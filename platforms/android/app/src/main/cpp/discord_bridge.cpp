@@ -191,6 +191,8 @@ namespace
 		// updates as you play ("Exploring Ivalice, Lv 34"). Empty when RA is off or the game has
 		// no set. Suggested by Tanos.
 		std::string want_ra;
+		// A remote play session's party id, while both players are in one; empty otherwise.
+		std::string want_party;
 	};
 
 	State& S()
@@ -240,7 +242,7 @@ namespace
 	void PushPresence()
 	{
 		std::shared_ptr<discordpp::Client> client;
-		std::string serial, title, cover, ra;
+		std::string serial, title, cover, ra, party;
 		{
 			std::lock_guard<std::mutex> lock(S().mutex);
 			client = S().client;
@@ -248,6 +250,7 @@ namespace
 			title = S().want_title;
 			cover = S().want_cover;
 			ra = S().want_ra;
+			party = S().want_party;
 		}
 		if (!client)
 			return;
@@ -266,6 +269,17 @@ namespace
 			// the in-a-game marker: a friend's client decides "library or game" purely from whether
 			// State is set, so a game with no serial AND no RA still has to set something.
 			activity.SetState(!ra.empty() ? ra : (serial.empty() ? std::string("-") : serial));
+			if (!party.empty())
+			{
+				// Remote play with both players in. The second line says so instead, and the party,
+				// the same id on both devices, is what makes Discord add "(2 of 2)" after it.
+				activity.SetState(std::string("Playing remote play"));
+				discordpp::ActivityParty group;
+				group.SetId(party);
+				group.SetCurrentSize(2);
+				group.SetMaxSize(2);
+				activity.SetParty(std::move(group));
+			}
 		}
 		else
 		{
@@ -717,7 +731,7 @@ Java_com_armsx2_discord_DiscordNative_error(JNIEnv* env, jclass)
 /// Remember and publish what is being played. Empty title = back in the library.
 JNIEXPORT void JNICALL
 Java_com_armsx2_discord_DiscordNative_setPlaying(
-	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover, jstring ra)
+	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover, jstring ra, jstring party)
 {
 	{
 		std::lock_guard<std::mutex> lock(S().mutex);
@@ -725,6 +739,7 @@ Java_com_armsx2_discord_DiscordNative_setPlaying(
 		S().want_title = JStr(env, title);
 		S().want_cover = JStr(env, cover);
 		S().want_ra = JStr(env, ra);
+		S().want_party = JStr(env, party);
 	}
 	if (S().status.load(std::memory_order_acquire) == static_cast<int>(BridgeStatus::Connected))
 		PushPresence();
@@ -817,7 +832,7 @@ JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_takeRefreshToken
 JNIEXPORT jboolean JNICALL Java_com_armsx2_discord_DiscordNative_takeAuthExpired(JNIEnv*, jclass) { return JNI_FALSE; }
 JNIEXPORT jint JNICALL Java_com_armsx2_discord_DiscordNative_status(JNIEnv*, jclass) { return 0; }
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_error(JNIEnv*, jclass) { return nullptr; }
-JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_setPlaying(JNIEnv*, jclass, jstring, jstring, jstring, jstring) {}
+JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_setPlaying(JNIEnv*, jclass, jstring, jstring, jstring, jstring, jstring) {}
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_friends(JNIEnv* env, jclass) { return env->NewStringUTF(""); }
 JNIEXPORT jstring JNICALL Java_com_armsx2_discord_DiscordNative_self(JNIEnv* env, jclass) { return env->NewStringUTF(""); }
 JNIEXPORT void JNICALL Java_com_armsx2_discord_DiscordNative_pump(JNIEnv*, jclass) {}

@@ -483,6 +483,7 @@ class RemotePlayViewerActivity : ComponentActivity() {
     private fun firstFrame() {
         if (playing.value || isDestroyed) return
         playing.value = true
+        session?.hostParty?.let(com.armsx2.DiscordPresence::joinRemotePlay)
         hintVisible.value = true
         main.postDelayed({ hintVisible.value = false }, 6_000)
         touchActivity()
@@ -916,6 +917,9 @@ internal class ViewerInput(private val send: (RemotePlayProtocol.PadState) -> Un
 }
 
 /** The viewer's connection: signaling, the peer, audio playback and the pad. Main thread. */
+private val RemotePlaySerialShape = Regex("[A-Za-z0-9][A-Za-z0-9._-]{2,23}")
+private val RemotePlayPartyShape = Regex("[A-Za-z0-9-]{2,64}")
+
 internal class ViewerSession(
     private val context: Context,
     private val mode: ViewerMode,
@@ -952,6 +956,11 @@ internal class ViewerSession(
     // the screen itself.
     private var videoTrack: VideoTrack? = null
     private var sink: VideoSink? = null
+
+    /** The host's game and Discord party, from its offer, for this device's Discord status. */
+    @Volatile
+    var hostParty: com.armsx2.DiscordPresence.RemotePlayParty? = null
+        private set
 
     /** How the host's audio arrives, for the stats: "Opus" or "uncompressed"; null before any. */
     @Volatile
@@ -1011,6 +1020,7 @@ internal class ViewerSession(
                     return
                 }
                 link = CodeLink { code -> main.post { if (!ended) onReply(code) } }
+                takeOffer(mode.offer)
                 answer(mode.offer.optString("sdp"))
                 main.postDelayed(connectTimeout, INVITE_CONNECT_TIMEOUT_MS)
             }
@@ -1030,6 +1040,7 @@ internal class ViewerSession(
                             return@post
                         }
                         link = LobbyViewerLink(code) { failure -> main.post { end(lobbyMessage(failure)) } }
+                        takeOffer(offer)
                         answer(offer.optString("sdp"))
                         main.postDelayed(connectTimeout, LOBBY_CONNECT_TIMEOUT_MS)
                     }
@@ -1161,12 +1172,25 @@ internal class ViewerSession(
     private fun onSignal(message: JSONObject) {
         if (ended) return
         when (message.optString("t")) {
-            "offer" -> answer(message.optString("sdp"))
+            "offer" -> {
+                takeOffer(message)
+                answer(message.optString("sdp"))
+            }
             "bye" -> end(byeMessage(message.optString("reason")))
         }
     }
 
     /** Answers the host's offer; the answer goes out once complete, candidates included. */
+    // This goes on the player's own Discord profile, so only a plain name and a serial-shaped serial
+    // are taken from the host. The cover comes from this device's own cover source, never a link.
+    private fun takeOffer(offer: JSONObject) {
+        val game = offer.optString("game").filterNot { it.isISOControl() }.trim().take(80)
+        val serial = offer.optString("serial").takeIf { RemotePlaySerialShape.matches(it) }.orEmpty()
+        val party = offer.optString("party").takeIf { RemotePlayPartyShape.matches(it) }
+            ?: ("rp-" + java.util.UUID.randomUUID())
+        hostParty = com.armsx2.DiscordPresence.RemotePlayParty(party, game.ifBlank { "Remote play" }, serial)
+    }
+
     private fun answer(offer: String) {
         if (peer != null || ended) return
         val created = RemotePlayRtc.createFactory(context, output).also { rtc = it }
@@ -1309,6 +1333,7 @@ internal class ViewerSession(
     fun end(message: String?) {
         if (ended) return
         ended = true
+        hostParty?.let { com.armsx2.DiscordPresence.leaveRemotePlay(it.id) }
         main.removeCallbacks(heartbeat)
         main.removeCallbacks(sendLater)
         main.removeCallbacks(prioritize)

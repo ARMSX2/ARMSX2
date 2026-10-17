@@ -64,6 +64,12 @@ internal object RemotePlayCore {
             ?: runCatching { NativeApp.getPauseGameTitle() }.getOrNull().orEmpty()
     }
 
+    /** Host: the running game's serial, so the friend's Discord status can show its cover. Empty when unknown. */
+    fun runningSerial(): String {
+        if (!runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)) return ""
+        return MainActivityRuntime.currentGame.value?.serial.orEmpty()
+    }
+
     /** Host: player 2's motors as the game last set them, (large shl 8) or small; 0 while paused. */
     fun remoteRumble(): Int = if (isPaused()) 0 else NativeApp.sRemotePlayer2Rumble
 

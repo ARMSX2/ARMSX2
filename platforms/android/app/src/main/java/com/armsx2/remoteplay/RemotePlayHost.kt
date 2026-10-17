@@ -354,6 +354,10 @@ private class HostSession(
     private var opusAudio = false
     private var viewer = "?"
 
+    // Sent to the friend with the offer, so both devices' Discord status carry the same party and
+    // Discord shows them as one remote play session.
+    private val partyId = "rp-" + java.util.UUID.randomUUID()
+
     /** Who is playing, as their device introduced itself. */
     val playerName: String get() = viewer
 
@@ -596,6 +600,8 @@ private class HostSession(
                     RemotePlayRtc.sdpMessage("offer", sdp)
                         .put("v", RemotePlayProtocol.VERSION)
                         .put("game", game.take(80))
+                        .put("serial", RemotePlayCore.runningSerial())
+                        .put("party", partyId)
                         .put("host", Build.MODEL),
                 )
             }
@@ -703,6 +709,7 @@ private class HostSession(
 
         RemotePlayHost.report(RemotePlayHost.Status.Playing(viewer))
         hadPlayer = true
+        com.armsx2.DiscordPresence.joinRemotePlay(com.armsx2.DiscordPresence.RemotePlayParty(partyId))
         RemotePlayHost.announce(RemotePlayHost.Notice(viewer, joined = true))
         wifi.hold()
         val observer = source.capturerObserver
@@ -887,6 +894,7 @@ private class HostSession(
     fun end(reason: String) {
         if (ended) return
         ended = true
+        com.armsx2.DiscordPresence.leaveRemotePlay(partyId)
         input.removeCallbacksAndMessages(null)
         main.removeCallbacks(connectTimeout)
         main.removeCallbacks(answerTimeout)

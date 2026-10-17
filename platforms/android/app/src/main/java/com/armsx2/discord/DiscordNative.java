@@ -96,8 +96,10 @@ public final class DiscordNative {
     public static native String error();
 
     /** Publish what is running. Empty title = back in the library. raPresence is
-     *  RetroAchievements' own rich-presence line, or empty when RA is off. */
-    public static native void setPlaying(String serial, String title, String coverUrl, String raPresence);
+     *  RetroAchievements' own rich-presence line, or empty when RA is off. remotePlayParty is the
+     *  party id of a remote play session with both players in, or empty outside one. */
+    public static native void setPlaying(String serial, String title, String coverUrl, String raPresence,
+            String remotePlayParty);
 
     /** Friends in ARMSX2, as name/game/serial/avatar records. */
     public static native String friends();
