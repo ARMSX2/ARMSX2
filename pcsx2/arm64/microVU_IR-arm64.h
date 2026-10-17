@@ -19,6 +19,7 @@ struct microMapNEON
 	int  count;    // LRU counter
 	bool isNeeded; // Locked for current instruction
 	bool isZero;   // Loaded from VF0, no clamping needed
+	bool natural;  // Single-lane write held in its own lane, not rotated to lane 0
 };
 
 struct microMapGPR
@@ -42,10 +43,10 @@ static const int neonAllocTotal = 28;
 // GPR allocatable for VI: x14-x15 (2) + x26-x28 (3) = 5.
 // x0-x7=args/scratch, x8=RXSCRATCH, x9-x13=scratch, x16-x17=vixl,
 // x18=platform, x19=gprVUState, x20-x23=gprF0-F3, x24=gprMVUFlag,
-// x25=gprMVUglob, x29=fp (also the EE JIT's REEPIN_V0 $v0 pin — must stay
-// out of this pool: COP2 macro-mode runs mVU emitters inside EE blocks
-// where x29 holds a live guest value; micro-mode is covered by the
-// dispatcher's x29/x30 Stp/Ldp), x30=lr, sp=stack.
+// x25=gprMVUglob, x29=gprVUMem in micro mode (also the EE JIT's REEPIN_V0
+// $v0 pin — must stay out of this pool: COP2 macro-mode runs mVU emitters
+// inside EE blocks where x29 holds a live guest value; micro-mode is covered
+// by the dispatcher's x29/x30 Stp/Ldp), x30=lr, sp=stack.
 static const int gprAllocCount = 32; // Total GPR IDs (unusable ones are marked in the map)
 
 // Fold count for vu_merge_fold_tests, so a test cannot pass on a build
@@ -92,6 +93,12 @@ protected:
 	};
 	CloneNote clones[kCloneRunMax];
 	int cloneCount = 0;
+
+	// The VI twin: allocGPR's clone-write copy of a cached VI into the slot
+	// its destination gets, while that copy is still the last word emitted.
+	// takeGPRCloneSource() is the consumer; see the VI arithmetic in
+	// microVU_Lower-arm64.inl. One deep, because no VI op makes two.
+	CloneNote gprClone = {-1, -1, -1};
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -228,7 +235,7 @@ protected:
 			// Partial write — must invalidate after store regardless of
 			// clearEntry, otherwise later cached reads pick up a reg with
 			// stale / shuffled lanes and skip the re-load.
-			mVUsaveReg(qreg, gprVUState, off, entry.xyzw, true);
+			mVUsaveReg(qreg, gprVUState, off, entry.xyzw, !entry.natural);
 			clearNeon(regIdx);
 			return;
 		}
@@ -258,6 +265,7 @@ protected:
 		neonMap[regIdx].count = 0;
 		neonMap[regIdx].isNeeded = false;
 		neonMap[regIdx].isZero = false;
+		neonMap[regIdx].natural = false;
 	}
 
 	void clearGPR(int regIdx)
@@ -328,6 +336,7 @@ public:
 		counter = 0;
 		neonWatermark = 0;
 		cloneCount = 0;
+		gprClone = {-1, -1, -1};
 	}
 
 	// Highest NEON slot index + 1 handed out since the last reset(). The COP2
@@ -380,6 +389,30 @@ public:
 		return top.src;
 	}
 
+	// The register the VI in `dst` was copied from, or -1. On a hit the copy
+	// is dropped from the buffer and the caller owes dst a write that reads
+	// the returned register in its place -- the same contract as
+	// takeCloneSource, for allocGPR's clone-write Mov.
+	int takeGPRCloneSource(const a64::Register& dst)
+	{
+		const CloneNote note = gprClone;
+		gprClone = {-1, -1, -1};
+		if (note.dst != static_cast<int>(dst.GetCode()) || note.end != armAsm->GetCursorOffset() || note.end < 4)
+			return -1;
+
+		// MOV Wd, Wn is ORR Wd, WZR, Wn.
+		const u32 expect = 0x2A0003E0u | (note.src << 16) | note.dst;
+		const u32* word = armAsm->GetBuffer()->GetOffsetAddress<const u32*>(note.end - 4);
+		if (*word != expect)
+		{
+			pxFailRel("mVU VI clone fold: unexpected word");
+			return -1;
+		}
+
+		armAsm->GetBuffer()->Rewind(note.end - 4);
+		return note.src;
+	}
+
 	// Emit the NEON equivalent of x86's PSHUF.D(dst, src, imm) used in the
 	// clone-write path for single-scalar VF ops. Moves src's lane `srcLane`
 	// into dst's lane 0. Other dst lanes are don't-care (SS ops only read
@@ -396,9 +429,24 @@ public:
 				armAsm->Mov(dst.V16B(), src.V16B());
 			return;
 		}
-		if (dst.GetCode() != src.GetCode())
-			armAsm->Mov(dst.V16B(), src.V16B());
-		armAsm->Ext(dst.V16B(), dst.V16B(), dst.V16B(), srcLane * 4);
+		// EXT reads both halves from src, so the rotation needs no copy in
+		// front of it: the result is the copy rotated, word for word.
+		armAsm->Ext(dst.V16B(), src.V16B(), src.V16B(), srcLane * 4);
+	}
+
+	// `reg`, a full-width clone-write temp (allocReg(vf, 0, 0xf)) the caller
+	// has just filled with the whole new value of `vfreg`, becomes that VF's
+	// written slot in place, as if it had been allocated allocReg(-1, vfreg,
+	// 0xf) and the value copied over. clearNeeded then treats it as the full
+	// write it is and drops every other cached copy of `vfreg`.
+	void rebindFullWrite(const a64::VRegister& reg, int vfreg)
+	{
+		microMapNEON& m = neonMap[reg.GetCode()];
+		pxAssert(m.isNeeded && m.VFreg == 0 && m.xyzw == 0xF);
+		m.VFreg  = vfreg;
+		m.isZero = false;
+		m.natural = false;
+		m.count  = counter;
 	}
 
 	// Allocate a NEON register for VF access. Ported from x86 allocReg —
@@ -407,12 +455,29 @@ public:
 	// vfLoadReg: VF to load from (-1=temp, 0-31=VF, 32=ACC, 33=I)
 	// vfWriteReg: VF to write to (-1=none/read-only, 0-31, 32=ACC, 33=I)
 	// xyzw: components touched (mask: X=8, Y=4, Z=2, W=1; 0=full-read;
-	//       0xF=full-write). For SS writes a single bit is set.
+	//       0xF=full-write). For SS writes a single bit is set. With a
+	//       vfWriteReg, 0 is an empty field and the slot is a temp.
 	// cloneWrite: if true, clone cached reg so caller's write doesn't
 	//             stomp the cached value.
-	const a64::VRegister allocReg(int vfLoadReg = -1, int vfWriteReg = -1, int xyzw = 0, bool cloneWrite = true)
+	// natural: a single-lane write keeps every lane where it is (a whole-
+	//          register clone or load) instead of rotating the written lane
+	//          to lane 0; the slot is marked so its writeback and merge take
+	//          that lane from its own place. For emitters that compute the
+	//          lane in place, full width.
+	const a64::VRegister allocReg(int vfLoadReg = -1, int vfWriteReg = -1, int xyzw = 0, bool cloneWrite = true,
+		bool natural = false)
 	{
 		counter++;
+		natural = natural && (xyzw == 8 || xyzw == 4 || xyzw == 2 || xyzw == 1);
+		const int ssXyzw = natural ? 0 : xyzw; // the rotation's view of the mask
+
+		// A slot with xyzw == 0 is recorded as an unmodified copy of its
+		// register. A write with an empty field passes the same value, so the
+		// slot holding its result would pass for a clean copy of vfWriteReg
+		// (VF0, for the writes that use it as the drop-it register), and a
+		// later read or partial write of that register would take the result
+		// for it. A write that touches no lane leaves a temp.
+		const int slotReg = xyzw ? vfWriteReg : -1;
 
 		// Search for cached copy.
 		if (vfLoadReg >= 0)
@@ -439,11 +504,11 @@ public:
 							const a64::VRegister qmmZ = armQRegister(z);
 							writeBackNeon(z);
 
-							if (xyzw == 4)
+							if (ssXyzw == 4)
 								emitSSShuffle(qmmZ, qmmI, 1); // Y to lane 0
-							else if (xyzw == 2)
+							else if (ssXyzw == 2)
 								emitSSShuffle(qmmZ, qmmI, 2); // Z to lane 0
-							else if (xyzw == 1)
+							else if (ssXyzw == 1)
 								emitSSShuffle(qmmZ, qmmI, 3); // W to lane 0
 							else if (z != i)
 							{
@@ -458,16 +523,17 @@ public:
 							if ((vfLoadReg != vfWriteReg) || (xyzw != 0xF))
 								writeBackNeon(i);
 
-							if (xyzw == 4)
+							if (ssXyzw == 4)
 								emitSSShuffle(qmmI, qmmI, 1);
-							else if (xyzw == 2)
+							else if (ssXyzw == 2)
 								emitSSShuffle(qmmI, qmmI, 2);
-							else if (xyzw == 1)
+							else if (ssXyzw == 1)
 								emitSSShuffle(qmmI, qmmI, 3);
 						}
-						neonMap[z].VFreg = vfWriteReg;
+						neonMap[z].VFreg = slotReg;
 						neonMap[z].xyzw  = xyzw;
 						neonMap[z].isZero = (vfLoadReg == 0);
+						neonMap[z].natural = natural;
 					}
 					neonMap[z].count = counter;
 					neonMap[z].isNeeded = true;
@@ -491,19 +557,20 @@ public:
 			}
 			else if (vfLoadReg == 33) // I register
 			{
-				loadIreg(qmmX, xyzw);
+				loadIreg(qmmX, natural ? 0xF : xyzw);
 			}
 			else if (vfLoadReg == 32)
 			{
-				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, ACC), xyzw);
+				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, ACC), natural ? 0xF : xyzw);
 			}
 			else if (vfLoadReg >= 0)
 			{
-				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, VF) + vfLoadReg * sizeof(VECTOR), xyzw);
+				mVUloadReg(qmmX, gprVUState, offsetof(VURegs, VF) + vfLoadReg * sizeof(VECTOR), natural ? 0xF : xyzw);
 			}
 
-			neonMap[x].VFreg = vfWriteReg;
+			neonMap[x].VFreg = slotReg;
 			neonMap[x].xyzw  = xyzw;
+			neonMap[x].natural = natural;
 		}
 		else // Reg will not be modified (always load the full reg so it can be cached)
 		{
@@ -522,6 +589,7 @@ public:
 
 			neonMap[x].VFreg = vfLoadReg;
 			neonMap[x].xyzw  = 0;
+			neonMap[x].natural = false;
 		}
 		neonMap[x].isZero    = (vfLoadReg == 0);
 		neonMap[x].count     = counter;
@@ -544,6 +612,7 @@ public:
 		neonMap[x].VFreg = vfLoadA;
 		neonMap[x].xyzw = 0;
 		neonMap[x].isZero = (vfLoadA == 0);
+		neonMap[x].natural = false;
 		neonMap[x].count = counter;
 		neonMap[x].isNeeded = true; // hold the slot while the second is chosen
 
@@ -554,6 +623,7 @@ public:
 		neonMap[y].VFreg = vfLoadB;
 		neonMap[y].xyzw = 0;
 		neonMap[y].isZero = (vfLoadB == 0);
+		neonMap[y].natural = false;
 		neonMap[y].count = counter;
 
 		// Ldp's first register takes the lower address, so a descending pair
@@ -623,6 +693,9 @@ public:
 	const a64::Register allocGPR(int viLoadReg = -1, int viWriteReg = -1, bool backup = false, bool zext_if_dirty = false)
 	{
 		counter++;
+		// A note left by an earlier allocation is never this one's to fold: the
+		// register it names may be the very slot this call hands out again.
+		gprClone = {-1, -1, -1};
 
 		// Writing zero? Return a zeroed register
 		if (viWriteReg == 0)
@@ -670,6 +743,7 @@ public:
 							}
 
 							armAsm->Mov(armWRegister(x).W(), armWRegister(i).W());
+							gprClone = {x, i, armAsm->GetCursorOffset()};
 
 							gprMap[x].isZeroExtended = zext_if_dirty;
 							// Swap so `i` names the new slot — matches x86's
@@ -860,7 +934,7 @@ public:
 				// into it. The merged reg now holds the complete state, so
 				// mark it as fully valid (xyzw=0xF). We'll invalidate our
 				// own slot below.
-				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, /*modXYZW=*/true);
+				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, /*modXYZW=*/!clear.natural);
 				mapI.xyzw  = 0xF;
 				mapI.count = counter;
 				mergeState = 2;
@@ -990,6 +1064,20 @@ public:
 		        (gprMap[regId].VIreg >= 0 || gprMap[regId].isNeeded));
 	}
 
+	// Whether allocReg would find `vfreg` cached whole (clean, or dirty in
+	// every lane) -- the copy a single-lane write can be inserted into in
+	// place. VF0 never qualifies.
+	bool isCachedWhole(int vfreg) const
+	{
+		for (int i = 0; i < neonAllocTotal; i++)
+		{
+			const microMapNEON& m = neonMap[i];
+			if (m.VFreg == vfreg && vfreg != 0 && (m.xyzw == 0 || m.xyzw == 0xF))
+				return true;
+		}
+		return false;
+	}
+
 	bool hasRegVF(int vfreg) const
 	{
 		for (int i = 0; i < neonAllocTotal; i++)
@@ -1055,6 +1143,20 @@ public:
 	bool isUsableNeon(int i) const
 	{
 		return i >= 0 && i < neonAllocTotal && neonUsable(i);
+	}
+
+	// The register holding VI `vi` for a read: its cached slot, or `dst` after
+	// the same 16-bit load moveVIToGPR makes. For a reader that takes only
+	// some low bits of the value, so needs no copy of its own.
+	a64::Register viReadGPR(const a64::Register& dst, int vi)
+	{
+		for (int i = 0; i < gprAllocCount; i++)
+		{
+			if (gprMap[i].usable && gprMap[i].VIreg == vi)
+				return armWRegister(i);
+		}
+		armAsm->Ldrh(dst.W(), mVUstateMem(offsetof(VURegs, VI) + vi * sizeof(REG_VI)));
+		return dst.W();
 	}
 
 	// Move VI value into a specific GPR (for address computation etc.)

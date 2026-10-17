@@ -31,6 +31,22 @@ static bool mVUneedsSoftwareFlush(mV)
 	return !(isVU0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR).GetDenormalsAreZero();
 }
 
+// Z set when the word in lane 0 of `reg` is a div-unit zero: exponent field
+// zero. Under a VU FPCR with FZ that is FCMP against 0.0, which flushes a
+// denormal operand to zero before comparing and leaves an exponent-255 word
+// unordered (Z clear), one instruction for the move and the test. Without
+// FZ a denormal compares nonzero, so the field itself is tested.
+static __fi void mVUemitDivZeroTest(mV, const a64::VRegister& reg, const a64::Register& scratch)
+{
+	if (!mVUneedsSoftwareFlush(mVU))
+	{
+		armAsm->Fcmp(a64::SRegister(reg.GetCode()), 0.0);
+		return;
+	}
+	armAsm->Umov(scratch.W(), reg.V4S(), 0);
+	armAsm->Tst(scratch.W(), kEeExpMask);
+}
+
 mVUop(mVU_DIV)
 {
 	pass1 { mVUanalyzeFDIV(mVU, _Fs_, _Fsf_, _Ft_, _Ftf_, 7); }
@@ -54,15 +70,13 @@ mVUop(mVU_DIV)
 		const bool consoleQ = CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Test if Ft is zero (a NaN's exponent is 255, so it takes the not-zero
-		// branch as the Fcmp this replaces did).
-		armAsm->Umov(gprT1.W(), Ft.V4S(), 0);
-		armAsm->Tst(gprT1.W(), kEeExpMask);
+		// branch).
+		mVUemitDivZeroTest(mVU, Ft, gprT1);
 		a64::Label ftNotZero, divDone;
 		armAsm->B(&ftNotZero, a64::ne); // Skip if Ft != 0
 
 		// Ft is zero -- check Fs
-		armAsm->Umov(gprT2.W(), Fs.V4S(), 0);
-		armAsm->Tst(gprT2.W(), kEeExpMask);
+		mVUemitDivZeroTest(mVU, Fs, gprT2);
 		a64::Label fsNotZero;
 		armAsm->B(&fsNotZero, a64::ne); // Skip if Fs != 0
 
@@ -1088,10 +1102,23 @@ mVUop(mVU_FCOR)
 	{
 		const a64::Register& dst = mVU.regAlloc->allocGPR(-1, 1, mVUlow.backupVI);
 		mVUallocCFLAGa(mVU, dst, cFLAG.read);
-		armAsm->Mov(gprT1.W(), _Imm24_);
-		armAsm->Orr(dst.W(), dst.W(), gprT1.W());
-		armAsm->Add(dst.W(), dst.W(), 1);
-		armAsm->Lsr(dst.W(), dst.W(), 24);
+		// vi01 = ((CLIP | imm24) == 0xFFFFFF): every bit the immediate leaves
+		// clear has to be set in CLIP. BICS tests those bits for a zero, with
+		// the mask shifted down to its lowest bit so the strided masks programs
+		// use fit one MOVZ, and CLIP shifted to match in BICS's own operand.
+		// Bits of CLIP above 23 take no part, as in the interpreter.
+		const u32 need = ~_Imm24_ & 0xFFFFFFu;
+		if (need == 0)
+		{
+			armAsm->Mov(dst.W(), 1);
+		}
+		else
+		{
+			const int shift = __builtin_ctz(need);
+			armAsm->Mov(gprT1.W(), need >> shift);
+			armAsm->Bics(a64::wzr, gprT1.W(), a64::Operand(dst.W(), a64::LSR, shift));
+			armAsm->Cset(dst.W(), a64::eq);
+		}
 		mVU.regAlloc->clearNeeded(dst);
 		mVU.profiler.EmitOp(opFCOR);
 	}
@@ -1269,6 +1296,18 @@ mVUop(mVU_FSSET)
 // IADD/IADDI/IADDIU/IAND/IOR/ISUB/ISUBIU
 //------------------------------------------------------------------
 
+// What a VI op reads in place of its destination's old value. When the
+// destination is a different VI from the source, allocGPR copies the cached
+// source into the destination's slot; if that copy is the last word emitted,
+// the op reads the source register instead and the copy goes. Every caller
+// writes the whole destination register with the op that follows, so the
+// copy was dead.
+static __fi a64::Register mVUviSource(mV, const a64::Register& reg)
+{
+	const int src = mVU.regAlloc->takeGPRCloneSource(reg);
+	return (src >= 0) ? armWRegister(src) : reg;
+}
+
 mVUop(mVU_IADD)
 {
 	pass1 { mVUanalyzeIALU1(mVU, _Id_, _Is_, _It_); }
@@ -1286,7 +1325,7 @@ mVUop(mVU_IADD)
 		{
 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
-			armAsm->Add(regS.W(), regS.W(), regT.W());
+			armAsm->Add(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
 			mVU.regAlloc->clearNeeded(regS);
 			mVU.regAlloc->clearNeeded(regT);
 		}
@@ -1331,10 +1370,11 @@ mVUop(mVU_IADDI)
 				if (_Imm5_ != 0)
 				{
 					s16 imm = _Imm5_;
+					const a64::Register src = mVUviSource(mVU, regS);
 					if (imm >= 0)
-						armAsm->Add(regS.W(), regS.W(), (u32)imm);
+						armAsm->Add(regS.W(), src.W(), (u32)imm);
 					else
-						armAsm->Sub(regS.W(), regS.W(), (u32)(-imm));
+						armAsm->Sub(regS.W(), src.W(), (u32)(-imm));
 				}
 			}
 			else
@@ -1387,10 +1427,7 @@ mVUop(mVU_IADDIU)
 			if (!EmuConfig.Gamefixes.IbitHack)
 			{
 				if (_Imm15_ != 0)
-				{
-					armAsm->Mov(gprT1.W(), _Imm15_);
-					armAsm->Add(regS.W(), regS.W(), gprT1.W());
-				}
+					armAsm->Add(regS.W(), mVUviSource(mVU, regS).W(), _Imm15_);
 			}
 			else
 			{
@@ -1415,7 +1452,7 @@ mVUop(mVU_IAND)
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
 		if (_It_ != _Is_)
-			armAsm->And(regS.W(), regS.W(), regT.W());
+			armAsm->And(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
 		mVU.regAlloc->clearNeeded(regS);
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opIAND);
@@ -1431,7 +1468,7 @@ mVUop(mVU_IOR)
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
 		if (_It_ != _Is_)
-			armAsm->Orr(regS.W(), regS.W(), regT.W());
+			armAsm->Orr(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
 		mVU.regAlloc->clearNeeded(regS);
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opIOR);
@@ -1448,7 +1485,7 @@ mVUop(mVU_ISUB)
 		{
 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1);
 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Id_, mVUlow.backupVI);
-			armAsm->Sub(regS.W(), regS.W(), regT.W());
+			armAsm->Sub(regS.W(), mVUviSource(mVU, regS).W(), regT.W());
 			mVU.regAlloc->clearNeeded(regS);
 			mVU.regAlloc->clearNeeded(regT);
 		}
@@ -1472,10 +1509,7 @@ mVUop(mVU_ISUBIU)
 		if (!EmuConfig.Gamefixes.IbitHack)
 		{
 			if (_Imm15_ != 0)
-			{
-				armAsm->Mov(gprT1.W(), _Imm15_);
-				armAsm->Sub(regS.W(), regS.W(), gprT1.W());
-			}
+				armAsm->Sub(regS.W(), mVUviSource(mVU, regS).W(), _Imm15_);
 		}
 		else
 		{
@@ -1494,6 +1528,24 @@ mVUop(mVU_ISUBIU)
 //------------------------------------------------------------------
 // MFIR/MFP/MOVE/MR32/MTIR
 //------------------------------------------------------------------
+
+// A single-lane VF write whose destination (Ft) is cached whole: the lane
+// goes straight into that copy with one INS, Ft[lane] <- Fs[srcLane], and the
+// copy becomes a whole-register write. The old route -- a single-lane slot
+// for the lane, then clearNeeded's merge into the same cached copy -- leaves
+// that copy holding the same words and marked the same way. False, with
+// nothing emitted, when the op is not single-lane or Ft is not cached whole.
+static bool mVUinsertLane(mV, int fsReg, int srcLane)
+{
+	if (!_XYZW_SS || _Ft_ == 0 || !mVU.regAlloc->isCachedWhole(_Ft_))
+		return false;
+	const a64::VRegister& Fs = mVU.regAlloc->allocReg(fsReg);
+	const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, _Ft_, 0xf, false);
+	armAsm->Ins(Ft.V4S(), mVUssLane(mVU), Fs.V4S(), srcLane);
+	mVU.regAlloc->clearNeeded(Ft);
+	mVU.regAlloc->clearNeeded(Fs);
+	return true;
+}
 
 mVUop(mVU_MFIR)
 {
@@ -1551,8 +1603,13 @@ mVUop(mVU_MOVE)
 	pass1 { mVUanalyzeMOVE(mVU, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, _Ft_, _X_Y_Z_W);
-		mVU.regAlloc->clearNeeded(Fs);
+		// One lane into a destination cached whole is one INS into that copy
+		// (mVUinsertLane); otherwise a clone of Fs that the allocator merges.
+		if (!mVUinsertLane(mVU, _Fs_, mVUssLane(mVU)))
+		{
+			const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, _Ft_, _X_Y_Z_W);
+			mVU.regAlloc->clearNeeded(Fs);
+		}
 		mVU.profiler.EmitOp(opMOVE);
 	}
 	pass3 { mVUlog("MOVE.%s vf%02d, vf%02d", _XYZW_String, _Ft_, _Fs_); }
@@ -1563,6 +1620,12 @@ mVUop(mVU_MR32)
 	pass1 { mVUanalyzeMR32(mVU, _Fs_, _Ft_); }
 	pass2
 	{
+		// MR32 rotates XYZW -> YZWX, so the lane written takes the next one up.
+		if (mVUinsertLane(mVU, _Fs_, (mVUssLane(mVU) + 1) & 3))
+		{
+			mVU.profiler.EmitOp(opMR32);
+			return;
+		}
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
 		if (_XYZW_SS)
@@ -1610,6 +1673,39 @@ mVUop(mVU_MTIR)
 // ILW/ILWR
 //------------------------------------------------------------------
 
+// gprT1 = the byte index into VU data memory of VI[vi] + Imm11, wrapped
+// (mVUaddrFix). On VU1 the base VI is read where it is cached, so the
+// copy into gprT1 goes; on VU0 the sequence is unchanged.
+static void mVUaddrFromVI(mV, int vi)
+{
+	a64::Register base = isVU1 ? mVU.regAlloc->viReadGPR(gprT1, vi) : gprT1;
+	if (!isVU1)
+		mVU.regAlloc->moveVIToGPR(gprT1, vi);
+	if (!EmuConfig.Gamefixes.IbitHack)
+	{
+		if (_Imm11_ != 0)
+		{
+			s32 imm = _Imm11_;
+			if (imm >= 0)
+				armAsm->Add(gprT1.W(), base.W(), (u32)imm);
+			else
+				armAsm->Sub(gprT1.W(), base.W(), (u32)(-imm));
+			base = gprT1;
+		}
+	}
+	else
+	{
+		// IbitHack: reconstruct signed Imm11 from the live opcode word at
+		// runtime via sbfx+bfxil.
+		armLoadPtr(RWSCRATCH, &curI);
+		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
+		armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
+		armAsm->Add(gprT1.W(), base.W(), gprT2.W());
+		base = gprT1;
+	}
+	mVUaddrFixFrom(mVU, gprT1, base);
+}
+
 mVUop(mVU_ILW)
 {
 	pass1
@@ -1626,36 +1722,15 @@ mVUop(mVU_ILW)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, offsetSS, gprT1q, kDispReachH, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at
-				// runtime via sbfx+bfxil.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _Is_);
 
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, offsetSS == 0);
 			addr.disp += offsetSS;
 		}
 
 		// Load 16-bit value from memory
 		const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-		armAsm->Ldrh(regT.W(), a64::MemOperand(addr.base, addr.disp));
+		armAsm->Ldrh(regT.W(), addr.at());
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opILW);
 	}
@@ -1676,18 +1751,23 @@ mVUop(mVU_ILWR)
 	{
 		if (_Is_)
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			mVUaddrFix(mVU, gprT1);
+			if (isVU1)
+				mVUaddrFixFrom(mVU, gprT1, mVU.regAlloc->viReadGPR(gprT1, _Is_));
+			else
+			{
+				mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
+				mVUaddrFix(mVU, gprT1);
+			}
 		}
 		else
 		{
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, offsetSS == 0);
 
 		const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-		armAsm->Ldrh(regT.W(), a64::MemOperand(addr.base, addr.disp + offsetSS));
+		armAsm->Ldrh(regT.W(), addr.at(offsetSS));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opILWR);
 	}
@@ -1712,37 +1792,17 @@ mVUop(mVU_ISW)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, 0, gprT1q, kDispReachW - 12, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
+			mVUaddrFromVI(mVU, _Is_);
 
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			addr = mVUmemAtIndex(mVU, gprT1q, _X_Y_Z_W == 0x8);
 		}
 
 		// Load VI[It] value (zero-extended to 32-bit) and store to selected lanes
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1, false, true);
-		if (_X) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp));
-		if (_Y) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 4));
-		if (_Z) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 8));
-		if (_W) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 12));
+		if (_X) armAsm->Str(regT.W(), addr.at());
+		if (_Y) armAsm->Str(regT.W(), addr.at(4));
+		if (_Z) armAsm->Str(regT.W(), addr.at(8));
+		if (_W) armAsm->Str(regT.W(), addr.at(12));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opISW);
 	}
@@ -1761,21 +1821,26 @@ mVUop(mVU_ISWR)
 	{
 		if (_Is_)
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			mVUaddrFix(mVU, gprT1);
+			if (isVU1)
+				mVUaddrFixFrom(mVU, gprT1, mVU.regAlloc->viReadGPR(gprT1, _Is_));
+			else
+			{
+				mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
+				mVUaddrFix(mVU, gprT1);
+			}
 		}
 		else
 		{
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, _X_Y_Z_W == 0x8);
 
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, -1, false, true);
-		if (_X) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp));
-		if (_Y) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 4));
-		if (_Z) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 8));
-		if (_W) armAsm->Str(regT.W(), a64::MemOperand(addr.base, addr.disp + 12));
+		if (_X) armAsm->Str(regT.W(), addr.at());
+		if (_Y) armAsm->Str(regT.W(), addr.at(4));
+		if (_Z) armAsm->Str(regT.W(), addr.at(8));
+		if (_W) armAsm->Str(regT.W(), addr.at(12));
 		mVU.regAlloc->clearNeeded(regT);
 		mVU.profiler.EmitOp(opISWR);
 	}
@@ -1795,32 +1860,12 @@ mVUop(mVU_LQ)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _Is_, _Imm11_, 0, gprT1q, kDispReachW - 12, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _Is_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			mVUaddrFromVI(mVU, _Is_);
+			addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 		}
 
 		const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-		mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+		mVUloadMem(Ft, addr, _X_Y_Z_W);
 		mVU.regAlloc->clearNeeded(Ft);
 		mVU.profiler.EmitOp(opLQ);
 	}
@@ -1838,16 +1883,21 @@ mVUop(mVU_LQD)
 		// to and VI0 stays hardwired.
 		const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
 		armAsm->Sub(regS.W(), regS.W(), 1);
-		armAsm->Sxth(gprT1.W(), regS.W());
+		if (isVU1)
+			mVUaddrFixFrom(mVU, gprT1, regS);
+		else
+		{
+			armAsm->Sxth(gprT1.W(), regS.W());
+			mVUaddrFix(mVU, gprT1);
+		}
 		mVU.regAlloc->clearNeeded(regS);
-		mVUaddrFix(mVU, gprT1);
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 
 		if (!mVUlow.noWriteVF)
 		{
 			const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-			mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+			mVUloadMem(Ft, addr, _X_Y_Z_W);
 			mVU.regAlloc->clearNeeded(Ft);
 		}
 		mVU.profiler.EmitOp(opLQD);
@@ -1864,22 +1914,30 @@ mVUop(mVU_LQI)
 		{
 			// Post-increment: read current value, then increment
 			const a64::Register& regS = mVU.regAlloc->allocGPR(_Is_, _Is_, mVUlow.backupVI);
-			armAsm->Sxth(gprT1.W(), regS.W());
-			armAsm->Add(regS.W(), regS.W(), 1);
+			if (isVU1)
+			{
+				mVUaddrFixFrom(mVU, gprT1, regS);
+				armAsm->Add(regS.W(), regS.W(), 1);
+			}
+			else
+			{
+				armAsm->Sxth(gprT1.W(), regS.W());
+				armAsm->Add(regS.W(), regS.W(), 1);
+				mVUaddrFix(mVU, gprT1);
+			}
 			mVU.regAlloc->clearNeeded(regS);
-			mVUaddrFix(mVU, gprT1);
 		}
 		else
 		{
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, mVUloadMemAtZero(_X_Y_Z_W));
 
 		if (!mVUlow.noWriteVF)
 		{
 			const a64::VRegister& Ft = mVU.regAlloc->allocReg(-1, _Ft_, _X_Y_Z_W);
-			mVUloadMem(Ft, addr.base, addr.disp, _X_Y_Z_W);
+			mVUloadMem(Ft, addr, _X_Y_Z_W);
 			mVU.regAlloc->clearNeeded(Ft);
 		}
 		mVU.profiler.EmitOp(opLQI);
@@ -1900,41 +1958,21 @@ mVUop(mVU_SQ)
 		mVUmemRef addr;
 		if (!mVUoptimizeConstantAddr(mVU, _It_, _Imm11_, 0, gprT1q, kDispReachQ, addr))
 		{
-			mVU.regAlloc->moveVIToGPR(gprT1, _It_);
-			if (!EmuConfig.Gamefixes.IbitHack)
-			{
-				if (_Imm11_ != 0)
-				{
-					s32 imm = _Imm11_;
-					if (imm >= 0)
-						armAsm->Add(gprT1.W(), gprT1.W(), (u32)imm);
-					else
-						armAsm->Sub(gprT1.W(), gprT1.W(), (u32)(-imm));
-				}
-			}
-			else
-			{
-				// IbitHack: reconstruct signed Imm11 from the live opcode word at runtime.
-				armLoadPtr(RWSCRATCH, &curI);
-				armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-				armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
-				armAsm->Add(gprT1.W(), gprT1.W(), gprT2.W());
-			}
-			mVUaddrFix(mVU, gprT1);
-			addr = mVUmemAtIndex(mVU, gprT1q);
+			mVUaddrFromVI(mVU, _It_);
+			addr = mVUmemAtIndex(mVU, gprT1q, true);
 		}
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
 			// Partial store: load existing, merge, store
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQ);
@@ -1949,22 +1987,27 @@ mVUop(mVU_SQD)
 	{
 		const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
 		armAsm->Sub(regT.W(), regT.W(), 1);
-		armAsm->Uxth(gprT1.W(), regT.W());
+		if (isVU1)
+			mVUaddrFixFrom(mVU, gprT1, regT);
+		else
+		{
+			armAsm->Uxth(gprT1.W(), regT.W());
+			mVUaddrFix(mVU, gprT1);
+		}
 		mVU.regAlloc->clearNeeded(regT);
-		mVUaddrFix(mVU, gprT1);
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, true);
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQD);
@@ -1981,28 +2024,36 @@ mVUop(mVU_SQI)
 		{
 			// Post-increment: read current, then increment
 			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_, _It_, mVUlow.backupVI);
-			armAsm->Uxth(gprT1.W(), regT.W());
-			armAsm->Add(regT.W(), regT.W(), 1);
+			if (isVU1)
+			{
+				mVUaddrFixFrom(mVU, gprT1, regT);
+				armAsm->Add(regT.W(), regT.W(), 1);
+			}
+			else
+			{
+				armAsm->Uxth(gprT1.W(), regT.W());
+				armAsm->Add(regT.W(), regT.W(), 1);
+				mVUaddrFix(mVU, gprT1);
+			}
 			mVU.regAlloc->clearNeeded(regT);
-			mVUaddrFix(mVU, gprT1);
 		}
 		else
 		{
 			armAsm->Mov(gprT1.W(), 0);
 		}
 
-		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q);
+		const mVUmemRef addr = mVUmemAtIndex(mVU, gprT1q, true);
 
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, -1, _X_Y_Z_W);
 		if (_X_Y_Z_W == 0xf)
 		{
-			armAsm->Str(Fs, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(Fs, addr.at());
 		}
 		else
 		{
-			armAsm->Ldr(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Ldr(RQSCRATCH, addr.at());
 			mVUmergeRegs(RQSCRATCH, Fs, _X_Y_Z_W, false);
-			armAsm->Str(RQSCRATCH, a64::MemOperand(addr.base, addr.disp));
+			armAsm->Str(RQSCRATCH, addr.at());
 		}
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.profiler.EmitOp(opSQI);
@@ -2417,12 +2468,63 @@ static __fi const a64::Register mVUcondBranchDest(mV)
 
 // Store the finished condition value to mVU.branch (authoritative — evil/bad
 // continuations read it cross-block) and record the carry when it lives in a
-// pool temp.
-static __fi void mVUcondBranchFinish(mV, const a64::Register& condReg)
+// pool temp. `low16`: see microVU::branchCondCarryLow16.
+static __fi void mVUcondBranchFinish(mV, const a64::Register& condReg, bool low16 = false)
 {
 	mVUstrField(mVU, condReg, &mVU.branch);
 	if (doBranchCondCarry && condReg.GetCode() != gprT1.GetCode())
+	{
 		mVU.branchCondCarryGpr = condReg.GetCode();
+		mVU.branchCondCarryLow16 = low16;
+	}
+}
+
+// condReg = Is ^ It for IBEQ/IBNE, each operand from VIbackup when the
+// analysis says so. vi00 is zero (moveVIToGPR, allocGPR and the constant
+// address fold all hold it so), so an operand that is vi00 contributes
+// nothing: against it the XOR is the other operand, moved rather than
+// loaded and combined.
+static __fi void mVUcondBranchXor(mV, const a64::Register& condReg)
+{
+	const bool isZero = !mVUlow.memReadIs && _Is_ == 0;
+	const bool itZero = !mVUlow.memReadIt && _It_ == 0;
+
+	if (isZero)
+	{
+		if (mVUlow.memReadIt)
+			mVUldrField(mVU, condReg, &mVU.VIbackup);
+		else
+			mVU.regAlloc->moveVIToGPR(condReg, _It_);
+		return;
+	}
+
+	if (itZero)
+	{
+		if (mVUlow.memReadIs)
+			mVUldrField(mVU, condReg, &mVU.VIbackup);
+		else
+			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
+		return;
+	}
+
+	// The XOR reads Is where it is cached rather than from a copy in condReg.
+	// It is allocated first, so its allocation cannot recycle Is's slot
+	// between the read and the XOR.
+	a64::Register regT = gprT2;
+	if (mVUlow.memReadIt)
+		mVUldrField(mVU, gprT2, &mVU.VIbackup);
+	else
+		regT = mVU.regAlloc->allocGPR(_It_);
+
+	a64::Register isSrc = condReg;
+	if (mVUlow.memReadIs)
+		mVUldrField(mVU, condReg, &mVU.VIbackup);
+	else
+		isSrc = mVU.regAlloc->viReadGPR(condReg, _Is_);
+
+	armAsm->Eor(condReg.W(), isSrc.W(), regT.W());
+	if (!mVUlow.memReadIt)
+		mVU.regAlloc->clearNeeded(regT);
 }
 
 mVUop(mVU_IBEQ)
@@ -2432,33 +2534,16 @@ mVUop(mVU_IBEQ)
 	pass2
 	{
 		const a64::Register condReg = mVUcondBranchDest(mVU);
-		if (mVUlow.memReadIs)
-			mVUldrField(mVU, condReg, &mVU.VIbackup);
-		else
-			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
-
-		if (mVUlow.memReadIt)
-		{
-			mVUldrField(mVU, gprT2, &mVU.VIbackup);
-			armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
-		}
-		else
-		{
-			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
-			armAsm->Eor(condReg.W(), condReg.W(), regT.W());
-			mVU.regAlloc->clearNeeded(regT);
-		}
+		mVUcondBranchXor(mVU, condReg);
 
 		if (!(isBadOrEvil))
 		{
-			mVUcondBranchFinish(mVU, condReg);
 			// The Eor sources can carry dirty upper halves (pool slots written
 			// by unmasked VI arithmetic aren't zero-extended; VIbackup stores
-			// the full W). The old tail's Ldrsh compared only the low 16 bits
-			// — narrow the carried value to match. The store above keeps the
-			// raw bytes mVU.branch always held.
-			if (condReg.GetCode() != gprT1.GetCode())
-				armAsm->Uxth(condReg.W(), condReg.W());
+			// the full W). The old tail's Ldrsh compared only the low 16 bits,
+			// so the tail tests just those. mVU.branch keeps the raw bytes it
+			// always held.
+			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else
 			condEvilBranch(mVU, a64::eq);
@@ -2582,29 +2667,12 @@ mVUop(mVU_IBNE)
 	pass2
 	{
 		const a64::Register condReg = mVUcondBranchDest(mVU);
-		if (mVUlow.memReadIs)
-			mVUldrField(mVU, condReg, &mVU.VIbackup);
-		else
-			mVU.regAlloc->moveVIToGPR(condReg, _Is_);
-
-		if (mVUlow.memReadIt)
-		{
-			mVUldrField(mVU, gprT2, &mVU.VIbackup);
-			armAsm->Eor(condReg.W(), condReg.W(), gprT2.W());
-		}
-		else
-		{
-			const a64::Register& regT = mVU.regAlloc->allocGPR(_It_);
-			armAsm->Eor(condReg.W(), condReg.W(), regT.W());
-			mVU.regAlloc->clearNeeded(regT);
-		}
+		mVUcondBranchXor(mVU, condReg);
 
 		if (!(isBadOrEvil))
 		{
-			mVUcondBranchFinish(mVU, condReg);
-			// See IBEQ — narrow to the low 16 bits the old Ldrsh compared.
-			if (condReg.GetCode() != gprT1.GetCode())
-				armAsm->Uxth(condReg.W(), condReg.W());
+			// See IBEQ — the tail tests the low 16 bits the old Ldrsh compared.
+			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else
 			condEvilBranch(mVU, a64::ne);

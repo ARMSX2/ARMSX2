@@ -96,6 +96,7 @@ add_pcsx2_test(recompiler_tests
 	vu0_clamp_modes_tests.cpp
 	vu_ftoi_saturation_tests.cpp
 	vu_madda_acc_lane_tests.cpp
+	vu_single_lane_inplace_tests.cpp
 	vu_ss_clamp_lane_tests.cpp
 	vu_clip_flag_tests.cpp
 	vu_clamp_consts_residency_tests.cpp
@@ -108,6 +109,7 @@ add_pcsx2_test(recompiler_tests
 	vu_minmax_order_tests.cpp
 	vu_pq_boundary_tests.cpp
 	vu_saturated_q_consumer_tests.cpp
+	vu_branch_condition_tests.cpp
 	vu_branch_terminator_tests.cpp
 	vu_overflow_hack_tests.cpp
 	vu_mac_flag_pack_tests.cpp
@@ -130,6 +132,12 @@ add_pcsx2_test(recompiler_tests
 	mvu_observed_entries_tests.cpp
 	mvu_cache_exhaustion_tests.cpp
 	mvu_lpstate_invariant_tests.cpp
+	mvu_clear_occupied_tests.cpp
+	mvu_block_list_tests.cpp
+	mvu_empty_field_tests.cpp
+	mvu_vi_backup_tests.cpp
+	mvu_ilw_load_use_tests.cpp
+	vu_end_drain_console_tests.cpp
 	mvu_resume_dispatch_tests.cpp
 	mvu_spin_ff_tests.cpp
 	mvu_contentmap_drift_tests.cpp
@@ -139,6 +147,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_progcache_disk_tests.cpp
 	mvu_waitmtvu_stub_tests.cpp
 	mvu_ebit_exit_tests.cpp
+	mvu_ebit_condbranch_status_tests.cpp
 	mvu_options_sentinel_tests.cpp
 	mvu_model_stub_tests.cpp
 	model_call_contract_tests.cpp

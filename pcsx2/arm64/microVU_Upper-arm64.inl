@@ -20,6 +20,34 @@ enum
 	preClampFrom = 2,
 };
 
+// The AX-14 lane-fold multiply: Fs *= Ft[lane], by element, as a vector or as
+// a scalar for the single-lane forms.
+static __fi void mVUemitLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane, bool scalar);
+
+// What an arithmetic step reads in place of `to`. When the last word emitted is
+// the clone-write copy that filled `to`, the step reads the register it was
+// copied from and the copy goes: every step below writes all four lanes of
+// `to` (a scalar op zeroes lanes 1-3), so nothing the copy put there survives
+// it. A clamp of `to` emitted in between ends the copy's run, and then the
+// step reads `to` as before.
+static __fi a64::VRegister mVUstepSource(mV, const a64::VRegister& to)
+{
+	const int src = mVU.regAlloc->takeCloneSource(to.GetCode());
+	return (src >= 0) ? a64::VRegister(src, 128) : to;
+}
+
+static __fi void mVUemitLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane, bool scalar)
+{
+	// vm MUST be the scalar .S() view: vixl's by-element emitter keys element
+	// size off vm's scalar format, and a V4S vm silently selects the
+	// half-precision opcode once Devel strips the VIXL_ASSERT.
+	const a64::VRegister a = mVUstepSource(mVU, Fs);
+	if (scalar)
+		armAsm->Fmul(Fs.S(), a.S(), Ft.S(), lane);
+	else
+		armAsm->Fmul(Fs.V4S(), a.V4S(), Ft.S(), lane);
+}
+
 // The adder's guard bits (armEmitVuGuardMask), between the clamps and the add.
 //
 // The masked pair goes to the scratch trio rather than over the operands: `to`
@@ -41,6 +69,10 @@ static __fi void mVUemitAddSub(mV, const a64::VRegister& to, const a64::VRegiste
 		armEmitVuGuardMask(RQSCRATCH, RQSCRATCH2, to, from, RQSCRATCH3);
 		a = RQSCRATCH;
 		b = RQSCRATCH2;
+	}
+	else
+	{
+		a = mVUstepSource(mVU, to);
 	}
 
 	if (scalar)
@@ -65,8 +97,11 @@ static __fi void mVUclampStepOperands(mV, const a64::VRegister& to, const a64::V
 {
 	if (!clampE)
 		return;
+	// A single-lane step is scalar arithmetic into `to` (mVUclampOperands'
+	// scalarDst).
 	mVUclampOperands(mVU, {(preClamped & preClampFrom) ? a64::NoVReg : from,
-	                       (preClamped & preClampTo) ? a64::NoVReg : to}, xyzw, true);
+	                       (preClamped & preClampTo) ? a64::NoVReg : to}, xyzw, true,
+	                 (xyzw == 0x8) ? to : a64::NoVReg);
 }
 
 static void NEON_ADDPS(mV, const a64::VRegister& to, const a64::VRegister& from, int preClamped = 0)
@@ -107,10 +142,11 @@ static __fi void mVUemitMul(mV, const a64::VRegister& to, const a64::VRegister& 
 {
 	if (!CHECK_VU_EXACT(mVU.index))
 	{
+		const a64::VRegister a = mVUstepSource(mVU, to);
 		if (scalar)
-			armAsm->Fmul(to.S(), to.S(), from.S());
+			armAsm->Fmul(to.S(), a.S(), from.S());
 		else
-			armAsm->Fmul(to.V4S(), to.V4S(), from.V4S());
+			armAsm->Fmul(to.V4S(), a.V4S(), from.V4S());
 		return;
 	}
 
@@ -189,7 +225,7 @@ static void NEON_MULSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 static void NEON_MULSS_Series(mV, const a64::VRegister& to, const a64::VRegister& from)
 {
 	mVUclampStepOperands(mVU, to, from, 0, 0x8);
-	armAsm->Fmul(to.S(), to.S(), from.S());
+	armAsm->Fmul(to.S(), mVUstepSource(mVU, to).S(), from.S());
 	mVUclamp4(mVU, to, RQSCRATCH3, 0x8);
 }
 
@@ -349,6 +385,26 @@ static void NEON_MINSS(mV, const a64::VRegister& to, const a64::VRegister& from,
 	mVU.regAlloc->clearNeeded(t1);
 }
 
+// MAX/MINI against VF0, whose four words are +0, +0, +0 and +1.0: every one of
+// them has its sign bit clear. With at least one operand non-negative the two
+// operands are never both negative, which is the one case where the integer
+// order of the raw words differs from the order the transform above builds
+// (negative raw words compare backwards among themselves). Otherwise both
+// orders agree: a negative word is below every non-negative one either way,
+// and two non-negative words compare as plain integers in both. Equal keys
+// are equal words. So the select is one SMAX or SMIN on the raw words.
+//
+// Single-lane forms run on the whole register too: lane 0 is the one the
+// allocator writes back, and the clone's other lanes are dead.
+static void mVUemitMaxMinSignClear(mV, const a64::VRegister& to, const a64::VRegister& from, bool isMax)
+{
+	const a64::VRegister a = mVUstepSource(mVU, to);
+	if (isMax)
+		armAsm->Smax(to.V4S(), a.V4S(), from.V4S());
+	else
+		armAsm->Smin(to.V4S(), a.V4S(), from.V4S());
+}
+
 //------------------------------------------------------------------
 // Function Pointer Tables
 //------------------------------------------------------------------
@@ -409,6 +465,54 @@ enum clampModes
 	cACC = 0x04, // Clamp ACC
 };
 
+// Whether the lane-fold multiply is a multiply by VF0.w, which is +1.0, of an
+// Fs the body has just clamped with FMINNM/FMAXNM under a VU FPCR with FZ. FZ
+// flushes a denormal input of that clamp to zero and the clamp brings exponent
+// 255 down to the finite bound, so Fs holds a normal number or a zero, and x *
+// 1.0 is x, bit for bit, for every such word in every rounding mode. Then the
+// multiply is the identity and is not emitted. (The sign-preserving clamp
+// passes denormals through, which the multiply would flush, so it does not
+// qualify.)
+static __fi bool mVUlaneMulIsIdentity(mV, const a64::VRegister& Fs, int opCase, int lane, int clampType)
+{
+	const bool ftz = (isVU0 ? EmuConfig.Cpu.VU0FPCR : EmuConfig.Cpu.VU1FPCR).GetFlushToZero();
+	return opCase == 2 && _Ft_ == 0 && lane == 3 && (clampType & cFs) && ftz
+	       && mVUclamp1Emits(mVU, false) && !mVUclamp2Signs(mVU, false)
+	       && mVU.regAlloc->checkVFClamp(Fs.GetCode());
+}
+
+// The AX-14 lane-fold multiply of an FMAC body, unless it is the identity.
+// `scalar`: the body computes its one lane in lane 0 (the rotated form).
+static __fi void mVUemitBodyLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane,
+	int opCase, int clampType, bool scalar)
+{
+	if (!mVUlaneMulIsIdentity(mVU, Fs, opCase, lane, clampType))
+		mVUemitLaneMul(mVU, Fs, Ft, lane, scalar);
+}
+
+// Whether a single-lane FMAC body computes its lane in place, full width,
+// instead of rotating it (and ACC) to lane 0 for scalar arithmetic and back.
+// Each lane of a vector op is the scalar op on that lane's words, so the
+// written lane is the same word either way, and the other lanes of a
+// single-lane destination are dead: allocReg's natural slots write back and
+// merge just the one lane, from its own place, and mVUupdateFlags takes the
+// single-scalar weights from that lane (ssLane), so every MAC and STATUS bit
+// lands where the rotated form puts it. Below clampE, so the only clamp of
+// the step is the body's own operand clamp, which runs full width on the
+// clone. At clampE the steps clamp ACC as an operand, and a full-width clamp
+// would rewrite ACC's other lanes in its cached register; X needs no
+// rotation in the first place. The TriAce ADDi path reads lane 0 by hand.
+static __fi bool mVUssNatural(mV, int opType)
+{
+	return _XYZW_SS2 && !clampE && !(opType == 5 && CHECK_VUADDSUBHACK && !CHECK_VU_EXACT(mVU.index));
+}
+
+// The lane a single-lane op writes, by index (X = 0).
+static __fi int mVUssLane(mV)
+{
+	return _X ? 0 : (_Y ? 1 : (_Z ? 2 : 3));
+}
+
 //------------------------------------------------------------------
 // Logging Helper
 //------------------------------------------------------------------
@@ -467,14 +571,19 @@ static bool doSafeSub(microVU& mVU, int opCase, int opType, bool isACC)
 // and the caller's multiply step must fold the lane select into a by-element
 // FMUL on that lane. Only set when canLaneFold (the sole Ft consumer is the
 // multiply step) and no Ft clamp will be emitted.
-static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt, int opCase, int clampType, int& bcLane, bool canLaneFold)
+static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt, int opCase, int clampType, int& bcLane, bool canLaneFold,
+	bool natural = false)
 {
 	bcLane = -1;
+	// Whether any clamp of Ft is emitted: the body's own cFt operand clamp, or
+	// the clampE operand/result clamps inside NEON_MULPS/SS.
+	const bool willClamp = (clampE || ((clampType & cFt) && !clampE && (CHECK_VU_OVERFLOW(mVU.index) || CHECK_VU_SIGN_OVERFLOW(mVU.index))));
 	opCase1
 	{
-		const bool willClamp = (clampE || ((clampType & cFt) && !clampE && (CHECK_VU_OVERFLOW(mVU.index) || CHECK_VU_SIGN_OVERFLOW(mVU.index))));
-
-		if (_XYZW_SS2)      { Ft = mVU.regAlloc->allocReg(_Ft_, 0, _X_Y_Z_W); tempFt = Ft; }
+		// A natural body reads Ft in place, full width (it never clamps Ft:
+		// below clampE no single-lane op has cFt).
+		if (natural)        { Ft = mVU.regAlloc->allocReg(_Ft_);                tempFt = a64::NoVReg; }
+		else if (_XYZW_SS2) { Ft = mVU.regAlloc->allocReg(_Ft_, 0, _X_Y_Z_W); tempFt = Ft; }
 		else if (willClamp) { Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);       tempFt = Ft; }
 		else                { Ft = mVU.regAlloc->allocReg(_Ft_);                tempFt = a64::NoVReg; }
 	}
@@ -490,8 +599,10 @@ static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt,
 		// mVUclamp2 nor NEON_MULPS's clampE-gated mVUclamp3/4 emit anything,
 		// so bypassing NEON_MULPS loses no clamps (and the raw guest reg is
 		// never clamped in place). x86 SSE cannot express this fold.
-		const bool willClamp = (clampE || ((clampType & cFt) && !clampE && (CHECK_VU_OVERFLOW(mVU.index) || CHECK_VU_SIGN_OVERFLOW(mVU.index))));
-		if (canLaneFold && !willClamp && !_XYZW_SS)
+		//
+		// The single-lane forms fold too: the scalar FMUL by element reads the
+		// same word lane 0 of the broadcast would hold.
+		if (canLaneFold && !willClamp)
 		{
 			Ft     = mVU.regAlloc->allocReg(_Ft_); // read-only mapping, held needed until the consumer's Fmul
 			tempFt = a64::NoVReg;
@@ -506,12 +617,24 @@ static void setupFtReg(microVU& mVU, a64::VRegister& Ft, a64::VRegister& tempFt,
 	}
 	opCase3
 	{
-		Ft = mVU.regAlloc->allocReg(33, 0, _X_Y_Z_W);
+		// A natural body takes I broadcast, as the multi-lane forms do. (Never
+		// a read-only mapping of 33: nothing invalidates one when the next
+		// I-bit immediate lands in REG_I.)
+		Ft = mVU.regAlloc->allocReg(33, 0, natural ? 0xf : _X_Y_Z_W);
 		tempFt = Ft;
 	}
 	opCase4
 	{
-		if (!clampE && _XYZW_SS && !mVUinfo.readQ)
+		// The same fold for Q: the multiply reads its instance's lane of qmmPQ
+		// by element instead of a broadcast of it (getQreg).
+		if (canLaneFold && !willClamp)
+		{
+			Ft     = qmmPQ;
+			tempFt = a64::NoVReg;
+			bcLane = mVUinfo.readQ;
+			return;
+		}
+		if (!clampE && _XYZW_SS && !mVUinfo.readQ && !natural)
 		{
 			Ft = qmmPQ;
 			tempFt = a64::NoVReg;
@@ -655,18 +778,25 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		a64::VRegister tempFt = a64::NoVReg;
 		int bcLane = -1;
 
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, opType == 2);
+		const bool natural = mVUssNatural(mVU, opType);
+		const bool scalar = _XYZW_SS && !natural;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, opType == 2, natural);
 
+		// A full-width ACC write needs no ACC register of its own: the result is
+		// computed in Fs's clone and that register becomes ACC's written slot
+		// afterwards (rebindFullWrite), instead of being copied into one.
+		const bool accInFs = isACC && (_X_Y_Z_W == 0xf);
 		if (isACC)
 		{
-			Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
-			ACC = mVU.regAlloc->allocReg((_X_Y_Z_W == 0xf) ? -1 : 32, 32, 0xf, false);
-			if (_XYZW_SS2)
+			Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W, true, natural);
+			if (!accInFs)
+				ACC = mVU.regAlloc->allocReg(32, 32, 0xf, false);
+			if (_XYZW_SS2 && !natural)
 				shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 		}
 		else
 		{
-			Fs = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W);
+			Fs = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W, true, natural);
 		}
 
 		// Before the clamps and before the arithmetic overwrites Fs. The AX-14
@@ -675,33 +805,47 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		const mVUfmacUO uo = mVUemitFmacUO(mVU, opType, Fs, Ft);
 		pxAssert(!uo.overflow.IsValid() || bcLane < 0);
 
+		// A single-lane ADD/SUB/MUL writes Fs with scalar arithmetic next
+		// (mVUclampOperands' scalarDst). MAX/MINI clamp nothing.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
-		                       (clampType & cFs) ? Fs : a64::NoVReg}, _X_Y_Z_W);
+		                       (clampType & cFs) ? Fs : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
+		                 (scalar && opType != 3 && opType != 4) ? Fs : a64::NoVReg);
 
-		// AX-14 fold (== Dup + NEON_MULPS under the no-clamp gate). vm MUST be
-		// the scalar .S() view: vixl's by-element emitter keys element size off
-		// vm's scalar format, and a V4S vm silently selects the half-precision
-		// opcode once Devel strips the VIXL_ASSERT.
-		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane);
-		else if (_XYZW_SS) NEON_SS[opType](mVU, Fs, Ft, 0);
+		// AX-14 fold (== broadcast + NEON_MULPS/SS under the no-clamp gate).
+		// MAX/MINI with VF0 on either side: see mVUemitMaxMinSignClear. Ft
+		// holds VF0 itself, its broadcast lane, or (single lane) its rotated
+		// lane; Fs, a clone of it.
+		const bool vf0MaxMin = (opType == 3 || opType == 4) && (opCase == 1 || opCase == 2)
+		                       && (_Ft_ == 0 || _Fs_ == 0);
+
+		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar);
+		else if (vf0MaxMin) mVUemitMaxMinSignClear(mVU, Fs, Ft, opType == 3);
+		else if (scalar)   NEON_SS[opType](mVU, Fs, Ft, 0);
 		else               NEON_PS[opType](mVU, Fs, Ft, 0);
 
 		mVUemitSaturateAtMax(mVU, Fs, uo);
 
-		if (isACC)
+		if (accInFs)
 		{
-			if (_XYZW_SS)
+			mVU.regAlloc->rebindFullWrite(Fs, 32);
+			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow);
+		}
+		else if (isACC)
+		{
+			if (natural)
+				armAsm->Ins(ACC.V4S(), mVUssLane(mVU), Fs.V4S(), mVUssLane(mVU));
+			else if (_XYZW_SS)
 				armAsm->Ins(ACC.V4S(), 0, Fs.V4S(), 0); // MOVSS equivalent
 			else
 				mVUmergeRegs(ACC, Fs, _X_Y_Z_W);
-			mVUupdateFlags(mVU, ACC, Fs, tempFt, true, uo.underflow, uo.overflow);
-			if (_XYZW_SS2)
+			mVUupdateFlags(mVU, ACC, Fs, tempFt, true, uo.underflow, uo.overflow, natural ? mVUssLane(mVU) : 0);
+			if (_XYZW_SS2 && !natural)
 				shuffleSSfrom0(ACC, offsetReg); // Rotate lane 0 back to original position
 			mVU.regAlloc->clearNeeded(ACC);
 		}
 		else if (opType < 3 || opType == 5) // Not Min/Max or is ADDi (opType 5)
 		{
-			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow);
+			mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, uo.underflow, uo.overflow, natural ? mVUssLane(mVU) : 0);
 		}
 
 		mVUclearUO(mVU, uo);
@@ -732,24 +876,28 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		a64::VRegister tempFt = a64::NoVReg;
 		int bcLane = -1;
 
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
+		const bool natural = mVUssNatural(mVU, opType);
+		const bool scalar = _XYZW_SS && !natural;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true, natural);
 
-		Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W);
+		Fs  = mVU.regAlloc->allocReg(_Fs_, 0, _X_Y_Z_W, true, natural);
 		ACC = mVU.regAlloc->allocReg(32, 32, 0xf, false);
 
-		if (_XYZW_SS2)
+		if (_XYZW_SS2 && !natural)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
+		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
-		                       (clampType & cFs) ? Fs : a64::NoVReg}, _X_Y_Z_W);
+		                       (clampType & cFs) ? Fs : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
+		                 scalar ? Fs : a64::NoVReg);
 
 		// mVUclamp4 does not run behind the AX-14 lane fold, which replaces
 		// NEON_*[2], nor in the sign-preserving mode, which clamps operands only.
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Step 1: Multiply Fs * Ft
-		if (bcLane >= 0)   armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-		else if (_XYZW_SS) NEON_SS[2](mVU, Fs, Ft, 0);
+		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		else if (scalar)   NEON_SS[2](mVU, Fs, Ft, 0);
 		else               NEON_PS[2](mVU, Fs, Ft, 0);
 
 		// Step 2: ADD/SUB the product to/from ACC
@@ -763,19 +911,28 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 				// x86 ADDSS/SUBSS, which preserve them — the x86 mVU relies on
 				// that). Accumulate on a scratch copy and merge only lane 0 back,
 				// mirroring the load+Ins pattern mVU_FMACa uses for its ACC.
+				// A natural body accumulates full width and inserts its own lane.
 				const a64::VRegister& accSS = mVU.regAlloc->allocReg();
 				armAsm->Mov(accSS.V16B(), ACC.V16B());
 				mVU.regAlloc->noteClone(accSS.GetCode(), ACC.GetCode());
-				NEON_SS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
-				armAsm->Ins(ACC.V4S(), 0, accSS.V4S(), 0);
+				if (natural)
+				{
+					NEON_PS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
+					armAsm->Ins(ACC.V4S(), mVUssLane(mVU), accSS.V4S(), mVUssLane(mVU));
+				}
+				else
+				{
+					NEON_SS[opType](mVU, accSS, Fs, prodClamped ? preClampFrom : 0);
+					armAsm->Ins(ACC.V4S(), 0, accSS.V4S(), 0);
+				}
 				mVU.regAlloc->clearNeeded(accSS);
 			}
 			else
 			{
 				NEON_PS[opType](mVU, ACC, Fs, prodClamped ? preClampFrom : 0);
 			}
-			mVUupdateFlags(mVU, ACC, Fs, tempFt);
-			if (_XYZW_SS && _X_Y_Z_W != 8)
+			mVUupdateFlags(mVU, ACC, Fs, tempFt, true, a64::NoVReg, a64::NoVReg, natural ? mVUssLane(mVU) : 0);
+			if (_XYZW_SS && _X_Y_Z_W != 8 && !natural)
 				shuffleSSfrom0(ACC, offsetReg); // Rotate back
 		}
 		else
@@ -814,34 +971,36 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		a64::VRegister tempFt = a64::NoVReg;
 		int bcLane = -1;
 
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
+		const bool natural = mVUssNatural(mVU, 2);
+		const bool scalar = _XYZW_SS && !natural;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true, natural);
 
 		ACC = mVU.regAlloc->allocReg(32);
-		Fs  = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W);
+		Fs  = mVU.regAlloc->allocReg(_Fs_, _Fd_, _X_Y_Z_W, true, natural);
 
-		if (_XYZW_SS2)
+		if (_XYZW_SS2 && !natural)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
+		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
 		                       (clampType & cFs) ? Fs : a64::NoVReg,
-		                       (clampType & cACC) ? ACC : a64::NoVReg}, _X_Y_Z_W);
+		                       (clampType & cACC) ? ACC : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
+		                 scalar ? Fs : a64::NoVReg);
 
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fs = Fs + ACC
-		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft, 0); NEON_SS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0); }
-		else
-		{
-			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-			else             NEON_PS[2](mVU, Fs, Ft, 0);
-			NEON_PS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
-		}
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		else if (scalar) NEON_SS[2](mVU, Fs, Ft, 0);
+		else             NEON_PS[2](mVU, Fs, Ft, 0);
+		if (scalar) NEON_SS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
+		else        NEON_PS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
 
-		if (_XYZW_SS2)
+		if (_XYZW_SS2 && !natural)
 			shuffleSSfrom0(ACC, offsetReg); // Rotate back
 
-		mVUupdateFlags(mVU, Fs, tempFt);
+		mVUupdateFlags(mVU, Fs, tempFt, a64::NoVReg, true, a64::NoVReg, a64::NoVReg, natural ? mVUssLane(mVU) : 0);
 
 		mVU.regAlloc->clearNeeded(Fs); // Always clear written reg first
 		mVU.regAlloc->clearNeeded(Ft);
@@ -867,28 +1026,37 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		a64::VRegister tempFt = a64::NoVReg;
 		int bcLane = -1;
 
-		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true);
+		const bool natural = mVUssNatural(mVU, 1);
+		const bool scalar = _XYZW_SS && !natural;
+		setupFtReg(mVU, Ft, tempFt, opCase, clampType, bcLane, true, natural);
 
-		Fs = mVU.regAlloc->allocReg(_Fs_,  0, _X_Y_Z_W);
-		Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W);
+		// A natural body takes its ACC-to-Fd clone after the multiply, so the
+		// clone is the word in front of the subtract, which then reads ACC's
+		// register in its place (mVUstepSource). It has no ACC clamp to order:
+		// cACC is COP2-only, and natural is below clampE.
+		Fs = mVU.regAlloc->allocReg(_Fs_,  0, _X_Y_Z_W, true, natural);
+		if (!natural)
+			Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W);
 
+		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
 		                       (clampType & cFs) ? Fs : a64::NoVReg,
-		                       (clampType & cACC) ? Fd : a64::NoVReg}, _X_Y_Z_W);
+		                       (clampType & cACC) ? Fd : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
+		                 scalar ? Fs : a64::NoVReg);
 
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fd = Fd - Fs  (Fd starts as ACC)
-		if (_XYZW_SS) { NEON_SS[2](mVU, Fs, Ft, 0); NEON_SS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0); }
-		else
-		{
-			if (bcLane >= 0) armAsm->Fmul(Fs.V4S(), Fs.V4S(), Ft.S(), bcLane); // AX-14 fold
-			else             NEON_PS[2](mVU, Fs, Ft, 0);
-			NEON_PS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0);
-		}
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		else if (scalar) NEON_SS[2](mVU, Fs, Ft, 0);
+		else             NEON_PS[2](mVU, Fs, Ft, 0);
+		if (natural)
+			Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W, true, true);
+		if (scalar) NEON_SS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0);
+		else        NEON_PS[1](mVU, Fd, Fs, prodClamped ? preClampFrom : 0);
 
-		mVUupdateFlags(mVU, Fd, Fs, tempFt);
+		mVUupdateFlags(mVU, Fd, Fs, tempFt, true, a64::NoVReg, a64::NoVReg, natural ? mVUssLane(mVU) : 0);
 
 		mVU.regAlloc->clearNeeded(Fd); // Always clear written reg first
 		mVU.regAlloc->clearNeeded(Ft);
@@ -948,14 +1116,28 @@ static void mVUopRotateToDestLane(mV, const a64::VRegister& reg)
 	armAsm->Ext(reg.V16B(), reg.V16B(), reg.V16B(), (_Y ? 1 : (_Z ? 2 : 3)) * 4);
 }
 
-// Ft, in place: {Z, X, Y, +0} — indices 2,0,1 and a zero.
-static void mVUopRotateFt(const a64::VRegister& Ft)
+// The two permuted multiplicands, built into `dst` from the unchanged
+// source. Lane w is only built when the dest field writes w: otherwise it
+// feeds nothing but a product lane the field masks off, which no register
+// write, MAC weight or STATUS reduction reads (the weights take the dest
+// field, and every O/U predicate reaches STATUS through them).
+//
+// Fs: {Y, Z, X, W}. EXT gives {Y, Z, W, X}; one INS puts X in lane 2.
+static void mVUopPermuteFs(mV, const a64::VRegister& dst, const a64::VRegister& Fs)
 {
-	armAsm->Mov(RQSCRATCH.V16B(), Ft.V16B());
-	armAsm->Ins(Ft.V4S(), 0, RQSCRATCH.V4S(), 2);
-	armAsm->Ins(Ft.V4S(), 1, RQSCRATCH.V4S(), 0);
-	armAsm->Ins(Ft.V4S(), 2, RQSCRATCH.V4S(), 1);
-	armAsm->Ins(Ft.V4S(), 3, a64::wzr);
+	armAsm->Ext(dst.V16B(), Fs.V16B(), Fs.V16B(), 4); // {Y, Z, W, X}
+	armAsm->Ins(dst.V4S(), 2, Fs.V4S(), 0);           // {Y, Z, X, X}
+	if (_W)
+		armAsm->Ins(dst.V4S(), 3, Fs.V4S(), 3);       // {Y, Z, X, W}
+}
+
+// Ft: {Z, X, Y, +0}. EXT gives {W, X, Y, Z}; one INS puts Z in lane 0.
+static void mVUopPermuteFt(mV, const a64::VRegister& dst, const a64::VRegister& Ft)
+{
+	armAsm->Ext(dst.V16B(), Ft.V16B(), Ft.V16B(), 12); // {W, X, Y, Z}
+	armAsm->Ins(dst.V4S(), 0, Ft.V4S(), 2);            // {Z, X, Y, Z}
+	if (_W)
+		armAsm->Ins(dst.V4S(), 3, a64::wzr);           // {Z, X, Y, +0}
 }
 
 mVUop(mVU_OPMULA)
@@ -967,13 +1149,14 @@ mVUop(mVU_OPMULA)
 		// the destination is a plain temp rather than a clean copy of ACC.
 		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
 		const a64::VRegister& ACC = mVU.regAlloc->allocReg(-1, _X_Y_Z_W ? 32 : -1, _X_Y_Z_W);
-		armAsm->Ext(ACC.V16B(), Fs.V16B(), Fs.V16B(), 4); // {Y, Z, W, X}
-		armAsm->Ins(ACC.V4S(), 2, Fs.V4S(), 0);           // {Y, Z, X, X}
-		armAsm->Ins(ACC.V4S(), 3, Fs.V4S(), 3);           // {Y, Z, X, W}
+		mVUopPermuteFs(mVU, ACC, Fs);
 		mVU.regAlloc->clearNeeded(Fs);
 
-		const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);
-		mVUopRotateFt(Ft);
+		// Ft is read where it is cached; the permuted copy is a temp.
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
+		mVUopPermuteFt(mVU, Ft, FtSrc);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		// An ordinary multiply, so it carries the multiply's U and O, taken from
 		// the rotated multiplicands. The rotation to the dest lane comes after,
@@ -1011,23 +1194,27 @@ mVUop(mVU_OPMSUB)
 	pass1 { mVUanalyzeFMAC1(mVU, _Fd_, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Ft  = mVU.regAlloc->allocReg(_Ft_, 0, 0xf);
-		const a64::VRegister& Fs  = mVU.regAlloc->allocReg(_Fs_, 0, 0xf);
-		// The ACC side of an empty dest field, for the reason in mVU_OPMULA:
-		// a full-width clone bound to VF0, which the allocator discards.
-		const a64::VRegister& ACC = _X_Y_Z_W
-			? mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W)
-			: mVU.regAlloc->allocReg(32, 0, 0xf);
-
-		// Fs, in place: {Y, Z, X, W}
-		armAsm->Mov(RQSCRATCH.V16B(), Fs.V16B());
-		armAsm->Ins(Fs.V4S(), 0, RQSCRATCH.V4S(), 1);
-		armAsm->Ins(Fs.V4S(), 1, RQSCRATCH.V4S(), 2);
-		armAsm->Ins(Fs.V4S(), 2, RQSCRATCH.V4S(), 0);
-		mVUopRotateFt(Ft);
+		// Both multiplicands are read where they are cached and permuted into
+		// temps, so neither needs a clone of its own.
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& FsSrc = mVU.regAlloc->allocReg(_Fs_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
+		const a64::VRegister& Fs = mVU.regAlloc->allocReg();
+		mVUopPermuteFs(mVU, Fs, FsSrc);
+		mVUopPermuteFt(mVU, Ft, FtSrc);
+		mVU.regAlloc->clearNeeded(FsSrc);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		NEON_MULPS(mVU, Fs,  Ft);
 		mVUopRotateToDestLane(mVU, Fs);
+
+		// The ACC side of an empty dest field, for the reason in mVU_OPMULA:
+		// a full-width clone bound to VF0, which the allocator discards.
+		// Allocated last, so its clone is the word in front of the subtract,
+		// which reads ACC's register in its place (mVUstepSource).
+		const a64::VRegister& ACC = _X_Y_Z_W
+			? mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W)
+			: mVU.regAlloc->allocReg(32, 0, 0xf);
 		NEON_SUBPS(mVU, ACC, Fs);
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.regAlloc->clearNeeded(Ft);
@@ -1150,12 +1337,17 @@ mVUop(mVU_CLIP)
 	pass1 { mVUanalyzeFMAC4(mVU, _Fs_, _Ft_); }
 	pass2
 	{
-		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_, 0, 0xf);
-		const a64::VRegister& Ft = mVU.regAlloc->allocReg(_Ft_, 0, 0x1);
+		// Fs and Ft are read where they are cached; every register written
+		// below is a temp. Fn is the -x vector.
+		const a64::VRegister& Fs = mVU.regAlloc->allocReg(_Fs_);
+		const a64::VRegister& FtSrc = mVU.regAlloc->allocReg(_Ft_);
+		const a64::VRegister& Ft = mVU.regAlloc->allocReg();
 		const a64::VRegister& t1 = mVU.regAlloc->allocReg();
+		const a64::VRegister& Fn = mVU.regAlloc->allocReg();
 
 		// Broadcast Ft.w to all lanes
-		mVUunpack_xyzw(Ft, Ft, 0);
+		mVUunpack_xyzw(Ft, FtSrc, 3);
+		mVU.regAlloc->clearNeeded(FtSrc);
 
 		// Get previous clip flag and shift left by 6
 		mVUallocCFLAGa(mVU, gprT1, cFLAG.lastWrite);
@@ -1174,16 +1366,16 @@ mVUop(mVU_CLIP)
 
 		// Negate Fs (for -w comparison)
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.signbit[0]));
-		armAsm->Eor(Fs.V16B(), t1.V16B(), RQSCRATCH3.V16B());
+		armAsm->Eor(Fn.V16B(), t1.V16B(), RQSCRATCH3.V16B());
 
 		// t1 > Ft means +component > +w: bit set
 		armAsm->Cmgt(t1.V4S(), t1.V4S(), Ft.V4S());   // +x>+w, +y>+w, +z>+w, (ignored)
-		// Fs > Ft means -component > +w (i.e., component < -w): bit set
-		armAsm->Cmgt(Fs.V4S(), Fs.V4S(), Ft.V4S());    // -x>+w, -y>+w, -z>+w, (ignored)
+		// Fn > Ft means -component > +w (i.e., component < -w): bit set
+		armAsm->Cmgt(Fn.V4S(), Fn.V4S(), Ft.V4S());    // -x>+w, -y>+w, -z>+w, (ignored)
 
 		// Extract bits from the comparison results
 		// t1 lanes: [0]=+x>w, [1]=+y>w, [2]=+z>w
-		// Fs lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
+		// Fn lanes: [0]=-x>w, [1]=-y>w, [2]=-z>w
 		// Required layout: bit0=+x>w, bit1=-x>w, bit2=+y>w, bit3=-y>w, bit4=+z>w, bit5=-z>w
 		//
 		// A comparison leaves its lane all ones or all zero, so its low
@@ -1192,7 +1384,7 @@ mVUop(mVU_CLIP)
 		// bit. The weights are distinct powers of two, so the lane sum ADDV
 		// forms is the OR the layout wants.
 		armAsm->Ldr(RQSCRATCH3, mVUglobMem(&mVUglob.clipWeights[0]));
-		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fs.V8H());
+		armAsm->Uzp1(t1.V8H(), t1.V8H(), Fn.V8H());
 		armAsm->And(t1.V16B(), t1.V16B(), RQSCRATCH3.V16B());
 		armAsm->Addv(t1.H(), t1.V8H());
 		armAsm->Umov(gprT2.W(), t1.V8H(), 0);
@@ -1206,6 +1398,7 @@ mVUop(mVU_CLIP)
 		mVU.regAlloc->clearNeeded(Fs);
 		mVU.regAlloc->clearNeeded(Ft);
 		mVU.regAlloc->clearNeeded(t1);
+		mVU.regAlloc->clearNeeded(Fn);
 		mVU.profiler.EmitOp(opCLIP);
 	}
 	pass3

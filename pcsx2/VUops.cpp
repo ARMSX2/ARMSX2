@@ -171,7 +171,18 @@ static __ri bool _vuEFUflush(VURegs* VU)
 	return false;
 }
 
-// called at end of program
+// Called when a program ends, after the delay-slot pair of the E bit.
+//
+// Everything still in flight is written back, so the next program starts from
+// the final registers and flags. Only the divide and EFU results move the
+// cycle count on to their completion: on the console the end of a program (the
+// time the EE sees VPU_STAT busy clear) never waits for an FMAC or an ILW/ILWR,
+// because their result lands at most four cycles after the delay slot, inside
+// the fixed part of the end (microVU stops at the delay slot too). A divide or
+// EFU op does move it, but the console waits for less than the whole latency
+// (max(0, L - p - 5) for a divide, max(0, L - p - 6) for an EFU op, p pairs
+// before the delay slot) and neither engine models that; the wait here is
+// unchanged from before.
 void _vuFlushAll(VURegs* VU)
 {
 	int i = 0;
@@ -213,20 +224,14 @@ void _vuFlushAll(VURegs* VU)
 		VU->VI[REG_MAC_FLAG].UL = VU->fmac[i].macflag;
 
 		VU->fmacreadpos = (VU->fmacreadpos + 1) & 3;
-
-		if ((VU->cycle - VU->fmac[i].sCycle) < VU->fmac[i].Cycle)
-			VU->cycle = VU->fmac[i].sCycle + VU->fmac[i].Cycle;
-
 		VU->fmaccount--;
 	}
 
-	for (i = VU->ialureadpos; VU->ialucount > 0; i = (i + 1) & 3)
+	// An ILW/ILWR has already written its VI. The pipe only tracks the load for
+	// instructions that read that VI, and none follows the end.
+	while (VU->ialucount > 0)
 	{
 		VU->ialureadpos = (VU->ialureadpos + 1) & 3;
-
-		if ((VU->cycle - VU->ialu[i].sCycle) < VU->ialu[i].Cycle)
-			VU->cycle = VU->ialu[i].sCycle + VU->ialu[i].Cycle;
-
 		VU->ialucount--;
 	}
 }
@@ -330,7 +335,8 @@ static __fi void _vuTestALUStalls(VURegs* VU, _VURegsNum* VUregsn)
 		if ((VU->cycle - VU->ialu[currentpipe].sCycle) >= VU->ialu[currentpipe].Cycle)
 			continue;
 
-		if (VU->ialu[currentpipe].reg & VUregsn->VIread) // Read and written VI regs share the same register
+		// vi0 is wired to zero: an ILW into it loads nothing and no reader of vi0 waits.
+		if (VU->ialu[currentpipe].reg & VUregsn->VIread & ~1u) // Read and written VI regs share the same register
 		{
 			u64 newCycle = VU->ialu[currentpipe].Cycle + VU->ialu[currentpipe].sCycle;
 
@@ -356,8 +362,11 @@ __fi void _vuTestLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 		case VUPIPE_FMAC: _vuTestFMACStalls(VU, VUregsn); break;
 		case VUPIPE_FDIV: _vuTestFDIVStalls(VU, VUregsn); break;
 		case VUPIPE_EFU:  _vuTestEFUStalls(VU, VUregsn); break;
-		case VUPIPE_BRANCH: _vuTestALUStalls(VU, VUregsn); break;
 	}
+
+	// Any lower op that reads a VI waits for an ILW/ILWR still loading it, not only a
+	// branch (the console and microVU do the same).
+	_vuTestALUStalls(VU, VUregsn);
 }
 
 __fi void _vuClearFMAC(VURegs* VU)
@@ -463,19 +472,54 @@ __fi void _vuAddLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 	}
 }
 
+// A branch in the pair right after a write to the VI it tests reads the VI as
+// it stood before the earliest write to it inside the last four cycles, not the
+// new value (PS2 console, SCPH-30001; microVU's analyzeBranchVI does the same).
+// The window counts cycles, so a stall inside it pushes an earlier write out.
+// ILW is a write for this too. A branch right after one waits for the load
+// (_vuTestALUStalls), and that stall ends the window.
+//
+// VIBackupCycles starts at VI_BACKUP_WINDOW on a write and loses the cycles
+// each pair takes. A branch sees VIOldValue only while it is above
+// VI_BACKUP_BRANCH: one that issues the very next cycle finds 3, one that
+// stalled, or sits a pair further on, finds 2 or less and reads the VI as it
+// is. VIWrites holds the VI before each of the last three writes and the cycle
+// it happened, for the earliest-write search. They only count while the window
+// is open.
+#define VI_BACKUP_WINDOW 4
+#define VI_BACKUP_BRANCH (VI_BACKUP_WINDOW - 2)
+
 __fi void _vuBackupVI(VURegs* VU, u32 reg)
 {
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles && reg == VU->VIRegNumber)
-	{
-		//On repeat writes we need to remember the value from before the chain
-		VU->VIBackupCycles = 2;
+	if (reg == 0)
 		return;
+
+	if (VU->VIBackupCycles == 0)
+		std::memset(VU->VIWrites, 0, sizeof(VU->VIWrites));
+
+	const u8 now = (u8)VU->cycle;
+	const u16 cur = VU->VI[reg].US[0];
+
+	// Oldest first: the earliest write to this VI that is 3 cycles back or less
+	u16 old = cur;
+	for (int i = 2; i >= 0; i--)
+	{
+		const VIWriteRec& w = VU->VIWrites[i];
+		if (w.reg == reg && (u8)(now - w.cyc) <= 3)
+		{
+			old = w.old;
+			break;
+		}
 	}
 
-	VU->VIBackupCycles = 2;
+	VU->VIWrites[2] = VU->VIWrites[1];
+	VU->VIWrites[1] = VU->VIWrites[0];
+	VU->VIWrites[0] = VIWriteRec{cur, (u8)reg, now};
+
+	VU->VIBackupCycles = VI_BACKUP_WINDOW;
 	VU->VIRegNumber = reg;
-	VU->VIOldValue = VU->VI[reg].US[0];
+	VU->VIOldValue = old;
 #endif
 }
 
@@ -1304,6 +1348,8 @@ static __ri void _vuILW(VURegs* VU)
 	if (_It_ == 0)
 		return;
 
+	_vuBackupVI(VU, _It_);
+
 	s16 imm = (VU->code & 0x400) ? (VU->code & 0x3ff) | 0xfc00 : (VU->code & 0x3ff);
 	u16 addr = ((imm + VU->VI[_Is_].SS[0]) * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
@@ -1326,6 +1372,8 @@ static __ri void _vuILWR(VURegs* VU)
 {
 	if (_It_ == 0)
 		return;
+
+	_vuBackupVI(VU, _It_);
 
 	u32 addr = (VU->VI[_Is_].US[0] * 16);
 	u16* ptr = (u16*)GET_VU_MEM(VU, addr);
@@ -1548,7 +1596,7 @@ static __ri void _vuIBEQ(VURegs* VU)
 	s16 dest = VU->VI[_It_].US[0];
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _It_)
 			dest = VU->VIOldValue;
@@ -1568,7 +1616,7 @@ static __ri void _vuIBGEZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1585,7 +1633,7 @@ static __ri void _vuIBGTZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1603,7 +1651,7 @@ static __ri void _vuIBLEZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1620,7 +1668,7 @@ static __ri void _vuIBLTZ(VURegs* VU)
 {
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _Is_)
 			src = VU->VIOldValue;
@@ -1638,7 +1686,7 @@ static __ri void _vuIBNE(VURegs* VU)
 	s16 dest = VU->VI[_It_].US[0];
 	s16 src = VU->VI[_Is_].US[0];
 #ifdef VI_BACKUP
-	if (VU->VIBackupCycles > 0)
+	if (VU->VIBackupCycles > VI_BACKUP_BRANCH)
 	{
 		if (VU->VIRegNumber == _It_)
 			dest = VU->VIOldValue;

@@ -30,12 +30,17 @@
 // (mVUemitMulUO / mVUemitAddSubO). They ride the same single ADDV as sign and
 // zero: the weight vector gains their two nibbles and armEmitPackSignZeroBits
 // an SLI apiece. Only their reduction to STATUS costs anything else.
+//
+// `ssLane`: the lane a single-scalar result sits in, 0 unless the body
+// computed it in place (allocReg's natural slots). The weights then take it
+// from there, and the flags come out bit for bit as from lane 0.
 static void mVUupdateFlags(mV, const a64::VRegister& reg,
 	const a64::VRegister& regT1in = a64::NoVReg,
 	const a64::VRegister& regT2in = a64::NoVReg,
 	bool modXYZW = true,
 	const a64::VRegister& vUnderflow = a64::NoVReg,
-	const a64::VRegister& vOverflow = a64::NoVReg)
+	const a64::VRegister& vOverflow = a64::NoVReg,
+	int ssLane = 0)
 {
 	const a64::Register& mReg = gprT1;
 	const a64::Register& sReg = getFlagReg(sFLAG.write);
@@ -78,9 +83,12 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 
 	if (sFLAG.doFlag)
 	{
-		mVUallocSFLAGa(sReg, sFLAG.lastWrite);
+		// The non-sticky clear reads the previous instance straight out of its
+		// register, rather than copying it over and clearing the copy.
 		if (sFLAG.doNonSticky)
-			armAsm->And(sReg.W(), sReg.W(), 0xfffc00ffu);
+			armAsm->And(sReg.W(), getFlagReg(sFLAG.lastWrite).W(), 0xfffc00ffu);
+		else
+			mVUallocSFLAGa(sReg, sFLAG.lastWrite);
 	}
 
 	//--------- Sign bits → [7:4], zero bits → [3:0], in one horizontal add ------
@@ -88,7 +96,7 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 
 	armEmitPackSignZeroBits(mReg.W(), reg, RQSCRATCH3, regT1, RQSCRATCH3,
 		[&](const a64::VRegister& w) {
-			armAsm->Ldr(w, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, foldShift, weightVariant)));
+			armAsm->Ldr(w, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, foldShift, weightVariant, ssLane)));
 		},
 		vUnderflow, vOverflow);
 
@@ -108,7 +116,7 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 		armAsm->Cmge(regT1.V4S(), regT1.V4S(), RQSCRATCH3.V4S()); // all-1s where |x| >= FLT_MAX
 		// Reuse the shared weight vector: on an all-1s lane it contributes both
 		// nibbles, so the mask falls out of the low one.
-		armAsm->Ldr(RQSCRATCH3, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, 0, mVUmacW_ZS)));
+		armAsm->Ldr(RQSCRATCH3, mVUglobMem(mVUmacWeightVec(AND_XYZW, macPath, 0, mVUmacW_ZS, ssLane)));
 		armAsm->And(regT1.V16B(), regT1.V16B(), RQSCRATCH3.V16B());
 		armAsm->Addv(a64::VRegister(regT1.GetCode(), 32), regT1.V4S());
 		armAsm->Fmov(gprT2, a64::VRegister(regT1.GetCode(), 32));
