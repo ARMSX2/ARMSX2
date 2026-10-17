@@ -34,6 +34,8 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         // settings, and forgetting which file the user imported is not a setting being restored,
         // it is making them go and find their Lossless.dll again.
         "lsfgEnabled", "lsfgMultiplier", "lsfgPerformance", "lsfgFp16", "lsfgFlowScale", "lsfgTargetRate",
+        // ZeroFgSection lives on this tab too.
+        "zeroFgEnabled", "zeroFgMode",
     ),
     // RendererTab.kt
     SettingsCategory.Graphics to listOf(

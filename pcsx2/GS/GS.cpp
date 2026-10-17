@@ -38,6 +38,7 @@
 
 #ifdef ENABLE_VULKAN
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/Vulkan/GSZeroFG.h"
 #endif
 
 #ifdef _WIN32
@@ -1145,8 +1146,15 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 	if (new_config.OsdFontPath != old_config.OsdFontPath)
 		ImGuiManager::ReloadFonts();
 
-	// Options which need a full teardown/recreate.
-	if (!GSConfig.RestartOptionsAreEqual(old_config))
+	// Options which need a full teardown/recreate. ZeroFG switched on in game needs one only when the
+	// Vulkan device came up without it: its instance and device carry what ZeroFG needs only when
+	// created with it on. Off, and on again over a device that has it, switch in place (GSDeviceVK).
+	bool zerofg_reopen = false;
+#ifdef ENABLE_VULKAN
+	zerofg_reopen = GSConfig.ZeroFGEnabled && !old_config.ZeroFGEnabled && g_gs_device &&
+					g_gs_device->GetRenderAPI() == RenderAPI::Vulkan && !GSZeroFG::IsActive();
+#endif
+	if (zerofg_reopen || !GSConfig.RestartOptionsAreEqual(old_config))
 	{
 		if (!GSreopen(true, true, GSConfig.Renderer, &old_config))
 			pxFailRel("Failed to do full GS reopen");

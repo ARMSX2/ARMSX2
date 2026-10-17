@@ -2196,6 +2196,6 @@ private val BASE_EN: Map<String, String> = mapOf(
  * guard on the UI keeps the rows from being drawn while every one of these strings still sits in
  * the play dex in plain text, findable by anyone who searches for them.
  *
- * See I18nLsfg.kt in the github and play source sets.
+ * See I18nLsfg.kt and I18nZeroFg.kt in the github and play source sets.
  */
-val EN: Map<String, String> = BASE_EN + LSFG_EN
+val EN: Map<String, String> = BASE_EN + LSFG_EN + ZEROFG_EN

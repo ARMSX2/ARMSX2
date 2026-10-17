@@ -12,6 +12,7 @@ enum {
     ADRENOTOOLS_DRIVER_CUSTOM = 1 << 0,
     ADRENOTOOLS_DRIVER_FILE_REDIRECT = 1 << 1,
     ADRENOTOOLS_DRIVER_GPU_MAPPING_IMPORT = 1 << 2,
+    ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY = 1 << 3, //!< KGSL draw contexts take the priority set with adrenotools_set_context_priority
 };
 
 #define ADRENOTOOLS_GPU_MAPPING_SUCCEEDED_MAGIC 0xDEADBEEF

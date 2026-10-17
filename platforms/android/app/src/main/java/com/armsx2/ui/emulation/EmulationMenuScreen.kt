@@ -1308,6 +1308,13 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
     // Frame generation, in its own card: it changes what is PRESENTED rather than what is
     // emulated, so it does not belong among the speedhacks above. Github flavour only — the
     // card is a no-op stub in the Play build, which contains no frame generation at all.
+    com.armsx2.ui.common.ZeroFgEmulationCard(
+        enabled = settings.graphics.zeroFgEnabled,
+        mode = settings.graphics.zeroFgMode,
+    ) { on, mode ->
+        viewModel.updateSettings { it.copy(graphics = it.graphics.copy(zeroFgEnabled = on, zeroFgMode = mode)) }
+        com.armsx2.runtime.MainActivityRuntime.surface.value?.applyFrameRatePreference()
+    }
     com.armsx2.ui.common.LsfgEmulationCard(
         enabled = settings.graphics.lsfgEnabled,
         multiplier = settings.graphics.lsfgMultiplier,

@@ -271,6 +271,11 @@ private:
 	void SubmitCommandBuffer(VKSwapChain* present_swap_chain);
 	void MoveToNextCommandBuffer();
 
+	/// Hands ZeroFG (GSZeroFG.h) this present's game frame when it has a new one and ZeroFG takes
+	/// frames; [output_width] x [output_height] is the target the draw rectangle is in. True when it
+	/// was recorded, so the caller publishes it after the submit.
+	bool CaptureZeroFGFrame(VkCommandBuffer cmdbuffer, bool new_frame, u32 output_width, u32 output_height);
+
 	enum class WaitType
 	{
 		None,

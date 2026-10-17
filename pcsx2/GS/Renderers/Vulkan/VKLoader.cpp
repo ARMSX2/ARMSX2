@@ -21,6 +21,7 @@
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "adrenotools/driver.h"
+#include "GS/Renderers/Vulkan/GSZeroFG.h"
 #endif
 
 extern "C" {
@@ -157,6 +158,10 @@ static bool TryOpenAdrenotoolsDriver(DynamicLibrary& library, const CustomDriver
 	int feature_flags = ADRENOTOOLS_DRIVER_CUSTOM;
 	if (!redirect_dir.empty())
 		feature_flags |= ADRENOTOOLS_DRIVER_FILE_REDIRECT;
+	// ZeroFG's device asks KGSL for a higher priority than the game's (GSZeroFG, around its
+	// vkCreateDevice): the hook that sets it is loaded only while ZeroFG is on.
+	if (GSZeroFG::WantsSourceHandoff())
+		feature_flags |= ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY;
 
 	Console.WriteLn("VKLoader: opening custom Vulkan driver via adrenotools "
 		"(dir=%s name=%s redirect=%s hook=%s)",

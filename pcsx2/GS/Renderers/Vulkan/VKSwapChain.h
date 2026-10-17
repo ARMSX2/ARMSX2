@@ -109,6 +109,10 @@ public:
 	bool RecreateSurface(const WindowInfo& new_wi);
 	bool ResizeSwapChain(u32 new_width = 0, u32 new_height = 0, float new_scale = 1.0f);
 
+	/// Destroys the swap chain and gives the surface to the caller instead of destroying it: ZeroFG's
+	/// device B presents on it (GSZeroFG.h), and a later Create() rebuilds a swap chain on it.
+	VkSurfaceKHR ReleaseSurface();
+
 	// Change vsync enabled state. This may fail as it causes a swapchain recreation.
 	bool SetPresentMode(VkPresentModeKHR present_mode);
 

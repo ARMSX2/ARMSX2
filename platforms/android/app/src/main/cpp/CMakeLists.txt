@@ -408,3 +408,45 @@ if(ARMSX2_ENABLE_LSFG)
 	# test in place would silently drop the define and ship the toggle with nothing behind it.
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LSFG=1)
 endif()
+
+# ZeroFG: frame generation on its own Vulkan 1.3 device (GS/Renderers/Vulkan/GSZeroFG.cpp), github
+# flavour only. The engine is the standalone ZeroFG library (Apache-2.0): ZEROFG_SOURCE_DIR points
+# at a local checkout (the armsx2.zerofgDir Gradle property), and without one the published tag is
+# fetched. Its shaders ship compiled, so it needs no tools beyond the NDK. Define and link go on
+# PCSX2_FLAGS for the reason given for librashader above.
+if(ARMSX2_ENABLE_ZEROFG)
+	# The Vulkan headers the core is built with (this directory's 3rdparty/vulkan, via
+	# SearchForStuff), so the engine's and the core's never differ.
+	get_target_property(_zerofg_vulkan_headers vulkan-headers INTERFACE_INCLUDE_DIRECTORIES)
+	set(ZEROFG_VULKAN_HEADERS_DIR "${_zerofg_vulkan_headers}" CACHE PATH "" FORCE)
+	set(ZEROFG_SOURCE_DIR "" CACHE PATH "Local ZeroFG checkout (empty: fetch the published tag)")
+	if(ZEROFG_SOURCE_DIR)
+		add_subdirectory("${ZEROFG_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/zerofg")
+		set(_zerofg_root "${ZEROFG_SOURCE_DIR}")
+	else()
+		include(FetchContent)
+		FetchContent_Declare(zerofg
+			GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
+			GIT_TAG v1.0.4)
+		FetchContent_MakeAvailable(zerofg)
+		set(_zerofg_root "${zerofg_SOURCE_DIR}")
+	endif()
+	target_link_libraries(PCSX2_FLAGS INTERFACE zerofg)
+	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_ZEROFG=1)
+	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE zerofg)
+
+	# The presenter side: the standalone's portable host kit (host/portable), which builds the
+	# ZeroFG Independent Presenter and handoff unchanged. Only GSZeroFG.cpp sees its headers (it tests
+	# for them with __has_include), so adding it recompiles that one file rather than the core.
+	# Published tags before the kit do not carry it; GSZeroFG then stops at device B.
+	if(EXISTS "${_zerofg_root}/host/portable/CMakeLists.txt")
+		set(ZEROFG_HOST_VULKAN_HEADERS_DIR "${_zerofg_vulkan_headers}" CACHE PATH "" FORCE)
+		add_subdirectory("${_zerofg_root}/host/portable" "${CMAKE_BINARY_DIR}/zerofg_host")
+		set_source_files_properties("${ARMSX2_ROOT}/pcsx2/GS/Renderers/Vulkan/GSZeroFG.cpp"
+			DIRECTORY "${ARMSX2_ROOT}/pcsx2"
+			PROPERTIES INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:zerofg_host,INTERFACE_INCLUDE_DIRECTORIES>")
+		# Link only: everything that links the core (emucore, and pcsx2-gsrunner, which the Android
+		# Gradle plugin builds too) needs the kit's symbols, but none of its headers.
+		target_link_libraries(PCSX2_FLAGS INTERFACE "$<LINK_ONLY:zerofg_host>")
+	endif()
+endif()
