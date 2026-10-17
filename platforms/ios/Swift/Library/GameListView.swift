@@ -3803,7 +3803,10 @@ struct GameListView: View {
                     maximumHeight: 680,
                     onDismiss: { discLinkTarget = nil }
                 ) {
-                    DiscLinkPicker(discs: games.filter { !$0.isELF && $0.id != game.id }) { selected in
+                    DiscLinkPicker(
+                        discs: games.filter { !$0.isELF && $0.id != game.id },
+                        hasLinkedDisc: ARMSX2Bridge.linkedDiscPath(forELF: game.bootName)?.isEmpty == false
+                    ) { selected in
                         ARMSX2Bridge.setLinkedDiscPath(selected?.fileURL?.path ?? selected?.bootName, forELF: game.bootName)
                         loadGames()
                     }
@@ -9962,11 +9965,18 @@ private struct DiscLinkPicker: View {
     @State private var settings = SettingsStore.shared
 
     let discs: [ISOEntry]
+    let hasLinkedDisc: Bool
     let onSelect: (ISOEntry?) -> Void
 
     var body: some View {
         NavigationStack {
             List {
+                if hasLinkedDisc {
+                    Button(settings.localized("Remove Disc Link"), role: .destructive) {
+                        onSelect(nil)
+                        dismiss()
+                    }
+                }
                 if discs.isEmpty {
                     Text(settings.localized("No disc images found. Import an ISO first, then link it here."))
                         .foregroundStyle(.secondary)

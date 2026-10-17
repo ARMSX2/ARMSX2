@@ -156,7 +156,7 @@ struct UIKitPadPressSurface<Content: View>: UIViewRepresentable {
     // removes this representable (e.g. a control hidden through a visibility edit). Without
     // this, the retained UIHostingController and stale UIControl targets survive the view
     // removal and can corrupt touch dispatch after the pad is rebuilt.
-    static func dismantleView(_ uiView: UIButton, coordinator: Coordinator) {
+    static func dismantleUIView(_ uiView: UIButton, coordinator: Coordinator) {
         uiView.removeTarget(coordinator, action: nil, for: .allEvents)
         coordinator.hostingController.willMove(toParent: nil)
         coordinator.hostingController.view?.removeFromSuperview()
