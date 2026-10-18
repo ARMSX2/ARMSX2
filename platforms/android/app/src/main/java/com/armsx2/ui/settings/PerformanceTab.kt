@@ -44,6 +44,18 @@ fun PerformanceTab(state: MutableState<Settings>) {
         modifier = Modifier
             .fillMaxWidth(),
     ) {
+        // Automatic performance tuning: when a game keeps missing frames, the core tries
+        // performance settings one at a time and keeps the ones that help, in that game's own
+        // settings. At the top because it is the first thing to try, ahead of the manual levers
+        // below. The per-game list of what it changed, and its Reset, sit under it.
+        ToggleRow(
+            label = str("perf.autoTune.label"),
+            value = s.emuCore.autoTune,
+            description = str("perf.autoTune.description"),
+            field = "autoTune",
+        ) { apply(s.copy(emuCore = s.emuCore.copy(autoTune = it))) }
+        AutoTuneSection(state)
+        SettingsDivider()
         // Prominent latency preset: zero queued GS frames keeps the emulated CPU
         // from running ahead of presentation, and the Surface requests a matching
         // high-refresh display mode. Settings scope is supplied by InGameOverlay,

@@ -25,6 +25,7 @@ import org.json.JSONObject
 internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = mapOf(
     // PerformanceTab.kt
     SettingsCategory.Performance to listOf(
+        "autoTune", "dynamicEeCycleRate",
         "eeClampMode", "eeCycleRate", "eeCycleSkip", "eeFpuRoundMode",
         "fastCDVD", "fpsLimit", "frameSkip", "framerateNtsc", "frameratePal",
         "intcStat", "iopThread", "iopThreadLag", "mtvu", "vuAot", "nominalSpeedPercent", "skipDuplicateFrames", "vu0RoundMode",
