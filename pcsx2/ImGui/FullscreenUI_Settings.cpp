@@ -6,6 +6,7 @@
 #include "GS/GS.h"
 #include "GS/GSUtil.h"
 #include "Achievements.h"
+#include "AutoTune/AutoTuneApplier.h"
 #include "GameList.h"
 #include "Host.h"
 #include "Host/AudioStream.h"
@@ -1652,6 +1653,8 @@ void FullscreenUI::SwitchToSettings()
 	s_game_settings_entry.reset();
 	s_game_settings_interface.reset();
 	s_game_settings_serial.clear();
+	s_game_settings_crc = 0;
+	s_game_autotune_lines.clear();
 	s_game_patch_list = {};
 	s_enabled_game_patch_cache = {};
 	s_game_cheats_list = {};
@@ -1666,8 +1669,10 @@ void FullscreenUI::SwitchToGameSettings(const std::string_view serial, u32 crc)
 {
 	s_game_settings_entry.reset();
 	s_game_settings_serial = serial;
+	s_game_settings_crc = crc;
 	s_game_settings_interface = std::make_unique<INISettingsInterface>(VMManager::GetGameSettingsPath(serial, crc));
 	s_game_settings_interface->Load();
+	RefreshGameAutoTuneLines();
 	PopulatePatchesAndCheatsList(serial, crc);
 	s_current_main_window = MainWindowType::Settings;
 	s_settings_page = SettingsPage::Summary;
@@ -1756,11 +1761,52 @@ void FullscreenUI::DoClearGameSettings()
 		return;
 
 	Pcsx2Config::ClearConfiguration(s_game_settings_interface.get());
+	// The record of what auto-tune changed goes with the settings it describes.
+	s_game_settings_interface->RemoveSection(AutoTune::kStoreSection);
+	s_game_autotune_lines.clear();
 
 	SetSettingsChanged(s_game_settings_interface.get());
 
 	ShowToast(ICON_FA_TRASH,
 		fmt::format(FSUI_FSTR("Game settings have been cleared for '{}'."), Path::GetFileTitle(s_game_settings_interface->GetFileName())));
+}
+
+void FullscreenUI::RefreshGameAutoTuneLines()
+{
+	s_game_autotune_lines = AutoTune::DescribeForGame(s_game_settings_serial, s_game_settings_crc);
+}
+
+void FullscreenUI::DoResetGameAutoTune()
+{
+	if (!s_game_settings_interface)
+		return;
+
+	// ResetForGame edits the game's file (and applies the change on the CPU thread when this game is running). This
+	// page holds its own copy of that file and would write the old values back on its next change, so read it again.
+	const AutoTune::ResetResult result = AutoTune::ResetForGame(s_game_settings_serial, s_game_settings_crc);
+	{
+		auto lock = Host::GetSettingsLock();
+		s_game_settings_interface->Clear();
+		s_game_settings_interface->Load();
+	}
+	RefreshGameAutoTuneLines();
+
+	if (!result.had_record)
+	{
+		ShowToast(ICON_FA_WAND_MAGIC, FSUI_STR("Auto-tune had not changed anything for this game."));
+		return;
+	}
+
+	if (result.left_alone.empty())
+	{
+		ShowToast(ICON_FA_ROTATE_LEFT, fmt::format(FSUI_FSTR("Auto-tune reset: {} setting(s) put back."), result.restored.size()));
+	}
+	else
+	{
+		ShowToast(ICON_FA_ROTATE_LEFT,
+			fmt::format(FSUI_FSTR("Auto-tune reset: {} setting(s) put back, {} you changed yourself left as they are."),
+				result.restored.size(), result.left_alone.size()));
+	}
 }
 
 void FullscreenUI::DrawSettingsWindow()
@@ -2169,6 +2215,32 @@ void FullscreenUI::DrawSummarySettingsPage()
 	else
 	{
 		MenuButton(FSUI_ICONSTR(ICON_FA_BAN, "Cannot show details for games which were not scanned in the game list."), "");
+	}
+
+	MenuHeading(FSUI_CSTR("Automatic Performance Tuning"));
+
+	if (s_game_autotune_lines.empty())
+	{
+		ActiveButton(FSUI_CSTR("Automatic performance tuning has not changed any settings for this game."), false, false,
+			LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+	}
+	else
+	{
+		for (const std::string& line : s_game_autotune_lines)
+			ActiveButton(line.c_str(), false, false, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+
+		if (MenuButton(FSUI_ICONSTR(ICON_FA_ROTATE_LEFT, "Reset Auto-Tune"),
+				FSUI_CSTR("Puts back the settings auto-tune changed for this game, and forgets what it learned about it.")))
+		{
+			OpenConfirmMessageDialog(FSUI_ICONSTR(ICON_FA_ROTATE_LEFT, "Reset Auto-Tune"),
+				FSUI_STR("Put back the settings that automatic performance tuning changed for this game? Settings you changed yourself "
+						 "since are left as they are, and auto-tune may try the same settings again."),
+				[](bool yes) {
+					if (yes)
+						DoResetGameAutoTune();
+				},
+				false);
+		}
 	}
 
 	MenuHeading(FSUI_CSTR("Options"));
@@ -2633,6 +2705,9 @@ void FullscreenUI::DrawEmulationSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_USERS, "Enable IOP Thread"),
 		FSUI_CSTR("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores."),
 		"EmuCore/Speedhacks", "iopThread", false);
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
+		FSUI_CSTR("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."),
+		"EmuCore", "AutoTune", true);
 #ifdef ARCH_ARM64 // vu-aot is part of the ARM64 recompilers only
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Enable VU1 Ahead-of-Time Compiler"),
 		FSUI_CSTR("Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache."),
@@ -6794,6 +6869,14 @@ TRANSLATE_NOOP("FullscreenUI", "EE Cycle Rate");
 TRANSLATE_NOOP("FullscreenUI", "EE Cycle Skipping");
 TRANSLATE_NOOP("FullscreenUI", "Enable Multithreaded VU1 (MTVU)");
 TRANSLATE_NOOP("FullscreenUI", "Enable IOP Thread");
+TRANSLATE_NOOP("FullscreenUI", "Automatic Performance Tuning");
+TRANSLATE_NOOP("FullscreenUI", "Automatic performance tuning has not changed any settings for this game.");
+TRANSLATE_NOOP("FullscreenUI", "Reset Auto-Tune");
+TRANSLATE_NOOP("FullscreenUI", "Puts back the settings auto-tune changed for this game, and forgets what it learned about it.");
+TRANSLATE_NOOP("FullscreenUI", "Put back the settings that automatic performance tuning changed for this game? Settings you changed yourself since are left as they are, and auto-tune may try the same settings again.");
+TRANSLATE_NOOP("FullscreenUI", "Auto-tune had not changed anything for this game.");
+TRANSLATE_NOOP("FullscreenUI", "Auto-tune reset: {} setting(s) put back.");
+TRANSLATE_NOOP("FullscreenUI", "Auto-tune reset: {} setting(s) put back, {} you changed yourself left as they are.");
 TRANSLATE_NOOP("FullscreenUI", "Enable VU1 Ahead-of-Time Compiler");
 TRANSLATE_NOOP("FullscreenUI", "Enable Thread Pinning");
 TRANSLATE_NOOP("FullscreenUI", "Enable Cheats");

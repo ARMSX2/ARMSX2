@@ -28,6 +28,7 @@
 #include "SettingsWindow.h"
 
 #include "pcsx2/Achievements.h"
+#include "pcsx2/AutoTune/AutoTuneStore.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -258,6 +259,26 @@ SettingsWindow::~SettingsWindow()
 		s_open_game_properties_dialogs.removeOne(this);
 }
 
+void SettingsWindow::changeEvent(QEvent* event)
+{
+	QWidget::changeEvent(event);
+
+	// A game's settings file can change while this window is open: automatic performance tuning saves what it keeps into
+	// it while the game runs. This window holds its own copy and every change made here saves the whole copy, which would
+	// put the old file back over what auto-tune saved. Each change is saved as it is made, so the copy has nothing
+	// unsaved: read it again whenever the window comes to the front.
+	if (m_sif && event->type() == QEvent::ActivationChange && isActiveWindow())
+	{
+		if (FileSystem::FileExists(m_sif->GetFileName().c_str()))
+		{
+			m_sif->Clear();
+			m_sif->Load();
+		}
+		if (m_emulation_settings)
+			m_emulation_settings->updateAutoTuneSummary();
+	}
+}
+
 void SettingsWindow::closeEvent(QCloseEvent*)
 {
 	// we need to clean up ourselves, since we're not modal
@@ -352,12 +373,14 @@ void SettingsWindow::onClearSettingsClicked()
 	m_game_patch_settings_widget->disableAllPatches();
 
 	Pcsx2Config::ClearConfiguration(m_sif.get());
+	// The record of what auto-tune changed goes with the settings it describes.
+	m_sif->RemoveSection(AutoTune::kStoreSection);
 	saveAndReloadGameSettings();
 
 	reopen(tr("Per-game configuration cleared."));
 }
 
-void SettingsWindow::reopen(const QString& message)
+void SettingsWindow::reopen(const QString& message, const char* category)
 {
 	// This doesn't work for global settings, because MainWindow maintains a pointer.
 	if (!m_sif)
@@ -373,6 +396,8 @@ void SettingsWindow::reopen(const QString& message)
 
 	SettingsWindow* dlg = new SettingsWindow(std::move(new_sif), game, m_serial, m_disc_crc, m_filename);
 	dlg->QWidget::setWindowTitle(windowTitle());
+	if (category)
+		dlg->setCategory(category);
 
 	// See note above.
 	QtHost::RunOnUIThread([this, dlg, message]() {

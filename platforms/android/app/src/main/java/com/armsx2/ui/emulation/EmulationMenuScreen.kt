@@ -1186,6 +1186,9 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
 @Composable
 private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
     val settings = state.settings
+    MenuSwitchRow(str("perf.autoTune.label"), settings.emuCore.autoTune, description = str("perf.autoTune.description"), field = "autoTune") {
+        viewModel.updateSettings { current -> current.copy(emuCore = current.emuCore.copy(autoTune = it)) }
+    }
     SectionCard(str("perf.speedLimit.label"), field = "nominalSpeedPercent") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(

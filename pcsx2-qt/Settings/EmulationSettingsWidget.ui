@@ -179,6 +179,13 @@
           </property>
          </widget>
         </item>
+        <item row="3" column="1">
+         <widget class="QCheckBox" name="autoTune">
+          <property name="text">
+           <string>Automatic Performance Tuning</string>
+          </property>
+         </widget>
+        </item>
        </layout>
       </item>
       <item row="0" column="0">
@@ -200,6 +207,52 @@
          <cstring>eeCycleSkipping</cstring>
         </property>
        </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="autoTuneGroup">
+     <property name="title">
+      <string>Automatic Performance Tuning</string>
+     </property>
+     <layout class="QVBoxLayout" name="autoTuneLayout">
+      <item>
+       <widget class="QLabel" name="autoTuneSummary">
+        <property name="textFormat">
+         <enum>Qt::PlainText</enum>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+        <property name="textInteractionFlags">
+         <set>Qt::TextSelectableByMouse</set>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <layout class="QHBoxLayout" name="autoTuneButtonLayout">
+        <item>
+         <widget class="QPushButton" name="resetAutoTune">
+          <property name="text">
+           <string>Reset Auto-Tune for This Game</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <spacer name="autoTuneButtonSpacer">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
+          </property>
+         </spacer>
+        </item>
+       </layout>
       </item>
      </layout>
     </widget>
@@ -332,6 +385,8 @@
   <tabstop>MTVU</tabstop>
   <tabstop>threadPinning</tabstop>
   <tabstop>iopThread</tabstop>
+  <tabstop>autoTune</tabstop>
+  <tabstop>resetAutoTune</tabstop>
   <tabstop>cheats</tabstop>
   <tabstop>hostFilesystem</tabstop>
   <tabstop>precacheCDVD</tabstop>

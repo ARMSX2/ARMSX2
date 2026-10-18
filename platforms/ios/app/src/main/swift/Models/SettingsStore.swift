@@ -603,6 +603,13 @@ final class SettingsStore {
         suppressible: false,
         codec: .bool)
     var hostFilesystem: Bool = false { didSet { commit(_hostFilesystemConfig, hostFilesystem) } }
+    // Automatic performance tuning: when a game keeps missing frames, the core tries performance
+    // settings one at a time and keeps the ones that help, saved in that game's own settings.
+    let _autoTuneConfig = Setting<Bool>(
+        section: "EmuCore", key: "AutoTune", default: true,
+        suppressible: false,
+        codec: .bool)
+    var autoTune: Bool = true { didSet { commit(_autoTuneConfig, autoTune) } }
 
     // ── Manual Game Fixes (EmuCore/Gamefixes/<key>) ──
     // Dictionary-backed because the 17 fixes are homogeneous toggles. Effective only
@@ -2131,6 +2138,7 @@ final class SettingsStore {
         enableWidescreenPatches = _enableWidescreenPatchesConfig.load()
         enableNoInterlacingPatches = _enableNoInterlacingPatchesConfig.load()
         hostFilesystem = _hostFilesystemConfig.load()
+        autoTune = _autoTuneConfig.load()
         gameFixes = Self.loadGameFixes()
         // Graphics
         // Not load(): the INI can name a desktop renderer, so we correct it on disk too.

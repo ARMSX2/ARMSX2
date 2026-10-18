@@ -67,6 +67,7 @@ private val setupStepKeys = listOf(
     "setup.step.appData.title",
     "setup.page.bios.title",
     "setup.page.roms.title",
+    "setup.page.performance.title",
     "setup.button.applyFinish",
 )
 
@@ -264,6 +265,7 @@ private fun WizardPage(
         1 -> StoragePage(state, compact = true, viewModel::selectStorage, onCustomStorage)
         2 -> BiosPage(state, compact = true, onPick = biosPicker, onSelectBios = viewModel::selectBiosCandidate)
         3 -> GamesPage(state, folderPicker, viewModel::removeGameFolder, viewModel::setFolderSubfolders)
+        4 -> PerformancePage(state, viewModel::setAutoTune)
         else -> ReadyPage(state, compact = true)
     }
 }
@@ -628,6 +630,37 @@ private fun GamesPage(
             }
             OutlinedButton(onClick = onAdd, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
                 Text(if (state.gameFolders.isEmpty()) str("setup.button.pickRomsFolder") else str("setup.button.addAnotherFolder"))
+            }
+        }
+    }
+}
+
+/** Asks whether the emulator may tune a game's performance settings by itself. On by default; the answer is saved when setup finishes. */
+@Composable
+private fun PerformancePage(state: OnboardingUiState, onAutoTune: (Boolean) -> Unit) {
+    SetupPage(str("setup.page.performance.title"), str("setup.step.performance.description")) {
+        Surface(
+            onClick = { onAutoTune(!state.autoTune) },
+            modifier = Modifier.fillMaxWidth().padFocusRing(RoundedCornerShape(20.dp)),
+            shape = RoundedCornerShape(20.dp),
+            color = if (state.autoTune) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            border = BorderStroke(
+                if (state.autoTune) 2.dp else 1.dp,
+                if (state.autoTune) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.42f),
+            ),
+        ) {
+            Row(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(str("perf.autoTune.label"), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        str("setup.performance.autoTune.detail"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.autoTune, onCheckedChange = null)
             }
         }
     }

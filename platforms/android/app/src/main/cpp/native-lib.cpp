@@ -14,6 +14,7 @@
 #include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
 #include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/VMManager.h"
+#include "pcsx2/AutoTune/AutoTuneApplier.h" // per-game auto-tune record: read, reset, write back
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/CDVD/IsoReader.h" // ISO extraction for host: quick-loading setups
 #include "pcsx2/CDVD/CDVD.h" // cdvdSaveNVRAM (flush BIOS NVM on background)
@@ -189,6 +190,7 @@ static jclass     s_NativeApp_class  = nullptr;  // GlobalRef
 static jmethodID  s_vmSetPaused_mid  = nullptr;
 static jmethodID  s_onPadRumble_mid  = nullptr;
 static jmethodID  s_playSound_mid    = nullptr;
+static jmethodID  s_onAutoTuneCommitted_mid = nullptr;
 
 ////
 std::string GetJavaString(JNIEnv *env, jstring jstr) {
@@ -491,6 +493,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         s_vmSetPaused_mid = env->GetStaticMethodID(s_NativeApp_class, "vmSetPaused", "(Z)V");
         s_onPadRumble_mid = env->GetStaticMethodID(s_NativeApp_class, "onPadRumble", "(III)V");
         s_playSound_mid   = env->GetStaticMethodID(s_NativeApp_class, "playSound", "(Ljava/lang/String;)V");
+        s_onAutoTuneCommitted_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneCommitted",
+            "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
     }
 
     // Bind the JNI-backed HTTP downloader's class + method IDs while we
@@ -6020,6 +6024,100 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniCommitWrite(JNIEnv*, jclass) {
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
+// ---- Auto-tune's record of a game ----
+//
+// What auto-tune changed lives in the game's file (gamesettings/<serial>_<CRC>.ini, the keys it set and an
+// [AutoTune] section recording what they were before). The app has no CRC to name that file until a game runs,
+// so these take the app's serial: the running game's file when that is the game, else the one file on disk
+// for that serial. A blank serial means the running game (a homebrew ELF has none).
+static bool AutoTuneResolveGame(const std::string& serial, std::string* out_serial, u32* out_crc) {
+    if (VMManager::HasValidVM()) {
+        const std::string disc_serial = VMManager::GetDiscSerial();
+        if (serial.empty() || StringUtil::compareNoCase(serial, disc_serial)) {
+            u32 crc = VMManager::GetDiscCRC();
+            if (crc == 0)
+                crc = VMManager::GetCurrentCRC();
+            if (crc != 0) {
+                *out_serial = disc_serial;
+                *out_crc = crc;
+                return true;
+            }
+        }
+    }
+    if (serial.empty())
+        return false;
+    // <serial>_<CRC>.ini: the CRC is the hex after the last underscore.
+    const std::string path = AndroidGameSettingsPathForSerial(serial);
+    if (path.empty())
+        return false;
+    const std::string title = std::string(Path::GetFileTitle(path));
+    const size_t underscore = title.rfind('_');
+    if (underscore == std::string::npos)
+        return false;
+    const std::optional<u32> crc = StringUtil::FromChars<u32>(std::string_view(title).substr(underscore + 1), 16);
+    if (!crc.has_value() || crc.value() == 0)
+        return false;
+    *out_serial = serial;
+    *out_crc = crc.value();
+    return true;
+}
+
+static jobjectArray AutoTuneStringArray(JNIEnv* env, const std::vector<std::string*>& items) {
+    jclass string_class = env->FindClass("java/lang/String");
+    jobjectArray array = env->NewObjectArray(static_cast<jsize>(items.size()), string_class, nullptr);
+    for (size_t i = 0; i < items.size(); i++) {
+        if (!items[i])
+            continue; // a null element
+        jstring text = env->NewStringUTF(items[i]->c_str());
+        env->SetObjectArrayElement(array, static_cast<jsize>(i), text);
+        env->DeleteLocalRef(text);
+    }
+    env->DeleteLocalRef(string_class);
+    return array;
+}
+
+// One readable line for each thing auto-tune changed for the game, then one for the steps it tried without
+// benefit. Empty when it changed nothing.
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_autoTuneDescribe(JNIEnv* env, jclass, jstring p_serial) {
+    std::string serial;
+    u32 crc = 0;
+    std::vector<std::string> lines;
+    if (AutoTuneResolveGame(p_serial ? GetJavaString(env, p_serial) : std::string(), &serial, &crc))
+        lines = AutoTune::DescribeForGame(serial, crc);
+    std::vector<std::string*> items;
+    for (std::string& line : lines)
+        items.push_back(&line);
+    return AutoTuneStringArray(env, items);
+}
+
+// Puts back what auto-tune changed in the game's file, forgets what it learned, and (for the running game) applies
+// that on the CPU thread. Returns {had_record "1"/"0", count of keys left alone because the player changed them,
+// then section, key, value for every key put back, with a null value where the key was deleted} so the app can do
+// the same to its own copy. Null when the game has no file.
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_autoTuneReset(JNIEnv* env, jclass, jstring p_serial) {
+    std::string serial;
+    u32 crc = 0;
+    if (!AutoTuneResolveGame(p_serial ? GetJavaString(env, p_serial) : std::string(), &serial, &crc))
+        return nullptr;
+    const AutoTune::ResetResult result = AutoTune::ResetForGame(serial, crc);
+
+    std::string had_record = result.had_record ? "1" : "0";
+    std::string left_alone = std::to_string(result.left_alone.size());
+    std::vector<std::string*> items{&had_record, &left_alone};
+    // Kept alive until the array is built: the pointers above and below point into these.
+    std::vector<std::optional<std::string>> values;
+    values.reserve(result.restored.size());
+    for (const AutoTune::Restored& restored : result.restored) {
+        items.push_back(const_cast<std::string*>(&restored.section));
+        items.push_back(const_cast<std::string*>(&restored.key));
+        values.push_back(restored.value);
+        items.push_back(values.back().has_value() ? &values.back().value() : nullptr);
+    }
+    return AutoTuneStringArray(env, items);
+}
+
 // Build a game's per-game file at launch, for the core to write when it loads it. The same
 // put/claim/commit stream as gameIniBeginWrite; see AndroidWriteStagedGameIni for why the
 // writing has to wait.
@@ -6627,6 +6725,46 @@ void Native::onPadRumble(int pad, int largeMotor, int smallMotor) {
                               static_cast<jint>(smallMotor));
 
     if (attached) s_jvm->DetachCurrentThread();
+}
+
+// Auto-tune has moved one setting into this game's settings file. The app regenerates that file from its own
+// copy of the per-game settings (config.game.<key>), wiping the keys it owns, so a value that is only in the file
+// would be gone the next time the app writes it. Hands the key to the app, which writes it into its copy.
+// Called on the CPU thread; the app does the work on its own thread, so this returns at once.
+void Host::OnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
+{
+    if (!s_jvm || !s_NativeApp_class || !s_onAutoTuneCommitted_mid)
+        return;
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    const int status = s_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (s_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+            return;
+        attached = true;
+    } else if (status != JNI_OK) {
+        return;
+    }
+
+    const std::string serial = VMManager::GetDiscSerial();
+    const std::string value_str(value);
+    jstring jserial = env->NewStringUTF(serial.c_str());
+    jstring jsection = env->NewStringUTF(section);
+    jstring jkey = env->NewStringUTF(key);
+    jstring jvalue = env->NewStringUTF(value_str.c_str());
+    env->CallStaticVoidMethod(s_NativeApp_class, s_onAutoTuneCommitted_mid, jserial, jsection, jkey, jvalue);
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(jserial);
+    env->DeleteLocalRef(jsection);
+    env->DeleteLocalRef(jkey);
+    env->DeleteLocalRef(jvalue);
+
+    if (attached)
+        s_jvm->DetachCurrentThread();
 }
 
 // Android implementation of the cross-platform sound helper. Used by the

@@ -76,6 +76,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("perf.ntscFramerate.label", true, SettingsCategory.Performance, listOf("perf.speedhacks.title")),
     SettingsSearchEntry("perf.palFramerate.label", true, SettingsCategory.Performance, listOf("perf.speedhacks.title")),
     SettingsSearchEntry("perf.frameSkip.label", true, SettingsCategory.Performance, listOf("perf.speedhacks.title")),
+    SettingsSearchEntry("perf.autoTune.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.lowLatencyMode.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.speedhackProfile.label", true, SettingsCategory.Performance),
     SettingsSearchEntry("perf.displayResolution.label", true, SettingsCategory.Performance),

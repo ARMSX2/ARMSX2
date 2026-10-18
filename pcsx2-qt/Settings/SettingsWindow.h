@@ -102,6 +102,10 @@ public:
 	void removeSettingValue(const char* section, const char* key);
 	void saveAndReloadGameSettings();
 
+	/// Replaces this per-game dialog with a new one read from the game's settings file, optionally on a category, and shows
+	/// `message` in it. For a change made to the file behind the dialog's back.
+	void reopen(const QString& message, const char* category = nullptr);
+
 Q_SIGNALS:
 	void discSerialChanged();
 
@@ -112,6 +116,7 @@ private Q_SLOTS:
 	void onClearSettingsClicked();
 
 protected:
+	void changeEvent(QEvent* event) override;
 	void closeEvent(QCloseEvent*) override;
 	void wheelEvent(QWheelEvent* event) override;
 
@@ -125,8 +130,6 @@ private:
 
 	void addWidget(QWidget* widget, QString title, QString icon, QString help_text);
 	bool handleWheelEvent(QWheelEvent* event);
-
-	void reopen(const QString& message);
 
 	std::unique_ptr<INISettingsInterface> m_sif;
 

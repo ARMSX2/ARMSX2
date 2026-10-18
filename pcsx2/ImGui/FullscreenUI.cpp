@@ -3275,9 +3275,11 @@ void FullscreenUI::DrawSetupWindow()
 		FSUI_NSTR("BIOS"),
 		FSUI_NSTR("Game Directories"),
 		FSUI_NSTR("RetroAchievements"),
+		FSUI_NSTR("Performance"),
 		FSUI_NSTR("Finished"),
 	};
 	static constexpr u32 STEP_COUNT = std::size(step_titles);
+	static constexpr u32 STEP_PERFORMANCE = 4;
 
 	const u32 step = std::min(s_setup_wizard_step, STEP_COUNT - 1);
 	const bool last_step = (step == STEP_COUNT - 1);
@@ -3295,6 +3297,13 @@ void FullscreenUI::DrawSetupWindow()
 		}
 	};
 	const auto go_next = [&step, last_step]() {
+		if (step == STEP_PERFORMANCE)
+		{
+			// Saves the answer even when it was left as it was, so the settings file shows the player was asked.
+			Host::SetBaseBoolSettingValue("EmuCore", "AutoTune", Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", true));
+			Host::CommitBaseSettingChanges();
+		}
+
 		if (last_step)
 		{
 			CompleteSetupWizard();
@@ -3401,7 +3410,21 @@ void FullscreenUI::DrawSetupWindow()
 		}
 		break;
 
-		case 4: // Finished
+		case STEP_PERFORMANCE:
+		{
+			auto lock = Host::GetSettingsLock();
+			SettingsInterface* bsi = GetEditingSettingsInterface();
+			BeginMenuButtons();
+			MenuHeading(FSUI_CSTR("Performance"));
+			DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
+				FSUI_CSTR("When a game can't keep full speed, ARMSX2 tries lighter settings for that game one at a time and keeps the ones "
+						  "that help. You can reset it for any game from the game's settings."),
+				"EmuCore", "AutoTune", true);
+			EndMenuButtons();
+		}
+		break;
+
+		case 5: // Finished
 		default:
 		{
 			BeginMenuButtons();
@@ -4324,6 +4347,8 @@ TRANSLATE_NOOP("FullscreenUI", "Welcome to ARMSX2!");
 TRANSLATE_NOOP("FullscreenUI", "Navigate with the D-Pad, and use the shoulder buttons to move between steps.");
 TRANSLATE_NOOP("FullscreenUI", "Choose a BIOS, add your game directories, and optionally sign in to RetroAchievements.");
 TRANSLATE_NOOP("FullscreenUI", "Go straight to the main menu. You can configure everything later from Settings.");
+TRANSLATE_NOOP("FullscreenUI", "Automatic Performance Tuning");
+TRANSLATE_NOOP("FullscreenUI", "When a game can't keep full speed, ARMSX2 tries lighter settings for that game one at a time and keeps the ones that help. You can reset it for any game from the game's settings.");
 TRANSLATE_NOOP("FullscreenUI", "Setup Complete!");
 TRANSLATE_NOOP("FullscreenUI", "You're all set. These options can be changed at any time from the Settings menu.");
 TRANSLATE_NOOP("FullscreenUI", "Completes setup and opens the main menu.");
@@ -4373,6 +4398,7 @@ TRANSLATE_NOOP("FullscreenUI", "Welcome");
 TRANSLATE_NOOP("FullscreenUI", "BIOS");
 TRANSLATE_NOOP("FullscreenUI", "Game Directories");
 TRANSLATE_NOOP("FullscreenUI", "RetroAchievements");
+TRANSLATE_NOOP("FullscreenUI", "Performance");
 TRANSLATE_NOOP("FullscreenUI", "Finished");
 TRANSLATE_NOOP("FullscreenUI", "Type");
 TRANSLATE_NOOP("FullscreenUI", "Serial");

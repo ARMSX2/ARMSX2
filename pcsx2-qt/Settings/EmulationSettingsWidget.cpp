@@ -4,6 +4,7 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMessageBox>
 
+#include "pcsx2/AutoTune/AutoTuneApplier.h"
 #include "pcsx2/Host.h"
 
 #include "EmulationSettingsWidget.h"
@@ -43,6 +44,7 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.MTVU, "EmuCore/Speedhacks", "vuThread", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.iopThread, "EmuCore/Speedhacks", "iopThread", false);
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.autoTune, "EmuCore", "AutoTune", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.threadPinning, "EmuCore", "EnableThreadPinning", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.fastCDVD, "EmuCore/Speedhacks", "fastCDVD", false);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.precacheCDVD, "EmuCore", "CdvdPrecache", false);
@@ -75,9 +77,14 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 		// Disable cheats, use the cheats panel instead
 		m_ui.systemSettingsLayout->removeWidget(m_ui.cheats);
 		m_ui.cheats->hide();
+
+		connect(m_ui.resetAutoTune, &QPushButton::clicked, this, &EmulationSettingsWidget::onResetAutoTuneClicked);
+		updateAutoTuneSummary();
 	}
 	else
 	{
+		// What auto-tune changed, and the reset, belong to a game's own settings.
+		m_ui.autoTuneGroup->hide();
 		m_ui.rtcGroup->hide();
 
 		SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.cheats, "EmuCore", "EnableCheats", false);
@@ -130,6 +137,9 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 		tr("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. "
 		   "A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores, "
 		   "and for PS1 games, arcade games and while an IOP breakpoint is set."));
+	dialog()->registerWidgetHelp(m_ui.autoTune, tr("Automatic Performance Tuning"), tr("Checked"),
+		tr("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game. "
+		   "What it changed is listed in the game's properties, where it can also be reset."));
 	dialog()->registerWidgetHelp(m_ui.fastCDVD, tr("Enable Fast CDVD"), tr("Unchecked"),
 		tr("Fast disc access, shorter loading times. Check HDLoader compatibility lists for games that are known to have issues with this."));
 	dialog()->registerWidgetHelp(m_ui.precacheCDVD, tr("Enable CDVD Precaching"), tr("Unchecked"),
@@ -181,6 +191,54 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 }
 
 EmulationSettingsWidget::~EmulationSettingsWidget() = default;
+
+void EmulationSettingsWidget::updateAutoTuneSummary()
+{
+	const std::vector<std::string> lines = AutoTune::DescribeForGame(dialog()->getSerial(), dialog()->getDiscCRC());
+
+	QString text;
+	if (lines.empty())
+	{
+		text = tr("Automatic performance tuning has not changed any settings for this game.");
+	}
+	else
+	{
+		text = tr("Settings changed by automatic performance tuning for this game:");
+		for (const std::string& line : lines)
+			text += QStringLiteral("\n  ") + QString::fromStdString(line);
+	}
+
+	m_ui.autoTuneSummary->setText(text);
+	m_ui.resetAutoTune->setEnabled(!lines.empty());
+}
+
+void EmulationSettingsWidget::onResetAutoTuneClicked()
+{
+	if (QMessageBox::question(QtUtils::GetRootWidget(this), tr("Reset Auto-Tune"),
+			tr("Settings that automatic performance tuning changed for this game will go back to what they were before, and what it "
+			   "learned about this game is forgotten, so it may try those settings again.\n\nSettings you changed yourself since are "
+			   "left as they are.\n\nDo you want to continue?"),
+			QMessageBox::Yes, QMessageBox::No) != QMessageBox::Yes)
+	{
+		return;
+	}
+
+	// The file is edited here (and applied on the emulation thread when this game is running). The dialog holds its own copy of
+	// the file, which would write the old values back on its next change, so it is reopened from the file afterwards.
+	const AutoTune::ResetResult result = AutoTune::ResetForGame(dialog()->getSerial(), dialog()->getDiscCRC());
+
+	QString message;
+	if (!result.had_record)
+		message = tr("Automatic performance tuning had not changed anything for this game.");
+	else
+		message = tr("%n setting(s) were put back to what they were before automatic performance tuning changed them.", nullptr,
+			static_cast<int>(result.restored.size()));
+	if (!result.left_alone.empty())
+		message += QStringLiteral("\n\n") +
+		           tr("%n setting(s) you changed yourself since were left as they are.", nullptr, static_cast<int>(result.left_alone.size()));
+
+	dialog()->reopen(message, "Emulation");
+}
 
 void EmulationSettingsWidget::initializeSpeedCombo(QComboBox* cb, const char* section, const char* key, float default_value)
 {

@@ -56,6 +56,7 @@ private:
 		Page_GameList,
 		Page_Controller,
 		Page_RetroAchievements,
+		Page_AutoTune,
 		Page_Complete,
 		Page_Count,
 	};
@@ -66,6 +67,7 @@ private:
 	void setupGameListPage();
 	void setupControllerPage();
 	void setupRetroAchievementsPage();
+	void setupAutoTunePage();
 	void setupCompletePage();
 	void refreshRetroAchievementsLoginState();
 
