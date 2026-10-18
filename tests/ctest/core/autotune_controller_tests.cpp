@@ -582,23 +582,64 @@ TEST(AutoTuneController, BasicToMinimumIsRejectedWhenItDoesNotHelpAndNotTriedAga
 	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
 	rig.state.blending_level = 1; // Basic
 
-	AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	AutoTuneAction a = rig.WarmAndTrigger(GsCpuBound(60.0));
 	ASSERT_EQ(a.kind, Kind::StartTrial);
 	EXPECT_EQ(a.lever, AutoTuneLever::Blending);
 	EXPECT_EQ(a.value, 0.0); // Minimum
 
-	// Minimum can be slower than Basic on a GPU-bound device: no gain.
-	a = rig.RunUntilAction(GpuBound(58.0));
+	// Minimum does not always help even where the GS thread is the limit: no gain.
+	a = rig.RunUntilAction(GsCpuBound(58.0));
 	ASSERT_EQ(a.kind, Kind::Revert);
 	EXPECT_TRUE(a.measured);
 	EXPECT_EQ(a.lever, AutoTuneLever::Blending);
 	EXPECT_EQ(a.value, 0.0);
 
 	// Reverted (the caller put Basic back), settled, still slow: no second try, so exhausted.
-	rig.FeedFor(GpuBound(60.0), 3.0);
-	a = rig.Trigger(GpuBound(60.0));
+	rig.FeedFor(GsCpuBound(60.0), 3.0);
+	a = rig.Trigger(GsCpuBound(60.0));
 	EXPECT_EQ(a.kind, Kind::Exhausted);
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 1u);
+}
+
+TEST(AutoTuneController, BasicToMinimumIsNeverOfferedToAGpuBoundGame)
+{
+	// On the SD865 it was +3.8% on Shadow of the Colossus and -12% on God of War II, both GPU-bound; on the MQ65
+	// it was wasted on a GPU-bound Shadow of the Colossus. Only where the GS thread on the CPU is the limit did
+	// it pay (Black, +6.8%).
+	Rig rig;
+	rig.state.resolution = 1.0;
+	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.blending_level = 1; // Basic
+	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	EXPECT_EQ(a.kind, Kind::Exhausted);
+	EXPECT_EQ(a.bottleneck, AutoTuneBottleneck::Gpu);
+	EXPECT_EQ(rig.Count(Kind::StartTrial), 0u);
+
+	// The same for the GPU case that has no GPU timer: the EE blocked on a GS that is not CPU-bound.
+	Rig blind;
+	blind.state.resolution = 1.0;
+	blind.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	blind.state.blending_level = 1;
+	AutoTuneWindow w = Win(60.0);
+	w.ee_pct = 70.0;
+	w.mtgs_pct = 50.0;
+	w.ee_wait_gs_ratio = 0.4;
+	EXPECT_EQ(blind.WarmAndTrigger(w).kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneController, TheStepsAboveBasicAreOfferedToEveryBottleneck)
+{
+	for (const AutoTuneWindow& w : {GpuBound(60.0), GsCpuBound(60.0)})
+	{
+		Rig rig;
+		rig.state.resolution = 1.0;
+		rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+		rig.state.blending_level = 2; // Medium, one step above Basic
+		const AutoTuneAction a = rig.WarmAndTrigger(w);
+		ASSERT_EQ(a.kind, Kind::StartTrial);
+		EXPECT_EQ(a.lever, AutoTuneLever::Blending);
+		EXPECT_EQ(a.value, 1.0);
+	}
 }
 
 TEST(AutoTuneController, WhatAnEarlierSessionRejectedIsNotTried)

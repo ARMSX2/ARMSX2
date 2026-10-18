@@ -437,7 +437,9 @@ private:
 
 	bool IsBad(const AutoTuneWindow& w) const;
 	AutoTuneAction Diagnose(const AutoTuneLeverState& state);
-	std::optional<double> TargetFor(AutoTuneLever lever, const AutoTuneLeverState& state) const;
+	/// The value a trial of `lever` would try now, or nullopt when there is none. `bottleneck` is what the trial
+	/// is for: the step from Basic blending to Minimum is only offered against the GS on the CPU.
+	std::optional<double> TargetFor(AutoTuneLever lever, const AutoTuneLeverState& state, AutoTuneBottleneck bottleneck) const;
 	/// Whether blending accuracy and the download mode are worth trying before the resolution at this speed.
 	bool CheapLeversHaveSomethingToGive(double speed_pct, const AutoTuneLeverState& state) const;
 	bool IsRejected(AutoTuneLever lever, double value, const AutoTuneLeverState& state) const;

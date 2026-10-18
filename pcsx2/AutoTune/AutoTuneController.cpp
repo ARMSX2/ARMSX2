@@ -276,7 +276,7 @@ bool AutoTuneController::IsRejected(AutoTuneLever lever, double value, const Aut
 	       std::any_of(state.rejected.begin(), state.rejected.end(), matches);
 }
 
-std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const AutoTuneLeverState& s) const
+std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const AutoTuneLeverState& s, AutoTuneBottleneck bottleneck) const
 {
 	switch (lever)
 	{
@@ -328,7 +328,12 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 		{
 			if (!s.hw_renderer)
 				return std::nullopt;
-			const int floor = std::max(0, s.blending_floor);
+			int floor = std::max(0, s.blending_floor);
+			// Basic to Minimum is a speed lever only where the GS thread on the CPU is the limit: on a GPU-bound
+			// game it measured +3.8% and -12% (SD865), and it is no help to a stall. Above Basic the steps are
+			// offered to every bottleneck.
+			if (bottleneck != AutoTuneBottleneck::GsCpu)
+				floor = std::max(floor, kBlendingBasic);
 			if (s.blending_level > floor)
 				return static_cast<double>(s.blending_level - 1);
 			return std::nullopt;
@@ -348,7 +353,7 @@ bool AutoTuneController::CheapLeversHaveSomethingToGive(double speed_pct, const 
 
 	// With a notch to take: one notch from r removes (r / next)^2 of the pixels, so it can give that much speed
 	// at most. If that gets to full speed, the resolution goes first.
-	const std::optional<double> next = TargetFor(AutoTuneLever::Resolution, s);
+	const std::optional<double> next = TargetFor(AutoTuneLever::Resolution, s, AutoTuneBottleneck::Gpu);
 	if (!next || !(*next > 0.0))
 		return true; // no notch (native, or the software renderer): there is no resolution step to put them before
 	const double pixels = (s.resolution / *next) * (s.resolution / *next);
@@ -457,7 +462,7 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 
 	for (size_t i = 0; i < count; i++)
 	{
-		const std::optional<double> target = TargetFor(order[i], state);
+		const std::optional<double> target = TargetFor(order[i], state, bottleneck);
 		if (!target || IsRejected(order[i], *target, state))
 			continue;
 
@@ -492,7 +497,7 @@ AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& s
 	none.bottleneck = m_pending.bottleneck;
 
 	// The state may have moved since the diagnosis (somebody changed a setting, or the step is no longer there).
-	const std::optional<double> target = TargetFor(m_pending.lever, state);
+	const std::optional<double> target = TargetFor(m_pending.lever, state, m_pending.bottleneck);
 	if (!target || std::fabs(*target - m_pending.value) > kValueEpsilon || IsRejected(m_pending.lever, *target, state))
 	{
 		m_phase = Phase::Watching;
