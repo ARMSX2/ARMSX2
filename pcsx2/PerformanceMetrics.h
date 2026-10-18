@@ -161,4 +161,34 @@ namespace PerformanceMetrics
 
 	const FrameTimeHistory& GetFrameTimeHistory();
 	u32 GetFrameTimeHistoryPos();
+
+	/// Whether the open GS device can time the GPU. Set by the GS thread when the device opens. Without a
+	/// timer GetGPUUsage() reads zero whatever the GPU is doing, so a reader must not take that as idle.
+	void SetGPUTimerSupported(bool supported);
+	bool HasGPUTimer();
+
+	/// The figures of the last window Update() closed (about every 0.5 s), copied together.
+	/// Update() runs on the GS thread and the getters above are plain reads of what it wrote, so a reader on
+	/// another thread can see half of one window and half of the next; this copy cannot. `sequence` counts the
+	/// windows closed so far and never goes back, so a reader that keeps the last value it saw knows when a
+	/// new window has arrived instead of reading the same one twice.
+	struct WindowSnapshot
+	{
+		u32 sequence = 0;
+		float seconds = 0.0f; // wall time the window covers
+		float speed = 0.0f; // percent of the nominal frame rate, as GetSpeed()
+		double ee_usage = 0.0; // percent of one core, as GetCPUThreadUsage()
+		float gs_usage = 0.0f;
+		float gs_back_usage = 0.0f;
+		float vu_usage = 0.0f;
+		float iop_usage = 0.0f;
+		float gpu_usage = 0.0f;
+		bool has_gs_back_thread = false;
+		bool has_iop_thread = false;
+		bool has_gpu_timer = false;
+	};
+
+	/// False when no window has been closed yet or the GS thread is in the middle of closing one (try again
+	/// later). Safe to call from any thread.
+	bool TryGetWindowSnapshot(WindowSnapshot* out);
 } // namespace PerformanceMetrics

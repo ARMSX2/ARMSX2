@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
@@ -216,6 +217,13 @@ static float s_vu_thread_time = 0.0f;
 static float s_iop_thread_usage = 0.0f;
 static float s_iop_thread_time = 0.0f;
 
+// Update() closes a window by writing a dozen statics. TryGetWindowSnapshot() reads them from another
+// thread, so the writer brackets its stores with this counter (odd while writing, even otherwise) and
+// the reader keeps a copy only if the counter was even and did not move.
+static std::atomic<u32> s_window_seq{0};
+static float s_window_seconds = 0.0f;
+static std::atomic<bool> s_gpu_timer_supported{false};
+
 static PerformanceMetrics::FrameTimeHistory s_frame_time_history;
 static u32 s_frame_time_history_pos = 0;
 
@@ -337,6 +345,9 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 		return;
 
 	s_last_update_time.ResetTo(now_ticks);
+	s_window_seq.fetch_add(1, std::memory_order_relaxed);
+	std::atomic_thread_fence(std::memory_order_release);
+	s_window_seconds = time;
 	s_minimum_frame_time = std::exchange(s_minimum_frame_time_accumulator, 0.0f);
 	s_average_frame_time = std::exchange(s_average_frame_time_accumulator, 0.0f) / static_cast<float>(s_unskipped_frames_since_last_update);
 	s_maximum_frame_time = std::exchange(s_maximum_frame_time_accumulator, 0.0f);
@@ -441,7 +452,47 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_unskipped_frames_since_last_update = 0;
 	s_presents_since_last_update = 0;
 
+	s_window_seq.fetch_add(1, std::memory_order_release);
+
 	Host::OnPerformanceMetricsUpdated();
+}
+
+void PerformanceMetrics::SetGPUTimerSupported(bool supported)
+{
+	s_gpu_timer_supported.store(supported, std::memory_order_relaxed);
+}
+
+bool PerformanceMetrics::HasGPUTimer()
+{
+	return s_gpu_timer_supported.load(std::memory_order_relaxed);
+}
+
+bool PerformanceMetrics::TryGetWindowSnapshot(WindowSnapshot* out)
+{
+	const u32 before = s_window_seq.load(std::memory_order_acquire);
+	if (before == 0 || (before & 1))
+		return false;
+
+	WindowSnapshot snap;
+	snap.sequence = before / 2;
+	snap.seconds = s_window_seconds;
+	snap.speed = GetSpeed();
+	snap.ee_usage = s_cpu_thread_usage;
+	snap.gs_usage = s_gs_thread_usage;
+	snap.gs_back_usage = s_gs_back_thread_usage;
+	snap.vu_usage = s_vu_thread_usage;
+	snap.iop_usage = s_iop_thread_usage;
+	snap.gpu_usage = s_gpu_usage;
+	snap.has_gs_back_thread = HasGSBackThread();
+	snap.has_iop_thread = HasIOPThread();
+	snap.has_gpu_timer = HasGPUTimer();
+
+	std::atomic_thread_fence(std::memory_order_acquire);
+	if (s_window_seq.load(std::memory_order_relaxed) != before)
+		return false;
+
+	*out = snap;
+	return true;
 }
 
 void PerformanceMetrics::OnGPUPresent(float gpu_time, u64 vs_invocations, u64 ps_invocations)

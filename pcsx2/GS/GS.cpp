@@ -16,6 +16,7 @@
 #include "Host.h"
 #include "Input/InputManager.h"
 #include "MTGS.h"
+#include "PerformanceMetrics.h"
 #include "pcsx2/GS.h"
 #include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "GS/Renderers/Common/GSCopyRoadBlendingPolicy.h"
@@ -197,7 +198,9 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 		return false;
 	}
 
-	if (!g_gs_device->SetGPUTimingEnabled(true))
+	const bool gpu_timing = g_gs_device->SetGPUTimingEnabled(true);
+	PerformanceMetrics::SetGPUTimerSupported(gpu_timing);
+	if (!gpu_timing)
 		GSConfig.OsdShowGPU = false;
 	if (GSConfig.OsdShowGPUStats && !g_gs_device->SetGPUPipelineStatisticsEnabled(true))
 		GSConfig.OsdShowGPUStats = false;
