@@ -176,9 +176,13 @@ AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 
 	if (m.mtvu_pct >= sat)
 		return AutoTuneBottleneck::Vu1;
-	// The IOP thread is the cause when it is saturated, or when the EE is stuck waiting for it: the EE then
-	// reads as saturated too (it spins), and the levers for an EE-bound game would not help.
-	if (m.iop_pct >= sat || ee_blocked_on_iop)
+	// The IOP thread is the cause when the EE is stuck waiting for it: the EE then reads as saturated too (it
+	// spins), and the levers for an EE-bound game would not help. Its own CPU share is not evidence of that on
+	// its own: it paces itself against the EE and spins while it waits, so it reads saturated whenever the EE
+	// is, and the EE waiting 0% of its time for it says it keeps up. The CPU share is the answer only where the
+	// wait could not be measured.
+	const bool iop_bound = m.ee_wait_iop_ratio.has_value() ? ee_blocked_on_iop : m.iop_pct >= sat;
+	if (iop_bound)
 		return AutoTuneBottleneck::Iop;
 
 	if (m.ee_pct >= sat)

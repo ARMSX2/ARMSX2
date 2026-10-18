@@ -946,6 +946,27 @@ TEST(AutoTuneController, AnEeBlockedOnTheIopThreadIsIopBoundNotEeBound)
 	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Gpu);
 }
 
+TEST(AutoTuneController, AnIopThreadAtFullCpuWhileTheEeDoesNotWaitForItIsNotTheBottleneck)
+{
+	// The IOP thread paces itself against the EE and spins while it waits, so its CPU share reads saturated
+	// whenever the EE is. Measured on an EE-bound scene with the EE interpreter: EE 99.7%, IOP 99.5%, and the
+	// EE spent 0% of its time waiting for the IOP. The EE is the cause.
+	AutoTuneController ctl;
+	AutoTuneWindow w = EeBound(22.0);
+	w.iop_pct = 99.5;
+	w.ee_wait_iop_ratio = 0.0;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Ee);
+
+	// Without the wait figure the CPU share is all there is to go on.
+	w.ee_wait_iop_ratio.reset();
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Iop);
+
+	// A wait over the line is the IOP whatever its CPU share says (it can be asleep when woken).
+	w.iop_pct = 40.0;
+	w.ee_wait_iop_ratio = 0.4;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Iop);
+}
+
 TEST(AutoTuneController, AnIopBoundCaseIsReportedAndTheGovernorIsNotTried)
 {
 	Rig rig;
