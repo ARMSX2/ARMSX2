@@ -17,11 +17,13 @@ public:
 
 private Q_SLOTS:
 	void onOptimalFramePacingChanged();
+	void onResetAutoTuneClicked();
 
 private:
 	void initializeSpeedCombo(QComboBox* cb, const char* section, const char* key, float default_value);
 	void handleSpeedComboChange(QComboBox* cb, const char* section, const char* key);
 	void updateOptimalFramePacing();
+	void updateAutoTuneSummary();
 	void updateUseVSyncForTimingEnabled();
 	void onManuallySetRealTimeClockChanged();
 	void onUseSystemLocaleFormatChanged();

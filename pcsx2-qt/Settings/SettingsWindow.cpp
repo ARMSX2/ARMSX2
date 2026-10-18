@@ -28,6 +28,7 @@
 #include "SettingsWindow.h"
 
 #include "pcsx2/Achievements.h"
+#include "pcsx2/AutoTune/AutoTuneStore.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -352,12 +353,14 @@ void SettingsWindow::onClearSettingsClicked()
 	m_game_patch_settings_widget->disableAllPatches();
 
 	Pcsx2Config::ClearConfiguration(m_sif.get());
+	// The record of what auto-tune changed goes with the settings it describes.
+	m_sif->RemoveSection(AutoTune::kStoreSection);
 	saveAndReloadGameSettings();
 
 	reopen(tr("Per-game configuration cleared."));
 }
 
-void SettingsWindow::reopen(const QString& message)
+void SettingsWindow::reopen(const QString& message, const char* category)
 {
 	// This doesn't work for global settings, because MainWindow maintains a pointer.
 	if (!m_sif)
@@ -373,6 +376,8 @@ void SettingsWindow::reopen(const QString& message)
 
 	SettingsWindow* dlg = new SettingsWindow(std::move(new_sif), game, m_serial, m_disc_crc, m_filename);
 	dlg->QWidget::setWindowTitle(windowTitle());
+	if (category)
+		dlg->setCategory(category);
 
 	// See note above.
 	QtHost::RunOnUIThread([this, dlg, message]() {
