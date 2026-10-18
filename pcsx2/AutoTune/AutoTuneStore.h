@@ -49,7 +49,7 @@ namespace AutoTune
 		std::string key;
 		std::optional<std::string> original; // nullopt: the file did not have the key
 		std::string value; // as the file holds it
-		double gain = 0.0; // relative gain of the figure that earned the keep (the speed, or the cost the lever targets), compounded over every step kept on this key
+		double gain = 0.0; // relative gain in speed measured when the lever was kept, compounded over every step kept on this key
 	};
 
 	/// Writes a lever's value under its key, as the right type for that key.

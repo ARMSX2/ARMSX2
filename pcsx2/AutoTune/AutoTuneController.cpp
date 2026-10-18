@@ -624,8 +624,6 @@ AutoTuneAction AutoTuneController::FinishTrial()
 	{
 		action.kind = AutoTuneAction::Kind::Keep;
 		action.measured = true;
-		if (!keep_on_speed)
-			action.gain = cost.gain;
 		// Nothing about the applied state changes for a keep, so only the hitch of persisting it is waited out.
 		EnterSettle(Phase::SettlingAfter, m_policy.settle_seconds);
 		m_trial = Trial();

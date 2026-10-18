@@ -1353,7 +1353,7 @@ TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillThe
 		verdict = rig.Feed(Gpu(40.8, 14.0));
 	ASSERT_EQ(verdict.kind, Kind::Keep);
 	EXPECT_NEAR(verdict.cost_gain, 0.3, 1e-9);
-	EXPECT_NEAR(verdict.gain, 0.3, 1e-9) << "the figure that earned the keep";
+	EXPECT_NEAR(verdict.gain, 0.02, 1e-9) << "what is reported is the speed that was measured; the cost has its own figure";
 	EXPECT_NEAR(verdict.speed_after, 40.8, 1e-9);
 }
 

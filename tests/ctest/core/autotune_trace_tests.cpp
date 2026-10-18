@@ -338,6 +338,11 @@ TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 	EXPECT_GT(keep->speed_after, keep->speed_before) << "kept with the speed up, not with it down";
 	EXPECT_GT(keep->cost_gain, 0.10);
 
+	// What the player is told is the speed that was measured (+7%), not the 19% the GS thread's cost fell by.
+	EXPECT_NEAR(keep->gain, keep->speed_after / keep->speed_before - 1.0, 1e-9);
+	EXPECT_LT(keep->gain, 0.10);
+	EXPECT_GT(keep->gain, 0.0);
+
 	// The first look is four windows after the 9 of the settle; it kept on the second one, four windows later.
 	EXPECT_GE(rig.At(keep) - rig.At(start), 9u + 4u + 4u);
 }

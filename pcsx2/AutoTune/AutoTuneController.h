@@ -298,8 +298,9 @@ struct AutoTuneAction
 	double value = 0.0;
 	AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
 	/// StartTrial, Keep and Revert: the median speed before the trial and during it, and the relative change.
-	/// For a Keep, `gain` is the change of whichever figure earned the keep: the speed, or (when the speed
-	/// hardly moved because something else is still the limit) the cost the lever targets.
+	/// `gain` is always the speed's, also for a Keep that the targeted cost earned (the speed hardly moved
+	/// because something else is still the limit): it is what the player is told and what the game's file
+	/// records as the lever's gain in speed. The cost has its own figures below.
 	double speed_before = 0.0;
 	double speed_after = 0.0;
 	double gain = 0.0;
