@@ -100,6 +100,10 @@ struct GSMTLMainVSUniform
 	vector_float2 point_size;
 	uint max_depth;
 	float line_aa1_width;
+	// Volumetric stereo constants (GSHWDrawConfig::VSConstantBuffer::vr_stereo): Vulkan only, unused
+	// here; they keep the two structs the same size.
+	vector_float4 vr_stereo;
+	vector_float4 vr_stereo2;
 };
 
 struct GSMTLMainPSUniform

@@ -42,6 +42,7 @@ if(NOT APPLE)
 	option(USE_OPENGL "Enable OpenGL GS renderer" ON)
 endif()
 option(USE_VULKAN "Enable Vulkan GS renderer" ON)
+option(ENABLE_VOLUMETRIC "Build the Volumetric stereo renderer (GSVolumetric.h): depth capture and multiview stereo 3D for VR frontends such as the Steam Frame. Needs USE_VULKAN. Inert until a frontend turns it on." OFF)
 # What the GL renderer asks the host for. Android is GL ES whether this is set
 # or not; it exists for the other platforms that have only ES - webOS, and the
 # embedded frontends - where a desktop GL request is refused and the core then
@@ -365,6 +366,13 @@ endif()
 
 if(USE_VULKAN)
 	list(APPEND PCSX2_DEFS ENABLE_VULKAN)
+endif()
+
+if(ENABLE_VOLUMETRIC)
+	if(NOT USE_VULKAN)
+		message(FATAL_ERROR "ENABLE_VOLUMETRIC needs the Vulkan renderer (USE_VULKAN).")
+	endif()
+	list(APPEND PCSX2_DEFS PCSX2_VOLUMETRIC)
 endif()
 
 if(X11_API)

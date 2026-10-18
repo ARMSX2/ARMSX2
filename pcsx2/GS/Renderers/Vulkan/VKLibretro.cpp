@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 // Only the retro_hw_render_interface_vulkan layout is needed here; pull it
@@ -177,6 +178,46 @@ namespace VKLibretro
 		return true;
 	}
 
+#ifdef PCSX2_VOLUMETRIC
+	static std::mutex s_copy_mutex;
+	static std::condition_variable s_copy_done_cv;
+	static PresentCopyTarget s_copy_armed[2];
+	static bool s_copy_in_flight = false;
+
+	void ArmPresentCopy(int eye, const PresentCopyTarget& target)
+	{
+		std::lock_guard<std::mutex> lock(s_copy_mutex);
+		s_copy_armed[eye & 1] = target;
+	}
+
+	void DisarmPresentCopy(int eye)
+	{
+		std::unique_lock<std::mutex> lock(s_copy_mutex);
+		s_copy_done_cv.wait(lock, [] { return !s_copy_in_flight; });
+		for (int i = 0; i < 2; i++)
+		{
+			if (eye < 0 || eye == i)
+				s_copy_armed[i] = PresentCopyTarget();
+		}
+	}
+
+	bool TakePresentCopy(PresentCopyTarget* left, PresentCopyTarget* right)
+	{
+		std::lock_guard<std::mutex> lock(s_copy_mutex);
+		*left = std::exchange(s_copy_armed[0], PresentCopyTarget());
+		*right = std::exchange(s_copy_armed[1], PresentCopyTarget());
+		s_copy_in_flight = left->image != VK_NULL_HANDLE || right->image != VK_NULL_HANDLE;
+		return s_copy_in_flight;
+	}
+
+	void FinishPresentCopy()
+	{
+		std::lock_guard<std::mutex> lock(s_copy_mutex);
+		s_copy_in_flight = false;
+		s_copy_done_cv.notify_all();
+	}
+#endif
+
 	void SetPacing(bool enabled)
 	{
 		std::lock_guard<std::mutex> lock(s_frame_mutex);
@@ -200,5 +241,11 @@ namespace VKLibretro
 		s_frame_consumed = 0;
 		s_pacing = false;
 		s_frame_consumed_cv.notify_all();
+#ifdef PCSX2_VOLUMETRIC
+		std::lock_guard<std::mutex> copy_lock(s_copy_mutex);
+		s_copy_armed[0] = s_copy_armed[1] = PresentCopyTarget();
+		s_copy_in_flight = false;
+		s_copy_done_cv.notify_all();
+#endif
 	}
 } // namespace VKLibretro

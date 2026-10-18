@@ -16,6 +16,11 @@
 #define VS_EXPAND_TRIANGLE_AA1 5
 #endif
 
+// Volumetric stereo (GSVolumetric.h): set for devices created for a frontend that may show stereo.
+#ifndef VOLUMETRIC
+#define VOLUMETRIC 0
+#endif
+
 layout(std140, set = 0, binding = 0) uniform cb0
 {
 	vec2 VertexScale;
@@ -25,7 +30,46 @@ layout(std140, set = 0, binding = 0) uniform cb0
 	vec2 PointSize;
 	uint MaxDepth;
 	float LineAA1Width;
+#if VOLUMETRIC
+	vec4 VRStereo; // GSVolumetric stereo: xy the (left) eye's shift for the farthest geometry (0 = off), z convergence, w Z mode (1), or portal (minus the left eye's distance ratio)
+	vec4 VRStereo2; // x: integer-scaled depth to 0..1 of the Z format, yz: the right eye's shift (multiview), w: portal, the right eye's distance ratio
+#endif
 };
+
+#if VOLUMETRIC
+// GSVolumetric stereo: where a vertex lands on screen for the eye's position, in NDC - the parallax
+// of a window: geometry at the convergence stays on the screen, the farthest moves most. With
+// multiview, view 0 is the left eye and view 1 the right. The portal also scales the picture about
+// the screen centre for the eye's distance (GSVolumetric::StereoSettings).
+// FST draws come with zero constants (no shift) unless the renderer places them in the scene (effects
+// drawn as 2D overlays, see GSRendererHW::VolumetricClassifyDraw).
+vec2 VRStereoPlace(vec2 p, float q, float z_ndc)
+{
+#if MULTIVIEW
+	const vec2 eye = (gl_ViewIndex == 0) ? VRStereo.xy : VRStereo2.yz;
+#else
+	const vec2 eye = VRStereo.xy;
+#endif
+	if (VRStereo.w < 0.0f)
+	{
+#if MULTIVIEW
+		const float r = (gl_ViewIndex == 0) ? -VRStereo.w : VRStereo2.w;
+#else
+		const float r = -VRStereo.w;
+#endif
+		const float u = clamp((z_ndc * VRStereo2.x) / max(VRStereo.z, 1e-6f), 0.0f, 1.0f);
+		return (p * r + eye * (1.0f - u)) / (1.0f + u * (r - 1.0f));
+	}
+	if (eye.x == 0.0f && eye.y == 0.0f)
+		return p;
+	float f;
+	if (VRStereo.w != 0.0f)
+		f = clamp(1.0f - (z_ndc * VRStereo2.x) / max(VRStereo.z, 1e-6f), 0.0f, 1.0f);
+	else
+		f = max(0.0f, 1.0f - VRStereo.z * q);
+	return p + eye * f;
+}
+#endif
 
 layout(location = 0) out VSOutput
 {
@@ -66,6 +110,9 @@ void main()
 	gl_Position.xy = gl_Position.xy * vec2(VertexScale.x, -VertexScale.y) - vec2(VertexOffset.x, -VertexOffset.y);
 	gl_Position.z *= exp2(-32.0f);		// integer->float depth
 	gl_Position.y = -gl_Position.y;
+#if VOLUMETRIC
+	gl_Position.xy = VRStereoPlace(gl_Position.xy, a_q, gl_Position.z);
+#endif
 
 #if GPU_PROFILE_MALI
 	// Mali HW bug (PPSSPP EQUAL_WZ_CORRUPTS_DEPTH): clip-space z == w corrupts the
@@ -175,6 +222,9 @@ ProcessedVertex load_vertex(uint index)
 	vtx.p.xy = vtx.p.xy * vec2(VertexScale.x, -VertexScale.y) - vec2(VertexOffset.x, -VertexOffset.y);
 	vtx.p.z *= exp2(-32.0f);		// integer->float depth
 	vtx.p.y = -vtx.p.y;
+#if VOLUMETRIC
+	vtx.p.xy = VRStereoPlace(vtx.p.xy, a_q, vtx.p.z);
+#endif
 
 	#if VS_TME
 		vec2 uv = a_uv - TextureOffset;
@@ -692,19 +742,47 @@ layout(location = 0) in VSOutput
 #endif
 
 #if NEEDS_TEX
+#if MULTIVIEW
+// GSVolumetric multiview stereo: every texture is bound as an array; each eye reads its own layer
+// of a per-eye texture (render targets and their copies) and layer 0 of a plain one.
+layout(set = 1, binding = 0) uniform sampler2DArray Texture;
+layout(set = 1, binding = 1) uniform texture2DArray Palette;
+int TexLayer() { return min(gl_ViewIndex, textureSize(Texture, 0).z - 1); }
+#define TEX_SIZE() textureSize(Texture, 0).xy
+#define TEX_SAMPLE(uv) texture(Texture, vec3(uv, float(TexLayer())))
+#define TEX_LOD(uv, lod) textureLod(Texture, vec3(uv, float(TexLayer())), lod)
+#define TEX_FETCH(xy) texelFetch(Texture, ivec3(xy, TexLayer()), 0)
+#define PAL_FETCH(xy) texelFetch(Palette, ivec3(xy, min(gl_ViewIndex, textureSize(Palette, 0).z - 1)), 0)
+#else
 layout(set = 1, binding = 0) uniform sampler2D Texture;
 layout(set = 1, binding = 1) uniform texture2D Palette;
+#define TEX_SIZE() textureSize(Texture, 0)
+#define TEX_SAMPLE(uv) texture(Texture, uv)
+#define TEX_LOD(uv, lod) textureLod(Texture, uv, lod)
+#define TEX_FETCH(xy) texelFetch(Texture, xy, 0)
+#define PAL_FETCH(xy) texelFetch(Palette, xy, 0)
+#endif
 #endif
 
 #if PS_FEEDBACK_LOOP_IS_NEEDED_RT || PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH
 	#if defined(DISABLE_TEXTURE_BARRIER) || defined(HAS_FEEDBACK_LOOP_LAYOUT)
 		#if (PS_FEEDBACK_LOOP_IS_NEEDED_RT && !PS_ROV_COLOR)
+			#if MULTIVIEW
+			layout(set = 1, binding = 2) uniform texture2DArray RtSampler;
+			vec4 sample_from_rt() { return texelFetch(RtSampler, ivec3(ivec2(gl_FragCoord.xy), gl_ViewIndex), 0); }
+			#else
 			layout(set = 1, binding = 2) uniform texture2D RtSampler;
 			vec4 sample_from_rt() { return texelFetch(RtSampler, ivec2(gl_FragCoord.xy), 0); }
+			#endif
 		#endif
 		#if (PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH && !PS_ROV_DEPTH)
+			#if MULTIVIEW
+			layout(set = 1, binding = 4) uniform texture2DArray DepthSampler;
+			float sample_from_depth() { return texelFetch(DepthSampler, ivec3(ivec2(gl_FragCoord.xy), gl_ViewIndex), 0).r; }
+			#else
 			layout(set = 1, binding = 4) uniform texture2D DepthSampler;
 			float sample_from_depth() { return texelFetch(DepthSampler, ivec2(gl_FragCoord.xy), 0).r; }
+			#endif
 		#endif
 	#else
 		// Must consider each case separately since the input attachment indices must be consecutive.
@@ -724,7 +802,13 @@ layout(set = 1, binding = 1) uniform texture2D Palette;
 #endif
 
 #if PS_DATE > 0
+#if MULTIVIEW
+layout(set = 1, binding = 3) uniform texture2DArray PrimMinTexture;
+#define PRIMMIN_FETCH(xy) texelFetch(PrimMinTexture, ivec3(xy, gl_ViewIndex), 0)
+#else
 layout(set = 1, binding = 3) uniform texture2D PrimMinTexture;
+#define PRIMMIN_FETCH(xy) texelFetch(PrimMinTexture, xy, 0)
+#endif
 #endif
 
 #if ZWRITE && !PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH
@@ -764,7 +848,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 	// Below taken from https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#7.18.11%20LOD%20Calculations
 	// And https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_filter_anisotropic.txt
 	// With guidance from https://pema.dev/2025/05/09/mipmaps-too-much-detail/ 
-	vec2 sz = textureSize(Texture, 0);
+	vec2 sz = TEX_SIZE();
 	vec2 dX = dFdx(uv) * sz;
 	vec2 dY = dFdy(uv) * sz;
 
@@ -863,7 +947,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 
 	vec4 colour;
 	if (aniso_ratio == 1.0f)
-		colour = textureLod(Texture, uv, lod);
+		colour = TEX_LOD(uv, lod);
 	else
 	{
 		vec4 num = vec4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -872,7 +956,7 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 		{
 			vec2 d = -aniso_line + (0.5f + i) * segment;	
 			vec2 uv_sample = uv + d;
-			vec4 sample_colour = textureLod(Texture, uv_sample, lod);
+			vec4 sample_colour = TEX_LOD(uv_sample, lod);
 			num += sample_colour;
 		}
 
@@ -887,7 +971,7 @@ vec4 sample_c(vec2 uv)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #elif PS_REGION_RECT
-	return texelFetch(Texture, ivec2(uv), 0);
+	return TEX_FETCH(ivec2(uv));
 #else
 
 #if !PS_ADJS && !PS_ADJT
@@ -908,18 +992,18 @@ vec4 sample_c(vec2 uv)
 #if PS_ANISOTROPIC_FILTERING > 1
 	return sample_c_af(uv, vsIn.t.w);
 #elif PS_AUTOMATIC_LOD == 1
-	return texture(Texture, uv);
+	return TEX_SAMPLE(uv);
 #elif PS_MANUAL_LOD == 1
-	return textureLod(Texture, uv, manual_lod(vsIn.t.w));
+	return TEX_LOD(uv, manual_lod(vsIn.t.w));
 #else
-	return textureLod(Texture, uv, 0); // No lod
+	return TEX_LOD(uv, 0); // No lod
 #endif
 #endif
 }
 
 vec4 sample_p(uint idx)
 {
-	return texelFetch(Palette, ivec2(int(idx), 0), 0);
+	return PAL_FETCH(ivec2(int(idx), 0));
 }
 
 vec4 sample_p_norm(float u)
@@ -1067,7 +1151,7 @@ uint fetch_raw_depth(ivec2 xy)
 #if PS_TEX_IS_FB
 	vec4 col = sample_from_rt();
 #else
-	vec4 col = texelFetch(Texture, xy, 0);
+	vec4 col = TEX_FETCH(xy);
 #endif
 	return uint(col.r * exp2(32.0f));
 }
@@ -1077,7 +1161,7 @@ vec4 fetch_raw_color(ivec2 xy)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #else
-	return texelFetch(Texture, xy, 0);
+	return TEX_FETCH(xy);
 #endif
 }
 
@@ -1086,7 +1170,7 @@ vec4 fetch_c(ivec2 uv)
 #if PS_TEX_IS_FB
 	return sample_from_rt();
 #else
-	return texelFetch(Texture, uv, 0);
+	return TEX_FETCH(uv);
 #endif
 }
 
@@ -1151,7 +1235,7 @@ vec4 sample_depth(vec2 st, ivec2 pos)
 		uint depth = fetch_raw_depth(pos);
 
 		// Convert msb based on the palette
-		t = texelFetch(Palette, ivec2((depth >> 8u) & 0xFFu, 0), 0) * 255.0f;
+		t = PAL_FETCH(ivec2((depth >> 8u) & 0xFFu, 0)) * 255.0f;
 	}
 	#elif (PS_URBAN_CHAOS_HLE == 1)
 	{
@@ -1165,7 +1249,7 @@ vec4 sample_depth(vec2 st, ivec2 pos)
 		uint depth = fetch_raw_depth(pos);
 
 		// Convert lsb based on the palette
-		t = texelFetch(Palette, ivec2(depth & 0xFFu, 0), 0) * 255.0f;
+		t = PAL_FETCH(ivec2(depth & 0xFFu, 0)) * 255.0f;
 
 		// Msb is easier
 		float green = float(((depth >> 8u) & 0xFFu) * 36.0f);
@@ -1903,7 +1987,7 @@ void main()
 #endif		// PS_DATE >= 5
 
 #if PS_DATE == 3
-	int stencil_ceil = int(texelFetch(PrimMinTexture, ivec2(gl_FragCoord.xy), 0).r);
+	int stencil_ceil = int(PRIMMIN_FETCH(ivec2(gl_FragCoord.xy)).r);
 	// Note gl_PrimitiveID == stencil_ceil will be the primitive that will update
 	// the bad alpha value so we must keep it.
 

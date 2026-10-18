@@ -35,20 +35,32 @@ layout(location = 0) in vec2 v_tex;
 	#define OUTPUT o_col0
 #endif
 
+#ifndef MULTIVIEW
+#define MULTIVIEW 0
+#endif
+
+#if MULTIVIEW
+// GSVolumetric multiview stereo: a pass drawn inside a multiview TFX render pass (colour clip
+// setup/resolve, DATE image setup) reads the layer of its own eye. Only sample_c() is available.
+layout(set = 0, binding = 0) uniform sampler2DArray samp0;
+#define SAMPLE_SAMP0(uv) texture(samp0, vec3(uv, float(gl_ViewIndex)))
+#else
 layout(set = 0, binding = 0) uniform sampler2D samp0;
+#define SAMPLE_SAMP0(uv) texture(samp0, uv)
+#endif
 
 #if HAS_FLOAT32_INPUT
 
 float sample_c(vec2 uv)
 {
-	return texture(samp0, uv).r;
+	return SAMPLE_SAMP0(uv).r;
 }
 
 #else
 
 vec4 sample_c(vec2 uv)
 {
-	return texture(samp0, uv);
+	return SAMPLE_SAMP0(uv);
 }
 
 #endif

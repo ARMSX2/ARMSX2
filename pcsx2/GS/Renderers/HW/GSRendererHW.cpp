@@ -18,6 +18,7 @@
 #include "GS/Renderers/Common/GSReplacementAlphaSnap.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
+#include "GS/GSVolumetric.h"
 #include "GS/GSUtil.h"
 #include "Host.h"
 #include "common/Console.h"
@@ -68,6 +69,7 @@ GSRendererHW::~GSRendererHW()
 
 void GSRendererHW::Destroy()
 {
+	ReleaseDepthCanvases();
 	g_texture_cache->RemoveAll(true, true, true);
 	GSRenderer::Destroy();
 }
@@ -183,6 +185,7 @@ void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 	m_skip_offset = 0;
 
 	GSRenderer::VSync(field, registers_written, idle_frame);
+	VolumetricEndVSync();
 }
 
 GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
@@ -206,8 +209,10 @@ GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 	TEX0.TBW = curFramebuffer.FBW;
 	TEX0.PSM = curFramebuffer.PSM;
 
+	VolumetricSetOutput(index, nullptr);
 	if (GSTextureCache::Target* rt = g_texture_cache->LookupDisplayTarget(TEX0, framebufferSize, GetTextureScaleFactor(), false))
 	{
+		VolumetricSetOutput(index, rt);
 		const u32 bp_adj = (TEX0.TBP0 < rt->m_TEX0.TBP0 && rt->UnwrappedEndBlock() > GS_MAX_BLOCKS) ? (TEX0.TBP0 + GS_MAX_BLOCKS) : TEX0.TBP0;
 		rt->Update();
 		t = rt->m_texture;
@@ -3398,6 +3403,10 @@ void GSRendererHW::Draw()
 		return;
 	}
 
+	// Before anything below can clear or draw into a depth target.
+	if (GSVolumetric::IsEnabled())
+		SnapshotDepthBeforeDraw();
+
 	// Sometimes everything will get reset and it will draw a single black point in the top left corner,
 	// which can cause invalid targets to be created, so might as well skip it.
 	if (GSVector4i(m_vt.m_min.p.xyxy(m_vt.m_max.p)).eq(GSVector4i::zero()) && m_vt.m_eq.rgba == 0xffff && 
@@ -5732,9 +5741,12 @@ void GSRendererHW::Draw()
 	//
 	const GSVector4i real_rect = m_r;
 
+	VolumetricTraceDraw(rt, ds, src, skip_draw);
+
 	if (!skip_draw)
 		DrawPrims(rt, ds, src, tmm);
 
+	VolumetricSaveTraceDraw(rt, ds, skip_draw);
 
 	// Temporary source *must* be invalidated before normal, because otherwise it'll be double freed.
 	g_texture_cache->InvalidateTemporarySource();
@@ -7066,6 +7078,8 @@ void GSRendererHW::DetermineVSConfig(GSTextureCache::Target* rt, float rtscale, 
 	scale_y = sy;
 	m_conf.cb_vs.vertex_scale = GSVector2(sx, sy);
 	m_conf.cb_vs.vertex_offset = GSVector2(ox * sx + ox2 + 1, oy * sy + oy2 + 1);
+
+	VolumetricStereoConstants(rt);
 
 	// A sprite that reads its texture on the native texel grid needs this transform to be the
 	// plain one: native coordinate n at device coordinate n * scale + 0.5. Half-pixel-offset modes
@@ -10989,6 +11003,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	// Z setup has to come before channel shuffle
 	EmulateZbuffer(ds);
 
+	VolumetricRecordDraw(rt, ds);
+
 	// HLE implementation of the channel selection effect
 	//
 	// Warning it must be done at the begining because it will change the
@@ -11190,6 +11206,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	const float texscale = tex ? tex->GetScale() : 0.0f;
 	const GSVector2i texsize = tex ? tex->GetTexture()->GetSize() : GSVector2i(0, 0);
+
+	VolumetricClassifyDraw(rt, tex);
 
 	// Vertex shader config
 	float vs_scale_x, vs_scale_y;
@@ -12360,7 +12378,7 @@ bool GSRendererHW::OI_BlitFMV(GSTextureCache::Target* _rt, GSTextureCache::Sourc
 		r_texture.w -= offset;
 		const int new_height = std::max(r_texture.w, th);
 
-		if (GSTexture* temp_tex = g_gs_device->CreateTexture(tw, new_height, 1, tex->m_texture->GetFormat(), true))
+		if (GSTexture* temp_tex = g_gs_device->CreateTexture(tw, new_height, 1, tex->m_texture->GetFormat(), true, tex->m_texture->GetArrayLayers()))
 		{
 			if (GSTexture* rt = g_gs_device->CreateFeedbackTarget(tw, new_height, GSTexture::Format::Color))
 			{
@@ -12860,7 +12878,7 @@ void GSRendererHW::EndHLEHardwareDraw(bool force_copy_on_hazard /* = false */)
 		{
 			// Have to copy texture. Assume the whole thing is read, in all the cases this is used, it is.
 			GSTexture* src = (config.tex == config.rt) ? config.rt : config.ds;
-			copy = g_gs_device->CreateTexture(src->GetWidth(), src->GetHeight(), 1, src->GetFormat(), true);
+			copy = g_gs_device->CreateTexture(src->GetWidth(), src->GetHeight(), 1, src->GetFormat(), true, src->GetArrayLayers());
 			if (!copy)
 			{
 				Console.Error("HW: Texture allocation failure in EndHLEHardwareDraw()");

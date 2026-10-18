@@ -6299,6 +6299,16 @@ GSTextureCache::Target* GSTextureCache::GetExactTarget(u32 BP, u32 BW, int type,
 	return nullptr;
 }
 
+GSTextureCache::Target* GSTextureCache::FindExactTarget(u32 BP, u32 BW, int type) const
+{
+	for (Target* t : m_dst[type])
+	{
+		if (t->m_TEX0.TBP0 == BP && std::max(t->m_TEX0.TBW, 1U) == BW)
+			return t;
+	}
+	return nullptr;
+}
+
 GSTextureCache::Target* GSTextureCache::GetTargetWithSharedBits(u32 BP, u32 PSM) const
 {
 	auto& rts = m_dst[GSLocalMemory::m_psm[PSM].depth ? DepthStencil : RenderTarget];
@@ -6647,7 +6657,7 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 			const bool outside_target = ((x + w) > dst->m_texture->GetWidth() || (y + h) > dst->m_texture->GetHeight());
 			GSTexture::Usage usage = outside_target ? dst->m_texture->GetUsage() : GSTexture::Texture;
 			GSTexture* sTex = dst->m_texture;
-			GSTexture* dTex = g_gs_device->FetchSurface(usage, w, h, outside_target ? 1 : tlevels, sTex->GetFormat(), true, PreferReusedLabelledTexture());
+			GSTexture* dTex = g_gs_device->FetchSurface(usage, w, h, outside_target ? 1 : tlevels, sTex->GetFormat(), true, PreferReusedLabelledTexture(), sTex->GetArrayLayers());
 			if (!dTex) [[unlikely]]
 			{
 				Console.Error("Failed to allocate %dx%d texture for offset source", w, h);
@@ -6957,7 +6967,7 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 			// 'src' is the new texture cache entry (hence the output)
 			GSTexture::Usage usage = use_texture ? GSTexture::Texture : dst->m_texture->GetUsage();
 			GSTexture* sTex = dst->m_texture;
-			GSTexture* dTex = g_gs_device->FetchSurface(usage, new_size, 1, sTex->GetFormat(), source_rect_empty || destX != 0 || destY != 0, PreferReusedLabelledTexture());
+			GSTexture* dTex = g_gs_device->FetchSurface(usage, new_size, 1, sTex->GetFormat(), source_rect_empty || destX != 0 || destY != 0, PreferReusedLabelledTexture(), sTex->GetArrayLayers());
 			if (!dTex) [[unlikely]]
 			{
 				Console.Error("Failed to allocate %dx%d texture for target copy to source", new_size.x, new_size.y);

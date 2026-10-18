@@ -884,6 +884,20 @@ if(USE_VULKAN)
 			"${CMAKE_CURRENT_SOURCE_DIR}/GS/Renderers/Vulkan/FrameGen")
 	endif()
 
+# Volumetric stereo renderer (GSVolumetric.h): opt-in through ENABLE_VOLUMETRIC. Without it the
+# hooks in the GS are empty inline functions.
+if(ENABLE_VOLUMETRIC)
+	list(APPEND pcsx2GSSources
+		GS/GSVolumetric.cpp
+		GS/Renderers/HW/GSRendererHWVolumetric.cpp
+		GS/Renderers/Vulkan/GSDeviceVKVolumetric.cpp
+	)
+	list(APPEND pcsx2GSHeaders
+		GS/GSVolumetric.h
+		GS/Renderers/HW/GSRendererHWVolumetric.h
+	)
+endif()
+
 	# VKLibretro.cpp needs the libretro Vulkan HW-render interface header.
 	# Link it PRIVATE to PCSX2 (not the shared PCSX2_FLAGS) so the header path
 	# doesn't leak onto every target that consumes PCSX2_FLAGS.
