@@ -39,7 +39,8 @@ private:
 	static bool IsPaletteBlockCopy(const GSRasterizerData& data, bool uv, bool texel32 = false);
 	static bool IsMaskedTexelCopy(const GSRasterizerData& data, bool uv, bool mip);
 	static bool OnUVGrid(const GSRasterizerData& data);
-	static bool CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod = 0, bool divide_q = false, bool minify = false);
+	template <bool minify = false>
+	static bool CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod = 0, bool divide_q = false);
 	static bool DrawPaletteBlocks(GSSwPrimRenderState& sw, const GSRasterizerData& data);
 	static bool DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& sw, GSRasterizerData& data);
 	static bool DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderState& sw, GSRasterizerData& data, bool mip);
@@ -859,7 +860,8 @@ static u32 WrapTexel(s32 c, s16 tmin, s16 tmax, bool repeat, int lod = 0)
 //   notest by checking a bounding box that is already clipped to the scissor, so a clipped sprite
 //   can carry it, and a notest scanline assumes its span starts and ends on the vector grid. What
 //   it writes for an off-grid span is not what this would write.
-bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod, bool divide_q, bool minify)
+template <bool minify>
+bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod, bool divide_q)
 {
 	// One texel of the level a draw samples is 2^lod texels of the coordinate the vertices carry.
 	const float one_texel = 65536.0f * static_cast<float>(1 << lod);
@@ -924,10 +926,13 @@ bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRa
 		const GSVector4 dt = (t1 - t0) / (p1 - p0);
 		int su = 1;
 		int sv = 1;
-		if (minify && dt.x == 2.0f * one_texel)
-			su = 2;
-		if (minify && dt.y == 2.0f * one_texel)
-			sv = 2;
+		if constexpr (minify)
+		{
+			if (dt.x == 2.0f * one_texel)
+				su = 2;
+			if (dt.y == 2.0f * one_texel)
+				sv = 2;
+		}
 		if (dt.x != su * one_texel || dt.y != sv * one_texel)
 			return false;
 
@@ -1059,7 +1064,7 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 	const GSDrawingContext* context = hw.m_context;
 	const bool ltf = gd.sel.ltf;
 
-	if (!CollectSprites(sw, data, 0, false, ltf))
+	if (!(ltf ? CollectSprites<true>(sw, data) : CollectSprites<false>(sw, data)))
 		return false;
 
 	if (sw.palette_blocks.empty())
