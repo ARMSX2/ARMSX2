@@ -39,7 +39,7 @@ private:
 	static bool IsPaletteBlockCopy(const GSRasterizerData& data, bool uv, bool texel32 = false);
 	static bool IsMaskedTexelCopy(const GSRasterizerData& data, bool uv, bool mip);
 	static bool OnUVGrid(const GSRasterizerData& data);
-	static bool CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod = 0, bool divide_q = false);
+	static bool CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod = 0, bool divide_q = false, bool minify = false);
 	static bool DrawPaletteBlocks(GSSwPrimRenderState& sw, const GSRasterizerData& data);
 	static bool DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& sw, GSRasterizerData& data);
 	static bool DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderState& sw, GSRasterizerData& data, bool mip);
@@ -776,7 +776,13 @@ bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, b
 	// PrepareTexture() sets fst for a sprite whatever its coordinates came as (the ST case is held to the
 	// sixteenth grid by `uv`) and the texture pitch, which reads nothing here.
 	if (texel32)
+	{
 		sel.fst = 1;
+
+		// A bilinear lookup is taken only where its weights are all zero (a texel a pixel) or all half (two texels a
+		// pixel, the box filter); DrawTexels32() holds each sprite to one of the two.
+		sel.ltf = 0;
+	}
 
 	// Everything else must be exactly this: a textured sprite with a nearest, non-mipmapped UV
 	// lookup through the palette (or, for texel32, with no palette), decal (the output is the palette entry, with the vertex alpha in
@@ -842,9 +848,10 @@ static u32 WrapTexel(s32 c, s16 tmin, s16 tmax, bool repeat, int lod = 0)
 // Reads the draw's sprites into sw.palette_blocks, refusing (writing nothing) any draw with a sprite that the
 // copies cannot reproduce:
 //
-// - The texture coordinate must step exactly one texel per pixel on both axes. Positions and UVs
-//   arrive as sixteenths, so every product and sum below is exact in float and the coordinate at
-//   pixel k is the seed plus k whole texels, whatever the scanline's vector width.
+// - The texture coordinate must step exactly one texel per pixel on both axes (two, with `minify`, on either
+//   axis: the 32-bit texel copy's box filter). Positions and UVs arrive as sixteenths, so every product and
+//   sum below is exact in float and the coordinate at pixel k is the seed plus k whole steps, whatever the
+//   scanline's vector width.
 // - The sprite's own extent must be a power of two on both axes. Otherwise the rasterizer walks
 //   the coordinate a hair low from the second pixel on (GSSpriteRampBias), which this does
 //   not model.
@@ -852,7 +859,7 @@ static u32 WrapTexel(s32 c, s16 tmin, s16 tmax, bool repeat, int lod = 0)
 //   notest by checking a bounding box that is already clipped to the scissor, so a clipped sprite
 //   can carry it, and a notest scanline assumes its span starts and ends on the vector grid. What
 //   it writes for an off-grid span is not what this would write.
-bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod, bool divide_q)
+bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRasterizerData& data, int lod, bool divide_q, bool minify)
 {
 	// One texel of the level a draw samples is 2^lod texels of the coordinate the vertices carry.
 	const float one_texel = 65536.0f * static_cast<float>(1 << lod);
@@ -915,7 +922,13 @@ bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRa
 		}
 
 		const GSVector4 dt = (t1 - t0) / (p1 - p0);
-		if (dt.x != one_texel || dt.y != one_texel)
+		int su = 1;
+		int sv = 1;
+		if (minify && dt.x == 2.0f * one_texel)
+			su = 2;
+		if (minify && dt.y == 2.0f * one_texel)
+			sv = 2;
+		if (dt.x != su * one_texel || dt.y != sv * one_texel)
 			return false;
 
 		const int w = extent.width();
@@ -933,7 +946,7 @@ bool GSSwPrimRenderFunctions::CollectSprites(GSSwPrimRenderState& sw, const GSRa
 			alpha = static_cast<u32>(std::clamp(static_cast<int>(v1.c.w) >> 7, 0, 255)) << 24;
 
 		const GSVector4 seed = t0 + dt * (GSVector4(r.left, r.top) - p0);
-		sw.palette_blocks.push_back({r, static_cast<s32>(seed.x), static_cast<s32>(seed.y), alpha});
+		sw.palette_blocks.push_back({r, static_cast<s32>(seed.x), static_cast<s32>(seed.y), alpha, su, sv});
 	}
 
 	return true;
@@ -1009,11 +1022,24 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 }
 
 // The 32-bit texel copy: IsPaletteBlockCopy(..., texel32) admits a sprite draw from a 32-bit texture into a 32-bit
-// frame, and this writes each texel one-to-one, the way the scanline would. Stuntman draws 189 of these a frame, and
-// the rasterizer spends its time on setup and a snapshot of the texture for each.
+// frame, and this writes the pixels the scanline would, without the rasterizer. Stuntman draws 189 of these a frame
+// (the 2:1 box filter that builds the half-size copies of its road textures), and the rasterizer spends its time on
+// setup and on a snapshot of the texture for each.
 //
 // Mirrors DrawPaletteBlocks (see CollectSprites for the sprites it accepts), except that the texels come from local
 // memory itself, as DrawMaskedTexels reads them, and not from the snapshot (the draw is judged before it is taken).
+//
+// Three lookups are taken, each per axis:
+//
+// - Nearest, one texel a pixel: the pixel is the texel at the coordinate's integer part.
+// - Bilinear, one texel a pixel, with every weight zero. The scanline reads the texel at the coordinate less half a
+//   texel, and weighs the next one in by the coordinate's four fraction bits. Those are zero when the coordinate's
+//   own fraction is in [1/2, 1/2 + 1/16), where the lookup is the nearest one's: lerp16_4() adds (b - a) * 0 >> 4 to a.
+// - Bilinear, two texels a pixel, with every weight a half. The coordinate's fraction is in [0, 1/16), so less half a
+//   texel it is in [1/2, 1/2 + 1/16): the texel before the coordinate's and the one at it, weighted 8 of 16. lerp16_4()
+//   gives a + ((b - a) * 8 >> 4), which is the average of a and b rounded down, bytewise; the vertical lerp takes the
+//   average of the two rows' results the same way.
+//
 // It refuses, writing nothing, a draw where it could not read what the snapshot would hold:
 //
 // - The snapshot holds the blocks GetTextureMinMax() covers, and reads zero or an earlier draw's bytes from the
@@ -1022,6 +1048,7 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 // - Every texel is read before the first pixel is written, as the snapshot is taken before the draw. A draw that
 //   writes the blocks it reads sees the texture as it was.
 // - A texel whose address is past the end of local memory is the rasterizer's.
+// - A coordinate less than half a texel in, where the scanline truncates a negative coordinate toward zero.
 //
 // The pixel is the texel, with the vertex's alpha in place of the texel's when the texture colour function has no
 // TCC (the same keep and alpha as DrawPaletteBlocks).
@@ -1030,8 +1057,9 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 	GSScanlineGlobalData& gd = data.global;
 	GSVertexTrace& vt = hw.m_vt;
 	const GSDrawingContext* context = hw.m_context;
+	const bool ltf = gd.sel.ltf;
 
-	if (!CollectSprites(sw, data))
+	if (!CollectSprites(sw, data, 0, false, ltf))
 		return false;
 
 	if (sw.palette_blocks.empty())
@@ -1045,6 +1073,43 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 	constexpr size_t max_texels = size_t(1) << 20;
 	if (texels > max_texels)
 		return false;
+
+	// Which taps each axis of each sprite takes, settled before anything is read. `first` is the integer texel the
+	// first pixel's first tap sits at.
+	struct Axis
+	{
+		int first;
+		int taps;
+	};
+
+	const auto axis = [ltf](s32 seed, int step, Axis& out) -> bool {
+		const s32 whole = seed >> 16;
+		const u32 fraction = static_cast<u32>(seed) & 0xffff;
+
+		if (!ltf)
+		{
+			out = {whole, 1};
+			return step == 1 && seed >= 0;
+		}
+
+		if (step == 1)
+		{
+			// Every weight zero.
+			out = {whole, 1};
+			return fraction >= 0x8000 && fraction < 0x9000 && seed >= 0;
+		}
+
+		// Every weight a half; the first tap is the texel before the coordinate's, and must exist.
+		out = {whole - 1, 2};
+		return fraction < 0x1000 && whole >= 1;
+	};
+
+	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
+	{
+		Axis ax, ay;
+		if (!axis(b.u, b.su, ax) || !axis(b.v, b.sv, ay))
+			return false;
+	}
 
 	// The blocks the snapshot would have taken, found as PrepareTexture() finds them.
 	hw.CalculatePrimitiveCoversWithoutGaps(false);
@@ -1066,54 +1131,95 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 	const u32* vm32 = reinterpret_cast<const u32*>(hw.m_mem.m_vm8);
 	constexpr u32 limit = VM_SIZE / 4; // how far a texel's address may reach, in 32-bit pixels
 
+	// The bytewise average of two pixels, rounded down: a + ((b - a) >> 1) in each of the four channels.
+	const auto average = [](u32 a, u32 b) -> u32 {
+		return (a & b) + (((a ^ b) & 0xfefefefeu) >> 1);
+	};
+
 	sw.texel_words.resize(texels);
 	u32* out = sw.texel_words.data();
 
-	u16 columns[max_width];
+	u16 columns[2][max_width];
 
 	for (const GSSwPrimRenderState::PaletteBlock& b : sw.palette_blocks)
 	{
 		const int width = b.rect.width();
 
-		// Almost always the coordinate of pixel k is the first one plus k, with no wrap to apply: it steps a whole
-		// texel a pixel, so the first and last decide. Only plain repeat and clamp reach here (the region modes are
-		// refused), so a repeat's max is 0 and its min a low mask, and a clamp's min is 0: a coordinate in
-		// [0, limit] passes through the wrap unchanged.
-		const int u_first = b.u >> 16;
-		const int u_last = (b.u + (width - 1) * 65536) >> 16;
-		if (u_first >= 0 && u_last <= (urepeat ? umin : umax))
-		{
-			if (u_first < cover.left || u_last >= cover.right)
-				return false;
-			for (int k = 0; k < width; k++)
-				columns[k] = static_cast<u16>(u_first + k);
-		}
-		else
+		Axis ax, ay;
+		axis(b.u, b.su, ax);
+		axis(b.v, b.sv, ay);
+
+		// Each tap's column, wrapped on its own as the scanline wraps the second tap after adding one to the first.
+		// Almost always none of it wraps: the texels run from the first to the last, and only plain repeat and clamp
+		// reach here (the region modes are refused), so a repeat's max is 0 and its min a low mask, and a clamp's min
+		// is 0: a coordinate in [0, limit] passes through the wrap unchanged.
+		const int last = ax.first + (width - 1) * b.su + (ax.taps - 1);
+		const bool plain = ax.first >= 0 && last <= (urepeat ? umin : umax);
+		if (plain && (ax.first < cover.left || last >= cover.right))
+			return false;
+
+		for (int t = 0; t < ax.taps; t++)
 		{
 			for (int k = 0; k < width; k++)
 			{
-				const u32 u = WrapTexel(b.u + k * 65536, umin, umax, urepeat);
-				if (static_cast<int>(u) < cover.left || static_cast<int>(u) >= cover.right)
-					return false;
-				columns[k] = static_cast<u16>(u);
+				const int x = ax.first + k * b.su + t;
+				u32 u = static_cast<u32>(x);
+				if (!plain)
+				{
+					u = WrapTexel(x * 65536, umin, umax, urepeat);
+					if (static_cast<int>(u) < cover.left || static_cast<int>(u) >= cover.right)
+						return false;
+				}
+				columns[t][k] = static_cast<u16>(u);
 			}
 		}
 
 		for (int y = b.rect.top; y < b.rect.bottom; y++)
 		{
-			const u32 v = WrapTexel(b.v + (y - b.rect.top) * 65536, vmin, vmax, vrepeat);
-			if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
-				return false;
+			GSOffset::PAHelper pa[2];
 
-			const GSOffset::PAHelper pa = off.paMulti(0, static_cast<int>(v));
+			for (int t = 0; t < ay.taps; t++)
+			{
+				const int row = ay.first + (y - b.rect.top) * b.sv + t;
+				const u32 v = WrapTexel(row * 65536, vmin, vmax, vrepeat);
+				if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
+					return false;
+
+				pa[t] = off.paMulti(0, static_cast<int>(v));
+			}
+
+			const auto fetch = [&](int row, int tap, int k) -> u32 {
+				return pa[row].value(columns[tap][k]);
+			};
 
 			for (int k = 0; k < width; k++)
 			{
-				const u32 addr = pa.value(columns[k]);
-				if (addr >= limit)
-					return false;
+				u32 texel[2][2];
+				for (int row = 0; row < ay.taps; row++)
+				{
+					for (int tap = 0; tap < ax.taps; tap++)
+					{
+						const u32 addr = fetch(row, tap, k);
+						if (addr >= limit)
+							return false;
 
-				*out++ = vm32[addr];
+						texel[row][tap] = vm32[addr];
+					}
+				}
+
+				u32 top = texel[0][0];
+				if (ax.taps == 2)
+					top = average(top, texel[0][1]);
+
+				if (ay.taps == 2)
+				{
+					u32 bottom = texel[1][0];
+					if (ax.taps == 2)
+						bottom = average(bottom, texel[1][1]);
+					top = average(top, bottom);
+				}
+
+				*out++ = top;
 			}
 		}
 	}

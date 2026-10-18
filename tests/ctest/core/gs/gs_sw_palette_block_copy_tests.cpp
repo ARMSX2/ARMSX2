@@ -84,6 +84,8 @@ namespace
 	{
 		u32 seed;
 		std::vector<Draw> draws;
+		/// When not empty, local memory starts as this cycle of words and not as random bytes.
+		std::vector<u32> fill;
 	};
 
 	struct ArmResult
@@ -264,7 +266,9 @@ namespace
 		// Runs both arms and compares local memory. Returns the draws the copy took.
 		u64 Compare(const Case& c)
 		{
-			const std::vector<u8> vm = RandomMemory(c.seed);
+			std::vector<u8> vm = RandomMemory(c.seed);
+			for (size_t i = 0; !c.fill.empty() && i < vm.size(); i += 4)
+				std::memcpy(&vm[i], &c.fill[(i / 4) % c.fill.size()], 4);
 			const ArmResult ref = RunArm(c, vm, false);
 			const ArmResult got = RunArm(c, vm, true);
 			m_ref_unswizzled = ref.unswizzled;
@@ -672,10 +676,92 @@ namespace
 					d.fba.FBA = 0;
 				}
 
-				const bool mipped = d.tex1.MXL != 0;
+				// A bilinear lookup whose weights come out zero or a half is taken (the box filter), so the linear
+			// filter is no longer a change the copy must refuse for a 32-bit texture.
+			if (d.tex1.MMAG == 1 && d.tex1.MMIN == 1 && d.tex1.MXL == 0)
+				d.must_refuse = false;
+
+			const bool mipped = d.tex1.MXL != 0;
 				shaped.push_back(d.tex0.PSM == PSMCT32 && (d.frame.PSM == PSMCT32 || d.frame.PSM == PSMZ32) && d.frame.FBMSK == 0 && !d.must_refuse && !mipped);
 			}
 
+			return c;
+		}
+		// RandomCase32() with the bilinear lookups the 32-bit texel copy takes: about nine draws in ten are made
+		// linear, each axis steps one or two texels a pixel (sometimes three, which is refused), and the coordinates'
+		// fractions are put in the window the copy takes for the step about five times in six, else left random.
+		// `candidate` says which draws are in the copy's shape: a 32-bit texture, a plain 32-bit frame, a bilinear
+		// lookup with the weights the copy takes.
+		static Case RandomCase32Box(u32 seed, std::vector<bool>& candidate)
+		{
+			std::vector<bool> unused;
+			Case c = RandomCase32(seed, unused);
+			std::mt19937 rng(seed ^ 0x2545f491u);
+			const auto pick = [&rng](int n) { return static_cast<int>(rng() % static_cast<u32>(n)); };
+
+			for (Draw& d : c.draws)
+			{
+				const bool shape = d.tex0.PSM == PSMCT32 && (d.frame.PSM == PSMCT32 || d.frame.PSM == PSMZ32) && d.frame.FBMSK == 0 &&
+								   !d.must_refuse && d.tex1.MXL == 0 && d.prim.FST == 1;
+				bool taken_shape = shape;
+
+				if (pick(10) != 0)
+				{
+					d.tex1.MMAG = 1;
+					d.tex1.MMIN = 1;
+					d.must_refuse = false;
+
+					// A drawing offset on whole pixels most of the time, for the same reason as the sprites below.
+					if (pick(8) != 0)
+					{
+						const int dx = static_cast<int>(d.xyoffset.OFX) & 15;
+						const int dy = static_cast<int>(d.xyoffset.OFY) & 15;
+						d.xyoffset.OFX -= dx;
+						d.xyoffset.OFY -= dy;
+						for (Sprite& sp : d.sprites)
+						{
+							sp.x0 -= dx;
+							sp.x1 -= dx;
+							sp.y0 -= dy;
+							sp.y1 -= dy;
+						}
+					}
+
+					const int sx = pick(10) == 0 ? 3 : 1 + pick(2);
+					const int sy = pick(10) == 0 ? 3 : 1 + pick(2);
+					const auto window = [](int step) { return step == 2 ? 0 : step == 1 ? 8 : -1; };
+
+					for (Sprite& sp : d.sprites)
+					{
+						// Row and column order of the corners is the generator's; scale each extent by the step.
+						const int du = sp.u1 - sp.u0;
+						const int dv = sp.v1 - sp.v0;
+						const int fu = pick(6) ? window(sx) : pick(16);
+						const int fv = pick(6) ? window(sy) : pick(16);
+						if (fu >= 0)
+							sp.u0 = (sp.u0 & ~15) | fu;
+						if (fv >= 0)
+							sp.v0 = (sp.v0 & ~15) | fv;
+						sp.u1 = std::clamp(sp.u0 + du * sx, 0, 0x3FFF);
+						sp.v1 = std::clamp(sp.v0 + dv * sy, 0, 0x3FFF);
+
+						// A sprite on whole pixels most of the time: a fraction in its position moves the coordinate
+						// off the window the copy takes.
+						if (pick(8) != 0)
+						{
+							const int dx = sp.x1 - sp.x0;
+							const int dy = sp.y1 - sp.y0;
+							sp.x0 &= ~15;
+							sp.y0 &= ~15;
+							sp.x1 = sp.x0 + dx;
+							sp.y1 = sp.y0 + dy;
+						}
+					}
+
+					taken_shape = shape && sx <= 2 && sy <= 2;
+				}
+				candidate.push_back(taken_shape);
+			}
 			return c;
 		}
 	};
@@ -1740,7 +1826,11 @@ TEST_F(GSSwPaletteBlockCopy, Refuses32BitBlitsWithAnythingElseOnTheDraw)
 		{"dither", [](Draw& d) { d.dthe.DTHE = 1; }},
 		{"frame alpha bit", [](Draw& d) { d.fba.FBA = 1; }},
 		{"scan mask", [](Draw& d) { d.scanmsk.MSK = 2; }},
-		{"linear filter", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; }},
+		{"linear filter at weights of a half", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; }},
+		{"linear filter, odd weights", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; for (Sprite& sp : d.sprites) { sp.u0 += 8; sp.u1 += 8; sp.v0 += 8; sp.v1 += 8; sp.u0 += 1; sp.u1 += 1; } }},
+		{"linear filter, a quarter step", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; for (Sprite& sp : d.sprites) { sp.u0 += 8; sp.u1 += 8 + 8 * 16; sp.v0 += 8; sp.v1 += 8 + 8 * 16; } }},
+		{"linear filter, three texels a pixel", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; for (Sprite& sp : d.sprites) { sp.u1 = sp.u0 + 3 * (sp.u1 - sp.u0); sp.v1 = sp.v0 + 3 * (sp.v1 - sp.v0); } }},
+		{"two texels a pixel, nearest", [](Draw& d) { for (Sprite& sp : d.sprites) { sp.u1 = sp.u0 + 2 * (sp.u1 - sp.u0); sp.v1 = sp.v0 + 2 * (sp.v1 - sp.v0); } }},
 		{"region clamp u", [](Draw& d) { d.clamp.WMS = CLAMP_REGION_CLAMP; d.clamp.MAXU = 31; }},
 		{"region repeat v", [](Draw& d) { d.clamp.WMT = CLAMP_REGION_REPEAT; d.clamp.MINV = 7; d.clamp.MAXV = 64; }},
 		{"highlight", [](Draw& d) { d.tex0.TFX = 2; }},
@@ -1820,4 +1910,294 @@ TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomDrawsFrom32BitTextures)
 	EXPECT_GE(in_shape, 300u) << "the generator made too few draws in the copy's shape";
 	EXPECT_GE(in_shape_taken * 2, in_shape) << "fewer than half the random draws in the copy's shape were taken";
 	EXPECT_EQ(other_formats_taken, 0u) << "a texture format other than 32-bit was copied as 32-bit texels";
+}
+
+// Stuntman builds the half-size copies of its road textures with a bilinear sprite that steps two texels a
+// pixel from a whole-texel coordinate, so every pixel is the average of a 2x2 square. The weights come out at
+// exactly a half, and the copy takes it. A bilinear sprite that steps one texel a pixel takes the texel itself
+// when the coordinate sits half a texel in, and blends two otherwise.
+static Draw Box32(int sx = 2, int sy = 2, int frac_u = -1, int frac_v = -1)
+{
+	Draw d = Blit32();
+	d.tex1.MMAG = 1;
+	d.tex1.MMIN = 1;
+	d.sprites.clear();
+	// A coordinate on a whole texel for a step of two, half a texel in for a step of one, as the game sends them.
+	const int fu = frac_u >= 0 ? frac_u : sx == 2 ? 0 : 8;
+	const int fv = frac_v >= 0 ? frac_v : sy == 2 ? 0 : 8;
+	d.sprites.push_back({(2048 + 8) * 16, (2048 + 4) * 16, (2048 + 8 + 16) * 16, (2048 + 4 + 16) * 16,
+		16 + fu, 16 + fv, 16 + fu + 16 * 16 * sx, 16 + fv + 16 * 16 * sy});
+	return d;
+}
+
+TEST_F(GSSwPaletteBlockCopy, TakesTheBoxFilterStuntmanUses)
+{
+	Case c;
+	c.seed = 500;
+	c.draws.push_back(Box32());
+	EXPECT_EQ(Compare(c), 1u);
+	EXPECT_GT(m_ref_unswizzled, 0.0);
+	EXPECT_EQ(m_got_unswizzled, 0.0);
+}
+
+// Stuntman's sprites: the destination's corner at the origin, the source's at texel (1, 1), and the sizes it uses.
+TEST_F(GSSwPaletteBlockCopy, TakesEverySizeOfStuntmansBoxFilter)
+{
+	u32 seed = 510;
+	for (const int w : {8, 16, 32, 64, 128})
+	{
+		for (const int h : {8, 16, 32, 64, 128})
+		{
+			Case c;
+			c.seed = seed++;
+			Draw d = Box32();
+			d.tex0.TW = 10;
+			d.tex0.TH = 10;
+			d.tex0.TBW = 16;
+			d.frame.FBW = 2;
+			d.scissor.SCAX1 = 127;
+			d.scissor.SCAY1 = 255;
+			d.sprites.clear();
+			d.sprites.push_back({2048 * 16, 2048 * 16, (2048 + w) * 16, (2048 + h) * 16, 16, 16, 16 + 2 * w * 16, 16 + 2 * h * 16});
+			c.draws.push_back(d);
+			EXPECT_EQ(Compare(c), 1u) << w << "x" << h;
+		}
+	}
+}
+
+// Stuntman's rows of them: a run of consecutive box filters, each from a different place in a large texture.
+TEST_F(GSSwPaletteBlockCopy, TakesARunOfBoxFilters)
+{
+	Case c;
+	c.seed = 520;
+	for (int i = 0; i < 24; i++)
+	{
+		Draw d = Box32();
+		d.tex0.TBP0 = 0x2000 + i * 0x40;
+		d.tex0.TW = 9;
+		d.tex0.TH = 9;
+		d.tex0.TBW = 8;
+		c.draws.push_back(d);
+	}
+	EXPECT_EQ(Compare(c), 24u);
+}
+
+TEST_F(GSSwPaletteBlockCopy, TakesBoxFiltersFromEveryTextureAndFrameWidth)
+{
+	u32 seed = 540;
+	for (int fbw = 1; fbw <= 16; fbw += 3)
+	{
+		for (const int tbw : {1, 3, 8, 16})
+		{
+			Case c;
+			c.seed = seed++;
+			Draw d = Box32();
+			d.frame.FBW = fbw;
+			d.tex0.TBW = tbw;
+			d.scissor.SCAX1 = fbw * 64 - 1;
+			c.draws.push_back(d);
+			EXPECT_EQ(Compare(c), 1u) << "fbw " << fbw << " tbw " << tbw;
+		}
+	}
+}
+
+// Each axis on its own step: both two, one two and one one, both one (the bilinear lookup whose weights are zero).
+TEST_F(GSSwPaletteBlockCopy, TakesEachCombinationOfStepsPerAxis)
+{
+	u32 seed = 570;
+	for (const int sx : {1, 2})
+	{
+		for (const int sy : {1, 2})
+		{
+			Case c;
+			c.seed = seed++;
+			c.draws.push_back(Box32(sx, sy));
+			EXPECT_EQ(Compare(c), 1u) << "steps " << sx << "," << sy;
+		}
+	}
+}
+
+// The coordinate's fraction only matters through its top four bits: the window the copy takes is a sixteenth wide.
+TEST_F(GSSwPaletteBlockCopy, TakesTheBilinearWindowAndNoOtherFraction)
+{
+	u32 seed = 580;
+	for (const int sx : {1, 2})
+	{
+		for (int frac = 0; frac < 16; frac++)
+		{
+			Case c;
+			c.seed = seed++;
+			c.draws.push_back(Box32(sx, sx, frac, frac));
+			const u64 want = frac == (sx == 2 ? 0 : 8) ? 1u : 0u;
+			EXPECT_EQ(Compare(c), want) << "step " << sx << " fraction " << frac << "/16";
+		}
+	}
+}
+
+// The taps wrap and clamp on their own: the second sits past the texture's edge when the first is its last texel.
+TEST_F(GSSwPaletteBlockCopy, WrapsTheSecondTapAtTheTexturesEdge)
+{
+	u32 seed = 620;
+	u64 taken = 0;
+	u64 draws = 0;
+	for (const int wms : {CLAMP_REPEAT, CLAMP_CLAMP})
+	{
+		for (const int wmt : {CLAMP_REPEAT, CLAMP_CLAMP})
+		{
+			for (const int tw : {3, 4, 5, 8})
+			{
+				for (const int sx : {1, 2})
+				{
+					Case c;
+					c.seed = seed++;
+					Draw d = Box32(sx, sx);
+					d.clamp.WMS = wms;
+					d.clamp.WMT = wmt;
+					d.tex0.TW = tw;
+					d.tex0.TH = tw;
+					d.sprites.clear();
+					const int n = 1 << tw;
+					const int f = sx == 2 ? 0 : 8;
+					const auto sprite = [&](int dx, int dy, int w, int h, int u, int v) {
+						d.sprites.push_back({(2048 + dx) * 16, (2048 + dy) * 16, (2048 + dx + w) * 16, (2048 + dy + h) * 16,
+							u * 16 + f, v * 16 + f, (u + w * sx) * 16 + f, (v + h * sx) * 16 + f});
+					};
+					// Runs off the right and bottom edges, starts at the second texel, and starts past the edges.
+					sprite(0, 0, 8, 8, n - 6, n - 6);
+					sprite(8, 8, 8, 8, 1, 1);
+					sprite(16, 0, 8, 8, n + 1, n + 3);
+					sprite(0, 16, 16, 16, 2, 2);
+					c.draws.push_back(d);
+					taken += Compare(c);
+					draws += c.draws.size();
+				}
+			}
+		}
+	}
+	std::printf("32-bit texel copy, texture edges: %" PRIu64 " of %" PRIu64 " draws taken\n", taken, draws);
+	EXPECT_GT(taken, 0u) << "no draw reached the copy, so no wrap was compared";
+}
+
+// A coordinate under a texel, where the scanline truncates toward zero and the box filter's first tap is texel -1:
+// left to the rasterizer.
+TEST_F(GSSwPaletteBlockCopy, RefusesABoxFilterThatStartsBeforeTheTexture)
+{
+	Case c;
+	c.seed = 650;
+	Draw d = Box32();
+	d.sprites[0].u0 = 8;
+	d.sprites[0].u1 = 8 + 16 * 32;
+	c.draws.push_back(d);
+	d.sprites[0].u0 = 0;
+	d.sprites[0].u1 = 16 * 32;
+	d.sprites[0].v0 = 4;
+	d.sprites[0].v1 = 4 + 16 * 32;
+	c.draws.push_back(d);
+	EXPECT_EQ(Compare(c), 0u);
+}
+
+// The box filter over the draw's own texture: every texel is read before the first pixel is written.
+TEST_F(GSSwPaletteBlockCopy, ReadsItsOwnTextureAsItWasBeforeTheBoxFilter)
+{
+	u32 seed = 660;
+	for (const int shift : {0, 1, 2, 3, 8, 16, 33})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Box32();
+		d.tex0.TBP0 = d.frame.FBP * 32 + shift;
+		d.tex0.TBW = d.frame.FBW;
+		d.tex0.TW = 7;
+		d.tex0.TH = 7;
+		d.sprites.clear();
+		d.sprites.push_back({2048 * 16, 2048 * 16, (2048 + 32) * 16, (2048 + 32) * 16, 16, 16, 16 + 64 * 16, 16 + 64 * 16});
+		d.sprites.push_back({(2048 + 8) * 16, (2048 + 8) * 16, (2048 + 24) * 16, (2048 + 24) * 16, 16, 16, 16 + 32 * 16, 16 + 32 * 16});
+		c.draws.push_back(d);
+		Compare(c);
+		EXPECT_EQ(m_got_copies[0], 1u) << "shift " << shift;
+	}
+}
+
+// With and without TCC, and every alpha: the average is taken on the texel's alpha like any channel, or the
+// vertex's alpha stands in for it.
+TEST_F(GSSwPaletteBlockCopy, AveragesAlphaLikeAnyChannelAndTakesTheVertexsWithoutTCC)
+{
+	u32 seed = 670;
+	for (const bool tcc : {true, false})
+	{
+		for (const int alpha : {0x00, 0x44, 0x80, 0xff})
+		{
+			Case c;
+			c.seed = seed++;
+			Draw d = Box32();
+			d.tex0.TCC = tcc;
+			d.rgbaq.A = alpha;
+			c.draws.push_back(d);
+			EXPECT_EQ(Compare(c), 1u) << "tcc " << tcc << " alpha " << alpha;
+		}
+	}
+}
+
+// Texture bytes at the extremes, where an average that rounded up, or carried between channels, would show: local
+// memory is filled with a short cycle of two such words, so every 2x2 square mixes them.
+TEST_F(GSSwPaletteBlockCopy, AveragesBytewiseWithoutCarryOrRoundUp)
+{
+	const u32 patterns[] = {0x00000000u, 0xffffffffu, 0x00ff00ffu, 0xff00ff00u, 0x01010101u, 0xfefefefeu, 0x80808080u, 0x7f7f7f7fu, 0x01ff02fdu};
+	u32 seed = 700;
+	for (const u32 a : patterns)
+	{
+		for (const u32 b : patterns)
+		{
+			Case c;
+			c.seed = seed++;
+			c.fill = {a, b, b, a, a, a, b, a};
+			Draw d = Box32();
+			d.sprites.clear();
+			d.sprites.push_back({2048 * 16, 2048 * 16, (2048 + 8) * 16, (2048 + 8) * 16, 16, 16, 16 + 16 * 16, 16 + 16 * 16});
+			c.draws.push_back(d);
+			EXPECT_EQ(Compare(c), 1u) << std::hex << a << " " << b;
+		}
+	}
+}
+
+// Random cases with bilinear lookups, byte-compared like the others. Most draws in the copy's shape are taken: a
+// refusal that is not forced by the shape is a sprite the copy cannot reproduce (an extent that is not a power of
+// two, a texel outside the blocks the snapshot would hold, a scissor edge off the vector grid).
+TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomBilinearDraws)
+{
+	constexpr u32 cases = 1500;
+	u64 candidates = 0;
+	u64 candidates_taken = 0;
+	u64 box_taken = 0;
+	u64 elsewhere_taken = 0;
+
+	for (u32 seed = 9000; seed < 9000 + cases; seed++)
+	{
+		std::vector<bool> candidate;
+		const Case c = RandomCase32Box(seed, candidate);
+		Compare(c);
+		for (size_t i = 0; i < c.draws.size() && i < m_got_copies.size(); i++)
+		{
+			const Draw& d = c.draws[i];
+			if (candidate[i])
+			{
+				candidates++;
+				candidates_taken += m_got_copies[i];
+				if (d.tex1.MMAG == 1)
+					box_taken += m_got_copies[i];
+			}
+			else
+			{
+				elsewhere_taken += m_got_copies[i];
+			}
+		}
+		if (HasFailure())
+			break;
+	}
+
+	std::printf("32-bit texel copy, bilinear: %" PRIu64 " of %" PRIu64 " random draws in the copy's shape taken, %" PRIu64 " of them bilinear, %" PRIu64 " others taken\n",
+		candidates_taken, candidates, box_taken, elsewhere_taken);
+	EXPECT_GE(candidates, 600u);
+	EXPECT_GE(candidates_taken * 4, candidates);
+	EXPECT_GE(box_taken, 150u) << "too few bilinear draws reached the copy";
 }
