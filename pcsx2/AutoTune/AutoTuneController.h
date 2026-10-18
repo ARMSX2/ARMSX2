@@ -208,7 +208,7 @@ enum class AutoTuneDisturbance : uint8_t
 {
 	SceneChange, // boot, state load, reset, a new game: the whole warm-up again
 	SettingsChange, // somebody else changed a setting: the numbers around it mean nothing
-	Resumed, // back from a pause: the first windows are partial
+	Resumed, // back from a pause: the bad-window streak is cut; a trial in flight carries on
 };
 
 class AutoTuneController

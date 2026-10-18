@@ -110,8 +110,10 @@ void AutoTuneApplier::Execute(const AutoTuneAction& action)
 		{
 			const bool vu1 = action.bottleneck == AutoTuneBottleneck::Vu1;
 			m_env.Log(fmt::format("{} is the bottleneck; none of the settings auto-tune changes can help", AutoTuneBottleneckName(action.bottleneck)));
-			m_env.ShowMessage(vu1 ? std::string(TRANSLATE_SV("AutoTune", "Auto-tune: VU1 is the bottleneck. None of the settings it can change would help."))
-			                      : std::string(TRANSLATE_SV("AutoTune", "Auto-tune: the IOP thread is the bottleneck. None of the settings it can change would help.")));
+			if (vu1)
+				m_env.ShowMessage(std::string(TRANSLATE_SV("AutoTune", "Auto-tune: VU1 is the bottleneck. None of the settings it can change would help.")));
+			else
+				m_env.ShowMessage(std::string(TRANSLATE_SV("AutoTune", "Auto-tune: the IOP thread is the bottleneck. None of the settings it can change would help.")));
 			break;
 		}
 
