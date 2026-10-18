@@ -224,6 +224,14 @@ void AutoTuneApplier::Revert(const AutoTuneAction& action)
 			action.gain * 100.0, CostText(action)));
 		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} did not help, undone"), label));
 	}
+	else if (action.retry)
+	{
+		// The game changed while the lever was tried, so the loss is not the lever's to answer for. Undone and not
+		// written down; the controller measures the step again from a fresh baseline.
+		m_env.Log(fmt::format("{} was undone because the game changed while it was tried (speed {:.1f}% -> {:.1f}%, {:+.1f}%){}; not remembered, will be measured again",
+			label, action.speed_before, action.speed_after, action.gain * 100.0, CostText(action)));
+		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: the game changed while {} was tried, undone; measuring again"), label));
+	}
 	else if (action.inconclusive)
 	{
 		// Within the noise even after a longer look: undone, and not written to the game's file, because a result
@@ -436,7 +444,7 @@ namespace
 			case Kind::Keep:
 				return "keep";
 			case Kind::Revert:
-				return a.measured ? "revert" : (a.inconclusive ? "inconclusive" : "cancel");
+				return a.measured ? "revert" : (a.retry ? "retry" : (a.inconclusive ? "inconclusive" : "cancel"));
 			case Kind::ReportBottleneck:
 				return "report";
 			case Kind::Unclassified:

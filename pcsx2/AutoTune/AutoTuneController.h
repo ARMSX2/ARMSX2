@@ -16,10 +16,13 @@
 //   baseline  takes baseline_extra_windows more windows right before the trial, so the "before" is
 //             measured now and over enough windows to tell a steady figure from a hitch.
 //   trial     applies the next countermeasure for that bottleneck (StartTrial), waits out the settle time,
-//             measures measure_windows windows, and gives one of three verdicts: keep it (Keep), undo it
+//             measures measure_windows windows, and gives one of these verdicts: keep it (Keep), undo it
 //             and remember that it did not help (Revert, measured), or undo it and remember nothing
 //             (Revert, inconclusive) when the difference is within the noise. An inconclusive measurement
-//             is first extended by a few windows. The EE governor's trial settles and measures for longer,
+//             is first extended by a few windows. A speed that clearly fell is a measured rejection at the
+//             first look. A rejection that the game changing also explains (see scene_shift_fraction) is
+//             neither: it is undone, nothing is written down, and the step comes round again with a fresh
+//             baseline (Revert, retry). The EE governor's trial settles and measures for longer,
 //             in step with the governor's own clocks (policy.governor_*).
 //   repeat    until the frames stop being late, or no countermeasure is left (Exhausted).
 //
@@ -172,6 +175,19 @@ struct AutoTunePolicy
 	/// Windows with a figure for the targeted cost needed on both sides before the cost is used to judge.
 	uint32_t min_cost_windows = 3;
 
+	/// A trial is only judged against its baseline if the game stayed the same between them. Two things say it
+	/// did not. The first and the second half of the trial's windows differ in speed by more than the noise
+	/// (judged from this many windows on: halves of two windows are no evidence of anything, and a trial gets
+	/// that many only after being looked at for longer; the EE governor is exempt, it steps down and back up by
+	/// design). Or the cost of a resource the lever does not act on moved by more than scene_shift_fraction of
+	/// its baseline: the EE time per frame for resolution and blending; the GS and GPU time for the IOP thread and
+	/// the governor; the GPU time for the GS back thread and the download mode (which act on the GS threads and
+	/// on how long the EE waits for them, so the EE time moves with them). A rejection that is also explained by
+	/// that is not written down: the trial is undone and measured again from a fresh baseline, at most
+	/// max_extensions times for one step.
+	uint32_t scene_halves_min_windows = 8;
+	double scene_shift_fraction = 0.10;
+
 	/// Below this speed the game is so far from full speed that one notch of resolution cannot close the gap
 	/// (a notch removes at most (r / (r - 1))^2 of the pixels: 1.3x at 8x, 1.7x at 4x), so the levers whose
 	/// effect is not bounded that way are tried before resolution: blending accuracy and the download mode.
@@ -298,6 +314,9 @@ struct AutoTuneAction
 	bool measured = false;
 	/// Revert only: the measurement stayed within the noise even after being extended.
 	bool inconclusive = false;
+	/// Revert only: the game changed while the lever was tried (a rejection that is also explained by the scene).
+	/// The step is not written off and not held back for the session; it comes round again with a fresh baseline.
+	bool retry = false;
 };
 
 enum class AutoTuneDisturbance : uint8_t
@@ -382,9 +401,17 @@ private:
 		AutoTuneStat speed_before;
 		AutoTuneStat cost_before;
 		double late_before = 0.0;
+		// The costs of the resources the lever does not act on, summarised the same way: the baseline for the
+		// check that the scene stayed the same (see AutoTunePolicy::scene_shift_fraction).
+		AutoTuneStat ee_before;
+		AutoTuneStat gs_before;
+		AutoTuneStat gpu_before;
 		// What the trial measured so far.
 		std::vector<double> speeds;
 		std::vector<double> costs;
+		std::vector<double> ee_ms;
+		std::vector<double> gs_ms;
+		std::vector<double> gpu_ms;
 		double late_sum = 0.0;
 		uint32_t collected = 0;
 		uint32_t windows = 0; // how many to collect before judging
@@ -416,6 +443,11 @@ private:
 	std::optional<double> CostOf(AutoTuneBottleneck bottleneck, const AutoTuneWindow& w) const;
 	AutoTuneAction StartPendingTrial(const AutoTuneLeverState& state);
 	AutoTuneAction FinishTrial();
+	/// Whether the game itself changed between the trial's baseline and its windows, which makes a loss look like
+	/// the lever's doing. `noise` is the speed judgement's, relative to the baseline.
+	bool SceneChangedDuringTrial(double noise) const;
+	/// How many times this step has been undone for a changed scene and measured again this session.
+	uint32_t& RetriesFor(AutoTuneLever lever, double value);
 	void EnterSettle(Phase phase, double seconds);
 
 	AutoTunePolicy m_policy;
@@ -426,6 +458,13 @@ private:
 	Trial m_trial;
 	Pending m_pending;
 	std::vector<AutoTuneRejection> m_rejected; // this session
+	struct Retries
+	{
+		AutoTuneLever lever;
+		double value;
+		uint32_t count;
+	};
+	std::vector<Retries> m_retries; // this session
 	bool m_exhausted[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
 	bool m_reported[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
 	double m_unclassified_cooldown = 0.0;

@@ -257,6 +257,28 @@ TEST(AutoTuneApplier, AnInconclusiveTrialIsUndoneSaidSoAndNeverWrittenToTheFile)
 	EXPECT_NE(f.env.logs.back().find("not remembered"), std::string::npos) << f.env.logs.back();
 }
 
+TEST(AutoTuneApplier, ATrialUndoneBecauseTheGameChangedIsNeitherRememberedNorHeldBack)
+{
+	Fixture f;
+	f.env.game_file.SetFloatValue(GS, "upscale_multiplier", 5.0f);
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::Resolution, 4.0));
+
+	AutoTuneAction undo = Action(Kind::Revert, AutoTuneLever::Resolution, 4.0);
+	undo.measured = false;
+	undo.inconclusive = true;
+	undo.retry = true;
+	undo.gain = -0.11;
+	f.applier.Execute(undo);
+
+	EXPECT_FALSE(f.applier.TrialActive());
+	EXPECT_EQ(Num(f.env.Effective(GS, "upscale_multiplier"), -1.0), 5.0);
+	EXPECT_TRUE(AutoTune::ReadRejected(f.env.game_file).empty());
+	EXPECT_TRUE(f.applier.Rejections().empty()) << "the same step comes round again";
+	EXPECT_EQ(f.env.messages.back(), "Auto-tune: the game changed while resolution 4x was tried, undone; measuring again");
+	EXPECT_NE(f.env.logs.back().find("the game changed"), std::string::npos) << f.env.logs.back();
+	EXPECT_NE(f.env.logs.back().find("not remembered"), std::string::npos) << f.env.logs.back();
+}
+
 TEST(AutoTuneApplier, TheLogSaysWhatTheTargetedCostDid)
 {
 	Fixture f;

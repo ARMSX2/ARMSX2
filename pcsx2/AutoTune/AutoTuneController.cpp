@@ -150,6 +150,7 @@ void AutoTuneController::Reset()
 	m_streak_windows.clear();
 	m_trial = Trial();
 	m_rejected.clear();
+	m_retries.clear();
 	std::fill(std::begin(m_exhausted), std::end(m_exhausted), false);
 	std::fill(std::begin(m_reported), std::end(m_reported), false);
 	m_unclassified_cooldown = 0.0;
@@ -481,7 +482,7 @@ AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& s
 		return none;
 	}
 
-	std::vector<double> speeds, costs;
+	std::vector<double> speeds, costs, ee_ms, gs_ms, gpu_ms;
 	double late = 0.0;
 	for (const AutoTuneWindow& w : m_pending.baseline)
 	{
@@ -489,6 +490,12 @@ AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& s
 		late += w.late_frame_ratio;
 		if (const std::optional<double> cost = CostOf(m_pending.bottleneck, w))
 			costs.push_back(*cost);
+		if (w.ee_ms > 0.0)
+			ee_ms.push_back(w.ee_ms);
+		if (const double gs = std::max(w.mtgs_ms, w.gs_back_ms); gs > 0.0)
+			gs_ms.push_back(gs);
+		if (w.has_gpu_timer && w.gpu_ms > 0.0)
+			gpu_ms.push_back(w.gpu_ms);
 	}
 
 	m_trial = Trial();
@@ -497,6 +504,9 @@ AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& s
 	m_trial.bottleneck = m_pending.bottleneck;
 	m_trial.speed_before = AutoTuneSummarize(speeds);
 	m_trial.cost_before = AutoTuneSummarize(costs);
+	m_trial.ee_before = AutoTuneSummarize(ee_ms);
+	m_trial.gs_before = AutoTuneSummarize(gs_ms);
+	m_trial.gpu_before = AutoTuneSummarize(gpu_ms);
 	m_trial.late_before = Mean(late, m_pending.baseline.size());
 	m_trial.windows = MeasureWindowsFor(m_pending.lever);
 	EnterSettle(Phase::SettlingTrial, TrialSettleSeconds(m_pending.lever, m_trial.speed_before.centre));
@@ -510,6 +520,58 @@ AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& s
 	action.cost_before = m_trial.cost_before.n >= m_policy.min_cost_windows ? m_trial.cost_before.centre : 0.0;
 	m_pending = Pending();
 	return action;
+}
+
+uint32_t& AutoTuneController::RetriesFor(AutoTuneLever lever, double value)
+{
+	for (Retries& r : m_retries)
+	{
+		if (r.lever == lever && std::fabs(r.value - value) < kValueEpsilon)
+			return r.count;
+	}
+	m_retries.push_back({lever, value, 0});
+	return m_retries.back().count;
+}
+
+bool AutoTuneController::SceneChangedDuringTrial(double noise) const
+{
+	// The two halves of the measurement tell different stories. A trial's windows are one state of the game,
+	// the lever's; when the first half and the second half differ by more than the noise, something moved
+	// while they were taken. Two lumps of windows also make the spread-based noise estimate too small, which
+	// is how a loss inside the lumps looked certain. The governor ramps down and back by design.
+	const size_t n = m_trial.speeds.size();
+	if (n >= m_policy.scene_halves_min_windows && n >= 4 && m_trial.lever != AutoTuneLever::EeGovernor)
+	{
+		const size_t half = n / 2;
+		const std::vector<double> first(m_trial.speeds.begin(), m_trial.speeds.begin() + static_cast<std::ptrdiff_t>(half));
+		const std::vector<double> second(m_trial.speeds.end() - static_cast<std::ptrdiff_t>(half), m_trial.speeds.end());
+		const double base = std::max(std::fabs(m_trial.speed_before.centre), 1e-6);
+		if (std::fabs(AutoTuneSummarize(first).centre - AutoTuneSummarize(second).centre) / base > noise)
+			return true;
+	}
+
+	// A resource the lever does not act on cost something else per frame in the trial than before it: the game
+	// is doing something else now.
+	const auto moved = [&](const AutoTuneStat& before, const std::vector<double>& windows) {
+		if (before.n < m_policy.min_cost_windows || windows.size() < m_policy.min_cost_windows || !(before.centre > 0.0))
+			return false;
+		const double now = AutoTuneSummarize(windows).centre;
+		return std::fabs(now - before.centre) / before.centre > m_policy.scene_shift_fraction;
+	};
+	switch (m_trial.lever)
+	{
+		case AutoTuneLever::IopThread:
+		case AutoTuneLever::EeGovernor:
+			return moved(m_trial.gs_before, m_trial.gs_ms) || moved(m_trial.gpu_before, m_trial.gpu_ms);
+		case AutoTuneLever::Resolution:
+		case AutoTuneLever::Blending:
+			return moved(m_trial.ee_before, m_trial.ee_ms);
+		case AutoTuneLever::GsBackThread:
+		case AutoTuneLever::DownloadMode:
+			return moved(m_trial.gpu_before, m_trial.gpu_ms);
+		default:
+			return false;
+	}
 }
 
 AutoTuneAction AutoTuneController::FinishTrial()
@@ -570,6 +632,27 @@ AutoTuneAction AutoTuneController::FinishTrial()
 		return action;
 	}
 
+	// A rejection is only as good as the baseline it is measured against. If the game changed while the trial
+	// ran, the loss may be the scene's: undo the trial without writing it down, and measure the step again from
+	// a fresh baseline. Allowed a couple of times for one step; a scene that keeps moving gets the
+	// inconclusive answer below.
+	const bool scene_changed = reject && SceneChangedDuringTrial(speed.noise);
+	if (scene_changed)
+	{
+		uint32_t& retries = RetriesFor(m_trial.lever, m_trial.value);
+		if (retries < m_policy.max_extensions)
+		{
+			retries++;
+			action.kind = AutoTuneAction::Kind::Revert;
+			action.measured = false;
+			action.inconclusive = true;
+			action.retry = true;
+			EnterSettle(Phase::SettlingAfter, SettleSecondsFor(m_trial.lever));
+			m_trial = Trial();
+			return action;
+		}
+	}
+
 	if (!reject)
 	{
 		// Neither a clear gain nor clearly nothing. Look a little longer before giving up.
@@ -579,9 +662,12 @@ AutoTuneAction AutoTuneController::FinishTrial()
 			m_trial.windows += m_policy.extend_windows;
 			return AutoTuneAction();
 		}
+	}
 
-		// Still within the noise: undo it and move on, without writing "did not help" for good. This session
-		// does not offer the same step again.
+	if (!reject || scene_changed)
+	{
+		// Still within the noise, or too unsure about the scene: undo it and move on, without writing "did not
+		// help" for good. This session does not offer the same step again.
 		action.kind = AutoTuneAction::Kind::Revert;
 		action.measured = false;
 		action.inconclusive = true;
@@ -673,6 +759,12 @@ AutoTuneAction AutoTuneController::OnWindow(const AutoTuneWindow& w, const AutoT
 			m_trial.speeds.push_back(w.speed_pct);
 			if (const std::optional<double> cost = CostOf(m_trial.bottleneck, w))
 				m_trial.costs.push_back(*cost);
+			if (w.ee_ms > 0.0)
+				m_trial.ee_ms.push_back(w.ee_ms);
+			if (const double gs = std::max(w.mtgs_ms, w.gs_back_ms); gs > 0.0)
+				m_trial.gs_ms.push_back(gs);
+			if (w.has_gpu_timer && w.gpu_ms > 0.0)
+				m_trial.gpu_ms.push_back(w.gpu_ms);
 			m_trial.late_sum += w.late_frame_ratio;
 			m_trial.collected++;
 			if (m_trial.collected < m_trial.windows)

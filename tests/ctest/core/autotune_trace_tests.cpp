@@ -229,6 +229,62 @@ namespace
 		{0.522, 51.1, 0.938, 72.2, 37.0, 55.3, 30.2, 58.0, 52.7, 1, 0.274, 23.57, 12.09, 18.07, 34.39},
 		{0.506, 52.7, 1.000, 69.0, 38.2, 57.4, 30.9, 59.9, 54.3, 1, 0.299, 21.82, 12.09, 18.14, 34.34},
 	};
+
+	// ---------------------------------------------------------------------------------------- RG477V trace
+
+	// RG477V Shadow of the Colossus at 5x, resolution 5x -> 4x, then the 5x windows after the undo
+	const TraceWindow kSotcResolution4[] = {
+		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
+		{0.535, 87.4, 0.750, 48.0, 27.8, 0.0, 28.1, 0.0, 0.0, 0, 0.511, 9.16, 5.32, 0.00, 0.00},
+		{0.501, 86.5, 0.731, 47.9, 26.8, 0.0, 28.4, 0.0, 0.0, 0, 0.514, 9.24, 5.17, 0.00, 0.00},
+		{0.502, 86.4, 0.769, 46.8, 26.6, 0.0, 27.2, 0.0, 0.0, 0, 0.523, 9.04, 5.13, 0.00, 0.00},
+		{0.516, 84.1, 0.808, 46.5, 32.4, 0.0, 27.0, 0.0, 0.0, 0, 0.527, 9.22, 6.44, 0.00, 0.00},
+		{0.522, 89.6, 0.643, 50.1, 28.7, 0.0, 28.8, 0.0, 0.0, 0, 0.494, 9.33, 5.35, 0.00, 0.00},
+		{0.521, 89.6, 0.679, 49.2, 29.1, 0.0, 29.4, 0.0, 0.0, 0, 0.499, 9.15, 5.42, 0.00, 0.00},
+		{0.505, 85.9, 0.769, 44.8, 27.2, 0.0, 26.3, 0.0, 0.0, 0, 0.545, 8.70, 5.28, 0.00, 0.00},
+		{0.519, 83.6, 0.808, 43.0, 25.3, 0.0, 24.4, 0.0, 0.0, 0, 0.551, 8.59, 5.04, 0.00, 0.00},  // trial starts
+		{0.510, 94.8, 0.148, 54.9, 37.2, 0.0, 30.0, 0.0, 0.0, 0, 0.223, 9.66, 6.54, 0.00, 0.00},
+		{0.500, 100.1, 0.000, 64.7, 40.1, 0.0, 31.9, 0.0, 0.0, 0, 0.000, 10.79, 6.69, 0.00, 0.00},
+		{0.501, 100.0, 0.000, 65.0, 40.5, 0.0, 32.6, 0.0, 0.0, 0, 0.000, 10.84, 6.76, 0.00, 0.00},
+		{0.500, 100.0, 0.000, 64.3, 37.3, 0.0, 31.5, 0.0, 0.0, 0, 0.000, 10.73, 6.22, 0.00, 0.00},
+		{0.501, 100.0, 0.000, 62.6, 36.6, 0.0, 29.1, 0.0, 0.0, 0, 0.000, 10.45, 6.11, 0.00, 0.00},
+		{0.500, 100.0, 0.000, 64.0, 39.6, 0.0, 32.4, 0.0, 0.0, 0, 0.000, 10.68, 6.61, 0.00, 0.00},
+		{0.512, 74.9, 0.400, 60.4, 40.4, 0.0, 39.4, 0.0, 0.0, 0, 0.258, 13.44, 9.00, 0.00, 0.00},
+		{0.506, 75.8, 0.870, 60.1, 44.2, 0.0, 41.6, 0.0, 0.0, 0, 0.376, 13.24, 9.72, 0.00, 0.00},
+		{0.500, 93.3, 0.385, 58.8, 42.1, 0.0, 35.5, 0.0, 0.0, 0, 0.239, 10.50, 7.52, 0.00, 0.00},
+		{0.501, 99.9, 0.000, 63.5, 40.6, 0.0, 32.6, 0.0, 0.0, 0, 0.000, 10.60, 6.77, 0.00, 0.00},
+		{0.500, 100.0, 0.000, 64.5, 38.8, 0.0, 34.2, 0.0, 0.0, 0, 0.010, 10.77, 6.47, 0.00, 0.00},
+		{0.503, 72.9, 0.625, 60.9, 40.5, 0.0, 42.9, 0.0, 0.0, 0, 0.326, 13.92, 9.26, 0.00, 0.00},
+		{0.520, 77.0, 0.958, 54.4, 43.7, 0.0, 41.4, 0.0, 0.0, 0, 0.451, 11.79, 9.47, 0.00, 0.00},
+		{0.521, 76.9, 1.000, 46.3, 40.6, 0.0, 38.3, 0.0, 0.0, 0, 0.533, 10.04, 8.80, 0.00, 0.00},  // traced: revert
+		{0.515, 55.0, 0.765, 35.9, 32.3, 0.0, 27.0, 0.0, 0.0, 0, 0.516, 10.89, 9.80, 0.00, 0.00},
+		{0.512, 52.2, 1.000, 32.3, 27.8, 0.0, 24.8, 0.0, 0.0, 0, 0.675, 10.34, 8.88, 0.00, 0.00},
+		{0.515, 51.9, 1.000, 31.5, 28.3, 0.0, 24.4, 0.0, 0.0, 0, 0.681, 10.14, 9.10, 0.00, 0.00},
+		{0.514, 51.9, 1.000, 32.7, 27.8, 0.0, 24.9, 0.0, 0.0, 0, 0.670, 10.51, 8.94, 0.00, 0.00},
+		{0.512, 52.1, 1.000, 31.8, 27.1, 0.0, 24.4, 0.0, 0.0, 0, 0.679, 10.19, 8.69, 0.00, 0.00},
+		{0.507, 52.7, 1.000, 33.0, 28.1, 0.0, 25.4, 0.0, 0.0, 0, 0.667, 10.43, 8.90, 0.00, 0.00},
+		{0.513, 52.0, 1.000, 32.0, 27.9, 0.0, 24.8, 0.0, 0.0, 0, 0.677, 10.27, 8.95, 0.00, 0.00},
+		{0.515, 51.8, 1.000, 32.3, 27.3, 0.0, 25.1, 0.0, 0.0, 0, 0.671, 10.41, 8.79, 0.00, 0.00},
+		{0.508, 52.5, 1.000, 33.2, 28.2, 0.0, 25.4, 0.0, 0.0, 0, 0.665, 10.54, 8.97, 0.00, 0.00},
+		{0.510, 52.3, 1.000, 32.4, 27.6, 0.0, 25.2, 0.0, 0.0, 0, 0.672, 10.33, 8.80, 0.00, 0.00},
+		{0.515, 51.9, 1.000, 32.3, 27.3, 0.0, 25.0, 0.0, 0.0, 0, 0.670, 10.38, 8.79, 0.00, 0.00},
+		{0.518, 51.5, 1.000, 31.7, 27.0, 0.0, 24.4, 0.0, 0.0, 0, 0.683, 10.27, 8.74, 0.00, 0.00},
+		{0.511, 52.3, 1.000, 32.3, 27.4, 0.0, 24.8, 0.0, 0.0, 0, 0.673, 10.30, 8.75, 0.00, 0.00},
+		{0.507, 52.6, 1.000, 33.3, 28.4, 0.0, 26.3, 0.0, 0.0, 0, 0.664, 10.55, 9.01, 0.00, 0.00},  // traced: start
+		{0.518, 12.9, 0.750, 7.9, 29.3, 7.1, 6.0, 0.0, 0.0, 0, 0.920, 10.26, 37.97, 9.24, 0.00},
+		{0.516, 55.0, 1.000, 31.8, 17.1, 26.0, 24.6, 0.0, 0.0, 0, 0.675, 9.65, 5.19, 7.88, 0.00},
+		{0.510, 55.6, 1.000, 32.2, 17.0, 26.2, 24.6, 0.0, 0.0, 0, 0.674, 9.67, 5.10, 7.88, 0.00},
+	};
+
+	// The windows of the same trial that fall in the heavier part of the scene (EE 13.2 ... 13.9 ms where the rest
+	// has 10.5 ... 10.8): the speed 4x gives once the game has got heavier, as far as the trace saw it.
+	const TraceWindow kSotcHeavyAt4x[] = {
+		{0.512, 74.9, 0.400, 60.4, 40.4, 0.0, 39.4, 0.0, 0.0, 0, 0.258, 13.44, 9.00, 0.00, 0.00},
+		{0.506, 75.8, 0.870, 60.1, 44.2, 0.0, 41.6, 0.0, 0.0, 0, 0.376, 13.24, 9.72, 0.00, 0.00},
+		{0.503, 72.9, 0.625, 60.9, 40.5, 0.0, 42.9, 0.0, 0.0, 0, 0.326, 13.92, 9.26, 0.00, 0.00},
+		{0.520, 77.0, 0.958, 54.4, 43.7, 0.0, 41.4, 0.0, 0.0, 0, 0.451, 11.79, 9.47, 0.00, 0.00},
+		{0.521, 76.9, 1.000, 46.3, 40.6, 0.0, 38.3, 0.0, 0.0, 0, 0.533, 10.04, 8.80, 0.00, 0.00},
+	};
 } // namespace
 
 // ---------------------------------------------------------------------------------------------- keep on cost
@@ -314,4 +370,59 @@ TEST(AutoTuneTrace, ABackThreadThatCostAQuarterOfTheSpeedIsRememberedAsRejectedA
 
 	// Cut short at the first look: the 10 windows of the settle and the four windows measured, no extension.
 	EXPECT_EQ(rig.At(revert) - rig.At(start), 10u + 4u);
+}
+
+// ---------------------------------------------------------------------------------------------- scene drift
+
+TEST(AutoTuneTrace, TheGameGettingHeavierDuringATrialIsNotARememberedRejection)
+{
+	// Shadow of the Colossus on the RG477V at 5x, 86% speed. Resolution 5x -> 4x ran at 100% for the settle
+	// and the first windows, and then the game got heavier: EE time per frame went from 10.5 to 13.5 ms, and the
+	// speed to 73 ... 77%. Against the baseline of 86% that reads as -11%, with the windows in two tight lumps
+	// (the median-based noise 5.4%), so the old judge called it clearly nothing and wrote "resolution 4x did
+	// not help" into the game's file for good. The next baseline, in the heavy scene, was 52%: 4x was 25 points
+	// better.
+	TraceRig rig;
+	rig.state.resolution = 5.0;
+	rig.WarmUp();
+	rig.Feed(kSotcResolution4);
+
+	const AutoTuneAction* start = rig.First(Kind::StartTrial);
+	ASSERT_NE(start, nullptr);
+	EXPECT_EQ(start->lever, AutoTuneLever::Resolution);
+	EXPECT_EQ(start->value, 4.0);
+	EXPECT_EQ(start->bottleneck, AutoTuneBottleneck::Gpu) << "no GPU timer: the EE blocked on the GS";
+
+	const AutoTuneAction* revert = rig.First(Kind::Revert);
+	ASSERT_NE(revert, nullptr);
+	EXPECT_EQ(revert->lever, AutoTuneLever::Resolution);
+	EXPECT_FALSE(revert->measured) << "not written to the game's file";
+	EXPECT_TRUE(revert->inconclusive);
+	EXPECT_TRUE(revert->retry) << "to be measured again against a fresh baseline";
+}
+
+TEST(AutoTuneTrace, AfterTheDriftTheStepIsMeasuredAgainAgainstAFreshBaselineAndKept)
+{
+	TraceRig rig;
+	rig.state.resolution = 5.0;
+	rig.WarmUp();
+	rig.Feed(kSotcResolution4);
+
+	// The undone trial is not in the session's list of failures: the baseline is taken again, in the heavy
+	// scene (52%), and the same step is tried.
+	ASSERT_EQ(rig.Count(Kind::StartTrial), 2u);
+	const AutoTuneAction& again = rig.actions[rig.actions.size() - 1];
+	ASSERT_EQ(again.kind, Kind::StartTrial);
+	EXPECT_EQ(again.lever, AutoTuneLever::Resolution);
+	EXPECT_EQ(again.value, 4.0);
+	EXPECT_NEAR(again.speed_before, 52.0, 1.0);
+
+	// The trace has no 4x windows of the heavy scene beyond the ones it measured; those are what the retry sees.
+	for (int i = 0; i < 20; i++)
+		rig.Feed(kSotcHeavyAt4x[static_cast<size_t>(i) % (sizeof(kSotcHeavyAt4x) / sizeof(kSotcHeavyAt4x[0]))]);
+	const AutoTuneAction* keep = rig.First(Kind::Keep);
+	ASSERT_NE(keep, nullptr) << "77% against 52% is a clear gain";
+	EXPECT_EQ(keep->lever, AutoTuneLever::Resolution);
+	EXPECT_GT(keep->gain, 0.40);
+	EXPECT_EQ(rig.Count(Kind::Revert), 1u);
 }

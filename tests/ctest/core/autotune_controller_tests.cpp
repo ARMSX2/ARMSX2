@@ -1433,6 +1433,206 @@ TEST(AutoTuneJudging, TheCostThatIsJudgedFollowsTheBottleneck)
 	EXPECT_NEAR(ee.log.back().cost_before, 15.0, 1e-9);
 }
 
+// ---------------------------------------------------------------------------------------------- a changing scene
+//
+// A rejection is written into the game's file for good, so it has to be about the lever and not about the game
+// having changed while the lever was tried. Two checks, each on a trial that would otherwise be a rejection: the
+// first and the second half of its windows must agree on the speed, and a resource the lever does not act on must
+// cost what it cost before.
+
+namespace
+{
+	// A GPU-bound window with a figure for the EE's time per frame as well.
+	AutoTuneWindow GpuWithEe(double speed, double ee_ms)
+	{
+		AutoTuneWindow w = Gpu(speed, 20.0);
+		w.ee_ms = ee_ms;
+		return w;
+	}
+
+	// The baseline, the start of a resolution trial from 6x, and its settle: the controller is ready to measure.
+	void StartResolutionTrial(Rig& rig, double baseline_speed, double baseline_ee_ms)
+	{
+		OnlyResolutionIsLeft(rig, 6.0);
+		rig.WarmUp();
+		for (int i = 0; i < 8; i++)
+			rig.Feed(GpuWithEe(baseline_speed, baseline_ee_ms));
+		ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+		rig.FeedFor(GpuWithEe(baseline_speed, baseline_ee_ms), 3.0);
+		ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+	}
+}
+
+TEST(AutoTuneScene, ALossOnASteadySceneIsRejectedAndRemembered)
+{
+	Rig rig;
+	StartResolutionTrial(rig, 60.0, 10.0);
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(GpuWithEe(50.0, 10.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+	EXPECT_FALSE(verdict.retry);
+}
+
+TEST(AutoTuneScene, ALossWhileTheEeCostMovedByATenthIsNotRemembered)
+{
+	// 60% to 50% with the EE's time per frame going from 10 to 13 ms: a resolution step does not touch the EE, so
+	// the game got heavier. Undone, to be measured again, and not held back for the session.
+	Rig rig;
+	StartResolutionTrial(rig, 60.0, 10.0);
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(GpuWithEe(50.0, 13.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_FALSE(verdict.measured);
+	EXPECT_TRUE(verdict.inconclusive);
+	EXPECT_TRUE(verdict.retry);
+
+	// A shift of 9% is inside what a steady scene does.
+	Rig calm;
+	StartResolutionTrial(calm, 60.0, 10.0);
+	for (int i = 0; i < 4; i++)
+		verdict = calm.Feed(GpuWithEe(50.0, 10.9));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+}
+
+TEST(AutoTuneScene, TheResourceAGpuLeverDoesNotTouchIsTheEeAndAnEeLeversIsTheGs)
+{
+	// The EE lever: the GS thread's time moves 30% while the EE trial loses 17% of its speed.
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.WarmUp();
+	AutoTuneWindow before = EeBound(60.0);
+	before.ee_ms = 20.0;
+	before.mtgs_ms = 10.0;
+	for (int i = 0; i < 8; i++)
+		rig.Feed(before);
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(before, 6.0);
+
+	AutoTuneWindow during = EeBound(50.0);
+	during.ee_ms = 22.0;
+	during.mtgs_ms = 13.0;
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(during);
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.retry) << "the GS thread has nothing to do with the IOP thread";
+
+	// The EE's own time moving is the lever's business, not the scene's.
+	Rig own;
+	own.state.iop_thread_placeable = true;
+	own.WarmUp();
+	for (int i = 0; i < 8; i++)
+		own.Feed(before);
+	ASSERT_EQ(own.log.back().kind, Kind::StartTrial);
+	own.FeedFor(before, 6.0);
+	during.mtgs_ms = 10.0;
+	for (int i = 0; i < 4; i++)
+		verdict = own.Feed(during);
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+}
+
+TEST(AutoTuneScene, TwoHalvesThatDisagreeAreNotAMeasuredRejection)
+{
+	// Eight windows with a median 23% under the baseline; the first half is at the baseline's level and the
+	// second a third lower. Whatever happened, it was not one state of the game.
+	Rig rig;
+	StartResolutionTrial(rig, 60.0, 10.0);
+	for (const double speed : {50.0, 70.0, 52.0, 68.0})
+		EXPECT_EQ(rig.Feed(GpuWithEe(speed, 10.0)).kind, Kind::None) << "inconclusive: looked at for longer";
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(GpuWithEe(40.0, 10.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_FALSE(verdict.measured);
+	EXPECT_TRUE(verdict.retry);
+	EXPECT_LT(verdict.gain, -0.2);
+
+	// The same median with all eight windows alike is a plain, remembered rejection.
+	Rig steady;
+	StartResolutionTrial(steady, 60.0, 10.0);
+	for (int i = 0; i < 3; i++)
+		EXPECT_EQ(steady.Feed(GpuWithEe(46.0, 10.0)).kind, Kind::None);
+	verdict = steady.Feed(GpuWithEe(46.0, 10.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+}
+
+TEST(AutoTuneScene, FourWindowsAreTooFewToCompareHalves)
+{
+	// Two windows against two prove nothing; the scene is judged by its cost at the first look.
+	Rig rig;
+	StartResolutionTrial(rig, 60.0, 10.0);
+	AutoTuneAction verdict;
+	for (const double speed : {40.0, 41.0, 49.0, 50.0})
+		verdict = rig.Feed(GpuWithEe(speed, 10.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+}
+
+TEST(AutoTuneScene, TheEeGovernorMayStepDownAndBackWithinATrial)
+{
+	// Its windows are not one state by design (see AutoTunePolicy::governor_measure_windows), so the halves of
+	// a governor trial are allowed to differ.
+	Rig rig;
+	rig.state.ee_governor_eligible = true;
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(EeBound(60.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	ASSERT_EQ(rig.log.back().lever, AutoTuneLever::EeGovernor);
+	// The settle of the governor: 6 s, and the 6.5 s of its own clocks at 60% speed, 16.8 s in all.
+	for (int i = 0; i < 34; i++)
+		rig.Feed(EeBound(60.0));
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+
+	AutoTuneAction verdict;
+	for (const double speed : {50.0, 70.0, 52.0, 68.0, 40.0, 40.0, 40.0, 40.0})
+		verdict = rig.Feed(EeBound(speed));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+	EXPECT_FALSE(verdict.retry);
+}
+
+TEST(AutoTuneScene, AStepIsMeasuredAgainTwiceAndThenGivenUpWithoutBeingRememberedOrRetriedForever)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+
+	std::vector<AutoTuneAction> verdicts;
+	for (int round = 0; round < 3; round++)
+	{
+		// Baseline and start of the trial.
+		AutoTuneAction start;
+		for (int i = 0; i < 8 && start.kind == Kind::None; i++)
+			start = rig.Feed(GpuWithEe(60.0, 10.0));
+		ASSERT_EQ(start.kind, Kind::StartTrial) << "round " << round;
+		rig.FeedFor(GpuWithEe(60.0, 10.0), 3.0);
+		AutoTuneAction verdict;
+		for (int i = 0; i < 4; i++)
+			verdict = rig.Feed(GpuWithEe(50.0, 13.0));
+		ASSERT_EQ(verdict.kind, Kind::Revert) << "round " << round;
+		verdicts.push_back(verdict);
+		rig.FeedFor(GpuWithEe(60.0, 10.0), 3.0);
+	}
+	EXPECT_TRUE(verdicts[0].retry);
+	EXPECT_TRUE(verdicts[1].retry);
+	EXPECT_FALSE(verdicts[2].retry) << "two retries for one step";
+	for (const AutoTuneAction& v : verdicts)
+	{
+		EXPECT_FALSE(v.measured);
+		EXPECT_TRUE(v.inconclusive);
+	}
+
+	// Now the step is out for the session, like any inconclusive one: nothing is left to try.
+	EXPECT_EQ(rig.Trigger(GpuWithEe(60.0, 10.0)).kind, Kind::Exhausted);
+}
+
 // ---------------------------------------------------------------------------------------------- the baseline
 
 TEST(AutoTuneBaseline, ATrialIsComparedWithTheWindowsRightBeforeIt)
@@ -1861,16 +2061,28 @@ TEST(AutoTuneReplay, TheResolutionWalkStopsAtTheStepThatShowsNothingInsteadOfWal
 			story.push_back("exhausted");
 	}
 
-	// 8 to 7 (+7%) and 7 to 6 (+21%) are real; 6 to 5 is the same speed with a hitch in the numbers; and having
-	// found a step that shows nothing, the walk stops: it does not go on to 4x and 3x on the noise.
+	// 8 to 7 (+7%) and 7 to 6 (+21%) are real; 6 to 5 is the same speed with a hitch in the numbers: the first
+	// half of its windows are the transient after the change and the second half the steady figure, so the
+	// scene check calls the trial unstable and measures the step again, twice, with the same transient each
+	// time. It ends undone and not written down. Having found a step that shows nothing, the walk stops: it
+	// does not go on to 4x and 3x on the noise.
 	ASSERT_GE(story.size(), 7u);
 	EXPECT_EQ(story[0], "try 7");
 	EXPECT_EQ(story[1], "keep");
 	EXPECT_EQ(story[2], "try 6");
 	EXPECT_EQ(story[3], "keep");
-	EXPECT_EQ(story[4], "try 5");
-	EXPECT_TRUE(story[5] == "undo" || story[5] == "reject") << story[5];
-	EXPECT_EQ(story[6], "exhausted");
+	size_t next = 4;
+	size_t tries_of_5 = 0;
+	while (next + 1 < story.size() && story[next] == "try 5")
+	{
+		EXPECT_EQ(story[next + 1], "undo") << "never written down";
+		tries_of_5++;
+		next += 2;
+	}
+	EXPECT_EQ(tries_of_5, 3u) << "the trial and its two retries";
+	ASSERT_LT(next, story.size());
+	EXPECT_EQ(story[next], "exhausted");
+	EXPECT_TRUE(walk.persisted.empty());
 	EXPECT_EQ(walk.world.resolution, 6);
 	for (const std::string& line : story)
 		EXPECT_TRUE(line != "try 4" && line != "try 3") << line;
