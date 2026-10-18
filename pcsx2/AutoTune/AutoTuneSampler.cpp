@@ -82,6 +82,10 @@ bool AutoTuneSampler::Poll(const PerformanceMetrics::WindowSnapshot& snap, const
 	w.iop_pct = snap.has_iop_thread ? snap.iop_usage : 0.0;
 	w.gpu_pct = snap.gpu_usage;
 	w.has_gpu_timer = snap.has_gpu_timer;
+	w.ee_ms = snap.ee_ms;
+	w.mtgs_ms = snap.gs_ms;
+	w.gs_back_ms = snap.has_gs_back_thread ? snap.gs_back_ms : 0.0;
+	w.gpu_ms = snap.has_gpu_timer ? snap.gpu_ms : 0.0;
 
 	// What the CPU thread counted since the last delivery.
 	if (have_before && now.frames >= before.frames && now.overran_frames >= before.overran_frames)

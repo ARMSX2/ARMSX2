@@ -8,6 +8,8 @@
 
 #include "AutoTune/AutoTuneController.h"
 
+#include <algorithm>
+#include <string>
 #include <vector>
 
 namespace
@@ -86,12 +88,18 @@ namespace
 
 		void WarmUp() { FeedFor(Win(100.0), 10.0); }
 
-		// Four bad windows in a row after the warm-up. Returns what the fourth one produced.
+		// Bad windows in a row after the warm-up: four start the diagnosis, and when it chooses a lever, four more
+		// are the baseline the trial is compared with and the trial starts on the last of them. Returns the first
+		// action that comes back (the fourth window's for a report, the eighth's for a trial).
 		AutoTuneAction Trigger(const AutoTuneWindow& bad)
 		{
 			AutoTuneAction last;
-			for (int i = 0; i < 4; i++)
+			for (int i = 0; i < 4 + static_cast<int>(ctl.GetPolicy().baseline_extra_windows); i++)
+			{
 				last = Feed(bad);
+				if (last.kind != Kind::None)
+					break;
+			}
 			return last;
 		}
 
@@ -149,6 +157,11 @@ TEST(AutoTuneController, TriggersOnlyAfterFourConsecutiveBadWindows)
 		EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::None);
 	EXPECT_EQ(rig.ctl.BadStreak(), 3u);
 
+	// The fourth bad window decides what to try; four more are its baseline, and the trial starts on the last.
+	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining);
+	for (int i = 0; i < 3; i++)
+		EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::None);
 	const AutoTuneAction a = rig.Feed(EeBound(70.0));
 	EXPECT_EQ(a.kind, Kind::StartTrial);
 	EXPECT_EQ(a.lever, AutoTuneLever::IopThread);
@@ -190,7 +203,12 @@ TEST(AutoTuneController, UnusableWindowsDoNotCountAndDoNotBreakTheStreak)
 	// A pause in the middle neither completes the streak nor resets it.
 	EXPECT_EQ(rig.FeedFor(paused, 30.0).kind, Kind::None);
 	EXPECT_EQ(rig.ctl.BadStreak(), 3u);
-	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::StartTrial);
+	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::None);
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining) << "the fourth usable bad window completed the streak";
+	// The baseline is counted in usable windows too.
+	EXPECT_EQ(rig.FeedFor(paused, 30.0).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining);
+	EXPECT_EQ(rig.RunUntilAction(EeBound(70.0)).kind, Kind::StartTrial);
 }
 
 TEST(AutoTuneController, UnusableWindowsDoNotRunTheSettleClockOrTheMeasurement)
@@ -692,14 +710,33 @@ TEST(AutoTuneController, SlowButUnexplainedIsReportedWithACooldown)
 
 // ---------------------------------------------------------------------------------------------- keep or revert
 
-TEST(AutoTuneController, AGainUnderFivePercentIsReverted)
+TEST(AutoTuneController, AGainThatClearlyIsNotThereIsRevertedAndRemembered)
 {
 	Rig rig;
 	rig.state.iop_thread_placeable = true;
 	ASSERT_EQ(rig.WarmAndTrigger(EeBound(80.0)).kind, Kind::StartTrial);
-	// 80 -> 83.9 is +4.9%.
-	const AutoTuneAction a = rig.RunUntilAction(EeBound(83.9));
+	// 80 -> 80.8 is +1%: under the bar even allowing for the noise.
+	const AutoTuneAction a = rig.RunUntilAction(EeBound(80.8));
 	EXPECT_EQ(a.kind, Kind::Revert);
+	EXPECT_TRUE(a.measured);
+	EXPECT_FALSE(a.inconclusive);
+	EXPECT_NEAR(a.gain, 0.01, 0.001);
+}
+
+TEST(AutoTuneController, AGainJustUnderTheBarIsInconclusiveNotRejected)
+{
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	ASSERT_EQ(rig.WarmAndTrigger(EeBound(80.0)).kind, Kind::StartTrial);
+	// 80 -> 83.9 is +4.9%: under the bar, but within the noise of reaching it. Not enough to say it did not
+	// help, so it is looked at for longer and then undone without being remembered.
+	rig.FeedFor(EeBound(80.0), 6.0);
+	for (int i = 0; i < 4 + 4 + 4 - 1; i++)
+		EXPECT_EQ(rig.Feed(EeBound(83.9)).kind, Kind::None) << "window " << i << ": measured, then extended twice";
+	const AutoTuneAction a = rig.Feed(EeBound(83.9));
+	EXPECT_EQ(a.kind, Kind::Revert);
+	EXPECT_FALSE(a.measured) << "an answer within the noise is not written to the game's file";
+	EXPECT_TRUE(a.inconclusive);
 	EXPECT_NEAR(a.gain, 0.04875, 0.001);
 }
 
@@ -995,6 +1032,9 @@ TEST(AutoTuneController, TheIopWaitIsAveragedOverTheWindowsThatTriggered)
 		w.ee_wait_iop_ratio = wait;
 		rig.Feed(w);
 	}
+	// The diagnosis is made on those four; the baseline of the trial it chose is four more.
+	for (int i = 0; i < 4; i++)
+		rig.Feed(EeBound(60.0));
 	ASSERT_EQ(rig.log.size(), 1u);
 	EXPECT_EQ(rig.log[0].kind, Kind::StartTrial);
 	EXPECT_EQ(rig.log[0].lever, AutoTuneLever::EeGovernor);
@@ -1065,11 +1105,734 @@ TEST(AutoTuneController, EveryThresholdLivesInThePolicy)
 	AutoTunePolicy policy;
 	policy.warmup_seconds = 2.0;
 	policy.trigger_windows = 2;
+	policy.baseline_extra_windows = 1;
 	Rig rig;
 	rig.ctl = AutoTuneController(policy);
 	rig.state.iop_thread_placeable = true;
 
 	rig.FeedFor(Win(100.0), 2.0);
 	rig.Feed(EeBound(70.0));
-	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::StartTrial);
+	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::None) << "the second bad window starts the diagnosis";
+	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::StartTrial) << "and one more window is the baseline";
+}
+
+// ---------------------------------------------------------------------------------------------- judging
+
+TEST(AutoTuneStats, TheMedianIgnoresAHitchWindow)
+{
+	const AutoTuneStat steady = AutoTuneSummarize({12.2, 12.3, 12.2, 12.1, 12.2, 12.3, 12.2, 12.2});
+	const AutoTuneStat hitch = AutoTuneSummarize({12.2, 12.3, 12.2, 12.1, 10.8, 12.3, 12.2, 12.2});
+	EXPECT_NEAR(steady.centre, 12.2, 1e-9);
+	EXPECT_NEAR(hitch.centre, 12.2, 1e-9) << "the mean would be 12.0";
+	EXPECT_LT(hitch.error, 0.1) << "and one window out of eight does not make the figure uncertain";
+	EXPECT_EQ(hitch.n, 8u);
+}
+
+TEST(AutoTuneStats, ASpreadMakesTheFigureUncertain)
+{
+	const AutoTuneStat noisy = AutoTuneSummarize({50.0, 60.0, 45.0, 62.0});
+	EXPECT_NEAR(noisy.centre, 55.0, 1e-9);
+	EXPECT_GT(noisy.error, 4.0);
+	EXPECT_EQ(AutoTuneSummarize({}).n, 0u);
+	EXPECT_EQ(AutoTuneSummarize({7.0}).centre, 7.0);
+	EXPECT_EQ(AutoTuneSummarize({7.0}).error, 0.0);
+}
+
+TEST(AutoTuneStats, AGainHasToBeBothBigEnoughAndBeyondTheNoise)
+{
+	const AutoTunePolicy policy;
+	const auto stat = [](std::vector<double> v) { return AutoTuneSummarize(std::move(v)); };
+
+	// Steady windows, +21%: clear.
+	AutoTuneGain g = AutoTuneJudgeGain(stat({10.0, 10.1, 10.1, 10.2}), stat({12.2, 12.3, 12.2, 12.1}), true, policy);
+	EXPECT_TRUE(g.clear);
+	EXPECT_FALSE(g.none);
+
+	// Steady windows, +1.6%: clearly nothing.
+	g = AutoTuneJudgeGain(stat({12.2, 12.2, 12.2, 12.2}), stat({12.4, 12.4, 12.4, 12.4}), true, policy);
+	EXPECT_FALSE(g.clear);
+	EXPECT_TRUE(g.none);
+
+	// Steady windows, +4.9%: under the bar, but not clearly under it.
+	g = AutoTuneJudgeGain(stat({80, 80, 80, 80}), stat({83.9, 83.9, 83.9, 83.9}), true, policy);
+	EXPECT_FALSE(g.clear);
+	EXPECT_FALSE(g.none);
+
+	// +10% on windows that scatter by 20%: over the bar and not beyond the noise.
+	g = AutoTuneJudgeGain(stat({50, 50, 50, 50}), stat({50, 60, 45, 62}), true, policy);
+	EXPECT_GT(g.gain, 0.05);
+	EXPECT_FALSE(g.clear);
+	EXPECT_FALSE(g.none);
+
+	// A cost is better lower: 10 ms to 7 ms is a 30% gain.
+	g = AutoTuneJudgeGain(stat({10, 10, 10, 10}), stat({7, 7, 7, 7}), false, policy);
+	EXPECT_NEAR(g.gain, 0.3, 1e-9);
+	EXPECT_TRUE(g.clear);
+}
+
+// The first trial of a bad game: a window of the bad windows that triggered it, then the same again for the
+// baseline, then the settle and the measurement. `settle` is how many windows pass between the start and the
+// first measured one.
+namespace
+{
+	// A GPU-bound window at `speed` with a GPU timer; the cost is the GPU's ms per frame.
+	AutoTuneWindow Gpu(double speed, double gpu_ms = 0.0)
+	{
+		AutoTuneWindow w = GpuBound(speed);
+		w.gpu_ms = gpu_ms;
+		return w;
+	}
+
+	// Nothing for the other levers to do, so a trial is the resolution at `resolution`.
+	void OnlyResolutionIsLeft(Rig& rig, double resolution)
+	{
+		rig.state.hw_renderer = true;
+		rig.state.resolution = resolution;
+		rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+		rig.state.blending_level = 0;
+		rig.state.gs_back_thread_allowed = false;
+	}
+
+	AutoTuneAction FeedAll(Rig& rig, const std::vector<double>& speeds)
+	{
+		AutoTuneAction first;
+		for (const double speed : speeds)
+		{
+			const AutoTuneAction a = rig.Feed(Gpu(speed));
+			if (first.kind == Kind::None && a.kind != Kind::None)
+				first = a;
+		}
+		return first;
+	}
+} // namespace
+
+TEST(AutoTuneJudging, AHitchInTheBaselineDoesNotTurnNothingIntoAGain)
+{
+	// God of War II at 6x with Maximum blending, the 6x to 5x step of core-smoke run2. The four bad windows
+	// that triggered it were 12.1, 12.2, 10.8 (a hitch) and 12.0, a mean of 11.8; the five windows it
+	// measured were 12.6 ... 12.4 and 12.4, 13.0, 12.4, 11.8: a mean of 12.4. The old gate read +5.3% and
+	// kept it; the speed at 5x was the speed at 6x. The same windows against a median baseline of eight:
+	const std::vector<double> trigger = {12.1, 12.2, 10.8, 12.0};
+	const std::vector<double> extra = {12.3, 12.2, 12.3, 12.2};
+	const std::vector<double> settle = {12.6, 13.1, 13.0, 12.6, 12.4, 12.4};
+	const std::vector<double> measured = {12.4, 13.0, 12.4, 11.8};
+
+	const double old_gain = (12.4 / ((12.1 + 12.2 + 10.8 + 12.0) / 4.0)) - 1.0;
+	EXPECT_GT(old_gain, 0.05) << "this is the data of the false keep";
+
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	EXPECT_EQ(FeedAll(rig, trigger).kind, Kind::None);
+	const AutoTuneAction start = FeedAll(rig, extra);
+	ASSERT_EQ(start.kind, Kind::StartTrial);
+	EXPECT_EQ(start.lever, AutoTuneLever::Resolution);
+	EXPECT_EQ(start.value, 5.0);
+	EXPECT_NEAR(start.speed_before, 12.2, 1e-9) << "the median of the eight";
+
+	EXPECT_EQ(FeedAll(rig, settle).kind, Kind::None);
+	for (const double speed : measured)
+		EXPECT_EQ(rig.Feed(Gpu(speed)).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring)
+		<< "+1.6% on windows that scatter by 13.0 and 11.8 is not clearly nothing: look longer, do not keep";
+
+	// What the run measured next (its settling-after windows, where the 5x figure came down to the 6x one).
+	AutoTuneAction verdict = FeedAll(rig, {12.9, 10.0, 14.8, 12.3});
+	EXPECT_EQ(verdict.kind, Kind::None);
+	verdict = FeedAll(rig, {12.3, 12.3, 12.2, 12.2});
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_LT(verdict.gain, 0.05);
+	EXPECT_NEAR(verdict.speed_after, 12.3, 0.06);
+}
+
+TEST(AutoTuneJudging, AClearGainIsKeptOnTheMedians)
+{
+	// 7x to 6x in the same run: 10.0, 10.1, 10.1, 10.2 against 12.2 ... 12.3.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 7.0);
+	rig.WarmUp();
+	FeedAll(rig, {10.1, 10.0, 10.1, 10.2, 10.1, 10.1, 10.2, 10.0});
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	FeedAll(rig, {10.5, 11.8, 11.9, 12.3, 12.3, 12.3});
+	AutoTuneAction verdict;
+	for (const double speed : {12.3, 12.2, 12.2, 12.3})
+		verdict = rig.Feed(Gpu(speed));
+	ASSERT_EQ(verdict.kind, Kind::Keep);
+	EXPECT_NEAR(verdict.gain, 0.2178, 0.005);
+}
+
+TEST(AutoTuneJudging, AnAnswerWithinTheNoiseIsExtendedThenUndoneWithoutBeingRemembered)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	FeedAll(rig, {50, 50, 50, 50, 50, 50, 50, 50});
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(50.0), 3.0);
+
+	// Scattered windows with a median 10% above the baseline: neither a clear gain nor clearly nothing.
+	const std::vector<double> scatter = {50, 60, 45, 62};
+	EXPECT_EQ(FeedAll(rig, scatter).kind, Kind::None) << "measured four windows: extend";
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+	EXPECT_EQ(FeedAll(rig, scatter).kind, Kind::None) << "extended once: extend again";
+	const AutoTuneAction verdict = FeedAll(rig, scatter);
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_FALSE(verdict.measured);
+	EXPECT_TRUE(verdict.inconclusive);
+
+	// This session does not offer the same step again: nothing else is left, so it says so.
+	rig.FeedFor(Gpu(50.0), 3.0);
+	const AutoTuneAction next = rig.Trigger(Gpu(50.0));
+	EXPECT_EQ(next.kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneJudging, ALongerLookCanSettleAnInconclusiveFirstAnswer)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	FeedAll(rig, {50, 50, 50, 50, 50, 50, 50, 50});
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(50.0), 3.0);
+
+	EXPECT_EQ(FeedAll(rig, {50, 60, 45, 62}).kind, Kind::None);
+	// The next four are steady at 60: eight windows with a median of 60 and a small spread.
+	AutoTuneAction verdict;
+	for (const double speed : {60.0, 60.0, 59.0, 61.0})
+		verdict = rig.Feed(Gpu(speed));
+	ASSERT_EQ(verdict.kind, Kind::Keep);
+	EXPECT_GT(verdict.gain, 0.15);
+}
+
+TEST(AutoTuneJudging, AnEmptyBaselineWindowIsNotACostOfZero)
+{
+	// The GPU figure is missing from every window: the cost cannot be judged and the speed decides.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	FeedAll(rig, {40, 40, 40, 40, 40, 40, 40, 40});
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	EXPECT_EQ(rig.log.back().cost_before, 0.0);
+	rig.FeedFor(Gpu(40.0), 3.0);
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(Gpu(50.0));
+	EXPECT_EQ(verdict.kind, Kind::Keep);
+	EXPECT_EQ(verdict.cost_after, 0.0);
+}
+
+TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillTheLimit)
+{
+	// A GPU that spends 20 ms per frame and then 14, while the speed stays at 40% because the frame is still
+	// limited by something else: -30% on the cost the lever targets, +2% on the speed.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0, 20.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	EXPECT_NEAR(rig.log.back().cost_before, 20.0, 1e-9);
+	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(Gpu(40.8, 14.0));
+	ASSERT_EQ(verdict.kind, Kind::Keep);
+	EXPECT_NEAR(verdict.cost_gain, 0.3, 1e-9);
+	EXPECT_NEAR(verdict.gain, 0.3, 1e-9) << "the figure that earned the keep";
+	EXPECT_NEAR(verdict.speed_after, 40.8, 1e-9);
+}
+
+TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsToIsNotAKeep)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0, 20.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+
+	AutoTuneAction verdict;
+	for (int i = 0; i < 12; i++)
+	{
+		verdict = rig.Feed(Gpu(34.0, 14.0));
+		EXPECT_NE(verdict.kind, Kind::Keep);
+	}
+	EXPECT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_FALSE(verdict.measured) << "contradictory figures are no answer";
+}
+
+TEST(AutoTuneJudging, TheCostThatIsJudgedFollowsTheBottleneck)
+{
+	// Without a GPU timer a GPU case is judged on the GS threads: the busier of MTGS and the back thread.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	AutoTuneWindow w = Gpu(40.0);
+	w.has_gpu_timer = false;
+	w.gpu_pct = 0.0;
+	w.ee_wait_gs_ratio = 0.5; // blocked on the GS, not CPU-bound there: the GPU case without a timer
+	w.mtgs_pct = 70.0;
+	w.mtgs_ms = 11.0;
+	w.gs_back_ms = 6.0;
+	for (int i = 0; i < 8; i++)
+		rig.Feed(w);
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	EXPECT_NEAR(rig.log.back().cost_before, 11.0, 1e-9) << "MTGS, as it is the busier";
+
+	// An EE case is judged on the EE thread.
+	Rig ee;
+	ee.state.iop_thread_placeable = true;
+	ee.WarmUp();
+	AutoTuneWindow e = EeBound(70.0);
+	e.ee_ms = 15.0;
+	e.mtgs_ms = 99.0; // nothing to do with it
+	for (int i = 0; i < 8; i++)
+		ee.Feed(e);
+	ASSERT_EQ(ee.log.back().kind, Kind::StartTrial);
+	EXPECT_NEAR(ee.log.back().cost_before, 15.0, 1e-9);
+}
+
+// ---------------------------------------------------------------------------------------------- the baseline
+
+TEST(AutoTuneBaseline, ATrialIsComparedWithTheWindowsRightBeforeIt)
+{
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.WarmUp();
+	for (const double speed : {60.0, 60.0, 60.0, 60.0})
+		EXPECT_EQ(rig.Feed(EeBound(speed)).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining);
+
+	// The speed drifted while the trial was being prepared: the baseline is where it is now.
+	for (const double speed : {80.0, 80.0, 80.0})
+		EXPECT_EQ(rig.Feed(EeBound(speed)).kind, Kind::None);
+	const AutoTuneAction start = rig.Feed(EeBound(80.0));
+	ASSERT_EQ(start.kind, Kind::StartTrial);
+	EXPECT_NEAR(start.speed_before, 70.0, 1e-9) << "the median of 60 60 60 60 80 80 80 80";
+}
+
+TEST(AutoTuneBaseline, AWindowThatIsFineCancelsThePreparation)
+{
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.WarmUp();
+	for (int i = 0; i < 4; i++)
+		rig.Feed(EeBound(60.0));
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining);
+
+	EXPECT_EQ(rig.Feed(Win(100.0)).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
+	EXPECT_EQ(rig.ctl.BadStreak(), 0u);
+	EXPECT_EQ(rig.Count(Kind::StartTrial), 0u);
+
+	// It has to come back for four bad windows and another four.
+	EXPECT_EQ(rig.Trigger(EeBound(60.0)).kind, Kind::StartTrial);
+}
+
+TEST(AutoTuneBaseline, NoExtraWindowsStartsTheTrialAtOnce)
+{
+	AutoTunePolicy policy;
+	policy.baseline_extra_windows = 0;
+	Rig rig;
+	rig.ctl = AutoTuneController(policy);
+	rig.state.iop_thread_placeable = true;
+	EXPECT_EQ(rig.WarmAndTrigger(EeBound(70.0)).kind, Kind::StartTrial);
+}
+
+TEST(AutoTuneBaseline, AReportDoesNotWaitForOne)
+{
+	Rig rig;
+	rig.state.iop_thread_on = true;
+	AutoTuneWindow w = Win(60.0);
+	w.mtvu_pct = 96.0;
+	EXPECT_EQ(rig.WarmAndTrigger(w).kind, Kind::ReportBottleneck);
+}
+
+TEST(AutoTuneBaseline, ASettingsChangeWhilePreparingDropsTheTrial)
+{
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.WarmUp();
+	for (int i = 0; i < 4; i++)
+		rig.Feed(EeBound(60.0));
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Baselining);
+
+	EXPECT_FALSE(rig.ctl.OnDisturbance(AutoTuneDisturbance::SettingsChange).has_value()) << "no trial was running to undo";
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingAfter);
+}
+
+TEST(AutoTuneBaseline, AStepThatIsNoLongerThereIsNotTried)
+{
+	// The player turned the IOP thread on while the baseline was being taken.
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.WarmUp();
+	for (int i = 0; i < 7; i++)
+		rig.Feed(EeBound(60.0));
+	rig.state.iop_thread_on = true;
+	EXPECT_EQ(rig.Feed(EeBound(60.0)).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
+}
+
+// ---------------------------------------------------------------------------------------------- far below full speed
+
+namespace
+{
+	// A GPU-bound game with the blending at Maximum and a download mode that reads back.
+	void BlendingAndDownloadAreOpen(Rig& rig, double resolution)
+	{
+		rig.state.hw_renderer = true;
+		rig.state.resolution = resolution;
+		rig.state.blending_level = 5;
+		rig.state.download_mode = AutoTuneDownloadMode::Accurate;
+		rig.state.gs_back_thread_allowed = true;
+	}
+
+	AutoTuneLever FirstLeverTried(double speed, const AutoTunePolicy& policy = AutoTunePolicy())
+	{
+		Rig rig;
+		rig.ctl = AutoTuneController(policy);
+		BlendingAndDownloadAreOpen(rig, 8.0);
+		rig.WarmUp();
+		return rig.Trigger(Gpu(speed)).lever;
+	}
+} // namespace
+
+TEST(AutoTuneOrder, FarBelowFullSpeedTheBlendingGoesBeforeTheResolution)
+{
+	// 9% speed: a notch of resolution can give at most 1.3x at 8x. One blending step moved this game from 13%
+	// to 100%, after six resolution trials that moved it from 9.4% to 13.1%.
+	EXPECT_EQ(FirstLeverTried(9.0), AutoTuneLever::Blending);
+}
+
+TEST(AutoTuneOrder, CloserToFullSpeedTheResolutionComesFirst)
+{
+	EXPECT_EQ(FirstLeverTried(70.0), AutoTuneLever::Resolution);
+	EXPECT_EQ(FirstLeverTried(50.0), AutoTuneLever::Resolution) << "the line is at 50, and 50 is not under it";
+}
+
+TEST(AutoTuneOrder, TheLineIsAPolicyAndZeroTurnsItOff)
+{
+	AutoTunePolicy off;
+	off.cheap_levers_first_below_pct = 0.0;
+	EXPECT_EQ(FirstLeverTried(9.0, off), AutoTuneLever::Resolution);
+
+	AutoTunePolicy high;
+	high.cheap_levers_first_below_pct = 80.0;
+	EXPECT_EQ(FirstLeverTried(70.0, high), AutoTuneLever::Blending);
+}
+
+TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThread)
+{
+	Rig rig;
+	BlendingAndDownloadAreOpen(rig, 8.0);
+	rig.state.blending_level = 1; // one step left to give: Basic to Minimum
+	rig.WarmUp();
+
+	std::vector<AutoTuneLever> tried;
+	for (int round = 0; round < 4; round++)
+	{
+		const AutoTuneAction start = rig.Trigger(Gpu(9.0));
+		ASSERT_EQ(start.kind, Kind::StartTrial) << "round " << round;
+		tried.push_back(start.lever);
+		// The back thread reopens the renderer: its settle is the longer one, before and after.
+		const double settle = start.lever == AutoTuneLever::GsBackThread ? 6.0 : 3.0;
+		rig.FeedFor(Gpu(9.0), settle);
+		const AutoTuneAction verdict = rig.RunUntilAction(Gpu(9.0));
+		ASSERT_EQ(verdict.kind, Kind::Revert);
+		rig.FeedFor(Gpu(9.0), settle);
+	}
+	const std::vector<AutoTuneLever> expected = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode, AutoTuneLever::Resolution,
+		AutoTuneLever::GsBackThread};
+	EXPECT_EQ(tried, expected);
+}
+
+TEST(AutoTuneOrder, ABackThreadStillGoesFirstWhenTheGsThreadsAreTheCause)
+{
+	Rig rig;
+	BlendingAndDownloadAreOpen(rig, 8.0);
+	rig.WarmUp();
+	AutoTuneWindow w = GsCpuBound(9.0);
+	const AutoTuneAction start = rig.Trigger(w);
+	ASSERT_EQ(start.kind, Kind::StartTrial);
+	EXPECT_EQ(start.lever, AutoTuneLever::GsBackThread);
+}
+
+// ---------------------------------------------------------------------------------------------- a replay
+
+// God of War II at 8x with Maximum blending (devs/bmdhacks/campaigns/auto-tune-2026-10-18/core-smoke-2026-10-18,
+// run2): 9% speed with the GPU at 100%, and the old gate walking the resolution 8, 7, 6, 5, 4, 3 over 70 s and
+// moving the speed from 9.4% to 13.1% by keeping a 5x that measured +6.1% against a baseline with a hitch in it
+// and rejecting a 3x for good at -6.1%; then one blending step, Maximum to Full, took it to 100%.
+//
+// The speeds below are that run's windows for each resolution, in order, transients and hitches included (the
+// 6x series has its 10.8 window, the 5x series its first twelve windows of 12.6 ... 14.8 before it came down to
+// the 6x figure). The GPU cost per frame of a game that is GPU-bound is the frame time. Full blending at 4x
+// cost 28.5% of a 60 Hz frame (4.75 ms); at other resolutions it is taken to scale with the pixels, which is
+// an assumption of this test and not a measurement.
+namespace
+{
+	struct TraceWorld
+	{
+		int resolution = 8;
+		int blending = 5;
+
+		// Speeds per resolution at Maximum blending: the windows after a change, in order. The last eight are
+		// repeated once they run out.
+		static const std::vector<double>& Series(int resolution)
+		{
+			static const std::vector<double> r8 = {9.4, 9.4, 9.4, 9.3, 9.3, 9.4, 9.8, 9.9, 9.3, 9.2, 9.4, 9.3, 9.4, 9.2, 9.4, 9.4, 9.4, 9.3, 9.3, 9.2};
+			static const std::vector<double> r7 = {9.7, 10.1, 10.0, 9.9, 10.0, 10.1, 10.1, 10.1, 10.2, 10.0, 10.1, 10.1, 10.1, 10.1, 10.2, 10.2, 10.1, 10.1};
+			static const std::vector<double> r6 = {11.8, 11.9, 12.3, 12.3, 12.3, 12.2, 12.2, 12.2, 12.3, 12.3, 12.2, 12.3, 12.2, 12.1, 12.1, 12.2, 10.8, 12.0, 12.3};
+			static const std::vector<double> r5 = {12.6, 13.1, 13.0, 12.6, 12.4, 12.4, 13.0, 12.4, 11.8, 12.9, 10.0, 14.8, 12.3, 12.3, 12.3, 12.2, 12.2, 12.1, 12.1, 12.2};
+			static const std::vector<double> r4 = {13.1, 13.3, 13.2, 13.1, 13.1, 13.0, 13.2, 13.0, 13.0, 13.1, 13.1, 13.1, 13.2, 13.2, 13.1, 13.0, 13.4, 13.3};
+			static const std::vector<double> r3 = {12.5, 12.3, 12.4, 12.4, 12.4, 12.4, 12.4, 12.4};
+			switch (resolution)
+			{
+				case 8:
+					return r8;
+				case 7:
+					return r7;
+				case 6:
+					return r6;
+				case 5:
+					return r5;
+				case 4:
+					return r4;
+				default:
+					return r3;
+			}
+		}
+
+		void Set(int new_resolution, int new_blending)
+		{
+			if (new_resolution != resolution || new_blending != blending)
+				index = 0;
+			resolution = new_resolution;
+			blending = new_blending;
+		}
+
+		AutoTuneWindow Next()
+		{
+			constexpr double kFrame60 = 1000.0 / 59.94;
+			double speed;
+			double gpu_ms;
+			double mtgs_pct = 99.5;
+			if (blending >= 5)
+			{
+				const std::vector<double>& series = Series(resolution);
+				const size_t i = index < series.size() ? index : series.size() - 8 + (index - series.size()) % 8;
+				speed = series[i];
+				gpu_ms = kFrame60 * 100.0 / speed * 0.99;
+				mtgs_pct = resolution >= 5 ? 99.5 : (resolution == 4 ? 70.0 : 55.0);
+			}
+			else
+			{
+				// Full blending: 4.75 ms at 4x, with the 28.1 ... 30.0% wobble of that run's windows.
+				static const double wobble[] = {1.0, 1.02, 0.99, 1.0, 1.04, 1.01, 0.98, 1.0};
+				gpu_ms = 4.75 * (resolution / 4.0) * (resolution / 4.0) * wobble[index % 8];
+				const double frame_ms = std::max(kFrame60, gpu_ms);
+				speed = kFrame60 / frame_ms * 100.0;
+				mtgs_pct = 20.0;
+			}
+			index++;
+
+			AutoTuneWindow w;
+			w.usable = true;
+			w.seconds = 0.5;
+			w.speed_pct = speed;
+			w.late_frame_ratio = speed < 99.0 ? 1.0 : 0.0;
+			w.ee_pct = speed < 99.0 ? 2.0 : 27.7;
+			w.mtgs_pct = mtgs_pct;
+			w.gpu_pct = std::min(110.0, gpu_ms / (kFrame60 * 100.0 / speed) * 100.0);
+			w.has_gpu_timer = true;
+			w.gpu_ms = gpu_ms;
+			w.mtgs_ms = kFrame60 * 100.0 / speed * mtgs_pct / 100.0;
+			return w;
+		}
+
+		size_t index = 0;
+	};
+
+	struct Replay
+	{
+		TraceWorld world;
+		AutoTuneController controller;
+		std::vector<AutoTuneAction> actions;
+		std::vector<AutoTuneRejection> persisted; // what the game's file would remember
+		std::vector<double> speeds;
+		double now = 0.0;
+
+		AutoTuneLeverState State() const
+		{
+			AutoTuneLeverState s;
+			s.hw_renderer = true;
+			s.resolution = world.resolution;
+			s.blending_level = world.blending;
+			s.download_mode = AutoTuneDownloadMode::Accurate;
+			s.rejected = persisted;
+			return s;
+		}
+
+		void Run(double seconds)
+		{
+			for (const double end = now + seconds; now < end; now += 0.5)
+			{
+				const AutoTuneWindow w = world.Next();
+				speeds.push_back(w.speed_pct);
+				const AutoTuneAction a = controller.OnWindow(w, State());
+				if (a.kind == AutoTuneAction::Kind::None)
+					continue;
+				actions.push_back(a);
+
+				if (a.kind == AutoTuneAction::Kind::StartTrial)
+					Apply(a.lever, a.value);
+				else if (a.kind == AutoTuneAction::Kind::Revert)
+				{
+					Undo(a.lever, a.value);
+					if (a.measured)
+						persisted.push_back({a.lever, a.value});
+				}
+			}
+		}
+
+		void Apply(AutoTuneLever lever, double value)
+		{
+			previous_resolution = world.resolution;
+			previous_blending = world.blending;
+			if (lever == AutoTuneLever::Resolution)
+				world.Set(static_cast<int>(value), world.blending);
+			else if (lever == AutoTuneLever::Blending)
+				world.Set(world.resolution, static_cast<int>(value));
+			// The download mode and the back thread did nothing in that run.
+		}
+
+		void Undo(AutoTuneLever lever, double)
+		{
+			if (lever == AutoTuneLever::Resolution || lever == AutoTuneLever::Blending)
+				world.Set(previous_resolution, previous_blending);
+		}
+
+		int previous_resolution = 8;
+		int previous_blending = 5;
+	};
+
+	size_t CountKind(const Replay& r, AutoTuneAction::Kind kind)
+	{
+		return static_cast<size_t>(std::count_if(r.actions.begin(), r.actions.end(), [&](const AutoTuneAction& a) { return a.kind == kind; }));
+	}
+} // namespace
+
+TEST(AutoTuneReplay, TheGow2TraceFindsTheBlendingFirstAndKeepsNothingInsideTheNoise)
+{
+	Replay r;
+	r.Run(150.0);
+
+	// Under 50% speed the blending goes before the resolution: the first thing tried is Maximum to Full.
+	const auto first = std::find_if(r.actions.begin(), r.actions.end(), [](const AutoTuneAction& a) { return a.kind == AutoTuneAction::Kind::StartTrial; });
+	ASSERT_NE(first, r.actions.end());
+	EXPECT_EQ(first->lever, AutoTuneLever::Blending);
+	EXPECT_EQ(first->value, 4.0);
+
+	const auto keep = std::find_if(r.actions.begin(), r.actions.end(), [](const AutoTuneAction& a) { return a.kind == AutoTuneAction::Kind::Keep; });
+	ASSERT_NE(keep, r.actions.end());
+	EXPECT_EQ(keep->lever, AutoTuneLever::Blending);
+	EXPECT_GT(keep->speed_after, 80.0) << "9% to the high eighties in one step";
+	EXPECT_GT(keep->cost_gain, 0.7) << "and the GPU's cost per frame fell by most of itself";
+
+	// It goes on from there: a notch of resolution takes the rest of the way, and the game is at full speed.
+	EXPECT_EQ(r.world.blending, 4);
+	EXPECT_LE(r.world.resolution, 7);
+	EXPECT_GE(r.speeds.back(), 99.0);
+
+	// Nothing was kept or rejected on a difference inside the noise.
+	for (const AutoTuneAction& a : r.actions)
+	{
+		if (a.kind == AutoTuneAction::Kind::Keep)
+			EXPECT_GE(a.gain, 0.05) << AutoTuneLeverName(a.lever);
+		if (a.kind == AutoTuneAction::Kind::Revert && a.measured)
+			ADD_FAILURE() << "a rejection was recorded: " << AutoTuneLeverName(a.lever) << " " << a.value << " gain " << a.gain;
+	}
+
+	// Under a minute after the warm-up (it took the old run 85 s from its trigger to the blending step).
+	size_t windows_to_full_speed = 0;
+	while (windows_to_full_speed < r.speeds.size() && r.speeds[windows_to_full_speed] < 99.0)
+		windows_to_full_speed++;
+	EXPECT_LT(windows_to_full_speed * 0.5, 70.0) << "seconds from the start, 10 of them warm-up";
+}
+
+TEST(AutoTuneReplay, TheResolutionWalkStopsAtTheStepThatShowsNothingInsteadOfWalkingIntoTheNoise)
+{
+	// Only the resolution is left to try (as when the blending is already at its floor): the trace's own walk.
+	// The state offers nothing but the resolution: the blending cannot go lower, and the download mode already
+	// does not read back.
+	struct ResolutionOnly
+	{
+		TraceWorld world;
+		AutoTuneController controller;
+		std::vector<AutoTuneAction> actions;
+		std::vector<AutoTuneRejection> persisted;
+		int previous = 8;
+		double now = 0.0;
+
+		void Run(double seconds)
+		{
+			for (const double end = now + seconds; now < end; now += 0.5)
+			{
+				AutoTuneLeverState s;
+				s.hw_renderer = true;
+				s.resolution = world.resolution;
+				s.blending_level = 0;
+				s.download_mode = AutoTuneDownloadMode::NoReadbacks;
+				s.rejected = persisted;
+				const AutoTuneAction a = controller.OnWindow(world.Next(), s);
+				if (a.kind == AutoTuneAction::Kind::None)
+					continue;
+				actions.push_back(a);
+				if (a.kind == AutoTuneAction::Kind::StartTrial)
+				{
+					previous = world.resolution;
+					world.Set(static_cast<int>(a.value), world.blending);
+				}
+				else if (a.kind == AutoTuneAction::Kind::Revert)
+				{
+					world.Set(previous, world.blending);
+					if (a.measured)
+						persisted.push_back({a.lever, a.value});
+				}
+			}
+		}
+	};
+
+	ResolutionOnly walk;
+	walk.Run(220.0);
+
+	std::vector<std::string> story;
+	for (const AutoTuneAction& a : walk.actions)
+	{
+		if (a.kind == AutoTuneAction::Kind::StartTrial)
+			story.push_back("try " + std::to_string(static_cast<int>(a.value)));
+		else if (a.kind == AutoTuneAction::Kind::Keep)
+			story.push_back("keep");
+		else if (a.kind == AutoTuneAction::Kind::Revert)
+			story.push_back(a.measured ? "reject" : "undo");
+		else if (a.kind == AutoTuneAction::Kind::Exhausted)
+			story.push_back("exhausted");
+	}
+
+	// 8 to 7 (+7%) and 7 to 6 (+21%) are real; 6 to 5 is the same speed with a hitch in the numbers; and having
+	// found a step that shows nothing, the walk stops: it does not go on to 4x and 3x on the noise.
+	ASSERT_GE(story.size(), 7u);
+	EXPECT_EQ(story[0], "try 7");
+	EXPECT_EQ(story[1], "keep");
+	EXPECT_EQ(story[2], "try 6");
+	EXPECT_EQ(story[3], "keep");
+	EXPECT_EQ(story[4], "try 5");
+	EXPECT_TRUE(story[5] == "undo" || story[5] == "reject") << story[5];
+	EXPECT_EQ(story[6], "exhausted");
+	EXPECT_EQ(walk.world.resolution, 6);
+	for (const std::string& line : story)
+		EXPECT_TRUE(line != "try 4" && line != "try 3") << line;
 }

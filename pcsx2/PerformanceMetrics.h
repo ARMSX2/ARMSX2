@@ -197,6 +197,13 @@ namespace PerformanceMetrics
 		bool has_gs_back_thread = false;
 		bool has_iop_thread = false;
 		bool has_gpu_timer = false;
+		// What each thread cost per frame over the window, in milliseconds (CPU time per frame; the GPU's own
+		// time per frame). Unlike the usage figures these do not saturate at 100%, so they can show a thread
+		// getting cheaper while it is still the limit.
+		float ee_ms = 0.0f;
+		float gs_ms = 0.0f;
+		float gs_back_ms = 0.0f;
+		float gpu_ms = 0.0f;
 	};
 
 	/// False when no window has been closed yet or the GS thread is in the middle of closing one (try again

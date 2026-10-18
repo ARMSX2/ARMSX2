@@ -236,6 +236,43 @@ TEST(AutoTuneApplier, ACancelledTrialIsNotRememberedAsAFailure)
 	EXPECT_EQ(f.env.applies, 2) << "applied once to start, once to take back";
 }
 
+TEST(AutoTuneApplier, AnInconclusiveTrialIsUndoneSaidSoAndNeverWrittenToTheFile)
+{
+	Fixture f;
+	f.env.game_file.SetFloatValue(GS, "upscale_multiplier", 3.0f);
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::Resolution, 2.0));
+
+	AutoTuneAction undo = Action(Kind::Revert, AutoTuneLever::Resolution, 2.0);
+	undo.measured = false;
+	undo.inconclusive = true;
+	undo.gain = 0.04;
+	f.applier.Execute(undo);
+
+	EXPECT_FALSE(f.applier.TrialActive());
+	EXPECT_EQ(Num(f.env.Effective(GS, "upscale_multiplier"), -1.0), 3.0);
+	EXPECT_TRUE(AutoTune::ReadRejected(f.env.game_file).empty()) << "a result that could be noise must not be written for good";
+	EXPECT_TRUE(f.applier.Rejections().empty());
+	EXPECT_EQ(f.env.messages.back(), "Auto-tune: resolution 2x made no clear difference, undone");
+	EXPECT_NE(f.env.logs.back().find("inconclusive"), std::string::npos) << f.env.logs.back();
+	EXPECT_NE(f.env.logs.back().find("not remembered"), std::string::npos) << f.env.logs.back();
+}
+
+TEST(AutoTuneApplier, TheLogSaysWhatTheTargetedCostDid)
+{
+	Fixture f;
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::Blending, 4.0));
+	AutoTuneAction keep = Action(Kind::Keep, AutoTuneLever::Blending, 4.0);
+	keep.cost_before = 127.0;
+	keep.cost_after = 4.75;
+	keep.cost_gain = 0.9626;
+	f.applier.Execute(keep);
+
+	bool found = false;
+	for (const std::string& line : f.env.logs)
+		found = found || line.find("target cost 127.00 -> 4.75 ms per frame (-96%)") != std::string::npos;
+	EXPECT_TRUE(found) << "the keep line carries the cost that earned it";
+}
+
 TEST(AutoTuneApplier, CancelTrialAppliesOnlyWhenAsked)
 {
 	Fixture f;

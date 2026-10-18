@@ -42,12 +42,56 @@ namespace
 	// The GPU is the cause: resolution is the lever that moves the GPU's work most.
 	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::Resolution, AutoTuneLever::GsBackThread,
 		AutoTuneLever::DownloadMode, AutoTuneLever::Blending};
+	// The same two when the game is so far under full speed that a notch of resolution cannot close the gap
+	// (AutoTunePolicy::cheap_levers_first_below_pct): blending and the download mode go before resolution.
+	constexpr AutoTuneLever kGsCpuFarOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Blending,
+		AutoTuneLever::DownloadMode, AutoTuneLever::Resolution};
+	constexpr AutoTuneLever kGpuFarOrder[] = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode,
+		AutoTuneLever::Resolution, AutoTuneLever::GsBackThread};
 
 	double Mean(double sum, size_t n)
 	{
 		return n ? sum / static_cast<double>(n) : 0.0;
 	}
 } // namespace
+
+AutoTuneStat AutoTuneSummarize(std::vector<double> values)
+{
+	AutoTuneStat stat;
+	stat.n = values.size();
+	if (values.empty())
+		return stat;
+
+	const auto median = [](std::vector<double>& v) {
+		std::sort(v.begin(), v.end());
+		const size_t mid = v.size() / 2;
+		return (v.size() % 2) ? v[mid] : 0.5 * (v[mid - 1] + v[mid]);
+	};
+
+	stat.centre = median(values);
+
+	std::vector<double> deviations;
+	deviations.reserve(values.size());
+	for (const double v : values)
+		deviations.push_back(std::fabs(v - stat.centre));
+	const double sigma = 1.4826 * median(deviations);
+	stat.error = 1.2533 * sigma / std::sqrt(static_cast<double>(values.size()));
+	return stat;
+}
+
+AutoTuneGain AutoTuneJudgeGain(const AutoTuneStat& before, const AutoTuneStat& after, bool higher_is_better, const AutoTunePolicy& policy)
+{
+	AutoTuneGain g;
+	const double base = std::max(std::fabs(before.centre), 1e-6);
+	g.gain = (higher_is_better ? after.centre - before.centre : before.centre - after.centre) / base;
+
+	const double error = std::hypot(before.error, after.error) / base;
+	g.noise = policy.noise_z * std::max(error, policy.noise_floor_fraction);
+
+	g.clear = g.gain >= policy.gain_fraction - 1e-9 && g.gain > g.noise;
+	g.none = g.gain + g.noise < policy.gain_fraction;
+	return g;
+}
 
 const char* AutoTuneLeverName(AutoTuneLever lever)
 {
@@ -79,6 +123,8 @@ const char* AutoTuneController::PhaseName(Phase phase)
 			return "warmup";
 		case Phase::Watching:
 			return "watching";
+		case Phase::Baselining:
+			return "baselining";
 		case Phase::SettlingTrial:
 			return "settling";
 		case Phase::Measuring:
@@ -151,6 +197,28 @@ double AutoTuneController::TrialSettleSeconds(AutoTuneLever lever, double speed_
 uint32_t AutoTuneController::MeasureWindowsFor(AutoTuneLever lever) const
 {
 	return lever == AutoTuneLever::EeGovernor ? m_policy.governor_measure_windows : m_policy.measure_windows;
+}
+
+std::optional<double> AutoTuneController::CostOf(AutoTuneBottleneck bottleneck, const AutoTuneWindow& w) const
+{
+	double ms = 0.0;
+	switch (bottleneck)
+	{
+		case AutoTuneBottleneck::Ee:
+			ms = w.ee_ms;
+			break;
+		case AutoTuneBottleneck::Gpu:
+			ms = w.has_gpu_timer ? w.gpu_ms : std::max(w.mtgs_ms, w.gs_back_ms);
+			break;
+		case AutoTuneBottleneck::GsCpu:
+			ms = std::max(w.mtgs_ms, w.gs_back_ms);
+			break;
+		default:
+			return std::nullopt;
+	}
+	if (!(ms > 0.0))
+		return std::nullopt;
+	return ms;
 }
 
 AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
@@ -341,6 +409,13 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		return action;
 	}
 
+	// So far under full speed that one notch of resolution cannot close the gap: see the policy.
+	std::vector<double> streak_speeds;
+	for (const AutoTuneWindow& w : m_streak_windows)
+		streak_speeds.push_back(w.speed_pct);
+	const bool far_below = m_policy.cheap_levers_first_below_pct > 0.0 &&
+	                       AutoTuneSummarize(streak_speeds).centre < m_policy.cheap_levers_first_below_pct;
+
 	const AutoTuneLever* order = nullptr;
 	size_t count = 0;
 	switch (bottleneck)
@@ -350,12 +425,12 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 			count = std::size(kEeOrder);
 			break;
 		case AutoTuneBottleneck::GsCpu:
-			order = kGsCpuOrder;
-			count = std::size(kGsCpuOrder);
+			order = far_below ? kGsCpuFarOrder : kGsCpuOrder;
+			count = far_below ? std::size(kGsCpuFarOrder) : std::size(kGsCpuOrder);
 			break;
 		default:
-			order = kGpuOrder;
-			count = std::size(kGpuOrder);
+			order = far_below ? kGpuFarOrder : kGpuOrder;
+			count = far_below ? std::size(kGpuFarOrder) : std::size(kGpuOrder);
 			break;
 	}
 
@@ -365,18 +440,19 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		if (!target || IsRejected(order[i], *target, state))
 			continue;
 
-		m_trial = Trial();
-		m_trial.lever = order[i];
-		m_trial.value = *target;
-		m_trial.speed_before = mean.speed_pct;
-		m_trial.late_before = mean.late_frame_ratio;
-		m_trial.windows = MeasureWindowsFor(order[i]);
-		EnterSettle(Phase::SettlingTrial, TrialSettleSeconds(order[i], mean.speed_pct));
-
-		action.kind = AutoTuneAction::Kind::StartTrial;
-		action.lever = order[i];
-		action.value = *target;
-		action.speed_before = mean.speed_pct;
+		// The windows that triggered this are the start of the baseline; the trial starts once it has the rest.
+		m_pending = Pending();
+		m_pending.lever = order[i];
+		m_pending.value = *target;
+		m_pending.bottleneck = bottleneck;
+		m_pending.baseline = m_streak_windows;
+		m_pending.extra_wanted = m_policy.baseline_extra_windows;
+		m_phase = Phase::Baselining;
+		m_phase_seconds = 0.0;
+		m_streak = 0;
+		m_streak_windows.clear();
+		if (m_pending.extra_wanted == 0)
+			return StartPendingTrial(state);
 		return action;
 	}
 
@@ -389,43 +465,131 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 	return action;
 }
 
+AutoTuneAction AutoTuneController::StartPendingTrial(const AutoTuneLeverState& state)
+{
+	AutoTuneAction none;
+	none.bottleneck = m_pending.bottleneck;
+
+	// The state may have moved since the diagnosis (somebody changed a setting, or the step is no longer there).
+	const std::optional<double> target = TargetFor(m_pending.lever, state);
+	if (!target || std::fabs(*target - m_pending.value) > kValueEpsilon || IsRejected(m_pending.lever, *target, state))
+	{
+		m_phase = Phase::Watching;
+		m_phase_seconds = 0.0;
+		m_pending = Pending();
+		return none;
+	}
+
+	std::vector<double> speeds, costs;
+	double late = 0.0;
+	for (const AutoTuneWindow& w : m_pending.baseline)
+	{
+		speeds.push_back(w.speed_pct);
+		late += w.late_frame_ratio;
+		if (const std::optional<double> cost = CostOf(m_pending.bottleneck, w))
+			costs.push_back(*cost);
+	}
+
+	m_trial = Trial();
+	m_trial.lever = m_pending.lever;
+	m_trial.value = m_pending.value;
+	m_trial.bottleneck = m_pending.bottleneck;
+	m_trial.speed_before = AutoTuneSummarize(speeds);
+	m_trial.cost_before = AutoTuneSummarize(costs);
+	m_trial.late_before = Mean(late, m_pending.baseline.size());
+	m_trial.windows = MeasureWindowsFor(m_pending.lever);
+	EnterSettle(Phase::SettlingTrial, TrialSettleSeconds(m_pending.lever, m_trial.speed_before.centre));
+
+	AutoTuneAction action;
+	action.kind = AutoTuneAction::Kind::StartTrial;
+	action.lever = m_pending.lever;
+	action.value = m_pending.value;
+	action.bottleneck = m_pending.bottleneck;
+	action.speed_before = m_trial.speed_before.centre;
+	action.cost_before = m_trial.cost_before.n >= m_policy.min_cost_windows ? m_trial.cost_before.centre : 0.0;
+	m_pending = Pending();
+	return action;
+}
+
 AutoTuneAction AutoTuneController::FinishTrial()
 {
-	const double speed_after = Mean(m_trial.speed_sum, m_trial.collected);
+	const AutoTuneStat speed_after = AutoTuneSummarize(m_trial.speeds);
+	const AutoTuneStat cost_after = AutoTuneSummarize(m_trial.costs);
 	const double late_after = Mean(m_trial.late_sum, m_trial.collected);
-	const double base = std::max(m_trial.speed_before, 1.0);
-	const double gain = (speed_after - m_trial.speed_before) / base;
 
-	const bool improved = gain >= m_policy.gain_fraction - 1e-9;
+	const AutoTuneGain speed = AutoTuneJudgeGain(m_trial.speed_before, speed_after, true, m_policy);
+
+	// The cost the lever targets counts only where both sides have enough windows with a figure for it.
+	const bool have_cost = m_trial.cost_before.n >= m_policy.min_cost_windows && cost_after.n >= m_policy.min_cost_windows;
+	AutoTuneGain cost;
+	if (have_cost)
+		cost = AutoTuneJudgeGain(m_trial.cost_before, cost_after, false, m_policy);
+
 	// From bad to fully good counts even when the gain is under the bar. A baseline that was already fast
 	// and only had late frames does not get this for free: it needs the late frames gone.
-	const bool was_good_speed = m_trial.speed_before >= m_policy.reached_speed_pct;
+	const bool was_good_speed = m_trial.speed_before.centre >= m_policy.reached_speed_pct;
 	const bool was_late = m_trial.late_before >= m_policy.late_frame_ratio_bad;
-	const bool fixed = speed_after >= m_policy.reached_speed_pct && late_after < m_policy.late_frame_ratio_bad &&
+	const bool fixed = speed_after.centre >= m_policy.reached_speed_pct && late_after < m_policy.late_frame_ratio_bad &&
 	                   (!was_good_speed || was_late);
+
+	// Keep: the speed clearly rose, or reached full speed, or the cost the lever targets clearly fell while the
+	// speed did not clearly drop (something else is still the limit). Reject, and remember it: neither figure
+	// shows a gain even allowing for the noise. Anything else is inconclusive.
+	const bool keep_on_speed = fixed || speed.clear;
+	const bool keep_on_cost = have_cost && cost.clear && speed.gain > -speed.noise;
+	const bool reject = speed.none && (!have_cost || cost.none);
 
 	AutoTuneAction action;
 	action.lever = m_trial.lever;
 	action.value = m_trial.value;
 	action.bottleneck = m_last_bottleneck;
-	action.speed_before = m_trial.speed_before;
-	action.speed_after = speed_after;
-	action.gain = gain;
-	action.measured = true;
+	action.speed_before = m_trial.speed_before.centre;
+	action.speed_after = speed_after.centre;
+	action.gain = speed.gain;
+	if (have_cost)
+	{
+		action.cost_before = m_trial.cost_before.centre;
+		action.cost_after = cost_after.centre;
+		action.cost_gain = cost.gain;
+	}
 
-	if (improved || fixed)
+	if (keep_on_speed || keep_on_cost)
 	{
 		action.kind = AutoTuneAction::Kind::Keep;
+		action.measured = true;
+		if (!keep_on_speed)
+			action.gain = cost.gain;
 		// Nothing about the applied state changes for a keep, so only the hitch of persisting it is waited out.
 		EnterSettle(Phase::SettlingAfter, m_policy.settle_seconds);
-	}
-	else
-	{
-		action.kind = AutoTuneAction::Kind::Revert;
-		m_rejected.push_back({m_trial.lever, m_trial.value});
-		EnterSettle(Phase::SettlingAfter, SettleSecondsFor(m_trial.lever));
+		m_trial = Trial();
+		return action;
 	}
 
+	if (!reject)
+	{
+		// Neither a clear gain nor clearly nothing. Look a little longer before giving up.
+		if (m_trial.extensions < m_policy.max_extensions && m_policy.extend_windows > 0)
+		{
+			m_trial.extensions++;
+			m_trial.windows += m_policy.extend_windows;
+			return AutoTuneAction();
+		}
+
+		// Still within the noise: undo it and move on, without writing "did not help" for good. This session
+		// does not offer the same step again.
+		action.kind = AutoTuneAction::Kind::Revert;
+		action.measured = false;
+		action.inconclusive = true;
+		m_rejected.push_back({m_trial.lever, m_trial.value});
+		EnterSettle(Phase::SettlingAfter, SettleSecondsFor(m_trial.lever));
+		m_trial = Trial();
+		return action;
+	}
+
+	action.kind = AutoTuneAction::Kind::Revert;
+	action.measured = true;
+	m_rejected.push_back({m_trial.lever, m_trial.value});
+	EnterSettle(Phase::SettlingAfter, SettleSecondsFor(m_trial.lever));
 	m_trial = Trial();
 	return action;
 }
@@ -476,6 +640,21 @@ AutoTuneAction AutoTuneController::OnWindow(const AutoTuneWindow& w, const AutoT
 				return action;
 			}
 
+		case Phase::Baselining:
+			// The problem has to still be there: a window that is fine ends the diagnosis, and the next bad
+			// streak starts over.
+			if (!IsBad(w))
+			{
+				m_phase = Phase::Watching;
+				m_phase_seconds = 0.0;
+				m_pending = Pending();
+				return none;
+			}
+			m_pending.baseline.push_back(w);
+			if (m_pending.baseline.size() < m_pending.extra_wanted + m_policy.trigger_windows)
+				return none;
+			return StartPendingTrial(state);
+
 		case Phase::SettlingTrial:
 			m_phase_seconds -= w.seconds;
 			if (m_phase_seconds <= 0.0)
@@ -486,7 +665,9 @@ AutoTuneAction AutoTuneController::OnWindow(const AutoTuneWindow& w, const AutoT
 			return none;
 
 		case Phase::Measuring:
-			m_trial.speed_sum += w.speed_pct;
+			m_trial.speeds.push_back(w.speed_pct);
+			if (const std::optional<double> cost = CostOf(m_trial.bottleneck, w))
+				m_trial.costs.push_back(*cost);
 			m_trial.late_sum += w.late_frame_ratio;
 			m_trial.collected++;
 			if (m_trial.collected < m_trial.windows)

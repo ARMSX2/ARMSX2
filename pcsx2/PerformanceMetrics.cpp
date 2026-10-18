@@ -497,6 +497,10 @@ bool PerformanceMetrics::TryGetWindowSnapshot(WindowSnapshot* out)
 	snap.has_gs_back_thread = HasGSBackThread();
 	snap.has_iop_thread = HasIOPThread();
 	snap.has_gpu_timer = HasGPUTimer();
+	snap.ee_ms = static_cast<float>(s_cpu_thread_time);
+	snap.gs_ms = static_cast<float>(s_gs_thread_time);
+	snap.gs_back_ms = static_cast<float>(s_gs_back_thread_time);
+	snap.gpu_ms = s_average_gpu_time;
 
 	std::atomic_thread_fence(std::memory_order_acquire);
 	if (s_window_seq.load(std::memory_order_relaxed) != before)

@@ -257,6 +257,40 @@ TEST(AutoTuneSampler, CopiesTheThreadFigures)
 	EXPECT_DOUBLE_EQ(*w.ee_wait_vu1_ratio, 0.05);
 }
 
+TEST(AutoTuneSampler, CopiesWhatEachThreadCostPerFrame)
+{
+	PerformanceMetrics::WindowSnapshot s = Snap(1);
+	s.ee_ms = 12.5f;
+	s.gs_ms = 16.0f;
+	s.gs_back_ms = 7.5f;
+	s.has_gs_back_thread = true;
+	s.gpu_ms = 9.25f;
+	s.has_gpu_timer = true;
+
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(s, Steady(), Tally(0.5), &w));
+	EXPECT_DOUBLE_EQ(w.ee_ms, 12.5);
+	EXPECT_DOUBLE_EQ(w.mtgs_ms, 16.0);
+	EXPECT_DOUBLE_EQ(w.gs_back_ms, 7.5);
+	EXPECT_DOUBLE_EQ(w.gpu_ms, 9.25);
+}
+
+TEST(AutoTuneSampler, ACostOfAThreadOrTimerThatIsNotThereReadsZero)
+{
+	PerformanceMetrics::WindowSnapshot s = Snap(1);
+	s.gs_back_ms = 7.5f; // stale figure with no thread registered
+	s.has_gs_back_thread = false;
+	s.gpu_ms = 9.25f; // stale figure with no timer
+	s.has_gpu_timer = false;
+
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(s, Steady(), Tally(0.5), &w));
+	EXPECT_EQ(w.gs_back_ms, 0.0);
+	EXPECT_EQ(w.gpu_ms, 0.0);
+}
+
 TEST(AutoTuneSampler, AThreadThatDoesNotExistReadsZero)
 {
 	PerformanceMetrics::WindowSnapshot s = Snap(1);

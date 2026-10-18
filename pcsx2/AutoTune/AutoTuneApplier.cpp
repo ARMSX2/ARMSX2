@@ -38,6 +38,17 @@ static_assert(static_cast<int>(GSHardwareDownloadMode::Disabled) == AutoTuneDown
 static_assert(static_cast<int>(GSHardwareDownloadMode::Asynchronous) == AutoTuneDownloadMode::Asynchronous);
 static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Maximum) == 5);
 
+namespace
+{
+	// ", target cost 127.00 -> 4.75 ms per frame (-96%)" when the cost the lever targets was measured on both sides.
+	std::string CostText(const AutoTuneAction& a)
+	{
+		if (a.cost_before <= 0.0 || a.cost_after <= 0.0)
+			return {};
+		return fmt::format(", target cost {:.2f} -> {:.2f} ms per frame ({:+.0f}%)", a.cost_before, a.cost_after, -a.cost_gain * 100.0);
+	}
+} // namespace
+
 // ================================================================================================
 // AutoTuneApplier
 // ================================================================================================
@@ -148,7 +159,8 @@ void AutoTuneApplier::StartTrial(const AutoTuneAction& action)
 	m_trial_value = action.value;
 
 	const std::string label = AutoTune::LeverLabel(action.lever, action.value);
-	m_env.Log(fmt::format("trying {} (bottleneck {}, speed {:.1f}%)", label, AutoTuneBottleneckName(action.bottleneck), action.speed_before));
+	m_env.Log(fmt::format("trying {} (bottleneck {}, speed {:.1f}%{})", label, AutoTuneBottleneckName(action.bottleneck), action.speed_before,
+		action.cost_before > 0.0 ? fmt::format(", {:.2f} ms per frame on the target", action.cost_before) : std::string()));
 	m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: trying {}..."), label));
 
 	// The settle period starts after this returns: the controller waits out the windows that follow.
@@ -158,7 +170,8 @@ void AutoTuneApplier::StartTrial(const AutoTuneAction& action)
 void AutoTuneApplier::Keep(const AutoTuneAction& action)
 {
 	const std::string label = AutoTune::LeverLabel(action.lever, action.value);
-	m_env.Log(fmt::format("keeping {}: speed {:.1f}% -> {:.1f}% ({:+.1f}%)", label, action.speed_before, action.speed_after, action.gain * 100.0));
+	m_env.Log(fmt::format("keeping {}: speed {:.1f}% -> {:.1f}% ({:+.1f}%){}", label, action.speed_before, action.speed_after, action.gain * 100.0,
+		CostText(action)));
 
 	AutoTune::Change change;
 	const bool persisted = m_env.EditGameFile([&](SettingsInterface& ini) {
@@ -205,9 +218,17 @@ void AutoTuneApplier::Revert(const AutoTuneAction& action)
 		const AutoTuneRejection rejection{action.lever, action.value};
 		m_rejected.push_back(rejection);
 		m_env.EditGameFile([&](SettingsInterface& ini) { AutoTune::RecordRejected(ini, rejection); });
-		m_env.Log(fmt::format("{} did not help (speed {:.1f}% -> {:.1f}%, {:+.1f}%); undone", label, action.speed_before, action.speed_after,
-			action.gain * 100.0));
+		m_env.Log(fmt::format("{} did not help (speed {:.1f}% -> {:.1f}%, {:+.1f}%){}; undone", label, action.speed_before, action.speed_after,
+			action.gain * 100.0, CostText(action)));
 		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} did not help, undone"), label));
+	}
+	else if (action.inconclusive)
+	{
+		// Within the noise even after a longer look: undone, and not written to the game's file, because a result
+		// that could be noise must not keep the same step from being tried for good.
+		m_env.Log(fmt::format("{} was inconclusive (speed {:.1f}% -> {:.1f}%, {:+.1f}%){}; undone, not remembered", label, action.speed_before,
+			action.speed_after, action.gain * 100.0, CostText(action)));
+		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} made no clear difference, undone"), label));
 	}
 	else
 	{
@@ -412,7 +433,7 @@ namespace
 			case Kind::Keep:
 				return "keep";
 			case Kind::Revert:
-				return a.measured ? "revert" : "cancel";
+				return a.measured ? "revert" : (a.inconclusive ? "inconclusive" : "cancel");
 			case Kind::ReportBottleneck:
 				return "report";
 			case Kind::Unclassified:
@@ -617,7 +638,7 @@ namespace
 		if (std::ftell(f) == 0)
 		{
 			std::fputs("t,seq,usable,seconds,speed,late,ee,mtgs,gsb,mtvu,iop,gpu,gpu_timer,wait_gs,wait_vu1,phase,streak,"
-					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop,ee_rate\n",
+					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop,ee_rate,ee_ms,gs_ms,gsb_ms,gpu_ms\n",
 				f);
 		}
 		std::fprintf(f, "# session %s crc %08X\n", VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC());
@@ -631,7 +652,7 @@ namespace
 			return;
 
 		const auto opt = [](const std::optional<double>& v) { return v ? fmt::format("{:.3f}", *v) : std::string(); };
-		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{},{}\n",
+		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{},{},{:.2f},{:.2f},{:.2f},{:.2f}\n",
 			m_session_timer.GetTimeSeconds(), m_sampler.LastSequence(), w.usable ? 1 : 0, w.seconds, w.speed_pct, w.late_frame_ratio, w.ee_pct,
 			w.mtgs_pct, w.gs_back_pct, w.mtvu_pct, w.iop_pct, w.gpu_pct, w.has_gpu_timer ? 1 : 0, opt(w.ee_wait_gs_ratio),
 			opt(w.ee_wait_vu1_ratio), AutoTuneController::PhaseName(m_controller.GetPhase()), m_controller.BadStreak(),
@@ -643,7 +664,8 @@ namespace
 				fmt::format("{:g}", a.value) :
 				std::string(),
 			a.gain, s.resolution, s.gs_back_thread_on ? 1 : 0, s.download_mode, s.blending_level, s.iop_thread_on ? 1 : 0,
-			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio), static_cast<int>(EECycleRate::GetEffective()));
+			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio), static_cast<int>(EECycleRate::GetEffective()), w.ee_ms, w.mtgs_ms,
+			w.gs_back_ms, w.gpu_ms);
 		std::fputs(line.c_str(), f);
 		std::fflush(f);
 	}

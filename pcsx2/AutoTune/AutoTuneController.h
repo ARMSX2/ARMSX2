@@ -13,11 +13,22 @@
 //   watching  counts consecutive usable windows that are bad (speed under policy.bad_speed_pct, or late
 //             frames). trigger_windows of them in a row start a diagnosis.
 //   classify  from the averages of those windows, which part of the emulator is the bottleneck.
+//   baseline  takes baseline_extra_windows more windows right before the trial, so the "before" is
+//             measured now and over enough windows to tell a steady figure from a hitch.
 //   trial     applies the next countermeasure for that bottleneck (StartTrial), waits out the settle time,
-//             measures measure_windows windows, and either keeps it (Keep) or undoes it (Revert) and
-//             remembers that it did not help. The EE governor's trial settles and measures for longer,
+//             measures measure_windows windows, and gives one of three verdicts: keep it (Keep), undo it
+//             and remember that it did not help (Revert, measured), or undo it and remember nothing
+//             (Revert, inconclusive) when the difference is within the noise. An inconclusive measurement
+//             is first extended by a few windows. The EE governor's trial settles and measures for longer,
 //             in step with the governor's own clocks (policy.governor_*).
 //   repeat    until the frames stop being late, or no countermeasure is left (Exhausted).
+//
+// A trial is judged on the medians of its windows, never the means: one hitch window (a shader compile,
+// a state save) moves a mean of four windows by several percent and a median by nothing. It is judged on
+// two figures: the speed, and the cost of the thing the lever targets (GPU ms per frame, GS thread ms per
+// frame, or EE ms per frame; see AutoTuneController::CostOf). Speed alone cannot see a lever that works
+// while something else is still the limit, and at the noise a slow game has it cannot tell a notch of
+// resolution from nothing when another cost dominates the frame.
 //
 // Only usable windows count. An unusable window (paused, fast-forward, frame advance, a GS dump) neither
 // advances a clock nor breaks a streak: it is as if it had not happened.
@@ -127,10 +138,40 @@ struct AutoTunePolicy
 		return governor.warmup_seconds + steps * dwell + (steps - 1.0) * governor.cooldown_seconds + governor.window_seconds;
 	}
 
-	/// A trial is kept when the mean speed rose by at least this fraction of the mean before it...
+	/// A trial is kept when the median of its speed (or of the cost it targets) improved by at least this
+	/// fraction of the median before it, and by more than the noise (below)...
 	double gain_fraction = 0.05;
 	/// ...or when it went from bad to this speed with no late frames.
 	double reached_speed_pct = 99.0;
+
+	/// The noise a gain has to clear, as this many standard errors of the difference between the two
+	/// medians (each estimated from the spread of its own windows, robustly). A gain that reaches
+	/// gain_fraction but not the noise is inconclusive, not a keep.
+	double noise_z = 2.0;
+	/// The standard error is never taken to be smaller than this fraction of the baseline: the windows of
+	/// one scene are not independent draws (the scene moves, the clocks drift), and a run of steady windows
+	/// would otherwise claim a precision it does not have. With noise_z that is a 3% floor on the gain.
+	double noise_floor_fraction = 0.015;
+
+	/// Windows taken right before a trial, added to the ones that triggered the diagnosis, so the baseline
+	/// is measured now and not borrowed from an earlier trial or from before a hitch.
+	uint32_t baseline_extra_windows = 4;
+
+	/// A measurement that is neither a clear gain nor clearly nothing is extended by this many windows, up
+	/// to max_extensions times, and then undone without being remembered as "did not help".
+	uint32_t extend_windows = 4;
+	uint32_t max_extensions = 2;
+
+	/// Windows with a figure for the targeted cost needed on both sides before the cost is used to judge.
+	uint32_t min_cost_windows = 3;
+
+	/// Below this speed the game is so far from full speed that one notch of resolution cannot close the gap
+	/// (a notch removes at most (r / (r - 1))^2 of the pixels: 1.3x at 8x, 1.7x at 4x), so the levers whose
+	/// effect is not bounded that way are tried before resolution: blending accuracy and the download mode.
+	/// Measured on a God of War II scene at 8x with Maximum blending, 9% speed: six resolution trials moved
+	/// the speed from 9.4% to 13.1% over 70 s, and one blending step moved it from 13% to 100%. 0 turns the
+	/// reordering off.
+	double cheap_levers_first_below_pct = 50.0;
 
 	/// After a diagnosis that found nothing to act on, wait this long before saying so again.
 	double unclassified_cooldown_seconds = 30.0;
@@ -158,6 +199,12 @@ struct AutoTuneWindow
 	double iop_pct = 0.0; // 0 when the IOP has no thread of its own
 	double gpu_pct = 0.0;
 	bool has_gpu_timer = false;
+	/// What each thread costs per frame, in milliseconds (CPU time per frame; GPU time per frame): the currency
+	/// a trial is judged in. 0 = not measured, or no such thread.
+	double ee_ms = 0.0;
+	double mtgs_ms = 0.0;
+	double gs_back_ms = 0.0;
+	double gpu_ms = 0.0;
 	/// The share of its time the EE spent waiting for the GS, for VU1, and for the IOP thread. Unknown when
 	/// they could not be measured over the window (see AutoTuneSampler); the controller works without them.
 	std::optional<double> ee_wait_gs_ratio;
@@ -227,13 +274,23 @@ struct AutoTuneAction
 	AutoTuneLever lever = AutoTuneLever::Count;
 	double value = 0.0;
 	AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
-	/// Keep and Revert: the mean speed before the trial and during it, and the relative change.
+	/// StartTrial, Keep and Revert: the median speed before the trial and during it, and the relative change.
+	/// For a Keep, `gain` is the change of whichever figure earned the keep: the speed, or (when the speed
+	/// hardly moved because something else is still the limit) the cost the lever targets.
 	double speed_before = 0.0;
 	double speed_after = 0.0;
 	double gain = 0.0;
+	/// The median cost the lever targets before and during the trial (ms per frame), and its relative
+	/// improvement (positive is cheaper). 0 when the cost could not be measured on both sides.
+	double cost_before = 0.0;
+	double cost_after = 0.0;
+	double cost_gain = 0.0;
 	/// Revert only: false when the trial was cut short (the scene changed, the user changed a setting)
-	/// instead of being measured. Only a measured failure is remembered as "did not help".
+	/// or was inconclusive, instead of being measured to a clear answer. Only a measured failure is
+	/// remembered as "did not help"; the controller still does not offer the same step again this session.
 	bool measured = false;
+	/// Revert only: the measurement stayed within the noise even after being extended.
+	bool inconclusive = false;
 };
 
 enum class AutoTuneDisturbance : uint8_t
@@ -243,6 +300,30 @@ enum class AutoTuneDisturbance : uint8_t
 	Resumed, // back from a pause: the bad-window streak is cut; a trial in flight carries on
 };
 
+/// The centre of some windows' figures and how well it is known: the median, and the standard error of the
+/// median estimated from the median absolute deviation (1.4826 * MAD is a standard deviation for a normal
+/// spread, and the median of n has 1.2533 times the error of the mean). Both ignore a hitch window.
+struct AutoTuneStat
+{
+	double centre = 0.0;
+	double error = 0.0;
+	size_t n = 0;
+};
+AutoTuneStat AutoTuneSummarize(std::vector<double> values);
+
+/// How much a figure changed between two sets of windows, and whether that is a clear gain, clearly nothing, or
+/// neither. `gain` is the relative improvement of the median (positive is better); `noise` is what it has to
+/// beat. A gain is clear when it reaches policy.gain_fraction and exceeds the noise. It is clearly nothing
+/// when even the gain plus the noise stays under policy.gain_fraction. Anything between is inconclusive.
+struct AutoTuneGain
+{
+	double gain = 0.0;
+	double noise = 0.0;
+	bool clear = false;
+	bool none = false;
+};
+AutoTuneGain AutoTuneJudgeGain(const AutoTuneStat& before, const AutoTuneStat& after, bool higher_is_better, const AutoTunePolicy& policy);
+
 class AutoTuneController
 {
 public:
@@ -250,6 +331,7 @@ public:
 	{
 		WarmUp,
 		Watching,
+		Baselining, // a lever is chosen; taking the windows its trial is compared with
 		SettlingTrial, // a trial is applied, waiting out the hitch
 		Measuring,
 		SettlingAfter, // a keep or revert was applied, waiting out the hitch
@@ -285,12 +367,28 @@ private:
 	{
 		AutoTuneLever lever = AutoTuneLever::Count;
 		double value = 0.0;
-		double speed_before = 0.0;
+		AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
+		// The windows it is compared with, summarised once when the trial starts.
+		AutoTuneStat speed_before;
+		AutoTuneStat cost_before;
 		double late_before = 0.0;
-		double speed_sum = 0.0;
+		// What the trial measured so far.
+		std::vector<double> speeds;
+		std::vector<double> costs;
 		double late_sum = 0.0;
 		uint32_t collected = 0;
 		uint32_t windows = 0; // how many to collect before judging
+		uint32_t extensions = 0;
+	};
+
+	// A lever chosen by a diagnosis, waiting for its baseline.
+	struct Pending
+	{
+		AutoTuneLever lever = AutoTuneLever::Count;
+		double value = 0.0;
+		AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
+		std::vector<AutoTuneWindow> baseline;
+		uint32_t extra_wanted = 0;
 	};
 
 	bool IsBad(const AutoTuneWindow& w) const;
@@ -302,6 +400,11 @@ private:
 	/// The settle before a trial of `lever` is measured, for a game that was running at `speed_pct`.
 	double TrialSettleSeconds(AutoTuneLever lever, double speed_pct) const;
 	uint32_t MeasureWindowsFor(AutoTuneLever lever) const;
+	/// What a trial of a lever against `bottleneck` is judged on, in ms per frame; nullopt if the window has no
+	/// figure for it. EE: the EE thread. GPU with a GPU timer: the GPU. Otherwise the GS: the busier of the
+	/// MTGS thread and the back thread (the back thread splits the work, so the sum would not fall with it).
+	std::optional<double> CostOf(AutoTuneBottleneck bottleneck, const AutoTuneWindow& w) const;
+	AutoTuneAction StartPendingTrial(const AutoTuneLeverState& state);
 	AutoTuneAction FinishTrial();
 	void EnterSettle(Phase phase, double seconds);
 
@@ -311,6 +414,7 @@ private:
 	uint32_t m_streak = 0;
 	std::vector<AutoTuneWindow> m_streak_windows;
 	Trial m_trial;
+	Pending m_pending;
 	std::vector<AutoTuneRejection> m_rejected; // this session
 	bool m_exhausted[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
 	bool m_reported[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
