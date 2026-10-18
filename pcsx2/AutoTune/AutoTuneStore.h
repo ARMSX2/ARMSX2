@@ -1,0 +1,98 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+// What auto-tune writes into a game's own settings file, and how it takes it back.
+//
+// A kept lever becomes an ordinary key in the game's file (so the game starts tuned next time, and the
+// settings screens show it), and an `[AutoTune]` section records what was there before:
+//
+//   [AutoTune]
+//   Change.0 = resolution|EmuCore/GS|upscale_multiplier|=3|2|0.1210
+//   Change.1 = iop-thread|EmuCore/Speedhacks|iopThread|~|true|0.1830
+//   Rejected.0 = blending@0
+//
+// A Change line is `lever|section|key|original|new|gain`. The original is `=<text>` when the file had the
+// key and `~` when it did not (the game was following the global setting, and a reset must delete the key
+// again, not freeze the global value into the file). The new value is the text the file holds. Rejected
+// lines are `lever@value`: a step that was tried and did not help.
+//
+// Everything here works on a SettingsInterface, so it runs on the per-game INI, on a memory interface in
+// a test, and without a VM.
+
+#pragma once
+
+#include "AutoTune/AutoTuneController.h"
+
+#include <optional>
+#include <string>
+#include <vector>
+
+class SettingsInterface;
+
+namespace AutoTune
+{
+	inline constexpr const char* kStoreSection = "AutoTune";
+
+	/// The settings key a lever writes.
+	struct LeverKey
+	{
+		const char* section;
+		const char* key;
+	};
+	LeverKey KeyForLever(AutoTuneLever lever);
+
+	/// One key auto-tune set in the game's file.
+	struct Change
+	{
+		AutoTuneLever lever = AutoTuneLever::Count;
+		std::string section;
+		std::string key;
+		std::optional<std::string> original; // nullopt: the file did not have the key
+		std::string value; // as the file holds it
+		double gain = 0.0; // relative speed gain, compounded over every step kept on this key
+	};
+
+	/// Writes a lever's value under its key, as the right type for that key.
+	void WriteLeverValue(SettingsInterface& si, AutoTuneLever lever, double value);
+
+	std::vector<Change> ReadChanges(const SettingsInterface& si);
+	std::vector<AutoTuneRejection> ReadRejected(const SettingsInterface& si);
+
+	/// Sets the lever's key to `value` in `si` and records it. When the key was already one of ours the
+	/// first original is kept and the gains compound, so a reset goes back to what the player had.
+	Change Commit(SettingsInterface& si, AutoTuneLever lever, double value, double gain);
+
+	/// Remembers that a step did not help. Idempotent.
+	void RecordRejected(SettingsInterface& si, const AutoTuneRejection& rejection);
+
+	/// A key a reset put back (or deleted) in the file. `value` is empty when the key was deleted.
+	struct Restored
+	{
+		std::string section;
+		std::string key;
+		std::optional<std::string> value;
+	};
+
+	struct ResetResult
+	{
+		bool had_record = false;
+		/// Keys put back to their original value (or deleted, when there was none).
+		std::vector<Restored> restored;
+		/// Keys the player changed after auto-tune did; left as they are.
+		std::vector<Change> left_alone;
+	};
+
+	/// Puts every recorded key back, except those whose value is no longer the one auto-tune wrote, and
+	/// removes the `[AutoTune]` section (the rejected steps too, so a later session may try them again).
+	ResetResult Reset(SettingsInterface& si);
+
+	/// One line per change, then one for the steps that did not help, in words the player can read.
+	std::vector<std::string> Describe(const SettingsInterface& si);
+
+	/// True when two settings texts mean the same value ("2" and "2.000000", "true" and "1").
+	bool SameValue(const std::string& a, const std::string& b);
+
+	/// "Resolution 3x" style label for the OSD and the list. `value` is the lever's value as the controller
+	/// uses it.
+	std::string LeverLabel(AutoTuneLever lever, double value);
+} // namespace AutoTune

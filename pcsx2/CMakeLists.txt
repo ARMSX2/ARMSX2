@@ -68,6 +68,7 @@ set(pcsx2Sources
 	Arcade/ArcadeInput.cpp
 	Arcade/ArcadeSetup.cpp
 	AutoTune/AutoTuneController.cpp
+	AutoTune/AutoTuneStore.cpp
 	Autosave.cpp
 	BuildVersion.cpp
 	Cache.cpp
@@ -174,6 +175,7 @@ set(pcsx2Headers
 	Arcade/ArcadeInput.h
 	Arcade/ArcadeSetup.h
 	AutoTune/AutoTuneController.h
+	AutoTune/AutoTuneStore.h
 	Autosave.h
 	BuildVersion.h
 	Cache.h
