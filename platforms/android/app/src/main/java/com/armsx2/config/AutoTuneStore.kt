@@ -1,6 +1,7 @@
 package com.armsx2.config
 
 import android.util.Log
+import androidx.core.content.edit
 import com.armsx2.EmuState
 import com.armsx2.runtime.MainActivityRuntime
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +22,12 @@ import java.util.concurrent.Executors
  *
  *  - [onCommitted]: the core moved one setting into the file; write it into `config.game.<key>` too.
  *  - [reset]: the core put the file's keys back to what they were; do the same to `config.game.<key>`.
+ *
+ * The core records what the *file* held before a commit, and the file is not where the player's own choices
+ * live: a value picked in the quick menu is in the app's copy only until the file is next regenerated, so the
+ * core's record says the key was absent and a reset would hand the game back to the global setting. [onCommitted]
+ * therefore also notes the override the app's copy had before it wrote ([notePrior], kept in
+ * `config.autotune.prior.<key>`), and [reset] puts that value back when there is one.
  *
  * The `[AutoTune]` section is outside the sections the app regenerates, so it survives and still carries
  * the record.
@@ -75,23 +82,66 @@ object AutoTuneStore {
         }
     }
 
-    /** Writes a committed key into the sparse per-game [overrides]. False when the key is not one of ours or the text does not parse. */
-    internal fun applyCommit(overrides: JSONObject, section: String, key: String, value: String): Boolean {
+    private const val PRIOR = "prior"
+    private const val COMMITTED = "committed"
+    private const val PRIOR_PREFS_KEY = "config.autotune.prior."
+
+    /** Whether two JSON values of a lever field are the same setting (2 and 2.0 are). */
+    internal fun sameJson(a: Any?, b: Any?): Boolean {
+        if (a == null || b == null) return a == b
+        if (a is Number && b is Number) return Math.abs(a.toDouble() - b.toDouble()) < 1e-6
+        return a == b
+    }
+
+    /**
+     * Notes, before [committed] is written over [overrides], the value the player's own override of [lever] had,
+     * in [priors] (`field -> {prior?, committed}`). Called for every commit; only the first step on a field takes
+     * the override as the player's: while the override still holds the value auto-tune committed last, it is
+     * auto-tune's own and the record keeps what was there before. If the override is something else now, the
+     * player set it since, and that is the value to give back. No override at all records no `prior`.
+     */
+    internal fun notePrior(priors: JSONObject, overrides: JSONObject, lever: Lever, committed: Any) {
+        val entry = priors.optJSONObject(lever.field)
+        val current: Any? = if (overrides.has(lever.field)) overrides.get(lever.field) else null
+        if (entry != null && current != null && entry.has(COMMITTED) && sameJson(entry.get(COMMITTED), current)) {
+            entry.put(COMMITTED, committed)
+            return
+        }
+        val fresh = JSONObject()
+        if (current != null) fresh.put(PRIOR, current)
+        fresh.put(COMMITTED, committed)
+        priors.put(lever.field, fresh)
+    }
+
+    /**
+     * Writes a committed key into the sparse per-game [overrides]. False when the key is not one of ours or the text
+     * does not parse. With [priors], also notes the override that was there before ([notePrior]).
+     */
+    internal fun applyCommit(overrides: JSONObject, section: String, key: String, value: String, priors: JSONObject? = null): Boolean {
         val lever = leverFor(section, key) ?: return false
         val json = jsonValue(lever, value) ?: return false
+        priors?.let { notePrior(it, overrides, lever, json) }
         overrides.put(lever.field, json)
         return true
     }
 
     /**
-     * Puts back what a reset restored. A key the core deleted had no value in the game's file, so the game followed
-     * global for it: the override goes. A key it restored to a value had one: the override is that value again.
-     * Returns how many fields were touched.
+     * Puts back what a reset restored. A key the player had an override for before auto-tune ([priors]) gets that
+     * value back, whatever the core's file said. Otherwise: a key the core deleted had no value in the game's file,
+     * so the game followed global for it and the override goes; a key it restored to a value had one, and the
+     * override is that value again. A key the core left alone (the player changed it since) is not in [restored]
+     * and is not touched. Returns how many fields were touched.
      */
-    internal fun applyRestore(overrides: JSONObject, restored: List<Restored>): Int {
+    internal fun applyRestore(overrides: JSONObject, restored: List<Restored>, priors: JSONObject? = null): Int {
         var touched = 0
         for (r in restored) {
             val lever = leverFor(r.section, r.key) ?: continue
+            val prior = priors?.optJSONObject(lever.field)
+            if (prior != null && prior.has(PRIOR)) {
+                overrides.put(lever.field, prior.get(PRIOR))
+                touched++
+                continue
+            }
             if (r.value == null) {
                 if (overrides.has(lever.field)) {
                     overrides.remove(lever.field)
@@ -129,14 +179,27 @@ object AutoTuneStore {
             runCatching {
                 synchronized(storeLock) {
                     val overrides = ConfigStore.loadOverrides(settingsKey) ?: JSONObject()
-                    if (applyCommit(overrides, section, key, value)) {
+                    val priors = loadPriors(settingsKey)
+                    if (applyCommit(overrides, section, key, value, priors)) {
                         ConfigStore.saveOverrides(settingsKey, overrides)
+                        savePriors(settingsKey, priors)
                         Log.i(TAG, "auto-tune: $section/$key = $value written to config.game.$settingsKey")
                     } else {
                         Log.w(TAG, "auto-tune: could not read '$value' for $section/$key")
                     }
                 }
             }.onFailure { Log.e(TAG, "auto-tune write-back failed for $section/$key", it) }
+        }
+    }
+
+    private fun loadPriors(settingsKey: String): JSONObject =
+        runCatching {
+            MainActivityRuntime.prefs.getString(PRIOR_PREFS_KEY + settingsKey, null)?.let { JSONObject(it) }
+        }.getOrNull() ?: JSONObject()
+
+    private fun savePriors(settingsKey: String, priors: JSONObject) {
+        MainActivityRuntime.prefs.edit {
+            if (priors.length() == 0) remove(PRIOR_PREFS_KEY + settingsKey) else putString(PRIOR_PREFS_KEY + settingsKey, priors.toString())
         }
     }
 
@@ -173,10 +236,12 @@ object AutoTuneStore {
         withContext(Dispatchers.IO) {
             synchronized(storeLock) {
                 val overrides = ConfigStore.loadOverrides(settingsKey)
-                if (overrides != null && applyRestore(overrides, restored) > 0) {
+                if (overrides != null && applyRestore(overrides, restored, loadPriors(settingsKey)) > 0) {
                     if (overrides.length() == 0) ConfigStore.clearOverrides(settingsKey)
                     else ConfigStore.saveOverrides(settingsKey, overrides)
                 }
+                // The core clears its record on a reset; so does this one.
+                if (hadRecord) savePriors(settingsKey, JSONObject())
             }
         }
 

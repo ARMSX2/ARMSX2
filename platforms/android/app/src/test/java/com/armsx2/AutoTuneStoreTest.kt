@@ -110,6 +110,96 @@ class AutoTuneStoreTest {
         assertEquals(3.0f, resolved.output.upscaleFloat, 0.0f)
     }
 
+    private fun upscale(overrides: JSONObject): Double = overrides.getDouble("upscaleFloat")
+
+    @Test
+    fun resetGivesBackTheValueThePlayerSetInTheAppThatTheFileNeverHeld() {
+        // The player set 8x in the app's quick menu: the app's copy has it, the game's settings file does not yet.
+        // Auto-tune walks the resolution down (8 -> 5 -> 4), each step a commit, and the core's record says the
+        // original was absent (~), because it only reads the file. Reset must give back 8x, not "follow global".
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "5.000000", priors))
+        assertEquals(5.0, upscale(overrides), 0.0)
+        assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "4.000000", priors))
+        assertEquals(4.0, upscale(overrides), 0.0)
+
+        val touched = AutoTuneStore.applyRestore(
+            overrides,
+            listOf(AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", null)),
+            priors,
+        )
+        assertEquals(1, touched)
+        assertEquals("the player's own value", 8.0, upscale(overrides), 0.0)
+        assertEquals(8.0, Settings.merge(global, overrides).output.upscaleFloat.toDouble(), 0.0)
+    }
+
+    @Test
+    fun resetRemovesTheKeyWhenThePlayerHadNoOverrideOfTheirOwn() {
+        val overrides = JSONObject()
+        val priors = JSONObject()
+        assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/Speedhacks", "iopThread", "true", priors))
+        assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "3.000000", priors))
+        assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "2.000000", priors))
+        assertFalse("a second step of ours is not the player's value", priors.getJSONObject("upscaleFloat").has("prior"))
+
+        val touched = AutoTuneStore.applyRestore(
+            overrides,
+            listOf(
+                AutoTuneStore.Restored("EmuCore/Speedhacks", "iopThread", null),
+                AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", null),
+            ),
+            priors,
+        )
+        assertEquals(2, touched)
+        assertEquals(0, overrides.length())
+    }
+
+    @Test
+    fun aValueThePlayerSetAfterTheCommitIsTheNewPriorForTheNextCommit() {
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "5.000000", priors)
+
+        // The player picks 6x in the app; auto-tune then commits 4x on top of that.
+        overrides.put("upscaleFloat", 6.0)
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "4.000000", priors)
+
+        AutoTuneStore.applyRestore(overrides, listOf(AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", null)), priors)
+        assertEquals(6.0, upscale(overrides), 0.0)
+    }
+
+    @Test
+    fun aKeyThePlayerEditedAfterTheCommitIsNotInTheRestoredListAndStaysAlone() {
+        // The core leaves a key the player changed since the commit out of what it restored; the recorded prior
+        // must not bring the old value back over it.
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "5.000000", priors)
+        overrides.put("upscaleFloat", 7.0) // the player's edit after the commit
+
+        val touched = AutoTuneStore.applyRestore(overrides, emptyList(), priors)
+        assertEquals(0, touched)
+        assertEquals(7.0, upscale(overrides), 0.0)
+    }
+
+    @Test
+    fun theRecordedPriorOutranksTheValueTheCoreRestoredFromItsFile() {
+        // The file held 3x (an older regeneration); the player has since picked 8x in the app. 8x is the latest.
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "5.000000", priors)
+        AutoTuneStore.applyRestore(overrides, listOf(AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", "3")), priors)
+        assertEquals(8.0, upscale(overrides), 0.0)
+    }
+
+    @Test
+    fun withoutARecordResetBehavesAsBefore() {
+        val overrides = JSONObject().put("upscaleFloat", 2.0)
+        AutoTuneStore.applyRestore(overrides, listOf(AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", "3")))
+        assertEquals(3.0, upscale(overrides), 0.0)
+    }
+
     @Test
     fun resetOfAnAbsentOverrideChangesNothing() {
         val overrides = JSONObject()
