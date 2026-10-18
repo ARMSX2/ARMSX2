@@ -3985,6 +3985,14 @@ void VMManager::CheckForConfigChanges(const Pcsx2Config& old_config)
 		CheckForMemoryCardConfigChanges(old_config);
 		USB::CheckForConfigChanges(old_config);
 	}
+	else if (GetState() == VMState::Shutdown)
+	{
+		// The desktop settings window and Big Picture apply settings with no VM too. Nothing is running to
+		// reset, but turning vu-aot off still clears what it saved (a VM that is initializing is left alone:
+		// its settings are the game's layered over the global ones, and the cache is shared between games).
+		vuAotSettingChanged(old_config.Cpu.Recompiler.EnableVUAot, EmuConfig.Cpu.Recompiler.EnableVUAot,
+			EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	}
 
 	// For the big picture UI, we still need to update GS settings, since it's running,
 	// and we don't update its config when we start the VM.
