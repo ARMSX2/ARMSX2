@@ -168,6 +168,11 @@ namespace
 
 TEST(PadInput, DualShock2AnswersAsItAlwaysDid)
 {
+#if !(defined(__linux__) && defined(__GLIBC__))
+	// The dead-zone part goes through atan2, sin and cos, whose last bits differ between C libraries; the record
+	// was taken with glibc's.
+	GTEST_SKIP() << "the DualShock 2 record was taken with glibc's libm";
+#endif
 	PadDualshock2 pad(0, 0);
 	EXPECT_EQ(RunScript(pad, PadDualshock2::Inputs::LENGTH, PadDualshock2::Inputs::PAD_ANALOG, kDualshock2Sticks), kDualshock2);
 }

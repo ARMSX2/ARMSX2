@@ -2610,6 +2610,9 @@ std::string AuditRecordCode(const vuaot::persist::RegionCode& c, const MappedRan
 // finds the C helpers.)
 TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 {
+#if !defined(__linux__)
+	GTEST_SKIP() << "the audit reads the mapped ranges from /proc/self/maps";
+#endif
 	const MappedRanges maps;
 	ASSERT_FALSE(maps.r.empty());
 	struct Case

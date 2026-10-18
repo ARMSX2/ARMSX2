@@ -1231,9 +1231,13 @@ TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuAotIsWanted)
 
 	EXPECT_FALSE(hookOff);
 	EXPECT_TRUE(hookOn);
+	EXPECT_NE(on, off) << "the hook changed nothing";
+#if !(defined(__linux__) && !defined(__ANDROID__) && defined(__GLIBCXX__))
+	// The pins are harvested on Linux/libstdc++ (see the skip in the pinned-digest test above).
+	GTEST_SKIP() << "digest pins are harvested on Linux/libstdc++; the hook's presence is checked above";
+#endif
 	const u32 abi = mVUProgCache::GetCompilerAbiVersion();
 	EXPECT_EQ(off, findPin(abi)) << std::hex << "setting off: 0x" << off << ", abi " << std::dec << abi << " pinned 0x" << std::hex << findPin(abi);
-	EXPECT_NE(on, off) << "the hook changed nothing";
 	// Pinned from the merged code at abi 63. Re-pin it with the table when an emitter change moves it.
 	constexpr u64 kHookOnDigestAbi63 = 0xccc45e874390054b;
 	EXPECT_EQ(abi, 63u) << "the hook-on pin is for abi 63: re-pin kHookOnDigestAbi63";
