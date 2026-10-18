@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "R3000A.h"
 #include "Counters.h"
+#include "EECycleRateSampler.h"
 #include "IopCounters.h"
 #include "IopThread/IopBridge.h"
 #include "IopThread/SharedWord.h"
@@ -510,9 +511,16 @@ static __fi void VSyncStart(u64 sCycle)
 
 	// Don't bother throttling if we're going to pause.
 	if (!VMManager::Internal::IsExecutionInterrupted())
+	{
 		VMManager::Internal::Throttle(true);
+	}
 	else
-		PerformanceMetrics::AdpfPauseFrameWork(); // interrupted → no Throttle → drop the ADPF period so the resume report excludes the pause
+	{
+		// Interrupted → no Throttle → drop the work period so the resume measurement excludes
+		// the pause, and mark the governor's window unmeasurable for the same reason.
+		PerformanceMetrics::OnFrameWorkPaused();
+		EECycleRateSampler::OnFrameNotThrottled();
+	}
 
 	if (!EmuConfig.GS.AdvancedFrameDisplay)
 	{
@@ -589,9 +597,14 @@ static __fi void VSyncEnd(u64 sCycle)
 {
 	EECNT_LOG("    ================  EE COUNTER VSYNC END (frame: %d)  ================", g_FrameCount);
 	if (!VMManager::Internal::IsExecutionInterrupted())
+	{
 		VMManager::Internal::Throttle(false);
+	}
 	else
-		PerformanceMetrics::AdpfPauseFrameWork();
+	{
+		PerformanceMetrics::OnFrameWorkPaused();
+		EECycleRateSampler::OnFrameNotThrottled();
+	}
 
 	if (EmuConfig.GS.AdvancedFrameDisplay)
 	{

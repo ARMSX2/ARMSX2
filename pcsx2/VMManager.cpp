@@ -12,6 +12,8 @@
 #include "DebugTools/DebugInterface.h"
 #include "DebugTools/SymbolImporter.h"
 #include "Elfheader.h"
+#include "EECycleRate.h"
+#include "EECycleRateSampler.h"
 #include "FW.h"
 #include "GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
@@ -369,6 +371,9 @@ void VMManager::SetState(VMState state)
 			ResetFrameLimiter();
 			AutoTune::OnResumed();
 		}
+
+		// The window in progress spans a stretch of wall time the guest was not running for.
+		EECycleRateSampler::OnLifecycleReset(paused ? "paused" : "resumed");
 
 		SPU2::SetOutputPaused(paused);
 		if (!paused)
@@ -773,6 +778,11 @@ void VMManager::LoadSettings()
 	{
 		WarnAboutUnsafeSettings();
 		ApplyGameFixes();
+
+		// After the database, because a database cycle rate is one of the things that
+		// decides the answer. Once per apply, not once per frame: the governor resolves
+		// this for itself every window and does not log.
+		EECycleRate::LogResolvedEligibility();
 	}
 }
 
@@ -814,8 +824,20 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 	// a frontend also wrote the mask — only iOS does. This is what makes MaskUserHacks()
 	// below spare it, so the value survives long enough for the database to be told to
 	// leave it alone.
+	//
+	// The two cycle-rate claims come from the same read. They are key presence, not
+	// value comparison: a per-game EECycleRate that happens to equal the global one is
+	// still the player saying "this game runs at this rate", and the dynamic governor
+	// has to leave it alone.
+	EmuConfig.PerGameClaimsEECycleRate = false;
+	EmuConfig.PerGameClaimsDynamicEECycleRate = false;
 	if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-		EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
+	{
+		const PerGameOverrides overrides = ComputePerGameOverrides(*game_layer);
+		EmuConfig.GS.UserHackOverrides |= overrides.gs_hacks;
+		EmuConfig.PerGameClaimsEECycleRate = overrides.Has(SpeedHack::EECycleRate);
+		EmuConfig.PerGameClaimsDynamicEECycleRate = overrides.Has(SpeedHack::DynamicEECycleRate);
+	}
 
 	Patch::ApplyPatchSettingOverrides();
 
@@ -946,6 +968,11 @@ void VMManager::WarnAboutUnconfiguredController()
 
 void VMManager::ApplyGameFixes()
 {
+	// Cleared here rather than where it is set, because the setter only runs when a
+	// database entry exists. Every path out of this function has to leave the flag
+	// saying what THIS apply found, including the paths that find nothing.
+	EmuConfig.GameDBSetEECycleRate = false;
+
 	// An arcade game's own ELF comes off its dongle, after the boot program, so HasBootedELF() can stay
 	// false for the whole game. Its database entry is known from the gameid from the start, so it applies
 	// from the start too, under what the BIOS case below adds (PCSX2x6).
@@ -1066,6 +1093,7 @@ void VMManager::ApplyCoreSettings()
 		LoadCoreSettings(*Host::GetSettingsInterface());
 		WarnAboutUnsafeSettings();
 		ApplyGameFixes();
+		EECycleRate::LogResolvedEligibility();
 	}
 
 	CheckForConfigChanges(old_config);
@@ -2200,6 +2228,8 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	mmap_ResetBlockTracking();
 	memSetExtraMemMode(EmuConfig.Cpu.ExtraMemory);
 	vuAotResetStickyTripwire();
+	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnVMStart();
 	Internal::ClearCPUExecutionCaches();
 	FPControlRegister::SetCurrent(EmuConfig.Cpu.FPUFPCR);
 	memBindConditionalHandlers();
@@ -2356,6 +2386,7 @@ void VMManager::Shutdown(bool save_resume_state)
 	AutoTune::OnVMShutdown();
 
 	PerformanceMetrics::LogSessionSummary();
+	EECycleRateSampler::OnVMShutdown();
 
 	SetTimerResolutionIncreased(false);
 
@@ -2519,6 +2550,8 @@ void VMManager::Reset()
 	// thread back (design 9.5, 9.6). The mode is chosen before the recompilers are reset, which
 	// generates the EE dispatcher for it.
 	IopThread::ChooseModeForReset();
+	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnLifecycleReset("VM reset");
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 	SysMemory::Reset();
@@ -2649,6 +2682,10 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 
 	MemcardBusy::CheckSaveStateDependency();
 	AutoTune::OnSceneChanged();
+
+	// A state load replaces the guest wholesale, so every window of evidence about the one
+	// that was running describes a scene that is gone.
+	EECycleRateSampler::OnLifecycleReset("save-state load");
 	return true;
 }
 
@@ -2953,6 +2990,16 @@ float VMManager::GetTargetSpeedForLimiterMode(LimiterModeType mode)
 
 void VMManager::UpdateTargetSpeed()
 {
+	// Captured before anything below is recomputed, because most calls here do not change
+	// the deadline at all - a fullscreen toggle, a vsync settings apply, the ELF-executed
+	// path and FrameRateChanged all land in this function with the same answer coming out.
+	// The cycle-rate governor treats a moved deadline as a lifecycle reset, and a reset it
+	// did not need costs it the rate it had chosen plus a full warm-up before it could
+	// choose it again.
+	const s64 old_limiter_ticks_per_frame = s_limiter_ticks_per_frame;
+	const float old_target_speed = s_target_speed;
+	const bool old_use_vsync_for_timing = s_use_vsync_for_timing;
+
 	const float frame_rate = GetFrameRate();
 	float target_speed = GetTargetSpeedForLimiterMode(s_limiter_mode);
 
@@ -3007,11 +3054,26 @@ void VMManager::UpdateTargetSpeed()
 		}
 		ResetFrameLimiter();
 	}
+
+	// Only when the deadline actually moved, or stopped existing. When it did, anything the
+	// governor inferred from the old one is a statement about a different machine - and if
+	// the limiter has gone unlimited or host-vsync paced, Throttle() will not close another
+	// window, so this is also the only chance to hand back a rate it had lowered.
+	if (s_limiter_ticks_per_frame != old_limiter_ticks_per_frame || s_target_speed != old_target_speed ||
+		s_use_vsync_for_timing != old_use_vsync_for_timing)
+	{
+		EECycleRateSampler::OnLifecycleReset("the frame limiter changed");
+	}
 }
 
 bool VMManager::IsTargetSpeedAdjustedToHost()
 {
 	return s_target_speed_synced_to_host;
+}
+
+bool VMManager::IsUsingVSyncForTiming()
+{
+	return s_use_vsync_for_timing;
 }
 
 float VMManager::GetFrameRate()
@@ -3029,18 +3091,21 @@ void VMManager::Internal::Throttle(bool vsync_start)
 {
 	if (s_target_speed == 0.0f || s_use_vsync_for_timing)
 	{
-		// Not frame-limiting this frame (unlimited / host-vsync pacing): invalidate the ADPF work
-		// period so no wall-time-with-wait duration is submitted.
-		PerformanceMetrics::AdpfPauseFrameWork();
+		// Not frame-limiting this frame (unlimited / host-vsync pacing): invalidate the frame-work
+		// period so no wall-time-with-wait duration is measured.
+		PerformanceMetrics::OnFrameWorkPaused();
+		EECycleRateSampler::OnFrameNotThrottled();
 		return;
 	}
 
-	// ADPF: close the active-work segment that just ended (before the limiter sleep below), then
-	// re-open one AFTER the sleep. The frame's two segments are reported together at the vsync-end
-	// wait. The ScopedGuard fires on EVERY exit past here — including the missed-frame early
-	// return — so measurement survives the can't-hit-target case.
-	PerformanceMetrics::AdpfEndWorkSegment(!vsync_start);
-	ScopedGuard adpf_begin_next_work([]() { PerformanceMetrics::AdpfBeginFrameWork(); });
+	const u64 iEnd = GetCPUTicks(); // The current tick we actually stopped on.
+
+	// Close the active-work segment that just ended (before the limiter sleep below), then re-open
+	// one AFTER the sleep. A frame's work is the two segments, one per wait; `frame_end` marks the
+	// vsync-end wait that completes it. The ScopedGuard fires on EVERY exit past here — including
+	// the missed-frame early return — so measurement survives the can't-hit-target case.
+	const u64 segment_ticks = PerformanceMetrics::OnFrameWorkSegmentComplete(iEnd, !vsync_start);
+	ScopedGuard begin_next_frame_work([]() { PerformanceMetrics::OnFrameWorkBegin(); });
 
 	// Throttle runs twice per frame; the frame is closed by the second call, whichever way it returns.
 	ScopedGuard close_frame([vsync_start]() {
@@ -3054,8 +3119,19 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
 		(vsync_start ? (s_limiter_ticks_per_frame * 0.9) : s_limiter_ticks_per_frame); // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
-	const u64 iEnd = GetCPUTicks(); // The current tick we actually stopped on.
 	const s64 sDeltaTime = iEnd - uExpectedEnd; // The diff between when we stopped and when we expected to.
+
+	// The dynamic EE cycle-rate governor's segment boundary, before the sleep below, so its
+	// "active" is the frame's work and not the work plus the wait for the deadline. It also
+	// has to be before the missed-frame return: a frame that overran is the one the governor
+	// most needs to see.
+	//
+	// The frame is judged late by the vsync-end wait against the full-frame deadline. The
+	// vsync-start wait's own deadline is 0.9 of that and says nothing about the frame, except
+	// when it overran by a whole frame: the missed-frame branch below moves the frame start
+	// forward, and the vsync-end verdict would be taken against the moved deadline.
+	EECycleRateSampler::OnSegmentThrottled(segment_ticks, static_cast<u64>(s_limiter_ticks_per_frame), !vsync_start,
+		vsync_start ? (sDeltaTime >= s_limiter_ticks_per_frame) : (sDeltaTime >= 0));
 
 	// If frame ran too long...
 	if (sDeltaTime >= s_limiter_ticks_per_frame)
@@ -3116,8 +3192,14 @@ void VMManager::FrameAdvance(u32 num_frames /*= 1*/)
 		return;
 	}
 
+	EECycleRateSampler::OnLifecycleReset("frame advance");
 	s_frame_advance_count = num_frames;
 	SetState(VMState::Running);
+}
+
+bool VMManager::IsFrameAdvancing()
+{
+	return s_frame_advance_count > 0;
 }
 
 bool VMManager::ChangeDisc(CDVD_SourceType source, std::string path)
@@ -3836,6 +3918,10 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	// turns the cache on) is picked up by the mVUreset that ClearCPUExecutionCaches
 	// triggers below — recording and the disk cache are re-synced there from the
 	// live config, so no explicit sync is needed here.
+	// A settings apply resolves the configured selector afresh; the governor's
+	// transient choice does not survive it, and the caches are going anyway.
+	EECycleRate::SyncToConfigured();
+	EECycleRateSampler::OnLifecycleReset("settings apply");
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 
@@ -4206,9 +4292,7 @@ void VMManager::EnforceAchievementsChallengeModeSettings()
 	EmuConfig.GS.FrameratePAL = Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_PAL;
 
 	// You can overclock, but not underclock (since that might slow down the game and make it easier).
-	EmuConfig.Speedhacks.EECycleRate =
-		std::max<decltype(EmuConfig.Speedhacks.EECycleRate)>(EmuConfig.Speedhacks.EECycleRate, 0);
-	EmuConfig.Speedhacks.EECycleSkip = 0;
+	EmuConfig.Speedhacks.ClampForHardcoreMode();
 }
 
 void VMManager::LogUnsafeSettingsToConsole(const std::string& messages)

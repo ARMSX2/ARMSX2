@@ -38,6 +38,9 @@ add_pcsx2_test(core_test
 	onscreen_keyboard_tests.cpp
 	onscreen_keyboard_ui_tests.cpp
 	texture_upscale_setting_tests.cpp
+	ee_cycle_rate_controller_tests.cpp
+	ee_cycle_rate_eligibility_tests.cpp
+	ee_cycle_rate_sampler_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )

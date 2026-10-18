@@ -588,6 +588,9 @@
     <ClCompile Include="ps2\BiosTools.cpp" />
     <ClCompile Include="BuildVersion.cpp" />
     <ClCompile Include="Counters.cpp" />
+    <ClCompile Include="EECycleRate.cpp" />
+    <ClCompile Include="EECycleRateController.cpp" />
+    <ClCompile Include="EECycleRateSampler.cpp" />
     <ClCompile Include="FiFo.cpp" />
     <ClCompile Include="Hw.cpp" />
     <ClCompile Include="HwRead.cpp" />
@@ -1165,6 +1168,9 @@
     <ClInclude Include="SaveState.h" />
     <ClInclude Include="SaveStateLegacy.h" />
     <ClInclude Include="Counters.h" />
+    <ClInclude Include="EECycleRate.h" />
+    <ClInclude Include="EECycleRateController.h" />
+    <ClInclude Include="EECycleRateSampler.h" />
     <ClInclude Include="Dmac.h" />
     <ClInclude Include="Hardware.h" />
     <ClInclude Include="Hw.h" />

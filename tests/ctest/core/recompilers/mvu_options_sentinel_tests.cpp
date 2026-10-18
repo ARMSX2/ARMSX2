@@ -17,6 +17,7 @@
 #include "harness/RecompilerTestEnvironment.h"
 
 #include "Config.h"
+#include "EECycleRate.h"
 #include "common/Pcsx2Defs.h"
 
 #include <gtest/gtest.h>
@@ -36,6 +37,10 @@ struct Gate
 	// emitters through a composite needs the composite's other half on.
 	std::function<void()> prepare;
 	std::function<void()> flip;
+	// Which VUs' sentinels the setting must move (bit n = VU n). The ones it leaves out
+	// must NOT move: a setting only one VU's emitters read would otherwise evict the other
+	// VU's whole program cache every time it changed.
+	unsigned reaches = 3;
 };
 
 u64 Sentinel(int index)
@@ -64,7 +69,9 @@ TEST(MvuOptionsSentinel, EverySettingTheEmittersReadReachesTheCacheKey)
 		{"Gamefixes.XgKickHack",      nullptr, [&] { gf.XgKickHack = !gf.XgKickHack; }},
 		{"Speedhacks.vuFlagHack",     nullptr, [&] { sh.vuFlagHack = !sh.vuFlagHack; }},
 		{"Speedhacks.vuThread",       nullptr, [&] { sh.vuThread = !sh.vuThread; }},
-		{"Speedhacks.EECycleRate",    nullptr, [&] { sh.EECycleRate = static_cast<s8>(sh.EECycleRate + 1); }},
+		// What the emitters read is the EFFECTIVE selector, which follows the configured one
+		// through SyncToConfigured(), and only VU0's mVUtestCycles reads it.
+		{"Speedhacks.EECycleRate",    nullptr, [&] { sh.EECycleRate = static_cast<s8>(sh.EECycleRate + 1); EECycleRate::SyncToConfigured(); }, 1},
 		{"Speedhacks.EECycleSkip",    nullptr, [&] { sh.EECycleSkip = static_cast<u8>(sh.EECycleSkip + 1); }},
 		// Reaches the emitters only as THREAD_VU1's other half.
 		{"Recompiler.EnableVU1",      [&] { sh.vuThread = true; }, [&] { rc.EnableVU1 = !rc.EnableVU1; }},
@@ -87,21 +94,32 @@ TEST(MvuOptionsSentinel, EverySettingTheEmittersReadReachesTheCacheKey)
 		for (int index = 0; index < 2; index++)
 		{
 			EmuConfig = saved;
+			EECycleRate::SyncToConfigured();
 			if (g.prepare)
 				g.prepare();
 			const u64 before = Sentinel(index);
 			g.flip();
 			const u64 after = Sentinel(index);
-			EXPECT_NE(before, after)
-				<< g.name << " does not reach VU" << index << "'s options "
-				<< "sentinel, so a program recorded under one value of it is "
-				<< "replayable under the other.";
+			if (g.reaches & (1u << index))
+			{
+				EXPECT_NE(before, after)
+					<< g.name << " does not reach VU" << index << "'s options "
+					<< "sentinel, so a program recorded under one value of it is "
+					<< "replayable under the other.";
+			}
+			else
+			{
+				EXPECT_EQ(before, after)
+					<< g.name << " reaches VU" << index << "'s options sentinel, but "
+					<< "that VU's emitters never read it.";
+			}
 		}
 	}
 
 	// The probe rebuilds the live sentinel as a side effect; leave both VUs
 	// holding the one the current config asks for.
 	EmuConfig = saved;
+	EECycleRate::SyncToConfigured();
 	Sentinel(0);
 	Sentinel(1);
 }

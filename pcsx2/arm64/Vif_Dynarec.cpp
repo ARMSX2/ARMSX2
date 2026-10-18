@@ -5,6 +5,7 @@
 #include "arm64/Vif_UnpackNEON.h"
 #include "arm64/AsmHelpers.h"
 #include "MTVU.h"
+#include "EECycleRate.h"
 
 #include "common/Assertions.h"
 #include "common/Perf.h"
@@ -102,6 +103,8 @@ static void maskedVecWrite(const a64::VRegister& reg, const a64::MemOperand& add
 
 void dVifReset(int idx)
 {
+	EECycleRate::NoteVifReset();
+
 	nVif[idx].vifBlocks.reset();
 
 	const size_t offset = idx ? HostMemoryMap::VIF1recOffset : HostMemoryMap::VIF0recOffset;

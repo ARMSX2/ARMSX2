@@ -188,6 +188,13 @@ enum class SpeedHack
 	MTVU,
 	EECycleRate,
 	IOPThread,
+	// The dynamic EE cycle-rate governor. It is in this enum because that is what
+	// gives it a bit in PerGameOverrides::speedhacks, which is how "the player wrote
+	// this key in the per-game file" is asked — and the governor has to know that,
+	// because a per-game key is an opt-in it must obey. It is NOT a game database
+	// key: gamedb-schema.json's speedHacks object is closed (additionalProperties
+	// false), so no entry can carry it until someone deliberately opens it.
+	DynamicEECycleRate,
 	MaxCount,
 };
 
@@ -1409,7 +1416,11 @@ struct Pcsx2Config
 			// JIT code tests vuThread by its bit position in this word (microVU-arm64.cpp), so the
 			// flags below stay after every older one.
 			iopThread : 1, // Run the IOP on its own thread (IopThread::ResolveMode decides whether it can)
-			iopThreadLockstep : 1; // With iopThread: strict turns with the EE instead of concurrent. Testing only, no UI.
+			iopThreadLockstep : 1, // With iopThread: strict turns with the EE instead of concurrent. Testing only, no UI.
+			// Let the governor lower the EE cycle rate below EECycleRate, by up to two
+			// steps, when the host cannot hold the frame deadline. Never above it, and
+			// never written back — EECycleRate stays the player's baseline.
+			DynamicEECycleRate : 1;
 		BITFIELD_END
 
 		s8 EECycleRate; // EE cycle rate selector (1.0, 1.5, 2.0)
@@ -1419,11 +1430,27 @@ struct Pcsx2Config
 		// from the settings file. An advanced setting: INI only, never in a simple settings view.
 		int iopThreadLag;
 
+		// Development trace for the governor: one CSV row per sampling window, written
+		// to this path. Empty means no trace, which is the shipped state.
+		//
+		// ⚠️ Deliberately outside operator==, so CheckForCPUConfigChanges() cannot see
+		// it. Where a trace file goes has nothing to do with generated code, and that
+		// comparison is what decides whether the EE and microVU code caches are thrown
+		// away — turning the trace on mid-session must not cost a recompile of
+		// everything, or the first windows it records are measuring the reset.
+		std::string DynamicEECycleRateTrace;
+
 		SpeedhackOptions();
 		void LoadSave(SettingsWrapper& conf);
 		SpeedhackOptions& DisableAll();
 
 		void Set(SpeedHack id, int value);
+
+		/// RetroAchievements hardcore mode. Overclocking stays allowed; underclocking
+		/// does not, because it slows the game down and makes it easier. That rules out
+		/// cycle skip and the dynamic governor outright — the governor exists to
+		/// underclock, and it does it without being asked.
+		void ClampForHardcoreMode();
 
 		bool operator==(const SpeedhackOptions& right) const;
 		bool operator!=(const SpeedhackOptions& right) const;
@@ -1724,6 +1751,21 @@ struct Pcsx2Config
 	// Fall back aspect ratio for games that have patches (when AspectRatioType::RAuto4_3_3_2) is active.
 	float CurrentCustomAspectRatio = 0.f;
 	bool IsPortableMode = false;
+
+	// Where the resolved EE cycle rate came from, which is not something the resolved
+	// integer can answer: the same -1 can be the global default, a game database entry,
+	// or a key the player wrote for this game, and only the first of those is a value
+	// nobody has staked a compatibility claim on. Comparing the final value against the
+	// global one gets this wrong every time the two happen to agree.
+	//
+	// The dynamic governor is the consumer: it may only move a rate nobody claimed.
+	//
+	// Re-derived on every settings apply and never loaded, saved or copied — see the
+	// deliberate absence from CopyRuntimeConfig(), which would otherwise carry a stale
+	// answer across the config rebuild that ApplySettings() does.
+	bool GameDBSetEECycleRate = false;
+	bool PerGameClaimsEECycleRate = false;
+	bool PerGameClaimsDynamicEECycleRate = false;
 
 	Pcsx2Config();
 	void LoadSave(SettingsWrapper& wrap);

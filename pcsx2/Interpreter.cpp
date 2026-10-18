@@ -6,6 +6,7 @@
 #include "VMManager.h"
 #include "Elfheader.h"
 #include "Cache.h"
+#include "EECycleRate.h"
 #include "ee_divtrace.h"
 #include "no-jit-improvements.h"
 
@@ -43,7 +44,7 @@ void intChargeSkippedHandlerCycles(u32 raw_block_cycles)
 void intUpdateCPUCycles()
 {
 	const bool lowcycles = (cpuBlockCycles <= 40);
-	const s8 cyclerate = EmuConfig.Speedhacks.EECycleRate;
+	const s8 cyclerate = EECycleRate::GetEffective();
 	u32 scale_cycles = 0;
 
 	if (cyclerate == 0 || lowcycles || cyclerate < -99 || cyclerate > 3)
@@ -74,6 +75,26 @@ void intUpdateCPUCycles()
 		cpuBlockCycles &= 0x7;
 	}
 }
+
+#ifdef PCSX2_RECOMPILER_TESTS
+// Test-only counterpart of recEeScaleBlockCyclesForTest: the interpreter keeps
+// its own hand-written copy of the same seven formulas, so the characterization
+// table drives both and requires them to agree. Restores cpuBlockCycles and
+// cpuRegs.cycle.
+u32 intScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder)
+{
+	const u32 saved_block = cpuBlockCycles;
+	const u32 saved_cycle = cpuRegs.cycle;
+	cpuBlockCycles = raw_block_cycles;
+	intUpdateCPUCycles();
+	const u32 charge = cpuRegs.cycle - saved_cycle;
+	if (out_remainder)
+		*out_remainder = cpuBlockCycles;
+	cpuBlockCycles = saved_block;
+	cpuRegs.cycle = saved_cycle;
+	return charge;
+}
+#endif
 
 // These macros are used to assemble the repassembler functions
 

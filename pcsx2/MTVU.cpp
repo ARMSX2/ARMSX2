@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "Common.h"
+#include "EECycleRateSampler.h"
 #include "Gif_Unit.h"
 #include "MTVU.h"
 #include "PerformanceMetrics.h"
@@ -217,6 +218,11 @@ void VU_Thread::ExecuteRingBuffer()
 // Should only be called by ReserveSpace()
 __ri void VU_Thread::WaitOnSize(s32 size)
 {
+	// Hit on every VIF1 push, and almost always answered by one of the two breaks below,
+	// so the clock is not read until the first yield actually happens. A push that finds
+	// room costs a zeroed register and a compare-and-branch, and no call.
+	u64 wait_begin = 0;
+
 	for (;;)
 	{
 		s32 readPos = GetReadPos();
@@ -230,6 +236,8 @@ __ri void VU_Thread::WaitOnSize(s32 size)
 		if (readPos > m_write_pos + size + _4kb)
 			break; // Enough free front space
 		{          // Let MTVU run to free up buffer space
+			if (wait_begin == 0)
+				wait_begin = EECycleRateSampler::BeginWait();
 			KickStart();
 			// Locking might trigger a full flush of the ring buffer. Yield
 			// will be more aggressive, and only flush the minimal size.
@@ -238,6 +246,9 @@ __ri void VU_Thread::WaitOnSize(s32 size)
 			std::this_thread::yield();
 		}
 	}
+
+	if (wait_begin != 0)
+		EECycleRateSampler::EndVU1Wait(wait_begin);
 }
 
 // Makes sure theres enough room in the ring buffer
@@ -436,7 +447,9 @@ bool VU_Thread::IsDone()
 void VU_Thread::WaitVU()
 {
 	MTVU_LOG("MTVU - WaitVU!");
+	const u64 wait_begin = EECycleRateSampler::BeginWait();
 	semaEvent.WaitForEmpty();
+	EECycleRateSampler::EndVU1Wait(wait_begin);
 }
 
 void VU_Thread::ExecuteVU(u32 vu_addr, u32 vif_top, u32 vif_itop, u32 fbrst)
