@@ -205,6 +205,16 @@ struct EmulatorSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section(settings.localized("Automatic Performance Tuning")) {
+                Toggle(settings.localized("Automatic Performance Tuning"), isOn: $settings.autoTune)
+                    .controllerAccessibilityTargetID(
+                        "settings.emulator.auto-tune"
+                    )
+                Text(settings.localized("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section(settings.localized("Host Filesystem")) {
                 Toggle(settings.localized("Enable Host Filesystem"), isOn: $settings.hostFilesystem)
                     .controllerAccessibilityTargetID(
