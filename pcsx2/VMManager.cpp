@@ -3067,6 +3067,11 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	}
 }
 
+bool VMManager::Internal::IsFrameAdvancing()
+{
+	return s_frame_advance_count > 0;
+}
+
 void VMManager::Internal::FrameRateChanged()
 {
 	UpdateTargetSpeed();
