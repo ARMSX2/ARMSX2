@@ -30,6 +30,11 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vu1Recompiler, "EmuCore/CPU/Recompiler", "EnableVU1", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vuFlagHack, "EmuCore/Speedhacks", "vuFlagHack", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.instantVU1, "EmuCore/Speedhacks", "vu1Instant", true);
+	// vu-aot only exists in the ARM64 recompilers. The setting is read and written everywhere, and does nothing elsewhere.
+	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.vuAot, "EmuCore/CPU/Recompiler", "EnableVUAot", true);
+#ifndef ARCH_ARM64
+	m_ui.vuAot->hide();
+#endif
 
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.eeRoundingMode, "EmuCore/CPU", "FPU.Roundmode", static_cast<int>(FPRoundMode::ChopZero));
 	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.eeDivRoundingMode, "EmuCore/CPU", "FPUDiv.Roundmode", static_cast<int>(FPRoundMode::Nearest));
@@ -144,6 +149,11 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	dialog()->registerWidgetHelp(
 		//: mVU = PCSX2's recompiler for VU (Vector Unit) code (full name: microVU)
 		m_ui.vuFlagHack, tr("mVU Flag Hack"), tr("Checked"), tr("Good speedup and high compatibility, may cause graphical errors."));
+
+	//: VU1 = Vector Unit 1. One of the PS2's processors.
+	dialog()->registerWidgetHelp(m_ui.vuAot, tr("Enable VU1 Ahead-of-Time Compiler"), tr("Checked"),
+		tr("Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. "
+		   "Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache."));
 
 	dialog()->registerWidgetHelp(m_ui.iopRecompiler, tr("Enable Recompiler"), tr("Checked"),
 		tr("Performs just-in-time binary translation of 32-bit MIPS-I machine code to native code."));
