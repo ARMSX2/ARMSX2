@@ -141,6 +141,7 @@ AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 	const double sat = m_policy.saturation_pct;
 	const bool gs_cpu = m.mtgs_pct >= sat || m.gs_back_pct >= sat;
 	const bool ee_blocked_on_gs = m.ee_wait_gs_ratio.has_value() && *m.ee_wait_gs_ratio > m_policy.ee_blocked_on_gs_ratio;
+	const bool ee_blocked_on_iop = m.ee_wait_iop_ratio.has_value() && *m.ee_wait_iop_ratio > m_policy.ee_blocked_on_iop_ratio;
 
 	// A busy GPU wins over busy GS threads: the GS thread of a GPU-bound game spends its time feeding or
 	// waiting on the GPU and reads just as busy, and the lever for that is the resolution, not a back thread.
@@ -158,7 +159,9 @@ AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 
 	if (m.mtvu_pct >= sat)
 		return AutoTuneBottleneck::Vu1;
-	if (m.iop_pct >= sat)
+	// The IOP thread is the cause when it is saturated, or when the EE is stuck waiting for it: the EE then
+	// reads as saturated too (it spins), and the levers for an EE-bound game would not help.
+	if (m.iop_pct >= sat || ee_blocked_on_iop)
 		return AutoTuneBottleneck::Iop;
 
 	if (m.ee_pct >= sat)
@@ -248,8 +251,8 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 	// Average the bad windows that triggered this.
 	AutoTuneWindow mean;
 	mean.has_gpu_timer = m_streak_windows.front().has_gpu_timer;
-	double speed = 0, late = 0, ee = 0, mtgs = 0, gsb = 0, vu = 0, iop = 0, gpu = 0, wgs = 0, wvu = 0;
-	size_t n_wgs = 0, n_wvu = 0;
+	double speed = 0, late = 0, ee = 0, mtgs = 0, gsb = 0, vu = 0, iop = 0, gpu = 0, wgs = 0, wvu = 0, wiop = 0;
+	size_t n_wgs = 0, n_wvu = 0, n_wiop = 0;
 	for (const AutoTuneWindow& w : m_streak_windows)
 	{
 		speed += w.speed_pct;
@@ -270,6 +273,11 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 			wvu += *w.ee_wait_vu1_ratio;
 			n_wvu++;
 		}
+		if (w.ee_wait_iop_ratio)
+		{
+			wiop += *w.ee_wait_iop_ratio;
+			n_wiop++;
+		}
 	}
 	const size_t n = m_streak_windows.size();
 	mean.speed_pct = Mean(speed, n);
@@ -284,6 +292,8 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		mean.ee_wait_gs_ratio = Mean(wgs, n_wgs);
 	if (n_wvu)
 		mean.ee_wait_vu1_ratio = Mean(wvu, n_wvu);
+	if (n_wiop)
+		mean.ee_wait_iop_ratio = Mean(wiop, n_wiop);
 
 	const AutoTuneBottleneck bottleneck = Classify(mean);
 	m_last_bottleneck = bottleneck;

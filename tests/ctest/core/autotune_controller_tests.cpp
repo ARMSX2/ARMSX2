@@ -833,6 +833,64 @@ TEST(AutoTuneController, ClassificationTable)
 	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Iop);
 }
 
+TEST(AutoTuneController, AnEeBlockedOnTheIopThreadIsIopBoundNotEeBound)
+{
+	AutoTuneController ctl;
+
+	// The EE thread reads saturated because it is spinning for the IOP thread. Slowing it, or giving it
+	// more threads, does not help: report the IOP.
+	AutoTuneWindow w = EeBound(70.0);
+	w.iop_pct = 55.0; // the IOP thread itself is not at its limit: it is behind, or asleep when woken
+	w.ee_wait_iop_ratio = 0.40;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Iop);
+
+	// A small wait is part of normal life with an IOP thread.
+	w.ee_wait_iop_ratio = 0.10;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Ee);
+
+	// No figure (no baseline yet, or the counters started over) is not a wait.
+	w.ee_wait_iop_ratio.reset();
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Ee);
+
+	// The GS side still goes first: a GS-bound game with the IOP thread on is not an IOP case.
+	w.ee_wait_iop_ratio = 0.40;
+	w.ee_wait_gs_ratio = 0.40;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Gpu);
+}
+
+TEST(AutoTuneController, AnIopBoundCaseIsReportedAndTheGovernorIsNotTried)
+{
+	Rig rig;
+	rig.state.iop_thread_on = true;
+	rig.state.ee_governor_eligible = true;
+	AutoTuneWindow w = EeBound(60.0);
+	w.ee_wait_iop_ratio = 0.35;
+
+	const AutoTuneAction a = rig.WarmAndTrigger(w);
+	EXPECT_EQ(a.kind, Kind::ReportBottleneck);
+	EXPECT_EQ(a.bottleneck, AutoTuneBottleneck::Iop);
+	rig.FeedFor(w, 60.0);
+	EXPECT_EQ(rig.Count(Kind::StartTrial), 0u) << "the governor would underclock an EE that is only waiting";
+}
+
+TEST(AutoTuneController, TheIopWaitIsAveragedOverTheWindowsThatTriggered)
+{
+	// Two windows blocked, two not: the mean, 0.20, is under the line.
+	Rig rig;
+	rig.state.iop_thread_on = true;
+	rig.state.ee_governor_eligible = true;
+	rig.WarmUp();
+	for (const double wait : {0.40, 0.40, 0.0, 0.0})
+	{
+		AutoTuneWindow w = EeBound(60.0);
+		w.ee_wait_iop_ratio = wait;
+		rig.Feed(w);
+	}
+	ASSERT_EQ(rig.log.size(), 1u);
+	EXPECT_EQ(rig.log[0].kind, Kind::StartTrial);
+	EXPECT_EQ(rig.log[0].lever, AutoTuneLever::EeGovernor);
+}
+
 TEST(AutoTuneController, WithoutAGpuTimerBlockedOnTheGsMeansGpuBound)
 {
 	AutoTuneController ctl;

@@ -584,7 +584,7 @@ namespace
 		if (std::ftell(f) == 0)
 		{
 			std::fputs("t,seq,usable,seconds,speed,late,ee,mtgs,gsb,mtvu,iop,gpu,gpu_timer,wait_gs,wait_vu1,phase,streak,"
-					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor\n",
+					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop\n",
 				f);
 		}
 		std::fprintf(f, "# session %s crc %08X\n", VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC());
@@ -598,7 +598,7 @@ namespace
 			return;
 
 		const auto opt = [](const std::optional<double>& v) { return v ? fmt::format("{:.3f}", *v) : std::string(); };
-		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{}\n",
+		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{}\n",
 			m_session_timer.GetTimeSeconds(), m_sampler.LastSequence(), w.usable ? 1 : 0, w.seconds, w.speed_pct, w.late_frame_ratio, w.ee_pct,
 			w.mtgs_pct, w.gs_back_pct, w.mtvu_pct, w.iop_pct, w.gpu_pct, w.has_gpu_timer ? 1 : 0, opt(w.ee_wait_gs_ratio),
 			opt(w.ee_wait_vu1_ratio), AutoTuneController::PhaseName(m_controller.GetPhase()), m_controller.BadStreak(),
@@ -610,7 +610,7 @@ namespace
 				fmt::format("{:g}", a.value) :
 				std::string(),
 			a.gain, s.resolution, s.gs_back_thread_on ? 1 : 0, s.download_mode, s.blending_level, s.iop_thread_on ? 1 : 0,
-			s.ee_governor_on ? 1 : 0);
+			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio));
 		std::fputs(line.c_str(), f);
 		std::fflush(f);
 	}

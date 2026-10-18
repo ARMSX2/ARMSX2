@@ -86,6 +86,9 @@ struct AutoTunePolicy
 	/// The EE waiting on the GS for more than this share of its time means the EE is blocked on the GS.
 	/// Also the stand-in for "GPU-bound" where there is no GPU timer.
 	double ee_blocked_on_gs_ratio = 0.25;
+	/// The same for the IOP thread: an EE that spends more than this share of its time waiting for the IOP
+	/// thread to catch up or to stop for a hold reads as saturated (it is spinning), but is bound by the IOP.
+	double ee_blocked_on_iop_ratio = 0.25;
 
 	double warmup_seconds = 10.0;
 	/// Windows to ignore after a setting changes, before measuring.
@@ -127,10 +130,11 @@ struct AutoTuneWindow
 	double iop_pct = 0.0; // 0 when the IOP has no thread of its own
 	double gpu_pct = 0.0;
 	bool has_gpu_timer = false;
-	/// The share of its time the EE spent waiting for the GS, and for VU1. Unknown until the EE governor's
-	/// wait sampling is merged; the controller works without them.
+	/// The share of its time the EE spent waiting for the GS, for VU1, and for the IOP thread. Unknown when
+	/// they could not be measured over the window (see AutoTuneSampler); the controller works without them.
 	std::optional<double> ee_wait_gs_ratio;
 	std::optional<double> ee_wait_vu1_ratio;
+	std::optional<double> ee_wait_iop_ratio;
 };
 
 /// A trial that did not help. `value` is what was tried (lever-specific, see AutoTuneLeverState).

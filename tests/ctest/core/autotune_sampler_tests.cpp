@@ -28,7 +28,8 @@ namespace
 	}
 
 	// The CPU thread's running totals at `time_s` on its own clock.
-	AutoTuneTally Tally(double time_s, uint64_t frames = 0, uint64_t overran = 0, double gs_wait_s = 0.0, double vu1_wait_s = 0.0)
+	AutoTuneTally Tally(double time_s, uint64_t frames = 0, uint64_t overran = 0, double gs_wait_s = 0.0, double vu1_wait_s = 0.0,
+		double iop_wait_s = 0.0)
 	{
 		AutoTuneTally t;
 		t.time_s = time_s;
@@ -37,6 +38,7 @@ namespace
 		t.waits_measured = true;
 		t.gs_wait_s = gs_wait_s;
 		t.vu1_wait_s = vu1_wait_s;
+		t.iop_wait_s = iop_wait_s;
 		return t;
 	}
 
@@ -126,6 +128,32 @@ TEST(AutoTuneSampler, WaitsAreAShareOfTheTimeBetweenTwoDeliveries)
 	EXPECT_NEAR(*w.ee_wait_vu1_ratio, 0.0, 1e-9);
 }
 
+TEST(AutoTuneSampler, TheEesWaitOnTheIopThreadIsAShareToo)
+{
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+
+	// The EE spent 0.2 s of 0.5 s spinning for the IOP thread to catch up or to stop for a hold.
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5, 30, 0, 0.0, 0.0, 0.2), &w));
+	ASSERT_TRUE(w.ee_wait_iop_ratio.has_value());
+	EXPECT_NEAR(*w.ee_wait_iop_ratio, 0.4, 1e-9);
+
+	// Without an IOP thread nothing is counted and the EE is not waiting on it.
+	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0, 60, 0, 0.0, 0.0, 0.2), &w));
+	EXPECT_NEAR(*w.ee_wait_iop_ratio, 0.0, 1e-9);
+}
+
+TEST(AutoTuneSampler, IopTotalsThatStartedOverAreNotAnAnswer)
+{
+	// The IOP thread's counters start over when the thread is restarted, which a settings change can do.
+	AutoTuneSampler sampler;
+	AutoTuneWindow w;
+	sampler.Reset(0, Tally(5.0, 1000, 0, 1.0, 0.0, 3.0));
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(5.5, 1030, 0, 1.15, 0.0, 0.1), &w));
+	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.3, 1e-9) << "the GS figure is unaffected";
+	EXPECT_FALSE(w.ee_wait_iop_ratio.has_value());
+}
+
 TEST(AutoTuneSampler, TheDenominatorIsTheCpuThreadsOwnSpanNotTheMetricsWindow)
 {
 	// The metrics window is closed on the GS thread and says 0.5 s; the CPU thread read its totals 0.6 s
@@ -155,6 +183,7 @@ TEST(AutoTuneSampler, WaitsThatAreNotMeasuredStayUnknown)
 	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), now, &w));
 	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
 	EXPECT_FALSE(w.ee_wait_vu1_ratio.has_value());
+	EXPECT_FALSE(w.ee_wait_iop_ratio.has_value());
 }
 
 TEST(AutoTuneSampler, WithoutABaselineTheFirstWindowHasNoWaits)

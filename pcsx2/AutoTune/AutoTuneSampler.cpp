@@ -5,6 +5,7 @@
 
 #include "EECycleRateSampler.h"
 #include "GSDumpReplayer.h"
+#include "IopThread/IopThreadVm.h"
 #include "VMManager.h"
 
 #include "common/HostSys.h"
@@ -44,6 +45,11 @@ AutoTuneTally AutoTuneReadLiveTally()
 		t.waits_measured = true;
 		t.gs_wait_s = static_cast<double>(raw.gs_wait_ticks) / tick_frequency;
 		t.vu1_wait_s = static_cast<double>(raw.vu1_wait_ticks) / tick_frequency;
+
+		// Both counters are written by the EE thread, which is this one, and are kept whether or not anything
+		// asks: they are the stall the thread timed already.
+		const IopThread::Stats iop = IopThread::GetStats();
+		t.iop_wait_s = static_cast<double>(iop.lag_stall_ns + iop.emu_hold_stall_ns) * 1e-9;
 	}
 	return t;
 }
@@ -91,6 +97,7 @@ bool AutoTuneSampler::Poll(const PerformanceMetrics::WindowSnapshot& snap, const
 	{
 		w.ee_wait_gs_ratio = ShareOfSpan(now.gs_wait_s, before.gs_wait_s, span);
 		w.ee_wait_vu1_ratio = ShareOfSpan(now.vu1_wait_s, before.vu1_wait_s, span);
+		w.ee_wait_iop_ratio = ShareOfSpan(now.iop_wait_s, before.iop_wait_s, span);
 	}
 
 	// A window says something about steady play only while the limiter is aiming at the nominal speed.

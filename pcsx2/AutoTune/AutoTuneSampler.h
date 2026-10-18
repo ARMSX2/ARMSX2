@@ -6,7 +6,7 @@
 // PerformanceMetrics closes a window on the GS thread. The sampler is polled once per frame on the CPU
 // thread, sees the window's sequence number change, and combines that window's figures with what the CPU
 // thread counted over the same stretch: the frames the limiter dropped, and the time the EE thread spent
-// blocked on the GS and VU1 threads.
+// blocked on the GS, VU1 and IOP threads.
 //
 // Where the counts come from, and why they line up. The EE governor's sampler (EECycleRateSampler) keeps
 // running totals at the frame limiter and at the MTGS/MTVU wait sites; auto-tune asks it to (RequestTally)
@@ -39,9 +39,12 @@ struct AutoTuneTally
 	uint64_t overran_frames = 0;
 	/// Whether the wait totals below were being kept. False when nothing had asked for the tally.
 	bool waits_measured = false;
-	/// Time the EE thread spent blocked on the GS thread and on the VU1 thread, in seconds.
+	/// Time the EE thread spent blocked on the GS thread, on the VU1 thread and on the IOP thread, in seconds.
+	/// The IOP figure is the EE's wait for the IOP thread to catch up (CheckLag) and to stop for a hold, from
+	/// IopThread::Stats; it stays zero while the IOP runs inline.
 	double gs_wait_s = 0.0;
 	double vu1_wait_s = 0.0;
+	double iop_wait_s = 0.0;
 };
 
 /// The totals now. CPU thread. Waits are unmeasured unless EECycleRateSampler::RequestTally(true) is in force.
