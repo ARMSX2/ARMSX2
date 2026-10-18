@@ -109,8 +109,11 @@ struct AutoTunePolicy
 	double ee_blocked_on_iop_ratio = 0.25;
 
 	double warmup_seconds = 10.0;
-	/// Windows to ignore after a setting changes, before measuring.
-	double settle_seconds = 3.0;
+	/// Windows to ignore after a setting changes, before measuring. A resolution, blending or download mode
+	/// change shows its new figure in the first full window (SD865: 82% in the partial window, then 101.8%;
+	/// RG477V: 94.8%, then 100.1%), and after a keep the trace shows no hitch at all. A stray hitch window that
+	/// outlasts this is the median's and the extension's to absorb.
+	double settle_seconds = 1.5;
 	/// The same for the levers that reset the recompilers or reopen the renderer, whose hitch is longer.
 	double settle_heavy_seconds = 6.0;
 

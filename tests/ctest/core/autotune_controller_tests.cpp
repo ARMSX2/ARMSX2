@@ -303,6 +303,16 @@ TEST(AutoTuneController, AfterTheIopThreadFailsTheGovernorIsNext)
 // that takes 1.4 seconds on the wall, and a trial that measured before the governor had acted would call it
 // useless and remember that for good.
 
+TEST(AutoTunePolicy, TheLightSettleIsOneAndAHalfSecondsAndTheHeavyOneIsStillSix)
+{
+	// After a resolution, blending or download mode change the new figure shows in the first full window (SD865:
+	// 82% in the partial window, then 101.8%; RG477V: 94.8%, then 100.1%). Three seconds was five of waiting that
+	// nothing needed. The levers that reset the recompilers or reopen the renderer keep their six; a hitch that
+	// outlasts the shorter one is the extension's to absorb.
+	EXPECT_DOUBLE_EQ(AutoTunePolicy().settle_seconds, 1.5);
+	EXPECT_DOUBLE_EQ(AutoTunePolicy().settle_heavy_seconds, 6.0);
+}
+
 TEST(AutoTunePolicy, TheGovernorSettleFollowsTheGovernorsOwnPolicy)
 {
 	// 2 s warm-up + 2 steps x (2 windows of 0.5 s) + 1 cooldown of 2 s between them + 1 window of slack.
@@ -433,7 +443,7 @@ TEST(AutoTuneController, GpuBoundStepsResolutionDownAndStopsAtNative)
 	ASSERT_EQ(a.kind, Kind::Keep);
 	rig.state.resolution = 2.0;
 
-	rig.FeedFor(GpuBound(62.0), 3.0);
+	rig.FeedFor(GpuBound(62.0), 1.5);
 	a = rig.Trigger(GpuBound(62.0));
 	ASSERT_EQ(a.kind, Kind::StartTrial);
 	EXPECT_EQ(a.lever, AutoTuneLever::Resolution);
@@ -444,7 +454,7 @@ TEST(AutoTuneController, GpuBoundStepsResolutionDownAndStopsAtNative)
 	rig.state.resolution = 1.0;
 
 	// Still slow at 1x with nothing else to give up: the controller stops.
-	rig.FeedFor(GpuBound(80.0), 3.0);
+	rig.FeedFor(GpuBound(80.0), 1.5);
 	a = rig.Trigger(GpuBound(80.0));
 	EXPECT_EQ(a.kind, Kind::Exhausted);
 	EXPECT_EQ(a.bottleneck, AutoTuneBottleneck::Gpu);
@@ -582,7 +592,7 @@ TEST(AutoTuneController, BlendingStepsOneLevelAtATimeToTheFloor)
 	ASSERT_EQ(rig.RunUntilAction(GpuBound(70.0)).kind, Kind::Keep);
 	rig.state.blending_level = 2;
 
-	rig.FeedFor(GpuBound(70.0), 3.0);
+	rig.FeedFor(GpuBound(70.0), 1.5);
 	a = rig.Trigger(GpuBound(70.0));
 	ASSERT_EQ(a.kind, Kind::StartTrial);
 	EXPECT_EQ(a.value, 1.0);
@@ -590,7 +600,7 @@ TEST(AutoTuneController, BlendingStepsOneLevelAtATimeToTheFloor)
 	rig.state.blending_level = 1;
 
 	// At the database's minimum there is no step left.
-	rig.FeedFor(GpuBound(80.0), 3.0);
+	rig.FeedFor(GpuBound(80.0), 1.5);
 	EXPECT_EQ(rig.Trigger(GpuBound(80.0)).kind, Kind::Exhausted);
 }
 
@@ -614,7 +624,7 @@ TEST(AutoTuneController, BasicToMinimumIsRejectedWhenItDoesNotHelpAndNotTriedAga
 	EXPECT_EQ(a.value, 0.0);
 
 	// Reverted (the caller put Basic back), settled, still slow: no second try, so exhausted.
-	rig.FeedFor(GsCpuBound(60.0), 3.0);
+	rig.FeedFor(GsCpuBound(60.0), 1.5);
 	a = rig.Trigger(GsCpuBound(60.0));
 	EXPECT_EQ(a.kind, Kind::Exhausted);
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 1u);
@@ -914,8 +924,8 @@ TEST(AutoTuneController, AnExternalSettingsChangeCancelsATrialAndSettles)
 	EXPECT_FALSE(revert->measured);
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingAfter);
 
-	// Three seconds of settle, then watching.
-	EXPECT_EQ(rig.FeedFor(EeBound(70.0), 2.5).kind, Kind::None);
+	// A second and a half of settle, then watching.
+	EXPECT_EQ(rig.FeedFor(EeBound(70.0), 1.0).kind, Kind::None);
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingAfter);
 	rig.Feed(EeBound(70.0));
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
@@ -931,8 +941,8 @@ TEST(AutoTuneController, ASettingsChangeOutsideATrialJustSettles)
 
 	EXPECT_FALSE(rig.ctl.OnDisturbance(AutoTuneDisturbance::SettingsChange).has_value());
 	EXPECT_EQ(rig.ctl.BadStreak(), 0u);
-	EXPECT_EQ(rig.FeedFor(EeBound(70.0), 2.5).kind, Kind::None);
-	// 3 s of settle, then 4 bad windows to trigger.
+	EXPECT_EQ(rig.FeedFor(EeBound(70.0), 1.0).kind, Kind::None);
+	// 1.5 s of settle, then 4 bad windows to trigger.
 	rig.Feed(EeBound(70.0));
 	EXPECT_EQ(rig.Trigger(EeBound(70.0)).kind, Kind::StartTrial);
 }
@@ -958,7 +968,7 @@ TEST(AutoTuneController, AFailedApplyCountsAsATrialThatDidNotHelp)
 	rig.ctl.NoteApplyFailed();
 	EXPECT_FALSE(rig.ctl.TrialActive());
 
-	rig.FeedFor(EeBound(70.0), 3.0);
+	rig.FeedFor(EeBound(70.0), 1.5);
 	EXPECT_EQ(rig.Trigger(EeBound(70.0)).lever, AutoTuneLever::EeGovernor);
 }
 
@@ -1267,6 +1277,15 @@ namespace
 		rig.state.gs_back_thread_allowed = false;
 	}
 
+	// The windows of the run these tests replay came through its 3 s settle; with the settle that has since been
+	// halved the same windows would be measured earlier and mean something else.
+	AutoTunePolicy RunWithThreeSecondSettle()
+	{
+		AutoTunePolicy policy;
+		policy.settle_seconds = 3.0;
+		return policy;
+	}
+
 	AutoTuneAction FeedAll(Rig& rig, const std::vector<double>& speeds)
 	{
 		AutoTuneAction first;
@@ -1295,6 +1314,7 @@ TEST(AutoTuneJudging, AHitchInTheBaselineDoesNotTurnNothingIntoAGain)
 	EXPECT_GT(old_gain, 0.05) << "this is the data of the false keep";
 
 	Rig rig;
+	rig.ctl = AutoTuneController(RunWithThreeSecondSettle());
 	OnlyResolutionIsLeft(rig, 6.0);
 	rig.WarmUp();
 	EXPECT_EQ(FeedAll(rig, trigger).kind, Kind::None);
@@ -1323,6 +1343,7 @@ TEST(AutoTuneJudging, AClearGainIsKeptOnTheMedians)
 {
 	// 7x to 6x in the same run: 10.0, 10.1, 10.1, 10.2 against 12.2 ... 12.3.
 	Rig rig;
+	rig.ctl = AutoTuneController(RunWithThreeSecondSettle());
 	OnlyResolutionIsLeft(rig, 7.0);
 	rig.WarmUp();
 	FeedAll(rig, {10.1, 10.0, 10.1, 10.2, 10.1, 10.1, 10.2, 10.0});
@@ -1342,7 +1363,7 @@ TEST(AutoTuneJudging, AnAnswerWithinTheNoiseIsExtendedThenUndoneWithoutBeingReme
 	rig.WarmUp();
 	FeedAll(rig, {50, 50, 50, 50, 50, 50, 50, 50});
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
-	rig.FeedFor(Gpu(50.0), 3.0);
+	rig.FeedFor(Gpu(50.0), 1.5);
 
 	// Scattered windows with a median 10% above the baseline: neither a clear gain nor clearly nothing.
 	const std::vector<double> scatter = {50, 60, 45, 62};
@@ -1355,7 +1376,7 @@ TEST(AutoTuneJudging, AnAnswerWithinTheNoiseIsExtendedThenUndoneWithoutBeingReme
 	EXPECT_TRUE(verdict.inconclusive);
 
 	// This session does not offer the same step again: nothing else is left, so it says so.
-	rig.FeedFor(Gpu(50.0), 3.0);
+	rig.FeedFor(Gpu(50.0), 1.5);
 	const AutoTuneAction next = rig.Trigger(Gpu(50.0));
 	EXPECT_EQ(next.kind, Kind::Exhausted);
 }
@@ -1367,7 +1388,7 @@ TEST(AutoTuneJudging, ALongerLookCanSettleAnInconclusiveFirstAnswer)
 	rig.WarmUp();
 	FeedAll(rig, {50, 50, 50, 50, 50, 50, 50, 50});
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
-	rig.FeedFor(Gpu(50.0), 3.0);
+	rig.FeedFor(Gpu(50.0), 1.5);
 
 	EXPECT_EQ(FeedAll(rig, {50, 60, 45, 62}).kind, Kind::None);
 	// The next four are steady at 60: eight windows with a median of 60 and a small spread.
@@ -1387,7 +1408,7 @@ TEST(AutoTuneJudging, AnEmptyBaselineWindowIsNotACostOfZero)
 	FeedAll(rig, {40, 40, 40, 40, 40, 40, 40, 40});
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
 	EXPECT_EQ(rig.log.back().cost_before, 0.0);
-	rig.FeedFor(Gpu(40.0), 3.0);
+	rig.FeedFor(Gpu(40.0), 1.5);
 	AutoTuneAction verdict;
 	for (int i = 0; i < 4; i++)
 		verdict = rig.Feed(Gpu(50.0));
@@ -1406,7 +1427,7 @@ TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillThe
 		rig.Feed(Gpu(40.0, 20.0));
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
 	EXPECT_NEAR(rig.log.back().cost_before, 20.0, 1e-9);
-	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
 
 	AutoTuneAction verdict;
 	for (int i = 0; i < 4; i++)
@@ -1427,7 +1448,7 @@ TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsAGoodDealIsRejectedAtTheFi
 	for (int i = 0; i < 8; i++)
 		rig.Feed(Gpu(40.0, 20.0));
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
-	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
 
 	AutoTuneAction verdict;
 	for (int i = 0; i < 3; i++)
@@ -1449,7 +1470,7 @@ TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsALittleIsNeitherKeptNorRej
 	for (int i = 0; i < 8; i++)
 		rig.Feed(Gpu(40.0, 20.0));
 	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
-	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
 
 	AutoTuneAction verdict;
 	for (int i = 0; i < 12; i++)
@@ -1493,6 +1514,41 @@ TEST(AutoTuneJudging, TheCostThatIsJudgedFollowsTheBottleneck)
 	EXPECT_NEAR(ee.log.back().cost_before, 15.0, 1e-9);
 }
 
+TEST(AutoTuneController, AResolutionTrialMeasuresAfterOneAndAHalfSeconds)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingTrial);
+
+	rig.FeedFor(Gpu(40.0), 1.0);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingTrial);
+	rig.Feed(Gpu(40.0));
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+}
+
+TEST(AutoTuneController, TheSettleAfterAKeepOrAnUndoIsTheLightOneForTheLightLevers)
+{
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0));
+	rig.FeedFor(Gpu(40.0), 1.5);
+	AutoTuneAction verdict;
+	for (int i = 0; i < 4; i++)
+		verdict = rig.Feed(Gpu(60.0));
+	ASSERT_EQ(verdict.kind, Kind::Keep);
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingAfter);
+	rig.FeedFor(Gpu(60.0), 1.0);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingAfter);
+	rig.Feed(Gpu(60.0));
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
+}
+
 // ---------------------------------------------------------------------------------------------- a changing scene
 //
 // A rejection is written into the game's file for good, so it has to be about the lever and not about the game
@@ -1518,7 +1574,7 @@ namespace
 		for (int i = 0; i < 8; i++)
 			rig.Feed(GpuWithEe(baseline_speed, baseline_ee_ms));
 		ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
-		rig.FeedFor(GpuWithEe(baseline_speed, baseline_ee_ms), 3.0);
+		rig.FeedFor(GpuWithEe(baseline_speed, baseline_ee_ms), 1.5);
 		ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
 	}
 }
@@ -1672,13 +1728,13 @@ TEST(AutoTuneScene, AStepIsMeasuredAgainTwiceAndThenGivenUpWithoutBeingRemembere
 		for (int i = 0; i < 8 && start.kind == Kind::None; i++)
 			start = rig.Feed(GpuWithEe(60.0, 10.0));
 		ASSERT_EQ(start.kind, Kind::StartTrial) << "round " << round;
-		rig.FeedFor(GpuWithEe(60.0, 10.0), 3.0);
+		rig.FeedFor(GpuWithEe(60.0, 10.0), 1.5);
 		AutoTuneAction verdict;
 		for (int i = 0; i < 4; i++)
 			verdict = rig.Feed(GpuWithEe(50.0, 13.0));
 		ASSERT_EQ(verdict.kind, Kind::Revert) << "round " << round;
 		verdicts.push_back(verdict);
-		rig.FeedFor(GpuWithEe(60.0, 10.0), 3.0);
+		rig.FeedFor(GpuWithEe(60.0, 10.0), 1.5);
 	}
 	EXPECT_TRUE(verdicts[0].retry);
 	EXPECT_TRUE(verdicts[1].retry);
@@ -2015,7 +2071,7 @@ namespace
 	struct Replay
 	{
 		TraceWorld world;
-		AutoTuneController controller;
+		AutoTuneController controller{RunWithThreeSecondSettle()};
 		std::vector<AutoTuneAction> actions;
 		std::vector<AutoTuneRejection> persisted; // what the game's file would remember
 		std::vector<double> speeds;
@@ -2127,7 +2183,7 @@ TEST(AutoTuneReplay, TheResolutionWalkStopsAtTheStepThatShowsNothingInsteadOfWal
 	struct ResolutionOnly
 	{
 		TraceWorld world;
-		AutoTuneController controller;
+		AutoTuneController controller{RunWithThreeSecondSettle()};
 		std::vector<AutoTuneAction> actions;
 		std::vector<AutoTuneRejection> persisted;
 		int previous = 8;
