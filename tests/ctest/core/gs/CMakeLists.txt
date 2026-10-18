@@ -63,6 +63,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sw_fog_blend_tests.cpp
 	gs_local_memory_move_tests.cpp
 	gs_local_memory_write_stamp_tests.cpp
+	gs_local_memory_write_source_bounds_tests.cpp
 	gs_write_stamp_writer_tests.cpp
 	gs_hash_memo_tests.cpp
 	gs_hash_raw_key_tests.cpp

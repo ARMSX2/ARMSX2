@@ -65,14 +65,15 @@ namespace GSWriteStamps
 		/// `qwords` quadwords of 0xFF in one IMAGE tag.
 		void Data(u32 qwords)
 		{
-			std::vector<GIFPackedReg> buf(qwords + 1);
+			// The writers can read past the data they are handed, so the buffer is longer than the transfer.
+			std::vector<GIFPackedReg> buf(qwords + 1 + kSourceSlack / sizeof(GIFPackedReg));
 			std::memset(buf.data(), 0xFF, buf.size() * sizeof(GIFPackedReg));
 			GIFTag tag = {};
 			tag.NLOOP = qwords;
 			tag.EOP = 1;
 			tag.FLG = GIF_FLG_IMAGE;
 			std::memcpy(&buf[0], &tag, sizeof(tag));
-			m_gs.Transfer<0>(reinterpret_cast<const u8*>(buf.data()), static_cast<u32>(buf.size()));
+			m_gs.Transfer<0>(reinterpret_cast<const u8*>(buf.data()), qwords + 1);
 		}
 
 		/// Ends the slice that has arrived: a changed TRXPOS makes the parser write out what it holds, and

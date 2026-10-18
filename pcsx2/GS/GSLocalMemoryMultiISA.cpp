@@ -838,7 +838,9 @@ void GSLocalMemoryFunctions::WriteImageX(GSLocalMemory& mem, int& tx, int& ty, c
 		case PSMZ24:
 			readWriteHelper(tx, ty, len / 3, 1, sx, w, off.assertSizesMatch(GSLocalMemory::swizzle32), [&](GSOffset::PAHelper& pa, int x)
 			{
-				mem.WritePixel24(&vm32[pa.value(x)], *(u32*)pb);
+				// Three bytes. A 32-bit load would read a fourth, which the last pixel of the source does not have;
+				// WritePixel24 keeps only the low 24 bits of what it is given, so the result is the same.
+				mem.WritePixel24(&vm32[pa.value(x)], static_cast<u32>(pb[0]) | (static_cast<u32>(pb[1]) << 8) | (static_cast<u32>(pb[2]) << 16));
 				pb += 3;
 			});
 			break;

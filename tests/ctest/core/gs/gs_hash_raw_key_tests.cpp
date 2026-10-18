@@ -942,7 +942,7 @@ namespace
 			reg.RRW = w;
 			reg.RRH = h;
 			const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			std::vector<u8> data(len);
+			std::vector<u8> data(len + GSWriteStamps::kSourceSlack); // the writers can read past len
 			for (u8& b : data)
 				b = static_cast<u8>(rng());
 

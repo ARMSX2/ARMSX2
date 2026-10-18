@@ -335,7 +335,7 @@ namespace
 			reg.RRH = h;
 
 			const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			std::vector<u8> data(len, 0xFF);
+			std::vector<u8> data(len + GSWriteStamps::kSourceSlack, 0xFF); // the writers can read past len
 
 			std::memset(m_mem->m_vm8, 0, GSLocalMemory::m_vmsize);
 			const Watch watch(*m_mem);
@@ -374,7 +374,7 @@ namespace
 		reg.RRW = w;
 		reg.RRH = h;
 		const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-		std::vector<u8> data(len, 0xFF);
+		std::vector<u8> data(len + GSWriteStamps::kSourceSlack, 0xFF); // the writers can read past len
 
 		const Watch watch(*m_mem);
 		int tx = x0, ty = y0;
@@ -418,7 +418,9 @@ namespace
 			reg.RRH = h;
 
 			const size_t total = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			std::vector<u8> data(total, 0xFF);
+			// The writers can read past a slice: the odd-width PSMT4 path reads up to a whole image from the start of
+			// each one, so the buffer is padded by an image as well as by the slack.
+			std::vector<u8> data(2 * total + GSWriteStamps::kSourceSlack, 0xFF);
 
 			std::memset(m_mem->m_vm8, 0, GSLocalMemory::m_vmsize);
 			const Watch watch(*m_mem);
