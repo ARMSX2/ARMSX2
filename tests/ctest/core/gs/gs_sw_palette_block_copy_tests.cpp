@@ -66,6 +66,7 @@ namespace
 		GIFRegDTHE dthe;
 		GIFRegFBA fba;
 		GIFRegSCANMSK scanmsk;
+		u32 zmsk = 1; ///< ZBUF.ZMSK: set, so the draw writes no depth
 		GIFRegRGBAQ rgbaq;
 		GIFRegPRIM prim;
 		std::vector<Sprite> sprites;
@@ -153,7 +154,7 @@ namespace
 			r.U64 = 0;
 			r.ZBUF.ZBP = 0x1C0;
 			r.ZBUF.PSM = PSMZ32;
-			r.ZBUF.ZMSK = 1;
+			r.ZBUF.ZMSK = d.zmsk;
 			p.Reg(GIF_A_D_REG_ZBUF_1, r);
 			r.TEST = d.test;
 			p.Reg(GIF_A_D_REG_TEST_1, r);
@@ -631,6 +632,48 @@ namespace
 					d.must_refuse = false;
 
 				c.draws.push_back(d);
+			}
+
+			return c;
+		}
+		// RandomCase() with the textures moved to 32-bit ones: every register it varies (offsets, scissor, wrap, ST,
+		// sub-texel phases, sprite counts and overlaps, the texture under the frame, the one change a case may carry
+		// that the copy must refuse) is varied for them too. Most draws go to a 32-bit frame with no mask, which is
+		// where the 32-bit texel copy applies; the rest keep the 16-bit and masked frames and take texture formats
+		// other than 32-bit, which it must leave to the rasterizer. `shaped` says which draws are in the copy's shape.
+		static Case RandomCase32(u32 seed, std::vector<bool>& shaped)
+		{
+			Case c = RandomCase(seed);
+			std::mt19937 rng(seed ^ 0x5bd1e995u);
+			const auto pick = [&rng](int n) { return static_cast<int>(rng() % static_cast<u32>(n)); };
+
+			for (Draw& d : c.draws)
+			{
+				const int r = pick(100);
+				d.tex0.PSM = r < 82 ? PSMCT32 : r < 86 ? PSMCT24 : r < 90 ? PSMCT16 : r < 94 ? PSMCT16S : r < 97 ? PSMZ32 : PSMZ24;
+				d.tex0.CBP = d.tex0.CPSM = d.tex0.CSA = 0;
+
+				// The rasterizer's snapshot of a 32-bit texture is read past its end by a region clamp or repeat that
+				// names texels beyond the texture, so the reference itself differs from run to run on those draws
+				// (two runs of the rasterizer disagree, seen in seeds 5312 and 5656). The copy refuses them and the
+				// directed test covers that with a region inside the texture; the sweep makes them plain draws.
+				if (d.clamp.WMS > CLAMP_CLAMP || d.clamp.WMT > CLAMP_CLAMP)
+				{
+					d.clamp.WMS &= 1;
+					d.clamp.WMT &= 1;
+					d.must_refuse = false;
+				}
+
+				// A 16-bit frame without a perturbation becomes a 32-bit one most of the time, mask and all.
+				if (IsFrame16(d.frame.PSM) && !d.must_refuse && pick(100) < 85)
+				{
+					d.frame.PSM = pick(10) ? PSMCT32 : PSMZ32;
+					d.frame.FBMSK = pick(8) ? 0 : static_cast<u32>(rng());
+					d.fba.FBA = 0;
+				}
+
+				const bool mipped = d.tex1.MXL != 0;
+				shaped.push_back(d.tex0.PSM == PSMCT32 && (d.frame.PSM == PSMCT32 || d.frame.PSM == PSMZ32) && d.frame.FBMSK == 0 && !d.must_refuse && !mipped);
 			}
 
 			return c;
@@ -1316,4 +1359,465 @@ TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomDraws)
 	EXPECT_GE(copies * 5, draws) << "fewer than a fifth of the random draws reached the copy";
 	EXPECT_GE(copies16 * 5, draws16) << "fewer than a fifth of the random draws into 16-bit frames reached the masked texel copy";
 	EXPECT_GE(copiesmip * 10, drawsmip) << "fewer than a tenth of the random mipmapped draws reached the masked texel copy";
+}
+
+// The 32-bit texel copy: a sprite draw that writes each texel of a 32-bit texture one-to-one into a 32-bit frame.
+// Stuntman draws 189 of these a frame (the road, blitted from a 1024x1024 texture); there is no palette, so the
+// copy reads the texels straight from local memory and writes them back, and the rasterizer's snapshot of the
+// texture is never taken. The cases below are the same comparison as the palette block copy's: both arms from one
+// local memory, every byte compared.
+
+// A 32-bit blit: a 32x16 piece of a 256x256 32-bit texture into a 128-pixel-wide 32-bit frame, texel for pixel.
+static Draw Blit32(int frac = 0)
+{
+	Draw d = {};
+	d.tex0.TBP0 = 0x2000;
+	d.tex0.TBW = 4;
+	d.tex0.PSM = PSMCT32;
+	d.tex0.TW = 8;
+	d.tex0.TH = 8;
+	d.tex0.TCC = 1;
+	d.tex0.TFX = TFX_DECAL;
+	d.frame.FBP = 0x40;
+	d.frame.FBW = 2;
+	d.frame.PSM = PSMCT32;
+	d.test.ZTE = 1;
+	d.test.ZTST = ZTST_ALWAYS;
+	d.xyoffset.OFX = 2048 * 16;
+	d.xyoffset.OFY = 2048 * 16;
+	d.scissor.SCAX1 = 127;
+	d.scissor.SCAY1 = 255;
+	d.rgbaq.R = d.rgbaq.G = d.rgbaq.B = d.rgbaq.A = 0x80;
+	d.rgbaq.Q = 1.0f;
+	d.prim.PRIM = GS_SPRITE;
+	d.prim.TME = 1;
+	d.prim.FST = 1;
+	d.sprites.push_back({(2048 + 8) * 16, (2048 + 4) * 16, (2048 + 40) * 16, (2048 + 20) * 16,
+		(24) * 16 + frac, (100) * 16 + frac, (24 + 32) * 16 + frac, (100 + 16) * 16 + frac});
+	return d;
+}
+
+// A sprite by its destination corner and extent and its source corner, in whole pixels.
+static Sprite Blit32Sprite(int dx, int dy, int w, int h, int sx, int sy, int frac = 0)
+{
+	return {(2048 + dx) * 16, (2048 + dy) * 16, (2048 + dx + w) * 16, (2048 + dy + h) * 16,
+		sx * 16 + frac, sy * 16 + frac, (sx + w) * 16 + frac, (sy + h) * 16 + frac};
+}
+
+TEST_F(GSSwPaletteBlockCopy, TakesA32BitBlit)
+{
+	Case c;
+	c.seed = 200;
+	c.draws.push_back(Blit32());
+	EXPECT_EQ(Compare(c), 1u);
+}
+
+// No snapshot of the texture is taken: with the copy on nothing is converted, with it off the snapshot converts
+// whole blocks of the texture.
+TEST_F(GSSwPaletteBlockCopy, TakesA32BitBlitWithoutASnapshotOfTheTexture)
+{
+	Case c;
+	c.seed = 201;
+	c.draws.push_back(Blit32());
+	EXPECT_EQ(Compare(c), 1u);
+	EXPECT_GT(m_ref_unswizzled, 0.0);
+	EXPECT_EQ(m_got_unswizzled, 0.0);
+}
+
+// The sub-texel phase of the coordinates does not matter to a nearest lookup that steps one texel a pixel.
+TEST_F(GSSwPaletteBlockCopy, TakesEverySubTexelPhase)
+{
+	u32 seed = 210;
+	for (int frac = 0; frac < 16; frac++)
+	{
+		Case c;
+		c.seed = seed++;
+		c.draws.push_back(Blit32(frac));
+		EXPECT_EQ(Compare(c), 1u) << "frac " << frac;
+	}
+}
+
+// Stuntman's blits are a run of consecutive draws, each a different piece of the texture.
+TEST_F(GSSwPaletteBlockCopy, TakesARunOfBlits)
+{
+	Case c;
+	c.seed = 220;
+	for (int i = 0; i < 24; i++)
+	{
+		Draw d = Blit32();
+		d.sprites.clear();
+		d.sprites.push_back(Blit32Sprite((i & 3) * 32, (i >> 2) * 16, 32, 16, (i * 24) & 0xe0, (i * 40) & 0xf0));
+		c.draws.push_back(d);
+	}
+	EXPECT_EQ(Compare(c), 24u);
+}
+
+TEST_F(GSSwPaletteBlockCopy, TakesEveryFrameAndTextureWidth)
+{
+	u32 seed = 230;
+	for (int fbw = 1; fbw <= 16; fbw++)
+	{
+		for (const int tbw : {1, 4, 16})
+		{
+			Case c;
+			c.seed = seed++;
+			Draw d = Blit32();
+			d.frame.FBW = fbw;
+			d.tex0.TBW = tbw;
+			d.scissor.SCAX1 = fbw * 64 - 1;
+			c.draws.push_back(d);
+			EXPECT_EQ(Compare(c), 1u) << "fbw " << fbw << " tbw " << tbw;
+		}
+	}
+}
+
+// Both 32-bit frame layouts, and the 32-bit depth layout as a frame.
+TEST_F(GSSwPaletteBlockCopy, TakesTheFrameFormatsWithA32BitPixel)
+{
+	u32 seed = 260;
+	for (const u32 psm : {PSMCT32, PSMZ32})
+	{
+		Case c;
+		c.seed = seed++;
+		c.draws.push_back(Blit32());
+		c.draws.back().frame.PSM = psm;
+		EXPECT_EQ(Compare(c), 1u) << "frame format " << psm;
+	}
+}
+
+// Without TCC the texel's colour goes out with the vertex's alpha, the second vertex's.
+TEST_F(GSSwPaletteBlockCopy, TakesTextureColourWithVertexAlphaFrom32BitTextures)
+{
+	u32 seed = 270;
+	for (const int alpha : {0x00, 0x37, 0x7f, 0x80, 0xc9, 0xff})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		d.tex0.TCC = 0;
+		d.rgbaq.A = alpha;
+		c.draws.push_back(d);
+		d.alpha0 = 0xff - alpha;
+		d.alpha1 = alpha;
+		c.draws.push_back(d);
+		EXPECT_EQ(Compare(c), 2u) << "alpha " << alpha;
+	}
+}
+
+// With TCC the texel's own alpha goes out, whatever the vertex says and whatever TEXA says: TEXA is not read for a
+// 32-bit texture.
+TEST_F(GSSwPaletteBlockCopy, WritesTheTexelsOwnAlphaWhateverTEXASays)
+{
+	u32 seed = 280;
+	for (const int ta : {0, 1, 0x80, 0xff})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		d.texa.TA0 = ta;
+		d.texa.TA1 = 0xff - ta;
+		d.texa.AEM = ta & 1;
+		d.rgbaq.A = ta ^ 0x55;
+		c.draws.push_back(d);
+		EXPECT_EQ(Compare(c), 1u) << "TA0 " << ta;
+	}
+}
+
+// Modulate by a colour of 0x80 is decal; by any other colour it is not.
+TEST_F(GSSwPaletteBlockCopy, TakesModulateByHalfOf32BitTexturesAndRefusesAnyOtherColour)
+{
+	Case c;
+	c.seed = 290;
+	c.draws.push_back(Blit32());
+	c.draws.back().tex0.TFX = TFX_MODULATE;
+	c.draws.push_back(Blit32());
+	c.draws.back().tex0.TFX = TFX_MODULATE;
+	c.draws.back().tex0.TCC = 0;
+	c.draws.back().rgbaq.A = 0x11;
+	EXPECT_EQ(Compare(c), 2u);
+
+	Case r;
+	r.seed = 291;
+	r.draws.push_back(Blit32());
+	r.draws.back().tex0.TFX = TFX_MODULATE;
+	r.draws.back().rgbaq.G = 0x7F;
+	EXPECT_EQ(Compare(r), 0u);
+}
+
+// Repeat and clamp when the sprite reads past the texture's edge, on each axis.
+TEST_F(GSSwPaletteBlockCopy, WrapsAt32BitTexturesEdges)
+{
+	u32 seed = 300;
+	for (const int wms : {CLAMP_REPEAT, CLAMP_CLAMP})
+	{
+		for (const int wmt : {CLAMP_REPEAT, CLAMP_CLAMP})
+		{
+			for (const int tw : {3, 5, 8})
+			{
+				Case c;
+				c.seed = seed++;
+				Draw d = Blit32();
+				d.clamp.WMS = wms;
+				d.clamp.WMT = wmt;
+				d.tex0.TW = tw;
+				d.tex0.TH = tw;
+				d.sprites.clear();
+				// Starts inside the texture and runs past its right and bottom edges.
+				d.sprites.push_back(Blit32Sprite(4, 4, 32, 16, (1 << tw) - 11, (1 << tw) - 5));
+				c.draws.push_back(d);
+				// Starts past both edges.
+				d.sprites[0] = Blit32Sprite(4, 40, 16, 16, (1 << tw) + 3, (1 << tw) + 9);
+				c.draws.push_back(d);
+				// Starts at the origin and is bigger than the texture.
+				d.sprites[0] = Blit32Sprite(0, 64, 32, 32, 0, 0);
+				c.draws.push_back(d);
+				Compare(c);
+			}
+		}
+	}
+}
+
+// The frame over the draw's own texture: every texel is read before the first pixel is written, as the snapshot
+// would have it.
+TEST_F(GSSwPaletteBlockCopy, ReadsItsOwn32BitTextureAsItWasBeforeTheDraw)
+{
+	u32 seed = 330;
+	for (const int shift : {0, 1, 2, 8, 9, 16, 17, 33})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		d.tex0.TBP0 = d.frame.FBP * 32;
+		d.tex0.TBW = d.frame.FBW;
+		d.tex0.TW = 7;
+		d.tex0.TH = 7;
+		d.sprites.clear();
+		// Each sprite reads what the one before wrote, and what its own pixels are about to overwrite.
+		d.sprites.push_back(Blit32Sprite(0, 0, 32, 32, shift, 0));
+		d.sprites.push_back(Blit32Sprite(8, 8, 32, 32, 0, shift));
+		d.sprites.push_back(Blit32Sprite(shift, shift, 16, 16, 0, 0));
+		c.draws.push_back(d);
+		d.tex0.TBP0 += shift;
+		c.draws.push_back(d);
+		Compare(c);
+		EXPECT_GE(m_got_copies[0], 1u) << "shift " << shift;
+	}
+}
+
+// Sprites that overlap each other in one draw, later over earlier.
+TEST_F(GSSwPaletteBlockCopy, TakesOverlappingSpritesInOrder)
+{
+	Case c;
+	c.seed = 340;
+	Draw d = Blit32();
+	d.sprites.clear();
+	d.sprites.push_back(Blit32Sprite(0, 0, 32, 32, 0, 0));
+	d.sprites.push_back(Blit32Sprite(16, 16, 32, 32, 64, 64));
+	d.sprites.push_back(Blit32Sprite(8, 24, 16, 16, 128, 32));
+	c.draws.push_back(d);
+	EXPECT_EQ(Compare(c), 1u);
+}
+
+// A scissor that cuts the sprite on each side, on the vector grid and off it.
+TEST_F(GSSwPaletteBlockCopy, ClipsToTheScissor)
+{
+	u32 seed = 350;
+	for (const int x0 : {0, 3, 8, 11, 16})
+	{
+		for (const int x1 : {20, 27, 31, 39, 127})
+		{
+			Case c;
+			c.seed = seed++;
+			Draw d = Blit32();
+			d.scissor.SCAX0 = x0;
+			d.scissor.SCAX1 = x1;
+			d.scissor.SCAY0 = (x0 & 1) * 7;
+			d.scissor.SCAY1 = 8 + (x1 & 7);
+#ifndef GS_PALETTE_COPY_TESTS_JIT
+			// The C++ scanline asserts on a span the scissor cuts off the vector grid; the generated-code build
+			// takes the unaligned edges.
+			d.scissor.SCAX0 &= ~3;
+			d.scissor.SCAX1 |= 3;
+#endif
+			c.draws.push_back(d);
+			Compare(c);
+		}
+	}
+}
+
+// A sprite cut off completely draws nothing, and neither arm touches memory.
+TEST_F(GSSwPaletteBlockCopy, LeavesMemoryAloneForASpriteOutsideTheScissor)
+{
+	Case c;
+	c.seed = 360;
+	c.draws.push_back(Blit32());
+	c.draws.back().scissor.SCAX0 = 100;
+	c.draws.back().scissor.SCAX1 = 123;
+	Compare(c);
+}
+
+// A frame that runs off the end of local memory wraps; the texels still land where the rasterizer puts them.
+TEST_F(GSSwPaletteBlockCopy, WrapsAFrameAtTheEndOfLocalMemory)
+{
+	u32 seed = 370;
+	for (const int fbp : {0x1ff, 0x1fe, 0x1fd, 0x1fc})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		d.frame.FBP = fbp;
+		d.frame.FBW = 8;
+		d.scissor.SCAX1 = 511;
+		d.sprites.clear();
+		d.sprites.push_back(Blit32Sprite(0, 0, 64, 64, 0, 0));
+		d.sprites.push_back(Blit32Sprite(200, 20, 128, 64, 32, 32));
+		c.draws.push_back(d);
+		Compare(c);
+		EXPECT_EQ(m_got_copies[0], 1u) << "fbp " << fbp;
+	}
+}
+
+// A texture that runs off the end of local memory: whichever arm takes it, the bytes agree.
+TEST_F(GSSwPaletteBlockCopy, ReadsATextureAtTheEndOfLocalMemory)
+{
+	u32 seed = 380;
+	for (const int tbp : {0x3fff, 0x3ff0, 0x3f00, 0x3e00, 0x3c00})
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		d.tex0.TBP0 = tbp;
+		d.sprites.clear();
+		d.sprites.push_back(Blit32Sprite(0, 0, 64, 64, 0, 0));
+		d.sprites.push_back(Blit32Sprite(0, 64, 64, 64, 128, 128));
+		c.draws.push_back(d);
+		Compare(c);
+	}
+}
+
+// ST sprites whose S and T land exactly on texels are the UV draw, at a Q of one or a power of two.
+TEST_F(GSSwPaletteBlockCopy, TakesSTCoordinatesOnTheSixteenthGridFrom32BitTextures)
+{
+	Case c;
+	c.seed = 390;
+	Draw d = Blit32();
+	d.prim.FST = 0;
+	c.draws.push_back(d);
+	d.rgbaq.Q = 2.0f;
+	c.draws.push_back(d);
+	d.rgbaq.Q = 0.25f;
+	c.draws.push_back(d);
+	EXPECT_EQ(Compare(c), 3u);
+}
+
+TEST_F(GSSwPaletteBlockCopy, Refuses32BitBlitSTOffTheSixteenthGrid)
+{
+	Case c;
+	c.seed = 391;
+	c.draws.push_back(Blit32());
+	c.draws.back().prim.FST = 0;
+	c.draws.back().st_nudge = 1.0f / 32.0f;
+	EXPECT_EQ(Compare(c), 0u);
+}
+
+// What the rasterizer does that the copy does not model: each is one change to the blit, and none is taken.
+TEST_F(GSSwPaletteBlockCopy, Refuses32BitBlitsWithAnythingElseOnTheDraw)
+{
+	struct Change
+	{
+		const char* name;
+		void (*apply)(Draw&);
+	};
+	static const Change changes[] = {
+		{"frame mask", [](Draw& d) { d.frame.FBMSK = 0x00FF0000; }},
+		{"alpha mask", [](Draw& d) { d.frame.FBMSK = 0xFF000000; }},
+		{"colour mask", [](Draw& d) { d.frame.FBMSK = 0x00FFFFFF; }},
+		{"alpha test", [](Draw& d) { d.test.ATE = 1; d.test.ATST = ATST_GREATER; d.test.AREF = 0x40; d.test.AFAIL = 0; }},
+		{"alpha test, keep colour", [](Draw& d) { d.test.ATE = 1; d.test.ATST = ATST_LESS; d.test.AREF = 0x90; d.test.AFAIL = 3; }},
+		{"destination alpha test", [](Draw& d) { d.test.DATE = 1; d.test.DATM = 1; }},
+		{"blend", [](Draw& d) { d.prim.ABE = 1; d.alpha.A = 0; d.alpha.B = 1; d.alpha.C = 0; d.alpha.D = 1; }},
+		{"fog", [](Draw& d) { d.prim.FGE = 1; }},
+		{"dither", [](Draw& d) { d.dthe.DTHE = 1; }},
+		{"frame alpha bit", [](Draw& d) { d.fba.FBA = 1; }},
+		{"scan mask", [](Draw& d) { d.scanmsk.MSK = 2; }},
+		{"linear filter", [](Draw& d) { d.tex1.MMAG = 1; d.tex1.MMIN = 1; }},
+		{"region clamp u", [](Draw& d) { d.clamp.WMS = CLAMP_REGION_CLAMP; d.clamp.MAXU = 31; }},
+		{"region repeat v", [](Draw& d) { d.clamp.WMT = CLAMP_REGION_REPEAT; d.clamp.MINV = 7; d.clamp.MAXV = 64; }},
+		{"highlight", [](Draw& d) { d.tex0.TFX = 2; }},
+		{"highlight 2", [](Draw& d) { d.tex0.TFX = 3; }},
+		{"modulate by other colour", [](Draw& d) { d.tex0.TFX = TFX_MODULATE; d.rgbaq.R = 0x40; }},
+		{"depth test", [](Draw& d) { d.test.ZTE = 1; d.test.ZTST = ZTST_GEQUAL; }},
+		{"depth write", [](Draw& d) { d.test.ZTE = 1; d.test.ZTST = ZTST_ALWAYS; d.zmsk = 0; }},
+		{"width not a power of two", [](Draw& d) { d.sprites[0].x1 += 4 * 16; d.sprites[0].u1 += 4 * 16; }},
+		{"height not a power of two", [](Draw& d) { d.sprites[0].y1 += 2 * 16; d.sprites[0].v1 += 2 * 16; }},
+		{"scaled", [](Draw& d) { d.sprites[0].u1 += 16 * 16; }},
+		{"mirrored", [](Draw& d) { std::swap(d.sprites[0].u0, d.sprites[0].u1); }},
+		{"24-bit frame", [](Draw& d) { d.frame.PSM = PSMCT24; }},
+		{"16-bit frame", [](Draw& d) { d.frame.PSM = PSMCT16; }},
+		{"16-bit skewed frame", [](Draw& d) { d.frame.PSM = PSMCT16S; }},
+		{"24-bit texture", [](Draw& d) { d.tex0.PSM = PSMCT24; }},
+		{"16-bit texture", [](Draw& d) { d.tex0.PSM = PSMCT16; }},
+		{"16-bit skewed texture", [](Draw& d) { d.tex0.PSM = PSMCT16S; }},
+		{"32-bit depth texture", [](Draw& d) { d.tex0.PSM = PSMZ32; }},
+		{"mipmap at level one", [](Draw& d) { d.tex1.LCM = 1; d.tex1.MXL = 2; d.tex1.MMIN = 2; d.tex1.K = 16; d.miptbp1.TBP1 = 0x2100; d.miptbp1.TBW1 = 2; }},
+	};
+
+	u32 seed = 400;
+	for (const Change& ch : changes)
+	{
+		Case c;
+		c.seed = seed++;
+		Draw d = Blit32();
+		ch.apply(d);
+		c.draws.push_back(d);
+		EXPECT_EQ(Compare(c), 0u) << ch.name;
+	}
+}
+
+// Random cases from the palette block copy's generator, moved to 32-bit textures: every register it varies
+// (offsets, scissor, wrap, ST, sub-texel phases, sprite counts and overlaps, the texture under the frame, the
+// one change a case may carry that the copy must refuse) is varied here too. Most draws go to a 32-bit frame
+// with no mask, which is where the copy applies; the rest keep the 16-bit and masked frames and the source
+// formats other than 32-bit, which it must leave to the rasterizer. Byte-compared against the rasterizer.
+TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomDrawsFrom32BitTextures)
+{
+	constexpr u32 cases = 800;
+	u64 draws = 0;
+	u64 in_shape = 0; // 32-bit texture, 32-bit frame, no perturbation, no mipmap: the draws the copy is for
+	u64 in_shape_taken = 0;
+	u64 taken_elsewhere = 0; // taken although not in that shape; only an alpha test or a blend the renderer proves away may be
+	u64 other_formats_taken = 0;
+
+	for (u32 seed = 5000; seed < 5000 + cases; seed++)
+	{
+		std::vector<bool> shaped;
+		const Case c = RandomCase32(seed, shaped);
+		draws += c.draws.size();
+		Compare(c);
+		for (size_t i = 0; i < c.draws.size() && i < m_got_copies.size(); i++)
+		{
+			const Draw& d = c.draws[i];
+			if (shaped[i])
+			{
+				in_shape++;
+				in_shape_taken += m_got_copies[i];
+			}
+			else if (m_got_copies[i] != 0 && d.tex0.PSM != PSMCT32)
+			{
+				other_formats_taken += m_got_copies[i];
+			}
+			else if (m_got_copies[i] != 0)
+			{
+				taken_elsewhere += m_got_copies[i];
+			}
+		}
+		if (HasFailure())
+			break;
+	}
+
+	std::printf("32-bit texel copy: %" PRIu64 " of %" PRIu64 " random draws in the copy's shape taken (%" PRIu64 " draws in all), %" PRIu64 " others from 32-bit textures taken, %" PRIu64 " from other formats\n",
+		in_shape_taken, in_shape, draws, taken_elsewhere, other_formats_taken);
+	EXPECT_GE(in_shape, 300u) << "the generator made too few draws in the copy's shape";
+	EXPECT_GE(in_shape_taken * 2, in_shape) << "fewer than half the random draws in the copy's shape were taken";
+	EXPECT_EQ(other_formats_taken, 0u) << "a texture format other than 32-bit was copied as 32-bit texels";
 }
