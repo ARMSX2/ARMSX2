@@ -767,6 +767,52 @@ TEST_F(MvuProgCachePreload, ASidecarFollowsItsProgramsRankAndLoadsOnDemandPastTh
 	EXPECT_EQ(cstats.sidecarPreloadHits, 2u) << "the other two were read from disk";
 }
 
+// The preload reads a session's files when the cache comes up and puts them in memory a little later, and a
+// program asks for its sidecar when it first appears, which may be before that: it reads the file. A sidecar
+// the session then writes for the program replaces the file, and the copy the preload puts in memory after
+// all of this is the file as it was at startup. The next ask for the sidecar (the program is made again
+// after a reset) is answered by that copy, older than the file the session wrote.
+//
+// (Found as the flake of VuAotCache.UnusableSavedCodeFallsBackToThePlan, which failed about one run in
+// twenty on a loaded machine: its second load got the edited file back instead of the one the first load's
+// session had written.)
+TEST_F(MvuProgCachePreload, DISABLED_ASidecarWrittenInTheSessionIsNotAnsweredByTheOlderCopyThePreloadHeld)
+{
+	const AotOn aot;
+	SaveVariants();
+	const XXH128_hash_t hash = HashOfPayload(paths_[0]);
+	const std::vector<u8> before(512, 0x11), after(256, 0x22);
+	mVUProgCache::QueueSidecar(0, hash, [before]() { return before; });
+	mVUProgCache::FlushSidecars(0);
+	// (the program is the most recently used, so the preload reads it first, and holds with it in hand)
+	SetAge(paths_[0], 0);
+	SetAge(paths_[1], 1);
+	SetAge(paths_[2], 2);
+	SetAge(paths_[3], 3);
+
+	// A new session whose preload is slower than the first ask.
+	mVUProgCache::ResetForTest(0);
+	mVUProgCache::TestHoldPreload(0, true);
+	mVUProgCache::TestReinitFromLiveSentinel(0);
+	for (int i = 0; i < 5000 && !mVUProgCache::TestPreloadIsHeld(0); i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	ASSERT_TRUE(mVUProgCache::TestPreloadIsHeld(0)) << "the preload has read its first file";
+	std::vector<u8> got;
+	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, hash, got));
+	EXPECT_EQ(got, before) << "the first ask finds nothing preloaded yet and reads the file";
+
+	// The session learns more about the program and writes a new sidecar.
+	mVUProgCache::QueueSidecar(0, hash, [after]() { return after; });
+	mVUProgCache::FlushSidecars(0);
+
+	// The preload catches up, with the file it read before that.
+	mVUProgCache::TestHoldPreload(0, false);
+	mVUProgCache::TestWaitForPreload(0);
+
+	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, hash, got));
+	EXPECT_EQ(got, after) << "answered by the copy from before the session wrote its own";
+}
+
 TEST_F(MvuProgCachePreload, ProgramsUnusedForLongAreDeletedAndCompileAgainIfTheyReturn)
 {
 	const AotOn aot;

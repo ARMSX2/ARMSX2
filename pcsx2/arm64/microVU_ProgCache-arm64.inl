@@ -118,6 +118,8 @@ struct State
 	std::thread       preloadThread;
 	std::mutex        preloadMutex;
 	std::atomic<bool> preloadStop{false};
+	std::atomic<bool> preloadHold{false}; // test hooks, see TestHoldPreload
+	std::atomic<bool> preloadHeld{false};
 	std::unordered_map<XXH128_hash_t, std::vector<u8>,
 	                   MvuContentHashHash, MvuContentHashEq> preloaded;
 	u64 preloadedPayloads = 0;
@@ -554,6 +556,12 @@ static void StartPreload(State& s)
 			std::optional<std::vector<u8>> side;
 			if (sideSize > 0)
 				side = FileSystem::ReadBinaryFile(f.sidecar.c_str());
+			while (s.preloadHold.load(std::memory_order_acquire) && !s.preloadStop.load(std::memory_order_relaxed))
+			{
+				s.preloadHeld.store(true, std::memory_order_release);
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			s.preloadHeld.store(false, std::memory_order_release);
 			std::lock_guard<std::mutex> lock(s.preloadMutex);
 			if (bytes.has_value() && !bytes->empty())
 			{
@@ -1217,6 +1225,7 @@ bool TestGetLiveSentinel(u32 vu_index, XXH128_hash_t* out_sentinel)
 void ResetForTest(u32 vu_index)
 {
 	State& s = g_state[vu_index & 1];
+	s.preloadHold.store(false, std::memory_order_release);
 	s.StopWriter();
 	s.StopPreload();
 	s.initialized      = false;
@@ -1269,6 +1278,16 @@ bool TestIsPreloaded(u32 vu_index, const XXH128_hash_t& hash, bool sidecar)
 	State& s = g_state[vu_index & 1];
 	std::lock_guard<std::mutex> lock(s.preloadMutex);
 	return sidecar ? s.preloadedSidecars.count(hash) != 0 : s.preloaded.count(hash) != 0;
+}
+
+void TestHoldPreload(u32 vu_index, bool hold)
+{
+	g_state[vu_index & 1].preloadHold.store(hold, std::memory_order_release);
+}
+
+bool TestPreloadIsHeld(u32 vu_index)
+{
+	return g_state[vu_index & 1].preloadHeld.load(std::memory_order_acquire);
 }
 
 void TestWaitForPreload(u32 vu_index)

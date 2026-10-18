@@ -2775,6 +2775,14 @@ InstallRun LoadInstall(const InstallCase& c, bool sync, bool fh, const std::vect
 	LiveScope s2(true, 1000000, fh, 1000000, sync);
 	const vuaot::live::Stats s0 = vuaot::live::GetStats();
 	VuTestHarness h(1);
+	// The cache comes up at the first reset of the session, and reads the directory on a thread of its own.
+	// A program that appears before that thread has put what it read in memory reads the file itself, and the
+	// thread's copy, older than anything this session writes, is then answered to the next ask. A session
+	// that changes a sidecar file between loads (the edited-file tests) needs the thread done first, as a
+	// real session's is by the time its first program appears. (The code's side of this is
+	// MvuProgCachePreload.DISABLED_ASidecarWrittenInTheSessionIsNotAnsweredByTheOlderCopyThePreloadHeld.)
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	mVUProgCache::TestWaitForPreload(1);
 	Prepare(h, c.prog, c.setup, budget);
 	h.SetStartPc(c.entries[0]);
 	h.RunNoDiff(); // (loads the program in its JIT pass, then the reset drops it and saves it)

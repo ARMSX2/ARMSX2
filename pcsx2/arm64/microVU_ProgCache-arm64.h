@@ -170,6 +170,12 @@ namespace mVUProgCache
 	void TestSetPreloadBudget(u32 vu_index, size_t bytes);
 	// Test-only: the preload holds the payload (or, with `sidecar`, the vu-aot sidecar) of `hash` in RAM.
 	bool TestIsPreloaded(u32 vu_index, const XXH128_hash_t& hash, bool sidecar);
+	// Test-only: while held, the preload thread has read each file it is going to keep but does not put it in
+	// the map (a preload slower than the first loads of the session, which on a loaded machine or a slow
+	// disk it can be). Set before Init; released with false. ResetForTest releases it.
+	void TestHoldPreload(u32 vu_index, bool hold);
+	// Test-only: the preload thread is waiting in the hold, with a file read and not yet in the map.
+	bool TestPreloadIsHeld(u32 vu_index);
 	// Test-only: block until the background payload preload spawned by Init
 	// (if any) has finished. Lets tests deterministically assert the RAM-
 	// served hydration path (e.g. by deleting the on-disk payload after the
