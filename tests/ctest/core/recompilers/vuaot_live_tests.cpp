@@ -254,9 +254,9 @@ vuaot::live::Stats RunLive(const std::vector<VuOp>& prog, const Setup& setup, bo
 }
 } // namespace
 
-// The tier is off by default and with it off nothing counts, tiers up or
-// compiles: the dispatcher is microVU's.
-TEST(VuAotLive, OffByDefaultIsInert)
+// With the tier off nothing counts, tiers up or compiles: the dispatcher is microVU's. (The setting
+// is on by default; the test environment starts with it off, see RecompilerTestEnvironment::Initialize.)
+TEST(VuAotLive, OffIsInert)
 {
 	EXPECT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUAot);
 	LiveScope off(false, 2, true);

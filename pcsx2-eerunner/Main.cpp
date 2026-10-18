@@ -1429,6 +1429,11 @@ void EERunner::SettingsOverride()
 	}
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", live_mtvu);
 
+	// vu-aot is on by default in the product. A run here starts with it off, as it did before, so the
+	// twin passes and the identity runs keep their meaning; `--set EmuCore/CPU/Recompiler/EnableVUAot=true`
+	// (applied after this pinning) turns it on. It also brings the VU program cache up (UseVUProgramCache).
+	s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", false);
+
 	// EERUNNER_EECYCLESKIP / EERUNNER_EECYCLERATE: apply the EE cycle
 	// speedhacks. The Android Low-End preset ships EECycleSkip=1 and handheld
 	// users add underclock on top; timing-poison triage needs the handheld's

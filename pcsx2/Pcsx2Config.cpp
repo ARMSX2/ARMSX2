@@ -471,7 +471,7 @@ Pcsx2Config::RecompilerOptions::RecompilerOptions()
 	EnableFastmem = true;
 	PauseOnTLBMiss = false;
 	EnableVUProgramCache = false; // default off; opt-in until the on-disk cache is validated on the target hardware
-	EnableVUAot = false; // default off; opt-in until vu-aot is validated and measured on the target hardware
+	EnableVUAot = true; // default on (arm64 builds; the setting is ignored elsewhere); it also turns the VU program cache on
 
 	// vu and fpu clamping default to standard overflow.
 	vu0Overflow = true;

@@ -703,8 +703,8 @@ void Init(microVU& mVU)
 	// Production gate: the whole on-disk cache — init, INDEX
 	// telemetry, .vuprog payloads, dispatch-time hydration — sits behind the
 	// EmuCore/CPU/Recompiler EnableVUProgramCache INI bool, or EnableVUAot,
-	// which is bound to the cache (RecompilerOptions::UseVUProgramCache). Off
-	// (the default) means no disk side effects at all. Toggling either on at
+	// which is bound to the cache (RecompilerOptions::UseVUProgramCache). Both
+	// off means no disk side effects at all. Toggling either on at
 	// runtime works because mVUreset re-enters here after every settings-driven
 	// recompiler clear; toggling the cache off (both bits clear) leaves the
 	// already-initialized state up for the rest of the session (entries written

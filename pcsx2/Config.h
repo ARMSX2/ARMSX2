@@ -802,7 +802,8 @@ struct Pcsx2Config
 		// vu-aot, the whole-program VU1 compiler (pcsx2/arm64/vuaot/): programs
 		// that run often enough are recompiled above microVU, which stays the
 		// fallback at every block boundary. arm64-only; no-op on x86. Default
-		// off. It turns the VU program cache on (UseVUProgramCache()).
+		// on. It turns the VU program cache on (UseVUProgramCache()), which
+		// keeps the compiled code on disk for the next session.
 		bool
 			EnableVUAot : 1;
 		BITFIELD_END
