@@ -5,6 +5,7 @@ add_pcsx2_test(core_test
 	vuaot_setting_tests.cpp
 	ee_fpu_reloc_tests.cpp
 	patch_tests.cpp
+	autotune_controller_tests.cpp
 	autotune_settings_tests.cpp
 	iop_fingerprint_tests.cpp
 	iop_thread_mode_tests.cpp
