@@ -1884,6 +1884,10 @@ std::vector<VuOp> TwoLoopProg()
 	return p;
 }
 
+// The sidecars the cache's writer had written when FillPlan's session ended (the session's scope closes
+// the cache, and its counters with it, once the tier is back off).
+u64 g_planFillSidecarWrites = 0;
+
 // Session one of a plan test: the tier on, TwoLoopProg tiered up, its second entry run under the tier
 // (a root job), and the reset that saves. Returns the number of sidecars on disk afterwards.
 size_t FillPlan(const std::string& root, bool sync, bool fh, const Result& ref, const Result& ref2)
@@ -1911,6 +1915,7 @@ size_t FillPlan(const std::string& root, bool sync, bool fh, const Result& ref, 
 	h.RunJitPreserveBlockCache();
 	RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
 	mVUProgCache::FlushSidecars(1);
+	g_planFillSidecarWrites = mVUProgCache::GetStats(1).sidecarWrites;
 	return FindSidecars(root + "/vu_jit").size();
 }
 } // namespace
@@ -1932,7 +1937,7 @@ TEST_F(VuAotCache, SavedPlanTiersUpAtTheFirstRun)
 			NewProcess();
 			RecursiveRm(root_ + "/vu_jit");
 			ASSERT_EQ(FillPlan(root_, sync, fh, ref, ref2), 1u) << where << ": one program, one sidecar";
-			EXPECT_GE(mVUProgCache::GetStats(1).sidecarWrites, 1u) << where;
+			EXPECT_GE(g_planFillSidecarWrites, 1u) << where;
 
 			NewProcess();
 			LiveScope s2(true, 1000000, fh, 1000000, sync);

@@ -36,6 +36,7 @@
 
 #include "common/FileSystem.h"
 #include "common/Path.h"
+#include "common/StringUtil.h"
 
 #include <gtest/gtest.h>
 
@@ -45,6 +46,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -136,6 +138,9 @@ protected:
 	// tests can compile a genuine no-cache baseline first.
 	void InitDiskCache()
 	{
+		// The setting says the cache is wanted from here on: a reset closes a cache that nothing asks for
+		// (mVUreset). TearDown puts it back.
+		EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
 		mVUProgCache::ResetForTest(0);
 		mVUProgCache::TestReinitFromLiveSentinel(0);
 		ASSERT_TRUE(mVUProgCache::GetStats(0).enabled)
@@ -385,7 +390,7 @@ TEST_F(MvuProgCacheDisk, ConfigBoolGatesProductionInit)
 	// though EmuFolders::Cache points at a perfectly writable directory.
 	mVUProgCache::ResetForTest(0);
 
-	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized)
 		<< "disk cache initialized with the config bool OFF";
@@ -417,7 +422,7 @@ TEST_F(MvuProgCacheDisk, VuAotTurnsTheCacheOn)
 	} restore;
 
 	mVUProgCache::ResetForTest(0);
-	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUAot);
 	EXPECT_FALSE(EmuConfig.Cpu.Recompiler.UseVUProgramCache());
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
@@ -442,6 +447,33 @@ TEST_F(MvuProgCacheDisk, VuAotTurnsTheCacheOn)
 	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	EXPECT_FALSE(mVUPersist::IsRecordingEnabled()) << "both off: recording is off";
+}
+
+TEST_F(MvuProgCacheDisk, AResetThatNoLongerWantsTheCacheClosesItAndSavesNothing)
+{
+	// The cache is up and a program is live. Both settings go off, and the reset that follows (a settings
+	// change) closes the cache instead of checkpointing into it: nothing is written, and the writer and
+	// preload threads are gone before anything deletes the files.
+	VuTestHarness h(0);
+	SeedAndLoad(h);
+	h.Run();
+	h.RunJitPreserveBlockCache();
+	InitDiskCache();
+	ASSERT_TRUE(mVUProgCache::GetStats(0).initialized);
+
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
+	ASSERT_FALSE(EmuConfig.Cpu.Recompiler.EnableVUAot);
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized) << "the unwanted cache stayed up";
+	std::vector<std::string> payloads;
+	FindPayloads(vu0_root(), payloads);
+	EXPECT_TRUE(payloads.empty()) << "the reset saved into a cache that nothing asks for";
+
+	// And it comes back, empty-handed but working, when something asks for it again.
+	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	EXPECT_TRUE(mVUProgCache::GetStats(0).initialized);
+	EXPECT_TRUE(mVUProgCache::GetStats(0).enabled);
 }
 
 TEST_F(MvuProgCacheDisk, HydratedProgramResavesWithoutGrowth)
@@ -772,6 +804,216 @@ TEST_F(MvuProgCachePreload, ProgramsUnusedForLongAreDeletedAndCompileAgainIfThey
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	EXPECT_TRUE(FileSystem::FileExists(paths_[1].c_str())) << "the returned program was not saved again";
 	EXPECT_LT(AgeDays(paths_[1]), 0.01);
+}
+
+//------------------------------------------------------------------
+// Turning vu-aot off clears what it saved (mVUProgCache::OnVuAotSettingChanged, called by
+// VMManager::CheckForCPUConfigChanges after the reset).
+//------------------------------------------------------------------
+
+namespace
+{
+// Every file under `dir` whose name ends in `ext`.
+void FindWithExtension(const std::string& dir, const char* ext, std::vector<std::string>& out)
+{
+	if (!FileSystem::DirectoryExists(dir.c_str()))
+		return;
+	const size_t n = std::strlen(ext);
+	FileSystem::FindResultsArray ents;
+	FileSystem::FindFiles(dir.c_str(), "*",
+		FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES, &ents);
+	for (const auto& e : ents)
+	{
+		if (e.Attributes & FILESYSTEM_FILE_ATTRIBUTE_DIRECTORY)
+			FindWithExtension(e.FileName, ext, out);
+		else if (e.FileName.size() > n && e.FileName.compare(e.FileName.size() - n, n, ext) == 0)
+			out.push_back(e.FileName);
+	}
+}
+
+XXH128_hash_t HashOf(u64 n)
+{
+	XXH128_hash_t h;
+	h.low64 = n * 0x9E3779B97F4A7C15ull + 1;
+	h.high64 = ~n;
+	return h;
+}
+} // namespace
+
+class MvuAotCacheClear : public MvuProgCachePreload
+{
+protected:
+	void SetUp() override
+	{
+		MvuProgCachePreload::SetUp();
+		saved_aot_ = EmuConfig.Cpu.Recompiler.EnableVUAot;
+		EmuConfig.Cpu.Recompiler.EnableVUAot = true;
+		RecompilerTestEnvironment::ResetVuBlockCache(0);
+	}
+
+	void TearDown() override
+	{
+		mVUProgCache::ResetForTest(1);
+		EmuConfig.Cpu.Recompiler.EnableVUAot = saved_aot_;
+		MvuProgCachePreload::TearDown();
+	}
+
+	std::string vu_jit() const { return Path::Combine(root_, "vu_jit"); }
+
+	// The shard directory a file for `hash` lives in is the first byte of the name; a file written by hand
+	// goes under the same shape.
+	std::string HandFile(const std::string& dir, u64 n, const char* ext)
+	{
+		const std::string name = StringUtil::StdStringFromFormat("%016llx%016llx", (unsigned long long)HashOf(n).high64,
+			(unsigned long long)HashOf(n).low64);
+		const std::string shard = Path::Combine(dir, name.substr(0, 2));
+		FileSystem::EnsureDirectoryExists(shard.c_str(), true);
+		const std::string path = Path::Combine(shard, name + ext);
+		const std::vector<u8> bytes(100 + n, static_cast<u8>(n));
+		EXPECT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes.data(), bytes.size()));
+		return path;
+	}
+
+	// VU0: four real programs with sidecars (the first two preloaded). VU1: a cache of its own with two
+	// sidecars and a payload. A set-aside cache directory with one of each. And the tripwire's memory.
+	void Populate()
+	{
+		SaveVariants();
+		for (u32 k = 0; k < kPrograms; k++)
+			mVUProgCache::QueueSidecar(0, HashOfPayload(paths_[k]), [k]() { return std::vector<u8>(512, static_cast<u8>(k + 1)); });
+		mVUProgCache::FlushSidecars(0);
+
+		mVUProgCache::ResetForTest(1);
+		mVUProgCache::TestReinitFromLiveSentinel(1);
+		ASSERT_TRUE(mVUProgCache::GetStats(1).enabled);
+		for (u64 n : {1, 2})
+			mVUProgCache::QueueSidecar(1, HashOf(n), [n]() { return std::vector<u8>(256, static_cast<u8>(n)); });
+		mVUProgCache::FlushSidecars(1);
+		vu1_payload_ = HandFile(Path::Combine(vu_jit(), "vu1"), 3, ".vuprog");
+
+		stale_ = Path::Combine(vu_jit(), "vu0.stale.123");
+		stale_side_ = HandFile(stale_, 4, ".vuaot");
+		stale_payload_ = HandFile(stale_, 5, ".vuprog");
+
+		tripped_ = Path::Combine(vu_jit(), "vuaot_tripped.txt");
+		ASSERT_TRUE(FileSystem::WriteStringToFile(tripped_.c_str(), "SCUS-97481 2F123FD8\n"));
+
+		Reopen(0); // the next session: the sidecars of the first programs sit in RAM
+		ASSERT_GE(mVUProgCache::GetStats(0).sidecarsPreloaded, 1u);
+	}
+
+	size_t CountSidecars() const
+	{
+		std::vector<std::string> v;
+		FindWithExtension(vu_jit(), ".vuaot", v);
+		return v.size();
+	}
+
+	size_t CountPayloads() const
+	{
+		std::vector<std::string> v;
+		FindWithExtension(vu_jit(), ".vuprog", v);
+		return v.size();
+	}
+
+	bool saved_aot_ = false;
+	std::string vu1_payload_, stale_, stale_side_, stale_payload_, tripped_;
+};
+
+TEST_F(MvuAotCacheClear, OnToOffDeletesTheSidecarsAndKeepsWhatAnotherSettingStillWants)
+{
+	Populate();
+	ASSERT_EQ(CountSidecars(), 4u + 2u + 1u);
+	ASSERT_EQ(CountPayloads(), 4u + 1u + 1u);
+	ASSERT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[0]), true));
+
+	// EnableVUProgramCache stays on: the payloads and the INDEX are not touched.
+	const auto r = mVUProgCache::OnVuAotSettingChanged(true, false, true);
+	EXPECT_EQ(r.files, 7u);
+	EXPECT_GT(r.bytes, 7u * 100u);
+	EXPECT_EQ(CountSidecars(), 0u) << "VU0, VU1 and the set-aside directory";
+	EXPECT_EQ(CountPayloads(), 6u);
+	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str())) << "the tripwire's memory stays";
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "INDEX").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "VERSION").c_str()));
+	EXPECT_FALSE(mVUPersist::IsProcessDisabled());
+
+	// What the preload held is gone too, and the cache still works: a new sidecar is written.
+	EXPECT_FALSE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[0]), true));
+	EXPECT_TRUE(mVUProgCache::GetStats(0).initialized);
+	mVUProgCache::QueueSidecar(0, HashOfPayload(paths_[0]), []() { return std::vector<u8>(64, 1); });
+	mVUProgCache::FlushSidecars(0);
+	EXPECT_EQ(CountSidecars(), 1u);
+}
+
+TEST_F(MvuAotCacheClear, OnToOffWithNothingElseUsingTheCacheDeletesTheWholeCache)
+{
+	Populate();
+	const auto r = mVUProgCache::OnVuAotSettingChanged(true, false, false);
+	EXPECT_GE(r.files, 7u + 6u + 2u) << "sidecars, payloads, and the INDEX and VERSION of both caches";
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(vu_jit(), "vu0").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(vu_jit(), "vu1").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(stale_.c_str())) << "the set-aside cache";
+	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str())) << "the tripwire's memory stays";
+	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized) << "the cache in memory is closed";
+	EXPECT_FALSE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[0]), false));
+
+	// Switched on again, the cache starts fresh.
+	mVUProgCache::TestReinitFromLiveSentinel(0);
+	EXPECT_TRUE(mVUProgCache::GetStats(0).enabled);
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "VERSION").c_str()));
+	EXPECT_EQ(mVUProgCache::GetStats(0).entries, 0u);
+}
+
+TEST_F(MvuAotCacheClear, EveryOtherChangeClearsNothing)
+{
+	Populate();
+	const size_t sidecars = CountSidecars(), payloads = CountPayloads();
+	for (const bool programCache : {false, true})
+	{
+		const auto before_off_on = mVUProgCache::OnVuAotSettingChanged(false, true, programCache);
+		const auto on_on = mVUProgCache::OnVuAotSettingChanged(true, true, programCache);
+		const auto off_off = mVUProgCache::OnVuAotSettingChanged(false, false, programCache);
+		EXPECT_EQ(before_off_on.files + on_on.files + off_off.files, 0u);
+	}
+	EXPECT_EQ(CountSidecars(), sidecars);
+	EXPECT_EQ(CountPayloads(), payloads);
+	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str()));
+	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[0]), true)) << "the preload is untouched";
+}
+
+TEST_F(MvuAotCacheClear, ANonexistentCacheDirectoryIsFine)
+{
+	// (the fixture's reset brought VU0's cache up under the temporary root: take it away again)
+	mVUProgCache::ResetForTest(0);
+	RecursiveRm(vu_jit());
+	EXPECT_FALSE(FileSystem::DirectoryExists(vu_jit().c_str()));
+	EXPECT_EQ(mVUProgCache::OnVuAotSettingChanged(true, false, false).files, 0u);
+	EXPECT_EQ(mVUProgCache::OnVuAotSettingChanged(true, false, true).files, 0u);
+	const std::string saved = EmuFolders::Cache;
+	EmuFolders::Cache.clear();
+	EXPECT_EQ(mVUProgCache::ClearVuAot(true).files, 0u) << "no cache folder at all";
+	EmuFolders::Cache = saved;
+}
+
+TEST_F(MvuAotCacheClear, ASidecarStillQueuedIsNotWrittenAfterTheClear)
+{
+	InitDiskCache();
+	// Slow builds, so most of the queue is still waiting when the clear starts.
+	for (u64 n = 1; n <= 12; n++)
+	{
+		mVUProgCache::QueueSidecar(0, HashOf(n), [n]() {
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+			return std::vector<u8>(64, static_cast<u8>(n));
+		});
+	}
+	mVUProgCache::ClearVuAot(false);
+	// (the one being built when the clear started is finished and deleted; the rest are dropped, not written
+	// and deleted)
+	EXPECT_LE(mVUProgCache::GetStats(0).sidecarWrites, 2u) << "the queue was written out";
+	EXPECT_EQ(CountSidecars(), 0u) << "the writer put a file back after the clear";
+	std::this_thread::sleep_for(std::chrono::milliseconds(300));
+	EXPECT_EQ(CountSidecars(), 0u) << "the writer was still running";
 }
 
 } // namespace recompiler_tests

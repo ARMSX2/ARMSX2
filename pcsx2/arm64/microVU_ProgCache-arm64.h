@@ -104,6 +104,28 @@ namespace mVUProgCache
 	// Waits until every queued sidecar has been written (Close does this too).
 	void FlushSidecars(u32 vu_index);
 
+	// What ClearVuAot removed.
+	struct ClearResult
+	{
+		u64 files = 0;
+		u64 bytes = 0;
+	};
+
+	// Removes the vu-aot cache from disk, for both VUs: the sidecars (`.vuaot`), and with `wholeCache` the
+	// rest of the program cache too (the `.vuprog` payloads, INDEX and VERSION, and the `.stale.*`
+	// directories an options change set aside). The tripwire's memory (`vu_jit/vuaot_tripped.txt`) is
+	// kept: it is a safety record, a few bytes. The writer and preload threads are stopped first, so nothing
+	// writes back what is deleted and nothing reads what is gone, and what they held is dropped (a sidecar
+	// still queued for writing is not written). With `wholeCache` the cache in memory is closed as well, so
+	// the next Init starts a fresh one. Safe when the directories do not exist. CPU thread, with the VU
+	// recompilers idle (a settings change has just reset them). Logs one line when it removed anything.
+	ClearResult ClearVuAot(bool wholeCache);
+
+	// What a change of the EnableVUAot setting owes the disk cache: nothing, unless it went from on to
+	// off. Then the sidecars go, and the whole cache with them when nothing else keeps it
+	// (`programCacheStillOn` is EnableVUProgramCache after the change).
+	ClearResult OnVuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn);
+
 	// Dispatch-time probe used by mVUsearchProg on the in-process-miss
 	// path. Tracks whether the INDEX already knows the (program, startPC)
 	// tuple the dispatcher is about to recompile — the hit-rate equals the

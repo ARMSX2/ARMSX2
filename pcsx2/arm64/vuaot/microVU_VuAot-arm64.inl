@@ -569,6 +569,7 @@ void mVUvuAotRebuildIfDue()
 }
 
 void vuAotResetStickyTripwire() { vuaot::live::ResetStickyTripwire(); }
+void vuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn) { mVUProgCache::OnVuAotSettingChanged(wasOn, isOn, programCacheStillOn); }
 void vuAotSetTitle(const std::string& serial, u32 crc) { vuaot::live::SetTitle(serial, crc); }
 
 namespace vuaot::live

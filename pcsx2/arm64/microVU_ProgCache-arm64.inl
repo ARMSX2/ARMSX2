@@ -706,10 +706,8 @@ void Init(microVU& mVU)
 	// which is bound to the cache (RecompilerOptions::UseVUProgramCache). Both
 	// off means no disk side effects at all. Toggling either on at
 	// runtime works because mVUreset re-enters here after every settings-driven
-	// recompiler clear; toggling the cache off (both bits clear) leaves the
-	// already-initialized state up for the rest of the session (entries written
-	// after the toggle are keyed to the post-toggle sentinel and are evicted
-	// wholesale on the next handshake — bounded garbage, never corruption).
+	// recompiler clear; with both bits clear that same reset closes a cache that
+	// is up (Close, without saving), so nothing is written after the toggle.
 	// Tests bypass this gate through InitWithSentinel / TestReinitFromLiveSentinel.
 	if (!EmuConfig.Cpu.Recompiler.UseVUProgramCache())
 		return;
@@ -827,6 +825,128 @@ void FlushSidecars(u32 vu_index)
 std::string TestSidecarPath(u32 vu_index, const XXH128_hash_t& hash)
 {
 	return SidecarPath(g_state[vu_index & 1], hash);
+}
+
+ClearResult ClearVuAot(bool wholeCache)
+{
+	ClearResult result;
+
+	// The threads come first. The writer would put back a file this deletes, and the preload would read
+	// one it has deleted. A request still queued is dropped, not written (the one being written when this
+	// starts is finished by the join, and deleted below).
+	for (State& s : g_state)
+	{
+		{
+			std::lock_guard<std::mutex> lock(s.writerMutex);
+			s.writerOrder.clear();
+			s.writerQueue.clear();
+		}
+		s.StopWriter();
+		s.StopPreload();
+		std::lock_guard<std::mutex> lock(s.preloadMutex);
+		for (const auto& kv : s.preloadedSidecars)
+			s.preloadedBytes -= kv.second.size();
+		s.preloadedSidecars.clear();
+		if (wholeCache)
+		{
+			s.preloaded.clear();
+			s.preloadedBytes = 0;
+			s.initialized = false;
+			s.entries.clear();
+		}
+	}
+
+	if (EmuFolders::Cache.empty())
+		return result;
+
+	// (every path is UTF-8 through Utf8Path; the error_code overloads keep a missing or unreadable
+	// directory from throwing)
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	const fs::path root = Utf8Path(Path::Combine(EmuFolders::Cache, kRootDirName));
+	if (!fs::is_directory(root, ec))
+		return result;
+
+	const auto isCacheDir = [](const std::string& name) {
+		for (const char* vu : {"vu0", "vu1"})
+		{
+			const std::string stale = std::string(vu) + ".stale.";
+			if (name == vu || name.compare(0, stale.size(), stale) == 0)
+				return true;
+		}
+		return false;
+	};
+
+	std::vector<fs::path> dirs;
+	for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+	{
+		std::error_code sec;
+		if (it->is_directory(sec) && isCacheDir(it->path().filename().string()))
+			dirs.push_back(it->path());
+	}
+
+	const auto endsWith = [](const std::string& name, const char* suffix) {
+		const size_t n = std::strlen(suffix);
+		return name.size() >= n && name.compare(name.size() - n, n, suffix) == 0;
+	};
+
+	for (const fs::path& dir : dirs)
+	{
+		std::vector<fs::path> doomed;
+		if (wholeCache)
+			doomed.push_back(dir);
+		else
+		{
+			std::error_code wec;
+			for (fs::recursive_directory_iterator it(dir, wec), end; !wec && it != end; it.increment(wec))
+			{
+				std::error_code sec;
+				if (!it->is_regular_file(sec))
+					continue;
+				// (".vuaot.tmp" is a write that was cut short)
+				const std::string name = it->path().filename().string();
+				if (endsWith(name, ".vuaot") || endsWith(name, ".vuaot.tmp"))
+					doomed.push_back(it->path());
+			}
+		}
+
+		for (const fs::path& path : doomed)
+		{
+			std::error_code sec;
+			if (fs::is_directory(path, sec))
+			{
+				for (fs::recursive_directory_iterator it(path, sec), end; !sec && it != end; it.increment(sec))
+				{
+					std::error_code fec;
+					if (it->is_regular_file(fec))
+					{
+						++result.files;
+						result.bytes += it->file_size(fec);
+					}
+				}
+				fs::remove_all(path, sec);
+			}
+			else
+			{
+				++result.files;
+				result.bytes += fs::file_size(path, sec);
+				fs::remove(path, sec);
+			}
+		}
+	}
+
+	if (result.files)
+		Console.WriteLn(Color_StrongBlue, "vu-aot: cleared the %s: %" PRIu64 " files, %.1f MiB",
+			wholeCache ? "VU program cache" : "compiled cache (sidecars)", result.files,
+			static_cast<double>(result.bytes) / (1024.0 * 1024.0));
+	return result;
+}
+
+ClearResult OnVuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn)
+{
+	if (!wasOn || isOn)
+		return {};
+	return ClearVuAot(!programCacheStillOn);
 }
 
 void SaveProgram(microVU& mVU, const microProgram& prog)

@@ -3796,6 +3796,11 @@ void VMManager::CheckForCPUConfigChanges(const Pcsx2Config& old_config)
 	Internal::ClearCPUExecutionCaches();
 	memBindConditionalHandlers();
 
+	// The reset above has closed the disk cache if nothing asks for it any more and stopped its threads;
+	// what vu-aot saved is deleted now that nothing uses it.
+	vuAotSettingChanged(old_config.Cpu.Recompiler.EnableVUAot, EmuConfig.Cpu.Recompiler.EnableVUAot,
+		EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+
 	if (EmuConfig.Cpu.Recompiler.EnableFastmem != old_config.Cpu.Recompiler.EnableFastmem)
 		vtlb_ResetFastmem();
 

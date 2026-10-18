@@ -175,7 +175,7 @@ static bool s_stress = false;          // --iop-stress <seed>: a --liverun that 
 static u32 s_stress_seed = 1;
 static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
 static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
-static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag
+static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag; "vuaot": flip EnableVUAot
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
 static u32 s_rec_fallback_reg_masks[EERecFallback::kCop2MoveOpCount] = {~0u, ~0u, ~0u, ~0u}; // per-COP2-move-op register filters
@@ -724,7 +724,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
-	std::fprintf(stderr, "  --settings-churn N <lockstep|threaded|lag>: in the twin passes and the --liverun, apply a settings change through\n");
+	std::fprintf(stderr, "  --settings-churn N <lockstep|threaded|lag|vuaot>: in the twin passes and the --liverun, apply a settings change through\n");
 	std::fprintf(stderr, "               VMManager::ApplySettings every N frames, as a player changing a setting mid-game would.\n");
 	std::fprintf(stderr, "               'lockstep' flips the IOP thread between Off and Lockstep (a mode change: the thread\n");
 	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
@@ -1098,9 +1098,9 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::string_view n = StringUtil::StripWhitespace(argv[++i]);
 				s_churn_kind = StringUtil::StripWhitespace(argv[++i]);
 				const std::optional<u32> every = StringUtil::FromChars<u32>(n, 10);
-				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "threaded" && s_churn_kind != "lag"))
+				if (!every.has_value() || every.value() == 0 || (s_churn_kind != "lockstep" && s_churn_kind != "threaded" && s_churn_kind != "lag" && s_churn_kind != "vuaot"))
 				{
-					Console.Error("--settings-churn expects N (frames) and a kind: lockstep, threaded or lag.");
+					Console.Error("--settings-churn expects N (frames) and a kind: lockstep, threaded, lag or vuaot.");
 					return false;
 				}
 				s_churn_every = every.value();
@@ -3216,7 +3216,7 @@ static void ApplyChurnBaseline(bool restore)
 {
 	struct Base
 	{
-		bool lockstep, iop_thread;
+		bool lockstep, iop_thread, vuaot;
 		int lag;
 	};
 	static std::optional<Base> base;
@@ -3224,12 +3224,14 @@ static void ApplyChurnBaseline(bool restore)
 	{
 		base = Base{s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false),
 			s_settings_interface.GetBoolValue("EmuCore/Speedhacks", "iopThread", false),
+			s_settings_interface.GetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", false),
 			s_settings_interface.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", 6144)};
 	}
 	if (!restore)
 		return;
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", base->lockstep);
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThread", base->iop_thread);
+	s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", base->vuaot);
 	s_settings_interface.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", base->lag);
 	VMManager::ApplySettings();
 }
@@ -3251,6 +3253,12 @@ static void ApplySettingsChurn()
 		s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", false);
 		if (s_stress)
 			Console.WriteLn(fmt::format("STRESS: settings change: iopThread {} -> {}", on ? "on" : "off", on ? "off" : "on"));
+	}
+	else if (s_churn_kind == "vuaot")
+	{
+		const bool on = s_settings_interface.GetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", false);
+		s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", !on);
+		Console.WriteLn(fmt::format("CHURN: EnableVUAot {} -> {}", on ? "on" : "off", on ? "off" : "on"));
 	}
 	else if (s_stress && s_churn_kind == "lag-random")
 	{

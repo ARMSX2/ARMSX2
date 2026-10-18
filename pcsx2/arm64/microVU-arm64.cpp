@@ -1273,8 +1273,17 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// re-emitting. SaveAllPrograms is idempotent (no-op on hashes already
 	// in the on-disk INDEX) so calling on every reset is cheap. The vu-aot
 	// tier hands its programs' plans to the cache's writer first.
-	mVUvuAotSaveAll(mVU);
-	mVUProgCache::SaveAllPrograms(mVU);
+	//
+	// A cache that is up but no longer wanted (the setting was turned off, or it came up at boot under the
+	// default configuration before the settings were read) is closed instead, and nothing is saved: its
+	// writer and preload threads stop, so a settings change that deletes its files finds nothing using them.
+	if (EmuConfig.Cpu.Recompiler.UseVUProgramCache())
+	{
+		mVUvuAotSaveAll(mVU);
+		mVUProgCache::SaveAllPrograms(mVU);
+	}
+	else
+		mVUProgCache::Close(mVU);
 
 	// Single ownership lives in mVU.mvuContentMap. Free each program
 	// exactly once via the map iteration; per-PC deques and quick slots are

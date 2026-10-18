@@ -290,12 +290,17 @@ static constexpr u32 VU0_WINDOW_VU1_STATUS_QWORD = 32 + REG_STATUS_FLAG;
 // change does not).
 // The running title (disc serial and CRC), for the vu-aot tripwire's memory across sessions: a title that
 // set it off starts every later session with it set.
+// Turning the setting off clears what vu-aot saved on disk (the compiled cache), and the whole VU program
+// cache with it when EnableVUProgramCache is not on either. Called after the settings change has reset
+// the VU recompilers.
 #if defined(__aarch64__) || defined(_M_ARM64)
 extern void vuAotNoteOutsideStatusRead();
 extern void vuAotResetStickyTripwire();
 extern void vuAotSetTitle(const std::string& serial, u32 crc);
+extern void vuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn);
 #else
 static inline void vuAotNoteOutsideStatusRead() {}
 static inline void vuAotResetStickyTripwire() {}
 static inline void vuAotSetTitle(const std::string&, u32) {}
+static inline void vuAotSettingChanged(bool, bool, bool) {}
 #endif
