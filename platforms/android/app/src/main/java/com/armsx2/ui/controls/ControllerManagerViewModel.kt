@@ -2,9 +2,15 @@ package com.armsx2.ui.controls
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.armsx2.input.ControllerMappings
+import com.armsx2.input.PadRouter
+import com.armsx2.runtime.MainActivityRuntime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-enum class ControllerSection { Buttons, Hotkeys }
+enum class ControllerSection { Buttons, Profiles, Hotkeys }
 
 data class ControllerManagerUiState(
     val player: Int = 0,
@@ -14,6 +20,12 @@ data class ControllerManagerUiState(
     val rumble: Boolean = true,
     val multitap: Boolean = false,
     val dpadAsStick: Boolean = false,
+    val allToPlayer1: Boolean = false,
+    val pads: List<PadRouter.Pad> = emptyList(),
+    val pins: Map<String, Int> = emptyMap(),
+    val profiles: List<String> = emptyList(),
+    /** The profile last loaded, and into which player, so its row shows as the current one. */
+    val loadedProfile: Pair<Int, String>? = null,
 )
 
 class ControllerManagerViewModel(application: Application) : AndroidViewModel(application) {
@@ -26,7 +38,56 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
             rumble = ControllerMappings.rumbleEnabled(),
             multitap = ControllerMappings.multitapEnabled(),
             dpadAsStick = ControllerMappings.dpadAsLeftStick(),
+            allToPlayer1 = PadRouter.allToPlayer1,
+            pads = PadRouter.connectedPads(),
+            pins = PadRouter.pins(),
         )
+        refreshProfiles()
+    }
+
+    // listProfiles() also reads the portable inputprofiles/ folder, so it stays off the main thread.
+    private fun refreshProfiles() {
+        viewModelScope.launch {
+            val names = withContext(Dispatchers.IO) { ControllerMappings.listProfiles() }
+            state.value = state.value.copy(profiles = names)
+        }
+    }
+
+    fun setAllToPlayer1(on: Boolean) {
+        PadRouter.setAllToPlayer1(on)
+        refresh()
+    }
+
+    fun setPin(descriptor: String, port: Int?) {
+        PadRouter.setPin(descriptor, port)
+        refresh()
+    }
+
+    // The running game, when it has its own map for [player]. That map shadows the global one
+    // key by key, so a profile loaded globally would change nothing in this game.
+    private fun gameTier(player: Int): String? =
+        MainActivityRuntime.currentGame.value?.serial
+            ?.takeIf { it.isNotEmpty() && ControllerMappings.hasGameOverrides(it, player) }
+
+    /** Load [name] into the player being edited, at once and mid-game: into the global map,
+     *  or into the running game's own map when it has one. */
+    fun loadProfile(name: String) {
+        cancelCapture()
+        val player = state.value.player
+        if (ControllerMappings.applyProfile(name, player, gameTier(player))) {
+            state.value = state.value.copy(loadedProfile = player to name)
+        }
+        refresh()
+    }
+
+    /** Save the map the edited player is using now under [name]. False for a blank name. */
+    fun saveProfile(name: String): Boolean {
+        val saved = ControllerMappings.saveProfile(name, state.value.player, gameTier(state.value.player))
+        if (saved) {
+            state.value = state.value.copy(loadedProfile = state.value.player to name.trim())
+            refreshProfiles()
+        }
+        return saved
     }
 
     fun setPlayer(player: Int) {
@@ -52,7 +113,7 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
         ControllerMappings.bind(action, keyCode, state.value.player)
         ControllerMappings.padCapturing.value = false
         ControllerMappings.capturePadAction.value = null
-        state.value = state.value.copy(capturingAction = null, tick = state.value.tick + 1)
+        state.value = state.value.copy(capturingAction = null, tick = state.value.tick + 1, loadedProfile = null)
         return true
     }
 
@@ -64,11 +125,13 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
 
     fun clear(action: ControllerMappings.Action) {
         ControllerMappings.clearAction(action, state.value.player)
+        state.value = state.value.copy(loadedProfile = null)
         refresh()
     }
 
     fun resetPlayer() {
         ControllerMappings.reset(state.value.player)
+        state.value = state.value.copy(loadedProfile = null)
         refresh()
     }
 

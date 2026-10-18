@@ -301,9 +301,21 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             // usually whatever presses something first. Pins are stored per controller (by
             // descriptor, so they survive reconnects) and set once, rather than raced for at the
             // start of every session.
+            //
+            // Or every controller on player 1, for one person who docks the handheld: its own
+            // controls and the pad it is docked with then both play, with nothing to assign.
+            val allToPlayer1 = remember(refreshToken.intValue) { com.armsx2.input.PadRouter.allToPlayer1 }
+            ToggleRow(
+                str("pad.allToPlayer1.label"),
+                allToPlayer1,
+                description = str("pad.allToPlayer1.description"),
+            ) {
+                com.armsx2.input.PadRouter.setAllToPlayer1(it)
+                refreshToken.intValue++
+            }
             val pads = remember(refreshToken.intValue) { com.armsx2.input.PadRouter.connectedPads() }
             if (pads.isNotEmpty()) {
-                HelpText(str("pad.assign.help"))
+                if (!allToPlayer1) HelpText(str("pad.assign.help"))
                 HelpText(str("pad.assign.rumbleHelp"))
                 // Only the slots Multitap actually arms. Offering player 3-8 with Multitap off
                 // would let the user pin a pad at an un-armed PS2 port, where its input goes
@@ -321,7 +333,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                 )
                 pads.forEach { pad ->
                     val pinnedPort = com.armsx2.input.PadRouter.pins()[pad.descriptor]
-                    SegmentedRow(
+                    if (!allToPlayer1) SegmentedRow(
                         label = pad.name,
                         options = slotLabels,
                         selectedIndex = (pinnedPort?.plus(1) ?: 0).coerceIn(0, slotLabels.lastIndex),
