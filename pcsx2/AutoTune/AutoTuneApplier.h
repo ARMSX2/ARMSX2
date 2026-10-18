@@ -39,6 +39,8 @@ namespace GameDatabaseSchema
 	struct GameEntry;
 }
 
+enum class GSHardwareDownloadMode : u8;
+enum class RenderAPI;
 struct GSBackThreadInputs;
 
 /// Everything the applier needs from the VM.
@@ -133,6 +135,10 @@ namespace AutoTune
 	/// four performance cores and the IOP thread on, the back thread lands on one of them and costs the speed:
 	/// 66.6% without it, 53.7% with it (MQ65).
 	bool GsBackThreadOffered(const GSBackThreadInputs& inputs, bool would_share_busy_core);
+
+	/// What the setting would be granted for: the renderer kind, the API of the device that is open (not the
+	/// configured renderer, which reads Auto after a renderer reopen) and the download mode.
+	GSBackThreadInputs BackThreadInputs(bool hardware_renderer, RenderAPI live_api, GSHardwareDownloadMode download_mode);
 
 	/// Whether IopThread::ResolveMode would give an IOP thread a place on this host. The GS back thread, when it
 	/// is running, takes one of the performance cores and one of the cores overall, so it is counted as busy:

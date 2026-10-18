@@ -133,6 +133,11 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle);
 GSRendererType GSGetCurrentRenderer();
 bool GSIsHardwareRenderer();
 
+/// The API of the GS device that is open now, None when there is none. Unlike GSGetCurrentRenderer(), which is the
+/// configured renderer and reads Auto after a reopen that was given the unresolved setting, this is what the
+/// device actually is. Safe to read from any thread.
+RenderAPI GSGetCurrentRenderAPI();
+
 /// Whether this renderer's GetOutput() reads the framebuffer at the display's own offset,
 /// block-aligning as it goes, rather than reading the whole buffer and leaving the offset
 /// for the presenter. Today this is exactly "is the software renderer", but it is a property

@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "EECycleRate.h"
 #include "GameDatabase.h"
+#include "GS/GS.h"
 #include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "INISettingsInterface.h"
 #include "LayeredSettingsInterface.h"
@@ -472,6 +473,26 @@ TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)
 	in.vulkan = true;
 	in.download_mode = GSHardwareDownloadMode::Unsynchronized;
 	EXPECT_FALSE(AutoTune::GsBackThreadOffered(in, false));
+}
+
+TEST(AutoTuneHost, TheBackThreadIsJudgedByTheLiveDeviceNotByTheConfiguredRenderer)
+{
+	// After a renderer reopen the configured renderer reads Auto (GSreopen passes the unresolved setting on), so
+	// asking it whether this is Vulkan said no for the rest of the session and the lever vanished. The device
+	// that is open knows what it is.
+	const auto offered = [](RenderAPI api) {
+		const GSBackThreadInputs in = AutoTune::BackThreadInputs(true, api, GSHardwareDownloadMode::Enabled);
+		return AutoTune::GsBackThreadOffered(in, false);
+	};
+	EXPECT_TRUE(offered(RenderAPI::Vulkan));
+	EXPECT_FALSE(offered(RenderAPI::OpenGL));
+	EXPECT_FALSE(offered(RenderAPI::None)) << "no device is open";
+
+	// The software renderer queues on any API.
+	EXPECT_TRUE(AutoTune::GsBackThreadOffered(AutoTune::BackThreadInputs(false, RenderAPI::OpenGL, GSHardwareDownloadMode::Enabled), false));
+
+	// With no VM there is no device to ask.
+	EXPECT_EQ(GSGetCurrentRenderAPI(), RenderAPI::None);
 }
 
 TEST(AutoTuneHost, ACoreCountThatIsUnknownIsNotPlaceable)

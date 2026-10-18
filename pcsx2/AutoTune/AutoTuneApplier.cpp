@@ -277,6 +277,16 @@ AutoTune::GameDbForced AutoTune::ForcedByGameDb(const GameDatabaseSchema::GameEn
 	return forced;
 }
 
+GSBackThreadInputs AutoTune::BackThreadInputs(bool hardware_renderer, RenderAPI live_api, GSHardwareDownloadMode download_mode)
+{
+	GSBackThreadInputs in;
+	in.requested = true;
+	in.hardware_renderer = hardware_renderer;
+	in.vulkan = live_api == RenderAPI::Vulkan;
+	in.download_mode = download_mode;
+	return in;
+}
+
 bool AutoTune::GsBackThreadOffered(const GSBackThreadInputs& inputs, bool would_share_busy_core)
 {
 	return GSDecideBackThread(inputs).on && !would_share_busy_core;
@@ -581,11 +591,8 @@ namespace
 		s.resolution = EmuConfig.GS.UpscaleMultiplier;
 
 		s.gs_back_thread_on = EmuConfig.GS.BackThread;
-		GSBackThreadInputs back;
-		back.requested = true;
-		back.hardware_renderer = s.hw_renderer;
-		back.vulkan = renderer == GSRendererType::VK;
-		back.download_mode = EmuConfig.GS.HWDownloadMode;
+		// Ask the device, not the configuration: after a renderer reopen the configured renderer reads Auto.
+		const GSBackThreadInputs back = AutoTune::BackThreadInputs(s.hw_renderer, GSGetCurrentRenderAPI(), EmuConfig.GS.HWDownloadMode);
 		// The placement is read off the topology, so it is only asked for when it matters: the thread is off and
 		// the setting would be granted.
 		s.gs_back_thread_allowed = GSDecideBackThread(back).on &&
