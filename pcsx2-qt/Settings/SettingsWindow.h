@@ -116,6 +116,7 @@ private Q_SLOTS:
 	void onClearSettingsClicked();
 
 protected:
+	void changeEvent(QEvent* event) override;
 	void closeEvent(QCloseEvent*) override;
 	void wheelEvent(QWheelEvent* event) override;
 

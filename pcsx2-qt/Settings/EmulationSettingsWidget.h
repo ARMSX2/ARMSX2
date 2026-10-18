@@ -15,6 +15,9 @@ public:
 	EmulationSettingsWidget(SettingsWindow* settings_dialog, QWidget* parent);
 	~EmulationSettingsWidget();
 
+	/// Reads what auto-tune changed for this game from its settings file again. Per-game dialogs only.
+	void updateAutoTuneSummary();
+
 private Q_SLOTS:
 	void onOptimalFramePacingChanged();
 	void onResetAutoTuneClicked();
@@ -23,7 +26,6 @@ private:
 	void initializeSpeedCombo(QComboBox* cb, const char* section, const char* key, float default_value);
 	void handleSpeedComboChange(QComboBox* cb, const char* section, const char* key);
 	void updateOptimalFramePacing();
-	void updateAutoTuneSummary();
 	void updateUseVSyncForTimingEnabled();
 	void onManuallySetRealTimeClockChanged();
 	void onUseSystemLocaleFormatChanged();
