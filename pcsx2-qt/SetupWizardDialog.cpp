@@ -100,6 +100,13 @@ void SetupWizardDialog::nextPage()
 	if (!canShowNextPage())
 		return;
 
+	if (current_page == Page_AutoTune)
+	{
+		Host::SetBaseBoolSettingValue("EmuCore", "AutoTune", m_ui.autoTuneEnabled->isChecked());
+		Host::CommitBaseSettingChanges();
+		g_emu_thread->applySettings();
+	}
+
 	const int new_page = current_page + 1;
 	m_ui.pages->setCurrentIndex(new_page);
 	updatePageLabels(current_page);
@@ -171,6 +178,7 @@ void SetupWizardDialog::setupUi()
 	m_page_labels[Page_GameList] = m_ui.labelGameList;
 	m_page_labels[Page_Controller] = m_ui.labelController;
 	m_page_labels[Page_RetroAchievements] = m_ui.labelRetroAchievements;
+	m_page_labels[Page_AutoTune] = m_ui.labelAutoTune;
 	m_page_labels[Page_Complete] = m_ui.labelComplete;
 
 	connect(m_ui.back, &QPushButton::clicked, this, &SetupWizardDialog::previousPage);
@@ -182,6 +190,7 @@ void SetupWizardDialog::setupUi()
 	setupGameListPage();
 	setupControllerPage();
 	setupRetroAchievementsPage();
+	setupAutoTunePage();
 	setupCompletePage();
 }
 
@@ -441,6 +450,13 @@ void SetupWizardDialog::setupRetroAchievementsPage()
 	connect(m_ui.raLoginButton, &QPushButton::clicked, this, &SetupWizardDialog::onRetroAchievementsLoginLogoutPressed);
 	connect(m_ui.raViewProfileButton, &QPushButton::clicked, this, &SetupWizardDialog::onRetroAchievementsViewProfilePressed);
 	refreshRetroAchievementsLoginState();
+}
+
+void SetupWizardDialog::setupAutoTunePage()
+{
+	// Checked unless the player already turned it off. A change is saved at once; leaving the page saves the answer
+	// even when it was left as it was (see nextPage), so the settings file shows the player was asked.
+	SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoTuneEnabled, "EmuCore", "AutoTune", true);
 }
 
 void SetupWizardDialog::setupCompletePage()

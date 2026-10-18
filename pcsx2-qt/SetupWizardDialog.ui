@@ -98,6 +98,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QLabel" name="labelAutoTune">
+         <property name="text">
+          <string>Performance</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QLabel" name="labelComplete">
          <property name="text">
           <string>Complete</string>
@@ -887,6 +894,58 @@
           <size>
            <width>20</width>
            <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="pageAutoTune">
+      <layout class="QVBoxLayout" name="verticalLayout_autotune">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="autoTuneIntro">
+         <property name="text">
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:14pt; font-weight:700;&quot;&gt;Automatic Performance Tuning&lt;/span&gt;&lt;/p&gt;&lt;p&gt;When a game can't keep full speed, ARMSX2 tries lighter settings for that game one at a time and keeps the ones that help. What it changed is saved with the game's own settings, and you can reset it for any game from the game's properties.&lt;/p&gt;&lt;p&gt;You can change this later under Settings, Emulation.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QCheckBox" name="autoTuneEnabled">
+         <property name="text">
+          <string>Enable automatic performance tuning</string>
+         </property>
+         <property name="checked">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_autotune">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
           </size>
          </property>
         </spacer>
