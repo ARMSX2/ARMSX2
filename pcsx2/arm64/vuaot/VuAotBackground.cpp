@@ -9,6 +9,11 @@
 
 #include <cstring>
 
+#if defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
+#endif
+
 namespace vuaot::bg
 {
 	namespace a64 = vixl::aarch64;
@@ -266,6 +271,17 @@ namespace vuaot::bg
 		Threading::SetNameOfCurrentThread("VU1 vu-aot compile");
 		// Below the emulator's threads: a tier-up may wait, the VU must not.
 		Threading::ThreadHandle::GetForCallingThread().SetNicePriority(10);
+#if defined(__linux__)
+		// A thread starts with the processor mask of the thread that creates it. The tier can be switched
+		// on in a running game (the in-game switch), from the CPU thread, which the emulator has pinned to
+		// one core, or to the performance cores, by then; the worker would then share the EE's core, or
+		// the cores the emulation threads need, at a low priority. It takes the mask of the process's first
+		// thread instead, which nothing pins and a taskset or cpuset still limits: the placement of a
+		// worker started at boot, before the emulation threads were pinned.
+		cpu_set_t mask;
+		if (sched_getaffinity(getpid(), sizeof(mask), &mask) == 0)
+			sched_setaffinity(0, sizeof(mask), &mask);
+#endif
 		for (;;)
 		{
 			std::function<void()> gate;

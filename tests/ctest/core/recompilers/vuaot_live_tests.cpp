@@ -18,6 +18,7 @@
 #include "VUmicro.h"
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
+#include "arm64/vuaot/VuAotBackground.h"
 #include "arm64/vuaot/VuAotLive.h"
 #include "arm64/vuaot/VuAotPersist.h"
 
@@ -36,6 +37,7 @@
 #include <thread>
 #include <vector>
 
+#include <sched.h>
 #include <unistd.h>
 #ifdef __linux__
 #include <spawn.h>
@@ -688,6 +690,48 @@ TEST(VuAotLive, ResetDuringCompileDropsTheJob)
 		EXPECT_GE(d.regions, 1u);
 	}
 }
+
+#if defined(__linux__)
+// The worker runs wherever the process's first thread may, not where the thread that started it was
+// pinned: the tier can be switched on from the CPU thread of a running game, which the emulator has
+// pinned to one core. (Mutation: leave the new thread's mask as it begins, and it is that one core.)
+TEST(VuAotLive, WorkerStartedFromAPinnedThreadIsNotPinnedWithIt)
+{
+	cpu_set_t processMask;
+	ASSERT_EQ(sched_getaffinity(getpid(), sizeof(processMask), &processMask), 0);
+	if (CPU_COUNT(&processMask) < 2)
+		GTEST_SKIP() << "the process may use one processor only";
+	int firstCpu = 0;
+	while (!CPU_ISSET(firstCpu, &processMask))
+		firstCpu++;
+
+	struct ReadMask final : vuaot::bg::Job
+	{
+		int cpus = -1;
+		void Run() override
+		{
+			cpu_set_t m;
+			if (sched_getaffinity(0, sizeof(m), &m) == 0)
+				cpus = CPU_COUNT(&m);
+		}
+	};
+	auto job = std::make_shared<ReadMask>();
+
+	std::thread starter([&] {
+		cpu_set_t one;
+		CPU_ZERO(&one);
+		CPU_SET(firstCpu, &one);
+		ASSERT_EQ(sched_setaffinity(0, sizeof(one), &one), 0);
+		vuaot::bg::Worker worker;
+		worker.Start();
+		ASSERT_TRUE(worker.Submit(job));
+		worker.Wait(job);
+		worker.Stop();
+	});
+	starter.join();
+	EXPECT_EQ(job->cpus, CPU_COUNT(&processMask)) << "the worker kept the starting thread's single core";
+}
+#endif
 
 // The tier switched off while a job is compiling: the reset that applies the
 // setting stops the worker (waiting for the job), nothing it made is published,
