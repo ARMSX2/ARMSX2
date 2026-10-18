@@ -4323,6 +4323,10 @@ void VMManager::WarnAboutUnsafeSettings()
 	if (!EmuConfig.WarnAboutUnsafeSettings)
 		return;
 
+	// Auto-tune applies settings six to nine times in a convergence; a toast for each would bury its own message.
+	if (AutoTune::IsApplyingSettings())
+		return;
+
 	std::string messages;
 	auto append = [&messages](const char* icon, const std::string_view msg) {
 		messages += icon;

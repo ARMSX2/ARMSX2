@@ -117,6 +117,22 @@ namespace AutoTune
 	/// it does not know, so it writes the key back to its store here. Set once at start-up, before any VM exists.
 	extern void (*g_on_committed)(const char* section, const char* key, std::string_view value);
 
+	/// True while auto-tune is applying settings itself: a trial, an undo, a keep, a reset. Applying settings
+	/// shows the game database's hints on screen again (a recommended blending level, AA1) and the unsafe
+	/// settings warning, and a convergence is six to nine applies in a row, so those stay quiet then. A settings
+	/// change by the player is not auto-tune's and still shows them. CPU thread.
+	bool IsApplyingSettings();
+
+	/// Marks the settings applies made while it is alive as auto-tune's own. Nests.
+	class ApplyScope
+	{
+	public:
+		ApplyScope();
+		~ApplyScope();
+		ApplyScope(const ApplyScope&) = delete;
+		ApplyScope& operator=(const ApplyScope&) = delete;
+	};
+
 	// ---- decisions that depend on the host and the game database, as pure functions ------------------
 
 	/// Settings the game database fixes for this game, in the terms the controller uses.

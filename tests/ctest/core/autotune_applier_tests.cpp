@@ -13,6 +13,7 @@
 #include "GS/GS.h"
 #include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "INISettingsInterface.h"
+#include "common/Console.h"
 #include "LayeredSettingsInterface.h"
 #include "VMManager.h"
 
@@ -805,6 +806,91 @@ TEST(AutoTuneTogether, ALeverThatDoesNotHelpIsUndoneAndNeverTriedAgain)
 	EXPECT_EQ(count("trying IOP thread"), 1);
 	EXPECT_EQ(count("did not help"), 1);
 	EXPECT_EQ(count("nothing left to try"), 1);
+}
+
+// ---------------------------------------------------------------------------------------------- the on-screen hints
+
+namespace
+{
+	// Everything the log said while it was alive, host output only.
+	std::vector<std::string> g_log_lines;
+
+	void CaptureLog(LOGLEVEL, ConsoleColors, std::string_view message)
+	{
+		g_log_lines.emplace_back(message);
+	}
+
+	class LogCapture
+	{
+	public:
+		LogCapture()
+		{
+			g_log_lines.clear();
+			Log::SetHostOutputLevel(LOGLEVEL_INFO, &CaptureLog);
+		}
+		~LogCapture() { Log::SetHostOutputLevel(LOGLEVEL_NONE, nullptr); }
+
+		static bool Said(const std::string& osd_key)
+		{
+			const std::string needle = "OSD [" + osd_key + "]";
+			return std::any_of(g_log_lines.begin(), g_log_lines.end(), [&](const std::string& l) { return l.find(needle) != std::string::npos; });
+		}
+	};
+
+	// A game whose database entry recommends more than the configuration has: Full blending, AA1.
+	void ApplyRecommendationsTo(Pcsx2Config::GSOptions& gs)
+	{
+		GameDatabaseSchema::GameEntry entry;
+		entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::RecommendedBlendingLevel, static_cast<int>(AccBlendLevel::Full));
+		entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::RecommendedHWAA1, 1);
+		gs.AccurateBlendingUnit = AccBlendLevel::Basic;
+		gs.HWAA1 = false;
+		EmuConfig.GS.AccurateBlendingUnit = AccBlendLevel::Basic;
+		entry.applyGSHardwareFixes(gs, {}, GameDatabaseSchema::ApplyMode::Live);
+	}
+}
+
+TEST(AutoTuneHints, TheGameDatabaseSaysWhatItRecommendsWhenThePlayerAppliesSettings)
+{
+	LogCapture capture;
+	Pcsx2Config::GSOptions gs;
+	ApplyRecommendationsTo(gs);
+	EXPECT_TRUE(LogCapture::Said("HWBlendingWarning"));
+	EXPECT_TRUE(LogCapture::Said("HWAA1Warning"));
+}
+
+TEST(AutoTuneHints, TheyStayQuietWhileAutoTuneAppliesATrialOrAnUndo)
+{
+	// Every trial and every undo is an apply, and a convergence is six to nine of them: a stack of the same two
+	// toasts on top of auto-tune's own message.
+	LogCapture capture;
+	{
+		AutoTune::ApplyScope applying;
+		Pcsx2Config::GSOptions gs;
+		ApplyRecommendationsTo(gs);
+	}
+	EXPECT_FALSE(LogCapture::Said("HWBlendingWarning"));
+	EXPECT_FALSE(LogCapture::Said("HWAA1Warning"));
+
+	// And the next apply that is not auto-tune's says them again.
+	Pcsx2Config::GSOptions gs;
+	ApplyRecommendationsTo(gs);
+	EXPECT_TRUE(LogCapture::Said("HWBlendingWarning"));
+}
+
+TEST(AutoTuneHints, TheScopeNestsAndEndsWithTheOutermost)
+{
+	EXPECT_FALSE(AutoTune::IsApplyingSettings());
+	{
+		AutoTune::ApplyScope outer;
+		EXPECT_TRUE(AutoTune::IsApplyingSettings());
+		{
+			AutoTune::ApplyScope inner;
+			EXPECT_TRUE(AutoTune::IsApplyingSettings());
+		}
+		EXPECT_TRUE(AutoTune::IsApplyingSettings()) << "a keep applies inside an apply";
+	}
+	EXPECT_FALSE(AutoTune::IsApplyingSettings());
 }
 
 // ---------------------------------------------------------------------------------------------- the game's file

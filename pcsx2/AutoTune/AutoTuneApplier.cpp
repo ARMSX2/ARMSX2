@@ -25,6 +25,7 @@
 #include "fmt/format.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -39,6 +40,26 @@ static_assert(static_cast<int>(GSHardwareDownloadMode::Asynchronous) == AutoTune
 static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Basic) == 1 && static_cast<int>(AccBlendLevel::Maximum) == 5);
 
 void (*AutoTune::g_on_committed)(const char* section, const char* key, std::string_view value) = nullptr;
+
+namespace
+{
+	std::atomic<int> s_applying_depth{0};
+}
+
+bool AutoTune::IsApplyingSettings()
+{
+	return s_applying_depth.load(std::memory_order_relaxed) > 0;
+}
+
+AutoTune::ApplyScope::ApplyScope()
+{
+	s_applying_depth.fetch_add(1, std::memory_order_relaxed);
+}
+
+AutoTune::ApplyScope::~ApplyScope()
+{
+	s_applying_depth.fetch_sub(1, std::memory_order_relaxed);
+}
 
 namespace
 {
@@ -396,16 +417,10 @@ namespace
 	class VmEnv final : public AutoTuneEnv
 	{
 	public:
-		explicit VmEnv(bool& applying)
-			: m_applying(applying)
-		{
-		}
-
 		void ApplySettings() override
 		{
-			m_applying = true;
+			AutoTune::ApplyScope applying;
 			VMManager::ApplySettings();
-			m_applying = false;
 		}
 
 		bool EditGameFile(const std::function<void(SettingsInterface&)>& edit) override
@@ -423,9 +438,8 @@ namespace
 
 		void ReloadGameSettings() override
 		{
-			m_applying = true;
+			AutoTune::ApplyScope applying;
 			VMManager::ReloadGameSettings();
-			m_applying = false;
 		}
 
 		std::unique_lock<std::mutex> LockSettings() override { return Host::GetSettingsLock(); }
@@ -442,9 +456,6 @@ namespace
 			if (AutoTune::g_on_committed)
 				AutoTune::g_on_committed(section, key, value);
 		}
-
-	private:
-		bool& m_applying;
 	};
 
 	const char* ActionName(const AutoTuneAction& a)
@@ -474,12 +485,10 @@ namespace
 	{
 	public:
 		Runtime()
-			: m_env(m_applying)
-			, m_applier(m_env)
+			: m_applier(m_env)
 		{
 		}
 
-		bool m_applying = false;
 		VmEnv m_env;
 		AutoTuneApplier m_applier;
 		AutoTuneController m_controller;
@@ -782,7 +791,7 @@ void AutoTune::OnResumed()
 void AutoTune::OnSettingsApplied()
 {
 	Runtime& rt = Rt();
-	if (!rt.m_applying)
+	if (!IsApplyingSettings())
 		rt.m_pending_settings = true;
 }
 
@@ -849,9 +858,8 @@ AutoTune::ResetResult AutoTune::ResetForGame(const std::string& serial, u32 crc)
 			Runtime& rt = Rt();
 			rt.m_applier.CancelTrial(false);
 			rt.m_active = false; // starts over at the next vsync, reading the rejected steps from the cleaned file
-			rt.m_applying = true;
+			AutoTune::ApplyScope applying;
 			VMManager::ReloadGameSettings();
-			rt.m_applying = false;
 		});
 	}
 

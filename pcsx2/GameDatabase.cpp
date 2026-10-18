@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GameDatabase.h"
+
+#include "AutoTune/AutoTuneApplier.h"
 #ifdef ARMSX2_EMBEDDED_RESOURCES
 #include "EmbeddedResources.h"
 #endif
@@ -1145,7 +1147,8 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::RecommendedBlendingLevel:
 			{
-				if (quiet)
+				// Quiet also while auto-tune applies a trial: a toast per apply stacks up (see AutoTune::IsApplyingSettings).
+				if (quiet || AutoTune::IsApplyingSettings())
 					break;
 
 				if (!is_sw_renderer && value >= 0 && value <= static_cast<int>(AccBlendLevel::Maximum) && static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) < value)
@@ -1179,7 +1182,8 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::RecommendedAccurateAlphaTest:
 			{
-				if (quiet)
+				// Quiet also while auto-tune applies a trial: a toast per apply stacks up (see AutoTune::IsApplyingSettings).
+				if (quiet || AutoTune::IsApplyingSettings())
 					break;
 
 				if (!is_sw_renderer && value >= 0 && value <= 1 &&
@@ -1203,7 +1207,8 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::RecommendedHWAA1:
 			{
-				if (quiet)
+				// Quiet also while auto-tune applies a trial: a toast per apply stacks up (see AutoTune::IsApplyingSettings).
+				if (quiet || AutoTune::IsApplyingSettings())
 					break;
 
 				if (!is_sw_renderer && value >= 0 && value <= 1 &&
