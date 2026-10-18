@@ -90,6 +90,7 @@ AutoTuneGain AutoTuneJudgeGain(const AutoTuneStat& before, const AutoTuneStat& a
 
 	g.clear = g.gain >= policy.gain_fraction - 1e-9 && g.gain > g.noise;
 	g.none = g.gain + g.noise < policy.gain_fraction;
+	g.worse = g.gain <= -(policy.gain_fraction - 1e-9) && g.gain < -g.noise;
 	return g;
 }
 
@@ -533,11 +534,15 @@ AutoTuneAction AutoTuneController::FinishTrial()
 	                   (!was_good_speed || was_late);
 
 	// Keep: the speed clearly rose, or reached full speed, or the cost the lever targets clearly fell while the
-	// speed did not fall (something else is still the limit). Reject, and remember it: neither figure shows a gain
-	// even allowing for the noise. Anything else is inconclusive.
+	// speed did not fall (something else is still the limit). Reject, and remember it: the speed clearly fell, or
+	// neither figure shows a gain even allowing for the noise. Anything else is inconclusive.
 	const bool keep_on_speed = fixed || speed.clear;
 	const bool keep_on_cost = have_cost && cost.clear && speed.gain >= -m_policy.cost_keep_max_speed_loss;
-	const bool reject = speed.none && (!have_cost || cost.none);
+	// The speed clearly fell, whatever the cost did: the lever made things worse, and that is as good a
+	// measurement as there is. It ends the trial at the first look instead of keeping the player at the lower
+	// speed for another eight windows.
+	const bool hurt = speed.worse;
+	const bool reject = hurt || (speed.none && (!have_cost || cost.none));
 
 	AutoTuneAction action;
 	action.lever = m_trial.lever;

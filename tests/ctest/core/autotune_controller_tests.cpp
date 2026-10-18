@@ -1168,6 +1168,20 @@ TEST(AutoTuneStats, AGainHasToBeBothBigEnoughAndBeyondTheNoise)
 	g = AutoTuneJudgeGain(stat({10, 10, 10, 10}), stat({7, 7, 7, 7}), false, policy);
 	EXPECT_NEAR(g.gain, 0.3, 1e-9);
 	EXPECT_TRUE(g.clear);
+	EXPECT_FALSE(g.worse);
+
+	// The same for a loss: steady windows 12.5% under the baseline are clearly worse, and not a gain.
+	g = AutoTuneJudgeGain(stat({80, 80, 80, 80}), stat({70, 70, 70, 70}), true, policy);
+	EXPECT_NEAR(g.gain, -0.125, 1e-9);
+	EXPECT_TRUE(g.worse);
+	EXPECT_FALSE(g.clear);
+
+	// A loss under the bar is not worse, nor is one inside the noise.
+	g = AutoTuneJudgeGain(stat({80, 80, 80, 80}), stat({78, 78, 78, 78}), true, policy);
+	EXPECT_FALSE(g.worse);
+	g = AutoTuneJudgeGain(stat({50, 50, 50, 50, 50, 50}), stat({31, 38, 52, 60, 33, 66}), true, policy);
+	EXPECT_LT(g.gain, -0.05);
+	EXPECT_FALSE(g.worse) << "a spread that wide could be anything";
 }
 
 // The first trial of a bad game: a window of the bad windows that triggered it, then the same again for the
@@ -1343,8 +1357,32 @@ TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillThe
 	EXPECT_NEAR(verdict.speed_after, 40.8, 1e-9);
 }
 
-TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsToIsNotAKeep)
+TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsAGoodDealIsRejectedAtTheFirstLook)
 {
+	// The cost fell 30% and the speed fell 15%: the lever made things worse. That is a measurement, and it is
+	// remembered; it is not looked at for eight more windows with the player at the lower speed.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0, 20.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(40.0, 20.0), 3.0);
+
+	AutoTuneAction verdict;
+	for (int i = 0; i < 3; i++)
+		EXPECT_EQ(rig.Feed(Gpu(34.0, 14.0)).kind, Kind::None);
+	verdict = rig.Feed(Gpu(34.0, 14.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+	EXPECT_FALSE(verdict.inconclusive);
+	EXPECT_NEAR(verdict.gain, -0.15, 1e-9);
+}
+
+TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsALittleIsNeitherKeptNorRejected)
+{
+	// The cost fell 30% and the speed fell 2.5%: under the bar for a loss and over the 1% a keep allows. The
+	// figures contradict each other; it is looked at for longer and then undone without being remembered.
 	Rig rig;
 	OnlyResolutionIsLeft(rig, 6.0);
 	rig.WarmUp();
@@ -1356,11 +1394,12 @@ TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsToIsNotAKeep)
 	AutoTuneAction verdict;
 	for (int i = 0; i < 12; i++)
 	{
-		verdict = rig.Feed(Gpu(34.0, 14.0));
+		verdict = rig.Feed(Gpu(39.0, 14.0));
 		EXPECT_NE(verdict.kind, Kind::Keep);
 	}
 	EXPECT_EQ(verdict.kind, Kind::Revert);
 	EXPECT_FALSE(verdict.measured) << "contradictory figures are no answer";
+	EXPECT_TRUE(verdict.inconclusive);
 }
 
 TEST(AutoTuneJudging, TheCostThatIsJudgedFollowsTheBottleneck)

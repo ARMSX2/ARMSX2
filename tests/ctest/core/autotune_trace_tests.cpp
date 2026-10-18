@@ -200,6 +200,35 @@ namespace
 		{0.501, 53.3, 1.000, 95.9, 72.0, 83.8, 38.3, 0.0, 61.6, 1, 0.000, 30.00, 22.52, 26.20, 19.26},
 		{0.508, 52.6, 1.000, 93.1, 71.7, 83.5, 38.9, 0.0, 60.6, 1, 0.010, 29.55, 22.76, 26.50, 19.24},
 	};
+
+	// MQ65 Shadow of the Colossus (windowed run), GS back thread, IOP thread already on
+	const TraceWindow kSotcGsb[] = {
+		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
+		{0.506, 72.5, 0.409, 92.7, 90.5, 0.0, 48.4, 86.5, 77.0, 1, 0.000, 21.33, 20.83, 0.00, 35.44},
+		{0.545, 73.4, 0.500, 92.1, 91.6, 0.0, 48.5, 87.7, 77.9, 1, 0.000, 20.94, 20.82, 0.00, 35.42},
+		{0.504, 72.8, 0.636, 95.5, 90.8, 0.0, 50.0, 88.4, 77.3, 1, 0.000, 21.88, 20.82, 0.00, 35.43},
+		{0.500, 76.7, 0.545, 91.6, 92.1, 0.0, 47.9, 87.4, 77.8, 1, 0.000, 19.92, 20.03, 0.00, 35.36},
+		{0.500, 73.4, 0.636, 90.6, 91.6, 0.0, 49.1, 88.1, 76.9, 1, 0.000, 20.60, 20.82, 0.00, 34.96},
+		{0.500, 73.3, 0.636, 94.6, 91.7, 0.0, 49.0, 87.2, 77.0, 1, 0.000, 21.52, 20.87, 0.00, 35.03},
+		{0.509, 68.8, 0.545, 93.2, 90.3, 0.0, 50.0, 87.9, 75.8, 1, 0.000, 22.60, 21.88, 0.00, 35.10},
+		{0.504, 72.9, 0.591, 92.3, 91.5, 0.0, 48.7, 87.2, 76.9, 1, 0.000, 21.13, 20.95, 0.00, 35.23},  // trial starts
+		{1.737, 1.9, 0.667, 4.1, 86.7, 0.0, 2.3, 3.8, 0.0, 1, 0.966, 35.83, 753.13, 0.12, 0.00},
+		{0.544, 24.5, 1.000, 33.0, 32.3, 62.9, 14.4, 26.5, 15.3, 1, 0.668, 22.45, 22.00, 42.78, 20.83},
+		{0.536, 37.4, 1.000, 48.3, 31.4, 66.4, 22.3, 42.8, 47.7, 1, 0.519, 21.56, 14.01, 29.64, 42.58},
+		{0.530, 50.3, 1.000, 69.2, 38.3, 55.5, 30.0, 57.3, 52.3, 1, 0.294, 22.94, 12.71, 18.38, 34.69},
+		{0.535, 49.9, 1.000, 65.5, 38.9, 55.2, 29.4, 58.0, 51.6, 1, 0.342, 21.89, 13.02, 18.45, 34.51},
+		{0.519, 51.4, 1.000, 67.8, 38.0, 56.3, 30.4, 59.0, 52.5, 1, 0.314, 22.01, 12.34, 18.27, 34.11},
+		{0.524, 51.0, 1.000, 66.6, 38.2, 56.3, 30.1, 58.4, 53.2, 1, 0.330, 21.79, 12.50, 18.42, 34.85},
+		{0.564, 53.2, 1.000, 72.2, 40.0, 58.5, 31.8, 61.1, 55.2, 1, 0.268, 22.64, 12.53, 18.33, 34.59},
+		{0.501, 53.3, 1.000, 70.3, 39.5, 58.9, 31.8, 61.8, 55.2, 1, 0.281, 22.02, 12.38, 18.46, 34.57},
+		{0.548, 54.8, 1.000, 67.1, 41.2, 60.4, 32.6, 63.7, 57.0, 1, 0.323, 20.43, 12.55, 18.40, 34.70},
+		{0.518, 51.5, 1.000, 69.6, 38.4, 56.0, 30.6, 58.5, 53.4, 1, 0.298, 22.52, 12.42, 18.12, 34.60},
+		{0.507, 52.7, 1.000, 70.3, 38.2, 57.2, 31.2, 60.3, 54.5, 1, 0.287, 22.28, 12.11, 18.13, 34.55},
+		{0.535, 49.9, 1.000, 64.5, 37.4, 55.2, 29.3, 58.2, 52.2, 1, 0.349, 21.55, 12.51, 18.43, 34.88},
+		{0.510, 52.3, 1.000, 65.5, 38.5, 57.4, 31.1, 60.4, 55.0, 1, 0.335, 20.87, 12.27, 18.28, 35.03},
+		{0.522, 51.1, 0.938, 72.2, 37.0, 55.3, 30.2, 58.0, 52.7, 1, 0.274, 23.57, 12.09, 18.07, 34.39},
+		{0.506, 52.7, 1.000, 69.0, 38.2, 57.4, 30.9, 59.9, 54.3, 1, 0.299, 21.82, 12.09, 18.14, 34.34},
+	};
 } // namespace
 
 // ---------------------------------------------------------------------------------------------- keep on cost
@@ -223,7 +252,13 @@ TEST(AutoTuneTrace, TheGow2BackThreadIsNotKeptOnItsCostAlone)
 	const AutoTuneAction* revert = rig.First(Kind::Revert);
 	ASSERT_NE(revert, nullptr) << "and the trial ends";
 	EXPECT_EQ(revert->lever, AutoTuneLever::GsBackThread);
-	EXPECT_LT(revert->gain, 0.0);
+
+	// With eight windows the speed is 5.8% under the baseline, beyond the 4.4% noise: it made things worse, and
+	// that is remembered. The first four windows could not say (9.4% noise), so the trial was extended once.
+	EXPECT_TRUE(revert->measured);
+	EXPECT_FALSE(revert->inconclusive);
+	EXPECT_NEAR(revert->gain, -0.058, 0.01);
+	EXPECT_EQ(rig.At(revert) - rig.At(start), 9u + 4u + 4u);
 }
 
 TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
@@ -249,4 +284,34 @@ TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 
 	// The first look is four windows after the 9 of the settle; it kept on the second one, four windows later.
 	EXPECT_GE(rig.At(keep) - rig.At(start), 9u + 4u + 4u);
+}
+
+// ---------------------------------------------------------------------------------------------- clearly worse
+
+TEST(AutoTuneTrace, ABackThreadThatCostAQuarterOfTheSpeedIsRememberedAsRejectedAtOnce)
+{
+	// Shadow of the Colossus on the MQ65 with the IOP thread on: the GS back thread had nowhere to run, and the
+	// speed went from 73% to 52% (-28%) while the GS thread's cost fell 12%. The trial was extended twice and
+	// then undone as "inconclusive", which is not remembered, so the next launch did it again for 13 s and two
+	// renderer reopens. The A/B run said -19%.
+	TraceRig rig;
+	rig.state.gs_back_thread_allowed = true;
+	rig.state.iop_thread_on = true;
+	rig.WarmUp();
+	rig.Feed(kSotcGsb);
+
+	const AutoTuneAction* start = rig.First(Kind::StartTrial);
+	ASSERT_NE(start, nullptr);
+	EXPECT_EQ(start->lever, AutoTuneLever::GsBackThread);
+
+	const AutoTuneAction* revert = rig.First(Kind::Revert);
+	ASSERT_NE(revert, nullptr);
+	EXPECT_EQ(revert->lever, AutoTuneLever::GsBackThread);
+	EXPECT_TRUE(revert->measured) << "a clear loss is a rejection, and is remembered";
+	EXPECT_FALSE(revert->inconclusive);
+	EXPECT_LT(revert->gain, -0.25);
+	EXPECT_GT(revert->cost_gain, 0.05) << "the cost did fall, which is what made the old rule call it unclear";
+
+	// Cut short at the first look: the 10 windows of the settle and the four windows measured, no extension.
+	EXPECT_EQ(rig.At(revert) - rig.At(start), 10u + 4u);
 }

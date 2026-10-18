@@ -321,13 +321,16 @@ AutoTuneStat AutoTuneSummarize(std::vector<double> values);
 /// How much a figure changed between two sets of windows, and whether that is a clear gain, clearly nothing, or
 /// neither. `gain` is the relative improvement of the median (positive is better); `noise` is what it has to
 /// beat. A gain is clear when it reaches policy.gain_fraction and exceeds the noise. It is clearly nothing
-/// when even the gain plus the noise stays under policy.gain_fraction. Anything between is inconclusive.
+/// when even the gain plus the noise stays under policy.gain_fraction. A loss is clear (`worse`) when it is as
+/// large as a clear gain would be. Anything between is inconclusive.
 struct AutoTuneGain
 {
 	double gain = 0.0;
 	double noise = 0.0;
 	bool clear = false;
 	bool none = false;
+	/// The mirror of `clear`: the figure got worse by at least policy.gain_fraction and by more than the noise.
+	bool worse = false;
 };
 AutoTuneGain AutoTuneJudgeGain(const AutoTuneStat& before, const AutoTuneStat& after, bool higher_is_better, const AutoTunePolicy& policy);
 
