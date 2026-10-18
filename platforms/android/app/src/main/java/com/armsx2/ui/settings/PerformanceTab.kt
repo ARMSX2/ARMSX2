@@ -451,6 +451,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
                 description = str("perf.hack.iopThreadLag.desc"),
                 field = "iopThreadLag",
             ) { apply(s.copy(cpu = s.cpu.copy(iopThreadLag = lagChoices[it]))) }
+            ToggleRow(str("perf.hack.vuAot"), s.cpu.vuAot, description = str("perf.hack.vuAot.desc"), field = "vuAot") { apply(s.copy(cpu = s.cpu.copy(vuAot = it))) }
             ToggleRow(str("perf.hack.instantVu1"), s.cpu.vu1Instant, description = str("perf.hack.instantVu1.desc"), field = "vu1Instant") { apply(s.copy(cpu = s.cpu.copy(vu1Instant = it))) }
             ToggleRow(str("perf.hack.vuFlagHack"), s.cpu.vuFlagHack, description = str("perf.hack.vuFlagHack.desc"), field = "vuFlagHack") { apply(s.copy(cpu = s.cpu.copy(vuFlagHack = it))) }
             ToggleRow(str("perf.hack.fastCdvd"), s.cpu.fastCDVD, description = str("perf.hack.fastCdvd.desc"), field = "fastCDVD") { apply(s.copy(cpu = s.cpu.copy(fastCDVD = it))) }

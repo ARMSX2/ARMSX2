@@ -119,6 +119,11 @@ data class CpuSettings(
     /** EmuCore/Speedhacks/iopThreadLag — how many EE cycles the EE may run ahead of the IOP thread before
      *  it waits for it. Advanced. The core clamps it to 4096..196608; keep the pickers inside that. */
     val iopThreadLag: Int = 6144,
+    /** EmuCore/CPU/Recompiler/EnableVUAot — vu-aot, the VU1 ahead-of-time compiler. Programs that run often
+     *  are recompiled in the background above microVU, and the compiled VU code is kept on disk (the VU
+     *  program cache comes up with it) so the next launch starts with it. On by default. Turning it off
+     *  clears the compiled cache (the core does that when the setting changes under a running game). */
+    val vuAot: Boolean = true,
     /** EmuCore/Speedhacks/vu1Instant — completes VU1 in one cycle. */
     val vu1Instant: Boolean = true,
     /** EmuCore/Speedhacks/vuFlagHack — skip VU flag computation when unread. */
@@ -931,6 +936,7 @@ data class Settings(
         put("EmuCore/Speedhacks", "vuThread", "bool", cpu.mtvu.toString())
         put("EmuCore/Speedhacks", "iopThread", "bool", cpu.iopThread.toString())
         put("EmuCore/Speedhacks", "iopThreadLag", "int", cpu.iopThreadLag.toString())
+        put("EmuCore/CPU/Recompiler", "EnableVUAot", "bool", cpu.vuAot.toString())
         put("EmuCore/Speedhacks", "vu1Instant", "bool", cpu.vu1Instant.toString())
         put("EmuCore/Speedhacks", "vuFlagHack", "bool", cpu.vuFlagHack.toString())
         put("EmuCore/Speedhacks", "fastCDVD", "bool", cpu.fastCDVD.toString())
@@ -1229,6 +1235,7 @@ data class Settings(
                 mtvu = boolAt("EmuCore/Speedhacks/vuThread") ?: this.cpu.mtvu,
                 iopThread = boolAt("EmuCore/Speedhacks/iopThread") ?: this.cpu.iopThread,
                 iopThreadLag = intAt("EmuCore/Speedhacks/iopThreadLag") ?: this.cpu.iopThreadLag,
+                vuAot = boolAt("EmuCore/CPU/Recompiler/EnableVUAot") ?: this.cpu.vuAot,
                 vu1Instant = boolAt("EmuCore/Speedhacks/vu1Instant") ?: this.cpu.vu1Instant,
                 vuFlagHack = boolAt("EmuCore/Speedhacks/vuFlagHack") ?: this.cpu.vuFlagHack,
                 fastCDVD = boolAt("EmuCore/Speedhacks/fastCDVD") ?: this.cpu.fastCDVD,
@@ -1940,6 +1947,7 @@ data class Settings(
         put("mtvu", cpu.mtvu)
         put("iopThread", cpu.iopThread)
         put("iopThreadLag", cpu.iopThreadLag)
+        put("vuAot", cpu.vuAot)
         put("vu1Instant", cpu.vu1Instant)
         put("vuFlagHack", cpu.vuFlagHack)
         put("fastCDVD", cpu.fastCDVD)
@@ -2270,6 +2278,7 @@ data class Settings(
                     mtvu = json.optBoolean("mtvu", def.cpu.mtvu),
                     iopThread = json.optBoolean("iopThread", def.cpu.iopThread),
                     iopThreadLag = json.optInt("iopThreadLag", def.cpu.iopThreadLag),
+                    vuAot = json.optBoolean("vuAot", def.cpu.vuAot),
                     vu1Instant = json.optBoolean("vu1Instant", def.cpu.vu1Instant),
                     vuFlagHack = json.optBoolean("vuFlagHack", def.cpu.vuFlagHack),
                     fastCDVD = json.optBoolean("fastCDVD", def.cpu.fastCDVD),
@@ -2570,6 +2579,7 @@ data class Settings(
             if (current.cpu.mtvu                != base.cpu.mtvu)                j.put("mtvu", current.cpu.mtvu)
             if (current.cpu.iopThread           != base.cpu.iopThread)           j.put("iopThread", current.cpu.iopThread)
             if (current.cpu.iopThreadLag        != base.cpu.iopThreadLag)        j.put("iopThreadLag", current.cpu.iopThreadLag)
+            if (current.cpu.vuAot               != base.cpu.vuAot)               j.put("vuAot", current.cpu.vuAot)
             if (current.cpu.vu1Instant          != base.cpu.vu1Instant)          j.put("vu1Instant", current.cpu.vu1Instant)
             if (current.cpu.vuFlagHack          != base.cpu.vuFlagHack)          j.put("vuFlagHack", current.cpu.vuFlagHack)
             if (current.cpu.fastCDVD            != base.cpu.fastCDVD)            j.put("fastCDVD", current.cpu.fastCDVD)
@@ -2827,6 +2837,7 @@ data class Settings(
                 mtvu = if (overrides.has("mtvu")) overrides.getBoolean("mtvu") else base.cpu.mtvu,
                 iopThread = if (overrides.has("iopThread")) overrides.getBoolean("iopThread") else base.cpu.iopThread,
                 iopThreadLag = if (overrides.has("iopThreadLag")) overrides.getInt("iopThreadLag") else base.cpu.iopThreadLag,
+                vuAot = if (overrides.has("vuAot")) overrides.getBoolean("vuAot") else base.cpu.vuAot,
                 vu1Instant = if (overrides.has("vu1Instant")) overrides.getBoolean("vu1Instant") else base.cpu.vu1Instant,
                 vuFlagHack = if (overrides.has("vuFlagHack")) overrides.getBoolean("vuFlagHack") else base.cpu.vuFlagHack,
                 fastCDVD = if (overrides.has("fastCDVD")) overrides.getBoolean("fastCDVD") else base.cpu.fastCDVD,

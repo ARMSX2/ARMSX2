@@ -1298,6 +1298,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "perf.hack.mtvu" to "MTVU",
     "perf.hack.iopThread" to "IOP Thread",
     "perf.hack.iopThreadLag" to "IOP Thread Lag Bound",
+    "perf.hack.vuAot" to "VU1 Ahead-of-Time Compiler",
     "perf.hack.skipDupeFrames" to "Skip Dupe Frames",
     "perf.hack.skipVuStallSim" to "Skip VU Stall Sim",
     "perf.hack.vuFlagHack" to "VU Flag Hack",
@@ -1306,6 +1307,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     // Per-setting descriptions for the Advanced Speedhacks toggles (restored after the UI rework).
     "perf.hack.iopThread.desc" to "Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. Faster on devices with four or more fast cores. It turns itself off on devices without spare cores, and for PS1 and arcade games. Off by default.",
     "perf.hack.iopThreadLag.desc" to "How many EE cycles the game thread may run ahead of the IOP thread before it waits for it. Larger values wait less often but let the IOP's answers reach the game later. Used only with the IOP thread on.",
+    "perf.hack.vuAot.desc" to "Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache. On by default.",
     "perf.hack.mtvu.desc" to "Runs VU1 on its own CPU thread. Faster on multi-core devices, but can break games needing tight EE/VU1 sync. On by default.",
     "perf.hack.instantVu1.desc" to "Completes VU1 programs instantly instead of simulating their timing. Big speed boost; rarely causes minor glitches. On by default.",
     "perf.hack.vuFlagHack.desc" to "Skips VU flag updates that aren't needed. Safe speed boost for almost all games. On by default.",
