@@ -101,6 +101,9 @@ bool GSGetPresentCapRenderSkip();
 // a clean re-prime, no catch-up burst — as soon as fast-forward ends.
 void GSSetPresentCapSuspended(bool suspended);
 bool GSGetPresentCapSuspended();
+// The IPU decoded a picture (any thread). The display looks at the count to tell a movie is playing.
+void GSNoteVideoDecode();
+u32 GSGetVideoDecodeCount();
 int GSfreeze(FreezeAction mode, freezeData* data);
 std::string GSGetBaseSnapshotFilename();
 // False if there is no renderer, or a snapshot is already queued and this request was dropped.

@@ -1380,14 +1380,15 @@ void GSDevice::Merge(GSTexture* sTex[3], GSVector4* sRect, GSVector4* dRect, con
 	m_current = m_merge;
 }
 
-void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad)
+void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad,
+	float line_rows, float line_origin)
 {
 	FlushDeferredDraws();
 	static int bufIdx = 0;
 	float offset = yoffset * static_cast<float>(field);
 	offset = GSConfig.DisableInterlaceOffset ? 0.0f : offset;
 
-	auto do_interlace = [this, top_pad](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
+	auto do_interlace = [this, top_pad, line_rows, line_origin](GSTexture* sTex, GSTexture* dTex, ShaderInterlace shader, Filter filter, float yoffset, int bufIdx) {
 		const GSVector2i ds_i = dTex->GetSize();
 		const GSVector2 ds = GSVector2(static_cast<float>(ds_i.x), static_cast<float>(ds_i.y));
 
@@ -1406,7 +1407,7 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 
 		const InterlaceConstantBuffer cb = {
 			GSVector4(static_cast<float>(bufIdx), 1.0f / ds.y, ds.y, MAD_SENSITIVITY),
-			GSVector4(top_pad.first, top_pad.end, 0.0f, 0.0f)
+			GSVector4(top_pad.first, top_pad.end, line_rows, line_origin)
 		};
 
 		GL_PUSH("DoInterlace %dx%d Shader:%d Filter:%d", ds_i.x, ds_i.y, static_cast<int>(shader), filter);
@@ -1442,6 +1443,12 @@ void GSDevice::Interlace(const GSVector2i& ds, int field, int mode, float yoffse
 			do_interlace(m_merge, m_mad, ShaderInterlace::MAD_BUFFER, Nearest, offset, bufIdx);
 			ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false);
 			do_interlace(m_mad, m_weavebob, ShaderInterlace::MAD_RECONSTRUCT, Nearest, 0, bufIdx);
+			m_current = m_weavebob;
+			break;
+		case 4: // Comb-adaptive, for woven interlaced video: keeps this field's lines, rebuilds the other
+		        // field's where they comb.
+			ResizeRenderTarget(&m_weavebob, ds.x, ds.y, true, false);
+			do_interlace(m_merge, m_weavebob, ShaderInterlace::COMB, Nearest, 0.0f, field);
 			m_current = m_weavebob;
 			break;
 		default:

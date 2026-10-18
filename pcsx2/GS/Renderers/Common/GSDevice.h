@@ -108,6 +108,7 @@ enum class ShaderInterlace
 	BLEND = 2,
 	MAD_BUFFER = 3,
 	MAD_RECONSTRUCT = 4,
+	COMB = 5,
 	Count
 };
 
@@ -655,6 +656,8 @@ struct alignas(16) InterlaceConstantBuffer
 	// (two rows at 2x, one at 1x and at 1.5x). The weave and MAD buffering passes read the first row
 	// that WAS drawn instead of the hole; without it the frame carries a black row at 2x and above.
 	// (first undrawn device row, first drawn device row below it, unused, unused)
+	// The comb pass uses zw instead: (unused, unused, device rows per native line, device row where
+	// native line 0 starts).
 	GSVector4 FieldPad;
 };
 static_assert(sizeof(InterlaceConstantBuffer) == 32, "InterlaceConstantBuffer is correct size");
@@ -1702,7 +1705,7 @@ private:
 	static const std::array<HWBlend, 3*3*3*3> m_blendMap;
 
 protected:
-	static constexpr int NUM_INTERLACE_SHADERS = 5;
+	static constexpr int NUM_INTERLACE_SHADERS = 6;
 	static constexpr float MAD_SENSITIVITY = 0.08f;
 	static constexpr u32 MAX_POOLED_TARGETS = 300;
 	static constexpr u32 MAX_TARGET_AGE = 20;
@@ -2253,7 +2256,10 @@ public:
 	/// `top_pad` is the device rows of the merge target that were not drawn for this field, because
 	/// the merge offset that field's picture down by a native line: they start where the circuit's
 	/// display rect starts, not necessarily at row 0.
-	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad);
+	/// line_rows and line_origin: device rows per native line and the device row native line 0 starts
+	/// at, for the comb pass (mode 4), which works in native lines.
+	void Interlace(const GSVector2i& ds, int field, int mode, float yoffset, const GSFieldPadRows& top_pad,
+		float line_rows = 1.0f, float line_origin = 0.0f);
 	void FXAA();
 	void ShadeBoost();
 	/// Runs the configured RetroArch (.slangp) shader chain over m_current, after

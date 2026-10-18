@@ -47,7 +47,7 @@ struct GSMTLPresentPSUniform
 struct GSMTLInterlacePSUniform
 {
 	vector_float4 ZrH;
-	vector_float4 field_pad; ///< see InterlaceConstantBuffer: (first undrawn device row, first drawn row below it, 0, 0)
+	vector_float4 field_pad; ///< see InterlaceConstantBuffer: (first undrawn device row, first drawn row below it, comb pass: device rows per native line, row of native line 0)
 };
 
 struct GSMTLCASPSUniform

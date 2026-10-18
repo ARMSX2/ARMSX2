@@ -11,7 +11,7 @@ in vec4 PSin_c;
 
 uniform vec4 ZrH;
 // xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
-// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a field's
+// where the circuit's display rect starts; zw are for the comb pass (ps_main5). GSRenderer::Merge offsets a field's
 // picture down by one native line and the merge target is cleared, so nothing drew them.
 uniform vec4 FieldPad;
 
@@ -218,6 +218,38 @@ void ps_main4()
 				SV_Target0 = cn;
 		}
 	}
+}
+
+
+// Comb-adaptive deinterlace, for interlaced video woven into one frame (a movie in frame mode). Works
+// in native lines, FieldPad.z device rows each from device row FieldPad.w. The lines of the field on
+// screen now are kept. A line of the other field is replaced by the mean of its neighbours where it
+// combs: where it stands out the same way from both neighbours (they show the other moment) more than
+// it differs from its own field's lines two away. A still picture stays whole, and so does a thin line
+// that stands out from its own field too.
+void ps_main5()
+{
+	int   field = int(ZrH.x) & 1;
+	int   native_line = int(floor((gl_FragCoord.y - FieldPad.w) / FieldPad.z));
+	vec4  c     = textureLod(TextureSampler, PSin_t, 0.0);
+	if ((native_line & 1) == field)
+	{
+		SV_Target0 = c;
+		return;
+	}
+
+	vec2  step = vec2(0.0f, FieldPad.z * ZrH.y); // one native line
+	vec4  a    = textureLod(TextureSampler, PSin_t - step, 0.0);
+	vec4  b    = textureLod(TextureSampler, PSin_t + step, 0.0);
+	vec3  luma = vec3(0.299f, 0.587f, 0.114f);
+	float lc   = dot(c.rgb, luma);
+	float la   = dot(a.rgb, luma);
+	float lb   = dot(b.rgb, luma);
+	float lown = 0.5f * (dot(textureLod(TextureSampler, PSin_t - 2.0f * step, 0.0).rgb, luma) +
+	                     dot(textureLod(TextureSampler, PSin_t + 2.0f * step, 0.0).rgb, luma));
+	float out_of = ((lc - la) * (lc - lb) > 0.0f) ? min(abs(lc - la), abs(lc - lb)) : 0.0f;
+	float comb   = smoothstep(0.02f, 0.06f, out_of - abs(lc - lown));
+	SV_Target0 = mix(c, 0.5f * (a + b), comb);
 }
 
 #endif

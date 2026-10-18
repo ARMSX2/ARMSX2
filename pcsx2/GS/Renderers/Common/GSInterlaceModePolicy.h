@@ -27,15 +27,23 @@ struct GSInterlaceModeSelection
 // field_render_is_whole_picture: true only when every enabled circuit was rendered at integer
 // upscale >= 2, so each field line covers that many device rows. At 1x or fractional scales the
 // weave is still needed.
+//
+// video_playing: the IPU decoded a picture lately. A movie shown in frame mode is a woven picture whose
+// two fields need not agree (interlaced video, or encoded that way), and combs where they differ; the
+// scaling to the screen smears that into a blur. Automatic then runs the comb pass (shader_mode 4),
+// which leaves a still picture whole. Frame mode without a movie is left alone. The caller passes
+// false unless the movie_comb_deinterlace setting is on (off by default).
 constexpr GSInterlaceModeSelection SelectGSInterlaceMode(
 	int configured_mode, bool automatic, bool game_deinterlacing, bool ffmd, bool scanmask_frame,
-	bool field_render_is_whole_picture = false)
+	bool field_render_is_whole_picture = false, bool video_playing = false)
 {
 	GSInterlaceModeSelection selection = {0, 3, false};
 	if (!automatic || (!game_deinterlacing && !ffmd && !scanmask_frame))
 	{
 		selection.field_offset = configured_mode & 1;
 		selection.shader_mode = (configured_mode < 2) ? -1 : ((configured_mode - 2) / 2);
+		if (automatic && video_playing)
+			selection.shader_mode = 4;
 	}
 	else if (ffmd && !scanmask_frame && field_render_is_whole_picture)
 	{
@@ -54,6 +62,11 @@ static_assert(SelectGSInterlaceMode(0, true, false, true, false, true).present_f
 // A scanmask frame keeps its deinterlace pass at any scale; an explicit mode is never overridden.
 static_assert(!SelectGSInterlaceMode(0, true, false, true, true, true).present_field_direct);
 static_assert(!SelectGSInterlaceMode(2, false, false, true, false, true).present_field_direct);
+// A movie in frame mode gets the comb pass; not without one, not in field mode, not over an explicit mode.
+static_assert(SelectGSInterlaceMode(0, true, false, false, false, false, true).shader_mode == 4);
+static_assert(SelectGSInterlaceMode(0, true, false, false, false, true, true).shader_mode == 4);
+static_assert(SelectGSInterlaceMode(0, true, false, true, false, true, true).present_field_direct);
+static_assert(SelectGSInterlaceMode(8, false, false, false, false, false, true).shader_mode == 3);
 
 // ---------------------------------------------------------------------------------------------
 // The undrawn field band

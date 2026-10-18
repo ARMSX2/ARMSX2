@@ -9,6 +9,7 @@
 
 #include <limits.h>
 #include "Config.h"
+#include "GS/GS.h"
 
 // the BP doesn't advance and returns -1 if there is no data to be read
 alignas(16) tIPU_cmd ipu_cmd;
@@ -485,12 +486,14 @@ __fi void IPUCMD_WRITE(u32 val)
 			return;
 
 		case SCE_IPU_IDEC:
+			GSNoteVideoDecode();
 			g_BP.Advance(val & 0x3F);
 			ipuIDEC(val);
 			ipuRegs.SetTopBusy();
 			break;
 
 		case SCE_IPU_BDEC:
+			GSNoteVideoDecode();
 			g_BP.Advance(val & 0x3F);
 			ipuBDEC(val);
 			ipuRegs.SetTopBusy();
