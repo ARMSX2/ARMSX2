@@ -440,6 +440,8 @@ namespace FullscreenUI
 	s32 GetEffectiveIntSetting(SettingsInterface* bsi, const char* section, const char* key, s32 default_value);
 	void DoCopyGameSettings();
 	void DoClearGameSettings();
+	void RefreshGameAutoTuneLines();
+	void DoResetGameAutoTune();
 	void ResetControllerSettings();
 	void DoLoadInputProfile();
 	void DoSaveInputProfile();
@@ -521,6 +523,10 @@ namespace FullscreenUI
 	// Whose settings are being edited. Kept beside the interface rather than read off
 	// the entry, which is null when an ELF is what opened the page. Empty for those.
 	inline std::string s_game_settings_serial;
+	inline u32 s_game_settings_crc = 0;
+	// What auto-tune changed for the game being edited, one line each (AutoTune::DescribeForGame). Read when the page
+	// opens and after a reset, not every frame.
+	inline std::vector<std::string> s_game_autotune_lines;
 	inline std::vector<std::pair<std::string, bool>> s_game_list_directories_cache;
 	inline std::vector<GSAdapterInfo> s_graphics_adapter_list_cache;
 	inline std::vector<Patch::PatchInfo> s_game_patch_list;
