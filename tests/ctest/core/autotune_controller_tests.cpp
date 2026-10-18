@@ -495,11 +495,30 @@ TEST(AutoTuneController, GpuBoundTriesResolutionBeforeTheBackThread)
 	rig.state.gs_back_thread_allowed = true;
 	EXPECT_EQ(rig.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
 
-	// With nothing to lower the back thread is next.
+	// With nothing to lower and nothing to read back the back thread is next.
 	Rig rig2;
 	rig2.state.resolution = 1.0;
 	rig2.state.gs_back_thread_allowed = true;
+	rig2.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
 	EXPECT_EQ(rig2.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::GsBackThread);
+}
+
+TEST(AutoTuneController, GpuBoundTriesTheDownloadModeBeforeTheBackThread)
+{
+	// A download mode that reads back is cheap to try (the light settle, no renderer reopen), and a stall on the
+	// readbacks reads as the GPU. The back thread costs two renderer reopens when it does not help.
+	Rig rig;
+	rig.state.resolution = 1.0;
+	rig.state.gs_back_thread_allowed = true;
+	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
+	EXPECT_EQ(rig.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::DownloadMode);
+
+	// The GS on the CPU is the other way round: the back thread splits that work, the download mode does not.
+	Rig cpu;
+	cpu.state.resolution = 1.0;
+	cpu.state.gs_back_thread_allowed = true;
+	cpu.state.download_mode = AutoTuneDownloadMode::Accurate;
+	EXPECT_EQ(cpu.WarmAndTrigger(GsCpuBound(60.0)).lever, AutoTuneLever::GsBackThread);
 }
 
 TEST(AutoTuneController, TheBackThreadIsOnlyTriedWhereItWouldRun)

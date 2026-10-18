@@ -320,6 +320,35 @@ namespace
 		{0.543, 73.7, 0.792, 78.4, 93.5, 0.0, 37.2, 0.0, 64.1, 1, 0.189, 17.74, 21.16, 0.00, 29.02},
 		{0.538, 74.4, 0.708, 78.3, 94.1, 0.0, 37.3, 0.0, 64.8, 1, 0.190, 17.54, 21.10, 0.00, 29.07},
 	};
+
+	// MQ65 OutRun 2006, car select: download mode Accurate -> Asynchronous (the EE waits on the GS 60% of the time, MTGS 61%, GPU 41%)
+	const TraceWindow kOutRunDownloadMode[] = {
+		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
+		{0.503, 71.5, 1.000, 34.9, 63.1, 0.0, 13.7, 0.0, 42.2, 1, 0.629, 9.76, 17.64, 0.00, 11.79},
+		{0.500, 71.9, 1.000, 34.8, 62.5, 0.0, 13.2, 0.0, 42.3, 1, 0.630, 9.69, 17.38, 0.00, 11.75},
+		{0.509, 70.7, 1.000, 34.5, 61.2, 0.0, 12.9, 0.0, 41.5, 1, 0.619, 9.77, 17.31, 0.00, 11.75},
+		{0.513, 70.2, 1.000, 35.0, 61.7, 0.0, 13.2, 0.0, 41.1, 1, 0.609, 9.98, 17.59, 0.00, 11.71},
+		{0.507, 71.0, 1.000, 34.9, 61.2, 0.0, 13.1, 0.0, 41.5, 1, 0.617, 9.82, 17.24, 0.00, 11.67},
+		{0.508, 70.9, 1.000, 35.0, 61.2, 0.0, 12.9, 0.0, 41.4, 1, 0.603, 9.87, 17.27, 0.00, 11.69},
+		{0.513, 70.1, 1.000, 34.9, 60.2, 0.0, 12.9, 0.0, 40.8, 1, 0.599, 9.95, 17.16, 0.00, 11.64},
+		{0.521, 69.1, 1.000, 34.1, 60.0, 0.0, 12.6, 0.0, 40.6, 1, 0.631, 9.87, 17.39, 0.00, 11.74},  // trial starts
+		{0.501, 91.8, 0.042, 58.2, 87.5, 0.0, 16.0, 0.0, 52.4, 1, 0.064, 12.69, 19.07, 0.00, 11.43},
+		{0.508, 102.5, 0.000, 61.9, 82.8, 0.0, 17.2, 0.0, 61.4, 1, 0.000, 12.08, 16.16, 0.00, 11.99},
+		{0.500, 99.9, 0.000, 62.0, 79.8, 0.0, 18.1, 0.0, 59.2, 1, 0.000, 12.41, 15.96, 0.00, 11.85},
+		{0.503, 99.4, 0.000, 60.4, 77.7, 0.0, 17.3, 0.0, 57.8, 1, 0.000, 12.14, 15.62, 0.00, 11.63},
+		{0.517, 100.5, 0.000, 62.1, 80.2, 0.0, 17.6, 0.0, 59.3, 1, 0.000, 12.36, 15.95, 0.00, 11.79},
+		{0.519, 100.1, 0.000, 60.0, 78.6, 0.0, 16.9, 0.0, 59.4, 1, 0.000, 11.98, 15.69, 0.00, 11.86},
+		{0.500, 99.9, 0.000, 61.6, 80.0, 0.0, 17.5, 0.0, 60.1, 1, 0.000, 12.32, 16.01, 0.00, 12.03},
+		{0.501, 99.8, 0.000, 61.3, 79.0, 0.0, 17.4, 0.0, 60.0, 1, 0.000, 12.29, 15.82, 0.00, 12.01},
+		{0.519, 100.2, 0.000, 61.8, 79.7, 0.0, 17.2, 0.0, 60.0, 1, 0.000, 12.34, 15.90, 0.00, 11.97},
+		{0.500, 99.9, 0.000, 61.7, 79.8, 0.0, 17.7, 0.0, 59.8, 1, 0.000, 12.35, 15.97, 0.00, 11.96},  // traced: keep
+		{0.501, 99.9, 0.000, 61.1, 78.8, 0.0, 17.0, 0.0, 59.5, 1, 0.001, 12.24, 15.78, 0.00, 11.91},
+		{0.503, 99.4, 0.000, 61.8, 80.0, 0.0, 17.2, 0.0, 59.7, 1, 0.000, 12.43, 16.11, 0.00, 12.02},
+		{0.516, 100.8, 0.000, 60.7, 80.3, 0.0, 16.5, 0.0, 60.0, 1, 0.000, 12.05, 15.95, 0.00, 11.91},
+		{0.503, 99.3, 0.000, 61.1, 77.5, 0.0, 17.3, 0.0, 58.0, 1, 0.000, 12.30, 15.60, 0.00, 11.67},
+		{0.517, 100.6, 0.000, 60.3, 78.8, 0.0, 16.2, 0.0, 58.4, 1, 0.000, 11.99, 15.67, 0.00, 11.61},
+		{0.503, 99.4, 0.000, 60.9, 78.3, 0.0, 17.6, 0.0, 58.7, 1, 0.000, 12.26, 15.75, 0.00, 11.81},
+	};
 } // namespace
 
 // ---------------------------------------------------------------------------------------------- keep on cost
@@ -488,4 +517,31 @@ TEST(AutoTuneTrace, BasicToMinimumIsStillTriedAndKeptWhereTheGsThreadIsTheLimit)
 	ASSERT_NE(keep, nullptr);
 	EXPECT_EQ(keep->lever, AutoTuneLever::Blending);
 	EXPECT_GT(keep->gain, 0.05);
+}
+
+// ---------------------------------------------------------------------------------------------- the order
+
+TEST(AutoTuneTrace, AReadbackStallGetsTheDownloadModeBeforeTheBackThread)
+{
+	// OutRun 2006 on the MQ65: the EE waits on the GS 60% of the time while MTGS is at 61% and the GPU at 41%.
+	// That reads as the GPU, whose first lever at native resolution was the GS back thread: -4.8%, two renderer
+	// reopens and 13 s, then the download mode (Asynchronous) took 71% to 100%. The same on Need for Speed
+	// Hot Pursuit 2 (-0.9%, then +31%). The download mode goes first.
+	TraceRig rig;
+	rig.state.gs_back_thread_allowed = true;
+	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
+	rig.state.blending_level = 1;
+	rig.WarmUp();
+	rig.Feed(kOutRunDownloadMode);
+
+	const AutoTuneAction* start = rig.First(Kind::StartTrial);
+	ASSERT_NE(start, nullptr);
+	EXPECT_EQ(start->bottleneck, AutoTuneBottleneck::Gpu);
+	EXPECT_EQ(start->lever, AutoTuneLever::DownloadMode);
+	EXPECT_EQ(start->value, static_cast<double>(AutoTuneDownloadMode::Asynchronous));
+
+	const AutoTuneAction* keep = rig.First(Kind::Keep);
+	ASSERT_NE(keep, nullptr);
+	EXPECT_GT(keep->gain, 0.30);
+	EXPECT_EQ(rig.Count(Kind::StartTrial), 1u) << "and nothing else had to be tried first";
 }

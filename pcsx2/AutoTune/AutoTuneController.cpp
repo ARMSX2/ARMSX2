@@ -41,9 +41,12 @@ namespace
 	// The GS threads are the cause and the GPU is not: the back thread splits the CPU work, so it goes first.
 	constexpr AutoTuneLever kGsCpuOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Resolution,
 		AutoTuneLever::DownloadMode, AutoTuneLever::Blending};
-	// The GPU is the cause: resolution is the lever that moves the GPU's work most.
-	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::Resolution, AutoTuneLever::GsBackThread,
-		AutoTuneLever::DownloadMode, AutoTuneLever::Blending};
+	// The GPU is the cause: resolution is the lever that moves the GPU's work most. Then the download mode, ahead of
+	// the back thread: a stall on readbacks reads as the GPU (the EE blocked on a GS that is not CPU-bound), the
+	// mode is cheap to try (the light settle, no renderer reopen), and the back thread costs two renderer reopens
+	// when it does not help (OutRun and Need for Speed on the MQ65: 18 s late for it).
+	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::Resolution, AutoTuneLever::DownloadMode,
+		AutoTuneLever::GsBackThread, AutoTuneLever::Blending};
 	// The same two when the game is so far under full speed that a notch of resolution cannot close the gap
 	// (AutoTunePolicy::cheap_levers_first_below_pct): blending and the download mode go before resolution.
 	constexpr AutoTuneLever kGsCpuFarOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Blending,
