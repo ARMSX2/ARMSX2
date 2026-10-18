@@ -298,9 +298,16 @@ extern void vuAotNoteOutsideStatusRead();
 extern void vuAotResetStickyTripwire();
 extern void vuAotSetTitle(const std::string& serial, u32 crc);
 extern void vuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn);
+// The same for settings applied with no VM running, where "was" is the global value last seen with no VM:
+// vuAotNoteGlobalSetting records it without clearing anything (at startup, and as a VM ends), and
+// vuAotNoVmSettingsApplied compares it with the global value now. A game's own settings never come into it.
+extern void vuAotNoteGlobalSetting(bool on);
+extern void vuAotNoVmSettingsApplied(bool on, bool programCacheStillOn);
 #else
 static inline void vuAotNoteOutsideStatusRead() {}
 static inline void vuAotResetStickyTripwire() {}
 static inline void vuAotSetTitle(const std::string&, u32) {}
 static inline void vuAotSettingChanged(bool, bool, bool) {}
+static inline void vuAotNoteGlobalSetting(bool) {}
+static inline void vuAotNoVmSettingsApplied(bool, bool) {}
 #endif

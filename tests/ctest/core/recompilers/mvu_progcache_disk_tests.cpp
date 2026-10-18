@@ -982,6 +982,60 @@ TEST_F(MvuAotCacheClear, EveryOtherChangeClearsNothing)
 	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[0]), true)) << "the preload is untouched";
 }
 
+// Settings applied with no VM running (VMManager::CheckForConfigChanges in the Shutdown state) compare the
+// global setting with the global value last seen with no VM, which VMManager records at startup and as a VM
+// ends. The config a game ends with, its own settings over the global ones, never counts: a boot that
+// fails applies settings in the Shutdown state with exactly that config as the old one.
+TEST_F(MvuAotCacheClear, LeavingAGameWithItsOwnSettingOnAndTheGlobalOneOffClearsNothing)
+{
+	Populate();
+	const size_t sidecars = CountSidecars(), payloads = CountPayloads();
+	vuAotNoteGlobalSetting(false); // startup: the global setting is off (the game's own settings turn it on)
+	// ...the game runs and ends; a failed boot, or any later apply, sees the global setting off again
+	vuAotNoVmSettingsApplied(false, false);
+	vuAotNoVmSettingsApplied(false, false);
+	EXPECT_EQ(CountSidecars(), sidecars);
+	EXPECT_EQ(CountPayloads(), payloads);
+	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str()));
+}
+
+TEST_F(MvuAotCacheClear, TheGlobalSettingTurnedOffWithNoVmClearsOnceAndOnlyThen)
+{
+	Populate();
+	const size_t payloads = CountPayloads();
+	vuAotNoteGlobalSetting(true);
+	vuAotNoVmSettingsApplied(true, true); // an unrelated setting applied
+	EXPECT_EQ(CountSidecars(), 7u);
+
+	vuAotNoVmSettingsApplied(false, true); // on to off, the program cache setting on: sidecars only
+	EXPECT_EQ(CountSidecars(), 0u);
+	EXPECT_EQ(CountPayloads(), payloads);
+
+	// Off to off clears nothing (new files stay), and so does off to on.
+	mVUProgCache::QueueSidecar(0, HashOfPayload(paths_[0]), []() { return std::vector<u8>(64, 1); });
+	mVUProgCache::FlushSidecars(0);
+	vuAotNoVmSettingsApplied(false, true);
+	vuAotNoVmSettingsApplied(true, true);
+	EXPECT_EQ(CountSidecars(), 1u);
+
+	// On again, and off again: a second change, a second clear. With nothing keeping the program cache it goes whole.
+	vuAotNoVmSettingsApplied(false, false);
+	EXPECT_EQ(CountSidecars(), 0u);
+	EXPECT_EQ(CountPayloads(), 0u);
+	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str()));
+}
+
+TEST_F(MvuAotCacheClear, TheGlobalValueNotedAsAGameEndsIsNotAChangeMadeWithNoVm)
+{
+	Populate();
+	const size_t sidecars = CountSidecars();
+	vuAotNoteGlobalSetting(true); // startup: on
+	// the global setting is turned off while a game runs (the game's own settings keep it on), and the VM ends
+	vuAotNoteGlobalSetting(false);
+	vuAotNoVmSettingsApplied(false, false);
+	EXPECT_EQ(CountSidecars(), sidecars);
+}
+
 TEST_F(MvuAotCacheClear, ANonexistentCacheDirectoryIsFine)
 {
 	// (the fixture's reset brought VU0's cache up under the temporary root: take it away again)

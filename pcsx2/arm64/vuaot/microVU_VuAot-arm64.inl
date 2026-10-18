@@ -570,6 +570,16 @@ void mVUvuAotRebuildIfDue()
 
 void vuAotResetStickyTripwire() { vuaot::live::ResetStickyTripwire(); }
 void vuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn) { mVUProgCache::OnVuAotSettingChanged(wasOn, isOn, programCacheStillOn); }
+
+// The global (base layer) value of EnableVUAot, as last seen with no VM running. It starts at the setting's
+// default; VMManager records the loaded value at startup and as each VM ends.
+static bool s_vuAotGlobalOn = true;
+void vuAotNoteGlobalSetting(bool on) { s_vuAotGlobalOn = on; }
+void vuAotNoVmSettingsApplied(bool on, bool programCacheStillOn)
+{
+	const bool was = std::exchange(s_vuAotGlobalOn, on);
+	mVUProgCache::OnVuAotSettingChanged(was, on, programCacheStillOn);
+}
 void vuAotSetTitle(const std::string& serial, u32 crc) { vuaot::live::SetTitle(serial, crc); }
 
 namespace vuaot::live

@@ -175,6 +175,7 @@ static bool s_stress = false;          // --iop-stress <seed>: a --liverun that 
 static u32 s_stress_seed = 1;
 static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
 static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
+static std::vector<bool> s_no_vm_vuaot_flips; // --no-vm-vuaot-flips 0,1,0: EnableVUAot set to each value in turn and the settings applied with no VM running
 static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag; "vuaot": flip EnableVUAot
 static u32 s_rec_fallback_groups = 0; // --rec-fallback <groups>: EE opcode groups forced to interp
 #if defined(ARCH_ARM64)
@@ -730,6 +731,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               starts or stops and the EE recompiler is reset); 'lag' flips only the IOP thread lag\n");
 	std::fprintf(stderr, "               (the same recompiler resets, no mode change), the control for it. Each pass starts from\n");
 	std::fprintf(stderr, "               the settings it began the run with. Both must leave the fingerprint unchanged.\n");
+	std::fprintf(stderr, "  --no-vm-vuaot-flips 0,1,0: before the VM boots, set EnableVUAot to each value in turn and apply the settings with no\n");
+	std::fprintf(stderr, "               VM running (the desktop settings window does the same with no game); on to off clears what vu-aot saved.\n");
 	std::fprintf(stderr, "  --change-disc N <image>: in a --liverun, swap the disc for <image> at frame N, from the CPU thread, as the\n");
 	std::fprintf(stderr, "               frontend's change-disc menu does.\n");
 	std::fprintf(stderr, "  --host-action N <hotkey>: in a --liverun, press and release the hotkey <hotkey> (by its name in the hotkey\n");
@@ -1127,6 +1130,23 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_host_actions.push_back({at.value(), std::string(StringUtil::StripWhitespace(argv[++i]))});
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--no-vm-vuaot-flips"))
+			{
+				// A list of 0 and 1 separated by commas. Before the VM boots (and so with no VM running) the
+				// runner sets EnableVUAot to each value in turn and applies the settings, as the desktop settings
+				// window does with no game running; turning it off clears what vu-aot saved.
+				for (const char* c = argv[++i]; *c; c++)
+				{
+					if (*c == '0' || *c == '1')
+						s_no_vm_vuaot_flips.push_back(*c == '1');
+					else if (*c != ',')
+					{
+						Console.Error("--no-vm-vuaot-flips expects 0s and 1s separated by commas.");
+						return false;
+					}
+				}
 				continue;
 			}
 			else if (CHECK_ARG("--iop-assert-log"))
@@ -5148,6 +5168,13 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 
 		// apply new settings (e.g. pick up renderer change)
 		VMManager::ApplySettings();
+
+		for (const bool on : s_no_vm_vuaot_flips)
+		{
+			Console.WriteLn(fmt::format("NOVM-FLIP: EnableVUAot -> {}, settings applied with no VM running", on ? "on" : "off"));
+			s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", on);
+			VMManager::ApplySettings();
+		}
 
 		if (VMManager::Initialize(*params) == VMBootResult::StartupSuccess)
 		{

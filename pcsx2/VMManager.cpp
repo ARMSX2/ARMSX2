@@ -477,6 +477,12 @@ bool VMManager::Internal::IsOnCPUThread()
 	return owner == std::this_thread::get_id();
 }
 
+// EnableVUAot in the global settings (the base layer, whatever a game's settings say).
+static bool GetGlobalVuAot()
+{
+	return Host::GetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "EnableVUAot", Pcsx2Config::RecompilerOptions().EnableVUAot);
+}
+
 bool VMManager::Internal::CPUThreadInitialize()
 {
 	Threading::SetNameOfCurrentThread("CPU Thread");
@@ -521,6 +527,7 @@ bool VMManager::Internal::CPUThreadInitialize()
 	// We want settings loaded so we choose the correct renderer for big picture mode.
 	// This also sorts out input sources.
 	LoadSettings();
+	vuAotNoteGlobalSetting(GetGlobalVuAot());
 	Console.WriteLn(
 		"@@CPU_BACKEND@@ code_generation=%d ee_rec=%d iop_rec=%d vu0_rec=%d vu1_rec=%d fastmem=%d mtvu=%d",
 		SysMemory::HasCodeMemory() ? 1 : 0,
@@ -2438,6 +2445,8 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	// clear out any potentially-incorrect settings from the last game
 	LoadSettings();
+	// (the global setting may have been changed while the game ran: that is not a change made with no VM)
+	vuAotNoteGlobalSetting(GetGlobalVuAot());
 }
 
 bool VMManager::RequestReset()
@@ -3988,10 +3997,12 @@ void VMManager::CheckForConfigChanges(const Pcsx2Config& old_config)
 	else if (GetState() == VMState::Shutdown)
 	{
 		// The desktop settings window and Big Picture apply settings with no VM too. Nothing is running to
-		// reset, but turning vu-aot off still clears what it saved (a VM that is initializing is left alone:
-		// its settings are the game's layered over the global ones, and the cache is shared between games).
-		vuAotSettingChanged(old_config.Cpu.Recompiler.EnableVUAot, EmuConfig.Cpu.Recompiler.EnableVUAot,
-			EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
+		// reset, but turning vu-aot off still clears what it saved. What counts is a change of the global
+		// setting since it was last seen with no VM, not old_config against the new one: the config a game
+		// ended with (its settings layered over the global ones) is what old_config holds when a boot fails
+		// and settings are applied in the Shutdown state, and leaving a game must never clear the cache,
+		// which is shared between games.
+		vuAotNoVmSettingsApplied(GetGlobalVuAot(), EmuConfig.Cpu.Recompiler.EnableVUProgramCache);
 	}
 
 	// For the big picture UI, we still need to update GS settings, since it's running,
