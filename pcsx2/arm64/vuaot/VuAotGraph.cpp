@@ -4,6 +4,7 @@
 #include "VuAotGraph.h"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <set>
 

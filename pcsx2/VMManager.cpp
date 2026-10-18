@@ -4625,20 +4625,6 @@ static u64 GetPerformanceCoresMask()
 }
 #endif
 
-u64 VMManager::Internal::GetPerformanceCoreMask()
-{
-#if defined(__linux__)
-	return GetPerformanceCoresMask();
-#else
-	return 0; // no capacity source: the cores cannot be told apart, so Threaded is not offered
-#endif
-}
-
-u32 VMManager::Internal::GetPerformanceCoreCount()
-{
-	return static_cast<u32>(std::popcount(GetPerformanceCoreMask()));
-}
-
 // Widen a mask of individual processors to every processor sharing their clusters. cpuinfo
 // splits ARM clusters by MIDR, so this is "the same core type", which is what a helper thread
 // wants: near the emu threads' cache, without stealing one of their specific cores.
@@ -4860,6 +4846,20 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
 }
 
 #endif
+
+u64 VMManager::Internal::GetPerformanceCoreMask()
+{
+#if defined(__linux__)
+	return GetPerformanceCoresMask();
+#else
+	return 0; // no capacity source: the cores cannot be told apart, so Threaded is not offered
+#endif
+}
+
+u32 VMManager::Internal::GetPerformanceCoreCount()
+{
+	return static_cast<u32>(std::popcount(GetPerformanceCoreMask()));
+}
 
 void VMManager::EnsureCPUInfoInitialized()
 {

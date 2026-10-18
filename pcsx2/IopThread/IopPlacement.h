@@ -18,6 +18,7 @@
 
 #include "common/Pcsx2Types.h"
 
+#include <cstddef>
 #include <vector>
 
 namespace IopThread
