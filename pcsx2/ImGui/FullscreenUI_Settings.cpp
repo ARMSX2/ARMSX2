@@ -2633,6 +2633,9 @@ void FullscreenUI::DrawEmulationSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_USERS, "Enable IOP Thread"),
 		FSUI_CSTR("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores."),
 		"EmuCore/Speedhacks", "iopThread", false);
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
+		FSUI_CSTR("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."),
+		"EmuCore", "AutoTune", true);
 #ifdef ARCH_ARM64 // vu-aot is part of the ARM64 recompilers only
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Enable VU1 Ahead-of-Time Compiler"),
 		FSUI_CSTR("Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache."),
@@ -6794,6 +6797,7 @@ TRANSLATE_NOOP("FullscreenUI", "EE Cycle Rate");
 TRANSLATE_NOOP("FullscreenUI", "EE Cycle Skipping");
 TRANSLATE_NOOP("FullscreenUI", "Enable Multithreaded VU1 (MTVU)");
 TRANSLATE_NOOP("FullscreenUI", "Enable IOP Thread");
+TRANSLATE_NOOP("FullscreenUI", "Automatic Performance Tuning");
 TRANSLATE_NOOP("FullscreenUI", "Enable VU1 Ahead-of-Time Compiler");
 TRANSLATE_NOOP("FullscreenUI", "Enable Thread Pinning");
 TRANSLATE_NOOP("FullscreenUI", "Enable Cheats");
