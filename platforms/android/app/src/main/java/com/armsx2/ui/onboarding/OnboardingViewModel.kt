@@ -8,6 +8,7 @@ import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.armsx2.BiosInfo
+import com.armsx2.config.ConfigStore
 import com.armsx2.runtime.MainActivityRuntime
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,8 @@ data class OnboardingUiState(
     val biosOptions: List<BiosCandidate> = emptyList(),
     val selectedBiosPath: String? = null,
     val gameFolders: List<String> = emptyList(),
+    /** Automatic performance tuning (EmuCore/AutoTune). On unless the player turned it off before. */
+    val autoTune: Boolean = true,
     val busy: Boolean = false,
     val error: String? = null,
 )
@@ -36,6 +39,12 @@ data class OnboardingUiState(
 enum class StorageLocation { Internal, SdCard, Custom }
 
 class OnboardingViewModel(application: Application) : AndroidViewModel(application) {
+    private companion object {
+        /** The pages are welcome, storage, BIOS, games, performance, ready. */
+        const val PAGE_PERFORMANCE = 4
+        const val LAST_PAGE = 5
+    }
+
     var state = androidx.compose.runtime.mutableStateOf(OnboardingUiState())
         private set
 
@@ -53,12 +62,13 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             biosInfo = info,
             selectedBiosPath = existingBios?.absolutePath,
             gameFolders = MainActivityRuntime.romsDirs.value,
+            autoTune = runCatching { ConfigStore.loadGlobal().emuCore.autoTune }.getOrDefault(true),
             page = if (MainActivityRuntime.setupComplete.value) 1 else 0,
         )
     }
 
     fun next() {
-        if (canContinue()) state.value = state.value.copy(page = (state.value.page + 1).coerceAtMost(4), error = null)
+        if (canContinue()) state.value = state.value.copy(page = (state.value.page + 1).coerceAtMost(LAST_PAGE), error = null)
     }
 
     fun previous() {
@@ -66,7 +76,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun goTo(page: Int) {
-        state.value = state.value.copy(page = page.coerceIn(0, 4), error = null)
+        state.value = state.value.copy(page = page.coerceIn(0, LAST_PAGE), error = null)
     }
 
     fun selectStorage(location: StorageLocation) {
@@ -271,8 +281,12 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         com.armsx2.data.library.LibraryRefresh.request()
     }
 
+    fun setAutoTune(enabled: Boolean) {
+        state.value = state.value.copy(autoTune = enabled)
+    }
+
     fun canContinue(): Boolean = when (state.value.page) {
-        0, 1 -> true
+        0, 1, PAGE_PERFORMANCE -> true
         2 -> state.value.biosInfo != null
         3 -> state.value.gameFolders.isNotEmpty()
         else -> state.value.biosInfo != null && state.value.gameFolders.isNotEmpty()
@@ -280,6 +294,11 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
 
     fun finish() {
         if (!canContinue()) return
+        // The answer is saved even when it was left as it was, so the saved settings show the player was asked.
+        runCatching {
+            val global = ConfigStore.loadGlobal()
+            ConfigStore.saveGlobal(global.copy(emuCore = global.emuCore.copy(autoTune = state.value.autoTune)))
+        }
         val previousRoot = MainActivityRuntime.currentInitDataRoot()
         MainActivityRuntime.finishSetup()
         // No folder chosen means app-private storage, which is what the pin holds in that case;
