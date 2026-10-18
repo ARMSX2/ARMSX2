@@ -470,10 +470,11 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	// in case the user toggled clamp / FPCR / speedhack settings since init.
 	mVUbuildOptionsSentinel(mVU);
 
-	// Open the on-disk program cache for this VU. Must run after
-	// mVUbuildOptionsSentinel because the VERSION-header handshake mixes the
-	// sentinel; a cache built with a different options layout is evicted here.
-	mVUProgCache::Init(mVU);
+	// The on-disk program cache is not opened here. At boot this runs before the settings are loaded, so
+	// it would open (or leave closed) a cache for the default configuration: with vu-aot on by default,
+	// a user who turned it off would get the cache's directories, its preload thread and a VERSION
+	// handshake against a sentinel built from the defaults. The first mVUreset opens it, with the loaded
+	// settings and the sentinel built from them, and every reset after it re-checks the settings.
 }
 
 //------------------------------------------------------------------

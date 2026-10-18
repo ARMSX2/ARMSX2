@@ -50,8 +50,9 @@ namespace mVUProgCache
 	// effects at all). Reads VERSION; if it diverges from the running
 	// build's (compiler ABI, options sentinel, arch tag), evicts the stale
 	// dir and starts fresh. Loads INDEX into memory. Idempotent — called
-	// from mVUinit AND every mVUreset (the reset call is what activates a
-	// runtime config toggle); only does real work on first effective call.
+	// from every mVUreset (the reset call is what activates a runtime config
+	// toggle), not from mVUinit, which runs before the settings are loaded;
+	// only does real work on first effective call.
 	void Init(microVU& mVU);
 
 	// Same Init logic but takes (vu_index, options_sentinel) directly so
