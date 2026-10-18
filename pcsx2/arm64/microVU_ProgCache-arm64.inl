@@ -28,6 +28,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -122,6 +123,12 @@ struct State
 	std::atomic<bool> preloadHeld{false};
 	std::unordered_map<XXH128_hash_t, std::vector<u8>,
 	                   MvuContentHashHash, MvuContentHashEq> preloaded;
+	// The hashes this session has written a payload or a sidecar for, under preloadMutex. The preload
+	// reads a file and puts it in `preloaded` a moment later, and a program that appears in between reads
+	// the file itself and may write a newer one: what the preload then holds is the file from before, and
+	// must not be answered after the newer one is on disk. A hash in these sets is never put in the maps.
+	std::unordered_set<XXH128_hash_t, MvuContentHashHash, MvuContentHashEq> payloadsWritten;
+	std::unordered_set<XXH128_hash_t, MvuContentHashHash, MvuContentHashEq> sidecarsWritten;
 	u64 preloadedPayloads = 0;
 	u64 preloadedBytes    = 0;
 	u64 preloadHits       = 0;
@@ -346,9 +353,11 @@ static bool WritePayload(State& s, const XXH128_hash_t& hash,
 
 	// A rewritten payload supersedes any not-yet-consumed preloaded copy
 	// (which would otherwise serve the pre-growth image — sound under the
-	// consistent-prefix rule, but pointlessly stale).
+	// consistent-prefix rule, but pointlessly stale), and one the preload
+	// has read and not yet put in memory (payloadsWritten).
 	{
 		std::lock_guard<std::mutex> lock(s.preloadMutex);
+		s.payloadsWritten.insert(hash);
 		auto pit = s.preloaded.find(hash);
 		if (pit != s.preloaded.end())
 		{
@@ -401,6 +410,15 @@ static void SidecarWriterLoop(State& s)
 			{
 				s.sidecarWrites.fetch_add(1, std::memory_order_relaxed);
 				s.sidecarWriteBytes.fetch_add(bytes.size(), std::memory_order_relaxed);
+				// The file supersedes any copy the preload holds or is about to put in memory.
+				std::lock_guard<std::mutex> preloadLock(s.preloadMutex);
+				s.sidecarsWritten.insert(hash);
+				auto it = s.preloadedSidecars.find(hash);
+				if (it != s.preloadedSidecars.end())
+				{
+					s.preloadedBytes -= it->second.size();
+					s.preloadedSidecars.erase(it);
+				}
 			}
 			else
 				Console.Warning("mVUProgCache: sidecar write failed: %s", path.c_str());
@@ -563,7 +581,7 @@ static void StartPreload(State& s)
 			}
 			s.preloadHeld.store(false, std::memory_order_release);
 			std::lock_guard<std::mutex> lock(s.preloadMutex);
-			if (bytes.has_value() && !bytes->empty())
+			if (bytes.has_value() && !bytes->empty() && !s.payloadsWritten.count(f.hash))
 			{
 				s.preloadedBytes += bytes->size();
 				readBytes += bytes->size();
@@ -571,7 +589,7 @@ static void StartPreload(State& s)
 				s.preloaded[f.hash] = std::move(*bytes);
 			}
 			// (an unreadable payload: the dispatch-time read will count payloadMissing)
-			if (side.has_value() && !side->empty())
+			if (side.has_value() && !side->empty() && !s.sidecarsWritten.count(f.hash))
 			{
 				s.preloadedBytes += side->size();
 				s.sidecarPreloadBytes += side->size();
@@ -742,6 +760,8 @@ void Close(microVU& mVU)
 		std::lock_guard<std::mutex> lock(s.preloadMutex);
 		s.preloaded.clear();
 		s.preloadedSidecars.clear();
+		s.payloadsWritten.clear();
+		s.sidecarsWritten.clear();
 		s.preloadedBytes = 0;
 		// Zero the cumulative preload counters too (mirror ResetForTest) so a
 		// Close+Init cycle starts from a consistent baseline — otherwise
@@ -855,9 +875,11 @@ ClearResult ClearVuAot(bool wholeCache)
 		for (const auto& kv : s.preloadedSidecars)
 			s.preloadedBytes -= kv.second.size();
 		s.preloadedSidecars.clear();
+		s.sidecarsWritten.clear();
 		if (wholeCache)
 		{
 			s.preloaded.clear();
+			s.payloadsWritten.clear();
 			s.preloadedBytes = 0;
 			s.initialized = false;
 			s.entries.clear();
@@ -1248,6 +1270,8 @@ void ResetForTest(u32 vu_index)
 	{
 		std::lock_guard<std::mutex> lock(s.preloadMutex);
 		s.preloaded.clear();
+		s.payloadsWritten.clear();
+		s.sidecarsWritten.clear();
 		s.preloadedPayloads = 0;
 		s.preloadedBytes    = 0;
 		s.preloadHits       = 0;
@@ -1283,6 +1307,11 @@ bool TestIsPreloaded(u32 vu_index, const XXH128_hash_t& hash, bool sidecar)
 void TestHoldPreload(u32 vu_index, bool hold)
 {
 	g_state[vu_index & 1].preloadHold.store(hold, std::memory_order_release);
+}
+
+bool TestWritePayload(u32 vu_index, const XXH128_hash_t& hash, const std::vector<u8>& image)
+{
+	return WritePayload(g_state[vu_index & 1], hash, image);
 }
 
 bool TestPreloadIsHeld(u32 vu_index)

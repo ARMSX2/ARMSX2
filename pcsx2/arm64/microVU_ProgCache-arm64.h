@@ -174,6 +174,9 @@ namespace mVUProgCache
 	// the map (a preload slower than the first loads of the session, which on a loaded machine or a slow
 	// disk it can be). Set before Init; released with false. ResetForTest releases it.
 	void TestHoldPreload(u32 vu_index, bool hold);
+	// Test-only: write a payload the way SaveProgram does (tmp + rename), and so supersede any copy of it the
+	// preload holds or is about to put in memory.
+	bool TestWritePayload(u32 vu_index, const XXH128_hash_t& hash, const std::vector<u8>& image);
 	// Test-only: the preload thread is waiting in the hold, with a file read and not yet in the map.
 	bool TestPreloadIsHeld(u32 vu_index);
 	// Test-only: block until the background payload preload spawned by Init

@@ -771,12 +771,13 @@ TEST_F(MvuProgCachePreload, ASidecarFollowsItsProgramsRankAndLoadsOnDemandPastTh
 // program asks for its sidecar when it first appears, which may be before that: it reads the file. A sidecar
 // the session then writes for the program replaces the file, and the copy the preload puts in memory after
 // all of this is the file as it was at startup. The next ask for the sidecar (the program is made again
-// after a reset) is answered by that copy, older than the file the session wrote.
+// after a reset) must not be answered by that copy, older than the file the session wrote: the session
+// remembers what its writer has written, and the preload does not put those hashes in memory.
 //
 // (Found as the flake of VuAotCache.UnusableSavedCodeFallsBackToThePlan, which failed about one run in
 // twenty on a loaded machine: its second load got the edited file back instead of the one the first load's
 // session had written.)
-TEST_F(MvuProgCachePreload, DISABLED_ASidecarWrittenInTheSessionIsNotAnsweredByTheOlderCopyThePreloadHeld)
+TEST_F(MvuProgCachePreload, ASidecarWrittenInTheSessionIsNotAnsweredByTheOlderCopyThePreloadHeld)
 {
 	const AotOn aot;
 	SaveVariants();
@@ -811,6 +812,61 @@ TEST_F(MvuProgCachePreload, DISABLED_ASidecarWrittenInTheSessionIsNotAnsweredByT
 
 	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, hash, got));
 	EXPECT_EQ(got, after) << "answered by the copy from before the session wrote its own";
+}
+
+// The same for a payload (SaveProgram rewrites it when the program's graph has grown).
+TEST_F(MvuProgCachePreload, APayloadWrittenInTheSessionIsNotAnsweredByTheOlderCopyThePreloadHeld)
+{
+	SaveVariants();
+	const XXH128_hash_t hash = HashOfPayload(paths_[0]);
+	SetAge(paths_[0], 0);
+	SetAge(paths_[1], 1);
+	SetAge(paths_[2], 2);
+	SetAge(paths_[3], 3);
+
+	mVUProgCache::ResetForTest(0);
+	mVUProgCache::TestHoldPreload(0, true);
+	mVUProgCache::TestReinitFromLiveSentinel(0);
+	for (int i = 0; i < 5000 && !mVUProgCache::TestPreloadIsHeld(0); i++)
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	ASSERT_TRUE(mVUProgCache::TestPreloadIsHeld(0)) << "the preload has read its first file";
+
+	ASSERT_TRUE(mVUProgCache::TestWritePayload(0, hash, std::vector<u8>(777, 0x33)));
+	mVUProgCache::TestHoldPreload(0, false);
+	mVUProgCache::TestWaitForPreload(0);
+
+	EXPECT_FALSE(mVUProgCache::TestIsPreloaded(0, hash, false)) << "the copy from before the session wrote its own";
+	for (u32 k = 1; k < kPrograms; k++)
+		EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, HashOfPayload(paths_[k]), false)) << "variant " << k << " was not written";
+	EXPECT_EQ(mVUProgCache::GetStats(0).preloadedPayloads, kPrograms - 1u);
+}
+
+// A copy already in memory when the session writes goes at once.
+TEST_F(MvuProgCachePreload, AWriteDropsTheCopyAlreadyInMemory)
+{
+	const AotOn aot;
+	SaveVariants();
+	const XXH128_hash_t hash = HashOfPayload(paths_[0]);
+	mVUProgCache::QueueSidecar(0, hash, []() { return std::vector<u8>(512, 0x11); });
+	mVUProgCache::FlushSidecars(0);
+	Reopen(0);
+	ASSERT_TRUE(mVUProgCache::TestIsPreloaded(0, hash, true));
+	ASSERT_TRUE(mVUProgCache::TestIsPreloaded(0, hash, false));
+
+	const std::vector<u8> after(256, 0x22);
+	mVUProgCache::QueueSidecar(0, hash, [after]() { return after; });
+	mVUProgCache::FlushSidecars(0);
+	ASSERT_TRUE(mVUProgCache::TestWritePayload(0, hash, std::vector<u8>(300, 0x44)));
+	EXPECT_FALSE(mVUProgCache::TestIsPreloaded(0, hash, true));
+	EXPECT_FALSE(mVUProgCache::TestIsPreloaded(0, hash, false));
+	std::vector<u8> got;
+	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, hash, got));
+	EXPECT_EQ(got, after);
+
+	// And the next session preloads the new files.
+	Reopen(0);
+	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, hash, true));
+	EXPECT_TRUE(mVUProgCache::TestIsPreloaded(0, hash, false));
 }
 
 TEST_F(MvuProgCachePreload, ProgramsUnusedForLongAreDeletedAndCompileAgainIfTheyReturn)
