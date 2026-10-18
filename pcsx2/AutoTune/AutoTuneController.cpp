@@ -142,14 +142,17 @@ AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 	const bool gs_cpu = m.mtgs_pct >= sat || m.gs_back_pct >= sat;
 	const bool ee_blocked_on_gs = m.ee_wait_gs_ratio.has_value() && *m.ee_wait_gs_ratio > m_policy.ee_blocked_on_gs_ratio;
 
-	// The GS threads are saturated: they are the cause, whatever the EE shows (it spins waiting for them).
-	if (gs_cpu)
-		return AutoTuneBottleneck::GsCpu;
-
+	// A busy GPU wins over busy GS threads: the GS thread of a GPU-bound game spends its time feeding or
+	// waiting on the GPU and reads just as busy, and the lever for that is the resolution, not a back thread.
 	if (m.has_gpu_timer && m.gpu_pct >= m_policy.gpu_high_pct)
 		return AutoTuneBottleneck::Gpu;
 
-	// The EE is stuck behind a GS that is not CPU-bound: the GPU, or a stall inside the GS.
+	// The GS threads are saturated and the GPU is not: they are the cause, whatever the EE shows (it spins
+	// waiting for them).
+	if (gs_cpu)
+		return AutoTuneBottleneck::GsCpu;
+
+	// The EE is stuck behind a GS that is not CPU-bound: a stall inside the GS.
 	if (ee_blocked_on_gs)
 		return AutoTuneBottleneck::Gpu;
 

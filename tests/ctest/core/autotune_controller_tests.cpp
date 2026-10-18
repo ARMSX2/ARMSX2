@@ -816,6 +816,14 @@ TEST(AutoTuneController, ClassificationTable)
 	// A busy GPU timer.
 	EXPECT_EQ(ctl.Classify(GpuBound(70.0)), AutoTuneBottleneck::Gpu);
 
+	// The GS thread reads just as busy when it is feeding a busy GPU: the GPU wins.
+	w = GpuBound(70.0);
+	w.mtgs_pct = 99.0;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::Gpu);
+	// With the GPU idle the same thread is the cause.
+	w.gpu_pct = 40.0;
+	EXPECT_EQ(ctl.Classify(w), AutoTuneBottleneck::GsCpu);
+
 	// VU1 and IOP.
 	w = Win(70.0);
 	w.mtvu_pct = 91.0;

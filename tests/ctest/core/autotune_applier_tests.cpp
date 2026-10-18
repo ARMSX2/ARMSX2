@@ -9,10 +9,14 @@
 #include "AutoTune/AutoTuneApplier.h"
 #include "Config.h"
 #include "GameDatabase.h"
+#include "INISettingsInterface.h"
 #include "LayeredSettingsInterface.h"
+#include "VMManager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <tuple>
 
 namespace
@@ -528,4 +532,114 @@ TEST(AutoTuneTogether, ALeverThatDoesNotHelpIsUndoneAndNeverTriedAgain)
 	EXPECT_EQ(count("trying IOP thread"), 1);
 	EXPECT_EQ(count("did not help"), 1);
 	EXPECT_EQ(count("nothing left to try"), 1);
+}
+
+// ---------------------------------------------------------------------------------------------- the game's file
+
+namespace
+{
+	// Points the game settings folder at a scratch directory for the length of a test.
+	class GameSettingsDir
+	{
+	public:
+		GameSettingsDir()
+			: m_saved(EmuFolders::GameSettings)
+			, m_dir(std::filesystem::temp_directory_path() /
+					("autotune_gamefile_test_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+		{
+			std::filesystem::create_directories(m_dir);
+			EmuFolders::GameSettings = m_dir.string();
+		}
+
+		~GameSettingsDir()
+		{
+			EmuFolders::GameSettings = m_saved;
+			std::filesystem::remove_all(m_dir);
+		}
+
+	private:
+		std::string m_saved;
+		std::filesystem::path m_dir;
+	};
+
+	constexpr u32 kCrc = 0x2F123FD8;
+	constexpr const char* kSerial = "SCUS-97481";
+} // namespace
+
+TEST(AutoTuneGameFile, DescribeAndResetWorkOnTheFileWithoutAVm)
+{
+	GameSettingsDir dir;
+	const std::string path = VMManager::GetGameSettingsPath(kSerial, kCrc);
+	{
+		INISettingsInterface ini(path);
+		ini.SetFloatValue(GS, "upscale_multiplier", 3.0f);
+		ini.SetBoolValue("EmuCore/Gamefixes", "XgKickHack", true);
+		AutoTune::Commit(ini, AutoTuneLever::Resolution, 2.0, 0.12);
+		AutoTune::Commit(ini, AutoTuneLever::IopThread, 1.0, 0.18);
+		ASSERT_TRUE(ini.Save());
+	}
+
+	const std::vector<std::string> lines = AutoTune::DescribeForGame(kSerial, kCrc);
+	ASSERT_EQ(lines.size(), 2u);
+	EXPECT_EQ(lines[0], "Resolution: 3x -> 2x (+12% speed)");
+
+	const AutoTune::ResetResult result = AutoTune::ResetForGame(kSerial, kCrc);
+	EXPECT_TRUE(result.had_record);
+	EXPECT_EQ(result.restored.size(), 2u);
+
+	INISettingsInterface after(path);
+	ASSERT_TRUE(after.Load());
+	EXPECT_EQ(after.GetFloatValue(GS, "upscale_multiplier", 0.0f), 3.0f);
+	EXPECT_FALSE(after.ContainsValue(SPEED, "iopThread"));
+	EXPECT_TRUE(after.GetBoolValue("EmuCore/Gamefixes", "XgKickHack", false));
+	EXPECT_TRUE(AutoTune::DescribeForGame(kSerial, kCrc).empty());
+
+	// A second reset finds nothing to do.
+	EXPECT_FALSE(AutoTune::ResetForGame(kSerial, kCrc).had_record);
+}
+
+TEST(AutoTuneGameFile, AKeyThePlayerEditedSinceSurvivesTheReset)
+{
+	GameSettingsDir dir;
+	const std::string path = VMManager::GetGameSettingsPath(kSerial, kCrc);
+	{
+		INISettingsInterface ini(path);
+		ini.SetFloatValue(GS, "upscale_multiplier", 3.0f);
+		AutoTune::Commit(ini, AutoTuneLever::Resolution, 2.0, 0.12);
+		AutoTune::Commit(ini, AutoTuneLever::Blending, 1.0, 0.05);
+		// The player opens the game's properties and sets the resolution to 6x.
+		ini.SetFloatValue(GS, "upscale_multiplier", 6.0f);
+		ASSERT_TRUE(ini.Save());
+	}
+
+	const AutoTune::ResetResult result = AutoTune::ResetForGame(kSerial, kCrc);
+	EXPECT_EQ(result.restored.size(), 1u);
+	ASSERT_EQ(result.left_alone.size(), 1u);
+	EXPECT_EQ(result.left_alone[0].key, "upscale_multiplier");
+
+	INISettingsInterface after(path);
+	ASSERT_TRUE(after.Load());
+	EXPECT_EQ(after.GetFloatValue(GS, "upscale_multiplier", 0.0f), 6.0f);
+	EXPECT_FALSE(after.ContainsValue(GS, "accurate_blending_unit"));
+}
+
+TEST(AutoTuneGameFile, AGameWithNoFileHasNothingToDescribeOrReset)
+{
+	GameSettingsDir dir;
+	EXPECT_TRUE(AutoTune::DescribeForGame(kSerial, kCrc).empty());
+	EXPECT_FALSE(AutoTune::ResetForGame(kSerial, kCrc).had_record);
+	EXPECT_FALSE(std::filesystem::exists(VMManager::GetGameSettingsPath(kSerial, kCrc))) << "a reset must not create a file";
+}
+
+TEST(AutoTuneGameFile, AGameWhoseSettingsLiveInTheOldCrcFileIsFoundThere)
+{
+	GameSettingsDir dir;
+	const std::string legacy = VMManager::GetGameSettingsPath({}, kCrc);
+	{
+		INISettingsInterface ini(legacy);
+		AutoTune::Commit(ini, AutoTuneLever::IopThread, 1.0, 0.18);
+		ASSERT_TRUE(ini.Save());
+	}
+	EXPECT_EQ(AutoTune::DescribeForGame(kSerial, kCrc).size(), 1u);
+	EXPECT_TRUE(AutoTune::ResetForGame(kSerial, kCrc).had_record);
 }
