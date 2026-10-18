@@ -1418,6 +1418,15 @@
     <ClCompile Include="Counters.cpp">
       <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
     </ClCompile>
+    <ClCompile Include="EECycleRate.cpp">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClCompile>
+    <ClCompile Include="EECycleRateController.cpp">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClCompile>
+    <ClCompile Include="EECycleRateSampler.cpp">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClCompile>
     <ClCompile Include="ps2\BiosTools.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
@@ -2590,6 +2599,15 @@
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Counters.h">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="EECycleRate.h">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="EECycleRateController.h">
+      <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="EECycleRateSampler.h">
       <Filter>System\Ps2\EmotionEngine\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="Achievements.h">
