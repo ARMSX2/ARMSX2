@@ -14,6 +14,10 @@
 #include "common/HashCombine.h"
 #include "common/ReadbackSpinManager.h"
 
+#ifdef __ANDROID__
+#include "GS/GSRemotePlay.h"
+#endif
+
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -70,6 +74,9 @@ public:
 		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
 		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
+		/// VK_ANDROID_external_memory_android_hardware_buffer with VK_EXT_queue_family_foreign:
+		/// remote play's frames go to the video encoder as shared buffers (GSRemotePlay.h).
+		bool vk_android_external_memory_ahb : 1;
 	};
 
 	// Global state accessors
@@ -1127,4 +1134,55 @@ private:
 
 	// current pipeline selector - we save this in the struct to avoid re-zeroing it every draw
 	PipelineSelector m_pipeline_selector = {};
+
+#ifdef __ANDROID__
+	// ---- Remote play (GSRemotePlay.h). GS thread, apart from what the ring publishes. ----
+public:
+	void RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area) override;
+
+private:
+	/// A slot's shared buffer, imported as an image the GPU copies the frame into.
+	struct RemotePlayHardware
+	{
+		AHardwareBuffer* buffer = nullptr;
+		VkImage image = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		u32 width = 0;
+		u32 height = 0;
+	};
+
+	/// A slot's readback buffer, with its own memory so it can be made visible to the CPU alone.
+	struct RemotePlayReadback
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		const u8* data = nullptr;
+		u32 size = 0;
+		bool coherent = true;
+	};
+
+	bool RemotePlayCreateHardware(RemotePlayHardware& hardware, u32 width, u32 height);
+	/// Destroyed now when the GPU is idle, otherwise once the frames that used it are done.
+	void RemotePlayDiscard(RemotePlayHardware& hardware, bool device_idle);
+	bool RemotePlayCreateReadback(RemotePlayReadback& readback, u32 size);
+	void RemotePlayDiscard(RemotePlayReadback& readback, bool device_idle);
+	void RemotePlayRelease(bool device_idle);
+	static void RemotePlayPrepareRead(void* context, u32 index);
+
+	GSRemotePlay::Ring m_rp_ring;
+	std::array<RemotePlayHardware, 4> m_rp_hardware{};
+	std::array<RemotePlayReadback, 4> m_rp_readback{};
+
+	/// The stream's frame, drawn from the game's at the stream's size; each slot gets a copy.
+	std::unique_ptr<GSTextureVK> m_rp_frame;
+
+	/// One u32 per slot, which the GPU sets to the slot's sequence number once its frame is in.
+	VkBuffer m_rp_marker_buffer = VK_NULL_HANDLE;
+	VmaAllocation m_rp_marker_allocation = VK_NULL_HANDLE;
+
+	u32 m_rp_seq = 0;
+	bool m_rp_published = false;
+	bool m_rp_hardware_failed = false;
+#endif
 };

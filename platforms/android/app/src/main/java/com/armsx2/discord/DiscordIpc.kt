@@ -48,7 +48,7 @@ object DiscordIpc {
     // App -> helper.
     const val MSG_START = 1        // DATA_TOKEN + DATA_REFRESH: resume with a saved sign-in, or empty to idle
     const val MSG_AUTHORIZE = 2    // begin browser sign-in
-    const val MSG_SET_PLAYING = 3  // DATA_SERIAL / DATA_TITLE / DATA_COVER
+    const val MSG_SET_PLAYING = 3  // DATA_SERIAL / DATA_TITLE / DATA_COVER / DATA_RA / DATA_PARTY
     const val MSG_QUERY = 4        // request one MSG_STATE; replyTo carries the answer
     const val MSG_STOP = 5         // sign out and tear the client down
     const val MSG_IDLE = 6         // DATA_IDLE: the app is out of sight, so drain the SDK slowly
@@ -62,6 +62,7 @@ object DiscordIpc {
     const val DATA_TITLE = "title"
     const val DATA_COVER = "cover"
     const val DATA_RA = "ra"
+    const val DATA_PARTY = "party" // a remote play session's party id; empty outside one
 
     const val DATA_STATUS = "status"
     const val DATA_FRIENDS = "friends"

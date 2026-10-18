@@ -391,6 +391,7 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::DisableStencilBuffer: return "DisableStencilBuffer";
 		case DriverWorkaround::PreferVulkanRenderer: return "PreferVulkanRenderer";
 		case DriverWorkaround::PreferCachedStreamRingMemory: return "PreferCachedStreamRingMemory";
+		case DriverWorkaround::ReadBackRemotePlayFrames: return "ReadBackRemotePlayFrames";
 		case DriverWorkaround::Count:
 		default: return "Unknown";
 	}

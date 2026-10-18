@@ -13,6 +13,11 @@
 
 #include "common/HashCombine.h"
 
+#ifdef __ANDROID__
+#include "GS/GSRemotePlay.h"
+#include <memory>
+#endif
+
 #include <array>
 
 class GLContext;
@@ -506,4 +511,52 @@ public:
 	void SetupOM(OMDepthStencilSelector dssel);
 	GLuint GetSamplerID(PSSamplerSelector ssel);
 	GLuint GetPaletteSamplerID();
+
+#ifdef __ANDROID__
+	// ---- Remote play (GSRemotePlay.h). GS thread, apart from what the ring publishes. ----
+public:
+	void RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area) override;
+
+private:
+	/// A slot's shared buffer, bound to a texture of this context through an EGLImage.
+	struct RemotePlayHardware
+	{
+		AHardwareBuffer* buffer = nullptr;
+		void* image = nullptr; // EGLImageKHR
+		GLuint texture = 0;
+		u32 width = 0;
+		u32 height = 0;
+	};
+
+	/// A slot's readback: the pixel buffer the frame is read into, its fence, and the copy the app reads.
+	struct RemotePlayReadback
+	{
+		GLuint pbo = 0;
+		GLsync fence = nullptr;
+		std::unique_ptr<u8[]> data;
+		u32 size = 0;
+	};
+
+	void RemotePlayFinishReadbacks();
+	bool RemotePlayCreateHardware(RemotePlayHardware& hardware, u32 width, u32 height);
+	void RemotePlayDestroyHardware(RemotePlayHardware& hardware);
+	void RemotePlayRelease();
+	static bool RemotePlayIsDone(void* context, u32 index);
+
+	GSRemotePlay::Ring m_rp_ring;
+	std::array<RemotePlayHardware, 4> m_rp_hardware{};
+	std::array<RemotePlayReadback, 4> m_rp_readback{};
+
+	/// Per slot: the native fence that signals once its hardware frame is in, or -1.
+	std::array<int, 4> m_rp_fence_fds{-1, -1, -1, -1};
+
+	/// The stream's frame, drawn from the game's at the stream's size; each slot gets a copy.
+	std::unique_ptr<GSTexture> m_rp_frame;
+
+	GLuint m_rp_read_fbo = 0;
+	GLuint m_rp_draw_fbo = 0;
+	u32 m_rp_seq = 0;
+	bool m_rp_published = false;
+	bool m_rp_hardware_failed = false;
+#endif
 };

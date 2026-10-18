@@ -170,6 +170,11 @@ enum class DriverWorkaround : u8
 	/// a defect. Without this bit the rings stay write-combined even when a cached coherent type
 	/// exists (that road lost on the SD865). See GSStreamRingMemoryPolicy.h.
 	PreferCachedStreamRingMemory,
+	/// Remote play reads its frames back instead of handing them to the encoder as
+	/// AHardwareBuffers. For a driver whose buffer export or foreign-queue release misbehaves; the
+	/// extensions stay enabled, only their use is off. No rule declares it yet: it is the switch
+	/// that excludes one driver without new code.
+	ReadBackRemotePlayFrames,
 	Count,
 };
 

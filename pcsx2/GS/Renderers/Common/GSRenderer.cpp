@@ -13,6 +13,7 @@
 #include "GS/GSDumpBundle.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
+#include "GS/GSRemotePlay.h"
 #include "GS/GSUtil.h"
 #include "GSDumpReplayer.h"
 #ifdef ENABLE_VULKAN
@@ -925,6 +926,31 @@ void GSRenderer::ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec)
 	VSync(rec.field, rec.registers_written, rec.idle_frame);
 }
 
+#ifdef __ANDROID__
+// Remote play: where the picture goes in the stream's frame, as fractions of it (x, y, width,
+// height). The friend sees it as this screen shows it, aspect ratio and all, with black around it;
+// a stretched picture fills the frame, since the friend's screen has its own shape to stretch to.
+static GSVector4 RemotePlayArea(const GSVector4& draw_rect)
+{
+	const u32 size = GSRemotePlay::g_max_size.load(std::memory_order_relaxed);
+	const float frame_w = static_cast<float>(size >> 16);
+	const float frame_h = static_cast<float>(size & 0xffff);
+	const float draw_w = draw_rect.z - draw_rect.x;
+	const float draw_h = draw_rect.w - draw_rect.y;
+	if (GSConfig.AspectRatio == AspectRatioType::Stretch || frame_w <= 0.0f || frame_h <= 0.0f || draw_w <= 0.0f ||
+		draw_h <= 0.0f)
+	{
+		return GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+	}
+
+	// draw_rect is in the window as the player holds it, so a rotated screen needs no correction.
+	const float ratio = (draw_w / draw_h) / (frame_w / frame_h);
+	if (ratio >= 1.0f)
+		return GSVector4(0.0f, (1.0f - 1.0f / ratio) * 0.5f, 1.0f, 1.0f / ratio);
+	return GSVector4((1.0f - ratio) * 0.5f, 0.0f, ratio, 1.0f);
+}
+#endif
+
 void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 {
 	if (GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
@@ -1259,6 +1285,15 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				}
 			}
 		}
+
+#ifdef __ANDROID__
+		// Remote play takes the frame as it is about to be shown, upscaled and sharpened, before the
+		// present pass opens. A blank frame goes out black, as the screen shows it.
+		if (current && !blank_frame)
+			g_gs_device->RemotePlayVSync(current, src_uv, RemotePlayArea(draw_rect));
+		else
+			g_gs_device->RemotePlayVSync(nullptr, GSVector4::zero(), GSVector4::zero());
+#endif
 
 		if (BeginPresentFrame(false))
 		{

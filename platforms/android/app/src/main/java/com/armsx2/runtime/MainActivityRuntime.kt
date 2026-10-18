@@ -3202,7 +3202,11 @@ open class MainActivityRuntime : ComponentActivity() {
                 Modifier.fillMaxSize(),
                 contentAlignment = Alignment.TopCenter,
             ) {
-                com.armsx2.ui.friends.FriendOnlineBanner()
+                androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    com.armsx2.ui.friends.FriendOnlineBanner()
+                    // Remote play: a friend joining or leaving as player 2, for the host.
+                    com.armsx2.remoteplay.RemotePlayNoticeBanner()
+                }
             }
             }
         }

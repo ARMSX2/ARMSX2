@@ -24,6 +24,9 @@ sealed interface AppRoute {
     data object Language : AppRoute
     data object News : AppRoute
     data object Friends : AppRoute
+    // Joining a friend's game. Hosting lives in the in-game menu instead, since only a running game
+    // can be hosted.
+    data object RemotePlay : AppRoute
     data object About : AppRoute
 }
 

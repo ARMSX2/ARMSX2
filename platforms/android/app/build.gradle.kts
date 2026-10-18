@@ -85,6 +85,17 @@ val generateSharedResources by tasks.registering(Sync::class) {
     into(layout.buildDirectory.dir("generated/sharedResources/resources"))
 }
 
+// The About screen's license texts. GPL.html and ThirdPartyLicenses.html are the files the desktop
+// About dialog opens; like the runtime resources above they are copied from bin/docs at build time,
+// so there is no second copy to drift. They land in assets/licenses beside android.html, the
+// Android app's own list, which is committed under src/main/assets/licenses.
+val generateLicenseDocs by tasks.registering(Sync::class) {
+    from(rootProject.layout.projectDirectory.dir("../../bin/docs")) {
+        include("GPL.html", "ThirdPartyLicenses.html")
+    }
+    into(layout.buildDirectory.dir("generated/licenseDocs/licenses"))
+}
+
 // AGP 9.2.1 rejects a Provider in assets.srcDir (the sourceSets block below uses a concrete path),
 // so wire the dependency bmd's Provider form would have carried implicitly. The generated assets
 // dir is consumed by several AGP tasks — asset merge AND lint's model/analyze passes — so declare
@@ -93,7 +104,7 @@ val generateSharedResources by tasks.registering(Sync::class) {
 tasks.matching { t ->
     t.name == "preBuild" || t.name.endsWith("Assets") || t.name.contains("Lint")
 }.configureEach {
-    dependsOn(generateSharedResources)
+    dependsOn(generateSharedResources, generateLicenseDocs)
 }
 
 // Private, optional Discord SDK location. Set by release CI; absent in every public clone.
@@ -281,6 +292,7 @@ android {
         // `generateSharedResources.map { }` form throws "cannot add Provider instances"). The
         // task dependency that materialises this tree is wired via tasks.matching above.
         assets.srcDir(layout.buildDirectory.dir("generated/sharedResources").get().asFile)
+        assets.srcDir(layout.buildDirectory.dir("generated/licenseDocs").get().asFile)
     }
 
     compileOptions {
@@ -435,6 +447,9 @@ dependencies {
     implementation(libs.coil.gif) // animated GIF / WebP / APNG (library background)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+
+    // Remote play (com.armsx2.remoteplay): video, audio and player 2's input between two devices.
+    implementation(libs.streamWebrtc)
 
     testImplementation(libs.junit)
     // Real org.json for JVM unit tests: the mockable android.jar stubs throw "not mocked", and

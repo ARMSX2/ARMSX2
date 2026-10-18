@@ -81,11 +81,16 @@ namespace
 #endif
 
 #include <bit>
+#include <chrono>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <utility>
+
+#ifdef __ANDROID__
+#include <android/hardware_buffer.h>
+#endif
 
 // Tweakables
 enum : u32
@@ -615,6 +620,25 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// fp16), so it takes effect from the next device, which is the next game.
 	m_optional_extensions.vk_khr_shader_float16_int8 =
 		GSConfig.LsfgFp16 && SupportsExtension(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME, false);
+
+#ifdef __ANDROID__
+	// Remote play hands its frames to the video encoder as AHardwareBuffers, so they never pass
+	// through the CPU. Both are on practically every Android driver; the foreign queue family is what
+	// lets the encoder's GL take a frame over, so the buffer extension is only asked for alongside it.
+	// Without them, frames are read back instead.
+	//
+	// Both or neither. SupportsExtension enables what it finds, so asking for the two in a row
+	// enabled the foreign queue family alone on a driver that lists it without the buffer one.
+	const auto listed = [&available_extension_list](const char* name) {
+		return std::any_of(available_extension_list.begin(), available_extension_list.end(),
+			[name](const VkExtensionProperties& properties) { return !std::strcmp(name, properties.extensionName); });
+	};
+	m_optional_extensions.vk_android_external_memory_ahb =
+		listed(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) &&
+		listed(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME) &&
+		SupportsExtension(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME, false) &&
+		SupportsExtension(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME, false);
+#endif
 
 	return true;
 }
@@ -3121,11 +3145,18 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	InitializeState();
+#ifdef __ANDROID__
+	GSRemotePlay::g_renderer_captures.store(true, std::memory_order_release);
+#endif
 	return true;
 }
 
 void GSDeviceVK::Destroy()
 {
+#ifdef __ANDROID__
+	GSRemotePlay::g_renderer_captures.store(false, std::memory_order_release);
+#endif
+
 	// Free the libretro backbuffers while the device is still alive; the
 	// frontend stopped sampling at context_destroy.
 	if (VKLibretro::Active || GSHeadless::IsEnabled())
@@ -3158,6 +3189,12 @@ void GSDeviceVK::Destroy()
 		ExecuteCommandBuffer(false);
 		WaitForGPUIdle();
 	}
+
+#ifdef __ANDROID__
+	// The GPU is idle, so remote play's buffers can go at once, ahead of the allocator.
+	if (m_device != VK_NULL_HANDLE)
+		RemotePlayRelease(true);
+#endif
 
 	m_swap_chain.reset();
 
@@ -3904,6 +3941,15 @@ void GSDeviceVK::PublishGPUProfile()
 	const GpuProfileSelection& mobile_profile = m_gpu_profile;
 	SetMobileDriverProfile(mobile_profile.driver);
 #if defined(__ANDROID__)
+	// Remote play's buffer handoff, turned off for a driver whose profile says so. The profile is
+	// only known now, after the device was created with the extensions, so it is their use that
+	// goes: frames are read back instead.
+	if (m_optional_extensions.vk_android_external_memory_ahb &&
+		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::ReadBackRemotePlayFrames))
+	{
+		Console.WriteLn("VK: remote play reads frames back on this driver (driver profile).");
+		m_optional_extensions.vk_android_external_memory_ahb = false;
+	}
 	// So that IsMaliGPUProfile() and IsAdrenoGPUProfile() answer for the Vulkan device too.
 	SetRuntimeGPUProfile(mobile_profile.runtime_profile);
 	// Per-model pool sizes and ages, which drive GSDevice's pool sizing. From sashkinbro/EmuCoreX.
@@ -10131,3 +10177,428 @@ void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
 	w.EndObject();
 	out.backend_json = w.TakeString();
 }
+
+#ifdef __ANDROID__
+
+// ---- Remote play ---------------------------------------------------------------------------------
+//
+// The stream's frames (GS/GSRemotePlay.h). Every presented frame is drawn at the stream's size and
+// copied into a free slot, recorded into the frame's own command buffer ahead of the present, which
+// submits it with everything else. The app's video thread picks it up once the GPU marks it done.
+
+void GSDeviceVK::RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area)
+{
+	const u32 max_size = GSRemotePlay::g_max_size.load(std::memory_order_acquire);
+	if (max_size == 0)
+	{
+		if (m_rp_published || m_rp_frame || m_rp_marker_buffer != VK_NULL_HANDLE)
+			RemotePlayRelease(false);
+		return;
+	}
+
+	GSRemotePlay::g_frames.fetch_add(1, std::memory_order_relaxed);
+
+	// A slot the app's side has finished with. When the GPU or the app still holds all of them, this
+	// frame is dropped rather than waited for.
+	GSRemotePlay::Ring& ring = m_rp_ring;
+	u32 index = 0;
+	while (index < ring.slots.size() &&
+		   ring.slots[index].state.load(std::memory_order_acquire) != GSRemotePlay::SlotFree)
+	{
+		index++;
+	}
+	if (index == ring.slots.size())
+	{
+		GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+	GSRemotePlay::Slot& slot = ring.slots[index];
+
+	// Every frame is the stream's full size, whatever size the game's is. Games switch sizes between
+	// menus, videos and play, and a stream that followed them would restart the encoder here and the
+	// decoder on the friend's device at each switch: a hitch every time. NV12 wants the width a
+	// multiple of 4 and the height even.
+	const u32 width = std::max(4u, (max_size >> 16) & ~3u);
+	const u32 height = std::max(2u, (max_size & 0xffffu) & ~1u);
+
+	if (!m_rp_frame || static_cast<u32>(m_rp_frame->GetWidth()) != width ||
+		static_cast<u32>(m_rp_frame->GetHeight()) != height)
+	{
+		m_rp_frame = GSTextureVK::Create(GSTexture::Usage::RenderTarget, GSTexture::Format::Color, width, height, 1);
+		if (!m_rp_frame)
+		{
+			GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+	}
+
+	// The slot's storage. A free slot is nobody's, so it can be replaced here, and a frame of either
+	// kind can go into any slot.
+	RemotePlayHardware& hardware = m_rp_hardware[index];
+	RemotePlayReadback& readback = m_rp_readback[index];
+	bool use_hardware = GSRemotePlay::g_hardware.load(std::memory_order_acquire) && !m_rp_hardware_failed &&
+						m_optional_extensions.vk_android_external_memory_ahb &&
+						vkGetAndroidHardwareBufferPropertiesANDROID != nullptr;
+
+	if (use_hardware && (!hardware.buffer || hardware.width != width || hardware.height != height))
+	{
+		RemotePlayHardware created;
+		const bool ok = RemotePlayCreateHardware(created, width, height);
+		{
+			// The app takes its own reference to a slot's buffer under the lock.
+			std::lock_guard lock(GSRemotePlay::g_mutex);
+			RemotePlayDiscard(hardware, false);
+			if (ok)
+				hardware = created;
+			slot.hardware_buffer = ok ? hardware.buffer : nullptr;
+			slot.generation = ok ? GSRemotePlay::g_generation.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+		}
+		if (!ok)
+		{
+			// Frames go through the CPU from here on, for as long as this device lives.
+			m_rp_hardware_failed = true;
+			use_hardware = false;
+			Console.Warning("VK: Remote play: no shared frame buffers on this device, reading frames back instead.");
+		}
+	}
+
+	const u32 rgba_size = width * height * 4;
+	if (!use_hardware && (!readback.buffer || readback.size < rgba_size))
+	{
+		RemotePlayDiscard(readback, false);
+		if (!RemotePlayCreateReadback(readback, rgba_size))
+		{
+			GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		slot.data = readback.data;
+	}
+
+	// One u32 per slot, cleared once and kept mapped, so checking a slot costs a memory read.
+	if (m_rp_marker_buffer == VK_NULL_HANDLE)
+	{
+		const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0,
+			sizeof(u32) * ring.slots.size(), VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
+		VmaAllocationCreateInfo aci = {};
+		aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+		aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT;
+		aci.requiredFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+		VmaAllocationInfo ai = {};
+		if (vmaCreateBuffer(m_allocator, &bci, &aci, &m_rp_marker_buffer, &m_rp_marker_allocation, &ai) != VK_SUCCESS ||
+			!ai.pMappedData)
+		{
+			if (m_rp_marker_buffer != VK_NULL_HANDLE)
+				vmaDestroyBuffer(m_allocator, m_rp_marker_buffer, m_rp_marker_allocation);
+			m_rp_marker_buffer = VK_NULL_HANDLE;
+			m_rp_marker_allocation = VK_NULL_HANDLE;
+			GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+		std::memset(ai.pMappedData, 0, sizeof(u32) * ring.slots.size());
+		ring.markers = static_cast<const volatile u32*>(ai.pMappedData);
+	}
+
+	if (!m_rp_published)
+	{
+		std::lock_guard lock(GSRemotePlay::g_mutex);
+		ring.prepare_read = &GSDeviceVK::RemotePlayPrepareRead;
+		ring.context = this;
+		GSRemotePlay::g_ring = &ring;
+		m_rp_published = true;
+	}
+
+	// The picture where it goes, black around it. The clear also gives every pixel full alpha, which
+	// the draw then leaves alone: the game's own alpha means nothing on a screen.
+	ClearRenderTarget(m_rp_frame.get(), 0xFF000000u);
+	if (src)
+	{
+		const float fw = static_cast<float>(width);
+		const float fh = static_cast<float>(height);
+		const GSVector4 dst(area.x * fw, area.y * fh, (area.x + area.z) * fw, (area.y + area.w) * fh);
+		StretchRect(src, src_uv, m_rp_frame.get(), dst, ShaderConvertSelector(ShaderConvert::COPY, 0x7), Biln);
+	}
+	else
+	{
+		m_rp_frame->CommitClear();
+	}
+	EndRenderPass();
+
+	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
+	m_rp_frame->TransitionToLayout(GSTextureVK::Layout::TransferSrc);
+	m_rp_frame->SetUseFenceCounter(GetCurrentFenceCounter());
+
+	if (use_hardware)
+	{
+		const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+		// Whatever the encoder last read from it is discarded, so no ownership transfer back is needed.
+		VkImageMemoryBarrier acquire = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		acquire.srcAccessMask = 0;
+		acquire.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		acquire.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		acquire.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		acquire.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		acquire.image = hardware.image;
+		acquire.subresourceRange = range;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+			nullptr, 1, &acquire);
+
+		const VkImageCopy copy = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+			{0, 0, 0}, {width, height, 1}};
+		vkCmdCopyImage(cmd, m_rp_frame->GetImage(), m_rp_frame->GetVkLayout(), hardware.image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+		// Handed to the encoder's side (GL, on the same GPU): released to the foreign queue family.
+		// The second scope is TRANSFER, not BOTTOM_OF_PIPE, so the marker write below waits for the
+		// release and its layout change, and a landed marker means GL may read.
+		VkImageMemoryBarrier release = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+		release.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		release.dstAccessMask = 0;
+		release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		release.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		release.srcQueueFamilyIndex = m_graphics_queue_family_index;
+		release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
+		release.image = hardware.image;
+		release.subresourceRange = range;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+			nullptr, 1, &release);
+	}
+	else
+	{
+		const VkBufferImageCopy region = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {width, height, 1}};
+		vkCmdCopyImageToBuffer(cmd, m_rp_frame->GetImage(), m_rp_frame->GetVkLayout(), readback.buffer, 1, &region);
+
+		// The frame goes out to the host, and the marker write waits for it, so a marker that shows
+		// this slot's number means its frame is in.
+		const VkBufferMemoryBarrier out = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_ACCESS_HOST_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, readback.buffer, 0, rgba_size};
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &out, 0, nullptr);
+	}
+
+	// 0 is what a cleared marker reads.
+	if (++m_rp_seq == 0)
+		++m_rp_seq;
+
+	vkCmdFillBuffer(cmd, m_rp_marker_buffer, index * sizeof(u32), sizeof(u32), m_rp_seq);
+	const VkBufferMemoryBarrier marker = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_ACCESS_HOST_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_rp_marker_buffer,
+		index * sizeof(u32), sizeof(u32)};
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &marker, 0,
+		nullptr);
+
+	slot.seq = m_rp_seq;
+	slot.width = width;
+	slot.height = height;
+	slot.hardware = use_hardware;
+	slot.recorded_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+	slot.state.store(GSRemotePlay::SlotRecorded, std::memory_order_release);
+
+	// Wakes the app's thread, which then waits the few ms until the GPU has the frame done.
+	GSRemotePlay::NotifyRecorded();
+}
+
+// An AHardwareBuffer the GPU can copy a frame into and the encoder's GL can read, imported as an
+// image with its own dedicated memory. False, with nothing left allocated, when any step fails.
+bool GSDeviceVK::RemotePlayCreateHardware(RemotePlayHardware& hardware, u32 width, u32 height)
+{
+	AHardwareBuffer_Desc desc = {};
+	desc.width = width;
+	desc.height = height;
+	desc.layers = 1;
+	desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+	// CPU_READ_RARELY although the CPU never reads it: it keeps gralloc from picking a compressed GPU
+	// layout. The writer can be Turnip while the reader is the system GLES driver, and a plain linear
+	// buffer is the one layout both are sure to agree on.
+	desc.usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+				 AHARDWAREBUFFER_USAGE_CPU_READ_RARELY;
+	if (AHardwareBuffer_allocate(&desc, &hardware.buffer) != 0 || !hardware.buffer)
+	{
+		hardware.buffer = nullptr;
+		return false;
+	}
+
+	VkAndroidHardwareBufferFormatPropertiesANDROID format_properties = {
+		VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
+	VkAndroidHardwareBufferPropertiesANDROID properties = {
+		VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID, &format_properties};
+	if (vkGetAndroidHardwareBufferPropertiesANDROID(m_device, hardware.buffer, &properties) != VK_SUCCESS ||
+		properties.memoryTypeBits == 0 || format_properties.format != VK_FORMAT_R8G8B8A8_UNORM)
+	{
+		RemotePlayDiscard(hardware, true);
+		return false;
+	}
+
+	VkExternalMemoryImageCreateInfo external = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+	external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+
+	VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &external};
+	ici.imageType = VK_IMAGE_TYPE_2D;
+	ici.format = VK_FORMAT_R8G8B8A8_UNORM;
+	ici.extent = {width, height, 1};
+	ici.mipLevels = 1;
+	ici.arrayLayers = 1;
+	ici.samples = VK_SAMPLE_COUNT_1_BIT;
+	ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	if (vkCreateImage(m_device, &ici, nullptr, &hardware.image) != VK_SUCCESS)
+	{
+		hardware.image = VK_NULL_HANDLE;
+		RemotePlayDiscard(hardware, true);
+		return false;
+	}
+
+	VkImportAndroidHardwareBufferInfoANDROID import = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID};
+	import.buffer = hardware.buffer;
+	VkMemoryDedicatedAllocateInfo dedicated = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, &import};
+	dedicated.image = hardware.image;
+	VkMemoryAllocateInfo mai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &dedicated};
+	mai.allocationSize = properties.allocationSize;
+	mai.memoryTypeIndex = static_cast<u32>(std::countr_zero(properties.memoryTypeBits));
+	if (vkAllocateMemory(m_device, &mai, nullptr, &hardware.memory) != VK_SUCCESS)
+	{
+		hardware.memory = VK_NULL_HANDLE;
+		RemotePlayDiscard(hardware, true);
+		return false;
+	}
+
+	if (vkBindImageMemory(m_device, hardware.image, hardware.memory, 0) != VK_SUCCESS)
+	{
+		RemotePlayDiscard(hardware, true);
+		return false;
+	}
+
+	hardware.width = width;
+	hardware.height = height;
+	return true;
+}
+
+// The buffer itself lives on for as long as the encoder's GL still holds an image of it.
+void GSDeviceVK::RemotePlayDiscard(RemotePlayHardware& hardware, bool device_idle)
+{
+	const RemotePlayHardware gone = hardware;
+	hardware = {};
+	if (!gone.buffer && gone.image == VK_NULL_HANDLE && gone.memory == VK_NULL_HANDLE)
+		return;
+
+	const auto destroy = [device = m_device, gone]() {
+		if (gone.image != VK_NULL_HANDLE)
+			vkDestroyImage(device, gone.image, nullptr);
+		if (gone.memory != VK_NULL_HANDLE)
+			vkFreeMemory(device, gone.memory, nullptr);
+		if (gone.buffer)
+			AHardwareBuffer_release(gone.buffer);
+	};
+	if (device_idle)
+		destroy();
+	else
+		m_frame_resources[m_current_frame].cleanup_resources.push_back(destroy);
+}
+
+// A readback slot's buffer, mapped for as long as it exists. Its own memory, so making it visible to
+// the CPU (RemotePlayPrepareRead) touches nothing else's.
+bool GSDeviceVK::RemotePlayCreateReadback(RemotePlayReadback& readback, u32 size)
+{
+	const VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, nullptr, 0, size,
+		VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, nullptr};
+	VmaAllocationCreateInfo aci = {};
+	aci.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+	aci.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+	// As GSDownloadTextureVK chooses, for the same reason: cached reads are far faster, except on the
+	// Mali drivers its profile says otherwise for.
+	const bool prefer_coherent = IsDeviceMali() && GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::PreferCoherentReadback);
+	aci.preferredFlags = prefer_coherent ? VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+
+	VmaAllocationInfo ai = {};
+	if (vmaCreateBuffer(m_allocator, &bci, &aci, &readback.buffer, &readback.allocation, &ai) != VK_SUCCESS ||
+		!ai.pMappedData)
+	{
+		if (readback.buffer != VK_NULL_HANDLE)
+			vmaDestroyBuffer(m_allocator, readback.buffer, readback.allocation);
+		readback = {};
+		return false;
+	}
+
+	VkMemoryPropertyFlags flags = 0;
+	vmaGetMemoryTypeProperties(m_allocator, ai.memoryType, &flags);
+	readback.memory = ai.deviceMemory;
+	readback.data = static_cast<const u8*>(ai.pMappedData);
+	readback.size = size;
+	readback.coherent = (flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+	return true;
+}
+
+void GSDeviceVK::RemotePlayDiscard(RemotePlayReadback& readback, bool device_idle)
+{
+	if (readback.buffer != VK_NULL_HANDLE)
+	{
+		if (device_idle)
+			vmaDestroyBuffer(m_allocator, readback.buffer, readback.allocation);
+		else
+			DeferBufferDestruction(readback.buffer, readback.allocation);
+	}
+	readback = {};
+}
+
+// The app's video thread, under GSRemotePlay::g_mutex, before it reads a readback slot. The slot's
+// buffer cannot go meanwhile: the GS thread replaces buffers only in free slots, and withdraws the
+// ring under the same lock before it lets them go.
+void GSDeviceVK::RemotePlayPrepareRead(void* context, u32 index)
+{
+	GSDeviceVK* const device = static_cast<GSDeviceVK*>(context);
+	const RemotePlayReadback& readback = device->m_rp_readback[index];
+	if (readback.coherent || readback.memory == VK_NULL_HANDLE)
+		return;
+
+	const VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, nullptr, readback.memory, 0, VK_WHOLE_SIZE};
+	vkInvalidateMappedMemoryRanges(device->m_device, 1, &range);
+}
+
+// Everything remote play allocated goes once it stops, or with the device. device_idle: the GPU has
+// nothing in flight, so it all goes at once; otherwise once the frames that used it are done. A frame
+// the encoder still holds needs no waiting: its buffer outlives the image for as long as GL has it.
+void GSDeviceVK::RemotePlayRelease(bool device_idle)
+{
+	GSRemotePlay::Ring& ring = m_rp_ring;
+	{
+		// The app's side reads slots under this lock, so once the ring is withdrawn nothing reads it.
+		std::lock_guard lock(GSRemotePlay::g_mutex);
+		if (GSRemotePlay::g_ring == &ring)
+			GSRemotePlay::g_ring = nullptr;
+
+		for (GSRemotePlay::Slot& slot : ring.slots)
+		{
+			slot.state.store(GSRemotePlay::SlotFree, std::memory_order_relaxed);
+			slot.data = nullptr;
+			slot.hardware_buffer = nullptr;
+			slot.generation = 0;
+			slot.hardware = false;
+		}
+		ring.markers = nullptr;
+	}
+	m_rp_published = false;
+
+	for (u32 i = 0; i < ring.slots.size(); i++)
+	{
+		RemotePlayDiscard(m_rp_hardware[i], device_idle);
+		RemotePlayDiscard(m_rp_readback[i], device_idle);
+	}
+
+	if (m_rp_marker_buffer != VK_NULL_HANDLE)
+	{
+		if (device_idle)
+			vmaDestroyBuffer(m_allocator, m_rp_marker_buffer, m_rp_marker_allocation);
+		else
+			DeferBufferDestruction(m_rp_marker_buffer, m_rp_marker_allocation);
+		m_rp_marker_buffer = VK_NULL_HANDLE;
+		m_rp_marker_allocation = VK_NULL_HANDLE;
+	}
+
+	m_rp_frame.reset();
+}
+
+#endif // __ANDROID__

@@ -553,12 +553,36 @@ public class NativeApp {
 	 *  back to the last-used gamepad when the port isn't claimed yet (single-player,
 	 *  or before first input) — solo play is unchanged. No-op with no vibrator. */
 	public static void onPadRumble(int pad, int largeMotor, int smallMotor) {
+		// Remote play: player 2 is on a friend's device, so player 2's rumble goes there and not to
+		// a controller here, whatever this device's vibration setting (the friend's applies there).
+		if (pad == 1 && sRemotePlayer2) {
+			sRemotePlayer2Rumble = (Math.max(0, Math.min(255, largeMotor)) << 8) | Math.max(0, Math.min(255, smallMotor));
+			return;
+		}
 		if (!sRumbleEnabled) return;
 		// Native calls this with no exception check (Native::onPadRumble), so nothing may escape:
 		// a throw would leave the IOP thread with a pending exception, which aborts the app at
 		// its next JNI call.
 		try {
 			rumblePlayer(pad, largeMotor, smallMotor);
+		} catch (Throwable ignored) {
+		}
+	}
+
+	// Remote play, host: set while a friend plays as player 2 over a stream (RemotePlayHost), and that
+	// player's motors as the game last set them, (large << 8) | small, read every 30 ms and sent on.
+	public static volatile boolean sRemotePlayer2 = false;
+	public static volatile int sRemotePlayer2Rumble = 0;
+
+	/** Remote play, viewer: runs this device's motors as the host's game asks, on the controller in use
+	 *  ([deviceId], -1 for none yet) or else the handheld's own motor, with this device's vibration
+	 *  settings. 0, 0 stops them. Main thread. */
+	public static void playRemoteRumble(int deviceId, int largeMotor, int smallMotor) {
+		if (!sRumbleEnabled && (largeMotor > 0 || smallMotor > 0)) return;
+		try {
+			float low = Math.max(0f, Math.min(1f, largeMotor / 255f));
+			float high = Math.max(0f, Math.min(1f, smallMotor / 255f));
+			vibrateDevice(deviceId >= 0 ? deviceId : sRumbleDeviceId, low, high, RUMBLE_MS, true);
 		} catch (Throwable ignored) {
 		}
 	}
@@ -1000,6 +1024,27 @@ public class NativeApp {
 	public static native void setAppBackgrounded(boolean backgrounded);
 	public static native void shutdown();
 	public static native boolean hasActiveVM();
+
+	// ---- Remote play (com.armsx2.remoteplay; core side in cpp/remote_play.cpp) ----
+	// The running game's frames and sound for the stream to a friend's device, pulled by the app's
+	// streaming threads (RemotePlayFrames, RemotePlayHost) so nothing calls into Java from the GS or
+	// SPU2 threads. Same calls and meanings as ARMSX3's, which the streaming code was written against.
+	public static native boolean remotePlayStart(int maxWidth, int maxHeight);
+	public static native void remotePlayStop();
+	public static native int remotePlayPollVideo(java.nio.ByteBuffer buffer, int[] info, int timeoutMs);
+	public static native int remotePlayPollAudio(java.nio.ByteBuffer buffer, int capFrames, int timeoutMs);
+	public static native boolean remotePlayCounters(int[] out);
+	public static native long remotePlayImportFrame(int slot, int texture);
+	public static native void remotePlayDestroyImage(long image);
+	public static native void remotePlayReleaseFrame(int slot, int seq);
+	public static native void remotePlaySetHardware(boolean enabled);
+	/** Whether the game is paused, for the viewer's "your friend paused the game". */
+	public static native boolean remotePlayPaused();
+	// The host's router, asked to let the friend in for the session (UPnP): this device's address on
+	// the router's network or null, then the router's public "address:port" for a local UDP port or null.
+	public static native String remotePlayUpnpPrepare();
+	public static native String remotePlayUpnpMap(int internalPort, int externalHint, int leaseSeconds);
+	public static native void remotePlayUpnpUnmap(int externalPort);
 
 	/** Persist the Vulkan pipeline cache to disk so cold restarts don't have
 	 *  to recompile every TFX pipeline. No-op for OpenGL (its cache flushes

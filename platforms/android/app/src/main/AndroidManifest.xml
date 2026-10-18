@@ -7,6 +7,17 @@
     <uses-permission android:name="archos.permission.FULLSCREEN.FULL" />
     <!-- Cover artwork can be loaded from the configured remote artwork source. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Remote play: finding hosts on the same Wi-Fi (DNS-SD). Some drivers drop the multicast
+         replies unless an app holds a multicast lock. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- Remote play on Android 17, which keeps an app that targets it off the local network
+         without this: finding and joining hosts on the same Wi-Fi, and the router port for online
+         hosting. A runtime permission in the Nearby devices group, asked for only when remote play
+         needs it (RemotePlayLocalNetwork.kt). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- Remote play: a low-latency Wi-Fi lock while a stream runs, so the radio does not doze
+         between packets (Android requires this permission for any Wi-Fi lock). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"
@@ -105,6 +116,15 @@
                 <data android:scheme="file" />
             </intent-filter>
         </activity>
+
+        <!-- Remote play viewer: a friend's game streamed here, played as player 2. -->
+        <activity
+            android:name="com.armsx2.remoteplay.RemotePlayViewerActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|density|navigation"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:hardwareAccelerated="true"
+            android:screenOrientation="sensorLandscape" />
 
         <activity-alias
             android:name=".MainActivity"

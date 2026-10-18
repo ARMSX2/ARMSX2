@@ -2281,6 +2281,13 @@ public:
 	void SGSRUpscale(GSTexture*& tex, GSVector4i& src_rect, GSVector4& src_uv, const GSVector4& draw_rect,
 		bool edge_direction);
 
+	/// Remote play (GSRemotePlay.h), once per presented vsync, before the present opens. While remote
+	/// play runs: draws src's src_uv part into the stream's frame at area (x, y, width, height, as
+	/// fractions of the frame, black around it), or a black frame for a null src, and hands it over.
+	/// Otherwise: lets go of whatever an earlier capture allocated. A renderer that cannot capture
+	/// keeps this no-op and never sets GSRemotePlay::g_renderer_captures.
+	virtual void RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area) {}
+
 	bool ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_contents, bool recycle);
 
 	void AgePool();

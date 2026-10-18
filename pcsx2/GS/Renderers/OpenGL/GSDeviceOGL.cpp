@@ -35,6 +35,15 @@
 #include <fstream>
 #include <sstream>
 
+#ifdef __ANDROID__
+#include "glad/egl.h"
+#include <android/hardware_buffer.h>
+#include <chrono>
+#include <cstring>
+#include <poll.h>
+#include <unistd.h>
+#endif
+
 static constexpr u32 g_vs_pc_index        = 4;
 static constexpr u32 g_vs_ib_index        = 3;
 static constexpr u32 g_vs_vb_index        = 2;
@@ -805,6 +814,9 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	static_assert(sizeof(OMColorMaskSelector) == 1, "Wrong OMColorMaskSelector size");
 
 	Console.WriteLn("@@ANDROID_GL_INIT@@ stage=create_done");
+#ifdef __ANDROID__
+	GSRemotePlay::g_renderer_captures.store(true, std::memory_order_release);
+#endif
 	return true;
 }
 
@@ -856,6 +868,13 @@ void GSDeviceOGL::DestroyDeviceObjects()
 	if (m_objects_destroyed)
 		return;
 	m_objects_destroyed = true;
+
+#ifdef __ANDROID__
+	GSRemotePlay::g_renderer_captures.store(false, std::memory_order_release);
+	// With the context still there to delete through, as everything below.
+	if (m_gl_context)
+		RemotePlayRelease();
+#endif
 
 	DestroyShaderChain();
 
@@ -4683,3 +4702,372 @@ void GSDeviceOGL::InsertDebugMessage(DebugMessageCategory category, const char* 
 		glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, type, id, severity, buf.size(), buf.c_str());
 #endif
 }
+
+#ifdef __ANDROID__
+
+// ---- Remote play ---------------------------------------------------------------------------------
+//
+// The stream's frames (GS/GSRemotePlay.h), as GSDeviceVK makes them, on OpenGL ES: every presented
+// frame drawn at the stream's size, then copied into a free slot. Where the driver can share buffers
+// the copy goes into the slot's AHardwareBuffer, bound to a texture through an EGLImage, and a native
+// fence says when it is in: the app's thread waits on the fence's file descriptor, with no GL of its
+// own. Otherwise the frame is read into a pixel buffer, and copied out for the app at a later frame
+// once the GPU has finished, since only this thread's context can map the buffer.
+
+void GSDeviceOGL::RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area)
+{
+	const u32 max_size = GSRemotePlay::g_max_size.load(std::memory_order_acquire);
+	if (max_size == 0)
+	{
+		if (m_rp_published || m_rp_frame || m_rp_read_fbo != 0)
+			RemotePlayRelease();
+		return;
+	}
+
+	// Readbacks the GPU has finished go to the app first, so their slots can be counted as taken.
+	RemotePlayFinishReadbacks();
+
+	GSRemotePlay::g_frames.fetch_add(1, std::memory_order_relaxed);
+
+	GSRemotePlay::Ring& ring = m_rp_ring;
+	u32 index = 0;
+	while (index < ring.slots.size() &&
+		   ring.slots[index].state.load(std::memory_order_acquire) != GSRemotePlay::SlotFree)
+	{
+		index++;
+	}
+	if (index == ring.slots.size())
+	{
+		GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+		return;
+	}
+	GSRemotePlay::Slot& slot = ring.slots[index];
+
+	// The stream's full size whatever the game's is, as GSDeviceVK explains.
+	const u32 width = std::max(4u, (max_size >> 16) & ~3u);
+	const u32 height = std::max(2u, (max_size & 0xffffu) & ~1u);
+
+	if (!m_rp_frame || static_cast<u32>(m_rp_frame->GetWidth()) != width ||
+		static_cast<u32>(m_rp_frame->GetHeight()) != height)
+	{
+		m_rp_frame.reset(CreateSurface(GSTexture::Usage::RenderTarget, width, height, 1, GSTexture::Format::Color));
+		if (!m_rp_frame)
+		{
+			GSRemotePlay::g_skipped.fetch_add(1, std::memory_order_relaxed);
+			return;
+		}
+	}
+
+	if (m_rp_read_fbo == 0)
+	{
+		glGenFramebuffers(1, &m_rp_read_fbo);
+		glGenFramebuffers(1, &m_rp_draw_fbo);
+	}
+
+	RemotePlayHardware& hardware = m_rp_hardware[index];
+	RemotePlayReadback& readback = m_rp_readback[index];
+	bool use_hardware = GSRemotePlay::g_hardware.load(std::memory_order_acquire) && !m_rp_hardware_failed &&
+						GLAD_EGL_ANDROID_get_native_client_buffer && GLAD_EGL_ANDROID_image_native_buffer &&
+						GLAD_EGL_KHR_image_base && GLAD_EGL_ANDROID_native_fence_sync && GLAD_GL_OES_EGL_image;
+
+	if (use_hardware && (!hardware.buffer || hardware.width != width || hardware.height != height))
+	{
+		RemotePlayHardware created;
+		const bool ok = RemotePlayCreateHardware(created, width, height);
+		{
+			// The app takes its own reference to a slot's buffer under the lock.
+			std::lock_guard lock(GSRemotePlay::g_mutex);
+			RemotePlayDestroyHardware(hardware);
+			if (ok)
+				hardware = created;
+			slot.hardware_buffer = ok ? hardware.buffer : nullptr;
+			slot.generation = ok ? GSRemotePlay::g_generation.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+		}
+		if (!ok)
+		{
+			m_rp_hardware_failed = true;
+			use_hardware = false;
+			Console.Warning("GL: Remote play: no shared frame buffers on this device, reading frames back instead.");
+		}
+	}
+
+	const u32 rgba_size = width * height * 4;
+	if (!use_hardware && (readback.pbo == 0 || readback.size < rgba_size))
+	{
+		if (readback.pbo != 0)
+			glDeleteBuffers(1, &readback.pbo);
+		glGenBuffers(1, &readback.pbo);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.pbo);
+		glBufferData(GL_PIXEL_PACK_BUFFER, rgba_size, nullptr, GL_STREAM_READ);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+		readback.data = std::make_unique<u8[]>(rgba_size);
+		readback.size = rgba_size;
+		slot.data = readback.data.get();
+	}
+
+	if (!m_rp_published)
+	{
+		std::lock_guard lock(GSRemotePlay::g_mutex);
+		ring.markers = nullptr;
+		ring.is_done = &GSDeviceOGL::RemotePlayIsDone;
+		ring.prepare_read = nullptr;
+		ring.context = this;
+		GSRemotePlay::g_ring = &ring;
+		m_rp_published = true;
+	}
+
+	// The picture where it goes, black around it, full alpha from the clear (see GSDeviceVK).
+	ClearRenderTarget(m_rp_frame.get(), 0xFF000000u);
+	if (src)
+	{
+		const float fw = static_cast<float>(width);
+		const float fh = static_cast<float>(height);
+		const GSVector4 dst(area.x * fw, area.y * fh, (area.x + area.z) * fw, (area.y + area.w) * fh);
+		StretchRect(src, src_uv, m_rp_frame.get(), dst, ShaderConvertSelector(ShaderConvert::COPY, 0x7), Biln);
+	}
+	else
+	{
+		CommitClear(m_rp_frame.get(), false);
+	}
+
+	// Out of the frame: a blit into the shared buffer, or a read into the pixel buffer. Rows go across
+	// as they are; the frame's first row is the top of the picture here too (DrawStretchRect).
+	GLint read_fbo = 0;
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read_fbo);
+	glDisable(GL_SCISSOR_TEST);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, m_rp_read_fbo);
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+		static_cast<GSTextureOGL*>(m_rp_frame.get())->GetID(), 0);
+
+	int fence_fd = -1;
+	if (use_hardware)
+	{
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_rp_draw_fbo);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, hardware.texture, 0);
+		glBlitFramebuffer(0, 0, static_cast<GLint>(width), static_cast<GLint>(height), 0, 0,
+			static_cast<GLint>(width), static_cast<GLint>(height), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, GLState::fbo);
+
+		// Signals once the copy is in. Its file descriptor exists once the commands before it are
+		// flushed, which is also what gets them to the GPU now rather than at the present.
+		const EGLDisplay display = eglGetCurrentDisplay();
+		const EGLint attributes[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, EGL_NO_NATIVE_FENCE_FD_ANDROID, EGL_NONE};
+		const EGLSyncKHR sync = eglCreateSyncKHR(display, EGL_SYNC_NATIVE_FENCE_ANDROID, attributes);
+		glFlush();
+		if (sync != EGL_NO_SYNC_KHR)
+		{
+			fence_fd = eglDupNativeFenceFDANDROID(display, sync);
+			eglDestroySyncKHR(display, sync);
+		}
+		if (fence_fd < 0)
+		{
+			// Nothing to wait on: this frame waits here, and the next ones are read back.
+			glFinish();
+			m_rp_hardware_failed = true;
+			Console.Warning("GL: Remote play: no native fences, reading frames back instead.");
+		}
+	}
+	else
+	{
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.pbo);
+		glPixelStorei(GL_PACK_ALIGNMENT, 4);
+		glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+		glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+		readback.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+	}
+
+	glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+	glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(read_fbo));
+	glEnable(GL_SCISSOR_TEST);
+
+	if (++m_rp_seq == 0)
+		++m_rp_seq;
+
+	if (m_rp_fence_fds[index] >= 0)
+		close(m_rp_fence_fds[index]);
+	m_rp_fence_fds[index] = fence_fd;
+
+	slot.seq = m_rp_seq;
+	slot.width = width;
+	slot.height = height;
+	slot.hardware = use_hardware;
+	slot.recorded_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	if (use_hardware)
+	{
+		slot.state.store(GSRemotePlay::SlotRecorded, std::memory_order_release);
+		GSRemotePlay::NotifyRecorded();
+	}
+	else
+	{
+		// This thread's until the pixel buffer is copied out (RemotePlayFinishReadbacks).
+		slot.state.store(GSRemotePlay::SlotPending, std::memory_order_release);
+	}
+}
+
+// Readbacks whose fence has signalled: copied out of the pixel buffer for the app, which can then
+// take them. GS thread, with this context current.
+void GSDeviceOGL::RemotePlayFinishReadbacks()
+{
+	bool any = false;
+	for (u32 i = 0; i < m_rp_ring.slots.size(); i++)
+	{
+		GSRemotePlay::Slot& slot = m_rp_ring.slots[i];
+		RemotePlayReadback& readback = m_rp_readback[i];
+		if (slot.state.load(std::memory_order_acquire) != GSRemotePlay::SlotPending || !readback.fence)
+			continue;
+
+		const GLenum status = glClientWaitSync(readback.fence, 0, 0);
+		if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED)
+			continue;
+
+		glDeleteSync(readback.fence);
+		readback.fence = nullptr;
+
+		const u32 size = slot.width * slot.height * 4;
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, readback.pbo);
+		const void* map = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, size, GL_MAP_READ_BIT);
+		if (map)
+		{
+			std::memcpy(readback.data.get(), map, size);
+			glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+		}
+		glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+
+		slot.state.store(map ? GSRemotePlay::SlotRecorded : GSRemotePlay::SlotFree, std::memory_order_release);
+		any |= (map != nullptr);
+	}
+	if (any)
+		GSRemotePlay::NotifyRecorded();
+}
+
+// An AHardwareBuffer the GPU can render into and the encoder's GL can read, bound to a texture of
+// this context through an EGLImage. False, with nothing left allocated, when any step fails.
+bool GSDeviceOGL::RemotePlayCreateHardware(RemotePlayHardware& hardware, u32 width, u32 height)
+{
+	AHardwareBuffer_Desc desc = {};
+	desc.width = width;
+	desc.height = height;
+	desc.layers = 1;
+	desc.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+	// CPU_READ_RARELY although the CPU never reads it: a plain linear layout, which the encoder's
+	// driver is sure to read the way this one wrote it (see GSDeviceVK).
+	desc.usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+				 AHARDWAREBUFFER_USAGE_CPU_READ_RARELY;
+	if (AHardwareBuffer_allocate(&desc, &hardware.buffer) != 0 || !hardware.buffer)
+	{
+		hardware.buffer = nullptr;
+		return false;
+	}
+
+	const EGLDisplay display = eglGetCurrentDisplay();
+	const EGLClientBuffer client = eglGetNativeClientBufferANDROID(hardware.buffer);
+	const EGLint attributes[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
+	const EGLImageKHR image = client ?
+		eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID, client, attributes) : EGL_NO_IMAGE_KHR;
+	if (image == EGL_NO_IMAGE_KHR)
+	{
+		RemotePlayDestroyHardware(hardware);
+		return false;
+	}
+	hardware.image = image;
+
+	// Through the scratch unit the emulated DSA calls use, and given back to what it held.
+	while (glGetError() != GL_NO_ERROR)
+	{
+	}
+	glGenTextures(1, &hardware.texture);
+	glActiveTexture(GL_TEXTURE7);
+	glBindTexture(GL_TEXTURE_2D, hardware.texture);
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, static_cast<GLeglImageOES>(image));
+	const bool bound = glGetError() == GL_NO_ERROR;
+	glBindTexture(GL_TEXTURE_2D, GLState::tex_unit[7]);
+	if (!bound)
+	{
+		RemotePlayDestroyHardware(hardware);
+		return false;
+	}
+
+	hardware.width = width;
+	hardware.height = height;
+	return true;
+}
+
+// The buffer itself lives on for as long as the encoder's GL still holds an image of it.
+void GSDeviceOGL::RemotePlayDestroyHardware(RemotePlayHardware& hardware)
+{
+	if (hardware.texture != 0)
+		glDeleteTextures(1, &hardware.texture);
+	if (hardware.image)
+		eglDestroyImageKHR(eglGetCurrentDisplay(), static_cast<EGLImageKHR>(hardware.image));
+	if (hardware.buffer)
+		AHardwareBuffer_release(hardware.buffer);
+	hardware = {};
+}
+
+// The app's video thread, under GSRemotePlay::g_mutex: whether a recorded slot's frame is in. A
+// hardware frame is when its fence has signalled; a readback frame only becomes recorded once it is.
+bool GSDeviceOGL::RemotePlayIsDone(void* context, u32 index)
+{
+	const GSDeviceOGL* const device = static_cast<const GSDeviceOGL*>(context);
+	const int fd = device->m_rp_fence_fds[index];
+	if (fd < 0)
+		return true;
+
+	pollfd pfd = {fd, POLLIN, 0};
+	return poll(&pfd, 1, 0) > 0;
+}
+
+// Everything remote play allocated goes once it stops, or with the device. GS thread, with this
+// context current. GL keeps an object the GPU still uses until it is done with it.
+void GSDeviceOGL::RemotePlayRelease()
+{
+	GSRemotePlay::Ring& ring = m_rp_ring;
+	{
+		// The app's side reads slots under this lock, so once the ring is withdrawn nothing reads it.
+		std::lock_guard lock(GSRemotePlay::g_mutex);
+		if (GSRemotePlay::g_ring == &ring)
+			GSRemotePlay::g_ring = nullptr;
+
+		for (GSRemotePlay::Slot& slot : ring.slots)
+		{
+			slot.state.store(GSRemotePlay::SlotFree, std::memory_order_relaxed);
+			slot.data = nullptr;
+			slot.hardware_buffer = nullptr;
+			slot.generation = 0;
+			slot.hardware = false;
+		}
+	}
+	m_rp_published = false;
+
+	for (u32 i = 0; i < ring.slots.size(); i++)
+	{
+		RemotePlayDestroyHardware(m_rp_hardware[i]);
+
+		RemotePlayReadback& readback = m_rp_readback[i];
+		if (readback.fence)
+			glDeleteSync(readback.fence);
+		if (readback.pbo != 0)
+			glDeleteBuffers(1, &readback.pbo);
+		readback = {};
+
+		if (m_rp_fence_fds[i] >= 0)
+			close(m_rp_fence_fds[i]);
+		m_rp_fence_fds[i] = -1;
+	}
+
+	if (m_rp_read_fbo != 0)
+	{
+		glDeleteFramebuffers(1, &m_rp_read_fbo);
+		glDeleteFramebuffers(1, &m_rp_draw_fbo);
+		m_rp_read_fbo = 0;
+		m_rp_draw_fbo = 0;
+	}
+
+	m_rp_frame.reset();
+}
+
+#endif // __ANDROID__
