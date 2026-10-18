@@ -225,7 +225,18 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 		m_env.Log(fmt::format("could not save {} in the game's settings; kept for this session only", label));
 	}
 
-	m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} kept ({:+.0f}%)"), label, action.gain * 100.0));
+	if (action.lever == AutoTuneLever::EeGovernor)
+	{
+		// The governor lowers the emulated EE's clock so the game keeps up with real time; the gain is game
+		// speed, and a bare percentage reads like a frame-rate gain.
+		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune",
+										  "Auto-tune: {} kept. The emulated CPU is underclocked to hold game speed (game speed {:+.0f}%, not more frames)."),
+			label, action.gain * 100.0));
+	}
+	else
+	{
+		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} kept ({:+.0f}%)"), label, action.gain * 100.0));
+	}
 }
 
 void AutoTuneApplier::Revert(const AutoTuneAction& action)

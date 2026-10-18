@@ -174,6 +174,25 @@ TEST(AutoTuneApplier, KeepMovesTheValueFromTheTrialIntoTheGamesFile)
 	EXPECT_TRUE(AutoTune::SameValue(*changes[0].original, "3"));
 }
 
+TEST(AutoTuneApplier, TheGovernorsKeepMessageSaysTheEmulatedCpuIsUnderclockedToHoldGameSpeed)
+{
+	// "EE governor kept (+69%)" read like a frame-rate gain. It is game speed: the governor lowers the emulated
+	// EE's clock so the game keeps up with real time, at the same number of pictures drawn.
+	Fixture f;
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::EeGovernor, 1.0));
+	AutoTuneAction keep = Action(Kind::Keep, AutoTuneLever::EeGovernor, 1.0);
+	keep.gain = 0.69;
+	f.applier.Execute(keep);
+
+	EXPECT_EQ(f.env.messages.back(),
+		"Auto-tune: EE governor kept. The emulated CPU is underclocked to hold game speed (game speed +69%, not more frames).");
+
+	// Another lever keeps its plain message.
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::IopThread, 1.0));
+	f.applier.Execute(Action(Kind::Keep, AutoTuneLever::IopThread, 1.0));
+	EXPECT_EQ(f.env.messages.back(), "Auto-tune: IOP thread kept (+12%)");
+}
+
 TEST(AutoTuneApplier, KeepWithNoSettingsFileHoldsTheValueForTheSession)
 {
 	Fixture f;
