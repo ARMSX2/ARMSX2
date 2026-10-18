@@ -270,14 +270,39 @@ bool AutoTune::IopThreadPlaceable(bool vu_thread, bool lockstep, IopThread::Host
 	return IopThread::ResolveMode(hypothetical, host, vm) == IopThreadMode::Threaded;
 }
 
+bool AutoTune::GovernorAvailableFrom(const EECycleRate::GovernorStatus& status, bool dynamic_setting)
+{
+	if (!status.eligible)
+		return false;
+
+	// The floor is two steps under the player's rate and never under the selector's own minimum.
+	if (status.floor >= status.configured)
+		return false;
+
+	// On globally but kept out of this game by a pinned rate: a trial would not change the configuration.
+	if (dynamic_setting && !status.enabled)
+		return false;
+
+	return true;
+}
+
 bool AutoTune::EeGovernorAvailable()
 {
-	return false;
+	return GovernorAvailableFrom(EECycleRate::GetGovernorStatus(), EmuConfig.Speedhacks.DynamicEECycleRate);
 }
 
 bool AutoTune::EeGovernorEnabled()
 {
-	return Host::GetBoolSettingValue("EmuCore/Speedhacks", "DynamicEECycleRate", false);
+	// The resolved answer rather than the raw switch: a pinned rate can keep the governor out of a game whose
+	// switch is on.
+	return EECycleRate::GetGovernorStatus().enabled;
+}
+
+bool AutoTune::TrialWasMeasured(AutoTuneLever lever, uint32_t governor_transitions_at_start, uint32_t governor_transitions_now)
+{
+	if (lever != AutoTuneLever::EeGovernor)
+		return true;
+	return governor_transitions_now != governor_transitions_at_start;
 }
 
 // ================================================================================================
@@ -418,6 +443,8 @@ namespace
 		bool m_pending_scene = false;
 		bool m_pending_settings = false;
 		bool m_pending_resume = false;
+		// EECycleRate::GetTransitionCount() when the governor's trial began, to tell a trial in which it never acted.
+		uint32_t m_governor_transitions_at_trial = 0;
 		AutoTune::GameDbForced m_forced;
 		Common::Timer m_session_timer;
 		std::unique_ptr<std::FILE, void (*)(std::FILE*)> m_trace{nullptr, [](std::FILE* f) { if (f) std::fclose(f); }};
@@ -560,8 +587,14 @@ namespace
 				return static_cast<int>(EmuConfig.GS.HWDownloadMode) == static_cast<int>(std::lround(value));
 			case AutoTuneLever::Blending:
 				return static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) == static_cast<int>(std::lround(value));
+			case AutoTuneLever::EeGovernor:
+			{
+				// Asked for and not suspended. A pinned rate or a suspension (hardcore mode, a cycle skip) would
+				// leave the governor off and the trial measuring nothing.
+				const EECycleRate::GovernorStatus status = EECycleRate::GetGovernorStatus();
+				return status.enabled == (value != 0.0) && (value == 0.0 || status.eligible);
+			}
 			default:
-				// The governor has no field to read back yet.
 				return true;
 		}
 	}
@@ -584,7 +617,7 @@ namespace
 		if (std::ftell(f) == 0)
 		{
 			std::fputs("t,seq,usable,seconds,speed,late,ee,mtgs,gsb,mtvu,iop,gpu,gpu_timer,wait_gs,wait_vu1,phase,streak,"
-					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop\n",
+					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop,ee_rate\n",
 				f);
 		}
 		std::fprintf(f, "# session %s crc %08X\n", VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC());
@@ -598,7 +631,7 @@ namespace
 			return;
 
 		const auto opt = [](const std::optional<double>& v) { return v ? fmt::format("{:.3f}", *v) : std::string(); };
-		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{}\n",
+		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{},{}\n",
 			m_session_timer.GetTimeSeconds(), m_sampler.LastSequence(), w.usable ? 1 : 0, w.seconds, w.speed_pct, w.late_frame_ratio, w.ee_pct,
 			w.mtgs_pct, w.gs_back_pct, w.mtvu_pct, w.iop_pct, w.gpu_pct, w.has_gpu_timer ? 1 : 0, opt(w.ee_wait_gs_ratio),
 			opt(w.ee_wait_vu1_ratio), AutoTuneController::PhaseName(m_controller.GetPhase()), m_controller.BadStreak(),
@@ -610,7 +643,7 @@ namespace
 				fmt::format("{:g}", a.value) :
 				std::string(),
 			a.gain, s.resolution, s.gs_back_thread_on ? 1 : 0, s.download_mode, s.blending_level, s.iop_thread_on ? 1 : 0,
-			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio));
+			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio), static_cast<int>(EECycleRate::GetEffective()));
 		std::fputs(line.c_str(), f);
 		std::fflush(f);
 	}
@@ -633,10 +666,22 @@ namespace
 		m_pending_scene = m_pending_settings = m_pending_resume = false;
 
 		const AutoTuneLeverState state = Gather();
-		const AutoTuneAction action = m_controller.OnWindow(w, state);
+		AutoTuneAction action = m_controller.OnWindow(w, state);
+
+		// A governor that never lowered the rate during its trial was not tried. The controller has noted it for
+		// this session, so it is not offered again straight away, but it is not written to the game's file as
+		// "did not help": the next session may find the game overloaded when this one did not.
+		if (action.kind == AutoTuneAction::Kind::Revert && action.measured &&
+			!AutoTune::TrialWasMeasured(action.lever, m_governor_transitions_at_trial, EECycleRate::GetTransitionCount()))
+		{
+			m_env.Log("the EE governor never lowered the EE rate during its trial, so it was not measured; not counted against it");
+			action.measured = false;
+		}
 		WriteTrace(w, state, action);
 
 		m_applier.Execute(action);
+		if (action.kind == AutoTuneAction::Kind::StartTrial && action.lever == AutoTuneLever::EeGovernor)
+			m_governor_transitions_at_trial = EECycleRate::GetTransitionCount();
 
 		// A trial whose value did not reach the configuration (the game database or a clamp overruled it) would
 		// measure nothing. Call it a failed trial and take it back.

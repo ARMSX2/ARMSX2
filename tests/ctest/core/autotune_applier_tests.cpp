@@ -8,6 +8,7 @@
 
 #include "AutoTune/AutoTuneApplier.h"
 #include "Config.h"
+#include "EECycleRate.h"
 #include "GameDatabase.h"
 #include "INISettingsInterface.h"
 #include "LayeredSettingsInterface.h"
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <tuple>
 
 namespace
@@ -419,6 +421,95 @@ TEST(AutoTuneHost, LockstepAndVmConditionsRuleItOut)
 	EXPECT_FALSE(AutoTune::IopThreadPlaceable(false, false, host, vm, false));
 }
 
+// ---------------------------------------------------------------------------------------------- the governor lever
+
+namespace
+{
+	// A VM running normally with nothing suspending the governor, nobody claiming the rate, and the governor
+	// off: the state an auto-tune trial starts from.
+	EECycleRate::EligibilityInputs Plain()
+	{
+		EECycleRate::EligibilityInputs in;
+		in.configured = 0;
+		in.limiter_nominal = true;
+		in.vm_running = true;
+		return in;
+	}
+
+	bool Available(const EECycleRate::EligibilityInputs& in)
+	{
+		return AutoTune::GovernorAvailableFrom(EECycleRate::ResolveGovernorStatus(in, in.configured), in.dynamic_setting);
+	}
+} // namespace
+
+TEST(AutoTuneGovernor, IsAvailableWhereTheGovernorsOwnResolverWouldRunIt)
+{
+	EXPECT_TRUE(Available(Plain()));
+
+	// Already on: nothing for a trial to switch, but nothing that makes it unavailable either.
+	EECycleRate::EligibilityInputs on = Plain();
+	on.dynamic_setting = true;
+	EXPECT_TRUE(Available(on));
+}
+
+TEST(AutoTuneGovernor, IsNotAvailableWhatEverSuspendsIt)
+{
+	const auto without = [](auto&& tweak) {
+		EECycleRate::EligibilityInputs in = Plain();
+		tweak(in);
+		return Available(in);
+	};
+
+	EXPECT_FALSE(without([](auto& in) { in.hardcore = true; }));
+	EXPECT_FALSE(without([](auto& in) { in.ee_cycle_skip = 1; }));
+	EXPECT_FALSE(without([](auto& in) { in.limiter_nominal = false; }));
+	EXPECT_FALSE(without([](auto& in) { in.paced_by_host_vsync = true; })) << "Throttle() never measures a frame";
+	EXPECT_FALSE(without([](auto& in) { in.gs_dump_replay = true; }));
+	EXPECT_FALSE(without([](auto& in) { in.frame_advancing = true; }));
+	EXPECT_FALSE(without([](auto& in) { in.vm_running = false; }));
+}
+
+TEST(AutoTuneGovernor, NeedsARateToLowerFrom)
+{
+	// The floor is two steps under the player's rate, never under -3. At -3 there is nothing to give back.
+	EECycleRate::EligibilityInputs in = Plain();
+	in.configured = -3;
+	EXPECT_FALSE(Available(in));
+	in.configured = -2;
+	EXPECT_TRUE(Available(in));
+	in.configured = 3;
+	EXPECT_TRUE(Available(in));
+}
+
+TEST(AutoTuneGovernor, ASwitchThatIsOnButHeldOffByAPinnedRateIsNotATrialThatWouldChangeAnything)
+{
+	// The global switch is on and the game's file pins the rate: the resolver keeps the governor out. A trial
+	// writes the same "on" the global switch already says, so the configuration would not change, the caches
+	// would not reset, and the sampler would never be told to start.
+	EECycleRate::EligibilityInputs in = Plain();
+	in.dynamic_setting = true;
+	in.pergame_claims_rate = true;
+	EXPECT_FALSE(Available(in));
+
+	// With the switch off, the same pin is no obstacle: a trial turns it on, and the trial layer counts as a
+	// per-game claim on it (VMManager::LoadCoreSettings), as the kept key would.
+	in.dynamic_setting = false;
+	EXPECT_TRUE(Available(in));
+}
+
+TEST(AutoTuneGovernor, ATrialOnlyCountsWhenTheGovernorLowersTheRate)
+{
+	using L = AutoTuneLever;
+	// The governor acts by lowering the EE rate. A trial in which it never did measured a game it did not touch.
+	EXPECT_FALSE(AutoTune::TrialWasMeasured(L::EeGovernor, 4, 4));
+	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::EeGovernor, 4, 5));
+	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::EeGovernor, 4, 6));
+
+	// Every other lever is measured by its own effect on the speed.
+	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::IopThread, 4, 4));
+	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::Resolution, 4, 4));
+}
+
 // ---------------------------------------------------------------------------------------------- together
 
 namespace
@@ -429,8 +520,10 @@ namespace
 	{
 		Fixture fixture;
 		AutoTuneController controller;
-		double (*speed_of)(const FakeEnv&) = nullptr;
+		std::function<double(const FakeEnv&)> speed_of;
 		std::vector<std::string> trace;
+		double now = 0.0; // seconds played
+		bool governor_available = false;
 
 		AutoTuneLeverState State() const
 		{
@@ -440,6 +533,8 @@ namespace
 			s.download_mode = AutoTuneDownloadMode::NoReadbacks;
 			s.iop_thread_on = IsOn(fixture.env.Effective(SPEED, "iopThread"));
 			s.iop_thread_placeable = true;
+			s.ee_governor_on = IsOn(fixture.env.Effective(SPEED, "DynamicEECycleRate"));
+			s.ee_governor_eligible = governor_available;
 			s.rejected = fixture.applier.Rejections();
 			return s;
 		}
@@ -453,6 +548,7 @@ namespace
 				w.speed_pct = speed_of(fixture.env);
 				const AutoTuneAction a = controller.OnWindow(w, State());
 				fixture.applier.Execute(a);
+				now += 0.5;
 			}
 		}
 	};
@@ -483,6 +579,81 @@ TEST(AutoTuneTogether, AnEeBoundGameGetsTheIopThreadAndKeepsItInTheFile)
 	EXPECT_EQ(game.fixture.env.messages.front(), "Auto-tune: trying IOP thread...");
 	EXPECT_NE(game.fixture.env.messages.back().find("IOP thread kept (+41%)"), std::string::npos) << game.fixture.env.messages.back();
 	EXPECT_EQ(game.fixture.env.reloads, 1);
+}
+
+TEST(AutoTuneTogether, AnEeBoundGameWithTheIopThreadAlreadyOnGetsTheGovernorAndKeepsItInTheFile)
+{
+	Game game;
+	game.governor_available = true;
+	game.fixture.env.game_file.SetBoolValue(SPEED, "iopThread", true); // the IOP thread is on already
+
+	// The governor takes its time: it warms up for two seconds of game time, waits two windows, steps down,
+	// cools down for two more, and steps again. Nothing changes on the wall until about 12 s after the switch.
+	double governor_on_at = -1.0;
+	game.speed_of = [&](const FakeEnv& env) {
+		if (!IsOn(env.Effective(SPEED, "DynamicEECycleRate")))
+		{
+			governor_on_at = -1.0;
+			return 70.0;
+		}
+		if (governor_on_at < 0.0)
+			governor_on_at = game.now;
+		return (game.now - governor_on_at) < 12.0 ? 70.0 : 99.0;
+	};
+
+	AutoTuneWindow ee_bound;
+	ee_bound.ee_pct = 98.0;
+	ee_bound.mtgs_pct = 30.0;
+	game.Play(ee_bound, 80.0);
+
+	EXPECT_EQ(game.fixture.env.game_file.GetBoolValue(SPEED, "DynamicEECycleRate", false), true) << "kept in the file";
+	EXPECT_FALSE(game.fixture.applier.TrialLayer()->ContainsValue(SPEED, "DynamicEECycleRate"));
+	EXPECT_EQ(game.fixture.env.game_file.GetBoolValue(SPEED, "iopThread", false), true) << "the IOP thread was not touched";
+	ASSERT_EQ(game.fixture.env.committed.size(), 1u);
+	EXPECT_EQ(std::get<1>(game.fixture.env.committed[0]), "DynamicEECycleRate");
+
+	const std::vector<std::string> lines = AutoTune::Describe(game.fixture.env.game_file);
+	ASSERT_EQ(lines.size(), 1u);
+	EXPECT_NE(lines[0].find("EE cycle-rate governor"), std::string::npos) << lines[0];
+	EXPECT_TRUE(AutoTune::ReadRejected(game.fixture.env.game_file).empty());
+	EXPECT_EQ(game.fixture.env.messages.front(), "Auto-tune: trying EE governor...");
+}
+
+TEST(AutoTuneTogether, AGovernorThatSettlesTooShortWouldHaveBeenRejected)
+{
+	// The same game with the governor's clocks not honoured (a settle of 6 s and four windows, as for the
+	// other levers): the trial measures the game before the governor has acted and calls it useless. This is
+	// what the longer settle is for.
+	Game game;
+	game.governor_available = true;
+	game.fixture.env.game_file.SetBoolValue(SPEED, "iopThread", true);
+
+	AutoTunePolicy hasty;
+	hasty.governor_settle_game_seconds = 0.0;
+	hasty.governor_measure_windows = hasty.measure_windows;
+	game.controller = AutoTuneController(hasty);
+
+	double governor_on_at = -1.0;
+	game.speed_of = [&](const FakeEnv& env) {
+		if (!IsOn(env.Effective(SPEED, "DynamicEECycleRate")))
+		{
+			governor_on_at = -1.0;
+			return 70.0;
+		}
+		if (governor_on_at < 0.0)
+			governor_on_at = game.now;
+		return (game.now - governor_on_at) < 12.0 ? 70.0 : 99.0;
+	};
+
+	AutoTuneWindow ee_bound;
+	ee_bound.ee_pct = 98.0;
+	ee_bound.mtgs_pct = 30.0;
+	game.Play(ee_bound, 30.0);
+
+	EXPECT_FALSE(game.fixture.env.game_file.ContainsValue(SPEED, "DynamicEECycleRate"));
+	const std::vector<AutoTuneRejection> persisted = AutoTune::ReadRejected(game.fixture.env.game_file);
+	ASSERT_EQ(persisted.size(), 1u);
+	EXPECT_EQ(persisted[0].lever, AutoTuneLever::EeGovernor);
 }
 
 TEST(AutoTuneTogether, AGpuBoundGameWalksResolutionDownUntilItIsFastEnough)

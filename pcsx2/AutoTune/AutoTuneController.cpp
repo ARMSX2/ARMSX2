@@ -136,6 +136,23 @@ double AutoTuneController::SettleSecondsFor(AutoTuneLever lever) const
 	}
 }
 
+double AutoTuneController::TrialSettleSeconds(AutoTuneLever lever, double speed_pct) const
+{
+	const double hitch = SettleSecondsFor(lever);
+	if (lever != AutoTuneLever::EeGovernor)
+		return hitch;
+
+	// The governor's clocks run in game time (see AutoTunePolicy::governor_settle_game_seconds); the wall time
+	// they take is that over the speed the game is running at.
+	const double speed = std::clamp(speed_pct, m_policy.governor_min_speed_pct, 100.0) / 100.0;
+	return hitch + m_policy.governor_settle_game_seconds / speed;
+}
+
+uint32_t AutoTuneController::MeasureWindowsFor(AutoTuneLever lever) const
+{
+	return lever == AutoTuneLever::EeGovernor ? m_policy.governor_measure_windows : m_policy.measure_windows;
+}
+
 AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 {
 	const double sat = m_policy.saturation_pct;
@@ -349,7 +366,8 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		m_trial.value = *target;
 		m_trial.speed_before = mean.speed_pct;
 		m_trial.late_before = mean.late_frame_ratio;
-		EnterSettle(Phase::SettlingTrial, SettleSecondsFor(order[i]));
+		m_trial.windows = MeasureWindowsFor(order[i]);
+		EnterSettle(Phase::SettlingTrial, TrialSettleSeconds(order[i], mean.speed_pct));
 
 		action.kind = AutoTuneAction::Kind::StartTrial;
 		action.lever = order[i];
@@ -467,7 +485,7 @@ AutoTuneAction AutoTuneController::OnWindow(const AutoTuneWindow& w, const AutoT
 			m_trial.speed_sum += w.speed_pct;
 			m_trial.late_sum += w.late_frame_ratio;
 			m_trial.collected++;
-			if (m_trial.collected < m_policy.measure_windows)
+			if (m_trial.collected < m_trial.windows)
 				return none;
 			return FinishTrial();
 

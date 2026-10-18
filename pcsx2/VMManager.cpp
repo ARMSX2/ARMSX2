@@ -837,6 +837,16 @@ void VMManager::LoadCoreSettings(SettingsInterface& si)
 		EmuConfig.PerGameClaimsDynamicEECycleRate = overrides.Has(SpeedHack::DynamicEECycleRate);
 	}
 
+	// An auto-tune trial of the governor is the per-game key it becomes if it is kept: the keep writes it into
+	// the game's file, where it claims the governor over a pinned rate. The trial has to resolve the same way,
+	// or it would measure a governor the kept setting would not have been.
+	if (const SettingsInterface* trial_layer = Host::Internal::GetAutoTuneSettingsLayer())
+	{
+		const AutoTune::LeverKey governor_key = AutoTune::KeyForLever(AutoTuneLever::EeGovernor);
+		if (trial_layer->ContainsValue(governor_key.section, governor_key.key))
+			EmuConfig.PerGameClaimsDynamicEECycleRate = true;
+	}
+
 	Patch::ApplyPatchSettingOverrides();
 
 	// Achievements hardcore mode disallows setting some configuration options.

@@ -15,7 +15,8 @@
 //   classify  from the averages of those windows, which part of the emulator is the bottleneck.
 //   trial     applies the next countermeasure for that bottleneck (StartTrial), waits out the settle time,
 //             measures measure_windows windows, and either keeps it (Keep) or undoes it (Revert) and
-//             remembers that it did not help.
+//             remembers that it did not help. The EE governor's trial settles and measures for longer,
+//             in step with the governor's own clocks (policy.governor_*).
 //   repeat    until the frames stop being late, or no countermeasure is left (Exhausted).
 //
 // Only usable windows count. An unusable window (paused, fast-forward, frame advance, a GS dump) neither
@@ -25,6 +26,9 @@
 
 #pragma once
 
+#include "EECycleRateController.h"
+
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <vector>
@@ -98,6 +102,30 @@ struct AutoTunePolicy
 
 	uint32_t trigger_windows = 4;
 	uint32_t measure_windows = 4;
+
+	/// The EE governor keeps its clocks in game time: two seconds of warm-up after the switch, two windows of
+	/// overload before a step, two seconds of cooldown after one. On a game running at half speed every one of
+	/// those takes twice as long on the wall, so a trial of it settles for this much game time spread over the
+	/// wall at the speed the game was running (on top of the usual settle for the cache reset the switch
+	/// causes), and measures after the governor has taken the steps it is going to take. A trial that measured
+	/// earlier would call the governor useless for a game it had not yet touched, and that is remembered.
+	/// Derived from the governor's own policy so the two cannot drift apart.
+	double governor_settle_game_seconds = GovernorSettleGameSeconds(EECycleRatePolicy());
+	/// The slowest speed assumed when spreading it over the wall: a game at 5% does not get 130 seconds.
+	double governor_min_speed_pct = 20.0;
+	/// The governor steps down and back up on its own once it has headroom; a longer look averages over a cycle
+	/// of that instead of landing in one half of it.
+	uint32_t governor_measure_windows = 8;
+
+	/// Game time from the switch to the governor's last possible step down: the warm-up, then for each step
+	/// the windows of overload it needs and (between steps) the cooldown, then a window of slack because the
+	/// governor's clocks advance in whole windows. With the default policy: 2 + 2 x 1 + 1 x 2 + 0.5 = 6.5 s.
+	static double GovernorSettleGameSeconds(const EECycleRatePolicy& governor)
+	{
+		const double steps = std::max<double>(governor.max_steps_down, 1.0);
+		const double dwell = static_cast<double>(governor.downshift_dwell) * governor.window_seconds;
+		return governor.warmup_seconds + steps * dwell + (steps - 1.0) * governor.cooldown_seconds + governor.window_seconds;
+	}
 
 	/// A trial is kept when the mean speed rose by at least this fraction of the mean before it...
 	double gain_fraction = 0.05;
@@ -262,13 +290,18 @@ private:
 		double speed_sum = 0.0;
 		double late_sum = 0.0;
 		uint32_t collected = 0;
+		uint32_t windows = 0; // how many to collect before judging
 	};
 
 	bool IsBad(const AutoTuneWindow& w) const;
 	AutoTuneAction Diagnose(const AutoTuneLeverState& state);
 	std::optional<double> TargetFor(AutoTuneLever lever, const AutoTuneLeverState& state) const;
 	bool IsRejected(AutoTuneLever lever, double value, const AutoTuneLeverState& state) const;
+	/// The settle after a change is applied or undone: the hitch of whatever the change resets.
 	double SettleSecondsFor(AutoTuneLever lever) const;
+	/// The settle before a trial of `lever` is measured, for a game that was running at `speed_pct`.
+	double TrialSettleSeconds(AutoTuneLever lever, double speed_pct) const;
+	uint32_t MeasureWindowsFor(AutoTuneLever lever) const;
 	AutoTuneAction FinishTrial();
 	void EnterSettle(Phase phase, double seconds);
 

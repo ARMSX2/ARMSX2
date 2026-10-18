@@ -278,6 +278,94 @@ TEST(AutoTuneController, AfterTheIopThreadFailsTheGovernorIsNext)
 	EXPECT_EQ(next.lever, AutoTuneLever::EeGovernor);
 }
 
+// ---------------------------------------------------------------------------------------------- the governor's clocks
+//
+// The governor counts in game time: two seconds of warm-up, then two windows of overload, then a step, then
+// two seconds of cooldown, then two windows for the second step. On a game running at 70% every second of
+// that takes 1.4 seconds on the wall, and a trial that measured before the governor had acted would call it
+// useless and remember that for good.
+
+TEST(AutoTunePolicy, TheGovernorSettleFollowsTheGovernorsOwnPolicy)
+{
+	// 2 s warm-up + 2 steps x (2 windows of 0.5 s) + 1 cooldown of 2 s between them + 1 window of slack.
+	EXPECT_DOUBLE_EQ(AutoTunePolicy::GovernorSettleGameSeconds(EECycleRatePolicy()), 6.5);
+	EXPECT_DOUBLE_EQ(AutoTunePolicy().governor_settle_game_seconds, 6.5);
+
+	EECycleRatePolicy slower;
+	slower.warmup_seconds = 4.0;
+	slower.cooldown_seconds = 3.0;
+	slower.max_steps_down = 1;
+	EXPECT_DOUBLE_EQ(AutoTunePolicy::GovernorSettleGameSeconds(slower), 4.0 + 1.0 + 0.0 + 0.5);
+}
+
+TEST(AutoTuneController, AGovernorTrialSettlesForTheGovernorsClocksAtTheGamesSpeed)
+{
+	Rig rig;
+	rig.state.ee_governor_eligible = true;
+
+	const AutoTuneAction start = rig.WarmAndTrigger(EeBound(70.0));
+	ASSERT_EQ(start.kind, Kind::StartTrial);
+	ASSERT_EQ(start.lever, AutoTuneLever::EeGovernor);
+
+	// 6 s for the cache reset the switch causes + 6.5 s of game time at 70% (9.3 s) = 15.3 s.
+	EXPECT_EQ(rig.FeedFor(EeBound(70.0), 15.0).kind, Kind::None);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::SettlingTrial);
+	rig.FeedFor(EeBound(70.0), 1.0);
+	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+}
+
+TEST(AutoTuneController, ASlowerGameGivesTheGovernorMoreWallTimeButNeverWithoutLimit)
+{
+	// 40%: 6 + 6.5/0.4 = 22.25 s.
+	Rig slow;
+	slow.state.ee_governor_eligible = true;
+	ASSERT_EQ(slow.WarmAndTrigger(EeBound(40.0)).lever, AutoTuneLever::EeGovernor);
+	slow.FeedFor(EeBound(40.0), 22.0);
+	EXPECT_EQ(slow.ctl.GetPhase(), AutoTuneController::Phase::SettlingTrial);
+	slow.FeedFor(EeBound(40.0), 1.0);
+	EXPECT_EQ(slow.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+
+	// A game at 5% is assumed to run at 20%: 6 + 6.5/0.2 = 38.5 s, not 136 s.
+	Rig crawl;
+	crawl.state.ee_governor_eligible = true;
+	ASSERT_EQ(crawl.WarmAndTrigger(EeBound(5.0)).lever, AutoTuneLever::EeGovernor);
+	crawl.FeedFor(EeBound(5.0), 38.0);
+	EXPECT_EQ(crawl.ctl.GetPhase(), AutoTuneController::Phase::SettlingTrial);
+	crawl.FeedFor(EeBound(5.0), 1.0);
+	EXPECT_EQ(crawl.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+}
+
+TEST(AutoTuneController, AGovernorTrialMeasuresLongerThanOtherTrials)
+{
+	// The governor steps down and back up on its own; a longer look averages over a cycle of that.
+	Rig rig;
+	rig.state.ee_governor_eligible = true;
+	ASSERT_EQ(rig.WarmAndTrigger(EeBound(70.0)).lever, AutoTuneLever::EeGovernor);
+	rig.FeedFor(EeBound(70.0), 15.5); // 31 windows: the 15.3 s settle, rounded up to whole windows
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+
+	for (int i = 0; i < 7; i++)
+		EXPECT_EQ(rig.Feed(EeBound(99.0)).kind, Kind::None) << "window " << i;
+	const AutoTuneAction keep = rig.Feed(EeBound(99.0));
+	ASSERT_EQ(keep.kind, Kind::Keep);
+	EXPECT_EQ(keep.lever, AutoTuneLever::EeGovernor);
+}
+
+TEST(AutoTuneController, OtherLeversKeepTheShortSettleAndMeasure)
+{
+	Rig rig;
+	rig.state.iop_thread_placeable = true;
+	rig.state.ee_governor_eligible = true;
+	ASSERT_EQ(rig.WarmAndTrigger(EeBound(40.0)).lever, AutoTuneLever::IopThread);
+
+	// The speed does not stretch the IOP thread's 6 s, and it measures four windows.
+	rig.FeedFor(EeBound(40.0), 6.0);
+	ASSERT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Measuring);
+	for (int i = 0; i < 3; i++)
+		EXPECT_EQ(rig.Feed(EeBound(40.0)).kind, Kind::None);
+	EXPECT_EQ(rig.Feed(EeBound(40.0)).kind, Kind::Revert);
+}
+
 TEST(AutoTuneController, HardcoreModeSkipsTheGovernor)
 {
 	Rig rig;

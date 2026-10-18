@@ -22,6 +22,7 @@
 #include "AutoTune/AutoTuneController.h"
 #include "AutoTune/AutoTuneSampler.h"
 #include "AutoTune/AutoTuneStore.h"
+#include "EECycleRate.h"
 #include "IopThread/IopThreadMode.h"
 
 #include "common/MemorySettingsInterface.h"
@@ -123,14 +124,24 @@ namespace AutoTune
 	bool IopThreadPlaceable(bool vu_thread, bool lockstep, IopThread::HostCpuInfo host, const IopThread::VmConditions& vm,
 		bool gs_back_thread_running);
 
-	/// The live EE governor (PR #662, branch ee-governor-rebase) as a lever.
+	/// The live EE cycle-rate governor as a lever. Both read the governor's own resolver (EECycleRate::GetGovernorStatus),
+	/// so auto-tune and the governor cannot disagree about whether it runs. CPU thread.
 	///
-	/// NOT WIRED YET. Until that branch is merged the key it would write does nothing, so a trial of it would
-	/// measure nothing and be remembered as useless. After the merge: make EeGovernorAvailable() return
-	/// whether the governor is compiled in and the EE recompiler is the one running, and make
-	/// EeGovernorEnabled() read EmuConfig.Speedhacks' governor flag instead of the setting text.
+	/// Available: the governor would run in this game if asked, and a trial of it would change something. Nothing
+	/// is suspending it (hardcore mode, a cycle skip, a limiter that is not at normal speed, host-vsync pacing),
+	/// the player's rate has room to be lowered (the floor is under it), and the global switch is not already on
+	/// but held off by a pinned rate: a trial writes the same "on" the switch already says, the configuration
+	/// would not change, the caches would not reset and the sampler would never be told to start.
+	/// Enabled: the governor is asked for in this game and nothing pins the rate.
+	bool GovernorAvailableFrom(const EECycleRate::GovernorStatus& status, bool dynamic_setting);
 	bool EeGovernorAvailable();
 	bool EeGovernorEnabled();
+
+	/// Whether a finished trial says anything about its lever. Only the governor can fail to be tried: it acts
+	/// by lowering the EE rate, and if it never did during the trial the game was measured with a governor that
+	/// had not touched it (the game was not overloaded by its own tests, or it had not yet warmed up). That is
+	/// not "did not help", and the per-game file remembers "did not help" for good.
+	bool TrialWasMeasured(AutoTuneLever lever, uint32_t governor_transitions_at_start, uint32_t governor_transitions_now);
 
 	// ---- what VMManager calls (CPU thread) ----------------------------------------------------------
 
