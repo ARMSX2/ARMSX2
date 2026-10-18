@@ -53,6 +53,26 @@ struct EECycleRateFrameSample
 	bool late = false;
 };
 
+// How a paced segment ended against the limiter's deadline. One measurement at two
+// thresholds, taken once per Throttle() call so that everything that cares about lateness
+// reads the same verdict:
+//
+//   Late     the segment ended after its deadline. The governor gates on this: a frame that
+//            misses its deadline at all is deadline pressure the EE thread may be the cause
+//            of, even though the next frame can still catch up.
+//   Overran  it ended a whole frame or more after it. The limiter gives up on the schedule
+//            and moves the frame start forward, so this is a frame the player does not see
+//            on time. Auto-tune gates on this: a game that makes its deadline by a hair on
+//            half its frames is running at full speed and has nothing to fix.
+//
+// Overran implies Late.
+enum class EECycleRateLateness : u8
+{
+	OnTime,
+	Late,
+	Overran,
+};
+
 // Folds the limiter's two waits per frame into one frame. The limiter waits at vsync start
 // and again at vsync end, and the work between waits is what PerformanceMetrics measures,
 // so a frame arrives as two segments. Pure: no clock, no VM, no globals, so the rules
@@ -73,17 +93,19 @@ struct EECycleRateFrameAccumulator
 	u64 active_ticks = 0;
 	bool unmeasured = false;
 	bool late = false;
+	bool overran = false;
 
 	// segment_ticks is zero when no work period was open at this wait (the previous frame
-	// was not paced, or a pause landed inside this one). `late` is the limiter's verdict
-	// at this wait; any true marks the frame late. After Closed or Unmeasured the fields
-	// stay readable until Clear().
-	Outcome AddSegment(u64 segment_ticks, bool frame_end, bool late_verdict)
+	// was not paced, or a pause landed inside this one). `lateness` is the limiter's verdict
+	// at this wait; any verdict worse than OnTime marks the frame late, and Overran marks it
+	// overran. After Closed or Unmeasured the fields stay readable until Clear().
+	Outcome AddSegment(u64 segment_ticks, bool frame_end, EECycleRateLateness lateness)
 	{
 		if (segment_ticks == 0)
 			unmeasured = true;
 		active_ticks += segment_ticks;
-		late |= late_verdict;
+		late |= (lateness != EECycleRateLateness::OnTime);
+		overran |= (lateness == EECycleRateLateness::Overran);
 
 		if (!frame_end)
 			return Outcome::Pending;
@@ -91,6 +113,44 @@ struct EECycleRateFrameAccumulator
 	}
 
 	void Clear() { *this = EECycleRateFrameAccumulator(); }
+};
+
+// Running totals of the CPU thread's frames and of the time its EE spent blocked, for
+// consumers that are not the governor (auto-tune). They only grow, so a reader takes the
+// difference between two readings and divides by the time between them on its own clock:
+// numerator and denominator then cover the same stretch by construction, wherever the
+// governor's windows happen to fall. The governor's windows are half a second of game time,
+// which is longer on the wall in a slow game and has no fixed relation to any other window.
+struct EECycleRateTally
+{
+	// Paced frames the limiter closed, measurable or not.
+	u64 frames = 0;
+	// ...of which ended a whole frame or more after their deadline (EECycleRateLateness::Overran).
+	u64 overran_frames = 0;
+	// Wall time the EE thread spent waiting on the GS thread and on the VU1 thread, in the
+	// GetCPUTicks() domain. Both sleeping and spinning waits count.
+	u64 gs_wait_ticks = 0;
+	u64 vu1_wait_ticks = 0;
+
+	// A frame the accumulator has just closed (Closed or Unmeasured).
+	void NoteFrame(const EECycleRateFrameAccumulator& closed)
+	{
+		frames++;
+		overran_frames += closed.overran ? 1 : 0;
+	}
+
+	// A wait from `begin_ticks` to `end_ticks`. A clock that did not advance adds nothing.
+	void NoteGSWait(u64 begin_ticks, u64 end_ticks)
+	{
+		if (end_ticks > begin_ticks)
+			gs_wait_ticks += end_ticks - begin_ticks;
+	}
+
+	void NoteVU1Wait(u64 begin_ticks, u64 end_ticks)
+	{
+		if (end_ticks > begin_ticks)
+			vu1_wait_ticks += end_ticks - begin_ticks;
+	}
 };
 
 namespace EECycleRateSampler
@@ -193,11 +253,16 @@ namespace EECycleRateSampler
 	// none was open. A frame with a zero segment has no known length, so it makes its
 	// window unmeasurable rather than entering the window as a short frame.
 	//
-	// `late` is the limiter's verdict for the frame so far. On the vsync-end call it is
-	// "ended after the frame deadline"; on the vsync-start call the caller passes true
-	// only for the limiter's missed-frame case, which moves the frame start and so
-	// would hide the lateness from the vsync-end verdict. Any true marks the frame late.
-	void OnSegmentThrottled(u64 segment_ticks, u64 target_ticks, bool frame_end, bool late);
+	// `lateness` is the limiter's verdict for this segment (see EECycleRateLateness). On the
+	// vsync-end call it is taken against the full-frame deadline; on the vsync-start call it
+	// is OnTime or Overran, because that wait's own deadline is 0.9 of the frame and says
+	// nothing about the frame except when it overran by a whole frame - which moves the frame
+	// start and would hide the lateness from the vsync-end verdict. The worst verdict of the
+	// two segments is the frame's.
+	//
+	// Runs while the governor is measuring or a tally is requested; otherwise it is a
+	// not-taken branch.
+	void OnSegmentThrottled(u64 segment_ticks, u64 target_ticks, bool frame_end, EECycleRateLateness lateness);
 
 	// A segment Throttle() did not pace - the limiter is unlimited or host-vsync driven,
 	// or execution was interrupted. The window in progress is marked unmeasurable rather
@@ -237,6 +302,24 @@ namespace EECycleRateSampler
 	// reset, save-state load, pause, settings apply, limiter change, frame advance), because
 	// a window from before any of those describes a machine that no longer exists.
 	bool GetLastWindow(LastWindow* out);
+
+	// --- the tally -------------------------------------------------------------------
+	//
+	// Frame verdicts and EE wait totals for a consumer that is not the governor. The governor's
+	// own sampler is off unless the governor is enabled for the game or a trace path is set, so
+	// a consumer asks for the part it needs. A request starts the wait timing at the blocking
+	// sites and the per-frame counting, and does not make the governor act: nothing here feeds
+	// the controller. Cost while requested: two clock reads on a path that is already about to
+	// block, and a few loads and adds twice per frame.
+	//
+	// CPU thread only.
+
+	// Starts or stops counting for the tally. Idempotent.
+	void RequestTally(bool wanted);
+
+	// The totals so far, since the VM started or since counting began, whichever is later. False
+	// when no tally is requested: the totals are not being kept and would read as zero waits.
+	bool GetTally(EECycleRateTally* out);
 
 	// --- overlay ---------------------------------------------------------------------
 	//

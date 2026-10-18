@@ -25,11 +25,19 @@
 
 namespace
 {
-	// Whether the blocking sites should time themselves at all. Read from the MTVU thread
-	// as well as the CPU thread, because MTVU reaches MTGS::WaitGS and the ring-full stall
-	// on its own; relaxed, because a window either side of the flag moving is a window the
-	// lifecycle reset that moved it has already thrown away.
+	// Whether the blocking sites should time themselves at all: the governor is sampling, or a
+	// tally is requested. Read from the MTVU thread as well as the CPU thread, because MTVU
+	// reaches MTGS::WaitGS and the ring-full stall on its own; relaxed, because a window either
+	// side of the flag moving is a window the lifecycle reset that moved it has already thrown
+	// away.
 	std::atomic<bool> s_measuring_waits{false};
+
+	// A consumer other than the governor (auto-tune) wants the totals in s_tally. CPU-thread owned.
+	bool s_tally_requested = false;
+
+	// Running totals for EECycleRateSampler::GetTally(). CPU-thread owned: BeginWait() hands out
+	// a start only to the CPU thread, so only the CPU thread reaches the wait accumulation.
+	EECycleRateTally s_tally;
 
 	// Charged to the frame in progress and read out at the frame boundary. CPU-thread
 	// owned: BeginWait() hands out a start only to the CPU thread, so only the CPU thread
@@ -285,7 +293,7 @@ namespace
 		s_shadow = !eligibility.enabled && (s_trace != nullptr);
 		s_active = eligibility.enabled || s_shadow;
 		s_ran_this_session |= s_active;
-		s_measuring_waits.store(s_active, std::memory_order_relaxed);
+		s_measuring_waits.store(s_active || s_tally_requested, std::memory_order_relaxed);
 	}
 
 	// The session summary's raw material. Time is charged to the selector the window
@@ -542,6 +550,7 @@ void EECycleRateSampler::EndGSWait(u64 begin_ticks)
 	const u64 now = GetCPUTicks();
 	if (now > begin_ticks)
 		s_frame_gs_wait_ticks += now - begin_ticks;
+	s_tally.NoteGSWait(begin_ticks, now);
 }
 
 void EECycleRateSampler::EndVU1Wait(u64 begin_ticks)
@@ -552,6 +561,31 @@ void EECycleRateSampler::EndVU1Wait(u64 begin_ticks)
 	const u64 now = GetCPUTicks();
 	if (now > begin_ticks)
 		s_frame_vu1_wait_ticks += now - begin_ticks;
+	s_tally.NoteVU1Wait(begin_ticks, now);
+}
+
+void EECycleRateSampler::RequestTally(bool wanted)
+{
+	if (s_tally_requested == wanted)
+		return;
+
+	s_tally_requested = wanted;
+	s_measuring_waits.store(s_active || s_tally_requested, std::memory_order_relaxed);
+
+	// What the frame in progress holds was gathered while nothing wanted it, or is about to
+	// stop being wanted: start the next frame clean. When the governor is sampling the frame
+	// belongs to it and is left alone.
+	if (!s_active)
+		ClearFrameInProgress();
+}
+
+bool EECycleRateSampler::GetTally(EECycleRateTally* out)
+{
+	if (!s_tally_requested)
+		return false;
+
+	*out = s_tally;
+	return true;
 }
 
 void EECycleRateSampler::OnVMStart()
@@ -567,6 +601,7 @@ void EECycleRateSampler::OnVMStart()
 	s_session_transitions = 0;
 	s_session_ineffective = 0;
 	s_ran_this_session = false;
+	s_tally = EECycleRateTally();
 
 	OpenTrace();
 
@@ -617,7 +652,7 @@ void EECycleRateSampler::OnVMShutdown()
 	s_active = false;
 	s_shadow = false;
 	s_have_last_window = false;
-	s_measuring_waits.store(false, std::memory_order_relaxed);
+	s_measuring_waits.store(s_tally_requested, std::memory_order_relaxed);
 	s_controller.Reset(EECycleRate::GetConfigured());
 	PublishOverlay();
 	StartWindow();
@@ -654,14 +689,25 @@ bool EECycleRateSampler::GetLastWindow(LastWindow* out)
 	return true;
 }
 
-void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks, bool frame_end, bool late)
+void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks, bool frame_end, EECycleRateLateness lateness)
 {
-	if (!s_active)
+	if (!s_active && !s_tally_requested)
 		return;
 
-	const EECycleRateFrameAccumulator::Outcome outcome = s_frame.AddSegment(segment_ticks, frame_end, late);
+	const EECycleRateFrameAccumulator::Outcome outcome = s_frame.AddSegment(segment_ticks, frame_end, lateness);
 	if (outcome == EECycleRateFrameAccumulator::Outcome::Pending)
 		return;
+
+	// Every paced frame goes into the tally, measurable or not: a frame with a missing segment
+	// has no known length, but it still ended at the limiter and is one of the frames the speed
+	// is made of.
+	s_tally.NoteFrame(s_frame);
+
+	if (!s_active)
+	{
+		ClearFrameInProgress();
+		return;
+	}
 
 	if (outcome == EECycleRateFrameAccumulator::Outcome::Unmeasured || target_ticks == 0)
 	{
@@ -692,10 +738,11 @@ void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks,
 
 void EECycleRateSampler::OnFrameNotThrottled()
 {
-	if (!s_active)
+	if (!s_active && !s_tally_requested)
 		return;
 
-	s_window_invalid = true;
+	if (s_active)
+		s_window_invalid = true;
 	ClearFrameInProgress();
 }
 

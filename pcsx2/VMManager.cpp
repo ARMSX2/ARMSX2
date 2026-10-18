@@ -3130,8 +3130,12 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	// vsync-start wait's own deadline is 0.9 of that and says nothing about the frame, except
 	// when it overran by a whole frame: the missed-frame branch below moves the frame start
 	// forward, and the vsync-end verdict would be taken against the moved deadline.
-	EECycleRateSampler::OnSegmentThrottled(segment_ticks, static_cast<u64>(s_limiter_ticks_per_frame), !vsync_start,
-		vsync_start ? (sDeltaTime >= s_limiter_ticks_per_frame) : (sDeltaTime >= 0));
+	EECycleRateLateness lateness = EECycleRateLateness::OnTime;
+	if (sDeltaTime >= s_limiter_ticks_per_frame)
+		lateness = EECycleRateLateness::Overran;
+	else if (!vsync_start && sDeltaTime >= 0)
+		lateness = EECycleRateLateness::Late;
+	EECycleRateSampler::OnSegmentThrottled(segment_ticks, static_cast<u64>(s_limiter_ticks_per_frame), !vsync_start, lateness);
 
 	// If frame ran too long...
 	if (sDeltaTime >= s_limiter_ticks_per_frame)

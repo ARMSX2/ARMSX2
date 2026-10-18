@@ -20,6 +20,8 @@
 
 namespace
 {
+	using Lateness = EECycleRateLateness;
+
 	// One tick per nanosecond, so a "tick" reads as a nanosecond throughout and 16'666'667
 	// is a 60 Hz frame. Arbitrary - the arithmetic only ever divides ticks by this.
 	constexpr u64 kTickFrequency = 1'000'000'000;
@@ -323,12 +325,13 @@ TEST(EECycleRateFrameAccumulator, TheTwoSegmentsAddAndOnlyTheLastClosesTheFrame)
 	EECycleRateFrameAccumulator acc;
 	using Outcome = EECycleRateFrameAccumulator::Outcome;
 
-	EXPECT_EQ(acc.AddSegment(10'000'000, false, false), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(10'000'000, false, Lateness::OnTime), Outcome::Pending);
 	EXPECT_EQ(acc.active_ticks, 10'000'000u);
 
-	EXPECT_EQ(acc.AddSegment(3'000'000, true, false), Outcome::Closed);
+	EXPECT_EQ(acc.AddSegment(3'000'000, true, Lateness::OnTime), Outcome::Closed);
 	EXPECT_EQ(acc.active_ticks, 13'000'000u);
 	EXPECT_FALSE(acc.late);
+	EXPECT_FALSE(acc.overran);
 }
 
 TEST(EECycleRateFrameAccumulator, AMissingFirstSegmentMakesTheFrameUnmeasurable)
@@ -337,8 +340,8 @@ TEST(EECycleRateFrameAccumulator, AMissingFirstSegmentMakesTheFrameUnmeasurable)
 	EECycleRateFrameAccumulator acc;
 	using Outcome = EECycleRateFrameAccumulator::Outcome;
 
-	EXPECT_EQ(acc.AddSegment(0, false, false), Outcome::Pending);
-	EXPECT_EQ(acc.AddSegment(3'000'000, true, false), Outcome::Unmeasured)
+	EXPECT_EQ(acc.AddSegment(0, false, Lateness::OnTime), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(3'000'000, true, Lateness::OnTime), Outcome::Unmeasured)
 		<< "the second segment alone is not the frame; reading it as one would report a short frame";
 }
 
@@ -347,25 +350,50 @@ TEST(EECycleRateFrameAccumulator, AMissingSecondSegmentMakesTheFrameUnmeasurable
 	EECycleRateFrameAccumulator acc;
 	using Outcome = EECycleRateFrameAccumulator::Outcome;
 
-	EXPECT_EQ(acc.AddSegment(10'000'000, false, false), Outcome::Pending);
-	EXPECT_EQ(acc.AddSegment(0, true, false), Outcome::Unmeasured);
+	EXPECT_EQ(acc.AddSegment(10'000'000, false, Lateness::OnTime), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(0, true, Lateness::OnTime), Outcome::Unmeasured);
 }
 
 TEST(EECycleRateFrameAccumulator, ALateVerdictFromEitherWaitSticks)
 {
 	using Outcome = EECycleRateFrameAccumulator::Outcome;
 
-	// The vsync-start wait reports late only when the limiter had to move the frame start,
+	// The vsync-start wait reports a verdict only when the limiter had to move the frame start,
 	// which would otherwise hide the lateness from the vsync-end verdict.
 	EECycleRateFrameAccumulator first;
-	first.AddSegment(10'000'000, false, true);
-	EXPECT_EQ(first.AddSegment(3'000'000, true, false), Outcome::Closed);
+	first.AddSegment(10'000'000, false, Lateness::Overran);
+	EXPECT_EQ(first.AddSegment(3'000'000, true, Lateness::OnTime), Outcome::Closed);
 	EXPECT_TRUE(first.late);
 
 	EECycleRateFrameAccumulator second;
-	second.AddSegment(10'000'000, false, false);
-	EXPECT_EQ(second.AddSegment(3'000'000, true, true), Outcome::Closed);
+	second.AddSegment(10'000'000, false, Lateness::OnTime);
+	EXPECT_EQ(second.AddSegment(3'000'000, true, Lateness::Late), Outcome::Closed);
 	EXPECT_TRUE(second.late);
+}
+
+// Late is "ended after its deadline" and is the governor's gate; Overran is "a whole frame or more
+// after it" and is what auto-tune counts as a dropped frame. They are one measurement at two
+// thresholds, so an overran frame is always a late one and never the other way round.
+TEST(EECycleRateFrameAccumulator, OverranIsLateAtTheHigherThreshold)
+{
+	using Outcome = EECycleRateFrameAccumulator::Outcome;
+
+	EECycleRateFrameAccumulator late;
+	late.AddSegment(10'000'000, false, Lateness::OnTime);
+	EXPECT_EQ(late.AddSegment(3'000'000, true, Lateness::Late), Outcome::Closed);
+	EXPECT_TRUE(late.late);
+	EXPECT_FALSE(late.overran) << "a few milliseconds past the deadline is late, not a dropped frame";
+
+	EECycleRateFrameAccumulator overran;
+	overran.AddSegment(10'000'000, false, Lateness::OnTime);
+	EXPECT_EQ(overran.AddSegment(3'000'000, true, Lateness::Overran), Outcome::Closed);
+	EXPECT_TRUE(overran.late);
+	EXPECT_TRUE(overran.overran);
+
+	EECycleRateFrameAccumulator start_only;
+	start_only.AddSegment(10'000'000, false, Lateness::Overran);
+	EXPECT_EQ(start_only.AddSegment(3'000'000, true, Lateness::OnTime), Outcome::Closed);
+	EXPECT_TRUE(start_only.overran) << "the vsync-start wait's whole-frame overrun sticks too";
 }
 
 TEST(EECycleRateFrameAccumulator, ClearStartsTheNextFrameFromNothing)
@@ -373,14 +401,62 @@ TEST(EECycleRateFrameAccumulator, ClearStartsTheNextFrameFromNothing)
 	EECycleRateFrameAccumulator acc;
 	using Outcome = EECycleRateFrameAccumulator::Outcome;
 
-	acc.AddSegment(0, false, true);
-	acc.AddSegment(1'000'000, true, false);
+	acc.AddSegment(0, false, Lateness::Overran);
+	acc.AddSegment(1'000'000, true, Lateness::OnTime);
 	acc.Clear();
 
-	EXPECT_EQ(acc.AddSegment(4'000'000, false, false), Outcome::Pending);
-	EXPECT_EQ(acc.AddSegment(5'000'000, true, false), Outcome::Closed);
+	EXPECT_EQ(acc.AddSegment(4'000'000, false, Lateness::OnTime), Outcome::Pending);
+	EXPECT_EQ(acc.AddSegment(5'000'000, true, Lateness::OnTime), Outcome::Closed);
 	EXPECT_EQ(acc.active_ticks, 9'000'000u);
 	EXPECT_FALSE(acc.late);
+	EXPECT_FALSE(acc.overran);
+}
+
+// --- the tally other consumers read --------------------------------------------------------
+//
+// Auto-tune reads running totals rather than the governor's windows, so what it sees does not
+// depend on whether the governor is running or on where the governor's windows fall. These pin
+// what goes into the totals.
+
+TEST(EECycleRateTally, EveryClosedFrameCountsWhetherOrNotItWasMeasurable)
+{
+	EECycleRateTally tally;
+	EECycleRateFrameAccumulator acc;
+
+	// A measured frame that overran.
+	acc.AddSegment(10'000'000, false, Lateness::OnTime);
+	ASSERT_EQ(acc.AddSegment(3'000'000, true, Lateness::Overran), EECycleRateFrameAccumulator::Outcome::Closed);
+	tally.NoteFrame(acc);
+	acc.Clear();
+
+	// A frame with a missing segment (the first one after a pause) has no known length but did
+	// end on the limiter, and is still one of the frames the speed is made of.
+	acc.AddSegment(0, false, Lateness::OnTime);
+	ASSERT_EQ(acc.AddSegment(3'000'000, true, Lateness::OnTime), EECycleRateFrameAccumulator::Outcome::Unmeasured);
+	tally.NoteFrame(acc);
+
+	EXPECT_EQ(tally.frames, 2u);
+	EXPECT_EQ(tally.overran_frames, 1u);
+}
+
+TEST(EECycleRateTally, AWaitIsTheTimeBetweenItsTwoReadings)
+{
+	EECycleRateTally tally;
+	tally.NoteGSWait(1'000, 4'000);
+	tally.NoteGSWait(10'000, 10'500);
+	tally.NoteVU1Wait(2'000, 2'250);
+	EXPECT_EQ(tally.gs_wait_ticks, 3'500u);
+	EXPECT_EQ(tally.vu1_wait_ticks, 250u);
+}
+
+TEST(EECycleRateTally, AClockThatDidNotAdvanceAddsNothing)
+{
+	EECycleRateTally tally;
+	tally.NoteGSWait(5'000, 5'000);
+	tally.NoteGSWait(5'000, 4'000);
+	tally.NoteVU1Wait(5'000, 4'999);
+	EXPECT_EQ(tally.gs_wait_ticks, 0u);
+	EXPECT_EQ(tally.vu1_wait_ticks, 0u);
 }
 
 // --- overlay word ----------------------------------------------------------
