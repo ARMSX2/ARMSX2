@@ -223,6 +223,34 @@ namespace EECycleRate
 	// ReadEligibilityInputs() + ResolveEligibility().
 	EECycleRateEligibility ResolveEligibility();
 
+	// Where the governor stands right now, for other consumers. Resolved afresh on each
+	// call from the live config and VM state; CPU thread only.
+	//
+	// `enabled` is whether it was asked for in this game (the per-game key, else the global
+	// switch when nothing claims the rate). `eligible` is whether anything is suspending it
+	// at this moment (hardcore, cycle skip, a non-nominal limiter, host-vsync pacing, GS
+	// dump replay, frame advance). `active` is both: the governor may move the selector.
+	// `configured` is the baseline and the ceiling, `effective` is what runs, and `floor`
+	// is the lowest the governor may take it. The reasons are static strings naming the
+	// rule that decided each answer, the same ones the log line carries.
+	struct GovernorStatus
+	{
+		bool enabled = false;
+		bool eligible = false;
+		bool active = false;
+		s8 configured = 0;
+		s8 effective = 0;
+		s8 floor = 0;
+		const char* enabled_reason = "";
+		const char* eligible_reason = "";
+	};
+
+	GovernorStatus GetGovernorStatus();
+
+	// The same answer as a pure function of the inputs and the effective selector, so the
+	// mapping can be tested without a VM.
+	GovernorStatus ResolveGovernorStatus(const EligibilityInputs& in, s8 effective);
+
 	// Resolve and write one DevCon line saying what came out and why. Call once per
 	// settings apply; the governor itself resolves per window and does not log.
 	void LogResolvedEligibility();

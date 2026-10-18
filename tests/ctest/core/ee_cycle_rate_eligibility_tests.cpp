@@ -289,6 +289,54 @@ TEST(EECycleRatePerGameKeys, WritingOnlyTheGovernorKeyLeavesTheBaselineToTheReso
 	EXPECT_EQ(e.baseline, 2) << "an overclock nobody picked for this game, and the governor's ceiling";
 }
 
+// ------------------------------------------------------------------ status read
+
+TEST(EECycleRateGovernorStatus, ActiveMeansAskedForAndNothingSuspendingIt)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true;
+	in.configured = 0;
+
+	const EECycleRate::GovernorStatus on = EECycleRate::ResolveGovernorStatus(in, -1);
+	EXPECT_TRUE(on.enabled);
+	EXPECT_TRUE(on.eligible);
+	EXPECT_TRUE(on.active);
+	EXPECT_EQ(on.configured, 0);
+	EXPECT_EQ(on.effective, -1);
+	EXPECT_EQ(on.floor, -2);
+	EXPECT_STREQ(on.enabled_reason, "on globally, and nothing claims this game's rate");
+	EXPECT_STREQ(on.eligible_reason, "nothing is suspending it");
+
+	in.limiter_nominal = false; // turbo
+	const EECycleRate::GovernorStatus turbo = EECycleRate::ResolveGovernorStatus(in, 0);
+	EXPECT_TRUE(turbo.enabled);
+	EXPECT_FALSE(turbo.eligible);
+	EXPECT_FALSE(turbo.active);
+	EXPECT_STREQ(turbo.eligible_reason, "the limiter is not at normal speed");
+
+	in.limiter_nominal = true;
+	in.dynamic_setting = false;
+	const EECycleRate::GovernorStatus off = EECycleRate::ResolveGovernorStatus(in, 0);
+	EXPECT_FALSE(off.enabled);
+	EXPECT_TRUE(off.eligible);
+	EXPECT_FALSE(off.active);
+}
+
+TEST(EECycleRateGovernorStatus, TheFloorFollowsTheConfiguredRateAndNeverPassesTheSelectorsEnd)
+{
+	Inputs in = Healthy();
+	in.dynamic_setting = true;
+
+	in.configured = 3;
+	EXPECT_EQ(EECycleRate::ResolveGovernorStatus(in, 3).floor, 1);
+
+	in.configured = -2;
+	EXPECT_EQ(EECycleRate::ResolveGovernorStatus(in, -2).floor, -3);
+
+	in.configured = -3;
+	EXPECT_EQ(EECycleRate::ResolveGovernorStatus(in, -3).floor, -3);
+}
+
 // ------------------------------------------------------------------- suspension
 
 TEST(EECycleRateEligibility, HardcoreModeSuspendsTheGovernor)

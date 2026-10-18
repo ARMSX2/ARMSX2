@@ -33,6 +33,14 @@ namespace
 	EECycleRate::TransitionPath s_last_path = {};
 } // namespace
 
+namespace
+{
+	s8 FloorFor(s8 configured)
+	{
+		return static_cast<s8>(std::max<int>(Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE, configured - 2));
+	}
+} // namespace
+
 s8 EECycleRate::GetEffective()
 {
 	return s_effective;
@@ -50,7 +58,7 @@ void EECycleRate::SyncToConfigured()
 
 s8 EECycleRate::GetFloor()
 {
-	return static_cast<s8>(std::max<int>(Pcsx2Config::SpeedhackOptions::MIN_EE_CYCLE_RATE, GetConfigured() - 2));
+	return FloorFor(GetConfigured());
 }
 
 bool EECycleRate::ApplyEffective(s8 selector, const char* reason)
@@ -267,6 +275,28 @@ EECycleRate::EligibilityInputs EECycleRate::ReadEligibilityInputs()
 EECycleRateEligibility EECycleRate::ResolveEligibility()
 {
 	return ResolveEligibility(ReadEligibilityInputs());
+}
+
+EECycleRate::GovernorStatus EECycleRate::ResolveGovernorStatus(const EligibilityInputs& in, s8 effective)
+{
+	EligibilityReasons why;
+	const EECycleRateEligibility e = ResolveEligibility(in, &why);
+
+	GovernorStatus out;
+	out.enabled = e.enabled;
+	out.eligible = e.eligible;
+	out.active = e.enabled && e.eligible;
+	out.configured = e.baseline;
+	out.effective = effective;
+	out.floor = FloorFor(e.baseline);
+	out.enabled_reason = why.enabled;
+	out.eligible_reason = why.eligible;
+	return out;
+}
+
+EECycleRate::GovernorStatus EECycleRate::GetGovernorStatus()
+{
+	return ResolveGovernorStatus(ReadEligibilityInputs(), GetEffective());
 }
 
 void EECycleRate::LogResolvedEligibility()

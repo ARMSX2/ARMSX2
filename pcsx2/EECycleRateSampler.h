@@ -204,6 +204,40 @@ namespace EECycleRateSampler
 	// than having a sample invented for it, and the frame in progress is dropped.
 	void OnFrameNotThrottled();
 
+	// --- reading the latest window ----------------------------------------------------
+	//
+	// For other consumers of the governor's measurements. CPU thread only: the sampler's
+	// state is CPU-thread owned, and unlike the overlay word nothing here is published for
+	// other threads.
+	//
+	// Windows are produced only while the sampler runs: the governor is enabled for this
+	// game, or a trace path puts it in shadow mode. With both off there is nothing to read.
+	struct LastWindow
+	{
+		// Counts closed windows, usable or not, for the whole session. A reader that
+		// remembers the last serial it handled knows whether a new window has closed.
+		u32 serial = 0;
+
+		// The window's frames as one sample, including the p90 active ratio, late ratio,
+		// own-time ratio, blocked ratio and the GS and VU1 shares of it. See
+		// EECycleRateWindowSample for what each one divides by.
+		EECycleRateWindowSample sample;
+
+		// EECycleRateController::IsSampleUsable(sample): measured, non-empty and finite.
+		// A window that is not usable carries numbers that mean nothing.
+		bool usable = false;
+
+		// The selectors in force while the window's frames ran. The governor's decision at
+		// the end of the window may already have moved the live one.
+		s8 configured = 0;
+		s8 effective = 0;
+	};
+
+	// False until a window has closed since the sampler last started over (VM start, VM
+	// reset, save-state load, pause, settings apply, limiter change, frame advance), because
+	// a window from before any of those describes a machine that no longer exists.
+	bool GetLastWindow(LastWindow* out);
+
 	// --- overlay ---------------------------------------------------------------------
 	//
 	// What the on-screen display is allowed to know, as one packed word published by the

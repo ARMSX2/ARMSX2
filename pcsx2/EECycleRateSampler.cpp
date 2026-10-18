@@ -114,6 +114,11 @@ namespace
 		s_session_ineffective += snap.ineffective_count;
 	}
 
+	// The latest closed window, for EECycleRateSampler::GetLastWindow(). CPU-thread owned.
+	EECycleRateSampler::LastWindow s_last_window;
+	bool s_have_last_window = false;
+	u32 s_window_serial = 0;
+
 	// Published for the on-screen display. Written by the CPU thread at every window close
 	// and every lifecycle reset; read by the GS thread.
 	std::atomic<u32> s_overlay_word{0};
@@ -302,6 +307,16 @@ namespace
 			s_seconds_at_selector[index] += sample.target_seconds;
 	}
 
+	void RecordLastWindow(const EECycleRateWindowSample& sample, s8 effective_during_window)
+	{
+		s_last_window.serial = ++s_window_serial;
+		s_last_window.sample = sample;
+		s_last_window.usable = EECycleRateController::IsSampleUsable(sample);
+		s_last_window.configured = EECycleRate::GetConfigured();
+		s_last_window.effective = effective_during_window;
+		s_have_last_window = true;
+	}
+
 	void TraceWindow(const EECycleRateWindowSample& sample, const EECycleRateEligibility& eligibility,
 		const EECycleRate::EligibilityReasons& why, EECycleRateDecision decision, bool applied)
 	{
@@ -419,6 +434,7 @@ namespace
 		}
 
 		AccountWindow(sample, effective_during_window);
+		RecordLastWindow(sample, effective_during_window);
 		TraceWindow(sample, fed, why, decision, applied);
 
 		RefreshActivation(eligibility);
@@ -600,6 +616,7 @@ void EECycleRateSampler::OnVMShutdown()
 	s_vm_started = false;
 	s_active = false;
 	s_shadow = false;
+	s_have_last_window = false;
 	s_measuring_waits.store(false, std::memory_order_relaxed);
 	s_controller.Reset(EECycleRate::GetConfigured());
 	PublishOverlay();
@@ -622,9 +639,19 @@ void EECycleRateSampler::OnLifecycleReset(const char* reason)
 
 	FoldControllerCountsIntoSession();
 	s_controller.Reset(eligibility.baseline);
+	s_have_last_window = false;
 	PublishOverlay();
 	StartWindow();
 	TraceLifecycle(reason);
+}
+
+bool EECycleRateSampler::GetLastWindow(LastWindow* out)
+{
+	if (!s_have_last_window)
+		return false;
+
+	*out = s_last_window;
+	return true;
 }
 
 void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks, bool frame_end, bool late)
