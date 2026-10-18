@@ -284,6 +284,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
 // Defined in VMManager.cpp; see AndroidWriteStagedGameIni.
 extern void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path);
 static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path);
+static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std::string_view value);
 
 extern "C"
 JNIEXPORT void JNICALL
@@ -303,6 +304,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     std::string _szPath = GetJavaString(env, p_szpath);
     std::string _szBiosFolder = GetJavaString(env, p_szbiosfolder);
     g_android_before_game_settings_load = &AndroidWriteStagedGameIni;
+    AutoTune::g_on_committed = &AndroidOnAutoTuneCommitted;
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
@@ -6731,7 +6733,7 @@ void Native::onPadRumble(int pad, int largeMotor, int smallMotor) {
 // copy of the per-game settings (config.game.<key>), wiping the keys it owns, so a value that is only in the file
 // would be gone the next time the app writes it. Hands the key to the app, which writes it into its copy.
 // Called on the CPU thread; the app does the work on its own thread, so this returns at once.
-void Host::OnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
+static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
 {
     if (!s_jvm || !s_NativeApp_class || !s_onAutoTuneCommitted_mid)
         return;

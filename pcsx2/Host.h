@@ -147,12 +147,6 @@ namespace Host
 	/// Sets host-specific default settings.
 	void SetDefaultUISettings(SettingsInterface& si);
 
-	/// Auto-tune has moved one setting into the game's own settings file (section and key as in the
-	/// file, value as text). Called on the CPU thread. The default does nothing; a host that keeps its
-	/// own copy of per-game settings (Android regenerates the file from its store) writes the key back
-	/// to that copy here, or the next regeneration drops it.
-	void OnAutoTuneCommitted(const char* section, const char* key, std::string_view value);
-
 	/// Creates a progress callback that displays in the host.
 	std::unique_ptr<ProgressCallback> CreateHostProgressCallback();
 

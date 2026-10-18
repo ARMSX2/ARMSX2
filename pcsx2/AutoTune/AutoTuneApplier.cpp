@@ -38,6 +38,8 @@ static_assert(static_cast<int>(GSHardwareDownloadMode::Disabled) == AutoTuneDown
 static_assert(static_cast<int>(GSHardwareDownloadMode::Asynchronous) == AutoTuneDownloadMode::Asynchronous);
 static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Maximum) == 5);
 
+void (*AutoTune::g_on_committed)(const char* section, const char* key, std::string_view value) = nullptr;
+
 namespace
 {
 	// ", target cost 127.00 -> 4.75 ms per frame (-96%)" when the cost the lever targets was measured on both sides.
@@ -414,7 +416,8 @@ namespace
 
 		void NotifyCommitted(const char* section, const char* key, const std::string& value) override
 		{
-			Host::OnAutoTuneCommitted(section, key, value);
+			if (AutoTune::g_on_committed)
+				AutoTune::g_on_committed(section, key, value);
 		}
 
 	private:

@@ -453,13 +453,3 @@ void Host::Internal::SetAutoTuneSettingsLayer(SettingsInterface* sif, std::uniqu
 {
 	s_layered_settings_interface.SetLayer(LayeredSettingsInterface::LAYER_AUTOTUNE, sif);
 }
-
-// Weak, so a host that keeps its own copy of the per-game settings can define it itself: the Android app regenerates
-// the game's settings file from its own store and has to be told what auto-tune saved. Every other host, and the
-// Android tools that have no such store (pcsx2-gsrunner), keep this empty default.
-#if defined(__clang__) || defined(__GNUC__)
-__attribute__((weak))
-#endif
-void Host::OnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
-{
-}

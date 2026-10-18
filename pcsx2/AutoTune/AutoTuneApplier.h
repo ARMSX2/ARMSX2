@@ -31,6 +31,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace GameDatabaseSchema
@@ -106,6 +107,12 @@ private:
 
 namespace AutoTune
 {
+	/// Set by a host that keeps its own copy of the per-game settings; null (nothing to tell) otherwise. Auto-tune
+	/// calls it when it has moved one setting into the game's own settings file (section and key as in the file,
+	/// value as text), on the CPU thread. The Android app regenerates that file from its own store and drops what
+	/// it does not know, so it writes the key back to its store here. Set once at start-up, before any VM exists.
+	extern void (*g_on_committed)(const char* section, const char* key, std::string_view value);
+
 	// ---- decisions that depend on the host and the game database, as pure functions ------------------
 
 	/// Settings the game database fixes for this game, in the terms the controller uses.
