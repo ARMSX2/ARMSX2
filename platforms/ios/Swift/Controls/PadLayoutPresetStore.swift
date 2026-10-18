@@ -727,9 +727,7 @@ final class PadLayoutPresetStore: @unchecked Sendable {
     }
 
     private static func defaultLibraryURL() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
+        let base = URL.applicationSupportDirectory
         return base
             .appendingPathComponent("ARMSX2", isDirectory: true)
             .appendingPathComponent("VPadLayouts.json")

@@ -9,9 +9,7 @@ enum BackgroundStorage {
 
     static var storageDirectory: URL {
         let fm = FileManager.default
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? fm.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? fm.temporaryDirectory
+        let base = URL.applicationSupportDirectory
         let dir = base.appendingPathComponent("ARMSX2", isDirectory: true)
             .appendingPathComponent(storageDirectoryName, isDirectory: true)
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -72,8 +72,7 @@ enum TexturePackLibrary {
     // GameLibrarySnapshot persists this cache; reading it names packs without opening any disc.
     static func titlesBySerial() -> [String: String] {
         struct Entry: Decodable { let metadata: [String: String] }
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first,
-              let data = try? Data(contentsOf: base.appendingPathComponent("LibraryMetadataCache.json")),
+        guard let data = try? Data(contentsOf: URL.applicationSupportDirectory.appendingPathComponent("LibraryMetadataCache.json")),
               let entries = try? JSONDecoder().decode([String: Entry].self, from: data) else {
             return [:]
         }

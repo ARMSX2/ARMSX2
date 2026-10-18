@@ -54,8 +54,7 @@ final class SaveStateMetadataStore {
     private let url: URL
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
+        let base = URL.applicationSupportDirectory
         let directory = base.appendingPathComponent("ARMSX2", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         url = directory.appendingPathComponent("SaveStateSlots.json")

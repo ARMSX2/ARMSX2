@@ -654,32 +654,6 @@ struct BackgroundControlSection<Content: View>: View {
   }
 }
 
-/// A shim over NumberRow for the background rows that still build their own readout string. The
-/// initialiser is the one every call site already spells, so it stays.
-///
-/// The title stays raw here. Two switches downstream match on the English string to find a reset
-/// value and a section icon, and NumberRow localises late enough not to break them.
-struct DynamicSettingsValueSlider: View {
-  let title: String
-  @Binding var value: Double
-  let range: ClosedRange<Double>
-  let step: Double?
-  let formattedValue: String
-  let resetValue: Double?
-
-  var body: some View {
-    NumberRow(
-      title,
-      value: $value,
-      in: range,
-      format: .opaque(formattedValue),
-      step: step,
-      default: resetValue,
-      settings: SettingsStore.shared
-    )
-  }
-}
-
 struct BackgroundControlToggle: View {
   let title: String
   @Binding var value: Bool
@@ -716,14 +690,6 @@ func controlSlider(
     default: defaultValue,
     settings: SettingsStore.shared
   )
-}
-
-@MainActor
-func settingResetButton(
-  _ title: String,
-  action: @escaping () -> Void
-) -> some View {
-  DynamicSettingsResetButton(title: title, action: action)
 }
 
 extension View {
@@ -882,7 +848,7 @@ struct DynamicBackgroundSettingsControls: View {
             "Colour towers",
             isOn: $particleSettings.backgrounds.playStation2MenuColorsTowers
           )
-          settingResetButton("Colour towers") {
+          DynamicSettingsResetButton(title: "Colour towers") {
             particleSettings.backgrounds.playStation2MenuColorsTowers =
               defaults.playStation2MenuColorsTowers
           }
@@ -898,7 +864,7 @@ struct DynamicBackgroundSettingsControls: View {
             "Show line waves",
             isOn: $particleSettings.backgrounds.faceButtonsShowsLightBands
           )
-          settingResetButton("Show Face Buttons line waves") {
+          DynamicSettingsResetButton(title: "Show Face Buttons line waves") {
             particleSettings.backgrounds.faceButtonsShowsLightBands =
               defaults.faceButtonsShowsLightBands
           }
@@ -1012,13 +978,14 @@ struct DynamicBackgroundSettingsControls: View {
     formattedValue: String,
     resetValue: Double
   ) -> some View {
-    DynamicSettingsValueSlider(
-      title: title,
+    NumberRow(
+      title,
       value: value,
-      range: range,
+      in: range,
+      format: .opaque(formattedValue),
       step: step,
-      formattedValue: formattedValue,
-      resetValue: resetValue
+      default: resetValue,
+      settings: SettingsStore.shared
     )
   }
 
@@ -1152,7 +1119,7 @@ struct DynamicParticleSettingsControls: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
         Toggle("Enable particles", isOn: $particleSettings.isEnabled)
-        settingResetButton("Add particles") {
+        DynamicSettingsResetButton(title: "Add particles") {
           particleSettings.isEnabled = defaults.isEnabled
         }
       }
@@ -1164,7 +1131,7 @@ struct DynamicParticleSettingsControls: View {
           }
         }
         .pickerStyle(.menu)
-        settingResetButton("Particle style") {
+        DynamicSettingsResetButton(title: "Particle style") {
           particleSettings.style = defaults.style
         }
       }
@@ -1304,7 +1271,7 @@ struct DynamicParticleSettingsControls: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
         Toggle("Enable face buttons", isOn: $particleSettings.faceButtonsEnabled)
-        settingResetButton("Add Face Buttons") {
+        DynamicSettingsResetButton(title: "Add Face Buttons") {
           particleSettings.faceButtonsEnabled =
             defaults.faceButtonsEnabled
         }
@@ -1366,7 +1333,7 @@ struct DynamicParticleSettingsControls: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack {
         Toggle("Show Logo", isOn: logoEnabledBinding)
-        settingResetButton("Add Logo") {
+        DynamicSettingsResetButton(title: "Add Logo") {
           particleSettings.isARMSX2LogoEnabled = false
         }
       }
@@ -1477,13 +1444,14 @@ struct DynamicParticleSettingsControls: View {
     formattedValue: String,
     resetValue: Double? = nil
   ) -> some View {
-    DynamicSettingsValueSlider(
-      title: title,
+    NumberRow(
+      title,
       value: value,
-      range: range,
+      in: range,
+      format: .opaque(formattedValue),
       step: step,
-      formattedValue: formattedValue,
-      resetValue: resetValue ?? particleResetValue(for: title)
+      default: resetValue ?? particleResetValue(for: title),
+      settings: SettingsStore.shared
     )
   }
 
@@ -1995,7 +1963,7 @@ struct PlayStation3XMBMartSettingsControls: View {
             }
           }
           .pickerStyle(.menu)
-          settingResetButton("Gradient preset") {
+          DynamicSettingsResetButton(title: "Gradient preset") {
             settings.gradientPreset =
               defaults.gradientPreset
             isPresetExplicit = false
@@ -2112,7 +2080,7 @@ struct PlayStation3XMBMartSettingsControls: View {
             "Follow wave Y-axis",
             isOn: $settings.particlesFollowWaveY
           )
-          settingResetButton("Follow wave Y-axis") {
+          DynamicSettingsResetButton(title: "Follow wave Y-axis") {
             settings.particlesFollowWaveY =
               defaults.particlesFollowWaveY
           }
@@ -2465,13 +2433,14 @@ struct PlayStation3XMBMartSettingsControls: View {
     formattedValue: String,
     resetValue: Double? = nil
   ) -> some View {
-    DynamicSettingsValueSlider(
-      title: title,
+    NumberRow(
+      title,
       value: value,
-      range: range,
+      in: range,
+      format: .opaque(formattedValue),
       step: step,
-      formattedValue: formattedValue,
-      resetValue: resetValue ?? defaultValue(for: title)
+      default: resetValue ?? defaultValue(for: title),
+      settings: SettingsStore.shared
     )
   }
 

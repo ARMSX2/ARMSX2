@@ -331,7 +331,6 @@ struct TextureReplacementSettings: View {
 
 extension TexturePackLibrary {
     static var root: URL {
-        URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory(), isDirectory: true)
-            .appendingPathComponent("textures", isDirectory: true)
+        URL.documentsDirectory.appendingPathComponent("textures", isDirectory: true)
     }
 }

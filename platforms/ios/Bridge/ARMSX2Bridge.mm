@@ -27,10 +27,6 @@
 #include "common/Darwin/DarwinMisc.h"
 #include <SDL3/SDL.h>
 
-extern "C" void ARMSX2_SetSDLFullscreen(bool enabled);
-extern "C" bool ARMSX2_IsSDLFullscreen();
-extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outThermalState,
-                                          double* outRamGB, bool* outLowPower);
 #include "Common.h"
 #include "Config.h"
 #include "CDVD/CDVD.h"
@@ -64,13 +60,8 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "TexturePackTar.h"
 #include "TexturePackZstd.h"
 
-// Owned by SceneDelegate's persistent VM worker. Declared narrowly here: IOSRuntime.h gives
-// the render view its concrete type, and this bridge deliberately uses UIKit's UIView.
-extern std::atomic<bool> s_vmThreadActive;
-extern std::atomic<bool> s_requestVMBoot;
-extern std::mutex s_vmMutex;
-extern void ARMSX2ConfigureControllerMacroInput(u32 input_mask, u32 modifier_mask);
-extern void ARMSX2ConsumeControllerMacroInput(u32 input_mask);
+#import "ARMSX2GameView.h"
+#include "IOSRuntime.h"
 #include "IconsFontAwesome.h"
 
 #include <algorithm>
@@ -94,13 +85,6 @@ extern void ARMSX2ConsumeControllerMacroInput(u32 input_mask);
 #include <stdlib.h>
 #include <sys/stat.h>
 
-// Access the global settings interface from ios_main.mm
-extern INISettingsInterface* g_p44_settings_interface;
-extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason);
-extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void);
-extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void);
-extern "C" void ARMSX2_iOSTestGamepadRumble(void);
-extern "C" bool ARMSX2_IsIdleVMPrewarmResolved(void);
 static void ARMSX2RequestPerGameSettingsReload();
 
 // Coalesce base-settings INI writes so rapid changes (slider drags, preset bursts,
@@ -1179,11 +1163,6 @@ static void ARMSX2ApplyLiveTargetSpeedSetting(std::function<void()> update)
     }, false);
 }
 
-static float ARMSX2NormalizeIOSNominalScalar(float value)
-{
-    return std::isfinite(value) ? std::clamp(value, 0.05f, 10.0f) : 1.0f;
-}
-
 static float ARMSX2EnforceRetroAchievementsHardcoreFloatSetting(const char* section, const char* key, float value)
 {
     if (!ARMSX2RetroAchievementsHardcoreActive())
@@ -1240,10 +1219,9 @@ static void ARMSX2ApplyLiveFloatSetting(const char* section, const char* key, fl
     if (std::strcmp(section, "Framerate") != 0)
         return;
 
-    const float clamped = std::isfinite(value) ? std::clamp(value, 0.05f, 10.0f) : 1.0f;
+    const float clamped = ARMSX2SanitizedNominalScalar(value);
     if (std::strcmp(key, "NominalScalar") == 0) {
-        const float normalized = ARMSX2NormalizeIOSNominalScalar(value);
-        ARMSX2ApplyLiveTargetSpeedSetting([normalized]() { EmuConfig.EmulationSpeed.NominalScalar = normalized; });
+        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.NominalScalar = clamped; });
     } else if (std::strcmp(key, "TurboScalar") == 0) {
         ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; });
     } else if (std::strcmp(key, "SlomoScalar") == 0) {
@@ -2355,7 +2333,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 @implementation ARMSX2Bridge
 
 + (UIView *)gameRenderView {
-    extern UIView* g_gameRenderView;
     return g_gameRenderView;
 }
 
@@ -2390,7 +2367,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         u32 idx = buttonMap[(int)button];
         pad->Set(idx, pressed ? 1.0f : 0.0f);
         // Update touch state so PumpMessagesOnCPUThread doesn't override
-        extern bool g_touchPadState[64];
         if (idx < 64) g_touchPadState[idx] = pressed;
     }
 }
@@ -2407,7 +2383,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     pad->Set(PadDualshock2::Inputs::PAD_L_LEFT, left);
     pad->Set(PadDualshock2::Inputs::PAD_L_DOWN, down);
     pad->Set(PadDualshock2::Inputs::PAD_L_UP, up);
-    extern bool g_touchPadState[64];
     g_touchPadState[PadDualshock2::Inputs::PAD_L_RIGHT] = right > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_L_LEFT] = left > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_L_DOWN] = down > 0.01f;
@@ -2425,7 +2400,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     pad->Set(PadDualshock2::Inputs::PAD_R_LEFT, left);
     pad->Set(PadDualshock2::Inputs::PAD_R_DOWN, down);
     pad->Set(PadDualshock2::Inputs::PAD_R_UP, up);
-    extern bool g_touchPadState[64];
     g_touchPadState[PadDualshock2::Inputs::PAD_R_RIGHT] = right > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_LEFT] = left > 0.01f;
     g_touchPadState[PadDualshock2::Inputs::PAD_R_DOWN] = down > 0.01f;
@@ -2442,7 +2416,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 }
 
 + (void)requestVMStop {
-    extern std::atomic<bool> s_requestVMStop;
     s_requestVMStop.store(true);
     NSLog(@"[ARMSX2Bridge] VM stop requested");
 }
@@ -3948,7 +3921,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     float valueToStore = value;
     valueToStore = ARMSX2EnforceRetroAchievementsHardcoreFloatSetting(section.UTF8String, key.UTF8String, valueToStore);
     if (std::strcmp(section.UTF8String, "Framerate") == 0 && std::strcmp(key.UTF8String, "NominalScalar") == 0)
-        valueToStore = ARMSX2NormalizeIOSNominalScalar(valueToStore);
+        valueToStore = ARMSX2SanitizedNominalScalar(valueToStore);
 
     g_p44_settings_interface->SetFloatValue(section.UTF8String, key.UTF8String, valueToStore);
     ARMSX2ScheduleINISave();
@@ -5808,10 +5781,6 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
 }
 
 // Gamepad button mapping
-extern std::atomic<bool> s_captureMode;
-extern std::atomic<int>  s_capturedButton;
-extern int s_buttonMap[16];
-
 + (void)startButtonCapture {
     s_capturedButton.store(-1);
     s_captureMode.store(true);

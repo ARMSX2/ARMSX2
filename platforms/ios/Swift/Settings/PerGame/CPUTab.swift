@@ -111,7 +111,7 @@ struct CPUTab: View {
             Section("Performance / Compatibility") {
                 Picker("EE Cycle Rate", selection: $eeCycleRate) {
                     Text("Global Default (\(Self.formatEECycleRate(globalEECycleRate)))").tag(eeCycleRateUseGlobalSentinel)
-                    ForEach(-3...3, id: \.self) { value in
+                    ForEach(SettingsStore.eeCycleRateRange, id: \.self) { value in
                         Text(Self.formatEECycleRate(value)).tag(value)
                     }
                 }
@@ -122,7 +122,7 @@ struct CPUTab: View {
                     options: [(
                         id: eeCycleRateUseGlobalSentinel,
                         title: "Global Default (\(Self.formatEECycleRate(globalEECycleRate)))"
-                    )] + Array(-3...3).map {
+                    )] + Array(SettingsStore.eeCycleRateRange).map {
                         (id: $0, title: Self.formatEECycleRate($0))
                     }
                 )
@@ -271,12 +271,8 @@ struct CPUTab: View {
         ]
     }
 
-    private static func clampedEECycleRate(_ value: Int) -> Int {
-        min(max(value, -3), 3)
-    }
-
     private static func formatEECycleRate(_ value: Int) -> String {
-        let clamped = clampedEECycleRate(value)
+        let clamped = SettingsStore.clampedEECycleRate(value)
         return clamped > 0 ? "+\(clamped)" : "\(clamped)"
     }
 }

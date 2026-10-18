@@ -33,7 +33,7 @@ private struct StoragePaths: Sendable {
     @MainActor
     static func current() -> StoragePaths {
         let fileManager = FileManager.default
-        let documentsURL = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory(), isDirectory: true)
+        let documentsURL = URL.documentsDirectory
         let systemCachesURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
         return StoragePaths(
             emulatorCacheURL: documentsURL.appendingPathComponent("cache", isDirectory: true),

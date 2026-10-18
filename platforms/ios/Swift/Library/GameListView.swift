@@ -612,9 +612,7 @@ private final class GameLibrarySnapshot {
 	private var lastLibraryRefresh: Date?
 
 	private static var persistenceURL: URL? {
-		let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-			?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-		return base?.appendingPathComponent("LibraryMetadataCache.json")
+		URL.applicationSupportDirectory.appendingPathComponent("LibraryMetadataCache.json")
 	}
 
 	private init() {}

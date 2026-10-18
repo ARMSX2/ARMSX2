@@ -72,7 +72,7 @@ struct AudioTab: View {
             get: { volumeOverride },
             set: { newValue in
                 volumeOverride = newValue
-                volumePercent = newValue ? Self.clampedVolume(volumePercent) : globalVolumePercent
+                volumePercent = newValue ? SettingsStore.clampedEmulatorVolumePercent(volumePercent) : globalVolumePercent
             }
         )
     }
@@ -80,15 +80,11 @@ struct AudioTab: View {
     private var volumeBinding: Binding<Int> {
         Binding(
             get: { volumePercent },
-            set: { volumePercent = Self.clampedVolume($0) }
+            set: { volumePercent = SettingsStore.clampedEmulatorVolumePercent($0) }
         )
     }
 
-    private static func clampedVolume(_ value: Int) -> Int {
-        SettingsStore.clampedEmulatorVolumePercent(value)
-    }
-
     private static func formatPercent(_ value: Int) -> String {
-        "\(clampedVolume(value))%"
+        "\(SettingsStore.clampedEmulatorVolumePercent(value))%"
     }
 }
