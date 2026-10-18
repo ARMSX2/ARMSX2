@@ -144,6 +144,13 @@ struct AutoTunePolicy
 	/// ...or when it went from bad to this speed with no late frames.
 	double reached_speed_pct = 99.0;
 
+	/// A trial whose speed did not clearly rise is still kept when the cost it targets clearly fell (another cost
+	/// is the limit, so the speed cannot show it yet), but only if the median speed did not fall by more than this
+	/// fraction. A cost falls whenever work is split over more threads, whether or not anything downstream is
+	/// faster; the speed has to be at least level with the baseline. A trial whose cost fell and whose speed fell
+	/// more than this is looked at for longer instead.
+	double cost_keep_max_speed_loss = 0.01;
+
 	/// The noise a gain has to clear, as this many standard errors of the difference between the two
 	/// medians (each estimated from the spread of its own windows, robustly). A gain that reaches
 	/// gain_fraction but not the noise is inconclusive, not a keep.

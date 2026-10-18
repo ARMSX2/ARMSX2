@@ -533,10 +533,10 @@ AutoTuneAction AutoTuneController::FinishTrial()
 	                   (!was_good_speed || was_late);
 
 	// Keep: the speed clearly rose, or reached full speed, or the cost the lever targets clearly fell while the
-	// speed did not clearly drop (something else is still the limit). Reject, and remember it: neither figure
-	// shows a gain even allowing for the noise. Anything else is inconclusive.
+	// speed did not fall (something else is still the limit). Reject, and remember it: neither figure shows a gain
+	// even allowing for the noise. Anything else is inconclusive.
 	const bool keep_on_speed = fixed || speed.clear;
-	const bool keep_on_cost = have_cost && cost.clear && speed.gain > -speed.noise;
+	const bool keep_on_cost = have_cost && cost.clear && speed.gain >= -m_policy.cost_keep_max_speed_loss;
 	const bool reject = speed.none && (!have_cost || cost.none);
 
 	AutoTuneAction action;
