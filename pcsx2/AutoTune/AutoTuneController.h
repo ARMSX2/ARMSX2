@@ -257,8 +257,8 @@ struct AutoTuneLeverState
 	double resolution = 1.0; // the upscale multiplier in effect
 
 	bool gs_back_thread_on = false;
-	/// The GS back thread would actually run if asked: Vulkan for the hardware renderer, and not
-	/// Unsynchronized downloads.
+	/// The GS back thread would actually run if asked (Vulkan for the hardware renderer, and not Unsynchronized
+	/// downloads) and is worth asking for: it would not have to share a processor with another busy thread.
 	bool gs_back_thread_allowed = false;
 
 	int download_mode = AutoTuneDownloadMode::Accurate; // AutoTuneDownloadMode::*

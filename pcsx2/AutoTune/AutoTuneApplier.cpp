@@ -277,6 +277,11 @@ AutoTune::GameDbForced AutoTune::ForcedByGameDb(const GameDatabaseSchema::GameEn
 	return forced;
 }
 
+bool AutoTune::GsBackThreadOffered(const GSBackThreadInputs& inputs, bool would_share_busy_core)
+{
+	return GSDecideBackThread(inputs).on && !would_share_busy_core;
+}
+
 bool AutoTune::IopThreadPlaceable(bool vu_thread, bool lockstep, IopThread::HostCpuInfo host, const IopThread::VmConditions& vm,
 	bool gs_back_thread_running)
 {
@@ -581,7 +586,10 @@ namespace
 		back.hardware_renderer = s.hw_renderer;
 		back.vulkan = renderer == GSRendererType::VK;
 		back.download_mode = EmuConfig.GS.HWDownloadMode;
-		s.gs_back_thread_allowed = GSDecideBackThread(back).on;
+		// The placement is read off the topology, so it is only asked for when it matters: the thread is off and
+		// the setting would be granted.
+		s.gs_back_thread_allowed = GSDecideBackThread(back).on &&
+		                           (s.gs_back_thread_on || AutoTune::GsBackThreadOffered(back, VMManager::Internal::GSBackThreadWouldShareBusyCore()));
 
 		s.download_mode = static_cast<int>(EmuConfig.GS.HWDownloadMode);
 		s.download_mode_forced = m_forced.download_mode;

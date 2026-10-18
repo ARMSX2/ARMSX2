@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "EECycleRate.h"
 #include "GameDatabase.h"
+#include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "INISettingsInterface.h"
 #include "LayeredSettingsInterface.h"
 #include "VMManager.h"
@@ -450,6 +451,27 @@ TEST(AutoTuneHost, TheGsBackThreadCountsAsABusyCore)
 	host.performance_cores = 4;
 	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, false));
 	EXPECT_FALSE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
+}
+
+TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)
+{
+	// MQ65 with the IOP thread on: EE, MTVU, the front and the IOP thread hold the four big cores, and the back
+	// thread would be placed on one of them. A/B on the device: 66.6% without it, 53.7% with it.
+	GSBackThreadInputs in;
+	in.requested = true;
+	in.hardware_renderer = true;
+	in.vulkan = true;
+	in.download_mode = GSHardwareDownloadMode::Enabled;
+
+	EXPECT_TRUE(AutoTune::GsBackThreadOffered(in, false));
+	EXPECT_FALSE(AutoTune::GsBackThreadOffered(in, true));
+
+	// The renderer and the download mode rule it out first, as for the setting itself.
+	in.vulkan = false;
+	EXPECT_FALSE(AutoTune::GsBackThreadOffered(in, false));
+	in.vulkan = true;
+	in.download_mode = GSHardwareDownloadMode::Unsynchronized;
+	EXPECT_FALSE(AutoTune::GsBackThreadOffered(in, false));
 }
 
 TEST(AutoTuneHost, ACoreCountThatIsUnknownIsNotPlaceable)

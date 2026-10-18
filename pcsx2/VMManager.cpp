@@ -16,6 +16,7 @@
 #include "EECycleRateSampler.h"
 #include "FW.h"
 #include "GS.h"
+#include "GS/Renderers/Common/GSBackThreadPolicy.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "AutoTune/AutoTuneApplier.h"
 #include "GSDumpReplayer.h"
@@ -4784,8 +4785,10 @@ static u64 ClusterMaskForProcessorMask(u64 processor_mask)
 // whenever the front sleeps and then preempted by every front wake (SD865, front pinned to
 // one core: 560-930 back preemptions per frame against ~2). If the topology gives no answer,
 // every processor except the front's; 0 (unpinned) only when there is nothing else.
-static u64 ChooseGSBackThreadAffinity(u64 gs_mask, u64 occupied)
+static u64 ChooseGSBackThreadAffinity(u64 gs_mask, u64 occupied, bool* shares_busy_core = nullptr)
 {
+	if (shares_busy_core)
+		*shares_busy_core = false;
 	if (gs_mask == 0)
 		return 0;
 
@@ -4805,12 +4808,10 @@ static u64 ChooseGSBackThreadAffinity(u64 gs_mask, u64 occupied)
 			others |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
 	}
 	others &= ~gs_mask;
-	for (const u64 candidate : {fast_cluster & ~occupied, fast_rest & ~occupied, fast_cluster, fast_rest, others})
-	{
-		if (candidate != 0)
-			return candidate;
-	}
-	return 0;
+	const GSBackThreadPlacement placement = GSPlaceBackThread(fast_cluster, fast_rest, others, occupied);
+	if (shares_busy_core)
+		*shares_busy_core = placement.shares_busy_core;
+	return placement.mask;
 }
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -5020,16 +5021,24 @@ void VMManager::Internal::SetGSBackThreadAffinity(u64 mask)
 	SetGSBackThreadAffinityLocked(mask);
 }
 
-u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
+// Where the MTGS thread is pinned now, and the processors the other busy emu threads are pinned to (with the MTGS
+// thread's own): the inputs of the back thread's placement.
+static void GetGSBackThreadPlacementInputs(u64* gs_mask, u64* occupied)
 {
-	EnsureCPUInfoInitialized();
 	const auto pinned = [](const Threading::ThreadHandle& h) -> u64 {
 		const u64 mask = h ? h.GetAffinity() : 0;
 		return (std::popcount(mask) == 1) ? mask : 0;
 	};
-	const u64 gs_mask = MTGS::GetThreadHandle() ? MTGS::GetThreadHandle().GetAffinity() : 0;
-	const u64 occupied = gs_mask | pinned(s_vm_thread_handle) | pinned(vu1Thread.GetThreadHandle()) |
-	                     pinned(IopThread::g_thread.GetThreadHandle());
+	*gs_mask = MTGS::GetThreadHandle() ? MTGS::GetThreadHandle().GetAffinity() : 0;
+	*occupied = *gs_mask | pinned(s_vm_thread_handle) | pinned(vu1Thread.GetThreadHandle()) |
+	            pinned(IopThread::g_thread.GetThreadHandle());
+}
+
+u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
+{
+	EnsureCPUInfoInitialized();
+	u64 gs_mask, occupied;
+	GetGSBackThreadPlacementInputs(&gs_mask, &occupied);
 #if defined(__linux__) || defined(_WIN32)
 	const u64 mask = ChooseGSBackThreadAffinity(gs_mask, occupied);
 #else
@@ -5037,6 +5046,20 @@ u64 VMManager::Internal::PlaceGSBackThreadNearGSThread()
 #endif
 	SetGSBackThreadAffinityLocked(mask);
 	return mask;
+}
+
+bool VMManager::Internal::GSBackThreadWouldShareBusyCore()
+{
+	EnsureCPUInfoInitialized();
+#if defined(__linux__) || defined(_WIN32)
+	u64 gs_mask, occupied;
+	GetGSBackThreadPlacementInputs(&gs_mask, &occupied);
+	bool shares = false;
+	ChooseGSBackThreadAffinity(gs_mask, occupied, &shares);
+	return shares;
+#else
+	return false; // The back thread is not pinned here, so it is not placed on anyone's processor.
+#endif
 }
 
 #if defined(__ANDROID__)

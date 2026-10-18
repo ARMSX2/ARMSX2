@@ -39,6 +39,8 @@ namespace GameDatabaseSchema
 	struct GameEntry;
 }
 
+struct GSBackThreadInputs;
+
 /// Everything the applier needs from the VM.
 class AutoTuneEnv
 {
@@ -124,6 +126,13 @@ namespace AutoTune
 		int min_blending = 0;
 	};
 	GameDbForced ForcedByGameDb(const GameDatabaseSchema::GameEntry* entry);
+
+	/// Whether the GS back thread is worth offering as a lever: the setting would be granted for this renderer
+	/// and download mode (GSDecideBackThread), and the thread would not have to share a processor with another busy
+	/// emu thread (`would_share_busy_core`, VMManager::Internal::GSBackThreadWouldShareBusyCore). On a host with
+	/// four performance cores and the IOP thread on, the back thread lands on one of them and costs the speed:
+	/// 66.6% without it, 53.7% with it (MQ65).
+	bool GsBackThreadOffered(const GSBackThreadInputs& inputs, bool would_share_busy_core);
 
 	/// Whether IopThread::ResolveMode would give an IOP thread a place on this host. The GS back thread, when it
 	/// is running, takes one of the performance cores and one of the cores overall, so it is counted as busy:

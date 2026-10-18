@@ -415,6 +415,11 @@ namespace VMManager
 		/// now, for tools that move the MTGS thread themselves. Returns the mask applied.
 		u64 PlaceGSBackThreadNearGSThread();
 
+		/// Whether the placement the GS back thread would get now, given where the MTGS, EE, VU and IOP threads
+		/// are pinned, includes a processor one of them is pinned to. False when the threads are not pinned (the
+		/// scheduler decides, and there is nothing to say) and on platforms with no placement.
+		bool GSBackThreadWouldShareBusyCore();
+
 		/// Returns a list of processors in the system, suitable for pinning for the software renderer.
 		const std::vector<u32>& GetSoftwareRendererProcessorList();
 

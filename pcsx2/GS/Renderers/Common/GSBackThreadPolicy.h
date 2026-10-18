@@ -61,6 +61,37 @@ constexpr GSBackThreadDecision GSDecideBackThread(const GSBackThreadInputs& in)
 	return {true, GSBackThreadReason::Requested};
 }
 
+// Where the back thread goes once the front thread (MTGS) has its processor, as masks of processors
+// (VMManager.cpp builds them from the topology). Every draw crosses between front and back through a shared
+// ring, so the back wants the front's cache; and both are busy, so it wants a processor of its own:
+//
+//   fast_cluster  the rest of the front's cluster, in the performance tier
+//   fast_rest     the rest of the performance tier
+//   others        every processor but the front's
+//   occupied      processors pinned to other busy emu threads (EE, MTVU, IOP, the front itself)
+//
+// In order: the cluster's free processors, the tier's free processors, then the same two without regard to
+// who is on them, then everything else. 0 (unpinned) only when there is nothing at all.
+struct GSBackThreadPlacement
+{
+	u64 mask = 0;
+	/// The mask includes a processor another busy emu thread is pinned to, so the back thread would compete
+	/// with that thread for it. Measured on the MQ65 with the IOP thread on (EE, MTVU, MTGS and IOP on its four
+	/// big cores): 66.6% without the back thread, 53.7% with it.
+	bool shares_busy_core = false;
+};
+
+constexpr GSBackThreadPlacement GSPlaceBackThread(u64 fast_cluster, u64 fast_rest, u64 others, u64 occupied)
+{
+	const u64 candidates[] = {fast_cluster & ~occupied, fast_rest & ~occupied, fast_cluster, fast_rest, others};
+	for (const u64 candidate : candidates)
+	{
+		if (candidate != 0)
+			return {candidate, (candidate & occupied) != 0};
+	}
+	return {};
+}
+
 constexpr const char* GSBackThreadReasonText(GSBackThreadReason reason)
 {
 	switch (reason)

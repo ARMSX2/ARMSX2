@@ -86,3 +86,65 @@ TEST(GSBackThreadPolicy, OffIsGivenAsAsked)
 		EXPECT_EQ(d.reason, GSBackThreadReason::Requested);
 	}
 }
+
+// ---------------------------------------------------------------------------------------------- placement
+//
+// Where the back thread may run once the front thread (MTGS) has its processor: the rest of the front's cluster in
+// the performance tier, then the rest of the tier, each first without the processors pinned to other busy emu
+// threads, then with them, then everything else.
+
+namespace
+{
+	constexpr u64 Core(int n) { return static_cast<u64>(1) << n; }
+}
+
+// The MQ65: four A73 cores (4-7) and four A53 (0-3). EE on 4, MTVU on 5, the front on 6.
+TEST(GSBackThreadPlacement, TakesAFreeBigCoreWhenThereIsOne)
+{
+	const u64 front = Core(6);
+	const u64 occupied = Core(4) | Core(5) | front;
+	const u64 tier = 0xf0;
+	const GSBackThreadPlacement p = GSPlaceBackThread(tier & ~front, tier & ~front, 0xff & ~front, occupied);
+	EXPECT_EQ(p.mask, Core(7));
+	EXPECT_FALSE(p.shares_busy_core);
+}
+
+// With the IOP thread on core 7 the four big cores are all taken: "GS back thread may run on 0xb0" in the log,
+// which are cores 4, 5 and 7, each already running a busy thread. Measured on the device: -19% speed.
+TEST(GSBackThreadPlacement, SaysSoWhenEveryBigCoreIsTaken)
+{
+	const u64 front = Core(6);
+	const u64 occupied = Core(4) | Core(5) | Core(7) | front;
+	const u64 tier = 0xf0;
+	const GSBackThreadPlacement p = GSPlaceBackThread(tier & ~front, tier & ~front, 0xff & ~front, occupied);
+	EXPECT_EQ(p.mask, 0xb0u);
+	EXPECT_TRUE(p.shares_busy_core);
+}
+
+// The rest of the tier comes before the rest of the cluster only when the cluster is full.
+TEST(GSBackThreadPlacement, PrefersTheFrontsClusterThenTheRestOfTheTier)
+{
+	const u64 front = Core(4);
+	const u64 occupied = Core(4) | Core(5);
+	// Two clusters in the tier: 4-5 (the front's) and 6-7.
+	const GSBackThreadPlacement p = GSPlaceBackThread(Core(5), Core(5) | Core(6) | Core(7), 0xff & ~front, occupied);
+	EXPECT_EQ(p.mask, Core(6) | Core(7)) << "the cluster's only other core is busy, the other cluster is free";
+	EXPECT_FALSE(p.shares_busy_core);
+}
+
+TEST(GSBackThreadPlacement, UnpinnedMeansNothingIsShared)
+{
+	const GSBackThreadPlacement p = GSPlaceBackThread(0, 0, 0, 0);
+	EXPECT_EQ(p.mask, 0u);
+	EXPECT_FALSE(p.shares_busy_core);
+}
+
+// A free slow core does not make a busy big core free: the order is the placement's, and it takes the big one.
+TEST(GSBackThreadPlacement, ABusyBigCoreIsStillSharedWhileASlowCoreIsFree)
+{
+	const u64 front = Core(6);
+	const u64 occupied = Core(4) | Core(5) | Core(7) | front;
+	const GSBackThreadPlacement p = GSPlaceBackThread(0xb0, 0xb0, 0x0f | 0xb0, occupied);
+	EXPECT_EQ(p.mask, 0xb0u);
+	EXPECT_TRUE(p.shares_busy_core);
+}
