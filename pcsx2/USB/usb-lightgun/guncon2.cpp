@@ -17,6 +17,8 @@
 #include "common/Console.h"
 #include "common/StringUtil.h"
 
+#include <atomic>
+#include <iterator>
 #include <tuple>
 
 namespace usb_lightgun
@@ -95,6 +97,54 @@ namespace usb_lightgun
 		{"SLPM-62205", 110.15f, 100.0f, 433, 159, 512, 256}, // Virtua Cop Re-Birth (J) (480i)
 		// {"SLES-51229", 85.75f, 92.0f, 456, 164, 640, 256}, // Virtua Cop - Elite Edition (E,J) (480p)
 	};
+
+	// Per-port gun state from a frontend that drives the guns itself (SetHostState).
+	struct HostState
+	{
+		std::atomic<bool> active{false};
+		std::atomic<bool> aim_valid{false};
+		std::atomic<float> x{0.0f};
+		std::atomic<float> y{0.0f};
+		std::atomic<u32> buttons{0};
+		// The game's Set Param requests: how many, and the last offset.
+		std::atomic<u32> param_count{0};
+		std::atomic<s32> param_x{0};
+		std::atomic<s32> param_y{0};
+	};
+	static HostState s_host_state[2];
+
+	void SetHostState(u32 port, bool active, bool aim_valid, float window_x, float window_y, u32 buttons)
+	{
+		if (port >= std::size(s_host_state))
+			return;
+		HostState& h = s_host_state[port];
+		h.x.store(window_x, std::memory_order_relaxed);
+		h.y.store(window_y, std::memory_order_relaxed);
+		h.aim_valid.store(aim_valid, std::memory_order_relaxed);
+		h.buttons.store(buttons, std::memory_order_relaxed);
+		h.active.store(active, std::memory_order_release);
+	}
+
+	u32 GetGameParams(u32 port, s16* x, s16* y)
+	{
+		if (port >= std::size(s_host_state))
+			return 0;
+		const HostState& h = s_host_state[port];
+		const u32 count = h.param_count.load(std::memory_order_acquire);
+		*x = static_cast<s16>(h.param_x.load(std::memory_order_relaxed));
+		*y = static_cast<s16>(h.param_y.load(std::memory_order_relaxed));
+		return count;
+	}
+
+	bool IsKnownGame(std::string_view serial)
+	{
+		for (const GameConfig& gc : s_game_config)
+		{
+			if (serial == gc.serial)
+				return true;
+		}
+		return false;
+	}
 
 	static constexpr s32 DEFAULT_SCREEN_WIDTH = 640;
 	static constexpr s32 DEFAULT_SCREEN_HEIGHT = 240;
@@ -253,7 +303,15 @@ namespace usb_lightgun
 			us->param_x = static_cast<u16>(data[0]) | (static_cast<u16>(data[1]) << 8);
 			us->param_y = static_cast<u16>(data[2]) | (static_cast<u16>(data[3]) << 8);
 			us->param_mode = static_cast<u16>(data[4]) | (static_cast<u16>(data[5]) << 8);
-			DevCon.WriteLn("GunCon2 Set Param %04X %d %d", us->param_mode, us->param_x, us->param_y);
+			// Always logged: it is the game's own calibration, which is what to look at when aiming is off.
+			Console.WriteLn("GunCon2 Set Param %04X %d %d", us->param_mode, us->param_x, us->param_y);
+			if (us->port < std::size(s_host_state))
+			{
+				HostState& h = s_host_state[us->port];
+				h.param_x.store(us->param_x, std::memory_order_relaxed);
+				h.param_y.store(us->param_y, std::memory_order_relaxed);
+				h.param_count.fetch_add(1, std::memory_order_release);
+			}
 			return;
 		}
 
@@ -270,6 +328,10 @@ namespace usb_lightgun
 			{
 				if (p->ep->nr == 1)
 				{
+					// The frontend's buttons replace the bound ones while it drives this port.
+					if (us->port < std::size(s_host_state) && s_host_state[us->port].active.load(std::memory_order_acquire))
+						us->button_state = s_host_state[us->port].buttons.load(std::memory_order_relaxed);
+
 					const auto [pos_x, pos_y] = us->CalculatePosition();
 
 					// Time Crisis games do a "calibration" by displaying a black frame for a single frame,
@@ -371,9 +433,22 @@ namespace usb_lightgun
 	std::tuple<s16, s16> GunCon2State::CalculatePosition()
 	{
 		float pointer_x, pointer_y;
-		const auto& [window_x, window_y] =
-			(has_relative_binds) ? GetAbsolutePositionFromRelativeAxes() : InputManager::GetPointerAbsolutePosition(0);
-		GSTranslateWindowToDisplayCoordinates(window_x, window_y, &pointer_x, &pointer_y);
+		if (port < std::size(s_host_state) && s_host_state[port].active.load(std::memory_order_acquire))
+		{
+			// This port's own aim, from the frontend.
+			const HostState& h = s_host_state[port];
+			if (h.aim_valid.load(std::memory_order_relaxed))
+				GSTranslateWindowToDisplayCoordinates(h.x.load(std::memory_order_relaxed), h.y.load(std::memory_order_relaxed),
+					&pointer_x, &pointer_y);
+			else
+				pointer_x = pointer_y = -1.0f;
+		}
+		else
+		{
+			const auto& [window_x, window_y] =
+				(has_relative_binds) ? GetAbsolutePositionFromRelativeAxes() : InputManager::GetPointerAbsolutePosition(0);
+			GSTranslateWindowToDisplayCoordinates(window_x, window_y, &pointer_x, &pointer_y);
+		}
 
 		s16 pos_x, pos_y;
 		if (pointer_x < 0.0f || pointer_y < 0.0f)
