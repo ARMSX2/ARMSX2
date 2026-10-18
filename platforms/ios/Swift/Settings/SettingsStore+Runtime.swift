@@ -93,17 +93,25 @@ extension SettingsStore {
     }
 
     static func clampedTextureOffset(_ offset: Int) -> Int {
-        min(max(offset, textureOffsetRange.lowerBound), textureOffsetRange.upperBound)
+        clamped(offset, to: textureOffsetRange)
     }
 
     static func clampedSkipDraw(_ value: Int) -> Int {
-        min(max(value, skipDrawRange.lowerBound), skipDrawRange.upperBound)
+        clamped(value, to: skipDrawRange)
     }
 
     static func normalizedSkipDrawEnd(start: Int, end: Int) -> Int {
         let clampedStart = clampedSkipDraw(start)
         let clampedEnd = clampedSkipDraw(end)
         return clampedStart > 0 && clampedEnd < clampedStart ? clampedStart : clampedEnd
+    }
+
+    static func normalizedSkipDrawEnd(start: Int, end: Int, startOverride: Bool, endOverride: Bool) -> Int {
+        let clampedEnd = clampedSkipDraw(end)
+        guard startOverride && endOverride else {
+            return clampedEnd
+        }
+        return normalizedSkipDrawEnd(start: start, end: clampedEnd)
     }
 
     // MARK: - CPU rounding/clamp writers

@@ -19,6 +19,7 @@
 #import <GameController/GameController.h>
 
 #import "ARMSX2iOS-Swift.h"
+#import "ARMSX2Bridge.h"
 
 #include "IOSRuntime.h"
 #import "PCSX2AppDelegate.h"
@@ -80,8 +81,7 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
     
     // --- Setup PCSX2 Environment (Moved from SceneDelegate) ---
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths objectAtIndex:0];
+    NSString *documentsDirectory = [ARMSX2Bridge documentsDirectory];
     NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
     
     std::string dataRoot = [documentsDirectory UTF8String];

@@ -87,6 +87,13 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void);
 // Snapshots the upscaling hacks the running game ended up with, after the masks and
 // the GameDB have had their say. CPU thread only, since it reads EmuConfig.
 extern "C" void ARMSX2_CaptureGraphicsHackState(void);
+extern "C" void ARMSX2_SetSDLFullscreen(bool enabled);
+extern "C" bool ARMSX2_IsSDLFullscreen();
+extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outThermalState,
+                                          double* outRamGB, bool* outLowPower);
+extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason);
+extern "C" void ARMSX2_iOSTestGamepadRumble(void);
+extern "C" bool ARMSX2_IsIdleVMPrewarmResolved(void);
 // Runtime telemetry gate (env-gated, cached).
 bool ARMSX2IOSRuntimeTelemetryEnabled();
 
@@ -140,6 +147,7 @@ void ARMSX2IOSSanitizeFolderSettings(SettingsInterface* si, const std::string& d
                                      const char* reason);
 void ARMSX2IOSApplyRetroAchievementsOverlayDefaults(SettingsInterface* si, const char* reason);
 void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason);
+float ARMSX2SanitizedNominalScalar(float scalar);
 void ARMSX2SanitizeFrameLimiterConfig(const char* reason);
 void ARMSX2IOSLogMemoryCardConfig(const char* reason);
 bool ARMSX2ResolveFastBootForISO(const std::string& isoPath);

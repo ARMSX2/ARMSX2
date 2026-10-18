@@ -110,7 +110,7 @@ struct PadLayoutEditView: View {
                     snapshot.fittedToPortraitDeck(
                         $0,
                         size: CGSize(width: editAreaW, height: editAreaH),
-                        analogStickScale: min(max(CGFloat(settings.analogStickScale), 0.8), 1.6)
+                        analogStickScale: CGFloat(SettingsStore.clampedAnalogStickScale(settings.analogStickScale))
                     )
                 } ?? snapshot
             }
@@ -807,7 +807,7 @@ struct PadLayoutEditView: View {
 
     @ViewBuilder
     private func editorControls(areaW: CGFloat, areaH: CGFloat, isLandscape: Bool, fitted: PadLayoutSnapshot? = nil, fit: PadPortraitFit? = nil) -> some View {
-        let stickScale = min(max(CGFloat(settings.analogStickScale), 0.8), 1.6)
+        let stickScale = CGFloat(SettingsStore.clampedAnalogStickScale(settings.analogStickScale))
         let overlaps = overlappingControlIDs(
             in: (fitted ?? layout.snapshot()).controlGeometries(size: CGSize(width: areaW, height: areaH), landscape: isLandscape, analogStickScale: stickScale)
         )

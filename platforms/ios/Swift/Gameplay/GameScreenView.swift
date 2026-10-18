@@ -234,7 +234,7 @@ func portraitGameSplit(
     analogStickScale: Float
 ) -> (gameHeight: CGFloat, fitted: PadLayoutSnapshot?, fit: PadPortraitFit?) {
     let barBase = geo.safeAreaInsets.bottom - GameplayControllerShortcutHelpOverlay.homeIndicatorSink(geo.safeAreaInsets.bottom)
-    let stickScale = min(max(CGFloat(analogStickScale), 0.8), 1.6)
+    let stickScale = CGFloat(SettingsStore.clampedAnalogStickScale(analogStickScale))
     let envelope = snapshot?.portraitEnvelope(analogStickScale: stickScale)
     let padFloor = envelope.map {
         max(0, deckHeight - ($0.height * PadPortraitFit.outerMinimumScale + PadPortraitFit.topGap + barBase))

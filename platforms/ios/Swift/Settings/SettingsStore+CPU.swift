@@ -12,6 +12,10 @@ extension SettingsStore {
         min(max(value, range.lowerBound), range.upperBound)
     }
 
+    static func clampedEECycleRate(_ value: Int) -> Int {
+        clamped(value, to: eeCycleRateRange)
+    }
+
     static func eeClampModeFromBools(_ overflow: Bool, _ extra: Bool, _ full: Bool) -> Int {
         if full { return 3 }
         if extra { return 2 }

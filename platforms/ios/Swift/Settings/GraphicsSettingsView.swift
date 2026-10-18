@@ -571,8 +571,7 @@ struct GraphicsSettingsView: View {
 
     /// Empties Documents/cache: achievement images, plus the VU program cache when that is turned on.
     private func clearShaderCache() {
-        let docsPath = ARMSX2Bridge.documentsDirectory()
-        let cacheURL = URL(fileURLWithPath: (docsPath as NSString).appendingPathComponent("cache"), isDirectory: true)
+        let cacheURL = URL.documentsDirectory.appendingPathComponent("cache", isDirectory: true)
         let fileManager = FileManager.default
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: cacheURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {

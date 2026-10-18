@@ -424,7 +424,7 @@ struct EmulatorSettingsView: View {
 
             Section {
                 Picker(settings.localized("EE Cycle Rate"), selection: $settings.eeCycleRate) {
-                    ForEach(-3...3, id: \.self) { value in
+                    ForEach(SettingsStore.eeCycleRateRange, id: \.self) { value in
                         Text(value > 0 ? "+\(value)" : "\(value)").tag(value)
                     }
                 }
@@ -432,7 +432,7 @@ struct EmulatorSettingsView: View {
                     id: "settings.emulator.ee-cycle-rate",
                     label: settings.localized("EE Cycle Rate"),
                     selection: $settings.eeCycleRate,
-                    options: Array(-3...3).map { value in
+                    options: Array(SettingsStore.eeCycleRateRange).map { value in
                         (id: value, title: value > 0 ? "+\(value)" : "\(value)")
                     }
                 )

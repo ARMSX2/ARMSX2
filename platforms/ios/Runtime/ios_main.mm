@@ -83,7 +83,7 @@ struct rc_client_t;
 // Game render view with CAMetalLayer as backing layer (like MTKView)
 // Game render view — backing layer (CAMetalLayer), manual landscape toggle
 #include "pcsx2/MTGS.h"
-extern void GSResizeDisplayWindow(u32 width, u32 height, float scale);
+#include "pcsx2/GS/GS.h"
 
 #pragma mark - Init helpers
 static std::vector<u8> s_imguiStandardFontData;

@@ -235,6 +235,7 @@ final class SettingsStore {
     static let defaultEmulatorVolumePercent = 100
     static let textureOffsetRange = -4096...4096
     static let skipDrawRange = 0...5000
+    static let eeCycleRateRange = -3...3
     // Named so the stepper, the per-game panel and the global codec all agree.
     static let vsyncQueueRange = 2...16
     static let audioBufferMsRange = 10...200
@@ -745,7 +746,6 @@ final class SettingsStore {
         suppressible: false,
         codec: .bool)
     var wildArmsOffset: Bool = false { didSet { commit(_wildArmsOffsetConfig, wildArmsOffset) } }
-    // clamps to -4096...4096
     var textureOffsetX: Int {
         didSet {
             let normalized = Self.clampedTextureOffset(textureOffsetX)
@@ -757,7 +757,6 @@ final class SettingsStore {
             requestGraphicsApplyGuarded()
         }
     }
-    // clamps to -4096...4096
     var textureOffsetY: Int {
         didSet {
             let normalized = Self.clampedTextureOffset(textureOffsetY)
@@ -769,7 +768,6 @@ final class SettingsStore {
             requestGraphicsApplyGuarded()
         }
     }
-    // clamps to 0...5000
     var skipDrawStart: Int {
         didSet {
             let normalized = Self.clampedSkipDraw(skipDrawStart)
@@ -781,7 +779,6 @@ final class SettingsStore {
             requestGraphicsApplyGuarded()
         }
     }
-    // clamps to 0...5000
     var skipDrawEnd: Int {
         didSet {
             let normalized = Self.clampedSkipDraw(skipDrawEnd)

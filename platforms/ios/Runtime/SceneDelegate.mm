@@ -83,9 +83,7 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     ARMSX2InstallNativeGamepadDpadObserversOnMain();
     
-    NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths objectAtIndex:0];
-    std::string dataRoot = [documentsDirectory UTF8String];
+    std::string dataRoot = [[ARMSX2Bridge documentsDirectory] UTF8String];
     
     EmuFolders::DataRoot = dataRoot;
     EmuFolders::Bios = dataRoot + "/bios";
@@ -351,7 +349,7 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 #pragma mark - BIOS discovery
 - (void)checkAndConfigureBIOS {
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *docs = [ARMSX2Bridge documentsDirectory];
     NSString *biosDir = [docs stringByAppendingPathComponent:@"bios"];
     [fm createDirectoryAtPath:biosDir withIntermediateDirectories:YES attributes:nil error:nil];
 
@@ -1070,7 +1068,6 @@ static void ARMSX2StartJITKeepalive()
 - (void)sceneWillResignActive:(UIScene *)scene {
 // NVM save when app loses focus
     if (s_vmThreadActive.load(std::memory_order_relaxed) && !BiosPath.empty()) {
-        extern void cdvdSaveNVRAM();
         cdvdSaveNVRAM();
         Console.WriteLn("[NVM] NVM saved on sceneWillResignActive");
     }
@@ -1087,7 +1084,6 @@ static void ARMSX2StartJITKeepalive()
     // because cdvdSaveNVRAM() is only called at VM shutdown, which never
     // happens when iOS terminates the app via SIGTERM.
     if (s_vmThreadActive.load(std::memory_order_relaxed) && !BiosPath.empty()) {
-        extern void cdvdSaveNVRAM();
         cdvdSaveNVRAM();
         Console.WriteLn("[NVM] NVM saved on sceneDidEnterBackground");
     }

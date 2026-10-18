@@ -371,8 +371,8 @@ struct PerGameSettingsPanel: View {
                 ? .gameController
                 : (initiallySelectsShaders ? .graphics : .general)
         )
-        let inheritedVolume = Self.clampedVolume(Self.intValue(info["globalVolumePercent"], defaultValue: SettingsStore.defaultEmulatorVolumePercent))
-        let loadedVolume = Self.clampedVolume(Self.intValue(info["volumePercent"], defaultValue: inheritedVolume))
+        let inheritedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info["globalVolumePercent"], defaultValue: SettingsStore.defaultEmulatorVolumePercent))
+        let loadedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info["volumePercent"], defaultValue: inheritedVolume))
         _globalVolumePercent = State(initialValue: inheritedVolume)
         _volumeOverride = State(initialValue: Self.boolValue(info["hasVolumeOverride"], defaultValue: false))
         _volumePercent = State(initialValue: loadedVolume)
@@ -396,13 +396,13 @@ struct PerGameSettingsPanel: View {
         _mergeSprite = State(initialValue: Self.boolValue(info["hasMergeSpriteOverride"], defaultValue: false) ? (Self.boolValue(info["mergeSprite"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
         _wildArmsOffset = State(initialValue: Self.boolValue(info["hasWildArmsOffsetOverride"], defaultValue: false) ? (Self.boolValue(info["wildArmsOffset"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel)
         _textureOffsetXOverride = State(initialValue: Self.boolValue(info["hasTextureOffsetXOverride"], defaultValue: false))
-        _textureOffsetX = State(initialValue: Self.clampedTextureOffset(Self.intValue(info["textureOffsetX"], defaultValue: 0)))
+        _textureOffsetX = State(initialValue: SettingsStore.clampedTextureOffset(Self.intValue(info["textureOffsetX"], defaultValue: 0)))
         _textureOffsetYOverride = State(initialValue: Self.boolValue(info["hasTextureOffsetYOverride"], defaultValue: false))
-        _textureOffsetY = State(initialValue: Self.clampedTextureOffset(Self.intValue(info["textureOffsetY"], defaultValue: 0)))
+        _textureOffsetY = State(initialValue: SettingsStore.clampedTextureOffset(Self.intValue(info["textureOffsetY"], defaultValue: 0)))
         let hasSkipDrawStartOverride = Self.boolValue(info["hasSkipDrawStartOverride"], defaultValue: false)
         let hasSkipDrawEndOverride = Self.boolValue(info["hasSkipDrawEndOverride"], defaultValue: false)
-        let initialSkipDrawStart = Self.clampedSkipDraw(Self.intValue(info["skipDrawStart"], defaultValue: 0))
-        let initialSkipDrawEnd = Self.normalizedSkipDrawEnd(
+        let initialSkipDrawStart = SettingsStore.clampedSkipDraw(Self.intValue(info["skipDrawStart"], defaultValue: 0))
+        let initialSkipDrawEnd = SettingsStore.normalizedSkipDrawEnd(
             start: initialSkipDrawStart,
             end: Self.intValue(info["skipDrawEnd"], defaultValue: 0),
             startOverride: hasSkipDrawStartOverride,
@@ -414,9 +414,9 @@ struct PerGameSettingsPanel: View {
         _skipDrawEnd = State(initialValue: initialSkipDrawEnd)
         _eeCoreType = State(initialValue: Self.intValue(info["eeCoreType"], defaultValue: 2))
         _mtvu = State(initialValue: Self.boolValue(info["mtvu"], defaultValue: true))
-        let inheritedEECycleRate = Self.clampedEECycleRate(Self.intValue(info["globalEECycleRate"], defaultValue: 0))
+        let inheritedEECycleRate = SettingsStore.clampedEECycleRate(Self.intValue(info["globalEECycleRate"], defaultValue: 0))
         _globalEECycleRate = State(initialValue: inheritedEECycleRate)
-        _eeCycleRate = State(initialValue: Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) ? Self.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel)
+        _eeCycleRate = State(initialValue: Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) ? SettingsStore.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel)
         let inheritedEECycleSkip = SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)), to: 0...3)
         _globalEECycleSkip = State(initialValue: inheritedEECycleSkip)
         let inheritedFastBoot = Self.boolValue(info["globalFastBoot"], defaultValue: false)
@@ -2629,7 +2629,7 @@ struct PerGameSettingsPanel: View {
             "eeCoreType": enabled ? Int32(eeCoreType) : 0,
             "mtvu": enabled && mtvu,
             "hasEECycleRateOverride": enabled && eeCycleRate != Self.eeCycleRateUseGlobalSentinel,
-            "eeCycleRate": Int32(Self.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
+            "eeCycleRate": Int32(SettingsStore.clampedEECycleRate(eeCycleRate == Self.eeCycleRateUseGlobalSentinel ? globalEECycleRate : eeCycleRate)),
             "hasFastBootOverride": enabled && fastBoot != Self.fastBootUseGlobalSentinel,
             "fastBoot": fastBoot == Self.fastBootOn,
             "enableCheats": enabled && enableCheats,
@@ -2920,8 +2920,8 @@ struct PerGameSettingsPanel: View {
     }
 
     private func normalizedSkipDrawValues() -> (start: Int, end: Int) {
-        let start = Self.clampedSkipDraw(skipDrawStart)
-        let end = Self.normalizedSkipDrawEnd(
+        let start = SettingsStore.clampedSkipDraw(skipDrawStart)
+        let end = SettingsStore.normalizedSkipDrawEnd(
             start: start,
             end: skipDrawEnd,
             startOverride: skipDrawStartOverride,
@@ -2961,29 +2961,5 @@ struct PerGameSettingsPanel: View {
             return number.floatValue
         }
         return defaultValue
-    }
-
-    private static func clampedTextureOffset(_ offset: Int) -> Int {
-        min(max(offset, SettingsStore.textureOffsetRange.lowerBound), SettingsStore.textureOffsetRange.upperBound)
-    }
-
-    private static func clampedSkipDraw(_ value: Int) -> Int {
-        min(max(value, SettingsStore.skipDrawRange.lowerBound), SettingsStore.skipDrawRange.upperBound)
-    }
-
-    private static func clampedVolume(_ value: Int) -> Int {
-        SettingsStore.clampedEmulatorVolumePercent(value)
-    }
-
-    private static func clampedEECycleRate(_ value: Int) -> Int {
-        min(max(value, -3), 3)
-    }
-
-    private static func normalizedSkipDrawEnd(start: Int, end: Int, startOverride: Bool, endOverride: Bool) -> Int {
-        let clampedEnd = clampedSkipDraw(end)
-        guard startOverride && endOverride else {
-            return clampedEnd
-        }
-        return SettingsStore.normalizedSkipDrawEnd(start: start, end: clampedEnd)
     }
 }

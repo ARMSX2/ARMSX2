@@ -118,11 +118,7 @@ enum VirtualPadSkin: Int, CaseIterable, Identifiable {
     }
 
     static func legacyCustomSkinDirectory(create: Bool = false) -> URL? {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-
-        let directory = documents.appendingPathComponent("ControllerSkins/Custom", isDirectory: true)
+        let directory = URL.documentsDirectory.appendingPathComponent("ControllerSkins/Custom", isDirectory: true)
         if create {
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }

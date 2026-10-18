@@ -33,7 +33,7 @@ struct VirtualControllerView: View {
     }
 
     private var analogStickScale: CGFloat {
-        min(max(CGFloat(settings.analogStickScale), 0.8), 1.6)
+        CGFloat(SettingsStore.clampedAnalogStickScale(settings.analogStickScale))
     }
 
     private var effectiveSkinDescriptor: VPadSkinDescriptor {

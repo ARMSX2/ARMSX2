@@ -598,7 +598,7 @@ struct GraphicsTab: View {
         Binding(
             get: { skipDrawStart },
             set: { newValue in
-                skipDrawStart = Self.clampedSkipDraw(newValue)
+                skipDrawStart = SettingsStore.clampedSkipDraw(newValue)
                 normalizeSkipDrawRangeIfNeeded()
             }
         )
@@ -608,7 +608,7 @@ struct GraphicsTab: View {
         Binding(
             get: { skipDrawEnd },
             set: { newValue in
-                skipDrawEnd = Self.normalizedSkipDrawEnd(
+                skipDrawEnd = SettingsStore.normalizedSkipDrawEnd(
                     start: skipDrawStart,
                     end: newValue,
                     startOverride: skipDrawStartOverride,
@@ -629,25 +629,13 @@ struct GraphicsTab: View {
     }
 
     private func normalizedSkipDrawValues() -> (start: Int, end: Int) {
-        let start = Self.clampedSkipDraw(skipDrawStart)
-        let end = Self.normalizedSkipDrawEnd(
+        let start = SettingsStore.clampedSkipDraw(skipDrawStart)
+        let end = SettingsStore.normalizedSkipDrawEnd(
             start: start,
             end: skipDrawEnd,
             startOverride: skipDrawStartOverride,
             endOverride: skipDrawEndOverride
         )
         return (start, end)
-    }
-
-    private static func clampedSkipDraw(_ value: Int) -> Int {
-        min(max(value, SettingsStore.skipDrawRange.lowerBound), SettingsStore.skipDrawRange.upperBound)
-    }
-
-    private static func normalizedSkipDrawEnd(start: Int, end: Int, startOverride: Bool, endOverride: Bool) -> Int {
-        let clampedEnd = clampedSkipDraw(end)
-        guard startOverride && endOverride else {
-            return clampedEnd
-        }
-        return SettingsStore.normalizedSkipDrawEnd(start: start, end: clampedEnd)
     }
 }

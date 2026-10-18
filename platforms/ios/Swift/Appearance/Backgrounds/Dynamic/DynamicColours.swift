@@ -611,10 +611,9 @@ struct ThemePaletteControls: View {
     }
   }
 
-  // Two separate things force the dark gradient to zero in DynamicBackgroundTheme, and the
-  // slider only ever greyed out for the first. The second is the eye button on a saved
-  // palette, which lives in another section and says nothing about this one, so the slider
-  // sat at full strength doing nothing with no way to work out why.
+  // DynamicBackgroundTheme zeroes the dark gradient for two reasons: this section's switch and
+  // the eye button on a saved palette, which lives in another section. Both grey the slider out
+  // so it never sits at full strength doing nothing.
   private var darkGradientIsInert: Bool {
     particleSettings.disablesDarkPaletteEffects || sharedCustomColor?.usesDarkEffect == false
   }
@@ -797,13 +796,14 @@ struct ThemePaletteControls: View {
     formattedValue: String,
     resetValue: Double
   ) -> some View {
-    DynamicSettingsValueSlider(
-      title: title,
+    NumberRow(
+      title,
       value: value,
-      range: range,
+      in: range,
+      format: .opaque(formattedValue),
       step: step,
-      formattedValue: formattedValue,
-      resetValue: resetValue
+      default: resetValue,
+      settings: SettingsStore.shared
     )
   }
 

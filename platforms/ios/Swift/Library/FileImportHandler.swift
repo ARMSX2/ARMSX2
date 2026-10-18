@@ -121,7 +121,7 @@ final class FileImportHandler {
             return []
         }
 
-        let docsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+        let docsPath = URL.documentsDirectory.path
         let destinationDirectory = (docsPath as NSString).appendingPathComponent(directoryName)
         var existingFileNames: [String] = []
         var seenFileNames = Set<String>()
@@ -178,7 +178,7 @@ final class FileImportHandler {
             return importPNACHFile(url, asCheat: true)
         }
 
-        let docsPath = NSSearchPathForDirectoriesInDomains(.documentDirectory, .userDomainMask, true).first!
+        let docsPath = URL.documentsDirectory.path
 
         // Determine destination
         let destDir: String

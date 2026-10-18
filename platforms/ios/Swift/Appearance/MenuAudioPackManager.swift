@@ -1084,10 +1084,7 @@ final class MenuAudioPackManager {
     }
 
     private nonisolated static var storageRootURL: URL {
-        let manager = FileManager.default
-        let base = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? manager.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? manager.temporaryDirectory
+        let base = URL.applicationSupportDirectory
         return base.appendingPathComponent("ARMSX2", isDirectory: true)
             .appendingPathComponent("UIAudioPack", isDirectory: true)
     }

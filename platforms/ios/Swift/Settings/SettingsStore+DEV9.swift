@@ -9,7 +9,7 @@ extension SettingsStore {
     /// players copy the image in themselves and the core never creates it on iOS.
     func excludeHddImageFromBackup() {
         let fileName = dev9HddFile.isEmpty ? "DEV9hdd.raw" : dev9HddFile
-        let inis = URL(fileURLWithPath: ARMSX2Bridge.documentsDirectory()).appendingPathComponent("inis", isDirectory: true)
+        let inis = URL.documentsDirectory.appendingPathComponent("inis", isDirectory: true)
         var imageURL = URL(fileURLWithPath: fileName, relativeTo: inis).absoluteURL
         guard FileManager.default.fileExists(atPath: imageURL.path) else { return }
         var values = URLResourceValues()

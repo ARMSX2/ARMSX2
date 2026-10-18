@@ -838,9 +838,7 @@ final class PatchStore {
     private static let sidecarFilename = "CheatsMetadata.json"
 
     private var sidecarURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
+        let base = URL.applicationSupportDirectory
         let directory = base.appendingPathComponent("ARMSX2", isDirectory: true)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent(Self.sidecarFilename)
