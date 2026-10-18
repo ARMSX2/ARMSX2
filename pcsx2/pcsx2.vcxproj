@@ -207,6 +207,10 @@
     <ClCompile Include="Arcade\ArcadeFiles.cpp" />
     <ClCompile Include="Arcade\ArcadeInput.cpp" />
     <ClCompile Include="Arcade\ArcadeSetup.cpp" />
+    <ClCompile Include="AutoTune\AutoTuneApplier.cpp" />
+    <ClCompile Include="AutoTune\AutoTuneController.cpp" />
+    <ClCompile Include="AutoTune\AutoTuneSampler.cpp" />
+    <ClCompile Include="AutoTune\AutoTuneStore.cpp" />
     <ClCompile Include="arm64\AsmHelpers.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -754,6 +758,10 @@
     <ClInclude Include="Arcade\ArcadeFiles.h" />
     <ClInclude Include="Arcade\ArcadeInput.h" />
     <ClInclude Include="Arcade\ArcadeSetup.h" />
+    <ClInclude Include="AutoTune\AutoTuneApplier.h" />
+    <ClInclude Include="AutoTune\AutoTuneController.h" />
+    <ClInclude Include="AutoTune\AutoTuneSampler.h" />
+    <ClInclude Include="AutoTune\AutoTuneStore.h" />
     <ClInclude Include="arm64\AsmHelpers.h">
       <ExcludedFromBuild Condition="'$(Platform)'!='ARM64'">true</ExcludedFromBuild>
     </ClInclude>

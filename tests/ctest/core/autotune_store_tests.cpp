@@ -350,5 +350,5 @@ TEST(AutoTuneStore, LeverLabelsNameTheValue)
 	EXPECT_EQ(LeverLabel(AutoTuneLever::Resolution, 2.0), "resolution 2x");
 	EXPECT_EQ(LeverLabel(AutoTuneLever::DownloadMode, 5.0), "download mode Asynchronous");
 	EXPECT_EQ(LeverLabel(AutoTuneLever::Blending, 0.0), "blending Minimum");
-	EXPECT_EQ(LeverLabel(AutoTuneLever::IopThread, 1.0), "the IOP thread");
+	EXPECT_EQ(LeverLabel(AutoTuneLever::IopThread, 1.0), "IOP thread");
 }

@@ -1463,6 +1463,18 @@
     <ClCompile Include="Arcade\ArcadeSetup.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
+    <ClCompile Include="AutoTune\AutoTuneApplier.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="AutoTune\AutoTuneController.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="AutoTune\AutoTuneSampler.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
+    <ClCompile Include="AutoTune\AutoTuneStore.cpp">
+      <Filter>Misc</Filter>
+    </ClCompile>
     <ClCompile Include="Autosave.cpp">
       <Filter>Misc</Filter>
     </ClCompile>
@@ -2605,6 +2617,18 @@
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Arcade\ArcadeSetup.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="AutoTune\AutoTuneApplier.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="AutoTune\AutoTuneController.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="AutoTune\AutoTuneSampler.h">
+      <Filter>Misc</Filter>
+    </ClInclude>
+    <ClInclude Include="AutoTune\AutoTuneStore.h">
       <Filter>Misc</Filter>
     </ClInclude>
     <ClInclude Include="Autosave.h">

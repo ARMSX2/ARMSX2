@@ -425,11 +425,11 @@ std::string AutoTune::LeverLabel(AutoTuneLever lever, double value)
 		case AutoTuneLever::Blending:
 			return fmt::format(TRANSLATE_FS("AutoTune", "blending {}"), DisplayValue(lever, fmt::format("{:g}", value)));
 		case AutoTuneLever::IopThread:
-			return std::string(TRANSLATE_SV("AutoTune", "the IOP thread"));
+			return std::string(TRANSLATE_SV("AutoTune", "IOP thread"));
 		case AutoTuneLever::EeGovernor:
-			return std::string(TRANSLATE_SV("AutoTune", "the EE governor"));
+			return std::string(TRANSLATE_SV("AutoTune", "EE governor"));
 		case AutoTuneLever::GsBackThread:
-			return std::string(TRANSLATE_SV("AutoTune", "the GS back thread"));
+			return std::string(TRANSLATE_SV("AutoTune", "GS back thread"));
 		default:
 			return "?";
 	}

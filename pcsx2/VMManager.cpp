@@ -15,6 +15,7 @@
 #include "FW.h"
 #include "GS.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
+#include "AutoTune/AutoTuneApplier.h"
 #include "GSDumpReplayer.h"
 #include "GameDatabase.h"
 #include "GameList.h"
@@ -255,6 +256,8 @@ static u32 s_iop_placement_token = 0;
 
 static LimiterModeType s_limiter_mode = LimiterModeType::Nominal;
 static s64 s_limiter_ticks_per_frame = 0;
+// Set when either limiter call of the current frame found the frame overrunning; auto-tune counts the frame once.
+static bool s_limiter_frame_overran = false;
 static u64 s_limiter_frame_start = 0;
 static float s_target_speed = 0.0f;
 static bool s_target_speed_can_sync_to_host = false;
@@ -364,6 +367,7 @@ void VMManager::SetState(VMState state)
 		{
 			PerformanceMetrics::Reset();
 			ResetFrameLimiter();
+			AutoTune::OnResumed();
 		}
 
 		SPU2::SetOutputPaused(paused);
@@ -1031,6 +1035,7 @@ void VMManager::ApplySettings()
 	CheckForConfigChanges(old_config);
 	if (s_emulation_only_mode.load(std::memory_order_acquire))
 		ReleaseNonEssentialRuntimeResources(s_emulation_only_release_flags.load(std::memory_order_acquire));
+	AutoTune::OnSettingsApplied();
 }
 
 void VMManager::ApplyCoreSettings()
@@ -1066,6 +1071,7 @@ void VMManager::ApplyCoreSettings()
 	CheckForConfigChanges(old_config);
 	if (s_emulation_only_mode.load(std::memory_order_acquire))
 		ReleaseNonEssentialRuntimeResources(s_emulation_only_release_flags.load(std::memory_order_acquire));
+	AutoTune::OnSettingsApplied();
 }
 
 bool VMManager::ReloadGameSettings()
@@ -1470,6 +1476,8 @@ void VMManager::UpdateDiscDetails(bool booting)
 	Console.WriteLn(Color_StrongGreen, fmt::format("  Version: {}", s_disc_version));
 	Console.WriteLn(Color_StrongGreen, fmt::format("  CRC: {:08X}", s_disc_crc));
 
+	// A trial of the previous game must not reach the settings that are about to be applied.
+	AutoTune::OnGameChanged();
 	UpdateGameSettingsLayer();
 	ApplySettings();
 
@@ -2334,6 +2342,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	}
 
 	PerformanceMetrics::Clear();
+	AutoTune::OnVMStarted();
 	return VMBootResult::StartupSuccess;
 }
 
@@ -2342,6 +2351,9 @@ void VMManager::Shutdown(bool save_resume_state)
 	// we'll probably already be stopping (this is how Qt calls shutdown),
 	// but just in case, so any of the stuff we call here knows we don't have a valid VM.
 	s_state.store(VMState::Stopping, std::memory_order_release);
+
+	// Empties and removes auto-tune's trial layer before anything below applies settings.
+	AutoTune::OnVMShutdown();
 
 	PerformanceMetrics::LogSessionSummary();
 
@@ -2528,6 +2540,7 @@ void VMManager::Reset()
 	}
 
 	ResetFrameLimiter();
+	AutoTune::OnSceneChanged();
 
 	// If we were paused, state won't be resetting, so don't flip back to running.
 	if (s_state.load(std::memory_order_acquire) == VMState::Resetting)
@@ -2635,6 +2648,7 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 	}
 
 	MemcardBusy::CheckSaveStateDependency();
+	AutoTune::OnSceneChanged();
 	return true;
 }
 
@@ -3008,6 +3022,7 @@ float VMManager::GetFrameRate()
 void VMManager::ResetFrameLimiter()
 {
 	s_limiter_frame_start = GetCPUTicks();
+	s_limiter_frame_overran = false;
 }
 
 void VMManager::Internal::Throttle(bool vsync_start)
@@ -3027,6 +3042,15 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	PerformanceMetrics::AdpfEndWorkSegment(!vsync_start);
 	ScopedGuard adpf_begin_next_work([]() { PerformanceMetrics::AdpfBeginFrameWork(); });
 
+	// Throttle runs twice per frame; the frame is closed by the second call, whichever way it returns.
+	ScopedGuard close_frame([vsync_start]() {
+		if (!vsync_start)
+		{
+			AutoTune::OnLimitedFrame(s_limiter_frame_overran);
+			s_limiter_frame_overran = false;
+		}
+	});
+
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
 		(vsync_start ? (s_limiter_ticks_per_frame * 0.9) : s_limiter_ticks_per_frame); // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
@@ -3036,6 +3060,8 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	// If frame ran too long...
 	if (sDeltaTime >= s_limiter_ticks_per_frame)
 	{
+		s_limiter_frame_overran = true;
+
 		// ... Fudge the next frame start over a bit. Prevents fast forward zoomies.
 		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame) * s_limiter_ticks_per_frame;
 		return;
@@ -3714,6 +3740,7 @@ void VMManager::Internal::EntryPointCompilingOnCPUThread()
 	Console.WriteLn(
 		Color_StrongGreen, fmt::format("ELF {} with entry point at 0x{:08X} is executing.", s_elf_path, s_elf_entry_point));
 	s_elf_executed = true;
+	AutoTune::OnSceneChanged();
 
 	if (reset_speed_limiter)
 	{
@@ -3758,6 +3785,8 @@ void VMManager::Internal::VSyncOnCPUThread()
 	Achievements::FrameUpdate();
 
 	PollDiscordPresence();
+
+	AutoTune::OnVSync();
 }
 
 void VMManager::Internal::PollInputOnCPUThread()
