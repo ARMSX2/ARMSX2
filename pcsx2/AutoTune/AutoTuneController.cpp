@@ -12,6 +12,8 @@
 namespace
 {
 	constexpr double kValueEpsilon = 1e-6;
+	// AccBlendLevel::Basic, the default. AutoTuneApplier.cpp static_asserts the numbering.
+	constexpr int kBlendingBasic = 1;
 
 	constexpr const char* kLeverNames[] = {
 		"iop-thread",
@@ -337,6 +339,22 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 	}
 }
 
+bool AutoTuneController::CheapLeversHaveSomethingToGive(double speed_pct, const AutoTuneLeverState& s) const
+{
+	// Blending only gives a lot from above Basic; Basic to Minimum is a small, scene-dependent step (and the
+	// only one left at the default), so it does not justify putting the cheap levers before the resolution.
+	if (s.blending_level <= kBlendingBasic)
+		return false;
+
+	// With a notch to take: one notch from r removes (r / next)^2 of the pixels, so it can give that much speed
+	// at most. If that gets to full speed, the resolution goes first.
+	const std::optional<double> next = TargetFor(AutoTuneLever::Resolution, s);
+	if (!next || !(*next > 0.0))
+		return true; // no notch (native, or the software renderer): there is no resolution step to put them before
+	const double pixels = (s.resolution / *next) * (s.resolution / *next);
+	return speed_pct * pixels < 100.0;
+}
+
 AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 {
 	// Average the bad windows that triggered this.
@@ -415,8 +433,9 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 	std::vector<double> streak_speeds;
 	for (const AutoTuneWindow& w : m_streak_windows)
 		streak_speeds.push_back(w.speed_pct);
-	const bool far_below = m_policy.cheap_levers_first_below_pct > 0.0 &&
-	                       AutoTuneSummarize(streak_speeds).centre < m_policy.cheap_levers_first_below_pct;
+	const double centre_speed = AutoTuneSummarize(streak_speeds).centre;
+	const bool far_below = m_policy.cheap_levers_first_below_pct > 0.0 && centre_speed < m_policy.cheap_levers_first_below_pct &&
+	                       CheapLeversHaveSomethingToGive(centre_speed, state);
 
 	const AutoTuneLever* order = nullptr;
 	size_t count = 0;

@@ -36,7 +36,7 @@ static_assert(static_cast<int>(GSHardwareDownloadMode::NoReadbacks) == AutoTuneD
 static_assert(static_cast<int>(GSHardwareDownloadMode::Unsynchronized) == AutoTuneDownloadMode::Unsynchronized);
 static_assert(static_cast<int>(GSHardwareDownloadMode::Disabled) == AutoTuneDownloadMode::Disabled);
 static_assert(static_cast<int>(GSHardwareDownloadMode::Asynchronous) == AutoTuneDownloadMode::Asynchronous);
-static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Maximum) == 5);
+static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Basic) == 1 && static_cast<int>(AccBlendLevel::Maximum) == 5);
 
 void (*AutoTune::g_on_committed)(const char* section, const char* key, std::string_view value) = nullptr;
 

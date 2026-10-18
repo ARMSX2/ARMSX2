@@ -188,12 +188,18 @@ struct AutoTunePolicy
 	uint32_t scene_halves_min_windows = 8;
 	double scene_shift_fraction = 0.10;
 
-	/// Below this speed the game is so far from full speed that one notch of resolution cannot close the gap
-	/// (a notch removes at most (r / (r - 1))^2 of the pixels: 1.3x at 8x, 1.7x at 4x), so the levers whose
+	/// Below this speed the game can be so far from full speed that one notch of resolution cannot close the gap
+	/// (a notch removes at most (r / (r - 1))^2 of the pixels: 1.3x at 8x, 1.7x at 4x), and the levers whose
 	/// effect is not bounded that way are tried before resolution: blending accuracy and the download mode.
 	/// Measured on a God of War II scene at 8x with Maximum blending, 9% speed: six resolution trials moved
 	/// the speed from 9.4% to 13.1% over 70 s, and one blending step moved it from 13% to 100%. 0 turns the
 	/// reordering off.
+	///
+	/// It applies only where both of these hold. The blending is above Basic: the one step from Basic to Minimum
+	/// is not that kind of lever (it was worth +4% and -12% on the SD865 and cost 25 to 29 s there). And one
+	/// notch cannot plausibly reach full speed: speed x (r / next notch)^2 is under 100, where r is the current
+	/// multiplier and the next notch is the one the resolution lever would step to (at 1x there is no notch).
+	/// Shadow of the Colossus at 2x and 26% would be at 104% after one notch, and measured +127% for it.
 	double cheap_levers_first_below_pct = 50.0;
 
 	/// After a diagnosis that found nothing to act on, wait this long before saying so again.
@@ -432,6 +438,8 @@ private:
 	bool IsBad(const AutoTuneWindow& w) const;
 	AutoTuneAction Diagnose(const AutoTuneLeverState& state);
 	std::optional<double> TargetFor(AutoTuneLever lever, const AutoTuneLeverState& state) const;
+	/// Whether blending accuracy and the download mode are worth trying before the resolution at this speed.
+	bool CheapLeversHaveSomethingToGive(double speed_pct, const AutoTuneLeverState& state) const;
 	bool IsRejected(AutoTuneLever lever, double value, const AutoTuneLeverState& state) const;
 	/// The settle after a change is applied or undone: the hitch of whatever the change resets.
 	double SettleSecondsFor(AutoTuneLever lever) const;

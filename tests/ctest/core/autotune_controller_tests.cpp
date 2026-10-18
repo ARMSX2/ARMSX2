@@ -1767,7 +1767,7 @@ TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThr
 {
 	Rig rig;
 	BlendingAndDownloadAreOpen(rig, 8.0);
-	rig.state.blending_level = 1; // one step left to give: Basic to Minimum
+	rig.state.blending_level = 2; // one step left to give that a GPU-bound game is offered: Medium to Basic
 	rig.WarmUp();
 
 	std::vector<AutoTuneLever> tried;
@@ -1786,6 +1786,63 @@ TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThr
 	const std::vector<AutoTuneLever> expected = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode, AutoTuneLever::Resolution,
 		AutoTuneLever::GsBackThread};
 	EXPECT_EQ(tried, expected);
+}
+
+TEST(AutoTuneOrder, WithBasicBlendingThereIsNothingCheapToTryFirstSoTheResolutionGoesFirst)
+{
+	// Shadow of the Colossus at 3x on the SD865, 48%, blending Basic: the only blending step is Basic to
+	// Minimum, and it is not a speed lever on that GPU. The two cheap levers took 29 s and got nothing before the
+	// resolution step that fixed it.
+	Rig rig;
+	BlendingAndDownloadAreOpen(rig, 3.0);
+	rig.state.blending_level = 1;
+	rig.WarmUp();
+	EXPECT_EQ(rig.Trigger(Gpu(48.0)).lever, AutoTuneLever::Resolution);
+
+	// God of War II at 5x, 45%: the same.
+	Rig rig2;
+	BlendingAndDownloadAreOpen(rig2, 5.0);
+	rig2.state.blending_level = 1;
+	rig2.WarmUp();
+	EXPECT_EQ(rig2.Trigger(Gpu(44.6)).lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneOrder, TheCheapLeversGoFirstOnlyWhereOneNotchCannotReachFullSpeed)
+{
+	// One notch from r removes at most (r / (r - 1))^2 of the pixels. The speed times that decides.
+	const auto first = [](double resolution, double speed) {
+		Rig rig;
+		BlendingAndDownloadAreOpen(rig, resolution);
+		rig.WarmUp();
+		return rig.Trigger(Gpu(speed)).lever;
+	};
+
+	// 2x at 26%: 26 x 4 = 104, one notch gets there (Shadow of the Colossus on the MQ65, measured +127%).
+	EXPECT_EQ(first(2.0, 26.0), AutoTuneLever::Resolution);
+	// 3x at 48%: 48 x 2.25 = 108.
+	EXPECT_EQ(first(3.0, 48.0), AutoTuneLever::Resolution);
+	// 8x at 9%: 9 x 1.31 = 12 (the owner-approved God of War II case, where blending took it to 100% in 5 s).
+	EXPECT_EQ(first(8.0, 9.0), AutoTuneLever::Blending);
+	// 4x at 40%: 40 x 1.78 = 71, not enough; 2x at 20%: 20 x 4 = 80.
+	EXPECT_EQ(first(4.0, 40.0), AutoTuneLever::Blending);
+	EXPECT_EQ(first(2.0, 20.0), AutoTuneLever::Blending);
+}
+
+TEST(AutoTuneOrder, AtNativeResolutionThereIsNoNotchSoTheCheapLeversGoFirst)
+{
+	Rig rig;
+	BlendingAndDownloadAreOpen(rig, 1.0);
+	rig.WarmUp();
+	EXPECT_EQ(rig.Trigger(Gpu(30.0)).lever, AutoTuneLever::Blending);
+}
+
+TEST(AutoTuneOrder, TheNotchIsTheOneTheResolutionLeverWouldTake)
+{
+	// 2.5x steps to 2x, a ratio of 1.56 in pixels, not the 2.8 of a whole multiplier down to 1.5x.
+	Rig rig;
+	BlendingAndDownloadAreOpen(rig, 2.5);
+	rig.WarmUp();
+	EXPECT_EQ(rig.Trigger(Gpu(60.0 / 1.56 - 1.0)).lever, AutoTuneLever::Blending) << "37% x 1.5625 = 58%: not there";
 }
 
 TEST(AutoTuneOrder, ABackThreadStillGoesFirstWhenTheGsThreadsAreTheCause)
