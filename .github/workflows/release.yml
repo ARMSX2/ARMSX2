@@ -1,0 +1,268 @@
+# Stable release pipeline, run by hand from the Actions tab.
+#
+# Builds the stable Android APKs and the Linux arm64 AppImages from one commit, tags
+# that commit, and leaves everything on a DRAFT release. A maintainer writes the notes
+# and publishes it; nothing here publishes on its own.
+#
+#   * Android  -> the four tiered APKs, built by the same recipe as hand releases
+#                 (tools/build-release-targets.sh: dual page-size cores, PGO, rotation
+#                 signing). One matrix job per tier, since each builds the core twice.
+#   * Linux    -> the 4K and 16K page-size Qt AppImages, as in the nightly, on the
+#                 stable updater channel.
+#
+# The tag is created BEFORE anything builds: the AppImage reads its version from the tag
+# on HEAD, and without it a release build reports itself as "<previous>-N-g<sha>".
+# Re-running the workflow for the same version is fine as long as the tag still points
+# at the same commit and the release is still a draft.
+#
+# Required secrets (the nightly already uses the first six; they are the stable keys):
+#   NIGHTLY_DEBUG_KS_B64, NIGHTLY_RELEASE_KS_B64, NIGHTLY_LINEAGE_B64,
+#   NIGHTLY_RELEASE_KS_PASS, NIGHTLY_RELEASE_KEY_ALIAS, NIGHTLY_RELEASE_KEY_PASS
+#   DISCORD_SDK_URL    URL of a .tar.gz of the staged Discord SDK dir (include/, arm64-v8a/,
+#                      the .aar). Too large for a secret itself, so it lives elsewhere.
+#   DISCORD_SDK_TOKEN  optional bearer token for that URL (e.g. a private repo's asset)
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, without a leading v (e.g. 2.8.5). Becomes the tag and the Android versionName.'
+        required: true
+        type: string
+      version_code:
+        description: 'Android versionCode. Must be higher than the last stable release, or installed apps will not update.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  # ---- prepare: validate inputs, tag the commit, open the draft ----------
+  prepare:
+    name: Validate, tag and draft
+    if: ${{ github.repository == 'ARMSX2/ARMSX2' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VN: ${{ inputs.version }}
+      VC: ${{ inputs.version_code }}
+    steps:
+      - name: Check the version inputs
+        run: |
+          [[ "$VN" =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "::error::version '$VN' is not like 2.8.5"; exit 1; }
+          [[ "$VC" =~ ^[0-9]+$ ]] || { echo "::error::version_code '$VC' is not a number"; exit 1; }
+
+      # A versionCode at or below the installed one makes Android refuse the update, and
+      # nothing about the APK itself shows that. Compare against the last stable release.
+      - name: Check the versionCode goes up
+        run: |
+          LATEST="$(gh release list -R "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts -L 100 \
+            --json tagName --jq '[.[] | .tagName | select(test("^[0-9]+[.][0-9]+"))] | .[0]')"
+          if [ -z "$LATEST" ]; then
+            echo "No previous stable release; skipping."
+            exit 0
+          fi
+          gh release download "$LATEST" -R "$GITHUB_REPOSITORY" -p '*-sdk26.apk' -O last.apk
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt2 | sort -V | tail -1)"
+          LAST_VC="$("$AAPT" dump badging last.apk | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+          echo "$LATEST has versionCode $LAST_VC"
+          [ "$VC" -gt "$LAST_VC" ] || { echo "::error::version_code $VC must be higher than $LATEST's $LAST_VC"; exit 1; }
+
+      - name: Tag the commit
+        run: |
+          EXISTING="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VN" --jq .object.sha 2>/dev/null || true)"
+          if [ -z "$EXISTING" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VN" -f sha="$GITHUB_SHA" >/dev/null
+            echo "Tagged $GITHUB_SHA as $VN"
+          elif [ "$EXISTING" = "$GITHUB_SHA" ]; then
+            echo "$VN already points at $GITHUB_SHA"
+          else
+            echo "::error::tag $VN already exists on $EXISTING, not $GITHUB_SHA. Never move a release tag."
+            exit 1
+          fi
+
+      - name: Open the draft release
+        run: |
+          DRAFT="$(gh release view "$VN" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          if [ -z "$DRAFT" ]; then
+            gh release create "$VN" -R "$GITHUB_REPOSITORY" --draft --verify-tag --title "ARMSX2 $VN" --notes ""
+          elif [ "$DRAFT" != "true" ]; then
+            echo "::error::release $VN is already published"
+            exit 1
+          fi
+
+  # ---- Android: one job per tier ------------------------------------------
+  android:
+    name: Android (${{ matrix.target }})
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [legacy, a11, a13, a15]
+    defaults:
+      run:
+        working-directory: platforms/android
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # The action's default is "tools platform-tools"; Google removed the
+          # legacy "tools" package, so installing it fails the whole job.
+          packages: platform-tools
+
+      # Must match the NDK build-release-targets.sh pins for every tier.
+      - name: Install NDK + CMake
+        run: yes | sdkmanager "ndk;29.0.14206865" "cmake;3.31.6" >/dev/null || true
+
+      - name: Fetch shaderc third-party deps
+        run: python3 app/src/main/cpp/3rdparty/shaderc/utils/git-sync-deps
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      # The build only warns when the Discord SDK is missing, and a whole release once
+      # shipped without it (2.6.6.8). Fail here instead.
+      - name: Stage the Discord SDK
+        env:
+          DISCORD_SDK_URL: ${{ secrets.DISCORD_SDK_URL }}
+          DISCORD_SDK_TOKEN: ${{ secrets.DISCORD_SDK_TOKEN }}
+        run: |
+          [ -n "$DISCORD_SDK_URL" ] || { echo "::error::DISCORD_SDK_URL secret is not set"; exit 1; }
+          AUTH=()
+          [ -z "$DISCORD_SDK_TOKEN" ] || AUTH=(-H "Authorization: Bearer $DISCORD_SDK_TOKEN" -H "Accept: application/octet-stream")
+          mkdir -p "$RUNNER_TEMP/discord"
+          curl -fsSL "${AUTH[@]}" "$DISCORD_SDK_URL" | tar -xz -C "$RUNNER_TEMP/discord"
+          SDK="$(dirname "$(dirname "$(find "$RUNNER_TEMP/discord" -path '*/include/discordpp.h' | head -1)")")"
+          [ -f "$SDK/include/discordpp.h" ] || { echo "::error::no include/discordpp.h in the Discord SDK archive"; exit 1; }
+          echo "DISCORD_SDK_DIR=$SDK" >> "$GITHUB_ENV"
+
+      - name: Decode the signing keys
+        env:
+          DEBUG_KS_B64: ${{ secrets.NIGHTLY_DEBUG_KS_B64 }}
+          RELEASE_KS_B64: ${{ secrets.NIGHTLY_RELEASE_KS_B64 }}
+          LINEAGE_B64: ${{ secrets.NIGHTLY_LINEAGE_B64 }}
+        run: |
+          printf '%s' "$DEBUG_KS_B64"   | base64 -d > "$RUNNER_TEMP/debug.jks"
+          printf '%s' "$RELEASE_KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          printf '%s' "$LINEAGE_B64"    | base64 -d > "$RUNNER_TEMP/lineage.bin"
+
+      - name: Build ${{ matrix.target }} APK
+        env:
+          VC: ${{ inputs.version_code }}
+          VN: ${{ inputs.version }}
+          OUTDIR: ${{ runner.temp }}/apk
+          PROF: ${{ github.workspace }}/platforms/android/pgo/armsx2.profdata
+          DEBUG_KS: ${{ runner.temp }}/debug.jks
+          LINEAGE: ${{ runner.temp }}/lineage.bin
+          RELEASE_KS: ${{ runner.temp }}/release.jks
+          RELEASE_KS_PASS: ${{ secrets.NIGHTLY_RELEASE_KS_PASS }}
+          RELEASE_KEY_ALIAS: ${{ secrets.NIGHTLY_RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASS: ${{ secrets.NIGHTLY_RELEASE_KEY_PASS }}
+        run: |
+          mkdir -p "$OUTDIR"
+          tools/build-release-targets.sh "${{ matrix.target }}"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: armsx2-android-${{ matrix.target }}
+          path: ${{ runner.temp }}/apk/*.apk
+          if-no-files-found: error
+
+  # ---- Linux arm64 Qt AppImages -------------------------------------------
+  pc-linux-arm64:
+    name: PC · Linux arm64 (Qt)
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pageVariant: "4k"
+            pageSize: "4096"
+            cacheLineSize: "64"
+          - pageVariant: "16k"
+            pageSize: "16384"
+            cacheLineSize: "128"
+    uses: ./.github/workflows/linux_build_qt.yml
+    with:
+      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
+      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      compiler: clang
+      cmakeflags: "-DHOST_PAGE_SIZE=${{ matrix.pageSize }} -DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
+      buildAppImage: true
+      fetchTags: true
+      stableBuild: true
+
+  # ---- upload everything to the draft -------------------------------------
+  upload:
+    name: Upload to the draft release
+    needs: [android, pc-linux-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VN: ${{ inputs.version }}
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dl
+
+      # APKs keep the names build-release-targets.sh gives them: the in-app updater picks
+      # its download by the -sdkNN suffix. AppImages follow the nightly's platform suffixes.
+      - name: Collect release assets
+        run: |
+          mkdir -p out
+          # grab <file glob> <output name>
+          grab() {
+            local src
+            src=$(find dl -type f -name "$1" | head -1) || true
+            [ -n "$src" ] || { echo "::error::missing $2"; exit 1; }
+            cp "$src" "out/$2"
+            echo "  ok  $2  <-  $src"
+          }
+          for apk in legacy-armv8.0-sdk26 a11-armv8.2-sdk30 a13-armv8.2-sdk33 a15-armv8.2-sdk35; do
+            grab "ARMSX2-${VN}-${apk}.apk" "ARMSX2-${VN}-${apk}.apk"
+          done
+          grab '*-4k-*.AppImage'  "ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage"
+          grab '*-16k-*.AppImage' "ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"
+          (cd out && sha256sum *)
+
+      # UPLOAD THE LEGACY APK FIRST. Updaters up to 2.6.6.6 take the release's first .apk
+      # whatever its name, and GitHub lists assets in upload order. Any other APK first
+      # hands pre-v8.2 devices a build that crashes on launch. A re-run clears the draft's
+      # assets first, so --clobber can't reorder them.
+      - name: Upload in order
+        run: |
+          gh release view "$VN" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+            | while read -r name; do gh release delete-asset "$VN" "$name" -R "$GITHUB_REPOSITORY" -y; done
+          for f in \
+            "out/ARMSX2-${VN}-legacy-armv8.0-sdk26.apk" \
+            "out/ARMSX2-${VN}-a11-armv8.2-sdk30.apk" \
+            "out/ARMSX2-${VN}-a13-armv8.2-sdk33.apk" \
+            "out/ARMSX2-${VN}-a15-armv8.2-sdk35.apk" \
+            "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
+            "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+            gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY"
+          done
+          echo "Draft ready: ${{ github.server_url }}/${{ github.repository }}/releases"
