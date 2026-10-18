@@ -1795,6 +1795,47 @@ open class MainActivityRuntime : ComponentActivity() {
             handler.postDelayed(tryLoad, 250)
         }
 
+        /**
+         * Treat an install a launcher has already prepared as set up, without making anyone walk
+         * the wizard to say so (ARMSX2 #847, the check ARMSX3 #114 added, requested by
+         * carter-lilley).
+         *
+         * A launcher that installs ARMSX2, puts a BIOS in its BIOS folder and starts a game by
+         * path has done everything setup asks for, and then setup asked again. Worse, an external
+         * launch waits for setupComplete, so the game it was asked to start never booted.
+         *
+         * Checked against the filesystem rather than any flag a caller could set: a PS2 BIOS the
+         * wizard itself would accept, in the folder the core boots from, plus a game, either a
+         * ROMs folder already configured or the one this launch hands over. If placement failed,
+         * setup runs and the user can fix it, which is the failure a skip flag would have hidden.
+         *
+         * Persisted once decided, matching finishSetup, so a working install is not put back into
+         * setup by a later change to the folder.
+         */
+        private fun adoptPreparedSetup(context: Context, launchHasGame: Boolean) {
+            if (setupComplete.value) return
+            if (romsDirs.value.isEmpty() && !launchHasGame) return
+
+            // The wizard's own test (getBiosInfoFromFd), and not an arcade board's BIOS, which
+            // cannot start a PS2 disc. The chosen one comes first if it is still there.
+            fun ps2Bios(file: File): Boolean = file.isFile && !file.name.startsWith(".") && runCatching {
+                val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).detachFd()
+                NativeApp.getBiosInfoFromFd(fd)?.let { !com.armsx2.arcade.Arcade.isArcadeBios(it) } == true
+            }.getOrDefault(false)
+            val chosen = bios.value?.takeIf { it.isNotEmpty() }?.let(::File)
+            val found = chosen?.takeIf(::ps2Bios)
+                ?: internalBiosDir(context).listFiles()?.sortedBy { it.name.lowercase() }?.firstOrNull(::ps2Bios)
+                ?: return
+
+            android.util.Log.i("ARMSX2", "setup: a BIOS and a game are already in place, skipping the wizard")
+            bios.value = found.absolutePath
+            prefs.edit(commit = true) {
+                putString("bios", found.absolutePath)
+                putBoolean("setupComplete", true)
+            }
+            setupComplete.value = true
+        }
+
         fun finishSetup() {
             prefs.edit { putBoolean("setupComplete", true) }
             setupComplete.value = true
@@ -2635,13 +2676,17 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         romsDirsWithoutSubfolders.value =
             runCatching { prefs.getStringSet(KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS, null)?.toSet() }.getOrNull().orEmpty()
+        adoptPreparedSetup(applicationContext, launchHasGame = extractLaunchUri(intent) != null)
         // Setup recovery. Auto Backup can restore our prefs (incl. setupComplete + the
         // ROMs URIs) on reinstall, but SAF/all-files PERMISSIONS are never backed up — so
         // a restored setup can point at a folder we can no longer read, which would strand
         // the user in an empty library with the wizard skipped. If no configured ROMs
         // folder is actually reachable, drop setupComplete for this session so the wizard
         // re-runs (and re-requests the permission); finishSetup re-arms it.
-        if (setupComplete.value && !romsAccessible(this, romsDirs.value)) {
+        // Only when there IS a ROMs folder to lose. A launcher-prepared install has none (see
+        // adoptPreparedSetup), and romsAccessible counts an empty list as lost, which put the
+        // wizard straight back after the skip.
+        if (setupComplete.value && romsDirs.value.isNotEmpty() && !romsAccessible(this, romsDirs.value)) {
             setupComplete.value = false
             setupRecoveryNeeded.value = true
         }
