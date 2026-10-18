@@ -4,9 +4,18 @@
 // Builds an AutoTuneWindow once per metrics window (about every half second) on the CPU thread.
 //
 // PerformanceMetrics closes a window on the GS thread. The sampler is polled once per frame on the CPU
-// thread, sees the window's sequence number change, and combines that window's figures with the late-frame
-// count it has kept itself. Late frames are counted at the frame limiter (VMManager::Internal::Throttle),
-// which runs on the CPU thread too, so the counters need no locking.
+// thread, sees the window's sequence number change, and combines that window's figures with what the CPU
+// thread counted over the same stretch: the frames the limiter dropped, and the time the EE thread spent
+// blocked on the GS and VU1 threads.
+//
+// Where the counts come from, and why they line up. The EE governor's sampler (EECycleRateSampler) keeps
+// running totals at the frame limiter and at the MTGS/MTVU wait sites; auto-tune asks it to (RequestTally)
+// and reads the totals at each delivery. The totals only grow, so a window's figures are the difference
+// between two deliveries, and the share of time spent waiting is that difference divided by the time between
+// the same two deliveries on the same clock. Numerator and denominator are the same stretch by construction,
+// wherever the metrics window's edge fell on the CPU thread's timeline (it is closed on the GS thread, up to
+// a few frames behind the EE). The governor's own windows are not used: they are half a second of game time,
+// which is longer on the wall in a slow game and has no fixed relation to the metrics windows.
 //
 // Whether a window is usable is decided here from what the VM was doing: not paused, at the nominal
 // limiter, not frame-advancing, not a GS dump. The warm-up after a boot and the settle after a change are
@@ -17,22 +26,26 @@
 #include "AutoTune/AutoTuneController.h"
 #include "PerformanceMetrics.h"
 
-#include <optional>
+#include <cstdint>
 
-/// How long the EE thread waited on the GS and on VU1, as a share of the window. nullopt = not measured.
-struct AutoTuneEeWaits
+/// The CPU thread's running totals at one moment, as EECycleRateSampler keeps them. Two readings make a window.
+struct AutoTuneTally
 {
-	std::optional<double> gs;
-	std::optional<double> vu1;
+	/// The CPU thread's clock when the totals were read, in seconds. Only differences mean anything.
+	double time_s = 0.0;
+	/// Frames the limiter paced, and the ones among them that ended a whole frame or more after their
+	/// deadline (the limiter had to move its schedule forward: a frame the player did not get on time).
+	uint64_t frames = 0;
+	uint64_t overran_frames = 0;
+	/// Whether the wait totals below were being kept. False when nothing had asked for the tally.
+	bool waits_measured = false;
+	/// Time the EE thread spent blocked on the GS thread and on the VU1 thread, in seconds.
+	double gs_wait_s = 0.0;
+	double vu1_wait_s = 0.0;
 };
 
-/// The EE's wait times for the window that just closed, and a reset for the next one.
-///
-/// NOT MEASURED YET: this returns "unknown" for both. The measurement belongs to the EE governor's sampler
-/// (PR #662, branch ee-governor-rebase), which times the EE thread at the MTGS and MTVU wait sites; when
-/// that is merged, this function reads its per-window totals, divides by `window_seconds`, and clears them.
-/// Until then the controller classifies without them (see AutoTuneController::Classify).
-AutoTuneEeWaits AutoTuneSampleEeWaits(double window_seconds);
+/// The totals now. CPU thread. Waits are unmeasured unless EECycleRateSampler::RequestTally(true) is in force.
+AutoTuneTally AutoTuneReadLiveTally();
 
 /// What the VM was doing, as far as deciding that a window is steady play.
 struct AutoTuneConditions
@@ -49,16 +62,16 @@ struct AutoTuneConditions
 class AutoTuneSampler
 {
 public:
-	/// One frame went through the limiter; `late` is true if it took two frame times or more.
-	/// Call once per frame (not per limiter call), on the CPU thread.
-	void NoteLimitedFrame(bool late);
-
-	/// Forget the counters, and treat the window with this sequence number as already seen.
-	void Reset(uint32_t seen_sequence = 0);
+	/// Treat the window with this sequence number as already seen, and take `baseline` as the reading the
+	/// next window is measured from.
+	void Reset(uint32_t seen_sequence, const AutoTuneTally& baseline);
 
 	/// Builds the window if `snapshot` is a new one; false if it is the one already delivered (or none).
+	/// `now` is the CPU thread's totals at this delivery; the window's late frames and waits are the change
+	/// since the previous delivery (or since Reset). An unusable window still consumes them, so a pause does
+	/// not leave its late frames to the first window after it.
 	bool Poll(const PerformanceMetrics::WindowSnapshot& snapshot, const AutoTuneConditions& conditions,
-		const AutoTuneEeWaits& waits, AutoTuneWindow* out);
+		const AutoTuneTally& now, AutoTuneWindow* out);
 
 	/// Poll against the live PerformanceMetrics and VMManager. CPU thread.
 	bool PollLive(AutoTuneWindow* out);
@@ -70,6 +83,6 @@ public:
 
 private:
 	uint32_t m_last_sequence = 0;
-	uint32_t m_frames = 0;
-	uint32_t m_late = 0;
+	AutoTuneTally m_previous;
+	bool m_have_previous = false;
 };

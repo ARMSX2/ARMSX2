@@ -258,8 +258,6 @@ static u32 s_iop_placement_token = 0;
 
 static LimiterModeType s_limiter_mode = LimiterModeType::Nominal;
 static s64 s_limiter_ticks_per_frame = 0;
-// Set when either limiter call of the current frame found the frame overrunning; auto-tune counts the frame once.
-static bool s_limiter_frame_overran = false;
 static u64 s_limiter_frame_start = 0;
 static float s_target_speed = 0.0f;
 static bool s_target_speed_can_sync_to_host = false;
@@ -3084,7 +3082,6 @@ float VMManager::GetFrameRate()
 void VMManager::ResetFrameLimiter()
 {
 	s_limiter_frame_start = GetCPUTicks();
-	s_limiter_frame_overran = false;
 }
 
 void VMManager::Internal::Throttle(bool vsync_start)
@@ -3107,29 +3104,22 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	const u64 segment_ticks = PerformanceMetrics::OnFrameWorkSegmentComplete(iEnd, !vsync_start);
 	ScopedGuard begin_next_frame_work([]() { PerformanceMetrics::OnFrameWorkBegin(); });
 
-	// Throttle runs twice per frame; the frame is closed by the second call, whichever way it returns.
-	ScopedGuard close_frame([vsync_start]() {
-		if (!vsync_start)
-		{
-			AutoTune::OnLimitedFrame(s_limiter_frame_overran);
-			s_limiter_frame_overran = false;
-		}
-	});
-
 	const u64 uExpectedEnd =
 		s_limiter_frame_start +
 		(vsync_start ? (s_limiter_ticks_per_frame * 0.9) : s_limiter_ticks_per_frame); // Compute when we would expect this frame to end, assuming everything goes perfectly perfect.
 	const s64 sDeltaTime = iEnd - uExpectedEnd; // The diff between when we stopped and when we expected to.
 
-	// The dynamic EE cycle-rate governor's segment boundary, before the sleep below, so its
-	// "active" is the frame's work and not the work plus the wait for the deadline. It also
-	// has to be before the missed-frame return: a frame that overran is the one the governor
-	// most needs to see.
+	// The frame's segment boundary for the dynamic EE cycle-rate governor and for auto-tune's
+	// tally, before the sleep below, so the governor's "active" is the frame's work and not the
+	// work plus the wait for the deadline. It also has to be before the missed-frame return: a
+	// frame that overran is the one both most need to see.
 	//
-	// The frame is judged late by the vsync-end wait against the full-frame deadline. The
-	// vsync-start wait's own deadline is 0.9 of that and says nothing about the frame, except
-	// when it overran by a whole frame: the missed-frame branch below moves the frame start
-	// forward, and the vsync-end verdict would be taken against the moved deadline.
+	// This is the only place a frame is judged late; the governor reads the verdict as Late or
+	// worse and auto-tune as Overran. The frame is judged by the vsync-end wait against the
+	// full-frame deadline. The vsync-start wait's own deadline is 0.9 of that and says nothing
+	// about the frame, except when it overran by a whole frame: the missed-frame branch below
+	// moves the frame start forward, and the vsync-end verdict would be taken against the
+	// moved deadline.
 	EECycleRateLateness lateness = EECycleRateLateness::OnTime;
 	if (sDeltaTime >= s_limiter_ticks_per_frame)
 		lateness = EECycleRateLateness::Overran;
@@ -3140,8 +3130,6 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	// If frame ran too long...
 	if (sDeltaTime >= s_limiter_ticks_per_frame)
 	{
-		s_limiter_frame_overran = true;
-
 		// ... Fudge the next frame start over a bit. Prevents fast forward zoomies.
 		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame) * s_limiter_ticks_per_frame;
 		return;

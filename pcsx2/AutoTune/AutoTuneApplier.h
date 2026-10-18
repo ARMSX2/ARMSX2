@@ -146,8 +146,6 @@ namespace AutoTune
 	void OnResumed();
 	/// VMManager::ApplySettings() finished. Applies auto-tune did itself are told apart from the rest.
 	void OnSettingsApplied();
-	/// A frame went through the frame limiter (Throttle at the end of a frame); `late` if it overran.
-	void OnLimitedFrame(bool late);
 	/// Once per frame, at vsync start.
 	void OnVSync();
 

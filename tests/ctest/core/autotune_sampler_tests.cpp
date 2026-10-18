@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// AutoTuneSampler: turning a metrics window plus the limiter's late-frame count into an AutoTuneWindow.
+// AutoTuneSampler: turning a metrics window plus what the CPU thread counted over the same stretch (the limiter's
+// overran frames, the time the EE spent blocked) into an AutoTuneWindow.
 
 #include <gtest/gtest.h>
 
@@ -25,70 +26,172 @@ namespace
 		c.nominal_limiter = true;
 		return c;
 	}
+
+	// The CPU thread's running totals at `time_s` on its own clock.
+	AutoTuneTally Tally(double time_s, uint64_t frames = 0, uint64_t overran = 0, double gs_wait_s = 0.0, double vu1_wait_s = 0.0)
+	{
+		AutoTuneTally t;
+		t.time_s = time_s;
+		t.frames = frames;
+		t.overran_frames = overran;
+		t.waits_measured = true;
+		t.gs_wait_s = gs_wait_s;
+		t.vu1_wait_s = vu1_wait_s;
+		return t;
+	}
+
+	// A sampler whose baseline is the start of time, as ResetLive() leaves it when a session begins.
+	AutoTuneSampler Started()
+	{
+		AutoTuneSampler sampler;
+		sampler.Reset(0, Tally(0.0));
+		return sampler;
+	}
 } // namespace
 
 TEST(AutoTuneSampler, DeliversEachWindowOnceBySequenceNumber)
 {
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	EXPECT_TRUE(sampler.Poll(Snap(1), Steady(), {}, &w));
-	EXPECT_FALSE(sampler.Poll(Snap(1), Steady(), {}, &w)) << "the same window is not read twice";
-	EXPECT_TRUE(sampler.Poll(Snap(2), Steady(), {}, &w));
+	EXPECT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5), &w));
+	EXPECT_FALSE(sampler.Poll(Snap(1), Steady(), Tally(0.6), &w)) << "the same window is not read twice";
+	EXPECT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0), &w));
 	EXPECT_EQ(sampler.LastSequence(), 2u);
 }
 
 TEST(AutoTuneSampler, NoWindowYetIsNotAWindow)
 {
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	EXPECT_FALSE(sampler.Poll(Snap(0), Steady(), {}, &w));
+	EXPECT_FALSE(sampler.Poll(Snap(0), Steady(), Tally(0.5), &w));
 }
 
 TEST(AutoTuneSampler, ResetTreatsTheCurrentWindowAsSeen)
 {
 	AutoTuneSampler sampler;
 	AutoTuneWindow w;
-	sampler.Reset(7);
-	EXPECT_FALSE(sampler.Poll(Snap(7), Steady(), {}, &w));
-	EXPECT_TRUE(sampler.Poll(Snap(8), Steady(), {}, &w));
+	sampler.Reset(7, Tally(10.0));
+	EXPECT_FALSE(sampler.Poll(Snap(7), Steady(), Tally(10.2), &w));
+	EXPECT_TRUE(sampler.Poll(Snap(8), Steady(), Tally(10.5), &w));
 }
 
-TEST(AutoTuneSampler, LateFramesAreCountedPerWindowAndStartOverAfterEach)
+TEST(AutoTuneSampler, LateFramesAreTheShareOfFramesThatOverranBetweenDeliveries)
 {
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
 
-	for (int i = 0; i < 30; i++)
-		sampler.NoteLimitedFrame(i < 6); // 6 late of 30
-	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), {}, &w));
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5, 30, 6), &w)); // 6 overran of 30
 	EXPECT_NEAR(w.late_frame_ratio, 0.2, 1e-9);
 
-	for (int i = 0; i < 30; i++)
-		sampler.NoteLimitedFrame(false);
-	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), {}, &w));
+	// The totals only grow: the next window is judged on what was added since the last one.
+	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0, 60, 6), &w));
 	EXPECT_EQ(w.late_frame_ratio, 0.0);
 }
 
 TEST(AutoTuneSampler, NoLimitedFramesMeansNoLateFrames)
 {
 	// The limiter is bypassed (host-vsync pacing): nothing was counted, and that is not a late frame.
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), {}, &w));
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5, 0, 0), &w));
 	EXPECT_EQ(w.late_frame_ratio, 0.0);
 }
 
 TEST(AutoTuneSampler, ADroppedWindowDoesNotCarryItsLateFramesForward)
 {
 	// Two windows closed between polls: the one delivered covers both, and the count starts over after it.
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(Snap(5), Steady(), Tally(1.0, 60, 3), &w));
+	EXPECT_NEAR(w.late_frame_ratio, 0.05, 1e-9);
+	ASSERT_TRUE(sampler.Poll(Snap(6), Steady(), Tally(1.5, 61, 3), &w));
+	EXPECT_EQ(w.late_frame_ratio, 0.0);
+}
+
+TEST(AutoTuneSampler, WaitsAreAShareOfTheTimeBetweenTwoDeliveries)
+{
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+
+	// 0.15 s of 0.5 s on the GS, 0.025 s on VU1.
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5, 30, 0, 0.15, 0.025), &w));
+	ASSERT_TRUE(w.ee_wait_gs_ratio.has_value());
+	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.3, 1e-9);
+	ASSERT_TRUE(w.ee_wait_vu1_ratio.has_value());
+	EXPECT_NEAR(*w.ee_wait_vu1_ratio, 0.05, 1e-9);
+
+	// The next window starts from the totals the last one ended on.
+	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0, 60, 0, 0.20, 0.025), &w));
+	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.1, 1e-9);
+	EXPECT_NEAR(*w.ee_wait_vu1_ratio, 0.0, 1e-9);
+}
+
+TEST(AutoTuneSampler, TheDenominatorIsTheCpuThreadsOwnSpanNotTheMetricsWindow)
+{
+	// The metrics window is closed on the GS thread and says 0.5 s; the CPU thread read its totals 0.6 s
+	// apart. The wait is over the CPU thread's stretch, so it is divided by that.
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.6, 30, 0, 0.15), &w));
+	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.25, 1e-9);
+}
+
+TEST(AutoTuneSampler, AWaitCannotExceedTheTimeItHappenedIn)
+{
+	// A wait that began before the baseline reading and ended after it can put a little more than the
+	// span into the totals.
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(0.5, 30, 0, 0.52), &w));
+	EXPECT_EQ(*w.ee_wait_gs_ratio, 1.0);
+}
+
+TEST(AutoTuneSampler, WaitsThatAreNotMeasuredStayUnknown)
+{
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	AutoTuneTally now = Tally(0.5, 30, 0, 0.1);
+	now.waits_measured = false; // no tally was being kept
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), now, &w));
+	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
+	EXPECT_FALSE(w.ee_wait_vu1_ratio.has_value());
+}
+
+TEST(AutoTuneSampler, WithoutABaselineTheFirstWindowHasNoWaits)
+{
+	// A sampler that was never started has no earlier reading to take a difference against.
 	AutoTuneSampler sampler;
 	AutoTuneWindow w;
-	for (int i = 0; i < 60; i++)
-		sampler.NoteLimitedFrame(i < 3);
-	ASSERT_TRUE(sampler.Poll(Snap(5), Steady(), {}, &w));
-	EXPECT_NEAR(w.late_frame_ratio, 0.05, 1e-9);
-	sampler.NoteLimitedFrame(false);
-	ASSERT_TRUE(sampler.Poll(Snap(6), Steady(), {}, &w));
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(100.0, 5000, 100, 40.0), &w));
+	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
+	EXPECT_EQ(w.late_frame_ratio, 0.0);
+
+	// The reading it just took is the baseline for the next.
+	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(100.5, 5030, 106, 40.15), &w));
+	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.3, 1e-9);
+	EXPECT_NEAR(w.late_frame_ratio, 0.2, 1e-9);
+}
+
+TEST(AutoTuneSampler, ASpanMuchLongerThanTheWindowSaysNothingAboutItsWaits)
+{
+	// A pause sat between the two readings: the totals cover seconds of nothing, and a share of them would
+	// read as an idle EE. The frame counts are still a ratio and stay.
+	AutoTuneSampler sampler = Started();
+	AutoTuneWindow w;
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(30.0, 30, 3, 0.2), &w));
+	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
+	EXPECT_FALSE(w.ee_wait_vu1_ratio.has_value());
+	EXPECT_NEAR(w.late_frame_ratio, 0.1, 1e-9);
+}
+
+TEST(AutoTuneSampler, TotalsThatWentBackwardsAreNotAnAnswer)
+{
+	// The counters start over with a new VM.
+	AutoTuneSampler sampler;
+	AutoTuneWindow w;
+	sampler.Reset(0, Tally(5.0, 1000, 10, 2.0));
+	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), Tally(5.5, 20, 1, 0.1), &w));
+	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
 	EXPECT_EQ(w.late_frame_ratio, 0.0);
 }
 
@@ -106,13 +209,9 @@ TEST(AutoTuneSampler, CopiesTheThreadFigures)
 	s.gpu_usage = 77.0f;
 	s.has_gpu_timer = true;
 
-	AutoTuneEeWaits waits;
-	waits.gs = 0.3;
-	waits.vu1 = 0.05;
-
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	ASSERT_TRUE(sampler.Poll(s, Steady(), waits, &w));
+	ASSERT_TRUE(sampler.Poll(s, Steady(), Tally(0.5, 30, 0, 0.15, 0.025), &w));
 	EXPECT_TRUE(w.usable);
 	EXPECT_DOUBLE_EQ(w.seconds, 0.5);
 	EXPECT_NEAR(w.speed_pct, 87.0, 1e-4);
@@ -137,20 +236,11 @@ TEST(AutoTuneSampler, AThreadThatDoesNotExistReadsZero)
 	s.has_gs_back_thread = false;
 	s.has_iop_thread = false;
 
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	ASSERT_TRUE(sampler.Poll(s, Steady(), {}, &w));
+	ASSERT_TRUE(sampler.Poll(s, Steady(), Tally(0.5), &w));
 	EXPECT_EQ(w.gs_back_pct, 0.0);
 	EXPECT_EQ(w.iop_pct, 0.0);
-}
-
-TEST(AutoTuneSampler, WaitsThatAreNotMeasuredStayUnknown)
-{
-	AutoTuneSampler sampler;
-	AutoTuneWindow w;
-	ASSERT_TRUE(sampler.Poll(Snap(1), Steady(), AutoTuneSampleEeWaits(0.5), &w));
-	EXPECT_FALSE(w.ee_wait_gs_ratio.has_value());
-	EXPECT_FALSE(w.ee_wait_vu1_ratio.has_value());
 }
 
 TEST(AutoTuneSampler, UsableOnlyInSteadyPlay)
@@ -158,9 +248,9 @@ TEST(AutoTuneSampler, UsableOnlyInSteadyPlay)
 	const auto usable = [](auto&& tweak) {
 		AutoTuneConditions c = Steady();
 		tweak(c);
-		AutoTuneSampler sampler;
+		AutoTuneSampler sampler = Started();
 		AutoTuneWindow w;
-		EXPECT_TRUE(sampler.Poll(Snap(1), c, {}, &w));
+		EXPECT_TRUE(sampler.Poll(Snap(1), c, Tally(0.5), &w));
 		return w.usable;
 	};
 
@@ -180,29 +270,27 @@ TEST(AutoTuneSampler, SpeedIsRelativeToTheLimitersTarget)
 	PerformanceMetrics::WindowSnapshot s = Snap(1);
 	s.speed = 150.0f;
 
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	ASSERT_TRUE(sampler.Poll(s, c, {}, &w));
+	ASSERT_TRUE(sampler.Poll(s, c, Tally(0.5), &w));
 	EXPECT_NEAR(w.speed_pct, 100.0, 1e-4);
 
 	s.sequence = 2;
 	s.speed = 120.0f;
-	ASSERT_TRUE(sampler.Poll(s, c, {}, &w));
+	ASSERT_TRUE(sampler.Poll(s, c, Tally(1.0), &w));
 	EXPECT_NEAR(w.speed_pct, 80.0, 1e-4);
 }
 
 TEST(AutoTuneSampler, AWindowThatIsNotUsableStillConsumesItsLateFrames)
 {
 	// A pause must not leave its late frames to be blamed on the first window after it.
-	AutoTuneSampler sampler;
+	AutoTuneSampler sampler = Started();
 	AutoTuneWindow w;
-	for (int i = 0; i < 30; i++)
-		sampler.NoteLimitedFrame(true);
 	AutoTuneConditions paused = Steady();
 	paused.vm_running = false;
-	ASSERT_TRUE(sampler.Poll(Snap(1), paused, {}, &w));
+	ASSERT_TRUE(sampler.Poll(Snap(1), paused, Tally(0.5, 30, 30), &w));
 	EXPECT_FALSE(w.usable);
 
-	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), {}, &w));
+	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0, 60, 30), &w));
 	EXPECT_EQ(w.late_frame_ratio, 0.0);
 }

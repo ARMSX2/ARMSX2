@@ -5,6 +5,7 @@
 
 #include "Achievements.h"
 #include "Config.h"
+#include "EECycleRateSampler.h"
 #include "GameDatabase.h"
 #include "GS/GS.h"
 #include "GS/Renderers/Common/GSBackThreadPolicy.h"
@@ -461,6 +462,9 @@ namespace
 
 		m_forced = AutoTune::ForcedByGameDb(GameDatabase::findGame(VMManager::GetDiscSerial()));
 		m_controller.Reset();
+		// The waits and the dropped frames come from the governor's sampler, which only keeps them when asked.
+		// Asked before the baseline is read, so the first window is measured from a reading that was kept.
+		EECycleRateSampler::RequestTally(true);
 		m_sampler.ResetLive();
 		m_session_timer.Reset();
 		OpenTrace();
@@ -477,6 +481,7 @@ namespace
 		m_applier.CancelTrial(apply);
 		m_controller.Reset();
 		m_trace.reset();
+		EECycleRateSampler::RequestTally(false);
 		m_active = false;
 	}
 
@@ -492,6 +497,7 @@ namespace
 		}
 		m_controller.Reset();
 		m_trace.reset();
+		EECycleRateSampler::RequestTally(false);
 		m_active = false;
 		m_pending_scene = m_pending_settings = m_pending_resume = false;
 	}
@@ -685,11 +691,6 @@ void AutoTune::OnSettingsApplied()
 	Runtime& rt = Rt();
 	if (!rt.m_applying)
 		rt.m_pending_settings = true;
-}
-
-void AutoTune::OnLimitedFrame(bool late)
-{
-	Rt().m_sampler.NoteLimitedFrame(late);
 }
 
 void AutoTune::OnVSync()
