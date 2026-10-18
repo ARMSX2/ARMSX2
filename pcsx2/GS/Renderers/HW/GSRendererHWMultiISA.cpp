@@ -1130,6 +1130,7 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 	const GSOffset off = hw.m_mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 	const u32* vm32 = reinterpret_cast<const u32*>(hw.m_mem.m_vm8);
 	constexpr u32 limit = VM_SIZE / 4; // how far a texel's address may reach, in 32-bit pixels
+	static_assert((limit & (limit - 1)) == 0, "the address mask below needs a power of two");
 
 	// The bytewise average of two pixels, rounded down: a + ((b - a) >> 1) in each of the four channels.
 	const auto average = [](u32 a, u32 b) -> u32 {
@@ -1158,7 +1159,10 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 		if (plain && (ax.first < cover.left || last >= cover.right))
 			return false;
 
-		for (int t = 0; t < ax.taps; t++)
+		// The pair load needs an even first column; a single tap steps by one column whatever it is.
+		const bool stepped = plain && (ax.taps == 1 || (ax.first & 1) == 0);
+
+		for (int t = 0; t < ax.taps && !stepped; t++)
 		{
 			for (int k = 0; k < width; k++)
 			{
@@ -1174,54 +1178,103 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 			}
 		}
 
-		for (int y = b.rect.top; y < b.rect.bottom; y++)
-		{
-			GSOffset::PAHelper pa[2];
+		// One row of the sprite at a time, with the number of taps on each axis fixed at compile time so the loop is the
+		// loads and the averages and little else. An address past the end of local memory is masked for its load and
+		// remembered, and the draw refused when the row is done: nothing has been written yet.
+		//
+		// STEP: when nothing wraps, the columns are the sprite's first plus the step times k, and need no table. For
+		// two taps that also puts the first tap on an even column when the first is even, and an even column and the
+		// next one are adjacent words in a 32-bit block (the column table pairs them, and the page, block and xor
+		// terms of the address do not touch its low bit), so the two taps are one 64-bit load.
+		const auto gather_rows = [&](auto tu, auto tv, auto stepped) -> bool {
+			constexpr int TU = decltype(tu)::value;
+			constexpr int TV = decltype(tv)::value;
+			constexpr bool STEP = decltype(stepped)::value;
 
-			for (int t = 0; t < ay.taps; t++)
+			for (int y = b.rect.top; y < b.rect.bottom; y++)
 			{
-				const int row = ay.first + (y - b.rect.top) * b.sv + t;
-				const u32 v = WrapTexel(row * 65536, vmin, vmax, vrepeat);
-				if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
-					return false;
+				GSOffset::PAHelper pa[TV];
 
-				pa[t] = off.paMulti(0, static_cast<int>(v));
-			}
-
-			const auto fetch = [&](int row, int tap, int k) -> u32 {
-				return pa[row].value(columns[tap][k]);
-			};
-
-			for (int k = 0; k < width; k++)
-			{
-				u32 texel[2][2];
-				for (int row = 0; row < ay.taps; row++)
+				for (int t = 0; t < TV; t++)
 				{
-					for (int tap = 0; tap < ax.taps; tap++)
+					const int row = ay.first + (y - b.rect.top) * b.sv + t;
+					const u32 v = WrapTexel(row * 65536, vmin, vmax, vrepeat);
+					if (static_cast<int>(v) < cover.top || static_cast<int>(v) >= cover.bottom)
+						return false;
+
+					pa[t] = off.paMulti(0, static_cast<int>(v));
+				}
+
+				u32 past = 0;
+
+				// One row of taps of one pixel: the pixel's texel, or the average of its two.
+				const auto row_pixel = [&](const GSOffset::PAHelper& row, int k) -> u32 {
+					if constexpr (STEP && TU == 2)
 					{
-						const u32 addr = fetch(row, tap, k);
-						if (addr >= limit)
-							return false;
-
-						texel[row][tap] = vm32[addr];
+						const u32 addr = row.value(static_cast<u32>(ax.first + 2 * k));
+						past |= addr;
+						u64 pair;
+						std::memcpy(&pair, &vm32[addr & (limit - 2)], sizeof(pair));
+						return average(static_cast<u32>(pair), static_cast<u32>(pair >> 32));
 					}
-				}
+					else
+					{
+						const u32 x0 = STEP ? static_cast<u32>(ax.first + k) : columns[0][k];
+						u32 addr = row.value(x0);
+						past |= addr;
+						u32 pixel = vm32[addr & (limit - 1)];
 
-				u32 top = texel[0][0];
-				if (ax.taps == 2)
-					top = average(top, texel[0][1]);
+						if constexpr (TU == 2)
+						{
+							addr = row.value(columns[1][k]);
+							past |= addr;
+							pixel = average(pixel, vm32[addr & (limit - 1)]);
+						}
 
-				if (ay.taps == 2)
+						return pixel;
+					}
+				};
+
+				for (int k = 0; k < width; k++)
 				{
-					u32 bottom = texel[1][0];
-					if (ax.taps == 2)
-						bottom = average(bottom, texel[1][1]);
-					top = average(top, bottom);
+					u32 pixel = row_pixel(pa[0], k);
+
+					if constexpr (TV == 2)
+						pixel = average(pixel, row_pixel(pa[1], k));
+
+					*out++ = pixel;
 				}
 
-				*out++ = top;
+				if (past >= limit)
+					return false;
 			}
+
+			return true;
+		};
+
+		using One = std::integral_constant<int, 1>;
+		using Two = std::integral_constant<int, 2>;
+		using Yes = std::true_type;
+		using No = std::false_type;
+
+		bool read;
+		if (ax.taps == 2)
+		{
+			if (ay.taps == 2)
+				read = stepped ? gather_rows(Two(), Two(), Yes()) : gather_rows(Two(), Two(), No());
+			else
+				read = stepped ? gather_rows(Two(), One(), Yes()) : gather_rows(Two(), One(), No());
 		}
+		else
+		{
+			if (ay.taps == 2)
+				read = stepped ? gather_rows(One(), Two(), Yes()) : gather_rows(One(), Two(), No());
+			else
+				read = stepped ? gather_rows(One(), One(), Yes()) : gather_rows(One(), One(), No());
+		}
+
+		if (!read)
+			return false;
 	}
 
 	// Nothing was written until every texel was read.
