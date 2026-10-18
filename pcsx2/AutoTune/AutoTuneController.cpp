@@ -156,7 +156,7 @@ void AutoTuneController::Reset()
 	m_trial = Trial();
 	m_rejected.clear();
 	m_retries.clear();
-	std::fill(std::begin(m_exhausted), std::end(m_exhausted), false);
+	m_exhausted_said = false;
 	std::fill(std::begin(m_reported), std::end(m_reported), false);
 	m_unclassified_cooldown = 0.0;
 	m_last_bottleneck = AutoTuneBottleneck::None;
@@ -485,11 +485,10 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		return action;
 	}
 
-	// Nothing left for this bottleneck. Said once; the session then stays quiet about it.
-	bool& exhausted = m_exhausted[static_cast<size_t>(bottleneck)];
-	if (exhausted)
+	// Nothing left for this bottleneck. Said once; the session then stays quiet about it, for every class.
+	if (m_exhausted_said)
 		return action;
-	exhausted = true;
+	m_exhausted_said = true;
 	action.kind = AutoTuneAction::Kind::Exhausted;
 	return action;
 }

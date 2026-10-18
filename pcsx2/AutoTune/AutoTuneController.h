@@ -479,7 +479,9 @@ private:
 		uint32_t count;
 	};
 	std::vector<Retries> m_retries; // this session
-	bool m_exhausted[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
+	// "Nothing left to try" is said once per session, whatever the class: a thread on the saturation line flips
+	// the class between GS (CPU) and GPU, and both have nothing left.
+	bool m_exhausted_said = false;
 	bool m_reported[static_cast<size_t>(AutoTuneBottleneck::Count)] = {};
 	double m_unclassified_cooldown = 0.0;
 	AutoTuneBottleneck m_last_bottleneck = AutoTuneBottleneck::None;

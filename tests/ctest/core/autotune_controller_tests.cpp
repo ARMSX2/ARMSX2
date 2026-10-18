@@ -748,6 +748,23 @@ TEST(AutoTuneController, ExhaustedIsSaidOnceThenTheSessionIsQuiet)
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 0u);
 }
 
+TEST(AutoTuneController, ExhaustedIsSaidOncePerSessionWhateverTheClass)
+{
+	// The class flips between GS (CPU) and GPU for a thread that sits on the saturation line; both have nothing
+	// left. The player is told once.
+	Rig rig;
+	rig.state.resolution = 1.0;
+	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	ASSERT_EQ(rig.WarmAndTrigger(GsCpuBound(70.0)).kind, Kind::Exhausted);
+	EXPECT_EQ(rig.FeedFor(GpuBound(70.0), 20.0).kind, Kind::None);
+	EXPECT_EQ(rig.FeedFor(GsCpuBound(70.0), 20.0).kind, Kind::None);
+	EXPECT_EQ(rig.Count(Kind::Exhausted), 1u);
+
+	// A new session says it again.
+	rig.ctl.Reset();
+	ASSERT_EQ(rig.WarmAndTrigger(GpuBound(70.0)).kind, Kind::Exhausted);
+}
+
 TEST(AutoTuneController, ABottleneckThatMovedGetsItsOwnLevers)
 {
 	Rig rig;
