@@ -420,6 +420,11 @@ SettingsInterface* Host::Internal::GetInputSettingsLayer()
 	return s_layered_settings_interface.GetLayer(LayeredSettingsInterface::LAYER_INPUT);
 }
 
+SettingsInterface* Host::Internal::GetAutoTuneSettingsLayer()
+{
+	return s_layered_settings_interface.GetLayer(LayeredSettingsInterface::LAYER_AUTOTUNE);
+}
+
 void Host::Internal::SetBaseSettingsLayer(SettingsInterface* sif)
 {
 	pxAssertRel(s_layered_settings_interface.GetLayer(LayeredSettingsInterface::LAYER_BASE) == nullptr,
@@ -442,4 +447,13 @@ void Host::Internal::SetGameSettingsLayer(SettingsInterface* sif, std::unique_lo
 void Host::Internal::SetInputSettingsLayer(SettingsInterface* sif, std::unique_lock<std::mutex>& settings_lock)
 {
 	s_layered_settings_interface.SetLayer(LayeredSettingsInterface::LAYER_INPUT, sif);
+}
+
+void Host::Internal::SetAutoTuneSettingsLayer(SettingsInterface* sif, std::unique_lock<std::mutex>& settings_lock)
+{
+	s_layered_settings_interface.SetLayer(LayeredSettingsInterface::LAYER_AUTOTUNE, sif);
+}
+
+void Host::OnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
+{
 }

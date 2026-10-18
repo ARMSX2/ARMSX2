@@ -147,6 +147,12 @@ namespace Host
 	/// Sets host-specific default settings.
 	void SetDefaultUISettings(SettingsInterface& si);
 
+	/// Auto-tune has moved one setting into the game's own settings file (section and key as in the
+	/// file, value as text). Called on the CPU thread. The default does nothing; a host that keeps its
+	/// own copy of per-game settings (Android regenerates the file from its store) writes the key back
+	/// to that copy here, or the next regeneration drops it.
+	void OnAutoTuneCommitted(const char* section, const char* key, std::string_view value);
+
 	/// Creates a progress callback that displays in the host.
 	std::unique_ptr<ProgressCallback> CreateHostProgressCallback();
 
@@ -180,6 +186,9 @@ namespace Host
 		/// Retrieves the input settings layer, if present. Must call with lock held.
 		SettingsInterface* GetInputSettingsLayer();
 
+		/// Retrieves the auto-tune trial layer, if present. Must call with lock held.
+		SettingsInterface* GetAutoTuneSettingsLayer();
+
 		/// Sets the base settings layer. Should be called by the host at initialization time.
 		void SetBaseSettingsLayer(SettingsInterface* sif);
 
@@ -191,6 +200,9 @@ namespace Host
 
 		/// Sets the input profile settings layer. Called by VMManager when the game changes.
 		void SetInputSettingsLayer(SettingsInterface* sif, std::unique_lock<std::mutex>& settings_lock);
+
+		/// Sets the auto-tune trial layer, which sits above the game layer. Called by AutoTune; null removes it.
+		void SetAutoTuneSettingsLayer(SettingsInterface* sif, std::unique_lock<std::mutex>& settings_lock);
 
 		/// Implementation to retrieve a translated string.
 		s32 GetTranslatedStringImpl(const std::string_view context, const std::string_view msg, char* tbuf, size_t tbuf_space);

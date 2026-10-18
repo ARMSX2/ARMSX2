@@ -1668,6 +1668,11 @@ struct Pcsx2Config
 
 		HostFs : 1,
 
+		// Auto-tune (pcsx2/AutoTune): tries one slowdown countermeasure at a time and keeps what helped.
+		// Kept out of Cpu/Speedhacks on purpose: those are compared in CheckForCPUConfigChanges, and
+		// flipping this switch must not flush the recompiler caches.
+		AutoTune : 1,
+
 		WarnAboutUnsafeSettings : 1;
 	BITFIELD_END
 
@@ -1696,6 +1701,7 @@ struct Pcsx2Config
 	// slots (3 each)
 	McdOptions Mcd[8];
 	std::string GzipIsoIndexTemplate; // for quick-access index with gzipped ISO
+	std::string AutoTuneTrace; // developer only: CSV path, one row per auto-tune window; empty = off
 
 	int PINESlot;
 

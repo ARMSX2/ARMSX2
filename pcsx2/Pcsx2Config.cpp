@@ -2184,6 +2184,7 @@ Pcsx2Config::Pcsx2Config()
 	BackupSavestate = true;
 	McdAutoBackup = MemcardBackup::AutoBackupDefault(); // off where the front end has no backup screen of the shared kind
 	WarnAboutUnsafeSettings = true;
+	AutoTune = true;
 	EnableDiscordPresence = false;
 	ManuallySetRealTimeClock = false;
 	UseSystemLocaleFormat = false;
@@ -2232,6 +2233,8 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 	SettingsWrapBitBool(EnableDiscordPresence);
 	SettingsWrapBitBool(InhibitScreensaver);
 	SettingsWrapBitBool(HostFs);
+	SettingsWrapBitBool(AutoTune);
+	SettingsWrapEntry(AutoTuneTrace);
 
 	SettingsWrapBitBool(BackupSavestate);
 
