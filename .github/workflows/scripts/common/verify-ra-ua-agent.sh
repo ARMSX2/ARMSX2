@@ -1,26 +1,46 @@
 #!/usr/bin/env bash
 # Fail the build if the RetroAchievements client identity did not reach the binary.
 #
-# A reordered step, stale build directory or wrong path still produces a working IPA that
+#   verify-ra-ua-agent.sh <path to the built binary> [ios|armsx2]
+#
+# ios (the default) checks the ARMSX2-iOS client against IOS_RA_UA_VERSION; armsx2 checks the
+# ARMSX2 client (Android and desktop) against RA_UA_VERSION. With RA_UA_REQUIRED set, as release
+# builds do, a missing version is an error rather than nothing to check.
+#
+# A reordered step, stale build directory or wrong path still produces a working build that
 # identifies as stock PCSX2. Matching the exact version also catches an older header.
 
 set -euo pipefail
 
 BINARY="${1:-}"
+CLIENT="${2:-ios}"
 
 if [[ -z "$BINARY" ]]; then
-	echo "::error::usage: verify-ra-ua-agent.sh <path to the built binary>"
+	echo "::error::usage: verify-ra-ua-agent.sh <path to the built binary> [ios|armsx2]"
 	exit 1
 fi
+
+case "$CLIENT" in
+	ios) VAR=IOS_RA_UA_VERSION; PREFIX="ARMSX2-iOS/v" ;;
+	armsx2) VAR=RA_UA_VERSION; PREFIX="ARMSX2/" ;;
+	*)
+		echo "::error::unknown client '$CLIENT': ios or armsx2"
+		exit 1
+		;;
+esac
 
 if [[ ! -f "$BINARY" ]]; then
 	echo "::error::$BINARY does not exist, so the build did not produce what this check reads."
 	exit 1
 fi
 
-VERSION="$(printf '%s' "${IOS_RA_UA_VERSION:-}" | tr -d '[:space:]')"
+VERSION="$(printf '%s' "${!VAR:-}" | tr -d '[:space:]')"
 
 if [[ -z "$VERSION" ]]; then
+	if [[ -n "${RA_UA_REQUIRED:-}" ]]; then
+		echo "::error::$VAR is unset. This is a release build, and without it RetroAchievements would allow softcore only."
+		exit 1
+	fi
 	echo "no secret was supplied, so this build identifies as stock PCSX2. Nothing to verify."
 	exit 0
 fi
@@ -28,7 +48,7 @@ fi
 # Host.cpp puts a space after the version, which anchors the match so 1.2.3 can't pass for
 # 1.2.345. grep reads the whole stream instead of -q, which would SIGPIPE strings under
 # pipefail. Output is discarded to keep the version out of the log.
-if strings -a "$BINARY" | grep -F "ARMSX2-iOS/v$VERSION " >/dev/null; then
+if strings -a "$BINARY" | grep -F "$PREFIX$VERSION " >/dev/null; then
 	echo "$BINARY carries the RetroAchievements client identity"
 	exit 0
 fi

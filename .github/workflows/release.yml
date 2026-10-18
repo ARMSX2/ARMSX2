@@ -21,6 +21,9 @@
 #   DISCORD_SDK_URL    URL of a .tar.gz of the staged Discord SDK dir (include/, arm64-v8a/,
 #                      the .aar). Too large for a secret itself, so it lives elsewhere.
 #   DISCORD_SDK_TOKEN  optional bearer token for that URL (e.g. a private repo's asset)
+#   RA_UA_VERSION      the ARMSX2 client's RetroAchievements version, which pcsx2/Host.cpp reads
+#                      from the gitignored ra_ua_secret.h. Without it RetroAchievements allows
+#                      softcore only, so both the Android and the Linux builds fail when it is unset.
 name: Release
 
 on:
@@ -155,6 +158,15 @@ jobs:
           [ -f "$SDK/include/discordpp.h" ] || { echo "::error::no include/discordpp.h in the Discord SDK archive"; exit 1; }
           echo "DISCORD_SDK_DIR=$SDK" >> "$GITHUB_ENV"
 
+      # RetroAchievements grants hardcore by the client name and version in the user agent. A
+      # release without the identity would be softcore only, so a missing secret fails here.
+      - name: Embed the RetroAchievements client identity
+        working-directory: ${{ github.workspace }}
+        env:
+          RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
+          RA_UA_REQUIRED: "1"
+        run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
+
       - name: Decode the signing keys
         env:
           DEBUG_KS_B64: ${{ secrets.NIGHTLY_DEBUG_KS_B64 }}
@@ -180,6 +192,20 @@ jobs:
         run: |
           mkdir -p "$OUTDIR"
           tools/build-release-targets.sh "${{ matrix.target }}"
+
+      # The client doesn't report a refused agent, so check that both cores carry the identity.
+      - name: Verify the client identity reached both cores
+        env:
+          RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
+          RA_UA_REQUIRED: "1"
+        run: |
+          shopt -s nullglob
+          apks=("$RUNNER_TEMP"/apk/*.apk)
+          [ "${#apks[@]}" -eq 1 ] || { echo "::error::expected one APK in $RUNNER_TEMP/apk, found ${#apks[@]}"; exit 1; }
+          for core in libemucore_4k libemucore_16k; do
+            unzip -p "${apks[0]}" "lib/arm64-v8a/$core.so" > "$RUNNER_TEMP/$core.so"
+            bash "$GITHUB_WORKSPACE/.github/workflows/scripts/common/verify-ra-ua-agent.sh" "$RUNNER_TEMP/$core.so" armsx2
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
@@ -211,6 +237,8 @@ jobs:
       buildAppImage: true
       fetchTags: true
       stableBuild: true
+    secrets:
+      RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
 
   # ---- upload everything to the draft -------------------------------------
   upload:

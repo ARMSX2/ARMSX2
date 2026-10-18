@@ -43,6 +43,10 @@ on:
         required: false
         type: string
         default: Release
+    secrets:
+      RA_UA_VERSION:
+        description: The ARMSX2 client's RetroAchievements version. A stable build fails without it.
+        required: false
 
 jobs:
   build_linux:
@@ -128,6 +132,16 @@ jobs:
           cd bin/resources
           aria2c -Z "${{ inputs.patchesUrl }}/patches.zip"
 
+      # RetroAchievements grants hardcore by the client name and version in the user agent, which
+      # pcsx2/Host.cpp reads from a gitignored header. A stable build must carry it, so a missing
+      # secret fails here; other builds go on without it, softcore only.
+      - name: Embed the RetroAchievements client identity
+        if: inputs.stableBuild == true
+        env:
+          RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
+          RA_UA_REQUIRED: "1"
+        run: bash .github/workflows/scripts/common/write-ra-ua-secret.sh
+
       - name: Generate CMake
         env:
           ADDITIONAL_CMAKE_ARGS: ${{ inputs.cmakeflags }}
@@ -157,6 +171,14 @@ jobs:
           ninja
           # Save the Cache
           ccache -s
+
+      # The client doesn't report a refused agent, so check the identity reached the binary.
+      - name: Verify the client identity reached the binary
+        if: inputs.stableBuild == true
+        env:
+          RA_UA_VERSION: ${{ secrets.RA_UA_VERSION }}
+          RA_UA_REQUIRED: "1"
+        run: bash .github/workflows/scripts/common/verify-ra-ua-agent.sh build/bin/armsx2-qt armsx2
 
       - name: Run Tests
         working-directory: ./build
