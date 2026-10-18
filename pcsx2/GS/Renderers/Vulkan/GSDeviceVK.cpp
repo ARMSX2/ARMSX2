@@ -1513,14 +1513,16 @@ VkRenderPass GSDeviceVK::GetRenderPassForRestarting(VkRenderPass pass)
 		if (it.second != pass)
 			continue;
 
+		// The restarted pass continues the one that was open, so it loads what that pass drew. A
+		// DONT_CARE kept from the first opening (an invalidated target) throws it away instead: on a
+		// tiler the pass then starts from undefined tile memory and stores it over everything drawn
+		// before the restart. GSVolumetric's multiview restarts (one per constant change) made that
+		// common: Time Crisis 3's sky, drawn first, came out as coloured noise.
 		RenderPassCacheKey modified_key;
 		modified_key.key = it.first;
-		if (modified_key.color_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-			modified_key.color_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-		if (modified_key.depth_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-			modified_key.depth_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-		if (modified_key.stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-			modified_key.stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+		modified_key.color_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+		modified_key.depth_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+		modified_key.stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
 
 		if (modified_key.key == it.first)
 			return pass;
