@@ -62,15 +62,6 @@ import com.armsx2.ui.common.StatusChip
 import com.armsx2.ui.common.padFocusRing
 import com.armsx2.ui.theme.Success
 
-private val setupStepKeys = listOf(
-    "setup.page.welcome.title",
-    "setup.step.appData.title",
-    "setup.page.bios.title",
-    "setup.page.roms.title",
-    "setup.page.performance.title",
-    "setup.button.applyFinish",
-)
-
 @Composable
 fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
     val state = viewModel.state.value
@@ -149,7 +140,7 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
                             val threshold = size.width * 0.16f
                             when {
                                 swipeDistance > threshold && state.page > 0 && !state.busy -> viewModel.previous()
-                                swipeDistance < -threshold && state.page < setupStepKeys.lastIndex && canContinue && !state.busy -> viewModel.next()
+                                swipeDistance < -threshold && state.page < state.steps.lastIndex && canContinue && !state.busy -> viewModel.next()
                             }
                             swipeDistance = 0f
                         },
@@ -161,12 +152,12 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
             if (landscape) {
                 Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     LandscapeHero(
-                        page = state.page,
+                        step = state.step,
                         modifier = Modifier.weight(0.92f).fillMaxHeight().padding(start = 8.dp, top = 16.dp, bottom = 16.dp),
                     )
                     Column(Modifier.weight(1.08f).fillMaxHeight().padding(end = 8.dp)) {
                         Spacer(Modifier.height(18.dp))
-                        PageIndicator(state.page, Modifier.align(Alignment.CenterHorizontally))
+                        PageIndicator(state.page, state.steps.size, Modifier.align(Alignment.CenterHorizontally))
                         Spacer(Modifier.height(8.dp))
                         AnimatedContent(
                             targetState = state.page,
@@ -190,11 +181,12 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
                         }
                         NavigationBar(
                             page = state.page,
+                            isLast = state.page == state.steps.lastIndex,
                             canContinue = viewModel.canContinue(),
                             busy = state.busy,
                             compact = false,
                             onBack = viewModel::previous,
-                            onNext = if (state.page == setupStepKeys.lastIndex) viewModel::finish else viewModel::next,
+                            onNext = if (state.page == state.steps.lastIndex) viewModel::finish else viewModel::next,
                         )
                     }
                 }
@@ -206,7 +198,7 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
                     ) {
                         ArmsLogo()
                         Spacer(Modifier.weight(1f))
-                        PageIndicator(state.page)
+                        PageIndicator(state.page, state.steps.size)
                     }
                     AnimatedContent(
                         targetState = state.page,
@@ -230,11 +222,12 @@ fun OnboardingScreen(viewModel: OnboardingViewModel = viewModel()) {
                     }
                     NavigationBar(
                         page = state.page,
+                        isLast = state.page == state.steps.lastIndex,
                         canContinue = viewModel.canContinue(),
                         busy = state.busy,
                         compact = true,
                         onBack = viewModel::previous,
-                        onNext = if (state.page == setupStepKeys.lastIndex) viewModel::finish else viewModel::next,
+                        onNext = if (state.page == state.steps.lastIndex) viewModel::finish else viewModel::next,
                     )
                 }
             }
@@ -260,18 +253,20 @@ private fun WizardPage(
     folderPicker: () -> Unit,
     onCustomStorage: () -> Unit,
 ) {
-    when (page) {
-        0 -> WelcomePage(compact = true)
-        1 -> StoragePage(state, compact = true, viewModel::selectStorage, onCustomStorage)
-        2 -> BiosPage(state, compact = true, onPick = biosPicker, onSelectBios = viewModel::selectBiosCandidate)
-        3 -> GamesPage(state, folderPicker, viewModel::removeGameFolder, viewModel::setFolderSubfolders)
-        4 -> PerformancePage(state, viewModel::setAutoTune)
+    // The page that is animating out was drawn for its own index, so map through the list rather than state.step.
+    when (state.steps.getOrNull(page)) {
+        SetupStep.Welcome -> WelcomePage(compact = true)
+        SetupStep.Storage -> StoragePage(state, compact = true, viewModel::selectStorage, onCustomStorage)
+        SetupStep.Bios -> BiosPage(state, compact = true, onPick = biosPicker, onSelectBios = viewModel::selectBiosCandidate)
+        SetupStep.Games -> GamesPage(state, folderPicker, viewModel::removeGameFolder, viewModel::setFolderSubfolders)
+        SetupStep.Performance -> PerformancePage(state, viewModel::setAutoTune)
+        SetupStep.Driver -> DriverPage(state, viewModel::installDriver, viewModel::retryDriverOffer)
         else -> ReadyPage(state, compact = true)
     }
 }
 
 @Composable
-private fun LandscapeHero(page: Int, modifier: Modifier = Modifier) {
+private fun LandscapeHero(step: SetupStep, modifier: Modifier = Modifier) {
     Column(modifier, verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
         Surface(
             modifier = Modifier.size(82.dp),
@@ -281,14 +276,14 @@ private fun LandscapeHero(page: Int, modifier: Modifier = Modifier) {
         ) { Box(contentAlignment = Alignment.Center) { ArmsLogo(showWordmark = false) } }
         Spacer(Modifier.height(24.dp))
         Text(
-            str(setupStepKeys[page]),
+            str(step.titleKey),
             style = MaterialTheme.typography.displaySmall,
             color = MaterialTheme.colorScheme.onBackground,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            str(if (page == 0) "setup.welcome.subheading" else "setup.recommended.subtitle"),
+            str(if (step == SetupStep.Welcome) "setup.welcome.subheading" else "setup.recommended.subtitle"),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -297,9 +292,9 @@ private fun LandscapeHero(page: Int, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun PageIndicator(page: Int, modifier: Modifier = Modifier) {
+private fun PageIndicator(page: Int, count: Int, modifier: Modifier = Modifier) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-        setupStepKeys.indices.forEach { index ->
+        (0 until count).forEach { index ->
             Surface(
                 modifier = Modifier.width(if (index == page) 26.dp else 8.dp).height(8.dp),
                 shape = CircleShape,
@@ -666,6 +661,56 @@ private fun PerformancePage(state: OnboardingUiState, onAutoTune: (Boolean) -> U
     }
 }
 
+/** Offers the ARMSX2 GPU driver built for this device (malisx2 on Mali, our Turnip on Adreno 6xx and 7xx).
+ *  Skipping costs nothing: the same download is in the GPU driver settings. */
+@Composable
+private fun DriverPage(state: OnboardingUiState, onInstall: () -> Unit, onRetry: () -> Unit) {
+    SetupPage(str("setup.page.driver.title"), str("setup.step.driver.description")) {
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            val pack = state.driverPack
+            if (pack != null) {
+                val megabytes = pack.sizeBytes / (1024.0 * 1024.0)
+                SummaryCard(
+                    pack.releaseName.ifBlank { pack.assetName },
+                    listOf(state.driverSource, pack.tagName, if (pack.sizeBytes > 0) "%.0f MB".format(megabytes) else "")
+                        .filter(String::isNotBlank).joinToString(" · "),
+                )
+            }
+            when (state.driverStage) {
+                DriverStage.Loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(str("backend.driver.fetching"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                DriverStage.Unreachable -> {
+                    Text(str("setup.driver.unreachable"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedButton(onClick = onRetry, modifier = Modifier.padFocusRing(RoundedCornerShape(14.dp))) { Text(str("setup.driver.retry")) }
+                }
+                DriverStage.Ready, DriverStage.Failed -> {
+                    if (state.driverStage == DriverStage.Failed) {
+                        Text(str("setup.driver.failed"), color = MaterialTheme.colorScheme.error)
+                    }
+                    Button(
+                        onClick = onInstall,
+                        modifier = Modifier.defaultMinSize(minHeight = 56.dp).padFocusRing(RoundedCornerShape(14.dp)),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text(str("setup.driver.download"), fontWeight = FontWeight.Bold) }
+                }
+                DriverStage.Installing -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Text(str("setup.driver.installing"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                DriverStage.Installed -> StatusChip(str("setup.driver.installed"), Success)
+            }
+            if (state.driverIsMali) {
+                Text(str("setup.driver.mali.note"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(str("setup.driver.skipHint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 @Composable
 private fun ReadyPage(state: OnboardingUiState, compact: Boolean) {
     SetupPage(str("setup.button.applyFinish"), str("games.scanningRoms")) {
@@ -758,6 +803,7 @@ private fun SummaryCard(title: String, value: String, modifier: Modifier = Modif
 @Composable
 private fun NavigationBar(
     page: Int,
+    isLast: Boolean,
     canContinue: Boolean,
     busy: Boolean,
     compact: Boolean,
@@ -803,7 +849,7 @@ private fun NavigationBar(
             }
             // "Next", not "Confirm": the welcome page literally says "Hit Next to get started", and
             // these steps advance a wizard rather than commit anything. Reported by Rei Ayanami.
-            Text(if (page == setupStepKeys.lastIndex) str("setup.button.letsGo") else str("setup.button.next"), fontWeight = FontWeight.Bold)
+            Text(if (isLast) str("setup.button.letsGo") else str("setup.button.next"), fontWeight = FontWeight.Bold)
         }
     }
 }

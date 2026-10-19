@@ -1,6 +1,8 @@
 package com.armsx2
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -59,5 +61,37 @@ class CustomDriverSourceTest {
         // Telling these users to download a driver that is not listed for them would be wrong.
         for (r in notOffered)
             assertFalse(r.toString(), CustomDriver.offersMaliSX2(r))
+    }
+
+    // Adreno 6xx and 7xx, as GL_RENDERER spells them. 8xx is out: Turnip's a8xx support is young.
+    private val adreno6xxAnd7xx = listOf(
+        "Adreno (TM) 610", "Adreno (TM) 650", "Adreno (TM) 662", "Adreno (TM) 690",
+        "Adreno (TM) 702", "Adreno (TM) 730", "Adreno (TM) 740", "Adreno (TM) 750", "adreno (tm) 740",
+    )
+    private val notAdrenoTurnipTarget = listOf(
+        null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 540", "Adreno (TM) 830", "Adreno (TM) 840",
+        "Adreno (TM) 6500", "Mali-G715", "PowerVR B-Series BXM-8-256", "Xclipse 940",
+    )
+
+    @Test
+    fun turnipTargetIsAdreno6xxAnd7xx() {
+        for (r in adreno6xxAnd7xx)
+            assertTrue(r, CustomDriver.isAdreno6xxOr7xx(r))
+        for (r in notAdrenoTurnipTarget)
+            assertFalse(r.toString(), CustomDriver.isAdreno6xxOr7xx(r))
+    }
+
+    @Test
+    fun setupOffersOurDriverForTheGpuAndNothingElse() {
+        for (r in valhallV9 + valhallV11)
+            assertEquals(r, "ARMSX2 · MaliSX2", CustomDriver.setupOfferLabel(r))
+        for (r in adreno6xxAnd7xx)
+            assertEquals(r, "ARMSX2 · turnip", CustomDriver.setupOfferLabel(r))
+        val nothingOffered = listOf(
+            null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 840", "Adreno (TM) 6500",
+            "Mali-G52 MC2", "Mali-G610 MC6", "PowerVR B-Series BXM-8-256", "Xclipse 940",
+        )
+        for (r in nothingOffered)
+            assertNull(r.toString(), CustomDriver.setupOfferLabel(r))
     }
 }

@@ -88,18 +88,50 @@ object CustomDriver {
      *  [MALISX2_SOURCE]'s `supports` widens both. */
     fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
 
+    // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
+    // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
+    // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
+    // (6xx only) under one of them (GSGPUDriverProfile.cpp). Same GitHub-releases zip format as
+    // every source below; one release per pack, so the release name is the row title.
+    // Listed on every GPU; the first-run setup offers it on Adreno 6xx and 7xx only ([setupSource]).
+    private val ARMSX2_TURNIP_SOURCE = DriverSource(
+        "ARMSX2 · turnip",
+        "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases",
+        "armsx2turnip",
+    )
+
+    /** Adreno 6xx and 7xx, the parts the armsx2-turnip releases say they are built for. Not 8xx:
+     *  Turnip's a8xx support is young and the driver list recommends a Qualcomm pack there.
+     *  GL_RENDERER reads like "Adreno (TM) 740". */
+    private val ADRENO_6XX_7XX = Regex("""Adreno\D*([67]\d\d)(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isAdreno6xxOr7xx(renderer: String?): Boolean =
+        renderer != null && ADRENO_6XX_7XX.containsMatchIn(renderer)
+
+    /** The source the first-run setup offers for [renderer]: ours for the GPU, or null when none of
+     *  our drivers is built for it (the system driver stays). The two predicates never overlap. */
+    private fun setupSource(renderer: String?): DriverSource? = when {
+        MALISX2_SOURCE.supports(renderer) -> MALISX2_SOURCE
+        isAdreno6xxOr7xx(renderer) -> ARMSX2_TURNIP_SOURCE
+        else -> null
+    }
+
+    /** Name of the source the first-run setup offers for [renderer] ("ARMSX2 · MaliSX2"), or null
+     *  when it offers nothing. Cheap and offline, so the setup can decide whether it has a driver
+     *  page before it asks the network anything. */
+    fun setupOfferLabel(renderer: String?): String? = setupSource(renderer)?.label
+
+    /** The newest pack of the source [setupOfferLabel] names, or null when there is none or the
+     *  release list can't be read. Blocks on the network: call it from Dispatchers.IO. GitHub lists
+     *  releases newest first, and a source's list order is kept. */
+    fun fetchSetupOffer(renderer: String?): RemoteDriver? {
+        val src = setupSource(renderer) ?: return null
+        return fetchSource(src, "ARMSX2/" + runCatching { NativeApp.getBuildVersion() }.getOrNull().orEmpty().ifEmpty { "dev" })
+            .firstOrNull()
+    }
+
     private val DRIVER_SOURCES = listOf(
         MALISX2_SOURCE,
-        // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
-        // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
-        // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
-        // (6xx only) under one of them (GSGPUDriverProfile.cpp). Same GitHub-releases zip format as
-        // every source below; one release per pack, so the release name is the row title.
-        DriverSource(
-            "ARMSX2 · turnip",
-            "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases",
-            "armsx2turnip",
-        ),
+        ARMSX2_TURNIP_SOURCE,
         DriverSource(
             "AdrenoToolsDrivers",
             "https://api.github.com/repos/K11MCH1/AdrenoToolsDrivers/releases",
