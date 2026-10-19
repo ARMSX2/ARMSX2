@@ -115,3 +115,72 @@ IopThread::OrderedPlan IopThread::PlanOrdered(size_t list_size, bool mtvu, bool 
 	plan.first_software_thread = used + (plan.iop >= 0 ? 1 : 0);
 	return plan;
 }
+
+IopThread::PrimeSplit IopThread::PrimeCoreSplit(const std::vector<CpuCapacity>& cpus)
+{
+	PrimeSplit split;
+	const u64 tier = PerformanceMask(cpus);
+	if (std::popcount(tier) < 3)
+		return split;
+
+	u32 top = 0;
+	for (const CpuCapacity& cpu : cpus)
+	{
+		if (cpu.first_thread && cpu.processor_id < 64 && (tier >> cpu.processor_id & 1))
+			top = std::max(top, cpu.capacity);
+	}
+	u64 at_top = 0;
+	u32 second = 0;
+	for (const CpuCapacity& cpu : cpus)
+	{
+		if (!cpu.first_thread || cpu.processor_id >= 64 || !(tier >> cpu.processor_id & 1))
+			continue;
+		if (cpu.capacity == top)
+			at_top |= static_cast<u64>(1) << cpu.processor_id;
+		else
+			second = std::max(second, cpu.capacity);
+	}
+	if (std::popcount(at_top) != 1 || second == 0 || static_cast<double>(top) < static_cast<double>(second) * kPrimeCoreRatio)
+		return split;
+
+	split.prime = at_top;
+	split.rest = tier & ~at_top;
+	return split;
+}
+
+int IopThread::PrimeArbiterUpdate(PrimeArbiter& arbiter, const PrimeLoad& load)
+{
+	int best = -1;
+	for (int i = 0; i < kPrimeContenderCount; i++)
+	{
+		if (load.present[i] && (best < 0 || load.busy[i] > load.busy[best]))
+			best = i;
+	}
+	if (best < 0)
+		return arbiter.owner;
+
+	if (arbiter.owner < 0 || !load.present[arbiter.owner])
+	{
+		arbiter.owner = best;
+		arbiter.challenger = -1;
+		arbiter.streak = 0;
+		return arbiter.owner;
+	}
+
+	if (best == arbiter.owner || load.busy[best] < load.busy[arbiter.owner] + kPrimeMarginPercent)
+	{
+		arbiter.challenger = -1;
+		arbiter.streak = 0;
+		return arbiter.owner;
+	}
+
+	arbiter.streak = (arbiter.challenger == best) ? arbiter.streak + 1 : 1;
+	arbiter.challenger = best;
+	if (arbiter.streak >= kPrimeWindows)
+	{
+		arbiter.owner = best;
+		arbiter.challenger = -1;
+		arbiter.streak = 0;
+	}
+	return arbiter.owner;
+}

@@ -99,4 +99,55 @@ namespace IopThread
 		u32 first_software_thread = 2;
 	};
 	OrderedPlan PlanOrdered(size_t list_size, bool mtvu, bool iop_thread);
+
+	// ---- the prime core ------------------------------------------------------------------------
+
+	/// A processor is "the prime core" when it is the only one at the top capacity and the rest of the tier is at
+	/// least this far below it. The SD865 (1024 against 871) and the T820 (1024 against 869) qualify; a Dimensity
+	/// 8300 (an X-class core a few percent over three more of its kind) and a part whose top cores are equal do not.
+	inline constexpr double kPrimeCoreRatio = 1.10;
+
+	/// The prime core and the rest of the performance tier. Both 0 when the tier has no single core that clearly
+	/// outruns the others, or when it holds fewer than three processors (a prime core plus one other leaves nothing to
+	/// share).
+	struct PrimeSplit
+	{
+		u64 prime = 0; // exactly one bit
+		u64 rest = 0; // the performance tier without the prime core
+	};
+	PrimeSplit PrimeCoreSplit(const std::vector<CpuCapacity>& cpus);
+
+	/// The threads that can be the one the frame waits on, and so the one that wants the prime core.
+	enum PrimeContender : int
+	{
+		kPrimeEE = 0,
+		kPrimeVU,
+		kPrimeGSFront,
+		kPrimeGSBack,
+		kPrimeContenderCount
+	};
+
+	/// What the last window measured: how much of a processor each thread used, in percent (100 = one whole core).
+	struct PrimeLoad
+	{
+		bool present[kPrimeContenderCount] = {};
+		double busy[kPrimeContenderCount] = {};
+	};
+
+	/// A challenger takes the prime core after being this far above the owner (percentage points) for this many
+	/// windows in a row. The margin and the streak keep two threads that are about equally busy from trading the core
+	/// back and forth; a move costs the thread its warm caches.
+	inline constexpr double kPrimeMarginPercent = 10.0;
+	inline constexpr u32 kPrimeWindows = 3;
+
+	struct PrimeArbiter
+	{
+		int owner = -1; // the thread that has the prime core to itself; -1 until the first window names one
+		int challenger = -1;
+		u32 streak = 0;
+	};
+
+	/// Feeds one window into the arbiter and returns the owner. The first window names the busiest thread. A thread
+	/// that is not running cannot own the core: the busiest thread that is running takes it at once.
+	int PrimeArbiterUpdate(PrimeArbiter& arbiter, const PrimeLoad& load);
 } // namespace IopThread

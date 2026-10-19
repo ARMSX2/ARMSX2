@@ -4091,6 +4091,7 @@ void VMManager::CheckForMiscConfigChanges(const Pcsx2Config& old_config)
 	// that has just started is on the CPU thread's affinity until it is placed. It also counts as one of the
 	// threads to place, so the others' places can change with it.
 	if (HasValidVM() && (EmuConfig.EnableThreadPinning != old_config.EnableThreadPinning ||
+							EmuConfig.EnablePrimeCorePlacement != old_config.EnablePrimeCorePlacement ||
 							(s_thread_affinities_set && EmuConfig.Speedhacks.vuThread != old_config.Speedhacks.vuThread) ||
 							IopThread::PlacementToken() != s_iop_placement_token))
 	{
@@ -4734,7 +4735,7 @@ static std::vector<u32> GetProcessorWeights()
 
 // Reads each processor's capacity and hands the table to IopThread::PerformanceMask, which decides the tier
 // (and says why it is not simply the fastest cluster).
-static u64 GetPerformanceCoresMask()
+static std::vector<IopThread::CpuCapacity> ReadCpuCapacities()
 {
 	const std::vector<u32> weights = GetProcessorWeights();
 	std::vector<IopThread::CpuCapacity> cpus;
@@ -4746,7 +4747,19 @@ static u64 GetPerformanceCoresMask()
 			continue;
 		cpus.push_back({GetProcessorIdForProcessor(proc), weights[i], proc->smt_id == 0});
 	}
-	return IopThread::PerformanceMask(cpus);
+	return cpus;
+}
+
+static u64 GetPerformanceCoresMask()
+{
+	return IopThread::PerformanceMask(ReadCpuCapacities());
+}
+
+// The prime core and the rest of the performance tier, empty when the host has no single core that clearly outruns
+// the others (IopThread::PrimeCoreSplit says what clearly means).
+static IopThread::PrimeSplit GetPrimeCoreSplit()
+{
+	return IopThread::PrimeCoreSplit(ReadCpuCapacities());
 }
 #endif
 
@@ -5086,8 +5099,112 @@ static void SetIopThreadAffinity(u64 mask)
 		IopThread::g_thread.GetThreadHandle().SetAffinity(mask);
 }
 
+// ---- the prime core ----------------------------------------------------------------------------
+//
+// On a part with one core clearly faster than the rest of its performance tier (SD865: one 2.84 GHz core over three at
+// 2.42 GHz; T820 likewise), the thread the frame waits on should have that core to itself. Which thread that is changes
+// with the game: a GS-heavy scene is waited on by the GS back thread, an EE-bound one by the EE thread, a VU1-heavy one
+// by the MTVU thread. The kernel's own balancing puts the busiest single thread on the prime core, but with the GS split
+// on it does not keep the back thread there: the back thread shares the prime core with the EE thread and changes
+// processors about a hundred times a second. So while the GS back thread is running, the busiest of EE, VU1, GS front
+// and GS back gets the prime core alone and every other emulation thread is kept to the rest of the tier. The choice is
+// made from the usage figures PerformanceMetrics already samples, with a margin and a streak
+// (IopThread::PrimeArbiterUpdate) so equally busy threads do not trade the core.
+//
+// It applies only where nothing placed the threads by hand: the unpinned Linux placement (which already confines the GS
+// threads to the tier; ROCKNIX runs with pinning off) and Android's Performance Cores mode (the default). Pinned placements
+// and the ranked Android modes are the user's choice and are left alone.
+static std::mutex s_prime_mutex; // SetEmuThreadAffinities and the arbiter both write the threads' masks
+static IopThread::PrimeSplit s_prime_split; // set by SetEmuThreadAffinities when the arbiter applies to the placement it made
+static IopThread::PrimeArbiter s_prime_arbiter;
+static bool s_prime_engaged = false;
+static int s_prime_applied_owner = -1;
+static bool s_prime_disabled_by_host = false; // the gsrunner places threads by hand
+static struct
+{
+	u64 ee = 0, vu = 0, front = 0, iop = 0, back = 0;
+} s_prime_baseline;
+
+static void ApplyPrimeOwnerLocked(int owner)
+{
+	const u64 prime = s_prime_split.prime;
+	const u64 rest = s_prime_split.rest;
+	const auto mask_for = [&](int who) { return owner == who ? prime : rest; };
+	s_vm_thread_handle.SetAffinity(mask_for(IopThread::kPrimeEE));
+	if (EmuConfig.Speedhacks.vuThread)
+		vu1Thread.GetThreadHandle().SetAffinity(mask_for(IopThread::kPrimeVU));
+	MTGS::GetThreadHandle().SetAffinity(mask_for(IopThread::kPrimeGSFront));
+	SetGSBackThreadAffinityLocked(mask_for(IopThread::kPrimeGSBack));
+	if (IopThread::g_thread.IsRunning())
+		SetIopThreadAffinity(rest);
+	s_prime_applied_owner = owner;
+}
+
+static void DisengagePrimeLocked()
+{
+	if (!s_prime_engaged)
+		return;
+	s_vm_thread_handle.SetAffinity(s_prime_baseline.ee);
+	if (EmuConfig.Speedhacks.vuThread)
+		vu1Thread.GetThreadHandle().SetAffinity(s_prime_baseline.vu);
+	MTGS::GetThreadHandle().SetAffinity(s_prime_baseline.front);
+	SetGSBackThreadAffinityLocked(s_prime_baseline.back);
+	if (IopThread::g_thread.IsRunning())
+		SetIopThreadAffinity(s_prime_baseline.iop);
+	s_prime_engaged = false;
+	s_prime_applied_owner = -1;
+}
+
+void VMManager::Internal::DisablePrimeCorePlacement()
+{
+	std::unique_lock lock(s_prime_mutex);
+	DisengagePrimeLocked();
+	s_prime_split = {};
+	s_prime_disabled_by_host = true;
+}
+
+void VMManager::Internal::UpdatePrimeCorePlacement(const IopThread::PrimeLoad& load)
+{
+	std::unique_lock lock(s_prime_mutex);
+	if (s_prime_disabled_by_host || s_prime_split.prime == 0)
+		return;
+
+	// Only the split puts a second heavy thread beside the EE thread; with it off the kernel's placement is left alone.
+	if (!load.present[IopThread::kPrimeGSBack])
+	{
+		DisengagePrimeLocked();
+		return;
+	}
+
+	if (!s_prime_engaged)
+	{
+		s_prime_baseline.ee = s_vm_thread_handle.GetAffinity();
+		s_prime_baseline.vu = vu1Thread.GetThreadHandle().GetAffinity();
+		s_prime_baseline.front = MTGS::GetThreadHandle().GetAffinity();
+		s_prime_baseline.iop = IopThread::g_thread.IsRunning() ? IopThread::g_thread.GetThreadHandle().GetAffinity() : 0;
+		s_prime_baseline.back = s_gs_back_thread_affinity;
+		s_prime_arbiter = {};
+		s_prime_engaged = true;
+	}
+
+	const int owner = IopThread::PrimeArbiterUpdate(s_prime_arbiter, load);
+	if (owner != s_prime_applied_owner)
+	{
+		INFO_LOG("Prime core 0x{:x}: owner {} (busy EE {:.0f} VU {:.0f} GS {:.0f} GSB {:.0f}%)", s_prime_split.prime, owner,
+			load.busy[IopThread::kPrimeEE], load.busy[IopThread::kPrimeVU], load.busy[IopThread::kPrimeGSFront],
+			load.busy[IopThread::kPrimeGSBack]);
+		ApplyPrimeOwnerLocked(owner);
+	}
+}
+
 void VMManager::SetEmuThreadAffinities()
 {
+	// The arbiter's masks are the result of the last placement, which this call replaces; it engages again on its next
+	// window. Held for the whole call so the two never write the same thread at once.
+	std::unique_lock prime_lock(s_prime_mutex);
+	DisengagePrimeLocked(); // back to the placement that was in force before the arbiter took over
+	s_prime_split = {};
+
 	// The IOP thread runs beside the EE, so it is one more busy thread that wants a processor of its own. In
 	// Lockstep the two take strict turns and it does not. Remembered before anything below can return, so that
 	// the thread this call places is the one the token names.
@@ -5177,6 +5294,16 @@ void VMManager::SetEmuThreadAffinities()
 														"left unpinned (no processor left for it in the tier)");
 			SetGSBackThreadAffinityLocked(back_fits ? perf_mask : 0);
 			s_thread_affinities_set = true;
+			// With the GS back thread running, the busiest thread gets the prime core alone (see the prime core block above).
+			// Only a part with one core clearly faster than the rest of its tier has a prime core to give: the RG 476H (T820:
+			// 1024 / 869 / 336) does; the RG 477V (Dimensity 8300: 1024 against 996) does not, and EAS keeps placing its threads.
+			if (EmuConfig.EnablePrimeCorePlacement)
+			{
+				s_prime_split = GetPrimeCoreSplit();
+				if (s_prime_split.prime != 0)
+					INFO_LOG("Prime core 0x{:x} goes to the busiest thread while the GS back thread runs (rest of the tier 0x{:x})",
+						s_prime_split.prime, s_prime_split.rest);
+			}
 			// Already a whole tier — hand it to helper threads unchanged.
 			s_perf_cluster_mask.store(perf_mask, std::memory_order_relaxed);
 			return;
@@ -5283,7 +5410,18 @@ void VMManager::SetEmuThreadAffinities()
 		const u64 gs_tier = 0;
 #endif
 		if (gs_tier != 0)
+		{
 			INFO_LOG("Thread pinning off: GS thread and GS back thread confined to the performance tier 0x{:x}", gs_tier);
+#if defined(__linux__)
+			if (EmuConfig.EnablePrimeCorePlacement)
+			{
+				s_prime_split = GetPrimeCoreSplit();
+				if (s_prime_split.prime != 0)
+					INFO_LOG("Prime core 0x{:x} goes to the busiest thread while the GS back thread runs (rest of the tier 0x{:x})",
+						s_prime_split.prime, s_prime_split.rest);
+			}
+#endif
+		}
 		if (gs_tier != 0 || was_pinned || s_gs_tier_confined)
 			MTGS::GetThreadHandle().SetAffinity(gs_tier);
 		SetGSBackThreadAffinityLocked(gs_tier);

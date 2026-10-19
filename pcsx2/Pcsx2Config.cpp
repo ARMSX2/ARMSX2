@@ -2200,6 +2200,7 @@ Pcsx2Config::Pcsx2Config()
 	EnableFastBoot = true;
 	EnableRecordingTools = true;
 	EnableGameFixes = true;
+	EnablePrimeCorePlacement = true;
 	InhibitScreensaver = true;
 	UseSavestateSelector = true;
 	BackupSavestate = true;
@@ -2246,6 +2247,7 @@ void Pcsx2Config::LoadSaveCore(SettingsWrapper& wrap)
 	SettingsWrapBitBool(EnableFastBoot);
 	SettingsWrapBitBool(EnableFastBootFastForward);
 	SettingsWrapBitBool(EnableThreadPinning);
+	SettingsWrapBitBool(EnablePrimeCorePlacement);
 	SettingsWrapBitBool(EnableRecordingTools);
 	SettingsWrapBitBool(EnableGameFixes);
 	SettingsWrapBitBool(SaveStateOnShutdown);

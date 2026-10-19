@@ -17,6 +17,11 @@
 
 enum class CDVD_SourceType : uint8_t;
 
+namespace IopThread
+{
+	struct PrimeLoad;
+}
+
 namespace Threading
 {
 	class ThreadHandle;
@@ -419,6 +424,14 @@ namespace VMManager
 		/// are pinned, includes a processor one of them is pinned to. False when the threads are not pinned (the
 		/// scheduler decides, and there is nothing to say) and on platforms with no placement.
 		bool GSBackThreadWouldShareBusyCore();
+
+		/// Called about twice a second from the GS thread with each emulation thread's share of a processor over the
+		/// last window. While the GS back thread runs and the placement left the threads to the scheduler, the busiest
+		/// thread gets the prime core alone (see the prime core block in VMManager.cpp). A no-op everywhere else.
+		void UpdatePrimeCorePlacement(const IopThread::PrimeLoad& load);
+
+		/// For a host that places the threads itself (pcsx2-gsrunner -gspin / -gsbackpin): the arbiter steps aside.
+		void DisablePrimeCorePlacement();
 
 		/// Returns a list of processors in the system, suitable for pinning for the software renderer.
 		const std::vector<u32>& GetSoftwareRendererProcessorList();

@@ -15,6 +15,7 @@
 #include "PerformanceMetrics.h"
 
 #include "GS.h"
+#include "IopThread/IopPlacement.h"
 #include "MTGS.h"
 #include "MTVU.h"
 #include "VMManager.h"
@@ -425,6 +426,19 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 	s_gs_back_thread_time = static_cast<double>(gs_back_delta) * time_divider;
 	s_vu_thread_time = static_cast<double>(vu_delta) * time_divider;
 	s_iop_thread_time = static_cast<double>(iop_delta) * time_divider;
+
+	{
+		IopThread::PrimeLoad load;
+		load.present[IopThread::kPrimeEE] = true;
+		load.busy[IopThread::kPrimeEE] = s_cpu_thread_usage;
+		load.present[IopThread::kPrimeVU] = THREAD_VU1;
+		load.busy[IopThread::kPrimeVU] = s_vu_thread_usage;
+		load.present[IopThread::kPrimeGSFront] = true;
+		load.busy[IopThread::kPrimeGSFront] = s_gs_thread_usage;
+		load.present[IopThread::kPrimeGSBack] = HasGSBackThread();
+		load.busy[IopThread::kPrimeGSBack] = s_gs_back_thread_usage;
+		VMManager::Internal::UpdatePrimeCorePlacement(load);
+	}
 
 	for (GSSWThreadStats& thread : s_gs_sw_threads)
 	{

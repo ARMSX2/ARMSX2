@@ -3039,6 +3039,9 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// the GS thread itself, to whichever processor its frequency sort ranked next.
 			// Moving this call any earlier means that pin quietly overwrites -gspin, and
 			// the only visible symptom would be that the flag stops doing anything.
+			// A hand placement (-gspin, -gsbackpin) is the experiment; the prime-core arbiter must not move it.
+			if (!s_gs_pin_request.empty() || !s_gs_back_pin_request.empty())
+				VMManager::Internal::DisablePrimeCorePlacement();
 			ApplyGSThreadPin();
 			ApplyGSBackThreadPin();
 

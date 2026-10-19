@@ -23,6 +23,7 @@
 #include "IopThreadTestSupport.h"
 #include "VMManager.h"
 
+#include <algorithm>
 #include <bit>
 #include <vector>
 
@@ -603,4 +604,140 @@ TEST(IopThreadHandle, OnlyAThreadedThreadCountsWhenThreadsAreCounted)
 	IopThread::StopThread();
 	EXPECT_FALSE(IopThread::PlacesThread());
 	EXPECT_EQ(IopThread::PlacementToken(), 0u);
+}
+
+// ---------------------------------------------------------------- the prime core
+
+namespace
+{
+	using IopThread::PrimeArbiter;
+	using IopThread::PrimeArbiterUpdate;
+	using IopThread::PrimeContender;
+	using IopThread::PrimeCoreSplit;
+	using IopThread::PrimeLoad;
+
+	std::vector<CpuCapacity> T820()
+	{
+		std::vector<CpuCapacity> cpus;
+		Add(cpus, 0, 4, 336); // A55
+		Add(cpus, 4, 3, 869); // A76
+		Add(cpus, 7, 1, 1024); // A76 prime
+		return cpus;
+	}
+
+	// The load of one window: busy percent for EE, VU, GS front, GS back; a negative figure means the thread is not running.
+	PrimeLoad Load(double ee, double vu, double front, double back)
+	{
+		PrimeLoad load;
+		const double v[IopThread::kPrimeContenderCount] = {ee, vu, front, back};
+		for (int i = 0; i < IopThread::kPrimeContenderCount; i++)
+		{
+			load.present[i] = v[i] >= 0.0;
+			load.busy[i] = v[i] >= 0.0 ? v[i] : 0.0;
+		}
+		return load;
+	}
+} // namespace
+
+TEST(IopThreadPrimeCore, TheSd865AndTheT820HaveOnePrimeCoreAndTheOtherThreeBigCoresAreTheRest)
+{
+	for (const auto& cpus : {Sd865(), T820()})
+	{
+		const IopThread::PrimeSplit split = PrimeCoreSplit(cpus);
+		EXPECT_EQ(split.prime, 0x80u);
+		EXPECT_EQ(split.rest, 0x70u);
+	}
+}
+
+TEST(IopThreadPrimeCore, ADimensity8300PrimeCoreFourPercentAheadOfItsNeighboursIsNotPrime)
+{
+	const IopThread::PrimeSplit split = PrimeCoreSplit(Dimensity8300());
+	EXPECT_EQ(split.prime, 0u);
+	EXPECT_EQ(split.rest, 0u);
+}
+
+TEST(IopThreadPrimeCore, FourEqualBigCoresAndTheM2HaveNoPrimeCore)
+{
+	EXPECT_EQ(PrimeCoreSplit(Mq65()).prime, 0u);
+	EXPECT_EQ(PrimeCoreSplit(M2Max()).prime, 0u);
+	EXPECT_EQ(PrimeCoreSplit(Rk3562()).prime, 0u);
+	EXPECT_EQ(PrimeCoreSplit(Sd662()).prime, 0u);
+}
+
+TEST(IopThreadPrimeCore, ACoreListThatCannotBeReadHasNoPrimeCore)
+{
+	std::vector<CpuCapacity> cpus;
+	Add(cpus, 0, 8, 0);
+	EXPECT_EQ(PrimeCoreSplit(cpus).prime, 0u);
+}
+
+TEST(IopThreadPrimeCore, ATierOfTwoLeavesNothingToShareAndHasNoPrimeCore)
+{
+	std::vector<CpuCapacity> cpus;
+	Add(cpus, 0, 6, 284);
+	Add(cpus, 6, 1, 871);
+	Add(cpus, 7, 1, 1024);
+	EXPECT_EQ(PrimeCoreSplit(cpus).prime, 0u);
+}
+
+TEST(IopThreadPrimeCore, TheProcessorNumberIsTheBitWhateverTheListOrder)
+{
+	std::vector<CpuCapacity> cpus = Sd865();
+	std::reverse(cpus.begin(), cpus.end());
+	EXPECT_EQ(PrimeCoreSplit(cpus).prime, 0x80u);
+	EXPECT_EQ(PrimeCoreSplit(cpus).rest, 0x70u);
+}
+
+TEST(IopThreadPrimeArbiter, TheFirstWindowGivesTheCoreToTheBusiestThread)
+{
+	PrimeArbiter a;
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(47, 41, 49, 96)), IopThread::kPrimeGSBack);
+	PrimeArbiter b;
+	EXPECT_EQ(PrimeArbiterUpdate(b, Load(99, 85, 81, 49)), IopThread::kPrimeEE);
+	PrimeArbiter c;
+	EXPECT_EQ(PrimeArbiterUpdate(c, Load(40, 99, 30, 50)), IopThread::kPrimeVU);
+}
+
+TEST(IopThreadPrimeArbiter, AChallengerNeedsTheMarginForSeveralWindowsInARow)
+{
+	PrimeArbiter a;
+	ASSERT_EQ(PrimeArbiterUpdate(a, Load(95, 40, 50, 60)), IopThread::kPrimeEE);
+	// The back thread is 20 points over the EE thread, but only for two windows.
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(70, 40, 50, 90)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(70, 40, 50, 90)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(95, 40, 50, 60)), IopThread::kPrimeEE); // the streak is broken
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(70, 40, 50, 90)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(70, 40, 50, 90)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(70, 40, 50, 90)), IopThread::kPrimeGSBack);
+}
+
+TEST(IopThreadPrimeArbiter, TwoAboutEquallyBusyThreadsDoNotTradeTheCore)
+{
+	PrimeArbiter a;
+	ASSERT_EQ(PrimeArbiterUpdate(a, Load(99, 40, 50, 90)), IopThread::kPrimeEE);
+	for (int i = 0; i < 20; i++)
+		EXPECT_EQ(PrimeArbiterUpdate(a, i % 2 ? Load(92, 40, 50, 99) : Load(99, 40, 50, 95)), IopThread::kPrimeEE);
+}
+
+TEST(IopThreadPrimeArbiter, TheChallengerThatLeadsIsTheBusiestNotTheFirstOverTheMargin)
+{
+	PrimeArbiter a;
+	ASSERT_EQ(PrimeArbiterUpdate(a, Load(50, 30, 40, 45)), IopThread::kPrimeEE);
+	for (int i = 0; i < 2; i++)
+		EXPECT_EQ(PrimeArbiterUpdate(a, Load(50, 80, 40, 95)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(50, 80, 40, 95)), IopThread::kPrimeGSBack);
+}
+
+TEST(IopThreadPrimeArbiter, AThreadThatStoppedRunningLosesTheCoreAtOnce)
+{
+	PrimeArbiter a;
+	ASSERT_EQ(PrimeArbiterUpdate(a, Load(30, 20, 40, 95)), IopThread::kPrimeGSBack);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(30, 60, 40, -1)), IopThread::kPrimeVU);
+}
+
+TEST(IopThreadPrimeArbiter, NothingRunningKeepsTheOwnerAsItWas)
+{
+	PrimeArbiter a;
+	ASSERT_EQ(PrimeArbiterUpdate(a, Load(95, 20, 40, 30)), IopThread::kPrimeEE);
+	EXPECT_EQ(PrimeArbiterUpdate(a, Load(-1, -1, -1, -1)), IopThread::kPrimeEE);
 }

@@ -1680,6 +1680,7 @@ struct Pcsx2Config
 		EnableFastBoot : 1,
 		EnableFastBootFastForward : 1,
 		EnableThreadPinning : 1,
+		EnablePrimeCorePlacement : 1, // GS multi-threading on a part with one prime core: the busiest thread gets it alone
 		// TODO - Vaser - where are these settings exposed in the Qt UI?
 		EnableRecordingTools : 1,
 		EnableGameFixes : 1, // enables automatic game fixes
