@@ -219,4 +219,44 @@ class AutoTuneStoreTest {
         assertTrue(old.emuCore.autoTune)
         assertFalse(old.cpu.dynamicEeCycleRate)
     }
+
+    @Test
+    fun theResolutionIsTheOnlyLeverTheAppsWriterForTheGamesFileDoesNotCarry() {
+        // The app regenerates the game's file from the stored settings at every in-game save, so a kept value
+        // survives only if that writer emits it. All of them do but the resolution, which the app keeps in the
+        // core's base layer; that is why AutoTuneStore pushes it there on a commit and on a reset.
+        val sample = mapOf(
+            "upscale_multiplier" to "3", "GSBackThreadMode" to "1", "HWDownloadMode" to "5",
+            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true",
+        )
+        val baseline = global.emittedKeys()
+        for (lever in AutoTuneStore.levers) {
+            val id = lever.section + "/" + lever.key
+            val tuned = Settings.merge(global, committed(lever.section, lever.key, sample.getValue(lever.key)))
+            val carried = tuned.emittedKeys().let { it.containsKey(id) && it[id] != baseline[id] }
+            assertEquals(id, lever.key != "upscale_multiplier", carried)
+        }
+    }
+
+    @Test
+    fun aCommittedResolutionIsTheOneThatIsPushedToTheBaseLayer() {
+        assertEquals(3.0f, AutoTuneStore.upscaleCommitted("EmuCore/GS", "upscale_multiplier", "3.000000")!!, 0.0f)
+        assertEquals(null, AutoTuneStore.upscaleCommitted("EmuCore/GS", "HWDownloadMode", "5"))
+        assertEquals(null, AutoTuneStore.upscaleCommitted("EmuCore/GS", "upscale_multiplier", "banana"))
+    }
+
+    @Test
+    fun aResetThatRestoredTheResolutionPushesTheStoredOneBack() {
+        val restored = listOf(
+            AutoTuneStore.Restored("EmuCore/Speedhacks", "iopThread", null),
+            AutoTuneStore.Restored("EmuCore/GS", "upscale_multiplier", null),
+        )
+        // The player's own 8x, back in the store: that is what the base layer has to hold again.
+        assertEquals(8.0f, AutoTuneStore.upscaleAfterRestore(restored, 8.0f)!!, 0.0f)
+        // Global's native when the player had nothing of their own.
+        assertEquals(1.0f, AutoTuneStore.upscaleAfterRestore(restored, 1.0f)!!, 0.0f)
+        // A reset that left the resolution alone (or never touched it) pushes nothing.
+        assertEquals(null, AutoTuneStore.upscaleAfterRestore(restored.take(1), 8.0f))
+        assertEquals(null, AutoTuneStore.upscaleAfterRestore(emptyList(), 8.0f))
+    }
 }

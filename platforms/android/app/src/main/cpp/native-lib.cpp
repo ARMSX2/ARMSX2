@@ -6735,6 +6735,15 @@ void Native::onPadRumble(int pad, int largeMotor, int smallMotor) {
 // Called on the CPU thread; the app does the work on its own thread, so this returns at once.
 static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
 {
+    // The resolution is the one lever the app's writer for the game's file does not emit (it keeps the resolution
+    // in the base layer, see renderUpscalemultiplier), so the next save from the app regenerates the file without
+    // the key and the base layer's older value would take over. Put the kept value there too. The emulator already
+    // runs at this value, so nothing is applied.
+    if (std::strcmp(section, "EmuCore/GS") == 0 && std::strcmp(key, "upscale_multiplier") == 0) {
+        if (const auto parsed = StringUtil::FromChars<float>(value); parsed.has_value())
+            Host::SetBaseFloatSettingValue(section, key, parsed.value());
+    }
+
     if (!s_jvm || !s_NativeApp_class || !s_onAutoTuneCommitted_mid)
         return;
 

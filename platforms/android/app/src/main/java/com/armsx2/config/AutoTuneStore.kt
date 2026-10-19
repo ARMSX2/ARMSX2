@@ -31,6 +31,13 @@ import java.util.concurrent.Executors
  *
  * The `[AutoTune]` section is outside the sections the app regenerates, so it survives and still carries
  * the record.
+ *
+ * One lever is not carried by that regeneration: the resolution. The app's writer for the game's file never
+ * emits `upscale_multiplier`; the app keeps the resolution in the core's base layer (renderUpscalemultiplier,
+ * pushed at boot and on a change). A kept resolution that only the game's file holds is therefore gone from it
+ * at the next save from the app, and the base layer's older value takes over. So the core also puts a kept
+ * resolution in the base layer when it commits it (AndroidOnAutoTuneCommitted in native-lib.cpp), and [reset]
+ * pushes the restored resolution back ([upscaleAfterRestore]).
  */
 object AutoTuneStore {
     enum class Kind { BOOL, INT, FLOAT }
@@ -92,6 +99,21 @@ object AutoTuneStore {
         if (a is Number && b is Number) return Math.abs(a.toDouble() - b.toDouble()) < 1e-6
         return a == b
     }
+
+    private const val UPSCALE_SECTION = "EmuCore/GS"
+    private const val UPSCALE_KEY = "upscale_multiplier"
+
+    /** The resolution a committed [section]/[key] sets, or null when it is another key or the text is not a number. */
+    internal fun upscaleCommitted(section: String, key: String, value: String): Float? =
+        if (section == UPSCALE_SECTION && key == UPSCALE_KEY) value.trim().toFloatOrNull() else null
+
+    /**
+     * The resolution to push to the core's base layer after a reset, or null when the reset did not touch it. The
+     * core has put the game's file back by then, so what the emulator runs is whatever the base layer holds, and
+     * the base layer holds the resolution auto-tune last kept: [resolved] is what the stored settings say it is now.
+     */
+    internal fun upscaleAfterRestore(restored: List<Restored>, resolved: Float): Float? =
+        if (restored.any { it.section == UPSCALE_SECTION && it.key == UPSCALE_KEY }) resolved.coerceIn(0.25f, 8.0f) else null
 
     /**
      * Notes, before [committed] is written over [overrides], the value the player's own override of [lever] had,
@@ -183,6 +205,8 @@ object AutoTuneStore {
                     if (applyCommit(overrides, section, key, value, priors)) {
                         ConfigStore.saveOverrides(settingsKey, overrides)
                         savePriors(settingsKey, priors)
+                        // What the app believes the emulator runs at, for the resolution hotkeys.
+                        upscaleCommitted(section, key, value)?.let { MainActivityRuntime.upscale.value = it }
                         Log.i(TAG, "auto-tune: $section/$key = $value written to config.game.$settingsKey")
                     } else {
                         Log.w(TAG, "auto-tune: could not read '$value' for $section/$key")
@@ -246,12 +270,20 @@ object AutoTuneStore {
         }
 
         // The core's base layer was filled from the app's settings, which held the kept values; push the restored
-        // ones. Only for the game that is running: otherwise the next boot does it.
+        // ones. Only for the game that is running: otherwise the next boot does it. The resolution is not part of
+        // what applyTo pushes (it goes through renderUpscalemultiplier), and the base layer holds the kept one.
         withContext(Dispatchers.Main) {
             val running = MainActivityRuntime.nativeReady.value &&
                 MainActivityRuntime.eState.value != EmuState.STOPPED &&
                 MainActivityRuntime.currentGame.value?.settingsKey == settingsKey
-            if (running && hadRecord) runCatching { ConfigStore.resolveForGame(settingsKey).applyTo() }
+            if (running && hadRecord) runCatching {
+                val resolved = ConfigStore.resolveForGame(settingsKey)
+                resolved.applyTo()
+                upscaleAfterRestore(restored, resolved.output.upscaleFloat)?.let {
+                    MainActivityRuntime.upscale.value = it
+                    NativeApp.renderUpscalemultiplier(it)
+                }
+            }
         }
         return ResetOutcome(hadRecord, restored.size, leftAlone)
     }
