@@ -12,7 +12,23 @@
 #include "Settings/InterfaceSettingsWidget.h"
 #include "SetupWizardDialog.h"
 
+#include "Catalog/Fetch.h"
+
 #include "common/StringUtil.h"
+
+#include <QtCore/QCoreApplication>
+#include <QtCore/QPointer>
+#include <QtCore/QThreadPool>
+#include <QtGui/QGuiApplication>
+
+namespace
+{
+	QString driverSizeText(u64 bytes)
+	{
+		const double mib = static_cast<double>(bytes) / (1024.0 * 1024.0);
+		return QCoreApplication::translate("SetupWizardDialog", "%1 MB").arg(mib, 0, 'f', mib < 10.0 ? 1 : 0);
+	}
+} // namespace
 
 SetupWizardDialog::SetupWizardDialog()
 {
@@ -21,7 +37,11 @@ SetupWizardDialog::SetupWizardDialog()
 	updatePageButtons();
 }
 
-SetupWizardDialog::~SetupWizardDialog() = default;
+SetupWizardDialog::~SetupWizardDialog()
+{
+	// A download still running when the wizard closes stops at its next check.
+	m_driver_cancel.Cancel();
+}
 
 void SetupWizardDialog::resizeEvent(QResizeEvent* event)
 {
@@ -72,13 +92,25 @@ bool SetupWizardDialog::canShowNextPage()
 	return true;
 }
 
+int SetupWizardDialog::pageAfter(int page) const
+{
+	const int next = page + 1;
+	return (next == Page_Driver && !m_driver_page_enabled) ? next + 1 : next;
+}
+
+int SetupWizardDialog::pageBefore(int page) const
+{
+	const int previous = page - 1;
+	return (previous == Page_Driver && !m_driver_page_enabled) ? previous - 1 : previous;
+}
+
 void SetupWizardDialog::previousPage()
 {
 	const int current_page = m_ui.pages->currentIndex();
-	if (current_page == 0)
+	if (current_page == 0 || m_driver_installing)
 		return;
 
-	m_ui.pages->setCurrentIndex(current_page - 1);
+	m_ui.pages->setCurrentIndex(pageBefore(current_page));
 	updatePageLabels(current_page);
 	updatePageButtons();
 }
@@ -86,6 +118,9 @@ void SetupWizardDialog::previousPage()
 void SetupWizardDialog::nextPage()
 {
 	const int current_page = m_ui.pages->currentIndex();
+	if (m_driver_installing)
+		return;
+
 	if (current_page == Page_Complete)
 	{
 		if (m_ui.createDesktopShortcut->isChecked())
@@ -107,7 +142,7 @@ void SetupWizardDialog::nextPage()
 		g_emu_thread->applySettings();
 	}
 
-	const int new_page = current_page + 1;
+	const int new_page = pageAfter(current_page);
 	m_ui.pages->setCurrentIndex(new_page);
 	updatePageLabels(current_page);
 	updatePageButtons();
@@ -124,6 +159,10 @@ void SetupWizardDialog::pageChangedTo(int page)
 
 		case Page_RetroAchievements:
 			refreshRetroAchievementsLoginState();
+			break;
+
+		case Page_Driver:
+			loadDriverOffer();
 			break;
 
 		default:
@@ -150,7 +189,9 @@ void SetupWizardDialog::updatePageButtons()
 {
 	const int page = m_ui.pages->currentIndex();
 	m_ui.next->setText((page == Page_Complete) ? tr("&Finish") : tr("&Next"));
-	m_ui.back->setEnabled(page > 0);
+	// The download is not left half done: Back and Next wait until it finishes or is cancelled.
+	m_ui.back->setEnabled(page > 0 && !m_driver_installing);
+	m_ui.next->setEnabled(!m_driver_installing);
 }
 
 void SetupWizardDialog::confirmCancel()
@@ -179,6 +220,7 @@ void SetupWizardDialog::setupUi()
 	m_page_labels[Page_Controller] = m_ui.labelController;
 	m_page_labels[Page_RetroAchievements] = m_ui.labelRetroAchievements;
 	m_page_labels[Page_AutoTune] = m_ui.labelAutoTune;
+	m_page_labels[Page_Driver] = m_ui.labelDriver;
 	m_page_labels[Page_Complete] = m_ui.labelComplete;
 
 	connect(m_ui.back, &QPushButton::clicked, this, &SetupWizardDialog::previousPage);
@@ -191,6 +233,7 @@ void SetupWizardDialog::setupUi()
 	setupControllerPage();
 	setupRetroAchievementsPage();
 	setupAutoTunePage();
+	setupDriverPage();
 	setupCompletePage();
 }
 
@@ -457,6 +500,176 @@ void SetupWizardDialog::setupAutoTunePage()
 	// Checked unless the player already turned it off. A change is saved at once; leaving the page saves the answer
 	// even when it was left as it was (see nextPage), so the settings file shows the player was asked.
 	SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoTuneEnabled, "EmuCore", "AutoTune", true);
+}
+
+void SetupWizardDialog::setupDriverPage()
+{
+	// The page exists only where a pack can help: an Adreno on Linux whose player has not chosen or installed one
+	// and whose launcher does not set the driver itself. The page is skipped otherwise, and its step is hidden.
+	m_driver_manager = std::make_shared<DriverPacks::Manager>(Catalog::GetDefaultFetcher(), DriverPacks::ManagerConfig::ForUser());
+	const QString platform = QGuiApplication::platformName();
+	const bool session_is_x11 = platform == QLatin1String("xcb") || platform == QLatin1String("x11");
+	m_driver_page_enabled = DriverPacks::ShouldOfferInSetup(DriverPacks::GetSetupContext(*m_driver_manager, session_is_x11));
+	m_ui.labelDriver->setVisible(m_driver_page_enabled);
+
+	connect(m_ui.driverInstall, &QPushButton::clicked, this, &SetupWizardDialog::onDriverInstallClicked);
+}
+
+void SetupWizardDialog::loadDriverOffer()
+{
+	if (m_driver_listing_started)
+		return;
+	m_driver_listing_started = true;
+	m_driver_offer.reset();
+	m_ui.driverInstall->setEnabled(false);
+	m_ui.driverInstall->setText(tr("Download and Install"));
+	m_ui.driverStatus->clear();
+	m_ui.driverOffer->setText(tr("Looking up the driver..."));
+
+	QPointer<SetupWizardDialog> self(this);
+	const std::shared_ptr<DriverPacks::Manager> manager = m_driver_manager;
+	const Catalog::CancelToken cancel = m_driver_cancel;
+	QThreadPool::globalInstance()->start([self, manager, cancel]() {
+		DriverPacks::RemoteListing listing = manager->ListAvailable(cancel);
+		if (cancel.IsCancelled())
+			return;
+
+		QMetaObject::invokeMethod(QCoreApplication::instance(), [self, listing = std::move(listing)]() {
+			if (self)
+				self->showDriverOffer(listing); }, Qt::QueuedConnection);
+	});
+}
+
+void SetupWizardDialog::showDriverOffer(const DriverPacks::RemoteListing& listing)
+{
+	if (const DriverPacks::RemoteDriver* pick = DriverPacks::PickRecommended(listing.drivers))
+	{
+		m_driver_offer = *pick;
+		QStringList parts;
+		parts << QString::fromStdString(pick->tag);
+		if (pick->size)
+			parts << driverSizeText(pick->size);
+		m_ui.driverOffer->setText(QStringLiteral("<b>%1</b><br>%2")
+									  .arg(QString::fromStdString(pick->release_name.empty() ? pick->tag : pick->release_name).toHtmlEscaped(),
+										  parts.join(QStringLiteral(" · ")).toHtmlEscaped()));
+		m_ui.driverInstall->setText(tr("Download and Install"));
+	}
+	else
+	{
+		const QString reason = listing.errors.empty() ? tr("No GPU driver is available for this device right now.") :
+		                                                tr("Could not read the driver list: %1").arg(QString::fromStdString(listing.errors.front().message));
+		m_ui.driverOffer->setText(reason);
+		m_ui.driverInstall->setText(tr("Try Again"));
+	}
+	m_ui.driverInstall->setEnabled(true);
+}
+
+void SetupWizardDialog::onDriverInstallClicked()
+{
+	if (m_driver_installing)
+	{
+		m_driver_cancel.Cancel();
+		m_ui.driverInstall->setEnabled(false);
+		m_ui.driverStatus->setText(tr("Cancelling..."));
+		return;
+	}
+
+	if (!m_driver_offer)
+	{
+		// The list could not be read: ask again.
+		m_driver_listing_started = false;
+		loadDriverOffer();
+		return;
+	}
+
+	m_driver_installing = true;
+	m_driver_cancel = Catalog::CancelToken();
+	m_ui.driverInstall->setText(tr("Cancel"));
+	m_ui.driverProgress->setRange(0, 0);
+	m_ui.driverProgress->setVisible(true);
+	m_ui.driverStatus->setText(tr("Preparing..."));
+	updatePageButtons();
+
+	QPointer<SetupWizardDialog> self(this);
+	const std::shared_ptr<DriverPacks::Manager> manager = m_driver_manager;
+	const Catalog::CancelToken cancel = m_driver_cancel;
+	QThreadPool::globalInstance()->start([self, manager, cancel, driver = *m_driver_offer]() {
+		const DriverPacks::InstallResult result = manager->Install(driver, [self](const DriverPacks::InstallProgress& progress) { QMetaObject::invokeMethod(QCoreApplication::instance(), [self, progress]() {
+				if (self)
+					self->showDriverProgress(progress); }, Qt::QueuedConnection); }, cancel);
+
+		QMetaObject::invokeMethod(QCoreApplication::instance(), [self, result]() {
+			if (self)
+				self->finishDriverInstall(result); }, Qt::QueuedConnection);
+	});
+}
+
+void SetupWizardDialog::showDriverProgress(const DriverPacks::InstallProgress& progress)
+{
+	if (!m_driver_installing)
+		return;
+
+	QString text;
+	bool determinate = false;
+	switch (progress.stage)
+	{
+		case DriverPacks::InstallStage::Preparing:
+			text = tr("Preparing...");
+			break;
+		case DriverPacks::InstallStage::Downloading:
+			text = progress.total ? tr("Downloading %1 of %2").arg(driverSizeText(progress.done), driverSizeText(progress.total)) : tr("Downloading %1").arg(driverSizeText(progress.done));
+			determinate = progress.total > 0;
+			break;
+		case DriverPacks::InstallStage::Verifying:
+			text = tr("Verifying download...");
+			break;
+		case DriverPacks::InstallStage::Extracting:
+			text = tr("Extracting...");
+			break;
+		case DriverPacks::InstallStage::Checking:
+			text = tr("Checking that the driver loads...");
+			break;
+		case DriverPacks::InstallStage::Finishing:
+			text = tr("Finishing...");
+			break;
+	}
+	m_ui.driverStatus->setText(text);
+	if (determinate)
+	{
+		m_ui.driverProgress->setRange(0, 1000);
+		m_ui.driverProgress->setValue(static_cast<int>(progress.done * 1000 / progress.total));
+	}
+	else
+	{
+		m_ui.driverProgress->setRange(0, 0);
+	}
+
+	// The last steps cannot be cancelled usefully.
+	m_ui.driverInstall->setEnabled(progress.stage != DriverPacks::InstallStage::Finishing && !m_driver_cancel.IsCancelled());
+}
+
+void SetupWizardDialog::finishDriverInstall(const DriverPacks::InstallResult& result)
+{
+	m_driver_installing = false;
+	m_ui.driverProgress->setVisible(false);
+
+	if (result.Ok())
+	{
+		// Selected now; it loads when ARMSX2 starts again, which the caller does after the wizard.
+		DriverPacks::SetSelectedPack(result.id);
+		m_driver_installed = true;
+		m_ui.driverStatus->setText(tr("Installed. It loads when ARMSX2 restarts, which happens when you finish setup."));
+		m_ui.driverInstall->setText(tr("Installed"));
+		m_ui.driverInstall->setEnabled(false);
+		m_ui.driverRestartNote->setVisible(true);
+	}
+	else
+	{
+		m_ui.driverStatus->setText(result.Cancelled() ? tr("Cancelled.") : tr("Could not install the driver: %1").arg(QString::fromStdString(result.message)));
+		m_ui.driverInstall->setText(tr("Download and Install"));
+		m_ui.driverInstall->setEnabled(true);
+	}
+	updatePageButtons();
 }
 
 void SetupWizardDialog::setupCompletePage()

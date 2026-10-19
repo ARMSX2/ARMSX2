@@ -105,6 +105,13 @@
         </widget>
        </item>
        <item>
+        <widget class="QLabel" name="labelDriver">
+         <property name="text">
+          <string>GPU Driver</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QLabel" name="labelComplete">
          <property name="text">
           <string>Complete</string>
@@ -952,6 +959,105 @@
        </item>
       </layout>
      </widget>
+     <widget class="QWidget" name="pageDriver">
+      <layout class="QVBoxLayout" name="verticalLayout_driver">
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QLabel" name="driverIntro">
+         <property name="text">
+          <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:14pt; font-weight:700;&quot;&gt;GPU Driver&lt;/span&gt;&lt;/p&gt;&lt;p&gt;ARMSX2 builds its own Vulkan driver for Qualcomm Adreno GPUs. It is the driver ARMSX2 is tuned for, and it is recommended over the one that came with your system. It is used by ARMSX2 only; nothing is installed into the system.&lt;/p&gt;&lt;p&gt;ARMSX2 restarts once when you finish setup so the driver can load. You can skip this and choose a driver later under Settings, GPU Drivers.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+         </property>
+         <property name="alignment">
+          <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="driverOffer">
+         <property name="text">
+          <string/>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="driverProgress">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="maximum">
+          <number>1000</number>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="driverStatus">
+         <property name="text">
+          <string/>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="driverButtons">
+         <item>
+          <widget class="QPushButton" name="driverInstall">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Download and Install</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer_driver">
+           <property name="orientation">
+            <enum>Qt::Orientation::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer_driver">
+         <property name="orientation">
+          <enum>Qt::Orientation::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
      <widget class="QWidget" name="pageComplete">
       <layout class="QVBoxLayout" name="verticalLayout_7">
        <property name="leftMargin">
@@ -973,6 +1079,19 @@
          </property>
          <property name="alignment">
           <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignTop</set>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="driverRestartNote">
+         <property name="visible">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>The GPU driver you installed loads when ARMSX2 starts again. ARMSX2 restarts once when you press Finish.</string>
          </property>
          <property name="wordWrap">
           <bool>true</bool>
