@@ -358,6 +358,36 @@ namespace DriverPacks
 	/// "your launcher overrides this".
 	ApplyResult GetLastApplyResult();
 
+	// ---- First-run setup ------------------------------------------------------------------------------------
+
+	/// What the first-run setup (the Qt wizard, Big Picture) needs to know to decide whether to offer
+	/// the recommended pack. Plain data, so the decision is testable.
+	struct SetupContext
+	{
+		Availability availability;
+		std::string selected_pack;
+		/// VK_DRIVER_FILES or VK_ICD_FILENAMES is in the environment: a launcher (ROCKNIX's) picked the
+		/// driver, and a selection would be ignored. ApplyEnvironment() does not note this while nothing is
+		/// selected, so the environment is read directly.
+		bool environment_sets_driver = false;
+		size_t installed_count = 0;
+		/// The packs present Wayland, so an X11 session cannot show one.
+		bool session_is_x11 = false;
+	};
+
+	/// True when the setup should offer the recommended pack: this machine can use packs, the player
+	/// has neither chosen nor installed one, and no launcher decides the driver (the ROCKNIX launcher
+	/// sets VK_DRIVER_FILES, which a selection cannot override).
+	bool ShouldOfferInSetup(const SetupContext& context);
+
+	/// Reads the context from this process: the manager's availability and installed packs, the
+	/// selection in the base settings (takes the settings lock) and the environment.
+	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11);
+
+	/// The pack the setup installs from a listing: the first release that is not a prerelease, else
+	/// the first. Listings are newest first. Null for an empty list.
+	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers);
+
 	// ---- Restart ------------------------------------------------------------------------------------------
 
 	/// What it takes to start this program again with the same arguments.

@@ -1398,6 +1398,37 @@ namespace DriverPacks
 	}
 
 	// =============================================================================================
+	// First-run setup
+	// =============================================================================================
+
+	bool ShouldOfferInSetup(const SetupContext& context)
+	{
+		return context.availability.IsAvailable() && !context.session_is_x11 && context.selected_pack.empty() &&
+		       context.installed_count == 0 && !context.environment_sets_driver;
+	}
+
+	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11)
+	{
+		SetupContext context;
+		context.availability = manager.GetAvailability();
+		context.selected_pack = GetSelectedPack();
+		context.environment_sets_driver = EnvIsSet("VK_DRIVER_FILES") || EnvIsSet("VK_ICD_FILENAMES");
+		context.installed_count = manager.ListInstalled().size();
+		context.session_is_x11 = session_is_x11;
+		return context;
+	}
+
+	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers)
+	{
+		for (const RemoteDriver& driver : drivers)
+		{
+			if (!driver.prerelease)
+				return &driver;
+		}
+		return drivers.empty() ? nullptr : &drivers.front();
+	}
+
+	// =============================================================================================
 	// Restart
 	// =============================================================================================
 

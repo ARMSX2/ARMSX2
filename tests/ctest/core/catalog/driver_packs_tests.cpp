@@ -431,6 +431,130 @@ TEST(DriverPacksGpu, AvailabilityExplainsItself)
 }
 
 // =================================================================================================
+// First-run setup
+// =================================================================================================
+
+namespace
+{
+	// A machine the setup should offer a pack on: Adreno on Linux, nothing chosen, nothing installed.
+	SetupContext OfferableContext()
+	{
+		SetupContext context;
+		context.availability.reason = Availability::Reason::Available;
+		return context;
+	}
+} // namespace
+
+TEST(DriverPacksSetup, OffersAPackOnAnAdrenoThatHasNone)
+{
+	EXPECT_TRUE(ShouldOfferInSetup(OfferableContext()));
+}
+
+TEST(DriverPacksSetup, OffersNothingWhereThereAreNoPacks)
+{
+	SetupContext no_gpu = OfferableContext();
+	no_gpu.availability.reason = Availability::Reason::NoMatchingGpu;
+	EXPECT_FALSE(ShouldOfferInSetup(no_gpu));
+
+	SetupContext other_os = OfferableContext();
+	other_os.availability.reason = Availability::Reason::UnsupportedPlatform;
+	EXPECT_FALSE(ShouldOfferInSetup(other_os));
+}
+
+TEST(DriverPacksSetup, OffersNothingToAPlayerWhoAlreadyDecided)
+{
+	SetupContext selected = OfferableContext();
+	selected.selected_pack = "armsx2turnip-axfl2-002";
+	EXPECT_FALSE(ShouldOfferInSetup(selected));
+
+	// Installed but not selected: the player has been to the driver settings.
+	SetupContext installed = OfferableContext();
+	installed.installed_count = 1;
+	EXPECT_FALSE(ShouldOfferInSetup(installed));
+}
+
+TEST(DriverPacksSetup, OffersNothingWhereALauncherSetsTheDriver)
+{
+	// ROCKNIX's launcher sets VK_DRIVER_FILES, so a selection would be ignored.
+	SetupContext launcher = OfferableContext();
+	launcher.environment_sets_driver = true;
+	EXPECT_FALSE(ShouldOfferInSetup(launcher));
+}
+
+TEST(DriverPacksSetup, OffersNothingOnAnX11Session)
+{
+	SetupContext x11 = OfferableContext();
+	x11.session_is_x11 = true;
+	EXPECT_FALSE(ShouldOfferInSetup(x11));
+}
+
+TEST(DriverPacksSetup, AnEnvironmentThatNamesADriverCountsAsALauncherChoice)
+{
+	// ApplyEnvironment() says nothing about the environment while no pack is selected, so the setup reads it.
+	EnvGuard guard;
+	BaseLayer();
+	SetSelectedPack({});
+	Rig rig(true);
+	EXPECT_FALSE(GetSetupContext(*rig.manager, false).environment_sets_driver);
+
+	setenv("VK_DRIVER_FILES", "/storage/turnip/axfl2-002/freedreno_icd.aarch64.json", 1);
+	EXPECT_TRUE(GetSetupContext(*rig.manager, false).environment_sets_driver);
+	EXPECT_FALSE(ShouldOfferInSetup(GetSetupContext(*rig.manager, false)));
+
+	unsetenv("VK_DRIVER_FILES");
+	setenv("VK_ICD_FILENAMES", "/storage/turnip/axfl2-002/freedreno_icd.aarch64.json", 1);
+	EXPECT_TRUE(GetSetupContext(*rig.manager, false).environment_sets_driver);
+}
+
+TEST(DriverPacksSetup, ReadsTheContextFromTheMachine)
+{
+	EnvGuard guard;
+	BaseLayer();
+	SetSelectedPack({});
+
+	Rig rig(true);
+	SetupContext context = GetSetupContext(*rig.manager, false);
+	EXPECT_TRUE(context.availability.IsAvailable());
+	EXPECT_EQ(context.selected_pack, "");
+	EXPECT_EQ(context.installed_count, 0u);
+	EXPECT_FALSE(context.session_is_x11);
+
+	const RemoteDriver driver = rig.Serve(MakePackTarGz("lib"));
+	ASSERT_TRUE(rig.Install(driver).Ok());
+	context = GetSetupContext(*rig.manager, true);
+	EXPECT_EQ(context.installed_count, 1u);
+	EXPECT_TRUE(context.session_is_x11);
+
+	SetSelectedPack("armsx2turnip-axfl2-002");
+	EXPECT_EQ(GetSetupContext(*rig.manager, false).selected_pack, "armsx2turnip-axfl2-002");
+	SetSelectedPack({});
+
+	Rig mali(false);
+	EXPECT_FALSE(GetSetupContext(*mali.manager, false).availability.IsAvailable());
+}
+
+TEST(DriverPacksSetup, TheRecommendedPackIsTheNewestThatIsNotAPrerelease)
+{
+	EXPECT_EQ(PickRecommended({}), nullptr);
+
+	RemoteDriver beta;
+	beta.id = "armsx2turnip-beta";
+	beta.prerelease = true;
+	RemoteDriver stable;
+	stable.id = "armsx2turnip-stable";
+	RemoteDriver older;
+	older.id = "armsx2turnip-older";
+
+	const std::vector<RemoteDriver> mixed = {beta, stable, older};
+	ASSERT_NE(PickRecommended(mixed), nullptr);
+	EXPECT_EQ(PickRecommended(mixed)->id, "armsx2turnip-stable");
+
+	const std::vector<RemoteDriver> only_prereleases = {beta};
+	ASSERT_NE(PickRecommended(only_prereleases), nullptr);
+	EXPECT_EQ(PickRecommended(only_prereleases)->id, "armsx2turnip-beta");
+}
+
+// =================================================================================================
 // Listing what a feed offers
 // =================================================================================================
 
