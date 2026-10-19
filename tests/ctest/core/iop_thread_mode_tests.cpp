@@ -96,11 +96,11 @@ TEST(IopThreadMode, AnEmptySettingsFileLoadsAsOff)
 	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultLag);
 }
 
-TEST(IopThreadMode, TheDefaultLagIsSixThousandOneHundredFortyFourCycles)
+TEST(IopThreadMode, TheDefaultLagIsTwentyFourThousandFiveHundredSeventySixCycles)
 {
-	// Twice the longest the EE runs between event tests (owner, 2026-10-13).
-	EXPECT_EQ(IopThread::kDefaultLag, 6144);
-	EXPECT_EQ(Pcsx2Config().Speedhacks.iopThreadLag, 6144);
+	// Eight times the longest the EE runs between event tests (owner, 2026-10-19).
+	EXPECT_EQ(IopThread::kDefaultLag, 24576);
+	EXPECT_EQ(Pcsx2Config().Speedhacks.iopThreadLag, 24576);
 }
 
 // ---------------------------------------------------------------- the three modes
@@ -412,7 +412,7 @@ TEST(IopThreadModeLag, ValuesInRangeAreKept)
 {
 	EXPECT_EQ(ClampLag(IopThread::kMinLag), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(IopThread::kMinLag + 1), IopThread::kMinLag + 1);
-	EXPECT_EQ(ClampLag(IopThread::kDefaultLag), 6144);
+	EXPECT_EQ(ClampLag(IopThread::kDefaultLag), 24576);
 	EXPECT_EQ(ClampLag(12288), 12288);
 	EXPECT_EQ(ClampLag(IopThread::kMaxLag - 1), IopThread::kMaxLag - 1);
 	EXPECT_EQ(ClampLag(IopThread::kMaxLag), IopThread::kMaxLag);
@@ -439,7 +439,7 @@ TEST(IopThreadModeLag, ALagTheFileDoesNotNameIsTheDefault)
 {
 	MemorySettingsInterface si;
 	si.SetBoolValue("EmuCore/Speedhacks", "iopThread", true);
-	EXPECT_EQ(LoadHacks(si).iopThreadLag, 6144);
+	EXPECT_EQ(LoadHacks(si).iopThreadLag, 24576);
 }
 
 // ---------------------------------------------------------------- the INI keys

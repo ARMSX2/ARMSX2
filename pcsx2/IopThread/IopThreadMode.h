@@ -32,7 +32,11 @@ namespace IopThread
 	// The lag bound L: how many EE cycles the EE may be ahead of the IOP at an event test before
 	// it waits. All three values are in EE cycles.
 	//
-	// The default is twice kEeWaitCycles (owner, 2026-10-13).
+	// The default is eight times kEeWaitCycles (owner, 2026-10-19; it was twice, 2026-10-13). On
+	// the SD865 with the IOP thread on a big core, going from 6144 to 24576 cut the EE's time per
+	// frame by a further 3 to 4 points in FFX and Katamari and about 1 in SotC and UYA, flat
+	// above 12288 for the latter two, with no hang and bit-identical FFX/Katamari audio at the
+	// maximum (umbrella iopthread/little-core-lag-sweep-2026-10-19).
 	//
 	// The minimum has to be strictly greater than kEeWaitCycles. The IOP only runs up to the cycle
 	// the EE published at its previous event test, so at the next one the EE is already about
@@ -49,7 +53,7 @@ namespace IopThread
 	// (4.9 million EE cycles at 60 Hz), so the cycle-stamped EE-to-IOP queue (1024 entries, about
 	// 527 posts per frame) cannot fill within one window, and the largest delay the EE can see an
 	// IOP effect after is still below a millisecond.
-	inline constexpr s32 kDefaultLag = 2 * kEeWaitCycles;
+	inline constexpr s32 kDefaultLag = 8 * kEeWaitCycles;
 	inline constexpr s32 kMinLag = kEeWaitCycles + 1024;
 	inline constexpr s32 kMaxLag = 64 * kEeWaitCycles;
 
