@@ -444,11 +444,17 @@ void GSRendererHW::VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureC
 	// player shoots), or at the Z format's maximum like the HUDs VolumetricStereoConstants pins.
 	// With the game's fx_overlays, an additive overlay that is not a HUD piece goes to the nearest
 	// scene depth under its middle wherever it is (Crisis Zone's bursts on a dying enemy).
+	// So does, with fx_overlays, a flat Q = 1 quad tested against the scene, without a Z write, at a
+	// depth far nearer than the scene's there: an effect given a fake depth so that it always shows
+	// (Ninja Assault's hit sparks, at a tenth of the depth range). One at the depth of what it is on
+	// (Time Crisis II's lamp halos) keeps its own.
 	m_vr.overlay_znorm = -1.0f;
 	m_vr.overlay_fx = false;
 	const GSVolumetric::StereoSettings& stereo = GSVolumetric::GetStereo();
+	const bool fake_depth = stereo.fx_overlays && !PRIM->FST && depth_placed && m_vt.m_eq.z && m_vt.m_eq.q &&
+							m_vt.m_min.t.z == 1.0f && m_cached_ctx.ZBUF.ZMSK;
 	if (!m_vr.stereo_display_target || !stereo.enabled || !stereo.z_mode || !PRIM->TME || stereo_source ||
-		!(PRIM->FST || m_vr.stereo_screen_space))
+		!(PRIM->FST || m_vr.stereo_screen_space || fake_depth))
 		return;
 	// By corner alone: Crisis Zone uploads its HUD's textures to a different address every frame.
 	const u64 key = static_cast<u64>(static_cast<u32>(static_cast<int>(m_vt.m_min.p.x) >> 1)) << 32 |
@@ -461,6 +467,9 @@ void GSRendererHW::VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureC
 	const bool steady = m_vr.overlay_vsync - seen->second.first >= HUD_VSYNCS;
 	const u64 z_format_max = (1ull << GSLocalMemory::m_psm[m_cached_ctx.ZBUF.PSM].trbpp) - 1;
 	const bool at_max_depth = m_vt.m_eq.z && m_vt.m_min.p.z >= static_cast<float>(z_format_max);
+	// Far nearer: in front of the scene by more than the scene's own depth again.
+	const float own_znorm = m_vt.m_min.p.z / static_cast<float>(z_format_max);
+	const auto in_front_of = [&](float znorm) { return !fake_depth || own_znorm > 2.0f * znorm; };
 	// Placed by scaling its Z, which needs some.
 	if (steady || at_max_depth || m_vt.m_max.p.z < 1.0f)
 		return;
@@ -477,7 +486,7 @@ void GSRendererHW::VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureC
 	for (const GSVolumetric::ShotAnchor& a : GSVolumetric::GetShotAnchors())
 	{
 		const float dx = cx - (static_cast<float>(fb.x) + a.u * fw), dy = cy - (static_cast<float>(fb.y) + a.v * fh);
-		if (std::abs(dx) <= reach && std::abs(dy) <= reach && dx * dx + dy * dy < nearest)
+		if (std::abs(dx) <= reach && std::abs(dy) <= reach && dx * dx + dy * dy < nearest && in_front_of(a.znorm))
 		{
 			nearest = dx * dx + dy * dy;
 			m_vr.overlay_znorm = a.znorm;
@@ -486,13 +495,13 @@ void GSRendererHW::VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureC
 
 	// Additive: Cs * (As or FIX) + Cd. A HUD is blended over the picture instead.
 	const bool additive = PRIM->ABE && m_context->ALPHA.A == 0 && m_context->ALPHA.B == 2 && m_context->ALPHA.D == 1;
-	if (m_vr.overlay_znorm < 0.0f && stereo.fx_overlays && additive)
+	if (m_vr.overlay_znorm < 0.0f && stereo.fx_overlays && (additive || fake_depth))
 	{
 		// A small window at its middle, the same for each layer of an effect (a burst is a few sprites
 		// of different sizes around one point); its glow spreads past what it is on.
 		const float u = (cx - static_cast<float>(fb.x)) / fw, v = (cy - static_cast<float>(fb.y)) / fh;
 		const float znorm = GSVolumetric::SceneDepth(u - 0.03f, v - 0.04f, u + 0.03f, v + 0.04f);
-		if (znorm >= 0.0f)
+		if (znorm >= 0.0f && in_front_of(znorm))
 		{
 			m_vr.overlay_znorm = znorm;
 			m_vr.overlay_fx = true;
