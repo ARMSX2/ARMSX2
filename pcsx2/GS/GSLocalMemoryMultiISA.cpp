@@ -453,6 +453,17 @@ void GSLocalMemoryFunctions::WriteImage(GSLocalMemory& mem, int& tx, int& ty, co
 	if (TRXREG.RRW == 0)
 		return;
 
+	// An odd width 4bpp transfer is one stream of nibbles that runs on across rows: the last pixel of a row takes the low
+	// nibble of a byte and the first pixel of the next row takes its high nibble, as on the console. Its rows do not start
+	// on a byte, so none of the code below, which moves whole bytes per row, can write it. WriteImageX walks the nibbles
+	// and keeps the cursor, so a transfer that arrives in pieces carries on from where the last piece stopped.
+	// GT3 demo, Jak 2 Japanese subtitles, and the BG Dark Alliance minimap do this.
+	if (trbpp == 4 && (TRXREG.RRW & 0x1))
+	{
+		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
+		return;
+	}
+
 	const int l = (int)TRXPOS.DSAX;
 	const int r = l + (int)TRXREG.RRW;
 
@@ -471,26 +482,6 @@ void GSLocalMemoryFunctions::WriteImage(GSLocalMemory& mem, int& tx, int& ty, co
 	// Round up to the nearest byte (NFL 2K5 does r = 1, l = 0 bpp =4, causing divide by zero)
 	const int srcpitch = (((r - l) * trbpp) + 7) >> 3;
 	int h = len / srcpitch;
-
-	// Slow path for odd width 4bpp, the fast path expects everything to be perfectly aligned and great,
-	// but things get hairy with 4bpp pixels and odd widths since the lowest size we can address is 8bits, it goes out of sync.
-	// Although I call this a slow path, it's probably faster than modifying the data alignment every other line.
-	// GT3 demo, Jak 2 Japanese subtitles, and the BG Dark Alliance minimap do this.
-	if (trbpp == 4 && (TRXREG.RRW & 0x1))
-	{
-		int count = 0;
-		const int t = TRXPOS.DSAY;
-		const int b = t + (int)TRXREG.RRH;
-		for (int y = t; y < b; y++)
-		{
-			for (int x = l; x < r; x++)
-			{
-				mem.WritePixel4(x, y, src[count >> 1] >> ((count & 1) << 2), BITBLTBUF.DBP, BITBLTBUF.DBW);
-				count++;
-			}
-		}
-		return;
-	}
 
 	if (ra - la >= bsx && h > 0) // "transfer width" >= "block width" && there is at least one full row
 	{
@@ -666,6 +657,14 @@ void GSLocalMemoryFunctions::WriteImage4HL(GSLocalMemory& mem, int& tx, int& ty,
 	if (TRXREG.RRW == 0)
 		return;
 
+	// An odd width never takes the aligned path below (a row of it is not a whole number of bytes), and for a width of 1
+	// RRW / 2 is 0, which the length is divided by. Say so up front.
+	if (TRXREG.RRW & 1)
+	{
+		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
+		return;
+	}
+
 	u32 bp = BITBLTBUF.DBP;
 	u32 bw = BITBLTBUF.DBW;
 
@@ -700,6 +699,14 @@ void GSLocalMemoryFunctions::WriteImage4HH(GSLocalMemory& mem, int& tx, int& ty,
 {
 	if (TRXREG.RRW == 0)
 		return;
+
+	// An odd width never takes the aligned path below (a row of it is not a whole number of bytes), and for a width of 1
+	// RRW / 2 is 0, which the length is divided by. Say so up front.
+	if (TRXREG.RRW & 1)
+	{
+		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
+		return;
+	}
 
 	u32 bp = BITBLTBUF.DBP;
 	u32 bw = BITBLTBUF.DBW;
@@ -803,6 +810,86 @@ static void readWriteHelper(int& tx, int& ty, int len, int xinc, int sx, int w, 
 	ty = y;
 }
 
+/// The 4-bit formats' share of WriteImageX: `write(pa, x, nibble)` stores one pixel of the row `pa` was made for.
+///
+/// The source is one stream of nibbles, the low nibble of each byte first, and nibble n of a transfer goes to pixel
+/// (sx + n % w, sy + n / w). A row is not padded to a byte: on an odd width the last pixel of a row takes the low nibble
+/// of a byte and the first pixel of the next row takes its high nibble. That is what the console does for every width and
+/// start x. The transfer ends when the bytes do or when the rectangle is full, so an odd pixel count drops its spare nibble.
+/// Nothing is stored outside the rectangle and no byte past `len` is read.
+///
+/// (tx, ty) is left at the next pixel to write. A piece of a transfer is a whole number of bytes, so a later piece starts
+/// at a nibble boundary and the cursor is all it needs.
+template <typename Fn>
+static void writeNibbleStream(int& tx, int& ty, const u8* src, int len, int sx, int sy, int w, int h, const GSOffset& off, Fn&& write)
+{
+	const int ex = sx + w;
+	const int ey = sy + h;
+
+	if (ty >= ey)
+		return;
+
+	// The nibbles to write: what the bytes hold, or what is left of the rectangle if that is less.
+	int remaining = std::min(len * 2, (ey - ty) * w - (tx - sx));
+	int remX = ex - tx;
+
+	pxAssert(remX >= 0);
+
+	int y = ty;
+	GSOffset::PAHelper pa = off.paMulti(tx, y);
+	const u8* pb = src;
+	bool carry = false; // the high nibble of the last byte read is still to be stored
+	u32 carryNibble = 0;
+
+	while (remaining > 0)
+	{
+		if (remX == 0)
+		{
+			y++;
+			remX = w;
+			pa = off.paMulti(sx, y);
+		}
+
+		const int stop = std::min(remX, remaining);
+		remX -= stop;
+		remaining -= stop;
+
+		int x = 0;
+
+		if (carry)
+		{
+			write(pa, x++, carryNibble);
+			carry = false;
+		}
+
+		// Both pixels of a byte are in this row: all of an even-width row.
+		for (; x + 1 < stop; x += 2)
+		{
+			const u32 b = *pb++;
+			write(pa, x, b & 0xf);
+			write(pa, x + 1, b >> 4);
+		}
+
+		// One pixel left in the row: it takes the low nibble of a byte, the next row the high nibble.
+		if (x < stop)
+		{
+			const u32 b = *pb++;
+			write(pa, x, b & 0xf);
+			carryNibble = b >> 4;
+			carry = true;
+		}
+	}
+
+	if (remX == 0)
+	{
+		y++;
+		remX = w;
+	}
+
+	tx = ex - remX;
+	ty = y;
+}
+
 void GSLocalMemoryFunctions::WriteImageX(GSLocalMemory& mem, int& tx, int& ty, const u8* src, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG)
 {
 	if (len <= 0)
@@ -819,7 +906,9 @@ void GSLocalMemoryFunctions::WriteImageX(GSLocalMemory& mem, int& tx, int& ty, c
 	u32 bw = BITBLTBUF.DBW;
 
 	int sx = TRXPOS.DSAX;
+	int sy = TRXPOS.DSAY;
 	int w = TRXREG.RRW;
+	int h = TRXREG.RRH;
 
 	GSOffset off = mem.GetOffset(bp, bw, BITBLTBUF.DPSM);
 
@@ -865,11 +954,9 @@ void GSLocalMemoryFunctions::WriteImageX(GSLocalMemory& mem, int& tx, int& ty, c
 			break;
 
 		case PSMT4:
-			readWriteHelper(tx, ty, len * 2, 2, sx, w, GSOffset::fromKnownPSM(bp, bw, PSMT4), [&](GSOffset::PAHelper& pa, int x)
+			writeNibbleStream(tx, ty, pb, len, sx, sy, w, h, GSOffset::fromKnownPSM(bp, bw, PSMT4), [&](GSOffset::PAHelper& pa, int x, u32 nibble)
 			{
-				mem.WritePixel4(pa.value(x), *pb & 0xf);
-				mem.WritePixel4(pa.value(x + 1), *pb >> 4);
-				pb++;
+				mem.WritePixel4(pa.value(x), nibble);
 			});
 			break;
 
@@ -882,20 +969,16 @@ void GSLocalMemoryFunctions::WriteImageX(GSLocalMemory& mem, int& tx, int& ty, c
 			break;
 
 		case PSMT4HL:
-			readWriteHelper(tx, ty, len * 2, 2, sx, w, GSOffset::fromKnownPSM(bp, bw, PSMT4HL), [&](GSOffset::PAHelper& pa, int x)
+			writeNibbleStream(tx, ty, pb, len, sx, sy, w, h, GSOffset::fromKnownPSM(bp, bw, PSMT4HL), [&](GSOffset::PAHelper& pa, int x, u32 nibble)
 			{
-				mem.WritePixel4HL(&vm32[pa.value(x)], *pb & 0xf);
-				mem.WritePixel4HL(&vm32[pa.value(x + 1)], *pb >> 4);
-				pb++;
+				mem.WritePixel4HL(&vm32[pa.value(x)], nibble);
 			});
 			break;
 
 		case PSMT4HH:
-			readWriteHelper(tx, ty, len * 2, 2, sx, w, GSOffset::fromKnownPSM(bp, bw, PSMT4HH), [&](GSOffset::PAHelper& pa, int x)
+			writeNibbleStream(tx, ty, pb, len, sx, sy, w, h, GSOffset::fromKnownPSM(bp, bw, PSMT4HH), [&](GSOffset::PAHelper& pa, int x, u32 nibble)
 			{
-				mem.WritePixel4HH(&vm32[pa.value(x)], *pb & 0xf);
-				mem.WritePixel4HH(&vm32[pa.value(x + 1)], *pb >> 4);
-				pb++;
+				mem.WritePixel4HH(&vm32[pa.value(x)], nibble);
 			});
 			break;
 	}

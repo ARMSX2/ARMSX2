@@ -12,9 +12,6 @@
 // 0d525e4bdb: GSLocalMemoryWriteStamps.TheRectangleOfAnImageWriteCoversEveryPageItChanges hands a
 // std::vector's worth of bytes to every writer, and a 24-bit write read one byte past it.
 //
-// The 4-bit writers (PSMT4HL and PSMT4HH on an odd width, and PSMT4 on a slice) still read past their source.
-// The cases for them are DISABLED_ below, because what they should do instead is not settled.
-//
 // POSIX only: the guard page is an mmap and the fault is a signal.
 
 #include "GS/GSLocalMemory.h"
@@ -39,13 +36,13 @@ namespace
 	// Every format a surface can have in local memory.
 	constexpr u32 kPsms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
 
-	// The formats whose writers keep to their source on every transfer below.
+	// Every format but PSMT4HL and PSMT4HH, which have cases of their own below.
 	constexpr u32 kBoundedPsms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
 
-	// The ones that do not, on an odd width: the 4-bit formats that share a word with other data.
+	// The 4-bit formats that keep their nibble in a word that holds other data.
 	constexpr u32 kFourBitHighPsms[] = {PSMT4HL, PSMT4HH};
 
-	// The formats whose writers keep to a slice of a transfer. The 4-bit ones do not.
+	// The slice cases, in two lists: the 4-bit formats have a case of their own below.
 	constexpr u32 kSlicedPsms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT8H, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
 	constexpr u32 kFourBitPsms[] = {PSMT4, PSMT4HL, PSMT4HH};
 
@@ -301,24 +298,24 @@ namespace
 		Random(kBoundedPsms);
 	}
 
-	// DISABLED: the 4-bit writers still read past the end of a slice, and past the end of an odd-width image.
-	// What they should do there instead is open, so these cases are not enabled.
-	TEST_F(GSLocalMemoryWriteSourceBounds, DISABLED_AnOddSizedTransferOfEachFourBitHighFormat)
+	// The 4-bit formats: an odd width shares a byte between the end of one row and the start of the next, and a slice
+	// of a transfer holds only part of the image. See gs_local_memory_four_bit_stream_tests.cpp for where the pixels go.
+	TEST_F(GSLocalMemoryWriteSourceBounds, AnOddSizedTransferOfEachFourBitHighFormat)
 	{
 		OddSized(kFourBitHighPsms);
 	}
 
-	TEST_F(GSLocalMemoryWriteSourceBounds, DISABLED_ASliceShorterThanItsTransferOfEachFourBitFormat)
+	TEST_F(GSLocalMemoryWriteSourceBounds, ASliceShorterThanItsTransferOfEachFourBitFormat)
 	{
 		Sliced(kFourBitPsms);
 	}
 
-	TEST_F(GSLocalMemoryWriteSourceBounds, DISABLED_TheSmallestTransfersOfEachFourBitHighFormat)
+	TEST_F(GSLocalMemoryWriteSourceBounds, TheSmallestTransfersOfEachFourBitHighFormat)
 	{
 		Smallest(kFourBitHighPsms);
 	}
 
-	TEST_F(GSLocalMemoryWriteSourceBounds, DISABLED_RandomTransfersOfEachFourBitHighFormat)
+	TEST_F(GSLocalMemoryWriteSourceBounds, RandomTransfersOfEachFourBitHighFormat)
 	{
 		Random(kFourBitHighPsms);
 	}

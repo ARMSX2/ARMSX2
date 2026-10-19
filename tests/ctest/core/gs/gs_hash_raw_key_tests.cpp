@@ -916,7 +916,7 @@ namespace
 		}
 
 		/// A write of random bytes into a random part of the window's own blocks, or somewhere else, through the
-		/// host-to-local writer and marked the way a transfer marks it (the rectangle grown by a pixel).
+		/// host-to-local writer and marked the way a transfer marks it (the rectangle of the transfer).
 		void RandomMarkedWrite(std::mt19937& rng, const std::vector<Window>& wins)
 		{
 			Window target = wins[rng() % wins.size()];
@@ -942,13 +942,13 @@ namespace
 			reg.RRW = w;
 			reg.RRH = h;
 			const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			std::vector<u8> data(len + GSWriteStamps::kSourceSlack); // the writers can read past len
+			std::vector<u8> data(len);
 			for (u8& b : data)
 				b = static_cast<u8>(rng());
 
 			int tx = x0, ty = y0;
 			p.wi(m_gs->m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
-			m_gs->m_mem.MarkPagesWritten(Offset(target), GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
+			m_gs->m_mem.MarkPagesWritten(Offset(target), GSVector4i(x0, y0, x0 + w, y0 + h));
 		}
 
 		static GSTextureCache::BlockHashStats Stats3() { return GSTextureCache::GetBlockHashStats(); }

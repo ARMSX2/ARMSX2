@@ -22,12 +22,6 @@
 
 namespace GSWriteStamps
 {
-	/// Bytes of padding for the source buffer of a host-to-local image write. The writers can read past the len
-	/// they are handed: an odd-width 4-bit row takes a whole byte for its last pixel, and the odd-width PSMT4
-	/// path reads from the start of a slice as if the slice held the whole image. How far depends on the
-	/// transfer, so a test pads its buffer instead of relying on what the heap has after it.
-	constexpr size_t kSourceSlack = 256;
-
 	class Watch
 	{
 	public:

@@ -308,9 +308,9 @@ namespace
 	}
 
 	// The page set of a rectangle against what the host-to-local writers really store: whatever bytes
-	// change, a mark of the rectangle (one pixel larger on the right and bottom, as ExecTransferRecord
-	// marks it) covers them. Random buffers at any block address, including ones that are not page
-	// aligned and ones whose rows run off the end of local memory.
+	// change, a mark of the rectangle (as ExecTransferRecord marks it) covers them. Random buffers at any
+	// block address, including ones that are not page aligned and ones whose rows run off the end of local
+	// memory.
 	TEST_F(GSLocalMemoryWriteStamps, TheRectangleOfAnImageWriteCoversEveryPageItChanges)
 	{
 		u32 cases = 0;
@@ -335,14 +335,14 @@ namespace
 			reg.RRH = h;
 
 			const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			std::vector<u8> data(len + GSWriteStamps::kSourceSlack, 0xFF); // the writers can read past len
+			std::vector<u8> data(len, 0xFF);
 
 			std::memset(m_mem->m_vm8, 0, GSLocalMemory::m_vmsize);
 			const Watch watch(*m_mem);
 			int tx = x0, ty = y0;
 			p.wi(*m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
 
-			m_mem->MarkPagesWritten(m_mem->GetOffset(bp, bw, psm), GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
+			m_mem->MarkPagesWritten(m_mem->GetOffset(bp, bw, psm), GSVector4i(x0, y0, x0 + w, y0 + h));
 
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
@@ -355,42 +355,45 @@ namespace
 		EXPECT_GT(cases, 1400u) << "the cases did not write";
 	}
 
-	// Why the rectangle is grown by a pixel: a 4-bit write of odd width stores the second pixel of its last
-	// pair of a row one pixel past the right edge. Here that pixel is the first column of the next page.
-	TEST_F(GSLocalMemoryWriteStamps, AnOddWidthFourBitImageWriteStoresOnePixelPastItsRightEdge)
+	// An odd-width 4-bit write is one stream of nibbles, so it stores nothing past the right edge of its rectangle or
+	// below its last row (the console does not either: see gs_local_memory_four_bit_stream_tests.cpp), and the mark of
+	// the exact rectangle covers it. The right edge is at x = 440, where a block of the high 4-bit formats starts, so a
+	// pixel stored one past it would be in a block the rectangle does not name. With 164 rows the pixel count is even,
+	// with 163 it is odd and the spare nibble of the last byte would land in the row below the rectangle.
+	TEST_F(GSLocalMemoryWriteStamps, AnOddWidthFourBitImageWriteStoresNothingOutsideItsRectangle)
 	{
-		constexpr u32 psm = PSMT4HL, bp = 10249, bw = 12;
-		constexpr int x0 = 287, y0 = 268, w = 153, h = 164; // right edge at 440, which starts a page
-		const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[psm];
+		constexpr u32 bp = 10249, bw = 12;
+		constexpr int x0 = 287, y0 = 268, w = 153;
 
-		GIFRegBITBLTBUF blit = {};
-		blit.DBP = bp;
-		blit.DBW = bw;
-		blit.DPSM = psm;
-		GIFRegTRXPOS pos = {};
-		pos.DSAX = x0;
-		pos.DSAY = y0;
-		GIFRegTRXREG reg = {};
-		reg.RRW = w;
-		reg.RRH = h;
-		const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-		std::vector<u8> data(len + GSWriteStamps::kSourceSlack, 0xFF); // the writers can read past len
+		for (const u32 psm : {PSMT4, PSMT4HL, PSMT4HH})
+		{
+			for (const int h : {164, 163})
+			{
+				const GSLocalMemory::psm_t& p = GSLocalMemory::m_psm[psm];
 
-		const Watch watch(*m_mem);
-		int tx = x0, ty = y0;
-		p.wi(*m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
+				GIFRegBITBLTBUF blit = {};
+				blit.DBP = bp;
+				blit.DBW = bw;
+				blit.DPSM = psm;
+				GIFRegTRXPOS pos = {};
+				pos.DSAX = x0;
+				pos.DSAY = y0;
+				GIFRegTRXREG reg = {};
+				reg.RRW = w;
+				reg.RRH = h;
+				const size_t len = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
+				std::vector<u8> data(len, 0xFF);
 
-		// The page set of the exact rectangle leaves out a page the write changed, and the block set the blocks
-		// of it...
-		const GSOffset off = m_mem->GetOffset(bp, bw, psm);
-		m_mem->MarkPagesWritten(off, GSVector4i(x0, y0, x0 + w, y0 + h));
-		EXPECT_FALSE(watch.UnmarkedChangedPages().empty());
-		EXPECT_FALSE(watch.UnmarkedChangedBlocks().empty());
+				std::memset(m_mem->m_vm8, 0, GSLocalMemory::m_vmsize);
+				const Watch watch(*m_mem);
+				int tx = x0, ty = y0;
+				p.wi(*m_mem, tx, ty, data.data(), static_cast<int>(len), blit, pos, reg);
 
-		// ...and the grown one leaves out neither.
-		m_mem->MarkPagesWritten(off, GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
-		EXPECT_TRUE(watch.UnmarkedChangedPages().empty());
-		EXPECT_TRUE(watch.UnmarkedChangedBlocks().empty());
+				m_mem->MarkPagesWritten(m_mem->GetOffset(bp, bw, psm), GSVector4i(x0, y0, x0 + w, y0 + h));
+				EXPECT_TRUE(watch.UnmarkedChangedPages().empty()) << "psm " << psm << " " << w << "x" << h << ": unmarked pages " << Watch::Describe(watch.UnmarkedChangedPages());
+				EXPECT_TRUE(watch.UnmarkedChangedBlocks().empty()) << "psm " << psm << " " << w << "x" << h << ": unmarked blocks " << Watch::Describe(watch.UnmarkedChangedBlocks());
+			}
+		}
 	}
 
 	// The same question for a transfer that arrives in slices. A slice after the first starts below the
@@ -418,9 +421,7 @@ namespace
 			reg.RRH = h;
 
 			const size_t total = (static_cast<size_t>(w) * h * p.trbpp + 7) / 8;
-			// The writers can read past a slice: the odd-width PSMT4 path reads up to a whole image from the start of
-			// each one, so the buffer is padded by an image as well as by the slack.
-			std::vector<u8> data(2 * total + GSWriteStamps::kSourceSlack, 0xFF);
+			std::vector<u8> data(total, 0xFF);
 
 			std::memset(m_mem->m_vm8, 0, GSLocalMemory::m_vmsize);
 			const Watch watch(*m_mem);
@@ -438,7 +439,7 @@ namespace
 				at += n;
 			}
 
-			m_mem->MarkPagesWritten(m_mem->GetOffset(bp, bw, psm), GSVector4i(x0, y0, x0 + w + 1, y0 + h + 1));
+			m_mem->MarkPagesWritten(m_mem->GetOffset(bp, bw, psm), GSVector4i(x0, y0, x0 + w, y0 + h));
 
 			ASSERT_TRUE(watch.UnmarkedChangedPages().empty())
 				<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << x0 << "," << y0 << " " << w << "x" << h
@@ -754,8 +755,8 @@ namespace
 		clean_and_count([&] { m_mem->MarkAllPagesWritten(); });
 		clean_and_count([&] { m_mem->MarkPageRangeWritten(37, GS_MAX_PAGES); });
 
-		// A rectangle with no page set: the transfer-edge-at-2048 cliff, which is correct and slow. A transfer
-		// whose right edge is x 2048 is marked as 2049 once grown by a pixel.
+		// A rectangle with no page set: the transfer-edge-at-2048 cliff, which is correct and slow. It starts one
+		// pixel past 2048 on either axis: a transfer whose edge is 2048 is marked as it is, and has a page set.
 		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(1984, 0, 2049, 32)); });
 		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(0, 0, 64, 2049)); });
 		clean_and_count([&] { m_mem->MarkPagesWritten(off, GSVector4i(10, 10, 10, 20)); });
