@@ -105,7 +105,7 @@ build_core 0x1000 emucore_4k  "$WORK/base-4k.apk"
 unzip -p "$WORK/base-4k.apk"  lib/arm64-v8a/libemucore_4k.so  > "$WORK/lib-stage/lib/arm64-v8a/libemucore_4k.so"
 [[ -n "${ONLY_4K:-}" ]] || unzip -p "$WORK/base-16k.apk" lib/arm64-v8a/libemucore_16k.so > "$WORK/lib-stage/lib/arm64-v8a/libemucore_16k.so"
 for so in libemucore_4k $([[ -z "${ONLY_4K:-}" ]] && echo libemucore_16k); do
-	sz=$(stat -f%z "$WORK/lib-stage/lib/arm64-v8a/$so.so")
+	sz=$(wc -c < "$WORK/lib-stage/lib/arm64-v8a/$so.so")   # portable: release.yml runs this on Linux
 	echo "  $so.so = $((sz/1024/1024)) MB"
 	[[ "$sz" -gt 10000000 ]] || { echo "FATAL $so too small ($sz)" >&2; exit 1; }
 done
