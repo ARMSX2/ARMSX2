@@ -43,6 +43,7 @@ struct GSRendererHWVolumetricState
 	bool stereo_screen_space = false;
 	bool stereo_source = false; // ... because it textures from a stereo picture
 	bool stereo_display_target = false; // this draw's target is (or was recently) displayed
+	bool display_copy = false; // this draw copies a displayed picture into another target
 	// A 2D overlay placed in the scene: the depth it goes to (else < 0), on a shot or (overlay_fx) as
 	// an effect at the scene's depth under it.
 	float overlay_znorm = -1.0f;

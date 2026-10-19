@@ -434,6 +434,13 @@ void GSRendererHW::VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureC
 	}
 	m_vr.stereo_display_target = rt && std::find(m_vr.stereo_display_bp.begin(), m_vr.stereo_display_bp.end(),
 										 static_cast<u32>(rt->m_TEX0.TBP0)) != m_vr.stereo_display_bp.end();
+	// A copy of a displayed picture holds that picture, as on the screen: what textures from it is
+	// not shifted, even while the picture is all 2D. Time Crisis II's menu bubbles refract a copy
+	// taken around each, at a fake depth; the first copy of a menu frame, taken before anything in
+	// it was shifted, put its bubble at the back and the others on the glass.
+	m_vr.display_copy = !m_vr.stereo_display_target && tex && tex->m_from_target &&
+						std::find(m_vr.stereo_display_bp.begin(), m_vr.stereo_display_bp.end(),
+							static_cast<u32>(tex->m_from_target->m_TEX0.TBP0)) != m_vr.stereo_display_bp.end();
 
 	// A 2D overlay centred on where a shot landed is an effect of that shot (Crisis Zone's hit
 	// bursts: FST sprites at its HUD's Z, drawn without a depth test among the HUD's pieces): it goes
@@ -521,7 +528,8 @@ void GSRendererHW::VolumetricStereoConstants(GSTextureCache::Target* rt)
 	{
 		// What this draw leaves in the target: its own parallax, or the stereo picture it re-reads.
 		const bool marks =
-			(!hud_at_max_depth && !m_vr.stereo_screen_space && !PRIM->FST && m_vr.stereo_display_target) || m_vr.stereo_source;
+			(!hud_at_max_depth && !m_vr.stereo_screen_space && !PRIM->FST && m_vr.stereo_display_target) || m_vr.stereo_source ||
+			m_vr.display_copy;
 		if (marks)
 			rt->m_texture->SetStereoContent(true);
 	}
