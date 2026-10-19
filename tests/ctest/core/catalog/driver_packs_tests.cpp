@@ -519,11 +519,13 @@ TEST(DriverPacksSetup, ReadsTheContextFromTheMachine)
 	EXPECT_EQ(context.installed_count, 0u);
 	EXPECT_FALSE(context.session_is_x11);
 
+#ifdef DRIVER_TESTS_LINUX
+	// Installing works only where driver packs are supported, like the install tests below.
 	const RemoteDriver driver = rig.Serve(MakePackTarGz("lib"));
 	ASSERT_TRUE(rig.Install(driver).Ok());
-	context = GetSetupContext(*rig.manager, true);
-	EXPECT_EQ(context.installed_count, 1u);
-	EXPECT_TRUE(context.session_is_x11);
+	EXPECT_EQ(GetSetupContext(*rig.manager, false).installed_count, 1u);
+#endif
+	EXPECT_TRUE(GetSetupContext(*rig.manager, true).session_is_x11);
 
 	SetSelectedPack("armsx2turnip-axfl2-002");
 	EXPECT_EQ(GetSetupContext(*rig.manager, false).selected_pack, "armsx2turnip-axfl2-002");
