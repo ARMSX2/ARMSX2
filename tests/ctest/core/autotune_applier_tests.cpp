@@ -362,6 +362,57 @@ TEST(AutoTuneApplier, CancelTrialAppliesOnlyWhenAsked)
 	EXPECT_EQ(f.env.applies, 1) << "nothing to cancel";
 }
 
+TEST(AutoTuneApplier, ATrialThatIsNotKeptNeverReachesTheGamesFileOrTheHost)
+{
+	// A trial value lives in the trial layer and nowhere else until it is kept. The Android app keeps its own copy
+	// of the per-game settings and is told about one thing, a committed key, so the value of a trial that was
+	// undone, cancelled or cut short must not appear in the game's file as a setting or in what the host was told.
+	struct Trial
+	{
+		AutoTuneLever lever;
+		double value;
+	};
+	const Trial trials[] = {
+		{AutoTuneLever::IopThread, 1.0},
+		{AutoTuneLever::EeGovernor, 1.0},
+		{AutoTuneLever::Resolution, 2.0},
+		{AutoTuneLever::GsBackThread, 1.0},
+		{AutoTuneLever::DownloadMode, AutoTuneDownloadMode::Asynchronous},
+		{AutoTuneLever::Blending, 0.0},
+	};
+
+	for (const Trial& t : trials)
+	{
+		const AutoTune::LeverKey key = AutoTune::KeyForLever(t.lever);
+		const auto ends = {0, 1, 2, 3, 4}; // measured, inconclusive, retry, cancelled, CancelTrial()
+		for (const int end : ends)
+		{
+			Fixture f;
+			f.applier.Execute(Action(Kind::StartTrial, t.lever, t.value));
+			ASSERT_TRUE(f.applier.TrialLayer()->ContainsValue(key.section, key.key)) << AutoTuneLeverName(t.lever);
+
+			if (end == 4)
+			{
+				f.applier.CancelTrial(true);
+			}
+			else
+			{
+				AutoTuneAction undo = Action(Kind::Revert, t.lever, t.value);
+				undo.measured = end == 0;
+				undo.inconclusive = end == 1 || end == 2;
+				undo.retry = end == 2;
+				f.applier.Execute(undo);
+			}
+
+			EXPECT_FALSE(f.applier.TrialLayer()->ContainsValue(key.section, key.key)) << AutoTuneLeverName(t.lever) << " ended " << end;
+			EXPECT_FALSE(f.env.game_file.ContainsValue(key.section, key.key)) << AutoTuneLeverName(t.lever) << " ended " << end;
+			EXPECT_TRUE(f.env.committed.empty()) << "the host is told about a kept key only: " << AutoTuneLeverName(t.lever) << " ended " << end;
+			EXPECT_TRUE(AutoTune::ReadChanges(f.env.game_file).empty()) << "no change was recorded";
+			EXPECT_EQ(f.env.Effective(key.section, key.key), "<none>") << "what the emulator reads is what it read before";
+		}
+	}
+}
+
 TEST(AutoTuneApplier, BeginEmptiesTheLayerAndLoadsTheRememberedFailures)
 {
 	Fixture f;
