@@ -1077,6 +1077,32 @@ TEST(AutoTuneGameFile, AKeyThePlayerEditedSinceSurvivesTheReset)
 	EXPECT_FALSE(after.ContainsValue(GS, "accurate_blending_unit"));
 }
 
+TEST(AutoTuneGameFile, AFileThatLostTheKeptKeyReportsItAsMissing)
+{
+	// What the Android app leaves behind after it writes a game's file again: the record, without the resolution.
+	GameSettingsDir dir;
+	const std::string path = VMManager::GetGameSettingsPath(kSerial, kCrc);
+	{
+		INISettingsInterface ini(path);
+		ini.SetFloatValue(GS, "upscale_multiplier", 8.0f);
+		AutoTune::Commit(ini, AutoTuneLever::Resolution, 3.0, 0.28);
+		ini.DeleteValue(GS, "upscale_multiplier");
+		ASSERT_TRUE(ini.Save());
+	}
+
+	const AutoTune::ResetResult result = AutoTune::ResetForGame(kSerial, kCrc);
+	EXPECT_TRUE(result.had_record);
+	EXPECT_TRUE(result.restored.empty());
+	ASSERT_EQ(result.left_alone.size(), 1u);
+	EXPECT_EQ(result.left_alone[0].key, "upscale_multiplier");
+	EXPECT_TRUE(result.left_alone[0].absent);
+	EXPECT_TRUE(AutoTune::SameValue(result.left_alone[0].value, "3"));
+
+	INISettingsInterface after(path);
+	ASSERT_TRUE(after.Load());
+	EXPECT_FALSE(after.ContainsValue(GS, "upscale_multiplier")) << "the file is not given a value it did not have";
+}
+
 TEST(AutoTuneGameFile, AGameWithNoFileHasNothingToDescribeOrReset)
 {
 	GameSettingsDir dir;

@@ -6094,9 +6094,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_autoTuneDescribe(JNIEnv* env, jclass, jstri
 }
 
 // Puts back what auto-tune changed in the game's file, forgets what it learned, and (for the running game) applies
-// that on the CPU thread. Returns {had_record "1"/"0", count of keys left alone because the player changed them,
-// then section, key, value for every key put back, with a null value where the key was deleted} so the app can do
-// the same to its own copy. Null when the game has no file.
+// that on the CPU thread. Null when the game has no file. Otherwise {had_record "1"/"0"}, then four strings for each
+// key the record named, so the app can do the same to its own copy: kind, section, key, value.
+//   "restored": put back. The value is the text the file holds again, null where the key was deleted.
+//   "absent":   left alone because the key is not in the file. The value is the text auto-tune wrote. The app's writer
+//               leaves some keys out of the file, so the app decides from its own copy whether the player removed it.
+//   "changed":  left alone because the file holds another value. The value is the text auto-tune wrote.
 extern "C" JNIEXPORT jobjectArray JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_autoTuneReset(JNIEnv* env, jclass, jstring p_serial) {
     std::string serial;
@@ -6106,16 +6109,25 @@ Java_kr_co_iefriends_pcsx2_NativeApp_autoTuneReset(JNIEnv* env, jclass, jstring 
     const AutoTune::ResetResult result = AutoTune::ResetForGame(serial, crc);
 
     std::string had_record = result.had_record ? "1" : "0";
-    std::string left_alone = std::to_string(result.left_alone.size());
-    std::vector<std::string*> items{&had_record, &left_alone};
+    static std::string kind_restored("restored");
+    static std::string kind_absent("absent");
+    static std::string kind_changed("changed");
+    std::vector<std::string*> items{&had_record};
     // Kept alive until the array is built: the pointers above and below point into these.
     std::vector<std::optional<std::string>> values;
     values.reserve(result.restored.size());
     for (const AutoTune::Restored& restored : result.restored) {
+        items.push_back(&kind_restored);
         items.push_back(const_cast<std::string*>(&restored.section));
         items.push_back(const_cast<std::string*>(&restored.key));
         values.push_back(restored.value);
         items.push_back(values.back().has_value() ? &values.back().value() : nullptr);
+    }
+    for (const AutoTune::LeftAlone& left : result.left_alone) {
+        items.push_back(left.absent ? &kind_absent : &kind_changed);
+        items.push_back(const_cast<std::string*>(&left.section));
+        items.push_back(const_cast<std::string*>(&left.key));
+        items.push_back(const_cast<std::string*>(&left.value));
     }
     return AutoTuneStringArray(env, items);
 }

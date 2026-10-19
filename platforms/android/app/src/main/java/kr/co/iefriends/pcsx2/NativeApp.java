@@ -493,9 +493,12 @@ public class NativeApp {
 	public static native String[] autoTuneDescribe(String serial);
 	/** Puts back what auto-tune changed in the game's settings file and forgets what it learned
 	 *  (applied on the CPU thread when the game is running). Returns null when the game has no
-	 *  file, else {hadRecord "1"/"0", count of keys left alone because the player changed them,
-	 *  then section, key, value for each key put back; a null value means the key was deleted}.
-	 *  The app must do the same to its own copy of the game's settings (AutoTuneStore). */
+	 *  file, else {hadRecord "1"/"0"} followed by kind, section, key, value for each key the record
+	 *  named. Kind "restored": put back, the value is what the file holds again (null: the key was
+	 *  deleted). Kind "absent": left alone because the key is not in the file, the value is what
+	 *  auto-tune wrote. Kind "changed": left alone because the file holds another value, the value
+	 *  is what auto-tune wrote. The app must do the same to its own copy of the game's settings
+	 *  (AutoTuneStore.applyReset). */
 	public static native String[] autoTuneReset(String serial);
 
 	/** Called from native (the CPU thread) after auto-tune moved one setting into the game's

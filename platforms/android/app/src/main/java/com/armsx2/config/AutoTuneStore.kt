@@ -38,6 +38,10 @@ import java.util.concurrent.Executors
  * at the next save from the app, and the base layer's older value takes over. So the core also puts a kept
  * resolution in the base layer when it commits it (AndroidOnAutoTuneCommitted in native-lib.cpp), and [reset]
  * pushes the restored resolution back ([upscaleAfterRestore]).
+ *
+ * The same save also leaves out any other key whose value equals the global one, so after it the core can find
+ * any lever's key missing from the file when it resets. The app's store, not the file, decides what that means
+ * ([applyReset]).
  */
 object AutoTuneStore {
     enum class Kind { BOOL, INT, FLOAT }
@@ -62,7 +66,22 @@ object AutoTuneStore {
     /** A key the core put back in the game's file. [value] is the text it holds again, null when it deleted the key. */
     class Restored(val section: String, val key: String, val value: String?)
 
-    /** What a reset did. [restored] is how many keys the core put back; [leftAlone] how many the player had changed since. */
+    /**
+     * A key the core did not put back. [written] is the text auto-tune wrote for it; [absent] says the key is not in the
+     * game's file at all (as opposed to holding another value).
+     */
+    class LeftAlone(val section: String, val key: String, val written: String, val absent: Boolean)
+
+    /** The core's answer to a reset: whether there was a record, the keys it put back, and the ones it left alone. */
+    class CoreReset(val hadRecord: Boolean, val restored: List<Restored>, val leftAlone: List<LeftAlone>)
+
+    /**
+     * What a reset did to the app's copy. [restored] is every key put back: the core's, and the ones [applyReset] took
+     * back itself. [leftAlone] is how many stayed as they are. [overridesChanged] says the store has to be written.
+     */
+    class ResetApplied(val restored: List<Restored>, val leftAlone: Int, val overridesChanged: Boolean)
+
+    /** What a reset did. [restored] is how many keys were put back; [leftAlone] how many the player had changed since. */
     class ResetOutcome(val hadRecord: Boolean, val restored: Int, val leftAlone: Int)
 
     private const val TAG = "ARMSX2"
@@ -178,6 +197,87 @@ object AutoTuneStore {
         return touched
     }
 
+    private const val KIND_RESTORED = "restored"
+    private const val KIND_ABSENT = "absent"
+    private const val KIND_CHANGED = "changed"
+
+    /**
+     * Reads the core's reply to [NativeApp.autoTuneReset]: `hadRecord "1"/"0"`, then four strings for each key the
+     * record named: kind (restored, absent or changed), section, key, value. The value of a restored key is the text
+     * the file holds again, null where the core deleted it; for a key left alone it is the text auto-tune wrote.
+     */
+    internal fun parseReset(raw: List<String?>): CoreReset {
+        val restored = ArrayList<Restored>()
+        val leftAlone = ArrayList<LeftAlone>()
+        var i = 1
+        while (i + 3 < raw.size) {
+            val section = raw[i + 1] ?: ""
+            val key = raw[i + 2] ?: ""
+            val value = raw[i + 3]
+            when (raw[i]) {
+                KIND_RESTORED -> restored.add(Restored(section, key, value))
+                KIND_ABSENT -> leftAlone.add(LeftAlone(section, key, value ?: "", absent = true))
+                KIND_CHANGED -> leftAlone.add(LeftAlone(section, key, value ?: "", absent = false))
+            }
+            i += 4
+        }
+        return CoreReset(raw.getOrNull(0) == "1", restored, leftAlone)
+    }
+
+    /**
+     * Whether the app's copy of [lever] still holds [written], the text auto-tune put in the game's file: nothing has
+     * set the field since the commit. Null when the text does not read as a value of the lever.
+     */
+    private fun holdsWritten(overrides: JSONObject?, lever: Lever, written: String): Boolean? {
+        val value = jsonValue(lever, written) ?: return null
+        val current: Any? = if (overrides != null && overrides.has(lever.field)) overrides.get(lever.field) else null
+        return sameJson(current, value)
+    }
+
+    /**
+     * Applies the core's reset to the app's copy: [overrides] (null when the game has none) and [priors], in place.
+     *
+     * The core puts a key back only while the game's file still holds the value it wrote, and counts a key missing
+     * from the file as the player's doing. On Android the file is not where the player's settings live: it is
+     * regenerated from the app's store at every save, and the app's writer leaves out the resolution always and any
+     * other key whose value equals the global one. So a kept value can be missing from the file with the player
+     * having done nothing, and the store is what says so. A key the core left alone because it is absent from the file,
+     * while the store still holds the value auto-tune committed, is auto-tune's own and goes back like one the core
+     * restored (the player's recorded value, or no override if there was none). If the store holds something else the
+     * player set it since, and it stays.
+     *
+     * A recorded player value is dropped only for a key this dealt with: put back, or left alone because the player
+     * changed it. A key that cannot be compared keeps its record.
+     */
+    internal fun applyReset(overrides: JSONObject?, priors: JSONObject, reply: CoreReset): ResetApplied {
+        val takenBack = ArrayList<Restored>()
+        val decided = ArrayList<Lever>()
+        var leftAlone = 0
+        for (l in reply.leftAlone) {
+            val lever = leverFor(l.section, l.key)
+            if (lever == null) {
+                leftAlone++
+                continue
+            }
+            // A key that is in the file with another value was changed there, which is the core's call to leave.
+            val ours = if (l.absent) holdsWritten(overrides, lever, l.written) else false
+            when (ours) {
+                true -> takenBack.add(Restored(l.section, l.key, null))
+                false -> {
+                    leftAlone++
+                    decided.add(lever)
+                }
+                null -> leftAlone++
+            }
+        }
+
+        val restored = reply.restored + takenBack
+        val touched = if (overrides != null) applyRestore(overrides, restored, priors) else 0
+        for (r in restored) leverFor(r.section, r.key)?.let { priors.remove(it.field) }
+        for (lever in decided) priors.remove(lever.field)
+        return ResetApplied(restored, leftAlone, touched > 0)
+    }
+
     /** The key `config.game.<key>` for the running game: its disc serial, else the app's own key for it (a homebrew ELF has none). */
     private fun settingsKeyFor(serial: String): String? =
         serial.takeIf { it.isNotBlank() } ?: MainActivityRuntime.currentGame.value?.settingsKey?.takeIf { it.isNotBlank() }
@@ -240,32 +340,28 @@ object AutoTuneStore {
 
     /**
      * Puts back what auto-tune changed for the game: the core restores the game's file (and applies it, when that
-     * game is running), then this does the same to the app's copy, and re-applies the app's settings to a running
-     * game so the core's base layer stops holding the old values. Null when the game has no settings file, so
-     * there is no record.
+     * game is running), then this does the same to the app's copy ([applyReset], which also covers a key the file no
+     * longer has), and re-applies the app's settings to a running game so the core's base layer stops holding the
+     * old values. Null when the game has no settings file, so there is no record.
      */
     suspend fun reset(settingsKey: String): ResetOutcome? {
         val raw = withContext(Dispatchers.IO) {
             runCatching { NativeApp.autoTuneReset(nativeSerialFor(settingsKey)) }.getOrNull()
         } ?: return null
-        val hadRecord = raw.getOrNull(0) == "1"
-        val leftAlone = raw.getOrNull(1)?.toIntOrNull() ?: 0
-        val restored = ArrayList<Restored>()
-        var i = 2
-        while (i + 2 < raw.size) {
-            restored.add(Restored(raw[i] ?: "", raw[i + 1] ?: "", raw[i + 2]))
-            i += 3
-        }
+        val reply = parseReset(raw.toList())
 
-        withContext(Dispatchers.IO) {
+        val applied = withContext(Dispatchers.IO) {
             synchronized(storeLock) {
                 val overrides = ConfigStore.loadOverrides(settingsKey)
-                if (overrides != null && applyRestore(overrides, restored, loadPriors(settingsKey)) > 0) {
+                val priors = loadPriors(settingsKey)
+                val done = applyReset(overrides, priors, reply)
+                if (overrides != null && done.overridesChanged) {
                     if (overrides.length() == 0) ConfigStore.clearOverrides(settingsKey)
                     else ConfigStore.saveOverrides(settingsKey, overrides)
                 }
-                // The core clears its record on a reset; so does this one.
-                if (hadRecord) savePriors(settingsKey, JSONObject())
+                // The core clears its record on a reset; so does this one, for the keys it dealt with.
+                if (reply.hadRecord) savePriors(settingsKey, priors)
+                done
             }
         }
 
@@ -276,15 +372,15 @@ object AutoTuneStore {
             val running = MainActivityRuntime.nativeReady.value &&
                 MainActivityRuntime.eState.value != EmuState.STOPPED &&
                 MainActivityRuntime.currentGame.value?.settingsKey == settingsKey
-            if (running && hadRecord) runCatching {
+            if (running && reply.hadRecord) runCatching {
                 val resolved = ConfigStore.resolveForGame(settingsKey)
                 resolved.applyTo()
-                upscaleAfterRestore(restored, resolved.output.upscaleFloat)?.let {
+                upscaleAfterRestore(applied.restored, resolved.output.upscaleFloat)?.let {
                     MainActivityRuntime.upscale.value = it
                     NativeApp.renderUpscalemultiplier(it)
                 }
             }
         }
-        return ResetOutcome(hadRecord, restored.size, leftAlone)
+        return ResetOutcome(reply.hadRecord, applied.restored.size, applied.leftAlone)
     }
 }

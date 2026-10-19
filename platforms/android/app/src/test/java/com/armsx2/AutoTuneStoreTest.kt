@@ -259,4 +259,159 @@ class AutoTuneStoreTest {
         assertEquals(null, AutoTuneStore.upscaleAfterRestore(restored.take(1), 8.0f))
         assertEquals(null, AutoTuneStore.upscaleAfterRestore(emptyList(), 8.0f))
     }
+
+    // ---- keep, then an unrelated save from the app, then Reset -------------------------------------------------------
+
+    private fun leftAbsent(section: String, key: String, written: String) =
+        AutoTuneStore.CoreReset(true, emptyList(), listOf(AutoTuneStore.LeftAlone(section, key, written, absent = true)))
+
+    @Test
+    fun theCoreReplyIsReadAsRestoredAndLeftAloneKeys() {
+        val reply = AutoTuneStore.parseReset(
+            listOf(
+                "1",
+                "restored", "EmuCore/Speedhacks", "iopThread", null,
+                "restored", "EmuCore/GS", "HWDownloadMode", "2",
+                "absent", "EmuCore/GS", "upscale_multiplier", "3",
+                "changed", "EmuCore/GS", "accurate_blending_unit", "0",
+            ),
+        )
+        assertTrue(reply.hadRecord)
+        assertEquals(listOf("iopThread" to null, "HWDownloadMode" to "2"), reply.restored.map { it.key to it.value })
+        assertEquals(
+            listOf(Triple("upscale_multiplier", "3", true), Triple("accurate_blending_unit", "0", false)),
+            reply.leftAlone.map { Triple(it.key, it.written, it.absent) },
+        )
+        assertFalse(AutoTuneStore.parseReset(listOf("0")).hadRecord)
+    }
+
+    @Test
+    fun resetAfterAKeepAndAnUnrelatedSaveGivesBackTheValueThePlayerSetInTheApp() {
+        // The player set 8x in the app. Auto-tune walks it down to 3x, each step a commit.
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        for (step in 7 downTo 3)
+            assertTrue(AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "$step.000000", priors))
+        // An unrelated save from the app: its writer regenerates the game's file without the resolution, so the core
+        // finds the key missing and leaves it alone. The store keeps the 3x and gains the other setting.
+        overrides.put("audioVolume", 56)
+
+        val applied = AutoTuneStore.applyReset(overrides, priors, leftAbsent("EmuCore/GS", "upscale_multiplier", "3"))
+
+        assertEquals("the player's own value is back", 8.0, upscale(overrides), 0.0)
+        assertEquals("the unrelated setting is untouched", 56, overrides.getInt("audioVolume"))
+        assertEquals(0, priors.length())
+        assertTrue(applied.overridesChanged)
+        assertEquals(1, applied.restored.size)
+        assertEquals(0, applied.leftAlone)
+        // The running emulator is told to go back to it.
+        val resolved = Settings.merge(global, overrides).output.upscaleFloat
+        assertEquals(8.0f, AutoTuneStore.upscaleAfterRestore(applied.restored, resolved)!!, 0.0f)
+    }
+
+    @Test
+    fun resetAfterAKeepAndAnUnrelatedSaveRemovesAnOverrideThePlayerNeverHad() {
+        val overrides = JSONObject()
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "3.000000", priors)
+        overrides.put("audioVolume", 56)
+
+        val applied = AutoTuneStore.applyReset(overrides, priors, leftAbsent("EmuCore/GS", "upscale_multiplier", "3"))
+
+        assertFalse(overrides.has("upscaleFloat"))
+        assertEquals(56, overrides.getInt("audioVolume"))
+        assertEquals(1, applied.restored.size)
+        assertEquals(global.output.upscaleFloat, Settings.merge(global, overrides).output.upscaleFloat, 0.0f)
+    }
+
+    @Test
+    fun aValueThePlayerSetAfterTheKeepIsLeftAloneWhenTheFileLostTheKey() {
+        val overrides = JSONObject().put("upscaleFloat", 8.0)
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "3.000000", priors)
+        overrides.put("upscaleFloat", 5.0) // the player's own choice after the keep
+
+        val applied = AutoTuneStore.applyReset(overrides, priors, leftAbsent("EmuCore/GS", "upscale_multiplier", "3"))
+
+        assertEquals(5.0, upscale(overrides), 0.0)
+        assertFalse(applied.overridesChanged)
+        assertTrue(applied.restored.isEmpty())
+        assertEquals(1, applied.leftAlone)
+        assertEquals("nothing is pushed over the player's choice", null, AutoTuneStore.upscaleAfterRestore(applied.restored, 5.0f))
+        assertFalse("the core's record is gone, so the old value has no use", priors.has("upscaleFloat"))
+    }
+
+    @Test
+    fun aRecordOfAKeyThatWasNeitherPutBackNorDecidedIsKept() {
+        val overrides = JSONObject().put("upscaleFloat", 8.0).put("iopThread", false)
+        val priors = JSONObject()
+        AutoTuneStore.applyCommit(overrides, "EmuCore/GS", "upscale_multiplier", "3.000000", priors)
+        AutoTuneStore.applyCommit(overrides, "EmuCore/Speedhacks", "iopThread", "true", priors)
+
+        // The reply names the resolution with text that does not read as a number, so it cannot be compared with the
+        // store, and says nothing about the IOP thread.
+        val applied = AutoTuneStore.applyReset(overrides, priors, leftAbsent("EmuCore/GS", "upscale_multiplier", "banana"))
+
+        assertEquals(3.0, upscale(overrides), 0.0)
+        assertEquals(1, applied.leftAlone)
+        assertEquals(8.0, priors.getJSONObject("upscaleFloat").getDouble("prior"), 0.0)
+        assertEquals(false, priors.getJSONObject("iopThread").getBoolean("prior"))
+    }
+
+    @Test
+    fun aGameWithNoStoredSettingsHasNothingToRestoreInto() {
+        val priors = JSONObject()
+        priors.put("upscaleFloat", JSONObject().put("prior", 8.0).put("committed", 3.0))
+
+        val applied = AutoTuneStore.applyReset(null, priors, leftAbsent("EmuCore/GS", "upscale_multiplier", "3"))
+
+        assertFalse(applied.overridesChanged)
+        assertEquals(1, applied.leftAlone)
+        assertEquals(0, priors.length())
+    }
+
+    @Test
+    fun everyLeverComesBackAfterAKeepAndAnUnrelatedSaveWhateverTheWriterDid() {
+        // The player's own override, and the value auto-tune kept, for each key auto-tune can write.
+        val player = mapOf<String, Any>(
+            "upscale_multiplier" to 8.0, "GSBackThreadMode" to 0, "HWDownloadMode" to 0,
+            "accurate_blending_unit" to 3, "iopThread" to false, "DynamicEECycleRate" to false,
+        )
+        val kept = mapOf(
+            "upscale_multiplier" to "3.000000", "GSBackThreadMode" to "1", "HWDownloadMode" to "5",
+            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true",
+        )
+        // Two global settings: the stock one, and one that already has the kept value. The app writes into the game's
+        // file only the keys that differ from global, so the second drops every key.
+        val globals = mapOf("stock global" to false, "global already at the kept value" to true)
+        for ((label, globalHasKept) in globals) {
+            for (lever in AutoTuneStore.levers) {
+                val id = lever.section + "/" + lever.key
+                val base = if (globalHasKept) Settings.merge(global, committed(lever.section, lever.key, kept.getValue(lever.key))) else global
+                val overrides = JSONObject().put(lever.field, player.getValue(lever.key))
+                val priors = JSONObject()
+                assertTrue(AutoTuneStore.applyCommit(overrides, lever.section, lever.key, kept.getValue(lever.key), priors))
+                overrides.put("audioVolume", 56)
+
+                // What the app's writer leaves in the game's file for the game as it is now.
+                val tuned = Settings.merge(base, overrides)
+                val inFile = tuned.emittedKeys().let { it.containsKey(id) && it[id] != base.emittedKeys()[id] }
+                assertEquals("$label, $id: the writer carries every key but the resolution, and any equal to global", !globalHasKept && lever.key != "upscale_multiplier", inFile)
+
+                val reply = if (inFile) {
+                    // Still in the file holding the kept value: the core puts it back (it was not in the file before).
+                    AutoTuneStore.CoreReset(true, listOf(AutoTuneStore.Restored(lever.section, lever.key, null)), emptyList())
+                } else {
+                    leftAbsent(lever.section, lever.key, kept.getValue(lever.key))
+                }
+                val applied = AutoTuneStore.applyReset(overrides, priors, reply)
+
+                assertTrue("$label, $id: the player's value is back", AutoTuneStore.sameJson(player.getValue(lever.key), overrides.get(lever.field)))
+                assertEquals("$label, $id", 56, overrides.getInt("audioVolume"))
+                assertEquals("$label, $id", 1, applied.restored.size)
+                assertEquals("$label, $id", 0, applied.leftAlone)
+                assertEquals("$label, $id: the record is dealt with", 0, priors.length())
+            }
+        }
+    }
 }

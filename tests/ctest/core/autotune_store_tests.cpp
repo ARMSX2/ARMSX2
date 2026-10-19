@@ -189,6 +189,39 @@ TEST(AutoTuneStore, ResetLeavesAKeyThePlayerDeleted)
 	EXPECT_FALSE(si.ContainsValue(GS, "upscale_multiplier"));
 }
 
+TEST(AutoTuneStore, ResetSaysWhichLeftAloneKeysAreMissingFromTheFile)
+{
+	MemorySettingsInterface si;
+	si.SetFloatValue(GS, "upscale_multiplier", 3.0f);
+	Commit(si, AutoTuneLever::Resolution, 2.0, 0.12);
+	Commit(si, AutoTuneLever::IopThread, 1.0, 0.18);
+	Commit(si, AutoTuneLever::Blending, 0.0, 0.05);
+
+	// The Android app writes the file again from its own copy and the resolution is not among the keys it writes,
+	// while the player turned the IOP thread off by hand.
+	si.DeleteValue(GS, "upscale_multiplier");
+	si.SetBoolValue(SPEED, "iopThread", false);
+
+	const ResetResult r = Reset(si);
+	ASSERT_EQ(r.restored.size(), 1u);
+	EXPECT_EQ(r.restored[0].key, "accurate_blending_unit");
+	ASSERT_EQ(r.left_alone.size(), 2u);
+	for (const LeftAlone& left : r.left_alone)
+	{
+		if (left.key == "upscale_multiplier")
+		{
+			EXPECT_TRUE(left.absent) << "the key is gone from the file";
+			EXPECT_TRUE(SameValue(left.value, "2")) << "the value auto-tune wrote is still reported: " << left.value;
+		}
+		else
+		{
+			EXPECT_EQ(left.key, "iopThread");
+			EXPECT_FALSE(left.absent) << "the file holds another value for it";
+			EXPECT_FALSE(left.original.has_value());
+		}
+	}
+}
+
 TEST(AutoTuneStore, ResetOnAFileAutoTuneNeverTouchedDoesNothing)
 {
 	MemorySettingsInterface si;

@@ -73,13 +73,22 @@ namespace AutoTune
 		std::optional<std::string> value;
 	};
 
+	/// A recorded key a reset did not put back. The Change is what auto-tune wrote.
+	struct LeftAlone : Change
+	{
+		/// The key is not in the file at all, as opposed to holding another value. A frontend that keeps the
+		/// player's settings somewhere other than this file (the Android app) can tell from its own copy whether
+		/// the key was removed on purpose or only dropped when the file was written again.
+		bool absent = false;
+	};
+
 	struct ResetResult
 	{
 		bool had_record = false;
 		/// Keys put back to their original value (or deleted, when there was none).
 		std::vector<Restored> restored;
-		/// Keys the player changed after auto-tune did; left as they are.
-		std::vector<Change> left_alone;
+		/// Keys the player changed after auto-tune did, or removed from the file; left as they are.
+		std::vector<LeftAlone> left_alone;
 	};
 
 	/// Puts every recorded key back, except those whose value is no longer the one auto-tune wrote, and

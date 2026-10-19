@@ -366,10 +366,11 @@ AutoTune::ResetResult AutoTune::Reset(SettingsInterface& si)
 		const bool present = si.GetStringValue(c.section.c_str(), c.key.c_str(), &current);
 
 		// Only a key that still holds what auto-tune wrote goes back. If the player has changed it since, or
-		// removed it, it is theirs now.
+		// removed it, it is theirs now. A missing key is flagged: a frontend that keeps the settings in its own
+		// store can tell from there whether the player removed it.
 		if (!present || !SameValue(current, c.value))
 		{
-			result.left_alone.push_back(c);
+			result.left_alone.push_back(LeftAlone{c, !present});
 			continue;
 		}
 
