@@ -330,12 +330,12 @@ void GSRendererHW::VolumetricTraceDraw(GSTextureCache::Target* rt, GSTextureCach
 
 void GSRendererHW::VolumetricSaveTraceDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool skip_draw)
 {
-	// Draw trace with PS2V_TRACE_SAVE set: the render target after every draw of the traced frame.
+	// Draw trace with VOLUMETRIC_TRACE_SAVE set: the render target after every draw of the traced frame.
 	if (GSVolumetric::DrawTraceActive() && !skip_draw && rt && rt->m_texture)
 	{
-		static const char* s_save_dir = std::getenv("PS2V_TRACE_SAVE");
-		static const bool s_save_ds = std::getenv("PS2V_TRACE_SAVE_DS") != nullptr;
-		static const char* s_every_env = std::getenv("PS2V_TRACE_SAVE_EVERY");
+		static const char* s_save_dir = std::getenv("VOLUMETRIC_TRACE_SAVE");
+		static const bool s_save_ds = std::getenv("VOLUMETRIC_TRACE_SAVE_DS") != nullptr;
+		static const char* s_every_env = std::getenv("VOLUMETRIC_TRACE_SAVE_EVERY");
 		static const u32 s_every = s_every_env ? static_cast<u32>(std::atoi(s_every_env)) : 1;
 		static u32 s_trace = 0, s_index = 0;
 		if (s_trace != GSVolumetric::DrawTraceNumber())

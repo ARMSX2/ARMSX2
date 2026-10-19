@@ -40,7 +40,7 @@ namespace
 	// The present into the frontend's images (VKLibretro::ArmPresentCopy): the targets this present
 	// took, the wrappers through which it draws straight into those of its size (through an RGBA8
 	// UNORM view: the GS writes sRGB-encoded values, as the frontend's sRGB images expect), and the
-	// ids it reports. $PS2V_NO_DIRECT_PRESENT copies into them instead, for a measurement.
+	// ids it reports. $VOLUMETRIC_NO_DIRECT_PRESENT copies into them instead, for a measurement.
 	VKLibretro::PresentCopyTarget s_present_target[2];
 	std::unique_ptr<GSTextureVK> s_direct_tex[2];
 	bool s_present_copy_taken = false;
@@ -48,9 +48,10 @@ namespace
 	bool DirectPresentAllowed()
 	{
 		static const bool allowed = [] {
-			const bool a = !std::getenv("PS2V_NO_DIRECT_PRESENT");
+			const bool a = !std::getenv("VOLUMETRIC_NO_DIRECT_PRESENT");
 			if (!a)
-				Console.Warning("VK stereo: presenting into the frontend's images by copies ($PS2V_NO_DIRECT_PRESENT)");
+				Console.Warning(
+					"VK stereo: presenting into the frontend's images by copies ($VOLUMETRIC_NO_DIRECT_PRESENT)");
 			return a;
 		}();
 		return allowed;
@@ -505,7 +506,7 @@ void GSDeviceVK::CheckStereoRenderPass(VkRenderPass rp)
 }
 
 // Profiling: how many passes the frames have, how many restarts the VS and PS constants cause, and
-// $PS2V_MV_RESTART to drop restarts for a measurement ("vs": only for VS constants, "none": never;
+// $VOLUMETRIC_MV_RESTART to drop restarts for a measurement ("vs": only for VS constants, "none": never;
 // either brings the corruption back where the driver bug strikes).
 namespace
 {
@@ -519,10 +520,11 @@ namespace
 	int RestartMode() // 2 both, 1 VS only, 0 none
 	{
 		static const int mode = [] {
-			const char* env = std::getenv("PS2V_MV_RESTART");
+			const char* env = std::getenv("VOLUMETRIC_MV_RESTART");
 			const int m = !env ? 2 : !std::strcmp(env, "vs") ? 1 : !std::strcmp(env, "none") ? 0 : 2;
 			if (m != 2)
-				Console.Warning("VK stereo: multiview pass restarts %s ($PS2V_MV_RESTART)", m ? "for VS constants only" : "off");
+				Console.Warning("VK stereo: multiview pass restarts %s ($VOLUMETRIC_MV_RESTART)",
+					m ? "for VS constants only" : "off");
 			return m;
 		}();
 		return mode;
@@ -567,14 +569,14 @@ void GSDeviceVK::RestartMultiviewPassForNewConstants(bool vertex_constants)
 	BeginRenderPass(GetRenderPassForRestarting(pass), area);
 }
 
-// Debugging: the $PS2V_FLUSH_FILE draw range (see DebugFlushAfterDraw).
+// Debugging: the $VOLUMETRIC_FLUSH_FILE draw range (see DebugFlushAfterDraw).
 static u32 s_debug_flush_first = 0;
 static u32 s_debug_flush_last = 0;
 
 void GSDeviceVK::DebugReadFlushRange()
 {
 	m_debug_draw_index = 0;
-	static const char* s_file = std::getenv("PS2V_FLUSH_FILE");
+	static const char* s_file = std::getenv("VOLUMETRIC_FLUSH_FILE");
 	if (!s_file)
 		return;
 	u32 first = 0, last = 0;
@@ -594,7 +596,7 @@ void GSDeviceVK::DebugFlushAfterDraw()
 {
 	// Debugging (bisecting GPU ordering bugs, see docs/m3-multiview.md): after the hardware draws of a frame whose index is
 	// in [first, last), end the pass and wait for the GPU. The range comes from the file
-	// $PS2V_FLUSH_FILE ("first last"), read once per frame.
+	// $VOLUMETRIC_FLUSH_FILE ("first last"), read once per frame.
 	if (s_debug_flush_first < s_debug_flush_last && m_debug_draw_index >= s_debug_flush_first &&
 		m_debug_draw_index < s_debug_flush_last)
 	{

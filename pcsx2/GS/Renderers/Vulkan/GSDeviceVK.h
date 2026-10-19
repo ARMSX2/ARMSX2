@@ -1023,7 +1023,7 @@ public:
 	GSTextureVK* PrepareVolumetricPresent(VkCommandBuffer cmdbuffer, GSTextureVK* bb, int bb_index);
 	void FillVolumetricFrame(VKLibretro::Frame& frame, GSTextureVK* bb, GSTextureVK* bb_right);
 	void ReleaseStereoBackbuffers();
-	// Debugging: the $PS2V_FLUSH_FILE draw range of DoRenderHW (see DebugFlushAfterDraw).
+	// Debugging: the $VOLUMETRIC_FLUSH_FILE draw range of DoRenderHW (see DebugFlushAfterDraw).
 	void DebugReadFlushRange();
 	void DebugFlushAfterDraw();
 	u32 m_debug_draw_index = 0;
