@@ -238,6 +238,7 @@ namespace FullscreenUI
 	inline MainWindowType s_current_main_window = MainWindowType::None;
 	inline PauseSubMenu s_current_pause_submenu = PauseSubMenu::None;
 	inline u32 s_setup_wizard_step = 0;
+	inline bool s_setup_offer_driver = false; ///< the first-run setup has a GPU Driver step (decided when it opens)
 	inline bool s_initialized = false;
 	inline bool s_tried_to_initialize = false;
 	inline bool s_pause_menu_was_open = false;
@@ -584,6 +585,16 @@ namespace FullscreenUI
 	// GPU driver packs (FullscreenUI_Drivers.cpp)
 	/// Whether the page is listed: driver packs exist here (desktop Linux with an Adreno GPU), or one is installed or
 	/// selected, so the choice can still be undone. Reads the selection, so the settings lock must not be held.
+	// First-run setup's GPU Driver step. The step draws without the settings lock.
+	bool ShouldOfferDriverInSetup();
+	void DrawDriverSetupStep();
+	bool IsDriverSetupInstalling();
+	bool IsDriverSetupInstalled();
+	/// Selects the pack the step installed. True if it did, which means the caller restarts so it loads. Takes
+	/// the settings lock.
+	bool FinishDriverSetup();
+	void RestartForDriverSetup();
+
 	bool ShowDriversSettingsPage();
 	void DrawDriversSettingsPage(SettingsInterface* bsi);
 	/// Cancels the page's downloads and joins its threads.

@@ -119,6 +119,13 @@ namespace
 		// The last install that did not finish, kept on the page because a notification goes away.
 		std::string failure_name;
 		std::string failure_message;
+
+		// First-run setup: the install in flight was started by its GPU Driver step, and the pack that step
+		// installed. Setup selects it when it finishes, since a pack loads at the next start.
+		bool install_from_setup = false;
+		std::string setup_installed_id;
+		std::string setup_installed_tag;
+		int setup_last_frame = -100;
 	};
 	PageState s_state;
 
@@ -414,8 +421,18 @@ namespace
 			if (finished->Ok())
 			{
 				s_state.failure_message.clear();
+				if (s_state.install_from_setup)
+				{
+					s_state.setup_installed_id = finished->id;
+					s_state.setup_installed_tag = tag;
+				}
 				if (ui_up)
-					ShowInstallNotice(fmt::format(FSUI_FSTR("Installed {}"), tag), FSUI_STR("Choose it on the GPU Drivers page to use it."), 6.0f);
+				{
+					ShowInstallNotice(fmt::format(FSUI_FSTR("Installed {}"), tag),
+						s_state.install_from_setup ? FSUI_STR("ARMSX2 uses it after it restarts, when you finish setup.") :
+													 FSUI_STR("Choose it on the GPU Drivers page to use it."),
+						6.0f);
+				}
 			}
 			else if (finished->Cancelled())
 			{
@@ -473,7 +490,7 @@ namespace
 		});
 	}
 
-	void StartInstall(const DP::RemoteDriver& driver)
+	void StartInstall(const DP::RemoteDriver& driver, bool from_setup = false)
 	{
 		if (s_state.installing)
 		{
@@ -483,6 +500,7 @@ namespace
 		if (s_state.install_thread.joinable())
 			s_state.install_thread.join();
 
+		s_state.install_from_setup = from_setup;
 		s_state.installing = true;
 		s_state.install_id = driver.id;
 		s_state.install_tag = driver.tag.empty() ? driver.id : driver.tag;
@@ -948,6 +966,104 @@ void FullscreenUI::ShutdownDriversPage()
 	s_state.install_tag.clear();
 	s_state.failure_name.clear();
 	s_state.failure_message.clear();
+	s_state.install_from_setup = false;
+	s_state.setup_installed_id.clear();
+	s_state.setup_installed_tag.clear();
+	s_state.setup_last_frame = -100;
+}
+
+// ---- first-run setup ---------------------------------------------------------------------------------
+
+bool FullscreenUI::ShouldOfferDriverInSetup()
+{
+	return DP::ShouldOfferInSetup(DP::GetSetupContext(GetManager(), SessionIsX11()));
+}
+
+bool FullscreenUI::IsDriverSetupInstalling()
+{
+	return s_state.installing && s_state.install_from_setup;
+}
+
+bool FullscreenUI::IsDriverSetupInstalled()
+{
+	return !s_state.setup_installed_id.empty();
+}
+
+bool FullscreenUI::FinishDriverSetup()
+{
+	if (s_state.setup_installed_id.empty())
+		return false;
+	DP::SetSelectedPack(s_state.setup_installed_id);
+	return true;
+}
+
+void FullscreenUI::RestartForDriverSetup()
+{
+	DoRestartNow();
+}
+
+void FullscreenUI::DrawDriverSetupStep()
+{
+	// Drawn every frame the step is open, so a gap in the frame count means it was opened again.
+	const int frame = ImGui::GetFrameCount();
+	if (frame - s_state.setup_last_frame > 1)
+		OnPageEntered();
+	s_state.setup_last_frame = frame;
+	DrainHandoff();
+	if (s_state.feed == FeedState::NotLoaded)
+		StartFeedFetch(false);
+
+	BeginMenuButtons();
+	MenuHeading(FSUI_CSTR("GPU Driver"));
+	ActiveButton(FSUI_CSTR("ARMSX2 has its own Vulkan driver for your GPU. It is the driver ARMSX2 is tuned for."), false, false,
+		LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+
+	if (!s_state.setup_installed_id.empty())
+	{
+		const std::string title = fmt::format("{} {}###drv_setup_done", ICON_FA_CIRCLE_CHECK, fmt::format(FSUI_FSTR("Installed {}"), s_state.setup_installed_tag));
+		MenuButton(title.c_str(), FSUI_CSTR("ARMSX2 restarts when you finish setup so the driver can load."));
+	}
+	else if (s_state.installing && s_state.install_from_setup)
+	{
+		const std::string progress = fmt::format(FSUI_FSTR("Installing {}: {}"), s_state.install_tag, ProgressText(s_state.progress));
+		if (MenuButton(FSUI_ICONSTR(ICON_FA_XMARK, "Cancel Install"), progress.c_str()))
+			s_state.install_cancel.Cancel();
+	}
+	else
+	{
+		if (!s_state.failure_message.empty())
+		{
+			const std::string summary = fmt::format("{}: {}", s_state.failure_name, s_state.failure_message);
+			if (MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_TRIANGLE_EXCLAMATION, "Install Failed"), summary.c_str(), FSUI_CSTR("Dismiss")))
+				s_state.failure_message.clear();
+		}
+
+		if (s_state.feed == FeedState::NotLoaded || s_state.feed == FeedState::Loading)
+		{
+			MenuButton(FSUI_ICONSTR(ICON_FA_CIRCLE_NOTCH, "Loading driver list..."), FSUI_CSTR("Asking GitHub which driver packs are available."));
+		}
+		else if (const DP::RemoteDriver* pick = DP::PickRecommended(s_state.listing.drivers))
+		{
+			std::string summary = pick->tag;
+			if (pick->size > 0)
+				summary += "  |  " + FormatSize(pick->size);
+			const std::string title = fmt::format("{} {}###drv_setup_get", ICON_FA_CLOUD_ARROW_DOWN, NoHash(pick->release_name.empty() ? pick->tag : pick->release_name));
+			if (MenuButtonWithValue(title.c_str(), summary.c_str(), FSUI_CSTR("Download")))
+				StartInstall(*pick, true);
+		}
+		else
+		{
+			// The service words the reason for display ("GitHub is limiting requests from this network; ...").
+			const std::string reason = s_state.listing.errors.empty() ? std::string(FSUI_STR("The feed has no driver packs for this device right now.")) :
+																		 s_state.listing.errors.front().message;
+			if (MenuButtonWithValue(FSUI_ICONSTR(ICON_FA_TRIANGLE_EXCLAMATION, "Could not load the driver list"), reason.c_str(), FSUI_CSTR("Try Again")))
+				StartFeedFetch(true);
+		}
+
+		MenuButton(FSUI_ICONSTR(ICON_FA_CIRCLE_INFO, "You can skip this"), FSUI_CSTR("Choose a driver later under Settings, GPU Drivers."));
+	}
+
+	EndMenuButtons();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -968,6 +1084,7 @@ TRANSLATE_NOOP("FullscreenUI", "Unpacking...");
 TRANSLATE_NOOP("FullscreenUI", "Checking that the driver loads...");
 TRANSLATE_NOOP("FullscreenUI", "Finishing...");
 TRANSLATE_NOOP("FullscreenUI", "Starting...");
+TRANSLATE_NOOP("FullscreenUI", "ARMSX2 uses it after it restarts, when you finish setup.");
 TRANSLATE_NOOP("FullscreenUI", "Choose it on the GPU Drivers page to use it.");
 TRANSLATE_NOOP("FullscreenUI", "The install was cancelled. Nothing was changed.");
 TRANSLATE_NOOP("FullscreenUI", "The install failed.");
@@ -995,6 +1112,7 @@ TRANSLATE_NOOP("FullscreenUI", "Not Installed");
 TRANSLATE_NOOP("FullscreenUI", "Pre-release");
 TRANSLATE_NOOP("FullscreenUI", "Installing");
 TRANSLATE_NOOP("FullscreenUI", "Download");
+TRANSLATE_NOOP("FullscreenUI", "The feed has no driver packs for this device right now.");
 TRANSLATE_NOOP("FullscreenUI", "Driver packs are Turnip builds for Qualcomm Adreno GPUs. This device uses its system driver.");
 TRANSLATE_NOOP("FullscreenUI", "Current Driver");
 TRANSLATE_NOOP("FullscreenUI", "The driver you chose applies the next time ARMSX2 starts. Restarting closes ARMSX2 and the running game, then opens it again.");
@@ -1009,9 +1127,12 @@ TRANSLATE_NOOP("FullscreenUI", "Available Driver Packs");
 TRANSLATE_NOOP("FullscreenUI", "Asking GitHub which driver packs are available.");
 TRANSLATE_NOOP("FullscreenUI", "Try Again");
 TRANSLATE_NOOP("FullscreenUI", "GitHub could not be reached, so this list may be out of date.");
-TRANSLATE_NOOP("FullscreenUI", "The feed has no driver packs for this device right now.");
 TRANSLATE_NOOP("FullscreenUI", "Asks GitHub for the current list of driver packs.");
 TRANSLATE_NOOP("FullscreenUI", "Installed Driver Packs");
+TRANSLATE_NOOP("FullscreenUI", "GPU Driver");
+TRANSLATE_NOOP("FullscreenUI", "ARMSX2 has its own Vulkan driver for your GPU. It is the driver ARMSX2 is tuned for.");
+TRANSLATE_NOOP("FullscreenUI", "ARMSX2 restarts when you finish setup so the driver can load.");
+TRANSLATE_NOOP("FullscreenUI", "Choose a driver later under Settings, GPU Drivers.");
 TRANSLATE_NOOP("FullscreenUI", "Using the driver pack \"{}\".");
 TRANSLATE_NOOP("FullscreenUI", "The selected driver pack \"{}\" is not installed. The system driver is in use.");
 TRANSLATE_NOOP("FullscreenUI", "Downloading: {} of {} ({}%)");
@@ -1040,5 +1161,7 @@ TRANSLATE_NOOP("FullscreenUI", "Loading driver list...");
 TRANSLATE_NOOP("FullscreenUI", "Showing the last saved list");
 TRANSLATE_NOOP("FullscreenUI", "No driver packs found");
 TRANSLATE_NOOP("FullscreenUI", "Refresh List");
+TRANSLATE_NOOP("FullscreenUI", "Could not load the driver list");
+TRANSLATE_NOOP("FullscreenUI", "You can skip this");
 // TRANSLATION-STRING-AREA-END
 #endif
