@@ -458,7 +458,12 @@ void GSLocalMemoryFunctions::WriteImage(GSLocalMemory& mem, int& tx, int& ty, co
 	// on a byte, so none of the code below, which moves whole bytes per row, can write it. WriteImageX walks the nibbles
 	// and keeps the cursor, so a transfer that arrives in pieces carries on from where the last piece stopped.
 	// GT3 demo, Jak 2 Japanese subtitles, and the BG Dark Alliance minimap do this.
-	if (trbpp == 4 && (TRXREG.RRW & 0x1))
+	//
+	// An odd start x is the same case for the same reason: the paths below take pixel x from nibble x & 1 of byte x / 2
+	// from a base they round down to a byte, so for an odd x every pixel would get its left neighbour's nibble, the first
+	// from the byte before the source, and the last nibble would be dropped. The console stores it as the same stream, at
+	// any width, so it goes the same way.
+	if (trbpp == 4 && ((TRXREG.RRW | TRXPOS.DSAX) & 0x1))
 	{
 		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
 		return;

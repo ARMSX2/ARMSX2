@@ -12,6 +12,10 @@
 // 0d525e4bdb: GSLocalMemoryWriteStamps.TheRectangleOfAnImageWriteCoversEveryPageItChanges hands a
 // std::vector's worth of bytes to every writer, and a 24-bit write read one byte past it.
 //
+// The same is done for the start: every source is also placed so that it begins exactly at the start of a mapped
+// page, with an inaccessible page before it, so a read of the byte before the source is caught too. PSMT4's
+// block-aligned path did that for a start x that is odd: it read the source at byte x / 2 from a base one nibble out.
+//
 // POSIX only: the guard page is an mmap and the fault is a signal.
 
 #include "GS/GSLocalMemory.h"
@@ -101,22 +105,30 @@ namespace
 		struct sigaction m_old_bus = {};
 	};
 
-	/// `len` bytes that end exactly where the mapping does, with an inaccessible page after them.
+	/// Which end of the source sits against an inaccessible page.
+	enum class Edge
+	{
+		End, ///< the source ends exactly where the mapping does: a read past its last byte faults
+		Start, ///< the source begins exactly where the mapping does: a read before its first byte faults
+	};
+
+	/// `len` bytes that touch an inaccessible page at one end, and are followed (End) or preceded (Start) by mapped
+	/// memory of 0xFF at the other.
 	class EdgeBuffer
 	{
 	public:
-		explicit EdgeBuffer(size_t len)
+		EdgeBuffer(size_t len, Edge edge)
 		{
 			const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
 			const size_t body = (len + page - 1) / page * page;
-			m_total = body + page;
+			m_total = page + body + page;
 			void* base = mmap(nullptr, m_total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
 			if (base == MAP_FAILED)
 				return;
 			m_base = static_cast<u8*>(base);
-			if (mprotect(m_base + body, page, PROT_NONE) != 0)
+			if (mprotect(m_base, page, PROT_NONE) != 0 || mprotect(m_base + page + body, page, PROT_NONE) != 0)
 				return;
-			m_data = m_base + body - len;
+			m_data = edge == Edge::End ? m_base + page + body - len : m_base + page;
 			std::memset(m_data, 0xFF, len);
 		}
 		~EdgeBuffer()
@@ -186,22 +198,30 @@ namespace
 	protected:
 		void SetUp() override { m_mem = std::make_unique<GSLocalMemory>(); }
 
-		/// Runs the writer on a source that ends at a guard page; true when it stayed inside it. A read
-		/// past the end is reported as a failure that names the transfer.
+		/// Runs the writer on a source that ends at a guard page, and again on one that starts at a guard page; true when
+		/// it stayed inside the source both times. A read past the end or before the start is reported as a failure that
+		/// names the transfer.
 		bool ExpectInsideItsSource(const Transfer& t)
 		{
-			const EdgeBuffer buf(t.Len());
-			if (!buf.data())
+			for (const Edge edge : {Edge::End, Edge::Start})
 			{
-				ADD_FAILURE() << "could not map the source buffer for " << t.Describe();
-				return false;
-			}
+				const EdgeBuffer buf(t.Len(), edge);
+				if (!buf.data())
+				{
+					ADD_FAILURE() << "could not map the source buffer for " << t.Describe();
+					return false;
+				}
 
-			WriterCall call{m_mem.get(), &t, buf.data()};
-			const int sig = FaultCatcher::Call(RunWriter, &call);
-			if (sig != 0)
-				ADD_FAILURE() << t.Describe() << ": the writer read past the " << t.Len() << " bytes it was handed (signal " << sig << ")";
-			return sig == 0;
+				WriterCall call{m_mem.get(), &t, buf.data()};
+				const int sig = FaultCatcher::Call(RunWriter, &call);
+				if (sig != 0)
+				{
+					const char* where = edge == Edge::End ? "past the end of" : "before the start of";
+					ADD_FAILURE() << t.Describe() << ": the writer read " << where << " the " << t.Len() << " bytes it was handed (signal " << sig << ")";
+					return false;
+				}
+			}
+			return true;
 		}
 
 		/// Bw counts 64-pixel columns; 8 and 4-bit pages are 128 wide and take it in pairs.
@@ -266,6 +286,21 @@ namespace
 			}
 		}
 
+		// PSMT4 with an even width of 34 or more from an odd start x: the rectangle holds a whole 32-pixel block column, so
+		// the block-aligned path takes it, and some hold whole 16-row block rows too. The rows start half way through a
+		// byte of the source; the writer must not read the byte before the source to make up for it, nor stop a nibble
+		// short of the end.
+		void WideFromOddStartX()
+		{
+			const u32 bw = Bw(PSMT4, 4);
+			ExpectInsideItsSource({PSMT4, 0x123, bw, 5, 3, 130, 71});
+			ExpectInsideItsSource({PSMT4, 0x123, bw, 31, 5, 34, 1}); // the narrowest way in: pixels 31 | 32..63 | 64
+			ExpectInsideItsSource({PSMT4, 0x123, bw, 61, 38, 102, 4});
+			ExpectInsideItsSource({PSMT4, 0x123, bw, 1, 16, 66, 33});
+			ExpectInsideItsSource({PSMT4, 0, bw, 33, 0, 64, 16});
+			ExpectInsideItsSource({PSMT4, 0x123, bw, 5, 3, 128, 1});
+		}
+
 		FaultCatcher m_catcher;
 		std::unique_ptr<GSLocalMemory> m_mem;
 	};
@@ -318,6 +353,47 @@ namespace
 	TEST_F(GSLocalMemoryWriteSourceBounds, RandomTransfersOfEachFourBitHighFormat)
 	{
 		Random(kFourBitHighPsms);
+	}
+
+	// PSMT4 from an odd start x with a rectangle wide enough for the block-aligned path. See
+	// gs_local_memory_four_bit_stream_tests.cpp for where the pixels go.
+	TEST_F(GSLocalMemoryWriteSourceBounds, AWideTransferIntoPSMT4FromAnOddStartX)
+	{
+		WideFromOddStartX();
+	}
+
+	TEST_F(GSLocalMemoryWriteSourceBounds, ASliceShorterThanItsTransferIntoPSMT4FromAnOddStartX)
+	{
+		const u32 bw = Bw(PSMT4, 4);
+		for (const Transfer shape : {Transfer{PSMT4, 0x123, bw, 5, 3, 130, 71}, Transfer{PSMT4, 0x123, bw, 61, 38, 102, 40}, Transfer{PSMT4, 0, bw, 33, 0, 64, 32}})
+		{
+			Transfer t = shape;
+			t.slice_bytes = (t.ImageLen() / 3) & ~static_cast<size_t>(15); // whole quadwords, as the GIF delivers them
+			ExpectInsideItsSource(t);
+		}
+	}
+
+	TEST_F(GSLocalMemoryWriteSourceBounds, RandomWideTransfersIntoPSMT4FromAnOddStartX)
+	{
+		std::mt19937_64 rng(5678);
+		const auto random = [&](u32 n) { return static_cast<u32>(rng() % n); };
+
+		for (int i = 0; i < 1500; i++)
+		{
+			Transfer t;
+			t.psm = PSMT4;
+			t.bp = random(GS_MAX_BLOCKS);
+			t.bw = Bw(PSMT4, 1 + random(16));
+			t.x0 = static_cast<int>(random(300)) | 1;
+			t.y0 = static_cast<int>(random(300));
+			t.w = 34 + 2 * static_cast<int>(random(100));
+			t.h = 1 + static_cast<int>(random(80));
+			if (random(3) == 0)
+				t.slice_bytes = (t.ImageLen() / 2) & ~static_cast<size_t>(15);
+
+			if (!ExpectInsideItsSource(t))
+				break;
+		}
 	}
 } // namespace
 
