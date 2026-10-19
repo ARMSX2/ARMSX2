@@ -519,13 +519,16 @@ TEST(DriverPacksSetup, ReadsTheContextFromTheMachine)
 	EXPECT_EQ(context.installed_count, 0u);
 	EXPECT_FALSE(context.session_is_x11);
 
-#ifdef DRIVER_TESTS_LINUX
-	// Installing works only where driver packs are supported, like the install tests below.
-	const RemoteDriver driver = rig.Serve(MakePackTarGz("lib"));
-	ASSERT_TRUE(rig.Install(driver).Ok());
-	EXPECT_EQ(GetSetupContext(*rig.manager, false).installed_count, 1u);
-#endif
-	EXPECT_TRUE(GetSetupContext(*rig.manager, true).session_is_x11);
+	// Manager::Install exists only on desktop Linux, but listing the installed packs works on
+	// every platform, so the pack is laid out by hand and this check runs everywhere.
+	const std::string pack = Path::Combine(rig.config.drivers_dir, "armsx2turnip-axfl2-002");
+	fs::create_directories(fs::path(pack));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "meta.json"), R"({"manifest":"freedreno_icd.aarch64.json","library":"libvulkan_freedreno.so"})"));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "freedreno_icd.aarch64.json"), "{}"));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "libvulkan_freedreno.so"), "lib"));
+	context = GetSetupContext(*rig.manager, true);
+	EXPECT_EQ(context.installed_count, 1u);
+	EXPECT_TRUE(context.session_is_x11);
 
 	SetSelectedPack("armsx2turnip-axfl2-002");
 	EXPECT_EQ(GetSetupContext(*rig.manager, false).selected_pack, "armsx2turnip-axfl2-002");
