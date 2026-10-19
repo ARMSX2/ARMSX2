@@ -1433,10 +1433,13 @@ TEST(AutoTuneJudging, AnEmptyBaselineWindowIsNotACostOfZero)
 	EXPECT_EQ(verdict.cost_after, 0.0);
 }
 
-TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillTheLimit)
+TEST(AutoTuneJudging, ACostThatClearlyFallsDoesNotEarnAKeepOnItsOwn)
 {
-	// A GPU that spends 20 ms per frame and then 14, while the speed stays at 40% because the frame is still
-	// limited by something else: -30% on the cost the lever targets, +2% on the speed.
+	// A GPU that spends 20 ms per frame and then 14, while the speed stays at 40% because something else is
+	// still the limit: -30% on the cost the lever targets, +0.5% on the speed. Splitting work over more threads
+	// lowers the busiest one's cost whether or not the game gets faster (the GS back thread on God of War II:
+	// -14% GS cost, -0.5% speed, and a big core burned for it). The cost may keep the trial open for a longer
+	// look; it never makes the trial a keep. A trial that ends flat with its cost down did not help.
 	Rig rig;
 	OnlyResolutionIsLeft(rig, 6.0);
 	rig.WarmUp();
@@ -1446,13 +1449,57 @@ TEST(AutoTuneJudging, ACostThatClearlyFallsEarnsAKeepWhenSomethingElseIsStillThe
 	EXPECT_NEAR(rig.log.back().cost_before, 20.0, 1e-9);
 	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
 
+	for (int i = 0; i < 4 + 4 + 4 - 1; i++)
+		EXPECT_EQ(rig.Feed(Gpu(40.2, 14.0)).kind, Kind::None) << "window " << i << ": the cost is down, so it is looked at for longer";
+	const AutoTuneAction verdict = rig.Feed(Gpu(40.2, 14.0));
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured) << "the speed is clearly flat: that is a measurement, and it is remembered";
+	EXPECT_FALSE(verdict.inconclusive);
+	EXPECT_NEAR(verdict.cost_gain, 0.3, 1e-9) << "the cost has its own figure";
+	EXPECT_NEAR(verdict.gain, 0.005, 1e-9);
+	EXPECT_EQ(rig.Count(Kind::Keep), 0u);
+}
+
+TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedRisesALittleIsNotKeptEither)
+{
+	// +3% on the speed is under the 5% bar and not clearly nothing either (the noise is 3%): the cost that fell
+	// is no reason to keep it. Looked at for longer, then undone without being remembered.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0, 20.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
+
+	AutoTuneAction verdict;
+	for (int i = 0; i < 12; i++)
+	{
+		verdict = rig.Feed(Gpu(41.2, 14.0));
+		EXPECT_NE(verdict.kind, Kind::Keep);
+	}
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_FALSE(verdict.measured);
+	EXPECT_TRUE(verdict.inconclusive);
+}
+
+TEST(AutoTuneJudging, ACostThatFallsAndASpeedThatClearlyRisesIsKeptOnTheSpeed)
+{
+	// The same lever when the game does get faster: +10% on the speed is the keep, and the cost is only reported.
+	Rig rig;
+	OnlyResolutionIsLeft(rig, 6.0);
+	rig.WarmUp();
+	for (int i = 0; i < 8; i++)
+		rig.Feed(Gpu(40.0, 20.0));
+	ASSERT_EQ(rig.log.back().kind, Kind::StartTrial);
+	rig.FeedFor(Gpu(40.0, 20.0), 1.5);
+
 	AutoTuneAction verdict;
 	for (int i = 0; i < 4; i++)
-		verdict = rig.Feed(Gpu(40.8, 14.0));
+		verdict = rig.Feed(Gpu(44.0, 14.0));
 	ASSERT_EQ(verdict.kind, Kind::Keep);
+	EXPECT_NEAR(verdict.gain, 0.10, 1e-9);
 	EXPECT_NEAR(verdict.cost_gain, 0.3, 1e-9);
-	EXPECT_NEAR(verdict.gain, 0.02, 1e-9) << "what is reported is the speed that was measured; the cost has its own figure";
-	EXPECT_NEAR(verdict.speed_after, 40.8, 1e-9);
 }
 
 TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsAGoodDealIsRejectedAtTheFirstLook)
@@ -1477,10 +1524,11 @@ TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsAGoodDealIsRejectedAtTheFi
 	EXPECT_NEAR(verdict.gain, -0.15, 1e-9);
 }
 
-TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsALittleIsNeitherKeptNorRejected)
+TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsALittleDidNotHelp)
 {
-	// The cost fell 30% and the speed fell 2.5%: under the bar for a loss and over the 1% a keep allows. The
-	// figures contradict each other; it is looked at for longer and then undone without being remembered.
+	// The cost fell 30% and the speed fell 2.5%: under the bar for a loss, so the first look cannot call it
+	// worse, and a cost on its own is no keep. It is looked at for longer, and when the speed is still not up it
+	// did not help: the work moved between threads and the game is no faster.
 	Rig rig;
 	OnlyResolutionIsLeft(rig, 6.0);
 	rig.WarmUp();
@@ -1494,10 +1542,12 @@ TEST(AutoTuneJudging, ACostThatFallsWhileTheSpeedFallsALittleIsNeitherKeptNorRej
 	{
 		verdict = rig.Feed(Gpu(39.0, 14.0));
 		EXPECT_NE(verdict.kind, Kind::Keep);
+		if (i < 11)
+			EXPECT_EQ(verdict.kind, Kind::None) << "window " << i;
 	}
-	EXPECT_EQ(verdict.kind, Kind::Revert);
-	EXPECT_FALSE(verdict.measured) << "contradictory figures are no answer";
-	EXPECT_TRUE(verdict.inconclusive);
+	ASSERT_EQ(verdict.kind, Kind::Revert);
+	EXPECT_TRUE(verdict.measured);
+	EXPECT_FALSE(verdict.inconclusive);
 }
 
 TEST(AutoTuneJudging, TheCostThatIsJudgedFollowsTheBottleneck)

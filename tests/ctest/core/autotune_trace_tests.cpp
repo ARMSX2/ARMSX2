@@ -14,6 +14,7 @@
 
 #include "AutoTune/AutoTuneController.h"
 
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -391,6 +392,71 @@ namespace
 		{0.502, 69.8, 0.857, 39.7, 35.9, 91.9, 28.1, 0.0, 0.0, 0, 0.600, 9.49, 8.57, 21.96, 0.00},
 		{0.515, 71.3, 0.818, 40.3, 36.6, 94.1, 29.6, 0.0, 0.0, 0, 0.556, 9.43, 8.57, 22.03, 0.00},
 	};
+
+	// The tables below are from the second device round (mq65-r2), which ran the controller as it is now, so a
+	// TraceRig for them takes the default policy: TraceRig rig{AutoTunePolicy()}.
+	// MQ65 God of War II combat, GS back thread, second device round
+	const TraceWindow kGow2GsbR2[] = {
+		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
+		{0.527, 38.0, 1.000, 90.9, 91.1, 0.0, 77.1, 0.0, 44.4, 1, 0.064, 39.91, 39.96, 0.00, 19.47},
+		{0.506, 39.5, 1.000, 89.7, 96.7, 0.0, 78.0, 0.0, 46.7, 1, 0.054, 37.85, 40.80, 0.00, 19.71},
+		{0.506, 39.5, 1.000, 88.9, 96.6, 0.0, 76.6, 0.0, 46.1, 1, 0.059, 37.50, 40.75, 0.00, 19.47},
+		{0.521, 38.4, 1.000, 85.9, 93.5, 0.0, 81.8, 0.0, 45.4, 1, 0.128, 37.32, 40.63, 0.00, 19.73},
+		{0.502, 39.9, 1.000, 88.5, 96.5, 0.0, 78.0, 0.0, 46.4, 1, 0.099, 36.99, 40.34, 0.00, 19.41},
+		{0.540, 40.1, 1.000, 89.2, 96.4, 0.0, 79.4, 0.0, 44.0, 1, 0.057, 37.07, 40.06, 0.00, 18.28},
+		{0.503, 39.8, 1.000, 88.0, 95.3, 0.0, 77.0, 0.0, 47.3, 1, 0.094, 36.88, 39.93, 0.00, 19.82},
+		{0.535, 40.5, 1.000, 89.6, 96.7, 0.0, 75.6, 0.0, 51.8, 1, 0.094, 36.90, 39.81, 0.00, 21.34},  // trial starts
+		{1.907, 2.6, 1.000, 5.3, 80.0, 0.0, 5.2, 0.0, 2.0, 1, 0.865, 33.69, 508.93, 0.09, 12.93},
+		{0.516, 16.2, 1.000, 72.6, 76.4, 38.8, 26.7, 0.0, 20.4, 1, 0.300, 74.86, 78.75, 40.00, 21.03},
+		{0.544, 30.7, 1.000, 72.3, 87.7, 38.3, 57.9, 0.0, 44.9, 1, 0.263, 39.32, 47.73, 20.85, 24.41},
+		{0.536, 34.2, 1.000, 85.2, 88.3, 44.2, 68.3, 0.0, 46.7, 1, 0.121, 41.55, 43.03, 21.53, 22.75},
+		{0.521, 35.2, 1.000, 88.8, 84.7, 46.8, 69.7, 0.0, 47.2, 1, 0.104, 42.06, 40.14, 22.16, 22.38},
+		{0.532, 37.6, 1.000, 89.8, 85.5, 52.7, 76.7, 0.0, 42.5, 1, 0.057, 39.83, 37.94, 23.36, 18.86},
+		{0.515, 38.9, 1.000, 94.1, 83.8, 54.8, 78.7, 0.0, 55.9, 1, 0.031, 40.37, 35.94, 23.53, 23.99},
+		{0.507, 39.5, 1.000, 94.9, 85.0, 55.4, 81.2, 0.0, 48.1, 1, 0.000, 40.14, 35.92, 23.44, 20.35},
+		{0.510, 39.3, 1.000, 97.0, 85.7, 55.6, 81.7, 0.0, 48.6, 1, 0.000, 41.19, 36.39, 23.61, 20.63},
+		{0.536, 40.5, 1.000, 94.5, 83.1, 59.8, 85.9, 0.0, 53.7, 1, 0.000, 38.93, 34.23, 24.64, 22.15},
+		{0.517, 38.7, 1.000, 93.8, 84.8, 56.8, 81.5, 0.0, 47.1, 1, 0.000, 40.39, 36.51, 24.47, 20.27},
+		{0.516, 38.8, 1.000, 97.6, 80.8, 57.1, 85.8, 0.0, 43.7, 1, 0.000, 41.92, 34.69, 24.52, 18.77},
+		{0.505, 39.7, 1.000, 96.9, 83.0, 55.6, 83.3, 0.0, 58.1, 1, 0.000, 40.76, 34.91, 23.38, 24.44},
+		{0.501, 40.0, 1.000, 97.0, 79.5, 57.2, 84.1, 0.0, 49.7, 1, 0.000, 40.45, 33.16, 23.87, 20.73},
+		{0.511, 39.2, 1.000, 91.5, 83.3, 55.6, 79.4, 0.0, 48.1, 1, 0.000, 38.97, 35.46, 23.68, 20.48},
+		{0.506, 39.6, 1.000, 95.2, 82.3, 56.5, 83.0, 0.0, 49.1, 1, 0.000, 40.11, 34.68, 23.81, 20.71},
+		{0.509, 39.3, 1.000, 94.6, 80.0, 55.9, 81.3, 0.0, 48.6, 1, 0.000, 40.10, 33.91, 23.72, 20.59},  // traced: keep
+		{0.512, 39.1, 1.000, 97.3, 77.6, 54.9, 83.8, 0.0, 48.8, 1, 0.000, 41.54, 33.12, 23.41, 20.84},
+		{0.500, 40.0, 1.000, 96.1, 81.3, 57.4, 82.3, 0.0, 49.7, 1, 0.000, 40.08, 33.90, 23.94, 20.71},
+		{0.511, 39.2, 1.000, 95.8, 81.3, 57.2, 81.6, 0.0, 48.7, 1, 0.000, 40.78, 34.61, 24.35, 20.76},
+		{0.510, 39.3, 1.000, 97.2, 83.8, 59.3, 84.2, 0.0, 44.7, 1, 0.000, 41.31, 35.59, 25.21, 18.99},
+		{0.513, 39.0, 1.000, 96.3, 83.9, 57.3, 83.1, 0.0, 47.5, 1, 0.000, 41.15, 35.83, 24.47, 20.31},
+	};
+
+	// MQ65 R&C UYA combat, GS back thread, second device round
+	const TraceWindow kUyaGsbR2[] = {
+		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
+		{0.517, 45.2, 1.000, 71.4, 93.3, 0.0, 28.4, 0.0, 50.1, 1, 0.263, 26.39, 34.47, 0.00, 18.50},
+		{0.501, 46.6, 1.000, 73.8, 96.1, 0.0, 29.6, 0.0, 51.0, 1, 0.236, 26.43, 34.42, 0.00, 18.28},
+		{0.505, 46.3, 1.000, 73.5, 95.3, 0.0, 29.3, 0.0, 50.7, 1, 0.237, 26.51, 34.36, 0.00, 18.30},
+		{0.522, 44.7, 1.000, 71.2, 92.8, 0.0, 28.2, 0.0, 50.0, 1, 0.270, 26.54, 34.61, 0.00, 18.64},
+		{0.506, 46.2, 1.000, 72.7, 94.2, 0.0, 29.5, 0.0, 50.7, 1, 0.251, 26.26, 34.04, 0.00, 18.31},
+		{0.520, 44.9, 1.000, 70.9, 91.8, 0.0, 28.3, 0.0, 49.1, 1, 0.272, 26.36, 34.13, 0.00, 18.24},
+		{0.500, 46.7, 1.000, 73.4, 94.8, 0.0, 29.4, 0.0, 50.9, 1, 0.247, 26.23, 33.89, 0.00, 18.20},
+		{0.525, 47.7, 1.000, 74.1, 96.0, 0.0, 28.5, 0.0, 52.7, 1, 0.233, 25.92, 33.60, 0.00, 18.42},  // trial starts
+		{1.920, 2.6, 1.000, 4.4, 80.9, 0.0, 2.4, 0.0, 2.0, 1, 0.922, 28.26, 517.57, 0.10, 12.88},
+		{0.517, 19.4, 1.000, 31.5, 50.3, 66.0, 11.3, 0.0, 19.7, 1, 0.681, 27.09, 43.31, 56.88, 16.93},
+		{0.518, 45.1, 1.000, 77.6, 64.5, 80.2, 32.2, 0.0, 59.6, 1, 0.201, 28.74, 23.88, 29.69, 22.06},
+		{0.512, 52.1, 1.000, 92.7, 69.8, 80.4, 38.6, 0.0, 60.0, 1, 0.031, 29.66, 22.35, 25.73, 19.21},
+		{0.501, 49.9, 1.000, 88.1, 69.7, 80.0, 37.5, 0.0, 58.6, 1, 0.098, 29.44, 23.28, 26.74, 19.58},
+		{0.519, 51.4, 1.000, 92.7, 69.7, 79.6, 37.9, 0.0, 59.2, 1, 0.050, 30.06, 22.60, 25.81, 19.20},
+		{0.507, 52.6, 1.000, 91.6, 71.6, 81.9, 39.1, 0.0, 60.5, 1, 0.010, 29.06, 22.71, 25.97, 19.18},
+		{0.531, 50.2, 1.000, 91.9, 70.0, 78.1, 35.8, 0.0, 57.4, 1, 0.046, 30.54, 23.25, 25.94, 19.08},
+		{0.523, 51.1, 1.000, 92.0, 71.0, 81.4, 37.8, 0.0, 59.6, 1, 0.020, 30.05, 23.20, 26.58, 19.47},
+		{0.524, 51.0, 1.000, 88.1, 71.0, 80.5, 37.9, 0.0, 58.5, 1, 0.059, 28.84, 23.26, 26.37, 19.17},
+		{0.525, 50.8, 1.000, 93.3, 70.8, 80.5, 36.7, 0.0, 58.3, 1, 0.008, 30.63, 23.24, 26.42, 19.14},
+		{0.522, 51.1, 1.000, 86.2, 71.3, 82.8, 37.1, 0.0, 60.2, 1, 0.064, 28.14, 23.28, 27.03, 19.67},
+		{0.528, 50.6, 1.000, 92.9, 69.0, 79.4, 36.6, 0.0, 57.8, 1, 0.047, 30.66, 22.77, 26.18, 19.08},  // traced: keep
+		{0.510, 52.3, 1.000, 83.9, 70.8, 79.7, 40.8, 0.0, 59.6, 1, 0.015, 26.75, 22.59, 25.41, 19.02},
+	};
+
 } // namespace
 
 // ---------------------------------------------------------------------------------------------- keep on cost
@@ -427,7 +493,7 @@ TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 {
 	// The same lever on R&C: GS cost 33.4 -> 27.5 ms, and over the first four windows a speed of 46.6% -> 45.1%
 	// (-3.2%) because of one 33% hitch window. A/B on the device: +11%. The first look cannot tell, so it looks
-	// again; with eight windows the speed is up.
+	// again, and again: the cost that fell does not keep it, the speed has to rise. With twelve windows it has.
 	TraceRig rig;
 	rig.state.gs_back_thread_allowed = true;
 	rig.WarmUp();
@@ -444,13 +510,57 @@ TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 	EXPECT_GT(keep->speed_after, keep->speed_before) << "kept with the speed up, not with it down";
 	EXPECT_GT(keep->cost_gain, 0.10);
 
-	// What the player is told is the speed that was measured (+7%), not the 19% the GS thread's cost fell by.
+	// What the player is told is the speed that was measured (+12%, the device's A/B said +11%), not the 20% the
+	// GS thread's cost fell by.
 	EXPECT_NEAR(keep->gain, keep->speed_after / keep->speed_before - 1.0, 1e-9);
-	EXPECT_LT(keep->gain, 0.10);
-	EXPECT_GT(keep->gain, 0.0);
+	EXPECT_NEAR(keep->gain, 0.116, 0.02);
+	EXPECT_GE(keep->gain, rig.ctl.GetPolicy().gain_fraction);
 
-	// The first look is four windows after the 9 of the settle; it kept on the second one, four windows later.
-	EXPECT_GE(rig.At(keep) - rig.At(start), 9u + 4u + 4u);
+	// The first look is four windows after the 9 of the settle. At the second, eight windows in, the speed was
+	// up 7% but not beyond the noise, which two hitch windows make wide; it kept on the third.
+	EXPECT_GE(rig.At(keep) - rig.At(start), 9u + 4u + 4u + 4u);
+}
+
+TEST(AutoTuneTrace, TheGow2BackThreadOfTheSecondRoundIsRejectedAlthoughTheGsCostFell)
+{
+	// Clean windows this time (no renderer-reopen hitch in the measurement): the speed reads 39.8% -> 39.6%
+	// and the GS cost fell 14%, 40.2 -> 34.7 ms, because the work is split over two threads. The EE, 94% to 97%
+	// busy, is the limit before and after. A/B on the device: 0%. The rule that kept this on its cost (the speed
+	// had not fallen by more than 1%) put "kept (-1%)" on screen and a big core to work for nothing.
+	TraceRig rig{AutoTunePolicy()};
+	rig.state.gs_back_thread_allowed = true;
+	rig.WarmUp();
+	rig.Feed(kGow2GsbR2);
+
+	const AutoTuneAction* start = rig.First(Kind::StartTrial);
+	ASSERT_NE(start, nullptr);
+	EXPECT_EQ(start->lever, AutoTuneLever::GsBackThread);
+
+	EXPECT_EQ(rig.Count(Kind::Keep), 0u) << "a lower GS cost with the same speed is not a keep";
+	const AutoTuneAction* revert = rig.First(Kind::Revert);
+	ASSERT_NE(revert, nullptr);
+	EXPECT_EQ(revert->lever, AutoTuneLever::GsBackThread);
+	EXPECT_TRUE(revert->measured) << "the speed is clearly flat: it did not help, and that is remembered";
+	EXPECT_FALSE(revert->inconclusive);
+	EXPECT_LT(std::fabs(revert->gain), 0.02);
+	EXPECT_GT(revert->cost_gain, 0.10) << "the cost did fall, which is why it was looked at for longer";
+}
+
+TEST(AutoTuneTrace, TheUyaBackThreadOfTheSecondRoundIsKeptOnItsSpeed)
+{
+	// The lever that is worth keeping: GS cost 34.3 -> 26.4 ms and the speed 46.2% -> 50.9% (+10%). A/B on the
+	// device: +11%.
+	TraceRig rig{AutoTunePolicy()};
+	rig.state.gs_back_thread_allowed = true;
+	rig.WarmUp();
+	rig.Feed(kUyaGsbR2);
+
+	const AutoTuneAction* keep = rig.First(Kind::Keep);
+	ASSERT_NE(keep, nullptr);
+	EXPECT_EQ(keep->lever, AutoTuneLever::GsBackThread);
+	EXPECT_TRUE(keep->measured);
+	EXPECT_NEAR(keep->gain, 0.10, 0.02);
+	EXPECT_GT(keep->cost_gain, 0.15);
 }
 
 // ---------------------------------------------------------------------------------------------- clearly worse

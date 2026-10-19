@@ -196,9 +196,14 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 	m_env.Log(fmt::format("keeping {}: speed {:.1f}% -> {:.1f}% ({:+.1f}%){}", label, action.speed_before, action.speed_after, action.gain * 100.0,
 		CostText(action)));
 
+	// A keep the full-speed rule earned on a game that was at full speed with late frames can have a speed change
+	// a little under zero. What the player is told and what the game's file records is 0 at the least: a keep is
+	// never shown as a loss. The log line above has the measured figure.
+	const double gain = std::max(action.gain, 0.0);
+
 	AutoTune::Change change;
 	const bool persisted = m_env.EditGameFile([&](SettingsInterface& ini) {
-		change = AutoTune::Commit(ini, action.lever, action.value, action.gain);
+		change = AutoTune::Commit(ini, action.lever, action.value, gain);
 	});
 
 	if (persisted)
@@ -231,11 +236,11 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 		// speed, and a bare percentage reads like a frame-rate gain.
 		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune",
 										  "Auto-tune: {} kept. The emulated CPU is underclocked to hold game speed (game speed {:+.0f}%, not more frames)."),
-			label, action.gain * 100.0));
+			label, gain * 100.0));
 	}
 	else
 	{
-		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} kept ({:+.0f}%)"), label, action.gain * 100.0));
+		m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: {} kept ({:+.0f}%)"), label, gain * 100.0));
 	}
 }
 

@@ -621,15 +621,21 @@ AutoTuneAction AutoTuneController::FinishTrial()
 	const bool fixed = speed_after.centre >= m_policy.reached_speed_pct && late_after < m_policy.late_frame_ratio_bad &&
 	                   (!was_good_speed || was_late);
 
-	// Keep: the speed clearly rose, or reached full speed, or the cost the lever targets clearly fell while the
-	// speed did not fall (something else is still the limit). Reject, and remember it: the speed clearly fell, or
-	// neither figure shows a gain even allowing for the noise. Anything else is inconclusive.
-	const bool keep_on_speed = fixed || speed.clear;
-	const bool keep_on_cost = have_cost && cost.clear && speed.gain >= -m_policy.cost_keep_max_speed_loss;
+	// Keep: the speed clearly rose, or reached full speed. Only the speed earns a keep. A cost falls whenever
+	// work is split over more threads, whether or not the game is faster (the GS back thread on God of War II:
+	// -14% GS cost, speed 39.7% -> 39.5%, the EE still the limit), so a lower cost on its own is not a reason to
+	// give up a core or a setting.
+	const bool keep = fixed || speed.clear;
+	// Reject, and remember it: the speed clearly fell, or it shows no gain even allowing for the noise and the
+	// cost shows none either. Anything else is looked at for longer, and then inconclusive.
+	//
 	// The speed clearly fell, whatever the cost did: the lever made things worse, and that is as good a
 	// measurement as there is. It ends the trial at the first look instead of keeping the player at the lower
 	// speed for another eight windows.
 	const bool hurt = speed.worse;
+	// A cost that clearly fell is the one thing that holds a flat speed back from a rejection at the first look:
+	// the speed may follow it. If it does not, the longer look ends in a rejection (below).
+	const bool cost_fell = have_cost && cost.clear;
 	const bool reject = hurt || (speed.none && (!have_cost || cost.none));
 
 	AutoTuneAction action;
@@ -646,7 +652,7 @@ AutoTuneAction AutoTuneController::FinishTrial()
 		action.cost_gain = cost.gain;
 	}
 
-	if (keep_on_speed || keep_on_cost)
+	if (keep)
 	{
 		action.kind = AutoTuneAction::Kind::Keep;
 		action.measured = true;
@@ -656,11 +662,27 @@ AutoTuneAction AutoTuneController::FinishTrial()
 		return action;
 	}
 
+	if (!reject)
+	{
+		// Neither a clear gain nor clearly nothing, or the speed is flat but the cost fell. Look a little longer
+		// before giving up.
+		if (m_trial.extensions < m_policy.max_extensions && m_policy.extend_windows > 0)
+		{
+			m_trial.extensions++;
+			m_trial.windows += m_policy.extend_windows;
+			return AutoTuneAction();
+		}
+	}
+
+	// The look is over. The speed is flat after all that, and the cost that fell did not take it along: the work
+	// moved between threads and the game did not get faster. That did not help.
+	const bool did_not_help = reject || (speed.none && cost_fell);
+
 	// A rejection is only as good as the baseline it is measured against. If the game changed while the trial
 	// ran, the loss may be the scene's: undo the trial without writing it down, and measure the step again from
 	// a fresh baseline. Allowed a couple of times for one step; a scene that keeps moving gets the
 	// inconclusive answer below.
-	const bool scene_changed = reject && SceneChangedDuringTrial(speed.noise);
+	const bool scene_changed = did_not_help && SceneChangedDuringTrial(speed.noise);
 	if (scene_changed)
 	{
 		uint32_t& retries = RetriesFor(m_trial.lever, m_trial.value);
@@ -677,18 +699,7 @@ AutoTuneAction AutoTuneController::FinishTrial()
 		}
 	}
 
-	if (!reject)
-	{
-		// Neither a clear gain nor clearly nothing. Look a little longer before giving up.
-		if (m_trial.extensions < m_policy.max_extensions && m_policy.extend_windows > 0)
-		{
-			m_trial.extensions++;
-			m_trial.windows += m_policy.extend_windows;
-			return AutoTuneAction();
-		}
-	}
-
-	if (!reject || scene_changed)
+	if (!did_not_help || scene_changed)
 	{
 		// Still within the noise, or too unsure about the scene: undo it and move on, without writing "did not
 		// help" for good. This session does not offer the same step again.

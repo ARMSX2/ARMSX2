@@ -27,11 +27,12 @@
 //   repeat    until the frames stop being late, or no countermeasure is left (Exhausted).
 //
 // A trial is judged on the medians of its windows, never the means: one hitch window (a shader compile,
-// a state save) moves a mean of four windows by several percent and a median by nothing. It is judged on
-// two figures: the speed, and the cost of the thing the lever targets (GPU ms per frame, GS thread ms per
-// frame, or EE ms per frame; see AutoTuneController::CostOf). Speed alone cannot see a lever that works
-// while something else is still the limit, and at the noise a slow game has it cannot tell a notch of
-// resolution from nothing when another cost dominates the frame.
+// a state save) moves a mean of four windows by several percent and a median by nothing. Only the speed
+// earns a keep (a clear gain, or full speed reached). The cost of the thing the lever targets (GPU ms per
+// frame, GS thread ms per frame, or EE ms per frame; see AutoTuneController::CostOf) is the second figure,
+// and it can only hold a verdict back: a cost that fell with a flat speed is looked at for longer before the
+// trial is called a failure. A cost falls whenever work is split over more threads, whether or not anything
+// downstream is faster, so it is not a reason to keep a setting or burn a core.
 //
 // Only usable windows count. An unusable window (paused, fast-forward, frame advance, a GS dump) neither
 // advances a clock nor breaks a streak: it is as if it had not happened.
@@ -144,18 +145,13 @@ struct AutoTunePolicy
 		return governor.warmup_seconds + steps * dwell + (steps - 1.0) * governor.cooldown_seconds + governor.window_seconds;
 	}
 
-	/// A trial is kept when the median of its speed (or of the cost it targets) improved by at least this
-	/// fraction of the median before it, and by more than the noise (below)...
+	/// A trial is kept when the median of its speed improved by at least this fraction of the median before it,
+	/// and by more than the noise (below)...
 	double gain_fraction = 0.05;
-	/// ...or when it went from bad to this speed with no late frames.
+	/// ...or when it went from bad to this speed with no late frames. The cost the lever targets never earns a
+	/// keep: a lever that lowers it with the speed flat did not help, because something else is the limit and
+	/// the game is no faster. It does hold a flat speed back from an early rejection (see extend_windows).
 	double reached_speed_pct = 99.0;
-
-	/// A trial whose speed did not clearly rise is still kept when the cost it targets clearly fell (another cost
-	/// is the limit, so the speed cannot show it yet), but only if the median speed did not fall by more than this
-	/// fraction. A cost falls whenever work is split over more threads, whether or not anything downstream is
-	/// faster; the speed has to be at least level with the baseline. A trial whose cost fell and whose speed fell
-	/// more than this is looked at for longer instead.
-	double cost_keep_max_speed_loss = 0.01;
 
 	/// The noise a gain has to clear, as this many standard errors of the difference between the two
 	/// medians (each estimated from the spread of its own windows, robustly). A gain that reaches
@@ -171,7 +167,9 @@ struct AutoTunePolicy
 	uint32_t baseline_extra_windows = 4;
 
 	/// A measurement that is neither a clear gain nor clearly nothing is extended by this many windows, up
-	/// to max_extensions times, and then undone without being remembered as "did not help".
+	/// to max_extensions times, and then undone without being remembered as "did not help". A flat speed
+	/// with a cost that clearly fell is extended the same way, and if the speed is still flat afterwards it
+	/// is remembered as "did not help".
 	uint32_t extend_windows = 4;
 	uint32_t max_extensions = 2;
 
@@ -307,9 +305,9 @@ struct AutoTuneAction
 	double value = 0.0;
 	AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
 	/// StartTrial, Keep and Revert: the median speed before the trial and during it, and the relative change.
-	/// `gain` is always the speed's, also for a Keep that the targeted cost earned (the speed hardly moved
-	/// because something else is still the limit): it is what the player is told and what the game's file
-	/// records as the lever's gain in speed. The cost has its own figures below.
+	/// `gain` is always the speed's: it is what the player is told and what the game's file records as the
+	/// lever's gain in speed. It is under zero only for a Keep earned by the full-speed rule on a game that was
+	/// at full speed with late frames. The cost has its own figures below.
 	double speed_before = 0.0;
 	double speed_after = 0.0;
 	double gain = 0.0;

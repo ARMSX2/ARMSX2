@@ -193,6 +193,31 @@ TEST(AutoTuneApplier, TheGovernorsKeepMessageSaysTheEmulatedCpuIsUnderclockedToH
 	EXPECT_EQ(f.env.messages.back(), "Auto-tune: IOP thread kept (+12%)");
 }
 
+TEST(AutoTuneApplier, AKeptMessageNeverCarriesANegativeNumber)
+{
+	// A trial can be kept without a speed gain: it reached full speed with the late frames gone, on a game
+	// that was at full speed all along. The speed can then read a little under the baseline, and "kept (-1%)"
+	// reads as a loss. The message, the game's record and the list of changes show 0 at the least.
+	Fixture f;
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::IopThread, 1.0));
+	AutoTuneAction keep = Action(Kind::Keep, AutoTuneLever::IopThread, 1.0);
+	keep.gain = -0.012;
+	f.applier.Execute(keep);
+	EXPECT_EQ(f.env.messages.back(), "Auto-tune: IOP thread kept (+0%)");
+
+	const std::vector<AutoTune::Change> changes = AutoTune::ReadChanges(f.env.game_file);
+	ASSERT_EQ(changes.size(), 1u);
+	EXPECT_GE(changes[0].gain, 0.0);
+	for (const std::string& line : AutoTune::Describe(f.env.game_file))
+		EXPECT_EQ(line.find("(-"), std::string::npos) << line;
+
+	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::EeGovernor, 1.0));
+	keep = Action(Kind::Keep, AutoTuneLever::EeGovernor, 1.0);
+	keep.gain = -0.004;
+	f.applier.Execute(keep);
+	EXPECT_NE(f.env.messages.back().find("game speed +0%"), std::string::npos) << f.env.messages.back();
+}
+
 TEST(AutoTuneApplier, KeepWithNoSettingsFileHoldsTheValueForTheSession)
 {
 	Fixture f;
