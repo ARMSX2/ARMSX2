@@ -15,11 +15,14 @@
 #include "common/HashCombine.h"
 #include "common/SmallString.h"
 
+#include <algorithm>
 #include <atomic>
 
 #include "fmt/format.h"
 
+#include <bit>
 #include <cinttypes>
+#include <cstring>
 #include <math.h>
 
 #ifdef __APPLE__
@@ -360,6 +363,222 @@ bool GSTextureCache::FullRectDirty(Target* target)
 	return FullRectDirty(target, GSUtil::GetChannelMask(target->m_TEX0.PSM));
 }
 
+static bool s_union_retire = true;
+static GSTextureCache::UnionRetireStats s_union_retire_stats;
+
+void GSTextureCache::SetUnionRetire(bool enable)
+{
+	s_union_retire = enable;
+}
+
+bool GSTextureCache::GetUnionRetire()
+{
+	return s_union_retire;
+}
+
+GSTextureCache::UnionRetireStats GSTextureCache::GetUnionRetireStats()
+{
+	return s_union_retire_stats;
+}
+
+void GSTextureCache::ResetUnionRetireStats()
+{
+	s_union_retire_stats = {};
+}
+
+bool GSTextureCache::DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 bw, u32 rgba_mask, const GSVector4i& area_v, GSVector2i* hole)
+{
+	// A list longer than this is not swept: the target stays, which is what it did before.
+	static constexpr size_t MAX_RECTS = 128;
+
+	// Plain integers throughout: the rectangles are compared with each other many times over.
+	struct IRect
+	{
+		int x, y, z, w;
+	};
+	const IRect area = {area_v.x, area_v.y, area_v.z, area_v.w};
+	if (area.z <= area.x || area.w <= area.y)
+		return false;
+
+	const u32 bw1 = std::max(bw, 1u);
+	const auto counts = [&](const GSDirtyRect& d) {
+		return d.psm == psm && std::max(d.bw, 1u) == bw1 && (d.rgba._u32 & rgba_mask) == rgba_mask;
+	};
+
+	// The pixel an earlier test found in no rectangle, if it is still in none: then the list does not cover the
+	// area and nothing else needs looking at. The pixel is checked against this list, so an old one is only
+	// ever a missed shortcut. Most changes to a list that is not about to cover its target leave it uncovered.
+	if (hole && hole->x >= area.x && hole->x < area.z && hole->y >= area.y && hole->y < area.w)
+	{
+		const int hx = hole->x, hy = hole->y;
+		bool hit = false;
+		for (const GSDirtyRect& d : list)
+		{
+			if (hx >= d.r.x && hx < d.r.z && hy >= d.r.y && hy < d.r.w && counts(d))
+			{
+				hit = true;
+				break;
+			}
+		}
+		if (!hit)
+			return false;
+	}
+
+	IRect rects[MAX_RECTS];
+	size_t n = 0;
+	s64 area_sum = 0;
+	// The area and every rectangle that counts have their edges on an 8 pixel grid (blocks are 8 pixels or a
+	// multiple of it), which is the usual case, and then a bitmap of 8x8 cells answers exactly and faster.
+	bool on_grid = ((area.x | area.y | area.z | area.w) & 7) == 0;
+	for (const GSDirtyRect& d : list)
+	{
+		if (!counts(d))
+			continue;
+
+		const IRect r = {std::max(d.r.x, area.x), std::max(d.r.y, area.y), std::min(d.r.z, area.z), std::min(d.r.w, area.w)};
+		if (r.z <= r.x || r.w <= r.y)
+			continue;
+		if (r.x == area.x && r.y == area.y && r.z == area.z && r.w == area.w)
+			return true;
+		if (n == MAX_RECTS)
+			return false;
+
+		rects[n++] = r;
+		area_sum += static_cast<s64>(r.z - r.x) * (r.w - r.y);
+		on_grid &= ((r.x | r.y | r.z | r.w) & 7) == 0;
+	}
+
+	// The union is no larger than the sum of the areas.
+	if (area_sum < static_cast<s64>(area.z - area.x) * (area.w - area.y))
+		return false;
+
+	s_union_retire_stats.sweeps++;
+
+	if (on_grid)
+	{
+		static constexpr size_t MAX_WORDS = 1024;
+		const int cells_x = (area.z - area.x) >> 3;
+		const int cells_y = (area.w - area.y) >> 3;
+		const size_t row_words = static_cast<size_t>(cells_x + 63) >> 6;
+		if (row_words * static_cast<size_t>(cells_y) <= MAX_WORDS)
+		{
+			u64 cells[MAX_WORDS];
+			std::memset(cells, 0, row_words * static_cast<size_t>(cells_y) * sizeof(u64));
+			for (size_t i = 0; i < n; i++)
+			{
+				const int x0 = (rects[i].x - area.x) >> 3, x1 = (rects[i].z - area.x) >> 3;
+				const int y0 = (rects[i].y - area.y) >> 3, y1 = (rects[i].w - area.y) >> 3;
+				const int w0 = x0 >> 6, w1 = (x1 - 1) >> 6;
+				if (w0 == w1)
+				{
+					// The cells x0..x1 of one word.
+					const int lo = x0 & 63, count = x1 - x0;
+					const u64 mask = (count == 64 ? ~u64(0) : ((u64(1) << count) - 1)) << lo;
+					for (int y = y0; y < y1; y++)
+						cells[static_cast<size_t>(y) * row_words + static_cast<size_t>(w0)] |= mask;
+				}
+				else
+				{
+					for (int y = y0; y < y1; y++)
+					{
+						u64* const row = &cells[static_cast<size_t>(y) * row_words];
+						for (int w = w0; w <= w1; w++)
+						{
+							const int lo = std::max(x0 - w * 64, 0);
+							const int hi = std::min(x1 - w * 64, 64);
+							row[w] |= (hi == 64 ? ~u64(0) : ((u64(1) << hi) - 1)) & ~((u64(1) << lo) - 1);
+						}
+					}
+				}
+			}
+
+			for (int y = 0; y < cells_y; y++)
+			{
+				const u64* const row = &cells[static_cast<size_t>(y) * row_words];
+				for (size_t w = 0; w < row_words; w++)
+				{
+					const int left = cells_x - static_cast<int>(w) * 64;
+					const u64 want = left >= 64 ? ~u64(0) : ((u64(1) << left) - 1);
+					const u64 missing = want & ~row[w];
+					if (missing != 0)
+					{
+						if (hole)
+						{
+							const int cx = static_cast<int>(w) * 64 + std::countr_zero(missing);
+							*hole = GSVector2i(area.x + cx * 8, area.y + y * 8);
+						}
+						return false;
+					}
+				}
+			}
+			return true;
+		}
+	}
+
+	// Sweep across the distinct left and right edges. Inside one strip between two neighbouring edges a
+	// rectangle either spans the whole strip or misses it, so the strip is covered when the rectangles
+	// that span it, taken from the top down, leave no gap between area.y and area.w.
+	std::sort(rects, rects + n, [](const IRect& a, const IRect& b) { return a.y < b.y; });
+
+	int xs[2 * MAX_RECTS + 2];
+	size_t m = 0;
+	xs[m++] = area.x;
+	xs[m++] = area.z;
+	for (size_t i = 0; i < n; i++)
+	{
+		xs[m++] = rects[i].x;
+		xs[m++] = rects[i].z;
+	}
+	std::sort(xs, xs + m);
+	m = static_cast<size_t>(std::unique(xs, xs + m) - xs);
+
+	for (size_t i = 0; i + 1 < m; i++)
+	{
+		const int x0 = xs[i];
+		const int x1 = xs[i + 1];
+		int reach = area.y;
+		for (size_t k = 0; k < n && reach < area.w; k++)
+		{
+			const IRect& r = rects[k];
+			if (r.x > x0 || r.z < x1)
+				continue;
+			if (r.y > reach)
+			{
+				// The pixel at (x0, reach) is in no rectangle: the ones that span this strip and start no
+				// higher than reach all end at or above it, and the rest start below it.
+				if (hole)
+					*hole = GSVector2i(x0, reach);
+				return false;
+			}
+			reach = std::max(reach, r.w);
+		}
+		if (reach < area.w)
+		{
+			if (hole)
+				*hole = GSVector2i(x0, reach);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+bool GSTextureCache::FullRectDirtyByUnion(Target* target)
+{
+	// One rectangle is FullRectDirty's case. An unchanged list was tested when it last changed.
+	if (!s_union_retire || target->m_dirty.size() < 2 || target->m_dirty_adds == target->m_dirty_cover_checked)
+		return false;
+
+	target->m_dirty_cover_checked = target->m_dirty_adds;
+	s_union_retire_stats.tests++;
+
+	if (!DirtyRectsCover(target->m_dirty, target->m_TEX0.PSM, target->m_TEX0.TBW, GSUtil::GetChannelMask(target->m_TEX0.PSM), target->m_valid, &target->m_dirty_hole))
+		return false;
+
+	s_union_retire_stats.retired++;
+	return true;
+}
+
 void GSTextureCache::AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear)
 {
 	bool skipdirty = false;
@@ -402,6 +621,7 @@ void GSTextureCache::AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm
 	{
 		GL_INS("TC: Dirty rect added for BP %x rect %d,%d->%d->%d", target->m_TEX0.TBP0, rect.x, rect.y, rect.z, rect.w);
 		target->m_dirty.push_back(GSDirtyRect(rect, psm, bw, rgba, req_linear));
+		target->m_dirty_adds++;
 
 		if (!target->m_drawn_since_read.rempty())
 		{
@@ -5371,7 +5591,7 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 						else
 							AddDirtyRectTarget(t, r, psm, bw, rgba);
 
-						if (FullRectDirty(t))
+						if (FullRectDirty(t) || FullRectDirtyByUnion(t))
 						{
 							InvalidateSourcesFromTarget(t);
 							i = list.erase(j);
@@ -5389,7 +5609,7 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 					// Try the hard way for partial invalidation.
 					DirtyRectByPage(bp, psm, bw, t, r);
 
-					if (FullRectDirty(t, rgba._u32))
+					if (FullRectDirty(t, rgba._u32) || FullRectDirtyByUnion(t))
 					{
 						InvalidateSourcesFromTarget(t);
 						i = list.erase(j);

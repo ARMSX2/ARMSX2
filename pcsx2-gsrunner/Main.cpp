@@ -142,6 +142,7 @@ namespace GSRunner
 	static void DumpStats();
 	static bool ReportHashMemoVerify();
 	static bool ReportBlockHashVerify();
+	static void ReportUnionRetire();
 
 	static bool CreatePlatformWindow();
 	static void DestroyPlatformWindow();
@@ -1273,6 +1274,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "with the cached hash, is keyed again without the cache, and the two keys must agree on which "
 						 "windows are one. Prints one BLOCK-HASH-VERIFY line at exit and exits non-zero on a stale block "
 						 "hash or a disagreement. Slow: the memo of texture hashes is not used.\n");
+	std::fprintf(stderr, "  -union-retire on|off: Retire a render target or depth target when its dirty rectangles together "
+						 "cover its valid area (on, the default), or only when one rectangle does (off). Pixels are the "
+						 "same either way; off is the same-binary control of an A/B.\n");
 	std::fprintf(stderr, "  -block-hash-cache on|off: Key paletted windows through the per-block hash cache (on, the default) "
 						 "or by one hash of their raw blocks with no cache (off). Pixels and hash cache hits are the same "
 						 "either way; off is for checking a suspect title without a rebuild.\n");
@@ -1800,6 +1804,20 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 				s_verify_block_hash = true;
 				GSTextureCache::SetBlockHashVerify(true);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-union-retire"))
+			{
+				const char* const value = argv[++i];
+				if (!std::strcmp(value, "off"))
+					GSTextureCache::SetUnionRetire(false);
+				else if (!std::strcmp(value, "on"))
+					GSTextureCache::SetUnionRetire(true);
+				else
+				{
+					ArgError("-union-retire: expected on or off, got '{}'.", value);
+					return false;
+				}
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-block-hash-cache"))
@@ -2554,6 +2572,12 @@ static void WriteStatsJson(const std::string& path)
 	std::fprintf(fp.get(), "    \"native_texel_grid_draws\": %" PRIu64 ",\n", s_total_native_texel_grid_draws);
 	std::fprintf(fp.get(), "    \"sprite_edge_clamp_draws\": %" PRIu64 ",\n", s_total_sprite_edge_clamp_draws);
 	std::fprintf(fp.get(), "    \"sw_palette_block_copies\": %" PRIu64 ",\n", s_total_sw_palette_block_copies);
+	{
+		// Render and depth targets retired because their dirty rectangles together cover them.
+		const GSTextureCache::UnionRetireStats ur = GSTextureCache::GetUnionRetireStats();
+		std::fprintf(fp.get(), "    \"union_retire\": {\"on\": %s, \"tests\": %" PRIu64 ", \"sweeps\": %" PRIu64 ", \"retired\": %" PRIu64 "},\n",
+			GSTextureCache::GetUnionRetire() ? "true" : "false", ur.tests, ur.sweeps, ur.retired);
+	}
 	std::fprintf(fp.get(), "    \"gpu_blocking_waits\": %s,\n", j_u64(s_total_gpu_blocking_waits).c_str());
 	std::fprintf(fp.get(), "    \"gs_cpu_ms\": %.3f,\n    \"gs_cpu_us_per_draw\": %.3f,\n    \"gs_cpu_us_per_draw_call\": %.3f,\n",
 		gs_cpu_ms_total, gs_cpu_us_per_draw, gs_cpu_us_per_draw_call);
@@ -2662,6 +2686,16 @@ bool GSRunner::ReportHashMemoVerify()
 	Console.WriteLn(line);
 	std::fprintf(stderr, "%s\n", line.c_str());
 	return report.mismatches == 0 && report.missed_writers == 0;
+}
+
+// The union-retire counters of the run: one UNION-RETIRE line.
+void GSRunner::ReportUnionRetire()
+{
+	const GSTextureCache::UnionRetireStats ur = GSTextureCache::GetUnionRetireStats();
+	const std::string line = fmt::format("UNION-RETIRE on={} tests={} sweeps={} retired={}", GSTextureCache::GetUnionRetire() ? 1 : 0,
+		ur.tests, ur.sweeps, ur.retired);
+	Console.WriteLn(line);
+	std::fprintf(stderr, "%s\n", line.c_str());
 }
 
 // Prints what -verify-block-hash found. False if a cached block hash was stale, which is a store into local
@@ -3045,6 +3079,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			GSRunner::DumpStats();
 			const bool memo_verify_ok = GSRunner::ReportHashMemoVerify();
 			const bool block_hash_verify_ok = GSRunner::ReportBlockHashVerify();
+			GSRunner::ReportUnionRetire();
 			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
