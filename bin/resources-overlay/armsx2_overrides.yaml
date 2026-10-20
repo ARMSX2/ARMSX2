@@ -1307,6 +1307,8 @@ SLES-50672:
 # MQ65 87.34 -> 86.47; Sly 3 SD865 16.72 -> 12.78, RG 476H 25.74 -> 25.42, RG 477V 14.94 -> 12.15,
 # MQ65 67.97 -> 59.73; Ratchet & Clank: Up Your Arsenal SD865 10.02 -> 9.29, RG 476H 16.41 ->
 # 14.56, RG 477V 9.91 -> 9.72, MQ65 40.85 -> 34.96. No cell is slower with the split on.
+# The hint is withheld when the IOP thread is on (VMManager::Internal::CanSplitGS asks for a fifth performance core): with it on, the split was slower
+# than one GS thread on the SD865 and RG 476H in Spider-Man 3 (+4 to +5 percent), and Sly 3 gained only 1 to 4 percent.
 # At 2x on the SD865 Spider-Man 3 is GPU-limited (34.8 ms either way) and Sly 3 gains 7.5 percent.
 # Verified: draw-storm x1-placement build, armsx2-turnip axfl2-002 on the SD865, malisx2 0.1.5 on
 # the RG 476H and RG 477V. Serials: every retail release of each title that the database lists;

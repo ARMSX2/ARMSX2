@@ -5003,8 +5003,14 @@ bool VMManager::Internal::CanSplitGS()
 {
 #if defined(__linux__)
 	EnsureCPUInfoInitialized();
+	// EE, VU1, GS front and GS back, plus the IOP thread when it is asked for: that one is busy 40 to 99% of a core, and a
+	// split beside it needs a fifth performance core. Measured live with the IOP thread on, on four big cores (SD865, RG 476H),
+	// the split is 0.6 to 14% slower than one GS thread in Spider-Man 3, God of War II and Katamari, even with the prime core
+	// rule (Spider-Man 3 +4% and +5%, God of War II +8% and +12%, Katamari +1% and +14% on the RG 476H and the SD865); Sly 3
+	// still gains 1 to 4%. Not measured with the IOP thread on: Ratchet & Clank, or any host with five or more performance cores.
+	const u32 needed = 4 + (EmuConfig.Speedhacks.iopThread ? 1 : 0);
 	const u32 tier = GetPerformanceCoreCount();
-	return tier >= 4 && tier < cpuinfo_get_processors_count();
+	return tier >= needed && tier < cpuinfo_get_processors_count();
 #else
 	return false;
 #endif

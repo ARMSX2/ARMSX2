@@ -344,6 +344,22 @@ TEST(SettingsPrecedenceApply, TheDatabaseTurnsTheBackThreadOnOnlyWhereTheHostCan
 	EXPECT_EQ(gs.BackThread, VMManager::Internal::CanSplitGS()) << "on exactly when this host can run the split";
 }
 
+TEST(SettingsPrecedenceApply, TheIopThreadAsksForAFifthPerformanceCoreBeforeTheDatabaseSplitsTheGs)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::BackThread, 1);
+
+	const bool old_iop = EmuConfig.Speedhacks.iopThread;
+	EmuConfig.Speedhacks.iopThread = true;
+	Pcsx2Config::GSOptions gs;
+	gs.BackThread = false;
+	entry.applyGSHardwareFixes(gs, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+	EmuConfig.Speedhacks.iopThread = old_iop;
+	// Four performance cores (the handhelds) are not enough with the IOP thread on; a host with five or more may split.
+	if (VMManager::Internal::GetPerformanceCoreCount() < 5)
+		EXPECT_FALSE(gs.BackThread);
+}
+
 TEST(SettingsPrecedenceApply, APlayersBackThreadSettingForTheGameKeepsTheDatabaseOut)
 {
 	GameDatabaseSchema::GameEntry entry;
