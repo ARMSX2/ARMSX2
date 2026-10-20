@@ -5,6 +5,7 @@
 
 #include "GSTextureCache.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
+#include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSRenderer.h"
@@ -390,6 +391,12 @@ private:
 	// takes Stencil DATE and reuses the copy.
 	GSTexture* m_date_chain_rt = nullptr;
 	u8 m_date_chain_datm = 0;
+
+	// Blend carry-over (GSBlendCarry.h): the last blended draw of the donor class, and whether the draw in
+	// hand had its blend elided as the identity (set at the blend gate in DrawPrims).
+	GSBlendCarry::Donor m_blend_carry;
+	bool m_blend_identity = false;
+	void CarryBlendBeforeSubmit(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
 	bool m_date_draw_shares_copy = false; ///< This draw's DATE keeps a shared copy true (set by EmulateDATESelectMethod).
 
 	GIFRegFRAME m_split_clear_start = {};

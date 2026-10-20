@@ -106,6 +106,7 @@ void GSRendererHW::Reset(bool hardware_reset)
 	if (!hardware_reset)
 		g_texture_cache->ReadbackAll();
 
+	m_blend_carry.valid = false;
 	g_texture_cache->RemoveAll(true, true, true);
 	g_texture_cache->NoteColdStart();
 	GSHwHack::ResetState();
@@ -129,6 +130,8 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	m_blend_carry.valid = false;
+
 	if (GSTextureCache::IsHashMemoVerify()) [[unlikely]]
 		g_texture_cache->VerifyWriteStamps(m_mem);
 
@@ -3470,6 +3473,7 @@ void GSRendererHW::Draw()
 
 				m_last_rt->UpdateValidity(valid_area);
 
+				m_blend_carry.valid = false; // submitted outside the chain
 				g_gs_device->RenderHW(m_conf);
 
 				if (GSConfig.DumpGSData)
@@ -11100,6 +11104,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	// AA1: Set alpha source to coverage 128 when AA1 is not supported.
 	m_conf.ps.fixed_one_a = IsCoverageAlphaFixedOne();
 
+	m_blend_identity = false;
 	if ((!IsOpaque() || m_context->ALPHA.IsBlack()) && rt && ((m_conf.colormask.wrgba & 0x7) || (m_texture_shuffle && !m_texture_shuffle.real_16_bit_source && !m_texture_shuffle.SameGroupShuffle())))
 	{
 		EmulateBlending(blend_alpha_min, blend_alpha_max, date_options, rt, can_scale_rt_alpha, new_scale_rt_alpha);
@@ -11107,6 +11112,11 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	else
 	{
 		m_conf.blend = {}; // No blending please
+
+		// The identity form (Cs - Cd) * As + Cd with a constant As of 1.0: A = Cs, B = D = Cd, C = As. IsOpaque() is
+		// then true through the alpha range clause (A == B is false, D is not 0), so the range is 128 at both ends.
+		m_blend_identity = rt && (m_conf.colormask.wrgba & 0x7) && PRIM->ABE && !m_context->ALPHA.IsBlack() &&
+		                   m_context->ALPHA.A == 0 && m_context->ALPHA.B == 1 && m_context->ALPHA.C == 0 && m_context->ALPHA.D == 1;
 
 		if (can_scale_rt_alpha && !new_scale_rt_alpha && m_conf.colormask.wa)
 		{
@@ -11329,6 +11339,9 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 			m_date_chain_rt = nullptr;
 		}
 	}
+
+	// Before the road and the draw log, which read the pixel shader selector this may change.
+	CarryBlendBeforeSubmit(rt, ds);
 
 	m_conf.road = DecideDrawRoad(m_conf, g_gs_device->Features());
 
@@ -12832,6 +12845,48 @@ GSHWDrawConfig& GSRendererHW::BeginHLEHardwareDraw(
 	return config;
 }
 
+// A draw whose blend was elided as the identity takes the blend of the blended draw submitted just before it
+// (GSBlendCarry.h), so the backend binds one pipeline for the run instead of two around it. What the elided and
+// the blended form write is the same pixels, so this changes which pipeline draws them and nothing it draws.
+//
+// The donor is a blended draw of the same ALPHA register with a plain shape, remembered with the render target and
+// depth target it drew to. Any draw that is not the donor class or does not match it ends the chain. The targets
+// are compared only to find draws that share a render pass: everything of a target that reaches the output (its
+// format, alpha scaling and colour clamp) is in the pixel shader selector, which is compared whole outside the blend
+// bits, so a target that reuses the address of a freed one cannot make an inexact match. The donor is cleared at
+// Reset and VSync anyway, and wherever a draw is submitted by a path that does not come through here.
+void GSRendererHW::CarryBlendBeforeSubmit(GSTextureCache::Target* rt, GSTextureCache::Target* ds)
+{
+	GSBlendCarry::Donor& d = m_blend_carry;
+
+	// The draw is held for the channel shuffle and submitted later (see Draw()), out of the chain.
+	if (m_channel_shuffle_width)
+	{
+		d.valid = false;
+		return;
+	}
+
+	const u32 abcd = GSBlendCarry::PackAlpha(m_context->ALPHA.A, m_context->ALPHA.B, m_context->ALPHA.C, m_context->ALPHA.D);
+
+	if (m_blend_identity)
+	{
+		if (!GSBlendCarry::IsElidedIdentity(m_conf) || !GSBlendCarry::Matches(d, m_conf, rt, ds, abcd))
+		{
+			d.valid = false;
+			return;
+		}
+
+		GSBlendCarry::Adopt(d, m_conf);
+		return;
+	}
+
+	// A blended draw of the donor class becomes the donor; anything else ends the chain.
+	if (GSBlendCarry::IsDonorClass(m_conf, abcd))
+		d = GSBlendCarry::MakeDonor(m_conf, rt, ds, abcd);
+	else
+		d.valid = false;
+}
+
 void GSRendererHW::EndHLEHardwareDraw(bool force_copy_on_hazard /* = false */)
 {
 	GSHWDrawConfig& config = m_conf;
@@ -12879,6 +12934,7 @@ void GSRendererHW::EndHLEHardwareDraw(bool force_copy_on_hazard /* = false */)
 	                      (!GSDevice::IsDualSourceBlendFactor(config.blend.src_factor) &&
 	                       !GSDevice::IsDualSourceBlendFactor(config.blend.dst_factor));
 
+	m_blend_carry.valid = false; // submitted outside the chain
 	config.road = DecideDrawRoad(config, g_gs_device->Features());
 	g_gs_device->RenderHW(m_conf);
 

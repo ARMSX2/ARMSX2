@@ -685,6 +685,7 @@ set(pcsx2GSHeaders
 	GS/GSVector.h
 	GS/GSXXH.h
 	GS/MultiISA.h
+	GS/Renderers/Common/GSBlendCarry.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
 	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
