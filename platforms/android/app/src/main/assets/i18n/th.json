@@ -1077,6 +1077,8 @@
  "pad.stickTarget.ps2Buttons": "ปุ่ม PS2",
  "pad.testRumble.player1": "ทดสอบการสั่น: Player 1",
  "pad.testRumble.player2": "ทดสอบการสั่น: Player 2",
+ "pad.tightShoulders.description": "L1, L2, R1 และ R2 จะตอบสนองเฉพาะเมื่อแตะที่ตัวปุ่มเท่านั้น ไม่ใช่พื้นที่รอบ ๆ ปุ่ม จึงกินพื้นที่หน้าจอน้อยลง",
+ "pad.tightShoulders.label": "พื้นที่สัมผัส L1/L2/R1/R2 พอดีปุ่ม",
  "pad.touchHaptics.description": "สั่นสั้นๆ เมื่อกดปุ่มบนหน้าจอ (เหมือน PPSSPP / Azahar) แยกจากการสั่นคอนโทรลเลอร์",
  "pad.touchHaptics.label": "Touch Haptics",
  "pad.touchPlayer.description": "กำหนดว่าตัวควบคุมบนหน้าจอเป็นผู้เล่นคนไหน ตั้งเป็น Player 2 เพื่อให้คนหนึ่งเล่นด้วยคอนโทรลเลอร์ และอีกคนเล่นบนหน้าจอสัมผัส รีสตาร์ตเกมเพื่อให้มีผล",

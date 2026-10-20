@@ -68,6 +68,7 @@ object TouchControls {
     private const val KEY_GESTURE_DTAP = "touch.gesture.doubleTap"
     private const val KEY_GESTURE_DTAP_HOLD = "touch.gesture.doubleTapHold"
     private const val KEY_MULTI_RADIUS = "touch.multiRadius"
+    private const val KEY_TIGHT_SHOULDERS = "touch.tightShoulders"
     private const val KEY_DPAD_SPACING = "touch.dpadSpacing"
     private const val KEY_FLOATING_STICK = "touch.floatingStick"
     private const val KEY_FULL_HALF_STICKS = "touch.fullHalfSticks"
@@ -224,6 +225,11 @@ object TouchControls {
     // buttons register a press from further out, so multitouch/rolling works with more
     // space between them. Persisted under KEY_MULTI_RADIUS. Default 0.62.
     val multiTouchRadius = mutableFloatStateOf(0.62f)
+
+    // L1/L2/R1/R2 answer only on their artwork, not the square of their size and the multi-touch
+    // circle around it, which reach well above and below the wide shoulder sprites. Persisted
+    // under KEY_TIGHT_SHOULDERS. Default off.
+    val tightShoulders = mutableStateOf(false)
 
     // ---- Gesture control (PPSSPP-style, #SNAKEATER) --------------------------
     // Swipes and a double-tap on EMPTY screen area (never on a button — the gesture layer
@@ -880,6 +886,7 @@ object TouchControls {
                else GlideMode.FOLLOW
         touchHaptics.value = MainActivityRuntime.prefs.getBoolean(KEY_TOUCH_HAPTICS, true)
         multiTouchRadius.floatValue = MainActivityRuntime.prefs.getFloat(KEY_MULTI_RADIUS, 0.62f).coerceIn(0.50f, 0.95f)
+        tightShoulders.value = MainActivityRuntime.prefs.getBoolean(KEY_TIGHT_SHOULDERS, false)
         dpadSpacing.floatValue = MainActivityRuntime.prefs.getFloat(KEY_DPAD_SPACING, 0.0f).coerceIn(0.0f, 0.35f)
         floatingStick.value = MainActivityRuntime.prefs.getBoolean(KEY_FLOATING_STICK, false)
         fullHalfSticks.value = MainActivityRuntime.prefs.getBoolean(KEY_FULL_HALF_STICKS, false)
@@ -986,6 +993,7 @@ object TouchControls {
                 .putBoolean(KEY_TOUCH_GLIDING, glideMode.value == GlideMode.HOLD_ALL)
                 .putBoolean(KEY_TOUCH_HAPTICS, touchHaptics.value)
                 .putFloat(KEY_MULTI_RADIUS, multiTouchRadius.floatValue)
+                .putBoolean(KEY_TIGHT_SHOULDERS, tightShoulders.value)
                 .putFloat(KEY_DPAD_SPACING, dpadSpacing.floatValue)
                 .putBoolean(KEY_FLOATING_STICK, floatingStick.value)
                 .putBoolean(KEY_FULL_HALF_STICKS, fullHalfSticks.value)
@@ -1403,6 +1411,11 @@ object TouchControls {
 
     fun setMultiTouchRadius(v: Float) {
         multiTouchRadius.floatValue = v.coerceIn(0.50f, 0.95f)
+        persist()
+    }
+
+    fun setTightShoulders(enabled: Boolean) {
+        tightShoulders.value = enabled
         persist()
     }
 

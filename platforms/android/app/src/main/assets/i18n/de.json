@@ -980,6 +980,8 @@
  "pad.stickTarget.ps2Buttons": "PS2-Tasten",
  "pad.testRumble.player1": "Vibrationstest für Spieler 1",
  "pad.testRumble.player2": "Vibrationstest für Spieler 2",
+ "pad.tightShoulders.description": "L1, L2, R1 und R2 reagieren nur auf Berührungen der Taste selbst, nicht auf den Bereich darum, und nehmen so weniger Platz auf dem Bildschirm ein.",
+ "pad.tightShoulders.label": "Enge Touch-Fläche für L1/L2/R1/R2",
  "pad.touchHaptics.description": "Kurz vibrieren beim Drücken einer Bildschirmtaste (wie PPSSPP / Azahar). Unabhängig vom Controller-Rumble.",
  "pad.touchHaptics.label": "Touch-Haptik",
  "pad.touchPlayer.description": "Legt fest, als welcher Spieler die Bildschirmsteuerung spielt. Mit Spieler 2 kann eine Person am Controller und eine andere auf dem Touchscreen spielen. Zum Übernehmen Spiel neu starten.",

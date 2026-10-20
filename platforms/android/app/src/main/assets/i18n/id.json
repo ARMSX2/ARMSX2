@@ -1077,6 +1077,8 @@
   "pad.stickTarget.ps2Buttons": "Tombol PS2",
   "pad.testRumble.player1": "Tes getar: Pemain 1",
   "pad.testRumble.player2": "Tes getar: Pemain 2",
+  "pad.tightShoulders.description": "L1, L2, R1, dan R2 hanya merespons sentuhan pada tombol itu sendiri, bukan ruang di sekitarnya, sehingga tidak banyak memakan layar.",
+  "pad.tightShoulders.label": "Area sentuh L1/L2/R1/R2 yang pas",
   "pad.touchHaptics.description": "Bergetar sebentar saat Anda menekan tombol di layar (seperti PPSSPP / Azahar). Terpisah dari getar controller.",
   "pad.touchHaptics.label": "Haptik Sentuh",
   "pad.touchPlayer.description": "Menentukan pemain mana yang dikendalikan kontrol di layar. Pemain 2 memungkinkan satu orang bermain dengan controller dan orang lain di layar sentuh. Mulai ulang game untuk menerapkan.",

@@ -1077,6 +1077,8 @@
   "pad.stickTarget.ps2Buttons": "Nút PS2",
   "pad.testRumble.player1": "Thử rung: Người chơi 1",
   "pad.testRumble.player2": "Thử rung: Người chơi 2",
+  "pad.tightShoulders.description": "L1, L2, R1 và R2 chỉ phản hồi khi chạm vào chính nút, không phải khoảng trống xung quanh, nên chiếm ít chỗ trên màn hình hơn.",
+  "pad.tightShoulders.label": "Vùng chạm vừa khít cho L1/L2/R1/R2",
   "pad.touchHaptics.description": "Rung nhẹ khi bạn nhấn một nút trên màn hình (giống PPSSPP / Azahar). Tách biệt với rung tay cầm.",
   "pad.touchHaptics.label": "Phản hồi rung cảm ứng",
   "pad.touchPlayer.description": "Chọn người chơi cho điều khiển trên màn hình. Người chơi 2 cho phép một người chơi bằng tay cầm và một người khác chơi trên màn hình cảm ứng. Khởi động lại game để áp dụng.",

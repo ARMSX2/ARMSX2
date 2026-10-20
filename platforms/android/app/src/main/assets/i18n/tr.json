@@ -1077,6 +1077,8 @@
  "pad.stickTarget.ps2Buttons": "PS2 Düğmeleri",
  "pad.testRumble.player1": "Titreşimi test et: 1. Oyuncu",
  "pad.testRumble.player2": "Titreşimi test et: 2. Oyuncu",
+ "pad.tightShoulders.description": "L1, L2, R1 ve R2 yalnızca düğmenin kendisine dokunulduğunda tepki verir, etrafındaki boşluğa değil; böylece ekranda daha az yer kaplar.",
+ "pad.tightShoulders.label": "L1/L2/R1/R2 için dar dokunma alanı",
  "pad.touchHaptics.description": "Ekran üstü bir düğmeye bastığınızda kısaca titreşir (PPSSPP / Azahar gibi). Kumanda titreşiminden ayrıdır.",
  "pad.touchHaptics.label": "Dokunmatik Titreşim",
  "pad.touchPlayer.description": "Ekran üstü kontrollerin hangi oyuncu olduğunu belirler. 2. Oyuncu, bir kişinin kumandayla, diğerinin dokunmatik ekranla oynamasını sağlar. Uygulamak için oyunu yeniden başlatın.",

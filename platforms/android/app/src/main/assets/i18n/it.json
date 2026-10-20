@@ -1072,6 +1072,8 @@
  "pad.stickTarget.ps2Buttons": "Pulsanti PS2",
  "pad.testRumble.player1": "Prova rumble (Giocatore 1)",
  "pad.testRumble.player2": "Prova rumble (Giocatore 2)",
+ "pad.tightShoulders.description": "L1, L2, R1 e R2 rispondono solo ai tocchi sul pulsante stesso, non sullo spazio intorno, così occupano meno schermo.",
+ "pad.tightShoulders.label": "Area di tocco ridotta per L1/L2/R1/R2",
  "pad.touchHaptics.description": "Vibra brevemente quando premi un pulsante su schermo (come PPSSPP / Azahar). Separato dal rumble del controller.",
  "pad.touchHaptics.label": "Aptica touch",
  "pad.touchPlayer.description": "Sceglie a quale giocatore corrispondono i controlli su schermo. Giocatore 2 permette a una persona di giocare con un controller e a un'altra sul touchscreen. Riavvia il gioco per applicare.",

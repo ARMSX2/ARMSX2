@@ -1079,6 +1079,8 @@
  "pad.stickTarget.ps2Buttons": "PS2 按键",
  "pad.testRumble.player1": "测试震动：玩家 1",
  "pad.testRumble.player2": "测试震动：玩家 2",
+ "pad.tightShoulders.description": "L1、L2、R1 和 R2 只在触碰按键本身时响应，按键周围的空白处不再响应，占用的屏幕空间更少。",
+ "pad.tightShoulders.label": "L1/L2/R1/R2 触控范围贴合按键",
  "pad.touchHaptics.description": "按下屏幕按键时短暂振动（类似 PPSSPP / Azahar）。与手柄震动独立。",
  "pad.touchHaptics.label": "触控触觉",
  "pad.touchPlayer.description": "选择屏幕控件对应哪位玩家。设为玩家 2 可让一人用手柄、另一人用触摸屏游玩。重启游戏生效。",

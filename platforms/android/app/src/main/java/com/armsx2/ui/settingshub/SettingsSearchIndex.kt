@@ -178,6 +178,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("pad.touchHaptics.label", true, SettingsCategory.Controls, listOf("pad.section.onScreenControls")),
     SettingsSearchEntry("pad.onScreenControls.label", true, SettingsCategory.Controls, listOf("pad.section.onScreenControls")),
     SettingsSearchEntry("touch.editor.multiTouchOn", true, SettingsCategory.Controls, listOf("pad.section.onScreenControls")),
+    SettingsSearchEntry("pad.tightShoulders.label", true, SettingsCategory.Controls, listOf("pad.section.onScreenControls")),
     SettingsSearchEntry("pad.stickFeel.deadzone.label", true, SettingsCategory.Controls, listOf("pad.leftStickFeel.title", "pad.rightStickFeel.title")),
     SettingsSearchEntry("pad.stickFeel.outerDeadzone.label", true, SettingsCategory.Controls, listOf("pad.leftStickFeel.title", "pad.rightStickFeel.title")),
     SettingsSearchEntry("pad.stickFeel.antiDeadzone.label", true, SettingsCategory.Controls, listOf("pad.leftStickFeel.title", "pad.rightStickFeel.title")),

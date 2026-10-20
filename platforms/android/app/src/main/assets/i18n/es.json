@@ -1072,6 +1072,8 @@
  "pad.stickTarget.ps2Buttons": "Botones PS2",
  "pad.testRumble.player1": "Probar vibración (Jugador 1)",
  "pad.testRumble.player2": "Probar vibración (Jugador 2)",
+ "pad.tightShoulders.description": "L1, L2, R1 y R2 solo responden a toques sobre el propio botón, no en el espacio que lo rodea, así ocupan menos pantalla.",
+ "pad.tightShoulders.label": "Área táctil ajustada en L1/L2/R1/R2",
  "pad.touchHaptics.description": "Vibra brevemente al pulsar un botón en pantalla (como PPSSPP / Azahar). Independiente de la vibración del mando.",
  "pad.touchHaptics.label": "Háptica táctil",
  "pad.touchPlayer.description": "Elige a qué jugador corresponden los controles en pantalla. Jugador 2 permite que una persona juegue con un mando y otra en la pantalla táctil. Reinicia el juego para aplicar.",

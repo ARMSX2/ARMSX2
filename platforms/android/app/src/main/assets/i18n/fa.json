@@ -1111,6 +1111,8 @@
  "pad.stickTarget.ps2Buttons": "دکمه های PS2",
  "pad.testRumble.player1": "تست رامبل: بازیکن 1",
  "pad.testRumble.player2": "تست رامبل: بازیکن 2",
+ "pad.tightShoulders.description": "L1، L2، R1 و R2 فقط به لمس روی خود دکمه پاسخ می‌دهند، نه فضای اطراف آن، بنابراین جای کمتری از صفحه را می‌گیرند.",
+ "pad.tightShoulders.label": "ناحیه لمسی فشرده برای L1/L2/R1/R2",
  "pad.touchHaptics.description": "هنگامی که یک دکمه روی صفحه را فشار می دهید (مانند PPSSPP / Azahar) مختصری لرزش داشته باشید. جدا از سروصدای کنترلر.",
  "pad.touchHaptics.label": "Haptics را لمس کنید",
  "pad.touchPlayer.description": "تعیین می‌کند کنترل‌های روی صفحه برای کدام بازیکن باشند. «بازیکن 2» به یک نفر اجازه می‌دهد با کنترلر بازی کند و نفر دیگر با صفحه لمسی. برای اعمال، بازی را مجدداً راه‌اندازی کنید.",

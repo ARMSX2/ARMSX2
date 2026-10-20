@@ -223,6 +223,7 @@ fun TouchControlsOverlay() {
             OverlayDims.last = OverlayDims.Dims(widthPx, heightPx, density.density)
         }
         val layout = TouchControls.activeLayout.value
+        val tight = tightShoulderFactors()
         // Buttons the single UnifiedTouchLayer currently holds down (face + shoulder +
         // menu digital buttons). The covered widgets read this to paint their pressed
         // visual — they're render-only when multi-touch is on (inputEnabled=false).
@@ -387,9 +388,10 @@ fun TouchControlsOverlay() {
                     val s = with(density) { cfg.sizeDp.dp.toPx() }
                     val cx = widthPx * cfg.xFrac
                     val cy = heightPx * cfg.yFrac
-                    Rect(cx - s / 2f, cy - s / 2f, cx + s / 2f, cy + s / 2f)
+                    val halfH = s * (tight[cfg.id] ?: 1f) / 2f
+                    Rect(cx - s / 2f, cy - halfH, cx + s / 2f, cy + halfH)
                 },
-                circles = multi.map { cfg ->
+                circles = multi.filter { it.id !in tight }.map { cfg ->
                     val s = with(density) { cfg.sizeDp.dp.toPx() }
                     Offset(widthPx * cfg.xFrac, heightPx * cfg.yFrac) to s * radius
                 },
@@ -437,12 +439,13 @@ fun TouchControlsOverlay() {
             val yFrac = if (snapping) snapFracToGrid(cfg.yFrac, heightPx, gridPx) else cfg.yFrac
             val cx = w * xFrac
             val cy = h * yFrac
+            val boxH = size * (tight[cfg.id] ?: 1f)
             val left = cx - size / 2
-            val top = cy - size / 2
+            val top = cy - boxH / 2
             Box(
                 modifier = Modifier
                     .offset(x = left, y = top)
-                    .size(size)
+                    .size(width = size, height = boxH)
                     .alpha(if (edit && !cfg.enabled) 0.4f else 1f),
             ) {
                 when (cfg.id.kind) {
@@ -590,6 +593,7 @@ fun RemotePlayTouchControls() {
         }
         val full = TouchControls.activeLayout.value
         val layout = remember(full) { TouchLayout(full.buttons.filter { isRemotePlayKind(it.id.kind) }) }
+        val tight = tightShoulderFactors()
         var unifiedPressed by remember { mutableStateOf<Set<TouchButtonId>>(emptySet()) }
         var unifiedDpad by remember { mutableStateOf(DpadState()) }
         val faceMulti = TouchControls.faceMultiTouch.value
@@ -620,10 +624,11 @@ fun RemotePlayTouchControls() {
                 !(cfg.id == TouchButtonId.L_STICK && TouchControls.fullHalfKeepLeftStick.value)) continue
             if (!extraShown(cfg, gunAttached = false)) continue
             val size = cfg.sizeDp.dp
+            val boxH = size * (tight[cfg.id] ?: 1f)
             Box(
                 modifier = Modifier
-                    .offset(x = w * cfg.xFrac - size / 2, y = h * cfg.yFrac - size / 2)
-                    .size(size),
+                    .offset(x = w * cfg.xFrac - size / 2, y = h * cfg.yFrac - boxH / 2)
+                    .size(width = size, height = boxH),
             ) {
                 when (cfg.id.kind) {
                     TouchButtonId.Kind.DPAD -> DpadWidget(
@@ -724,6 +729,37 @@ private fun skinPainter(key: String?): Painter? {
     val ctx = LocalContext.current
     val bmp = remember(active, key) { ControllerSkinStore.bitmapForKey(ctx, key) } ?: return null
     return remember(bmp) { BitmapPainter(bmp) }
+}
+
+/** Height over width of a shoulder button's art on screen: the skin's image or the bundled sprite.
+ *  At most 1: art taller than it is wide fills the square anyway. */
+@Composable
+private fun shoulderArtAspect(id: TouchButtonId): Float {
+    val art = (skinPainter(skinKeyFor(id)) ?: painterResource(drawableFor(id, false))).intrinsicSize
+    return if (art.width.isFinite() && art.height.isFinite() && art.width > 0f && art.height > 0f)
+        (art.height / art.width).coerceIn(0.2f, 1f) else 1f
+}
+
+private val SHOULDER_IDS = listOf(TouchButtonId.L1, TouchButtonId.R1, TouchButtonId.L2, TouchButtonId.R2)
+
+/**
+ * Height factor of each shoulder button's box while Tight shoulder buttons is on, else empty.
+ *
+ * Every widget is a square of its size, and with multi-touch on a button also answers anywhere in a
+ * circle 1.24 times as wide. L1/R1's sprite is only 0.58 of its width tall, so those reached far
+ * above and below the button and got in the way (a request pointing at NetherSX2, which keeps the
+ * touch area to the button). With the option on, a shoulder's widget box, touch area and the
+ * regions other layers leave to it are all its artwork's box.
+ */
+@Composable
+private fun tightShoulderFactors(): Map<TouchButtonId, Float> {
+    val on = TouchControls.tightShoulders.value
+    val factors = HashMap<TouchButtonId, Float>(SHOULDER_IDS.size)
+    for (id in SHOULDER_IDS) {
+        val aspect = shoulderArtAspect(id)
+        if (on) factors[id] = aspect
+    }
+    return factors
 }
 
 /** Logical skin key for a button, or null for buttons with no skin slot. */
@@ -876,21 +912,28 @@ private fun UnifiedTouchLayer(
     }
 
     val density = LocalDensity.current
+    val tight = tightShoulderFactors()
     val buttonRects = hitButtons.map { cfg ->
         val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
         val cx = widthPx * cfg.xFrac
         val cy = heightPx * cfg.yFrac
-        UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = sizePx * TouchControls.multiTouchRadius.floatValue)
+        val factor = tight[cfg.id]
+        if (factor != null) {
+            UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = 0f, halfW = sizePx / 2f, halfH = sizePx * factor / 2f)
+        } else {
+            UnifiedHit(id = cfg.id, cx = cx, cy = cy, radius = sizePx * TouchControls.multiTouchRadius.floatValue)
+        }
     }
     val foreignBounds = foreignRects.map { cfg ->
         val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
         val cx = widthPx * cfg.xFrac
         val cy = heightPx * cfg.yFrac
+        val halfH = sizePx * (tight[cfg.id] ?: 1f) / 2f
         UnifiedRect(
             left = cx - sizePx / 2f,
-            top = cy - sizePx / 2f,
+            top = cy - halfH,
             right = cx + sizePx / 2f,
-            bottom = cy + sizePx / 2f,
+            bottom = cy + halfH,
         )
     } + listOfNotNull(
         // #357: the top-center cog carve-out went away with the cog. PAUSE inherits its job as the
@@ -956,11 +999,7 @@ private fun UnifiedTouchLayer(
                 // Full-screen: positions are already in global (layer) coordinates.
                 fun hits(pos: Offset): Set<TouchButtonId> =
                     buttonRects
-                        .filter { hit ->
-                            val dx = pos.x - hit.cx
-                            val dy = pos.y - hit.cy
-                            dx * dx + dy * dy <= hit.radius * hit.radius
-                        }
+                        .filter { hit -> hit.contains(pos.x, pos.y) }
                         .map { it.id }
                         .toSet()
                 fun inForeignRegion(pos: Offset): Boolean =
@@ -1153,7 +1192,17 @@ private data class UnifiedHit(
     val cx: Float,
     val cy: Float,
     val radius: Float,
-)
+    /** Half extents of a box hit, for a tight shoulder button; 0 = the circle of [radius]. */
+    val halfW: Float = 0f,
+    val halfH: Float = 0f,
+) {
+    fun contains(x: Float, y: Float): Boolean {
+        val dx = x - cx
+        val dy = y - cy
+        return if (halfW > 0f) dx >= -halfW && dx <= halfW && dy >= -halfH && dy <= halfH
+        else dx * dx + dy * dy <= radius * radius
+    }
+}
 
 private data class UnifiedRect(
     val left: Float,
@@ -2138,11 +2187,7 @@ private data class HalfStickParams(
 ) {
     fun inForeign(pos: Offset): Boolean =
         foreignRects.any { pos.x >= it.left && pos.x <= it.right && pos.y >= it.top && pos.y <= it.bottom } ||
-            foreignCircles.any {
-                val dx = pos.x - it.cx
-                val dy = pos.y - it.cy
-                dx * dx + dy * dy <= it.radius * it.radius
-            }
+            foreignCircles.any { it.contains(pos.x, pos.y) }
 }
 
 /** Invisible full-screen layer: the LEFT half drives the left analog, the RIGHT half the right one.
@@ -2160,6 +2205,7 @@ private fun FullHalfStickLayer(
 ) {
     if (widthPx <= 0f || heightPx <= 0f) return
     val density = LocalDensity.current
+    val tight = tightShoulderFactors()
     // Foreign regions: every enabled non-stick widget on screen (D-pad, face, shoulders, menu, L3/R3,
     // Pause, FF, macro, state, pressure; [extraShown]). A finger starting on one of these drives the
     // button, not a stick.
@@ -2169,14 +2215,15 @@ private fun FullHalfStickLayer(
             val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
             val cx = widthPx * cfg.xFrac
             val cy = heightPx * cfg.yFrac
-            UnifiedRect(cx - sizePx / 2f, cy - sizePx / 2f, cx + sizePx / 2f, cy + sizePx / 2f)
+            val halfH = sizePx * (tight[cfg.id] ?: 1f) / 2f
+            UnifiedRect(cx - sizePx / 2f, cy - halfH, cx + sizePx / 2f, cy + halfH)
         }
     // With multi-touch on, a face/shoulder/menu button answers anywhere in its hit circle
     // (UnifiedTouchLayer), and the circle reaches past the square. Leave those to the button too,
     // or a thumb on the rim of Cross would move the right stick instead.
     val radius = TouchControls.multiTouchRadius.floatValue
     val foreignCircles = if (!faceMulti) emptyList() else layout.buttons
-        .filter { it.enabled && isUnifiedKind(it.id.kind) && !it.tapToHold }
+        .filter { it.enabled && isUnifiedKind(it.id.kind) && !it.tapToHold && it.id !in tight }
         .map { cfg ->
             val sizePx = with(density) { cfg.sizeDp.dp.toPx() }
             UnifiedHit(id = cfg.id, cx = widthPx * cfg.xFrac, cy = heightPx * cfg.yFrac, radius = sizePx * radius)

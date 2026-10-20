@@ -1110,6 +1110,8 @@
   "pad.stickTarget.ps2Buttons": "Кнопки PS2",
   "pad.testRumble.player1": "Test rumble (Гравець 1)",
   "pad.testRumble.player2": "Test rumble (Гравець 2)",
+  "pad.tightShoulders.description": "L1, L2, R1 і R2 реагують лише на дотик до самої кнопки, а не простору навколо неї, тому займають менше місця на екрані.",
+  "pad.tightShoulders.label": "Вузька зона натискання L1/L2/R1/R2",
   "pad.touchHaptics.description": "Коротко вібрувати, коли ви натискаєте екранну кнопку (наприклад, PPSSPP / Azahar). Окремо від гулу контролера.",
   "pad.touchHaptics.label": "Торкніться «Haptics».",
   "pad.touchPlayer.description": "Визначає, яким гравцем керують екранні кнопки. «Гравець 2» дає змогу одній людині грати на контролері, поки інша грає на сенсорному екрані. Перезапустіть гру, щоб застосувати.",

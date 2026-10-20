@@ -1077,6 +1077,8 @@
  "pad.stickTarget.ps2Buttons": "أزرار PS2",
  "pad.testRumble.player1": "اختبار الاهتزاز (اللاعب 1)",
  "pad.testRumble.player2": "اختبار الاهتزاز (اللاعب 2)",
+ "pad.tightShoulders.description": "تستجيب L1 وL2 وR1 وR2 للمس على الزر نفسه فقط، لا للمساحة المحيطة به، فتشغل مساحة أقل من الشاشة.",
+ "pad.tightShoulders.label": "مساحة لمس محكمة لأزرار L1/L2/R1/R2",
  "pad.touchHaptics.description": "اهتزاز قصير عند ضغط زر على الشاشة (مثل PPSSPP / Azahar). منفصل عن اهتزاز الذراع.",
  "pad.touchHaptics.label": "اهتزاز اللمس",
  "pad.touchPlayer.description": "يحدد أي لاعب تمثّله عناصر التحكم على الشاشة. يتيح اختيار اللاعب 2 لشخص أن يلعب بالذراع ولآخر أن يلعب على شاشة اللمس. أعد تشغيل اللعبة للتطبيق.",

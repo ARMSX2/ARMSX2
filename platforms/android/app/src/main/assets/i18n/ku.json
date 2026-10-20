@@ -1110,6 +1110,8 @@
   "pad.stickTarget.ps2Buttons": "Bişkojkên PS2",
   "pad.testRumble.player1": "Test rumble: Lîstikvan 1",
   "pad.testRumble.player2": "Test rumble: Lîstikvan 2",
+  "pad.tightShoulders.description": "L1, L2, R1 û R2 tenê bersivê didin destdanên li ser bişkokê bi xwe, ne valahiya li dora wê, ji ber vê yekê cihê kêmtir ji ekranê digirin.",
+  "pad.tightShoulders.label": "Qada destdanê ya teng ji bo L1/L2/R1/R2",
   "pad.touchHaptics.description": "Dema ku hûn bişkojkek li ser ekranê (wek PPSSPP / Azahar) pêl dikin, bi kurtî lerizînin. Ji kontrolker rumble veqetin.",
   "pad.touchHaptics.label": "Touch Haptics",
   "pad.touchPlayer.description": "Diyar dike ka kontrolên li ser ekranê kîjan lîstikvan in. Bi \"Lîstikvan 2\", kesek dikare bi kontrolkerê bilîze û kesekî din li ser ekrana destlêdanê bilîze. Ji bo serîlêdanê lîstikê ji nû ve bidin destpêkirin.",

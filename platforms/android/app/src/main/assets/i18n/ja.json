@@ -1077,6 +1077,8 @@
   "pad.stickTarget.ps2Buttons": "PS2ボタン",
   "pad.testRumble.player1": "振動テスト：Player 1",
   "pad.testRumble.player2": "振動テスト：Player 2",
+  "pad.tightShoulders.description": "L1・L2・R1・R2がボタンそのものへのタッチにだけ反応し、周囲の余白には反応しなくなるため、画面を占める範囲が小さくなります。",
+  "pad.tightShoulders.label": "L1/L2/R1/R2のタッチ範囲を絞る",
   "pad.touchHaptics.description": "画面上のボタンを押したときに短く振動します（PPSSPP／Azaharのように）。コントローラーの振動とは別です。",
   "pad.touchHaptics.label": "タッチ触覚",
   "pad.touchPlayer.description": "画面上のコントロールをどのプレイヤーの操作にするかを選びます。Player 2にすると、1人がコントローラー、もう1人がタッチ画面でプレイできます。適用にはゲームの再起動が必要です。",

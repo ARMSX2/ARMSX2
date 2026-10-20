@@ -1154,6 +1154,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.touchPlayer.label" to "Touch controls play as",
     "pad.touchPlayer.description" to "Which player the on-screen controls are. Player 2 lets one person play on a controller and another on the touch screen. Restart the game to apply.",
     "pad.multiTouch.description" to "How far from a button's center a touch still counts as a press, so you can hit two adjacent on-screen buttons at once. Higher = more reach (easier rolls and combos).",
+    "pad.tightShoulders.label" to "Tight L1/L2/R1/R2 touch areas",
+    "pad.tightShoulders.description" to "L1, L2, R1 and R2 respond only to touches on the button itself, not the space around it, so they take up less of the screen.",
     "pad.onScreenControls.label" to "On-screen controls",
     "pad.player1" to "Player 1",
     "pad.player2" to "Player 2",
