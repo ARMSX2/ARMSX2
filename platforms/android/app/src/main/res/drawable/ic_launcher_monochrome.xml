@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Themed-icon layer: the tower alone, one flat shape with its three faces cut apart, framed exactly
+  like ic_launcher_foreground. A launcher keeps only this layer's alpha and paints it in the theme
+  colour, so it has to be transparent everywhere the tower isn't. The full-colour foreground used to
+  stand in for it, and that artwork is opaque edge to edge, so themed icons (Material 3 Expressive)
+  showed ARMSX2 as a plain disc. The art is derived from savetowerforeground (same 1024px frame).
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:inset="18%">
+    <bitmap
+        android:antialias="true"
+        android:gravity="fill"
+        android:src="@drawable/ic_launcher_monochrome_art" />
+</inset>
