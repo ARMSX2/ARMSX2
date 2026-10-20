@@ -240,6 +240,8 @@
   "audio.buffer.label": "Bộ đệm âm thanh",
   "audio.buffer.description": "Bộ đệm lớn hơn = ít rè/mất tiếng hơn nhưng độ trễ cao hơn. Tăng giá trị này nếu âm thanh bị giật trên thiết bị yếu.",
   "audio.outputLatency.label": "Độ trễ đầu ra",
+  "audio.recordingCompatible.description": "Đưa âm thanh qua bộ trộn của hệ thống để các ứng dụng quay màn hình có thể ghi lại. Nếu không bật, bản ghi có thể bị mất tiếng dù âm thanh vẫn phát bình thường trên thiết bị. Tăng độ trễ một chút, vì vậy hãy tắt trừ khi bạn đang quay.",
+  "audio.recordingCompatible.label": "Âm thanh tương thích quay màn hình",
   "audio.outputLatency.description": "Độ trễ đầu ra mục tiêu. Thấp hơn thì phản hồi nhanh hơn; cao hơn thì an toàn hơn để tránh mất tiếng.",
   "audio.fastForwardVolume.label": "Âm lượng khi tua nhanh",
   "audio.fastForwardVolume.description": "Âm lượng đầu ra khi đang tua nhanh.",

@@ -240,6 +240,8 @@
  "audio.buffer.label": "Ses Tamponu",
  "audio.buffer.description": "Daha büyük tampon = daha az çıtırtı/kesinti ama daha fazla gecikme. Düşük performanslı cihazlarda ses takılıyorsa bunu artırın.",
  "audio.outputLatency.label": "Çıkış Gecikmesi",
+ "audio.recordingCompatible.description": "Ekran kaydedicilerin yakalayabilmesi için sesi sistem mikserinden geçirir. Bu olmadan, ses cihazda normal çalsa bile kayıtlar sessiz çıkabilir. Biraz gecikme ekler, bu yüzden kayıt yapmıyorsanız kapalı bırakın.",
+ "audio.recordingCompatible.label": "Kayıt uyumlu ses",
  "audio.outputLatency.description": "Hedef çıkış gecikmesi. Düşük değer daha duyarlıdır; yüksek değer kesintilere karşı daha güvenlidir.",
  "audio.fastForwardVolume.label": "İleri Sarma Ses Düzeyi",
  "audio.fastForwardVolume.description": "İleri sarma sırasındaki çıkış ses düzeyi.",

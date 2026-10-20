@@ -38,6 +38,10 @@ struct AudioStreamParameters
 	// reclaim when idle — so pause/resume stays a cheap play-state toggle rather
 	// than a full stream rebuild. Ignored by every non-Oboe backend.
 	bool android_use_opensles = DEFAULT_ANDROID_USE_OPENSLES;
+	// Android/Oboe only: never take AAudio's low-latency MMAP fast path. It writes past the
+	// mixer that Android's screen recorder captures, so a recording comes out silent while
+	// the game plays normally on the device. Costs a little latency. Ignored elsewhere.
+	bool android_recording_compatible = DEFAULT_ANDROID_RECORDING_COMPATIBLE;
 	u16 buffer_ms = DEFAULT_BUFFER_MS;
 	u16 output_latency_ms = DEFAULT_OUTPUT_LATENCY_MS;
 
@@ -63,6 +67,7 @@ struct AudioStreamParameters
 	static constexpr u16 DEFAULT_OUTPUT_LATENCY_MS = 20;
 	static constexpr bool DEFAULT_OUTPUT_LATENCY_MINIMAL = false;
 	static constexpr bool DEFAULT_ANDROID_USE_OPENSLES = false;
+	static constexpr bool DEFAULT_ANDROID_RECORDING_COMPATIBLE = false;
 
 	static constexpr u16 DEFAULT_EXPAND_BLOCK_SIZE = 2048;
 	static constexpr float DEFAULT_EXPAND_CIRCULAR_WRAP = 90.0f;

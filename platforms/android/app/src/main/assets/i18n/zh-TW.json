@@ -240,6 +240,8 @@
  "audio.buffer.label": "音訊緩衝",
  "audio.buffer.description": "緩衝越大＝爆音／斷音越少，但延遲增加。若低階裝置上音訊卡頓，請調高。",
  "audio.outputLatency.label": "輸出延遲",
+ "audio.recordingCompatible.description": "讓音訊經由系統混音器輸出，使螢幕錄影工具能夠錄到聲音。未開啟時，即使裝置上聲音播放正常，錄影也可能沒有聲音。會稍微增加延遲，不錄影時請保持關閉。",
+ "audio.recordingCompatible.label": "相容螢幕錄影的音訊",
  "audio.outputLatency.description": "目標輸出延遲。越低越靈敏；越高越能避免斷音。",
  "audio.fastForwardVolume.label": "快轉音量",
  "audio.fastForwardVolume.description": "快轉時的輸出音量。",

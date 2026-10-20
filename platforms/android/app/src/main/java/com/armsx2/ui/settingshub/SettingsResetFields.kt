@@ -53,8 +53,8 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
     // AudioTab.kt
     SettingsCategory.Audio to listOf(
         "audioBufferMs", "audioFastForwardVolume", "audioMuted", "audioOpenSLES",
-        "audioOutputLatencyMs", "audioSwapChannels", "audioTimeStretch", "audioVolume",
-        "spu2LightweightMix", "spu2NeonReverb",
+        "audioOutputLatencyMs", "audioRecordingCompatible", "audioSwapChannels", "audioTimeStretch",
+        "audioVolume", "spu2LightweightMix", "spu2NeonReverb",
     ),
     // NetworkTab.kt
     SettingsCategory.Network to listOf(

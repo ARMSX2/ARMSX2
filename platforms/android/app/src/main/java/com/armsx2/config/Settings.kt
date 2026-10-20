@@ -263,6 +263,12 @@ data class AudioSettings(
      *  menu) never triggers the ~1s stream rebuild. Applies live (stream
      *  reconfigures). Default off = AAudio low-latency. */
     val audioOpenSLES: Boolean = false,
+    /** SPU2/Output/AndroidRecordingCompatible — keep the Oboe stream off
+     *  AAudio's low-latency MMAP fast path, which writes past the mixer that
+     *  screen recorders capture: the game plays on the device and the recording
+     *  comes out silent. A little more latency. Applies live (stream
+     *  reconfigures). Default off. */
+    val audioRecordingCompatible: Boolean = false,
     /** SPU2/Output/LightweightMode — low-end audio lever: skip the SPU2 reverb
      *  pipeline (all echo/spatial reverb) in the mixer. Frees CPU on devices that
      *  can't keep up even with NEON reverb; default off = full reverb. Applies
@@ -1010,6 +1016,7 @@ data class Settings(
         // Opt-in OpenSL ES output (Oboe). Lives in the SPU2/Output StreamParameters,
         // so ApplySettings → CheckForConfigChanges recreates the stream on toggle.
         put("SPU2/Output", "AndroidOpenSLES", "bool", audio.audioOpenSLES.toString())
+        put("SPU2/Output", "AndroidRecordingCompatible", "bool", audio.audioRecordingCompatible.toString())
         // Lightweight mix (skip reverb) — read live in MixCore via EmuConfig.SPU2.
         put("SPU2/Output", "LightweightMode", "bool", audio.spu2LightweightMix.toString())
         // Patches / cheats (EmuCore). Reloaded by ApplySettings →
@@ -1286,6 +1293,7 @@ data class Settings(
                 audioFastForwardVolume = intAt("SPU2/Output/FastForwardVolume") ?: this.audio.audioFastForwardVolume,
                 spu2NeonReverb = boolAt("SPU2/NeonReverbSIMD") ?: this.audio.spu2NeonReverb,
                 audioOpenSLES = boolAt("SPU2/Output/AndroidOpenSLES") ?: this.audio.audioOpenSLES,
+                audioRecordingCompatible = boolAt("SPU2/Output/AndroidRecordingCompatible") ?: this.audio.audioRecordingCompatible,
                 spu2LightweightMix = boolAt("SPU2/Output/LightweightMode") ?: this.audio.spu2LightweightMix,
             ),
             emuCore = this.emuCore.copy(
@@ -1983,6 +1991,7 @@ data class Settings(
         put("audioFastForwardVolume", audio.audioFastForwardVolume)
         put("spu2NeonReverb", audio.spu2NeonReverb)
         put("audioOpenSLES", audio.audioOpenSLES)
+        put("audioRecordingCompatible", audio.audioRecordingCompatible)
         put("spu2LightweightMix", audio.spu2LightweightMix)
         put("renderer", output.renderer)
         put("upscaleFloat", output.upscaleFloat.toDouble())
@@ -2333,6 +2342,7 @@ data class Settings(
                     audioFastForwardVolume = json.optInt("audioFastForwardVolume", def.audio.audioFastForwardVolume),
                     spu2NeonReverb = json.optBoolean("spu2NeonReverb", def.audio.spu2NeonReverb),
                     audioOpenSLES = json.optBoolean("audioOpenSLES", def.audio.audioOpenSLES),
+                    audioRecordingCompatible = json.optBoolean("audioRecordingCompatible", def.audio.audioRecordingCompatible),
                     spu2LightweightMix = json.optBoolean("spu2LightweightMix", def.audio.spu2LightweightMix),
                 ),
                 emuCore = EmuCoreSettings(
@@ -2619,6 +2629,7 @@ data class Settings(
             if (current.audio.audioFastForwardVolume != base.audio.audioFastForwardVolume) j.put("audioFastForwardVolume", current.audio.audioFastForwardVolume)
             if (current.audio.spu2NeonReverb != base.audio.spu2NeonReverb) j.put("spu2NeonReverb", current.audio.spu2NeonReverb)
             if (current.audio.audioOpenSLES != base.audio.audioOpenSLES) j.put("audioOpenSLES", current.audio.audioOpenSLES)
+            if (current.audio.audioRecordingCompatible != base.audio.audioRecordingCompatible) j.put("audioRecordingCompatible", current.audio.audioRecordingCompatible)
             if (current.audio.spu2LightweightMix != base.audio.spu2LightweightMix) j.put("spu2LightweightMix", current.audio.spu2LightweightMix)
             if (current.output.renderer != base.output.renderer) j.put("renderer", current.output.renderer)
             if (current.output.upscaleFloat != base.output.upscaleFloat) j.put("upscaleFloat", current.output.upscaleFloat.toDouble())
@@ -2896,6 +2907,7 @@ data class Settings(
                 audioFastForwardVolume = if (overrides.has("audioFastForwardVolume")) overrides.getInt("audioFastForwardVolume") else base.audio.audioFastForwardVolume,
                 spu2NeonReverb = if (overrides.has("spu2NeonReverb")) overrides.getBoolean("spu2NeonReverb") else base.audio.spu2NeonReverb,
                 audioOpenSLES = if (overrides.has("audioOpenSLES")) overrides.getBoolean("audioOpenSLES") else base.audio.audioOpenSLES,
+                audioRecordingCompatible = if (overrides.has("audioRecordingCompatible")) overrides.getBoolean("audioRecordingCompatible") else base.audio.audioRecordingCompatible,
                 spu2LightweightMix = if (overrides.has("spu2LightweightMix")) overrides.getBoolean("spu2LightweightMix") else base.audio.spu2LightweightMix,
             ),
             emuCore = EmuCoreSettings(

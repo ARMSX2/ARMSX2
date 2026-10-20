@@ -240,6 +240,8 @@
   "audio.buffer.label": "オーディオバッファ",
   "audio.buffer.description": "バッファを大きくするとノイズ／音飛びは減りますが遅延が増えます。低性能デバイスで音が途切れる場合は上げてください。",
   "audio.outputLatency.label": "出力遅延",
+  "audio.recordingCompatible.description": "画面録画アプリが音声を取り込めるよう、システムミキサーを経由して音声を出力します。オフのままだと、端末では普通に音が鳴っていても録画が無音になることがあります。遅延が少し増えるため、録画するとき以外はオフのままにしてください。",
+  "audio.recordingCompatible.label": "録画対応オーディオ",
   "audio.outputLatency.description": "目標の出力遅延。低いほど反応が良く、高いほど音飛びに強くなります。",
   "audio.fastForwardVolume.label": "早送り時の音量",
   "audio.fastForwardVolume.description": "早送り中の出力音量。",

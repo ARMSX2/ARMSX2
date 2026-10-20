@@ -193,6 +193,8 @@
  "audio.openSles.label": "OpenSL-ES-Audio (Kompatibilität)",
  "audio.outputLatency.description": "Ziel-Ausgabelatenz. Niedriger reagiert direkter; höher schützt besser vor Aussetzern.",
  "audio.outputLatency.label": "Ausgabelatenz",
+ "audio.recordingCompatible.description": "Leitet den Ton über den System-Mixer, damit Bildschirmaufnahmen ihn erfassen können. Ohne diese Option können Aufnahmen stumm bleiben, obwohl der Ton auf dem Gerät normal zu hören ist. Erhöht die Latenz etwas, daher nur zum Aufnehmen einschalten.",
+ "audio.recordingCompatible.label": "Aufnahmekompatibles Audio",
  "audio.spu2Simd.description": "NEON-Schnellpfad für die Hall-Berechnung (Reverb). Entlastet die CPU und kann auf CPU-limitierten Geräten Leistung bringen. Aus (Standard) nutzt den Standardpfad mit unverändertem Klang. Zum Umschalten Spiel neu starten.",
  "audio.spu2Simd.label": "SPU2-SIMD-Audio (experimentell)",
  "audio.swapChannels.description": "Vertauscht die Stereoausgabe (L↔R). Nützlich, wenn der Type-C-Port ein umgekehrtes Querformat erzwingt und die Lautsprecher physisch vertauscht sind (z. B. Clamp-Gamepad), was sonst das Stereobild in Rennspielen spiegelt. Wird sofort übernommen.",

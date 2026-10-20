@@ -307,6 +307,8 @@
   "audio.buffer.label": "Audio Buffer",
   "audio.buffer.description": "Tamponek mezintir = kêm qijik/derketin lê dereng zêde. Ger deng li ser cîhazên nizm biqewime vê yekê bilind bikin.",
   "audio.outputLatency.label": "Derengiya derketinê",
+  "audio.recordingCompatible.description": "Dengî di mîkserê pergalê re derbas dike da ku tomarkerên ekranê bikaribin wî bigirin. Bêyî vê, dibe ku tomar bêdeng derkevin, her çend deng li ser cîhazê bi awayekî normal tê lêdan jî. Hinekî derengiyê zêde dike, ji ber vê yekê heta ku tu tomar nekî wê girtî bihêle.",
+  "audio.recordingCompatible.label": "Dengê lihevhatî bi tomarkirinê re",
   "audio.outputLatency.description": "Derengiya hilberîna armancê. Jêrîn bêtir bersivdar e; bilindtir e li hember daketinê ewletir e.",
   "audio.fastForwardVolume.label": "Volume Fast-Forward",
   "audio.fastForwardVolume.description": "Hêjmara derketinê dema ku bilez-pêşveçûn.",

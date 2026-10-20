@@ -55,6 +55,8 @@
  "audio.buffer.label": "Buffer de Áudio",
  "audio.buffer.description": "Buffer maior = menos estalos/cortes, mas mais latência. Aumente se o áudio engasgar em aparelhos fracos.",
  "audio.outputLatency.label": "Latência de Saída",
+ "audio.recordingCompatible.description": "Envia o áudio pelo mixer do sistema para que gravadores de tela consigam capturá-lo. Sem isso, as gravações podem sair sem som, mesmo que o áudio toque normalmente no dispositivo. Adiciona um pouco de latência, então deixe desativado a menos que esteja gravando.",
+ "audio.recordingCompatible.label": "Áudio compatível com gravação",
  "audio.outputLatency.description": "Latência de saída desejada. Menor é mais responsivo; maior é mais seguro contra cortes.",
  "audio.fastForwardVolume.label": "Volume no Avanço Rápido",
  "audio.fastForwardVolume.description": "Volume de saída durante o avanço rápido.",

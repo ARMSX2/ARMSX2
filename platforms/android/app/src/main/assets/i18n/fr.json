@@ -256,6 +256,8 @@
   "audio.buffer.label": "Tampon audio",
   "audio.buffer.description": "Un tampon plus grand = moins de craquements/coupures mais plus de latence. Augmentez-le si l'audio saccade sur les appareils modestes.",
   "audio.outputLatency.label": "Latence de sortie",
+  "audio.recordingCompatible.description": "Fait passer le son par le mélangeur du système pour que les enregistreurs d'écran puissent le capturer. Sans cette option, les enregistrements peuvent être muets alors que le son est joué normalement sur l'appareil. Ajoute un peu de latence, donc laissez-la désactivée sauf si vous enregistrez.",
+  "audio.recordingCompatible.label": "Audio compatible avec l'enregistrement",
   "audio.outputLatency.description": "Latence de sortie cible. Plus basse = plus réactif ; plus haute = plus sûr contre les coupures.",
   "audio.fastForwardVolume.label": "Volume en avance rapide",
   "audio.fastForwardVolume.description": "Volume de sortie pendant l'avance rapide.",

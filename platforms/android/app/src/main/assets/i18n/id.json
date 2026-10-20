@@ -240,6 +240,8 @@
   "audio.buffer.label": "Buffer Audio",
   "audio.buffer.description": "Buffer lebih besar = lebih sedikit kresek/putus tapi latensi lebih tinggi. Naikkan ini jika audio tersendat di perangkat kelas bawah.",
   "audio.outputLatency.label": "Latensi Keluaran",
+  "audio.recordingCompatible.description": "Mengalirkan audio melalui mixer sistem agar perekam layar dapat menangkapnya. Tanpa ini, rekaman bisa tanpa suara meskipun audio diputar normal di perangkat. Menambah sedikit latensi, jadi biarkan mati kecuali Anda sedang merekam.",
+  "audio.recordingCompatible.label": "Audio kompatibel perekaman",
   "audio.outputLatency.description": "Target latensi keluaran. Lebih rendah lebih responsif; lebih tinggi lebih aman dari putus-putus.",
   "audio.fastForwardVolume.label": "Volume Fast-Forward",
   "audio.fastForwardVolume.description": "Volume keluaran saat fast-forward.",

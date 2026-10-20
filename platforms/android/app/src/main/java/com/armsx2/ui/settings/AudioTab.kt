@@ -115,6 +115,13 @@ fun AudioTab(state: MutableState<Settings>) {
         ) { apply(s.copy(audio = s.audio.copy(audioOpenSLES = it))) }
         SettingsDivider()
         ToggleRow(
+            str("audio.recordingCompatible.label"),
+            s.audio.audioRecordingCompatible,
+            description = str("audio.recordingCompatible.description"),
+            field = "audioRecordingCompatible",
+        ) { apply(s.copy(audio = s.audio.copy(audioRecordingCompatible = it))) }
+        SettingsDivider()
+        ToggleRow(
             str("audio.lightweight.label"),
             s.audio.spu2LightweightMix,
             description = str("audio.lightweight.description"),

@@ -187,8 +187,16 @@ bool OboeAudioStream::Initialize(bool stretch_enabled)
 		oboe::PerformanceMode::LowLatency,
 		oboe::PerformanceMode::None,
 	};
+	// Recording compatible: start at None. LowLatency lets AAudio take Qualcomm's MMAP fast
+	// path, which writes past the mixer that AudioPlaybackCapture taps: the game is audible on
+	// the device and missing from a screen recording, with no error anywhere, and whether MMAP
+	// is granted varies per run. None keeps the stream on the mixer, which is capturable.
+	if (m_parameters.android_recording_compatible)
+		Console.WriteLn("(Oboe) Recording compatible: opening with performance mode None.");
 	for (const oboe::PerformanceMode mode : kModes)
 	{
+		if (mode == oboe::PerformanceMode::LowLatency && m_parameters.android_recording_compatible)
+			continue;
 		m_perf_mode = mode;
 		for (int attempt = 0; attempt < 2; attempt++)
 		{

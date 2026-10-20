@@ -256,6 +256,8 @@
  "audio.buffer.label": "Búfer de audio",
  "audio.buffer.description": "Búfer mayor = menos crujidos/cortes pero más latencia. Súbelo si el audio entrecorta en dispositivos poco potentes.",
  "audio.outputLatency.label": "Latencia de salida",
+ "audio.recordingCompatible.description": "Envía el audio a través del mezclador del sistema para que las grabadoras de pantalla puedan capturarlo. Sin esto, las grabaciones pueden salir sin sonido aunque el audio se oiga con normalidad en el dispositivo. Añade un poco de latencia, así que déjalo desactivado salvo que estés grabando.",
+ "audio.recordingCompatible.label": "Audio compatible con grabación",
  "audio.outputLatency.description": "Latencia de salida objetivo. Menor es más responsivo; mayor protege mejor contra cortes.",
  "audio.fastForwardVolume.label": "Volumen en avance rápido",
  "audio.fastForwardVolume.description": "Volumen de salida durante el avance rápido.",

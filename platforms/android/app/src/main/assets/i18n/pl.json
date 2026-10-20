@@ -240,6 +240,8 @@
  "audio.buffer.label": "Bufor dźwięku",
  "audio.buffer.description": "Większy bufor = mniej trzasków/przerw, ale większe opóźnienie. Zwiększ, jeśli dźwięk się zacina na słabszych urządzeniach.",
  "audio.outputLatency.label": "Opóźnienie wyjścia",
+ "audio.recordingCompatible.description": "Kieruje dźwięk przez mikser systemowy, aby aplikacje do nagrywania ekranu mogły go przechwycić. Bez tego nagrania mogą być nieme, mimo że dźwięk normalnie gra na urządzeniu. Dodaje nieco opóźnienia, więc zostaw tę opcję wyłączoną, chyba że nagrywasz.",
+ "audio.recordingCompatible.label": "Dźwięk zgodny z nagrywaniem",
  "audio.outputLatency.description": "Docelowe opóźnienie wyjścia. Niższe = większa responsywność; wyższe = bezpieczniejsze przed przerwami.",
  "audio.fastForwardVolume.label": "Głośność przewijania",
  "audio.fastForwardVolume.description": "Głośność wyjścia podczas przewijania do przodu.",

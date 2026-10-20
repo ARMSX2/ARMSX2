@@ -240,6 +240,8 @@
  "audio.buffer.label": "오디오 버퍼",
  "audio.buffer.description": "버퍼가 크면 잡음/끊김이 줄지만 지연이 늘어납니다. 저사양 기기에서 오디오가 끊기면 이 값을 높이세요.",
  "audio.outputLatency.label": "출력 지연",
+ "audio.recordingCompatible.description": "화면 녹화 앱이 소리를 캡처할 수 있도록 시스템 믹서를 거쳐 오디오를 출력합니다. 이 옵션이 꺼져 있으면 기기에서는 소리가 정상적으로 나와도 녹화 파일이 무음일 수 있습니다. 지연이 약간 늘어나므로 녹화할 때가 아니면 꺼 두세요.",
+ "audio.recordingCompatible.label": "녹화 호환 오디오",
  "audio.outputLatency.description": "목표 출력 지연입니다. 낮을수록 반응이 빠르고, 높을수록 끊김에 안전합니다.",
  "audio.fastForwardVolume.label": "빨리감기 볼륨",
  "audio.fastForwardVolume.description": "빨리감기 중 출력 볼륨입니다.",

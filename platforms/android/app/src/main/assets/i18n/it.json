@@ -256,6 +256,8 @@
  "audio.buffer.label": "Buffer audio",
  "audio.buffer.description": "Buffer più grande = meno crepitii/interruzioni ma più latenza. Aumentalo se l'audio balbetta su dispositivi meno potenti.",
  "audio.outputLatency.label": "Latenza in uscita",
+ "audio.recordingCompatible.description": "Fa passare l'audio attraverso il mixer di sistema, così i registratori dello schermo possono catturarlo. Senza questa opzione le registrazioni possono risultare mute anche se l'audio si sente normalmente sul dispositivo. Aggiunge un po' di latenza, quindi lasciala disattivata a meno che tu non stia registrando.",
+ "audio.recordingCompatible.label": "Audio compatibile con la registrazione",
  "audio.outputLatency.description": "Latenza in uscita desiderata. Più bassa è più reattiva; più alta protegge meglio da interruzioni.",
  "audio.fastForwardVolume.label": "Volume avanzamento rapido",
  "audio.fastForwardVolume.description": "Volume in uscita durante l'avanzamento rapido.",

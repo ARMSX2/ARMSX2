@@ -153,6 +153,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("audio.swapChannels.label", true, SettingsCategory.Audio),
     SettingsSearchEntry("audio.spu2Simd.label", true, SettingsCategory.Audio),
     SettingsSearchEntry("audio.openSles.label", true, SettingsCategory.Audio),
+    SettingsSearchEntry("audio.recordingCompatible.label", true, SettingsCategory.Audio),
     SettingsSearchEntry("audio.lightweight.label", true, SettingsCategory.Audio),
     SettingsSearchEntry("audio.volume.label", true, SettingsCategory.Audio),
     SettingsSearchEntry("audio.buffer.label", true, SettingsCategory.Audio),

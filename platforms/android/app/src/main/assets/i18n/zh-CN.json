@@ -240,6 +240,8 @@
  "audio.buffer.label": "音频缓冲",
  "audio.buffer.description": "缓冲越大 = 爆音/断音越少但延迟越高。低端设备音频卡顿时可调高此项。",
  "audio.outputLatency.label": "输出延迟",
+ "audio.recordingCompatible.description": "让音频经过系统混音器输出，使录屏工具能够录到声音。不开启时，即使设备上声音播放正常，录屏也可能没有声音。会略微增加延迟，不录屏时请保持关闭。",
+ "audio.recordingCompatible.label": "兼容录屏的音频",
  "audio.outputLatency.description": "目标输出延迟。越低越灵敏；越高越能避免断音。",
  "audio.fastForwardVolume.label": "快进音量",
  "audio.fastForwardVolume.description": "快进时的输出音量。",

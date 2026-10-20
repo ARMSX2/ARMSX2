@@ -308,6 +308,8 @@
  "audio.buffer.label": "بافر صوتی",
  "audio.buffer.description": "بافر بزرگتر = ترک/ترق کمتر اما تاخیر بیشتر. اگر صدا در دستگاه های ارزان قیمت دچار لکنت می شود، این را افزایش دهید.",
  "audio.outputLatency.label": "تاخیر خروجی",
+ "audio.recordingCompatible.description": "صدا را از میکسر سیستم عبور می‌دهد تا برنامه‌های ضبط صفحه بتوانند آن را ضبط کنند. بدون این گزینه ممکن است ضبط‌ها بی‌صدا باشند، هرچند صدا روی دستگاه به‌طور عادی پخش می‌شود. کمی تأخیر اضافه می‌کند، پس جز هنگام ضبط آن را خاموش بگذارید.",
+ "audio.recordingCompatible.label": "صدای سازگار با ضبط",
  "audio.outputLatency.description": "تأخیر خروجی هدف پایینتر پاسخگوتر است. بالاتر در برابر ترک تحصیل ایمن تر است.",
  "audio.fastForwardVolume.label": "حجم سریع به جلو",
  "audio.fastForwardVolume.description": "صدای خروجی هنگام فوروارد سریع",
