@@ -468,6 +468,10 @@ data class GameInfo(
      *  long name wraps/ellipsizes. */
     val regionFlag: String? get() = region?.let { regionFlagFor(it) }
 
+    /** The dump's file name as stored, extension included ("SLUS_216.78.iso"). */
+    val fileName: String? get() = uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')
+        ?.takeIf { it.isNotBlank() }
+
     /** A short version/edition tag shown under the title so two copies of the
      *  same game can be told apart: a disc-version token parsed from the dump
      *  filename (e.g. "v3.00") when present, otherwise the serial. */
