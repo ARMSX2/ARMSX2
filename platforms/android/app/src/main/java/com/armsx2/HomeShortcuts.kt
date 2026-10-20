@@ -12,6 +12,14 @@ import android.util.Log
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.graphics.drawable.toBitmap
+import coil.imageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
+import coil.request.SuccessResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -21,7 +29,7 @@ import kotlin.math.roundToInt
  * into it. The shortcut targets [Main] with the same launch extra the external-launch
  * path (ES-DE etc.) already understands, so tapping it boots the game directly.
  *
- * Icon: the game's custom cover when set, otherwise the app icon. Requires a launcher
+ * Icon: the cover the library shows for the game, otherwise the app icon. Requires a launcher
  * that supports pinned shortcuts (Android 8.0+ ShortcutManager); [isSupported] reports it.
  */
 object HomeShortcuts {
@@ -38,8 +46,9 @@ object HomeShortcuts {
     /** Ask the launcher to add a home-screen shortcut that boots [game]. Returns false
      *  if nothing was requested (the caller should surface that). A true return means the
      *  launcher *accepted the request* — it then shows its own confirm UI, so this can't
-     *  report the user's accept/decline. */
-    fun pin(ctx: Context, game: GameInfo): Boolean {
+     *  report the user's accept/decline. Suspends while it fetches the cover, which normally
+     *  comes out of the library's own image cache. */
+    suspend fun pin(ctx: Context, game: GameInfo): Boolean {
         // Raw file:// games hand the core the
         // bare /storage path; SAF games pass the content:// URI string. The boot path
         // (MainActivityRuntime.handleExternalLaunchIntent -> extractLaunchUri) reads the "path" extra.
@@ -52,7 +61,8 @@ object HomeShortcuts {
         }
         val label = game.title.ifBlank { "PS2 Game" }
         val id = "game:" + (game.serial?.takeIf { it.isNotEmpty() } ?: game.uri.toString())
-        val icon = coverIcon(ctx, game) ?: IconCompat.createWithResource(ctx, ctx.applicationInfo.icon)
+        val icon = withContext(Dispatchers.IO) { coverIcon(ctx, game) }
+            ?: IconCompat.createWithResource(ctx, ctx.applicationInfo.icon)
 
         // Attempt the pin even when isRequestPinShortcutSupported reports false — some
         // launchers (handheld/custom) under-report it but still accept the pin. A genuine
@@ -75,7 +85,11 @@ object HomeShortcuts {
         }
     }
 
-    /** The game's custom cover as a shortcut icon, or null to fall back to the app icon.
+    /** The cover the library shows for [game] as a shortcut icon, or null to fall back to the app
+     *  icon: a custom cover, else the box art, else this disc's own art when the Cover Region pick
+     *  has none. [GameInfo.coverUrl] already sends a Namco System 246/256 game to the arcade
+     *  covers, so those come out the same as in the library. Only a custom cover used to count, so
+     *  nearly every shortcut showed the app icon.
      *
      *  The cover is decoded downscaled and clamped to the launcher's max icon edge before
      *  it ever reaches IconCompat: PS2 box art (512x728+) is far larger than the shortcut
@@ -83,12 +97,35 @@ object HomeShortcuts {
      *  #335 was reporting as success. Kept as a plain (non-adaptive) bitmap on purpose:
      *  adaptive icons mask everything outside the centre ~66% safe zone, which would crop
      *  the title off portrait box art. The app-icon fallback is already adaptive. */
-    private fun coverIcon(ctx: Context, game: GameInfo): IconCompat? = runCatching {
-        val f = CustomCovers.fileFor(ctx, game) ?: return null
-        val bmp = decodeScaled(f.absolutePath, maxIconEdgePx(ctx)) ?: return null
-        IconCompat.createWithBitmap(bmp)
-    }.getOrElse { e ->
-        Log.w(TAG, "coverIcon: cover unusable, falling back to app icon: $e")
+    private suspend fun coverIcon(ctx: Context, game: GameInfo): IconCompat? {
+        val maxPx = maxIconEdgePx(ctx)
+        val custom = runCatching { CustomCovers.fileFor(ctx, game)?.let { decodeScaled(it.absolutePath, maxPx) } }
+            .getOrElse { e ->
+                Log.w(TAG, "coverIcon: custom cover unusable: $e")
+                null
+            }
+        val bmp = custom
+            ?: game.coverUrl?.let { loadCover(ctx, it, maxPx) }
+            ?: game.discCoverUrl?.takeIf { it != game.coverUrl }?.let { loadCover(ctx, it, maxPx) }
+            ?: return null
+        return IconCompat.createWithBitmap(bmp)
+    }
+
+    /** [url] through the app's image loader, so a cover the library has shown comes from its disk
+     *  cache. Memory cache off: the bitmap is this icon's own, never one a cover tile is drawing.
+     *  Null when it can't be had (offline and never fetched, or the repo has none). */
+    private suspend fun loadCover(ctx: Context, url: String, maxPx: Int): Bitmap? = try {
+        val request = ImageRequest.Builder(ctx)
+            .data(url)
+            .size(maxPx)
+            .allowHardware(false)
+            .memoryCachePolicy(CachePolicy.DISABLED)
+            .build()
+        (ctx.imageLoader.execute(request) as? SuccessResult)?.drawable?.toBitmap()?.let { clampToMax(it, maxPx) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "coverIcon: $url unusable: $e")
         null
     }
 

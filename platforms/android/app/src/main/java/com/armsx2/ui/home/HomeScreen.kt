@@ -1160,8 +1160,11 @@ fun HomeScreen(
                 val addToHomeFailed = str("games.addToHome.unsupported")
                 GameMenuAction("📌", str("games.addToHome"), "game-menu.pin") {
                     menuGame = null
-                    if (!com.armsx2.HomeShortcuts.pin(context, game))
-                        Toast.makeText(context, addToHomeFailed, Toast.LENGTH_LONG).show()
+                    // pin() fetches the cover first, normally from the library's image cache.
+                    scope.launch {
+                        if (!com.armsx2.HomeShortcuts.pin(context, game))
+                            Toast.makeText(context, addToHomeFailed, Toast.LENGTH_LONG).show()
+                    }
                 }
                 // Only offered when the game is actually in Recently Played — this drops
                 // just this one entry, unlike the library-wide "Show Recently Played" toggle.
