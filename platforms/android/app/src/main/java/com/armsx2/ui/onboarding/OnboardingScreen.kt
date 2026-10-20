@@ -670,7 +670,7 @@ private fun DriverPage(state: OnboardingUiState, onInstall: () -> Unit, onRetry:
             val pack = state.driverPack
             if (pack != null) {
                 val megabytes = pack.sizeBytes / (1024.0 * 1024.0)
-                SummaryCard(
+                DriverPackCard(
                     pack.releaseName.ifBlank { pack.assetName },
                     listOf(state.driverSource, pack.tagName, if (pack.sizeBytes > 0) "%.0f MB".format(megabytes) else "")
                         .filter(String::isNotBlank).joinToString(" · "),
@@ -707,6 +707,25 @@ private fun DriverPage(state: OnboardingUiState, onInstall: () -> Unit, onRetry:
                 Text(str("setup.driver.mali.note"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(str("setup.driver.skipHint"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** The release name and its details stacked, each at full width. SummaryCard puts a short label beside a
+ *  short value, and a release name is long enough that the value would squeeze it into a narrow column. */
+@Composable
+private fun DriverPackCard(name: String, detail: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.74f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.36f)),
+    ) {
+        Column(Modifier.padding(17.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(name, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+            if (detail.isNotBlank()) {
+                Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
