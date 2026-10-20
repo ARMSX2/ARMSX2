@@ -437,6 +437,9 @@ namespace FullscreenUI
 	SettingsInterface* GetEditingSettingsInterface(bool game_settings);
 	bool ShouldShowAdvancedSettings(SettingsInterface* bsi);
 	void SetSettingsChanged(SettingsInterface* bsi);
+	/// A settings row wrote or removed `section`/`key` in `bsi`. As above, and when `bsi` is a game's own settings and the key is one
+	/// auto-tune moves, auto-tune is turned off for that game: the player just chose that value (AutoTune::DisableForManualChange).
+	void SetSettingsChanged(SettingsInterface* bsi, const char* section, const char* key);
 	bool GetEffectiveBoolSetting(SettingsInterface* bsi, const char* section, const char* key, bool default_value);
 	s32 GetEffectiveIntSetting(SettingsInterface* bsi, const char* section, const char* key, s32 default_value);
 	void DoCopyGameSettings();

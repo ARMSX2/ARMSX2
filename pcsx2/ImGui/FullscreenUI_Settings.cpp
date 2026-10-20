@@ -219,6 +219,14 @@ void FullscreenUI::SetSettingsChanged(SettingsInterface* bsi)
 		s_settings_changed.store(true, std::memory_order_release);
 }
 
+void FullscreenUI::SetSettingsChanged(SettingsInterface* bsi, const char* section, const char* key)
+{
+	// Read from the base layer directly: callers hold the settings lock, which is not recursive.
+	if (IsEditingGameSettings(bsi))
+		AutoTune::DisableForManualChange(*bsi, section, key, Host::Internal::GetBaseSettingsLayer()->GetBoolValue("EmuCore", "AutoTune", true));
+	SetSettingsChanged(bsi);
+}
+
 bool FullscreenUI::GetEffectiveBoolSetting(SettingsInterface* bsi, const char* section, const char* key, bool default_value)
 {
 	if (IsEditingGameSettings(bsi))
@@ -513,7 +521,7 @@ bool FullscreenUI::DrawToggleSetting(SettingsInterface* bsi, const char* title, 
 			bsi->DeleteValue(section, key);
 	}
 
-	SetSettingsChanged(bsi);
+	SetSettingsChanged(bsi, section, key);
 	return true;
 }
 
@@ -566,7 +574,7 @@ void FullscreenUI::DrawIntListSetting(SettingsInterface* bsi, const char* title,
 						bsi->SetIntValue(section, key, index + option_offset);
 					}
 
-					SetSettingsChanged(bsi);
+					SetSettingsChanged(bsi, section, key);
 				}
 
 				CloseChoiceDialog();
@@ -623,7 +631,7 @@ void FullscreenUI::DrawIntRangeSetting(SettingsInterface* bsi, const char* title
 			else
 				bsi->SetIntValue(section, key, dlg_value);
 
-			SetSettingsChanged(bsi);
+			SetSettingsChanged(bsi, section, key);
 		}
 
 		ImGui::PopStyleColor(7);
@@ -758,7 +766,7 @@ void FullscreenUI::DrawIntSpinBoxSetting(SettingsInterface* bsi, const char* tit
 			else
 				bsi->SetIntValue(section, key, dlg_value);
 
-			SetSettingsChanged(bsi);
+			SetSettingsChanged(bsi, section, key);
 		}
 
 		if (MenuButtonWithoutSummary(FSUI_CSTR("OK"), true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY, g_large_font, ImVec2(0.5f, 0.0f)))
@@ -826,7 +834,7 @@ void FullscreenUI::DrawFloatRangeSetting(SettingsInterface* bsi, const char* tit
 			else
 				bsi->SetFloatValue(section, key, dlg_value);
 
-			SetSettingsChanged(bsi);
+			SetSettingsChanged(bsi, section, key);
 		}
 
 		ImGui::PopStyleColor(7);
@@ -966,7 +974,7 @@ void FullscreenUI::DrawFloatSpinBoxSetting(SettingsInterface* bsi, const char* t
 			else
 				bsi->SetFloatValue(section, key, dlg_value);
 
-			SetSettingsChanged(bsi);
+			SetSettingsChanged(bsi, section, key);
 		}
 
 		if (MenuButtonWithoutSummary(FSUI_CSTR("OK"), true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY, g_large_font, ImVec2(0.5f, 0.0f)))
@@ -1230,7 +1238,7 @@ void FullscreenUI::DrawStringListSetting(SettingsInterface* bsi, const char* tit
 						bsi->SetStringValue(section, key, option_values_copy[index].c_str());
 					}
 
-					SetSettingsChanged(bsi);
+					SetSettingsChanged(bsi, section, key);
 				}
 
 				CloseChoiceDialog();
@@ -1274,7 +1282,7 @@ void FullscreenUI::DrawStringListSetting(SettingsInterface* bsi, const char* tit
 						bsi->SetStringValue(section, key, raw_options[index].first.c_str());
 					}
 
-					SetSettingsChanged(bsi);
+					SetSettingsChanged(bsi, section, key);
 				}
 
 				CloseChoiceDialog();
@@ -1344,7 +1352,7 @@ void FullscreenUI::DrawFloatListSetting(SettingsInterface* bsi, const char* titl
 						bsi->SetFloatValue(section, key, option_values[index]);
 					}
 
-					SetSettingsChanged(bsi);
+					SetSettingsChanged(bsi, section, key);
 				}
 
 				CloseChoiceDialog();
@@ -1395,7 +1403,7 @@ void FullscreenUI::DrawEnumSetting(SettingsInterface* bsi, const char* title, co
 						bsi->SetStringValue(section, key, to_string_function(static_cast<DataType>(index)));
 					}
 
-					SetSettingsChanged(bsi);
+					SetSettingsChanged(bsi, section, key);
 				}
 
 				CloseChoiceDialog();
