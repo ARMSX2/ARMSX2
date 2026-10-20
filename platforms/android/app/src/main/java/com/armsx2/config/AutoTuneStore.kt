@@ -63,6 +63,20 @@ object AutoTuneStore {
         Lever("EmuCore/Speedhacks", "DynamicEECycleRate", "dynamicEeCycleRate", Kind.BOOL),
     )
 
+    /**
+     * The player changed [previous] into [updated] by hand, in a game's own settings. When that moved a setting
+     * auto-tune writes (a [levers] field), auto-tune would go on adjusting what the player just chose, so it is
+     * turned off for that game: the result is [updated] with the switch off. A change to anything else, or
+     * auto-tune already being off, gives [updated] back as it is. What auto-tune already changed, and its
+     * record, stay.
+     */
+    fun withAutoTuneOffForManualChange(previous: Settings, updated: Settings): Settings {
+        if (!updated.emuCore.autoTune) return updated
+        val changed = Settings.diff(previous, updated)
+        if (levers.none { changed.has(it.field) }) return updated
+        return updated.copy(emuCore = updated.emuCore.copy(autoTune = false))
+    }
+
     /** A key the core put back in the game's file. [value] is the text it holds again, null when it deleted the key. */
     class Restored(val section: String, val key: String, val value: String?)
 

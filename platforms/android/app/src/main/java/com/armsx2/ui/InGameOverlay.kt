@@ -3,6 +3,7 @@ package com.armsx2.ui
 import androidx.compose.runtime.mutableStateOf
 import com.armsx2.EmuState
 import com.armsx2.runtime.MainActivityRuntime
+import com.armsx2.config.AutoTuneStore
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
@@ -93,8 +94,11 @@ object InGameOverlay {
      *  snapping back to the top. Keyed by EmulationMenuTab.name to avoid coupling to that enum. */
     val menuTabScroll = HashMap<String, Int>()
 
-    fun saveSettings(updated: Settings) {
+    fun saveSettings(changed: Settings) {
         val previous = settingsState.value
+        // A setting auto-tune moves, set by hand in a game's own settings, turns auto-tune off for that game. The global
+        // settings are not a game's: changing those leaves the switch alone.
+        val updated = if (settingsScope.value == SettingsScope.Game) AutoTuneStore.withAutoTuneOffForManualChange(previous, changed) else changed
         settingsState.value = updated
         // `previous` matters: it's how ConfigStore tells a field the user just changed in
         // Game scope from one they never touched, so setting a per-game value that happens
