@@ -52,6 +52,16 @@ namespace AutoTune
 		double gain = 0.0; // relative gain in speed measured when the lever was kept, compounded over every step kept on this key
 	};
 
+	/// True when `section`/`key` is a setting auto-tune writes (one of the keys KeyForLever returns).
+	bool IsLeverKey(const char* section, const char* key);
+
+	/// The player changed `section`/`key` by hand in a game's own settings (not the global ones). When it is a
+	/// lever key and auto-tune is on for this game, turns it off for the game by writing EmuCore/AutoTune = false
+	/// into `game_si`, so it does not move the setting the player just chose. `enabled_globally` is the global
+	/// switch, which decides whether a game's file that says nothing is on. Returns true when it wrote. The caller
+	/// saves the file. What auto-tune already changed, and the record of it, stay.
+	bool DisableForManualChange(SettingsInterface& game_si, const char* section, const char* key, bool enabled_globally);
+
 	/// Writes a lever's value under its key, as the right type for that key.
 	void WriteLeverValue(SettingsInterface& si, AutoTuneLever lever, double value);
 

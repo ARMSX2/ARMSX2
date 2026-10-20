@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 namespace
 {
@@ -226,6 +227,31 @@ AutoTune::LeverKey AutoTune::KeyForLever(AutoTuneLever lever)
 		default:
 			return {"", ""};
 	}
+}
+
+bool AutoTune::IsLeverKey(const char* section, const char* key)
+{
+	for (int i = 0; i < static_cast<int>(AutoTuneLever::Count); i++)
+	{
+		const LeverKey k = KeyForLever(static_cast<AutoTuneLever>(i));
+		if (std::strcmp(section, k.section) == 0 && std::strcmp(key, k.key) == 0)
+			return true;
+	}
+	return false;
+}
+
+bool AutoTune::DisableForManualChange(SettingsInterface& game_si, const char* section, const char* key, bool enabled_globally)
+{
+	if (!IsLeverKey(section, key))
+		return false;
+
+	bool enabled = enabled_globally;
+	game_si.GetBoolValue("EmuCore", "AutoTune", &enabled);
+	if (!enabled)
+		return false;
+
+	game_si.SetBoolValue("EmuCore", "AutoTune", false);
+	return true;
 }
 
 void AutoTune::WriteLeverValue(SettingsInterface& si, AutoTuneLever lever, double value)

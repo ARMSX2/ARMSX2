@@ -385,3 +385,77 @@ TEST(AutoTuneStore, LeverLabelsNameTheValue)
 	EXPECT_EQ(LeverLabel(AutoTuneLever::Blending, 0.0), "blending Minimum");
 	EXPECT_EQ(LeverLabel(AutoTuneLever::IopThread, 1.0), "IOP thread");
 }
+
+// ---- a setting the player changes by hand ----------------------------------------------------------
+
+TEST(AutoTuneManualChange, OnlyTheKeysAutoTuneWritesAreLeverKeys)
+{
+	for (int i = 0; i < static_cast<int>(AutoTuneLever::Count); i++)
+	{
+		const LeverKey k = KeyForLever(static_cast<AutoTuneLever>(i));
+		EXPECT_TRUE(IsLeverKey(k.section, k.key)) << k.section << "/" << k.key;
+	}
+
+	EXPECT_FALSE(IsLeverKey(GS, "filter"));
+	EXPECT_FALSE(IsLeverKey("EmuCore", "AutoTune"));
+	// The right key in the wrong section is another setting.
+	EXPECT_FALSE(IsLeverKey(SPEED, "upscale_multiplier"));
+	EXPECT_FALSE(IsLeverKey(GS, "iopThread"));
+}
+
+TEST(AutoTuneManualChange, ChangingALeverTurnsAutoTuneOffForThatGame)
+{
+	// Each lever, with the global switch on and the game's file saying nothing about it.
+	for (int i = 0; i < static_cast<int>(AutoTuneLever::Count); i++)
+	{
+		const LeverKey k = KeyForLever(static_cast<AutoTuneLever>(i));
+		MemorySettingsInterface game;
+		EXPECT_TRUE(DisableForManualChange(game, k.section, k.key, true)) << k.key;
+		bool value = true;
+		ASSERT_TRUE(game.GetBoolValue("EmuCore", "AutoTune", &value)) << k.key;
+		EXPECT_FALSE(value) << k.key;
+	}
+}
+
+TEST(AutoTuneManualChange, AnyOtherSettingLeavesAutoTuneAlone)
+{
+	MemorySettingsInterface game;
+	EXPECT_FALSE(DisableForManualChange(game, GS, "filter", true));
+	EXPECT_FALSE(DisableForManualChange(game, "EmuCore", "AutoTune", true));
+	EXPECT_FALSE(game.ContainsValue("EmuCore", "AutoTune"));
+}
+
+TEST(AutoTuneManualChange, WhenItIsAlreadyOffNothingIsWritten)
+{
+	// Off in the game's own file.
+	MemorySettingsInterface off_here;
+	off_here.SetBoolValue("EmuCore", "AutoTune", false);
+	EXPECT_FALSE(DisableForManualChange(off_here, GS, "upscale_multiplier", true));
+	EXPECT_FALSE(off_here.GetBoolValue("EmuCore", "AutoTune", true));
+
+	// Off globally, and the game's file follows the global setting: writing "off" into it would only
+	// pin the game to a value the global setting already gives it.
+	MemorySettingsInterface follows_global;
+	EXPECT_FALSE(DisableForManualChange(follows_global, GS, "upscale_multiplier", false));
+	EXPECT_FALSE(follows_global.ContainsValue("EmuCore", "AutoTune"));
+}
+
+TEST(AutoTuneManualChange, AGameThatTurnedItOnAgainstAGlobalOffIsTurnedOff)
+{
+	MemorySettingsInterface game;
+	game.SetBoolValue("EmuCore", "AutoTune", true);
+	EXPECT_TRUE(DisableForManualChange(game, SPEED, "iopThread", false));
+	EXPECT_FALSE(game.GetBoolValue("EmuCore", "AutoTune", true));
+}
+
+TEST(AutoTuneManualChange, TheRecordOfWhatAutoTuneChangedIsKept)
+{
+	// Turning it off stops further tuning; the changes it already made stay, and so does the way back.
+	MemorySettingsInterface game;
+	Commit(game, AutoTuneLever::Resolution, 2.0, 0.1);
+	game.SetFloatValue(GS, "upscale_multiplier", 4.0f); // the player's change
+	EXPECT_TRUE(DisableForManualChange(game, GS, "upscale_multiplier", true));
+
+	ASSERT_EQ(ReadChanges(game).size(), 1u);
+	EXPECT_EQ(game.GetFloatValue(GS, "upscale_multiplier", 0.0f), 4.0f);
+}
