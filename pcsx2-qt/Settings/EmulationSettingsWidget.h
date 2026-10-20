@@ -15,8 +15,11 @@ public:
 	EmulationSettingsWidget(SettingsWindow* settings_dialog, QWidget* parent);
 	~EmulationSettingsWidget();
 
-	/// Reads what auto-tune changed for this game from its settings file again. Per-game dialogs only.
+	/// Reads what auto-tune changed for this game from its settings file again, and whether it is on. Per-game dialogs only.
 	void updateAutoTuneSummary();
+
+protected:
+	void showEvent(QShowEvent* event) override;
 
 private Q_SLOTS:
 	void onOptimalFramePacingChanged();
@@ -29,6 +32,7 @@ private:
 	void updateUseVSyncForTimingEnabled();
 	void onManuallySetRealTimeClockChanged();
 	void onUseSystemLocaleFormatChanged();
+	void refreshAutoTuneToggle();
 
 	Ui::EmulationSettingsWidget m_ui;
 };

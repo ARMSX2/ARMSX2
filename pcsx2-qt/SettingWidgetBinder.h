@@ -704,6 +704,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -745,6 +746,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -819,6 +821,7 @@ namespace SettingWidgetBinder
 					}
 				}
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -867,6 +870,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -908,6 +912,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -949,6 +954,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -1011,6 +1017,7 @@ namespace SettingWidgetBinder
 					sif->DeleteValue(section.c_str(), key.c_str());
 				}
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -1077,6 +1084,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});
@@ -1142,6 +1150,7 @@ namespace SettingWidgetBinder
 				else
 					sif->DeleteValue(section.c_str(), key.c_str());
 
+				QtHost::NoteGameSettingEdited(sif, section.c_str(), key.c_str());
 				QtHost::SaveGameSettings(sif, true);
 				g_emu_thread->reloadGameSettings();
 			});

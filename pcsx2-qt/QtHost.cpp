@@ -19,6 +19,7 @@
 
 #include "pcsx2/CDVD/CDVDcommon.h"
 #include "pcsx2/Achievements.h"
+#include "pcsx2/AutoTune/AutoTuneStore.h"
 #include "pcsx2/BuildVersion.h"
 #include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/CDVD/CDVD.h"
@@ -1544,6 +1545,11 @@ QString QtHost::GetResourcesBasePath()
 std::string QtHost::GetRuntimeDownloadedResourceURL(std::string_view name)
 {
 	return fmt::format("{}/{}", RUNTIME_RESOURCES_URL, Path::URLEncode(name));
+}
+
+void QtHost::NoteGameSettingEdited(SettingsInterface* sif, const char* section, const char* key)
+{
+	AutoTune::DisableForManualChange(*sif, section, key, Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", true));
 }
 
 bool QtHost::SaveGameSettings(SettingsInterface* sif, bool delete_if_empty)

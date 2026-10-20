@@ -267,6 +267,10 @@ namespace QtHost
 	/// Saves a game settings interface.
 	bool SaveGameSettings(SettingsInterface* sif, bool delete_if_empty);
 
+	/// A settings screen wrote or removed `section`/`key` in a game's own settings `sif`, which it saves next. When the key is one
+	/// automatic performance tuning moves, tuning is turned off for that game: the player just chose the value.
+	void NoteGameSettingEdited(SettingsInterface* sif, const char* section, const char* key);
+
 	/// Downloads the specified URL into memory.
 	std::optional<bool> DownloadFile(QWidget* parent, const QString& title, std::string url, std::vector<u8>* data);
 

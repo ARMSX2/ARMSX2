@@ -79,6 +79,9 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 		m_ui.cheats->hide();
 
 		connect(m_ui.resetAutoTune, &QPushButton::clicked, this, &EmulationSettingsWidget::onResetAutoTuneClicked);
+		// Changing the IOP thread turns auto-tune off for the game (QtHost::NoteGameSettingEdited), and its switch is on this page.
+		// The binder's own handler is connected first, so the file has the change by the time this runs.
+		connect(m_ui.iopThread, &QCheckBox::checkStateChanged, this, &EmulationSettingsWidget::refreshAutoTuneToggle);
 		updateAutoTuneSummary();
 	}
 	else
@@ -192,8 +195,32 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 
 EmulationSettingsWidget::~EmulationSettingsWidget() = default;
 
+void EmulationSettingsWidget::showEvent(QShowEvent* event)
+{
+	SettingsWidget::showEvent(event);
+
+	// A change on another page (the resolution, say) can have turned auto-tune off for this game since this page was last shown.
+	if (dialog()->isPerGameSettings())
+		refreshAutoTuneToggle();
+}
+
+void EmulationSettingsWidget::refreshAutoTuneToggle()
+{
+	SettingsInterface* sif = dialog()->getSettingsInterface();
+	if (!sif)
+		return;
+
+	// What the binder did when it set the box up, again, without the box saving what it is told.
+	const QSignalBlocker blocker(m_ui.autoTune);
+	bool value = false;
+	SettingWidgetBinder::SettingAccessor<QCheckBox>::setNullableBoolValue(
+		m_ui.autoTune, sif->GetBoolValue("EmuCore", "AutoTune", &value) ? std::optional<bool>(value) : std::nullopt);
+}
+
 void EmulationSettingsWidget::updateAutoTuneSummary()
 {
+	refreshAutoTuneToggle();
+
 	const std::vector<std::string> lines = AutoTune::DescribeForGame(dialog()->getSerial(), dialog()->getDiscCRC());
 
 	QString text;
