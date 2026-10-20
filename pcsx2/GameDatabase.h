@@ -90,6 +90,9 @@ namespace GameDatabaseSchema
 		RecommendedBlendingLevel,
 		RecommendedAccurateAlphaTest,
 		RecommendedHWAA1,
+		// GS multi-threading (the back thread) as a per-title recommendation: a nonzero value turns it on where the host can
+		// spare the cores (VMManager::Internal::CanSplitGS) and never turns it off.
+		BackThread,
 		HWDownloadMode,
 		GetSkipCount,
 		BeforeDraw,

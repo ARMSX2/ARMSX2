@@ -1287,3 +1287,117 @@ SLES-50672:
         author=bmdhacks
         comment=Keeps textures that are drawn every frame resident in the game's VRAM texture cache instead of evicting and re-uploading them (0x00135250: lw v0,-0x5b38(gp) -> lw v0,-0x5b34(gp)).
         patch=1,EE,00135250,word,8f82a4cc
+
+# GS multi-threading (backThread) recommended for the titles whose frame is limited by the GS
+# thread. bmdhacks (draw-storm ARCH step 1, Claude session), 2026-10-19; ARMSX2 umbrella,
+# devs/bmdhacks/campaigns/draw-storm/ARCH/STEP1-RESULT.md.
+#
+# What the fix does: backThread: 1 turns the GS back thread on for the game, only where the host
+# has at least four performance-tier cores and a slower tier beside them
+# (VMManager::Internal::CanSplitGS), and never turns it off. A player's own per-game
+# GSBackThreadMode claims the setting and the database stands aside.
+#
+# Why these titles and not every game: the split moves the draw, texture-cache and driver half of
+# the GS work to a second thread. Where the GS thread is the limit that is a large win; where the
+# EE or VU1 thread is the limit it costs 1 to 13 percent, because the two extra threads compete
+# for the same four big cores. Frame time, savestate in a GS-limited scene, native 1x, unlimited
+# speed, median of 6 passes over two rounds, split off against split on (Android: Performance
+# Cores mode, ROCKNIX: threads left to the scheduler, both with the prime-core rule of the same
+# commit): Spider-Man 3 SD865 22.76 -> 20.52 ms, RG 476H 33.01 -> 30.50, RG 477V 20.86 -> 20.02,
+# MQ65 87.34 -> 86.47; Sly 3 SD865 16.72 -> 12.78, RG 476H 25.74 -> 25.42, RG 477V 14.94 -> 12.15,
+# MQ65 67.97 -> 59.73; Ratchet & Clank: Up Your Arsenal SD865 10.02 -> 9.29, RG 476H 16.41 ->
+# 14.56, RG 477V 9.91 -> 9.72, MQ65 40.85 -> 34.96. No cell is slower with the split on.
+# At 2x on the SD865 Spider-Man 3 is GPU-limited (34.8 ms either way) and Sly 3 gains 7.5 percent.
+# Verified: draw-storm x1-placement build, armsx2-turnip axfl2-002 on the SD865, malisx2 0.1.5 on
+# the RG 476H and RG 477V. Serials: every retail release of each title that the database lists;
+# the measured ones are the NTSC-U discs (SLUS-21552, SCUS-97464, SCUS-97353).
+#
+# gsHWFixes is replaced wholesale, so each entry restates the upstream fixes it keeps.
+
+# Spider-Man 3, six releases (SLUS-21552 measured). bmdhacks, 2026-10-19: backThread added to the upstream fixes.
+SLUS-21552:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+SLUS-21617:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+SLES-54723:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+SLES-54724:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+SLKA-25385:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+SLPS-25823:
+  gsHWFixes:
+    cpuSpriteRenderBW: 2 # Fixes textures.
+    cpuSpriteRenderLevel: 2 # Fixes the sun when using the above.
+    halfPixelOffset: 5 # Fixes bloom alignment.
+    autoFlush: 1 # Fixes bloom intensity.
+    nativeScaling: 2 # Fixes DOF effect.
+    backThread: 1 # GS thread is the limit in the worst scenes; see the block above.
+
+# Sly 3: Honor Among Thieves, four releases (SCUS-97464 measured). bmdhacks, 2026-10-19: backThread added to the upstream fixes.
+SCUS-97464:
+  gsHWFixes:
+    halfPixelOffset: 5 # Fixes chromatic effect.
+    backThread: 1 # GS thread is the limit in the busy streets; see the block above.
+SCES-53409:
+  gsHWFixes:
+    halfPixelOffset: 5 # Fixes chromatic effect.
+    backThread: 1 # GS thread is the limit in the busy streets; see the block above.
+SCKA-20063:
+  gsHWFixes:
+    halfPixelOffset: 5 # Fixes chromatic effect.
+    backThread: 1 # GS thread is the limit in the busy streets; see the block above.
+SCKA-20111:
+  gsHWFixes:
+    halfPixelOffset: 5 # Fixes chromatic effect.
+    backThread: 1 # GS thread is the limit in the busy streets; see the block above.
+
+# Ratchet & Clank: Up Your Arsenal, two releases (SCUS-97353 measured). bmdhacks, 2026-10-19: backThread added to the upstream fixes.
+SCUS-97353:
+  gsHWFixes:
+    recommendedBlendingLevel: 3 # Improves color and luminosity of surfaces.
+    disablePartialInvalidation: 1 # Prevents the situation that a level (Aquatos) doesn't render characters and geometry.
+    halfPixelOffset: 4 # Aligns post bloom.
+    nativeScaling: 1 # Fixes light blooms.
+    autoFlush: 2 # Helps fix misaligned bloom.
+    recommendedAccurateAlphaTest: 1 # Fixes shadows and glasses alpha.
+    backThread: 1 # GS thread is the limit in combat scenes; see the block above.
+SCES-52456:
+  gsHWFixes:
+    recommendedBlendingLevel: 3 # Improves color and luminosity of surfaces.
+    disablePartialInvalidation: 1 # Prevents the situation that a level (Aquatos) doesn't render characters and geometry.
+    halfPixelOffset: 4 # Aligns post bloom.
+    nativeScaling: 1 # Fixes light blooms.
+    autoFlush: 2 # Helps fix misaligned bloom.
+    recommendedAccurateAlphaTest: 1 # Fixes shadows and glasses alpha.
+    backThread: 1 # GS thread is the limit in combat scenes; see the block above.

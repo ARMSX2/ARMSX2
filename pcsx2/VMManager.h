@@ -444,6 +444,10 @@ namespace VMManager
 		/// How many of them there are. The IOP thread's ResolveMode wants it (design 10.2).
 		u32 GetPerformanceCoreCount();
 
+		/// Whether this host can run the GS back thread beside the EE, VU1 and GS front threads: at least four performance-tier
+		/// processors and a slower tier beside them. False where the cores cannot be told apart (no capacity source).
+		bool CanSplitGS();
+
 		/// Diagnostic (OSD): where the EE/VU/GS threads, and the IOP thread while it runs, are actually
 		/// running (current core + affinity mask) plus the cpuinfo cluster/frequency topology. Used to see whether the
 		/// worker threads are being scheduled onto slow cores / clamped by a cpuset.

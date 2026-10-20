@@ -9,6 +9,7 @@
 #endif
 #include "GS/GS.h"
 #include "Host.h"
+#include "VMManager.h"
 #include "IconsFontAwesome.h"
 #include "vtlb.h"
 
@@ -455,6 +456,7 @@ static const char* s_gs_hw_fix_names[] = {
 	"recommendedBlendingLevel",
 	"recommendedAccurateAlphaTest",
 	"recommendedHWAA1",
+	"backThread",
 	"hwDownloadMode",
 	"getSkipCount",
 	"beforeDraw",
@@ -496,6 +498,7 @@ bool GameDatabaseSchema::isUserHackHWFix(GSHWFixId id)
 		case GSHWFixId::RecommendedBlendingLevel:
 		case GSHWFixId::PCRTCOffsets:
 		case GSHWFixId::PCRTCOverscan:
+		case GSHWFixId::BackThread:
 		case GSHWFixId::GetSkipCount:
 		case GSHWFixId::BeforeDraw:
 		case GSHWFixId::MoveHandler:
@@ -844,6 +847,9 @@ bool GameDatabaseSchema::GameEntry::configMatchesHWFix(const Pcsx2Config::GSOpti
 		case GSHWFixId::CPUCLUTRender:
 			return (config.UserHacks_CPUCLUTRender == value);
 
+		case GSHWFixId::BackThread:
+			return (config.BackThread == (value != 0));
+
 		case GSHWFixId::GPUTargetCLUT:
 			return (static_cast<int>(config.UserHacks_GPUTargetCLUTMode) == value);
 
@@ -1102,6 +1108,14 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 			case GSHWFixId::CPUCLUTRender:
 				config.UserHacks_CPUCLUTRender = value;
 				break;
+
+			case GSHWFixId::BackThread:
+			{
+				// A recommendation, not an order: it can turn the split on, never off, and only on a host with the cores for it.
+				if (value != 0 && !config.BackThread && VMManager::Internal::CanSplitGS())
+					config.BackThread = true;
+			}
+			break;
 
 			case GSHWFixId::GPUTargetCLUT:
 			{

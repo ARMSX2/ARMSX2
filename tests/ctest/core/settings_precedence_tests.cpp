@@ -19,6 +19,7 @@
 #include "Config.h"
 #include "GameDatabase.h"
 #include "PerGameOverrides.h"
+#include "VMManager.h"
 
 #include "common/MemorySettingsInterface.h"
 #include "common/SettingsWrapper.h"
@@ -328,6 +329,42 @@ TEST(SettingsPrecedenceApply, AClaimedGraphicsFixKeepsThePlayersValue)
 
 	EXPECT_FALSE(gs.HWMipmap) << "claimed, so the database stands aside";
 	EXPECT_EQ(gs.UserHacks_TextureInsideRt, GSTextureInRtMode::InsideTargets) << "unclaimed, so it still applies";
+}
+
+// The back thread is a recommendation: the database can turn the split on where the host has the cores for it, a player's
+// own setting for the game stands in its way, and it never turns the split off.
+TEST(SettingsPrecedenceApply, TheDatabaseTurnsTheBackThreadOnOnlyWhereTheHostCanSplit)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::BackThread, 1);
+
+	Pcsx2Config::GSOptions gs;
+	gs.BackThread = false;
+	entry.applyGSHardwareFixes(gs, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+	EXPECT_EQ(gs.BackThread, VMManager::Internal::CanSplitGS()) << "on exactly when this host can run the split";
+}
+
+TEST(SettingsPrecedenceApply, APlayersBackThreadSettingForTheGameKeepsTheDatabaseOut)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::BackThread, 1);
+
+	Pcsx2Config::GSOptions gs;
+	gs.BackThread = false;
+	const PerGameOverrides ov = GameFile().Set("EmuCore/GS", "GSBackThreadMode", 0).Overrides();
+	entry.applyGSHardwareFixes(gs, ov, GameDatabaseSchema::ApplyMode::Hypothetical);
+	EXPECT_FALSE(gs.BackThread);
+}
+
+TEST(SettingsPrecedenceApply, TheDatabaseNeverTurnsAPlayersBackThreadOff)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::BackThread, 0);
+
+	Pcsx2Config::GSOptions gs;
+	gs.BackThread = true;
+	entry.applyGSHardwareFixes(gs, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+	EXPECT_TRUE(gs.BackThread);
 }
 
 // ---------------------------------------------------------------- the copy filter

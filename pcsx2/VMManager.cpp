@@ -4999,6 +4999,17 @@ u32 VMManager::Internal::GetPerformanceCoreCount()
 	return static_cast<u32>(std::popcount(GetPerformanceCoreMask()));
 }
 
+bool VMManager::Internal::CanSplitGS()
+{
+#if defined(__linux__)
+	EnsureCPUInfoInitialized();
+	const u32 tier = GetPerformanceCoreCount();
+	return tier >= 4 && tier < cpuinfo_get_processors_count();
+#else
+	return false;
+#endif
+}
+
 void VMManager::EnsureCPUInfoInitialized()
 {
 	std::call_once(s_processor_list_initialized, InitializeProcessorList);
