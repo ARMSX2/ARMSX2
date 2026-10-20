@@ -2943,8 +2943,14 @@ void MainWindow::createDisplayWidget(bool fullscreen, bool render_to_main)
 		else
 			restoreDisplayWindowGeometryFromConfig();
 
-		if (fullscreen)
-			m_display_surface->showFullScreen();
+ 		if (fullscreen)
+		{
+			// Wayland has nothing to fall back to for a window that was never mapped,
+			// so we need to give it a mapping with a resolution before fullscreen.
+			m_display_container->showNormal();
+			QGuiApplication::sync();
+ 			m_display_container->showFullScreen();
+		}
 		else
 			m_display_surface->showNormal();
 #else
