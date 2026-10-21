@@ -13,7 +13,8 @@ import org.junit.Test
  * ([AutoTuneStore.withAutoTuneOffForManualChange]). Any other setting leaves it alone.
  */
 class AutoTuneManualChangeTest {
-    private val before = Settings() // auto-tune is on by default
+    // Auto-tune is off by default; the rule under test only applies to a game it is on for.
+    private val before = Settings().let { it.copy(emuCore = it.emuCore.copy(autoTune = true)) }
 
     private fun changedBy(change: (Settings) -> Settings): Settings =
         AutoTuneStore.withAutoTuneOffForManualChange(before, change(before))

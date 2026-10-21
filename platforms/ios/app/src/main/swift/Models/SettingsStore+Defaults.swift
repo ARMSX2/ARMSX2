@@ -78,7 +78,7 @@ extension SettingsStore {
         enableWidescreenPatches = false
         enableNoInterlacingPatches = false
         hostFilesystem = false
-        autoTune = true
+        autoTune = false
         for option in Self.gameFixOptions {
             gameFixes[option.key] = false
             ARMSX2Bridge.setINIBool("EmuCore/Gamefixes", key: option.key, value: false)

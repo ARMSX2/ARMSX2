@@ -125,18 +125,18 @@ TEST(AutoTuneTrialLayer, TheHostInstallsAndRemovesIt)
 
 // ---------------------------------------------------------------------------------------------- the switch
 
-TEST(AutoTuneSetting, IsOnByDefaultAndReadFromEmuCore)
+TEST(AutoTuneSetting, IsOffByDefaultAndReadFromEmuCore)
 {
 	Pcsx2Config config;
-	EXPECT_TRUE(config.AutoTune);
+	EXPECT_FALSE(config.AutoTune);
 	EXPECT_TRUE(config.AutoTuneTrace.empty());
 
 	MemorySettingsInterface si;
-	si.SetBoolValue("EmuCore", "AutoTune", false);
+	si.SetBoolValue("EmuCore", "AutoTune", true);
 	si.SetStringValue("EmuCore", "AutoTuneTrace", "/tmp/trace.csv");
 	SettingsLoadWrapper wrapper(si);
 	config.LoadSaveCore(wrapper);
-	EXPECT_FALSE(config.AutoTune);
+	EXPECT_TRUE(config.AutoTune);
 	EXPECT_EQ(config.AutoTuneTrace, "/tmp/trace.csv");
 }
 
@@ -145,7 +145,7 @@ TEST(AutoTuneSetting, IsNotPartOfAnythingTheCpuCachesDependOn)
 	// CheckForCPUConfigChanges compares Cpu, Gamefixes, Speedhacks and Profiler and flushes the
 	// recompiler caches when one differs. Toggling auto-tune must change none of them.
 	Pcsx2Config on, off;
-	off.AutoTune = false;
+	on.AutoTune = true;
 	EXPECT_TRUE(on.Cpu == off.Cpu);
 	EXPECT_TRUE(on.Gamefixes == off.Gamefixes);
 	EXPECT_TRUE(on.Speedhacks == off.Speedhacks);

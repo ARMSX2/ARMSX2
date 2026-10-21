@@ -1549,7 +1549,7 @@ std::string QtHost::GetRuntimeDownloadedResourceURL(std::string_view name)
 
 void QtHost::NoteGameSettingEdited(SettingsInterface* sif, const char* section, const char* key)
 {
-	AutoTune::DisableForManualChange(*sif, section, key, Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", true));
+	AutoTune::DisableForManualChange(*sif, section, key, Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", false));
 }
 
 bool QtHost::SaveGameSettings(SettingsInterface* sif, bool delete_if_empty)

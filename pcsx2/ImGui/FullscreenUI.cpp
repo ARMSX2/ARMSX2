@@ -3338,7 +3338,7 @@ void FullscreenUI::DrawSetupWindow()
 		if (step == SetupStep::Performance)
 		{
 			// Saves the answer even when it was left as it was, so the settings file shows the player was asked.
-			Host::SetBaseBoolSettingValue("EmuCore", "AutoTune", Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", true));
+			Host::SetBaseBoolSettingValue("EmuCore", "AutoTune", Host::GetBaseBoolSettingValue("EmuCore", "AutoTune", false));
 			Host::CommitBaseSettingChanges();
 		}
 
@@ -3461,7 +3461,7 @@ void FullscreenUI::DrawSetupWindow()
 			DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
 				FSUI_CSTR("When a game can't keep full speed, ARMSX2 tries lighter settings for that game one at a time and keeps the ones "
 						  "that help. You can reset it for any game from the game's settings."),
-				"EmuCore", "AutoTune", true);
+				"EmuCore", "AutoTune", false);
 			EndMenuButtons();
 		}
 		break;

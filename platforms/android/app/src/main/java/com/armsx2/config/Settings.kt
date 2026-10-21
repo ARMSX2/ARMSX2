@@ -300,8 +300,8 @@ data class EmuCoreSettings(
     val hostFs: Boolean = false,
     /** EmuCore/AutoTune — automatic performance tuning: when a game keeps missing frames, the core tries
      *  performance settings one at a time and keeps the ones that help, saved in the game's own settings
-     *  (see [com.armsx2.config.AutoTuneStore]). On by default. */
-    val autoTune: Boolean = true,
+     *  (see [com.armsx2.config.AutoTuneStore]). Off by default. */
+    val autoTune: Boolean = false,
     /** RetroAchievements' options, the [Achievements] INI section. */
     val achievements: AchievementsSettings = AchievementsSettings(),
     /** EmuCore/EnablePINE — the IPC server external tools drive the emulator through

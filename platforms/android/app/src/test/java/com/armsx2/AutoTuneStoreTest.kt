@@ -210,13 +210,13 @@ class AutoTuneStoreTest {
 
     @Test
     fun theSwitchAndTheGovernorSurviveTheSettingsJson() {
-        val s = Settings().let { it.copy(emuCore = it.emuCore.copy(autoTune = false), cpu = it.cpu.copy(dynamicEeCycleRate = true)) }
+        val s = Settings().let { it.copy(emuCore = it.emuCore.copy(autoTune = true), cpu = it.cpu.copy(dynamicEeCycleRate = true)) }
         val back = Settings.fromJson(s.toJson())
-        assertFalse(back.emuCore.autoTune)
+        assertTrue(back.emuCore.autoTune)
         assertTrue(back.cpu.dynamicEeCycleRate)
-        // On by default, so a stored blob without the key (a save from before the switch) reads as on.
+        // Off by default, so a stored blob without the key (a save from before the switch) reads as off.
         val old = Settings.fromJson(JSONObject().also { it.put("mtvu", true) })
-        assertTrue(old.emuCore.autoTune)
+        assertFalse(old.emuCore.autoTune)
         assertFalse(old.cpu.dynamicEeCycleRate)
     }
 

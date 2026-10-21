@@ -499,7 +499,7 @@ void SetupWizardDialog::setupAutoTunePage()
 {
 	// Checked unless the player already turned it off. A change is saved at once; leaving the page saves the answer
 	// even when it was left as it was (see nextPage), so the settings file shows the player was asked.
-	SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoTuneEnabled, "EmuCore", "AutoTune", true);
+	SettingWidgetBinder::BindWidgetToBoolSetting(nullptr, m_ui.autoTuneEnabled, "EmuCore", "AutoTune", false);
 }
 
 void SetupWizardDialog::setupDriverPage()

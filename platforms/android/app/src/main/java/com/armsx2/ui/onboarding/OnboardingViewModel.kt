@@ -49,8 +49,8 @@ data class OnboardingUiState(
     val biosOptions: List<BiosCandidate> = emptyList(),
     val selectedBiosPath: String? = null,
     val gameFolders: List<String> = emptyList(),
-    /** Automatic performance tuning (EmuCore/AutoTune). On unless the player turned it off before. */
-    val autoTune: Boolean = true,
+    /** Automatic performance tuning (EmuCore/AutoTune). Off unless the player turned it on before. */
+    val autoTune: Boolean = false,
     /** Name of the driver source offered on the driver page ("ARMSX2 · MaliSX2"); empty when the page is not shown. */
     val driverSource: String = "",
     /** The offered driver is malisx2, which has a kernel requirement worth telling the player about. */
@@ -98,7 +98,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             biosInfo = info,
             selectedBiosPath = existingBios?.absolutePath,
             gameFolders = MainActivityRuntime.romsDirs.value,
-            autoTune = runCatching { ConfigStore.loadGlobal().emuCore.autoTune }.getOrDefault(true),
+            autoTune = runCatching { ConfigStore.loadGlobal().emuCore.autoTune }.getOrDefault(false),
             page = if (MainActivityRuntime.setupComplete.value) 1 else 0,
         )
         if (driverSource != null && driverOfferJob == null) lookUpDriverOffer(renderer)

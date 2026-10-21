@@ -223,7 +223,7 @@ void FullscreenUI::SetSettingsChanged(SettingsInterface* bsi, const char* sectio
 {
 	// Read from the base layer directly: callers hold the settings lock, which is not recursive.
 	if (IsEditingGameSettings(bsi))
-		AutoTune::DisableForManualChange(*bsi, section, key, Host::Internal::GetBaseSettingsLayer()->GetBoolValue("EmuCore", "AutoTune", true));
+		AutoTune::DisableForManualChange(*bsi, section, key, Host::Internal::GetBaseSettingsLayer()->GetBoolValue("EmuCore", "AutoTune", false));
 	SetSettingsChanged(bsi);
 }
 
@@ -2715,7 +2715,7 @@ void FullscreenUI::DrawEmulationSettingsPage()
 		"EmuCore/Speedhacks", "iopThread", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
 		FSUI_CSTR("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."),
-		"EmuCore", "AutoTune", true);
+		"EmuCore", "AutoTune", false);
 #ifdef ARCH_ARM64 // vu-aot is part of the ARM64 recompilers only
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Enable VU1 Ahead-of-Time Compiler"),
 		FSUI_CSTR("Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache."),
