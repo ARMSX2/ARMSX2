@@ -4434,7 +4434,7 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 			GetMobileDriverProfile().orders_declared_feedback_loop ?
 				"TRUSTED" :
 				"NOT trusted on this part -- generation 1 covers Turnip on Adreno 650-699, "
-				"generation 2 adds Adreno 730 and up and the 722");
+				"generation 2 adds Adreno 730 and up");
 	}
 	// Printed whenever the profile carries the rule, in effect or not.
 	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)

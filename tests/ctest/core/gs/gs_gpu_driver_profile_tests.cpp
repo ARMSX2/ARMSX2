@@ -996,8 +996,8 @@ namespace
 	}
 } // namespace
 
-// The device this was measured on, its neighbours, and the 722 (an a730 derivative, in on lineage
-// rather than measurement). Stock Turnip, no tag, and it still earns the preference -- that is the
+// The device this was measured on, its neighbours, and the 722 (an a730 derivative, run on the Duo
+// and stable on this road). Stock Turnip, no tag, and it still earns the preference -- that is the
 // whole point of this fact being about the part.
 TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarriers)
 {
@@ -1053,8 +1053,9 @@ TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno7xxGetsThePreferenceAndNotTheOrder
 }
 
 // Generation 2 carries the a7xx half of the fix: the driver orders a declared loop on A7XX too.
-// On the 730 and up, and the 722, that buys the ordering claim, alongside the preference, and the
-// road policy lets the ordering fact win (same road, barriers dropped).
+// On the 730 and up that buys the ordering claim, alongside the preference, and the road policy
+// lets the ordering fact win (same road, barriers dropped). The 722 is not in this list: see
+// TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip.
 namespace
 {
 	constexpr const char* kGen2TurnipDriverInfo = "Mesa 26.3.0-devel (git-axfl2-001)";
@@ -1062,8 +1063,7 @@ namespace
 
 TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno7xxOrdersTheDeclaredLoop)
 {
-	for (const char* device_name :
-		{"Adreno (TM) 740", "Adreno (TM) 750", "Adreno (TM) 730", "Adreno (TM) 722"})
+	for (const char* device_name : {"Adreno (TM) 740", "Adreno (TM) 750", "Adreno (TM) 730"})
 	{
 		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kGen2TurnipDriverInfo);
 		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno7xx) << device_name;
@@ -1085,10 +1085,13 @@ TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno650StillOrdersTheDeclaredLoop
 	EXPECT_FALSE(OrdersDeclaredLoop(ResolveTurnipVK("Adreno (TM) 610", kGen2TurnipDriverInfo)));
 }
 
-// The a7xx parts below 730, the 722 apart, were never run; a generation-2 tag does not reach them.
+// A generation-2 tag does not reach the a7xx parts below 730. The 702, 710, 720 and 725 were never
+// run. The 722 was, and with the barriers dropped it drew a different picture on each run of two
+// dumps (TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip).
 TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno702To725MakesNoOrderingClaim)
 {
-	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 725"})
+	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 722",
+			 "Adreno (TM) 725"})
 	{
 		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kGen2TurnipDriverInfo);
 		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u) << device_name;
@@ -1149,10 +1152,13 @@ TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotClearTheRtCopyWorkaround)
 }
 
 // ---------------------------------------------------------------------------------------------
-// The Adreno 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo). Nothing was run on it. It is an a7xx
-// generation 1 part derived from the 730, so it is in the a7xx rules above on lineage, not on a
-// measurement. These pin what that means: the same rows and bits as the 740 on every driver, the
-// ordering claim only for a generation-2 build, and nothing for the numbers beside it.
+// The Adreno 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo). It is an a7xx generation 1 part derived
+// from the 730 and is on the barrier-kept declared-loop road under Turnip. It is not on the
+// generation-2 ordering claim: on the Duo, 2026-10-21, with the barriers dropped NASCAR Thunder 2002
+// and Splashdown differed from the barrier-kept frames by 12 to 19 % of pixels and from run to run,
+// with both the axfl2-a722 and axfl2-003 packs; with the barriers kept every dump was stable. These
+// pin what that means: the 740's rows and bits on every driver, the preference on every Turnip
+// build, the ordering claim on none, and nothing for the numbers beside it.
 
 // Turnip's own name for the part is "Adreno (TM) 722" or "Turnip Adreno (TM) 722" depending on its
 // device table; the driver ID, not the name, says it is Turnip.
@@ -1169,9 +1175,9 @@ TEST(GSGpuDriverProfile, TheAdreno722ResolvesAsARecognisedAdreno7xxOnTurnip)
 	}
 }
 
-// Stock and generation-1 Turnip: the barrier-kept declared loop and no ordering claim. Generation 2:
-// the ordering claim too, with the overlap ordering left to the pipelines that ask for it.
-TEST(GSGpuDriverProfile, TheAdreno722TakesTheA7xxRoadForEachTurnipGeneration)
+// Stock, generation-1 and generation-2 Turnip all give the 722 the barrier-kept declared loop and no
+// ordering claim.
+TEST(GSGpuDriverProfile, TheAdreno722TakesTheBarrierKeptDeclaredLoopForEachTurnipGeneration)
 {
 	const GpuProfileSelection stock = ResolveTurnipVK("Adreno (TM) 722", kStockTurnipDriverInfo);
 	EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(stock));
@@ -1185,13 +1191,31 @@ TEST(GSGpuDriverProfile, TheAdreno722TakesTheA7xxRoadForEachTurnipGeneration)
 	const GpuProfileSelection gen2 = ResolveTurnipVK("Adreno (TM) 722", kGen2TurnipDriverInfo);
 	EXPECT_EQ(gen2.driver.declared_loop_fix_generation, 2u);
 	EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(gen2));
-	EXPECT_TRUE(OrdersDeclaredLoop(gen2));
-	EXPECT_TRUE(gen2.driver.declared_loop_orders_overlap_on_request);
+	EXPECT_FALSE(OrdersDeclaredLoop(gen2));
+	EXPECT_FALSE(gen2.driver.declared_loop_orders_overlap_on_request);
 }
 
-// The 722 takes exactly the table rows, bugs, workarounds and road bits the 740 does, on Turnip at
-// each generation and on the Qualcomm blob. A row keyed on a model range or an architecture that
-// the 722 fell outside would show here as a difference.
+// Under a generation-2 tag the 740 gets the ordering claim and the 722 does not. The tag still parses
+// on the 722, so the log reports it, but the profile does not trust it there.
+TEST(GSGpuDriverProfile, TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip)
+{
+	const GpuProfileSelection a722 = ResolveTurnipVK("Adreno (TM) 722", kGen2TurnipDriverInfo);
+	const GpuProfileSelection a740 = ResolveTurnipVK("Adreno (TM) 740", kGen2TurnipDriverInfo);
+	EXPECT_EQ(a722.driver.declared_loop_fix_generation, 2u);
+	EXPECT_EQ(a740.driver.declared_loop_fix_generation, 2u);
+	EXPECT_TRUE(OrdersDeclaredLoop(a740));
+	EXPECT_FALSE(OrdersDeclaredLoop(a722));
+	EXPECT_FALSE(a722.driver.declared_loop_orders_overlap_on_request);
+	EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(a722));
+	// A later generation tag does not change that: the bound is the model, not the tag.
+	EXPECT_FALSE(OrdersDeclaredLoop(
+		ResolveTurnipVK("Adreno (TM) 722", "Mesa 26.3.0-devel (git-axfl3-001)")));
+}
+
+// The 722 takes exactly the table rows, bugs and workarounds the 740 does, and the same road bits
+// except the generation-2 ordering claim (TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip), on
+// Turnip at each generation and on the Qualcomm blob. A row keyed on a model range or an
+// architecture that the 722 fell outside would show here as a difference.
 TEST(GSGpuDriverProfile, TheAdreno722MatchesTheAdreno740OnEveryDriver)
 {
 	for (const char* info : {kStockTurnipDriverInfo, kFixedTurnipDriverInfo, kGen2TurnipDriverInfo})
@@ -1203,10 +1227,14 @@ TEST(GSGpuDriverProfile, TheAdreno722MatchesTheAdreno740OnEveryDriver)
 		EXPECT_EQ(a722.driver.workarounds, a740.driver.workarounds) << info;
 		EXPECT_EQ(a722.driver.prefers_declared_loop_with_barriers, a740.driver.prefers_declared_loop_with_barriers)
 			<< info;
-		EXPECT_EQ(a722.driver.orders_declared_feedback_loop, a740.driver.orders_declared_feedback_loop) << info;
-		EXPECT_EQ(a722.driver.declared_loop_orders_overlap_on_request,
-			a740.driver.declared_loop_orders_overlap_on_request)
-			<< info;
+		if (std::string_view(info) != kGen2TurnipDriverInfo)
+		{
+			EXPECT_EQ(a722.driver.orders_declared_feedback_loop, a740.driver.orders_declared_feedback_loop)
+				<< info;
+			EXPECT_EQ(a722.driver.declared_loop_orders_overlap_on_request,
+				a740.driver.declared_loop_orders_overlap_on_request)
+				<< info;
+		}
 	}
 
 	const GpuProfileSelection blob722 = ResolveAdrenoVKWithInfo("Adreno (TM) 722",
