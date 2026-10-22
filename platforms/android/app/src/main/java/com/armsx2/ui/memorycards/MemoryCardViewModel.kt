@@ -52,7 +52,16 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         val safe = name.trim().replace(Regex("[\\/:*?\"<>|]"), "_").ifBlank { "MemoryCard" }
-        val cardName: String
+        if (safe.all { it == '.' }) {
+            state.value = state.value.copy(error = "Unable to create $safe.")
+            return
+        }
+        val cardName = if (type == 2 || safe.endsWith(".ps2", true)) safe else "$safe.ps2"
+        if (File(cardDirectory(), cardName).exists() ||
+            cardDirectory().listFiles().orEmpty().any { it.name.equals(cardName, true) }) {
+            state.value = state.value.copy(error = "A memory card named $cardName already exists.")
+            return
+        }
         val success = if (type == 2) {
             // FOLDER card = a directory holding an empty `_pcsx2_superblock` marker (the core
             // identifies a folder card by that marker). Build it with the JAVA file API, NOT
@@ -61,14 +70,12 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
             // folder mkdir hit — and only CreateDirectoryPath got a Java fallback, file writes
             // didn't), so the native path leaves an empty, invalid 0-byte folder. Java file ops
             // work here. No .ps2 suffix; size is ignored for folder cards.
-            cardName = safe
             runCatching {
                 val dir = File(cardDirectory(), safe).apply { mkdirs() }
                 File(dir, "_pcsx2_superblock").createNewFile()
                 dir.isDirectory
             }.getOrDefault(false)
         } else {
-            cardName = if (safe.endsWith(".ps2", true)) safe else "$safe.ps2"
             runCatching { NativeApp.createMemoryCard(cardName, 1, sizeType.coerceIn(1, 4)) }.getOrDefault(false)
         }
         state.value = if (success) state.value.copy(message = "Created $cardName.") else state.value.copy(error = "Unable to create $cardName.")
