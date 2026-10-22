@@ -1993,8 +1993,17 @@ public:
     }
     ~ScopedVMPause() {
         if (m_was_running && m_resume_on_destroy && !s_stop_requested.load(std::memory_order_acquire))
-            VMManager::SetPaused(false);
-        if (m_audio_pause_suppressed)
+        {
+            // Resuming resets CPU-owned code caches.
+            Host::RunOnCPUThread([audio_pause_suppressed = m_audio_pause_suppressed]() {
+                if (!s_stop_requested.load(std::memory_order_acquire) &&
+                    VMManager::HasValidVM() && VMManager::GetState() == VMState::Paused)
+                    VMManager::SetPaused(false);
+                if (audio_pause_suppressed)
+                    SPU2::SetOutputPauseSuppressed(false);
+            }, /*block=*/m_parked);
+        }
+        else if (m_audio_pause_suppressed)
             SPU2::SetOutputPauseSuppressed(false);
     }
     ScopedVMPause(const ScopedVMPause&) = delete;
