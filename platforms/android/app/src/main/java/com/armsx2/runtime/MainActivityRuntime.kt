@@ -553,6 +553,7 @@ open class MainActivityRuntime : ComponentActivity() {
             }
         }
 
+        val vmSessionGeneration = java.util.concurrent.atomic.AtomicLong()
         private val vmLifecycleLock = Any()
         @Volatile private var vmStopInProgress = false
         @Volatile private var vmRestartAfterStop = false
@@ -637,6 +638,7 @@ open class MainActivityRuntime : ComponentActivity() {
 
         @JvmStatic
         fun isVmStopInProgress(): Boolean = vmStopInProgress
+        fun hasVmRunLoop(): Boolean = vmRunLoopActive
 
         /** True from game/BIOS boot until we are back in the library. This — not currentGame —
          *  decides which rotation tier applyEmulationOrientation() uses: a BIOS boot has no
@@ -783,6 +785,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     vmRestartAfterStop = true
                     return
                 }
+                vmSessionGeneration.incrementAndGet()
                 vmRunLoopActive = true
             }
             // Only now that this launch has actually committed. Clearing it above the early return
@@ -805,7 +808,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     // Opt-in only: blocks a controller's Home button from minimising the game,
                     // which the app cannot do any other way — HOME never reaches us (#425).
                     instance?.let { com.armsx2.ui.ScreenPinning.start(it) }
-                    applyRendererPrefs()
+                    synchronized(com.armsx2.config.LiveGsApplyQueue.vmSettingsLock) {
+                        applyRendererPrefs()
+                    }
                     // Both of these are consumed by native when the VM boots, so they must be
                     // pushed BEFORE runVMThread (which blocks until the VM exits). One resolve,
                     // per-game ∘ global.
@@ -857,6 +862,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     // observed). Drop back to STOPPED only after native has
                     // actually unwound, so users can't launch the next game
                     // while the previous VM is still tearing down.
+                    vmSessionGeneration.incrementAndGet()
                     eState.value = EmuState.STOPPED
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
@@ -1287,6 +1293,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     vmRestartAfterStop = true
                     false
                 } else {
+                    vmSessionGeneration.incrementAndGet()
                     vmRunLoopActive = true
                     true
                 }
@@ -1304,7 +1311,9 @@ open class MainActivityRuntime : ComponentActivity() {
                     // The BIOS is emulation too: claim the renderer rotation tier so it honours the
                     // Renderer page (global, since there is no game) instead of the launcher's.
                     emulationOwnsOrientation = true
-                    applyRendererPrefs()
+                    synchronized(com.armsx2.config.LiveGsApplyQueue.vmSettingsLock) {
+                        applyRendererPrefs()
+                    }
                     // The BIOS mounts the cards too, and its memory card manager can format one or
                     // delete saves off it — so this boot is worth a copy for the same reason a game
                     // boot is. No serial here, so the global card choice is the right one.
@@ -1318,6 +1327,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     stagePerGameSettingsFile(null)
                     NativeApp.runVMThread(m_szGamefile)
                 } finally {
+                    vmSessionGeneration.incrementAndGet()
                     eState.value = EmuState.STOPPED
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
@@ -1441,6 +1451,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 } else if (eState.value == EmuState.STOPPED && !vmRunLoopActive && !nativeActive) {
                     false
                 } else {
+                    vmSessionGeneration.incrementAndGet()
                     vmStopInProgress = true
                     true
                 }
@@ -1467,6 +1478,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 NativeApp.shutdown()
                 println("@@ANDROID_STOP_JAVA@@ shutdown_return active=${NativeApp.hasActiveVM()} runLoop=$vmRunLoopActive state=${eState.value}")
                 if (!vmRunLoopActive && (eState.value == EmuState.STOPPED || !NativeApp.hasActiveVM())) {
+                    vmSessionGeneration.incrementAndGet()
                     eState.value = EmuState.STOPPED
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmStopInProgress = false
@@ -6062,6 +6074,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // Real finish only — a configuration recreate must NOT tear the second-display panel
         // down (it would flicker away and rebuild on every rotation/density change).
         runCatching { com.armsx2.SecondScreen.release(applicationContext) }
+        vmSessionGeneration.incrementAndGet()
         NativeApp.shutdown()
         super.onDestroy()
 

@@ -1,5 +1,6 @@
 package com.armsx2.config
 
+import com.armsx2.runtime.MainActivityRuntime
 import kr.co.iefriends.pcsx2.NativeApp
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -16,6 +17,79 @@ object LiveGsApplyQueue {
     private val upscaleRunning = AtomicBoolean(false)
     private val latestFramerate = AtomicReference<Pair<Float, Float>?>(null)
     private val framerateRunning = AtomicBoolean(false)
+
+    // SAF ELF names can give the app a decoded key that differs from the native serial.
+    data class VmIdentity(val generation: Long, val serial: String, val active: Boolean, val appKey: String?) {
+        fun isCurrent(): Boolean = generation == MainActivityRuntime.vmSessionGeneration.get() &&
+            !MainActivityRuntime.isVmStopInProgress() &&
+            (active || !MainActivityRuntime.hasVmRunLoop()) &&
+            active == NativeApp.hasActiveVM() &&
+            (!active || serial == NativeApp.getGameSerial()) &&
+            appKey == MainActivityRuntime.currentGame.value?.settingsKey &&
+            generation == MainActivityRuntime.vmSessionGeneration.get()
+    }
+
+    fun captureVmIdentity() = VmIdentity(
+        MainActivityRuntime.vmSessionGeneration.get(), NativeApp.getGameSerial(), NativeApp.hasActiveVM(),
+        MainActivityRuntime.currentGame.value?.settingsKey,
+    )
+
+    // A new boot waits off main for any in-flight native apply from the previous session.
+    val vmSettingsLock = Any()
+
+    private class Task(val saveFor: VmIdentity?, val apply: () -> Unit)
+    private val pending = java.util.ArrayDeque<Task>()
+    private var draining = false
+    private var appliedIdentity: VmIdentity? = null
+    private var appliedSettings: Settings? = null
+
+    @Synchronized
+    fun previousSettings(identity: VmIdentity, initial: Settings): Settings {
+        if (appliedIdentity != identity) {
+            appliedIdentity = identity
+            appliedSettings = initial
+        }
+        return appliedSettings ?: initial
+    }
+
+    @Synchronized
+    fun recordAppliedSettings(settings: Settings) {
+        appliedIdentity = captureVmIdentity()
+        appliedSettings = settings
+    }
+
+    fun enqueue(apply: () -> Unit) = submit(Task(null, apply))
+
+    fun enqueueForVm(identity: VmIdentity = captureVmIdentity(), apply: () -> Unit) {
+        enqueue { if (identity.isCurrent()) apply() }
+    }
+
+    fun enqueueSave(identity: VmIdentity, apply: () -> Unit) {
+        submit(Task(identity) { if (identity.isCurrent()) apply() })
+    }
+
+    private fun submit(task: Task) {
+        synchronized(pending) {
+            // Only adjacent, not-yet-started saves may replace each other. Everything else is a barrier.
+            if (task.saveFor != null && pending.peekLast()?.saveFor == task.saveFor)
+                pending.removeLast()
+            pending.addLast(task)
+            if (draining) return
+            draining = true
+        }
+        executor.execute {
+            while (true) {
+                val next = synchronized(pending) {
+                    if (pending.isEmpty()) {
+                        draining = false
+                        null
+                    } else pending.removeFirst()
+                } ?: break
+                runCatching { synchronized(vmSettingsLock) { next.apply() } }
+                    .onFailure { println("@@ANDROID_GS_LIVE_QUEUE@@ apply_error=${it.javaClass.simpleName}") }
+            }
+        }
+    }
 
     fun applySettings(settings: Settings) {
         latestSettings.set(settings)

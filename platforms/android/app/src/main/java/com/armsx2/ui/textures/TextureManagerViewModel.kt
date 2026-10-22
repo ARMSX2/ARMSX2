@@ -151,7 +151,7 @@ class TextureManagerViewModel(application: Application) : AndroidViewModel(appli
         // global explicitly rather than whatever was loaded when the screen opened.
         val updated = transform(ConfigStore.loadGlobal())
         ConfigStore.saveGlobal(updated)
-        if (MainActivityRuntime.nativeReady.value) runCatching { updated.applyTo() }
+        if (MainActivityRuntime.nativeReady.value) updated.enqueueApply()
         state.value = state.value.copy(settings = updated)
     }
 

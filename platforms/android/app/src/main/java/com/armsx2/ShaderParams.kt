@@ -103,6 +103,7 @@ data class ShaderParam(
 object ShaderParams {
 
     private const val TAG = "ShaderParams"
+    private val knownParams = java.util.concurrent.ConcurrentHashMap<String, List<ShaderParam>>()
 
     /** The parameters [presetPath] declares, in the order the author declared them, or an
      *  empty list when the preset can't be read (no librashader in this build, a preset
@@ -144,7 +145,7 @@ object ShaderParams {
                         )
                     )
                 }
-            }
+            }.also { knownParams[presetPath] = it }
         } catch (t: Throwable) {
             Log.w(TAG, "malformed parameter JSON for $presetPath", t)
             emptyList()
@@ -175,11 +176,16 @@ object ShaderParams {
      *  Sending the initials explicitly is what makes reset work on a live chain: dropping a
      *  parameter from the map would leave the chain sitting on the last value we set,
      *  because librashader has no "unset this parameter" call. Costs one float per
-     *  parameter (~900 at the worst end of the stock pack) and only runs when the user
-     *  moves something, so it is not worth being clever about. */
+     *  parameter (~900 at the worst end of the stock pack). */
     fun pushEffective(presetPath: String, params: List<ShaderParam>, overrides: Map<String, Float>) {
         if (presetPath.isBlank()) return
         push(presetPath, params.associate { it.name to (overrides[it.name] ?: it.initial) })
+    }
+
+    /** Reuse the editor's enumeration after a queued apply, without parsing on the save path. */
+    fun pushEffective(presetPath: String, overrides: Map<String, Float>) {
+        val params = knownParams[presetPath] ?: return
+        pushEffective(presetPath, params, overrides)
     }
 
     // ---- Saving a tweaked preset -------------------------------------------

@@ -6,15 +6,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import com.armsx2.EmuState
 import com.armsx2.config.ConfigStore
 import com.armsx2.config.GameDbOverrides
 import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
 import com.armsx2.i18n.str
-import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.InGameOverlay
-import kr.co.iefriends.pcsx2.NativeApp
 
 /**
  * What PCSX2's game database sets for THIS game, with a switch each.
@@ -96,22 +93,7 @@ private fun commit(serial: String, state: MutableState<Settings>) {
     val shown = ConfigStore.resolveForDisplay(serial)
     state.value = shown
     InGameOverlay.settingsState.value = shown
-    val running = MainActivityRuntime.nativeReady.value &&
-        MainActivityRuntime.eState.value != EmuState.STOPPED &&
-        MainActivityRuntime.currentGame.value?.settingsKey == serial
-    runCatching {
-        if (running) {
-            // File, then the core's copy of it, then the commit -- the same order as a settings
-            // save in-game, so the change applies now rather than at the next boot.
-            resolved.writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = serial)
-            NativeApp.reloadGameSettingsLayer()
-            resolved.applyTo()
-        } else {
-            // Rewrites the file only if the game has one. Otherwise the next boot writes it
-            // (MainActivityRuntime stages it from this game's stored settings).
-            resolved.writeGameSettingsIni(ConfigStore.loadGlobal(), serial)
-        }
-    }
+    resolved.enqueueApply(serial, rewriteIni = true)
 }
 
 @Composable

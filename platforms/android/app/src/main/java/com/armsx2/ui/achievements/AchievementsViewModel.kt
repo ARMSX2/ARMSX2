@@ -283,11 +283,7 @@ class AchievementsViewModel(application: Application) : AndroidViewModel(applica
         if (serial == null || !MainActivityRuntime.nativeReady.value ||
             MainActivityRuntime.eState.value == EmuState.STOPPED) return
         val resolved = ConfigStore.resolveForGame(serial)
-        runCatching {
-            resolved.writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = serial)
-            NativeApp.reloadGameSettingsLayer()
-            resolved.applyTo()
-        }
+        resolved.enqueueApply(serial, rewriteIni = true)
         // Keep the in-game menu's copy in step, or its next save would write the old value back.
         if (InGameOverlay.currentSerial.value == serial) InGameOverlay.settingsState.value = ConfigStore.resolveForDisplay(serial)
     }
