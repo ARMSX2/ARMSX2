@@ -291,6 +291,12 @@ endif()
 
 if (USE_PGO_GENERATE OR USE_PGO_OPTIMIZE)
 	add_compile_options("-fprofile-dir=${CMAKE_SOURCE_DIR}/profile")
+	# An internal-linkage function (static, anonymous namespace) is recorded under
+	# the source path exactly as the compiler was given it, so a profile applies to
+	# those functions only from the path that made it. With this, only the file's
+	# base name is recorded. It is needed on both sides: a profile made without it
+	# is keyed by path, and a build that has it will not find them.
+	add_compile_options("SHELL:-mllvm -static-func-full-module-prefix=false")
 endif()
 
 if (USE_PGO_GENERATE)
