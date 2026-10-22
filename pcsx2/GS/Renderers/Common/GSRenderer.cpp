@@ -444,7 +444,7 @@ bool GSRenderer::Merge(int field)
 	// from the texture, so it would then letterbox the already-stretched result instead of
 	// correcting it. Matching the draw rect keeps the final present a 1:1 blit.
 	//
-	// m_real_size is deliberately left alone: in CalculateDrawSrcRect it only scales user Crop
+	// m_real_size is deliberately left alone: in CalculateDrawSrcRect it only scales the Crop
 	// values (with no crop the src rect is the whole texture either way), so holding it at the
 	// internal size keeps crop proportional to the frame rather than to the shaded target.
 	if (GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty())
@@ -705,10 +705,13 @@ static GSVector4i CalculateDrawSrcRect(const GSTexture* src, const GSVector2i re
 	const GSVector2i size(src->GetSize());
 	const GSVector2 scale = GSVector2(size.x, size.y) / GSVector2(real_size.x, real_size.y).max(GSVector2(0.1f, 0.1f));
 	const float upscale = GSIsHardwareRenderer() ? GSConfig.UpscaleMultiplier : 1;
-	const int left = static_cast<int>(static_cast<float>(GSConfig.Crop[0] * scale.x) * upscale);
-	const int top = static_cast<int>(static_cast<float>(GSConfig.Crop[1] * scale.y) * upscale);
-	const int right =  size.x - static_cast<int>(static_cast<float>(GSConfig.Crop[2] * scale.x) * upscale);
-	const int bottom = size.y - static_cast<int>(static_cast<float>(GSConfig.Crop[3] * scale.y) * upscale);
+	// Upscaled hardware rendering often leaves garbage in the outermost row/column of the
+	// frame. Rather than chase each cause, trim one native pixel off every edge.
+	const int trim = (GSConfig.TrimUpscaledEdges && upscale >= 2.0f) ? 1 : 0;
+	const int left = static_cast<int>(static_cast<float>((GSConfig.Crop[0] + trim) * scale.x) * upscale);
+	const int top = static_cast<int>(static_cast<float>((GSConfig.Crop[1] + trim) * scale.y) * upscale);
+	const int right =  size.x - static_cast<int>(static_cast<float>((GSConfig.Crop[2] + trim) * scale.x) * upscale);
+	const int bottom = size.y - static_cast<int>(static_cast<float>((GSConfig.Crop[3] + trim) * scale.y) * upscale);
 	return GSVector4i(left, top, right, bottom);
 }
 

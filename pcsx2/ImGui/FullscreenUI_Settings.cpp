@@ -3211,6 +3211,9 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MAXIMIZE, "Show Overscan"),
 		FSUI_CSTR("Enables the option to show the overscan area on games which draw more than the safe area of the screen."), "EmuCore/GS",
 		"pcrtc_overscan", false);
+	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_CROP, "Trim Upscaled Edges"),
+		FSUI_CSTR("Crops one PS2 pixel from each edge of the picture when upscaling 2x or higher, hiding the garbage that often appears there."),
+		"EmuCore/GS", "TrimUpscaledEdges", true);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_GLASSES, "Anti-Blur"),
 		FSUI_CSTR("Enables internal Anti-Blur hacks. Less accurate than PS2 rendering but will make a lot of games look less blurry."),
 		"EmuCore/GS", "pcrtc_antiblur", true);
@@ -6917,6 +6920,8 @@ TRANSLATE_NOOP("FullscreenUI", "Integer Scaling");
 TRANSLATE_NOOP("FullscreenUI", "Screen Offsets");
 TRANSLATE_NOOP("FullscreenUI", "Show Overscan");
 TRANSLATE_NOOP("FullscreenUI", "Anti-Blur");
+TRANSLATE_NOOP("FullscreenUI", "Trim Upscaled Edges");
+TRANSLATE_NOOP("FullscreenUI", "Crops one PS2 pixel from each edge of the picture when upscaling 2x or higher, hiding the garbage that often appears there.");
 TRANSLATE_NOOP("FullscreenUI", "Internal Resolution");
 TRANSLATE_NOOP("FullscreenUI", "Texture Filtering");
 TRANSLATE_NOOP("FullscreenUI", "Trilinear Filtering");

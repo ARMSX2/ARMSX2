@@ -920,6 +920,9 @@ struct Pcsx2Config
 					PCRTCOffsets : 1,
 					PCRTCOverscan : 1,
 					IntegerScaling : 1,
+					// Crop one native pixel off every edge of the displayed frame when the hardware
+					// renderer is upscaling 2x or more; the outermost row/column is often garbage there.
+					TrimUpscaledEdges : 1,
 					UseDebugDevice : 1,
 					UseDebugBlend : 1,
 					// Emit per-draw graphics-debugger labels describing the PS2 state.
