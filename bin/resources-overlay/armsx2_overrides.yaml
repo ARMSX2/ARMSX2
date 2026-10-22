@@ -1441,6 +1441,28 @@ SCES-52456:
 # upstream key they have (mvuFlag: 0). gsHWFixes is not named here, so upstream's graphics fixes for all
 # three titles are untouched. Shadow of the Colossus and God of War have no upstream speedHacks.
 
+# nativeCounterDraws for Shadow of the Colossus: draw its shadow volumes at native resolution when upscaling.
+# bmdhacks, 2026-10-22. Investigation, the corpus scan and flip pages: devs/bmdhacks/campaigns/sotc-slow-2026-10-22
+# in the umbrella.
+#
+# Symptom: the game counts its shadow volumes in a separate buffer, adding 1 or 255 per triangle with colour
+# clamping off so 255 wraps to -1. Climbing a colossus, the volumes cover the screen about 47 times. To keep the
+# wrap exact the HW renderer blends them into a 16-bit-per-channel copy of the target, and Adreno blends that
+# format slowly: at 2x on the Retroid Pocket Duo that one draw took about 15 ms of a 37 ms frame.
+#
+# What the fix does: a draw that only adds +1/-1 to the same channels (GSRendererHW::IsColClipCounterDraw()) is
+# drawn at the target's native resolution, against a point-sampled copy of the depth buffer, and stretched back.
+# The game reads the count back only as inside/outside, so only the shadow's edges move, by at most one native
+# pixel. Vulkan only; other backends ignore it.
+#
+# Verified on the Duo (Adreno 722, Turnip axfl2-003, Vulkan, 2x, GS dump replays): today's climbing dump 36.9 ms
+# per frame as shipped, 24.7 with the fix; eleven other SotC dumps 0.2 to 1.4 ms faster. 1.2 to 4.6 percent of
+# a frame's pixels differ, on shadow edges; the owner compared all twelve dumps' flips and accepted the look. A
+# scan of 222 dumps found counter draws in no other game (Spider-Man 3, Sly 3, God of War II and Stuntman use the
+# same 16-bit path with ordinary colours and are not counters).
+#
+# gsHWFixes replaces the upstream map, so each entry below restates upstream's three keys unchanged.
+
 # OPHFlagHack for Shadow of the Colossus: holds the game at a steady 30 fps instead of flipping between 30 and 60.
 # bmdhacks, 2026-10-22. Source: NetherSX2 v2.2n-4248's GameIndex.yaml sets it on all eight releases below
 # ("Improves performance"); upstream PCSX2 never has. Investigation and measurements:
@@ -1469,43 +1491,85 @@ SCES-52456:
 
 # Shadow of the Colossus, five releases (SCUS-97472 measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
 # bmdhacks, 2026-10-22: OPHFlagHack added (see the block above); SCUS-97472 measured.
+# bmdhacks, 2026-10-22: nativeCounterDraws added (see its block above); SCUS-97472 measured.
 SCUS-97472:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCES-53326:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-15097:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-19320:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-19335:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 
 # Shadow of the Colossus, the Korean release and two demos (none measured). bmdhacks, 2026-10-22: OPHFlagHack added
 # (see the OPHFlagHack block above); NetherSX2 sets it on these too. No iopThread: they were not measured for it.
+# bmdhacks, 2026-10-22: nativeCounterDraws added (see its block above), same game engine.
 SCKA-20061:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
 SCED-53962:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 1 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
 SCUS-97505:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+  gsHWFixes:
+    recommendedBlendingLevel: 4 # Upstream: fixes water color.
+    halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
+    nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
+    nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
 
 # God of War, ten releases (none measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
 SCUS-97399:
