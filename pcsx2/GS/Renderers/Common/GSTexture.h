@@ -110,6 +110,9 @@ public:
 protected:
 	GSVector2i m_size{};
 	int m_mipmap_levels = 0;
+	// GSVolumetric stereo: 2 for a per-eye render target (one array layer per eye).
+	u32 m_array_layers = 1;
+	bool m_stereo_content = false;
 	Usage m_usage = Usage::Texture;
 	Format m_format = Format::Invalid;
 	State m_state = State::Dirty;
@@ -168,6 +171,17 @@ public:
 
 	__fi int GetMipmapLevels() const { return m_mipmap_levels; }
 	__fi bool IsMipmap() const { return m_mipmap_levels > 1; }
+	__fi u32 GetArrayLayers() const { return m_array_layers; }
+
+	// GSVolumetric stereo: whether the layers hold different pictures, drawn with each eye's
+	// parallax (directly, or copied from such a texture). A draw that textures from one re-reads a
+	// stereo picture and is not shifted again.
+	__fi bool HasStereoContent() const { return m_stereo_content; }
+	__fi void SetStereoContent(bool stereo) { m_stereo_content = stereo; }
+	void AddStereoContentFrom(const GSTexture* src);
+
+	// A texture standing for one array layer of this one (itself when it has a single layer).
+	virtual GSTexture* GetLayerProxyTexture(u32 layer) { return this; }
 
 	__fi Usage GetUsage() const { return m_usage; }
 	__fi Format GetFormat() const { return m_format; }
@@ -325,7 +339,7 @@ public:
 #endif
 
 	// Typical size of a RGBA texture
-	u32 GetMemUsage() const { return m_size.x * m_size.y * (m_format == Format::UNorm8 ? 1 : 4); }
+	u32 GetMemUsage() const { return m_size.x * m_size.y * (m_format == Format::UNorm8 ? 1 : 4) * m_array_layers; }
 
 	// Helper routines for formats/types
 	static bool IsCompressedFormat(Format format)

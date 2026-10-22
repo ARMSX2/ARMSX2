@@ -376,3 +376,10 @@ bool GSDownloadTexture::ReadTexels(const GSVector4i& rc, void* out_ptr, u32 out_
 	StringUtil::StrideMemCpy(out_ptr, out_stride, m_map_pointer + copy_offset, m_current_pitch, copy_size, copy_rows);
 	return true;
 }
+
+void GSTexture::AddStereoContentFrom(const GSTexture* src)
+{
+	if (!src || !src->m_stereo_content || m_stereo_content)
+		return;
+	m_stereo_content = true;
+}

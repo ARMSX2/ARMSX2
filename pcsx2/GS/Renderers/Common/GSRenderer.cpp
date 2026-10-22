@@ -8,6 +8,7 @@
 #include "GS/Renderers/Common/GSInterlaceModePolicy.h"
 #include "GS/Renderers/Common/GSPresentationPolicy.h"
 #include "GS/Renderers/Common/GSSnapshotPolicy.h"
+#include "GS/GSVolumetric.h"
 #include "GS/DriverReport/GSDriverReport.h"
 #include "GS/GSDump.h"
 #include "GS/GSDumpBundle.h"
@@ -391,6 +392,12 @@ bool GSRenderer::Merge(int field)
 
 	const u32 c = (m_regs->BGCOLOR.U32[0] & 0x00FFFFFFu) | (m_regs->PMODE.ALP << 24);
 	g_gs_device->Merge(tex, src_gs_read, dst, top_band, fs, m_regs->PMODE, m_regs->EXTBUF, c);
+
+	if constexpr (merge_mode == MergeMode::Full)
+	{
+		if (GSVolumetric::IsEnabled())
+			MergeDepth(tex, src_gs_read, dst, fs);
+	}
 
 	// Show the detector this field, offset and all. It is told which offset was applied so it can
 	// take it back out and measure what the GAME did between fields. Costs nothing once decided.
@@ -1076,6 +1083,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		m_snapshot.empty() && !m_dump && m_dump_frames == 0 &&
 		!GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()) && g_gs_device->GetCurrent() != nullptr;
 
+	GSVolumetric::BeginVSync();
+
 	bool merged_frame;
 	if (!request_skipped_final_render)
 	{
@@ -1092,6 +1101,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		merged_frame = Merge<MergeMode::SkipFinalComposition>(field);
 	}
 	const bool skipped_final_render = request_skipped_final_render && merged_frame;
+
+	GSVolumetric::EndMerge(DisplayedStereoEye(), idle_frame, g_gs_device->GetStereoLayers() > 1);
 	const bool blank_frame = !merged_frame;
 	// Run length, not just "was blank": the policy below distinguishes a single alternating blank
 	// (an interlaced-field artefact, safe to drop) from a run of them (a fade the game is actually
@@ -1197,6 +1208,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				src_rect, current->GetSize(), s_display_alignment, g_gs_device->UsesLowerLeftOrigin(),
 				GetVideoMode() == GSVideoMode::SDTV_480P);
 			s_last_draw_rect = draw_rect;
+			GSVolumetric::SetPresentedRect(src_uv, draw_rect);
 
 			// MetalFX spatial upscale runs before CAS/present, and only when actually upscaling
 			// (source smaller than the on-screen draw rect). CAS can still sharpen afterward.

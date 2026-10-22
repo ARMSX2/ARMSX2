@@ -4,6 +4,9 @@
 #pragma once
 
 #include "GSTextureCache.h"
+#ifdef PCSX2_VOLUMETRIC
+#include "GS/Renderers/HW/GSRendererHWVolumetric.h"
+#endif
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
@@ -441,6 +444,33 @@ private:
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;
 
+	// Volumetric (GSVolumetric.h): depth capture and stereo, in GSRendererHWVolumetric.h/.cpp. Built
+	// with ENABLE_VOLUMETRIC; without it the hooks called from this renderer are empty.
+#ifdef PCSX2_VOLUMETRIC
+	GSRendererHWVolumetricState m_vr;
+	void RecordDepthPairing(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	void SnapshotDepth(GSVolumetricDepthPairing& pairing);
+	void SnapshotDepthBeforeDraw();
+	void ReleaseDepthCanvases();
+	void VolumetricSetOutput(int index, GSTextureCache::Target* rt);
+	void VolumetricTraceDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* src, bool skip_draw);
+	void VolumetricSaveTraceDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool skip_draw);
+	void VolumetricRecordDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	void VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureCache::Source* tex);
+	void VolumetricStereoConstants(GSTextureCache::Target* rt);
+	void VolumetricEndVSync();
+#else
+	void SnapshotDepthBeforeDraw() {}
+	void ReleaseDepthCanvases() {}
+	void VolumetricSetOutput(int index, GSTextureCache::Target* rt) {}
+	void VolumetricTraceDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* src, bool skip_draw) {}
+	void VolumetricSaveTraceDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool skip_draw) {}
+	void VolumetricRecordDraw(GSTextureCache::Target* rt, GSTextureCache::Target* ds) {}
+	void VolumetricClassifyDraw(GSTextureCache::Target* rt, GSTextureCache::Source* tex) {}
+	void VolumetricStereoConstants(GSTextureCache::Target* rt) {}
+	void VolumetricEndVSync() {}
+#endif
+
 public:
 	GSRendererHW();
 	virtual ~GSRendererHW() override;
@@ -492,6 +522,10 @@ public:
 
 	GSTexture* GetOutput(int i, float& scale, int& y_offset) override;
 	GSTexture* GetFeedbackOutput(float& scale) override;
+#ifdef PCSX2_VOLUMETRIC
+	void MergeDepth(GSTexture* const* tex, const GSVector4* src_gs_read, const GSVector4* dst, const GSVector2i& fs) override;
+	int DisplayedStereoEye() override;
+#endif
 	void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) override;
 	void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) override;
 	void Move() override;

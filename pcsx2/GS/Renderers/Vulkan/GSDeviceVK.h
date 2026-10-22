@@ -30,9 +30,15 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class VKSwapChain;
+namespace VKLibretro
+{
+	struct Frame;
+}
 struct GSSelfReadRoadDecision;
 
 class GSDeviceVK final : public GSDevice
@@ -195,7 +201,10 @@ public:
 		VkAttachmentStoreOp depth_store_op = VK_ATTACHMENT_STORE_OP_STORE,
 		VkAttachmentLoadOp stencil_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		VkAttachmentStoreOp stencil_store_op = VK_ATTACHMENT_STORE_OP_DONT_CARE, bool color_feedback_loop = false,
-		bool depth_sampling = false);
+		bool depth_sampling = false, bool multiview = false);
+
+	// GSVolumetric multiview stereo (GSDevice::m_stereo_layers): every TFX pass renders both layers.
+	__fi bool IsMultiview() const { return m_stereo_layers > 1; }
 
 	// Gets a non-clearing version of the specified render pass. Slow, don't call in hot path.
 	VkRenderPass GetRenderPassForRestarting(VkRenderPass pass);
@@ -302,6 +311,7 @@ private:
 			u32 stencil_store_op : 1;
 			u32 color_feedback_loop : 1;
 			u32 depth_sampling : 1;
+			u32 multiview : 1; // view mask 0b11: one view per array layer
 		};
 
 		u32 key;
@@ -458,6 +468,7 @@ private:
 	bool m_last_submit_failed = false;
 
 	std::map<u32, VkRenderPass> m_render_pass_cache;
+	std::unordered_set<VkRenderPass> m_multiview_render_passes; // GSVolumetric stereo
 
 	VkDebugUtilsMessengerEXT m_debug_messenger_callback = VK_NULL_HANDLE;
 
@@ -718,6 +729,7 @@ private:
 	std::string m_tfx_source;
 
 	GSTexture* CreateSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format) override;
+	GSTexture* CreateLayeredSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, u32 layers) override;
 
 	void DoMerge(GSTexture* sTex[3], GSVector4* sRect, GSTexture* dTex, GSVector4* dRect, const MergeTopBand* top_band, const GSRegPMODE& PMODE,
 		const GSRegEXTBUF& EXTBUF, u32 c, const Filter filter) final;
@@ -808,6 +820,9 @@ private:
 
 	bool CompileImGuiPipeline();
 	void RenderImGui();
+	// Draws the ImGui frame RenderImGui rendered, again, into the render pass begun on the current
+	// command buffer (the right eye's backbuffer in multiview stereo).
+	void DrawImGui();
 	void RenderBlankFrame();
 
 	void DestroyResources();
@@ -982,7 +997,59 @@ public:
 	void SetBlendConstants(u8 color);
 	void SetLineWidth(float width);
 
-	void SetUtilityTexture(GSTexture* tex, VkSampler sampler);
+	// array_view: bind it as an array (all layers), for the MULTIVIEW utility passes drawn inside
+	// multiview TFX render passes; otherwise a layered texture is bound as its layer 0.
+	void SetUtilityTexture(GSTexture* tex, VkSampler sampler, bool array_view = false);
+	// Volumetric multiview stereo and libretro frame export (GSVolumetric.h), in
+	// GSDeviceVKVolumetric.cpp. Built with ENABLE_VOLUMETRIC; without it the hooks called from this
+	// device do nothing, and the device never has more than one layer.
+	// Set when the device is created for a frontend that may show stereo: the TFX vertex shaders then
+	// carry the stereo shift (VOLUMETRIC), which is 0 while it shows the picture flat.
+	bool m_volumetric_shaders = false;
+#ifdef PCSX2_VOLUMETRIC
+	void EnableStereoMultiview(VkDeviceCreateInfo& device_info, VkPhysicalDeviceMultiviewFeatures& multiview_feature);
+	bool m_multiview_feature = false; // the device was created with multiview on (SetStereoLayers can use 2)
+	bool SupportsStereoLayers(u32 layers) const override;
+	bool SetStereoLayers(u32 layers) override;
+	void BeginStereoLayerWrite(GSTexture* tex);
+	void CheckStereoRenderPass(VkRenderPass rp);
+	void RestartMultiviewPassForNewConstants(bool vertex_constants);
+	void LogMultiviewRestartStats();
+	void RecordPresentCopies(VkCommandBuffer cmdbuffer, GSTextureVK* bb, GSTextureVK* bb_right);
+	GSTextureVK* TakePresentTargets(GSTextureVK* bb);
+	GSTextureVK* PresentTarget(GSTextureVK* bb);
+	void FinishPresentCopies();
+	GSTextureVK* PresentRightEye(VkCommandBuffer cmdbuffer, GSTextureVK* bb, int bb_index);
+	GSTextureVK* PrepareVolumetricPresent(VkCommandBuffer cmdbuffer, GSTextureVK* bb, int bb_index);
+	void FillVolumetricFrame(VKLibretro::Frame& frame, GSTextureVK* bb, GSTextureVK* bb_right);
+	void ReleaseStereoBackbuffers();
+	// Debugging: the $VOLUMETRIC_FLUSH_FILE draw range of DoRenderHW (see DebugFlushAfterDraw).
+	void DebugReadFlushRange();
+	void DebugFlushAfterDraw();
+	u32 m_debug_draw_index = 0;
+#else
+	void EnableStereoMultiview(VkDeviceCreateInfo& device_info, VkPhysicalDeviceMultiviewFeatures& multiview_feature) {}
+	void BeginStereoLayerWrite(GSTexture* tex) {}
+	void CheckStereoRenderPass(VkRenderPass rp) {}
+	void RestartMultiviewPassForNewConstants(bool vertex_constants) {}
+	GSTextureVK* TakePresentTargets(GSTextureVK* bb) { return bb; }
+	GSTextureVK* PresentTarget(GSTextureVK* bb) { return bb; }
+	void FinishPresentCopies() {}
+	GSTextureVK* PrepareVolumetricPresent(VkCommandBuffer cmdbuffer, GSTextureVK* bb, int bb_index) { return nullptr; }
+	void FillVolumetricFrame(VKLibretro::Frame& frame, GSTextureVK* bb, GSTextureVK* bb_right) {}
+	void ReleaseStereoBackbuffers() {}
+	void DebugReadFlushRange() {}
+	void DebugFlushAfterDraw() {}
+#endif
+
+	// GSVolumetric multiview stereo: TFX shaders declare array samplers.
+	__fi VkImageView GetTFXView(GSTextureVK* tex) { return IsMultiview() ? tex->GetArrayView() : tex->GetView(); }
+	__fi VkImageView GetUtilityView()
+	{
+		GSTextureVK* tex = const_cast<GSTextureVK*>(m_utility_texture);
+		return m_utility_array_view ? tex->GetArrayView() : tex->GetViewForSampling();
+	}
+	bool m_utility_array_view = false;
 	void SetUtilityPushConstants(const void* data, u32 size);
 	void UnbindTexture(GSTextureVK* tex);
 
@@ -1115,6 +1182,10 @@ private:
 	u8 m_blend_constant_color = 0;
 
 	std::array<GSTextureVK*, NUM_TFX_TEXTURES> m_tfx_textures{};
+	// The view and layout each slot's descriptor was last written with. A texture can change layout
+	// (a layer proxy moving its parent, a copy) while it stays bound; the descriptor must follow.
+	std::array<VkImageView, NUM_TFX_TEXTURES> m_tfx_written_views{};
+	std::array<VkImageLayout, NUM_TFX_TEXTURES> m_tfx_written_layouts{};
 	VkSampler m_tfx_sampler = VK_NULL_HANDLE;
 	u32 m_tfx_sampler_sel = 0;
 	VkDescriptorSet m_tfx_ubo_descriptor_set = VK_NULL_HANDLE;

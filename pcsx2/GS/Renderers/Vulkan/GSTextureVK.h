@@ -39,7 +39,7 @@ public:
 
 	~GSTextureVK() override;
 
-	static std::unique_ptr<GSTextureVK> Create(Usage usage, Format format, int width, int height, int levels);
+	static std::unique_ptr<GSTextureVK> Create(Usage usage, Format format, int width, int height, int levels, int layers = 1);
 	static std::unique_ptr<GSTextureVK> Adopt(
 		VkImage image, Usage usage, Format format, int width, int height, int levels, VkFormat vk_format);
 
@@ -47,7 +47,20 @@ public:
 
 	__fi VkImage GetImage() const { return m_image; }
 	__fi VkImageView GetView() const { return m_view; }
-	__fi Layout GetLayout() const { return m_layout; }
+
+	// GSVolumetric stereo, layered (per-eye) textures: a single-layer 2D view of one layer, and a
+	// GSTexture standing for that layer (sharing the image) for paths that handle one layer.
+	VkImageView GetLayerView(u32 layer);
+	GSTexture* GetLayerProxyTexture(u32 layer) override;
+	__fi bool IsLayerProxy() const { return m_proxy_parent != nullptr; }
+	__fi GSTextureVK* GetProxyParent() const { return m_proxy_parent; }
+	__fi u32 GetBaseArrayLayer() const { return m_proxy_base_layer; }
+	// A 2D_ARRAY view of every layer (one layer for a plain texture), for multiview TFX samplers.
+	VkImageView GetArrayView();
+	// A view that can be bound to a sampler2D: layer 0 of a layered texture.
+	__fi VkImageView GetViewForSampling() { return (m_array_layers > 1) ? GetLayerView(0) : m_view; }
+
+	__fi Layout GetLayout() const { return m_proxy_parent ? m_proxy_parent->m_layout : m_layout; }
 	bool IsShaderWriteMode() const override { return GetLayout() == Layout::ReadWriteImage; }
 
 	__fi VkFormat GetVkFormat() const { return m_vk_format; }
@@ -86,11 +99,16 @@ public:
 	VkFramebuffer GetLinkedFramebuffer(GSTextureVK* depth_texture, bool feedback_loop_color, bool feedback_loop_depth);
 
 	// Call when the texture is bound to the pipeline, or read from in a copy.
-	__fi void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
+	__fi void SetUseFenceCounter(u64 counter)
+	{
+		m_use_fence_counter = counter;
+		if (m_proxy_parent)
+			m_proxy_parent->m_use_fence_counter = counter;
+	}
 
 private:
-	GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image, VmaAllocation allocation,
-		VkImageView view, VkFormat vk_format);
+	GSTextureVK(Usage usage, Format format, int width, int height, int levels, int layers, VkImage image,
+		VmaAllocation allocation, VkImageView view, VkFormat vk_format);
 
 	VkCommandBuffer GetCommandBufferForUpdate();
 	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;
@@ -103,6 +121,12 @@ private:
 	VkImageView m_view = VK_NULL_HANDLE;
 	VkFormat m_vk_format = VK_FORMAT_UNDEFINED;
 	Layout m_layout = Layout::Undefined;
+
+	std::vector<VkImageView> m_layer_views; // lazily created, layered textures only
+	VkImageView m_array_view = VK_NULL_HANDLE; // lazily created, single-layer textures and proxies
+	GSTextureVK* m_proxy_parent = nullptr;
+	u32 m_proxy_base_layer = 0;
+	std::vector<std::unique_ptr<GSTextureVK>> m_layer_proxies;
 
 	// Contains the fence counter when the texture was last used.
 	// When this matches the current fence counter, the texture was used this command buffer.

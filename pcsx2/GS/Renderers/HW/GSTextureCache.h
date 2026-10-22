@@ -834,6 +834,8 @@ public:
 
 	/// Looks up a target in the cache, and only returns it if the BP/BW match exactly.
 	Target* GetExactTarget(u32 BP, u32 BW, int type, u32 end_bp);
+	/// GetExactTarget's BP/BW match without moving the target in the LRU order (Volumetric).
+	Target* FindExactTarget(u32 BP, u32 BW, int type) const;
 	Target* GetTargetWithSharedBits(u32 BP, u32 PSM) const;
 	Target* FindOverlappingTarget(GSTextureCache::Target* target) const;
 	Target* FindOverlappingTarget(u32 BP, u32 end_bp) const;

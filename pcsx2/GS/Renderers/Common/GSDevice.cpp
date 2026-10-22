@@ -800,13 +800,19 @@ void GSDevice::TextureRecycleDeleter::operator()(GSTexture* const tex)
 	g_gs_device->Recycle(tex);
 }
 
-GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, const GSVector2i& size, int levels, GSTexture::Format format, bool clear, bool prefer_reuse)
+GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, const GSVector2i& size, int levels, GSTexture::Format format, bool clear, bool prefer_reuse, u32 layers)
 {
-	return FetchSurface(usage, size.x, size.y, levels, format, clear, prefer_reuse);
+	return FetchSurface(usage, size.x, size.y, levels, format, clear, prefer_reuse, layers);
 }
 
-GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse)
+GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height, int levels, GSTexture::Format format, bool clear, bool prefer_reuse, u32 layers)
 {
+	// GSVolumetric multiview stereo: every render target and depth buffer gets a layer per eye, so
+	// any of them can be an attachment of a multiview draw.
+	if (layers == 0)
+		layers = GSTexture::IsTexture(usage) ? 1 : m_stereo_layers;
+	layers = std::min(layers, m_stereo_layers);
+
 	// No blanket flush here: what comes back is either brand new or was recycled into the
 	// pool. The deferred-clear calls at the tail guard themselves.
 	const GSVector2i size(std::clamp(width, 1, static_cast<int>(g_gs_device->GetMaxTextureSize())),
@@ -823,7 +829,7 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 		for (const GSTexture* held : m_deferred_recycle)
 		{
 			if (held->GetUsage() == usage && held->GetFormat() == format && held->GetSize() == size &&
-				held->GetMipmapLevels() == levels)
+				held->GetMipmapLevels() == levels && held->GetArrayLayers() == layers)
 			{
 				FlushDeferredDraws();
 				break;
@@ -842,7 +848,8 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 
 		pxAssert(t);
 
-		if (t->GetUsage() == usage && t->GetFormat() == format && t->GetSize() == size && t->GetMipmapLevels() == levels)
+		if (t->GetUsage() == usage && t->GetFormat() == format && t->GetSize() == size && t->GetMipmapLevels() == levels &&
+			t->GetArrayLayers() == layers)
 		{
 			if (prefer_reuse || t->GetLastFrameUsed() != m_frame)
 			{
@@ -869,12 +876,12 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 		}
 		else
 		{
-			t = CreateSurface(usage, size.x, size.y, levels, format);
+			t = CreateLayeredSurface(usage, size.x, size.y, levels, format, layers);
 			if (!t)
 			{
 				ERROR_LOG("GS: Memory allocation failure for {}x{} texture. Purging pool and retrying.", size.x, size.y);
 				PurgePool();
-				t = CreateSurface(usage, size.x, size.y, levels, format);
+				t = CreateLayeredSurface(usage, size.x, size.y, levels, format, layers);
 				if (!t)
 				{
 					ERROR_LOG("GS: Memory allocation failure for {}x{} texture after purging pool.", size.x, size.y);
@@ -892,6 +899,8 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 #endif
 		}
 	}
+
+	t->SetStereoContent(false);
 
 	if (t->IsRenderTarget())
 	{
@@ -1095,11 +1104,11 @@ GSTexture* GSDevice::CreateDepthStencil(const GSVector2i& size, bool clear, bool
 	return FetchSurface(GetDepthStencilUsage(), size.x, size.y, 1, GSTexture::Format::DepthStencil, clear, prefer_reuse);
 }
 
-GSTexture* GSDevice::CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse)
+GSTexture* GSDevice::CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse, u32 layers)
 {
 	pxAssert(mipmap_levels != 0 && (mipmap_levels < 0 || mipmap_levels <= GetMipmapLevelsForSize(w, h)));
 	const int levels = mipmap_levels < 0 ? GetMipmapLevelsForSize(w, h) : mipmap_levels;
-	return FetchSurface(GSTexture::Texture, w, h, levels, format, false, m_features.prefer_new_textures && prefer_reuse);
+	return FetchSurface(GSTexture::Texture, w, h, levels, format, false, m_features.prefer_new_textures && prefer_reuse, layers);
 }
 
 GSTexture* GSDevice::CreateTexture(const GSVector2i& size, int mipmap_levels, GSTexture::Format format, bool prefer_reuse)
@@ -1119,7 +1128,7 @@ GSTexture* GSDevice::CreateCompatible(GSTexture* tex, const GSVector2i& size, bo
 
 GSTexture* GSDevice::CreateCompatible(GSTexture* tex, int w, int h, bool clear, bool prefer_reuse)
 {
-	return FetchSurface(tex->GetUsage(), w, h, 1, tex->GetFormat(), clear, prefer_reuse);
+	return FetchSurface(tex->GetUsage(), w, h, 1, tex->GetFormat(), clear, prefer_reuse, tex->GetArrayLayers());
 }
 
 void GSDevice::DoStretchRectWithAssertions(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex,
@@ -1559,7 +1568,7 @@ bool GSDevice::ResizeRenderTarget(GSTexture** t, int w, int h, bool preserve_con
 	const GSTexture::Format fmt = orig_tex ? orig_tex->GetFormat() : GSTexture::Format::Color;
 	const GSTexture::Usage usage = orig_tex ? orig_tex->GetUsage() : GSTexture::RenderTarget;
 	const bool really_preserve_contents = (preserve_contents && orig_tex);
-	GSTexture* new_tex = FetchSurface(usage, w, h, 1, fmt, !really_preserve_contents, false);
+	GSTexture* new_tex = FetchSurface(usage, w, h, 1, fmt, !really_preserve_contents, false, orig_tex ? orig_tex->GetArrayLayers() : 0);
 	if (!new_tex)
 	{
 		Console.WriteLn("%dx%d texture allocation failed in ResizeTexture()", w, h);
