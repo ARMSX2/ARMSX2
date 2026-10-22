@@ -257,6 +257,11 @@ endif()
 # add -DUSE_PERF_JITDUMP=ON for its --perf-jitdump symbol dump.
 option(ARMSX2_BUILD_EERUNNER "Add the pcsx2-eerunner command-line tool (never part of the app)" OFF)
 if(ARMSX2_BUILD_EERUNNER)
+	# The eerunner drives the EE recompiler through the test hooks (EERecFallback, the twin
+	# counters); without them it fails to compile with undeclared identifiers.
+	if(NOT ENABLE_RECOMPILER_TEST_HOOKS)
+		message(FATAL_ERROR "ARMSX2_BUILD_EERUNNER requires -DENABLE_RECOMPILER_TEST_HOOKS=ON.")
+	endif()
 	add_subdirectory("${ARMSX2_ROOT}/pcsx2-eerunner" "${CMAKE_BINARY_DIR}/pcsx2-eerunner" EXCLUDE_FROM_ALL)
 endif()
 
