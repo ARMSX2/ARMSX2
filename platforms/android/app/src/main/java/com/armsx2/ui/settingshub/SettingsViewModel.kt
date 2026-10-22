@@ -112,5 +112,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 running -> settings.value.applyTo()
             }
         }
+        if (running && category == SettingsCategory.Performance) MainActivityRuntime.surface.value?.applyOutputScale()
     }
 }
