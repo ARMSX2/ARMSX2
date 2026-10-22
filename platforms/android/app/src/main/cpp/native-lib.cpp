@@ -1735,17 +1735,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setNominalSpeed(JNIEnv *env, jclass clazz,
     // slider in-game did nothing (the string round-trip through ApplySettings
     // didn't re-pace reliably). Clamp matches EmulationSpeedOptions::SanityCheck.
     float scalar = std::clamp(static_cast<float>(p_percent) / 100.0f, 0.05f, 10.0f);
-    // RetroAchievements hardcore forbids slowdown. This direct-apply path skips
-    // VMManager::ApplySettings (so EnforceAchievementsChallengeModeSettings,
-    // which clamps NominalScalar to >=1.0, never runs) — enforce it here.
-    // Fast-forward (>1.0) stays allowed.
-    if (Achievements::IsHardcoreModeActive() && scalar < 1.0f)
-        scalar = 1.0f;
-    Host::SetBaseFloatSettingValue("Framerate", "NominalScalar", scalar);
-    EmuConfig.EmulationSpeed.NominalScalar = scalar;
-    if (VMManager::HasValidVM())
-        VMManager::UpdateTargetSpeed();
-    Console.WriteLnFmt("@@ANDROID_SPEED@@ nominal_scalar={}", scalar);
+    // EmuConfig and UpdateTargetSpeed's MTGS/SPU2 notifications belong to the CPU thread.
+    Host::RunOnCPUThread([scalar]() mutable {
+        // RetroAchievements hardcore forbids slowdown. This direct-apply path skips
+        // VMManager::ApplySettings (so EnforceAchievementsChallengeModeSettings,
+        // which clamps NominalScalar to >=1.0, never runs) — enforce it here.
+        // Fast-forward (>1.0) stays allowed.
+        if (Achievements::IsHardcoreModeActive() && scalar < 1.0f)
+            scalar = 1.0f;
+        Host::SetBaseFloatSettingValue("Framerate", "NominalScalar", scalar);
+        EmuConfig.EmulationSpeed.NominalScalar = scalar;
+        if (VMManager::HasValidVM())
+            VMManager::UpdateTargetSpeed();
+        Console.WriteLnFmt("@@ANDROID_SPEED@@ nominal_scalar={}", scalar);
+    });
 }
 
 extern "C"
@@ -4142,7 +4145,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_shutdown(JNIEnv *env, jclass clazz) {
     Console.WriteLn("@@STOP_LATCH_SET@@ val=%d",
         s_stop_requested.load(std::memory_order_acquire) ? 1 : 0);
 
-    VMManager::SetLimiterMode(LimiterModeType::Nominal);
     if (VMManager::GetState() != VMState::Stopping)
         VMManager::SetState(VMState::Stopping);
     if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
@@ -4945,6 +4947,7 @@ void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool def
     // the 2nd launch). If we're already shut down, there's nothing left to stop.
     if (VMManager::GetState() == VMState::Shutdown)
         return;
+    VMManager::SetLimiterMode(LimiterModeType::Nominal);
     VMManager::SetState(VMState::Stopping);
     if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
         Cpu->ExitExecution();
