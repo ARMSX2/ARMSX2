@@ -46,6 +46,7 @@ namespace
 		{"UserHacks_ForceEvenSpritePosition", GSHWFixId::ForceEvenSpritePosition, GSUserHackOverride::ForceEvenSpritePosition},
 		{"UserHacks_native_scaling", GSHWFixId::NativeScaling, GSUserHackOverride::NativeScaling},
 		{"UserHacks_NativePaletteDraw", GSHWFixId::NativePaletteDraw, GSUserHackOverride::NativePaletteDraw},
+		{"UserHacks_NativeCounterDraws", GSHWFixId::NativeCounterDraws, GSUserHackOverride::MaxCount},
 		{"UserHacks_BilinearHack", GSHWFixId::BilinearUpscale, GSUserHackOverride::BilinearHack},
 		{"UserHacks_TCOffsetX", GSHWFixId::Count, GSUserHackOverride::TextureOffsetX},
 		{"UserHacks_TCOffsetY", GSHWFixId::Count, GSUserHackOverride::TextureOffsetY},

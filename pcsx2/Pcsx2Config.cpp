@@ -838,6 +838,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	UserHacks_ForceEvenSpritePosition = false;
 	UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 	UserHacks_NativePaletteDraw = false;
+	UserHacks_NativeCounterDraws = false;
 
 	DumpReplaceableTextures = false;
 	DumpReplaceableMipmaps = false;
@@ -1120,6 +1121,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBoolEx(UserHacks_ForceEvenSpritePosition, "UserHacks_ForceEvenSpritePosition");
 	SettingsWrapIntEnumEx(UserHacks_BilinearHack, "UserHacks_BilinearHack");
 	SettingsWrapBitBoolEx(UserHacks_NativePaletteDraw, "UserHacks_NativePaletteDraw");
+	SettingsWrapBitBoolEx(UserHacks_NativeCounterDraws, "UserHacks_NativeCounterDraws");
 	SettingsWrapIntEnumEx(UserHacks_TextureInsideRt, "UserHacks_TextureInsideRt");
 	SettingsWrapIntEnumEx(UserHacks_Limit24BitDepth, "UserHacks_Limit24BitDepth");
 	SettingsWrapBitBoolEx(UserHacks_EstimateTextureRegion, "UserHacks_EstimateTextureRegion");
@@ -1329,9 +1331,10 @@ void Pcsx2Config::GSOptions::MaskUserHacks(bool respect_claims)
 	if (!keep(GSUserHackOverride::RewriteLargeST))
 		UserHacks_RewriteLargeSTCoords = false;
 
-	// No UI reaches these two, so there is nothing for a player to claim.
+	// No UI reaches these, so there is nothing for a player to claim.
 	UserHacks_DisableSafeFeatures = false;
 	UserHacks_DisableRenderFixes = false;
+	UserHacks_NativeCounterDraws = false;
 	SkipDrawStart = 0;
 	SkipDrawEnd = 0;
 }
@@ -1366,6 +1369,8 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 		note("bilinearUpscale");
 	if (UserHacks_NativePaletteDraw)
 		note("nativePaletteDraw");
+	if (UserHacks_NativeCounterDraws)
+		note("nativeCounterDraws");
 	if (UserHacks_HalfPixelOffset != GSHalfPixelOffset::Off)
 		note("halfPixelOffset");
 	if (UserHacks_RoundSprite != 0)
@@ -1382,6 +1387,7 @@ void Pcsx2Config::GSOptions::MaskUpscalingHacks()
 	UserHacks_ForceEvenSpritePosition = false;
 	UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 	UserHacks_NativePaletteDraw = false;
+	UserHacks_NativeCounterDraws = false;
 	UserHacks_HalfPixelOffset = GSHalfPixelOffset::Off;
 	UserHacks_RoundSprite = 0;
 	UserHacks_NativeScaling = GSNativeScaling::Off;

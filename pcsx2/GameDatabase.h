@@ -67,6 +67,7 @@ namespace GameDatabaseSchema
 		PCRTCOffsets,
 		PCRTCOverscan,
 		CoalesceRenderPasses,
+		NativeCounterDraws,
 
 		// integer settings
 		TrilinearFiltering,

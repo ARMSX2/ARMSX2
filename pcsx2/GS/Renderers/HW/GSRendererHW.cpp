@@ -1899,6 +1899,37 @@ GSVector2i GSRendererHW::GetTargetSize(const GSTextureCache::Source* tex, const 
 	return g_texture_cache->GetTargetSize(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, valid_size.x, valid_size.y, can_expand);
 }
 
+// A counter draw: every primitive adds +1 or -1 (mod 256) to the same channels, so the target ends up holding
+// a per-pixel count. Shadow of the Colossus counts its shadow volumes this way, with colour clamping off so that
+// 255 wraps to -1. Only the count matters to whoever reads it back, so it can be drawn at native resolution and
+// stretched: that moves the edges of the counted regions by at most one native pixel. The test reads every
+// vertex colour, so the cheap register checks go first and the loop stops at the first vertex that is not +-1.
+bool GSRendererHW::IsColClipCounterDraw() const
+{
+	if (PRIM->TME)
+		return false;
+
+	// Cs * 1 + Cd: A = Cs, B = 0, D = Cd, and C a factor of exactly 1.0 (FIX 128, or a constant source alpha of 128).
+	const GIFRegALPHA& alpha = m_context->ALPHA;
+	if (alpha.A != 0 || alpha.B != 2 || alpha.D != 1)
+		return false;
+	if (!((alpha.C == 2 && alpha.FIX == 128) || (alpha.C == 0 && m_vt.m_eq.a && m_vertex->buff[0].RGBAQ.A == 128)))
+		return false;
+
+	bool plus = false, minus = false;
+	for (u32 i = 0; i < m_vertex->tail; i++)
+	{
+		const GIFRegRGBAQ& c = m_vertex->buff[i].RGBAQ;
+		if (c.R != c.G || c.G != c.B || (c.R != 1 && c.R != 255))
+			return false;
+		plus |= (c.R == 1);
+		minus |= (c.R == 255);
+	}
+
+	// One direction alone only ever adds or subtracts, which is not a count of crossings.
+	return plus && minus;
+}
+
 bool GSRendererHW::NextDrawColClip() const
 {
 	const int get_next_ctx = (m_state_flush_reason == CONTEXTCHANGE) ? m_env.PRIM.CTXT : m_backed_up_ctx;
@@ -11342,6 +11373,18 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	// Before the road and the draw log, which read the pixel shader selector this may change.
 	CarryBlendBeforeSubmit(rt, ds);
+
+	// A fresh colclip counter draw with nothing else riding on it: draw it at native resolution (GameDB
+	// nativeCounterDraws). Anything that would add a pass, a barrier or a destination-alpha setup keeps the
+	// full-resolution path.
+	if (GSConfig.UserHacks_NativeCounterDraws && g_gs_device->Features().native_counter_draws && m_conf.ps.colclip_hw &&
+		m_conf.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve && rt && rt->GetScale() > 1.0f &&
+		m_conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Off && !m_conf.require_one_barrier &&
+		!m_conf.require_full_barrier && !m_conf.alpha_second_pass.enable && !m_conf.blend_multi_pass.enable &&
+		!m_conf.ps.HasColorROV() && !m_conf.ps.HasDepthROV() && IsColClipCounterDraw())
+	{
+		m_conf.colclip_native_scale = rt->GetScale();
+	}
 
 	m_conf.road = DecideDrawRoad(m_conf, g_gs_device->Features());
 

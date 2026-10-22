@@ -4238,6 +4238,8 @@ void GSDeviceVK::ResolveFeatureTable()
 	// by the time this reads it.
 	m_features.broken_blend_constant = GetMobileDriverProfile().HasBug(DriverBug::BrokenBlendConstant);
 
+	m_features.native_counter_draws = true;
+
 	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
 	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
 
@@ -9347,6 +9349,26 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	GSTextureVK* draw_rt_clone = nullptr;
 	GSTextureVK* colclip_rt = static_cast<GSTextureVK*>(g_gs_device->GetColorClipTexture());
 
+	// A counter draw the renderer asked to have drawn at native resolution (GSHWDrawConfig::colclip_native_scale):
+	// the colclip target, and a point-sampled copy of the depth buffer it tests against, are made at the target's
+	// size divided by its scale, and the resolve stretches the result back with point sampling. Only a fresh
+	// convert-and-resolve draw qualifies, since an existing colclip target already has the full size.
+	const bool native = config.colclip_native_scale > 1.0f && config.ps.colclip_hw && !colclip_rt &&
+	                    config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve && config.rt &&
+	                    config.rt->GetState() == GSTexture::State::Dirty;
+	const float native_div = native ? config.colclip_native_scale : 1.0f;
+	const GSVector2i draw_size = native ?
+		GSVector2i(static_cast<int>(std::ceil(rtsize.x / native_div)), static_cast<int>(std::ceil(rtsize.y / native_div))) :
+		rtsize;
+	const auto to_draw_size = [native, native_div](const GSVector4i& r) {
+		if (!native)
+			return r;
+		return GSVector4i(static_cast<int>(std::floor(r.x / native_div)), static_cast<int>(std::floor(r.y / native_div)),
+			static_cast<int>(std::ceil(r.z / native_div)), static_cast<int>(std::ceil(r.w / native_div)));
+	};
+	GSTextureVK* const full_ds = draw_ds;
+	GSTextureVK* native_ds = nullptr;
+
 	// stream buffer in first, in case we need to exec
 	SetVSConstantBuffer(config.cb_vs);
 	SetPSConstantBuffer(config.cb_ps);
@@ -9496,7 +9518,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		{
 			config.colclip_update_area = config.drawarea;
 			EndRenderPass();
-			colclip_rt = static_cast<GSTextureVK*>(CreateFeedbackTarget(rtsize.x, rtsize.y, GSTexture::Format::ColorClip, false));
+			colclip_rt = static_cast<GSTextureVK*>(CreateFeedbackTarget(draw_size.x, draw_size.y, GSTexture::Format::ColorClip, false));
 			if (!colclip_rt)
 			{
 				Console.Warning("VK: Failed to allocate ColorClip render target, aborting draw.");
@@ -9537,6 +9559,25 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 						   (config.ds && static_cast<GSTextureVK*>(config.ds) == m_tfx_textures[0])))
 	{
 		PSSetShaderResource(0, nullptr, false);
+	}
+
+	if (native && full_ds)
+	{
+		// DoStretchRect, not StretchRect: the latter flushes deferred draws, and this is one of them.
+		// The depth-output flag is what makes the copy write depth at all.
+		EndRenderPass();
+		native_ds = static_cast<GSTextureVK*>(CreateDepthStencil(draw_size, false, true));
+		if (!native_ds)
+		{
+			Console.Warning("VK: Failed to allocate native-resolution depth buffer, aborting draw.");
+			Recycle(colclip_rt);
+			g_gs_device->SetColorClipTexture(nullptr);
+			GL_POP();
+			return;
+		}
+		DoStretchRect(static_cast<GSTexture*>(full_ds), GSVector4(0, 0, 1, 1), static_cast<GSTexture*>(native_ds),
+			GSVector4(GSVector4i::loadh(draw_size)), ShaderConvertSelector(ShaderConvert::DEPTH_COPY, 0xf, true), Nearest);
+		draw_ds = native_ds;
 	}
 
 	// render pass restart optimizations
@@ -9660,7 +9701,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	
 	PSSetROVs(draw_rt_rov, draw_ds_rov, config.ps.HasColorOutput(), config.ps.HasDepthROVWrite());
 
-	OMSetRenderTargets(draw_rt, draw_ds, config.scissor, static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), rtsize);
+	OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 
 	// Begin render pass if new target or out of the area.
 	if (!InRenderPass())
@@ -9690,8 +9731,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// microseconds per PASS, and a narrower area only forces more of them. Commit f9b5395855 has
 		// the mechanism this reverted, and the measurements behind these numbers.
 		const GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
-		                             ? config.drawarea
-		                             : GSVector4i::loadh(rtsize);
+		                             ? to_draw_size(config.drawarea)
+		                             : GSVector4i::loadh(draw_size);
 
 		if (is_clearing_rt)
 		{
@@ -9738,16 +9779,16 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// rt -> colclip hw blit if enabled
 	if (colclip_rt && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly || config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && config.rt->GetState() == GSTexture::State::Dirty)
 	{
-		OMSetRenderTargets(draw_rt, draw_ds, GSVector4i::loadh(rtsize), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags));
+		OMSetRenderTargets(draw_rt, draw_ds, GSVector4i::loadh(draw_size), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 		SetUtilityTexture(static_cast<GSTextureVK*>(config.rt), m_point_sampler);
 		SetPipeline(m_colclip_setup_pipelines[pipe.ds][pipe.IsRTFeedbackLoop()]);
 
 		const GSVector4 drawareaf = GSVector4((config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly) ? GSVector4i::loadh(rtsize) : config.drawarea);
 		const GSVector4 sRect(drawareaf / GSVector4(rtsize).xyxy());
-		DrawStretchRect(sRect, drawareaf, rtsize);
+		DrawStretchRect(sRect, native ? GSVector4(to_draw_size(config.drawarea)) : drawareaf, draw_size);
 
 		GL_POP();
-		OMSetRenderTargets(draw_rt, draw_ds, config.scissor, static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags));
+		OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 	}
 
 	// VB/IB upload, if we did DATE setup and it's not colclip hw this has already been done
@@ -9835,7 +9876,15 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	if (date_image)
 		Recycle(date_image);
 
-	// now blit the colclip texture back to the original target
+	if (native_ds)
+	{
+		EndRenderPass();
+		draw_ds = full_ds;
+		Recycle(native_ds);
+	}
+
+	// now blit the colclip texture back to the original target. The source rectangle is normalised, so a
+	// native-resolution colclip target needs nothing different here.
 	if (colclip_rt)
 	{
 		config.colclip_update_area = config.colclip_update_area.runion(config.drawarea);

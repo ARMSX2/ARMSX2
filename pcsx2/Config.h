@@ -986,6 +986,9 @@ struct Pcsx2Config
 					UserHacks_MergePPSprite : 1,
 					UserHacks_ForceEvenSpritePosition : 1,
 					UserHacks_NativePaletteDraw : 1,
+					// Draw a +-1 counter draw on the colclip path (shadow volumes counted by colour
+					// wrap-around) at the target's native resolution. See GSRendererHW::IsColClipCounterDraw().
+					UserHacks_NativeCounterDraws : 1,
 					UserHacks_EstimateTextureRegion : 1,
 					UserHacks_DrawBuffering : 1,
 					UserHacks_RewriteLargeSTCoords : 1,

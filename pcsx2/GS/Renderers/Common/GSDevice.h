@@ -1425,6 +1425,11 @@ struct alignas(16) GSHWDrawConfig
 
 	BlendMultiPass blend_multi_pass;
 
+	/// Non-zero: draw this colclip draw at native resolution, dividing the target's size by this
+	/// scale, then resolve back with point sampling. Set only for +-1 counter draws, and only when
+	/// the device reports native_counter_draws. See GSRendererHW::IsColClipCounterDraw().
+	float colclip_native_scale;
+
 	VSConstantBuffer cb_vs;
 	PSConstantBuffer cb_ps;
 	
@@ -1604,6 +1609,7 @@ public:
 		bool dual_source_blend    : 1; ///< Supports a second fragment output (SRC1) as a hardware blend factor.
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		bool broken_blend_constant : 1; ///< Driver applies a CONST_COLOR / INV_CONST_COLOR blend factor as if the constant were zero. A fixed (AFIX) factor rides the second fragment output instead -- see GSBlendConstantPolicy.h.
+		bool native_counter_draws : 1; ///< Can draw a fresh convert-and-resolve colclip draw at native resolution (GSHWDrawConfig::colclip_native_scale).
 		GSFeedbackCarry feedback_carry; ///< Which draws may keep the open pass's feedback-loop bits. Vulkan only; see GSDrawRoad.h.
 		FeatureSupport()
 		{
