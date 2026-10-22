@@ -100,6 +100,48 @@
 
 #include "svnrev.h"
 
+#ifdef __ANDROID__
+// The core expects the frontend to provide these JNI bridges (native-lib.cpp
+// does in the APK). A bare NDK executable has no JVM: the Java-backed paths
+// (scoped-storage fallbacks, content:// fds, Java sound, pad rumble) cannot
+// trigger under adb shell on plain filesystem paths, so they stub to failure.
+//
+// The declaring headers are included rather than the signatures re-typed, so a
+// signature that drifts is a compile error here instead of an unresolved
+// external.
+#include "pcsx2/Input/AndroidNativeRumble.h"
+
+namespace Common
+{
+	bool PlaySoundAsync(const char* path) { return false; }
+}
+namespace FileSystem
+{
+	int OpenFDFileContent(const char* filename) { return -1; }
+	std::vector<std::string> FindContentChdSiblings(const char* filename) { return {}; }
+	bool CreateDirectoryViaJava(const char* path) { return false; }
+	bool CreateFileViaJava(const char* path) { return false; }
+}
+namespace Native
+{
+	void onPadRumble(int pad, int largeMotor, int smallMotor) {}
+}
+
+// Android renderer-Auto steering (GSUtil.cpp; the APK sets it from the
+// GL_RENDERER string). Even the Null GS opens a host device API, and EGL fails
+// under adb shell, so take Vulkan.
+extern bool g_gs_android_prefer_vk;
+static const bool s_android_prefer_vk_init = []() { g_gs_android_prefer_vk = true; return true; }();
+
+// VMManager's Android thread placement mode (default 7, Performance Cores, set
+// by the app's settings). 0 is the unpinned mode: no mode picks cores for the
+// emu threads, matching the Linux build. Note that 0 sets every emu thread's
+// mask to all processors, which widens a mask inherited from taskset; pin
+// per thread once the VM is up.
+extern int g_android_affinity_mode;
+static const bool s_android_affinity_init = []() { g_android_affinity_mode = 0; return true; }();
+#endif
+
 namespace EERunner
 {
 	static void InitializeConsole();

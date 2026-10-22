@@ -250,6 +250,16 @@ if(ARMSX2_BUILD_DRIVERDIAG)
 	add_subdirectory("${ARMSX2_ROOT}/pcsx2-driverdiag" "${CMAKE_BINARY_DIR}/pcsx2-driverdiag" EXCLUDE_FROM_ALL)
 endif()
 
+# pcsx2-eerunner, the headless EE runner, as an adb-shell tool for profiling identical
+# runs across devices. Behind an option for the same reason as driverdiag above: the Android
+# Gradle plugin builds every executable target it finds, whatever EXCLUDE_FROM_ALL says.
+# It is never packaged. Build it with -DARMSX2_BUILD_EERUNNER=ON and --target pcsx2-eerunner;
+# add -DUSE_PERF_JITDUMP=ON for its --perf-jitdump symbol dump.
+option(ARMSX2_BUILD_EERUNNER "Add the pcsx2-eerunner command-line tool (never part of the app)" OFF)
+if(ARMSX2_BUILD_EERUNNER)
+	add_subdirectory("${ARMSX2_ROOT}/pcsx2-eerunner" "${CMAKE_BINARY_DIR}/pcsx2-eerunner" EXCLUDE_FROM_ALL)
+endif()
+
 # librashader: RetroArch (.slangp) shader chains for the GS post-process path, for BOTH
 # the Vulkan and OpenGL(ES) renderers. Rust-built and fetched at configure time from a
 # pinned commit (see the subdir's CMakeLists for why it can't be vendored). OPTIONAL:
