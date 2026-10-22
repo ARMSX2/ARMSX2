@@ -383,6 +383,41 @@ TEST(SettingsPrecedenceApply, TheDatabaseNeverTurnsAPlayersBackThreadOff)
 	EXPECT_TRUE(gs.BackThread);
 }
 
+// The IOP thread is a speed hack the mobile overlay switches on for God of War, God of War II and Shadow of the
+// Colossus. The God of War II entries carry mvuFlag too, because an overlay speedHacks list replaces the upstream one.
+TEST(SettingsPrecedenceApply, TheDatabaseTurnsTheIopThreadOnAndKeepsTheEntrysOtherSpeedHacks)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.speedHacks.emplace_back(SpeedHack::MVUFlag, 0);
+	entry.speedHacks.emplace_back(SpeedHack::IOPThread, 1);
+
+	Pcsx2Config config;
+	config.Speedhacks.iopThread = false;
+	config.Speedhacks.vuFlagHack = true;
+	entry.applyGameFixes(config, true, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+
+	EXPECT_TRUE(config.Speedhacks.iopThread);
+	EXPECT_FALSE(config.Speedhacks.vuFlagHack) << "the entry's other speed hack still applies";
+}
+
+TEST(SettingsPrecedenceApply, APlayersIopThreadSettingForTheGameKeepsTheDatabaseOut)
+{
+	GameDatabaseSchema::GameEntry entry;
+	entry.speedHacks.emplace_back(SpeedHack::MVUFlag, 0);
+	entry.speedHacks.emplace_back(SpeedHack::IOPThread, 1);
+
+	// A player who turned the IOP thread off for this game (or on, to the same effect on the database) owns the key.
+	const PerGameOverrides ov = GameFile().Set("EmuCore/Speedhacks", "iopThread", false).Overrides();
+
+	Pcsx2Config config;
+	config.Speedhacks.iopThread = false;
+	config.Speedhacks.vuFlagHack = true;
+	entry.applyGameFixes(config, true, ov, GameDatabaseSchema::ApplyMode::Hypothetical);
+
+	EXPECT_FALSE(config.Speedhacks.iopThread);
+	EXPECT_FALSE(config.Speedhacks.vuFlagHack) << "claiming the IOP thread leaves the rest of the entry alone";
+}
+
 // ---------------------------------------------------------------- the copy filter
 
 namespace

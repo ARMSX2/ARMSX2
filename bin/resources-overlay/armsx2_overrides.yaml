@@ -1403,3 +1403,123 @@ SCES-52456:
     autoFlush: 2 # Helps fix misaligned bloom.
     recommendedAccurateAlphaTest: 1 # Fixes shadows and glasses alpha.
     backThread: 1 # GS thread is the limit in combat scenes; see the block above.
+
+# IOP thread (speedHacks.iopThread) recommended for Shadow of the Colossus, God of War and God of War II.
+#
+# What the fix does: iopThread: 1 runs the PS2's I/O processor (SPU2 audio, disc, controllers, memory
+# cards) on its own host thread, a bounded number of EE cycles behind the EE, which takes that work off the
+# EE thread. It is a setting the game database can turn on, and a player's own per-game IOP Thread setting
+# claims it, so the database stands aside. IopThread::ResolveMode still turns it off by itself where it cannot
+# run: a host that is not ARM64, PS1 and arcade games, an IOP breakpoint, and a CPU without enough
+# performance-tier cores for the EE, GS, IOP and (with MTVU) VU1 threads plus two more cores for everything else.
+#
+# Cost: the thread waits by spinning, and in play on the Duo it used 0.93 to 0.98 of a performance core. That
+# is battery and heat for the gain below, which is why it is a per-title recommendation and not a default.
+#
+# Why these titles: on the two that were measured, the EE thread is saturated (0.98 of a core) on the
+# Retroid Pocket Duo with the thread off. Measured on the Duo (Snapdragon 7 Gen 4 class, Adreno 722,
+# Maximum Performance profile, fan at maximum, Turnip axfl2-003, frame limiter off, the 2026-10-02 benchmark
+# savestates, two visits per setting in a mirrored order, two 20 s passes per visit, passes within 1 percent):
+#   God of War II               1x 88.5 -> 94.0 fps (+6.2%)    2x 65.2 -> 68.9 fps (+5.7%)
+#   Shadow of the Colossus      1x 51.7 -> 57.5 fps (+11.2%)   2x 45.4 -> 46.4 fps (+2.1%)
+# The gain is largest where the CPU is the limit (1x) and smallest where the GPU is (2x, GPU 89 to 94
+# percent busy). It never lost in any of the four cells. Earlier, Shadow of the Colossus on the SD865 and the
+# MQ65 took about 10 and 12 percent fewer EE-thread cycles per frame with the thread on.
+#
+# Not measured: God of War (the first game) on any device. It is included on the owner's decision, on the
+# strength of its being the same engine as God of War II. God of War II on the SD865, RG 476H, RG 477V and
+# MQ65 was not measured either.
+#
+# With the GS back thread (backThread) as well, nothing gained on Shadow of the Colossus and God of War II
+# was 4.7 percent slower at 2x on the Duo, so neither of these entries asks for it.
+#
+# Every retail release the database lists for each title is covered, since the fix is a property of the
+# engine and not of the region. Demos, trials and the PAL Shadow of the Colossus + Ico demo disc are left out:
+# they were not measured.
+#
+# speedHacks is replaced wholesale when an entry lists one, so the God of War II entries restate the one
+# upstream key they have (mvuFlag: 0). gsHWFixes is not named here, so upstream's graphics fixes for all
+# three titles are untouched. Shadow of the Colossus and God of War have no upstream speedHacks.
+
+# Shadow of the Colossus, five releases (SCUS-97472 measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
+SCUS-97472:
+  speedHacks:
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCES-53326:
+  speedHacks:
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCPS-15097:
+  speedHacks:
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCPS-19320:
+  speedHacks:
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCPS-19335:
+  speedHacks:
+    iopThread: 1 # EE thread is the limit; see the block above.
+
+# God of War, ten releases (none measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
+SCUS-97399:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SCES-51533:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SCES-53133:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SCAJ-30010:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SCKA-30002:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SCKA-30003:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SLPM-66167:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SLPM-67010:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SLPM-67011:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+SLPM-67012:
+  speedHacks:
+    iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+
+# God of War II, eight releases (SCUS-97481 measured). bmdhacks, 2026-10-21: iopThread added to the upstream mvuFlag.
+SCUS-97481:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCES-54206:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCAJ-20190:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCAJ-30011:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCKA-30006:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SCKA-30007:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SLPM-67013:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
+SLPM-67017:
+  speedHacks:
+    mvuFlag: 0 # Fixes enemies attacks turning into squares.
+    iopThread: 1 # EE thread is the limit; see the block above.
