@@ -110,7 +110,7 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
 
     fun captureKey(keyCode: Int): Boolean {
         val action = state.value.capturingAction ?: return false
-        ControllerMappings.bind(action, keyCode, state.value.player)
+        ControllerMappings.bind(action, keyCode, state.value.player, gameTier(state.value.player))
         ControllerMappings.padCapturing.value = false
         ControllerMappings.capturePadAction.value = null
         state.value = state.value.copy(capturingAction = null, tick = state.value.tick + 1, loadedProfile = null)
@@ -124,13 +124,16 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
     }
 
     fun clear(action: ControllerMappings.Action) {
-        ControllerMappings.clearAction(action, state.value.player)
+        ControllerMappings.clearAction(action, state.value.player, gameTier(state.value.player))
         state.value = state.value.copy(loadedProfile = null)
         refresh()
     }
 
     fun resetPlayer() {
-        ControllerMappings.reset(state.value.player)
+        val player = state.value.player
+        val serial = gameTier(player)
+        if (serial != null) ControllerMappings.clearGameOverrides(serial, player)
+        else ControllerMappings.reset(player)
         state.value = state.value.copy(loadedProfile = null)
         refresh()
     }
@@ -156,7 +159,7 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
     }
 
     fun setDpadAsStick(value: Boolean) {
-        ControllerMappings.setDpadAsLeftStick(value)
+        ControllerMappings.setDpadAsLeftStickForRunningGame(value)
         refresh()
     }
 

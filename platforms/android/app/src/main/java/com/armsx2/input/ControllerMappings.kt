@@ -247,6 +247,10 @@ object ControllerMappings {
         MainActivityRuntime.prefs.edit { putBoolean(scopedKey(KEY_DPAD_AS_LSTICK, serial), on) }
         invalidateRuntimeCaches()
     }
+    fun setDpadAsLeftStickForRunningGame(on: Boolean) {
+        val serial = runtimeSerial()?.takeIf { MainActivityRuntime.prefs.contains(gameKey(it, KEY_DPAD_AS_LSTICK)) }
+        setDpadAsLeftStick(on, serial)
+    }
 
     // ---- Analog stick response shaping (physical sticks → PS2 analog) ----
     // Sensitivity = a linear output scale. Acceleration = an exponential response
