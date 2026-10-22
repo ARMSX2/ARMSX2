@@ -1441,22 +1441,71 @@ SCES-52456:
 # upstream key they have (mvuFlag: 0). gsHWFixes is not named here, so upstream's graphics fixes for all
 # three titles are untouched. Shadow of the Colossus and God of War have no upstream speedHacks.
 
+# OPHFlagHack for Shadow of the Colossus: holds the game at a steady 30 fps instead of flipping between 30 and 60.
+# bmdhacks, 2026-10-22. Source: NetherSX2 v2.2n-4248's GameIndex.yaml sets it on all eight releases below
+# ("Improves performance"); upstream PCSX2 never has. Investigation and measurements:
+# devs/bmdhacks/campaigns/sotc-fps-2026-10-22 in the umbrella.
+#
+# Symptom: the game has no fixed frame rate. It runs at 60 whenever a frame's EE work fits in one field and at
+# 30 otherwise, and in many scenes it sits on that line. On the Retroid Pocket Duo it then jumps to 60, cannot
+# hold full speed there (93 to 98 percent), stutters, and falls back to 30. Its game logic uses a variable time
+# step, so 30 is a correct speed for it, not a slowdown.
+#
+# What the fix does: before starting each frame the game waits for a once-per-vblank watchdog to see the GS
+# pipeline idle, and that check reads GIF_STAT's APATH bits. OPHFlagHack makes GIF_STAT reads alternate between
+# busy and idle, so the watchdog releases a frame at most every second vblank: 30 fps.
+#
+# Verified on the Duo (Adreno 722, Turnip axfl2-003, Vulkan, the com.armsx2.a722test build of master with
+# the Adreno 722 commits), SCUS-97472, shrine-stairs savestate, 30 s per arm, counting the game's own
+# frame and vblank counters over PINE: hack off 56.9 and 57.1 game fps (55 to 56 of 59 half-seconds at 60,
+# emulator under full speed); hack on 30.0 fps (0 of 60 half-seconds at 60, full speed). The on-screen FPS
+# counter reads about 60 either way, because this game writes the GS display registers every field.
+#
+# Not checked: a heavy colossus fight. The hack's busy/idle alternation is shared with about 18 other GIF_STAT
+# reads in the game, so a scene that cannot make 30 might drop to 15 rather than 20.
+#
+# gameFixes replaces the upstream list, and upstream has none for any of these entries. The five retail
+# releases that already carry iopThread keep it below.
+
 # Shadow of the Colossus, five releases (SCUS-97472 measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
+# bmdhacks, 2026-10-22: OPHFlagHack added (see the block above); SCUS-97472 measured.
 SCUS-97472:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCES-53326:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-15097:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-19320:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
 SCPS-19335:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
   speedHacks:
     iopThread: 1 # EE thread is the limit; see the block above.
+
+# Shadow of the Colossus, the Korean release and two demos (none measured). bmdhacks, 2026-10-22: OPHFlagHack added
+# (see the OPHFlagHack block above); NetherSX2 sets it on these too. No iopThread: they were not measured for it.
+SCKA-20061:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+SCED-53962:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
+SCUS-97505:
+  gameFixes:
+    - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
 
 # God of War, ten releases (none measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
 SCUS-97399:
