@@ -925,8 +925,24 @@ data class Settings(
         else NativeApp.setSetting(section, key, type, value)
     }
 
+    fun enqueueApply(serial: String? = null, rewriteIni: Boolean = false) {
+        val identity = LiveGsApplyQueue.captureVmIdentity()
+        val liveGame = identity.active && serial != null && serial == (identity.appKey ?: identity.serial)
+        val global = if (rewriteIni) ConfigStore.loadGlobal() else null
+        val restoreOsd = com.armsx2.ui.InGameOverlay.captureOsdMode(this)
+        LiveGsApplyQueue.enqueueForVm(identity) {
+            if (rewriteIni && serial != null) {
+                writeGameSettingsIni(global!!, serial = serial, liveGame = liveGame)
+                if (!identity.isCurrent()) return@enqueueForVm
+                if (liveGame) NativeApp.reloadGameSettingsLayer()
+            }
+            if (identity.isCurrent() && (!rewriteIni || liveGame))
+                applyTo(restoreOsd)
+        }
+    }
+
     /** Push every field into emucore via NativeApp.setSetting + commit. */
-    fun applyTo() {
+    fun applyTo(reassertOsdMode: () -> Unit = { com.armsx2.ui.InGameOverlay.reassertOsdModeAfterSettingsApply() }) {
         // Speedhacks
         put("EmuCore/Speedhacks", "EECycleRate", "int", cpu.eeCycleRate.toString())
         put("EmuCore/Speedhacks", "EECycleSkip", "int", cpu.eeCycleSkip.toString())
@@ -1171,17 +1187,19 @@ data class Settings(
         NativeApp.osdShowVersion(osd.osdShowVersion)
         NativeApp.osdShowSettings(osd.osdShowSettings)
         NativeApp.osdShowInputs(osd.osdShowInputs)
-        // ★ The OSD MODE overrides every flag just written. Full / Minimal / Off are a separate
-        // choice from the per-stat selection above, and this function runs on every settings
-        // change — so without this line, changing any unrelated setting quietly swaps an active
-        // mode for the Custom flags, which reads to the user as "the OSD disappeared when I
-        // changed a setting". Custom is already correct and is left alone.
-        com.armsx2.ui.InGameOverlay.reassertOsdModeAfterSettingsApply()
         // USB keyboard (#254): live attach/detach on the running VM, of whatever the
         // [USB1] Type above now names. No-op before the VM exists: the persisted Type
         // handles the cold boot.
         NativeApp.usbApplyPorts()
         NativeApp.commitSettings()
+        ShaderParams.pushEffective(graphics.shaderChainPreset, graphics.shaderChainParams[graphics.shaderChainPreset].orEmpty())
+        // ★ The OSD MODE overrides every flag just written. Full / Minimal / Off are a separate
+        // choice from the per-stat selection above, and this function runs on every settings
+        // change — so without this line, changing any unrelated setting quietly swaps an active
+        // mode for the Custom flags, which reads to the user as "the OSD disappeared when I
+        // changed a setting". Custom is already correct and is left alone.
+        reassertOsdMode()
+        LiveGsApplyQueue.recordAppliedSettings(this)
     }
 
     /** Reverse of [applyTo]: rebuild a Settings from a parsed PCSX2-Android.ini map
@@ -1580,15 +1598,13 @@ data class Settings(
      *  inherited one, and only a per-game choice outranks the database. Pass [claimsFor]
      *  whenever the game is known; without it the file carries only the diff.
      *
-     *  With a running VM the target is the current game; with no VM, [serial]'s existing file.
+     *  With [liveGame] the caller has validated the running identity; otherwise target [serial]'s existing file.
      *  No-op when there is neither. */
-    fun writeGameSettingsIni(global: Settings, serial: String? = null, claimsFor: String? = serial) {
+    fun writeGameSettingsIni(global: Settings, serial: String? = null, claimsFor: String? = serial, liveGame: Boolean) {
         synchronized(gameIniExportLock) {
-            // With a running VM the target is the current game (gameIniBeginWrite). With no VM — a
-            // per-game Reset done from the library — pass [serial] to locate the file directly;
-            // false there means no stale override file exists, so there is nothing to rewrite.
-            val began = if (serial == null) NativeApp.gameIniBeginWrite()
-                        else NativeApp.gameIniBeginWriteForSerial(serial)
+            // Only the live entry point selects the running revision's exact serial and CRC.
+            val began = if (liveGame) NativeApp.gameIniBeginWrite()
+                        else serial != null && NativeApp.gameIniBeginWriteForSerial(serial)
             if (!began) return
             streamGameSettingsIni(global, claimsFor)
             NativeApp.gameIniCommitWrite()
@@ -1720,8 +1736,8 @@ data class Settings(
         // The actual live apply. Only the CURRENT preset's values are pushed (the rest are
         // kept for when the user picks those presets again), and only the overrides — a
         // parameter left out keeps what the chain has, which for the freshly built or
-        // rebuilt chain this runs against is the author's initial. Resets are handled by
-        // the UI's own pushEffective, which sends initials explicitly to a live chain.
+        // rebuilt chain this runs against is the author's initial. After committing,
+        // applyTo sends known initials too, so resets take effect on an existing chain.
         // Skipped under emitSink: an export has no renderer to push to.
         if (emitSink == null)
             ShaderParams.push(graphics.shaderChainPreset, graphics.shaderChainParams[graphics.shaderChainPreset].orEmpty())

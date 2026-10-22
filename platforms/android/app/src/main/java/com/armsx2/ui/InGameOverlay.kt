@@ -5,6 +5,7 @@ import com.armsx2.EmuState
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.config.AutoTuneStore
 import com.armsx2.config.ConfigStore
+import com.armsx2.config.LiveGsApplyQueue
 import com.armsx2.config.Settings
 import com.armsx2.config.SettingsScope
 import kr.co.iefriends.pcsx2.NativeApp
@@ -38,7 +39,8 @@ object InGameOverlay {
      *  persist it so it survives a relaunch — matching the old per-stat toggles' persistence. */
     fun setOsdMode(mode: OsdMode) {
         ensureOsdLoaded()
-        applyOsdMode(mode)
+        osdMode.value = mode
+        reapplyOsdMode()
         runCatching { MainActivityRuntime.prefs.edit().putString(OsdModeKey, mode.name).apply() }
     }
 
@@ -52,7 +54,8 @@ object InGameOverlay {
         // settings ourselves. (A fresh install has every stat defaulting off, so this also cleanly
         // shows nothing by default rather than whatever stale state was left in settingsState.)
         if (osdMode.value == OsdMode.Custom) {
-            applyOsdFlags(
+            applyOsdModeFlags(
+                OsdMode.Custom,
                 com.armsx2.config.ConfigStore.resolveForGame(
                     MainActivityRuntime.currentGame.value?.settingsKey,
                 ),
@@ -96,69 +99,49 @@ object InGameOverlay {
 
     fun saveSettings(changed: Settings) {
         val previous = settingsState.value
+        val scope = settingsScope.value
+        val serial = currentSerial.value?.takeIf { it.isNotBlank() }
+        val running = MainActivityRuntime.eState.value != EmuState.STOPPED
         // A setting auto-tune moves, set by hand in a game's own settings, turns auto-tune off for that game. The global
         // settings are not a game's: changing those leaves the switch alone.
-        val updated = if (settingsScope.value == SettingsScope.Game) AutoTuneStore.withAutoTuneOffForManualChange(previous, changed) else changed
+        val updated = if (scope == SettingsScope.Game) AutoTuneStore.withAutoTuneOffForManualChange(previous, changed) else changed
         settingsState.value = updated
         // `previous` matters: it's how ConfigStore tells a field the user just changed in
         // Game scope from one they never touched, so setting a per-game value that happens
         // to equal global still pins it instead of vanishing.
-        ConfigStore.save(settingsScope.value, currentSerial.value, updated, previous)
+        ConfigStore.save(scope, currentSerial.value, updated, previous)
         frameLimitOn.value = updated.frameLimit.frameLimitEnable
 
         if (MainActivityRuntime.nativeReady.value) {
-            runCatching {
-                if (previous.frameLimit.frameLimitEnable != updated.frameLimit.frameLimitEnable) {
+            val identity = LiveGsApplyQueue.captureVmIdentity()
+            val stored = if (running && serial != null) ConfigStore.resolveForGame(serial) else null
+            val global = if (stored != null) ConfigStore.loadGlobal() else null
+            val restoreOsd = captureOsdMode(updated)
+            LiveGsApplyQueue.previousSettings(identity, previous)
+            if (previous.frameLimit.frameLimitEnable != updated.frameLimit.frameLimitEnable)
+                MainActivityRuntime.fastForwardToggleActive = false
+            if (running && previous.output.upscaleFloat != updated.output.upscaleFloat)
+                MainActivityRuntime.upscale.value = updated.output.upscaleFloat.coerceIn(0.25f, 8.0f)
+            LiveGsApplyQueue.enqueueSave(identity) {
+                if (scope == SettingsScope.Game && serial != (identity.appKey ?: identity.serial)) return@enqueueSave
+                val applied = LiveGsApplyQueue.previousSettings(identity, previous)
+                if (applied.frameLimit.frameLimitEnable != updated.frameLimit.frameLimitEnable) {
                     NativeApp.setSetting("EmuCore/GS", "FrameLimitEnable", "bool", updated.frameLimit.frameLimitEnable.toString())
                     NativeApp.speedhackLimitermode(if (updated.frameLimit.frameLimitEnable) 0 else 3)
-                    MainActivityRuntime.fastForwardToggleActive = false
                 }
-                if (previous.output.upscaleFloat != updated.output.upscaleFloat &&
-                    MainActivityRuntime.eState.value != EmuState.STOPPED
-                ) {
+                if (running && applied.output.upscaleFloat != updated.output.upscaleFloat)
                     NativeApp.renderUpscalemultiplier(updated.output.upscaleFloat.coerceIn(0.25f, 8.0f))
-                    MainActivityRuntime.upscale.value = updated.output.upscaleFloat.coerceIn(0.25f, 8.0f)
-                }
-                if (MainActivityRuntime.eState.value != EmuState.STOPPED) {
-                    // Regenerate the native per-game INI (gamesettings/<serial>_<CRC>.ini) from the
-                    // resolved settings so a stale key there can't shadow the base layer. Without this a
-                    // legacy per-game key — e.g. TVShader=3 from a reused data folder — survives every
-                    // "Off": VMManager::ApplySettings reloads EmuConfig.GS from base∘game each commit/boot
-                    // and the game layer wins. gameIniBeginWrite uses a fresh (no-Load) interface, so keys
-                    // the user no longer overrides (TVShader once it equals global) are dropped and the
-                    // file is deleted when empty. No-op when no VM (gameIniBeginWrite early-returns).
-                    //
-                    // ★ BEFORE applyTo(), not after. applyTo() is what triggers the commit, and that
-                    // commit re-reads base∘game off disk — so with the write afterwards the commit saw
-                    // the OLD file every time and the game layer clobbered the change that was being
-                    // made. The regenerated file only took effect on the NEXT commit, which is why a
-                    // live shader change appeared to need an app restart, and why it looked
-                    // game-dependent: only games that already had a per-game INI carrying that key
-                    // were affected. ConfigStore.save() above has already stored the new values, so
-                    // resolveForGame() here reads them and nothing depends on applyTo() running first.
-                    currentSerial.value?.takeIf { it.isNotBlank() }?.let { serial ->
-                        ConfigStore.resolveForGame(serial).writeGameSettingsIni(ConfigStore.loadGlobal(), claimsFor = serial)
-                        // The core read that file into its game layer at boot and keeps answering
-                        // from memory, so without a re-read this commit would still apply what the
-                        // file said then: old values, and old answers about which GameDB fixes the
-                        // player has taken back for this game.
+                if (running) {
+                    // The commit reloads the game layer, so replace its file before applying.
+                    if (stored != null && global != null) {
+                        stored.writeGameSettingsIni(global, serial = serial, liveGame = true)
+                        if (!identity.isCurrent()) return@enqueueSave
                         NativeApp.reloadGameSettingsLayer()
                     }
-                    // The core gets what is stored. In Game scope `updated` is what the screen shows,
-                    // database values included, and those would read as hardware fixes set by hand
-                    // (UserHacks) and stop the database's GS fixes applying.
-                    val stored = currentSerial.value?.takeIf { settingsScope.value == SettingsScope.Game && it.isNotBlank() }
-                        ?.let { ConfigStore.resolveForGame(it) }
-                    (stored ?: updated).applyTo()
+                    if (!identity.isCurrent()) return@enqueueSave
+                    (if (scope == SettingsScope.Game) stored ?: updated else updated).applyTo(restoreOsd)
                 }
-                // ★ Re-assert the OSD MODE after the commit. The Minimal/Full/Off modes are a
-                // LIVE-only flag apply (deliberately not persisted, so they don't overwrite the
-                // user's per-stat selection) — but VMManager::ApplySettings re-derives all of
-                // EmuConfig.GS from the layered config on every commit, which wiped that live
-                // override. That is the reported "OSD still says Minimal but it's off after
-                // changing upscale" (confirmed by bmdhacks). Re-pushing the current mode restores
-                // exactly what the user had, without touching any saved setting.
-                runCatching { reapplyOsdMode() }
+                if (identity.isCurrent()) restoreOsd()
             }
         }
 
@@ -174,7 +157,7 @@ object InGameOverlay {
             runCatching {
                 currentSerial.value?.takeIf { it.isNotBlank() }?.let { serial ->
                     ConfigStore.resolveForGame(serial)
-                        .writeGameSettingsIni(ConfigStore.loadGlobal(), serial)
+                        .writeGameSettingsIni(ConfigStore.loadGlobal(), serial, liveGame = false)
                 }
             }
         }
@@ -226,13 +209,30 @@ object InGameOverlay {
         return "OSD: " + osdModeLabel(next)
     }
 
+    fun captureOsdMode(settings: Settings = settingsState.value): () -> Unit {
+        ensureOsdLoaded()
+        val mode = osdMode.value
+        return { applyOsdModeFlags(mode, settings) }
+    }
+
     /** Re-push the CURRENT osd mode to native. Used when something suppressed the OSD live (the
      *  second-display panel routing it to the other screen) and needs to hand it back exactly as
      *  the user had it, without touching any saved setting. */
-    fun reapplyOsdMode() = applyOsdMode(osdMode.value)
+    fun reapplyOsdMode() {
+        val restore = captureOsdMode()
+        LiveGsApplyQueue.enqueueForVm { restore() }
+    }
 
     private fun applyOsdMode(mode: OsdMode) {
-        osdMode.value = mode
+        applyOsdModeFlags(mode, settingsState.value)
+    }
+
+    private fun applyOsdModeFlags(mode: OsdMode, settings: Settings) {
+        if (com.armsx2.SecondScreen.osdSuppressed) {
+            NativeApp.osdApplyFlags(false, false, false, false, false, false, false, false, false, false, false, false)
+            NativeApp.osdShowGpuStats(false)
+            return
+        }
         // Every mode also drives the GPU pipeline-stats line (VSI/PSI) explicitly: it has its
         // own setter outside osdApplyFlags' 12 flags, so leaving it out is what let it survive
         // the old "off" toggle and stay on screen (Cotcho).
@@ -246,7 +246,7 @@ object InGameOverlay {
                 NativeApp.osdApplyFlags(true, false, false, true, false, false, false, false, false, false, false, false)
                 NativeApp.osdShowGpuStats(false)
             }
-            OsdMode.Custom -> applyOsdFlags(settingsState.value)
+            OsdMode.Custom -> applyOsdFlags(settings)
             OsdMode.Off -> {
                 NativeApp.osdApplyFlags(false, false, false, false, false, false, false, false, false, false, false, false)
                 NativeApp.osdShowGpuStats(false)
@@ -258,7 +258,6 @@ object InGameOverlay {
      *  out so applyStoredOsdMode can feed it the boot-resolved settings (settingsState isn't ready
      *  yet at boot), while the live path feeds it settingsState. */
     private fun applyOsdFlags(s: com.armsx2.config.Settings) {
-        osdMode.value = OsdMode.Custom
         NativeApp.osdApplyFlags(
             s.osd.osdShowFps, s.osd.osdShowVps, s.osd.osdShowSpeed, s.osd.osdShowCpu, s.osd.osdShowGpu,
             s.osd.osdShowResolution, s.osd.osdShowGsStats, s.osd.osdShowFrameTimes, s.osd.osdShowHardwareInfo,

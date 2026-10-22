@@ -1,7 +1,10 @@
 package com.armsx2.ui.emulation
 
 import android.app.Application
+import android.os.Handler
+import android.os.Looper
 import androidx.lifecycle.AndroidViewModel
+import com.armsx2.config.LiveGsApplyQueue
 import com.armsx2.config.Settings
 import com.armsx2.i18n.I18n
 import com.armsx2.input.ControllerMappings
@@ -156,11 +159,16 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     fun setRenderer(renderer: String) {
         updateSettings { it.copy(output = it.output.copy(renderer = renderer)) }
         MainActivityRuntime.renderer.value = renderer
-        when (renderer) {
-            "vulkan" -> MainActivityRuntime.renderVulkan()
-            "opengl" -> MainActivityRuntime.renderOpenGL()
-            "software" -> MainActivityRuntime.renderSoftware()
-            else -> NativeApp.renderAuto()
+        val identity = LiveGsApplyQueue.captureVmIdentity()
+        LiveGsApplyQueue.enqueueForVm(identity) {
+            runCatching {
+                when (renderer) {
+                    "vulkan" -> MainActivityRuntime.renderVulkan()
+                    "opengl" -> MainActivityRuntime.renderOpenGL()
+                    "software" -> MainActivityRuntime.renderSoftware()
+                    else -> NativeApp.renderAuto()
+                }
+            }.onFailure { println("@@ANDROID_GS_LIVE_QUEUE@@ renderer_error=${it.javaClass.simpleName}") }
         }
     }
 
@@ -171,7 +179,6 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         val normalized = value.coerceIn(0.25f, 8f)
         updateSettings { it.copy(output = it.output.copy(upscaleFloat = normalized)) }
         MainActivityRuntime.upscale.value = normalized
-        NativeApp.renderUpscalemultiplier(normalized)
     }
 
     fun setAspectRatio(value: Int) = updateSettings { it.copy(output = it.output.copy(aspectRatio = value.coerceIn(0, 8))) }
@@ -286,7 +293,15 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
         // behind this menu — so the native "will be enabled on system reset" toast
         // just sits there. Reboot now so "Enable & restart" actually restarts.
         // (Disabling stays live — casual mode applies immediately.)
-        if (target) MainActivityRuntime.restart()
+        if (target) {
+            val identity = LiveGsApplyQueue.captureVmIdentity()
+            LiveGsApplyQueue.enqueueForVm(identity) {
+                // The reset must see the hardcore commit and still belong to this VM on main.
+                Handler(Looper.getMainLooper()).post {
+                    if (identity.isCurrent()) MainActivityRuntime.restart()
+                }
+            }
+        }
     }
 
     fun cancelToggleHardcore() {

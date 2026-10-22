@@ -170,13 +170,9 @@ fun ShaderChainSection(
 /**
  * The tweakable-parameter list for the selected preset.
  *
- * Values are written straight through to the caller's settings tier (same contract as the
- * preset picker) AND pushed at the running chain here, because those are two different
- * jobs and only one of them can be left to [com.armsx2.config.Settings.applyTo]:
- *  - persisting is the caller's, via [onParamsChange];
- *  - the LIVE apply has to send the effective value of every parameter, not just the
- *    overrides, so that resetting one restores the author's default on a chain that is
- *    already running. applyTo can't do that — it has no enumeration to read initials from.
+ * Values are written through to the caller's settings tier via [onParamsChange], like the
+ * preset picker. The editor's enumeration is cached so [com.armsx2.config.Settings.applyTo]
+ * can push every effective value after committing, including defaults for dropped overrides.
  */
 @Composable
 private fun ShaderParamPicker(
