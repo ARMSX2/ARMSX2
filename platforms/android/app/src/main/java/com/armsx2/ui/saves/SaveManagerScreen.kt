@@ -94,7 +94,7 @@ fun SaveManagerScreen(onBack: () -> Unit, viewModel: SaveManagerViewModel = view
                 items(state.saves, key = { it.file.absolutePath }) { save ->
                     SaveStateCard(
                         save = save,
-                        canSave = state.hasActiveVm,
+                        canSave = state.hasActiveVm && !save.isBackup,
                         onSave = { save.slot?.let(viewModel::save) },
                         onLoad = { viewModel.load(save) },
                         onDelete = { viewModel.delete(save) },
@@ -216,7 +216,7 @@ private fun SaveStateCard(
                 // nothing to snapshot otherwise. They were one `if`, so gating Save correctly
                 // also hid Load.
                 val usable = save.canUseWithActiveGame && save.slot != null
-                if (usable && canSave) {
+                if (usable && canSave && !save.isBackup) {
                     OutlinedButton(
                         onClick = onSave,
                         contentPadding = PaddingValues(horizontal = 14.dp),
