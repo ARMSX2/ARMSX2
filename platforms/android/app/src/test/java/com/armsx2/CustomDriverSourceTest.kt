@@ -67,11 +67,23 @@ class CustomDriverSourceTest {
     private val adreno6xxAnd7xx = listOf(
         "Adreno (TM) 610", "Adreno (TM) 650", "Adreno (TM) 662", "Adreno (TM) 690",
         "Adreno (TM) 702", "Adreno (TM) 730", "Adreno (TM) 740", "Adreno (TM) 750", "adreno (tm) 740",
+        // The Anbernic RG 55G1's Adreno 613, as Qualcomm's GL driver names it.
+        "Adreno (TM) A12", "adreno (tm) a12",
     )
     private val notAdrenoTurnipTarget = listOf(
         null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 540", "Adreno (TM) 830", "Adreno (TM) 840",
         "Adreno (TM) 6500", "Mali-G715", "PowerVR B-Series BXM-8-256", "Xclipse 940",
+        // Marketing names not identified on a device, and a bare 12 that is not one.
+        "Adreno (TM) A32", "Adreno (TM) A11", "Adreno (TM) 12",
     )
+
+    @Test
+    fun theA12MarketingNameReadsAsTheAdreno613() {
+        assertEquals("Adreno (TM) 613", CustomDriver.withAdrenoModelNumber("Adreno (TM) A12"))
+        assertEquals("Adreno 613 MP2", CustomDriver.withAdrenoModelNumber("Adreno A12 MP2"))
+        for (r in listOf(null, "", "Adreno (TM) 650", "Adreno (TM) A32", "Mali-G715", "Adreno (TM) A120"))
+            assertEquals(r.toString(), r, CustomDriver.withAdrenoModelNumber(r))
+    }
 
     @Test
     fun turnipTargetIsAdreno6xxAnd7xx() {

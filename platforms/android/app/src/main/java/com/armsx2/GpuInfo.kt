@@ -80,7 +80,7 @@ object GpuInfo {
      * built-in system driver). [sourceLabel] matches friendlyDriverSource().
      */
     fun recommendation(renderer: String?): Recommendation? {
-        val r = renderer ?: return null
+        val r = CustomDriver.withAdrenoModelNumber(renderer) ?: return null
         if (!r.contains("Adreno", ignoreCase = true)) return null
         val model = Regex("""(\d{3,4})""").find(r.substringAfter("Adreno", ""))?.value?.toIntOrNull()
         return when {

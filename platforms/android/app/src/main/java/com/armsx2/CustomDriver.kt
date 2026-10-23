@@ -100,12 +100,31 @@ object CustomDriver {
         "armsx2turnip",
     )
 
+    /** Qualcomm's "A" marketing names, which some GL drivers report in GL_RENDERER instead of the
+     *  model number, and the model each one is. Only names identified on a device: the Anbernic
+     *  RG 55G1's "Adreno (TM) A12" is an Adreno 613 (its Vulkan deviceID 0x06010300 is the 613's
+     *  chip id, and Turnip names it 613). The emulator carries the same table (GSGPUProfileAdreno.cpp). */
+    private val ADRENO_MARKETING_MODELS = mapOf(12 to 613)
+    private val ADRENO_MARKETING_NAME = Regex("""Adreno[^A-Za-z0-9]*(?:TM[^A-Za-z0-9]*)?A(\d{1,2})(?!\d)""", RegexOption.IGNORE_CASE)
+
+    /** [renderer] with a listed marketing name replaced by its model number ("Adreno (TM) A12" ->
+     *  "Adreno (TM) 613"), so the model-number matches read it. Anything else comes back unchanged. */
+    internal fun withAdrenoModelNumber(renderer: String?): String? {
+        if (renderer == null) return null
+        val number = ADRENO_MARKETING_NAME.find(renderer)?.groups?.get(1) ?: return renderer
+        val model = ADRENO_MARKETING_MODELS[number.value.toInt()] ?: return renderer
+        // The "A" before the number goes too.
+        return renderer.replaceRange(number.range.first - 1, number.range.last + 1, model.toString())
+    }
+
     /** Adreno 6xx and 7xx, the parts the armsx2-turnip releases say they are built for. Not 8xx:
      *  Turnip's a8xx support is young and the driver list recommends a Qualcomm pack there.
-     *  GL_RENDERER reads like "Adreno (TM) 740". */
+     *  GL_RENDERER reads like "Adreno (TM) 740", or a marketing name ([withAdrenoModelNumber]). */
     private val ADRENO_6XX_7XX = Regex("""Adreno\D*([67]\d\d)(?!\d)""", RegexOption.IGNORE_CASE)
-    internal fun isAdreno6xxOr7xx(renderer: String?): Boolean =
-        renderer != null && ADRENO_6XX_7XX.containsMatchIn(renderer)
+    internal fun isAdreno6xxOr7xx(renderer: String?): Boolean {
+        val r = withAdrenoModelNumber(renderer) ?: return false
+        return ADRENO_6XX_7XX.containsMatchIn(r)
+    }
 
     /** The source the first-run setup offers for [renderer]: ours for the GPU, or null when none of
      *  our drivers is built for it (the system driver stays). The two predicates never overlap. */

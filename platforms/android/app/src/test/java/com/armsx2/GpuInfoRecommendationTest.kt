@@ -19,6 +19,18 @@ class GpuInfoRecommendationTest {
         }
     }
 
+    // The Anbernic RG 55G1's Adreno 613, which Qualcomm's GL driver names by its marketing name.
+    @Test
+    fun theAdrenoA12IsRecommendedOurTurnipAsTheAdreno613() {
+        assertEquals("ARMSX2 Turnip", GpuInfo.recommendation("Adreno (TM) A12")?.sourceLabel)
+    }
+
+    // Marketing names nobody has identified on a device are not guessed at.
+    @Test
+    fun anUnlistedMarketingNameStaysOnTheGeneralPack() {
+        assertEquals("KIMCHI", GpuInfo.recommendation("Adreno (TM) A32")?.sourceLabel)
+    }
+
     @Test
     fun adreno8xxKeepsTheQualcommTunedPack() {
         for (r in listOf("Adreno (TM) 825", "Adreno (TM) 830", "Adreno (TM) 840"))
