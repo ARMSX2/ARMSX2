@@ -19,11 +19,12 @@ namespace
 {
 using GpuProfileDetail::ResolvedGpuProfile;
 
-ResolvedGpuProfile Adreno(std::string_view renderer)
+// vendor_id and device_id as Vulkan reports them; the OpenGL path has neither.
+ResolvedGpuProfile Adreno(std::string_view renderer, u32 vendor_id = 0, u32 device_id = 0)
 {
 	const std::string lowered = GpuProfileDetail::ToLowerASCII(renderer);
 	EXPECT_TRUE(GpuProfileDetail::LooksLikeAdreno(lowered)) << renderer;
-	return GpuProfileDetail::ResolveAdrenoProfile(lowered);
+	return GpuProfileDetail::ResolveAdrenoProfile(lowered, vendor_id, device_id);
 }
 
 ResolvedGpuProfile Mali(std::string_view renderer)
@@ -55,11 +56,12 @@ constexpr u32 kTurnipDriver = 18;
 constexpr u32 kPanVKDriver = 20;
 
 GpuProfileSelection ResolveVK(const char* override_mode, const char* device_name, u32 vendor_id, u32 driver_id,
-	u32 driver_version, const char* driver_name = "", const char* driver_info = "")
+	u32 driver_version, const char* driver_name = "", const char* driver_info = "", u32 device_id = 0)
 {
 	MobileDriverContext context;
 	context.api = MobileGpuApi::Vulkan;
 	context.vendor_id = vendor_id;
+	context.device_id = device_id;
 	context.driver_id = driver_id;
 	context.driver_version = driver_version;
 	context.driver_name = driver_name;
@@ -201,6 +203,140 @@ TEST(GSGpuProfileAdreno, ANameWithoutAModelIsAnUnknownAdreno)
 	EXPECT_FALSE(p.gpu.recognized);
 	EXPECT_EQ(p.gpu.name, "Unknown Adreno");
 	ExpectTuning(p.tuning, 96, 8, 6, false);
+}
+
+// The Anbernic RG 55G1's GPU, read off the device on 2026-10-23 (umbrella
+// devs/bmdhacks/campaigns/rg55g1-2026-10-23). Qualcomm's stock driver names it with a marketing
+// name, "Adreno (TM) A12", and Turnip on the same device names it "Turnip Adreno (TM) 613". Both
+// report Vulkan deviceID 0x06010300: the chip id of the 613 (core 6, major 1, minor 3), the same id
+// Mesa's device table derives for the 613. Strings below are the device's own, except the Turnip
+// driverVersion, which was not recorded and is Mesa 27.0.0's packing.
+namespace
+{
+constexpr u32 kAdreno613ChipId = 0x06010300u;
+constexpr u32 kRg55g1StockDriverVersion = 0x8026705Bu; // 512.615.91
+constexpr const char* kRg55g1StockDriverName = "Qualcomm Technologies Inc. Adreno Vulkan Driver";
+constexpr const char* kRg55g1StockDriverInfo = "Driver Build: a63fb93269, I16b8254a37, 1724729505";
+constexpr const char* kRg55g1TurnipDriverInfo = "Mesa 27.0.0-devel (git-axfl2-004)";
+
+GpuProfileSelection Rg55g1Stock()
+{
+	return ResolveVK("adreno", "Adreno (TM) A12", GpuVendorID::Qualcomm, kQualcommDriver, kRg55g1StockDriverVersion,
+		kRg55g1StockDriverName, kRg55g1StockDriverInfo, kAdreno613ChipId);
+}
+
+GpuProfileSelection Rg55g1Turnip()
+{
+	return ResolveVK("adreno", "Turnip Adreno (TM) 613", GpuVendorID::Qualcomm, kTurnipDriver,
+		PackVulkanVersion(27, 0, 0), "turnip Mesa driver", kRg55g1TurnipDriverInfo, kAdreno613ChipId);
+}
+
+void ExpectAdreno613(const MobileGpuIdentity& gpu, const MobileGsTuning& tuning, const char* what)
+{
+	EXPECT_EQ(gpu.architecture, MobileGpuArchitecture::Adreno6xx) << what;
+	EXPECT_EQ(gpu.model_number, 613) << what;
+	EXPECT_TRUE(gpu.recognized) << what;
+	EXPECT_EQ(gpu.name, "Adreno 613") << what;
+	ExpectTuning(tuning, 88, 7, 6, false);
+}
+} // namespace
+
+// The OpenGL path has only the name, so the marketing name itself has to resolve.
+TEST(GSGpuProfileAdreno, TheA12IsTheAdreno613ByName)
+{
+	const ResolvedGpuProfile p = Adreno("Adreno (TM) A12");
+	ExpectAdreno613(p.gpu, p.tuning, "Adreno (TM) A12");
+}
+
+TEST(GSGpuProfileAdreno, TheRg55g1IsTheAdreno613OnEitherDriver)
+{
+	const GpuProfileSelection stock = Rg55g1Stock();
+	EXPECT_EQ(stock.driver.driver, MobileGpuDriver::QualcommProprietary);
+	ExpectAdreno613(stock.gpu, stock.gs_tuning, "stock");
+
+	const GpuProfileSelection turnip = Rg55g1Turnip();
+	EXPECT_EQ(turnip.driver.driver, MobileGpuDriver::MesaTurnip);
+	ExpectAdreno613(turnip.gpu, turnip.gs_tuning, "turnip");
+}
+
+// A marketing name with no entry of its own (made up here) on a Qualcomm Vulkan device: the chip id
+// names the part. This is what recognises the next rebranded 6xx without a new name entry.
+TEST(GSGpuProfileAdreno, AChipIdNamesThePartWhenTheNameDoesNot)
+{
+	const GpuProfileSelection sel = ResolveVK("adreno", "Adreno (TM) A99", GpuVendorID::Qualcomm, kQualcommDriver,
+		kRg55g1StockDriverVersion, kRg55g1StockDriverName, "", kAdreno613ChipId);
+	ExpectAdreno613(sel.gpu, sel.gs_tuning, "Adreno (TM) A99");
+
+	// The Adreno 650's chip id as the Qualcomm driver reports it.
+	const GpuProfileSelection a650 = ResolveVK("adreno", "Adreno (TM) A99", GpuVendorID::Qualcomm, kQualcommDriver,
+		kRg55g1StockDriverVersion, kRg55g1StockDriverName, "", 0x06050001u);
+	EXPECT_EQ(a650.gpu.model_number, 650);
+	EXPECT_TRUE(a650.gpu.recognized);
+	ExpectTuning(a650.gs_tuning, 144, 10, 8, true);
+}
+
+// An ordinary renderer name keeps deciding, whatever the chip id says.
+TEST(GSGpuProfileAdreno, AModelInTheNameOutranksTheChipId)
+{
+	// Its own chip id.
+	const GpuProfileSelection a650 = ResolveVK("adreno", "Adreno (TM) 650", GpuVendorID::Qualcomm, kQualcommDriver,
+		kRg55g1StockDriverVersion, kRg55g1StockDriverName, "", 0x06050001u);
+	EXPECT_EQ(a650.gpu.model_number, 650);
+	EXPECT_EQ(a650.gpu.architecture, MobileGpuArchitecture::Adreno6xx);
+	EXPECT_TRUE(a650.gpu.recognized);
+	ExpectTuning(a650.gs_tuning, 144, 10, 8, true);
+
+	// A chip id that names another listed part does not override the name.
+	const GpuProfileSelection a650_613 = ResolveVK("adreno", "Adreno (TM) 650", GpuVendorID::Qualcomm,
+		kQualcommDriver, kRg55g1StockDriverVersion, kRg55g1StockDriverName, "", kAdreno613ChipId);
+	EXPECT_EQ(a650_613.gpu.model_number, 650);
+	ExpectTuning(a650_613.gs_tuning, 144, 10, 8, true);
+
+	// The L suffix exists only in the name; a chip id cannot carry it.
+	const GpuProfileSelection a619l = ResolveVK("adreno", "Adreno (TM) 619L", GpuVendorID::Qualcomm, kQualcommDriver,
+		kRg55g1StockDriverVersion, kRg55g1StockDriverName, "", 0x06050001u);
+	EXPECT_EQ(a619l.gpu.name, "Adreno 619L");
+	ExpectTuning(a619l.gs_tuning, 88, 7, 6, false);
+}
+
+// Chip ids the decode must not trust. Called directly, not through Resolve, because a name without
+// a model would otherwise pick up digits from the host's own platform hints.
+TEST(GSGpuProfileAdreno, ChipIdsThatDoNotSpellAListedModelAreIgnored)
+{
+	const auto expect_unknown = [](const ResolvedGpuProfile& p, const char* what) {
+		EXPECT_EQ(p.gpu.architecture, MobileGpuArchitecture::Unknown) << what;
+		EXPECT_FALSE(p.gpu.recognized) << what;
+		ExpectTuning(p.tuning, 96, 8, 6, false);
+	};
+
+	// The 7xx ids stop spelling the model: Mesa gives the 725 0x07030002, which reads as 730.
+	expect_unknown(Adreno("Adreno (TM)", GpuVendorID::Qualcomm, 0x07030002u), "725");
+	// The later layout spells nothing. Mesa lists 0x43050a00 as the "Adreno A32", an a7xx part with no
+	// model number; its marketing name has no entry, so it stays unknown.
+	expect_unknown(Adreno("Adreno (TM)", GpuVendorID::Qualcomm, 0x43050a00u), "A32 chip id");
+	const ResolvedGpuProfile a32 = Adreno("Adreno (TM) A32", GpuVendorID::Qualcomm, 0x43050a00u);
+	expect_unknown(a32, "Adreno (TM) A32");
+	EXPECT_EQ(a32.gpu.model_number, 32);
+	// A 6xx id that spells an unlisted number (Mesa's Adreno 643 reads 635).
+	expect_unknown(Adreno("Adreno (TM)", GpuVendorID::Qualcomm, 0x06030500u), "643");
+	// The id means nothing without Qualcomm's vendor ID, and OpenGL has neither.
+	expect_unknown(Adreno("Adreno (TM)", GpuVendorID::ARM, kAdreno613ChipId), "ARM vendor");
+	expect_unknown(Adreno("Adreno (TM)"), "no ids");
+	// And with no name to parse, a good chip id is enough.
+	const ResolvedGpuProfile chip_only = Adreno("Adreno (TM)", GpuVendorID::Qualcomm, kAdreno613ChipId);
+	ExpectAdreno613(chip_only.gpu, chip_only.tuning, "chip id only");
+}
+
+// The marketing-name entry is for the A-prefixed word only: other names with a 12 in them, and an
+// unlisted A-name, parse as before.
+TEST(GSGpuProfileAdreno, OnlyTheListedMarketingNameIsTranslated)
+{
+	EXPECT_EQ(Adreno("Adreno (TM) A11").gpu.model_number, 11);
+	EXPECT_FALSE(Adreno("Adreno (TM) A11").gpu.recognized);
+	EXPECT_EQ(Adreno("Adreno (TM) 12").gpu.model_number, 12);
+	EXPECT_FALSE(Adreno("Adreno (TM) 12").gpu.recognized);
+	EXPECT_EQ(Adreno("Adreno (TM) A12").gpu.model_number, 613);
+	EXPECT_EQ(Adreno("adreno a12").gpu.model_number, 613);
 }
 
 // ---------------------------------------------------------------------------------------------

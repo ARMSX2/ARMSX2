@@ -102,6 +102,22 @@ static constexpr std::array<AdrenoSpec, 10> s_recent_adreno_specs = {{
 	{840, 0, MobileGpuArchitecture::Adreno8xx, T(160, 12, 8, true)},
 }};
 
+// Qualcomm's "A" marketing names, which some drivers report as the renderer name in place of the
+// model number ("Adreno (TM) A12"), and the model each one is. Only names identified on a device
+// belong here. An unlisted one parses as its bare number, which no table row has, so on Vulkan the
+// chip id gets to name the part (AdrenoModelFromChipId).
+struct AdrenoMarketingName
+{
+	u16 number;
+	u16 model;
+};
+
+static constexpr std::array<AdrenoMarketingName, 1> s_adreno_marketing_names = {{
+	// Anbernic RG 55G1 (2026-10-23): the stock driver names it "Adreno (TM) A12" with Vulkan deviceID
+	// 0x06010300, the 613's chip id, and Turnip on the same device names it "Adreno (TM) 613".
+	{12, 613},
+}};
+
 static bool ParseAdrenoModel(std::string_view hints, u16* model, char* suffix)
 {
 	const size_t adreno = hints.find("adreno");
@@ -114,6 +130,10 @@ static bool ParseAdrenoModel(std::string_view hints, u16* model, char* suffix)
 	if (pos == hints.size())
 		return false;
 
+	// "a12": a marketing name, an 'a' starting a word directly before the number.
+	const bool marketing_name = (pos >= adreno + 8) && hints[pos - 1] == 'a' &&
+	                            !std::isalnum(static_cast<unsigned char>(hints[pos - 2]));
+
 	u32 value = 0;
 	while (pos < hints.size() && std::isdigit(static_cast<unsigned char>(hints[pos])))
 	{
@@ -124,7 +144,45 @@ static bool ParseAdrenoModel(std::string_view hints, u16* model, char* suffix)
 
 	*model = static_cast<u16>(value);
 	*suffix = (pos < hints.size() && hints[pos] == 'l') ? 'l' : 0;
+
+	if (marketing_name)
+	{
+		for (const AdrenoMarketingName& name : s_adreno_marketing_names)
+		{
+			if (name.number == value)
+			{
+				*model = name.model;
+				*suffix = 0;
+				break;
+			}
+		}
+	}
 	return true;
+}
+
+// The model a Qualcomm Vulkan deviceID spells, or 0 when it spells none. Both the Qualcomm driver and
+// Turnip report the kernel's chip id there. Up to the 6xx parts that id is 0xCCMMmmPP: core, major and
+// minor are the model's three digits and PP is a revision, so the Adreno 650 reports 0x06050001 and
+// the 613 0x06010300.
+//
+// Only ids of that form, core 2 to 6, are decoded. From the 7xx parts on, the digits stop matching the
+// model: Mesa's device table gives the 725 0x07030002 and the 730 0x07030001, and the later parts use
+// a different layout altogether (the 740 is 0x43050a01, the 722 0x43020100). Even within 6xx two of
+// Mesa's ids spell a number that is not the part's marketing name (0x06030500 reads 635 for an
+// Adreno 643, 0x06060201 reads 662 for a 644); neither number is in the tables above, so the caller,
+// which accepts only a listed model, ignores them.
+static u16 AdrenoModelFromChipId(u32 vendor_id, u32 device_id)
+{
+	if (vendor_id != GpuVendorID::Qualcomm)
+		return 0;
+
+	const u32 core = (device_id >> 24) & 0xff;
+	const u32 major = (device_id >> 16) & 0xff;
+	const u32 minor = (device_id >> 8) & 0xff;
+	if (core < 2 || core > 6 || major > 9 || minor > 9)
+		return 0;
+
+	return static_cast<u16>(core * 100 + major * 10 + minor);
 }
 
 static MobileGpuArchitecture ArchitectureForUnknownAdreno(u16 model)
@@ -158,7 +216,7 @@ static MobileGsTuning FallbackTuningForAdreno(u16 model)
 }
 
 template <size_t N>
-static const AdrenoSpec* FindAdrenoSpec(const std::array<AdrenoSpec, N>& specs, u16 model, char suffix)
+static const AdrenoSpec* FindAdrenoSpecIn(const std::array<AdrenoSpec, N>& specs, u16 model, char suffix)
 {
 	for (const AdrenoSpec& spec : specs)
 	{
@@ -167,6 +225,12 @@ static const AdrenoSpec* FindAdrenoSpec(const std::array<AdrenoSpec, N>& specs, 
 	}
 	return nullptr;
 }
+
+static const AdrenoSpec* FindAdrenoSpec(u16 model, char suffix)
+{
+	const AdrenoSpec* spec = FindAdrenoSpecIn(s_adreno_specs, model, suffix);
+	return spec ? spec : FindAdrenoSpecIn(s_recent_adreno_specs, model, suffix);
+}
 } // namespace
 
 bool LooksLikeAdreno(std::string_view lowered_hints)
@@ -174,7 +238,7 @@ bool LooksLikeAdreno(std::string_view lowered_hints)
 	return ContainsAny(lowered_hints, {"adreno", "qualcomm", "qcom", "snapdragon"});
 }
 
-ResolvedGpuProfile ResolveAdrenoProfile(std::string_view lowered_hints)
+ResolvedGpuProfile ResolveAdrenoProfile(std::string_view lowered_hints, u32 vendor_id, u32 device_id)
 {
 	ResolvedGpuProfile resolved;
 	resolved.gpu.name = "Unknown Adreno";
@@ -208,12 +272,23 @@ ResolvedGpuProfile ResolveAdrenoProfile(std::string_view lowered_hints)
 
 	u16 model = 0;
 	char suffix = 0;
-	if (!ParseAdrenoModel(lowered_hints, &model, &suffix))
-		return resolved;
+	const bool named = ParseAdrenoModel(lowered_hints, &model, &suffix);
+	const AdrenoSpec* spec = named ? FindAdrenoSpec(model, suffix) : nullptr;
 
-	const AdrenoSpec* spec = FindAdrenoSpec(s_adreno_specs, model, suffix);
+	// The name decides whenever it names a listed part. Otherwise a chip id that spells a listed part
+	// names it instead: a renamed part, or one whose marketing name has no entry above.
 	if (!spec)
-		spec = FindAdrenoSpec(s_recent_adreno_specs, model, suffix);
+	{
+		const u16 chip_model = AdrenoModelFromChipId(vendor_id, device_id);
+		if (const AdrenoSpec* chip_spec = chip_model ? FindAdrenoSpec(chip_model, 0) : nullptr)
+		{
+			spec = chip_spec;
+			model = chip_model;
+			suffix = 0;
+		}
+	}
+	if (!named && !spec)
+		return resolved;
 
 	resolved.gpu.model_number = model;
 	resolved.gpu.architecture = spec ? spec->architecture : ArchitectureForUnknownAdreno(model);

@@ -1292,6 +1292,101 @@ TEST(GSGpuDriverProfile, TheNumbersBesideTheAdreno722GetNoA7xxRule)
 }
 
 // ---------------------------------------------------------------------------------------------
+// The Anbernic RG 55G1: an Adreno 613 that Qualcomm's stock driver names "Adreno (TM) A12".
+//
+// Turnip names the part 613, and both drivers report Vulkan deviceID 0x06010300, the 613's chip id.
+// Under the old name parse the stock driver read the marketing name as model 12, an unknown
+// architecture, and so missed every row bounded by a model range. The part must take exactly the
+// rows, bugs, workarounds and road bits an "Adreno (TM) 613" takes, on each driver. Device strings
+// from umbrella devs/bmdhacks/campaigns/rg55g1-2026-10-23 (stock vkjson, Turnip probe); the Turnip
+// driverVersion was not recorded and is Mesa 27.0.0's packing.
+namespace
+{
+	constexpr u32 kAdreno613ChipId = 0x06010300u;
+	constexpr u32 kRg55g1StockDriverVersion = 0x8026705Bu;
+	constexpr const char* kRg55g1StockDriverName = "Qualcomm Technologies Inc. Adreno Vulkan Driver";
+	constexpr const char* kRg55g1StockDriverInfo = "Driver Build: a63fb93269, I16b8254a37, 1724729505";
+	constexpr const char* kRg55g1TurnipDriverInfo = "Mesa 27.0.0-devel (git-axfl2-004)";
+
+	GpuProfileSelection ResolveRg55g1VK(const char* device_name, bool turnip)
+	{
+		MobileDriverContext context;
+		context.api = MobileGpuApi::Vulkan;
+		context.vendor_id = kAdrenoVendorId;
+		context.device_id = kAdreno613ChipId;
+		context.driver_id = turnip ? kTurnipDriverId : kQualcommProprietaryDriverId;
+		context.driver_version = turnip ? PackVulkanVersion(27, 0, 0) : kRg55g1StockDriverVersion;
+		context.driver_name = turnip ? "turnip Mesa driver" : kRg55g1StockDriverName;
+		context.driver_info = turnip ? kRg55g1TurnipDriverInfo : kRg55g1StockDriverInfo;
+		return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+	}
+
+	void ExpectSameDriverProfile(const GpuProfileSelection& a, const GpuProfileSelection& b, const char* what)
+	{
+		EXPECT_EQ(a.gpu.architecture, b.gpu.architecture) << what;
+		EXPECT_EQ(a.gpu.model_number, b.gpu.model_number) << what;
+		EXPECT_EQ(a.gpu.recognized, b.gpu.recognized) << what;
+		EXPECT_EQ(a.driver.driver, b.driver.driver) << what;
+		EXPECT_EQ(a.driver.matched_rules, b.driver.matched_rules)
+			<< what << ": " << GpuProfileDetector::DescribeMatchedRules(a.driver) << " vs "
+			<< GpuProfileDetector::DescribeMatchedRules(b.driver);
+		EXPECT_EQ(a.driver.bugs, b.driver.bugs) << what;
+		EXPECT_EQ(a.driver.workarounds, b.driver.workarounds) << what;
+		EXPECT_EQ(a.driver.orders_declared_feedback_loop, b.driver.orders_declared_feedback_loop) << what;
+		EXPECT_EQ(a.driver.prefers_declared_loop_with_barriers, b.driver.prefers_declared_loop_with_barriers) << what;
+		EXPECT_EQ(a.gs_tuning.pooled_targets, b.gs_tuning.pooled_targets) << what;
+		EXPECT_EQ(a.gs_tuning.target_age, b.gs_tuning.target_age) << what;
+		EXPECT_EQ(a.gs_tuning.texture_age, b.gs_tuning.texture_age) << what;
+	}
+} // namespace
+
+TEST(GSGpuDriverProfile, TheRg55g1StockDriverTakesTheAdreno613sRows)
+{
+	const GpuProfileSelection a12 = ResolveRg55g1VK("Adreno (TM) A12", false);
+	const GpuProfileSelection a613 = ResolveRg55g1VK("Adreno (TM) 613", false);
+	EXPECT_EQ(a12.gpu.model_number, 613);
+	EXPECT_EQ(a12.gpu.architecture, MobileGpuArchitecture::Adreno6xx);
+	EXPECT_EQ(a12.driver.driver, MobileGpuDriver::QualcommProprietary);
+	ExpectSameDriverProfile(a12, a613, "stock");
+
+	// The row the marketing name used to miss: bounded to Adreno 200-799 on the Qualcomm driver.
+	EXPECT_TRUE(a12.driver.matched_rules & (u64{1} << RowOf("vk-qualcomm-pre-adreno8-readback")));
+	// The driver-wide road is unchanged: the Qualcomm driver keeps the render-target copy and makes no
+	// declared-loop claim on any Adreno.
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(a12));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(a12));
+	EXPECT_FALSE(OrdersDeclaredLoop(a12));
+}
+
+// Turnip already named the part 613; pinned so the stock-driver fix cannot move it.
+TEST(GSGpuDriverProfile, TheRg55g1TurnipTakesTheAdreno613sRows)
+{
+	const GpuProfileSelection sel = ResolveRg55g1VK("Turnip Adreno (TM) 613", true);
+	EXPECT_EQ(sel.gpu.model_number, 613);
+	EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip);
+	EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u);
+	ExpectSameDriverProfile(sel, ResolveRg55g1VK("Adreno (TM) 613", true), "turnip");
+
+	// Below the 650 the fix generation earns no ordering claim, and the 613 is not the 610 the
+	// cached stream rings were measured on.
+	EXPECT_TRUE(TakesTheRenderTargetCopyPath(sel));
+	EXPECT_FALSE(OrdersDeclaredLoop(sel));
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+	EXPECT_FALSE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory));
+}
+
+// The Android Auto renderer decision reads the GL strings, which carry the marketing name. The
+// device's GL_VERSION was not recorded; no row here depends on it.
+TEST(GSGpuDriverProfile, TheRg55g1OpenGLStringsResolveAsTheAdreno613)
+{
+	const GpuProfileSelection sel = ResolveGL("Qualcomm", "Adreno (TM) A12", "OpenGL ES 3.2");
+	EXPECT_EQ(sel.runtime_profile, RuntimeGpuProfile::Adreno);
+	EXPECT_EQ(sel.gpu.model_number, 613);
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno6xx);
+	EXPECT_TRUE(AutoPrefersVulkan("Qualcomm", "Adreno (TM) A12", "OpenGL ES 3.2"));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Which rows matched, by id. The log used to carry only a count and two bit masks, so nobody could
 // tell from an emulog which rule had fired. The ids below are the table's own strings.
 

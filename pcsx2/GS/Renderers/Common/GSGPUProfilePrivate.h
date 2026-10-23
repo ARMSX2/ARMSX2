@@ -25,7 +25,9 @@ MobileGsTuning MakeMobileGsTuning(u32 pooled_targets, u32 target_age, u32 pooled
 MobileGsTuning MakeConservativeMobileGsTuning();
 
 bool LooksLikeAdreno(std::string_view lowered_hints);
-ResolvedGpuProfile ResolveAdrenoProfile(std::string_view lowered_hints);
+/// `vendor_id` and `device_id` are VkPhysicalDeviceProperties' (0 on OpenGL). The device ID names the
+/// part when the renderer name does not name a listed one.
+ResolvedGpuProfile ResolveAdrenoProfile(std::string_view lowered_hints, u32 vendor_id, u32 device_id);
 
 bool LooksLikeMali(std::string_view lowered_hints);
 ResolvedGpuProfile ResolveMaliProfile(std::string_view lowered_hints);
