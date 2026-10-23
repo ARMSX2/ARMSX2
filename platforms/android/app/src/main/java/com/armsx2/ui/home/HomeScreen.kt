@@ -430,6 +430,9 @@ fun HomeScreen(
             // so normal browsing never followed the selector.)
             val allGamesHeaderShown = shownRecents.isNotEmpty() &&
                 state.initialized && state.visibleGames.isNotEmpty()
+            // The cover the pad is on, or none under touch: the index is 0 from the start, so the
+            // first cover wore the highlight whether or not a controller was ever used.
+            val gridSelected = if (com.armsx2.ui.common.PadInput.active.value) state.selectedIndex else -1
             LaunchedEffect(state.selectedIndex, state.visibleGames.size, state.layout, HomeInputController.zone.value) {
                 if (HomeInputController.zone.value != HomeZone.Grid) return@LaunchedEffect
                 // Don't follow (and thus don't scroll away from the top) until the user
@@ -483,7 +486,9 @@ fun HomeScreen(
                         { overflowMenu = true },
                     ),
                 )
-                val tb = HomeInputController.zone.value == HomeZone.Toolbar
+                // Highlights only while the pad drives the library: under touch the zones and the
+                // grid's index still exist (0 from the start), but nobody chose them.
+                val tb = HomeInputController.zone.value == HomeZone.Toolbar && com.armsx2.ui.common.PadInput.active.value
                 val tbi = HomeInputController.toolbarIndex.intValue
                 ArmsTopBar(
                     title = str("games.section.library"),
@@ -625,7 +630,7 @@ fun HomeScreen(
                             onClick = { LibraryKeyboard.open(viewModel.state.value.query, viewModel::setQuery, searchPlaceholder) },
                             placeholder = searchPlaceholder,
                             modifier = Modifier.fillMaxWidth(),
-                            selected = HomeInputController.zone.value == HomeZone.Search,
+                            selected = HomeInputController.zone.value == HomeZone.Search && com.armsx2.ui.common.PadInput.active.value,
                         )
                     }
                 }
@@ -721,7 +726,7 @@ fun HomeScreen(
                 }
 
                 if (shownRecents.isNotEmpty()) {
-                    val recentsSelected = HomeInputController.zone.value == HomeZone.Recents
+                    val recentsSelected = HomeInputController.zone.value == HomeZone.Recents && com.armsx2.ui.common.PadInput.active.value
                     val recentSel = if (recentsSelected) HomeInputController.recentIndex.intValue else -1
                     item(span = { GridItemSpan(maxLineSpan) }) {
                         Column {
@@ -939,7 +944,7 @@ fun HomeScreen(
                             // Every row lays out on the same perShelf-slot grid, so a
                             // short last row keeps its covers packed left in sequence.
                             slotsPerRow = perShelf,
-                            selectedIndex = state.selectedIndex,
+                            selectedIndex = gridSelected,
                             startIndex = rowIndex * perShelf,
                             onLaunch = { viewModel.launch(it) },
                             onDetails = { menuGame = it },
@@ -966,7 +971,7 @@ fun HomeScreen(
                         if (state.layout == LibraryLayout.Grid) {
                             GameGridCard(
                                 game = game,
-                                selected = index == state.selectedIndex,
+                                selected = index == gridSelected,
                                 onSelect = { viewModel.setSelection(index) },
                                 onLaunch = { viewModel.launch(game) },
                                 onDetails = { menuGame = game },
@@ -974,7 +979,7 @@ fun HomeScreen(
                         } else {
                             GameListCard(
                                 game = game,
-                                selected = index == state.selectedIndex,
+                                selected = index == gridSelected,
                                 onClick = { viewModel.setSelection(index); viewModel.launch(game) },
                                 onDetails = { menuGame = game },
                             )
@@ -2435,6 +2440,9 @@ object HomeInputController {
     fun move(dx: Int, dy: Int): Boolean {
         val viewModel = owner ?: return false
         userNavigated = true
+        // The press that switched from touch to the pad shows where the selection is: nothing was
+        // highlighted until now, so moving it would start from a spot nobody could see.
+        if (com.armsx2.ui.common.PadInput.justActivated) return true
         // Snapshot the highlight so we blip the nav sound only when it actually moves (not when a
         // press runs into an edge).
         val beforeZone = zone.value
@@ -2500,6 +2508,9 @@ object HomeInputController {
 
     fun confirm(): Boolean {
         val viewModel = owner ?: return false
+        // As in move(): a first press only shows the selection, so it cannot launch a game that
+        // was never highlighted.
+        if (com.armsx2.ui.common.PadInput.justActivated) return true
         com.armsx2.MenuSfx.play(com.armsx2.MenuSfx.Event.SELECT)
         when (zone.value) {
             HomeZone.Toolbar -> toolbarActions.getOrNull(toolbarIndex.intValue)?.invoke()

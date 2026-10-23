@@ -46,7 +46,10 @@ fun Modifier.padFocusRing(
     this
         .onFocusChanged { focused = it.isFocused || it.hasFocus }
         .then(
-            if (focused)
+            // Only while the pad drives the UI: Compose focus also lands on its own (the first
+            // focusable control when the game surface lets go), which under touch is a ring on a
+            // control nobody chose. See PadInput.
+            if (focused && PadInput.active.value)
                 // Driver-safe focus ring: solid inner + translucent outer border. We avoid
                 // Modifier.shadow with a custom ambient/spot color — Adreno / Mali / Turnip
                 // drivers commonly ignore the tint and render the elevation shadow as an

@@ -3367,6 +3367,9 @@ open class MainActivityRuntime : ComponentActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Before anything can consume it: whether the pad is driving the menus decides whether
+        // selection highlights show at all.
+        com.armsx2.ui.common.PadInput.onKey(event)
         // The library screensaver sees every key first: any input resets its clock, and the press
         // that wakes it goes no further, so it can't also start a game.
         if (com.armsx2.ui.home.LibraryScreensaver.onKey(event)) return true
@@ -4394,6 +4397,8 @@ open class MainActivityRuntime : ComponentActivity() {
     // on every other device — see maybeCorrectTouchScale). ALWAYS returns super, so it can never
     // block or consume a tap.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // A touch hands the menus back from the pad, so selection highlights hide (PadInput).
+        com.armsx2.ui.common.PadInput.onTouch(ev)
         if (com.armsx2.ui.home.LibraryScreensaver.onTouch(ev)) return true
         maybeCorrectTouchScale(ev)
         return super.dispatchTouchEvent(ev)
@@ -4631,6 +4636,7 @@ open class MainActivityRuntime : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        com.armsx2.ui.common.PadInput.onMotion(ev)
         if (com.armsx2.ui.home.LibraryScreensaver.onMotion(ev)) return true
         // Controller-input diagnostic (ARMSX2_JOYCON): logged before ANY gate so it
         // captures the raw axes even mid-(re)bind and for SOURCE_DPAD-only events the

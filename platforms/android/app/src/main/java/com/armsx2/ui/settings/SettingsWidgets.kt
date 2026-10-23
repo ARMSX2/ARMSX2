@@ -299,8 +299,11 @@ internal object SettingsControllerNav {
         registry.remove(id)
         positions.remove(id)
         widths.remove(id)
+        // Handing the selection to the first control scrolls the page there. With the pad driving
+        // that keeps it somewhere reachable; under touch it only flung the page to the top when a
+        // tapped row went away, so the selection is dropped instead.
         if (selectedId.value == id)
-            selectedId.value = orderedIds().firstOrNull()
+            selectedId.value = if (com.armsx2.ui.common.PadInput.active.value) orderedIds().firstOrNull() else null
         selectedIndex.intValue = orderedIds().indexOf(selectedId.value)
     }
 
@@ -642,7 +645,10 @@ internal fun Modifier.controllerFocusable(
             }
         }
         .then(
-            if (focused || selected) {
+            // Only while the pad drives the UI: Compose focus lands on controls by itself (the
+            // first focusable one when the game surface lets go), and under touch a ring there is
+            // a selection nobody made.
+            if ((focused || selected) && com.armsx2.ui.common.PadInput.active.value) {
                 // Driver-safe selection ring: solid inner + translucent outer border. We
                 // deliberately avoid Modifier.shadow with a custom ambient/spot color here —
                 // Adreno / Mali / Turnip drivers frequently ignore the tint and render the
