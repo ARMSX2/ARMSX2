@@ -866,6 +866,12 @@ struct OSDMessage
 static std::deque<OSDMessage> s_osd_active_messages;
 static std::deque<OSDMessage> s_osd_posted_messages;
 static std::mutex s_osd_messages_lock;
+static std::atomic<ImGuiManager::OSDMessageHook> s_osd_message_hook{nullptr};
+
+void ImGuiManager::SetOSDMessageHook(OSDMessageHook hook)
+{
+	s_osd_message_hook.store(hook, std::memory_order_release);
+}
 
 void Host::AddOSDMessage(std::string message, float duration /*= 2.0f*/)
 {
@@ -878,6 +884,12 @@ void Host::AddKeyedOSDMessage(std::string key, std::string message, float durati
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD [{}]: {}", key, message));
 	else
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD: {}", message));
+
+	if (const ImGuiManager::OSDMessageHook hook = s_osd_message_hook.load(std::memory_order_acquire))
+	{
+		hook(key, message, duration);
+		return;
+	}
 
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 
@@ -901,6 +913,12 @@ void Host::AddIconOSDMessage(std::string key, const char* icon, const std::strin
 	else
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD: {}", message));
 
+	if (const ImGuiManager::OSDMessageHook hook = s_osd_message_hook.load(std::memory_order_acquire))
+	{
+		hook(key, message, duration);
+		return;
+	}
+
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 
 	OSDMessage msg = {};
@@ -918,6 +936,13 @@ void Host::AddIconOSDMessage(std::string key, const char* icon, const std::strin
 
 void Host::RemoveKeyedOSDMessage(std::string key)
 {
+	if (const ImGuiManager::OSDMessageHook hook = s_osd_message_hook.load(std::memory_order_acquire))
+	{
+		if (!key.empty())
+			hook(key, {}, 0.0f);
+		return;
+	}
+
 	OSDMessage msg = {};
 	msg.key = std::move(key);
 	msg.duration = 0.0f;
@@ -928,6 +953,9 @@ void Host::RemoveKeyedOSDMessage(std::string key)
 
 void Host::ClearOSDMessages()
 {
+	if (const ImGuiManager::OSDMessageHook hook = s_osd_message_hook.load(std::memory_order_acquire))
+		hook({}, {}, 0.0f);
+
 	{
 		std::unique_lock<std::mutex> lock(s_osd_messages_lock);
 		s_osd_posted_messages.clear();
