@@ -33,6 +33,18 @@ TEST(GSInterlaceModePolicy, AutomaticTemporalSourcesUseFastMAD)
 	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, false, true).shader_mode, 3);
 }
 
+TEST(GSInterlaceModePolicy, AutomaticMovieInFrameModeUsesCombPass)
+{
+	// A movie woven into one frame combs where it moves; the comb pass (4) takes it apart.
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, false, false, false, true).shader_mode, 4);
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, false, false, true, true).shader_mode, 4);
+	// Field mode keeps its own handling, and an explicit mode is never replaced.
+	EXPECT_EQ(SelectGSInterlaceMode(0, true, false, true, false, false, true).shader_mode, 3);
+	EXPECT_TRUE(SelectGSInterlaceMode(0, true, false, true, false, true, true).present_field_direct);
+	EXPECT_EQ(SelectGSInterlaceMode(1, false, false, false, false, false, true).shader_mode, -1);
+	EXPECT_EQ(SelectGSInterlaceMode(8, false, false, false, false, false, true).shader_mode, 3);
+}
+
 TEST(GSInterlaceModePolicy, ExplicitModesMapToExpectedShadersAndFields)
 {
 	EXPECT_EQ(SelectGSInterlaceMode(1, false, false, false, false).shader_mode, -1);

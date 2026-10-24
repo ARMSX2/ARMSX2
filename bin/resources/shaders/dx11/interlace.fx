@@ -8,7 +8,7 @@ cbuffer cb0
 {
 	float4 ZrH;
 	// xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
-	// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a
+	// where the circuit's display rect starts; zw are for the comb pass (ps_main5). GSRenderer::Merge offsets a
 	// field's picture down by one native line and the merge target is cleared, so nothing drew them.
 	float4 FieldPad;
 };
@@ -222,4 +222,33 @@ float4 ps_main4(PS_INPUT input) : SV_Target0
 	}
 
 	return float4(0.0f, 0.0f, 0.0f, 0.0f);
+}
+
+
+// Comb-adaptive deinterlace, for interlaced video woven into one frame (a movie in frame mode). Works
+// in native lines, FieldPad.z device rows each from device row FieldPad.w. The lines of the field on
+// screen now are kept. A line of the other field is replaced by the mean of its neighbours where it
+// combs: where it stands out the same way from both neighbours (they show the other moment) more than
+// it differs from its own field's lines two away. A still picture stays whole, and so does a thin line
+// that stands out from its own field too.
+float4 ps_main5(PS_INPUT input) : SV_Target0
+{
+	const int   field = int(ZrH.x) & 1;
+	const int   native_line = int(floor((input.p.y - FieldPad.w) / FieldPad.z));
+	const float4 c    = Texture.SampleLevel(Sampler, input.t, 0);
+	if ((native_line & 1) == field)
+		return c;
+
+	const float2 vstep = float2(0.0f, FieldPad.z * ZrH.y); // one native line
+	const float4 a     = Texture.SampleLevel(Sampler, input.t - vstep, 0);
+	const float4 b     = Texture.SampleLevel(Sampler, input.t + vstep, 0);
+	const float3 luma  = float3(0.299f, 0.587f, 0.114f);
+	const float  lc    = dot(c.rgb, luma);
+	const float  la    = dot(a.rgb, luma);
+	const float  lb    = dot(b.rgb, luma);
+	const float  lown  = 0.5f * (dot(Texture.SampleLevel(Sampler, input.t - 2.0f * vstep, 0).rgb, luma) +
+	                             dot(Texture.SampleLevel(Sampler, input.t + 2.0f * vstep, 0).rgb, luma));
+	const float  out_of = ((lc - la) * (lc - lb) > 0.0f) ? min(abs(lc - la), abs(lc - lb)) : 0.0f;
+	const float  comb   = smoothstep(0.02f, 0.06f, out_of - abs(lc - lown));
+	return lerp(c, 0.5f * (a + b), comb);
 }

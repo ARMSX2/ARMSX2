@@ -917,6 +917,9 @@ struct Pcsx2Config
 					ExtendedUpscalingMultipliers : 1,
 					PCRTCAntiBlur : 1,
 					DisableInterlaceOffset : 1,
+					// Automatic deinterlacing runs the comb pass (shader mode 4) while a movie plays in
+					// frame mode (see SelectGSInterlaceMode). Off by default; frontends opt in.
+					MovieCombDeinterlace : 1,
 					PCRTCOffsets : 1,
 					PCRTCOverscan : 1,
 					IntegerScaling : 1,

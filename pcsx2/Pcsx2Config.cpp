@@ -774,6 +774,7 @@ Pcsx2Config::GSOptions::GSOptions()
 
 	PCRTCAntiBlur = true;
 	DisableInterlaceOffset = false;
+	MovieCombDeinterlace = false;
 	PCRTCOffsets = false;
 	PCRTCOverscan = false;
 	IntegerScaling = false;
@@ -1066,6 +1067,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	// using these variables, we need to use the old names. Maybe post 2.0 we can change this.
 	SettingsWrapBitBoolEx(PCRTCAntiBlur, "pcrtc_antiblur");
 	SettingsWrapBitBoolEx(DisableInterlaceOffset, "disable_interlace_offset");
+	SettingsWrapBitBoolEx(MovieCombDeinterlace, "movie_comb_deinterlace");
 	SettingsWrapBitBoolEx(PCRTCOffsets, "pcrtc_offsets");
 	SettingsWrapBitBoolEx(PCRTCOverscan, "pcrtc_overscan");
 	SettingsWrapBitBool(IntegerScaling);

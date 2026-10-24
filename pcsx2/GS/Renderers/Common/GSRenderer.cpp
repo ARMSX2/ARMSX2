@@ -228,6 +228,18 @@ bool GSRenderer::Merge(int field)
 	}
 	field_render_is_whole_picture &= isReallyInterlaced() && !m_scanmask_used;
 
+	// A movie is playing while the IPU keeps decoding pictures (see SelectGSInterlaceMode).
+	const u32 video_decodes = GSGetVideoDecodeCount();
+	if (video_decodes != m_video_decode_count)
+	{
+		m_video_decode_count = video_decodes;
+		m_video_merges_left = VIDEO_MERGES;
+	}
+	else if (m_video_merges_left > 0)
+	{
+		m_video_merges_left--;
+	}
+
 	// FFMD (half frames) requires blend deinterlacing, so automatically use that. Same when SCANMSK is used but not blended in the merge circuit (Alpine Racer 3).
 	// Centralised in GSInterlaceModePolicy.h so the progressive pass-through case (shader_mode -1)
 	// is pinned by static_assert and unit tests rather than resting on the sign behaviour of a
@@ -238,7 +250,8 @@ bool GSRenderer::Merge(int field)
 		game_deinterlacing,
 		m_regs->SMODE2.FFMD,
 		scanmask_frame,
-		field_render_is_whole_picture);
+		field_render_is_whole_picture,
+		GSConfig.MovieCombDeinterlace && m_video_merges_left > 0);
 	const int field2 = interlace_selection.field_offset;
 	const bool present_field_direct = interlace_selection.present_field_direct;
 	int mode = interlace_selection.shader_mode;
@@ -410,7 +423,12 @@ bool GSRenderer::Merge(int field)
 		// circuit the bob offset is taken from.
 		const GSFieldPadRows field_pad = top_pad[tex[1] ? 1 : 0];
 
-		g_gs_device->Interlace(fs, field ^ field2, mode, offset, field_pad);
+		// The comb pass works in the native lines of the circuit's picture. The field on screen shows
+		// the framebuffer lines of its parity, which start at the framebuffer rect's top.
+		const int circuit = tex[1] ? 1 : 0;
+		const int fb_top = PCRTCDisplays.PCRTCDisplays[circuit].framebufferRect.y + y_offset[circuit];
+		const int interlace_field = (mode == 4) ? (field ^ field2 ^ (fb_top & 1)) : (field ^ field2);
+		g_gs_device->Interlace(fs, interlace_field, mode, offset, field_pad, tex_scale[circuit], dst[circuit].y);
 	}
 
 	// Adaptive deinterlacing consumes prior fields. A skipped interlaced frame must update that
