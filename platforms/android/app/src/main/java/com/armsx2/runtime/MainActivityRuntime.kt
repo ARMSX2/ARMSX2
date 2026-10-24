@@ -3296,6 +3296,30 @@ open class MainActivityRuntime : ComponentActivity() {
         return event.keyCode
     }
 
+    private fun dispatchSystemImeKeyEvent(event: KeyEvent): Boolean {
+        val kc = event.keyCode
+        val isController = event.isFromSource(InputDevice.SOURCE_GAMEPAD) ||
+            event.isFromSource(InputDevice.SOURCE_JOYSTICK)
+        if (kc != KeyEvent.KEYCODE_BACK && !isController) {
+            return when (kc) {
+                KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_NAVIGATE_NEXT, KeyEvent.KEYCODE_NAVIGATE_PREVIOUS -> true
+                // Alt+Up/Down are the field's Home/End; plain Up/Down would only move focus.
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN ->
+                    if (event.isAltPressed) super.dispatchKeyEvent(event) else true
+                else -> super.dispatchKeyEvent(event)
+            }
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            when (kc) {
+                KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK ->
+                    com.armsx2.ui.home.LibraryKeyboard.close()
+                KeyEvent.KEYCODE_BUTTON_X -> com.armsx2.ui.home.LibraryKeyboard.backspace()
+            }
+        }
+        return true
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // The library screensaver sees every key first: any input resets its clock, and the press
         // that wakes it goes no further, so it can't also start a game.
@@ -3544,6 +3568,9 @@ open class MainActivityRuntime : ComponentActivity() {
         if (com.armsx2.ui.home.LibraryKeyboard.visible.value) {
             // The phone's volume keys stay the system's, as they are with any modal up.
             if (isVolumeKey(kc)) return false
+            if (com.armsx2.ui.home.LibraryKeyboard.useSystemIme.value) {
+                return dispatchSystemImeKeyEvent(event)
+            }
             if (event.action == KeyEvent.ACTION_DOWN) {
                 when (kc) {
                     KeyEvent.KEYCODE_DPAD_UP -> com.armsx2.ui.home.LibraryKeyboard.move(0, -1)
