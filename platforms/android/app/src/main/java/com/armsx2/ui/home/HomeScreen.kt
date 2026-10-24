@@ -911,7 +911,14 @@ fun HomeScreen(
                     if (com.armsx2.ArcadeOnly.enabled.value && state.query.isBlank()) {
                         arcadeOnlyEmpty { viewModel.setArcadeOnly(false) }
                     } else {
-                        emptyLibrary(state.query.isBlank())
+                        val reason = when {
+                            state.query.isNotBlank() -> EmptyLibraryReason.Searching
+                            directories.isEmpty() -> EmptyLibraryReason.NoFolders
+                            state.allGames.isNotEmpty() -> EmptyLibraryReason.Filtered
+                            state.error != null -> EmptyLibraryReason.ScanFailed
+                            else -> EmptyLibraryReason.NoGames
+                        }
+                        emptyLibrary(reason)
                     }
                 } else if (state.layout == LibraryLayout.Shelf) {
                     // Fill each plank: chunk by how many covers fit the shelf width.
@@ -1942,13 +1949,23 @@ private fun LibraryOverflowItem(
     )
 }
 
-private fun LazyGridScope.emptyLibrary(noFolders: Boolean) {
+private enum class EmptyLibraryReason { Searching, NoFolders, Filtered, ScanFailed, NoGames }
+
+private fun LazyGridScope.emptyLibrary(reason: EmptyLibraryReason) {
     item(span = { GridItemSpan(maxLineSpan) }) {
+        val (title, message) = when (reason) {
+            EmptyLibraryReason.Searching -> str("games.search.placeholder") to str("games.search.hint")
+            EmptyLibraryReason.NoFolders -> str("games.empty.noFolders.title") to str("games.empty.noFolders.body")
+            EmptyLibraryReason.Filtered -> str("games.empty.noGames.title") to str("games.empty.filtered.body")
+            EmptyLibraryReason.ScanFailed -> str("games.empty.noGames.title") to str("games.empty.scanFailed.body")
+            EmptyLibraryReason.NoGames -> str("games.empty.noGames.title") to str("games.empty.noGames.body")
+        }
+        val showSetup = reason != EmptyLibraryReason.Searching && reason != EmptyLibraryReason.Filtered
         EmptyState(
-            title = if (noFolders) str("games.empty.noFolders.title") else str("games.search.placeholder"),
-            message = if (noFolders) str("games.empty.noFolders.body") else str("games.search.hint"),
-            actionLabel = if (noFolders) str("games.toolbar.setup") else null,
-            onAction = if (noFolders) MainActivityRuntime::reopenSetup else null,
+            title = title,
+            message = message,
+            actionLabel = if (showSetup) str("games.toolbar.setup") else null,
+            onAction = if (showSetup) MainActivityRuntime::reopenSetup else null,
             modifier = Modifier.fillMaxWidth().height(260.dp),
         )
     }
