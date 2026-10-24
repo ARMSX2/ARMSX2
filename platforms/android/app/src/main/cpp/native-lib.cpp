@@ -68,6 +68,7 @@
 #include "BuildVersion.h"
 #include "native-lib.h"
 #include "libchdr/chd.h"
+#include <zlib.h>
 #include <algorithm>
 #include <cmath>
 
@@ -82,6 +83,7 @@
 #include <thread>
 #include <regex>
 #include <tuple>
+#include <utility>
 #include <map>
 #include <vector>
 
@@ -6229,9 +6231,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameDbClaimingKeys(JNIEnv* env, jclass) {
 //   2048 / 0    plain ISO — every byte is data
 //   2352 / 16   Mode 1 raw — 12 byte sync, 4 byte header, 2048 data, 288 ECC
 //   2352 / 24   Mode 2 Form 1 raw — 16 sync+header, 8 subheader, 2048 data, 280 ECC
+//   2448 / 24   raw with subchannel, data at +24
 //
 // We try them in order and the first one that finds a valid PVD wins. CSO/ZSO
-// and GZ still fall back to filename parsing on the Kotlin side.
+// still fall back to filename parsing on the Kotlin side. Gzip streams use
+// the same layouts after decompression.
 //
 // fd ownership: consumed (closed via fclose on the wrapping FILE*),
 // matching the IsBIOSFromFd contract.
@@ -6239,19 +6243,18 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameDbClaimingKeys(JNIEnv* env, jclass) {
 
 namespace {
 // Reader abstraction so the SYSTEM.CNF probe is independent of the
-// underlying container (flat ISO/BIN via FILE*, CHD via libchdr). Each
+// underlying container (flat ISO/BIN, gzip, or CHD). Each
 // implementation knows how to fetch up to 2048 bytes of cooked data
 // starting at a given LBA + intra-sector offset.
 using DiscReader = std::function<bool(std::uint32_t lba, std::uint32_t skip, void* buf, std::size_t size)>;
+using OffsetReader = std::function<bool(std::uint64_t offset, void* buf, std::size_t size)>;
 
-// FILE*-backed reader for plain ISO (2048/0) and raw .bin (2352/16, 2352/24).
-static DiscReader MakeFileReader(std::FILE* fp, std::uint32_t sectorSize,
-    std::uint32_t dataOffset, std::uint64_t byteBase = 0)
+static DiscReader MakeOffsetReader(const OffsetReader& read, std::uint32_t sectorSize,
+    std::uint32_t dataOffset, std::uint64_t byteBase)
 {
-    return [fp, sectorSize, dataOffset, byteBase](std::uint32_t lba, std::uint32_t skip, void* buf, std::size_t size) -> bool {
+    return [read, sectorSize, dataOffset, byteBase](std::uint32_t lba, std::uint32_t skip, void* buf, std::size_t size) -> bool {
         const std::uint64_t off = byteBase + static_cast<std::uint64_t>(lba) * sectorSize + dataOffset + skip;
-        if (std::fseek(fp, static_cast<long>(off), SEEK_SET) != 0) return false;
-        return std::fread(buf, 1, size, fp) == size;
+        return read(off, buf, size);
     };
 }
 
@@ -6431,6 +6434,25 @@ static std::string ProbeSerialWithLeadIns(std::uint32_t sectorSize, const Reader
     return {};
 }
 
+// Layouts in likelihood order: .iso is 2048/0, .bin usually 2352/16;
+// 2352/24 and 2448/24 are rare but cheap. Each is tried with the
+// 150-sector/Nero lead-ins, which otherwise hide some CD PVDs.
+static std::string ProbeSerialWithOffsets(const OffsetReader& read)
+{
+    const std::pair<std::uint32_t, std::uint32_t> layouts[] = {
+        {2048, 0}, {2352, 16}, {2352, 24}, {2448, 24},
+    };
+    for (const auto& [sectorSize, dataOffset] : layouts)
+    {
+        std::string serial = ProbeSerialWithLeadIns(sectorSize, [&](std::uint64_t byteBase) {
+            return MakeOffsetReader(read, sectorSize, dataOffset, byteBase);
+        });
+        if (!serial.empty())
+            return serial;
+    }
+    return {};
+}
+
 // Minimal core_file wrapper around an existing FILE*. libchdr only needs
 // fsize/fread/fseek/fclose; we hand-roll them to avoid bringing in the
 // emulator's heavyweight ChdCoreFileWrapper (which deals with parents and
@@ -6474,6 +6496,16 @@ static bool IsChdMagic(std::FILE* fp)
     if (std::fread(hdr, 1, 8, fp) != 8) return false;
     std::fseek(fp, 0, SEEK_SET);
     return std::memcmp(hdr, "MComprHD", 8) == 0;
+}
+
+static bool IsGzipMagic(std::FILE* fp)
+{
+    std::uint8_t hdr[2];
+    if (std::fseek(fp, 0, SEEK_SET) != 0) return false;
+    const bool gzip = std::fread(hdr, 1, sizeof(hdr), fp) == sizeof(hdr) &&
+        hdr[0] == 0x1f && hdr[1] == 0x8b;
+    std::fseek(fp, 0, SEEK_SET);
+    return gzip;
 }
 
 // Open a CHD on top of `fp` (ownership transferred on success — libchdr
@@ -6566,25 +6598,33 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getGameSerialFromFd(JNIEnv* env, jclass, ji
             // wrapper. Don't double-close.
         }
     }
+    else if (IsGzipMagic(fp))
+    {
+        const int gzipFd = dup(fileno(fp));
+        // fseek may rewind only the stdio buffer, leaving the descriptor ahead.
+        gzFile gz = nullptr;
+        if (gzipFd >= 0 && lseek(gzipFd, 0, SEEK_SET) == 0)
+            gz = gzdopen(gzipFd, "rb");
+        if (gz)
+        {
+            serial = ProbeSerialWithOffsets([gz](std::uint64_t offset, void* buf, std::size_t size) {
+                const auto off = static_cast<z_off_t>(offset);
+                return gzseek(gz, off, SEEK_SET) == off &&
+                    gzread(gz, buf, static_cast<unsigned int>(size)) == static_cast<int>(size);
+            });
+            gzclose(gz);
+        }
+        else if (gzipFd >= 0)
+        {
+            close(gzipFd);
+        }
+        std::fclose(fp);
+    }
     else
     {
-        // Plain ISO / raw .bin path. .iso files are virtually always
-        // 2048/0; .bin files are usually 2352/16 (Mode 1 raw); 2352/24
-        // (Mode 2 Form 1) is rare on PS2 but cheap to try as a last
-        // resort. Try PCSX2's 150-sector/Nero-style lead-in variants too,
-        // since some CD-format games otherwise hide their PVD from the
-        // lightweight scanner.
-        if (serial.empty()) serial = ProbeSerialWithLeadIns(2048, [&](std::uint64_t byteBase) {
-            return MakeFileReader(fp, 2048, 0, byteBase);
-        });
-        if (serial.empty()) serial = ProbeSerialWithLeadIns(2352, [&](std::uint64_t byteBase) {
-            return MakeFileReader(fp, 2352, 16, byteBase);
-        });
-        if (serial.empty()) serial = ProbeSerialWithLeadIns(2352, [&](std::uint64_t byteBase) {
-            return MakeFileReader(fp, 2352, 24, byteBase);
-        });
-        if (serial.empty()) serial = ProbeSerialWithLeadIns(2448, [&](std::uint64_t byteBase) {
-            return MakeFileReader(fp, 2448, 24, byteBase);
+        serial = ProbeSerialWithOffsets([fp](std::uint64_t offset, void* buf, std::size_t size) {
+            if (std::fseek(fp, static_cast<long>(offset), SEEK_SET) != 0) return false;
+            return std::fread(buf, 1, size, fp) == size;
         });
         std::fclose(fp);
     }

@@ -459,10 +459,11 @@ class GameLibraryRepository(private val context: Context) {
 
     private companion object {
         /** Bumped when a scan finds different games in the same folders. 2: arcade games kept as their
-         *  own files (ArcadeFiles), and their sets no longer listed as PS2 games. */
-        const val SCAN_RULES = 2
+         *  own files (ArcadeFiles), and their sets no longer listed as PS2 games.
+         *  3: gzip images probed for their serial. */
+        const val SCAN_RULES = 3
 
         const val MaxScanDepth = 12
-        val probeExtensions = setOf("iso", "bin", "chd", "img", "mdf", "nrg", "dump")
+        val probeExtensions = setOf("iso", "bin", "chd", "gz", "img", "mdf", "nrg", "dump")
     }
 }
