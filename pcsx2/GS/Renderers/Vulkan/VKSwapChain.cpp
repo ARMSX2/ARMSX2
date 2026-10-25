@@ -510,6 +510,37 @@ static DisplayRotation RotationFromSurfaceTransform(VkSurfaceTransformFlagBitsKH
 	}
 }
 
+static VkSurfaceTransformFlagBitsKHR SurfaceTransformFromRotation(DisplayRotation rotation)
+{
+	switch (rotation)
+	{
+		case DisplayRotation::Rot90:
+			return VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR;
+		case DisplayRotation::Rot180:
+			return VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR;
+		case DisplayRotation::Rot270:
+			return VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR;
+		default:
+			return VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+	}
+}
+
+// The rotation the surface wants pre-rotated: its currentTransform, or where the window system does
+// not report one through Vulkan (Wayland), the one the frontend read from the window system, if the
+// surface accepts it as a preTransform.
+static DisplayRotation WantedSurfaceRotation(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
+{
+	if (caps.supportedTransforms & caps.currentTransform)
+	{
+		const DisplayRotation reported = RotationFromSurfaceTransform(caps.currentTransform);
+		if (reported != DisplayRotation::Rot0)
+			return reported;
+	}
+
+	const DisplayRotation hinted = static_cast<DisplayRotation>(wi.surface_rotation % 4u);
+	return (caps.supportedTransforms & SurfaceTransformFromRotation(hinted)) ? hinted : DisplayRotation::Rot0;
+}
+
 static bool RotationSwapsAxes(DisplayRotation rotation)
 {
 	return (rotation == DisplayRotation::Rot90 || rotation == DisplayRotation::Rot270);
@@ -733,9 +764,7 @@ bool VKSwapChain::CreateSwapChain()
 	// the presentation engine shows them as they are. Left to the compositor, the rotation costs a
 	// pass per frame: on Android the display hardware cannot rotate a linear buffer on many panels,
 	// and SurfaceFlinger then draws the game layer on the GPU.
-	m_surface_rotation = (surface_capabilities.supportedTransforms & surface_capabilities.currentTransform) ?
-							 RotationFromSurfaceTransform(surface_capabilities.currentTransform) :
-							 DisplayRotation::Rot0;
+	m_surface_rotation = WantedSurfaceRotation(surface_capabilities, m_window_info);
 	m_pre_rotation = DisplayRotation::Rot0;
 	VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	VkExtent2D image_size = size;
@@ -748,7 +777,7 @@ bool VKSwapChain::CreateSwapChain()
 			rotated.height <= surface_capabilities.maxImageExtent.height)
 		{
 			m_pre_rotation = m_surface_rotation;
-			transform = surface_capabilities.currentTransform;
+			transform = SurfaceTransformFromRotation(m_pre_rotation);
 			image_size = rotated;
 		}
 		else
@@ -794,12 +823,14 @@ bool VKSwapChain::CreateSwapChain()
 		}
 		Console.WriteLnFmt(
 			"Vulkan: Swapchain {}x{} fmt={} colorspace={} present={} images={} (desired={} min={} max={}) wsi={} "
-			"surface_transform=0x{:x} pre_rotation={} image_size={}x{}",
+			"surface_transform=0x{:x} supported=0x{:x} window_rotation={} pre_rotation={} image_size={}x{}",
 			size.width, size.height, static_cast<unsigned>(surface_format->format),
 			static_cast<unsigned>(surface_format->colorSpace),
 			PresentModeToString(m_present_mode), image_count,
 			desired_image_count, surface_capabilities.minImageCount, surface_capabilities.maxImageCount,
 			wsi_name, static_cast<unsigned>(surface_capabilities.currentTransform),
+			static_cast<unsigned>(surface_capabilities.supportedTransforms),
+			static_cast<unsigned>(m_window_info.surface_rotation) * 90u,
 			static_cast<unsigned>(m_pre_rotation) * 90u, image_size.width, image_size.height);
 	}
 
@@ -976,10 +1007,7 @@ bool VKSwapChain::HasSurfaceRotationChanged() const
 
 	// Compared with what the surface asked for at creation, not with m_pre_rotation: a rotation
 	// that could not be applied would otherwise read as changed on every frame.
-	const DisplayRotation wanted =
-		(caps.supportedTransforms & caps.currentTransform) ? RotationFromSurfaceTransform(caps.currentTransform) :
-															 DisplayRotation::Rot0;
-	return (wanted != m_surface_rotation);
+	return (WantedSurfaceRotation(caps, m_window_info) != m_surface_rotation);
 }
 
 void VKSwapChain::DestroySwapChainImages()

@@ -49,6 +49,11 @@ struct WindowInfo
 	/// Refresh rate of the surface, if available.
 	float surface_refresh_rate = 0.0f;
 
+	/// Rotation the window system applies to show this window, in quarter turns counted the way
+	/// Vulkan's currentTransform counts them (1 = ROTATE_90). Filled in where the graphics API does
+	/// not report it (Wayland), so the renderer can pre-rotate. 0 if none or unknown.
+	u8 surface_rotation = 0;
+
 	/// Returns the host's refresh rate for the given window, if available.
 	static std::optional<float> QueryRefreshRateForWindow(const WindowInfo& wi);
 };

@@ -110,6 +110,12 @@ namespace QtUtils
 	void ResizePotentiallyFixedSizeWindow(QWidget* widget, int width, int height);
 	void ResizePotentiallyFixedSizeWindow(QWindow* window, int width, int height);
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+	/// Rotation a Wayland compositor applies to show windows on this screen, as WindowInfo::surface_rotation
+	/// counts it. 0 if none or if it cannot be worked out.
+	u8 GetWaylandScreenRotation(const QScreen* screen);
+#endif
+
 	/// Returns the common window info structure for a Qt Window/Widget.
 	template <class T>
 		requires std::is_base_of_v<QWidget, T> || std::is_base_of_v<QWindow, T>
@@ -152,6 +158,8 @@ namespace QtUtils
 			wi.type = WindowInfo::Type::Wayland;
 			wi.display_connection = pni->nativeResourceForWindow("display", windowHandle);
 			wi.window_handle = pni->nativeResourceForWindow("surface", windowHandle);
+			if (const QScreen* screen = windowHandle ? windowHandle->screen() : nullptr)
+				wi.surface_rotation = GetWaylandScreenRotation(screen);
 		}
 		else
 		{

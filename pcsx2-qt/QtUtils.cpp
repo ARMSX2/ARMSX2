@@ -1015,4 +1015,46 @@ namespace QtUtils
 		return lossless;
 #endif
 	}
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+	u8 GetWaylandScreenRotation(const QScreen* screen)
+	{
+		// Qt does not expose the wl_output transform. It folds it into orientation() together with
+		// whether the output's mode is portrait (QWaylandScreen::toScreenOrientation): for transform
+		// 0, 90, 180, 270 a portrait mode gives the first row below, a landscape one the second.
+		// The mode is not exposed either, but physicalSize() is the output's size in millimetres
+		// before the transform, which has the same shape.
+		static constexpr Qt::ScreenOrientation by_transform[2][4] = {
+			{Qt::PortraitOrientation, Qt::InvertedLandscapeOrientation, Qt::InvertedPortraitOrientation,
+				Qt::LandscapeOrientation},
+			{Qt::LandscapeOrientation, Qt::PortraitOrientation, Qt::InvertedLandscapeOrientation,
+				Qt::InvertedPortraitOrientation},
+		};
+
+		const QSizeF mm = screen->physicalSize();
+		if (mm.width() <= 0.0 || mm.height() <= 0.0 || mm.width() == mm.height())
+			return 0;
+		const bool portrait_panel = (mm.height() > mm.width());
+
+		const Qt::ScreenOrientation orientation = screen->orientation();
+		const auto& row = by_transform[portrait_panel ? 0 : 1];
+		const auto it = std::find(std::begin(row), std::end(row), orientation);
+		if (it == std::end(row))
+			return 0;
+		const u32 wl_quarter_turns = static_cast<u32>(it - std::begin(row));
+
+		// The screen's logical size is the mode after the transform. If its shape disagrees, the
+		// millimetres or Qt's mapping are not what this assumes (a compositor without xdg-output also
+		// reports the untransformed mode here); leave the rotation to the compositor.
+		const QSize logical = screen->size();
+		if (logical.width() != logical.height() &&
+			(logical.height() > logical.width()) != (portrait_panel != ((wl_quarter_turns & 1u) != 0)))
+		{
+			return 0;
+		}
+
+		// wl_output transforms turn counter-clockwise, Vulkan's clockwise: transform 90 is ROTATE_270.
+		return static_cast<u8>((4u - wl_quarter_turns) % 4u);
+	}
+#endif
 } // namespace QtUtils
