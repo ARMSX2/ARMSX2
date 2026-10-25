@@ -2153,6 +2153,11 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			return;
 		}
 
+		// The surface turned (device rotated, window moved to a display mounted the other way):
+		// rebuild with the new pre-rotation next frame. Other SUBOPTIMALs keep the swap chain.
+		if (res == VK_SUBOPTIMAL_KHR && present_swap_chain->HasSurfaceRotationChanged())
+			m_resize_requested = true;
+
 		// Grab the next image as soon as possible, that way we spend less time blocked on the next
 		// submission. Don't care if it fails, we'll deal with that at the presentation call site.
 		// Credit to dxvk for the idea.
@@ -3314,6 +3319,11 @@ bool GSDeviceVK::SupportsExclusiveFullscreen() const
 	return false;
 }
 
+DisplayRotation GSDeviceVK::GetSurfacePreRotation() const
+{
+	return m_swap_chain ? m_swap_chain->GetPreRotation() : DisplayRotation::Rot0;
+}
+
 void GSDeviceVK::DestroySurface()
 {
 	WaitForGPUIdle();
@@ -3461,9 +3471,12 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 
 	// SUBOPTIMAL is a success: the image is acquired and presentable. Adreno returns it when the
 	// compositor changes state (the touch overlay redrawing), and rebuilding the swap chain for it
-	// blanks the window. Rebuilding would not clear it either, since preTransform stays identity.
-	// Real size changes arrive as a host resize, an Android surface change, or OUT_OF_DATE.
+	// blanks the window, so it is rebuilt only when the surface's rotation changed (the swap chain
+	// is pre-rotated to it; see VKSwapChain::GetPreRotation). Real size changes arrive as a host
+	// resize, an Android surface change, or OUT_OF_DATE.
 	VkResult res = m_resize_requested ? VK_ERROR_OUT_OF_DATE_KHR : m_swap_chain->AcquireNextImage();
+	if (res == VK_SUBOPTIMAL_KHR && m_swap_chain->HasSurfaceRotationChanged())
+		m_resize_requested = true;
 	if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 	{
 		m_swap_chain->ReleaseCurrentImage();
@@ -5032,16 +5045,17 @@ void GSDeviceVK::DoStretchRect(GSTextureVK* sTex, const GSVector4& sRect, GSText
 	DrawStretchRect(sRect, dRect, size);
 }
 
-// Rotate a logical-NDC point (x, y) into physical-NDC by GSConfig.Rotation.
-// Used by the present pass to map a quad laid out for a logically-rotated
-// window onto the unrotated swapchain viewport.
+// Rotate a logical-NDC point (x, y) into physical-NDC by `rotation`, the present rotation
+// (the user's DisplayRotation plus the swap chain pre-rotation, GSDevice::GetPresentRotation).
+// Used by the present pass to map a quad laid out for the logical window onto the swap chain
+// image.
 //   Rot0:   (x,  y)
 //   Rot90:  (y, -x)   (image rotates 90° CW on the panel)
 //   Rot180: (-x,-y)
 //   Rot270: (-y, x)   (image rotates 90° CCW on the panel)
-static void RotateNDCForPresent(float& x, float& y)
+static void RotateNDCForPresent(DisplayRotation rotation, float& x, float& y)
 {
-	switch (GSConfig.Rotation)
+	switch (rotation)
 	{
 		case DisplayRotation::Rot90:
 		{
@@ -5085,16 +5099,17 @@ void GSDeviceVK::DrawStretchRect(const GSVector4& sRect, const GSVector4& dRect,
 	// Present pass: map logical-NDC (computed against the rotated window) onto
 	// the unrotated physical swapchain viewport. Non-present passes pass the
 	// real dst-texture size in `ds` and must not rotate.
-	if (m_is_presenting && GSConfig.Rotation != DisplayRotation::Rot0)
+	const DisplayRotation rotation = m_is_presenting ? GetPresentRotation() : DisplayRotation::Rot0;
+	if (rotation != DisplayRotation::Rot0)
 	{
 		float tlx = left, tly = top;
 		float trx = right, try_ = top;
 		float blx = left, bly = bottom;
 		float brx = right, bry = bottom;
-		RotateNDCForPresent(tlx, tly);
-		RotateNDCForPresent(trx, try_);
-		RotateNDCForPresent(blx, bly);
-		RotateNDCForPresent(brx, bry);
+		RotateNDCForPresent(rotation, tlx, tly);
+		RotateNDCForPresent(rotation, trx, try_);
+		RotateNDCForPresent(rotation, blx, bly);
+		RotateNDCForPresent(rotation, brx, bry);
 
 		const GSVertexPT1 vertices[] = {
 			{GSVector4(tlx, tly, 0.5f, 1.0f), GSVector2(sRect.x, sRect.y)},
@@ -6934,9 +6949,10 @@ void GSDeviceVK::RenderImGui()
 	// uScale/uTranslate map pixel coords directly to NDC. Rotation transforms
 	// logical pixels into the physical pixel space of the swapchain viewport,
 	// so uScale must always be in physical units (not logical) for both the
-	// rotated and unrotated paths.
-	const float phys_w = static_cast<float>(m_window_info.surface_width);
-	const float phys_h = static_cast<float>(m_window_info.surface_height);
+	// rotated and unrotated paths. Physical is the swap chain image, whose axes
+	// are swapped from the window's under a 90/270 pre-rotation.
+	const float phys_w = static_cast<float>(m_swap_chain ? m_swap_chain->GetImageWidth() : m_window_info.surface_width);
+	const float phys_h = static_cast<float>(m_swap_chain ? m_swap_chain->GetImageHeight() : m_window_info.surface_height);
 	const GSVector4 uniforms(2.0f / phys_w, 2.0f / phys_h, -1.0f, -1.0f);
 
 	SetUtilityPushConstants(&uniforms, sizeof(uniforms));
@@ -6955,7 +6971,8 @@ void GSDeviceVK::RenderImGui()
 	// maps a logical pixel (lx, ly) on a (lw, lh) logical surface to a
 	// physical pixel on the (phys_w, phys_h) swapchain. Rotation is around
 	// the geometric centre of each surface.
-	const bool rotate = (GSConfig.Rotation != DisplayRotation::Rot0);
+	const DisplayRotation rotation = GetPresentRotation();
+	const bool rotate = (rotation != DisplayRotation::Rot0);
 	const GSVector2i pres = GetPresentationSize();
 	const float lw = static_cast<float>(pres.x);
 	const float lh = static_cast<float>(pres.y);
@@ -6966,7 +6983,7 @@ void GSDeviceVK::RenderImGui()
 	const auto rotate_pixel = [&](float lx, float ly, float& px, float& py) {
 		float x = lx - lw * 0.5f;
 		float y = lh * 0.5f - ly;
-		RotateNDCForPresent(x, y);
+		RotateNDCForPresent(rotation, x, y);
 		px = x + phys_w * 0.5f;
 		py = phys_h * 0.5f - y;
 	};

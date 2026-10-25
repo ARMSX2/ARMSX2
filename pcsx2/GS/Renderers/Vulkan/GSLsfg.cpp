@@ -905,7 +905,9 @@ namespace GSLsfg
 
 		multiplier = std::clamp<u32>(multiplier, 2, 4);
 		const u8 flow_scale_percent = std::clamp<u8>(GSConfig.LsfgFlowScale, 25, 100);
-		const VkExtent2D extent = {swap_chain->GetWidth(), swap_chain->GetHeight()};
+		// The swap chain IMAGE size: generated frames are copied into the images, which a 90/270
+		// pre-rotation creates with the window's axes swapped.
+		const VkExtent2D extent = {swap_chain->GetImageWidth(), swap_chain->GetImageHeight()};
 		const VkFormat format = swap_chain->GetTextureFormat();
 
 		if (s_active && extent.width == s_extent.width && extent.height == s_extent.height &&
@@ -1083,7 +1085,7 @@ namespace GSLsfg
 
 		// A resize between Initialize and here would have us reading mismatched extents. Decline
 		// the frame; the caller presents normally and the next Initialize picks up the new size.
-		if (swap_chain->GetWidth() != s_extent.width || swap_chain->GetHeight() != s_extent.height)
+		if (swap_chain->GetImageWidth() != s_extent.width || swap_chain->GetImageHeight() != s_extent.height)
 		{
 			NoteFramesDisplayed(1, 0);
 			return false;

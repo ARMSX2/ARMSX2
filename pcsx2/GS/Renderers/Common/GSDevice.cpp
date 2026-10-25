@@ -345,6 +345,12 @@ GSVector2i GSDevice::GetPresentationSize() const
 			   : GSVector2i(w, h);
 }
 
+DisplayRotation GSDevice::GetPresentRotation() const
+{
+	const u32 quarter_turns = static_cast<u32>(GSConfig.Rotation) + static_cast<u32>(GetSurfacePreRotation());
+	return static_cast<DisplayRotation>(quarter_turns % 4u);
+}
+
 const char* GSDevice::RenderAPIToString(RenderAPI api)
 {
 	switch (api)

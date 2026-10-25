@@ -1336,7 +1336,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
 						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY &&
 						GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp &&
-						GSConfig.Rotation == DisplayRotation::Rot0 && !g_gs_device->UsesLowerLeftOrigin());
+						g_gs_device->GetPresentRotation() == DisplayRotation::Rot0 && !g_gs_device->UsesLowerLeftOrigin());
 			}
 
 			EndPresentFrame();

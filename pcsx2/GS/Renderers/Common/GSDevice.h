@@ -1974,6 +1974,15 @@ public:
 	GSVector2i GetPresentationSize() const;
 	__fi s32 GetPresentationWidth() const { return GetPresentationSize().x; }
 	__fi s32 GetPresentationHeight() const { return GetPresentationSize().y; }
+
+	/// Rotation the swap chain images were created with because the surface asked for it (see
+	/// VKSwapChain::GetPreRotation). Invisible to layout: the window size stays in the window's
+	/// orientation, and only the final present into the swap chain image applies it.
+	virtual DisplayRotation GetSurfacePreRotation() const { return DisplayRotation::Rot0; }
+
+	/// The rotation the final present applies: the user's DisplayRotation followed by the surface
+	/// pre-rotation. Both are clockwise quarter turns, so they add.
+	DisplayRotation GetPresentRotation() const;
 	__fi float GetWindowScale() const { return m_window_info.surface_scale; }
 	__fi GSVSyncMode GetVSyncMode() const { return m_vsync_mode; }
 	__fi bool IsPresentThrottleAllowed() const { return m_allow_present_throttle; }
