@@ -384,17 +384,47 @@ std::optional<VkSurfaceFormatKHR> VKSwapChain::SelectSurfaceFormat(VkSurfaceKHR 
 	if (surface_formats[0].format == VK_FORMAT_UNDEFINED)
 		return VkSurfaceFormatKHR{VK_FORMAT_R8G8B8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
 
-	// Try to find a suitable format.
+	// Prefer an 8-bit format in the sRGB colour space: the emulator's output is 8 bits per channel.
+	// Surfaces do not always list one first. wlroots compositors list R16G16B16A16_SFLOAT first,
+	// which doubles the bytes written per present and cannot be scanned out by display planes that
+	// have no float format, so the compositor has to draw the window every frame (measured on
+	// ROCKNIX: sway on a Retroid Pocket Flip 2 and an AYN MQ65). Then any format in the sRGB colour
+	// space, then whatever comes first.
+	const auto is_8bit = [](VkFormat format) {
+		switch (format)
+		{
+			case VK_FORMAT_R8G8B8A8_UNORM:
+			case VK_FORMAT_R8G8B8A8_SRGB:
+			case VK_FORMAT_B8G8R8A8_UNORM:
+			case VK_FORMAT_B8G8R8A8_SRGB:
+			case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
+			case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+				return true;
+			default:
+				return false;
+		}
+	};
+	const VkSurfaceFormatKHR* selected = nullptr;
 	for (const VkSurfaceFormatKHR& surface_format : surface_formats)
 	{
-		// Some drivers seem to return a SRGB format here (Intel Mesa).
-		// This results in gamma correction when presenting to the screen, which we don't want.
-		// Use a linear format instead, if this is the case.
-		return VkSurfaceFormatKHR{GetLinearFormat(surface_format.format), VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
+		if (surface_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && is_8bit(surface_format.format))
+		{
+			selected = &surface_format;
+			break;
+		}
 	}
+	for (const VkSurfaceFormatKHR& surface_format : surface_formats)
+	{
+		if (!selected && surface_format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+			selected = &surface_format;
+	}
+	if (!selected)
+		selected = &surface_formats[0];
 
-	Console.Error("Failed to find a suitable format for swap chain buffers.");
-	return std::nullopt;
+	// Some drivers seem to return a SRGB format here (Intel Mesa).
+	// This results in gamma correction when presenting to the screen, which we don't want.
+	// Use a linear format instead, if this is the case.
+	return VkSurfaceFormatKHR{GetLinearFormat(selected->format), VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
 }
 
 VKSwapChain::PresentStats VKSwapChain::GetPresentStats()
