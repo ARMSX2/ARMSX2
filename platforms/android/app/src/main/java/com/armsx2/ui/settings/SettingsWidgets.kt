@@ -285,12 +285,13 @@ internal object SettingsControllerNav {
      *  content it belongs to comes a moment later (the Icon Museum's panel, once its icons have
      *  loaded). The modal opens on [fallback] meanwhile, and [id] takes over when it registers,
      *  as long as the selection is still on [fallback]. */
-    private class LateFocus(val layer: String, val id: String, val fallback: String?)
+    private class LateFocus(val layer: String?, val id: String, val fallback: String?)
     private var lateFocus: LateFocus? = null
 
     /** For PadModal: [id], the focus [layer] asked for on open, is not there yet. Select it when
-     *  it registers, unless the pad has moved by then. */
-    fun focusWhenRegistered(layer: String, id: String) {
+     *  it registers, unless the pad has moved by then. A null [layer] is the base screen's (the
+     *  in-game menu reopening on the control it was left on). */
+    fun focusWhenRegistered(layer: String?, id: String) {
         lateFocus = LateFocus(layer, id, selectedId.value)
     }
 
