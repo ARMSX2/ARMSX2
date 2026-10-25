@@ -6959,30 +6959,16 @@ void GSDeviceVK::RenderImGui()
 	const GSVector2i pres = GetPresentationSize();
 	const float lw = static_cast<float>(pres.x);
 	const float lh = static_cast<float>(pres.y);
+	// The turn is RotateNDCForPresent's, the one the game image gets. That works in y-up
+	// coordinates (the present vertex shader flips y) and ImGui's pixels are y-down, so y is
+	// flipped around it; applying the same formula to y-down pixels turns the overlay the other
+	// way, 180 degrees off the game at Rot90/Rot270.
 	const auto rotate_pixel = [&](float lx, float ly, float& px, float& py) {
-		const float lcx = lx - lw * 0.5f;
-		const float lcy = ly - lh * 0.5f;
-		float pcx = lcx;
-		float pcy = lcy;
-		switch (GSConfig.Rotation)
-		{
-			case DisplayRotation::Rot90:
-				pcx = lcy;
-				pcy = -lcx;
-				break;
-			case DisplayRotation::Rot180:
-				pcx = -lcx;
-				pcy = -lcy;
-				break;
-			case DisplayRotation::Rot270:
-				pcx = -lcy;
-				pcy = lcx;
-				break;
-			default:
-				break;
-		}
-		px = pcx + phys_w * 0.5f;
-		py = pcy + phys_h * 0.5f;
+		float x = lx - lw * 0.5f;
+		float y = lh * 0.5f - ly;
+		RotateNDCForPresent(x, y);
+		px = x + phys_w * 0.5f;
+		py = phys_h * 0.5f - y;
 	};
 
 	for (int n = 0; n < draw_data->CmdLists.Size; n++)
