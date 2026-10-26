@@ -850,11 +850,14 @@ static void RestartAchievementsForHostChange() {
 
 static void PersistAndApplyAchievementsHostChange() {
     SaveBaseSettingsIfDirty();
+    // Not blocking: callers run on the UI thread and read nothing back, and the CPU thread does
+    // not run queued tasks while VMManager::Initialize boots a game, so a wait would stall the UI
+    // for the whole boot.
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ApplySettings();
         RestartAchievementsForHostChange();
-    }, /*block=*/true);
+    });
 }
 
 // Point the RetroAchievements client at a loopback proxy. Drives the same
