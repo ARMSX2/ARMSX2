@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <set>
 #include <vector>
 
 using namespace GSHWDrawHarness;
@@ -108,9 +109,19 @@ namespace
 		// At native scale the copy is 1:1 and the device serves it as a CopyRect.
 		void DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& r, u32 destX, u32 destY) override
 		{
-			Record(sTex, r,
-				GSVector4i(static_cast<int>(destX), static_cast<int>(destY), static_cast<int>(destX) + r.width(),
-					static_cast<int>(destY) + r.height()));
+			const GSVector4i destination(static_cast<int>(destX), static_cast<int>(destY),
+				static_cast<int>(destX) + r.width(), static_cast<int>(destY) + r.height());
+			Record(sTex, r, destination);
+			if (RecordingTexture::Is(sTex) && RecordingTexture::Is(dTex) &&
+				sTex->GetFormat() == GSTexture::Format::Color && dTex->GetFormat() == GSTexture::Format::Color)
+			{
+				const auto* source = static_cast<const RecordingTexture*>(sTex);
+				std::vector<u32> pixels;
+				for (int y = r.top; y < r.bottom; y++)
+					for (int x = r.left; x < r.right; x++)
+						pixels.push_back(source->Texel(x, y));
+				dTex->Update(destination, pixels.data(), r.width() * sizeof(u32));
+			}
 		}
 
 	protected:
@@ -461,6 +472,74 @@ namespace
 		ExpectPicture(t, {rect}, pic);
 		EXPECT_EQ(t->m_alpha_min, prev_min);
 		EXPECT_EQ(t->m_alpha_max, prev_max);
+	}
+
+	class GSExactDirtyUpload : public Fixture
+	{
+	protected:
+		std::unique_ptr<CaptureDevice> NewDevice() override { return std::make_unique<RecordingDevice>(); }
+
+		void CheckUpload(u32 source_bp, u32 source_bw, const GSVector4i& write, size_t expected_words)
+		{
+			GSConfig.UpscaleMultiplier = 1.0f;
+			BringUp();
+			GIFRegTEX0 layout = {};
+			layout.TBP0 = 0x2fa0;
+			layout.TBW = 4;
+			layout.PSM = PSMCT32;
+			const GSVector4i valid(0, 0, 256, 256);
+			auto* target = g_texture_cache->CreateTarget(layout, GSVector2i(256, 256),
+				GSVector2i(256, 256), 1.0f, GSTextureCache::RenderTarget, true, 0, false, false, false);
+			ASSERT_NE(target, nullptr);
+			target->m_valid = valid;
+			target->m_drawn_since_read = valid;
+			target->m_valid_rgb = true;
+			target->m_dirty.clear();
+
+			constexpr u32 unchanged = 0xdeadbeef;
+			constexpr u32 written = 0x90123456;
+			std::vector<u32> before(256 * 256, unchanged);
+			ASSERT_TRUE(target->m_texture->Update(valid, before.data(), 256 * sizeof(u32)));
+			const GSOffset source = GSOffset::fromKnownPSM(source_bp, source_bw, PSMCT32);
+			std::set<u32> written_words;
+			for (int y = write.top; y < write.bottom; y++)
+				for (int x = write.left; x < write.right; x++)
+				{
+					g_gs_renderer->m_mem.WritePixel32(x, y, written, source_bp, source_bw);
+					written_words.insert(source.pa(x, y));
+				}
+
+			// Exercise the cache adapter, then the actual unswizzle/upload path.
+			g_texture_cache->DirtyRectByPage(source_bp, PSMCT32, source_bw, target, write);
+			ASSERT_FALSE(target->m_dirty.empty());
+			auto& device = *static_cast<RecordingDevice*>(m_device);
+			device.m_uploads.clear();
+			target->Update(true);
+			EXPECT_TRUE(target->m_dirty.empty());
+			ASSERT_FALSE(device.m_uploads.empty());
+
+			const GSOffset receiver = GSOffset::fromKnownPSM(layout.TBP0, layout.TBW, PSMCT32);
+			const auto* texture = static_cast<const RecordingTexture*>(target->m_texture);
+			size_t changed = 0;
+			for (int y = 0; y < 256; y++)
+				for (int x = 0; x < 256; x++)
+				{
+					const bool hit = written_words.contains(receiver.pa(x, y));
+					changed += hit;
+					ASSERT_EQ(texture->Texel(x, y), hit ? written : unchanged) << x << "," << y;
+				}
+			EXPECT_EQ(changed, expected_words);
+		}
+	};
+
+	TEST_F(GSExactDirtyUpload, DifferentWidthPhysicalProjectionUploadsOnly1536WrittenWords)
+	{
+		CheckUpload(0x2eb8, 2, GSVector4i(0, 0, 128, 128), 1536);
+	}
+
+	TEST_F(GSExactDirtyUpload, NonPageAlignedSingleBlockSourceUploadsOnly256WrittenWords)
+	{
+		CheckUpload(0x2fb8, 1, GSVector4i(0, 0, 16, 16), 256);
 	}
 
 	INSTANTIATE_TEST_SUITE_P(Scales, GSTargetUpdate, ::testing::Values(1.0f, 2.0f));
