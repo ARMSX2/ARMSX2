@@ -3916,7 +3916,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     return true
                 }
                 ControllerMappings.SysHotkey.ACHIEVEMENTS -> {
-                    if (down) com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)
+                    if (down) com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Achievements)
                     return true
                 }
                 ControllerMappings.SysHotkey.CLOSE_GAME -> {
@@ -5645,7 +5645,7 @@ open class MainActivityRuntime : ComponentActivity() {
             ControllerMappings.SysHotkey.GYRO_RECENTER -> recenterGyro()
             ControllerMappings.SysHotkey.RES_UP -> stepResolution(1)
             ControllerMappings.SysHotkey.RES_DOWN -> stepResolution(-1)
-            ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Options)
+            ControllerMappings.SysHotkey.ACHIEVEMENTS -> com.armsx2.ui.emulation.EmulationMenuInputController.open(com.armsx2.ui.emulation.EmulationMenuTab.Achievements)
             ControllerMappings.SysHotkey.CLOSE_GAME -> confirmCloseGame(quit = false)
             ControllerMappings.SysHotkey.QUIT_APP -> confirmCloseGame(quit = true)
             ControllerMappings.SysHotkey.SAVE_AND_EXIT -> closeGame(saveAutosave = true)
