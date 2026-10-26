@@ -25,7 +25,7 @@ layout(push_constant) uniform cb0
 {
 	vec4 ZrH;
 	// xy: the device rows [x, y) of the merge that were not drawn for the field being read, starting
-	// where the circuit's display rect starts; z and w are unused. GSRenderer::Merge offsets a
+	// where the circuit's display rect starts; zw are for the comb pass (ps_main5). GSRenderer::Merge offsets a
 	// field's picture down by one native line and the merge target is cleared, so nothing drew them.
 	vec4 FieldPad;
 };
@@ -239,6 +239,40 @@ void ps_main4()
 				o_col0 = cn;
 		}
 	}
+}
+#endif
+
+
+// Comb-adaptive deinterlace, for interlaced video woven into one frame (a movie in frame mode). Works
+// in native lines, FieldPad.z device rows each from device row FieldPad.w. The lines of the field on
+// screen now are kept. A line of the other field is replaced by the mean of its neighbours where it
+// combs: where it stands out the same way from both neighbours (they show the other moment) more than
+// it differs from its own field's lines two away. A still picture stays whole, and so does a thin line
+// that stands out from its own field too.
+#ifdef ps_main5
+void ps_main5()
+{
+	const int   field = int(ZrH.x) & 1;
+	const int   native_line = int(floor((gl_FragCoord.y - FieldPad.w) / FieldPad.z));
+	const vec4  c     = textureLod(samp0, v_tex, 0);
+	if ((native_line & 1) == field)
+	{
+		o_col0 = c;
+		return;
+	}
+
+	const vec2  step = vec2(0.0f, FieldPad.z * ZrH.y); // one native line
+	const vec4  a    = textureLod(samp0, v_tex - step, 0);
+	const vec4  b    = textureLod(samp0, v_tex + step, 0);
+	const vec3  luma = vec3(0.299f, 0.587f, 0.114f);
+	const float lc   = dot(c.rgb, luma);
+	const float la   = dot(a.rgb, luma);
+	const float lb   = dot(b.rgb, luma);
+	const float lown = 0.5f * (dot(textureLod(samp0, v_tex - 2.0f * step, 0).rgb, luma) +
+	                           dot(textureLod(samp0, v_tex + 2.0f * step, 0).rgb, luma));
+	const float out_of = ((lc - la) * (lc - lb) > 0.0f) ? min(abs(lc - la), abs(lc - lb)) : 0.0f;
+	const float comb   = smoothstep(0.02f, 0.06f, out_of - abs(lc - lown));
+	o_col0 = mix(c, 0.5f * (a + b), comb);
 }
 #endif
 

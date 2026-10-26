@@ -60,6 +60,12 @@ private:
 	/// shift is the only correction the merge still makes. GS thread only.
 	GSFieldShiftDetector m_field_shift;
 
+	/// A movie is playing while the IPU has decoded a picture within the last VIDEO_MERGES merges:
+	/// the decode count last seen, and the merges left. GS thread only.
+	static constexpr int VIDEO_MERGES = 30;
+	u32 m_video_decode_count = 0;
+	int m_video_merges_left = 0;
+
 protected:
 	GSVector2i m_real_size{0, 0};
 
