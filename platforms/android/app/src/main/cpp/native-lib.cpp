@@ -632,7 +632,20 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loginAchievements(JNIEnv *env, jclass clazz
     const std::string user = GetJavaString(env, p_user);
     const std::string pass = GetJavaString(env, p_pass);
     Error error;
-    const bool ok = Achievements::Login(user.c_str(), pass.c_str(), &error);
+    bool ok = false;
+    // Live achievement clients require the CPU thread.
+    bool temporary_client = !Achievements::IsActive();
+    if (!temporary_client)
+    {
+        // Recheck on the CPU thread: a queued settings apply may have disabled achievements.
+        Host::RunOnCPUThread([user, pass, &error, &ok, &temporary_client]() {
+            temporary_client = !Achievements::IsActive();
+            if (!temporary_client)
+                ok = Achievements::Login(user.c_str(), pass.c_str(), &error);
+        }, /*block=*/true);
+    }
+    if (temporary_client)
+        ok = Achievements::Login(user.c_str(), pass.c_str(), &error);
     if (!ok)
     {
         const std::string msg = error.GetDescription();
@@ -667,7 +680,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loginAchievements(JNIEnv *env, jclass clazz
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_logoutAchievements(JNIEnv *env, jclass clazz) {
-    Achievements::Logout();
+    Host::RunOnCPUThread([]() { Achievements::Logout(); }, /*block=*/true);
     // Achievements::Logout clears Token from SECRETS but leaves the
     // Username we co-stored there. Drop it too so a fresh launch doesn't
     // re-mirror a stale username back to BASE.
@@ -835,14 +848,13 @@ static void RestartAchievementsForHostChange() {
     Achievements::Initialize();
 }
 
-static void PersistAndApplyAchievementsSettings() {
+static void PersistAndApplyAchievementsHostChange() {
     SaveBaseSettingsIfDirty();
-    // ApplySettings owns EmuConfig and resets the JIT caches, so it is the CPU thread's to run;
-    // see the assert at the top of VMManager::ApplySettings().
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ApplySettings();
-    });
+        RestartAchievementsForHostChange();
+    }, /*block=*/true);
 }
 
 // Point the RetroAchievements client at a loopback proxy. Drives the same
@@ -880,8 +892,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAchievementsHostOverride(JNIEnv *env, jc
             Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
     }
 
-    PersistAndApplyAchievementsSettings();
-    RestartAchievementsForHostChange();
+    PersistAndApplyAchievementsHostChange();
 }
 
 extern "C"
@@ -900,8 +911,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_clearAchievementsHostOverride(JNIEnv *env, 
         Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", saved);
     }
 
-    PersistAndApplyAchievementsSettings();
-    RestartAchievementsForHostChange();
+    PersistAndApplyAchievementsHostChange();
 }
 
 // Live HW/SW state from the GS thread's POV. The in-game overlay's renderer
