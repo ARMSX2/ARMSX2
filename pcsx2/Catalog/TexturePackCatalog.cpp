@@ -425,8 +425,8 @@ namespace Catalog
 	std::vector<std::string> TexturePackCatalog::DefaultMirrors()
 	{
 		return {
-			"https://dl.ps2ktxpak.net/textures.json",
-			"https://f005.backblazeb2.com/file/armsx2-textures/textures.json",
+			"https://dl.ps2ktxpak.net/catalog.json",
+			"https://f005.backblazeb2.com/file/armsx2-textures/catalog.json",
 		};
 	}
 

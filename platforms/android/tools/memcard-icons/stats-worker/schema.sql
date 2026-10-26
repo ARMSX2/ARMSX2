@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS seen (
 );
 
 -- Texture packs: downloads per pack per UTC day, and who already counted which pack today, the
--- same way as the icons. "id" is the pack's id in the texture catalog (textures.json).
+-- same way as the icons. "id" is the pack's id in the texture catalog (catalog.json).
 CREATE TABLE IF NOT EXISTS tex_hits (
     day TEXT NOT NULL,
     id TEXT NOT NULL,

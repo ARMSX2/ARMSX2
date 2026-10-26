@@ -20,12 +20,10 @@ struct TextureCatalogPack: Identifiable, Equatable, Sendable {
 }
 
 enum TextureCatalog {
-    // Tried in order: bmdhacks' ASTC catalogue, then mirrors of sashkinbro's.
+    // Tried in order: our catalog, then the Backblaze bucket it is served from.
     static let sources = [
-        "https://dl.ps2ktxpak.net/textures.json",
-        "https://raw.githubusercontent.com/sashkinbro/EmuCoreX-Textures/main/textures.json",
-        "https://github.com/sashkinbro/EmuCoreX-Textures/raw/main/textures.json",
-        "https://cdn.jsdelivr.net/gh/sashkinbro/EmuCoreX-Textures@main/textures.json",
+        "https://dl.ps2ktxpak.net/catalog.json",
+        "https://f005.backblazeb2.com/file/armsx2-textures/catalog.json",
     ].compactMap { URL(string: $0) }
 
     static func load() async -> [TextureCatalogPack]? {

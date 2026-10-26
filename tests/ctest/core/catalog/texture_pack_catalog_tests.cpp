@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The texture-pack catalog: parsing the one textures.json (both the live file's shape and the
-// unified one ps2ktxpak compiles), the rules that drop a bad entry, loading with mirrors and the
+// The texture-pack catalog: parsing catalog.json (the shape ps2ktxpak compiles, and the older
+// textures.json shape with no creators), the rules that drop a bad entry, loading with mirrors and the
 // saved copy, and the popularity counter. The fixtures are trimmed copies of the live file
 // captured 2026-10-08 and of the file `ps2ktxpak compile catalog` writes.
 
@@ -457,7 +457,7 @@ TEST(TexturePackCatalogLoad, FetchesTheFirstMirrorAndSavesIt)
 	ASSERT_EQ(result.packs.size(), 1u);
 	EXPECT_EQ(http.RequestCount(kMirrors[0]), 1u);
 	EXPECT_EQ(http.RequestCount(kMirrors[1]), 0u);
-	EXPECT_EQ(ReadFileOrEmpty(temp.File("cache/textures-v2.json")), kGoodBody);
+	EXPECT_EQ(ReadFileOrEmpty(temp.File("cache/catalog.json")), kGoodBody);
 
 	// It asks for JSON, in our name.
 	const auto requests = http.Requests();
@@ -552,7 +552,7 @@ TEST(TexturePackCatalogLoad, FallsThroughToTheNextMirror)
 		ASSERT_TRUE(result.IsOk()) << c.what << ": " << result.error;
 		EXPECT_EQ(result.source, TexturePackCatalog::Source::Network) << c.what;
 		EXPECT_EQ(http.RequestCount(kMirrors[1]), 1u) << c.what;
-		EXPECT_EQ(ReadFileOrEmpty(temp.File("cache/textures-v2.json")), kGoodBody) << c.what;
+		EXPECT_EQ(ReadFileOrEmpty(temp.File("cache/catalog.json")), kGoodBody) << c.what;
 	}
 }
 
@@ -646,7 +646,7 @@ TEST(TexturePackCatalogLoad, ACancelledLoadSaysSo)
 	EXPECT_FALSE(result.IsOk());
 	EXPECT_TRUE(result.cancelled);
 	EXPECT_TRUE(http.Requests().empty());
-	EXPECT_TRUE(ReadFileOrEmpty(temp.File("cache/textures-v2.json")).empty());
+	EXPECT_TRUE(ReadFileOrEmpty(temp.File("cache/catalog.json")).empty());
 }
 
 TEST(TexturePackCatalogLoad, OnlyEverAsksForTheCatalog)
@@ -663,8 +663,8 @@ TEST(TexturePackCatalogLoad, OnlyEverAsksForTheCatalog)
 
 TEST(TexturePackCatalogLoad, TheMirrorsAreTheDocumentedOnes)
 {
-	EXPECT_EQ(kMirrors, (std::vector<std::string>{"https://dl.ps2ktxpak.net/textures.json",
-						  "https://f005.backblazeb2.com/file/armsx2-textures/textures.json"}));
+	EXPECT_EQ(kMirrors, (std::vector<std::string>{"https://dl.ps2ktxpak.net/catalog.json",
+						  "https://f005.backblazeb2.com/file/armsx2-textures/catalog.json"}));
 }
 
 // ------------------------------------------------------------------------------------------

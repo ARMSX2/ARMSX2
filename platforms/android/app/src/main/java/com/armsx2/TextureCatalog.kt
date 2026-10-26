@@ -31,8 +31,8 @@ object TextureCatalog {
     /** Sources, tried in order: our catalog of converted ASTC KTX packs (schema 2, tar+zstd), and
      *  the B2 bucket it is served from, for when that domain is unreachable. */
     private val CATALOG_URLS = listOf(
-        "https://dl.ps2ktxpak.net/textures.json",
-        "https://f005.backblazeb2.com/file/armsx2-textures/textures.json",
+        "https://dl.ps2ktxpak.net/catalog.json",
+        "https://f005.backblazeb2.com/file/armsx2-textures/catalog.json",
     )
 
     private const val SCHEMA_VERSION = 1
@@ -40,9 +40,10 @@ object TextureCatalog {
     private const val MAX_SCHEMA_VERSION = 2
     private const val MAX_CATALOG_BYTES = 8L * 1024 * 1024
     private const val CACHE_TTL_MS = 6L * 60 * 60 * 1000
-    private const val CACHE_FILE = "textures-v2.json"
-    /** Older builds' cache, which can hold sashkinbro's catalog: never shown again, so deleted. */
-    private const val OLD_CACHE_FILE = "textures-v1.json"
+    private const val CACHE_FILE = "catalog.json"
+    /** Older builds' caches: sashkinbro's catalog, our textures.json from before catalog.json, and
+     *  the texture-pack-links.json that went with it. Never read again, so deleted. */
+    private val OLD_CACHE_FILES = listOf("textures-v1.json", "textures-v2.json", "texture-pack-links.json")
 
     /** Upper bound on a single archive. Guards against a malformed entry proposing a download that
      *  could never fit; the real free-space check happens in [TexturePackInstaller]. */
@@ -158,7 +159,7 @@ object TextureCatalog {
 
     /** Blocking. Returns null only when there is neither a usable network response nor a cache. */
     fun fetch(context: Context, forceRefresh: Boolean = false): Result? {
-        File(cacheDir(context), OLD_CACHE_FILE).delete()
+        OLD_CACHE_FILES.forEach { File(cacheDir(context), it).delete() }
         val cache = File(cacheDir(context), CACHE_FILE)
         if (!forceRefresh && cache.isFile &&
             (System.currentTimeMillis() - cache.lastModified()) < CACHE_TTL_MS

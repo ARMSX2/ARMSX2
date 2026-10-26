@@ -14,7 +14,7 @@ class Error;
 namespace Catalog
 {
 	/// A folder of cached HTTP responses, one file per name, e.g. the texture catalog at
-	/// <Cache>/texture-catalog/textures-v2.json. The body is stored as received (so the file is
+	/// <Cache>/texture-catalog/catalog.json. The body is stored as received (so the file is
 	/// the JSON itself) and the time it was fetched is the file's modification time: there is
 	/// no sidecar to fall out of step, and every Store() is atomic.
 	///

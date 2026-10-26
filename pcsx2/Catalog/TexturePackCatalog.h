@@ -5,8 +5,8 @@
 
 // The online texture-pack catalog: what packs exist, which games they are for, who made them,
 // and what installing one means (archive URL, size, digest, format). One file carries all of it,
-// https://dl.ps2ktxpak.net/textures.json (mirror: the Backblaze bucket), which the ps2ktxpak
-// compiler writes. There is no second file for creators; texture-pack-links.json is never read.
+// https://dl.ps2ktxpak.net/catalog.json (mirror: the Backblaze bucket), which the ps2ktxpak
+// compiler writes. There is no second file for creators.
 //
 // File format (schemaVersion 1 or 2, packs under "entries"):
 //
@@ -172,7 +172,7 @@ namespace Catalog
 	public:
 		static constexpr size_t MAX_CATALOG_BYTES = 8 * 1024 * 1024;
 		static constexpr std::chrono::seconds CACHE_MAX_AGE = std::chrono::hours(6);
-		static constexpr const char* CACHE_FILE_NAME = "textures-v2.json";
+		static constexpr const char* CACHE_FILE_NAME = "catalog.json";
 
 		/// The mirrors, tried in order.
 		static std::vector<std::string> DefaultMirrors();
@@ -183,7 +183,7 @@ namespace Catalog
 			std::chrono::seconds cache_max_age = CACHE_MAX_AGE;
 		};
 
-		/// `cache` holds textures-v2.json (see DefaultCache()); the fetcher must outlive this object.
+		/// `cache` holds catalog.json (see DefaultCache()); the fetcher must outlive this object.
 		TexturePackCatalog(Fetcher& fetcher, ResponseCache cache);
 		TexturePackCatalog(Fetcher& fetcher, ResponseCache cache, Config config);
 
