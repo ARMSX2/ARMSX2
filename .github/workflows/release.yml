@@ -89,17 +89,20 @@ jobs:
           echo "$LATEST has versionCode $LAST_VC"
           [ "$VC" -gt "$LAST_VC" ] || { echo "::error::version_code $VC must be higher than $LATEST's $LAST_VC"; exit 1; }
 
+      # gh api prints a 404's error body on stdout, so a missing tag is told by the exit status, not by
+      # empty output. Any other failure to read it ends in the create, which refuses an existing tag.
       - name: Tag the commit
         run: |
-          EXISTING="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VN" --jq .object.sha 2>/dev/null || true)"
-          if [ -z "$EXISTING" ]; then
+          if EXISTING="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VN" --jq .object.sha 2>/dev/null)"; then
+            if [ "$EXISTING" = "$GITHUB_SHA" ]; then
+              echo "$VN already points at $GITHUB_SHA"
+            else
+              echo "::error::tag $VN already exists on $EXISTING, not $GITHUB_SHA. Never move a release tag."
+              exit 1
+            fi
+          else
             gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VN" -f sha="$GITHUB_SHA" >/dev/null
             echo "Tagged $GITHUB_SHA as $VN"
-          elif [ "$EXISTING" = "$GITHUB_SHA" ]; then
-            echo "$VN already points at $GITHUB_SHA"
-          else
-            echo "::error::tag $VN already exists on $EXISTING, not $GITHUB_SHA. Never move a release tag."
-            exit 1
           fi
 
       - name: Open the draft release
