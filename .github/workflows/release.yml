@@ -15,12 +15,17 @@
 # Re-running the workflow for the same version is fine as long as the tag still points
 # at the same commit and the release is still a draft.
 #
+# With "android" off, the run builds and uploads only the Linux AppImages, for releases
+# whose APKs are built by hand. It never touches the draft's .apk assets, so the APKs
+# uploaded by hand keep their order (legacy first) however often it is re-run.
+#
 # Required secrets (the nightly already uses the first six; they are the stable keys):
 #   NIGHTLY_DEBUG_KS_B64, NIGHTLY_RELEASE_KS_B64, NIGHTLY_LINEAGE_B64,
 #   NIGHTLY_RELEASE_KS_PASS, NIGHTLY_RELEASE_KEY_ALIAS, NIGHTLY_RELEASE_KEY_PASS
 #   DISCORD_SDK_URL    URL of a .tar.gz of the staged Discord SDK dir (include/, arm64-v8a/,
 #                      the .aar). Too large for a secret itself, so it lives elsewhere.
 #   DISCORD_SDK_TOKEN  optional bearer token for that URL (e.g. a private repo's asset)
+#                      The two Discord secrets are needed only when the run builds the APKs.
 #   RA_UA_VERSION      the ARMSX2 client's RetroAchievements version, which pcsx2/Host.cpp reads
 #                      from the gitignored ra_ua_secret.h. Without it RetroAchievements allows
 #                      softcore only, so both the Android and the Linux builds fail when it is unset.
@@ -37,6 +42,11 @@ on:
         description: 'Android versionCode. Must be higher than the last stable release, or installed apps will not update.'
         required: true
         type: string
+      android:
+        description: 'Build the Android APKs too. Turn off when the APKs are built by hand and only the Linux AppImages are wanted.'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -106,6 +116,7 @@ jobs:
   android:
     name: Android (${{ matrix.target }})
     needs: prepare
+    if: ${{ inputs.android }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -244,12 +255,15 @@ jobs:
   upload:
     name: Upload to the draft release
     needs: [android, pc-linux-arm64]
+    # A Linux-only run skips the Android jobs on purpose; any other skip or failure stops here.
+    if: ${{ !cancelled() && needs.pc-linux-arm64.result == 'success' && (needs.android.result == 'success' || (needs.android.result == 'skipped' && !inputs.android)) }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
       VN: ${{ inputs.version }}
+      ANDROID: ${{ inputs.android }}
     steps:
       - name: Download all build artifacts
         uses: actions/download-artifact@v8
@@ -269,9 +283,11 @@ jobs:
             cp "$src" "out/$2"
             echo "  ok  $2  <-  $src"
           }
-          for apk in legacy-armv8.0-sdk26 a11-armv8.2-sdk30 a13-armv8.2-sdk33 a15-armv8.2-sdk35; do
-            grab "ARMSX2-${VN}-${apk}.apk" "ARMSX2-${VN}-${apk}.apk"
-          done
+          if [ "$ANDROID" = "true" ]; then
+            for apk in legacy-armv8.0-sdk26 a11-armv8.2-sdk30 a13-armv8.2-sdk33 a15-armv8.2-sdk35; do
+              grab "ARMSX2-${VN}-${apk}.apk" "ARMSX2-${VN}-${apk}.apk"
+            done
+          fi
           grab '*-4k-*.AppImage'  "ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage"
           grab '*-16k-*.AppImage' "ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"
           (cd out && sha256sum *)
@@ -282,15 +298,25 @@ jobs:
       # assets first, so --clobber can't reorder them.
       - name: Upload in order
         run: |
-          gh release view "$VN" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
-            | while read -r name; do gh release delete-asset "$VN" "$name" -R "$GITHUB_REPOSITORY" -y; done
-          for f in \
-            "out/ARMSX2-${VN}-legacy-armv8.0-sdk26.apk" \
-            "out/ARMSX2-${VN}-a11-armv8.2-sdk30.apk" \
-            "out/ARMSX2-${VN}-a13-armv8.2-sdk33.apk" \
-            "out/ARMSX2-${VN}-a15-armv8.2-sdk35.apk" \
-            "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
-            "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
-            gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY"
-          done
+          if [ "$ANDROID" = "true" ]; then
+            gh release view "$VN" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+              | while read -r name; do gh release delete-asset "$VN" "$name" -R "$GITHUB_REPOSITORY" -y; done
+            for f in \
+              "out/ARMSX2-${VN}-legacy-armv8.0-sdk26.apk" \
+              "out/ARMSX2-${VN}-a11-armv8.2-sdk30.apk" \
+              "out/ARMSX2-${VN}-a13-armv8.2-sdk33.apk" \
+              "out/ARMSX2-${VN}-a15-armv8.2-sdk35.apk" \
+              "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
+              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+              gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY"
+            done
+          else
+            # Linux only: the APKs are uploaded by hand, so replace just the AppImages and
+            # leave every .apk asset, and the order they were uploaded in, alone.
+            for f in \
+              "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
+              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+              gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY" --clobber
+            done
+          fi
           echo "Draft ready: ${{ github.server_url }}/${{ github.repository }}/releases"

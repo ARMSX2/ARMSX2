@@ -96,7 +96,19 @@ jobs:
         run: echo "timestamp=$(date -u "+%Y-%m-%d-%H;%M;%S")" >> $GITHUB_OUTPUT
 
       - name: ccache cache files
+        if: ${{ !(inputs.stableBuild == true || inputs.stableBuild == 'true') }}
         uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
+          restore-keys: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache
+
+      # A stable build compiles the RetroAchievements client identity into its objects, and a
+      # cache saved here can be restored by any pull request, forks included. So stable builds
+      # only restore the nightly's cache and never save their own.
+      - name: ccache cache files (restore only)
+        if: ${{ inputs.stableBuild == true || inputs.stableBuild == 'true' }}
+        uses: actions/cache/restore@v6
         with:
           path: .ccache
           key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
