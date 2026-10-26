@@ -686,11 +686,12 @@ fun HomeScreen(
                                         Spacer(Modifier.height(6.dp))
                                         (listOf<String?>(null) + com.armsx2.GameCategories.names()).forEach { name ->
                                             val label = name ?: allLabel
+                                            val focusId = name?.let { "category-pick-$it" } ?: "category-pick"
                                             Row(
                                                 Modifier
                                                     .fillMaxWidth()
                                                     .clip(RoundedCornerShape(10.dp))
-                                                    .controllerFocusable("category-pick-${'$'}label", RoundedCornerShape(10.dp),
+                                                    .controllerFocusable(focusId, RoundedCornerShape(10.dp),
                                                         onConfirm = { viewModel.setCategoryFilter(name); picking = false })
                                                     .combinedClickable(
                                                         onClick = { viewModel.setCategoryFilter(name); picking = false },
