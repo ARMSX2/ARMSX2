@@ -65,9 +65,10 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
 
     // The running game, when it has its own map for [player]. That map shadows the global one
     // key by key, so a profile loaded globally would change nothing in this game.
+    // Keyed like every per-game setting, by settingsKey (the filename stem when there is no serial).
     private fun gameTier(player: Int): String? =
-        MainActivityRuntime.currentGame.value?.serial
-            ?.takeIf { it.isNotEmpty() && ControllerMappings.hasGameOverrides(it, player) }
+        MainActivityRuntime.currentGame.value?.settingsKey
+            ?.takeIf { ControllerMappings.hasGameOverrides(it, player) }
 
     /** Load [name] into the player being edited, at once and mid-game: into the global map,
      *  or into the running game's own map when it has one. */
