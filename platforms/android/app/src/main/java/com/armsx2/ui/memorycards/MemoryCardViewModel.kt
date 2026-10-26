@@ -154,11 +154,12 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
         }
-        return fileNames.firstOrNull {
+        if ("_pcsx2_superblock" in fileNames) return null
+        // One top-level directory holding the superblock is the card; stray top-level files
+        // beside it (a README, .DS_Store) are skipped on extract rather than failing the import.
+        return fileNames.filter {
             '/' in it && it.substringAfter('/') == "_pcsx2_superblock"
-        }?.substringBefore('/')?.takeIf { directory ->
-            fileNames.all { it.startsWith("$directory/") }
-        }
+        }.map { it.substringBefore('/') }.singleOrNull()
     }
 
     private fun extractFolderCard(archive: File, target: File, wrapper: String?) {
@@ -168,9 +169,9 @@ class MemoryCardViewModel(application: Application) : AndroidViewModel(applicati
                 var entry = zin.nextEntry
                 while (entry != null) {
                     val rel = entry.name.replace('\\', '/').trimStart('/')
-                    val stripped = if (wrapper != null && rel.startsWith("$wrapper/"))
-                        rel.substringAfter('/') else rel
-                    if (stripped.isNotBlank() && !rel.startsWith("__MACOSX/")) {
+                    val outside = wrapper != null && !rel.startsWith("$wrapper/")
+                    val stripped = if (wrapper != null) rel.substringAfter('/') else rel
+                    if (!outside && stripped.isNotBlank() && !rel.startsWith("__MACOSX/")) {
                         val out = File(target, stripped)
                         // Zip-slip guard: never write outside the card directory.
                         if (out.canonicalPath.startsWith(target.canonicalPath + File.separator) ||
