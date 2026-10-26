@@ -8421,9 +8421,18 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completi
 	GSTexture* const current_rt = m_current_render_target;
 	GSTexture* const current_ds = m_current_depth_target;
 	const FeedbackLoopFlag current_feedback_loop = m_current_framebuffer_feedback_loop;
+	// Callers restart in the middle of a draw whose textures are already bound, then re-apply its
+	// state. Moving to the next command buffer resets every texture slot to the null texture, which
+	// would draw the rest of that draw untextured, so carry the bindings across. They stay valid:
+	// a texture unbinds itself when destroyed.
+	const std::array<GSTextureVK*, NUM_TFX_TEXTURES> tfx_textures = m_tfx_textures;
+	const GSTextureVK* const utility_texture = m_utility_texture;
 
 	EndRenderPass();
 	ExecuteCommandBuffer(GetWaitType(wait_for_completion, GSConfig.HWSpinCPUForReadbacks));
+
+	m_tfx_textures = tfx_textures;
+	m_utility_texture = utility_texture;
 
 	if (render_pass != VK_NULL_HANDLE)
 	{
