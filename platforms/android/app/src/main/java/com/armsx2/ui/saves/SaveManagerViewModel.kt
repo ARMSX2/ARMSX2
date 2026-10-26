@@ -20,6 +20,7 @@ data class SaveStateItem(
     val serial: String,
     val preview: Bitmap?,
     val canUseWithActiveGame: Boolean,
+    val isBackup: Boolean,
 )
 
 data class SaveManagerUiState(
@@ -74,22 +75,35 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
 
     fun load(item: SaveStateItem) {
         val slot = item.slot ?: return
+        val backup = item.isBackup
+        val path = item.file.absolutePath
+        val reportResult: (Boolean) -> Unit = { ok ->
+            if (backup) dismissMessage()
+            state.value = if (ok) {
+                state.value.copy(message = "${I18n.get("touch.stateAction.load")} · ${slot + 1}")
+            } else {
+                state.value.copy(error = "${I18n.get("touch.stateAction.load")} · ${slot + 1}")
+            }
+        }
         viewModelScope.launch {
             val hasActiveVm = withContext(Dispatchers.IO) {
                 runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
             }
             val ok = if (hasActiveVm) {
                 withContext(Dispatchers.IO) {
-                    runCatching { NativeApp.loadStateFromSlot(slot) }.getOrDefault(false)
+                    runCatching {
+                        if (backup) NativeApp.loadStateFromFile(path) == 1
+                        else NativeApp.loadStateFromSlot(slot)
+                    }.getOrDefault(false)
                 }
             } else {
+                if (backup) {
+                    if (!MainActivityRuntime.launchCurrentGameFromSaveFile(path, reportResult)) reportResult(false)
+                    return@launch
+                }
                 MainActivityRuntime.launchCurrentGameFromSaveSlot(slot)
             }
-            state.value = if (ok) {
-                state.value.copy(message = "${I18n.get("touch.stateAction.load")} · ${slot + 1}")
-            } else {
-                state.value.copy(error = "${I18n.get("touch.stateAction.load")} · ${slot + 1}")
-            }
+            reportResult(ok)
         }
     }
 
@@ -106,7 +120,7 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun backupAll() {
-        val files = state.value.saves.map(SaveStateItem::file)
+        val files = state.value.saves.filterNot(SaveStateItem::isBackup).map(SaveStateItem::file)
         if (files.isEmpty()) {
             state.value = state.value.copy(error = I18n.get("savestate.noSavesToBackUp"))
             return
@@ -175,8 +189,7 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
                 ?.takeIf(File::exists)
         }
 
-        val roots = listOf("sstates", "savestates")
-            .map { File(MainActivityRuntime.assetCopyRoot(getApplication()), it) }
+        val roots = saveStateRoots()
         val discovered = roots.flatMap { root ->
             if (!root.isDirectory) emptyList()
             else root.walkTopDown().filter { it.isFile && it.extension.equals("p2s", true) }.toList()
@@ -197,6 +210,7 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
                 serial = serial,
                 preview = decodePreview(file),
                 canUseWithActiveGame = belongsToActiveGame,
+                isBackup = isBackup(file),
             )
         }.sortedWith(compareBy<SaveStateItem> { it.slot == null }.thenBy { it.slot ?: Int.MAX_VALUE }.thenByDescending { it.file.lastModified() })
 
@@ -216,6 +230,13 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.RGB_565
         })
+    }
+
+    private fun saveStateRoots(): List<File> = listOf("sstates", "savestates")
+        .map { File(MainActivityRuntime.assetCopyRoot(getApplication()), it) }
+
+    private fun isBackup(file: File): Boolean = saveStateRoots().any { root ->
+        file.absoluteFile.normalize().startsWith(File(root, "backups").absoluteFile.normalize())
     }
 
     private fun slotFrom(file: File): Int? = SLOT_PATTERN.find(file.name)?.groupValues?.getOrNull(1)?.toIntOrNull()

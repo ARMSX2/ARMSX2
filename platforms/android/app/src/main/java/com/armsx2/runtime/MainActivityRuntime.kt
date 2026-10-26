@@ -871,6 +871,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (restartNow) {
                         start()
                     } else {
+                        failPendingFileLoadOnBoot()
                         WindowImpl.toolbarVisible.value = true
                         WindowImpl.showLibrary.value = false
                         WindowImpl.overlayVisible.value = false
@@ -1332,6 +1333,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (restartNow) {
                         start()
                     } else {
+                        failPendingFileLoadOnBoot()
                         // BIOS exit had no cleanup at all — it relied entirely on stop()'s racy
                         // branch, so quitting the BIOS also left the launcher stuck in its rotation.
                         onReturnedToLibrary()
@@ -1448,6 +1450,7 @@ open class MainActivityRuntime : ComponentActivity() {
             if (!shouldStop) {
                 // Nothing left to stop (the VM self-terminated). Still reconcile the library
                 // state — this early return also used to leak a stale per-game rotation.
+                if (!vmRestartAfterStop) failPendingFileLoadOnBoot()
                 onReturnedToLibrary()
                 return
             }
@@ -1480,6 +1483,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (restartNow) {
                         start()
                     } else {
+                        failPendingFileLoadOnBoot()
                         synchronized(vmLifecycleLock) {
                             WindowImpl.toolbarVisible.value = true
                             WindowImpl.showLibrary.value = false
@@ -1601,6 +1605,20 @@ open class MainActivityRuntime : ComponentActivity() {
         @Volatile
         private var pendingSlotLoadOnBoot: Int? = null
 
+        @Volatile
+        private var pendingFileLoadOnBoot: PendingFileLoad? = null
+
+        private data class PendingFileLoad(val path: String, val onResult: (Boolean) -> Unit)
+
+        private fun failPendingFileLoadOnBoot() {
+            val request = synchronized(vmLifecycleLock) {
+                val pending = pendingFileLoadOnBoot ?: return
+                pendingFileLoadOnBoot = null
+                pending
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { request.onResult(false) }
+        }
+
         // The last game we booted, retained across exit-to-library so the Save Manager can
         // re-launch + load a save AFTER the game was exited. Kept SEPARATE from currentGame
         // (which stop() nulls for settings-scope) so it can't resurrect per-game scope in the
@@ -1611,6 +1629,21 @@ open class MainActivityRuntime : ComponentActivity() {
         {
             val game = currentGame.value ?: contextGame.value ?: return false
             return launchGameFromSaveSlot(game, slot)
+        }
+
+        fun launchCurrentGameFromSaveFile(path: String, onResult: (Boolean) -> Unit): Boolean {
+            val game = currentGame.value ?: contextGame.value ?: return false
+            val launchPath = if (game.uri.scheme == "file") {
+                game.uri.path ?: game.uri.toString()
+            } else {
+                game.uri.toString()
+            }
+            if (launchPath.isBlank() || path.isBlank()) return false
+            pendingFileLoadOnBoot = PendingFileLoad(path, onResult)
+            pendingSlotLoadOnBoot = null
+            pendingAutoLoadOnBoot = false
+            launchGame(launchPath, game)
+            return true
         }
 
         /**
@@ -1628,6 +1661,7 @@ open class MainActivityRuntime : ComponentActivity() {
             }
             if (launchPath.isBlank()) return false
             pendingSlotLoadOnBoot = slot
+            pendingFileLoadOnBoot = null
             pendingAutoLoadOnBoot = false
             launchGame(launchPath, game)
             return true
@@ -1757,9 +1791,11 @@ open class MainActivityRuntime : ComponentActivity() {
         fun onVmRunning() {
             adoptExternalGameIdentity()
             val requestedSlot = pendingSlotLoadOnBoot
-            val loadAutosave = pendingAutoLoadOnBoot && requestedSlot == null
-            if (requestedSlot == null && !loadAutosave) return
+            val requestedFile = pendingFileLoadOnBoot
+            val loadAutosave = pendingAutoLoadOnBoot && requestedSlot == null && requestedFile == null
+            if (requestedSlot == null && requestedFile == null && !loadAutosave) return
             pendingSlotLoadOnBoot = null
+            pendingFileLoadOnBoot = null
             pendingAutoLoadOnBoot = false
             val handler = android.os.Handler(android.os.Looper.getMainLooper())
             val tryLoad = object : Runnable {
@@ -1767,7 +1803,10 @@ open class MainActivityRuntime : ComponentActivity() {
                 var lastFrame = -1
                 var advancingPolls = 0
                 override fun run() {
-                    if (vmStopInProgress || eState.value == EmuState.STOPPED) return
+                    if (vmStopInProgress || eState.value == EmuState.STOPPED) {
+                        requestedFile?.onResult?.invoke(false)
+                        return
+                    }
                     // Wait until the renderer is actually PRESENTING frames before restoring the
                     // state. A boot-time load that fires as soon as the disc CRC is known — before
                     // the present loop is flowing — leaves the restored frame undisplayed (a black
@@ -1782,6 +1821,13 @@ open class MainActivityRuntime : ComponentActivity() {
                     lastFrame = frame
                     if (advancingPolls < 3) {
                         if (++attempts < 60) handler.postDelayed(this, 250)
+                        else requestedFile?.onResult?.invoke(false)
+                        return
+                    }
+                    if (requestedFile != null) {
+                        val status = runCatching { NativeApp.loadStateFromFile(requestedFile.path) }.getOrDefault(-1)
+                        if (status == 0 && ++attempts < 60) handler.postDelayed(this, 250)
+                        else requestedFile.onResult(status == 1)
                         return
                     }
                     val loaded = runCatching {

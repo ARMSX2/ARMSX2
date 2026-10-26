@@ -4343,6 +4343,71 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
     return loaded;
 }
 
+static bool SaveStatePathMatchesCurrentGame(std::string_view path) {
+    const std::string_view name = Path::GetFileName(path);
+    const std::string_view suffix = name.size() >= 7 ? name.substr(name.size() - 7) : std::string_view();
+    if (suffix.size() != 7 || suffix[0] != '.' || suffix[1] < '0' || suffix[1] > '9' ||
+        suffix[2] < '0' || suffix[2] > '9' || suffix.substr(3) != ".p2s")
+        return false;
+    const s32 slot = (suffix[1] - '0') * 10 + (suffix[2] - '0');
+    const std::string expected = VMManager::GetSaveStateFileName(
+        VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC(), slot);
+    return !expected.empty() && name == Path::GetFileName(expected);
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromFile(JNIEnv *env, jclass clazz, jstring p_path) {
+    const std::string path = GetJavaString(env, p_path);
+    const auto fail = [&path](const char* reason, jint status) -> jint {
+        Console.Error("@@ANDROID_LOADSTATE@@ path=%s ok=0 reason=%s crc=%08X serial=%s", path.c_str(),
+            reason, VMManager::GetDiscCRC(), VMManager::GetDiscSerial().c_str());
+        return status;
+    };
+    if (!VMManager::HasValidVM())
+        return fail("no_vm", 0);
+    if (!FileSystem::FileExists(path.c_str()))
+        return fail("no_file", -1);
+    const ScopedVMPause pause_guard;
+    if (!pause_guard.parked())
+        return fail("cpu_thread_not_parked", 0);
+    // Loading and presenting both push to CPU-owned rings, before the pause guard resumes the VM.
+    jint status = 0;
+    Host::RunOnCPUThread([&path, &status, &fail]() {
+        if (!VMManager::HasValidVM()) {
+            status = fail("no_vm", 0);
+            return;
+        }
+        if (!SaveStatesHaveName()) {
+            status = fail("crc_zero", 0);
+            return;
+        }
+        if (!SaveStatePathMatchesCurrentGame(path)) {
+            status = fail("wrong_game", -1);
+            return;
+        }
+        if (!FileSystem::FileExists(path.c_str())) {
+            status = fail("no_file", -1);
+            return;
+        }
+        if (MemcardBusy::IsBusy()) {
+            status = fail("memcard_busy", 0);
+            return;
+        }
+        Error error;
+        if (!VMManager::LoadState(path.c_str(), &error)) {
+            Console.Error(fmt::format("loadStateFromFile: {}", error.GetDescription()));
+            status = fail("load_failed", -1);
+            return;
+        }
+        MTGS::PresentCurrentFrame();
+        status = 1;
+    }, /*block=*/true);
+    if (status == 1)
+        Console.WriteLn("@@ANDROID_LOADSTATE@@ path=%s ok=1", path.c_str());
+    return status;
+}
+
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_changeDisc(JNIEnv *env, jclass clazz, jstring p_path) {
