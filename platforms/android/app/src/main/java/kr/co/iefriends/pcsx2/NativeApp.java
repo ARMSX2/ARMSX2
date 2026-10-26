@@ -1109,8 +1109,10 @@ public class NativeApp {
 	/**
 	 * Read enough of a PS2 disc image to extract its serial (e.g.
 	 * "SLUS-20312"). Walks the ISO9660 directory to find SYSTEM.CNF and
-	 * parses the BOOT2 line. Handles flat ISO/raw-sector images and CHDs;
-	 * CSO/ZSO/GZ still return null and the caller falls back to filename
+	 * parses the BOOT2 line. Handles flat ISO/raw-sector images, CHDs and
+	 * gzip images; gzip has no random access, so reaching a SYSTEM.CNF far
+	 * into the image inflates everything before it and can take seconds.
+	 * CSO/ZSO still return null and the caller falls back to filename
 	 * parsing. fd is consumed (closed by native).
 	 */
 	public static native String getGameSerialFromFd(int fd);
