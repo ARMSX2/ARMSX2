@@ -5033,7 +5033,8 @@ void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool def
     // the 2nd launch). If we're already shut down, there's nothing left to stop.
     if (VMManager::GetState() == VMState::Shutdown)
         return;
-    VMManager::SetLimiterMode(LimiterModeType::Nominal);
+    // No limiter reset here: the core calls this from whichever thread powers the console off,
+    // and every boot sets the limiter back to Nominal anyway (VMManager::Initialize).
     VMManager::SetState(VMState::Stopping);
     if (!s_execute_exit.load(std::memory_order_acquire) && Cpu)
         Cpu->ExitExecution();
