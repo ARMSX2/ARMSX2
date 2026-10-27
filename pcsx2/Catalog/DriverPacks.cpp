@@ -232,8 +232,21 @@ namespace DriverPacks
 		if (fs::exists(fs::path(sysfs_root) / "class" / "kgsl" / "kgsl-3d0", ec))
 			return true;
 
-		// Mainline: the display/GPU node is a DRM device bound to the msm driver (Adreno 6xx and
-		// later, including Snapdragon X). cardN-<connector> entries are connectors, not devices.
+		// Mainline: the GPU itself is bound to the adreno platform driver. The directory also holds
+		// bind/unbind/uevent files and a module link, so only a device link counts.
+		const fs::path adreno = fs::path(sysfs_root) / "bus" / "platform" / "drivers" / "adreno";
+		for (fs::directory_iterator it(adreno, ec), end; !ec && it != end; it.increment(ec))
+		{
+			std::error_code link_ec;
+			if (it->path().filename() != "module" && it->is_symlink(link_ec))
+				return true;
+		}
+		ec.clear();
+
+		// Mainline, by the DRM device's driver (Adreno 6xx and later, including Snapdragon X). Which
+		// name that is depends on the kernel: msm_dpu (current, display controller) or msm_mdp on
+		// older SoCs, msm or msm_drm on older kernels. cardN-<connector> entries are connectors, not
+		// devices.
 		const fs::path drm = fs::path(sysfs_root) / "class" / "drm";
 		for (fs::directory_iterator it(drm, ec), end; !ec && it != end; it.increment(ec))
 		{
@@ -244,7 +257,7 @@ namespace DriverPacks
 			if (link_ec)
 				continue;
 			const std::string driver = target.filename().string();
-			if (driver == "msm" || driver == "msm_drm")
+			if (driver == "msm" || driver == "msm_drm" || driver == "msm_dpu" || driver == "msm_mdp")
 				return true;
 		}
 		return false;

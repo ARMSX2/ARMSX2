@@ -405,6 +405,31 @@ TEST(DriverPacksGpu, AdrenoIsADrmDeviceOnTheMsmDriver)
 	EXPECT_FALSE(IsAdrenoGpu(dir.File("c")));
 }
 
+// Issue #887: on current mainline kernels (ROCKNIX 20260930 and Armada 20261010 on the SM8250, kernel
+// 7.2) the DRM device belongs to the display controller's driver, msm_dpu. Older SoCs use msm_mdp.
+TEST(DriverPacksGpu, TheMsmDisplayControllerDriversCount)
+{
+	ScopedTempDir dir;
+	MakeFakeSysfs(dir.File("dpu"), "msm_dpu");
+	EXPECT_TRUE(IsAdrenoGpu(dir.File("dpu")));
+
+	MakeFakeSysfs(dir.File("mdp"), "msm_mdp");
+	EXPECT_TRUE(IsAdrenoGpu(dir.File("mdp")));
+}
+
+// The GPU has its own platform driver, adreno, whatever the display side is called.
+TEST(DriverPacksGpu, AGpuBoundToTheAdrenoDriverCounts)
+{
+	ScopedTempDir dir;
+	const fs::path adreno = fs::path(dir.File("sys")) / "bus" / "platform" / "drivers" / "adreno";
+	fs::create_directories(adreno);
+	fs::create_symlink("../../../../module/msm", adreno / "module");
+	EXPECT_FALSE(IsAdrenoGpu(dir.File("sys"))); // the driver is loaded but no GPU is bound to it
+
+	fs::create_symlink("../../../../devices/platform/soc@0/3d00000.gpu", adreno / "3d00000.gpu");
+	EXPECT_TRUE(IsAdrenoGpu(dir.File("sys")));
+}
+
 TEST(DriverPacksGpu, ADownstreamKgslDeviceCounts)
 {
 	ScopedTempDir dir;
