@@ -42,6 +42,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_alu_imm_tests.cpp
 	ee_rec_branch_tests.cpp
 	ee_rec_loop_residency_tests.cpp
+	ee_rec_mem_operand_tests.cpp
 	ee_rec_carbon_selfloop_store_tests.cpp
 	ee_rec_superblock_tests.cpp
 	ee_rec_branch_in_delay_tests.cpp
