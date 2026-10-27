@@ -85,6 +85,7 @@ add_pcsx2_test(recompiler_tests
 	ee_vu0_cop2_madd_clamp_tests.cpp
 	ee_vu0_cop2_sub_mul_clamp_tests.cpp
 	ee_vu0_cop2_madda_bc_tests.cpp
+	ee_vu0_cop2_extra_clamp_tests.cpp
 	vu0_harness_validation_tests.cpp
 	vu0_alu_upper_tests.cpp
 	vu0_alu_lower_tests.cpp

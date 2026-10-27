@@ -138,9 +138,11 @@ constexpr u8 kColBit[] = {VSB_VALUE, VSB_MAC, VSB_STAT};
 int PopCount(u8 v) { return (v & 1) + ((v >> 1) & 1) + ((v >> 2) & 1); }
 
 // The mode the tables below are scored at, and what the recompiler's column
-// comes to under it, where no exact model is emitted.
+// comes to under it, where no exact model is emitted. Mode 2 is one column
+// better than 1: from there the multiplicands are bounded (cop2ClampProducts),
+// so row 27's 0 * 2^128 is a zero rather than a NaN.
 constexpr int kVuSatScoredMode = 4;
-constexpr int kVuSatUnmodelledBadJit = 76;
+constexpr int kVuSatUnmodelledBadJit[] = {0, 76, 75, 75}; // by mode, 1-3
 
 } // namespace
 
@@ -232,9 +234,9 @@ TEST(Vu0MacroFmacRangeConsole, NoModeBelowFourCarriesTheModels)
 			bad += PopCount(Misses(c, RunCase(c, word, true, mode)));
 		}
 		std::printf("vuClampMode %d: %d column misses\n", mode, bad);
-		EXPECT_EQ(bad, kVuSatUnmodelledBadJit);
+		EXPECT_EQ(bad, kVuSatUnmodelledBadJit[mode]);
 	}
-	EXPECT_GT(kVuSatUnmodelledBadJit, kVuSatBadJit)
+	EXPECT_GT(kVuSatUnmodelledBadJit[3], kVuSatBadJit)
 		<< "mode 4 has stopped carrying the models these rows are here for";
 }
 

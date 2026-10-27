@@ -94,12 +94,13 @@ TEST(VuSaturatedQConsumer, MicroMultiplyKeepsTheSaturatedQuotient)
 	}
 }
 
-// VMADDq, not VMULq: MULq's Q goes through cop2ClampOperandInto, so the q-forms
-// that reach the arithmetic unbounded are MADDq, MSUBq, MADDAq, MSUBAq, ADDAq
-// and SUBAq. Mode 4 is the test below.
+// VMADDq, not VMULq: MULq's Q goes through cop2ClampOperandInto at every mode,
+// where MADDq's is bounded from mode 2 up (cop2ClampProducts). Mode 4's DIV
+// leaves Q at the 0xFFFFFFFF ceiling, which an unbounded multiply reads as a
+// NaN and returns as +FLT_MAX.
 TEST(VuSaturatedQConsumer, MacroAccumulateKeepsTheSaturatedQuotient)
 {
-	for (int mode = 1; mode <= 3; ++mode)
+	for (int mode = 1; mode <= 4; ++mode)
 	{
 		SCOPED_TRACE(::testing::Message() << "vu0ClampMode " << mode);
 
@@ -113,8 +114,9 @@ TEST(VuSaturatedQConsumer, MacroAccumulateKeepsTheSaturatedQuotient)
 	}
 }
 
-// The macro accumulate has no ceiling model of its own and, at mode 4, no
-// operand clamp either. microVU's MADDq is held at the same mode above.
+// The macro accumulate has no ceiling model of its own. From mode 2 its Q is
+// bounded, so the quotient keeps its sign, but -FLT_MAX is a binade under the
+// console's 0xFFFFFFFF and the product lands a binade under the interpreter's.
 TEST(VuSaturatedQConsumer, MacroAccumulateCannotHoldTheCeilingAtClampModeFour)
 {
 	EeRecTestHarness h;
@@ -122,8 +124,8 @@ TEST(VuSaturatedQConsumer, MacroAccumulateCannotHoldTheCeilingAtClampModeFour)
 	BuildMacro(h, VMADDq_C2(kMacroLanes, kFd, kFm));
 	h.Run();
 
-	EXPECT_EQ(h.GetVu0VfBitsJit(kFd, 'x'), 0x7F7FFFFFu)
+	EXPECT_EQ(h.GetVu0VfBitsJit(kFd, 'x'), 0xCD7FFFFEu)
 		<< "the macro accumulate now holds the console ceiling";
-	ExpectProductKeptTheOperand(h.GetVu0VfBitsInterp(kFd, 'x'), "macro interp");
+	EXPECT_EQ(h.GetVu0VfBitsInterp(kFd, 'x'), 0xCDFFFFFEu);
 }
 } // namespace recompiler_tests

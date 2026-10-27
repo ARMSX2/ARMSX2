@@ -452,16 +452,16 @@ const Grid& Measured()
 // holds the exponent-255 operands and scores the operand clamp rather than this
 // model.
 //
-// The macro path bounds what the mVU clampType row it mirrors names, at every
-// vuClampMode. Where the row names nothing -- mVU_MADD, mVU_MULA, mVU_MADDA,
+// At vuClampMode 1 the macro path bounds what the mVU clampType row it mirrors
+// names. Where the row names nothing -- mVU_MADD, mVU_MULA, mVU_MADDA,
 // mVU_MSUBA, mVU_MSUBw, and the OP ops, which reach NEON_MULPS with no row --
 // the word arrives at Fmul as a host NaN and the result clamp folds the product
-// to +/-FLT_MAX where the interpreter multiplies two numbers. microVU bounds by
-// mode instead: mVUclamp3 takes every operand from vuClampMode 2 up whatever
-// the row says, and below vuClampMode 3 the bound is mVUclamp1's Fminnm/Fmaxnm
-// pair, which loses an exponent-255 word's sign. So the macro column is the
-// larger of the two at every mode, and the shapes where the micro column is
-// larger are confined to modes 1 and 2, where the sign goes.
+// to +/-FLT_MAX where the interpreter multiplies two numbers. From mode 2 up
+// both emitters bound every multiplicand: microVU through mVUclamp3, the macro
+// path through cop2ClampProducts. At mode 2 microVU's bound is mVUclamp1's
+// Fminnm/Fmaxnm pair, which loses an exponent-255 word's sign, and the macro
+// path's keeps it, so the macro column is the larger at mode 1, the smaller at
+// mode 2, and the two agree at 3 and 4.
 //
 // vu_micro_fmac_console_tests.cpp scores that clamp against the console; this
 // file only has to leave it alone.
@@ -479,7 +479,7 @@ constexpr int kBad[kTableCount][5][2] = {
 	{{0,0}, {2744,2744}, {2744,2744}, {2744,2744}, {0,0}},       // short-tail
 	{{0,0}, {6920,6920}, {6920,6920}, {6920,6920}, {20,20}},     // low-short-tail
 	{{0,0}, {1110,1110}, {1110,1110}, {1110,1110}, {296,296}},   // edges
-	{{0,0}, {2742,2402}, {2742,2326}, {2742,2166}, {2242,1546}}, // top-binade
+	{{0,0}, {2742,2402}, {2166,2326}, {2166,2166}, {1546,1546}}, // top-binade
 };
 
 } // namespace

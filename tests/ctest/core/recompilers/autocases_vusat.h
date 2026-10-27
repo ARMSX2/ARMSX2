@@ -60,7 +60,7 @@ inline constexpr VuSatCase kVuSatCases[] = {
 	{VS_MUL,  0x00000000u, 0x7F800000u, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "D 0*2^128"},
 	{VS_MUL,  0x80000000u, 0x7F800000u, 0x00000000u, 0x80000000u, 0x00FFu, 0x00C3u, 0, 0, "D -0*2^128"},
 	{VS_MUL,  0x00000000u, 0x7FFFFFFFu, 0x00000000u, 0x00000000u, 0x000Fu, 0x0041u, 0, 0, "D 0*max"},
-	{VS_MADD, 0x00000000u, 0x7F800000u, 0x3F800000u, 0x3F800000u, 0x0000u, 0x0040u, 0, 5, "D 1.0 + 0*2^128"},
+	{VS_MADD, 0x00000000u, 0x7F800000u, 0x3F800000u, 0x3F800000u, 0x0000u, 0x0040u, 0, 4, "D 1.0 + 0*2^128"},
 	{VS_MADD, 0x7F800000u, 0x40800000u, 0xFFFFFFFFu, 0x7FFFFFFFu, 0xF000u, 0x0288u, 0, 7, "E -max + 2^130 saturated product 00000000 | wide product 7FFFFFFF"},
 	{VS_MSUB, 0x7F800000u, 0x40800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0xF0F0u, 0x028Au, 0, 7, "E max - 2^130 saturated product 00000000 | wide product FFFFFFFF"},
 	{VS_MADD, 0x7F800000u, 0xC0800000u, 0x7FFFFFFFu, 0xFFFFFFFFu, 0xF0F0u, 0x028Au, 0, 7, "E max + -2^130 saturated product 00000000 | wide product FFFFFFFF"},
@@ -106,6 +106,6 @@ inline constexpr VuSatCase kVuSatCases[] = {
 inline constexpr int kVuSatCaseCount = 68;
 // Column-misses, not case-misses: a case wrong in two columns counts twice.
 inline constexpr int kVuSatBadInterp = 0;
-inline constexpr int kVuSatBadJit = 44;
+inline constexpr int kVuSatBadJit = 43;
 
 } // namespace console_vusat
