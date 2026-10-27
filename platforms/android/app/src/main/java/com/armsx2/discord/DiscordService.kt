@@ -132,6 +132,7 @@ class DiscordService : Service() {
                         d.getString(DiscordIpc.DATA_COVER).orEmpty(),
                         d.getString(DiscordIpc.DATA_RA).orEmpty(),
                         d.getString(DiscordIpc.DATA_PARTY).orEmpty(),
+                        d.getBoolean(DiscordIpc.DATA_SHOW_GAME, false),
                     )
                 }
             }

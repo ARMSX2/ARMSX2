@@ -63,6 +63,7 @@ object DiscordIpc {
     const val DATA_COVER = "cover"
     const val DATA_RA = "ra"
     const val DATA_PARTY = "party" // a remote play session's party id; empty outside one
+    const val DATA_SHOW_GAME = "showGame" // name the game, not ARMSX2, in the status line
 
     const val DATA_STATUS = "status"
     const val DATA_FRIENDS = "friends"

@@ -542,6 +542,8 @@
  "friends.nowOnline": "님이 접속했습니다",
  "friends.playing": "게임 플레이 중",
  "friends.playingNow": "지금 ARMSX2 사용 중",
+ "friends.showGame": "내 상태에 게임 표시",
+ "friends.showGame.desc": "Discord 상태에 ARMSX2 대신 플레이 중인 게임을 표시합니다.",
  "friends.title": "친구",
  "friends.unavailable": "이 빌드는 Discord SDK 없이 만들어졌습니다.",
  "gamedb.help": "PCSX2 게임 데이터베이스가 사용자 설정 위에 이 게임용으로 이 항목들을 설정합니다. 항목을 끄면 해당 항목에는 대신 사용자 설정이 유지됩니다.",

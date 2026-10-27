@@ -542,6 +542,8 @@
  "friends.nowOnline": "şimdi çevrimiçi",
  "friends.playing": "Oyunda",
  "friends.playingNow": "Şu an ARMSX2'de",
+ "friends.showGame": "Durumumda oyunu göster",
+ "friends.showGame.desc": "Discord durumunuz ARMSX2 yerine oynadığınız oyunu gösterir.",
  "friends.title": "Arkadaşlar",
  "friends.unavailable": "Bu sürüm Discord SDK olmadan derlendi.",
  "gamedb.help": "PCSX2'nin oyun veritabanı, kendi ayarlarınızın üzerine bunları bu oyun için ayarlar. Bunun yerine kendi ayarınızı korumak için birini kapatın.",

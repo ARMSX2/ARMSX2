@@ -542,6 +542,8 @@
   "friends.nowOnline": "vừa trực tuyến",
   "friends.playing": "Đang chơi game",
   "friends.playingNow": "Đang dùng ARMSX2",
+  "friends.showGame": "Hiện game trong trạng thái của tôi",
+  "friends.showGame.desc": "Trạng thái Discord của bạn hiện game bạn đang chơi thay vì ARMSX2.",
   "friends.title": "Bạn bè",
   "friends.unavailable": "Bản dựng này được tạo mà không có Discord SDK.",
   "gamedb.help": "Cơ sở dữ liệu game của PCSX2 đặt các mục này cho game này, chồng lên cài đặt của riêng bạn. Tắt một mục để giữ cài đặt của bạn cho mục đó thay vào đó.",

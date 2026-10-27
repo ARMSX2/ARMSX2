@@ -598,6 +598,8 @@
  "friends.nowOnline": "اکنون آنلاین است",
  "friends.playing": "در حال بازی",
  "friends.playingNow": "اکنون در ARMSX2",
+ "friends.showGame": "نمایش بازی در وضعیت من",
+ "friends.showGame.desc": "وضعیت Discord شما به‌جای ARMSX2، بازی‌ای را که انجام می‌دهید نشان می‌دهد.",
  "friends.title": "دوستان",
  "friends.unavailable": "این نسخه بدون Discord SDK ساخته شده است.",
  "gamedb.help": "پایگاه‌داده بازی‌های PCSX2 این‌ها را برای این بازی تنظیم می‌کند، علاوه بر تنظیمات خودتان. یکی را خاموش کنید تا در عوض تنظیم خودتان برای آن حفظ شود.",

@@ -193,6 +193,9 @@ namespace
 		std::string want_ra;
 		// A remote play session's party id, while both players are in one; empty otherwise.
 		std::string want_party;
+		// Name the game, not ARMSX2, in the status line: the player's Friends switch, and only ever
+		// set for a real game (a place such as the Icon Museum keeps "Playing ARMSX2").
+		bool want_show_game = false;
 	};
 
 	State& S()
@@ -243,6 +246,7 @@ namespace
 	{
 		std::shared_ptr<discordpp::Client> client;
 		std::string serial, title, cover, ra, party;
+		bool show_game = false;
 		{
 			std::lock_guard<std::mutex> lock(S().mutex);
 			client = S().client;
@@ -251,6 +255,7 @@ namespace
 			cover = S().want_cover;
 			ra = S().want_ra;
 			party = S().want_party;
+			show_game = S().want_show_game;
 		}
 		if (!client)
 			return;
@@ -263,10 +268,12 @@ namespace
 		{
 			activity.SetDetails(title);
 			// Discord's status line under someone's name then reads "Playing <game>" instead of
-			// "Playing ARMSX2"; the activity card still shows ARMSX2 with the cover. Only in a game:
-			// in the library Details is "In the library", which would read as a game called that.
-			// Idea and the desktop version by bshar1865 (https://github.com/bshar1865).
-			activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Details);
+			// "Playing ARMSX2"; the activity card still shows ARMSX2 with the cover. Only for a game,
+			// and only while the Friends switch is on: a place (the Icon Museum) and the library keep
+			// "Playing ARMSX2", which is how they were made to read.
+			// Idea, the desktop version and the switch by bshar1865 (https://github.com/bshar1865).
+			if (show_game)
+				activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Details);
 			// Second line of the Discord status. RetroAchievements' own rich presence when there
 			// is one -- "Exploring Ivalice, Lv 34" is worth reading; a disc serial is not, and it
 			// was needless detail to publish about someone. Falls back to the serial so this stays
@@ -735,7 +742,8 @@ Java_com_armsx2_discord_DiscordNative_error(JNIEnv* env, jclass)
 /// Remember and publish what is being played. Empty title = back in the library.
 JNIEXPORT void JNICALL
 Java_com_armsx2_discord_DiscordNative_setPlaying(
-	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover, jstring ra, jstring party)
+	JNIEnv* env, jclass, jstring serial, jstring title, jstring cover, jstring ra, jstring party,
+	jboolean show_game)
 {
 	{
 		std::lock_guard<std::mutex> lock(S().mutex);
@@ -744,6 +752,7 @@ Java_com_armsx2_discord_DiscordNative_setPlaying(
 		S().want_cover = JStr(env, cover);
 		S().want_ra = JStr(env, ra);
 		S().want_party = JStr(env, party);
+		S().want_show_game = show_game != JNI_FALSE;
 	}
 	if (S().status.load(std::memory_order_acquire) == static_cast<int>(BridgeStatus::Connected))
 		PushPresence();

@@ -1139,6 +1139,8 @@
  "friends.connected": "Discord conectado",
  "friends.disconnect": "Desconectar",
  "friends.playingNow": "Em ARMSX2 agora",
+ "friends.showGame": "Mostrar o jogo no meu status",
+ "friends.showGame.desc": "Seu status do Discord mostra o jogo que você está jogando em vez de ARMSX2.",
  "friends.nobody": "Nenhum dos seus amigos do Discord está no ARMSX2 no momento.",
  "friends.notify": "Avise-me no jogo",
  "friends.notify.desc": "Mostre uma mensagem durante o jogo quando um amigo começar a jogar ARMSX2.",

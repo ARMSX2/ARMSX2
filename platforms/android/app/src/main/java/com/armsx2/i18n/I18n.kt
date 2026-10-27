@@ -172,6 +172,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "friends.nobody" to "None of your Discord friends are in ARMSX2 right now.",
     "friends.notify" to "Notify me in game",
     "friends.notify.desc" to "Show a message over the game when a friend starts playing ARMSX2.",
+    "friends.showGame" to "Show the game in my status",
+    "friends.showGame.desc" to "Your Discord status shows the game you're playing instead of ARMSX2.",
     "friends.inLibrary" to "In the library",
     "friends.playing" to "In a game",
     "friends.nowOnline" to "is now online",

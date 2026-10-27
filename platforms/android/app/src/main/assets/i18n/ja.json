@@ -542,6 +542,8 @@
   "friends.nowOnline": "がオンラインになりました",
   "friends.playing": "ゲームをプレイ中",
   "friends.playingNow": "ARMSX2を使用中",
+  "friends.showGame": "ステータスにゲーム名を表示",
+  "friends.showGame.desc": "Discordのステータスに、ARMSX2ではなくプレイ中のゲーム名を表示します。",
   "friends.title": "フレンド",
   "friends.unavailable": "このビルドはDiscord SDKなしで作成されています。",
   "gamedb.help": "PCSX2のゲームデータベースが、ユーザー自身の設定に加えて、このゲーム用にこれらを設定しています。いずれかをオフにすると、その項目には代わりに自分の設定が使われます。",

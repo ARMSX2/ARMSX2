@@ -537,6 +537,8 @@
  "friends.nowOnline": "è ora online",
  "friends.playing": "In gioco",
  "friends.playingNow": "Su ARMSX2 ora",
+ "friends.showGame": "Mostra il gioco nel mio stato",
+ "friends.showGame.desc": "Il tuo stato su Discord mostra il gioco a cui stai giocando invece di ARMSX2.",
  "friends.title": "Amici",
  "friends.unavailable": "Questa build è stata creata senza l'SDK di Discord.",
  "gamedb.help": "Il database dei giochi di PCSX2 imposta questi valori per questo gioco, al di sopra delle tue impostazioni. Disattivane uno per mantenere invece la tua impostazione.",

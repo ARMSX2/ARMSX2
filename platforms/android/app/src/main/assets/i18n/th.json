@@ -542,6 +542,8 @@
  "friends.nowOnline": "ออนไลน์แล้ว",
  "friends.playing": "อยู่ในเกม",
  "friends.playingNow": "อยู่ใน ARMSX2 ตอนนี้",
+ "friends.showGame": "แสดงเกมในสถานะของฉัน",
+ "friends.showGame.desc": "สถานะ Discord ของคุณจะแสดงเกมที่คุณกำลังเล่นแทน ARMSX2",
  "friends.title": "เพื่อน",
  "friends.unavailable": "บิลด์นี้สร้างโดยไม่มี Discord SDK",
  "gamedb.help": "ฐานข้อมูลเกมของ PCSX2 ตั้งค่าเหล่านี้ให้เกมนี้ ทับการตั้งค่าของคุณเอง ปิดรายการใดเพื่อใช้การตั้งค่าของคุณเองสำหรับรายการนั้นแทน",

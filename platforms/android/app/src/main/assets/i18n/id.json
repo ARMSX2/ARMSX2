@@ -542,6 +542,8 @@
   "friends.nowOnline": "sekarang online",
   "friends.playing": "Sedang bermain",
   "friends.playingNow": "Sedang di ARMSX2",
+  "friends.showGame": "Tampilkan game di status saya",
+  "friends.showGame.desc": "Status Discord Anda menampilkan game yang sedang Anda mainkan, bukan ARMSX2.",
   "friends.title": "Teman",
   "friends.unavailable": "Build ini dibuat tanpa Discord SDK.",
   "gamedb.help": "Database game PCSX2 mengatur ini untuk game ini, di atas pengaturan Anda sendiri. Matikan salah satunya untuk tetap memakai pengaturan Anda sendiri.",

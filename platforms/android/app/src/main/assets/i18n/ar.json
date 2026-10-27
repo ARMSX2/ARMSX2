@@ -542,6 +542,8 @@
  "friends.nowOnline": "متصل الآن",
  "friends.playing": "في لعبة",
  "friends.playingNow": "في ARMSX2 الآن",
+ "friends.showGame": "أظهر اللعبة في حالتي",
+ "friends.showGame.desc": "تُظهر حالتك في Discord اسم اللعبة التي تلعبها بدلاً من ARMSX2.",
  "friends.title": "الأصدقاء",
  "friends.unavailable": "بُني هذا الإصدار دون Discord SDK.",
  "gamedb.help": "تضبط قاعدة بيانات ألعاب PCSX2 هذه لهذه اللعبة، فوق إعداداتك الخاصة. أوقف أحدها للإبقاء على إعدادك الخاص بدلاً منه.",

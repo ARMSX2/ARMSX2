@@ -542,6 +542,8 @@
  "friends.nowOnline": "jest teraz online",
  "friends.playing": "W grze",
  "friends.playingNow": "Teraz w ARMSX2",
+ "friends.showGame": "Pokazuj grę w moim statusie",
+ "friends.showGame.desc": "Twój status na Discordzie pokazuje grę, w którą grasz, zamiast ARMSX2.",
  "friends.title": "Znajomi",
  "friends.unavailable": "Ta wersja została zbudowana bez Discord SDK.",
  "gamedb.help": "Baza danych gier PCSX2 ustawia je dla tej gry, ponad Twoimi własnymi ustawieniami. Wyłącz daną pozycję, aby zamiast tego zachować własne ustawienie.",

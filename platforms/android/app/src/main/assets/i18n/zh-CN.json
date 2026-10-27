@@ -544,6 +544,8 @@
  "friends.nowOnline": "已上线",
  "friends.playing": "游戏中",
  "friends.playingNow": "正在使用 ARMSX2",
+ "friends.showGame": "在我的状态中显示游戏",
+ "friends.showGame.desc": "你的 Discord 状态会显示你正在玩的游戏，而不是 ARMSX2。",
  "friends.title": "好友",
  "friends.unavailable": "此版本构建时未包含 Discord SDK。",
  "gamedb.help": "PCSX2 的游戏数据库会在你自己的设置基础上，为此游戏设定这些项目。关闭某一项即可改用你自己为其设置的值。",

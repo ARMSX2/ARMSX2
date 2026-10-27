@@ -597,6 +597,8 @@
   "friends.nowOnline": "теперь в сети",
   "friends.playing": "В игре",
   "friends.playingNow": "Сейчас в ARMSX2",
+  "friends.showGame": "Показывать игру в статусе",
+  "friends.showGame.desc": "В статусе Discord будет видна игра, в которую вы играете, а не ARMSX2.",
   "friends.title": "Друзья",
   "friends.unavailable": "Эта сборка создана без Discord SDK.",
   "gamedb.help": "База данных игр PCSX2 задает эти значения для этой игры поверх ваших собственных настроек. Выключите пункт, чтобы вместо этого использовать свою настройку.",
