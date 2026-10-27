@@ -1471,8 +1471,10 @@ static void recUnalignedLoadDouble(bool is_ldl)
 //   SDL: mem64(aligned) = (Rt >> (56 - shift8)) | (mem & (~0 << (shift8 + 8)))  [s==7: store Rt]
 //   SDR: mem64(aligned) = (Rt <<       shift8 ) | (mem & (~0 >> (64 - shift8))) [s==0: store Rt]
 //
-// aligned, s and Rt all live in callee-saved temps across the read. The
-// degenerate alignment (SDL s==7 / SDR s==0) stores Rt whole and skips the read.
+// Fastmem compiles use one branch-free form for every alignment (below).
+// Softmem compiles keep the address in a callee-saved temp across the read,
+// and the degenerate alignment (SDL s==7 / SDR s==0) stores Rt whole and skips
+// the read.
 static void recUnalignedStoreDouble(bool is_sdl)
 {
 	// --- SDL/SDR pair fusion -------------------------------------------------
@@ -1540,6 +1542,52 @@ static void recUnalignedStoreDouble(bool is_sdl)
 	recComputeAddr();
 	iFlushCall(FLUSH_VTLB);
 
+	// Fastmem: one branch-free merge for every alignment, with the shift as a
+	// register operand.
+	//   SDR: mem = (mem & ~(~0 << s)) | (Rt << s),  s = (addr & 7) * 8
+	//   SDL: mem = (mem & ~(~0 >> s)) | (Rt >> s),  s = (7 - (addr & 7)) * 8
+	// s == 0 is the degenerate alignment and gives Rt whole, as the two-path
+	// form below does; unlike it, the doubleword is read in that case too,
+	// which is what the interpreter does. A read of RAM has no effect, and an
+	// address that is not RAM faults on its first access, after which the PC
+	// compiles softmem, below, with the read skipped as before.
+	// w10 holds s across the read: the inline access touches nothing, and the
+	// load backpatch thunk touches only w9 (the address, unchanged), x8, x17
+	// and x0, with its slow call preserve_most (x9-x15 spared). w9 keeps the
+	// aligned address for the write the same way.
+	if (useFastmem)
+	{
+		if (is_sdl)
+		{
+			armAsm->Mvn(a64::w10, a64::w9);
+			armAsm->Ubfiz(a64::w10, a64::w10, 3, 3);                // s = (~addr & 7) * 8
+		}
+		else
+		{
+			armAsm->Ubfiz(a64::w10, a64::w9, 3, 3);                 // s = (addr & 7) * 8
+		}
+		armAsm->And(a64::w9, a64::w9, ~7u);                         // aligned
+		vtlbFastmemRead(9, 0, 64, false);                          // mem -> x0
+		const a64::Register rt = _eeGetGPRSourceReg(a64::x1, _Rt_); // handles Rt == 0
+		if (is_sdl)
+		{
+			armAsm->Lsr(a64::x1, rt, a64::x10);
+			armAsm->Mov(RXSCRATCH, UINT64_C(0xFFFFFFFFFFFFFFFF));
+			armAsm->Lsr(RXSCRATCH, RXSCRATCH, a64::x10);
+		}
+		else
+		{
+			armAsm->Lsl(a64::x1, rt, a64::x10);
+			armAsm->Mov(RXSCRATCH, UINT64_C(0xFFFFFFFFFFFFFFFF));
+			armAsm->Lsl(RXSCRATCH, RXSCRATCH, a64::x10);
+		}
+		armAsm->Bic(a64::x0, a64::x0, RXSCRATCH);
+		armAsm->Orr(a64::x0, a64::x0, a64::x1);
+		vtlbFastmemWrite(9, 0, 64);
+		return;
+	}
+
+	// Softmem (a PC that has faulted: the address is not RAM).
 	// EE-SRA 3 Arm B: only the full effective address must survive the read's
 	// slow-path C call (it re-addresses the write-back), so it is the sole
 	// callee-saved temp. s = addr & 7 drives the degenerate-alignment branch and
@@ -1557,10 +1605,7 @@ static void recUnalignedStoreDouble(bool is_sdl)
 
 	// General path: read aligned word, merge with Rt.
 	armAsm->And(a64::w9, armWRegister(addrCS), ~7u);                  // aligned
-	if (useFastmem)
-		vtlbFastmemRead(9, 0, 64, false);                            // mem -> x0
-	else
-		vtlbSoftmemRead(9, 64, false);
+	vtlbSoftmemRead(9, 64, false);                                    // mem -> x0
 
 	_eeMoveGPRtoR(a64::x1, _Rt_);                                     // Rt (post-read), handles Rt==0
 	armAsm->And(RWSCRATCH, armWRegister(addrCS), 7);                  // s, recomputed post-read
@@ -1598,10 +1643,7 @@ static void recUnalignedStoreDouble(bool is_sdl)
 
 	armAsm->Bind(&merged);
 	armAsm->And(a64::w9, armWRegister(addrCS), ~7u);                  // aligned (write)
-	if (useFastmem)
-		vtlbFastmemWrite(9, 0, 64);
-	else
-		vtlbSoftmemWrite(9, 0, 64);
+	vtlbSoftmemWrite(9, 0, 64);
 
 	_freeArm64GPR(addrCS);
 }
