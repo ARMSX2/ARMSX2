@@ -257,12 +257,16 @@ namespace
 
 		discordpp::Activity activity;
 		// Name and applicationId are overwritten by the SDK — the header says so, and it is why
-		// Discord will read "Playing ARMSX2" with the game underneath rather than the other way
-		// round. Details is therefore where the game has to go.
+		// the activity itself is always ARMSX2. Details is therefore where the game has to go.
 		activity.SetType(discordpp::ActivityTypes::Playing);
 		if (!title.empty())
 		{
 			activity.SetDetails(title);
+			// Discord's status line under someone's name then reads "Playing <game>" instead of
+			// "Playing ARMSX2"; the activity card still shows ARMSX2 with the cover. Only in a game:
+			// in the library Details is "In the library", which would read as a game called that.
+			// Idea and the desktop version by bshar1865 (https://github.com/bshar1865).
+			activity.SetStatusDisplayType(discordpp::StatusDisplayTypes::Details);
 			// Second line of the Discord status. RetroAchievements' own rich presence when there
 			// is one -- "Exploring Ivalice, Lv 34" is worth reading; a disc serial is not, and it
 			// was needless detail to publish about someone. Falls back to the serial so this stays
