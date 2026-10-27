@@ -510,10 +510,10 @@ void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state
 	XINPUT_GAMEPAD& ogp = cd.last_state.Gamepad;
 	const XINPUT_GAMEPAD& ngp = new_state.Gamepad;
 
-#define CHECK_AXIS(field, axis, min_value, max_value) \
+#define CHECK_AXIS(field, axis, min_value, max_value, shape) \
 	if (ogp.field != ngp.field) \
 	{ \
-		const float value = static_cast<float>(ngp.field) / ((ngp.field < 0) ? min_value : max_value); \
+		const float value = shape(static_cast<float>(ngp.field) / ((ngp.field < 0) ? min_value : max_value)); \
 		InputManager::InvokeEvents(MakeGenericControllerAxisKey(InputSourceType::XInput, index, axis), value, \
 			GenericInputBinding::Unknown, \
 			s_xinput_generic_binding_axis_mapping[axis][0], \
@@ -521,12 +521,12 @@ void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state
 	}
 
 	// Y axes is inverted in XInput when compared to SDL.
-	CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767);
-	CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767);
-	CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767);
-	CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767);
-	CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255);
-	CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255);
+	CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767, );
+	CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767, );
+	CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767, );
+	CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767, );
+	CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255, InputManager::ApplyTriggerRestDeadzone);
+	CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255, InputManager::ApplyTriggerRestDeadzone);
 
 #undef CHECK_AXIS
 

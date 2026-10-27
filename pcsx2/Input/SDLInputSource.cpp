@@ -1576,7 +1576,9 @@ bool SDLInputSource::HandleGamepadAxisEvent(const SDL_GamepadAxisEvent* ev)
 		return false;
 
 	const InputBindingKey key(MakeGenericControllerAxisKey(InputSourceType::SDL, it->player_id, ev->axis));
-	const float value = NormalizeS16(ev->value);
+	// Triggers that rest a little above zero would otherwise hold L2/R2 down.
+	const bool is_trigger = (ev->axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || ev->axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+	const float value = is_trigger ? InputManager::ApplyTriggerRestDeadzone(NormalizeS16(ev->value)) : NormalizeS16(ev->value);
 
 	if (ev->axis < std::size(s_sdl_generic_binding_axis_mapping))
 	{

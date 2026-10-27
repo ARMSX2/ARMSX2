@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -173,6 +174,19 @@ namespace InputManager
 	/// Maximum number of software cursors. We allocate an extra two for USB devices with
 	/// positioning data from the controller instead of a mouse.
 	static constexpr u32 MAX_SOFTWARE_CURSORS = MAX_POINTER_BUTTONS + 2;
+
+	/// Travel at the bottom of an analog trigger that reads as released. Some pads rest a few percent
+	/// above zero (the Retroid Pocket Flip 2 under ROCKNIX rests R2 at 12/255), and the pad counts any
+	/// pressure as the L2/R2 button held. Same value as the Android frontend's TRIGGER_DEAD.
+	static constexpr float TRIGGER_REST_DEADZONE = 0.06f;
+
+	/// Trims TRIGGER_REST_DEADZONE off a trigger value in [0, 1] and stretches the rest back to [0, 1],
+	/// so pressure still ramps from zero. Matches the Android frontend's shapeTrigger without its curve.
+	static inline float ApplyTriggerRestDeadzone(float value)
+	{
+		const float raw = std::clamp(value, 0.0f, 1.0f);
+		return (raw <= TRIGGER_REST_DEADZONE) ? 0.0f : (raw - TRIGGER_REST_DEADZONE) / (1.0f - TRIGGER_REST_DEADZONE);
+	}
 
 	/// Returns a pointer to the external input source class, if present.
 	InputSource* GetInputSourceInterface(InputSourceType type);

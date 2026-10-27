@@ -27,6 +27,7 @@ add_pcsx2_test(core_test
 	iop_thread_fpcr_tests.cpp
 	iop_thread_threaded_tests.cpp
 	pad_input_tests.cpp
+	trigger_rest_deadzone_tests.cpp
 	shared_word_tests.cpp
 	IopThreadTestSupport.h
 	StubHostTasks.h
