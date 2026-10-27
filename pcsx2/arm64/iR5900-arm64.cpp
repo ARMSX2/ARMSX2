@@ -2375,6 +2375,16 @@ static bool recSuperblockLivenessBarrier(u32 addr)
 // INTC/DMAC/TIMR fire only at event tests (block boundary, branch==0 there),
 // and AdEL (RaiseAddressError) is a stub. Pinned by ee_rec_traps_tests.cpp
 // delay-slot raiser tests + AluDelaySlotBranchSemanticsSurviveWithoutBracket.
+//
+// Memory ops compiled on the fastmem path drop the bracket too. Under a
+// recompiler neither vtlb_Miss nor _ext_memUnknown raises (they report and
+// return), and nothing else a load or store can reach calls cpuException, so
+// the bracket's store, reload, branch and clear never observe anything. The
+// fastmem backpatch thunk also has no divert to offer: it is generated at
+// fault time and cannot name the block's live guest values
+// (ee_rec_tlb_divert_tests.cpp). Softmem compiles (fastmem off, or a PC that
+// has faulted before) keep the bracket, because the staged TLB-miss divert in
+// those tests rides its epilogue. Pinned by ee_rec_delay_slot_bracket_tests.cpp.
 #ifdef PCSX2_RECOMPILER_TESTS
 
 namespace EERecFallback
@@ -2930,8 +2940,6 @@ namespace EERecFallback
 
 static bool delaySlotNeedsBranchBracket(u32 code, const R5900::OPCODE& op)
 {
-	if (op.flags & (IS_LOAD | IS_STORE | IS_MEMORY))
-		return true; // TLB-miss / MMIO-fallback raisers
 	if (op.flags & IS_BRANCH)
 		return true; // SYSCALL + branch-in-delay-slot interpreter fallback
 	if (!op.recompile)
@@ -2941,6 +2949,13 @@ static bool delaySlotNeedsBranchBracket(u32 code, const R5900::OPCODE& op)
 		return true; // same conservatism for a harness-forced interpreter fallback,
 		             // so the bisect switch cannot itself change exception semantics
 #endif
+	if (op.flags & (IS_LOAD | IS_STORE | IS_MEMORY))
+	{
+		// Same test every memory emitter makes for its own access (pc is the
+		// delay slot's here; it advances after the slot compiles).
+		const bool fastmem = CHECK_FASTMEM && !vtlb_IsFaultingPC(pc);
+		return !fastmem; // softmem keeps the staged TLB-miss divert's seam
+	}
 	const u32 primary = code >> 26;
 	if (primary == 0x00)
 	{
