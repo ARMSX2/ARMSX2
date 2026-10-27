@@ -826,7 +826,7 @@ bool VKSwapChain::CreateSwapChain()
 		}
 		Console.WriteLnFmt(
 			"Vulkan: Swapchain {}x{} fmt={} colorspace={} present={} images={} (desired={} min={} max={}) wsi={} "
-			"surface_transform=0x{:x} supported=0x{:x} window_rotation={} pre_rotation={} image_size={}x{}",
+			"surface_transform=0x{:x} supported=0x{:x} window_rotation={} pre_rotation={} image_size={}x{}{}",
 			size.width, size.height, static_cast<unsigned>(surface_format->format),
 			static_cast<unsigned>(surface_format->colorSpace),
 			PresentModeToString(m_present_mode), image_count,
@@ -834,7 +834,8 @@ bool VKSwapChain::CreateSwapChain()
 			wsi_name, static_cast<unsigned>(surface_capabilities.currentTransform),
 			static_cast<unsigned>(surface_capabilities.supportedTransforms),
 			static_cast<unsigned>(m_window_info.surface_rotation) * 90u,
-			static_cast<unsigned>(m_pre_rotation) * 90u, image_size.width, image_size.height);
+			static_cast<unsigned>(m_pre_rotation) * 90u, image_size.width, image_size.height,
+			GSConfig.DisableSwapChainPreRotation ? " (pre-rotation off by setting)" : "");
 	}
 
 	VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
