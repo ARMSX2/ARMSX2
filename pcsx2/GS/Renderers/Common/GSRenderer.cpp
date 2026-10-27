@@ -469,9 +469,12 @@ bool GSRenderer::Merge(int field)
 	{
 		if (GSTexture* const pre_chain = g_gs_device->GetCurrent())
 		{
+			// Laid out like the present lays it out: in the presentation size, which is the window's
+			// with the axes swapped under a 90 or 270 degree display rotation.
 			const GSVector4i pre_src(CalculateDrawSrcRect(pre_chain, m_real_size));
-			const GSVector4 pre_dst(CalculateDrawDstRect(g_gs_device->GetWindowWidth(),
-				g_gs_device->GetWindowHeight(), pre_src, pre_chain->GetSize(), s_display_alignment,
+			const GSVector2i pres_size = g_gs_device->GetPresentationSize();
+			const GSVector4 pre_dst(CalculateDrawDstRect(pres_size.x,
+				pres_size.y, pre_src, pre_chain->GetSize(), s_display_alignment,
 				g_gs_device->UsesLowerLeftOrigin(), GetVideoMode() == GSVideoMode::SDTV_480P));
 			const GSVector2i on_screen(
 				static_cast<int>(std::floor((pre_dst.z - pre_dst.x) + 0.5f)),
@@ -481,9 +484,10 @@ bool GSRenderer::Merge(int field)
 	}
 
 	// Sharpens biinear at lower resolutions, almost nearest but with more uniform pixels.
-	if (GSConfig.LinearPresent == GSPostBilinearMode::BilinearSharp && (g_gs_device->GetWindowWidth() > fs.x || g_gs_device->GetWindowHeight() > fs.y))
+	const GSVector2i pres_size = g_gs_device->GetPresentationSize();
+	if (GSConfig.LinearPresent == GSPostBilinearMode::BilinearSharp && (pres_size.x > fs.x || pres_size.y > fs.y))
 	{
-		g_gs_device->Resize(g_gs_device->GetWindowWidth(), g_gs_device->GetWindowHeight());
+		g_gs_device->Resize(pres_size.x, pres_size.y);
 	}
 
 	if (m_scanmask_used)
@@ -621,9 +625,10 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 			const GSVector2i fs = GSVector2i(static_cast<int>(static_cast<float>(resolution.x) * g_gs_renderer->GetUpscaleMultiplier()),
 				static_cast<int>(static_cast<float>(resolution.y) * g_gs_renderer->GetUpscaleMultiplier()));
 
-			if (g_gs_device->GetWindowWidth() > fs.x || g_gs_device->GetWindowHeight() > fs.y)
+			const GSVector2i pres_size = g_gs_device->GetPresentationSize();
+			if (pres_size.x > fs.x || pres_size.y > fs.y)
 			{
-				t_width *= static_cast<float>(fs.x) / src_rect.width();
+				t_width *=static_cast<float>(fs.x) / src_rect.width();
 				t_height *= static_cast<float>(fs.y) / src_rect.height();
 			}
 		}
@@ -1293,8 +1298,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				{
 					// sharpen only if the IR is higher than the display resolution
 					const bool sharpen_only = (GSConfig.CASMode == GSCASMode::SharpenOnly ||
-					                           (current->GetWidth() > g_gs_device->GetWindowWidth() &&
-					                            current->GetHeight() > g_gs_device->GetWindowHeight()));
+					                           (current->GetWidth() > pres_size.x &&
+					                            current->GetHeight() > pres_size.y));
 					g_gs_device->CAS(current, src_rect, src_uv, draw_rect, sharpen_only);
 				}
 				else if (!cas_log_once)
