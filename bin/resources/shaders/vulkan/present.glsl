@@ -392,7 +392,9 @@ vec4 LottesCRTPass()
 {
 	vec4 color;
 	vec2 fragcoord = window_frag_coord() - u_target_rect.xy;
-	vec2 inSize = u_target_resolution - (2 * u_target_rect.xy);
+	// The target rect's own size. The window size less twice the rect's offset is the same thing only
+	// when the rect is centred, and the display alignment and render position settings move it.
+	vec2 inSize = u_target_size;
 
 	vec2 pos = Warp(fragcoord.xy / inSize);
 	color.rgb = Tri(pos);
