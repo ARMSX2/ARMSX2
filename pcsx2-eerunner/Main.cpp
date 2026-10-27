@@ -36,6 +36,7 @@
 
 #ifdef __linux__
 #include <linux/perf_event.h>
+#include <sched.h>
 #include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -218,6 +219,7 @@ static u32 s_iop_stats_every = 0;      // --iop-stats-every N: in a --liverun, l
 static bool s_stress = false;          // --iop-stress <seed>: a --liverun that does random lifecycle things between frames
 static u32 s_stress_seed = 1;
 static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
+static bool s_threadperf_frontend = false; // --threadperf-frontend: @THREADPERF2@ front-end counters on the CPU thread
 static u32 s_churn_every = 0;          // --settings-churn N <kind>: apply a settings change every N frames of a twin pass
 static std::vector<bool> s_no_vm_vuaot_flips; // --no-vm-vuaot-flips 0,1,0: EnableVUAot set to each value in turn and the settings applied with no VM running
 static std::string s_churn_kind;       // "lockstep": flip the IOP thread between Off and Lockstep; "threaded": between Off and Threaded; "lag": flip the IOP thread lag; "vuaot": flip EnableVUAot
@@ -1059,6 +1061,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --ee-rate-hitch <N>: with --ee-rate-script, report the median wall time of the N frames\n");
 	std::fprintf(stderr, "               before each transition and the wall time of the N frames after it, so the\n");
 	std::fprintf(stderr, "               recompile hitch is a number rather than a guess.\n");
+	std::fprintf(stderr, "  --threadperf-frontend: in a --liverun, also count L1 instruction cache and TLB refills, front-end stalls and\n");
+	std::fprintf(stderr, "               branch mispredictions on the CPU thread (@THREADPERF2@).\n");
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
@@ -1182,6 +1186,11 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("--liverun"))
 			{
 				s_mode = RunMode::LiveRun;
+				continue;
+			}
+			else if (CHECK_ARG("--threadperf-frontend"))
+			{
+				s_threadperf_frontend = true;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--gsdump"))
@@ -5074,6 +5083,124 @@ static int OpenThreadPerfCounter(pid_t tid, u64 config, bool* user_only)
 	return fd;
 }
 
+// --threadperf-frontend: the CPU thread's L1 instruction cache refills, L1 instruction TLB refills, front-end stalls and branch
+// mispredictions, from the core PMU's named events (/sys/bus/event_source/devices/<pmu>/events/), printed as @THREADPERF2@ beside
+// @THREADPERF@. The counting is the one in the EE AOT campaign's R0 harness (ee-aot-r0 4ca814aa28) without the rest of that
+// harness. Measurement only.
+struct FrontendCounter
+{
+	std::string name;
+	int fd;
+};
+static std::vector<FrontendCounter> s_fe_counters;
+static std::string s_fe_pmu;
+
+static bool ReadSmallFile(const std::string& path, std::string* out)
+{
+	std::ifstream f(path);
+	if (!f)
+		return false;
+	std::getline(f, *out);
+	return true;
+}
+
+// Whether `cpu` is in a sysfs CPU list such as "0-3,5".
+static bool CpuInList(const std::string& list, int cpu)
+{
+	for (const std::string_view tok : StringUtil::SplitString(list, ','))
+	{
+		const std::string t(tok);
+		int lo = 0, hi = 0;
+		if (std::sscanf(t.c_str(), "%d-%d", &lo, &hi) == 2)
+		{
+			if (cpu >= lo && cpu <= hi)
+				return true;
+		}
+		else if (std::sscanf(t.c_str(), "%d", &lo) == 1 && cpu == lo)
+			return true;
+	}
+	return false;
+}
+
+static void OpenFrontendCounters(pid_t tid)
+{
+	// The PMU of the first CPU the thread may run on (the runs are confined to one cluster).
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	int cpu = 0;
+	if (sched_getaffinity(tid, sizeof(set), &set) == 0)
+	{
+		for (int c = 0; c < CPU_SETSIZE; c++)
+		{
+			if (CPU_ISSET(c, &set))
+			{
+				cpu = c;
+				break;
+			}
+		}
+	}
+	std::string dev;
+	u32 type = 0;
+	for (const auto& e : std::filesystem::directory_iterator("/sys/bus/event_source/devices"))
+	{
+		std::string cpus, t;
+		if (!ReadSmallFile((e.path() / "cpus").string(), &cpus) || !CpuInList(cpus, cpu) || !ReadSmallFile((e.path() / "type").string(), &t))
+			continue;
+		dev = e.path().filename().string();
+		type = static_cast<u32>(std::strtoul(t.c_str(), nullptr, 10));
+		break;
+	}
+	s_fe_pmu = dev;
+	static const char* const kWant[] = {"l1i_cache_refill", "l1i_tlb_refill", "stall_frontend", "br_mis_pred"};
+	for (const char* w : kWant)
+	{
+		std::string ev;
+		if (dev.empty() || !ReadSmallFile("/sys/bus/event_source/devices/" + dev + "/events/" + w, &ev))
+			continue;
+		const auto eq = ev.find("0x");
+		if (eq == std::string::npos)
+			continue;
+		perf_event_attr a = {};
+		a.size = sizeof(a);
+		a.type = type;
+		a.config = std::strtoull(ev.c_str() + eq + 2, nullptr, 16);
+		a.exclude_hv = 1;
+		a.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+		int fd = static_cast<int>(syscall(SYS_perf_event_open, &a, tid, -1, -1, 0));
+		if (fd < 0 && errno == EACCES)
+		{
+			a.exclude_kernel = 1;
+			fd = static_cast<int>(syscall(SYS_perf_event_open, &a, tid, -1, -1, 0));
+		}
+		if (fd >= 0)
+			s_fe_counters.push_back({w, fd});
+	}
+}
+
+static void ReportFrontendCounters()
+{
+	if (!s_threadperf_frontend)
+		return;
+	if (s_fe_counters.empty())
+	{
+		Console.WriteLn(fmt::format("@THREADPERF2@ CPU Thread: no front-end counters on PMU '{}'", s_fe_pmu));
+		return;
+	}
+	std::string line = fmt::format("@THREADPERF2@ CPU Thread pmu {}:", s_fe_pmu);
+	for (FrontendCounter& c : s_fe_counters)
+	{
+		u64 v[3] = {};
+		if (read(c.fd, v, sizeof(v)) != sizeof(v))
+			v[0] = v[1] = v[2] = 0;
+		close(c.fd);
+		line += fmt::format(" {}={}", c.name, v[0]);
+		if (v[1] != v[2])
+			line += fmt::format("(multiplexed {}/{})", v[2], v[1]);
+	}
+	Console.WriteLn(line);
+	s_fe_counters.clear();
+}
+
 static void StartThreadPerfCounters()
 {
 	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
@@ -5086,6 +5213,8 @@ static void StartThreadPerfCounters()
 		c.comm = comm.empty() ? entry.path().filename().string() : comm;
 		c.fd_ins = OpenThreadPerfCounter(tid, PERF_COUNT_HW_INSTRUCTIONS, &c.user_only);
 		c.fd_cyc = OpenThreadPerfCounter(tid, PERF_COUNT_HW_CPU_CYCLES, &c.user_only);
+		if (s_threadperf_frontend && comm == "CPU Thread")
+			OpenFrontendCounters(tid);
 		if (c.fd_ins >= 0 || c.fd_cyc >= 0)
 			s_thread_perf.push_back(std::move(c));
 	}
@@ -5114,6 +5243,7 @@ static void ReportThreadPerfCounters()
 			c.comm, ins, cyc, c.user_only ? " (user-only)" : ""));
 	}
 	s_thread_perf.clear();
+	ReportFrontendCounters();
 }
 #endif
 
