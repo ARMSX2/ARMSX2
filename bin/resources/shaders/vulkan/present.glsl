@@ -42,6 +42,15 @@ vec4 sample_c(vec2 uv)
 	return texture(samp0, uv);
 }
 
+// The fragment's position in the window the present is laid out in, the space u_target_rect and
+// u_target_resolution are in. Use it instead of gl_FragCoord: when the present is rotated (the swap
+// chain pre-rotation, or the user's display rotation) gl_FragCoord is in the swap chain image's
+// axes, turned from the window's. v_tex runs across the target rect the same way in every rotation.
+vec2 window_frag_coord()
+{
+	return u_target_rect.xy + (v_tex - u_source_rect.xy) / (u_source_rect.zw - u_source_rect.xy) * u_target_size;
+}
+
 vec4 ps_crt(uint i)
 {
 	vec4 mask[4] = vec4[4](
@@ -72,7 +81,7 @@ void ps_copy()
 #ifdef ps_filter_scanlines
 void ps_filter_scanlines() // scanlines
 {
-	uvec4 p = uvec4(gl_FragCoord);
+	uvec2 p = uvec2(window_frag_coord());
 
 	o_col0 = ps_scanlines(p.y % 2);
 }
@@ -81,7 +90,7 @@ void ps_filter_scanlines() // scanlines
 #ifdef ps_filter_diagonal
 void ps_filter_diagonal() // diagonal
 {
-	uvec4 p = uvec4(gl_FragCoord);
+	uvec2 p = uvec2(window_frag_coord());
 	o_col0 = ps_crt((p.x + (p.y % 3)) % 3);
 }
 #endif
@@ -89,7 +98,7 @@ void ps_filter_diagonal() // diagonal
 #ifdef ps_filter_triangular
 void ps_filter_triangular() // triangular
 {
-	uvec4 p = uvec4(gl_FragCoord);
+	uvec2 p = uvec2(window_frag_coord());
 
 	// output.c = ps_crt(input, ((p.x + (p.y & 1) * 3) >> 1) % 3);
 	o_col0 = ps_crt(((p.x + ((p.y >> 1) & 1) * 3) >> 1) % 3);
@@ -382,7 +391,7 @@ vec3 Mask(vec2 pos)
 vec4 LottesCRTPass()
 {
 	vec4 color;
-	vec4 fragcoord = gl_FragCoord - u_target_rect;
+	vec2 fragcoord = window_frag_coord() - u_target_rect.xy;
 	vec2 inSize = u_target_resolution - (2 * u_target_rect.xy);
 
 	vec2 pos = Warp(fragcoord.xy / inSize);
@@ -406,7 +415,9 @@ void ps_filter_lottes()
 #ifdef ps_4x_rgss
 void ps_4x_rgss()
 {
-	vec2 dxy = vec2(dFdx(v_tex.x), dFdy(v_tex.y));
+	// One output pixel's step in v_tex along each source axis. When the present is rotated 90 or
+	// 270 degrees, the source's x runs along the swap chain image's y, so take both derivatives.
+	vec2 dxy = vec2(abs(dFdx(v_tex.x)) + abs(dFdy(v_tex.x)), abs(dFdx(v_tex.y)) + abs(dFdy(v_tex.y)));
 	vec3 color = vec3(0);
 
 	float s = 1.0/8.0;
