@@ -383,6 +383,10 @@ data class DisplaySettings(
     val syncToHostRefresh: Boolean = false,
     /** EmuCore/GS/DisableFramebufferFetch — disable the framebuffer-fetch path. Default off. */
     val disableFramebufferFetch: Boolean = false,
+    /** EmuCore/GS/DisableSwapChainPreRotation — leave the screen's rotation to the compositor instead
+     *  of pre-rotating the Vulkan swap chain. Default off. For a surface that reports a rotation it
+     *  does not undo (issue #890). */
+    val disableSwapChainPreRotation: Boolean = false,
     /** EmuCore/GS/HWROV — Rasterizer Order Views (accurate blending via fragment-shader
      *  interlock; Vulkan only). Default OFF on mobile: it's a perf loss on tilers and is
      *  inert on Turnip/Adreno (no VK_EXT_fragment_shader_interlock), so on-by-default just
@@ -1355,6 +1359,7 @@ data class Settings(
                 disableInterlaceOffset = boolAt("EmuCore/GS/disable_interlace_offset") ?: this.display.disableInterlaceOffset,
                 syncToHostRefresh = boolAt("EmuCore/GS/SyncToHostRefreshRate") ?: this.display.syncToHostRefresh,
                 disableFramebufferFetch = boolAt("EmuCore/GS/DisableFramebufferFetch") ?: this.display.disableFramebufferFetch,
+                disableSwapChainPreRotation = boolAt("EmuCore/GS/DisableSwapChainPreRotation") ?: this.display.disableSwapChainPreRotation,
                 hwRov = boolAt("EmuCore/GS/HWROV") ?: this.display.hwRov,
                 hwAa1 = boolAt("EmuCore/GS/HWAA1") ?: this.display.hwAa1,
                 coalesceRenderPasses = boolAt("EmuCore/GS/CoalesceRenderPasses") ?: this.display.coalesceRenderPasses,
@@ -1767,6 +1772,7 @@ data class Settings(
         put("EmuCore/GS", "disable_interlace_offset", "bool", display.disableInterlaceOffset.toString())
         put("EmuCore/GS", "SyncToHostRefreshRate", "bool", display.syncToHostRefresh.toString())
         put("EmuCore/GS", "DisableFramebufferFetch", "bool", display.disableFramebufferFetch.toString())
+        put("EmuCore/GS", "DisableSwapChainPreRotation", "bool", display.disableSwapChainPreRotation.toString())
         put("EmuCore/GS", "HWROV", "bool", display.hwRov.toString())
         put("EmuCore/GS", "HWAA1", "bool", display.hwAa1.toString())
         put("EmuCore/GS", "CoalesceRenderPasses", "bool", display.coalesceRenderPasses.toString())
@@ -2054,6 +2060,7 @@ data class Settings(
         put("disableInterlaceOffset", display.disableInterlaceOffset)
         put("syncToHostRefresh", display.syncToHostRefresh)
         put("disableFramebufferFetch", display.disableFramebufferFetch)
+        put("disableSwapChainPreRotation", display.disableSwapChainPreRotation)
         put("hwRov", display.hwRov)
         put("hwAa1", display.hwAa1)
         put("coalesceRenderPasses", display.coalesceRenderPasses)
@@ -2401,6 +2408,7 @@ data class Settings(
                     disableInterlaceOffset = json.optBoolean("disableInterlaceOffset", def.display.disableInterlaceOffset),
                     syncToHostRefresh = json.optBoolean("syncToHostRefresh", def.display.syncToHostRefresh),
                     disableFramebufferFetch = json.optBoolean("disableFramebufferFetch", def.display.disableFramebufferFetch),
+                    disableSwapChainPreRotation = json.optBoolean("disableSwapChainPreRotation", def.display.disableSwapChainPreRotation),
                     hwRov = json.optBoolean("hwRov", def.display.hwRov),
                     hwAa1 = json.optBoolean("hwAa1", def.display.hwAa1),
                     hwAat = false,
@@ -2690,6 +2698,7 @@ data class Settings(
             if (current.display.disableInterlaceOffset != base.display.disableInterlaceOffset) j.put("disableInterlaceOffset", current.display.disableInterlaceOffset)
             if (current.display.syncToHostRefresh    != base.display.syncToHostRefresh)    j.put("syncToHostRefresh", current.display.syncToHostRefresh)
             if (current.display.disableFramebufferFetch != base.display.disableFramebufferFetch) j.put("disableFramebufferFetch", current.display.disableFramebufferFetch)
+            if (current.display.disableSwapChainPreRotation != base.display.disableSwapChainPreRotation) j.put("disableSwapChainPreRotation", current.display.disableSwapChainPreRotation)
             if (current.display.hwRov != base.display.hwRov) j.put("hwRov", current.display.hwRov)
             if (current.display.hwAa1 != base.display.hwAa1) j.put("hwAa1", current.display.hwAa1)
             if (current.display.coalesceRenderPasses != base.display.coalesceRenderPasses) j.put("coalesceRenderPasses", current.display.coalesceRenderPasses)
@@ -2971,6 +2980,7 @@ data class Settings(
                 disableInterlaceOffset = if (overrides.has("disableInterlaceOffset")) overrides.getBoolean("disableInterlaceOffset") else base.display.disableInterlaceOffset,
                 syncToHostRefresh = if (overrides.has("syncToHostRefresh")) overrides.getBoolean("syncToHostRefresh") else base.display.syncToHostRefresh,
                 disableFramebufferFetch = if (overrides.has("disableFramebufferFetch")) overrides.getBoolean("disableFramebufferFetch") else base.display.disableFramebufferFetch,
+                disableSwapChainPreRotation = if (overrides.has("disableSwapChainPreRotation")) overrides.getBoolean("disableSwapChainPreRotation") else base.display.disableSwapChainPreRotation,
                 hwRov = if (overrides.has("hwRov")) overrides.getBoolean("hwRov") else base.display.hwRov,
                 hwAa1 = if (overrides.has("hwAa1")) overrides.getBoolean("hwAa1") else base.display.hwAa1,
                 hwAat = false,

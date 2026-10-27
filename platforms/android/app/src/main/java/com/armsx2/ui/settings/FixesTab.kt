@@ -93,6 +93,13 @@ fun FixesTab(state: MutableState<Settings>) {
             field = "disableFramebufferFetch",
         ) { apply(s.copy(display = s.display.copy(disableFramebufferFetch = it))) }
         SettingsDivider()
+        ToggleRow(
+            str("fixes.disableSwapChainPreRotation.label"),
+            s.display.disableSwapChainPreRotation,
+            description = str("fixes.disableSwapChainPreRotation.desc"),
+            field = "disableSwapChainPreRotation",
+        ) { apply(s.copy(display = s.display.copy(disableSwapChainPreRotation = it))) }
+        SettingsDivider()
         SegmentedRow(
             label = str("fixes.overrideTextureBarriers.label"),
             options = listOf(str("fixes.opt.auto"), str("fixes.opt.off"), str("fixes.opt.on")),

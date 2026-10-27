@@ -84,7 +84,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "cpuFramebufferConversion", "cpuSpriteRenderBw", "cpuSpriteRenderLevel", "cropBottom",
         "cropLeft", "cropRight", "cropTop", "displayZoom", "disableDepthEmulation", "disableFramebufferFetch",
         "disableInterlaceOffset", "disablePartialInvalidation", "disableRenderFixes",
-        "disableSafeFeatures", "disableShaderCache", "disableVertexShaderExpand", "dithering",
+        "disableSafeFeatures", "disableShaderCache", "disableSwapChainPreRotation", "disableVertexShaderExpand", "dithering",
         "drawBuffering", "estimateTextureRegion", "forceEvenSpritePosition",
         "gpuPaletteConversion", "gpuTargetClut", "halfPixelOffset", "hwAccurateAlphaTest",
         "integerScaling", "limit24BitDepth", "manualUserHacks", "mergeSprite", "mipmapSw",

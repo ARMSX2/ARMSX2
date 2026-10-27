@@ -232,6 +232,7 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("fixes.disableInterlaceOffset.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
     SettingsSearchEntry("fixes.syncToHostRefresh.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
     SettingsSearchEntry("fixes.disableFramebufferFetch.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
+    SettingsSearchEntry("fixes.disableSwapChainPreRotation.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
     SettingsSearchEntry("fixes.hwAccurateAlphaTest.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
     SettingsSearchEntry("fixes.disableVertexShaderExpand.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),
     SettingsSearchEntry("fixes.useBlitSwapChain.label", true, SettingsCategory.Advanced, listOf("fixes.section.display")),

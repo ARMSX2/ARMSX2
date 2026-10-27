@@ -622,6 +622,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "fixes.disableFramebufferFetch.label" to "Disable Framebuffer Fetch",
     "fixes.disableInterlaceOffset.desc" to "Removes the interlace field offset; can stop shimmer but may add combing.",
     "fixes.disableInterlaceOffset.label" to "Disable Interlace Offset",
+    "fixes.disableSwapChainPreRotation.desc" to "Vulkan: leaves the screen's rotation to the system. Turn on if the game image appears turned sideways.",
+    "fixes.disableSwapChainPreRotation.label" to "Disable Swap Chain Pre-Rotation",
     "fixes.disablePartialInvalidation.desc" to "Disables partial texture-cache source invalidation.",
     "fixes.disablePartialInvalidation.label" to "Disable Partial Invalidation",
     "fixes.disableRenderFixes.desc" to "Disables automatic render fixes. Advanced/diagnostic only.",
