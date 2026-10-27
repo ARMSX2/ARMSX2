@@ -782,6 +782,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	LinearPresent = GSPostBilinearMode::BilinearSmooth;
 	UseDebugDevice = false;
 	UseBlitSwapChain = false;
+	DisableSwapChainPreRotation = false;
 	DisableShaderCache = false;
 	PrecompilePipelines = true;
 	DisableFramebufferFetch = false;
@@ -991,6 +992,7 @@ bool Pcsx2Config::GSOptions::IsRestartOption(const char* ini_key)
 		"UseDebugDevice",
 		"DebugLabels",
 		"UseBlitSwapChain",
+		"DisableSwapChainPreRotation",
 		"DisableShaderCache",
 		"PrecompilePipelines",
 		"DisableFramebufferFetch",
@@ -1020,6 +1022,7 @@ bool Pcsx2Config::GSOptions::RestartOptionsAreEqual(const GSOptions& right) cons
 		   // instance creation -- toggling it in place would silently do nothing.
 		   OpEqu(DebugLabels) &&
 		   OpEqu(UseBlitSwapChain) &&
+		   OpEqu(DisableSwapChainPreRotation) &&
 		   OpEqu(DisableShaderCache) &&
 		   OpEqu(PrecompilePipelines) &&
 		   OpEqu(DisableFramebufferFetch) &&
@@ -1076,6 +1079,7 @@ void Pcsx2Config::GSOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(DebugLabels);
 	SettingsWrapBitBool(DumpDrawLog);
 	SettingsWrapBitBool(UseBlitSwapChain);
+	SettingsWrapBitBool(DisableSwapChainPreRotation);
 	SettingsWrapBitBool(DisableShaderCache);
 	SettingsWrapBitBool(PrecompilePipelines);
 	SettingsWrapBitBool(DisableFramebufferFetch);

@@ -3564,6 +3564,10 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 			"GSDumpCompression", static_cast<int>(GSDumpCompressionMethod::LZMA), s_gsdump_compression, std::size(s_gsdump_compression), true);
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BAN, "Disable Framebuffer Fetch"),
 			FSUI_CSTR("Prevents the usage of framebuffer fetch when supported by host GPU."), "EmuCore/GS", "DisableFramebufferFetch", false);
+		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_ROTATE, "Disable Swap Chain Pre-Rotation"),
+			FSUI_CSTR("Leaves the screen's rotation to the system compositor. Turn on if the game image appears turned "
+					  "sideways with Vulkan."),
+			"EmuCore/GS", "DisableSwapChainPreRotation", false, (renderer == GSRendererType::Auto || renderer == GSRendererType::VK));
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_LAYER_GROUP, "Coalesce Render Passes"),
 			FSUI_CSTR("Groups consecutive draws to the same target into one render pass. Helps on tiling GPUs, where every "
 					  "pass boundary costs a full tile load and store. Rendering is unchanged."),
@@ -6349,6 +6353,8 @@ TRANSLATE_NOOP("FullscreenUI", "Overrides the driver's heuristics for enabling e
 TRANSLATE_NOOP("FullscreenUI", "Forces texture barrier functionality to the specified value.");
 TRANSLATE_NOOP("FullscreenUI", "Change the compression algorithm used when creating a GS dump.");
 TRANSLATE_NOOP("FullscreenUI", "Prevents the usage of framebuffer fetch when supported by host GPU.");
+TRANSLATE_NOOP("FullscreenUI", "Disable Swap Chain Pre-Rotation");
+TRANSLATE_NOOP("FullscreenUI", "Leaves the screen's rotation to the system compositor. Turn on if the game image appears turned sideways with Vulkan.");
 TRANSLATE_NOOP("FullscreenUI", "Groups consecutive draws to the same target into one render pass. Helps on tiling GPUs, where every pass boundary costs a full tile load and store. Rendering is unchanged.");
 TRANSLATE_NOOP("FullscreenUI", "Prevents the loading and saving of shaders/pipelines to disk.");
 TRANSLATE_NOOP("FullscreenUI", "Falls back to the CPU for expanding sprites/lines.");

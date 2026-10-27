@@ -527,9 +527,12 @@ static VkSurfaceTransformFlagBitsKHR SurfaceTransformFromRotation(DisplayRotatio
 
 // The rotation the surface wants pre-rotated: its currentTransform, or where the window system does
 // not report one through Vulkan (Wayland), the one the frontend read from the window system, if the
-// surface accepts it as a preTransform.
+// surface accepts it as a preTransform. None when the user turned pre-rotation off.
 static DisplayRotation WantedSurfaceRotation(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
 {
+	if (GSConfig.DisableSwapChainPreRotation)
+		return DisplayRotation::Rot0;
+
 	if (caps.supportedTransforms & caps.currentTransform)
 	{
 		const DisplayRotation reported = RotationFromSurfaceTransform(caps.currentTransform);

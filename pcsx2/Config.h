@@ -936,6 +936,10 @@ struct Pcsx2Config
 					// not free, so never leave it on for one arm of an A/B.
 					DumpDrawLog : 1,
 					UseBlitSwapChain : 1,
+					// Create the swap chain in the window's orientation and leave the screen's rotation
+					// to the compositor, as before pre-rotation. For surfaces that report a rotation
+					// they do not undo (issue #890).
+					DisableSwapChainPreRotation : 1,
 					DisableShaderCache : 1,
 					// Record the TFX pipelines each game uses and build them on worker threads
 					// when the game starts, ahead of their first draw. Needs the shader cache.
