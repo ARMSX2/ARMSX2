@@ -2,12 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# --fast builds a development IPA: no PCSX2 core LTO and the Swift UI at -Onone.
+# --fast builds a development IPA with the Swift UI at -Onone.
 FAST_SETTINGS=()
 if [[ "${1:-}" == "--fast" ]]; then
 	BUILD_DIR="${BUILD_DIR:-$ROOT_DIR/build/device-fast}"
 	IPA_NAME="${IPA_NAME:-ARMSX2-iOS-development.ipa}"
-	LTO_PCSX2_CORE=OFF
 	FAST_SETTINGS=(
 		SWIFT_OPTIMIZATION_LEVEL=-Onone
 		SWIFT_COMPILATION_MODE=singlefile
@@ -86,30 +85,6 @@ ensure_librashader_toolchain() {
 	fi
 }
 
-refresh_generated_git_metadata() {
-	local short_hash full_hash git_date pbxproj svnrev_file
-	short_hash="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
-	full_hash="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
-	git_date="$(git -C "$ROOT_DIR" log -1 --format=%cd --date=local 2>/dev/null || true)"
-	[[ -n "$short_hash" ]] || return 0
-
-	pbxproj="$PROJECT/project.pbxproj"
-	if [[ -f "$pbxproj" ]]; then
-		SHORT_HASH="$short_hash" perl -0pi -e \
-			's/ARMSX2_GIT_HASH=\\"[0-9A-Fa-f]+\\"/ARMSX2_GIT_HASH=\\"$ENV{SHORT_HASH}\\"/g' \
-			"$pbxproj"
-	fi
-
-	svnrev_file="$BUILD_DIR/common/include/svnrev.h"
-	if [[ -f "$svnrev_file" ]]; then
-		SHORT_HASH="$short_hash" FULL_HASH="$full_hash" GIT_DATE_TEXT="$git_date" perl -0pi -e '
-			s/(#define GIT_REV "[^"]*-g)[0-9A-Fa-f]+(")/$1$ENV{SHORT_HASH}$2/g;
-			s/(#define GIT_HASH ")[^"]*(")/$1$ENV{FULL_HASH}$2/g;
-			s/(#define GIT_DATE ")[^"]*(")/$1$ENV{GIT_DATE_TEXT}$2/g;
-		' "$svnrev_file"
-	fi
-}
-
 mkdir -p "$BUILD_DIR"
 ensure_librashader_toolchain
 
@@ -133,21 +108,11 @@ echo "Developer directory: $(xcode-select -p)"
 echo "Metal compiler: $(xcrun --sdk iphoneos --find metal)"
 echo
 
-if command -v cmake >/dev/null 2>&1; then
-	BUILD_DIR="$BUILD_DIR" LTO_PCSX2_CORE="${LTO_PCSX2_CORE:-ON}" \
-		"$ROOT_DIR/scripts/generate-ios-xcode.sh"
-elif [[ ! -d "$PROJECT" ]]; then
-	echo "error: cmake is required to generate the iOS Xcode project." >&2
-	echo "Install CMake from https://cmake.org/download/ or through your package manager." >&2
-	exit 1
-else
-	echo "cmake not found; reusing existing generated Xcode project."
-fi
+BUILD_DIR="$BUILD_DIR" "$ROOT_DIR/scripts/generate-ios-xcode.sh"
 if ! grep -q "ARMSX2_HAS_LIBRASHADER" "$PROJECT/project.pbxproj"; then
 	echo "error: production project omitted librashader; refusing to package a shader-disabled IPA." >&2
 	exit 1
 fi
-refresh_generated_git_metadata
 
 set +e
 xcodebuild \

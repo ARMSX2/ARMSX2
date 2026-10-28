@@ -175,6 +175,38 @@ jobs:
       - name: Install Rust iOS target
         run: rustup target add aarch64-apple-ios
 
+      # The core is cached by committed content and saved before the client identity is
+      # written, so no cache or key holds it.
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Compute the core cache key
+        id: core-key
+        run: echo "key=ios-core-device-$({ xcodebuild -version; cmake --version | head -1; ninja --version; rustc --version; git rev-parse HEAD:pcsx2 HEAD:common HEAD:3rdparty HEAD:cmake HEAD:bin/resources/shaders HEAD:platforms/android/app/src/main/cpp/3rdparty HEAD:platforms/ios/CMakeLists.txt HEAD:platforms/ios/cmake HEAD:platforms/ios/3rdparty HEAD:platforms/ios/patches HEAD:platforms/ios/scripts/build-ios-core.sh; } | shasum | cut -c1-40)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the prebuilt core
+        id: core-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: platforms/ios/build/core-device
+          key: ${{ steps.core-key.outputs.key }}
+
+      # A restored core is older than a fresh checkout, so Ninja would rebuild all of it. The
+      # checkout is aged on a miss too, since a precompiled header rejects any header whose
+      # mtime differs from the one it was built against.
+      - name: Age the checkout behind the prebuilt core
+        run: find . -path ./.git -prune -o -path ./platforms/ios/build -prune -o -exec touch -h -t 200001010000 {} +
+
+      - name: Build the prebuilt core
+        run: platforms/ios/scripts/build-ios-core.sh device
+
+      - name: Save the prebuilt core
+        if: steps.core-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: platforms/ios/build/core-device
+          key: ${{ steps.core-key.outputs.key }}
+
       # RetroAchievements grants hardcore by the client name and version in the user agent,
       # which pcsx2/Host.cpp reads from a gitignored header. Only master builds get it; pull
       # request builds keep the stock PCSX2 agent and stay softcore.

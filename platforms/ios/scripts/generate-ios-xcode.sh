@@ -18,7 +18,6 @@ fi
 cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Xcode \
 	-DCMAKE_SYSTEM_NAME=iOS \
 	-DARMSX2_REAL_DEVICE=ON \
-	-DLTO_PCSX2_CORE="${LTO_PCSX2_CORE:-ON}" \
 	-DARMSX2_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
 	-DARMSX2_DEVELOPMENT_TEAM="$TEAM_ID" \
 	-DARMSX2_DISPLAY_NAME="$DISPLAY_NAME" \
@@ -31,6 +30,9 @@ Generated Xcode project:
 
 Open in Xcode:
   open "$BUILD_DIR/ARMSX2iOS.xcodeproj"
+
+Prebuilt core (Ninja, rebuilt before every app build when its sources change):
+  $ROOT_DIR/build/core-device
 
 Unsigned device build:
   xcodebuild -project "$BUILD_DIR/ARMSX2iOS.xcodeproj" -scheme ARMSX2iOS -configuration Release -sdk iphoneos CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build

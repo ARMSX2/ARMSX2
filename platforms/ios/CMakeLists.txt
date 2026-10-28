@@ -42,11 +42,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	set(ARMSX2_IOS_DEPLOYMENT_TARGET "17.4" CACHE STRING "Minimum iOS deployment target")
 	set(CMAKE_OSX_DEPLOYMENT_TARGET "${ARMSX2_IOS_DEPLOYMENT_TARGET}" CACHE STRING "Minimum iOS deployment target" FORCE)
 	set(ARMSX2_MACOS_DEPLOYMENT_TARGET "15.0" CACHE STRING "Minimum Mac Catalyst deployment target")
-	if(ARMSX2_REAL_DEVICE OR ARMSX2_MAC_CATALYST)
+	option(ARMSX2_CORE_ONLY "Build only the core libraries (set by scripts/build-ios-core.sh)" OFF)
+	if(ARMSX2_CORE_ONLY AND ARMSX2_MAC_CATALYST)
+		set(CMAKE_OSX_SYSROOT "macosx")
+	elseif(ARMSX2_REAL_DEVICE OR ARMSX2_MAC_CATALYST)
 		set(CMAKE_OSX_SYSROOT "iphoneos")
 	else()
 		set(CMAKE_OSX_SYSROOT "iphonesimulator")
 	endif()
+	# Ninja turns CMAKE_OSX_SYSROOT into a path at project(); librashader picks its Rust target by name.
+	set(ARMSX2_OSX_SDK "${CMAKE_OSX_SYSROOT}")
 	set(CMAKE_OSX_ARCHITECTURES "arm64")
 	set(USE_OPENGL OFF CACHE BOOL "Enable OpenGL renderer" FORCE)
 	set(USE_VULKAN OFF CACHE BOOL "Enable Vulkan renderer" FORCE)
@@ -106,27 +111,155 @@ detect_compiler()
 #-------------------------------------------------------------------------------
 # Include specific module
 include(BuildParameters)
-include(SearchForStuff)
 
-# Must be done after SearchForStuff
-get_git_version_info()
-write_svnrev_h()
+if(ARMSX2_CORE_ONLY)
+	include(SearchForStuff)
 
-# Build the shared core from the repository root. Explicit binary dirs are
-# required because the source dirs live outside this iOS app tree.
-# NOTE: the individual 3rdparty libs are pulled in by SearchForStuff (above),
-# sourced from ${ARMSX2_ROOT}/3rdparty and the Android-vendored tree. The root
-# 3rdparty/ has no aggregate CMakeLists, so add_subdirectory'ing it would
-# FATAL; do not re-add it here.
+	# Must be done after SearchForStuff
+	get_git_version_info()
+	write_svnrev_h()
 
-# make common
-add_subdirectory(${ARMSX2_ROOT}/common ${CMAKE_BINARY_DIR}/common)
+	# Build the shared core from the repository root. Explicit binary dirs are
+	# required because the source dirs live outside this iOS app tree.
+	# NOTE: the individual 3rdparty libs are pulled in by SearchForStuff (above),
+	# sourced from ${ARMSX2_ROOT}/3rdparty and the Android-vendored tree. The root
+	# 3rdparty/ has no aggregate CMakeLists, so add_subdirectory'ing it would
+	# FATAL; do not re-add it here.
 
-# make pcsx2
-add_subdirectory(${ARMSX2_ROOT}/pcsx2 ${CMAKE_BINARY_DIR}/pcsx2)
-# Fetched and cargo-built, never vendored. Must follow pcsx2 so PCSX2_FLAGS exists by the
-# time the link block below runs.
-add_subdirectory(3rdparty/librashader)
+	# make common
+	add_subdirectory(${ARMSX2_ROOT}/common ${CMAKE_BINARY_DIR}/common)
+
+	# make pcsx2
+	add_subdirectory(${ARMSX2_ROOT}/pcsx2 ${CMAKE_BINARY_DIR}/pcsx2)
+	# Fetched and cargo-built, never vendored. Must follow pcsx2 so PCSX2_FLAGS exists by the
+	# time the link block below runs.
+	block(PROPAGATE ARMSX2_HAVE_LIBRASHADER)
+		set(CMAKE_OSX_SYSROOT "${ARMSX2_OSX_SDK}")
+		add_subdirectory(3rdparty/librashader)
+	endblock()
+
+	# On PCSX2_FLAGS, not PCSX2, so every core target that links the interface sees it.
+	if(ARMSX2_HAVE_LIBRASHADER)
+		target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
+		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
+	endif()
+
+	# write_svnrev_h only runs at configure; this keeps the core's banner on the commit being built.
+	add_custom_target(armsx2_svnrev ALL
+		BYPRODUCTS "${CMAKE_BINARY_DIR}/common/include/svnrev.h"
+		COMMAND ${CMAKE_COMMAND}
+			-DGIT_WORKING_DIR=${PROJECT_SOURCE_DIR}
+			-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/common/include/svnrev.h
+			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteSvnRev.cmake
+		COMMENT "Resolving core git revision"
+	)
+	add_dependencies(PCSX2 armsx2_svnrev)
+
+	add_custom_target(armsx2_ra_ua_stamp
+		BYPRODUCTS "${CMAKE_BINARY_DIR}/ra_ua_present.txt"
+		COMMAND ${CMAKE_COMMAND}
+			-DHEADER=${ARMSX2_ROOT}/pcsx2/ra_ua_secret.h
+			-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/ra_ua_present.txt
+			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteRaUaStamp.cmake
+	)
+	set_source_files_properties(${ARMSX2_ROOT}/pcsx2/Host.cpp TARGET_DIRECTORY PCSX2
+		PROPERTIES OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/ra_ua_present.txt)
+	add_dependencies(PCSX2 armsx2_ra_ua_stamp)
+
+	add_custom_target(armsx2_core_libs)
+	add_dependencies(armsx2_core_libs PCSX2 SDL3-static armsx2_svnrev armsx2_ra_ua_stamp)
+	if(ARMSX2_HAVE_LIBRASHADER)
+		add_dependencies(armsx2_core_libs librashader_cargo)
+	endif()
+
+	function(armsx2_collect_libraries directory out)
+		set(armsx2_found "")
+		get_property(armsx2_targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+		foreach(armsx2_target IN LISTS armsx2_targets)
+			get_target_property(armsx2_type ${armsx2_target} TYPE)
+			if(armsx2_type MATCHES "^(STATIC|OBJECT|INTERFACE)_LIBRARY$")
+				list(APPEND armsx2_found ${armsx2_target})
+			endif()
+		endforeach()
+
+		get_property(armsx2_subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+		foreach(armsx2_subdirectory IN LISTS armsx2_subdirectories)
+			armsx2_collect_libraries("${armsx2_subdirectory}" armsx2_more)
+			list(APPEND armsx2_found ${armsx2_more})
+		endforeach()
+		set(${out} ${armsx2_found} PARENT_SCOPE)
+	endfunction()
+
+	armsx2_collect_libraries("${CMAKE_SOURCE_DIR}" ARMSX2_CORE_LIBRARIES)
+	# These export their own targets, and a target can sit in only one export set.
+	list(REMOVE_ITEM ARMSX2_CORE_LIBRARIES SDL3_Headers SDL3-static SDL3_test plutovg plutosvg libzstd libzstd_static)
+	export(TARGETS ${ARMSX2_CORE_LIBRARIES} NAMESPACE armsx2core:: FILE "${CMAKE_BINARY_DIR}/ARMSX2CoreTargets.cmake")
+	set(ARMSX2_CORE_FOREIGN_EXPORTS
+		"${CMAKE_BINARY_DIR}/3rdparty/sdl3/SDL3headersTargets.cmake"
+		"${CMAKE_BINARY_DIR}/3rdparty/sdl3/SDL3staticTargets.cmake"
+		"${CMAKE_BINARY_DIR}/3rdparty/plutovg/plutovgTargets.cmake"
+		"${CMAKE_BINARY_DIR}/3rdparty/plutosvg/plutosvgTargets.cmake"
+		"${CMAKE_BINARY_DIR}/3rdparty/zstd/build/cmake/zstdTargets_static.cmake"
+	)
+
+	if(ARMSX2_HAVE_LIBRASHADER)
+		get_target_property(ARMSX2_LIBRASHADER_LIB librashader IMPORTED_LOCATION)
+		get_target_property(ARMSX2_LIBRASHADER_INCLUDE librashader INTERFACE_INCLUDE_DIRECTORIES)
+	endif()
+	file(WRITE "${CMAKE_BINARY_DIR}/armsx2-core.cmake"
+		"set(ARMSX2_HAVE_LIBRASHADER \"${ARMSX2_HAVE_LIBRASHADER}\")\n"
+		"set(ARMSX2_LIBRASHADER_LIB \"${ARMSX2_LIBRASHADER_LIB}\")\n"
+		"set(ARMSX2_LIBRASHADER_INCLUDE \"${ARMSX2_LIBRASHADER_INCLUDE}\")\n"
+		"set(ARMSX2_ANDROID_VENDORED \"${ARMSX2_ANDROID_VENDORED}\")\n"
+		"set(ARMSX2_CORE_FOREIGN_EXPORTS \"${ARMSX2_CORE_FOREIGN_EXPORTS}\")\n"
+	)
+	return()
+endif()
+
+find_program(ARMSX2_NINJA ninja)
+if(NOT ARMSX2_NINJA)
+	message(FATAL_ERROR "ninja is required to build the iOS core. Install it with: brew install ninja")
+endif()
+if(ARMSX2_MAC_CATALYST)
+	set(ARMSX2_CORE_PLATFORM catalyst)
+elseif(ARMSX2_REAL_DEVICE)
+	set(ARMSX2_CORE_PLATFORM device)
+else()
+	set(ARMSX2_CORE_PLATFORM sim)
+endif()
+set(ARMSX2_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/core-${ARMSX2_CORE_PLATFORM}")
+execute_process(
+	COMMAND ${CMAKE_COMMAND} -E env ARMSX2_CMAKE=${CMAKE_COMMAND} ARMSX2_NINJA=${ARMSX2_NINJA}
+		${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-ios-core.sh ${ARMSX2_CORE_PLATFORM} --configure
+	RESULT_VARIABLE armsx2_core_result
+)
+if(NOT armsx2_core_result EQUAL 0)
+	message(FATAL_ERROR "configuring build/core-${ARMSX2_CORE_PLATFORM} failed")
+endif()
+
+# The exported core names these imported targets, so they have to exist here too.
+find_package(Threads REQUIRED)
+add_library(ZLIB::ZLIB INTERFACE IMPORTED)
+set_property(TARGET ZLIB::ZLIB PROPERTY INTERFACE_LINK_LIBRARIES z)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DFMT_USE_EXCEPTIONS=0 -DFMT_USE_RTTI=0")
+include("${ARMSX2_CORE_DIR}/armsx2-core.cmake")
+if(ARMSX2_HAVE_LIBRASHADER)
+	add_library(librashader STATIC IMPORTED)
+	set_target_properties(librashader PROPERTIES
+		IMPORTED_LOCATION "${ARMSX2_LIBRASHADER_LIB}"
+		INTERFACE_INCLUDE_DIRECTORIES "${ARMSX2_LIBRASHADER_INCLUDE}")
+endif()
+# One Release core serves every app configuration.
+foreach(armsx2_config DEBUG RELWITHDEBINFO MINSIZEREL)
+	set(CMAKE_MAP_IMPORTED_CONFIG_${armsx2_config} Release)
+endforeach()
+foreach(armsx2_export IN LISTS ARMSX2_CORE_FOREIGN_EXPORTS)
+	include("${armsx2_export}")
+endforeach()
+# SDL's headers were plain -I while SDL built in-tree; imported targets default to -isystem.
+set_property(TARGET SDL3::Headers PROPERTY SYSTEM OFF)
+include("${ARMSX2_CORE_DIR}/ARMSX2CoreTargets.cmake")
+set(CMAKE_SUPPRESS_REGENERATION ON)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	enable_language(Swift)
@@ -228,6 +361,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 			# Release build runs out of frontend memory, per-file goes back for Release.
 			XCODE_ATTRIBUTE_SWIFT_COMPILATION_MODE "$<IF:$<CONFIG:Debug>,singlefile,wholemodule>"
 			XCODE_ATTRIBUTE_SWIFT_ENABLE_BATCH_MODE "$<IF:$<CONFIG:Debug>,NO,YES>"
+			XCODE_ATTRIBUTE_COMPILER_INDEX_STORE_ENABLE "NO"
 			XCODE_ATTRIBUTE_CLANG_ENABLE_MODULES "YES"
 			XCODE_ATTRIBUTE_ENABLE_ON_DEMAND_RESOURCES "NO"
 			XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "@executable_path/Frameworks /usr/lib/swift"
@@ -359,25 +493,24 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	endif()
 
 	target_link_libraries(ARMSX2iOS PRIVATE
-		PCSX2
-		SDL3::SDL3
+		armsx2core::PCSX2
+		SDL3::SDL3-static
 		${ARMSX2_APPLE_FRAMEWORKS}
 	)
 
-	# The define MUST go on PCSX2_FLAGS, not PCSX2: generate-ios-xcode.sh always passes
-	# -DLTO_PCSX2_CORE=ON, which compiles GS/Renderers/Metal/GSDeviceMTL.mm into a separate
-	# PCSX2_LTO target that never sees PCSX2's PRIVATE properties. PCSX2_FLAGS is the
-	# INTERFACE target both link. Getting it wrong compiles clean, links clean, and silently
-	# ships the chain stubbed out — verify with nm on the built binary, never the build log.
 	if(ARMSX2_HAVE_LIBRASHADER)
-		target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
-		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
 		target_link_libraries(ARMSX2iOS PRIVATE librashader)
-		# And again for ARMSX2iOS itself, which ARMSX2Bridge.mm compiles into: PCSX2_FLAGS is
-		# linked PRIVATE into PCSX2 at pcsx2/CMakeLists.txt:10, so its INTERFACE define stops
-		# there and the bridge's capability query would report NO in every build.
+		# The core's define stops at its archives; the bridge's capability query needs its own.
 		target_compile_definitions(ARMSX2iOS PRIVATE ARMSX2_HAS_LIBRASHADER=1)
 	endif()
+
+	add_custom_target(armsx2_core
+		COMMAND ${CMAKE_COMMAND} -E env ARMSX2_CMAKE=${CMAKE_COMMAND} ARMSX2_NINJA=${ARMSX2_NINJA}
+			ARMSX2_APP_LIBRASHADER=${ARMSX2_HAVE_LIBRASHADER}
+			${CMAKE_CURRENT_SOURCE_DIR}/scripts/build-ios-core.sh ${ARMSX2_CORE_PLATFORM}
+		COMMENT "Building the core in build/core-${ARMSX2_CORE_PLATFORM}"
+	)
+	add_dependencies(ARMSX2iOS armsx2_core)
 
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
 	# With OBJCXX not enabled, CMake builds this target's .mm files as CXX. The core keeps its own warnings.
@@ -403,19 +536,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	)
 	add_dependencies(ARMSX2iOS armsx2_git_hash)
 
-	# Same treatment for the core's own banner, which comes from svnrev.h and was
-	# stale for the same reason. Upstream still writes it at configure time up in
-	# write_svnrev_h; this only refreshes it, and produces identical bytes.
-	add_custom_target(armsx2_svnrev ALL
-		COMMAND ${CMAKE_COMMAND}
-			-DGIT_WORKING_DIR=${PROJECT_SOURCE_DIR}
-			-DOUTPUT_FILE=${CMAKE_BINARY_DIR}/common/include/svnrev.h
-			-P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteSvnRev.cmake
-		COMMENT "Resolving core git revision"
-	)
-	add_dependencies(PCSX2 armsx2_svnrev)
-	add_dependencies(ARMSX2iOS armsx2_svnrev)
-
 	target_compile_definitions(ARMSX2iOS PRIVATE
 		PCSX2_NO_PCAP=1
 		ARMSX2_VERSION_STR="${ARMSX2_VERSION}"
@@ -440,29 +560,29 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		${ARMSX2_ROOT}/3rdparty/vulkan/include
 		${ARMSX2_ROOT}/3rdparty/glslang/glslang
 		${ARMSX2_ROOT}/3rdparty/glslang/include
-		${CMAKE_BINARY_DIR}/common/include
-		${CMAKE_BINARY_DIR}/pcsx2
+		${ARMSX2_CORE_DIR}/common/include
+		${ARMSX2_CORE_DIR}/pcsx2
 		${ARMSX2_ROOT}/3rdparty/simpleini/include
 		${ARMSX2_ROOT}/3rdparty/imgui/include
 		${ARMSX2_ROOT}/3rdparty/rapidyaml/include
 		${ARMSX2_ROOT}/3rdparty/cpuinfo/include
 		${ARMSX2_ROOT}/3rdparty/libchdr/include
 		${ARMSX2_ROOT}/3rdparty/libzip/lib
-		${CMAKE_BINARY_DIR}/3rdparty/libzip
+		${ARMSX2_CORE_DIR}/3rdparty/libzip
 		${ARMSX2_ROOT}/3rdparty/cubeb/include
 		${ARMSX2_ROOT}/3rdparty/rcheevos/include
 		${ARMSX2_ROOT}/3rdparty/freesurround/include
 		${ARMSX2_ROOT}/3rdparty/freetype/include
 		${ARMSX2_ROOT}/3rdparty/plutosvg1/source
 		${ARMSX2_ROOT}/3rdparty/plutosvg1/plutovg/include
-		${CMAKE_BINARY_DIR}/3rdparty/freetype/include
+		${ARMSX2_CORE_DIR}/3rdparty/freetype/include
 		${ARMSX2_ROOT}/3rdparty/soundtouch/soundtouch
 		${ARMSX2_ROOT}/3rdparty/lz4/lz4/lib
 		${ARMSX2_ROOT}/3rdparty/lzma/include
 		${ARMSX2_ANDROID_VENDORED}/zstd/lib
 		${ARMSX2_ROOT}/3rdparty/demangler/include
 		${ARMSX2_ROOT}/3rdparty/ccc/src
-		${CMAKE_BINARY_DIR}/3rdparty/SDL3/include-revision
+		${ARMSX2_CORE_DIR}/3rdparty/SDL3/include-revision
 	)
 
 	# Runtime resources come from the canonical bin/resources tree (shared with the
