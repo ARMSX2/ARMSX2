@@ -231,6 +231,37 @@ private enum OverlayRoute: Equatable {
     case pausedPresenting(QuickMenuDestination)
 }
 
+/// The portrait game height, and with `refitting` (the Duo) the pad layout fitted to the deck below.
+/// The outer screen's game gives up height so the pad keeps `PadPortraitFit.outerMinimumScale`.
+@MainActor
+func portraitGameSplit(
+    _ geo: GeometryProxy,
+    deckHeight: CGFloat,
+    fold: CGRect?,
+    refitting snapshot: PadLayoutSnapshot?,
+    analogStickScale: Float
+) -> (gameHeight: CGFloat, fitted: PadLayoutSnapshot?, fit: PadPortraitFit?) {
+    let barBase = geo.safeAreaInsets.bottom - GameplayControllerShortcutHelpOverlay.homeIndicatorSink(geo.safeAreaInsets.bottom)
+    let stickScale = min(max(CGFloat(analogStickScale), 0.8), 1.6)
+    let envelope = snapshot?.portraitEnvelope(analogStickScale: stickScale)
+    let padFloor = envelope.map {
+        max(0, deckHeight - ($0.height * PadPortraitFit.outerMinimumScale + PadPortraitFit.topGap + barBase))
+    } ?? .infinity
+    let gameHeight = fold?.minY ?? min(geo.size.width * 3 / 4, deckHeight * 0.6, padFloor)
+    let deck = CGSize(width: geo.size.width, height: deckHeight - gameHeight - (fold?.height ?? 0))
+    let fit = envelope.flatMap { PadPortraitFit(envelope: $0, deck: deck, barBase: barBase) }
+    let fitted = fit.flatMap { snapshot?.fittedToPortraitDeck($0, size: deck, analogStickScale: stickScale) } ?? snapshot
+    return (gameHeight, fitted, fit)
+}
+
+/// The Duo's inner screen keeps the landscape pad and menu button inside the safe area.
+@MainActor
+func landscapePadInsets(_ geo: GeometryProxy, screen: CGSize) -> EdgeInsets {
+    AppState.shared.hingePresent && usesLargeLayout(windowSize: screen)
+        ? EdgeInsets(top: 0, leading: geo.safeAreaInsets.leading, bottom: 0, trailing: geo.safeAreaInsets.trailing)
+        : EdgeInsets()
+}
+
 /// Gameplay presentation used after Emulation-Only Mode finishes startup cleanup.
 /// With every release switch enabled, this keeps only the existing Metal surface.
 struct EmulationOnlyGameView: View {
@@ -275,15 +306,26 @@ struct EmulationOnlyGameView: View {
                 if appState.emulationOnlyPresentation.showsVirtualControls && !isLandscape {
                     VStack(spacing: 0) {
                         let deckHeight = screen.height - geometry.safeAreaInsets.top
-                        let gameHeight = min(geometry.size.width * 3 / 4, deckHeight * 0.6)
+                        let fold = geometry.activeFold(book: false)
+                        let (gameHeight, fittedSnapshot, fit) = portraitGameSplit(
+                            geometry,
+                            deckHeight: deckHeight,
+                            fold: fold,
+                            refitting: appState.hingePresent
+                                ? appState.emulationOnlyPresentation.padLayoutSnapshot ?? PadLayoutStore.shared.snapshot() : nil,
+                            analogStickScale: settings.analogStickScale
+                        )
                         accessibleMetalSurface
                             .frame(height: gameHeight)
                             .clipped()
                             .overlay { dynamicCrosshairOverlay }
+                        if let fold {
+                            Color.black.frame(height: fold.height)
+                        }
 
                         ZStack {
                             Color.black
-                            retainedVirtualControls(isLandscape: false, screen: screen)
+                            retainedVirtualControls(isLandscape: false, screen: screen, fittedSnapshot: fittedSnapshot, fitScale: fittedSnapshot == nil ? nil : fit?.scale ?? 1)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -291,10 +333,12 @@ struct EmulationOnlyGameView: View {
                     // Same top safe-area strip as the full game screen, same reason.
                     .background(Color.black.ignoresSafeArea())
                 } else {
+                    let padInsets = landscapePadInsets(geometry, screen: screen)
                     ZStack {
                         accessibleMetalSurface
                         if appState.emulationOnlyPresentation.showsVirtualControls {
                             retainedVirtualControls(isLandscape: true, screen: screen)
+                                .padding(padInsets)
                         }
                         dynamicCrosshairOverlay
                     }
@@ -311,13 +355,14 @@ struct EmulationOnlyGameView: View {
             .accessibilityAddTraits(.isImage)
     }
 
-    private func retainedVirtualControls(isLandscape: Bool, screen: CGSize) -> some View {
+    private func retainedVirtualControls(isLandscape: Bool, screen: CGSize, fittedSnapshot: PadLayoutSnapshot? = nil, fitScale: CGFloat? = nil) -> some View {
         VirtualControllerView(
             isLandscape: isLandscape,
-            layoutSnapshot: appState.emulationOnlyPresentation.padLayoutSnapshot,
+            layoutSnapshot: fittedSnapshot ?? appState.emulationOnlyPresentation.padLayoutSnapshot,
             skinDescriptor: appState.emulationOnlyPresentation.padSkinDescriptor,
             touchActionSession: touchActionSession,
-            largeLayout: usesLargeLayout(windowSize: screen)
+            largeLayout: usesLargeLayout(windowSize: screen),
+            fitScale: fitScale
         )
         .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
     }
@@ -670,6 +715,7 @@ struct GameScreenView: View {
 
             Group {
                 if isLandscape {
+                    let padInsets = landscapePadInsets(geo, screen: screen)
                     // Landscape: full-screen layout so pad coordinates match the layout editor.
                     ZStack {
                         PhoneGameSurface()
@@ -688,11 +734,13 @@ struct GameScreenView: View {
                                 touchActionSession: touchActionSession,
                                 largeLayout: usesLargeLayout(windowSize: screen)
                             )
+                            .padding(padInsets)
                             .id(padRebuildToken)
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                         }
                         dynamicCrosshairOverlay
                         menuButtonOverlay(isLandscape: true)
+                            .padding(padInsets)
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
                     }
                     .ignoresSafeArea()
@@ -703,7 +751,16 @@ struct GameScreenView: View {
                     VStack(spacing: 0) {
                         // The deck ignores the bottom inset, so it runs to the foot of the window.
                         let deckHeight = screen.height - geo.safeAreaInsets.top
-                        let gameHeight = min(geo.size.width * 3 / 4, deckHeight * 0.6)
+                        // Tabletop only: a fold running down a portrait window leaves the layout alone.
+                        let fold = geo.activeFold(book: false)
+                        let (gameHeight, fittedSnapshot, fit) = portraitGameSplit(
+                            geo,
+                            deckHeight: deckHeight,
+                            fold: fold,
+                            refitting: appState.hingePresent && effectiveVirtualPadVisible
+                                ? effectivePadLayoutSnapshot ?? PadLayoutStore.shared.snapshot() : nil,
+                            analogStickScale: settings.analogStickScale
+                        )
                         PhoneGameSurface()
                             .frame(height: gameHeight)
                             .clipped()
@@ -719,15 +776,19 @@ struct GameScreenView: View {
                                     dynamicCrosshairOverlay
                                 }
                             }
+                        if let fold {
+                            Color.black.frame(height: fold.height)
+                        }
 
                         if effectiveVirtualPadVisible {
                             ZStack {
                                 Color.black
                                 VirtualControllerView(
-                                    layoutSnapshot: effectivePadLayoutSnapshot,
+                                    layoutSnapshot: fittedSnapshot ?? effectivePadLayoutSnapshot,
                                     skinDescriptor: effectivePadSkinDescriptor,
                                     touchActionSession: touchActionSession,
-                                    largeLayout: usesLargeLayout(windowSize: screen)
+                                    largeLayout: usesLargeLayout(windowSize: screen),
+                                    fitScale: fittedSnapshot == nil ? nil : fit?.scale ?? 1
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)

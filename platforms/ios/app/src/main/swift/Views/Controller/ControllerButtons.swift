@@ -331,6 +331,10 @@ struct StickView: View {
     let sizeScale: CGFloat
     var layoutScale: CGFloat = 1.0
     var captureDiameter: CGFloat? = nil
+    /// Caps the touch circle without shrinking the art, which then draws past it.
+    var captureLimit: CGFloat? = nil
+    /// The L3/R3 badge's size factor; a refitted portrait pad shrinks it with the rest.
+    var badgeScale: CGFloat = 1.0
     var knobImage: UIImage? = nil
     var knobSize: CGSize? = nil
 
@@ -347,7 +351,7 @@ struct StickView: View {
         30 * effectiveScale
     }
     private var effectiveCapture: CGFloat {
-        max(captureDiameter ?? sz, sz)
+        min(max(captureDiameter ?? sz, sz), captureLimit ?? .infinity)
     }
 
     @State private var off: CGSize = .zero
@@ -399,13 +403,13 @@ struct StickView: View {
                     fileName: isLeft ? "ic_controller_l3_button.png" : "ic_controller_r3_button.png",
                     fallback: isLeft ? "L3" : "R3",
                     fallbackColor: .white.opacity(0.35),
-                    fallbackFontSize: 9,
+                    fallbackFontSize: 9 * badgeScale,
                     skin: padSkin,
                     descriptor: padSkinDescriptor
                 )
-                    .frame(width: 18, height: 18)
+                    .frame(width: 18 * badgeScale, height: 18 * badgeScale)
                     .opacity(0.45 * padOpacity)
-                    .offset(y: sz / 2 + 9)
+                    .offset(y: sz / 2 + 9 * badgeScale)
             } else if let knobImage {
                 Image(uiImage: knobImage)
                     .resizable()
