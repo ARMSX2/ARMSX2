@@ -15,6 +15,10 @@
 #include "fmt/format.h"
 
 #include <cstring>
+#include <utility>
+
+/// The packs' one entry type: a program binary under its sources' hashes, with its binary format.
+static constexpr u16 PROGRAM_TYPE = 1;
 
 GLShaderCache::GLShaderCache() = default;
 
@@ -68,18 +72,40 @@ bool GLShaderCache::Open(bool is_gles)
 	stamp.AddHex("binary_formats", formats.data(), formats.size() * sizeof(GLint));
 
 	// Named for the driver, so switching between two (the device's GLES driver and ANGLE) keeps both.
-	GSCacheFile::CleanStaleTempFiles(EmuFolders::Cache);
-	const std::string stem = "gl_programs_" + GSCacheFile::ShortName(stamp.GetDigest());
-	GSCacheFile::PruneOtherIdentities(EmuFolders::Cache, "gl_programs", stem, 3);
-	if (!m_store.Open(Path::Combine(EmuFolders::Cache, stem), GSCacheFile::KIND_GL_PROGRAMS, stamp, KEY_SIZE))
-		Console.Warning("GL: running without a program cache");
+	// Kept per game, read whole when the game starts (SetGame); the programs the device builds before
+	// any game is known have a pack of their own.
+	m_stamp = stamp;
+	m_stem = "gl_" + GSCacheFile::ShortName(stamp.GetDigest());
+	m_writer.Start(EmuFolders::Cache);
+	m_device_pack = GSCacheFile::OpenPack(
+		GSCacheFile::GetPackDirectory(EmuFolders::Cache, std::string(), 0), "gl_", m_stem, GSCacheFile::KIND_GL_PROGRAMS, m_stamp);
+	m_writer.Add(m_device_pack);
 
 	return true;
 }
 
 void GLShaderCache::Close()
 {
-	m_store.Close();
+	m_writer.Stop(GSCacheFile::Clock::now() + GSCacheFile::PackWriter::CLOSE_DEADLINE);
+	m_game_pack.reset();
+	m_device_pack.reset();
+}
+
+void GLShaderCache::SetGame(const std::string& serial, u32 crc)
+{
+	if (!m_writer.IsRunning())
+		return;
+
+	std::shared_ptr<GSCacheFile::Pack> pack;
+	if (!serial.empty())
+	{
+		const std::string dir = GSCacheFile::GetPackDirectory(EmuFolders::Cache, serial, crc);
+		if (m_game_pack && m_game_pack->GetPath() == Path::Combine(dir, m_stem + ".pack"))
+			return;
+		pack = GSCacheFile::OpenPack(dir, "gl_", m_stem, GSCacheFile::KIND_GL_PROGRAMS, m_stamp);
+		m_writer.Add(pack);
+	}
+	m_writer.Release(std::exchange(m_game_pack, std::move(pack)));
 }
 
 GLShaderCache::CacheKey GLShaderCache::GetCacheKey(
@@ -104,8 +130,11 @@ std::optional<GLProgram> GLShaderCache::GetCachedProgram(const CacheKey& key)
 {
 	std::vector<u8> data;
 	u32 format = 0;
-	if (!m_store.Lookup(key.data(), &data, &format))
+	if (!(m_game_pack && m_game_pack->Get(PROGRAM_TYPE, key.data(), KEY_SIZE, &data, &format)) &&
+		!(m_device_pack && m_device_pack->Get(PROGRAM_TYPE, key.data(), KEY_SIZE, &data, &format)))
+	{
 		return std::nullopt;
+	}
 
 #ifdef PCSX2_DEVBUILD
 	Common::Timer timer;
@@ -124,7 +153,11 @@ std::optional<GLProgram> GLShaderCache::GetCachedProgram(const CacheKey& key)
 	// without its strings changing. Nothing else in the store can be trusted either.
 	Console.Warning(
 		"Failed to create program from binary, this may be due to a driver or GPU Change. Recreating cache.");
-	m_store.Recreate();
+	for (GSCacheFile::Pack* pack : {m_game_pack.get(), m_device_pack.get()})
+	{
+		if (pack)
+			pack->Clear();
+	}
 	return std::nullopt;
 }
 
@@ -133,7 +166,7 @@ std::optional<GLProgram> GLShaderCache::GetProgram(
 {
 	// A pre-link callback sets link state the source does not show, so such a program is not
 	// content-addressed by its key and is never cached.
-	if (!m_program_binary_supported || !m_store.IsOpen() || callback)
+	if (!m_program_binary_supported || !m_device_pack || callback)
 	{
 #ifdef PCSX2_DEVBUILD
 		Common::Timer timer;
@@ -170,7 +203,8 @@ bool GLShaderCache::GetProgram(GLProgram* out_program, const std::string_view ve
 
 void GLShaderCache::AddProgram(const CacheKey& key, GLProgram& prog)
 {
-	if (!m_store.IsWritable())
+	GSCacheFile::Pack* pack = m_game_pack ? m_game_pack.get() : m_device_pack.get();
+	if (!pack)
 		return;
 
 	std::vector<u8> prog_data;
@@ -178,7 +212,7 @@ void GLShaderCache::AddProgram(const CacheKey& key, GLProgram& prog)
 	if (!prog.GetBinary(&prog_data, &prog_format))
 		return;
 
-	m_store.Insert(key.data(), prog_data.data(), prog_data.size(), prog_format);
+	pack->Put(PROGRAM_TYPE, key.data(), KEY_SIZE, prog_data.data(), prog_data.size(), prog_format, false);
 }
 
 std::optional<GLProgram> GLShaderCache::CompileProgram(const std::string_view vertex_shader,
@@ -225,7 +259,7 @@ std::optional<GLProgram> GLShaderCache::CompileComputeProgram(
 
 std::optional<GLProgram> GLShaderCache::GetComputeProgram(const std::string_view glsl, const PreLinkCallback& callback)
 {
-	if (!m_program_binary_supported || !m_store.IsOpen() || callback)
+	if (!m_program_binary_supported || !m_device_pack || callback)
 	{
 #ifdef PCSX2_DEVBUILD
 		Common::Timer timer;

@@ -1100,9 +1100,10 @@ private fun ClearShaderCacheRow() {
 }
 
 /** Delete the on-disk compiled shader/pipeline caches: every renderer's files, their debug
- *  variants, the per-game pipeline key lists, the frame-generation SPIR-V and any temporary file a
- *  killed write left behind. They rebuild on the next renderer init. Same set as the core's
- *  GSCacheFile::DeleteAll. Returns how many files were removed. */
+ *  variants, the per-game shader packs (gs_packs/), the pipeline key lists of older builds, the
+ *  frame-generation SPIR-V and any temporary file a killed write left behind. They rebuild on the
+ *  next renderer init. Same set as the core's GSCacheFile::DeleteAll. Returns how many files were
+ *  removed. */
 private fun clearShaderCache(cacheDir: File): Int {
     val prefixes = listOf("vulkan_shaders", "vulkan_pipelines", "gl_programs", "lsfg_spirv")
     var removed = 0
@@ -1110,8 +1111,14 @@ private fun clearShaderCache(cacheDir: File): Int {
         if (f.isFile && prefixes.any { f.name.startsWith(it) } && runCatching { f.delete() }.getOrDefault(false))
             removed++
     }
-    File(cacheDir, "vulkan_pipeline_keys").listFiles()?.forEach { f ->
-        if (runCatching { f.delete() }.getOrDefault(false)) removed++
+    for (dir in listOf("vulkan_pipeline_keys", "gs_packs")) {
+        File(cacheDir, dir).walkBottomUp().forEach { f ->
+            if (f.isFile) {
+                if (runCatching { f.delete() }.getOrDefault(false)) removed++
+            } else {
+                runCatching { f.delete() }
+            }
+        }
     }
     return removed
 }

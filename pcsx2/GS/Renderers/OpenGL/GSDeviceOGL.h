@@ -424,6 +424,7 @@ public:
 	void EndPresent() override;
 
 	bool SetGPUTimingEnabled(bool enabled) override;
+	void SetGameIdentity(const std::string& serial, u32 crc) override;
 	float GetAndResetAccumulatedGPUTime() override;
 
 	bool SetGPUPipelineStatisticsEnabled(bool enabled) override;

@@ -6,6 +6,7 @@
 #include "GS/Renderers/OpenGL/GLProgram.h"
 
 #include <array>
+#include <memory>
 #include <functional>
 #include <optional>
 #include <string>
@@ -22,7 +23,11 @@ public:
 	~GLShaderCache();
 
 	bool Open(bool is_gles);
+	/// Writes what changed within the close deadline and drops the packs.
 	void Close();
+
+	/// Opens the program pack of the game the GS runs now (an empty serial: none), reading it whole.
+	void SetGame(const std::string& serial, u32 crc);
 
 	std::optional<GLProgram> GetProgram(const std::string_view vertex_shader, const std::string_view fragment_shader,
 		const PreLinkCallback& callback = {});
@@ -46,6 +51,12 @@ private:
 		const std::string_view glsl, const PreLinkCallback& callback, bool set_retrievable);
 	void AddProgram(const CacheKey& key, GLProgram& prog);
 
-	GSCacheFile::BlobStore m_store;
+	/// Program binaries by source: the device's own programs, and the running game's. GS thread,
+	/// apart from the writer's thread writing them.
+	GSCacheFile::PackWriter m_writer;
+	GSCacheFile::Stamp m_stamp;
+	std::string m_stem;
+	std::shared_ptr<GSCacheFile::Pack> m_device_pack;
+	std::shared_ptr<GSCacheFile::Pack> m_game_pack;
 	bool m_program_binary_supported = false;
 };

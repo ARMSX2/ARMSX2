@@ -2071,14 +2071,15 @@ public:
 	/// Enables/disables GPU frame timing.
 	virtual bool SetGPUTimingEnabled(bool enabled) = 0;
 
-	/// Names the running game, so a device can build the pipelines it recorded for that game ahead
-	/// of their first use. Called on the GS thread when a renderer opens and on every game change;
-	/// an empty serial (the software renderer, or no game) means build nothing.
+	/// Names the running game, so a device can read the game's shader packs into RAM and build the
+	/// pipelines it recorded for that game ahead of their first use. Called on the GS thread when a
+	/// renderer opens and on every game change; an empty serial (the software renderer, or no game)
+	/// means no game.
 	virtual void SetGameIdentity(const std::string& serial, u32 crc) {}
 
-	/// Called on the GS thread just before the on-disk shader caches are cleared: close whatever
-	/// cache file the device holds outside GSCacheFile's stores, and drop in-memory state it would
-	/// otherwise write back.
+	/// Called on the GS thread just before the on-disk shader caches are cleared: drop in-memory
+	/// state the device would otherwise write back outside GSCacheFile's packs (which the clear
+	/// empties in place).
 	virtual void PrepareShaderCacheClear() {}
 
 	/// Returns the amount of GPU time utilized since the last time this method was called.

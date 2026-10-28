@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The GS cache store under a host file system (the libretro core's frontend VFS), where every file is
-// a stream with no descriptor: no lock and no truncate. The store must still write, cut a torn tail
-// and start over, without taking the missing lock for another process's. Its own binary, because a
+// The GS cache packs under a host file system (the libretro core's frontend VFS), where every file is
+// a stream with no descriptor: no lock and no truncate. A pack must still write, cut a torn tail and
+// start over, without taking the missing lock for another process's. Its own binary, because a
 // host file system is installed once for the whole process.
 
 #include "GS/GSCacheFile.h"
@@ -125,46 +125,51 @@ TEST_F(GSCacheFileVfsTest, StreamsAreCookies)
 	std::fclose(fp);
 }
 
-TEST_F(GSCacheFileVfsTest, StoreWritesReadsAndRecoversWithoutLocksOrTruncate)
+TEST_F(GSCacheFileVfsTest, PackWritesReadsAndRecoversWithoutLocksOrTruncate)
 {
-	const std::string base = Path::Combine(m_dir, "store");
+	const std::string path = Path::Combine(m_dir, "test.pack");
 	const std::vector<u8> data(300, 0x5a);
 	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp(), 24));
-		EXPECT_FALSE(store.GetOpenInfo().read_only);
-		ASSERT_TRUE(store.IsWritable());
+		Pack pack;
+		pack.Open(path, KIND_TEST, MakeStamp(), 1u << 30);
 		for (u32 i = 0; i < 5; i++)
-			ASSERT_TRUE(store.Insert(Key(i).data(), data.data(), data.size(), i));
+			ASSERT_TRUE(pack.Put(1, Key(i).data(), 24, data.data(), data.size(), i));
+		const Pack::WriteResult res = pack.Write();
+		ASSERT_FALSE(res.failed);
+		EXPECT_FALSE(res.contended);
+		// Appended through the host file system, which has no append mode on a new file.
+		ASSERT_TRUE(pack.Put(1, Key(5).data(), 24, data.data(), data.size(), 5));
+		ASSERT_EQ(pack.Write().records, 1u);
 	}
 	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp(), 24));
-		EXPECT_TRUE(store.IsWritable());
-		EXPECT_EQ(store.GetEntryCount(), 5u);
+		Pack pack;
+		pack.Open(path, KIND_TEST, MakeStamp(), 1u << 30);
+		EXPECT_EQ(pack.GetEntryCount(), 6u);
 		std::vector<u8> out;
-		ASSERT_TRUE(store.Lookup(Key(3).data(), &out));
+		ASSERT_TRUE(pack.Get(1, Key(3).data(), 24, &out));
 		EXPECT_EQ(out, data);
 	}
 
-	// A torn tail is cut by rewriting, since the stream cannot be truncated.
+	// A torn tail is cut by writing the pack whole, since the stream cannot be truncated.
 	{
-		std::FILE* fp = std::fopen((base + ".idx").c_str(), "ab");
+		std::FILE* fp = std::fopen(path.c_str(), "ab");
 		std::fwrite("torn", 1, 4, fp);
 		std::fclose(fp);
 	}
 	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp(), 24));
-		EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 4u);
-		EXPECT_EQ(store.GetEntryCount(), 5u);
-		// And emptied in place by reopening the files.
-		ASSERT_TRUE(store.Recreate());
-		EXPECT_TRUE(store.IsWritable());
-		ASSERT_TRUE(store.Insert(Key(9).data(), data.data(), data.size(), 9));
+		Pack pack;
+		pack.Open(path, KIND_TEST, MakeStamp(), 1u << 30);
+		EXPECT_EQ(pack.GetLoadInfo().torn_bytes, 4u);
+		EXPECT_EQ(pack.GetEntryCount(), 6u);
+		EXPECT_TRUE(pack.Write().rewrote);
+		// And emptied the same way.
+		pack.Clear();
+		EXPECT_TRUE(pack.Write().rewrote);
+		ASSERT_TRUE(pack.Put(1, Key(9).data(), 24, data.data(), data.size(), 9));
+		ASSERT_FALSE(pack.Write().failed);
 	}
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp(), 24));
-	EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 0u);
-	EXPECT_EQ(store.GetEntryCount(), 1u);
+	Pack pack;
+	pack.Open(path, KIND_TEST, MakeStamp(), 1u << 30);
+	EXPECT_EQ(pack.GetLoadInfo().torn_bytes, 0u);
+	EXPECT_EQ(pack.GetEntryCount(), 1u);
 }

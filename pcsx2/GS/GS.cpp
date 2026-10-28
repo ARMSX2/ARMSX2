@@ -919,7 +919,7 @@ void GSThrottlePresentation()
 
 void GSGameChanged(const std::string& serial, u32 crc)
 {
-	// Stops the pipeline precompile and closes the pipeline-key file the back thread records
+	// Stops the pipeline precompile and lets go of the pipeline key list the back thread records
 	// into, and resets hack state its draws use.
 	DrainBackQueueBeforeDeviceMutation();
 

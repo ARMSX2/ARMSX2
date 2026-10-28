@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/DriverReport/GSDriverReportClassify.h"
+#include "GS/GSCacheFile.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
@@ -637,9 +638,8 @@ private:
 		m_tfx_fragment_shaders;
 	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
-	u32 m_tfx_pipeline_compile_counter = 0;
 
-	// Pipeline precompile. Each game's TFX pipeline keys are appended to a file in the cache
+	// Pipeline precompile. Each game's TFX pipeline keys are recorded in a pack in the game's cache
 	// directory as they are first created; when that game starts again, worker threads build the
 	// recorded pipelines in first-use order, ahead of the draws that need them. The pipelines are
 	// the ones the GS thread would have built -- same key, same CreateTFXPipeline -- so this moves
@@ -663,15 +663,10 @@ private:
 	bool m_precompile_stop = false;
 	u64 m_precompile_start = 0; ///< Common::Timer value when the workers started; read by the workers.
 	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
-	/// GS thread only: the keys the game's key file holds (record index and last session drawn), the
-	/// open file, and this session's number in it.
-	struct RecordedTFXKey
-	{
-		u32 index;
-		u32 last_session;
-	};
-	std::unordered_map<PipelineSelector, RecordedTFXKey, PipelineSelectorHash> m_recorded_tfx_keys;
-	std::FILE* m_tfx_key_file = nullptr;
+	/// The game's key list (each key with the last session that drew with it), held in RAM and written
+	/// by the shader cache's background writer, and this session's number in it. Swapped on the GS
+	/// thread only, with no draw in flight.
+	std::shared_ptr<GSCacheFile::Pack> m_tfx_key_pack;
 	u32 m_tfx_key_session = 0;
 
 	void SetGameIdentity(const std::string& serial, u32 crc) override;
@@ -684,7 +679,7 @@ private:
 	/// and the caller builds p itself.
 	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
 	void RecordTFXPipelineKey(const PipelineSelector& p);
-	/// What CreateTFXPipeline reads besides the key. A key file written under a different value is
+	/// What CreateTFXPipeline reads besides the key. A key list written under a different value is
 	/// discarded, so a key is never built on a device configuration it was not recorded on.
 	std::string GetTFXPipelineKeyFingerprint() const;
 

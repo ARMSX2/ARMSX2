@@ -3,7 +3,7 @@
 
 // The on-disk format every GS shader and pipeline cache uses (GS/GSCacheFile.h): a stamp that does
 // not match discards a file whole, a damaged entry is dropped and never returned, and a torn end is
-// cut off with everything before it kept.
+// cut off with everything before it kept. Packs are held in RAM and written by a background writer.
 
 #include "GS/GSCacheFile.h"
 
@@ -12,8 +12,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -22,6 +24,7 @@
 #define getpid _getpid
 #else
 #include <csignal>
+#include <sys/file.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
@@ -80,22 +83,43 @@ namespace
 			ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), data.data(), data.size()));
 		}
 
-		static void FillStore(BlobStore& store, u32 count)
+		std::string PackPath() const { return PathOf("test.pack"); }
+
+		static constexpr u16 TYPE_A = 1;
+		static constexpr u16 TYPE_B = 2;
+		static constexpr u64 BIG = 1ull << 30;
+		/// The pack layout, mirrored: a 56-byte file header, then records of a 24-byte header, the key
+		/// and the payload.
+		static constexpr size_t HEADER = 56;
+		static constexpr size_t RECORD_HEADER = 24;
+		static size_t RecordBytes(u32 i) { return RECORD_HEADER + 24 + 100 + i * 10; }
+
+		static void Put(Pack& pack, u32 i)
 		{
-			for (u32 i = 0; i < count; i++)
-			{
-				const std::vector<u8> data = Bytes(i, 100 + i * 10);
-				ASSERT_TRUE(store.Insert(Key(i).data(), data.data(), data.size(), i));
-			}
+			const std::vector<u8> data = Bytes(i, 100 + i * 10);
+			ASSERT_TRUE(pack.Put(TYPE_A, Key(i).data(), 24, data.data(), data.size(), i));
 		}
 
-		static void ExpectEntry(BlobStore& store, u32 i)
+		static void ExpectEntry(const Pack& pack, u32 i)
 		{
 			std::vector<u8> data;
 			u32 aux = ~0u;
-			ASSERT_TRUE(store.Lookup(Key(i).data(), &data, &aux)) << "entry " << i;
+			ASSERT_TRUE(pack.Get(TYPE_A, Key(i).data(), 24, &data, &aux)) << "entry " << i;
 			EXPECT_EQ(data, Bytes(i, 100 + i * 10));
 			EXPECT_EQ(aux, i);
+		}
+
+		/// The keys of TYPE_A, in ForEach order.
+		static std::vector<u32> Order(const Pack& pack)
+		{
+			std::vector<u32> order;
+			pack.ForEach(TYPE_A, [&order](const u8* key, u32 key_size, const std::vector<u8>&, u32) {
+				u32 n;
+				std::memcpy(&n, key, sizeof(n));
+				EXPECT_EQ(key_size, 24u);
+				order.push_back(n);
+			});
+			return order;
 		}
 
 		std::string m_dir;
@@ -185,273 +209,382 @@ TEST_F(GSCacheFileTest, FramedRejectsOldPipelineCacheLayout)
 		ReadResult::BadHeader);
 }
 
-TEST_F(GSCacheFileTest, BlobStoreRoundTrip)
+TEST_F(GSCacheFileTest, FramedWriteAbandonedAtTheDeadlineLeavesTheOldFile)
 {
-	const std::string base = PathOf("store");
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		EXPECT_EQ(store.GetEntryCount(), 0u);
-		FillStore(store, 20);
-		for (u32 i = 0; i < 20; i++)
-			ExpectEntry(store, i);
-	}
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetOpenInfo().discarded, ReadResult::Ok);
-	EXPECT_EQ(store.GetEntryCount(), 20u);
-	for (u32 i = 0; i < 20; i++)
-		ExpectEntry(store, i);
-	std::vector<u8> data;
-	EXPECT_FALSE(store.Lookup(Key(99).data(), &data));
+	const std::string path = PathOf("framed.bin");
+	const std::vector<u8> payload = Bytes(1, 5000);
+	ASSERT_TRUE(WriteFramedFile(path, KIND_TEST, MakeStamp("A"), payload.data(), payload.size()));
+	const std::vector<u8> other = Bytes(2, 5000);
+	EXPECT_FALSE(WriteFramedFile(path, KIND_TEST, MakeStamp("A"), other.data(), other.size(), Clock::now() - std::chrono::seconds(1)));
+
+	std::vector<u8> out;
+	ASSERT_EQ(ReadFramedFile(path, KIND_TEST, MakeStamp("A"), &out), ReadResult::Ok);
+	EXPECT_EQ(out, payload);
+	EXPECT_EQ(CleanStaleTempFiles(m_dir), 0u) << "the temporary file was left behind";
+	for (const auto& entry : std::filesystem::directory_iterator(m_dir))
+		EXPECT_EQ(entry.path().filename().string(), "framed.bin");
 }
 
-TEST_F(GSCacheFileTest, BlobStoreStampMismatchDiscardsWholeStore)
+TEST_F(GSCacheFileTest, PackRoundTripInFirstStoredOrder)
 {
-	const std::string base = PathOf("store");
 	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		FillStore(store, 10);
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(pack.GetLoadInfo().result, ReadResult::Missing);
+		for (const u32 i : {3u, 1u, 4u, 0u, 2u})
+			Put(pack, i);
+		const u32 other = 7;
+		ASSERT_TRUE(pack.Put(TYPE_B, nullptr, 0, &other, sizeof(other)));
+		const Pack::WriteResult res = pack.Write();
+		EXPECT_FALSE(res.failed);
+		EXPECT_EQ(res.records, 6u);
+		EXPECT_FALSE(pack.HasPendingWrites());
+		// A second write has nothing to add.
+		EXPECT_EQ(pack.Write().records, 0u);
 	}
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("B"), 24));
-		EXPECT_EQ(store.GetOpenInfo().discarded, ReadResult::StampMismatch);
-		EXPECT_EQ(store.GetEntryCount(), 0u);
-		std::vector<u8> data;
-		EXPECT_FALSE(store.Lookup(Key(3).data(), &data));
-		FillStore(store, 2);
-	}
-	// And the files now belong to B: going back to A discards again.
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetOpenInfo().discarded, ReadResult::StampMismatch);
-	EXPECT_EQ(store.GetEntryCount(), 0u);
-	// A different key layout is a different store.
-	store.Close();
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 28));
-	EXPECT_EQ(store.GetOpenInfo().discarded, ReadResult::BadHeader);
-}
 
-TEST_F(GSCacheFileTest, BlobStoreDamagedDataIsDroppedNotReturned)
-{
-	const std::string base = PathOf("store");
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		FillStore(store, 5);
-	}
-	// Entry 2's data starts after 100+110 bytes; flip a byte inside it.
-	std::vector<u8> bin = ReadAll(base + ".bin");
-	bin[100 + 110 + 5] ^= 0xFF;
-	WriteAll(base + ".bin", bin);
-
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetEntryCount(), 5u);
-	std::vector<u8> data = {1, 2, 3};
-	EXPECT_FALSE(store.Lookup(Key(2).data(), &data));
-	EXPECT_TRUE(data.empty());
-	EXPECT_EQ(store.GetBadDataCount(), 1u);
-	EXPECT_EQ(store.GetEntryCount(), 4u);
-	for (u32 i : {0u, 1u, 3u, 4u})
-		ExpectEntry(store, i);
-
-	// Rebuilt and added again, the new copy wins on the next open.
-	const std::vector<u8> fresh = Bytes(2, 100 + 2 * 10);
-	ASSERT_TRUE(store.Insert(Key(2).data(), fresh.data(), fresh.size(), 2));
-	store.Close();
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetLoadInfo().result, ReadResult::Ok);
+	EXPECT_EQ(pack.GetLoadInfo().records, 6u);
+	EXPECT_EQ(pack.GetEntryCount(), 6u);
+	EXPECT_FALSE(pack.HasPendingWrites());
 	for (u32 i = 0; i < 5; i++)
-		ExpectEntry(store, i);
+		ExpectEntry(pack, i);
+	std::vector<u8> value;
+	ASSERT_TRUE(pack.Get(TYPE_B, nullptr, 0, &value));
+	EXPECT_EQ(value.size(), sizeof(u32));
+	EXPECT_EQ(Order(pack), (std::vector<u32>{3, 1, 4, 0, 2}));
 }
 
-TEST_F(GSCacheFileTest, BlobStoreTornIndexTailIsCutAndTheRestKept)
+TEST_F(GSCacheFileTest, PackNewestRecordWinsAndErasesStick)
 {
-	const std::string base = PathOf("store");
 	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		FillStore(store, 6);
-	}
-	const std::vector<u8> idx = ReadAll(base + ".idx");
-	const size_t entry_size = 24 + 32;
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		for (u32 i = 0; i < 3; i++)
+			Put(pack, i);
+		ASSERT_FALSE(pack.Write().failed);
 
-	// Half an entry appended: the app died mid-write.
-	std::vector<u8> torn = idx;
-	torn.insert(torn.end(), idx.end() - entry_size, idx.end() - entry_size / 2);
-	WriteAll(base + ".idx", torn);
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		EXPECT_EQ(store.GetOpenInfo().truncated_bytes, entry_size / 2);
-		EXPECT_EQ(store.GetEntryCount(), 6u);
-		for (u32 i = 0; i < 6; i++)
-			ExpectEntry(store, i);
-		// Cut on disk, so appending continues from a clean end.
-		EXPECT_EQ(ReadAll(base + ".idx").size(), idx.size());
-		const std::vector<u8> more = Bytes(50, 77);
-		ASSERT_TRUE(store.Insert(Key(50).data(), more.data(), more.size(), 50));
-	}
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 0u);
-		EXPECT_EQ(store.GetEntryCount(), 7u);
+		// The same payload and aux change nothing, and without replace nothing is replaced.
+		const std::vector<u8> same = Bytes(1, 110);
+		EXPECT_FALSE(pack.Put(TYPE_A, Key(1).data(), 24, same.data(), same.size(), 1));
+		const std::vector<u8> other = Bytes(50, 77);
+		EXPECT_FALSE(pack.Put(TYPE_A, Key(1).data(), 24, other.data(), other.size(), 9, false));
+		EXPECT_FALSE(pack.HasPendingWrites());
+
+		EXPECT_TRUE(pack.Put(TYPE_A, Key(1).data(), 24, other.data(), other.size(), 9));
+		pack.Erase(TYPE_A, Key(2).data(), 24);
+		EXPECT_EQ(pack.GetEntryCount(), 2u);
+		ASSERT_FALSE(pack.Write().failed);
 	}
 
-	// A whole entry of garbage (a torn write the file system filled with zeros) in the middle ends
-	// the index there; the entries before it survive.
-	std::vector<u8> zeroed = ReadAll(base + ".idx");
-	const size_t header = zeroed.size() - 7 * entry_size;
-	std::fill(zeroed.begin() + header + 3 * entry_size, zeroed.begin() + header + 4 * entry_size, 0);
-	WriteAll(base + ".idx", zeroed);
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetEntryCount(), 3u);
-	EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 4 * entry_size);
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetEntryCount(), 2u);
+	ExpectEntry(pack, 0);
+	std::vector<u8> data;
+	u32 aux = 0;
+	ASSERT_TRUE(pack.Get(TYPE_A, Key(1).data(), 24, &data, &aux));
+	EXPECT_EQ(data, Bytes(50, 77));
+	EXPECT_EQ(aux, 9u);
+	EXPECT_FALSE(pack.Get(TYPE_A, Key(2).data(), 24, &data));
+	// A replaced key keeps its place.
+	EXPECT_EQ(Order(pack), (std::vector<u32>{0, 1}));
+	// The same key under another type is another entry.
+	EXPECT_FALSE(pack.Get(TYPE_B, Key(0).data(), 24, &data));
+}
+
+TEST_F(GSCacheFileTest, PackOfAnotherStampOrKindStartsEmptyAndIsReplaced)
+{
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		Put(pack, 0);
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_VK_SPIRV, MakeStamp("A"), BIG);
+		EXPECT_EQ(pack.GetLoadInfo().result, ReadResult::BadHeader);
+		EXPECT_EQ(pack.GetEntryCount(), 0u);
+	}
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("B"), BIG);
+		EXPECT_EQ(pack.GetLoadInfo().result, ReadResult::StampMismatch);
+		EXPECT_EQ(pack.GetEntryCount(), 0u);
+		Put(pack, 1);
+		const Pack::WriteResult res = pack.Write();
+		EXPECT_TRUE(res.rewrote);
+	}
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("B"), BIG);
+	EXPECT_EQ(pack.GetLoadInfo().result, ReadResult::Ok);
+	EXPECT_EQ(pack.GetEntryCount(), 1u);
+	ExpectEntry(pack, 1);
+}
+
+TEST_F(GSCacheFileTest, PackBrokenRecordEndsTheLogAndIsCutOff)
+{
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		for (u32 i = 0; i < 4; i++)
+			Put(pack, i);
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	// One flipped bit in the third record's payload: it and everything after it go.
+	std::vector<u8> file = ReadAll(PackPath());
+	const size_t third = HEADER + RecordBytes(0) + RecordBytes(1);
+	file[third + RECORD_HEADER + 30] ^= 0x04;
+	WriteAll(PackPath(), file);
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(pack.GetEntryCount(), 2u);
+		EXPECT_EQ(pack.GetLoadInfo().torn_bytes, RecordBytes(2) + RecordBytes(3));
+		ExpectEntry(pack, 0);
+		ExpectEntry(pack, 1);
+		EXPECT_TRUE(pack.HasPendingWrites());
+		Put(pack, 5);
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	EXPECT_EQ(ReadAll(PackPath()).size(), HEADER + RecordBytes(0) + RecordBytes(1) + RecordBytes(5));
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetLoadInfo().torn_bytes, 0u);
+	EXPECT_EQ(pack.GetEntryCount(), 3u);
+	ExpectEntry(pack, 5);
+}
+
+TEST_F(GSCacheFileTest, PackTornTailIsCutOffAndTheRestKept)
+{
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		for (u32 i = 0; i < 4; i++)
+			Put(pack, i);
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	// A record cut short: its header and half its payload.
+	std::vector<u8> file = ReadAll(PackPath());
+	const std::vector<u8> extra(file.end() - RecordBytes(3), file.end() - RecordBytes(3) / 2);
+	file.insert(file.end(), extra.begin(), extra.end());
+	WriteAll(PackPath(), file);
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(pack.GetLoadInfo().torn_bytes, extra.size());
+		EXPECT_EQ(pack.GetEntryCount(), 4u);
+		// Cut even when nothing else changed.
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetLoadInfo().torn_bytes, 0u);
+	for (u32 i = 0; i < 4; i++)
+		ExpectEntry(pack, i);
+}
+
+TEST_F(GSCacheFileTest, PackIsWrittenWholeWhenMostlyGarbage)
+{
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	const std::vector<u8> key = Key(0);
+	bool rewrote = false;
+	u32 writes = 0;
+	for (u32 i = 0; i < 10 && !rewrote; i++)
+	{
+		const std::vector<u8> data = Bytes(i, 300 * 1024);
+		ASSERT_TRUE(pack.Put(TYPE_A, key.data(), 24, data.data(), data.size()));
+		// Not in a pass with a deadline (a close): there only the appends must land.
+		EXPECT_FALSE(pack.Write(Clock::now() + std::chrono::hours(1)).rewrote);
+		pack.Put(TYPE_A, key.data(), 24, Bytes(i + 100, 300 * 1024).data(), 300 * 1024);
+		rewrote = pack.Write().rewrote;
+		writes++;
+	}
+	EXPECT_TRUE(rewrote);
+	EXPECT_LE(writes, 3u);
+	EXPECT_EQ(ReadAll(PackPath()).size(), HEADER + RECORD_HEADER + 24 + 300 * 1024);
+	EXPECT_EQ(pack.GetFileBytes(), ReadAll(PackPath()).size());
+
+	Pack again;
+	again.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	std::vector<u8> data;
+	ASSERT_TRUE(again.Get(TYPE_A, key.data(), 24, &data));
+	EXPECT_EQ(data, Bytes(writes - 1 + 100, 300 * 1024));
+}
+
+TEST_F(GSCacheFileTest, PackPastTheRamCapKeepsAPrefixAndIsOnlyAppendedTo)
+{
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		for (u32 i = 0; i < 10; i++)
+			Put(pack, i);
+		ASSERT_FALSE(pack.Write().failed);
+		// A newer record of the first key, at the end of the log.
+		const std::vector<u8> newer = Bytes(99, 100);
+		pack.Put(TYPE_A, Key(0).data(), 24, newer.data(), newer.size(), 0);
+		ASSERT_FALSE(pack.Write().failed);
+	}
+	const size_t full_size = ReadAll(PackPath()).size();
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), 500);
+		EXPECT_TRUE(pack.GetLoadInfo().ram_cap_hit);
+		EXPECT_LT(pack.GetEntryCount(), 10u);
+		EXPECT_GT(pack.GetEntryCount(), 0u);
+		EXPECT_LE(pack.GetRamBytes(), 500u);
+		ExpectEntry(pack, 1);
+		// The newest record of key 0 is past the cap, so the older one must not be served.
+		std::vector<u8> data;
+		EXPECT_FALSE(pack.Get(TYPE_A, Key(0).data(), 24, &data));
+		Put(pack, 20);
+		const Pack::WriteResult res = pack.Write();
+		EXPECT_FALSE(res.rewrote);
+		EXPECT_EQ(res.records, 1u);
+	}
+	EXPECT_EQ(ReadAll(PackPath()).size(), full_size + RecordBytes(20));
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetEntryCount(), 11u);
+	ExpectEntry(pack, 20);
+	std::vector<u8> data;
+	ASSERT_TRUE(pack.Get(TYPE_A, Key(0).data(), 24, &data));
+	EXPECT_EQ(data, Bytes(99, 100));
+}
+
+TEST_F(GSCacheFileTest, PackWriteStopsAtTheDeadlineAndKeepsTheRestPending)
+{
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
 	for (u32 i = 0; i < 3; i++)
-		ExpectEntry(store, i);
+		Put(pack, i);
+	const Pack::WriteResult late = pack.Write(Clock::now() - std::chrono::seconds(1));
+	EXPECT_TRUE(late.deadline_hit);
+	EXPECT_FALSE(late.failed);
+	EXPECT_EQ(late.records, 0u);
+	EXPECT_TRUE(pack.HasPendingWrites());
+	EXPECT_EQ(pack.Write().records, 3u);
+	EXPECT_FALSE(pack.HasPendingWrites());
 }
 
-TEST_F(GSCacheFileTest, BlobStoreEntryPastTheDataEndsTheIndex)
+TEST_F(GSCacheFileTest, PackClearLeavesAnEmptyPack)
 {
-	const std::string base = PathOf("store");
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		FillStore(store, 4);
-	}
-	// The index reached the disk and the last data did not.
-	std::vector<u8> bin = ReadAll(base + ".bin");
-	bin.resize(bin.size() - 20);
-	WriteAll(base + ".bin", bin);
-
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetEntryCount(), 3u);
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
 	for (u32 i = 0; i < 3; i++)
-		ExpectEntry(store, i);
+		Put(pack, i);
+	ASSERT_FALSE(pack.Write().failed);
+	pack.Clear();
+	EXPECT_EQ(pack.GetEntryCount(), 0u);
+	EXPECT_TRUE(pack.HasPendingWrites());
+	EXPECT_TRUE(pack.Write().rewrote);
+	EXPECT_FALSE(pack.HasPendingWrites());
+	EXPECT_EQ(ReadAll(PackPath()).size(), HEADER);
+	Put(pack, 4);
+	ASSERT_FALSE(pack.Write().failed);
+
+	Pack again;
+	again.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(again.GetEntryCount(), 1u);
+	ExpectEntry(again, 4);
 }
 
-TEST_F(GSCacheFileTest, BlobStoreReplacesOldFormatAndGarbage)
+TEST_F(GSCacheFileTest, PackDeletedFromOutsideIsWrittenWhole)
 {
-	const std::string base = PathOf("store");
-	// The old layout: a small version number, then entries.
-	std::vector<u8> old(4 + 40 + 5 * 32, 0);
-	const u32 version = 125;
-	std::memcpy(old.data(), &version, sizeof(version));
-	WriteAll(base + ".idx", old);
-	WriteAll(base + ".bin", Bytes(9, 4000));
-
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(store.GetOpenInfo().discarded, ReadResult::BadHeader);
-	EXPECT_EQ(store.GetEntryCount(), 0u);
-	EXPECT_EQ(ReadAll(base + ".bin").size(), 0u);
-	FillStore(store, 3);
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
 	for (u32 i = 0; i < 3; i++)
-		ExpectEntry(store, i);
-}
+		Put(pack, i);
+	ASSERT_FALSE(pack.Write().failed);
+	ASSERT_TRUE(FileSystem::DeleteFilePath(PackPath().c_str()));
+	Put(pack, 3);
+	EXPECT_TRUE(pack.Write().rewrote);
 
-TEST_F(GSCacheFileTest, BlobStoreOverSizeLimitStartsOver)
-{
-	const std::string base = PathOf("store");
-	{
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		FillStore(store, 10);
-	}
-	BlobStore store;
-	ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24, 500));
-	EXPECT_EQ(store.GetEntryCount(), 0u);
+	Pack again;
+	again.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(again.GetEntryCount(), 4u);
 }
 
 #ifndef _WIN32
-TEST_F(GSCacheFileTest, BlobStoreSecondProcessReadsButNeverWrites)
+TEST_F(GSCacheFileTest, PackWritePassIsSkippedWhileAnotherProcessWrites)
 {
-	// A second open of the same files stands in for a second process: the lock is per open file.
-	const std::string base = PathOf("store");
-	BlobStore owner;
-	ASSERT_TRUE(owner.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	FillStore(owner, 4);
-	EXPECT_TRUE(owner.IsWritable());
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	Put(pack, 0);
+	ASSERT_FALSE(pack.Write().failed);
 
-	BlobStore other;
-	ASSERT_TRUE(other.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_TRUE(other.GetOpenInfo().read_only);
-	EXPECT_FALSE(other.IsWritable());
-	for (u32 i = 0; i < 4; i++)
-		ExpectEntry(other, i);
-	const std::vector<u8> data = Bytes(7, 10);
-	EXPECT_FALSE(other.Insert(Key(7).data(), data.data(), data.size()));
-
-	// A reader with another stamp does not wipe the owner's files; it runs without a cache.
-	BlobStore stranger;
-	EXPECT_FALSE(stranger.Open(base, KIND_TEST, MakeStamp("B"), 24));
-	EXPECT_FALSE(stranger.IsOpen());
-	for (u32 i = 0; i < 4; i++)
-		ExpectEntry(owner, i);
+	// A second open of the file stands in for a second process: the lock is per open file.
+	std::FILE* other = std::fopen(PackPath().c_str(), "r+b");
+	ASSERT_NE(other, nullptr);
+	ASSERT_EQ(flock(fileno(other), LOCK_EX | LOCK_NB), 0);
+	Put(pack, 1);
+	const Pack::WriteResult res = pack.Write();
+	EXPECT_TRUE(res.contended);
+	EXPECT_FALSE(res.failed);
+	EXPECT_TRUE(pack.HasPendingWrites());
+	std::fclose(other);
+	EXPECT_EQ(pack.Write().records, 1u);
 }
 #endif
 
-TEST_F(GSCacheFileTest, RecordFileRoundTripAndDamage)
+TEST_F(GSCacheFileTest, WriterWritesWhenAskedAndOnStop)
 {
-	static constexpr u32 RECORD_SIZE = 40;
-	const Stamp stamp = MakeStamp("A");
-	std::vector<u8> file = MakeRecordFileHeader(KIND_TEST, stamp, RECORD_SIZE, 17);
-	for (u32 i = 0; i < 5; i++)
+	auto pack = std::make_shared<Pack>();
+	pack->Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	u32 extra_passes = 0;
+	bool extra_asked = false;
+	PackWriter writer;
+	writer.Start(m_dir, [&](Clock::time_point, bool asked) {
+		extra_passes++;
+		extra_asked = asked;
+	}, std::chrono::hours(1));
+	EXPECT_TRUE(writer.IsRunning());
+	writer.Add(pack);
+
+	Put(*pack, 0);
+	writer.Flush(true);
+	EXPECT_FALSE(pack->HasPendingWrites());
+	EXPECT_EQ(extra_passes, 1u);
+	EXPECT_TRUE(extra_asked);
 	{
-		std::vector<u8> rec = Bytes(i, RECORD_SIZE);
-		SealRecord(rec.data(), RECORD_SIZE);
-		file.insert(file.end(), rec.begin(), rec.end());
+		Pack reader;
+		reader.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(reader.GetEntryCount(), 1u);
 	}
 
-	u64 user = 0;
-	u32 dropped = 0;
-	std::vector<std::vector<u8>> records;
-	ASSERT_EQ(ParseRecordFile(file, KIND_TEST, stamp, RECORD_SIZE, &user, &records, &dropped), ReadResult::Ok);
-	EXPECT_EQ(user, 17u);
-	EXPECT_EQ(records.size(), 5u);
-	EXPECT_EQ(dropped, 0u);
+	// A released pack is written once more, then let go.
+	Put(*pack, 1);
+	writer.Release(pack);
+	std::weak_ptr<Pack> weak = pack;
+	pack.reset();
+	writer.Flush(true);
+	EXPECT_TRUE(weak.expired());
+	{
+		Pack reader;
+		reader.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(reader.GetEntryCount(), 2u);
+	}
 
-	// A record damaged in place is dropped; the others are kept.
-	std::vector<u8> bad = file;
-	bad[GetRecordFileHeaderSize() + 2 * RECORD_SIZE + 3] ^= 0x40;
-	ASSERT_EQ(ParseRecordFile(bad, KIND_TEST, stamp, RECORD_SIZE, &user, &records, &dropped), ReadResult::Ok);
-	EXPECT_EQ(records.size(), 4u);
-	EXPECT_EQ(dropped, 1u);
-
-	// A torn record at the end is ignored.
-	std::vector<u8> torn = file;
-	torn.resize(torn.size() - RECORD_SIZE / 2);
-	ASSERT_EQ(ParseRecordFile(torn, KIND_TEST, stamp, RECORD_SIZE, &user, &records, &dropped), ReadResult::Ok);
-	EXPECT_EQ(records.size(), 4u);
+	auto second = std::make_shared<Pack>();
+	second->Open(PathOf("second.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	writer.Add(second);
+	Put(*second, 2);
+	writer.Stop(Clock::now() + PackWriter::CLOSE_DEADLINE);
+	EXPECT_FALSE(writer.IsRunning());
+	EXPECT_FALSE(second->HasPendingWrites());
+	// Not running: a flush returns at once.
+	writer.Flush(true);
 }
 
-TEST_F(GSCacheFileTest, RecordFileLayoutOrStampChangeDiscards)
+TEST_F(GSCacheFileTest, PackDirectoriesAreNamedForTheGame)
 {
-	const Stamp stamp = MakeStamp("A");
-	std::vector<u8> file = MakeRecordFileHeader(KIND_VK_PIPELINE_KEYS, stamp, 40, 3);
-	std::vector<u8> rec = Bytes(1, 40);
-	SealRecord(rec.data(), 40);
-	file.insert(file.end(), rec.begin(), rec.end());
-
-	u64 user = 0;
-	std::vector<std::vector<u8>> records;
-	// The record grew: an older list cannot be read as the new layout.
-	EXPECT_EQ(ParseRecordFile(file, KIND_VK_PIPELINE_KEYS, stamp, 44, &user, &records), ReadResult::BadHeader);
-	EXPECT_TRUE(records.empty());
-	// Another build: same layout, and still discarded.
-	EXPECT_EQ(ParseRecordFile(file, KIND_VK_PIPELINE_KEYS, MakeStamp("B"), 40, &user, &records),
-		ReadResult::StampMismatch);
-	EXPECT_TRUE(records.empty());
-	// The format before this one: a different magic in the first word.
-	std::vector<u8> old = file;
-	const u32 old_magic = 0x59454B50;
-	std::memcpy(old.data(), &old_magic, sizeof(old_magic));
-	EXPECT_EQ(ParseRecordFile(old, KIND_VK_PIPELINE_KEYS, stamp, 40, &user, &records), ReadResult::BadHeader);
+	EXPECT_EQ(GetPackDirectory("/c", "", 0), Path::Combine(Path::Combine("/c", "gs_packs"), "_"));
+	EXPECT_EQ(GetPackDirectory("/c", "SLUS-20946", 0x1A2B3C4D), Path::Combine(Path::Combine("/c", "gs_packs"), "SLUS-20946_1A2B3C4D"));
+	EXPECT_GE(GetDefaultPackRamCap(), 32ull * 1024 * 1024);
 }
 
 TEST_F(GSCacheFileTest, DeleteAllTakesEveryCacheAndNothingElse)
@@ -466,70 +599,88 @@ TEST_F(GSCacheFileTest, DeleteAllTakesEveryCacheAndNothingElse)
 	WriteAll(PathOf("vulkan_pipeline_keys/SLUS-12345_ABCDEF01_00112233.bin"), Bytes(1, 8));
 	std::filesystem::create_directories(PathOf("achievement_images"));
 	WriteAll(PathOf("achievement_images/1.png"), Bytes(1, 8));
+	std::filesystem::create_directories(PathOf("gs_packs/SLUS-12345_ABCDEF01"));
+	WriteAll(PathOf("gs_packs/SLUS-12345_ABCDEF01/vk_spirv_11111111.pack"), Bytes(1, 8));
+	WriteAll(PathOf("gs_packs/SLUS-12345_ABCDEF01/gl_22222222.pack.tmp99"), Bytes(1, 8));
 
-	EXPECT_EQ(DeleteAll(m_dir), 11u);
+	// A pack held open, as by a running game, is emptied in place, and what it adds afterwards lands
+	// in the file a new start reads.
+	std::filesystem::create_directories(PathOf("gs_packs/_"));
+	Pack live;
+	live.Open(PathOf("gs_packs/_/vk_spirv_33333333.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	for (u32 i = 0; i < 3; i++)
+		Put(live, i);
+	ASSERT_FALSE(live.Write().failed);
+
+	EXPECT_EQ(DeleteAll(m_dir), 14u);
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("gamelist.cache").c_str()));
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("keep.txt").c_str()));
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("achievement_images/1.png").c_str()));
 	EXPECT_FALSE(FileSystem::DirectoryExists(PathOf("vulkan_pipeline_keys").c_str()));
 	EXPECT_FALSE(FileSystem::FileExists(PathOf("vulkan_pipelines.bin.tmp1234").c_str()));
-}
-
-TEST_F(GSCacheFileTest, RecreateKeepsTheLock)
-{
-	const std::string base = PathOf("store");
-	BlobStore owner;
-	ASSERT_TRUE(owner.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	FillStore(owner, 3);
-	ASSERT_TRUE(owner.Recreate());
-	EXPECT_EQ(owner.GetEntryCount(), 0u);
-	EXPECT_TRUE(owner.IsWritable());
-#ifndef _WIN32
-	BlobStore other;
-	ASSERT_TRUE(other.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_TRUE(other.GetOpenInfo().read_only);
-#endif
-	FillStore(owner, 2);
-	owner.Close();
-	BlobStore again;
-	ASSERT_TRUE(again.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(again.GetEntryCount(), 2u);
-}
-
-TEST_F(GSCacheFileTest, ClearEmptiesLiveStoresInPlaceAndDeletesTheRest)
-{
-	// A renderer's store stays open through the clear, as it does with a running game or with the
-	// fullscreen UI's device alive; the clear must not leave it appending to a deleted file.
-	const std::string base = PathOf("vulkan_shaders_0123abcd");
-	BlobStore live;
-	ASSERT_TRUE(live.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	FillStore(live, 5);
-	WriteAll(PathOf("vulkan_pipelines_0123abcd.bin"), Bytes(1, 64));
-	WriteAll(PathOf("gl_programs_99999999.idx"), Bytes(1, 64));
-
-	EXPECT_EQ(DeleteAll(m_dir), 4u);
-	EXPECT_FALSE(FileSystem::FileExists(PathOf("vulkan_pipelines_0123abcd.bin").c_str()));
-	EXPECT_FALSE(FileSystem::FileExists(PathOf("gl_programs_99999999.idx").c_str()));
-	EXPECT_TRUE(FileSystem::FileExists((base + ".idx").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(PathOf("gs_packs/SLUS-12345_ABCDEF01").c_str()));
 	EXPECT_EQ(live.GetEntryCount(), 0u);
-	EXPECT_TRUE(live.IsWritable());
-	EXPECT_EQ(ReadAll(base + ".bin").size(), 0u);
+	EXPECT_EQ(ReadAll(live.GetPath()).size(), HEADER);
 
-	// What it adds afterwards lands in the files a new start reads.
-	FillStore(live, 2);
+	Put(live, 4);
+	ASSERT_FALSE(live.Write().failed);
 	live.Close();
-	BlobStore next;
-	ASSERT_TRUE(next.Open(base, KIND_TEST, MakeStamp("A"), 24));
-	EXPECT_EQ(next.GetEntryCount(), 2u);
-	ExpectEntry(next, 0);
-	ExpectEntry(next, 1);
+	Pack next;
+	next.Open(PathOf("gs_packs/_/vk_spirv_33333333.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(next.GetEntryCount(), 1u);
+	ExpectEntry(next, 4);
+}
+
+TEST_F(GSCacheFileTest, LeftoversOfOlderCachesAndUnusedPacksAreRemoved)
+{
+	const auto age = [](const std::string& path, std::chrono::hours hours) {
+		std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - hours);
+	};
+	const std::chrono::hours day(24);
+
+	WriteAll(PathOf("vulkan_shaders_11111111.idx"), Bytes(1, 8));
+	age(PathOf("vulkan_shaders_11111111.idx"), 8 * day);
+	// A week has not passed: another build sharing the data root may still use it.
+	WriteAll(PathOf("gl_programs_22222222.bin"), Bytes(1, 8));
+	age(PathOf("gl_programs_22222222.bin"), 1 * day);
+	WriteAll(PathOf("vulkan_pipelines_33333333.bin"), Bytes(1, 8));
+	age(PathOf("vulkan_pipelines_33333333.bin"), 90 * day);
+	std::filesystem::create_directories(PathOf("vulkan_pipeline_keys"));
+	WriteAll(PathOf("vulkan_pipeline_keys/a.bin"), Bytes(1, 8));
+	age(PathOf("vulkan_pipeline_keys/a.bin"), 8 * day);
+
+	std::filesystem::create_directories(PathOf("gs_packs/T"));
+	std::filesystem::create_directories(PathOf("gs_packs/U"));
+	WriteAll(PathOf("gs_packs/T/old.pack"), Bytes(1, 8));
+	age(PathOf("gs_packs/T/old.pack"), 61 * day);
+	WriteAll(PathOf("gs_packs/T/new.pack"), Bytes(1, 8));
+	age(PathOf("gs_packs/T/new.pack"), 59 * day);
+	Pack open;
+	open.Open(PathOf("gs_packs/U/open.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	Put(open, 0);
+	ASSERT_FALSE(open.Write().failed);
+	age(PathOf("gs_packs/U/open.pack"), 61 * day);
+
+	EXPECT_EQ(CleanLeftovers(m_dir), 3u);
+	for (const char* gone : {"vulkan_shaders_11111111.idx", "vulkan_pipeline_keys/a.bin", "gs_packs/T/old.pack"})
+		EXPECT_FALSE(FileSystem::FileExists(PathOf(gone).c_str())) << gone;
+	for (const char* kept : {"gl_programs_22222222.bin", "vulkan_pipelines_33333333.bin", "gs_packs/T/new.pack", "gs_packs/U/open.pack"})
+		EXPECT_TRUE(FileSystem::FileExists(PathOf(kept).c_str())) << kept;
+	EXPECT_FALSE(FileSystem::DirectoryExists(PathOf("vulkan_pipeline_keys").c_str()));
+
+	// Opening a pack marks it used.
+	open.Close();
+	open.Open(PathOf("gs_packs/U/open.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	open.Close();
+	EXPECT_EQ(CleanLeftovers(m_dir), 0u);
+	EXPECT_TRUE(FileSystem::FileExists(PathOf("gs_packs/U/open.pack").c_str()));
 }
 
 #ifndef _WIN32
-// A full disk, simulated with a file size limit: the append fails part way, and the store must cut
-// both files back and stop writing, leaving nothing for the next start to trip on. The limit is set
-// in this process, soft limit only, and put back on every return. Not in a forked child: fork()
-// returns -1 on the CI runners.
+// A full disk, simulated with a file size limit: the append fails part way, and the pack must stop
+// writing and leave a file the next start reads up to the failure. The limit is set in this process,
+// soft limit only, and put back on every return. Not in a forked child: fork() returns -1 on the CI
+// runners.
 namespace
 {
 	class FileSizeLimit
@@ -558,63 +709,42 @@ namespace
 	};
 } // namespace
 
-static int AppendUntilFull(const std::string& base, const Stamp& stamp, bool fail_in_index)
+TEST_F(GSCacheFileTest, FailedWriteStopsWritingAndLeavesAReadablePack)
 {
-	BlobStore store;
-	if (!store.Open(base, KIND_TEST, stamp, 24))
-		return 10;
-	const s64 idx_before = FileSystem::GetPathFileSize((base + ".idx").c_str());
-	const s64 bin_before = FileSystem::GetPathFileSize((base + ".bin").c_str());
-
-	// Room for a 1-byte blob but not a whole index entry, or not even the blob.
-	const rlim_t limit = fail_in_index ? static_cast<rlim_t>(idx_before + 20) : static_cast<rlim_t>(bin_before + 10);
-	FileSizeLimit fsize(limit);
-	if (!fsize.IsSet())
-		return 11;
-
-	std::vector<u8> key(24, 0x77);
-	const std::vector<u8> data(fail_in_index ? 1 : 100, 0x42);
-	if (store.Insert(key.data(), data.data(), data.size()))
-		return 12;
-	if (store.IsWritable())
-		return 13;
-	key[0] = 0x78;
-	if (store.Insert(key.data(), data.data(), 1))
-		return 14;
-	if (FileSystem::GetPathFileSize((base + ".idx").c_str()) != idx_before)
-		return 15;
-	if (FileSystem::GetPathFileSize((base + ".bin").c_str()) != bin_before)
-		return 16;
-	// Reading still works.
-	std::vector<u8> out;
-	std::vector<u8> first(24, 0);
-	if (!store.Lookup(first.data(), &out))
-		return 17;
-	return 0;
-}
-
-TEST_F(GSCacheFileTest, FailedAppendIsCutBackAndStopsWriting)
-{
-	for (const bool fail_in_index : {true, false})
 	{
-		const std::string base = PathOf(fail_in_index ? "full_idx" : "full_bin");
-		{
-			BlobStore store;
-			ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-			FillStore(store, 4);
-		}
-		EXPECT_EQ(AppendUntilFull(base, MakeStamp("A"), fail_in_index), 0) << (fail_in_index ? "index" : "data");
-
-		BlobStore store;
-		ASSERT_TRUE(store.Open(base, KIND_TEST, MakeStamp("A"), 24));
-		EXPECT_EQ(store.GetOpenInfo().truncated_bytes, 0u);
-		EXPECT_EQ(store.GetEntryCount(), 4u);
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
 		for (u32 i = 0; i < 4; i++)
-			ExpectEntry(store, i);
+			Put(pack, i);
+		ASSERT_FALSE(pack.Write().failed);
 	}
+	{
+		Pack pack;
+		pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		const std::vector<u8> big = Bytes(9, 4 * 1024 * 1024);
+		pack.Put(TYPE_A, Key(9).data(), 24, big.data(), big.size());
+		Pack::WriteResult res;
+		{
+			FileSizeLimit fsize(static_cast<rlim_t>(ReadAll(PackPath()).size() + 100));
+			ASSERT_TRUE(fsize.IsSet());
+			res = pack.Write();
+		}
+		EXPECT_TRUE(res.failed);
+		// Nothing more this session.
+		EXPECT_FALSE(pack.HasPendingWrites());
+		Put(pack, 5);
+		EXPECT_EQ(pack.Write().records, 0u);
+		ExpectEntry(pack, 5);
+	}
+	Pack pack;
+	pack.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(pack.GetEntryCount(), 4u);
+	for (u32 i = 0; i < 4; i++)
+		ExpectEntry(pack, i);
 }
 
 TEST_F(GSCacheFileTest, StaleTempFilesAreRemoved)
+
 {
 	// A pid far above any this machine hands out is not running.
 	WriteAll(PathOf("vulkan_pipelines_aa.bin.tmp2147480000"), Bytes(1, 8));

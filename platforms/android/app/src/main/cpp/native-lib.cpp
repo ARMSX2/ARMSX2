@@ -4097,33 +4097,19 @@ JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz) {
     // Persist the Vulkan pipeline cache so cold restarts don't re-compile every
     // pipeline. Hooked from onPause so the typical background-then-swipe-kill
-    // sequence on Android still writes the cache. The destructor in
-    // VKShaderCache also flushes, but we can't rely on onDestroy running before
-    // Android reaps the process. No-op for the OpenGL backend (GL backend
-    // manages its own cache via GLShaderCache; this is Vulkan-specific).
+    // sequence on Android still writes the cache. No-op for the OpenGL backend.
     //
-    // ★ MUST run on the GS thread. This used to call FlushPipelineCache() straight from the UI
-    // thread (onPause), which means vkGetPipelineCacheData() on the same VkPipelineCache that the
-    // GS thread passes to vkCreateGraphicsPipelines. Vulkan requires host access to a pipeline
-    // cache to be externally synchronised, and nothing here synchronised it — so backgrounding the
-    // app while the GS thread happened to be compiling a pipeline was a data race inside the
-    // driver. Being a spec violation rather than a driver quirk, it crashed on Adreno and Xclipse
-    // alike, intermittently, which matches the field reports. Routed via the CPU thread because
-    // MTGS::RunOnGSThread writes the EE-owned MTGS ring and must not be posted from the UI thread.
+    // This only asks the shader cache's background writer to save now rather than at its next pass;
+    // the serialisation and the write happen on that thread, never on the UI or GS thread. The request
+    // is still posted to the GS thread, through the CPU thread (MTGS::RunOnGSThread writes the EE-owned
+    // MTGS ring and must not be posted from the UI thread), because the GS thread owns the cache's
+    // lifetime: from here it could be destroyed underneath us.
     //
-    // Fire-and-forget: we deliberately do NOT block the UI thread waiting for the GS thread (that
-    // risks an ANR, and onPause is on a deadline). If the process is reaped before it lands we
-    // lose only this one flush — GetTFXPipeline's threshold flush already persists incrementally.
+    // Fire-and-forget: the UI thread never waits (onPause is on a deadline). Rate-limited, since each
+    // save serialises the whole cache, and while that runs the driver holds the cache's lock against
+    // new pipelines.
     if (!VMManager::HasValidVM() || !MTGS::IsOpen())
         return;
-    // ★ Rate-limited. Measured on a Retroid Pocket 6: backgrounding wrote 777 KB of pipeline cache,
-    // synchronously on the GS thread, at the exact moment Android is also tearing the surface down
-    // and we are about to rebuild the swapchain. Every background paid it, because active play
-    // keeps compiling pipelines so the dirty flag is essentially always set — turning a quick
-    // alt-tab into a visible multi-second "FPS N/A" stall on return. The flush only exists to
-    // survive a swipe-kill, which is rare and cheap to lose (the pipelines just recompile), so one
-    // flush per interval is plenty. GetTFXPipeline's own threshold flush still persists
-    // incrementally during play, so nothing here is the sole path to durability.
     static std::atomic<s64> s_last_flush_time{0};
     const s64 now = static_cast<s64>(
         std::chrono::duration_cast<std::chrono::seconds>(
@@ -4142,7 +4128,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
             return;
         MTGS::RunOnGSThread([]() {
             if (g_vulkan_shader_cache)
-                g_vulkan_shader_cache->FlushPipelineCache();
+                g_vulkan_shader_cache->RequestFlush();
         });
     });
 }

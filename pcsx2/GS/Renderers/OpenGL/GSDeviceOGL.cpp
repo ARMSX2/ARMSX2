@@ -2005,6 +2005,11 @@ void GSDeviceOGL::KickTimestampQuery()
 	m_timestamp_query_started = true;
 }
 
+void GSDeviceOGL::SetGameIdentity(const std::string& serial, u32 crc)
+{
+	m_shader_cache.SetGame(serial, crc);
+}
+
 bool GSDeviceOGL::SetGPUTimingEnabled(bool enabled)
 {
 	// Timed queries on GLES are EXT_disjoint_timer_query and nothing else, so
