@@ -26,6 +26,10 @@ ARMSX2 supports any ARM capable device, including Android, iOS, Linux, and Windo
 
 Please note that a BIOS dump from a legitimately-owned PS2 console is required to use the emulator.
 
+## Building the iOS App
+
+The iOS app needs Xcode, CMake and Ninja (`brew install ninja`). The PCSX2 core builds on its own into `build/core-<sim|device|catalyst>`; see [docs/ios-build.md](docs/ios-build.md).
+
 ## Website
 
 → <https://armsx2.net/>

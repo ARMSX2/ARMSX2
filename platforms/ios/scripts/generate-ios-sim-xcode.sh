@@ -38,6 +38,9 @@ Generated iOS Simulator Xcode project:
 Open in Xcode:
   open "$BUILD_DIR/ARMSX2iOS.xcodeproj"
 
+Prebuilt core (Ninja, rebuilt before every app build when its sources change):
+  $ROOT_DIR/build/core-sim
+
 Simulator build:
   xcodebuild -project "$BUILD_DIR/ARMSX2iOS.xcodeproj" -scheme ARMSX2iOS -configuration Debug -sdk iphonesimulator build
 
