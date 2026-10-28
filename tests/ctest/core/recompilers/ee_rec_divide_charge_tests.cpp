@@ -62,10 +62,9 @@ const DivideOp kOps[] = {
 	{"DIV_S",   ee::DIV_S(3, 1, 2),            7 * 8,  true},
 	{"SQRT_S",  ee::SQRT_S(3, 2),              7 * 8,  true},
 	{"RSQRT_S", ee::RSQRT_S(3, 1, 2),          13 * 8, true},
-	// The parallel divides: no console measurement yet, so unchanged.
-	{"PDIVW",   ee::PDIVW(reg::a0, reg::a1),   22 * 8, false},
-	{"PDIVUW",  ee::PDIVUW(reg::a0, reg::a1),  22 * 8, false},
-	{"PDIVBW",  ee::PDIVBW(reg::a0, reg::a1),  22 * 8, false},
+	{"PDIVW",   ee::PDIVW(reg::a0, reg::a1),   37 * 8, false},
+	{"PDIVUW",  ee::PDIVUW(reg::a0, reg::a1),  37 * 8, false},
+	{"PDIVBW",  ee::PDIVBW(reg::a0, reg::a1),  37 * 8, false},
 };
 
 // Sets the configured selector (and with it the effective one) for a scope.

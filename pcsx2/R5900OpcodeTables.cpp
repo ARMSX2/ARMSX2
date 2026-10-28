@@ -144,7 +144,15 @@ namespace R5900
 			// branch (the divide-by-zero check) before the read.
 			static const int Div = 37*8;
 			static const int MMI_Mult = 3*8;
-			static const int MMI_Div = 22*8;
+
+			// PDIVW, PDIVUW and PDIVBW: 37 cycles, measured on an SCPH-30001,
+			// the same as DIV. A PDIVW then PMFLO costs 37 per pair, as does
+			// a PDIVW repeated with nothing reading it, on every operand
+			// tried (zero divisor, overflow, signs, quotient zero), and
+			// PDIVBW's four quotients take no longer than PDIVW's two. They
+			// use both pipelines' dividers: a DIV issued after a PDIVW waits
+			// for it (74 cycles for the pair).
+			static const int MMI_Div = 37*8;
 			static const int MMI_Default = 14;
 
 			static const int FPU_Mult = 4*8;

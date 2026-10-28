@@ -513,15 +513,15 @@ std::vector<u32> ChainThen(const std::vector<u32>& tail)
 // Tail: parallel divides, deep enough that the charge outgrows ADD's imm12 two
 // steps below the configured rate but NOT at the configured rate itself — which
 // is what makes the emitted shape widen across the transition and gives the
-// test something to see. PDIVW costs 176 raw units (Cycles::MMI_Div), doubled
-// because CP0 Config bit 18 is clear under the harness, so 64 of them are
-// 22528 raw: 2816 at rate 0, inside imm12, and 4928 at rate -2, outside it.
+// test something to see. PDIVW costs 296 raw units (Cycles::MMI_Div), doubled
+// because CP0 Config bit 18 is clear under the harness, so 40 of them are
+// 23680 raw: 2960 at rate 0, inside imm12, and 5180 at rate -2, outside it.
 // (DeepDivideBlock above uses 128 and is over the line at BOTH ends, which is
 // all its own test needs.)
 std::vector<u32> DeepDivideTail()
 {
 	std::vector<u32> tail;
-	for (int i = 0; i < 64; i++)
+	for (int i = 0; i < 40; i++)
 		tail.push_back(ee::PDIVW(reg::a1, reg::a2));
 	tail.push_back(J(RecompilerTestEnvironment::kParkingPc));
 	tail.push_back(NOP);
