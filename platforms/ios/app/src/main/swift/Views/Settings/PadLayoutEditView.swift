@@ -13,7 +13,7 @@ private struct PadLayoutEditorUndoSnapshot {
     let skinID: String
 }
 
-private struct PadEditorControlGeometry {
+struct PadEditorControlGeometry {
     let id: String
     let center: CGPoint
     let baseSize: CGSize
@@ -83,6 +83,10 @@ struct PadLayoutEditView: View {
     // treated as unlinked when explicitly toggled here OR when its stored axes
     // already differ. Cleared on dismiss with the rest of the editor view state.
     @State private var unlinkedControls: Set<String> = []
+    // The Duo portrait split for this size, held so a drop at a deck edge does not refit the pad.
+    @State private var heldSplit: (key: [CGFloat?], gameHeight: CGFloat, fit: PadPortraitFit?)?
+    // Bumped when the whole layout changes (load, undo, reset, visibility) so the held split refits.
+    @State private var refitGeneration = 0
 
     init(onDismiss: @escaping () -> Void, context: PadLayoutEditorContext = .current) {
         self.onDismiss = onDismiss
@@ -97,9 +101,28 @@ struct PadLayoutEditView: View {
         GeometryReader { geo in
             let isActuallyLandscape = geo.size.width > geo.size.height
             let isMismatch = isActuallyLandscape != editLandscape
-            let portraitGameHeight = min(geo.size.width * 3 / 4, geo.size.height * 0.55)
+            // On the Duo the portrait deck is split like gameplay's, so the refitted pad shows as it plays.
+            let deckHeight = geo.size.height + geo.safeAreaInsets.bottom
+            let fold = geo.activeFold(book: false)
+            let snapshot = layout.snapshot()
+            let splitKey = [geo.size.width, geo.size.height, fold?.minY, fold?.height, CGFloat(refitGeneration)]
+            let liveSplit = !isActuallyLandscape && AppState.shared.hingePresent
+                ? portraitGameSplit(geo, deckHeight: deckHeight, fold: fold, refitting: snapshot, analogStickScale: settings.analogStickScale)
+                : nil
+            let split = heldSplit?.key == splitKey ? heldSplit : liveSplit.map { (key: splitKey, gameHeight: $0.gameHeight, fit: $0.fit) }
+            let portraitGameHeight = split.map { $0.gameHeight + (fold?.height ?? 0) } ?? min(geo.size.width * 3 / 4, geo.size.height * 0.55)
             let editAreaW = geo.size.width
-            let editAreaH = isActuallyLandscape ? geo.size.height : geo.size.height - portraitGameHeight
+            let editAreaH = isActuallyLandscape ? geo.size.height : (split == nil ? geo.size.height : deckHeight) - portraitGameHeight
+            let panelArea = split?.fit?.referenceArea(deckWidth: editAreaW) ?? CGSize(width: editAreaW, height: editAreaH)
+            let fitted = split.map { split in
+                split.fit.map {
+                    snapshot.fittedToPortraitDeck(
+                        $0,
+                        size: CGSize(width: editAreaW, height: editAreaH),
+                        analogStickScale: min(max(CGFloat(settings.analogStickScale), 0.8), 1.6)
+                    )
+                } ?? snapshot
+            }
             ZStack(alignment: .top) {
                 Color.clear
                     .contentShape(Rectangle())
@@ -110,7 +133,14 @@ struct PadLayoutEditView: View {
                 if isActuallyLandscape {
                     landscapeEditorCanvas(isEditable: !isMismatch)
                 } else {
-                    portraitEditorCanvas(width: geo.size.width, height: geo.size.height, isEditable: !isMismatch)
+                    portraitEditorCanvas(
+                        width: geo.size.width,
+                        gameHeight: portraitGameHeight,
+                        padHeight: editAreaH,
+                        fitted: fitted,
+                        fit: split?.fit,
+                        isEditable: !isMismatch
+                    )
                 }
 
                 VStack(spacing: 0) {
@@ -121,7 +151,7 @@ struct PadLayoutEditView: View {
                     if isMismatch {
                         orientationMismatchView()
                     } else if let selectedControlID {
-                        selectedControlPanel(id: selectedControlID, areaW: editAreaW, areaH: editAreaH, isLandscape: editLandscape)
+                        selectedControlPanel(id: selectedControlID, areaW: panelArea.width, areaH: panelArea.height, isLandscape: editLandscape)
                             .padding(.top, 8)
                             .padding(.horizontal, max(max(geo.safeAreaInsets.leading, geo.safeAreaInsets.trailing), 8))
                         Spacer(minLength: 0)
@@ -134,6 +164,9 @@ struct PadLayoutEditView: View {
                 .zIndex(2)
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+            .onChange(of: splitKey, initial: true) {
+                heldSplit = liveSplit.map { (key: splitKey, gameHeight: $0.gameHeight, fit: $0.fit) }
+            }
             .onAppear {
                 if originalSnapshot == nil {
                     originalSnapshot = captureSnapshot()
@@ -141,6 +174,7 @@ struct PadLayoutEditView: View {
                     if let initialSnapshot = context.initialSnapshot {
                         layout.apply(snapshot: initialSnapshot)
                         loadedPresetSnapshot = initialSnapshot
+                        refitGeneration += 1
                     } else {
                         loadedPresetSnapshot = layout.snapshot()
                     }
@@ -205,10 +239,8 @@ struct PadLayoutEditView: View {
     }
 
     // MARK: - Portrait editor canvas (always shown when device is portrait)
-    private func portraitEditorCanvas(width: CGFloat, height: CGFloat, isEditable: Bool) -> some View {
-        let gameHeight = min(width * 3 / 4, height * 0.55)
-        let padHeight = height - gameHeight
-        return VStack(spacing: 0) {
+    private func portraitEditorCanvas(width: CGFloat, gameHeight: CGFloat, padHeight: CGFloat, fitted: PadLayoutSnapshot?, fit: PadPortraitFit?, isEditable: Bool) -> some View {
+        VStack(spacing: 0) {
             // Top: reveal paused gameplay underneath
             Color.clear
                 .allowsHitTesting(false)
@@ -219,7 +251,7 @@ struct PadLayoutEditView: View {
                 Color.black.opacity(0.85)
                 if isEditable {
                     customSkinPreview(isLandscape: false, width: width, height: padHeight)
-                    editorControls(areaW: width, areaH: padHeight, isLandscape: false)
+                    editorControls(areaW: width, areaH: padHeight, isLandscape: false, fitted: fitted, fit: fit)
                 }
             }
             .frame(height: padHeight)
@@ -545,18 +577,22 @@ struct PadLayoutEditView: View {
                 Button("Reset Action", role: .destructive) {
                     pushSnapshot()
                     layout.resetPerButtonActionButtons(isLandscape: editLandscape)
+                    refitGeneration += 1
                 }
                 Button("Reset D-Pad", role: .destructive) {
                     pushSnapshot()
                     layout.resetPerButtonDPad(isLandscape: editLandscape)
+                    refitGeneration += 1
                 }
                 Button("Reset All", role: .destructive) {
                     pushSnapshot()
                     layout.resetAll()
+                    refitGeneration += 1
                 }
                 Button("Reset Visibility", role: .destructive) {
                     pushSnapshot()
                     layout.resetControlVisibility()
+                    refitGeneration += 1
                 }
             }
         } label: {
@@ -572,6 +608,7 @@ struct PadLayoutEditView: View {
         return Button {
             pushSnapshot()
             layout.setControlVisible(id, visible: !visible)
+            refitGeneration += 1
         } label: {
             let name = label ?? id.uppercased()
             Label(name, systemImage: visible ? "eye" : "eye.slash")
@@ -778,9 +815,11 @@ struct PadLayoutEditView: View {
     }
 
     @ViewBuilder
-    private func editorControls(areaW: CGFloat, areaH: CGFloat, isLandscape: Bool) -> some View {
+    private func editorControls(areaW: CGFloat, areaH: CGFloat, isLandscape: Bool, fitted: PadLayoutSnapshot? = nil, fit: PadPortraitFit? = nil) -> some View {
         let stickScale = min(max(CGFloat(settings.analogStickScale), 0.8), 1.6)
-        let overlaps = overlappingControlIDs(in: editorControlGeometries(areaW: areaW, areaH: areaH, isLandscape: isLandscape, analogStickScale: stickScale))
+        let overlaps = overlappingControlIDs(
+            in: (fitted ?? layout.snapshot()).controlGeometries(size: CGSize(width: areaW, height: areaH), landscape: isLandscape, analogStickScale: stickScale)
+        )
         ZStack {
             ForEach(PadLayoutStore.perButtonIDs, id: \.self) { (id: String) in
                 DraggableButton(
@@ -788,6 +827,8 @@ struct PadLayoutEditView: View {
                     areaW: areaW,
                     areaH: areaH,
                     isLandscape: isLandscape,
+                    fitted: fitted,
+                    fit: fit,
                     selectedControlID: $selectedControlID,
                     isSelected: selectedControlID == id,
                     isOverlapping: overlaps.contains(id),
@@ -801,6 +842,8 @@ struct PadLayoutEditView: View {
                     areaH: areaH,
                     isLandscape: isLandscape,
                     analogStickScale: stickScale,
+                    fitted: fitted,
+                    fit: fit,
                     selectedControlID: $selectedControlID,
                     isSelected: selectedControlID == id,
                     isOverlapping: overlaps.contains(id),
@@ -812,43 +855,6 @@ struct PadLayoutEditView: View {
         .environment(\.padSkinDescriptor, effectiveSkinDescriptor)
         .environment(\.padOpacity, 1.0)
         .environment(\.padUsesFullSkin, false)
-    }
-
-    private func editorControlGeometries(areaW: CGFloat, areaH: CGFloat, isLandscape: Bool, analogStickScale: CGFloat) -> [PadEditorControlGeometry] {
-        let perButtonGeometries = PadLayoutStore.perButtonIDs.compactMap { id -> PadEditorControlGeometry? in
-            guard layout.isControlVisible(id) else { return nil }
-            let position = layout.perButtonPosition(for: id, landscape: isLandscape, areaW: areaW, areaH: areaH)
-            return PadEditorControlGeometry(
-                id: id,
-                center: CGPoint(x: position.x * areaW, y: position.y * areaH),
-                baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
-                visibleScaleX: position.scaleX,
-                visibleScaleY: position.scaleY,
-                hitScaleX: position.hitScaleX,
-                hitScaleY: position.hitScaleY
-            )
-        }
-
-        let groupGeometries = PadLayoutStore.groupIDs
-            .filter { $0 != "action" && $0 != "dpad" }
-            .compactMap { id -> PadEditorControlGeometry? in
-                guard layout.isControlVisible(id) else { return nil }
-                let position = layout.position(for: id, landscape: isLandscape)
-                // Sticks keep coupled (square) hit sizing tied to the visible scale.
-                let hitX = isStick(id) ? position.scaleX : position.hitScaleX
-                let hitY = isStick(id) ? position.scaleY : position.hitScaleY
-                return PadEditorControlGeometry(
-                    id: id,
-                    center: CGPoint(x: position.x * areaW, y: position.y * areaH),
-                    baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
-                    visibleScaleX: position.scaleX,
-                    visibleScaleY: position.scaleY,
-                    hitScaleX: hitX,
-                    hitScaleY: hitY
-                )
-            }
-
-        return perButtonGeometries + groupGeometries
     }
 
     private func overlappingControlIDs(in geometries: [PadEditorControlGeometry]) -> Set<String> {
@@ -890,6 +896,7 @@ struct PadLayoutEditView: View {
         layout.controlVisibility = snapshot.controlVisibility
         skinLibrary.selectSkin(id: snapshot.skinID)
         settings.virtualPadSkin = snapshot.skin
+        refitGeneration += 1
     }
 
     private func pushSnapshot() {
@@ -923,7 +930,7 @@ private func editorLabel(for id: String) -> String {
     }
 }
 
-private func padEditorBaseSize(for id: String, isLandscape: Bool, analogStickScale: CGFloat) -> CGSize {
+func padEditorBaseSize(for id: String, isLandscape: Bool, analogStickScale: CGFloat) -> CGSize {
     switch id {
     case "up", "down", "left", "right":
         let width = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: isLandscape)
@@ -954,6 +961,9 @@ private struct DraggableGroup: View {
     let areaH: CGFloat
     let isLandscape: Bool
     let analogStickScale: CGFloat
+    /// The refitted portrait layout the controls are drawn from on the Duo, and its fit; nil elsewhere.
+    let fitted: PadLayoutSnapshot?
+    let fit: PadPortraitFit?
     @Binding var selectedControlID: String?
     let isSelected: Bool
     let isOverlapping: Bool
@@ -965,8 +975,12 @@ private struct DraggableGroup: View {
     @State private var hasPushedSnapshot = false
     @Environment(\.uiAccentColour) private var accentColour
 
-    private var pos: PadGroupPosition {
+    private var stored: PadGroupPosition {
         layout.position(for: id, landscape: isLandscape)
+    }
+
+    private var pos: PadGroupPosition {
+        fitted?.position(for: id, landscape: false) ?? stored
     }
 
     private var currentX: CGFloat { pos.x * areaW + dragOffset.width }
@@ -1068,9 +1082,9 @@ private struct DraggableGroup: View {
     }
 
     private func updatePosition(x: CGFloat, y: CGFloat) {
-        var p = pos
+        var p = stored
         p.x = x
-        p.y = y
+        p.y = fit?.storedY(y) ?? y
         if isLandscape {
             layout.landscape[id] = p
         } else {
@@ -1081,7 +1095,7 @@ private struct DraggableGroup: View {
     private func updateScale(magnification: CGFloat) {
         // Uniform pinch: scale both visible axes by the same factor, preserving
         // any existing width/height ratio.
-        var p = pos
+        var p = stored
         p.scaleX = PadLayoutMetrics.clampedScale(p.scaleX * magnification)
         p.scaleY = PadLayoutMetrics.clampedScale(p.scaleY * magnification)
         if isLandscape {
@@ -1111,9 +1125,9 @@ private struct DraggableGroup: View {
         case "r2":
             PadBtn(label: "R2", w: baseSize.width, h: baseSize.height, btn: .R2, visibleScaleX: visibleScaleX, visibleScaleY: visibleScaleY, hitScaleX: hitScaleX, hitScaleY: hitScaleY)
         case "lstick":
-            StickView(isLeft: true, sizeScale: analogStickScale, layoutScale: visibleScaleX)
+            StickView(isLeft: true, sizeScale: analogStickScale, layoutScale: visibleScaleX, badgeScale: fit?.scale ?? 1)
         case "rstick":
-            StickView(isLeft: false, sizeScale: analogStickScale, layoutScale: visibleScaleX)
+            StickView(isLeft: false, sizeScale: analogStickScale, layoutScale: visibleScaleX, badgeScale: fit?.scale ?? 1)
         case "select":
             PadBtn(label: "SEL", w: baseSize.width, h: baseSize.height, btn: .select, visibleScaleX: visibleScaleX, visibleScaleY: visibleScaleY, hitScaleX: hitScaleX, hitScaleY: hitScaleY)
         case "start":
@@ -1130,6 +1144,8 @@ private struct DraggableButton: View {
     let areaW: CGFloat
     let areaH: CGFloat
     let isLandscape: Bool
+    let fitted: PadLayoutSnapshot?
+    let fit: PadPortraitFit?
     @Binding var selectedControlID: String?
     let isSelected: Bool
     let isOverlapping: Bool
@@ -1141,8 +1157,13 @@ private struct DraggableButton: View {
     @State private var hasPushedSnapshot = false
     @Environment(\.uiAccentColour) private var accentColour
 
+    private var stored: PadGroupPosition {
+        let area = fit?.referenceArea(deckWidth: areaW) ?? CGSize(width: areaW, height: areaH)
+        return layout.perButtonPosition(for: id, landscape: isLandscape, areaW: area.width, areaH: area.height)
+    }
+
     private var pos: PadGroupPosition {
-        layout.perButtonPosition(for: id, landscape: isLandscape, areaW: areaW, areaH: areaH)
+        fitted?.perButtonPosition(for: id, landscape: false, areaW: areaW, areaH: areaH) ?? stored
     }
 
     private var currentX: CGFloat { pos.x * areaW + dragOffset.width }
@@ -1254,9 +1275,9 @@ private struct DraggableButton: View {
     }
 
     private func updatePosition(x: CGFloat, y: CGFloat) {
-        var p = pos
+        var p = stored
         p.x = x
-        p.y = y
+        p.y = fit?.storedY(y) ?? y
         if isLandscape {
             layout.perButtonLandscape[id] = p
         } else {
@@ -1267,7 +1288,7 @@ private struct DraggableButton: View {
     private func updateScale(magnification: CGFloat) {
         // Uniform pinch: scale both visible axes by the same factor, preserving
         // any existing width/height ratio.
-        var p = pos
+        var p = stored
         p.scaleX = PadLayoutMetrics.clampedScale(p.scaleX * magnification)
         p.scaleY = PadLayoutMetrics.clampedScale(p.scaleY * magnification)
         if isLandscape {
@@ -1299,6 +1320,18 @@ private struct DraggableButton: View {
         default:
             EmptyView()
         }
+    }
+}
+
+private extension PadPortraitFit {
+    /// The deck a per-button position is derived in, so a stored edit fits back to its drop point.
+    func referenceArea(deckWidth: CGFloat) -> CGSize {
+        CGSize(width: deckWidth / scale, height: Self.referenceDeckHeight)
+    }
+
+    /// The stored y of a control dropped at `y` in the fitted deck.
+    func storedY(_ y: CGFloat) -> CGFloat {
+        (((y * deckHeight - Self.topGap) / scale + envelopeTop) / Self.referenceDeckHeight).clamped(0, 1)
     }
 }
 

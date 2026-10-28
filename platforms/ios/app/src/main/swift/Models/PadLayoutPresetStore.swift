@@ -45,6 +45,100 @@ struct PadLayoutSnapshot: Codable, Equatable {
         let group = PadLayoutStore.groupID(for: id)
         return controlVisibility[group] ?? true
     }
+
+    func controlGeometries(size: CGSize, landscape isLandscape: Bool, analogStickScale: CGFloat) -> [PadEditorControlGeometry] {
+        func geometry(_ id: String, _ p: PadGroupPosition) -> PadEditorControlGeometry {
+            let isStick = id == "lstick" || id == "rstick"
+            return PadEditorControlGeometry(
+                id: id,
+                center: CGPoint(x: p.x * size.width, y: p.y * size.height),
+                baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
+                visibleScaleX: p.scaleX,
+                visibleScaleY: p.scaleY,
+                hitScaleX: isStick ? p.scaleX : p.hitScaleX,
+                hitScaleY: isStick ? p.scaleY : p.hitScaleY
+            )
+        }
+        let buttons = PadLayoutStore.perButtonIDs.filter(isControlVisible).map {
+            geometry($0, perButtonPosition(for: $0, landscape: isLandscape, areaW: size.width, areaH: size.height))
+        }
+        let groups = PadLayoutStore.groupIDs.filter { $0 != "action" && $0 != "dpad" && isControlVisible($0) }.map {
+            geometry($0, position(for: $0, landscape: isLandscape))
+        }
+        return buttons + groups
+    }
+
+    func portraitEnvelope(analogStickScale: CGFloat) -> (top: CGFloat, height: CGFloat) {
+        let reference = CGSize(width: PadPortraitFit.referenceDeckWidth, height: PadPortraitFit.referenceDeckHeight)
+        let geometries = controlGeometries(size: reference, landscape: false, analogStickScale: analogStickScale)
+        // Touch areas count only up to the deck edges, where the fitted layout clips them.
+        guard let top = geometries.map({ max($0.hitFrame.minY, 0) }).min() else { return (0, 0) }
+        // StickView draws its 18 pt badge right under the stick.
+        let bottom = geometries.map {
+            min($0.hitFrame.maxY, PadPortraitFit.referenceDeckHeight) + ($0.id.hasSuffix("stick") ? 18 : 0)
+        }.max() ?? top
+        return (top, bottom - top)
+    }
+
+    func fittedToPortraitDeck(_ fit: PadPortraitFit, size: CGSize, analogStickScale: CGFloat) -> PadLayoutSnapshot {
+        var fitted = self
+        fitted.portrait = Dictionary(uniqueKeysWithValues: PadLayoutStore.groupIDs.map { ($0, fit.fitted(position(for: $0, landscape: false), of: $0)) })
+        fitted.perButtonPortrait = Dictionary(uniqueKeysWithValues: perButtonPortrait.map { ($0.key, fit.fitted($0.value, of: $0.key)) })
+
+        for g in fitted.controlGeometries(size: size, landscape: false, analogStickScale: analogStickScale) where !g.id.hasSuffix("stick") {
+            let frame = g.hitFrame
+            guard frame.minX < 0 || frame.minY < 0 || frame.maxX > size.width || frame.maxY > size.height else { continue }
+            let isPerButton = PadLayoutStore.perButtonIDs.contains(g.id)
+            var p = isPerButton
+                ? fitted.perButtonPosition(for: g.id, landscape: false, areaW: size.width, areaH: size.height)
+                : fitted.position(for: g.id, landscape: false)
+            let roomX = max(0, min(g.center.x, size.width - g.center.x)) * 2
+            let roomY = max(0, min(g.center.y, size.height - g.center.y)) * 2
+            p.hitScaleX = min(p.hitScaleX, roomX / max(g.baseSize.width, PadLayoutMetrics.minimumTouchLength))
+            p.hitScaleY = min(p.hitScaleY, roomY / max(g.baseSize.height, PadLayoutMetrics.minimumTouchLength))
+            if isPerButton {
+                fitted.perButtonPortrait[g.id] = p
+            } else {
+                fitted.portrait[g.id] = p
+            }
+        }
+        return fitted
+    }
+}
+
+/// Places the reference portrait deck's layout in a shorter deck: x stays, sizes and rows scale by `scale`.
+struct PadPortraitFit {
+    // The iPhone 18 Pro portrait deck the built-in layout was drawn on.
+    static let referenceDeckWidth: CGFloat = 402
+    static let referenceDeckHeight: CGFloat = 510.5
+    // The smallest pad scale before the game gives up height on a short deck.
+    static let outerMinimumScale: CGFloat = 0.70
+    static let topGap: CGFloat = 4
+    static let minimumHitScale: CGFloat = 44 / PadLayoutMetrics.minimumTouchLength
+
+    let scale: CGFloat
+    let envelopeTop: CGFloat
+    let deckHeight: CGFloat
+
+    init?(envelope: (top: CGFloat, height: CGFloat), deck: CGSize, barBase: CGFloat) {
+        guard envelope.height > 0, deck.width > 0, deck.height > 0 else { return nil }
+        scale = max(min(1, (deck.height - Self.topGap - barBase) / envelope.height), PadLayoutMetrics.minControlScale)
+        envelopeTop = envelope.top
+        deckHeight = deck.height
+    }
+
+    func fitted(_ p: PadGroupPosition, of id: String) -> PadGroupPosition {
+        // Opposite D-pad arrows sit closer than about 44 pt, so their touch areas shrink with the pad.
+        let minimumHit = PadLayoutStore.groupID(for: id) == "dpad" ? 0 : Self.minimumHitScale
+        return PadGroupPosition(
+            x: p.x,
+            y: (Self.topGap + (p.y * Self.referenceDeckHeight - envelopeTop) * scale) / deckHeight,
+            scaleX: p.scaleX * scale,
+            scaleY: p.scaleY * scale,
+            hitScaleX: max(p.hitScaleX * scale, min(p.hitScaleX, minimumHit)),
+            hitScaleY: max(p.hitScaleY * scale, min(p.hitScaleY, minimumHit))
+        )
+    }
 }
 
 enum PadLayoutPresetSource: String, Codable, Equatable {
