@@ -417,6 +417,8 @@
  "fixes.disableSafeFeatures.label": "Disable Safe Features",
  "fixes.disableShaderCache.desc": "No guardar en disco los shaders compilados (recompila cada inicio). Init de renderizador: reinicia el juego para aplicar.",
  "fixes.disableShaderCache.label": "Disable Shader Cache",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: deja al sistema el giro de la imagen en pantallas montadas de lado, como antes de la 2.9. Solo para solucionar problemas; consume tiempo de GPU en esas pantallas.",
+ "fixes.disableSwapChainPreRotation.label": "Desactivar la prerrotación de la Swap Chain",
  "fixes.disableVertexShaderExpand.desc": "Fuerza la expansión de vértices en CPU en vez del vertex shader. Init de renderizador: reinicia el juego para aplicar.",
  "fixes.disableVertexShaderExpand.label": "Disable Vertex Shader Expand",
  "fixes.dithering.desc": "Reduce el banding de color. Unscaled es lo más fiel a la PS2.",

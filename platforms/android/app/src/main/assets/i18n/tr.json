@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "Güvenli Özellikleri Kapat",
  "fixes.disableShaderCache.desc": "Derlenmiş shader'ları diske önbelleklemez (her açılışta yeniden derler). Renderer başlangıcı: uygulamak için oyunu yeniden başlatın.",
  "fixes.disableShaderCache.label": "Shader Önbelleğini Kapat",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: Yan monte edilmiş ekranlarda görüntünün döndürülmesini 2.9 öncesindeki gibi sisteme bırakır. Yalnızca sorun giderme içindir; bu ekranlarda GPU zamanı harcar.",
+ "fixes.disableSwapChainPreRotation.label": "Swap Chain Ön Döndürmeyi Devre Dışı Bırak",
  "fixes.disableVertexShaderExpand.desc": "Vertex shader yerine CPU vertex genişletmesini zorlar. Renderer başlangıcı: uygulamak için oyunu yeniden başlatın.",
  "fixes.disableVertexShaderExpand.label": "Vertex Shader Expand'i Kapat",
  "fixes.dithering.desc": "Renk bantlanmasını azaltır. Unscaled, PS2'ye en yakın olanıdır.",

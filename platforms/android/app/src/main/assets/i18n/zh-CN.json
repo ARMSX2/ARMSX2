@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "禁用安全功能",
  "fixes.disableShaderCache.desc": "不将编译后的着色器缓存到磁盘（每次启动重新编译）。渲染器初始化时应用，重启游戏生效。",
  "fixes.disableShaderCache.label": "禁用着色器缓存",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan：对侧装屏幕，将画面旋转交给系统处理，与 2.9 之前相同。仅用于故障排查；在这类屏幕上会占用 GPU 时间。",
+ "fixes.disableSwapChainPreRotation.label": "禁用交换链预旋转",
  "fixes.disableVertexShaderExpand.desc": "强制用 CPU 顶点扩展而非顶点着色器。渲染器初始化时应用，重启游戏生效。",
  "fixes.disableVertexShaderExpand.label": "禁用顶点着色器扩展",
  "fixes.dithering.desc": "减少色带。Unscaled 最接近 PS2 原效果。",

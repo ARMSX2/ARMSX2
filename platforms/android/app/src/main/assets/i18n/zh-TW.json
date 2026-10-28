@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "停用安全功能",
  "fixes.disableShaderCache.desc": "不將已編譯的 shader 快取到磁碟 (每次啟動都重新編譯)。渲染器初始化時生效，重新啟動遊戲以套用。",
  "fixes.disableShaderCache.label": "停用 Shader 快取",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan：對側裝螢幕，將畫面旋轉交給系統處理，與 2.9 之前相同。僅供疑難排解；在這類螢幕上會佔用 GPU 時間。",
+ "fixes.disableSwapChainPreRotation.label": "停用 Swap Chain 預旋轉",
  "fixes.disableVertexShaderExpand.desc": "強制以 CPU 展開頂點而非用 vertex shader。渲染器初始化時生效，重新啟動遊戲以套用。",
  "fixes.disableVertexShaderExpand.label": "停用 Vertex Shader Expand",
  "fixes.dithering.desc": "減少色帶。Unscaled 最貼近 PS2。",

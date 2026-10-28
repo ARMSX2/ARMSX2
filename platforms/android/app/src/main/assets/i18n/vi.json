@@ -422,6 +422,8 @@
   "fixes.disableSafeFeatures.label": "Tắt Safe Features",
   "fixes.disableShaderCache.desc": "Không lưu shader đã biên dịch ra đĩa (biên dịch lại mỗi lần chạy). Khởi tạo renderer: khởi động lại game để áp dụng.",
   "fixes.disableShaderCache.label": "Tắt Shader Cache",
+  "fixes.disableSwapChainPreRotation.desc": "Vulkan: để hệ thống tự xoay hình cho màn hình lắp nằm nghiêng, như trước 2.9. Chỉ dùng để khắc phục sự cố; tốn thời gian GPU trên các màn hình đó.",
+  "fixes.disableSwapChainPreRotation.label": "Tắt xoay trước Swap Chain",
   "fixes.disableVertexShaderExpand.desc": "Buộc mở rộng vertex trên CPU thay vì dùng vertex shader. Khởi tạo renderer: khởi động lại game để áp dụng.",
   "fixes.disableVertexShaderExpand.label": "Tắt Vertex Shader Expand",
   "fixes.dithering.desc": "Giảm hiện tượng dải màu. Unscaled giống PS2 nhất.",

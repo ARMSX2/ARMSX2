@@ -477,6 +477,8 @@
   "fixes.disableSafeFeatures.label": "Отключить безопасные функции",
   "fixes.disableShaderCache.desc": "Не кэшируйте скомпилированные шейдеры на диск (перекомпилируйте каждый запуск). Renderer-init: перезапустите игру, чтобы применить.",
   "fixes.disableShaderCache.label": "Отключить кэш шейдеров",
+  "fixes.disableSwapChainPreRotation.desc": "Vulkan: поворот изображения на экранах, установленных боком, остаётся за системой, как до 2.9. Только для устранения неполадок; на таких экранах тратит время GPU.",
+  "fixes.disableSwapChainPreRotation.label": "Отключить предварительный поворот цепочки обмена",
   "fixes.disableVertexShaderExpand.desc": "Принудительно расширяет вершины ЦП вместо вершинного шейдера. Renderer-init: перезапустите игру, чтобы применить.",
   "fixes.disableVertexShaderExpand.label": "Отключить вершинный шейдер. Развернуть",
   "fixes.dithering.desc": "Уменьшает цветовые полосы. Unscaled наиболее точно соответствует PS2.",

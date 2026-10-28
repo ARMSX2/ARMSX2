@@ -422,6 +422,8 @@
   "fixes.disableSafeFeatures.label": "Disable Safe Features",
   "fixes.disableShaderCache.desc": "コンパイル済みシェーダーをディスクにキャッシュしません（起動ごとに再コンパイル）。renderer初期化：適用にはゲームの再起動が必要です。",
   "fixes.disableShaderCache.label": "Disable Shader Cache",
+  "fixes.disableSwapChainPreRotation.desc": "Vulkan：横向きに取り付けられた画面での映像の回転を、2.9より前と同じくシステムに任せます。トラブルシューティング専用です。これらの画面ではGPU時間を消費します。",
+  "fixes.disableSwapChainPreRotation.label": "Swap Chainの事前回転を無効化",
   "fixes.disableVertexShaderExpand.desc": "頂点シェーダーの代わりにCPU頂点展開を強制します。renderer初期化：適用にはゲームの再起動が必要です。",
   "fixes.disableVertexShaderExpand.label": "Disable Vertex Shader Expand",
   "fixes.dithering.desc": "色のバンディングを軽減します。Unscaledが最もPS2に近い表示です。",

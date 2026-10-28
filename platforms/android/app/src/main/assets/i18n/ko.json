@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "Disable Safe Features",
  "fixes.disableShaderCache.desc": "컴파일된 셰이더를 디스크에 캐시하지 않습니다(실행마다 재컴파일). 렌더러 초기화: 적용하려면 게임을 재시작하세요.",
  "fixes.disableShaderCache.label": "Disable Shader Cache",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: 옆으로 장착된 화면의 영상 회전을 2.9 이전처럼 시스템에 맡깁니다. 문제 해결용으로만 사용하세요. 해당 화면에서 GPU 시간을 소모합니다.",
+ "fixes.disableSwapChainPreRotation.label": "Swap Chain 사전 회전 끄기",
  "fixes.disableVertexShaderExpand.desc": "정점 셰이더 대신 CPU 정점 확장을 강제합니다. 렌더러 초기화: 적용하려면 게임을 재시작하세요.",
  "fixes.disableVertexShaderExpand.label": "Disable Vertex Shader Expand",
  "fixes.dithering.desc": "색상 밴딩을 줄입니다. Unscaled가 PS2에 가장 가깝습니다.",

@@ -302,6 +302,8 @@
  "fixes.disableSafeFeatures.label": "Sichere Funktionen deaktivieren",
  "fixes.disableShaderCache.desc": "Kompilierte Shader nicht auf dem Datenträger cachen (bei jedem Start neu kompiliert). Renderer-Init: zum Übernehmen Spiel neu starten.",
  "fixes.disableShaderCache.label": "Shader-Cache deaktivieren",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: Überlässt das Drehen des Bildes bei seitlich eingebauten Bildschirmen dem System, wie vor 2.9. Nur zur Fehlerbehebung; kostet auf diesen Bildschirmen GPU-Zeit.",
+ "fixes.disableSwapChainPreRotation.label": "Swap-Chain-Vorrotation deaktivieren",
  "fixes.disableVertexShaderExpand.desc": "Erzwingt CPU-Vertex-Expansion statt des Vertex-Shaders. Renderer-Init: zum Übernehmen Spiel neu starten.",
  "fixes.disableVertexShaderExpand.label": "Vertex-Shader-Expand deaktivieren",
  "fixes.dithering.desc": "Reduziert Farbabstufungen (Banding). „Unskaliert“ ist am nächsten an der PS2.",

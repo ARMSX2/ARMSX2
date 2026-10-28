@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "Disable Safe Features",
  "fixes.disableShaderCache.desc": "لا تخزّن shaders المُترجمة على القرص (يعيد الترجمة كل تشغيل). يخص تهيئة Renderer؛ أعد تشغيل اللعبة للتطبيق.",
  "fixes.disableShaderCache.label": "Disable Shader Cache",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: يترك تدوير الصورة في الشاشات المثبتة جانبيًا للنظام، كما قبل 2.9. لاستكشاف الأخطاء فقط؛ يستهلك وقت GPU على تلك الشاشات.",
+ "fixes.disableSwapChainPreRotation.label": "تعطيل التدوير المسبق لـ Swap Chain",
  "fixes.disableVertexShaderExpand.desc": "يفرض توسيع الرؤوس على المعالج بدلاً من vertex shader. يخص تهيئة Renderer؛ أعد تشغيل اللعبة للتطبيق.",
  "fixes.disableVertexShaderExpand.label": "Disable Vertex Shader Expand",
  "fixes.dithering.desc": "يقلل تدرّج الألوان (banding). Unscaled يطابق PS2 عن قرب.",

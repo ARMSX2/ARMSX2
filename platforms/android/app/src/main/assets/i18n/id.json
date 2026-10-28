@@ -422,6 +422,8 @@
   "fixes.disableSafeFeatures.label": "Nonaktifkan Safe Features",
   "fixes.disableShaderCache.desc": "Jangan cache shader terkompilasi ke disk (rekompilasi tiap peluncuran). Renderer-init: mulai ulang game untuk menerapkan.",
   "fixes.disableShaderCache.label": "Nonaktifkan Shader Cache",
+  "fixes.disableSwapChainPreRotation.desc": "Vulkan: menyerahkan pemutaran gambar untuk layar yang terpasang menyamping kepada sistem, seperti sebelum 2.9. Hanya untuk pemecahan masalah; memakan waktu GPU pada layar tersebut.",
+  "fixes.disableSwapChainPreRotation.label": "Nonaktifkan Pra-Rotasi Swap Chain",
   "fixes.disableVertexShaderExpand.desc": "Memaksa vertex expansion di CPU alih-alih vertex shader. Renderer-init: mulai ulang game untuk menerapkan.",
   "fixes.disableVertexShaderExpand.label": "Nonaktifkan Vertex Shader Expand",
   "fixes.dithering.desc": "Mengurangi banding warna. Unscaled paling mendekati PS2.",

@@ -477,6 +477,8 @@
   "fixes.disableSafeFeatures.label": "Taybetmendiyên Ewle neçalak bike",
   "fixes.disableShaderCache.desc": "Şaderên berhevkirî li dîskê cache nekin (her destpêkirinê ji nû ve berhev dike). Renderer-init: ji bo serîlêdanê lîstikê ji nû ve bidin destpêkirin.",
   "fixes.disableShaderCache.label": "Shader Cache neçalak bike",
+  "fixes.disableSwapChainPreRotation.desc": "Vulkan: zivirandina wêneyê li ser ekranên ku ji kêlekê ve hatine bicihkirin, wek berî 2.9, ji pergalê re dihêle. Tenê ji bo çareserkirina pirsgirêkan; li ser wan ekranan dema GPU dixwe.",
+  "fixes.disableSwapChainPreRotation.label": "Pêş-zivirandina Swap Chain neçalak bike",
   "fixes.disableVertexShaderExpand.desc": "Berfirehkirina verteksa CPU-yê li şûna şaderê vertexê ferz dike. Renderer-init: ji bo serîlêdanê lîstikê ji nû ve bidin destpêkirin.",
   "fixes.disableVertexShaderExpand.label": "Vertex Shader Expand neçalak bike",
   "fixes.dithering.desc": "Bandora rengan kêm dike. Unscaled herî nêzîk bi PS2-ê re têkildar dike.",

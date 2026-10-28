@@ -478,6 +478,8 @@
  "fixes.disableSafeFeatures.label": "ویژگی های ایمن را غیرفعال کنید",
  "fixes.disableShaderCache.desc": "سایه بان های کامپایل شده را روی دیسک ذخیره نکنید (هر راه اندازی را دوباره کامپایل می کند). Renderer-init: بازی را مجدداً راه اندازی کنید تا اعمال شود.",
  "fixes.disableShaderCache.label": "Shader Cache را غیرفعال کنید",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: چرخاندن تصویر در صفحه‌نمایش‌هایی که از پهلو نصب شده‌اند را مانند قبل از 2.9 به سیستم می‌سپارد. فقط برای عیب‌یابی؛ روی این صفحه‌نمایش‌ها زمان GPU مصرف می‌کند.",
+ "fixes.disableSwapChainPreRotation.label": "غیرفعال کردن پیش‌چرخش Swap Chain",
  "fixes.disableVertexShaderExpand.desc": "به جای سایه زن راس، گسترش راس CPU را مجبور می کند. Renderer-init: بازی را مجدداً راه اندازی کنید تا اعمال شود.",
  "fixes.disableVertexShaderExpand.label": "Vertex Shader Expand را غیرفعال کنید",
  "fixes.dithering.desc": "باند رنگی را کاهش می دهد. Unscaled بیشتر با PS2 مطابقت دارد.",

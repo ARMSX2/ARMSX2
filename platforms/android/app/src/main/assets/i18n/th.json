@@ -422,6 +422,8 @@
  "fixes.disableSafeFeatures.label": "Disable Safe Features",
  "fixes.disableShaderCache.desc": "ไม่แคชเชดเดอร์ที่คอมไพล์แล้วลงดิสก์ (คอมไพล์ใหม่ทุกครั้งที่เปิด) เริ่มต้น renderer: รีสตาร์ตเกมเพื่อให้มีผล",
  "fixes.disableShaderCache.label": "Disable Shader Cache",
+ "fixes.disableSwapChainPreRotation.desc": "Vulkan: ปล่อยให้ระบบเป็นผู้หมุนภาพสำหรับหน้าจอที่ติดตั้งในแนวตะแคง เหมือนก่อน 2.9 ใช้เพื่อแก้ปัญหาเท่านั้น และใช้เวลา GPU เพิ่มบนหน้าจอเหล่านั้น",
+ "fixes.disableSwapChainPreRotation.label": "ปิดการหมุนล่วงหน้าของ Swap Chain",
  "fixes.disableVertexShaderExpand.desc": "บังคับขยาย vertex บน CPU แทน vertex shader เริ่มต้น renderer: รีสตาร์ตเกมเพื่อให้มีผล",
  "fixes.disableVertexShaderExpand.label": "Disable Vertex Shader Expand",
  "fixes.dithering.desc": "ลดการไล่สีเป็นแถบ Unscaled ตรงกับ PS2 มากที่สุด",
