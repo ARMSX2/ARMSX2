@@ -374,14 +374,12 @@ struct RetroAchievementsSettingsView: View {
         }
 
         loggingIn = true
-        NSLog("@@RA_LOGIN_UI@@ begin username_present=1")
         ARMSX2Bridge.loginRetroAchievements(username: trimmedUsername, password: password) { success, message in
             Task { @MainActor in
                 loggingIn = false
                 password = ""
                 showingLogin = false
                 refresh()
-                NSLog("@@RA_LOGIN_UI@@ complete success=\(success ? 1 : 0)")
                 showMessage(title: success ? "Logged In" : "Login Failed", body: settings.localized(message))
             }
         }

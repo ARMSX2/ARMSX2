@@ -90,23 +90,23 @@ enum ARMSX2DeepLinkHandler {
 
         // The link chose this callback, so RootView confirms the destination first.
         AppState.shared.pendingLibraryExport = callback
-        NSLog("[ARMSX2 iOS DeepLink] library export awaiting confirmation callback=%@", callback)
+        NSLog("[ARMSX2 iOS DeepLink] library export awaiting confirmation")
     }
 
     static func performLibraryExport(callback: String) {
         let payload = libraryPayload()
+        let gameCount = payload["gameCount"] as? Int ?? 0
         do {
             let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
             let encoded = base64URLEncoded(data)
             guard let callbackURL = callbackURL(base: callback, payload: encoded) else {
                 showMessage("The library callback URL was invalid.")
-                NSLog("[ARMSX2 iOS DeepLink] invalid callback=%@", callback)
+                NSLog("[ARMSX2 iOS DeepLink] library export callback invalid")
                 return
             }
 
-            NSLog("[ARMSX2 iOS DeepLink] exporting library count=%d callback=%@", payload.gameCount, callbackURL.absoluteString)
             UIApplication.shared.open(callbackURL, options: [:]) { didOpen in
-                NSLog("[ARMSX2 iOS DeepLink] callback open result=%d callback=%@", didOpen ? 1 : 0, callbackURL.absoluteString)
+                NSLog("[ARMSX2 iOS DeepLink] library export games=%ld callback open result=%ld", gameCount, didOpen ? 1 : 0)
                 if !didOpen {
                     Task { @MainActor in
                         showMessage("The library callback could not be opened.")
@@ -227,12 +227,6 @@ enum ARMSX2DeepLinkHandler {
 
     private static func showMessage(_ message: String) {
         FileImportHandler.shared.presentImportResult(message)
-    }
-}
-
-private extension Dictionary where Key == String, Value == Any {
-    var gameCount: Int {
-        self["gameCount"] as? Int ?? 0
     }
 }
 

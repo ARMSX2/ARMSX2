@@ -554,15 +554,6 @@ private enum InitialContentFileInstaller {
                 source.lastPathComponent.caseInsensitiveCompare("audiopack.zip") == .orderedSame
             }
         }.first
-        NSLog(
-            "[ARMSX2 iOS Folder] scan BIOS=%@ GAMES=%@ PRESETS=%@ SKINS=%@ LOGO=%@ AUDIOPACK=%@",
-            biosInputDirectories.map(\.path).joined(separator: ", "),
-            gameInputDirectories.map(\.path).joined(separator: ", "),
-            presetInputDirectories.map(\.path).joined(separator: ", "),
-            skinInputDirectories.map(\.path).joined(separator: ", "),
-            logoImage?.path ?? "",
-            audioPackArchive?.path ?? ""
-        )
 
         var biosCandidates = 0
         var biosCopied = 0

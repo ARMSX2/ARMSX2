@@ -1,14 +1,15 @@
 // SkinManifestRuntimeLayout.swift — Runtime layout for advanced (manifest v2) skins
 // SPDX-License-Identifier: GPL-3.0+
-//
+
 // Converts a stored manifest-v2.json for an imported skin into a runtime layout
 // that VirtualControllerView can render: a background asset plus absolutely
-// positioned controls (single buttons, a composite D-pad, thumbsticks). This is
-// the Phase 4 rendering bridge; the manifest v2 model and importer (Phases 1-3)
-// are unchanged. When a layout cannot be produced the caller falls back to the
-// legacy controller rendering, so built-in and legacy imported skins are
-// unaffected. Function/action controls are mapped to .inert and never execute;
-// screen, sound, animation, haptic, and asset.selected remain parsed/reserved.
+// positioned controls (single buttons, a composite D-pad, thumbsticks).
+
+// When a layout cannot be produced the caller falls back to the legacy
+// controller rendering, so built-in and legacy imported skins are unaffected.
+
+// Function/action controls are mapped to .inert and never execute; screen,
+// sound, animation, haptic, and asset.selected remain parsed/reserved.
 
 import Foundation
 import CoreGraphics
@@ -214,7 +215,6 @@ struct SkinManifestRuntimeLayout {
     static func image(forRelativePath path: String?, in directory: URL) -> UIImage? {
         guard let path, SkinAssetPath.isSafeRelative(path) else { return nil }
         if path.lowercased().hasSuffix(".pdf") {
-            NSLog("[ARMSX2 iOS Skins] PDF asset '%@' is reserved and not rendered yet.", path)
             return nil
         }
         let url = directory.appendingPathComponent(path)

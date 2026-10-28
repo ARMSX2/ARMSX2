@@ -1,7 +1,5 @@
 // HostImpls.mm — PCSX2 Host interface implementations for iOS.
 
-#define SDL_MAIN_HANDLED
-
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_metal.h>
 
@@ -117,8 +115,7 @@ namespace Host
     void RequestResetSettings(bool) {} 
     const char* GetTranslatedStringImpl(const char* key) { return key; }
     u32 GetDisplayRefreshRate() { return 60; }
-    std::optional<WindowInfo> AcquireRenderWindow(bool recreate_window) {
-        Console.WriteLn("Host::AcquireRenderWindow(recreate=%d) called.", recreate_window);
+    std::optional<WindowInfo> AcquireRenderWindow(bool) {
         if (!g_sdl_window) {
             Console.Error("Host::AcquireRenderWindow: g_sdl_window is NULL");
             return std::nullopt;
@@ -222,9 +219,6 @@ namespace Host
             return;
 
         std::unique_lock<std::mutex> lock(task->mutex);
-        std::fprintf(stderr, "@@CPU_TASK_WAIT@@ id=%llu state=%d\n",
-            task->id, static_cast<int>(VMManager::GetState()));
-        std::fflush(stderr);
         if (!task->cv.wait_for(lock, std::chrono::seconds(1), [&task] { return task->complete; })) {
             // Callers capture their locals by reference. A task that has not started is
             // dropped; one that has is waited for, so neither writes into a dead frame.
@@ -237,8 +231,6 @@ namespace Host
             }
             task->cv.wait(lock, [&task] { return task->complete; });
         }
-        std::fprintf(stderr, "@@CPU_TASK_WAIT_OK@@ id=%llu\n", task->id);
-        std::fflush(stderr);
     }
     // Post to the GS thread from anywhere. Mirrors pcsx2-qt (QtHost.cpp): the MTGS ring is
     // single-producer and s_WritePos belongs to the CPU thread, so a UI-thread caller has to hop
@@ -293,7 +285,6 @@ namespace Host
 
 // Check for VM shutdown request (safe: runs on CPU thread)
         if (s_requestVMStop.load()) {
-            Console.WriteLn("[UI] PumpMessages: setting VM state to Stopping");
             VMManager::SetState(VMState::Stopping);
             return;
         }
@@ -358,50 +349,6 @@ namespace Host
                 ARMSX2ApplyIOSGamepadInput(gamepad_index, gamepad, gamepad_pad, gamepad_index == 0);
             }
         }
-
-        // [BIOS_NAV] Auto-navigate BIOS — debug only
-#if DEBUG
-        if (const char* nav = getenv("ARMSX2_BIOS_NAV"); nav && atoi(nav))
-        {
-            unsigned int fc = ::g_FrameCount;
-            auto press = [&](u32 btn, unsigned int at) {
-                if (fc >= at && fc <= at + 1) pad->Set(btn, 1.0f);
-                else if (fc == at + 2) pad->Set(btn, 0.0f);
-            };
-            // BIOS nav: ↓ → ○ → ○ → ○ → ← → ○ → ○...
-            // The exact screen order varies. Try multiple ←+○ combos.
-            press(PadDualshock2::Inputs::PAD_DOWN, 600);
-            press(PadDualshock2::Inputs::PAD_CIRCLE, 750);
-            // After entering System Configuration, each screen needs ○ to advance.
-            // The "initialization" dialog needs ← first to select "Yes".
-            // Try ← before each ○ to handle wherever the dialog appears.
-            unsigned int seq[] = {
-                950,  0,  // ○ language
-                1150, 0,  // ○ clock
-                1350, 1,  // ← then ○ (init dialog attempt 1)
-                1550, 1,  // ← then ○ (init dialog attempt 2)
-                1750, 0,  // ○
-                1950, 0,  // ○
-                2150, 1,  // ← then ○ (attempt 3)
-                2350, 0,  // ○
-                2550, 0, 2750, 0, 2950, 0, 3150, 0, 3350, 0, 3550, 0,
-            };
-            for (int i = 0; i < (int)(sizeof(seq)/sizeof(seq[0])); i += 2) {
-                unsigned int t = seq[i];
-                if (seq[i+1]) // needs LEFT first
-                    press(PadDualshock2::Inputs::PAD_LEFT, t);
-                press(PadDualshock2::Inputs::PAD_CIRCLE, t + (seq[i+1] ? 100 : 0));
-            }
-
-            // Log after each step
-            static const unsigned int cps[] = {650, 770, 950, 1130, 1300, 1500, 1800, 2100, 2400, 2700, 3000};
-            for (auto cp : cps) {
-                if (fc == cp) {
-                    Console.WriteLn(Color_Yellow, "[BIOS_NAV] checkpoint f=%u", fc);
-                }
-            }
-        }
-#endif // DEBUG — BIOS_NAV
     }
     std::string TranslatePluralToString(const char*, const char* msg, const char*, int count)
     {
@@ -560,7 +507,6 @@ public:
 #else
             m_session = (void*)[session retain];
 #endif
-            NSLog(@"[ARMSX2 iOS HTTP] NSURLSession created: %@", session);
         }
     }
 
@@ -657,7 +603,7 @@ protected:
                 url_request.HTTPMethod = @"GET";
             }
 
-            NSString* debug_url = url.absoluteString ?: @"";
+            NSString* debug_url = url.host ?: @"";
 #if __has_feature(objc_arc)
             NSURLSession* session = (__bridge NSURLSession*)m_session;
 #else
@@ -800,13 +746,11 @@ namespace CocoaTools {
         }
 
         wi->surface_handle = view; // Store view handle to destroy later
-        Console.WriteLn("Created Metal Layer: %p from View: %p", SDL_Metal_GetLayer(view), view);
         return true;
     }
-    
+
     void DestroyMetalLayer(WindowInfo* wi) {
         if (wi->surface_handle) {
-            Console.WriteLn("Destroying Metal View: %p", wi->surface_handle);
             SDL_Metal_DestroyView((SDL_MetalView)wi->surface_handle);
             wi->surface_handle = nullptr;
         }

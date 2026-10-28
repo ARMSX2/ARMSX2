@@ -37,13 +37,8 @@ struct ImportDocumentPicker: UIViewControllerRepresentable {
 		let picker: UIDocumentPickerViewController
 		if let legacyDocumentTypes {
 			picker = UIDocumentPickerViewController(documentTypes: legacyDocumentTypes, in: legacyDocumentMode)
-			let modeName = legacyDocumentMode == .open ? "open" : "import"
-			NSLog("[ARMSX2 iOS Import] opening legacy document picker types=%@ multiple=%d mode=%@",
-			      legacyDocumentTypes.joined(separator: ","), allowsMultipleSelection ? 1 : 0, modeName)
 		} else {
 			picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: asCopy)
-			NSLog("[ARMSX2 iOS Import] opening document picker types=%@ multiple=%d asCopy=%d",
-			      allowedContentTypes.map(\.identifier).joined(separator: ","), allowsMultipleSelection ? 1 : 0, asCopy ? 1 : 0)
 		}
         picker.allowsMultipleSelection = allowsMultipleSelection
         picker.delegate = context.coordinator
@@ -60,13 +55,10 @@ struct ImportDocumentPicker: UIViewControllerRepresentable {
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            NSLog("[ARMSX2 iOS Import] picker returned %d URL(s): %@",
-                  urls.count, urls.map(\.lastPathComponent).joined(separator: ", "))
             onComplete(.success(urls))
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            NSLog("[ARMSX2 iOS Import] picker cancelled")
             onComplete(.failure(CocoaError(.userCancelled)))
         }
     }

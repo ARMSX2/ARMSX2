@@ -1,11 +1,8 @@
 // AppDelegate.mm — iOS app delegate, directory bootstrap, and main().
 
-#define SDL_MAIN_HANDLED
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <mach-o/dyld.h>
 #include <string>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -127,42 +124,15 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 #ifndef ARMSX2_VERSION_STR
 #define ARMSX2_VERSION_STR "dev"
 #endif
-#ifndef ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS
-#define ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS 0
-#endif
     fprintf(stderr, "@@BUILD_ID@@ ARMSX2_iOS v%s %s %s %s\n",
         ARMSX2_VERSION_STR, ARMSX2_GIT_HASH, __DATE__, __TIME__);
-    fprintf(stderr, "@@TEST_MARKER@@ armsx2_ios_43_v232_metadata_v1\n");
-    fprintf(stderr, "@@FF_FIX@@ offspeed_present_skip=1 present_cap60=1 adaptive_backoff=1 drawable_wait_probe=1 vm_pace_probe=1 turbo_only_toggle=1\n");
-    fprintf(stderr, "@@DIAG_MODE@@ ee_hotpath=%d\n", ARMSX2_ENABLE_EE_HOTPATH_DIAGNOSTICS);
-    
-    // [iPSX2] Unification Validation
-    // @@BIOS_GATE@@ build_id=2026-01-14_13-30-00 bundle=(from_nsbundle)
-    NSString* bID = [[NSBundle mainBundle] bundleIdentifier];
-    const char* cBundle = bID ? [bID UTF8String] : "(null)";
-    fprintf(stderr, "@@BIOS_GATE@@ build_id=2026-01-17_PROBE bundle=%s\n", cBundle);
-    fprintf(stderr, "@@LOG_UNIFIED@@ pcsx2_log.txt includes emulog output; emulog.txt disabled=1\n");
     ARMSX2ConfigureImGuiFonts("app-launch");
-    
-// DYLD Map — debug builds only
-#if DEBUG
-    {
-        fprintf(stderr, "@@CFG@@ iPSX2_CRASH_DIAG=1 (DYLD Dump Enabled)\n");
-        uint32_t count = _dyld_image_count();
-        for (uint32_t i = 0; i < count; i++) {
-            const char* name = _dyld_get_image_name(i);
-            intptr_t slide = _dyld_get_image_vmaddr_slide(i);
-            const struct mach_header* hdr = _dyld_get_image_header(i);
-            fprintf(stderr, "@@DYLD_MAP@@ idx=%u addr=%p slide=%p path=%s\n", i, hdr, (void*)slide, name);
-        }
-    }
-#endif
+
     fflush(stderr);
 
     // Enable PCSX2 Console Output only (std::cout/cerr will now go to file)
     Log::SetConsoleOutputLevel(LOGLEVEL::LOGLEVEL_INFO);
-    
-    Console.WriteLn("PCSX2 iOS: AppDelegate didFinishLaunching.");
+
     Console.WriteLn("PCSX2 iOS: resource root %s", EmuFolders::Resources.c_str());
 
     const char* cacheHome = getenv("XDG_CACHE_HOME");
@@ -190,7 +160,6 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 
 int main(int argc, char * argv[]) {
     @autoreleasepool {
-        // SDL_MAIN_HANDLED is set, so we use standard main()
         return UIApplicationMain(argc, argv,
                                  NSStringFromClass([ARMSX2Application class]),
                                  NSStringFromClass([PCSX2AppDelegate class]));
