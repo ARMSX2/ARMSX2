@@ -493,11 +493,13 @@ protected:
 		{
 			// outrun-a/-b and mgs3's NOP-padded triple, 13,900 handler calls
 			// across the corpus; spiderman3's and stuntman's {RGBAQ, XYZ2},
-			// 13,560; and the UV triple, which is the whole triangle stream of
-			// both Baldur's Gate: Dark Alliance titles.
+			// 13,560; the UV triple, which is the whole triangle stream of
+			// both Baldur's Gate: Dark Alliance titles; and the NOP-padded
+			// triple with XYZ2.
 			return layout == GSVertexKernels::PackedLayout::NopTripleXYZF2 ||
 				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2 ||
-				   layout == GSVertexKernels::PackedLayout::UvTripleXYZF2;
+				   layout == GSVertexKernels::PackedLayout::UvTripleXYZF2 ||
+				   layout == GSVertexKernels::PackedLayout::NopTripleXYZ2;
 		}
 		else if constexpr (prim == GS_SPRITE)
 		{

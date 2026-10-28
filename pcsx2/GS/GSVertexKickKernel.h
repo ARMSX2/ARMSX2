@@ -624,7 +624,7 @@ namespace GSVertexKickKernel
 	//   * Q == +0.0 becomes FLT_MIN by selecting on "the lane is zero" over all four
 	//     lanes against a vector that is zero in the other three, so a zero S, T or
 	//     colour is replaced by zero;
-	//   * the NOP-padded triple's second fix-up, a NaN Q to FLT_MAX, is the compare,
+	//   * the NOP-padded triples' second fix-up, a NaN Q to FLT_MAX, is the compare,
 	//     the lane mask and the select.
 	// Under keep_gif_q both replacement masks are zero and both selects pass Q through.
 	template <GSVertexKernels::PackedLayout layout, bool clamp>
@@ -705,7 +705,7 @@ namespace GSVertexKickKernel
 				const uint8x16x2_t st_rgba = {ld(off_a), ld(off_c)};
 				uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, pat_m0));
 				v0 = vbslq_u32(Unfolded(vceqzq_u32(v0)), q_min, v0);
-				if constexpr (layout == PackedLayout::NopTripleXYZF2)
+				if constexpr (!LayoutIsContiguousTriple(layout))
 				{
 					// FCMEQ of a lane with itself is false only for a NaN.
 					const float32x4_t f = vreinterpretq_f32_u32(v0);

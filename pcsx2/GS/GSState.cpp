@@ -548,7 +548,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVRGBAQXYZF2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZF2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZ2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2103,14 +2105,17 @@ __noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& t
 
 	// {ST, RGBAQ, XYZF2} with NOPs between: most of outrun-b's and mgs3's traffic.
 	// {UV, RGBAQ, XYZF2} with NOPs between is the same triple addressed by UV.
+	// {ST, RGBAQ, XYZ2} with NOPs between (2,f,1,5), used for triangle strips.
 	if (n == 3)
 	{
-		if (desc[1] != GIF_REG_RGBA || desc[2] != GIF_REG_XYZF2)
+		if (desc[1] != GIF_REG_RGBA)
 			return false;
-		if (desc[0] == GIF_REG_STQ)
+		if (desc[0] == GIF_REG_STQ && desc[2] == GIF_REG_XYZF2)
 			type = GIFPath::TYPE_NOPSTQRGBAXYZF2;
-		else if (desc[0] == GIF_REG_UV)
+		else if (desc[0] == GIF_REG_UV && desc[2] == GIF_REG_XYZF2)
 			type = GIFPath::TYPE_UVRGBAQXYZF2;
+		else if (desc[0] == GIF_REG_STQ && desc[2] == GIF_REG_XYZ2)
+			type = GIFPath::TYPE_NOPSTQRGBAXYZ2;
 		else
 			return false;
 		layout = {nreg, pos[0], pos[1], pos[2]};
