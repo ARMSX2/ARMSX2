@@ -124,7 +124,25 @@ namespace R5900
 			static const int CopDefault = 7;
 
 			static const int Mult = 2*8;
-			static const int Div = 14*8;
+
+			// DIV, DIVU, DIV1 and DIVU1: 37 cycles, measured on an SCPH-30001.
+			// A loop of DIV then MFLO costs 37 cycles per pair, and DIV, DIV1,
+			// MFLO, MFLO1 costs 37 per group: each pipeline has its own
+			// divider, the two run at once, and the divider runs on while
+			// other instructions issue until MFLO or MFHI waits for it.
+			// (DIVU and DIVU1 were not timed separately; they use the same
+			// dividers.)
+			//
+			// The whole 37 is charged at issue. Charging the wait at the first
+			// read of LO or HI instead would be closer when independent work
+			// sits between the divide and the read, or when DIV1 issues while
+			// DIV is still running. In game code it makes almost no difference:
+			// the read follows within a few instructions, and on the
+			// instruction mix of ten games the two ways of charging differ by
+			// under 0.06% of a frame's cycles. It would also need state carried
+			// from block to block, because a third of those divides have a
+			// branch (the divide-by-zero check) before the read.
+			static const int Div = 37*8;
 			static const int MMI_Mult = 3*8;
 			static const int MMI_Div = 22*8;
 			static const int MMI_Default = 14;

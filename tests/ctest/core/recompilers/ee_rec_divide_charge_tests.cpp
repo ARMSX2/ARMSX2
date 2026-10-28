@@ -55,10 +55,10 @@ struct DivideOp
 
 // The charge per divide opcode, in eighths of a cycle.
 const DivideOp kOps[] = {
-	{"DIV",     DIV(reg::a0, reg::a1),         14 * 8, false},
-	{"DIVU",    DIVU(reg::a0, reg::a1),        14 * 8, false},
-	{"DIV1",    ee::DIV1(reg::a0, reg::a1),    14 * 8, false},
-	{"DIVU1",   ee::DIVU1(reg::a0, reg::a1),   14 * 8, false},
+	{"DIV",     DIV(reg::a0, reg::a1),         37 * 8, false},
+	{"DIVU",    DIVU(reg::a0, reg::a1),        37 * 8, false},
+	{"DIV1",    ee::DIV1(reg::a0, reg::a1),    37 * 8, false},
+	{"DIVU1",   ee::DIVU1(reg::a0, reg::a1),   37 * 8, false},
 	{"DIV_S",   ee::DIV_S(3, 1, 2),            6 * 8,  true},
 	{"SQRT_S",  ee::SQRT_S(3, 2),              6 * 8,  true},
 	{"RSQRT_S", ee::RSQRT_S(3, 1, 2),          8 * 8,  true},

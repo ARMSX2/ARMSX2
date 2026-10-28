@@ -408,8 +408,9 @@ namespace R5900
 		// Textual name of the instruction.
 		const char Name[16];
 
-		// Number of cycles this instruction normally uses.
-		u8 cycles;
+		// Number of cycles this instruction normally uses, in eighths of a
+		// cycle. Wider than a byte because the integer divides need 296.
+		u16 cycles;
 
 		// Information about the opcode
 		u32 flags;
