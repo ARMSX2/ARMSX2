@@ -494,7 +494,8 @@ struct GameScreenView: View {
                 frameMode: .landscapePanel,
                 // Room for the controller shortcut bar, which shows while this card is up.
                 bottomReserve: controllerInput?.hasConnectedController == true
-                    ? GameplayControllerShortcutHelpOverlay.pauseCardReserve : 0
+                    ? GameplayControllerShortcutHelpOverlay.pauseCardReserve : 0,
+                spreadsAcrossFold: true
             ) { metrics in
                 QuickMenuView(
                     settings: settings,
@@ -613,7 +614,8 @@ struct GameScreenView: View {
                     SaveStatesPanel(
                         settings: settings,
                         undo: saveStateUndo,
-                        variant: metrics.variant,
+                        // A portrait leaf beside iPhone Duo's fold is phone-sized, so it takes the phone rows.
+                        variant: metrics.isLandscape || !screenIsLandscape ? metrics.variant : .phonePortrait,
                         landscape: screenIsLandscape,
                         gameTitle: currentRuntimeGameName(),
                         statusHandler: { message, isImportant in
@@ -650,6 +652,32 @@ struct GameScreenView: View {
                 }
             case .resetROM:
                 runtimeResetROMAlert
+            case .speed where appState.hingePartiallyOpen:
+                GameOverlayContainer(frameMode: .landscapePanel) { _ in
+                    SpeedControlPanel(settings: settings, onClose: { overlayRoute = .paused })
+                        .glassSurface(clear: false, cornerRadius: 26)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(.escape) { overlayRoute = .paused }
+            case .retroAchievements where appState.hingePartiallyOpen:
+                GameOverlayContainer(frameMode: .landscapePanel) { _ in
+                    RetroAchievementsGamePanel(settings: settings, onClose: { overlayRoute = .paused })
+                        .glassSurface(clear: false, cornerRadius: 26)
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(.escape) { overlayRoute = .paused }
+            case .cheats where appState.hingePartiallyOpen:
+                GameOverlayContainer(frameMode: .landscapePanel) { _ in
+                    CheatsPatchesManagerView(
+                        isoName: ARMSX2Bridge.currentGameISOName() ?? "",
+                        gameTitle: "",
+                        launchContext: .inGame,
+                        controllerInput: controllerInput,
+                        onClose: { overlayRoute = .paused }
+                    )
+                }
+                .accessibilityElement(children: .contain)
+                .accessibilityAction(.escape) { overlayRoute = .paused }
             case .speed, .cheats,
                  .retroAchievements:
                 // These destinations are lazy sheet contents. Their route is
@@ -864,11 +892,19 @@ struct GameScreenView: View {
         .overlay {
             // The same shortcut bar under the pause menu. It goes the moment the menu closes.
             if overlayRoute == .paused {
-                GameplayControllerShortcutHelpOverlay(
-                    settings: settings,
-                    controllerInput: controllerInput,
-                    overPauseMenu: true
-                )
+                GeometryReader { geo in
+                    let insets = geo.safeAreaInsets
+                    let window = CGSize(width: geo.size.width + insets.leading + insets.trailing,
+                                        height: geo.size.height + insets.top + insets.bottom)
+                    // iPhone Duo's inner pause card shows the tiles in its footer instead.
+                    if !(appState.hingePresent && usesLargeLayout(windowSize: window)) {
+                        GameplayControllerShortcutHelpOverlay(
+                            settings: settings,
+                            controllerInput: controllerInput,
+                            overPauseMenu: true
+                        )
+                    }
+                }
                     .transition(.identity)
             }
         }
@@ -1818,10 +1854,11 @@ struct GameScreenView: View {
     /// has already moved the route to `.hidden`, in which case the dismissal is a no-op so it
     /// does not clobber the intentional return to gameplay.
     private func childPresentedBinding(_ child: QuickMenuDestination) -> Binding<Bool> {
+        // Half open, runtimeQuickMenuOverlay hosts the child instead and a fold keeps the route.
         Binding(
-            get: { overlayRoute == .pausedPresenting(child) },
+            get: { overlayRoute == .pausedPresenting(child) && !appState.hingePartiallyOpen },
             set: { isPresented in
-                guard !isPresented else { return }
+                guard !isPresented, !appState.hingePartiallyOpen else { return }
                 if case .pausedPresenting(let active) = overlayRoute, active == child {
                     overlayRoute = .paused
                 }
@@ -2572,6 +2609,7 @@ private struct RetroAchievementsGamePanel: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.menuControllerInputRouter) private var controllerInput
     let settings: SettingsStore
+    var onClose: (() -> Void)? = nil
 
     @State private var entries: [RetroAchievementEntry] = []
     @State private var state: [String: Any] = [:]
@@ -2600,11 +2638,13 @@ private struct RetroAchievementsGamePanel: View {
                     }
                 }
             }
+            // Hosted beside the fold, the panel's glass shows through as it does in Cheats.
+            .scrollContentBackground(onClose == nil ? .automatic : .hidden)
             .navigationTitle(settings.localized("RetroAchievements"))
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(settings.localized("Done")) {
-                        dismiss()
+                        close()
                     }
                 }
             }
@@ -2621,11 +2661,15 @@ private struct RetroAchievementsGamePanel: View {
             scopeKey: "runtime.retro-achievements",
             priority: 345,
             onBack: {
-                dismiss()
+                close()
                 return true
             },
             usesExplicitTargetGeometryOnly: true
         )
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private var summarySection: some View {
@@ -2867,6 +2911,7 @@ private struct SpeedControlPanel: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.menuControllerInputRouter) private var controllerInput
     @State private var hardcoreActive = false
+    var onClose: (() -> Void)? = nil
 
     // Done sits in the toolbar above the rows, so it comes first.
     private static let controllerTargetOrder = [
@@ -2919,18 +2964,19 @@ private struct SpeedControlPanel: View {
                     }
                 }
             }
+            .scrollContentBackground(onClose == nil ? .automatic : .hidden)
             .navigationTitle(settings.localized("Speed / Fast Forward"))
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(settings.localized("Done")) {
-                        dismiss()
+                        close()
                     }
                     .controllerAccessibilityActionTarget(
                         id: "runtime.speed.done",
                         label: settings.localized("Done"),
                         activationFeedback: .back
                     ) {
-                        dismiss()
+                        close()
                     }
                 }
             }
@@ -2948,7 +2994,7 @@ private struct SpeedControlPanel: View {
             priority: 345,
             orbStyle: .plain,
             onBack: {
-                dismiss()
+                close()
                 return true
             },
             confinesHorizontalFocusMovement: true,
@@ -2957,6 +3003,10 @@ private struct SpeedControlPanel: View {
             preferredInitialFocusLabel: "runtime.speed.fast-forward",
             declaredTargetOrder: Self.controllerTargetOrder
         )
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     private var fastForwardEnabledBinding: Binding<Bool> {

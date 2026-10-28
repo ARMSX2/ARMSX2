@@ -31,6 +31,7 @@ struct QuickMenuView: View {
     @State private var showStopConfirmation = false
     @State private var stopConfirmationAnchor: StopConfirmationAnchor?
     @Environment(\.menuControllerInputRouter) private var controllerInput
+    @Environment(\.overlayFoldSplit) private var foldSplit
     @Environment(\.layoutDirection) private var layoutDirection
 
     let settings: SettingsStore
@@ -96,6 +97,7 @@ struct QuickMenuView: View {
             // `overlayBody`. In particular, iPad uses the portrait-style body
             // even when its measured card is wider than it is tall.
             let usesLandscapeMap = variant == .phoneLandscape
+            let spread = foldSplit?.vertical == true
             let usesTwoColumns = variant.supportsTwoColumns(
                 width: geo.size.width,
                 height: geo.size.height
@@ -159,6 +161,8 @@ struct QuickMenuView: View {
                     },
                     directionalLinks: showStopConfirmation
                         ? []
+                        : spread
+                            ? quickMenuSpreadDirectionalLinks()
                         : usesLandscapeMap
                             ? quickMenuLandscapeDirectionalLinks(
                                 twoColumns: usesTwoColumns
@@ -236,28 +240,78 @@ struct QuickMenuView: View {
     private func quickMenuControllerScopeKey(
         usesLandscapeMap: Bool
     ) -> String {
-        let layout = usesLandscapeMap ? "landscape" : "portrait"
+        let layout = (usesLandscapeMap ? "landscape" : "portrait") + foldPose
         let availability = "\(vmMenuAvailable ? 1 : 0)\(gameMenuAvailable ? 1 : 0)"
         let alert = showStopConfirmation ? "stop-confirmation" : "content"
         return "quick-pause.\(layout).\(availability).\(alert)"
+    }
+
+    private var foldPose: String {
+        foldSplit.map { $0.vertical ? ".book" : ".tabletop" } ?? ""
+    }
+
+    /// The leading leaf of the book-pose spread, top to bottom.
+    private var spreadLeadingRows: [String] {
+        var rows = [
+            ControllerTargetID.osd,
+            ControllerTargetID.virtualPad,
+            ControllerTargetID.fullScreen,
+            ControllerTargetID.hideMenuButton,
+        ]
+        if vmMenuAvailable { rows.append(ControllerTargetID.speed) }
+        if gameMenuAvailable { rows.append(ControllerTargetID.perGame) }
+        rows.append(ControllerTargetID.controllerSkin)
+        if !hidesPadLayoutEditorForController { rows.append(ControllerTargetID.editPadLayout) }
+        return rows
+    }
+
+    /// Each leaf is its own column; Left and Right cross the fold to the row beside, and
+    /// vertical movement enters the footer through Resume. Mirrored in right-to-left.
+    private func quickMenuSpreadDirectionalLinks() -> [ControllerAccessibilityDirectionalLink] {
+        let leading = spreadLeadingRows
+        let trailing = Array(quickMenuPortraitControllerTargetOrder().dropFirst(leading.count).dropLast(2))
+        let stop = ControllerTargetID.stop
+        let resume = ControllerTargetID.resume
+        let boundary = ControllerAccessibilityDirectionalLink.navigationBoundary
+        let towardTrailing: MenuControllerCommand = layoutDirection == .rightToLeft ? .left : .right
+        let towardLeading: MenuControllerCommand = layoutDirection == .rightToLeft ? .right : .left
+
+        var links: [ControllerAccessibilityDirectionalLink] = []
+        for column in [leading, trailing] {
+            for (upper, lower) in zip(column, column.dropFirst()) {
+                links.append(.init(fromLabel: upper, direction: .down, toLabel: lower))
+                links.append(.init(fromLabel: lower, direction: .up, toLabel: upper))
+            }
+        }
+        links += leading.map { .init(fromLabel: $0, direction: towardLeading, toLabel: boundary) }
+        links += trailing.map { .init(fromLabel: $0, direction: towardTrailing, toLabel: boundary) }
+        // Stop sits at the footer's near end, where a plain spatial lookup can rank it above the other leaf.
+        links += leading.map { .init(fromLabel: $0, direction: towardTrailing, toLabel: ControllerAccessibilityDirectionalLink.nearest(of: trailing)) }
+        links += trailing.map { .init(fromLabel: $0, direction: towardLeading, toLabel: ControllerAccessibilityDirectionalLink.nearest(of: leading)) }
+        if let first = trailing.first {
+            links.append(.init(fromLabel: first, direction: .up, toLabel: boundary))
+        }
+        if let last = leading.last {
+            links.append(.init(fromLabel: last, direction: .down, toLabel: resume))
+            links.append(.init(fromLabel: stop, direction: towardLeading, toLabel: last))
+        }
+        links += [
+            .init(fromLabel: ControllerTargetID.backToMenu, direction: .down, toLabel: resume),
+            .init(fromLabel: stop, direction: .up, toLabel: ControllerTargetID.backToMenu),
+            .init(fromLabel: stop, direction: .down, toLabel: boundary),
+            .init(fromLabel: stop, direction: towardTrailing, toLabel: resume),
+            .init(fromLabel: resume, direction: .up, toLabel: ControllerTargetID.backToMenu),
+            .init(fromLabel: resume, direction: towardLeading, toLabel: stop),
+            .init(fromLabel: resume, direction: towardTrailing, toLabel: boundary),
+        ]
+        return links
     }
 
     /// Portrait keeps its scrolling rows and fixed footer in different
     /// coordinate spaces. Publish their semantic order instead of re-sorting
     /// them from frames that change while the scroll view is moving.
     private func quickMenuPortraitControllerTargetOrder() -> [String] {
-        var order = [
-            ControllerTargetID.osd,
-            ControllerTargetID.virtualPad,
-            ControllerTargetID.fullScreen,
-            ControllerTargetID.hideMenuButton,
-        ]
-        if vmMenuAvailable { order.append(ControllerTargetID.speed) }
-        if gameMenuAvailable { order.append(ControllerTargetID.perGame) }
-        order.append(ControllerTargetID.controllerSkin)
-        if !hidesPadLayoutEditorForController {
-            order.append(ControllerTargetID.editPadLayout)
-        }
+        var order = spreadLeadingRows
         if gameMenuAvailable {
             order.append(ControllerTargetID.gameController)
         }
@@ -574,7 +628,11 @@ struct QuickMenuView: View {
         height: CGFloat,
         twoColumns: Bool
     ) -> some View {
-        if variant == .phoneLandscape {
+        if let foldSplit, foldSplit.vertical {
+            spreadBody(foldSplit, hintTiles: footerHintTiles(width: width, height: height) != nil)
+        } else if let foldSplit {
+            pairBody(foldSplit, hintTiles: footerHintTiles(width: width, height: height) != nil)
+        } else if variant == .phoneLandscape {
             landscapeBody(
                 width: width,
                 height: height,
@@ -603,7 +661,7 @@ struct QuickMenuView: View {
                     subtitle: gameTitle,
                     compact: compact
                 )
-                scrollContent(twoColumns: twoColumns)
+                scrollContent(twoColumns: twoColumns, hintTiles: footerHintTiles(width: width, height: height))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
@@ -636,6 +694,108 @@ struct QuickMenuView: View {
         .environment(\.overlayCompact, true)
     }
 
+    /// The card opened at iPhone Duo's fold in book pose: one column per leaf.
+    private func spreadBody(_ split: OverlayFoldSplit, hintTiles: Bool) -> some View {
+        HStack(alignment: .top, spacing: split.second.minX - split.first.maxX) {
+            foldLeaf(split.first.width, split.first.height, foldEdge: .trailing) {
+                OverlayHeader(
+                    systemImage: "pause.circle.fill",
+                    title: settings.localized("Paused"),
+                    subtitle: gameTitle,
+                    compact: compact
+                )
+                ScrollView {
+                    spreadRightStickTarget(leading: true)
+                    VStack(spacing: 14) {
+                        OverlaySectionCard(title: settings.localized("Quick Actions")) { quickActionsRows }
+                        OverlaySectionCard(title: settings.localized("This Game")) { thisGameRows }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                }
+                if hintTiles {
+                    pauseFooter(hintTiles: .alone)
+                }
+            }
+            foldLeaf(split.second.width, split.second.height, foldEdge: .leading) {
+                ScrollView {
+                    spreadRightStickTarget(leading: false)
+                    VStack(spacing: 14) {
+                        OverlaySectionCard(title: settings.localized("Game Tools")) { gameToolsRows }
+                        OverlaySectionCard(title: settings.localized("Reset & Exit")) { resetAndExitRows }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 10)
+                }
+                pauseFooter(hintTiles: hintTiles ? .beside : nil)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// Tabletop: what is paused above the fold, every control below it.
+    private func pairBody(_ split: OverlayFoldSplit, hintTiles: Bool) -> some View {
+        VStack(spacing: split.second.minY - split.first.maxY) {
+            foldLeaf(split.first.width, nil, foldEdge: .bottom) {
+                OverlayHeader(
+                    systemImage: "pause.circle.fill",
+                    title: settings.localized("Paused"),
+                    subtitle: gameTitle,
+                    compact: compact
+                )
+                .frame(minHeight: 68)
+                if hintTiles {
+                    GameplayControllerShortcutHelpOverlay(settings: settings, controllerInput: controllerInput, inCard: true)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                        .overlay(alignment: .top) {
+                            OverlayTheme.separator
+                                .frame(height: 0.5)
+                        }
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(height: split.first.height, alignment: .bottom)
+            foldLeaf(split.second.width, split.second.height, foldEdge: .top) {
+                ScrollView {
+                    quickMenuRightStickTarget
+                    cardsContent(
+                        twoColumns: variant.supportsTwoColumns(width: split.second.width, height: split.second.height)
+                    )
+                }
+                pauseFooter(hintTiles: nil)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// One leaf of the opened card. Corners facing the fold are tighter, and the shadow
+    /// stops at the fold's edge so nothing but the scrim lands on it.
+    private func foldLeaf<Leaf: View>(
+        _ width: CGFloat,
+        _ height: CGFloat?,
+        foldEdge: Edge,
+        @ViewBuilder content: () -> Leaf
+    ) -> some View {
+        func radius(_ a: Edge, _ b: Edge) -> CGFloat { foldEdge == a || foldEdge == b ? 8 : 26 }
+        let radii = RectangleCornerRadii(
+            topLeading: radius(.top, .leading),
+            bottomLeading: radius(.bottom, .leading),
+            bottomTrailing: radius(.bottom, .trailing),
+            topTrailing: radius(.top, .trailing)
+        )
+        return OverlayPanelScaffold(cornerRadii: radii) {
+            VStack(spacing: 0) { content() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .frame(width: width, height: height)
+        .accessibilityElement(children: .contain)
+        .clipShape(UnevenRoundedRectangle(cornerRadii: radii, style: .continuous))
+        .shadow(color: .black.opacity(0.28), radius: 22, x: 0, y: 12)
+        .modifier(LeafShadowMask(foldEdge: foldEdge))
+    }
+
     @ViewBuilder
     private func cardsContent(twoColumns: Bool) -> some View {
         if twoColumns {
@@ -665,8 +825,16 @@ struct QuickMenuView: View {
         }
     }
 
+    /// iPhone Duo's inner screen has no room for the floating shortcut bar under the card.
+    private func footerHintTiles(width: CGFloat, height: CGFloat) -> QuickMenuFooter.HintTiles? {
+        guard AppState.shared.hingePresent, variant == .ipadTwoColumn,
+              controllerInput?.hasConnectedController == true,
+              ControllerButtonGlyph.connectedGamepad != nil else { return nil }
+        return width > height ? .halves : .row
+    }
+
     @ViewBuilder
-    private func scrollContent(twoColumns: Bool) -> some View {
+    private func scrollContent(twoColumns: Bool, hintTiles: QuickMenuFooter.HintTiles?) -> some View {
         // Keep the footer as a real layout sibling. A safe-area overlay leaves
         // the underlying scroll viewport focusable beneath the buttons, so a
         // row can receive controller focus while Stop/Resume visually cover it.
@@ -675,15 +843,29 @@ struct QuickMenuView: View {
                 quickMenuRightStickTarget
                 cardsContent(twoColumns: twoColumns)
             }
-            QuickMenuFooter(
-                settings: settings,
-                compact: compact,
-                stopControllerNavigationID: ControllerTargetID.stop,
-                resumeControllerNavigationID: ControllerTargetID.resume,
-                onStop: { showStopConfirmation = true },
-                onResume: onResume
-            )
+            pauseFooter(hintTiles: hintTiles)
         }
+    }
+
+    private func pauseFooter(hintTiles: QuickMenuFooter.HintTiles?) -> some View {
+        QuickMenuFooter(
+            settings: settings,
+            compact: compact,
+            stopControllerNavigationID: ControllerTargetID.stop,
+            resumeControllerNavigationID: ControllerTargetID.resume,
+            onStop: { showStopConfirmation = true },
+            onResume: onResume,
+            hintTiles: hintTiles
+        )
+    }
+
+    private func spreadRightStickTarget(leading: Bool) -> some View {
+        QuickMenuLeafStickTarget(
+            controllerInput: controllerInput,
+            leadingRows: spreadLeadingRows,
+            leading: leading,
+            isEnabled: !showStopConfirmation
+        )
     }
 
     private var quickMenuRightStickTarget: some View {
@@ -1240,43 +1422,87 @@ struct QuickMenuFooter: View {
     var resumeTitle: String?
     var resumeImage = "play.fill"
     var hint: ControllerHintLine?
+    var hintTiles: HintTiles?
+
+    enum HintTiles {
+        /// Tiles under the first column, Stop and Resume under the second.
+        case halves
+        /// Tiles, then Stop, then Resume, in one row.
+        case row
+        /// Only the tiles, on the leaf of iPhone Duo's opened card that has no buttons.
+        case alone
+        /// Only Stop and Resume, at least as tall as the tiles on the other leaf.
+        case beside
+    }
+
+    @Environment(\.menuControllerInputRouter) private var controllerInput
 
     var body: some View {
         VStack(spacing: 0) {
             OverlayTheme.separator
                 .frame(height: 0.5)
-            HStack(spacing: compact ? 10 : 12) {
-                if showsStopButton {
-                    QuickMenuStopButton(
-                        controllerNavigationID: stopControllerNavigationID,
-                        accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
-                        compact: compact,
-                        ejects: ejects,
-                        action: onStop
-                    )
-                }
-                if let hint {
-                    hint
-                        .font(.footnote)
-                        .foregroundStyle(OverlayTheme.textSecondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Button(action: onResume) {
-                    Label {
-                        Text(resumeTitle ?? settings.localized("Resume"))
-                    } icon: {
-                        Image(systemName: resumeImage)
-                            .foregroundStyle(.white)
+            Group {
+                switch hintTiles {
+                case .halves:
+                    HStack(spacing: 12) {
+                        tiles.frame(maxWidth: .infinity)
+                        buttons.frame(maxWidth: .infinity)
                     }
-                        .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                case .row:
+                    HStack(spacing: compact ? 10 : 12) {
+                        tiles.frame(width: 3 * 110 + 8)
+                        buttons
+                    }
+                    .padding(.horizontal, 16)
+                case .alone:
+                    tiles.padding(.horizontal, 16)
+                case .beside:
+                    buttons
+                        .frame(minHeight: GameplayControllerShortcutHelpOverlay.height)
+                        .padding(.horizontal, 16)
+                case nil:
+                    buttons.padding(.horizontal, compact ? 18 : 20)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(compact ? .regular : .large)
-                .quickMenuResumeTarget(resumeControllerNavigationID, action: onResume)
             }
-            .padding(.horizontal, compact ? 18 : 20)
             .padding(.top, 8)
             .padding(.bottom, compact ? 10 : 14)
+        }
+    }
+
+    private var tiles: some View {
+        GameplayControllerShortcutHelpOverlay(settings: settings, controllerInput: controllerInput, inCard: true)
+    }
+
+    private var buttons: some View {
+        HStack(spacing: compact ? 10 : 12) {
+            if showsStopButton {
+                QuickMenuStopButton(
+                    controllerNavigationID: stopControllerNavigationID,
+                    accessibilityLabel: settings.localized(ejects ? "Eject Disc" : "Stop"),
+                    compact: compact,
+                    ejects: ejects,
+                    action: onStop
+                )
+            }
+            if let hint {
+                hint
+                    .font(.footnote)
+                    .foregroundStyle(OverlayTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            Button(action: onResume) {
+                Label {
+                    Text(resumeTitle ?? settings.localized("Resume"))
+                } icon: {
+                    Image(systemName: resumeImage)
+                        .foregroundStyle(.white)
+                }
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(compact ? .regular : .large)
+            .quickMenuResumeTarget(resumeControllerNavigationID, action: onResume)
         }
     }
 }
@@ -1289,6 +1515,29 @@ private extension View {
         } else {
             self
         }
+    }
+}
+
+/// The right stick scrolls the leaf of the book-pose spread that holds controller focus.
+private struct QuickMenuLeafStickTarget: View {
+    let controllerInput: MenuControllerInputRouter?
+    let leadingRows: [String]
+    let leading: Bool
+    let isEnabled: Bool
+    @Environment(\.controllerAccessibilityNavigationSession) private var session
+
+    var body: some View {
+        // The focused frame is observed and the key is not, so read the frame to stay current.
+        let key = session?.focusedFrame == nil ? nil : session?.focusedElementID
+        let focusIsLeading = key.map { key in leadingRows.contains { key.contains($0) } } ?? false
+        ControllerRightStickScrollTarget(
+            controllerInput: controllerInput,
+            axes: .vertical,
+            priority: 180,
+            isEnabled: isEnabled && focusIsLeading == leading,
+            pointsPerSecond: 680
+        )
+        .frame(height: 0)
     }
 }
 

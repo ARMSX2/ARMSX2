@@ -352,8 +352,10 @@ struct GameplayControllerShortcutHelpOverlay: View {
     let controllerInput: MenuControllerInputRouter?
     /// Clear glass reads as part of the game; under the pause card it needs the card's frost.
     var overPauseMenu = false
+    /// Just the tiles, for a footer row inside the pause card.
+    var inCard = false
 
-    private static let height: CGFloat = 52
+    static let height: CGFloat = 52
     private static let bottomPadding: CGFloat = 6
     /// What the pause card keeps free above the safe area: the bar and a gap.
     static let pauseCardReserve = bottomPadding + height + 11
@@ -365,75 +367,93 @@ struct GameplayControllerShortcutHelpOverlay: View {
     var body: some View {
         if controllerInput?.hasConnectedController == true,
            ControllerButtonGlyph.connectedGamepad != nil {
-            shortcutContent
+            Group {
+                if inCard {
+                    tiles.frame(height: Self.height)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(spokenHints)
+                } else {
+                    shortcutContent
+                }
+            }
+            .allowsHitTesting(false)
         }
+    }
+
+    private var spokenHints: String {
+        [
+            "Press \(settings.controllerMacroQuickMenu.title) to open the Quick Menu.",
+            "Press \(settings.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
+            "Press \(settings.controllerMacroSaveGameState.title) to save a game state.",
+            "Press \(settings.controllerMacroLoadGameState.title) to load a game state.",
+        ].joined(separator: " ")
+    }
+
+    private var tiles: some View {
+        HStack(spacing: 0) {
+            shortcutTile(
+                title: settings.localized("Menu")
+            ) {
+                macroBadge(settings.controllerMacroQuickMenu)
+            }
+
+            shortcutTile(
+                title: settings.localized("Speed")
+            ) {
+                macroBadge(settings.controllerMacroIncreaseSpeed)
+            }
+
+            shortcutTile(
+                title: settings.localized("State")
+            ) {
+                macroBadge(settings.controllerMacroSaveGameState)
+            }
+        }
+        .padding(4)
     }
 
     private var shortcutContent: some View {
         GeometryReader { geometry in
             let accent = themedAccentColor
-            HStack(spacing: 0) {
-                shortcutTile(
-                    title: settings.localized("Menu")
-                ) {
-                    macroBadge(settings.controllerMacroQuickMenu)
-                }
-
-                shortcutTile(
-                    title: settings.localized("Speed")
-                ) {
-                    macroBadge(settings.controllerMacroIncreaseSpeed)
-                }
-
-                shortcutTile(
-                    title: settings.localized("State")
-                ) {
-                    macroBadge(settings.controllerMacroSaveGameState)
-                }
-            }
-            .padding(4)
-            .frame(height: Self.height)
-            .frame(
-                maxWidth: min(
-                    420,
-                    max(
-                        0,
-                        geometry.size.width
-                            - geometry.safeAreaInsets.leading
-                            - geometry.safeAreaInsets.trailing
-                            - 20
+            // In book pose the bar fits inside the leading pane.
+            let paneWidth = geometry.activeFold(book: true).map { $0.minX - 32 }
+            tiles
+                .frame(height: Self.height)
+                .frame(
+                    maxWidth: min(
+                        420,
+                        paneWidth ?? .infinity,
+                        max(
+                            0,
+                            geometry.size.width
+                                - geometry.safeAreaInsets.leading
+                                - geometry.safeAreaInsets.trailing
+                                - 20
+                        )
                     )
                 )
-            )
-            .glassSurface(
-                tint: accent.opacity(0.05),
-                clear: !overPauseMenu,
-                forceClear: !overPauseMenu,
-                materializeTransition: true,
-                cornerRadius: 28
-            )
-            .overlay {
-                Capsule(style: .continuous)
-                    .stroke(
-                        Color.primary.opacity(0.13),
-                        lineWidth: 0.65
-                    )
-            }
-            .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
-            // On the bar itself, so VoiceOver frames the bar rather than the whole screen.
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(
-                [
-                    "Press \(settings.controllerMacroQuickMenu.title) to open the Quick Menu.",
-                    "Press \(settings.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
-                    "Press \(settings.controllerMacroSaveGameState.title) to save a game state.",
-                    "Press \(settings.controllerMacroLoadGameState.title) to load a game state.",
-                ].joined(separator: " ")
-            )
-            .padding(.bottom, geometry.safeAreaInsets.bottom - Self.homeIndicatorSink(geometry.safeAreaInsets.bottom) + Self.bottomPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .glassSurface(
+                    tint: accent.opacity(0.05),
+                    clear: !overPauseMenu,
+                    forceClear: !overPauseMenu,
+                    materializeTransition: true,
+                    cornerRadius: 28
+                )
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(
+                            Color.primary.opacity(0.13),
+                            lineWidth: 0.65
+                        )
+                }
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+                // On the bar itself, so VoiceOver frames the bar rather than the whole screen.
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(spokenHints)
+                .padding(.bottom, geometry.safeAreaInsets.bottom - Self.homeIndicatorSink(geometry.safeAreaInsets.bottom) + Self.bottomPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .centredInLeadingPaneOnFold()
         }
-        .allowsHitTesting(false)
     }
 
     private var themedAccentColor: Color {

@@ -77,6 +77,7 @@ struct CheatsPatchesManagerView: View {
     let gameTitle: String
     let launchContext: CheatsPatchesLaunchContext
     let controllerInput: MenuControllerInputRouter?
+    let onClose: (() -> Void)?
 
     @State private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
@@ -96,12 +97,14 @@ struct CheatsPatchesManagerView: View {
         isoName: String,
         gameTitle: String,
         launchContext: CheatsPatchesLaunchContext = .library,
-        controllerInput: MenuControllerInputRouter? = nil
+        controllerInput: MenuControllerInputRouter? = nil,
+        onClose: (() -> Void)? = nil
     ) {
         self.isoName = isoName
         self.gameTitle = gameTitle
         self.launchContext = launchContext
         self.controllerInput = controllerInput
+        self.onClose = onClose
     }
 
     var body: some View {
@@ -985,7 +988,7 @@ struct CheatsPatchesManagerView: View {
                 showAdvanced = false
                 controllerTarget = .advanced
             } else {
-                dismiss()
+                close()
             }
             controllerInput?.playFeedback(.back)
         case .toggleFavorite, .showContextMenu, .previousTab, .nextTab:
@@ -1075,7 +1078,11 @@ struct CheatsPatchesManagerView: View {
 
     private func dismissWithReturnSound() {
         MenuAudioPackManager.shared.playEvent(.return)
-        dismiss()
+        close()
+    }
+
+    private func close() {
+        if let onClose { onClose() } else { dismiss() }
     }
 
     // One source-URL row. The text binding is captured per-row so SwiftUI tracks it
