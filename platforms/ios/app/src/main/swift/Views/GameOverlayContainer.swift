@@ -108,21 +108,19 @@ struct GameOverlayContainer<Content: View>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    // iPad vs iPhone is decided by device idiom, not the horizontal size class: the
-    // largest iPhones (Pro Max / Plus) report a regular width size class in landscape,
-    // which previously misrouted them onto the bounded iPad card and starved the
-    // landscape deck. GeometryReader still re-evaluates on orientation/size change.
-    private var isIPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
-
     var body: some View {
         // Outer reader sees the keyboard, inner one does not. Card is sized off the inner
         // one so it cannot collapse; the difference is how much the keyboard covers.
         GeometryReader { keyboardGeo in
             GeometryReader { geo in
                 // Gameplay scene geometry, so rotation and Stage Manager come for free.
+                let insets = geo.safeAreaInsets
+                let window = CGSize(width: geo.size.width + insets.leading + insets.trailing,
+                                    height: geo.size.height + insets.top + insets.bottom)
+                // Goes by window size: a Pro Max reports a regular width class in landscape.
                 let metrics = OverlayMetrics(
                     size: geo.size,
-                    isIPad: isIPad,
+                    isIPad: usesLargeLayout(windowSize: window),
                     reduceTransparency: reduceTransparency,
                     ipadPortraitHeightCap: ipadPortraitHeightCap
                 )

@@ -155,6 +155,7 @@ struct PadLayoutEditView: View {
         .ignoresSafeArea(.keyboard)
         .navigationBarHidden(true)
         .statusBarHidden()
+        .statusColumnDisabled()
         .persistentSystemOverlays(.hidden)
         .onDisappear {
             rollbackUnsavedChanges()

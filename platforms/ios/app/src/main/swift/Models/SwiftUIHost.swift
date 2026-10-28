@@ -63,6 +63,13 @@ final class ARMSX2ControllerEventHostViewController: GCEventViewController {
         children.last
     }
 
+#if canImport(UIKit, _version: 9127.0.85)
+    @available(iOS 27.1, *)
+    override var childForPreferredVerticalBarBehavior: UIViewController? {
+        children.last
+    }
+#endif
+
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         contentController.supportedInterfaceOrientations
     }
@@ -194,7 +201,36 @@ extension View {
     func appStatusBarHidden() -> some View {
         statusBarHidden(AppState.shared.hideStatusBar)
     }
+
+    /// Turns iPhone Duo's status column off for the full-screen cover this view sits in.
+    @ViewBuilder
+    func statusColumnDisabled() -> some View {
+#if canImport(UIKit, _version: 9127.0.85)
+        background(StatusColumnDisabler())
+#else
+        self
+#endif
+    }
 }
+
+#if canImport(UIKit, _version: 9127.0.85)
+private struct StatusColumnDisabler: UIViewControllerRepresentable {
+    final class Controller: UIViewController {
+        @available(iOS 27.1, *)
+        override var preferredVerticalBarBehavior: UIVerticalBarBehavior { .disabled }
+
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            if #available(iOS 27.1, *) {
+                parent?.setNeedsUpdateOfVerticalBarConfiguration()
+            }
+        }
+    }
+
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) {}
+}
+#endif
 
 /// Custom hosting controller that respects fullScreen state for status bar hiding
 class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
@@ -207,6 +243,17 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
     override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation {
         .fade
     }
+#if canImport(UIKit, _version: 9127.0.85)
+    // A mounted NavigationStack would answer for the game screen, so no child while playing.
+    @available(iOS 27.1, *)
+    override var preferredVerticalBarBehavior: UIVerticalBarBehavior {
+        AppState.shared.currentScreen == .playing ? .disabled : .automatic
+    }
+    @available(iOS 27.1, *)
+    override var childForPreferredVerticalBarBehavior: UIViewController? {
+        AppState.shared.currentScreen == .playing ? nil : super.childForPreferredVerticalBarBehavior
+    }
+#endif
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -271,6 +318,9 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
             self.rootView = current
             self.view.setNeedsLayout()
             self.view.layoutIfNeeded()
+        }, completion: { _ in
+            // iPhone Duo's scene reaches the other screen only as the transition completes, after its hinge update.
+            AppState.shared.sizeTransitions &+= 1
         })
     }
 
@@ -283,6 +333,11 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         while let current = controller {
             current.setNeedsStatusBarAppearanceUpdate()
             current.setNeedsUpdateOfHomeIndicatorAutoHidden()
+#if canImport(UIKit, _version: 9127.0.85)
+            if #available(iOS 27.1, *) {
+                current.setNeedsUpdateOfVerticalBarConfiguration()
+            }
+#endif
             controller = current.parent
         }
     }
@@ -329,6 +384,17 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
         let hostingController = ARMSX2HostingController(rootView: RootView())
         hostingController.view.backgroundColor = .clear
         hostingController.view.isOpaque = false
+#if canImport(UIKit, _version: 9127.0.85)
+        if #available(iOS 27.1, *) {
+            hostingController.view.addInteraction(UIHingeInteraction { _, update in
+                let state = AppState.shared
+                let partiallyOpen = update.hinge?.status == .partiallyOpen
+                let present = update.hinge.map { $0.status != .unknown } ?? false
+                if state.hingePartiallyOpen != partiallyOpen { state.hingePartiallyOpen = partiallyOpen }
+                if state.hingePresent != present { state.hingePresent = present }
+            })
+        }
+#endif
         return hostingController
     }
 
@@ -359,5 +425,82 @@ extension UIApplication {
     /// The app's own scene; an AirPlay scene can enumerate first and has a key window too.
     var appWindowScene: UIWindowScene? {
         connectedScenes.first { $0.session.role == .windowApplication } as? UIWindowScene
+    }
+
+    /// The screen of the app's own scene.
+    var appScreen: UIScreen {
+        appWindowScene?.screen ?? UIScreen.main
+    }
+}
+
+/// iPad, or a phone window whose shorter side is at least 600 pt (iPhone Duo's inner screen).
+@MainActor
+func usesLargeLayout(windowSize: CGSize? = nil) -> Bool {
+    switch UIDevice.current.userInterfaceIdiom {
+    case .pad:
+        return true
+    case .phone:
+        let size = windowSize ?? UIApplication.shared.appWindowScene?.coordinateSpace.bounds.size ?? .zero
+        return min(size.width, size.height) >= 600
+    default:
+        return false
+    }
+}
+
+extension GeometryProxy {
+    /// The fold while the hinge is half open, in this proxy's space.
+    func activeFold() -> CGRect? {
+#if canImport(SwiftUI, _version: 8.0.85)
+        guard AppState.shared.hingePartiallyOpen, #available(iOS 27.1, *) else { return nil }
+        let bounds = CGRect(origin: .zero, size: size)
+        return reservedRegions(kind: .division)
+            .first { $0.isActive && $0.frame.intersects(bounds) }?
+            .frame
+#else
+        return nil
+#endif
+    }
+
+    /// The fold in book pose (running top to bottom) or in tabletop (running across).
+    func activeFold(book: Bool) -> CGRect? {
+        activeFold().flatMap { (book ? $0.height > $0.width : $0.width > $0.height) ? $0 : nil }
+    }
+}
+
+extension ToolbarContent {
+    /// Moves the item into the vertical bar when one is shown.
+    @ToolbarContentBuilder
+    func prefersVerticalBar() -> some ToolbarContent {
+#if canImport(SwiftUI, _version: 8.0.85)
+        if #available(iOS 27.1, *) {
+            axisBehavior(.verticalPreferred)
+        } else {
+            self
+        }
+#else
+        self
+#endif
+    }
+}
+
+extension View {
+    /// Centres the view in the leading pane while the fold splits it in book pose.
+    func centredInLeadingPaneOnFold() -> some View {
+        modifier(LeadingPaneOnFold())
+    }
+}
+
+private struct LeadingPaneOnFold: ViewModifier {
+    @State private var shift: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: shift)
+            .background {
+                GeometryReader { geo in
+                    let target = geo.activeFold(book: true).map { $0.minX / 2 - geo.size.width / 2 } ?? 0
+                    Color.clear.onChange(of: target, initial: true) { _, target in shift = target }
+                }
+            }
     }
 }

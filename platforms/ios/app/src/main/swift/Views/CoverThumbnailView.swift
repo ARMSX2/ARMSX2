@@ -60,7 +60,7 @@ struct CoverThumbnailView: View {
             return
         }
 
-        let scale = UIScreen.main.scale
+        let scale = UIApplication.shared.appScreen.scale
         if let cached = CoverThumbnailCache.shared.cachedImage(
             for: coverURL,
             signature: coverSignature,

@@ -283,7 +283,7 @@ struct EmulationOnlyGameView: View {
 
                         ZStack {
                             Color.black
-                            retainedVirtualControls(isLandscape: false)
+                            retainedVirtualControls(isLandscape: false, screen: screen)
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -294,7 +294,7 @@ struct EmulationOnlyGameView: View {
                     ZStack {
                         accessibleMetalSurface
                         if appState.emulationOnlyPresentation.showsVirtualControls {
-                            retainedVirtualControls(isLandscape: true)
+                            retainedVirtualControls(isLandscape: true, screen: screen)
                         }
                         dynamicCrosshairOverlay
                     }
@@ -311,12 +311,13 @@ struct EmulationOnlyGameView: View {
             .accessibilityAddTraits(.isImage)
     }
 
-    private func retainedVirtualControls(isLandscape: Bool) -> some View {
+    private func retainedVirtualControls(isLandscape: Bool, screen: CGSize) -> some View {
         VirtualControllerView(
             isLandscape: isLandscape,
             layoutSnapshot: appState.emulationOnlyPresentation.padLayoutSnapshot,
             skinDescriptor: appState.emulationOnlyPresentation.padSkinDescriptor,
-            touchActionSession: touchActionSession
+            touchActionSession: touchActionSession,
+            largeLayout: usesLargeLayout(windowSize: screen)
         )
         .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
     }
@@ -684,7 +685,8 @@ struct GameScreenView: View {
                                 isLandscape: true,
                                 layoutSnapshot: effectivePadLayoutSnapshot,
                                 skinDescriptor: effectivePadSkinDescriptor,
-                                touchActionSession: touchActionSession
+                                touchActionSession: touchActionSession,
+                                largeLayout: usesLargeLayout(windowSize: screen)
                             )
                             .id(padRebuildToken)
                             .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
@@ -724,7 +726,8 @@ struct GameScreenView: View {
                                 VirtualControllerView(
                                     layoutSnapshot: effectivePadLayoutSnapshot,
                                     skinDescriptor: effectivePadSkinDescriptor,
-                                    touchActionSession: touchActionSession
+                                    touchActionSession: touchActionSession,
+                                    largeLayout: usesLargeLayout(windowSize: screen)
                                 )
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .gameplayLaunchChrome(visible: appState.gameplayLaunchControlsVisible)
