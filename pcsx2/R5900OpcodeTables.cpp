@@ -410,8 +410,12 @@ namespace R5900
 		MakeOpcodeM( PMULTH, MMI_Mult, 0 );
 		MakeOpcodeM( PMADDW, MMI_Mult, 0 );
 		MakeOpcodeM( PMSUBW, MMI_Mult, 0 );
-		MakeOpcodeM( PMFHI, MMI_Mult, 0 );
-		MakeOpcodeM( PMFLO, MMI_Mult, 0 );
+		// PMFHI, PMFLO: 1 cycle on an SCPH-30001, like any MMI move; after a
+		// parallel multiply the read waits, and PMULTH then PMFLO costs 4,
+		// which the multiply's 3 plus this 1 already charges. (They were
+		// charged as multiplies, 3.)
+		MakeOpcodeM( PMFHI, MMI_Default, 0 );
+		MakeOpcodeM( PMFLO, MMI_Default, 0 );
 		MakeOpcodeM( PMULTW, MMI_Mult, 0 );
 		MakeOpcodeM( PMADDUW, MMI_Mult, 0 );
 		MakeOpcodeM( PMULTUW, MMI_Mult, 0 );

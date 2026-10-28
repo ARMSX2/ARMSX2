@@ -120,6 +120,12 @@ const MeasuredOp kMmiAlu[] = {
 	{"PEXCW", ee::MMI(reg::a1, reg::a2, reg::t0, 0x1e, 0x29), 1 * 8},
 };
 
+// The 128-bit HI/LO reads.
+const MeasuredOp kHiLoReads[] = {
+	{"PMFHI", ee::PMFHI(reg::t0), 1 * 8},
+	{"PMFLO", ee::PMFLO(reg::t0), 1 * 8},
+};
+
 struct ScopedCycleRate
 {
 	s8 prev;
@@ -219,4 +225,12 @@ void ExpectMeasuredCharges(const MeasuredOp (&ops)[N])
 TEST(EeRecMeasuredCharge, MmiAluOpsChargeOneCycle)
 {
 	ExpectMeasuredCharges(kMmiAlu);
+}
+
+// The console reads HI or LO in 1 cycle; after a parallel multiply the read
+// waits, and a PMULTH then PMFLO costs 4 per pair, which the multiply's own 3
+// plus this 1 already makes.
+TEST(EeRecMeasuredCharge, ParallelHiLoReadsChargeOneCycle)
+{
+	ExpectMeasuredCharges(kHiLoReads);
 }
