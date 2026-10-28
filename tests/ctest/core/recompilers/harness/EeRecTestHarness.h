@@ -353,7 +353,12 @@ public:
 	const VuSnapshot& Vu1InterpSnapshot() const { return vu1_interp_snapshot_; }
 
 private:
-	static constexpr s32 kCycleBudget = 1024;
+	// The JIT leg runs until it parks or has charged this many cycles; the
+	// interpreter leg runs until it parks or has run kMaxInstructions. The
+	// budget must outlast every program the interpreter leg finishes, or the
+	// two legs stop at different points. The fuzzer's counted loops of integer
+	// divides (37 cycles each) need more than 1024.
+	static constexpr s32 kCycleBudget = 8192;
 	static constexpr u32 kMaxInstructions = 2048;
 
 	void LoadProgramImpl(std::initializer_list<u32> instructions, bool append_term);
