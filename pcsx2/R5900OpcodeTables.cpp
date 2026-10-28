@@ -130,8 +130,10 @@ namespace R5900
 			// MFLO, MFLO1 costs 37 per group: each pipeline has its own
 			// divider, the two run at once, and the divider runs on while
 			// other instructions issue until MFLO or MFHI waits for it.
-			// (DIVU and DIVU1 were not timed separately; they use the same
-			// dividers.)
+			// DIVU and DIVU1 take the same 37, and so does every operand
+			// tried: divide by zero, INT_MIN / -1, signs, a quotient of zero
+			// or one. A divide issued while the same pipeline's divider is
+			// busy waits for it.
 			//
 			// The whole 37 is charged at issue. Charging the wait at the first
 			// read of LO or HI instead would be closer when independent work
@@ -507,9 +509,10 @@ namespace R5900
 		// be 6.  The charge is the whole latency at issue, which overcharges
 		// an FPU add or multiply that runs inside the divide by its own small
 		// charge.  (FPU_Mult's 4 does match the measured multiply latency.)
-		// RSQRT.S is charged the 13 above; it used to be 8.  Only the
-		// SCPH-90000 has timed it, but that console's other divide and
-		// multiply figures are exactly what the SCPH-30001 gives.
+		// RSQRT.S is charged the 13 above; it used to be 8.  The SCPH-30001
+		// gives 13 as well, on every operand class tried, and its mixes
+		// add up the same way (DIV.S with SQRT.S 14 per pair, with
+		// RSQRT.S 20).
 		MakeOpcode1( MUL_S, FPU_Mult, 0 );
 		MakeOpcode1( DIV_S, 7*8, 0 );
 		MakeOpcode1( SQRT_S, 7*8, 0 );
