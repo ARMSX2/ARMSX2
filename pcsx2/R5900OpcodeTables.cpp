@@ -499,11 +499,13 @@ namespace R5900
 		// be 6.  The charge is the whole latency at issue, which overcharges
 		// an FPU add or multiply that runs inside the divide by its own small
 		// charge.  (FPU_Mult's 4 does match the measured multiply latency.)
-		// RSQRT.S below still says 8.
+		// RSQRT.S is charged the 13 above; it used to be 8.  Only the
+		// SCPH-90000 has timed it, but that console's other divide and
+		// multiply figures are exactly what the SCPH-30001 gives.
 		MakeOpcode1( MUL_S, FPU_Mult, 0 );
 		MakeOpcode1( DIV_S, 7*8, 0 );
 		MakeOpcode1( SQRT_S, 7*8, 0 );
-		MakeOpcode1( RSQRT_S, 8*8, 0 );
+		MakeOpcode1( RSQRT_S, 13*8, 0 );
 		MakeOpcode1( MULA_S, FPU_Mult, 0 );
 		MakeOpcode1( MADD_S, FPU_Mult, 0 );
 		MakeOpcode1( MSUB_S, FPU_Mult, 0 );
