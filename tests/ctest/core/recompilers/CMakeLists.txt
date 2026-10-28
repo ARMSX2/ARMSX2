@@ -49,6 +49,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_callret_tests.cpp
 	ee_rec_cond_veneer_tests.cpp
 	ee_rec_cop0_tests.cpp
+	ee_event_gate_tests.cpp
 	ee_event_test_quiet_path_tests.cpp
 	mtvu_savestate_load_tests.cpp
 	ee_rec_cycle_rate_tests.cpp
