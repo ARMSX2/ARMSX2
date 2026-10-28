@@ -164,9 +164,9 @@ object ShaderParamsEditor {
 
     private fun commit(next: Map<String, Float>) {
         val req = request.value ?: return
+        if (next == overrides.value) return
         overrides.value = next
         req.onChange(next)
-        ShaderParams.pushEffective(req.preset, params.value.orEmpty(), next)
     }
 
     /** Nudge the selected parameter by [dir] of its own step. */
@@ -174,6 +174,7 @@ object ShaderParamsEditor {
         val line = lines.value.getOrNull(selected.intValue) as? ParamLine.Param ?: return
         val p = line.param
         val next = p.valueAt((p.indexOf(valueOf(p)) + dir).coerceIn(0, p.stepCount))
+        if (next == valueOf(p)) return
         // Landing back on the author's default DROPS the override rather than storing a
         // value equal to it, so "changed" always means changed.
         commit(if (p.isInitial(next)) overrides.value - p.name else overrides.value + (p.name to next))

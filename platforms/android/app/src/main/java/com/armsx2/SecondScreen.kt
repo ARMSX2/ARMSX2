@@ -175,19 +175,12 @@ object SecondScreen {
     }
 
     /** Suppress the on-game OSD while the panel is up; restore the user's own flags when it isn't. */
+    @Volatile var osdSuppressed = false
+        private set
+
     private fun applyOsdRouting() {
-        val suppress = moveOsd.value && presentation?.isShowing == true
-        runCatching {
-            if (suppress) {
-                NativeApp.osdApplyFlags(
-                    false, false, false, false, false, false, false, false, false, false, false, false,
-                )
-            } else {
-                // Re-assert the user's own OSD mode rather than blanket-true, so someone who had
-                // most stats off doesn't get them all switched on when the panel goes away.
-                com.armsx2.ui.InGameOverlay.reapplyOsdMode()
-            }
-        }
+        osdSuppressed = moveOsd.value && presentation?.isShowing == true
+        com.armsx2.ui.InGameOverlay.reapplyOsdMode()
     }
 
     /** User toggle (App settings). Default OFF — dual-screen owners turn it on themselves, and it

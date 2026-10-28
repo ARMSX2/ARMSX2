@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.core.content.edit
 import com.armsx2.EmuState
 import com.armsx2.runtime.MainActivityRuntime
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.NativeApp
@@ -358,43 +359,53 @@ object AutoTuneStore {
      * longer has), and re-applies the app's settings to a running game so the core's base layer stops holding the
      * old values. Null when the game has no settings file, so there is no record.
      */
-    suspend fun reset(settingsKey: String): ResetOutcome? {
-        val raw = withContext(Dispatchers.IO) {
-            runCatching { NativeApp.autoTuneReset(nativeSerialFor(settingsKey)) }.getOrNull()
-        } ?: return null
-        val reply = parseReset(raw.toList())
-
-        val applied = withContext(Dispatchers.IO) {
-            synchronized(storeLock) {
-                val overrides = ConfigStore.loadOverrides(settingsKey)
-                val priors = loadPriors(settingsKey)
-                val done = applyReset(overrides, priors, reply)
-                if (overrides != null && done.overridesChanged) {
-                    if (overrides.length() == 0) ConfigStore.clearOverrides(settingsKey)
-                    else ConfigStore.saveOverrides(settingsKey, overrides)
+    suspend fun reset(settingsKey: String): ResetOutcome? = withContext(Dispatchers.Main) {
+        val identity = LiveGsApplyQueue.captureVmIdentity()
+        val running = MainActivityRuntime.nativeReady.value && identity.active &&
+            MainActivityRuntime.eState.value != EmuState.STOPPED &&
+            (identity.appKey ?: identity.serial) == settingsKey
+        val restoreOsd = com.armsx2.ui.InGameOverlay.captureOsdMode(ConfigStore.resolveForGame(settingsKey))
+        val requestedUpscale = MainActivityRuntime.upscale.value
+        val outcome = CompletableDeferred<ResetOutcome?>()
+        var upscale: Float? = null
+        // Keep the native restore, app store and regenerated game layer in one FIFO transaction.
+        LiveGsApplyQueue.enqueue {
+            runCatching {
+                if (!identity.isCurrent()) return@runCatching null
+                val raw = runCatching { NativeApp.autoTuneReset(if (running) "" else settingsKey) }.getOrNull()
+                    ?: return@runCatching null
+                val reply = parseReset(raw.toList())
+                val applied = synchronized(storeLock) {
+                    val overrides = ConfigStore.loadOverrides(settingsKey)
+                    val priors = loadPriors(settingsKey)
+                    val done = applyReset(overrides, priors, reply)
+                    if (overrides != null && done.overridesChanged) {
+                        if (overrides.length() == 0) ConfigStore.clearOverrides(settingsKey)
+                        else ConfigStore.saveOverrides(settingsKey, overrides)
+                    }
+                    // The core clears its record on a reset; so does this one, for the keys it dealt with.
+                    if (reply.hadRecord) savePriors(settingsKey, priors)
+                    done
                 }
-                // The core clears its record on a reset; so does this one, for the keys it dealt with.
-                if (reply.hadRecord) savePriors(settingsKey, priors)
-                done
+                if (reply.hadRecord && identity.isCurrent()) {
+                    val resolved = ConfigStore.resolveForGame(settingsKey)
+                    resolved.writeGameSettingsIni(ConfigStore.loadGlobal(), serial = settingsKey, liveGame = running)
+                    if (running && identity.isCurrent()) {
+                        NativeApp.reloadGameSettingsLayer()
+                        resolved.applyTo(restoreOsd)
+                        upscale = upscaleAfterRestore(applied.restored, resolved.output.upscaleFloat)
+                        upscale?.let { NativeApp.renderUpscalemultiplier(it) }
+                    }
+                }
+                ResetOutcome(reply.hadRecord, applied.restored.size, applied.leftAlone)
+            }.onSuccess { outcome.complete(it) }.onFailure {
+                Log.e(TAG, "auto-tune reset failed", it)
+                outcome.complete(null)
             }
         }
-
-        // The core's base layer was filled from the app's settings, which held the kept values; push the restored
-        // ones. Only for the game that is running: otherwise the next boot does it. The resolution is not part of
-        // what applyTo pushes (it goes through renderUpscalemultiplier), and the base layer holds the kept one.
-        withContext(Dispatchers.Main) {
-            val running = MainActivityRuntime.nativeReady.value &&
-                MainActivityRuntime.eState.value != EmuState.STOPPED &&
-                MainActivityRuntime.currentGame.value?.settingsKey == settingsKey
-            if (running && reply.hadRecord) runCatching {
-                val resolved = ConfigStore.resolveForGame(settingsKey)
-                resolved.applyTo()
-                upscaleAfterRestore(applied.restored, resolved.output.upscaleFloat)?.let {
-                    MainActivityRuntime.upscale.value = it
-                    NativeApp.renderUpscalemultiplier(it)
-                }
-            }
-        }
-        return ResetOutcome(reply.hadRecord, applied.restored.size, applied.leftAlone)
+        val result = outcome.await()
+        if (running && identity.isCurrent() && MainActivityRuntime.upscale.value == requestedUpscale)
+            upscale?.let { MainActivityRuntime.upscale.value = it }
+        result
     }
 }
