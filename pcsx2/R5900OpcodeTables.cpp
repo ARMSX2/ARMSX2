@@ -155,7 +155,14 @@ namespace R5900
 			// use both pipelines' dividers: a DIV issued after a PDIVW waits
 			// for it (74 cycles for the pair).
 			static const int MMI_Div = 37*8;
-			static const int MMI_Default = 14;
+
+			// The MMI ALU, shift, pack, compare and move ops: 1 cycle, measured
+			// on an SCPH-30001 for every op charged as MMI_Default. A chain of
+			// them through one register costs 1 per op and independent ones
+			// cost 1 per op too: two never issue together, nor beside an
+			// integer ALU op (only beside a load or store). The table charged
+			// 1.75.
+			static const int MMI_Default = 1*8;
 
 			static const int FPU_Mult = 4*8;
 
