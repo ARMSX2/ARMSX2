@@ -855,8 +855,14 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 	// Matched on the driverInfo string, not the parsed revision the rule table uses, and without the
 	// table's MT6897 exemption. MT6897's r44p1 does not advertise the layout extension, so the two
 	// agree on every r44p1 device seen.
+	//
+	// Imagination's driver: the database row vk-powervr-proprietary declares
+	// DisableAttachmentFeedbackLoopLayout, and this is the switch that makes it take effect. Keyed on
+	// the driver ID, so Mesa's PowerVR driver is left alone.
+	const bool imagination_proprietary =
+		(context.vendor_id == GpuVendorID::Imagination) && (context.driver_id == DRIVER_ID_IMAGINATION_PROPRIETARY);
 	rules.avoid_feedback_loop_layout =
-		mali && context.driver_info.find("r44p1") != std::string_view::npos;
+		(mali && context.driver_info.find("r44p1") != std::string_view::npos) || imagination_proprietary;
 	// The Mali crash is in Arm's blob. malisx2 reports Arm's identity but is our own driver, and is
 	// trusted with push descriptors once it advertises as many as the backend binds; a build without
 	// the extension, or with fewer, keeps the avoid.

@@ -1159,9 +1159,15 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 
 	// Mali r44p1 loses the device under an in-pass self-read. This alone does not avoid it: the
 	// driver-bug database also puts r44p1 on the render-target copy road.
+	// Imagination's driver: the self-read goes through a subpass input attachment instead of the
+	// feedback-loop layout, so it stays in tile memory (see VulkanDeviceRules).
 	if (m_device_rules.avoid_feedback_loop_layout)
 	{
-		Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
+		if (IsDevicePowerVR())
+			Console.WriteLn("PowerVR: not using the attachment-feedback-loop layout; the in-pass self-read uses a "
+							"subpass input attachment.");
+		else
+			Console.WriteLn("Mali r44p1: disabling attachment-feedback-loop blend path (DEVICE_LOST workaround).");
 		m_optional_extensions.vk_ext_attachment_feedback_loop_layout = false;
 	}
 
@@ -6202,10 +6208,9 @@ bool GSDeviceVK::CreatePipelineLayouts()
 	// the long-standing sampled-image descriptor — subpassLoad still reads the render-pass input
 	// attachment (not vendor-scoped). Keep this condition identical to the writes in ApplyTFXState.
 	// Vendor-scoped per sashkinbro/EmuCoreX 30b09c8 (Fix Adreno Vulkan accurate blending flicker).
+	// PowerVR takes the Mali side: see UseInputAttachmentDescriptors().
 	const VkDescriptorType feedback_descriptor_type =
-		(m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali()) ?
-			VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT :
-			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+		UseInputAttachmentDescriptors() ? VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 	dslb.AddBinding(TFX_TEXTURE_RT, feedback_descriptor_type, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	dslb.AddBinding(TFX_TEXTURE_PRIMID, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
 	dslb.AddBinding(TFX_TEXTURE_DEPTH, feedback_descriptor_type, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -8891,7 +8896,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_RT)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
+			if (UseInputAttachmentDescriptors())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_RT, m_tfx_textures[TFX_TEXTURE_RT]->GetView(), VK_IMAGE_LAYOUT_GENERAL);
@@ -8909,7 +8914,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 		if (flags & DIRTY_FLAG_TFX_TEXTURE_DEPTH)
 		{
-			if (m_features.texture_barrier && !UseFeedbackLoopLayout() && IsDeviceMali())
+			if (UseInputAttachmentDescriptors())
 			{
 				dsub.AddInputAttachmentDescriptorWrite(
 					ds, TFX_TEXTURE_DEPTH, m_tfx_textures[TFX_TEXTURE_DEPTH]->GetView(), VK_IMAGE_LAYOUT_GENERAL);
