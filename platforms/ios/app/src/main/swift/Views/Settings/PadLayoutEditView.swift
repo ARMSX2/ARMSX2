@@ -151,6 +151,8 @@ struct PadLayoutEditView: View {
                 }
             }
         }
+        // Otherwise the name keyboard shortens the editor and portrait gets the landscape layout.
+        .ignoresSafeArea(.keyboard)
         .navigationBarHidden(true)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
