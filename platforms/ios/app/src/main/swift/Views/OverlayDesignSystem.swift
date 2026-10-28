@@ -108,6 +108,18 @@ private struct OverlayKeyboardOverlapKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+/// The two leaves of a card opened at iPhone Duo's fold, in the hosted frame's space.
+struct OverlayFoldSplit: Equatable {
+    var vertical: Bool
+    /// Leading leaf in book pose, top leaf in tabletop.
+    var first: CGRect
+    var second: CGRect
+}
+
+private struct OverlayFoldSplitKey: EnvironmentKey {
+    static let defaultValue: OverlayFoldSplit? = nil
+}
+
 extension EnvironmentValues {
     var overlayCompact: Bool {
         get { self[OverlayCompactKey.self] }
@@ -120,6 +132,11 @@ extension EnvironmentValues {
         get { self[OverlayKeyboardOverlapKey.self] }
         set { self[OverlayKeyboardOverlapKey.self] = newValue }
     }
+
+    var overlayFoldSplit: OverlayFoldSplit? {
+        get { self[OverlayFoldSplitKey.self] }
+        set { self[OverlayFoldSplitKey.self] = newValue }
+    }
 }
 
 /// Clear glass overlay shell content. Host this INSIDE `GameOverlayContainer` (which supplies the
@@ -129,10 +146,12 @@ extension EnvironmentValues {
 struct OverlayPanelScaffold<Content: View>: View {
     private let content: Content
     private let usesRegularGlass: Bool
+    private let cornerRadii: RectangleCornerRadii?
     @Environment(\.uiAccentColour) private var accentColour
 
-    init(usesRegularGlass: Bool = false, @ViewBuilder content: () -> Content) {
+    init(usesRegularGlass: Bool = false, cornerRadii: RectangleCornerRadii? = nil, @ViewBuilder content: () -> Content) {
         self.usesRegularGlass = usesRegularGlass
+        self.cornerRadii = cornerRadii
         self.content = content()
     }
 
@@ -142,7 +161,8 @@ struct OverlayPanelScaffold<Content: View>: View {
             .tint(accentColour)
             .glassSurface(
                 clear: !usesRegularGlass,
-                cornerRadius: 26
+                cornerRadius: 26,
+                cornerRadii: cornerRadii
             )
     }
 }

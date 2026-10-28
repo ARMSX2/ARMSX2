@@ -943,7 +943,8 @@ extension View {
         forceClear: Bool = false,
         materializeTransition: Bool = false,
         isEnabled: Bool = true,
-        cornerRadius: CGFloat
+        cornerRadius: CGFloat,
+        cornerRadii: RectangleCornerRadii? = nil
     ) -> some View {
         modifier(
             DynamicBackgroundGlassSurfaceModifier(
@@ -953,7 +954,8 @@ extension View {
                 forceClear: forceClear,
                 materializeTransition: materializeTransition,
                 isEnabled: isEnabled,
-                cornerRadius: cornerRadius
+                cornerRadius: cornerRadius,
+                cornerRadii: cornerRadii
             )
         )
     }
@@ -968,9 +970,19 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
     let materializeTransition: Bool
     let isEnabled: Bool
     let cornerRadius: CGFloat
+    let cornerRadii: RectangleCornerRadii?
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        if let cornerRadii {
+            surface(content, in: UnevenRoundedRectangle(cornerRadii: cornerRadii, style: .continuous))
+        } else {
+            surface(content, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func surface(_ content: Content, in shape: some Shape) -> some View {
         let usesClearGlass = clear && (forceClear || clearLiquidGlassUIEnabled)
         if !isEnabled {
             // Glass is a compositor effect, not layout. Far-offscreen lazy
@@ -984,7 +996,7 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
             content
                 .glassEffect(
                     glass.tint(tint).interactive(interactive),
-                    in: .rect(cornerRadius: cornerRadius)
+                    in: shape
                 )
                 .glassEffectTransition(
                     materializeTransition ? .materialize : .identity
@@ -1000,7 +1012,7 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
                 content
                     .background(
                         fallbackMaterial,
-                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        in: shape
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.94)))
                     .controllerFocusDepthBehindGlass(
@@ -1010,7 +1022,7 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
                 content
                     .background(
                         fallbackMaterial,
-                        in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        in: shape
                     )
                     .controllerFocusDepthBehindGlass(
                         cornerRadius: cornerRadius

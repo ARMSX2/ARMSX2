@@ -16,8 +16,9 @@ class PauseShortcutBar(unittest.TestCase):
     def test_the_bar_sits_above_the_pause_menu_without_a_fade(self):
         game = without_comments(read(GAME))
         menu = game.find(".overlay {\n            runtimeQuickMenuOverlay\n        }")
-        bar = game.find("if overlayRoute == .paused {\n                GameplayControllerShortcutHelpOverlay(")
+        bar = game.find("overPauseMenu: true")
         self.assertGreater(bar, menu)
+        self.assertIn("if overlayRoute == .paused {", game[menu:bar])
         self.assertIn(".transition(.identity)", game[bar:bar + 300])
 
     def test_the_start_bar_steps_aside_while_paused(self):

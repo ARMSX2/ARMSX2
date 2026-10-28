@@ -17,7 +17,7 @@ class RetroAchievementsController(unittest.TestCase):
 
     def test_it_has_a_session_that_circle_closes(self):
         self.assertIn('scopeKey: "runtime.retro-achievements"', self.panel)
-        self.assertIn("onBack: {\n                dismiss()", self.panel)
+        self.assertIn("onBack: {\n                close()", self.panel)
 
     def test_each_achievement_is_a_target(self):
         self.assertIn('id: "runtime.retro-achievements.\\(entry.id)"', self.panel)

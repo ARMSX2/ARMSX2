@@ -70,7 +70,16 @@ struct ControllerGameContextMenu: View {
     var body: some View {
         GeometryReader { proxy in
             let isCompact = verticalSizeClass == .compact || proxy.size.height < 500
-            let panelWidth = min(isCompact ? 390 : 440, max(280, proxy.size.width - 24))
+            let bookFold = proxy.activeFold(book: true)
+            let tabletopFold = proxy.activeFold(book: false)
+            let panelWidth = min(
+                isCompact ? 390 : 440,
+                max(280, proxy.size.width - 24),
+                (bookFold?.minX ?? .infinity) - 32
+            )
+            // The reader ignores the safe area, so the home indicator inset comes from the window.
+            let bottomInset = UIApplication.shared.appWindowScene?.windows.first?.safeAreaInsets.bottom ?? 0
+            let bandHeight = tabletopFold.map { max(0, proxy.size.height - bottomInset - 8 - ($0.maxY + 8)) }
             let rowHeight: CGFloat = isCompact ? 42 : 46
             let rowSpacing: CGFloat = isCompact ? 5 : 7
             let estimatedItemsHeight = CGFloat(items.count) * rowHeight
@@ -101,13 +110,21 @@ struct ControllerGameContextMenu: View {
                     .padding(isCompact ? 11 : 18)
                 }
                 .frame(width: panelWidth)
+                .frame(maxHeight: bandHeight)
                 .environment(\.clearLiquidGlassUIEnabled, false)
-                .padding(.vertical, isCompact ? 6 : 21)
+                .padding(.vertical, tabletopFold == nil ? (isCompact ? 6 : 21) : 0)
+                .padding(.top, tabletopFold.map { $0.maxY + 8 } ?? 0)
                 .transition(
                     reduceMotion
                         ? .opacity
                         : .scale(scale: 0.92).combined(with: .opacity)
                 )
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: .infinity,
+                    alignment: tabletopFold == nil ? .center : .top
+                )
+                .centredInLeadingPaneOnFold()
             }
         }
         // The retained library is shortened by the persistent tab bar. Expand
@@ -242,7 +259,7 @@ struct ControllerGameContextMenu: View {
                     }
                 }
             }
-            .frame(height: maxHeight)
+            .frame(maxHeight: maxHeight)
             .scrollIndicators(.visible)
             .onChange(of: selectedAction) { _, action in
                 guard let action else { return }

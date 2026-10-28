@@ -815,6 +815,8 @@ struct PerGameSettingsPanel: View {
         }
         .allowsHitTesting(!livePreviewSessionIsFinishing)
         .tint(accentColour)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(.escape) { _ = handleSharedControllerBack() }
         .onChange(of: hasPendingChanges) { _, pending in
             if pending {
                 saveFeedbackVisible = false
