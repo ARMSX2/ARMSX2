@@ -79,9 +79,6 @@ struct rc_client_t;
 #include "IOSRuntime.h"
 #import "ARMSX2GameView.h"
 
-// Global Log View
-UITextView* g_logView = nil;
-
 // Game render view — frame-based layout, portrait=50% / landscape=full safe area
 // Game render view with CAMetalLayer as backing layer (like MTKView)
 // Game render view — backing layer (CAMetalLayer), manual landscape toggle
@@ -143,14 +140,9 @@ void ARMSX2EnsureIOSSpeedhackDefaults(SettingsInterface* si, const char* reason)
             "@@MTVU_DEFAULT@@ reason=%s physical=%u default=%d had_vuThread=%d had_legacy=%d legacy_false=%d value=%d\n",
             reason, physical_cores, default_mtvu ? 1 : 0, has_vu_thread ? 1 : 0, has_legacy_mtvu ? 1 : 0,
             legacy_false_default ? 1 : 0, mtvu_value ? 1 : 0);
+        std::fflush(stderr);
         changed = true;
-    } else {
-        const bool current_vu_thread = si->GetBoolValue("EmuCore/Speedhacks", "vuThread", default_mtvu);
-        std::fprintf(stderr,
-            "@@MTVU_DEFAULT@@ reason=%s physical=%u default=%d migrated=1 value=%d\n",
-            reason, physical_cores, default_mtvu ? 1 : 0, current_vu_thread ? 1 : 0);
     }
-    std::fflush(stderr);
 
     if (has_legacy_mtvu) {
         si->DeleteValue("EmuCore/Speedhacks", "MTVU");
@@ -273,10 +265,6 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
         false,
     });
     ImGuiManager::SetFonts(std::move(fonts));
-
-    std::fprintf(stderr, "@@IMGUI_FONT@@ ok=1 reason=%s path=\"%s\" size=%zu\n",
-        reason, fontPath.c_str(), s_imguiStandardFontData.size());
-    std::fflush(stderr);
 }
 
 #pragma mark - ARMSX2GameView
@@ -527,9 +515,6 @@ void ARMSX2IOSApplyRetroAchievementsOverlayDefaults(SettingsInterface* si, const
     EmuConfig.Achievements.LeaderboardNotifications = true;
     EmuConfig.Achievements.OverlayPosition = AchievementOverlayPosition::TopLeft;
     EmuConfig.Achievements.NotificationPosition = OsdOverlayPos::TopCenter;
-
-    Console.WriteLn("iOS RetroAchievements overlay defaults applied (reason: %s)",
-        reason ? reason : "unknown");
 }
 
 bool ARMSX2IOSPathIsInsideRoot(const std::string& path, const std::string& root)
@@ -905,17 +890,6 @@ void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
     // callers is the UIKit thread, where MTGS::RunOnGSThread asserts. The call site that
     // needs it is the only one running after the GS opens, and it pushes there.
     EmuConfig.GS.OsdPerformancePos = static_cast<OsdOverlayPos>(position);
-
-    Console.WriteLn("@@OSD@@ preset=%d position=%d reason=%s fps=%d vps=%d speed=%d gpu=%d device_stats=%d frame_times=%d version=%d hardware=%d",
-        s_settings_interface->GetIntValue("ARMSX2iOS/UI", "OsdPreset", 0), position, reason ? reason : "unknown",
-        EmuConfig.GS.OsdShowFPS ? 1 : 0,
-        EmuConfig.GS.OsdShowVPS ? 1 : 0,
-        EmuConfig.GS.OsdShowSpeed ? 1 : 0,
-        EmuConfig.GS.OsdShowGPU ? 1 : 0,
-        ARMSX2_iOSShouldShowDeviceStatsOverlay() ? 1 : 0,
-        EmuConfig.GS.OsdShowFrameTimes ? 1 : 0,
-        EmuConfig.GS.OsdShowVersion ? 1 : 0,
-        EmuConfig.GS.OsdShowHardwareInfo ? 1 : 0);
 }
 
 
@@ -956,11 +930,8 @@ void ARMSX2DrainCPUThreadTasks()
             runs = task->function && !task->cancelled;
             task->started = runs;
         }
-        if (runs) {
-            std::fprintf(stderr, "@@CPU_TASK_RUN@@ id=%llu\n", task->id);
-            std::fflush(stderr);
+        if (runs)
             task->function();
-        }
 
         {
             std::lock_guard<std::mutex> lock(task->mutex);

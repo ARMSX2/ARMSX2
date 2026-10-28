@@ -134,7 +134,6 @@ static void ARMSX2FlushINISave()
         g_p44_settings_interface->Save();
 }
 
-static NSDate* s_lastNVMSaveDate = nil;
 static ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification = nil;
 // CPU-thread-owned temporary mute state for the Per-Game live-preview overlay.
 // The prior user mute state is restored when the preview returns to editing.
@@ -551,10 +550,6 @@ static BOOL ARMSX2ExternalGameRecordScanDisabled(NSDictionary* record, NSURL* ur
 	if (ARMSX2ExternalGameRecordIsCloudProvider(record, url))
 		return YES;
 
-	id scanDisabledValue = record[@"scanDisabled"];
-	if ([scanDisabledValue isKindOfClass:NSNumber.class] && [(NSNumber*)scanDisabledValue boolValue])
-		NSLog(@"[ARMSX2Bridge] Ignoring stale external scanDisabled flag for non-cloud path=%@", url.path);
-
 	return NO;
 }
 
@@ -606,10 +601,8 @@ static BOOL ARMSX2StartExternalGameDirectoryAccessForPath(NSString* path)
 		NSURL* directoryURL = ARMSX2ResolveExternalGameDirectoryRecord(record);
 		if (!directoryURL)
 			continue;
-		if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL)) {
-			NSLog(@"[ARMSX2Bridge] External game cloud provider direct access skipped path=%@", directoryURL.path);
+		if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL))
 			continue;
-		}
 
 		BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
 		NSString* normalizedRecordPath = directoryURL.path.stringByStandardizingPath;
@@ -619,12 +612,10 @@ static BOOL ARMSX2StartExternalGameDirectoryAccessForPath(NSString* path)
 			continue;
 
 		BOOL granted = [directoryURL startAccessingSecurityScopedResource];
-		if (granted) {
+		if (granted)
 			ARMSX2RememberExternalGameAccess(directoryURL);
-			NSLog(@"[ARMSX2Bridge] External game %@ access active path=%@", isDirectory ? @"folder" : @"file", directoryURL.path);
-		} else {
+		else
 			NSLog(@"[ARMSX2Bridge] External game %@ access not granted path=%@", isDirectory ? @"folder" : @"file", directoryURL.path);
-		}
 		return granted;
 	}
 
@@ -822,12 +813,10 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
     NSInteger removed = 0;
     for (NSURL* url in matches) {
         NSError* error = nil;
-        if ([fm removeItemAtURL:url error:&error]) {
+        if ([fm removeItemAtURL:url error:&error])
             removed++;
-            NSLog(@"[ARMSX2Bridge] Removed generated game file %@", url.path);
-        } else {
+        else
             NSLog(@"[ARMSX2Bridge] Failed removing generated game file %@ error=%@", url.path, error.localizedDescription);
-        }
     }
     return removed;
 }
@@ -1031,14 +1020,11 @@ static NSInteger ARMSX2BackupAssignedMemoryCards(const char* reason, s32 stateSl
         NSString* targetName = [NSString stringWithFormat:@"slot%zu-%@", i + 1, sourceName];
         NSString* targetPath = [backupDir stringByAppendingPathComponent:targetName];
         NSError* copyError = nil;
-        if ([fm copyItemAtPath:sourcePath toPath:targetPath error:&copyError]) {
+        if ([fm copyItemAtPath:sourcePath toPath:targetPath error:&copyError])
             copied++;
-            NSLog(@"[ARMSX2 iOS SaveState] memcard backup copied slot=%zu path=%@",
-                  i + 1, targetPath);
-        } else {
+        else
             NSLog(@"[ARMSX2 iOS SaveState] memcard backup failed slot=%zu source=%@ error=%@",
                   i + 1, sourcePath, copyError.localizedDescription ?: @"unknown");
-        }
     }
 
     if (copied == 0) {
@@ -1055,13 +1041,9 @@ static NSInteger ARMSX2BackupAssignedMemoryCards(const char* reason, s32 stateSl
 static bool ARMSX2FlushNVRAMAndMemoryCards(const char* reason)
 {
     cdvdSaveNVRAM();
-    s_lastNVMSaveDate = [NSDate date];
 
-    if (!VMManager::HasValidVM()) {
-        NSLog(@"[ARMSX2Bridge] Save-state flush skipped memory cards reason=%s validVM=0",
-              reason ? reason : "unknown");
+    if (!VMManager::HasValidVM())
         return true;
-    }
 
     if (MemcardBusy::IsBusy()) {
         NSLog(@"[ARMSX2Bridge] Save-state flush blocked reason=%s memoryCardBusy=1",
@@ -1071,8 +1053,6 @@ static bool ARMSX2FlushNVRAMAndMemoryCards(const char* reason)
 
     FileMcd_EmuClose();
     FileMcd_EmuOpen();
-    NSLog(@"[ARMSX2Bridge] Save-state flush complete reason=%s nvmDate=%@",
-          reason ? reason : "unknown", s_lastNVMSaveDate);
     return true;
 }
 
@@ -1186,23 +1166,16 @@ static NSString* ARMSX2SanitizedSkinFileName(NSString* name)
     return sanitized;
 }
 
-static void ARMSX2ApplyLiveTargetSpeedSetting(std::function<void()> update, const char* section, const char* key, float value)
+static void ARMSX2ApplyLiveTargetSpeedSetting(std::function<void()> update)
 {
-    const std::string sectionName(section ? section : "");
-    const std::string keyName(key ? key : "");
-
     if (!VMManager::HasValidVM()) {
         update();
-        NSLog(@"[ARMSX2Bridge] target speed setting stored for next boot %s/%s=%0.3f",
-              sectionName.c_str(), keyName.c_str(), value);
         return;
     }
 
-    Host::RunOnCPUThread([update = std::move(update), sectionName, keyName, value]() mutable {
+    Host::RunOnCPUThread([update = std::move(update)]() mutable {
         update();
         VMManager::UpdateTargetSpeed();
-        NSLog(@"[ARMSX2Bridge] target speed updated on CPU thread %s/%s=%0.3f",
-              sectionName.c_str(), keyName.c_str(), value);
     }, false);
 }
 
@@ -1270,13 +1243,11 @@ static void ARMSX2ApplyLiveFloatSetting(const char* section, const char* key, fl
     const float clamped = std::isfinite(value) ? std::clamp(value, 0.05f, 10.0f) : 1.0f;
     if (std::strcmp(key, "NominalScalar") == 0) {
         const float normalized = ARMSX2NormalizeIOSNominalScalar(value);
-        if (std::fabs(normalized - clamped) > 0.001f)
-            NSLog(@"[ARMSX2Bridge] clamping unsupported NominalScalar %.3f -> %.3f", clamped, normalized);
-        ARMSX2ApplyLiveTargetSpeedSetting([normalized]() { EmuConfig.EmulationSpeed.NominalScalar = normalized; }, section, key, normalized);
+        ARMSX2ApplyLiveTargetSpeedSetting([normalized]() { EmuConfig.EmulationSpeed.NominalScalar = normalized; });
     } else if (std::strcmp(key, "TurboScalar") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; }, section, key, clamped);
+        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; });
     } else if (std::strcmp(key, "SlomoScalar") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.SlomoScalar = clamped; }, section, key, clamped);
+        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.SlomoScalar = clamped; });
     }
 }
 
@@ -2028,9 +1999,8 @@ static void ARMSX2SetPatchEnableListForIdentity(NSArray<NSString*>* values, cons
         si.SetStringList(section.UTF8String ?: "", key.UTF8String ?: "", list);
 
     Error error;
-    si.Save(&error);
-    // NSLog(@"[ARMSX2Bridge] Patch enable list saved serial=%@ crc=%08X section=%@ count=%lu",
-    //       ARMSX2NSStringFromStdString(serial), (unsigned int)crc, section, (unsigned long)list.size());
+    if (!si.Save(&error))
+        NSLog(@"[ARMSX2Bridge] Patch list save error: %@", ARMSX2NSStringFromStdString(error.GetDescription()));
 }
 
 // Resolve a per-game identity (serial, crc) for a library ISO. Returns NO if the ISO
@@ -2478,13 +2448,7 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 }
 
 + (void)setVMPaused:(BOOL)paused {
-    const bool hasValidVM = VMManager::HasValidVM();
-    std::fprintf(stderr, "@@IOS_VM_PAUSE_REQUEST@@ paused=%d valid=%d block=0 state=%d\n",
-        paused ? 1 : 0, hasValidVM ? 1 : 0,
-        hasValidVM ? static_cast<int>(VMManager::GetState()) : -1);
-    std::fflush(stderr);
-
-    if (!hasValidVM)
+    if (!VMManager::HasValidVM())
         return;
 
     Host::RunOnCPUThread([paused]() {
@@ -2499,8 +2463,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             VMManager::SetPaused(false);
             Console.WriteLn("@@IOS_VM_PAUSE@@ paused=0 reason=swiftui-menu");
         }
-        Console.WriteLn("@@IOS_VM_PAUSE_APPLY@@ requested=%d before=%d after=%d",
-            paused ? 1 : 0, static_cast<int>(state), static_cast<int>(VMManager::GetState()));
     }, false);
 }
 
@@ -3334,10 +3296,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 		}
 
 		BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
-		if (isDirectory && ARMSX2ExternalGameRecordScanDisabled(record, directoryURL)) {
-			NSLog(@"[ARMSX2Bridge] External game folder scan disabled path=%@", directoryURL.path);
+		if (isDirectory && ARMSX2ExternalGameRecordScanDisabled(record, directoryURL))
 			continue;
-		}
 
 		BOOL alreadyActive = ARMSX2ExternalGameAccessAlreadyActive(directoryURL.path);
 		BOOL startedAccess = alreadyActive ? NO : [directoryURL startAccessingSecurityScopedResource];
@@ -3413,9 +3373,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
             metadata[@"region"] = region;
         if (entry.crc != 0)
             metadata[@"crc"] = [NSString stringWithFormat:@"%08X", entry.crc];
-
-        NSLog(@"[ARMSX2 iOS Covers] metadata %@ title=%@ serial=%@ region=%@",
-              isoName, metadata[@"title"] ?: @"", metadata[@"serial"] ?: @"", metadata[@"region"] ?: @"");
     } else {
         NSLog(@"[ARMSX2 iOS Covers] metadata unavailable %@", isoName);
     }
@@ -3600,10 +3557,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
         bool ejectResult = false;
         bool result = false;
         Host::RunOnCPUThread([&result]() {
-            const CDVD_SourceType oldSource = CDVDsys_GetSourceType();
-            const std::string oldPathForLog = CDVDsys_GetFile(oldSource);
-            NSLog(@"[ARMSX2Bridge] ChangeDisc eject phase oldSource=%d oldPath=%@",
-                  static_cast<int>(oldSource), ARMSX2NSStringFromStdString(oldPathForLog));
             result = VMManager::ChangeDisc(CDVD_SourceType::NoDisc, {});
         }, true);
         ejectResult = result;
@@ -3612,10 +3565,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 
         Host::RunOnCPUThread([nativePath, &result]() {
             result = VMManager::ChangeDisc(CDVD_SourceType::Iso, nativePath);
-            NSLog(@"[ARMSX2Bridge] ChangeDisc insert phase newSource=%d newPath=%@ result=%d",
-                  static_cast<int>(CDVDsys_GetSourceType()),
-                  ARMSX2NSStringFromStdString(CDVDsys_GetFile(CDVDsys_GetSourceType())),
-                  result ? 1 : 0);
         }, true);
 
         if (result && g_p44_settings_interface) {
@@ -3881,7 +3830,6 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 	g_p44_settings_interface->Save();
 	std::fprintf(stderr, "@@BOOT_FASTBOOT_SET@@ value=%d source=settings\n", fastBoot ? 1 : 0);
 	std::fflush(stderr);
-	NSLog(@"bootISO: set BootISO=%@ resolved=%@", bootValue, resolvedPath ?: @"");
 }
 
 #pragma mark - BIOS management
@@ -5075,8 +5023,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
     }
 
     const std::string targetPath = VMManager::GetSaveStateFileName(serial.c_str(), crc, nativeSlot);
-    NSLog(@"[ARMSX2 iOS SaveState] save requested slot=%d automatic=%d path=%@", nativeSlot, automatic ? 1 : 0,
-          ARMSX2NSStringFromStdString(targetPath));
 
     dispatch_async(ARMSX2SaveStateQueue(), ^{
         bool started = false;
@@ -5092,7 +5038,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
             skipped = "a per-game live preview was open";
         else {
             Host::RunOnCPUThread([nativeSlot, serial, crc, automatic, leaving, &targetPath, &started, &existed, &skipped, saveError]() {
-                NSLog(@"[ARMSX2 iOS SaveState] CPU save start slot=%d", nativeSlot);
                 if (!ARMSX2SaveStateIdentityMatches(serial, crc)) {
                     NSLog(@"[ARMSX2 iOS SaveState] CPU save rejected slot=%d reason=game-changed", nativeSlot);
                     skipped = "another game was running";
@@ -5105,7 +5050,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
                     return;
                 }
                 if (automatic && (FileMcd_IsAutoEjecting() || (!leaving && VMManager::GetState() != VMState::Running))) {
-                    NSLog(@"[ARMSX2 iOS SaveState] CPU save skipped slot=%d reason=not-running-or-ejecting", nativeSlot);
                     skipped = "the game was paused or a memory card was ejecting";
                     return;
                 }
@@ -5129,7 +5073,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
                     Host::RemoveKeyedOSDMessage("MemcardBusy"); // The core's in-game save hint would repeat every interval.
                 else if (saveError->empty())
                     ARMSX2FlushNVRAMAndMemoryCards("post-save-state");
-                NSLog(@"[ARMSX2 iOS SaveState] CPU save finished slot=%d", nativeSlot);
             }, true);
         }
 
@@ -5198,8 +5141,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
     // No serial in the name: Clear Cache removes temporary files that carry one.
     NSString* undoPath = keepingUndo ? [NSTemporaryDirectory() stringByAppendingPathComponent:
         [NSString stringWithFormat:@"ARMSX2-undo-load-%@.p2s", [[NSUUID UUID] UUIDString]]] : nil;
-    NSLog(@"[ARMSX2 iOS SaveState] load requested slot=%d path=%@ undo=%d",
-          nativeSlot, ARMSX2NSStringFromStdString(targetPath), keepingUndo ? 1 : 0);
 
     dispatch_async(ARMSX2SaveStateQueue(), ^{
         // By value: the main-queue block below outlives this one.
@@ -5821,9 +5762,6 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
     std::string user(trimmedUsername.UTF8String ?: "");
     std::string pass(nativePassword.UTF8String ?: "");
 
-    NSLog(@"@@RA_LOGIN_NATIVE@@ requested username=%@ enabled=%d active=%d",
-        trimmedUsername, EmuConfig.Achievements.Enabled ? 1 : 0, Achievements::IsActive() ? 1 : 0);
-
     dispatch_async(ARMSX2RetroAchievementsQueue(), ^{
         @autoreleasepool {
             if (!EmuConfig.Achievements.Enabled) {
@@ -5835,7 +5773,7 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
 
             if (!ARMSX2EnsureAchievementsClientInitialized()) {
                 NSString* message = @"RetroAchievements could not initialize its network client.";
-                NSLog(@"[ARMSX2Bridge] RetroAchievements login username=%@ result=0 message=%@", trimmedUsername, message);
+                NSLog(@"[ARMSX2Bridge] RetroAchievements login result=0 message=%@", message);
                 ARMSX2_PostRetroAchievementsStateChanged();
                 if (callback)
                     dispatch_async(dispatch_get_main_queue(), ^{ callback(NO, message); });
@@ -5850,8 +5788,7 @@ static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletio
             if (result && g_p44_settings_interface)
                 g_p44_settings_interface->Save();
 
-            NSLog(@"@@RA_LOGIN_NATIVE@@ result=%d message=%@", result ? 1 : 0, message);
-            NSLog(@"[ARMSX2Bridge] RetroAchievements login username=%@ result=%d message=%@", trimmedUsername, result ? 1 : 0, message);
+            NSLog(@"[ARMSX2Bridge] RetroAchievements login result=%d message=%@", result ? 1 : 0, message);
             ARMSX2_PostRetroAchievementsStateChanged();
 
             if (callback)

@@ -402,7 +402,7 @@ enum SkinAssetPath {
     }
 }
 
-// MARK: - Normalized conversions (reserved for future rendering phases)
+// MARK: - Normalized conversions
 
 /// A frame expressed as fractions (0...1) of a mapping size.
 struct NormalizedFrame: Equatable {
@@ -462,7 +462,7 @@ extension SkinExtendedEdges {
     }
 }
 
-// MARK: - Representation selection (pure helper, not wired into runtime)
+// MARK: - Representation selection
 
 /// Query used to select the best matching representation.
 struct SkinManifestQuery: Equatable {

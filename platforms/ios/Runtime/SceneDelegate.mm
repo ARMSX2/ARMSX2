@@ -72,7 +72,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 
     UIWindowScene *windowScene = (UIWindowScene *)scene;
     
-    // --- SDL Initialization ---
     static bool s_initialized = false;
     if (!s_initialized) {
         SDL_SetMainReady();
@@ -84,21 +83,13 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     ARMSX2InstallNativeGamepadDpadObserversOnMain();
     
-    // --- Setup PCSX2 Environment ---
-    // (Moved to AppDelegate)
-    // We still need local variables if used below, but EmuFolders are global.
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths objectAtIndex:0];
     std::string dataRoot = [documentsDirectory UTF8String];
     
-    // Re-ensure EmuFolders (idempotent)
     EmuFolders::DataRoot = dataRoot;
     EmuFolders::Bios = dataRoot + "/bios";
-    // ...
-    
-    Console.WriteLn("PCSX2 iOS: Initializing logic in SceneDelegate...");
-    
-    // Settings Initialization
+
     if (!s_settings_interface) {
         std::string iniPath = dataRoot + "/PCSX2-iOS.ini";
         s_settings_interface = new INISettingsInterface(iniPath);
@@ -116,10 +107,8 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             s_settings_interface->SetBoolValue("EmuCore/CPU", "EnableSparseMemory", true);
             s_settings_interface->SetBoolValue("EmuCore/CPU", "ExtraMemory", false);
 
-            // Audio
             s_settings_interface->SetStringValue("SPU2/Output", "Backend", "SDL");
 
-            // GS
             s_settings_interface->SetIntValue("EmuCore/GS", "VsyncQueueSize", 8);
 
             // Normal console-speed frame limiter. Do not save reduced nominal
@@ -128,17 +117,14 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             s_settings_interface->SetBoolValue("GameISO", "FastBoot", false);
             s_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", false);
 
-            // Speedhacks
             s_settings_interface->SetBoolValue("EmuCore/Speedhacks", "vuThread", ARMSX2ShouldEnableMTVUByDefault(nullptr));
 
-            // RetroAchievements
             s_settings_interface->SetBoolValue("Achievements", "Enabled", false);
             s_settings_interface->SetBoolValue("Achievements", "ChallengeMode", false);
 
             // iOS controller defaults.
             s_settings_interface->SetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
-            
-            Console.WriteLn("@@CFG_DEFAULTS@@ created=1 CoreType=2 UseArm64Dynarec=true EnableEE=1 FastBoot=1");
+
             s_settings_interface->Save();
         }
         Host::Internal::SetBaseSettingsLayer(s_settings_interface);
@@ -186,16 +172,8 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     s_settings_interface->Save();
     [self checkAndConfigureBIOS];
 
-    // GS Renderer: Metal fixed on iOS. Only override if not already Metal.
-#if DEBUG
-    if (const char* null_gs_env = getenv("ARMSX2_NULL_GS"); null_gs_env && atoi(null_gs_env)) {
-        EmuConfig.GS.Renderer = GSRendererType::Null;
-        Console.WriteLn("@@CFG@@ GS Renderer: Null (DEBUG)");
-    } else
-#endif
-    {
-        EmuConfig.GS.Renderer = GSRendererType::Metal;
-    }
+    // GS Renderer: Metal fixed on iOS.
+    EmuConfig.GS.Renderer = GSRendererType::Metal;
     s_settings_interface->Save();
 
     VMManager::Internal::LoadStartupSettings();
@@ -207,20 +185,16 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
     s_settings_interface->Save();
     VMManager::ApplySettings();
-    ARMSX2IOSLogMemoryCardConfig("scene-connect-after-apply-settings");
     ARMSX2_PostRetroAchievementsStateChanged();
     
-    // --- Create SDL Window ---
     Host::g_sdl_window = SDL_CreateWindow("PCSX2 iOS", 1280, 720, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
     if (!Host::g_sdl_window) {
         Console.Error("Failed to create SDL window: %s", SDL_GetError());
         return;
     }
     
-    // --- Attach UIWindow ---
     UIWindow *uiWindow = (__bridge UIWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(Host::g_sdl_window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
     if (uiWindow) {
-        Console.WriteLn("Attaching UIWindow to Scene...");
         uiWindow.windowScene = windowScene;
         self.window = uiWindow;
         self.window.backgroundColor = [UIColor systemGroupedBackgroundColor];
@@ -251,21 +225,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         g_gameRenderView.backgroundColor = [UIColor blackColor];
         g_gameRenderView.clipsToBounds = YES;
         // Do NOT addSubview here — SwiftUI's MetalGameView handles view hierarchy
-        Console.WriteLn("[Layout] Game render view created (SwiftUI-managed)");
-        
-// Debug-only UI elements
-#if DEBUG
-        UIViewController *rootVC = self.window.rootViewController;
-        if (rootVC) {
-            g_logView = [[UITextView alloc] initWithFrame:CGRectMake(10, 50, 600, 300)];
-            g_logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.5];
-            g_logView.textColor = [UIColor whiteColor];
-            g_logView.font = [UIFont fontWithName:@"Courier" size:10];
-            g_logView.editable = NO;
-            g_logView.hidden = YES;
-            [rootVC.view addSubview:g_logView];
-        }
-#endif
     }
     
     // --- [UI] Startup Logic: Show menu first, boot on user action ---
@@ -295,10 +254,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             s_menuVC = menuVC;
             s_rootVC = rootVC;
 
-            if (g_logView) {
-                g_logView.hidden = YES;
-                g_logView.userInteractionEnabled = NO;
-            }
             [self syncRootViewToWindow];
             Console.WriteLn("[UI] SwiftUI menu attached (screen: %.0fx%.0f)",
                 rootVC.view.bounds.size.width, rootVC.view.bounds.size.height);
@@ -321,7 +276,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
             EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
         std::fflush(stderr);
-        Console.WriteLn("[UI] VM boot requested from UI (rootVC=%p)", s_rootVC);
         NSNumber* loadState = note.userInfo[@"loadLastSaveState"];
         s_loadLastSaveStateOnBoot.store(loadState ? loadState.boolValue : true);
         ARMSX2ApplyIOSMultitapConfig("boot-request");
@@ -375,12 +329,11 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         });
     }
 
-    // Cold-launch deep link: iOS delivers the launch URL through connectionOptions,
     NSSet<UIOpenURLContext *> *launchURLContexts = connectionOptions.URLContexts;
     if (launchURLContexts.count > 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
             for (UIOpenURLContext *ctx in launchURLContexts) {
-                NSLog(@"[ARMSX2 iOS DeepLink] cold-launch url=%@", ctx.URL.absoluteString);
+                NSLog(@"[ARMSX2 iOS DeepLink] cold-launch host=%@", ctx.URL.host);
                 [DeepLinkBridge handle:ctx.URL];
             }
         });
@@ -401,7 +354,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     NSString *biosDir = [docs stringByAppendingPathComponent:@"bios"];
     [fm createDirectoryAtPath:biosDir withIntermediateDirectories:YES attributes:nil error:nil];
-    Console.WriteLn("@@BIOS_DIR@@ path=\"%s\"", biosDir.UTF8String);
 
     // 0. Check Env Var Override (ARMSX2_BIOS_PATH)
     const char* envBios = getenv("ARMSX2_BIOS_PATH");
@@ -420,8 +372,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             Console.WriteLn("@@BIOS_PICK@@ result=\"%s\" source=env", fileName.UTF8String);
             return;
         }
-    } else {
-        Console.WriteLn("@@BIOS_ENV@@ exists=0");
     }
 
     // 1. Check existing config
@@ -666,7 +616,6 @@ static void ARMSX2StartJITKeepalive()
         if (s_vmThreadActive.load()) {
             std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=1 action=ignored\n");
             std::fflush(stderr);
-            Console.WriteLn("[VM] startVMThread: VM already active, ignoring");
             return;
         }
 
@@ -710,7 +659,6 @@ static void ARMSX2StartJITKeepalive()
                 s_requestVMStop.store(false);
                 std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=1 action=signal\n");
                 std::fflush(stderr);
-                Console.WriteLn("[VM] startVMThread: signaling existing VM thread");
                 s_vmCV.notify_one();
                 return;
             }
@@ -738,13 +686,10 @@ static void ARMSX2StartJITKeepalive()
     std::fprintf(stderr, "@@BOOT_START_THREAD@@ active=0 created=0 action=create request_boot=%d\n",
         requestBoot ? 1 : 0);
     std::fflush(stderr);
-    Console.WriteLn("[VM] Creating persistent VM thread...");
 
     std::thread vmThread([]() {
         // === ONE-TIME INIT (runs once per app lifetime) ===
         s_cpuThreadId = std::this_thread::get_id();
-        std::fprintf(stderr, "@@BOOT_THREAD_INIT@@ begin=1\n");
-        std::fflush(stderr);
         ARMSX2ConfigureImGuiFonts("vm-thread");
         if (!DarwinMisc::iPSX2_FORCE_EE_INTERP)
         {
@@ -756,7 +701,6 @@ static void ARMSX2StartJITKeepalive()
                     "EmuCore/CPU/Recompiler", "EnableFastmem",
                     EmuConfig.Cpu.Recompiler.EnableFastmem);
         }
-        Console.WriteLn("[VM] VM Thread: CPUThreadInitialize (once)...");
         // VM init watchdog (Component 4a): if CPUThreadInitialize hangs (e.g. a
         // Universal TXM prepare that never traps), surface an error and return
         // to the menu instead of hanging on a permanent black screen.
@@ -827,14 +771,12 @@ static void ARMSX2StartJITKeepalive()
                 } else {
                     std::fprintf(stderr, "@@BOOT_THREAD_WAIT@@ waiting=1\n");
                     std::fflush(stderr);
-                    Console.WriteLn("[VM] VM Thread: waiting for boot request...");
                     s_vmCV.wait(lk, [] { return s_requestVMBoot.load() || s_vmThreadShouldExit.load(); });
                     if (s_vmThreadShouldExit.load(std::memory_order_relaxed))
                     {
                         s_vmThreadShouldExit.store(false, std::memory_order_relaxed);
                         std::fprintf(stderr, "@@BOOT_THREAD_EXIT@@ reason=should_exit\n");
                         std::fflush(stderr);
-                        Console.WriteLn("[VM] VM Thread: exit requested, ending persistent loop.");
                         // The persistent-thread design assumes CPUThreadInitialize runs once.
                         // When we tear down to create a new thread (e.g. for interpreter fallback),
                         // we must pair the init with a shutdown so the new thread can re-allocate
@@ -854,7 +796,6 @@ static void ARMSX2StartJITKeepalive()
 
             std::fprintf(stderr, "@@BOOT_THREAD_SIGNAL@@ received=1\n");
             std::fflush(stderr);
-            Console.WriteLn("[VM] VM Thread: boot signal received, preparing boot params...");
             // Block new canaries, cancel periodic validation, then wait for a
             // callback which already passed the busy check. JIT execution may
             // begin only after that callback has restored the probed code byte.
@@ -888,12 +829,7 @@ static void ARMSX2StartJITKeepalive()
                 // Resolve fast boot from the per-game override if present, otherwise the
                 // configured global value. Global settings are not mutated here.
                 const bool fastBoot = ARMSX2ResolveFastBootForISO(isoPath);
-                std::fprintf(stderr, "@@BOOT_FASTBOOT_READ@@ selected=%d\n", fastBoot ? 1 : 0);
-                std::fflush(stderr);
                 const bool isoExists = !isoFilename.empty() && FileSystem::FileExists(isoPath.c_str());
-                std::fprintf(stderr, "@@BOOT_PARAMS@@ ini_iso=\"%s\" resolved=\"%s\" exists=%d fast_boot=%d\n",
-                    isoFilename.c_str(), isoPath.c_str(), isoExists ? 1 : 0, fastBoot ? 1 : 0);
-                std::fflush(stderr);
                 if (isoExists) {
                     bootGameName = isoFilename;
                     std::string suffix = isoFilename.size() >= 4 ? isoFilename.substr(isoFilename.size() - 4) : "";
@@ -916,7 +852,6 @@ static void ARMSX2StartJITKeepalive()
                         std::fprintf(stderr, "@@ISO_BOOT@@ path=%s fast_boot=1 mode=ELF INI=\"%s\"\n",
                             isoPath.c_str(), isoFilename.c_str());
                         std::fflush(stderr);
-                        Console.WriteLn("@@ISO_BOOT@@ path=%s fast_boot=1 mode=ELF (INI: %s)", isoPath.c_str(), isoFilename.c_str());
                     } else {
                         boot_params.filename = isoPath;
                         boot_params.source_type = CDVD_SourceType::Iso;
@@ -924,13 +859,11 @@ static void ARMSX2StartJITKeepalive()
                         std::fprintf(stderr, "@@ISO_BOOT@@ path=%s fast_boot=%d mode=ISO INI=\"%s\"\n",
                             isoPath.c_str(), fastBoot ? 1 : 0, isoFilename.c_str());
                         std::fflush(stderr);
-                        Console.WriteLn("@@ISO_BOOT@@ path=%s fast_boot=%d (INI: %s)", isoPath.c_str(), fastBoot ? 1 : 0, isoFilename.c_str());
                     }
                 } else {
                     std::fprintf(stderr, "@@ISO_BOOT_MISSING@@ ini_iso=\"%s\" attempted=\"%s\"\n",
                         isoFilename.c_str(), isoPath.c_str());
                     std::fflush(stderr);
-                    Console.WriteLn("@@ISO_BOOT@@ no ISO='%s', falling back to BIOS only", isoFilename.c_str());
                 }
             }
 
@@ -994,10 +927,6 @@ static void ARMSX2StartJITKeepalive()
             // and SIGSEGV on the first memory access.
             if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
                 EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-            std::fprintf(stderr, "@@IOS_PREVM_SYNC_SETTINGS@@ mtvu=%d fastmem=%d\n",
-                EmuConfig.Speedhacks.vuThread ? 1 : 0,
-                EmuConfig.Cpu.Recompiler.EnableFastmem ? 1 : 0);
-            std::fflush(stderr);
             const int configuredCoreType = s_settings_interface->GetIntValue("EmuCore/CPU", "CoreType", 2);
             const bool configuredUseArm64 = s_settings_interface->GetBoolValue("EmuCore/CPU", "UseArm64Dynarec", configuredCoreType == 2);
             std::fprintf(stderr,
@@ -1011,13 +940,6 @@ static void ARMSX2StartJITKeepalive()
                 EmuConfig.Speedhacks.vuThread ? 1 : 0,
                 DarwinMisc::iPSX2_FORCE_EE_INTERP ? 1 : 0);
             std::fflush(stderr);
-            ARMSX2IOSLogMemoryCardConfig("pre-vm-initialize");
-            Console.WriteLn("@@FRAMELIMIT@@ boot nominal=%.3f turbo=%.3f slomo=%.3f ntsc=%.3f pal=%.3f",
-                EmuConfig.EmulationSpeed.NominalScalar,
-                EmuConfig.EmulationSpeed.TurboScalar,
-                EmuConfig.EmulationSpeed.SlomoScalar,
-                EmuConfig.GS.FramerateNTSC,
-                EmuConfig.GS.FrameratePAL);
 
             ARMSX2ApplyJITScriptProtocol("pre-vm-initialize");
 
@@ -1038,9 +960,6 @@ static void ARMSX2StartJITKeepalive()
                     }
                 }
                 ARMSX2IOSLogMemoryCardConfig("post-vm-initialize");
-                std::fprintf(stderr, "@@BOOT_POST_INIT@@ stage=before_osd state=%d frame=%u\n",
-                    static_cast<int>(VMManager::GetState()), ::g_FrameCount);
-                std::fflush(stderr);
                 ARMSX2ApplyIOSOsdPresetFromConfig("post-vm-initialize");
                 // The only one of the three OSD apply points that runs with the GS already
                 // open, so the overlay position needs pushing rather than just being left in
@@ -1048,14 +967,7 @@ static void ARMSX2StartJITKeepalive()
                 // MTGS::RunOnGSThread asserts on.
                 if (MTGS::IsOpen())
                     MTGS::ApplySettings();
-                std::fprintf(stderr, "@@BOOT_POST_INIT@@ stage=after_osd state=%d frame=%u\n",
-                    static_cast<int>(VMManager::GetState()), ::g_FrameCount);
-                std::fflush(stderr);
-                Console.WriteLn("[VM] VM initialized successfully");
                 VMManager::SetState(VMState::Running);
-                std::fprintf(stderr, "@@BOOT_POST_INIT@@ stage=after_set_running state=%d frame=%u\n",
-                    static_cast<int>(VMManager::GetState()), ::g_FrameCount);
-                std::fflush(stderr);
 
                 if (ARMSX2IOSRuntimeTelemetryEnabled()) {
                     std::thread([heartbeat_generation]() {
@@ -1098,16 +1010,12 @@ static void ARMSX2StartJITKeepalive()
                         Console.WriteLn("[VM] VM Thread: shutdown signal received.");
                         break;
                     } else if (state == VMState::Running) {
-                        std::fprintf(stderr, "@@BOOT_EXEC_ENTER@@ state=%d frame=%u\n",
-                            static_cast<int>(state), ::g_FrameCount);
-                        std::fflush(stderr);
                         VMManager::Execute();
                     } else {
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     }
                 }
 
-                Console.WriteLn("[VM] VM Thread: shutting down VM...");
                 VMManager::Shutdown(false);
             } else {
                 Console.Error("VM Thread: VMManager::Initialize failed!");
@@ -1125,9 +1033,6 @@ static void ARMSX2StartJITKeepalive()
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
             });
         } // end while(true) boot loop
-
-        // Note: CPUThreadShutdown() is never reached because the thread persists.
-        // It would only be needed if we added an app-termination signal.
     });
     vmThread.detach();
 }
@@ -1168,9 +1073,6 @@ static void ARMSX2StartJITKeepalive()
         extern void cdvdSaveNVRAM();
         cdvdSaveNVRAM();
         Console.WriteLn("[NVM] NVM saved on sceneWillResignActive");
-    } else {
-        Console.WriteLn("[NVM] Skipped save on sceneWillResignActive active=%d biosPath=%d",
-            s_vmThreadActive.load(std::memory_order_relaxed) ? 1 : 0, BiosPath.empty() ? 0 : 1);
     }
 }
 
@@ -1188,9 +1090,6 @@ static void ARMSX2StartJITKeepalive()
         extern void cdvdSaveNVRAM();
         cdvdSaveNVRAM();
         Console.WriteLn("[NVM] NVM saved on sceneDidEnterBackground");
-    } else {
-        Console.WriteLn("[NVM] Skipped save on sceneDidEnterBackground active=%d biosPath=%d",
-            s_vmThreadActive.load(std::memory_order_relaxed) ? 1 : 0, BiosPath.empty() ? 0 : 1);
     }
     // A folder card writes its last sectors two frames after the game stops writing, and a game in
     // the background gets no more frames, so a kill there would lose the end of an in-game save.

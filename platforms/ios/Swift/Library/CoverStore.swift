@@ -302,7 +302,6 @@ final class CoverStore {
                 do {
                     try fileManager.removeItem(at: file)
                     removed += 1
-                    NSLog("[ARMSX2 iOS Covers] removed %@", file.path)
                 } catch {
                     NSLog("[ARMSX2 iOS Covers] remove failed %@ error=%@", file.path, error.localizedDescription)
                 }
@@ -483,7 +482,6 @@ final class CoverStore {
             }
             try data.write(to: temp, options: .atomic)
             try fileManager.moveItem(at: temp, to: target)
-            NSLog("[ARMSX2 iOS Covers] downloaded %@ -> %@", remoteURL.absoluteString, target.path)
             return true
         } catch {
             NSLog("[ARMSX2 iOS Covers] download failed %@ error=%@", remoteURL.absoluteString, error.localizedDescription)

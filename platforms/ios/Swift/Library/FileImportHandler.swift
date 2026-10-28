@@ -69,8 +69,6 @@ final class FileImportHandler {
         preferredDestination: ImportDestination = .automatic,
         allowReplacingExistingFiles: Bool = true
     ) -> [ImportedGame] {
-        NSLog("[ARMSX2 iOS Import] importing %d file(s), destination=%@", urls.count, String(describing: preferredDestination))
-
         var imported: [String] = []
         var importedGames: [ImportedGame] = []
         var rejected: [String] = []
@@ -175,8 +173,6 @@ final class FileImportHandler {
 
         let ext = url.pathExtension.lowercased()
         let fileName = url.lastPathComponent
-        NSLog("[ARMSX2 iOS Import] candidate: %@ ext=%@ securityScoped=%d",
-              fileName, ext.isEmpty ? "(none)" : ext, accessing ? 1 : 0)
 
         if preferredDestination == .pnachCheat || (preferredDestination == .automatic && Self.pnachExtensions.contains(ext)) {
             return importPNACHFile(url, asCheat: true)

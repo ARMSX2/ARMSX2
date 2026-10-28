@@ -369,16 +369,14 @@ struct BIOSListView: View {
                 ToolbarItem(id: "menu.import", placement: .topBarTrailing) {
                     Menu {
                         Button {
-                            presentMenuPanel("bios_import") {
-                                NSLog("[ARMSX2 iOS BIOS] opening primary BIOS picker")
+                            presentMenuPanel {
                                 openBIOSImporter()
                             }
                         } label: {
                             Label(settings.localized("Import BIOS"), systemImage: "doc.badge.plus")
                         }
                         Button {
-                            presentMenuPanel("bios_compatibility_import") {
-                                NSLog("[ARMSX2 iOS BIOS] opening compatibility BIOS picker")
+                            presentMenuPanel {
                                 openCompatibilityBIOSImporter()
                             }
                         } label: {
@@ -438,7 +436,7 @@ struct BIOSListView: View {
                     allowsMultipleSelection: true
                 ) { result in
                     showBIOSImporter = false
-                    handleBIOSPickerResult(result, source: "primary")
+                    handleBIOSPickerResult(result)
                 }
             }
             .sheet(isPresented: $showBIOSCompatibilityImporter) {
@@ -447,7 +445,7 @@ struct BIOSListView: View {
                     legacyDocumentTypes: ["public.item", "public.data", "public.content"]
                 ) { result in
                     showBIOSCompatibilityImporter = false
-                    handleBIOSPickerResult(result, source: "compatibility")
+                    handleBIOSPickerResult(result)
                 }
             }
             .alert(
@@ -696,8 +694,7 @@ struct BIOSListView: View {
         }
     }
 
-    private func presentMenuPanel(_ name: String, _ action: @escaping () -> Void) {
-        NSLog("[ARMSX2 iOS BIOSMenu] present \(name)")
+    private func presentMenuPanel(_ action: @escaping () -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             action()
         }
@@ -776,7 +773,6 @@ struct BIOSListView: View {
                 .foregroundStyle(secondaryTextColour)
                 .multilineTextAlignment(.center)
             Button {
-                NSLog("[ARMSX2 iOS BIOS] opening primary BIOS picker from empty state")
                 openBIOSImporter()
             } label: {
                 MenuImportActionLabel(
@@ -824,10 +820,9 @@ struct BIOSListView: View {
         showBIOSCompatibilityImporter = true
     }
 
-    private func handleBIOSPickerResult(_ result: Result<[URL], Error>, source: String) {
+    private func handleBIOSPickerResult(_ result: Result<[URL], Error>) {
         switch result {
         case .success(let urls):
-            NSLog("[ARMSX2 iOS BIOS] %@ picker completed with %d URL(s)", source, urls.count)
             prepareBIOSImport(urls)
         case .failure(let error):
             if !FileImportHandler.isUserCancelledPickerError(error) {

@@ -3311,7 +3311,7 @@ struct GameListView: View {
                 ToolbarItem(id: "menu.more", placement: .topBarTrailing) {
                     Menu {
                         Button {
-                            presentMenuPanel("cover_import_all") {
+                            presentMenuPanel {
                                 pendingCoverGameName = nil
                                 showCoverImporter = true
                             }
@@ -3327,7 +3327,7 @@ struct GameListView: View {
                         .disabled(coverStore.isDownloadingCovers || games.isEmpty)
 
                         Button {
-                            presentMenuPanel("cover_source") {
+                            presentMenuPanel {
                                 coverTemplateDraft = coverStore.coverURLTemplate
                                 showCoverTemplateEditor = true
                             }
@@ -3336,7 +3336,7 @@ struct GameListView: View {
                         }
 
                         Button {
-                            presentMenuPanel("cover_template_reset") {
+                            presentMenuPanel {
                                 coverStore.coverURLTemplate = CoverStore.defaultCoverURLTemplate
                                 coverStore.lastCoverMessage = "Cover URL template reset to the ARMSX2 Android default."
                                 coverStore.showCoverAlert = true
@@ -6316,7 +6316,7 @@ struct GameListView: View {
         dismissControllerMoreMenu(playsFeedback: false)
         switch actions[index].id {
         case "import-local-covers":
-            presentMenuPanel("cover_import_all") {
+            presentMenuPanel {
                 pendingCoverGameName = nil
                 showCoverImporter = true
             }
@@ -6325,13 +6325,13 @@ struct GameListView: View {
             downloadMissingCovers()
             controllerInput?.playFeedback(.activate)
         case "cover-source":
-            presentMenuPanel("cover_source") {
+            presentMenuPanel {
                 coverTemplateDraft = coverStore.coverURLTemplate
                 showCoverTemplateEditor = true
             }
             controllerInput?.playFeedback(.contextMenu)
         case "reset-cover-template":
-            presentMenuPanel("cover_template_reset") {
+            presentMenuPanel {
                 coverStore.coverURLTemplate = CoverStore.defaultCoverURLTemplate
                 coverStore.lastCoverMessage =
                     "Cover URL template reset to the ARMSX2 Android default."
@@ -8254,8 +8254,7 @@ struct GameListView: View {
         .stopConfirmationCard()
     }
 
-	private func presentMenuPanel(_ name: String, _ action: @escaping () -> Void) {
-		NSLog("[ARMSX2 iOS GameListMenu] present \(name)")
+	private func presentMenuPanel(_ action: @escaping () -> Void) {
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
 			action()
 		}
@@ -8943,8 +8942,6 @@ struct GameListView: View {
 
 		let coverTargets = targets.map(\.coverInfo)
 		AutomaticCustomSkinManager.shared.enqueueMatches(for: coverTargets)
-		let serials = coverTargets.map { $0.metadata["serial"] ?? "" }.filter { !$0.isEmpty }.joined(separator: ",")
-		NSLog("[ARMSX2 iOS Covers] auto-download external missing covers count=%d serials=%@", targets.count, serials)
 		coverWorkTask?.cancel()
 		coverWorkTask = Task { @MainActor in
 			let summary = await coverStore.downloadMissingCovers(for: coverTargets, showResult: false)
@@ -9097,7 +9094,7 @@ struct GameListView: View {
 	private func copyLaunchLink(_ game: ISOEntry) {
 		let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
 		UIPasteboard.general.string = link
-		presentMenuPanel("copy_launch_link") {
+		presentMenuPanel {
 			gameActionTitle = "Launch Link Copied"
 			gameActionMessage = link
 		}

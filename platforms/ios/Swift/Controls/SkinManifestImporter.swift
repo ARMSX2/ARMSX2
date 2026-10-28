@@ -175,20 +175,31 @@ enum SkinManifestImporter {
     static func validateForInstall(_ manifest: SkinManifestV2, packageRoot: URL) -> InstallValidation {
         let result = SkinManifestValidator.validate(manifest, packageRoot: nil)
         var errors = result.errors.map(\.description)
-        let warnings = result.warnings.map(\.description)
+        var warnings = result.warnings.map(\.description)
 
-        for path in missingRequiredAssets(manifest, packageRoot: packageRoot) {
-            let message = "required asset \"\(path)\" was not found in the package"
-            if !errors.contains(message) {
-                errors.append(message)
+        var pdfAssets: [String] = []
+        for path in requiredAssets(manifest) {
+            if !FileManager.default.fileExists(atPath: packageRoot.appendingPathComponent(path).path) {
+                let message = "required asset \"\(path)\" was not found in the package"
+                if !errors.contains(message) {
+                    errors.append(message)
+                }
             }
+            if path.lowercased().hasSuffix(".pdf"), !pdfAssets.contains(path) {
+                pdfAssets.append(path)
+            }
+        }
+        if !pdfAssets.isEmpty {
+            let message = "PDF control art is not rendered in manifest v2.0: \(pdfAssets.joined(separator: ", "))"
+            warnings.append(message)
+            NSLog("[ARMSX2 iOS Skins] %@", message)
         }
         return InstallValidation(errors: errors, warnings: warnings)
     }
 
-    /// Asset paths required for a control to render (its normal art, or a
-    /// thumbstick knob) that are absent from the package root.
-    static func missingRequiredAssets(_ manifest: SkinManifestV2, packageRoot: URL) -> [String] {
+    /// Safe relative asset paths a control needs to render: its normal art,
+    /// a thumbstick knob, or per-direction D-pad art.
+    static func requiredAssets(_ manifest: SkinManifestV2) -> [String] {
         var required: [String] = []
         guard let representations = manifest.representations else { return [] }
         for (_, byScreenClass) in representations {
@@ -210,15 +221,7 @@ enum SkinManifestImporter {
             }
         }
 
-        var missing: [String] = []
-        for path in required {
-            guard SkinAssetPath.isSafeRelative(path) else { continue }
-            let resolved = packageRoot.appendingPathComponent(path)
-            if !FileManager.default.fileExists(atPath: resolved.path), !missing.contains(path) {
-                missing.append(path)
-            }
-        }
-        return missing
+        return required.filter { SkinAssetPath.isSafeRelative($0) }
     }
 
     // MARK: - Reporting
