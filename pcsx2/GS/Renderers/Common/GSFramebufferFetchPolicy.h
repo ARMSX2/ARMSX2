@@ -209,6 +209,12 @@ struct GSVulkanFramebufferFetchInputs
 	/// vendor terms a deny list there and keeps PowerVR and other unnamed vendors off the
 	/// per-primitive barrier path. Elsewhere only Mali and Adreno are trusted.
 	bool any_vendor_trusted = false;
+
+	/// The device orders a single-sample subpassLoad of the attachment being written WITHOUT the
+	/// extension (VulkanDeviceRules::ordered_input_attachment_read: PowerVR on Imagination's
+	/// driver). Stands in for roaa_available only; every deny above still applies. The caller sets
+	/// it only where the read is spelled as an input attachment.
+	bool ordered_without_roaa = false;
 };
 
 struct GSVulkanFramebufferFetchDecision
@@ -237,9 +243,21 @@ constexpr GSVulkanFramebufferFetchDecision DecideVulkanFramebufferFetch(
 		!denied_destination_read && !in.is_xclipse && !in.is_adreno8xx_proprietary &&
 		(in.is_mali || in.is_adreno || in.any_vendor_trusted);
 
-	decision.enabled = vendor_allows && in.roaa_available && !in.user_disabled;
+	decision.enabled = vendor_allows && (in.roaa_available || in.ordered_without_roaa) && !in.user_disabled;
 	return decision;
 }
+
+// PowerVR on Imagination's driver: no extension, ordered in tile anyway. On Android, and with the
+// user's setting as the way back.
+static_assert(DecideVulkanFramebufferFetch({.any_vendor_trusted = true, .ordered_without_roaa = true}).enabled);
+static_assert(!DecideVulkanFramebufferFetch(
+	{.user_disabled = true, .any_vendor_trusted = true, .ordered_without_roaa = true})
+				   .enabled);
+// The device fact replaces the extension, not the vendor gate.
+static_assert(!DecideVulkanFramebufferFetch({.ordered_without_roaa = true}).enabled);
+static_assert(!DecideVulkanFramebufferFetch(
+	{.is_xclipse = true, .any_vendor_trusted = true, .ordered_without_roaa = true})
+				   .enabled);
 
 // Mali with the extension, not denied, no force key: the in-tile read is on.
 static_assert(DecideVulkanFramebufferFetch({.roaa_available = true, .is_mali = true}).enabled);

@@ -132,6 +132,21 @@ TEST(GSVulkanDeviceRules, ImaginationsDriverAvoidsTheFeedbackLoopLayout)
 	EXPECT_FALSE(Rules(not_imagination).avoid_feedback_loop_layout);
 }
 
+TEST(GSVulkanDeviceRules, OnlyImaginationsDriverOrdersTheInputAttachmentRead)
+{
+	EXPECT_TRUE(Rules(kPowerVR).ordered_input_attachment_read);
+	EXPECT_TRUE(Rules(kPowerVRCSeries).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kPowerVRMesa).ordered_input_attachment_read);
+	// r44p1 avoids the layout too, and is not on this road: its in-pass read loses the device.
+	EXPECT_FALSE(Rules(kRg477v).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kMaliG57).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kAdreno740Turnip).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kAppleM2).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kRadv).ordered_input_attachment_read);
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kPowerVRCSeries)),
+		"avoid_feedback_loop_layout, ordered_input_attachment_read");
+}
+
 TEST(GSVulkanDeviceRules, OnlyAnR44p1DriverAvoidsTheFeedbackLoopLayout)
 {
 	EXPECT_TRUE(Rules(kRg477v).avoid_feedback_loop_layout);

@@ -878,5 +878,8 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 		adreno && qualcomm_driver && selection.gpu.architecture == MobileGpuArchitecture::Adreno8xx;
 	rules.self_read_costs_measured = turnip || honeykrisp;
 	rules.barrier_road_measured = honeykrisp;
+	// The in-tile read without the extension, on the same driver the layout avoid names above. Both
+	// are needed: the ordering holds for subpassLoad, not for a sampler read of the attachment.
+	rules.ordered_input_attachment_read = imagination_proprietary && rules.avoid_feedback_loop_layout;
 	return rules;
 }

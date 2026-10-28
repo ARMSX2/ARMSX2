@@ -368,6 +368,16 @@ struct VulkanDeviceRules
 	/// VULKAN_PUSH_DESCRIPTORS_REQUIRED descriptors. Recorded so a log shows the exemption, not just
 	/// the absence of the avoid.
 	bool exempt_malisx2_push_descriptors = false;
+	/// PowerVR on Imagination's driver: a single-sample subpassLoad of the attachment being written
+	/// is coherent and in primitive order in tile memory, without
+	/// VK_EXT_rasterization_order_attachment_access. The extension cannot be advertised on this
+	/// hardware only because it also promises coherent reads of OTHER samples of a pixel, which IMG
+	/// does not give; ANGLE relies on the single-sample guarantee to expose coherent
+	/// GL_EXT/ARM_shader_framebuffer_fetch on the same driver (vk_renderer.cpp,
+	/// mIsColorFramebufferFetchCoherent). Puts the device on the in-tile fetch road with no per-draw
+	/// barriers. Needs the input-attachment spelling, so it applies only with
+	/// avoid_feedback_loop_layout. Fixes tab -> Disable Framebuffer Fetch returns to the barrier road.
+	bool ordered_input_attachment_read = false;
 };
 
 /// A VulkanDeviceRules flag and the name the log and the driver report print it under.
@@ -390,6 +400,7 @@ inline constexpr VulkanDeviceRuleName VULKAN_DEVICE_RULE_NAMES[] = {
 	{"self_read_costs_measured", &VulkanDeviceRules::self_read_costs_measured},
 	{"barrier_road_measured", &VulkanDeviceRules::barrier_road_measured},
 	{"exempt_malisx2_push_descriptors", &VulkanDeviceRules::exempt_malisx2_push_descriptors},
+	{"ordered_input_attachment_read", &VulkanDeviceRules::ordered_input_attachment_read},
 };
 static_assert(sizeof(VulkanDeviceRules) == sizeof(VULKAN_DEVICE_RULE_NAMES) / sizeof(VULKAN_DEVICE_RULE_NAMES[0]),
 	"VulkanDeviceRules is all bool flags; every one needs a VULKAN_DEVICE_RULE_NAMES entry");

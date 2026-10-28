@@ -2400,6 +2400,14 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 	VkAttachmentReference* depth_reference_ptr = nullptr;
 	std::array<VkAttachmentReference, 2> input_reference;
 	u32 num_subpass_inputs = 0;
+	// The framebuffer-local self-dependency is what makes a pipeline barrier inside the pass legal.
+	// The rasterization-order road issues none and needs none. The in-tile read WITHOUT the extension
+	// (PowerVR, VulkanDeviceRules::ordered_input_attachment_read) keeps it anyway. Nothing on that
+	// road is expected to issue an in-pass barrier (offset reads are copied, and the depth feedback
+	// loop stays off without rasterization-order depth access), so this is a no-cost guard that keeps
+	// any barrier that does reach SendHWDraw valid rather than undefined.
+	const bool self_dependency = !m_features.framebuffer_fetch ||
+	                             !m_optional_extensions.vk_ext_rasterization_order_attachment_access;
 	std::array<VkSubpassDependency, 3> subpass_dependency;
 	u32 num_subpass_dependencies = 0;
 	std::array<VkAttachmentDescription, 2> attachments;
@@ -2426,7 +2434,7 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 				num_subpass_inputs++;
 			}
 
-			if (!m_features.framebuffer_fetch)
+			if (self_dependency)
 			{
 				// don't need the framebuffer-local dependency when we have rasterization order attachment access
 				subpass_dependency[num_subpass_dependencies].srcSubpass = 0;
@@ -2471,7 +2479,7 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 				num_subpass_inputs++;
 			}
 
-			if (!m_features.framebuffer_fetch)
+			if (self_dependency)
 			{
 				// don't need the framebuffer-local dependency when we have rasterization order attachment access
 				subpass_dependency[num_subpass_dependencies].srcSubpass = 0;
@@ -4100,6 +4108,11 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 #ifdef __ANDROID__
 	fetch_inputs.any_vendor_trusted = true;
 #endif
+	// PowerVR on Imagination's driver orders a single-sample subpassLoad in tile memory without the
+	// extension (VulkanDeviceRules::ordered_input_attachment_read). Only where the layout extension
+	// is off, so the read is spelled subpassLoad: the ordering says nothing about a sampler read.
+	fetch_inputs.ordered_without_roaa = m_device_rules.ordered_input_attachment_read &&
+	                                    !m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
 	if (fetch_decision.force_key_ignored)
 	{
@@ -4227,6 +4240,9 @@ void GSDeviceVK::ResolveFeatureTable()
 	// in -- the in-tile read IS the in-pass read, so it cannot outlive the bit that permits one --
 	// and this is here to catch a future edit to that function that forgets it.
 	pxAssert(!m_features.framebuffer_fetch || m_features.texture_barrier);
+	// The in-tile read without the rasterization-order extension is only ordered as subpassLoad.
+	pxAssert(!m_features.framebuffer_fetch || m_optional_extensions.vk_ext_rasterization_order_attachment_access ||
+			 !UseFeedbackLoopLayout());
 
 	// Which spelling of the in-pass self-read this backend uses, published so GSRendererHW can tell
 	// the two apart without knowing about Vulkan extensions. The layout road samples the attachment
@@ -6428,8 +6444,10 @@ bool GSDeviceVK::CompileConvertPipelines()
 					// The feedback-loop (fbl) render pass carries the RASTERIZATION_ORDER_ATTACHMENT subpass flag
 					// when framebuffer fetch is available; the pipeline bound in it must declare the matching
 					// color-blend rasterization-order flag or the coherent self-read is undefined. Set (overwrite,
-					// not OR, so fbl=0 stays unflagged).
-					gpb.SetBlendFlags((fbl != 0 && m_features.framebuffer_fetch)
+					// not OR, so fbl=0 stays unflagged). Without the extension (PowerVR's ordered
+					// input-attachment read) neither the subpass nor the pipeline may carry it.
+					gpb.SetBlendFlags((fbl != 0 && m_features.framebuffer_fetch &&
+										  m_optional_extensions.vk_ext_rasterization_order_attachment_access)
 							? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT
 							: 0);
 					arr[ds][fbl] = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
@@ -7805,7 +7823,11 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	// Tests have shown that it's faster to just enable rast order on the entire pass, rather than alternating
 	// between turning it on and off for different draws, and adding the required barrier between non-rast-order
 	// and rast-order draws.
-	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop())
+	// The flag exists only with the extension. PowerVR's in-tile read without it
+	// (VulkanDeviceRules::ordered_input_attachment_read) is ordered by the hardware, not by a flag,
+	// and the render pass declares no rasterization-order subpass flag for it either.
+	if (m_features.framebuffer_fetch && p.IsRTFeedbackLoop() &&
+		m_optional_extensions.vk_ext_rasterization_order_attachment_access)
 		gpb.AddBlendFlags(VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT);
 	// The declared-loop road on a driver that orders overlapping primitives only on request: only
 	// the draws the renderer marked get it, because the per-overlap wait is what costs.
