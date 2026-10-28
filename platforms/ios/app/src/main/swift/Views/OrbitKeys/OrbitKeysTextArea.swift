@@ -10,49 +10,87 @@ struct OrbitKeysEditorPanel: View {
   let compact: Bool
   let usesExpandedMetrics: Bool
   let onSettingsTap: () -> Void
+  /// With a value the field row and the chips row get their own panels this far apart.
+  var rowGap: CGFloat? = nil
   @Environment(\.uiAccentColour) private var themeAccent
 
+  /// The panel heights of a split editor: the tablet field and chips rows plus their padding.
+  static let splitFieldRowHeight: CGFloat = 70
+  static let splitChipsRowHeight: CGFloat = 54
+
   var body: some View {
-    VStack(spacing: usesExpandedMetrics ? 10 : 6) {
-      HStack(spacing: usesExpandedMetrics ? 9 : 5) {
-        OrbitKeysTextField(
-          model: model,
-          compact: compact,
-          usesExpandedMetrics: usesExpandedMetrics
+    Group {
+      if let rowGap {
+        VStack(spacing: rowGap) {
+          splitPanel(fieldRow, height: Self.splitFieldRowHeight)
+          splitPanel(chipsRow, height: Self.splitChipsRowHeight)
+        }
+      } else {
+        VStack(spacing: usesExpandedMetrics ? 10 : 6) {
+          fieldRow
+          chipsRow
+        }
+        .frame(maxWidth: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(panelPadding)
+        .keyboardThemeSurface(
+          usesLegacyTheme: model.usesLegacyTheme,
+          clearGlassLevel: model.clearGlassLevel,
+          cornerRadius: 22
         )
-
-        editorActions
-      }
-
-      HStack(spacing: usesExpandedMetrics ? 8 : 5) {
-        holdBackspaceButton
-        modeButton(
-          title: "L2",
-          subtitle: "123",
-          color: themeAccent,
-          isActive: model.mode == .numbers,
-          action: model.toggleNumbersLock
-        )
-        modeButton(
-          title: "R2",
-          subtitle: "ABC",
-          color: themeAccent,
-          isActive: model.mode == .shifted,
-          action: model.toggleShiftLock
-        )
-        holdSpaceButton
       }
     }
-    .frame(maxWidth: .infinity)
-    .fixedSize(horizontal: false, vertical: true)
-    .padding(usesExpandedMetrics ? 14 : (compact ? 9 : 10))
-    .keyboardThemeSurface(
-      usesLegacyTheme: model.usesLegacyTheme,
-      clearGlassLevel: model.clearGlassLevel,
-      cornerRadius: 22
-    )
     .contentShape(Rectangle())
     .onTapGesture {}
+  }
+
+  private var panelPadding: CGFloat {
+    usesExpandedMetrics ? 14 : (compact ? 9 : 10)
+  }
+
+  private func splitPanel(_ row: some View, height: CGFloat) -> some View {
+    row
+      .padding(.horizontal, panelPadding)
+      .frame(maxWidth: .infinity)
+      .frame(height: height)
+      .keyboardThemeSurface(
+        usesLegacyTheme: model.usesLegacyTheme,
+        clearGlassLevel: model.clearGlassLevel,
+        cornerRadius: 22
+      )
+  }
+
+  private var fieldRow: some View {
+    HStack(spacing: usesExpandedMetrics ? 9 : 5) {
+      OrbitKeysTextField(
+        model: model,
+        compact: compact,
+        usesExpandedMetrics: usesExpandedMetrics
+      )
+
+      editorActions
+    }
+  }
+
+  private var chipsRow: some View {
+    HStack(spacing: usesExpandedMetrics ? 8 : 5) {
+      holdBackspaceButton
+      modeButton(
+        title: "L2",
+        subtitle: "123",
+        color: themeAccent,
+        isActive: model.mode == .numbers,
+        action: model.toggleNumbersLock
+      )
+      modeButton(
+        title: "R2",
+        subtitle: "ABC",
+        color: themeAccent,
+        isActive: model.mode == .shifted,
+        action: model.toggleShiftLock
+      )
+      holdSpaceButton
+    }
   }
 
   private func modeButton(
