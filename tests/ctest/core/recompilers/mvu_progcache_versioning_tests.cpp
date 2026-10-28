@@ -3,12 +3,13 @@
 //
 // mVUProgCache VERSION handshake + stale-cache eviction + INDEX format.
 //
-// mVUProgCache::Init writes a VersionHeader to $root/VERSION on first
-// boot. On every subsequent boot it reads back the on-disk header and
-// compares against the live build's (kProgCacheFormatVersion,
-// kMvuCompilerAbiVersion, optionsSentinel, vuIndex, archTag). Any
-// mismatch atomically renames $root → $root.stale.<ns> and starts
-// fresh.
+// Each options sentinel has a cache directory of its own,
+// $root = vu_jit/vu{0,1}/<sentinel hex>. mVUProgCache::Init writes a
+// VersionHeader to $root/VERSION on first boot. On every subsequent boot
+// it reads back the on-disk header and compares against the live build's
+// (kProgCacheFormatVersion, kMvuCompilerAbiVersion, optionsSentinel,
+// vuIndex, archTag). Any mismatch renames $root → $root.stale.<ns>,
+// starts fresh, and the background pass deletes the renamed directory.
 //
 // What this proves:
 //
@@ -16,12 +17,13 @@
 //      $root.
 //   2. Re-init with the same options sentinel keeps the cache alive
 //      (staleEvictions stays at 0).
-//   3. Re-init with a different optionsSentinel triggers an eviction
-//      (staleEvictions ticks; $root.stale.* exists; INDEX entries
-//      from the prior run aren't visible).
+//   3. Re-init with a different optionsSentinel opens that sentinel's
+//      own cache and leaves the first one intact; renamed-aside
+//      directories, the pre-sentinel layout, and caches unused for 60
+//      days are deleted.
 //   4. A manually-poisoned VERSION (bad magic / bad formatVersion /
-//      bad compilerAbiVersion / bad archTag) triggers the same
-//      eviction path — defends the format-bump invariant.
+//      bad compilerAbiVersion / bad archTag) triggers the eviction
+//      path — defends the format-bump invariant.
 //
 // References:
 //   pcsx2/arm64/microVU_ProgCache-arm64.inl  VersionHeader, VersionMatches,
@@ -34,7 +36,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <fcntl.h>
@@ -143,6 +148,15 @@ namespace
 			return Path::Combine(Path::Combine(m_root, "vu_jit"),
 			                      (vu_index & 1) ? "vu1" : "vu0");
 		}
+		// The cache of one options sentinel: vu_jit/vu{0,1}/<sentinel hex>.
+		std::string cache_dir(u32 vu_index, const XXH128_hash_t& sentinel) const
+		{
+			char hex[33];
+			std::snprintf(hex, sizeof(hex), "%016llx%016llx",
+				static_cast<unsigned long long>(sentinel.high64),
+				static_cast<unsigned long long>(sentinel.low64));
+			return Path::Combine(vu_subdir(vu_index), hex);
+		}
 	private:
 		static void RecursiveRm(const std::string& dir)
 		{
@@ -222,7 +236,7 @@ TEST(ProgCacheVersioning, fresh_init_writes_version_file)
 	EXPECT_EQ(stats.staleEvictions, 0u);
 	EXPECT_EQ(stats.entries, 0u);
 
-	const std::string version_path = Path::Combine(tmp.vu_subdir(1), "VERSION");
+	const std::string version_path = Path::Combine(tmp.cache_dir(1, sentinel), "VERSION");
 	ReadAndVerifyCurrentVersion(version_path, /*vu_index=*/1);
 
 	mVUProgCache::ResetForTest(1);
@@ -249,45 +263,99 @@ TEST(ProgCacheVersioning, reinit_same_sentinel_keeps_cache)
 	mVUProgCache::ResetForTest(1);
 }
 
-// 3. Re-init with a different optionsSentinel triggers an eviction.
-TEST(ProgCacheVersioning, optionsSentinel_mismatch_evicts_cache)
+// 3. A different optionsSentinel gets a cache of its own, and the first
+//    one is still there when its sentinel comes back. The GameDB sets the
+//    VU clamp modes and gamefixes per game, so two games played in turn
+//    can have two sentinels; neither may throw the other's cache away.
+TEST(ProgCacheVersioning, optionsSentinel_change_keeps_each_cache)
 {
 	TempCacheRoot tmp;
 	mVUProgCache::ResetForTest(1);
 
 	XXH128_hash_t s_a{};
 	s_a.low64 = 0xDEAD0000ull; s_a.high64 = 0xBEEF0000ull;
-	mVUProgCache::InitWithSentinel(1, s_a);
-	mVUProgCache::ResetForTest(1);
-
 	XXH128_hash_t s_b{};
 	s_b.low64 = 0x1234ull; s_b.high64 = 0x5678ull; // differs from s_a
+	XXH128_hash_t prog{};
+	prog.low64 = 0x0A0A0A0Aull; prog.high64 = 0x0B0B0B0Bull;
+
+	mVUProgCache::InitWithSentinel(1, s_a);
+	ASSERT_TRUE(mVUProgCache::TestAppendIndexEntry(1, prog));
+	mVUProgCache::ResetForTest(1);
+
 	mVUProgCache::InitWithSentinel(1, s_b);
-
-	const auto stats = mVUProgCache::GetStats(1);
+	auto stats = mVUProgCache::GetStats(1);
 	EXPECT_TRUE(stats.initialized);
-	EXPECT_EQ(stats.staleEvictions, 1u)
-		<< "optionsSentinel mismatch must rename the cache aside";
-	EXPECT_EQ(stats.entries, 0u);
+	EXPECT_EQ(stats.staleEvictions, 0u) << "a sentinel change must not evict anything";
+	EXPECT_EQ(stats.entries, 0u) << "s_b's cache starts empty";
+	mVUProgCache::ResetForTest(1);
 
-	// $root.stale.* should exist somewhere under $root_parent.
-	FileSystem::FindResultsArray stales;
-	FileSystem::FindFiles(
-		Path::Combine(tmp.root(), "vu_jit").c_str(),
-		"vu1.stale.*",
-		FILESYSTEM_FIND_FOLDERS | FILESYSTEM_FIND_HIDDEN_FILES,
-		&stales);
-	EXPECT_FALSE(stales.empty())
-		<< "expected at least one vu1.stale.<ns> directory after eviction";
+	mVUProgCache::InitWithSentinel(1, s_a);
+	stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.staleEvictions, 0u);
+	EXPECT_TRUE(mVUProgCache::TestHasIndexEntry(1, prog)) << "s_a's cache must survive a session under s_b";
 
-	// Fresh VERSION on the new $root reflects s_b.
-	const std::string version_path = Path::Combine(tmp.vu_subdir(1), "VERSION");
-	auto bytes = FileSystem::ReadBinaryFile(version_path.c_str());
-	ASSERT_TRUE(bytes.has_value());
-	VersionHeaderMirror hdr;
-	std::memcpy(&hdr, bytes->data(), sizeof(hdr));
-	EXPECT_EQ(hdr.optionsSentinel.low64, s_b.low64);
-	EXPECT_EQ(hdr.optionsSentinel.high64, s_b.high64);
+	// Each cache's VERSION carries its own sentinel.
+	for (const XXH128_hash_t& s : {s_a, s_b})
+	{
+		auto bytes = FileSystem::ReadBinaryFile(Path::Combine(tmp.cache_dir(1, s), "VERSION").c_str());
+		ASSERT_TRUE(bytes.has_value());
+		VersionHeaderMirror hdr;
+		std::memcpy(&hdr, bytes->data(), sizeof(hdr));
+		EXPECT_EQ(hdr.optionsSentinel.low64, s.low64);
+		EXPECT_EQ(hdr.optionsSentinel.high64, s.high64);
+	}
+
+	mVUProgCache::ResetForTest(1);
+}
+
+// 3b. What an eviction or an older build left behind goes: the directories
+//     the eviction renamed aside, and the files of the layout before the
+//     per-sentinel directories (VERSION, INDEX and the payload shards
+//     directly under vu1/). A cache whose sentinel was not opened for 60
+//     days goes too; one opened recently stays.
+TEST(ProgCacheVersioning, leftovers_and_unused_caches_are_deleted)
+{
+	TempCacheRoot tmp;
+	mVUProgCache::ResetForTest(1);
+
+	XXH128_hash_t mine{}, recent{}, old{};
+	mine.low64 = 0x1ull; recent.low64 = 0x2ull; old.low64 = 0x3ull;
+	const std::string vu1 = tmp.vu_subdir(1);
+	const std::string jit = Path::Combine(tmp.root(), "vu_jit");
+	const auto make_file = [](const std::string& dir, const char* name) {
+		ASSERT_TRUE(FileSystem::EnsureDirectoryExists(dir.c_str(), true));
+		ASSERT_TRUE(FileSystem::WriteStringToFile(Path::Combine(dir, name).c_str(), "x"));
+	};
+	make_file(Path::Combine(jit, "vu1.stale.123"), "INDEX");
+	make_file(Path::Combine(vu1, "0123456789abcdef0123456789abcdef.stale.9"), "INDEX");
+	make_file(vu1, "VERSION");
+	make_file(vu1, "INDEX");
+	make_file(Path::Combine(vu1, "ab"), "abcd.vuprog");
+	make_file(tmp.cache_dir(1, recent), "VERSION");
+	make_file(tmp.cache_dir(1, old), "VERSION");
+	make_file(jit, "vuaot_tripped.txt");
+	const auto days_ago = [](int days) {
+		return std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * days);
+	};
+	std::error_code ec;
+	std::filesystem::last_write_time(Path::Combine(tmp.cache_dir(1, recent), "VERSION"), days_ago(10), ec);
+	ASSERT_FALSE(ec);
+	std::filesystem::last_write_time(Path::Combine(tmp.cache_dir(1, old), "VERSION"), days_ago(61), ec);
+	ASSERT_FALSE(ec);
+
+	mVUProgCache::InitWithSentinel(1, mine);
+	mVUProgCache::TestWaitForPreload(1);
+
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(jit, "vu1.stale.123").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(vu1, "0123456789abcdef0123456789abcdef.stale.9").c_str()));
+	EXPECT_FALSE(FileSystem::FileExists(Path::Combine(vu1, "VERSION").c_str()));
+	EXPECT_FALSE(FileSystem::FileExists(Path::Combine(vu1, "INDEX").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(Path::Combine(vu1, "ab").c_str()));
+	EXPECT_FALSE(FileSystem::DirectoryExists(tmp.cache_dir(1, old).c_str())) << "unused for 61 days";
+	EXPECT_TRUE(FileSystem::DirectoryExists(tmp.cache_dir(1, recent).c_str())) << "used 10 days ago";
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(tmp.cache_dir(1, mine), "VERSION").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(jit, "vuaot_tripped.txt").c_str())) << "the tripwire's memory stays";
 
 	mVUProgCache::ResetForTest(1);
 }
@@ -306,7 +374,7 @@ TEST(ProgCacheVersioning, bad_magic_evicts_cache)
 
 	// Poison: overwrite VERSION with bogus magic but otherwise-current
 	// fields. Init should reject and evict.
-	const std::string version_path = Path::Combine(tmp.vu_subdir(0), "VERSION");
+	const std::string version_path = Path::Combine(tmp.cache_dir(0, sentinel), "VERSION");
 	VersionHeaderMirror hdr{};
 	hdr.magic              = 0xDEADBEEFu;             // wrong
 	hdr.formatVersion      = mVUProgCache::kProgCacheFormatVersion;
@@ -336,7 +404,7 @@ TEST(ProgCacheVersioning, bad_formatVersion_evicts_cache)
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::ResetForTest(1);
 
-	const std::string version_path = Path::Combine(tmp.vu_subdir(1), "VERSION");
+	const std::string version_path = Path::Combine(tmp.cache_dir(1, sentinel), "VERSION");
 	VersionHeaderMirror hdr{};
 	hdr.magic              = kVersionMagicMirror;
 	hdr.formatVersion      = mVUProgCache::kProgCacheFormatVersion + 100u; // wrong
@@ -367,7 +435,7 @@ TEST(ProgCacheVersioning, bad_compilerAbiVersion_evicts_cache)
 	mVUProgCache::InitWithSentinel(0, sentinel);
 	mVUProgCache::ResetForTest(0);
 
-	const std::string version_path = Path::Combine(tmp.vu_subdir(0), "VERSION");
+	const std::string version_path = Path::Combine(tmp.cache_dir(0, sentinel), "VERSION");
 	VersionHeaderMirror hdr{};
 	hdr.magic              = kVersionMagicMirror;
 	hdr.formatVersion      = mVUProgCache::kProgCacheFormatVersion;
@@ -410,7 +478,7 @@ TEST(ProgCacheVersioning, bad_archTag_evicts_cache)
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::ResetForTest(1);
 
-	const std::string version_path = Path::Combine(tmp.vu_subdir(1), "VERSION");
+	const std::string version_path = Path::Combine(tmp.cache_dir(1, sentinel), "VERSION");
 	VersionHeaderMirror hdr{};
 	hdr.magic              = kVersionMagicMirror;
 	hdr.formatVersion      = mVUProgCache::kProgCacheFormatVersion;
@@ -479,7 +547,7 @@ namespace
 	static_assert(sizeof(IndexEntryHeaderMirror) == 64,
 		"IndexEntryHeader mirror drifted from production layout");
 
-	// Build a current-format VERSION file in `vu_subdir/VERSION` so Init
+	// Build a current-format VERSION file in the sentinel's directory so Init
 	// doesn't evict the synthetic INDEX we're about to write.
 	void WriteCurrentVersion(const std::string& version_path, u32 vu_index,
 	                         const XXH128_hash_t& sentinel,
@@ -550,7 +618,7 @@ TEST(ProgCacheIndexFormatV4, single_entry_round_trip_via_test_helper)
 	EXPECT_FALSE(mVUProgCache::TestAppendIndexEntry(1, hash));
 
 	// On-disk record is exactly the 64-byte header: no trailing list.
-	const std::string idx = Path::Combine(tmp.vu_subdir(1), "INDEX");
+	const std::string idx = Path::Combine(tmp.cache_dir(1, sentinel), "INDEX");
 	ASSERT_TRUE(FileSystem::FileExists(idx.c_str()));
 	const auto bytes = FileSystem::ReadBinaryFile(idx.c_str());
 	ASSERT_TRUE(bytes.has_value());
@@ -577,7 +645,7 @@ TEST(ProgCacheIndexFormatV4, multi_record_synthetic_load)
 	sentinel.high64 = 0xC0FFEE88C0FFEE88ull;
 
 	// Lay down a valid VERSION + INDEX before Init runs.
-	const std::string sub = tmp.vu_subdir(1);
+	const std::string sub = tmp.cache_dir(1, sentinel);
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
@@ -612,7 +680,7 @@ TEST(ProgCacheIndexFormatV4, truncated_tail_drops_partial_record_cleanly)
 	sentinel.low64  = 0xC0FFEE99C0FFEE99ull;
 	sentinel.high64 = 0xC0FFEE99C0FFEE99ull;
 
-	const std::string sub = tmp.vu_subdir(1);
+	const std::string sub = tmp.cache_dir(1, sentinel);
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
@@ -645,7 +713,7 @@ TEST(ProgCacheIndexFormatV4, tombstone_skipped_on_load)
 	sentinel.low64  = 0xC0FFEEAAC0FFEEAAull;
 	sentinel.high64 = 0xC0FFEEAAC0FFEEAAull;
 
-	const std::string sub = tmp.vu_subdir(1);
+	const std::string sub = tmp.cache_dir(1, sentinel);
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel);
 
@@ -683,7 +751,7 @@ TEST(ProgCacheIndexFormatV4, version3_directory_is_evicted_not_misparsed)
 	sentinel.low64  = 0xC0FFEEBBC0FFEEBBull;
 	sentinel.high64 = 0xC0FFEEBBC0FFEEBBull;
 
-	const std::string sub = tmp.vu_subdir(1);
+	const std::string sub = tmp.cache_dir(1, sentinel);
 	ASSERT_TRUE(FileSystem::EnsureDirectoryExists(sub.c_str(), true));
 	WriteCurrentVersion(Path::Combine(sub, "VERSION"), 1, sentinel, /*format_version=*/3u);
 

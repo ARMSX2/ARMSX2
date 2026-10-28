@@ -961,6 +961,11 @@ protected:
 	}
 
 	std::string vu_jit() const { return Path::Combine(root_, "vu_jit"); }
+	// The open cache's own directory (vu_jit/vu{0,1}/<sentinel hex>): two levels above a sidecar's path.
+	static std::string CacheDir(u32 vu)
+	{
+		return std::string(Path::GetDirectory(Path::GetDirectory(mVUProgCache::TestSidecarPath(vu, HashOf(0)))));
+	}
 
 	// The shard directory a file for `hash` lives in is the first byte of the name; a file written by hand
 	// goes under the same shape.
@@ -991,9 +996,10 @@ protected:
 		for (u64 n : {1, 2})
 			mVUProgCache::QueueSidecar(1, HashOf(n), [n]() { return std::vector<u8>(256, static_cast<u8>(n)); });
 		mVUProgCache::FlushSidecars(1);
-		vu1_payload_ = HandFile(Path::Combine(vu_jit(), "vu1"), 3, ".vuprog");
+		vu1_payload_ = HandFile(CacheDir(1), 3, ".vuprog");
 
-		stale_ = Path::Combine(vu_jit(), "vu0.stale.123");
+		// (under VU1, whose cache is not opened again below: opening one deletes its set-aside directories)
+		stale_ = CacheDir(1) + ".stale.123";
 		stale_side_ = HandFile(stale_, 4, ".vuaot");
 		stale_payload_ = HandFile(stale_, 5, ".vuprog");
 
@@ -1036,8 +1042,8 @@ TEST_F(MvuAotCacheClear, OnToOffDeletesTheSidecarsAndKeepsWhatAnotherSettingStil
 	EXPECT_EQ(CountSidecars(), 0u) << "VU0, VU1 and the set-aside directory";
 	EXPECT_EQ(CountPayloads(), 6u);
 	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str())) << "the tripwire's memory stays";
-	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "INDEX").c_str()));
-	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "VERSION").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(CacheDir(0), "INDEX").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(CacheDir(0), "VERSION").c_str()));
 	EXPECT_FALSE(mVUPersist::IsProcessDisabled());
 
 	// What the preload held is gone too, and the cache still works: a new sidecar is written.
@@ -1063,7 +1069,7 @@ TEST_F(MvuAotCacheClear, OnToOffWithNothingElseUsingTheCacheDeletesTheWholeCache
 	// Switched on again, the cache starts fresh.
 	mVUProgCache::TestReinitFromLiveSentinel(0);
 	EXPECT_TRUE(mVUProgCache::GetStats(0).enabled);
-	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(Path::Combine(vu_jit(), "vu0"), "VERSION").c_str()));
+	EXPECT_TRUE(FileSystem::FileExists(Path::Combine(CacheDir(0), "VERSION").c_str()));
 	EXPECT_EQ(mVUProgCache::GetStats(0).entries, 0u);
 }
 

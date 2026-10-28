@@ -40,13 +40,17 @@ namespace
 // Disk layout
 //   $EmuFolders::Cache/vu_jit/
 //     vu0/
-//       VERSION                          (64-byte handshake block)
-//       INDEX                            (append-only stream of entries)
-//       <hh>/...                         (payload artifacts)
+//       <sentinel hex>/                  (one cache per options sentinel)
+//         VERSION                        (64-byte handshake block)
+//         INDEX                          (append-only stream of entries)
+//         <hh>/...                       (payload artifacts)
 //     vu1/  (same shape)
 //
 // VERSION + INDEX are per-VU so each VU initializes independently from the
 // sequential mVUinit(microVU0) / mVUinit(microVU1) calls in cpuMicroVU::Init.
+// The sentinel picks the directory because the GameDB sets clamp modes and
+// gamefixes per game: with one directory per VU, playing two games whose
+// settings differ evicted the cache at every switch.
 //------------------------------------------------------------------
 static constexpr u32  kVersionMagic       = 0x4A56554Du; // 'MVUJ'
 static constexpr char kRootDirName[]      = "vu_jit";
@@ -89,7 +93,8 @@ struct State
 {
 	bool        initialized   = false;
 	bool        enabled       = true;
-	std::string root;        // $EmuFolders::Cache/vu_jit/vu{0,1}
+	std::string vuDir;       // $EmuFolders::Cache/vu_jit/vu{0,1}
+	std::string root;        // $vuDir/<sentinel hex>
 	std::string indexPath;   // $root/INDEX
 	std::string versionPath; // $root/VERSION
 
@@ -466,6 +471,94 @@ static constexpr int kMaxUnusedDays = 60;
 // hold more than the budget: what is not preloaded is read when its program appears.
 static constexpr size_t kPreloadBudgetBytes = 32 * 1024 * 1024;
 
+static bool IsSentinelDirName(const std::string& name)
+{
+	return name.size() == 32 && std::all_of(name.begin(), name.end(), [](char c) {
+		return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+	});
+}
+
+// Deletes, on the preload thread, what no cache will read again: the directories an eviction renamed aside
+// (vu_jit/vu{0,1}.stale.* from the layout before the per-sentinel directories, $vuDir/<hex>.stale.* since),
+// that layout's own VERSION, INDEX and payload shards directly under $vuDir, and the caches of sentinels not
+// opened for kMaxUnusedDays (a cache's VERSION is touched each time it is opened). The tripwire's memory in
+// vu_jit/ is not touched.
+static void DeleteLeftovers(State& s)
+{
+	namespace fs = std::filesystem;
+	const auto now = fs::file_time_type::clock::now();
+	const auto maxAge = std::chrono::hours(24 * kMaxUnusedDays);
+	const fs::path vuDir = Utf8Path(s.vuDir);
+	const std::string vuName = vuDir.filename().string();
+	const std::string ownName = Utf8Path(s.root).filename().string();
+	const auto contains = [](const std::string& name, const std::string& part) { return name.find(part) != std::string::npos; };
+
+	std::vector<fs::path> doomed;
+	std::error_code ec;
+	for (fs::directory_iterator it(vuDir.parent_path(), ec), end; !ec && it != end; it.increment(ec))
+	{
+		std::error_code sec;
+		const std::string name = it->path().filename().string();
+		if (it->is_directory(sec) && name.compare(0, vuName.size() + 7, vuName + ".stale.") == 0)
+			doomed.push_back(it->path());
+	}
+	for (fs::directory_iterator it(vuDir, ec), end; !ec && it != end; it.increment(ec))
+	{
+		std::error_code sec;
+		const std::string name = it->path().filename().string();
+		if (name == ownName)
+			continue;
+		if (!it->is_directory(sec))
+		{
+			if (name == kVersionFileName || name == kIndexFileName || contains(name, ".tmp"))
+				doomed.push_back(it->path());
+			continue;
+		}
+		if (contains(name, ".stale.") || name.size() == 2)
+		{
+			doomed.push_back(it->path());
+			continue;
+		}
+		if (!IsSentinelDirName(name))
+			continue;
+		const auto used = fs::last_write_time(it->path() / kVersionFileName, sec);
+		if (sec || now - used > maxAge)
+			doomed.push_back(it->path());
+	}
+
+	u64 files = 0, bytes = 0;
+	for (const fs::path& path : doomed)
+	{
+		if (s.preloadStop.load(std::memory_order_relaxed))
+			return;
+		std::error_code sec;
+		if (fs::is_directory(path, sec))
+		{
+			for (fs::recursive_directory_iterator it(path, sec), end; !sec && it != end; it.increment(sec))
+			{
+				std::error_code fec;
+				if (it->is_regular_file(fec))
+				{
+					files++;
+					bytes += it->file_size(fec);
+				}
+			}
+			fs::remove_all(path, sec);
+		}
+		else
+		{
+			files++;
+			bytes += fs::file_size(path, sec);
+			fs::remove(path, sec);
+		}
+	}
+	if (files)
+	{
+		Console.WriteLn("mVUProgCache: deleted %llu files (%llu KiB) of set-aside, old-layout or unused caches",
+			static_cast<unsigned long long>(files), static_cast<unsigned long long>(bytes / 1024));
+	}
+}
+
 static void StartPreload(State& s)
 {
 	struct Item
@@ -480,8 +573,6 @@ static void StartPreload(State& s)
 		if (kv.second.codeSize > 0)
 			items.push_back({kv.first, kv.second.lastUsedNs, kv.second.codeSize});
 	}
-	if (items.empty())
-		return;
 
 	struct File
 	{
@@ -504,6 +595,8 @@ static void StartPreload(State& s)
 	// ResetForTest ever mutate that state. Don't "fix" this into a by-value or
 	// shared_ptr capture — there is no lifetime bug to solve.
 	s.preloadThread = std::thread([&s, sidecars, budgetBytes, files = std::move(files)]() mutable {
+		DeleteLeftovers(s);
+
 		// Rank by last use and age out what has not been used for a long time. A payload that is not
 		// on disk (evicted by hand, or aged out earlier) has nothing to preload.
 		const auto now = FileTimeNow();
@@ -657,7 +750,11 @@ static void InitImpl(u32 vu_index, const XXH128_hash_t& options_sentinel)
 	}
 
 	const std::string root = Path::Combine(EmuFolders::Cache, kRootDirName);
-	s.root        = Path::Combine(root, (vu_index & 1) ? "vu1" : "vu0");
+	char sentinelHex[33];
+	std::snprintf(sentinelHex, sizeof(sentinelHex), "%016" PRIx64 "%016" PRIx64,
+		options_sentinel.high64, options_sentinel.low64);
+	s.vuDir       = Path::Combine(root, (vu_index & 1) ? "vu1" : "vu0");
+	s.root        = Path::Combine(s.vuDir, sentinelHex);
 	s.indexPath   = Path::Combine(s.root, kIndexFileName);
 	s.versionPath = Path::Combine(s.root, kVersionFileName);
 
@@ -709,6 +806,12 @@ static void InitImpl(u32 vu_index, const XXH128_hash_t& options_sentinel)
 			s.initialized = true;
 			return;
 		}
+	}
+	else
+	{
+		// The cache's last use, for DeleteLeftovers in a later session.
+		std::error_code ec;
+		std::filesystem::last_write_time(Utf8Path(s.versionPath), std::filesystem::file_time_type::clock::now(), ec);
 	}
 
 	s.entries.clear();
@@ -1264,6 +1367,7 @@ void ResetForTest(u32 vu_index)
 	s.StopPreload();
 	s.initialized      = false;
 	s.enabled          = true;
+	s.vuDir.clear();
 	s.root.clear();
 	s.indexPath.clear();
 	s.versionPath.clear();

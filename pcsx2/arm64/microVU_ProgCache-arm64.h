@@ -19,11 +19,13 @@ struct microVU;
 struct microProgram;
 
 // Disk-side scaffolding for the persisted-JIT VU program cache. Owns:
-//   1. The per-VU vu_jit/vu{0,1}/{VERSION,INDEX,<shard>/...} filesystem layout.
+//   1. The vu_jit/vu{0,1}/<sentinel hex>/{VERSION,INDEX,<shard>/...} filesystem
+//      layout: one cache per VU and options sentinel, so games whose settings
+//      differ keep a cache each.
 //   2. Version handshake: a build-time ABI version + options sentinel + arch tag
 //      anchors the cache to a specific PCSX2 binary + config. Mismatch on startup
-//      atomically renames vu_jit.../<old>/ → vu_jit.../<old>.stale.<ns>/ and
-//      starts fresh.
+//      renames the directory to <dir>.stale.<ns>/ and starts fresh; a background
+//      pass deletes set-aside directories and caches unused for 60 days.
 //   3. In-memory INDEX populated from disk at Init. Subsequent Save calls append
 //      one variable-length entry per program to disk + in-memory map.
 //   4. TryLoadProgram hydrates the block graph via mVUPersist::HydrateProgram
