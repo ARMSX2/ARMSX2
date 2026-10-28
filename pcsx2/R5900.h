@@ -530,6 +530,7 @@ void iopRunSliceOnIopThread();
 extern void cpuTestINTCInts();
 extern void cpuTestDMACInts();
 extern void cpuTestTIMRInts();
+extern void cpuTestIntsAfterStatusChange();
 
 // breakpoint code shared between interpreter and recompiler
 int isMemcheckNeeded(u32 pc);

@@ -15,6 +15,7 @@
 // that need it skip themselves in a build without them.
 
 #include "Common.h"
+#include "COP0.h"
 #include "Config.h"
 #include "Counters.h"
 #include "Hw.h"
@@ -636,6 +637,39 @@ TEST_F(ThreadedMachine, TheEeTakesTheIopsInterruptBeforeItChecksItsInterruptsInT
 
 	EventTest(100);
 	EXPECT_EQ(cpuRegs.CP0.n.Status.b.EXL, 1u) << "the interrupt waited for the event test after this one";
+}
+
+TEST_F(ThreadedMachine, AStatusWriteKeepsItsEventTestForAnSbusInterruptTheIopHasQueued)
+{
+	// MTC0 Status asks for an event test 4 cycles on only when that test could act (cpuTestIntsAfterStatusChange).
+	// An interrupt the IOP has queued is not in INTC_STAT yet, but the event test raises it at its top, so it counts.
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	const u32 sbus = 1u << INTC_SBUS;
+	const u32 enabled = 0x10001 | 0x400; // EIE, IE, the INTC master bit
+	psHu32(INTC_MASK) = sbus;
+
+	// Nothing queued: the write asks for nothing.
+	cpuRegs.nextEventCycle = cpuRegs.cycle + 1000;
+	WriteCP0Status(enabled);
+	EXPECT_EQ(cpuRegs.nextEventCycle, cpuRegs.cycle + 1000);
+	WriteCP0Status(0);
+
+	SetGatedHook([] { EeBridge::RaiseSbusIrq(); });
+	EventTest(2000);
+	s_gate = true;
+	ASSERT_TRUE(WaitFor([] { return s_hook_runs.load() >= 1 && IopThread::g_thread.MayHaveI2E(); }, 10s, false));
+	ASSERT_EQ(psHu32(INTC_STAT) & sbus, 0u);
+
+	cpuRegs.nextEventCycle = cpuRegs.cycle + 1000;
+	WriteCP0Status(enabled);
+	EXPECT_EQ(cpuRegs.nextEventCycle, cpuRegs.cycle + 4);
+	EXPECT_EQ(cpuRegs.CP0.n.Status.b.EXL, 0u);
+
+	EventTest(4);
+	EXPECT_EQ(cpuRegs.CP0.n.Status.b.EXL, 1u) << "the event test the write asked for raised the interrupt and took it";
+	EXPECT_EQ(s_violations.load(), 0u);
 }
 
 TEST_F(ThreadedMachine, APauseTheIopAsksForIsMadeByTheEeAtItsNextEventTestAndNotInsideTheDrain)

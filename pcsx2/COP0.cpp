@@ -24,7 +24,7 @@ void WriteCP0Status(u32 value)
 {
 	COP0_UpdatePCCR();
 	cpuRegs.CP0.n.Status.val = value;
-	cpuSetNextEventDelta(4);
+	cpuTestIntsAfterStatusChange();
 }
 
 void WriteCP0Config(u32 value)
@@ -659,7 +659,7 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 			cpuRegs.CP0.n.Status.b.EXL = 0;
 		}
 		cpuUpdateOperationMode();
-		cpuSetNextEventDelta(4);
+		cpuTestIntsAfterStatusChange();
 		intSetBranch();
 	}
 
@@ -680,8 +680,8 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 			cpuRegs.CP0.n.Status.b.ERL || (cpuRegs.CP0.n.Status.b.KSU == 0))
 		{
 			cpuRegs.CP0.n.Status.b.EIE = 1;
-			// schedule an event test, which will check for and raise pending IRQs.
-			cpuSetNextEventDelta(4);
+			// schedule an event test if there is an IRQ it could raise.
+			cpuTestIntsAfterStatusChange();
 		}
 	}
 

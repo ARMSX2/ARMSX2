@@ -22,8 +22,9 @@
 //  - Every other way a cause becomes pending schedules a test of its own, or
 //    is taken in by an event test the EE runs anyway: a device raising an
 //    INTC or DMAC cause, the INTC_MASK and D_STAT writes, and the flags the
-//    VU1 thread posts. (The threaded IOP's queue is pinned beside the other
-//    IOP thread tests, in core_test.)
+//    VU1 thread posts, which the gate does not read. (The threaded IOP's
+//    queue, which it does read, is pinned beside the other IOP thread tests,
+//    in core_test.)
 //
 // The recompiler test environment runs with no VM, where the shared event test
 // returns straight after its first check; the tests that need it to run mark
@@ -608,4 +609,163 @@ TEST(EeEventGateDelivery, Mtc0StatusThatLeavesTheCauseBlockedTakesNothing)
 		EXPECT_FALSE(t.exl);
 		EXPECT_EQ(t.sled, static_cast<u32>(2 * kSled));
 	}
+}
+
+// ---------------------------------------------------------------------------
+//  The gate: with nothing an event test could act on, no test is scheduled
+// ---------------------------------------------------------------------------
+
+TEST_F(EeEventGate, Mtc0StatusWithNothingPendingSchedulesNothing)
+{
+	EnableByMtc0();
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, EiWithNothingPendingSchedulesNothing)
+{
+	EnableByEi();
+	ASSERT_TRUE(cpuRegs.CP0.n.Status.b.EIE);
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, EretWithNothingPendingSchedulesNothing)
+{
+	EnableByEret();
+	ASSERT_EQ(cpuRegs.pc, 0x00200000u);
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, EretFromErlWithNothingPendingSchedulesNothing)
+{
+	EnableByEretFromErl();
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, MaskedCausesAreNothingPending)
+{
+	psHu32(INTC_STAT) = kIntcVblankS | kIntcSbus; // no mask bit
+	psHu32(INTC_MASK) = kIntcVu1;
+	psHu32(DMAC_STAT) = (1u << 2) | (1u << (16 + 3)); // CIS2, CIM3
+	EnableByMtc0();
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+	EnableByEi();
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+	EnableByEret();
+	EXPECT_TRUE(Unchanged()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, APendingCauseSchedulesTheTestWhateverTheNewStatusSays)
+{
+	// Not gated on Status: see EretAfterAStatusWriteInItsBlock... below.
+	const u32 blocking[] = {
+		0,
+		kStatusAllEnabled & ~kStatusIE,
+		kStatusAllEnabled & ~kStatusEIE,
+		kStatusAllEnabled | kStatusEXL,
+		kStatusAllEnabled | kStatusERL,
+		kStatusAllEnabled & ~kStatusIntc,
+	};
+	for (u32 status : blocking)
+	{
+		SCOPED_TRACE(status);
+		cpuRegs.nextEventCycle = cpuRegs.cycle + QuietMachine::kFar;
+		psHu32(INTC_STAT) = kIntcVblankS;
+		psHu32(INTC_MASK) = kIntcVblankS;
+		Mtc0Status(status);
+		EXPECT_TRUE(TestIn4()) << NextTestIn();
+	}
+	// The same for a DMAC cause with the DMAC bit off.
+	psHu32(INTC_STAT) = 0;
+	cpuRegs.nextEventCycle = cpuRegs.cycle + QuietMachine::kFar;
+	PendDmacChannel(4);
+	Mtc0Status(kStatusAllEnabled & ~kStatusDmac);
+	EXPECT_TRUE(TestIn4()) << NextTestIn();
+}
+
+TEST_F(EeEventGate, AFlagTheVu1ThreadHasPostedDoesNotKeepTheTest)
+{
+	// The flag word is written by the VU1 thread whenever it gets there. A
+	// schedule that read it would make an MTVU run depend on host timing
+	// (two runs of the same build stopped matching when the gate read it).
+	// The flags become causes only when an event test applies them, and the
+	// event tests that do that are not the gate's (see
+	// AFlagTheVu1ThreadPostedIsTakenInByTheNextEventTest... above).
+	EmuConfig.Cpu.Recompiler.EnableVU1 = true;
+	EmuConfig.Speedhacks.vuThread = true;
+	ASSERT_TRUE(THREAD_VU1);
+	const u32 flags[] = {VU_Thread::InterruptFlagFinish, VU_Thread::InterruptFlagSignal, VU_Thread::InterruptFlagLabel,
+		VU_Thread::InterruptFlagVUEBit, VU_Thread::InterruptFlagVUTBit};
+	for (u32 f : flags)
+	{
+		SCOPED_TRACE(f);
+		vu1Thread.mtvuInterrupts.store(f);
+		EnableByMtc0();
+		EXPECT_TRUE(Unchanged()) << NextTestIn();
+		EnableByEi();
+		EXPECT_TRUE(Unchanged()) << NextTestIn();
+		EnableByEret();
+		EXPECT_TRUE(Unchanged()) << NextTestIn();
+	}
+}
+
+TEST(EeEventGateDelivery, Mtc0StatusWithNothingPendingAddsNoEventTestInTheJit)
+{
+#ifndef PCSX2_RECOMPILER_TESTS
+	GTEST_SKIP() << "needs the twin event-test counter";
+#else
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	// The same program with the Status write and with a NOP in its place.
+	Delivery with(AroundInstruction(MTC0(reg::t0, kCp0Status)), 0, 0);
+	with.pend = [] { cpuRegs.GPR.n.t0.UD[0] = kStatusAllEnabled; };
+	Delivery without(AroundInstruction(NOP), 0, 0);
+	u64 n_with = 0, n_without = 0;
+	const Taken a = with.Run(Engine::Jit, &n_with);
+	const Taken b = without.Run(Engine::Jit, &n_without);
+	EXPECT_FALSE(a.exl);
+	EXPECT_FALSE(b.exl);
+	EXPECT_EQ(a.sled, static_cast<u32>(2 * kSled));
+	EXPECT_EQ(n_with, n_without);
+
+	// The interpreter runs an event test at every branch, so the schedule
+	// never decides how many it runs.
+	with.Run(Engine::Interp, &n_with);
+	without.Run(Engine::Interp, &n_without);
+	EXPECT_EQ(n_with, n_without);
+#endif
+}
+
+TEST(EeEventGateDelivery, EiAndEretWithNothingPendingAddNoEventTestInTheJit)
+{
+#ifndef PCSX2_RECOMPILER_TESTS
+	GTEST_SKIP() << "needs the twin event-test counter";
+#else
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	// EI ends its JIT block either way, so the NOP control is an unconditional branch to the next instruction.
+	Delivery ei(AroundEi(), kStatusAllEnabled & ~kStatusEIE, 0);
+	std::vector<u32> nb = AroundEi();
+	nb[2] = BEQ(reg::zero, reg::zero, 1);
+	nb.insert(nb.begin() + 3, NOP);
+	nb.erase(nb.begin() + 4); // keep the sled length
+	Delivery noei(nb, kStatusAllEnabled & ~kStatusEIE, 0);
+	u64 n_ei = 0, n_noei = 0;
+	ei.Run(Engine::Jit, &n_ei);
+	noei.Run(Engine::Jit, &n_noei);
+	EXPECT_EQ(n_ei, n_noei);
+
+	// ERET into the sled against a jump into the same sled.
+	std::vector<u32> p = {BEQ(reg::zero, reg::zero, 1), NOP, ERET};
+	const u32 ret = kProgPc + 4 * static_cast<u32>(p.size() + 1);
+	p.push_back(NOP);
+	Append(p, Sled());
+	std::vector<u32> q = p;
+	q[2] = BEQ(reg::zero, reg::zero, 1); // to ret, with q[3] as its delay slot
+	Delivery eret(p, kStatusAllEnabled | kStatusEXL, ret);
+	Delivery noeret(q, kStatusAllEnabled | kStatusEXL, ret);
+	u64 n_eret = 0, n_noeret = 0;
+	const Taken a = eret.Run(Engine::Jit, &n_eret);
+	const Taken b = noeret.Run(Engine::Jit, &n_noeret);
+	EXPECT_EQ(a.sled, static_cast<u32>(kSled));
+	EXPECT_EQ(b.sled, static_cast<u32>(kSled));
+	EXPECT_EQ(n_eret, n_noeret);
+#endif
 }

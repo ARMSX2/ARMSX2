@@ -260,6 +260,15 @@ __fi void cpuClearInt( uint i )
 	cpuRegs.dmastall &= ~(1 << i);
 }
 
+// An unmasked INTC cause, an unmasked DMAC channel cause or a DMAC bus error: the only states in which
+// intcInterrupt() or dmacInterrupt() does anything. The event test looks at this before calling them, and
+// cpuTestIntsAfterStatusChange() before asking for an event test.
+static __fi bool cpuIntcDmacCausePending()
+{
+	return (psHu32(INTC_STAT) & psHu32(INTC_MASK)) |
+		(psHu16(DMAC_STAT + 2) & psHu16(DMAC_STAT)) | (psHu16(DMAC_STAT) & 0x8000);
+}
+
 static __fi void TESTINT( u8 n, void (*callback)() )
 {
 	if( !(cpuRegs.interrupt & (1 << n)) ) return;
@@ -535,12 +544,10 @@ __fi void _cpuEventTest_Shared()
 	// be able to read the value before the exception handler clears it).
 
 	// intcInterrupt() and dmacInterrupt() return 0 and change nothing unless
-	// an unmasked INTC cause, an unmasked DMAC channel cause or a DMAC bus
-	// error is pending, which on most event tests none is. Look first.
-	// Do not gate on Status: intcInterrupt() latches the counter HOLD
-	// registers whether or not the interrupt is then taken.
-	if ((psHu32(INTC_STAT) & psHu32(INTC_MASK)) |
-		(psHu16(DMAC_STAT + 2) & psHu16(DMAC_STAT)) | (psHu16(DMAC_STAT) & 0x8000))
+	// a cause is pending (cpuIntcDmacCausePending), which on most event tests
+	// none is. Look first. Do not gate on Status: intcInterrupt() latches the
+	// counter HOLD registers whether or not the interrupt is then taken.
+	if (cpuIntcDmacCausePending())
 	{
 		const uint mask = intcInterrupt() | dmacInterrupt();
 		if (cpuIntsEnabled(mask))
@@ -666,6 +673,30 @@ __fi void cpuTestDMACInts()
 	cpuSetNextEventDelta(4);
 	if (eeEventTestIsActive && (psxRegs.iopCycleEE > 0))
 		EeBridge::BreakIopSlice();
+}
+
+// MTC0 Status, EI and ERET can let a waiting interrupt through, so each asks for an event test 4 cycles on,
+// which takes it. With nothing waiting that test has nothing to do, which is most of the time: on Shadow of
+// the Colossus the BIOS writes Status several times per syscall. So the test is asked for only when it could
+// act:
+//  - an INTC or DMAC cause is pending (cpuIntcDmacCausePending). Not gated on Status: the BIOS returns from
+//    an exception with a Status write (EXL still set) and ERET in one block, and the write's test, due at the
+//    end of that block, is what takes a waiting interrupt at the return address. intcInterrupt() also
+//    latches the counter HOLD registers whatever Status says.
+//  - Status.IM7: the COP0 timer is only looked at inside event tests (_cpuTestTIMR), and not gated on IE.
+//  - an interrupt the threaded IOP has queued for the EE (the SBUS interrupt), which the event test raises at
+//    its top. Threaded runs depend on host timing anyway.
+// Every other way a cause becomes pending asks for its own test (hwIntcIrq, hwDmacIrq, the INTC_MASK and
+// D_STAT writes) or waits for an event test the EE runs anyway. That includes the VU1 thread's flags (GS
+// SIGNAL, FINISH and LABEL, the VU1 E and T bits): they become causes only when an event test applies them,
+// and reading the flag word here would make the schedule, and so a whole MTVU run, depend on when the VU1
+// thread got there. On the console these instructions have no visible effect when nothing is waiting.
+void cpuTestIntsAfterStatusChange()
+{
+	const bool timer = cpuRegs.CP0.n.Status.val & 0x8000;
+	const bool queued = IopThread::GetMode() == IopThreadMode::Threaded && IopThread::g_thread.MayHaveI2E();
+	if (cpuIntcDmacCausePending() || timer || queued)
+		cpuSetNextEventDelta(4);
 }
 
 __fi void cpuTestTIMRInts()
