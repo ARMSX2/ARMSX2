@@ -113,6 +113,13 @@ namespace mVUPersist
 	// Must be called with the code cache CLOSED (it opens its own episode).
 	microProgram* HydrateProgram(microVU& mVU, const u8* data, size_t size);
 
+	// What a program's serialized image would be made of (its range, block and chunk counts), cheaply
+	// and without serializing: equal shapes mean an image saved earlier still holds everything, since a
+	// log only grows. ImageShape reads the same out of an image's header. 0 for a program with nothing
+	// to serialize, or for bytes that are not an image.
+	u64 LogShape(const microProgram& prog);
+	u64 ImageShape(const u8* data, size_t size);
+
 	// The running build's identity, as a 128-bit hash: the GNU build-id note of the module that holds
 	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file. The
 	// vu-aot sidecars are keyed on it while vu-aot changes daily (persistence-design.md, the owner's

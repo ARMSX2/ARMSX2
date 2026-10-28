@@ -1278,11 +1278,13 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 		mVU.jitAsm->GetScratchRegisterList()->Remove(RSCRATCHADDR.GetCode());
 	}
 
-	// Checkpoint the live programs to the on-disk program cache before we
-	// free them. Subsequent process boots can hit this VU image without
-	// re-emitting. SaveAllPrograms is idempotent (no-op on hashes already
-	// in the on-disk INDEX) so calling on every reset is cheap. The vu-aot
-	// tier hands its programs' plans to the cache's writer first.
+	// Checkpoint the live programs to the program cache before we free
+	// them: the next load of each comes from RAM, and the cache's writer
+	// puts them on disk for later sessions. SaveAllPrograms stores only
+	// programs that grew since they were stored, so calling it on every
+	// reset is cheap. The vu-aot tier queues its programs' plans first.
+	// Then, if the title or the sentinel changed, the cache moves to that
+	// pack: these programs belong to the old one.
 	//
 	// A cache that is up but no longer wanted (the setting was turned off, or it came up at boot under the
 	// default configuration before the settings were read) is closed instead, and nothing is saved: its
@@ -1291,6 +1293,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	{
 		mVUvuAotSaveAll(mVU);
 		mVUProgCache::SaveAllPrograms(mVU);
+		mVUProgCache::Rekey(mVU);
 	}
 	else
 		mVUProgCache::Close(mVU);
@@ -1334,7 +1337,7 @@ void mVUclose(microVU& mVU)
 	mVUCacheTraceDump(mVU, "shutdown");
 #endif
 
-	// Final checkpoint of live programs to the on-disk cache before we let
+	// Final checkpoint of live programs to the cache before we let
 	// the contentMap go. Mirrors the mVUreset path; harmless if nothing
 	// new has been added since the last reset. The vu-aot tier's plans go to the
 	// cache's writer first; Close writes them before it returns.

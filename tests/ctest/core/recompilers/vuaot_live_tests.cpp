@@ -10,6 +10,7 @@
 
 #if defined(_M_ARM64) || defined(__aarch64__)
 
+#include "harness/ProgCachePackMirror.h"
 #include "harness/RecompilerTestEnvironment.h"
 #include "harness/VuTestHarness.h"
 
@@ -1853,15 +1854,11 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 
 namespace
 {
-// Every sidecar under `dir`.
+// Every sidecar under `dir`: a ref per program, read and replaced through progcache_pack::ReadSidecar and
+// progcache_pack::WriteSidecar (the sidecars are records in the packs).
 std::vector<std::string> FindSidecars(const std::string& dir)
 {
-	std::vector<std::string> out;
-	FileSystem::FindResultsArray ents;
-	FileSystem::FindFiles(dir.c_str(), "*.vuaot", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_RECURSIVE, &ents);
-	for (const auto& e : ents)
-		out.push_back(e.FileName);
-	return out;
+	return progcache_pack::FindSidecars(dir);
 }
 
 // The identity a sidecar claims (FileHeader: mvuAbi at 12, content hash at 32, sentinel at 48, build at 64).
@@ -2039,7 +2036,7 @@ TEST_F(VuAotCache, ResetBeforeTheRootsArriveKeepsThePlan)
 	ASSERT_EQ(FillPlan(root_, true, fh, ref, ref2), 1u);
 	const std::string path = FindSidecars(root_ + "/vu_jit").front();
 	const auto records = [&]() -> size_t {
-		const std::optional<std::vector<u8>> b = FileSystem::ReadBinaryFile(path.c_str());
+		const std::optional<std::vector<u8>> b = progcache_pack::ReadSidecar(path);
 		vuaot::persist::File f;
 		if (!b.has_value() || vuaot::persist::Parse(b->data(), b->size(), ClaimedIdentity(*b), f) != vuaot::persist::ParseResult::Ok)
 			return 0;
@@ -2275,7 +2272,7 @@ TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 	RecursiveRm(root_ + "/vu_jit");
 	ASSERT_EQ(FillPlan(root_, true, fh, ref, ref2), 1u);
 	const std::string path = FindSidecars(root_ + "/vu_jit").front();
-	const std::optional<std::vector<u8>> good = FileSystem::ReadBinaryFile(path.c_str());
+	const std::optional<std::vector<u8>> good = progcache_pack::ReadSidecar(path);
 	ASSERT_TRUE(good.has_value() && good->size() > 100);
 
 	enum Case
@@ -2316,7 +2313,7 @@ TEST_F(VuAotCache, DamagedOrStaleSidecarIsRefused)
 			}
 		}
 		const std::string where = std::string("case ") + std::to_string(int(c));
-		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes.data(), bytes.size()));
+		ASSERT_TRUE(progcache_pack::WriteSidecar(path, bytes.data(), bytes.size()));
 		NewProcess();
 		if (overrideBuild)
 			mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
@@ -2928,7 +2925,7 @@ TEST_F(VuAotCache, UnusableSavedCodeFallsBackToThePlan)
 	FillInstall(c, true, fh, ref, problems);
 	ASSERT_EQ(problems, "");
 	const std::string path = FindSidecars(root_ + "/vu_jit").front();
-	const std::optional<std::vector<u8>> good = FileSystem::ReadBinaryFile(path.c_str());
+	const std::optional<std::vector<u8>> good = progcache_pack::ReadSidecar(path);
 	ASSERT_TRUE(good.has_value());
 	{
 		vuaot::persist::File f;
@@ -2970,7 +2967,7 @@ TEST_F(VuAotCache, UnusableSavedCodeFallsBackToThePlan)
 			case OtherLayout: f.id.layoutHash ^= 1; break;
 		}
 		bytes = vuaot::persist::Serialize(f);
-		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), bytes.data(), bytes.size()));
+		ASSERT_TRUE(progcache_pack::WriteSidecar(path, bytes.data(), bytes.size()));
 		const std::string where = std::string("case ") + std::to_string(int(k));
 		const InstallRun r = LoadInstall(c, true, fh, ref, 0, 512);
 		EXPECT_EQ(r.problems, "") << where;
@@ -3003,10 +3000,10 @@ TEST_F(VuAotCache, UnusableSavedCodeFallsBackToThePlan)
 		}
 		if (k != GenWord && k != OtherLayout)
 			EXPECT_EQ(r.d.aotPrograms, 1u) << where << ": the file the first load's session saved installs";
-		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), good->data(), good->size()));
+		ASSERT_TRUE(progcache_pack::WriteSidecar(path, good->data(), good->size()));
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 		mVUProgCache::FlushSidecars(1);
-		ASSERT_TRUE(FileSystem::WriteBinaryFile(path.c_str(), good->data(), good->size()));
+		ASSERT_TRUE(progcache_pack::WriteSidecar(path, good->data(), good->size()));
 	}
 }
 
@@ -3235,7 +3232,7 @@ TEST_F(VuAotCache, DeclinedRootsAreNotAskedForAgain)
 			EXPECT_GT(vuaot::live::GetStats().jobsDeclined, f0.jobsDeclined) << where << ": session one declined the second entry's root";
 			{
 				const std::string path = FindSidecars(root_ + "/vu_jit").front();
-				const std::optional<std::vector<u8>> b = FileSystem::ReadBinaryFile(path.c_str());
+				const std::optional<std::vector<u8>> b = progcache_pack::ReadSidecar(path);
 				vuaot::persist::File f;
 				ASSERT_TRUE(b.has_value());
 				ASSERT_EQ(vuaot::persist::Parse(b->data(), b->size(), ClaimedIdentity(*b), f), vuaot::persist::ParseResult::Ok) << where;

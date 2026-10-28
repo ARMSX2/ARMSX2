@@ -580,7 +580,12 @@ void vuAotNoVmSettingsApplied(bool on, bool programCacheStillOn)
 	const bool was = std::exchange(s_vuAotGlobalOn, on);
 	mVUProgCache::OnVuAotSettingChanged(was, on, programCacheStillOn);
 }
-void vuAotSetTitle(const std::string& serial, u32 crc) { vuaot::live::SetTitle(serial, crc); }
+// The disc details, for the tripwire's memory and for the program cache, whose packs are per title.
+void vuAotSetTitle(const std::string& serial, u32 crc)
+{
+	vuaot::live::SetTitle(serial, crc);
+	mVUProgCache::SetTitle(serial, crc);
+}
 
 namespace vuaot::live
 {

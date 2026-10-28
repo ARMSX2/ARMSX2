@@ -1254,6 +1254,32 @@ namespace mVUPersist
 		return true;
 	}
 
+	static u64 ShapeOf(u32 ranges, u32 blocks, u32 chunks)
+	{
+		const u32 words[3] = {ranges, blocks, chunks};
+		return XXH3_64bits(words, sizeof(words)) | 1u; // (never 0, which means "none")
+	}
+
+	u64 LogShape(const microProgram& prog)
+	{
+		const MvuPersistLog* log = prog.persist;
+		if (!log || log->blocks.empty() || !prog.contentHashValid)
+			return 0;
+		return ShapeOf(prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0, static_cast<u32>(log->blocks.size()),
+			static_cast<u32>(log->chunks.size()));
+	}
+
+	u64 ImageShape(const u8* data, size_t size)
+	{
+		if (!data || size < sizeof(ImageHeader))
+			return 0;
+		ImageHeader hdr;
+		std::memcpy(&hdr, data, sizeof(hdr));
+		if (hdr.magic != kImageMagic || hdr.version != kImageVersion)
+			return 0;
+		return ShapeOf(hdr.rangeCount, hdr.blockCount, hdr.chunkCount);
+	}
+
 	// Checksum of a serialized image as SerializeProgram computed it.
 	static u64 ImageChecksum(const u8* data, size_t size)
 	{

@@ -2014,7 +2014,7 @@ int main(int argc, char** argv)
 			const auto c = mVUProgCache::GetStats(vu);
 			const auto p = mVUPersist::GetStats(vu);
 			std::printf("[cache] vu%u: entries=%llu payloadWrites=%llu payloadHits=%llu "
-				"payloadMissing=%llu payloadRejects=%llu preloaded=%llu preloadHits=%llu "
+				"payloadMissing=%llu payloadRejects=%llu loadedRecords=%llu recordsWritten=%llu "
 				"programsHydrated=%llu blocksHydrated=%llu chunksRecorded=%llu "
 				"chunksDropped=%llu blockCompiles=%llu\n",
 				vu,
@@ -2023,8 +2023,8 @@ int main(int argc, char** argv)
 				(unsigned long long)c.payloadHits,
 				(unsigned long long)c.payloadMissing,
 				(unsigned long long)c.payloadRejects,
-				(unsigned long long)c.preloadedPayloads,
-				(unsigned long long)c.preloadHits,
+				(unsigned long long)c.loadedRecords,
+				(unsigned long long)c.recordsWritten,
 				(unsigned long long)p.programsHydrated,
 				(unsigned long long)p.blocksHydrated,
 				(unsigned long long)p.chunksRecorded,
