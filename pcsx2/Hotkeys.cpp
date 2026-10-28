@@ -166,6 +166,11 @@ DEFINE_HOTKEY("OpenPauseMenu", TRANSLATE_NOOP("Hotkeys", "Navigation"), TRANSLAT
 		if (!pressed && VMManager::HasValidVM() && CanPause())
 			FullscreenUI::OpenPauseMenu();
 	})
+DEFINE_HOTKEY("QuitApplication", TRANSLATE_NOOP("Hotkeys", "Navigation"), TRANSLATE_NOOP("Hotkeys", "Quit Application"),
+	[](s32 pressed) {
+		if (!pressed)
+			Host::RequestExitApplication(true);
+	})
 DEFINE_HOTKEY("OpenAchievementsList", TRANSLATE_NOOP("Hotkeys", "Navigation"),
 	TRANSLATE_NOOP("Hotkeys", "Open Achievements List"), [](s32 pressed) {
 		if (!pressed && CanPause())
