@@ -145,10 +145,15 @@ in SHADER
 	// and only `gl_LastFragColorARM` reads back the live tile pixel correctly.
 	// Selection is driven by GPU_PROFILE_MALI (emitted from the C++ side after
 	// the runtime profile is resolved).
+	// PowerVR takes the ARM builtin too wherever it is advertised: under ANGLE (Pixel 10/11)
+	// the header enables only GL_ARM_shader_framebuffer_fetch, so the EXT `inout` below does
+	// not compile there. Mirrors DecideGLFramebufferFetch in GSFramebufferFetchPolicy.h.
 	#if GPU_PROFILE_MALI
 		#if HAS_ARM_SHADER_FRAMEBUFFER_FETCH
 			#define LAST_FRAG_COLOR gl_LastFragColorARM
 		#endif
+	#elif GPU_PROFILE_POWERVR && HAS_ARM_SHADER_FRAMEBUFFER_FETCH
+		#define LAST_FRAG_COLOR gl_LastFragColorARM
 	#else
 		#if HAS_EXT_SHADER_FRAMEBUFFER_FETCH || HAS_EXT_SHADER_PIXEL_LOCAL_STORAGE
 			#undef TARGET_0_QUALIFIER
