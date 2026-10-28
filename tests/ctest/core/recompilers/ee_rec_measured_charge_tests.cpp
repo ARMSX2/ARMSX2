@@ -135,6 +135,14 @@ const MeasuredOp kFpuAccumulator[] = {
 	{"MSUBA_S", ee::COP1(0x10, 2, 1, 0, 0x1F), 1 * 8},
 };
 
+// COP0 reads (two registers whose value both engines agree on), DI and TLBP.
+const MeasuredOp kCop0[] = {
+	{"MFC0", MFC0(reg::t0, 15), 1 * 8}, // PRId
+	{"MFC0", MFC0(reg::t0, 12), 1 * 8}, // Status
+	{"DI",   ee::DI,            1 * 8},
+	{"TLBP", (0x10u << 26) | (0x10u << 21) | 0x08u, 3 * 8},
+};
+
 struct ScopedCycleRate
 {
 	s8 prev;
@@ -249,4 +257,11 @@ TEST(EeRecMeasuredCharge, ParallelHiLoReadsChargeOneCycle)
 TEST(EeRecMeasuredCharge, FpuAccumulatorWritesChargeOneCycle)
 {
 	ExpectMeasuredCharges(kFpuAccumulator);
+}
+
+// The console reads any COP0 register in 1 cycle (eight tried), and DI costs
+// 1 and TLBP 3, independent or not.
+TEST(EeRecMeasuredCharge, Cop0ReadsDiAndTlbpChargeAsMeasured)
+{
+	ExpectMeasuredCharges(kCop0);
 }

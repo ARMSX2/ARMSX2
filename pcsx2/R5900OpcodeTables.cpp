@@ -456,7 +456,9 @@ namespace R5900
 		MakeOpcodeClass( COP0_C0 );
 		MakeOpcodeClass( COP0_BC0 );
 
-		MakeOpcode0( MFC0, CopDefault, 0 );
+		// MFC0: 1 cycle on an SCPH-30001, for every register tried (Count,
+		// Status, Cause, EPC, PRId, Config, BadVAddr, Compare). It was 0.875.
+		MakeOpcode0( MFC0, 1*8, 0 );
 		MakeOpcode0( MTC0, CopDefault, 0 );
 
 		MakeOpcode0(BC0F, Branch, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_EQ);
@@ -467,10 +469,10 @@ namespace R5900
 		MakeOpcode0( TLBR, CopDefault, 0 );
 		MakeOpcode0( TLBWI, CopDefault, 0 );
 		MakeOpcode0( TLBWR, CopDefault, 0 );
-		MakeOpcode0( TLBP, CopDefault, 0 );
+		MakeOpcode0( TLBP, 3*8, 0 ); // 3 cycles on an SCPH-30001; was 0.875
 		MakeOpcode0( ERET, CopDefault, IS_BRANCH|BRANCHTYPE_ERET );
 		MakeOpcode0( EI, CopDefault, 0 );
-		MakeOpcode0( DI, CopDefault, 0 );
+		MakeOpcode0( DI, 1*8, 0 );   // 1 cycle on an SCPH-30001; was 0.875
 
 		//////////////////////////////////////////////////////////
 		// COP1 Instructions!
