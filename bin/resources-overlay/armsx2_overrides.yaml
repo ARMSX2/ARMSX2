@@ -908,7 +908,7 @@ NM00019:
     textureInsideRT: 1 # Fixes heat haze half screen problem.
     cpuSpriteRenderBW: 1
     getSkipCount: "GSC_NamcoGames"
-    bilinearDirtyUpscale: 1 # Fixed the issue where a sphere would appear as a cube when backlit.
+    bilinearUpscale: 1 # Fixed the issue where a sphere would appear as a cube when backlit.
     autoFlush: 1
 # NM00020 Dragon Chronicle Online - Great Sky Battle: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
 NM00020:
@@ -971,7 +971,7 @@ NM00026:
     textureInsideRT: 1 # Fixes heat haze half screen problem.
     cpuSpriteRenderBW: 1
     getSkipCount: "GSC_NamcoGames"
-    bilinearDirtyUpscale: 1 # Fixes the issue where a sphere would appear as a cube when backlit.
+    bilinearUpscale: 1 # Fixes the issue where a sphere would appear as a cube when backlit.
     autoFlush: 1
 # NM00027 Super Dragon Ball Z: PCSX2x6 GameIndex (583f0e9090), with the arcade port; not yet tested on Android.
 NM00027:
