@@ -4339,7 +4339,12 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 	// renderer adds the per-draw terms.
 	GSFeedbackLoopCarryInputs carry;
 	carry.device_always_carries = IsDeviceBroadcom();
-	carry.device_is_measured_vendor = IsDeviceMali();
+	// PowerVR on its in-tile road (VulkanDeviceRules::ordered_input_attachment_read) is the same
+	// shape as Mali's: a pass declared self-reading by a draw that never reads is the same pass with
+	// one unused input attachment. Without the carry every switch between a destination-reading draw
+	// and a plain one ends the pass: 588 passes for ~1150 draws in NFS Underground at Full blending
+	// on a Pixel 11 Pro, against 151 at Basic, each one a tile store and reload at the upscaled size.
+	carry.device_is_measured_vendor = IsDeviceMali() || m_device_rules.ordered_input_attachment_read;
 	carry.device_is_layout_road_vendor = IsDeviceAdreno();
 	// texture_barrier is what makes SendHWDraw issue the reader's feedback barrier at all. With it
 	// off there is no ordering, so the layout road carries nothing. Consulted only on the layout
