@@ -494,15 +494,15 @@ namespace R5900
 		// non-terminating quotients, denormals, zero, divide by zero, overflow
 		// to the EE maximum -- so there is no early termination anywhere.
 		//
-		// The three entries below say 6, 6 and 8.  They are LEFT AS THEY ARE
-		// deliberately: this is a compatibility-sensitive timing table, not a
-		// correctness one, and nothing has measured what moving it does to
-		// games.  The numbers above are recorded here so that the next person to
-		// wonder does not have to take the console run again.  (FPU_Mult's 4
-		// does match the measured multiply latency.)
+		// An SCPH-30001 gives the same 7 for dependent DIV.S and SQRT.S chains
+		// (and 4 for MUL.S), so DIV.S and SQRT.S are charged 7; they used to
+		// be 6.  The charge is the whole latency at issue, which overcharges
+		// an FPU add or multiply that runs inside the divide by its own small
+		// charge.  (FPU_Mult's 4 does match the measured multiply latency.)
+		// RSQRT.S below still says 8.
 		MakeOpcode1( MUL_S, FPU_Mult, 0 );
-		MakeOpcode1( DIV_S, 6*8, 0 );
-		MakeOpcode1( SQRT_S, 6*8, 0 );
+		MakeOpcode1( DIV_S, 7*8, 0 );
+		MakeOpcode1( SQRT_S, 7*8, 0 );
 		MakeOpcode1( RSQRT_S, 8*8, 0 );
 		MakeOpcode1( MULA_S, FPU_Mult, 0 );
 		MakeOpcode1( MADD_S, FPU_Mult, 0 );

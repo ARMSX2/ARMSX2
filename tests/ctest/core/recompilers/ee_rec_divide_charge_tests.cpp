@@ -59,8 +59,8 @@ const DivideOp kOps[] = {
 	{"DIVU",    DIVU(reg::a0, reg::a1),        37 * 8, false},
 	{"DIV1",    ee::DIV1(reg::a0, reg::a1),    37 * 8, false},
 	{"DIVU1",   ee::DIVU1(reg::a0, reg::a1),   37 * 8, false},
-	{"DIV_S",   ee::DIV_S(3, 1, 2),            6 * 8,  true},
-	{"SQRT_S",  ee::SQRT_S(3, 2),              6 * 8,  true},
+	{"DIV_S",   ee::DIV_S(3, 1, 2),            7 * 8,  true},
+	{"SQRT_S",  ee::SQRT_S(3, 2),              7 * 8,  true},
 	{"RSQRT_S", ee::RSQRT_S(3, 1, 2),          8 * 8,  true},
 	// The parallel divides: no console measurement yet, so unchanged.
 	{"PDIVW",   ee::PDIVW(reg::a0, reg::a1),   22 * 8, false},
