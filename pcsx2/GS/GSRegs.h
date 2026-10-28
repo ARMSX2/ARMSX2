@@ -78,7 +78,8 @@ enum GIF_REG_COMPLEX
 	GIF_REG_RGBAQXYZ2 = 0x05,
 	GIF_REG_UVRGBAQXYZF2 = 0x06,
 	GIF_REG_UVXYZF2 = 0x07,
-	GIF_REG_COMPLEX_COUNT = 0x08,
+	GIF_REG_NOPSTQRGBAXYZ2 = 0x08,
+	GIF_REG_COMPLEX_COUNT = 0x09,
 };
 
 enum GIF_A_D_REG
@@ -1172,6 +1173,8 @@ struct alignas(32) GIFPath
 		TYPE_UVRGBAQXYZF2,
 		// {UV, XYZF2}: Call of Duty 3's sprite stream. ST, colour and Q carried, as {UV, XYZ2}.
 		TYPE_UVXYZF2,
+		// {ST, RGBAQ, XYZ2} with NOPs between, used for triangle strips.
+		TYPE_NOPSTQRGBAXYZ2,
 	};
 
 	static_assert(TYPE_STQRGBAXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_STQRGBAXYZF2);
@@ -1182,6 +1185,7 @@ struct alignas(32) GIFPath
 	static_assert(TYPE_RGBAQXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_RGBAQXYZ2);
 	static_assert(TYPE_UVRGBAQXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_UVRGBAQXYZF2);
 	static_assert(TYPE_UVXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_UVXYZF2);
+	static_assert(TYPE_NOPSTQRGBAXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_NOPSTQRGBAXYZ2);
 
 	__forceinline void SetTag(const void* mem)
 	{

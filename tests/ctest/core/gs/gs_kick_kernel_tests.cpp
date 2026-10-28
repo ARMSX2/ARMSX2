@@ -422,6 +422,8 @@ namespace
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(prim);
 				case GSVertexKernels::PackedLayout::UvTripleXYZF2:
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::UvTripleXYZF2>(prim);
+				case GSVertexKernels::PackedLayout::NopTripleXYZ2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::NopTripleXYZ2>(prim);
 				default: return false;
 			}
 		}
@@ -2025,6 +2027,37 @@ TEST(GifSetTag, UvTriples)
 	}
 }
 
+TEST(GifSetTag, NopPaddedXYZ2Triples)
+{
+	struct Case
+	{
+		std::vector<u8> descs;
+		u32 stride, off_st, off_rgba, off_xyz;
+	};
+	// The 2,f,1,5 layout, and the other places the NOP can sit.
+	const Case cases[] = {
+		{{2, 0xF, 1, 5}, 4, 0, 2, 3},
+		{{0xF, 2, 1, 5}, 4, 1, 2, 3},
+		{{2, 1, 0xF, 5}, 4, 0, 1, 3},
+		{{0xF, 0xF, 2, 1, 5}, 5, 2, 3, 4},
+	};
+	for (const Case& c : cases)
+	{
+		const GIFPath p = ClassifyTag(c.descs, 9);
+		SCOPED_TRACE(::testing::Message() << "nreg=" << c.descs.size());
+		EXPECT_EQ(p.type, static_cast<u32>(GIFPath::TYPE_NOPSTQRGBAXYZ2));
+		EXPECT_EQ(p.nreg, c.stride) << "a NOP-padded tag keeps its nreg";
+		EXPECT_EQ(p.nloop, 9u);
+		EXPECT_EQ(p.layout.stride, c.stride);
+		EXPECT_EQ(p.layout.off_a, c.off_st);
+		EXPECT_EQ(p.layout.off_rgba, c.off_rgba);
+		EXPECT_EQ(p.layout.off_xyz, c.off_xyz);
+	}
+
+	// The contiguous triple keeps its own type: only a tag carrying a NOP reaches the classifier.
+	EXPECT_EQ(ClassifyTag({2, 1, 5}, 9).type, static_cast<u32>(GIFPath::TYPE_STQRGBAXYZ2));
+}
+
 TEST(GifSetTag, NopPaddedPairs)
 {
 	// stuntman's 3:f,1,5 -- 4.8% of its packed qwords.
@@ -2236,6 +2269,9 @@ namespace
 	const LayoutCase kUvTriple = {"3:3,1,4", {3, 1, 4}, {3, 0, 1, 2}, GSVertexKernels::PackedLayout::UvTripleXYZF2};
 	const LayoutCase kUvTriple40 = {"4:3,f,1,4", {3, 0xF, 1, 4}, {4, 0, 2, 3}, GSVertexKernels::PackedLayout::UvTripleXYZF2};
 	const LayoutCase kUvTriple41 = {"4:f,3,1,4", {0xF, 3, 1, 4}, {4, 1, 2, 3}, GSVertexKernels::PackedLayout::UvTripleXYZF2};
+	// Triangle strips, and the same triple with the NOP leading.
+	const LayoutCase kNopTripleXYZ2 = {"4:2,f,1,5", {2, 0xF, 1, 5}, {4, 0, 2, 3}, GSVertexKernels::PackedLayout::NopTripleXYZ2};
+	const LayoutCase kNopTripleXYZ2Lead = {"4:f,2,1,5", {0xF, 2, 1, 5}, {4, 1, 2, 3}, GSVertexKernels::PackedLayout::NopTripleXYZ2};
 } // namespace
 
 // The layouts against the per-qword path, over the whole prim / ADC / run-length
@@ -2273,6 +2309,8 @@ TEST(GsKickKernel, LayoutsMatchThePerQwordPath)
 						KickSetup{}, prim, kUvTriple, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
 						KickSetup{}, prim, kUvTriple40, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZ2>(
+						KickSetup{}, prim, kNopTripleXYZ2, v, {len}, use_kernel);
 				}
 			}
 		}
@@ -2304,6 +2342,8 @@ TEST(GsKickKernel, LayoutsMatchAcrossCallSplits)
 				KickSetup{}, prim, kPairRGBAQ, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
 				KickSetup{}, prim, kUvTriple41, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZ2>(
+				KickSetup{}, prim, kNopTripleXYZ2Lead, v, calls);
 		}
 	}
 }
@@ -2332,6 +2372,8 @@ TEST(GsKickKernel, LayoutsMatchOnTheAutoFlushArm)
 					s, prim, kPairRGBAQ, v, {len}, true, true);
 				RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
 					s, prim, kUvTriple, v, {len}, true, true);
+				RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZ2>(
+					s, prim, kNopTripleXYZ2, v, {len}, true, true);
 			}
 		}
 	}
@@ -2408,10 +2450,12 @@ TEST(GsKickKernel, LayoutQLatchTakesTheStqFixups)
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairSTQXYZ2>(
 			KickSetup{}, GS_SPRITE, kPairSTQ, v, {8u});
 
-		// The NOP-padded triple, vertex bytes and latch both, against the
+		// The NOP-padded triples, vertex bytes and latch both, against the
 		// per-qword replay -- NaN included.
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
 			KickSetup{}, GS_TRIANGLESTRIP, kNopTriple40, v, {8u});
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZ2>(
+			KickSetup{}, GS_TRIANGLESTRIP, kNopTripleXYZ2, v, {8u});
 
 		if (std::isnan(q))
 		{
@@ -2604,7 +2648,7 @@ TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 {
 	u32 seed = 9900;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
-		&kUvTriple41};
+		&kUvTriple41, &kNopTripleXYZ2};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
@@ -2649,7 +2693,8 @@ TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 {
 	u32 seed = 9700;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF,
-		&kPairRGBAQ, &kPairRGBAQNop, &kUvTriple, &kUvTriple40, &kUvTriple41};
+		&kPairRGBAQ, &kPairRGBAQNop, &kUvTriple, &kUvTriple40, &kUvTriple41, &kNopTripleXYZ2,
+		&kNopTripleXYZ2Lead};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
@@ -2706,7 +2751,7 @@ TEST(GsKickKernel, LayoutsMatchThroughTransferWithDrawBuffering)
 {
 	u32 seed = 9900;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairRGBAQ,
-		&kPairRGBAQNop, &kUvTriple, &kUvTriple41};
+		&kPairRGBAQNop, &kUvTriple, &kUvTriple41, &kNopTripleXYZ2};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
