@@ -619,6 +619,8 @@ u32 EeRecTestHarness::GetAccBitsInterp() const      { return interp_snapshot_.Ac
 u32 EeRecTestHarness::GetAccBitsJit   () const      { return jit_snapshot_.AccWord(); }
 u32 EeRecTestHarness::GetCp0Interp(u32 r) const     { return interp_snapshot_.regs.CP0.r[r]; }
 u32 EeRecTestHarness::GetCp0Jit   (u32 r) const     { return jit_snapshot_.regs.CP0.r[r]; }
+u64 EeRecTestHarness::GetCycleDeltaInterp() const   { return interp_snapshot_.regs.cycle - pre_snapshot_.regs.cycle; }
+u64 EeRecTestHarness::GetCycleDeltaJit   () const   { return jit_snapshot_.regs.cycle - pre_snapshot_.regs.cycle; }
 
 void EeRecTestHarness::ExpectGpr64(u32 reg_idx, u64 expected) const
 {

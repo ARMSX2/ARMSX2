@@ -198,6 +198,12 @@ public:
 	u32 GetAccBitsJit   () const;
 	u32 GetCp0Interp(u32 reg_idx) const;
 	u32 GetCp0Jit   (u32 reg_idx) const;
+	// Cycles each engine charged over the run: cpuRegs.cycle after it, minus
+	// cpuRegs.cycle in the pre-state both runs start from. The diff ignores the
+	// cycle counter, because the two engines advance it at different points;
+	// a test that is about the charge reads it here.
+	u64 GetCycleDeltaInterp() const;
+	u64 GetCycleDeltaJit   () const;
 
 	// ---- Expect helpers (paired-side architectural assertions) ----
 	//
