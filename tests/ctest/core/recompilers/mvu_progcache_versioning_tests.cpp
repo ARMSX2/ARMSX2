@@ -484,7 +484,8 @@ TEST(ProgCachePack, opening_a_pack_marks_its_use)
 	std::error_code ec;
 	const auto age = std::filesystem::file_time_type::clock::now() - std::filesystem::last_write_time(path, ec);
 	ASSERT_FALSE(ec);
-	EXPECT_LT(age, std::chrono::hours(1));
+	// In minutes, as a plain integer: libc++'s file clock counts in __int128, which gtest cannot print.
+	EXPECT_LT(std::chrono::duration_cast<std::chrono::minutes>(age).count(), 60);
 }
 
 // The pack being opened is never taken for an unused one, however old its time says it is: the leftover
