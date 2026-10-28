@@ -19,6 +19,15 @@ enum QuickMenuDestination: Equatable {
     case changeDisc
 }
 
+/// The open card's last focus scope and size class, so a fold keeps the selected row.
+struct QuickMenuFoldMemory: Equatable {
+    var scope: String
+    var large: Bool
+    /// The opened card's pose on iPhone Duo's inner screen, empty when the card is whole.
+    var pose = ""
+    var folded = false
+}
+
 /// Native in-game pause menu: a clear Liquid Glass "command deck" presented by the host as a
 /// bounded card over a controlled dim of the paused gameplay. The host pauses the VM while this
 /// card is shown. Toggles are bound directly; everything else is routed back to the host through
@@ -47,6 +56,8 @@ struct QuickMenuView: View {
     let variant: PauseLayoutVariant
     /// The child just closed, whose row gets focus back instead of Resume.
     let returningFrom: QuickMenuDestination?
+    /// Held by GameScreenView while the card is open.
+    @Binding var foldMemory: QuickMenuFoldMemory?
     let activePadLayoutName: String
     let activeControllerSkinName: String
 
@@ -97,7 +108,13 @@ struct QuickMenuView: View {
             // `overlayBody`. In particular, iPad uses the portrait-style body
             // even when its measured card is wider than it is tall.
             let usesLandscapeMap = variant == .phoneLandscape
+            let large = variant == .ipadTwoColumn
             let spread = foldSplit?.vertical == true
+            // After a fold, the row a controller had selected instead of Resume.
+            let foldFocus = foldMemory.flatMap { memory in
+                memory.folded || memory.large != large || memory.pose != foldPose
+                    ? controllerInput?.rememberedNavigationFocusKey(forScope: memory.scope) : nil
+            }
             let usesTwoColumns = variant.supportsTwoColumns(
                 width: geo.size.width,
                 height: geo.size.height
@@ -188,7 +205,7 @@ struct QuickMenuView: View {
                     preferredInitialFocusLabel:
                         showStopConfirmation
                             ? settings.localized("Cancel")
-                            : returningFrom.map(controllerTargetID(for:))
+                            : returningFrom.map(controllerTargetID(for:)) ?? foldFocus
                                 ?? ControllerTargetID.resume
                 )
                 .task(
@@ -206,6 +223,14 @@ struct QuickMenuView: View {
                         matchingScopePrefix: "quick-pause."
                     )
                 }
+                .onChange(
+                    of: QuickMenuFoldMemory(
+                        scope: quickMenuControllerScopeKey(usesLandscapeMap: usesLandscapeMap),
+                        large: large,
+                        pose: foldPose
+                    ),
+                    initial: true
+                ) { _, now in rememberFoldScope(now) }
         }
         .onChange(of: showStopConfirmation) { _, isPresented in
             guard isPresented else { return }
@@ -235,6 +260,23 @@ struct QuickMenuView: View {
         case .resetROM: ControllerTargetID.resetROM
         case .changeDisc: ControllerTargetID.changeDisc
         }
+    }
+
+    private func rememberFoldScope(_ now: QuickMenuFoldMemory) {
+        guard !showStopConfirmation else { return }
+        guard var memory = foldMemory else {
+            foldMemory = now
+            return
+        }
+        memory.folded = memory.folded || memory.large != now.large || memory.pose != now.pose
+        if memory.folded, memory.scope != now.scope,
+           let key = controllerInput?.rememberedNavigationFocusKey(forScope: memory.scope) {
+            controllerInput?.rememberNavigationFocusKey(key, forScope: now.scope)
+        }
+        memory.scope = now.scope
+        memory.large = now.large
+        memory.pose = now.pose
+        foldMemory = memory
     }
 
     private func quickMenuControllerScopeKey(
