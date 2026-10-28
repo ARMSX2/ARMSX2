@@ -1416,19 +1416,33 @@ void GameDatabase::initDatabase()
 		/*is_override=*/true);
 }
 
-void GameDatabase::ensureLoaded()
+// The Android library can look a game up before the core has set its folders, and on the first launch
+// after an update the shipped resources are still being written then. A load at that point finds no file,
+// and call_once kept that empty database for the rest of the session, so no game got its fixes until the
+// app was restarted. Nothing loads until the resources folder is known; until then a lookup finds nothing.
+static bool loadOnceFolderIsSet()
 {
+	if (EmuFolders::Resources.empty())
+		return false;
+
 	std::call_once(s_load_once_flag, []() {
 		Common::Timer timer;
 		Console.WriteLn(fmt::format("GameDB: Has not been initialized yet, initializing..."));
-		initDatabase();
+		GameDatabase::initDatabase();
 		Console.WriteLn("GameDB: %zu games on record (loaded in %.2fms)", s_game_db.size(), timer.GetTimeMilliseconds());
 	});
+	return true;
+}
+
+void GameDatabase::ensureLoaded()
+{
+	loadOnceFolderIsSet();
 }
 
 const GameDatabaseSchema::GameEntry* GameDatabase::findGame(const std::string_view serial)
 {
-	GameDatabase::ensureLoaded();
+	if (!loadOnceFolderIsSet())
+		return nullptr;
 
 	auto iter = s_game_db.find(StringUtil::toLower(serial));
 	return (iter != s_game_db.end()) ? &iter->second : nullptr;
@@ -1436,7 +1450,8 @@ const GameDatabaseSchema::GameEntry* GameDatabase::findGame(const std::string_vi
 
 std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> GameDatabase::findArcadeGames()
 {
-	GameDatabase::ensureLoaded();
+	if (!loadOnceFolderIsSet())
+		return {};
 
 	std::vector<std::pair<std::string, const GameDatabaseSchema::GameEntry*>> games;
 	for (const auto& [serial, entry] : s_game_db)
