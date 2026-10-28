@@ -2223,6 +2223,8 @@ struct MenuTabView: View {
                         menuViewportSize = size
                     }
             }
+            // Otherwise a keyboard shortens the menu and portrait gets the landscape layout.
+            .ignoresSafeArea(.keyboard)
         }
         // One foreground field owns every controller-focus anchor in this
         // presentation, including cards, toolbars, alerts, and the tab bar.
@@ -4321,7 +4323,9 @@ private struct SafeAreaProtectedMenuTabContent<Content: View>: View {
         // GeometryReader destroys an active Settings NavigationStack and its controller
         // navigation session.
         GeometryReader { geometry in
-            let isLandscapePhone = geometry.size.width > geometry.size.height
+            // A keyboard shrinks the safe region, so landscape is judged from the window.
+            let isLandscapePhone = geometry.size.width + geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing
+                > geometry.size.height + geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom
                 && UIDevice.current.userInterfaceIdiom == .phone
             let systemProvidesInset = geometry.safeAreaInsets.leading > 0
                 || geometry.safeAreaInsets.trailing > 0

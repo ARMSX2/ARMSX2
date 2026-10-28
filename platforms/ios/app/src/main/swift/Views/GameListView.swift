@@ -3127,6 +3127,8 @@ struct GameListView: View {
                             }
                         }
                     }
+                    // Otherwise the Cover Source keyboard shortens the library and portrait switches to cover flow.
+                    .ignoresSafeArea(.keyboard)
                     // Keep card glass in one persistent sampling group without
                     // absorbing either half of the depth-split orb field.
                     .stableMenuContentGlassContainer()

@@ -889,8 +889,9 @@ struct NumberRow: View {
 
     /// Keep the draft local until editing ends. Besides making Done deterministic,
     /// this prevents Per-Game live preview from restarting for every digit.
+    /// Only drops focus; onChange(of: fieldFocused) commits. Removing the field and its keyboard bar
+    /// in the same update as the focus leaves the bar's height behind as keyboard inset.
     private func commitAndDismissKeyboard() {
-        commit()
         fieldFocused = false
         UIApplication.shared.sendAction(
             #selector(UIResponder.resignFirstResponder),
