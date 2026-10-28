@@ -126,6 +126,15 @@ const MeasuredOp kHiLoReads[] = {
 	{"PMFLO", ee::PMFLO(reg::t0), 1 * 8},
 };
 
+// The FPU ops whose result goes to the accumulator (fs = f1, ft = f2).
+const MeasuredOp kFpuAccumulator[] = {
+	{"ADDA_S",  ee::COP1(0x10, 2, 1, 0, 0x18), 1 * 8},
+	{"SUBA_S",  ee::COP1(0x10, 2, 1, 0, 0x19), 1 * 8},
+	{"MULA_S",  ee::COP1(0x10, 2, 1, 0, 0x1A), 1 * 8},
+	{"MADDA_S", ee::COP1(0x10, 2, 1, 0, 0x1E), 1 * 8},
+	{"MSUBA_S", ee::COP1(0x10, 2, 1, 0, 0x1F), 1 * 8},
+};
+
 struct ScopedCycleRate
 {
 	s8 prev;
@@ -233,4 +242,11 @@ TEST(EeRecMeasuredCharge, MmiAluOpsChargeOneCycle)
 TEST(EeRecMeasuredCharge, ParallelHiLoReadsChargeOneCycle)
 {
 	ExpectMeasuredCharges(kHiLoReads);
+}
+
+// The console accumulates into ACC at one per cycle: a MADDA.S chain costs 1
+// per op, and MULA.S then a MADD.S that reads ACC costs 2 per pair.
+TEST(EeRecMeasuredCharge, FpuAccumulatorWritesChargeOneCycle)
+{
+	ExpectMeasuredCharges(kFpuAccumulator);
 }

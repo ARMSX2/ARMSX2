@@ -166,6 +166,13 @@ namespace R5900
 
 			static const int FPU_Mult = 4*8;
 
+			// The FPU ops that write the accumulator (ADDA.S, SUBA.S, MULA.S,
+			// MADDA.S, MSUBA.S): 1 cycle, measured on an SCPH-30001. A chain
+			// through ACC costs 1 per op, independent ones 1 per op, and MULA.S
+			// then a MADD.S reading ACC 2 per pair. The table charged MULA.S,
+			// MADDA.S and MSUBA.S as multiplies (4) and ADDA.S, SUBA.S 0.875.
+			static const int FPU_Acc = 1*8;
+
 			static const int Store = 14;
 			static const int Load = 14;
 		}
@@ -483,9 +490,9 @@ namespace R5900
 		MakeOpcode1( BC1TL, Branch, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_NE|IS_LIKELY );
 
 		MakeOpcode1( ADD_S, CopDefault, 0 );
-		MakeOpcode1( ADDA_S, CopDefault, 0 );
+		MakeOpcode1( ADDA_S, FPU_Acc, 0 );
 		MakeOpcode1( SUB_S, CopDefault, 0 );
-		MakeOpcode1( SUBA_S, CopDefault, 0 );
+		MakeOpcode1( SUBA_S, FPU_Acc, 0 );
 
 		MakeOpcode1( ABS_S, CopDefault, 0 );
 		MakeOpcode1( MOV_S, CopDefault, 0 );
@@ -528,11 +535,11 @@ namespace R5900
 		MakeOpcode1( DIV_S, 7*8, 0 );
 		MakeOpcode1( SQRT_S, 7*8, 0 );
 		MakeOpcode1( RSQRT_S, 13*8, 0 );
-		MakeOpcode1( MULA_S, FPU_Mult, 0 );
+		MakeOpcode1( MULA_S, FPU_Acc, 0 );
 		MakeOpcode1( MADD_S, FPU_Mult, 0 );
 		MakeOpcode1( MSUB_S, FPU_Mult, 0 );
-		MakeOpcode1( MADDA_S, FPU_Mult, 0 );
-		MakeOpcode1( MSUBA_S, FPU_Mult, 0 );
+		MakeOpcode1( MADDA_S, FPU_Acc, 0 );
+		MakeOpcode1( MSUBA_S, FPU_Acc, 0 );
 
 		MakeOpcode1( C_F, CopDefault, 0 );
 		MakeOpcode1( C_EQ, CopDefault, 0 );
