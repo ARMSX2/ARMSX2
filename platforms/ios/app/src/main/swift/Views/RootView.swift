@@ -420,19 +420,20 @@ struct GameplayControllerShortcutHelpOverlay: View {
                     )
             }
             .shadow(color: .black.opacity(0.12), radius: 12, y: 5)
+            // On the bar itself, so VoiceOver frames the bar rather than the whole screen.
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(
+                [
+                    "Press \(settings.controllerMacroQuickMenu.title) to open the Quick Menu.",
+                    "Press \(settings.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
+                    "Press \(settings.controllerMacroSaveGameState.title) to save a game state.",
+                    "Press \(settings.controllerMacroLoadGameState.title) to load a game state.",
+                ].joined(separator: " ")
+            )
             .padding(.bottom, geometry.safeAreaInsets.bottom - Self.homeIndicatorSink(geometry.safeAreaInsets.bottom) + Self.bottomPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
         .allowsHitTesting(false)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            [
-                "Press \(settings.controllerMacroQuickMenu.title) to open the Quick Menu.",
-                "Press \(settings.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
-                "Press \(settings.controllerMacroSaveGameState.title) to save a game state.",
-                "Press \(settings.controllerMacroLoadGameState.title) to load a game state.",
-            ].joined(separator: " ")
-        )
     }
 
     private var themedAccentColor: Color {

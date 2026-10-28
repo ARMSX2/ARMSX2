@@ -3281,6 +3281,7 @@ struct GameListView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(settings.localized("Boot BIOS"))
+                        .fixedSize()
                     }
                 }
                 ToolbarItem(id: "menu.import", placement: .topBarTrailing) {

@@ -3173,6 +3173,8 @@ private struct ControllerAccessibilityFocusOverlay: View {
             )
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+            // The frame is in physical points; right-to-left would mirror the ring off its row.
+            .environment(\.layoutDirection, .leftToRight)
             .zIndex(90_000)
         }
     }
@@ -3223,6 +3225,7 @@ private struct ControllerAccessibilityWindowFocusOverlay: View {
         .ignoresSafeArea()
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+        .environment(\.layoutDirection, .leftToRight)
     }
 }
 

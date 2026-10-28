@@ -31,6 +31,7 @@ struct QuickMenuView: View {
     @State private var showStopConfirmation = false
     @State private var stopConfirmationAnchor: StopConfirmationAnchor?
     @Environment(\.menuControllerInputRouter) private var controllerInput
+    @Environment(\.layoutDirection) private var layoutDirection
 
     let settings: SettingsStore
     @Binding var padVisible: Bool
@@ -286,7 +287,9 @@ struct QuickMenuView: View {
     /// leaves the footer through Resume; horizontal movement selects Stop.
     private func quickMenuPortraitDirectionalLinks()
         -> [ControllerAccessibilityDirectionalLink] {
-        [
+        let towardStop: MenuControllerCommand = layoutDirection == .rightToLeft ? .right : .left
+        let towardResume: MenuControllerCommand = layoutDirection == .rightToLeft ? .left : .right
+        return [
             .init(
                 fromLabel: ControllerTargetID.backToMenu,
                 direction: .down,
@@ -304,12 +307,12 @@ struct QuickMenuView: View {
             ),
             .init(
                 fromLabel: ControllerTargetID.resume,
-                direction: .left,
+                direction: towardStop,
                 toLabel: ControllerTargetID.stop
             ),
             .init(
                 fromLabel: ControllerTargetID.stop,
-                direction: .right,
+                direction: towardResume,
                 toLabel: ControllerTargetID.resume
             ),
         ]
