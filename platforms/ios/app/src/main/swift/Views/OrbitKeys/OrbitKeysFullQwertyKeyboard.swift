@@ -246,6 +246,8 @@ enum OrbitKeysFullQwertyLayout {
 struct OrbitKeysFullQwerty: View {
   @ObservedObject var model: OrbitKeysModel
   let compact: Bool
+  /// Above 0 the keys split into two panels this far apart.
+  var splitGap: CGFloat = 0
   @Environment(\.uiAccentColour) private var themeAccent
 
   private var rows: [[OrbitKeysFullQwertyKey]] {
@@ -262,23 +264,32 @@ struct OrbitKeysFullQwerty: View {
             .zIndex(0)
         }
 
-        VStack(spacing: metrics.rowSpacing) {
-          ForEach(rows.indices, id: \.self) { rowIndex in
-            keyRow(
-              rowIndex: rowIndex,
-              keys: rows[rowIndex],
-              height: metrics.keyHeight,
-              spacing: metrics.keySpacing
+        Group {
+          if splitGap > 0 {
+            HStack(spacing: splitGap) {
+              splitHalf(trailing: false, metrics: metrics, size: proxy.size)
+              splitHalf(trailing: true, metrics: metrics, size: proxy.size)
+            }
+          } else {
+            VStack(spacing: metrics.rowSpacing) {
+              ForEach(rows.indices, id: \.self) { rowIndex in
+                keyRow(
+                  rowIndex: rowIndex,
+                  keys: rows[rowIndex],
+                  height: metrics.keyHeight,
+                  spacing: metrics.keySpacing
+                )
+              }
+            }
+            .padding(metrics.padding)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+            .keyboardThemeSurface(
+              usesLegacyTheme: model.usesLegacyTheme,
+              clearGlassLevel: model.clearGlassLevel,
+              cornerRadius: 20
             )
           }
         }
-        .padding(metrics.padding)
-        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
-        .keyboardThemeSurface(
-          usesLegacyTheme: model.usesLegacyTheme,
-          clearGlassLevel: model.clearGlassLevel,
-          cornerRadius: 20
-        )
         .zIndex(1)
 
         if model.showsOrbs, model.orbsInForeground {
@@ -319,7 +330,7 @@ struct OrbitKeysFullQwerty: View {
   }
 
   private func keyboardMetrics(in size: CGSize) -> OrbitKeysFullQwertyKeyboardMetrics {
-    let isTablet = UIDevice.current.userInterfaceIdiom == .pad
+    let isTablet = usesLargeLayout()
     let padding = isTablet
       ? (compact ? CGFloat(10) : CGFloat(12))
       : (compact ? CGFloat(7) : CGFloat(8))
@@ -404,15 +415,40 @@ struct OrbitKeysFullQwerty: View {
     let totalUnits = row.reduce(0) { $0 + $1.width }
     guard totalUnits > 0 else { return nil }
 
-    let totalSpacing = CGFloat(max(row.count - 1, 0)) * metrics.keySpacing
-    let availableWidth = max(1, size.width - metrics.padding * 2 - totalSpacing)
-    let precedingUnits = row.prefix(position.column).reduce(0) { $0 + $1.width }
-    let keyWidth = availableWidth * CGFloat(row[position.column].width / totalUnits)
-    let x =
-      metrics.padding
-      + availableWidth * CGFloat(precedingUnits / totalUnits)
-      + metrics.keySpacing * CGFloat(position.column)
-      + keyWidth / 2
+    let x: CGFloat
+    if splitGap > 0 {
+      let halfWidth = (size.width - splitGap) / 2
+      let innerWidth = halfWidth - metrics.padding * 2
+      let half = { (trailing: Bool) in
+        splitKeys(
+          row: position.row,
+          trailing: trailing,
+          innerWidth: innerWidth,
+          spacing: metrics.keySpacing
+        )
+      }
+      let inLeading = half(false).contains { $0.column == position.column }
+      let keys = half(!inLeading)
+      guard let index = keys.firstIndex(where: { $0.column == position.column }) else { return nil }
+      let rowWidth = keys.reduce(0) { $0 + $1.width } + metrics.keySpacing * CGFloat(keys.count - 1)
+      x =
+        (inLeading ? 0 : halfWidth + splitGap)
+        + metrics.padding
+        + (innerWidth - rowWidth) / 2
+        + keys.prefix(index).reduce(0) { $0 + $1.width }
+        + metrics.keySpacing * CGFloat(index)
+        + keys[index].width / 2
+    } else {
+      let totalSpacing = CGFloat(max(row.count - 1, 0)) * metrics.keySpacing
+      let availableWidth = max(1, size.width - metrics.padding * 2 - totalSpacing)
+      let precedingUnits = row.prefix(position.column).reduce(0) { $0 + $1.width }
+      let keyWidth = availableWidth * CGFloat(row[position.column].width / totalUnits)
+      x =
+        metrics.padding
+        + availableWidth * CGFloat(precedingUnits / totalUnits)
+        + metrics.keySpacing * CGFloat(position.column)
+        + keyWidth / 2
+    }
     let y =
       metrics.centeredContentOffsetY
       + metrics.padding
@@ -436,35 +472,112 @@ struct OrbitKeysFullQwerty: View {
       HStack(spacing: spacing) {
         ForEach(keys.indices, id: \.self) { column in
           let key = keys[column]
-          let position = OrbitKeysFullQwertyKeyPosition(row: rowIndex, column: column)
-          let isSelected = model.fullQwertyToolbarSelection == nil
-            && model.fullQwertySelection == position
           let keyWidth = availableWidth * CGFloat(key.width / totalUnits)
 
-          OrbitKeysFullQwertyKeyButton(
-            key: key,
-            accent: themeAccent,
-            isSelected: isSelected,
-            feedbackTrigger: isSelected ? model.fullQwertyFeedbackSequence : 0,
-            compact: compact,
-            clearGlassLevel: model.clearGlassLevel,
-            usesLegacyTheme: model.usesLegacyTheme,
-            onHoldChanged: { isHeld in
-              guard key.action == .backspace else { return }
-              if isHeld {
-                model.selectFullQwertyKey(position)
-              }
-              model.setFullQwertyTouchBackspaceHeld(isHeld)
-            }
-          ) {
-            model.activateFullQwertyKey(at: position)
-          }
-          .frame(width: keyWidth, height: height)
+          keyButton(key, at: OrbitKeysFullQwertyKeyPosition(row: rowIndex, column: column))
+            .frame(width: keyWidth, height: height)
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     .frame(height: height)
+  }
+
+  private func keyButton(
+    _ key: OrbitKeysFullQwertyKey,
+    at position: OrbitKeysFullQwertyKeyPosition
+  ) -> some View {
+    let isSelected = model.fullQwertyToolbarSelection == nil
+      && model.fullQwertySelection == position
+
+    return OrbitKeysFullQwertyKeyButton(
+      key: key,
+      accent: themeAccent,
+      isSelected: isSelected,
+      feedbackTrigger: isSelected ? model.fullQwertyFeedbackSequence : 0,
+      compact: compact,
+      clearGlassLevel: model.clearGlassLevel,
+      usesLegacyTheme: model.usesLegacyTheme,
+      onHoldChanged: { isHeld in
+        guard key.action == .backspace else { return }
+        if isHeld {
+          model.selectFullQwertyKey(position)
+        }
+        model.setFullQwertyTouchBackspaceHeld(isHeld)
+      }
+    ) {
+      model.activateFullQwertyKey(at: position)
+    }
+  }
+
+  private func splitHalf(
+    trailing: Bool,
+    metrics: OrbitKeysFullQwertyKeyboardMetrics,
+    size: CGSize
+  ) -> some View {
+    let width = (size.width - splitGap) / 2
+
+    return VStack(spacing: metrics.rowSpacing) {
+      ForEach(rows.indices, id: \.self) { rowIndex in
+        let keys = splitKeys(
+          row: rowIndex,
+          trailing: trailing,
+          innerWidth: width - metrics.padding * 2,
+          spacing: metrics.keySpacing
+        )
+
+        HStack(spacing: metrics.keySpacing) {
+          ForEach(keys.indices, id: \.self) { index in
+            let column = keys[index].column
+
+            keyButton(
+              rows[rowIndex][column],
+              at: OrbitKeysFullQwertyKeyPosition(row: rowIndex, column: column)
+            )
+            .frame(width: keys[index].width, height: metrics.keyHeight)
+            // Both halves draw the space bar; VoiceOver reads it from the leading one.
+            .accessibilityHidden(trailing && rows[rowIndex][column].action == .space)
+          }
+        }
+        .frame(maxWidth: .infinity)
+      }
+    }
+    .padding(metrics.padding)
+    .frame(width: width, height: size.height, alignment: .center)
+    .keyboardThemeSurface(
+      usesLegacyTheme: model.usesLegacyTheme,
+      clearGlassLevel: model.clearGlassLevel,
+      cornerRadius: 20
+    )
+  }
+
+  /// One half of a split row: its columns and widths. Letters keep the top row's key width,
+  /// space (or else Shift and Delete) takes the rest, and a half with neither is centred.
+  private func splitKeys(
+    row rowIndex: Int,
+    trailing: Bool,
+    innerWidth: CGFloat,
+    spacing: CGFloat
+  ) -> [(column: Int, width: CGFloat)] {
+    let keys = rows[rowIndex]
+    let halfCount = rows[0].count / 2
+    let space = keys.firstIndex { $0.action == .space }
+    let columns = trailing
+      ? Array((space ?? halfCount)..<keys.count)
+      : Array(0..<(space.map { $0 + 1 } ?? halfCount))
+    let flexible = space.map { [$0] } ?? columns.filter {
+      if case .character = keys[$0].action { false } else { true }
+    }
+    let units = { (columns: [Int]) in CGFloat(columns.reduce(0) { $0 + keys[$1].width }) }
+    let fixedUnits = units(columns.filter { !flexible.contains($0) })
+    let freeWidth = innerWidth - spacing * CGFloat(columns.count - 1)
+    let topRowUnit = (innerWidth - spacing * CGFloat(halfCount - 1)) / CGFloat(halfCount)
+    let unit = flexible.isEmpty ? min(topRowUnit, freeWidth / fixedUnits) : topRowUnit
+    let flexibleUnit = max(0, freeWidth - unit * fixedUnits) / units(flexible)
+
+    return columns.map { column in
+      (column, CGFloat(keys[column].width) * (flexible.contains(column) ? flexibleUnit : unit))
+    }
   }
 }
 
@@ -493,7 +606,7 @@ private struct OrbitKeysFullQwertyKeyButton: View {
   @State private var isTouchHeld = false
 
   private var usesTabletMetrics: Bool {
-    UIDevice.current.userInterfaceIdiom == .pad
+    usesLargeLayout()
   }
 
   @ViewBuilder

@@ -15,6 +15,12 @@ struct OrbitKeysGridView: View {
     count: 3
   )
 
+  /// How far the side keys' circles reach past a grid square `gridSide` points wide.
+  static func keyOverhang(gridSide: CGFloat) -> CGFloat {
+    let key = OrbitKeysCellView.keyMetrics(size: max(1, (gridSide - 16) / 3))
+    return max(0, key.diameter / 2 - key.inset)
+  }
+
   var body: some View {
     GeometryReader { proxy in
       let gridSide = min(proxy.size.width, proxy.size.height)
@@ -177,15 +183,19 @@ private struct OrbitKeysCellView: View {
   @State private var suppressKeyTap = false
   @Environment(\.uiAccentColour) private var themeAccent
 
+  /// A side key's centre inset and circle diameter in a cell `size` points wide.
+  static func keyMetrics(size: CGFloat) -> (inset: CGFloat, diameter: CGFloat) {
+    let isTablet = usesLargeLayout()
+    return (
+      max(17, size * 0.18),
+      min(isTablet ? 110 : 44, max(isTablet ? 56 : 29, size * (isTablet ? 0.42 : 0.34)))
+    )
+  }
+
   var body: some View {
     GeometryReader { proxy in
       let size = min(proxy.size.width, proxy.size.height)
-      let inset = max(17, size * 0.18)
-      let isTablet = UIDevice.current.userInterfaceIdiom == .pad
-      let baseKeyDiameter = min(
-        isTablet ? 110 : 44,
-        max(isTablet ? 56 : 29, size * (isTablet ? 0.42 : 0.34))
-      )
+      let (inset, baseKeyDiameter) = Self.keyMetrics(size: size)
       let keyDiameter = position == .center ? baseKeyDiameter * 0.9 : baseKeyDiameter
       let dotLimit = size * 0.27
       let joystickOffset = CGSize(
