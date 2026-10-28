@@ -426,6 +426,8 @@ struct GameScreenView: View {
     @State private var overlayRoute: OverlayRoute = .hidden
     // The pause menu child last opened. Its row takes focus when the card returns.
     @State private var pauseMenuChild: QuickMenuDestination?
+    @State private var pauseCardFoldMemory: QuickMenuFoldMemory?
+    @State private var cheatsSession = CheatsPatchesManagerView.Session()
     @State private var runtimePerGameSettingsEntry: ISOEntry?
     @State private var runtimePerGameSettings: [String: Any]?
     @State private var runtimePerGameStartsInGameController = false
@@ -512,6 +514,7 @@ struct GameScreenView: View {
                     gameTitle: currentRuntimeGameName(),
                     variant: metrics.variant,
                     returningFrom: pauseMenuChild,
+                    foldMemory: $pauseCardFoldMemory,
                     activePadLayoutName: activePadLayoutDisplayName,
                     activeControllerSkinName:
                         effectivePadSkinDescriptor.displayName,
@@ -673,7 +676,8 @@ struct GameScreenView: View {
                         gameTitle: "",
                         launchContext: .inGame,
                         controllerInput: controllerInput,
-                        onClose: { overlayRoute = .paused }
+                        onClose: { overlayRoute = .paused },
+                        session: cheatsSession
                     )
                 }
                 .accessibilityElement(children: .contain)
@@ -867,7 +871,8 @@ struct GameScreenView: View {
                 isoName: ARMSX2Bridge.currentGameISOName() ?? "",
                 gameTitle: "",
                 launchContext: .inGame,
-                controllerInput: controllerInput
+                controllerInput: controllerInput,
+                session: cheatsSession
             )
             .presentationDetents([.medium, .large])
         }
@@ -940,7 +945,7 @@ struct GameScreenView: View {
         }
         // VM pause follows `overlayRoute` alone: any route but `.hidden` keeps it paused.
         .onChange(of: overlayRoute) { _, route in
-            if route == .hidden { pauseMenuChild = nil }
+            if route == .hidden { (pauseMenuChild, pauseCardFoldMemory) = (nil, nil) }
             if route == .paused {
                 // Child dismissal and background re-entry can expose the pause
                 // card without going through either explicit open action.
@@ -1718,6 +1723,7 @@ struct GameScreenView: View {
             )
         case .cheats:
             MenuAudioPackManager.shared.playEvent(.uiToast)
+            cheatsSession = CheatsPatchesManagerView.Session()
             overlayRoute = .pausedPresenting(destination)
         case .controllerSkin:
             openRuntimeControllerSkinPicker()

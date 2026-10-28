@@ -716,8 +716,16 @@ struct PerGameSettingsPanel: View {
             // Recreate probes and the navigation scope atomically at rotation
             // so Cross can never activate a retained control from the old tree.
             .id(layout)
-            .onChange(of: layout) { _, _ in
+            .onChange(of: layout) { _, newLayout in
+                guard AppState.shared.hingePresent else {
+                    selectedControllerDetail = nil
+                    return
+                }
+                // The split always shows openCategory, so a fold's stack pushes it again.
+                guard !initiallySelectsShaders else { return }
                 selectedControllerDetail = nil
+                guard !newLayout.usesSplitView else { return }
+                pushOpenCategoryAfterLayout()
             }
             .controllerAccessibilityTargetOrder(
                 perGameControllerTargetOrder

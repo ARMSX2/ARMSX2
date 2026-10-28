@@ -55,7 +55,18 @@ private enum InstalledFileRemoval {
 }
 
 struct CheatsPatchesManagerView: View {
-    private enum ControllerTarget: Hashable {
+    // Held by the in-game caller, since iPhone Duo's fold swaps the sheet for a hosted panel.
+    final class Session {
+        fileprivate var patchSourcesDraft: [String]?
+        fileprivate var cheatSourcesDraft: [String]?
+        fileprivate var showAdvanced = false
+        fileprivate var scrollShare: CGFloat?
+        fileprivate var restoreShare: CGFloat?
+        fileprivate var controllerTarget = ControllerTarget.done
+        fileprivate var shownBy: UUID?
+    }
+
+    fileprivate enum ControllerTarget: Hashable {
         case done
         case retryIdentity
         case dismissFeedback
@@ -78,6 +89,7 @@ struct CheatsPatchesManagerView: View {
     let launchContext: CheatsPatchesLaunchContext
     let controllerInput: MenuControllerInputRouter?
     let onClose: (() -> Void)?
+    let session: Session?
 
     @State private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
@@ -91,6 +103,7 @@ struct CheatsPatchesManagerView: View {
     @State private var downloadTask: Task<Void, Never>?
     @State private var controllerTarget: ControllerTarget = .done
     @State private var controllerConfirmationIndex = 0
+    @State private var instance = UUID()
     @Environment(\.dismiss) private var dismiss
 
     init(
@@ -98,13 +111,15 @@ struct CheatsPatchesManagerView: View {
         gameTitle: String,
         launchContext: CheatsPatchesLaunchContext = .library,
         controllerInput: MenuControllerInputRouter? = nil,
-        onClose: (() -> Void)? = nil
+        onClose: (() -> Void)? = nil,
+        session: Session? = nil
     ) {
         self.isoName = isoName
         self.gameTitle = gameTitle
         self.launchContext = launchContext
         self.controllerInput = controllerInput
         self.onClose = onClose
+        self.session = session
     }
 
     var body: some View {
@@ -149,7 +164,9 @@ struct CheatsPatchesManagerView: View {
                 }
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
+                .cheatsScrollMemory(session, instance: instance)
                 .onChange(of: controllerTarget) { _, target in
+                    if session?.shownBy == instance { session?.controllerTarget = target }
                     withAnimation(.snappy(duration: 0.22)) {
                         proxy.scrollTo(target, anchor: .center)
                     }
@@ -174,9 +191,19 @@ struct CheatsPatchesManagerView: View {
                 }
             }
             .onAppear {
+                if let session {
+                    // A restored controller target scrolls itself into view below.
+                    let restoresOffset = session.shownBy != nil && session.controllerTarget == .done
+                    session.restoreShare = restoresOffset ? session.scrollShare : nil
+                    session.shownBy = instance
+                }
                 reload()
-                patchSourcesDraft = store.patchDatabaseURLTemplates
-                cheatSourcesDraft = store.cheatDatabaseURLTemplates
+                patchSourcesDraft = session?.patchSourcesDraft ?? store.patchDatabaseURLTemplates
+                cheatSourcesDraft = session?.cheatSourcesDraft ?? store.cheatDatabaseURLTemplates
+                if let session {
+                    showAdvanced = session.showAdvanced
+                    controllerTarget = session.controllerTarget
+                }
                 controllerInput?.setNavigationCaptured(
                     true,
                     owner: MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
@@ -184,19 +211,24 @@ struct CheatsPatchesManagerView: View {
                 )
             }
             .onDisappear {
-                downloadTask?.cancel()
-                downloadTask = nil
-                // PatchStore is shared for persistence, but its parsed rows,
-                // messages, and current-game identity are presentation-only.
-                // Discard them when this manager leaves the hierarchy so the
-                // Quick Menu does not keep them resident during gameplay.
-                store.releasePresentationResources()
+                // A pose change can show the next view before this one leaves, and that one owns the capture.
+                guard session?.shownBy ?? instance == instance else { return }
+                // Unfolding can drop the hosted view before the sheet shows, so GameScreenView releases the store on close.
+                if session == nil || !AppState.shared.hingePresent {
+                    downloadTask?.cancel()
+                    downloadTask = nil
+                    // PatchStore's parsed rows, messages and game identity are presentation-only.
+                    store.releasePresentationResources()
+                }
                 controllerInput?.setNavigationCaptured(
                     false,
                     owner: MenuControllerNavigationCaptureOwner.cheatsPatchesManager,
                     priority: 500
                 )
             }
+            .onChange(of: patchSourcesDraft) { _, drafts in session?.patchSourcesDraft = drafts }
+            .onChange(of: cheatSourcesDraft) { _, drafts in session?.cheatSourcesDraft = drafts }
+            .onChange(of: showAdvanced) { _, shown in session?.showAdvanced = shown }
             .onChange(of: controllerInput?.latestEvent) { _, event in
                 guard let event else { return }
                 handleControllerCommand(event)
@@ -309,6 +341,9 @@ struct CheatsPatchesManagerView: View {
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityAddTraits(.isHeader)
+                    .background {
+                        if let session { CheatsScrollRestore(session: session) }
+                    }
                     // A row of its own for this marker left an empty band above the title.
                     .background {
                         ControllerRightStickScrollTarget(
@@ -933,7 +968,9 @@ struct CheatsPatchesManagerView: View {
     }
 
     private func handleControllerCommand(_ event: MenuControllerInputEvent) {
+        // The sheet still hears the pad while a fold swaps it for the hosted panel.
         guard controllerInput != nil,
+              (session?.shownBy ?? instance) == instance,
               event.captureOwner
                 == MenuControllerNavigationCaptureOwner.cheatsPatchesManager else {
             return
@@ -1106,6 +1143,77 @@ struct CheatsPatchesManagerView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(settings.localized("Remove source"))
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    fileprivate func cheatsScrollMemory(_ session: CheatsPatchesManagerView.Session?, instance: UUID) -> some View {
+        if #available(iOS 18.0, *), let session {
+            modifier(CheatsScrollMemory(session: session, instance: instance))
+        } else {
+            self
+        }
+    }
+}
+
+// The sheet and the panel beside the fold differ in width, so the place is kept as a fraction of the scroll range.
+@available(iOS 18.0, *)
+private struct CheatsScrollMemory: ViewModifier {
+    let session: CheatsPatchesManagerView.Session
+    let instance: UUID
+
+    func body(content: Content) -> some View {
+        content.onScrollGeometryChange(for: CGFloat.self, of: { geometry in
+            let range = geometry.contentSize.height + geometry.contentInsets.top
+                + geometry.contentInsets.bottom - geometry.containerSize.height
+            return range > 0 ? (geometry.contentOffset.y + geometry.contentInsets.top) / range : 0
+        }) { _, share in
+            guard session.shownBy == instance else { return }
+            session.scrollShare = share
+        }
+    }
+}
+
+// SwiftUI cannot move a Form to an offset, so this marker in the first row moves its collection view.
+private struct CheatsScrollRestore: UIViewRepresentable {
+    let session: CheatsPatchesManagerView.Session
+
+    func makeUIView(context: Context) -> Marker { Marker(session: session) }
+    func updateUIView(_ marker: Marker, context: Context) {}
+
+    final class Marker: UIView {
+        private let session: CheatsPatchesManagerView.Session
+
+        init(session: CheatsPatchesManagerView.Session) {
+            self.session = session
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard window != nil else { return }
+            // By the next turn the swapped-in view has taken the share and sized its rows.
+            DispatchQueue.main.async { [weak self] in self?.restore() }
+        }
+
+        private func restore() {
+            guard let share = session.restoreShare else { return }
+            var ancestor = superview
+            while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
+            guard let list = ancestor as? UIScrollView else { return }
+            session.restoreShare = nil
+            // Rows size as they come into view and change the range, so settle in a few passes.
+            for _ in 0..<3 {
+                let inset = list.adjustedContentInset
+                let range = list.contentSize.height + inset.top + inset.bottom - list.bounds.height
+                list.setContentOffset(CGPoint(x: list.contentOffset.x, y: share * max(range, 0) - inset.top), animated: false)
+                list.layoutIfNeeded()
+            }
         }
     }
 }
