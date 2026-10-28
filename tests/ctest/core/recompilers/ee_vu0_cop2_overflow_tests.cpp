@@ -283,7 +283,10 @@ TEST(EeVu0Cop2Overflow, OverflowMatchesTheInterpreterAtModeFour)
 // from that half deliberately: mode 4 also turns on the guard mask there, which
 // is a value model and is scored by the guard-mask files. The MAC U comparison
 // skips the gated nibbles because U is a mode lower and mode 1 has none of it;
-// ee_vu0_cop2_mul_underflow_tests.cpp scores that gate.
+// ee_vu0_cop2_mul_underflow_tests.cpp scores that gate. The word comparison
+// starts at mode 2, where the multiplicands are bounded as they are at 4: mode 1
+// reads an exponent-255 multiplicand as the host's NaN, a third shape of move,
+// and ee_vu0_cop2_extra_clamp_tests.cpp scores that gate.
 TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 {
 	for (int low = 1; low <= 3; ++low)
@@ -302,7 +305,7 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 			<< " ft " << c.ft << " iter " << iter);
 		EXPECT_EQ(g1.mac & kMacO, 0u) << "raised MAC O below the gate";
 		EXPECT_EQ(g1.status & kStatO, 0u) << "raised STATUS O/OS below the gate";
-		if (!c.f->adder)
+		if (!c.f->adder && low >= 2)
 		{
 			EXPECT_EQ(g1.mac & ~(kMacO | kMacU), g4.mac & ~(kMacO | kMacU))
 				<< "MAC outside the gated nibbles";
@@ -343,6 +346,8 @@ TEST(EeVu0Cop2Overflow, ModesBelowFourLoseTheOverflowBits)
 		lost += (gi.mac & kMacO) != 0;
 	}
 	EXPECT_GT(lost, 200) << "nothing was lost, so the gate was not exercised";
+	if (low < 2)
+		continue;
 	EXPECT_GT(nonzero, 1000) << "the below-gate run read back nothing, so the value "
 	                            "comparison above compared zero with zero";
 	EXPECT_GT(promoted, 100) << "no multiply's word took the ceiling, so the shape of "
