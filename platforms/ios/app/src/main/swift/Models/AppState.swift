@@ -60,7 +60,13 @@ final class AppState: @unchecked Sendable {
         case playing
     }
 
-    var currentScreen: Screen = .menu
+    var currentScreen: Screen = .menu {
+        didSet {
+            if systemChromeNotificationsEnabled, oldValue != currentScreen {
+                NotificationCenter.default.post(name: Self.systemChromeNeedsUpdateNotification, object: nil)
+            }
+        }
+    }
     var selectedTab: Int = 0
     var runningGameName: String? = nil
     private(set) var vmShutdownPending = false
@@ -75,6 +81,10 @@ final class AppState: @unchecked Sendable {
     var gameplayLaunchControlsVisible = true
     var gameplayLaunchBackgroundVisible = false
     var externalDisplayConnected = false
+    var sizeTransitions = 0
+    // Written by the hinge interaction on the menu hosting view.
+    var hingePartiallyOpen = false
+    var hingePresent = false
     /// Serial supplied by the library before the VM has published its CRC.
     /// This lets gameplay resolve a serial-scoped automatic pad assignment on
     /// its very first SwiftUI frame instead of briefly drawing Global Default.

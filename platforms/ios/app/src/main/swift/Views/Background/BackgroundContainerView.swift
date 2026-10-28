@@ -173,7 +173,7 @@ private struct StaticLibraryBackgroundImageView: View {
             }
         }
         .task(id: loadIdentity) {
-            let scale = UIScreen.main.scale
+            let scale = UIApplication.shared.appScreen.scale
             let maximumPixelSize = max(
                 1,
                 Int(max(size.width, size.height) * scale)

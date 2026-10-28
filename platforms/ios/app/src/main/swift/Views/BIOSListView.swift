@@ -430,6 +430,7 @@ struct BIOSListView: View {
                         label: BIOSControllerTarget.refresh
                     ) { loadBIOSes() }
                 }
+                .prefersVerticalBar()
                 }
             }
             .tint(settings.controllerToolbarColor)
@@ -802,6 +803,7 @@ struct BIOSListView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, minHeight: 240)
+        .centredInLeadingPaneOnFold()
     }
 
     private func performBootBIOSAction() {

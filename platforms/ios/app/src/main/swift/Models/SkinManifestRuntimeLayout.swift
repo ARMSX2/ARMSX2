@@ -196,12 +196,6 @@ struct SkinManifestRuntimeLayout {
 
     // MARK: - Device detection (MainActor; UIKit singletons)
 
-    /// iPhone on phone idiom, iPad on pad idiom.
-    @MainActor
-    static func currentDevice() -> SkinDevice {
-        UIDevice.current.userInterfaceIdiom == .pad ? .ipad : .iphone
-    }
-
     /// Prefers edgeToEdge on modern full-screen devices (non-zero safe area),
     /// otherwise standard. `bestRepresentation` falls back across the chain, so
     /// this only biases the preferred screen class.

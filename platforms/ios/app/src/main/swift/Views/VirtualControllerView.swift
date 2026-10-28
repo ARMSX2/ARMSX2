@@ -65,6 +65,7 @@ struct VirtualControllerView: View {
     var layoutSnapshot: PadLayoutSnapshot? = nil
     var skinDescriptor: VPadSkinDescriptor? = nil
     var touchActionSession: VirtualPadTouchActionSession? = nil
+    var largeLayout = false
 
     @State private var v2Layout: SkinManifestRuntimeLayout? = nil
 
@@ -113,7 +114,7 @@ struct VirtualControllerView: View {
     }
 
     private var v2CacheKey: String {
-        "\(effectiveSkinDescriptor.id)|\(isLandscape ? "l" : "p")"
+        "\(effectiveSkinDescriptor.id)|\(isLandscape ? "l" : "p")|\(largeLayout ? "L" : "c")"
     }
 
     private func v2VisualRect(_ control: SkinManifestRuntimeLayout.Control, transform: V2CanvasTransform) -> CGRect {
@@ -356,10 +357,12 @@ struct VirtualControllerView: View {
             v2Layout = SkinManifestRuntimeLayout.make(
                 for: effectiveSkinDescriptor,
                 isLandscape: isLandscape,
-                device: SkinManifestRuntimeLayout.currentDevice(),
+                device: largeLayout ? .ipad : .iphone,
                 screenClass: SkinManifestRuntimeLayout.currentScreenClass()
             )
         }
+        // A fold moves the pad to the other screen and its touches never end.
+        .onChange(of: largeLayout) { resetDynamicInputs() }
 
     }
 

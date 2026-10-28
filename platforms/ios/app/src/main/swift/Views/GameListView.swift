@@ -3294,6 +3294,7 @@ struct GameListView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(settings.localized("Import Games"))
                 }
+                .prefersVerticalBar()
                 ToolbarItem(id: "menu.layout", placement: .topBarTrailing) {
                     Menu {
                         Button {
@@ -8966,6 +8967,7 @@ struct GameListView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, minHeight: 240)
+        .centredInLeadingPaneOnFold()
     }
 
     private func loadGames(

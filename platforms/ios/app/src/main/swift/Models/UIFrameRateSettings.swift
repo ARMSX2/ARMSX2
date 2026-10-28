@@ -309,7 +309,9 @@ final class UIFrameRateSettings {
     }
 
     var displayMaximumFramesPerSecond: Int {
-        max(30, UIScreen.main.maximumFramesPerSecond)
+        // Read so SwiftUI redraws callers when iPhone Duo moves to its other screen.
+        _ = AppState.shared.sizeTransitions
+        return max(30, UIApplication.shared.appScreen.maximumFramesPerSecond)
     }
 
     var effectiveDisplayRefreshRate: Double {
@@ -322,7 +324,8 @@ final class UIFrameRateSettings {
     func wallpaperResolutionTitle(
         _ resolution: DynamicWallpaperResolution
     ) -> String {
-        let nativeSize = UIScreen.main.nativeBounds.size
+        _ = AppState.shared.sizeTransitions
+        let nativeSize = UIApplication.shared.appScreen.nativeBounds.size
         let width = max(1, Int((nativeSize.width * resolution.renderScale).rounded()))
         let height = max(1, Int((nativeSize.height * resolution.renderScale).rounded()))
         return "\(resolution.title) · \(width) × \(height) px"

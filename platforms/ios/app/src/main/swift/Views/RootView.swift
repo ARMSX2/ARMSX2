@@ -2190,6 +2190,7 @@ struct MenuTabView: View {
                         }
                     )
                     .frame(maxWidth: .infinity)
+                    .centredInLeadingPaneOnFold()
                     .opacity(gameRenamePresented ? 0 : 1)
                     .allowsHitTesting(!gameRenamePresented)
                     .accessibilityHidden(gameRenamePresented)
@@ -2502,7 +2503,7 @@ private struct ControllerTabBarOrbOverlay: View {
     /// extending beyond the Games and Settings button surfaces.
     private func compactOrbitFrame(_ frame: CGRect) -> CGRect {
         let maximumWidth: CGFloat =
-            UIDevice.current.userInterfaceIdiom == .pad ? 112 : 96
+            usesLargeLayout() ? 112 : 96
         let width = min(frame.width, maximumWidth)
         let height = min(frame.height, 40)
         return CGRect(
@@ -2631,7 +2632,7 @@ private struct LegacyGlassMenuTabBar: View {
     ]
 
     private var barWidth: CGFloat {
-        UIDevice.current.userInterfaceIdiom == .pad ? 360 : 276
+        usesLargeLayout() ? 360 : 276
     }
 
     var body: some View {
@@ -2849,6 +2850,13 @@ private struct LegacyGlassTabButtonStyle: ButtonStyle {
 #endif
 
 #if !targetEnvironment(macCatalyst)
+private extension UIWindow {
+    /// Leaves out a one-sided inset such as iPhone Duo's status column; mirrored insets cancel.
+    var symmetricSafeWidth: CGFloat {
+        bounds.width - abs(safeAreaInsets.left - safeAreaInsets.right)
+    }
+}
+
 /// A real UIKit tab bar kept outside every page's GlassEffectContainer.
 /// This gives the bar its native system appearance while guaranteeing that it
 /// remains a foreground sibling rather than being composited below tab content.
@@ -2964,7 +2972,7 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         // portrait; trusting a transient SwiftUI proposal first caused the bar
         // to squeeze while retained tabs swapped.
         let width = uiView.resolvedMeasurementWidth(
-            windowWidth: uiView.window?.bounds.width ?? 0,
+            windowWidth: uiView.window?.symmetricSafeWidth ?? 0,
             containerWidth: uiView.superview?.bounds.width ?? 0,
             boundsWidth: uiView.bounds.width,
             proposalWidth: proposal.width ?? 0
@@ -3161,8 +3169,8 @@ private struct NativeMenuTabBar: UIViewRepresentable {
             // UIKit cache titles such as "G", "B", and "S". Start from a
             // complete compact bar until the UIWindow supplies its exact size.
             let minimumBarWidth = min(
-                UIScreen.main.bounds.width,
-                UIDevice.current.userInterfaceIdiom == .pad ? 360 : 276
+                UIApplication.shared.appScreen.bounds.width,
+                usesLargeLayout(windowSize: window?.bounds.size) ? 360 : 276
             )
             let initialWidth = max(proposedInitialWidth, minimumBarWidth)
             stableMeasurementWidth = initialWidth
@@ -3213,7 +3221,7 @@ private struct NativeMenuTabBar: UIViewRepresentable {
         override func didMoveToWindow() {
             super.didMoveToWindow()
             guard let window, window.bounds.width > 1 else { return }
-            stableMeasurementWidth = window.bounds.width
+            stableMeasurementWidth = window.symmetricSafeWidth
             invalidateIntrinsicContentSize()
             setNeedsLayout()
         }
@@ -3466,7 +3474,7 @@ private struct NativeMenuTabBar: UIViewRepresentable {
             let visualContentFrame = itemVisualContentFrame(in: itemControl)
             let centerX = visualContentFrame?.midX ?? itemFrame.midX
             let minimumWidth: CGFloat =
-                UIDevice.current.userInterfaceIdiom == .pad ? 120 : 0
+                usesLargeLayout(windowSize: window?.bounds.size) ? 120 : 0
             let focusWidth = max(itemFrame.width + 8, minimumWidth)
             let proposedFrame = CGRect(
                 x: centerX - (focusWidth / 2),
@@ -3543,7 +3551,7 @@ private struct NativeMenuTabBar: UIViewRepresentable {
             focusFrame: CGRect
         ) -> CGRect {
             let maximumWidth: CGFloat =
-                UIDevice.current.userInterfaceIdiom == .pad ? 112 : 96
+                usesLargeLayout(windowSize: window?.bounds.size) ? 112 : 96
             let contentWidth = (visualContentFrame?.width ?? 64) + 24
             let width = min(
                 focusFrame.width,
