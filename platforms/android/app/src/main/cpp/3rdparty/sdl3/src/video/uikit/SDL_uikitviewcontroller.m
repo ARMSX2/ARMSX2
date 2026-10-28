@@ -554,7 +554,6 @@ static void SDLCALL SDL_HideHomeIndicatorHintChanged(void *userdata, const char 
 
 - (void)keyboardWillHide:(NSNotification *)notification
 {
-    hidingKeyboard = YES;
     [self setKeyboardHeight:0];
 
     /* When the user dismisses the software keyboard by the "hide" button in the bottom right corner,
@@ -567,6 +566,8 @@ static void SDLCALL SDL_HideHomeIndicatorHintChanged(void *userdata, const char 
         /* When the device changes orientation, a sequence of hide and show transitions are triggered.
          * keep text input state active in this case. */
         && !rotatingOrientation) {
+        /* Rotations and folds post hide/show pairs with no keyboard up, so only restart input this hide stopped. */
+        hidingKeyboard = YES;
         SDL_StopTextInput(window);
     }
 }
