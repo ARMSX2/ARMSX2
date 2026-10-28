@@ -18,6 +18,18 @@ ResolvedGpuProfile ResolvePowerVRProfile(std::string_view lowered_hints)
 	resolved.gpu.name = "PowerVR";
 	resolved.tuning = MakeMobileGsTuning(72, 6, 72, 5);
 
+	// C-Series: the CXTP-48-1536 in Tensor G6 (Pixel 11). Its Vulkan driver reports
+	// "PowerVR C-Series CXTP-48-1536 MC1". A flagship part in a 12-16 GB phone, so it gets the pool
+	// the Mali-G715 / G720 it follows in the Pixel line get, not the unrecognised-part default.
+	// Keyed on the CXT parts only: "c-series" would also take in the small CXM parts.
+	if (ContainsAny(lowered_hints, {"cxtp", "cxt-"}))
+	{
+		resolved.gpu.recognized = true;
+		resolved.gpu.name = "PowerVR C-Series";
+		resolved.tuning = MakeMobileGsTuning(144, 10, 144, 8, true);
+		return resolved;
+	}
+
 	if (ContainsAny(lowered_hints, {"b-series", "bxs", "bxt", "d-series", "dxt", "dmtp"}))
 	{
 		resolved.gpu.recognized = true;
