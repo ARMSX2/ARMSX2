@@ -21,7 +21,7 @@ from pathlib import Path
 from ios_source import BRIDGE_DIR, ROOT
 
 GENERATOR = ROOT / "platforms/ios/scripts/shader_manifest.py"
-BRIDGE = BRIDGE_DIR / "ARMSX2Bridge.mm"
+BRIDGE = BRIDGE_DIR / "ARMSX2Bridge+Shaders.mm"
 REAL_PATCH = ROOT / "platforms/ios/patches/slang-shaders-prescale-zero-guard.patch"
 
 

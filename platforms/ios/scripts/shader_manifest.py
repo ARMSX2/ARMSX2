@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUT = ROOT / "platforms/ios/build/shader-manifest"
 DEFAULT_PATCHES = ROOT / "platforms/ios/patches"
-BRIDGE = ROOT / "platforms/ios/Bridge/ARMSX2Bridge.mm"
+BRIDGE = ROOT / "platforms/ios/Bridge/ARMSX2Bridge+Shaders.mm"
 
 # The patch context lines were cut against files byte-identical to this commit, and the
 # row-for-row cross-check against the bundled-preset audit holds only here, because its
@@ -47,8 +47,8 @@ MAX_DEPTH = 16
 GUARD_MODULE = "test_ios_shader_prescale_guard"
 GUARD_PATH = Path(__file__).resolve().parent / "tests" / (GUARD_MODULE + ".py")
 
-# kMaxShaderPackEntryBytes in ARMSX2Bridge.mm. The extractor skips a larger entry without an
-# error, so a closure containing one is refused here.
+# kMaxShaderPackEntryBytes in ARMSX2Bridge+Shaders.mm. The extractor skips a larger entry
+# without an error, so a closure containing one is refused here.
 MAX_FILE_BYTES = 8 * 1024 * 1024
 DEFAULT_CLOSURE_BYTES = 32 * 1024 * 1024
 

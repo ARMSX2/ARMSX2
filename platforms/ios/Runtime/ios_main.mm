@@ -325,7 +325,7 @@ void ARMSX2ConfigureImGuiFonts(const char* reason)
 @end
 
 #pragma mark - Statics & device stats
-ARMSX2GameView* g_gameRenderView = nil;  // non-static: accessed from ARMSX2Bridge.mm
+ARMSX2GameView* g_gameRenderView = nil;  // non-static: accessed from the bridge
 INISettingsInterface* s_settings_interface = nullptr;
 INISettingsInterface* s_secrets_settings_interface = nullptr;
 
