@@ -7,6 +7,7 @@
 #include "Host.h"
 #include "R3000A.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/BlockLut-arm64.h"
 #include "arm64/RecCrashReport-arm64.h"
 #include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
@@ -83,7 +84,6 @@ void psxRecompileNextInstruction(bool delayslot, bool swapped_delayslot);
 extern void (*rpsxBSC[64])();
 void rpsxpropBSC(EEINST* prev, EEINST* pinst);
 
-static void iopClearRecLUT(BASEBLOCK* base, int count);
 // iopRecError's codes.
 enum IopRecErrorCode : u32
 {
@@ -101,7 +101,7 @@ static void iopRecError(u32 err, u32 jump_pc, u32 jump_rs);
 			4)
 
 // LUT page management — same as x86 (architecture-independent)
-static DynamicHeapArray<BASEBLOCK, 4096> recLutReserve;
+static BlockLut recLutReserve;
 static DynamicHeapArray<BASEBLOCK, 4096> recLutUnmapped;
 static size_t recLutEntries = 0;
 static bool extraRam = false;
@@ -1466,12 +1466,6 @@ void iopStoreClearHit(u32 addr)
 	recClearIOP((addr & 0x1fffffff) & ~3u, 1);
 }
 
-static void iopClearRecLUT(BASEBLOCK* base, int count)
-{
-	for (int i = 0; i < count / 4; i++)
-		base[i].SetFnptr((uptr)iopJITCompile);
-}
-
 // =====================================================================================================
 //  Reserve / Reset / Shutdown / Execute
 // =====================================================================================================
@@ -1481,8 +1475,7 @@ static void recReserveRAM()
 	recLutEntries =
 		((Ps2MemSize::ExposedIopRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2) / 4);
 
-	if (recLutReserve.size() != recLutEntries)
-		recLutReserve.resize(recLutEntries);
+	recLutReserve.Resize(recLutEntries);
 
 	recLutUnmapped.resize(_64kb / 4);
 
@@ -1539,8 +1532,7 @@ void recResetIOP()
 	recPtr = armEndBlock();
 	s_blocksStart = recPtr;
 
-	iopClearRecLUT(reinterpret_cast<BASEBLOCK*>(recLutReserve.data()),
-		Ps2MemSize::ExposedIopRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
+	recLutReserve.Reset((uptr)iopJITCompile);
 
 	BASEBLOCK* unmapped = recLutUnmapped.data();
 
@@ -1608,7 +1600,7 @@ void recResetIOP()
 static void recShutdown()
 {
 	s_iopConstantPool.Destroy();
-	recLutReserve.deallocate();
+	recLutReserve.Free();
 
 	safe_free(s_pInstCache);
 	s_nInstCacheSize = 0;
