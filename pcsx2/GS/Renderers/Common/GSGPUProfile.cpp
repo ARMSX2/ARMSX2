@@ -364,6 +364,7 @@ const char* GpuProfileDetector::BugToString(DriverBug value)
 		case DriverBug::BrokenGraphicsPipelineLibrary: return "BrokenGraphicsPipelineLibrary";
 		case DriverBug::BrokenRoaaDestinationRead: return "BrokenRoaaDestinationRead";
 		case DriverBug::BrokenBlendConstant: return "BrokenBlendConstant";
+		case DriverBug::BrokenImageQuery: return "BrokenImageQuery";
 		case DriverBug::Count:
 		default: return "Unknown";
 	}
@@ -392,6 +393,7 @@ const char* GpuProfileDetector::WorkaroundToString(DriverWorkaround value)
 		case DriverWorkaround::PreferVulkanRenderer: return "PreferVulkanRenderer";
 		case DriverWorkaround::PreferCachedStreamRingMemory: return "PreferCachedStreamRingMemory";
 		case DriverWorkaround::ReadBackRemotePlayFrames: return "ReadBackRemotePlayFrames";
+		case DriverWorkaround::PassTextureSizeInUniform: return "PassTextureSizeInUniform";
 		case DriverWorkaround::Count:
 		default: return "Unknown";
 	}

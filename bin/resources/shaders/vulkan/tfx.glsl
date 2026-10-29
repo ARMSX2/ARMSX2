@@ -768,7 +768,23 @@ vec4 sample_c_af(vec2 uv, float uv_w)
 	// Below taken from https://microsoft.github.io/DirectX-Specs/d3d/archive/D3D11_3_FunctionalSpec.htm#7.18.11%20LOD%20Calculations
 	// And https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_filter_anisotropic.txt
 	// With guidance from https://pema.dev/2025/05/09/mipmaps-too-much-detail/ 
+#if DRIVER_NO_IMAGE_QUERY
+	// For drivers that can't use textureSize(): WH.zw is the TEX0 size at this scale, and the bound texture
+	// differs from it by the factors sample_c() maps uv with.
+	vec2 sz = WH.zw;
+	#if PS_ADJS
+		sz.x /= STRange.z;
+	#else
+		sz.x /= STScale.x;
+	#endif
+	#if PS_ADJT
+		sz.y /= STRange.w;
+	#else
+		sz.y /= STScale.y;
+	#endif
+#else
 	vec2 sz = textureSize(Texture, 0);
+#endif
 	vec2 dX = dFdx(uv) * sz;
 	vec2 dY = dFdy(uv) * sz;
 

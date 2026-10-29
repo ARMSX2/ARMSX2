@@ -45,4 +45,5 @@
 // reads -1) on every device and drops the VS_PROVOKING_VERTEX_LAST define.
 // 130: the Vulkan expanded-line vertex shader reads the first vertex's own slot instead of the slot
 // before it, so a cached 129 shader would still fault on the draw whose vertices start the ring.
-static constexpr u32 SHADER_CACHE_VERSION = 130;
+// 131: Vulkan shaders take texture sizes from push constants instead of textureSize().
+static constexpr u32 SHADER_CACHE_VERSION = 131;

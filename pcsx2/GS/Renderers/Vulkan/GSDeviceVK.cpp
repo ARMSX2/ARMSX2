@@ -6049,6 +6049,8 @@ static void AddShaderHeader(std::stringstream& ss)
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd) ? 1 : 0);
 	AddMacro(ss, "DRIVER_REWRITE_UNIFORM_INDEXING",
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::RewriteUniformIndexing) ? 1 : 0);
+	AddMacro(ss, "DRIVER_NO_IMAGE_QUERY",
+		dev->UsesMobileDriverWorkaround(DriverWorkaround::PassTextureSizeInUniform) ? 1 : 0);
 	// When no workaround is active these MUST expand to the bare operator, not to a function that
 	// happens to return it. Overloads cost an OpFunctionCall in the SPIR-V at every call site --
 	// including inside the texture loop in tfx.glsl and the region-clamp path -- and Qualcomm's

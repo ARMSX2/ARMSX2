@@ -474,7 +474,7 @@ static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
-static constexpr std::array<DriverRule, 35> s_driver_rules = {{
+static constexpr std::array<DriverRule, 36> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -530,6 +530,11 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		Workaround(DriverWorkaround::UseDescriptorSets) |
 			Workaround(DriverWorkaround::DisableAttachmentFeedbackLoopLayout) |
 			Workaround(DriverWorkaround::ScalarizeVectorBitwiseAnd)},
+	// Arm's Mali driver before r30 segfaults compiling any pipeline that queries an image size.
+	{"vk-arm-image-query-before-r30", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {30, 0, 0},
+		0, 0, false, Bug(DriverBug::BrokenImageQuery),
+		Workaround(DriverWorkaround::PassTextureSizeInUniform)},
 	// Slow cached readback (from Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY) measured backwards on
 	// r44p1 / Mali-G615: a non-coherent cached type with explicit invalidates beat the coherent
 	// map about 12x per readback. That does not prove it wrong on older parts, so the preference

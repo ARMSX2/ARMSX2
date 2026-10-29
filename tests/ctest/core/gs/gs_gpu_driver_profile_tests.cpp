@@ -282,6 +282,25 @@ TEST(GSGpuDriverProfile, MaliG57DeniesTheRoaaDestinationReadOnAnySoC)
 	EXPECT_FALSE(DeniesRoaaDestinationRead(ResolveMaliVK("Mali-G77 MC9", PackVulkanVersion(32, 1, 0))));
 }
 
+// Arm's Mali driver before r30 crashes on pipelines that query an image size, so its shaders take
+// sizes from uniforms. Vulkan only; GL uses a different compiler.
+TEST(GSGpuDriverProfile, MaliBeforeR30TakesTextureSizesFromUniforms)
+{
+	const GpuProfileSelection r29 = ResolveMaliVK("Mali-G52", PackVulkanVersion(29, 1, 0));
+	EXPECT_TRUE(r29.driver.HasBug(DriverBug::BrokenImageQuery));
+	EXPECT_TRUE(r29.driver.UsesWorkaround(DriverWorkaround::PassTextureSizeInUniform));
+
+	for (const u32 version : {PackVulkanVersion(30, 0, 0), PackVulkanVersion(32, 1, 0), PackVulkanVersion(44, 1, 0)})
+	{
+		const GpuProfileSelection later = ResolveMaliVK("Mali-G52", version);
+		EXPECT_FALSE(later.driver.HasBug(DriverBug::BrokenImageQuery));
+		EXPECT_FALSE(later.driver.UsesWorkaround(DriverWorkaround::PassTextureSizeInUniform));
+	}
+
+	EXPECT_FALSE(ResolveGL("ARM", "Mali-G52", "OpenGL ES 3.2 v1.g29p1-12eac0.d6e9c0f8499d70cc285f3f0ca2ede780")
+					 .driver.UsesWorkaround(DriverWorkaround::PassTextureSizeInUniform));
+}
+
 // The deny list is a Vulkan rule about rasterization-order attachment access. The GL backend's
 // fetch comes from GL_ARM_shader_framebuffer_fetch, which is a different mechanism on a different
 // code path, and GSUtil::AndroidAutoPrefersVulkan asks the table through the GL path -- so a

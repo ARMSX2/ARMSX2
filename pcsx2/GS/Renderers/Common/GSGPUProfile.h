@@ -129,6 +129,8 @@ enum class DriverBug : u8
 	/// The trigger is run history, not anything the draw carries, so it cannot be probed at
 	/// start-up and no emission order avoids it.
 	BrokenBlendConstant,
+	/// The shader compiler crashes on any pipeline that queries an image size (textureSize).
+	BrokenImageQuery,
 	Count,
 };
 
@@ -175,6 +177,9 @@ enum class DriverWorkaround : u8
 	/// extensions stay enabled, only their use is off. No rule declares it yet: it is the switch
 	/// that excludes one driver without new code.
 	ReadBackRemotePlayFrames,
+	/// Take texture sizes from a uniform or push constant instead of textureSize(). The utility shaders
+	/// always do; tfx.glsl's anisotropic filter only does with this bit set.
+	PassTextureSizeInUniform,
 	Count,
 };
 
