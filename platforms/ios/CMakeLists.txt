@@ -513,6 +513,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	)
 	add_dependencies(ARMSX2iOS armsx2_core)
 
+	find_program(ARMSX2_PYTHON3 python3)
+	if(NOT ARMSX2_PYTHON3)
+		message(FATAL_ERROR "python3 not found; the bridge method check needs it")
+	endif()
+	# A method the header declares but no bridge file implements only fails at run time.
+	add_custom_command(TARGET ARMSX2iOS POST_BUILD
+		COMMAND ${ARMSX2_PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_bridge_methods.py
+			${CMAKE_CURRENT_SOURCE_DIR}/Bridge/ARMSX2Bridge.h $<TARGET_FILE:ARMSX2iOS>
+		VERBATIM
+	)
+
 	target_compile_options(ARMSX2iOS PRIVATE $<$<COMPILE_LANGUAGE:C,CXX,OBJC,OBJCXX>:-pipe>)
 	# With OBJCXX not enabled, CMake builds this target's .mm files as CXX. The core keeps its own warnings.
 	target_compile_options(ARMSX2iOS PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-Wunused-function;-Wunused-variable;-Wunused-private-field;-Wunused-but-set-variable;-Wunused-lambda-capture;-Wunused-local-typedef;-Wunused-label>")
