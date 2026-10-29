@@ -54,87 +54,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 @interface ARMSX2Bridge : NSObject
 
-// Game render view (for UIViewRepresentable)
-+ (nonnull UIView *)gameRenderView;
-+ (void)prepareGameRenderViewForCurrentRenderer;
-
-// Pad input
-+ (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
-+ (void)setLeftStickX:(float)x Y:(float)y;
-+ (void)setRightStickX:(float)x Y:(float)y;
-+ (void)configureControllerMacroInputMask:(uint32_t)inputMask
-                             modifierMask:(uint32_t)modifierMask
-    NS_SWIFT_NAME(configureControllerMacroInput(mask:modifierMask:));
-+ (void)consumeControllerMacroInputMask:(uint32_t)inputMask
-    NS_SWIFT_NAME(consumeControllerMacroInput(mask:));
-
-// VM control
-+ (void)requestVMStop;
-+ (void)setVMPaused:(BOOL)paused;
-+ (void)setFullScreen:(BOOL)enabled;
-
-// Silent, private save-state transaction used by the in-game Per-Game Settings
-// live preview. These states never occupy a user slot and never emit an OSD.
-+ (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion NS_SWIFT_NAME(beginPerGameLivePreview(completion:));
-+ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token afterSave:(BOOL)afterSave NS_SWIFT_NAME(refreshPerGameLivePreviewBaseline(token:afterSave:));
-+ (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(applyPerGameLivePreview(token:completion:));
-+ (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restorePerGameLivePreviewState(token:completion:));
-+ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:completion:));
-+ (BOOL)isSDLFullscreen;
-
-// Info
-+ (nonnull NSString *)buildVersion;
-+ (BOOL)isJITAvailable;
-+ (BOOL)isNoJITFallbackActive;
-+ (BOOL)isIdleVMPrewarmResolved;
-+ (nonnull NSArray<NSURL *> *)extractControllerSkinArchiveAtURL:(nonnull NSURL *)archiveURL
-                                                    toDirectory:(nonnull NSURL *)destinationDirectory
-    NS_SWIFT_NAME(extractControllerSkinArchive(at:to:));
-
-+ (nullable NSData *)peekSkinManifestDataAtURL:(nonnull NSURL *)archiveURL
-    NS_SWIFT_NAME(peekSkinManifestData(at:));
-
-+ (nonnull NSArray<NSURL *> *)extractSkinPackageArchiveAtURL:(nonnull NSURL *)archiveURL
-                                                    toDirectory:(nonnull NSURL *)destinationDirectory
-    NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
-
-// Preserves the archive tree, so each .slangp still resolves its stages by relative path.
-// Empty with `error` set on failure; count the returned .slangp URLs to tell a real pack.
-+ (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL
-                                                toDirectory:(nonnull NSURL *)destinationDirectory
-                                                      error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
-
-// Extracts one MP3 or WAV for each required UI-audio role. Archive folders are
-// ignored and the validated files are flattened into the destination.
-+ (nonnull NSArray<NSURL *> *)extractAudioPackArchiveAtURL:(nonnull NSURL *)archiveURL
-                                               toDirectory:(nonnull NSURL *)destinationDirectory
-                                                     error:(NSError * _Nullable * _Nullable)error
-    NS_SWIFT_NAME(extractAudioPackArchive(at:to:error:));
-
-// Extracts the first .ps2 file from a ZIP into the memory-card directory.
-+ (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
-    NS_SWIFT_NAME(extractMemoryCardArchive(at:));
-
-// OSD overlay
-+ (void)setPerformanceOverlayVisible:(BOOL)visible;
-+ (void)applyOsdPreset:(int)preset;  // 0=off, 1=simple, 2=detail, 3=full
-
-// Permanently releases the selected optional runtime resources for the current VM session.
-+ (void)releaseNonEmulationResources:(NSUInteger)releaseFlags;
-+ (BOOL)isEmulationOnlyModeActive;
-
-// Accessibility: structured device stats for the VoiceOver HUD mirror.
-+ (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;
-
-// Device haptic fallback for game rumble when no rumble-capable controller is connected.
-+ (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;
-
-// Audio
-+ (int)emulatorVolumePercent;
-+ (void)setEmulatorVolumePercent:(int)value;
-+ (void)setPerGameLivePreviewAudioMuted:(BOOL)muted;
-
 // ISO management
 + (nullable NSString *)currentISOPath;
 + (nullable NSString *)currentGameISOName;
@@ -144,11 +63,6 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSArray<NSString *> *)availableISOs;
 + (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries;
 + (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
-                                                            crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
-+ (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
-+ (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
 + (void)setLinkedDiscPath:(nullable NSString *)discPath forELF:(nonnull NSString *)elfName NS_SWIFT_NAME(setLinkedDiscPath(_:forELF:));
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(clearCache(forISO:));
@@ -161,15 +75,161 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (BOOL)canResolveISO:(nonnull NSString *)isoName NS_SWIFT_NAME(canResolveISO(_:));
 + (void)bootISO:(nonnull NSString *)isoName;
 
+// Favorites
++ (BOOL)isFavorite:(nonnull NSString *)isoName;
++ (void)setFavorite:(nonnull NSString *)isoName favorite:(BOOL)favorite;
+
+@end
+
+@interface ARMSX2Bridge (Input)
+
+// Pad input
++ (void)setPadButton:(ARMSX2PadButton)button pressed:(BOOL)pressed;
++ (void)setLeftStickX:(float)x Y:(float)y;
++ (void)setRightStickX:(float)x Y:(float)y;
++ (void)configureControllerMacroInputMask:(uint32_t)inputMask
+                             modifierMask:(uint32_t)modifierMask
+    NS_SWIFT_NAME(configureControllerMacroInput(mask:modifierMask:));
++ (void)consumeControllerMacroInputMask:(uint32_t)inputMask
+    NS_SWIFT_NAME(consumeControllerMacroInput(mask:));
+
+// Device haptic fallback for game rumble when no rumble-capable controller is connected.
++ (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;
++ (void)testControllerRumble;
+
+// Gamepad button mapping
++ (void)startButtonCapture;
++ (void)stopButtonCapture;
++ (void)pollGamepadForCapture;  // call from main thread when VM is not running
++ (int)capturedButton;  // returns SDL_GamepadButton or -1
++ (void)setButtonMapping:(int)ps2Index toSDLButton:(int)sdlButton;
++ (int)getButtonMapping:(int)ps2Index;
++ (void)resetButtonMappings;
+
+@end
+
+@interface ARMSX2Bridge (LivePreview)
+
+// Silent, private save-state transaction used by the in-game Per-Game Settings
+// live preview. These states never occupy a user slot and never emit an OSD.
++ (void)beginPerGameLivePreviewWithCompletion:(nullable ARMSX2TemporaryStateCreationCompletion)completion NS_SWIFT_NAME(beginPerGameLivePreview(completion:));
++ (void)refreshPerGameLivePreviewBaselineForToken:(nonnull NSString *)token afterSave:(BOOL)afterSave NS_SWIFT_NAME(refreshPerGameLivePreviewBaseline(token:afterSave:));
++ (void)applyPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(applyPerGameLivePreview(token:completion:));
++ (void)restorePerGameLivePreviewStateForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(restorePerGameLivePreviewState(token:completion:));
++ (void)finishPerGameLivePreviewForToken:(nonnull NSString *)token completion:(nullable ARMSX2SaveStateCompletion)completion NS_SWIFT_NAME(finishPerGameLivePreview(token:completion:));
+
+@end
+
+@interface ARMSX2Bridge (Skins)
+
++ (nonnull NSArray<NSURL *> *)extractControllerSkinArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                    toDirectory:(nonnull NSURL *)destinationDirectory
+    NS_SWIFT_NAME(extractControllerSkinArchive(at:to:));
+
++ (nullable NSData *)peekSkinManifestDataAtURL:(nonnull NSURL *)archiveURL
+    NS_SWIFT_NAME(peekSkinManifestData(at:));
+
++ (nonnull NSArray<NSURL *> *)extractSkinPackageArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                    toDirectory:(nonnull NSURL *)destinationDirectory
+    NS_SWIFT_NAME(extractSkinPackageArchive(at:to:));
+
+@end
+
+@interface ARMSX2Bridge (Audio)
+
+// Extracts one MP3 or WAV for each required UI-audio role. Archive folders are
+// ignored and the validated files are flattened into the destination.
++ (nonnull NSArray<NSURL *> *)extractAudioPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                               toDirectory:(nonnull NSURL *)destinationDirectory
+                                                     error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractAudioPackArchive(at:to:error:));
+
+// Audio
++ (int)emulatorVolumePercent;
++ (void)setEmulatorVolumePercent:(int)value;
++ (void)setPerGameLivePreviewAudioMuted:(BOOL)muted;
+
+@end
+
+@interface ARMSX2Bridge (VM)
+
+// Game render view (for UIViewRepresentable)
++ (nonnull UIView *)gameRenderView;
++ (void)prepareGameRenderViewForCurrentRenderer;
+
+// VM control
++ (void)requestVMStop;
++ (void)setVMPaused:(BOOL)paused;
++ (void)setFullScreen:(BOOL)enabled;
++ (BOOL)isSDLFullscreen;
+
+// Info
++ (nonnull NSString *)buildVersion;
++ (BOOL)isJITAvailable;
++ (BOOL)isNoJITFallbackActive;
++ (BOOL)isIdleVMPrewarmResolved;
+
+// OSD overlay
++ (void)setPerformanceOverlayVisible:(BOOL)visible;
++ (void)applyOsdPreset:(int)preset;  // 0=off, 1=simple, 2=detail, 3=full
+
+// Permanently releases the selected optional runtime resources for the current VM session.
++ (void)releaseNonEmulationResources:(NSUInteger)releaseFlags;
++ (BOOL)isEmulationOnlyModeActive;
+
+// Accessibility: structured device stats for the VoiceOver HUD mirror.
++ (nonnull NSDictionary<NSString *, id> *)deviceStatsForAccessibility;
+
+// A thread-safe copy of PerformanceMetrics' 150-sample frame-time ring and its write
+// cursor, for the adaptive-resolution controller.
++ (nonnull NSData *)frameTimeHistory;
++ (NSUInteger)frameTimeHistoryPos;
+
+// Runtime speed control
++ (int)limiterMode;
++ (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeFastForward(enabled:speedPercent:));
++ (void)setRuntimeEmulationSpeedPercent:(int)percent
+    NS_SWIFT_NAME(setRuntimeEmulationSpeedPercent(_:));
++ (void)setPresentFPSCap:(float)fps NS_SWIFT_NAME(setPresentFPSCap(_:));
+
+// VM lifecycle for menu flow
++ (BOOL)isVMRunning;
++ (BOOL)hasBIOS;
++ (void)requestVMBoot;
++ (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState NS_SWIFT_NAME(requestVMBoot(loadLastSaveState:));
+
+// DEV9 / Network
++ (nonnull NSArray<NSString *> *)dev9NetworkAdapters;
+
+@end
+
+@interface ARMSX2Bridge (GameSettings)
+
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
++ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                            crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
++ (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
+
+@end
+
+@interface ARMSX2Bridge (GameSettingsSave)
+
++ (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
+
+@end
+
+@interface ARMSX2Bridge (BIOS)
+
 // BIOS management
 + (nonnull NSString *)biosDirectory;
 + (nonnull NSArray<ARMSX2BIOSInfo *> *)availableBIOSInfos;
 + (nonnull NSString *)defaultBIOSName;
 + (void)setDefaultBIOS:(nonnull NSString *)biosName;
 
-// Favorites
-+ (BOOL)isFavorite:(nonnull NSString *)isoName;
-+ (void)setFavorite:(nonnull NSString *)isoName favorite:(BOOL)favorite;
+@end
+
+@interface ARMSX2Bridge (Settings)
 
 // INI generic getter/setter
 + (int)getINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def;
@@ -192,10 +252,16 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSDictionary<NSString *, id> *)graphicsHackState;
 + (void)setGraphicsHackPinned:(nonnull NSString *)iniKey pinned:(BOOL)pinned NS_SWIFT_NAME(setGraphicsHackPinned(_:pinned:));
 
-// A thread-safe copy of PerformanceMetrics' 150-sample frame-time ring and its write
-// cursor, for the adaptive-resolution controller.
-+ (nonnull NSData *)frameTimeHistory;
-+ (NSUInteger)frameTimeHistoryPos;
+@end
+
+@interface ARMSX2Bridge (Shaders)
+
+// Preserves the archive tree, so each .slangp still resolves its stages by relative path.
+// Empty with `error` set on failure; count the returned .slangp URLs to tell a real pack.
++ (nonnull NSArray<NSURL *> *)extractShaderPackArchiveAtURL:(nonnull NSURL *)archiveURL
+                                                toDirectory:(nonnull NSURL *)destinationDirectory
+                                                      error:(NSError * _Nullable * _Nullable)error
+    NS_SWIFT_NAME(extractShaderPackArchive(at:to:error:));
 
 // YES only on iOS 16+ with a GPU that supports the MetalFX spatial scaler; NO on the simulator.
 + (BOOL)isMetalFXSupported;
@@ -214,6 +280,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 // librashader's message when the last chain built for path failed, or nil.
 + (nullable NSError *)shaderChainErrorForPreset:(nonnull NSString *)path NS_SWIFT_NAME(shaderChainError(forPreset:));
+
+@end
+
+@interface ARMSX2Bridge (PerGameINI)
 
 // Per-game INI access — reads/writes the per-game INI file
 // (EmuFolders::GameSettings/<serial>_<crc>.ini) used by the game-settings and
@@ -237,13 +307,26 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // one. Reads VM state only.
 + (nonnull NSString *)perGameIdentityKeyForCurrentGame;
 
-// Runtime speed control
-+ (int)limiterMode;
-+ (void)setRuntimeFastForwardEnabled:(BOOL)enabled speedPercent:(int)percent
-    NS_SWIFT_NAME(setRuntimeFastForward(enabled:speedPercent:));
-+ (void)setRuntimeEmulationSpeedPercent:(int)percent
-    NS_SWIFT_NAME(setRuntimeEmulationSpeedPercent(_:));
-+ (void)setPresentFPSCap:(float)fps NS_SWIFT_NAME(setPresentFPSCap(_:));
+// PNACH cheats/patches (pass nil for isoName to target the running game)
++ (nullable NSString *)pnachPathForISO:(nullable NSString *)isoName asCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPath(forISO:asCheat:));
++ (void)reloadPatches;
+
+// Per-game patch/cheat enable lists (stored in the per-game INI under [Cheats]/Enable
+// and [Patches]/Enable, matching the PCSX2 patch loader). Used by the Cheats & Patches
+// manager to toggle named patch entries without rewriting .pnach files. Pass nil for isoName to target the running game.
++ (nonnull NSArray<NSString *> *)patchEnableListForISO:(nullable NSString *)isoName
+                                               section:(nonnull NSString *)section
+                                                   key:(nonnull NSString *)key
+        NS_SWIFT_NAME(patchEnableList(forISO:section:key:));
++ (void)setPatchEnableList:(nonnull NSArray<NSString *> *)values
+                    forISO:(nullable NSString *)isoName
+                   section:(nonnull NSString *)section
+                       key:(nonnull NSString *)key
+        NS_SWIFT_NAME(setPatchEnableList(_:forISO:section:key:));
+
+@end
+
+@interface ARMSX2Bridge (TexturePacks)
 
 // Runtime disc identity
 + (nonnull NSString *)currentDiscIdentity;
@@ -254,12 +337,9 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // serial: `serial` if set, else a serial folder in the archive, else its file name, else fallbackSerial.
 + (nullable NSString *)installTexturePackAtURL:(nonnull NSURL *)archiveURL serial:(nonnull NSString *)forcedSerial fallbackSerial:(nonnull NSString *)fallbackSerial error:(NSError * _Nullable * _Nullable)error;
 
-// VM lifecycle for menu flow
-+ (BOOL)isVMRunning;
-+ (BOOL)hasBIOS;
-+ (void)requestVMBoot;
-+ (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState NS_SWIFT_NAME(requestVMBoot(loadLastSaveState:));
-+ (void)testControllerRumble;
+@end
+
+@interface ARMSX2Bridge (SaveStates)
 
 // Save states
 + (BOOL)hasValidSaveStateGame;
@@ -290,22 +370,13 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 /// Seconds played in the running game: the played-time file plus this session.
 + (double)currentGamePlayedSeconds;
 
-// PNACH cheats/patches (pass nil for isoName to target the running game)
-+ (nullable NSString *)pnachPathForISO:(nullable NSString *)isoName asCheat:(BOOL)asCheat NS_SWIFT_NAME(pnachPath(forISO:asCheat:));
-+ (void)reloadPatches;
+@end
 
-// Per-game patch/cheat enable lists (stored in the per-game INI under [Cheats]/Enable
-// and [Patches]/Enable, matching the PCSX2 patch loader). Used by the Cheats & Patches
-// manager to toggle named patch entries without rewriting .pnach files. Pass nil for isoName to target the running game.
-+ (nonnull NSArray<NSString *> *)patchEnableListForISO:(nullable NSString *)isoName
-                                               section:(nonnull NSString *)section
-                                                   key:(nonnull NSString *)key
-        NS_SWIFT_NAME(patchEnableList(forISO:section:key:));
-+ (void)setPatchEnableList:(nonnull NSArray<NSString *> *)values
-                    forISO:(nullable NSString *)isoName
-                   section:(nonnull NSString *)section
-                       key:(nonnull NSString *)key
-        NS_SWIFT_NAME(setPatchEnableList(_:forISO:section:key:));
+@interface ARMSX2Bridge (MemoryCards)
+
+// Extracts the first .ps2 file from a ZIP into the memory-card directory.
++ (nullable NSString *)extractMemoryCardArchiveAtURL:(nonnull NSURL *)archiveURL
+    NS_SWIFT_NAME(extractMemoryCardArchive(at:));
 
 // Memory card management
 + (nonnull NSString *)memoryCardDirectory;
@@ -314,6 +385,10 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setMemoryCardName:(nonnull NSString *)name forSlot:(NSInteger)slot enabled:(BOOL)enabled NS_SWIFT_NAME(setMemoryCard(name:forSlot:enabled:));
 + (BOOL)createMemoryCardNamed:(nonnull NSString *)name sizeMB:(NSInteger)sizeMB folder:(BOOL)folder NS_SWIFT_NAME(createMemoryCard(named:sizeMB:folder:));
 + (BOOL)deleteMemoryCardNamed:(nonnull NSString *)name NS_SWIFT_NAME(deleteMemoryCard(named:));
+
+@end
+
+@interface ARMSX2Bridge (RetroAchievements)
 
 // RetroAchievements
 + (nonnull NSDictionary<NSString *, id> *)retroAchievementsState;
@@ -327,17 +402,5 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)setRetroAchievementsOverlays:(BOOL)enabled;
 + (void)loginRetroAchievementsWithUsername:(nonnull NSString *)username password:(nonnull NSString *)password completion:(nullable ARMSX2RetroAchievementsCompletion)completion NS_SWIFT_NAME(loginRetroAchievements(username:password:completion:));
 + (void)logoutRetroAchievements;
-
-// DEV9 / Network
-+ (nonnull NSArray<NSString *> *)dev9NetworkAdapters;
-
-// Gamepad button mapping
-+ (void)startButtonCapture;
-+ (void)stopButtonCapture;
-+ (void)pollGamepadForCapture;  // call from main thread when VM is not running
-+ (int)capturedButton;  // returns SDL_GamepadButton or -1
-+ (void)setButtonMapping:(int)ps2Index toSDLButton:(int)sdlButton;
-+ (int)getButtonMapping:(int)ps2Index;
-+ (void)resetButtonMappings;
 
 @end

@@ -11,8 +11,7 @@ stat.size fails here instead of on someone's phone.
 import re
 import unittest
 
-from ios_source import bridge_text, without_comments
-
+from ios_source import BRIDGE_DIR, read
 
 
 READ = "ReadBinaryFileInZip("
@@ -27,7 +26,14 @@ GUARD_LINES = 2
 class ZipEntryCaps(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.lines = without_comments(bridge_text()).split("\n")
+        cls.lines, cls.where = [], []
+        for path in sorted(BRIDGE_DIR.glob("ARMSX2Bridge*.mm")):
+            # Block comments keep their newlines so the reported lines stay true.
+            text = re.sub(r"//[^\n]*|/\*.*?\*/", lambda m: "\n" * m.group().count("\n"),
+                          read(path), flags=re.S)
+            for n, line in enumerate(text.split("\n"), 1):
+                cls.lines.append(line)
+                cls.where.append("%s:%d" % (path.name, n))
         cls.sites = [i for i, line in enumerate(cls.lines) if READ in line]
 
     def guard_at(self, index):
@@ -37,13 +43,13 @@ class ZipEntryCaps(unittest.TestCase):
         """Every check below passes on an empty list, so count the sites first."""
         self.assertGreaterEqual(
             len(self.sites), 6,
-            "found %d %s call sites in ARMSX2Bridge.mm, expected at least 6. Either the "
+            "found %d %s call sites in the bridge files, expected at least 6. Either the "
             "reads moved behind a helper, in which case check the cap there, or this "
             "test is now looking at nothing" % (len(self.sites), READ))
 
     def test_every_read_is_bounded_by_what_it_got(self):
         unbounded = [
-            "  ARMSX2Bridge.mm:%d" % (i + 1)
+            "  " + self.where[i]
             for i in self.sites
             if not BOUND.search(self.guard_at(i))
         ]
@@ -62,7 +68,7 @@ class ZipEntryCaps(unittest.TestCase):
                 self.assertRegex(
                     source, r"const zip_uint64_t\s+" + name + r"\s*=",
                     "%s bounds a zip read but is not declared as a zip_uint64_t in "
-                    "ARMSX2Bridge.mm, so it is either a literal or the wrong width" % name)
+                    "the bridge files, so it is either a literal or the wrong width" % name)
 
 
 if __name__ == "__main__":

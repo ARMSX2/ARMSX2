@@ -64,7 +64,7 @@ class PerGameShaderSelectionPolicy(unittest.TestCase):
                     "per-game preset token")
                 self.assertIn(
                     method, self.impl,
-                    f"{method} is declared but not implemented in ARMSX2Bridge.mm")
+                    f"{method} is declared but no ARMSX2Bridge*.mm implements it")
 
     def test_one_resolver_owns_the_token(self):
         self.assertIn(
