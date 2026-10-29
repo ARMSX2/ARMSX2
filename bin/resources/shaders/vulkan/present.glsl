@@ -109,7 +109,8 @@ void ps_filter_triangular() // triangular
 void ps_filter_complex() // triangular
 {
 	const float PI = 3.14159265359f;
-	vec2 texdim = vec2(textureSize(samp0, 0));
+	// Source texture size; textureSize() crashes some Mali drivers.
+	vec2 texdim = u_source_resolution;
 
 	o_col0 = (0.9 - 0.4 * cos(2 * PI * v_tex.y * texdim.y)) * sample_c(vec2(v_tex.x, (floor(v_tex.y * texdim.y) + 0.5) / texdim.y));
 }

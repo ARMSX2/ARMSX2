@@ -4903,6 +4903,12 @@ void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTextur
 	pxAssert(dTex);
 	filter = shader.SupportsBilinear() ? Nearest : filter; // Don't allow HW bilinear if SW bilinear is needed.
 	const bool allow_discard = (shader.Mask() == 0xf);
+	// SW bilinear reads the source's size from the push constants (see SAMPLE_RGBA_DEPTH_BILN in convert.glsl).
+	if (shader.Biln())
+	{
+		const GSVector2i source_size = sTex->GetSize();
+		SetUtilityPushConstants(&source_size, sizeof(source_size));
+	}
 	DoStretchRect(static_cast<GSTextureVK*>(sTex), sRect, static_cast<GSTextureVK*>(dTex), dRect,
 		GetConvertPipeline(shader), filter, allow_discard);
 }
@@ -5042,6 +5048,12 @@ void GSDeviceVK::DoMultiStretchRects(
 	if (!InRenderPass())
 		BeginRenderPassForStretchRect(dTex, rc, rc, false);
 	SetUtilityTexture(rects[0].src, rects[0].filter == Biln ? m_linear_sampler : m_point_sampler);
+	// SW bilinear reads the source's size from the push constants (see SAMPLE_RGBA_DEPTH_BILN in convert.glsl).
+	if (shader.Biln())
+	{
+		const GSVector2i source_size = rects[0].src->GetSize();
+		SetUtilityPushConstants(&source_size, sizeof(source_size));
+	}
 
 	SetPipeline(GetConvertPipeline(shader.SetMask(rects[0].wmask.wrgba)));
 
@@ -5478,6 +5490,9 @@ void GSDeviceVK::DoFXAA(GSTexture* sTex, GSTexture* dTex)
 	SetUtilityTexture(sTex, m_linear_sampler);
 	BeginRenderPass(m_utility_color_render_pass_discard, dRect);
 	dTex->SetState(GSTexture::State::Dirty);
+	// fxaa.fx reads the source's size from the push constants rather than with textureSize().
+	const GSVector2 source_size(static_cast<float>(sTex->GetWidth()), static_cast<float>(sTex->GetHeight()));
+	SetUtilityPushConstants(&source_size, sizeof(source_size));
 	SetPipeline(m_fxaa_pipeline);
 	DrawStretchRect(sRect, GSVector4(dRect), dTex->GetSize());
 	EndRenderPass();
