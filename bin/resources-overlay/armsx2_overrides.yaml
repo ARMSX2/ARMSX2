@@ -625,6 +625,7 @@ SLUS-20686:
 # Retail GT4 serials only. Prologue, the demos, Tourist Trophy and the Nike editions are left out:
 # nobody has checked they make the same readback.
 # gsHWFixes replaces upstream's block, so upstream's GT4 fixes are restated beside it.
+# iopThread is set on every entry below (see the IOP thread block further down).
 SCUS-97328:            # Gran Turismo 4 (NTSC-U)
   gsHWFixes:
     autoFlush: 1
@@ -632,6 +633,8 @@ SCUS-97328:            # Gran Turismo 4 (NTSC-U)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCUS-97563:            # Gran Turismo 4 (NTSC-U, later release)
   gsHWFixes:
     autoFlush: 1
@@ -639,6 +642,8 @@ SCUS-97563:            # Gran Turismo 4 (NTSC-U, later release)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCUS-90682:            # Gran Turismo 4 (NTSC-U)
   gsHWFixes:
     autoFlush: 1
@@ -646,6 +651,8 @@ SCUS-90682:            # Gran Turismo 4 (NTSC-U)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCUS-97436:            # Gran Turismo 4 (NTSC-U, Online Public Beta)
   gsHWFixes:
     autoFlush: 1
@@ -653,6 +660,8 @@ SCUS-97436:            # Gran Turismo 4 (NTSC-U, Online Public Beta)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCES-51719:            # Gran Turismo 4 (PAL)
   gsHWFixes:
     autoFlush: 1
@@ -660,6 +669,8 @@ SCES-51719:            # Gran Turismo 4 (PAL)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCPS-17001:            # Gran Turismo 4 (NTSC-J)
   gsHWFixes:
     autoFlush: 1
@@ -667,6 +678,8 @@ SCPS-17001:            # Gran Turismo 4 (NTSC-J)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCPS-19252:            # Gran Turismo 4 (NTSC-J, PlayStation2 the Best)
   gsHWFixes:
     autoFlush: 1
@@ -674,6 +687,8 @@ SCPS-19252:            # Gran Turismo 4 (NTSC-J, PlayStation2 the Best)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCAJ-30006:            # Gran Turismo 4 (NTSC-C)
   gsHWFixes:
     autoFlush: 1
@@ -681,6 +696,8 @@ SCAJ-30006:            # Gran Turismo 4 (NTSC-C)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCAJ-30007:            # Gran Turismo 4 (NTSC-C)
   gsHWFixes:
     autoFlush: 1
@@ -688,6 +705,8 @@ SCAJ-30007:            # Gran Turismo 4 (NTSC-C)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCAJ-30008:            # Gran Turismo 4 (NTSC-C, PlayStation2 the Best)
   gsHWFixes:
     autoFlush: 1
@@ -695,6 +714,8 @@ SCAJ-30008:            # Gran Turismo 4 (NTSC-C, PlayStation2 the Best)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCCS-60002:            # Gran Turismo 4 (NTSC-C, Chinese)
   gsHWFixes:
     autoFlush: 1
@@ -702,6 +723,8 @@ SCCS-60002:            # Gran Turismo 4 (NTSC-C, Chinese)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCKA-30001:            # Gran Turismo 4 (NTSC-K)
   gsHWFixes:
     autoFlush: 1
@@ -709,6 +732,8 @@ SCKA-30001:            # Gran Turismo 4 (NTSC-K)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 SCKA-30004:            # Gran Turismo 4 (NTSC-K, BigHit Series)
   gsHWFixes:
     autoFlush: 1
@@ -716,6 +741,8 @@ SCKA-30004:            # Gran Turismo 4 (NTSC-K, BigHit Series)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 PBPX-95601:            # Gran Turismo 4 (NTSC-J, console bundle)
   gsHWFixes:
     autoFlush: 1
@@ -723,6 +750,8 @@ PBPX-95601:            # Gran Turismo 4 (NTSC-J, console bundle)
     halfPixelOffset: 4
     hwDownloadMode: 5
     recommendedBlendingLevel: 3
+  speedHacks:
+    iopThread: 1 # Not measured; owner decision. See the IOP thread block below.
 
 # ---------------------------------------------------------------------------------------------
 # Namco System 246/256 arcade games. Added 2026-10-01 by jpolo1224 with the arcade port (branch
@@ -1404,7 +1433,8 @@ SCES-52456:
     recommendedAccurateAlphaTest: 1 # Fixes shadows and glasses alpha.
     backThread: 1 # GS thread is the limit in combat scenes; see the block above.
 
-# IOP thread (speedHacks.iopThread) recommended for Shadow of the Colossus, God of War and God of War II.
+# IOP thread (speedHacks.iopThread) recommended for Shadow of the Colossus, God of War, God of War II and
+# Gran Turismo 4.
 #
 # What the fix does: iopThread: 1 runs the PS2's I/O processor (SPU2 audio, disc, controllers, memory
 # cards) on its own host thread, a bounded number of EE cycles behind the EE, which takes that work off the
@@ -1429,6 +1459,8 @@ SCES-52456:
 # Not measured: God of War (the first game) on any device. It is included on the owner's decision, on the
 # strength of its being the same engine as God of War II. God of War II on the SD865, RG 476H, RG 477V and
 # MQ65 was not measured either.
+#
+# Not measured: Gran Turismo 4 on any device. It is included on the owner's decision; whether the EE thread is what limits it was not checked.
 #
 # With the GS back thread (backThread) as well, nothing gained on Shadow of the Colossus and God of War II
 # was 4.7 percent slower at 2x on the Duo, so neither of these entries asks for it.
