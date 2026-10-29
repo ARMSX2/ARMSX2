@@ -437,9 +437,16 @@ void cpuinfo_arm_linux_init(void) {
 		/* Use the cluster_cpus_list topology node if available. If not
 		 * found, cache the result to avoid repeatedly attempting to
 		 * read the non-existent paths.
+		 *
+		 * The node is not usable when the kernel reports cluster_id -1:
+		 * the firmware describes no clusters (e.g. a device tree without
+		 * cluster nodes in cpu-map, as on the Raspberry Pi 5), and
+		 * cluster_cpus_list then holds only the processor itself, which
+		 * would make every core a cluster of its own.
 		 * */
 		if (!detected_core_siblings_list_node && !detected_cluster_cpus_list_node) {
-			if (cpuinfo_linux_detect_cluster_cpus(
+			if (!cpuinfo_linux_has_unknown_cluster_id(i) &&
+			    cpuinfo_linux_detect_cluster_cpus(
 				    arm_linux_processors_count,
 				    i,
 				    (cpuinfo_siblings_callback)cluster_siblings_parser,
