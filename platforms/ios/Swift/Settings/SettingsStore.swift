@@ -921,7 +921,7 @@ final class SettingsStore {
     var upscaler: Int = 0 { didSet { commit(_upscalerConfig, upscaler) } }
 
     /// Why an upscaling hack isn't doing what the row says. Mirrors the enum in
-    /// ARMSX2Bridge.mm; the values cross as ints.
+    /// ARMSX2Bridge+Settings.mm; the values cross as ints.
     enum GraphicsHackReason: Int {
         case applied = 0
         case needsManualHacks
