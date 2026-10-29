@@ -4034,8 +4034,9 @@ static void recResetRaw()
 
 	memset(manual_page, 0, sizeof(manual_page));
 	memset(manual_counter, 0, sizeof(manual_counter));
+	// Discard instead of memset, which would keep all 32 MB resident.
 	if (recRAMCopy.data())
-		memset(recRAMCopy.data(), 0, recRAMCopy.size());
+		HostSys::DiscardMemory(recRAMCopy.data(), recRAMCopy.size());
 
 	g_branch = 0;
 

@@ -177,6 +177,37 @@ void HostSys::DestroySharedMemory(void* ptr)
 	close(static_cast<int>(reinterpret_cast<intptr_t>(ptr)));
 }
 
+bool HostSys::DiscardSharedMemory(void* ptr, size_t offset, size_t size)
+{
+#if defined(__linux__)
+	// shm/memfd memory is tmpfs, so a hole reads back as zeros. Partial pages at the ends get zeroed.
+	const int fd = static_cast<int>(reinterpret_cast<intptr_t>(ptr));
+	return fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(offset),
+			   static_cast<off_t>(size)) == 0;
+#else
+	return false;
+#endif
+}
+
+void HostSys::DiscardMemory(void* ptr, size_t size)
+{
+#if defined(__linux__)
+	// MADV_DONTNEED frees whole pages (they read back as zeros); partial pages at the ends get zeroed.
+	const uptr begin = reinterpret_cast<uptr>(ptr);
+	const uptr end = begin + size;
+	const uptr pages_begin = Common::AlignUpPow2(begin, __pagesize);
+	const uptr pages_end = Common::AlignDownPow2(end, __pagesize);
+	if (pages_begin < pages_end &&
+		madvise(reinterpret_cast<void*>(pages_begin), pages_end - pages_begin, MADV_DONTNEED) == 0)
+	{
+		std::memset(ptr, 0, pages_begin - begin);
+		std::memset(reinterpret_cast<void*>(pages_end), 0, end - pages_end);
+		return;
+	}
+#endif
+	std::memset(ptr, 0, size);
+}
+
 #ifndef __APPLE__
 
 size_t HostSys::GetRuntimePageSize()
