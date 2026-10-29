@@ -746,9 +746,12 @@ bool VKSwapChain::CreateSwapChain()
 	// image lets the GPU work on N+2 while N is on-screen and N+1 is queued, recovering
 	// ~33% throughput. Default to 3 images for VulkanDirect, and for MAILBOX
 	// present mode regardless of WSI.
+	// IMMEDIATE too: it never waits for vblank, so a third image adds no latency, and with two the acquire
+	// waits for the compositor to release the previous frame.
 	const bool use_triple =
 		(m_window_info.type == WindowInfo::Type::VulkanDirect) ||
-		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR);
+		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR) ||
+		(m_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
 	u32 desired_image_count = use_triple ? 3 : 2;
 
 	// ★ Frame generation needs images it can hold ON TOP of the one being presented.
