@@ -4,6 +4,7 @@
 
 #import "ARMSX2Bridge.h"
 #include "common/Pcsx2Types.h"
+#include "pcsx2/Host.h"
 
 #include <atomic>
 #include <string>
@@ -16,6 +17,16 @@ static constexpr int ARMSX2DefaultAudioVolumePercent = 100;
 
 extern ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification;
 extern std::atomic<uint64_t> s_ARMSX2PerGameSettingsReloadGeneration;
+
+bool ARMSX2HasBaseSettings();
+
+template <typename F>
+void ARMSX2EditBaseSettings(F&& edit)
+{
+    auto lock = Host::GetSettingsLock(); // not recursive: no Host accessor or ARMSX2HasBaseSettings in edit
+    if (SettingsInterface* layer = Host::Internal::GetBaseSettingsLayer())
+        edit(*layer);
+}
 
 void ARMSX2ScheduleINISave();
 void ARMSX2FlushINISave();

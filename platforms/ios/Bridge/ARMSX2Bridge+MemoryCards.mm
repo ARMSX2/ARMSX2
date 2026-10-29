@@ -148,8 +148,8 @@ static MemoryCardFileType ARMSX2MemoryCardFileTypeForSizeMB(NSInteger sizeMB)
     std::snprintf(key, sizeof(key), "Slot%u_Filename", nativeSlot + 1);
 
     std::string value = EmuConfig.Mcd[nativeSlot].Filename;
-    if (g_p44_settings_interface)
-        value = g_p44_settings_interface->GetStringValue("MemoryCards", key, value.c_str());
+    if (ARMSX2HasBaseSettings())
+        value = Host::GetBaseStringSettingValue("MemoryCards", key, value.c_str());
 
     return ARMSX2NSStringFromStdString(value);
 }
@@ -165,10 +165,12 @@ static MemoryCardFileType ARMSX2MemoryCardFileTypeForSizeMB(NSInteger sizeMB)
     std::snprintf(enableKey, sizeof(enableKey), "Slot%u_Enable", nativeSlot + 1);
     std::snprintf(fileKey, sizeof(fileKey), "Slot%u_Filename", nativeSlot + 1);
 
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetBoolValue("MemoryCards", enableKey, enabled);
-        g_p44_settings_interface->SetStringValue("MemoryCards", fileKey, nativeName.c_str());
-        g_p44_settings_interface->Save();
+    if (ARMSX2HasBaseSettings()) {
+        ARMSX2EditBaseSettings([&](SettingsInterface& si) {
+            si.SetBoolValue("MemoryCards", enableKey, enabled);
+            si.SetStringValue("MemoryCards", fileKey, nativeName.c_str());
+        });
+        Host::CommitBaseSettingChanges();
     }
 
     EmuConfig.Mcd[nativeSlot].Enabled = enabled ? true : false;

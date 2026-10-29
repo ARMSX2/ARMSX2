@@ -18,6 +18,12 @@
 #include <algorithm>
 #include <mutex>
 
+bool ARMSX2HasBaseSettings()
+{
+    auto lock = Host::GetSettingsLock();
+    return Host::Internal::GetBaseSettingsLayer() != nullptr;
+}
+
 // Coalesce base-settings INI writes so a slider drag or a burst of toggles reaches disk
 // once per short window. The in-memory interface updates at once, so reads see the
 // latest value; ARMSX2FlushINISave() forces a write now.
@@ -26,7 +32,7 @@ static NSUInteger s_ini_save_generation = 0;
 
 void ARMSX2ScheduleINISave()
 {
-    if (!g_p44_settings_interface || s_ini_save_scheduled)
+    if (!ARMSX2HasBaseSettings() || s_ini_save_scheduled)
         return;
     s_ini_save_scheduled = YES;
     s_ini_save_generation++;
@@ -35,8 +41,8 @@ void ARMSX2ScheduleINISave()
         dispatch_get_main_queue(),
         ^{
             s_ini_save_scheduled = NO;
-            if (scheduled_generation == s_ini_save_generation && g_p44_settings_interface)
-                g_p44_settings_interface->Save();
+            if (scheduled_generation == s_ini_save_generation && ARMSX2HasBaseSettings())
+                Host::CommitBaseSettingChanges();
         });
 }
 
@@ -44,8 +50,8 @@ void ARMSX2FlushINISave()
 {
     s_ini_save_generation++;
     s_ini_save_scheduled = NO;
-    if (g_p44_settings_interface)
-        g_p44_settings_interface->Save();
+    if (ARMSX2HasBaseSettings())
+        Host::CommitBaseSettingChanges();
 }
 
 ARMSX2RetroAchievementsToastInfo* s_pendingRetroAchievementsNotification = nil;

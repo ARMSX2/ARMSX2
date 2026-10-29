@@ -285,67 +285,67 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 #pragma mark - INI generic getter/setter
 
 + (int)getINIInt:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(int)def {
-    if (!g_p44_settings_interface) return def;
-    return g_p44_settings_interface->GetIntValue(section.UTF8String, key.UTF8String, def);
+    if (!ARMSX2HasBaseSettings()) return def;
+    return Host::GetBaseIntSettingValue(section.UTF8String, key.UTF8String, def);
 }
 
 + (BOOL)getINIBool:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(BOOL)def {
-    if (!g_p44_settings_interface) return def;
-    return g_p44_settings_interface->GetBoolValue(section.UTF8String, key.UTF8String, def);
+    if (!ARMSX2HasBaseSettings()) return def;
+    return Host::GetBaseBoolSettingValue(section.UTF8String, key.UTF8String, def);
 }
 
 + (float)getINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(float)def {
-    if (!g_p44_settings_interface) return def;
-    return g_p44_settings_interface->GetFloatValue(section.UTF8String, key.UTF8String, def);
+    if (!ARMSX2HasBaseSettings()) return def;
+    return Host::GetBaseFloatSettingValue(section.UTF8String, key.UTF8String, def);
 }
 
 + (nonnull NSString *)getINIString:(nonnull NSString *)section key:(nonnull NSString *)key defaultValue:(nonnull NSString *)def {
-    if (!g_p44_settings_interface) return def;
-    std::string val = g_p44_settings_interface->GetStringValue(section.UTF8String, key.UTF8String, def.UTF8String);
+    if (!ARMSX2HasBaseSettings()) return def;
+    std::string val = Host::GetBaseStringSettingValue(section.UTF8String, key.UTF8String, def.UTF8String);
     return [NSString stringWithUTF8String:val.c_str()];
 }
 
 + (void)setINIInt:(nonnull NSString *)section key:(nonnull NSString *)key value:(int)value {
-    if (!g_p44_settings_interface) return;
+    if (!ARMSX2HasBaseSettings()) return;
     if (ARMSX2RetroAchievementsHardcoreActive() &&
         std::strcmp(section.UTF8String, "EmuCore/Speedhacks") == 0 &&
         std::strcmp(key.UTF8String, "EECycleRate") == 0 && value < 0) {
         ARMSX2LogRetroAchievementsHardcoreBlock("ee_underclock");
         value = 0;
     }
-    g_p44_settings_interface->SetIntValue(section.UTF8String, key.UTF8String, value);
+    Host::SetBaseIntSettingValue(section.UTF8String, key.UTF8String, value);
     ARMSX2ScheduleINISave();
 }
 
 + (void)setINIBool:(nonnull NSString *)section key:(nonnull NSString *)key value:(BOOL)value {
-    if (!g_p44_settings_interface) return;
+    if (!ARMSX2HasBaseSettings()) return;
     if (ARMSX2ShouldBlockRetroAchievementsHardcoreBoolSetting(section.UTF8String, key.UTF8String, value))
         value = NO;
-    g_p44_settings_interface->SetBoolValue(section.UTF8String, key.UTF8String, value);
+    Host::SetBaseBoolSettingValue(section.UTF8String, key.UTF8String, value);
     ARMSX2ScheduleINISave();
 }
 
 + (void)setINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value {
-    if (!g_p44_settings_interface) return;
+    if (!ARMSX2HasBaseSettings()) return;
     float valueToStore = value;
     valueToStore = ARMSX2EnforceRetroAchievementsHardcoreFloatSetting(section.UTF8String, key.UTF8String, valueToStore);
     if (std::strcmp(section.UTF8String, "Framerate") == 0 && std::strcmp(key.UTF8String, "NominalScalar") == 0)
         valueToStore = ARMSX2SanitizedNominalScalar(valueToStore);
 
-    g_p44_settings_interface->SetFloatValue(section.UTF8String, key.UTF8String, valueToStore);
+    Host::SetBaseFloatSettingValue(section.UTF8String, key.UTF8String, valueToStore);
     ARMSX2ScheduleINISave();
     ARMSX2ApplyLiveFloatSetting(section.UTF8String, key.UTF8String, valueToStore);
 }
 
 + (void)setINIString:(nonnull NSString *)section key:(nonnull NSString *)key value:(nonnull NSString *)value {
-    if (!g_p44_settings_interface) return;
-    g_p44_settings_interface->SetStringValue(section.UTF8String, key.UTF8String, value.UTF8String);
+    if (!ARMSX2HasBaseSettings()) return;
+    Host::SetBaseStringSettingValue(section.UTF8String, key.UTF8String, value.UTF8String);
     ARMSX2ScheduleINISave();
 }
 
 + (void)clearINISection:(nonnull NSString *)section {
-    if (!g_p44_settings_interface) return;
-    g_p44_settings_interface->ClearSection(section.UTF8String);
+    if (!ARMSX2HasBaseSettings()) return;
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) { si.ClearSection(section.UTF8String); });
     ARMSX2ScheduleINISave();
 }
 
@@ -397,7 +397,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 // stays here rather than in Swift because the enum lives in Config.h.
 + (void)setGraphicsHackPinned:(nonnull NSString *)iniKey pinned:(BOOL)pinned
 {
-    if (!g_p44_settings_interface)
+    if (!ARMSX2HasBaseSettings())
         return;
 
     const ARMSX2GraphicsHackDescriptor* descriptor = ARMSX2FindGraphicsHack(iniKey.UTF8String);
@@ -405,9 +405,9 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
         return;
 
     const u32 bit = 1u << static_cast<u32>(descriptor->override_id);
-    u32 mask = static_cast<u32>(g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHackOverrides", 0));
+    u32 mask = static_cast<u32>(Host::GetBaseIntSettingValue("EmuCore/GS", "UserHackOverrides", 0));
     mask = pinned ? (mask | bit) : (mask & ~bit);
-    g_p44_settings_interface->SetIntValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(mask));
+    Host::SetBaseIntSettingValue("EmuCore/GS", "UserHackOverrides", static_cast<int>(mask));
     ARMSX2ScheduleINISave();
 }
 

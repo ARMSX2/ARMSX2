@@ -102,15 +102,15 @@ static ARMSX2BIOSInfo* ARMSX2MakeBIOSInfo(NSString* fileName, NSString* director
 }
 
 + (nonnull NSString *)defaultBIOSName {
-    if (!g_p44_settings_interface) return @"";
-    std::string val = g_p44_settings_interface->GetStringValue("Filenames", "BIOS", "");
+    if (!ARMSX2HasBaseSettings()) return @"";
+    std::string val = Host::GetBaseStringSettingValue("Filenames", "BIOS", "");
     return [NSString stringWithUTF8String:val.c_str()];
 }
 
 + (void)setDefaultBIOS:(nonnull NSString *)biosName {
-    if (!g_p44_settings_interface) return;
-    g_p44_settings_interface->SetStringValue("Filenames", "BIOS", biosName.UTF8String);
-    g_p44_settings_interface->Save();
+    if (!ARMSX2HasBaseSettings()) return;
+    Host::SetBaseStringSettingValue("Filenames", "BIOS", biosName.UTF8String);
+    Host::CommitBaseSettingChanges();
     EmuConfig.BaseFilenames.Bios = biosName.UTF8String;
     NSLog(@"setDefaultBIOS: %@", biosName);
 }

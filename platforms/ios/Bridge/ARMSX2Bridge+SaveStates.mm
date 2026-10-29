@@ -245,11 +245,11 @@ static std::optional<s32> ARMSX2LatestSaveStateSlot(const std::string& serial, u
 
 void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
 {
-    if (game.empty() || !g_p44_settings_interface)
+    if (game.empty() || !ARMSX2HasBaseSettings())
         return; // BIOS-only boot must not replace the remembered game.
 
-    g_p44_settings_interface->SetStringValue("ARMSX2iOS/Boot", "LastGame", game.c_str());
-    g_p44_settings_interface->Save();
+    Host::SetBaseStringSettingValue("ARMSX2iOS/Boot", "LastGame", game.c_str());
+    Host::CommitBaseSettingChanges();
 
     std::string serial;
     u32 crc = 0;
@@ -268,7 +268,7 @@ void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
         ARMSX2RestoreSaveStateBackup(path);
     }
 
-    if (!loadLastSaveState || !g_p44_settings_interface->GetBoolValue(
+    if (!loadLastSaveState || !Host::GetBaseBoolSettingValue(
             "ARMSX2iOS/Boot", "AutomaticLoadLastSaveState", false))
         return;
 

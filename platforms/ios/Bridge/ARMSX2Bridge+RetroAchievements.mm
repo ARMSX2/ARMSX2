@@ -91,11 +91,10 @@ static bool ARMSX2EnsureAchievementsClientInitialized()
 
 static void ARMSX2SaveBaseSettingBool(const char* section, const char* key, bool value)
 {
+    if (!ARMSX2HasBaseSettings())
+        return;
     Host::SetBaseBoolSettingValue(section, key, value);
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetBoolValue(section, key, value);
-        g_p44_settings_interface->Save();
-    }
+    Host::CommitBaseSettingChanges();
 }
 
 static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
@@ -134,7 +133,8 @@ static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
     u32 totalAchievements = 0;
     u32 unlockedPoints = 0;
     u32 totalPoints = 0;
-    const std::string savedUsernameValue = Host::GetBaseStringSettingValue("Achievements", "Username");
+    const std::string savedUsernameValue = ARMSX2HasBaseSettings() ?
+        Host::GetBaseStringSettingValue("Achievements", "Username") : std::string();
     const bool savedUsername = !savedUsernameValue.empty();
     const bool savedToken = !Host::GetStringSettingValue("Achievements", "Token").empty();
 
@@ -392,8 +392,8 @@ static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
             NSString* message = result ? @"RetroAchievements login successful." :
                 (error.IsValid() ? ARMSX2NSStringFromStdString(error.GetDescription()) : @"RetroAchievements login failed.");
 
-            if (result && g_p44_settings_interface)
-                g_p44_settings_interface->Save();
+            if (result && ARMSX2HasBaseSettings())
+                Host::CommitBaseSettingChanges();
 
             NSLog(@"[ARMSX2Bridge] RetroAchievements login result=%d message=%@", result ? 1 : 0, message);
             ARMSX2_PostRetroAchievementsStateChanged();
@@ -407,8 +407,8 @@ static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
 + (void)logoutRetroAchievements {
     dispatch_async(ARMSX2RetroAchievementsQueue(), ^{
         Achievements::Logout();
-        if (g_p44_settings_interface)
-            g_p44_settings_interface->Save();
+        if (ARMSX2HasBaseSettings())
+            Host::CommitBaseSettingChanges();
         NSLog(@"[ARMSX2Bridge] RetroAchievements logout");
         ARMSX2_PostRetroAchievementsStateChanged();
     });

@@ -46,9 +46,6 @@ std::optional<std::string> InputManager::ConvertHostKeyboardCodeToString(u32 c) 
 const char* InputManager::ConvertHostKeyboardCodeToIcon(u32 c) { return nullptr; }
 std::optional<u32> InputManager::ConvertHostKeyboardStringToCode(std::string_view s) { return std::nullopt; }
 
-// --- Settings ---
-INISettingsInterface* g_p44_settings_interface = nullptr;
-
 // --- Host functions (declared in Host.h) ---
 bool Host::InNoGUIMode() { return true; }
 void Host::RunOnCPUThread(std::function<void()> f, bool b) { BLOCKING_HOST_CALL_ASSERT(b); if (f) f(); }
