@@ -202,7 +202,6 @@ namespace
 		double ms = 0.0;
 	};
 
-	/// Runs ProbeDriver in a child and collects its JSON through a pipe, under a deadline.
 	ChildResult ProbeInChild(bool custom, const Options& opt)
 	{
 		ChildResult res;

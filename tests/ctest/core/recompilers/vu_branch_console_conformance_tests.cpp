@@ -349,23 +349,16 @@ TEST(VuBranchConsole, ViWriteIsVisibleToABranchOnePairLater)
 //  3b. A branch after two writes to its VI
 // =========================================================================
 //
-//  ViWriteIsVisibleToABranchOnePairLater has one write per program. The rows
-//  in autocases_vubranch_vidw.h write the branch's VI twice or three times,
-//  or load it with ILW, or put a VWAITQ stall between the writes, and read
-//  what the branch saw. When the pair right before the branch writes the VI
-//  the branch tests, the branch reads the value that VI held before the
-//  EARLIEST write inside the last four cycles. A write more than three pairs
-//  back is visible, and a stall inside the window pushes an earlier write
-//  out of it.
+//  The rows in autocases_vubranch_vidw.h write the branch's VI twice or three
+//  times, load it with ILW, or put a VWAITQ stall between the writes, and read
+//  what the branch saw. When the pair right before the branch writes the VI the
+//  branch tests, the branch reads the value that VI held before the EARLIEST
+//  write inside the last four cycles. A write more than three pairs back is
+//  visible, and a stall inside the window pushes an earlier write out of it.
 //
-//  The interpreter used to keep a two-cycle window that chained only writes
-//  in consecutive pairs; it differed on 37 of these rows. microVU matched all
-//  of them. Rows where an instruction reads a VI an ILW is still loading are
-//  in autocases_vubranch_ilwuse.h and scored in the next block.
-//
-//  Each row is scored on vi1..vi8 and TPC. The flag registers are left out:
-//  the harness starts VU0 with MAC and STATUS values the console does not
-//  have, whatever the program does.
+//  Each row is scored on vi1..vi8 and TPC. The flag registers are left out: the
+//  harness starts VU0 with MAC and STATUS values the console does not have,
+//  whatever the program does.
 
 namespace
 {
@@ -430,15 +423,13 @@ TEST(VuBranchViDoubleWrite, InterpreterMatchesTheConsoleOnEveryRow)
 //  3c. An instruction that reads a VI an ILW is still loading
 // =========================================================================
 //
-//  ILW and ILWR load their VI over four cycles. On the console and in
-//  microVU an instruction that reads that VI waits for the load, whatever
-//  it is; the interpreter used to wait only for a branch. A writer that
-//  reads the loading VI (IADDIU vi1,vi1,1, LQI) therefore issued too early,
-//  and the branch after it looked back through a window that held the
-//  wrong writes. The 40 rows in autocases_vubranch_ilwuse.h are the
-//  corpus-protocol rows of that shape: ILW, N = 0..2 pairs, then a writer
-//  that reads the VI, and ILW followed by two such writers back to back.
-//  Each row is scored like the ones above.
+//  ILW and ILWR load their VI over four cycles. On the console any instruction
+//  that reads that VI waits for the load, not only a branch. A writer that
+//  reads the loading VI (IADDIU vi1,vi1,1, LQI) therefore issues late, and the
+//  branch after it looks back through a window that holds different writes.
+//  The rows in autocases_vubranch_ilwuse.h are of that shape: ILW, N = 0..2
+//  pairs, then a writer that reads the VI, and ILW followed by two such writers
+//  back to back. Each row is scored like the ones above.
 
 namespace
 {
@@ -453,8 +444,6 @@ TEST(VuBranchIlwLoadUse, MicroVuMatchesTheConsoleOnEveryRow)
 	EXPECT_TRUE(bad.empty()) << "rows where microVU differs from the console:" << bad;
 }
 
-// The interpreter used to differ on all 40 rows: it stalled only a branch on
-// the loading VI, so the writer did not wait.
 TEST(VuBranchIlwLoadUse, InterpreterMatchesTheConsoleOnEveryRow)
 {
 	const std::string bad = ViDwMisses(false, kVuBranchIlwUseCases, kVuBranchIlwUseCaseCount);

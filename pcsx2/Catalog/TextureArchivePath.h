@@ -30,7 +30,7 @@ namespace Catalog
 	{
 		ExtractStatus status = ExtractStatus::Failed;
 		std::string error; ///< Human-readable cause when status is Failed.
-		u64 textures = 0; ///< Texture files written.
+		u64 textures = 0;
 
 		bool IsOk() const { return status == ExtractStatus::Ok; }
 	};

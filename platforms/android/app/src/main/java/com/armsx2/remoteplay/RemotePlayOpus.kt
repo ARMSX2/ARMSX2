@@ -142,7 +142,6 @@ internal class OpusDecoder private constructor(private val codec: MediaCodec) {
                 onPcm(pcm)
             }
             codec.releaseOutputBuffer(out, false)
-            // Takes whatever else is already done, then goes back for the next packet.
             wait = 0
         }
     }

@@ -372,7 +372,6 @@ namespace vuaot
 			for (int i = 0; i < N; i++)
 				s2[i] = succ[i];
 			s2[V] = roots;
-			// iterative DFS: postorder + retreating edges
 			std::vector<int> state(N + 1, 0), post, order(N + 1, -1);
 			std::vector<std::pair<int, int>> retreat;
 			std::vector<std::pair<int, size_t>> st;

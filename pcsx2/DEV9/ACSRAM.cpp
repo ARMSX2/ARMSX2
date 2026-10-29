@@ -18,23 +18,22 @@
 u8 ACSRAM::buffer[ACSRAM_MAX_SIZE];
 u8 compbuf[ACSRAM_MAX_SIZE] = {0};
 std::string ACSRAM::filepath = "";
-bool LockSave = false; //why? because I dont wanna wipe an SRAM image that already existed but failed to be read
+bool LockSave = false; // set when an existing SRAM image could not be read; blocks saving so it is not overwritten
 
 
-// ARMSX2: through FileSystem (whose create path works on Android's emulated storage), and with the file
-// closed after a good read too.
-// ARMSX2: each session decides afresh whether its SRAM may be saved. The lock used to be cleared on the
-// line after it was set, so an SRAM file of another size (a game's settings and high scores) was written
-// over with the blank buffer at shutdown; and nothing cleared it for the next session, whose good read
-// then never saved. Saving is allowed only over a whole SRAM read, or where there is no file yet.
+// ARMSX2: reads through FileSystem (whose create path works on Android's emulated storage) and
+// closes the file after a good read too.
+// LockSave is decided afresh on every call: it is set only when an existing SRAM file could not be
+// read in full or opened, so WriteFile() never overwrites it with the blank buffer. Saving is allowed
+// over a whole SRAM read, or where there is no file yet.
 int ACSRAM::ReadFile() {
     Error error;
     LockSave = false;
     FILE* FD = FileSystem::OpenCFile(ACSRAM::filepath.c_str(), "rb", &error);
     if (FD) {
-        // unlike PS2 NVRAM, which we can do a generic damage/invalid detection attempt.
-        // ACSRAM is per-game, and not all of them strongly check if it has valid data
-        // this is even problematic on real hardware, where such games can behave erratically when ran on a machine whose ACSRAM has payload of another game
+        // Unlike PS2 NVRAM, there is no generic damage/validity check for ACSRAM: it is per-game, and
+        // not every game checks that its data is valid. Real hardware has the same problem: such games
+        // can misbehave on a machine whose ACSRAM holds another game's payload.
         if (std::fread(compbuf, sizeof(compbuf), 1, FD) == 1) {
             std::memcpy(ACSRAM::buffer, compbuf, ACSRAM_MAX_SIZE);
             Console.WriteLn(Color_StrongCyan, "%-16s OK", __FUNCTION__);
@@ -42,7 +41,7 @@ int ACSRAM::ReadFile() {
             return 1;
         } else {
             Console.ErrorFmt("ACSRAM: Could not read all the data. locking save");
-            LockSave = true; // file opened but failed to read? forbid from saving
+            LockSave = true;
         }
 	    std::fclose(FD);
     } else {

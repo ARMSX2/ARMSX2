@@ -262,9 +262,9 @@ static __fi void Sif1End()
 	DMA_LOG("SIF1 DMA End");
 }
 
-// One pass of the EE side of the pump: if the EE side is busy, not held by the DMAC's stall control,
-// and can move, one step of its transfer. Returns whether the step ran. The step itself can set the
-// stall flag, which holds the EE side for the rest of this call and the calls after it.
+// One step of the EE side's transfer, if it is busy, not held by the DMAC's stall control, and can move.
+// Returns whether a step ran. The step can set the stall flag, which holds the EE side for the rest of this
+// call and the calls after it.
 static __fi bool Sif1EeStep()
 {
 	EE_SIDE_ASSERT();
@@ -280,8 +280,7 @@ static __fi bool Sif1EeStep()
 	return false;
 }
 
-// One pass of the IOP side of the pump: if the IOP side is busy and can move, one step of its
-// transfer. Returns whether the step ran.
+// One step of the IOP side's transfer, if it is busy and can move. Returns whether a step ran.
 static __fi bool Sif1IopStep()
 {
 	IOP_SIDE_ASSERT();

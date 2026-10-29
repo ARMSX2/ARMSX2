@@ -898,8 +898,7 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // GS Multi-threading (GV7 front/back split). Restart-required like the renderer /
     // driver above, so it lives in the same group — hit Apply & Restart below to apply.
     // Off (0) = single-threaded; on (any other value, written as 1) = GS rendering on a
-    // second thread. Description shown inline so users who never open full settings
-    // still understand what it does.
+    // second thread.
     MenuSwitchRow(
         str("renderer.gsBackThread.label"),
         settings.display.gsBackThreadMode != 0,
@@ -1463,7 +1462,6 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     // Macros — edit each M1-M4 button set here in-game too (physical-trigger binding stays
     // in All Settings › Controls, which hosts the key-capture listener).
     com.armsx2.ui.settings.MacrosSection()
-    // Arcade controls for the arcade game being played: what each button does on its cabinet.
     com.armsx2.arcade.Arcade.sessionGameId.value?.let { com.armsx2.ui.settings.ArcadeControlsSection(it, pickGame = false) }
 }
 
@@ -1484,8 +1482,8 @@ private fun OptionsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
     // "▣", is one already proven to render in the shipped font -- "▩" (U+25A9) and "⏻" (U+23FB)
     // come out as tofu boxes on device.
     Spacer(Modifier.height(6.dp))
-    // Volume and Mute, the same two settings as All Settings › Audio, kept within reach while
-    // playing rather than three screens deep. Both apply instantly (applyTo's direct setters).
+    // Volume and Mute: the same two settings as All Settings › Audio. Both apply instantly
+    // (applyTo's direct setters).
     com.armsx2.ui.settings.IntSliderRow(
         label = str("audio.volume.label"),
         value = settings.audio.audioVolume.coerceIn(0, 150),

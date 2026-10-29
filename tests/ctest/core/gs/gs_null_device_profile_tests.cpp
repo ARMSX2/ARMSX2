@@ -148,10 +148,6 @@ TEST(GsNullDeviceProfile, MaliG615IsTheInTileFetchRoad)
 	EXPECT_FALSE(f.aa1);
 }
 
-// ---------------------------------------------------------------------------
-// mali-g615-malisx2: the same part on our own driver.
-// ---------------------------------------------------------------------------
-
 namespace
 {
 	// VK_DRIVER_ID_ARM_PROPRIETARY. malisx2 reports Arm's vendorID, driverID, 44.1.0 and device name
@@ -247,9 +243,7 @@ TEST(GsNullDeviceProfile, MaliG615Malisx2HasEveryBitTheStockProfileHas)
 {
 	// Push descriptors, bresenham lines, the memory budget and device fault are the things malisx2
 	// changes on this part, and none of them is a FeatureSupport bit. The stock row already stands on
-	// MT6897's exemptions, so the two tables agree bit for bit and only the name differs. If a bit is
-	// ever made to differ, it is a decision about one of these devices: say which in the commit, and
-	// edit this test.
+	// MT6897's exemptions, so the two tables agree bit for bit and only the name differs.
 	const GSDevice::FeatureSupport stock = GSNullDeviceProfile::Features(Id::MaliG615);
 	const GSDevice::FeatureSupport sx2 = GSNullDeviceProfile::Features(Id::MaliG615Malisx2);
 	EXPECT_EQ(0, std::memcmp(&stock, &sx2, sizeof(stock)));

@@ -72,9 +72,8 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 #include "IOS/TexturePackTar.h"
 #include "IOS/TexturePackZstd.h"
 
-// Owned by SceneDelegate's persistent VM worker. Keep these declarations
-// narrow: IOSRuntime.h also exposes the render view with its concrete type,
-// while this bridge intentionally uses UIKit's UIView surface.
+// Owned by SceneDelegate's persistent VM worker. Declared narrowly here: IOSRuntime.h gives
+// the render view its concrete type, and this bridge deliberately uses UIKit's UIView.
 extern std::atomic<bool> s_vmThreadActive;
 extern std::atomic<bool> s_requestVMBoot;
 extern std::mutex s_vmMutex;
@@ -732,9 +731,8 @@ static BOOL ARMSX2PerGameIdentityForCurrentGame(std::string* serial, u32* crc);
 
 // There is one process-wide InputIsoFile, shared between the running VM and every
 // metadata scan, so scanning the disc a game is playing from closes it out from
-// under the game. GameList.h documents this above PopulateEntryFromPath: do not
-// call it while the system is running. Subsequent reads return zero blocks and
-// starve the game while the emulator continues running.
+// under the game, and later reads return zero blocks. GameList.h says PopulateEntryFromPath
+// must not be called while the system is running.
 static bool ARMSX2PathIsRunningDisc(NSString* resolvedPath)
 {
     if (resolvedPath.length == 0 || !VMManager::HasValidVM())
@@ -746,7 +744,6 @@ static bool ARMSX2PathIsRunningDisc(NSString* resolvedPath)
 
 static void ARMSX2NoteRunningDiscScan(NSString* path)
 {
-    // Report the first rejected scan without flooding the normal runtime log.
     static bool warned = false;
     if (warned)
         return;
@@ -768,9 +765,8 @@ static BOOL ARMSX2PopulateGameListEntryForISO(NSString* isoName, GameList::Entry
     // Any VM, not just one playing this particular file. InputIsoFile::Open closes
     // whatever is already open before it opens anything, so scanning some unrelated
     // image while a game is running kills that game's disc just the same.
-    // HasValidVM becomes false BEFORE Shutdown closes the shared disc reader.
-    // Hold the boot gate through an idle scan; the worker claims it before
-    // Initialize and retains ownership until Shutdown has finished.
+    // Hold the boot gate through the check: the worker takes it before Initialize and keeps it
+    // until Shutdown finishes, and HasValidVM turns false before Shutdown closes the disc reader.
     const std::lock_guard<std::mutex> bootLock(s_vmMutex);
     if (s_vmThreadActive.load(std::memory_order_acquire)
         || s_requestVMBoot.load(std::memory_order_acquire)
@@ -1155,7 +1151,7 @@ void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState)
 
     const auto slot = ARMSX2LatestSaveStateSlot(serial, crc);
     if (!slot)
-        return; // No saved state: continue the normal boot silently.
+        return;
 
     if (ARMSX2RetroAchievementsHardcoreActive())
     {
@@ -1435,9 +1431,8 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     result[@"serial"] = ARMSX2NSStringFromStdString(serial);
     result[@"crc"] = [NSString stringWithFormat:@"%08X", crc];
 
-    // Publish one typed snapshot from the already-open INI so every row shares
-    // the same game identity and both library and running-game callers perform
-    // exactly one file read.
+    // Publish one typed snapshot from the already-open INI, so every row shares the same game
+    // identity and each caller does a single file read.
     NSMutableDictionary<NSString*, id>* prefetchedINI = [NSMutableDictionary dictionary];
     result[@"perGameINI"] = prefetchedINI;
 
@@ -3474,9 +3469,8 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
     return result;
 }
 
-// The library already paid the cost of identifying every game while it built
-// its card model. Reuse that serial/CRC here instead of opening and probing the
-// disc image a second time just because SwiftUI is presenting its settings.
+// The library already identified every game while building its card model. Reuse that
+// serial/CRC rather than probing the disc image again when SwiftUI presents settings.
 + (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
                                                             crc:(nullable NSString *)crcString {
     NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
@@ -4752,8 +4746,7 @@ static void ARMSX2MutatePerGameINI(NSString* isoName, NSString* section, NSStrin
     }
     const float scalar = static_cast<float>(normalizedPercent) / 100.0f;
 
-    // This shortcut is session-only. Persisted frame-pacing configuration
-    // remains untouched, while the active VM target speed changes immediately.
+    // Session-only: the persisted frame-pacing configuration is left alone.
     Host::RunOnCPUThread([scalar, normalizedPercent]() {
         if (!VMManager::HasValidVM())
             return;
@@ -5423,7 +5416,6 @@ static void ARMSX2WriteSaveState(s32 nativeSlot, bool automatic, bool leaving, v
     });
 }
 
-/// Runs `body` on the save-state queue with the path of the running game's slot.
 static void ARMSX2WithSaveStateSlotPath(NSInteger slot, ARMSX2SaveStateCompletion completion,
     bool (^body)(const std::string& path))
 {

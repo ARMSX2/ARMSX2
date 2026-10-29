@@ -929,7 +929,7 @@ public:
 	void RotateTransferPayload();
 	void ExecReleasePayloadRecord(const GSBackQueue::ReleasePayloadRecord& rec);
 
-	// GV7-1d: the back thread, started by the back renderer object's constructor.
+	// The back thread, started by the back renderer object's constructor.
 	// VSYNC records are NOT queued: present runs on the MTGS thread after a drain,
 	// so the back thread never touches the GSDevice on present paths (and for SW,
 	// at all). The split engages only for Vulkan and SW renderers — a GL device is

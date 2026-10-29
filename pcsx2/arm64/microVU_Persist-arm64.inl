@@ -29,10 +29,6 @@
 
 namespace mVUPersist
 {
-	// A fixup is an encoding form (how the operand sits in the code) and a
-	// target (what it points at). Every target is resolved against this
-	// process at hydration, so nothing in a payload depends on the addresses
-	// of the process that recorded it.
 	enum : u8
 	{
 		kFormMovRun = 0, // MOVZ + MOVK×(width-1) over halfwords 0..width-1, one Rd
@@ -85,7 +81,6 @@ namespace mVUPersist
 	};
 	static_assert(sizeof(PersistFixup) == 24);
 
-	// Instructions a fixup's patcher rewrites, starting at codeOffset.
 	static u32 FixupSpanInsns(const PersistFixup& f)
 	{
 		return (f.form == kFormMovRun) ? f.width : 1;
@@ -410,7 +405,6 @@ namespace mVUPersist
 		hi = id.high64;
 	}
 
-	// The build's identity folded to the 64 bits a payload header carries.
 	static u64 BuildTag()
 	{
 		u64 lo, hi;
@@ -462,11 +456,7 @@ namespace mVUPersist
 	// Address-operand audit (test tooling)
 	//------------------------------------------------------------------
 	//
-	// Decodes a recorded chunk as it sits in the slab and reports every
-	// instruction that carries a host address no fixup covers: a PC-relative
-	// operand (B/BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, ADR/ADRP, LDR literal) whose
-	// target is outside the chunk, or a MOVZ/MOVN/ORR-immediate + MOVK run
-	// whose value lands in a mapped region. This is independent of the emit
+	// Decodes recorded chunks straight from the slab, independent of the emit
 	// helpers, so it also catches code that bypasses them. Counts go into a
 	// census keyed by "<form>-><region>".
 
@@ -1068,8 +1058,7 @@ namespace mVUPersist
 
 	void SyncRecordingFromConfig(bool config_enabled)
 	{
-		// Production: recording follows the program cache setting (EnableVUProgramCache
-		// or EnableVUAot: UseVUProgramCache), called from
+		// Production: recording follows the program cache setting, called from
 		// mVUinit/mVUreset before the options sentinel is rebuilt. The
 		// test-manual override lets the recompiler-test harness drive
 		// recording itself without these reset-time syncs clobbering it.
@@ -1440,7 +1429,6 @@ namespace mVUPersist
 			return nullptr;
 		}
 
-		// Without the region bases no image or data address can be resolved.
 		if (!GetRegions().valid)
 		{
 			s_stats[vu].hydrationRejects++;

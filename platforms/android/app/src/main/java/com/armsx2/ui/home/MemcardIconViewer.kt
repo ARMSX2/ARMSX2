@@ -53,19 +53,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Whether the Icon Museum is open; set from the library's overflow menu. */
+/** Open state of the Icon Museum and its dialogs; set from the library's overflow menu. */
 internal object MemcardIconViewerState {
     val open = mutableStateOf(false)
-    /** The "MC Icon Info" note. */
     val info = mutableStateOf(false)
-    /** The screensaver's settings. */
     val screensaver = mutableStateOf(false)
-    /** The Online Icons download prompt. */
     val online = mutableStateOf(false)
 }
 
-/** The Icon Museum's bookmark: the icon it opens at, by [MemcardCovers.ShowIcon.key]. With the
- *  online set there are thousands, and nobody should have to page back to where they were. */
+/** The Icon Museum's bookmark: the icon it opens at, by [MemcardCovers.ShowIcon.key]. */
 internal object MuseumBookmark {
     private const val KEY = "library.iconMuseum.bookmark"
     val key = mutableStateOf<String?>(null)
@@ -77,7 +73,6 @@ internal object MuseumBookmark {
         key.value = runCatching { MainActivityRuntime.prefs.getString(KEY, null) }.getOrNull()
     }
 
-    /** Bookmarks [k], or takes the bookmark off it when it is the one bookmarked. */
     fun toggle(k: String) {
         val next = if (key.value == k) null else k
         runCatching {
@@ -87,7 +82,6 @@ internal object MuseumBookmark {
     }
 }
 
-/** How Memory Card Covers works, from the library menu's "MC Icon Info". */
 @Composable
 internal fun MemcardCoversInfo(onClose: () -> Unit) {
     com.armsx2.ui.common.PadModal(key = "memcard-covers-info", onDismiss = onClose, initialFocusId = "memcard-covers-info.ok") {
@@ -124,13 +118,13 @@ internal fun MemcardCoversInfo(onClose: () -> Unit) {
 }
 
 /**
- * Icon Museum: every save icon on the player's memory cards, then the ones found on discs and,
- * once downloaded, every icon of the online set, one at a time, full screen and moving, each on
- * its own icon.sys background with its title. Like ARMSX3's theme preview, it is for looking at
- * them without the library in the way. Swipe or press left and right to go through them. Over it,
- * Bookmark marks one to open at next time (A on the panel does too), Shuffle makes every step,
- * left or right, land on a random icon until it is off again, and Close closes; a controller
- * reaches the three with Up. Back closes it too.
+ * Icon Museum: a full-screen viewer for every save icon on the player's memory cards, then the
+ * ones found on discs and, once downloaded, the online set. One icon at a time, animated, on its
+ * own icon.sys background with its title.
+ *
+ * Swipe or press left and right to move. Bookmark marks the icon to open at next time (A on the
+ * panel does too), Shuffle makes every step land on a random icon until it is turned off, and
+ * Close and Back close the viewer. A controller reaches the three buttons with Up.
  */
 @Composable
 internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, String> = { emptyMap() }) {
@@ -170,7 +164,6 @@ internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, St
                 )
                 else -> ViewerPages(list)
             }
-            // Close: a tap, A once up from the panel, or Back.
             RoundButton("memcard-icon-viewer.close", onClose, Modifier.align(Alignment.TopEnd).padding(16.dp)) {
                 Text("×", color = Color.White, fontSize = 26.sp)
             }
@@ -181,16 +174,14 @@ internal fun MemcardIconViewer(onClose: () -> Unit, titles: () -> Map<String, St
 @Composable
 private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
     remember { MuseumBookmark.load() }
-    // One page per icon: the pages are keyed by icon, and a key may only be used once.
+    // Pager keys must be unique.
     val icons = remember(saves) { saves.distinctBy { it.key } }
-    // Opens at the bookmark, when it is still in the list.
     val start = remember(icons) { icons.indexOfFirst { it.key == MuseumBookmark.key.value }.coerceAtLeast(0) }
     // Where each icon sits in the list, for the count shown and for turning Shuffle off.
     val place = remember(icons) { HashMap<String, Int>(icons.size * 2).apply { icons.forEachIndexed { i, s -> put(s.key, i) } } }
-    // Shuffle: the pages are the icon showing with random icons either side, so every step, left
-    // or right, lands on a random one; wherever the Museum comes to rest gets new random
-    // neighbours, so no step ever leads back through the same ones. The icon showing stays put
-    // when Shuffle goes on and off; off, the icons are back in order from where it sits.
+    // Shuffle: the pages are the icon showing with random icons either side. Each time the Museum
+    // rests on another page it is reseeded with new neighbours around that icon. The icon showing
+    // stays put when Shuffle goes on and off.
     var shuffle by remember { mutableStateOf<ShuffleWindow?>(null) }
     val order = shuffle?.pages ?: icons
     val pager = rememberPagerState(initialPage = start, pageCount = { order.size })
@@ -222,8 +213,6 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
             val ref = order[page]
             ViewerPage(ref, animate = page == pager.settledPage)
         }
-        // Title, serial and card, and where in the list this is. Also the controller's handle on
-        // the viewer: left and right move through the saves, and A bookmarks the one shown.
         val ref = order[pager.currentPage.coerceIn(order.indices)]
         val isBookmarked = MuseumBookmark.key.value == ref.key
         val origin = when (val o = ref.origin) {
@@ -234,7 +223,6 @@ private fun ViewerPages(saves: List<MemcardCovers.ShowIcon>) {
                 if (o.contributors.isBlank()) online else onlineBy.replace("%s", o.contributors),
             ).joinToString("  ·  ")
         }
-        // Bookmark and Shuffle, across from Close: taps, or A once up from the panel.
         Row(Modifier.align(Alignment.TopStart).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             RoundButton("memcard-icon-viewer.bookmark", { MuseumBookmark.toggle(ref.key) }) {
                 androidx.compose.material3.Icon(
@@ -306,7 +294,6 @@ internal class ShuffleWindow(val pages: List<MemcardCovers.ShowIcon>, val middle
 /** Random icons a side of [here], enough for a few quick steps before the Museum comes to rest. */
 internal const val SHUFFLE_REACH = 8
 
-/** [here] with random icons from [icons] either side, none of them twice and none of them [here]. */
 internal fun shuffleAround(icons: List<MemcardCovers.ShowIcon>, here: MemcardCovers.ShowIcon): ShuffleWindow {
     val others = icons.filter { it.key != here.key }.shuffled()
     val before = others.take(minOf(SHUFFLE_REACH, others.size / 2))
@@ -314,8 +301,7 @@ internal fun shuffleAround(icons: List<MemcardCovers.ShowIcon>, here: MemcardCov
     return ShuffleWindow(before + here + after, before.size)
 }
 
-/** A round button over the Museum: tapped, or reached from the panel with Up and pressed with A.
- *  [active] lights it, for a mode that is on (Shuffle). */
+/** A round button over the Museum. [active] lights it, for a mode that is on (Shuffle). */
 @Composable
 private fun RoundButton(
     id: String,

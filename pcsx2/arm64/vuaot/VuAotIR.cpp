@@ -198,7 +198,7 @@ namespace vuaot::ir
 				return v;
 			}
 
-			// --- Braun et al. ---
+			// SSA construction after Braun et al.
 			void WriteVar(u32 v, int block, ValueId val) { cur_[block][v] = val; }
 
 			ValueId ReadVar(u32 v, int block)
@@ -305,7 +305,6 @@ namespace vuaot::ir
 
 			void RemoveRedundantSccs();
 
-			// --- VU semantics ---
 			ValueId Rd(u32 v) { return ReadVar(v, b_); }
 			void Wr(u32 v, ValueId x) { WriteVar(v, b_, x); }
 
@@ -1281,8 +1280,6 @@ namespace vuaot::ir
 
 			RemoveRedundantSccs();
 
-			// Finalize: route every operand through the replacement map and drop
-			// removed phis from their blocks.
 			for (Inst& in : f_.insts)
 				for (ValueId& a : in.args)
 					a = Resolve(a);
@@ -1482,7 +1479,6 @@ namespace vuaot::ir
 				b = idom[b];
 			}
 		};
-		// position of each value inside its block
 		std::vector<int> pos(f.insts.size(), -1);
 		for (const Block& bl : f.blocks)
 		{

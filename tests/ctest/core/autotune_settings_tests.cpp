@@ -18,8 +18,6 @@ namespace
 	constexpr const char* UPSCALE = "upscale_multiplier";
 } // namespace
 
-// ---------------------------------------------------------------------------------------------- trial layer
-
 TEST(AutoTuneTrialLayer, SitsAboveTheGameLayerAndBelowTheCommandLine)
 {
 	MemorySettingsInterface base, game, trial, cmdline;
@@ -74,7 +72,6 @@ TEST(AutoTuneTrialLayer, SurvivesTheGameLayerBeingRebuilt)
 	layered.SetLayer(LayeredSettingsInterface::LAYER_AUTOTUNE, &trial);
 	trial.SetFloatValue(GS, UPSCALE, 2.0f);
 
-	// The game file is reloaded: new object, new contents.
 	auto reloaded = std::make_unique<MemorySettingsInterface>();
 	reloaded->SetFloatValue(GS, UPSCALE, 5.0f);
 	layered.SetLayer(LayeredSettingsInterface::LAYER_GAME, reloaded.get());
@@ -122,8 +119,6 @@ TEST(AutoTuneTrialLayer, TheHostInstallsAndRemovesIt)
 	}
 	EXPECT_EQ(Host::GetStringSettingValue("EmuCore", "AutoTuneProbe", "none"), "none");
 }
-
-// ---------------------------------------------------------------------------------------------- the switch
 
 TEST(AutoTuneSetting, IsOffByDefaultAndReadFromEmuCore)
 {

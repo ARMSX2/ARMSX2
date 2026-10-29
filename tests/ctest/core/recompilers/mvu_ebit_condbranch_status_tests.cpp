@@ -114,7 +114,7 @@ TEST(MvuEbitCondBranchStatus, FinalMacIgnoresUnexecutedTarget)
 }
 
 // An E-bit JR never reorders for a successor (its lookahead asks for every
-// flag, whatever the target holds), so it was never affected; pinned here.
+// flag, whatever the target holds), so the target cannot change the result.
 TEST(MvuEbitCondBranchStatus, EbitJumpIgnoresUnexecutedTarget)
 {
 	for (int gap = 0; gap < 4; gap++)

@@ -106,23 +106,18 @@ namespace ee_divtrace
 	// EERUNNER_VU0FP.
 	extern bool                    g_vu0_include;
 
-	// When set, FingerprintCpu() ALSO mixes in the VU0 state a JIT-vs-JIT
-	// comparison across builds needs and a JIT-vs-interp one cannot use: all
-	// 32 VI registers (VPU_STAT, TPC, FBRST included), VU0's clock and flags
-	// word, VF00-31 + ACC, and hashes of VU0 data and micro memory. The VU0
-	// clock differs between JIT and interp by design, so this is for
-	// --twindump/--twincompare between two JIT builds. eerunner sets it from
-	// EERUNNER_VU0FULL.
+	// When set, FingerprintCpu() also mixes in the VU0 state that a JIT-vs-JIT comparison across
+	// builds needs and a JIT-vs-interp one cannot use: all 32 VI registers (VPU_STAT, TPC, FBRST
+	// included), VU0's clock and flags word, VF00-31 + ACC, and hashes of VU0 data and micro memory.
+	// The VU0 clock differs between JIT and interp by design. For --twindump/--twincompare between
+	// two JIT builds; eerunner sets it.
 	extern bool                    g_vu0_full;
 
-	// When set, FingerprintCpu() and HashMemory() cover the whole emulated
-	// machine rather than what a JIT-vs-interp diff can tolerate: every EE
-	// register (k0/k1 and the CP0 timing registers included), the EE and IOP
-	// event schedulers (cycle, nextEventCycle, the pending-interrupt masks and
-	// their deadlines, EEsCycle/EEoCycle), both counter sets, the IOP register
-	// file, VU1, and the bytes of IOP RAM, both hardware-register pages and
-	// VU1 memory. For --twindump/--twincompare between two JIT builds that
-	// claim identical emulated timing. eerunner sets it from EERUNNER_SYSFULL.
+	// When set, FingerprintCpu() and HashMemory() cover the whole emulated machine instead of only
+	// what a JIT-vs-interp diff can tolerate: every EE register (k0/k1 and the CP0 timing registers
+	// included), the EE and IOP event schedulers and counter sets, the IOP register file, VU1, and
+	// the bytes of IOP RAM, both hardware-register pages and VU1 memory. For --twindump/--twincompare
+	// between two JIT builds that claim identical emulated timing; eerunner sets it.
 	extern bool                    g_sys_full;
 
 	// When set, the interpreter's SYSCALL handler skips FlushCache (0x64) /
@@ -141,17 +136,16 @@ namespace ee_divtrace
 	u64  FingerprintSystem();
 
 #ifdef PCSX2_RECOMPILER_TESTS
-	// The IOP-side state FingerprintSystem and HashMemory do not reach, one hash
-	// per subsystem so a mismatch says which one moved:
-	//   spu2  the SPU2 savestate block (registers, both cores' voices, the
-	//         SPDIF block, mixing clocks) and the 2 MB of sample memory
+	// The IOP-side state FingerprintSystem and HashMemory do not reach, one hash per subsystem so a
+	// mismatch says which one moved:
+	//   spu2  the SPU2 savestate block (registers, both cores' voices, the SPDIF block, mixing
+	//         clocks) and the 2 MB of sample memory
 	//   sif   sif0, sif1 and sif2 (the SIF FIFOs, DMA tags and busy/cycle fields)
 	//   sio   Sio0, Sio2 and both multitap states, as a savestate writes them
 	//   cdvd  the cdvd struct, as a savestate writes it
-	// The spu2 and cdvd hashes cost about 2 MB of copying and hashing, so this is
-	// called once per frame by --twindump/--twincompare when g_sys_full is set,
-	// and is NOT folded into FingerprintSystem, which the per-op sampler calls.
-	// Reads the live state only; nothing it calls changes emulation.
+	// The spu2 and cdvd hashes copy and hash about 2 MB, so this is called once per frame by
+	// --twindump/--twincompare when g_sys_full is set, and is not folded into FingerprintSystem,
+	// which the per-op sampler calls. Reads the live state only.
 	struct IopFingerprint
 	{
 		u64 spu2;

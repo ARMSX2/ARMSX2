@@ -12,16 +12,9 @@
 
 class Error;
 
-// Streaming SHA-256.
-//
-// This wraps the 7-Zip implementation vendored in 3rdparty/lzma (public domain). It selects the
-// ARMv8 SHA2 / x86 SHA-NI instructions at runtime when the CPU has them, which matters when
-// hashing multi-gigabyte texture packs on a handheld. Nothing from the 7-Zip headers leaks into
-// this header.
-//
-//   SHA256Digest sha;
-//   sha.Update(buf, len);          // any number of times, any chunk sizes
-//   std::string hex = sha.FinalHex();
+// Streaming SHA-256 over the 7-Zip implementation vendored in 3rdparty/lzma (public domain), using
+// the ARMv8 SHA2 / x86 SHA-NI instructions at runtime when the CPU has them. No 7-Zip header is
+// included here.
 //
 // After Final()/FinalHex() the object holds no usable state until Reset() is called.
 class SHA256Digest
@@ -37,15 +30,13 @@ public:
 	void Update(std::string_view data) { Update(data.data(), data.size()); }
 
 	Bytes Final();
-	/// Final() as 64 lowercase hex characters.
 	std::string FinalHex();
 
-	/// One-shot helpers.
 	static Bytes Hash(const void* data, size_t size);
 	static std::string HashHex(const void* data, size_t size);
 	static std::string HashHex(std::string_view data) { return HashHex(data.data(), data.size()); }
 
-	/// Lowercase hex, two characters per byte.
+	/// Lowercase hex digits.
 	static std::string ToHex(const Bytes& digest);
 
 	enum class FileResult

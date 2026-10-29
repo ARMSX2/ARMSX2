@@ -42,15 +42,11 @@
 namespace LocalLink = Catalog::LocalLink;
 namespace AutoCovers = Catalog::AutoCovers;
 
-//////////////////////////////////////////////////////////////////////////
-// Texture upscaler
-//////////////////////////////////////////////////////////////////////////
-
 void FullscreenUI::DrawTextureUpscaleSetting(SettingsInterface* bsi)
 {
-	// Labels as in the Qt widget (Graphics > Texture Replacement). Its help text is five sentences,
-	// which does not fit here: MenuButtonWithValue reserves too little width for the value, so a
-	// summary longer than one line is drawn under it. This is a one-line version of the help.
+	// Labels as in the Qt widget (Graphics > Texture Replacement). Its help text does not fit
+	// here: MenuButtonWithValue reserves too little width for the value, so a summary longer than
+	// one line is drawn under it.
 	// The values are GSTextureUpscaleMode: 0 Off, 1 RAISR 2x, 2 RAISR 4x.
 	static constexpr const char* s_options[] = {
 		FSUI_NSTR("Off (Default)"),
@@ -63,15 +59,10 @@ void FullscreenUI::DrawTextureUpscaleSetting(SettingsInterface* bsi)
 		"EmuCore/GS", "TextureUpscale", static_cast<int>(GSTextureUpscaleMode::Off), s_options, std::size(s_options), true);
 }
 
-//////////////////////////////////////////////////////////////////////////
-// Local Link
-//////////////////////////////////////////////////////////////////////////
-
 namespace
 {
 	using namespace FullscreenUI;
 
-	// The reason an entry was refused, in the user's language.
 	std::string LocalLinkProblemText(LocalLink::Problem problem)
 	{
 		switch (problem)
@@ -95,8 +86,7 @@ namespace
 	}
 
 	// Asks for one Local Link value and stores it if it passes the rules in LocalLinkSettings.h.
-	// A refused answer comes back as a toast with the box open again on what was typed, since the
-	// usual mistake is one character off.
+	// A refused answer comes back as a toast with the box open again on what was typed.
 	void EditLocalLinkField(SettingsInterface* bsi, LocalLink::Field field, std::string title, std::string message,
 		std::string text, InputFilterType filter)
 	{
@@ -273,13 +263,8 @@ void FullscreenUI::LocalLinkApiSelected(SettingsInterface* bsi, const std::strin
 		LocalLink::SeedDefaults(*bsi);
 }
 
-//////////////////////////////////////////////////////////////////////////
-// Automatic covers
-//
 // FullscreenUI state belongs to the GS thread. The cover job runs on its own worker thread, so its
 // callbacks only fill s_cover_handoff and ask the GS thread to look at it.
-//////////////////////////////////////////////////////////////////////////
-
 namespace
 {
 	using namespace FullscreenUI;
@@ -288,9 +273,9 @@ namespace
 	constexpr double COVER_LIST_QUIET_SECONDS = 3.0;
 	constexpr double COVER_POLL_SECONDS = 0.25;
 
-	// What the cover worker thread hands to the GS thread. Callbacks add to it and queue a drain;
-	// the drain empties it. At most one drain is queued at a time, so a run that skips thousands of
-	// games a second costs the GS thread one look per CPU-thread tick.
+	// Callbacks on the cover worker thread add to this and queue a drain, which empties it on the
+	// GS thread. At most one drain is queued at a time, so a run that skips thousands of games a
+	// second costs the GS thread one look per CPU-thread tick.
 	struct CoverHandoff
 	{
 		std::mutex mutex;
@@ -332,13 +317,12 @@ namespace
 		ImGuiFullscreen::AddNotification(COVER_NOTIFICATION_KEY, seconds, fmt::format("{} {}", ICON_FA_IMAGE, title), text, std::string());
 	}
 
-	// Takes the progress message down (a notification with no time left goes at the next draw).
+	// A notification with no time left goes at the next draw.
 	void DismissCoverNotice()
 	{
 		ImGuiFullscreen::AddNotification(COVER_NOTIFICATION_KEY, 0.0f, std::string(), std::string(), std::string());
 	}
 
-	// GS thread: applies what the worker reported since the last time.
 	void DrainCoverHandoff()
 	{
 		std::vector<std::pair<std::string, std::string>> saved;
@@ -358,9 +342,8 @@ namespace
 		if (!IsInitialized())
 			return;
 
-		// A cover that arrived is picked up the next time its game is drawn: forget where the cover
-		// was looked for (an empty answer is remembered too) and drop the picture if the file was
-		// replaced.
+		// Forget where the cover was looked for (an empty answer is remembered too) and drop the
+		// cached picture if the file was replaced, so the next draw of the game picks it up.
 		for (const auto& [game_path, cover_path] : saved)
 		{
 			s_cover_image_map.erase(game_path);
@@ -500,8 +483,8 @@ namespace
 		});
 	}
 
-	// After the style or region changed: the covers on disk still look the old way until they are
-	// downloaded again, which is the user's call (it is a lot of downloading).
+	// After the style or region changed, covers on disk keep the old look until downloaded again.
+	// Ask first, since that is a lot of downloading.
 	void OfferCoverRedownload(std::vector<std::string> paths, std::string message)
 	{
 		OpenConfirmMessageDialog(FSUI_ICONSTR(ICON_FA_IMAGE, "Download Covers Again?"), std::move(message),
@@ -660,10 +643,10 @@ void FullscreenUI::DrawCoverRegionPinSetting(const GameList::Entry& entry)
 
 void FullscreenUI::PollAutoCovers()
 {
-	// Nothing tells Big Picture that a game list refresh has finished: the hosts run the scan on
-	// their own thread and report to nobody. The list does show it, though. Each refresh builds a new
-	// list and fills it entry by entry, so a list that stopped changing a few seconds ago is the end
-	// of one. A scan that pauses longer than that gets another look when it adds more.
+	// Nothing tells Big Picture that a game list refresh has finished (the hosts scan on their own
+	// thread and report to nobody), but the list shows it: each refresh builds a new list and fills
+	// it entry by entry, so a list that has not changed for a few seconds is the end of one. A scan
+	// that pauses longer than that gets another look when it adds more.
 	if (VMManager::HasValidVM() || s_poll_timer.GetTimeSeconds() < COVER_POLL_SECONDS)
 		return;
 	s_poll_timer.Reset();

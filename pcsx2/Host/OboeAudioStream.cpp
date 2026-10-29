@@ -144,10 +144,9 @@ bool OboeAudioStream::onError(oboe::AudioStream* oboeStream, oboe::Result error)
 		Console.Error("(Oboe) Stream disconnected, reopening...");
 		Stop();
 		Close();
-		// Reopen, but a paused stream stays paused: the resume starts it. Starting it here played a
-		// paused game's silence for as long as it stayed paused, and nothing paused it again since
-		// SetPaused(true) saw it already paused. In the background that kept Android's audio mixer
-		// holding a wakelock all night (#825).
+		// Reopen, but a paused stream stays paused: the resume starts it. Starting it here would play
+		// silence for as long as the pause lasts, and SetPaused(true) would not pause it again since
+		// it already counts as paused.
 		if (!Open() || (!m_paused && !Start()))
 			Console.Error("(Oboe) Failed to reopen stream after disconnection.");
 		return true;

@@ -32,10 +32,6 @@ namespace Catalog
 		constexpr u8 TYPE_DIR = '5';
 		constexpr u8 TYPE_LONGNAME = 'L';
 
-		// ---------------------------------------------------------------------------------
-		// Compressed input
-		// ---------------------------------------------------------------------------------
-
 		class CompressedSource
 		{
 		public:
@@ -85,10 +81,6 @@ namespace Catalog
 			std::span<const u8> m_data;
 			size_t m_pos = 0;
 		};
-
-		// ---------------------------------------------------------------------------------
-		// zstd: exactly one frame, then the end of the input
-		// ---------------------------------------------------------------------------------
 
 		class ZstdFrameReader
 		{
@@ -213,10 +205,6 @@ namespace Catalog
 			bool m_failed = false;
 			std::string m_error;
 		};
-
-		// ---------------------------------------------------------------------------------
-		// tar
-		// ---------------------------------------------------------------------------------
 
 		bool IsAllZero(const u8* data, size_t size)
 		{

@@ -1166,10 +1166,10 @@ static void vuAotEmitJumpTail(u32 vu, void* block, const u8* endKey)
 	armAsm->Br(a64::x0);
 }
 
-// vu-aot milestone 8: microVU's own code for a block a region holds (the
-// block manager keeps the region's entry; mVUcompile finds that block and
-// compiles into it without replacing the entry). The record's slot keeps the
-// code for the next bail.
+// microVU's own code for a block a vu-aot region holds. The block manager
+// keeps the region's entry; mVUcompile finds that block and compiles into it
+// without replacing the entry. The record's slot caches the code for the next
+// bail.
 static void* vuAotBailTarget(u32 vu, u8* rec)
 {
 	microVU& mVU = mVUbyIndex(vu);
@@ -1429,9 +1429,9 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUsetFlags(mVU, mFC);
 	mVUoptimizePipeState(mVU);
 	// vu-aot: a test installs its hooks through the vuaot:: globals; otherwise
-	// the live tier hands out its own, for a program it has tiered up (and
-	// for VU1 only). With neither, nothing below runs and microVU compiles the
-	// block exactly as it always has.
+	// the live tier hands out its own, for a program it has tiered up (VU1
+	// only). With neither, nothing below runs and microVU compiles the block
+	// unchanged.
 	vuaot::VuAotRegionHook vuAotRegionHook = vuaot::g_vuAotRegionHook;
 	void* vuAotRegionUser = vuaot::g_vuAotRegionHookUser;
 	vuaot::VuAotBodyHook vuAotBodyHook = vuaot::g_vuAotBodyHook;
@@ -1453,8 +1453,8 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	if (vuaot::g_mvuBlockHook)
 		vuaot::g_mvuBlockHook(vuAotTrace, vuaot::g_mvuBlockHookUser);
 #endif
-	// vu-aot milestone 4: a hook may compile a whole region rooted at this
-	// block in its place; microVU then emits nothing for it.
+	// vu-aot: a hook may compile a whole region rooted at this block in its
+	// place; microVU then emits nothing for it.
 	if (vuAotRegionHook && !vuAotShadow && vuAotRegionHook(vuAotTrace, mVUbuildEmitEnv(mVU), vuAotRegionUser))
 		return thisPtr;
 	{
@@ -1471,8 +1471,8 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	u32 x = 0;
 
 	mVUemitClampConsts(mVU);
-	// vu-aot milestone 2: a hook may emit this block's whole body from vu-aot's
-	// IR; microVU then emits only its framing below.
+	// vu-aot: a hook may emit this block's whole body from vu-aot's IR;
+	// microVU then emits only its framing below.
 	const bool vuAotBody = vuAotBodyHook && !vuAotShadow &&
 		vuAotBodyHook(vuAotTrace, mVUbuildEmitEnv(mVU), vuAotBodyUser);
 	if (!vuAotBody)

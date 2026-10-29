@@ -176,10 +176,6 @@ protected:
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-//  Nothing pending: nothing happens
-// ---------------------------------------------------------------------------
-
 TEST_F(EeEventTestQuietPath, QuietEntryDeliversNothingAndRunsNoVu)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
@@ -195,10 +191,6 @@ TEST_F(EeEventTestQuietPath, QuietEntryDeliversNothingAndRunsNoVu)
 	// The next test is scheduled in the future, never in the past.
 	EXPECT_GT(cpuRegs.nextEventCycle, cpuRegs.cycle);
 }
-
-// ---------------------------------------------------------------------------
-//  INTC
-// ---------------------------------------------------------------------------
 
 TEST_F(EeEventTestQuietPath, IntcPendingAndEnabledRaisesInterruptAndLatchesHold)
 {
@@ -254,10 +246,6 @@ TEST_F(EeEventTestQuietPath, IntcOtherCauseRaisesWithoutLatchingHold)
 	EXPECT_EQ(counters[0].hold, kHoldSentinel);
 }
 
-// ---------------------------------------------------------------------------
-//  DMAC
-// ---------------------------------------------------------------------------
-
 TEST_F(EeEventTestQuietPath, DmacChannelCauseWithMaskRaisesInterrupt)
 {
 	cpuRegs.CP0.n.Status.val = kStatusAllEnabled;
@@ -308,10 +296,6 @@ TEST_F(EeEventTestQuietPath, IntcAndDmacTogetherRaiseBothCauses)
 	EXPECT_TRUE(ExceptionTaken());
 	EXPECT_EQ(cpuRegs.CP0.n.Cause & 0xFFFF, 0xC00u);
 }
-
-// ---------------------------------------------------------------------------
-//  VU sync
-// ---------------------------------------------------------------------------
 
 TEST_F(EeEventTestQuietPath, RunningVu0BehindTheEeIsRun)
 {

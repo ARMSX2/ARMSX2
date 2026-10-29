@@ -54,10 +54,9 @@ constexpr u32 LSFG_RECURRENCE_FRAMES = 2;
     const f32 rendered_width = static_cast<f32>(guest_extent.width);
     const f32 ratio = rendered_width / static_cast<f32>(presented_extent.width);
 
-    // Motion measured at 432 lines, never more than the game rendered: GameSir's phone setting
-    // for GSFG 1.1 is 720p in with motion at 60%, which is 768x432, and ARMSX3 settled on the
-    // same (its cf1c0a61f). An absolute target keeps the cost flat when the resolution scale
-    // raises the game's resolution, where a share of the game would climb with it.
+    // Motion is measured at 432 lines (768x432 at 16:9), never more than the game rendered. An
+    // absolute target keeps the cost flat when the resolution scale raises the game's resolution;
+    // a share of the game's would climb with it.
     constexpr f32 AUTO_MOTION_LINES = 432.0f;
     const f32 target = presented_extent.height
         ? std::min(ratio, AUTO_MOTION_LINES / static_cast<f32>(presented_extent.height))
@@ -263,9 +262,8 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     built_flow_scale = flow_scale;
 
     chain.emplace(device, memory_allocator, *shaders, extent, format, built_flow_scale);
-    // Once per rebuild (start, a resize, a change of motion detail): says what LSFG runs at, so
-    // the automatic motion detail can be checked on a device, and so rebuilds that come too often
-    // (a game changing resolution back and forth) show up in the log.
+    // Logged once per rebuild (start, a resize, a change of motion detail) so the automatic motion
+    // detail can be checked on a device and too-frequent rebuilds show up.
     Console.WriteLn("LSFG: passes built at %ux%u, motion at %.0f%% (%ux%u).", extent.width, extent.height,
                     built_flow_scale * 100.0f, static_cast<u32>(static_cast<f32>(extent.width) * built_flow_scale),
                     static_cast<u32>(static_cast<f32>(extent.height) * built_flow_scale));

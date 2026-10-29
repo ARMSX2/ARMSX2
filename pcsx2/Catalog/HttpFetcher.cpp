@@ -17,10 +17,6 @@
 
 namespace Catalog
 {
-	// ---------------------------------------------------------------------------------------
-	// URLs
-	// ---------------------------------------------------------------------------------------
-
 	static bool EqualsNoCase(std::string_view a, std::string_view b)
 	{
 		return a.size() == b.size() &&
@@ -113,10 +109,6 @@ namespace Catalog
 	{
 		return fmt::format("ARMSX2/{}", (BuildVersion::GitTag && BuildVersion::GitTag[0]) ? BuildVersion::GitTag : "unknown");
 	}
-
-	// ---------------------------------------------------------------------------------------
-	// One fetch
-	// ---------------------------------------------------------------------------------------
 
 	namespace
 	{
@@ -404,10 +396,6 @@ namespace Catalog
 			}
 		}
 	} // namespace
-
-	// ---------------------------------------------------------------------------------------
-	// HttpFetcher
-	// ---------------------------------------------------------------------------------------
 
 	HttpFetcher::HttpFetcher(std::shared_ptr<HttpTransport> transport)
 		: m_transport(std::move(transport))

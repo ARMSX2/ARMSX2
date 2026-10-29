@@ -87,11 +87,9 @@ TEST(GSBackThreadPolicy, OffIsGivenAsAsked)
 	}
 }
 
-// ---------------------------------------------------------------------------------------------- placement
-//
-// Where the back thread may run once the front thread (MTGS) has its processor: the rest of the front's cluster in
-// the performance tier, then the rest of the tier, each first without the processors pinned to other busy emu
-// threads, then with them, then everything else.
+// Placement: where the back thread may run once the front thread (MTGS) has its processor: the
+// rest of the front's cluster in the performance tier, then the rest of the tier, each first
+// without the processors pinned to other busy emu threads, then with them, then everything else.
 
 namespace
 {
@@ -109,8 +107,8 @@ TEST(GSBackThreadPlacement, TakesAFreeBigCoreWhenThereIsOne)
 	EXPECT_FALSE(p.shares_busy_core);
 }
 
-// With the IOP thread on core 7 the four big cores are all taken: "GS back thread may run on 0xb0" in the log,
-// which are cores 4, 5 and 7, each already running a busy thread. Measured on the device: -19% speed.
+// With the IOP thread on core 7 the four big cores are all taken (the front on 6, busy threads on 4, 5
+// and 7), so the back thread can only share one: "GS back thread may run on 0xb0" in the log.
 TEST(GSBackThreadPlacement, SaysSoWhenEveryBigCoreIsTaken)
 {
 	const u64 front = Core(6);

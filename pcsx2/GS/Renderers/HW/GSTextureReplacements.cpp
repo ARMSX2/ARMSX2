@@ -234,9 +234,7 @@ namespace GSTextureReplacements
 	/// Set while the worker runs a job it has taken off the queue.
 	static bool s_worker_thread_busy = false;
 
-	// ---- Texture upscaling ----
-	//
-	// Lock order: s_replacement_texture_cache_mutex, then s_worker_thread_mutex or
+	// Texture upscaling state. Lock order: s_replacement_texture_cache_mutex, then s_worker_thread_mutex or
 	// s_upscale_mutex (those two are never held together). Workers hold s_upscale_mutex only to
 	// take a job and never while taking the cache mutex.
 
@@ -609,8 +607,6 @@ void GSTextureReplacements::Initialize()
 
 	ReloadReplacementMap();
 
-	// Loads the filters and starts the workers when upscaling is on. With it off there is nothing
-	// to set up.
 	if (GSConfig.TextureUpscale != GSTextureUpscaleMode::Off)
 		SetUpscaleMode();
 }
@@ -1421,10 +1417,6 @@ void GSTextureReplacements::CancelPendingLoadsAndDumps()
 	s_pending_async_load_textures.clear();
 }
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Texture upscaling
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 bool GSTextureReplacements::IsUpscaleActive()
 {
 	return s_upscale_ready.load(std::memory_order_relaxed);
@@ -1673,10 +1665,9 @@ void GSTextureReplacements::BuildUpscaledTexture(const UpscaleJob& job, Replacem
 			job.cpu_mip_levels, &rtex->mips);
 	}
 
-	// The renderer trusts this range. Alpha is interpolated between source texels or taken from
-	// one (KeepHardAlphaEdges2x), so it cannot leave the source's range; take the source's, over the
-	// same levels the native texture would upload. That is the range the native texture has, so it
-	// also holds if a draw ends up reading the native texture in place of this one.
+	// The renderer trusts this range. Alpha is interpolated between source texels or taken from one
+	// (KeepHardAlphaEdges2x), so it cannot leave the source's range. Take the source's, over the same levels
+	// the native texture would upload, so the range also holds if a draw reads the native texture instead.
 	rtex->alpha_minmax = GSGetRGBA8AlphaMinMax(base.pixels, base.width, base.height, base.pitch);
 	for (size_t i = 1; i < job.levels.size(); i++)
 	{

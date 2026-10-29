@@ -23,8 +23,6 @@ namespace Catalog
 
 		static constexpr char GAMEINDEX_FILE_NAME[] = "GameIndex.yaml";
 
-		// ---- Settings -----------------------------------------------------------------------
-
 		bool IsEnabled(const SettingsInterface& si)
 		{
 			return si.GetBoolValue(SETTINGS_SECTION, KEY_AUTO_DOWNLOAD, DEFAULT_AUTO_DOWNLOAD);
@@ -104,8 +102,6 @@ namespace Catalog
 			ModifyBaseSettings([&](SettingsInterface& si) { SetGameRegionPin(si, serial, pin); });
 		}
 
-		// ---- Work selection -----------------------------------------------------------------
-
 		std::optional<CoverWorkItem> WorkItemForEntry(const GameList::Entry& entry)
 		{
 			CoverWorkItem item;
@@ -153,8 +149,6 @@ namespace Catalog
 			}
 			return items;
 		}
-
-		// ---- Running ------------------------------------------------------------------------
 
 		// The game database text, from the resources folder or, in builds that carry one, from the
 		// copy compiled into the binary (the same order GameDatabase uses).

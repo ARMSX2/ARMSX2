@@ -37,7 +37,6 @@ enum class SetupStep(val titleKey: String) {
 enum class DriverStage { Loading, Ready, Unreachable, Installing, Installed, Failed }
 
 data class OnboardingUiState(
-    /** Index into [steps]. */
     val page: Int = 0,
     val steps: List<SetupStep> = SetupStep.entries - SetupStep.Driver,
     val systemLocation: StorageLocation = StorageLocation.Internal,

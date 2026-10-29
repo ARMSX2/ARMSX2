@@ -94,10 +94,9 @@ protected:
 	CloneNote clones[kCloneRunMax];
 	int cloneCount = 0;
 
-	// The VI twin: allocGPR's clone-write copy of a cached VI into the slot
-	// its destination gets, while that copy is still the last word emitted.
-	// takeGPRCloneSource() is the consumer; see the VI arithmetic in
-	// microVU_Lower-arm64.inl. One deep, because no VI op makes two.
+	// The VI twin: allocGPR's clone-write copy of a cached VI, while it is still
+	// the last instruction emitted. takeGPRCloneSource() consumes it (see the VI
+	// arithmetic in microVU_Lower-arm64.inl). One deep, because no VI op makes two.
 	CloneNote gprClone = {-1, -1, -1};
 
 	VURegs& regs() const { return ::vuRegs[index]; }
@@ -429,16 +428,14 @@ public:
 				armAsm->Mov(dst.V16B(), src.V16B());
 			return;
 		}
-		// EXT reads both halves from src, so the rotation needs no copy in
-		// front of it: the result is the copy rotated, word for word.
+		// EXT reads both halves from src, so no copy is needed ahead of the rotation.
 		armAsm->Ext(dst.V16B(), src.V16B(), src.V16B(), srcLane * 4);
 	}
 
-	// `reg`, a full-width clone-write temp (allocReg(vf, 0, 0xf)) the caller
-	// has just filled with the whole new value of `vfreg`, becomes that VF's
-	// written slot in place, as if it had been allocated allocReg(-1, vfreg,
-	// 0xf) and the value copied over. clearNeeded then treats it as the full
-	// write it is and drops every other cached copy of `vfreg`.
+	// Rebinds `reg`, a full-width clone-write temp (allocReg(vf, 0, 0xf)) that
+	// already holds the whole new value of `vfreg`, as that VF's written slot, as
+	// if it had come from allocReg(-1, vfreg, 0xf). clearNeeded then treats it as
+	// a full write and drops every other cached copy of `vfreg`.
 	void rebindFullWrite(const a64::VRegister& reg, int vfreg)
 	{
 		microMapNEON& m = neonMap[reg.GetCode()];
@@ -476,7 +473,7 @@ public:
 		// slot holding its result would pass for a clean copy of vfWriteReg
 		// (VF0, for the writes that use it as the drop-it register), and a
 		// later read or partial write of that register would take the result
-		// for it. A write that touches no lane leaves a temp.
+		// for it. So such a write leaves a temp.
 		const int slotReg = xyzw ? vfWriteReg : -1;
 
 		// Search for cached copy.
@@ -934,7 +931,7 @@ public:
 				// into it. The merged reg now holds the complete state, so
 				// mark it as fully valid (xyzw=0xF). We'll invalidate our
 				// own slot below.
-				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, /*modXYZW=*/!clear.natural);
+				mVUmergeRegs(armQRegister(i), reg, clear.xyzw, !clear.natural);
 				mapI.xyzw  = 0xF;
 				mapI.count = counter;
 				mergeState = 2;

@@ -283,10 +283,9 @@ TEST(GSSpriteEdgeSnap, TheNativePushIgnoresFractionsUnderAHalf)
 }
 
 // Under the Native half-pixel offset the vertex transform lands native coordinate n on the
-// middle of native pixel n's device block, so the far edge that stops on the block boundary is
-// half a pixel short of the whole coordinate (grid_shift 8). Gran Turismo 4's menu text is the
-// case: a glyph ending at y=163.25 was pushed to 164.0, which at 2x drew one device row of
-// pixel 164 with the glyph's last row and doubled its shadow.
+// middle of native pixel n's device block, so a far edge that stops on the block boundary is
+// half a pixel short of the whole coordinate (grid_shift 8). The snap must stop at that
+// half-pixel position, not round up to the next pixel.
 TEST(GSSpriteEdgeSnap, UnderTheNativeOffsetTheEdgeStopsHalfAPixelShort)
 {
 	constexpr int kNative = 8;
@@ -300,7 +299,6 @@ TEST(GSSpriteEdgeSnap, UnderTheNativeOffsetTheEdgeStopsHalfAPixelShort)
 	EXPECT_EQ(FarEdge(0, 0, 16, 16 * 10 + 12, 0, 0, 16, 16 * 10 + 12, true, kNative).dy, 0);
 	EXPECT_EQ(FarEdge(0, 0, 16, 16 * 10, 0, 0, 16, 16 * 10, true, kNative).dy, 0);
 
-	// The ordinary transform still snaps to the whole pixel.
 	EXPECT_EQ(FarEdge(0, 2500, 16, 2612, 0, 6224, 16, 6448, true).dy, 12);
 }
 

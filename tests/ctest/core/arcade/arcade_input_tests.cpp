@@ -67,10 +67,8 @@ namespace
 		static void Press(GIB binding, u32 pad = 0) { EXPECT_TRUE(Send(binding, HELD, pad)); }
 		static void Release(GIB binding, u32 pad = 0) { EXPECT_TRUE(Send(binding, LET_GO, pad)); }
 
-		// The switches the board has down for a player.
 		static u16 Switches(u32 player = 0) { return ACJV::GetButtonState(player); }
 
-		// What pressing a button alone leaves on the board, and the board after letting go of it.
 		static u16 PressedAlone(GIB binding, u32 pad = 0)
 		{
 			Press(binding, pad);
@@ -86,10 +84,6 @@ namespace
 		return Remap(pairs.begin(), pairs.end());
 	}
 } // namespace
-
-// ----------------------------------------------------------------------------------------------------
-// Taking the controller
-// ----------------------------------------------------------------------------------------------------
 
 TEST_F(ArcadeInputTest, NothingIsTakenWithoutAnArcadeGame)
 {
@@ -131,10 +125,6 @@ TEST_F(ArcadeInputTest, TheSessionAndItsMode)
 	EXPECT_EQ(ArcadeInput::GetMode(), JVS_MODE::DRUM);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Control modes
-// ----------------------------------------------------------------------------------------------------
-
 TEST(ArcadeInputModes, EveryModeIsListedInOrderWithItsJvsmodeName)
 {
 	const auto modes = ArcadeInput::GetModes();
@@ -165,10 +155,6 @@ TEST(ArcadeInputModes, AGameIDGetsItsModeFromTheBoardTables)
 	EXPECT_EQ(ArcadeInput::GetModeForGameId("NM00099"), JVS_MODE::DEFAULT);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Default cabinet
-// ----------------------------------------------------------------------------------------------------
-
 TEST_F(ArcadeInputTest, DefaultTheDpadIsTheLeverAndTheFaceButtonsAreTheSixButtons)
 {
 	EXPECT_EQ(PressedAlone(GIB::DPadUp), JVS_BTN_UP);
@@ -184,7 +170,6 @@ TEST_F(ArcadeInputTest, DefaultTheDpadIsTheLeverAndTheFaceButtonsAreTheSixButton
 	EXPECT_EQ(PressedAlone(GIB::R1), JVS_BTN_6);
 	EXPECT_EQ(PressedAlone(GIB::Start), JVS_BTN_START);
 
-	// What has no place on the cabinet does nothing.
 	EXPECT_EQ(PressedAlone(GIB::L2), 0);
 	EXPECT_EQ(PressedAlone(GIB::R2), 0);
 	EXPECT_EQ(PressedAlone(GIB::L3), 0);
@@ -245,7 +230,7 @@ TEST_F(ArcadeInputTest, ResetLetsGoOfEverythingHeld)
 {
 	Press(GIB::Cross);
 	Press(GIB::DPadLeft, 1);
-	ACJV::SetGameId(GENERIC_GAME); // The board's side of a new game.
+	ACJV::SetGameId(GENERIC_GAME);
 	ArcadeInput::Reset();
 	EXPECT_EQ(Switches(0), 0);
 	EXPECT_EQ(Switches(1), 0);
@@ -253,10 +238,6 @@ TEST_F(ArcadeInputTest, ResetLetsGoOfEverythingHeld)
 	Release(GIB::Cross);
 	EXPECT_EQ(Switches(0), 0);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Coin, Service, Test
-// ----------------------------------------------------------------------------------------------------
 
 TEST_F(ArcadeInputTest, SelectInsertsACoinOnThePressNotWhileHeld)
 {
@@ -341,10 +322,6 @@ TEST_F(ArcadeInputTest, TestFlipsTheBoardsTestSwitch)
 	EXPECT_FALSE(ACJV::GetDIPSwitchState(0));
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Fighting and standard cabinets: the game's own table of buttons
-// ----------------------------------------------------------------------------------------------------
-
 TEST_F(ArcadeInputTest, FightingTekkenUsesItsFourButtonsAndNothingElse)
 {
 	Boot("NM00004");
@@ -401,10 +378,6 @@ TEST_F(ArcadeInputTest, StandardSmashCourtHasTwoButtonsAndQuizAnswersSitOnTheLev
 	EXPECT_EQ(PressedAlone(GIB::Square), JVS_BTN_LEFT);
 	EXPECT_EQ(PressedAlone(GIB::Circle), JVS_BTN_RIGHT);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Driving
-// ----------------------------------------------------------------------------------------------------
 
 TEST_F(ArcadeInputTest, DriveTheLeftStickSteersAndTheTriggersAreThePedals)
 {
@@ -471,10 +444,6 @@ TEST_F(ArcadeInputTest, DriveOneCabinetOnePlayer)
 	EXPECT_EQ(Switches(1), 0);
 	EXPECT_FLOAT_EQ(ACJV::GetGas(), 0.0f);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Light guns
-// ----------------------------------------------------------------------------------------------------
 
 TEST_F(ArcadeInputTest, LightGunVampireNightTriggerStartAndPedalReload)
 {
@@ -621,10 +590,6 @@ TEST_F(ArcadeInputTest, LightGunGunLayerButtonsWorkTheSameSwitches)
 	EXPECT_EQ(Switches(), 0);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Drums
-// ----------------------------------------------------------------------------------------------------
-
 TEST_F(ArcadeInputTest, DrumFourHitsOfThePad)
 {
 	Boot("NM00023");
@@ -687,10 +652,6 @@ TEST_F(ArcadeInputTest, DrumPlayer2HasTheOtherFourChannels)
 		EXPECT_FALSE(ACJV::GetDrumHit(channel)) << channel;
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Twin sticks
-// ----------------------------------------------------------------------------------------------------
-
 TEST_F(ArcadeInputTest, TwinStickTheSticksAreTheLeversAndTheTriggersAreTheTriggers)
 {
 	Boot("NM00016");
@@ -737,10 +698,6 @@ TEST_F(ArcadeInputTest, TwinStickOneCabinetOnePlayer)
 	Press(GIB::Start, 1);
 	EXPECT_EQ(Switches(1), 0);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Touch panel
-// ----------------------------------------------------------------------------------------------------
 
 TEST_F(ArcadeInputTest, TouchLeverAndSixButtonsLikeTheDefaultAndR2Touches)
 {
@@ -792,10 +749,6 @@ TEST_F(ArcadeInputTest, GunLayerButtonsDoNothingOnOtherCabinets)
 	ArcadeInput::SetGunButton(0, ArcadeInput::GunButton::Coin, true);
 	EXPECT_EQ(ACJV::coin[0], 1);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// The mouse as the gun
-// ----------------------------------------------------------------------------------------------------
 
 namespace
 {
@@ -1000,10 +953,6 @@ TEST_F(ArcadeInputTest, MouseAndControllerShareTheGunWithoutLettingGoOfEachOther
 	EXPECT_EQ(Switches(), 0);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// The player's own layout
-// ----------------------------------------------------------------------------------------------------
-
 TEST_F(ArcadeInputTest, RemapAButtonDoesTheOtherButtonsJobAndLosesItsOwn)
 {
 	ArcadeInput::SetActiveRemap(MakeRemap({{GIB::Cross, GIB::Square}}));
@@ -1117,10 +1066,6 @@ TEST_F(ArcadeInputTest, ASelectHeldThroughALayoutChangeIsNoNewCoin)
 	Release(GIB::Select);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Remap text and settings
-// ----------------------------------------------------------------------------------------------------
-
 TEST(ArcadeRemapText, RoundTrip)
 {
 	const Remap remap = MakeRemap({{GIB::Cross, GIB::Square}, {GIB::Select, GIB::Unknown}, {GIB::DPadUp, GIB::L3}});
@@ -1233,10 +1178,6 @@ TEST_F(ArcadeInputTest, SettingsReloadTakesTheGlobalAndTheGamesLayoutsTogether)
 	ArcadeInput::ReloadSettings(nullptr, nullptr);
 	EXPECT_TRUE(ArcadeInput::GetActiveRemap().empty());
 }
-
-// ----------------------------------------------------------------------------------------------------
-// The jobs of a cabinet
-// ----------------------------------------------------------------------------------------------------
 
 namespace
 {

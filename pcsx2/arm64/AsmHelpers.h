@@ -71,18 +71,15 @@ class ArmConstantPool;
 // Address-emission observer for the on-disk VU program cache. While a
 // recorder is attached (mVU code-cache episodes only, see mVUopenCodeCache),
 // the emit helpers below report every host-address-bearing instruction they
-// emit, so the recorder can build a relocation table that lets the code run
-// at another address in another process (ASLR moves the image, the heap and
-// possibly the arenas).
+// emit, so the recorder can build a relocation table for running the code at a
+// different address (ASLR moves the image, the heap and possibly the arenas).
 //
-// Emission stays in the forms the helpers use without a recorder, with one
-// exception: an address materialized as an immediate is emitted as a
-// fixed-shape MOVZ + MOVK run over halfwords 0..width-1 (see armEmitMovRun),
-// so a patcher can rewrite the value in place. The width is the value's own
-// minimum (top non-zero halfword) or the recorder's floor, whichever is
-// larger; that is the instruction count vixl's Mov emits for an address
-// unless a halfword below the top one happens to be zero. `at` arguments are the address of the first instruction of the
-// reported shape. All hooks are no-ops when no recorder is attached.
+// An address materialized as an immediate is emitted as a fixed-shape MOVZ +
+// MOVK run over halfwords 0..width-1 (see armEmitMovRun) so a patcher can
+// rewrite it in place. The width is the value's own minimum (top non-zero
+// halfword) or the recorder's floor, whichever is larger. `at` arguments are
+// the address of the first instruction of the reported shape. All hooks are
+// no-ops when no recorder is attached.
 class ArmAddressRecorder
 {
 public:
@@ -154,26 +151,14 @@ void armEmitCall(const void* ptr, bool force_inline = false);
 // backpatch. No cache maintenance: callers own the flush policy.
 void armPatchCodeWord(void* site, u32 instr);
 
-// ---------------------------------------------------------------------------
-// Cache maintenance for many scattered single-word code patches
-//
-// HostSys::FlushInstructionCache is the wrong shape for this. On Linux/AArch64
-// it is __builtin___clear_cache, which ends in a `dsb ish` / `isb` pair, and
-// BaseblockEx-arm64.h's FlushPatchedSites already states the cost model: the
-// per-call cost is dominated by that pair, not by the DC/IC ops. That helper
-// answers the adjacent-sites case by coalescing into ranges, which is right for
-// the handful of link sites one block emits a few instructions apart. A pass
-// that rewrites tens of thousands of words spread over a multi-megabyte arena
-// has no adjacency to coalesce and would pay one barrier pair per site.
-//
-// Note() each patched word, then Finish() once. Finish issues the clean and
-// invalidate for every touched line and exactly ONE barrier pair for the whole
-// set. (`ic iallu` would collapse the I-side to a single instruction, but it is
-// EL1-only; EL0 gets `ic ivau` and nothing else.)
+// Cache maintenance for many scattered single-word code patches, where
+// HostSys::FlushInstructionCache would pay its dsb/isb pair once per site.
+// Note() each patched word, then Finish() once: it cleans and invalidates every
+// touched line and issues exactly one barrier pair for the whole set. (`ic iallu`
+// would do the I-side in one instruction, but it is EL1-only.)
 //
 // Note() takes the EXECUTE address of the word, not the writable alias: cache
-// maintenance is architecturally on the address the instruction fetch uses.
-// ---------------------------------------------------------------------------
+// maintenance is architecturally on the address instruction fetch uses.
 class ArmCodePatchFlusher
 {
 public:

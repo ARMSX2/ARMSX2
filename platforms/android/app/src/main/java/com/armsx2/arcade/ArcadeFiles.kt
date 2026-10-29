@@ -3,13 +3,13 @@ package com.armsx2.arcade
 
 /**
  * Arcade games kept as their own files, with no .acgame: the game's image and its security dongle, named
- * after the game's ID (NM00010.chd and NM00010.ps2, "Battle Gear 3 (NM00010).chd" too) or kept in a folder
- * named after it. The library lists the image as the game wherever it is, and [Arcade.prepare] writes the
- * .acgame the core boots from into the app's own storage, so nothing of the game is copied: only its
- * dongle goes into the memory cards folder, as it does for every arcade game.
+ * after the game ID (NM00010.chd and NM00010.ps2, or "Battle Gear 3 (NM00010).chd") or kept in a folder
+ * named after it. The library lists the image as the game, and [Arcade.prepare] writes the .acgame the
+ * core boots from into the app's own storage. Only the dongle is copied, into the memory cards folder,
+ * as for every arcade game.
  *
- * The files of an arcade set are never PS2 games: an image boots only on its board, and a dongle named
- * .bin would otherwise be listed as a disc. The library keeps all of them out of its list.
+ * The files of an arcade set are never listed as PS2 games: an image boots only on its board, and a
+ * dongle named .bin would otherwise show up as a disc.
  */
 object ArcadeFiles {
     /** The smallest PS2 memory card (8 MB without its ECC). Arcade sets carry small board ROMs that are
@@ -63,7 +63,6 @@ object ArcadeFiles {
         }
     }
 
-    /** One game's image among a folder's files. */
     class Found(val id: String, val image: String, val packed: Boolean)
 
     /** The arcade games among one folder's files, and every file of their sets there, lower-case, which
@@ -71,10 +70,9 @@ object ArcadeFiles {
     class Folder(val games: List<Found>, val claimed: Set<String>)
 
     /**
-     * The arcade games among [names], one folder's files: each file carries its game ID in its name, or
-     * takes the folder's own ([folderId]) when the folder is named after a game. The games an .acgame there
-     * covers ([covered]) are its own: their files are claimed, and not listed a second time. [sizeOf] is
-     * asked only for a .bin or an .img, the one kind an image and a dongle share.
+     * The arcade games among [names], one folder's files. A file's game ID comes from its name, or from the
+     * folder's own ([folderId]). Games an .acgame already covers ([covered]) have their files claimed but are
+     * not listed again. [sizeOf] is asked only for a .bin or .img, the one kind an image and a dongle share.
      */
     fun find(names: Collection<String>, folderId: String?, covered: Set<String>, sizeOf: (String) -> Long): Folder {
         val games = ArrayList<Found>()
@@ -108,10 +106,9 @@ object ArcadeFiles {
     /** How a Conquest card starts (its first page, written by the game); a dongle never does. */
     private val CONQUEST_HEADER = "Memory Card for SoulCaliburII".toByteArray(Charsets.US_ASCII)
 
-    /** How many of a card's first bytes [isConquestCard] reads. */
     val CONQUEST_HEADER_BYTES: Int get() = CONQUEST_HEADER.size
 
-    /** Whether a card file is a Conquest card and not a dongle, by its first bytes (unpacked). */
+    /** [head] is the first bytes of the unpacked card file. */
     fun isConquestCard(head: ByteArray): Boolean =
         head.size >= CONQUEST_HEADER.size && CONQUEST_HEADER.indices.all { head[it] == CONQUEST_HEADER[it] }
 }

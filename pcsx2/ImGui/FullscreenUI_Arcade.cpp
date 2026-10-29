@@ -1,18 +1,14 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Big Picture screens for Namco System 246/256 arcade games, over the shared services in pcsx2/Arcade:
+// Big Picture screens for Namco System 246/256 arcade games, over the shared services in pcsx2/Arcade: the
+// global "Arcade Setup" page (boot files, arcade BIOS, button layout), an "Arcade" section on a game's Summary
+// page, the pause menu's Arcade submenu (coin, Service, Test), and game start (ArcadeSetup::Service::Prepare(),
+// or the missing-files report when something is absent). Other FullscreenUI files call in through the
+// declarations at the end of FullscreenUI_Internal.h.
 //
-//   - the global "Arcade Setup" settings page: boot files (download, update), the arcade BIOS, and the
-//     button layout that applies to every arcade game;
-//   - an "Arcade" section on a game's own Summary page: what the game still lacks, and its own layout;
-//   - the pause menu's Arcade submenu: coin, Service and Test while an arcade game runs;
-//   - starting an arcade game: ArcadeSetup::Service::Prepare() first, and the missing-files report instead
-//     of a boot when something is not there.
-//
-// The other FullscreenUI files call in here with a line each (declarations at the end of
-// FullscreenUI_Internal.h). FullscreenUI state belongs to the GS thread; the downloads and Prepare() run on
-// a worker thread of their own and report back by posting to the GS thread, as FullscreenUI_Packs.cpp does.
+// FullscreenUI state belongs to the GS thread. Downloads and Prepare() run on a worker thread and report back
+// by posting to the GS thread, as FullscreenUI_Packs.cpp does.
 
 #include "Arcade/ArcadeFiles.h"
 #include "Arcade/ArcadeInput.h"
@@ -69,10 +65,6 @@ namespace
 	// The GitHub release is asked about at most this often while the page stays open or is opened again.
 	constexpr double UPDATE_CHECK_MAX_AGE_SECONDS = 600.0;
 
-	// ------------------------------------------------------------------------------------------------
-	// Worker threads
-	// ------------------------------------------------------------------------------------------------
-
 	// One background job at a time. Start() and Join() are called from the GS thread only.
 	class Worker
 	{
@@ -121,10 +113,6 @@ namespace
 		});
 	}
 
-	// ------------------------------------------------------------------------------------------------
-	// State (GS thread)
-	// ------------------------------------------------------------------------------------------------
-
 	// What the setup page shows, read from disk when the page is opened and after a job.
 	Setup::BootFilesStatus s_boot;
 	Setup::BiosStatus s_bios;
@@ -152,10 +140,6 @@ namespace
 	// The Service button is held for a moment after it is pressed from the pause menu.
 	bool s_service_down = false;
 	Common::Timer s_service_timer;
-
-	// ------------------------------------------------------------------------------------------------
-	// Small helpers
-	// ------------------------------------------------------------------------------------------------
 
 	// True the first time a page is drawn after it was not (it was closed, or another page was showing).
 	bool IsFreshOpen(int* last_frame)
@@ -213,10 +197,6 @@ namespace
 		s_bios = service.GetBiosStatus();
 	}
 
-	// ------------------------------------------------------------------------------------------------
-	// Boot files: update check, download, install from a file
-	// ------------------------------------------------------------------------------------------------
-
 	// Forgets what GitHub said and what was asked: the stored boot files changed, or are about to.
 	void DropUpdateCheck()
 	{
@@ -251,7 +231,6 @@ namespace
 		s_check_pending = true;
 	}
 
-	// GS thread: a download or install ended.
 	void FinishBootFilesJob(const Setup::InstallResult& result)
 	{
 		s_boot_job_active = false;
@@ -324,18 +303,13 @@ namespace
 		});
 	}
 
-	// ------------------------------------------------------------------------------------------------
-	// What a game lacks
-	// ------------------------------------------------------------------------------------------------
-
 	bool NeedsBootFiles(const Setup::MissingReport& report)
 	{
 		return std::any_of(report.parts.begin(), report.parts.end(),
 			[](const Setup::MissingPart& part) { return part.kind == Setup::PartKind::BootProgram; });
 	}
 
-	// The whole report: every missing part, in a sentence each. The one part that Big Picture can fix, the boot
-	// files, comes with a button for it.
+	// Lists every missing part. The boot files, the one part Big Picture can fix, get a download button.
 	void ShowMissingReport(const std::string& game_title, const Setup::MissingReport& report, const std::string& error)
 	{
 		std::string text;
@@ -369,10 +343,6 @@ namespace
 			},
 			true, download, FSUI_ICONSTR(ICON_FA_SQUARE_XMARK, "Close"));
 	}
-
-	// ------------------------------------------------------------------------------------------------
-	// Starting a game
-	// ------------------------------------------------------------------------------------------------
 
 	// A game the board runs: an .acgame, or a loose image (named after its game, or in a folder that is).
 	bool IsArcadeStartPath(const std::string& path)
@@ -420,10 +390,6 @@ namespace
 		});
 	}
 
-	// ------------------------------------------------------------------------------------------------
-	// The button layout
-	// ------------------------------------------------------------------------------------------------
-
 	const ArcadeInput::Layout& LayoutFor(const std::string& game_id)
 	{
 		if (!s_layout.has_value() || s_layout_game_id != game_id)
@@ -450,8 +416,8 @@ namespace
 		return changed ? fmt::format(FSUI_FSTR("{} (changed)"), value) : value;
 	}
 
-	// All arcade games: each pad button acts as another pad button. Picking is two steps for a controller: the
-	// button here, then what it acts as in a list. [index] is the list's: the remappable buttons, then Nothing.
+	// All arcade games: makes a pad button act as another pad button. [index] is the choice list's: the
+	// remappable buttons, then Nothing.
 	void ApplyGlobalTarget(GIB button, s32 index)
 	{
 		const std::span<const ArcadeInput::ButtonInfo> buttons = ArcadeInput::GetRemappableButtons();
@@ -514,8 +480,8 @@ namespace
 		}
 	}
 
-	// One game: each pad button does one of the cabinet's jobs. [index] is the list's: the jobs that are not an
-	// analog pedal's, then Nothing.
+	// One game: makes a pad button do one of the cabinet's jobs. [index] is the choice list's: the jobs that are
+	// not an analog pedal's, then Nothing.
 	void ApplyGameJob(const std::string& game_id, GIB button, s32 index)
 	{
 		auto lock = Host::GetSettingsLock();
@@ -589,7 +555,6 @@ namespace
 		}
 	}
 
-	// How the pad works: the layout in general, then what each kind of cabinet does with the sticks and triggers.
 	void ShowControlsHelp()
 	{
 		std::string text = FSUI_STR("A controller button does the cabinet job it is given in the game: the D-pad is the lever, the face "
@@ -606,10 +571,6 @@ namespace
 		}
 		OpenInfoMessageDialog(FSUI_ICONSTR(ICON_FA_GAMEPAD, "How The Controller Works"), std::move(text));
 	}
-
-	// ------------------------------------------------------------------------------------------------
-	// The setup page
-	// ------------------------------------------------------------------------------------------------
 
 	std::string UpdateLine()
 	{
@@ -815,10 +776,6 @@ namespace
 			false);
 	}
 } // namespace
-
-//////////////////////////////////////////////////////////////////////////
-// Hooks
-//////////////////////////////////////////////////////////////////////////
 
 void FullscreenUI::DrawArcadeSettingsPage()
 {
@@ -1027,10 +984,7 @@ void FullscreenUI::ShutdownArcade()
 	s_game_page_frame = -100;
 }
 
-//////////////////////////////////////////////////////////////////////////
-// Screenshot harness entry points (FullscreenUIShot.cpp)
-//////////////////////////////////////////////////////////////////////////
-
+// Entry points for the screenshot harness (FullscreenUIShot.cpp).
 std::string FullscreenUI::ShotArcadeNames()
 {
 	return "arcadelaunch, arcadedownload, arcadepick, arcadepickall, arcadeset, arcadesetall, arcadetest, arcadeprops, arcadepause, arcadepausemain";
@@ -1066,7 +1020,6 @@ bool FullscreenUI::ShotArcade(std::string_view what, std::string* error)
 		return true;
 	}
 
-	// The pause menu's Game Properties, for the running game.
 	if (what == "props")
 	{
 		SwitchToGameSettings();

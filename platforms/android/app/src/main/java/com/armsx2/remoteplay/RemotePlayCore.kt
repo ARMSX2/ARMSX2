@@ -10,9 +10,9 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * Remote play's view of the emulator on ARMSX2: player 2's pad, rumble and the paused state. The
- * streaming code came from ARMSX3, where these calls went to its own core; here they go to PCSX2's
- * pad through the same entry points local co-op uses ([NativeApp.setPadButtonForPort], port 1).
+ * Remote play's view of the emulator: player 2's pad, rumble and the paused state. Pad input goes
+ * to PCSX2's pad through the same entry points local co-op uses ([NativeApp.setPadButtonForPort],
+ * port 1).
  */
 internal object RemotePlayCore {
     // The direction keys applyPadButton (cpp/native-lib.cpp) takes for each stick, with their

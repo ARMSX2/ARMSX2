@@ -309,8 +309,8 @@ const char* GSUtil::AndroidAutoRendererReason()
 
 bool GSUtil::MaliValhallArchPrefersVulkan(u32 valhall_arch)
 {
-	// Owner's call, not a defect list: v9 and v11 run Vulkan by default. v10 (G310/G510/G610/G710)
-	// is deliberately left on OpenGL, as is Bifrost.
+	// v9 and v11 run Vulkan by default. v10 (G310/G510/G610/G710) is deliberately left on OpenGL,
+	// as is Bifrost.
 	return valhall_arch == 9 || valhall_arch == 11;
 }
 

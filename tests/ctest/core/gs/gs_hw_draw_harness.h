@@ -220,7 +220,6 @@ namespace GSHWDrawHarness
 			GSConfig.HWMipmap = false;
 		}
 
-		/// The device BringUp() installs.
 		virtual std::unique_ptr<CaptureDevice> NewDevice() { return std::make_unique<CaptureDevice>(); }
 
 		void BringUp()

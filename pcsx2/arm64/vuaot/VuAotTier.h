@@ -3,7 +3,7 @@
 
 #pragma once
 
-// Milestone 2's test-only tier: called from microVU's block-body hook
+// A test-only tier: called from microVU's block-body hook
 // (VuAotMvuTrace.h), it lowers the block from vu-aot's IR if it can and
 // otherwise leaves the block to microVU. One BodyTier per program run: it
 // owns the first-pass port, which has to see every block in microVU's compile
@@ -45,7 +45,7 @@ namespace vuaot
 		std::set<s32> skip;
 		// Testing: shrink the allocatable register pools (LowerEnv).
 		u32 poolLimitV = 0, poolLimitG = 0;
-		// Milestone 9: list-schedule the bodies (regions do by default).
+		// List-schedule the bodies (regions do by default).
 		bool schedule = false;
 		// Print each lowered block's IR to stdout.
 		bool dump = false;

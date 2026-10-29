@@ -25,16 +25,16 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "RemotePlay"
 
 /**
- * The host's frames on their way from the core to the encoder.
+ * The host's frames on their way from the core to the encoder, by one of two paths.
  *
- * Where the device allows it, a frame is a slot of the core's capture ring: an AHardwareBuffer the
- * GPU filled with the frame. Each slot is imported once as a GL texture, on a GL thread of its own
- * whose context shares textures with the encoder's, and handed over as a texture frame the encoder
- * draws straight into its input. When WebRTC releases the frame the slot goes back to the core. The
- * frame never passes through the CPU.
+ * Texture path, where the device allows it: a frame is a slot of the core's capture ring, an
+ * AHardwareBuffer the GPU filled. Each slot is imported once as a GL texture, on a GL thread whose
+ * context shares textures with the encoder's, and handed over as a texture frame the encoder draws
+ * straight into its input; the frame never passes through the CPU. When WebRTC releases the frame
+ * the slot goes back to the core.
  *
- * Otherwise frames arrive as NV12, copied out of the core once into pooled buffers. A buffer that
- * cannot be imported, or an encoder that cannot take textures, switches to that for good.
+ * NV12 path: frames are copied out of the core once into pooled buffers. A buffer that cannot be
+ * imported, or an encoder that cannot take textures, switches to this path for good.
  */
 internal class RemotePlayFrames(textureInput: Boolean) {
     sealed interface Poll {
@@ -122,7 +122,6 @@ internal class RemotePlayFrames(textureInput: Boolean) {
         return Poll.Frame(VideoFrame(texture, 0, System.nanoTime()))
     }
 
-    // GL thread.
     private fun import(slot: Int): Boolean {
         if (images[slot] != 0L) {
             NativeApp.remotePlayDestroyImage(images[slot])

@@ -4,18 +4,14 @@
 // Who gets to decide the EE cycle rate, and when the dynamic governor is allowed to
 // touch it at all.
 //
-// The rule these tests exist to pin is that a claim is KEY PRESENCE, never value
-// equality. A per-game EECycleRate of 0 and a global EECycleRate of 0 are the same
-// integer and completely different statements: one is a player saying this game runs
-// at stock timing, the other is a player who never thought about it. Deciding by
-// comparing the two numbers gets it wrong in exactly the case that matters, and it
-// gets it wrong silently — the governor underclocks a game somebody had already
-// pinned, and all that shows up is a compatibility report nobody can reproduce.
+// A claim on the rate is KEY PRESENCE, never value equality. A per-game EECycleRate of 0
+// and a global EECycleRate of 0 are the same integer but different statements: "this game
+// runs at stock timing" versus "nobody chose". Comparing the numbers would let the
+// governor underclock a game the player had already pinned.
 //
-// EECycleRate::ResolveEligibility() takes a plain input struct for the same reason
-// the controller is clock-free: hardcore mode, the limiter, a GS dump replay and a
-// frame-advance request are global runtime state, and a unit test that had to stand
-// up a VM to reach them would test none of this.
+// EECycleRate::ResolveEligibility() takes a plain input struct because hardcore mode, the
+// limiter, a GS dump replay and frame-advance are global runtime state that a unit test
+// could only reach by standing up a VM.
 
 #include "EECycleRate.h"
 
@@ -86,8 +82,6 @@ namespace
 	}
 
 } // namespace
-
-// ------------------------------------------------------------------- precedence
 
 TEST(EECycleRateEligibility, AMissingKeyLeavesTheGovernorOff)
 {
@@ -189,15 +183,11 @@ TEST(EECycleRateEligibility, TheBaselineIsAlwaysTheConfiguredSelector)
 	}
 }
 
-// ------------------------------------------- the per-game files a writer produces
-
-// Opting a game in or out is a write to the per-game file, and what the governor does
-// afterwards depends on WHICH keys that write leaves behind. These tests feed the
-// resolver exactly the files the possible writes produce, plus the half-written file that
-// silently defeats an opt-in. There is no shared writer to test - the desktop settings,
-// the fullscreen UI, the mobile frontends and anything that opts a game in automatically
-// each write through their own settings layer - so this is the contract they all have to
-// satisfy, expressed in the only place every one of them can be checked against.
+// Opting a game in or out writes the per-game file, and what the governor does afterwards
+// depends on WHICH keys that write leaves behind. These tests feed the resolver the files
+// the possible writes produce, plus the half-written file that defeats an opt-in. There is
+// no shared writer to test (each frontend writes through its own settings layer), so this
+// is the contract they all have to satisfy.
 
 TEST(EECycleRatePerGameKeys, AnOptInBesideAnExplicitRateTurnsTheGovernorOnForThatGame)
 {
@@ -253,10 +243,9 @@ TEST(EECycleRatePerGameKeys, ANeitherKeyFileLeavesBothQuestionsToTheGlobalSettin
 	EXPECT_STREQ(why.enabled, "on globally, and nothing claims this game's rate");
 }
 
-// The half-written file that defeats an opt-in. A writer that turns a game's governor on
-// by writing only the rate would leave a fixed-rate claim behind, and a fixed-rate claim
-// turns the governor off for that game - so the setting just written does nothing, for
-// that game only, with nothing visible to show it.
+// The half-written file that defeats an opt-in: a writer that turns the governor on by
+// writing only the rate leaves a fixed-rate claim behind, which turns the governor off for
+// that game, so the opt-in silently does nothing.
 TEST(EECycleRatePerGameKeys, WritingOnlyTheRateWouldSilentlyTurnTheGovernorOff)
 {
 	Inputs in = Healthy();
@@ -272,9 +261,8 @@ TEST(EECycleRatePerGameKeys, WritingOnlyTheRateWouldSilentlyTurnTheGovernorOff)
 	EXPECT_STREQ(why.enabled, "the per-game file sets this game's cycle rate");
 }
 
-// The opt-in that writes only the governor key. It works, and it is the shape a writer
-// that must not pin a rate uses: the baseline is whatever the rate resolves to without
-// this file, global setting included, and the governor's ceiling follows it.
+// An opt-in that writes only the governor key. The baseline is the rate that resolves
+// without this file, global setting included, and the governor's ceiling follows it.
 TEST(EECycleRatePerGameKeys, WritingOnlyTheGovernorKeyLeavesTheBaselineToTheResolvedRate)
 {
 	Inputs in = Healthy();
@@ -288,8 +276,6 @@ TEST(EECycleRatePerGameKeys, WritingOnlyTheGovernorKeyLeavesTheBaselineToTheReso
 	EXPECT_TRUE(e.enabled);
 	EXPECT_EQ(e.baseline, 2) << "an overclock nobody picked for this game, and the governor's ceiling";
 }
-
-// ------------------------------------------------------------------ status read
 
 TEST(EECycleRateGovernorStatus, ActiveMeansAskedForAndNothingSuspendingIt)
 {
@@ -336,8 +322,6 @@ TEST(EECycleRateGovernorStatus, TheFloorFollowsTheConfiguredRateAndNeverPassesTh
 	in.configured = -3;
 	EXPECT_EQ(EECycleRate::ResolveGovernorStatus(in, -3).floor, -3);
 }
-
-// ------------------------------------------------------------------- suspension
 
 TEST(EECycleRateEligibility, HardcoreModeSuspendsTheGovernor)
 {
@@ -415,8 +399,6 @@ TEST(EECycleRateEligibility, NoRunningVMSuspendsTheGovernor)
 	EXPECT_STREQ(why.eligible, "no VM is running");
 }
 
-// ------------------------------------------------------------------- provenance
-
 TEST(EECycleRateProvenance, ADatabaseCycleRateIsRecordedWhenItLands)
 {
 	GameDatabaseSchema::GameEntry entry;
@@ -432,8 +414,8 @@ TEST(EECycleRateProvenance, ADatabaseCycleRateIsRecordedWhenItLands)
 }
 
 // The flag has to follow the value. When the player has claimed the rate the database
-// stands aside, so there is no database claim to record, and the governor is then free
-// to act on the per-game dynamic key.
+// stands aside, so there is no database claim to record and the governor is free to act
+// on the per-game dynamic key.
 TEST(EECycleRateProvenance, AClaimedCycleRateLeavesNoDatabaseClaimBehind)
 {
 	GameDatabaseSchema::GameEntry entry;
@@ -470,8 +452,6 @@ TEST(EECycleRateProvenance, TheDynamicKeyClaimsItselfAndNotTheRate)
 	EXPECT_FALSE(ov.Has(SpeedHack::EECycleRate)) << "opting in to the governor is not pinning a rate";
 }
 
-// ---------------------------------------------------------------- the two keys
-
 TEST(EECycleRateSettings, HardcoreModeForcesTheGovernorOffAlongWithTheUnderclock)
 {
 	Pcsx2Config::SpeedhackOptions hacks;
@@ -496,11 +476,10 @@ TEST(EECycleRateSettings, HardcoreModeStillAllowsOverclocking)
 	EXPECT_EQ(hacks.EECycleRate, 2);
 }
 
-// CheckForCPUConfigChanges() asks SpeedhackOptions::operator== before it throws the EE
-// and microVU code caches away. Where a development trace file goes changes no
-// generated code, so it must not be part of that answer — otherwise switching the
-// trace on recompiles everything, and the first windows the trace records are
-// measuring the reset the trace itself caused.
+// CheckForCPUConfigChanges() asks SpeedhackOptions::operator== before it discards the EE
+// and microVU code caches. A trace file path changes no generated code, so it must not be
+// part of that answer; otherwise switching the trace on recompiles everything and the
+// trace's first windows measure the reset it caused.
 TEST(EECycleRateSettings, ATracePathChangeIsNotACPUConfigChange)
 {
 	Pcsx2Config::SpeedhackOptions before;

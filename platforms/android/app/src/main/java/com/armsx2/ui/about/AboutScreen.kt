@@ -160,9 +160,8 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                                 )
                             }
                         }
-                        // ARMSX2's own license, and the open-source code it is built with: the GPL asks for
-                        // the first in the app (copyright, no warranty, where to read it), and the
-                        // libraries' licenses ask for their notices to come with it.
+                        // The GPL asks for ARMSX2's own license in the app (copyright, no warranty, where to
+                        // read it), and the libraries' licenses ask for their notices to come with it.
                         val license: @Composable (Modifier) -> Unit = { cardModifier ->
                             ProjectCard(
                                 title = str("about.license.title"),
@@ -197,8 +196,7 @@ fun AboutScreen(onBack: () -> Unit, viewModel: AboutViewModel = viewModel()) {
                                 openSource(Modifier.weight(1f))
                             }
                         }
-                        // The library music is CC0, so no attribution is legally required — the
-                        // author asks for credit and it costs nothing to give it.
+                        // The library music is CC0; the credit is voluntary, at the author's request.
                         Text(
                             str("app.credits.music"),
                             style = MaterialTheme.typography.bodySmall,

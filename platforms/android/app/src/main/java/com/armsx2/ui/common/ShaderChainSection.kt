@@ -583,9 +583,8 @@ private fun ShaderPresetRow(
  *  actually find in a file manager). That helper resolves through assetCopyRoot, like the
  *  texture / cache / memcard folders, so this follows a moved data folder.
  *
- *  Blocking I/O — call it off the UI thread. Usually one small file read: the list and the
- *  pass counts come from [ShaderIndex], which only walks and reads the whole tree when its
- *  index is missing or out of date. */
+ *  Blocking I/O: call it off the UI thread. Usually one small file read; [ShaderIndex]
+ *  walks the whole tree only when its index is missing or out of date. */
 private fun scanShaderPresets(context: Context): ShaderScan {
     val root = ShaderRepo.shadersRoot(context)
     if (!root.isDirectory) return ShaderScan(root.absolutePath, emptyShaderDirectory())

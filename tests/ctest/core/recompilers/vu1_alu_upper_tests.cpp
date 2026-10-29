@@ -522,17 +522,15 @@ TEST(Vu1AluUpper, OpmulaHonoursEveryDestField)
 	}
 }
 
-// The lanes outside the dest field are not just unwritten: they must not
-// reach the MAC or STATUS flags either. Here the true lane-w product is a -0
-// (MAC Z and S when w is in the field), while fs.x * ft.z is far past the
-// exponent range -- the lane a w-less OP op is free to compute something else
-// in must not leak that into the flags, at the default clamp mode or at mode
-// 4, where O is modelled. FMAND and FSAND read the flags back after the
-// pipeline has retired, and Run() diffs them against the interpreter. FSAND
-// reads the non-sticky half: the interpreter also takes OPMSUB's sticky S
-// from the multiply stage's -0, which neither emitter does (see
-// mvu_abi_digest_tests' broadcastChain), so the final STATUS is left out of
-// the diff for the same reason.
+// Lanes outside the dest field must not reach the MAC or STATUS flags. The true
+// lane-w product is a -0 (MAC Z and S when w is in the field), while fs.x * ft.z
+// is far past the exponent range; the lane a w-less OP op is free to compute
+// anything in must not leak into the flags, at the default clamp mode or at
+// mode 4 (where O is modelled). FMAND and FSAND read the flags back after the
+// pipeline retires, and Run() diffs them against the interpreter. FSAND reads
+// only the non-sticky half: the interpreter takes OPMSUB's sticky S from the
+// multiply stage's -0, which neither emitter does, so the final STATUS is
+// excluded from the diff.
 TEST(Vu1AluUpper, OpOpsKeepUnwrittenLanesOutOfTheFlags)
 {
 	const u32 masks[] = {mask::xyzw, mask::xyz, mask::x | mask::y, mask::x, mask::y, mask::z, mask::w};

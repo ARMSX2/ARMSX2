@@ -57,8 +57,6 @@ namespace
 	const std::string SUM_URL = TARBALL_URL + ".sha256";
 	const std::string PLATFORM = "linux-aarch64";
 
-	// ---- fake machines ---------------------------------------------------------------------------
-
 	// A sysfs with one DRM device bound to `driver`.
 	void MakeFakeSysfs(const std::string& root, const std::string& driver)
 	{
@@ -70,8 +68,6 @@ namespace
 		fs::create_symlink("../../../../bus/platform/drivers/msm", fs::path(root) / "class" / "drm" / "card0-HDMI-A-1" / "device" / "driver");
 	}
 
-	// ---- fake releases ---------------------------------------------------------------------------
-
 	std::string ReleasesJson(const std::string& tag, const std::string& asset, u64 size, const std::string& digest_hex, bool with_sum_asset)
 	{
 		std::string assets = fmt::format(R"({{"name":"{0}","size":{1},"digest":"{2}","browser_download_url":"https://github.com/bmdhacks/armsx2-turnip/releases/download/{3}/{0}"}})",
@@ -80,8 +76,6 @@ namespace
 			assets += fmt::format(R"(,{{"name":"{0}.sha256","size":98,"browser_download_url":"https://github.com/bmdhacks/armsx2-turnip/releases/download/{1}/{0}.sha256"}})", asset, tag);
 		return fmt::format(R"([{{"tag_name":"{0}","name":"Release {0}","draft":false,"prerelease":false,"published_at":"2026-10-04T23:54:03Z","assets":[{1}]}}])", tag, assets);
 	}
-
-	// ---- a pack archive ----------------------------------------------------------------------------
 
 	std::string IcdManifestJson()
 	{
@@ -129,8 +123,6 @@ namespace
 		return FileSystem::ReadFileToString(TestLib(name).c_str()).value_or(std::string());
 	}
 #endif
-
-	// ---- a whole rig -------------------------------------------------------------------------------
 
 	struct Rig
 	{
@@ -276,10 +268,6 @@ namespace
 	}
 } // namespace
 
-// =================================================================================================
-// Parsing a feed
-// =================================================================================================
-
 TEST(DriverPacksFeed, ParsesTheRealGithubResponse)
 {
 	std::vector<RemoteDriver> drivers;
@@ -386,10 +374,6 @@ TEST(DriverPacksIds, AreFolderSafe)
 	EXPECT_FALSE(IsValidDriverId(std::string(129, 'a')));
 }
 
-// =================================================================================================
-// Which machines get packs
-// =================================================================================================
-
 TEST(DriverPacksGpu, AdrenoIsADrmDeviceOnTheMsmDriver)
 {
 	ScopedTempDir dir;
@@ -454,10 +438,6 @@ TEST(DriverPacksGpu, AvailabilityExplainsItself)
 	EXPECT_EQ(other.manager->GetAvailability().reason, Availability::Reason::UnsupportedPlatform);
 	EXPECT_EQ(other.manager->GetAvailability().message, "Driver packs are not available on this platform.");
 }
-
-// =================================================================================================
-// First-run setup
-// =================================================================================================
 
 namespace
 {
@@ -584,10 +564,6 @@ TEST(DriverPacksSetup, TheRecommendedPackIsTheNewestThatIsNotAPrerelease)
 	EXPECT_EQ(PickRecommended(only_prereleases)->id, "armsx2turnip-beta");
 }
 
-// =================================================================================================
-// Listing what a feed offers
-// =================================================================================================
-
 TEST(DriverPacksListing, ReadsTheFeedAndSendsAGithubAcceptHeader)
 {
 	Rig rig;
@@ -617,7 +593,6 @@ TEST(DriverPacksListing, ACachedListingSavesTheRequestUntilItIsOld)
 	ASSERT_EQ(rig.manager->ListAvailable({}, true).drivers.size(), 2u);
 	EXPECT_EQ(rig.http.RequestCount(RELEASES_URL), 2u);
 
-	// A listing past its maximum age is fetched again.
 	rig.config.listing_max_age = std::chrono::seconds(0);
 	rig.Rebuild();
 	ASSERT_EQ(rig.manager->ListAvailable({}).drivers.size(), 2u);
@@ -741,10 +716,6 @@ TEST(DriverPacksListing, CancellationStopsBeforeTheRequest)
 	EXPECT_TRUE(rig.http.Requests().empty());
 }
 
-// =================================================================================================
-// Settings
-// =================================================================================================
-
 TEST(DriverPacksSettings, TheSelectionRoundTripsThroughTheBaseSettings)
 {
 	BaseLayer();
@@ -764,10 +735,6 @@ TEST(DriverPacksSettings, TheSelectionRoundTripsThroughTheBaseSettings)
 }
 
 #ifdef DRIVER_TESTS_LINUX
-
-// =================================================================================================
-// Loading a library the way the Vulkan loader will
-// =================================================================================================
 
 #ifdef CATALOG_TEST_LIB_DIR
 
@@ -899,10 +866,6 @@ TEST(DriverPacksTestLoad, FilesThatAreNotLibrariesAreRefused)
 }
 
 #endif // CATALOG_TEST_LIB_DIR
-
-// =================================================================================================
-// Installing
-// =================================================================================================
 
 TEST(DriverPacksInstall, TheRealLayoutInstallsAndTheManifestPointsAtTheInstalledLibrary)
 {
@@ -1116,8 +1079,6 @@ TEST(DriverPacksInstall, ArchivesThatAreNotPacksAreRefused)
 	}
 }
 
-// ---- trust: the checksum -----------------------------------------------------------------------------
-
 TEST(DriverPacksInstall, AWrongChecksumInstallsNothing)
 {
 	Rig rig;
@@ -1203,8 +1164,6 @@ TEST(DriverPacksInstall, AShaSumStyleFileWithUppercaseHexIsAccepted)
 	rig.http.Ok(SUM_URL, upper + " *turnip-axfl2-002-aarch64.tar.gz\r\n", "text/plain");
 	EXPECT_TRUE(rig.Install(rig.Remote(archive, true, false)).Ok());
 }
-
-// ---- trust: the transfer --------------------------------------------------------------------------------
 
 TEST(DriverPacksInstall, DownloadFailuresAreReported)
 {
@@ -1294,7 +1253,7 @@ TEST(DriverPacksInstall, NotEnoughFreeSpaceIsReportedBeforeDownloading)
 	Rig rig;
 	const std::string archive = MakePackTarGz("lib");
 	RemoteDriver driver = rig.Serve(archive);
-	driver.size = 1ull << 55; // a petabyte
+	driver.size = 1ull << 55;
 	const InstallResult result = rig.Install(driver);
 	EXPECT_EQ(result.status, InstallStatus::NoSpace);
 	EXPECT_NE(result.message.find("Not enough free space"), std::string::npos) << result.message;
@@ -1343,8 +1302,6 @@ TEST(DriverPacksInstall, ABadIdIsRefusedBeforeTouchingDisk)
 	EXPECT_TRUE(rig.http.Requests().empty());
 	EXPECT_FALSE(fs::exists(rig.config.drivers_dir));
 }
-
-// ---- importing, listing, deleting -----------------------------------------------------------------------------
 
 TEST(DriverPacksInstall, AnArchiveFromDiskInstallsWithoutTheNetwork)
 {
@@ -1413,10 +1370,6 @@ TEST(DriverPacksInstall, DeleteRemovesThePackAndOnlyThatPack)
 	EXPECT_FALSE(rig.manager->Delete(".", &error));
 	EXPECT_TRUE(fs::exists(Path::Combine(rig.config.drivers_dir, "keep-me")));
 }
-
-// =================================================================================================
-// Pointing the process at a pack
-// =================================================================================================
 
 TEST(DriverPacksApply, SetsBothVariablesToTheInstalledManifest)
 {
@@ -1519,10 +1472,6 @@ TEST(DriverPacksApply, TheZeroArgumentFormReadsTheSettingsAndDataRoot)
 	EXPECT_EQ(Env("VK_DRIVER_FILES"), "<unset>");
 	SetSelectedPack({});
 }
-
-// =================================================================================================
-// Restarting
-// =================================================================================================
 
 namespace
 {

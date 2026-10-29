@@ -10,12 +10,11 @@ import org.junit.Test
 /**
  * The texture upscaler setting is one int field that has to survive every path a graphics field
  * takes: the native INI (EmuCore/GS/TextureUpscale), the stored JSON, the per-game override
- * blob, and the live-GS-reconfigure check. A path that is missed does not fail loudly, the choice
- * just reverts, so each one is pinned here.
+ * blob, and the live-GS-reconfigure check. A missed path fails silently (the choice just
+ * reverts), so each one is pinned here.
  *
- * The values are 0 Off, 1 RAISR 2x, 2 RAISR 4x. The core's first key for this setting was
- * TextureUpscaleMode, where 2 meant Smooth 2x; a leftover value of that key must not be read as a
- * 4x choice, so the old key and the old stored JSON field are ignored.
+ * Values: 0 Off, 1 RAISR 2x, 2 RAISR 4x. The key was once TextureUpscaleMode, where 2 meant
+ * Smooth 2x, so that old key and its stored JSON field are ignored rather than read as 4x.
  */
 class TextureUpscaleSettingTest {
     private val iniKey = "EmuCore/GS/TextureUpscale"

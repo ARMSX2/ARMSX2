@@ -158,17 +158,11 @@ namespace DriverPacks
 			return fmt::format("{:.1f} MB", static_cast<double>(bytes) / (1 << 20));
 		}
 
-		// ---- last Apply state --------------------------------------------------------------------
-
 		std::mutex s_apply_mutex;
 		ApplyResult s_last_apply;
 		/// Variables ApplyEnvironment set in this process and the values it gave them.
 		std::vector<std::pair<std::string, std::string>> s_applied_env;
 	} // namespace
-
-	// =============================================================================================
-	// Settings
-	// =============================================================================================
 
 	std::string GetSelectedPack()
 	{
@@ -192,10 +186,6 @@ namespace DriverPacks
 			Host::SetBaseStringSettingValue(SETTING_SECTION, SETTING_KEY, id.c_str());
 		Host::CommitBaseSettingChanges();
 	}
-
-	// =============================================================================================
-	// Platform and GPU gating
-	// =============================================================================================
 
 	std::string CurrentPlatform()
 	{
@@ -289,10 +279,6 @@ namespace DriverPacks
 	{
 		return AvailabilityFor(CurrentPlatform(), sysfs_root);
 	}
-
-	// =============================================================================================
-	// Feeds
-	// =============================================================================================
 
 	std::vector<Feed> DefaultFeeds()
 	{
@@ -429,10 +415,6 @@ namespace DriverPacks
 		return true;
 	}
 
-	// =============================================================================================
-	// Test load
-	// =============================================================================================
-
 #ifdef ARMSX2_DRIVER_PACKS_SUPPORTED
 	namespace
 	{
@@ -452,9 +434,9 @@ namespace DriverPacks
 			}
 		}
 
-		/// Closes every descriptor above stderr except `keep`. The forked child inherits all the
-		/// emulator has open (the game image, save states, memory cards, sockets, a log), and the
-		/// driver it loads is code from a download that runs constructors; none of that is its business.
+		/// Closes every descriptor above stderr except `keep`. The forked child inherits everything
+		/// the emulator has open (game image, save states, memory cards, sockets, log), and the
+		/// driver it loads runs constructors from downloaded code.
 		void CloseDescriptorsExcept(int keep)
 		{
 #ifdef SYS_close_range
@@ -606,7 +588,7 @@ namespace DriverPacks
 				break;
 			}
 			if (rc == 0)
-				continue; // re-evaluates the deadline
+				continue;
 			char buffer[512];
 			const ssize_t n = read(fds[0], buffer, sizeof(buffer));
 			if (n < 0)
@@ -669,10 +651,6 @@ namespace DriverPacks
 		return false;
 #endif
 	}
-
-	// =============================================================================================
-	// Installed packs
-	// =============================================================================================
 
 	namespace
 	{
@@ -808,10 +786,6 @@ namespace DriverPacks
 		return true;
 	}
 
-	// =============================================================================================
-	// Listing
-	// =============================================================================================
-
 	RemoteListing Manager::ListAvailable(const Catalog::CancelToken& cancel, bool force_refresh)
 	{
 		RemoteListing listing;
@@ -898,10 +872,6 @@ namespace DriverPacks
 		}
 		return listing;
 	}
-
-	// =============================================================================================
-	// Install
-	// =============================================================================================
 
 	struct Manager::Source
 	{
@@ -1017,7 +987,6 @@ namespace DriverPacks
 				progress({stage, bytes, total});
 		};
 
-		// ---- extract ---------------------------------------------------------------------------
 		report(InstallStage::Extracting);
 		const std::string extract_dir = Path::Combine(stage_root, "extract");
 		Catalog::TarExtractInfo extracted;
@@ -1028,7 +997,6 @@ namespace DriverPacks
 		if (tar_result != Catalog::TarResult::Ok)
 			return done(InstallStatus::BadArchive, tar_error);
 
-		// ---- find the pack inside it -----------------------------------------------------------
 		IcdManifest manifest;
 		std::string problem;
 		if (!FindIcdManifest(extract_dir, extracted.files, &manifest, &problem))
@@ -1045,7 +1013,6 @@ namespace DriverPacks
 		if (ec)
 			return done(InstallStatus::IoError, fmt::format("Could not prepare the pack folder: {}", ec.message()));
 
-		// ---- would it load? --------------------------------------------------------------------
 		if (cancel.IsCancelled())
 			return done(InstallStatus::Cancelled, {});
 		report(InstallStage::Checking);
@@ -1053,7 +1020,6 @@ namespace DriverPacks
 		if (!m_config.library_check(Path::Combine(pack_dir, library_rel), &load_error))
 			return done(InstallStatus::LoadFailed, load_error);
 
-		// ---- write our manifest and meta.json ---------------------------------------------------
 		if (cancel.IsCancelled())
 			return done(InstallStatus::Cancelled, {});
 		report(InstallStage::Finishing);
@@ -1109,7 +1075,6 @@ namespace DriverPacks
 				return done(InstallStatus::IoError, fmt::format("Could not write the driver's metadata: {}", write_error.GetDescription()));
 		}
 
-		// ---- commit -----------------------------------------------------------------------------
 		// Move any pack with this id aside first so a failure puts it back.
 		const std::string old_dir = Path::Combine(stage_root, "previous");
 		bool moved_old = false;
@@ -1182,7 +1147,6 @@ namespace DriverPacks
 			return done(InstallStatus::IoError, fmt::format("Could not create \"{}\": {}", stage_root, ec.message()));
 		ScopeCleanup cleanup{[&]() { RemoveTree(stage_root); }};
 
-		// ---- what the archive must hash to -------------------------------------------------------
 		// Fetched before the archive so a release without one costs no bandwidth.
 		std::string expected;
 		if (!driver.checksum_url.empty())
@@ -1208,7 +1172,6 @@ namespace DriverPacks
 		if (expected.empty())
 			return done(InstallStatus::ChecksumMissing, "This release does not publish a checksum, so the download cannot be verified; nothing was installed.");
 
-		// ---- download, hashing as it arrives -------------------------------------------------------
 		const std::string archive_path = Path::Combine(stage_root, "archive.tar.gz");
 		SHA256Digest sha;
 		Catalog::FetchOptions options;
@@ -1314,10 +1277,6 @@ namespace DriverPacks
 #endif
 	}
 
-	// =============================================================================================
-	// Applying a pack to this process
-	// =============================================================================================
-
 	namespace
 	{
 		bool EnvIsSet(const char* name)
@@ -1410,10 +1369,6 @@ namespace DriverPacks
 		return s_last_apply;
 	}
 
-	// =============================================================================================
-	// First-run setup
-	// =============================================================================================
-
 	bool ShouldOfferInSetup(const SetupContext& context)
 	{
 		return context.availability.IsAvailable() && !context.session_is_x11 && context.selected_pack.empty() &&
@@ -1440,10 +1395,6 @@ namespace DriverPacks
 		}
 		return drivers.empty() ? nullptr : &drivers.front();
 	}
-
-	// =============================================================================================
-	// Restart
-	// =============================================================================================
 
 	namespace
 	{

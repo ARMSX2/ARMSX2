@@ -31,22 +31,20 @@ namespace GSDriverReport
 	/// empty when the driver does not report it.
 	void NoteActiveVulkanDriver(std::string_view driver_info);
 
-	/// The Vulkan device went away.
 	void ClearActiveVulkanDriver();
 
 	/// Safe from any thread.
 	ActiveVulkanDriver GetActiveVulkanDriver();
 
-	/// Whether to tell the user to get malisx2: the hardware renderer is running on a Vulkan device
-	/// whose driver is not malisx2, on a GPU the app offers malisx2 for. The software renderer can
-	/// sit on a Vulkan device only to present the frame the CPU drew, so a different driver costs
-	/// that user nothing.
+	/// Whether to tell the user to get malisx2: the hardware renderer is on a Vulkan device whose
+	/// driver is not malisx2, on a GPU the app offers malisx2 for. The software renderer uses a
+	/// Vulkan device only to present the CPU-drawn frame, so its driver does not matter.
 	///
-	/// Not when the user has already selected a malisx2 pack for this boot. Then the device is on
-	/// another driver because the pack did not load (malisx2 needs a recent Mali kernel driver, and
-	/// on an older one it fails to open and the system loader answers), and telling them to download
-	/// what they selected is wrong. The pack is read off the driver request the device was created
-	/// from (Vulkan::GetCustomDriverStatus), which is the per-game choice for the booting game.
+	/// Not when the user has already selected a malisx2 pack for this boot: the device is then on
+	/// another driver because the pack did not load (malisx2 needs a recent Mali kernel driver; on
+	/// an older one it fails to open and the system loader answers). The selected pack is read off
+	/// the driver request the device was created from (Vulkan::GetCustomDriverStatus), which is the
+	/// per-game choice for the booting game.
 	constexpr bool ShouldWarnMaliSX2(
 		bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver, bool malisx2_pack_selected)
 	{

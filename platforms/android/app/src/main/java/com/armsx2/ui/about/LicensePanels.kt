@@ -41,7 +41,6 @@ import kotlinx.coroutines.withContext
 /** ARMSX2's copyright line. Names and years, so the same in every language. */
 internal const val ArmsCopyright = "Copyright © 2002-2026 PCSX2 Dev Team and ARMSX2 contributors"
 
-/** The GNU GPL, from the About screen's License card. */
 @Composable
 internal fun GplPanel(onClose: () -> Unit) {
     val context = LocalContext.current

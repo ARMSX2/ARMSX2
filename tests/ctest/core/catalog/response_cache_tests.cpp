@@ -42,8 +42,6 @@ namespace
 	}
 } // namespace
 
-// ---- WriteFileAtomic --------------------------------------------------------------------
-
 TEST(CatalogFileUtil, WritesANewFileAndCreatesParentDirectories)
 {
 	ScopedTempDir dir;
@@ -88,8 +86,6 @@ TEST(CatalogFileUtil, FailureLeavesTheOriginalAndNoDebris)
 	EXPECT_TRUE(FileSystem::DirectoryExists(path.c_str()));
 }
 
-// ---- ResponseCache ----------------------------------------------------------------------
-
 TEST(CatalogResponseCache, StoreThenLoad)
 {
 	ScopedTempDir dir;
@@ -105,7 +101,6 @@ TEST(CatalogResponseCache, StoreThenLoad)
 	EXPECT_GE(entry->fetched_at, before - 1);
 	EXPECT_LE(entry->fetched_at, std::time(nullptr) + 1);
 
-	// The file is the JSON itself, where the spec says it lives.
 	EXPECT_EQ(FileSystem::ReadFileToString(cache.PathFor("textures-v2.json").c_str()).value_or(""), R"({"schemaVersion":2})");
 	EXPECT_TRUE(NoTempFilesLeft(cache.Directory()));
 }
@@ -187,8 +182,6 @@ TEST(CatalogResponseCache, NamesMustBePlainFileNames)
 	}
 	EXPECT_FALSE(FileSystem::FileExists(dir.File("escape").c_str()));
 }
-
-// ---- JSON helpers -----------------------------------------------------------------------
 
 TEST(CatalogJson, ParsesAndReportsErrorsWithAnOffset)
 {

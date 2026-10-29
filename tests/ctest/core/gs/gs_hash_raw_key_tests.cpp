@@ -3,21 +3,19 @@
 
 // Pins the raw-block key of GSTextureCache::HashCacheKey::Create. A paletted window (T8, T4, T8H, T4HL,
 // T4HH) of at least one block in each direction is keyed by the bytes of its blocks as they sit in local
-// memory, in the order the unswizzle reads them, plus where the window starts inside its first block. The
-// property a cache key needs, and the one these tests pin, is that two windows with the same key have the
-// same texels: the texture cached under the key is the right one for both.
+// memory, in the order the unswizzle reads them, plus where the window starts inside its first block.
 //
-// The texels are what PSM::rtxP hands PreloadTexture. The key is allowed to be stricter than the texels (it
-// reads the whole of the window's edge blocks, so a byte outside the window changes it), never looser.
+// A cache key must guarantee that two windows with the same key have the same texels (what PSM::rtxP hands
+// PreloadTexture). The key may be stricter than the texels (it reads the whole of the window's edge blocks,
+// so a byte outside the window changes it), never looser.
 //
-// The second half of the file pins the per-block hash cache, which keys such a window by a hash of the hashes
-// of its blocks instead of by their bytes: the same equivalence of windows, from far fewer bytes read.
+// The second half of the file pins the per-block hash cache, which keys such a window by a hash of the
+// hashes of its blocks instead of by their bytes: the same equivalence of windows, from far fewer bytes read.
 //
-// Only a window that used to be unswizzled to be hashed (it has a region, or the format shares its words with
-// other data) changes. Everything else keeps the key it had, bit for bit: a window smaller than a block, a
-// format that is not paletted, an unregioned 8 or 4-bit window (always hashed from its blocks, and the names
-// of its texture pack files are made from that hash), and every lookup that asks for the texel hash (dump,
-// replace, upscale).
+// Only windows that the texel hash unswizzles (a region, or a format that shares its words with other data)
+// get a new key. All others keep the texel hash: a window smaller than a block, a format that is not
+// paletted, an unregioned 8 or 4-bit window (its hash names its texture pack files), and every lookup that
+// asks for the texel hash (dump, replace, upscale).
 
 #include "gs_write_stamp_drivers.h"
 
@@ -35,7 +33,6 @@ namespace
 
 	constexpr u32 kPaletted[] = {PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH};
 
-	/// A texture window: the registers of the texture, and its region when it has one.
 	struct Window
 	{
 		u32 psm = PSMT8;
@@ -43,7 +40,7 @@ namespace
 		u32 tbw = 2; ///< In units of 64 texels.
 		u32 tw = 8, th = 8; ///< Log2 of the size of the texture.
 		bool has_x = false, has_y = false;
-		int x0 = 0, y0 = 0, w = 0, h = 0; ///< The region.
+		int x0 = 0, y0 = 0, w = 0, h = 0;
 	};
 
 	int Log2(int v)
@@ -137,8 +134,8 @@ namespace
 			return texels;
 		}
 
-		/// The hash of the window as it was taken before raw keys: of its unswizzled texels, or, for a window
-		/// that was never unswizzled to hash, of its blocks. Built here from the bytes.
+		/// The texel hash of the window: of its unswizzled texels, or, for a window the texel hash does not
+		/// unswizzle, of its blocks. Built here from the bytes.
 		u64 TexelHash(const Window& win)
 		{
 			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[win.psm];
@@ -161,15 +158,16 @@ namespace
 			return XXH3_64bits(bytes.data(), bytes.size());
 		}
 
-		/// Whether the window is hashed differently by a raw lookup: paletted, a block or more each way (the
-		/// random windows all are), and one that used to be unswizzled to hash.
+		/// Whether a raw lookup hashes the window differently from a texel lookup: paletted, a block or more each
+		/// way (the random windows all are), and one the texel hash unswizzles (a region, or a format that shares
+		/// its words with other data).
 		static bool ChangesWithRawKeys(const Window& win)
 		{
 			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[win.psm];
 			return psm.pal > 0 && (win.has_x || (win.has_y && win.y0 > 0) || psm.fmsk != 0xFFFFFFFFu);
 		}
 
-		/// The key a lookup got before raw keys existed, from the fields it is made of.
+		/// The key of a texel-hash lookup, from the fields it is made of.
 		bool MasterKeyMatches(const Window& win, const HashCacheKey& key)
 		{
 			HashCacheKey expected;
@@ -192,7 +190,7 @@ namespace
 			return tbw;
 		}
 
-		/// A window of the format of random position, size and region, at least a block in each direction.
+		/// A window of the given format with random position, size and region, at least a block in each direction.
 		static Window RandomWindow(std::mt19937& rng, u32 psm)
 		{
 			const GSVector2i bs = GSLocalMemory::m_psm[psm].bs;
@@ -276,8 +274,6 @@ namespace
 		}
 	};
 
-	// --- The property ----------------------------------------------------------------------------------
-
 	TEST_F(GSHashRawKey, AWindowCopiedToAnotherAddressHasTheSameKeyAndTexels)
 	{
 		BringUp();
@@ -335,7 +331,6 @@ namespace
 				const HashCacheKey key_a = Key(a, true);
 				const std::vector<u8> texels_a = Texels(a);
 
-				// Change one byte of one block of the copy.
 				const std::vector<u32> blocks = Blocks(b);
 				const u32 bn = blocks[rng() % blocks.size()];
 				const u32 byte = rng() % GS_BLOCK_SIZE;
@@ -461,7 +456,6 @@ namespace
 					m_gs->m_mem.MarkAllPagesWritten();
 				}
 
-				// A bit that is not the format's own.
 				words[1] ^= ~fmsk & (0u - ~fmsk);
 				m_gs->m_mem.MarkAllPagesWritten();
 				EXPECT_TRUE(Key(win, true) == before) << "psm " << psm << " block " << k << ": a bit outside the format";
@@ -487,7 +481,7 @@ namespace
 			win.th = 6;
 			win.has_x = true;
 			win.x0 = 0;
-			win.w = 100; // a region, so the window is hashed from raw blocks, unlike the same window without one
+			win.w = 100; // a region, so the window is hashed from raw blocks
 
 			const std::vector<u32> blocks = Blocks(win);
 			ASSERT_GT(blocks.size(), 8u);
@@ -505,8 +499,6 @@ namespace
 		}
 		ExpectVerified();
 	}
-
-	// --- Where the window starts ----------------------------------------------------------------------
 
 	TEST_F(GSHashRawKey, TheOffsetInTheFirstBlockIsInTheKey)
 	{
@@ -620,8 +612,6 @@ namespace
 		ExpectVerified();
 	}
 
-	// --- What is not raw ------------------------------------------------------------------------------
-
 	TEST_F(GSHashRawKey, AWindowSmallerThanABlockKeepsTheTexelHash)
 	{
 		BringUp();
@@ -678,7 +668,7 @@ namespace
 	TEST_F(GSHashRawKey, TheTexelKeyIsTheOneItWas)
 	{
 		// What a lookup for a dump, a pack texture or an upscale asks for: the texel hash, built here from
-		// the bytes as it was before raw keys.
+		// the bytes.
 		BringUp();
 		Randomise();
 		std::mt19937 rng(4);
@@ -729,8 +719,8 @@ namespace
 
 	TEST_F(GSHashRawKey, AnUnregionedPalettedWindowKeepsItsKeyInEveryMode)
 	{
-		// What a texture pack file of an 8 or 4-bit texture is named by: the hash of its blocks, from the key
-		// master builds. Raw keys change nothing for it, and neither do dump, replace and upscale lookups.
+		// A texture pack file of an 8 or 4-bit texture is named by the hash of its blocks, so raw lookups and
+		// dump, replace and upscale lookups must all leave that key unchanged.
 		BringUp();
 		Randomise();
 		for (const u32 psm : {PSMT8, PSMT4})
@@ -761,7 +751,6 @@ namespace
 
 	TEST_F(GSHashRawKey, TheKeyOfALookupForTexelsIsMasterKey)
 	{
-		// dump, replace and upscale: whatever the window, the key is the one master builds.
 		BringUp();
 		Randomise();
 		std::mt19937 rng(6);
@@ -775,8 +764,6 @@ namespace
 		}
 		ExpectVerified();
 	}
-
-	// --- The memo -------------------------------------------------------------------------------------
 
 	TEST_F(GSHashRawKey, RawAndTexelHashesDoNotShareAMemoEntry)
 	{
@@ -846,12 +833,10 @@ namespace
 		EXPECT_EQ(Stats().stale, 2u);
 		ExpectVerified();
 	}
-	// --- The per-block hash cache ---------------------------------------------------------------------
-	//
+
 	// With the cache a raw level is keyed by a hash of the 64-bit hashes of its blocks, and a block's hash is
-	// kept until a mark of the block. The tests pin what a cache key needs: it is the key a from-scratch
-	// computation gives (so a write is seen), and two windows have one with the cache exactly when they have
-	// one without it (so no hit is lost and no wrong texture is used).
+	// kept until a mark of the block. The key must equal the one a from-scratch computation gives (so a write is
+	// seen), and two windows share a key with the cache exactly when they do without it.
 
 	class GSBlockHashCache : public GSHashRawKey
 	{
@@ -956,7 +941,7 @@ namespace
 
 	TEST_F(GSBlockHashCache, TheKeyIsTheHashOfTheBlockHashesWhateverHasBeenWritten)
 	{
-		// R8 (i): after random marked writes, the key the cache gives is the key built from scratch from the bytes
+		// After random marked writes, the key the cache gives is the key built from scratch from the bytes
 		// of local memory, so a block hash that was kept past a write would show.
 		BringUp();
 		Randomise();
@@ -965,7 +950,7 @@ namespace
 		u32 checked = 0, changed = 0;
 		for (const u32 psm : kPaletted)
 		{
-			// Windows that are raw: an unregioned 8 or 4-bit window keeps the key it always had.
+			// Raw windows only: an unregioned 8 or 4-bit window is not one.
 			std::vector<Window> wins;
 			while (wins.size() < 6)
 			{
@@ -996,7 +981,7 @@ namespace
 
 	TEST_F(GSBlockHashCache, TwoWindowsHaveOneKeyWithTheCacheExactlyWhenTheyHaveOneWithout)
 	{
-		// R8 (ii): the cache changes the number a window hashes to and nothing about which windows are one.
+		// The cache changes the number a window hashes to and nothing about which windows are one.
 		BringUp();
 		std::mt19937 rng(32);
 
@@ -1033,7 +1018,6 @@ namespace
 						compare(a, b, "copy with junk in the other bits", psm);
 					}
 
-					// One bit of one block of the copy changed.
 					const std::vector<u32> blocks = Blocks(b);
 					m_gs->m_mem.BlockPtr(blocks[rng() % blocks.size()])[rng() % GS_BLOCK_SIZE] ^= static_cast<u8>(1u << (rng() % 8));
 					m_gs->m_mem.MarkAllPagesWritten();
@@ -1057,7 +1041,7 @@ namespace
 
 	TEST_F(GSBlockHashCache, AMipmapChainIsKeyedThroughTheCacheToo)
 	{
-		// Two levels, both raw: each is keyed through the cache, and the chain keeps the equivalence it had. On
+		// Two levels, both raw: each is keyed through the cache, with the same equivalence of windows. On
 		// memory of one repeated block, windows differ only by where they start inside a block at each level.
 		BringUp();
 		FillUniform();
@@ -1104,7 +1088,6 @@ namespace
 		EXPECT_GT(equal, 5u);
 		EXPECT_GT(different, 5u);
 
-		// Both levels of a lookup go through the cache.
 		const GSTextureCache::BlockHashStats before = Stats3();
 		Key(at(4), true, &lod);
 		EXPECT_EQ(Stats3().levels - before.levels, 2u);
@@ -1236,7 +1219,6 @@ namespace
 		for (const u32 bn : Blocks(win))
 			EXPECT_TRUE(m_gs->m_mem.HashDirty(bn)) << "block " << bn << ": the uncached key cleared a bit it does not own";
 
-		// The two keys of a window are two numbers.
 		EXPECT_FALSE(KeyWith(win, true) == off_key);
 		ExpectVerified();
 	}

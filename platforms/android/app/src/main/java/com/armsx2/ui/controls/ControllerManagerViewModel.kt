@@ -70,8 +70,7 @@ class ControllerManagerViewModel(application: Application) : AndroidViewModel(ap
         MainActivityRuntime.currentGame.value?.settingsKey
             ?.takeIf { ControllerMappings.hasGameOverrides(it, player) }
 
-    /** Load [name] into the player being edited, at once and mid-game: into the global map,
-     *  or into the running game's own map when it has one. */
+    /** Load [name] into the player being edited: into the global map, or into the running game's own map when it has one. */
     fun loadProfile(name: String) {
         cancelCapture()
         val player = state.value.player

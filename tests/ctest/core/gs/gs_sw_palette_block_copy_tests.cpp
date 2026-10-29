@@ -640,11 +640,10 @@ namespace
 
 			return c;
 		}
-		// RandomCase() with the textures moved to 32-bit ones: every register it varies (offsets, scissor, wrap, ST,
-		// sub-texel phases, sprite counts and overlaps, the texture under the frame, the one change a case may carry
-		// that the copy must refuse) is varied for them too. Most draws go to a 32-bit frame with no mask, which is
-		// where the 32-bit texel copy applies; the rest keep the 16-bit and masked frames and take texture formats
-		// other than 32-bit, which it must leave to the rasterizer. `shaped` says which draws are in the copy's shape.
+		// RandomCase() with the textures moved to 32-bit ones, varying the same registers. Most draws go to a
+		// 32-bit frame with no mask, where the 32-bit texel copy applies; the rest keep the 16-bit and masked frames
+		// and non-32-bit texture formats, which it must leave to the rasterizer. `shaped` says which draws are in
+		// the copy's shape.
 		static Case RandomCase32(u32 seed, std::vector<bool>& shaped)
 		{
 			Case c = RandomCase(seed);
@@ -657,10 +656,9 @@ namespace
 				d.tex0.PSM = r < 82 ? PSMCT32 : r < 86 ? PSMCT24 : r < 90 ? PSMCT16 : r < 94 ? PSMCT16S : r < 97 ? PSMZ32 : PSMZ24;
 				d.tex0.CBP = d.tex0.CPSM = d.tex0.CSA = 0;
 
-				// The rasterizer's snapshot of a 32-bit texture is read past its end by a region clamp or repeat that
-				// names texels beyond the texture, so the reference itself differs from run to run on those draws
-				// (two runs of the rasterizer disagree, seen in seeds 5312 and 5656). The copy refuses them and the
-				// directed test covers that with a region inside the texture; the sweep makes them plain draws.
+				// A region clamp or repeat that names texels beyond a 32-bit texture makes the rasterizer's snapshot
+				// read past its end, so the reference itself differs from run to run on those draws. The copy refuses
+				// them and the directed test covers that with a region inside the texture; the sweep makes them plain draws.
 				if (d.clamp.WMS > CLAMP_CLAMP || d.clamp.WMT > CLAMP_CLAMP)
 				{
 					d.clamp.WMS &= 1;
@@ -677,7 +675,7 @@ namespace
 				}
 
 				// A bilinear lookup whose weights come out zero or a half is taken (the box filter), so the linear
-			// filter is no longer a change the copy must refuse for a 32-bit texture.
+				// filter is no longer a change the copy must refuse for a 32-bit texture.
 			if (d.tex1.MMAG == 1 && d.tex1.MMIN == 1 && d.tex1.MXL == 0)
 				d.must_refuse = false;
 
@@ -885,7 +883,6 @@ TEST_F(GSSwPaletteBlockCopy, RefusesARegionClamp)
 	EXPECT_EQ(Compare(c), 0u);
 }
 
-// Without TCC the texel's colour goes out with the vertex's alpha.
 TEST_F(GSSwPaletteBlockCopy, TakesTextureColourWithVertexAlpha)
 {
 	Case c;
@@ -1382,7 +1379,6 @@ TEST_F(GSSwPaletteBlockCopy, RefusesA16BitFrameWhoseSpritesAreScaled)
 	EXPECT_EQ(Compare(c), 0u);
 }
 
-// A mask that keeps every bit writes nothing; both arms leave memory alone.
 TEST_F(GSSwPaletteBlockCopy, LeavesA16BitFrameAloneUnderAFullMask)
 {
 	Case c;
@@ -1448,10 +1444,9 @@ TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomDraws)
 }
 
 // The 32-bit texel copy: a sprite draw that writes each texel of a 32-bit texture one-to-one into a 32-bit frame.
-// Stuntman draws 189 of these a frame (the road, blitted from a 1024x1024 texture); there is no palette, so the
-// copy reads the texels straight from local memory and writes them back, and the rasterizer's snapshot of the
-// texture is never taken. The cases below are the same comparison as the palette block copy's: both arms from one
-// local memory, every byte compared.
+// There is no palette, so the copy reads the texels straight from local memory and writes them back, and the
+// rasterizer's snapshot of the texture is never taken. The cases below are the same comparison as the palette
+// block copy's: both arms from one local memory, every byte compared.
 
 // A 32-bit blit: a 32x16 piece of a 256x256 32-bit texture into a 128-pixel-wide 32-bit frame, texel for pixel.
 static Draw Blit32(int frac = 0)
@@ -1483,7 +1478,6 @@ static Draw Blit32(int frac = 0)
 	return d;
 }
 
-// A sprite by its destination corner and extent and its source corner, in whole pixels.
 static Sprite Blit32Sprite(int dx, int dy, int w, int h, int sx, int sy, int frac = 0)
 {
 	return {(2048 + dx) * 16, (2048 + dy) * 16, (2048 + dx + w) * 16, (2048 + dy + h) * 16,
@@ -1609,7 +1603,6 @@ TEST_F(GSSwPaletteBlockCopy, WritesTheTexelsOwnAlphaWhateverTEXASays)
 	}
 }
 
-// Modulate by a colour of 0x80 is decal; by any other colour it is not.
 TEST_F(GSSwPaletteBlockCopy, TakesModulateByHalfOf32BitTexturesAndRefusesAnyOtherColour)
 {
 	Case c;
@@ -1690,7 +1683,6 @@ TEST_F(GSSwPaletteBlockCopy, ReadsItsOwn32BitTextureAsItWasBeforeTheDraw)
 	}
 }
 
-// Sprites that overlap each other in one draw, later over earlier.
 TEST_F(GSSwPaletteBlockCopy, TakesOverlappingSpritesInOrder)
 {
 	Case c;
@@ -1731,7 +1723,6 @@ TEST_F(GSSwPaletteBlockCopy, ClipsToTheScissor)
 	}
 }
 
-// A sprite cut off completely draws nothing, and neither arm touches memory.
 TEST_F(GSSwPaletteBlockCopy, LeavesMemoryAloneForASpriteOutsideTheScissor)
 {
 	Case c;
@@ -1742,7 +1733,6 @@ TEST_F(GSSwPaletteBlockCopy, LeavesMemoryAloneForASpriteOutsideTheScissor)
 	Compare(c);
 }
 
-// A frame that runs off the end of local memory wraps; the texels still land where the rasterizer puts them.
 TEST_F(GSSwPaletteBlockCopy, WrapsAFrameAtTheEndOfLocalMemory)
 {
 	u32 seed = 370;
@@ -1763,7 +1753,6 @@ TEST_F(GSSwPaletteBlockCopy, WrapsAFrameAtTheEndOfLocalMemory)
 	}
 }
 
-// A texture that runs off the end of local memory: whichever arm takes it, the bytes agree.
 TEST_F(GSSwPaletteBlockCopy, ReadsATextureAtTheEndOfLocalMemory)
 {
 	u32 seed = 380;
@@ -1864,11 +1853,8 @@ TEST_F(GSSwPaletteBlockCopy, Refuses32BitBlitsWithAnythingElseOnTheDraw)
 	}
 }
 
-// Random cases from the palette block copy's generator, moved to 32-bit textures: every register it varies
-// (offsets, scissor, wrap, ST, sub-texel phases, sprite counts and overlaps, the texture under the frame, the
-// one change a case may carry that the copy must refuse) is varied here too. Most draws go to a 32-bit frame
-// with no mask, which is where the copy applies; the rest keep the 16-bit and masked frames and the source
-// formats other than 32-bit, which it must leave to the rasterizer. Byte-compared against the rasterizer.
+// RandomCase32() draws, byte-compared against the rasterizer. Those in the copy's shape are mostly taken; the
+// rest it must leave to the rasterizer.
 TEST_F(GSSwPaletteBlockCopy, MatchesTheRasterizerOnRandomDrawsFrom32BitTextures)
 {
 	constexpr u32 cases = 800;

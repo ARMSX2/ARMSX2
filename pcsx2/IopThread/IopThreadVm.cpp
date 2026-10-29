@@ -44,18 +44,17 @@ namespace IopThread
 
 	bool g_start_hold_pending = false;
 
-	// A pause the IOP thread asked for, waiting for the EE to make it.
 	std::atomic<bool> g_pause_requested{false};
 
 	namespace
 	{
-		// The testing knob for S_min (design 5.3); 0 runs a slice whenever there is budget.
+		// Minimum Threaded slice size (testing knob); 0 runs a slice whenever there is budget.
 		s32 s_min_slice = 0;
 
 		// The testing knob for the idle-watch window (Params::idle_spin_ns).
 		u32 s_idle_spin_ns = kDefaultIdleSpinNs;
 
-		// The pause hold (design 9.3), kept for as long as the VM stays paused.
+		// Held for as long as the VM stays paused.
 		std::optional<ScopedHold> s_pause_hold;
 
 		// The hold that keeps a Threaded thread started inside an event test stopped until the next one (g_start_hold_pending).
@@ -64,26 +63,25 @@ namespace IopThread
 		// The table the IOP thread applies E2I items with. Null is the real one (tests swap it).
 		const E2IActions* s_e2i_actions = nullptr;
 
-		// The IOP's position in EE cycles: where the EE is, less the IOP time still owed (design 3.3).
+		// The IOP's position in EE cycles: where the EE is, less the IOP time still owed.
 		// EEsCycle is negative when the IOP has run past the EE.
 		u64 IopPosition()
 		{
 			return cpuRegs.cycle - static_cast<s64>(EEsCycle);
 		}
 
-		// What the thread runs for each Lockstep request. The slice is the same code Off runs on the EE
-		// thread, iopRunSliceOnIopThread(); this only keeps the thread object's view of the IOP's position
-		// moving with the books. A reset or a state load moves the books by itself and calls ResyncClocks().
+		// The Lockstep slice: the same code Off runs on the EE thread, iopRunSliceOnIopThread(). This only keeps
+		// the thread object's view of the IOP's position in step with the books; a reset or a state load moves
+		// the books itself and calls ResyncClocks().
 		u64 RunIopSlice(u64 from, u64 /*target*/)
 		{
 			iopRunSliceOnIopThread();
 			return std::max(from, IopPosition());
 		}
 
-		// What the thread runs for each Threaded slice (design 5.2): today's pair, with the budget the
-		// thread computed from the watermark in place of EEsCycle. A slice is not given more than half of
-		// the s32 range, which a hold's catch-up after a very long stop could otherwise exceed. EEsCycle and
-		// EEoCycle are the EE's books and are not touched.
+		// The Threaded slice. The budget comes from the thread's watermark instead of EEsCycle, and the EE's
+		// books (EEsCycle, EEoCycle) are not touched. A slice gets at most half the s32 range, which a hold's
+		// catch-up after a very long stop could otherwise exceed.
 		u64 RunIopSliceThreaded(u64 from, u64 target)
 		{
 			IOP_SIDE_ASSERT();
@@ -107,14 +105,14 @@ namespace IopThread
 			return from + static_cast<u64>(std::max<s64>(ran, 0));
 		}
 
-		// What the EE does with an item the IOP queued (design 3.5). A CallOnEE is run by the thread object.
+		// What the EE does with an item the IOP queued. A CallOnEE is run by the thread object.
 		void HandleI2EItem(const I2EItem& item)
 		{
 			switch (item.kind)
 			{
 				case I2EKind::SbusIrq:
 					// INTC_STAT is written on the EE thread only: the EE JIT loads it inline when the IntcStat
-					// speedhack is off (design 7.1 C13).
+					// speedhack is off.
 					hwIntcIrq(INTC_SBUS);
 					break;
 				case I2EKind::PauseRequest:
@@ -128,8 +126,8 @@ namespace IopThread
 			}
 		}
 
-		// The EE-side books from where the IOP is (design 9.1, Threaded to anything): the IOP is at `pos`, so it
-		// is owed what the EE has run beyond that. Valid only while the IOP is held or stopped.
+		// The EE-side books from where the IOP is: it is owed what the EE has run beyond its published position.
+		// Valid only while the IOP is held or stopped.
 		void BooksFromThread()
 		{
 			EEsCycle = static_cast<s32>(cpuRegs.cycle - g_thread.PublishedPos());
@@ -184,8 +182,6 @@ namespace IopThread
 			g_thread.Stop();
 		}
 	} // namespace
-
-	// ================================================================ choosing and starting
 
 	HostCpuInfo CurrentHostInfo()
 	{
@@ -321,8 +317,6 @@ namespace IopThread
 			g_thread.ReapplyFpcr(EmuConfig.Cpu.FPUFPCR);
 	}
 
-	// ================================================================ clocks and pausing
-
 	void ResyncClocks()
 	{
 		if (g_thread.IsRunning())
@@ -362,8 +356,6 @@ namespace IopThread
 	{
 		return g_thread.GetStats();
 	}
-
-	// ================================================================ ownership asserts
 
 	namespace
 	{
@@ -480,8 +472,6 @@ namespace IopThread
 		s_violation_handler(Side::Ee, where);
 	}
 
-	// ================================================================ EE-to-IOP items
-
 	const E2IActions kRealE2IActions = {
 		[] { psxHBlankStart(); },
 		[] { psxHBlankEnd(); },
@@ -561,10 +551,9 @@ namespace IopThread
 				// Threaded: the IOP applies it when its own clock reaches the stamp, and the EE goes on.
 				if (g_thread.PostE2I(stamp, kind, arg))
 					return;
-				// The ring cannot make room for it while the IOP is held or blocked in a CallOnEE function
-				// (the lag bound keeps it nearly empty, so this does not happen), and the stop predicate ends a
-				// wait for room when the VM is going away. In the first case the IOP is stopped and the item can be
-				// applied here; in the second it is not, and the item is dropped with the VM.
+				// The queue can fail only while the IOP is held or blocked in a CallOnEE function (the lag bound
+				// keeps the ring nearly empty otherwise), or when the VM is going away. If the IOP is stopped,
+				// apply the item here; if the VM is going away, drop it.
 				pxAssertMsg(g_thread.IopIsStopped() || VMManager::GetState() == VMState::Stopping || VMManager::GetState() == VMState::Shutdown,
 					"an EE-to-IOP item could not be queued");
 				if (!g_thread.IopIsStopped())
@@ -576,8 +565,6 @@ namespace IopThread
 		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
 	}
 
-	// ================================================================ host threads and the CPU thread
-
 	bool TryPostToIop(HostCommandQueue::Command command)
 	{
 		return g_thread.TryPostHostCommand(std::move(command)) != 0;
@@ -587,8 +574,6 @@ namespace IopThread
 	{
 		Host::RunOnCPUThread(std::move(fn), false);
 	}
-
-	// ================================================================ the EE core's calls
 
 	bool LockstepActive()
 	{
@@ -627,8 +612,6 @@ namespace IopThread
 		VMManager::SetPaused(true);
 		Cpu->ExitExecution();
 	}
-
-	// ================================================================ Threaded: the EE's event test and SIF
 
 	namespace
 	{
@@ -690,8 +673,6 @@ namespace IopThread
 	{
 		return s_idle_spin_ns;
 	}
-
-	// ================================================================ counters
 
 	std::string FormatStats(const Stats& t, double frames)
 	{

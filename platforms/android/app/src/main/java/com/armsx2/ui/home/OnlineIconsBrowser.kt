@@ -52,18 +52,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Online Icons, from the library menu: the PS2 Icon Open Database's save icons, to look through
- * with previews and download one at a time, the ones for the player's games, or all of them, and
- * to remove any again. A paged grid rather than a lazy list: the controller moves between the
- * tiles that are composed, and left or right at the edge of a page turns it. Search matches
- * titles, which save it is, contributors and disc serials. With Shuffle on, All and Downloaded
- * deal a page of random icons at every turn. Downloads go on if it is closed.
+ * Browser for the PS2 Icon Open Database's save icons: preview, download and remove. A paged grid
+ * rather than a lazy list, so the controller can move between the composed tiles; left or right at
+ * a page's edge turns the page. Search matches titles, save labels, contributors and disc serials.
+ * Downloads continue after it is closed.
  */
 @Composable
 internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Collection<String>) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    // Store music while it is open, in the library music's place, and friends see "Browsing
-    // Online Icons".
     androidx.compose.runtime.DisposableEffect(Unit) {
         com.armsx2.LibraryMusic.playTheme(context, com.armsx2.R.raw.online_icons_music)
         com.armsx2.DiscordPresence.enter(com.armsx2.DiscordPresence.PLACE_ONLINE_ICONS)
@@ -95,9 +91,8 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
 
     var filter by remember { mutableIntStateOf(FILTER_POPULAR) }
     var query by remember { mutableStateOf("") }
-    // Shuffle, on All and Downloaded, as in the Icon Museum: turning it on leaves the page as it
-    // is, and from then on every turn, either way, deals a page of random icons from the tab
-    // ([dealt]) instead of the next in order. Off, the tab is back in order from there.
+    // Shuffle (All and Downloaded tabs): while on, each page turn deals random icons from the tab
+    // ([dealt]) instead of the next page. Turning it off resumes in order from there.
     var shuffleOn by remember { mutableStateOf(false) }
     var dealt by remember { mutableStateOf<List<OnlineIcons.Entry>?>(null) }
     var perPageNow by remember { mutableIntStateOf(1) }
@@ -125,7 +120,7 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
         page = 0
         dealt = null
     }
-    // A second press removes: one icon (its hash) or everything (ALL).
+    // Armed for removal by the next press: one icon's hash, or ALL.
     var removing by remember { mutableStateOf<String?>(null) }
     var tapped by remember { mutableStateOf<String?>(null) }
     val previews = remember { PreviewCache() }
@@ -144,7 +139,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
     com.armsx2.ui.common.PadModal(key = "online-icons", onDismiss = onClose, scrimAlpha = 1f, initialFocusId = "online-icons.tile.0") {
         Box(Modifier.fillMaxSize().background(Color(0xFF0A0F1E))) {
             Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // What this is, whose icons they are, and how many are here.
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(str("onlineicons.title"), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
@@ -157,7 +151,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     Spacer(Modifier.width(52.dp)) // room for Close
                 }
 
-                // What can be downloaded or removed, or how far a download is.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     when {
                         status is OnlineIcons.Status.Working -> {
@@ -209,7 +202,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     }
                 }
 
-                // Which icons: all, the player's games', the downloaded ones; and search.
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for ((f, label) in listOf(
                         FILTER_POPULAR to str("onlineicons.popular"), FILTER_ALL to str("onlineicons.all"),
@@ -250,7 +242,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     if (query.isNotEmpty()) Chip("×", "online-icons.clear") { query = "" }
                 }
 
-                // The icons, a page at a time.
                 BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                     val cols = (maxWidth / TILE_W).toInt().coerceAtLeast(1)
                     val rows = ((maxHeight - FOOTER_H) / TILE_H).toInt().coerceAtLeast(1)
@@ -260,12 +251,11 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                     // The list can shrink under the page (a filter, a search, a removal).
                     val current = page.coerceAtMost(pages - 1)
                     val first = current * perPage
-                    // Shuffling: Shuffle on, on a tab of its own, with more than a page to deal from.
+                    // A single page has nothing to deal from.
                     val shuffling = shuffleOn && (filter == FILTER_ALL || filter == FILTER_DOWNLOADED) && shown.size > perPage
                     val onPage = (if (shuffling) dealt?.filter { it in shownSet }?.takeIf { it.isNotEmpty() } else null)
                         ?: shown.subList(first.coerceAtMost(shown.size), (first + perPage).coerceAtMost(shown.size))
-                    // A turn, either way: while shuffling, a page of random icons from the tab, none of
-                    // them the ones showing when there are enough; otherwise the next page in order.
+                    // Shuffling deals a page that avoids the icons showing, when enough others remain.
                     val turn = { by: Int ->
                         turnPage()
                         if (shuffling) {
@@ -304,8 +294,7 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                                             else -> removing = entry.hash
                                         }
                                     }
-                                    // At the edge of a page, left and right turn it, and the
-                                    // selection lands on the other edge of the new one.
+                                    // At a page's edge, left/right turn it and the selection lands on the opposite edge.
                                     val left: (() -> Unit)? = if (c == 0 && (shuffling || current > 0)) {
                                         {
                                             turn(-1)
@@ -319,10 +308,9 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                                             SettingsControllerNav.selectById("online-icons.tile.${minOf(r * cols, last)}")
                                         }
                                     } else null
-                                    // One composition per slot, kept across page turns: rebuilding a
-                                    // tile unregisters its slot's id, and the registry then moved the
-                                    // selection to the first control, Download all. What depends on
-                                    // the icon inside it is keyed by the icon instead.
+                                    // One composition per slot, kept across page turns: rebuilding a tile
+                                    // unregisters its slot's id, and the registry then moves the selection
+                                    // to the first control. State tied to the icon is keyed by the icon.
                                     Tile(
                                         entry, "online-icons.tile.$slot", have, removing == entry.hash, previews,
                                         selectedByTouch = tapped == entry.hash, onPress = press, onLeft = left, onRight = right,
@@ -332,7 +320,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
                         }
                     }
 
-                    // Page, and the one selected: what it is, which save, who contributed it.
                     val selectedSlot = SettingsControllerNav.currentSelectedId()?.removePrefix("online-icons.tile.")?.toIntOrNull()
                     val focus = selectedSlot?.let { onPage.getOrNull(it) } ?: onPage.firstOrNull { it.hash == tapped }
                     Row(
@@ -369,7 +356,6 @@ internal fun OnlineIconsBrowser(onClose: () -> Unit, librarySerials: () -> Colle
     }
 }
 
-/** One icon: its preview, moving while selected, its name, and whether it is downloaded. */
 @Composable
 private fun Tile(
     entry: OnlineIcons.Entry,

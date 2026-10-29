@@ -824,11 +824,9 @@ namespace GSReplayPayload
 
 			// Checkpoints placed after one named packet, each reading its own region.
 			// Same boundary rule as a ladder rung: only where the GIF has closed every
-			// path it opened, deferred to the next such boundary otherwise, and named
-			// by the packet it actually follows so the arms join on a real index. A
-			// deferred one keeps its identity, because the question is "what did this
-			// draw leave behind" and moving it to the next quiescent boundary is the
-			// only honest way to read that.
+			// path it opened, otherwise deferred to the next such boundary. Each is
+			// named by the packet it actually follows so the arms join on a real index,
+			// and a deferred one keeps its own tag and region instead of being dropped.
 			for (size_t ai = 0; ai < opts.at.size(); ai++)
 			{
 				const bool due = (this_packet == opts.at[ai].packet);

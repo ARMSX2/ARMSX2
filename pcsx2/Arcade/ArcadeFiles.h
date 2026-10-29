@@ -7,8 +7,7 @@
 // None of them is a PS2 game, so the game list must not list them as discs or ELFs (ArcadeSetClaims), and
 // ArcadeSetup needs to know which of the files lying around a game is which.
 //
-// This is a port of the Android app's ArcadeFiles.kt (game IDs in file names, kindOf, dongleName, the
-// Conquest card header), with the same rules.
+// Ported from the Android app's ArcadeFiles.kt, with the same rules.
 
 #pragma once
 
@@ -30,7 +29,7 @@ namespace Arcade
 	enum class FileKind
 	{
 		Unknown, ///< Not a file of an arcade set by its name.
-		Image, ///< The game's disc or hard drive image (.chd, .iso, or a big .bin/.img), as the board's drive reads it.
+		Image, ///< The game's disc or hard drive image (.chd, .iso, or a big .bin/.img).
 		PackedImage, ///< An image still packed (.iso.gz): the drive cannot read it as it is.
 		Card, ///< A memory card file: the dongle (.ps2, a .bin of a card's size, or one packed as .gz) or Soul Calibur II's Conquest card.
 		Other, ///< Something else of the set (a small board ROM, a boot program): never a game.
@@ -39,8 +38,8 @@ namespace Arcade
 	/// The smallest PS2 memory card (8 MB without its ECC). Arcade sets carry small board ROMs that are easily
 	/// taken for the dongle; anything smaller than this is not one.
 	constexpr u64 MIN_CARD_BYTES = 8ull << 20;
-	/// Above any memory card file (the biggest the core makes, 64 MB with its ECC, is 66 MB): anything bigger is
-	/// an image.
+	/// Above any memory card file (the biggest the core makes, 64 MB with its ECC, is 66 MB): anything bigger
+	/// is an image.
 	constexpr u64 MAX_CARD_BYTES = 72ull << 20;
 
 	/// What a file of an arcade set is, by its name, and by its [size] when the name cannot tell (a .bin is an
@@ -68,14 +67,13 @@ namespace Arcade
 	/// A Conquest card with its spare bytes, the only kind the game reads: 16384 pages of 512 + 16 bytes.
 	constexpr u64 CONQUEST_CARD_BYTES = 8650752;
 
-	/// How many of a card's first bytes IsConquestCardHeader() reads.
 	size_t ConquestHeaderBytes();
-	/// Whether the first bytes of a card file (unpacked) are a Conquest card's, which a dongle never has.
+	/// [head] is the start of an unpacked card file; a dongle never has this header.
 	bool IsConquestCardHeader(std::span<const u8> head);
 
 	/// The files in the folders a scan covers that belong to an arcade set, which the game list must leave out
-	/// of its disc and ELF scan: an arcade game's boot.elf would be listed as an ELF "boot", its dongle, named
-	/// .bin, as a disc, and its image as a bogus PS2 disc.
+	/// of its disc and ELF scan: boot.elf would be listed as an ELF "boot", a .bin dongle as a disc, and the
+	/// image as a bogus PS2 disc.
 	///
 	/// A file belongs to a set when
 	///  - an .acgame in the scan names it (its boot program, image, SRAM, dongle or card), or, when that .acgame
@@ -92,9 +90,9 @@ namespace Arcade
 		bool Owns(const std::string& path) const;
 		bool Empty() const { return m_files.empty() && m_folders.empty(); }
 
-		/// [path] is a loose image (LooseImageGameId) of a game that no .acgame in the scan describes. It is owned like
-		/// the rest of a set, so a scan that does not know better leaves it out, but it is a game: the one file of the
-		/// set that a game list shows. An image of a game that has an .acgame is that .acgame's, wherever it lies.
+		/// [path] is a loose image (LooseImageGameId) of a game that no .acgame in the scan describes. It is
+		/// owned like the rest of a set, so a scan that ignores this leaves it out, but it is a game: the one
+		/// set file that a game list shows. An image of a game that has an .acgame is that .acgame's.
 		bool IsLooseImage(const std::string& path) const;
 
 	private:

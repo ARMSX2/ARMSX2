@@ -63,7 +63,7 @@ AutoTune::ApplyScope::~ApplyScope()
 
 namespace
 {
-	// ", target cost 127.00 -> 4.75 ms per frame (-96%)" when the cost the lever targets was measured on both sides.
+	// ", target cost <before> -> <after> ms per frame (<change>%)"; empty unless the lever's target cost was measured on both sides.
 	std::string CostText(const AutoTuneAction& a)
 	{
 		if (a.cost_before <= 0.0 || a.cost_after <= 0.0)
@@ -71,10 +71,6 @@ namespace
 		return fmt::format(", target cost {:.2f} -> {:.2f} ms per frame ({:+.0f}%)", a.cost_before, a.cost_after, -a.cost_gain * 100.0);
 	}
 } // namespace
-
-// ================================================================================================
-// AutoTuneApplier
-// ================================================================================================
 
 AutoTuneApplier::AutoTuneApplier(AutoTuneEnv& env)
 	: m_env(env)
@@ -196,9 +192,8 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 	m_env.Log(fmt::format("keeping {}: speed {:.1f}% -> {:.1f}% ({:+.1f}%){}", label, action.speed_before, action.speed_after, action.gain * 100.0,
 		CostText(action)));
 
-	// A keep the full-speed rule earned on a game that was at full speed with late frames can have a speed change
-	// a little under zero. What the player is told and what the game's file records is 0 at the least: a keep is
-	// never shown as a loss. The log line above has the measured figure.
+	// A keep earned by the full-speed rule can have a gain slightly under zero. The on-screen message and the
+	// game's file get 0 at the least; the log line above has the measured figure.
 	const double gain = std::max(action.gain, 0.0);
 
 	AutoTune::Change change;
@@ -284,10 +279,6 @@ void AutoTuneApplier::Revert(const AutoTuneAction& action)
 
 	m_env.ApplySettings();
 }
-
-// ================================================================================================
-// Decisions that depend on the host and the game database
-// ================================================================================================
 
 AutoTune::GameDbForced AutoTune::ForcedByGameDb(const GameDatabaseSchema::GameEntry* entry)
 {
@@ -387,10 +378,6 @@ bool AutoTune::TrialWasMeasured(AutoTuneLever lever, uint32_t governor_transitio
 		return true;
 	return governor_transitions_now != governor_transitions_at_start;
 }
-
-// ================================================================================================
-// The VM-bound half
-// ================================================================================================
 
 namespace
 {
@@ -741,9 +728,8 @@ namespace
 		const AutoTuneLeverState state = Gather();
 		AutoTuneAction action = m_controller.OnWindow(w, state);
 
-		// A governor that never lowered the rate during its trial was not tried. The controller has noted it for
-		// this session, so it is not offered again straight away, but it is not written to the game's file as
-		// "did not help": the next session may find the game overloaded when this one did not.
+		// A governor that never lowered the rate was not tried: the controller skips it for this session, but it
+		// is not recorded as "did not help" (see TrialWasMeasured).
 		if (action.kind == AutoTuneAction::Kind::Revert && action.measured &&
 			!AutoTune::TrialWasMeasured(action.lever, m_governor_transitions_at_trial, EECycleRate::GetTransitionCount()))
 		{
@@ -769,10 +755,6 @@ namespace
 		}
 	}
 } // namespace
-
-// ================================================================================================
-// VMManager's entry points
-// ================================================================================================
 
 void AutoTune::OnVMStarted()
 {
@@ -817,7 +799,6 @@ void AutoTune::OnVSync()
 
 	if (!EmuConfig.AutoTune || !VMManager::HasValidVM() || VMManager::GetState() != VMState::Running)
 	{
-		// Switched off, or the VM is not running: take back a trial that is in flight.
 		if (rt.m_active && !EmuConfig.AutoTune && VMManager::HasValidVM())
 			rt.Deactivate(true);
 		return;
@@ -843,10 +824,6 @@ void AutoTune::OnVSync()
 
 	rt.OnWindow(window);
 }
-
-// ================================================================================================
-// The per-game record
-// ================================================================================================
 
 AutoTune::ResetResult AutoTune::ResetForGame(const std::string& serial, u32 crc)
 {

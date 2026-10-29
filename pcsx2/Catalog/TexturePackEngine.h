@@ -22,8 +22,7 @@ namespace Catalog::TexturePackEngine
 	};
 
 	/// Whether the current GPU can use ASTC packs (GSDevice::Features().astc_textures, which the
-	/// engine's replacement loader tests before it uses any .ktx or .astc file). Typical NVIDIA,
-	/// AMD and Intel desktop GPUs lack it; Asahi, Apple Silicon and every ARM handheld GPU have it.
+	/// engine's replacement loader tests before it uses any .ktx or .astc file).
 	/// Show a pack with TexturePack::NeedsAstc() with a warning when this says Unsupported;
 	/// do not hide it.
 	///

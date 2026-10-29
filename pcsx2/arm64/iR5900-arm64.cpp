@@ -292,7 +292,6 @@ static void recEventTest()
 	}
 }
 
-// The event test the dispatcher stub calls for `mode`.
 static const void* RecEventTestFor(IopThreadMode mode)
 {
 	switch (mode)
@@ -811,7 +810,7 @@ void recBranchCall(void (*func)())
 void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads)
 {
 	const u32 saved_pc = pc;
-	pc += interpCallFlushPcBias(); // see recCall (AX-05)
+	pc += interpCallFlushPcBias(); // see recCall
 	iFlushCall(FLUSH_INTERPRETER | FLUSH_KEEP_PINS);
 	pc = saved_pc;
 
@@ -835,13 +834,11 @@ void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads)
 // Matches x86 scaleblockcycles_calculation() in ix86-32/iR5900.cpp
 #define DEFAULT_SCALED_BLOCKS() (s_nBlockCycles >> 3)
 
-// The scaler, parameterised by selector. The production entry point below
-// passes the live effective one; the encoding-form classifier passes each
-// selector the governor could move to, so it can ask what this same block
-// would be charged there. One copy of the formula, driven twice — the formula
-// has already been transcribed by hand twice (recompiler and interpreter) and
-// ee_rec_cycle_rate_tests exists because a slip in either is a silent timing
-// change. A third copy is not on the table.
+// The scaler for an explicit selector. The production entry point below passes the
+// live effective one; the encoding-form classifier passes each selector the governor
+// could move to, to see what this block would be charged there. Keep this the only
+// copy of the formula besides the interpreter's: a slip in either is a silent timing
+// change (ee_rec_cycle_rate_tests).
 static u32 scaleblockcycles_calculation_for(s8 cyclerate)
 {
 	const bool lowcycles = (s_nBlockCycles <= 40);
@@ -885,14 +882,10 @@ static u32 scaleblockcycles_clear_impl()
 	return scaled;
 }
 
-// Charge sites emitted since the last reset.
-//
-// Counted here rather than at the twelve emitters because the count is the
-// same either way and this one cannot drift: every emitter reaches
-// scaleblockcycles_clear() exactly once per site, and the scaler floors its
-// answer at 1 (pinned by ee_rec_cycle_rate_tests' EXPECT_GE(charge, 1u)), so
-// no caller can consume a charge and then emit nothing. A thirteenth site added
-// later is counted without anyone remembering to.
+// Charge sites emitted since the last reset. Counted in scaleblockcycles_clear()
+// rather than at each emitter: every emitter calls it once per site, and the scaler
+// floors its charge at 1 (pinned by ee_rec_cycle_rate_tests), so a consumed charge
+// always has an instruction emitted for it.
 static u32 s_eeChargeSites = 0;
 
 // Sites whose charge would not stay in one instruction across the governor's
@@ -902,13 +895,13 @@ static u32 s_eeFormChangeBlocks = 0;
 static bool s_eeBlockHasFormChange = false;
 
 // Does `charge` still fit the single-instruction form this site was emitted
-// in? A charge that stops fitting cannot be patched in place: vixl would have
-// emitted a longer sequence for it, and there is no room on the page.
+// in? A charge that stops fitting cannot be patched in place: vixl would emit a
+// longer sequence for it, and there is no room on the page.
 //
-// The MOVZ test is deliberately the narrow one the design names. vixl also
-// reaches one instruction through MOVN or an ORR-immediate for some values, so
-// for that single site the count below is an upper bound. It takes a charge
-// over 65535 to fail at all, which no realistic block reaches.
+// The MOVZ test is deliberately the narrow one. vixl also reaches one
+// instruction through MOVN or an ORR-immediate for some values, so for that site
+// the count below is an upper bound. Failing at all takes a charge over 65535,
+// which no realistic block reaches.
 static bool eeChargeFitsForm(u32 charge, EeChargeForm form)
 {
 	switch (form)
@@ -927,12 +920,10 @@ static bool eeChargeFitsForm(u32 charge, EeChargeForm form)
 	return false;
 }
 
-// Would this site's charge still be a single instruction at every selector the
-// governor could move to? The window is [GetFloor(), GetConfigured()] — at most
-// three values. Returns true when it would NOT, which is the flag the side
-// table carries and the transition pass acts on: such a site cannot be
-// repaired by rewriting its immediate, so the block holding it is invalidated
-// and recompiled instead.
+// Whether this site's charge stops being a single instruction at any selector in
+// the governor's window, [GetFloor(), GetConfigured()] (at most three values).
+// Returns true when it does: such a site cannot be repaired by rewriting its
+// immediate, so the transition pass invalidates and recompiles its block instead.
 static bool eeClassifyChargeForm(EeChargeForm form)
 {
 	const s8 floor = EECycleRate::GetFloor();
@@ -954,35 +945,28 @@ static bool eeClassifyChargeForm(EeChargeForm form)
 	return false;
 }
 
-// ---------------------------------------------------------------------------
-// The charge-site side table
+// The charge-site side table: one record per emitted charge, so a cycle-rate
+// transition can rewrite the immediates in place instead of resetting the
+// recompiler.
 //
-// One record per emitted charge, so a cycle-rate transition can rewrite the
-// immediates in place instead of resetting the recompiler. Records are held in
-// their own vectors rather than on BASEBLOCKEX, which is memcpy'd on grow,
-// memmove'd on insert and erased without destructors — a pointer field there
-// would need ownership handling on three paths that have none. A flat vector
-// is also the right layout for the pass, which walks in code-address order.
+// Records live in their own vectors rather than on BASEBLOCKEX, which is memcpy'd
+// on grow, memmove'd on insert and erased without destructors; a pointer field
+// there would need ownership handling on three paths that have none. A flat
+// vector also suits the pass, which walks in code-address order.
 //
-// Nothing prunes them. That is safe here in a way it was not for the link map
-// (see the liveness note in BaseblockEx-arm64.h): the link map grew by one
-// entry per recompile of every caller, i.e. without bound relative to the
-// code, while this one grows by exactly one record per site actually emitted
-// and is therefore bounded by arena occupancy. Patching a record whose block
-// has since been recompiled writes into orphaned code, which nothing executes.
-// ---------------------------------------------------------------------------
+// Nothing prunes them. They grow by one record per site actually emitted, so they
+// are bounded by arena occupancy. Patching a record whose block has since been
+// recompiled writes into orphaned code, which nothing executes.
 
 // This site's charge leaves its single-instruction encoding form somewhere in
 // the governor's window, so its block cannot be repaired in place.
 static constexpr u8 kEeChargeUnpatchable = 1u << 0;
 
-// This site IS the block's entry point. Patchable while the block is live — the
-// word there is the ADD/ADDS the record describes, and a patch only moves its
-// immediate. What the flag buys is telling an orphan apart from a
-// contradiction later: the only thing that ever overwrites a block's entry word
-// is Arm64BaseBlocks::Remove/Invalidate, which stamps a `B` redirect stub over
-// it. So an entry record whose word no longer decodes as its form is a record
-// whose block is gone, and the pass skips it instead of refusing.
+// This site is the block's entry point, and is patchable while the block is live.
+// The only thing that overwrites an entry word is Arm64BaseBlocks::Remove/Invalidate,
+// which stamps a `B` redirect stub over it, so an entry record whose word no longer
+// decodes as its form belongs to a removed block and the pass skips it instead of
+// refusing.
 static constexpr u8 kEeChargeAtBlockEntry = 1u << 1;
 
 struct EeChargeRecord
@@ -990,7 +974,7 @@ struct EeChargeRecord
 	u32 offset;        // from the base of the arena this record's vector covers
 	u32 raw;           // s_nBlockCycles as this site saw it, before the mask
 	u32 owner_startpc; // the block that emitted it, so a flagged one is findable
-	u8  form;          // EeChargeForm
+	u8  form;
 	u8  flags;
 };
 
@@ -1020,8 +1004,8 @@ static bool s_eeChargePendingUnpatchable = false;
 //
 // A charge that outgrew its immediate makes vixl acquire a scratch register
 // and emit a materialise-then-add, whose last instruction is the shifted-
-// REGISTER form of ADD (0x8B...) — so this test is what separates the two, and
-// it does so by reading the page rather than by trusting bookkeeping.
+// REGISTER form of ADD (0x8B...). This test tells the two apart by reading the
+// page, not by trusting bookkeeping.
 static bool eeChargeSiteHasForm(u32 word, EeChargeForm form)
 {
 	switch (form)
@@ -1115,22 +1099,19 @@ void recEeNoteChargeSite(EeChargeSite which)
 	// on its way in — the last word written is the charge either way.
 	const u8* const site = armGetCurrentCodePointer() - 4;
 
-	// A charge CAN be a block's own entry point, which the design assumed was
-	// impossible — the prologue was supposed to emit the manual-protection
-	// check and the pin reloads first. Two ways in. A block whose first guest
-	// instruction is a COP2 op needing a VU0 sync emits its charge Add before
-	// anything else, on a page still write-protected so there is no
-	// manual-protection prologue at all
+	// A charge can be a block's own entry point, even though the manual-protection
+	// check and pin reloads normally come first. Two ways in: a block whose first
+	// guest instruction is a COP2 op needing a VU0 sync emits its charge Add before
+	// anything else, on a page still write-protected, so there is no
+	// manual-protection prologue
 	// (EeVu0Cop2GuardMask.MultiplyAccumulateFormsMatchTheInterpreter compiles
-	// exactly that). And constant propagation: `addiu t0, zero, 1` emits no code
-	// whatsoever, so anything behind one lands on the entry.
+	// exactly that); and constant propagation, since `addiu t0, zero, 1` emits no
+	// code, so anything behind one lands on the entry.
 	//
-	// It is recorded, not refused. While the block is live the entry word is the
-	// ADD/ADDS this record describes, and patching it only moves the immediate,
-	// exactly like every other site. The flag is what lets the pass recognise
-	// the one case that IS different — the block has since been removed and the
-	// word is now a redirect stub — without mistaking it for the recompiler
-	// contradicting itself.
+	// It is recorded, not refused: while the block is live the entry word is the
+	// ADD/ADDS this record describes, and patching only moves the immediate. The
+	// flag lets the pass recognise a removed block (the word is now a redirect
+	// stub) without mistaking it for the recompiler contradicting itself.
 	const bool at_block_entry =
 		(s_pCurBlockEx && reinterpret_cast<uptr>(site) == s_pCurBlockEx->fnptr);
 
@@ -1195,8 +1176,6 @@ bool recEeChargeWordHasFormForTest(u32 word, EeChargeForm form)
 #endif
 
 // Charge sites emitted since the last reset, and blocks currently registered.
-// Between them they size everything a per-site repair pass would have to do at
-// a cycle-rate transition.
 u32 recEeGetChargeSiteCount()
 {
 	return s_eeChargeSites;
@@ -3904,7 +3883,7 @@ static void recResetRaw()
 	for (int i = 0; i < _64kb / 4; i++)
 		unmapped[i].SetFnptr((uptr)UnmappedRecLUTPage);
 
-	// Map EE RAM: 32 MB, or 128 MB with the extended map
+	// Map EE RAM
 	for (int i = 0; i < static_cast<int>(Ps2MemSize::ExposedRam / _64kb); i++)
 	{
 		u32 mask = (Ps2MemSize::ExposedRam / _64kb) - 1;
@@ -3957,9 +3936,8 @@ static void recResetRaw()
 	s_eeFormChangeBlocks = 0;
 	s_eeBlockHasFormChange = false;
 	// Both arenas rewind here, so this is the one place a charge record can
-	// dangle. clear() keeps the capacity: a cache-full reset is followed by
-	// rebuilding the same working set, and re-growing the vectors from empty
-	// every time is work for nothing.
+	// dangle. clear() keeps the capacity, since a cache-full reset is followed
+	// by rebuilding the same working set.
 	s_eeChargeRecords.clear();
 	s_eeColdChargeRecords.clear();
 	s_eeChargePending = false;
@@ -3992,29 +3970,26 @@ u64 recEeGetLastResetTicks()
 }
 
 // =====================================================================================================
-//  Immediate patching — a cycle-rate transition without a reset
+//  Immediate patching: a cycle-rate transition without a reset
 //
 // The scaled charge is a pure function of the raw block-cycle count and the
 // selector, and the remainder the scaler retains between sites in one block is
 // `& 0x7` for every selector from -3 through +1. So for any governor window
 // whose top is +1 or below, rewriting a site's immediate produces exactly the
-// bytes a fresh compile at the new selector would have emitted — which is what
-// EmittedCodeAfterPatchingMatchesAFreshCompile pins, byte for byte.
+// bytes a fresh compile at the new selector would have emitted
+// (EmittedCodeAfterPatchingMatchesAFreshCompile pins this byte for byte).
 //
-// What that replaces is recResetRaw()'s 88 MiB block-pointer LUT rewrite and
-// 32 MiB recRAMCopy memset, plus the lazy re-JIT of everything the next frame
-// touches. On the MQ65 those together cost 190-515 ms against a 33 ms budget.
+// This avoids recResetRaw()'s block-pointer LUT rewrite and recRAMCopy memset,
+// and the lazy re-JIT of everything the next frame touches.
 // =====================================================================================================
 
 // A pass that has to throw away more than this share of the live blocks is not
 // buying anything. Each invalidated block pays a full recompile on next
 // dispatch, which is what the reset pays anyway, and the reset at least pays it
-// once and predictably instead of dribbling it out over the next second.
+// once instead of spread over the next second.
 //
-// The number is a judgement call, not a measured knee: sotc-01 and uya-gameplay
-// both measure zero form-changing blocks over 300 frames, so this exists to
-// keep a pathological workload from turning a repair into a slow reset, and
-// nothing more.
+// The value is a judgement call, not a measured knee. It only keeps a
+// pathological workload from turning a repair into a slow reset.
 static constexpr u32 kEeMaxInvalidatedBlockPercent = 10;
 
 // Scratch, held across passes so a transition does not allocate. One planned
@@ -4036,13 +4011,10 @@ static std::vector<u32> s_eeDoomedBlocks;
 // touching a byte of code. Returns nullptr on success, or the reason the whole
 // pass has to be refused.
 //
-// A site whose word no longer holds the instruction it was recorded as means
-// one of two things, and the entry flag is what separates them. A block's entry
-// word is the one word anything else ever writes — Remove/Invalidate stamps a
-// redirect stub there — so an ENTRY record that stopped decoding is a record
-// whose block is gone, and its code is orphaned. Anything else is the
-// recompiler contradicting itself, and the only honest answer to that is the
-// reset.
+// A site whose word no longer holds the instruction it was recorded as is either
+// an ENTRY record whose block was removed (its code is orphaned; see
+// kEeChargeAtBlockEntry) or the recompiler contradicting itself, which only the
+// full reset can answer.
 static const char* recEePlanArena(const std::vector<EeChargeRecord>& table, u8* base, s8 new_selector,
 	std::vector<EePatchWrite>& out, u32* orphaned)
 {
@@ -4074,10 +4046,8 @@ static const char* recEePlanArena(const std::vector<EeChargeRecord>& table, u8* 
 			return "a recorded charge site no longer holds its charge instruction";
 		}
 
-		// The production scaler, driven at the target selector. Not a second
-		// copy of the formula: it already exists twice by hand (recompiler and
-		// interpreter) and ee_rec_cycle_rate_tests exists because a slip in
-		// either is a silent timing change for every game.
+		// The production scaler at the target selector, so there is no second
+		// copy of the formula to drift.
 		s_nBlockCycles = r.raw;
 		const u32 charge = scaleblockcycles_calculation_for(new_selector);
 		if (!eeChargeFitsForm(charge, form))
@@ -4134,7 +4104,6 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	if (eeRecNeedsReset)
 		return refuse("an EE recompiler reset is already pending");
 
-	// Decide everything first, act second.
 	s_eeDoomedBlocks.clear();
 	u32 orphaned_sites = 0;
 	const u32 saved_block_cycles = s_nBlockCycles;
@@ -4161,13 +4130,13 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	}
 
 	// One write scope per arena for the whole pass, not one per word.
-	// armPatchCodeWord opens its own page-granular scope, which is right for a
-	// handful of link sites and is 100k mprotect pairs on iOS Legacy mode here.
+	// armPatchCodeWord opens its own page-granular scope, which suits a handful
+	// of link sites but would be an mprotect pair per word here on iOS Legacy mode.
 	//
-	// Flipping the whole used arena to RW mid-execute is safe in a way it would
-	// not be during a compile: nothing executes EE code between the Begin and
-	// the End (this is the CPU thread, running straight-line C), and the live
-	// return addresses in it are only returned into after the End restores RX.
+	// Flipping the whole used arena to RW mid-execute is safe, unlike during a
+	// compile: nothing executes EE code between the Begin and the End (this is
+	// the CPU thread, running straight-line C), and live return addresses are
+	// only returned into after the End restores RX.
 	ArmCodePatchFlusher flusher;
 	u32 patched_sites = 0;
 
@@ -4194,13 +4163,12 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	// What could not be repaired is thrown away one block at a time: reset the
 	// LUT entry so the next dispatch recompiles at the new rate, and stamp the
 	// redirect stub over the entry so a link site still branching straight into
-	// the old code re-dispatches instead. Both are what recClear does; only the
-	// array erase is left out, because it is O(live blocks) per block.
+	// the old code re-dispatches instead. This is what recClear does, minus the
+	// array erase, which is O(live blocks) per block.
 	//
 	// After the write scopes, not inside them: Arm64BaseBlocks::Remove-style
 	// patching opens its own scope per site, and nesting one inside an open
-	// range is how iOS Legacy mode ends up RX-flipping a window somebody else
-	// still holds.
+	// range makes iOS Legacy mode RX-flip a window somebody else still holds.
 	u32 invalidated = 0;
 	for (const u32 startpc : s_eeDoomedBlocks)
 	{
@@ -4500,8 +4468,8 @@ static bool recSkipTimeoutLoop(s32 reg, bool is_timeout_loop)
 	// w9 = reg value (the decrementing counter). Scratches are w9/x10/w8
 	// (reserved — w4-w7 are allocatable and may hold live values in the
 	// surrounding EE block). MUST go through the pin helper: the counter can
-	// be a pinned GPR (UYA idles on $at, which was a pin when this broke; any
-	// pinned register can be the counter), and under lazy-dirty the loop's
+	// be a pinned GPR (UYA idles on $at; any pinned register can be the
+	// counter), and under lazy-dirty the loop's
 	// decrements live in the pin while canonical memory is stale — a raw Ldr
 	// here read a stale counter and the pin-aware store below then clobbered
 	// the real one, collapsing UYA's frame pacing (600 frames in 1s).

@@ -88,8 +88,7 @@ object HomeShortcuts {
     /** The cover the library shows for [game] as a shortcut icon, or null to fall back to the app
      *  icon: a custom cover, else the box art, else this disc's own art when the Cover Region pick
      *  has none. [GameInfo.coverUrl] already sends a Namco System 246/256 game to the arcade
-     *  covers, so those come out the same as in the library. Only a custom cover used to count, so
-     *  nearly every shortcut showed the app icon.
+     *  covers, so those come out the same as in the library.
      *
      *  The cover is decoded downscaled and clamped to the launcher's max icon edge before
      *  it ever reaches IconCompat: PS2 box art (512x728+) is far larger than the shortcut

@@ -8,10 +8,7 @@
 // The linear filter takes half a texel off, so the sample point sits at 1.03125
 // texels, which is 16.5 sixteenths: half a sixteenth above the boundary between
 // sixteenth 15 and 16. A bias of a whole sixteenth crosses that boundary and
-// reads the row above; a hair does not. The console's frame agrees with the hair
-// (98.03% of the words of the replayed frame identical against 69.80% for a
-// sixteenth). Every console capture behind the old rule seeded on a whole
-// sixteenth, where the two are the same.
+// reads the row above; a hair does not. The console's frame agrees with the hair.
 //
 // GSCoordinateWalk.h carries the reading. Coordinates below are the 16.16 units
 // the software renderer holds, with the linear filter's half texel already off.
@@ -35,8 +32,7 @@ s32 SixteenthOf(float coord)
 }
 } // namespace
 
-// Bounds the size to what the frame measured: 1 to 2048 units give one picture and
-// 2049 up give the sixteenth's.
+// Bounds the bias: 1 to 2048 units give one picture and 2049 up give the sixteenth's.
 TEST(GSSwSpriteRamp, BiasIsInsideTheHairWindow)
 {
 	EXPECT_GT(GS_UV_RAMP_BIAS, 0.0f);
@@ -91,8 +87,7 @@ TEST(GSSwSpriteRamp, HairDropsASeedOnABoundaryToTheSixteenthBelow)
 
 // Above 2^24 units (256 texels) a float cannot hold a change of one unit, and the
 // plain subtract rounds to even and returns the coordinate. The blur pass over 448
-// rows crosses 256 texels at row 255, so 193 of its rows lost the bias that way and
-// the frame scored 88.90% instead of 98.03%.
+// rows crosses 256 texels at row 255, so its later rows lost the bias that way.
 TEST(GSSwSpriteRamp, LoweringSurvivesTheFloatGrain)
 {
 	// Row 300 of the 448-row pass: 19,761,152 units, past 2^24.

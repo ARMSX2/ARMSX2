@@ -2,18 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Remote play, core side: hands the running game's picture and sound to the app, which streams them
-// to a friend's device, where the friend plays as player 2 (com.armsx2.remoteplay).
+// to a friend's device (com.armsx2.remoteplay).
 //
-// Nothing here talks to the network. The app's streaming threads pull frames and sound out through
-// the NativeApp.remotePlay* calls below; pulling rather than calling into Java keeps JNI off the GS
-// and SPU2 threads, which must never wait on the app.
+// Nothing here talks to the network. The app's streaming threads pull frames and sound through the
+// NativeApp.remotePlay* calls below; pulling rather than calling into Java keeps JNI off the GS and
+// SPU2 threads, which must never wait on the app.
 //
-// Frames come from the renderer's capture (GS/GSRemotePlay.h), drawn on the GPU at the stream's size
-// and picked up here, on the app's video thread, as soon as the GPU marks them done. Where the device
-// can share buffers, a frame is an AHardwareBuffer the app hands straight to the video encoder and
-// gives back afterwards (remotePlayReleaseFrame), so it never passes through the CPU; otherwise it is
-// RGBA read back, which is converted to NV12 here as it is copied out. Sound is SPU2's output, as it
-// leaves the mixer.
+// Frames come from the renderer's capture (GS/GSRemotePlay.h). Where the device can share buffers, a
+// frame is an AHardwareBuffer the app passes to the video encoder and returns with
+// remotePlayReleaseFrame; otherwise it is an RGBA readback, converted to NV12 here.
 
 #include <jni.h>
 #include <android/hardware_buffer.h>
@@ -149,7 +146,6 @@ namespace
 		// The marker or fence was read before the frame; keep it that way.
 		std::atomic_thread_fence(std::memory_order_acquire);
 
-		// How long that one took, for the next wait.
 		const u64 now = SteadyNs();
 		if (now > newest->recorded_ns)
 		{
@@ -336,7 +332,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_remotePlayPollVideo(JNIEnv* env, jclass, jo
 		}
 		else
 		{
-			// Nothing recorded: sleep until the renderer records a frame.
 			std::unique_lock lock(GSRemotePlay::g_recorded_mutex);
 			GSRemotePlay::g_recorded_cv.wait_until(lock, deadline, [recorded] {
 				return GSRemotePlay::g_recorded != recorded || !s_running.load(std::memory_order_acquire);

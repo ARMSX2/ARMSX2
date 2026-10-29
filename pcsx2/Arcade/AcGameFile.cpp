@@ -35,7 +35,6 @@ bool Arcade::IsPathInsideFolder(std::string_view path)
 	if (path.empty() || path.front() == '/' || path.front() == '\\' || HasColon(path) || path.find('\0') != std::string_view::npos)
 		return false;
 
-	// Every component, split at either kind of separator.
 	size_t start = 0;
 	while (start <= path.size())
 	{
@@ -106,8 +105,7 @@ std::optional<Arcade::AcGameInfo> Arcade::ReadAcGameInfo(const std::string& path
 		return std::nullopt;
 	}
 
-	// The files are found as VMManager::OpenArcadeGame() finds them: at the absolute path a key gives, else in the
-	// folder [data] subdir names beside the .acgame (the game ID by default, none for the .acgame's own).
+	// Must resolve names the way VMManager::OpenArcadeGame() does.
 	info.dir = std::string(Path::GetDirectory(path));
 	info.base_dir = info.dir;
 	const std::string subdir = ini.GetStringValue("data", "subdir", info.gameid.c_str());

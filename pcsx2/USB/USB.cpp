@@ -64,7 +64,6 @@ OHCIPort& USB::GetOHCIPort(u32 port)
 
 bool USB::CreateDevice(u32 port)
 {
-	// Attaches a device to the IOP's OHCI controller (IOP thread design 8.6).
 	IOP_SIDE_ASSERT();
 	const Pcsx2Config::USBOptions::Port& portcfg = EmuConfig.USB.Ports[port];
 	const DeviceProxy* proxy = (portcfg.DeviceType != DEVTYPE_NONE) ? RegisterDevice::instance().Device(portcfg.DeviceType) : nullptr;
@@ -529,8 +528,8 @@ void USBasync(u32 cycles)
 
 int usb_get_ticks_per_second()
 {
-	// 36.864 MHz, as it always was on a console (PS1 mode's slower PSXCLK included); an arcade System 256's
-	// IOP is faster, and its USB counts its cycles (PCSX2x6).
+	// A console is fixed at 36.864 MHz (PS1 mode's slower PSXCLK included); an arcade System 256's
+	// IOP is faster, and its USB counts its cycles.
 	return Arcade::IsActive() ? static_cast<int>(PSXCLK) : 36864000;
 }
 

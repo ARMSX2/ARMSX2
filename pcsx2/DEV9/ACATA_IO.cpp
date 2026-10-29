@@ -5,8 +5,6 @@
 // (https://github.com/PS2Homebrew-arcade/pcsx2x6) by Matías Israelson (El_isra), Tovarichtch and
 // DiscoStarslayer. Only reached while an arcade game runs (Arcade::IsActive(), common/ARCADE.h).
 
-///////////////// I/O THREAD CODE BELOW ONLY
-
 #include "common/Assertions.h"
 #include "common/Console.h"
 #include "common/Error.h"
@@ -44,10 +42,10 @@ s64 ACATA::TH::LBA;
 ChdImage CHD;
 
 
-// ARMSX2: the read is bounded by the DMA's transfer, not only by the sector count the game put in the
-// command: a command asking for more than its DMA moves read straight on past the DMA's buffer, over the
-// rest of IOP memory. And a read the image cannot supply (a truncated dump, a CHD read error) reports a
-// drive error instead of abort()ing the whole app.
+// ARMSX2: the read is bounded by the DMA's transfer as well as the sector count the game put in the
+// command: a command asking for more than its DMA moves would otherwise read on past the DMA's buffer,
+// over the rest of IOP memory. A read the image cannot supply (a truncated dump, a CHD read error)
+// reports a drive error instead of abort()ing the app.
 bool ACATA::TH::IO_Read(u32* addr, u32 size) {
 	const u64 wanted = (u64)sectorsize * nsector;
 	if (size != wanted)
@@ -110,9 +108,8 @@ void ACATA::TH::IO_Write(u32* addr, u32 size) {
 		}
 		std::fflush(IMAGE);
 	} else {
-		// ARMSX2: a CHD cannot be written, and these writes used to be dropped. They are kept beside the
-		// game's SRAM and read back over the CHD (ChdWrites), in this session and the next; never more
-		// than the DMA brought.
+		// ARMSX2: a CHD cannot be written, so these writes are kept beside the game's SRAM and read back
+		// over the CHD (ChdWrites), in this session and the next; never more than the DMA brought.
 		const u32 unit = CHD.GetSectorSize();
 		const u32 scale = unit ? sectorsize / unit : 0;
 		const u32 whole = sectorsize ? static_cast<u32>(std::min<u64>(size, static_cast<u64>(sectorsize) * nsector) / sectorsize) : 0;

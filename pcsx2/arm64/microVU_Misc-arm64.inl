@@ -307,11 +307,10 @@ static inline u32 branchAddr(const mV)
 	return ((((iPC + 2) + (_Imm11_ * 2)) & mVU.progMemMask) * 4);
 }
 
-// What the waitMTVU thunk calls when VU0 (or COP2 macro mode) addresses VU1's register window.
-// `vi` is the VI-based address mVUaddrFix was fixing up (the thunk passes gprT1). Under MTVU the
-// access waits for the VU1 thread; whatever the threading, an access to the quadword that holds
-// VU1's STATUS register tells the vu-aot tier that something outside VU1 can see the sticky bits it
-// drops.
+// Called by the waitMTVU thunk when VU0 (or COP2 macro mode) addresses VU1's register window.
+// `vi` is the address mVUaddrFix was fixing up (the thunk passes gprT1). Under MTVU this waits for
+// the VU1 thread. Regardless of threading, an access to the quadword holding VU1's STATUS register
+// is reported to the vu-aot tier: something outside VU1 can see the sticky bits it drops.
 static void mVUwaitMTVU(u32 vi)
 {
 	if (THREAD_VU1)
@@ -373,11 +372,10 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 		}
 		else if (mVUvuAotVU0WindowHook())
 		{
-			// Nothing to wait for. The access to VU1's STATUS register (VI[16]: quadword 48 of the
-			// window) goes to the same thunk, which saves every register a C call can clobber, so
-			// no pin or cached value needs to be flushed around it. Any other quadword of the
-			// window costs the compare and the branch. Only while the vu-aot tier is wanted: it is
-			// the tripwire's hook, and with the setting off nothing is emitted here.
+			// Nothing to wait for, but an access to VU1's STATUS register (VI[16], quadword 48 of the
+			// window) still goes to the same thunk. The thunk saves every register a C call can
+			// clobber, so no pin or cached value needs flushing around it. Other quadwords cost only
+			// the compare and branch. Emitted only while the vu-aot tier is wanted.
 			a64::Label notStatus;
 			armAsm->And(RWSCRATCH, gprReg.W(), 0x3f);
 			armAsm->Cmp(RWSCRATCH, VU0_WINDOW_VU1_STATUS_QWORD);

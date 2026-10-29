@@ -29,7 +29,7 @@ namespace
 	{
 	};
 
-	// --- Host to local transfers: GSState::ExecTransferRecord ----------------------------------------
+	// Host to local transfers: GSState::ExecTransferRecord
 
 	TEST_F(GSWriteStampWriters, ATransferInOnePiece)
 	{
@@ -107,7 +107,7 @@ namespace
 		ExpectCovered(watch, "transfer through the pipelined split");
 	}
 
-	// --- Whole memory: GSState::Defrost --------------------------------------------------------------
+	// Whole memory: GSState::Defrost
 
 	TEST_F(GSWriteStampWriters, LoadingASavedStateMarksEveryPage)
 	{
@@ -130,7 +130,7 @@ namespace
 		ExpectCovered(watch, "state load");
 	}
 
-	// --- The render target clear on the CPU: GSRendererHW::ClearGSLocalMemory ------------------------
+	// The render target clear on the CPU: GSRendererHW::ClearGSLocalMemory
 
 	TEST_F(GSWriteStampWriters, ClearingAWholeFrameWritesWholePages)
 	{
@@ -181,7 +181,7 @@ namespace
 		ExpectCovered(watch, "depth clear");
 	}
 
-	// --- The hacks that draw on the CPU: SwSpriteRender and OI_PointListPalette ----------------------
+	// The hacks that draw on the CPU: SwSpriteRender and OI_PointListPalette
 
 	TEST_F(GSWriteStampWriters, ASpriteDrawnOnTheCpu)
 	{
@@ -219,7 +219,7 @@ namespace
 		ExpectCovered(watch, "OI_PointListPalette");
 	}
 
-	// --- The software scanline core: GSSwPrimRenderFunctions::Run ------------------------------------
+	// The software scanline core: GSSwPrimRenderFunctions::Run
 
 	TEST_F(GSWriteStampSwPrimRender, ATileThroughTheRasterizer)
 	{

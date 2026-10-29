@@ -230,27 +230,21 @@ static u64 s_rec_fallback_fpu_mask[EERecFallback::kFpuIdCount / 64] = {~0ull, ~0
 static u64 s_rec_fallback_vu_mask[EERecFallback::kCop2VuIdCount / 64] = {~0ull, ~0ull, ~0ull, ~0ull}; // per-VU-macro-op filter
 #endif
 
-// ---------------------------------------------------------------------------
 // --ee-rate-script / --ee-rate-hitch
 //
-// Drives EECycleRate::ApplyEffective from the runner's own (CPU) thread at
-// deterministic outer frame boundaries — between Execute() calls, never from
-// inside guest execution. That is the same seam the governor will use, so this
-// exercises the real transition path: store the effective selector, reset the
-// EE recompiler and microVU0, and nothing else.
+// Drives EECycleRate::ApplyEffective from the runner's CPU thread between Execute() calls, never from inside guest
+// execution. That is the seam the governor uses, so it exercises the real transition path: store the effective
+// selector, reset the EE recompiler and microVU0, and nothing else.
 //
-// Two things it checks that nothing else can:
-//   * a transition must not reset the IOP recompiler, microVU1 or the VIF
-//     unpack dynarec. None of them bake the EE selector, and under MTVU a VU1
-//     reset reaches across a thread. The run fails if any of their generation
+// It checks two things:
+//   * a transition must not reset the IOP recompiler, microVU1 or the VIF unpack dynarec. None of them bake the
+//     EE selector, and under MTVU a VU1 reset reaches across a thread. The run fails if any of their generation
 //     counters moves.
-//   * how long the rebuild actually costs. --ee-rate-hitch N reports the median
-//     of the N frames before each transition and the wall time of the N frames
-//     after it, so the excess is measurable here and on the device.
+//   * how long the rebuild costs. --ee-rate-hitch N reports the median of the N frames before each transition and
+//     the wall time of the N frames after it.
 //
-// The script uses ABSOLUTE effective selectors and is bound by the same window
-// the governor is: [configured - 2, configured], floored at -3.
-// ---------------------------------------------------------------------------
+// The script uses absolute effective selectors and is bound by the governor's window: [configured - 2, configured],
+// floored at -3.
 
 struct EeRateStep
 {
@@ -293,10 +287,9 @@ static bool ValidateEeRateScript()
 	return ok;
 }
 
-// End-of-run census of the EE recompiler's charge sites. Same four numbers the
-// EERATE transition line carries, for the state the run finished in — a run
-// with no transitions at all still gets to say how big the working set got and
-// what fraction of it a patch pass could not repair in place.
+// End-of-run census of the EE recompiler's charge sites: the numbers the EERATE transition line carries, for the
+// state the run finished in, so a run with no transitions still reports its working set and the fraction of it
+// a patch pass could not repair in place.
 static void ReportEeChargeCensus(const char* when)
 {
 #if defined(ARCH_ARM64)
@@ -328,7 +321,6 @@ public:
 	{
 	}
 
-	// Between Execute() calls, before the frame with this index runs.
 	void BeforeFrame(uint32_t frame)
 	{
 		for (const EeRateStep& step : s_ee_rate_script)
@@ -339,7 +331,6 @@ public:
 		}
 	}
 
-	// After Execute() returned for this frame.
 	void AfterFrame(double ms)
 	{
 		if (s_ee_rate_hitch == 0)
@@ -363,9 +354,7 @@ private:
 		const EECycleRate::ResetGenerations before = EECycleRate::GetResetGenerations();
 		const s8 old = EECycleRate::GetEffective();
 
-		// Read before the transition, not after: the EE reset clears both, so
-		// afterwards they are zero and say nothing. This is the working set the
-		// transition is about to throw away.
+		// Read before the transition: the EE reset clears these counts.
 #if defined(ARCH_ARM64)
 		const u32 live_blocks = recEeGetLiveBlockCount();
 		const u32 charge_sites = recEeGetChargeSiteCount();
@@ -381,21 +370,16 @@ private:
 			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 		const EECycleRate::ResetGenerations after = EECycleRate::GetResetGenerations();
 
-		// Where the transition time actually went. The EE reset defers when it
-		// is called mid-execute, so "Cpu->Reset() call" is not the same number
-		// as "the EE rebuild" — the driver runs between Execute() calls, where
-		// they coincide, but the governor does not. Report both, and say
-		// whether the rebuild belongs to this transition (its generation stamp
-		// matches the post-transition EE generation) or to an earlier one.
+		// Report the Cpu->Reset() call and the EE rebuild separately: the EE reset defers when called mid-execute,
+		// so they differ for the governor (they coincide here, between Execute() calls). The rebuild belongs to this
+		// transition when its generation stamp matches the post-transition EE generation, else to an earlier reset.
 		const EECycleRate::TransitionCost cost = EECycleRate::GetLastTransitionCost();
 		const EECycleRate::TransitionPath path = EECycleRate::GetLastTransitionPath();
 		const double tick_ms = 1000.0 / static_cast<double>(GetTickFrequency());
 		const bool rebuild_is_ours = (cost.ee_rebuild_generation == after.ee) && (after.ee != before.ee);
 
-		// A request for the selector already in force returns before the path is
-		// recorded, so the struct still describes an EARLIER transition. Print
-		// nothing from it rather than reprinting stale numbers as if they
-		// belonged to this frame.
+		// A request for the selector already in force returns before the path is recorded, so `path` still
+		// describes an earlier transition; don't print it.
 		const std::string path_text = (old == selector)
 			? std::string("EE path unchanged (the selector was already there)")
 			: fmt::format("EE path {} ({}), patch pass {:.3f} ms, {} sites patched, {} orphaned, "
@@ -428,11 +412,8 @@ private:
 			return;
 		}
 
-		// The acceptance test for the immediate-patching path, stated as the
-		// inversion of the one above it: a transition that reports PATCHED must
-		// NOT have reset the EE recompiler. If the generation moved anyway, the
-		// pass did not actually replace the reset and every timing number from
-		// this run is measuring the old path under a new name.
+		// A transition that reports PATCHED must not have reset the EE recompiler. If the generation moved anyway,
+		// the patch pass did not replace the reset and the timings are of the reset path.
 		if (old != selector && path.patched && after.ee != before.ee)
 		{
 			Console.ErrorFmt("EERATE[{}] frame {}: the transition reported PATCHED but the EE recompiler "
@@ -901,8 +882,8 @@ static void DrainCpuThreadTasks()
 
 void Host::PumpMessagesOnCPUThread()
 {
-	// Headless — no platform message pump, apart from the --settings-churn change a player's settings
-	// dialog would deliver at this point: from inside the EE's event test, while the VM runs.
+	// Headless: no platform message pump, apart from the --settings-churn change, delivered here as a settings
+	// dialog would, from inside the EE's event test while the VM runs.
 	if (s_churn_pending)
 	{
 		s_churn_pending = false;
@@ -917,7 +898,6 @@ void Host::PumpMessagesOnCPUThread()
 		Console.WriteLn(fmt::format("eerunner: changed the disc to '{}': {}", s_change_disc_path, ok ? "ok" : "failed"));
 	}
 
-	// --host-action: a hotkey pressed and released.
 	if (!s_host_actions_pending.empty())
 	{
 		const std::vector<std::string> pending = std::exchange(s_host_actions_pending, {});
@@ -1638,8 +1618,7 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG_PARAM("--reload-state-at"))
 			{
-				// Loads the --savestate again after frame N of a --liverun: a savestate load in the
-				// middle of a run, with everything it resets (the VU recompilers among them).
+				// A savestate load in the middle of a run resets everything, the VU recompilers among them.
 				const std::optional<u32> n = StringUtil::FromChars<u32>(std::string_view(argv[++i]), 10);
 				if (!n.has_value() || n.value() == 0)
 				{
@@ -1871,9 +1850,9 @@ void EERunner::SettingsOverride()
 	}
 	s_settings_interface.SetBoolValue("EmuCore/Speedhacks", "vuThread", live_mtvu);
 
-	// vu-aot is on by default in the product. A run here starts with it off, as it did before, so the
-	// twin passes and the identity runs keep their meaning; `--set EmuCore/CPU/Recompiler/EnableVUAot=true`
-	// (applied after this pinning) turns it on. It also brings the VU program cache up (UseVUProgramCache).
+	// vu-aot is on by default in the product; the runner starts with it off so the twin passes and the identity
+	// runs stay comparable. `--set EmuCore/CPU/Recompiler/EnableVUAot=true` (applied after this pinning) turns it
+	// on, which also brings the VU program cache up (UseVUProgramCache).
 	s_settings_interface.SetBoolValue("EmuCore/CPU/Recompiler", "EnableVUAot", false);
 
 	// EERUNNER_EECYCLESKIP / EERUNNER_EECYCLERATE: apply the EE cycle
@@ -3444,9 +3423,6 @@ static int RunContinuousMemTrajectory()
 			VMManager::ApplySettings();
 		}
 		hashes.reserve(s_frames);
-		// Every pass gets the same rate script, so the interpreter and the JIT
-		// are compared under the same schedule rather than one of them silently
-		// running at the baseline.
 		EeRateDriver rate(fmt::format("contmem-{}{}", jit ? "jit" : "interp", ++pass_no));
 		for (uint32_t f = 0; f < s_frames && VMManager::GetState() != VMState::Shutdown; ++f)
 		{
@@ -5248,10 +5224,10 @@ static void ReportThreadPerfCounters()
 #endif
 
 #ifdef __linux__
-// The voluntary and involuntary context switches of the thread named `comm` (/proc/self/task/<tid>/status). A thread that
-// goes to sleep in the kernel makes a voluntary switch, so for the IOP thread this is the count of real sleeps (its parks
-// are mostly spins, WorkSema spins for SPIN_TIME_NS before it sleeps), and for the CPU thread, which must never sleep on the
-// emulation path, it is what proves it did not.
+// The voluntary and involuntary context switches of the thread named `comm` (/proc/self/task/<tid>/status). A voluntary
+// switch means the thread slept in the kernel: for the IOP thread that counts real sleeps (its parks are mostly spins,
+// WorkSema spins for SPIN_TIME_NS before it sleeps); for the CPU thread, which must never sleep on the emulation path,
+// it shows that it did not.
 static bool ReadContextSwitches(const char* comm, u64* voluntary, u64* involuntary)
 {
 	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
@@ -5284,8 +5260,8 @@ static bool ReadContextSwitches(const char* comm, u64* voluntary, u64* involunta
 
 // --iop-stress: the things a player does between frames, at random (a fixed seed repeats the sequence): turn the IOP thread
 // off and on and change its lag bound from inside the event test, save the state and load it, pause for a while (the IOP is
-// held and goes to sleep), reset the VM, press a hotkey. The IOP-thread design's section 11 lists these as the lifecycle
-// paths the deadlock analysis has to hold for.
+// held and goes to sleep), reset the VM, press a hotkey. These are the lifecycle paths the IOP thread has to stay
+// deadlock-free across.
 static struct StressCounts
 {
 	u32 switches = 0, lags = 0, saves = 0, loads = 0, load_failures = 0, pauses = 0, resets = 0, hotkeys = 0;

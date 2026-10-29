@@ -156,8 +156,8 @@ static constexpr uint DVD_MAX_ROTATION_X1 = 1515;
 // Legacy Note: FullSeek timing causes many games to load very slow, but it likely not the real problem.
 // Games breaking with it set to PSXCLK*40 : "wrath unleashed" and "Shijou Saikyou no Deshi Kenichi".
 
-// In IOP cycles. An arcade System 256 runs its IOP faster, so there the same 100ms/30ms follow PSXCLK
-// (PCSX2x6); a console keeps the fixed values, which PS1 mode's slower PSXCLK must not change.
+// In IOP cycles. An arcade System 256 runs its IOP faster, so there the same 100ms/30ms follow PSXCLK;
+// a console keeps the fixed values, which PS1 mode's slower PSXCLK must not change.
 static inline uint Cdvd_FullSeek_Cycles() { return Arcade::IsActive() ? (PSXCLK * 100UL) / 1000UL : (36864000UL * 100UL) / 1000UL; } // average number of cycles per fullseek (100ms)
 static inline uint Cdvd_FastSeek_Cycles() { return Arcade::IsActive() ? (PSXCLK * 30UL) / 1000UL : (36864000UL * 30UL) / 1000UL; }  // average number of cycles per fastseek (37ms)
 bool trayState = 0; // Used to check if the CD tray status has changed since the last time

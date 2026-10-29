@@ -87,27 +87,20 @@ namespace PerformanceMetrics
 	void AdpfShutdown();
 
 	/// The CPU thread's frame-work clock, driven by the frame limiter
-	/// (VMManager::Internal::Throttle). The period it measures is the frame's active EE/GS/VU
-	/// work, EXCLUDING the deliberate limiter sleep. The limiter waits twice per frame, at vsync
-	/// start and at vsync end, so a frame's work is two segments. OnFrameWorkSegmentComplete()
-	/// closes the segment that just ended (called at Throttle entry, before the sleep) and returns
-	/// its length in GetCPUTicks() units; OnFrameWorkBegin() opens the next segment after the
-	/// sleep; OnFrameWorkPaused() invalidates the frame when we are not frame-limiting
-	/// (unlimited / host-vsync pacing / execution interrupted), so no wall-time-with-wait
-	/// duration is measured. Zero back from OnFrameWorkSegmentComplete() means no segment was
-	/// open. `frame_end` marks the frame's last wait (vsync end).
-	///
-	/// Two consumers share this one timestamp: the Android ADPF hint, which sums the two
-	/// segments and reports them to PerformanceHintManager at the frame's last wait
-	/// (reportActualWork = the last workload cycle, not the frame interval), and the dynamic EE
-	/// cycle-rate sampler, which is the same measurement on every platform.
+	/// (VMManager::Internal::Throttle). It measures the frame's active EE/GS/VU work, excluding
+	/// the deliberate limiter sleep. The limiter waits twice per frame, at vsync start and at
+	/// vsync end, so a frame's work is two segments. OnFrameWorkSegmentComplete() closes the
+	/// segment that just ended (called at Throttle entry, before the sleep) and returns its length
+	/// in GetCPUTicks() units, or zero if no segment was open; `frame_end` marks the frame's last
+	/// wait. OnFrameWorkBegin() opens the next segment after the sleep. OnFrameWorkPaused()
+	/// invalidates the frame when not frame-limiting (unlimited, host-vsync pacing, execution
+	/// interrupted), so no duration that includes a wait is measured.
 	u64 OnFrameWorkSegmentComplete(u64 now_ticks, bool frame_end);
 	void OnFrameWorkBegin();
 	void OnFrameWorkPaused();
 
 	/// The CPU (EE) thread's own CPU time, in Threading::GetThreadTicksPerSecond() units.
-	/// Reads the same handle SetCPUThread() registered, so there is one handle rather than
-	/// one per consumer. Zero if no CPU thread is registered.
+	/// Reads the handle SetCPUThread() registered. Zero if no CPU thread is registered.
 	u64 GetCPUThreadCPUTime();
 
 	/// Sets the EE thread for CPU usage calculations.
@@ -126,8 +119,8 @@ namespace PerformanceMetrics
 
 	/// Sets the timer for the IOP thread (exists only while the IOP runs on its own thread, concurrently
 	/// with the EE). Registered by the VM when it starts the thread and cleared before it is joined; an empty
-	/// handle means no such thread exists, which is the default configuration. Without it the EE thread's
-	/// figure alone reads as a drop in cost that is really the IOP's work moved to another thread.
+	/// handle means no such thread exists, which is the default configuration. Without it, IOP work
+	/// moved off the EE thread would look like a drop in EE cost.
 	void SetIOPThread(Threading::ThreadHandle thread);
 
 	u64 GetFrameNumber();
@@ -178,11 +171,9 @@ namespace PerformanceMetrics
 	void SetGPUTimerSupported(bool supported);
 	bool HasGPUTimer();
 
-	/// The figures of the last window Update() closed (about every 0.5 s), copied together.
-	/// Update() runs on the GS thread and the getters above are plain reads of what it wrote, so a reader on
-	/// another thread can see half of one window and half of the next; this copy cannot. `sequence` counts the
-	/// windows closed so far and never goes back, so a reader that keeps the last value it saw knows when a
-	/// new window has arrived instead of reading the same one twice.
+	/// The figures of the last window Update() closed (about every 0.5 s), copied together as one
+	/// consistent set. `sequence` counts the windows closed so far and never goes back, so a reader can
+	/// tell when a new window has arrived.
 	struct WindowSnapshot
 	{
 		u32 sequence = 0;

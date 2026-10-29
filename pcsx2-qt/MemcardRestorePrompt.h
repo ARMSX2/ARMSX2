@@ -9,22 +9,17 @@
 // MemcardBackup calls the handler on the CPU thread, from VMManager::Initialize (through
 // FileMcd_Reopen) before any card is opened, and the boot waits for the answer. The question is
 // shown on the UI thread through a blocking queued call, and the CPU thread sleeps in that call
-// until the player has answered. That is safe because nothing on the UI thread ever waits for the
-// CPU thread during a boot:
-//   - starting a game only queues EmuThread::startVM; the UI thread does not wait for it;
-//   - Initialize itself blocks on the UI thread in several places already (Host::CancelGameListRefresh,
-//     Host::AcquireRenderWindow, Host::OnVMStarting's signal), so a UI thread that stays free is already
-//     what boot depends on;
-//   - no lock is held here (not the settings lock, not the VM info mutex), so a UI thread running its
-//     nested event loop for the dialog can read settings and VM state freely;
-//   - the dialog is application modal, so the user cannot trigger one of the few UI actions that do
-//     block on the CPU thread (Achievements logout, MainWindow::recreate) while it is open.
+// until the player has answered. That is safe because nothing on the UI thread waits for the CPU
+// thread during a boot: starting a game only queues EmuThread::startVM, Initialize already blocks on
+// the UI thread in several places, no lock is held across the call, and the dialog is application
+// modal, so the player cannot trigger the few UI actions that do block on the CPU thread
+// (Achievements logout, MainWindow::recreate) while it is open.
 //
-// Cases where a dialog would not be seen, or could not be answered, are answered "Start Anyway"
-// without asking, and the player is told on screen and in the log where to restore from:
-//   - Big Picture is running (fullscreen UI with the main window hidden; a controller-only player has
-//     no way to press a Qt button, and a stuck boot is worse than booting with the unreadable card);
-//   - the application was started with -nogui, so there is no window at all.
+// No dialog is shown with -nogui (there is no window) or in Big Picture (the main window is hidden,
+// and a controller-only player cannot press a Qt button). Big Picture asks through its own handler
+// when it has registered one (MemcardBackup::GetFallbackRestorePromptHandler); otherwise the answer
+// is "Start Anyway" without asking, and the player is told on screen and in the log where to restore
+// from. A stuck boot is worse than booting with the unreadable card.
 // "Start Anyway" never changes the card, and the newest good snapshot is never pruned, so the backup
 // is still there to restore from Settings > Memory Cards > Backups.
 

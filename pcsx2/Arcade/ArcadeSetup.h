@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Getting a Namco System 246/256 game ready to boot: the service behind an "Arcade Setup" page, shared by the
-// Qt and Big Picture UIs. A port of what the Android app does in Arcade.kt, ArcadeLibrary.kt and
-// ArcadeViewModel.kt, over plain file paths.
+// Getting a Namco System 246/256 game ready to boot: the service behind the "Arcade Setup" page, shared by the
+// Qt and Big Picture UIs. It works on plain file paths.
 //
 // What an arcade game needs, and who supplies it:
 //
@@ -16,12 +15,11 @@
 //                      brings it, beside the image; it is copied there at the first launch.
 //   (Soul Calibur II)  also a Conquest card in slot 2. A cleared one ships with the app (resources/arcade).
 //
-// A game reaches the board in one of two forms, and Prepare() gets either ready:
-//   - an .acgame file (PCSX2x6's format, also what the game list shows) that names the files around it, or
-//   - a loose image (NM00010.chd, "Battle Gear 3 (NM00010).chd") with its dongle beside it and no .acgame.
-//     Prepare() writes the .acgame for it, in the data folder, with the boot program from Proverb.
-// Prepare() returns what to hand to VMManager::Initialize() (PrepareResult::ApplyTo()). Missing() says what a
-// game still lacks, without changing anything, for a list of games.
+// A game reaches the board as an .acgame file (PCSX2x6's format, also what the game list shows) that names the
+// files around it, or as a loose image (NM00010.chd, "Battle Gear 3 (NM00010).chd") with its dongle beside it.
+// Prepare() gets either ready, writing an .acgame in the data folder for a loose image, and returns what to hand
+// to VMManager::Initialize() (PrepareResult::ApplyTo()). Missing() says what a game still lacks without
+// changing anything.
 //
 // Threads: every call blocks and may be made from any thread (a worker, not the GS thread). Two downloads of
 // the boot files at once are refused. Progress callbacks run on the calling thread.
@@ -84,10 +82,6 @@ namespace ArcadeSetup
 		static Folders FromEmuFolders();
 	};
 
-	// ------------------------------------------------------------------------------------------------
-	// The boot files (Proverb)
-	// ------------------------------------------------------------------------------------------------
-
 	struct BootFilesStatus
 	{
 		bool installed = false; ///< A stored zip that holds at least one boot program.
@@ -134,10 +128,6 @@ namespace ArcadeSetup
 		u64 size_bytes = 0; ///< Of the zip on GitHub.
 	};
 
-	// ------------------------------------------------------------------------------------------------
-	// The arcade BIOS
-	// ------------------------------------------------------------------------------------------------
-
 	struct BiosDump
 	{
 		std::string file_name; ///< In the BIOS folder.
@@ -156,10 +146,6 @@ namespace ArcadeSetup
 	/// none will do. Then [needs] names the board whose BIOS it needs ("System 246" for Battle Gear 3, which
 	/// refuses the System 256 one), and stays empty when the BIOS folder has no arcade BIOS at all.
 	std::string FindBiosFor(const std::string& game_id, std::string* needs = nullptr);
-
-	// ------------------------------------------------------------------------------------------------
-	// What a game lacks
-	// ------------------------------------------------------------------------------------------------
 
 	enum class PartKind
 	{
@@ -203,10 +189,6 @@ namespace ArcadeSetup
 	/// The IDOLM@STER.
 	bool IsAttractOnly(std::string_view game_id);
 
-	// ------------------------------------------------------------------------------------------------
-	// Getting a game ready
-	// ------------------------------------------------------------------------------------------------
-
 	struct PrepareResult
 	{
 		bool ok = false;
@@ -216,7 +198,7 @@ namespace ArcadeSetup
 		std::string game_id;
 		std::string title;
 
-		// What to boot with. All set when ok.
+		// All set when ok.
 		std::string acgame; ///< The .acgame to boot: the one given, or the one made for a loose image.
 		std::string elf; ///< The boot program the board runs.
 		std::string media; ///< The image.
@@ -233,8 +215,6 @@ namespace ArcadeSetup
 		explicit Service(Folders folders = Folders::FromEmuFolders());
 
 		const Folders& GetFolders() const { return m_folders; }
-
-		// -- The boot files ----------------------------------------------------------------------
 
 		BootFilesStatus GetBootFilesStatus() const;
 
@@ -256,12 +236,7 @@ namespace ArcadeSetup
 		/// Asks GitHub whether the release has changed since the stored zip was downloaded.
 		UpdateCheck CheckForBootFilesUpdate(Catalog::Fetcher& fetcher, const Catalog::CancelToken& cancel = {}) const;
 
-		// -- The BIOS ----------------------------------------------------------------------------
-
-		/// Reads the BIOS folder (EmuFolders::Bios).
 		BiosStatus GetBiosStatus() const;
-
-		// -- Games -------------------------------------------------------------------------------
 
 		/// What the game at [path] (an .acgame, or a loose image) still lacks. Changes nothing.
 		MissingReport Missing(const std::string& path) const;

@@ -1,12 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Namco System 246/256 cabinet controls. A retail PS2 reads a DualShock; an arcade cabinet reads its
-// buttons, levers, wheel, drums and gun through the JVS I/O board (pcsx2/DEV9/ACJV). This file lays a
-// controller's generic bindings (the buttons and sticks every pad type shares, GenericInputBinding) out on
-// that board, for each kind of cabinet (JVS_MODE): which button is the lever, which are the cabinet's
-// buttons, which is the trigger, the coin, and so on. The layout is the one the Android app has used since
-// its arcade bridge, now over generic bindings, so both can run the same code.
+// Namco System 246/256 cabinet controls. An arcade cabinet reads its buttons, levers, wheel, drums and gun
+// through the JVS I/O board (pcsx2/DEV9/ACJV) instead of a DualShock. This file maps a controller's generic
+// bindings (GenericInputBinding) onto that board for each kind of cabinet (JVS_MODE): which button is the
+// lever, which are the cabinet's buttons, which is the trigger, the coin, and so on.
 //
 // While an arcade game runs, input on controller ports 1 and 2 goes to the board and NOT to the emulated
 // DualShock (an arcade board has none): InputManager hands each pad binding event to HandleBinding() first.
@@ -40,10 +38,6 @@ enum class JVS_MODE;
 
 namespace ArcadeInput
 {
-	// ------------------------------------------------------------------------------------------------
-	// The running game
-	// ------------------------------------------------------------------------------------------------
-
 	/// An arcade game is running (its board exists). Everything below that acts on the cabinet does
 	/// nothing when this is false.
 	bool IsActive();
@@ -54,10 +48,6 @@ namespace ArcadeInput
 	/// The control mode the running game plays in. The game's .acgame can force one (jvsmode), so this is not
 	/// always GetModeForGameId(). JVS_MODE::DEFAULT when no arcade game runs.
 	JVS_MODE GetMode();
-
-	// ------------------------------------------------------------------------------------------------
-	// Control modes
-	// ------------------------------------------------------------------------------------------------
 
 	struct ModeInfo
 	{
@@ -74,10 +64,6 @@ namespace ArcadeInput
 	/// The control mode a game ID gets, before any .acgame override (ACJV::ResolveModeFromGameId).
 	JVS_MODE GetModeForGameId(const std::string& gameid);
 
-	// ------------------------------------------------------------------------------------------------
-	// Coin, Service and Test
-	// ------------------------------------------------------------------------------------------------
-
 	/// A coin in player 1's (0) or player 2's (1) slot. The same as Select on that player's controller.
 	void InsertCoin(u32 player);
 
@@ -88,10 +74,6 @@ namespace ArcadeInput
 	/// Flips the board's Test switch: on, the game goes to its test menu; off again to leave it.
 	void ToggleTest();
 	bool IsTestOn();
-
-	// ------------------------------------------------------------------------------------------------
-	// Controller input
-	// ------------------------------------------------------------------------------------------------
 
 	/// One pad binding event: controller port [pad_index] (0 is player 1, 1 is player 2), the generic binding
 	/// it stands for (GenericInputBinding::Unknown for one with none), its value 0..1 (buttons are held from
@@ -121,15 +103,14 @@ namespace ArcadeInput
 	void SetGunButton(u32 player, GunButton button, bool pressed);
 
 	/// A host mouse button went down or up ([button_index] is InputManager's pointer button: 0 left, 1 right,
-	/// 2 middle). While an arcade game runs as a light gun or a touch panel the mouse is player 1's gun layer,
-	/// and these are its buttons: left is Trigger, right ShootOffscreen (the reload, in the games that reload by
-	/// pointing away from the screen), middle A (the pedal; button 1 on a touch panel). Player 2 aims with the
-	/// right stick, so the mouse is never hers. Any other button is not the gun's.
+	/// 2 middle). In a light gun or touch panel game the mouse is player 1's gun layer: left is Trigger, right
+	/// ShootOffscreen (the reload), middle A (the pedal; button 1 on a touch panel). Other buttons are not the
+	/// gun's, and player 2 aims with the right stick, never the mouse.
 	///
-	/// Returns true when the cabinet took the click, which the pad bindings must then not see as well. A press is
-	/// not taken when no gun or touch panel game runs, or when [ui_has_pointer] (a menu is under the pointer:
-	/// clicking Resume must not fire a shot). A release is taken, and let go, whenever its press was, whatever
-	/// the game or mode has become since, so nothing stays held.
+	/// Returns true when the cabinet took the click, which the pad bindings must then not see. A press is not
+	/// taken when no gun or touch panel game runs, or when [ui_has_pointer] (a menu is under the pointer:
+	/// clicking Resume must not fire a shot). A release is taken whenever its press was, even if the game or
+	/// mode has changed since, so nothing stays held.
 	bool HandlePointerButton(u32 button_index, bool pressed, bool ui_has_pointer = false);
 
 	/// The mouse buttons work the cabinet now: a light gun or touch panel game runs. A frontend that gives
@@ -140,11 +121,6 @@ namespace ArcadeInput
 	/// stick. Called when the board starts (ACJV::SetGameId); the player's layout stays.
 	void Reset();
 
-	// ------------------------------------------------------------------------------------------------
-	// The player's own layout (remap)
-	// ------------------------------------------------------------------------------------------------
-
-	/// A pad button that can be given another button's job.
 	struct ButtonInfo
 	{
 		GenericInputBinding binding;
@@ -194,10 +170,6 @@ namespace ArcadeInput
 	void SetActiveRemap(const Remap& merged);
 	Remap GetActiveRemap();
 
-	// ------------------------------------------------------------------------------------------------
-	// A game's controls, for a settings page
-	// ------------------------------------------------------------------------------------------------
-
 	/// A job the pad does on a cabinet. Its buttons are the ones that do it by default, the first standing in
 	/// for the job when another button is given it. A fixed job is an analog pedal's, which stays on its trigger.
 	struct Job
@@ -228,10 +200,6 @@ namespace ArcadeInput
 
 	/// Makes [button] act as [target] in every game (Unknown: none; itself: its own, which removes the pair).
 	void SetGlobalTarget(Remap& global, GenericInputBinding button, GenericInputBinding target);
-
-	// ------------------------------------------------------------------------------------------------
-	// Testing
-	// ------------------------------------------------------------------------------------------------
 
 	/// Where the board changes made for InsertCoin and ToggleTest run. Host::RunOnCPUThread unless replaced,
 	/// which only tests do (they have no CPU thread). An empty function restores the default.

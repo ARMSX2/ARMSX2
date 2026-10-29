@@ -1,20 +1,14 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Deterministic sequence coverage for the dynamic EE cycle-rate governor's decision
-// half. No VM, no clock, no settings: every test is a fixed list of window samples
-// fed to EECycleRateController, and the assertions are the decisions it returns.
+// Deterministic coverage for the dynamic EE cycle-rate governor's decision half. No VM, no
+// clock, no settings: every test feeds EECycleRateController a fixed list of window samples
+// and asserts the decisions it returns.
 //
-// This is where the feature's real risk lives. Whether the governor oscillates,
-// walks to the floor against a bottleneck it cannot move, or reacts to one late
-// frame is decided entirely by these rules, and none of it can be settled from a
-// paced device run - a device run tells you the answer was wrong, not which rule
-// produced it.
-//
-// The window is 500 ms of target time throughout, so the default two-second
-// warm-up and cooldown are four windows each and the ten-second downshift inhibit
-// is twenty. The tests spell those out rather than computing them, because a policy
-// change that silently halves a dwell should fail here.
+// The window is 500 ms of target time throughout, so the default two-second warm-up and
+// cooldown are four windows each and the ten-second downshift inhibit is twenty. The tests
+// spell those out rather than computing them, so a policy change that silently halves a
+// dwell fails here.
 
 #include "EECycleRateController.h"
 
@@ -108,7 +102,6 @@ namespace
 			ASSERT_EQ(c.Update(sample, e), Decision::None) << "window " << i << " of " << count;
 	}
 
-	// Runs the warm-up out on neutral windows and leaves the controller observing.
 	void WarmUp(EECycleRateController& c, const EECycleRateEligibility& e)
 	{
 		FeedQuiet(c, DeadbandWindow(), e, kWarmupWindows);
@@ -372,7 +365,6 @@ TEST(EECycleRateControllerEffectiveness, AnIneffectiveStepIsGivenBackAndInhibits
 	EXPECT_EQ(c.GetSnapshot().overload_dwell, 0u);
 	EXPECT_DOUBLE_EQ(c.GetSnapshot().downshift_inhibit_seconds, 0.0);
 
-	// Once it is spent the governor is allowed to try again.
 	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::None);
 	EXPECT_EQ(c.Update(OverloadWindow(1.20f), e), Decision::StepDown);
 	EXPECT_EQ(c.GetEffective(), -1);
@@ -405,7 +397,6 @@ TEST(EECycleRateControllerEffectiveness, AnIneffectiveSecondStepKeepsTheEffectiv
 	EXPECT_EQ(c.GetSnapshot().ineffective_count, 1u);
 	c.OnApplied(-1);
 
-	// Eight inhibited windows of overload, and it stays where it is.
 	FeedQuiet(c, OverloadWindow(1.20f), e, kCooldownWindows);
 	FeedQuiet(c, OverloadWindow(1.20f), e, 4);
 	EXPECT_EQ(c.GetEffective(), -1);
@@ -463,7 +454,6 @@ TEST(EECycleRateControllerEligibility, LosingItRestoresTheBaselineAndClearsHisto
 	EXPECT_EQ(c.GetSnapshot().headroom_dwell, 0u);
 	c.OnApplied(0);
 
-	// Already at the baseline: nothing more to ask for.
 	EXPECT_EQ(c.Update(DeadbandWindow(), Suspended()), Decision::None);
 
 	// Coming back starts a fresh warm-up, so the pre-suspension evidence is gone.
@@ -657,13 +647,9 @@ TEST(EECycleRateControllerPolicy, ATestPolicyDrivesTheDwellAndTheFloor)
 	EXPECT_EQ(c.GetEffective(), -1);
 }
 
-// --- CSV replay ------------------------------------------------------------
-//
-// The fixture is embedded rather than shipped as a file under a data directory,
-// because nothing else in tests/ctest locates a file from the source tree - there is
-// no CMake-defined data path and no convention to follow. The replay helper still
-// takes a path, so a captured trace from a device run can be handed to it directly;
-// the test just writes its own copy to a temp file first.
+// The CSV fixture is embedded because nothing else in tests/ctest locates a file from the
+// source tree. The replay helper takes a path, so a trace captured on a device can be passed
+// to it directly; the test writes its own copy to a temp file first.
 
 namespace
 {
@@ -770,9 +756,9 @@ namespace
 	}
 } // namespace
 
-// The shape a live trace actually has: the header comments, the diagnostic columns after
-// the twelfth, and a lifecycle row in the middle. Trimmed to the rows that matter - the
-// point is the parsing contract, not the sequence, which the test above already covers.
+// Shape of a live trace: header comments, diagnostic columns after the twelfth, and a
+// lifecycle row in the middle. Only the parsing contract matters here; the sequence is
+// covered by the test above.
 namespace
 {
 	const char* const kLiveTraceCsv =

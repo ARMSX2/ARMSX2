@@ -7,14 +7,11 @@
 // (mVUcompile's analysis loop, x86/microVU_Analyze.inl, _mVUflagPass /
 // mVUsetFlagInfo, mVUsetFlags, mVUoptimizePipeState).
 //
-// The compiler's semantics are microVU's, so its timing model has to be
-// microVU's too: which flag instance an FMAC writes and a reader reads, which
-// Q/P lane is current, how many stall cycles each pair costs, which flag
-// updates the flag hack drops. Rather than re-derive any of that, this file
-// runs microVU's own algorithm over microVU's own block structure and keys,
-// and pcsx2-vurunner --vuaot-ir checks the answers against microVU's live
-// decisions (VuAotMvuTrace.h). Names follow microVU's so the two can be read
-// side by side.
+// vu-aot's timing model has to be microVU's: which flag instance an FMAC writes and a reader reads, which
+// Q/P lane is current, stall cycles per pair, which flag updates the flag hack drops. So this runs
+// microVU's own algorithm over its block structure and keys instead of re-deriving them, and
+// pcsx2-vurunner --vuaot-ir checks the result against microVU's live decisions (VuAotMvuTrace.h).
+// Names follow microVU's.
 
 #include "VuAotDecode.h"
 #include "VuAotMvuTrace.h"
@@ -186,17 +183,15 @@ namespace vuaot
 		void ToTrace(MvuBlockTrace& out, u32 vuIndex) const;
 	};
 
-	// One analyzer per program image. Like microVU's IRinfo, its per-slot op
-	// records persist across blocks, because microVU reads a neighbouring slot's
-	// record in two places (setBranchA's delay-slot test and the flag lookahead)
-	// without having written it in the current compile. Analysing blocks in
-	// microVU's compile order reproduces those reads.
-	// While set (the live tier's background worker sets it around a job), every
-	// analyzer on this thread marks each micro-memory word it reads (one byte
-	// per 32-bit word): the job's code is valid only while those words are
-	// unchanged, which is what its publication checks.
+	// While set (the live tier's background worker sets it around a job), every analyzer on this thread
+	// marks each micro-memory word it reads (one byte per 32-bit word). The job's code is valid only while
+	// those words are unchanged, which its publication checks.
 	extern thread_local u8* g_pipeReadMask;
 
+	// One analyzer per program image. Like microVU's IRinfo, its per-slot op records persist across blocks:
+	// microVU reads a neighbouring slot's record in two places (setBranchA's delay-slot test and the flag
+	// lookahead) without having written it in the current compile. Analysing blocks in microVU's compile
+	// order reproduces those reads.
 	class PipeAnalyzer
 	{
 	public:
@@ -244,7 +239,6 @@ namespace vuaot
 		u32 branchAddr() const;
 		u32 bSaveAddr() const;
 
-		// decoded fields of code_
 		u32 Ft() const { return (code_ >> 16) & 0x1F; }
 		u32 Fs() const { return (code_ >> 11) & 0x1F; }
 		u32 Fd() const { return (code_ >> 6) & 0x1F; }
@@ -313,7 +307,6 @@ namespace vuaot
 		void opU(int pass);
 		void opL(int pass);
 
-		// flag lookahead + setup
 		void flagPass(u32 startPC, u32 sCount, u32 found, std::vector<u32>& v);
 		void setFlagInfo();
 		void statusFlagOp();

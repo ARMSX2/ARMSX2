@@ -10,13 +10,12 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
- * One line of what the stream is doing, from WebRTC's own statistics: codec and which encoder or
- * decoder runs it, picture size, frame rate, bitrate and round trip, plus why quality is limited
- * (host) or how long frames wait and take to decode (viewer). The host logs it; the viewer shows
- * it when its stats are on.
+ * One line of stream stats from WebRTC's statistics report. The host logs it; the viewer shows it
+ * when its stats are on. The host adds why quality is limited, the viewer how long frames wait and
+ * take to decode.
  *
  * Times and rates cover the time since the previous sample, not the whole session, so a slow
- * start does not hang over the numbers for minutes.
+ * start does not skew the numbers for minutes.
  */
 internal class RemotePlayStats(private val sending: Boolean) {
     private var last: Map<String, Double> = emptyMap()
@@ -40,7 +39,6 @@ internal class RemotePlayStats(private val sending: Boolean) {
         val height = (m["frameHeight"] as? Number)?.toInt() ?: 0
         val fps = (m["framesPerSecond"] as? Number)?.toDouble() ?: 0.0
 
-        // Running totals, kept for the next sample.
         val totals = listOf(
             "bytesSent", "bytesReceived", "totalDecodeTime", "framesDecoded", "framesReceived",
             "jitterBufferDelay", "jitterBufferEmittedCount", "framesDropped", "packetsLost",
@@ -91,7 +89,6 @@ internal class RemotePlayStats(private val sending: Boolean) {
         // from losses cost, sent by the viewer, received by the host.
         delta("nackCount")?.takeIf { it > 0 }?.let { parts += String.format(Locale.US, "nack %.0f", it) }
         delta("pliCount")?.takeIf { it > 0 }?.let { parts += String.format(Locale.US, "pli %.0f", it) }
-        // How the devices reach each other, by the host address WebRTC settled on (viewer side).
         if (!sending) route(report, pair)?.let { parts += it }
 
         last = totals
@@ -167,14 +164,13 @@ internal class HostRtcSampler {
     }
 }
 
-/** The host's side of the stream ([RemotePlayProtocol.HostStats]) as one line of the stats. */
 internal fun describeHost(stats: RemotePlayProtocol.HostStats): String {
     val parts = mutableListOf(
         "host: game ${stats.gameFps} fps",
         "captured ${stats.capturedFps}",
         "encoded ${stats.encodedFps}",
     )
-    // WebRTC's side, from a host that reports it: what went out, and the bitrate it allowed.
+    // WebRTC's side; only present when the host reports it.
     if (stats.bweKbps > 0 || stats.sentFps > 0) {
         parts += "sent ${stats.sentFps}"
         parts += String.format(Locale.US, "bwe %.1f Mbps", stats.bweKbps / 1000.0)

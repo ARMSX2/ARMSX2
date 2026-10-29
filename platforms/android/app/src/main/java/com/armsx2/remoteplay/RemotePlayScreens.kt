@@ -91,9 +91,8 @@ fun RemotePlayScreen(onBack: () -> Unit) {
     val localNetwork = rememberLocalNetworkAccess()
     var localNetworkRefused by remember { mutableStateOf(false) }
 
-    // Looking for hosts only when asked, and for a minute at most: browsing holds a Wi-Fi
-    // multicast lock and keeps the radio busier, which is battery nobody should pay by opening
-    // this screen.
+    // Scan only when asked, and for a minute at most: browsing holds a Wi-Fi multicast lock and
+    // keeps the radio busy, which costs battery.
     DisposableEffect(scanning) {
         if (!scanning) return@DisposableEffect onDispose {}
         val browser = HostBrowser(context) { hosts = it }
@@ -304,7 +303,6 @@ fun RemotePlayScreen(onBack: () -> Unit) {
                         SectionTitle(str("remoteplay.join.manual"))
                         if (localNetworkRefused) ErrorText(str("remoteplay.permission.join"))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Typed on the app's own keyboard with a controller, like the code above.
                             val typeAddress = {
                                 com.armsx2.ui.home.LibraryKeyboard.open(
                                     address,
@@ -599,8 +597,7 @@ private fun ErrorText(text: String) {
 /** A pasted code is long, so the field shows its start and keeps it on a few lines. */
 @Composable
 private fun CodeField(value: String, onValueChange: (String) -> Unit, label: String, modifier: Modifier = Modifier) {
-    // A placeholder, not a label: a label reserves room above the box, and the pad's highlight,
-    // which follows the field's bounds, then sat above the outline instead of on it.
+    // A placeholder, not a label, for the reason given at the address field above.
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,

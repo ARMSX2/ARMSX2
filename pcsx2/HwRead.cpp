@@ -70,8 +70,8 @@ mem32_t _hwRead32(u32 mem)
 			if (mem == INTC_STAT)
 			{
 				// Disable INTC hack when in PS1 mode as it seems to break games.
-				// ICFG is an IOP register, and the IOP thread can write it while this runs: a relaxed load,
-				// which is the plain load it always was.
+				// ICFG is an IOP register, and the IOP thread can write it while this runs, so it is read with a
+				// relaxed load.
 				if (intcstathack && !(SharedWord::LoadRelaxed(psxHu32(HW_ICFG)) & (1 << 3))) IntCHackCheck();
 				return psHu32(INTC_STAT);
 			}

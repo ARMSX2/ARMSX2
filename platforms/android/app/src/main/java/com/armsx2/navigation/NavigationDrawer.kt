@@ -215,8 +215,7 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         DrawerItem("tab.controls", "🕹️", AppRoute.ControllerManager),
         DrawerItem("patches.dialog.patchesAndCheats", "🪄", AppRoute.PatchManager),
         DrawerItem("renderer.section.texturePacks", "🖌️", AppRoute.TextureManager),
-        // Namco System 246/256 arcade games: their folder, boot files, BIOS and imports. The ARMSX2
-        // logo in PCSX2x6's red.
+        // Namco System 246/256 arcade games: their folder, boot files, BIOS and imports.
         DrawerItem("arcade.title", "👾", AppRoute.Arcade, glyphIcon = com.armsx2.R.drawable.ic_arcade),
     )
     // Link-out rows: they reuse the existing onAction path (like Boot BIOS) rather than a

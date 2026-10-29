@@ -77,7 +77,6 @@ namespace
 		return order;
 	}
 
-	// Folders under `dir` whose name starts with `prefix`.
 	std::vector<std::string> FoldersStartingWith(const std::string& dir, const std::string& prefix)
 	{
 		std::vector<std::string> found;
@@ -135,10 +134,6 @@ protected:
 	TexturePackInstaller installer;
 	std::vector<Progress> seen;
 };
-
-// ------------------------------------------------------------------------------------------
-// A good install
-// ------------------------------------------------------------------------------------------
 
 TEST_F(TexturePackInstallerTest, InstallsATarZstdPackWhereTheEngineLooks)
 {
@@ -214,7 +209,6 @@ TEST_F(TexturePackInstallerTest, TheSerialMayBeSpelledAnyWayAndMustBeThePacks)
 TEST_F(TexturePackInstallerTest, InstallsAPackSplitIntoParts)
 {
 	Archive a = BuildTarPack("split", "SLUS-21410", NumberedTextures(40));
-	// Cut the archive in three and describe the pieces.
 	const size_t third = a.bytes.size() / 3;
 	const std::string pieces[3] = {a.bytes.substr(0, third), a.bytes.substr(third, third), a.bytes.substr(2 * third)};
 	a.pack.download_url.clear();
@@ -325,10 +319,6 @@ TEST_F(TexturePackInstallerTest, TheWholeArchiveIsCheckedEvenWhenEveryPartPassed
 	EXPECT_FALSE(FileSystem::DirectoryExists(TexturePath("SLUS-21410").c_str()));
 }
 
-// ------------------------------------------------------------------------------------------
-// A download that goes wrong
-// ------------------------------------------------------------------------------------------
-
 TEST_F(TexturePackInstallerTest, ACorruptSingleFileDownloadIsRefused)
 {
 	Archive a = BuildTarPack("pack-a", "SLUS-21410", NumberedTextures(3));
@@ -411,10 +401,6 @@ TEST_F(TexturePackInstallerTest, AnArchiveThatIsNotWhatTheCatalogSaidFailsAtExtr
 	EXPECT_FALSE(FileSystem::DirectoryExists(TexturePath(".texturepacks-tmp").c_str()));
 }
 
-// ------------------------------------------------------------------------------------------
-// Free space
-// ------------------------------------------------------------------------------------------
-
 TEST(TexturePackInstallerSpace, TheRequirementDependsOnTheFormat)
 {
 	constexpr u64 slack = 512ull * 1024 * 1024;
@@ -445,7 +431,7 @@ TEST_F(TexturePackInstallerTest, RefusesToStartWithoutRoomForTheWholeInstall)
 	EXPECT_TRUE(http.Requests().empty()) << "nothing may be downloaded first";
 	EXPECT_FALSE(FileSystem::DirectoryExists(TexturePath(".texturepacks-tmp").c_str()));
 
-	// Exactly enough is enough.
+	// The boundary: free space equal to the requirement is enough.
 	free_space = required;
 	EXPECT_TRUE(Install(a.pack, "SLUS-21410").IsOk());
 }
@@ -476,10 +462,6 @@ TEST_F(TexturePackInstallerTest, ZipsNeedTwiceTheArchive)
 	free_space = 2 * z.pack.size_bytes + TexturePackInstaller::FREE_SPACE_SLACK;
 	EXPECT_TRUE(Install(z.pack, "SLUS-21410").IsOk());
 }
-
-// ------------------------------------------------------------------------------------------
-// Zip packs
-// ------------------------------------------------------------------------------------------
 
 TEST_F(TexturePackInstallerTest, InstallsASchemaOneZipPack)
 {
@@ -517,10 +499,6 @@ TEST_F(TexturePackInstallerTest, AZipWithNoTexturesIsAnError)
 	EXPECT_EQ(result.error, "Archive contained no textures");
 	EXPECT_FALSE(FileSystem::DirectoryExists(TexturePath("SLUS-21410").c_str()));
 }
-
-// ------------------------------------------------------------------------------------------
-// Replacing, rolling back, cancelling, the one-at-a-time rule
-// ------------------------------------------------------------------------------------------
 
 TEST_F(TexturePackInstallerTest, AnInstallReplacesThePreviousPackAndItsRecord)
 {
@@ -682,13 +660,8 @@ TEST_F(TexturePackInstallerTest, OnlyOneInstallRunsAtATime)
 	EXPECT_EQ(http.RequestCount(b.pack.download_url), 0u);
 	EXPECT_FALSE(TexturePackInstaller::IsInstalling());
 
-	// Once the first is done the second goes through.
 	EXPECT_TRUE(Install(b.pack, "SLES-52187").IsOk());
 }
-
-// ------------------------------------------------------------------------------------------
-// Installed packs: listing, removing
-// ------------------------------------------------------------------------------------------
 
 class InstalledPacksTest : public TexturePackInstallerTest
 {
@@ -784,7 +757,6 @@ TEST_F(InstalledPacksTest, SizesComeFromTheCacheWhileTheFolderIsUnchanged)
 	TexturePackInstaller measuring(http, state, MakeConfig());
 	EXPECT_EQ(measuring.ListInstalled().at(0).file_count, 3u);
 
-	// And the fresh measurement is saved for next time.
 	rapidjson::Document doc;
 	ASSERT_TRUE(Catalog::ParseJson(ReadAll(temp.File("cache/pack-sizes.json")), &doc));
 	EXPECT_EQ(doc["SLUS-21410"]["c"].GetUint64(), 3u);
@@ -815,7 +787,6 @@ TEST_F(InstalledPacksTest, RemovingAPackTakesItOutOfUseAndForgetsIt)
 	EXPECT_TRUE(FileSystem::DirectoryExists(TexturePath("SLES-52187/replacements").c_str()));
 	EXPECT_FALSE(state.Find("pack-a").has_value());
 
-	// Nothing is left behind under the temporary names.
 	for (const auto& file : ListFiles(temp.File("textures")))
 		EXPECT_EQ(file.find(".deleting-"), std::string::npos) << file;
 	std::error_code ec;
@@ -864,10 +835,6 @@ TEST_F(InstalledPacksTest, ListingAMissingTexturesFolderIsEmpty)
 	EXPECT_TRUE(installer.Remove("SLUS-21410")); // no pack is left there, which is what was asked for
 }
 
-// ------------------------------------------------------------------------------------------
-// A replacements folder the installer did not make
-// ------------------------------------------------------------------------------------------
-
 class UserFolderTest : public InstalledPacksTest
 {
 protected:
@@ -904,7 +871,7 @@ TEST_F(UserFolderTest, AnInstallKeepsAFolderTheInstallerDidNotMake)
 
 TEST_F(UserFolderTest, AUiCanAskBeforeAnInstallWouldSetAFolderAside)
 {
-	EXPECT_FALSE(installer.HasUnrecordedReplacements("SLUS-21410")); // nothing there
+	EXPECT_FALSE(installer.HasUnrecordedReplacements("SLUS-21410"));
 
 	MakeUserFolder();
 	EXPECT_TRUE(installer.HasUnrecordedReplacements("SLUS-21410"));
@@ -1030,10 +997,6 @@ TEST(TexturePackInstallerCommit, ALinkAtTheTargetIsReplacedWithoutEmptyingWhatIt
 	EXPECT_EQ(ReadAll(temp.File("elsewhere/precious.png")), "precious");
 	EXPECT_EQ(ReadAll(temp.File("game/replacements/new.png")), "new");
 }
-
-// ------------------------------------------------------------------------------------------
-// Presentation helpers
-// ------------------------------------------------------------------------------------------
 
 TEST(TexturePackInstallerText, SizesAreShownTheWayTheCatalogAlwaysDid)
 {

@@ -156,10 +156,10 @@ bool RecompilerTestEnvironment::Initialize()
 	mVUPersist::SetTestManualRecording(true);
 #endif
 
-	// vu-aot is on by default in the product. The tests start with it off, as they were written: the tier
-	// brings the VU program cache up with it (UseVUProgramCache), tags VU0's code with its tripwire hook,
-	// and starts a worker thread, and a test that wants any of that sets EnableVUAot itself (LiveScope, the
-	// cache fixtures). Before the Reserve calls below, since mVUinit reads it.
+	// vu-aot is on by default in the product; the tests start with it off. It also brings up the VU
+	// program cache (UseVUProgramCache), tags VU0's code with its tripwire hook and starts a worker
+	// thread, so a test that wants any of that sets EnableVUAot itself. Before the Reserve calls
+	// below, since mVUinit reads it.
 	EmuConfig.Cpu.Recompiler.EnableVUAot = false;
 
 	// microVU JITs. mVUinit allocates the per-VU regAlloc + sets cache

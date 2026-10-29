@@ -22,11 +22,8 @@ namespace OnScreenKeyboard
 			return Key{kind, "", "", span};
 		}
 
-		//////////////////////////////////////////////////////////////////////////
-		// Letters. Shift capitalizes the letters, and turns '-' into '_' and '.' into ':', which
+		// Letters page. Shift capitalizes the letters, and turns '-' into '_' and '.' into ':', which
 		// is what a host name or an address with a port needs.
-		//////////////////////////////////////////////////////////////////////////
-
 		constexpr Key kLettersRow0[] = {Ch("1", "1"), Ch("2", "2"), Ch("3", "3"), Ch("4", "4"), Ch("5", "5"), Ch("6", "6"), Ch("7", "7"),
 			Ch("8", "8"), Ch("9", "9"), Ch("0", "0")};
 		constexpr Key kLettersRow1[] = {Ch("q", "Q"), Ch("w", "W"), Ch("e", "E"), Ch("r", "R"), Ch("t", "T"), Ch("y", "Y"), Ch("u", "U"),
@@ -36,11 +33,8 @@ namespace OnScreenKeyboard
 		constexpr Key kLettersRow3[] = {Fn(KeyKind::Shift), Ch("z", "Z"), Ch("x", "X"), Ch("c", "C"), Ch("v", "V"), Ch("b", "B"),
 			Ch("n", "N"), Ch("m", "M"), Ch(".", ":"), Fn(KeyKind::Backspace)};
 
-		//////////////////////////////////////////////////////////////////////////
-		// Symbols. The digits stay so that "192.168.0.1:7777" does not mean a page switch for every
+		// Symbols page. The digits stay so that "192.168.0.1:7777" does not mean a page switch for every
 		// number.
-		//////////////////////////////////////////////////////////////////////////
-
 		constexpr Key kSymbolsRow0[] = {Ch("1", "1"), Ch("2", "2"), Ch("3", "3"), Ch("4", "4"), Ch("5", "5"), Ch("6", "6"), Ch("7", "7"),
 			Ch("8", "8"), Ch("9", "9"), Ch("0", "0")};
 		constexpr Key kSymbolsRow1[] = {Ch("!", "!"), Ch("@", "@"), Ch("#", "#"), Ch("$", "$"), Ch("%", "%"), Ch("^", "^"), Ch("&", "&"),
@@ -67,10 +61,6 @@ namespace OnScreenKeyboard
 			{kSymbolsRow3, static_cast<u32>(std::size(kSymbolsRow3))},
 			{kBottomRow, static_cast<u32>(std::size(kBottomRow))},
 		};
-
-		//////////////////////////////////////////////////////////////////////////
-		// Number pads: digits on the left, the actions in the last column.
-		//////////////////////////////////////////////////////////////////////////
 
 		constexpr Key kPadRow0[] = {Ch("7", "7"), Ch("8", "8"), Ch("9", "9"), Fn(KeyKind::Backspace)};
 		constexpr Key kPadRow1[] = {Ch("4", "4"), Ch("5", "5"), Ch("6", "6"), Fn(KeyKind::Ok)};
@@ -134,10 +124,6 @@ namespace OnScreenKeyboard
 				return kLettersLayout;
 		}
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// Text
-	//////////////////////////////////////////////////////////////////////////
 
 	void Model::Begin(std::string text, CharSet set, size_t max_chars)
 	{
@@ -253,10 +239,6 @@ namespace OnScreenKeyboard
 			byte_offset--;
 		m_cursor = byte_offset;
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// Keys
-	//////////////////////////////////////////////////////////////////////////
 
 	const Key& Model::KeyAt(KeyPos pos) const
 	{

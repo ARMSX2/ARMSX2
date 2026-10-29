@@ -18,10 +18,6 @@ namespace vuaot::bg
 {
 	namespace a64 = vixl::aarch64;
 
-	//------------------------------------------------------------------
-	// CodeSink
-	//------------------------------------------------------------------
-
 	class CodeSink::Recorder final : public ArmAddressRecorder
 	{
 	public:
@@ -30,9 +26,9 @@ namespace vuaot::bg
 		{
 		}
 
-		// An address inside the buffer (code or placeholder) is emitted as a full four-halfword
-		// MOVZ/MOVK run, the shape the copy and the patcher look for. Every other address means the
-		// same wherever the code lands and is emitted at its own width, as vixl's Mov would.
+		// An address inside the buffer (code or placeholder) gets a full four-halfword MOVZ/MOVK run,
+		// the shape the copy and the patcher look for. Any other address means the same wherever the
+		// code lands, so it is emitted at its own width, as vixl's Mov would.
 		AddressClass ClassifyAddress(const void* addr) override
 		{
 			AddressClass c;
@@ -56,8 +52,7 @@ namespace vuaot::bg
 
 		void OnBranch(u8* at, const void* target, BranchForm form) override
 		{
-			// (the tier's emitters use B and BL only; a B.cond or CBZ here would need a reach check the
-			// copy cannot make)
+			// Only B and BL are relocatable: a B.cond or CBZ would need a reach check the copy cannot make.
 			if (form != BranchForm::Rel26)
 			{
 				Fail("conditional direct branch emitted");
@@ -149,7 +144,6 @@ namespace vuaot::bg
 
 	bool PatchAbsMov(u32* insn, u64 value)
 	{
-		// movz xN, #imm16 (hw=0) then movk xN, #imm16, lsl 16*i
 		constexpr u32 kOpMask = 0xFF800000u, kMovz = 0xD2800000u, kMovk = 0xF2800000u;
 		for (int i = 0; i < 4; i++)
 		{
@@ -172,10 +166,6 @@ namespace vuaot::bg
 		*insn = (*insn & 0xFC000000u) | (static_cast<u32>(disp) & 0x03FFFFFFu);
 		return true;
 	}
-
-	//------------------------------------------------------------------
-	// Worker
-	//------------------------------------------------------------------
 
 	void Worker::Start()
 	{
@@ -272,12 +262,10 @@ namespace vuaot::bg
 		// Below the emulator's threads: a tier-up may wait, the VU must not.
 		Threading::ThreadHandle::GetForCallingThread().SetNicePriority(10);
 #if defined(__linux__)
-		// A thread starts with the processor mask of the thread that creates it. The tier can be switched
-		// on in a running game (the in-game switch), from the CPU thread, which the emulator has pinned to
-		// one core, or to the performance cores, by then; the worker would then share the EE's core, or
-		// the cores the emulation threads need, at a low priority. It takes the mask of the process's first
-		// thread instead, which nothing pins and a taskset or cpuset still limits: the placement of a
-		// worker started at boot, before the emulation threads were pinned.
+		// A thread inherits the affinity mask of its creator. If the tier is switched on in a running
+		// game, the creator is the CPU thread, which is already pinned to one core or to the performance
+		// cores, so the worker would compete with the emulation threads. Use the process's first thread's
+		// mask instead: nothing pins it, and taskset/cpuset still limit it.
 		cpu_set_t mask;
 		if (sched_getaffinity(getpid(), sizeof(mask), &mask) == 0)
 			sched_setaffinity(0, sizeof(mask), &mask);

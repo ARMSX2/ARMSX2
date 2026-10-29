@@ -196,7 +196,7 @@ void Gif_FinishIRQEvent()
 	}
 }
 
-// GS draw latency on an arcade board: how long after the GIF drains to assert CSR.FINISH (PCSX2x6).
+// GS draw latency on an arcade board: how long after the GIF drains to assert CSR.FINISH.
 static constexpr int GS_FINISH_DRAW_DELAY = 0x10000;
 
 void Gif_FinishIRQ()

@@ -41,7 +41,7 @@ object MenuSfx {
      *  (case- and extension-insensitive); [defaultRes] is the bundled fallback clip. */
     enum class Event(val fileName: String, val defaultRes: Int, val altRes: Int = 0) {
         NAV("nav", R.raw.sfx_nav_a, R.raw.sfx_nav_b), // alternates two soft ticks as the highlight moves
-        SELECT("select", R.raw.sfx_click),       // confirm / launch a game: a short click, not the old chime
+        SELECT("select", R.raw.sfx_click),       // confirm / launch a game: a short click
         SUBMENU("submenu", R.raw.sfx_submenu),   // open a settings menu / sub-screen
         MENU_OPEN("menu", R.raw.sfx_menu),       // open the in-game pause menu
         BACK("back", R.raw.sfx_back),

@@ -724,15 +724,11 @@ void normBranch(mV, microFlagCycles& mFC)
 
 void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 {
-	// With the E bit the program ends after the delay slot on both sides, so
-	// no successor block runs and nothing needs the flag instances reordered
-	// for one. Reordering anyway moved them under mVUendProgram, which picks
-	// the final instance by its slot from before the reorder: when the branch
-	// target's lookahead asked for exact status (a status reader early in
-	// code that never runs), the final STATUS, MAC and CLIP came from the
-	// wrong register, or from one the reorder had overwritten. The M bit is
-	// the exception: its exit leaves the program resumable at a successor, and
-	// its non-E-bit mVUendProgram reads slot 3 of the reordered ring.
+	// With the E bit the program ends after the delay slot on both sides, so no
+	// successor block runs and the flag instances are not reordered for one:
+	// mVUendProgram picks the final instance by its slot from before the reorder.
+	// The M bit is the exception: its exit leaves the program resumable at a
+	// successor, and its non-E-bit mVUendProgram reads slot 3 of the reordered ring.
 	mVUsetupBranch(mVU, mFC, !(mVUup.eBit && !mVUup.mBit));
 
 	// T-bit, D-bit, M-bit conditional branches — match x86 condBranch(). Each

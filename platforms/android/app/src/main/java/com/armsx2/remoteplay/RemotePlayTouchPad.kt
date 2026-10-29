@@ -39,10 +39,9 @@ object RemotePlayPrefs {
 }
 
 /**
- * Player 2's pad as the on-screen controls hold it. The controls are ARMSX2's own
- * (com.armsx2.ui.touch.RemotePlayTouchControls), and they send what they would send a game on this
- * device: Android keycodes for buttons, and pairs of half-axis codes carrying 0..32767 for each
- * stick. Main thread, like the controls' touch handlers.
+ * Player 2's pad as the on-screen controls (com.armsx2.ui.touch.RemotePlayTouchControls) hold it.
+ * Input arrives as it would for a game on this device: Android keycodes for buttons, and pairs of
+ * half-axis codes carrying 0..32767 for each stick. Main thread, like the controls' touch handlers.
  */
 internal class TouchPadState(private val onChange: (RemotePlayProtocol.PadState) -> Unit) {
     private var buttons = 0

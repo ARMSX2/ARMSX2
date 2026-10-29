@@ -6,12 +6,11 @@
 // local memory, unswizzled to RGBA8, and the target's alpha range follows the alpha bytes of the
 // rectangles that were read.
 //
-// Update used to unswizzle straight into a mapped upload buffer and now unswizzles into a scratch
-// buffer and uploads from there. The test does not care which: its textures take a mapping or an
-// Update() call, and what it checks is the texels the update texture holds when it is copied into
-// the target. A rectangle the dirty list names must arrive complete and at the right place, a
-// rectangle that is not block aligned must still read its whole blocks for the alpha range, and a
-// colour format that has no alpha must not be scanned for it.
+// The test does not care how the texels get there (its textures take a mapping or an Update() call);
+// it checks the texels the update texture holds when it is copied into the target. A rectangle the
+// dirty list names must arrive complete and at the right place, a rectangle that is not block aligned
+// must still read its whole blocks for the alpha range, and a colour format that has no alpha must not
+// be scanned for it.
 
 #include "gs_hw_draw_harness.h"
 

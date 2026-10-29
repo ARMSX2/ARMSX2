@@ -47,8 +47,6 @@ namespace
 	constexpr u64 BIN_CARD = 8 * MB; // A card without.
 	const std::string REDIRECT_TARGET = "https://release-assets.githubusercontent.com/signed/proverb.zip?sp=r";
 
-	// -- Files ------------------------------------------------------------------------------------
-
 	void WriteFile(const std::string& path, const std::string& content)
 	{
 		ASSERT_TRUE(FileSystem::CreateDirectoryPath(std::string(Path::GetDirectory(path)).c_str(), true)) << path;
@@ -76,9 +74,6 @@ namespace
 		return names;
 	}
 
-	// -- Archives ---------------------------------------------------------------------------------
-
-	// A zip with these (name, content) entries, built with libzip.
 	std::string MakeZip(const std::vector<std::pair<std::string, std::string>>& entries)
 	{
 		ScopedTempDir dir;
@@ -95,7 +90,6 @@ namespace
 		return ReadFile(path);
 	}
 
-	// What boot.elf of a game holds in the made-up boot files.
 	std::string BootElfOf(const std::string& id)
 	{
 		return "ELF:" + id;
@@ -129,8 +123,6 @@ namespace
 		return out;
 	}
 
-	// -- GitHub's release reply -------------------------------------------------------------------
-
 	std::string ReleaseJson(const std::string& name, size_t zip_size, const std::string& digest)
 	{
 		std::string assets = R"({"name":"proverb.elf","size":25060,"updated_at":"2026-07-25T21:32:55Z","digest":"sha256:00"},)";
@@ -147,8 +139,6 @@ namespace
 			.Redirect(BOOT_FILES_URL, REDIRECT_TARGET)
 			.Ok(REDIRECT_TARGET, zip, "application/octet-stream");
 	}
-
-	// -- BIOS -------------------------------------------------------------------------------------
 
 	// A ROMDIR that LoadBiosVersion reads, with the ROMVER and EXTINFO of a console and of two arcade boards
 	// (as in arcade_bios_tests.cpp).
@@ -172,8 +162,6 @@ namespace
 	std::string ConsoleBios() { return MakeBios("0200AC20040614", "20040614-000000", 4 * MB); }
 	std::string System256Bios() { return MakeBios("0100TZ20000603", "20040519-145634", 2 * MB); }
 	std::string System246Bios() { return MakeBios("0100TZ20000603", "20021119-163841", 2 * MB); }
-
-	// -- Cards ------------------------------------------------------------------------------------
 
 	// A memory card file of [size] bytes that is all [tag], so that two cards are told apart by their content.
 	std::string Card(char tag, u64 size)
@@ -206,8 +194,6 @@ namespace
 	{
 		return SHA256Digest::HashHex(data);
 	}
-
-	// -- The fixture ------------------------------------------------------------------------------
 
 	class ArcadeSetupTest : public ::testing::Test
 	{
@@ -244,7 +230,6 @@ namespace
 
 		void PutBios(const char* name, const std::string& image) { WriteFile(Path::Combine(EmuFolders::Bios, name), image); }
 
-		// The made-up Proverb zip with boot programs for [ids], installed.
 		void InstallBootFiles(const std::vector<std::string>& ids)
 		{
 			const std::string zip = m_dir.File("installing.zip");
@@ -280,10 +265,6 @@ namespace
 		std::string m_games, m_old_bios, m_cleared, m_uncleared;
 	};
 } // namespace
-
-// ==================================================================================================
-// The boot files
-// ==================================================================================================
 
 TEST_F(ArcadeSetupTest, WithoutADownloadNothingIsInstalled)
 {
@@ -410,7 +391,6 @@ TEST_F(ArcadeSetupTest, ABadDownloadChangesNothing)
 		EXPECT_EQ(MakeService().GetBootFilesStatus().game_ids, (std::vector<std::string>{"NM00004", "NM00007"}));
 	};
 
-	// A 404.
 	{
 		FakeFetcher http;
 		http.Status(BOOT_RELEASE_URL, 404).Status(BOOT_FILES_URL, 404, "Not Found");
@@ -434,14 +414,12 @@ TEST_F(ArcadeSetupTest, ABadDownloadChangesNothing)
 		Service service = MakeService();
 		expect_untouched(service.DownloadBootFiles(http));
 	}
-	// A connection that dropped part way.
 	{
 		FakeFetcher http;
 		http.Status(BOOT_RELEASE_URL, 404).Redirect(BOOT_FILES_URL, REDIRECT_TARGET).Truncated(REDIRECT_TARGET, good, good.size() / 2);
 		Service service = MakeService();
 		expect_untouched(service.DownloadBootFiles(http));
 	}
-	// No connection.
 	{
 		FakeFetcher http;
 		http.Fail(BOOT_RELEASE_URL, "no route").Fail(BOOT_FILES_URL, "no route");
@@ -499,7 +477,6 @@ TEST_F(ArcadeSetupTest, ABootProgramIsReadOutOfTheZipOnDemand)
 	std::string error;
 	ASSERT_TRUE(service.ExtractBootProgram("NM00007", out, &error)) << error;
 	EXPECT_EQ(ReadFile(out), BootElfOf("NM00007"));
-	// Again, over the old one.
 	WriteFile(out, "stale");
 	ASSERT_TRUE(service.ExtractBootProgram("nm00007", out, &error)) << error;
 	EXPECT_EQ(ReadFile(out), BootElfOf("NM00007"));
@@ -545,7 +522,7 @@ TEST_F(ArcadeSetupTest, OnlyBinFolderBootElfEntriesAreBootPrograms)
 
 TEST_F(ArcadeSetupTest, ARealProverbZipIsUnderstood)
 {
-	// Three games of the live nightly build (2026-10-08), as GitHub serves it: 25028 bytes of ELF each.
+	// A trimmed copy of the real Proverb zip as GitHub serves it: three games, 25028-byte boot.elf each.
 	Service service = MakeService();
 	const InstallResult result = service.InstallBootFilesFromFile(CatalogTest::FixturePath("arcade/proverb-trimmed.zip"));
 	ASSERT_TRUE(result.ok) << result.error;
@@ -582,8 +559,6 @@ TEST_F(ArcadeSetupTest, AZipThePlayerHasCanBeInstalledWithoutTheNetwork)
 	}
 	EXPECT_EQ(service.GetBootFilesStatus().sha256, result.status.sha256);
 }
-
-// ---- Is there a newer one ----
 
 TEST_F(ArcadeSetupTest, AnUpdateIsFoundByTheDigestGitHubGives)
 {
@@ -652,16 +627,11 @@ TEST_F(ArcadeSetupTest, AnUpdateCheckThatCannotGetAnAnswerSaysSo)
 		EXPECT_EQ(service.CheckForBootFilesUpdate(http).state, UpdateCheck::State::Failed);
 	}
 	{
-		// A release with no zip among its assets.
 		FakeFetcher http;
 		http.Ok(BOOT_RELEASE_URL, R"({"name":"x","assets":[{"name":"proverb.elf","size":1}]})");
 		EXPECT_EQ(service.CheckForBootFilesUpdate(http).state, UpdateCheck::State::Failed);
 	}
 }
-
-// ==================================================================================================
-// The arcade BIOS
-// ==================================================================================================
 
 TEST_F(ArcadeSetupTest, TheArcadeBiosIsReadFromTheBiosFolder)
 {
@@ -700,10 +670,6 @@ TEST_F(ArcadeSetupTest, AGameRunsOnTheBiosTheCoreWouldPickForIt)
 	PutBios("system246.bin", System246Bios());
 	EXPECT_EQ(FindBiosFor("NM00010", &needs), "system246.bin");
 }
-
-// ==================================================================================================
-// What a game lacks
-// ==================================================================================================
 
 TEST_F(ArcadeSetupTest, AnAcgameLacksWhatIsNotThere)
 {
@@ -873,7 +839,7 @@ TEST_F(ArcadeSetupTest, APackedImageCannotBePlayed)
 	EXPECT_EQ(Kinds(report), (std::vector<PartKind>{PartKind::PackedImage}));
 	EXPECT_EQ(report.parts[0].detail, "NM00004.iso.gz");
 	EXPECT_FALSE(service.Prepare(Games("NM00004.iso.gz")).ok);
-	EXPECT_FALSE(Exists(Cards("NM00004.ps2"))); // Nothing was copied.
+	EXPECT_FALSE(Exists(Cards("NM00004.ps2")));
 }
 
 TEST_F(ArcadeSetupTest, EveryPartHasWordsForAList)
@@ -892,10 +858,6 @@ TEST_F(ArcadeSetupTest, EveryPartHasWordsForAList)
 		EXPECT_NE((MissingPart{kind, "THE-DETAIL"}).Explain().find("THE-DETAIL"), std::string::npos);
 }
 
-// ==================================================================================================
-// Getting an .acgame ready
-// ==================================================================================================
-
 TEST_F(ArcadeSetupTest, AnAcgameIsReadyWhenItsDongleIsCopiedAndItsSramSeeded)
 {
 	const std::string acgame = PutAcgame("NM00004");
@@ -912,7 +874,7 @@ TEST_F(ArcadeSetupTest, AnAcgameIsReadyWhenItsDongleIsCopiedAndItsSramSeeded)
 	EXPECT_EQ(result.game_id, "NM00004");
 	EXPECT_EQ(result.title, "Game NM00004");
 	EXPECT_EQ(result.acgame, acgame);
-	EXPECT_EQ(result.elf, Games("NM00004/boot.elf")); // The game's own.
+	EXPECT_EQ(result.elf, Games("NM00004/boot.elf"));
 	EXPECT_EQ(result.media, Games("NM00004/NM00004.chd"));
 	EXPECT_EQ(result.sram, Data("NM00004/sram.bin"));
 
@@ -1041,19 +1003,14 @@ TEST_F(ArcadeSetupTest, AnAcgameThatLacksSomethingIsLeftAlone)
 	WriteFile(Games("NM00004/NM00004.chd"), "image");
 	WriteFile(Games("NM00004/sram.bin"), "seed");
 	PutBios("system256.bin", System256Bios());
-	// No dongle anywhere.
 
 	const PrepareResult result = MakeService().Prepare(acgame);
 	EXPECT_FALSE(result.ok);
 	EXPECT_EQ(Kinds(result.missing), (std::vector<PartKind>{PartKind::Dongle}));
 	EXPECT_NE(result.error.find("NM00004.ps2"), std::string::npos) << result.error;
-	EXPECT_FALSE(Exists(Data("NM00004/sram.bin"))); // Not seeded either.
+	EXPECT_FALSE(Exists(Data("NM00004/sram.bin")));
 	EXPECT_FALSE(Exists(Cards("NM00004.ps2")));
 }
-
-// ==================================================================================================
-// Getting a loose image ready
-// ==================================================================================================
 
 TEST_F(ArcadeSetupTest, ALooseImageGetsAnAcgameAndItsDongleIsCopied)
 {
@@ -1107,7 +1064,7 @@ TEST_F(ArcadeSetupTest, ALooseImageNeedsTheBootFiles)
 	const PrepareResult result = service.Prepare(image);
 	EXPECT_FALSE(result.ok);
 	EXPECT_EQ(Kinds(result.missing), (std::vector<PartKind>{PartKind::BootProgram}));
-	EXPECT_FALSE(Exists(Cards("NM00004.ps2"))); // Nothing was changed.
+	EXPECT_FALSE(Exists(Cards("NM00004.ps2")));
 	EXPECT_FALSE(Exists(Data("NM00004/NM00004.acgame")));
 }
 
@@ -1157,8 +1114,6 @@ TEST_F(ArcadeSetupTest, AMacsResourceForkBesideTheDongleDoesNotGetInItsWay)
 	ASSERT_TRUE(MakeService().Prepare(Games("NM00004.chd")).ok);
 	EXPECT_EQ(ReadFile(Cards("NM00004.ps2")), Card('D', PS2_CARD));
 }
-
-// ---- A dongle swapped beside the image replaces the old copy ----
 
 TEST_F(ArcadeSetupTest, ADongleSwappedBesideTheImageReplacesTheCopy)
 {
@@ -1255,8 +1210,6 @@ TEST_F(ArcadeSetupTest, ACopyMadeBeforeAnythingWasNotedIsTakenToBeFromTheFirstDo
 	EXPECT_EQ(ReadFile(Cards("NM00010.ps2")), card_b);
 }
 
-// ---- Soul Calibur II's Conquest card ----
-
 TEST_F(ArcadeSetupTest, SoulCaliburIIGetsTheClearedConquestCard)
 {
 	PutBios("system256.bin", System256Bios());
@@ -1271,7 +1224,7 @@ TEST_F(ArcadeSetupTest, SoulCaliburIIGetsTheClearedConquestCard)
 
 	// The core mounts a card of this name in slot 2; the .acgame names it too.
 	EXPECT_EQ(ReadFile(Cards("NM00007.conquestcard")), m_cleared);
-	EXPECT_EQ(ReadFile(Cards("NM00007.ps2")), Card('D', PS2_CARD)); // And the dongle is the dongle.
+	EXPECT_EQ(ReadFile(Cards("NM00007.ps2")), Card('D', PS2_CARD));
 	const auto info = Arcade::ReadAcGameInfo(result.acgame);
 	ASSERT_TRUE(info.has_value());
 	EXPECT_EQ(info->card, "NM00007.conquestcard");

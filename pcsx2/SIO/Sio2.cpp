@@ -125,7 +125,7 @@ void Sio2::SetCtrl(u32 value)
 		}
 
 		// An arcade board's dongle and pads are timed: the interrupt arrives once the bytes have gone
-		// over the serial line at the port's baud rate (PCSX2x6).
+		// over the serial line at the port's baud rate.
 		this->ctrl &= ~Sio2Ctrl::START_TRANSFER;
 
 		const u32 cmd0 = CmdQueue[0];

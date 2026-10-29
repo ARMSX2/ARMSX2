@@ -754,9 +754,9 @@ void PadDualshock2::Set(u32 index, float value)
 			{
 				if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
 				{
-					// analogLight and currentMode are written by the IOP's mode-switch command as well, which now
-					// runs on the IOP thread. The pad is found again by its slot when the command runs, because
-					// a settings change can replace it (under a hold) before the IOP gets to the command.
+					// analogLight and currentMode are also written by the IOP's mode-switch command, which runs
+					// on the IOP thread. The pad is looked up again by slot when the command runs, because a
+					// settings change can replace it (under a hold) before the IOP gets to the command.
 					const u8 slot = this->unifiedSlot;
 					const auto toggle = [slot] {
 						PadBase* const pad = Pad::GetPad(slot);
@@ -764,7 +764,7 @@ void PadDualshock2::Set(u32 index, float value)
 							static_cast<PadDualshock2*>(pad)->ToggleAnalogLight();
 					};
 					if (!IopThread::TryPostToIop(toggle))
-						ToggleAnalogLight(); // no IOP thread any more: nothing else writes the fields
+						ToggleAnalogLight(); // IOP thread stopped: nothing else writes the fields
 				}
 				else
 				{

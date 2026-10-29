@@ -67,7 +67,7 @@ namespace vuaot
 	};
 
 	// What a block body emitted in place of microVU's needs to know about
-	// microVU and the active configuration (milestone 2's per-block lowering).
+	// microVU and the active configuration.
 	struct MvuEmitEnv
 	{
 		u32 vuIndex = 0;
@@ -91,8 +91,7 @@ namespace vuaot
 		bool flagHack = false;
 		bool vuSyncHack = false;      // VUSyncHack / FullVU0SyncHack (cycle accounting differs)
 
-		// Milestone 4 (vu-aot regions): what replacing microVU's block framing
-		// needs from microVU.
+		// What replacing microVU's block framing (vu-aot regions) needs from microVU.
 		s32 offCycles = 0;                // mVU.cycles, from x24
 		const void* cycleBreak = nullptr; // mVU.cycleBreak stub
 		void* rootBlock = nullptr;        // the microBlock being compiled (pState at offset 0)
@@ -116,12 +115,11 @@ namespace vuaot
 		// emits microVU's own dispatch (normJumpCompile after its setupBranch)
 		// for `block`, whose end state is `endKey`; the target is in mVU.branch.
 		void (*emitJumpTail)(u32 vu, void* block, const u8* endKey) = nullptr;
-		// Milestone 8: microVU's own code for a block a region holds, for a
-		// run that is short of the region's budget test. `rec` is a region's
-		// bail record (PC at 0, at 4 the signed distance from the record to a
-		// word holding the block's microProgram, the block's microBlock at 8,
-		// the code address at 16, written once compiled). Called from
-		// generated code.
+		// microVU's own code for a block a region holds, for a run that is short of
+		// the region's budget test. `rec` is the region's bail record: PC at 0, at 4
+		// the signed distance from the record to a word holding the block's
+		// microProgram, the block's microBlock at 8, the code address at 16 (written
+		// once compiled). Called from generated code.
 		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
 		// x29 holds VURegs::Mem in micro mode (gprVUMem).
 		bool vuMemPinned = false;

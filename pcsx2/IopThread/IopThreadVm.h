@@ -2,22 +2,22 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // What the VM does with the IOP thread: the one thread object, the mode in effect, and the calls the
-// VM's lifecycle makes (design sections 9.2 to 9.5).
+// VM's lifecycle makes.
 //
-// In Lockstep the IOP thread runs the IOP's slice of every EE event test while the EE waits (design
-// section 6.2). Everything else still runs on the EE thread, which is legal because the IOP thread is
-// parked whenever the EE runs. A hold (VmHold) is therefore a marker in Lockstep, but the lifecycle
-// takes one at every site where Threaded needs a real one.
+// In Lockstep the IOP thread runs the IOP's slice of every EE event test while the EE waits. Everything
+// else still runs on the EE thread, which is legal because the IOP thread is parked whenever the EE runs.
+// A hold (VmHold) is therefore a marker in Lockstep, but the lifecycle takes one at every site where
+// Threaded needs a real one.
 //
-// In Threaded the IOP thread paces itself from the EE's watermark (design section 5): the EE publishes
-// its cycle at every event test, empties the IOP-to-EE queue and waits only if it is more than L ahead
-// (W1). EE-to-IOP effects (blanking, an interrupt, once-a-frame jobs) are queued with a cycle stamp and
-// applied by the IOP when its clock reaches it. IOP-to-EE effects (the SBUS interrupt, a pause) are
-// queued for the EE to apply at its next event test. A SIF pump runs on the EE thread with the IOP
-// stopped (variant R, design 3.6.1): the EE holds the IOP for the pumps it starts, and the IOP blocks in
-// CallOnEE for the pumps it starts. While the thread runs the EE-side books (EEsCycle, EEoCycle) are not
-// maintained: the IOP's position is the thread's, and the books are rewritten from it whenever the IOP
-// is held or stopped, which is where the savestate and a mode change read them.
+// In Threaded the IOP thread paces itself from the EE's watermark: the EE publishes its cycle at every
+// event test, empties the IOP-to-EE queue and waits only if it is more than L ahead (W1). EE-to-IOP
+// effects (blanking, an interrupt, once-a-frame jobs) are queued with a cycle stamp and applied by the IOP
+// when its clock reaches it. IOP-to-EE effects (the SBUS interrupt, a pause) are queued for the EE to
+// apply at its next event test. A SIF pump runs on the EE thread with the IOP stopped: the EE holds the
+// IOP for the pumps it starts, and the IOP blocks in CallOnEE for the pumps it starts. While the thread
+// runs the EE-side books (EEsCycle, EEoCycle) are not maintained: the IOP's position is the thread's, and
+// the books are rewritten from it whenever the IOP is held or stopped, which is where the savestate and a
+// mode change read them.
 //
 // Everything here is called on the CPU thread unless it says otherwise.
 
@@ -37,8 +37,6 @@ namespace IopThread
 	/// The one IOP thread object. It exists for the life of the process and runs only while the mode
 	/// in effect is not Off.
 	extern Thread g_thread;
-
-	// ---- Choosing and starting ---------------------------------------------------------------
 
 	/// What this host looks like to ResolveMode: whether it is ARM64, its core count and how many of the
 	/// cores are performance cores (VMManager's GetPerformanceCoresMask; 0 where the cores cannot be told apart).
@@ -81,22 +79,21 @@ namespace IopThread
 
 	/// A VM reset is about to reset the recompilers (VMManager::Reset). The reset puts the IOP back in
 	/// PS2 mode, so the mode is chosen as if the PS1 flag in the IOP's registers were already clear: a
-	/// VM that was demoted to Off by a PS1 game gets its IOP thread back (design 9.5, 9.6). The caller
+	/// VM that was demoted to Off by a PS1 game gets its IOP thread back. The caller
 	/// starts the thread with SyncThread() once the CPU state has been reset.
 	void ChooseModeForReset();
 
 	/// The EE wrote F240 bit 19: the IOP is about to be reset into PS1 mode. PS1 mode forces Off (the
 	/// IOP runs at a different clock ratio), so the IOP thread is stopped here and the mode stays Off
-	/// until the next reset or boot (design 9.6). The caller holds the IOP (IopBridge::Ps1Switch), and
+	/// until the next reset or boot. The caller holds the IOP (IopBridge::Ps1Switch), and
 	/// the EE core is asked to regenerate its dispatcher, which still calls the event test instance of
 	/// the old mode. Needs the CPU thread.
 	void DemoteForPs1Switch();
 
-	// ---- EE-to-IOP items ---------------------------------------------------------------------
-	// The EE tells the IOP things at a cycle: blanking, an interrupt, a few once-a-frame jobs (design
-	// 3.4.2). The EE posts an item to the E2I queue stamped with its cycle. Lockstep then hands the
-	// IOP thread "apply everything up to this stamp" and waits, so the item takes effect at exactly
-	// the point of the EE's execution where Off made the direct call. Threaded will post and go on.
+	// The EE tells the IOP things at a cycle: blanking, an interrupt, a few once-a-frame jobs. The EE posts
+	// an item to the E2I queue stamped with its cycle. Lockstep then hands the IOP thread "apply everything
+	// up to this stamp" and waits, so the item takes effect at exactly the point of the EE's execution where
+	// Off made the direct call. Threaded posts and goes on.
 
 	namespace E2IKind
 	{
@@ -108,7 +105,7 @@ namespace IopThread
 		inline constexpr u16 Call = 5; // the job whose number is arg (E2IJob)
 	} // namespace E2IKind
 
-	/// The once-a-frame jobs the EE runs for IOP devices (design 3.4.2 CALL, 8.4, 8.11).
+	/// The once-a-frame jobs the EE runs for IOP devices.
 	namespace E2IJob
 	{
 		inline constexpr u32 AutoEjectTick = 0; // AutoEject::CountDownTicks()
@@ -141,18 +138,15 @@ namespace IopThread
 	/// here, directly. EE thread only.
 	void ApplyOnIop(u16 kind, u32 arg = 0);
 
-	// ---- Host threads and the IOP ------------------------------------------------------------
-
-	/// Any thread. For a host thread that today calls into IOP state directly and cannot take a hold (the
-	/// physical-disc thread's new-disc callback, design 8.3). With an IOP thread running, queues `command`
-	/// for it and returns true: it runs on the IOP thread between slices (Lockstep: in the next handoff).
-	/// Without one (Off, or a mode switch in progress) returns false and does not queue it, and the caller
-	/// makes the call itself, as before. A command accepted just as the thread stops runs on the IOP
-	/// thread before it exits.
+	/// Any thread. For a host thread that calls into IOP state directly and cannot take a hold (the
+	/// physical-disc thread's new-disc callback). With an IOP thread running, queues `command` for it and
+	/// returns true: it runs on the IOP thread between slices (Lockstep: in the next handoff). Without one
+	/// (Off, or a mode switch in progress) returns false and does not queue it, and the caller makes the
+	/// call itself. A command accepted just as the thread stops runs on the IOP thread before it exits.
 	bool TryPostToIop(HostCommandQueue::Command command);
 
 	/// IOP-side code asks for something that only the CPU thread may do and that nothing waits for (pad and
-	/// USB vibration, design 8.4 and 8.12). Off and Lockstep call `fn` here: in Off the caller is the CPU
+	/// USB vibration). Off and Lockstep call `fn` here: in Off the caller is the CPU
 	/// thread, and in Lockstep the CPU thread is blocked in the handoff, so the call is legal and keeps
 	/// the order Off has. Threaded posts it with Host::RunOnCPUThread(fn, false), which never waits for
 	/// the CPU thread, because the CPU thread may be spinning on the IOP.
@@ -170,8 +164,7 @@ namespace IopThread
 			fn();
 	}
 
-	// ---- Threaded: the EE's event test --------------------------------------------------------
-	// The Threaded instance of the event test calls these, on the EE thread (design section 4).
+	// The Threaded instance of the event test calls these, on the EE thread.
 
 	/// A pause the IOP asked for (its recompiler met an opcode it cannot run, or its interpreter hit a
 	/// breakpoint). In Lockstep the handoff returns and makes it; in Threaded the I2E item sets the flag and
@@ -216,14 +209,13 @@ namespace IopThread
 		return true;
 	}
 
-	// ---- Threaded: SIF pumps (variant R, design 3.6.1) --------------------------------------
 	/// A SIF pump that the IOP starts. The pump moves data on both sides and schedules both sides' completion
 	/// events, so it runs on the EE thread with the IOP stopped: the IOP posts it with CallOnEE and blocks until the
 	/// EE has run it (at its next event test, or sooner inside any EE wait). On the EE thread it just runs.
 	void RunSifPumpOnEe(void (*pump)());
 
 	// ---- Testing knobs (eerunner) ---------------------------------------------------------------
-	/// S_min for the next Start() (design 5.3: 0 by default; step 11 and 12 measure 256). Not a setting.
+	/// The minimum Threaded slice size (S_min) for the next Start(); 0 by default. Not a setting.
 	void SetThreadedMinSlice(s32 min_slice);
 	s32 ThreadedMinSlice();
 	/// The idle-watch window for the next Start(): how long an idle IOP watches the watermark before it sleeps
@@ -231,29 +223,24 @@ namespace IopThread
 	void SetThreadedIdleSpinNs(u32 ns);
 	u32 ThreadedIdleSpinNs();
 
-	// ---- Counters ------------------------------------------------------------------------------
 	/// One line of the Threaded counters, per frame over the time since the last call, for the OSD. Empty unless
 	/// the mode is Threaded.
 	std::string OsdStatsLine();
 	/// The same line for a total over `frames` frames, for the run reports.
 	std::string FormatStats(const Stats& totals, double frames);
 
-	// ---- Clocks and pausing ------------------------------------------------------------------
-
 	/// The EE's cycle counter and the IOP's slice books were reset or loaded (cpuReset, a savestate
 	/// load): move the thread's view of the IOP's position to match. Needs the IOP held or stopped.
 	void ResyncClocks();
 
 	/// The VM paused or resumed (VMManager::SetState). A paused VM keeps a hold for as long as it
-	/// stays paused, so the debugger and the settings see a still IOP (design 9.3).
+	/// stays paused, so the debugger and the settings see a still IOP.
 	void OnVmPaused(bool paused);
 
 	/// A request from the IOP thread to pause the VM, waiting for the EE. RunLockstepSlice() makes it
 	/// as soon as the handoff returns; the two functions are for the tests and for that.
 	bool DeferredPausePending();
 	void ClearDeferredPause();
-
-	// ---- Holds -------------------------------------------------------------------------------
 
 	/// A full stop of the IOP for the length of a scope: the EE thread may touch IOP state inside it.
 	/// A marker in Lockstep and with no thread. See ScopedHold for the rules.

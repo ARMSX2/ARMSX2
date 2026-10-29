@@ -211,11 +211,10 @@ internal object SettingsControllerNav {
     private val selectedId = mutableStateOf<String?>(null)
 
     /** How many screens laid out in side-by-side columns are up (the texture and patch managers),
-     *  held through [ColumnControllerNav]. While any is, and no modal owns input, Up/Down keep to
-     *  the selection's column and Left/Right reach the next column even where nothing sits level
-     *  with the selection; otherwise a two-column screen walked up and down both columns
-     *  interleaved, and Left/Right did nothing. A count, so two such screens overlapping in a
-     *  transition cannot switch it off for each other. */
+     *  counted through [ColumnControllerNav]. While any is up and no modal owns input, Up/Down stay
+     *  in the selection's column and Left/Right reach the next column even where nothing sits level
+     *  with the selection. A count, so two such screens overlapping in a transition cannot switch
+     *  it off for each other. */
     internal var columnScreens = 0
     val selectedIndex = mutableIntStateOf(-1)
     val scrollVelocity = mutableFloatStateOf(0f)
@@ -779,8 +778,7 @@ fun ToggleRow(
             .padding(vertical = 5.dp)
             .controllerFocusable(
                 controllerId = "toggle:$label",
-                // Only A flips it: Left/Right are for moving, and on a switch they flipped it by
-                // accident on the way past.
+                // Only A flips it, so Left/Right can move focus past the switch without toggling it.
                 onConfirm = { emit(!value) },
             ),
         shape = RoundedCornerShape(22.dp),

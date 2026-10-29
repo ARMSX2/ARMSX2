@@ -206,7 +206,7 @@ void psxDma9(u32 madr, u32 bcr, u32 chcr)
 	EeBridge::Sif0Pump();
 
 	// On an arcade board, clear DMA9's busy bit once SIF0 is idle, so each queued sceSifSetDma kicks
-	// again and reads its reused bounce buffer fresh; otherwise movies corrupt (PCSX2x6).
+	// again and reads its reused bounce buffer fresh; otherwise movies corrupt.
 	if (Arcade::IsActive() && !sif0.iop.busy)
 		HW_DMA9_CHCR &= ~0x01000000;
 }

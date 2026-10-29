@@ -3,19 +3,18 @@
 
 // RAISR 2x upscaler. The algorithm and the filter file format are from Intel's Library for Video
 // Super Resolution (BSD-3-Clause, https://github.com/OpenVisualCloud/Video-Super-Resolution-Library,
-// commit ea37e77): Library/Raisr_OpenCL_kernel.h is the clearest statement of it, Raisr.cpp and
-// Raisr_AVX256.cpp the CPU version Intel's filters were trained against. cppraisr (MIT) is the
-// model for the plain-C++ structure. This is a port of the algorithm; none of Intel's AVX or IPP
-// code is used. The filters we ship are not Intel's: see bin/resources/upscale/raisr/ps2/README.md.
+// commit ea37e77). Raisr.cpp and Raisr_AVX256.cpp, cited below, are the CPU version Intel's
+// filters were trained against. This is a plain C++ port of the algorithm (structure after
+// cppraisr, MIT); none of Intel's AVX or IPP code is used. The filters we ship are not Intel's:
+// see bin/resources/upscale/raisr/ps2/README.md.
 //
-// Differences from Intel's CPU path, all deliberate:
+// Deliberate differences from Intel's CPU path:
 //  - Every pixel is filtered. Intel leaves a 6 pixel border as plain bilinear; here the luma is
-//    treated as edge-replicated beyond the image, so a 32x32 texture is upscaled in full.
+//    edge-replicated beyond the image.
 //  - The cheap upscale is not rounded to 8 bits before filtering, and the blended luma is not
 //    rounded before it is recombined with chroma.
 //  - Coherence is 0 for a flat patch (Intel adds 1e-17 to the denominator, which does the same).
-//  - The hash bins are found without atan2 or square roots (see HashScalar): the same partition,
-//    except exactly on a bin edge, where float rounding decides in Intel's code too.
+//  - The hash bins are found without atan2 or square roots (see HashScalar).
 //
 // Structure: the image is processed in bands of output rows. Per band: source rows are converted
 // to luma/chroma/alpha and upscaled horizontally, vertically combined into the padded luma L,
@@ -23,10 +22,9 @@
 // 11x11 filter -> range fallback; then a 3x3 census blend and the colour recombine. Scratch is
 // per call, so the entry points can run on any number of threads.
 //
-// The scalar and NEON paths do the same float operations in the same order (the NEON path is the
-// scalar path, four pixels wide), so they produce identical bits. Every fused multiply-add is
-// explicit (MulAdd / vfmaq); the compiler must not contract anything else, so contraction is off
-// for this file.
+// The scalar and NEON paths do the same float operations in the same order (NEON is the scalar
+// path four pixels wide), so they produce identical bits. Every fused multiply-add is explicit
+// (MulAdd / vfmaq) and contraction is off for this file so the compiler adds no others.
 
 #include "GS/Renderers/HW/GSTextureUpscaler.h"
 
@@ -54,10 +52,6 @@ namespace GSTextureUpscaler
 {
 	namespace
 	{
-		// ---------------------------------------------------------------------------------
-		//  Constants
-		// ---------------------------------------------------------------------------------
-
 		constexpr int kMargin = static_cast<int>(kPatchSize / 2); // filter window radius, 5
 		constexpr u32 kPad = 8; // replicated columns left of x = 0 in every padded row
 		constexpr u32 kBandRows = 64; // output rows per band
@@ -65,9 +59,9 @@ namespace GSTextureUpscaler
 		constexpr u32 kSourceRows = kBandRows / 2 + 12; // source rows a band can touch
 		constexpr float kTensorNorm = 1.0f / (255.0f * 255.0f * 2.0f * 2.0f);
 
-		// Intel resizes luma into an 8-bit buffer, so its cheap upscale L is rounded to integers
-		// before it is hashed and filtered. Here L stays float. Flip this to compare the two; every
-		// consumer of L reads the rows LumaRow produces, so this is the only place that changes.
+		// Intel rounds the cheap upscale L to 8-bit integers before hashing and filtering; here L
+		// stays float. Set true to match Intel. Every consumer of L reads rows from LumaRow, so this
+		// is the only switch.
 		constexpr bool kRoundCheapLuma = false;
 
 		// A fused multiply-add on every build the NEON path is compiled for (it uses vfmaq), so the
@@ -82,10 +76,6 @@ namespace GSTextureUpscaler
 		}
 
 		inline u32 RoundUp4(u32 v) { return (v + 3) & ~3u; }
-
-		// ---------------------------------------------------------------------------------
-		//  Tables
-		// ---------------------------------------------------------------------------------
 
 		// Intel createGaussianKernel<float>(11, 2.0), Raisr.cpp:142.
 		std::array<float, kPatchSize> MakeGaussian11()
@@ -146,13 +136,9 @@ namespace GSTextureUpscaler
 			return tables;
 		}
 
-		// ---------------------------------------------------------------------------------
-		//  Hash
-		// ---------------------------------------------------------------------------------
-
 		struct HashParams
 		{
-			float se[2]; // strength edges
+			float se[2];
 			float cr[2]; // coherence edges as L2/L1 ratios, see below
 		};
 
@@ -175,23 +161,19 @@ namespace GSTextureUpscaler
 		// The hash of a tensor [[a b][b d]] (a = vertical-gradient energy, d = horizontal). Intel's is
 		// GetHashValue in Raisr.cpp:814 for the scalar form, Raisr_AVX256.cpp:393 for the live one.
 		//
-		// The angle is atan2(b, L1 - d), plus pi when negative: the direction of the dominant
-		// eigenvector (x, y) = (L1 - d, b), folded into [0, pi). Its bin is floor(angle / (pi/24)).
-		// Here the bin is found without atan2. Fold the direction into the first quadrant: its
-		// slope t = |y| / |x| says how many of the first quadrant's edges (k*pi/24, k = 1..12) it
-		// has passed, c = #(t >= tan(k*pi/24)), and when the folded direction pointed into the
-		// second quadrant (angle > pi/2) the bin is mirrored, 23 - c. That is the same partition
-		// as atan2, except exactly on an edge, and it vectorises with one divide.
+		// Intel's angle is atan2(b, L1 - d), plus pi when negative, in bins of pi/24. Here the
+		// direction (x, y) = (L1 - d, b) is folded into the first quadrant and its slope |y| / |x| is
+		// counted against tan(k*pi/24), k = 1..12; the count c is the bin, or 23 - c when the
+		// original direction was in the second quadrant. Same partition as atan2 except exactly on
+		// an edge, where float rounding decides in Intel's code too.
 		//
-		// b == 0 uses the direction (1, 0), angle 0, as Intel does (Raisr_AVX256.cpp:425-431). That
-		// puts a perfectly vertical edge (all gradient horizontal, b exactly 0) in angle bin 0, the
-		// same bin as a horizontal one.
+		// b == 0 uses the direction (1, 0), angle 0, as Intel does (Raisr_AVX256.cpp:425-431), so a
+		// perfectly vertical edge lands in angle bin 0, the same bin as a horizontal one.
 		//
-		// Strength is L1 and coherence is (sqrt(L1) - sqrt(L2)) / (sqrt(L1) + sqrt(L2)), tested as an
-		// L2/L1 ratio (MakeHashParams); a bin index
-		// is the number of edges the value is greater than (Intel's searchsorted, which puts a value
-		// equal to an edge in the lower bin). L1 and L2 come from sqrt(max(0, T^2/4 - D)) and
-		// max(0, T/2 - sqrt) so rounding cannot make them NaN.
+		// A strength or coherence bin is the number of edges the value is greater than (Intel's
+		// searchsorted: a value equal to an edge goes in the lower bin). Coherence is tested as an
+		// L2/L1 ratio, see MakeHashParams. L1 and L2 are clamped at 0 so rounding cannot make them
+		// NaN.
 		s32 HashScalar(const Tables& t, const HashParams& hp, float a, float b, float d)
 		{
 			const float T = a + d;
@@ -266,10 +248,6 @@ namespace GSTextureUpscaler
 			return vaddq_u32(vaddq_u32(vmulq_n_u32(angle, kStrengthBins * kCoherenceBins), vmulq_n_u32(strength, kCoherenceBins)), coherence);
 		}
 #endif
-
-		// ---------------------------------------------------------------------------------
-		//  Source rows: RGBA8 -> Y, Cb, Cr, A (float), then 2x horizontally
-		// ---------------------------------------------------------------------------------
 
 		// BT.601 full range. Cb and Cr are centred on 0, not 128.
 		void ConvertRowScalar(const u8* src, u32 count, float* y, float* cb, float* cr, float* a)
@@ -354,7 +332,6 @@ namespace GSTextureUpscaler
 			}
 		}
 
-		// Replicate the first and last real column into the padding of a padded row.
 		void FillPad(float* row, u32 W, u32 stride)
 		{
 			const float first = row[kPad];
@@ -365,7 +342,6 @@ namespace GSTextureUpscaler
 				row[i] = last;
 		}
 
-		// out = r0 * wa + r1 * wb
 		void VCombine(bool neon, const float* r0, const float* r1, float wa, float wb, float* out, u32 n)
 		{
 			u32 i = 0;
@@ -381,7 +357,6 @@ namespace GSTextureUpscaler
 				out[i] = MulAdd(r1[i], wb, r0[i] * wa);
 		}
 
-		// floor(v + 0.5) in place.
 		[[maybe_unused]] void RoundRow(bool neon, float* row, u32 n)
 		{
 			u32 i = 0;
@@ -433,10 +408,6 @@ namespace GSTextureUpscaler
 			if constexpr (kRoundCheapLuma)
 				RoundRow(neon, out, n);
 		}
-
-		// ---------------------------------------------------------------------------------
-		//  Structure tensor
-		// ---------------------------------------------------------------------------------
 
 		// Gradient products at n columns. lm, l0, lp are the rows above, at and below, pointing at
 		// the first column; the horizontal gradient reads one column either side.
@@ -497,10 +468,6 @@ namespace GSTextureUpscaler
 				out[x] = acc;
 			}
 		}
-
-		// ---------------------------------------------------------------------------------
-		//  Hash and filter, one output row
-		// ---------------------------------------------------------------------------------
 
 		struct FilterRowArgs
 		{
@@ -636,10 +603,6 @@ namespace GSTextureUpscaler
 			}
 		}
 
-		// ---------------------------------------------------------------------------------
-		//  Census blend and colour recombine, one output row
-		// ---------------------------------------------------------------------------------
-
 		struct BlendRowArgs
 		{
 			const float* l[3]; // L rows y-1, y, y+1, at column 0 (pad included)
@@ -755,10 +718,6 @@ namespace GSTextureUpscaler
 				}
 			}
 		}
-
-		// ---------------------------------------------------------------------------------
-		//  Driver
-		// ---------------------------------------------------------------------------------
 
 		void Upscale(const FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch, u8* dst, u32 dst_pitch, bool neon, LumaPlanes* planes)
 		{
@@ -897,7 +856,6 @@ namespace GSTextureUpscaler
 				if (Y1 == sH)
 					std::memcpy(rbuf.data() + static_cast<size_t>(band + 1) * rs, rbuf.data() + static_cast<size_t>(band) * rs, rs * sizeof(float));
 
-				// 5. Census blend and colour recombine.
 				for (s32 y = Y0; y < Y1; y++)
 				{
 					const RowTaps tp = TapsForRow(static_cast<u32>(y), h);
@@ -935,10 +893,6 @@ namespace GSTextureUpscaler
 				}
 			}
 		}
-
-		// ---------------------------------------------------------------------------------
-		//  Filter file parsing
-		// ---------------------------------------------------------------------------------
 
 		bool ReadFile(const std::filesystem::path& path, std::vector<u8>* out)
 		{
@@ -1069,10 +1023,6 @@ namespace GSTextureUpscaler
 		}
 	} // namespace
 
-	// -------------------------------------------------------------------------------------
-	//  FilterSet
-	// -------------------------------------------------------------------------------------
-
 	std::shared_ptr<const FilterSet> FilterSet::LoadFromMemory(std::span<const u8> filterbin,
 		std::string_view strbin, std::string_view cohbin, std::string* error)
 	{
@@ -1147,10 +1097,6 @@ namespace GSTextureUpscaler
 			std::string_view(reinterpret_cast<const char*>(bufs[1].data()), bufs[1].size()),
 			std::string_view(reinterpret_cast<const char*>(bufs[2].data()), bufs[2].size()), error);
 	}
-
-	// -------------------------------------------------------------------------------------
-	//  Entry points
-	// -------------------------------------------------------------------------------------
 
 	bool NeonAvailable()
 	{

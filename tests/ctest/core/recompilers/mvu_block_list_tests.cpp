@@ -6,21 +6,18 @@
 //
 // A block whose entry state needs an exact match lives on a singly linked
 // list with a head (fBlockList) and a tail (fBlockEnd). search() moves the
-// block it finds to the front, and add() appends new blocks at the tail. A
-// hit on the LAST link moves the tail to the front, so the tail pointer has
-// to move to its predecessor; if it keeps pointing at the old tail, which is
-// now the head, the next add() writes its new block after the head and cuts
-// off every link that followed the head.
-//
-// The cut-off blocks are unreachable from the list: search() can't find them,
-// so the next compile of the same entry state makes a duplicate; reset() and
-// the destructor walk the list from the head, so they never free them.
+// block it finds to the front, and add() appends at the tail. A hit on the
+// LAST link moves the tail to the front, so the tail pointer has to move to
+// its predecessor; if it keeps pointing at the old tail (now the head), the
+// next add() writes its block after the head and cuts off every link that
+// followed. Cut-off blocks are unreachable: search() can't find them, so a
+// recompile makes a duplicate, and reset() and the destructor never free them.
 //
 // The manager is driven through test hooks in pcsx2/arm64/microVU-arm64.cpp
 // (microVU-arm64.h's __fi definitions can't safely cross TUs; same pattern as
 // mvu_clear_occupied_tests). A block is identified by a key, and its address
-// is the block's identity: a lookup that returns a different address than the
-// block's first add() is a duplicate.
+// is its identity: a lookup that returns a different address than the block's
+// first add() is a duplicate.
 
 #include <gtest/gtest.h>
 
@@ -84,7 +81,6 @@ struct ManagerUnderTest
 
 } // namespace
 
-// The reported shape: promote the tail, then append.
 TEST(MvuBlockList, AppendAfterPromotingTheLastBlockKeepsEveryBlock)
 {
 	ManagerUnderTest m;

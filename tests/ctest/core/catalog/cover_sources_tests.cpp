@@ -3,7 +3,7 @@
 
 // Tests for where a game's cover comes from: URL resolution per platform and style, the
 // cover-region index built from GameIndex.yaml, and the library-wide and per-game region pins.
-// The fixtures are real entries and URLs from the live captures of 2026-10-08.
+// The fixtures are real entries and URLs from live captures.
 
 #include "cover_test_support.h"
 
@@ -24,8 +24,6 @@ using CoverTest::ExcerptIndex;
 using CoverTest::Ps2Jpg;
 using CoverTest::Ps2Png;
 using CoverTest::PSX_REPO;
-
-// ---- URL resolution ------------------------------------------------------------------------
 
 TEST(CoverUrls, EveryTemplateMatchesTheLiveCaptures)
 {
@@ -66,8 +64,6 @@ TEST(CoverUrls, SerialsThatCouldEscapeTheUrlOrTheFolderGetNoUrl)
 	EXPECT_TRUE(IsUsableCoverSerial("NM00007"));
 }
 
-// ---- Region index --------------------------------------------------------------------------
-
 TEST(CoverRegionIndexTest, TitlesReduceToAComparisonKey)
 {
 	EXPECT_EQ(CoverRegionIndex::NormalizeTitle("Kuon"), "kuon");
@@ -99,7 +95,6 @@ TEST(CoverRegionIndexTest, ReturnsNothingWhenThereIsNothingToSwap)
 {
 	const CoverRegionIndex index = *ExcerptIndex();
 
-	// Disc region wanted.
 	EXPECT_EQ(index.CoverSerialFor("SLUS-21007", CoverRegion::Disc), std::nullopt);
 	// Already in the wanted region: no like-for-like swap.
 	EXPECT_EQ(index.CoverSerialFor("SLUS-21007", CoverRegion::USA), std::nullopt);
@@ -194,8 +189,6 @@ TEST(CoverRegionIndexTest, TheShippedGameDatabaseBuildsAFullIndex)
 	EXPECT_EQ(index.CoverSerialFor("SLUS-21007", CoverRegion::JapanAsia), "SCAJ-20078");
 }
 
-// ---- Preferences and pins ------------------------------------------------------------------
-
 TEST(CoverPreferencesTest, PinsParseTheWayAndroidParsesThem)
 {
 	const auto pins = CoverPreferences::ParsePins("SLUS-20946=3, sles-51234 =1,bogus,=2,SLPS-1=x,SLPM-2=9,SLPM-3=-4,SLUS-5=");
@@ -266,12 +259,12 @@ TEST(CoverResolveTest, ARegionSwapKeepsTheDiscCoverAsTheFallback)
 TEST(CoverResolveTest, NoSwapMeansNoFallback)
 {
 	const auto index = ExcerptIndex();
-	CoverPreferences prefs; // disc region
+	CoverPreferences prefs;
 	const CoverUrls disc = ResolveCoverUrls(CoverPlatform::PS2, "SLUS-21007", prefs, index.get());
 	EXPECT_EQ(disc.primary, Ps2Jpg("SLUS-21007"));
 	EXPECT_EQ(disc.fallback, "");
 
-	prefs.region = CoverRegion::USA; // already USA
+	prefs.region = CoverRegion::USA;
 	EXPECT_EQ(ResolveCoverUrls(CoverPlatform::PS2, "SLUS-21007", prefs, index.get()).fallback, "");
 
 	// No index built: the disc's cover, silently.

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Host threads handing work to the IOP thread (IOP thread design 3.4.3 and 8.3): the host command queue's gate, what
-// happens to a command that arrives while the IOP thread stops, and the physical-disc thread's new-disc callback, which
-// Lockstep and Threaded hand to the IOP thread instead of calling it on the disc thread.
+// Host threads handing work to the IOP thread: the host command queue's gate, what happens to a
+// command that arrives while the IOP thread stops, and the physical-disc thread's new-disc callback,
+// which Lockstep and Threaded hand to the IOP thread instead of calling it on the disc thread.
 
 #include "CDVD/CDVDdiscReader.h"
 #include "IopThread/IopChannels.h"
@@ -17,8 +17,6 @@
 
 using namespace iopt;
 using namespace std::chrono_literals;
-
-// ================================================================ the queue's gate
 
 TEST(HostCommandQueueGate, ANewQueueRefusesUntilItIsOpened)
 {
@@ -120,8 +118,6 @@ TEST(HostCommandQueueGate, ACommandIsEitherAcceptedOrRefusedNeverBoth)
 	EXPECT_EQ(ran_by_poster.load(), refused.load());
 }
 
-// ================================================================ the IOP thread and its gate
-
 TEST(IopThreadHostCommands, OffHasNoThreadSoAPostIsRefused)
 {
 	SettingsGuard guard;
@@ -148,7 +144,7 @@ TEST(IopThreadHostCommands, ARunningLockstepThreadRunsAPostedCommandInTheNextHan
 	});
 	ASSERT_NE(ticket, 0u);
 
-	// Host commands run only inside a handoff in Lockstep (step 4), so the EE is never running at the same time.
+	// Host commands run only inside a handoff in Lockstep, so the EE is never running at the same time.
 	std::this_thread::sleep_for(30ms);
 	EXPECT_EQ(ran.load(), 0) << "Lockstep applies host commands between handoffs, not when they arrive";
 	EXPECT_FALSE(IopThread::g_thread.IsHostCommandDone(ticket));
@@ -277,7 +273,6 @@ TEST(IopThreadHostCommands, NothingIsLostOrRunTwiceWhileTheThreadStopsAndStarts)
 		}
 	});
 
-	// Stop and start the thread 300 times, running the queue in between, while the poster keeps going.
 	int cycles = 0;
 	while (cycles < 300 && posted.load(std::memory_order_relaxed) < kMaxCommands)
 	{
@@ -352,8 +347,6 @@ TEST(IopThreadHostCommands, AThreadedLoopRunsACommandAcceptedAsItStops)
 	EXPECT_EQ(ran.load(), 1);
 }
 
-// ================================================================ the physical-disc thread's callback
-
 namespace
 {
 	std::atomic<int> s_disc_calls{0};
@@ -369,7 +362,6 @@ namespace
 		s_disc_calls++;
 	}
 
-	// Puts the reader's callback pointer and flag back.
 	class DiscReaderGuard
 	{
 	public:

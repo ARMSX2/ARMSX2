@@ -62,7 +62,6 @@ namespace
 		return QString::fromStdString(entry.file_path) + QLatin1Char('\n') + QString::fromStdString(entry.name);
 	}
 
-	// The row that heads a source's group: its name as a coloured chip, then the repository.
 	QWidget* makeGroupHeader(QWidget* parent, Catalog::PatchSourceId source, size_t count)
 	{
 		QWidget* header = new QWidget(parent);

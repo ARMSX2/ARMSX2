@@ -113,9 +113,7 @@ namespace OnScreenKeyboard
 		/// `text` already holds.
 		void Begin(std::string text, CharSet set, size_t max_chars = kDefaultMaxChars);
 
-		//////////////////////////////////////////////////////////////////////////
-		// The text. Offsets are bytes of UTF-8; every edit moves by whole characters.
-		//////////////////////////////////////////////////////////////////////////
+		// Offsets are bytes of UTF-8; every edit moves by whole characters.
 
 		const std::string& Text() const { return m_text; }
 		size_t Cursor() const { return m_cursor; }
@@ -139,12 +137,7 @@ namespace OnScreenKeyboard
 		void SetCursorChars(size_t chars);
 		size_t CharCount() const;
 
-		/// Whether OK is allowed to submit. An empty text cannot be.
 		bool CanSubmit() const { return !m_text.empty(); }
-
-		//////////////////////////////////////////////////////////////////////////
-		// The keys
-		//////////////////////////////////////////////////////////////////////////
 
 		Page CurrentPage() const { return m_page; }
 		const Layout& CurrentLayout() const { return GetLayout(m_page); }

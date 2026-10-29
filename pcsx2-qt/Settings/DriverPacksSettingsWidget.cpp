@@ -106,7 +106,6 @@ void DriverPacksSettingsWidget::init()
 
 	const DriverPacks::Availability availability = m_manager->GetAvailability();
 	m_available = availability.IsAvailable();
-	// Without an Adreno the page is listed only for a pack that is installed or selected, to undo the choice or delete the pack.
 	m_manageable = m_available || !DriverPacks::GetSelectedPack().empty() || !m_manager->ListInstalled().empty();
 	if (!m_available)
 	{
@@ -156,8 +155,6 @@ void DriverPacksSettingsWidget::showEvent(QShowEvent* event)
 			loadAvailable(false);
 	}
 }
-
-// ---- What is in use, and what is installed ----------------------------------------------------------------
 
 bool DriverPacksSettingsWidget::sessionIsX11() const
 {
@@ -342,8 +339,6 @@ void DriverPacksSettingsWidget::onInstalledSelectionChanged()
 	m_ui.deleteButton->setEnabled(!m_ui.installedList->selectedItems().isEmpty() && !m_installing);
 }
 
-// ---- Apply & Restart, delete --------------------------------------------------------------------------------
-
 void DriverPacksSettingsWidget::onApplyClicked()
 {
 	const std::string id = chosenId();
@@ -431,8 +426,6 @@ void DriverPacksSettingsWidget::onDeleteClicked()
 	reloadInstalled();
 }
 
-// ---- Available packs and downloads -----------------------------------------------------------------------------
-
 void DriverPacksSettingsWidget::loadAvailable(bool force_refresh)
 {
 	if (m_listing_busy)
@@ -492,7 +485,6 @@ void DriverPacksSettingsWidget::showAvailable()
 	if (to_select)
 		m_ui.availableList->setCurrentItem(to_select);
 
-	// What the listing said about itself.
 	QString status;
 	if (m_listing_busy)
 		status = tr("Looking for driver packs...");
@@ -663,12 +655,10 @@ void DriverPacksSettingsWidget::onInstallStripButtonClicked()
 
 #include "moc_DriverPacksSettingsWidget.cpp"
 
-// ---- Screenshot entries (see QtShot.h) ---------------------------------------------------------------------------
-//
-// The page only has content on a device with an Adreno GPU. These entries stand one up on any machine
-// by giving the page a sysfs tree that has an msm DRM device, which is the seam DriverPacks itself
-// offers for its tests (ManagerConfig::sysfs_root). Packs live in a throwaway folder, so what the page
-// shows is what a first-time user would see.
+// Screenshot entries (see QtShot.h). The page only has content on a device with an Adreno GPU, so
+// these stand one up on any machine by giving the page a sysfs tree that has an msm DRM device, which
+// is the seam DriverPacks offers for its tests (ManagerConfig::sysfs_root). Packs live in a throwaway
+// folder, so the page shows what a first-time user would see.
 
 #include "QtShot.h"
 

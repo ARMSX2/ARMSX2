@@ -38,9 +38,7 @@ public:
     
 // Battle Gear 3 / Tuned: answer the steering board's boot handshake (BGRLOAD FUN_00133e60) so the game
 // doesn't stall on "HANDLE ERROR". With no emulated FFB board we reply ready and keep the drive-board flag
-// (EE 0x2694b0) CLEAR, so steering stays on the JVS analog wheel. FFB GROUNDWORK: set s_bg3FfbEnabled=true
-// when a real drive board is emulated to run the full calibration handshake.
-// (Thanks to Hydreigon223 for the dump.)
+// (EE 0x2694b0) clear, so steering stays on the JVS analog wheel.
     void TxByte(u8 value) override {
 	    txCnt++;
 	    if ((txCnt & 1) != 0) { prevTx = value; return; } // a {reg,val} command is 2 bytes; reply on the 2nd
@@ -106,10 +104,9 @@ public:
         handleDone = false;
         fifo.clear();
     }
-    //void TxByte(u8 value) override {}
 
     bool RxByte(u8& value) {
-		if (!fifo.empty()) // RRV reading the serial port: hand it the next status byte we queued ("E00")
+		if (!fifo.empty())
 		{
 			value = fifo.front();
 			fifo.pop_front();
@@ -136,7 +133,7 @@ public:
 	    if (fifo.empty())
 	    	fifo.assign(V257_STATUS, V257_STATUS + 3);
 	    ACUART_LOG("INTR");
-	    ACCORE::intr(ACCORE::INTRN_UART); // raise the UART RX interrupt
+	    ACCORE::intr(ACCORE::INTRN_UART);
     }
 };
 

@@ -640,15 +640,10 @@ PATCH_TEST(ExtendedConditionalResetSkipCount,
 	ee.ExpectWrite8(0x00200000, 0x12);
 }
 
-// *****************************************************************************
-// The vsync patches are applied in two passes, EE lines and then IOP lines
-// *****************************************************************************
-//
-// Patch::ApplyVsyncPatches used to make one pass over the patch list with both memories. The IOP
-// thread needs the IOP lines as a pass of their own (they have to run where IOP memory is owned),
-// so the list is now walked once per CPU. The two memories are independent, so each must see the
-// same accesses in the same order as before; only the interleaving between the two memories may
-// change. These tests pin that, including the state that carries from one line to the next.
+// Patch::ApplyVsyncPatches walks the patch list once per CPU, because IOP lines have to run where
+// IOP memory is owned. Each memory must see the same accesses in the same order as a single pass
+// over both; only the interleaving between the two may differ. That includes the state carried
+// from one line to the next.
 
 namespace
 {

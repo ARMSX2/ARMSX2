@@ -126,7 +126,7 @@ namespace Catalog
 			Error error;
 			if (!WriteJsonFileAtomic(path, document, &error))
 			{
-				// Losing this file costs the player a re-download of every pack: say so.
+				// Losing this file costs a re-download of every pack.
 				Console.Error("Texture packs: could not write %s: %s", path.c_str(), error.GetDescription().c_str());
 				return false;
 			}

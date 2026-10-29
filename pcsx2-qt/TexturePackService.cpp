@@ -52,8 +52,6 @@ void TexturePackService::shutdown()
 	m_pool.waitForDone();
 }
 
-// ---- Catalog -----------------------------------------------------------------------------------------
-
 void TexturePackService::loadCatalog(bool force_refresh)
 {
 	if (m_catalog.status == CatalogStatus::Loading)
@@ -106,8 +104,6 @@ void TexturePackService::loadPopular()
 	});
 }
 
-// ---- Installed packs -----------------------------------------------------------------------------------
-
 void TexturePackService::refreshInstalled()
 {
 	if (m_installed_refreshing)
@@ -135,8 +131,6 @@ Catalog::InstallAction TexturePackService::actionFor(const Catalog::TexturePack&
 	const auto it = m_installed.records.find(pack.id);
 	return Catalog::TexturePackState::ActionFor(it != m_installed.records.end() ? std::optional<Catalog::TexturePackRecord>(it->second) : std::nullopt, pack);
 }
-
-// ---- Install and delete ------------------------------------------------------------------------------------
 
 void TexturePackService::clearOutcome()
 {

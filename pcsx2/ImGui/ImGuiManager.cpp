@@ -236,7 +236,6 @@ bool ImGuiManager::InitializeFullscreenUI()
 
 void ImGuiManager::Shutdown(bool clear_state)
 {
-	// Creates or releases device textures, whose pool the GS back thread also uses.
 	GSDrainBackQueue();
 
 	DestroySoftwareCursorTextures();
@@ -1493,7 +1492,6 @@ void ImGuiManager::CreateSoftwareCursorTextures()
 
 void ImGuiManager::DestroySoftwareCursorTextures()
 {
-	// Creates or releases device textures, whose pool the GS back thread also uses.
 	GSDrainBackQueue();
 
 	for (u32 i = 0; i < InputManager::MAX_POINTER_DEVICES; i++)
@@ -1504,7 +1502,6 @@ void ImGuiManager::DestroySoftwareCursorTextures()
 
 void ImGuiManager::UpdateSoftwareCursorTexture(u32 index)
 {
-	// Creates or releases device textures, whose pool the GS back thread also uses.
 	GSDrainBackQueue();
 
 	SoftwareCursor& sc = s_software_cursors[index];

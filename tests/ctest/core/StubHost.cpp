@@ -164,7 +164,7 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 }
 
 // A task posted for the CPU thread is kept for a test to look at and run. Nothing else in the test binary
-// runs a CPU thread, so a task nobody takes is simply never run, as before.
+// runs a CPU thread, so a task nobody takes is simply never run.
 static std::mutex s_cpu_thread_tasks_mutex;
 static std::vector<StubHost::CpuThreadTask> s_cpu_thread_tasks;
 

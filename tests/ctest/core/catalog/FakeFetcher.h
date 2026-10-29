@@ -39,7 +39,6 @@ namespace CatalogTest
 		std::string body;
 		std::string content_type = "application/octet-stream";
 
-		/// For 3xx replies.
 		std::string location;
 
 		/// Content-Length announced: -2 = the body's size, -1 = not announced, otherwise as given
@@ -163,15 +162,12 @@ namespace CatalogTest
 		{
 		}
 
-		// -- Scripting. Each returns *this so calls chain. ---------------------------------
-
 		FakeFetcher& Reply(const std::string& url, FakeReply reply)
 		{
 			m_transport->AddReply(url, std::move(reply));
 			return *this;
 		}
 
-		/// 200 with a body.
 		FakeFetcher& Ok(const std::string& url, std::string body, std::string content_type = "application/json")
 		{
 			FakeReply reply;
@@ -190,7 +186,6 @@ namespace CatalogTest
 			return Reply(url, std::move(reply));
 		}
 
-		/// Any status with an optional body: 404, 403, 429, 500...
 		FakeFetcher& Status(const std::string& url, s32 status, std::string body = {})
 		{
 			FakeReply reply;
@@ -217,8 +212,6 @@ namespace CatalogTest
 			return Reply(url, std::move(reply));
 		}
 
-		// -- What happened. -----------------------------------------------------------------
-
 		std::vector<FakeRequest> Requests() const { return m_transport->Requests(); }
 
 		size_t RequestCount(const std::string& url) const
@@ -227,8 +220,6 @@ namespace CatalogTest
 			return static_cast<size_t>(std::count_if(requests.begin(), requests.end(),
 				[&](const FakeRequest& r) { return r.url == url; }));
 		}
-
-		// -- Catalog::Fetcher ---------------------------------------------------------------
 
 		Catalog::FetchResponse Get(const std::string& url, size_t max_body_bytes, const Catalog::FetchOptions& options = {}) override
 		{

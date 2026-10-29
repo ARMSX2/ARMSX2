@@ -112,7 +112,6 @@ static void MarkDrawWritten(GSLocalMemory& mem, const GSDrawingContext* context,
 	mem.MarkPagesWritten(context->offset.zb, grown);
 }
 
-// The clamp and wrap limits of a texture, in the form the scanline reads them.
 static void SetupTextureWrap(GSScanlineGlobalData& gd, const GSDrawingContext* context, const GIFRegTEX0& TEX0)
 {
 	u16 tw = 1u << TEX0.TW;
@@ -186,10 +185,8 @@ static void SetupTextureWrap(GSScanlineGlobalData& gd, const GSDrawingContext* c
 	gd.t.invmask = ~gd.t.mask;
 }
 
-// The level of detail of a mipmapped draw: the filter and level-of-detail bits of the selector, and the constant
-// level when the draw has one (gd.lod). The snapshot of the mip levels follows in PrepareTexture(); a copy that
-// reads the one level itself needs only this. Setting the same fields again changes nothing, so a copy that
-// declines the draw leaves PrepareTexture() the same work.
+// Sets the filter and level-of-detail selector bits and the constant level (gd.lod). The mip snapshot is
+// PrepareTexture()'s. Idempotent, so a copy that calls it and then declines the draw leaves PrepareTexture() the same work.
 void GSSwPrimRenderFunctions::SetupMipLod(GSRenderer& hw, GSScanlineGlobalData& gd)
 {
 	GSVertexTrace& vt = hw.m_vt;
@@ -222,14 +219,13 @@ void GSSwPrimRenderFunctions::SetupMipLod(GSRenderer& hw, GSScanlineGlobalData& 
 	{
 		k = (int)vt.m_lod.x << 16; // set lod to max level
 
-		gd.sel.lcm = 1; // lod is constant
+		gd.sel.lcm = 1;
 		gd.sel.mmin = 1; // tri-linear is meaningless
 	}
 
 	if (gd.sel.fst)
 	{
 		pxAssert(gd.sel.lcm == 1);
-		//pxAssert(((vt.m_min.t.uph(vt.m_max.t) == GSVector4::zero()).mask() & 3) == 3); // ratchet and clank (menu)
 
 		gd.sel.lcm = 1;
 	}
@@ -240,7 +236,7 @@ void GSSwPrimRenderFunctions::SetupMipLod(GSRenderer& hw, GSScanlineGlobalData& 
 
 		if (gd.sel.mmin == 1)
 		{
-			lod = (lod + 0x8000) & 0xffff0000; // rounding
+			lod = (lod + 0x8000) & 0xffff0000;
 		}
 
 		gd.lod.i = GSVector4i(lod >> 16);
@@ -254,11 +250,8 @@ void GSSwPrimRenderFunctions::SetupMipLod(GSRenderer& hw, GSScanlineGlobalData& 
 		gd.l = GSVector4((float)(-(0x10000 << context->TEX1.L)));
 		gd.k = GSVector4((float)k);
 
-		// The level of detail is a table read on Q's mantissa; see
-		// GSLevelOfDetail.h. This path builds the same global data the
-		// software renderer does and runs the same scanline, so it sets
-		// the same four fields -- a scanline reading an unset `lodtab`
-		// would be following a wild pointer per pixel.
+		// The level of detail is a table read on Q's mantissa (GSLevelOfDetail.h). All four fields must be set
+		// as in the software renderer: the scanline reads `lodtab` per pixel, so an unset one is a wild pointer.
 		gd.lodtab = GSLevelOfDetailTable[context->TEX1.L];
 		gd.lodk = context->TEX1.K;
 		gd.lodshift = 4 + context->TEX1.L;
@@ -745,11 +738,9 @@ bool GSSwPrimRenderFunctions::OnUVGrid(const GSRasterizerData& data)
 // wraps with the same limits (gd.t) and addresses the frame through the same tables
 // (gd.fzbr/fzbc).
 //
-// With `texel32` the same decision is made for the 32-bit texel copy (DrawTexels32()): the texture is a
-// 32-bit one with no palette, and the draw is judged before the snapshot is taken, so the selector's
-// texture half is filled in below the way PrepareTexture() would, as IsMaskedTexelCopy() does. Every
-// other field is held to the same shape: the texel goes to the frame unchanged, so everything the palette
-// entry path refuses is refused here for the same reason.
+// With `texel32` it decides the 32-bit texel copy (DrawTexels32()) instead: a 32-bit texture with no palette,
+// judged before the snapshot is taken, so the selector's texture half is filled in below as PrepareTexture()
+// would. Every other field is held to the same shape.
 bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, bool uv, bool texel32)
 {
 	const GSScanlineGlobalData& gd = data.global;
@@ -786,8 +777,8 @@ bool GSSwPrimRenderFunctions::IsPaletteBlockCopy(const GSRasterizerData& data, b
 	}
 
 	// Everything else must be exactly this: a textured sprite with a nearest, non-mipmapped UV
-	// lookup through the palette (or, for texel32, with no palette), decal (the output is the palette entry, with the vertex alpha in
-	// place of the entry's when TCC is off), a 32-bit frame write with no test, no depth, no blend, no fog, no dither and no alpha
+	// lookup through the palette (none for texel32), decal, a 32-bit frame write with no test, no depth,
+	// no blend, no fog, no dither and no alpha
 	// correction. Any other bit set, known or added later, sends the draw to the rasterizer.
 	GSScanlineSelector want;
 	want.key = 0;
@@ -1006,7 +997,6 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 
 			if (base + col_min >= 0 && static_cast<u32>(base + col_max) < HALF_VM_SIZE)
 			{
-				// No pixel of this row wraps, so its address is the row's plus the column's.
 				u8* line = vm + static_cast<ptrdiff_t>(base) * 2;
 				for (int k = 0; k < width; k++)
 					*reinterpret_cast<u32*>(line + static_cast<ptrdiff_t>(offsets[k])) = (clut[row[columns[k]]] & keep) | b.alpha;
@@ -1027,9 +1017,8 @@ bool GSSwPrimRenderFunctions::DrawPaletteBlocks(GSSwPrimRenderState& sw, const G
 }
 
 // The 32-bit texel copy: IsPaletteBlockCopy(..., texel32) admits a sprite draw from a 32-bit texture into a 32-bit
-// frame, and this writes the pixels the scanline would, without the rasterizer. Stuntman draws 189 of these a frame
-// (the 2:1 box filter that builds the half-size copies of its road textures), and the rasterizer spends its time on
-// setup and on a snapshot of the texture for each.
+// frame, and this writes the pixels the scanline would, without the rasterizer. Games build half-size copies of
+// textures this way (a 2:1 box filter), and the rasterizer spends its time on setup and the texture snapshot.
 //
 // Mirrors DrawPaletteBlocks (see CollectSprites for the sprites it accepts), except that the texels come from local
 // memory itself, as DrawMaskedTexels reads them, and not from the snapshot (the draw is judged before it is taken).
@@ -1099,7 +1088,6 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 
 		if (step == 1)
 		{
-			// Every weight zero.
 			out = {whole, 1};
 			return fraction >= 0x8000 && fraction < 0x9000 && seed >= 0;
 		}
@@ -1212,7 +1200,6 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 
 				u32 past = 0;
 
-				// One row of taps of one pixel: the pixel's texel, or the average of its two.
 				const auto row_pixel = [&](const GSOffset::PAHelper& row, int k) -> u32 {
 					if constexpr (STEP && TU == 2)
 					{
@@ -1310,7 +1297,6 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 
 			if (base + col_min >= 0 && static_cast<u32>(base + col_max) < HALF_VM_SIZE)
 			{
-				// No pixel of this row wraps, so its address is the row's plus the column's.
 				u8* line = vm + static_cast<ptrdiff_t>(base) * 2;
 				for (int k = 0; k < width; k++)
 					*reinterpret_cast<u32*>(line + static_cast<ptrdiff_t>(offsets[k])) = (texel[k] & keep) | b.alpha;
@@ -1331,14 +1317,13 @@ bool GSSwPrimRenderFunctions::DrawTexels32(GSRenderer& hw, GSSwPrimRenderState& 
 }
 
 // The masked texel copy: a sprite draw that writes each texel's palette entry one-to-one into a 16-bit
-// frame, under any write mask. Spider-Man 3 rebuilds 4-bit textures this way thousands of times a frame
-// (an index nibble per pass, masked into one corner of the 16-bit pixel), and the rasterizer spends its time
-// in the texture snapshot, which converts whole blocks for the few texels a draw reads.
+// frame, under any write mask. Games rebuild 4-bit textures this way (an index nibble per pass, masked into
+// one corner of the 16-bit pixel), and the rasterizer spends its time in the texture snapshot, which converts
+// whole blocks for the few texels a draw reads.
 //
-// Like the palette block copy it is decided on the scanline's own selector, and it runs before the
-// snapshot is taken, so the selector is complete but the texture half of it (PrepareTexture) is not:
-// the bits that half would set are filled in below the way it would. A selector bit added later, known
-// or not, is still a refusal.
+// Like the palette block copy it is decided on the scanline's own selector, and it runs before the snapshot is
+// taken, so the texture half of the selector (PrepareTexture) is not set yet and is filled in below. A
+// selector bit added later is still a refusal.
 bool GSSwPrimRenderFunctions::IsMaskedTexelCopy(const GSRasterizerData& data, bool uv, bool mip)
 {
 	const GSScanlineGlobalData& gd = data.global;
@@ -1348,12 +1333,11 @@ bool GSSwPrimRenderFunctions::IsMaskedTexelCopy(const GSRasterizerData& data, bo
 	if (sel.wms > CLAMP_CLAMP || sel.wmt > CLAMP_CLAMP)
 		return false;
 
-	// Fields that cannot change what this shape writes. The wrap is read from the draw's own limits; an
-	// 8-bit texel colour passes the colour clamp unchanged; datm is read only with date; notest picks how the
-	// scanline handles span edges (the sprites are held to its grid in CollectSprites); the frame is always
-	// read and merged under the mask, which is all that rfb adds here (a blend, a destination alpha test and
-	// an alpha test that keeps the old colour also set it, and each is a field of its own below). FBA sets
-	// the frame's alpha bit and is applied by the writer.
+	// Fields that cannot change what this shape writes: the wrap is read from the draw's own limits, an 8-bit
+	// texel colour passes the colour clamp unchanged, datm is read only with date, and notest only picks how
+	// span edges are handled (CollectSprites holds the sprites to its grid). rfb is set because the frame is
+	// merged under the mask; a blend or alpha test also set it, but each is checked through its own field below.
+	// FBA is applied by the writer.
 	sel.wms = 0;
 	sel.wmt = 0;
 	sel.colclamp = 0;
@@ -1365,12 +1349,11 @@ bool GSSwPrimRenderFunctions::IsMaskedTexelCopy(const GSRasterizerData& data, bo
 	// Without TCC the alpha written is the vertex's own (applied by the writer).
 	sel.tcc = 1;
 
-	// PrepareTexture sets the texture pitch, which reads nothing here, and, off the mipmap road, fst for a
-	// sprite whatever its coordinates came as (the ST case is held to the sixteenth grid by `uv`). A mipmapped
-	// draw keeps the primitive's own fst: UV coordinates are integers, and ST ones are divided by Q per pixel,
-	// which CollectSprites() holds to the exact case. Its level of detail has to be a constant level taken
-	// nearest (SetupMipLod() has set both), which is then one texture, read at the coordinate shifted down by
-	// the level.
+	// Filled in as PrepareTexture() would: the pitch reads nothing here, and off the mipmap road a sprite's fst
+	// is set whatever its coordinates came as (the ST case is held to the sixteenth grid by `uv`). A mipmapped
+	// draw keeps the primitive's fst (CollectSprites() holds ST to the exact-division case) and needs a
+	// constant, nearest level (SetupMipLod() sets both), so it reads one texture at the coordinate shifted
+	// down by the level.
 	if (mip)
 	{
 		if (sel.mmin != 1 || !sel.lcm)
@@ -1516,7 +1499,6 @@ bool GSSwPrimRenderFunctions::DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderSta
 	const u32* clut = gd.clut;
 	u8* vm = static_cast<u8*>(gd.vm);
 
-	// Writes one sprite's pixels from the palette indices read for it.
 	const auto write_block = [&](const GSSwPrimRenderState::PaletteBlock& b, const u8* indices) {
 		s32 offsets[max_width]; // the pixel's byte offset from its row's start, before the wrap; may be negative
 
@@ -1545,7 +1527,6 @@ bool GSSwPrimRenderFunctions::DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderSta
 
 			if (base + col_min >= 0 && static_cast<u32>(base + col_max) < HALF_VM_SIZE)
 			{
-				// No pixel of this row wraps, so its address is the row's plus the column's.
 				u8* line = vm + static_cast<ptrdiff_t>(base) * 2;
 				for (int k = 0; k < width; k++)
 				{
@@ -1572,7 +1553,7 @@ bool GSSwPrimRenderFunctions::DrawMaskedTexels(GSRenderer& hw, GSSwPrimRenderSta
 	// The coordinate's step from one pixel to the next: a texel of the level read.
 	const s32 step = 65536 << lod;
 
-	// Reads every texel of every sprite into the scratch, in the order they are written, for one source format.
+	// Texels go into the scratch in the order they are written.
 	const auto gather = [&](auto format) -> bool {
 		constexpr int F = decltype(format)::value;
 		// How far a texel's address may reach: bytes, nibbles, or 32-bit pixels.

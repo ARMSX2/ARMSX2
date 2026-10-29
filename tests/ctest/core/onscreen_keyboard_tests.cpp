@@ -83,10 +83,6 @@ namespace
 	}
 } // namespace
 
-//////////////////////////////////////////////////////////////////////////
-// Layouts
-//////////////////////////////////////////////////////////////////////////
-
 TEST(OnScreenKeyboardLayout, EveryRowFillsTheLayoutWidth)
 {
 	for (const Page page : {Page::Letters, Page::Symbols, Page::Numpad, Page::NumpadDot})
@@ -124,7 +120,7 @@ TEST(OnScreenKeyboardLayout, LettersPageHasTheControlKeysAndAllTheLetters)
 
 TEST(OnScreenKeyboardLayout, SymbolsAndLettersTogetherReachTheCharactersAddressesNeed)
 {
-	// . : - _ @ / ! are the ones the task names; # and ? are what a URL or a password adds.
+	// . : - _ @ / ! are the address characters; # and ? are what a URL or a password adds.
 	std::set<std::string> typed = TypedBy(Page::Letters);
 	const std::set<std::string> symbols = TypedBy(Page::Symbols);
 	typed.insert(symbols.begin(), symbols.end());
@@ -158,10 +154,6 @@ TEST(OnScreenKeyboardLayout, EveryCharacterAPadOffersIsOneItsFilterAccepts)
 			EXPECT_TRUE(Accepts(set, static_cast<char32_t>(static_cast<unsigned char>(s[0])))) << s;
 	}
 }
-
-//////////////////////////////////////////////////////////////////////////
-// Moving the selection
-//////////////////////////////////////////////////////////////////////////
 
 TEST(OnScreenKeyboardNavigation, LeftAndRightWrapWithinTheRow)
 {
@@ -252,10 +244,6 @@ TEST(OnScreenKeyboardNavigation, SetHighlightIgnoresPositionsOffThePage)
 	m.SetHighlight({1, 99});
 	EXPECT_EQ(m.Highlight(), (KeyPos{1, 3}));
 }
-
-//////////////////////////////////////////////////////////////////////////
-// Pressing keys
-//////////////////////////////////////////////////////////////////////////
 
 TEST(OnScreenKeyboardPress, CharacterKeysTypeAtTheCursor)
 {
@@ -395,10 +383,6 @@ TEST(OnScreenKeyboardPress, PressSelectsTheKeyFirst)
 	EXPECT_EQ(m.Highlight(), (KeyPos{1, 0}));
 }
 
-//////////////////////////////////////////////////////////////////////////
-// The text
-//////////////////////////////////////////////////////////////////////////
-
 TEST(OnScreenKeyboardText, BeginPutsTheCursorAtTheEnd)
 {
 	Model m = Start("192.168");
@@ -489,7 +473,6 @@ TEST(OnScreenKeyboardText, MaxCharsLimitsInsertsButNotWhatBeginWasGiven)
 	EXPECT_FALSE(m.Insert("g"));
 	EXPECT_EQ(m.Text(), "abcd");
 
-	// Backspace makes room again.
 	EXPECT_TRUE(m.Backspace());
 	EXPECT_TRUE(m.Insert("x"));
 	EXPECT_EQ(m.Text(), "abcx");

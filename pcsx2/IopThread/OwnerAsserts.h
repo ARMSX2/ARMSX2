@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The ownership asserts of the IOP thread design (section 6.3). Each side of the machine has entry
-// points that the other side's thread must not call unless it has stopped the owner first:
+// Ownership asserts for the IOP thread. Each side of the machine has entry points that the other
+// side's thread must not call unless it has stopped the owner first:
 //
 //   IOP_SIDE_ASSERT()  at an entry into IOP-owned state (the IOP's registers, RAM, hardware registers,
 //                      SPU2, CDVD, SIO2, DMA channels, the IOP half of SIF). It passes when
@@ -10,7 +10,7 @@
 //                        - the caller is the IOP thread, or
 //                        - the caller is the EE thread with a ScopedHold live (the IOP is stopped).
 //   BLOCKING_HOST_CALL_ASSERT(block)
-//                      at the top of each frontend's Host::RunOnCPUThread (design 8.12). A blocking call
+//                      at the top of each frontend's Host::RunOnCPUThread. A blocking call
 //                      from the IOP thread waits for the CPU thread, which in Lockstep is blocked in the
 //                      handoff and in Threaded may be spinning on the IOP: it never answers. It passes
 //                      unless `block` is set and the caller is the IOP thread.
@@ -21,15 +21,14 @@
 //
 // In Lockstep the two threads never run at once, so an assert cannot catch a data race there. What it
 // catches is an EE-thread call into IOP state that nothing queued and nothing wrapped in a hold, which
-// is a crossing that Threaded would turn into a race. Every violation is a missed row of design
-// section 7.
+// is a crossing that Threaded would turn into a race.
 //
-// Debug and Devel builds only. Release builds compile both to nothing.
+// Debug and Devel builds only. Release builds compile all three to nothing.
 //
 // The cost in Off is one load of IopThread::s_mode and a branch that is never taken (IOP_SIDE_ASSERT)
 // or a load and a compare (EE_SIDE_ASSERT). That is acceptable at an entry point that runs at most a
 // few thousand times a frame. It is not acceptable at one that runs per IOP memory access or per EE
-// event, which is why those carry no assert (see the notes in the step 9 record).
+// event, which is why those carry no assert.
 
 #pragma once
 
@@ -39,7 +38,6 @@
 
 namespace IopThread
 {
-	/// Which side's entry point was entered from the wrong side.
 	enum class Side : u8
 	{
 		Iop, // IOP_SIDE_ASSERT: an IOP entry called from the EE thread with no hold
@@ -52,7 +50,6 @@ namespace IopThread
 	using ViolationHandler = void (*)(Side side, const char* where);
 	ViolationHandler SetViolationHandler(ViolationHandler handler);
 
-	/// The handler that logs the violation and stops with an assertion failure.
 	void FailOnViolation(Side side, const char* where);
 	/// A handler that logs the first violation at each site and goes on, for runs that want the full list.
 	void LogViolation(Side side, const char* where);

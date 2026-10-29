@@ -692,9 +692,8 @@ void GameDatabaseSchema::GameEntry::applyGameFixes(
 		// are effectively booleans like the gamefixes
 		config.Speedhacks.Set(it.first, it.second);
 
-		// The database has just staked a compatibility claim on this game's EE timing.
-		// Record it: the resolved selector cannot say so afterwards, and the dynamic
-		// governor is only allowed to move a rate nobody claimed.
+		// Record that the database set the EE cycle rate: the resolved selector cannot say so
+		// afterwards, and the dynamic governor only moves a rate nobody claimed.
 		if (it.first == SpeedHack::EECycleRate)
 			config.GameDBSetEECycleRate = true;
 
@@ -1204,7 +1203,6 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::RecommendedAccurateAlphaTest:
 			{
-				// Quiet also while auto-tune applies a trial: a toast per apply stacks up (see AutoTune::IsApplyingSettings).
 				if (quiet || AutoTune::IsApplyingSettings())
 					break;
 
@@ -1229,7 +1227,6 @@ void GameDatabaseSchema::GameEntry::applyGSHardwareFixes(
 
 			case GSHWFixId::RecommendedHWAA1:
 			{
-				// Quiet also while auto-tune applies a trial: a toast per apply stacks up (see AutoTune::IsApplyingSettings).
 				if (quiet || AutoTune::IsApplyingSettings())
 					break;
 

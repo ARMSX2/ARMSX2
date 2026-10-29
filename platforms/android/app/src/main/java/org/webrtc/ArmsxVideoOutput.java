@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ArmsxVideoOutput {
   /** Called on the decoder's threads. */
   public interface Listener {
-    /** The first frame is on the screen. */
     void onFirstFrame();
 
     /** The picture's size as decoded, for fitting the view to it. */

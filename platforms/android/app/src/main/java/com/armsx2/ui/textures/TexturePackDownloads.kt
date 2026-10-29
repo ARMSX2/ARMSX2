@@ -14,9 +14,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * The texture pack being installed, one at a time, for as long as the app runs. It used to belong to
- * the catalog list on the texture screen; now the packs are in a browser that can be closed and
- * opened again mid-download, so the download outlives it, and the texture screen's card shows it too.
+ * The texture pack being installed, one at a time, for as long as the app runs. The packs are
+ * browsed in a screen that can be closed and reopened mid-download, so the download outlives it,
+ * and the texture screen's card shows it too.
  */
 internal object TexturePackDownloads {
     /** The pack downloading, or null. */
@@ -98,7 +98,7 @@ internal object TexturePackDownloads {
     }
 }
 
-/** A pack's size the way the catalog has always shown it: "241 MB", "1.2 GB". */
+/** A pack's size as the catalog shows it: "241 MB", "1.2 GB". */
 internal fun packMb(bytes: Long): String = when {
     bytes >= 1024L * 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f GB", bytes / 1024.0 / 1024 / 1024)
     else -> "${bytes / 1024 / 1024} MB"

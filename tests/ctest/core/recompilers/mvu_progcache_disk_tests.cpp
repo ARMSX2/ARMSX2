@@ -347,7 +347,6 @@ TEST_F(MvuProgCacheDisk, VuAotTurnsTheCacheOn)
 	EXPECT_TRUE(stats.initialized) << "reset with EnableVUAot ON did not initialize the cache";
 	EXPECT_TRUE(stats.enabled);
 
-	// The recording sync, with the test harness's manual control of it out of the way.
 	mVUPersist::SetTestManualRecording(false);
 	mVUPersist::SetRecordingEnabled(false);
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
@@ -379,7 +378,6 @@ TEST_F(MvuProgCacheDisk, AResetThatNoLongerWantsTheCacheClosesItAndSavesNothing)
 	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized) << "the unwanted cache stayed up";
 	EXPECT_EQ(Programs(), 0u) << "the reset saved into a cache that nothing asks for";
 
-	// And it comes back, empty-handed but working, when something asks for it again.
 	EmuConfig.Cpu.Recompiler.EnableVUProgramCache = true;
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	EXPECT_TRUE(mVUProgCache::GetStats(0).initialized);
@@ -689,7 +687,6 @@ TEST_F(MvuAotCacheClear, OnToOffWithNothingElseUsingTheCacheDeletesTheWholeCache
 	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str())) << "the tripwire's memory stays";
 	EXPECT_FALSE(mVUProgCache::GetStats(0).initialized) << "the cache in memory is closed";
 
-	// Switched on again, the cache starts fresh.
 	mVUProgCache::TestReinitFromLiveSentinel(0);
 	mVUProgCache::TestWaitForPreload(0);
 	EXPECT_TRUE(mVUProgCache::GetStats(0).enabled);

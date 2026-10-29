@@ -26,7 +26,7 @@
 
 namespace CatalogTest
 {
-	/// One tar header, with every field a test might want to get wrong.
+	/// One tar entry; the header fields can be set wrong on purpose.
 	struct TarEntry
 	{
 		std::string name;
@@ -192,7 +192,6 @@ namespace CatalogTest
 		return reinterpret_cast<const u8*>(s.data());
 	}
 
-	/// Writes a zip of name -> bytes to `path`.
 	inline bool WriteZip(const std::string& path, const std::vector<std::pair<std::string, std::string>>& files)
 	{
 		int error = 0;

@@ -1,12 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The ownership asserts (IOP thread design section 6.3): the predicates, the macros, and every entry point the
-// asserts are placed at.
+// The IOP-thread ownership asserts: the predicates, the macros, and every entry point they are placed at.
 //
-// The asserts are checked at their entry points by calling the real functions from the test thread (the EE
-// thread, in these tests) with the IOP thread running and no hold taken, with a handler that leaves the function
-// at its first statement, so a function that needs a machine is never actually run.
+// The real functions are called from the test thread (the EE thread) with the IOP thread running and no hold
+// taken. The handler leaves each function at its first statement, so one that needs a machine never runs.
 
 #include "CDVD/CDVD.h"
 #include "DEV9/DEV9.h"
@@ -29,8 +27,6 @@ using namespace iopt;
 
 namespace
 {
-	// ---- ownership violations
-
 	struct Violation
 	{
 		IopThread::Side side;
@@ -39,10 +35,9 @@ namespace
 	std::mutex s_violation_mutex;
 	std::vector<Violation>* s_violations = nullptr;
 
-	// With a jump target set on the calling thread, a violation leaves the function that asserted, before
-	// its body runs, so an entry point that needs a machine is never actually run. (The project builds
-	// without exceptions, so this is a longjmp; the entry points are left at their first statement and have
-	// nothing to unwind.)
+	// With a jump target set on the calling thread, a violation leaves the asserting function before its body
+	// runs. This is a longjmp because the project builds without exceptions; there is nothing to unwind at the
+	// first statement.
 	thread_local std::jmp_buf* t_jump = nullptr;
 	thread_local const char* t_last_where = nullptr;
 
@@ -134,8 +129,6 @@ TEST(IopThreadHolds, TheEeStartedSifPumpsHoldTheIop)
 	EXPECT_GE(violations.Violations().size(), 2u) << "without the bridge the IOP step fires its assert";
 #endif
 }
-
-// ---------------------------------------------------------------- the ownership asserts
 
 TEST(IopThreadOwnerAsserts, OffAllowsEveryCaller)
 {
@@ -309,7 +302,7 @@ namespace
 		{"SPU2writeDMA7Mem", [] { SPU2writeDMA7Mem(nullptr, 0); }, false},
 		{"cdvdVsync", [] { cdvdVsync(); }, false},
 		{"cdvdNewDiskCB", [] { cdvdNewDiskCB(); }, false},
-		// The calls the CPU thread makes into devices the IOP thread owns (step 10): each is held by its caller.
+		// Calls the CPU thread makes into devices the IOP thread owns; each is held by its caller.
 		{"SetOutputPaused", [] { SPU2::SetOutputPaused(true); }, false},
 		{"OnTargetSpeedChanged", [] { SPU2::OnTargetSpeedChanged(); }, false},
 		{"CheckForConfigChanges", [] { SPU2::CheckForConfigChanges(EmuConfig); }, false},
@@ -438,8 +431,8 @@ TEST(IopThreadOwnerAsserts, TheEeSideEntriesAreTheIopsToCallInLockstep)
 }
 
 // In Threaded the EE-side entries are the EE's alone: the check refuses the IOP thread. The bridges the IOP code
-// calls (kEeEntries) no longer reach them from the IOP thread: each is suppressed, queued for the EE, or run by
-// the EE (iop_thread_threaded_tests.cpp), so none of them fires the assert in Threaded.
+// calls (kEeEntries) are suppressed, queued for the EE, or run by the EE (iop_thread_threaded_tests.cpp), so none
+// of them fires the assert in Threaded.
 TEST(IopThreadOwnerAsserts, TheEeSideCheckRefusesTheIopThreadInThreaded)
 {
 	REQUIRE_ARM64_HOST();
@@ -455,8 +448,6 @@ TEST(IopThreadOwnerAsserts, TheEeSideCheckRefusesTheIopThreadInThreaded)
 	EXPECT_EQ(violations.Violations()[0].side, IopThread::Side::Ee);
 	EXPECT_EQ(caught, "AnEeEntry");
 }
-
-// ---------------------------------------------------------------- a blocking call to the CPU thread from the IOP thread
 
 namespace
 {

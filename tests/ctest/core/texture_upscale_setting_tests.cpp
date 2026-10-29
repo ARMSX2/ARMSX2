@@ -1,11 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The texture upscaling setting: EmuCore/GS TextureUpscale, 0 Off, 1 RAISR 2x, 2 RAISR 4x.
-//
-// The setting's first key was TextureUpscaleMode, where 2 meant Smooth 2x. That key is not read, so
-// a leftover value of it cannot turn into a 4x choice, and anything outside 0..2 under the new key
-// means Off.
+// The texture upscaling setting: EmuCore/GS TextureUpscale, 0 Off, 1 RAISR 2x, 2 RAISR 4x. Anything
+// outside 0..2 means Off. The retired TextureUpscaleMode key (where 2 meant Smooth 2x) is not read,
+// so a leftover value of it cannot turn into a 4x choice.
 
 #include <gtest/gtest.h>
 

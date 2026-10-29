@@ -310,7 +310,6 @@ void DEV9SettingsWidget::onEthDeviceTypeChanged(int index)
 			break;
 	}
 
-	// Local Link has no adapter to pick and no DHCP or DNS: it shows its own rows instead.
 	const bool local_link = selectedApi == Pcsx2Config::DEV9Options::NetApi::LocalLink;
 	m_ui.ethDevLabel->setVisible(!local_link);
 	m_ui.ethDev->setVisible(!local_link);
@@ -907,7 +906,6 @@ void DEV9SettingsWidget::LoadAdapters()
 	for (const AdapterEntry& adapter : SocketAdapter::GetAdapters())
 		AddAdapter(adapter);
 
-	// Local Link has no adapters; one entry stands for the device type so the usual selection stores it.
 	AdapterEntry localLink;
 	localLink.type = Pcsx2Config::DEV9Options::NetApi::LocalLink;
 	localLink.name = "Local Link";

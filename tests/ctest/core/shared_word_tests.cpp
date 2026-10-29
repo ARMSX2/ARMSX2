@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // SharedWord, the one idiom for a word two threads both touch. It is built on the compiler's atomic
-// builtins and not on std::atomic_ref, because the Android NDK's libc++ (r28, LLVM 19) has no
-// std::atomic_ref at all, so a header that named it stopped the Android build. These tests pin what
-// each call does, value by value, and that no update is lost between two threads.
+// builtins rather than std::atomic_ref, which the Android NDK's libc++ does not have.
 
 #include <gtest/gtest.h>
 

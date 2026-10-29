@@ -61,7 +61,6 @@ inline VuOp LowerOnly(u32 lower)
 constexpr u8 kTargetBlockObject = 0;
 constexpr u8 kTargetImage = 3;
 
-// One VU0 program: register setup plus the micro program.
 struct Program
 {
 	const char* name;
@@ -125,7 +124,6 @@ void Load(VuTestHarness& h, const Program& p)
 	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
 }
 
-// Compile `p` with recording on, run it, and serialize it.
 std::vector<u8> RecordProgram(const Program& p)
 {
 	VuTestHarness h(0);
@@ -324,7 +322,6 @@ TEST_F(MvuPersistRelocation, RejectsUnencodableImageAddressBeforeInstalling)
 	EXPECT_EQ(after.hydrationRejects, before.hydrationRejects + 1);
 	EXPECT_EQ(after.programsHydrated, before.programsHydrated);
 
-	// The program compiles normally afterwards.
 	h.Run();
 	EXPECT_FLOAT_EQ(h.GetVfJit(3, 'x'), 3.0f);
 }

@@ -620,10 +620,9 @@ namespace vu_capture
 			CapturedState st{};
 			SnapshotState(regs, st);
 			const u64 state_hash = Fnv1a(&st, sizeof(st));
-			// obs_hash: the same state with the bits the exactness contract frees (relaxation 3, flag
-			// hack on or off: the sticky zero/sign and invalid/divide-by-zero bits of STATUS, bits 6-7
-			// and 10-11 of the register and the low byte and bits 24-25 of its ring copies).
-			// Everything else a game can see is in it, the settled flags of a program end included.
+			// obs_hash: state with the sticky STATUS bits the exactness contract frees (relaxation 3)
+			// masked out: bits 6-7 and 10-11 of the register, the low byte and bits 24-25 of its
+			// ring copies.
 			CapturedState obs = st;
 			obs.VI[REG_STATUS_FLAG] &= ~0xCC0u;
 			for (u32& w : obs.micro_statusflags)
@@ -641,10 +640,9 @@ namespace vu_capture
 			u64 core = Fnv1a(st.VF, sizeof(st.VF));          // VF[32][4]
 			core = Fnv1a(st.VI, 16 * sizeof(st.VI[0]), core); // VI[0..15] (int regs)
 			core = Fnv1a(st.ACC, sizeof(st.ACC), core);       // ACC
-			// PCSX2_VU_TRAJ_DUMP_HASH=<hex>[,<hex>...]: write VU data memory (and the
-			// register surface) to $PCSX2_VU_TRAJ_OUT.<hex>.mem/.regs the first time a
-			// dispatch's state_hash matches, to see WHAT differs where two runs'
-			// vumem_hash parts.
+			// PCSX2_VU_TRAJ_DUMP_HASH=<hex>[,<hex>...]: write VU data memory to
+			// $PCSX2_VU_TRAJ_OUT.<hex>.mem the first time a dispatch's state_hash
+			// matches, to diff two runs whose vumem_hash differs.
 			static const std::vector<u64> dump_hashes = [] {
 				std::vector<u64> v;
 				if (const char* e = std::getenv("PCSX2_VU_TRAJ_DUMP_HASH"))

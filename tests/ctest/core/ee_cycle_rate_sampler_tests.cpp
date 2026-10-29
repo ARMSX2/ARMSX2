@@ -5,10 +5,8 @@
 // up to. No VM, no clock, no limiter - every test is an array of per-frame tick counts and
 // the EECycleRateWindowSample they produce.
 //
-// This is where a sampler bug looks like a working feature. A ratio that means something
-// other than what it is named cannot be caught by the controller's sequence tests, because
-// the controller believes whatever it is handed; it shows up months later as a governor
-// that downshifts against a GS bottleneck it cannot move.
+// The controller's sequence tests cannot catch a ratio that means something other than its
+// name, because the controller believes whatever it is handed. The sampler is checked here.
 
 #include "EECycleRateSampler.h"
 
@@ -130,7 +128,6 @@ TEST(EECycleRateSamplerWindow, GSAndVU1WaitsAreOneBlockedTotal)
 
 TEST(EECycleRateSamplerWindow, TheGSAndVU1SharesAddUpToTheBlockedRatio)
 {
-	// A quarter of each frame on the GS thread, an eighth on VU1.
 	const auto frames = UniformWindow(30, kFrame60Hz / 2, kFrame60Hz / 8, kFrame60Hz / 16);
 	const EECycleRateWindowSample s = EECycleRateSampler::BuildWindowSample(Inputs(frames));
 
@@ -165,7 +162,6 @@ TEST(EECycleRateSamplerWindow, AWaitLongerThanItsFrameIsClampedToTheFrame)
 	EXPECT_TRUE(s.valid);
 	EXPECT_GE(s.own_time_ratio, 0.0f);
 	EXPECT_LE(s.blocked_ratio, 1.0f);
-	// Twenty-nine unblocked half-budget frames and one fully blocked one.
 	EXPECT_NEAR(s.own_time_ratio, 29.0f * 0.5f / 30.0f, 1e-3f);
 }
 
@@ -423,7 +419,6 @@ TEST(EECycleRateTally, EveryClosedFrameCountsWhetherOrNotItWasMeasurable)
 	EECycleRateTally tally;
 	EECycleRateFrameAccumulator acc;
 
-	// A measured frame that overran.
 	acc.AddSegment(10'000'000, false, Lateness::OnTime);
 	ASSERT_EQ(acc.AddSegment(3'000'000, true, Lateness::Overran), EECycleRateFrameAccumulator::Outcome::Closed);
 	tally.NoteFrame(acc);
@@ -461,11 +456,10 @@ TEST(EECycleRateTally, AClockThatDidNotAdvanceAddsNothing)
 
 // --- overlay word ----------------------------------------------------------
 //
-// The one piece of governor state that crosses a thread boundary. It is a single word so
-// the display can never pair a configured selector from one window with an effective
-// selector from the next, and that only holds if the round trip is exact over the whole
-// selector range - including the negative half, which is where a bias that is off by one
-// or a sign extension would show up.
+// The one piece of governor state that crosses a thread boundary. It is a single word so the
+// display never pairs a configured selector from one window with an effective selector from
+// the next. That holds only if the round trip is exact over the whole selector range,
+// including the negative half, where an off-by-one bias or a sign extension would show up.
 
 TEST(EECycleRateSamplerOverlay, EverySelectorPairRoundTrips)
 {

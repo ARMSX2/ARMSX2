@@ -15,20 +15,15 @@ import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Remote play (com.armsx2.remoteplay): the viewer's decoder, which puts each frame straight onto
- * the screen ({@link ArmsxVideoOutput}).
+ * Remote play (com.armsx2.remoteplay): the viewer's decoder. MediaCodec renders each frame straight
+ * onto the screen's surface ({@link ArmsxVideoOutput}); WebRTC's own decoder instead hands every
+ * frame over as a GL texture, which costs an extra GPU pass and wait. Frames never queue: when
+ * more than one is done, the newest is shown and the older ones are skipped, so the picture is
+ * never behind. The viewer asks for 60 Hz while it streams, so each frame stays up for one refresh.
  *
- * WebRTC's own decoder hands every frame over as a GL texture for the viewer's renderer to draw:
- * one more pass on the GPU and a wait for it, and a frame that comes out while the one before is
- * still waiting to be drawn is thrown away. Here MediaCodec draws onto the screen's surface itself,
- * as a video player does, and the display shows the decoded picture as it is. Frames never queue
- * up behind each other: when more than one is done, the newest is shown and the older ones are
- * skipped, so the picture is never behind. The viewer asks the screen for 60 Hz while it streams,
- * so each frame stays up for exactly one refresh.
- *
- * WebRTC still hears of each frame shown, as a frame with a size and no pixels, so its statistics
- * stay true. If the codec will not start on the screen, the stock decoder takes over for the rest
- * of the session and the viewer draws its frames the usual way.
+ * WebRTC is still told of each frame shown, as a frame with a size and no pixels, so its
+ * statistics stay true. If the codec will not start on the screen, the stock decoder takes over
+ * for the rest of the session.
  */
 public class ArmsxSurfaceDecoder implements VideoDecoder {
   private static final String TAG = "ArmsxSurfaceDecoder";

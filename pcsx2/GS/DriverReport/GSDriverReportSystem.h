@@ -14,8 +14,7 @@
 
 namespace GSDriverReport
 {
-	/// The "device" object: model, manufacturer, board, platform, SoC, SDK, kernel, page size, plus
-	/// the build fingerprints, uname, /proc/version and the CPU cores.
+	/// The "device" object: hardware and OS build identity.
 	void WriteDeviceFacts(JsonWriter& w, StepLog& steps);
 
 	/// The vendor Vulkan/GLES libraries on disk (path, size, time) and, on Android, the
@@ -48,8 +47,7 @@ namespace GSDriverReport
 	/// Reads meta.json from the pack directory. Never fails; problems land in meta_error.
 	void ReadPackMeta(PackInfo* pack, StepLog& steps);
 
-	/// The "selected_driver" object: kind, pack name and path, meta.json, the driver file's size
-	/// and SHA-256, and the adrenotools hook libraries.
+	/// The "selected_driver" object: the pack's identity and the driver file's size and SHA-256.
 	void WriteSelectedDriver(JsonWriter& w, StepLog& steps, const PackInfo& pack);
 
 	/// What the kernel section found, for the served-driver verdict.

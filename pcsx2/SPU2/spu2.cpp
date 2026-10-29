@@ -124,7 +124,7 @@ AudioStream* SPU2::GetOutputStream()
 
 void SPU2::CreateOutputStream()
 {
-	// The stream the IOP thread writes is replaced: the CPU thread holds the IOP (IOP thread design 8.10).
+	// The stream the IOP thread writes is replaced: the CPU thread holds the IOP.
 	IOP_SIDE_ASSERT();
 	// Initialize volume and mute settings on new session.
 	if (!s_output_stream)
@@ -172,8 +172,8 @@ u32 SPU2::GetOutputVolume()
 
 void SPU2::SetOutputVolume(u32 volume)
 {
-	// The Android JNI setters call this from their own thread with no hold; the design leaves that race (8.10),
-	// and this assert reports it in a Devel build running Lockstep.
+	// The Android JNI setters call this from their own thread with no hold. That race is accepted;
+	// this assert reports it in a Devel build running Lockstep.
 	IOP_SIDE_ASSERT();
 	if (VMManager::GetTargetSpeed() == 1.0f)
 		s_standard_volume = volume;
@@ -251,9 +251,8 @@ void SPU2::SaveOutputVolume()
 static std::atomic<bool> s_output_pause_suppressed{false};
 
 // The app is not visible. Suppression keeps the device warm for a quick resume, but no one resumes
-// a game they cannot see, and a running stream keeps Android's audio mixer holding a wakelock: a
-// game paused behind the menu and the device locked went from 76% to 0% overnight (#825, #817).
-// While this is set, a paused VM pauses its output, suppressed or not.
+// a game they cannot see, and a running stream keeps Android's audio mixer holding a wakelock that
+// drains the battery. While this is set, a paused VM pauses its output, suppressed or not.
 static std::atomic<bool> s_output_backgrounded{false};
 
 static bool OutputShouldPause(bool vm_paused)
@@ -265,8 +264,8 @@ void SPU2::SetOutputPaused(bool paused)
 {
 	IOP_SIDE_ASSERT();
 	// Both edges follow the same rule. While suppressed in the foreground the stream stays
-	// running, so the resume edge finds it running and does nothing, as before. After the
-	// background has paused it, the resume edge starts it again.
+	// running, so the resume edge finds it running and does nothing; after the background has
+	// paused it, the resume edge starts it again.
 	s_output_stream->SetPaused(OutputShouldPause(paused));
 }
 

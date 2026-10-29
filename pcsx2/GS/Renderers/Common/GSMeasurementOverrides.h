@@ -39,12 +39,11 @@ struct GSMeasurementOverrides
 	/// It still grows to its cap on demand, so a small start drives the growth path on every title.
 	u32 vertex_ring_start_kib = 0;
 
-	/// -vertex-ring-no-grow: the vertex ring keeps its starting size and waits for the GPU when
-	/// full, as it did before it could grow.
+	/// -vertex-ring-no-grow: the vertex ring keeps its starting size and waits for the GPU when full.
 	bool vertex_ring_no_growth = false;
 
 	/// -texture-ring-no-grow: the texture upload ring keeps its starting size and waits for the GPU
-	/// when full, as it did before it could grow.
+	/// when full.
 	bool texture_ring_no_growth = false;
 
 	/// -stream-rings-cached: put the stream rings on a cached road as if the driver database granted

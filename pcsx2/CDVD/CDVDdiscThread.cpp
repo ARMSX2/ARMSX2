@@ -125,14 +125,14 @@ static bool cdvdReadBlockOfSectors(u32 sector, u8* data)
 void cdvdCallNewDiscCB()
 {
 	// The callback is the IOP's disc change (cdvdNewDiskCB: tray state, the disc type, an interrupt). With an
-	// IOP thread, that thread makes it between slices; this thread must not touch the IOP's state itself
-	// (IOP thread design 8.3). The IOP thread's reads of the new disc go through this thread's request queue,
-	// which is free as soon as this function returns, so weAreInNewDiskCB stays clear for it.
+	// IOP thread, that thread makes it between slices; this thread must not touch the IOP's state itself.
+	// The IOP thread's reads of the new disc go through this thread's request queue, which is free as soon
+	// as this function returns, so weAreInNewDiskCB stays clear for it.
 	if (IopThread::TryPostToIop(newDiscCB))
 		return;
 
-	// No IOP thread (Off): the call this thread always made, with the flag that tells the reader's own reads
-	// to bypass the request queue this thread is not serving while it is in the callback.
+	// No IOP thread (Off): make the call here, with the flag that tells the reader's own reads to bypass
+	// the request queue this thread is not serving while it is in the callback.
 	weAreInNewDiskCB = true;
 	newDiscCB();
 	weAreInNewDiskCB = false;

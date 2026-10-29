@@ -20,8 +20,7 @@ namespace IopThread
 
 		// No data travels through this flag; the mutex orders the commands. It is set and cleared
 		// only under the mutex, so a Post() after RunPending() has swapped the list out sets it
-		// again and the commands in the new list are not missed. Release is the design's choice
-		// (section 3.9) and costs nothing here.
+		// again and the commands in the new list are not missed.
 		m_pending.store(true, std::memory_order_release);
 		return ticket;
 	}

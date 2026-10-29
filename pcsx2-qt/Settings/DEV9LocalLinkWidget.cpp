@@ -42,7 +42,6 @@ namespace
 		return QString();
 	}
 
-	// This device's own IPv4 addresses, for the host to read out to the guests.
 	QString localIPv4Addresses()
 	{
 		QStringList addresses;
@@ -201,7 +200,6 @@ void DEV9LocalLinkWidget::showValues(const Values& values)
 	m_ui.localLinkPort->setValue(static_cast<int>(values.port));
 	m_ui.localLinkRoomCode->setText(QString::fromStdString(values.room_code));
 
-	// A host is always peer 1; a guest picks from the guest range.
 	if (values.host)
 	{
 		m_ui.localLinkPeerId->setRange(static_cast<int>(LocalLink::HOST_PEER_ID), static_cast<int>(LocalLink::HOST_PEER_ID));
@@ -214,7 +212,6 @@ void DEV9LocalLinkWidget::showValues(const Values& values)
 	}
 	m_ui.localLinkPeerId->setEnabled(!values.host);
 
-	// A host reads out its own address; a guest types the host's.
 	if (values.host)
 		m_ui.localLinkLocalAddress->setText(localIPv4Addresses());
 	m_ui.localLinkForm->setRowVisible(m_ui.localLinkLocalAddress, values.host);

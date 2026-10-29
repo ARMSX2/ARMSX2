@@ -13,13 +13,14 @@ class QComboBox;
 class QLabel;
 class QPushButton;
 
-// What each button of a controller does on a Namco System 246/256 cabinet. The cabinet has levers, numbered buttons,
-// a coin slot and so on; ArcadeInput lays the controller out on it for each kind of cabinet, and this page lets the
-// player move a button to another job. The page is the same widget in two windows, as every settings page is:
-//   - in a game's own settings (a game whose ID is an arcade game's): that game's layout. Each button shows the job it
-//     does on this cabinet and offers the cabinet's other jobs. Stored in the game's settings file, [Arcade] Controls.
-//   - in the global settings: the layout every arcade game starts from. Each button shows which controller button it
-//     acts as. Stored in the global settings, [Arcade] Controls.
+// What each button of a controller does on a Namco System 246/256 cabinet. ArcadeInput lays the
+// controller out on each kind of cabinet; this page lets the player move a button to another job.
+// The same widget appears in two windows, as every settings page does:
+//   - in a game's own settings (a game whose ID is an arcade game's): that game's layout. Each button
+//     shows the job it does on this cabinet and offers the cabinet's other jobs. Stored in the game's
+//     settings file, [Arcade] Controls.
+//   - in the global settings: the layout every arcade game starts from. Each button shows which
+//     controller button it acts as. Stored in the global settings, [Arcade] Controls.
 // A game's own entry for a button wins over the global one.
 class ArcadeControlsSettingsWidget final : public SettingsWidget
 {

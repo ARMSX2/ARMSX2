@@ -16,7 +16,6 @@
 
 namespace Catalog
 {
-	/// One `[Section]` block of a .pnach file.
 	struct PnachSection
 	{
 		/// The text between the brackets, trimmed. This is what goes in `[Patches] Enable` /
@@ -29,8 +28,7 @@ namespace Catalog
 		std::string description;
 
 		/// The block exactly as it appeared, header line included, with trailing whitespace
-		/// removed and line endings normalised to "\n". `author=`, `comment=`, `patch=` lines and
-		/// `//` comments are all in it.
+		/// removed and line endings normalised to "\n".
 		std::string body;
 	};
 

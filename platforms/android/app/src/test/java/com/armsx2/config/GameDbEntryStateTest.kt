@@ -130,7 +130,6 @@ class GameDbEntryStateTest {
 
     @Test
     fun aFlagEntryShowsOnOrOff() {
-        // Multi-threaded VU1 is on by default.
         assertEquals(mapOf<String, Any>("mtvu" to false), shown(named("mtvu", 0)))
     }
 

@@ -24,10 +24,9 @@
 // diverged; a1 was correct), corrupting memory the later SBUS handshake
 // depends on -> the EE never rings F240 -> the IOP stays idle -> deadlock.
 //
-// When this was found only a1 of the three registers was a pin. $a2, the loop
-// count, has been a pin since the pin table gained $a2 and $s1, so the tests
-// that use the game's registers now run the count through its pin; the last
-// test keeps the original shape, with the count in an unpinned register.
+// The tests that use the game's registers run the loop count through $a2,
+// which is a static pin like $a1; the last test keeps the count in an
+// unpinned register.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -221,9 +220,8 @@ TEST(EeRecCarbonSelfLoop, PinnedValueLoopCarriedBaseManyIterations)
 	h.ExpectGpr64(reg::a3, static_cast<u64>(kDataAddr + 100));
 }
 
-// The original residency shape: pinned store value (a1) and loop-carried store
-// base (a3), with the loop count in an UNPINNED register (t0), so the count is
-// loop-resident in the preheader as it was when the bug was found.
+// Pinned store value (a1) and loop-carried store base (a3), with the loop count
+// in an UNPINNED register (t0), so the count is loop-resident in the preheader.
 TEST(EeRecCarbonSelfLoop, PinnedValueUnpinnedCountLoopCarriedBaseByteFill)
 {
 	ASSERT_NE(armEEPinForGPR(reg::a1), nullptr) << "$a1 is no longer pinned";

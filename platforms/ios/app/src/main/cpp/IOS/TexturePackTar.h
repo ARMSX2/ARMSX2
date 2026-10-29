@@ -1,4 +1,3 @@
-// TexturePackTar.h — the tar profile texture packs ship in
 // SPDX-License-Identifier: GPL-3.0+
 
 #pragma once

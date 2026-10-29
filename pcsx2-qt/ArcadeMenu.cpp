@@ -14,8 +14,8 @@
 
 namespace
 {
-	// How long the Service button is held for one press from the menu. A tap shorter than a few frames is
-	// missed by the game, which reads the board once per frame; this is the time the Android app holds it too.
+	// Hold time for one Service press from the menu. The game reads the board once per frame, so a shorter
+	// tap can be missed.
 	constexpr int SERVICE_PRESS_MS = 200;
 } // namespace
 
@@ -53,7 +53,7 @@ ArcadeMenu::ArcadeMenu(QObject* parent, EmuThread* thread, QMenu* menu, QAction*
 
 void ArcadeMenu::updateEnabled()
 {
-	// IsActive() is the board itself: it is up from the moment an arcade game starts to booting until its VM is gone.
+	// IsActive() is true from the moment an arcade game starts booting until its VM is gone.
 	const bool enabled = m_vm_running && ArcadeInput::IsActive();
 	m_menu->setEnabled(enabled);
 	for (QAction* action : {m_coin_p1, m_coin_p2, m_service, m_test})
@@ -67,7 +67,7 @@ void ArcadeMenu::updateEnabled()
 
 void ArcadeMenu::syncTestState()
 {
-	// A plain read of the switch's state; being a beat out of date only shows the old tick for that long.
+	// Read directly, not through the CPU thread; a stale value only shows the old tick briefly.
 	const bool on = ArcadeInput::IsTestOn();
 	const QSignalBlocker blocker(m_test);
 	m_test->setChecked(on);
@@ -80,8 +80,8 @@ void ArcadeMenu::insertCoin(unsigned player)
 
 void ArcadeMenu::pressService()
 {
-	// The game reads the Service button while it runs, so a paused game is resumed first (as the Android app's pause
-	// menu does), then the button is held for a moment.
+	// The game only reads the Service button while it runs, so resume a paused game first (as the Android
+	// pause menu does).
 	if (m_vm_paused)
 		m_thread->setVMPaused(false);
 
@@ -91,8 +91,8 @@ void ArcadeMenu::pressService()
 
 void ArcadeMenu::toggleTest()
 {
-	// The tick toggled by the click is right as long as the switch was where the tick said; read it back once the
-	// toggle has been through the CPU thread, in case the hotkey moved it in between.
+	// The click already toggled the tick; read it back after the CPU thread has applied the toggle, in case
+	// the hotkey moved the switch in between.
 	Host::RunOnCPUThread([]() { ArcadeInput::ToggleTest(); });
 	QTimer::singleShot(250, this, [this]() { syncTestState(); });
 }

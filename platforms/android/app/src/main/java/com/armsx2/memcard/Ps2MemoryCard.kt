@@ -43,8 +43,7 @@ class Ps2Save internal constructor(
  * bytes of ECC that follow each 512-byte page) or a PCSX2 folder card. Read-only and defensive: a
  * card that is unformatted, truncated or corrupt yields what it can, or nothing, and never throws.
  *
- * Images are read a page at a time rather than whole: a 128 MB card is a real thing people have,
- * and loading one into a phone's heap to find a few icons would be absurd.
+ * Images are read a page at a time rather than whole, since a card image can be 128 MB.
  */
 object Ps2MemoryCard {
     private const val MAGIC = "Sony PS2 Memory Card Format "
@@ -59,7 +58,6 @@ object Ps2MemoryCard {
         fun saves(): List<Ps2Save>
     }
 
-    /** Opens the card at [file], or null when it is not a card that can be read. */
     fun open(file: File): Card? = runCatching {
         when {
             file.isDirectory -> FolderCard(file)
@@ -68,7 +66,7 @@ object Ps2MemoryCard {
         }
     }.getOrNull()
 
-    /** The saves on [file], read in one go; convenient when nothing else from the card is needed. */
+    /** The names of the save folders on [file]; opens the card and closes it again. */
     fun saveNames(file: File): List<String> = open(file)?.use { card -> card.saves().map { it.folder } }.orEmpty()
 
     /** A PCSX2 folder card: one directory per save, plus the core's own bookkeeping files. */

@@ -392,8 +392,7 @@ private:
 	GSTextureCache::Target* m_last_rt;
 
 	// GSAlphaBitLogicOp: the target whose last destination-alpha draw could have shared a stencil
-	// copy, and its DATM. A second such draw with only marks or nothing on that target in between
-	// takes Stencil DATE and reuses the copy.
+	// copy, and its DATM. See the comment where m_date_draw_shares_copy is set.
 	GSTexture* m_date_chain_rt = nullptr;
 	u8 m_date_chain_datm = 0;
 

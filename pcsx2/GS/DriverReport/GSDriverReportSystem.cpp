@@ -222,7 +222,6 @@ namespace GSDriverReport
 		});
 
 #if !defined(__ANDROID__)
-		// Linux handhelds: the device tree names the board, os-release names the distribution.
 		steps.Run("device.devicetree", [&](std::string& err) {
 			std::string model, compatible;
 			const bool have_model = ReadFileBytes("/proc/device-tree/model", 1024, &model, &err);
@@ -272,9 +271,6 @@ namespace GSDriverReport
 		w.EndObject();
 	}
 
-	// ---------------------------------------------------------------------------------------------
-	// Vendor libraries
-
 #ifdef DRIVER_REPORT_LINUX
 	namespace
 	{
@@ -310,8 +306,8 @@ namespace GSDriverReport
 
 	void WriteVendorLibraries(JsonWriter& w, StepLog& steps)
 	{
-		// Identity only: path, size and time. The libraries' embedded strings were tried and gave
-		// noise; the exact vendor release is in the served driver's own driverInfo.
+		// Identity only (path, size, time). The exact vendor release is in the served driver's own
+		// driverInfo.
 		w.BeginObject();
 #if defined(__ANDROID__)
 		w.Key("properties");
@@ -349,9 +345,6 @@ namespace GSDriverReport
 #endif
 		w.EndObject();
 	}
-
-	// ---------------------------------------------------------------------------------------------
-	// The selected pack
 
 	void ReadPackMeta(PackInfo* pack, StepLog& steps)
 	{
@@ -555,9 +548,6 @@ namespace GSDriverReport
 #endif
 		w.EndObject();
 	}
-
-	// ---------------------------------------------------------------------------------------------
-	// Kernel
 
 #ifdef DRIVER_REPORT_LINUX
 	namespace kgsl

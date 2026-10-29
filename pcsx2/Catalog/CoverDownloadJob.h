@@ -78,7 +78,6 @@ namespace Catalog
 		bool m_dirty = false;
 	};
 
-	/// One game that wants a cover.
 	struct CoverWorkItem
 	{
 		std::string id; ///< The caller's handle for the game (the game-list path); echoed back in callbacks.
@@ -107,7 +106,7 @@ namespace Catalog
 		std::string id; ///< CoverWorkItem::id
 		std::string serial;
 		std::string path; ///< The file written, <covers_dir>/<serial>.<ext>.
-		std::string url; ///< Where it came from.
+		std::string url;
 	};
 
 	enum class CoverJobEnd
@@ -128,7 +127,7 @@ namespace Catalog
 		u32 skipped_known_miss = 0; ///< Every URL was in the miss cache; no request made.
 		u32 missed = 0; ///< Asked, and every URL answered 404 or sent no image.
 		u32 failed = 0; ///< Transport or server errors; not remembered, retried next run.
-		u32 requests = 0; ///< HTTP requests made.
+		u32 requests = 0;
 	};
 
 	struct CoverJobOptions

@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// AutoTuneController against the windows of real trials from the first device round (MQ65, SD865, RG477V;
-// devs/bmdhacks/campaigns/auto-tune-2026-10-18/device-rounds). Each table is a slice of one run's trace: the four
-// windows that triggered the diagnosis, the four of the baseline (the last one carries the start of the trial), and
-// the windows that followed, undo and settling included, so a trial that is looked at for longer sees what the
-// device saw. The numbers are the trace's, unedited.
+// AutoTuneController against the windows of real trials recorded on devices (MQ65, SD865, RG477V). Each table is a
+// slice of one run's trace: the four windows that triggered the diagnosis, the four of the baseline (the last one
+// carries the start of the trial), and the windows that followed, undo and settling included, so a trial that is
+// looked at for longer sees what the device saw. The numbers are the trace's, unedited.
 //
-// The controller is built with the settle the round ran under (3 s for the light levers); the device-rounds'
-// verdicts are about those windows.
+// The first-round tables are fed to a controller built with the settle that round ran under (3 s for the light
+// levers).
 
 #include <gtest/gtest.h>
 
@@ -52,7 +51,7 @@ namespace
 		return w;
 	}
 
-	// The policy the first device round ran under, for the settings that have since changed.
+	// The default policy with the 3 s settle the first-round traces were recorded under.
 	AutoTunePolicy RoundOnePolicy()
 	{
 		AutoTunePolicy policy;
@@ -129,8 +128,6 @@ namespace
 			return n;
 		}
 	};
-
-	// ---------------------------------------------------------------------------------------- MQ65 traces
 
 	// MQ65 God of War II combat, GS back thread
 	const TraceWindow kGow2Gsb[] = {
@@ -231,8 +228,6 @@ namespace
 		{0.506, 52.7, 1.000, 69.0, 38.2, 57.4, 30.9, 59.9, 54.3, 1, 0.299, 21.82, 12.09, 18.14, 34.34},
 	};
 
-	// ---------------------------------------------------------------------------------------- RG477V trace
-
 	// RG477V Shadow of the Colossus at 5x, resolution 5x -> 4x, then the 5x windows after the undo
 	const TraceWindow kSotcResolution4[] = {
 		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
@@ -277,8 +272,8 @@ namespace
 		{0.510, 55.6, 1.000, 32.2, 17.0, 26.2, 24.6, 0.0, 0.0, 0, 0.674, 9.67, 5.10, 7.88, 0.00},
 	};
 
-	// The windows of the same trial that fall in the heavier part of the scene (EE 13.2 ... 13.9 ms where the rest
-	// has 10.5 ... 10.8): the speed 4x gives once the game has got heavier, as far as the trace saw it.
+	// The windows of the same trial from the heavier part of the scene (EE about 13 ms where the rest has about
+	// 10.5): the speed 4x gives once the game has got heavier.
 	const TraceWindow kSotcHeavyAt4x[] = {
 		{0.512, 74.9, 0.400, 60.4, 40.4, 0.0, 39.4, 0.0, 0.0, 0, 0.258, 13.44, 9.00, 0.00, 0.00},
 		{0.506, 75.8, 0.870, 60.1, 44.2, 0.0, 41.6, 0.0, 0.0, 0, 0.376, 13.24, 9.72, 0.00, 0.00},
@@ -322,7 +317,7 @@ namespace
 		{0.538, 74.4, 0.708, 78.3, 94.1, 0.0, 37.3, 0.0, 64.8, 1, 0.190, 17.54, 21.10, 0.00, 29.07},
 	};
 
-	// MQ65 OutRun 2006, car select: download mode Accurate -> Asynchronous (the EE waits on the GS 60% of the time, MTGS 61%, GPU 41%)
+	// MQ65 OutRun 2006, car select: download mode Accurate -> Asynchronous
 	const TraceWindow kOutRunDownloadMode[] = {
 		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
 		{0.503, 71.5, 1.000, 34.9, 63.1, 0.0, 13.7, 0.0, 42.2, 1, 0.629, 9.76, 17.64, 0.00, 11.79},
@@ -351,7 +346,7 @@ namespace
 		{0.503, 99.4, 0.000, 60.9, 78.3, 0.0, 17.6, 0.0, 58.7, 1, 0.000, 12.26, 15.75, 0.00, 11.81},
 	};
 
-	// RG477V Spider-Man 3 after a relaunch with the back thread kept and download mode and blending known not to help: from the start of the session (warm-up included) to 6 s after the second message
+	// RG477V Spider-Man 3 after a relaunch: from the start of the session (warm-up included) to 6 s after the second message
 	const TraceWindow kSm3Relaunch[] = {
 		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
 		{0.516, 64.7, 0.200, 44.8, 2.9, 0.4, 0.1, 0.0, 0.0, 0, 0.000, 11.57, 0.75, 0.10, 0.00},
@@ -393,8 +388,8 @@ namespace
 		{0.515, 71.3, 0.818, 40.3, 36.6, 94.1, 29.6, 0.0, 0.0, 0, 0.556, 9.43, 8.57, 22.03, 0.00},
 	};
 
-	// The tables below are from the second device round (mq65-r2), which ran the controller as it is now, so a
-	// TraceRig for them takes the default policy: TraceRig rig{AutoTunePolicy()}.
+	// The tables below were recorded under the default policy, so their tests build the rig with
+	// TraceRig rig{AutoTunePolicy()}.
 	// MQ65 God of War II combat, GS back thread, second device round
 	const TraceWindow kGow2GsbR2[] = {
 		// seconds speed late   ee  mtgs  gsb mtvu  iop  gpu tmr wait_gs  ee_ms  gs_ms gsb_ms gpu_ms
@@ -459,13 +454,10 @@ namespace
 
 } // namespace
 
-// ---------------------------------------------------------------------------------------------- keep on cost
-
 TEST(AutoTuneTrace, TheGow2BackThreadIsNotKeptOnItsCostAlone)
 {
-	// The GS thread's cost fell 16% because the work was split over two threads, and the speed fell with it:
-	// 39.9% before, 37.6% over the first four windows (-5.6%, noise 9.4% from two hitch windows). A/B on the device:
-	// 38.1% against 38.1%, and a big core burned. The old rule kept it, because the speed drop was inside the noise.
+	// The GS thread's cost falls because the work is split over two threads, and the speed falls with it,
+	// within the noise of the first four windows (two hitch windows make it wide).
 	TraceRig rig;
 	rig.state.gs_back_thread_allowed = true;
 	rig.WarmUp();
@@ -481,8 +473,8 @@ TEST(AutoTuneTrace, TheGow2BackThreadIsNotKeptOnItsCostAlone)
 	ASSERT_NE(revert, nullptr) << "and the trial ends";
 	EXPECT_EQ(revert->lever, AutoTuneLever::GsBackThread);
 
-	// With eight windows the speed is 5.8% under the baseline, beyond the 4.4% noise: it made things worse, and
-	// that is remembered. The first four windows could not say (9.4% noise), so the trial was extended once.
+	// With eight windows the speed is under the baseline by more than the noise: it made things worse, and
+	// that is remembered. The first four windows could not say, so the trial is extended once.
 	EXPECT_TRUE(revert->measured);
 	EXPECT_FALSE(revert->inconclusive);
 	EXPECT_NEAR(revert->gain, -0.058, 0.01);
@@ -491,9 +483,9 @@ TEST(AutoTuneTrace, TheGow2BackThreadIsNotKeptOnItsCostAlone)
 
 TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 {
-	// The same lever on R&C: GS cost 33.4 -> 27.5 ms, and over the first four windows a speed of 46.6% -> 45.1%
-	// (-3.2%) because of one 33% hitch window. A/B on the device: +11%. The first look cannot tell, so it looks
-	// again, and again: the cost that fell does not keep it, the speed has to rise. With twelve windows it has.
+	// The same lever on R&C: the GS cost falls, and the first four windows show a slightly lower speed because of one
+	// hitch window. The first look cannot tell, so it looks again, and again: a lower cost does not keep the lever,
+	// the speed has to rise. With twelve windows it has.
 	TraceRig rig;
 	rig.state.gs_back_thread_allowed = true;
 	rig.WarmUp();
@@ -510,23 +502,21 @@ TEST(AutoTuneTrace, TheUyaBackThreadIsKeptAfterALongerLook)
 	EXPECT_GT(keep->speed_after, keep->speed_before) << "kept with the speed up, not with it down";
 	EXPECT_GT(keep->cost_gain, 0.10);
 
-	// What the player is told is the speed that was measured (+12%, the device's A/B said +11%), not the 20% the
-	// GS thread's cost fell by.
+	// What the player is told is the speed that was measured, not the amount the GS thread's cost fell by.
 	EXPECT_NEAR(keep->gain, keep->speed_after / keep->speed_before - 1.0, 1e-9);
 	EXPECT_NEAR(keep->gain, 0.116, 0.02);
 	EXPECT_GE(keep->gain, rig.ctl.GetPolicy().gain_fraction);
 
-	// The first look is four windows after the 9 of the settle. At the second, eight windows in, the speed was
-	// up 7% but not beyond the noise, which two hitch windows make wide; it kept on the third.
+	// The first look is four windows after the 9 of the settle. At the second, eight windows in, the speed is up
+	// but not beyond the noise, which two hitch windows make wide; it keeps on the third.
 	EXPECT_GE(rig.At(keep) - rig.At(start), 9u + 4u + 4u + 4u);
 }
 
 TEST(AutoTuneTrace, TheGow2BackThreadOfTheSecondRoundIsRejectedAlthoughTheGsCostFell)
 {
-	// Clean windows this time (no renderer-reopen hitch in the measurement): the speed reads 39.8% -> 39.6%
-	// and the GS cost fell 14%, 40.2 -> 34.7 ms, because the work is split over two threads. The EE, 94% to 97%
-	// busy, is the limit before and after. A/B on the device: 0%. The rule that kept this on its cost (the speed
-	// had not fallen by more than 1%) put "kept (-1%)" on screen and a big core to work for nothing.
+	// Clean windows (no renderer-reopen hitch in the measurement): the speed stays flat while the GS cost falls,
+	// because the work is split over two threads. The EE, nearly saturated, is the limit before and after. A lower
+	// cost at the same speed must not be kept, or the lever puts a big core to work for nothing.
 	TraceRig rig{AutoTunePolicy()};
 	rig.state.gs_back_thread_allowed = true;
 	rig.WarmUp();
@@ -548,8 +538,7 @@ TEST(AutoTuneTrace, TheGow2BackThreadOfTheSecondRoundIsRejectedAlthoughTheGsCost
 
 TEST(AutoTuneTrace, TheUyaBackThreadOfTheSecondRoundIsKeptOnItsSpeed)
 {
-	// The lever that is worth keeping: GS cost 34.3 -> 26.4 ms and the speed 46.2% -> 50.9% (+10%). A/B on the
-	// device: +11%.
+	// The lever that is worth keeping: the GS cost falls and the speed rises by about 10%.
 	TraceRig rig{AutoTunePolicy()};
 	rig.state.gs_back_thread_allowed = true;
 	rig.WarmUp();
@@ -563,14 +552,11 @@ TEST(AutoTuneTrace, TheUyaBackThreadOfTheSecondRoundIsKeptOnItsSpeed)
 	EXPECT_GT(keep->cost_gain, 0.15);
 }
 
-// ---------------------------------------------------------------------------------------------- clearly worse
-
 TEST(AutoTuneTrace, ABackThreadThatCostAQuarterOfTheSpeedIsRememberedAsRejectedAtOnce)
 {
-	// Shadow of the Colossus on the MQ65 with the IOP thread on: the GS back thread had nowhere to run, and the
-	// speed went from 73% to 52% (-28%) while the GS thread's cost fell 12%. The trial was extended twice and
-	// then undone as "inconclusive", which is not remembered, so the next launch did it again for 13 s and two
-	// renderer reopens. The A/B run said -19%.
+	// Shadow of the Colossus on the MQ65 with the IOP thread on: the GS back thread has nowhere to run, so the
+	// speed drops by about a quarter while the GS thread's cost falls. That is a clear loss: it has to be
+	// remembered as a rejection at the first look, not extended and undone as "inconclusive", which is not remembered.
 	TraceRig rig;
 	rig.state.gs_back_thread_allowed = true;
 	rig.state.iop_thread_on = true;
@@ -593,16 +579,13 @@ TEST(AutoTuneTrace, ABackThreadThatCostAQuarterOfTheSpeedIsRememberedAsRejectedA
 	EXPECT_EQ(rig.At(revert) - rig.At(start), 10u + 4u);
 }
 
-// ---------------------------------------------------------------------------------------------- scene drift
-
 TEST(AutoTuneTrace, TheGameGettingHeavierDuringATrialIsNotARememberedRejection)
 {
-	// Shadow of the Colossus on the RG477V at 5x, 86% speed. Resolution 5x -> 4x ran at 100% for the settle
-	// and the first windows, and then the game got heavier: EE time per frame went from 10.5 to 13.5 ms, and the
-	// speed to 73 ... 77%. Against the baseline of 86% that reads as -11%, with the windows in two tight lumps
-	// (the median-based noise 5.4%), so the old judge called it clearly nothing and wrote "resolution 4x did
-	// not help" into the game's file for good. The next baseline, in the heavy scene, was 52%: 4x was 25 points
-	// better.
+	// Shadow of the Colossus on the RG477V at 5x, 86% speed. Resolution 5x -> 4x runs at 100% for the settle
+	// and the first windows, and then the game gets heavier: EE time per frame rises from 10.5 to 13.5 ms and the
+	// speed drops to 73 ... 77%. Against the 86% baseline that reads as a loss, with the windows in two tight
+	// lumps (so the median-based noise is small), but the loss is the scene, not the step. It must not be
+	// written to the game's file as "resolution 4x did not help".
 	TraceRig rig;
 	rig.state.resolution = 5.0;
 	rig.WarmUp();
@@ -629,8 +612,8 @@ TEST(AutoTuneTrace, AfterTheDriftTheStepIsMeasuredAgainAgainstAFreshBaselineAndK
 	rig.WarmUp();
 	rig.Feed(kSotcResolution4);
 
-	// The undone trial is not in the session's list of failures: the baseline is taken again, in the heavy
-	// scene (52%), and the same step is tried.
+	// The undone trial is not in the session's list of failures, so the same step is tried again against a
+	// baseline taken in the heavy scene (52%).
 	ASSERT_EQ(rig.Count(Kind::StartTrial), 2u);
 	const AutoTuneAction& again = rig.actions[rig.actions.size() - 1];
 	ASSERT_EQ(again.kind, Kind::StartTrial);
@@ -648,12 +631,10 @@ TEST(AutoTuneTrace, AfterTheDriftTheStepIsMeasuredAgainAgainstAFreshBaselineAndK
 	EXPECT_EQ(rig.Count(Kind::Revert), 1u);
 }
 
-// ---------------------------------------------------------------------------------------------- blending
-
 TEST(AutoTuneTrace, BasicToMinimumIsStillTriedAndKeptWhereTheGsThreadIsTheLimit)
 {
-	// Black on the MQ65: MTGS at 94%, the GPU at 71%, speed 68%. Minimum blending cut the GS thread's time by
-	// 8% and the speed went up 8% (the interleaved run: +6.8%).
+	// Black on the MQ65: the GS thread is the limit (MTGS at 94%). Minimum blending cuts the GS thread's time and
+	// the speed rises.
 	TraceRig rig;
 	rig.state.blending_level = 1;
 	rig.WarmUp();
@@ -671,14 +652,11 @@ TEST(AutoTuneTrace, BasicToMinimumIsStillTriedAndKeptWhereTheGsThreadIsTheLimit)
 	EXPECT_GT(keep->gain, 0.05);
 }
 
-// ---------------------------------------------------------------------------------------------- the order
-
 TEST(AutoTuneTrace, AReadbackStallGetsTheDownloadModeBeforeTheBackThread)
 {
 	// OutRun 2006 on the MQ65: the EE waits on the GS 60% of the time while MTGS is at 61% and the GPU at 41%.
-	// That reads as the GPU, whose first lever at native resolution was the GS back thread: -4.8%, two renderer
-	// reopens and 13 s, then the download mode (Asynchronous) took 71% to 100%. The same on Need for Speed
-	// Hot Pursuit 2 (-0.9%, then +31%). The download mode goes first.
+	// That reads as the GPU, whose first lever at native resolution would be the GS back thread, but a readback
+	// stall is cured by the download mode (Asynchronous), not by a second GS thread. The download mode goes first.
 	TraceRig rig;
 	rig.state.gs_back_thread_allowed = true;
 	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
@@ -698,16 +676,13 @@ TEST(AutoTuneTrace, AReadbackStallGetsTheDownloadModeBeforeTheBackThread)
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 1u) << "and nothing else had to be tried first";
 }
 
-// ---------------------------------------------------------------------------------------------- once per session
-
 TEST(AutoTuneTrace, NothingLeftToTryIsSaidOnceEvenWhenTheClassFlipsNearTheSaturationLine)
 {
-	// Spider-Man 3 on the RG477V after a relaunch: the back thread is on, the download mode and the blending are
-	// known not to help, so there is nothing to try. The back thread sits at 91-94% of a core against the 90%
-	// line; two windows at 85% pulled the four-window mean under it, the class went from GS (CPU) to GPU, and the
-	// same message came again two seconds after the first, as two toasts.
-	// The session's warm-up ended at the 21st window of the trace, not the 20th (something restarted it that the
-	// file does not record); 10.4 s lines the windows up with the messages.
+	// Spider-Man 3 on the RG477V: the back thread is on, the download mode and the blending are known not to
+	// help, so there is nothing to try. The back thread sits at 91-94% of a core against the 90% line; two
+	// windows at 85% pull the four-window mean under it and the class flips from GS (CPU) to GPU. The "nothing
+	// left to try" message must still be said once, not again after the flip.
+	// The warm-up is 10.4 s so that it ends at the 21st window of the trace, as it did in the recorded session.
 	AutoTunePolicy policy = RoundOnePolicy();
 	policy.warmup_seconds = 10.4;
 	TraceRig rig(policy);

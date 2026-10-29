@@ -386,8 +386,6 @@ TEST(AutoTuneStore, LeverLabelsNameTheValue)
 	EXPECT_EQ(LeverLabel(AutoTuneLever::IopThread, 1.0), "IOP thread");
 }
 
-// ---- a setting the player changes by hand ----------------------------------------------------------
-
 TEST(AutoTuneManualChange, OnlyTheKeysAutoTuneWritesAreLeverKeys)
 {
 	for (int i = 0; i < static_cast<int>(AutoTuneLever::Count); i++)

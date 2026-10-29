@@ -55,15 +55,10 @@
 //   x12 = cpuRegs.GPR.r[6].UD[0]   ($a2 — tier 2)
 //   x13 = cpuRegs.GPR.r[16].UD[0]  ($s0)
 //   x11 = cpuRegs.GPR.r[17].UD[0]  ($s1)
-// The percentages are shares of dynamic UD[0] references in the one Shadow of
-// the Colossus capture the original table was picked on. The two tier-2 homes
-// x12 and x11 held $k0 and $at until 2026-10: $k0 was hot in one title (Shadow
-// of the Colossus, through the BIOS system-call path) and $at in two (Ratchet &
-// Clank UYA and Shadow of the Colossus), while $a2 and $s1 carry real traffic
-// in most titles. Our 46-title register-heat sweep measured the swap at a
-// median -1.24% host instructions per guest instruction inside EE blocks; on
-// the Cortex-A73 handheld the EE thread's cycles moved by -1.2% at best and
-// +0.10% at worst.
+// The percentages are shares of dynamic UD[0] references in the Shadow of the
+// Colossus capture the table was first picked on. The tier-2 homes x12 and x11
+// hold $a2 and $s1 because those carry real traffic in most titles; the $k0 and
+// $at they replaced were hot in only one or two.
 // THE PIN IS AUTHORITATIVE for the lower 64 bits. Under the shipping
 // lazy-dirty policy (EE-SRA 3 Arm E) guest writes
 // update the pin only (armStoreEERegPtr / armStoreEEGPRQuad lane 0) and the
@@ -769,10 +764,10 @@ void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads);
 void recCall(void (*func)());
 
 // The single-instruction shape a charge site emits its immediate in. Every
-// caller of scaleblockcycles_clear() below hands its own shape over, because
-// the scaled charge is only patchable in place while it still fits the form
-// already on the page — a charge that outgrows imm12 would have been emitted
-// as a multi-instruction materialise-then-add instead.
+// caller of scaleblockcycles_clear() below passes its own shape, because the
+// scaled charge is only patchable in place while it still fits the form already
+// on the page; a charge that outgrows imm12 is emitted as a multi-instruction
+// materialise-then-add instead.
 enum class EeChargeForm : u8
 {
 	AddImm12,  // Add/Adds RECCYCLE, RECCYCLE, #charge
@@ -781,23 +776,14 @@ enum class EeChargeForm : u8
 
 u32 scaleblockcycles_clear(EeChargeForm form);
 
-// ---------------------------------------------------------------------------
-// Cycle-charge instrumentation
-//
-// The dynamic EE cycle-rate governor transitions by resetting the EE
-// recompiler, which costs tens of milliseconds plus the lazy re-JIT of the
-// next frame's working set. The alternative under investigation is to patch
-// the baked charge immediates in place, and every cost estimate for that pass
-// scales off numbers nobody has measured. These accessors are that
-// measurement, not the pass.
-// ---------------------------------------------------------------------------
+// Cycle-charge accessors, for sizing a cycle-rate transition: the reset cost
+// and the charge-site and block counts the in-place repair works over.
 
 // The most recent EE recompiler reset's own duration, in GetCPUTicks() units.
 u64 recEeGetLastResetTicks();
 
 // Cycle-charge sites emitted since the last reset, and blocks registered right
-// now. Both are cleared by the reset, so read them BEFORE a transition — after
-// it they are zero by construction.
+// now. Both are cleared by the reset, so read them before a transition.
 u32 recEeGetChargeSiteCount();
 u32 recEeGetLiveBlockCount();
 
@@ -805,37 +791,31 @@ u32 recEeGetLiveBlockCount();
 // immediate form somewhere in [EECycleRate::GetFloor(), GetConfigured()], and
 // how many blocks hold at least one such site. Underclocking multiplies the
 // charge by up to 2.25x, so a site comfortably inside ADD's imm12 at the
-// configured rate can leave it two steps down. Those sites cannot be repaired
-// in place; the blocks holding them would have to be invalidated and
-// recompiled instead. Cleared by the reset, same as the two above.
+// configured rate can leave it two steps down. Such blocks cannot be repaired
+// in place and are invalidated and recompiled instead. Cleared by the reset.
 u32 recEeGetFormChangeSiteCount();
 u32 recEeGetFormChangeBlockCount();
 
-// ---------------------------------------------------------------------------
-// The charge-site side table
+// The charge-site side table. Every charge site is recorded at emit time so a
+// cycle-rate transition can rewrite the immediates in place instead of throwing
+// the whole code cache away. Each emitter calls recEeNoteChargeSite() right
+// after its Add/Adds/Mov, and the pairing with scaleblockcycles_clear() is
+// asserted both ways: a charge computed and not recorded, or a record with no
+// charge behind it, would silently keep charging the old rate.
 //
-// Every charge site is recorded at emit time so a cycle-rate transition can
-// rewrite the immediates in place instead of throwing the whole code cache
-// away. Each of the twelve emitters calls this immediately after its
-// Add/Adds/Mov, and the pairing with scaleblockcycles_clear() is asserted both
-// ways: a charge computed and not recorded, or a record with no charge behind
-// it, is a site that would silently keep charging the old rate.
+// The site address is taken from the emit cursor rather than passed in: the
+// recorded word is decoded against the form the emitter declared, so a charge
+// that outgrew its immediate and made vixl emit a materialise-then-add is
+// recognised by what is on the page, not by bookkeeping that could disagree
+// with it.
 //
-// The site address is taken from the emit cursor rather than passed in. That
-// is deliberate: the recorded word is decoded against the form the emitter
-// declared, so a charge that outgrew its immediate and made vixl emit a
-// materialise-then-add is recognised by what is actually on the page, not by
-// bookkeeping that could disagree with it.
-//
-// The site id is bookkeeping for the coverage tests. The twelve emitters are
-// otherwise indistinguishable once their records are in the table, and a
-// coverage test that cannot say which emitter it reached is not one.
+// The site id lets a coverage test tell which emitter a record came from.
 enum class EeChargeSite : u8
 {
 	BranchCall,           // recBranchCall — interpreter-fallback seam
 	BranchCallNoGprWrite, // recBranchCallNoGprWrite — ERET, EI, constant-call SYSCALL
 	BlockTail,            // emitCycleUpdateAndEventCheck — the common tail
-	LoopBackedge,         // SetBranchBackedge — SL-1 resident self-loop
+	LoopBackedge,         // SetBranchBackedge — resident self-loop
 	WaitLoopFastFwd,      // SetBranchImm under Speedhacks.WaitLoop
 	SuperblockExit,       // recEmitSideExitTail — the MOVZ site
 	ShortBlockTail,       // recRecompile, non-branch block of <= 6 instructions
@@ -851,18 +831,18 @@ void recEeNoteChargeSite(EeChargeSite which);
 
 // Bring every recorded charge site into agreement with `new_selector` by
 // rewriting the immediate already on the page, so a cycle-rate transition costs
-// a walk of the side table instead of an 88 MiB LUT rewrite, a 32 MiB memset
-// and the lazy re-JIT of the next frame's whole working set.
+// a walk of the side table instead of a full recompiler reset and the lazy
+// re-JIT of the next frame's working set.
 //
 // Returns false when the pass did not run or could not complete, in which case
 // NOTHING was touched and the caller must fall back to the full reset. There is
-// no third outcome: a half-applied pass is blocks charging the old rate with
-// nobody tracking which ones, which is the failure this is designed against.
+// no partial outcome: a half-applied pass would leave blocks charging the old
+// rate with nobody tracking which ones.
 //
 // Runs on the CPU thread, mid-execute, from EECycleRate::ApplyEffective. That
 // is safe because patching neither moves nor frees code and does not change an
-// instruction boundary — every live return address stays valid and lands on the
-// same instruction, now carrying a different immediate.
+// instruction boundary, so every live return address still lands on the same
+// instruction, now carrying a different immediate.
 bool recEeRepatchCycleCharges(s8 new_selector);
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -871,8 +851,7 @@ bool recEeRepatchCycleCharges(s8 new_selector);
 // means a site is emitting a charge the transition pass will never repair.
 u32 recEeGetChargeRecordCount();
 
-// Records emitted by one specific emitter since the last reset. Cleared by the
-// reset with everything else.
+// Records emitted by one specific emitter since the last reset.
 u32 recEeGetChargeSiteCountFor(EeChargeSite which);
 
 // One code arena's base and used extent. The cold side-exit arena carries the

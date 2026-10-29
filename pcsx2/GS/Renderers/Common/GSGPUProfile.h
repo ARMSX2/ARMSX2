@@ -265,8 +265,8 @@ struct MobileDriverProfile
 	/// True for Turnip on Adreno 730 and up and on the 722, where the copy road renders wrong. The
 	/// barrier-less declared road races on a7xx under stock Turnip, which never emits the ordering
 	/// state there; a generation-2 build does, and on the 730 and up orders_declared_feedback_loop is
-	/// set as well and wins. On the 722 it is not set: with the barriers dropped that part drew a
-	/// different picture on each run of two dumps (Duo, 2026-10-21), so it keeps our barriers.
+	/// set as well and wins. On the 722 it is not set: without our barriers that part renders a
+	/// different picture on each run, so it keeps them.
 	bool prefers_declared_loop_with_barriers = false;
 
 	std::string driver_name;

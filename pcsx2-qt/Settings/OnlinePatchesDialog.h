@@ -9,12 +9,8 @@
 // Cheats page also offers the separate "large cheat database" search.
 //
 // The search runs on PatchRepo's own worker thread and reports back through queued calls; installing
-// runs on a short-lived worker (file I/O only). Nothing here blocks the UI thread except closing the
-// dialog while a request is in flight, which waits for the request to stop with the dialog still
-// responding.
-//
-// Install edits the game's settings file on disk, so after an install the settings window's copy of
-// that file is reloaded before anything else can save it; see reloadSettingsFromDisk().
+// runs on a short-lived worker (file I/O only). Closing the dialog while a request is in flight
+// cancels it and waits for it to stop, with the dialog still responding.
 
 #include "pcsx2/Catalog/PatchRepo.h"
 

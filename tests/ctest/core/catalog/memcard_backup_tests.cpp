@@ -106,8 +106,6 @@ namespace
 		return static_cast<s64>(std::mktime(&tm)) * 1000;
 	}
 
-	// ---- zips ----
-
 	struct ZipEntrySpec
 	{
 		std::string name;
@@ -169,8 +167,6 @@ namespace
 			<< ",\"folder\":" << (folder ? "true" : "false") << ",\"game\":\"" << game << "\",\"appVersion\":\"1.0\"}";
 		return out.str();
 	}
-
-	// ---- the fixture ----
 
 	class Fixture
 	{
@@ -236,8 +232,6 @@ namespace
 	};
 } // namespace
 
-// ---- verification -----------------------------------------------------------------------
-
 TEST(MemcardVerify, AFormattedPs2CardIsGood)
 {
 	Fixture f;
@@ -300,8 +294,6 @@ TEST(MemcardVerify, AFolderCardNeedsItsSuperblock)
 	fs::create_directories(f.CardPath("empty.ps2"));
 	EXPECT_EQ(Verify(f.CardPath("empty.ps2")), Health::Unreadable);
 }
-
-// ---- hashing ----------------------------------------------------------------------------
 
 TEST(MemcardHash, AFileCardHashesItsBytes)
 {
@@ -377,8 +369,6 @@ TEST(MemcardNames, OnlyPlainFileNamesAreCardNames)
 	EXPECT_FALSE(IsPlainCardName("a/b.ps2"));
 	EXPECT_FALSE(IsPlainCardName("a\\b.ps2"));
 }
-
-// ---- snapshots --------------------------------------------------------------------------
 
 TEST(MemcardSnapshot, ACardThatIsNotThereIsAbsentAndLeavesNothing)
 {
@@ -566,8 +556,6 @@ TEST(MemcardBackUpNow, SnapshotsEvenWhenNothingChangedAndRefusesACardThatDoesNot
 	EXPECT_FALSE(f.store().BackUpNow("nope.ps2", "", &error).has_value());
 }
 
-// ---- listing ----------------------------------------------------------------------------
-
 TEST(MemcardList, IsNewestFirstAndReadsSnapshotsFromTheAndroidApp)
 {
 	Fixture f;
@@ -638,8 +626,6 @@ TEST(MemcardList, ACardNameWithForbiddenCharactersGetsASafeFolderAndStillListsRi
 	// A different card whose name sanitises to the same folder does not see it.
 	EXPECT_TRUE(f.store().List("a_b.ps2").empty());
 }
-
-// ---- pruning ----------------------------------------------------------------------------
 
 namespace
 {
@@ -781,8 +767,6 @@ TEST(MemcardPrune, ABrokenCardNeverReplacesTheLastGoodSnapshot)
 	ASSERT_TRUE(healthy.has_value());
 	EXPECT_EQ(healthy->hash, SHA256Digest::HashHex(CardImage('a').data(), CardImage('a').size()));
 }
-
-// ---- restore ----------------------------------------------------------------------------
 
 TEST(MemcardRestore, PutsAFileCardBackAndKeepsTheBrokenOneAsAPreRestoreSnapshot)
 {
@@ -1061,8 +1045,6 @@ TEST(MemcardRestore, ABrokenCardThatCannotBeBackedUpFirstIsStillRestored)
 	EXPECT_EQ(ReadFile(root.File("memcards/a.ps2")), CardImage('a'));
 }
 
-// ---- the boot flow ----------------------------------------------------------------------
-
 namespace
 {
 	struct Prompts
@@ -1282,8 +1264,6 @@ TEST(MemcardBoot, TheHandlerCanBeRegisteredAndCleared)
 	EXPECT_EQ(calls, 0);
 }
 
-// ---- the reopen hook --------------------------------------------------------------------
-
 namespace
 {
 	// EmuFolders and EmuConfig as OnCardsReopening() reads them: the fixture's cards folder as the data root's
@@ -1368,8 +1348,6 @@ TEST(MemcardReopenHook, ASwitchedOffBackupTakesNoSnapshotEvenAtBoot)
 	OnCardsReopening(true);
 	EXPECT_EQ(Count(f, "a.ps2"), 0u);
 }
-
-// ---- the setting ------------------------------------------------------------------------
 
 namespace
 {

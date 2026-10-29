@@ -6,8 +6,8 @@
 // The rules for the Local Link settings a UI edits: which values the core accepts, what a UI must do
 // to what the user typed before storing it, and a generator for room codes. The core reads them in
 // DEV9/LocalLinkAdapter.cpp and the INI layout is Pcsx2Config::DEV9Options::LoadSave; this header
-// only decides what a UI may write. Nothing here touches the network, the host or any global, so
-// Big Picture and Qt share it and the tests run it against a plain SettingsInterface.
+// only decides what a UI may write. Nothing here touches the network, the host or any global, so it
+// runs against a plain SettingsInterface.
 //
 // The INI keys, all in [DEV9/Eth]:
 //   EthApi              "Local Link" selects the adapter (the other values are the usual ones)
@@ -26,7 +26,7 @@
 //   * Toggling the host switch: write LocalLinkHost, then SeedDefaults(si) again (a guest needs a
 //     valid peer ID, which the default 1 is not).
 //   * Text the user typed: Apply(si, field, text). It stores the cleaned value, or leaves the INI
-//     alone and returns why; show the reason to the user in the host's own words.
+//     alone and returns the Problem; the UI words the message.
 //   * "Generate": GenerateRoomCode() and store it with Apply(si, Field::RoomCode, code).
 //
 // The room code is upper-cased here and not in the core: the core hashes the bytes as given, so
@@ -104,7 +104,6 @@ namespace Catalog
 		/// True if `code` is something the adapter starts with (4..12 characters).
 		bool IsRoomCodeUsable(std::string_view code);
 
-		/// A new random room code of GENERATED_ROOM_CODE_LENGTH characters from ROOM_CODE_ALPHABET.
 		std::string GenerateRoomCode();
 
 		/// A random peer ID in the guest range, for a device that has not got one yet.

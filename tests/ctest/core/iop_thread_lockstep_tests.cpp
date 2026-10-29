@@ -5,13 +5,12 @@
 // handoff that runs the IOP's slice on the IOP thread while the EE waits, the holds the lifecycle
 // takes, and the runtime flag that keeps the recompiler test harness out of it.
 //
-// Lockstep must leave the machine exactly where Off would. The tests here check that on a small
-// scripted machine (a fake IOP CPU that records which thread ran it and what it was asked to do);
-// the whole-game proof is the eerunner whole-machine fingerprint, which is a different gate.
+// Lockstep must leave the machine exactly where Off would. The tests check that on a small
+// scripted machine: a fake IOP CPU that records which thread ran it and what it was asked to do.
 //
-// The event test returns at once unless the VM is Running, and the only way to say that without a
-// VM is VMManager::Internal::SetStateForTests, which exists in builds with the recompiler test hooks.
-// The tests that run the event test skip themselves in a build without them.
+// The event test returns at once unless the VM is Running, and without a VM the only way to say
+// that is VMManager::Internal::SetStateForTests, which exists only in builds with the recompiler
+// test hooks. Tests that run the event test skip themselves in a build without them.
 
 #include "Common.h"
 #include "Config.h"
@@ -57,7 +56,6 @@ namespace
 		return host;
 	}
 
-	// Puts the settings that choose the mode back when a test is done, and the mode with them.
 	class SettingsGuard
 	{
 	public:
@@ -96,8 +94,6 @@ namespace
 		if (!IopThread::CurrentHostInfo().is_arm64) \
 			GTEST_SKIP() << "Lockstep resolves to Off on a host that is not ARM64"; \
 	} while (0)
-
-// ---------------------------------------------------------------- the test-harness flag
 
 TEST(IopThreadHarnessFlag, IsOffUnlessTheGtestEnvironmentSetsIt)
 {
@@ -140,8 +136,6 @@ TEST(IopThreadHarnessFlag, ChooseModeHonoursIt)
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Lockstep);
 }
 
-// ---------------------------------------------------------------- the event test, once per mode
-
 TEST(IopThreadEventTest, EachModeHasItsOwnInstanceAndOffKeepsTheOriginal)
 {
 	const CpuEventTestFn off = cpuEventTestFor(IopThreadMode::Off);
@@ -151,7 +145,6 @@ TEST(IopThreadEventTest, EachModeHasItsOwnInstanceAndOffKeepsTheOriginal)
 	EXPECT_NE(off, lockstep);
 	EXPECT_EQ(off, &_cpuEventTest_Shared<IopThreadMode::Off>);
 	EXPECT_EQ(lockstep, &_cpuEventTest_Shared<IopThreadMode::Lockstep>);
-	// The instance for a mode does not change from one call to the next.
 	EXPECT_EQ(off, cpuEventTestFor(IopThreadMode::Off));
 	EXPECT_EQ(lockstep, cpuEventTestFor(IopThreadMode::Lockstep));
 }
@@ -193,7 +186,6 @@ TEST(IopThreadEventTest, ThreadedResolvesToThreadedOnAHostWithCoresToSpare)
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Threaded);
 	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Threaded));
 
-	// Lockstep on the same host is still Lockstep.
 	EmuConfig.Speedhacks.iopThreadLockstep = true;
 	IopThread::ChooseModeFor(Arm64Host(), IopThread::VmConditions());
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Lockstep);
@@ -240,8 +232,6 @@ TEST(IopThreadEventTest, AHostThatIsNotArm64ResolvesTheSettingsToOff)
 	EXPECT_FALSE(IopThread::g_thread.IsRunning());
 }
 
-// ---------------------------------------------------------------- the thread follows the mode
-
 TEST(IopThreadVm, TheThreadStartsAndStopsWithTheMode)
 {
 	REQUIRE_ARM64_HOST();
@@ -257,7 +247,6 @@ TEST(IopThreadVm, TheThreadStartsAndStopsWithTheMode)
 	EXPECT_EQ(IopThread::g_thread.Mode(), IopThreadMode::Lockstep);
 	EXPECT_TRUE(IopThread::LockstepActive());
 
-	// Syncing again changes nothing.
 	IopThread::SyncThread();
 	EXPECT_TRUE(IopThread::g_thread.IsRunning());
 
@@ -357,7 +346,6 @@ TEST(IopThreadVm, APausedVmKeepsAHoldUntilItResumes)
 
 	IopThread::OnVmPaused(true);
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 1u);
-	// Pausing a paused VM takes nothing more.
 	IopThread::OnVmPaused(true);
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 1u);
 	{
@@ -367,7 +355,6 @@ TEST(IopThreadVm, APausedVmKeepsAHoldUntilItResumes)
 	}
 	IopThread::OnVmPaused(false);
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 0u);
-	// Resuming a running VM releases nothing.
 	IopThread::OnVmPaused(false);
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 0u);
 }
@@ -385,8 +372,6 @@ TEST(IopThreadVm, StoppingTheThreadReleasesThePauseHold)
 	IopThread::StopThread();
 	EXPECT_EQ(IopThread::g_thread.HoldDepth(), 0u);
 }
-
-// ---------------------------------------------------------------- the handoff
 
 #ifdef PCSX2_RECOMPILER_TESTS
 namespace
@@ -531,7 +516,6 @@ namespace
 			u64 event_tests = 0;
 		};
 
-		// Runs a fixed script of event tests with the instance for `mode`.
 		Run RunScript(IopThreadMode mode)
 		{
 			Reset();

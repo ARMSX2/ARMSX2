@@ -3,16 +3,16 @@
 
 // Remote play, online hosting: a port opened on the host's router (UPnP) for the session.
 //
-// Online, the friend reaches the host straight across the internet, with no relay. Where the
-// friend's own network lets nothing in (a phone on mobile data is the common case) and the host's
-// router only lets in what the host sent out first, the two never connect. A router that speaks UPnP
-// can be asked to let packets for one port in: then the host has a fixed public address the friend's
-// side can always reach, as consoles do. It is still direct: the router only forwards to the host.
+// Online, the friend reaches the host directly, with no relay. When the friend's network lets nothing
+// in (a phone on mobile data) and the host's router only admits what the host sent out first, the two
+// never connect. A router that speaks UPnP can be asked to forward one port to the host, which gives
+// the host a fixed public address the friend's side can always reach. The connection stays direct: the
+// router only forwards to the host.
 //
 // The app (RemotePlayUpnp.kt) asks for the UDP port WebRTC already listens on, adds the router's
 // public address for it to the offer, renews the lease while the session lasts and closes the port
-// when it ends. The lease means a port left open by a crash closes itself, so a router that only
-// opens ports for good is not used at all: nothing would ever close a port the app did not live to.
+// when it ends. Only leased mappings are used: the lease lets a port left open by a crash close
+// itself, whereas a permanent forward would never be closed.
 
 #include <jni.h>
 #include <android/log.h>

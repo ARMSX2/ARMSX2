@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 yaps2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// ee_divtrace::FingerprintIop is the IOP half of the whole-machine fingerprint that the
-// IOP-thread work is gated on. Two properties matter: taking it must not change the
-// emulation it describes, and each of its four hashes must move when the state it covers
-// moves. The twin run gate shows the first on real games; these show both without a game.
+// ee_divtrace::FingerprintIop is the IOP half of the whole-machine fingerprint. Taking it must
+// not change the emulation it describes, and each of its four hashes must move when the state it
+// covers moves.
 
 #ifdef PCSX2_RECOMPILER_TESTS
 
@@ -32,7 +31,6 @@ namespace
 		return a.spu2 == b.spu2 && a.sif == b.sif && a.sio == b.sio && a.cdvd == b.cdvd;
 	}
 
-	// Flips one thing, takes the fingerprint, and puts the thing back.
 	template <typename Poke, typename Unpoke>
 	IopFingerprint WithPoke(Poke&& poke, Unpoke&& unpoke)
 	{
@@ -90,22 +88,18 @@ TEST(IopFingerprint, Spu2HashMovesOnlyWithSpu2State)
 {
 	const IopFingerprint base = FingerprintIop();
 
-	// A voice register of the second core.
 	const IopFingerprint pitch = WithPoke([] { Cores[1].Voices[23].Pitch ^= 0x100; }, [] { Cores[1].Voices[23].Pitch ^= 0x100; });
 	EXPECT_NE(base.spu2, pitch.spu2);
 	EXPECT_EQ(base.sif, pitch.sif);
 	EXPECT_EQ(base.sio, pitch.sio);
 	EXPECT_EQ(base.cdvd, pitch.cdvd);
 
-	// One word of sample memory.
 	const IopFingerprint mem = WithPoke([] { _spu2mem[0x0FFFFF] ^= 1; }, [] { _spu2mem[0x0FFFFF] ^= 1; });
 	EXPECT_NE(base.spu2, mem.spu2);
 
-	// One raw register.
 	const IopFingerprint reg = WithPoke([] { spu2regs[0x40] ^= 1; }, [] { spu2regs[0x40] ^= 1; });
 	EXPECT_NE(base.spu2, reg.spu2);
 
-	// The mixing clock.
 	const IopFingerprint clock = WithPoke([] { Cycles ^= 1; }, [] { Cycles ^= 1; });
 	EXPECT_NE(base.spu2, clock.spu2);
 

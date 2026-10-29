@@ -3,8 +3,7 @@
 
 // The seam to the emulator: whether the GPU can use ASTC packs, and turning texture replacement on
 // after an install. There is no VM and no graphics device in this binary, so these check what is
-// decided without one; the reload itself runs on the GS thread and is exercised by hand (see the
-// service's report).
+// decided without one; the reload itself runs on the GS thread and is exercised by hand.
 
 #include "Catalog/TexturePackEngine.h"
 

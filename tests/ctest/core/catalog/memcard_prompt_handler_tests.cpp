@@ -32,7 +32,6 @@ namespace
 		return [answer](const RestorePrompt&) { return answer; };
 	}
 
-	// What a boot would be told right now.
 	std::optional<RestoreAnswer> WouldAnswer()
 	{
 		const RestorePromptHandler handler = GetRestorePromptHandler();

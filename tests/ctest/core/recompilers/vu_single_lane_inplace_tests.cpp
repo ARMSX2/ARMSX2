@@ -10,14 +10,13 @@
 // their internal (denormalized) layout, which keeps a per-lane bit position,
 // and ACC.
 //
-// So each program here runs at mode 1 and at mode 2 and the JIT's post-state
-// is compared between the two, with the flag hack off (every FMAC writes
-// STATUS) and on, on both VUs. The programs cover the four FMAC bodies, each
-// broadcast/I/Q/lane-wise operand shape, MAX/MINI, results that are negative
-// and zero in the written lane (so the S and Z bits are live), status-only
-// writers (an FMAC with no MAC reader followed by another flag writer) and
-// two I-bit immediates in a row, the second reaching a single-lane op that
-// must not see the first. Run() also diffs each against the interpreter.
+// Each program runs at mode 1 and at mode 2 and the JIT's post-state is compared between the two,
+// with the flag hack off (every FMAC writes STATUS) and on, on both VUs. Besides the four FMAC
+// bodies in each operand shape, the programs make the S and Z bits live in the written lane
+// (negative and zero results), include status-only writers (an FMAC with no MAC reader followed
+// by another flag writer), and put two I-bit immediates in a row so the second reaches a
+// single-lane op that must not see the first. With the hack off, Run() also diffs each against
+// the interpreter.
 
 #include "harness/VuTestHarness.h"
 
@@ -99,7 +98,7 @@ std::vector<VuOp> Program(u32 m, int variant)
 {
 	switch (variant)
 	{
-		case 0: // FMACa: lane-wise, broadcast, I, then a MAX and a MINI
+		case 0:
 			return {
 				UpperOnly(VADD_U(m, 6, 1, 2)),
 				UpperOnly(VSUBz_U(m, 7, 1, 2)),
@@ -110,7 +109,7 @@ std::vector<VuOp> Program(u32 m, int variant)
 				UpperOnly(VADD_U(mask::xyzw, 12, 1, 3)),
 				EBitNopPair(),
 			};
-		case 1: // FMACc / FMACd against ACC, lane-wise and broadcast
+		case 1:
 			return {
 				UpperOnly(VMULA_U(mask::xyzw, 4, 5)),
 				UpperOnly(VMADD_U(m, 6, 1, 2)),
@@ -120,7 +119,7 @@ std::vector<VuOp> Program(u32 m, int variant)
 				UpperOnly(VADD_U(mask::xyzw, 12, 1, 3)),
 				EBitNopPair(),
 			};
-		case 2: // FMACb and the ACC-target FMACa forms
+		case 2:
 			return {
 				UpperOnly(VMULA_U(mask::xyzw, 4, 5)),
 				UpperOnly(VMADDAx_U(m, 1, 2)),
@@ -130,7 +129,7 @@ std::vector<VuOp> Program(u32 m, int variant)
 				UpperOnly(VMADD_U(mask::xyzw, 12, 1, 5)),
 				EBitNopPair(),
 			};
-		default: // two I immediates in a row, each read by a single-lane op
+		default:
 			return {
 				WithI(0x40000000u, VMAXi_U(m, 6, 1)),
 				WithI(0xc0400000u, VMINIi_U(m, 7, 1)),
@@ -164,11 +163,9 @@ TEST(VuSingleLaneInPlace, MatchesTheRotatedFormWordForWord)
 	}
 }
 
-// MOVE and MR32 with a one-lane field, into a destination that is cached
-// (read by the op before), not cached, and the source itself. Every lane,
-// both VUs, against the interpreter and the literal answer: the written lane
-// takes Fs's same lane (MOVE) or the next one up (MR32), the other three keep
-// the destination's words.
+// MOVE and MR32 with a one-lane field, into a destination that is cached (read by the op before),
+// not cached, and the source itself. The written lane takes Fs's same lane (MOVE) or the next one
+// up (MR32); the other three keep the destination's words.
 TEST(VuSingleLaneInPlace, MoveAndMr32IntoEveryLane)
 {
 	static const u32 kSrc[4] = {0x3f800000u, 0x40000000u, 0x40400000u, 0x40800000u};

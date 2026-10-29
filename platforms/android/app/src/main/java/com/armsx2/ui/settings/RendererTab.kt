@@ -112,11 +112,10 @@ fun RendererTab(state: MutableState<Settings>) {
             // one, so the control lives with the driver rather than buried lower in the tab.
             ClearShaderCacheRow()
             SettingsDivider()
-            // GS Multi-threading (the GS front/back thread split), placed right under the
-            // renderer/driver picker. Off (0, the default) = single-threaded GS; on (any
-            // other value; written as 1, older builds wrote 3) = GS rendering on a second
-            // thread. Restart-required (in RestartOptionsAreEqual); native-lib snapshots the
-            // field across a live apply, so it only takes effect on the next game boot.
+            // GS multi-threading (the GS front/back thread split). 0 (the default) = single-threaded
+            // GS; any other value (written as 1) = GS rendering on a second thread. Restart-required
+            // (in RestartOptionsAreEqual): native-lib snapshots the field across a live apply, so it
+            // only takes effect on the next game boot.
             ToggleRow(
                 str("renderer.gsBackThread.label"),
                 s.display.gsBackThreadMode != 0,
@@ -819,7 +818,6 @@ private fun TexturePackImportRow() {
                 )
             }
         }
-        // .zip / .tar.zst import — extracts the archive into the same per-game replacements folder.
         Box(
             Modifier
                 .fillMaxWidth()

@@ -1,22 +1,20 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Big Picture's "GPU Drivers" settings page: choose the Vulkan driver (the system's or an installed
-// driver pack), download and delete packs, and restart so the choice takes effect. The work is done
-// by Catalog/DriverPacks.h; this file is the page and the threads that call it.
+// Big Picture's "GPU Drivers" settings page, on top of Catalog/DriverPacks.h: choose the Vulkan
+// driver (the system's or an installed pack), download and delete packs, restart to apply.
 //
-// How a choice takes effect: DriverPacks::ApplyEnvironment() reads the selected pack once, early in
-// main(), so a changed selection is used the next time ARMSX2 starts. The page therefore shows two
-// things: what this run is using (DriverPacks::GetLastApplyResult) and what is selected now, and
-// offers "Restart Now" when they differ.
+// DriverPacks::ApplyEnvironment() reads the selected pack once, early in main(), so a changed
+// selection only takes effect on the next start. The page shows what this run is using
+// (DriverPacks::GetLastApplyResult) and what is selected now, and offers "Restart Now" when they differ.
 //
 // Threading: everything here that touches FullscreenUI state runs on the GS thread. The feed listing
-// and the install each run on a thread of their own and only fill s_handoff, then ask the GS thread
+// and the install each run on their own thread and only fill s_handoff, then ask the GS thread
 // (through the CPU thread, which owns the ring) to read it.
 //
 // The settings lock is held while a settings page draws, so the page body reads and writes the
-// selection through the SettingsInterface it is given and never through DriverPacks::GetSelectedPack
-// or SetSelectedPack, which take the lock themselves. Dialog callbacks run with the lock released.
+// selection through the SettingsInterface it is given, never through DriverPacks::GetSelectedPack or
+// SetSelectedPack, which take the lock themselves. Dialog callbacks run with the lock released.
 
 #include "Catalog/CancelToken.h"
 #include "Catalog/DriverPacks.h"
@@ -136,8 +134,6 @@ namespace
 		return *s_state.manager;
 	}
 
-	// ---- small helpers ----------------------------------------------------------------------------
-
 	std::string Trimmed(std::string value)
 	{
 		const size_t first = value.find_first_not_of(" \t\r\n");
@@ -208,8 +204,8 @@ namespace
 		return wayland && !x11;
 	}
 
-	// The window system the GS was given, which is how the GS and window code tell sessions apart
-	// (WindowInfo::Type). Under the Vulkan display path or Wayland the answer is no.
+	// True only when the GS window is an X11 one (WindowInfo::Type); under Wayland or the Vulkan
+	// display path it is false.
 	bool SessionIsX11()
 	{
 		return g_gs_device && g_gs_device->GetWindowInfo().type == WindowInfo::Type::X11;
@@ -235,8 +231,6 @@ namespace
 		s_state.installed = GetManager().ListInstalled();
 		s_state.installed_known = true;
 	}
-
-	// ---- what this run uses versus what is selected -------------------------------------------------
 
 	struct Status
 	{
@@ -284,8 +278,8 @@ namespace
 			case DP::ApplyOutcome::SystemDriver:
 			case DP::ApplyOutcome::Unsupported:
 				// With nothing selected, ApplyEnvironment() does not look at the environment, but a launcher
-				// that names a driver (ROCKNIX's does) is in charge all the same. A pack this process applied
-				// has the Applied outcome, so the variables are not ours here.
+				// that names a driver (ROCKNIX's does) still decides. A pack this process applied has the
+				// Applied outcome, so the variables are not ours here.
 				if (EnvironmentSetsDriver())
 					status.kind = Status::Kind::Launcher;
 				break;
@@ -340,8 +334,6 @@ namespace
 		return FSUI_STR("System Driver");
 	}
 
-	// ---- worker threads -> GS thread -----------------------------------------------------------------
-
 	// The workers are not the CPU thread, and a push into the GS ring is only allowed from the CPU
 	// thread (MTGS::RunOnGSThread), so hop through it.
 	void PostToGSThread(std::function<void()> function)
@@ -388,9 +380,9 @@ namespace
 		ShowInstallNotice(fmt::format(FSUI_FSTR("Installing {}"), s_state.install_tag), ProgressText(s_state.progress), 10.0f);
 	}
 
-	// GS thread: applies what the workers reported since the last time. The page also calls this when
-	// it draws, so a result that arrived while Big Picture was closed is not lost; the notices need the
-	// UI, the rest does not.
+	// GS thread: applies what the workers reported since the last call. The page also calls this when
+	// it draws, so a result that arrived while Big Picture was closed is not lost (only the notices
+	// need the UI).
 	void DrainHandoff()
 	{
 		std::optional<DP::RemoteListing> listing;
@@ -442,8 +434,7 @@ namespace
 			}
 			else
 			{
-				// The service writes its message for display ("Checksum mismatch: ...", "libwayland-client.so.0:
-				// cannot open shared object file"); show it as it is.
+				// The service's message is already worded for display ("Checksum mismatch: ..."); show it as is.
 				s_state.failure_name = tag;
 				s_state.failure_message = finished->message.empty() ? std::string(FSUI_STR("The install failed.")) : finished->message;
 				if (ui_up)
@@ -528,8 +519,6 @@ namespace
 		});
 	}
 
-	// ---- actions ---------------------------------------------------------------------------------------
-
 	void OnPageEntered()
 	{
 		s_state.availability = DP::GetAvailability();
@@ -538,9 +527,8 @@ namespace
 
 	void DoRestartNow()
 	{
-		// RelaunchAtExit arms a restart that runs when the process ends and cannot be taken back, so
-		// the exit is requested without a prompt the user could cancel: the confirmation, where one
-		// is needed, has been asked already.
+		// RelaunchAtExit arms a restart that cannot be taken back, so the exit is requested without a
+		// prompt the user could cancel; any confirmation has been asked already.
 		std::string error;
 		if (!DP::RelaunchAtExit(&error))
 		{
@@ -636,8 +624,6 @@ namespace
 			},
 			false);
 	}
-
-	// ---- the page --------------------------------------------------------------------------------------
 
 	std::string DescribePack(const DP::InstalledDriver& pack)
 	{
@@ -971,8 +957,6 @@ void FullscreenUI::ShutdownDriversPage()
 	s_state.setup_installed_tag.clear();
 	s_state.setup_last_frame = -100;
 }
-
-// ---- first-run setup ---------------------------------------------------------------------------------
 
 bool FullscreenUI::ShouldOfferDriverInSetup()
 {

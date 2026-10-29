@@ -109,10 +109,10 @@ bool SysMemory::AllocateMemoryMap()
 		return false;
 	}
 
-	// Constant-VA placement, from the on-disk VU program cache: on arm64 the
-	// data + code reservations sit at the same VAs every run. Cached code no
-	// longer depends on it (its data-arena addresses are fixups), but a fixed
-	// arena keeps a cached ADRP's ±4GB reach from the code slab. 4GB clears the
+	// Constant-VA placement for the on-disk VU program cache: on arm64 the data +
+	// code reservations sit at the same VAs every run. Cached code does not need
+	// that (its data-arena addresses are fixups), but a fixed arena keeps a cached
+	// ADRP within ±4GB of the code slab. 4GB clears the
 	// ASLR brk window (non-PIE image at 0x400000 + brk randomization < 2GB) and
 	// sits far below the mmap_base / PIE-load regions, so the slot-0 candidate
 	// succeeds deterministically; Create() walks 256MB-stride fallback slots and
@@ -407,12 +407,10 @@ void memSetExtraMemMode(bool mode)
 #ifdef ARCH_ARM64
 	// The ARM64 EE recompiler sizes its LUT, recRAM, recRAMCopy and the
 	// manual_page/manual_counter arrays to Ps2MemSize::ExposedRam, as x86 does,
-	// but the 128MB map has only ever run on it for the Namco System 246/256
-	// boards, whose games need it (PCSX2x6 turns it on for every one of them).
-	// Everywhere else the option stays refused, exactly as before: a console game
-	// that has been fine on 32MB is not the place to find out what else assumes
-	// them. The interpreter handles the 128MB map fine, so gate on the
-	// recompiler only.
+	// but the 128MB map is only enabled with it for the Namco System 246/256
+	// boards, whose games need it. Elsewhere the option stays refused: a console
+	// game that works on 32MB is not the place to find out what else assumes it.
+	// The interpreter handles the 128MB map fine, so gate on the recompiler only.
 	if (mode && EmuConfig.Cpu.Recompiler.EnableEE && !Arcade::IsActive())
 	{
 		Console.Warning("Extended RAM (128MB) is not supported by the ARM64 EE recompiler; ignoring it. "
@@ -606,9 +604,8 @@ void memMapPhy()
 
 	// Various ROMs (all read-only)
 	vtlb_MapBlock(eeMem->ROM,	0x1fc00000, Ps2MemSize::Rom);
-	// An arcade COH-H board has no ROM1 at 0x1e000000: its rom1: is declared by rom0:ACDEV, on the IOP
-	// side (PCSX2x6). PCSX2x6 maps it at 0xB0000000 instead, which is past the end of the EE physical
-	// map; the visible effect is nothing here, which is what an arcade session gets.
+	// An arcade COH-H board has no ROM1 at 0x1e000000: its rom1: is declared by rom0:ACDEV on the
+	// IOP side, so nothing is mapped here.
 	if (!Arcade::IsActive())
 		vtlb_MapBlock(eeMem->ROM1,	0x1e000000, Ps2MemSize::Rom1);
 	vtlb_MapBlock(eeMem->ROM2,	0x1e400000, Ps2MemSize::Rom2);

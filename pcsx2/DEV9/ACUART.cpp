@@ -75,7 +75,6 @@ u16 ACUART::Read16(u32 addr) {
 		// both set = transmitter idle, ready to accept data
 		// bit 0 = DR (RX data ready) — set while the V257 status FIFO has bytes (RRV)
 		r = 0x60 | ((s_device && s_device->HasData()) ? 0x01 : 0x00);
-		//r = 0x60 | ((s_v257RxFifo.empty()) ? 0x00 : 0x01);
 		break;
 	case 0x00C: // MSR
 		r = 0;

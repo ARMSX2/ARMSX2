@@ -4,23 +4,21 @@
 // The console's S, T and Q planes for a perspective triangle.
 //
 // The GS does not interpolate S, T and Q as the exact plane through the vertices.
-// Five console captures on an SCPH-30001 (gs-sm3b, gs-sm3c, gs-sm3d, gs-tri1a-f)
-// read the plane it does build, per pixel, and one integer arithmetic reproduces
-// every reading: the low eight mantissa bits of each input dropped, one block
-// exponent over all nine values, the vertices floored onto 2^(E-14), a gradient
-// from a table-and-Newton reciprocal of the area truncated onto g/1024, the plane
-// hung from one vertex, and every pixel floored to g/4. GSPerspectivePlane.h has the
-// rules and what is modelled rather than measured.
+// Console captures on an SCPH-30001 read the plane it does build, per pixel, and one
+// integer arithmetic reproduces every reading: the low eight mantissa bits of each
+// input dropped, one block exponent over all nine values, the vertices floored onto
+// 2^(E-14), a gradient from a table-and-Newton reciprocal of the area truncated onto
+// g/1024, the plane hung from one vertex, and every pixel floored to g/4.
+// GSPerspectivePlane.h has the rules and what is modelled rather than measured.
 //
 // This half is the arithmetic. gs_sw_perspective_plane_golden.inc holds 212
-// triangles: the game's own draw (Spider-Man 3, draw 16033), gs-tri1's nudges of
-// its triangle 54, and synthetic families (all four anchor shapes, y ties and
-// vertical long edges, Q crossing 2.0, power-of-two areas, negative gradients, vertices with
-// a negative Q). The models the expected values come from have no rule for a negative Q,
-// so the generator negates such a vertex whole first, as GSPerspectivePlane.h does.
-// Their expected values are gs-sm3d's Fraction model (analysis/model.py), NOT this
-// header's integers: exact rationals against integers is the whole comparison.
-// Regenerate with hardware-oracle/captures/gs-sm3b/analysis-impl/gen_golden.py.
+// triangles: one game draw's own triangles, nudged variants of one of them, and
+// synthetic families (all four anchor shapes, y ties and vertical long edges, Q
+// crossing 2.0, power-of-two areas, negative gradients, vertices with a negative Q).
+// The expected values come from an exact-rational (Fraction) model, not from this
+// header's integers: exact rationals against integers is the whole comparison. That
+// model has no rule for a negative Q, so the generator negates such a vertex whole
+// first, as GSPerspectivePlane.h does. The generator is not in this tree.
 //
 // The scanline half, which draws a perspective triangle through the real
 // rasterizer and both scanlines, is gs_sw_perspective_plane_scanline_tests.cpp.
@@ -103,13 +101,12 @@ Built Build(const Golden& g, const int order[3])
 const int kIdentity[3] = {0, 1, 2};
 } // namespace
 
-// ★ EVERY GOLDEN TRIANGLE, AGAINST THE FRACTION MODEL.
+// Every golden triangle against the Fraction model.
 //
 // Exponent, anchor, the three vertex counts of each attribute, both gradients of
-// each, and the plane's value at the sampled pixels, floored to g/4. Two hundred
-// triangles is enough to have every branch of the reciprocal in it: the table's
-// 256 bins are sampled by the game's own areas, the power-of-two exception by the
-// synthetic ones.
+// each, and the plane's value at the sampled pixels, floored to g/4. The set covers
+// every branch of the reciprocal: the table's 256 bins are sampled by the game's
+// own areas, the power-of-two exception by the synthetic ones.
 TEST(GsSwPerspectivePlane, EveryGoldenTriangleMatchesTheFractionModel)
 {
 	ASSERT_GE(std::size(kGolden), 212u);
@@ -142,10 +139,10 @@ TEST(GsSwPerspectivePlane, EveryGoldenTriangleMatchesTheFractionModel)
 	}
 }
 
-// ★ THE VERTEX ORDER IS NOT IN THE ANSWER.
+// The vertex order is not in the answer.
 //
-// gs-sm3d issued one triangle's vertices in all six orders and the console's plane
-// did not move: the anchor is a property of the geometry, and the gradient is the
+// The console's plane did not move when one triangle's vertices were issued in all
+// six orders: the anchor is a property of the geometry, and the gradient is the
 // plane's own. The header takes vertices in any order for that reason, so all six
 // permutations of every golden triangle must give one plane.
 TEST(GsSwPerspectivePlane, TheVertexOrderIsNotInTheAnswer)
@@ -176,14 +173,14 @@ TEST(GsSwPerspectivePlane, TheVertexOrderIsNotInTheAnswer)
 	}
 }
 
-// ★ THE ANCHOR IS THE COLOUR WALK'S, VERTEX FOR VERTEX.
+// The anchor is the colour walk's, vertex for vertex.
 //
-// Models A and B took the colour interpolator's spine rule for the plane; gs-sm3d
-// fitted its own ("an end of the longest y edge") and the two agree everywhere but
-// a vertical long edge, where the colour walk anchors on the top and gs-sm3d's
-// rule on the bottom. This pins that the header decides exactly what GSSetupColourWalk
-// decides, on every golden triangle, including the vertical ones. The colour walk
-// forms the spine in float, which is exact on these lattice positions.
+// A rule of "an end of the longest y edge" agrees with the colour interpolator's
+// spine rule everywhere but a vertical long edge, where the colour walk anchors on
+// the top and that rule on the bottom. This pins that the header decides exactly
+// what GSSetupColourWalk decides, on every golden triangle, including the vertical
+// ones. The colour walk forms the spine in float, which is exact on these lattice
+// positions.
 TEST(GsSwPerspectivePlane, TheAnchorIsTheColourWalksVertexForVertex)
 {
 	int vertical_long_edges = 0;
@@ -280,11 +277,11 @@ TEST(GsSwPerspectivePlane, TheAnchorAgreesWithTheColourWalkOnALattice)
 	EXPECT_GT(checked, 800);
 }
 
-// ★ THE RECIPROCAL IS A HAIR SHORT, AND THE POWER-OF-TWO EXCEPTION IS EXACT.
+// The reciprocal is a hair short of exact.
 //
-// gs-tri1f measured the shortfall between 2.259e-6 and 2.376e-6 on a triangle of
-// twice-area 574,798,354. A table seed and one Newton step lands at 2.28e-6 there,
-// where a reciprocal cut to eighteen bits gives 2.9e-6. 16,383,962 is what that
+// The console's shortfall on this triangle (twice-area 574,798,354) was measured
+// inside the bracket asserted below. A table seed and one Newton step lands inside
+// it, where a reciprocal cut to eighteen bits does not. 16,383,962 is what that
 // step leaves of an exact 16,384,000.
 TEST(GsSwPerspectiveGradient, TheShortfallOnGsTri1fsTriangleIsInsideItsBracket)
 {
@@ -362,7 +359,6 @@ TEST(GsSwPerspectiveGradient, NeverAboveExactAndNeverFarBelow)
 	EXPECT_GT(checked, 100);
 }
 
-// ★ THE INPUTS, ONE STEP AT A TIME.
 TEST(GsSwPerspectivePlane, TheLowEightMantissaBitsGo)
 {
 	// 1 + 2^-23 * 255 has every one of the low eight bits set.
@@ -409,13 +405,12 @@ TEST(GsSwPerspectivePlane, OneExponentIsSharedByAllNineValues)
 	}
 }
 
-// ★ A VERTEX WITH A NEGATIVE Q IS NEGATED WHOLE.
+// A vertex with a negative Q is negated whole.
 //
 // The setup works on Q's magnitude and carries its sign in S and T, so (S, T, Q) at
-// such a vertex becomes (-S, -T, |Q|) and S/Q is unchanged. Without it the game
-// draw's 53 triangles with a vertex Q at or below zero read 12% of their pixels right
-// and OutRun 2006's frame, on which nearly every draw has every Q negative, falls
-// from 80% to 75% exact words; with it they read 91% and 98%.
+// such a vertex becomes (-S, -T, |Q|) and S/Q is unchanged. Without it, triangles
+// with a vertex Q at or below zero mostly disagree with the console; with it they
+// mostly agree.
 TEST(GsSwPerspectivePlane, ANegativeQVertexIsNegatedWhole)
 {
 	const s32 x[3] = {0, 3200, 1600};
@@ -474,9 +469,8 @@ TEST(GsSwPerspectivePlane, ANegativeQVertexIsNegatedWhole)
 	}
 }
 
-// A vertex value is FLOORED onto the grid, not truncated toward zero: a negative
-// value one grid step below its neighbour reads there. (gs-sm3b's triangles 46, 49
-// and 50.)
+// A vertex value is floored onto the grid, not truncated toward zero: a negative
+// value reads one grid step below where truncation would put it.
 TEST(GsSwPerspectivePlane, AVertexIsFlooredOntoTheGrid)
 {
 	// E = 0, g = 2^-14. -1.5 g and +1.5 g.

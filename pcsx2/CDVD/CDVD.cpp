@@ -61,7 +61,7 @@ static u8 s_nvram[NVRAM_SIZE];
 static bool s_nvram_dirty = false;
 
 static constexpr u32 DEFAULT_MECHA_VERSION = 0x00020603;
-static constexpr u32 ARCADE_MECHA_VERSION = 0x0104020a; // from a COH-H31100: `0A 02 04 01` (PCSX2x6)
+static constexpr u32 ARCADE_MECHA_VERSION = 0x0104020a; // from a COH-H31100: `0A 02 04 01`
 static u32 s_mecha_version = 0;
 
 static __fi void SetSCMDResultSize(u8 size) noexcept
@@ -150,7 +150,7 @@ const NVMLayout* getNvmLayout() noexcept
 
 static void cdvdCreateNewNVM()
 {
-	// An arcade board's NVM comes up erased (PCSX2x6).
+	// An arcade board's NVM comes up erased.
 	std::memset(s_nvram, Arcade::IsActive() ? 0xFF : 0, sizeof(s_nvram));
 
 	// Write NVM ILink area with dummy data (Age of Empires 2)
@@ -2631,7 +2631,7 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 			case 0x12: // sceCdReadILinkId (0:9)
 				SetSCMDResultSize(9);
 				cdvdReadILinkID(&cdvd.SCMDResultBuff[1]);
-				// A System 256 checks its region against the iLinkID; the .acgame's 256Region picks one (PCSX2x6).
+				// A System 256 checks its region against the iLinkID; the .acgame's 256Region picks one.
 				if (Arcade::IsActive() && !ArcadeiLinkID.empty())
 				{
 					static constexpr u8 s256Region_ASIA4[8] = {0x32, 0x1F, 0xC7, 0xFA, 0xD6, 0xEE, 0xF0, 0x1C};
@@ -2661,7 +2661,7 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 
 			case 0x13: // sceCdWriteILinkID (8:1)
 				SetSCMDResultSize(1);
-				// An arcade board's IOP passes the ID from the first parameter byte (PCSX2x6).
+				// An arcade board's IOP passes the ID from the first parameter byte.
 				cdvdWriteILinkID(&cdvd.SCMDParamBuff[Arcade::IsActive() ? 0 : 1]);
 				break;
 

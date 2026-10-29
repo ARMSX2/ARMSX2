@@ -124,8 +124,6 @@ namespace
 	};
 } // namespace
 
-// ---------------------------------------------------------------------------------------------- the actions
-
 TEST(AutoTuneApplier, ATrialIsInTheLayerBeforeTheSettingsAreApplied)
 {
 	Fixture f;
@@ -168,7 +166,6 @@ TEST(AutoTuneApplier, KeepMovesTheValueFromTheTrialIntoTheGamesFile)
 
 	EXPECT_EQ(f.env.messages.back(), "Auto-tune: resolution 2x kept (+12%)");
 
-	// And the file says what it was.
 	const std::vector<AutoTune::Change> changes = AutoTune::ReadChanges(f.env.game_file);
 	ASSERT_EQ(changes.size(), 1u);
 	EXPECT_TRUE(AutoTune::SameValue(*changes[0].original, "3"));
@@ -187,7 +184,6 @@ TEST(AutoTuneApplier, TheGovernorsKeepMessageSaysTheEmulatedCpuIsUnderclockedToH
 	EXPECT_EQ(f.env.messages.back(),
 		"Auto-tune: EE governor kept. The emulated CPU is underclocked to hold game speed (game speed +69%, not more frames).");
 
-	// Another lever keeps its plain message.
 	f.applier.Execute(Action(Kind::StartTrial, AutoTuneLever::IopThread, 1.0));
 	f.applier.Execute(Action(Kind::Keep, AutoTuneLever::IopThread, 1.0));
 	EXPECT_EQ(f.env.messages.back(), "Auto-tune: IOP thread kept (+12%)");
@@ -483,8 +479,6 @@ TEST(AutoTuneApplier, NothingIsAppliedForNoAction)
 	EXPECT_TRUE(f.env.messages.empty());
 }
 
-// ---------------------------------------------------------------------------------------------- host decisions
-
 TEST(AutoTuneHost, TheGameDatabaseForcesWhatItNames)
 {
 	GameDatabaseSchema::GameEntry entry;
@@ -553,7 +547,7 @@ TEST(AutoTuneHost, TheGsBackThreadCountsAsABusyCore)
 TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)
 {
 	// MQ65 with the IOP thread on: EE, MTVU, the front and the IOP thread hold the four big cores, and the back
-	// thread would be placed on one of them. A/B on the device: 66.6% without it, 53.7% with it.
+	// thread would be placed on one of them, which costs speed.
 	GSBackThreadInputs in;
 	in.requested = true;
 	in.hardware_renderer = true;
@@ -574,8 +568,7 @@ TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)
 TEST(AutoTuneHost, TheBackThreadIsJudgedByTheLiveDeviceNotByTheConfiguredRenderer)
 {
 	// After a renderer reopen the configured renderer reads Auto (GSreopen passes the unresolved setting on), so
-	// asking it whether this is Vulkan said no for the rest of the session and the lever vanished. The device
-	// that is open knows what it is.
+	// it cannot say whether this is Vulkan. The device that is open knows what it is.
 	const auto offered = [](RenderAPI api) {
 		const GSBackThreadInputs in = AutoTune::BackThreadInputs(true, api, GSHardwareDownloadMode::Enabled);
 		return AutoTune::GsBackThreadOffered(in, false);
@@ -618,8 +611,6 @@ TEST(AutoTuneHost, LockstepAndVmConditionsRuleItOut)
 	vm.ps1_mode = true;
 	EXPECT_FALSE(AutoTune::IopThreadPlaceable(false, false, host, vm, false));
 }
-
-// ---------------------------------------------------------------------------------------------- the governor lever
 
 namespace
 {
@@ -707,8 +698,6 @@ TEST(AutoTuneGovernor, ATrialOnlyCountsWhenTheGovernorLowersTheRate)
 	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::IopThread, 4, 4));
 	EXPECT_TRUE(AutoTune::TrialWasMeasured(L::Resolution, 4, 4));
 }
-
-// ---------------------------------------------------------------------------------------------- together
 
 namespace
 {
@@ -903,8 +892,6 @@ TEST(AutoTuneTogether, ALeverThatDoesNotHelpIsUndoneAndNeverTriedAgain)
 	EXPECT_EQ(count("nothing left to try"), 1);
 }
 
-// ---------------------------------------------------------------------------------------------- the on-screen hints
-
 namespace
 {
 	// Everything the log said while it was alive, host output only.
@@ -987,8 +974,6 @@ TEST(AutoTuneHints, TheScopeNestsAndEndsWithTheOutermost)
 	}
 	EXPECT_FALSE(AutoTune::IsApplyingSettings());
 }
-
-// ---------------------------------------------------------------------------------------------- the game's file
 
 namespace
 {

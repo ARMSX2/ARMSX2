@@ -1,9 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The queues and flags the EE thread and the IOP thread use to talk to each other: the EE-to-IOP
-// side of the IOP-thread design (sections 3.4 and 3.5), with the memory orderings of section 3.9.
-// Nothing in the emulator uses them yet.
+// The queues and flags the EE thread and the IOP thread use to talk to each other.
 //
 //   StampedRing<N>     EE -> IOP, items carry an EE cycle stamp. One producer, one consumer.
 //   I2EQueue<N>        IOP -> EE, ordered. One producer, one consumer.
@@ -14,7 +12,6 @@
 //   - they never block and never take a lock;
 //   - they never allocate. The rings keep their storage inline, so even constructing one does not;
 //   - a full ring is reported to the caller as `false`, and the caller decides what to do about it.
-//     For the EE-to-IOP ring that is the "W3" spin of design section 4.
 // HostCommandQueue is the exception: it takes a mutex and allocates, so it is for host threads and
 // for lifecycle code, never for the emulation path.
 //
@@ -37,7 +34,6 @@
 
 namespace IopThread
 {
-	// Sizes from the design: section 3.4.2 (1024 entries) and section 3.5 (256 entries).
 	inline constexpr size_t kE2IRingCapacity = 1024;
 	inline constexpr size_t kI2EQueueCapacity = 256;
 
@@ -102,7 +98,6 @@ namespace IopThread
 			/// has gone round, so the producer may read it even if the consumer has popped it.
 			const T* LastPushed() const noexcept
 			{
-				// The producer's own index, so relaxed; there is nothing to pair with.
 				const u64 w = m_write.load(std::memory_order_relaxed);
 				return w == 0 ? nullptr : &m_slots[(w - 1) & kMask];
 			}
@@ -131,7 +126,6 @@ namespace IopThread
 			/// since the last Pop() is a bug.
 			void Pop() noexcept
 			{
-				// The consumer's own index, so relaxed; there is nothing to pair with.
 				const u64 r = m_read.load(std::memory_order_relaxed);
 				pxAssertMsg(r != m_cached_write, "Pop() without an item from Peek()");
 
@@ -140,7 +134,6 @@ namespace IopThread
 				m_read.store(r + 1, std::memory_order_release);
 			}
 
-			/// Consumer. Copies the oldest item out and releases it. Returns false when empty.
 			[[nodiscard]] bool TryPop(T& out) noexcept
 			{
 				const T* item = Peek();
@@ -166,7 +159,6 @@ namespace IopThread
 			/// statistics and tests only: the two indices are read separately and relaxed.
 			size_t ApproxSize() const noexcept
 			{
-				// Statistics only: relaxed, pairs with nothing.
 				const u64 r = m_read.load(std::memory_order_relaxed);
 				const u64 w = m_write.load(std::memory_order_relaxed);
 				const s64 d = static_cast<s64>(w - r);
@@ -212,9 +204,6 @@ namespace IopThread
 		};
 	} // namespace detail
 
-	// ------------------------------------------------------------------ EE -> IOP
-
-	/// One item of the EE-to-IOP ring (design section 3.4.2).
 	struct E2IItem
 	{
 		u64 stamp; // the EE cycle at which the IOP applies the item
@@ -242,7 +231,6 @@ namespace IopThread
 
 		static constexpr size_t Capacity() { return N; }
 
-		/// Producer. False when the ring is full, with nothing pushed.
 		[[nodiscard]] bool TryPush(u64 stamp, u16 kind, u32 arg = 0) noexcept
 		{
 			pxAssertMsg(StampDoesNotGoBackwards(stamp), "E2I stamps must not go backwards");
@@ -252,10 +240,8 @@ namespace IopThread
 		/// Consumer. The head item, or nullptr if empty. Valid until Pop().
 		const E2IItem* Peek() noexcept { return m_ring.Peek(); }
 
-		/// Consumer. Releases the head item returned by Peek().
 		void Pop() noexcept { m_ring.Pop(); }
 
-		/// Consumer. The stamp of the head item, or kNoStamp if the ring is empty.
 		u64 NextStamp() noexcept
 		{
 			const E2IItem* head = m_ring.Peek();
@@ -296,9 +282,6 @@ namespace IopThread
 		detail::SpscRing<E2IItem, N> m_ring;
 	};
 
-	// ------------------------------------------------------------------ IOP -> EE
-
-	/// One item of the IOP-to-EE queue (design section 3.5).
 	struct I2EItem
 	{
 		u16 kind;
@@ -319,19 +302,16 @@ namespace IopThread
 	public:
 		static constexpr size_t Capacity() { return N; }
 
-		/// Producer (IOP). False when the queue is full, with nothing pushed.
 		[[nodiscard]] bool TryPush(u16 kind, u32 arg = 0) noexcept
 		{
 			return m_ring.TryPush(I2EItem{kind, 0, arg});
 		}
 
-		/// Consumer (EE). Copies the oldest item into `out`. False when empty.
 		[[nodiscard]] bool TryPop(I2EItem& out) noexcept { return m_ring.TryPop(out); }
 
 		/// Consumer (EE). The oldest item, or nullptr if empty. Valid until Pop().
 		const I2EItem* Peek() noexcept { return m_ring.Peek(); }
 
-		/// Consumer (EE). Releases the item returned by Peek().
 		void Pop() noexcept { m_ring.Pop(); }
 
 		/// Consumer (EE). The check the event test makes on every pass: a relaxed load of the write
@@ -350,17 +330,15 @@ namespace IopThread
 		detail::SpscRing<I2EItem, N> m_ring;
 	};
 
-	// ------------------------------------------------------------------ kick flags
-
-	/// Bits of the EE-to-IOP kick word (design section 3.4.4). Used only by the split SIF.
+	/// Bits of the EE-to-IOP kick word. Used only by the split SIF.
 	namespace E2IKick
 	{
 		inline constexpr u32 Sif0Space = 1u << 0;
 		inline constexpr u32 Sif1Data = 1u << 1;
 	} // namespace E2IKick
 
-	/// Bits of the IOP-to-EE "kick pending" word (design section 3.5): one per SIF channel, set
-	/// when the IOP has queued a SIF entry the EE has not yet taken. Used only by the split SIF.
+	/// Bits of the IOP-to-EE "kick pending" word: one per SIF channel, set when the IOP has
+	/// queued a SIF entry the EE has not yet taken. Used only by the split SIF.
 	namespace I2EKick
 	{
 		inline constexpr u32 Sif0EeHalf = 1u << 0;
@@ -370,7 +348,7 @@ namespace IopThread
 	/// A word of atomic flags that coalesces: raising a flag that is already up does nothing, and
 	/// says so. One side raises, the other takes.
 	///
-	/// The pattern for a notification that must not pile up (the SIF entries of design section 3.5):
+	/// The pattern for a notification that must not pile up (the SIF entries):
 	///
 	///     producer:  write the data;  if (kicks.Raise(bit)) queue.TryPush(kind);   // retry if full
 	///     consumer:  queue.TryPop(item);  kicks.Take(bit);  read the data;  act on it
@@ -404,7 +382,6 @@ namespace IopThread
 			return bits & m_bits.fetch_and(~bits, std::memory_order_acquire);
 		}
 
-		/// Clears every bit and returns the ones that were set.
 		u32 TakeAll() noexcept
 		{
 			// Pairs with the release in Raise().
@@ -419,14 +396,8 @@ namespace IopThread
 		std::atomic<u32> m_bits{0};
 	};
 
-	// ------------------------------------------------------------------ host commands
-
-	/// Commands from any host thread to the IOP thread (design section 3.4.3): the CDVD disc
-	/// thread's new-disc callback, the FPCR re-apply after a settings change.
-	///
-	/// A mutex-protected list plus a flag the IOP thread checks between slices. Post() takes the
-	/// mutex and allocates, so it is for host threads and lifecycle code. The emulation path does
-	/// not call it.
+	/// Commands from any host thread to the IOP thread: the CDVD disc thread's new-disc callback,
+	/// the FPCR re-apply after a settings change.
 	///
 	/// Commands run on the IOP thread, in the order they were posted (the order they won the
 	/// mutex, for two posting threads), outside the lock, so a command may post another. A command
@@ -479,14 +450,12 @@ namespace IopThread
 		/// and returns how many it ran. Returns 0 straight away if called from inside a command.
 		size_t RunPending();
 
-		/// Any thread. True once the command with this ticket has finished running.
 		bool IsDone(Ticket ticket) const noexcept
 		{
 			// Pairs with the release store of m_completed in RunPending().
 			return m_completed.load(std::memory_order_acquire) >= ticket;
 		}
 
-		/// Any thread. How many commands have finished running.
 		u64 CompletedCount() const noexcept { return m_completed.load(std::memory_order_acquire); }
 
 	private:

@@ -80,7 +80,7 @@ static __fi void gsCSRwrite( const tGS_CSR& csr )
 		CSRreg.FINISH = false;
 		gifUnit.gsFINISH.gsFINISHFired = false; //Clear the previously fired FINISH (YS, Indiecar 2005, MGS3)
 		// On an arcade board, clearing the status bit does not cancel a FINISH still queued behind the
-		// draw delay (GS->EE readback; PCSX2x6).
+		// draw delay (GS->EE readback).
 		if (!Arcade::IsActive())
 			gifUnit.gsFINISH.gsFINISHPending = false;
 	}

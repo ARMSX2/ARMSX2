@@ -5,22 +5,20 @@
 // delay-slot pair) the EE sees VPU_STAT busy clear a fixed time after the delay slot, or later if a
 // divide or EFU result is still pending.  On the console (SCPH-30001, the 76 programs of
 // autocases_vuenddrain.h) an FMAC and an ILW/ILWR never move that time, wherever they sit in the tail:
-// their result lands at most four cycles after the delay slot, inside the fixed part.  microVU stops
-// its cycle count at the delay slot and matches.  The interpreter used to run its count on to the
-// completion of everything in flight (_vuFlushAll), so an FMAC or ILW issued p pairs before the
-// delay slot (p = 0..3) added 4 - p cycles: 305 against 304 on 47 Ratchet & Clank VU1 programs.
+// their result lands at most four cycles after the delay slot, inside the fixed part.  microVU and
+// the interpreter both stop their cycle count at the delay slot and match.
 //
 // A divide or EFU op is different: the console waits for it, but only past a fixed point (the end moves
 // by max(0, L - p - 5) for a divide and max(0, L - p - 6) for an EFU op, L = latency).  The interpreter
-// waits for all of L - p, microVU for none of it; neither is right.  That is a known divergence and is
-// not changed here; InterpreterQAndPWaitIsUnchanged pins the interpreter's side so a change to the
-// FMAC/ILW wait cannot move it by accident.
+// waits for all of L - p, microVU for none of it; neither is right.  That is a known divergence;
+// InterpreterQAndPWaitIsUnchanged pins the interpreter's side so a change to the FMAC/ILW wait
+// cannot move it by accident.
 //
 // The check is a difference: each engine's cycle count for a program minus its count for the empty
 // tail (A_none) must equal the console's end for the program minus the console's end for A_none.  The
 // one-cycle control is the same table: A_none with n extra NOP pairs moves the console's end by exactly
-// n.  Only the cycle count changes with the fix: the registers and flags the work in flight would have
-// written are still written at the end (CommittedStateIsTheSame...).
+// n.  Skipping the wait changes only the cycle count: the registers and flags the work in flight
+// would have written are still written at the end (CommittedStateIsTheSame...).
 
 #include <gtest/gtest.h>
 
@@ -227,18 +225,18 @@ TEST(VuEndDrainConsole, MicroVuEndDoesNotWaitForFmacOrIlw)
 	EXPECT_TRUE(bad.empty()) << "microVU ends that differ from the console:" << bad;
 }
 
-// _vuFlushAll used to move the interpreter's cycle count to the completion of every FMAC and ILW
-// still in flight: 4 - p extra cycles for p = 0..3 on 18 of the 76 rows (FMAC and ILW at p = 0..3
-// and four FMACs, on both VUs).
+// An FMAC or ILW still in flight when the program ends (p = 0..3 pairs before the delay slot)
+// must not add to the interpreter's cycle count.
 TEST(VuEndDrainConsole, InterpreterEndDoesNotWaitForFmacOrIlw)
 {
 	const std::string bad = EndMisses(false, FmacIlwOrControl);
 	EXPECT_TRUE(bad.empty()) << "interpreter ends that differ from the console:" << bad;
 }
 
-// Only the cycle count changes.  The flags an FMAC in flight at the end would have written are still
-// written (MUL vf31,vf3,vf1 on (-1, 0, 8, 16): MAC S.x and Z.y = 0x84), and the two engines finish in
-// the same architectural state, for every program with an FMAC or ILW near the end.
+// Skipping the wait must not drop the results.  The flags an FMAC in flight at the end would have
+// written are still written (MUL vf31,vf3,vf1 on (-1, 0, 8, 16): MAC S.x and Z.y = 0x84), and the
+// two engines finish in the same architectural state, for every program with an FMAC or ILW near
+// the end.
 TEST(VuEndDrainConsole, CommittedStateIsTheSameInBothEngines)
 {
 	for (int i = 0; i < kVuEndDrainRowCount; ++i)
@@ -257,9 +255,9 @@ TEST(VuEndDrainConsole, CommittedStateIsTheSameInBothEngines)
 	}
 }
 
-// KNOWN DIVERGENCE, not changed (owner rule: nothing changes until a game shows it matters).  The
-// console's end moves by max(0, L - p - 5) for a divide and max(0, L - p - 6) for an EFU op; microVU
-// adds nothing and the interpreter waits for the whole L - p.  This pins the interpreter's side.
+// KNOWN DIVERGENCE, left unchanged.  The console's end moves by max(0, L - p - 5) for a divide and
+// max(0, L - p - 6) for an EFU op; microVU adds nothing and the interpreter waits for the whole
+// L - p.  This pins the interpreter's side.
 TEST(VuEndDrainConsole, InterpreterQAndPWaitIsUnchanged)
 {
 	for (u32 vu = 0; vu < 2; ++vu)
@@ -329,8 +327,8 @@ TEST(VuEndDrainConsole, MicroVuFmacBesideQOrPAddsNothing)
 	EXPECT_TRUE(bad.empty()) << "microVU cycle counts that changed when FMACs were added:" << bad;
 }
 
-// With a divide or EFU op that finishes before the FMACs do (DIV at p = 4 and 5), the interpreter's end
-// used to be the FMACs' completion.
+// With a divide or EFU op that finishes before the FMACs do (DIV at p = 4 and 5), the interpreter's
+// end must not be pushed out to the FMACs' completion.
 TEST(VuEndDrainConsole, InterpreterFmacBesideQOrPAddsNothing)
 {
 	const std::string bad = FmacBesideQOrPMisses(false);

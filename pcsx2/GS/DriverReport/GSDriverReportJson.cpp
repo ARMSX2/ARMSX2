@@ -506,8 +506,7 @@ namespace GSDriverReport
 		}
 		char buf[40];
 		std::snprintf(buf, sizeof(buf), "%.9g", value);
-		// A locale with a decimal comma would produce invalid JSON; the C locale is the norm here,
-		// but make it impossible rather than unlikely.
+		// A locale with a decimal comma would produce invalid JSON.
 		for (char* p = buf; *p; p++)
 		{
 			if (*p == ',')

@@ -81,7 +81,7 @@ SmallString s_cpu_usage_gs_line;
 SmallString s_cpu_usage_gs_back_line;
 SmallString s_cpu_usage_vu_line;
 SmallString s_cpu_usage_iop_line;
-// Devel builds, Threaded mode: the IOP thread's waits and queues per frame (IOP thread design, step 11).
+// Devel builds, Threaded mode: the IOP thread's waits and queues per frame.
 SmallString s_iop_thread_line;
 std::vector<SmallString> s_software_thread_lines;
 SmallString s_gpu_usage_line;
@@ -296,10 +296,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// below keys off this word changing — sharing a bit would leave the block sized for the wrong
 	// set of lines the moment the LSFG line appeared or went away.
 	//
-	// The line comes with the rest of the performance overlay, so with the overlay off a healthy
-	// frame generation shows nothing (it stayed on screen whatever the overlay said, and with it,
-	// ImGui always drew, which kept frame generation off the game's own image). A problem still
-	// shows on its own: "on but silent" can't be told from "on and broken".
+	// The line shows only with the performance overlay on, so with it off a healthy frame
+	// generation draws nothing (any ImGui draw keeps frame generation off the game's own image).
+	// A problem still shows on its own: "on but silent" can't be told from "on and broken".
 	const std::string lsfg_status = LsfgStatusText();
 	const bool lsfg_line = !lsfg_status.empty() && (enabled_lines != 0 || LsfgStatusIsProblem());
 	enabled_lines |= static_cast<u32>(lsfg_line) << 12;
@@ -694,8 +693,7 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 #endif
 
 				// The governor's published word is the only governor state this thread reads.
-				// When it is not running the word says so and the configured settings answer,
-				// which is what this line has always shown.
+				// When it is not running the word says so and the configured settings answer.
 				const EECycleRateSampler::OverlayState ee_rate =
 					EECycleRateSampler::UnpackOverlayWord(EECycleRateSampler::GetOverlayWord());
 				const bool ee_rate_dynamic = ee_rate.enabled || ee_rate.shadow;
@@ -741,8 +739,8 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
 				}
 
-				// Only exists while the IOP runs on its own thread beside the EE. The EE line above no longer
-				// includes the IOP's work then, so without this one that work is invisible.
+				// Only exists while the IOP runs on its own thread; the EE line above no longer includes
+				// its work then.
 				if (PerformanceMetrics::HasIOPThread())
 				{
 					s_cpu_usage_iop_line.assign("IOP: ");
@@ -859,8 +857,6 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_gs_back_line.c_str(), OsdTextColor());
 				if (THREAD_VU1)
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_vu_line.c_str(), OsdTextColor());
-				// The frames between two refreshes of the figures draw the text of the last refresh. The IOP line is
-				// formatted where the others are, so without this it showed on the refresh frames only.
 				if (PerformanceMetrics::HasIOPThread())
 					DRAW_LINE(osd_font, font_size, s_cpu_usage_iop_line.c_str(), OsdTextColor());
 #if defined(PCSX2_DEVBUILD) || defined(PCSX2_DEBUG)
@@ -2212,8 +2208,8 @@ void ImGuiManager::RenderOverlays()
 		SaveStateSelectorUI::Draw();
 }
 
-// An arcade light gun aimed with a stick has nothing on screen to show where it points (a finger on a
-// touchscreen, or a real gun, needs nothing): a crosshair per player, while that player's stick aims.
+// A light gun aimed with a stick has no on-screen pointer (a touchscreen or a real gun needs none):
+// draws a crosshair per player while that player's stick aims.
 void ImGuiManager::DrawArcadeGunCrosshairs(float scale)
 {
 	if (!Arcade::IsActive() || ACJV::GetMode() != JVS_MODE::LIGHTGUN)

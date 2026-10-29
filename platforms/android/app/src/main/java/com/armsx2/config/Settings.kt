@@ -808,9 +808,8 @@ data class GraphicsSettings(
     val precacheTextureReplacements: Boolean = false,
     /** EmuCore/GS/TextureUpscale — GSTextureUpscaleMode: 0 Off / 1 RAISR 2x / 2 RAISR 4x. The
      *  picker index is the enum value. Persisted as an integer by the core, so new modes get
-     *  appended, never renumbered. The core's first key for this was TextureUpscaleMode, whose
-     *  values meant something else; it is neither read nor written, and neither is the stored
-     *  JSON field of that name. */
+     *  appended, never renumbered. An older TextureUpscaleMode key had different values; it and
+     *  the stored JSON field of that name are neither read nor written. */
     val textureUpscale: Int = 0,
     /** EmuCore/GS/DumpReplaceableTextures. */
     val dumpReplaceableTextures: Boolean = false,

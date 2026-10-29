@@ -8,20 +8,19 @@
 // the event test can reach the host message pump at vsync, where a savestate
 // save reads GPR memory, and it can leave the JIT through recExitExecution,
 // after which only memory survives. After a normal return it reloads the
-// cycle delta and the pins in caller-saved host registers (x11-x13), which
-// the call destroyed. The callee-saved pins are still in their registers, and
-// nothing recEventTest returns normally from writes guest GPR memory (a
-// savestate load or a recompiler reset requested from the pump also requests
-// an exit, so it leaves through recExitExecution), so they need no reload.
+// cycle delta and the pins in caller-saved host registers (x11-x13). The
+// callee-saved pins are still in their registers, and nothing recEventTest
+// returns normally from writes guest GPR memory (a savestate load or a
+// recompiler reset requested from the pump also requests an exit), so they
+// need no reload.
 //
 // The harness runs with no VM, where the shared event test returns early, so
 // the tests put their work inside recEventTest through a test hook: one reads
-// GPR memory there, as a savestate save from the message pump does, and one
-// raises an interrupt there, as the shared event test does, so the guest
-// handler, running as JIT code, reads every pin. All nine pins are dirty when
-// the stub runs. The shape tests count the stub's pin stores and reloads and
-// check that a recompiler reset regenerates the stub byte for byte, since
-// recEventTest can reset the recompiler in place and return into the new copy.
+// GPR memory there, as a savestate save does, and one raises an interrupt
+// there, so the guest handler, running as JIT code, reads every pin. All nine
+// pins are dirty when the stub runs. The shape tests count the stub's pin
+// stores and reloads and check that a recompiler reset regenerates the stub
+// byte for byte.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -290,7 +289,6 @@ TEST(EeRecEventStub, InterruptWithEveryPinDirtyReachesHandlerAndReturns)
 	h.RunJitNoDiff();
 	ASSERT_TRUE(s_seenSet) << "no event test ran at the block 1 tail";
 
-	// The interrupt was taken at the block 1 tail, and ERET came back.
 	EXPECT_EQ(h.GetCp0Jit(kCp0Epc), kBlock2Pc);
 	EXPECT_EQ(h.GetCp0Jit(kCp0Cause) & 0x7Cu, 0u); // exception code 0: interrupt
 	EXPECT_EQ(h.GetCp0Jit(kCp0Status) & 0x2u, 0u); // EXL cleared by ERET
@@ -338,8 +336,6 @@ TEST(EeRecEventStub, QuietEventTestWithEveryPinDirty)
 	h.ExpectGpr64(reg::t6, kSeed + 9);
 }
 
-// ---- Shape ----
-
 // All nine pins are stored before recEventTest (savestate save at vsync and
 // the exit path read GPR memory); only the caller-saved ones are reloaded.
 TEST(EeRecEventStub, StoresEveryPinAndReloadsOnlyCallerSavedPins)
@@ -358,7 +354,7 @@ TEST(EeRecEventStub, StoresEveryPinAndReloadsOnlyCallerSavedPins)
 
 // recEventTest can reset the recompiler in place and return into the
 // regenerated stub at the same offset, so a regeneration must emit the stub
-// byte for byte (feedback_ee_rec_reset_in_place_needs_identical_stubs).
+// byte for byte.
 TEST(EeRecEventStub, ResetRegeneratesTheStubByteForByte)
 {
 	EeRecTestHarness h;

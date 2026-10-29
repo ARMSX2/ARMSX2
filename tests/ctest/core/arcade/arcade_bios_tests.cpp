@@ -95,7 +95,7 @@ TEST_F(ArcadeBiosTest, TheMadeUpImagesAreTheKindsOfBiosTheyStandFor)
 	ASSERT_TRUE(IsBIOS(Add("console.bin", ConsoleBios()).c_str(), version, description, region, zone));
 	EXPECT_EQ(zone, "USA");
 
-	// IsBIOS takes an arcade dump: this is why the console lists showed one.
+	// IsBIOS accepts arcade dumps too; IsConsoleBIOS is the filter.
 	ASSERT_TRUE(IsBIOS(Add("arcade.bin", System256Bios()).c_str(), version, description, region, zone));
 	EXPECT_EQ(zone, "COH-H");
 	EXPECT_NE(description.find("System 256"), std::string::npos) << description;
@@ -109,7 +109,6 @@ TEST_F(ArcadeBiosTest, TheConsoleBiosListsLeaveOutArcadeDumps)
 	EXPECT_EQ(zone, "USA");
 	EXPECT_FALSE(IsConsoleBIOS(Add("system256.bin", System256Bios()).c_str(), version, description, region, zone));
 	EXPECT_FALSE(IsConsoleBIOS(Add("system246.bin", System246Bios()).c_str(), version, description, region, zone));
-	// Not a BIOS at all.
 	EXPECT_FALSE(IsConsoleBIOS(Add("junk.bin", std::vector<char>(4 * MB, 'x')).c_str(), version, description, region, zone));
 	EXPECT_FALSE(IsConsoleBIOS(Path::Combine(m_dir, "missing.bin").c_str(), version, description, region, zone));
 }

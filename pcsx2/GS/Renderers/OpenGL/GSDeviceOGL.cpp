@@ -1159,12 +1159,11 @@ bool GSDeviceOGL::CheckFeatures()
 			Console.Error("GL: glDrawElementsBaseVertex is unavailable (no core/OES/EXT) — draws will fail.");
 	}
 
-	// Same ES 3.2-vs-3.1 gap for the ranged variant. The draws over the index stream buffer pass the
+	// Same ES 3.2-vs-3.1 gap for the ranged variant. Draws over the index stream buffer pass the
 	// index range so the driver doesn't have to scan for it: without a range, Mali scans the indices
-	// and caches the result per (buffer, offset, count) in CPU memory, and since the stream buffer is
-	// never respecified and every draw lands at a new offset, that cache grows for the whole session
-	// (320 MB in a single allocation, killed by lmkd after ~2 h on a 4 GB device). If no variant is
-	// available, DrawElementsInRange() falls back to the unranged call.
+	// and caches the result per (buffer, offset, count) in CPU memory. The stream buffer is never
+	// respecified and every draw lands at a new offset, so that cache grows for the whole session.
+	// If no variant is available, DrawElementsInRange() falls back to the unranged call.
 	if (!glDrawRangeElementsBaseVertex)
 	{
 		if (GLAD_GL_OES_draw_elements_base_vertex && glDrawRangeElementsBaseVertexOES)
@@ -4710,9 +4709,7 @@ void GSDeviceOGL::InsertDebugMessage(DebugMessageCategory category, const char* 
 
 #ifdef __ANDROID__
 
-// ---- Remote play ---------------------------------------------------------------------------------
-//
-// The stream's frames (GS/GSRemotePlay.h), as GSDeviceVK makes them, on OpenGL ES: every presented
+// Remote play: the stream's frames (GS/GSRemotePlay.h), as GSDeviceVK makes them, on OpenGL ES: every presented
 // frame drawn at the stream's size, then copied into a free slot. Where the driver can share buffers
 // the copy goes into the slot's AHardwareBuffer, bound to a texture through an EGLImage, and a native
 // fence says when it is in: the app's thread waits on the fence's file descriptor, with no GL of its

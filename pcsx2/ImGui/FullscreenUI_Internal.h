@@ -550,9 +550,7 @@ namespace FullscreenUI
 	inline Common::Timer s_input_binding_timer;
 	inline bool s_prefer_english_titles;
 
-	//////////////////////////////////////////////////////////////////////////
-	// Features ported from the Android app (FullscreenUI_Packs.cpp)
-	//////////////////////////////////////////////////////////////////////////
+	// Texture upscale, Local Link and auto cover settings (FullscreenUI_Packs.cpp)
 	void DrawTextureUpscaleSetting(SettingsInterface* bsi);
 	/// Draws the Local Link rows when `api` (the EthApi setting) selects it; returns true if it did.
 	bool DrawLocalLinkSettings(SettingsInterface* bsi, const std::string& api, bool network_enabled);
@@ -563,9 +561,7 @@ namespace FullscreenUI
 	void PollAutoCovers();
 	void ShutdownAutoCovers();
 
-	//////////////////////////////////////////////////////////////////////////
 	// Memory card backups and autosaves (FullscreenUI_Saves.cpp)
-	//////////////////////////////////////////////////////////////////////////
 	/// Memory card page: the Automatic Backups toggle and the row that opens the backups window.
 	void DrawMemcardBackupSettings(SettingsInterface* bsi);
 	void OpenMemcardBackupsWindow();
@@ -586,8 +582,6 @@ namespace FullscreenUI
 	bool IsAutosaveSlot(s32 slot);
 
 	// GPU driver packs (FullscreenUI_Drivers.cpp)
-	/// Whether the page is listed: driver packs exist here (desktop Linux with an Adreno GPU), or one is installed or
-	/// selected, so the choice can still be undone. Reads the selection, so the settings lock must not be held.
 	// First-run setup's GPU Driver step. The step draws without the settings lock.
 	bool ShouldOfferDriverInSetup();
 	void DrawDriverSetupStep();
@@ -598,13 +592,14 @@ namespace FullscreenUI
 	bool FinishDriverSetup();
 	void RestartForDriverSetup();
 
+	/// Whether the page is listed: driver packs exist here (desktop Linux with an Adreno GPU), or one is installed or
+	/// selected, so the choice can still be undone. Reads the selection, so the settings lock must not be held.
 	bool ShowDriversSettingsPage();
 	void DrawDriversSettingsPage(SettingsInterface* bsi);
 	/// Cancels the page's downloads and joins its threads.
 	void ShutdownDriversPage();
 
 	// Arcade, Namco System 246/256 (FullscreenUI_Arcade.cpp)
-	//////////////////////////////////////////////////////////////////////////
 	/// The global "Arcade Setup" settings page: boot files, arcade BIOS, the button layout for every arcade game.
 	void DrawArcadeSettingsPage();
 	/// An "Arcade" section on the Summary page of one game's settings: what it lacks, its own button layout.
@@ -613,7 +608,6 @@ namespace FullscreenUI
 	/// lacks. False when `path` is not an arcade game, which the caller starts as it always did. `save_state` is the
 	/// path of a state to load once the game has booted.
 	bool StartArcadePath(const std::string& path, std::optional<s32> state_index, std::optional<bool> fast_boot, std::string save_state = {});
-	/// An arcade game is running.
 	bool IsArcadeSessionActive();
 	/// The pause menu's own entry for the Arcade submenu (nothing while no arcade game runs), how many rows it adds
 	/// to `submenu`, and the submenu itself with the ids of its first and last row for the wrap-around.
@@ -629,7 +623,6 @@ namespace FullscreenUI
 	std::string ShotArcadeNames();
 
 	// Online patches and cheats (FullscreenUI_OnlinePatches.cpp)
-	//////////////////////////////////////////////////////////////////////////
 	/// The "Browse Online" row of the per-game Patches (`cheats` false) and Cheats pages.
 	void DrawOnlinePatchesRow(bool cheats);
 	/// What pressing that row does: searches, or reopens the results already found for this game.
@@ -639,7 +632,6 @@ namespace FullscreenUI
 	void ShutdownOnlinePatches();
 
 	// Texture packs (FullscreenUI_TexturePacks.cpp)
-	//////////////////////////////////////////////////////////////////////////
 	/// The Texture Packs settings page: the online catalog, pack details, installing and installed packs.
 	void DrawTexturePacksSettingsPage();
 	/// "Browse Texture Packs" row for the Texture Replacement section of the Graphics page; opens the page

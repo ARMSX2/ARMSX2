@@ -1531,10 +1531,10 @@ mVUop(mVU_ISUBIU)
 
 // A single-lane VF write whose destination (Ft) is cached whole: the lane
 // goes straight into that copy with one INS, Ft[lane] <- Fs[srcLane], and the
-// copy becomes a whole-register write. The old route -- a single-lane slot
-// for the lane, then clearNeeded's merge into the same cached copy -- leaves
-// that copy holding the same words and marked the same way. False, with
-// nothing emitted, when the op is not single-lane or Ft is not cached whole.
+// copy becomes a whole-register write. That leaves the copy holding the same
+// words and marked the same way as a single-lane slot for the lane followed by
+// clearNeeded's merge into it, without the merge. False, with nothing
+// emitted, when the op is not single-lane or Ft is not cached whole.
 static bool mVUinsertLane(mV, int fsReg, int srcLane)
 {
 	if (!_XYZW_SS || _Ft_ == 0 || !mVU.regAlloc->isCachedWhole(_Ft_))
@@ -1674,8 +1674,8 @@ mVUop(mVU_MTIR)
 //------------------------------------------------------------------
 
 // gprT1 = the byte index into VU data memory of VI[vi] + Imm11, wrapped
-// (mVUaddrFix). On VU1 the base VI is read where it is cached, so the
-// copy into gprT1 goes; on VU0 the sequence is unchanged.
+// (mVUaddrFix). On VU1 the base VI is read where it is cached, with no copy
+// into gprT1; VU0 copies it into gprT1.
 static void mVUaddrFromVI(mV, int vi)
 {
 	a64::Register base = isVU1 ? mVU.regAlloc->viReadGPR(gprT1, vi) : gprT1;
@@ -2540,9 +2540,8 @@ mVUop(mVU_IBEQ)
 		{
 			// The Eor sources can carry dirty upper halves (pool slots written
 			// by unmasked VI arithmetic aren't zero-extended; VIbackup stores
-			// the full W). The old tail's Ldrsh compared only the low 16 bits,
-			// so the tail tests just those. mVU.branch keeps the raw bytes it
-			// always held.
+			// the full W), so the tail tests only the low 16 bits. mVU.branch
+			// keeps the raw bytes.
 			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else
@@ -2671,7 +2670,7 @@ mVUop(mVU_IBNE)
 
 		if (!(isBadOrEvil))
 		{
-			// See IBEQ — the tail tests the low 16 bits the old Ldrsh compared.
+			// See IBEQ: the tail tests only the low 16 bits.
 			mVUcondBranchFinish(mVU, condReg, true);
 		}
 		else

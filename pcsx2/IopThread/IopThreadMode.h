@@ -32,22 +32,16 @@ namespace IopThread
 	// The lag bound L: how many EE cycles the EE may be ahead of the IOP at an event test before
 	// it waits. All three values are in EE cycles.
 	//
-	// The default is eight times kEeWaitCycles (owner, 2026-10-19; it was twice, 2026-10-13). On
-	// the SD865 with the IOP thread on a big core, going from 6144 to 24576 cut the EE's time per
-	// frame by a further 3 to 4 points in FFX and Katamari and about 1 in SotC and UYA, flat
-	// above 12288 for the latter two, with no hang and bit-identical FFX/Katamari audio at the
-	// maximum (umbrella iopthread/little-core-lag-sweep-2026-10-19).
+	// The default is eight times kEeWaitCycles. A larger L lets the EE run further ahead of the
+	// IOP, which lowered the EE's time per frame on a big core; the gain flattened above 12288
+	// in some titles.
 	//
 	// The minimum has to be strictly greater than kEeWaitCycles. The IOP only runs up to the cycle
 	// the EE published at its previous event test, so at the next one the EE is already about
 	// kEeWaitCycles ahead of it. A bound at or below that finds the IOP behind on nearly every
-	// check: the model in iopthread/model/design-rules.md puts 66 to 87 percent of the waits at
-	// L = 3072 on that cause alone. How much more than kEeWaitCycles is needed comes from the same
-	// model's measurements on the SD865 and MQ65: an event test lands past its target by 81 cycles
-	// at the 90th percentile, and the IOP ends its last block up to 57 cycles past what it was
-	// given. 1024 cycles is more than seven times the sum of those. It also leaves L = 4096
-	// available, which the model evaluated: against L = 3072 it removes 13 to 82 percent of the
-	// simulated waits per frame, depending on the title and the device.
+	// check. The extra 1024 cycles cover the measured overshoot: an event test lands past its
+	// target by 81 cycles at the 90th percentile, and the IOP ends its last block up to 57 cycles
+	// past what it was given. 1024 is more than seven times the sum of those.
 	//
 	// The maximum, 64 times kEeWaitCycles, is a sanity bound. It is a twenty-fifth of a frame
 	// (4.9 million EE cycles at 60 Hz), so the cycle-stamped EE-to-IOP queue (1024 entries, about
@@ -65,7 +59,7 @@ namespace IopThread
 	s32 ClampLag(s32 requested);
 
 	/// What ResolveMode needs to know about the host. A test describes a device with it; the
-	/// emulator fills it from the CPU topology (a later step wires that up).
+	/// emulator fills it from the CPU topology.
 	struct HostCpuInfo
 	{
 		bool is_arm64 = false; // both modes are ARM64-only: the x86 IOP JIT is not audited for a second thread
@@ -104,16 +98,13 @@ namespace IopThread
 	/// thread and the audio callback.
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
 
-	// ---- At run time -------------------------------------------------------------------------
-
-	/// The mode in effect. A plain variable, like the design's s_mode: it is written on the CPU
-	/// thread only, by ChooseMode(), and the EE core reads it only where it builds something for the
-	/// mode (the JIT dispatcher at a recompiler reset, the interpreter's event test pointer). No
-	/// event-frequency path reads it.
+	/// The mode in effect. A plain variable, written on the CPU thread only, by ChooseMode(). The EE
+	/// core reads it only where it builds something for the mode (the JIT dispatcher at a recompiler
+	/// reset, the interpreter's event test pointer). No event-frequency path reads it.
 	//
-	// Hidden visibility: every reader is in the one executable, and a default-visibility variable is read
-	// through the GOT in position-independent code (two loads for one byte). The ownership asserts read it at
-	// event frequency in Off, so they are an adrp, a byte load and a branch.
+	// Hidden visibility: every reader is in the one executable, and a default-visibility variable is
+	// read through the GOT in position-independent code (two loads for one byte). The ownership
+	// asserts read it at event frequency in Off, so they are an adrp, a byte load and a branch.
 #if defined(__GNUC__) || defined(__clang__)
 	extern IopThreadMode s_mode __attribute__((visibility("hidden")));
 #else

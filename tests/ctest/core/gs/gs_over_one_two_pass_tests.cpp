@@ -4,10 +4,9 @@
 // Pins the two-pass road for (Cd - Cs) * As and (Cs - Cd) * As with As above 1.0 on a device that
 // reads the destination through a copy of the render target (GSRendererHW::EmulateBlending).
 //
-// The fixed-function blend unit clamps a factor to 1.0, so a draw whose alpha runs above 128 was
-// sent to software blending, which on that road costs a render-target copy and a render pass break
-// per draw. Black has 1,376 of them per frame. The road replaces the copy with two hardware passes
-// over the same geometry:
+// The fixed-function blend unit clamps a factor to 1.0, so a draw whose alpha runs above 128 would
+// otherwise go to software blending, which on that road costs a render-target copy and a render
+// pass break per draw. The road replaces the copy with two hardware passes over the same geometry:
 //   pass 1  the blend mix the draw takes where As <= 1: the shader outputs Cs * min(As, 1) and the
 //           unit subtracts it from Cd * min(As, 1), so the result is min(As, 1) * (Cd - Cs);
 //   pass 2  Cd1 * max(0, As - 1) + Cd1, which rescales what pass 1 left where As > 1. It runs

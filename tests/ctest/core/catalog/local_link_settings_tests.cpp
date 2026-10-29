@@ -35,8 +35,6 @@ namespace
 	}
 } // namespace
 
-// ---- The rules ------------------------------------------------------------------------------
-
 TEST(LocalLinkSettingsTest, ApiNameIsTheOneTheCoreWritesAndReads)
 {
 	EXPECT_STREQ(API_NAME, Pcsx2Config::DEV9Options::NetApiNames[static_cast<int>(Pcsx2Config::DEV9Options::NetApi::LocalLink)]);
@@ -111,8 +109,6 @@ TEST(LocalLinkSettingsTest, GeneratedGuestPeerIdsStayInTheGuestRange)
 	EXPECT_GT(highest, 64000u);
 }
 
-// ---- Apply: what is stored, and what is refused -----------------------------------------------
-
 TEST(LocalLinkSettingsTest, ApplyStoresTheCleanedRoomCode)
 {
 	MemorySettingsInterface si;
@@ -177,8 +173,6 @@ TEST(LocalLinkSettingsTest, ApplyStoresTheAddressAsTypedMinusSurroundingSpace)
 	EXPECT_EQ(si.GetStringValue(SECTION, KEY_ADDRESS, ""), "Host.Example.com");
 }
 
-// ---- SeedDefaults -----------------------------------------------------------------------------
-
 TEST(LocalLinkSettingsTest, SeedDefaultsGivesAnEmptyConfigARoomCodeAndAGuestPeerId)
 {
 	MemorySettingsInterface si;
@@ -241,8 +235,6 @@ TEST(LocalLinkSettingsTest, SeedDefaultsReplacesAGuestIdOutsideTheGuestRange)
 		EXPECT_LE(id, GUEST_PEER_ID_MAX) << bad;
 	}
 }
-
-// ---- The core's view --------------------------------------------------------------------------
 
 TEST(LocalLinkSettingsTest, CoreDefaultsMatchTheDefaultsTheUiAssumes)
 {

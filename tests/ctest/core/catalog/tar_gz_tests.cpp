@@ -71,8 +71,6 @@ namespace
 	}
 } // namespace
 
-// ---- paths ---------------------------------------------------------------------------------
-
 TEST(TarGzPath, NormalisesHarmlessForms)
 {
 	std::string out;
@@ -109,8 +107,6 @@ TEST(TarGzPath, RefusesUnsafeForms)
 	EXPECT_FALSE(NormalizeArchivePath(deep.substr(2), &out)); // 33
 	EXPECT_TRUE(NormalizeArchivePath(deep.substr(4), &out)); // 32 is the limit
 }
-
-// ---- extraction ----------------------------------------------------------------------------
 
 TEST(TarGzExtract, WritesFilesAndDirectories)
 {
@@ -218,8 +214,6 @@ TEST(TarGzExtract, ARealGnuTarArchiveWorks)
 	EXPECT_TRUE(Exists(dir, "turnip/axfl2-002/lib-fallback/libz.so.1"));
 }
 
-// ---- hostile or damaged archives -----------------------------------------------------------------
-
 TEST(TarGzExtract, NotGzipIsRefused)
 {
 	ScopedTempDir dir;
@@ -325,8 +319,6 @@ TEST(TarGzExtract, MissingArchiveFailsCleanly)
 	EXPECT_EQ(ExtractTarGz(dir.File("nope.tar.gz"), dir.File("out"), {}, nullptr, &error), TarResult::Failed);
 	EXPECT_FALSE(error.empty());
 }
-
-// ---- damage anywhere ---------------------------------------------------------------------------------
 
 TEST(TarGzExtract, EveryTruncationOfARealArchiveFailsCleanly)
 {

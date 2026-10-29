@@ -181,8 +181,7 @@ static __ri bool _vuEFUflush(VURegs* VU)
 // the fixed part of the end (microVU stops at the delay slot too). A divide or
 // EFU op does move it, but the console waits for less than the whole latency
 // (max(0, L - p - 5) for a divide, max(0, L - p - 6) for an EFU op, p pairs
-// before the delay slot) and neither engine models that; the wait here is
-// unchanged from before.
+// before the delay slot), which neither engine models.
 void _vuFlushAll(VURegs* VU)
 {
 	int i = 0;
@@ -483,9 +482,8 @@ __fi void _vuAddLowerStalls(VURegs* VU, _VURegsNum* VUregsn)
 // each pair takes. A branch sees VIOldValue only while it is above
 // VI_BACKUP_BRANCH: one that issues the very next cycle finds 3, one that
 // stalled, or sits a pair further on, finds 2 or less and reads the VI as it
-// is. VIWrites holds the VI before each of the last three writes and the cycle
-// it happened, for the earliest-write search. They only count while the window
-// is open.
+// is. VIWrites remembers the last three writes for the earliest-write search
+// and counts only while the window is open.
 #define VI_BACKUP_WINDOW 4
 #define VI_BACKUP_BRANCH (VI_BACKUP_WINDOW - 2)
 

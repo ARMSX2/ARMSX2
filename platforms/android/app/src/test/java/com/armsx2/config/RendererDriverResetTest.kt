@@ -9,7 +9,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * The Renderer tab's Reset now includes the Graphics API, GPU driver and ANGLE settings. For
+ * The Renderer tab's Reset covers the Graphics API, GPU driver and ANGLE settings. For
  * per-game settings, Reset goes back to whatever the global values are, and for global
  * settings it goes back to the defaults.
  */

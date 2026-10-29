@@ -184,10 +184,6 @@ std::vector<vuaot::ir::ValueId> InstsAt(const vuaot::ir::Function& f, u32 pc, vu
 }
 } // namespace
 
-//------------------------------------------------------------------
-// Decoder
-//------------------------------------------------------------------
-
 TEST(VuAotDecode, UpperForms)
 {
 	using namespace vuaot;
@@ -249,15 +245,8 @@ TEST(VuAotDecode, LowerForms)
 	EXPECT_EQ(DecodeLower(kNopL).ft, 0);
 }
 
-//------------------------------------------------------------------
-// First-pass port vs microVU
-//------------------------------------------------------------------
-
-// MAC/status readers at every distance from a run of FMACs, in a loop whose
-// head reads flags (so the back edge is an exact-match link).
-// The decode memo is per thread, on the heap: a table every thread owns, found through a thread_local
-// pointer. Every thread, the compile worker among them, gets the same answers, a slot taken by another
-// word is replaced, and a thread that exits frees its table (a leak check would see it).
+// The decode memo is a per-thread heap table behind a thread_local pointer. Every thread, the
+// compile worker included, must get identical decodes, including for words that collide in a slot.
 TEST(VuAotDecode, MemoIsPerThreadAndConsistent)
 {
 	std::mt19937 rng(0x7e1f);
@@ -298,9 +287,8 @@ TEST(VuAotDecode, MemoIsPerThreadAndConsistent)
 
 #if defined(__linux__)
 // glibc carves a program's static TLS out of the stack of every thread it creates, and cubeb's ALSA
-// thread asks for 256 KiB: a program with 265 KB of static TLS (the decode memo used to be a
-// thread_local array) could not start that thread on the handhelds. The size of the program's
-// PT_TLS segment, which is what that block is, stays far below it.
+// thread asks for 256 KiB: a program with 265 KB of static TLS could not start that thread on the
+// handhelds. The program's PT_TLS segment has to stay far below that.
 TEST(VuAotDecode, StaticTlsStaysSmall)
 {
 	u64 tls = 0;
@@ -320,6 +308,8 @@ TEST(VuAotDecode, StaticTlsStaysSmall)
 }
 #endif
 
+// MAC/status readers at every distance from a run of FMACs, in a loop whose
+// head reads flags (so the back edge is an exact-match link).
 TEST(VuAotPipe, FlagReadersMatchMicroVU)
 {
 	for (int vu : {0, 1})
@@ -506,10 +496,6 @@ TEST(VuAotPipe, FuzzMatchesMicroVU)
 		programs, blocksCompared, opsCompared, evilBlocks, flagDecisions);
 }
 
-//------------------------------------------------------------------
-// Program graph
-//------------------------------------------------------------------
-
 // Every block microVU compiles is a graph node with the same key.
 TEST(VuAotGraph, CoversMicroVUBlocks)
 {
@@ -570,10 +556,6 @@ TEST(VuAotGraph, ReturnToLinkResolvesStatically)
 	EXPECT_TRUE(found);
 	EXPECT_TRUE(vuaot::ir::Verify(b.fn).empty());
 }
-
-//------------------------------------------------------------------
-// SSA
-//------------------------------------------------------------------
 
 // A MAC reader binds to the producer four cycles back, not to the newest one.
 TEST(VuAotSSA, MacReaderBindsToProducerFourCyclesBack)

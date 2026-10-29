@@ -32,7 +32,6 @@ internal class OnlineIconStore(val dir: File, private val decode: (InputStream, 
     fun installedHashes(): Set<String> =
         iconDir.listFiles()?.mapNotNullTo(HashSet()) { f -> f.name.removeSuffix(".zst").takeIf { f.name.endsWith(".zst") } }.orEmpty()
 
-    /** Bytes the downloaded icons take on the device. */
     fun installedBytes(): Long = iconDir.listFiles()?.sumOf { it.length() } ?: 0L
 
     /** A downloaded icon's bytes, or null. */

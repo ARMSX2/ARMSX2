@@ -11,15 +11,15 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Remote play (com.armsx2.remoteplay): hardware H.264 from any encoder Android itself reports as
+ * Remote play (com.armsx2.remoteplay): hardware H.264 from any encoder Android reports as
  * hardware, run by {@link ArmsxH264Encoder} for low latency.
  *
- * WebRTC's HardwareVideoEncoderFactory only trusts H.264 encoders named OMX.qcom.* or OMX.Exynos.*.
- * Current Snapdragons name theirs c2.qti.*, so it fell back to software VP8: slow to encode on a
- * host that is already running a game, and slow to decode on a small handheld. This factory picks
- * the AVC encoder Android reports as hardware instead (before Android 10, which does not say, the
- * one not named as Android's own software codec) and leaves every other codec to the stock
- * factories.
+ * WebRTC's HardwareVideoEncoderFactory only trusts H.264 encoders named OMX.qcom.* or OMX.Exynos.*,
+ * and current Snapdragons name theirs c2.qti.*. WebRTC then falls back to software VP8, which is
+ * slow to encode on a host that is running a game and slow to decode on a small handheld. This
+ * factory picks the AVC encoder Android reports as hardware instead (before Android 10, which
+ * does not report it, the one not named as Android's own software codec). Every other codec goes
+ * to the stock factories.
  *
  * It lives in org.webrtc because the codec helpers it builds on are package-private.
  */
@@ -63,10 +63,7 @@ public class ArmsxVideoEncoderFactory implements VideoEncoderFactory {
     return h264 != null ? h264.getName() : null;
   }
 
-  /**
-   * Running totals of frames into the encoder, frames out of it and frames it dropped, for the
-   * stream's stats.
-   */
+  /** Running frame totals for the stream's stats: {in, out, dropped}. */
   public static int[] encoderCounters() {
     return new int[] {ArmsxH264Encoder.framesIn.get(), ArmsxH264Encoder.framesOut.get(),
         ArmsxH264Encoder.framesDropped.get()};

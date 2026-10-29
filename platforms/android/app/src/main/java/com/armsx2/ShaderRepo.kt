@@ -274,7 +274,6 @@ object ShaderRepo {
                 null
             }
         }
-        // As for a zip import: index while the user is still waiting.
         ShaderIndex.load(root)
         return result
     }
@@ -320,9 +319,8 @@ object ShaderRepo {
      * [onDownload] gets (bytesRead, totalBytes) — totalBytes is -1 if the
      * server sent no Content-Length — and [onExtract] gets (entriesDone,
      * entriesTotal). Both are throttled, so they're safe to route straight at
-     * Compose state. [onIndex] is called once the files are in place and the
-     * preset index ([ShaderIndex]) is being rebuilt — a walk of the whole tree,
-     * done here so the preset picker doesn't have to do it on its next open.
+     * Compose state. [onIndex] is called once the files are in place, while the
+     * preset index ([ShaderIndex]) is rebuilt.
      *
      * [isCancelled] is polled between chunks and between entries; when it goes
      * true the partial work is discarded and null is returned (same as any

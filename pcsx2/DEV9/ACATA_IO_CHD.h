@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// Namco System 246/256 arcade hardware, ported from PCSX2x6
-// (https://github.com/PS2Homebrew-arcade/pcsx2x6) by Matías Israelson (El_isra), Tovarichtch and
-// DiscoStarslayer. Only reached while an arcade game runs (Arcade::IsActive(), common/ARCADE.h).
+// CHD image access for the Namco System 246/256 arcade hardware. Only reached while an arcade game
+// runs (Arcade::IsActive(), common/ARCADE.h).
 
 #pragma once
 
@@ -29,7 +28,7 @@ public:
     ChdImage(const ChdImage&) = delete;
     ChdImage& operator=(const ChdImage&) = delete;
 
-    bool Open(const std::string& path, std::string* why = nullptr); // why: the reason it failed
+    bool Open(const std::string& path, std::string* why = nullptr);
     void Close();
 
     bool IsOpen() const;

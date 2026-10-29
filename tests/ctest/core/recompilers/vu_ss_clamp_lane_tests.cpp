@@ -116,22 +116,13 @@ TEST(VuSsClampLane, MaddXLeavesTheOtherAccLanes)
 	ExpectAccSurvived(h, k3, k4, k5, k6);
 }
 
-// =========================================================================
-//  The single-lane op's own destination is the other side of that rule.
-//  Its clamp is followed by the scalar arithmetic that writes the register,
-//  which zeroes lanes 1-3 itself, so whatever the clamp leaves there cannot
-//  matter -- but the cached VF it was cloned from must come through intact,
-//  and the written lane must come out exactly as the full-width form of the
-//  same op computes it, whose clamp runs on every lane anyway.
+// The single-lane op's own destination is the other side of that rule. Its clamp is followed by
+// the scalar arithmetic that writes the register and zeroes lanes 1-3 itself, so what the clamp
+// leaves there does not matter. What must hold is that the cached VF it was cloned from comes
+// through intact, and that the written lane equals the full-width form of the same op.
 //
-//  Each program caches vf1 with a MOVE, runs a single-lane op whose Fs is vf1
-//  (exponent-0xFF words, so the clamp has work to do) into vf5, the same op
-//  full width into vf8, and copies vf1 back out of the cache with a MOVE.
-//  The interpreter's console-exact clamp parts from microVU's on exactly these
-//  words (a documented, shared-with-x86 difference), so the checks are
-//  microVU against itself. Clamp modes 1 to 3, both VUs, an unrotated and two
-//  rotated lanes, and each single-lane body that clamps Fs and writes a VF.
-// =========================================================================
+// The interpreter's console-exact clamp differs from microVU's on these exponent-0xFF words (a
+// documented difference shared with x86), so the checks compare microVU with itself.
 
 namespace {
 

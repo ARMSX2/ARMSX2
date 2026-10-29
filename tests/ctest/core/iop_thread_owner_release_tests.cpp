@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The ownership asserts compile to nothing in a Release build (IOP thread design 6.3). This file is built
-// into the Devel test binary like the rest, so it undefines the two build-type macros before the only
-// header it includes that reads them, and checks what the assert macros expand to. A Release build of the
-// emulator defines neither macro.
+// The ownership asserts compile to nothing in a Release build. This file is built into the Devel test
+// binary like the rest, so it undefines the two build-type macros before the only header it includes
+// that reads them, and checks what the assert macros expand to. A Release build of the emulator defines
+// neither macro.
 //
 // Only OwnerAsserts.h (and the two small headers it includes) is included after the undefs: any header
 // with an inline function that reads PCSX2_DEVBUILD would be compiled two ways in one program.

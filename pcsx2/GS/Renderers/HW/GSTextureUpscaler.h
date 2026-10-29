@@ -16,14 +16,9 @@
 ///
 /// The algorithm and the filter file format are Intel's Library for Video Super Resolution
 /// (BSD-3-Clause, https://github.com/OpenVisualCloud/Video-Super-Resolution-Library); the code is
-/// a plain C++ port with a NEON path, structured after cppraisr (MIT). The filters ARMSX2 ships
-/// are our own, trained on PS2 texture pairs (bin/resources/upscale/raisr/ps2). No GS, GPU or
-/// settings dependencies, so it can be unit-tested and built standalone.
-///
-/// Per pixel: a bilinear 2x upscale of luma, a 11x11 structure tensor of its gradients picks one
-/// of 24 angles x 3 strengths x 3 coherences hash buckets, and that bucket's filter (one per output
-/// pixel phase) is dotted with the 11x11 luma neighbourhood. A census blend against the plain
-/// bilinear result limits the filter's overshoot. Chroma and alpha are upscaled bilinearly.
+/// a plain C++ port with a NEON path. The filters ARMSX2 ships are our own, trained on PS2
+/// texture pairs (bin/resources/upscale/raisr/ps2). No GS, GPU or settings dependencies, so it
+/// can be unit-tested and built standalone.
 ///
 /// Every entry point is safe to call from several threads at once, including with one FilterSet.
 namespace GSTextureUpscaler
@@ -80,7 +75,6 @@ namespace GSTextureUpscaler
 		Neon,
 	};
 
-	/// True when this build has the NEON path.
 	bool NeonAvailable();
 
 	/// The intermediate luma planes of an upscale, all (2w)x(2h), row-major, 0..255 scale.

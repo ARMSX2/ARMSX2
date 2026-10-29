@@ -41,10 +41,10 @@ namespace
 	// The GS threads are the cause and the GPU is not: the back thread splits the CPU work, so it goes first.
 	constexpr AutoTuneLever kGsCpuOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Resolution,
 		AutoTuneLever::DownloadMode, AutoTuneLever::Blending};
-	// The GPU is the cause: resolution is the lever that moves the GPU's work most. Then the download mode, ahead of
-	// the back thread: a stall on readbacks reads as the GPU (the EE blocked on a GS that is not CPU-bound), the
-	// mode is cheap to try (the light settle, no renderer reopen), and the back thread costs two renderer reopens
-	// when it does not help (OutRun and Need for Speed on the MQ65: 18 s late for it).
+	// The GPU is the cause: resolution moves the GPU's work most. Then the download mode, ahead of the back
+	// thread: a stall on readbacks reads as the GPU (the EE blocked on a GS that is not CPU-bound), the mode is
+	// cheap to try (the light settle, no renderer reopen), and the back thread costs two renderer reopens when
+	// it does not help.
 	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::Resolution, AutoTuneLever::DownloadMode,
 		AutoTuneLever::GsBackThread, AutoTuneLever::Blending};
 	// The same two when the game is so far under full speed that a notch of resolution cannot close the gap
@@ -251,11 +251,8 @@ AutoTuneBottleneck AutoTuneController::Classify(const AutoTuneWindow& m) const
 
 	if (m.mtvu_pct >= sat)
 		return AutoTuneBottleneck::Vu1;
-	// The IOP thread is the cause when the EE is stuck waiting for it: the EE then reads as saturated too (it
-	// spins), and the levers for an EE-bound game would not help. Its own CPU share is not evidence of that on
-	// its own: it paces itself against the EE and spins while it waits, so it reads saturated whenever the EE
-	// is, and the EE waiting 0% of its time for it says it keeps up. The CPU share is the answer only where the
-	// wait could not be measured.
+	// The IOP thread is the cause when the EE is stuck waiting for it; the EE spins there, so it reads saturated
+	// too. The IOP's own CPU share counts only where the wait could not be measured: it spins while it waits.
 	const bool iop_bound = m.ee_wait_iop_ratio.has_value() ? ee_blocked_on_iop : m.iop_pct >= sat;
 	if (iop_bound)
 		return AutoTuneBottleneck::Iop;
@@ -297,8 +294,7 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 		{
 			if (!s.hw_renderer)
 				return std::nullopt;
-			// The largest notch below the current multiplier, never under the first notch (1x).
-			// A multiplier already at or under the first notch has nowhere to go.
+			// The largest notch below the current multiplier; at or under the first notch there is nowhere to go.
 			const auto& notches = m_policy.resolution_notches;
 			if (notches.empty() || s.resolution <= notches.front() + kValueEpsilon)
 				return std::nullopt;
@@ -332,9 +328,8 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 			if (!s.hw_renderer)
 				return std::nullopt;
 			int floor = std::max(0, s.blending_floor);
-			// Basic to Minimum is a speed lever only where the GS thread on the CPU is the limit: on a GPU-bound
-			// game it measured +3.8% and -12% (SD865), and it is no help to a stall. Above Basic the steps are
-			// offered to every bottleneck.
+			// Basic to Minimum is a speed lever only where the GS thread on the CPU is the limit; it does not help
+			// a GPU-bound game or a stall. Above Basic the steps are offered to every bottleneck.
 			if (bottleneck != AutoTuneBottleneck::GsCpu)
 				floor = std::max(floor, kBlendingBasic);
 			if (s.blending_level > floor)
@@ -365,7 +360,6 @@ bool AutoTuneController::CheapLeversHaveSomethingToGive(double speed_pct, const 
 
 AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 {
-	// Average the bad windows that triggered this.
 	AutoTuneWindow mean;
 	mean.has_gpu_timer = m_streak_windows.front().has_gpu_timer;
 	double speed = 0, late = 0, ee = 0, mtgs = 0, gsb = 0, vu = 0, iop = 0, gpu = 0, wgs = 0, wvu = 0, wiop = 0;
@@ -437,7 +431,6 @@ AutoTuneAction AutoTuneController::Diagnose(const AutoTuneLeverState& state)
 		return action;
 	}
 
-	// So far under full speed that one notch of resolution cannot close the gap: see the policy.
 	std::vector<double> streak_speeds;
 	for (const AutoTuneWindow& w : m_streak_windows)
 		streak_speeds.push_back(w.speed_pct);
@@ -561,10 +554,9 @@ uint32_t& AutoTuneController::RetriesFor(AutoTuneLever lever, double value)
 
 bool AutoTuneController::SceneChangedDuringTrial(double noise) const
 {
-	// The two halves of the measurement tell different stories. A trial's windows are one state of the game,
-	// the lever's; when the first half and the second half differ by more than the noise, something moved
-	// while they were taken. Two lumps of windows also make the spread-based noise estimate too small, which
-	// is how a loss inside the lumps looked certain. The governor ramps down and back by design.
+	// A trial's windows are one state of the game, the lever's. When the first and second half differ by more
+	// than the noise, something moved while they were taken. Two lumps of windows also make the spread-based
+	// noise estimate too small. The governor is exempt: it ramps down and back by design.
 	const size_t n = m_trial.speeds.size();
 	if (n >= m_policy.scene_halves_min_windows && n >= 4 && m_trial.lever != AutoTuneLever::EeGovernor)
 	{
@@ -622,16 +614,14 @@ AutoTuneAction AutoTuneController::FinishTrial()
 	                   (!was_good_speed || was_late);
 
 	// Keep: the speed clearly rose, or reached full speed. Only the speed earns a keep. A cost falls whenever
-	// work is split over more threads, whether or not the game is faster (the GS back thread on God of War II:
-	// -14% GS cost, speed 39.7% -> 39.5%, the EE still the limit), so a lower cost on its own is not a reason to
-	// give up a core or a setting.
+	// work is split over more threads, whether or not the game is faster, so a lower cost on its own is not a
+	// reason to give up a core or a setting.
 	const bool keep = fixed || speed.clear;
 	// Reject, and remember it: the speed clearly fell, or it shows no gain even allowing for the noise and the
 	// cost shows none either. Anything else is looked at for longer, and then inconclusive.
 	//
-	// The speed clearly fell, whatever the cost did: the lever made things worse, and that is as good a
-	// measurement as there is. It ends the trial at the first look instead of keeping the player at the lower
-	// speed for another eight windows.
+	// A speed that clearly fell is rejected at the first look, whatever the cost did, so the player is not kept at
+	// the lower speed while more windows are taken.
 	const bool hurt = speed.worse;
 	// A cost that clearly fell is the one thing that holds a flat speed back from a rejection at the first look:
 	// the speed may follow it. If it does not, the longer look ends in a rejection (below).

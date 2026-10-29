@@ -68,7 +68,7 @@ namespace Catalog
 	{
 		std::string name;
 		std::string page; ///< their own page: a forum profile, say
-		std::string avatar; ///< their profile picture
+		std::string avatar;
 		std::string tip;
 		std::string socials;
 	};
@@ -93,7 +93,7 @@ namespace Catalog
 
 		/// Who made the pack, lead first.
 		///
-		/// EMPTY MEANS NOBODY HAS NAMED THE CREATOR: the entry carried "creators": []. Say so
+		/// Empty means nobody has named the creator (the entry carried "creators": []). Say so
 		/// ("Creator not identified") instead of showing `authors`.
 		///
 		/// An entry without a "creators" key comes from a catalog that predates the field; its
@@ -108,7 +108,6 @@ namespace Catalog
 		/// "complete", "in_progress", "incomplete" or "partial"; empty when not known.
 		std::string completeness;
 
-		// What installing needs.
 		std::string download_url; ///< Empty on a split pack.
 		std::vector<TexturePackPart> parts; ///< Empty for a single-file pack.
 		TexturePackFormat format = TexturePackFormat::Zip;
@@ -118,7 +117,6 @@ namespace Catalog
 		u64 archive_revision = 0; ///< 0 for zip.
 		u64 decompressed_size_bytes = 0; ///< Exact tar stream length; 0 for zip.
 
-		/// True if a creator is named, i.e. creators is not empty.
 		bool HasNamedCreators() const { return !creators.empty(); }
 
 		/// The creators' names on one line, "A, B"; empty when nobody is named.
@@ -160,12 +158,7 @@ namespace Catalog
 	/// the schema version is outside 1..2, there is no "entries" array, or no entry survives.
 	std::optional<CatalogParseResult> ParseTexturePackCatalog(std::string_view json, std::string* error = nullptr);
 
-	/// The packs that list `serial`.
 	std::vector<const TexturePack*> FindPacksForSerial(const std::vector<TexturePack>& packs, std::string_view serial);
-
-	// ---------------------------------------------------------------------------------------
-	// Loading
-	// ---------------------------------------------------------------------------------------
 
 	class TexturePackCatalog
 	{
@@ -226,15 +219,10 @@ namespace Catalog
 		Config m_config;
 	};
 
-	// ---------------------------------------------------------------------------------------
-	// Popularity ("Popular Today")
-	// ---------------------------------------------------------------------------------------
-
 	/// https://iconstats.ps2ktxpak.net/textures/ : an anonymous counter that counts each pack
 	/// once per person per day.
 	static constexpr const char* TEXTURE_STATS_BASE_URL = "https://iconstats.ps2ktxpak.net/textures/";
 
-	/// How many ids FetchPopularPackIds() keeps.
 	static constexpr size_t POPULAR_PACK_COUNT = 10;
 
 	/// Pack ids the counter accepts and the app sends: ^[a-z0-9][a-z0-9._-]{1,254}$
@@ -249,11 +237,10 @@ namespace Catalog
 	/// has been downloaded yet today.
 	std::optional<std::vector<std::string>> FetchPopularPackIds(Fetcher& fetcher, const CancelToken& cancel = {});
 
-	/// Tells the counter that a pack the player chose has installed: the id, nothing else. Call it
-	/// after a successful user-started install, from a worker thread. `allowed` is the caller's
-	/// answer to "may the app phone home?" (the UI ties it to its online-features toggle); when it
-	/// is false, or the id is not valid, nothing is sent. Not retried. Returns true if the counter
-	/// acknowledged it. `cancel` abandons the request (it otherwise waits up to 30 s for a silent server),
-	/// which a UI that is shutting down uses to get its worker back.
+	/// Tells the counter that a pack the user chose has installed; only the id is sent. Call it from
+	/// a worker thread after a successful user-started install. `allowed` is whether the app may
+	/// phone home (the UI ties it to its online-features toggle); when it is false, or the id is not
+	/// valid, nothing is sent. Not retried. Returns true if the counter acknowledged it. `cancel`
+	/// abandons the request, which otherwise waits up to 30 s for a silent server.
 	bool PostInstallHit(Fetcher& fetcher, std::string_view pack_id, bool allowed, const CancelToken& cancel = {});
 } // namespace Catalog

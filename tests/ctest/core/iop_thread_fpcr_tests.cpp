@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The IOP thread's floating-point control register (IOP thread design 3.10): it starts with the EE thread's, and a
+// The IOP thread's floating-point control register: it starts with the EE thread's, and a
 // CPU settings change reapplies it through the host command queue.
 
 #include "IopThreadTestSupport.h"
@@ -11,8 +11,6 @@
 #include <vector>
 
 using namespace iopt;
-
-// ================================================================ the IOP thread's FPCR
 
 namespace
 {
@@ -31,7 +29,6 @@ namespace
 		[](u32) {},
 	};
 
-	// Puts the item table, the FPCR setting and the EE thread's FPCR back.
 	class FpcrGuard
 	{
 	public:
@@ -104,7 +101,7 @@ TEST(IopThreadFpcr, TheFirstIopCodeAfterAnFpcrChangeRunsWithTheNewValue)
 	ASSERT_TRUE(IopThread::LockstepActive());
 	EXPECT_EQ(FpcrOnIopThreadNow(), a.bitmask) << "the thread starts with the EE's FPCR";
 
-	// A settings change mid-run, as CheckForCPUConfigChanges makes it: set the EE thread's FPCR, tell the IOP thread.
+	// Same sequence as CheckForCPUConfigChanges: set the EE thread's FPCR, then notify the IOP thread.
 	EmuConfig.Cpu.FPUFPCR = b;
 	FPControlRegister::SetCurrent(b);
 	IopThread::OnCpuConfigChanged();
@@ -116,7 +113,6 @@ TEST(IopThreadFpcr, TheFirstIopCodeAfterAnFpcrChangeRunsWithTheNewValue)
 	IopThread::OnCpuConfigChanged(); // a second call with nothing new changes nothing
 	EXPECT_EQ(FpcrOnIopThreadNow(), c.bitmask);
 
-	// Back to the first value: the last change wins.
 	EmuConfig.Cpu.FPUFPCR = a;
 	FPControlRegister::SetCurrent(a);
 	IopThread::OnCpuConfigChanged();

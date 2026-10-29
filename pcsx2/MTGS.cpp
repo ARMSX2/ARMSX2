@@ -281,9 +281,8 @@ void MTGS::PostVsyncStart(bool registers_written)
 	s_VsyncSignalListener.store(true, std::memory_order_release);
 	//Console.WriteLn( Color_Blue, "(EEcore Sleep) Vsync\t\tringpos=0x%06x, writepos=0x%06x", m_ReadPos.load(), m_WritePos.load() );
 
-	// The dominant GS-bound blocker: the EE thread is held here for as long as the GS thread
-	// is behind. Timed on this branch only - the queue-has-room return above is the frame's
-	// normal path and must not read a clock.
+	// The EE thread blocks here for as long as the GS thread is behind. Only this path is timed:
+	// the queue-has-room return above is the frame's normal path and must not read a clock.
 	const u64 wait_begin = EECycleRateSampler::BeginWait();
 	s_sem_Vsync.Wait();
 	EECycleRateSampler::EndGSWait(wait_begin);
@@ -661,8 +660,8 @@ void MTGS::WaitGS(bool syncRegs, bool weakWait, bool isMTVU)
 
 	SetEvent();
 
-	// Both branches block: the MTVU weak wait spins on the ring-busy mutex, the ordinary one
-	// sleeps until the ring drains. BeginWait() returns nothing when the caller is the MTVU
+	// Both branches block (the MTVU weak wait spins on the ring-busy mutex, the ordinary one
+	// sleeps until the ring drains), so both are timed. BeginWait() returns nothing on the MTVU
 	// thread, which is where the weak wait comes from.
 	const u64 wait_begin = EECycleRateSampler::BeginWait();
 
@@ -774,8 +773,8 @@ void MTGS::GenericStall(uint size)
 
 	if (freeroom <= size)
 	{
-		// Both branches below block the EE thread on the GS thread - one sleeping, one
-		// spinning - so both are timed, and the fast return above is untouched.
+		// Both branches below block the EE thread (one sleeps, one spins) and are timed; the fast
+		// return above is not.
 		const u64 wait_begin = EECycleRateSampler::BeginWait();
 
 		// writepos will overlap readpos if we commit the data, so we need to wait until

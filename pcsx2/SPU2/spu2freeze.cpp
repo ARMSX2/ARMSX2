@@ -87,14 +87,12 @@ s32 SPU2Savestate::FreezeIt(DataBlock& spud)
 
 #ifdef PCSX2_RECOMPILER_TESTS
 // Test-only, for ee_divtrace::FingerprintIop. Fills 'out' with the block
-// SPU2freeze(Save) writes, then removes the one part of it that differs from
-// process to process: V_Voice::SBuffer is a raw pointer into pcm_cache_data,
-// which FreezeIt copies as it is (ThawIt rebuilds it from NextA), so its value
-// moves with ASLR. It becomes the byte offset into pcm_cache_data, or ~0 for
-// null. DMAPtr/DMARPtr are already offsets after FreezeIt.
-//
-// FreezeIt only reads the SPU2 and writes into 'out'; it does not mix, run
-// TimeUpdate or touch the ADPCM cache.
+// SPU2freeze(Save) writes, with the one process-dependent part made stable:
+// V_Voice::SBuffer is a raw pointer into pcm_cache_data that FreezeIt copies
+// as it is (ThawIt rebuilds it from NextA), so it moves with ASLR. It becomes
+// the byte offset into pcm_cache_data, or ~0 for null. DMAPtr/DMARPtr are
+// already offsets after FreezeIt. Nothing is mixed or run: TimeUpdate and the
+// ADPCM cache are not touched.
 void SPU2freezeForFingerprint(std::vector<u8>& out)
 {
 	out.assign(sizeof(SPU2Savestate::DataBlock), 0);

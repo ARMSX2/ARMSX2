@@ -26,7 +26,6 @@ namespace Catalog
 		virtual bool Remove(const std::string& path) = 0;
 	};
 
-	/// The real file system.
 	class RealFileOps final : public FileOps
 	{
 	public:
@@ -50,7 +49,6 @@ namespace Catalog
 		}
 	};
 
-	/// A shared RealFileOps, for default arguments.
 	inline FileOps& GetRealFileOps()
 	{
 		static RealFileOps ops;

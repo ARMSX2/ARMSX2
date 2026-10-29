@@ -319,7 +319,6 @@ TEST_F(GSAlphaBitLogicOpDraw, DateDrawThatFlipsTheBitDoesNotShare)
 	EXPECT_EQ(m_device->m_date_copy, GSAlphaBitLogicOp::NoDateCopy);
 }
 
-// Without the device rule nothing changes.
 TEST_F(GSAlphaBitLogicOpDraw, WithoutTheDeviceRuleDateDrawsDoNotShare)
 {
 	GSConfig.UpscaleMultiplier = 1.0f;

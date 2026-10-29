@@ -1236,9 +1236,8 @@ TEST(EeRecMmiCoherence, SqFaultPathStoresResidentQuad)
 //
 // recQFSRV is where that used to bite: a second path for adjacent sources
 // (Rs == Rt+1) took &GPR.r[Rt] and Ldr'd 128 unaligned bits across the two
-// registers. Twelve of the adjacent pairs have a pinned source — five
-// both-pinned, ($v0,$v1) ($v1,$a0) ($a0,$a1) ($a1,$a2) ($s0,$s1), seven with
-// one — and that is the register range a funnel-shift memcpy loop uses. QFSRV loads each
+// registers. Twelve of the adjacent pairs have a pinned source (five with both
+// pinned), and that is the register range a funnel-shift memcpy loop uses. QFSRV loads each
 // operand through mmiLoadReg now, so the merge covers all three cases below.
 
 // Unpinned, the write reaches memory and there is nothing stale to catch.
@@ -1289,7 +1288,7 @@ TEST(EeRecMmiCoherence, QfsrvAdjacentDirtyPinnedRsIsMerged)
 	// A stale read yields the pre-write Rs bytes: UD[1] == 0x1122334499AABBCC.
 }
 
-// The same through a non-adjacent pair. Rs is $a3, which is not a pin.
+// The same through a non-adjacent pair.
 TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPin)
 {
 	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a0, "$a0"));
@@ -1307,8 +1306,8 @@ TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPin)
 	h.ExpectMmiPair(reg::v0, 0xDDEE'FF00'F0E0'D0C0ull, 0x1122'3344'99AA'BBCCull);
 }
 
-// Non-adjacent again, with the dirty pin on the Rs side ($a2 -> x12, a
-// caller-saved pin) and Rt unpinned ($t1).
+// Non-adjacent again, with the dirty pin on the Rs side ($a2, a caller-saved
+// pin) and Rt unpinned.
 TEST(EeRecMmiCoherence, QfsrvNonAdjacentPathMergesDirtyPinnedRs)
 {
 	ASSERT_NO_FATAL_FAILURE(RequirePinned(reg::a2, "$a2"));

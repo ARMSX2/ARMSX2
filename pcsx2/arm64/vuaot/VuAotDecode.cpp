@@ -254,17 +254,16 @@ namespace vuaot
 
 	namespace
 	{
-		// Decoding is a pure function of the word and the compile passes ask
-		// for the same words many times: a small direct-mapped memo per thread.
+		// Decoding is a pure function of the word and the compile passes ask for the
+		// same words many times: a small direct-mapped memo per thread.
 		//
 		// The table is heap storage the thread owns, reached through a thread_local
 		// pointer. A thread_local array of 4096 entries (two tables, about 262 KB)
-		// made the program's static TLS block 265 KB, and glibc carves static TLS out
-		// of the stack of every thread it creates: cubeb's ALSA thread asks for 256 KiB
-		// and pthread_create failed on the handhelds. The pointer is constant-initialised
-		// (nullptr), so the lookup still needs no per-access TLS init guard; the first
-		// lookup of a thread allocates the zeroed table, and a thread_local holder
-		// frees it when the thread exits.
+		// would grow the static TLS block, and glibc carves static TLS out of the stack
+		// of every thread it creates, so threads with small stacks can fail in
+		// pthread_create. The pointer is constant-initialised (nullptr), so the lookup
+		// needs no per-access TLS init guard; a thread_local holder allocates the
+		// zeroed table on a thread's first lookup and frees it when the thread exits.
 		template <typename T, T (*Decode)(u32)>
 		const T& Memo(u32 code)
 		{

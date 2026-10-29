@@ -40,9 +40,9 @@ object Ps2IconRenderer {
     const val CAMERA_PITCH = 0.3f
 
     /**
-     * Buffers a moving icon keeps from frame to frame, so drawing a frame allocates nothing: a
-     * library full of turning covers would otherwise make garbage by the megabyte every second.
-     * One per animation; not for use by two renders at once.
+     * Buffers a moving icon keeps from frame to frame, so drawing a frame allocates nothing and a
+     * library full of turning covers does not churn garbage. One per animation; not for use by two
+     * renders at once.
      */
     class Scratch {
         internal var color = IntArray(0)
@@ -110,14 +110,13 @@ object Ps2IconRenderer {
      *
      * The front, turned slightly, at the animation's first frame is the default, since that is
      * the pose the icon is designed around. Only when it is clearly a poor view, under 60% of the
-     * area of the best one (GRAW's emblem is a coin that faces sideways and flips: edge-on it is
-     * a sliver, 52% from the camera's height), are other moments tried at the front, and then
-     * other angles. The closest a good rest view comes is Blinky head-on, at 61%. Candidates are drawn
-     * at thumbnail size, and the framing does not change with the turn, so area is how big the
-     * icon really looks from there.
+     * area of the best one (an emblem that faces sideways and flips is a sliver edge-on), are other
+     * moments tried at the front, and then other angles. Candidates are drawn at thumbnail size,
+     * and the framing does not change with the turn, so area is how big the icon really looks
+     * from there.
      *
      * Deliberately not judged by which way surfaces face: the stored normals can't be trusted for
-     * that (every normal on Bakugan's card points the same way, both faces included).
+     * that (some icons have every normal pointing the same way, both faces included).
      */
     fun choosePose(icon: Ps2Icon, sys: Ps2IconSys?, options: Options = Options()): Pose {
         val yaws = options.yaw?.let { floatArrayOf(it) } ?: YAW_CANDIDATES
@@ -153,12 +152,12 @@ object Ps2IconRenderer {
 
     /**
      * Icon space is x right, y down, z into the screen, with the camera on the -z side: that is
-     * the side a save's own logo reads correctly from (ESPN's, not mirrored). The icon.sys light
+     * the side a save's own logo reads correctly from (not mirrored). The icon.sys light
      * directions point the way the light travels, so a surface is lit by the reverse of each.
      *
-     * Back faces, wound clockwise on screen, are not drawn, as on the console: on 200 of 212 real
-     * saves everything visible is wound the other way, and Bakugan's card, which is built inside
-     * out, reads the right way round from either side only with its near face hidden.
+     * Back faces, wound clockwise on screen, are not drawn, as on the console: on nearly all real
+     * saves everything visible is wound the other way, and an icon built inside out reads the
+     * right way round from either side only with its near face hidden.
      *
      * The camera looks down on the model by [Options.pitch]. The model turns about its own vertical
      * axis, through the middle of its footprint, and is framed by the most room it takes on screen
@@ -196,7 +195,6 @@ object Ps2IconRenderer {
         val refY = buf.refY
         val baseY = buf.baseY
 
-        // Transform and light each vertex once.
         val sx = buf.sx; val syy = buf.sy; val sz = buf.sz
         val lit = buf.lit
 
@@ -254,7 +252,6 @@ object Ps2IconRenderer {
         )
     }
 
-    /** Where [icon] sits in a [w] x [h] tile, into [buf]: see [draw]. */
     private fun frame(icon: Ps2Icon, w: Int, h: Int, options: Options, cp: Float, sp: Float, buf: Scratch) {
         val f = framing(icon, w, h, options)
         buf.cx = f.cx
@@ -272,8 +269,7 @@ object Ps2IconRenderer {
      *  point gets from the axis in depth, for a GPU's depth buffer. */
     internal class Framing(val cx: Float, val cz: Float, val scale: Float, val refY: Float, val baseY: Float, val depthRange: Float)
 
-    /** Where [icon] sits in a [w] x [h] tile: see [draw]. The software renderer and the GPU one
-     *  (IconGl) both use this, so the two agree to the pixel. */
+    /** Shared by the software renderer and the GPU one (IconGl), so the two agree to the pixel. */
     internal fun framing(icon: Ps2Icon, w: Int, h: Int, options: Options): Framing {
         val cp = cos(options.pitch)
         val sp = sin(options.pitch)
@@ -362,8 +358,8 @@ object Ps2IconRenderer {
     private val BROWSER_BACKGROUND = intArrayOf(0x1A2A4A, 0x1A2A4A, 0x0A0F1E, 0x0A0F1E)
 
     private fun background(px: IntArray, w: Int, h: Int, sys: Ps2IconSys?) {
-        // The save's gradient over the browser's, at the save's own opacity: ESPN's black at 96/128
-        // is a dark blue on the console, not the flat black the colours alone would give.
+        // The save's gradient over the browser's, at the save's own opacity: a black gradient at
+        // 96/128 is a dark blue on the console, not the flat black the colours alone would give.
         val alpha = (sys?.backgroundAlpha ?: 0) / 128f
         val c = IntArray(4) { i ->
             val over = sys?.background?.get(i) ?: 0
@@ -475,8 +471,8 @@ object Ps2IconRenderer {
             lerp2(c00 and 0xFF, c10 and 0xFF, c01 and 0xFF, c11 and 0xFF, ax, ay)
     }
 
-    // Both inline, here where they run for every channel of every pixel: as calls (coerceIn is one,
-    // shared with the rest of the app once shrunk) they were a fifth of a moving cover's time.
+    // Both inline: they run for every channel of every pixel, and as calls (coerceIn is one) the
+    // call overhead was a large share of a moving cover's frame time.
     @Suppress("NOTHING_TO_INLINE")
     private inline fun lerp2(a: Int, b: Int, c: Int, d: Int, ax: Float, ay: Float): Int {
         val top = a + (b - a) * ax
@@ -484,7 +480,6 @@ object Ps2IconRenderer {
         return byte(top + (bottom - top) * ay)
     }
 
-    /** 0..255 from a float, clamped. */
     @Suppress("NOTHING_TO_INLINE")
     private inline fun byte(v: Float): Int {
         val i = v.toInt()

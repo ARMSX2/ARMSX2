@@ -15,10 +15,8 @@
 //                 write with bit 5 or 7, resets 12-15 and sets bit 13; the SIF pumps clear their own bits
 //   F260          the EE writes it, an IOP write sets it to 0
 //
-// The first half of this file records what those accesses do today, value by value, so that making
-// them atomic can be checked not to move any of it. The second half runs the EE side and the IOP side
-// of one register on two threads at once. A plain read-modify-write loses an update when the other
-// side's lands between its load and its store; an atomic one cannot, so the counts come out exact.
+// The first half of this file pins what each access does, value by value. The second half runs the EE
+// side and the IOP side of one register on two threads at once.
 //
 // Memory. The IOP window reads and writes through psxMemRLUT/psxMemWLUT and iopMem->Sif, and the
 // handlers read psxRegs; this file points them at a heap block and a small table instead of bringing up
@@ -97,11 +95,10 @@ namespace
 		s_saved = nullptr;
 	}
 
-	// The EE's side.
 	u32 EeRead(u32 reg) { return hwRead32<0x0f>(reg); }
 	void EeWrite(u32 reg, u32 value) { hwWrite32<0x0f>(reg, value); }
 
-	// The IOP's side, by the register's EE address.
+	// IOP side; `reg` is the register's EE address.
 	u32 IopRead32(u32 reg) { return iopMemRead32(kIopSbus + (reg & 0xff)); }
 	u16 IopRead16(u32 reg) { return iopMemRead16(kIopSbus + (reg & 0xff)); }
 	void IopWrite32(u32 reg, u32 value) { iopMemWrite32(kIopSbus + (reg & 0xff), value); }
@@ -130,8 +127,6 @@ namespace
 	bool Sbus::s_ready = false;
 } // namespace
 
-// ---- What each register does, from either side ------------------------------------------------
-
 TEST_F(Sbus, F200TheEeWritesAndTheIopReads)
 {
 	EeWrite(SBUS_F200, 0x12345678);
@@ -140,7 +135,6 @@ TEST_F(Sbus, F200TheEeWritesAndTheIopReads)
 	EXPECT_EQ(0x12345678u, IopRead32(SBUS_F200));
 	EXPECT_EQ(0x5678u, IopRead16(SBUS_F200));
 
-	// An IOP write is dropped.
 	IopWrite32(SBUS_F200, 0xDEADBEEF);
 	IopWrite16(SBUS_F200, 0xBEEF);
 	EXPECT_EQ(0x12345678u, Word(SBUS_F200));
@@ -163,7 +157,6 @@ TEST_F(Sbus, F210TheIopWritesAndTheEeReads)
 	EXPECT_EQ(0xAABB1234u, Word(SBUS_F210));
 	EXPECT_EQ(0xAABB1234u, EeRead(SBUS_F210));
 
-	// An EE write is stored as it is.
 	EeWrite(SBUS_F210, 0x01020304);
 	EXPECT_EQ(0x01020304u, IopRead32(SBUS_F210));
 }
@@ -181,7 +174,6 @@ TEST_F(Sbus, F220TheEeSetsBitsAndTheIopClearsThem)
 	IopWrite32(SBUS_F220, 0xFFFFFFFF);
 	EXPECT_EQ(0u, Word(SBUS_F220));
 
-	// Bits the EE sets again after a clear are set.
 	EeWrite(SBUS_F220, 0x80000000);
 	EXPECT_EQ(0x80000000u, IopRead32(SBUS_F220));
 }
@@ -292,13 +284,13 @@ TEST_F(Sbus, TheRegistersDoNotTouchEachOther)
 		EXPECT_EQ(regs[i] == SBUS_F220 ? 0x33333F33u : start[i], Word(regs[i])) << std::hex << regs[i];
 }
 
-// ---- Both sides at once ------------------------------------------------------------------------
+// The tests below run the EE side and the IOP side of one register on two threads. A plain
+// read-modify-write loses an update when the other side's write lands between its load and its store.
 //
-// The EE side sets bits of a register one after another; the IOP side finds each set bit and clears it,
-// and counts what it cleared. If no update is lost the IOP clears exactly as many bits as the EE set,
-// because the EE only reuses a bit after the IOP cleared it. An update lost on either side shows as a
-// count that is not the rounds: a set that a clear overwrote is never seen (fewer), a clear that a set
-// overwrote is seen again (more).
+// The setter sets bits of a register one after another; the clearer finds each set bit, clears it, and
+// counts what it cleared. If no update is lost the count equals the rounds, because the setter only
+// reuses a bit after the clearer cleared it. A set that a clear overwrote is never seen (fewer); a clear
+// that a set overwrote is seen again (more).
 
 namespace
 {
@@ -312,7 +304,6 @@ namespace
 		u64 cleared = 0;
 	};
 
-	// F220: the EE sets, the IOP clears.
 	void RunEeSetsIopClears(Handshake& h)
 	{
 		std::thread ee([&h] {
@@ -350,7 +341,6 @@ namespace
 		iop.join();
 	}
 
-	// F230: the IOP sets, the EE clears.
 	void RunIopSetsEeClears(Handshake& h)
 	{
 		std::thread iop([&h] {
@@ -411,9 +401,8 @@ TEST_F(Sbus, F230NoSetIsLostWhenTheIopSetsWhileTheEeClears)
 	EXPECT_EQ(0u, Word(SBUS_F230) & 0xFFFF);
 }
 
-// The control register has the EE changing bit 8 while the IOP toggles bit 4. Each side's bit ends where
-// its own operations leave it, whatever the other did meanwhile: the IOP toggled an even number of times,
-// and the EE's last write set bit 8.
+// The EE changes bit 8 of the control register while the IOP toggles bit 4. Each side's bit ends where
+// its own operations leave it: the IOP toggled an even number of times, and the EE's last write set bit 8.
 TEST_F(Sbus, F240EachSidesBitEndsWhereItsOwnWritesLeaveIt)
 {
 	constexpr u32 kToggles = 200000; // even

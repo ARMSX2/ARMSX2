@@ -112,7 +112,7 @@ private fun ControllerOptions(
                 ChoiceRow(str("pad.player1"), state.player == 0, { viewModel.setPlayer(0) }, Modifier.weight(1f).controllerFocusable("controls.player1", RoundedCornerShape(14.dp), onConfirm = { viewModel.setPlayer(0) }))
                 ChoiceRow(str("pad.player2"), state.player == 1, { viewModel.setPlayer(1) }, Modifier.weight(1f).controllerFocusable("controls.player2", RoundedCornerShape(14.dp), onConfirm = { viewModel.setPlayer(1) }))
             }
-            // Scrolls like a long chip row should: three sections do not fit side by side everywhere.
+            // Three sections do not fit side by side on every screen, so the row scrolls.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(7.dp),
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -143,7 +143,7 @@ private fun ControllerOptions(
                     onConfirm = { viewModel.setDpadAsStick(!state.dpadAsStick) },
                 ),
             )
-            // Here as well as in the Pad tab: docking happens mid-game, and this is the screen open then.
+            // Also in the Pad tab; docking happens mid-game, when this is the open screen.
             SettingSwitchRow(
                 str("pad.allToPlayer1.label"), str("pad.allToPlayer1.description"), state.allToPlayer1, viewModel::setAllToPlayer1,
                 modifier = Modifier.controllerFocusable(
@@ -151,8 +151,7 @@ private fun ControllerOptions(
                     onConfirm = { viewModel.setAllToPlayer1(!state.allToPlayer1) },
                 ),
             )
-            // Which player each connected controller is. Several can share one. Only the players
-            // Multitap arms, like the Pad tab: a pin past them would route input nowhere.
+            // Only the players Multitap arms, as in the Pad tab: a pin past them would route input nowhere.
             if (!state.allToPlayer1 && state.pads.isNotEmpty()) {
                 SectionTitle(str("pad.section.controllers"), str("pad.assign.help"))
                 val slotCount = if (state.multitap) com.armsx2.input.PadRouter.MAX_PADS else 2
@@ -223,10 +222,7 @@ private fun ControllerBindings(state: ControllerManagerUiState, viewModel: Contr
     }
 }
 
-/**
- * Saved mapping profiles: one tap loads a profile into the player picked on the left, mid-game.
- * Saving happens here too, so a map made for one game is a tap away in the next.
- */
+/** Saved mapping profiles: a tap loads one into the player picked on the left; a new one can be saved here. */
 @Composable
 private fun ProfilePanel(state: ControllerManagerUiState, viewModel: ControllerManagerViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

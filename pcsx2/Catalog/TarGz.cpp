@@ -180,7 +180,6 @@ namespace Catalog
 				value = (value << 3) | static_cast<u64>(field[i] - '0');
 				any = true;
 			}
-			// What follows must be padding.
 			for (; i < length; i++)
 			{
 				if (field[i] != ' ' && field[i] != '\0')
@@ -392,7 +391,6 @@ namespace Catalog
 
 			const u64 padding = (BLOCK_SIZE - (size % BLOCK_SIZE)) % BLOCK_SIZE;
 
-			// ---- metadata headers: their data is not a file --------------------------------
 			if (type == 'L' || type == 'K' || type == 'x' || type == 'g')
 			{
 				if (size > MAX_METADATA_BYTES)
@@ -417,7 +415,6 @@ namespace Catalog
 				continue; // 'K' (long link target) and 'g' (global pax) carry nothing we use
 			}
 
-			// ---- the entry's name ----------------------------------------------------------
 			std::string name;
 			if (pax.has_path)
 				name = pax.path;

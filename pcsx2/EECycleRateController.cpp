@@ -8,14 +8,12 @@
 
 namespace
 {
-	// The selector range the speedhack has always had.
+	// Selector range of the EE cycle-rate speedhack.
 	constexpr int kMinSelector = -3;
 	constexpr int kMaxSelector = 3;
 
-	// Ratios are dimensionless and mostly land under 2. This is not a plausibility
-	// check, it is a "the sampler produced garbage" check: anything past it means a
-	// counter wrapped or a divisor was near zero, and the window is thrown away
-	// rather than repaired.
+	// Ratios are dimensionless and normally under 2. A ratio past this means a counter
+	// wrapped or a divisor was near zero; the window is discarded, not repaired.
 	constexpr float kMaxRatio = 1.0e4f;
 
 	s8 ClampSelector(s8 selector)
@@ -133,14 +131,12 @@ EECycleRateDecision EECycleRateController::GoToBaseline(State next_state)
 	return EECycleRateDecision::RestoreBaseline;
 }
 
-// A downshift that measurably bought nothing gives back one step, not the whole
-// underclock: any step below it was judged on its own two windows and passed, and
-// throwing those away would cost real time already proven to be there.
+// Gives back one step, not the whole underclock: earlier steps were each judged on
+// their own windows and passed.
 //
-// The inhibit that follows is deliberately not a state. It drains through Observe
-// and Cooldown alike, so the cooldown of this very upshift - or of a later one -
-// cannot shorten it, and headroom keeps working throughout, so the controller can
-// still climb back to the baseline while it runs.
+// The downshift inhibit that starts here is not a state. It drains through Observe
+// and Cooldown alike, so no cooldown can shorten it, and headroom still works while
+// it runs.
 EECycleRateDecision EECycleRateController::UndoIneffectiveStep()
 {
 	++m_ineffective_count;
@@ -161,9 +157,8 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 {
 	const s8 baseline = ClampSelector(eligibility.baseline);
 
-	// Eligibility is the one thing that acts without a measurable window: whatever
-	// suspended the governor - hardcore mode, turbo, a cycle-skip setting, a pause -
-	// wants the player's configured rate back now, not two windows from now.
+	// Loss of eligibility (hardcore mode, turbo, a cycle-skip setting, a pause) acts
+	// without waiting for a measurable window: the configured rate is restored now.
 	if (!eligibility.enabled || !eligibility.eligible)
 	{
 		if (m_effective != m_baseline)
@@ -179,7 +174,6 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 
 	if (m_state == State::Disabled)
 	{
-		// First eligible window of a session, or the first after a suspension.
 		m_baseline = baseline;
 		m_effective = baseline;
 		ClearDwell();
@@ -189,9 +183,8 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 	}
 	else if (baseline != m_baseline)
 	{
-		// The configured rate moved underneath us - a settings apply, a game change.
-		// The old effective selector is a decision about a baseline that no longer
-		// exists, so it goes back and the evidence starts over.
+		// The configured rate changed (settings apply, game change). The effective
+		// selector was chosen for the old baseline, so restore and start over.
 		m_baseline = baseline;
 		if (m_effective != m_baseline)
 			return GoToBaseline(State::Warmup);
@@ -202,10 +195,9 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 		EnterWarmup();
 	}
 
-	// A window we could not measure is not evidence either way. It cannot move the
-	// selector, and it advances none of the clocks - not the warm-up, not the
-	// cooldown, not the downshift inhibit - but it does break a dwell run: two
-	// overloaded windows either side of a gap are not two consecutive ones.
+	// An unmeasurable window is no evidence either way: it cannot move the selector
+	// and advances no clock (warm-up, cooldown, downshift inhibit), but it does break
+	// a dwell run, since windows either side of a gap are not consecutive.
 	if (!IsSampleUsable(sample))
 	{
 		ClearDwell();
@@ -214,14 +206,12 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 
 	m_last_p90 = sample.p90_active_ratio;
 
-	// The inhibit is read before it is drained, so the window that spends the last
-	// of it is still inhibited - the same rule the timed states use, where the
-	// window that fills the cooldown is consumed by it.
+	// Read before draining, so the window that spends the last of the inhibit is
+	// still inhibited, as the window that fills a cooldown is consumed by it.
 	const bool downshift_inhibited = m_downshift_inhibit_seconds > 0.0;
 	if (downshift_inhibited)
 		m_downshift_inhibit_seconds = std::max(0.0, m_downshift_inhibit_seconds - sample.target_seconds);
 
-	// The timed states sit windows out entirely.
 	if (m_state != State::Observe)
 	{
 		double limit = 0.0;
@@ -244,8 +234,8 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 		return EECycleRateDecision::None;
 	}
 
-	// Did the last downshift buy anything? This runs before classification, so a
-	// step that did not help is undone rather than followed by another one.
+	// Runs before classification so an ineffective downshift is undone rather than
+	// followed by another one.
 	if (m_effectiveness_armed)
 	{
 		++m_effectiveness_seen;
@@ -262,10 +252,9 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 		}
 	}
 
-	// Four gates, and a downshift needs all four open together. Each of the last
-	// three is a way an earlier attempt at this feature went wrong: host load that
-	// was not deadline pressure, deadline pressure the EE thread did not cause, and
-	// a GS or VU1 bottleneck answered by slowing the EE down.
+	// A downshift needs all four gates open. The last three exclude host load that is
+	// not deadline pressure, pressure the EE thread did not cause, and a GS or VU1
+	// bottleneck that slowing the EE cannot fix.
 	const bool over_deadline = sample.p90_active_ratio >= m_policy.overload_p90;
 	const bool missing_frames = sample.late_ratio >= m_policy.overload_late;
 	const bool ee_is_the_cost = sample.own_time_ratio >= m_policy.min_own_time;
@@ -273,10 +262,10 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 	const bool overload = over_deadline && missing_frames && ee_is_the_cost && not_blocked_elsewhere;
 	const bool headroom = sample.p90_active_ratio <= m_policy.headroom_p90 && sample.late_ratio <= 0.0f;
 
-	// An overloaded window during the inhibit is not counted against the downshift
-	// dwell - the last step already answered this classification and it did not
-	// work. It falls through to the decay path instead. Headroom is untouched, so
-	// the way back to the baseline stays open the whole time.
+	// An overloaded window during the inhibit does not count toward the downshift
+	// dwell (the last step already answered it and did not help); it falls through
+	// to the decay path. Headroom is unaffected, so the way back to the baseline
+	// stays open.
 	if (overload && !downshift_inhibited)
 	{
 		m_headroom_dwell = 0;
@@ -291,9 +280,8 @@ EECycleRateDecision EECycleRateController::Update(const EECycleRateWindowSample&
 	}
 	else
 	{
-		// The deadband. Not evidence against the run, just a missing vote, so the
-		// counters decay instead of clearing - that is what stops a workload sitting
-		// on a threshold from alternating between the two decisions.
+		// Deadband: a missing vote, not evidence against the run. The counters decay
+		// rather than clear so a workload sitting on a threshold does not flip-flop.
 		if (m_overload_dwell > 0)
 			--m_overload_dwell;
 		if (m_headroom_dwell > 0)

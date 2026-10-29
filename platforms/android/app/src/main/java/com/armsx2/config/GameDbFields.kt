@@ -15,15 +15,13 @@ internal sealed class DbSets {
  *
  * Keyed by the entry's own name (what the log prints and what [GameDbOverrides.Entry.name]
  * carries), valued by the key [Settings.toJson] uses. The database's value is in the field's own
- * units for every entry here, which is what the pickers on the settings screens already assume
- * when they name an entry's value.
+ * units for every entry here.
  *
- * Left out on purpose, so the row shows the player's value as before: entries with no setting in
- * this app (EE division rounding, FPU multiply, VIF FIFO, interlaced field shift, large-ST
- * rewrite), the blending cap that only applies where reading the frame being drawn is slow, which
- * depends on the device, two whose values are not in the same units as their setting
- * (trilinear filtering, CPU sprite size), and two the core applies only while the player's own
- * value is still the default (deinterlacing, hardware download mode).
+ * Left out, so the row keeps showing the player's value: entries with no setting in this app, the
+ * blending cap that applies only where reading the frame being drawn is slow (device dependent),
+ * entries whose values are not in their setting's units (trilinear filtering, CPU sprite size),
+ * and entries the core applies only while the player's own value is still the default
+ * (deinterlacing, hardware download mode).
  */
 internal object GameDbFields {
     private fun exact(vararg pairs: Pair<String, String>): Map<String, DbSets> =

@@ -82,7 +82,6 @@ public:
 	/// The session is over: drops any trial without applying anything.
 	void End();
 
-	/// Carries out one action from the controller.
 	void Execute(const AutoTuneAction& action);
 
 	/// Takes back the trial in flight, if any, without remembering it as a failure. With `apply` the settings
@@ -117,10 +116,10 @@ namespace AutoTune
 	/// it does not know, so it writes the key back to its store here. Set once at start-up, before any VM exists.
 	extern void (*g_on_committed)(const char* section, const char* key, std::string_view value);
 
-	/// True while auto-tune is applying settings itself: a trial, an undo, a keep, a reset. Applying settings
-	/// shows the game database's hints on screen again (a recommended blending level, AA1) and the unsafe
-	/// settings warning, and a convergence is six to nine applies in a row, so those stay quiet then. A settings
-	/// change by the player is not auto-tune's and still shows them. CPU thread.
+	/// True while auto-tune is applying settings itself (a trial, an undo, a keep, a reset). Each apply would
+	/// show the game database's hints (a recommended blending level, AA1) and the unsafe settings warning
+	/// again, and a convergence is several applies in a row, so those stay quiet. A settings change by the
+	/// player still shows them. CPU thread.
 	bool IsApplyingSettings();
 
 	/// Marks the settings applies made while it is alive as auto-tune's own. Nests.
@@ -132,8 +131,6 @@ namespace AutoTune
 		ApplyScope(const ApplyScope&) = delete;
 		ApplyScope& operator=(const ApplyScope&) = delete;
 	};
-
-	// ---- decisions that depend on the host and the game database, as pure functions ------------------
 
 	/// Settings the game database fixes for this game, in the terms the controller uses.
 	struct GameDbForced
@@ -148,8 +145,7 @@ namespace AutoTune
 	/// Whether the GS back thread is worth offering as a lever: the setting would be granted for this renderer
 	/// and download mode (GSDecideBackThread), and the thread would not have to share a processor with another busy
 	/// emu thread (`would_share_busy_core`, VMManager::Internal::GSBackThreadWouldShareBusyCore). On a host with
-	/// four performance cores and the IOP thread on, the back thread lands on one of them and costs the speed:
-	/// 66.6% without it, 53.7% with it (MQ65).
+	/// four performance cores and the IOP thread on, the back thread lands on one of them and costs speed.
 	bool GsBackThreadOffered(const GSBackThreadInputs& inputs, bool would_share_busy_core);
 
 	/// What the setting would be granted for: the renderer kind, the API of the device that is open (not the
@@ -165,11 +161,11 @@ namespace AutoTune
 	/// The live EE cycle-rate governor as a lever. Both read the governor's own resolver (EECycleRate::GetGovernorStatus),
 	/// so auto-tune and the governor cannot disagree about whether it runs. CPU thread.
 	///
-	/// Available: the governor would run in this game if asked, and a trial of it would change something. Nothing
-	/// is suspending it (hardcore mode, a cycle skip, a limiter that is not at normal speed, host-vsync pacing),
-	/// the player's rate has room to be lowered (the floor is under it), and the global switch is not already on
-	/// but held off by a pinned rate: a trial writes the same "on" the switch already says, the configuration
-	/// would not change, the caches would not reset and the sampler would never be told to start.
+	/// Available: the governor would run in this game if asked, and a trial of it would change something. That
+	/// needs nothing suspending it (hardcore mode, a cycle skip, a limiter off normal speed, host-vsync
+	/// pacing) and room to lower the player's rate (the floor is under it). It also excludes a global switch
+	/// that is already on but held off by a pinned rate: the trial would write the same "on", leave the
+	/// configuration unchanged, and the sampler would never be told to start.
 	/// Enabled: the governor is asked for in this game and nothing pins the rate.
 	bool GovernorAvailableFrom(const EECycleRate::GovernorStatus& status, bool dynamic_setting);
 	bool EeGovernorAvailable();
@@ -177,33 +173,28 @@ namespace AutoTune
 
 	/// Whether a finished trial says anything about its lever. Only the governor can fail to be tried: it acts
 	/// by lowering the EE rate, and if it never did during the trial the game was measured with a governor that
-	/// had not touched it (the game was not overloaded by its own tests, or it had not yet warmed up). That is
-	/// not "did not help", and the per-game file remembers "did not help" for good.
+	/// had not touched it (the game was not overloaded, or had not yet warmed up). That is not "did not help",
+	/// which the per-game file remembers for good; a later session may find the game overloaded.
 	bool TrialWasMeasured(AutoTuneLever lever, uint32_t governor_transitions_at_start, uint32_t governor_transitions_now);
 
-	// ---- what VMManager calls (CPU thread) ----------------------------------------------------------
-
-	/// The VM has finished booting.
+	// What VMManager calls, on the CPU thread.
 	void OnVMStarted();
 	/// The VM is shutting down: the trial layer is emptied and removed.
 	void OnVMShutdown();
-	/// The disc, ELF or game changed.
 	void OnGameChanged();
 	/// A savestate was loaded or the VM was reset: the scene is not the one being measured.
 	void OnSceneChanged();
-	/// The VM came back from a pause.
 	void OnResumed();
 	/// VMManager::ApplySettings() finished. Applies auto-tune did itself are told apart from the rest.
 	void OnSettingsApplied();
 	/// Once per frame, at vsync start.
 	void OnVSync();
 
-	// ---- the per-game record (any thread, no VM needed) -----------------------------------------------
+	// The per-game record: any thread, no VM needed.
 
 	/// Puts back what auto-tune changed in this game's settings file (except keys the player has changed since)
 	/// and forgets what it learned. When the game is the one running, the change is applied on the CPU thread.
 	ResetResult ResetForGame(const std::string& serial, u32 crc);
 
-	/// What auto-tune changed for this game, one readable line each.
 	std::vector<std::string> DescribeForGame(const std::string& serial, u32 crc);
 } // namespace AutoTune

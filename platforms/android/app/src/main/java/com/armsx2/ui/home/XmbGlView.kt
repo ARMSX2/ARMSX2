@@ -59,11 +59,7 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
         }
     }
 
-    /**
-     * Hold the wave still while the app is out of sight. A TextureView keeps its surface when the
-     * activity stops, so nothing else ends the loop: home, recents and a locked screen all left it
-     * drawing thirty frames a second that no one could see.
-     */
+    /** Pauses the wave while the app is out of sight: a TextureView keeps its surface when the activity stops, so nothing else ends the loop. */
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         thread?.paused = visibility != VISIBLE
@@ -108,7 +104,7 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
         private val cp = FloatArray(28)
         private var startNanos = 0L
 
-        /** Parks the loop while set. Parked, not polled: a hidden wave costs no wakeups at all. */
+        /** Parks the render thread while set, rather than polling. */
         @Volatile var paused = false
             set(value) { field = value; LockSupport.unpark(this) }
 
@@ -122,9 +118,8 @@ class XmbGlView(context: Context) : TextureView(context), TextureView.SurfaceTex
             var announced = false
             while (running) {
                 if (paused) {
-                    // Woken by the setter or by finish(). park() may also return early, which
-                    // only means another pass over this check. The clock moves with the pause, so
-                    // the wave comes back where it stopped.
+                    // Woken by the setter or finish(); an early return from park() just repeats this
+                    // check. The clock is advanced by the pause so the wave resumes where it stopped.
                     val parkedAt = System.nanoTime()
                     LockSupport.park(this)
                     startNanos += System.nanoTime() - parkedAt

@@ -58,9 +58,8 @@ namespace GSLadder
 		u32 every = 0;
 
 		/// Rungs placed after one named packet, each reading its own region. The
-		/// console payload's `-payload-at` writes the matching half, and both count
-		/// the same dump packets, so a rung here and a checkpoint there compare word
-		/// for word without either side interpreting the other's numbering.
+		/// console payload's `-payload-at` writes the matching half; both count the
+		/// same dump packets, so a rung here and a checkpoint there compare word for word.
 		struct At
 		{
 			u32 packet;

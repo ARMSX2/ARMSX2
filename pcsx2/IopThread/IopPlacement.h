@@ -1,12 +1,10 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Where the IOP thread runs, as pure functions of the host's processors and the settings.
-//
-// VMManager::SetEmuThreadAffinities pins the EE, GS and VU1 threads. With the IOP thread running
-// concurrently it is one more busy thread, so it takes a place in the same plans. The arithmetic
-// that decides how many threads there are, which processor each one gets and whether the GS back
-// thread still fits is here, apart from the OS calls, so a test can describe a device.
+// Where the IOP thread runs, as pure functions of the host's processors and the settings, kept
+// apart from the OS calls so a test can describe a device. VMManager::SetEmuThreadAffinities pins
+// the EE, GS and VU1 threads; with the IOP thread running concurrently it is one more busy thread
+// and takes a place in the same plans.
 //
 // The same file holds the one rule shared with ResolveMode: which processors are the performance
 // tier. ResolveMode counts them to decide whether the host has a core to spare, and the Android
@@ -23,9 +21,6 @@
 
 namespace IopThread
 {
-	// ---- the performance tier ----------------------------------------------------------------
-
-	/// One processor as the topology reader sees it.
 	struct CpuCapacity
 	{
 		u32 processor_id = 0; // the OS's number for it (Linux: linux_id); the mask bit is this number
@@ -61,8 +56,6 @@ namespace IopThread
 	/// EE thread is pinned to cpu 0, a little core, with the GS and the VU1 thread on the other little ones.
 	std::vector<u32> OrderProcessors(const std::vector<CpuCapacity>& cpus);
 
-	// ---- the placement plans -------------------------------------------------------------------
-
 	/// Android's Performance Cores mode: every busy emulation thread is confined to the performance
 	/// tier and the scheduler places them within it.
 	struct TierPlan
@@ -74,7 +67,7 @@ namespace IopThread
 	TierPlan PlanTier(u64 performance_mask, bool mtvu, bool iop_thread);
 
 	/// Android's ranked modes (1 to 6): each thread gets one processor from the list ordered fastest
-	/// first. ee, vu and gs are ranks, as before; the caller clamps them to the list. The IOP thread
+	/// first. ee, vu and gs are ranks; the caller clamps them to the list. The IOP thread
 	/// takes the first rank none of the others uses. -1 when there is no IOP thread to place or the
 	/// list has no rank left for it: it is then left alone, never put on another thread's processor.
 	struct RankPlan
@@ -99,8 +92,6 @@ namespace IopThread
 		u32 first_software_thread = 2;
 	};
 	OrderedPlan PlanOrdered(size_t list_size, bool mtvu, bool iop_thread);
-
-	// ---- the prime core ------------------------------------------------------------------------
 
 	/// A processor is "the prime core" when it is the only one at the top capacity and the rest of the tier is at
 	/// least this far below it. The SD865 (1024 against 871) and the T820 (1024 against 869) qualify; a Dimensity

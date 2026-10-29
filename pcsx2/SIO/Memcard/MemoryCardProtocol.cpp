@@ -518,7 +518,7 @@ void MemoryCardProtocol::AuthF3()
 	}
 	else
 	{
-		// An arcade dongle keeps the terminator it has through this step (PCSX2x6).
+		// An arcade dongle keeps the terminator it has through this step.
 		if (!Arcade::IsActive())
 			mcd->term = Terminator::READY;
 		The2bTerminator(5);

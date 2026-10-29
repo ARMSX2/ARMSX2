@@ -621,7 +621,6 @@ void GSDrawScanlineCodeGenerator::Step()
 
 				if (m_sel.stqplane)
 				{
-					// The plane's accumulators are integers (GSPerspectivePlane.h).
 					armAsm->Add(_temp_s.V4S(), _temp_s.V4S(), _vscratch.V4S());
 					armAsm->Add(_temp_t.V4S(), _temp_t.V4S(), _vscratch2.V4S());
 					armAsm->Add(_temp_q.V4S(), _temp_q.V4S(), v1.V4S());
@@ -862,11 +861,10 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 		// GSDrawScanline.cpp for why the width is fourteen.
 		if (m_sel.stqplane)
 		{
-			// The console's planes (GSPerspectivePlane.h): the accumulators are integers
-			// in units of g/2^14. Floor each to g/4 (the shift) and convert, so S/Q is a
-			// quotient of two counts and the power of two that takes it to 16.16 texels
-			// (2^(16 + TW), 2^(16 + TH)) rides on the product. The reciprocal is taken
-			// of the count: cutting its mantissa commutes with a power-of-two scale.
+			// Floor each g/2^14 accumulator to a count of g/4 (the shift) and convert, so S/Q is
+			// a quotient of two counts and the power of two that takes it to 16.16 texels
+			// (2^(16 + TW), 2^(16 + TH)) rides on the product. The reciprocal is taken of the
+			// count because cutting its mantissa commutes with a power-of-two scale.
 			armAsm->Sshr(v0.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
 			armAsm->Scvtf(v0.V4S(), v0.V4S());
 			armAsm->Fmov(v1.V4S(), 1.0f);
@@ -1270,7 +1268,6 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// Truncated reciprocal, as in SampleTexture above.
 		if (m_sel.stqplane)
 		{
-			// As in SampleTexture: the accumulators are integers in units of g/2^14.
 			armAsm->Sshr(local2.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
 			armAsm->Scvtf(local2.V4S(), local2.V4S());
 			armAsm->Fmov(local1.V4S(), 1.0f);
@@ -1327,8 +1324,8 @@ void GSDrawScanlineCodeGenerator::SampleTextureLOD()
 		// The logarithm is a 128-entry table on the top seven fractional bits of Q's
 		// mantissa (GSLevelOfDetail.h), not a polynomial log2.
 
-		// Q as a float. The plane rule keeps a count of g/4 (GSPerspectivePlane.h), so
-		// it is the count times 2^(E - 16); local2 held the reciprocal and is spent.
+		// With the plane rule Q is the count of g/4 times 2^(E - 16) (GSPerspectivePlane.h);
+		// local2 held the reciprocal and is spent.
 		VRegister qf = _temp_q;
 
 		if (m_sel.stqplane)

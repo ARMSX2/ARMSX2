@@ -11,7 +11,7 @@
 #include "VUmicro.h"
 
 #if defined(ARCH_ARM64)
-#include "arm64/iR5900-arm64.h" // recEeRepatchCycleCharges
+#include "arm64/iR5900-arm64.h"
 #endif
 
 #include "common/Assertions.h"
@@ -82,12 +82,11 @@ bool EECycleRate::ApplyEffective(s8 selector, const char* reason)
 	s_effective = selector;
 	s_transitions++;
 
-	// The EE recompiler's dependence on the selector is twelve baked charge
-	// immediates, and those can be rewritten in place — no reset, no lazy
-	// re-JIT of the next frame's working set. The pass either brings every
-	// recorded site into agreement with the new selector or touches nothing and
-	// says so; the reset stays as the fallback for everything it refuses, and
-	// stays unconditionally on x86, which has no such pass.
+	// The EE recompiler bakes the selector into charge immediates that can be
+	// rewritten in place, avoiding a reset and the re-JIT after it. The pass
+	// either brings every recorded site into agreement with the new selector or
+	// touches nothing and says so; the reset is the fallback for anything it
+	// refuses, and is always taken on x86, which has no such pass.
 	s_last_path = TransitionPath{};
 #if defined(ARCH_ARM64)
 	const bool patched = recEeRepatchCycleCharges(selector);
@@ -96,23 +95,22 @@ bool EECycleRate::ApplyEffective(s8 selector, const char* reason)
 	s_last_path.reason = "immediate patching is an AArch64 recompiler path";
 #endif
 
-	// The IOP thread needs no hold here. Everything below touches the EE recompiler's code
-	// and microVU0, and the IOP thread executes neither. The IOP recompiler is deliberately
-	// not reset: it bakes no EE selector, and ClearCPUExecutionCaches, which does reset it,
-	// must be called with the IOP thread held or stopped (IopThread::AssertHeldOrStopped).
-	// The only IOP-visible effect of a transition is that the EE's cycle counter advances
-	// at a different rate, and the IOP thread already follows that counter as the guest
-	// time base.
+	// The IOP thread needs no hold here: everything below touches the EE recompiler's code
+	// and microVU0, and the IOP thread executes neither. The IOP recompiler is not reset
+	// because it bakes no EE selector; ClearCPUExecutionCaches, which would reset it, must
+	// be called with the IOP thread held or stopped (IopThread::AssertHeldOrStopped). The
+	// only IOP-visible effect of a transition is that the EE's cycle counter, which the IOP
+	// thread follows as the guest time base, advances at a different rate.
 	//
 	// Order matters when the reset is taken. recResetEE defers to the next safe
 	// execution boundary when the EE is mid-execute; mVUreset is immediate.
 	// Between the two, a live EE block that reaches VU0 does so through a C
 	// entry point, so it meets the fresh mVU0 rather than a half-torn-down one.
 	//
-	// microVU0's reset is NOT optional on the patched path. mVUtestCycles
-	// scales its compile-time cycle count by the selector and then gates the
-	// emit on the scaled value being 1, so the emitted SHAPE changes with the
-	// selector — patching cannot add an instruction that was never emitted.
+	// microVU0's reset is required on the patched path too. mVUtestCycles scales its
+	// compile-time cycle count by the selector and gates the emit on the scaled value
+	// being 1, so the emitted code shape changes with the selector and patching cannot
+	// add an instruction that was never emitted.
 	const u64 t0 = GetCPUTicks();
 	if (!patched)
 		Cpu->Reset();
@@ -196,10 +194,10 @@ EECycleRateEligibility EECycleRate::ResolveEligibility(const EligibilityInputs& 
 
 	// Precedence. A per-game dynamic key is the player answering this exact question
 	// for this exact game, so it wins over everything, including a fixed-rate claim it
-	// sits next to. Failing that, any fixed-rate claim — from the database or from the
-	// per-game file — is a statement about this game's timing that a transient
-	// underclock would contradict, so the governor stays out. Only when nobody has
-	// claimed the rate does the global switch get to decide.
+	// sits next to. Otherwise any fixed-rate claim (database or per-game file) is a
+	// statement about this game's timing that a transient underclock would contradict,
+	// so the governor stays out. Only when nobody has claimed the rate does the global
+	// switch decide.
 	if (in.pergame_claims_dynamic)
 	{
 		out.enabled = in.dynamic_setting;

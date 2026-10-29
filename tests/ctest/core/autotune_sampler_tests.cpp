@@ -122,7 +122,6 @@ TEST(AutoTuneSampler, WaitsAreAShareOfTheTimeBetweenTwoDeliveries)
 	ASSERT_TRUE(w.ee_wait_vu1_ratio.has_value());
 	EXPECT_NEAR(*w.ee_wait_vu1_ratio, 0.05, 1e-9);
 
-	// The next window starts from the totals the last one ended on.
 	ASSERT_TRUE(sampler.Poll(Snap(2), Steady(), Tally(1.0, 60, 0, 0.20, 0.025), &w));
 	EXPECT_NEAR(*w.ee_wait_gs_ratio, 0.1, 1e-9);
 	EXPECT_NEAR(*w.ee_wait_vu1_ratio, 0.0, 1e-9);

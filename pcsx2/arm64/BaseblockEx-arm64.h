@@ -399,19 +399,16 @@ public:
 	}
 
 	// Stamp the redirect stub over one block's entry (and repoint its resident
-	// back-edge) WITHOUT erasing it from the array. Same protocol as Remove()
-	// above and the same effect on execution: the next dispatch of this startpc
-	// goes through JITCompile once the caller resets the LUT entry, and any
-	// link site still branching straight into the old code lands on the stub
-	// and re-dispatches. New() already handles recompiling a startpc whose
-	// BASEBLOCKEX is still present — it reuses the entry and retargets fnptr —
-	// which is the state recClear leaves the in-progress block in too.
+	// back-edge) without erasing it from the array. Same protocol as Remove():
+	// the next dispatch of this startpc goes through JITCompile once the caller
+	// resets the LUT entry, and any link site still branching into the old code
+	// lands on the stub and re-dispatches. New() reuses the entry and retargets
+	// fnptr when it recompiles a startpc whose BASEBLOCKEX is still present,
+	// which is also the state recClear leaves the in-progress block in.
 	//
-	// It exists because erase() is a memmove of the array tail, i.e. O(live
-	// blocks) per removed block. A cycle-rate transition can invalidate
-	// thousands of blocks at once, and paying that per block is quadratic in
-	// the working set: at 60k live blocks it is seconds, which is worse than
-	// the reset the whole exercise is trying to avoid.
+	// Exists because erase() is a memmove of the array tail, O(live blocks) per
+	// removed block, which goes quadratic when a cycle-rate transition
+	// invalidates thousands of blocks at once.
 	__fi void Invalidate(int idx)
 	{
 		if (!jitcompile)
@@ -433,10 +430,8 @@ public:
 		emitting_fnptr = 0;
 	}
 
-	// How many blocks are registered right now. The x86 BaseBlocks exposes
-	// this through its BaseBlockArray; this class never did. It is the
-	// denominator for anything that has to walk or repair every live block —
-	// a cycle-rate transition's cost, for one.
+	// Number of registered blocks: the denominator for anything that walks or
+	// repairs every live block, such as a cycle-rate transition's cost.
 	__fi u32 size() const { return blocks.size(); }
 
 #ifdef PCSX2_RECOMPILER_TESTS

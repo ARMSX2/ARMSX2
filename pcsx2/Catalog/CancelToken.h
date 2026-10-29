@@ -8,9 +8,8 @@
 
 namespace Catalog
 {
-	/// A cancel flag that can be handed to a worker thread. Copies share one flag: the UI keeps
-	/// a copy to call Cancel() on, the worker (and the fetch layer) poll IsCancelled() on theirs.
-	/// A default-constructed token is valid and simply never cancelled until someone cancels it.
+	/// A cancel flag to hand to a worker thread. Copies share one flag: the UI keeps a copy to
+	/// Cancel(), the worker (and the fetch layer) poll IsCancelled() on theirs.
 	class CancelToken
 	{
 	public:

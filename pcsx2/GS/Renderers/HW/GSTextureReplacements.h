@@ -60,7 +60,6 @@ namespace GSTextureReplacements
 	/// Whether a texture of this size is worth upscaling: at least 8 pixels on a side, at most 1024.
 	bool CanUpscaleTexture(int width, int height);
 
-	/// What LookupUpscaledTexture needs to read the guest levels of one texture.
 	struct UpscaleRequest
 	{
 		GSTextureCache::HashCacheKey key;

@@ -46,8 +46,6 @@ namespace
 	}
 } // namespace
 
-// ---- URL helpers ------------------------------------------------------------------------
-
 TEST(CatalogUrl, OnlyHttpsWithAHostIsAccepted)
 {
 	EXPECT_TRUE(IsHttpsUrl("https://example.com"));
@@ -97,8 +95,6 @@ TEST(CatalogCancelToken, CopiesShareOneFlag)
 
 	EXPECT_FALSE(CancelToken().IsCancelled()); // a new token has its own flag
 }
-
-// ---- Get --------------------------------------------------------------------------------
 
 TEST(CatalogFetchGet, ReturnsBodyAndMetadata)
 {
@@ -189,8 +185,6 @@ TEST(CatalogFetchGet, ABodyShorterThanAnnouncedIsAFailure)
 	EXPECT_EQ(r.result, FetchResult::Transport);
 	EXPECT_FALSE(r.IsSuccess());
 }
-
-// ---- Redirects --------------------------------------------------------------------------
 
 TEST(CatalogFetchRedirect, FollowsToTheFinalUrl)
 {
@@ -287,8 +281,6 @@ TEST(CatalogFetchGet, APlainHttpUrlIsRefusedBeforeAnyRequest)
 	EXPECT_TRUE(http.Requests().empty());
 }
 
-// ---- Byte caps --------------------------------------------------------------------------
-
 TEST(CatalogFetchCap, ABodyExactlyAtTheCapIsAccepted)
 {
 	FakeFetcher http;
@@ -333,8 +325,6 @@ TEST(CatalogFetchCap, ALyingContentLengthDoesNotBeatTheCap)
 	EXPECT_EQ(http.Get(URL, 1000).result, FetchResult::TooLarge);
 }
 
-// ---- Cancellation -----------------------------------------------------------------------
-
 TEST(CatalogFetchCancel, ACancelledTokenStopsBeforeAnyRequest)
 {
 	FakeFetcher http;
@@ -360,8 +350,6 @@ TEST(CatalogFetchCancel, CancellingFromTheProgressCallbackStopsTheDownload)
 	EXPECT_EQ(r.result, FetchResult::Cancelled);
 	EXPECT_LT(http.Requests()[0].body_bytes_delivered, 10000u);
 }
-
-// ---- GetToFile --------------------------------------------------------------------------
 
 TEST(CatalogFetchToFile, StreamsTheBodyToDiskAndFeedsTheTap)
 {
@@ -541,8 +529,6 @@ TEST(CatalogFetchToFile, ATruncatedDownloadIsAFailure)
 	EXPECT_EQ(r.bytes_received, 2000u);
 }
 
-// ---- Post -------------------------------------------------------------------------------
-
 TEST(CatalogFetchPost, SendsTheBodyAndContentType)
 {
 	FakeFetcher http;
@@ -581,8 +567,6 @@ TEST(CatalogFetchPost, AHugeReplyIsRefused)
 	http.Ok("https://example.com/hit", std::string(200 * 1024, 'x'), "text/plain");
 	EXPECT_EQ(http.Post("https://example.com/hit", "x", "text/plain").result, FetchResult::TooLarge);
 }
-
-// ---- Concurrency and the real fetcher ---------------------------------------------------
 
 TEST(CatalogFetchConcurrency, ManyThreadsMayFetchAtOnce)
 {

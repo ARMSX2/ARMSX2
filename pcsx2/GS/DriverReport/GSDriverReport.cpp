@@ -277,7 +277,6 @@ namespace GSDriverReport
 		}
 		else
 		{
-			// Could not start a thread: run it here instead.
 			steps.Add("system_part.thread", false, "could not start a helper thread; ran inline", 0.0);
 			RunSystemPart(part);
 		}
@@ -329,7 +328,6 @@ namespace GSDriverReport
 			w.KeyRaw("selected_driver", part->selected_driver_json);
 		}
 
-		// The served-driver verdict.
 		w.Key("served_driver");
 		w.BeginObject();
 		{

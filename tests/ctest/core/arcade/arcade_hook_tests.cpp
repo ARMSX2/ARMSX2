@@ -154,7 +154,6 @@ TEST_F(ArcadeHookTest, TheMouseMovingGivesTheGunBackToTheMouse)
 	Click(RSTICK_RIGHT_BUTTON, true);
 	ASSERT_TRUE(ACJV::GetGunStickAim(0, &x, &y));
 
-	// No movement, no change.
 	InputManager::UpdatePointerAbsolutePosition(0, 0.0f, 0.0f);
 	EXPECT_TRUE(ACJV::GetGunStickAim(0, &x, &y));
 	InputManager::UpdatePointerAbsolutePosition(0, 40.0f, 25.0f);
@@ -166,10 +165,6 @@ TEST_F(ArcadeHookTest, TheMouseMovingGivesTheGunBackToTheMouse)
 	EXPECT_FALSE(ACJV::GetGunStickAim(0, &x, &y));
 	Click(RSTICK_RIGHT_BUTTON, false);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// The mouse as the gun
-// ----------------------------------------------------------------------------------------------------
 
 // The fixture binds pointer buttons 0, 1 and 2 (left, right, middle) to the pad's Cross, Select and Start: a
 // click that the gun takes must not also reach them.
@@ -222,7 +217,7 @@ TEST_F(ArcadeHookTest, AClickKeepsItsBindingsOnOtherCabinetsAndInConsoleGames)
 {
 	StartArcadeGame("NM00099");
 	Click(SELECT_BUTTON, true);
-	EXPECT_EQ(ACJV::coin[0], 1); // The binding, as before.
+	EXPECT_EQ(ACJV::coin[0], 1);
 	Click(SELECT_BUTTON, false);
 	EXPECT_FALSE(ACJV::GetGunForceOffscreen());
 
@@ -246,10 +241,6 @@ TEST_F(ArcadeHookTest, AReleaseStillLetsGoOfTheGunWhenTheBindingsAreGone)
 	Click(CROSS_BUTTON, false);
 	EXPECT_EQ(ACJV::GetButtonState(0), 0);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Hotkeys
-// ----------------------------------------------------------------------------------------------------
 
 namespace
 {

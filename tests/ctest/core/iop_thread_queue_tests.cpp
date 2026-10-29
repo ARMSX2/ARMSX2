@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The EE-to-IOP queue in Lockstep (IOP thread design sections 3.4.2 and 6.2): the EE's blanking, its IRQ to the
+// The EE-to-IOP queue in Lockstep: the EE's blanking, its IRQ to the
 // IOP and its once-a-frame jobs become items stamped with the EE's cycle, and the IOP thread applies each before
 // the EE goes on, so each takes effect at the point of the EE's execution where Off made the direct call.
 //
@@ -19,8 +19,6 @@
 #include <memory>
 
 using namespace iopt;
-
-// ---------------------------------------------------------------- the EE-to-IOP queue in Lockstep
 
 TEST(IopThreadE2I, EveryKindIsMappedToItsAction)
 {
@@ -214,7 +212,6 @@ TEST(IopThreadE2I, LockstepLeavesTheIopWhereOffDoesForTheRealFunctions)
 	REQUIRE_ARM64_HOST();
 	SettingsGuard guard;
 
-	// Off.
 	IopThread::ChooseMode();
 	u32 off_istat;
 	bool off_h_after_start, off_h_after_end;
@@ -229,7 +226,6 @@ TEST(IopThreadE2I, LockstepLeavesTheIopWhereOffDoesForTheRealFunctions)
 		off_istat = psxHu32(HW_ISTAT);
 	}
 
-	// Lockstep: the same calls, applied by the IOP thread.
 	StartLockstep();
 	ASSERT_TRUE(IopThread::LockstepActive());
 	u32 lock_istat;
@@ -263,9 +259,6 @@ TEST(IopThreadE2I, TheCountersCallTheInstanceOfTheMode)
 	EXPECT_NE(reinterpret_cast<void*>(&rcntUpdate_vSync<IopThreadMode::Off>),
 		reinterpret_cast<void*>(&rcntUpdate_vSync<IopThreadMode::Lockstep>));
 }
-
-
-// ---------------------------------------------------------------- the event test drives its own mode's blanking
 
 #ifdef PCSX2_RECOMPILER_TESTS
 namespace

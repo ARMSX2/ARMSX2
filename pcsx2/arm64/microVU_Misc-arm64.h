@@ -142,7 +142,6 @@ struct mVU_Globals
 	// mVU_CLIP's UZP1 leaves them: the four +component lanes then the four
 	// -component ones, w weightless in both. Appended for the reason above.
 	u16 clipWeights[8] = {1, 4, 16, 0, 2, 8, 32, 0};
-	// Appended for the reason above — see mVU_SSLaneWeights.
 	mVU_SSLaneWeights ssLaneWeights = mVUmakeSSLaneWeights();
 #undef __four
 };
@@ -353,7 +352,6 @@ struct mVUmemRef
 	int64_t disp;
 	a64::Register index = a64::NoReg;
 
-	// The operand for the access `off` bytes in.
 	a64::MemOperand at(int64_t off = 0) const
 	{
 		if (index.IsValid())

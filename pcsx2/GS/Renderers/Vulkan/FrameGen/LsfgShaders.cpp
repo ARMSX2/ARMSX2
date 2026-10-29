@@ -22,9 +22,8 @@ namespace {
 
 /// Whether a module asks the device for nothing but what the fp32 family is known to work with
 /// here (Shader, StorageImageExtendedFormats, ImageQuery, StorageImageWriteWithoutFormat) plus
-/// Float16, the one thing the half-precision family adds: read out of Lossless.dll on 2026-09-29.
-/// A later DLL whose fp16 shaders wanted more would be invalid usage on our device, so it gets
-/// the fp32 family instead of a device-lost.
+/// Float16, the one thing the half-precision family adds. A DLL whose fp16 shaders want more would
+/// be invalid usage on our device, so it gets the fp32 family instead of a device-lost.
 [[nodiscard]] bool OnlyKnownCapabilities(const std::vector<u32>& words) {
     constexpr u32 OP_EXTENSION = 10, OP_EXT_INST_IMPORT = 11, OP_MEMORY_MODEL = 14, OP_CAPABILITY = 17;
     for (size_t i = 5; i < words.size();) {
@@ -112,8 +111,8 @@ LsfgShaders::LsfgShaders(const Device& device) {
             if (count == 0 || (words[i] & 0xffff) != 17) {
                 break; // past the capabilities, or malformed
             }
-            if (i + 1 < words.size() && words[i + 1] == 9) {
-                return true; // Float16
+            if (i + 1 < words.size() && words[i + 1] == 9) { // Float16
+                return true;
             }
             i += count;
         }

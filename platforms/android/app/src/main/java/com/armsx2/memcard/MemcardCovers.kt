@@ -25,12 +25,10 @@ import java.security.MessageDigest
 /**
  * Memory Card Covers: a game's save icon, from the player's own memory cards, as its library cover.
  *
- * Reads the cards in the app's memcards folder, the player's own disc images and, once the player
- * has downloaded them, the [OnlineIcons]; nothing is bundled. Each game shows the icon of its
- * newest save, rendered once into a cached PNG the library loads like any other cover, so
- * scrolling costs nothing extra. A game with no save gets the icon from its own disc when
- * [DiscIcons] can find it there (looked for once per disc, in the background), else the online
- * one, and keeps its box art when there is neither. A cover set by hand wins over all.
+ * Sources, highest priority first: a cover set by hand; the newest save across the cards in the
+ * app's memcards folder; the icon on the game's own disc ([DiscIcons], searched once per disc in
+ * the background); the downloaded [OnlineIcons]. A game with none keeps its box art. Each cover
+ * is rendered once into a cached PNG that the library loads like any other cover.
  */
 object MemcardCovers {
     private const val TAG = "MemcardCovers"
@@ -55,18 +53,17 @@ object MemcardCovers {
     const val COVER_W = 288
     const val COVER_H = 400
 
-    /** A cover is just the icon: no gradient, nothing shaped like a box behind it, standing on
-     *  the bottom edge so on the shelf it sits on the shelf. */
+    /** Icon only, with no background, anchored to the bottom edge of the cover. */
     val COVER_OPTIONS = Ps2IconRenderer.Options(background = false, anchorBottom = true)
 
     val enabled = mutableStateOf(false)
 
-    /** Covers turn and play their animations, as on the PS2's memory card screen ("Animated"),
-     *  rather than standing still ("Still"). Each tile on screen draws its own frames. */
+    /** Play the icon's animation ("Animated") rather than a still pose ("Still"). Each tile on
+     *  screen draws its own frames. */
     val animate = mutableStateOf(true)
 
-    /** Moving icons turn as well ("Spin"), or only play their own animation, facing the same way
-     *  ("No spin"). In the library, the Icon Museum and the screensaver alike. */
+    /** Whether moving icons also rotate ("Spin") or only play their own animation ("No spin").
+     *  Applies to the library, the Icon Museum and the screensaver. */
     val spin = mutableStateOf(true)
 
     /** Bumped whenever the covers change, so tiles resolve their cover again. */
@@ -159,8 +156,6 @@ object MemcardCovers {
             Loaded(icon, sys, Ps2IconRenderer.choosePose(icon, sys, options))
         }
     }.getOrNull()
-
-    // ---- Icon Museum ----------------------------------------------------------------------
 
     /** One save with an icon, for the Icon Museum: every save on every card, not just the one
      *  per game a cover uses. */
@@ -264,18 +259,14 @@ object MemcardCovers {
         if (on) refresh(context)
     }
 
-    /** The cover for a game with this serial, when Memory Card Covers is on and a save has one. */
     fun coverFor(serial: String?): File? =
         if (!enabled.value || serial.isNullOrBlank()) null else bySerial[serial.uppercase()]
 
-    /** A library game, for looking on its disc: its serial and where its image is. */
     class DiscGame(val serial: String, val uri: Uri)
 
-    /** Scan every card in the memcards folder again, in the background, and render any cover that
-     *  is new or changed. With several cards, each game takes its newest save across all of them.
-     *  Cheap when nothing changed: a scan reads directories and each save's timestamps, and a
-     *  cover is only drawn once per save version. Then, for [games] with no save, take the online
-     *  icon if the set is downloaded (see [onlinePass]) and look on their discs (see [discPass]). */
+    /** Rescan the memcards folder in the background and render covers that are new or changed.
+     *  Cheap when nothing changed: it reads directories and save timestamps, and a cover is drawn
+     *  once per save version. Then, for [games] with no save, runs [onlinePass] and [discPass]. */
     fun refresh(context: Context, games: List<DiscGame> = emptyList()) {
         if (!enabled.value) return
         val app = context.applicationContext
@@ -301,10 +292,9 @@ object MemcardCovers {
     }
 
     /**
-     * Games with no save take their online icon when the player has downloaded it: drawn once
-     * into a still cover, like the others, and shared by every serial that uses the same icon.
-     * Quick, so it runs before [discPass]; an icon found on a game's own disc still wins. An icon
-     * removed again takes its covers with it.
+     * Games with no save take their online icon if it is downloaded, drawn once into a still
+     * cover shared by every serial that uses the same icon. Quick, so it runs before
+     * [discPass], whose result still takes priority. Covers for removed icons are deleted.
      */
     private suspend fun onlinePass(app: Context, games: List<DiscGame>) {
         val dir = File(app.cacheDir, ONLINE_COVER_DIR).apply { mkdirs() }
@@ -344,9 +334,9 @@ object MemcardCovers {
 
     /**
      * Games with no save still get a cover when their own disc has the icon (see [DiscIcons]).
-     * Each disc is looked at once, a second or so at most, one at a time, and what was found is
-     * kept, "nothing" included, so later passes only check the cache. Stops while a game is loaded,
-     * so it never competes with the emulator for the storage; the next pass picks up from there.
+     * Discs are searched one at a time, a second or so each, and the result is cached, "nothing"
+     * included. Stops while a game is loaded so it does not compete with the emulator for
+     * storage; the next pass resumes.
      */
     private fun discPass(app: Context, games: List<DiscGame>) {
         discJob?.cancel()
@@ -364,7 +354,7 @@ object MemcardCovers {
                 if (serial in cardCovers || serial in covers) continue
                 val key = discKey(game.uri)
                 val icn = File(icons, "$key.icn")
-                // "Nothing here" is only as good as the search that said it.
+                // Keyed by DISC_SEARCH_VERSION so a better search retries discs that found nothing.
                 val none = File(icons, "$key.none$DISC_SEARCH_VERSION")
                 if (none.isFile) continue
                 if (!icn.isFile) {
@@ -430,7 +420,7 @@ object MemcardCovers {
     private fun scan(context: Context): Map<String, File> {
         val cards = cardFiles(context)
 
-        // The newest save of each game across every card, by the time the card itself recorded.
+        // Newest save per game across all cards, by the modified time recorded on the card.
         val picks = HashMap<String, Pick>()
         for (card in cards) {
             Ps2MemoryCard.open(card)?.use { c ->
@@ -445,7 +435,6 @@ object MemcardCovers {
 
         val cacheDir = File(context.cacheDir, CACHE_DIR).apply { mkdirs() }
         val out = HashMap<String, File>()
-        // Render what is missing, one card open at a time.
         for ((card, group) in picks.entries.groupBy { it.value.card }) {
             val wanted = group.associate { (serial, pick) -> serial to File(cacheDir, "${serial}_${key(pick)}.png") }
             val missing = wanted.filterValues { !it.isFile }
@@ -459,7 +448,6 @@ object MemcardCovers {
             for ((serial, file) in wanted) if (file.isFile) out[serial] = file
         }
         cardSources = out.keys.associateWith { serial -> picks.getValue(serial).let { CardSource(it.card, it.folder) } }
-        // Drop covers no save points at any more.
         val keep = out.values.toSet()
         cacheDir.listFiles()?.forEach { if (it !in keep) it.delete() }
         Log.i(TAG, "${cards.size} card(s), ${picks.size} game(s) with a save icon, ${out.size} cover(s)")

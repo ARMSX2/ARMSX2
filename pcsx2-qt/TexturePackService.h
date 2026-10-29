@@ -20,22 +20,18 @@
 #include <string>
 #include <vector>
 
-/// The texture pack catalog, the installed packs and the one running install, for every Texture Packs
-/// page in the process (the global settings window and each game's window show the same state).
+/// The texture pack catalog, installed packs and running install, shared by every Texture Packs page
+/// in the process (the global settings window and each game's window).
 ///
-/// Everything that blocks (the catalog and popularity requests, listing installed packs, an install,
-/// a delete) runs on a pool thread of its own and reports back on the UI thread, where this object
-/// lives; all the state below is read and written on the UI thread only. An install belongs to the
-/// application, not to a page: closing a settings window does not stop it, and a page opened later
-/// shows its progress.
+/// Blocking work runs on a private thread pool and reports back on the UI thread. All state is read
+/// and written on the UI thread only. An install belongs to the application, not to a page: closing a
+/// settings window does not stop it.
 class TexturePackService final : public QObject
 {
 	Q_OBJECT
 
 public:
 	static TexturePackService& instance();
-
-	// ---- Catalog ---------------------------------------------------------------------------------
 
 	enum class CatalogStatus
 	{
@@ -65,8 +61,6 @@ public:
 	/// asking the network unless `force_refresh`. Does nothing while a load is running.
 	void loadCatalog(bool force_refresh);
 
-	// ---- Installed packs ----------------------------------------------------------------------------
-
 	struct InstalledData
 	{
 		bool loaded = false;
@@ -77,10 +71,7 @@ public:
 	const InstalledData& installed() const { return m_installed; }
 	void refreshInstalled();
 
-	/// What the catalog row of `pack` should offer, given the packs installed now.
 	Catalog::InstallAction actionFor(const Catalog::TexturePack& pack) const;
-
-	// ---- Install and delete ----------------------------------------------------------------------------
 
 	struct InstallState
 	{

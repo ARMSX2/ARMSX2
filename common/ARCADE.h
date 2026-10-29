@@ -12,7 +12,7 @@
 #include <string_view>
 
 enum ACMEDIATYPE {
-	ACUNK = -1, //Unknown
+	ACUNK = -1,
 	ACCD = 0,
 	ACDVD,
 	ACHDD,

@@ -132,8 +132,6 @@ namespace
 	};
 } // namespace
 
-// ---------------------------------------------------------------------------------------------- trigger
-
 TEST(AutoTuneController, NothingHappensDuringWarmUp)
 {
 	Rig rig;
@@ -238,8 +236,6 @@ TEST(AutoTuneController, UnusableWindowsDoNotRunTheSettleClockOrTheMeasurement)
 	EXPECT_EQ(rig.Feed(EeBound(85.0)).kind, Kind::Keep);
 }
 
-// ---------------------------------------------------------------------------------------------- EE
-
 TEST(AutoTuneController, EeBoundTriesTheIopThreadAndKeepsItWhenSpeedRises)
 {
 	Rig rig;
@@ -296,8 +292,6 @@ TEST(AutoTuneController, AfterTheIopThreadFailsTheGovernorIsNext)
 	EXPECT_EQ(next.lever, AutoTuneLever::EeGovernor);
 }
 
-// ---------------------------------------------------------------------------------------------- the governor's clocks
-//
 // The governor counts in game time: two seconds of warm-up, then two windows of overload, then a step, then
 // two seconds of cooldown, then two windows for the second step. On a game running at 70% every second of
 // that takes 1.4 seconds on the wall, and a trial that measured before the governor had acted would call it
@@ -305,10 +299,9 @@ TEST(AutoTuneController, AfterTheIopThreadFailsTheGovernorIsNext)
 
 TEST(AutoTunePolicy, TheLightSettleIsOneAndAHalfSecondsAndTheHeavyOneIsStillSix)
 {
-	// After a resolution, blending or download mode change the new figure shows in the first full window (SD865:
-	// 82% in the partial window, then 101.8%; RG477V: 94.8%, then 100.1%). Three seconds was five of waiting that
-	// nothing needed. The levers that reset the recompilers or reopen the renderer keep their six; a hitch that
-	// outlasts the shorter one is the extension's to absorb.
+	// After a resolution, blending or download mode change the new speed shows in the first full window, so the
+	// light settle is short. The levers that reset the recompilers or reopen the renderer keep the six-second
+	// settle; a hitch that outlasts the shorter one is the measurement extension's to absorb.
 	EXPECT_DOUBLE_EQ(AutoTunePolicy().settle_seconds, 1.5);
 	EXPECT_DOUBLE_EQ(AutoTunePolicy().settle_heavy_seconds, 6.0);
 }
@@ -423,8 +416,6 @@ TEST(AutoTuneController, AGameDatabaseForcedLeverIsNeverTouched)
 	rig2.state.ee_governor_eligible = true;
 	EXPECT_EQ(rig2.WarmAndTrigger(EeBound(70.0)).lever, AutoTuneLever::EeGovernor);
 }
-
-// ---------------------------------------------------------------------------------------------- GS
 
 TEST(AutoTuneController, GpuBoundStepsResolutionDownAndStopsAtNative)
 {
@@ -632,9 +623,8 @@ TEST(AutoTuneController, BasicToMinimumIsRejectedWhenItDoesNotHelpAndNotTriedAga
 
 TEST(AutoTuneController, BasicToMinimumIsNeverOfferedToAGpuBoundGame)
 {
-	// On the SD865 it was +3.8% on Shadow of the Colossus and -12% on God of War II, both GPU-bound; on the MQ65
-	// it was wasted on a GPU-bound Shadow of the Colossus. Only where the GS thread on the CPU is the limit did
-	// it pay (Black, +6.8%).
+	// Measured on GPU-bound games it gained little or lost speed. It only paid where the GS thread on the CPU is
+	// the limit.
 	Rig rig;
 	rig.state.resolution = 1.0;
 	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
@@ -697,8 +687,6 @@ TEST(AutoTuneController, ARejectionIsAboutOneStepNotTheWholeLever)
 	EXPECT_EQ(a.value, 3.0);
 }
 
-// ---------------------------------------------------------------------------------------------- report only
-
 TEST(AutoTuneController, Vu1BoundIsReportedOnceAndNothingIsTried)
 {
 	Rig rig;
@@ -732,8 +720,6 @@ TEST(AutoTuneController, IopBoundIsReportedOnceAndNothingIsTried)
 	rig.FeedFor(w, 60.0);
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 0u);
 }
-
-// ---------------------------------------------------------------------------------------------- end states
 
 TEST(AutoTuneController, ExhaustedIsSaidOnceThenTheSessionIsQuiet)
 {
@@ -795,8 +781,6 @@ TEST(AutoTuneController, SlowButUnexplainedIsReportedWithACooldown)
 	EXPECT_EQ(rig.FeedFor(w, 6.0).kind, Kind::Unclassified);
 }
 
-// ---------------------------------------------------------------------------------------------- keep or revert
-
 TEST(AutoTuneController, AGainThatClearlyIsNotThereIsRevertedAndRemembered)
 {
 	Rig rig;
@@ -840,7 +824,7 @@ TEST(AutoTuneController, ReachingFullSpeedIsKeptEvenWithASmallGain)
 	Rig rig;
 	rig.state.iop_thread_placeable = true;
 	ASSERT_EQ(rig.WarmAndTrigger(EeBound(94.0)).kind, Kind::StartTrial);
-	// 94 -> 99.5 is +5.9%: kept either way. Use a case that is only the "reached" rule:
+	// 94 -> 99.5 is +5.9%: kept on the gain alone.
 	const AutoTuneAction a = rig.RunUntilAction(EeBound(99.5));
 	EXPECT_EQ(a.kind, Kind::Keep);
 
@@ -877,8 +861,6 @@ TEST(AutoTuneController, AStutterOnlyProblemIsKeptWhenTheLateFramesGoAway)
 	EXPECT_EQ(rig2.RunUntilAction(stutter).kind, Kind::Revert);
 }
 
-// ---------------------------------------------------------------------------------------------- stability
-
 TEST(AutoTuneController, SpeedHoveringAtTheLineNeverTriggers)
 {
 	Rig rig;
@@ -906,8 +888,6 @@ TEST(AutoTuneController, SpeedStuckJustUnderTheLineEndsInFewTrialsAndStaysQuiet)
 	EXPECT_EQ(rig.Count(Kind::Keep), 0u);
 	EXPECT_EQ(rig.Count(Kind::Exhausted), 1u);
 }
-
-// ---------------------------------------------------------------------------------------------- disturbances
 
 TEST(AutoTuneController, ASceneChangeCancelsATrialAndWarmsUpAgain)
 {
@@ -1002,8 +982,6 @@ TEST(AutoTuneController, ResetForgetsTheSession)
 	EXPECT_EQ(rig.Count(Kind::Exhausted), 2u);
 }
 
-// ---------------------------------------------------------------------------------------------- classification
-
 TEST(AutoTuneController, ClassificationTable)
 {
 	AutoTuneController ctl;
@@ -1073,8 +1051,7 @@ TEST(AutoTuneController, AnEeBlockedOnTheIopThreadIsIopBoundNotEeBound)
 TEST(AutoTuneController, AnIopThreadAtFullCpuWhileTheEeDoesNotWaitForItIsNotTheBottleneck)
 {
 	// The IOP thread paces itself against the EE and spins while it waits, so its CPU share reads saturated
-	// whenever the EE is. Measured on an EE-bound scene with the EE interpreter: EE 99.7%, IOP 99.5%, and the
-	// EE spent 0% of its time waiting for the IOP. The EE is the cause.
+	// whenever the EE is. With the EE spending none of its time waiting for the IOP, the EE is the cause.
 	AutoTuneController ctl;
 	AutoTuneWindow w = EeBound(22.0);
 	w.iop_pct = 99.5;
@@ -1203,8 +1180,6 @@ TEST(AutoTuneController, EveryThresholdLivesInThePolicy)
 	EXPECT_EQ(rig.Feed(EeBound(70.0)).kind, Kind::StartTrial) << "and one more window is the baseline";
 }
 
-// ---------------------------------------------------------------------------------------------- judging
-
 TEST(AutoTuneStats, TheMedianIgnoresAHitchWindow)
 {
 	const AutoTuneStat steady = AutoTuneSummarize({12.2, 12.3, 12.2, 12.1, 12.2, 12.3, 12.2, 12.2});
@@ -1271,9 +1246,6 @@ TEST(AutoTuneStats, AGainHasToBeBothBigEnoughAndBeyondTheNoise)
 	EXPECT_FALSE(g.worse) << "a spread that wide could be anything";
 }
 
-// The first trial of a bad game: a window of the bad windows that triggered it, then the same again for the
-// baseline, then the settle and the measurement. `settle` is how many windows pass between the start and the
-// first measured one.
 namespace
 {
 	// A GPU-bound window at `speed` with a GPU timer; the cost is the GPU's ms per frame.
@@ -1294,8 +1266,8 @@ namespace
 		rig.state.gs_back_thread_allowed = false;
 	}
 
-	// The windows of the run these tests replay came through its 3 s settle; with the settle that has since been
-	// halved the same windows would be measured earlier and mean something else.
+	// The recorded windows in these tests came through a 3 s settle; the default 1.5 s settle would measure them
+	// earlier and change what they mean.
 	AutoTunePolicy RunWithThreeSecondSettle()
 	{
 		AutoTunePolicy policy;
@@ -1318,10 +1290,10 @@ namespace
 
 TEST(AutoTuneJudging, AHitchInTheBaselineDoesNotTurnNothingIntoAGain)
 {
-	// God of War II at 6x with Maximum blending, the 6x to 5x step of core-smoke run2. The four bad windows
-	// that triggered it were 12.1, 12.2, 10.8 (a hitch) and 12.0, a mean of 11.8; the five windows it
-	// measured were 12.6 ... 12.4 and 12.4, 13.0, 12.4, 11.8: a mean of 12.4. The old gate read +5.3% and
-	// kept it; the speed at 5x was the speed at 6x. The same windows against a median baseline of eight:
+	// Recorded God of War II windows at 6x with Maximum blending, the 6x to 5x step. The four bad windows that
+	// triggered it were 12.1, 12.2, 10.8 (a hitch) and 12.0, a mean of 11.8; the windows it measured averaged
+	// 12.4. A gate on the mean reads +5.3% and keeps the step, but the speed at 5x was the speed at 6x. Against
+	// a median baseline of eight windows:
 	const std::vector<double> trigger = {12.1, 12.2, 10.8, 12.0};
 	const std::vector<double> extra = {12.3, 12.2, 12.3, 12.2};
 	const std::vector<double> settle = {12.6, 13.1, 13.0, 12.6, 12.4, 12.4};
@@ -1437,9 +1409,9 @@ TEST(AutoTuneJudging, ACostThatClearlyFallsDoesNotEarnAKeepOnItsOwn)
 {
 	// A GPU that spends 20 ms per frame and then 14, while the speed stays at 40% because something else is
 	// still the limit: -30% on the cost the lever targets, +0.5% on the speed. Splitting work over more threads
-	// lowers the busiest one's cost whether or not the game gets faster (the GS back thread on God of War II:
-	// -14% GS cost, -0.5% speed, and a big core burned for it). The cost may keep the trial open for a longer
-	// look; it never makes the trial a keep. A trial that ends flat with its cost down did not help.
+	// (the GS back thread) lowers the busiest one's cost whether or not the game gets faster, and burns a big
+	// core for it. The cost may keep the trial open for a longer look; it never makes the trial a keep. A trial
+	// that ends flat with its cost down did not help.
 	Rig rig;
 	OnlyResolutionIsLeft(rig, 6.0);
 	rig.WarmUp();
@@ -1616,8 +1588,6 @@ TEST(AutoTuneController, TheSettleAfterAKeepOrAnUndoIsTheLightOneForTheLightLeve
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
 }
 
-// ---------------------------------------------------------------------------------------------- a changing scene
-//
 // A rejection is written into the game's file for good, so it has to be about the lever and not about the game
 // having changed while the lever was tried. Two checks, each on a trial that would otherwise be a rejection: the
 // first and the second half of its windows must agree on the speed, and a resource the lever does not act on must
@@ -1790,7 +1760,6 @@ TEST(AutoTuneScene, AStepIsMeasuredAgainTwiceAndThenGivenUpWithoutBeingRemembere
 	std::vector<AutoTuneAction> verdicts;
 	for (int round = 0; round < 3; round++)
 	{
-		// Baseline and start of the trial.
 		AutoTuneAction start;
 		for (int i = 0; i < 8 && start.kind == Kind::None; i++)
 			start = rig.Feed(GpuWithEe(60.0, 10.0));
@@ -1815,8 +1784,6 @@ TEST(AutoTuneScene, AStepIsMeasuredAgainTwiceAndThenGivenUpWithoutBeingRemembere
 	// Now the step is out for the session, like any inconclusive one: nothing is left to try.
 	EXPECT_EQ(rig.Trigger(GpuWithEe(60.0, 10.0)).kind, Kind::Exhausted);
 }
-
-// ---------------------------------------------------------------------------------------------- the baseline
 
 TEST(AutoTuneBaseline, ATrialIsComparedWithTheWindowsRightBeforeIt)
 {
@@ -1898,8 +1865,6 @@ TEST(AutoTuneBaseline, AStepThatIsNoLongerThereIsNotTried)
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::Watching);
 }
 
-// ---------------------------------------------------------------------------------------------- far below full speed
-
 namespace
 {
 	// A GPU-bound game with the blending at Maximum and a download mode that reads back.
@@ -1924,8 +1889,7 @@ namespace
 
 TEST(AutoTuneOrder, FarBelowFullSpeedTheBlendingGoesBeforeTheResolution)
 {
-	// 9% speed: a notch of resolution can give at most 1.3x at 8x. One blending step moved this game from 13%
-	// to 100%, after six resolution trials that moved it from 9.4% to 13.1%.
+	// 9% speed: a notch of resolution can give at most 1.3x at 8x, so the blending step goes first.
 	EXPECT_EQ(FirstLeverTried(9.0), AutoTuneLever::Blending);
 }
 
@@ -1973,16 +1937,15 @@ TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThr
 
 TEST(AutoTuneOrder, WithBasicBlendingThereIsNothingCheapToTryFirstSoTheResolutionGoesFirst)
 {
-	// Shadow of the Colossus at 3x on the SD865, 48%, blending Basic: the only blending step is Basic to
-	// Minimum, and it is not a speed lever on that GPU. The two cheap levers took 29 s and got nothing before the
-	// resolution step that fixed it.
+	// 3x at 48% with blending Basic: the only blending step is Basic to Minimum, which is not a speed lever on a
+	// GPU-bound game, so the resolution goes first.
 	Rig rig;
 	BlendingAndDownloadAreOpen(rig, 3.0);
 	rig.state.blending_level = 1;
 	rig.WarmUp();
 	EXPECT_EQ(rig.Trigger(Gpu(48.0)).lever, AutoTuneLever::Resolution);
 
-	// God of War II at 5x, 45%: the same.
+	// 5x at 45%: the same.
 	Rig rig2;
 	BlendingAndDownloadAreOpen(rig2, 5.0);
 	rig2.state.blending_level = 1;
@@ -2000,11 +1963,11 @@ TEST(AutoTuneOrder, TheCheapLeversGoFirstOnlyWhereOneNotchCannotReachFullSpeed)
 		return rig.Trigger(Gpu(speed)).lever;
 	};
 
-	// 2x at 26%: 26 x 4 = 104, one notch gets there (Shadow of the Colossus on the MQ65, measured +127%).
+	// 2x at 26%: 26 x 4 = 104, one notch gets there.
 	EXPECT_EQ(first(2.0, 26.0), AutoTuneLever::Resolution);
 	// 3x at 48%: 48 x 2.25 = 108.
 	EXPECT_EQ(first(3.0, 48.0), AutoTuneLever::Resolution);
-	// 8x at 9%: 9 x 1.31 = 12 (the owner-approved God of War II case, where blending took it to 100% in 5 s).
+	// 8x at 9%: 9 x 1.31 = 12, nowhere near.
 	EXPECT_EQ(first(8.0, 9.0), AutoTuneLever::Blending);
 	// 4x at 40%: 40 x 1.78 = 71, not enough; 2x at 20%: 20 x 4 = 80.
 	EXPECT_EQ(first(4.0, 40.0), AutoTuneLever::Blending);
@@ -2039,14 +2002,11 @@ TEST(AutoTuneOrder, ABackThreadStillGoesFirstWhenTheGsThreadsAreTheCause)
 	EXPECT_EQ(start.lever, AutoTuneLever::GsBackThread);
 }
 
-// ---------------------------------------------------------------------------------------------- a replay
-
-// God of War II at 8x with Maximum blending (devs/bmdhacks/campaigns/auto-tune-2026-10-18/core-smoke-2026-10-18,
-// run2): 9% speed with the GPU at 100%, and the old gate walking the resolution 8, 7, 6, 5, 4, 3 over 70 s and
-// moving the speed from 9.4% to 13.1% by keeping a 5x that measured +6.1% against a baseline with a hitch in it
-// and rejecting a 3x for good at -6.1%; then one blending step, Maximum to Full, took it to 100%.
+// Replay of a recorded God of War II run at 8x with Maximum blending: 9% speed with the GPU at 100%. Walking
+// the resolution down gains little (9.4% to 13.1%), while one blending step, Maximum to Full, takes the game
+// to 100%.
 //
-// The speeds below are that run's windows for each resolution, in order, transients and hitches included (the
+// The speeds below are the recorded windows for each resolution, in order, transients and hitches included (the
 // 6x series has its 10.8 window, the 5x series its first twelve windows of 12.6 ... 14.8 before it came down to
 // the 6x figure). The GPU cost per frame of a game that is GPU-bound is the frame time. Full blending at 4x
 // cost 28.5% of a 60 Hz frame (4.75 ms); at other resolutions it is taken to scale with the pixels, which is
@@ -2235,7 +2195,7 @@ TEST(AutoTuneReplay, TheGow2TraceFindsTheBlendingFirstAndKeepsNothingInsideTheNo
 			ADD_FAILURE() << "a rejection was recorded: " << AutoTuneLeverName(a.lever) << " " << a.value << " gain " << a.gain;
 	}
 
-	// Under a minute after the warm-up (it took the old run 85 s from its trigger to the blending step).
+	// Under a minute after the warm-up.
 	size_t windows_to_full_speed = 0;
 	while (windows_to_full_speed < r.speeds.size() && r.speeds[windows_to_full_speed] < 99.0)
 		windows_to_full_speed++;
@@ -2244,9 +2204,8 @@ TEST(AutoTuneReplay, TheGow2TraceFindsTheBlendingFirstAndKeepsNothingInsideTheNo
 
 TEST(AutoTuneReplay, TheResolutionWalkStopsAtTheStepThatShowsNothingInsteadOfWalkingIntoTheNoise)
 {
-	// Only the resolution is left to try (as when the blending is already at its floor): the trace's own walk.
-	// The state offers nothing but the resolution: the blending cannot go lower, and the download mode already
-	// does not read back.
+	// Only the resolution is left to try: the blending cannot go lower, and the download mode already does not
+	// read back.
 	struct ResolutionOnly
 	{
 		TraceWorld world;

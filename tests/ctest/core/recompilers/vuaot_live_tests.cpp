@@ -70,9 +70,8 @@ struct LiveScope
 {
 	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUAot;
 	const bool savedFlagHack = EmuConfig.Speedhacks.vuFlagHack;
-	// `sync`: the deterministic mode (every background job waited for and
-	// published where it was asked for), which keeps a test's sequence of
-	// compiles the same from run to run.
+	// `sync`: the deterministic mode: every background job is waited for and published where it was asked for, so a test's
+	// sequence of compiles is the same from run to run.
 	LiveScope(bool on, u32 threshold, bool flagHack, u32 jumpThreshold = vuaot::live::kJumpTierUpRuns, bool sync = true)
 	{
 		EmuConfig.Cpu.Recompiler.EnableVUAot = on;
@@ -328,13 +327,11 @@ TEST(VuAotLive, JumpPathLeavesADispatchedProgramToItsDispatchCount)
 	}
 }
 
-// A stub program the dispatcher enters, whose JR goes into code the dispatcher never enters (JumpLoop's
-// code, so the overlay's own jumps meet the jump cache and the tier-up comes from inside its running code):
-// micro memory changed after the stub's program was made (the first run stops before the JR
-// executes, then a word outside its ranges is rewritten), so the search files the jump's
-// target as a program of its own. This is God of War II's shape (a stub, and overlays that
-// only exist because a JR reached them). Each run is preceded by the micro-memory write that
-// nulls the quick slots, so every run's JR takes the slow path.
+// A stub the dispatcher enters, whose JR goes into an overlay (JumpLoop's code) the dispatcher never enters, so the tier-up
+// comes from inside the overlay's running code; this is God of War II's shape. Micro memory changes after the stub's program
+// was made (the first run stops before the JR executes, then a word outside its ranges is rewritten), so the search files the
+// JR's target as a program of its own. Each run is preceded by a micro-memory write that nulls the quick slots, so every
+// JR takes the slow path.
 namespace
 {
 constexpr u32 kOverlayPair = 32;
@@ -421,11 +418,8 @@ TEST(VuAotLive, JumpPathTiersUpAnOverlayTheDispatcherNeverEnters)
 	}
 }
 
-//------------------------------------------------------------------
-// The background compile (compiler-design.md 9aa). microVU keeps running a
-// program while the worker builds its regions; what the worker made is
-// published at a slow path. None of it may change what a run leaves.
-//------------------------------------------------------------------
+// The background compile: microVU keeps running a program while the worker builds its regions, and what the worker made
+// is published at a slow path. None of it may change what a run leaves.
 
 namespace
 {
@@ -533,10 +527,8 @@ TEST(VuAotLive, BackgroundTierUpPublishesAtADispatch)
 		}
 }
 
-// Micro memory changes under a finished job before it is published (a write the
-// program's quick slot did not see, so microVU, here and in the reference, goes on
-// running its old code): the job compiled words that are no longer there, and is
-// thrown away, never published.
+// Micro memory changes under a finished job before it is published, through a write the program's quick slot did not see
+// (so microVU keeps running its old code): the job compiled words that are gone, and is discarded, never published.
 TEST(VuAotLive, PublishAfterMicroMemoryChangedIsDiscarded)
 {
 	const auto sequence = [](bool on, vuaot::live::Stats& d) {
@@ -560,9 +552,8 @@ TEST(VuAotLive, PublishAfterMicroMemoryChangedIsDiscarded)
 		std::memcpy(vuRegs[1].Micro + 5 * 8, &lower, 4);
 		h.RunJitPreserveBlockCache();
 		out.push_back(Take(h));
-		// (the tier-up is asked for again; a job made now would compile the new word
-		// for a program whose quick slot never saw it change, which a real write,
-		// through mVUclear, cannot leave behind: keep it from running)
+		// Keep the re-asked tier-up from running: a job made now would compile the new word for a program whose quick slot never
+		// saw the change, a state a real write (through mVUclear) cannot leave behind.
 		vuaot::live::HoldWorker(true);
 		for (int i = 0; i < 3; i++)
 		{
@@ -584,11 +575,9 @@ TEST(VuAotLive, PublishAfterMicroMemoryChangedIsDiscarded)
 	EXPECT_EQ(on.regions, 0u);
 }
 
-// Relaxation 3 (9ab) on the worker: with the flag hack on and no sticky STATUS reader in the
-// job's copy of micro memory, the region drops the sticky byte. A reader uploaded before the job
-// is published (outside the program's ranges and the words its compile read, so the program and
-// those words are unchanged) means the region would run under an image that can see the byte: the
-// job is thrown away.
+// With the flag hack on and no sticky STATUS reader in the job's copy of micro memory, the worker's region drops the sticky
+// byte. A reader uploaded before the job is published (outside the program's ranges and the words its compile read) means
+// the region would run under an image that can see the byte, so the job is discarded.
 TEST(VuAotLive, PublishAfterAStickyReaderAppearsIsDiscarded)
 {
 	std::vector<VuOp> prog = CountedLoop(10);
@@ -822,21 +811,12 @@ TEST(VuAotLive, ManyConcurrentRequests)
 	EXPECT_GE(on.regions, kPrograms);
 }
 
-// A region rooted in a program reached by a JR (an overlay, God of War II's shape) is published at the
-// JR slow path that has just resolved that program. Publishing a root drops the program's quick slots,
-// so the jump cache entry the slow path then fills must not be left as "no program, this entry": the
-// inline probe in front of every JR (normJumpCompile) takes an entry whose program equals the quick
-// slot's, and does not ask whether that program is null. Such an entry would be taken by the next JR
-// to that address whenever the slot is empty, which it is after any micro-memory write over the code
-// there: the stub then jumps into the overlay's old code when a new overlay is in place.
-//
-// The stub at 0 jumps to the overlay at kOverlayPair (as in StubAndOverlay), which tiers up through
-// the jump path. A dispatch at a second entry of the overlay (kOverlayEntry2, a counted loop) asks for
-// a root job, held in the worker. The stub runs to its JR's block and stops (cycle budget), the job is
-// let go, and the stub resumes: its JR misses the jump cache (the overlay's slots were emptied by a
-// write) and the slow path publishes the root. Then a different routine is written over the overlay's
-// entry and the stub runs again: microVU alone makes a program of the new routine and runs it.
-// (Mutation: vuAotRefetch leaves the quick slot empty after a root publication; the last run then
+// A region rooted in a program reached by a JR (an overlay, as in God of War II) is published at the JR slow path that has
+// just resolved that program. Publishing a root drops the program's quick slots, so the jump cache entry the slow path then
+// fills must not be left as "no program": the inline probe in front of every JR (normJumpCompile) takes an entry whose
+// program equals the quick slot's without asking whether it is null, so the next JR to that address would take it whenever
+// the slot is empty (after any micro-memory write over the code there) and jump into the overlay's old code even once a
+// new overlay is in place. (Mutation: vuAotRefetch leaves the quick slot empty after a root publication; the last run then
 // executes the old overlay.)
 namespace
 {
@@ -853,7 +833,6 @@ std::vector<VuOp> StubOverlayAndSecondEntry()
 	return p;
 }
 
-// What replaces the overlay's entry: a routine of its own.
 void WriteNewOverlay()
 {
 	const std::vector<VuOp> c = {U(VADD_U(mask::xyzw, vf::vf8, vf::vf1, vf::vf2)), U(VMUL_U(mask::xyzw, vf::vf9, vf::vf8, vf::vf8)),
@@ -943,14 +922,11 @@ TEST(VuAotLive, RootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
 	}
 }
 
-// A root publication empties every quick slot of its program, and the slow path that publishes it puts
-// back only the one it is in. mVUclear walks the slots that prog.quickOcc marks occupied instead of the
-// array (microVU ABI 62), so the bits of the slots the publication emptied have to go with them. (Mutation:
-// vuAotPublishRoot leaves them set. A stale bit is harmless to mVUclear, which drops a slot with no program
-// as one that overlaps; what it breaks is the bitmap being exactly the set of occupied slots.)
-//
-// One program is dispatched at two entries, so two slots hold it. A root job asked for at the second
-// entry is held in the worker, released, and published at the next dispatch.
+// A root publication empties every quick slot of its program, and the slow path that publishes it puts back only the one it is in.
+// mVUclear walks the slots prog.quickOcc marks occupied (microVU ABI 62), so the bits of the emptied slots must be cleared too.
+// (Mutation: vuAotPublishRoot leaves them set. mVUclear tolerates a stale bit, since it treats a slot with no program as
+// overlapping; what breaks is the bitmap being exactly the set of occupied slots.)
+// One program is dispatched at two entries, so two slots hold it.
 TEST(VuAotLive, RootPublicationKeepsTheQuickOccupancyBitmapInStep)
 {
 	constexpr u32 kEntry2 = 64;
@@ -1012,7 +988,6 @@ TEST(VuAotLive, SettingsRoundTrip)
 			EXPECT_EQ(Diff(ref, Take(h)), "") << "round " << round << " run " << i;
 		}
 		EXPECT_EQ(vuaot::live::GetStats().tierUps - before.tierUps, 1u) << "round " << round;
-		// Off and back on: a reset in between.
 		EmuConfig.Cpu.Recompiler.EnableVUAot = false;
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 		EXPECT_FALSE(vuaot::live::IsEnabled());
@@ -1035,13 +1010,9 @@ TEST(VuAotLive, UnsupportedGamefixKeepsItOff)
 	EXPECT_TRUE(vuaot::live::IsEnabled());
 }
 
-//------------------------------------------------------------------
-// The sticky-STATUS tripwire (owner decision j, section 9ad). Regions drop
-// the sticky bits of STATUS (6-7 and 10-11) in either flag-hack mode while no
-// reader of them is known; a reader that shows up -- a micro image holding
-// one, a compiled one, VU0 touching VU1's STATUS -- sets the tripwire off, and
-// VU1's regions are rebuilt and kept exact.
-//------------------------------------------------------------------
+// Sticky-STATUS tripwire: regions drop the sticky bits of STATUS (6-7 and 10-11) in either flag-hack mode while no reader of
+// them is known. A reader that shows up (a micro image holding one, a compiled one, VU0 touching VU1's STATUS) sets the
+// tripwire off, and VU1's regions are rebuilt and kept exact.
 
 namespace
 {
@@ -1517,16 +1488,10 @@ TEST(VuAotLive, TripwireMutationsAreCaught)
 }
 
 
-//------------------------------------------------------------------
-// The VU program cache and the tier (compiler-design.md 9ag)
-//------------------------------------------------------------------
-//
-// EnableVUAot turns the on-disk program cache on. The cache stores what microVU compiled, from the
-// recorder's log of each program (mVUPersist), and the tier changes none of that: the log stops growing
-// when a program is tiered (RegisterBlock fails every episode of a program with tier state), so the image
-// saved for a program is the microVU code it had before its tier-up. These tests run the whole path:
-// a program is compiled, tiered up and saved; a later session loads it from the disk cache, tiers it up
-// again and every run equals microVU's.
+// EnableVUAot turns the on-disk VU program cache on. The cache is filled from the recorder's log of each program
+// (mVUPersist), which stops growing once a program is tiered (RegisterBlock fails every episode of a program with tier state),
+// so the image saved for a program is the microVU code it had before its tier-up. These tests run the whole path: a program is
+// compiled, tiered up and saved; a later session loads it from the disk cache, tiers it up again, and every run equals microVU's.
 
 namespace
 {
@@ -1638,11 +1603,10 @@ protected:
 };
 } // namespace
 
-// The tier does not change what a program saves: its image after the tier-up is the image it had before,
-// byte for byte, and after more of it compiled under the tier (a second entry, whose root the tier takes
-// into a region) the code in the image is the same (the ranges the program answers for have grown).
-// (Mutation: let the recorder keep episodes of a tiered program, and the region placed in one is in the
-// image.)
+// The tier does not change what a program saves: the image after the tier-up equals the one before it, and the code in the
+// image stays the same when more of the program compiles under the tier (a second entry, whose root the tier takes into a
+// region); only the ranges the program answers for grow. (Mutation: let the recorder keep episodes of a tiered program, and
+// the region placed in one ends up in the image.)
 TEST_F(VuAotCache, TierUpDoesNotChangeWhatIsSaved)
 {
 	for (bool sync : {true, false})
@@ -1846,11 +1810,9 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 }
 
 
-//------------------------------------------------------------------
-// The saved plan (persistence-design.md, the plan half): with the program cache on, a tiered program's
-// regions are saved as their plan (roots, jump targets, the micro-memory words each compile read) in a
-// sidecar next to its payload, and a later session sends the jobs to the worker as the program loads.
-//------------------------------------------------------------------
+// The saved plan: with the program cache on, a tiered program's regions are saved as their plan (roots, jump targets, the
+// micro-memory words each compile read) in a sidecar next to its payload, and a later session sends the jobs to the worker as
+// the program loads.
 
 namespace
 {
@@ -2070,10 +2032,9 @@ TEST_F(VuAotCache, ResetBeforeTheRootsArriveKeepsThePlan)
 	EXPECT_EQ(records(), saved) << "the reset wrote a plan without the root that was still out";
 }
 
-// The tripwire across sessions (the owner's default on decision 3): a title that set it off starts every
-// later session (a VM boot or reset) with it set, so the regions keep the sticky bits from the start and every
-// run equals microVU byte for byte; another title, or the same with the program cache off, starts armed.
-// (Mutation: no memory, and session two's regions drop the sticky bits again.)
+// The tripwire across sessions: a title that set it off starts every later session (a VM boot or reset) with it set, so the
+// regions keep the sticky bits from the start and every run equals microVU byte for byte; another title, or the same with the
+// program cache off, starts armed. (Mutation: no memory, and session two's regions drop the sticky bits again.)
 TEST_F(VuAotCache, TrippedTitleStartsTheNextSessionTripped)
 {
 	for (bool fh : {true, false})
@@ -2140,15 +2101,14 @@ TEST_F(VuAotCache, TrippedTitleStartsTheNextSessionTripped)
 	}
 }
 
-// A generation published at a slow path that has just compiled blocks for another program, still untiered,
-// leaves that program's blocks to the persisted-program recorder: the publication runs in a code-cache episode
-// of its own. (Before, the recorder dropped the slow path's whole episode once the tiered program's root
-// registered in it, and the untiered program's blocks never reached its payload: 0 to 9 episodes, up to 1,161
-// blocks, per God of War II scene on a cold launch.)
+// A generation published at a slow path that has just compiled blocks for another, still untiered, program leaves that
+// program's blocks to the persisted-program recorder: the publication runs in a code-cache episode of its own. (Otherwise the
+// recorder drops the slow path's whole episode once the tiered program's root registers in it, and the untiered program's
+// blocks never reach its payload.)
 //
-// The overlay tiers up through the jump path and its job is finished but not yet published; then the stub's
-// first word changes, so the next dispatch makes a new program for the stub and compiles its blocks, and the
-// same slow path publishes the overlay's generation (its code is still in micro memory).
+// The overlay tiers up through the jump path and its job is finished but not yet published; then the stub's first word
+// changes, so the next dispatch makes a new program for the stub and compiles its blocks, and the same slow path publishes
+// the overlay's generation (its code is still in micro memory).
 TEST_F(VuAotCache, GenerationPublishedAtAnotherProgramsSlowPathLeavesItsBlocksRecorded)
 {
 	for (bool fh : {true, false})
@@ -2193,10 +2153,9 @@ TEST_F(VuAotCache, GenerationPublishedAtAnotherProgramsSlowPathLeavesItsBlocksRe
 	}
 }
 
-// Deterministic mode (pcsx2-eerunner --vuaot-sync, the unit tests): a root job microVU asks for while a loaded
-// plan's root jobs are finished but not yet published takes only its own job off the worker's finished list;
-// the plan's go to their program and are published at its next slow path. (Before, the synchronous root path
-// threw every other finished job away, so those roots never got their regions.)
+// Deterministic mode (pcsx2-eerunner --vuaot-sync, the unit tests): a root job microVU asks for while a loaded plan's root jobs
+// are finished but not yet published takes only its own job off the worker's finished list; the plan's go to their program and
+// are published at its next slow path. (Throwing the other finished jobs away would leave those roots without regions.)
 //
 // Session one saves a plan with the generation at entry A and a root at entry B. Session two first dispatches a
 // third entry C: the load sends the generation and, once it is published in that same slow path, the root plan
@@ -2437,10 +2396,8 @@ TEST_F(VuAotCache, FilesOfAnotherBuildAreRefusedAndReplaced)
 	EXPECT_EQ(back.installed, 0u);
 }
 
-//------------------------------------------------------------------
-// Saved region code (persistence-design.md, the install half): a published job's code with every
-// address in it a fixup another process can resolve, and the install of it at load.
-//------------------------------------------------------------------
+// Saved region code: a published job's code with every address in it a fixup another process can resolve, and the install of
+// that code at load.
 
 namespace
 {
@@ -2600,11 +2557,10 @@ std::string AuditRecordCode(const vuaot::persist::RegionCode& c, const MappedRan
 }
 } // namespace
 
-// Every job the worker publishes while the program cache keeps sidecars describes its code with a fixup for
-// every address in it, of a kind another process can resolve (persistence-design.md section 3): no address
-// run, outside branch or ADRP is left uncovered, and C helpers, VU state, the program, the nodes' handles and
-// placeholders for microVU's code all show up. (Mutation: drop the recorder's outside runs, and the audit
-// finds the C helpers.)
+// Every job the worker publishes while the program cache keeps sidecars describes its code with a fixup for every address in
+// it, of a kind another process can resolve: no address run, outside branch or ADRP is left uncovered, and C helpers, VU
+// state, the program, the nodes' handles and placeholders for microVU's code all show up. (Mutation: drop the recorder's
+// outside runs, and the audit finds the C helpers.)
 TEST_F(VuAotCache, WorkerRecordsEveryAddressItsRegionsHold)
 {
 #if !defined(__linux__)
@@ -2802,11 +2758,9 @@ InstallRun LoadInstall(const InstallCase& c, bool sync, bool fh, const std::vect
 }
 } // namespace
 
-// A tiered program's regions are saved with their code, and the next session puts them in place as the
-// program loads: no generation job, no root job for a saved root, regions from the very first dispatch, and
-// every run equals the tier off's. The code lands at another offset of the code cache than where it was made,
-// so every relocation is exercised. (Mutations, run by hand: no program-word patch, no handle patch, block refs
-// left at the saved address, one record linked at a time; see compiler-design.md 9ap.)
+// A tiered program's regions are saved with their code, and the next session puts them in place as the program loads: no
+// generation job, no root job for a saved root, regions from the very first dispatch, and every run equals the tier off's.
+// The code lands at another offset of the code cache than where it was made, so every relocation is exercised.
 TEST_F(VuAotCache, InstalledRegionsRunFromTheFirstDispatch)
 {
 	for (bool sync : {true, false})
@@ -2838,13 +2792,12 @@ TEST_F(VuAotCache, InstalledRegionsRunFromTheFirstDispatch)
 			}
 }
 
-// An installed program is found at every start PC it holds a block for, as one compiled by microVU is. A dispatch
-// at a start PC walks that PC's list of programs and compares ranges; only a search puts a program in a list, and
-// the regions of an installed program take their jumps inside their code, so none of its PCs has been searched. After
-// a write to micro memory that misses the program's ranges, the first dispatch at its other entry then found an empty
-// list, hashed the changed image and made a new program, which compiled the same code again (God of War II scene 3:
-// 145 programs in a second launch against 125 in the first, 16.5 G VU1 instructions against 14.1 G).
-// (Mutation: leave the lists alone at install, and the second entry makes a program.)
+// An installed program is found at every start PC it holds a block for, as one compiled by microVU is. A dispatch at a start
+// PC walks that PC's list of programs and compares ranges, and only a search puts a program in a list. The regions of an
+// installed program take their jumps inside their code, so none of its PCs has been searched: after a write to micro memory
+// that misses the program's ranges, the first dispatch at its other entry would find an empty list, hash the changed image and
+// make a new program that compiles the same code again. (Mutation: leave the lists alone at install, and the second entry
+// makes a program.)
 TEST_F(VuAotCache, InstalledProgramIsFoundAtItsOtherEntryAfterAWriteOutsideItsRanges)
 {
 	for (bool fh : {true, false})
@@ -3097,12 +3050,11 @@ TEST_F(VuAotCache, DroppedStickyRecordsStayOutOfATrippedSession)
 	}
 }
 
-// The jump cache fault of compiler-design.md 9ah, over a program loaded with its plan: the overlay a stub
-// JRs into is loaded from the cache, its generation comes from the plan, and its root plan (a second entry
-// the session never runs) is held in the worker, then published at the stub's JR slow path. Then a new
-// routine is written over the overlay and the stub jumps there: every run equals microVU alone, so the jump
-// cache entry the slow path filled names a program (vuAotRefetch), and nothing the load did wrote a quick
-// slot.
+// The jump cache fault (see RootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry), over a program loaded with its plan: the
+// overlay a stub JRs into is loaded from the cache, its generation comes from the plan, and its root plan (a second entry the
+// session never runs) is held in the worker, then published at the stub's JR slow path. Then a new routine is written over the
+// overlay and the stub jumps there: every run equals microVU alone, so the jump cache entry the slow path filled names a
+// program (vuAotRefetch), and nothing the load did wrote a quick slot.
 TEST_F(VuAotCache, LoadedOverlayRootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry)
 {
 	const PlanOnly planOnly;
@@ -3249,9 +3201,9 @@ TEST_F(VuAotCache, DeclinedRootsAreNotAskedForAgain)
 		}
 }
 
-// The jump cache fault of compiler-design.md 9ah, over an overlay whose saved regions are installed: the stub's
-// JR loads the overlay from the cache and its generation and root go in at that slow path, before the jump cache
-// entry is filled (from the quick slot the search installs afterwards). Then a new routine is written over the
+// The jump cache fault (see RootPublishedAtAJumpLeavesNoUncheckedJumpCacheEntry), over an overlay whose saved regions are
+// installed: the stub's JR loads the overlay from the cache and its generation and root go in at that slow path, before the
+// jump cache entry is filled (from the quick slot the search installs afterwards). Then a new routine is written over the
 // overlay and the stub jumps there: every run equals microVU alone.
 TEST_F(VuAotCache, InstalledOverlayLeavesNoUncheckedJumpCacheEntry)
 {

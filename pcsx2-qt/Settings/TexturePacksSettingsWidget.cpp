@@ -40,7 +40,6 @@ namespace
 
 	constexpr int SIZE_ROLE = Qt::UserRole + 1;
 
-	/// A list line that sorts sizes by number and text the way the language does.
 	class PackItem final : public QTreeWidgetItem
 	{
 	public:
@@ -301,14 +300,11 @@ void TexturePacksSettingsWidget::queryAstcSupport()
 
 void TexturePacksSettingsWidget::setAstcSupport(Engine support)
 {
-	// "No game running" is not a new answer about the GPU; keep what an earlier query found out.
 	if (m_astc == support || (support == Engine::Unknown && m_astc != Engine::Unknown))
 		return;
 	m_astc = support;
 	refreshList();
 }
-
-// ---- State from the service -----------------------------------------------------------------------------
 
 void TexturePacksSettingsWidget::onCatalogChanged()
 {
@@ -403,8 +399,6 @@ void TexturePacksSettingsWidget::refreshStatus()
 	m_ui.retryButton->setVisible(retry);
 	m_ui.refreshButton->setEnabled(catalog.status != Status::Loading);
 }
-
-// ---- The list -----------------------------------------------------------------------------------------
 
 const Tex::TexturePack* TexturePacksSettingsWidget::packForId(const std::string& id) const
 {
@@ -548,7 +542,7 @@ void TexturePacksSettingsWidget::refreshList()
 	rows.erase(std::remove_if(rows.begin(), rows.end(), [&](const Row& row) { return !rowMatchesSearch(row, needle); }), rows.end());
 	m_rows = std::move(rows);
 
-	// Rebuild the list. The sort order is the order the rows were built in until a header is clicked.
+	// The rows keep the order they were built in until a header is clicked.
 	QSignalBlocker block(m_ui.packList);
 	m_ui.packList->setSortingEnabled(false);
 	m_ui.packList->clear();
@@ -595,7 +589,6 @@ void TexturePacksSettingsWidget::refreshList()
 		m_ui.packList->setCurrentItem(to_select);
 	block.unblock();
 
-	// Empty list: say why.
 	QString empty;
 	if (m_rows.empty())
 	{
@@ -652,8 +645,6 @@ void TexturePacksSettingsWidget::onSelectionChanged()
 		m_selected_key = row->key();
 	showDetail(row);
 }
-
-// ---- Details --------------------------------------------------------------------------------------------
 
 void TexturePacksSettingsWidget::showDetail(const Row* row)
 {
@@ -745,7 +736,6 @@ void TexturePacksSettingsWidget::showDetail(const Row* row)
 	size += tr(", %n file(s)", nullptr, static_cast<int>(pack.file_count));
 	set_row(m_ui.detailSizeLabel, m_ui.detailSize, size);
 
-	// Space the install needs on the textures drive, against what is free.
 	const u64 needed = Tex::TexturePackInstaller::RequiredFreeSpace(pack);
 	const std::optional<u64> available = freeSpaceAt(EmuFolders::Textures);
 	QString space = QString::fromStdString(Tex::FormatPackSize(needed));
@@ -763,7 +753,6 @@ void TexturePacksSettingsWidget::showDetail(const Row* row)
 		source = htmlLink(pack.source_url, QUrl(QString::fromStdString(pack.source_url)).host());
 	set_row(m_ui.detailSourceLabel, m_ui.detailSource, source);
 
-	// What is installed, and whether there is something newer.
 	const Tex::InstallAction action = m_service->actionFor(pack);
 	QString installed_text;
 	if (row->installed && row->installed->record)
@@ -812,8 +801,6 @@ void TexturePacksSettingsWidget::showDetail(const Row* row)
 	m_ui.deleteButton->setVisible(row->installed.has_value());
 	m_ui.deleteButton->setEnabled(!busy);
 }
-
-// ---- Install, delete -----------------------------------------------------------------------------------
 
 void TexturePacksSettingsWidget::onInstallClicked()
 {

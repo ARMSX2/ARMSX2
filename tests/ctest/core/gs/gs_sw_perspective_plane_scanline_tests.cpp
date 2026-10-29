@@ -3,23 +3,18 @@
 
 // A perspective triangle drawn with the console's S, T and Q planes.
 //
-// gs_sw_perspective_plane_tests.cpp pins the arithmetic that builds a plane
-// (GSPerspectivePlane.h). This suite pins that the software renderer carries it to
-// the pixel. A triangle goes through the real GSRasterizer, once with the C++
-// scanline and once with the generated one, vertices in and framebuffer out,
-// against a texture whose every texel names itself, so a stored word says which
-// texel a pixel sampled. The expected texel is the header's plane through the
-// scanline's divide (a multiply by a reciprocal on a fifteen-bit grid, the
-// coordinate's truncation to a sixteenth; there is no lag on this route), so
-// what is on trial is the rasterizer's row seeds, the setup's steps and the
-// scanline's floor to g/4 and its conversion to float.
+// gs_sw_perspective_plane_tests.cpp pins the arithmetic that builds a plane (GSPerspectivePlane.h); this
+// suite pins that the software renderer carries it to the pixel. A triangle goes through the real
+// GSRasterizer, once with the C++ scanline and once with the generated one, against a texture whose every
+// texel names itself, so a stored word says which texel a pixel sampled. The expected texel is the header's
+// plane through the scanline's divide (a multiply by a reciprocal on a fifteen-bit grid, the coordinate
+// truncated to a sixteenth; there is no lag on this route). What is on trial is the rasterizer's row seeds,
+// the setup's steps, and the scanline's floor to g/4 and conversion to float.
 //
-// Each scene is chosen so that the exact plane names a different texel on 50 to 80
-// pixels: without the plane rule these cases are red, and the last case pins that
-// they are.
+// Each scene is chosen so that the exact plane names a different texel on dozens of pixels, so these cases
+// fail without the plane rule; the last case pins that they do.
 //
-// Rides ARCH_ARM64 like its siblings: the generators are per-architecture, and the
-// plane is not enabled on x86.
+// Built only for ARCH_ARM64: the generators are per-architecture, and the plane is not enabled on x86.
 
 #include "common/Pcsx2Defs.h"
 #include "GS/MultiISA.h"
@@ -78,12 +73,10 @@ struct Scene
 	float s[3], t[3], q[3];
 };
 
-// Six triangles, chosen by search so that the plane rule and the exact plane differ
-// in the texel they name on 3% to 6% of the pixels (50, 63 and 80 of about 1,200 to
-// 1,400 on the first three), and the last so that its twice-area is a power of two.
-// A is led by Q >= 2 (E = 1), B has negative coordinates under REPEAT (E = 0), C is
-// led by S (E = 1 with every Q below 2), D is the power-of-two area, E and F are A with
-// some or all of its vertices negated whole.
+// Six triangles. A is led by Q >= 2 (E = 1), B has negative coordinates under REPEAT (E = 0), C is led by S
+// (E = 1 with every Q below 2), D has a twice-area that is a power of two, E and F are A with some or all of
+// its vertices negated whole. A to C were chosen by search so that the plane rule and the exact plane name
+// different texels on a few percent of their pixels.
 const Scene kScenes[] = {
 	{"A", {104, 962, 379}, {150, 328, 936}, {0.547561646f, 1.88167548f, 0.400869966f}, {2.19578218f, 1.75813711f, 1.84474099f}, {3.09918571f, 2.01724887f, 2.0887816f}},
 	{"B", {100, 868, 176}, {77, 672, 925}, {-0.546903789f, 0.468648851f, 0.0164142307f}, {0.0105292341f, 0.810239851f, 0.0555147342f}, {0.659195065f, 1.73486447f, 0.913543701f}},
@@ -109,11 +102,10 @@ GSVertexSW Vertex(const Scene& sc, int i)
 	return v;
 }
 
-/// What the scanline's divide makes of one pixel's plane values: the multiply by a
-/// reciprocal on a fifteen-bit grid rounded as floor(x + 0.7), then the coordinate's truncation
-/// toward zero to a sixteenth (no lag on the plane route), and REPEAT addressing. The ARM64 scanline
-/// (GSDrawScanlineCodeGenerator SampleTexture) and its C++ twin are the two things
-/// this reads.
+/// What the scanline's divide makes of one pixel's plane values: the multiply by a reciprocal on a
+/// fifteen-bit grid rounded as floor(x + 0.7), then the coordinate's truncation toward zero to a sixteenth
+/// (no lag on the plane route), and REPEAT addressing. Mirrors the ARM64 scanline
+/// (GSDrawScanlineCodeGenerator SampleTexture) and its C++ twin.
 void Reference(const GSPerspectivePlane& p, int x, int y, int& u, int& v)
 {
 	const float sh = static_cast<float>(GSPerspectivePlanePixel(GSPerspectivePlaneValue(p, 0, x, y)));
@@ -436,11 +428,8 @@ u8* SwPerspectivePlaneTest::s_code = nullptr;
 size_t SwPerspectivePlaneTest::s_code_used = 0;
 GSLocalMemory* SwPerspectivePlaneTest::s_mem = nullptr;
 
-// ★ THE C++ SCANLINE DRAWS THE CONSOLE'S PLANE.
-//
-// Every pixel the draw stores must name the texel the header's plane names, through
-// the same divide. On the exact plane this is red: the scenes differ from it on 50 to
-// 80 pixels each.
+// Every pixel the draw stores must name the texel the header's plane names, through the same divide. The
+// scenes differ from the exact plane on dozens of pixels each, so this fails without the plane rule.
 TEST_F(SwPerspectivePlaneTest, TheCppScanlineDrawsThePlane)
 {
 	for (const Scene& sc : kScenes)
@@ -455,7 +444,6 @@ TEST_F(SwPerspectivePlaneTest, TheCppScanlineDrawsThePlane)
 	}
 }
 
-// ★ AND SO DOES THE GENERATED ONE.
 TEST_F(SwPerspectivePlaneTest, TheGeneratedScanlineDrawsThePlane)
 {
 	for (const Scene& sc : kScenes)
@@ -470,8 +458,6 @@ TEST_F(SwPerspectivePlaneTest, TheGeneratedScanlineDrawsThePlane)
 	}
 }
 
-// ★ NEGATING A VERTEX WHOLE DRAWS THE SAME PICTURE.
-//
 // E is A with every vertex negated and F is A with two of them negated. A vertex with
 // a negative Q is negated whole by the setup, so both must store A's words exactly.
 TEST_F(SwPerspectivePlaneTest, ANegatedVertexDrawsAsTheOriginalDoes)
@@ -502,12 +488,9 @@ TEST_F(SwPerspectivePlaneTest, TheTwoScanlinesAgreeWordForWord)
 	}
 }
 
-// ★ THE SCENES CAN TELL THE PLANE FROM THE EXACT PLANE.
-//
-// The plane rule is off here (the selector bit clear), so this is the renderer as it
-// was. Against the header's plane it must disagree on dozens of pixels on each of the
-// first three scenes; if it did not, the cases above would pass on the exact plane
-// too and would not be a test of the rule.
+// The plane rule is off here (the selector bit clear). Against the header's plane it must disagree on
+// dozens of pixels on each of the first three scenes; otherwise the cases above would pass on the exact
+// plane too and would not test the rule.
 TEST_F(SwPerspectivePlaneTest, WithoutTheRuleTheScenesDisagreeWithThePlane)
 {
 	for (const Scene& sc : kScenes)
@@ -556,11 +539,6 @@ TEST_F(SwPerspectivePlaneTest, WithoutTheRuleTheScenesDisagreeWithThePlane)
 	}
 }
 } // namespace
-
-
-// ---------------------------------------------------------------------------------
-// Every sampler mode.
-// ---------------------------------------------------------------------------------
 
 namespace
 {
@@ -626,17 +604,13 @@ const u32* InvertedTexture()
 
 namespace
 {
-// ★ AT WHOLE COUNTS OF g/4 THE PLANE RULE IS THE FLOAT PIPELINE, IN EVERY SAMPLER MODE.
-//
-// The floor to g/4 is the rule's only per-pixel arithmetic. A span whose seed and step
-// are whole counts of g/4 has nothing for it to floor, and every value the float
-// pipeline would carry is then exactly representable, so the rule and the float
-// pipeline must store the same word at every pixel: through the nearest and the
-// linear filter, the per-pixel filter crossover, and a constant and a Q-driven level
-// of detail. That is what pins the conversion the scanline adds (the shift, the
-// scale that takes the quotient to 16.16 texels, and the Q that the level and the
-// crossover read) against code that is not new. The C++ scanline and the generated
-// one are both run, and must agree.
+// The floor to g/4 is the plane rule's only per-pixel arithmetic. A span whose seed and step are whole
+// counts of g/4 has nothing for it to floor, and every value the float pipeline would carry is then
+// exactly representable, so the rule and the float pipeline must store the same word at every pixel, in
+// every sampler mode: nearest and linear filter, the per-pixel filter crossover, constant and Q-driven
+// level of detail. This pins the conversion the scanline adds (the shift, the scale that takes the
+// quotient to 16.16 texels, and the Q that the level and the crossover read). Both the C++ scanline and
+// the generated one are run, and must agree.
 class SwPerspectivePlaneSamplerTest : public SwPerspectivePlaneTest
 {
 protected:
@@ -853,16 +827,11 @@ TEST_F(SwPerspectivePlaneSamplerTest, QDrivenLevelOfDetailReadsQAsAFloat)
 	}
 }
 
-// ★ THE PLANE ROUTE HAS NO COORDINATE LAG.
-//
-// The lag the accumulator routes trail by (the UV register, STQ at Q = 1) is one unit
-// of the 16.16 coordinate off a forward walk, which moves a sample that lands exactly
-// on a texel boundary one texel down. On the plane route the coordinate lands on
-// boundaries all the time (a value floored to g/4 over a Q of exactly two), and the
-// console does not trail there: gs-sm3d's whole-draw arms read 100.0000% of 771,234
-// pixels with no lag and 92.3% with it. Q is 2.0 here (count 65,536 at E = 1), so the
-// divide is exact and S/Q steps one texel a pixel from texel 3: a lag would read
-// 2, 3, 4, 5.
+// The lag the accumulator routes trail by (the UV register, STQ at Q = 1) is one unit of the 16.16
+// coordinate off a forward walk, which moves a sample that lands exactly on a texel boundary one texel
+// down. On the plane route the coordinate lands on boundaries all the time (a value floored to g/4 over a
+// Q of exactly two), and the console does not trail there. Q is 2.0 here (count 65,536 at E = 1), so the
+// divide is exact and S/Q steps one texel a pixel from texel 3: a lag would read 2, 3, 4, 5.
 TEST_F(SwPerspectivePlaneSamplerTest, ThePlaneRouteDoesNotLag)
 {
 	const PlaneSpan sp{3 * 4096, 5 * 4096, 65536, 4096, 0, 0};

@@ -22,7 +22,7 @@ bool has_link = true;
 
 static bool phyLinkUp()
 {
-	// Battle Gear 3 / Tuned: no Ethernet link, so NESYS sees "no network" and boots standalone (PCSX2x6).
+	// Battle Gear 3 / Tuned: no Ethernet link, so NESYS sees "no network" and boots standalone.
 	if (Arcade::IsActive())
 	{
 		const std::string& gameId = ACJV::GetGameId();

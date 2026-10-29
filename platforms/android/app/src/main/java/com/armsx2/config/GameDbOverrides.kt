@@ -256,10 +256,9 @@ object GameDbOverrides {
     }
 
     /**
-     * Which database-contended keys each field moves. Which field drives which key is a property of
-     * the code, not of a game or of a value, so this is kept for the process: a lookup builds and
-     * emits a whole [Settings] per value tried, and repeating it for every row each time a setting
-     * changed would cost a visible stall.
+     * Which database-contended keys each field moves. That depends on the code, not on a game or a
+     * value, so it is kept for the process: a lookup builds and emits a whole [Settings] per value
+     * tried, and repeating it for every row on each setting change would stall the UI.
      */
     private val fieldKeys = HashMap<String, Set<String>>()
 
@@ -317,16 +316,15 @@ object GameDbOverrides {
     }
 
     /**
-     * Square what is about to be stored for [serial] with the fact that its settings screens show
-     * database values. [overrides] is the blob being written, [existing] the one it replaces,
+     * Reconciles what is about to be stored for [serial] with the fact that its settings screens
+     * show database values. [overrides] is the blob being written, [existing] the one it replaces,
      * [changed] the fields the player just changed, [updated] what the screen now holds.
      *
-     * A value the screen showed only because the database sets it is not the player's, and would
-     * otherwise be stored as the game's own the first time anything else is saved, so it is dropped
-     * unless the player changed it. And a setting the player puts at the database's own value goes
-     * back to the database: nothing is stored, and the row is the database's again. That is only
-     * done where the entry would then really apply; otherwise the value would quietly turn into
-     * the global one. Never throws: a failure leaves the blob as it was.
+     * A value the screen showed only because the database sets it is not the player's and would be
+     * stored as the game's own on the next save, so it is dropped unless the player changed it. A
+     * setting the player puts at the database's own value goes back to the database (nothing is
+     * stored), but only where the entry would then really apply; otherwise the value would turn
+     * into the global one. Never throws: a failure leaves the blob as it was.
      */
     fun settleDatabaseValues(
         serial: String,

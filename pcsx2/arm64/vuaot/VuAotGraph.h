@@ -6,17 +6,13 @@
 // The program graph vu-aot compiles: every microVU block variant reachable
 // from the program's entries, linked the way microVU links them.
 //
-// A node is what microVU calls a block: a start PC plus the pipeline state it
-// was entered with (its 96-byte key), running straight to a branch, an E-bit
-// or a jump. Two entries into the same PC with different pipeline states are
-// two nodes, exactly as microVU compiles two copies. That gives the compiler
-// three properties for free:
-//   - every pipeline-time decision inside a node is a compile-time constant,
-//     already validated against microVU (VuAotPipe);
-//   - the tail duplication the design needs at joins whose incoming pipeline
-//     states differ is the duplication microVU already does;
-//   - every node boundary is a point where microVU itself can take over with
-//     an identical state, which is the compiler's universal fallback.
+// A node is a microVU block: a start PC plus the pipeline state it was entered with
+// (its 96-byte key), running straight to a branch, an E-bit or a jump. Two entries into
+// the same PC with different pipeline states are two nodes, as microVU compiles two
+// copies. So every pipeline-time decision inside a node is a compile-time constant
+// (validated against microVU, see VuAotPipe), joins whose incoming pipeline states differ
+// are duplicated the way microVU duplicates them, and every node boundary is a point where
+// microVU can take over with an identical state.
 //
 // Block lookup follows microBlockManager::search: an exact-match key compares
 // all 96 bytes, any other compares the first 8 (minus the MAC bits under the

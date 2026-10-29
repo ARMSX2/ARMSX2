@@ -12,8 +12,6 @@
 
 using namespace Catalog;
 
-// ---- Game list entries and settings --------------------------------------------------------
-
 TEST(CoverAutoDownloadTest, GameListEntriesBecomeWorkItems)
 {
 	GameList::Entry entry;

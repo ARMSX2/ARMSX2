@@ -61,7 +61,7 @@ std::vector<VuMemWindow> WholeMemWindow(int vu_index)
 // VPU_STAT lives in VU0's VI for both VUs. Set the running bit for the
 // replayed VU, and bit 12 (VU1 XGKICK still transferring) from the
 // capture's own XGKICK state, so neither leaks in from an earlier replay.
-// Bits 0-11 are cleared as before; the VU's own VI copy mirrors the result.
+// Bits 0-11 are cleared; the VU's own VI copy mirrors the result.
 void SeedVpuStat(const vu_capture::CaptureRecord& rec)
 {
 	const int idx = static_cast<int>(rec.vu_index);
@@ -143,15 +143,12 @@ void RunJitFromSeeded(int idx, u32 cycles)
 	JitCpu(idx)->Execute(cycles);
 }
 
-// Holds the host FPCR at the replayed VU's FPCR (FZ + ChopZero by default)
-// for its lifetime. Every driver that executes VU code needs it, for two
-// reasons. The interpreter computes with host scalar FP (`fs / ft` in
-// `_vuDIV`, host `sqrt` in `_vuSQRT`, ...), which uses the thread's FPCR.
-// And microVU writes FPCR at dispatch only when the EE and VU FPCRs differ,
-// so with the default config the JIT also inherits the caller's FPCR. Run
-// either under round-to-nearest and it computes different values than the
-// game did: 1-ULP false divergences in a diff, and in a bench, a program
-// whose loop condition depends on the rounding can run to the cycle budget.
+// Holds the host FPCR at the replayed VU's FPCR (FZ + ChopZero by default) for its lifetime. Every driver
+// that executes VU code needs it: the interpreter computes with host scalar FP (`fs / ft` in `_vuDIV`, host
+// `sqrt` in `_vuSQRT`, ...), which uses the thread's FPCR, and microVU writes FPCR at dispatch only when the
+// EE and VU FPCRs differ, so with the default config the JIT also inherits the caller's FPCR. Under
+// round-to-nearest either computes different values than the game did: 1-ULP false divergences in a diff,
+// and in a bench, a program whose loop condition depends on the rounding can run to the cycle budget.
 class ScopedVuFpcr
 {
 public:

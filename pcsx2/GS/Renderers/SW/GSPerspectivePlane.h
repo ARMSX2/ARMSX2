@@ -14,14 +14,12 @@
 
 // How the GS builds the S, T and Q planes of a perspective triangle (STQ, FST = 0).
 //
-// Measured on an SCPH-30001 (gs-sm3b, gs-sm3c, gs-sm3d, gs-tri1a-f): the console's
-// plane is not the exact plane through the three vertices. The arithmetic below
-// reproduces every plane those captures read, 100% of the pixels of gs-sm3d's
-// 62 single-triangle arms and of its 56 predicted ones.
+// The plane an SCPH-30001 builds is not the exact plane through the three vertices.
+// The arithmetic below reproduces the planes its captures read.
 //
 //   0. A vertex with a negative Q is negated whole: the setup works on Q's magnitude
 //      and carries Q's sign in S and T, so (S, T, Q) becomes (-S, -T, |Q|) and S/Q is
-//      unchanged. Found by trying it, not read off a capture (see below).
+//      unchanged. Fitted rather than read off a capture (see below).
 //   1. Each of the nine inputs (S, T and Q at three vertices) loses its low eight
 //      mantissa bits, toward zero. The register keeps fifteen.
 //   2. One exponent E = floor(log2 max|v|) over all nine values, so S, T and Q
@@ -37,9 +35,9 @@
 //      and the vertices' exact sub-pixel positions, floored to g/4.
 //   6. The texture coordinate is that S over that Q, truncated toward zero to a
 //      sixteenth of a texel, which the scanline already does. There is no
-//      coordinate lag on this route (GSCoordinateWalk.h): the plane carries the
-//      shortfall it stands in for, and gs-sm3d's whole-draw arms read 100.0000%
-//      of 771,234 pixels without it and 92.3% with it.
+//      coordinate lag on this route (GSCoordinateWalk.h): the plane already carries
+//      the shortfall that lag stands in for, and adding the lag as well moves the
+//      result away from the console.
 //
 // Everything is integer arithmetic. The accumulator's unit is F = g / 2^14, which
 // is a gradient unit (g/1024) per sixteenth of a pixel, so
@@ -51,23 +49,16 @@
 // Only the low 32 bits are carried: a pixel inside the triangle has a value inside
 // +-2^30, so wrapped arithmetic gives the right answer wherever it is read.
 //
-// Rule 0 was not measured directly. Without it the 53 triangles of the game's draw
-// with a vertex Q at or below zero (5.1% of its pixels, the "sliver" class the model
-// could not explain) agree with the console on 12% of their coordinates; with it, 91%
-// on U and 99% on V (gs-sm3b's `bil` arm). OutRun 2006's frame has every Q negative on
-// 3,499 of its 3,539 perspective draws: exact-word identity with the console is 80.1%
-// on the exact plane, 75.5% on a plane built on the raw negative Q, and 98.0% with the
-// rule. gs-tri1e (Q swept through zero) would test it directly.
+// Rule 0 was fitted, not measured directly. Without it, triangles with a vertex Q at
+// or below zero mostly disagree with the console's coordinates; with it they mostly
+// agree. It matters in practice: OutRun 2006 draws most of its perspective triangles
+// with every Q negative.
 //
 // Modelled rather than measured:
-//   * The power-of-two exemption. A twice-area that is a power of two takes an
-//     exact reciprocal (GSSetupInvertsExactly). The table-and-Newton form below
-//     gives 1 - 3.8e-6 at a mantissa of exactly one, so the two have not been
-//     reconciled; the exemption is measured for the affine route only.
-//   * The anchor at a vertical long edge, where the colour walk's rule and
-//     gs-sm3d's empirical one differ (top against bottom). No capture separates
-//     them: on the game's draw 62 of 250 covered triangles have one and score
-//     identically either way.
+//   * The power-of-two exemption (see GSPerspectiveGradient), which is measured for
+//     the affine route only.
+//   * The anchor at a vertical long edge, where the colour walk's rule and the one
+//     fitted from captures differ (top against bottom). No capture separates them.
 //   * The mantissa cut for values the front end has already cut (GSState.cpp does
 //     so under constant Z), which is a finer grid and so changes nothing for a
 //     positive value.
@@ -249,8 +240,7 @@ __forceinline static u64 GSPlaneShiftRight(const GSPlaneU128& x, int n)
 	return x.hi >> (n - 64);
 }
 
-/// ★ THE RECIPROCAL, ISOLATED. One function forms every plane gradient, so this is
-/// the only place the setup's divide lives.
+/// Forms every plane gradient, so this is the only place the setup's divide lives.
 ///
 /// `numerator` is the plane's exact numerator, in units of g times a sixteenth of a
 /// pixel, and `cross` is twice the triangle's area, in 12.4 squared (the integer
@@ -258,14 +248,11 @@ __forceinline static u64 GSPlaneShiftRight(const GSPlaneU128& x, int n)
 /// per pixel, truncated toward zero.
 ///
 /// The console does not divide by the area. It multiplies by a reciprocal built
-/// from a 256-entry table and one Newton-Raphson step (gs-sm3d). Write the area as
+/// from a 256-entry table and one Newton-Raphson step. Write the area as
 /// D = m * 2^k with the mantissa m in [1, 2); the seed R0 is the reciprocal of the
 /// middle of the 2^-8 wide bin m falls in, R0 = 1 / (1 + (idx + 1/2) / 256) with
 /// idx = floor((m - 1) * 256); the step is R1 = R0 * (2 - m * R0); and R = R1 / 2^k.
-/// R1 is always a hair below 1 / D: R1 * m = 1 - (1 - m * R0)^2. The shortfall is
-/// 2.28e-6 on gs-tri1f's triangle (D = 574,798,354), inside the (2.259e-6,
-/// 2.376e-6] its phase captures bound, where a reciprocal truncated to eighteen
-/// bits gives 2.9e-6.
+/// R1 is always a hair below 1 / D: R1 * m = 1 - (1 - m * R0)^2.
 ///
 /// In integers, with c = |cross| = m * 2^L (L = its top bit) and a = 513 + 2*idx:
 ///
@@ -276,10 +263,9 @@ __forceinline static u64 GSPlaneShiftRight(const GSPlaneU128& x, int n)
 /// below it only if the reciprocal really is short of exact.
 ///
 /// A twice-area that is a power of two takes the exact quotient instead
-/// (GSSetupInvertsExactly): the affine route's console measurements say so, and
-/// the seed above would give a mantissa of one a shortfall of 3.8e-6. That
-/// exemption and this form have not been reconciled; a console test with
-/// power-of-two areas is pending.
+/// (GSSetupInvertsExactly), as the affine route's console measurements show; the
+/// seed above would give a mantissa of one a shortfall of 3.8e-6. The two have not
+/// been reconciled.
 __forceinline static s64 GSPerspectiveGradient(s64 numerator, s64 cross)
 {
 	if (numerator == 0 || cross == 0)
@@ -410,12 +396,9 @@ __forceinline static s32 GSPerspectivePlanePixel(s32 accumulator)
 // The per-pixel reciprocal of Q.
 //
 // With the plane rule fixing S, T and Q, the console's per-pixel 1/Q is a function of
-// Q alone (gs-sm3c `score`: 603,826 readings, 2,497 distinct Q, no two disagreeing),
-// on a grid of fifteen bits below its leading bit. A fourteen-bit grid is excluded.
-// The rounding is not truncation: r = floor(x + 0.7) on that grid, x = 1/Q in grid
-// units, with 0.7 fitted on half of the game's triangles and held on the other half
-// (97.85% of gs-sm3b's `bil` arm, against 94.1% for truncating fourteen bits). It is
-// a description, not a derived mechanism.
+// Q alone, on a grid of fifteen bits below its leading bit. The rounding is not
+// truncation: r = floor(x + 0.7) on that grid, x = 1/Q in grid units, with 0.7
+// fitted to captures. It is a description, not a derived mechanism.
 //
 // On a float32 quotient the grid is 2^8 units of the mantissa's last bit, and 0.7 of
 // it is 179: add that to the bits and clear the low eight, so a carry out of the

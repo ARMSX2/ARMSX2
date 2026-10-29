@@ -68,13 +68,13 @@ import kotlin.random.Random
 
 /**
  * The library's screensaver: after a set time with no input on the library (10 minutes unless
- * the player picks 1 to 60), the save icons take the screen one game at a time, each moving on
- * its own background with the game's name, drifting slowly so nothing sits still on an OLED
- * panel. Any input wakes it, and only wakes it: the press that does is not passed on, so it can't
- * also start a game. Only over the library, never over a game or while the app is hidden.
+ * the player picks 1 to 60), the save icons take the screen one game at a time, each on its own
+ * background with the game's name, drifting slowly. Any input wakes it, and only wakes it: the
+ * press that does is not passed on, so it can't also start a game. Only over the library, never
+ * over a game or while the app is hidden.
  *
  * Input is seen at the activity (see MainActivityRuntime's dispatch methods), before anything
- * else, which is the one place every key, stick and touch passes through.
+ * else, because every key, stick and touch passes through there.
  */
 object LibraryScreensaver {
     private const val KEY_ENABLED = "library.screensaver"
@@ -84,7 +84,6 @@ object LibraryScreensaver {
     val enabled = mutableStateOf(true)
     val minutes = mutableIntStateOf(DEFAULT_MINUTES)
 
-    /** On screen now. */
     val showing = mutableStateOf(false)
 
     @Volatile private var lastInput = SystemClock.uptimeMillis()
@@ -242,7 +241,6 @@ private fun Screensaver(titles: () -> Map<String, String>) {
             val list = icons
             when {
                 list == null -> Unit // black for the moment it takes to read the cards
-                // No icons anywhere: nothing to show, so no screensaver.
                 list.isEmpty() -> LaunchedEffect(Unit) { LibraryScreensaver.showing.value = false }
                 else -> Slideshow(list)
             }

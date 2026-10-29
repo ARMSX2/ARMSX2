@@ -14,42 +14,36 @@
 
 // Autosaves: save states the emulator writes by itself, kept as a short rotating history.
 //
-// Files, in the save state folder (EmuFolders::Savestates), for the running game:
+// Files, in EmuFolders::Savestates, for the running game:
 //
-//   {serial} ({CRC}).autosave.p2s      the newest. This is VMManager::SAVESTATE_SLOT_AUTOSAVE (-2).
-//   {serial} ({CRC}).autosave.2.p2s    the one before it, then .3 .4 .5 (KEEP_MAX in all).
-//   {serial} ({CRC}).autosave.N.p2s.drop   transient: the oldest, set aside while a new one is
-//                                       being written, so a failed save loses nothing. One a crash
-//                                       left behind is put back at its slot if that is empty (the
-//                                       only autosave, with keep 1), else deleted by the next save.
+//   {serial} ({CRC}).autosave.p2s          the newest (VMManager::SAVESTATE_SLOT_AUTOSAVE, -2)
+//   {serial} ({CRC}).autosave.N.p2s        older ones, N = 2..KEEP_MAX
+//   {serial} ({CRC}).autosave.N.p2s.drop   transient: the oldest, set aside while a new one is being
+//                                          written so a failed save loses nothing. After a crash it is
+//                                          put back if its slot is empty, else deleted by the next save.
 //
-// Every new autosave moves the existing ones one place older and drops the oldest past the
-// "keep" count. These files are separate from the numbered slots 1-10 and from the resume state
-// ({serial} ({CRC}).resume.p2s, written by EmuCore/SaveStateOnShutdown); see below.
+// Every new autosave moves the existing ones one place older and drops the oldest past the keep count.
+// These are separate from numbered slots 1-10 and from the resume state
+// ({serial} ({CRC}).resume.p2s, EmuCore/SaveStateOnShutdown), which this code never touches and which
+// does not count against the keep limit. AutosaveOnShutdown writes into the rotation, not the resume
+// state; with both enabled a shutdown writes both.
 //
-// Settings (all in [EmuCore], read from EmuConfig):
+// Settings, in [EmuCore]:
 //   AutosaveIntervalMinutes   0 = off (default), else save every N minutes of running time
 //   AutosaveKeep              how many to keep, 1-5, default 3
 //   AutosaveOnShutdown        also save when the game is closed, default off
 //
 // Threading: everything that writes (SaveNow, OnPollInput, OnShutdown) runs on the CPU thread and
-// blocks it until the file is written (a tenth to a third of a second for a game on an SSD; longer
-// on a slow SD card). A host on another thread marshals with Host::RunOnCPUThread(..., /*block=*/
-// true). The List functions only read the folder and can be called from any thread; during a save
-// they may see the files mid-rotation.
+// blocks it until the file is written. A host on another thread marshals with
+// Host::RunOnCPUThread(..., /*block=*/true). The List functions only read the folder and can be
+// called from any thread; during a save they may see the files mid-rotation.
 //
-// When: the interval timer runs from VMManager::Internal::PollInputOnCPUThread, once per frame right
-// after the hotkeys are polled, which is the point a hotkey save state is taken at.
+// The interval timer runs once per frame from VMManager::Internal::PollInputOnCPUThread, right after
+// the hotkeys are polled, which is where a hotkey save state is taken.
 //
-// Loading an autosave is the ordinary VMManager::LoadState(entry.path); its thumbnail is
-// SaveState_ReadScreenshot(entry.path, ...). The UIs offer autosaves in their Load menus only;
-// nothing saves into a chosen autosave file. VMManager::DeleteSaveStates() does not touch them.
-//
-// How this relates to the resume state: "Save State On Shutdown" (EmuCore/SaveStateOnShutdown)
-// writes ONE file, the resume state, that the next launch offers to continue from; it is made by
-// VMManager::Shutdown(save_resume_state) and is untouched by this code. AutosaveOnShutdown writes
-// into the rotating autosave history instead, so it never replaces the resume state and the resume
-// state never counts against the keep limit. Both can be on at once: a shutdown then writes both.
+// Load an autosave with VMManager::LoadState(entry.path); its thumbnail is
+// SaveState_ReadScreenshot(entry.path, ...). Nothing saves into a chosen autosave file, and
+// VMManager::DeleteSaveStates() does not touch them.
 namespace Autosave
 {
 	constexpr int KEEP_MIN = 1;
@@ -64,8 +58,6 @@ namespace Autosave
 	/// 2..KEEP_MAX the older ones ("... (CRC).autosave.3.p2s"). Returns `newest` for n <= 1.
 	std::string FileNameAt(const std::string& newest, int n);
 
-	// ---- the rotation ---------------------------------------------------------------------
-
 	/// Makes room for one new autosave, and puts everything back if it does not get written.
 	///
 	///   Rotation rotation(newest, keep);
@@ -74,7 +66,8 @@ namespace Autosave
 	///   if (written) rotation.Commit(); else rotation.Rollback();
 	///
 	/// Begin() moves every existing autosave one place older. The one that would pass `keep` is not
-	/// deleted but renamed to "<its name>.drop" until Commit(), so a save that fails loses nothing.
+	/// deleted but renamed to "<its name>.drop" until Commit(), which deletes it and any autosave past
+	/// `keep` (left from a larger setting), so a save that fails loses nothing.
 	/// Rollback() deletes whatever was written to `newest` (it may be half a file) and moves
 	/// everything back; the destructor does the same if neither was called. A step of Begin() that
 	/// fails undoes the steps before it and returns false.
@@ -91,10 +84,7 @@ namespace Autosave
 		Rotation& operator=(const Rotation&) = delete;
 
 		bool Begin();
-		/// The new autosave was written: delete the one set aside, and any autosave past `keep`
-		/// (left over from a larger setting).
 		void Commit();
-		/// The new autosave was not written: put everything back.
 		void Rollback();
 
 		bool IsOpen() const { return m_open; }
@@ -140,8 +130,6 @@ namespace Autosave
 	/// The keep count from the settings, clamped to KEEP_MIN..KEEP_MAX.
 	int ConfiguredKeep();
 
-	// ---- saving ---------------------------------------------------------------------------
-
 	/// Saves an autosave of the running game now, keeping `keep` (clamped to 1-5). CPU thread only;
 	/// blocks until written. Refuses with CardBusy while the game is writing its memory card, the
 	/// same rule as every other save state. `error`, if given, gets a reason on failure.
@@ -151,8 +139,6 @@ namespace Autosave
 	void OnPollInput();
 	/// Called by VMManager::Shutdown: saves if AutosaveOnShutdown is set, and resets the timer.
 	void OnShutdown();
-
-	// ---- the timer ------------------------------------------------------------------------
 
 	/// Counts running time and says when an interval has passed. Separate from the clock so it can
 	/// be tested. Time the emulator did not run (paused, a long stall) does not count: a gap larger
@@ -177,15 +163,11 @@ namespace Autosave
 		double m_elapsed = 0.0;
 	};
 
-	// ---- listing --------------------------------------------------------------------------
-
 	struct Entry
 	{
 		/// 1 = the newest, 2..5 older. The Nth entry of an autosave is "Autosave N" in the UIs.
 		int index = 0;
-		/// Full path; pass to VMManager::LoadState().
 		std::string path;
-		/// When the file was last written.
 		std::time_t modified = 0;
 		s64 size = 0;
 	};

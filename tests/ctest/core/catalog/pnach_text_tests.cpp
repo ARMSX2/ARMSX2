@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Tests for the .pnach text handling the online patch browser is built on (PnachText.h). The three
-// real files in fixtures/patches/ were downloaded on 2026-10-08; the widescreen one is trimmed to
-// the first lines of each section.
+// Tests for the .pnach text handling the online patch browser is built on (PnachText.h). The files
+// in fixtures/patches/ are real patch files.
 
 #include "catalog_test_support.h"
 

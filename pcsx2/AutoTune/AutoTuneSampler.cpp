@@ -15,9 +15,8 @@
 
 namespace
 {
-	// A CPU-thread span longer than this many metrics windows (plus a little slack for the polling
-	// granularity) has a pause or a stall in it, and the share of it the EE spent waiting says nothing about
-	// the window.
+	// A CPU-thread span longer than this many metrics windows (plus slack for the polling granularity)
+	// has a pause or a stall in it, so the share of it the EE spent waiting says nothing about the window.
 	constexpr double kMaxSpanInWindows = 2.0;
 	constexpr double kSpanSlackSeconds = 0.25;
 
@@ -46,8 +45,7 @@ AutoTuneTally AutoTuneReadLiveTally()
 		t.gs_wait_s = static_cast<double>(raw.gs_wait_ticks) / tick_frequency;
 		t.vu1_wait_s = static_cast<double>(raw.vu1_wait_ticks) / tick_frequency;
 
-		// Both counters are written by the EE thread, which is this one, and are kept whether or not anything
-		// asks: they are the stall the thread timed already.
+		// Both counters are written by the EE thread (this one) and kept whether or not anything asks.
 		const IopThread::Stats iop = IopThread::GetStats();
 		t.iop_wait_s = static_cast<double>(iop.lag_stall_ns + iop.emu_hold_stall_ns) * 1e-9;
 	}
@@ -87,7 +85,6 @@ bool AutoTuneSampler::Poll(const PerformanceMetrics::WindowSnapshot& snap, const
 	w.gs_back_ms = snap.has_gs_back_thread ? snap.gs_back_ms : 0.0;
 	w.gpu_ms = snap.has_gpu_timer ? snap.gpu_ms : 0.0;
 
-	// What the CPU thread counted since the last delivery.
 	if (have_before && now.frames >= before.frames && now.overran_frames >= before.overran_frames)
 	{
 		const uint64_t frames = now.frames - before.frames;

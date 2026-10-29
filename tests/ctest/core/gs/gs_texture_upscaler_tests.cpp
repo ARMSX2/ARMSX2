@@ -36,19 +36,12 @@ namespace
 	// The set the emulator ships; the 4x mode runs it twice.
 	constexpr const char* kShippedSet = "ps2";
 
-	// Quality thresholds, in dB of luma PSNR over bilinear. Set from the measurements printed by
-	// BeatsBilinearOnSyntheticImages.
-	// Measured on the four scenes (shapes, lines, checker, glyphs): +5.7 +3.8 +3.4 +1.6, mean +3.6.
-	// The images and the engine are deterministic, so the headroom is for float differences
-	// between compilers, not noise. Deliberately breaking the angle convention drops the mean to
-	// +0.4 with b negated and to +1.8 with the gradient axes swapped, so the mean threshold sits
-	// above both.
+	// Quality thresholds, in dB of luma PSNR over bilinear. The images and the engine are
+	// deterministic, so the headroom below the measured gains is for float differences between
+	// compilers, not noise. A wrong angle convention gives a mean gain of +0.4 (b negated) or +1.8
+	// (gradient axes swapped), so the mean threshold sits above both.
 	constexpr double kMinImageGainDb = 0.4;
 	constexpr double kMinMeanGainDb = 2.6;
-
-	// -----------------------------------------------------------------------------------------
-	//  Helpers
-	// -----------------------------------------------------------------------------------------
 
 	std::string SetDir(const char* set) { return std::string(GS_UPSCALER_RESOURCE_DIR) + "/" + set; }
 
@@ -164,10 +157,6 @@ namespace
 		return mse > 0 ? 10.0 * std::log10(255.0 * 255.0 / mse) : 99.0;
 	}
 
-	// -----------------------------------------------------------------------------------------
-	//  Synthetic scenes: anti-aliased shapes drawn at high resolution, then reduced
-	// -----------------------------------------------------------------------------------------
-
 	struct Rgb
 	{
 		double r, g, b;
@@ -175,7 +164,6 @@ namespace
 
 	using Scene = std::function<Rgb(double x, double y)>; // x, y in HR pixels
 
-	// Average of an 8x8 grid of samples per pixel.
 	Image RenderHR(u32 n, const Scene& scene)
 	{
 		constexpr int ss = 8;
@@ -225,7 +213,6 @@ namespace
 		return lr;
 	}
 
-	// Discs and a bar over a colour gradient.
 	Scene ShapesScene(double n)
 	{
 		struct Disc
@@ -251,7 +238,6 @@ namespace
 				if ((x - d.cx) * (x - d.cx) + (y - d.cy) * (y - d.cy) < d.r * d.r)
 					c = d.c;
 			}
-			// A bar at 35 degrees, 6 pixels wide.
 			const double dist = std::fabs(-std::sin(0.61) * (x - n * 0.5) + std::cos(0.61) * (y - n * 0.5));
 			if (dist < 3.0)
 				c = {245, 235, 40};
@@ -259,7 +245,6 @@ namespace
 		};
 	}
 
-	// Thin lines through the centre at 12 angles, 1.5 pixels wide.
 	Scene LinesScene(double n)
 	{
 		return [=](double x, double y) {
@@ -278,7 +263,6 @@ namespace
 		};
 	}
 
-	// Axis-aligned cells on the left, cells rotated 30 degrees on the right.
 	Scene CheckerScene(double n)
 	{
 		return [=](double x, double y) {
@@ -296,7 +280,6 @@ namespace
 		};
 	}
 
-	// Rows of 5x7 block glyphs, 3 pixels per block.
 	Scene GlyphScene(double n)
 	{
 		(void)n;
@@ -339,10 +322,6 @@ namespace
 		return AreaDownsample2(RenderHR(hr_size, sc.make(hr_size)));
 	}
 } // namespace
-
-// ---------------------------------------------------------------------------------------------
-//  Filter files
-// ---------------------------------------------------------------------------------------------
 
 TEST(GSTextureUpscalerFilters, RealFilesLoad)
 {
@@ -469,7 +448,6 @@ TEST(GSTextureUpscalerFilters, RejectsBadFilterBin)
 		std::string err;
 		EXPECT_FALSE(FilterSet::LoadFromMemory(bytes, str, coh, &err)) << what;
 		EXPECT_FALSE(err.empty()) << what << ": no error text";
-		// A null error pointer must be fine too.
 		EXPECT_FALSE(FilterSet::LoadFromMemory(bytes, str, coh, nullptr)) << what;
 	};
 
@@ -548,7 +526,6 @@ TEST(GSTextureUpscalerFilters, RejectsBadBinEdges)
 	}
 	rejected(1, "0.5 1.5\n", "coherence above 1");
 
-	// Whitespace and notation that should be accepted.
 	std::string err;
 	auto fs = FilterSet::LoadFromMemory(bin, "  1.269e-3\r\n+2.2169E-2\t", "0.192916 0.405942", &err);
 	ASSERT_TRUE(fs) << err;
@@ -564,10 +541,6 @@ TEST(GSTextureUpscalerFilters, LoadReportsMissingFile)
 	EXPECT_NE(error.find("filterbin_2_8"), std::string::npos) << error;
 	EXPECT_FALSE(FilterSet::Load(SetDir("no-such-set"), nullptr));
 }
-
-// ---------------------------------------------------------------------------------------------
-//  Structure tensor and hash
-// ---------------------------------------------------------------------------------------------
 
 TEST(GSTextureUpscalerHash, StructureKernelIsIntelsGaussian)
 {
@@ -610,8 +583,7 @@ namespace
 		return std::clamp(static_cast<int>(std::floor(angle / (kPi / 24))), 0, 23);
 	}
 
-	// The definition in DESIGN.md, in double, with the decisions that float rounding could flip
-	// marked ambiguous.
+	// The hash in double, with the decisions that float rounding could flip marked ambiguous.
 	RefHash ReferenceHash(const FilterSet& fs, double a, double b, double d)
 	{
 		const double T = a + d;
@@ -718,7 +690,6 @@ TEST(GSTextureUpscalerHash, EveryAngleBinIsReachableInOrder)
 		EXPECT_EQ(HashTensor(*fs, a, b, d), (23 - k) * 9 + 2 * 3 + 2) << "theta " << theta * 180 / kPi;
 	}
 
-	// A flat patch is bucket 0.
 	EXPECT_EQ(HashTensor(*fs, 0, 0, 0), 0);
 	// Strength and coherence buckets: isotropic energy is incoherent, one-sided is coherent.
 	EXPECT_EQ(HashTensor(*fs, 0.1f, 0, 0.1f) % 9, 2 * 3 + 0);
@@ -836,10 +807,6 @@ TEST(GSTextureUpscalerHash, AxisAlignedStepEdgesAreAngleBinZero)
 	EXPECT_GT(near_vertical, total * 7 / 10);
 }
 
-// ---------------------------------------------------------------------------------------------
-//  Whole-image behaviour
-// ---------------------------------------------------------------------------------------------
-
 TEST(GSTextureUpscaler, ConstantImagesStayConstant)
 {
 	const struct
@@ -873,8 +840,7 @@ TEST(GSTextureUpscaler, ConstantImagesStayConstant)
 					const Image out = Upscale(*fs, src, impl, &planes);
 					for (u32 i = 0; i < out.w * out.h; i++)
 					{
-						// The flat bucket's filter adds up to 0.9976, not 1 (the packs it was fitted
-						// to are a hair darker than the native textures), so the engine alone can
+						// The flat bucket's filter adds up to slightly less than 1, so the engine alone can
 						// land one level low: 255 comes out 254. Alpha is not filtered.
 						ASSERT_NEAR(out.px[i * 4 + 0], c.r, 1) << i;
 						ASSERT_NEAR(out.px[i * 4 + 1], c.g, 1) << i;
@@ -1052,7 +1018,6 @@ TEST(GSTextureUpscaler, PitchesAreHonoured)
 		}
 	}
 
-	// Same for the bilinear path.
 	const Image bil = Bilinear(src);
 	const u32 sp = src.w * 4 + 8, dp = bil.w * 4 + 8;
 	std::vector<u8> padded_src(static_cast<size_t>(sp) * src.h, 0xAB);
@@ -1147,10 +1112,6 @@ TEST(GSTextureUpscaler, ThreadsAgree)
 			EXPECT_EQ(results[t][k].px, expected[((k % srcs.size()) + t) % srcs.size()].px) << "thread " << t << " result " << k;
 	}
 }
-
-// ---------------------------------------------------------------------------------------------
-//  Quality
-// ---------------------------------------------------------------------------------------------
 
 // RAISR has to beat plain bilinear on luma PSNR against the original high-resolution image. The
 // margins are the measured ones, with headroom, because the point is to catch a wrong angle

@@ -48,7 +48,7 @@ static void HotkeyAdjustVolume(const s32 delta)
 	if (!VMManager::HasValidVM())
 		return;
 
-	// The volume and the mute setting are changed on the audio stream the IOP thread writes (IOP thread design 8.10).
+	// The volume and the mute setting are changed on the audio stream the IOP thread writes.
 	IopThread::VmHold iop_hold(IopThread::HoldKind::Emulation);
 
 	// Volume-adjusting hotkeys override mute toggle hotkey. EmuConfig.SPU2.OutputMuted overrides hotkeys.
@@ -267,7 +267,7 @@ DEFINE_HOTKEY("SwapMemCards", TRANSLATE_NOOP("Hotkeys", "System"),
 	TRANSLATE_NOOP("Hotkeys", "Swap Memory Cards"), [](s32 pressed) {
 		if (!pressed && VMManager::HasValidVM())
 			Host::RunOnCPUThread([]() {
-				// Swapping the cards reads and writes the state the IOP's SIO2 code uses (design 8.4).
+				// Swapping the cards reads and writes the state the IOP's SIO2 code uses.
 				IopThread::VmHold iop_hold(IopThread::HoldKind::Emulation);
 				FileMcd_Swap();
 			});

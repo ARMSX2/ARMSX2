@@ -22,8 +22,7 @@ u16 INTR_REG = 0;
 u16 ACCORE::Read16(u32 mem) {
     switch (mem) {
 	case 0x1241C000:
-		// Console.Error("%-16s %08X: %04X", __FUNCTION__, mem, INTR_REG);
-    	return INTR_REG; // ACRAM will wait 0xFFFFF times for this to not have 0x1000 bitmask set. also used inside intr_intr (interrup handler 13 declared on accore)
+    	return INTR_REG; // ACRAM waits 0xFFFFF times for bit 0x1000 to clear; intr_intr (handler 13) reads it too
     
     break;
     default: Console.Error("%-16s %08X:  %04X", "ACUNK::Read16", mem, 0); return 0;
@@ -39,7 +38,7 @@ void ACCORE::Write16(u32 mem, u16 value) {
 		case 0x1241511C: Console.Warning("ACCORE::INTR  DISABLE_ACUART_INTR"); break;
 		case 0x1241511E: break;
 		// ACFPGA UPLOAD MMIO ///TODOx6: move this handling to ACFPGA.cpp
-		// unknown addresses set to 0 on ACCORE. most likely stopping other stuff. games do write to these
+		// Unknown ACCORE addresses: games write them, purpose unknown. Ignored.
 		case 0x1241600A:
 		case 0x12416004:
 		case 0x12416006:
@@ -98,7 +97,7 @@ void ACCORE::Interrupt(u32 mem, u16 v) {
 		CLRB(INTR_REG, CAUS_ATA);
 		break;
 	case ACCORE_INTR_UART:
-		CLRB(INTR_REG, CAUS_UART); // acknowledge the UART RX interrupt (clear its cause bit)
+		CLRB(INTR_REG, CAUS_UART);
 		break;
 	default:
 		Console.Warning("ACCORE: unknown INTR write to: %08X", mem);

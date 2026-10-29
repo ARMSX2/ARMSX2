@@ -76,8 +76,8 @@ struct GSBackThreadPlacement
 {
 	u64 mask = 0;
 	/// The mask includes a processor another busy emu thread is pinned to, so the back thread would compete
-	/// with that thread for it. Measured on the MQ65 with the IOP thread on (EE, MTVU, MTGS and IOP on its four
-	/// big cores): 66.6% without the back thread, 53.7% with it.
+	/// with that thread for it. With EE, MTVU, MTGS and IOP already on a four-big-core SoC's big cores, that
+	/// made the back thread a net loss.
 	bool shares_busy_core = false;
 };
 

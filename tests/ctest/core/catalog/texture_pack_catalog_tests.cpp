@@ -72,10 +72,6 @@ namespace
 	const std::vector<std::string> kMirrors = TexturePackCatalog::DefaultMirrors();
 } // namespace
 
-// ------------------------------------------------------------------------------------------
-// The live file (before creators were added)
-// ------------------------------------------------------------------------------------------
-
 TEST(TexturePackCatalogParse, TheLiveFileParses)
 {
 	std::string error;
@@ -132,10 +128,6 @@ TEST(TexturePackCatalogParse, TheLiveFileKeepsMultipleSerialsAndPreviews)
 	const TexturePack& gta = result->packs[3];
 	EXPECT_EQ(gta.preview_urls, std::vector<std::string>{"https://i.imgur.com/RRDySLw.png"});
 }
-
-// ------------------------------------------------------------------------------------------
-// The unified file
-// ------------------------------------------------------------------------------------------
 
 TEST(TexturePackCatalogParse, TheUnifiedFileCarriesCreatorsTypeAndCompleteness)
 {
@@ -221,10 +213,6 @@ TEST(TexturePackCatalogParse, ACreatorsFieldThatIsNotAListCountsAsAbsent)
 	ASSERT_EQ(pack->creators.size(), 1u);
 	EXPECT_EQ(pack->creators[0].name, "A");
 }
-
-// ------------------------------------------------------------------------------------------
-// Field rules
-// ------------------------------------------------------------------------------------------
 
 TEST(TexturePackCatalogParse, NormalisesWhatTheCatalogSays)
 {
@@ -380,10 +368,6 @@ TEST(TexturePackCatalogParse, AcceptsAByteOrderMark)
 	EXPECT_TRUE(Parse("\xEF\xBB\xBF" + Catalog2({BaseEntry()})).has_value());
 }
 
-// ------------------------------------------------------------------------------------------
-// Matching packs to games
-// ------------------------------------------------------------------------------------------
-
 TEST(TexturePackLookup, NormalizeSerialAcceptsTheSpellingsPeopleType)
 {
 	EXPECT_EQ(NormalizeSerial("SLUS-21410"), "SLUS-21410");
@@ -432,10 +416,6 @@ TEST(TexturePackLookup, FindPacksForSerial)
 	EXPECT_EQ(FindPacksForSerial(result->packs, "SCUS-97328").size(), 1u);
 	EXPECT_TRUE(FindPacksForSerial(result->packs, "SLPM-12345").empty());
 }
-
-// ------------------------------------------------------------------------------------------
-// Loading: mirrors and the saved copy
-// ------------------------------------------------------------------------------------------
 
 namespace
 {
@@ -575,7 +555,7 @@ TEST(TexturePackCatalogLoad, WhenEveryMirrorFailsTheOldCopyIsStillOffered)
 	http.Status(kMirrors[0], 500).Fail(kMirrors[1], "no route to host");
 
 	TexturePackCatalog::Config config;
-	config.cache_max_age = std::chrono::seconds(0); // treat the copy as old
+	config.cache_max_age = std::chrono::seconds(0);
 	TexturePackCatalog catalog(http, cache, config);
 
 	const auto result = catalog.Load();
@@ -651,7 +631,7 @@ TEST(TexturePackCatalogLoad, ACancelledLoadSaysSo)
 
 TEST(TexturePackCatalogLoad, OnlyEverAsksForTheCatalog)
 {
-	// One file carries the creators now; the old links file must not be requested.
+	// Creators come from the catalog file itself; the old links file must not be requested.
 	ScopedTempDir temp;
 	FakeFetcher http;
 	http.Status(kMirrors[0], 500).Ok(kMirrors[1], kGoodBody);
@@ -666,10 +646,6 @@ TEST(TexturePackCatalogLoad, TheMirrorsAreTheDocumentedOnes)
 	EXPECT_EQ(kMirrors, (std::vector<std::string>{"https://dl.ps2ktxpak.net/catalog.json",
 						  "https://f005.backblazeb2.com/file/armsx2-textures/catalog.json"}));
 }
-
-// ------------------------------------------------------------------------------------------
-// Popularity
-// ------------------------------------------------------------------------------------------
 
 TEST(TexturePackPopularity, ParsesTheLiveList)
 {

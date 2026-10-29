@@ -43,9 +43,6 @@ namespace Catalog
 			std::array<const char*, 3> folders;
 		};
 
-		// Checked against PatchRepo.kt (RAW_BASE/TREE_URL, GABO_*, CHEAT_SOURCES,
-		// LARGE_CHEAT_SOURCE). The patch sources' folders stand in for the fixed "patches/" and
-		// "PCSX2 Patches/" paths the Kotlin code builds its URLs from.
 		constexpr std::array<SourceDef, 5> SOURCES = {{
 			{PatchSourceId::Pcsx2Patches, "PCSX2 patches", "PCSX2/pcsx2_patches", PatchKind::Patch, "tree-pcsx2-patches.txt", {"patches/", nullptr, nullptr}},
 			{PatchSourceId::Gabominated, "Gabominated", "Gabominated/PCSX2", PatchKind::Patch, "tree-gabominated.txt", {"PCSX2 Patches/", nullptr, nullptr}},
@@ -247,8 +244,6 @@ namespace Catalog
 		return GetSource(source).repository;
 	}
 
-	// ---- Plain functions ----------------------------------------------------------------------
-
 	std::vector<std::string> MatchCheatFiles(const std::vector<std::string>& tree, std::string_view crc, std::string_view serial)
 	{
 		const std::string c = UpperAscii(crc);
@@ -345,8 +340,6 @@ namespace Catalog
 		return true;
 	}
 
-	// ---- PatchSearchJob -----------------------------------------------------------------------
-
 	PatchSearchJob::~PatchSearchJob()
 	{
 		Cancel();
@@ -368,8 +361,6 @@ namespace Catalog
 		if (m_thread.joinable() && m_thread.get_id() != std::this_thread::get_id())
 			m_thread.join();
 	}
-
-	// ---- PatchRepo ----------------------------------------------------------------------------
 
 	struct PatchRepo::SearchContext
 	{
@@ -447,7 +438,6 @@ namespace Catalog
 		std::lock_guard load_lock(m_load_mutex);
 		const std::time_t now = Now();
 
-		// A list this process already holds.
 		{
 			std::lock_guard lock(m_mutex);
 			const auto it = m_trees.find(id);
@@ -464,7 +454,6 @@ namespace Catalog
 			m_trees[id] = MemoryTree{*paths, fetched_at};
 		};
 
-		// A cached list under a week old.
 		if (m_tree_cache.IsFresh(source.cache_name, std::chrono::seconds(TREE_CACHE_TTL_SECONDS), now))
 		{
 			if (const std::optional<ResponseCache::Entry> entry = m_tree_cache.Load(source.cache_name))
@@ -478,7 +467,6 @@ namespace Catalog
 			}
 		}
 
-		// The network, unless it failed recently.
 		bool backing_off = false;
 		{
 			std::lock_guard lock(m_mutex);
@@ -522,8 +510,7 @@ namespace Catalog
 			RecordTreeFailure(url, response.result == FetchResult::Ok ? response.status : 0, now);
 		}
 
-		// Failed or waiting: an older copy of the list is far better than none. A newly added file
-		// not showing up for a while is all that staleness costs.
+		// Failed or backing off: a stale list beats none. The cost is that a new file shows up late.
 		if (const std::optional<ResponseCache::Entry> entry = m_tree_cache.Load(source.cache_name))
 		{
 			const std::vector<std::string> all = SplitLines(entry->body);

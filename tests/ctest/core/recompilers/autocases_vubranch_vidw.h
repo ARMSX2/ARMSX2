@@ -1,28 +1,19 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 //
-// GENERATED from a first-party capture taken on a real PS2.  Do not edit.
+// GENERATED from a first-party capture taken on a real PS2 (SCPH-30001, PRId 0x2e20).  Do not edit.
 //
-// Console rows for a conditional branch whose VI was written twice just before it.  The rows are
-// taken from hardware-oracle/captures/vu-branch-vi-double-write-2026-10-15/ (make_draft.py there
-// emits any other subset of the 6,158 programs the probe ran).
+// Console rows for a conditional branch whose VI was written twice just before it.  The rows in
+// autocases_vubranch.h were taken on an SCPH-90000; Q2_IHAZ_D0..D5 reproduce on this console word
+// for word.
 //
-// Console: SCPH-30001 (PRId 0x2e20), the same console as the other captures of 2026-10;
-// pstef's rows in autocases_vubranch.h were taken on an SCPH-90000, and Q2_IHAZ_D0..D5 reproduce
-// on this one word for word.  The probe is vibranch-corpus.elf, the corpus's own protocol: VU0,
-// vi1..vi8 seeded by the EE (CTC2), vf4/5/8/9 = 0, vf6/vf7 = 0xDEADBEEF, FBRST = 0, `vcallms 0`,
-// wait for VPU_STAT to clear, read TPC/VPU_STAT/STATUS/MAC/CLIP/vi1..vi8/vf6/vf7.  Two launches
-// were byte-identical outside the tick counter.  The same shapes were also run as long,
-// self-setting-up programs on VU1 and VU0 (8,253 programs each, two launches each): all 364 shape
-// verdicts agree between the two protocols.
+// Rule: when the pair right before a conditional branch writes the branch's VI, the branch reads
+// the value the VI held before the EARLIEST write inside the last four cycles (a VWAITQ stall in
+// the window counts its cycles, so it pushes an earlier write out of it).  A write that is not in
+// the pair right before the branch, or that is more than three pairs earlier, is visible.
 //
-// What the rows establish, in one sentence: when the pair right before a conditional branch writes
-// the branch's VI, the branch reads the value the VI held before the EARLIEST write inside the last
-// four cycles (a VWAITQ stall in the window counts its cycles, so it pushes an earlier write out of
-// it).  A write that is not in the pair right before the branch, or that is more than three pairs
-// earlier, is visible.
-//
-// Each program, after seeding:
+// Each program runs on VU0 via `vcallms 0`, with vi1..vi8 seeded by the EE (CTC2) and vf6/vf7 =
+// 0xDEADBEEF.  Layout after seeding:
 //   the chain (setter, gap pairs, writer(s), as the rule text says)
 //   the branch on vi1 against vi2 (or against zero), taking the target if the test holds
 //   the branch's delay slot: a NOP pair
@@ -31,12 +22,11 @@
 //   an E-bit NOP pair and its delay slot
 // Seeds: vi1 = the value before the first write (P), vi2 = the comparator, vi3/vi4 = the setter's
 // operands, vi7/vi8 = the writer's, vi5 = vi6 = 0.  LQI loads to vf10 and up so vf6/vf7 keep their
-// sentinel.  ILW reads VU0 data memory quadword 0, which the probe zeroes (and the harness does).
+// sentinel.  ILW reads VU0 data memory quadword 0, which is zero on the console and in the harness.
 // Values are named P (before the first write), X (after it), Y, Z (after the second, third).
 //
-// The rows are 145 of the 6,158; the struct is autocases_vubranch.h's.  A consumer in the style
-// of ViWriteIsVisibleToABranchOnePairLater reads vi5, not vi2: ConsoleVi(c, 5) != 0x111u means
-// taken.
+// 145 rows; the struct is autocases_vubranch.h's.  A consumer in the style of
+// ViWriteIsVisibleToABranchOnePairLater reads vi5, not vi2: ConsoleVi(c, 5) != 0x111u means taken.
 #pragma once
 
 #include "autocases_vubranch.h"
@@ -44,7 +34,7 @@
 namespace console_vubranch
 {
 inline constexpr VuBranchCase kVuBranchViDwCases[] = {
-	// ---- The answer: IADDIU setter, N pairs, ISUBIU vi1,vi1,1 writer (the counted-loop shape), N = 0..5. IBEQ against the value before the setter (V0) and against the setter's value (V1).
+	// ---- IADDIU setter, N pairs, ISUBIU vi1,vi1,1 writer (the counted-loop shape), N = 0..5. IBEQ against the value before the setter (V0) and against the setter's value (V1).
 	{"Q2_VIDW_IADDIU_N0_ISUBIUr_EQ_P",
 	 "IADDIU vi1,vi0,imm; 0 pair(s); ISUBIU vi1,vi1,1; the branch, IBEQ vi1,vi2 (vi1 in the Is slot), vi2 = the value before the first write: vi5=0x111 means the branch did NOT read that value",
 	 0x00u,

@@ -614,9 +614,8 @@ void GSDrawScanline::CSetupPrim(const GSVertexSW* vertex, const u16* index, cons
 			//
 			// No coordinate lag: the plane already carries the shortfall the lag stands in
 			// for (the gradient truncated onto g/1024, the reciprocal a hair short of
-			// exact), and gs-sm3d's whole-draw arms read 100.0000% of 771,234 pixels
-			// without it and 92.3% with it. The lag stays on the routes it was measured
-			// on: the UV register and STQ at Q = 1.
+			// exact), so applying the lag as well would throw off the result. The lag stays
+			// on the routes it was measured on: the UV register and STQ at Q = 1.
 			const GSVector4i step = GSVector4i::cast(dscan.t);
 
 			const auto times = [](s32 a, s32 b) { return static_cast<s32>(static_cast<u32>(a) * static_cast<u32>(b)); };

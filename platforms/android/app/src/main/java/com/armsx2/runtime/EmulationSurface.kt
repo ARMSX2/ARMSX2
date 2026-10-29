@@ -264,10 +264,9 @@ class EmulationSurface(context: Context) :
 
         // Base output resolution: an explicit "WxH" override when set (fixes wrong panel detection,
         // e.g. a 1920x1080 panel mis-reported as 1920x1200 which squishes 16:9 games — issue #398),
-        // otherwise the SurfaceView's laid-out size. The override is a landscape size: on a screen held
-        // upright its shape was stretched over the tall view, the game drawn the full height of the
-        // screen, squeezed, with bars at its sides (#790). There it sets only the resolution: the
-        // view's own shape, at the override's short side.
+        // otherwise the SurfaceView's laid-out size. The override is a landscape size; on a screen
+        // held upright it sets only the resolution: the view's own shape, at the override's short
+        // side.
         val override = parseResOverride(effective.output.screenResOverride)
         val (baseW, baseH) = when {
             override == null -> viewWidth to viewHeight

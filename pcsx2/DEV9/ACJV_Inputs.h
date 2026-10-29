@@ -163,7 +163,6 @@ static constexpr InputBindingInfo s_fight_yuyu[] = {
 	{"YuYu_Guard", TRANSLATE_NOOP("JVS", "Guard"), nullptr, InputBindingInfo::Type::Button, JVS_BTN_3, GenericInputBinding::Cross},
 };
 
-// Fighting page: section title + action buttons per layout.
 static constexpr ACJV::LayoutInfo s_fighting_layout_ui[] = {
 	{"Tekken (TK4 / TK5 / TK5DR)", s_fight_tekken,     false},
 	{"Soul Calibur (SC2 / SC3)",   s_fight_soulcal,    false},
@@ -198,7 +197,6 @@ static constexpr ACJV::RacingLayoutInfo s_racing_layout_ui[] = {
 	{"Battle Gear 3 / Tuned", s_race_bg3},
 };
 
-// Per-layout standard action buttons
 static constexpr InputBindingInfo s_standard_smashcourt[] = {
 	{"Smash_TopSpin", TRANSLATE_NOOP("JVS", "Top Spin"), nullptr, InputBindingInfo::Type::Button, JVS_BTN_1, GenericInputBinding::Cross},
 	{"Smash_Slice",   TRANSLATE_NOOP("JVS", "Slice"),    nullptr, InputBindingInfo::Type::Button, JVS_BTN_2, GenericInputBinding::Square},
@@ -228,7 +226,6 @@ static constexpr InputBindingInfo s_standard_gundamquiz[] = {
 	{"GundamQuiz_Jump",   TRANSLATE_NOOP("JVS", "Answer D"), nullptr, InputBindingInfo::Type::Button, JVS_BTN_3, GenericInputBinding::Cross},
 };
 
-// Standard page: section title + action buttons per layout.
 static constexpr ACJV::LayoutInfo s_standard_layout_ui[] = {
 	{"Smash Court Pro Tournament", s_standard_smashcourt,  false, TRANSLATE_NOOP("JVS", "Top Spin + Slice together = Lob / Drop")},
 	{"Technic Beat",               s_standard_technicbeat, false},

@@ -288,7 +288,6 @@ object ArcadeOnly {
         enabled.value = value
         MainActivityRuntime.prefs.edit().putBoolean(KEY, value).apply()
     }
-    /** Whether [game] is an arcade game: what the library badges as one. */
     fun isArcade(game: GameInfo): Boolean = game.extension == com.armsx2.arcade.Arcade.BADGE
     /** Whether [game] stays in the library: any game while this is off, an arcade one while it is on. */
     fun shows(game: GameInfo): Boolean = !enabled.value || isArcade(game)
@@ -589,16 +588,16 @@ object CustomCovers {
  *  touches Arcade and its Compose state). */
 private val ARCADE_GAME_ID = Regex("NM\\d{5}")
 
-/** A Namco System 246/256 game's cover (its NM game ID) in ARMSX2's own arcade covers, in the chosen
- *  style: its real art on a PS2-style case insert, flat or as a case like the PS2 ones. Null for any
- *  other serial. Friends' Discord rows use it too, so an arcade game looks the same there. */
+/** The cover URL of a Namco System 246/256 game (its NM game ID) in ARMSX2's arcade covers, in the
+ *  chosen style (flat, or as a case like the PS2 ones). Null for any other serial. Friends' Discord rows
+ *  use it too, so an arcade game looks the same there. */
 internal fun arcadeCoverUrl(serial: String): String? = when {
     !ARCADE_GAME_ID.matches(serial) -> null
     CoverArtStyle.use3d.value -> "$ARCADE_COVERS/3d/$serial.png"
     else -> "$ARCADE_COVERS/$serial.jpg"
 }
 
-/** ARMSX2's arcade covers, on bmd's arcade server: <game ID>.jpg flat, 3d/<game ID>.png as a case. */
+/** ARMSX2's arcade covers on the arcade server: <game ID>.jpg flat, 3d/<game ID>.png as a case. */
 private const val ARCADE_COVERS = "https://arcade.ps2ktxpak.net/arcade-covers"
 
 /** Map a PS1/PS2 serial prefix to a region label. */

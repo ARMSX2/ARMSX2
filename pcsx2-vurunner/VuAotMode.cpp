@@ -46,7 +46,6 @@ namespace
 			s->blocks.push_back(b);
 	}
 
-	// Field name of a mismatch line, for the per-class histogram.
 	std::string MismatchClass(const std::string& line)
 	{
 		// "op N pc 0xPPPP field: ..." or "block field: ..."
@@ -146,7 +145,6 @@ int RunVuAotIr(const std::vector<vu_capture::CaptureRecord>& records,
 		for (const auto& l : firstLines)
 			std::printf("  %s\n", l.c_str());
 
-		// ---- Whole-program graph + SSA ----
 		// Entry: the capture's start PC with the key microVU dispatched it with.
 		vuaot::GraphOptions gopt;
 		gopt.cfg = cfg;
@@ -295,10 +293,6 @@ int RunVuAotIr(const std::vector<vu_capture::CaptureRecord>& records,
 	return failures ? 4 : 0;
 }
 
-//------------------------------------------------------------------
-// --vuaot-run
-//------------------------------------------------------------------
-
 #include "arm64/vuaot/VuAotTier.h"
 #include "arm64/vuaot/VuAotRegion.h"
 #include "arm64/vuaot/VuAotLive.h"
@@ -360,7 +354,6 @@ namespace
 			}
 		}
 
-		// Installs the hooks of the arm being measured.
 		void Install();
 	};
 
@@ -516,7 +509,7 @@ namespace
 		return out;
 	}
 
-	// The exactness contract (compiler-design.md 9ab): what a game can observe, field by field.
+	// The exactness contract: what a game can observe, field by field.
 	// `obs` fields must match always; `ring` fields (the four-deep flag copies the recompiler
 	// shadows) must match at a program end and may differ at a budget stop, where the continuation
 	// decides; `other` is everything else in VURegs the engines write (the interpreter's scratch,
@@ -689,7 +682,6 @@ int RunVuAotRun(const std::vector<vu_capture::CaptureRecord>& records,
 			g_traceVals.clear();
 		}
 
-		// vu-aot bodies.
 		BodyCtx ctx(vu, vuRegs[vu].Micro, opts);
 		if (ctx.region)
 			ctx.region->jumpTargets = jumpTargets;

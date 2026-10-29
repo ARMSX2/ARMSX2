@@ -17,16 +17,16 @@ struct VuAotModeOptions
 	bool dumpIr = false;   // print the SSA IR of each program
 	bool verbose = false;  // print every mismatch line, not only the first few
 	u32 cycleOverride = 0;
-	bool noYield = false;
-	u32 benchIters = 0;
+	bool noYield = false;  // --vuaot-no-yield: build the SSA without per-block yield checks (cost measurement)
+	u32 benchIters = 0;    // --vuaot-bench N: steady-state PMU iterations per engine (0 = no bench)
 	long traceDump = -1;   // --vuaot-trace-dump N: with --vuaot-trace, print the state at block entry N in both runs
-	std::string lowerSkip;
-	bool region = false;   // --vuaot-region: vu-aot regions (milestone 4), framed bodies for the rest
-	bool regionBg = false; // --vuaot-region-bg: the same regions, each built on the live tier's worker thread and copied in (9aa)
+	std::string lowerSkip; // --vuaot-skip a,b,...: leave these compiled blocks to microVU (bisecting)
+	bool region = false;   // --vuaot-region: vu-aot regions, framed bodies for the rest
+	bool regionBg = false; // --vuaot-region-bg: the same regions, each built on the live tier's worker thread and copied in
 	s32 regionLimit = -1;  // --vuaot-region-limit N: build only the first N regions
 	s32 vHomes = 14;       // --vuaot-vhomes N: at most N NEON homes per region
-	bool schedule = true;
-	bool splitHomes = true; // --vuaot-no-split: one home map per region (milestone 10 A/B)
+	bool schedule = true;  // --vuaot-no-sched: regions keep each node's operations in program order
+	bool splitHomes = true; // --vuaot-no-split: one home map per region (A/B)
 	bool wMemHomes = true;  // --vuaot-no-wmem: every vector home keeps its w lane in the register (A/B)
 	bool stickyAcc = true;  // --vuaot-no-acc: every status update builds its instance (no sticky accumulators; A/B)
 		bool accAlways = false; // --vuaot-acc-always: the accumulators even where the estimate says they would not pay (A/B)
@@ -40,11 +40,11 @@ struct VuAotModeOptions
 	bool observe = false;   // --vuaot-observe: compare observable state (the exactness contract), classify the byte differences,
 	                        // and continue each run through its budget stops with --vuaot-resumes re-entries
 	u32 resumes = 6;
-	bool profile = false;  // --vuaot-profile: per region node, its execution count and its code by IR op ("N"/"I" lines)  // --vuaot-no-sched: regions keep each node's operations in program order (milestone 9 A/B)
-	s32 gHomes = 6;        // --vuaot-ghomes N // --vuaot-skip a,b,...: leave these compiled blocks to microVU (bisecting)
+	bool profile = false;  // --vuaot-profile: per region node, its execution count and its code by IR op ("N"/"I" lines)
+	s32 gHomes = 6;        // --vuaot-ghomes N: at most N general-register homes per region
 	s32 lowerOnly = -1;    // --vuaot-only N: lower only compiled block N (bisecting); -1 = all
-	s32 lowerLimit = -1;
-	bool trace = false;    // --vuaot-trace: log block entries in both runs (debugging)   // --vuaot-limit N: lower only the first N compiled blocks    // --vuaot-run: steady-state PMU iterations per engine (0 = no bench)  // build the SSA without per-block yield checks (cost measurement)
+	s32 lowerLimit = -1;   // --vuaot-limit N: lower only the first N compiled blocks
+	bool trace = false;    // --vuaot-trace: log block entries in both runs (debugging)
 };
 
 // pcsx2-vurunner --vuaot-run: run each capture through microVU, then again

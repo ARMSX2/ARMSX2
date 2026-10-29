@@ -4,22 +4,18 @@
 // vu-aot live tier: tier-up policy and the glue between microVU's programs and
 // blocks and vu-aot's regions. Included at the end of microVU-arm64.cpp (it
 // needs microVU's TU-local types and helpers); the policy constants and the
-// part of the interface other code may use are in vuaot/VuAotLive.h, the
-// design in compiler-design.md sections 9x (the tier) and 9aa (the background
-// compile).
+// part of the interface other code may use are in vuaot/VuAotLive.h.
 //
 // Threads. Everything here runs on the thread that executes VU1 (the EE thread,
 // or the MTVU thread), except VuAotJob::Run and what it calls, which run on the
 // tier's worker thread (vuaot::bg::Worker). A job holds copies of everything it
-// reads (micro memory, the program's block keys and entries, the jump targets,
-// microVU's addresses as numbers) and writes only its own memory, so the two
-// threads share nothing but the worker's queue. What a job made is published
-// on the VU1 thread at a slow path microVU already takes (a dispatch that
-// missed the quick path, or a JR/JALR the jump cache missed), after checking
-// that the program and every micro-memory word the compile read are still what
-// they were. A reset (settings change, savestate load, cache exhaustion)
-// reaches this file from a thread that has waited for VU1 to go idle; it bumps
-// the epoch, and whatever a job made before it is dropped unread.
+// reads and writes only its own memory, so the two threads share nothing but the
+// worker's queue. A finished job is published on the VU1 thread at a slow path
+// microVU already takes (a dispatch that missed the quick path, or a JR/JALR the
+// jump cache missed), after checking that the program and every micro-memory
+// word the compile read are unchanged. A reset (settings change, savestate load,
+// cache exhaustion) arrives from a thread that has waited for VU1 to go idle; it
+// bumps the epoch, and whatever a job made before it is dropped unread.
 
 // (The vu-aot headers are included at the top of microVU-arm64.cpp: they cannot
 // follow microVU's macros.)
@@ -32,13 +28,8 @@
 #include <unordered_set>
 #include <vector>
 
-//------------------------------------------------------------------
-// Per-program state
-//------------------------------------------------------------------
-
 static u32 vuAotTotalRuns(const microProgram& p) { return p.vuAotRuns + p.vuAotJumpRuns; }
 
-// vuaot::live::kRetierCheckMask + 1 as a shift
 static constexpr u32 kCheckShift = 10;
 static_assert(vuaot::live::kRetierCheckMask + 1 == (1u << kCheckShift), "kCheckShift follows kRetierCheckMask");
 
@@ -82,7 +73,6 @@ struct VuAotProgramState
 	// deleted at the next reset, which also throws the code away.
 	std::vector<microBlockManager*> graveyard;
 
-	// Section 9aa: the background compile.
 	u32 gen = 0;
 	// A generation job is queued, running, or finished and not yet published.
 	bool genOutstanding = false;
@@ -99,9 +89,9 @@ struct VuAotProgramState
 	// entry. A block stays here until a region does.
 	std::unordered_set<const microBlock*> provisional;
 
-	// The program cache's sidecar (persistence-design.md, the plan half; vuaot/VuAotPersist.h).
-	// The plans of the jobs published into the current generation, in publication order (the
-	// generation first): a new generation starts the list again. Kept only while the cache is on.
+	// The program cache's sidecar (vuaot/VuAotPersist.h): the plans of the jobs published into
+	// the current generation, in publication order (the generation first). A new generation
+	// starts the list again. Kept only while the cache is on.
 	std::vector<std::shared_ptr<const vuaot::persist::Record>> published;
 	// `published` changed since the program's sidecar was last handed to the writer.
 	bool dirty = false;
@@ -252,7 +242,6 @@ struct VuAotJob final : vuaot::bg::Job
 	// The program cache keeps sidecars: the job also describes its code as a record's (recordCode).
 	bool wantRecord = false;
 
-	// Inputs.
 	std::unique_ptr<u8[]> micro; // micro memory when the job was made (kept: publication compares against it)
 	std::map<u32, std::vector<u32>> jumpTargets;
 	bool haveTrace = false;
@@ -264,7 +253,6 @@ struct VuAotJob final : vuaot::bg::Job
 	VuAotRegionOptions opts;
 	std::vector<std::unique_ptr<VuAotWBlock>> blocks; // the snapshot, then the job's nodes
 
-	// Outputs.
 	bool accepted = false;
 	std::string why;
 	vuaot::MvuBlockTrace rootTrace; // the port's first pass of the root (Generation jobs)
@@ -292,14 +280,14 @@ struct VuAotJob final : vuaot::bg::Job
 	u64 regionBytes = 0;
 	u32 wMemHomes = 0; // vector homes whose w lane stayed in microVU's location (HomeMap::wMem)
 	std::map<std::string, u32> declined;
-	// The flag-reader census of the compile (9ab), and whether it dropped the sticky STATUS
-	// byte (relaxation 3: decided by scanning the job's copy of micro memory; publication
-	// scans live micro memory again and discards the job if a sticky reader has appeared).
+	// The flag-reader census of the compile, and whether it dropped the sticky STATUS byte
+	// (decided by scanning the job's copy of micro memory; publication scans live micro memory
+	// again and discards the job if a sticky reader has appeared).
 	u32 statusReaders = 0, stickyReaders = 0, stickyDivReaders = 0, stickyDropped = 0, stickyImages = 0;
 	u64 workerIns = 0;
-	// With wantRecord: the code as a saved record holds it, every address in it a fixup
-	// (persistence-design.md section 3), or why the job cannot be saved with its code (an address
-	// nothing can re-base in another process; the job is still published, and saved as its plan).
+	// With wantRecord: the code as a saved record holds it, every address in it a fixup, or why
+	// the job cannot be saved with its code (an address nothing can re-base in another process;
+	// the job is still published, and saved as its plan).
 	vuaot::persist::RegionCode recordCode;
 	std::string notPersistable;
 
@@ -311,7 +299,6 @@ namespace
 {
 	struct VuAotLive
 	{
-		// The tier runs this session.
 		bool enabled = false;
 		// The counting lookup asked for the full search (set by the fast path,
 		// consumed by mVUvuAotAfterSearch on the same dispatch).
@@ -326,7 +313,6 @@ namespace
 		std::unique_ptr<vuaot::BodyTier> body;
 		vuaot::live::Stats stats;
 
-		// Section 9aa.
 		// Deterministic mode (tests, pcsx2-eerunner --vuaot-sync): every job is
 		// waited for and published where it was asked for, which is where the
 		// synchronous tier compiled.
@@ -349,13 +335,12 @@ namespace
 	// mVUvuAotOnClose) after this translation unit's statics are gone.
 	VuAotLive& s_vuaot = *new VuAotLive();
 
-	// Section 9ad, owner decision j: relaxation 3 (regions drop the sticky byte of STATUS) holds
-	// in every flag-hack mode while no sticky reader is known. This is the "known" part. It lives
-	// apart from VuAotLive because a reset (settings change, savestate load, cache exhaustion)
-	// rebuilds that one and must not forget what a game has already shown: only a VM reset or boot
-	// clears it (vuaot::live::ResetStickyTripwire). Atomics, because the writers are on three
-	// threads: microVU's compiles and the tier's publications run on the thread that executes VU1,
-	// and a VU0 access to VU1's STATUS runs on the EE thread (after MTVU has gone idle).
+	// Regions drop the sticky byte of STATUS, in every flag-hack mode, while no sticky reader is
+	// known; this is the "known" part. It lives apart from VuAotLive because a reset (settings
+	// change, savestate load, cache exhaustion) rebuilds that one, and this must survive it: only
+	// a VM reset or boot clears it (vuaot::live::ResetStickyTripwire). Atomics, because the
+	// writers are microVU's compiles and the tier's publications (VU1 thread) and VU0 accesses
+	// to VU1's STATUS (EE thread, after MTVU has gone idle).
 	struct VuAotTripwire
 	{
 		std::atomic<bool> tripped{false};
@@ -373,10 +358,10 @@ namespace
 	};
 	VuAotTripwire& s_trip = *new VuAotTripwire();
 
-	// The tripwire's memory across sessions: the titles that set it off are lines ("SERIAL CRC") of
-	// vu_jit/vuaot_tripped.txt under the cache folder, read when a session starts or the title changes and
-	// appended to at a trip. The running title is kept here. Any thread (a trip can come from VU0 on the
-	// EE thread); small and rare, so one mutex.
+	// The tripwire's memory across sessions: titles that set it off are lines ("SERIAL CRC") of
+	// vu_jit/vuaot_tripped.txt under the cache folder, read when a session starts or the title
+	// changes and appended to at a trip. Any thread can trip (VU0 runs on the EE thread), and
+	// trips are rare, so one mutex.
 	struct VuAotTitles
 	{
 		std::mutex mu;
@@ -454,16 +439,13 @@ static void vuAotTripRemembered()
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
-// vuaot::live::SetWorkerDelayUs
 static std::atomic<u32> s_vuAotWorkerDelayUs{0};
-// vuaot::live::TakeRecordCodeSamples (VU1 thread)
+// VU1 thread only.
 static std::vector<vuaot::live::RecordCodeSample> s_vuAotRecordSamples;
-// vuaot::live::SetInstallEnabled
 static bool s_vuAotInstall = true;
 #else
 static constexpr bool s_vuAotInstall = true;
 #endif
-// vuaot::live::LastPlacedOffset
 static size_t s_vuAotLastPlaced = 0;
 
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
@@ -472,10 +454,6 @@ static u64 vuAotReadIns() { return vuAotCountingIns() ? mvu_test_hooks::ReadThre
 #else
 static u64 vuAotReadIns() { return 0; }
 #endif
-
-//------------------------------------------------------------------
-// Config
-//------------------------------------------------------------------
 
 static vuaot::bg::Worker& vuAotWorker()
 {
@@ -886,10 +864,6 @@ namespace vuaot::live
 	}
 } // namespace vuaot::live
 
-//------------------------------------------------------------------
-// The worker's side of a job
-//------------------------------------------------------------------
-
 namespace
 {
 	// microBlockManager's lookup over a job's blocks, by the same rules: a key
@@ -1093,9 +1067,8 @@ void VuAotJob::Run()
 		b = std::move(trace);
 	else
 	{
-		// No compile of microVU's to take the root's first pass from: the
-		// port's own, which the publication compares against microVU's when it
-		// compiles the root (as the synchronous tier compared it here).
+		// No microVU compile to take the root's first pass from, so use the port's
+		// own; publication compares it against microVU's when microVU compiles the root.
 		vuaot::PipeConfig cfg;
 		cfg.vuIndex = 1;
 		cfg.flagHack = env.flagHack;
@@ -1352,10 +1325,6 @@ void VuAotJob::MakeRecordCode()
 	c.regionBytes = regionBytes;
 }
 
-//------------------------------------------------------------------
-// Making jobs (VU1 thread)
-//------------------------------------------------------------------
-
 static bool vuAotSidecarsOn(const microProgram& prog);
 
 static std::shared_ptr<VuAotJob> vuAotMakeJob(microVU& mVU, microProgram& prog, VuAotJob::Kind kind, u32 pc, const void* key)
@@ -1377,7 +1346,7 @@ static std::shared_ptr<VuAotJob> vuAotMakeJob(microVU& mVU, microProgram& prog, 
 	j->flagHack = CHECK_VU_FLAGHACK;
 	j->cacheLo = mVU.cache;
 	j->cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
-	// Relaxation 3 holds while no sticky reader is known (section 9ad).
+	// Regions drop the sticky byte of STATUS only while no sticky reader is known.
 	j->opts.dropSticky = !s_trip.tripped.load(std::memory_order_acquire) || vuAotMutated(vuaot::live::kTripMutJobOption);
 	if (prog.vuaot)
 		j->jumpTargets = prog.vuaot->jumpTargets;
@@ -1438,10 +1407,6 @@ static void vuAotCollect(VuAotJob& j)
 		vuAotTrip(vuaot::live::TripCause::Job);
 }
 
-//------------------------------------------------------------------
-// The saved plan (VU1 thread): persistence-design.md, the plan half
-//------------------------------------------------------------------
-
 static bool vuAotTryInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st, vuaot::persist::File& f);
 static void vuAotSubmitPlanRoots(microVU& mVU, microProgram& prog, VuAotProgramState& st);
 
@@ -1454,8 +1419,8 @@ static bool vuAotSidecarsOn(const microProgram& prog)
 	return prog.contentHashValid && mVUProgCache::SidecarsEnabled(1);
 }
 
-// The struct offsets and sizes region code bakes in as immediates (persistence-design.md 2.1): saved code
-// from a build whose layout differs is refused even if the build id did not change.
+// The struct offsets and sizes region code bakes in as immediates: saved code from a build whose
+// layout differs is refused even if the build id did not change.
 static u32 vuAotLayoutHash()
 {
 	static const u32 hash = [] {
@@ -1756,10 +1721,6 @@ static void vuAotNoteDeclined(microProgram& prog, const VuAotJob& j)
 	st->dirty = true;
 }
 
-//------------------------------------------------------------------
-// Publishing (VU1 thread)
-//------------------------------------------------------------------
-
 // The program is loaded: micro memory holds its image over its ranges
 // (mVUcmpProg without its side effects).
 static bool vuAotProgramLoaded(microVU& mVU, const microProgram& prog)
@@ -1897,7 +1858,6 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 			pxAssertRel(vuaot::bg::PatchAbsMov(reinterpret_cast<u32*>(armGetWritableCodePtr(base + f.offset)), reinterpret_cast<u64>(base + f.value)),
 				"vu-aot: an address in a region is not where its fixup says");
 
-	// The nodes, the root first, in the order the region registered them.
 	for (VuAotWBlock* n : j.nodes)
 	{
 		pxAssertRel(n->hasEntry, "vu-aot: a region node without an entry");
@@ -1911,8 +1871,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 		if (j.ph[id].first == VuAotJob::PhStub)
 			target[id] = vuAotStubTarget(j.env, j.ph[id].second);
 	// microVU's dispatch for the JR/JALR nodes, then the exits, compiled now
-	// in the order the region met them (as the synchronous tier compiled them
-	// after the region).
+	// in the order the region met them.
 	for (size_t id = 0; id < j.ph.size(); id++)
 		if (j.ph[id].first == VuAotJob::PhTail)
 		{
@@ -1990,10 +1949,6 @@ static u32 vuAotSetAside(microVU& mVU, microProgram& prog, VuAotProgramState& st
 	return setAside;
 }
 
-//------------------------------------------------------------------
-// Installing saved region code (VU1 thread): persistence-design.md, the install half
-//------------------------------------------------------------------
-
 const char* vuaot::live::AotRejectName(AotReject r)
 {
 	switch (r)
@@ -2046,7 +2001,7 @@ static vuaot::live::AotReject vuAotCheckRecord(microVU& mVU, const vuaot::persis
 	namespace ps = vuaot::persist;
 	if (!r.HasCode())
 		return vuaot::live::kAotNoCode;
-	// A region that dropped the sticky STATUS byte runs only while no sticky reader is known (section 9ad): the
+	// A region that dropped the sticky STATUS byte runs only while no sticky reader is known: the
 	// image scan has run before this (mVUvuAotOnNewProgram), so a reader in it has set the tripwire.
 	if ((r.flags & ps::kStickyDropped) && s_trip.tripped.load(std::memory_order_acquire))
 		return vuaot::live::kAotSticky;
@@ -2265,13 +2220,12 @@ static void vuAotInstall(microVU& mVU, microProgram& prog, VuAotProgramState& st
 		}
 	}
 
-	// The program joins the list of every start PC it holds a block for. A dispatch at a start PC finds its
-	// program by walking that PC's list and comparing ranges (mVUsearchProg), and only a search puts a program
-	// there. In a session that compiled the program with microVU, its jumps searched these PCs one by one; the
-	// regions of an installed program take those jumps inside their code, so none of its PCs has been searched.
-	// After a micro-memory write that misses the program's ranges, the first dispatch at such a PC found an
-	// empty list, hashed the changed image and made a new program, which compiled the same code again. The
-	// comparison of ranges keeps this exact: a program whose ranges no longer match is skipped.
+	// The program joins the list of every start PC it holds a block for. A dispatch finds its program
+	// by walking the list at its start PC and comparing ranges (mVUsearchProg), and only a search adds
+	// a program to a list. An installed program's regions take its jumps inside their code, so none of
+	// its PCs has been searched; with the lists empty, a dispatch after a micro-memory write that misses
+	// the program's ranges would hash the changed image and compile the same code again as a new program.
+	// The range comparison keeps the lists exact: a program whose ranges no longer match is skipped.
 	for (u32 i = 0; i < mVU.progSize / 2; i++)
 		if (prog.block[i])
 			mVUdequePushUnique(mVU.prog.prog[i], &prog);
@@ -2508,9 +2462,9 @@ static bool vuAotPublishReady(microVU& mVU, microProgram& prog, bool loaded)
 			continue;
 		}
 		// The region dropped the sticky STATUS byte because the job's micro image had no
-		// reader of it and none was known when the job was made. The tripwire must still be armed
-		// and the image a region runs under must not have a reader either (a scan that finds one
-		// sets the tripwire off).
+		// reader of it and none was known when the job was made. That must still hold: the
+		// tripwire not set, and no reader in the image a region runs under (a scan that finds
+		// one sets the tripwire).
 		if (j.stickyDropped && !vuAotMutated(vuaot::live::kTripMutPublish) &&
 			(s_trip.tripped.load(std::memory_order_acquire) || vuAotLiveImageReadsSticky(mVU)))
 		{
@@ -2637,15 +2591,14 @@ static bool vuAotDrainAndPublish(microVU& mVU, microProgram* cur)
 // The entry for (startPC, key) in `prog`'s graph as it is now (compiled with
 // the hooks if it is not there): where a slow path continues after a publication.
 //
-// The slot for the slow path's address is put back to `prog`, which the search
-// has just resolved from micro memory. A root publication empties every quick
-// slot of its program, and a JR slow path (mVUcompileJIT) copies this slot's
-// program into the jump cache entry it fills, next to the entry returned here.
-// Left empty, that would be an entry of no program with live code, and the
-// inline probe in front of the JR (normJumpCompile) takes an entry whose program
-// equals the slot's without asking whether it is null: every later JR there
-// would jump to `prog`'s code whenever the slot is empty, as it is after any
-// micro-memory write over that address, whatever code is in memory then.
+// Also puts the quick slot for the slow path's address back to `prog`, which the search
+// has just resolved from micro memory. A root publication empties every quick slot of its
+// program, and the JR slow path (mVUcompileJIT) copies this slot's program into the jump
+// cache entry it fills. With the slot empty, that entry would name no program, and the
+// inline probe in front of the JR (normJumpCompile) takes an entry whose program equals the
+// slot's without checking for null: every later JR there would jump to `prog`'s code
+// whenever the slot is empty (as it is after any micro-memory write over that address),
+// whatever code is in memory then.
 static void* vuAotRefetch(microVU& mVU, microProgram& prog, u32 startPC, const microRegInfo& key)
 {
 	alignas(16) microRegInfo k = key;
@@ -2656,10 +2609,6 @@ static void* vuAotRefetch(microVU& mVU, microProgram& prog, u32 startPC, const m
 	quick.block = prog.block[startPC / 8];
 	return entry;
 }
-
-//------------------------------------------------------------------
-// The dispatch path
-//------------------------------------------------------------------
 
 // mVUlookupProg_VU1 plus the run counter. A program reaches the tier-up
 // threshold, a tiered one the periodic look for new jump targets, and a
@@ -2694,7 +2643,6 @@ void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 	quick.block = block;
 
 	const u32 runs = ++prog->vuAotRuns;
-	// The worker has finished something: one slow path collects it.
 	if (s_vuaot.worker && s_vuaot.worker->CompletedCount())
 	{
 		s_vuaot.pending = true;
@@ -2892,11 +2840,10 @@ void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result)
 }
 
 // The same for a JR/JALR the jump cache missed (mVUcompileJIT), after the search resolved
-// its target to a program. Counts the entry on that program, and asks for its tier-up when
-// jumps are how it is reached: a program the dispatcher never enters (an overlay a stub
-// program jumps into) has no dispatch count to go by. A program the dispatcher does enter
-// keeps its dispatch threshold: tiering it from a jump into the middle of it would root its
-// first compile there, which splits what a compile from the program's entry keeps in one region.
+// its target to a program. Counts the entry on that program. A program the dispatcher never
+// enters (an overlay a stub program jumps into) has no dispatch count, so jumps decide its
+// tier-up; one the dispatcher does enter keeps its dispatch threshold, since tiering it from
+// a jump into its middle would root its first compile there and split the region.
 void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 {
 	if (!s_vuaot.enabled || mVU.index != 1)
@@ -2929,7 +2876,7 @@ void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 	}
 	else
 	{
-		// (jumps dominate: sixteen to one over dispatches)
+		// Only when jumps dominate the program's entries (16 to 1 over dispatches).
 		tierNow = jumps >= s_vuaot.jumpTierUpRuns && static_cast<u64>(prog->vuAotRuns) * 16 <= jumps;
 	}
 	return vuAotConsider(mVU, *prog, startPC, key, result, tierNow, true);
@@ -2968,10 +2915,6 @@ void mVUvuAotOnProgramDeleted(microProgram& prog)
 	delete st;
 	prog.vuaot = nullptr;
 }
-
-//------------------------------------------------------------------
-// The compile hooks
-//------------------------------------------------------------------
 
 #if defined(PCSX2_RECOMPILER_TESTS) && defined(__linux__)
 // With pcsx2-eerunner --count-vu1-ins: the user-mode instructions the outermost
@@ -3025,7 +2968,6 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 {
 	microVU& mVU = microVU1;
 	VuAotProgramState& st = *static_cast<VuAotProgramState*>(user);
-	// A generation being published: its root's compile places it.
 	if (VuAotJob* j = s_vuaot.prepared)
 	{
 		if (j->prog == mVU.prog.cur && b.startPC == j->pc && std::memcmp(b.entryState, &j->key, sizeof(j->key)) == 0)
@@ -3141,11 +3083,10 @@ void mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regi
 #ifdef PCSX2_RECOMPILER_TESTS
 namespace vuaot::live
 {
-	// pcsx2-vurunner --vuaot-region-bg: the region hook through the worker. A
-	// job is made from the block microVU is compiling and the graph around it,
-	// run on the worker and waited for, and its code copied in where microVU
-	// is compiling: the synchronous region, by way of everything the live
-	// tier's background path does to it.
+	// pcsx2-vurunner --vuaot-region-bg: the region hook through the worker. A job is
+	// made from the block microVU is compiling and the graph around it, run on the
+	// worker and waited for, and its code copied in where microVU is compiling. The
+	// result is the synchronous region, produced by the live tier's background path.
 	bool RegionHookViaWorker(const MvuBlockTrace& b, const MvuEmitEnv& env, void* user)
 	{
 		microVU& mVU = microVU1;

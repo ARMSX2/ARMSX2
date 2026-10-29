@@ -142,9 +142,9 @@ TEST(GSCopyRoadBlending, EveryDriverOrderedRoadIsUnchanged)
 	EXPECT_EQ(CopyRoadBlendingLevel(WithSplashdownEntry(PerPrimitiveCopyRoad())), kBasic);
 }
 
-// The declared loop on our generation-2 Turnip on Adreno 7xx: the driver orders the read, but with
-// a wait for the GPU to drain before every draw that takes one. That is the barrier road's cost, so
-// the cap follows it there; the a6xx build's ordered road is unchanged.
+// The declared loop on our generation-2 Turnip on Adreno 7xx: the driver orders the read, but waits
+// for the GPU to drain before every draw that takes one, so the cap applies; the a6xx build's
+// ordered road is unchanged.
 TEST(GSCopyRoadBlending, AnOrderedRoadThatWaitsPerDrawTakesTheCap)
 {
 	GSCopyRoadBlendingInputs in = WithSplashdownEntry(DriverOrderedLoopRoad());

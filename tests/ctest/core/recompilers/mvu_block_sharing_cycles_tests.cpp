@@ -5,13 +5,12 @@
 // cache owes on top of that.
 //
 // microVU finds a block by (startPC, pState). For a block that does not need
-// an exact match (everything that does not read a flag instance),
-// microBlockManager::search compares only the first eight bytes of the
-// 96-byte pipeline state: q, p, flag info, xgkick, the VI backup. The integer
-// and vector latencies that follow (VI[], VF[], xgkickcycles) are not part of
-// the key, so a second entry that reaches the same startPC with different
-// latencies finds the block the first entry compiled and runs its stalls. The
-// x86 microVU has the identical search.
+// an exact match (one that reads no flag instance), microBlockManager::search
+// compares only the first eight bytes of the 96-byte pipeline state: q, p,
+// flag info, xgkick, the VI backup. The integer and vector latencies that
+// follow (VI[], VF[], xgkickcycles) are not part of the key, so a second entry
+// reaching the same startPC with different latencies finds the block the first
+// entry compiled and runs its stalls. The x86 microVU has the identical search.
 //
 // The program below has two entries that join at one block. Entry A reaches
 // it one cycle after an ILW wrote vi2 (a four-cycle latency), so the shared
@@ -19,17 +18,10 @@
 // reaches it with nothing pending. Whichever entry compiles the shared block
 // first decides how many cycles both entries charge for it.
 //
-// That is a property of the lookup, not of the program cache, and it is what
-// the 14 Ratchet & Clank: Up Your Arsenal captures `vu1_pc00000080_seq*`
-// show when they run with the cache on: the cache hands a capture a program
-// holding blocks an earlier capture compiled from another entry, one cycle
-// more than a compile from scratch.
-//
-//  * HydratedProgramTimesLikeTheWarmProgram pins what the cache owes: a
-//    hydrated program times exactly like the same program kept in memory.
-//  * DISABLED_CyclesDoNotDependOnWhichEntryCompiledFirst states the
-//    requirement the lookup does not meet. It fails today; run it with
-//    --gtest_also_run_disabled_tests.
+// That is a property of the lookup, not of the program cache. What the cache
+// owes is that a hydrated program times exactly like the same program kept in
+// memory. The DISABLED_ test states the requirement the lookup does not meet;
+// it fails today (run with --gtest_also_run_disabled_tests).
 
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
@@ -102,7 +94,6 @@ u64 RunAt(u32 pc)
 	return vu0.cycle;
 }
 
-// Drop every compiled block and program, as a block-cache reset does.
 void ColdStart()
 {
 	RecompilerTestEnvironment::ResetVuBlockCache(0);

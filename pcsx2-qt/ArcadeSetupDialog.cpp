@@ -132,7 +132,6 @@ void ArcadeSetupDialog::buildUi()
 
 	QVBoxLayout* outer = new QVBoxLayout(this);
 
-	// The page scrolls, so it stays usable on a small screen.
 	QScrollArea* scroll = new QScrollArea(this);
 	scroll->setWidgetResizable(true);
 	scroll->setFrameStyle(QFrame::NoFrame);
@@ -149,7 +148,6 @@ void ArcadeSetupDialog::buildUi()
 		page);
 	root->addWidget(m_intro);
 
-	// 1. Boot files
 	QGroupBox* boot = new QGroupBox(tr("1. Boot files"), page);
 	QVBoxLayout* boot_layout = new QVBoxLayout(boot);
 	boot_layout->addWidget(MakeWrappedLabel(
@@ -183,7 +181,6 @@ void ArcadeSetupDialog::buildUi()
 	boot_layout->addLayout(boot_buttons);
 	root->addWidget(boot);
 
-	// 2. Arcade BIOS
 	QGroupBox* bios = new QGroupBox(tr("2. Arcade BIOS"), page);
 	QVBoxLayout* bios_layout = new QVBoxLayout(bios);
 	m_bios_status = MakeWrappedLabel(QString(), bios);
@@ -206,7 +203,6 @@ void ArcadeSetupDialog::buildUi()
 	bios_layout->addLayout(bios_buttons);
 	root->addWidget(bios);
 
-	// 3. Games
 	QGroupBox* games = new QGroupBox(tr("3. Your arcade games"), page);
 	QVBoxLayout* games_layout = new QVBoxLayout(games);
 	m_games_summary = MakeWrappedLabel(QString(), games);
@@ -285,10 +281,6 @@ void ArcadeSetupDialog::changeEvent(QEvent* event)
 	}
 }
 
-// ----------------------------------------------------------------------------------------------------
-// Boot files
-// ----------------------------------------------------------------------------------------------------
-
 void ArcadeSetupDialog::refreshBootFiles()
 {
 	m_boot = m_service.GetBootFilesStatus();
@@ -317,7 +309,6 @@ void ArcadeSetupDialog::updateBootControls()
 {
 	const bool busy = m_downloading || m_installing;
 
-	// What is installed.
 	if (!m_boot.installed)
 	{
 		m_boot_status->setText(Colored(tr("Not downloaded yet."), Tone::Bad));
@@ -339,7 +330,6 @@ void ArcadeSetupDialog::updateBootControls()
 		m_boot_status->setText(text);
 	}
 
-	// Whether there is a newer build.
 	QString update;
 	if (m_boot.installed)
 	{
@@ -373,7 +363,6 @@ void ArcadeSetupDialog::updateBootControls()
 	m_boot_update->setText(update);
 	m_boot_update->setVisible(!update.isEmpty());
 
-	// The buttons.
 	if (m_downloading)
 		m_download_button->setText(tr("Cancel"));
 	else if (!m_boot.installed)
@@ -488,10 +477,6 @@ void ArcadeSetupDialog::onInstallFinished(const ArcadeSetup::InstallResult& resu
 	refreshGames();
 }
 
-// ----------------------------------------------------------------------------------------------------
-// BIOS
-// ----------------------------------------------------------------------------------------------------
-
 void ArcadeSetupDialog::refreshBios()
 {
 	const ArcadeSetup::BiosStatus bios = m_service.GetBiosStatus();
@@ -526,10 +511,6 @@ void ArcadeSetupDialog::onOpenBiosFolderClicked()
 	FileSystem::EnsureDirectoryExists(EmuFolders::Bios.c_str(), true);
 	QtUtils::OpenURL(this, QUrl::fromLocalFile(QString::fromStdString(EmuFolders::Bios)));
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Games
-// ----------------------------------------------------------------------------------------------------
 
 void ArcadeSetupDialog::refreshGames()
 {
@@ -587,8 +568,7 @@ void ArcadeSetupDialog::refreshGames()
 			}
 			updateGamesSummary();
 
-			// With nothing chosen yet, show what the first game that cannot start lacks: that is what the player
-			// came to find out.
+			// With nothing chosen yet, show what the first game that cannot start lacks.
 			if (m_games_list->selectedItems().isEmpty())
 			{
 				const auto it = std::find_if(m_games.begin(), m_games.end(),

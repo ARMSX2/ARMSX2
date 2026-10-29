@@ -24,8 +24,6 @@ namespace Catalog
 	// New misses between saves of the miss cache, so a long run that is killed loses little.
 	static constexpr u32 MISSES_PER_SAVE = 50;
 
-	// ---- CoverMissCache ----------------------------------------------------------------------
-
 	CoverMissCache::CoverMissCache(std::string path, std::chrono::seconds miss_expiry)
 		: m_path(std::move(path))
 		, m_miss_expiry(miss_expiry)
@@ -34,7 +32,6 @@ namespace Catalog
 
 	bool CoverMissCache::Load(std::time_t now)
 	{
-		// A memory-only cache has nothing to read and keeps what it holds.
 		if (m_path.empty())
 			return false;
 
@@ -129,8 +126,6 @@ namespace Catalog
 		m_dirty = true;
 	}
 
-	// ---- Image sniffing ----------------------------------------------------------------------
-
 	std::string ImageExtensionForBytes(const void* data, size_t size)
 	{
 		const u8* bytes = static_cast<const u8*>(data);
@@ -146,8 +141,6 @@ namespace Catalog
 
 		return {};
 	}
-
-	// ---- The job -----------------------------------------------------------------------------
 
 	namespace
 	{
@@ -380,7 +373,7 @@ namespace Catalog
 						stop = true;
 						break;
 					}
-					else // Cancelled
+					else
 					{
 						m_summary.end = CoverJobEnd::Cancelled;
 						stop = true;
@@ -440,8 +433,6 @@ namespace Catalog
 		Job job(fetcher, options);
 		return job.Run(std::move(items));
 	}
-
-	// ---- Runner ------------------------------------------------------------------------------
 
 	CoverJobRunner::~CoverJobRunner()
 	{

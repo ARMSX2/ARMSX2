@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// What the IOP thread tests that start a Lockstep thread share: a guard that puts the settings and the mode back,
-// the table of recording actions that stands in for the IOP's functions when the IOP thread applies an EE-to-IOP
-// item, and a guard for the IOP state the safe entry points touch.
+// Shared by the IOP thread tests that start a Lockstep thread. The recording actions stand in for
+// the IOP's functions when the IOP thread applies an EE-to-IOP item.
 
 #pragma once
 
@@ -57,7 +56,6 @@ namespace iopt
 		R5900cpu* m_cpu;
 	};
 
-	// Lockstep, with the thread running.
 	inline void StartLockstep()
 	{
 		EmuConfig.Speedhacks.iopThread = true;
@@ -65,8 +63,6 @@ namespace iopt
 		IopThread::ChooseMode();
 		IopThread::SyncThread();
 	}
-
-	// ---- recording actions, for the table the IOP thread applies items with
 
 	struct Applied
 	{
@@ -93,7 +89,6 @@ namespace iopt
 		[](u32 job) { Record("job", job); },
 	};
 
-	// Installs the recording table and collects what the IOP thread applies.
 	class Recorder
 	{
 	public:

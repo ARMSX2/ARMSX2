@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The IOP thread object. The design, the states and the deadlock argument are in IopThread.h.
+// The IOP thread object. The states, the sleep handshake and the deadlock argument are in IopThread.h.
 
 #include "IopThread/IopThread.h"
 
@@ -94,8 +94,6 @@ namespace IopThread
 	{
 		Stop();
 	}
-
-	// ================================================================ lifecycle
 
 	bool Thread::Start(Params params)
 	{
@@ -209,11 +207,9 @@ namespace IopThread
 		m_mode = IopThreadMode::Off;
 	}
 
-	// ================================================================ the IOP thread
-
 	void Thread::ThreadMain()
 	{
-		// Design 3.10, modelled on MTVU.cpp and MTGS.cpp.
+		// Per-thread setup, as in MTVU.cpp and MTGS.cpp.
 		Threading::SetNameOfCurrentThread(m_params.name);
 		PerformanceMetrics::AdpfRegisterCallingThread();
 		PageFaultHandler::InstallSecondaryThread();
@@ -232,12 +228,11 @@ namespace IopThread
 		m_host.RunPending();
 	}
 
-	// Parks until `ready()` says there is work, or until woken: the waits for a hold to end, for a
-	// CallOnEE to be served, and Lockstep's wait for a request. `ready` re-reads everything that can
-	// end the wait after `sleeping` is set. What ends these waits is notified unconditionally (the
-	// hold's release, the call's completion, Stop()) or, in Lockstep, by a seq_cst store and load on
-	// the EE's side, so a seq_cst store here is enough. The sleep is WorkSema's: it spins for
-	// SPIN_TIME_NS first, then blocks.
+	// Parks until `ready()` reports work or the thread is woken: the hold wait, the CallOnEE wait and
+	// Lockstep's wait for a request. `ready` re-reads everything that can end the wait after `sleeping`
+	// is set. Those wake-ups are never filtered by `sleeping` (hold release, call completion, Stop()) or,
+	// in Lockstep, are ordered by a seq_cst store and load on the EE side, so a seq_cst store here is
+	// enough. WorkSema spins for SPIN_TIME_NS before it blocks.
 	template <class Ready>
 	void Thread::ParkUntil(Ready&& ready)
 	{
@@ -264,10 +259,10 @@ namespace IopThread
 		return true;
 	}
 
-	// The pacing loop has nothing to run. Watch the EE's words for idle_spin_ns: each publish is a
-	// store to the watermark's line, which ends the WFE, and WorkAvailable() looks again. The EE sends
-	// no wake-up while the IOP watches, because `sleeping` is not set. After idle_spin_ns with nothing
-	// to do, go to sleep through the handshake. Returns with work available, or after a wake-up.
+	// The pacing loop has nothing to run. Watch the EE's words for idle_spin_ns: a publish stores to the
+	// watermark's line, which ends the WFE, and WorkAvailable() looks again. The EE sends no wake-up
+	// while the IOP watches, since `sleeping` is not set. After idle_spin_ns, sleep through the
+	// handshake. Returns with work available or after a wake-up.
 	void Thread::IdleWait()
 	{
 		m_idle_waits.Add();
@@ -282,7 +277,6 @@ namespace IopThread
 			if (NowNs() >= deadline)
 			{
 				m_sleep.sleeping.store(true, std::memory_order_seq_cst);
-				// The barrier, then the re-check: see "Going to sleep".
 				if (IopStoreLoadBarrier())
 				{
 					if (!WorkAvailable())
@@ -293,7 +287,6 @@ namespace IopThread
 					m_sleep.sleeping.store(false, std::memory_order_relaxed);
 					break;
 				}
-				// No barrier, no sleep: keep watching.
 				m_sleep.sleeping.store(false, std::memory_order_relaxed);
 			}
 			WaitForLineChange(m_ee.wm, wm);
@@ -311,7 +304,7 @@ namespace IopThread
 		bool run = false;
 		if (budget > 0)
 		{
-			// Design 5.1. An item at the end of the slice is `next <= wm`, because target is then next.
+			// An item at the end of the slice is `next <= wm`, because target is then next.
 			run = budget >= m_min_slice || next <= wm || m_ee.spinning.load(std::memory_order_relaxed);
 		}
 		if (!run && m_params.has_event && m_params.has_event())
@@ -356,9 +349,8 @@ namespace IopThread
 			m_params.apply_kicks(bits);
 	}
 
-	// Design 5.2: one slice, then the items that fell due inside it, then the publication. The
-	// publication comes last so that the EE's lag check (and a hold) can trust that an iop_pos it
-	// reads has had its items applied.
+	// One slice, then the items that fell due inside it, then the publication. Publishing last lets the
+	// EE's lag check (and a hold) trust that an iop_pos it reads has had its items applied.
 	void Thread::RunOneSlice(u64 target)
 	{
 		u64 reached = m_params.run_slice(m_iop_pos, target);
@@ -452,8 +444,6 @@ namespace IopThread
 			ParkUntil([&] { return !still_held(); });
 	}
 
-	// ---- CallOnEE and the I2E queue, IOP side
-
 	bool Thread::PostI2E(u16 kind, u32 arg)
 	{
 		if (m_i2e.TryPush(kind, arg)) [[likely]]
@@ -461,9 +451,9 @@ namespace IopThread
 		return WaitForI2ESpace(kind, arg);
 	}
 
-	// The IOP waiting for the EE, which is the direction the design allows waiting in. The EE
-	// empties the queue at every event test and in every spin, so this is short. It polls rather
-	// than parks so that the EE's drain has nothing to notify.
+	// The IOP waits for the EE here, which the deadlock argument in IopThread.h allows. The EE empties
+	// the queue at every event test and in every spin, so this is short. It polls rather than parks so
+	// that the EE's drain has nothing to notify.
 	bool Thread::WaitForI2ESpace(u16 kind, u32 arg)
 	{
 		m_i2e_full_waits.Add();
@@ -528,8 +518,6 @@ namespace IopThread
 			});
 		}
 	}
-
-	// ================================================================ the EE thread
 
 	bool Thread::ShouldStop()
 	{
@@ -615,7 +603,6 @@ namespace IopThread
 		m_sema.NotifyOfWork(); // not filtered: the IOP may be asleep waiting for exactly this
 	}
 
-	// W1. Called when the lag check failed.
 	bool Thread::LagSpin(u64 cycle)
 	{
 		// A held or stopped IOP cannot catch up, and a CallOnEE function runs with the IOP blocked.
@@ -692,7 +679,6 @@ namespace IopThread
 		return true;
 	}
 
-	// W3. Called when the ring was full.
 	bool Thread::WaitForE2ISpace(u64 stamp, u16 kind, u32 arg)
 	{
 		// Making room takes the IOP consuming, which it cannot do while it is held, while it is
@@ -732,8 +718,6 @@ namespace IopThread
 		return queued;
 	}
 
-	// ---- holds
-
 	void Thread::AcquireHold(HoldKind kind)
 	{
 		// The IOP is already stopped for a hold taken inside another, inside a CallOnEE function, in
@@ -765,10 +749,8 @@ namespace IopThread
 		m_ee.spinning.store(true, std::memory_order_relaxed);
 		WakeIfParked(WakeSite::SpinEntry);
 
-		// A hold never gives up, and so never asks Params::should_stop. Its caller is in the middle of an operation
-		// that needs the IOP stopped (a SIF pump, the savestate a shutdown writes), and the IOP does get there: it
-		// finishes its slice, and this loop serves its queue and its CallOnEE functions on every iteration. Only the
-		// waits whose callers can return to the event test (CheckLag, PostE2I) give up when the VM is stopping.
+		// A hold never gives up and never asks Params::should_stop (see ScopedHold). The IOP reaches the
+		// hold after its current slice, and this loop serves its queue and CallOnEE functions meanwhile.
 		const bool may_sleep = (kind == HoldKind::Lifecycle);
 		const auto begin = std::chrono::steady_clock::now();
 		bool sleeping = false;
@@ -851,8 +833,6 @@ namespace IopThread
 		m_ee.wm.store(ee_cycle, std::memory_order_relaxed);
 		m_iop.pos_pub.store(iop_pos, std::memory_order_relaxed);
 	}
-
-	// ================================================================ Lockstep
 
 	u64 Thread::LockstepCall(u32 kind, u64 arg)
 	{
@@ -945,8 +925,6 @@ namespace IopThread
 			});
 		}
 	}
-
-	// ================================================================ any thread
 
 	Thread::Ticket Thread::PostHostCommand(HostCommandQueue::Command command)
 	{

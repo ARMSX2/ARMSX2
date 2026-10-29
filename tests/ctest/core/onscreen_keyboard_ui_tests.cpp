@@ -128,7 +128,6 @@ TEST_F(KeyboardDialogTest, TheButtonPressThatOpensTheDialogDoesNotTypeAKey)
 	Frame();
 	EXPECT_EQ(m_entry.GetText(), "");
 
-	// But the next press is a key.
 	OpenDialog();
 	Press(Confirm());
 	EXPECT_EQ(m_entry.GetText(), "1");

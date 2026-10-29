@@ -3,9 +3,8 @@
 
 #pragma once
 
-// A small, defensive .tar.gz extractor for downloaded packs we do not control (GPU driver
-// packs today). It reads the gzip stream with zlib and the tar stream by hand, so there is no
-// archive library to keep in step and every policy decision is visible in one place.
+// A defensive .tar.gz extractor for downloaded packs we do not control (GPU driver packs
+// today). Gzip is read with zlib and tar by hand, so no archive library is needed.
 //
 // What it does with an entry:
 //   regular file    written under the destination directory (mode 0644, or 0755 if the archive
@@ -15,11 +14,11 @@
 //                   skipped and counted, never created. Not creating links is what makes the
 //                   path checks below sufficient: nothing extracted can redirect a later write.
 //
-// What it refuses (the whole extraction fails, nothing is partially trusted): an absolute path,
-// a ".." component, a NUL or backslash in a name, a path over 4096 bytes / 32 components /
-// 255 bytes per component, a bad tar header checksum, an archive that ends mid-entry, a file
-// over TarLimits::max_file_bytes, more entries or more total bytes than the limits, and a gzip
-// stream that is corrupt. Reading stops at the end of the first gzip member.
+// What it refuses (the whole extraction fails): an absolute path, a ".." component, a NUL or
+// backslash in a name, a path over 4096 bytes / 32 components / 255 bytes per component, a bad
+// tar header checksum, an archive that ends mid-entry, a file over TarLimits::max_file_bytes,
+// more entries or more total bytes than the limits, and a corrupt gzip stream. Reading stops at
+// the end of the first gzip member.
 //
 // GNU long names (type 'L'), POSIX pax headers (type 'x', `path` and `size` records) and the
 // ustar `prefix` field are understood, because GNU tar and Python's tarfile both produce them.

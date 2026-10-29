@@ -4,9 +4,8 @@
 // Pins the blend carry-over decision (GS/Renderers/Common/GSBlendCarry.h): a draw whose blend was
 // elided as the identity (Cs - Cd) * As + Cd with As = 1.0 takes the blend of the blended draw of the
 // same equation submitted just before it, when the two agree on everything else that reaches the
-// output. The carry is exact only while that agreement holds, so each part of it is pinned: which draws
-// can be a donor, which can take one, what differs between them, and that every difference outside the
-// blend bits refuses.
+// output. The carry is exact only while that agreement holds, so the tests cover which draws can be
+// a donor, which can take one, and that every difference outside the blend bits refuses.
 //
 // Rides gs_vertex_tests -- the decision is header-only.
 
@@ -52,7 +51,6 @@ namespace
 		return c;
 	}
 
-	// The same draw with its blend elided: the blend-set bits and the blend state are clear.
 	GSHWDrawConfig Elided()
 	{
 		GSHWDrawConfig c = Blended();

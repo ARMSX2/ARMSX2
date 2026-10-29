@@ -130,13 +130,11 @@ private fun GpuPs2Icon(
 }
 
 /**
- * The software renderer's way, for when the GPU's can't be used. A PS2 save icon drawn live: playing its animation when [animate], and turning too when Spin is
- * on ([MemcardCovers.spin]), or one still frame when not. Frames are rendered off the main thread
- * at this composable's width (capped at [maxWidth], since it runs every frame) and [aspect]
- * (height / width), into two bitmaps used in turn, reusing the renderer's buffers. It starts from
- * the pose the loaded icon's still picture uses, and holds still while the app is out of sight,
- * carrying on from there when it is back. An icon with no animation of its own that is not
- * turning never changes, so it is drawn once and costs nothing after.
+ * The software renderer's way, for when the GPU's can't be used. Frames are rendered off the main
+ * thread at this composable's width (capped at [maxWidth], since it runs every frame) and
+ * [aspect], into two bitmaps used in turn, reusing the renderer's buffers. It holds still while
+ * the app is out of sight, carrying on from there when it is back. An icon with no animation of
+ * its own that is not turning never changes, so it is drawn once and costs nothing after.
  */
 @Composable
 private fun SoftwarePs2Icon(
@@ -180,7 +178,7 @@ private fun SoftwarePs2Icon(
         val start = System.nanoTime()
         val baseAnimation = clock[0]
         val baseTurn = clock[1]
-        // The very first frame is drawn as smoothly as the still picture it replaces.
+        // The first frame keeps the full supersampling, so it matches the still picture it replaces.
         var first = frame == null
         while (isActive) {
             val began = System.nanoTime()
@@ -196,9 +194,8 @@ private fun SoftwarePs2Icon(
             )
             val bmp = bitmaps[which]
             which = which xor 1
-            // Into the bitmap off the main thread too: the conversion to the bitmap's own format
-            // was the main thread's biggest cost with a screenful moving. It is the bitmap not on
-            // screen, the other of the two.
+            // Convert into the bitmap off the main thread too: with a screenful moving, that
+            // conversion is the main thread's biggest cost. This is the bitmap not on screen.
             withContext(Dispatchers.Default) {
                 val px = if (first) Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, options)
                     else Ps2IconRenderer.renderFrame(icon, loaded.sys, w, h, pose, frameOptions, scratch)
@@ -210,8 +207,8 @@ private fun SoftwarePs2Icon(
             if (first) { first = false; firstFrame() }
             if (!moving || still) break
             // Every moving icon draws on the same beat of one clock, so a screenful changes together
-            // and the screen is redrawn once per beat. On beats of their own they changed at
-            // different moments and kept an Odin 3 redrawing the whole library at 120 Hz.
+            // and the screen is redrawn once per beat. Icons on beats of their own change at
+            // different moments and keep the whole library redrawing at the display's refresh rate.
             val now = android.os.SystemClock.uptimeMillis()
             delay((FRAME_MS - now % FRAME_MS).coerceAtLeast(1))
         }
@@ -224,5 +221,5 @@ private fun SoftwarePs2Icon(
 }
 
 private const val FRAME_MS = 42L // about 24 frames a second
-// A full turn every six seconds, the unhurried spin of the console's own browser.
+// Radians per second: a full turn every six seconds.
 private const val TURN_PER_SECOND = (2.0 * PI / 6.0).toFloat()

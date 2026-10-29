@@ -85,13 +85,9 @@ namespace
 		ImGuiFullscreen::AddNotification(MEMCARD_NOTIFICATION_KEY, seconds, fmt::format("{} {}", ICON_PF_MEMORY_CARD, title), text, std::string());
 	}
 
-	////////////////////////////////////////////////////////////////////////
-	// The backups window
-	//
-	// All of this state belongs to the GS thread. Reading the snapshots opens a zip each and a backup
-	// compresses a whole card, so both run on a worker thread that hands its result back with
+	// The backups window's state belongs to the GS thread. Reading the snapshots opens a zip each and
+	// a backup compresses a whole card, so both run on a worker thread that hands its result back with
 	// PostToGSThread. One job at a time.
-	////////////////////////////////////////////////////////////////////////
 
 	struct BackupCard
 	{
@@ -247,10 +243,6 @@ namespace
 		QueueResetFocus(FocusResetType::WindowChanged);
 	}
 
-	////////////////////////////////////////////////////////////////////////
-	// The boot-time question
-	////////////////////////////////////////////////////////////////////////
-
 	void OpenRestorePromptDialog(const Backup::RestorePrompt& prompt, ImGuiFullscreen::ConfirmMessageDialogCallback callback)
 	{
 		std::string message = fmt::format(
@@ -308,7 +300,7 @@ namespace
 		if (timed_out)
 		{
 			Backup::ReportUnansweredRestore(prompt.card);
-			// The dialog is still up; it must not wait on for a question that has been answered.
+			// The dialog is still up; close it so it does not outlive the question.
 			MTGS::RunOnGSThread([]() {
 				if (IsInitialized())
 					ImGuiFullscreen::CloseMessageDialog();
@@ -322,10 +314,6 @@ namespace
 		}
 		return answer;
 	}
-
-	////////////////////////////////////////////////////////////////////////
-	// Autosave settings
-	////////////////////////////////////////////////////////////////////////
 
 	constexpr int AUTOSAVE_INTERVAL_CHOICES[] = {0, 1, 2, 5, 10, 15, 30};
 
@@ -375,10 +363,6 @@ namespace
 			});
 	}
 
-	////////////////////////////////////////////////////////////////////////
-	// Autosave tiles in the Load State selector
-	////////////////////////////////////////////////////////////////////////
-
 	// The slot number an autosave tile carries. The selector hands entry.slot to DoLoadState and to the
 	// "failed to load" message, so these are the real slot for the newest (VMManager::SAVESTATE_SLOT_AUTOSAVE,
 	// -2) and -3 .. -6 for the older ones; IsAutosaveSlot() recognises all of them.
@@ -421,10 +405,6 @@ namespace
 	}
 } // namespace
 
-//////////////////////////////////////////////////////////////////////////
-// Memory card page
-//////////////////////////////////////////////////////////////////////////
-
 void FullscreenUI::DrawMemcardBackupSettings(SettingsInterface* bsi)
 {
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_CLOCK_ROTATE_LEFT, "Automatic Backups"),
@@ -437,10 +417,6 @@ void FullscreenUI::DrawMemcardBackupSettings(SettingsInterface* bsi)
 		OpenMemcardBackupsWindow();
 	}
 }
-
-//////////////////////////////////////////////////////////////////////////
-// The backups window
-//////////////////////////////////////////////////////////////////////////
 
 void FullscreenUI::OpenMemcardBackupsWindow()
 {
@@ -553,44 +529,26 @@ void FullscreenUI::DrawMemcardBackupsWindow()
 	SetStandardSelectionFooterText(true);
 }
 
-//////////////////////////////////////////////////////////////////////////
-// The boot-time question
+// The boot-time question.
 //
-// THREADING. Backup::OnCardsReopening() calls the handler on the CPU thread, inside
+// Backup::OnCardsReopening() calls the handler (AskToRestoreCard) on the CPU thread, inside
 // VMManager::Initialize, and boot waits for the return value. The question is drawn and answered on
-// the GS thread. Nothing in between may need the CPU thread to run something, because it is the thread
-// that is waiting:
+// the GS thread, so nothing in between may need the CPU thread to run something: it is the thread
+// that is waiting. Pushing onto the GS ring from the CPU thread is the one allowed direction; nothing
+// here calls Host::RunOnCPUThread with block = true, and the dialog callback only sets the answer.
 //
-//   CPU thread (in the handler)               GS thread
-//   ---------------------------               ---------
-//   MTGS::RunOnGSThread(open the dialog) ---> draws the dialog every frame: MTGS's idle loop keeps
-//   BlockingAnswer::Wait(16 ms steps):          presenting while the VM is not Running, because Big
-//     InputManager::PollSources()               Picture set run-idle. The window and the GS are already
-//     still open? else give up                  open: the question is only asked when Big Picture is up.
-//                                          <--- the button callback (or the dialog being replaced, or
-//   returns Restore / StartAnyway                Big Picture shutting down) sets the answer.
+// Every way the dialog can go away unanswered still ends the wait. Replacing it
+// (OpenConfirmMessageDialog drops the old callback) or clearing it at shutdown destroys the
+// callback, and BlockingAnswer::Responder answers "start anyway" when its last copy goes. The GS
+// thread closing, or Big Picture shutting down, is caught by the keep-waiting check every 16 ms.
 //
-// Pushing onto the GS ring from the CPU thread is the one allowed direction. Nothing here calls
-// Host::RunOnCPUThread with block = true, and the dialog callback only sets the answer. The pieces that
-// would otherwise hang the CPU thread forever are each covered: the dialog replaced by another
-// (OpenConfirmMessageDialog drops the old callback unanswered) or cleared at shutdown destroys the
-// callback, and BlockingAnswer::Responder answers "start anyway" when its last copy goes; the GS thread
-// closing, or Big Picture shutting down, is seen by the keep-waiting check every 16 ms.
-//
-// Input is the one thing that does need this thread. Gamepads are polled by whoever runs the CPU thread's
-// loop, and the Qt host hands keyboard and mouse presses to the CPU thread as queued tasks; the loop is
-// blocked here, so the wait runs both itself every 16 ms (Host::PumpMessagesOnCPUThread and
-// InputManager::PollSources), as the Qt host's progress dialog does while a VM starts. Nothing waits for
-// that to happen on some other thread.
-//
-// Precedence. The handler is registered as the *fallback* (MemcardBackup::SetFallbackRestorePromptHandler),
-// while Big Picture is initialised. A handler the host registers with SetRestorePromptHandler (the
-// Qt main window's dialog) always wins, whichever was registered first, so Qt asks with its own dialog
-// whenever its main window exists and Big Picture asks only when it is the one UI (armsx2-sdl). With Big
-// Picture not initialised there is no fallback and boot goes ahead with the card as it is: for example
-// a game started from the command line, where Big Picture does not exist until the GS opens, after the
-// cards were already looked at.
-//////////////////////////////////////////////////////////////////////////
+// Precedence: this handler is registered as the *fallback*
+// (MemcardBackup::SetFallbackRestorePromptHandler) while Big Picture is initialised. A handler the
+// host registers with SetRestorePromptHandler (the Qt main window's dialog) always wins, whichever
+// was registered first, so Big Picture asks only when it is the one UI (armsx2-sdl). With Big
+// Picture not initialised there is no fallback and boot goes ahead with the card as it is, e.g. a
+// game started from the command line, where Big Picture does not exist until the GS opens, after
+// the cards were already looked at.
 
 void FullscreenUI::RegisterMemcardRestorePrompt()
 {
@@ -622,10 +580,6 @@ void FullscreenUI::OpenMemcardPromptPreview()
 	prompt.snapshot.healthy = true;
 	OpenRestorePromptDialog(prompt, [](bool) {});
 }
-
-//////////////////////////////////////////////////////////////////////////
-// Autosaves
-//////////////////////////////////////////////////////////////////////////
 
 void FullscreenUI::DrawAutosaveSettings(SettingsInterface* bsi)
 {

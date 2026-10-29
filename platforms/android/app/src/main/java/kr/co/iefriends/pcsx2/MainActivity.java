@@ -369,8 +369,8 @@ public class MainActivity extends AppCompatActivity {
 
     /** Whether this launch rewrites the files copyFile keeps in step with the APK (the shaders, the GameDB,
      *  our overrides): only when this install of the app has not written them into the data folder yet,
-     *  which MainActivityRuntime reads from the folder's marker. Rewriting them at every launch took long
-     *  enough, on a data folder on an SD card, for Android to report the app as not responding. */
+     *  which MainActivityRuntime reads from the folder's marker. Rewriting them every launch on an SD card
+     *  data folder is slow enough to trigger an ANR (app not responding). */
     public static volatile boolean refreshShippedAssets = true;
 
     /** Copies that failed since the last pass began: the marker is written only after a clean one. */

@@ -8,10 +8,7 @@
 #pragma once
 #include "MemoryTypes.h"
 
-/**
- * @brief source related to ACCORE.IRX MMIO and stuff
- * 
- */
+/** ACCORE.IRX MMIO, interrupt state and the pending DMA transfer type. */
 
 
 namespace ACCORE {
@@ -20,7 +17,7 @@ namespace ACCORE {
 	void intr(int INTRN);
 	void Interrupt(u32 mem, u16 val);
 	bool hasPendingInterrupt();
-	void Reset(); // ARMSX2: no interrupt or DMA pending, as a freshly started emulator has it
+	void Reset();
 	namespace DMA {
         enum TT {
             NONE = 0,

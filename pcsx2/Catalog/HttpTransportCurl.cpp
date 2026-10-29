@@ -114,7 +114,6 @@ namespace Catalog
 			}
 			else if ((line == "\r\n" || line == "\n") && ctx.head.status >= 200 && !ctx.head_sent)
 			{
-				// End of the final response's headers.
 				ctx.head_sent = true;
 				if (!ctx.sink->OnHead(ctx.head))
 				{

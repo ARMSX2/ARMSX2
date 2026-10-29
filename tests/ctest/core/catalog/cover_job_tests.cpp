@@ -4,7 +4,7 @@
 // Tests for the automatic cover download: image sniffing, the on-disk miss cache with its
 // back-off, the download job (fallback, remembered 404s, rate limits, cancellation) and the
 // thread runner. Replies come from FakeFetcher; nothing touches the network. The image bytes are
-// the first 512 bytes of real covers from the live captures of 2026-10-08.
+// the first 512 bytes of real covers.
 
 #include "cover_test_support.h"
 
@@ -112,8 +112,6 @@ namespace
 	};
 } // namespace
 
-// ---- Image sniffing ------------------------------------------------------------------------
-
 TEST(CoverImageTest, ExtensionComesFromTheBytesNotTheUrl)
 {
 	const std::string jpeg = Jpeg();
@@ -127,8 +125,6 @@ TEST(CoverImageTest, ExtensionComesFromTheBytesNotTheUrl)
 	for (const std::string& not_an_image : {std::string("<html>404</html>"), NotFoundBody(), std::string("RIFF\x24\x00\x00\x00WAVEfmt ", 16), std::string("\xFF\xD8"), std::string()})
 		EXPECT_EQ(ImageExtensionForBytes(not_an_image.data(), not_an_image.size()), "") << not_an_image;
 }
-
-// ---- Miss cache ----------------------------------------------------------------------------
 
 TEST(CoverMissCacheTest, MissesSurviveARestartAndExpire)
 {
@@ -220,8 +216,6 @@ TEST(CoverMissCacheTest, AMemoryOnlyCacheKeepsWhatItHolds)
 	EXPECT_TRUE(cache.IsMissed("https://x/a.jpg", T0));
 	EXPECT_TRUE(cache.Save());
 }
-
-// ---- The download job ----------------------------------------------------------------------
 
 TEST(CoverJob, SavesEachCoverUnderItsSerialWithTheExtensionOfItsBytes)
 {
@@ -684,8 +678,6 @@ TEST(CoverJob, ForcedRedownloadKeepsTheOldCoverWhenTheServerHasNothing)
 	EXPECT_EQ(summary.missed, 1u);
 	EXPECT_EQ(ReadFile(old_cover), "old");
 }
-
-// ---- The runner ----------------------------------------------------------------------------
 
 TEST(CoverRunner, RunsOnAWorkerThreadAndReportsWhenFinished)
 {

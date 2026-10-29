@@ -300,10 +300,6 @@ TEST(EeRecWaitLoopDetect, AllNopSelfLoopStillDetected)
 // bug read stale memory and burned the stale count's worth of CYCLES; UYA's
 // idle loop collapsed to 600 frames/1s of nothing).
 //
-// (UYA's idle loop counts down in $at, which was the x11 pin when that bug was
-// found; the register is now $s1, the same host register, so the shape is the
-// same.)
-//
 // HONESTY NOTE (mutation-verified 2026-07-09): this test CANNOT go red on the
 // raw-Ldr bug itself — when no event clamps the skip, the skip drains whatever
 // counter value it read down to 0, so the final architectural state matches

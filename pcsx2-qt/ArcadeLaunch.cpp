@@ -93,7 +93,6 @@ QMessageBox* ArcadeLaunch::CreateMissingReport(QWidget* parent, const ArcadeSetu
 		box->setText(title.isEmpty() ? tr("This arcade game cannot start yet. It is missing: %1.").arg(summary) :
 		                               tr("%1 cannot start yet. It is missing: %2.").arg(title, summary));
 
-		// One line per missing part, saying what it is and where it goes.
 		QStringList lines;
 		for (const ArcadeSetup::MissingPart& part : result.missing.parts)
 			lines.push_back(QStringLiteral("• ") + QString::fromStdString(part.Explain()));

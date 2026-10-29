@@ -133,9 +133,9 @@ class Ps2Icon(
                 var i = 0
                 // Run-length: a code with the top bit set is followed by (0x10000 - code) literal
                 // pixels; any other code repeats the one pixel after it that many times. A zero
-                // code is padding with no pixel after it: Namco's encoder (Katamari Damacy) puts
-                // one after every run and Sonic Riders has one mid-stream, and reading a pixel
-                // there threw the rest of each texture out of step.
+                // code is padding with no pixel after it (Namco's encoder emits one after every
+                // run, Sonic Riders has one mid-stream); reading a pixel there throws the rest of
+                // the texture out of step.
                 while (i < n && o + 2 <= end) {
                     val code = u16(o)
                     o += 2

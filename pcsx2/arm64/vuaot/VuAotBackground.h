@@ -3,19 +3,19 @@
 
 #pragma once
 
-// The background half of the vu-aot live tier (compiler-design.md section
-// 9aa): one low-priority worker thread that builds regions while microVU keeps
-// running the program, and the private code buffer it emits into.
+// The background half of the vu-aot live tier: one low-priority worker thread
+// that builds regions while microVU keeps running the program, and the private
+// code buffer it emits into.
 //
-// Nothing here knows microVU. The worker runs jobs (VuAotJob, in
-// microVU_VuAot-arm64.inl) that hold copies of everything they read; the VU1
-// thread publishes what a job made, copying its code into microVU's code cache
-// and patching the places the buffer could not know (the fixups below).
+// The worker runs jobs (VuAotJob, in microVU_VuAot-arm64.inl) that hold copies
+// of everything they read. The VU1 thread publishes a job's result by copying
+// its code into microVU's code cache and patching the places the buffer could
+// not know (the fixups below).
 //
-// Why a private buffer and a copy: microVU's code cache has one writer, the
-// thread that runs VU1, and on Apple platforms it is W^X with the write window
-// owned by that thread. The worker writes only plain memory of its own, and
-// the copy happens inside one of microVU's own code-cache episodes.
+// The buffer is private because microVU's code cache has one writer, the VU1
+// thread, and on Apple platforms it is W^X with the write window owned by that
+// thread. The worker writes only its own plain memory; the copy happens inside
+// one of microVU's code-cache episodes.
 
 #include "common/Pcsx2Defs.h"
 
@@ -37,7 +37,7 @@ namespace vuaot::bg
 		enum Kind : u8
 		{
 			// movz+movk*3 holding an address inside the buffer; `value` is
-			// that address's offset from the buffer's start.
+			// its offset from the buffer's start.
 			IntraAbs,
 			// B or BL whose target is a placeholder (`id`, see CodeSink); the
 			// publisher decides what it stands for.
@@ -50,9 +50,8 @@ namespace vuaot::bg
 			// The copy re-aims it, through a veneer if need be.
 			External26,
 			// MOVZ+MOVK run of `id` instructions holding an address outside the
-			// buffer (`value`): a C helper, a global, VU state, a block of the
-			// program's graph. It means the same wherever the copy lands, so the
-			// copy leaves it alone; a saved region re-bases it at install.
+			// buffer (`value`): a C helper, a global, VU state, a graph block.
+			// The copy leaves it alone; a saved region re-bases it at install.
 			OutsideAbs,
 			// An 8-byte data word holding `value` (the region builder's bail
 			// records: the program, a node's handle). The copy leaves it alone.
@@ -66,11 +65,7 @@ namespace vuaot::bg
 
 	// The worker's emission buffer. While bound (Begin..End) this thread's
 	// armAsm writes into it, and every address-bearing emission goes through
-	// the recorder: an address inside the buffer is materialised as a full
-	// four-halfword MOVZ/MOVK run (so the copy can patch it), any other address
-	// at its own width (it means the same wherever the code lands), and every
-	// one of them, and every branch to a placeholder or into the outside world,
-	// is logged as a fixup.
+	// the recorder, which logs the ones the copy must patch or re-aim as fixups.
 	//
 	// Placeholders are addresses in a reserved tail of the buffer that nothing
 	// is ever written to. A branch to one is always in B/BL range, and its
@@ -88,7 +83,6 @@ namespace vuaot::bg
 		CodeSink(const CodeSink&) = delete;
 		CodeSink& operator=(const CodeSink&) = delete;
 
-		// Binds this thread's armAsm (which must be unbound) to the buffer.
 		void Begin();
 		// Finalizes and unbinds; returns the number of bytes emitted.
 		u32 End();
@@ -129,8 +123,8 @@ namespace vuaot::bg
 	class Worker
 	{
 	public:
-		// A scene that loads new VU code asks for a few hundred regions in a burst
-		// (God of War II: 800 jobs in 300 frames, a few dozen at a time).
+		// A scene that loads new VU code requests a few hundred regions in a burst
+		// (God of War II: about 800 jobs over 300 frames).
 		static constexpr size_t kMaxQueued = 256;
 
 		~Worker() { Stop(); }

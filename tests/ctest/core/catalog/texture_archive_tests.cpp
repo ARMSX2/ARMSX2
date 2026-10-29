@@ -27,8 +27,7 @@ namespace
 		return {Bytes(s), s.size()};
 	}
 
-	// Compresses `tar` and extracts it, with the catalog's numbers set to the truth unless the
-	// test says otherwise.
+	// Compresses `tar` and extracts it, expecting its true size and `texture_count`.
 	ExtractResult ExtractTar(const std::string& tar, const std::string& dest, u64 texture_count,
 		const ExtractProgress& progress = {}, const CancelToken& cancel = {})
 	{
@@ -46,10 +45,6 @@ namespace
 		return TarBuilder().File(name, data).Finish();
 	}
 } // namespace
-
-// ------------------------------------------------------------------------------------------
-// Path policy
-// ------------------------------------------------------------------------------------------
 
 TEST(TextureArchivePath, ValidateAcceptsOrdinaryPathsAndCleansThem)
 {
@@ -172,10 +167,6 @@ TEST(TextureArchivePath, SafeRelativePathRefusesAnythingThatLeavesTheFolder)
 	EXPECT_FALSE(Path_::IsSafeRelativePath("./a.png"));
 }
 
-// ------------------------------------------------------------------------------------------
-// tar+zstd: what is accepted and where it lands
-// ------------------------------------------------------------------------------------------
-
 TEST(TarZstdExtractor, WritesTexturesAndSkipsEverythingElse)
 {
 	ScopedTempDir temp;
@@ -281,10 +272,6 @@ TEST(TarZstdExtractor, ReportsProgressEveryThirtyTwoFilesAndAtTheEnd)
 	EXPECT_EQ(calls[1], (std::pair<u64, u64>{64, 70}));
 	EXPECT_EQ(calls[2], (std::pair<u64, u64>{70, 70}));
 }
-
-// ------------------------------------------------------------------------------------------
-// tar+zstd: paths that must not get through
-// ------------------------------------------------------------------------------------------
 
 TEST(TarZstdExtractor, RefusesPathsThatEscapeTheDestination)
 {
@@ -417,10 +404,6 @@ TEST(TarZstdExtractor, EnforcesTheFileSizeLimit)
 	}
 }
 
-// ------------------------------------------------------------------------------------------
-// tar+zstd: collisions
-// ------------------------------------------------------------------------------------------
-
 TEST(TarZstdExtractor, RefusesTwoEntriesForOneFile)
 {
 	struct Case
@@ -481,10 +464,6 @@ TEST(TarZstdExtractor, AFolderEntryMayFollowItsContents)
 	const ExtractResult r = ExtractTar(TarBuilder().File("a/b.png", "y").Dir("a/").Finish(), temp.File("out"), 1);
 	EXPECT_TRUE(r.IsOk()) << r.error;
 }
-
-// ------------------------------------------------------------------------------------------
-// tar+zstd: the tar profile
-// ------------------------------------------------------------------------------------------
 
 TEST(TarZstdExtractor, RefusesEntryTypesOutsideTheProfile)
 {
@@ -679,10 +658,6 @@ TEST(TarZstdExtractor, HoldsTheArchiveToTheCatalogsNumbers)
 	EXPECT_EQ(run(TarZstdExtractor::MAX_DECOMPRESSED_BYTES + 1, 2).status, ExtractStatus::Failed);
 }
 
-// ------------------------------------------------------------------------------------------
-// tar+zstd: the zstd layer
-// ------------------------------------------------------------------------------------------
-
 TEST(TarZstdExtractor, WantsExactlyOneFrameAndNothingAfterIt)
 {
 	const std::string tar = OneFileTar("a.png");
@@ -770,10 +745,6 @@ TEST(TarZstdExtractor, StopsWhenCancelled)
 	}
 }
 
-// ------------------------------------------------------------------------------------------
-// zip (schema 1)
-// ------------------------------------------------------------------------------------------
-
 TEST(ZipTextureExtractor, ExtractsTexturesStrippingTheWrapper)
 {
 	ScopedTempDir temp;
@@ -838,10 +809,10 @@ TEST(ZipTextureExtractor, ReportsAnUnreadableArchiveAndAnEmptyOne)
 
 namespace
 {
-	// A zip of [count] small PNGs whose central directory says each is [declared] bytes: what a hostile zip does to
-	// pass the per-file limit and still ask for more than the disk has. (The data itself is a few bytes, so a
-	// reader that believes the declaration fails when it gets to the first file; the extractor must not get that
-	// far.)
+	// A zip of `count` small PNGs whose central directory declares each as `declared` bytes: what a hostile
+	// zip does to pass the per-file limit and still ask for more than the disk has. The data itself is tiny,
+	// so a reader that believed the declaration would only fail at the first file; the extractor must
+	// refuse before that.
 	void WriteZipDeclaring(const std::string& path, int count, u32 declared)
 	{
 		std::vector<std::pair<std::string, std::string>> files;

@@ -1,26 +1,22 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// EE cycle-rate selector: what the seven settings actually charge, and which
-// of the two selectors (configured vs effective) the emitted code is built from.
+// EE cycle-rate selector: what the seven settings charge, and which of the two
+// selectors (configured vs effective) the emitted code is built from.
 //
-// The charge formula is written out twice by hand — once in the EE interpreter
-// (intUpdateCPUCycles) and once in the AArch64 EE recompiler
-// (scaleblockcycles_calculation / _clear) — and the recompiler bakes its answer
-// into the block tail as an immediate. Nothing pinned either copy before this
-// file, so a transcription slip in one of them was a silent timing change.
+// The charge formula is written out twice by hand, in the EE interpreter
+// (intUpdateCPUCycles) and in the AArch64 EE recompiler
+// (scaleblockcycles_calculation / _clear), and the recompiler bakes its result
+// into the block tail as an immediate. These tests pin both copies.
 //
-// The table below is a characterization: it records what the two engines do
-// today, including the parts that look arbitrary (the manually tuned 80/168
-// window at rate -1, the 40-cycle floor under which no scaling happens at all,
-// the wider remainder mask at +2/+3). Changing a number here means changing
-// guest timing for every game, so a diff in this file should never be waved
-// through as "just updating the test".
+// The charge table characterizes what both engines do, including the parts that
+// look arbitrary (the tuned 80/168 window at rate -1, the 40-cycle floor below
+// which nothing is scaled, the wider remainder mask at +2/+3). Changing a number
+// in it changes guest timing for every game.
 //
-// The second half is the point of the configured/effective split: a block
-// compiled while the governor holds the effective selector at -1 must be
-// byte-identical to one compiled with -1 configured outright. If it is not,
-// some site still reads EmuConfig instead of EECycleRate::GetEffective().
+// A block compiled while the governor holds the effective selector at -1 must be
+// byte-identical to one compiled with -1 configured. If it is not, some site
+// still reads EmuConfig instead of EECycleRate::GetEffective().
 
 #include "harness/EeRecTestHarness.h"
 
@@ -31,9 +27,6 @@
 #include "VUmicro.h"
 #include "vtlb.h"
 
-// The recompiler's own header, for EeChargeSite / EeChargeForm and the patch
-// pass. The scaler drivers below stay extern declarations because they are
-// test-only entry points that live in the .cpp.
 #include "arm64/iR5900-arm64.h"
 
 #include <gtest/gtest.h>
@@ -41,9 +34,10 @@
 #include <functional>
 #include <vector>
 
-// Test-only scaler drivers (iR5900-arm64.cpp / Interpreter.cpp). Each sets the
-// engine's own raw block-cycle accumulator, runs the production scaler, and
-// returns the charge plus the remainder carried to the next block.
+// Test-only scaler drivers (iR5900-arm64.cpp / Interpreter.cpp), declared here
+// rather than in a header. Each sets the engine's own raw block-cycle
+// accumulator, runs the production scaler, and returns the charge plus the
+// remainder carried to the next block.
 extern u32 recEeScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder);
 extern u32 intScaleBlockCyclesForTest(u32 raw_block_cycles, u32* out_remainder);
 extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
@@ -56,8 +50,7 @@ namespace {
 
 constexpr u32 kProgramPc = RecompilerTestEnvironment::kProgramPc;
 
-// Sets the configured selector (and, with it, the effective one) for the
-// duration of a test, restoring both on the way out.
+// Sets the configured selector, and the effective one with it, for one test.
 struct ScopedCycleRate
 {
 	s8 prev_configured;
@@ -69,9 +62,7 @@ struct ScopedCycleRate
 		EECycleRate::SyncToConfigured();
 	}
 
-	// Restores the configured selector and re-syncs the effective one, which is
-	// what a settings reapply does — so a test that moved the effective value
-	// off the baseline cannot leak it into the next test.
+	// The re-sync also undoes any ApplyEffective() the test made.
 	~ScopedCycleRate()
 	{
 		EmuConfig.Speedhacks.EECycleRate = prev_configured;
@@ -131,17 +122,11 @@ std::vector<u32> LongBlock()
 	return prog;
 }
 
-// A block deep enough that its charge outgrows ADD's 12-bit immediate two
-// steps below the configured rate.
-//
-// The arithmetic: underclocking multiplies the charge by up to 2.25x (rate 0
-// charges raw/8, rate -3 charges 9*raw/32), so a site well inside imm12 at the
-// configured rate can leave it inside the governor's window. At configured 0
-// the window bottoms out at -2, which charges 7*raw/32; that first stops being
-// encodable at raw 18730 (see the boundary asserted in the test below). PDIVW
-// costs 176 raw units (Cycles::MMI_Div in R5900OpcodeTables.cpp), doubled again
-// when CP0 Config bit 18 is clear, so 128 of them clear the boundary either
-// way — 22528 raw at worst.
+// A block whose charge outgrows ADD's 12-bit immediate two steps below the
+// configured rate. At configured 0 the governor's window bottoms out at -2,
+// which charges 7*raw/32; that first stops being encodable at raw 18730. PDIVW
+// costs 176 raw units (Cycles::MMI_Div), doubled when CP0 Config bit 18 is
+// clear, so 128 of them are past that either way.
 std::vector<u32> DeepDivideBlock()
 {
 	std::vector<u32> prog;
@@ -150,10 +135,9 @@ std::vector<u32> DeepDivideBlock()
 	return prog;
 }
 
-// Compile LongBlock() from an empty code cache and return the emitted host
-// bytes of the block at kProgramPc. The full recompiler reset is what makes the
-// bytes comparable across calls: it rewinds the emit pointer, so the same
-// program lands at the same host address and any difference is real.
+// Compile LongBlock() from an empty code cache and return the host bytes of the
+// block at kProgramPc. The reset rewinds the emit pointer, so the same program
+// lands at the same host address and the bytes are comparable across calls.
 std::vector<u8> CaptureBlockBytes(int configured, int effective)
 {
 	EmuConfig.Speedhacks.EECycleRate = static_cast<s8>(configured);
@@ -178,10 +162,6 @@ std::vector<u8> CaptureBlockBytes(int configured, int effective)
 	return std::vector<u8>(p, p + host_size);
 }
 
-// ---------------------------------------------------------------------------
-// Patch-pass fixtures
-// ---------------------------------------------------------------------------
-
 // The patch pass only runs when the EE recompiler is the active provider, and
 // EeRecTestHarness::Run() leaves the global pointer back on the interpreter.
 bool RepatchAsRecCpu(int selector)
@@ -193,12 +173,10 @@ bool RepatchAsRecCpu(int selector)
 	return ok;
 }
 
-// A deterministic starting state for a byte-comparison. The full recompiler
-// reset rewinds the emit pointer so the same program lands at the same host
-// address; the vtlb block-tracking reset puts the program page back to
-// ProtMode_None, so the manual-protection prologue is present or absent the
-// same way in every run rather than depending on how many earlier tests wrote
-// to the page. (Same recipe as the loop-residency and superblock tests.)
+// A deterministic starting state for a byte comparison. The recompiler reset
+// rewinds the emit pointer so the same program lands at the same host address;
+// the vtlb block-tracking reset puts the program page back to ProtMode_None, so
+// the manual-protection prologue is present or absent the same way in every run.
 void ResetRecAndPageProtection()
 {
 	recCpu.Reset();
@@ -244,7 +222,6 @@ CodeImage CurrentImage()
 
 using ProgramRunner = std::function<void(EeRecTestHarness&)>;
 
-// Compile the program from an empty code cache with both selectors at `rate`.
 CodeImage CompileAt(int rate, const ProgramRunner& run)
 {
 	EmuConfig.Speedhacks.EECycleRate = static_cast<s8>(rate);
@@ -273,10 +250,9 @@ std::vector<u32> ChargeImmediatesIn(const std::vector<u8>& bytes)
 	return out;
 }
 
-// The claim the whole design rests on: patching an already-compiled block to a
-// new selector produces exactly the bytes a fresh compile at that selector
-// emits. Runs a same-rate control first, because a program whose emission is
-// not byte-stable would make the comparison meaningless either way.
+// Patching an already-compiled block to a new selector must produce exactly the
+// bytes a fresh compile at that selector emits. A same-rate control runs first:
+// if the program's emission is not byte-stable, the comparison means nothing.
 void ExpectPatchMatchesFreshCompileAt(u32 pc, int from, int to, const ProgramRunner& run, const char* what)
 {
 	const auto image = [pc] { return CodeImage{BlockBytesAt(pc), ColdArenaBytes()}; };
@@ -306,8 +282,6 @@ void ExpectPatchMatchesFreshCompile(int from, int to, const ProgramRunner& run, 
 	ExpectPatchMatchesFreshCompileAt(kProgramPc, from, to, run, what);
 }
 
-// One emitter's coverage: reach it, prove we reached it, then hold the patched
-// bytes against a fresh compile.
 void ExpectEmitterCovered(const char* what, EeChargeSite site, const ProgramRunner& run)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -318,10 +292,6 @@ void ExpectEmitterCovered(const char* what, EeChargeSite site, const ProgramRunn
 	EmuConfig.Speedhacks.EECycleRate = saved;
 	EECycleRate::SyncToConfigured();
 }
-
-// ---------------------------------------------------------------------------
-// Programs, one per charge emitter
-// ---------------------------------------------------------------------------
 
 // The common block tail (emitCycleUpdateAndEventCheck).
 void RunLongBlock(EeRecTestHarness& h)
@@ -363,10 +333,9 @@ void RunSuperblockTakenExit(EeRecTestHarness& h)
 	h.Run();
 }
 
-// A block that ends without a branch, in two instructions: the jump at the top
-// compiles a block over the loop body first, so when the back-edge later
-// dispatches into the middle the scan runs into that already-compiled block and
-// stops. Two instructions is well inside the <= 6 short-tail path.
+// A two-instruction block that ends without a branch, which takes the <= 6
+// instruction short-tail path. The jump at the top compiles 0x10 first, so when
+// the back-edge dispatches to 0x08 the scan stops at that compiled block.
 void RunShortNonBranchTail(EeRecTestHarness& h)
 {
 	h.SetGpr64(reg::t0, 0);
@@ -383,12 +352,10 @@ void RunShortNonBranchTail(EeRecTestHarness& h)
 	h.Run();
 }
 
-// MFC0 $9 (Count) — the absolute-cycle COP0 flush. The leading ADDIU reads a
-// register rather than materialising a constant on purpose: `addiu t0, zero, 1`
-// emits NOTHING, because constant propagation records t0 as a compile-time
-// constant, and the charge Add then lands on the block's entry point. That
-// shape is patchable too, and Cop0EntryChargeTail() is where it is tested;
-// this program is here for the ordinary mid-block one.
+// MFC0 $9 (Count), the absolute-cycle COP0 flush. The leading ADDIU reads a
+// register on purpose: `addiu t0, zero, 1` emits nothing (t0 becomes a
+// compile-time constant), which would put the charge Add on the block's entry
+// point. Cop0EntryChargeTail() covers that shape; this is the mid-block case.
 void RunCop0CountRead(EeRecTestHarness& h)
 {
 	h.EnableCop0();
@@ -398,10 +365,9 @@ void RunCop0CountRead(EeRecTestHarness& h)
 		MFC0(reg::v0, 9),
 		ADDIU(reg::t1, reg::t1, 2),
 	});
-	// JIT only. COP0 Count is derived from cpuRegs.cycle, which the two engines
-	// advance on different granularities — the recompiler charges a block at a
-	// time, the interpreter an instruction at a time — so a Count read is a
-	// standing JIT-vs-interp divergence and not this test's subject.
+	// JIT only: COP0 Count derives from cpuRegs.cycle, which the recompiler
+	// advances per block and the interpreter per instruction, so a Count read
+	// always differs between the engines.
 	h.RunJitNoDiff();
 }
 
@@ -449,7 +415,6 @@ void SeedTerminatingVu0Program(EeRecTestHarness& h)
 	h.SeedVu0Microprogram(off, {vu::EBitNopPair(), vu::NopPair()});
 }
 
-// VCALLMS: kicks a VU0 microprogram, and charges the block's cycles first.
 void RunVcallms(EeRecTestHarness& h)
 {
 	SeedTerminatingVu0Program(h);
@@ -486,12 +451,11 @@ void RunCop2PlainSync(EeRecTestHarness& h)
 	h.Run();
 }
 
-// A chain of sixteen small blocks, each ending in a jump to the next, followed
-// by a tail block. The chain exists to dilute: the pass refuses outright when
-// the unpatchable share of the live blocks is over its cap, so testing "one
-// block is invalidated and the rest are patched" needs a rest. Every chain
-// block does enough work to clear the 40-cycle no-scaling floor, so its charge
-// really does move with the selector and `sites patched` is a real number.
+// Sixteen small blocks, each ending in a jump to the next, followed by a tail
+// block. The pass refuses outright when the unpatchable share of the live blocks
+// is over its cap, so testing "one block is invalidated and the rest are
+// patched" needs a body of patchable blocks. Each chain block clears the
+// 40-cycle no-scaling floor, so its charge moves with the selector.
 constexpr int kChainBlocks = 16;
 constexpr u32 kChainBlockWords = 8; // 6 x ADDIU, J, delay slot
 constexpr u32 kTailBlockPc = RecompilerTestEnvironment::kProgramPc + kChainBlocks * kChainBlockWords * 4;
@@ -528,11 +492,10 @@ std::vector<u32> DeepDivideTail()
 	return tail;
 }
 
-// Tail: a COP0 Count read behind a constant materialisation, which emits no
-// code — so the Count read's charge lands on the block's entry point, the one
-// word Remove() ever overwrites. Its charge stays inside imm12 at every
-// selector, so the block is patched in place like any other while it is live,
-// and its records become orphans the moment it is removed.
+// Tail: a COP0 Count read behind a constant materialisation that emits no code,
+// so the Count read's charge lands on the block's entry point, the one word
+// Remove() overwrites. The charge fits imm12 at every selector, so a live block
+// is patched in place; once the block is removed its records are orphaned.
 std::vector<u32> Cop0EntryChargeTail()
 {
 	return {
@@ -549,8 +512,7 @@ void RunChainThenDeepDivide(EeRecTestHarness& h)
 	h.SetGpr64(reg::a1, 0x0001000200030004ull);
 	h.SetGpr64(reg::a2, 0x0000000500000007ull);
 	h.LoadProgramNoTerm(ChainThen(DeepDivideTail()));
-	// JIT only: this is a test about what the compiler emits, not about what
-	// PDIVW computes.
+	// JIT only: the test is about emitted code, not PDIVW's result.
 	h.RunJitNoDiff();
 }
 
@@ -558,9 +520,7 @@ void RunChainThenCop0EntryCharge(EeRecTestHarness& h)
 {
 	h.EnableCop0();
 	h.LoadProgramNoTerm(ChainThen(Cop0EntryChargeTail()));
-	// JIT only: COP0 Count is derived from cpuRegs.cycle, which the two engines
-	// advance on different granularities, so a Count read is a standing
-	// JIT-vs-interp divergence and not this test's subject.
+	// JIT only: a Count read differs between the engines, as in RunCop0CountRead.
 	h.RunJitNoDiff();
 }
 
@@ -572,8 +532,8 @@ void RunDeepDivideAlone(EeRecTestHarness& h)
 	h.RunJitNoDiff();
 }
 
-// A nop spin branching to itself, with the WaitLoop speedhack on, so the tail
-// takes the fast-forward shape instead of the ordinary event check.
+// Turns the WaitLoop speedhack on so a spin loop's tail takes the fast-forward
+// shape instead of the ordinary event check.
 struct ScopedWaitLoop
 {
 	bool prev;
@@ -604,25 +564,23 @@ TEST(EeRecCycleRate, InterpreterAndRecompilerChargeTheSame)
 	}
 }
 
-// The retained remainder does NOT always agree, and this pins where it doesn't.
+// The retained remainder does NOT always agree; this pins where it doesn't.
 //
 // Both recompilers (arm64 scaleblockcycles_clear, and x86's in
-// ix86-32/iR5900.cpp) mask the carried remainder with the wide +2/+3 mask only
-// for a block that was eligible for scaling at all:
+// ix86-32/iR5900.cpp) use the wide +2/+3 mask only for a block that was
+// eligible for scaling:
 //
 //     if (!lowcycles && cyclerate > 1)   s_nBlockCycles &= (1 << (cyclerate+2)) - 1;
 //     else                               s_nBlockCycles &= 0x7;
 //
 // The EE interpreter (intUpdateCPUCycles, shared upstream code) has no
 // `!lowcycles` term, so for a block of 40 raw cycles or fewer at selector +2 or
-// +3 it carries 4 or 5 bits where the recompilers carry 3. The two engines then
+// +3 it carries 4 or 5 bits where the recompilers carry 3, and the engines
 // drift apart by a fraction of a cycle per short block.
 //
-// This is an upstream divergence, not an ARMSX2 transcription slip, and it is
-// confined to the two overclock selectors. It is recorded rather than fixed:
-// changing either side changes guest timing, which is a separate decision from
-// the configured/effective split this file exists for. If it is fixed, this
-// test is what will say so.
+// This is an upstream divergence, confined to the two overclock selectors. It is
+// recorded rather than fixed because either change alters guest timing. If it
+// is fixed, this test will fail.
 TEST(EeRecCycleRate, InterpreterCarriesAWiderRemainderOnShortOverclockedBlocks)
 {
 	const u32 raw = 25; // <= 40, so no scaling; low bits set past bit 2
@@ -648,7 +606,6 @@ TEST(EeRecCycleRate, InterpreterCarriesAWiderRemainderOnShortOverclockedBlocks)
 	}
 }
 
-// The table itself. A change here is a change to every game's timing.
 TEST(EeRecCycleRate, CharacterizesTheSevenSelectors)
 {
 	for (int selector = -3; selector <= 3; selector++)
@@ -692,17 +649,15 @@ TEST(EeRecCycleRate, RemainderMaskWidthPerSelector)
 	}
 }
 
-// The whole point of the split: the emitted charge follows the effective
-// selector, not the configured one.
+// The emitted charge follows the effective selector, not the configured one.
 TEST(EeRecCycleRate, EmittedCodeFollowsTheEffectiveSelector)
 {
 	const s8 saved_configured = EmuConfig.Speedhacks.EECycleRate;
 
-	// The first compile of this program in the process is not comparable with
-	// the rest: the page holding it is still write-protected, so the block gets
-	// no manual-protection prologue. Loading the program a second time flips the
-	// page to ProtMode_Manual and every compile from then on carries the
-	// page-compare prologue. Discard the cold one and compare warmed ones.
+	// Discard the first compile: the program's page is still write-protected, so
+	// that block has no manual-protection prologue. Loading the program a second
+	// time flips the page to ProtMode_Manual, and every later compile carries the
+	// page-compare prologue, so only warmed compiles are comparable.
 	CaptureBlockBytes(0, 0);
 	const std::vector<u8> rate0_a = CaptureBlockBytes(0, 0);
 	const std::vector<u8> rate0_b = CaptureBlockBytes(0, 0);
@@ -718,14 +673,10 @@ TEST(EeRecCycleRate, EmittedCodeFollowsTheEffectiveSelector)
 
 	ASSERT_FALSE(rate0_a.empty());
 
-	// Control: recompiling the same program from an empty cache is byte-stable,
-	// so a difference below means something real.
 	ASSERT_EQ(rate0_a, rate0_b) << "block emission is not deterministic; the rest of this test proves nothing";
 
-	// The selector reaches emitted code at all.
 	ASSERT_NE(rate0_a, ratem1);
 
-	// Configured 0 + effective -1 emits exactly what configured -1 emits.
 	EXPECT_EQ(effm1, ratem1);
 }
 
@@ -745,17 +696,14 @@ TEST(EeRecCycleRate, ApplyEffectiveHonoursTheBounds)
 
 	const u32 before = EECycleRate::GetTransitionCount();
 
-	// Above the baseline: refused.
 	EXPECT_FALSE(EECycleRate::ApplyEffective(1, "test"));
 	EXPECT_EQ(EECycleRate::GetEffective(), 0);
 
-	// Below the two-step floor: refused.
 	EXPECT_FALSE(EECycleRate::ApplyEffective(-3, "test"));
 	EXPECT_EQ(EECycleRate::GetEffective(), 0);
 
 	EXPECT_EQ(EECycleRate::GetTransitionCount(), before) << "a rejected request is not a transition";
 
-	// Inside the window: taken.
 	EXPECT_TRUE(EECycleRate::ApplyEffective(-2, "test"));
 	EXPECT_EQ(EECycleRate::GetEffective(), -2);
 	EXPECT_EQ(EECycleRate::GetTransitionCount(), before + 1);
@@ -764,7 +712,6 @@ TEST(EeRecCycleRate, ApplyEffectiveHonoursTheBounds)
 	EXPECT_TRUE(EECycleRate::ApplyEffective(-2, "test"));
 	EXPECT_EQ(EECycleRate::GetTransitionCount(), before + 1);
 
-	// Back to the baseline.
 	EXPECT_TRUE(EECycleRate::ApplyEffective(0, "test"));
 	EXPECT_EQ(EECycleRate::GetEffective(), 0);
 	EXPECT_EQ(EECycleRate::GetTransitionCount(), before + 2);
@@ -773,19 +720,17 @@ TEST(EeRecCycleRate, ApplyEffectiveHonoursTheBounds)
 	CpuVU0 = saved_vu0;
 }
 
-// A transition rebuilds microVU0 and nothing else. This test used to demand
-// that the EE generation moved too; it now demands the opposite, and the
-// inversion IS the acceptance criterion for the patched path — an EE reset
-// here means the pass refused and the transition went back to costing an
-// 88 MiB LUT rewrite and a frame of re-JIT.
+// A transition patches the EE in place and rebuilds microVU0 only. An EE reset
+// here would mean the patch pass refused and the transition fell back to a full
+// LUT rewrite and re-JIT.
 //
-// microVU0's reset stays. mVUtestCycles scales its compile-time cycle count by
-// the selector and then gates the emit on the scaled value being 1, so the
-// emitted SHAPE changes with the selector and no immediate rewrite can add an
+// microVU0 is reset because mVUtestCycles scales its compile-time cycle count by
+// the selector and gates the emit on the scaled value being 1, so the emitted
+// shape changes with the selector and no immediate rewrite can add an
 // instruction that was never emitted.
 //
-// The IOP recompiler, microVU1 and the VIF unpack dynarec bake no EE selector
-// at all; under MTVU, resetting VU1 would also reach across a thread.
+// The IOP recompiler, microVU1 and the VIF unpack dynarec bake in no EE
+// selector; under MTVU, resetting VU1 would also reach across a thread.
 TEST(EeRecCycleRate, TransitionPatchesTheEeAndResetsOnlyVu0)
 {
 	ScopedCycleRate rate(0);
@@ -824,11 +769,10 @@ TEST(EeRecCycleRate, TransitionPatchesTheEeAndResetsOnlyVu0)
 	CpuVU0 = saved_vu0;
 }
 
-// The census the immediate-patching design needs before it can be costed: how
-// many charge sites would stop fitting the one instruction they were emitted
-// in if the governor moved the selector, and how many blocks hold one.
+// Counts the charge sites that would stop fitting the one instruction they were
+// emitted in if the governor moved the selector, and the blocks holding one.
 //
-// An ordinary block is nowhere near the boundary. 32 ADDIUs cost 9 raw units
+// An ordinary block is nowhere near the boundary: 32 ADDIUs cost 9 raw units
 // each, so the charge is double digits at every selector in the window and the
 // same ADD encoding covers all of them.
 TEST(EeRecCycleRate, AnOrdinaryBlockKeepsItsChargeEncodingAcrossTheWindow)
@@ -848,20 +792,18 @@ TEST(EeRecCycleRate, AnOrdinaryBlockKeepsItsChargeEncodingAcrossTheWindow)
 	EXPECT_EQ(recEeGetFormChangeBlockCount(), 0u);
 }
 
-// A block of 128 parallel divides is not exotic, and it is over the line. The
-// charge fits ADD's imm12 at the configured rate and does not fit it two steps
-// down, so the block cannot be repaired by rewriting the immediate in place —
-// a fresh compile would have emitted a longer sequence there.
+// A block of 128 parallel divides outgrows the single-instruction form two steps
+// down, so it cannot be repaired by rewriting the immediate in place; a fresh
+// compile would emit a longer sequence there.
 TEST(EeRecCycleRate, ADeepDivideBlockOutgrowsItsChargeEncodingTwoStepsDown)
 {
 	ScopedCycleRate rate(0);
 	ASSERT_EQ(EECycleRate::GetFloor(), -2);
 
-	// The boundary itself, stated against the production scaler rather than
-	// assumed. IsImmAddSub accepts a 12-bit immediate, or a 12-bit one shifted
-	// left by 12 with the low bits clear — so 4096 is still one instruction and
-	// 4097 is not. At rate -2 the charge is 7*raw/32, which reaches 4097 at raw
-	// 18730; 18729 still lands on 4096.
+	// The boundary itself, taken from the production scaler. IsImmAddSub accepts
+	// a 12-bit immediate, or a 12-bit one shifted left by 12 with the low bits
+	// clear, so 4096 is still one instruction and 4097 is not. At rate -2 the
+	// charge is 7*raw/32, which reaches 4097 at raw 18730.
 	const auto fits_add_imm12 = [](u32 c) {
 		return (c <= 0xfffu) || (((c >> 12) <= 0xfffu) && ((c & 0xfffu) == 0));
 	};
@@ -881,8 +823,7 @@ TEST(EeRecCycleRate, ADeepDivideBlockOutgrowsItsChargeEncodingTwoStepsDown)
 	h.SetGpr64(reg::a1, 0x0001000200030004ull);
 	h.SetGpr64(reg::a2, 0x0000000500000007ull);
 	h.LoadProgram(DeepDivideBlock());
-	// JIT only: this is a test about what the compiler emits, not about what
-	// PDIVW computes.
+	// JIT only: the test is about emitted code, not PDIVW's result.
 	h.RunJitNoDiff();
 
 	EXPECT_GE(recEeGetFormChangeSiteCount(), 1u);
@@ -890,12 +831,10 @@ TEST(EeRecCycleRate, ADeepDivideBlockOutgrowsItsChargeEncodingTwoStepsDown)
 }
 
 // The side table the immediate-patching transition walks. Every charge site
-// emits exactly one record, and a site with no record is a site that would go
-// on charging the old rate after a transition claimed to have repaired
-// everything — which is the one failure mode the whole design is built to
-// exclude. The recompiler asserts the pairing in both directions at emit time;
-// this pins the totals from outside, where a missed emitter shows up as a
-// count that no longer matches.
+// must emit exactly one record: a site with no record would keep charging the
+// old rate after a transition claimed to have repaired everything. The
+// recompiler asserts the pairing in both directions at emit time; this pins the
+// totals from outside, where a missed emitter shows up as a count mismatch.
 TEST(EeRecCycleRate, EveryChargeSiteLeavesExactlyOneRecord)
 {
 	ScopedCycleRate rate(0);
@@ -936,24 +875,18 @@ TEST(EeRecCycleRate, EveryChargeSiteLeavesExactlyOneRecord)
 	}
 	EXPECT_EQ(recEeGetChargeRecordCount(), recEeGetChargeSiteCount());
 
-	// And the reset takes both back to zero — the records point into an arena
-	// that is about to rewind, so leaving them would be a table of addresses
-	// that no longer mean anything.
+	// The reset zeroes both: the records point into an arena that is about to
+	// rewind.
 	recCpu.Reset();
 	EXPECT_EQ(recEeGetChargeSiteCount(), 0u);
 	EXPECT_EQ(recEeGetChargeRecordCount(), 0u);
 }
 
-// ---------------------------------------------------------------------------
-// The immediate-patching transition
-// ---------------------------------------------------------------------------
-
-// The claim the design rests on, stated as strictly as it can be: a block
-// compiled at one selector and then patched to another is byte-for-byte what a
-// fresh compile at the second selector emits. Not "charges the same" — the same
-// bytes, because anything else is a second code shape nobody is testing.
+// A block compiled at one selector and then patched to another must be
+// byte-for-byte what a fresh compile at the second selector emits, not merely
+// charge the same: anything else is a second code shape nobody tests.
 //
-// It holds because the charge is a pure function of the raw block-cycle count
+// This holds because the charge is a pure function of the raw block-cycle count
 // and the selector, and the remainder the scaler retains between sites in one
 // block is & 0x7 for every selector from -3 through +1. Only the immediate
 // moves.
@@ -964,10 +897,9 @@ TEST(EeRecCycleRate, EmittedCodeAfterPatchingMatchesAFreshCompile)
 	ExpectPatchMatchesFreshCompile(0, -1, RunLongBlock, "0 -> -1");
 	ExpectPatchMatchesFreshCompile(0, -2, RunLongBlock, "0 -> -2");
 
-	// The restore direction. Configured -1 rather than 0 only so the classifier
-	// sees a window containing both ends; the emitted bytes at a given
-	// effective selector do not depend on the configured one, which
-	// EmittedCodeFollowsTheEffectiveSelector already pins.
+	// The restore direction. Configured -1 so the classifier sees a window
+	// containing both ends; the emitted bytes do not depend on the configured
+	// selector (see EmittedCodeFollowsTheEffectiveSelector).
 	ExpectPatchMatchesFreshCompile(-1, 0, RunLongBlock, "-1 -> 0");
 	ExpectPatchMatchesFreshCompile(-1, -3, RunLongBlock, "-1 -> -3");
 
@@ -975,10 +907,9 @@ TEST(EeRecCycleRate, EmittedCodeAfterPatchingMatchesAFreshCompile)
 	EECycleRate::SyncToConfigured();
 }
 
-// Two steps in a row land where one step would have. The recorded raw is what
-// each pass scales, and a pass never rewrites the record, so nothing
-// accumulates — but a design that stored the last charge instead of the raw
-// would drift here and nowhere else.
+// Two steps in a row land where one step would have. Each pass scales the
+// recorded raw and never rewrites it, so nothing accumulates; a design that
+// stored the last charge instead would drift here and nowhere else.
 TEST(EeRecCycleRate, PatchingTwiceLandsWherePatchingOnceWould)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -997,11 +928,10 @@ TEST(EeRecCycleRate, PatchingTwiceLandsWherePatchingOnceWould)
 	EECycleRate::SyncToConfigured();
 }
 
-// Site coverage. The common block tail is what LongBlock exercises and what
-// every other test here has been proving; these are the other emitters, each
-// with a program that reaches it and a per-emitter counter that says so, so a
-// site that stops being reachable fails loudly instead of quietly dropping out
-// of the coverage. One test per emitter, so a hang or a failure names the site.
+// Site coverage. LongBlock exercises the common block tail; these are the other
+// emitters, each with a program that reaches it and a per-emitter counter that
+// proves it did, so an emitter that becomes unreachable fails loudly. One test
+// per emitter, so a hang or a failure names the site.
 TEST(EeRecCycleRate, ChargeSiteBlockTailSurvivesAPatch)
 {
 	ExpectEmitterCovered("block tail", EeChargeSite::BlockTail, RunLongBlock);
@@ -1061,16 +991,14 @@ TEST(EeRecCycleRate, WaitLoopFastForwardTailSurvivesAPatch)
 	ScopedWaitLoop waitloop(true);
 
 	// A spin branching to its own startpc, so s_branchTo == startpc and the
-	// block qualifies as a wait loop. The branch is NOT taken at run time —
-	// t0 is nonzero — because a wait loop that IS taken never leaves: the
-	// fast-forward tail jumps to DispatcherEvent and comes straight back to
-	// the loop top, which is the whole point of the shape. What is being
-	// tested is what the compiler emitted for the taken arm, and that is
-	// emitted whether or not the arm runs.
+	// block qualifies as a wait loop. The branch is not taken at run time (t0 is
+	// nonzero): a taken wait loop never leaves, since the fast-forward tail jumps
+	// to DispatcherEvent and straight back to the loop top. The taken arm is
+	// emitted whether or not it runs.
 	const ProgramRunner run = [](EeRecTestHarness& h) {
 		h.SetGpr64(reg::t0, 1);
 		h.LoadProgramNoTerm({
-			BEQ(reg::t0, reg::zero, -1), // → its own startpc
+			BEQ(reg::t0, reg::zero, -1),
 			NOP,                         // delay slot
 			ADDIU(reg::v0, reg::zero, 0x42),
 			J(RecompilerTestEnvironment::kParkingPc), NOP,
@@ -1089,7 +1017,7 @@ TEST(EeRecCycleRate, WaitLoopFastForwardTailSurvivesAPatch)
 
 // The hand encoder against vixl, at the boundaries where the encoding changes
 // shape. The byte-identity tests above are the real proof; this one localises a
-// failure to the bit layout instead of to "some block came out different".
+// failure to the bit layout.
 TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
 {
 	alignas(4) static u8 buffer[64];
@@ -1112,8 +1040,7 @@ TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
 	};
 
 	// IsImmAddSub: a 12-bit immediate, or a 12-bit one shifted left by 12 with
-	// the low bits clear. 1 and 0xfff are the plain form, 0x1000 and 0xfff000
-	// the shifted one, and 0xfff000 is the largest charge that encodes at all.
+	// the low bits clear. 0xfff000 is the largest charge that encodes at all.
 	for (const u32 charge : {1u, 2u, 0xfffu, 0x1000u, 0x2000u, 0xfff000u})
 	{
 		for (int form = 0; form < 2; form++)
@@ -1136,8 +1063,8 @@ TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
 			<< "MOVZ charge " << charge;
 	}
 
-	// And the decoder rejects the shapes a patch must never land on: the
-	// shifted-register ADD that a materialise-then-add ends with, and a MOVK.
+	// The decoder must reject the shapes a patch must never land on: the
+	// register-form ADD that a materialise-then-add ends with, and a MOVK.
 	{
 		vixl::aarch64::MacroAssembler masm(buffer, sizeof(buffer));
 		masm.add(RECCYCLE, RECCYCLE, vixl::aarch64::x9);
@@ -1158,16 +1085,14 @@ TEST(EeRecCycleRate, HandEncodedChargeImmediatesMatchVixl)
 	}
 }
 
-// A charge sitting on a block's entry point is patched in place like any other.
-// The design said it could not be, on the grounds that Arm64BaseBlocks::Remove
-// stamps its redirect stub over exactly that word — but that only happens once
-// the block is dead, and while it is alive the word is the ADD the record
-// describes. The pass reads every word before it writes, so it can never land
-// on a stub.
+// A charge on a block's entry point is patched in place like any other.
+// Arm64BaseBlocks::Remove stamps its redirect stub over that word, but only once
+// the block is dead; while it is alive the word is the ADD the record describes.
+// The pass reads every word before it writes, so it can never land on a stub.
 //
-// The block here is the constant-propagation shape: `addiu t1, zero, 1` emits
-// no code whatsoever, so the COP0 Count read behind it puts the charge Add at
-// the block's first word.
+// The block is the constant-propagation shape: `addiu t1, zero, 1` emits no
+// code, so the COP0 Count read behind it puts the charge Add at the block's
+// first word.
 TEST(EeRecCycleRate, AChargeAtABlockEntryIsPatchedInPlace)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -1191,12 +1116,12 @@ TEST(EeRecCycleRate, AChargeAtABlockEntryIsPatchedInPlace)
 	EECycleRate::SyncToConfigured();
 }
 
-// Once that block IS removed, its entry word is the redirect stub and its
-// records point at code nothing executes. The pass recognises that — it is the
-// one word anything but the pass ever writes — steps over the record, and
-// leaves the stub exactly as it found it. A pass that instead treated the
-// failed decode as the recompiler contradicting itself would refuse every
-// transition after the first SMC clear of a block shaped like this.
+// Once that block is removed, its entry word is the redirect stub and its
+// records point at code nothing executes. The pass recognises this (that word is
+// the only one anything but the pass writes), steps over the record, and leaves
+// the stub alone. Treating the failed decode as the recompiler contradicting
+// itself would refuse every transition after the first SMC clear of a block
+// shaped like this.
 TEST(EeRecCycleRate, AnOrphanedEntryChargeIsSteppedOverAndItsStubLeftAlone)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -1217,8 +1142,8 @@ TEST(EeRecCycleRate, AnOrphanedEntryChargeIsSteppedOverAndItsStubLeftAlone)
 	ASSERT_TRUE(recEeChargeWordHasFormForTest(charge_word, EeChargeForm::AddImm12))
 		<< "the block's first word is not the charge, so this test is not about what it says it is";
 
-	// Remove it the way the SMC path does — the same Remove() that stamps the
-	// redirect stub over the entry.
+	// Remove it as the SMC path does; Remove() stamps the redirect stub over the
+	// entry.
 	recCpu.Clear(kTailBlockPc, 8);
 	const u32 stub_word = word_at(entry);
 	ASSERT_NE(stub_word, charge_word) << "Clear() did not stamp a redirect stub over the entry";
@@ -1237,10 +1162,10 @@ TEST(EeRecCycleRate, AnOrphanedEntryChargeIsSteppedOverAndItsStubLeftAlone)
 }
 
 // The one reason a block cannot be repaired: its charge outgrows ADD's 12-bit
-// immediate two steps down, so a fresh compile would have emitted a
-// materialise-then-add of two to five instructions where one sits now. There
-// is no room on the page for that, so the block is thrown away and comes back
-// in the wider shape on its next dispatch.
+// immediate two steps down, so a fresh compile would emit a
+// materialise-then-add of two to five instructions where one sits now. There is
+// no room on the page for that, so the block is thrown away and comes back in
+// the wider shape on its next dispatch.
 TEST(EeRecCycleRate, ABlockWhoseChargeOutgrowsItsFormIsInvalidated)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -1253,10 +1178,9 @@ TEST(EeRecCycleRate, ABlockWhoseChargeOutgrowsItsFormIsInvalidated)
 	CompileAt(0, RunChainThenDeepDivide);
 	ASSERT_GE(recEeGetFormChangeBlockCount(), 1u) << "the deep block was not classified as unpatchable";
 	const std::vector<u32> at_rate_0 = ChargeImmediatesIn(BlockBytesAt(kTailBlockPc));
-	// The whole point of this block: its charge is a single ADD immediate at the
-	// configured rate and is not one two steps down, where vixl materialises it
-	// into a register instead. So the immediate the scan finds at rate 0 is gone
-	// from the -2 compile entirely.
+	// The charge is a single ADD immediate at the configured rate; two steps down
+	// vixl materialises it into a register instead, so the immediate found at
+	// rate 0 is absent from the -2 compile.
 	ASSERT_NE(at_rate_0, want) << "the two selectors emit the same shape, so nothing below can fail";
 
 	uptr before_fnptr = 0, before_lut = 0;
@@ -1299,10 +1223,9 @@ TEST(EeRecCycleRate, ABlockWhoseChargeOutgrowsItsFormIsInvalidated)
 	EECycleRate::SyncToConfigured();
 }
 
-// Past the cap the pass refuses outright, and refusing means nothing was
-// touched — not "most of it was fine". A deep-divide program on its own has
-// almost no other blocks, so its single unpatchable block is well over the 10%
-// share and the pass has to hand the transition back to the reset.
+// Past the cap the pass refuses outright and touches nothing. A deep-divide
+// program on its own has almost no other blocks, so its single unpatchable block
+// is well over the 10% share and the transition falls back to the reset.
 TEST(EeRecCycleRate, TooManyUnpatchableBlocksRefusesAndWritesNothing)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;
@@ -1331,10 +1254,9 @@ TEST(EeRecCycleRate, TooManyUnpatchableBlocksRefusesAndWritesNothing)
 }
 
 // Configured +2 and +3 widen the remainder the scaler retains between sites in
-// one block, so the raw a later site in the same block saw is no longer the
-// same at every selector in the window and the recorded raws are wrong for all
-// but the one they were taken at. The pass refuses rather than getting it
-// subtly wrong.
+// one block, so the raw a later site saw differs between selectors in the window
+// and the recorded raws are only right for the selector they were taken at. The
+// pass refuses rather than patch them wrongly.
 TEST(EeRecCycleRate, PatchingIsRefusedAboveConfiguredPlusOne)
 {
 	const s8 saved = EmuConfig.Speedhacks.EECycleRate;

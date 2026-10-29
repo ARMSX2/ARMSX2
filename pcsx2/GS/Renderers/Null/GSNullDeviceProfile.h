@@ -34,8 +34,7 @@ namespace GSNullDeviceProfile
 		// Dimensity 8300 / Mali-G615 MC6 (RG 477V) on ARM r44p1. In-tile road: texture barriers
 		// and framebuffer fetch on, no dual-source blending, so SRC1 blends are emulated in-shader.
 		// Depends on MT6897's exemption from both MediaTek/Mali rules that would remove the fetch
-		// (GSGPUDriverProfile.cpp, MEASURED_SOC_MT6897). Arm's own driver. Unchanged since older
-		// records were taken against this name.
+		// (GSGPUDriverProfile.cpp, MEASURED_SOC_MT6897). Arm's own driver.
 		MaliG615,
 		// The same part on malisx2, our Vulkan driver. It reports Arm's identity (vendor 0x13b5, driverID
 		// ARM_PROPRIETARY, 44.1.0, "Mali-G615") with its own name in driverInfo, and reaches the in-tile

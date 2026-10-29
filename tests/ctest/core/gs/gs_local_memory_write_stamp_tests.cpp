@@ -5,13 +5,10 @@
 // writers inside GSLocalMemory (the host-to-local image writers behind GSState::ExecTransferRecord's
 // mark, GSLocalMemory::Move and the four rectangle readback writers) leave no changed page unmarked.
 //
-// The texture hash memo reuses a hash while no page it read has been written since, so the one thing
-// that must hold is that a store into local memory is never missed. The page sets are therefore checked
-// against what the writers really store, not against the page looper's own idea of a rectangle.
-//
-// The same marks also set one bit per 256-byte block in a dirty bitmap, which the per-block hash cache
-// reads, and the same rule holds for it: every block a writer changes is marked. Each writer case below
-// asserts it beside the page rule.
+// The texture hash memo reuses a hash while no page it read has been written since, so a store into
+// local memory must never be missed. The page sets are therefore checked against what the writers
+// really store, not against the page looper's own idea of a rectangle. The same rule holds for the
+// per-256-byte-block dirty bitmap that the same marks set: every block a writer changes is marked.
 
 #include "gs_write_stamp_watch.h"
 
@@ -30,7 +27,6 @@ using GSWriteStamps::Watch;
 
 namespace
 {
-	// Every format a surface can have in local memory.
 	constexpr u32 kPsms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
 
 	class GSLocalMemoryWriteStamps : public ::testing::Test
@@ -73,7 +69,6 @@ namespace
 			return pages;
 		}
 
-		/// The blocks whose bit is set in the dirty bitmap, in order.
 		std::vector<u32> DirtyBlocks() const
 		{
 			std::vector<u32> blocks;
@@ -85,7 +80,6 @@ namespace
 			return blocks;
 		}
 
-		/// Clears the dirty bitmap of the fixture's memory.
 		void ClearDirty()
 		{
 			for (u32 block = 0; block < GS_MAX_BLOCKS; block++)
@@ -355,11 +349,11 @@ namespace
 		EXPECT_GT(cases, 1400u) << "the cases did not write";
 	}
 
-	// An odd-width 4-bit write is one stream of nibbles, so it stores nothing past the right edge of its rectangle or
-	// below its last row (the console does not either: see gs_local_memory_four_bit_stream_tests.cpp), and the mark of
-	// the exact rectangle covers it. The right edge is at x = 440, where a block of the high 4-bit formats starts, so a
-	// pixel stored one past it would be in a block the rectangle does not name. With 164 rows the pixel count is even,
-	// with 163 it is odd and the spare nibble of the last byte would land in the row below the rectangle.
+	// An odd-width 4-bit write is one nibble stream and stores nothing past its rectangle, so the exact
+	// rectangle's mark covers it (as on the console: see gs_local_memory_four_bit_stream_tests.cpp). The
+	// right edge, x = 440, starts a block of the high 4-bit formats, so a stray pixel there would be in a
+	// block the mark does not name; with 163 rows the pixel count is odd and the spare nibble of the last
+	// byte would land in the row below.
 	TEST_F(GSLocalMemoryWriteStamps, AnOddWidthFourBitImageWriteStoresNothingOutsideItsRectangle)
 	{
 		constexpr u32 bp = 10249, bw = 12;
@@ -585,8 +579,6 @@ namespace
 		}
 		EXPECT_GT(cases, 700u) << "the cases did not write";
 	}
-
-	// --- The dirty bitmaps --------------------------------------------------------------------------
 
 	TEST_F(GSLocalMemoryWriteStamps, AFreshMemoryHasTheDirtyBitmapSetAndAnIdOfItsOwn)
 	{

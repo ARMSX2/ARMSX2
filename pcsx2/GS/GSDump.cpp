@@ -34,9 +34,8 @@ GSDumpBase::GSDumpBase(std::string fn)
 
 GSDumpBase::~GSDumpBase()
 {
-	// The derived destructor has already ended the compressed stream, so closing the file makes
-	// the dump whole. This runs on every way a dump ends: its last frame, and a renderer torn
-	// down mid-recording.
+	// The derived destructor has already ended the compressed stream, so closing the file completes
+	// the dump. This also runs when a renderer is torn down mid-recording.
 	const bool wrote_dump = (m_gs != nullptr);
 	if (m_gs)
 		std::fclose(m_gs);

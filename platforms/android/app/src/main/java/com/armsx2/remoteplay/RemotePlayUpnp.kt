@@ -12,11 +12,11 @@ import kotlin.concurrent.thread
 private const val TAG = "RemotePlay"
 
 /**
- * Online hosting: the UDP port WebRTC listens on, opened on the host's router (UPnP) for the
- * session, so a friend whose own network lets nothing in (a phone on mobile data, say) can still
- * reach the host directly. The router's public address for it goes into the offer as one more
- * candidate. Not a relay: the router only forwards the friend's packets to the host. With no router
- * that speaks UPnP, or one behind a second NAT, the offer goes out as it was. One per session.
+ * Online hosting: opens the UDP port WebRTC listens on on the host's router (UPnP) for the
+ * session and adds the router's public address to the offer as one more candidate, so a friend
+ * whose own network lets nothing in (a phone on mobile data, say) can still reach the host
+ * directly. Not a relay: the router only forwards the friend's packets to the host. With no router
+ * that speaks UPnP, or one behind a second NAT, the offer goes out unchanged. One per session.
  */
 internal class RemotePlayUpnp {
     private val found = CountDownLatch(1)

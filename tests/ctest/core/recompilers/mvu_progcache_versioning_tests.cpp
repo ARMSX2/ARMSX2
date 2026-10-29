@@ -536,15 +536,9 @@ TEST(ProgCachePack, empty_emu_folders_disables_cache)
 // EE cycle rate in the options sentinel: a VU0-only code-generation input.
 //
 // mVUtestCycles applies the EE nominal-rate adjustment when compiling VU0 and
-// only VU0 — VU1's generated code has never depended on the EE cycle-rate
-// selector. The sentinel used to bake the selector for both indices anyway, so
-// changing the EE speedhack changed every VU1 program's identity and threw the
-// whole VU1 disk cache away for nothing. With a dynamic governor moving the
-// effective rate at runtime that would be a cache eviction per transition.
-//
-// These pin the property in both directions: VU0's identity must move with the
-// effective rate (its emitted cycle counts really do change), and VU1's must
-// not move at all.
+// only VU0. VU0's identity must therefore move with the effective rate (its
+// emitted cycle counts change), and VU1's must not, or a rate change would
+// evict the whole VU1 disk cache for nothing.
 // ---------------------------------------------------------------------------
 
 namespace

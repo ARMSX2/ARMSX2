@@ -25,12 +25,10 @@ import java.io.File
  * CC0 / public domain on OpenGameArt. CC0 imposes no attribution requirement, but the
  * author asks for credit and we give it — see the About screen.
  *
- * Three screens play their own track in its place ([playTheme]): the Icon Museum, "Another
- * August" by The Cynic Project (cynicmusic.com, pixelsphere.org), which asks for attribution,
- * given in the About screen and MC Icon Info; Online Icons, "Next to You", which doesn't; and the
- * texture screen, "November Snow" by The Cynic Project, CC0 from the Pixelsphere soundtrack, which
- * asks for the same attribution, given in the About screen.
- * Going in and out of them, the two tracks mix for a few seconds before the old one slowly fades.
+ * The Icon Museum, Online Icons and the texture screen play their own track in its place
+ * ([playTheme]). The Cynic Project tracks among them ("Another August", "November Snow") ask for
+ * attribution, given in the About screen (and MC Icon Info for the museum's). Going in and out of a
+ * screen, the two tracks mix for a few seconds before the old one slowly fades.
  */
 object LibraryMusic {
     private const val TAG = "LibraryMusic"
@@ -63,8 +61,8 @@ object LibraryMusic {
     private var player: MediaPlayer? = null
     private var focusRequest: AudioFocusRequest? = null
 
-    /** A screen's own track playing in the library's place while it is open (the Icon Museum's,
-     *  Online Icons'), or null for the library track. See [playTheme]. */
+    /** A screen's own track playing in the library's place while it is open, or null for the
+     *  library track. See [playTheme]. */
     private var theme: Int? = null
 
     /** Where the library track was when it last went quiet for a theme, so it goes on from there. */
@@ -72,10 +70,8 @@ object LibraryMusic {
 
     // ---- going in and out of a screen's own track ----
     //
-    // The Icon Museum's track mixes with the library's: the next fades in over MIX_IN_MS while the
-    // one before plays on at full for MIX_HOLD_MS, then slowly fades out over MIX_OUT_MS. A quick
-    // crossfade sounded abrupt to testers ("let the tracks mix for a bit before SLOWLY fading out
-    // the previous track").
+    // Tracks mix: the next fades in over MIX_IN_MS while the one before plays on at full for
+    // MIX_HOLD_MS, then slowly fades out over MIX_OUT_MS. A quick crossfade sounds abrupt.
     private const val MIX_IN_MS = 2500L
     private const val MIX_HOLD_MS = 2500L
     private const val MIX_OUT_MS = 3000L
@@ -198,10 +194,9 @@ object LibraryMusic {
         if (value) start(context) else stop(context)
     }
 
-    /** Always the application's AudioManager. Focus belongs to the AudioManager that asked for it,
-     *  so asking through another context's (the screen's, then the app's for the delayed start one
-     *  after the other) made us a second client: the system took focus from the first, our own
-     *  listener heard AUDIOFOCUS_LOSS and released the track that had just started. */
+    /** Always the application's AudioManager. Focus belongs to the AudioManager that asked for it, so
+     *  mixing a screen's context with the app's makes us two clients: the system takes focus from the
+     *  first, and our own listener hears AUDIOFOCUS_LOSS and releases the track that just started. */
     private fun audioManager(context: Context): AudioManager? =
         context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
@@ -298,9 +293,9 @@ object LibraryMusic {
 
     /**
      * Plays [track] (a raw resource) in the library track's place while a screen that has its own
-     * is open: the Icon Museum, Online Icons. Same switch, volume and deference to other apps'
-     * audio as the library track: it only takes over from our own music, never starts over
-     * someone's podcast. [endTheme] hands back, and the library track goes on where it was.
+     * is open. Same switch, volume and deference to other apps' audio as the library track: it only
+     * takes over from our own music, never starts over someone's podcast. [endTheme] hands back, and
+     * the library track goes on where it was.
      */
     fun playTheme(context: Context, track: Int) {
         if (theme == track) return
@@ -316,9 +311,9 @@ object LibraryMusic {
     }
 
     /**
-     * Goes over to whatever should play now ([theme], else the library track). With the Icon
-     * Museum the next fades in while the one playing mixes with it at full, then slowly fades out;
-     * with Online Icons the one playing fades out, and after a moment's quiet the next fades in.
+     * Goes over to whatever should play now ([theme], else the library track). Normally the next
+     * fades in while the one playing mixes with it at full, then slowly fades out; with a track in
+     * [oneAfterTheOther] the one playing fades out, and after a moment's quiet the next fades in.
      * Back and forth quickly, a track still on its way out comes back from where it had got to,
      * and nothing restarts.
      */

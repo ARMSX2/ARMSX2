@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 //
 // The vu-aot sidecar format (vuaot/VuAotPersist.h): a file of plans and region code round-trips, and
-// every kind of damage or mismatch is refused by the parser without reading past the buffer. The live save and
-// load paths are tested in vuaot_live_tests.cpp (VuAotCache).
+// every kind of damage or mismatch is refused by the parser without reading past the buffer. The
+// live save and load paths are tested in vuaot_live_tests.cpp (VuAotCache).
 
 #if defined(_M_ARM64) || defined(__aarch64__)
 

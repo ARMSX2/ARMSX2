@@ -133,7 +133,6 @@ TEST_F(GSDumpBundleTest, PacksTheThreeFilesIntoOneZipAndRemovesTheLooseOnes)
 	EXPECT_EQ(Read(zf.get(), "g.png"), shot);
 }
 
-// Nothing else is in the folder afterwards: "only a single zip file" is the point.
 TEST_F(GSDumpBundleTest, LeavesNothingButTheZipInTheFolder)
 {
 	const std::string a = Write("g.gs.zst", Noise(1, 1000));
@@ -205,7 +204,6 @@ TEST_F(GSDumpBundleTest, NothingToPackWritesNoZip)
 	EXPECT_FALSE(FileSystem::FileExists(PathOf("g.gs.zip").c_str()));
 }
 
-// The rule the feature must not break: a zip that cannot be written costs the packaging, never the dump.
 TEST_F(GSDumpBundleTest, AZipThatCannotBeWrittenKeepsEveryLooseFile)
 {
 	const std::vector<u8> dump = Noise(1, 5000);

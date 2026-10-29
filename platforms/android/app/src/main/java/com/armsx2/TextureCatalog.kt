@@ -9,9 +9,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * The online texture-pack catalog: ours, at dl.ps2ktxpak.net. It began as a conversion of
- * sashkinbro's catalog (used with his approval), which is where its pack ids come from; his own
- * catalog is no longer read.
+ * The online texture-pack catalog, served from dl.ps2ktxpak.net.
  *
  * Structure follows [SkinRepo]: fetch a manifest, list what matches, install on demand. The parsing
  * is deliberately written against `org.json` rather than kotlinx-serialization as upstream does —

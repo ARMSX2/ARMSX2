@@ -221,7 +221,7 @@ namespace PINEServer
 		MsgGSDump = 0x14, /**< Records a GS dump of the next N frames. */
 		MsgGetEffectiveSetting = 0x15, /**< Reads what a setting is actually running as. */
 
-		// Big Picture from outside, for an agent with no monitor (see ImGui/FullscreenUIShot.h).
+		// Big Picture from outside, for scripted clients with no display (see ImGui/FullscreenUIShot.h).
 		// All work with no VM running. Each replies [u32 size][JSON, NUL-terminated]:
 		// {"ok":true,...} or {"ok":false,"error":"..."}; a malformed request fails the command.
 		MsgUIScreenshot = 0x16, /**< [u32 path_len][path .png][u32 settle_frames] Draws that many frames, writes the next; needs --headless. */

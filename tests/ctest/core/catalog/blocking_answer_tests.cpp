@@ -157,8 +157,6 @@ TEST(BlockingAnswer, AnAnswerThatLosesTheRaceWithGivingUpStillGivesOneConsistent
 	}
 }
 
-// ---- the bounded wait -------------------------------------------------------------------
-
 TEST(BlockingAnswerWaitFor, GivesUpAtTheDeadlineWithTheFallback)
 {
 	auto answer = MakeAnswer();

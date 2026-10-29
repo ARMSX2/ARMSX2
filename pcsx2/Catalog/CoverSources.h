@@ -4,18 +4,18 @@
 #pragma once
 
 // Where a game's cover art comes from: which URL to ask for, given the game's serial, its
-// platform (PS2, PS1, arcade), the 2D/3D style the user prefers, and the "cover region" the user
-// picked. Port of the Android behaviour (GameInfo.kt coverUrl/discCoverUrl, CoverRegionIndex.kt).
+// platform (PS2, PS1, arcade), the 2D/3D style and the "cover region" the user picked. Port of
+// the Android behaviour (GameInfo.kt coverUrl/discCoverUrl, CoverRegionIndex.kt).
 //
 // Nothing here touches the network, the settings or the game list; CoverDownloadJob.h runs the
 // downloads and CoverAutoDownload.h ties both to the game list and the INI.
 //
 // The cover repositories name a file after the DISC serial of one specific release, and that
-// serial differs in every region (SLUS-21007 / SLES-53411 / SLPS-25329 are one game, Kuon). So
-// "show the Japanese cover for my US disc" means finding the other region's serial, which the
-// game database makes possible: the index below groups serials by their English title.
+// serial differs in every region (SLUS-21007 / SLES-53411 / SLPS-25329 are one game, Kuon). To
+// show another region's cover for a disc, the region index finds that region's serial by
+// grouping serials on their English title.
 //
-// Fallback is two separate mechanisms, neither a chain:
+// Fallback is two separate mechanisms, not a chain:
 //   1. The chosen region swaps the serial in the URL (CoverRegionIndex::CoverSerialFor).
 //   2. If that URL 404s, the disc's own serial is tried once (CoverUrls::fallback).
 
@@ -37,7 +37,7 @@ namespace Catalog
 		Arcade, ///< Namco System 246/256 (serial NM#####). Detected from the serial too, see CoverUrl().
 	};
 
-	/// Flat 2D scan (JPEG) or a 3D case render (PNG with transparency). Android's default is 2D.
+	/// Flat 2D scan (JPEG) or a 3D case render (PNG with transparency).
 	enum class CoverStyle
 	{
 		Flat2D,
@@ -74,11 +74,11 @@ namespace Catalog
 
 	/// The regional-serial groups built from GameIndex.yaml.
 	///
-	/// The file is read line by line, as Android does: a serial at column 0 ("SLUS-21007:", 8 to 12
-	/// characters, '-' fifth), then its indented `name:` and `name-en:` (the English one wins).
-	/// Titles are reduced to a comparison key (lower case, anything in [] or () dropped,
-	/// non-alphanumerics dropped) and serials sharing a key form a group, in file order. Roughly
-	/// 12.8k serials; PS1 serials are not in the database, so they never match.
+	/// The file is read line by line: a serial at column 0 ("SLUS-21007:", 8 to 12 characters,
+	/// '-' fifth), then its indented `name:` and `name-en:` (the English one wins). Titles are
+	/// reduced to a comparison key (lower case, anything in [] or () dropped, non-alphanumerics
+	/// dropped) and serials sharing a key form a group, in file order. PS1 serials are not in the
+	/// database, so they never match.
 	class CoverRegionIndex
 	{
 	public:
@@ -127,13 +127,12 @@ namespace Catalog
 		bool NeedsRegionIndex() const;
 
 		/// The INI text for the pins: "SLUS-20946=3,SLES-51234=1" (sorted by serial). Parsing is
-		/// forgiving like Android's: entries without '=' or with a non-number are skipped, values
-		/// are clamped to 0..3, serials are upper-cased.
+		/// forgiving: entries without '=' or with a non-number are skipped, values are clamped to
+		/// 0..3, serials are upper-cased.
 		static std::map<std::string, CoverRegion> ParsePins(std::string_view text);
 		std::string FormatPins() const;
 	};
 
-	/// Where to ask for one game's cover.
 	struct CoverUrls
 	{
 		std::string primary; ///< The region-swapped cover, or the disc's own when nothing swaps.

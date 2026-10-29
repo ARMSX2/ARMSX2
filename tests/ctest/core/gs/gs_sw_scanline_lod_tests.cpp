@@ -359,18 +359,16 @@ u8* SwScanlineLodTest::s_code = nullptr;
 size_t SwScanlineLodTest::s_code_used = 0;
 GSLocalMemory* SwScanlineLodTest::s_mem = nullptr;
 
-// ---- the perspective reciprocal -------------------------------------------------
-
 // The GS multiplies by a reciprocal on a coarse grid rather than dividing, so a
 // perspective coordinate is not the true quotient: fifteen bits below the
-// reciprocal's leading bit, rounded as floor(x + 0.7) (GSPerspectivePlane.h). That
-// rounds UP by up to a grid step, which the old truncation to fourteen bits did not,
-// and it changes the sampled texel wherever the exact quotient sits just short of a
-// boundary.
+// reciprocal's leading bit, rounded as floor(x + 0.7) (GSPerspectivePlane.h). The
+// rounding goes up by as much as a grid step, so the sampled texel changes wherever
+// the exact quotient sits just short of a boundary.
 //
 // q = 3 has a reciprocal with bits below the grid, and s is placed a sixth of a
-// sixteenth of a texel under the boundary of texel 2: the exact quotient and the old
-// truncated reciprocal both read texel 1, the grid's rounded-up one reads texel 2.
+// sixteenth of a texel under the boundary of texel 2: the exact quotient and a
+// reciprocal truncated to fourteen bits both read texel 1, the grid's rounded-up
+// one reads texel 2.
 TEST_F(SwScanlineLodTest, PerspectiveSamplesTheGridReciprocal)
 {
 	GSScanlineSelector sel = BaseSelector();

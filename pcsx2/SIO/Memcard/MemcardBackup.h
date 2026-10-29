@@ -25,7 +25,7 @@ class Error;
 // the card lists never see them. Each is a plain zip, named <milliseconds since epoch>-<reason>.zip
 // (e.g. 1760000000000-session.zip), holding a manifest "armsx2-mcbak.json" and the card under
 // "card/" (one file for a file card; every file of the folder for a folder card). The format is the
-// Android app's (MemoryCardBackup.kt), so either can read the other's snapshots.
+// same as the Android app's, so either can read the other's snapshots.
 //
 // When snapshots are taken:
 //   Automatically, when the VM boots: FileMcd_Reopen calls OnCardsReopening() after the cards are
@@ -67,7 +67,6 @@ namespace MemcardBackup
 		Session,
 		/// Declared by the Android app, never taken by it.
 		Save,
-		/// "Back up now".
 		Manual,
 		/// The card as it was before a restore replaced it. May be unhealthy: it is taken
 		/// precisely because the card may be broken.
@@ -79,7 +78,6 @@ namespace MemcardBackup
 
 	struct Snapshot
 	{
-		/// The zip file.
 		std::string path;
 		/// The card's name in the memory cards folder ("Mcd001.ps2").
 		std::string card;
@@ -118,9 +116,6 @@ namespace MemcardBackup
 		Failed,
 	};
 
-	// ---- cards ----------------------------------------------------------------------------
-
-	/// Card-level health of the file or folder at `card_path`.
 	Health Verify(const std::string& card_path);
 
 	/// SHA-256 of a card, as lowercase hex. A file card hashes its bytes; a folder card hashes, for
@@ -131,8 +126,6 @@ namespace MemcardBackup
 
 	/// A card name must be a plain file name: no directory part, not "." or "..".
 	bool IsPlainCardName(std::string_view name);
-
-	// ---- the backup folder ----------------------------------------------------------------
 
 	class Store
 	{
@@ -171,7 +164,6 @@ namespace MemcardBackup
 		/// verify, because there is nothing worth saving in it and a history slot to lose. Prunes.
 		std::optional<Snapshot> BackUpNow(const std::string& card, const std::string& game, std::string* error = nullptr);
 
-		/// Applies the retention rule to one card's snapshots.
 		void Prune(const std::string& card);
 
 		/// Puts `snapshot` back over the live card. The card must not be open: the VM must not be
@@ -198,8 +190,6 @@ namespace MemcardBackup
 		std::function<s64()> m_clock;
 		Catalog::FileOps* m_ops;
 	};
-
-	// ---- the boot prompt ------------------------------------------------------------------
 
 	/// What the user is asked at boot: this card (the one in slot `slot`, 1 or 2) does not verify and
 	/// `snapshot`, the newest healthy backup of it, could be put back.
@@ -237,11 +227,11 @@ namespace MemcardBackup
 	/// backup from (ReportUnansweredRestore()). Set it before the VM starts.
 	void SetRestorePromptHandler(RestorePromptHandler handler);
 
-	/// A second place for a handler, for a UI that is not the host's main one: Big Picture sets it
-	/// while it is running (and clears it when it shuts down). It is used only while no handler is
-	/// set with SetRestorePromptHandler(), whichever of the two was registered first, so the Qt
-	/// host's own dialog wins whenever the Qt main window exists and Big Picture asks only when it
-	/// is the one UI there is (armsx2-sdl, or Qt before its window exists).
+	/// A second handler slot for a UI that is not the host's main one: Big Picture sets it while it
+	/// is running and clears it on shutdown. It is used only while no handler is set with
+	/// SetRestorePromptHandler(), whichever was registered first, so the Qt host's own dialog wins
+	/// when the Qt main window exists and Big Picture asks only when it is the sole UI (armsx2-sdl,
+	/// or Qt before its window exists).
 	void SetFallbackRestorePromptHandler(RestorePromptHandler handler);
 
 	/// The handler a boot would call now: the host's, else the fallback, else empty.
@@ -251,7 +241,6 @@ namespace MemcardBackup
 	/// Picture hands the question to it, since Big Picture is what the player is looking at.
 	RestorePromptHandler GetFallbackRestorePromptHandler();
 
-	/// What happened to one card in PrepareCardsForBoot().
 	struct CardReport
 	{
 		std::string card;
@@ -279,12 +268,9 @@ namespace MemcardBackup
 	std::vector<CardReport> PrepareCardsForBoot(Store& store, const std::vector<std::string>& cards,
 		const std::string& game, bool allow_prompt, const RestorePromptHandler& handler);
 
-	// ---- entry points ---------------------------------------------------------------------
-
-	/// The default of [MemoryCards] AutoBackup for a build, from the platforms that have a front end
-	/// of their own for it: Android's app takes its own snapshots (MemoryCardBackup.kt), and the
-	/// libretro core and the iOS app have no screen that lists backups or asks whether to restore
-	/// one. Everywhere else the default is on.
+	/// The default of [MemoryCards] AutoBackup: off on Android (the app takes its own snapshots) and
+	/// on libretro and iOS (no screen that lists backups or asks whether to restore one), on
+	/// everywhere else.
 	constexpr bool AutoBackupDefaultFor(bool android, bool libretro, bool ios)
 	{
 		return !(android || libretro || ios);

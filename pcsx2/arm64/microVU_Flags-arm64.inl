@@ -31,9 +31,9 @@
 // zero: the weight vector gains their two nibbles and armEmitPackSignZeroBits
 // an SLI apiece. Only their reduction to STATUS costs anything else.
 //
-// `ssLane`: the lane a single-scalar result sits in, 0 unless the body
-// computed it in place (allocReg's natural slots). The weights then take it
-// from there, and the flags come out bit for bit as from lane 0.
+// `ssLane`: the lane a single-scalar result sits in, 0 unless the body computed
+// it in place (allocReg's natural slots). The weights take it from there, so the
+// flags come out bit for bit as from lane 0.
 static void mVUupdateFlags(mV, const a64::VRegister& reg,
 	const a64::VRegister& regT1in = a64::NoVReg,
 	const a64::VRegister& regT2in = a64::NoVReg,
@@ -83,8 +83,8 @@ static void mVUupdateFlags(mV, const a64::VRegister& reg,
 
 	if (sFLAG.doFlag)
 	{
-		// The non-sticky clear reads the previous instance straight out of its
-		// register, rather than copying it over and clearing the copy.
+		// The non-sticky clear reads the previous instance straight from its register
+		// instead of copying it first and clearing the copy.
 		if (sFLAG.doNonSticky)
 			armAsm->And(sReg.W(), getFlagReg(sFLAG.lastWrite).W(), 0xfffc00ffu);
 		else

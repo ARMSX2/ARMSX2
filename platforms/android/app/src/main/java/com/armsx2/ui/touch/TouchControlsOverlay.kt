@@ -746,10 +746,9 @@ private val SHOULDER_IDS = listOf(TouchButtonId.L1, TouchButtonId.R1, TouchButto
  * Height factor of each shoulder button's box while Tight shoulder buttons is on, else empty.
  *
  * Every widget is a square of its size, and with multi-touch on a button also answers anywhere in a
- * circle 1.24 times as wide. L1/R1's sprite is only 0.58 of its width tall, so those reached far
- * above and below the button and got in the way (a request pointing at NetherSX2, which keeps the
- * touch area to the button). With the option on, a shoulder's widget box, touch area and the
- * regions other layers leave to it are all its artwork's box.
+ * circle 1.24 times as wide. L1/R1's sprite is only 0.58 of its width tall, so those reach far
+ * above and below the button and get in the way. With the option on, a shoulder's widget box,
+ * touch area and the regions other layers leave to it are all its artwork's box.
  */
 @Composable
 private fun tightShoulderFactors(): Map<TouchButtonId, Float> {
@@ -904,8 +903,8 @@ private fun UnifiedTouchLayer(
     // DOWN whose position lands inside one of these rects (defensive, in case the
     // above-layer consume ever races), so a tap on the stick / Pause can't leak
     // into a face button.
-    // Only widgets on screen: the square of a hidden extra analog button or GunCon 2 button was a
-    // dead spot for everything this layer drives, the D-pad included (#796).
+    // Only widgets on screen: the square of a hidden extra analog or GunCon 2 button would be a
+    // dead spot for everything this layer drives, the D-pad included.
     val foreignRects = layout.buttons.filter { cfg ->
         cfg.enabled && extraShown(cfg, gunAttached) && cfg.id.kind != TouchButtonId.Kind.DPAD &&
             (!isUnifiedKind(cfg.id.kind) || cfg.tapToHold)
@@ -1158,9 +1157,9 @@ private fun UnifiedTouchLayer(
                             val aggDir = current.keys.fold(DpadState()) { acc, f -> acc or dirContribution(f) }
                             // P½ re-sends every held pressure button at its new strength as it goes
                             // down or up, so what lets go goes first, then P½, then what presses.
-                            // The other way round, lifting "hold Square, slide onto P½" in Follow let
-                            // P½ go first and put Square back at full pressure for an instant on its
-                            // way up; and a button pressed along with P½ started at full.
+                            // In any other order, lifting "hold Square, slide onto P½" in Follow lets
+                            // P½ go first and puts Square back at full pressure for an instant, and a
+                            // button pressed along with P½ starts at full.
                             val released = pressed - agg
                             val added = agg - pressed
                             released.filterNot(::isPressure).forEach { glidePress(it, false) }
@@ -2379,13 +2378,12 @@ private fun isUnifiedKind(kind: TouchButtonId.Kind): Boolean =
     isMultiTouchKind(kind) || isGlideTargetKind(kind)
 
 /**
- * Whether one of the widgets every layout carries, enabled, is in use: the GunCon 2's buttons only
- * while a gun is attached, the extra analog button only while its Pad-settings toggle is on (one switch,
- * where players look for it; the layout entry only says where it sits and how big it is, so the editor
- * shows it whenever the toggle is on). Any other widget: true, its own enabled flag decides. The widget
- * loop and the touch layers ask the same question. A layer that kept out of the square of a widget that
- * is not on screen left a dead spot there, under whatever the player put on it (#796: the extra button's
- * spot, 0.10 / 0.34, sat on the D-pad once the D-pad joined the multi-touch layer).
+ * Whether a widget that every layout carries is on screen: the GunCon 2's buttons only while a gun
+ * is attached, the extra analog button only while its Pad-settings toggle is on (the layout entry
+ * only says where it sits and how big it is, so the editor shows it whenever the toggle is on). Any
+ * other widget: true, its own enabled flag decides. The widget loop and the touch layers all ask
+ * this, so no layer keeps out of the square of a widget that is not on screen; that square would
+ * be a dead spot under whatever the player put there.
  */
 private fun extraShown(cfg: TouchButtonCfg, gunAttached: Boolean): Boolean = when {
     cfg.id.kind == TouchButtonId.Kind.GUN -> gunAttached

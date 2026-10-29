@@ -3,9 +3,8 @@
 
 #pragma once
 
-// The schema-1 catalog format: a plain zip of a pack, extracted with libzip. The live catalog has
-// no zip entries any more, so this is the small compatibility path, with the same path policy as
-// the tar+zstd extractor (TextureArchivePath.h): only .png .dds .astc .ktx are written, wrapper
+// Extracts a schema-1 catalog pack: a plain zip, read with libzip. It applies the same path policy
+// as the tar+zstd extractor (TextureArchivePath.h): only .png .dds .astc .ktx are written, wrapper
 // folders are stripped, a path with ".." or too many or too long components is refused, and two
 // entries that land on one file are an error. At most 100,000 entries, no file over 512 MiB.
 //
@@ -42,8 +41,7 @@ namespace Catalog
 		///
 		/// Before a byte is written the sizes the zip declares for its textures are added up: over
 		/// MAX_TOTAL_BYTES is refused, and the sum plus FREE_SPACE_MARGIN must fit in the free space
-		/// of `dest_dir`'s filesystem. Each file is held to its declared size as it is written, so the
-		/// sum is also the most the zip can write.
+		/// of `dest_dir`'s filesystem.
 		static ExtractResult ExtractFile(const std::string& archive_path, const std::string& dest_dir,
 			const ExtractProgress& progress = {}, const CancelToken& cancel = {}, const FreeSpaceQuery& free_space = {});
 	};

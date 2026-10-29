@@ -319,8 +319,7 @@ static void GSResolveBackThreadMode(Pcsx2Config::GSOptions& config, GSRendererTy
 	const GSBackThreadDecision decision = GSDecideBackThreadFor(config, renderer);
 	config.BackThreadResolved = decision.on;
 
-	// A request for the split that does not get it is worth a warning. The "GS: back thread"
-	// wording is what measurement scripts grep for.
+	// Scripts grep the log for the "GS: back thread" wording.
 	if (decision.on != config.BackThread)
 		Console.Warning("GS: back thread off, not pipelined (%s).", GSBackThreadReasonText(decision.reason));
 	else
@@ -576,8 +575,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 
 u32 GSClearShaderCacheOnGSThread()
 {
-	// Stops the pipeline precompile and replaces the pipeline cache the back thread compiles
-	// against.
+	// Drain first: the back thread compiles against the pipeline cache replaced below.
 	GSDrainBackQueue();
 
 	if (g_gs_device)
@@ -673,13 +671,11 @@ void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 T
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
-// Test runners (pcsx2-eerunner): with PCSX2_GS_STREAM_OUT=<file> set, one line per
-// vsync with a hash of every quadword the GS was handed since the last one, per
-// transfer entry point ("frame hash1 hash2 hash3 bytes"). The entry points are
-// fed whole quadwords, so the hash does not depend on how the MTGS ring chops a
-// transfer. It is the identity check for anything upstream of the GS (VU1 and
-// its XGKICKs, the VIF, the DMA): two runs whose lines match handed the GS the
-// same bytes in the same order.
+// Test runners (pcsx2-eerunner): with PCSX2_GS_STREAM_OUT=<file> set, writes one line per vsync,
+// "frame hash1 hash2 hash3 bytes": a hash of the quadwords handed to the GS since the last vsync,
+// one per transfer entry point. The entry points are fed whole quadwords, so the hash does not
+// depend on how the MTGS ring splits a transfer. Matching lines from two runs mean the GS got the
+// same bytes in the same order, which checks anything upstream (VU1 and XGKICK, VIF, DMA).
 namespace
 {
 	struct GSStreamHash
@@ -1209,11 +1205,10 @@ void GSgetTitleStats(std::string& info)
 
 void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config)
 {
-	// GV7-2: everything below mutates state the back thread may be reading
-	// mid-draw: GSConfig itself (read on every draw, and its strings are moved
-	// out just below), settings, ImGui font textures, TC purges. The front only
-	// parses on this (MTGS) thread, so a single drain up front quiesces the back
-	// thread for the whole apply.
+	// Everything below mutates state the back thread may be reading mid-draw: GSConfig (read on
+	// every draw; its strings are moved out just below), settings, ImGui font textures, texture
+	// cache purges. The front only parses on this (MTGS) thread, so one drain up front quiesces
+	// the back thread for the whole apply.
 	if (g_gs_renderer)
 		g_gs_renderer->DrainBackQueue();
 

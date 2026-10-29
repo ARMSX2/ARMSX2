@@ -42,11 +42,10 @@ import com.armsx2.ui.settings.controllerFocusable
 import com.armsx2.ui.theme.Success
 
 /**
- * NAMCO System 246/256: what every arcade game needs, and the games the library found. The boot files
- * they start from, the board's BIOS, then the games themselves, which stay where the player keeps them:
- * an image named after its game with its dongle beside it, or a folder laid out by PCSX2x6's template,
- * anywhere in the game folders. Nothing is copied but the dongle, into the memory cards folder, at the
- * game's first start.
+ * NAMCO System 246/256 setup: the boot files and board BIOS every arcade game needs, then the games
+ * the library found. Games stay where the player keeps them: an image named after its game with its
+ * dongle beside it, or a folder laid out by PCSX2x6's template, anywhere in the game folders. Only the
+ * dongle is copied (into the memory cards folder, at the game's first start).
  */
 @Composable
 fun ArcadeScreen(onBack: () -> Unit, viewModel: ArcadeViewModel = viewModel()) {
@@ -199,8 +198,7 @@ private fun StepCard(
     }
 }
 
-/** The arcade games the library found, each with what still keeps it from starting. The rows take the
- *  pad's selection, so a long list scrolls into view with it. */
+/** The arcade games the library found, each with what still keeps it from starting. */
 @Composable
 private fun ArcadeGames(games: List<ArcadeGame>) {
     if (games.isEmpty()) return

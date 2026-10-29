@@ -92,7 +92,6 @@ class GameLibraryRepository(private val context: Context) {
         val withoutSubfolders = MainActivityRuntime.romsDirsWithoutSubfolders.value
         directories.forEach { rawUri ->
             val uri = runCatching { rawUri.toUri() }.getOrNull() ?: return@forEach
-            // A folder set to leave its subfolders out is scanned at its own level only.
             val maxDepth = if (rawUri in withoutSubfolders) 0 else MaxScanDepth
             val rawRoot = if (canUseRawStorage()) MainActivityRuntime.resolveTreeUriToPosix(rawUri)?.let(::File) else null
             if (rawRoot?.isDirectory == true) {
@@ -316,11 +315,10 @@ class GameLibraryRepository(private val context: Context) {
     }
 
     /**
-     * The files the arcade games (.acgame) in one folder keep for themselves: their own folder (the
-     * subdir, by default the game ID) or, for one without, the boot program and media image beside
-     * it, and the dongle and card, which can be beside it whatever its subdir (Arcade.prepare looks
-     * there). Those are parts of the arcade game, not games: a boot program listed as an ELF would
-     * boot without its board, and a dongle named .bin would be listed as a disc.
+     * The files and folders the arcade games (.acgame) in one folder keep for themselves. These are
+     * parts of the arcade game, not games: a boot program listed as an ELF would boot without its
+     * board, and a dongle named .bin would be listed as a disc. The dongle and card can sit beside
+     * the .acgame whatever its subdir (Arcade.prepare looks there).
      */
     private class ArcadeClaims(val games: Map<String, Arcade.AcGame?>) {
         val gameIds: Set<String> = games.values.filterNotNull().map { it.gameId }.toSet()
@@ -336,9 +334,8 @@ class GameLibraryRepository(private val context: Context) {
     }
 
     /*
-     * Whether an arcade game's image is where Arcade.prepare looks for it: in its subdir, or beside the
-     * .acgame when it has none. An .acgame without its image is a game not imported yet (PCSX2x6's
-     * library template writes one for every game it knows), so it is listed once its image is there.
+     * An .acgame without its image is a game not imported yet (PCSX2x6's library template writes one
+     * for every game it knows), so it is listed only once the image is where Arcade.prepare looks.
      */
     private fun treeHasMedia(game: Arcade.AcGame, children: Array<DocumentFile>, names: Map<DocumentFile, String?>): Boolean {
         if (game.subdir.isEmpty()) return children.any { names[it].equals(game.mediaSrc, ignoreCase = true) }
@@ -359,9 +356,6 @@ class GameLibraryRepository(private val context: Context) {
             ?.use { c -> buildList { while (c.moveToNext()) c.getString(0)?.let(::add) } }
     }.getOrNull().orEmpty()
 
-    /** An .acgame: its own name for the game first (PCSX2x6 shows that one too), then the game
-     *  database's for its game ID. One that cannot be read is still listed, under its file name, so
-     *  launching it can say what is wrong with it. */
     /** An arcade game kept as its own files ([ArcadeFiles]): its image, under the game database's name.
      *  Two images of one game in a folder (two revisions of its disc) each say which file they are. */
     private fun createLooseArcadeGame(uri: Uri, found: ArcadeFiles.Found, folder: ArcadeFiles.Folder): GameInfo {
@@ -381,6 +375,9 @@ class GameLibraryRepository(private val context: Context) {
         )
     }
 
+    /** An .acgame: its own name for the game first (PCSX2x6 shows that one too), then the game
+     *  database's for its game ID. One that cannot be read is still listed, under its file name, so
+     *  launching it can say what is wrong with it. */
     private fun createArcadeGame(uri: Uri, name: String, game: Arcade.AcGame?): GameInfo {
         val db = game?.gameId?.let { dbTitles(it) }
         val compatibility = game?.gameId

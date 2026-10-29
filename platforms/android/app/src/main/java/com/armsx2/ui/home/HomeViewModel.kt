@@ -75,8 +75,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     /** The last [com.armsx2.data.library.LibraryRefresh] request this library has scanned for. */
     private var handledRefreshRequest = 0
 
-    /** Scans [romDirectories] again for a LibraryRefresh request it has not handled yet, after a
-     *  scan already running, so the files that request is about are certainly in the result. */
+    /** Rescans [romDirectories] for a LibraryRefresh request not handled yet. A scan already
+     *  running finishes first, so the files the request is about are in the result. */
     fun onRefreshRequested(request: Int, romDirectories: List<String>) {
         if (request <= handledRefreshRequest) return
         handledRefreshRequest = request
@@ -172,7 +172,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         state.value = buildState(state.value)
     }
 
-    /** Only the arcade games, or every game (the ⋮ menu's Arcade games only). */
+    /** The ⋮ menu's "Arcade games only" toggle. */
     fun setArcadeOnly(value: Boolean) {
         com.armsx2.ArcadeOnly.set(value)
         state.value = buildState(state.value.copy(selectedIndex = 0))

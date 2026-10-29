@@ -295,7 +295,6 @@ namespace vuaot::ir
 		int statusHead = -1;
 		int statusHeadOut = -1;
 
-		// construction statistics
 		u32 phisCreated = 0;
 		u32 phisRemovedTrivial = 0;
 		u32 phisRemovedScc = 0;
@@ -325,18 +324,18 @@ namespace vuaot::ir
 		// Clamp modes 2/3 (CHECK_VU_EXTRA_OVERFLOW / CHECK_VU_SIGN_OVERFLOW).
 		bool clampExtra = false;
 		bool clampSign = false;
-		// The exactness contract's relaxation 3 (flag hack on, no program reads a sticky STATUS
-		// bit): a STATUS update does not carry the sticky byte of the instance before it, so it
-		// depends on that instance only through the bits a divide or FSSET put there (bits 18 and
-		// up), which it takes from the last instance that wrote them; the updates in between are
-		// then dead unless somebody reads them. A sticky-only update adds nothing.
+		// With the flag hack on and no program reading a sticky STATUS bit, a STATUS
+		// update does not carry the sticky byte of the instance before it. It then
+		// depends on that instance only through the bits a divide or FSSET put there
+		// (bits 18 and up), taken from the last instance that wrote them; the updates
+		// in between are dead unless read. A sticky-only update adds nothing.
 		bool dropSticky = false;
 	};
 
-	// One microVU block alone, for milestone 2's per-block lowering: incoming
-	// state comes from microVU's block-boundary homes (LiveIn in the entry
-	// block), the body ends in a Leave that hands every variable's final value
-	// back, and microVU's own framing does the cycle test, links and ends.
+	// One microVU block alone, for per-block lowering: incoming state comes from
+	// microVU's block-boundary homes (LiveIn in the entry block), the body ends
+	// in a Leave that hands every variable's final value back, and microVU's own
+	// framing does the cycle test, links and ends.
 	Function BuildNodeLocal(const BlockResult& block, const BuildOptions& opts);
 	// The same, borrowing `block` for the build instead of copying it (it is
 	// handed back unchanged).

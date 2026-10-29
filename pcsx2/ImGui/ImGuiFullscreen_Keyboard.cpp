@@ -99,10 +99,6 @@ namespace ImGuiFullscreen
 			}
 		}
 
-		//////////////////////////////////////////////////////////////////////////
-		// Input
-		//////////////////////////////////////////////////////////////////////////
-
 		// The D-pad repeats at the pace of menu navigation; the left stick arrives as the same keys.
 		constexpr ImGuiInputFlags MOVE_REPEAT = ImGuiInputFlags_Repeat | ImGuiInputFlags_RepeatRateNavMove;
 
@@ -192,10 +188,6 @@ namespace ImGuiFullscreen
 			return OSK::Outcome::None;
 		}
 
-		//////////////////////////////////////////////////////////////////////////
-		// Drawing
-		//////////////////////////////////////////////////////////////////////////
-
 		// Everything is drawn in the dialog's text colour at different strengths, so it reads on every theme.
 		ImU32 InkColor(float alpha)
 		{
@@ -254,7 +246,6 @@ namespace ImGuiFullscreen
 			const bool shift_on = (key.kind == OSK::KeyKind::Shift && m.Shift() != OSK::ShiftState::Off);
 			const bool disabled = (key.kind == OSK::KeyKind::Ok && !m.CanSubmit());
 
-			// The selected key and an active shift are filled with the theme's secondary colour (lighter while pressed).
 			const ImVec4 accent = held ? UISecondaryStrongColor : UISecondaryColor;
 			const ImVec4 accent_ink = InkOn(accent);
 			ImU32 fill;
@@ -402,7 +393,6 @@ namespace ImGuiFullscreen
 
 					ImGui::SetCursorScreenPos(min);
 					ImGui::PushID(static_cast<int>(row * 16 + col));
-					// Holding Backspace repeats it.
 					ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, key.kind == OSK::KeyKind::Backspace);
 					const bool pressed = ImGui::InvisibleButton("##key", ImVec2(w, height), ImGuiButtonFlags_PressedOnClick);
 					ImGui::PopItemFlag();
@@ -431,10 +421,6 @@ namespace ImGuiFullscreen
 			ImGui::Dummy(ImVec2(width, 0.0f));
 			return outcome;
 		}
-
-		//////////////////////////////////////////////////////////////////////////
-		// Button hints, in the style of the footer: glyph, then what it does.
-		//////////////////////////////////////////////////////////////////////////
 
 		struct Shoulders
 		{

@@ -4,8 +4,7 @@
 #pragma once
 
 // The online patch and cheat browser: finds a game's .pnach files in community GitHub
-// repositories and installs the sections the player picks. Port of the Android app's PatchRepo.kt,
-// shared by the Qt and Big Picture UIs.
+// repositories and installs the sections the player picks. Shared by the Qt and Big Picture UIs.
 //
 // What a UI does
 //
@@ -22,7 +21,7 @@
 //   install.entries = the chosen PatchEntry values from result.entries;
 //   Catalog::PatchInstallResult done = repo.Install(install);
 //
-// Where things are looked up (the same list as Android, checked against PatchRepo.kt):
+// Where things are looked up:
 //
 //   patches   PCSX2/pcsx2_patches        patches/<SERIAL>_<CRC>.pnach, patches/<CRC>.pnach
 //             Gabominated/PCSX2          PCSX2 Patches/<SERIAL>_<CRC>.pnach, <CRC>.pnach
@@ -90,7 +89,6 @@ namespace Catalog
 	/// "PCSX2/pcsx2_patches", ... as owner/repository.
 	const char* PatchSourceRepository(PatchSourceId source);
 
-	/// One `[Section]` found online.
 	struct PatchEntry
 	{
 		PatchSourceId source = PatchSourceId::Pcsx2Patches;
@@ -283,7 +281,6 @@ namespace Catalog
 		/// Seconds since the epoch. Cache ages and back-off waits are judged against it.
 		std::function<std::time_t()> now;
 
-		/// Is this game the one running right now?
 		std::function<bool(std::string_view serial, u32 crc)> is_game_running;
 
 		/// Makes the running game re-read its settings file and pnach files. The default posts to
@@ -334,7 +331,6 @@ namespace Catalog
 		/// `crc` is 0.
 		void UpdateInstalledFlags(std::vector<PatchEntry>& entries, std::string_view serial, u32 crc) const;
 
-		/// Achievements hardcore mode is on: cheats do not apply (see PatchSearchResult).
 		bool IsHardcoreActive() const;
 
 	private:
@@ -380,7 +376,7 @@ namespace Catalog
 		std::map<std::string, std::time_t> m_retry_after; ///< file list URL -> not before.
 	};
 
-	// ---- Pieces of the above that are plain functions, exposed so they can be tested. ----
+	// Plain functions behind the class, exposed for tests.
 
 	/// Cheat files in `tree` (repository paths) that belong to a game: those whose file name
 	/// contains `crc` (8 hex digits, any case), or if none does, those named "<SERIAL>_..." or

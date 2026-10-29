@@ -57,9 +57,9 @@ namespace GSLsfg
 	/// "LSFG: unavailable" / "failed" / "no shaders" / "starting" / "LSFG: 118.80".
 	std::string GetStatusText();
 
-	/// Frame generation is switched on and something is wrong: unavailable, failed, no shaders,
-	/// or no display image to spare. The overlay shows its line for this even when the rest of the
-	/// overlay is off, since "on but silent" can't be told from "on and broken".
+	/// Frame generation is switched on and not working: unavailable, failed, no shaders, or no
+	/// display image to spare. The overlay shows its line for this even when the rest of the
+	/// overlay is off.
 	bool StatusIsProblem();
 
 	/// Frames reaching the DISPLAY per second — real plus generated — over the last one-second
@@ -137,13 +137,12 @@ namespace GSLsfg
 	};
 
 	/// Frame generation on the game's own image rather than the finished screen: copies [frame]
-	/// into frame generation's input, shrunk to fit the screen but never grown, so the passes run
-	/// at about the game's resolution, and PresentWithGeneration then puts each generated frame on
-	/// screen with the same scaled blit the real frame got. Recorded into [cmd], the frame's own
-	/// command buffer, where the game texture's layout is tracked: read from frame generation's
-	/// later submission instead, it would not be ordered against the GS drawing into the texture
-	/// again next frame. Only for a present that is nothing but that blit; null [frame] says this
-	/// frame is not, and PresentWithGeneration works on the finished screen as before.
+	/// into frame generation's input, shrunk to fit the screen but never grown, and
+	/// PresentWithGeneration then puts each generated frame on screen with the same scaled blit
+	/// the real frame got. Record into [cmd], the frame's own command buffer: read from frame
+	/// generation's later submission, the copy would not be ordered against the GS drawing into the
+	/// texture again next frame. Pass null [frame] when the present is more than that one blit;
+	/// PresentWithGeneration then works on the finished screen.
 	/// Call AFTER Initialize/Shutdown for the frame, which may replace the image it copies into.
 	void CaptureGameFrame(VkCommandBuffer cmd, const GameFrame* frame);
 } // namespace GSLsfg

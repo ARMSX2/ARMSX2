@@ -51,22 +51,15 @@ bool SaveStateBase::mtvuFreeze()
 	pxAssert(vu1Thread.IsDone());
 	if (!IsSaving())
 	{
-		// The VU thread is idle here, so set its state directly instead of
-		// queueing it. Nothing VU1 owns goes through the ring on a load:
-		//
+		// The VU thread is idle here, so set its state directly instead of queueing it.
 		// VU1's micro and data memory are separate entries of the save state
-		// (vu1MicroMem.bin, vu1Memory.bin), read after this function, straight
-		// into VU1.Micro and VU1.Mem. Queueing copies of them here copied the
-		// memory as it was BEFORE the load, and the VU thread wrote those
-		// copies back whenever it got round to the ring. When that was after
-		// the entries were read, VU1 ran on the old program and data: from a
-		// fresh boot, all-zero microcode, so nothing it ran ever XGKICKed and
-		// the 3D world stayed black.
+		// (vu1MicroMem.bin, vu1Memory.bin), read after this function straight into VU1.Micro
+		// and VU1.Mem. Queued copies would hold the memory as it was BEFORE the load, and the
+		// VU thread would write them back over the loaded data whenever it got to the ring.
 		//
-		// The registers were already restored (vuMicroFreeze), the microVU
-		// caches were cleared before the load began (PreLoadPrep), and the
-		// VU thread sees all of it once the next ring write publishes its
-		// position with release ordering.
+		// The registers were already restored (vuMicroFreeze), the microVU caches were
+		// cleared before the load began (PreLoadPrep), and the VU thread sees all of it once
+		// the next ring write publishes its position with release ordering.
 		vu1Thread.Reset();
 		vu1Thread.vif.MaskRow = vif1.MaskRow;
 		vu1Thread.vif.MaskCol = vif1.MaskCol;
@@ -219,8 +212,7 @@ void VU_Thread::ExecuteRingBuffer()
 __ri void VU_Thread::WaitOnSize(s32 size)
 {
 	// Hit on every VIF1 push, and almost always answered by one of the two breaks below,
-	// so the clock is not read until the first yield actually happens. A push that finds
-	// room costs a zeroed register and a compare-and-branch, and no call.
+	// so the clock is not read until the first yield actually happens.
 	u64 wait_begin = 0;
 
 	for (;;)

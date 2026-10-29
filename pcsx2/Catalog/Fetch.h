@@ -8,13 +8,12 @@
 // FakeFetcher (tests/ctest/core/catalog/FakeFetcher.h) and nothing touches the network.
 //
 // Why this is not common/HTTPDownloader: that class is poll-based and keeps the whole response
-// in memory, while texture packs reach 1.5 GB and must stream to disk. Teaching it a write sink
-// means editing its base class and all three backends (curl, WinHTTP, the Android Java bridge),
-// which is four upstream files to re-merge every month. Instead the implementation here
-// (HttpFetcher.h) owns the policy (https-only redirects, byte caps, file streaming, progress,
-// cancellation) in portable code and talks to libcurl's easy interface (WinHTTP on Windows)
-// through a thin HttpTransport, so no upstream file changes and the policy is testable with a
-// scripted transport.
+// in memory, while texture packs reach 1.5 GB and must stream to disk. A write sink there would
+// mean changing its base class and all three backends (curl, WinHTTP, the Android Java bridge).
+// Instead the implementation here (HttpFetcher.h) owns the policy (https-only redirects, byte
+// caps, file streaming, progress, cancellation) in portable code and talks to libcurl's easy
+// interface (WinHTTP on Windows) through a thin HttpTransport, so no upstream file changes and
+// the policy is testable with a scripted transport.
 //
 // All calls block and are safe to make concurrently from different threads; services run them
 // on worker threads. Nothing here takes a lock the UI or emulation threads can contend on.

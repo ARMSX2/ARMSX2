@@ -240,13 +240,12 @@ object TexturePackInstaller {
      * Installs a .zip or .tar.zst pack the user picked from storage into
      * `<dataRoot>/textures/<SERIAL>/replacements`. Blocking; call from a background dispatcher.
      *
-     * The format is read from the first bytes, not the name: a document provider's display name
-     * can lack the extension. There is no catalog entry, so nothing is checked against declared
-     * sizes or a digest, but the archive goes through the same path policy and tar rules as a
-     * catalog install. Files are extracted to staging first and then moved over the existing
-     * pack, so a failed archive leaves the game's textures as they were. Like the folder import,
-     * this adds to an existing pack rather than replacing it, and the catalog's install record is
-     * left alone.
+     * The format is read from the first bytes, not the name, since a document provider's display
+     * name can lack the extension. There is no catalog entry, so no declared size or digest is
+     * checked; path policy and tar rules are the same as a catalog install. Files are extracted to
+     * staging first, so a failed archive leaves the game's textures as they were. Like the folder
+     * import, this adds to an existing pack rather than replacing it, and the catalog's install
+     * record is left alone.
      */
     fun installLocal(
         context: Context,
@@ -484,8 +483,6 @@ object TexturePackInstaller {
         }
     }
 
-    // ---- extract: local zip -------------------------------------------------------------------
-
     /**
      * [extractZip] for a zip read from a document provider, which gives a stream rather than a
      * file. Same path policy; the entry count is not known up front, so progress has no total.
@@ -530,7 +527,6 @@ object TexturePackInstaller {
         }
     }
 
-    /** Fills [buf] from [input] as far as the stream allows; returns the bytes read. */
     private fun readUpTo(input: InputStream, buf: ByteArray): Int {
         var n = 0
         while (n < buf.size) {

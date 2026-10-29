@@ -18,15 +18,14 @@ import java.net.HttpURLConnection
 import java.util.zip.ZipFile
 
 /**
- * What the NAMCO System 246/256 screen sets up for every arcade game: the boot files they start from,
- * the list of games the database knows, and the arcade BIOS in use. The games themselves are found in
- * the player's game folders, where they are ([ArcadeFiles], and PCSX2x6's .acgame layout); nothing of
- * them is copied.
+ * What the NAMCO System 246/256 screen sets up for every arcade game: the boot files, the list of
+ * games the database knows, and the arcade BIOS in use. The games themselves stay in the player's
+ * game folders ([ArcadeFiles], and PCSX2x6's .acgame layout); nothing is copied.
  *
  * The boot files are Proverb (https://github.com/PS2Homebrew-arcade/proverb, AFL-3.0), the
  * PS2Homebrew-arcade bootloader PCSX2x6's game library template is made from: one zip holding
- * bin/<id>/boot.elf for every game. It is downloaded once into the app's own storage, and a game kept as
- * its own files boots from its game's ELF in it.
+ * bin/<id>/boot.elf for every game. It is downloaded once into the app's own storage, and a game
+ * kept as its own files boots from that game's ELF in it.
  */
 object ArcadeLibrary {
     private const val TAG = "ARMSX2-Arcade"
@@ -36,10 +35,7 @@ object ArcadeLibrary {
     private const val COPY_BUFFER = 1 shl 20
     private val BOOT_ENTRY = Regex("""(?:^|/)bin/(NM\d{5})/boot\.elf$""", RegexOption.IGNORE_CASE)
 
-    /** A game the database knows: its ID, name, board and media. */
     data class Title(val id: String, val name: String, val board: String, val media: String)
-
-    // ---- The boot files ----------------------------------------------------------------------------
 
     private fun bootFiles(context: Context): File = File(File(context.filesDir, "arcade"), "proverb.zip")
 
@@ -102,8 +98,6 @@ object ArcadeLibrary {
         }
     }.getOrNull()
 
-    // ---- The games -------------------------------------------------------------------------------
-
     /** Every arcade game the database knows, by name. Empty until the core is up: the database
      *  loads once per process, and a load before the core knows its resources folder stays empty. */
     fun titles(): List<Title> = (if (!MainActivityRuntime.nativeReady.value) "" else runCatching { NativeApp.getArcadeGames() }.getOrDefault(""))
@@ -115,18 +109,15 @@ object ArcadeLibrary {
         .sortedBy { it.name.lowercase() }
         .toList()
 
-    /** The board, as the screen names it. */
     fun boardName(board: String): String = when (board) {
         "System256" -> I18n.get("arcade.board.256")
         "System SUPER256" -> I18n.get("arcade.board.super256")
         else -> I18n.get("arcade.board.246")
     }
 
-    // ---- The arcade BIOS --------------------------------------------------------------------------
-
-    /** The arcade BIOS the core boots arcade games with, every one there in use: the System 256 one for
-     *  every game, another for a game that refuses it (BiosTools' FindArcadeBiosFor). Their boards as the
-     *  core names them ("System 246 Rack C, System 256"), else their file names; null for none. */
+    /** The arcade BIOS the core boots arcade games with, every one in use: the System 256 one for
+     *  every game, another for a game that refuses it. Their boards as the core names them
+     *  ("System 246 Rack C, System 256"), else their file names; null for none. */
     fun biosNames(context: Context): String? {
         val dir = MainActivityRuntime.internalBiosDir(context)
         val files = dir.listFiles()?.filter { it.isFile && it.length() in Arcade.ARCADE_BIOS_SIZES }.orEmpty()

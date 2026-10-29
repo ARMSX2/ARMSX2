@@ -61,9 +61,9 @@ namespace Patch
 		CPU_IOP
 	};
 
-	// Which CPU's lines an ApplyPatches pass writes. A pass for one CPU skips the other CPU's lines
-	// and never touches the other CPU's memory interface. ApplyVsyncPatches uses this to apply the
-	// IOP lines separately from the EE lines.
+	// Which CPU's lines an ApplyPatches pass writes. A pass for one CPU skips the other's lines and
+	// never touches the other's memory interface. ApplyVsyncPatches uses it to apply the IOP lines
+	// separately from the EE lines.
 	enum class patch_cpu_filter : u8
 	{
 		Both,

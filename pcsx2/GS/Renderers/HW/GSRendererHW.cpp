@@ -3004,14 +3004,13 @@ bool GSRendererHW::CanUseSwSpriteRender()
 // At native resolution ceil(x) is already where the coverage started, so this is a no-op in
 // both coverage and sampling; Draw only calls it for sprites into an upscaled target.
 //
-// The pushed edge still samples further along the gradient than the native sprite ever did:
-// the device pixels in the last native pixel's right half, and the ones the push adds, land
-// past the texel the last native pixel read, and where the game packs sprites into one
-// texture that is the neighbour's texel (We Love Katamari's title letters grow a line on
-// their right and bottom edges). So for every sprite it moves it also works out the
-// coordinate the last native pixel sampled, and when the device can clamp to it, writes that
-// limit into the sprite's ST, which an FST sprite does not otherwise read. Returns whether it
-// wrote limits.
+// The pushed edge samples further along the gradient than the native sprite did: the device
+// pixels in the last native pixel's right half, and the ones the push adds, land past the texel
+// the last native pixel read. Where the game packs sprites into one texture that is the
+// neighbour's texel (We Love Katamari's title letters grow a line on their right and bottom
+// edges). So for every sprite it moves it also computes the coordinate the last native pixel
+// sampled and, when the device can clamp to it, writes that limit into the sprite's ST, which
+// an FST sprite does not otherwise read. Returns whether it wrote limits.
 bool GSRendererHW::SnapSpriteEdgesToPixelGrid()
 {
 	// STQ sprites interpolate through Q; leave those alone rather than guess a gradient.
@@ -6195,11 +6194,10 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					// centred on the line, as the AA1 colour lines do. Games that outline with AA1 lines
 					// (the Sly titles) follow each colour line with the same line as a depth-only draw.
 					// The colour line is expanded above native (AA1LineExpandsAboveNative), so pixel runs
-					// here would lay its depth in native-pixel blocks that no longer match the colour.
-					// That shows once a later depth-tested draw lands behind the outline, as the vault
-					// glow in Sly Cooper does: the glow fills in around the blocks and the outline comes
-					// out stepped. The expansion rather than a hardware wide line, because the colour
-					// line is expanded too and the two should cover the same device pixels on every driver.
+					// here would lay its depth in native-pixel blocks that no longer match the colour; a
+					// later depth-tested draw behind the outline (the vault glow in Sly Cooper) then fills
+					// in around the blocks and the outline comes out stepped. Not a hardware wide line,
+					// because the two must cover the same device pixels on every driver.
 					GL_INS("HW: Depth-only line expand above native.");
 					m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
 					m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);
@@ -6806,7 +6804,7 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 
 	// A run of destination-alpha draws on one target, separated by nothing but alpha-bit marks, can
 	// share one stencil copy of the test result where a read waits per draw (GSAlphaBitLogicOp.h).
-	// The first draw of a run reads as before and starts the chain; the second and later take
+	// The first draw of a run takes the normal read and starts the chain; the second and later take
 	// Stencil DATE, which EmulateDATEGetConfig picks when no other mode is asked for, and the backend
 	// builds the copy once and keeps it while the pass stays open.
 	m_date_draw_shares_copy = features.alpha_bit_logic_op && features.stencil_buffer && m_conf.ds && rt &&
@@ -8298,7 +8296,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	//     the software-blend bits replaced (BlendMultiPass::ApplyTo), so whatever else the shader
 	//     does to the colour it does to the multiplier: fbmask, shuffles, AA1 coverage, PABE.
 	//     Dither and 16-bit targets quantise the colour after the blend, which pass 2 cannot
-	//     repeat. On Brian Lara's pitch, a dithered 16-bit target, the road measured worse than
+	//     repeat; on a dithered 16-bit target (Brian Lara's pitch) the road measured worse than
 	//     the promotion.
 	//   - An alpha test that keeps part of the fragment runs a second pass of its own, DATE tests
 	//     the destination alpha, and a draw that samples the target or depth sees it change
@@ -12915,15 +12913,15 @@ GSHWDrawConfig& GSRendererHW::BeginHLEHardwareDraw(
 }
 
 // A draw whose blend was elided as the identity takes the blend of the blended draw submitted just before it
-// (GSBlendCarry.h), so the backend binds one pipeline for the run instead of two around it. What the elided and
-// the blended form write is the same pixels, so this changes which pipeline draws them and nothing it draws.
+// (GSBlendCarry.h), so the backend binds one pipeline for the run instead of two around it. The elided and the
+// blended form write the same pixels, so only the pipeline that draws them changes.
 //
 // The donor is a blended draw of the same ALPHA register with a plain shape, remembered with the render target and
 // depth target it drew to. Any draw that is not the donor class or does not match it ends the chain. The targets
 // are compared only to find draws that share a render pass: everything of a target that reaches the output (its
 // format, alpha scaling and colour clamp) is in the pixel shader selector, which is compared whole outside the blend
-// bits, so a target that reuses the address of a freed one cannot make an inexact match. The donor is cleared at
-// Reset and VSync anyway, and wherever a draw is submitted by a path that does not come through here.
+// bits, so a target that reuses the address of a freed one cannot make an inexact match. The donor is also
+// cleared at Reset and VSync, and wherever a draw is submitted by a path that does not come through here.
 void GSRendererHW::CarryBlendBeforeSubmit(GSTextureCache::Target* rt, GSTextureCache::Target* ds)
 {
 	GSBlendCarry::Donor& d = m_blend_carry;
@@ -12949,7 +12947,6 @@ void GSRendererHW::CarryBlendBeforeSubmit(GSTextureCache::Target* rt, GSTextureC
 		return;
 	}
 
-	// A blended draw of the donor class becomes the donor; anything else ends the chain.
 	if (GSBlendCarry::IsDonorClass(m_conf, abcd))
 		d = GSBlendCarry::MakeDonor(m_conf, rt, ds, abcd);
 	else

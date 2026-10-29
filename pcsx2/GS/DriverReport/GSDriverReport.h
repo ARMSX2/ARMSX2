@@ -5,8 +5,7 @@
 
 // The driver report written beside every GS dump as `<dump>.driver.json`: which GPU driver served
 // the game, what it reports about itself, what ARMSX2's driver profile decided for it and which
-// roads the renderer took, plus the device, build and GPU kernel driver. A dump says what the game
-// drew; this says what drew it.
+// roads the renderer took, plus the device, build and GPU kernel driver.
 //
 // Collected from the live renderer, so the served driver is the one that rendered the dump. Never
 // fails the dump: a failed check is logged in the report's "steps" and the rest is still written.
@@ -53,6 +52,5 @@ namespace GSDriverReport
 	/// thread with a deadline, so a node that blocks costs the report its section, not the dump.
 	void WriteSidecarForDump(const std::string& dump_base);
 
-	/// The sidecar's path for a dump base name.
 	std::string SidecarPath(const std::string& dump_base);
 } // namespace GSDriverReport

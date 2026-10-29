@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The IOP thread as the VM uses it in Threaded mode (IOP thread design sections 3, 4, 5 and 7): the Threaded
-// instance of the EE event test, the IOP thread that paces itself from the EE's watermark, the items that
-// cross in each direction, and the SIF pumps that run on the EE thread with the IOP stopped (variant R).
+// The IOP thread as the VM uses it in Threaded mode: the Threaded instance of the EE event test, the IOP
+// thread that paces itself from the EE's watermark, the items that cross in each direction, and the SIF
+// pumps that run on the EE thread with the IOP stopped.
 //
-// The thread object is tested on its own in iop_thread_tests.cpp. What is tested here is the glue: the
-// bridges, the event test, the books the EE keeps for a savestate, the pump. The IOP's CPU is a fake that
-// records which thread ran it, with what budget, and can run a function inside each slice or hold the slice
-// until the test lets it go. The EE is the test thread, which runs the real Threaded event test.
+// The thread object is tested on its own in iop_thread_tests.cpp; this file tests the glue: the bridges,
+// the event test, the books the EE keeps for a savestate, the pump. The IOP's CPU is a fake that records
+// which thread ran it, with what budget, and can run a function inside each slice or hold the slice until
+// the test lets it go. The EE is the test thread, which runs the real Threaded event test.
 //
 // The event test returns at once unless the VM is Running, and the only way to say that without a VM is
 // VMManager::Internal::SetStateForTests, which exists in builds with the recompiler test hooks. The tests
@@ -72,8 +72,6 @@ namespace
 		host.performance_cores = 4;
 		return host;
 	}
-
-	// ---- the fake IOP CPU
 
 	struct SliceCall
 	{
@@ -143,8 +141,8 @@ namespace
 		{
 			if (std::chrono::steady_clock::now() > end)
 				return false;
-			// What the next event test does for a parked IOP: wake it if it has budget (design 3.9, the accepted lost
-			// wake-up), and serve what it asks of the EE.
+			// What the next event test does for a parked IOP: wake it if it has budget (a lost wake-up is
+			// accepted), and serve what it asks of the EE.
 			IopThread::g_thread.Wake();
 			if (serve)
 				IopThread::g_thread.DrainI2E();
@@ -278,7 +276,6 @@ namespace
 			ASSERT_EQ(IopThread::g_thread.Mode(), IopThreadMode::Threaded);
 		}
 
-		// One EE event test: the EE has run `cycles` more.
 		void EventTest(u32 cycles)
 		{
 			cpuRegs.cycle += cycles;
@@ -335,8 +332,6 @@ namespace
 		s32 m_min_slice;
 	};
 } // namespace
-
-// ---------------------------------------------------------------- the event test
 
 TEST_F(ThreadedMachine, TheThreadedEventTestPublishesTheWatermarkAndLeavesTheIopToItsThread)
 {
@@ -480,7 +475,6 @@ TEST_F(ThreadedMachine, AnEventOfTheIopsOwnRunsASliceEvenWithNoBudget)
 	StartThreaded();
 	EventTest(2000);
 	ASSERT_TRUE(WaitForIop(cpuRegs.cycle));
-	// Let it go back to sleep, with nothing left to run.
 	ASSERT_TRUE(WaitFor([] { return IopThread::g_thread.IsParked(); }));
 	const u32 slices_before = s_slices_started.load();
 	{
@@ -593,8 +587,6 @@ TEST_F(ThreadedMachine, WithNoIopThreadTheThreadedInstanceRunsTheSliceItselfAsOf
 	for (size_t i = 0; i < off.first.size(); i++)
 		EXPECT_TRUE(off.first[i] == threaded.first[i]) << "event test " << i;
 }
-
-// ---------------------------------------------------------------- IOP to EE
 
 TEST_F(ThreadedMachine, TheIopRaisesTheSbusInterruptThroughTheQueueAndTheEeWritesIntcStat)
 {
@@ -739,9 +731,9 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 		seen.iop_break_before = psxRegs.iopBreak;
 		iopEventAction = false;
 		psxRegs.iopNextEventCycle = psxRegs.cycle + 5000;
-		EeBridge::ScheduleEeEvent(10); // C3: PSX_INT
-		EeBridge::IopInterruptPending(); // C4: iopTestIntc
-		EeBridge::BreakIopSlice(); // C5: an EE event inside a slice
+		EeBridge::ScheduleEeEvent(10); // PSX_INT
+		EeBridge::IopInterruptPending(); // iopTestIntc
+		EeBridge::BreakIopSlice(); // an EE event inside a slice
 		seen.ee_next_event_after = cpuRegs.nextEventCycle;
 		seen.iop_cycle_ee_after = psxRegs.iopCycleEE;
 		seen.iop_break_after = psxRegs.iopBreak;
@@ -763,8 +755,6 @@ TEST_F(ThreadedMachine, TheIopSchedulesItsOwnEventsAndWritesNothingOfTheEesSched
 	EXPECT_LE(static_cast<s32>(seen.iop_next_event_after - static_cast<u32>(seen.iop_cycle)), 2) << "and its next branch comes forward";
 	EXPECT_EQ(s_violations.load(), 0u);
 }
-
-// ---------------------------------------------------------------- EE to IOP
 
 TEST_F(ThreadedMachine, AnItemTheEePostsIsAppliedByTheIopThreadAndTheEeDoesNotWaitForIt)
 {
@@ -845,7 +835,7 @@ TEST_F(ThreadedMachine, AnItemIsNotAppliedBeforeTheIopsClockReachesItsStamp)
 {
 	REQUIRE_ARM64_HOST();
 	Reset();
-	// Where the IOP starts: the EE's cycle less what the IOP is owed (design 9.1).
+	// Where the IOP starts: the EE's cycle less what the IOP is owed.
 	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
 	StartThreaded();
 	s_advance_at_apply = ~0ull;
@@ -859,10 +849,9 @@ TEST_F(ThreadedMachine, AnItemIsNotAppliedBeforeTheIopsClockReachesItsStamp)
 		std::lock_guard lock(s_seen_mutex);
 		return s_seen && !s_seen->empty();
 	}));
-	// The item was applied after the IOP reached the stamp. The IOP's clock at the moment of the apply is what the fake slices had
-	// added up by then. (Not PublishedPos(): the thread applies the items that fall due in a slice and publishes its position
-	// after them, IopThread.cpp RunOneSlice, so a published position read when the item is first seen can still be the previous
-	// slice's. A test that compared with it failed once in 40 repeats of the suites on a loaded machine.)
+	// The IOP's clock when the item was applied is what the fake slices had added up by then. Not PublishedPos():
+	// the thread applies the items that fall due in a slice and publishes its position after them (RunOneSlice),
+	// so a position read when the item is first seen can still be the previous slice's.
 	ASSERT_NE(s_advance_at_apply.load(), ~0ull);
 	EXPECT_GE(static_cast<s64>(start + s_advance_at_apply.load() - stamp), 0);
 	// And the position does get published, after the item.
@@ -870,8 +859,6 @@ TEST_F(ThreadedMachine, AnItemIsNotAppliedBeforeTheIopsClockReachesItsStamp)
 	std::lock_guard lock(s_seen_mutex);
 	EXPECT_STREQ(recorder.Items()[0].what, "vblank_end");
 }
-
-// ---------------------------------------------------------------- SIF, variant R
 
 namespace
 {
@@ -994,10 +981,9 @@ TEST_F(ThreadedMachine, AnEeStartedSifPumpStillHoldsTheIopWhenTheVmIsStoppingAnd
 	// The VM has been asked to stop and the IOP is in the middle of a slice that takes much longer than the first stop check
 	// of a spin. The EE thread is still in guest code (it leaves at its next event test), so a SIF pump can start in that
 	// window. It must wait for the IOP like any other: a pump that went on without the hold would run the IOP's half of the
-	// transfer beside the IOP thread. Found by stopping armsx2-sdl while a game was running.
+	// transfer beside the IOP thread.
 	VMManager::Internal::SetStateForTests(VMState::Stopping);
 
-	// The hold itself.
 	s_hold_slice = true;
 	std::thread release([] {
 		std::this_thread::sleep_for(50ms);
@@ -1022,8 +1008,6 @@ TEST_F(ThreadedMachine, AnEeStartedSifPumpStillHoldsTheIopWhenTheVmIsStoppingAnd
 	release_again.join();
 	EXPECT_EQ(s_violations.load(), violations_before) << "the IOP's half of the pump ran with the IOP not held";
 }
-
-// ---------------------------------------------------------------- the books
 
 TEST_F(ThreadedMachine, AStartedThreadTakesItsPositionFromTheBooks)
 {
@@ -1117,8 +1101,6 @@ TEST_F(ThreadedMachine, ANewLagBoundReachesTheRunningThread)
 	EXPECT_EQ(IopThread::g_thread.Lag(), IopThread::kMinLag);
 }
 
-// ---------------------------------------------------------------- the pad's analog button
-
 TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
 {
 	REQUIRE_ARM64_HOST();
@@ -1154,7 +1136,7 @@ TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
 	pad->Set(16, 1.0f);
 	EXPECT_NE(pad->IsAnalogLightEnabled(), now) << "a toggle posted to a thread that is not there was lost";
 
-	// Off: the toggle is the direct call it always was.
+	// Off: the toggle is a direct call.
 	IopThread::StopThread();
 	const bool then = pad->IsAnalogLightEnabled();
 	pad->Set(16, 0.0f);
@@ -1163,8 +1145,6 @@ TEST_F(ThreadedMachine, TheAnalogButtonsToggleRunsOnTheIopThreadInThreaded)
 
 	Pad::Shutdown();
 }
-
-// ---------------------------------------------------------------- placement (step 14)
 
 TEST_F(ThreadedMachine, AThreadedThreadIsOneMoreThreadToPlace)
 {
@@ -1209,14 +1189,12 @@ TEST_F(ThreadedMachine, AThreadedThreadCanBeMovedToAnotherProcessorWhileItRuns)
 	EXPECT_EQ(handle.GetAffinity(), allowed);
 }
 
-// ---------------------------------------------------------------- a settings change while the VM is paused
-
 TEST_F(ThreadedMachine, TurningTheThreadOnWhilePausedStartsItHeldAndTheResumeLetsItRun)
 {
 	REQUIRE_ARM64_HOST();
 	Reset();
 
-	// The VM is paused: SetState took the pause hold on the way in (design 9.3). The player opens the settings and ticks
+	// The VM is paused, so SetState took the pause hold on the way in. The player opens the settings and ticks
 	// the box; ApplySettings holds around the change and the thread starts.
 	IopThread::OnVmPaused(true);
 	{
@@ -1276,8 +1254,6 @@ TEST_F(ThreadedMachine, TurningTheThreadOffWhilePausedStopsItAndAnotherToggleBri
 	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
 	EXPECT_EQ(s_violations.load(), 0u);
 }
-
-// ---------------------------------------------------------------- the thread's CPU time in the metrics
 
 TEST_F(ThreadedMachine, AThreadedThreadIsRegisteredWithTheMetricsFromItsStartToItsStopAndAgainAfterARestart)
 {

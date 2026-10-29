@@ -20,8 +20,7 @@ namespace CatalogTest
 {
 	// Not called TarEntry: texture_pack_test_support.h has a different CatalogTest::TarEntry, and
 	// both headers end up in catalog_tests. Two structs with one name break the one-definition
-	// rule, and the linker keeps a single copy of the implicit constructors and destructor, so one
-	// struct gets the other's layout.
+	// rule (the linker keeps one copy of the implicit members, so one struct gets the other's layout).
 	struct TarGzEntry
 	{
 		enum class Naming

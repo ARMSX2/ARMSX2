@@ -16,14 +16,12 @@
 class MemorySettingsInterface;
 class SettingsWindow;
 
-/// The Local Link rows of the Network & HDD page: host or join, the host's address, port, room code
-/// and peer ID. Every rule (what the room code may contain, the port range, the guest peer ID,
-/// seeding) is Catalog::LocalLink in pcsx2/Catalog/LocalLinkSettings.h; this widget only shows the
-/// values and hands what the user typed to it.
+/// The Local Link rows of the Network & HDD page. The validation rules live in Catalog::LocalLink;
+/// this widget only shows the values and hands what the user typed to it.
 ///
-/// It works on the layer its settings window edits: the global INI, or a game's own INI. The values it
-/// shows are the effective ones (the game's, else the global ones), and a change writes only the keys
-/// that changed, so editing one field in a game's window does not copy the others into the game.
+/// It shows the effective values (the game's, else the global ones) and writes only the keys that
+/// changed to the layer its settings window edits, so editing one field in a game's window does not
+/// copy the others into the game.
 class DEV9LocalLinkWidget final : public QWidget
 {
 	Q_OBJECT
@@ -36,7 +34,6 @@ public:
 	/// peer ID exist (an empty room code makes the adapter refuse to start), and shows the values.
 	void onSelected();
 
-	/// Shows the stored values again.
 	void reload();
 
 protected:

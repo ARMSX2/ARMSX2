@@ -61,10 +61,7 @@ constexpr u32 kFocusN = 8;
 
 // Roaming-base candidates, drawn from kDestPool: the pinned list is every pool
 // member kEEPinTable pins ($ra is not in the pool), the plain list is every
-// other pool member. They are built from the table so they follow it. For the
-// shipped table they come out as {2,3,4,5,6,16,17,29} and
-// {1,7..15,18..25,28,30}; the pinned list used to hold $at (1) in place of
-// $a2 (6) and $s1 (17).
+// other pool member. Built from the table so they follow it.
 struct BasePools
 {
 	u32 pinned[kDestPoolN];

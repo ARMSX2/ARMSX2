@@ -49,10 +49,9 @@ internal object RemotePlayProtocol {
 
     /**
      * Same Wi-Fi: a fixed 10 Mbps, as Moonlight streams on a home network. Left to adapt, WebRTC's
-     * estimate sagged while the picture was still (4 Mbps in test 13) and the encoder's target
-     * moved with it (5.8 to 8.1 Mbps in test 17), so frame sizes swung and the first frames after
-     * standing still came out large. A home Wi-Fi link carries 10 Mbps many times over (test 15
-     * and 17: 480 to 1200 Mbps links on both devices).
+     * estimate sagged while the picture was still and the encoder's target moved with it, so frame
+     * sizes swung and the first frames after standing still came out large. A home Wi-Fi link
+     * carries 10 Mbps many times over.
      */
     val WIFI_BITRATE = Bitrate(min = 10_000_000, start = 10_000_000, max = 10_000_000)
 
@@ -80,7 +79,7 @@ internal object RemotePlayProtocol {
     private const val PACKET_WAITING: Byte = 7
     private const val RUMBLE_PACKET_SIZE = 8
 
-    // Why a session ended, in the second byte of a bye. Every bye before these carried 0 there.
+    // Why a session ended, in the second byte of a bye.
     private const val BYE_ENDED = 0
     private const val BYE_DENIED = 1
     private const val BYE_NO_ANSWER = 2
@@ -148,7 +147,6 @@ internal object RemotePlayProtocol {
         return out
     }
 
-    /** Returns the packet's sequence number and pad, or null for anything that is not a pad. */
     fun decodePad(data: ByteBuffer): Pair<Int, PadState>? {
         val buf = data.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         if (buf.remaining() < PAD_PACKET_SIZE || buf.get() != PACKET_PAD) return null
@@ -171,7 +169,6 @@ internal object RemotePlayProtocol {
         return out
     }
 
-    /** The PCM bytes of an audio packet, or null for anything else. */
     fun decodeAudio(data: ByteBuffer): ByteArray? {
         val buf = data.duplicate()
         if (buf.remaining() <= AUDIO_HEADER_SIZE || buf.get() != PACKET_AUDIO) return null
@@ -232,7 +229,6 @@ internal object RemotePlayProtocol {
         return out
     }
 
-    /** A rumble packet, or null for anything else. */
     fun decodeRumble(data: ByteBuffer): Rumble? {
         val buf = data.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         if (buf.remaining() < RUMBLE_PACKET_SIZE || buf.get() != PACKET_RUMBLE) return null
@@ -255,7 +251,6 @@ internal object RemotePlayProtocol {
 
     fun isBye(data: ByteBuffer): Boolean = data.remaining() >= 1 && data.get(data.position()) == PACKET_BYE
 
-    /** A bye's reason for [encodeBye], from the reason the signalling bye names. */
     fun byeCode(reason: String): Int = when (reason) {
         "denied" -> BYE_DENIED
         "noanswer" -> BYE_NO_ANSWER
@@ -280,16 +275,13 @@ internal object RemotePlayProtocol {
     fun isWaiting(data: ByteBuffer): Boolean = data.remaining() >= 1 && data.get(data.position()) == PACKET_WAITING
 
     /**
-     * The host's side of the stream over the last second, for the viewer's stats: frames the game
-     * drew, frames captured from them, frames out of the encoder, the frames lost on the way and
-     * where (the GPU still busy with every capture slot, replaced by a newer frame before the app
-     * took them, refused by the encoder, skipped inside WebRTC before it), the slowest frame from
-     * capture to out of the encoder and the largest frame, and which encoder runs. Then WebRTC's
-     * own account ([HostRtcSampler]): frames it sent, its estimate of the bandwidth to the
-     * viewer, the bitrate it asked of the encoder, and the viewer's requests to resend lost packets
-     * (NACK) and for a new key frame (PLI). Then the host's Wi-Fi link ([WifiLink]): channel
-     * frequency, send and receive link speeds, signal (dBm, negative). Zero from a host that does
-     * not send them.
+     * The host's side of the stream over the last second, for the viewer's stats. The dropped*
+     * counts say where frames were lost: GPU still busy with every capture slot, replaced by a
+     * newer frame before the app took them, refused by the encoder, skipped inside WebRTC.
+     * peakEncodeMs is the slowest frame from capture to encoder output. sentFps through plis come
+     * from WebRTC ([HostRtcSampler]; nacks are the viewer's resend requests, plis its key-frame
+     * requests), the wifi fields from the host's link ([WifiLink]): MHz, Mbps, and wifiRssi in dBm
+     * (negative). Zero from a host that does not send a field.
      */
     data class HostStats(
         val gameFps: Int,
@@ -344,7 +336,6 @@ internal object RemotePlayProtocol {
         return out
     }
 
-    /** The host's stats, or null for any other packet. */
     fun decodeHostStats(data: ByteBuffer): HostStats? {
         val buf = data.duplicate().order(ByteOrder.LITTLE_ENDIAN)
         if (buf.remaining() < HOST_STATS_HEADER_SIZE || buf.get() != PACKET_HOST_STATS) return null
@@ -380,8 +371,6 @@ internal object RemotePlayProtocol {
             captureGapMs = timing[0], pacerMs = timing[1],
         )
     }
-
-    // ---- Connection codes --------------------------------------------------------------------
 
     private const val CODE_PREFIX = "ARMSX2-RP1."
     private val CODE_PATTERN = Regex("ARMSX2-RP1\\.[A-Za-z0-9_-]+")
@@ -431,7 +420,6 @@ internal object RemotePlayProtocol {
         .toString()
         .toByteArray(Charsets.UTF_8)
 
-    /** An offer or answer as a code a player can paste into a chat. */
     fun encodeCode(message: JSONObject): String {
         val deflater = Deflater(Deflater.BEST_COMPRESSION)
         deflater.setDictionary(CODE_DICTIONARY)
@@ -476,8 +464,8 @@ internal object RemotePlayProtocol {
             return null
         } catch (_: RuntimeException) {
             // setDictionary throws IllegalArgumentException for a code made with another
-            // dictionary, which is what any other version's code is. A bad code is just not a code:
-            // uncaught, this took the app down, and on a host the running game with it.
+            // dictionary, which is what any other version's code is. Treat it as not a code; it
+            // must not take the app down, and on a host the running game with it.
             return null
         } finally {
             inflater.end()

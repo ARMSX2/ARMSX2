@@ -2,16 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Pins the memo of texture hashes in GSTextureCache::HashCacheKey::Create: a texture whose pages have
-// not been written since it was hashed is not hashed again, and one whose pages have been, by any of
-// the paths that store into local memory, is.
+// not been written since it was hashed is not hashed again, and a write by any path that stores into
+// local memory makes the next hash fresh.
 //
-// The memo may only ever return what a fresh hash would, so every case here runs with verify mode on:
-// each memo hit is also hashed afresh and compared, and the page sweep looks for stores that were not
-// marked. A case passes only if the memo hit when it should, missed when it should, and verify mode saw
-// no mismatch and no missed writer. Where the case can, the hash is also compared with one built here
-// from the bytes of the texture, independent of the renderer.
+// The memo may only ever return what a fresh hash would, so every case runs with verify mode on: each
+// memo hit is also hashed afresh and compared, and the page sweep looks for stores that were not marked.
+// Where possible the hash is also compared with one built here from the texture's bytes, independent of
+// the renderer.
 //
-// The textures are 256 x 128 of 32 bits, 512 blocks and 16 pages, the smallest the memo takes.
+// The textures are 256 x 128 of 32 bits (512 blocks, 16 pages), the smallest the memo takes.
 
 #include "gs_write_stamp_drivers.h"
 
@@ -45,7 +44,6 @@ namespace
 			SwPrimFixture::TearDown();
 		}
 
-		/// A texture of 16 pages that starts at `page`.
 		static GIFRegTEX0 Tex0(u32 page, u32 psm = PSMCT32, u32 tw = kTW, u32 th = kTH, u32 tbw = kTBW)
 		{
 			GIFRegTEX0 tex0 = {};
@@ -82,7 +80,6 @@ namespace
 
 		const GSTextureCache::HashMemoStats& Stats() const { return g_texture_cache->GetHashMemoStats(); }
 
-		/// Verify mode found nothing, and saw `hits` memo hits.
 		static void ExpectVerified(u64 hits)
 		{
 			const GSTextureCache::HashMemoVerifyReport report = GSTextureCache::GetHashMemoVerifyReport();
@@ -91,14 +88,12 @@ namespace
 			EXPECT_EQ(report.missed_writers, 0u);
 		}
 
-		// Local memory with every word different, marked as written.
 		void Randomise()
 		{
 			FillRandom();
 			m_gs->m_mem.MarkAllPagesWritten();
 		}
 
-		/// A 32-bit rectangle of one value at the start of `page`, through the readback writer.
 		void WriteRect(u32 page, u32 bw, int w, int h, u32 value)
 		{
 			std::vector<u32> pixels(static_cast<size_t>(w) * h, value);
@@ -126,8 +121,6 @@ namespace
 			EXPECT_EQ(after, Reference(tex0)) << what;
 		}
 	};
-
-	// --- The memo itself -----------------------------------------------------------------------------
 
 	TEST_F(GSHashMemo, AnUnwrittenTextureIsHashedOnce)
 	{
@@ -197,7 +190,6 @@ namespace
 		EXPECT_EQ(Stats().hits, 0u);
 		EXPECT_EQ(Stats().stale, 1u);
 
-		// Now it is memoised again, against the new sequence.
 		EXPECT_EQ(Hash(tex0), hash);
 		EXPECT_EQ(Stats().hits, 1u);
 
@@ -234,7 +226,6 @@ namespace
 		other.TBP0 += 32;
 		EXPECT_NE(Hash(other), base);
 
-		// A region of the texture is a different set of texels.
 		GSTextureCache::SourceRegion region = {};
 		region.SetX(0, 256);
 		EXPECT_NE(Hash(tex0, {}, nullptr, region), base);
@@ -242,7 +233,6 @@ namespace
 		EXPECT_EQ(Stats().hits, hits) << "a different key was answered with the hash of this one";
 		EXPECT_EQ(Stats().lookups, 7u) << "a variant was too small for the memo, which makes the checks above empty";
 
-		// Nothing was lost: the same key gives the same hash.
 		EXPECT_EQ(Hash(tex0), base);
 		ExpectVerified(Stats().hits);
 	}
@@ -285,7 +275,6 @@ namespace
 		{
 			u32 psm, tw, th, tbw;
 		};
-		// Each is 512 blocks, so 16 pages.
 		static constexpr Format formats[] = {
 			{PSMT8H, 8, 7, 4},
 			{PSMT4HL, 8, 7, 4},
@@ -439,7 +428,6 @@ namespace
 				const GIFRegTEX0 tex0 = Tex0(t * kPages);
 				ASSERT_EQ(Hash(tex0), Reference(tex0)) << "round " << round << " texture " << t;
 			}
-			// Rewrite a few pages.
 			for (int i = 0; i < 5; i++)
 			{
 				const u32 page = rng() % (kTextures * kPages);
@@ -474,8 +462,6 @@ namespace
 		EXPECT_EQ(Stats().hits, 0u);
 	}
 
-	// --- Every writer, one at a time: the texture sits where the writer writes -----------------------
-
 	TEST_F(GSHashMemo, AnImageTransfer)
 	{
 		BringUp();
@@ -490,9 +476,9 @@ namespace
 
 	TEST_F(GSHashMemo, ASliceInTheMiddleOfAnImageTransfer)
 	{
-		// 64 x 128 in three slices from page 0, which is four pages one above the other: the second slice
-		// writes page 1, below where the first slice stopped, and is the one the invalidation of the
-		// texture cache is told too little about. The texture is pages 0 to 15.
+		// 64 x 128 in three slices from page 0 (four pages, one above the other). The second slice
+		// writes page 1, below where the first slice stopped, and the texture cache's invalidation is
+		// told too small a range for it. The texture is pages 0 to 15.
 		BringUp();
 		Randomise();
 		const GIFRegTEX0 tex0 = Tex0(0);
@@ -619,11 +605,9 @@ namespace
 		fd.data = state.data();
 		ASSERT_EQ(m_gs->Freeze(&fd, false), 0);
 
-		// The game goes on and changes local memory...
 		std::memset(m_gs->m_mem.m_vm8, 0x33, GSLocalMemory::m_vmsize);
 		m_gs->m_mem.MarkAllPagesWritten();
 
-		// ...and the saved state is loaded over it.
 		ExpectWriteIsSeen(Tex0(4), "state load", [&] { ASSERT_EQ(m_gs->Defrost(&fd), 0); });
 		ExpectVerified(1);
 	}
@@ -644,8 +628,6 @@ namespace
 		EXPECT_EQ(Stats().stale, 1u);
 		ExpectVerified(1);
 	}
-
-	// --- Verify mode ---------------------------------------------------------------------------------
 
 	TEST_F(GSHashMemo, AStoreThatIsNotMarkedIsAMissedWriter)
 	{

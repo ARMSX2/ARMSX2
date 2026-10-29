@@ -17,19 +17,18 @@ import java.nio.ByteBuffer;
 import java.util.Locale;
 
 /**
- * Remote play (com.armsx2.remoteplay): the viewer's decoders.
+ * Remote play viewer's video decoders, configured for low latency.
  *
- * With a screen to decode onto ({@link ArmsxVideoOutput}), each codec's own MediaCodec decoder,
- * hardware first, draws straight onto it ({@link ArmsxSurfaceDecoder}). Otherwise, and when that
- * fails, the hardware H.264 decoder runs the stock way in low-latency mode, and everything else as
+ * With an {@link ArmsxVideoOutput} to decode onto, each codec's own MediaCodec decoder (hardware
+ * first) draws straight onto it ({@link ArmsxSurfaceDecoder}). Otherwise, or when that fails, H.264
+ * uses the hardware decoder through the stock AndroidVideoDecoder, and every other codec goes to
  * WebRTC's DefaultVideoDecoderFactory.
  *
- * Left in its default mode a decoder may hold several frames before it shows the first, which is
- * fine for a film and adds a few frames of lag to a game. The decoder is asked for low latency and
- * real-time priority, plus each vendor's own switch for the same; one that refuses is configured
- * again exactly as WebRTC would have.
+ * A decoder in its default mode may hold several frames before showing the first, which is
+ * noticeable lag in a game. Decoders are asked for low latency and real-time priority plus each
+ * vendor's own switch; one that refuses is configured as WebRTC would have.
  *
- * It lives in org.webrtc because AndroidVideoDecoder and the codec helpers are package-private.
+ * Lives in org.webrtc because AndroidVideoDecoder and the codec helpers are package-private.
  */
 public class ArmsxVideoDecoderFactory implements VideoDecoderFactory {
   private static final String TAG = "ArmsxVideoDecoder";
@@ -114,10 +113,10 @@ public class ArmsxVideoDecoderFactory implements VideoDecoderFactory {
   }
 
   /**
-   * A decoder that can draw this codec onto a surface: hardware first, then Android's own
-   * software one, which every device has for the codecs WebRTC sends. None that needs a protected
-   * or tunneled pipeline, which a plain surface is not. Works back to Android 8: before 10,
-   * Android does not say which codecs are hardware, and WebRTC's helper goes by the name.
+   * A decoder that can draw this codec onto a plain surface: hardware first, then Android's own
+   * software one, which every device has for the codecs WebRTC sends. Skips decoders that require
+   * secure or tunneled playback. Works back to Android 8: before 10, Android does not say which
+   * codecs are hardware, and WebRTC's helper goes by the name.
    */
   private static @Nullable MediaCodecInfo findDirectDecoder(VideoCodecMimeType type) {
     String mime = type.mimeType();
@@ -163,9 +162,9 @@ public class ArmsxVideoDecoderFactory implements VideoDecoderFactory {
     return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && info.isAlias();
   }
 
-  // Snapdragon 765, 765G and 768G (Adreno 620), where Moonlight found the decoder crashes when
-  // asked for its fastest clocks. Before Android 12 only the platform's name says so: "lito" is
-  // that family, and the 750G, which is left out with it to be safe.
+  // Snapdragon 765, 765G and 768G (Adreno 620): Moonlight found the decoder crashes when asked
+  // for its fastest clocks. Before Android 12 only the platform name identifies them: "lito" is
+  // that family, plus the 750G, which is treated the same to be safe.
   private static final boolean SNAPDRAGON_765 =
       (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && Build.SOC_MODEL.startsWith("SM7250"))
       || "lito".equalsIgnoreCase(Build.BOARD);
@@ -197,10 +196,10 @@ public class ArmsxVideoDecoderFactory implements VideoDecoderFactory {
   }
 
   /**
-   * The format with low latency asked for the way Moonlight asks for it
-   * (MediaCodecHelper.setDecoderLowLatencyOptions): Android's own switch, which is all a codec
-   * that declares it honours it needs. Any other codec also gets the fastest clocks on Qualcomm
-   * (realtime priority elsewhere) and each vendor's own switches.
+   * The format with low latency requested as Moonlight does
+   * (MediaCodecHelper.setDecoderLowLatencyOptions): Android's own switch, which is enough for a
+   * codec that declares FEATURE_LowLatency. Any other codec also gets the fastest clocks on
+   * Qualcomm (realtime priority elsewhere) and each vendor's own switches.
    */
   static MediaFormat lowLatency(MediaFormat original, MediaCodec codec) {
     MediaFormat format = new MediaFormat(original);

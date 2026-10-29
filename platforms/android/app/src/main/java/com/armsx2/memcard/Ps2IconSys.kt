@@ -3,11 +3,7 @@ package com.armsx2.memcard
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * A save's icon.sys: how the PS2 browser shows it. Its title, the four corner colours of the
- * background gradient, the three lights and the ambient light the icon is shaded with, and which
- * icon file to draw (the normal one, and the ones for the copy and delete animations).
- */
+/** A save's icon.sys: how the PS2 browser shows the save (title, background, lighting, icon files). */
 class Ps2IconSys(
     val title: String,
     /** Background colours as 0xRRGGBB, in the order upper-left, upper-right, lower-left, lower-right. */

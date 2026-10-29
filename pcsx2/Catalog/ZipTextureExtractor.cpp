@@ -62,7 +62,7 @@ namespace Catalog
 			std::string name = st.name;
 			std::replace(name.begin(), name.end(), '\\', '/');
 			if (name.empty() || name.back() == '/')
-				continue; // folder
+				continue;
 			if (TextureArchivePath::IsJunkEntry(name) || !TextureArchivePath::IsTextureFile(name))
 				continue;
 

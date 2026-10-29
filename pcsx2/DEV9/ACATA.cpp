@@ -41,8 +41,7 @@ static void ata_build_identify()
 	ata_identify_buf[47] = 0x8010;
 	ata_identify_buf[49] = 0x0300;
 	ata_identify_buf[53] = 0x0007;
-	// ARMSX2: by the open image's size, which a CHD has as well: it has no IMAGE file, and the drive
-	// used to report no sectors at all for one.
+	// Sector count comes from the open image's size, which a CHD has too (it has no IMAGE file).
 	{
 		if (ACATA::TH::IMAGESIZE > 0) {
 			ata_total_sectors = (u32)(ACATA::TH::IMAGESIZE / ATA_SECTORSIZE);
@@ -94,8 +93,8 @@ u16 ACATA::read16(u32 addr) {
         return R_HCYL;
     case ACATA_R_STATUS:
         ACATAPI::chunk_poll();
-        // reading R_STATUS after writing zero to it? this is the ACATA probe. we have to respond BUSY at least once for the driver to keep going
-        // FIXME
+        // A status read right after a zero write to R_STATUS is the driver's probe. BUSY has to be
+        // reported at least once for the driver to continue, so alternate it here.
         if (ACATA::last_write == ACATA_R_STATUS && ACATA::cmd_handled == 0 && ((R_SELECT & ACATA_UNIT1) == 0)) {
             if (R_STATUS & ATA_STAT_BUSY)
                 CLRB(R_STATUS, ATA_STAT_BUSY);
@@ -122,7 +121,7 @@ void ACATA::write16(u32 addr, u16 val) {
     case ACATA_R_HCYL:    R_HCYL    = val & 0xFF; break;
     case ACATA_R_SELECT:  R_SELECT  = val & 0xFF; break;
     case ACATA_R_COMMAND:
-        // uyjulian says: "Yeah it should be masked and high byte is command type"
+        // The high byte is the command type, so mask it off.
         ACATA::handle_cmd(val & 0xFF); return;
     
     case ACATA_R_DATA:
@@ -139,7 +138,7 @@ u32 ACATA::cmd_handled;
 u32 ACATA::cmd_handledc;
 atapi_packet_t ACATA::ata_c_packet;
 
-void ACATA::handle_dataW(u32 addr, u16 val) { // writes at R_DATA
+void ACATA::handle_dataW(u32 addr, u16 val) {
     switch (ACATA::cmd_handled) {
     case ATA_C_PACKET:
         if (ACATA::cmd_handledc < 6) { // packet is followed by a 6 word PIO
@@ -159,7 +158,7 @@ void ACATA::handle_dataW(u32 addr, u16 val) { // writes at R_DATA
     }
 }
 
-u16 ACATA::handle_dataR(u32 addr) { // PIO read at R_DATA
+u16 ACATA::handle_dataR(u32 addr) {
     switch (ACATA::cmd_handled) {
     case ATA_C_IDENTIFY_PACKET_DEVICE:
         if (ACATA::cmd_handledc < 256) {
@@ -233,8 +232,8 @@ void ACATA::handle_cmd(u16 val) {
     switch (val) {
     case ATA_C_NOP:
         ACATA::cmd_handled = val;
-        // the only situation when we will recieve a 0 (twice) to this reg, is during ACATA init.
-        // here, the ata busy flag must be present at least once, on the following checks to this addr
+        // A zero here (twice) only happens during ACATA init; read16's R_STATUS probe handling
+        // supplies the BUSY the driver expects on the checks that follow.
         break;
     case ATA_C_IDENTIFY_PACKET_DEVICE:
         ACATA_LOG("ATA_C_IDENTIFY_PACKET_DEVICE");
@@ -268,8 +267,7 @@ void ACATA::handle_cmd(u16 val) {
         u32 count = R_NSECTOR ? R_NSECTOR : 256;
         u32 total = count * ATA_SECTORSIZE;
         ACATA_LOG("CMD:ATA_C_READ_SECTOR lba:%08X sectors:%02X", lba, count);
-        // ARMSX2: a CHD hard drive (512-byte units) is read through the CHD, as DMA reads are; it has no
-        // IMAGE file, and every PIO read from one used to be refused.
+        // A CHD hard drive (512-byte units) is read through the CHD, as DMA reads are; it has no IMAGE file.
         const bool chd = ACATA::TH::isCHD && CHD.GetSectorSize() == ATA_SECTORSIZE;
         if ((!ACATA::TH::IMAGE && !chd) || total > sizeof(ata_pio_buf)) {
             R_STATUS |= ATA_STAT_ERR;
@@ -416,9 +414,8 @@ void ACATA::handle_cmd(u16 val) {
         ACCORE::intr(ACCORE::INTRN_ATA);
     break;
     case ATA_C_INITIALIZE_DEVICE_PARAMETERS:
-        // Need to rework this hack.
-        // BG3: 0x91 completes immediately, so mark the device idle (-1); else cmd_handled stays 0 and the BUSY
-        // probe-hack wedges it on -> HDD driver hangs (black screen).
+        // 0x91 completes immediately, so mark the device idle (-1). With cmd_handled left at 0, the BUSY
+        // probe in read16 stays active, wedges BUSY on, and the HDD driver hangs.
         ACATA::cmd_handled = -1;
         CLRB(R_STATUS, ATA_STAT_ERR);
         CLRB(R_STATUS, ATA_STAT_BUSY);
@@ -443,8 +440,7 @@ void ACATA::handle_cmd(u16 val) {
     }
 }
 
-// ARMSX2: VMManager resolves where the image is (a path, or an Android content:// URI the frontend found
-// next to the .acgame) and hands it over whole; PCSX2x6's SetEnv built it from a directory and a name.
+// VMManager resolves the image location (a path, or an Android content:// URI) and passes it whole.
 void ACATA::SetImage(std::string path, ACMEDIATYPE media) {
 	ACATA::imgpath = std::move(path);
 	ACATA::MediaType = media;

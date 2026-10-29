@@ -47,14 +47,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * The texture screen's door to the online packs: what the catalog holds, a strip of covers (packs for
- * the player's games first), a download in progress, and Browse, which opens the packs full screen
- * ([TexturePackBrowser]). The catalog loads here, so the browser opens on it at once.
+ * The texture screen's entry to the online packs: what the catalog holds, a strip of covers (packs
+ * for the player's games first), a download in progress, and Browse, which opens [TexturePackBrowser].
+ * The catalog loads here, so the browser opens on it at once.
  *
  * The whole catalog is browsable with no game running. Each pack names the serials it belongs to, so
  * the install target comes from the pack itself rather than from whatever happens to be loaded; for a
  * multi-region pack it is the serial of the copy the player has ([TextureCatalog.Pack.installSerialFor]).
- * New packs reach us over Discord and are uploaded by hand, so that is where the submit link goes.
  */
 @Composable
 fun TextureOnlineSection(
@@ -147,8 +146,7 @@ fun TextureOnlineSection(
                     .controllerFocusable("textures.online.browse", RoundedCornerShape(14.dp), onConfirm = open),
             ) { Text(str("textures.browser.open"), fontWeight = FontWeight.SemiBold) }
             Spacer(Modifier.height(4.dp))
-            // New packs come to us over Discord and are uploaded to the catalog by hand; there is no
-            // public repo to send people to, so the link is the server itself.
+            // Packs are submitted over Discord; there is no public repo to link to.
             val contact = { uriHandler.openUri(com.armsx2.navigation.DiscordUrl) }
             TextButton(
                 onClick = contact,
@@ -178,7 +176,7 @@ fun TextureOnlineSection(
 
 /**
  * A row of covers, as many as fit: the player's games' packs first, then a pick of the rest that
- * changes from day to day, one cover per game. A look at what is in there; tapping opens it.
+ * changes from day to day, one cover per game. Tapping opens the browser.
  */
 @Composable
 private fun CoverStrip(

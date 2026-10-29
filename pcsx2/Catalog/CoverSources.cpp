@@ -67,8 +67,6 @@ namespace Catalog
 		                                       fmt::format("{}/{}/main/covers/default/{}.jpg", GITHUB_RAW_ROOT, repo, serial);
 	}
 
-	// ---- Region index -----------------------------------------------------------------------
-
 	namespace
 	{
 		const std::vector<std::string_view>& RegionPrefixes(CoverRegion region)
@@ -117,7 +115,6 @@ namespace Catalog
 						out.push_back(value[i]);
 					}
 				}
-				// No closing quote: fall through and treat it as plain text.
 			}
 
 			const size_t hash = value.find('#');
@@ -210,8 +207,8 @@ namespace Catalog
 		const auto flush = [&]() {
 			if (!serial.empty())
 			{
-				// The English title goes first so a Japanese release files under the same key as
-				// the Western one, which is the whole point of the index.
+				// English title first, so a Japanese release files under the same key as the
+				// Western one.
 				const std::string& title = !name_en.empty() ? name_en : name;
 				const std::string key = NormalizeTitle(title);
 				if (!key.empty())
@@ -273,7 +270,6 @@ namespace Catalog
 		if (found == m_group_of.end())
 			return std::nullopt;
 
-		// Already the right region: keep it, there is no point swapping like for like.
 		if (SerialIsInRegion(serial, wanted))
 			return std::nullopt;
 
@@ -284,8 +280,6 @@ namespace Catalog
 		}
 		return std::nullopt;
 	}
-
-	// ---- Preferences ------------------------------------------------------------------------
 
 	std::optional<CoverRegion> CoverPreferences::PinFor(std::string_view serial) const
 	{

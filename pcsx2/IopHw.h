@@ -311,7 +311,7 @@ enum IopEventId
 	IopEvt_CdvdSectorReady,
 	IopEvt_DEV9,
 	IopEvt_USB,
-	// Arcade boards only (PCSX2x6): never scheduled by a console. Kept after the console's events so
+	// Arcade boards only: never scheduled by a console. Kept after the console's events so
 	// the bit and cycle slots a savestate records keep their meaning.
 	IopEvt_Dma8,
 	IopEvt_SIO2,

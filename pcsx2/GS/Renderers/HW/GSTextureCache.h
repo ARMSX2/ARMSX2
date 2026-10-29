@@ -118,11 +118,11 @@ public:
 
 		HashCacheKey();
 
-		/// `raw_blocks` lets a paletted window (T8, T4, T8H, T4HL, T4HH) that is at least one block in each
-		/// direction be hashed from the bytes of its blocks as they sit in local memory, instead of from the
-		/// texels they unswizzle to. Two windows with the same raw key have the same texels, so it is as good
-		/// a cache key, and it needs no unswizzle. It is not the texel hash, which names texture pack files
-		/// and upscaler results, so a lookup for those passes false and gets the texel hash.
+		/// `raw_blocks` lets a paletted window (T8, T4, T8H, T4HL, T4HH) at least one block in each direction
+		/// be hashed from the bytes of its blocks in local memory instead of from the texels they unswizzle
+		/// to. Windows with the same raw bytes have the same texels, so it works as a cache key without an
+		/// unswizzle. It is not the texel hash that names texture pack files and upscaler results, so lookups
+		/// for those pass false.
 		static HashCacheKey Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region, bool raw_blocks);
 
 		HashCacheKey WithRemovedCLUTHash() const;
@@ -528,8 +528,8 @@ protected:
 
 	/// The last hash of each texture and the write sequence of local memory it was taken at, so that
 	/// HashCacheKey::Create can reuse it while no page the texture reads has been written since. Direct
-	/// mapped, a fixed array: a lookup is a few compares and no allocation. Lives and dies with the cache,
-	/// as the local memory its sequence belongs to does with the renderer.
+	/// mapped in a fixed array, so a lookup is a few compares and no allocation. Lives and dies with the
+	/// cache, as the local memory whose write sequence it stores does with the renderer.
 	static constexpr u32 HASH_MEMO_ENTRIES = 32;
 	static constexpr u32 HASH_MEMO_MAX_LEVELS = 8; // the base level and the six mipmaps below it
 	/// Smallest base level that is memoised, in blocks of 256 bytes: 128 KiB of local memory read per hash.
@@ -708,24 +708,22 @@ public:
 	/// writes `mem`, with no writer in flight.
 	void VerifyWriteStamps(const GSLocalMemory& mem);
 
-	/// The per-block hash cache. A paletted window that is keyed from the bytes of its blocks (see
-	/// HashCacheKey::Create) is keyed from a hash of each block's hash, and the hash of a block is computed
-	/// when its hash-dirty bit in GSLocalMemory is set and kept until it is set again, so a window that was
-	/// looked up last frame costs the blocks written since, and not all of its bytes. Every lookup of such a
-	/// window, on every backend, relies on the marks of the writers of local memory to be complete.
+	/// The per-block hash cache. A paletted window keyed from the bytes of its blocks (see
+	/// HashCacheKey::Create) is keyed from a hash of each block's hash. A block is rehashed only when its
+	/// hash-dirty bit in GSLocalMemory is set, so a window looked up last frame costs only the blocks
+	/// written since. This relies on every writer of local memory setting those marks, on every backend.
 	///
-	/// On by default. Off, a window is keyed by one hash of its raw blocks, with no cache (gsrunner
-	/// -block-hash-cache off, to check a suspect title without a rebuild). The two keys of a window differ,
-	/// and two windows have one key if and only if they have one in the other, so which is in use changes no
-	/// pixel and no hit.
+	/// On by default. Off (gsrunner -block-hash-cache off), a window is keyed by one hash of its raw blocks
+	/// with no cache. The two keys differ but group windows identically, so the setting changes no pixel
+	/// and no hit.
 	static void SetBlockHashCacheEnabled(bool enable) { s_block_hash_cache_enabled = enable; }
 	static bool IsBlockHashCacheEnabled() { return s_block_hash_cache_enabled; }
 
-	/// Verify mode for the block hash cache (pcsx2-gsrunner -verify-block-hash), off by default. While it is
-	/// on, every level keyed through the cache has each of its blocks hashed afresh and compared with the
-	/// cached hash, the key is also made without the cache, and the two forms must agree on which windows are
-	/// one. The memo of texture hashes is not consulted, so every lookup is checked. Neither changes what the
-	/// renderer does.
+	/// Verify mode for the block hash cache (pcsx2-gsrunner -verify-block-hash), off by default. While on,
+	/// every block of a level keyed through the cache is also hashed afresh and compared with the cached
+	/// hash, and the key is also made without the cache; the two forms must agree on which windows are
+	/// one. The memo of texture hashes is not consulted, so every lookup is checked. Neither changes what
+	/// the renderer does.
 	static void SetBlockHashVerify(bool enable);
 	static bool IsBlockHashVerify() { return s_block_hash_verify; }
 	static BlockHashVerifyReport GetBlockHashVerifyReport();
@@ -736,8 +734,7 @@ public:
 	/// the same as a texture of the guest's own texels.
 	struct HashCacheLimits
 	{
-		/// Entries are never dropped for memory while there are no more than this many (the limit the cache had
-		/// before there was a memory limit), so a title keeps at least what it always did.
+		/// Entries are never dropped for memory while there are no more than this many.
 		u32 floor_entries = 800;
 		/// The most entries kept, whatever they hold. 0 = no limit.
 		u32 max_entries = 1600;
@@ -785,11 +782,11 @@ public:
 	static bool FullRectDirty(Target* target);
 
 	/// Whether the rectangles of `list` that name every channel of `rgba_mask`, in format `psm` at buffer width
-	/// `bw`, together cover every pixel of `area`. Rectangles in another format or width, and ones that leave
-	/// out a channel of the mask, are not counted, so a list with only those is never reported covering.
-	/// FullRectDirty's test is the case of one rectangle. `hole`, if given, is a pixel of an earlier answer: it
-	/// is tried first, a list that still misses it is answered at once, and a list that does not cover the area
-	/// leaves in it a pixel of the area that no rectangle holds (when it found one), for the next call.
+	/// `bw`, together cover every pixel of `area`. Rectangles in another format or width, or missing a channel
+	/// of the mask, are not counted. FullRectDirty's test is the case of one rectangle. `hole`, if given, is a
+	/// pixel an earlier call found uncovered: it is tried first, so a list that still misses it is answered at
+	/// once. When the list does not cover `area`, `hole` is set to an uncovered pixel, if one was found, for
+	/// the next call.
 	static bool DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 bw, u32 rgba_mask, const GSVector4i& area, GSVector2i* hole = nullptr);
 	/// FullRectDirty for a list of several rectangles: the target's own channels are dirty in every pixel of
 	/// its valid rectangle, so no pixel of it is newer than local memory. Tests the list once per change to

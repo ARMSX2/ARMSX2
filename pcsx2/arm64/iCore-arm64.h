@@ -204,11 +204,10 @@ struct _arm64neonregs
 // ARM64 GPR allocator functions
 
 // The allocator's state is per thread: the EE JIT, the IOP JIT and mVU's COP2 macro mode share this
-// allocator, and with the IOP on its own thread (IOP thread design, Threaded mode) an EE block and an IOP
-// block compile at the same time. A compile clears the maps when it starts and uses them until it ends, and
-// never reads them from another thread. Everything a compile keeps here is therefore thread_local: the two
-// maps, the copies a branch saves and restores, the liveness info of the instruction being compiled, and
-// the allocation counters (and g_arm64checknext in iCore-arm64.cpp).
+// allocator, and with the IOP on its own thread an EE block and an IOP block compile at the same time.
+// A compile clears the maps when it starts and never reads them from another thread, so everything it
+// keeps here is thread_local: the two maps, the copies a branch saves and restores, the liveness info of
+// the instruction being compiled, and the allocation counters (and g_arm64checknext in iCore-arm64.cpp).
 extern thread_local _arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
 
 bool _isAllocatableArm64GPR(int armreg);

@@ -51,23 +51,21 @@ internal object RemotePlayRtc {
      *    holding frames in a jitter buffer to even out their timing (min 0; a max at or under
      *    500 ms is what switches the mode on). Set on both sides, since the host's half travels in
      *    the video packets.
-     *  - Decodes at least 12 ms apart. Frames that arrive bunched up on Wi-Fi went to the decoder
-     *    back to back, and a screen shows one frame per refresh: of two done within the same
-     *    refresh only the newer is shown. Spaced out they each get shown. 16 ms (tests 15 to 18)
-     *    kept a backlog after a hiccup from playing faster than 60 fps, but so close to the
-     *    frame rate it kept frames waiting 30 to 50 ms; with frame sizes steady since test 18,
-     *    such backlogs are rare, and 12 ms waits far less.
+     *  - Decodes at least 12 ms apart. Frames that arrive bunched up on Wi-Fi would go to the
+     *    decoder back to back, and a screen shows one frame per refresh: of two done within the
+     *    same refresh only the newer is shown. Spaced out they each get shown. 16 ms drains a
+     *    backlog after a hiccup without playing faster than 60 fps, but sits so close to the frame
+     *    rate that frames wait 30 to 50 ms; 12 ms waits far less.
      *  - More than two frames waiting, after a hiccup, go to the decoder at once instead, so the
      *    picture jumps to the newest rather than fast-forwarding through the backlog.
      *  - No frame dropper: it skips frames whenever the encoder runs over its bitrate, which fast
      *    game footage often does. The bitrate still follows the network; frames are simply not
      *    thrown away on top.
      *  - No congestion window. With more data in flight than it allows, WebRTC's default skips
-     *    every few frames before they are encoded (a 54 fps second with the game at 60, in test
-     *    10, when moving again after standing still). Its other mode (DropFrame:false, test 12)
-     *    lowers the encoder's bitrate instead, and the stream sat at the 2 Mbps floor with frames
-     *    missing at the viewer: less going out drags the bandwidth estimate down with it, and at a
-     *    low estimate a large frame takes longer than 16.7 ms to send. Without the window the
+     *    every few frames before they are encoded. Its other mode (DropFrame:false) lowers the
+     *    encoder's bitrate instead, and the stream sat at the 2 Mbps floor with frames missing at
+     *    the viewer: less going out drags the bandwidth estimate down with it, and at a low
+     *    estimate a large frame takes longer than 16.7 ms to send. Without the window the
      *    bitrate follows the bandwidth estimate alone, which still backs off as soon as delay
      *    builds up or packets go missing. The setting only counts when it names a QueueSize.
      */
@@ -89,11 +87,10 @@ internal object RemotePlayRtc {
     /**
      * Puts the stream's threads at Android's video priority (nice -10). The emulator keeps every
      * core busy while a game runs (its RSX thread at nice -8, PPU and SPU threads at 0), and at
-     * the default nice 0 WebRTC's threads waited their turn behind it: test 16 measured packets
-     * waiting 63 ms on average on the host before they went out, and the round trip wandering up
-     * to 85 ms on a strong 5 GHz link, which the viewer saw as uneven frames (55 to 62 fps). These
-     * threads sleep most of the time, so the game loses nothing. Some only exist once frames flow,
-     * so callers run this again shortly after the stream starts; running it twice changes nothing.
+     * the default nice 0 WebRTC's threads wait their turn behind it, so packets sit on the host
+     * before they go out and the viewer sees uneven frames. These threads sleep most of the
+     * time, so the game loses nothing. Some only exist once frames flow, so callers run this
+     * again shortly after the stream starts; running it twice changes nothing.
      */
     fun prioritizeStreamThreads() {
         val tasks = java.io.File("/proc/self/task").listFiles() ?: return
@@ -150,9 +147,8 @@ internal object RemotePlayRtc {
     /**
      * [dscp]: video and audio marked as such (DSCP AF41 and EF), which a Wi-Fi router sends from
      * its WMM video and voice queues, ahead of other traffic. Off unless the viewer turns on QoS
-     * marking: on the same Wi-Fi it halved the longest gaps between frames (37 ms at most against
-     * 68 to 82, tests 20 and 23) but left frames waiting 28 to 45 ms before decoding instead of 7
-     * to 18. A trade for the player to make, not a default; networks differ.
+     * marking: it shortens the longest gaps between frames but leaves frames waiting longer
+     * before decoding. A trade for the player to make, not a default; networks differ.
      */
     fun configuration(dscp: Boolean = false): PeerConnection.RTCConfiguration =
         PeerConnection.RTCConfiguration(stunServers).apply {

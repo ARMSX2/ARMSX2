@@ -5,13 +5,12 @@
 // ACC lane. The interpreter clears the MAC word and the current ZSUO bits of
 // STATUS, keeps the sticky bits, and leaves everything else alone.
 //
-// microVU's allocReg records a slot whose xyzw is 0 as an unmodified cached
-// copy of its register, and an empty-field write passes the same value. The
-// slot holding the arithmetic result was therefore recorded as a clean copy of
-// the register it was told to write: Fd, or VF0 for the bodies that allocate
-// Fs or the I register as a write to VF0 ("a scratch copy, drop it"). A later
-// read of that register took the result for its value, and a later partial
-// write to it merged its lane into that slot and wrote the whole slot back.
+// Pitfall: microVU's allocReg records a slot whose xyzw is 0 as an unmodified cached
+// copy of its register, and an empty-field write passes that same value. The slot
+// holding the arithmetic result then looks like a clean copy of Fd (or of VF0, for the
+// bodies that allocate Fs or the I register as a write to VF0). A later read of that
+// register would take the result for its value, and a later partial write would merge
+// into that slot and write the whole slot back.
 //
 // Each program here seeds ACC, runs one empty-field instruction, then one
 // access that can find the stale slot (a read of Fd, a partial write to Fd, a
@@ -174,7 +173,6 @@ private:
 	bool saved_;
 };
 
-// VF and ACC lanes where two snapshots differ.
 void VfAccDiffs(const VuSnapshot& a, const VuSnapshot& b, std::vector<std::string>& out)
 {
 	char buf[96];
@@ -249,13 +247,12 @@ std::vector<VuOp> DelaySlotLoop(u32 trip, VuOp empty, u32 delay)
 	return p;
 }
 
-// One empty-field instruction, one access, in the two places an access can
-// sit: the next pair of straight-line code, and a counted loop's branch delay
-// slot. The block's preload (mvuPreloadRegisters) loads every register a
-// later pair reads into its own slot before the first one runs, and the
-// allocator's search takes the lowest-numbered slot, so in straight line the
-// preloaded copy of Fd hides a stale one. The preload stops at a branch, so a
-// delay slot's reads are not preloaded and meet the stale slot.
+// One empty-field instruction, one access, in the two places an access can sit: the
+// next pair of straight-line code, and a counted loop's branch delay slot. The block's
+// preload (mvuPreloadRegisters) loads every register a later pair reads into its own
+// slot, and the allocator's search takes the lowest-numbered slot, so in straight-line
+// code the preloaded copy of Fd hides a stale one. The preload stops at a branch, so a
+// delay slot's reads meet the stale slot.
 void RunForms(const std::vector<Form>& forms, const char* what)
 {
 	u32 runs = 0, bad = 0;
@@ -301,9 +298,9 @@ TEST(MvuEmptyField, OtherWritersWriteNoVfLane)
 	RunForms(OtherForms(), "other writers");
 }
 
-// The program the fault was first seen in, byte for byte: a counted loop of
-// MADD.0 vf12,vf6,vf6 (upper 00063329) with SUB.z vf12,vf20,vf6 (0046a32c) in
-// the branch delay slot. vf12 x, y and w came out holding the MADD's result.
+// Reduced reproducer, byte for byte: a counted loop of MADD.0 vf12,vf6,vf6 (upper
+// 00063329) with SUB.z vf12,vf20,vf6 (0046a32c) in the branch delay slot. vf12 x, y and
+// w must keep their words rather than take the MADD's result.
 TEST(MvuEmptyField, AsFoundInTheShrunkProgram)
 {
 	for (int vu = 0; vu < 2; vu++)
@@ -340,7 +337,7 @@ TEST(MvuEmptyField, LeavesRegistersAndClearsFlags)
 					p.push_back(U(VNOP_U()));
 				p.push_back(L(VFMAND_L(vi::vi5, vi::vi7)));
 				p.push_back(L(VFSAND_L(vi::vi6, 0xfff)));
-				p.push_back(f.op); // the empty field
+				p.push_back(f.op);
 				for (int i = 0; i < 4; i++)
 					p.push_back(U(VNOP_U()));
 				p.push_back(L(VFMAND_L(vi::vi8, vi::vi7)));

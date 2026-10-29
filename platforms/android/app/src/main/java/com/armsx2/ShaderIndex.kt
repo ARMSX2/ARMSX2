@@ -5,24 +5,18 @@ import java.io.File
 
 /**
  * On-disk index of every `.slangp` under the shaders root, with each preset's resolved pass
- * count.
+ * count. Without it, opening the preset picker walks the whole tree and reads every preset
+ * (plus its `#reference` chains) to count passes, which takes seconds on Android's shared
+ * storage. The scan runs once, while the user is already waiting on a download or import.
  *
- * Without it, every open of the preset picker and of the Shader Packs list walked the whole
- * tree — ~5.6k files for the stock pack — and READ every one of its ~2.5k presets (plus the
- * `#reference` chains between them) to count passes. On Android's shared storage that is many
- * seconds, during which the picker showed nothing but its "None" row. Now the walk runs once,
- * while the user is already waiting on a download or import, and every later open reads one
- * file.
- *
- * Staleness is handled two ways:
+ * Staleness:
  *  1. Every write under the shaders root that this app makes goes through [change], which
  *     deletes the index before and after the write. [change] and [load] share one lock, so a
  *     scan can never record a half-written tree.
- *  2. Changes made outside the app (a file manager) are caught by [fingerprint]: the
- *     modified times of the root, each pack folder, and each folder one level below that. A
- *     directory's modified time moves when an entry is added to, removed from, or renamed in
- *     it, so adding or removing a pack or a category forces a rescan. An edit deeper than that
- *     is not seen until the next write through [change].
+ *  2. Changes made outside the app are caught by [fingerprint]: the modified times of the
+ *     root, each pack folder, and each folder one level below that. Adding or removing a pack
+ *     or category forces a rescan; an edit deeper than that is not seen until the next write
+ *     through [change].
  *
  * The index file lives BESIDE the root, not inside it: writing it inside would move the
  * root's own modified time and invalidate the fingerprint it was just written with.
@@ -74,8 +68,7 @@ object ShaderIndex {
     }
 
     /** [change] for a write that touches only [files] (saving or deleting one user preset).
-     *  When the index was valid beforehand, it is patched for those files instead of being
-     *  thrown away, which saves a full rescan for a one-file edit. */
+     *  A valid index is patched for those files instead of being thrown away. */
     fun <T> changeFiles(root: File, files: List<File>, block: () -> T): T = synchronized(lock) {
         val before = read(root)
         val result = change(root, block)
@@ -176,24 +169,19 @@ object ShaderIndex {
         f.absoluteFile.relativeToOrNull(rootAbs)?.invariantSeparatorsPath
             ?.takeIf { it.isNotEmpty() && it != ".." && !it.startsWith("../") && '\n' !in it && '\r' !in it }
 
-    // ---- Pass counting ------------------------------------------------------------------
-
-    /** Depth cap for #reference chains. The deepest real chain in the stock pack is 7 hops
-     *  (bezel/koko-aio/Presets-4.1/FXAA-bloom-immersive.slangp), so this is pure headroom for
-     *  a future pack; the actual loop guard is the visited set in [resolvePasses]. */
+    /** Depth cap for #reference chains. The deepest chain in the stock pack is 7 hops, so this
+     *  is headroom; the actual loop guard is the visited set in [resolvePasses]. */
     private const val MAX_REFERENCE_DEPTH = 16
 
-    /** `shaders = 12` or `shaders = "12"` — 423 presets in the stock pack quote the value, so
-     *  the quotes are not optional to handle. */
+    /** `shaders = 12` or `shaders = "12"` — presets may quote the value. */
     private val SHADERS_RE = Regex("""^\s*shaders\s*=\s*"?(\d+)"?""", RegexOption.IGNORE_CASE)
 
     /** `#reference "../../Root_Presets/MBZ__3__STD__GDV.slangp"` — a preset that inherits its
      *  whole chain from another file and only overrides parameters. */
     private val REFERENCE_RE = Regex("""^\s*#reference\s+(.+?)\s*$""", RegexOption.IGNORE_CASE)
 
-    /** What one `.slangp` says about its own cost: its pass count, or the presets it inherits
-     *  one from. Never both in the stock pack — a `#reference` preset overrides parameters
-     *  only — but [resolvePasses] prefers a local count anyway, which is the RetroArch rule. */
+    /** What one `.slangp` says about its own cost: its pass count, the presets it inherits
+     *  one from, or both. [resolvePasses] prefers a local count, which is the RetroArch rule. */
     private class PresetFacts(val shaders: Int?, val references: List<String>)
 
     private fun readPreset(file: File): PresetFacts {
@@ -206,7 +194,7 @@ object ShaderIndex {
                     if (hit != null) {
                         shaders = hit.groupValues[1].toIntOrNull()
                         // A local count wins outright, so the references can't change the
-                        // answer — stop reading. Bails on line 1 for most of the pack.
+                        // answer — stop reading.
                         if (shaders != null) return@useLines
                     }
                     REFERENCE_RE.find(line)?.let {
@@ -215,27 +203,23 @@ object ShaderIndex {
                 }
             }
         } catch (_: Exception) {
-            // Unreadable / vanished mid-scan: the row says "cost unknown" rather than
-            // inventing a number.
+            // Unreadable or vanished mid-scan: leave the count unknown.
         }
         return PresetFacts(shaders, references)
     }
 
     /**
-     * The preset's pass count, following `#reference` chains. null = undeterminable, which the
-     * row reports honestly as "cost unknown".
+     * The preset's pass count, following `#reference` chains. null = undeterminable, shown
+     * as "cost unknown".
      *
-     * The reference hop is the whole reason this function exists rather than a one-line regex.
-     * 691 of the stock pack's 2542 presets — essentially all of Mega Bezel and koko-aio — carry
-     * no `shaders` key at all; they are thin files whose entire body is `#reference
-     * "../some/root.slangp"` plus parameter overrides. Reading `shaders` naively finds nothing
-     * for exactly those files, so without this the headline number would be blank on precisely
-     * the biggest chains in the pack.
+     * Many presets (essentially all of Mega Bezel and koko-aio) have no `shaders` key and are
+     * just a `#reference` to another file plus parameter overrides, so reading `shaders` alone
+     * finds nothing for them.
      *
-     * Targets resolve against the REFERENCING file's directory (they are written `../../…`).
-     * [seen] is the loop guard and [cache] memoises across the whole scan, both keyed on the
-     * normalised absolute path. Not the canonical path: that costs a lookup per directory
-     * level on every preset, and the depth cap already bounds a symlink loop.
+     * Targets resolve against the REFERENCING file's directory. [seen] is the loop guard and
+     * [cache] memoises across the whole scan, both keyed on the normalised absolute path. Not
+     * the canonical path: that costs a lookup per directory level on every preset, and the
+     * depth cap already bounds a symlink loop.
      */
     private fun resolvePasses(
         file: File,
@@ -249,9 +233,9 @@ object ShaderIndex {
         val facts = readPreset(file)
         val result = facts.shaders ?: facts.references.firstNotNullOfOrNull { ref ->
             val target = File(file.parentFile, ref)
-            // Multi-reference presets (324 of them) list the .slangp first and .params after;
-            // taking the first target that actually yields a count skips the parameter files
-            // without having to sniff extensions.
+            // Multi-reference presets list the .slangp first and .params after; taking the
+            // first target that yields a count skips the parameter files without sniffing
+            // extensions.
             if (target.isFile) resolvePasses(target, cache, seen, depth + 1) else null
         }
         cache[key] = result

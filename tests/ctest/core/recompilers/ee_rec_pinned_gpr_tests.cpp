@@ -461,13 +461,13 @@ TEST(EeRecPinnedGpr, RungThreeScalarReadsAndWriteThrough)
 	h.SetGpr64(reg::a1, 0x0000000000010000ull);
 	h.SetGpr64(reg::s0, 0x0000000000000123ull);
 	h.LoadProgram({
-		ADDIU(reg::t1, reg::a2, -16),       // pinned $a2 read
-		DADDU(reg::s1, reg::a1, reg::s0),   // pinned $s1 dest <- $a1 + $s0
-		DADDU(reg::t2, reg::s1, reg::zero), // read $s1 back via the pin
+		ADDIU(reg::t1, reg::a2, -16),
+		DADDU(reg::s1, reg::a1, reg::s0),
+		DADDU(reg::t2, reg::s1, reg::zero),
 		ADDIU(reg::s0, reg::s0, 0x100),     // pinned $s0 RMW
 		DADDU(reg::t3, reg::s0, reg::zero),
 		DSLL(reg::t4, reg::a1, 4),          // pinned $a1 read (shift)
-		DADDU(reg::a2, reg::s1, reg::a1),   // pin <- pin + pin
+		DADDU(reg::a2, reg::s1, reg::a1),
 		DADDU(reg::t5, reg::a2, reg::zero),
 	});
 	h.Run();
@@ -577,9 +577,9 @@ TEST(EeRecPinnedGpr, TierTwoQuadWriteThroughThenReadBack)
 	h.SetGpr64(reg::t0, 0x0000000100000002ull);
 	h.SetGpr64(reg::t1, 0x0000000300000004ull);
 	h.LoadProgram({
-		PADDW(reg::a2, reg::t0, reg::t1),   // 128-bit write of pinned $a2
-		DADDU(reg::t2, reg::a2, reg::zero), // scalar read-back via the pin
-		PSUBW(reg::s1, reg::t0, reg::t1),   // 128-bit write of pinned $s1
+		PADDW(reg::a2, reg::t0, reg::t1),
+		DADDU(reg::t2, reg::a2, reg::zero),
+		PSUBW(reg::s1, reg::t0, reg::t1),
 		DADDU(reg::t3, reg::s1, reg::zero),
 		PADDW(reg::s0, reg::t1, reg::t0),   // 128-bit write of pinned $s0
 		DADDU(reg::t4, reg::s0, reg::zero),
@@ -640,7 +640,7 @@ TEST(EeRecPinnedGpr, RidingDirtyPinsAcrossBlockChain)
 	h.LoadProgramNoTerm({
 		ADDIU(reg::v0, reg::zero, 0x11), // dirty callee-saved pin
 		ADDIU(reg::a1, reg::zero, 0x22), // dirty callee-saved pin
-		ADDIU(reg::a2, reg::zero, 0x33), // dirty spared-range pin
+		ADDIU(reg::a2, reg::zero, 0x33),
 		J(kBlockBPc),
 		NOP,
 	});
@@ -708,7 +708,7 @@ TEST(EeRecPinnedGpr, ScalarPinWriteThenQuadReadMergesMirror)
 		DADDU(reg::v1, reg::t6, reg::zero), // scalar write: pin dirty, upper 64 untouched
 		PADDW(reg::t2, reg::v1, reg::t1), // 128-bit read of $v1
 		DADDU(reg::a2, reg::t7, reg::zero),
-		PADDW(reg::t4, reg::a2, reg::t1), // 128-bit read of $a2
+		PADDW(reg::t4, reg::a2, reg::t1),
 		DADDU(reg::t3, reg::v1, reg::zero),
 		DADDU(reg::t5, reg::a2, reg::zero),
 	});

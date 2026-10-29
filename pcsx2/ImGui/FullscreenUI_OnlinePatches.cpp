@@ -3,12 +3,7 @@
 
 // Big Picture: find patches and cheats for the game whose settings are open in community
 // repositories, and install the ones the player picks (the Android app's "Browse online").
-// Catalog::PatchRepo does the searching and installing; this file is the controller side of it:
-//
-//   - a "Browse Online" row on the per-game Patches and Cheats pages,
-//   - the search, reported as a keyed notification instead of a modal dialog,
-//   - a checklist popup of what was found, grouped by source, that needs no typing,
-//   - reloading the page's settings after an install.
+// Catalog::PatchRepo does the searching and installing; this file is the controller side of it.
 //
 // Everything here runs on the GS thread. The search runs on its own thread and the install on the
 // CPU thread, and each hands its answer back through PostToGSThread. The Patches and Cheats pages
@@ -93,7 +88,6 @@ namespace
 		bool job_finished_seen = false;
 		Common::Timer install_age;
 
-		// The popup.
 		bool open = false;
 		bool open_cheats = false;
 		bool focus_pending = false;
@@ -147,7 +141,6 @@ namespace
 		return s_browser.bound && s_browser.serial == game.serial && s_browser.crc == game.crc;
 	}
 
-	// The results are for one game. Opening another game's settings starts afresh.
 	void ForgetIfOtherGame(const EditedGame& game)
 	{
 		if (s_browser.bound && !IsBoundTo(game))
@@ -203,10 +196,6 @@ namespace
 		QueueResetFocus(FocusResetType::PopupClosed);
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Messages
-	//////////////////////////////////////////////////////////////////////////
-
 	void ShowNoSerialMessage()
 	{
 		OpenInfoMessageDialog(FSUI_STR("Browse Online"), FSUI_STR("No game serial to look up patches for."));
@@ -235,10 +224,6 @@ namespace
 				FSUI_STR("Could not reach the online patch sources. Check your internet connection and try again in a few minutes. "
 						 "If GitHub is limiting requests, it can take up to an hour."));
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// Search
-	//////////////////////////////////////////////////////////////////////////
 
 	void OnSearchProgress(u64 ticket, const Catalog::PatchSearchProgress& progress, bool large_database)
 	{
@@ -372,7 +357,6 @@ namespace
 				request.already_listed.push_back(info.name);
 		}
 
-		// The previous job, if any, has finished or is about to; this waits for its thread.
 		s_browser.job.reset();
 
 		const u64 ticket = ++s_ticket_counter;
@@ -397,10 +381,6 @@ namespace
 				});
 			});
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// Install
-	//////////////////////////////////////////////////////////////////////////
 
 	// PatchRepo::Install edited the game's settings file on disk. The settings interface this page
 	// holds open has its own copy of that file, and the next save would write the copy back over the
@@ -513,10 +493,6 @@ namespace
 				});
 			});
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// The results list
-	//////////////////////////////////////////////////////////////////////////
 
 	// One found section: a check box, its name and description, and on the right the source it
 	// came from and whether the game already has it. Returns true when the player picked it.
@@ -665,7 +641,6 @@ void FullscreenUI::DrawOnlinePatchesResults()
 	EditedGame game;
 	if (!IsOnPage(s_browser.open_cheats) || !GetEditedGame(&game) || !IsBoundTo(game) || !s_browser.have_results)
 	{
-		// The player left the page (or the game) some other way.
 		s_browser.open = false;
 		return;
 	}

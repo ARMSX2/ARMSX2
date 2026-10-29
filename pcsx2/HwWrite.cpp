@@ -159,8 +159,8 @@ void _hwWrite32( u32 mem, u32 value )
 				return;
 
 				// The SBUS registers. The IOP reads and writes the same words through its 0x1D000000 window, so
-				// every write to them is one atomic operation (SharedWord.h). F200 and F210 are plain stores
-				// (they were: the default action below), F220 sets bits, F230 clears bits.
+				// every write to them is one atomic operation (SharedWord.h). F200 and F210 are plain stores,
+				// F220 sets bits, F230 clears bits.
 				mcase(SBUS_F200):
 				mcase(SBUS_F210):
 					SharedWord::StoreRelease(psHu32(mem), value);
@@ -182,7 +182,7 @@ void _hwWrite32( u32 mem, u32 value )
 					if (value & (1 << 19))
 					{
 						// PS1 mode forces the IOP thread off. This holds the IOP, stops its thread and
-						// has the EE core regenerate its dispatcher for Off (IOP thread design 9.6).
+						// has the EE core regenerate its dispatcher for Off.
 						IopBridge::Ps1Switch ps1_switch;
 						u64 cycle = psxRegs.cycle;
 						//pgifInit();

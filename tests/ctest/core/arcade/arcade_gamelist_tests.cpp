@@ -242,13 +242,9 @@ TEST(ArcadeGameList, BootingAnArcadeEntryLeavesTheSourceTypeUnset)
 	EXPECT_EQ(disc_params.source_type.value(), CDVD_SourceType::Iso);
 }
 
-// ----------------------------------------------------------------------------------------------------
-// A scan, and the cache
-// ----------------------------------------------------------------------------------------------------
-
 namespace
 {
-	// The process-wide base settings the game list reads its folders from. Set once: the layer can be set only once.
+	// The process-wide base settings the game list reads its folders from; the base layer can be set only once.
 	MemorySettingsInterface& HostBaseSettings()
 	{
 		static MemorySettingsInterface s_base;
@@ -352,10 +348,6 @@ TEST_F(ArcadeGameListScanTest, TheCacheKeepsArcadeEntriesWithoutRescanningTheFil
 	EXPECT_EQ(tekken->total_size, 1234u);
 	EXPECT_EQ(Find("NM00010")->type, GameList::EntryType::Arcade);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// The files of an arcade game are not games
-// ----------------------------------------------------------------------------------------------------
 
 namespace
 {

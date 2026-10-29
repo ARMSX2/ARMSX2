@@ -51,10 +51,9 @@ object PadRouter {
      * are -- an external pad and a handheld's built-in controller cannot be told apart by press
      * order alone. A pin overrides that for the pads it names and leaves the rest automatic.
      *
-     * Several pads can be pinned to one player, and all of them play as it: a handheld's own
-     * controls and a pad for the TV it is docked to, both player 1, with nothing to change when
-     * it docks. The live slot holds whichever of them pressed something last; the player's rumble
-     * goes to all of them ([otherDevicesForPort]).
+     * Several pads can be pinned to one player (e.g. a handheld's own controls and a pad for its
+     * docked TV) and all of them play as it. The live slot holds whichever pressed last; the
+     * player's rumble goes to all of them ([otherDevicesForPort]).
      */
     private val pinned = LinkedHashMap<String, Int>()
     private const val KEY_PINNED = "pad_router_pinned"
@@ -77,8 +76,7 @@ object PadRouter {
      * Every controller plays as player 1, whatever presses first and whatever is pinned.
      *
      * For one person on a handheld that gets docked: its own controls and a Bluetooth pad both
-     * drive player 1, with nothing to assign first. Pinning each of them to player 1 does the
-     * same, but nobody found it. The pins stay saved and apply again once this is off.
+     * drive player 1. Saved pins apply again once this is off.
      */
     @Volatile var allToPlayer1 = false
         private set
@@ -244,13 +242,11 @@ object PadRouter {
 
     /**
      * The other controllers playing as [port] besides [primary], so that player's rumble reaches
-     * all of them: every connected pad pinned to it. Before, only the one that pressed something
-     * last felt it, and the other pad of a docked handheld stayed still. Each still goes where its
-     * own rumble setting says ([rumbleMode]), Off included. One device per physical controller,
-     * never [primary]'s, and none for a pin Multitap does not arm.
+     * all of them: every connected pad pinned to it. Each still goes where its own rumble
+     * setting says ([rumbleMode]), Off included. One device per physical controller, never
+     * [primary]'s, and none for a pin Multitap does not arm.
      */
     fun otherDevicesForPort(port: Int, primary: Int): IntArray {
-        // With every controller on player 1, every controller is one of player 1's.
         if (allToPlayer1 && port != 0) return IntArray(0)
         if (!allToPlayer1 && (pinned.isEmpty() || port !in 0 until activeSlotCount())) return IntArray(0)
         val primaryDescriptor = if (primary >= 0) descriptorOf(primary) else null

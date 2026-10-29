@@ -5,19 +5,13 @@
 //
 // This class is pure: no clock, no VM, no globals, no EmuConfig, no logging. It is
 // fed one completed window sample plus the eligibility answer for that window, and
-// returns at most one selector step. Everything it needs to know about the passage
-// of time arrives as the target-time length of the windows it is given, so a test
-// can drive years of governor behaviour from a fixed array of structs.
-//
-// That split is deliberate. The signal model and the actuation path are both hard
-// to test in place: sampling needs a paced frontend and actuation needs a running
-// recompiler. The hysteresis rules are the part that decides whether the feature
-// oscillates, walks to the floor, or reacts to a bottleneck it cannot move, and
-// those rules are exactly the part that can be settled offline.
+// returns at most one selector step. Time arrives only as the target-time length of
+// the windows it is given, so the hysteresis rules can be tested from a fixed array
+// of samples.
 //
 // Bounds: the configured selector is the baseline and the upper bound. The
-// governor only ever underclocks, by at most EECycleRatePolicy::max_steps_down
-// steps, and never past the -3 end of the selector range.
+// governor only underclocks, by at most EECycleRatePolicy::max_steps_down steps, and
+// never past the -3 end of the selector range.
 
 #pragma once
 
@@ -75,7 +69,6 @@ struct EECycleRateWindowSample
 // after every settings, game-database and lifecycle mutation is complete.
 struct EECycleRateEligibility
 {
-	// The dynamic setting as resolved for this game.
 	bool enabled = false;
 
 	// No suspending condition: nominal sleep-based limiter, EECycleSkip == 0, not
@@ -89,25 +82,20 @@ struct EECycleRateEligibility
 
 enum class EECycleRateDecision : u8
 {
-	// Nothing to do this window.
 	None,
-	// Lower the effective selector by one step.
 	StepDown,
-	// Raise the effective selector by one step, toward the baseline.
 	StepUp,
 	// Go to the baseline now, in one act. Not one step: a two-step-down controller
 	// that loses eligibility restores the baseline directly.
 	RestoreBaseline,
 };
 
-// The KTD6 tuning constants, in one place so a trace and a test can name the same
-// numbers. Change them from captured traces, not from taste.
+// Tuning constants, in one place so a trace and a test can name the same numbers.
 struct EECycleRatePolicy
 {
-	// Target-time one window covers. The controller never reads this - it only ever sees
-	// the target_seconds the sampler reports per window - but it lives here so a trace, a
-	// test and the sampler all name the same number. 500 ms is 30 frames at 60 Hz and 25
-	// at 50 Hz: long enough to smooth frame noise, short enough not to hide a scene change.
+	// Target-time one window covers. The controller never reads this (it only sees the
+	// per-window target_seconds); it is here so the sampler, traces and tests share it.
+	// 500 ms is 30 frames at 60 Hz and 25 at 50 Hz.
 	double window_seconds = 0.5;
 
 	// Target-time to sit out after a lifecycle reset, covering boot, state load and
@@ -130,20 +118,15 @@ struct EECycleRatePolicy
 	float headroom_p90 = 0.75f;
 	u32 upshift_dwell = 4;
 
-	// After a downshift's cooldown expires, the next effectiveness_windows valid
-	// windows have to show a mean p90 at or below the pre-downshift p90 scaled by
-	// (1 - effectiveness_margin). If they do not, that step bought nothing and it
-	// is given back - one step, not the whole underclock, because any earlier step
-	// was judged on its own evidence and passed.
-	//
-	// Giving it back also starts a downshift inhibit of ineffective_hold_seconds.
-	// This is the guard against walking to the floor when the bottleneck is
-	// somewhere the EE selector cannot reach.
+	// After a downshift's cooldown, the next effectiveness_windows valid windows must
+	// show a mean p90 at or below the pre-downshift p90 scaled by
+	// (1 - effectiveness_margin), or the step is given back. Giving it back also
+	// inhibits downshifts for ineffective_hold_seconds, which stops a walk to the
+	// floor when the bottleneck is somewhere the EE selector cannot reach.
 	float effectiveness_margin = 0.05f;
 	u32 effectiveness_windows = 2;
 	double ineffective_hold_seconds = 10.0;
 
-	// Steps below the baseline the governor may take.
 	u32 max_steps_down = 2;
 };
 
@@ -191,7 +174,6 @@ public:
 	// the same seam; the controller does not emit a decision from here.
 	void Reset(s8 baseline);
 
-	// One completed window. Returns at most one step.
 	EECycleRateDecision Update(const EECycleRateWindowSample& sample, const EECycleRateEligibility& eligibility);
 
 	// The integration reports what it actually applied. The controller updates its
@@ -234,7 +216,6 @@ private:
 	u32 m_overload_dwell = 0;
 	u32 m_headroom_dwell = 0;
 
-	// Target-time accumulated in the current timed state.
 	double m_clock_seconds = 0.0;
 
 	// Armed by a downshift, evaluated once the cooldown expires.

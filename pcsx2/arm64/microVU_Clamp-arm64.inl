@@ -128,14 +128,12 @@ void mVUclamp2(microVU& mVU, const a64::VRegister& reg, const a64::VRegister& re
 		if (cloned == mVUcloneTakeHere)
 			cloned = mVU.regAlloc->takeCloneSource(reg.GetCode());
 		const a64::VRegister src = (cloned >= 0) ? a64::VRegister(cloned, 128) : reg;
-		// The all-lane row is the pair mVUemitClampConsts keeps resident:
-		// signBounds[1] is maxvals then minvals, so qmmClampMax holds the same
-		// words as its first half and qmmClampMin as its second, in every lane.
-		// Both are loaded at block entry and after every C call under this same
-		// CHECK_VU_OVERFLOW test, and microRegAlloc keeps them out of the VF
-		// pool, so they are intact here and the reload is not needed. The
-		// single-lane row has sentinel lanes the resident pair does not, and
-		// COP2 macro mode keeps its own copy (SL-13), so both take the Ldp below.
+		// The all-lane row is the pair mVUemitClampConsts keeps resident: qmmClampMax and
+		// qmmClampMin hold the first and second half of signBounds[1] (maxvals, then minvals)
+		// in every lane. They are loaded at block entry and after every C call under this same
+		// CHECK_VU_OVERFLOW test, and microRegAlloc keeps them out of the VF pool, so no
+		// reload is needed here. The single-lane row has sentinel lanes the resident pair
+		// does not, and COP2 macro mode keeps its own copy, so both take the Ldp below.
 		if (row == 1 && CHECK_VU_OVERFLOW(mVU.index) && !mVU.cop2)
 		{
 			armAsm->Smin(reg.V4S(), src.V4S(), qmmClampMax.V4S());
@@ -184,11 +182,10 @@ static __fi bool mVUclampFoldable(microVU& mVU, const a64::VRegister& reg, int x
 // standing -- allocReg remaps a clone-write destination as it writes it, so no
 // later operand can be holding one as its own cached copy.
 //
-// `scalarDst` is the operand a single-lane body's scalar arithmetic writes
-// next. A scalar op zeroes lanes 1-3 of its destination, so nothing in those
-// lanes outlives it, and that operand's clamp runs full width instead of the
-// single-lane form that preserves them: the same word in lane 0, without the
-// scratch round trip, and its clone-write copy folds.
+// `scalarDst` is the operand a single-lane body's scalar arithmetic writes next. A scalar op
+// zeroes lanes 1-3 of its destination, so that operand is clamped full width instead of with
+// the single-lane form that preserves them: the same lane 0 result without the scratch round
+// trip, and its clone-write copy folds.
 static void mVUclampOperands(microVU& mVU, std::initializer_list<a64::VRegister> regs, int xyzw,
 	bool bClampE = false, const a64::VRegister& scalarDst = a64::NoVReg)
 {

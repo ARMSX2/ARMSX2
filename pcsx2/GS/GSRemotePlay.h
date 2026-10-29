@@ -3,12 +3,12 @@
 
 #pragma once
 
-// ARMSX2 remote play: what the renderer and the sound mixer hand to the app's streaming threads
+// Remote play: what the renderer and the sound mixer hand to the app's streaming threads
 // (platforms/android/app/src/main/cpp/remote_play.cpp), which send the game to a friend's device
-// where they play as player 2. Only the Android app ever turns it on; elsewhere nothing captures.
+// where they play as player 2. Only the Android app turns it on; elsewhere nothing captures.
 //
 // Pictures: while remote play runs, the renderer draws every presented frame on the GPU, at the
-// stream's size, into a slot of a four-slot ring, and says when the frame is in: Vulkan has the GPU
+// stream's size, into a slot of a four-slot ring, and signals when the frame is in: Vulkan has the GPU
 // write the slot's sequence number to markers[i], OpenGL leaves a fence for is_done. The app's video
 // thread then takes the frame, which is one of two kinds, chosen by the renderer as it records:
 //  - hardware: the slot's AHardwareBuffer, filled with RGBA. The app hands it to the video encoder as
@@ -120,8 +120,6 @@ namespace GSRemotePlay
 		}
 		g_recorded_cv.notify_all();
 	}
-
-	// ---- Sound ------------------------------------------------------------------------------------
 
 	inline constexpr u32 AUDIO_SAMPLE_RATE = 48000;
 

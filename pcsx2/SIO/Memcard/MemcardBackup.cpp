@@ -176,8 +176,6 @@ namespace MemcardBackup
 			return (local.tm_year + 1900) * 1000 + local.tm_yday;
 		}
 
-		// ---- manifest ----
-
 		std::string BuildManifest(const Snapshot& snap)
 		{
 			rapidjson::Document doc;
@@ -281,8 +279,6 @@ namespace MemcardBackup
 			return snap;
 		}
 
-		// ---- zip ----
-
 		struct ZipWriter
 		{
 			zip_t* za = nullptr;
@@ -355,7 +351,6 @@ namespace MemcardBackup
 				return false;
 			}
 
-			// This is where the card is read and compressed.
 			if (zip_close(writer.za) != 0)
 			{
 				*error = fmt::format("Writing the backup failed: {}", zip_strerror(writer.za));
@@ -507,8 +502,6 @@ namespace MemcardBackup
 		return "MANUAL";
 	}
 
-	// ---- cards ----------------------------------------------------------------------------
-
 	Health Verify(const std::string& card_path)
 	{
 		FILESYSTEM_STAT_DATA stat = {};
@@ -555,8 +548,6 @@ namespace MemcardBackup
 		return !name.empty() && name != "." && name != ".." && name.find('/') == std::string_view::npos &&
 		       name.find('\\') == std::string_view::npos && name.find('\0') == std::string_view::npos;
 	}
-
-	// ---- Store ----------------------------------------------------------------------------
 
 	Store::Store(std::string cards_dir, std::string backups_dir)
 		: m_cards_dir(std::move(cards_dir))
@@ -784,7 +775,6 @@ namespace MemcardBackup
 
 		std::set<std::string> keep;
 
-		// The newest few, whatever their age.
 		std::set<int> recent_days;
 		for (size_t i = 0; i < all.size() && i < KEEP_RECENT; i++)
 		{
@@ -896,8 +886,6 @@ namespace MemcardBackup
 
 		return Outcome{true, fmt::format("Restored {}.", snap.card)};
 	}
-
-	// ---- boot hook ------------------------------------------------------------------------
 
 	void SetRestorePromptHandler(RestorePromptHandler handler)
 	{

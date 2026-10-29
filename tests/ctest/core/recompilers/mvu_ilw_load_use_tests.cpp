@@ -10,10 +10,7 @@
 // autocases_vubranch_ilwuse.h holds console rows for IADDIU and LQI behind a
 // branch. This file sweeps every instruction that reads a VI, on both VUs
 // and for both loads, and compares the cycle count of each engine with the
-// rule. The program is the load, N NOP pairs, the reader, a NOP pair for the
-// reader's delay slot, eight NOP pairs so that nothing is in flight at the
-// end, and the E-bit pair with its delay slot, so the cycle count is the
-// pair count plus the stall.
+// expected one: the program's pair count plus the stall.
 //
 // ILW into vi0 loads nothing (vi0 is wired to zero), so a reader of vi0 never
 // waits; microVU treats it that way and the interpreter has to as well.
@@ -98,7 +95,6 @@ struct Cycles
 	bool ok = false;
 };
 
-// The load, `gap` NOP pairs, the reader, and the padding described above.
 Cycles Run(u32 vuIndex, u32 load, u32 reader, u32 gap)
 {
 	std::vector<VuOp> prog;
@@ -185,8 +181,7 @@ TEST(MvuIlwLoadUse, MicroVuReaderOfVi0NeverWaits)
 	EXPECT_TRUE(bad.empty()) << "microVU cycle counts that differ from the rule:" << bad;
 }
 
-// The interpreter used to stall only a branch on the loading VI, so every
-// other reader issued too early.
+// Every reader stalls in the interpreter, not just a branch.
 TEST(MvuIlwLoadUse, InterpreterReaderWaitsForTheLoad)
 {
 	const std::string bad = Misses(false, false);

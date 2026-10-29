@@ -13,23 +13,21 @@ import kr.co.iefriends.pcsx2.NativeApp
 import java.io.File
 
 /**
- * Namco System 246/256 arcade games.
+ * Namco System 246/256 arcade games, Android half. The board itself is emulated in the core
+ * (pcsx2/DEV9/AC* and the hooks around them), ported from PCSX2x6 (github.com/PS2Homebrew-arcade/pcsx2x6)
+ * by Matías Israelson (El_isra), Tovarichtch and DiscoStarslayer.
  *
- * The board itself is emulated in the core (pcsx2/DEV9/AC* and the hooks around them, ported from
- * PCSX2x6, https://github.com/PS2Homebrew-arcade/pcsx2x6, by Matías Israelson (El_isra), Tovarichtch
- * and DiscoStarslayer). A game is an .acgame: PCSX2x6's small INI that names the game ID and the
- * files around it, laid out the way PCSX2x6's game library template lays them out:
+ * A game is an .acgame, PCSX2x6's small INI that names the game ID and the files around it:
  *
  *     NM00004.acgame
  *     NM00004/boot.elf       the boot program
  *     NM00004/NM00004.chd    the game's disc or hard drive image
  *     memcards/NM00004.ps2   the security dongle
  *
- * Only the game ID is required; every other name has a default ([parse]). This is the Android half:
- * reading the .acgame, finding those files in a library folder (on Android usually a document tree,
- * which has no paths for the core to follow), putting the dongle where the core mounts memory cards
- * from (a dongle next to the .acgame is copied there once, so it need not be put there by hand), and
- * the session the on-screen controls follow.
+ * Only the game ID is required; every other name has a default ([parse]). This file reads the .acgame,
+ * finds those files in a library folder (on Android usually a document tree, which has no paths for the
+ * core to follow), copies a dongle found next to the .acgame into the folder the core mounts memory cards
+ * from, and holds the session the on-screen controls follow.
  */
 object Arcade {
     const val EXTENSION = "acgame"
@@ -168,7 +166,6 @@ object Arcade {
         else -> NativeApp.ARCADE_MODE_GENERIC
     }
 
-    /** The folder the core mounts memory cards from. */
     fun memcardsDir(context: Context): File = File(MainActivityRuntime.assetCopyRoot(context), "memcards")
 
     /** Where a game's board settings (its SRAM, what the test menu saves) are kept: in the data folder,
@@ -201,11 +198,10 @@ object Arcade {
         val media = files.find(game.mediaSrc, inSubdir = game.subdir) ?: fail("arcade.error.media", game.mediaSrc)
 
         // Soul Calibur II's Conquest card, when its .acgame names none: the core takes it from the memory cards
-        // folder by its name. Before the dongle, as a card 2.8.1 took for the dongle is moved out of its way.
+        // folder by its name. Before the dongle: a Conquest card an earlier version copied in as the dongle is
+        // moved out of the dongle's way here.
         if (game.card.isEmpty() && game.gameId == ArcadeFiles.CONQUEST_GAME) conquestCard(context)
 
-        // The dongle, and the second card if the game has one: in the memory cards folder, or copied
-        // there from beside the .acgame.
         val cards = memcardsDir(context).apply { mkdirs() }
         for ((name, missingKey) in listOf(game.dongle to "arcade.error.dongle", game.card to "arcade.error.card")) {
             if (name.isEmpty()) continue
@@ -250,8 +246,8 @@ object Arcade {
         val boot = ArcadeLibrary.bootProgram(context, id) ?: fail("arcade.error.bootFiles")
         val elf = File(dir, "boot.elf")
         if (!copyInto(elf) { boot.inputStream() }) fail("arcade.error.elf", elf.name)
-        // Soul Calibur II's Conquest card before its dongle: it is a card file beside the game too, and 2.8.1
-        // could take it for the dongle.
+        // Soul Calibur II's Conquest card before its dongle: it is a card file beside the game too, and would
+        // otherwise be taken for the dongle.
         val card = if (id == ArcadeFiles.CONQUEST_GAME) conquestCard(context, files, siblings, folderId) else null
         val dongle = looseDongle(context, files, siblings, id, folderId) ?: fail("arcade.error.looseDongle", id)
 
@@ -280,8 +276,7 @@ object Arcade {
      *
      * The copy there is kept, as the game writes to it, until the file it was copied from ([DONGLE_FROM]) is
      * gone from beside the image and a different dongle is there: a key swapped for another (Soul Calibur
-     * II's Japanese one for its export one) then replaces it. Before, the old copy went on booting and the
-     * new key beside the image was never read. The same key renamed keeps the copy.
+     * II's Japanese one for its export one) then replaces it. The same key renamed keeps the copy.
      */
     private fun looseDongle(
         context: Context,
@@ -340,31 +335,26 @@ object Arcade {
      *  copied from, as its name, its size there and the SHA-256 of what it holds (unpacked), a line each. */
     private const val DONGLE_FROM = "dongle.from"
 
-    // ---- Soul Calibur II's Conquest card ----------------------------------------------------------
-
     /** The Conquest card that comes with the app: bin/cardmaterial.bin of SC2MAKER
-     *  (https://github.com/israpps/SC2MAKER, by Matías Israelson (El_isra), GPL-3.0), made from Conquest cards
-     *  its users gave and dumped, then cleared the way El_isra said to: DATA CLEAR, ALL CLEAR in the game's
-     *  test menu, run in this emulator (SC23 key), and the game left to rebuild it on the next boot. As
-     *  SC2MAKER has it, a player had to do that before Conquest mode would play. Packed with gzip; unpacked,
-     *  8,650,752 bytes, SHA-256 1bca7cff2432e578380f2aa0cf93cc407c0c3624ad65944a29006a1253596241. Named
-     *  .gzip, not .gz: the build unpacks a .gz asset into the APK under the name without it. */
+     *  (github.com/israpps/SC2MAKER, GPL-3.0), cleared with DATA CLEAR, ALL CLEAR in the game's test menu so
+     *  Conquest mode plays without that step. Packed with gzip; unpacked, 8,650,752 bytes, SHA-256
+     *  1bca7cff2432e578380f2aa0cf93cc407c0c3624ad65944a29006a1253596241. Named .gzip, not .gz: the build
+     *  unpacks a .gz asset into the APK under the name without it. */
     private const val CONQUEST_ASSET = "arcade/NM00007.conquestcard.gzip"
 
-    /** The card 2.8.2 came with: SC2MAKER's, not yet cleared. Its SHA-256, and the first bytes of page 112
-     *  (where its second player data slot starts, which the clear rewrites) to look at before hashing. */
+    /** SC2MAKER's card before the clear, which an earlier version shipped. Its SHA-256, and the first bytes of
+     *  page 112 (where the second player data slot starts, which the clear rewrites) to compare before hashing. */
     private const val UNCLEARED_CONQUEST_SHA256 = "fe7eac4c5566fa4f16680e2ce9ea682215207f87688dabc4b9065a30050c71f8"
     private const val UNCLEARED_CONQUEST_PAGE_112 = "4d4901007f6be5234c5ccbd5c7ddeda0"
 
     /**
      * Soul Calibur II's Conquest card, which the game reads in slot 2: [ArcadeFiles.CONQUEST_CARD] in the
      * memory cards folder. It is put there once and kept from then on, as the game writes its Conquest mode
-     * to it. It is the first of: the card already there; a Conquest card that 2.8.1 took for the dongle and
-     * copied in as one (moved, since it never was the dongle); the player's own beside the game's image
-     * ([files], [siblings]); else the card that comes with the app ([CONQUEST_ASSET]). The one exception to
-     * keeping it: a card still exactly the uncleared one 2.8.2 put there, which the game never wrote, is
-     * swapped for the cleared one. Its name there, or null when none could be put there: the game then
-     * starts without one, as before.
+     * to it. It is the first of: the card already there; a Conquest card an earlier version copied in as the
+     * dongle (moved, since it never was the dongle); the player's own beside the game's image ([files],
+     * [siblings]); else the card that comes with the app ([CONQUEST_ASSET]). The one exception to keeping
+     * it: a card still exactly the uncleared one, which the game never wrote, is swapped for the cleared one.
+     * Returns its name there, or null when none could be put there: the game then starts without one.
      */
     private fun conquestCard(
         context: Context,
@@ -413,7 +403,7 @@ object Arcade {
         return null
     }
 
-    /** Whether [file] is still exactly the uncleared Conquest card 2.8.2 came with ([UNCLEARED_CONQUEST_SHA256]).
+    /** Whether [file] is still exactly the uncleared Conquest card ([UNCLEARED_CONQUEST_SHA256]).
      *  Page 112 tells almost every other card apart without reading all 8 MB. */
     private fun isUnclearedConquestCard(file: File): Boolean = runCatching {
         if (file.length() != ArcadeFiles.CONQUEST_CARD_BYTES) return@runCatching false
@@ -432,7 +422,6 @@ object Arcade {
         id == ArcadeFiles.CONQUEST_GAME && file.isFile &&
             ArcadeFiles.isConquestCard(headOf(ArcadeFiles.CONQUEST_HEADER_BYTES, unpack = false) { file.inputStream() })
 
-    /** The same for the card file [name] beside the game's image. */
     private fun isConquestCardBeside(files: Files, id: String, name: String): Boolean {
         if (id != ArcadeFiles.CONQUEST_GAME) return false
         val source = files.find(name, inSubdir = "") ?: return false
@@ -446,7 +435,6 @@ object Arcade {
     private fun pathOf(location: String): String =
         if (location.startsWith("file://")) Uri.parse(location).path ?: location else location
 
-    /** A document's or a file's own name. */
     private fun displayName(context: Context, location: String): String? {
         if (!location.startsWith("content://")) return File(location).name
         return runCatching {
@@ -490,7 +478,6 @@ object Arcade {
         if (id !in ArcadeLibrary.bootGames(context)) parts.add(I18n.get("arcade.part.boot"))
         val size = siblings.firstOrNull { it.first == name }?.second ?: 0L
         if (ArcadeFiles.kindOf(name) { size } == ArcadeFiles.Kind.PACKED_IMAGE) parts.add(I18n.get("arcade.part.unpacked"))
-        // Soul Calibur II's Conquest card is a card file too, and never its dongle.
         fun dongleIn(n: String) = inCards(n) && !isConquestCardIn(id, File(cards, n))
         val dongle = dongleIn("$id.ps2") || dongleIn("$id.bin") || siblings.any { (n, bytes) ->
             (ArcadeFiles.idIn(n) ?: folderId) == id && ArcadeFiles.kindOf(n) { bytes } == ArcadeFiles.Kind.CARD &&
@@ -525,26 +512,22 @@ object Arcade {
     private fun fail(key: String, vararg args: Any): Nothing =
         throw IllegalStateException(if (args.isEmpty()) I18n.get(key) else I18n.get(key).format(*args))
 
-    /** The files around one .acgame, wherever its folder is. */
     private interface Files {
         /** The file named [name] in [inSubdir] beside the .acgame ("" for its own folder), and, when
          *  [alsoBeside], in the .acgame's own folder after that. A path or a content:// URI. */
         fun find(name: String, inSubdir: String, alsoBeside: Boolean = false): String?
 
-        /** Copies [source] to [target], unpacking it on the way when [unpack] (a .gz). */
         fun copy(source: String, target: File, unpack: Boolean = false): Boolean
 
         /** The first [n] bytes of [source], unpacked when [unpack] (a .gz); fewer when there are fewer. */
         fun head(source: String, n: Int, unpack: Boolean): ByteArray
 
-        /** [source], to read all of it. */
         fun open(source: String): java.io.InputStream
 
         /** The files in the game's own folder (the .acgame's or the image's), with their sizes (0 when the
          *  provider does not say). */
         fun list(): List<Pair<String, Long>>
 
-        /** That folder's own name. */
         fun folderName(): String?
     }
 
@@ -692,14 +675,12 @@ object Arcade {
         }.getOrNull()
     }
 
-    // ---- The arcade BIOS ---------------------------------------------------------------------------
-
     /**
      * There is no arcade BIOS to pick: every one in the BIOS folder is in use (the core's FindArcadeBiosFor),
      * the System 256 one for every game (PCSX2x6's default) and the System 246 one for a game that refuses
-     * it (Battle Gear 3). Never the console BIOS: an arcade BIOS cannot run console
-     * games, nor the other way. 2.8 had one picked for every arcade game; that pick is forgotten, in the
-     * app's preferences and in the core's settings ([Filenames] ArcadeBIOS), once the core is up.
+     * it (Battle Gear 3). Never the console BIOS: an arcade BIOS cannot run console games, nor the other way.
+     * Clears a pick stored by an earlier version, in the app's preferences and in the core's settings
+     * ([Filenames] ArcadeBIOS), once the core is up.
      */
     fun forgetArcadeBiosPick() {
         MainActivityRuntime.prefs.edit().remove("arcadeBios").apply()
@@ -710,10 +691,7 @@ object Arcade {
         }
     }
 
-    /** Whether a BIOS, as the core describes it, is an arcade board's. */
     fun isArcadeBios(info: com.armsx2.BiosInfo): Boolean = info.zone == "COH-H"
-
-    // ---- The cabinet's own buttons, for the in-game menu -------------------------------------------
 
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private val releaseService = Runnable { runCatching { NativeApp.arcadeService(false) } }

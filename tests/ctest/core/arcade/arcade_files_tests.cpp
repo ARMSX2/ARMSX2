@@ -28,7 +28,6 @@ namespace
 		out << content;
 	}
 
-	// A scan's result for the files under [root]: every file there, with its size.
 	FileSystem::FindResultsArray Scan(const std::string& root)
 	{
 		FileSystem::FindResultsArray files;

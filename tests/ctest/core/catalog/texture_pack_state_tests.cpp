@@ -136,7 +136,6 @@ TEST(TexturePackState, ANewInstallForASerialReplacesThePreviousRecord)
 	EXPECT_TRUE(all.count("elsewhere")); // another serial is untouched
 	EXPECT_EQ(state.FindForSerial("SLUS-21410")->pack_id, "second");
 
-	// Recording the same pack again just updates it.
 	ASSERT_TRUE(state.Record(Record("second", "SLUS-21410", "v2")));
 	EXPECT_EQ(state.All().size(), 2u);
 	EXPECT_EQ(state.Find("second")->version, "v2");
@@ -229,7 +228,7 @@ TEST(TexturePackState, AnEmptyScanIsNotBelievedWhileRecordsExist)
 	EXPECT_EQ(state.All().size(), 2u);
 
 	TexturePackState empty(temp.File("other.json"));
-	empty.Reconcile({}); // nothing recorded, nothing to do
+	empty.Reconcile({});
 	EXPECT_TRUE(empty.All().empty());
 }
 
@@ -251,10 +250,6 @@ TEST(TexturePackState, ManyThreadsRecordingDoNotLoseEachOther)
 	TexturePackState state(temp.File("texture-packs.json"));
 	EXPECT_EQ(state.All().size(), 80u);
 }
-
-// ------------------------------------------------------------------------------------------
-// The update rule
-// ------------------------------------------------------------------------------------------
 
 TEST(TexturePackStateAction, NothingInstalledMeansInstall)
 {

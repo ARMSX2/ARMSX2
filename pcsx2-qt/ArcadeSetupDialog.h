@@ -77,7 +77,6 @@ private:
 	Catalog::CancelToken m_background_cancel; // The update check; fires when the dialog closes.
 	QList<QThread*> m_tasks;
 
-	// The boot files.
 	ArcadeSetup::BootFilesStatus m_boot;
 	std::optional<ArcadeSetup::UpdateCheck> m_update;
 	bool m_checking_update = false;

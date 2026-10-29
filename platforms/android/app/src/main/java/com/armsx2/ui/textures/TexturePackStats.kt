@@ -15,8 +15,8 @@ import java.net.HttpURLConnection
 
 /**
  * Popular Today for texture packs: the same anonymous download counter as Online Icons' (the
- * armsx2-icon-stats worker, tools/memcard-icons/stats-worker), on routes of its own. The app tells it
- * a pack's id when a pack the player chose has installed, and asks it for today's ten most downloaded.
+ * armsx2-icon-stats worker), on routes of its own. The app tells it a pack's id when a pack the
+ * player chose has installed, and asks it for today's ten most downloaded.
  * The worker counts each pack once per person per day, by a salted hash of the day and their IP; the
  * IP is never stored.
  */

@@ -1,11 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// Port of microVU's first pass. Each function names the microVU function it
-// mirrors; keep them in step. The line-by-line shape is deliberate: the point
-// is that a reader can hold this file next to microVU_Compile-arm64.inl,
-// x86/microVU_Analyze.inl and microVU_Flags-arm64.inl and see the same
-// algorithm, and that pcsx2-vurunner --vuaot-ir can prove it.
+// Port of microVU's first pass (see VuAotPipe.h). Each function names the microVU function it mirrors;
+// keep them in step. The line-by-line shape is deliberate, so this file reads side by side with
+// microVU_Compile-arm64.inl, x86/microVU_Analyze.inl and microVU_Flags-arm64.inl.
 
 #include "VuAotPipe.h"
 
@@ -118,9 +116,7 @@ namespace vuaot
 		return ((xPC() + 16) & (cfg_.microMemSize() - 8)) / 8;
 	}
 
-	//------------------------------------------------------------------
 	// microVU_Compile-arm64.inl: pipeline helpers
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::optimizePipeState()
 	{
@@ -233,9 +229,7 @@ namespace vuaot
 		std::memset(&regsTemp_, 0, sizeof(regsTemp_));
 	}
 
-	//------------------------------------------------------------------
 	// x86/microVU_Analyze.inl
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::analyzeReg1(int xReg, MvuVFReg& vfRead)
 	{
@@ -727,9 +721,7 @@ namespace vuaot
 		}
 	}
 
-	//------------------------------------------------------------------
 	// Op dispatch: the pass1 / pass4 bodies of each mVUop
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::opU(int pass)
 	{
@@ -740,7 +732,6 @@ namespace vuaot
 			return;
 		}
 		const UpperInst u = DecodeUpper(code_);
-		// pass 0
 		const int opCase = static_cast<int>(u.form);
 		auto setupPass1 = [&](bool isACC, bool noFlagUpdate) {
 			const int fd = isACC ? 0 : static_cast<int>(Fd());
@@ -927,9 +918,7 @@ namespace vuaot
 		}
 	}
 
-	//------------------------------------------------------------------
 	// Flag lookahead (microVU_Compile-arm64.inl _mVUflagPass / mVUsetFlagInfo)
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::flagPass(u32 startPC, u32 sCount, u32 found, std::vector<u32>& v)
 	{
@@ -1039,9 +1028,7 @@ namespace vuaot
 		}
 	}
 
-	//------------------------------------------------------------------
 	// microVU_Flags-arm64.inl
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::statusFlagOp()
 	{
@@ -1197,9 +1184,7 @@ namespace vuaot
 		xCout = xC;
 	}
 
-	//------------------------------------------------------------------
 	// mVUcompile pass 1
-	//------------------------------------------------------------------
 
 	void PipeAnalyzer::eBitPass1(int& branch)
 	{
@@ -1404,7 +1389,6 @@ namespace vuaot
 		res.qLane = q_;
 		res.pLane = p_;
 
-		// Collect the block in program order.
 		res.count = count_;
 		res.cycles = cycles_;
 		res.needFlagFinalize = needFlagFinalize_;
@@ -1468,10 +1452,6 @@ namespace vuaot
 		}
 		return res;
 	}
-
-	//------------------------------------------------------------------
-	// Trace conversion + comparison
-	//------------------------------------------------------------------
 
 	static MvuVFRegTrace VFT(const MvuVFReg& r)
 	{

@@ -30,11 +30,9 @@ import kotlin.math.sin
 /**
  * Moving PS2 save icons drawn by the GPU, the way ARMSX3 draws its PS3 themes.
  *
- * The icons used to be drawn in software on the CPU, every frame of every moving tile, which with a
- * screenful moving kept an Odin 3's fan going. Here one GL thread with one OpenGL ES 3 context draws
- * each moving icon into its own small [IconView] (a TextureView) on the shared beat, with a depth
- * buffer and 4x multisampling, and the CPU's part is a few uniforms and, for an animated icon, its
- * blended vertex positions.
+ * One GL thread with one OpenGL ES 3 context draws each moving icon into its own small [IconView]
+ * (a TextureView) on the shared beat, with a depth buffer and 4x multisampling. The CPU's part is a
+ * few uniforms and, for an animated icon, its blended vertex positions.
  *
  * The maths is the software renderer's, moved into shaders: the same turn, camera tilt, framing
  * ([Ps2IconRenderer.framing], so the two agree to the pixel and the moving icon lands exactly on
@@ -45,7 +43,7 @@ import kotlin.math.sin
 internal object IconGl {
     private const val TAG = "IconGl"
     private const val FRAME_MS = 42L // about 24 frames a second, the software renderer's beat
-    // A full turn every six seconds, the unhurried spin of the console's own browser.
+    // A full turn every six seconds, like the console's own browser.
     private const val TURN_PER_SECOND = (2.0 * PI / 6.0).toFloat()
 
     /** False once the GPU path has failed to start; moving icons then use the software renderer. */
@@ -118,8 +116,6 @@ internal object IconGl {
         }
     }
 
-    // ---- the beat -----------------------------------------------------------------------------
-
     private val tick = object : Runnable {
         override fun run() {
             ticking = false
@@ -158,8 +154,6 @@ internal object IconGl {
         ticking = true
         handler.postAtTime(tick, now - now % FRAME_MS + FRAME_MS)
     }
-
-    // ---- drawing ------------------------------------------------------------------------------
 
     private fun draw(v: IconView) {
         val loaded = v.loaded ?: return
@@ -254,8 +248,6 @@ internal object IconGl {
     fun iconChanged() {
         handler.post { dropUnused() }
     }
-
-    // ---- setup --------------------------------------------------------------------------------
 
     private fun ensureGl(): Boolean {
         if (failed) return false
@@ -568,9 +560,8 @@ internal class IconView(context: Context) : TextureView(context), TextureView.Su
     // recomposition to run, and Compose holds recompositions back while the activity is stopped,
     // which is exactly when the icons have to stop.
     //
-    // The window's own visibility, not [visibility]: a view also gets GONE here when it detaches,
-    // as an icon scrolling out of a list does, while the window and every other icon stay on
-    // screen. IconGl's switch is shared, so that GONE stopped all of them.
+    // The window's own visibility, not [visibility]: a view also gets GONE here when it detaches
+    // (an icon scrolling out of a list), and IconGl's switch is shared by every icon.
     override fun onWindowVisibilityChanged(visibility: Int) {
         super.onWindowVisibilityChanged(visibility)
         IconGl.setVisible(windowVisibility == VISIBLE)

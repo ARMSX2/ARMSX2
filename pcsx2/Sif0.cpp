@@ -292,10 +292,9 @@ static __fi void Sif0End()
 	DMA_LOG("SIF0 DMA End");
 }
 
-// One pass of the IOP side of the pump: first the junk words that fill out the quadword the last
-// packet ended in (written whenever the IOP has nothing left of that packet and the FIFO has room, busy
-// or not), then, if the IOP side is busy and can move, one step of its transfer. Returns whether the
-// transfer step ran; the junk write does not count.
+// IOP side of the pump: write the junk words that pad out the last packet's quadword (whenever the IOP
+// has nothing left of that packet and the FIFO has room, busy or not), then one transfer step if busy
+// and able. Returns whether the transfer step ran; the junk write does not count.
 static __fi bool Sif0IopStep()
 {
 	IOP_SIDE_ASSERT();
@@ -318,8 +317,7 @@ static __fi bool Sif0IopStep()
 	return false;
 }
 
-// One pass of the EE side of the pump: if the EE side is busy and can move, one step of its transfer.
-// Returns whether the step ran.
+// EE side of the pump. Returns whether the transfer step ran.
 static __fi bool Sif0EeStep()
 {
 	EE_SIDE_ASSERT();

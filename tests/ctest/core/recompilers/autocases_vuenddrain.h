@@ -3,11 +3,9 @@
 //
 // GENERATED from a first-party capture taken on a real PS2.  Do not edit.
 //
-// Console rows for the end of a VU program: does the end wait for work still in flight?  They are the
-// programs of hardware-oracle/captures/vu-end-drain-2026-10-15/ (cases 3 and 4: the EE starts the VU,
-// spins N dependent adds, reads VPU_STAT once; N swept 0..319, SCPH-30001, two launches that agree)
-// together with the N at which the busy bit first read clear.  make_autocases.py there emits this
-// file from src/progs_c3.json, src/progs_c4.json and SUMMARY.txt.
+// Console rows for the end of a VU program: does the end wait for work still in flight?  Each row is a
+// program the EE starts on the VU, then spins N dependent adds and reads VPU_STAT once (N swept 0..319,
+// SCPH-30001, two launches that agree), with the N at which the busy bit first read clear.
 //
 // Each program is a preamble (loads, a divide, on VU1 an ESADD, twelve NOP pairs) and a tail of at
 // least six pairs with the E bit on the second-to-last.  One operation sits `p` pairs before the

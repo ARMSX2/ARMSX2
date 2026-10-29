@@ -7,15 +7,14 @@
 // (vu1MicroMem.bin, vu1Memory.bin), read straight into VU1.Micro and VU1.Mem
 // AFTER the internal-structures block, which is where the MTVU block lives.
 // So whatever the MTVU block queues for the VU thread is built from memory as
-// it was before the load. It used to queue copies of both memories; the VU
-// thread wrote them back whenever it next read its ring, and when that was
-// after the entries were read, VU1 ran the old program. From a fresh boot
-// that program is all zeros, nothing it runs XGKICKs, and the 3D world stays
-// black (Baldur's Gate: Dark Alliance, 11 of 64 MTVU loads).
+// it was before the load. Queued copies of both memories would be written
+// back whenever the VU thread next read its ring, and when that was after the
+// entries were read, VU1 would run the old program. From a fresh boot that
+// program is all zeros, nothing it runs XGKICKs, and the 3D world stays black.
 //
-// These tests pin the fixed behaviour: loading the MTVU block queues nothing
-// for the VU thread, sets the VU thread's own copy of VIF1's row and column
-// registers directly, and VU1 memory written after the block survives the VU
+// These tests pin that loading the MTVU block queues nothing for the VU
+// thread, sets the VU thread's own copy of VIF1's row and column registers
+// directly, and that VU1 memory written after the block survives the VU
 // thread catching up.
 
 #include "harness/RecompilerTestEnvironment.h"
@@ -83,7 +82,6 @@ protected:
 		m_row = vif1.MaskRow;
 		m_col = vif1.MaskCol;
 
-		// The MTVU block as a save would write it.
 		MtvuBlockState saver(m_block, true);
 		ASSERT_TRUE(saver.FreezeMtvu());
 	}

@@ -122,10 +122,10 @@ TEST(GSGpuProfileAdreno, SevenHundredSeriesPartsAreAdreno7xx)
 	ExpectTuning(Adreno("Adreno (TM) 702").tuning, 88, 7, 6, false);
 }
 
-// The 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo) sits between the 720 and the 725. Its row copies
-// the 720's sizing, the sibling with the same 1 MiB of GMEM, and that is also what an unlisted 7xx
-// number gets from the fallback. So listing it changes `recognized` and the confidence in the driver
-// report, and nothing about how the part is sized. The numbers beside it stay unlisted.
+// The 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo) copies the 720's sizing, the sibling with the
+// same 1 MiB of GMEM, which is also what an unlisted 7xx number gets from the fallback. Listing it
+// changes `recognized` and the confidence in the driver report, not how the part is sized. The
+// numbers beside it stay unlisted.
 TEST(GSGpuProfileAdreno, TheAdreno722IsListedWithTheAdreno720Sizing)
 {
 	for (const char* name : {"Adreno (TM) 722", "Turnip Adreno (TM) 722"})
@@ -400,7 +400,6 @@ TEST(GSGpuProfileMali, ImmortalisIsNamedAsSuch)
 	EXPECT_EQ(p.gpu.name, "Immortalis-G715 MC11");
 }
 
-// ---------------------------------------------------------------------------------------------
 // Valhall architecture number, as Mesa's panfrost model table counts it (pan_model.c keys each
 // Mali on PAN_PROD_ID(arch, ...); the arch is the first field). Resolved here from GL_RENDERER
 // strings, the way Auto's decision sees them.
@@ -469,9 +468,8 @@ TEST(GSGpuProfileMali, BifrostAndOlderAreNotValhall)
 	}
 }
 
-// The model number is read whole. A reader that stopped at two digits would put G71 and G715 (or
-// G31 and G310, G72 and G720, G51 and G510) in the same place; one that matched G61x loosely would
-// treat G610 and G615 alike.
+// A reader that stopped at two digits would put G71 and G715 (or G31 and G310, G72 and G720, G51
+// and G510) in the same place; one that matched G61x loosely would treat G610 and G615 alike.
 TEST(GSGpuProfileMali, TheWholeModelNumberDecidesTheArchitecture)
 {
 	EXPECT_EQ(ValhallArchOf("Mali-G71 MP8"), 0u);
@@ -489,8 +487,6 @@ TEST(GSGpuProfileMali, TheWholeModelNumberDecidesTheArchitecture)
 	EXPECT_EQ(ValhallArchOf("Mali-G77 MC9"), 9u);
 }
 
-// Only the Valhall architectures carry a number; every other value, including a part nothing
-// resolved, reads as not Valhall.
 TEST(GSGpuProfileMali, OnlyTheValhallArchitecturesHaveAValhallNumber)
 {
 	EXPECT_EQ(GpuProfileDetector::MaliValhallArch(MobileGpuArchitecture::Unknown), 0u);

@@ -84,8 +84,8 @@ void ACRAM::Write16(u32 addr, u16 val) {
     if (reg >= ACRAM_REG_READ && reg < ACRAM_REG_WRITE) {
         // One register write carries a full address, split in two:
         //   address = (value << 11) + (register offset & 0x7FC)
-        // The value picks the 2KB page, the register offset picks the spot
-        // inside that page (that's how the driver works — ps2sdk acram ram.c).
+        // The value picks the 2KB page, the register offset the spot inside it
+        // (ps2sdk acram ram.c).
         banks[bank].read_addr = bank_base + ((u32)val << 11) + (reg & 0x7FC);
         return;
     } else if (reg >= ACRAM_REG_WRITE && reg < 0x80000) {

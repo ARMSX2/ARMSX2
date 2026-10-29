@@ -14,10 +14,9 @@
 /// XXH3 state for hashing a run of GS blocks that are scattered in memory.
 ///
 /// XXH3's streaming update copies every 256-byte input into its internal 256-byte buffer before it
-/// consumes it, and a block is exactly that size, so hashing a texture block by block copied the whole
-/// texture. This state holds a pointer to the last block instead and consumes it from there when the
-/// next one (or anything else) arrives. The values it produces are the ones XXH3 gives for the same
-/// bytes hashed in one piece.
+/// consumes it, and a block is exactly that size. This state avoids the copy: it holds a pointer to
+/// the last block and consumes it from there when the next one (or anything else) arrives. The values
+/// it produces are the ones XXH3 gives for the same bytes hashed in one piece.
 ///
 /// The block handed to GSXXH3_64bits_block() must stay unchanged until the next call on the state.
 struct GSXXH3BlockState

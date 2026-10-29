@@ -4,10 +4,9 @@
 // Node lowering. See VuAotLower.h for the contract.
 //
 // Each operation names the microVU emitter whose arithmetic it reproduces.
-// Register choice is free (it cannot change a result); the arithmetic
-// sequence, operand order and clamp placement are not, because they decide
-// rounding, NaN propagation and flushes. Moves, copies and the order of
-// independent instructions are free too.
+// The arithmetic sequence, operand order and clamp placement must match it,
+// because they decide rounding, NaN propagation and flushes. Register choice,
+// moves, copies and the order of independent instructions are free.
 
 #include "VuAotLower.h"
 
@@ -135,14 +134,12 @@ namespace vuaot
 		bool IsStatus(u32 v) { return v >= var::S(0) && v <= var::S(3); }
 		bool IsPQ(u32 v) { return v >= var::QL0 && v <= var::PL1; }
 
-		// The variables a HomeMap may place in a general register.
 		bool GHomeable(u32 v)
 		{
 			return (v >= var::VI(1) && v <= var::VI(15)) || v == var::I || v == var::R || (v >= var::M(0) && v <= var::C(3)) ||
 				   v == var::DIVFLAG || v == var::VIBACKUP || v == var::XGKADDR;
 		}
 
-		// Where a value currently is.
 		enum class Cls : u8
 		{
 			None,
@@ -251,8 +248,8 @@ namespace vuaot
 			void Emit();
 
 		private:
-			// (never shrinks, so the lists past n keep their buffers for the
-			// pseudo values and the next node; only lists in use are cleared)
+			// Never shrinks: the lists past n keep their buffers for the pseudo
+			// values and the next node, and only lists in use are cleared.
 			struct Lists : std::vector<std::vector<u32>>
 			{
 				size_t live = 0;
@@ -427,7 +424,6 @@ namespace vuaot
 				globAddr_.swap(x.globAddr);
 				std::swap(leave2_, x.leave2);
 			}
-			// n empty lists, keeping the buffers of the lists that stay.
 			const Function& f_;
 			const LowerEnv& env_;
 			const HomeMap* hm_;
@@ -435,7 +431,7 @@ namespace vuaot
 			u32 analysisN_ = 0; // f_.insts.size() + 1 (values before the pseudo values)
 			bool BindHomes(std::string& why);
 			int node_ = -1;
-			std::vector<ValueId> order_; // the node's instructions
+			std::vector<ValueId> order_;
 			ValueId leave_ = 0;
 
 			// Per value (index = canonical ValueId; one extra pseudo value for
@@ -455,8 +451,8 @@ namespace vuaot
 			// LowerEnv::stickyAcc (region mode). The status chain's operations
 			// (StatusUpd / StatusDiv / StatusSet) take the chain word from
 			// HomeMap::stkReg rather than from the previous instance, so an
-			// instance nobody reads is never built: its FMAC adds its zero and sign
-			// lanes to the accumulators and nothing more.
+			// instance nobody reads is never built (see "Sticky status
+			// accumulation" below).
 			bool acc_ = false;
 			bool dirtyIn_ = true;       // the accumulators may owe the chain word bits at the node's entry
 			bool dirty_ = false;        // same, as emission goes
@@ -522,7 +518,6 @@ namespace vuaot
 			const Inst& I(ValueId v) const { return f_.insts[v]; }
 			ValueId C(ValueId v) const { return v ? canon_[v] : 0; }
 
-			// ---- liveness ----
 			u32 NextUse(ValueId c) const
 			{
 				const auto& u = uses_[c];
@@ -540,7 +535,6 @@ namespace vuaot
 				return false;
 			}
 
-			// ---- register state ----
 			void Bind(ValueId c, int r)
 			{
 				reg_[c] = static_cast<s8>(r);
@@ -602,7 +596,6 @@ namespace vuaot
 			void ReleaseLocks() { vLock_ = gLock_ = 0; vTemp_ = gTemp_ = 0; }
 			void SpillForCall();
 
-			// operand helpers
 			int VecOperand(const ArgVec& args, size_t off);
 			int ScalarV(ValueId v, int* lane);   // a register and lane holding the scalar (by-element form)
 			int ScalarLane0(ValueId v);          // a register whose lane 0 is the scalar
@@ -610,24 +603,24 @@ namespace vuaot
 			int LaneWord(ValueId v, int lane);   // lane `lane` of a vector value in a W register
 			int Broadcast(ValueId v);            // scalar broadcast to 4 lanes (temp)
 			int ClampInto(int src);              // mVUclamp1 into a temp
-			// Milestone 5: every clamped copy of a value is made once. A clamp is
-			// idempotent and microVU's clamps never write the value itself, so
-			// the copy can serve every clamped use (the region's invariant
-			// copies live in registers for the whole region: HomeMap::clampHome).
+			// Every clamped copy of a value is made once. A clamp is idempotent
+			// and microVU's clamps never write the value itself, so the copy can
+			// serve every clamped use (the region's invariant copies live in
+			// registers for the whole region: HomeMap::clampHome).
 			std::vector<ValueId> clampOf_;  // per canonical value: its clamped copy (a pseudo value), or 0
 			std::vector<s8> clampLane_;     // per clamped copy: the lane a scalar copy holds its value in
 			std::vector<u8> clampFixed_;    // per canonical value: already the output of this mode's clamp (clamping it changes nothing)
-			// Milestone 6: VI arithmetic on constants folded at compile time,
-			// copies and repeated loads aliased to the value they repeat.
+			// VI arithmetic on constants is folded at compile time; copies and
+			// repeated loads are aliased to the value they repeat.
 			std::vector<u8> folded_;        // per value: a constant computed here (constVal_)
 			std::vector<u32> constVal_;
 			bool ConstOf(ValueId v, u32& out) const;
 			void FoldAndAlias();
-			// Milestone 7: an FMAC's MAC and status packs share one sign/zero
-			// comparison of the result, and mVUglob constants are loaded once
-			// per block. A status update whose only reader is the next
-			// non-sticky update is folded into it: the later update ORs every
-			// pack of the chain into the sticky bits at once.
+			// An FMAC's MAC and status packs share one sign/zero comparison of
+			// the result, and mVUglob constants are loaded once per block. A
+			// status update whose only reader is the next non-sticky update is
+			// folded into it: the later update ORs every pack of the chain into
+			// the sticky bits at once.
 			std::vector<std::pair<std::pair<ValueId, int>, ValueId>> zsOf_; // (result, lane or -1) -> its sign/zero vector
 			std::vector<std::pair<const void*, ValueId>> globOf_;            // mVUglob address -> its constant value
 			std::vector<std::pair<u32, ValueId>> fcorConst_;                 // FCOR mask (shifted down) -> its constant value
@@ -712,7 +705,7 @@ namespace vuaot
 			// reader of a VI value already takes only the bits it needs, and the
 			// boundary stores are 16 bits wide). The two 32-bit fields that take
 			// an old VI value, microVU's VI backup and kick address, still get
-			// the zero-extended value they always got.
+			// the zero-extended value.
 			bool WideViLiveIn(ValueId c) const;
 			// FMEQ compares the whole register, and microVU's register holds a VI
 			// from an earlier block zero-extended, so whatever the operand is
@@ -728,10 +721,6 @@ namespace vuaot
 				return (var == var::VIBACKUP || var == var::XGKADDR) && WideViLiveIn(c);
 			}
 		};
-
-		//------------------------------------------------------------------
-		// Allocation
-		//------------------------------------------------------------------
 
 		int Lowerer::AllocSlot()
 		{
@@ -1101,7 +1090,6 @@ namespace vuaot
 
 		void Lowerer::EndInst()
 		{
-			// Values whose last use was this instruction leave their registers.
 			for (int file = 0; file < 2; file++)
 			{
 				const u32 lock = file ? gLock_ : vLock_;
@@ -1164,10 +1152,6 @@ namespace vuaot
 			}
 		}
 
-		//------------------------------------------------------------------
-		// Operands
-		//------------------------------------------------------------------
-
 		// Four lane sources args[off..off+3] (0 = not read) as one vector: the
 		// register of a single source covering them, else a temp built with
 		// inserts.
@@ -1201,7 +1185,6 @@ namespace vuaot
 				armAsm->Fmov(S(t), W(UseReg(first)));
 				return t;
 			}
-			// The source covering the most lanes is the base.
 			ValueId base = first;
 			int bestCount = 0;
 			for (int l = 0; l < 4; l++)
@@ -1749,9 +1732,7 @@ namespace vuaot
 			}
 		}
 
-		//------------------------------------------------------------------
 		// Sticky status accumulation (LowerEnv::stickyAcc)
-		//------------------------------------------------------------------
 		//
 		// The status chain's head is always  stk | reduce(accumulators)  (stk =
 		// HomeMap::stkReg, the accumulators HomeMap::saZ / saS). A status update
@@ -2009,9 +1990,9 @@ namespace vuaot
 			dirty_ = false;
 		}
 
-		// Milestone 9: issue-to-result latency of an operation's lowering on
-		// an in-order Cortex-A55 (approximate: NEON FP 4, loads 3-4, the flag
-		// packs' compare/reduce chains about 6, divides and EFU sequences long).
+		// Issue-to-result latency of an operation's lowering on an in-order
+		// Cortex-A55 (approximate: NEON FP 4, loads 3-4, the flag packs'
+		// compare/reduce chains about 6, divides and EFU sequences long).
 		u32 Lowerer::Latency(const Inst& in)
 		{
 			switch (in.op)
@@ -2279,7 +2260,6 @@ namespace vuaot
 						best = k;
 				}
 				const u32 i = avail[best];
-				// pressure bookkeeping
 				{
 					const Inst& x = I(order_[i]);
 					if (emit_[order_[i]])
@@ -2346,10 +2326,6 @@ namespace vuaot
 			constVal_.push_back(0);
 			return pid;
 		}
-
-		//------------------------------------------------------------------
-		// Operations
-		//------------------------------------------------------------------
 
 		// Clamp placement by mode, as microVU's FMAC bodies emit it:
 		//   mode 1: the per-op clampType clamps (mVUclamp1 on Fs / Ft) only;
@@ -2477,11 +2453,11 @@ namespace vuaot
 				KeepOnly(l3, prod);
 				finish([&](int d) {
 					if (u.kind == FmacKind::Msub)
-						armAsm->Fsub(V(d).V4S(), V(acc).V4S(), V(prod).V4S()); // ACC - product
+						armAsm->Fsub(V(d).V4S(), V(acc).V4S(), V(prod).V4S());
 					else if (u.cls == UClass::FmacB)
-						armAsm->Fadd(V(d).V4S(), V(acc).V4S(), V(prod).V4S()); // ACC + product
+						armAsm->Fadd(V(d).V4S(), V(acc).V4S(), V(prod).V4S());
 					else
-						armAsm->Fadd(V(d).V4S(), V(prod).V4S(), V(acc).V4S()); // product + ACC
+						armAsm->Fadd(V(d).V4S(), V(prod).V4S(), V(acc).V4S());
 				});
 				return;
 			}
@@ -2867,7 +2843,7 @@ namespace vuaot
 						if (imm)
 							armAsm->Orr(W(d), W(d), imm);
 					}
-					else // FSEQ
+					else
 					{
 						if (imm)
 							armAsm->Eor(W(d), W(d), imm);
@@ -2993,7 +2969,7 @@ namespace vuaot
 					}
 					break;
 				}
-				default: // RSQRT
+				default:
 				{
 					a64::Label notNeg;
 					armAsm->Umov(W(g9), V(ftR).V4S(), 0);
@@ -3020,9 +2996,8 @@ namespace vuaot
 			const Inst& in = I(id);
 			const LOp op = static_cast<LOp>(in.sub);
 			const LowerInst l = DecodeLower(in.word);
-			// Relaxation 3 covers the sticky I / D bits too (decision j, 2026-10-14: all the sticky
-			// bits of STATUS): with the sticky byte dropped the divide builds only the bits its
-			// instance needs. Mutation 3 (test only) drops the instance's own bits instead.
+			// Relaxation 3 covers the sticky I / D bits too: with the sticky byte dropped,
+			// the divide builds only the bits its instance needs.
 			u32 divI = env_.dropSticky ? (kDivI & kDivCurrent) : kDivI;
 			u32 divD = env_.dropSticky ? (kDivD & kDivCurrent) : kDivD;
 			if (env_.dropSticky && env_.dropStickyMutation == 3)
@@ -3279,11 +3254,13 @@ namespace vuaot
 					res = 0;
 					break;
 				case LOp::ESIN:
-					armAsm->Ins(V(r[1]).V4S(), 0, V(r[0]).V4S(), 0); // pq = X
-					mul(r[0], r[0]);                                  // Fs = X^2
-					mov(r[2], r[0]);                                  // t1 = X^2
-					mul(r[0], r[1]);                                  // Fs = X^3
-					mov(r[3], r[0]);                                  // t2 = X^3
+					// pq (r[1]) = X, t1 (r[2]) = X^2, t2 (r[3]) = X^3; each later term
+					// multiplies t2 by t1.
+					armAsm->Ins(V(r[1]).V4S(), 0, V(r[0]).V4S(), 0);
+					mul(r[0], r[0]);
+					mov(r[2], r[0]);
+					mul(r[0], r[1]);
+					mov(r[3], r[0]);
 					mulC(r[0], &mVUglob.S2[0]);
 					add(r[1], r[0]);
 					mul(r[3], r[2]);
@@ -3594,7 +3571,6 @@ namespace vuaot
 				ReleaseLocks();
 			}
 
-			// Which memory homes get written.
 			u8 memWritten[var::Count] = {};
 			for (u32 v : leaveKs_)
 			{
@@ -3638,7 +3614,6 @@ namespace vuaot
 			}
 			ReleaseLocks();
 
-			// Memory homes.
 			for (u32 r = 1; r <= 32; r++)
 			{
 				const u32 v0 = VecVar(r);
@@ -4408,10 +4383,6 @@ namespace vuaot
 			}
 		}
 
-		//------------------------------------------------------------------
-		// Setup
-		//------------------------------------------------------------------
-
 		bool Lowerer::Check(std::string& why)
 		{
 			if (f_.unsupported)
@@ -4526,9 +4497,8 @@ namespace vuaot
 				why = "no leave";
 				return false;
 			}
-			// Milestone 8: variables dead at the node's end (region liveness)
-			// are left out of the end: their final values are neither
-			// computed nor written.
+			// Variables dead at the node's end (region liveness) are left out of
+			// the end: their final values are neither computed nor written.
 			hasLeave2_ = false;
 			if (liveOut_ && (!f_.leaveArgs.empty() || f_.insts[leave_].args.empty()))
 			{
@@ -5010,7 +4980,6 @@ namespace vuaot
 			for (auto& x : finalOf_)
 				if (x == ~0u)
 					x = 0;
-			// Pools.
 			vPool_ = kVAll & ~hm_->vRegs;
 			gPool_ = kGAll & ~hm_->gRegs;
 			if (hm_->memBase >= 0)

@@ -277,8 +277,6 @@ static constexpr const char* ARCADE_S256_BIOS_SERIAL = "20040519-145634";
 // has to know a 2MB file can be one.
 static constexpr u32 MIN_ARCADE_BIOS_SIZE = 2 * _1mb;
 
-// Whether the file is a Namco arcade board's BIOS (a COH-H dump), and its EXTINFO serial, which names the
-// board it is from.
 bool IsArcadeBIOS(const char* filename, std::string* board_serial)
 {
 	const auto fp = FileSystem::OpenManagedCFile(filename, "rb");
@@ -508,7 +506,6 @@ bool LoadBIOS()
 
 	std::string path = EmuConfig.FullpathToBios();
 
-	// The arcade BIOS a player picked has to be one; otherwise, look for one (FindBiosImage).
 	if (Arcade::IsActive() && !path.empty() && FileSystem::FileExists(path.c_str()) && !IsArcadeBIOS(path.c_str()))
 	{
 		Console.Warning("Arcade BIOS '%s' is not a COH-H BIOS, looking for one.", EmuConfig.BaseFilenames.Bios.c_str());

@@ -80,11 +80,8 @@ static constexpr std::array<AdrenoSpec, 53> s_adreno_specs = {{
 	{720, 0, MobileGpuArchitecture::Adreno7xx, T(128, 9, 7, true)},
 	// Snapdragon 7 Gen 4 and Dragonwing Q-7790 (Retroid Pocket Duo): an a7xx generation 1 part derived
 	// from the 730, with fewer cores and caches and 1 MiB of GMEM like the 720. The pool sizes and ages
-	// are memory-budget heuristics, not measurements, so this row copies the 720's: the sibling with the
-	// same GMEM, unconstrained, and the same values the generic 7xx fallback returns. Recognising the
-	// part therefore changes its identity and confidence in the driver report and leaves its pools as
-	// they were. No measurement supports a pool larger than the 720's, nor a smaller one that would
-	// make it constrained.
+	// are memory-budget heuristics, so this row copies the 720's (same GMEM, unconstrained, same values
+	// as the generic 7xx fallback).
 	{722, 0, MobileGpuArchitecture::Adreno7xx, T(128, 9, 7, true)},
 }};
 

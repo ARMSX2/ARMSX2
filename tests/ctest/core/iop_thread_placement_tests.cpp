@@ -5,10 +5,9 @@
 //
 // Three groups:
 //   1. The performance tier: which processors count as the fast ones. The tables are the cpu_capacity
-//      values read off the devices on 2026-10-15 (SD865, MQ65, Dimensity 8300, M2 Max), so the masks
-//      in these tests are the masks those devices produce. The RK3562 and SD662 tables are described
-//      from their deploy notes (a cluster of four equal A53s, and four A73 beside four A53), since
-//      neither device could be read.
+//      values read off real devices (SD865, MQ65, Dimensity 8300, M2 Max), so the masks in these
+//      tests are the masks those devices produce. The RK3562 and SD662 tables are written from their
+//      known topology (a cluster of four equal A53s, and four A73 beside four A53).
 //   2. ResolveMode fed from those masks, so the core-count rule is checked against what a device's
 //      topology yields and not against a count typed into the test.
 //   3. The placement plans for the three ways the emulator pins its threads (Android's performance
@@ -106,8 +105,6 @@ namespace
 	}
 } // namespace
 
-// ---------------------------------------------------------------- the performance tier
-
 TEST(IopThreadPerformanceMask, TheSd865TierIsTheFourBigCores)
 {
 	// The three A77 are at 0.85 of the prime core, the A55 at 0.28.
@@ -146,7 +143,7 @@ TEST(IopThreadPerformanceMask, TheCutIsAtThreeQuartersOfTheFastestCore)
 
 TEST(IopThreadPerformanceMask, AMidTierBelowThePrimeCoreStaysInUntilItFallsUnderTheCut)
 {
-	// A715 at 855 beside an X3 at 1024 is 0.83; an A510 at 280 is 0.27 (the comment on the ratio).
+	// A715 at 855 beside an X3 at 1024 is 0.83; an A510 at 280 is 0.27.
 	std::vector<CpuCapacity> cpus;
 	Add(cpus, 0, 3, 280);
 	Add(cpus, 3, 4, 855);
@@ -183,8 +180,6 @@ TEST(IopThreadPerformanceMask, AProcessorWithNoReadingIsNotInTheTier)
 	Add(cpus, 3, 1, 0);
 	EXPECT_EQ(PerformanceMask(cpus), 0x7u);
 }
-
-// ---------------------------------------------------------------- ResolveMode from a mask
 
 TEST(IopThreadHostInfo, TheCountIsTheNumberOfBitsInTheMask)
 {
@@ -250,8 +245,6 @@ TEST(IopThreadResolveFromMask, TheRealHostIsDescribedByItsOwnMask)
 	EXPECT_EQ(host.performance_cores, VMManager::Internal::GetPerformanceCoreCount());
 }
 
-// ---------------------------------------------------------------- the order pinned threads take processors in
-
 namespace
 {
 	using IopThread::OrderProcessors;
@@ -269,7 +262,7 @@ namespace
 TEST(IopThreadProcessorOrder, TheSd865PutsThePrimeCoreFirstThenTheOtherThreeBigCores)
 {
 	// cpuinfo sees "8 cores, 8 processors, 1 clusters" and no frequencies on this device, so the order has to come from the
-	// capacity table. Before it did, the EE thread was pinned to cpu 0, a Cortex-A55.
+	// capacity table.
 	EXPECT_EQ(OrderProcessors(Sd865()), (ProcessorList{7, 4, 5, 6, 0, 1, 2, 3}));
 }
 
@@ -345,11 +338,9 @@ TEST(IopThreadProcessorOrder, EveryPinnedThreadLandsInThePerformanceTierOnTheTar
 	}
 }
 
-// ---------------------------------------------------------------- Android: the performance tier
-
 TEST(IopThreadPlaceTier, WithoutTheIopThreadTheCountsAreWhatTheyWere)
 {
-	// EE + GS, plus the VU1 thread. This is the arithmetic the mode used before the IOP thread existed.
+	// EE + GS, plus the VU1 thread: the counts when no IOP thread is placed.
 	const auto with_vu = IopThread::PlanTier(0xF0, true, false);
 	EXPECT_EQ(with_vu.threads_to_place, 3u);
 	EXPECT_TRUE(with_vu.tier_fits);
@@ -369,7 +360,7 @@ TEST(IopThreadPlaceTier, TheIopThreadIsOneMoreThreadToPlace)
 
 TEST(IopThreadPlaceTier, OnFourBigCoresWithMtvuTheGsBackThreadNoLongerFits)
 {
-	// The design accepts this (10.3): it was already so with MTVU on a three-big-core device.
+	// Accepted: the same happens with MTVU on a three-big-core device.
 	const auto plan = IopThread::PlanTier(0xF0, true, true);
 	EXPECT_TRUE(plan.tier_fits);
 	EXPECT_FALSE(plan.back_thread_fits);
@@ -397,11 +388,9 @@ TEST(IopThreadPlaceTier, TheEightCoreM2KeepsEveryThreadAndTheBackThread)
 	EXPECT_TRUE(plan.back_thread_fits);
 }
 
-// ---------------------------------------------------------------- Android: the ranked modes
-
 namespace
 {
-	// The old table, row by row: {ee, vu, gs} for modes 1 to 6.
+	// Ranks {ee, vu, gs} for modes 1 to 6, row by row.
 	constexpr int kOldRanks[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {2, 0, 1}, {1, 2, 0}, {2, 1, 0}};
 } // namespace
 
@@ -419,7 +408,7 @@ TEST(IopThreadPlaceRanks, WithoutTheIopThreadEveryModeKeepsItsOldRanks)
 
 TEST(IopThreadPlaceRanks, WithMtvuOffGsTakesTheVuRankWhenVuRankedHigher)
 {
-	// The existing rule: no VU thread to place, so GS inherits its slot when it ranked above GS.
+	// No VU thread to place, so GS takes its slot when VU ranked above GS.
 	EXPECT_EQ(IopThread::PlanRanks(1, false, false, 8).gs, 1); // EE>VU>GS: VU is rank 1, GS was 2
 	EXPECT_EQ(IopThread::PlanRanks(3, false, false, 8).gs, 0); // VU>EE>GS: VU is rank 0
 	EXPECT_EQ(IopThread::PlanRanks(5, false, false, 8).gs, 0); // GS>EE>VU: GS already first
@@ -473,8 +462,6 @@ TEST(IopThreadPlaceRanks, AListTooShortToHoldTheIopThreadLeavesItUnplaced)
 	EXPECT_EQ(IopThread::PlanRanks(1, true, true, 3).iop, -1);
 	EXPECT_EQ(IopThread::PlanRanks(1, false, true, 2).iop, -1);
 }
-
-// ---------------------------------------------------------------- desktop: the ordered list
 
 TEST(IopThreadPlaceOrdered, WithoutTheIopThreadTheSlotsAreWhatTheyWere)
 {
@@ -537,8 +524,6 @@ TEST(IopThreadPlaceOrdered, AListWithNoSlotLeftForTheIopThreadLeavesItUnplaced)
 	// An unplaced thread does not push the software renderer's threads down.
 	EXPECT_EQ(IopThread::PlanOrdered(3, true, true).first_software_thread, 3u);
 }
-
-// ---------------------------------------------------------------- the thread's own handle
 
 namespace
 {
@@ -605,8 +590,6 @@ TEST(IopThreadHandle, OnlyAThreadedThreadCountsWhenThreadsAreCounted)
 	EXPECT_FALSE(IopThread::PlacesThread());
 	EXPECT_EQ(IopThread::PlacementToken(), 0u);
 }
-
-// ---------------------------------------------------------------- the prime core
 
 namespace
 {

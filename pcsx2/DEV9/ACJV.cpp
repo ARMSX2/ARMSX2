@@ -32,7 +32,7 @@ enum ACJVCMD {
 bool ACJV::enabled = false;
 void do_acjv_packet();
 
-// R/W arrays are u8 because ACJV is processing (u8) arrays, but the MMIO is performed over (volatile u16*). leaving the higher byte empty
+// u8 arrays because ACJV processes u8 data, while MMIO goes through u16 words (higher byte left empty).
 std::array<u8, ACJV_PACKETSIZE> rdbuf; // NAMCO_PCB ---> IOP
 std::array<u8, ACJV_PACKETSIZE> wrbuf; // IOP --> NAMCO_PCB
 inline u16* rdbuf_getu16() { // NAMCO_PCB ---> IOP
@@ -191,7 +191,6 @@ void ACJV::ToggleDIPSwitchState(u32 index)
 	s_dip_switch_state ^= mask;
 }
 
-// Fixed JVS switches a macro can fire (configurable without a running game).
 static constexpr ACJV::JvsMacroSwitch s_jvs_macro_switches[] = {
 	{"Button1", "Button 1", JVS_BTN_1},
 	{"Button2", "Button 2", JVS_BTN_2},
@@ -338,12 +337,10 @@ void ACJV::SetDefaultConfiguration(SettingsInterface& si)
 	si.SetIntValue(CONFIG_SECTION, "SindenBorderThickness", 10);
 }
 
-// The game reading the JVS board: return the requested word from its read buffer (rdbuf).
 u16 ACJV::Read16(u32 addr) {
     if (addr >= ACJV_RDBASE && addr < 0x124045FE) {
         int x = (addr - ACJV_RDBASE)/2;
-        // El_isra's initial-polling scaffold, disabled (tested OK without it):
-        // if (x == 2 || x == 3 || x == 4) return rdbuf.at(x)|1;// initial polling expects these addrs to not be zero
+        // The original port forced words 2-4 non-zero here for the game's initial polling; not needed.
         return (u16)rdbuf.at(x);
     } else if ((addr == 0x124045FE)) {
 		return (u16)rdbuf.at((addr - ACJV_RDBASE)/2);
@@ -367,9 +364,8 @@ void ACJV::Write16(u32 addr, u16 val) {
 
 u16 ACJV::coin[2] = {0, 0};
 static u16 m_jvsSystemButtonState = 0;
-// ARMSX2: atomic, because the Android pad bridge sets these from the input thread while the CPU thread
-// sets the gun sensor bit in the same word (UpdateLightgunFromMouse); a plain |= / &= from both could
-// drop either change.
+// ARMSX2: atomic because the Android pad bridge (input thread) and UpdateLightgunFromMouse (CPU thread,
+// gun sensor bit) both modify the same word; a plain |= / &= from both could drop a change.
 static std::atomic<u16> m_jvsButtonState[JVS_PLAYER_COUNT] = {};
 static u8 m_testButtonState = 0;
 static u16 m_jvsScreenPosX[JVS_PLAYER_COUNT] = {};
@@ -384,7 +380,7 @@ static float m_wheelSteerL = 0.0f; // stick left   -> steering negative
 static float m_wheelGas    = 0.0f; // right trigger (R2)
 static float m_wheelBrake  = 0.0f; // left trigger  (L2)
 
-// Per-game JVS button mapping for lightgun games, keyed by NM game ID (see issue #9).
+// Per-game JVS button mapping for lightgun games, keyed by NM game ID.
 // Field order: pedal, sensor, sensor_active_high, p1_start, p2_start, p1_trigger, p2_trigger, board, link_2p
 // Each button value is a JVS bit from JVSButton enum. 0 = not used for this game.
 // link_2p: "LINK AS" cabinet side switch bit the game polls (TC3 reads Push3 as MIU-I/O, TC4 reads Push4).
@@ -433,8 +429,8 @@ static const std::map<std::string, RacingLayout> s_racing_layouts = {
 static const std::map<std::string, StandardLayout> s_standard_layouts = {
 	{"NM00009", StandardLayout::BASEBALL},    // Netchu Pro Baseball 2002
 	{"NM00006", StandardLayout::SMASHCOURT},  // Smash Court Pro Tournament
-	{"NM10003", StandardLayout::TECHNICBEAT}, // Technic Beat (unique unofficial gameid; NM00003 = Vampire Night, GameIndex PR #92)
-	{"NM00030", StandardLayout::GUNDAMQUIZ},  // Gundam Quiz Warrior (moved from Fighting: a quiz, not a fighter)
+	{"NM10003", StandardLayout::TECHNICBEAT}, // Technic Beat (unofficial gameid; NM00003 is Vampire Night)
+	{"NM00030", StandardLayout::GUNDAMQUIZ},  // Gundam Quiz Warrior
 	{"NM00037", StandardLayout::INUFUKU},     // Quiz Suku Suku Inufuku 2
 };
 
@@ -452,7 +448,6 @@ static constexpr const char* s_touch_games[] = { // V290 FCB touch panel games
 	"NM00036", // Zenno Training (Whole Brain)
 };
 
-// Derive the JVS device mode from the gameid alone (jvsmode= is an optional override, see VMManager).
 JVS_MODE ACJV::ResolveModeFromGameId(const std::string& gameid)
 {
 	if (s_racing_layouts.count(gameid))   return JVS_MODE::DRIVE;
@@ -549,7 +544,6 @@ std::span<const ACJV::RacingLayoutInfo> ACJV::GetRacingLayouts()
 	return s_racing_layout_ui;
 }
 
-// Gamepad input -> JVS button state: set or clear a button bit for a player
 void ACJV::SetButtonState(u32 player, u16 mask, bool pressed)
 {
 	if (player >= JVS_PLAYER_COUNT)
@@ -568,7 +562,6 @@ void ACJV::SetMacroState(u32 player, u32 index, bool active)
 	RecomputeMacroState(player);
 }
 
-// Gamepad coin button -> increment JVS coin counter for P1 (slot 0) or P2 (slot 1)
 void ACJV::InsertCoin(u32 slot)
 {
 	if (slot == 0)
@@ -615,7 +608,6 @@ JVS_MODE ACJV::GetMode()
 	return m_jvsMode;
 }
 
-// Host steering, -1 (full left)...+1 (full right). GetGas/GetBrake: 0...1.
 float ACJV::GetSteer()
 {
 	return std::clamp(m_wheelSteerR - m_wheelSteerL, -1.0f, 1.0f);
@@ -645,13 +637,12 @@ void ACJV::SetScreenPos(u16 x, u16 y)
 	m_jvsScreenPosY[0] = y;
 }
 
-// Called from VMManager on game boot. Resets all JVS state and selects per-game I/O config.
 const std::string& ACJV::GetGameId() { return s_gameid; }
 
+// Called from VMManager on game boot: resets the JVS input state and selects the per-game I/O config.
 void ACJV::SetGameId(const std::string& gameid)
 {
 	s_gameid = gameid;
-	// Clean slate: zero all input state on game switch within the emulator
 	ACUART::SetupGameHandler(gameid);
 	ACJV::coin[0] = 0;
 	ACJV::coin[1] = 0;
@@ -674,9 +665,8 @@ void ACJV::SetGameId(const std::string& gameid)
 		for (u32 i = 0; i < NUM_JVS_MACROS; i++)
 			s_jvs_macros[p][i].active = false;
 	}
-	ArcadeInput::Reset(); // ARMSX2: the controller side of the same clean slate
+	ArcadeInput::Reset();
 
-	// Select per-game gun mapping, or fall back to default
 	auto it = s_gun_mappings.find(gameid);
 	if (it != s_gun_mappings.end())
 	{
@@ -686,7 +676,6 @@ void ACJV::SetGameId(const std::string& gameid)
 	else
 		m_gunMapping = &s_default_gun_mapping;
 
-	// Log the running game's layout (buttons come from GetFighting/Racing/StandardButtons).
 	if (const std::string lk = GetCurrentLayoutKey(); !lk.empty())
 		Console.WriteLn("ACJV: layout for %s: %s", gameid.c_str(), lk.c_str());
 
@@ -1084,7 +1073,6 @@ void do_jvs_packet(const u8* input, u8* output) {
 
 			(*output++) = JVS_CMD_SUCCESS;
 			(*output++) = m_testButtonState|(s_dip_switch_state & TESTMODE);
-			//(*output++) = (m_jvsSystemButtonState == 0x03) ? 0x80 : 0;  //Test
 
 			u16 p1btn = m_jvsButtonState[0].load(std::memory_order_relaxed) | m_jvsMacroButtonState[0];
 			if (s_lightgun_link_2p)
@@ -1092,9 +1080,6 @@ void do_jvs_packet(const u8* input, u8* output) {
 			(*output++) = static_cast<u8>(p1btn);      //Player 1
 			(*output++) = static_cast<u8>(p1btn >> 8); //Player 1
 			(*dstSize) += 4;
-
-			//if (m_jvsButtonState[0])
-			//	Console.WriteLn("JVS P1 buttons: %04X coin:%d", m_jvsButtonState[0].load(), ACJV::coin[0]);
 
 			if(playerCount == 2)
 			{
@@ -1141,7 +1126,6 @@ void do_jvs_packet(const u8* input, u8* output) {
 
 			JVS_ASSERT(slotCount >= 1);
 			JVS_ASSERT(slotCount <= 2);
-			//inWorkChecksum += slotCount;
 			inSize -= 3;
 
 			if(slotCount == 1) ACJV::coin[0] += (amountMSB << 8) + amountLSB;
@@ -1161,7 +1145,6 @@ void do_jvs_packet(const u8* input, u8* output) {
 
 			JVS_ASSERT(slotCount >= 1);
 			JVS_ASSERT(slotCount <= 2);
-			//inWorkChecksum += slotCount;
 			inSize -= 3;
 
 			if(slotCount == 1) ACJV::coin[0] -= (amountMSB << 8) + amountLSB;
@@ -1343,14 +1326,11 @@ void do_jvs_packet(const u8* input, u8* output) {
 		}
 		break;
 		default:
-			//Unknown command
-			// Console.Error("ACJV::%s: unknown JVS CMD 0x%X", __FUNCTION__, cmd);
 			break;
 		}
 	}
 	u8 inChecksum = (*input);
-	// if (inChecksum != (inWorkChecksum & 0xFF))
-	//     Console.Warning("ACJV::%s: checksum mismatch: %02X | %02X", __FUNCTION__, inChecksum, inWorkChecksum&0xFF);
+	// The checksum accumulated above is not verified.
 }
 
 
@@ -1360,7 +1340,6 @@ static u16 JvFirmwareVersion() {
 	return (s_gameid == "NM00015") ? 0x213 : (s_gameid == "NM00010") ? 0x210 : 0x208;
 }
 
-// Prime the JVS board firmware-version register when ACJV starts (BG3 Tuned polls it before any command).
 void ACJV::OnBoardStart() {
 	rdbuf_getu16()[1] = JvFirmwareVersion();
 }

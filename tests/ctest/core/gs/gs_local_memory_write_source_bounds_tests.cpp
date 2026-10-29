@@ -8,9 +8,7 @@
 // always: the transfer buffer is much larger than most transfers, and a heap block is followed by another
 // block. It faults when the source ends where a mapping does. Here every source ends exactly at the end of
 // a mapped page, the page after it is inaccessible, and a read past the end is caught and reported with the
-// transfer that made it. This is what killed gs_vertex_tests with a bus error on the macOS Nightly run of
-// 0d525e4bdb: GSLocalMemoryWriteStamps.TheRectangleOfAnImageWriteCoversEveryPageItChanges hands a
-// std::vector's worth of bytes to every writer, and a 24-bit write read one byte past it.
+// transfer that made it.
 //
 // The same is done for the start: every source is also placed so that it begins exactly at the start of a mapped
 // page, with an inaccessible page before it, so a read of the byte before the source is caught too. PSMT4's
@@ -37,7 +35,6 @@
 
 namespace
 {
-	// Every format a surface can have in local memory.
 	constexpr u32 kPsms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMT8, PSMT4, PSMT8H, PSMT4HL, PSMT4HH, PSMZ32, PSMZ24, PSMZ16, PSMZ16S};
 
 	// Every format but PSMT4HL and PSMT4HH, which have cases of their own below.
@@ -199,8 +196,7 @@ namespace
 		void SetUp() override { m_mem = std::make_unique<GSLocalMemory>(); }
 
 		/// Runs the writer on a source that ends at a guard page, and again on one that starts at a guard page; true when
-		/// it stayed inside the source both times. A read past the end or before the start is reported as a failure that
-		/// names the transfer.
+		/// it stayed inside the source both times. A violation is reported as a failure that names the transfer.
 		bool ExpectInsideItsSource(const Transfer& t)
 		{
 			for (const Edge edge : {Edge::End, Edge::Start})
@@ -261,8 +257,8 @@ namespace
 			}
 		}
 
-		// The sweep GSLocalMemoryWriteStamps.TheRectangleOfAnImageWriteCoversEveryPageItChanges makes, which is
-		// where the bus error was: random formats, block addresses, widths and rectangles.
+		// The sweep GSLocalMemoryWriteStamps.TheRectangleOfAnImageWriteCoversEveryPageItChanges makes: random
+		// formats, block addresses, widths and rectangles.
 		template <size_t N>
 		void Random(const u32 (&psms)[N])
 		{

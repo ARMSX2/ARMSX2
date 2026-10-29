@@ -20,7 +20,7 @@ enum
 	preClampFrom = 2,
 };
 
-// The AX-14 lane-fold multiply: Fs *= Ft[lane], by element, as a vector or as
+// The lane-fold multiply: Fs *= Ft[lane], by element, as a vector or as
 // a scalar for the single-lane forms.
 static __fi void mVUemitLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane, bool scalar);
 
@@ -97,8 +97,6 @@ static __fi void mVUclampStepOperands(mV, const a64::VRegister& to, const a64::V
 {
 	if (!clampE)
 		return;
-	// A single-lane step is scalar arithmetic into `to` (mVUclampOperands'
-	// scalarDst).
 	mVUclampOperands(mVU, {(preClamped & preClampFrom) ? a64::NoVReg : from,
 	                       (preClamped & preClampTo) ? a64::NoVReg : to}, xyzw, true,
 	                 (xyzw == 0x8) ? to : a64::NoVReg);
@@ -481,7 +479,7 @@ static __fi bool mVUlaneMulIsIdentity(mV, const a64::VRegister& Fs, int opCase, 
 	       && mVU.regAlloc->checkVFClamp(Fs.GetCode());
 }
 
-// The AX-14 lane-fold multiply of an FMAC body, unless it is the identity.
+// The lane-fold multiply of an FMAC body, unless it is the identity.
 // `scalar`: the body computes its one lane in lane 0 (the rotated form).
 static __fi void mVUemitBodyLaneMul(mV, const a64::VRegister& Fs, const a64::VRegister& Ft, int lane,
 	int opCase, int clampType, bool scalar)
@@ -493,21 +491,19 @@ static __fi void mVUemitBodyLaneMul(mV, const a64::VRegister& Fs, const a64::VRe
 // Whether a single-lane FMAC body computes its lane in place, full width,
 // instead of rotating it (and ACC) to lane 0 for scalar arithmetic and back.
 // Each lane of a vector op is the scalar op on that lane's words, so the
-// written lane is the same word either way, and the other lanes of a
-// single-lane destination are dead: allocReg's natural slots write back and
-// merge just the one lane, from its own place, and mVUupdateFlags takes the
-// single-scalar weights from that lane (ssLane), so every MAC and STATUS bit
-// lands where the rotated form puts it. Below clampE, so the only clamp of
-// the step is the body's own operand clamp, which runs full width on the
-// clone. At clampE the steps clamp ACC as an operand, and a full-width clamp
-// would rewrite ACC's other lanes in its cached register; X needs no
+// written lane is the same word either way. The other lanes of a single-lane
+// destination are dead: allocReg's natural slots write back and merge just
+// that lane, and mVUupdateFlags takes the single-scalar weights from it
+// (ssLane), so every MAC and STATUS bit is unchanged. Only below clampE,
+// where the step's only clamp is the body's own operand clamp, run full width
+// on the clone; at clampE the steps clamp ACC as an operand, and a full-width
+// clamp would rewrite ACC's other lanes in its cached register. X needs no
 // rotation in the first place. The TriAce ADDi path reads lane 0 by hand.
 static __fi bool mVUssNatural(mV, int opType)
 {
 	return _XYZW_SS2 && !clampE && !(opType == 5 && CHECK_VUADDSUBHACK && !CHECK_VU_EXACT(mVU.index));
 }
 
-// The lane a single-lane op writes, by index (X = 0).
 static __fi int mVUssLane(mV)
 {
 	return _X ? 0 : (_Y ? 1 : (_Z ? 2 : 3));
@@ -811,7 +807,7 @@ static void mVU_FMACa(microVU& mVU, int recPass, int opCase, int opType, bool is
 		                       (clampType & cFs) ? Fs : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
 		                 (scalar && opType != 3 && opType != 4) ? Fs : a64::NoVReg);
 
-		// AX-14 fold (== broadcast + NEON_MULPS/SS under the no-clamp gate).
+		// Lane fold (== broadcast + NEON_MULPS/SS under the no-clamp gate).
 		// MAX/MINI with VF0 on either side: see mVUemitMaxMinSignClear. Ft
 		// holds VF0 itself, its broadcast lane, or (single lane) its rotated
 		// lane; Fs, a clone of it.
@@ -886,7 +882,6 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		if (_XYZW_SS2 && !natural)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
-		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
 		                       (clampType & cFs) ? Fs : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
 		                 scalar ? Fs : a64::NoVReg);
@@ -896,7 +891,7 @@ static void mVU_FMACb(microVU& mVU, int recPass, int opCase, int opType, microOp
 		const bool prodClamped = (bcLane < 0) && !CHECK_VU_SIGN_OVERFLOW(mVU.index);
 
 		// Step 1: Multiply Fs * Ft
-		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		if (bcLane >= 0)   mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar);
 		else if (scalar)   NEON_SS[2](mVU, Fs, Ft, 0);
 		else               NEON_PS[2](mVU, Fs, Ft, 0);
 
@@ -981,7 +976,6 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (_XYZW_SS2 && !natural)
 			shuffleSSto0(ACC, offsetReg); // Rotate target lane to lane 0
 
-		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
 		                       (clampType & cFs) ? Fs : a64::NoVReg,
 		                       (clampType & cACC) ? ACC : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
@@ -991,7 +985,7 @@ static void mVU_FMACc(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fs = Fs + ACC
-		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar);
 		else if (scalar) NEON_SS[2](mVU, Fs, Ft, 0);
 		else             NEON_PS[2](mVU, Fs, Ft, 0);
 		if (scalar) NEON_SS[0](mVU, Fs, ACC, prodClamped ? preClampTo : 0);
@@ -1038,7 +1032,6 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 		if (!natural)
 			Fd = mVU.regAlloc->allocReg(32, _Fd_, _X_Y_Z_W);
 
-		// Step 1's single-lane multiply writes Fs with scalar arithmetic.
 		mVUclampOperands(mVU, {((clampType & cFt) && bcLane < 0) ? Ft : a64::NoVReg,
 		                       (clampType & cFs) ? Fs : a64::NoVReg,
 		                       (clampType & cACC) ? Fd : a64::NoVReg}, natural ? 0xf : _X_Y_Z_W, false,
@@ -1048,7 +1041,7 @@ static void mVU_FMACd(microVU& mVU, int recPass, int opCase, microOpcode opEnum,
 
 		// Step 1: Fs = Fs * Ft
 		// Step 2: Fd = Fd - Fs  (Fd starts as ACC)
-		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar); // AX-14 fold
+		if (bcLane >= 0) mVUemitBodyLaneMul(mVU, Fs, Ft, bcLane, opCase, clampType, scalar);
 		else if (scalar) NEON_SS[2](mVU, Fs, Ft, 0);
 		else             NEON_PS[2](mVU, Fs, Ft, 0);
 		if (natural)

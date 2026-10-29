@@ -26,7 +26,6 @@ namespace
 		return QString::fromStdString(Host::TranslateToString("Arcade", text));
 	}
 
-	// A Job::label is translated already.
 	bool JobHasButton(const ArcadeInput::Job& job, GIB button)
 	{
 		return std::find(job.buttons.begin(), job.buttons.end(), button) != job.buttons.end();
@@ -266,8 +265,8 @@ void ArcadeControlsSettingsWidget::onResetClicked()
 
 void ArcadeControlsSettingsWidget::saveRemap(const ArcadeInput::Remap& remap)
 {
-	// Through the window, so the setting goes to the game's file or the global settings as on every other page, and a
-	// running game picks the layout up.
+	// Goes through the window so it lands in the game's file or the global settings like every other
+	// page, and a running game picks it up.
 	const std::string text = ArcadeInput::RemapToString(remap);
 	if (text.empty())
 		dialog()->setStringSettingValue(ArcadeInput::REMAP_SECTION, ArcadeInput::REMAP_KEY, std::nullopt);

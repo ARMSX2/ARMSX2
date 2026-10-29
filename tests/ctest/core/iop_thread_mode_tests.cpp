@@ -1,13 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The IOP-thread settings and IopThread::ResolveMode.
-//
-// The IOP-thread work moves the PS2's I/O processor onto its own host thread. Nothing in this
-// file runs a thread. It covers the three INI keys, the game database key, and the pure function
-// that turns "what the player asked for" plus "what this host and this game can do" into one of
-// Off, Lockstep or Threaded. ResolveMode is a pure function so that a device can be described by a
-// struct here instead of owned by whoever runs the test.
+// The IOP-thread settings (three INI keys, one game database key) and IopThread::ResolveMode, the
+// pure function that maps the requested mode plus host and VM conditions to Off, Lockstep or
+// Threaded. A device is described by a HostCpuInfo struct here; nothing in this file runs a thread.
 
 #include <gtest/gtest.h>
 
@@ -37,8 +33,8 @@ namespace
 		return host;
 	}
 
-	// The rows of design section 10.2's device table. performance_cores is what
-	// GetPerformanceCoresMask() counts on the device: cores of at least 0.75 of the fastest.
+	// One row per target device. performance_cores is what GetPerformanceCoresMask() counts on the
+	// device: cores of at least 0.75 of the fastest.
 	const HostCpuInfo kSd865 = Host(true, 8, 4); // 1 prime + 3 A77, 4 A55
 	const HostCpuInfo kMq65 = Host(true, 8, 4); // 4 A73, 4 A53
 	const HostCpuInfo kDimensity8300 = Host(true, 8, 4);
@@ -77,8 +73,6 @@ namespace
 	}
 } // namespace
 
-// ---------------------------------------------------------------- defaults
-
 TEST(IopThreadMode, TheDefaultIsOff)
 {
 	const Pcsx2Config config;
@@ -98,12 +92,10 @@ TEST(IopThreadMode, AnEmptySettingsFileLoadsAsOff)
 
 TEST(IopThreadMode, TheDefaultLagIsTwentyFourThousandFiveHundredSeventySixCycles)
 {
-	// Eight times the longest the EE runs between event tests (owner, 2026-10-19).
+	// Eight times kEeWaitCycles, the longest the EE runs between event tests.
 	EXPECT_EQ(IopThread::kDefaultLag, 24576);
 	EXPECT_EQ(Pcsx2Config().Speedhacks.iopThreadLag, 24576);
 }
-
-// ---------------------------------------------------------------- the three modes
 
 TEST(IopThreadMode, TheEnableFlagAloneGivesThreaded)
 {
@@ -121,8 +113,6 @@ TEST(IopThreadMode, TheLockstepFlagWithoutTheEnableFlagIsOff)
 	EXPECT_EQ(Resolve(false, true, true, kSd865), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(false, false, true, kSd865), IopThreadMode::Off);
 }
-
-// ---------------------------------------------------------------- forced Off
 
 TEST(IopThreadMode, PS1ModeForcesOff)
 {
@@ -173,9 +163,8 @@ TEST(IopThreadMode, ANonArm64HostForcesThreadedOff)
 
 TEST(IopThreadMode, ANonArm64HostForcesLockstepOffToo)
 {
-	// Manager decision, 2026-10-13 (step 8), superseding the step 3 rule that Lockstep resolves on
-	// any host: the x86 IOP JIT has not been audited for running on another thread, and x86 is
-	// not a target for this feature. Neither mode resolves there, whatever the core count.
+	// The x86 IOP JIT has not been audited for running on another thread, and x86 is not a target
+	// for this feature. Neither mode resolves there, whatever the core count.
 	const HostCpuInfo x86_desktop = Host(false, 16, 8);
 	EXPECT_EQ(Resolve(true, true, true, x86_desktop), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, true, false, x86_desktop), IopThreadMode::Off);
@@ -210,8 +199,6 @@ TEST(IopThreadMode, AllTheForcingConditionsAtOnceIsOff)
 	vm.ps1_mode = vm.arcade = vm.gs_dump_replay = vm.iop_breakpoints = vm.recompiler_test_harness = true;
 	EXPECT_EQ(Resolve(true, true, true, Host(false, 4, 4), vm), IopThreadMode::Off);
 }
-
-// ---------------------------------------------------------------- the device table (design 10.2)
 
 TEST(IopThreadModeDevices, TheSd865IsOn)
 {
@@ -253,7 +240,7 @@ TEST(IopThreadModeDevices, TheRk3562StillRunsLockstep)
 
 TEST(IopThreadModeDevices, TheSd662ClassIsOnButUntested)
 {
-	// Allowed by the owner (2026-10-12): it passes the core rule. Nobody has run it there.
+	// It passes the core rule, so Threaded is allowed; it has not been run on that hardware.
 	EXPECT_EQ(Resolve(true, false, true, kSd662), IopThreadMode::Threaded);
 }
 
@@ -282,8 +269,8 @@ TEST(IopThreadModeDevices, AHostThatCannotTellItsCoresApartIsOff)
 
 TEST(IopThreadModeDevices, LockstepIgnoresTheCoreRuleOnEveryHost)
 {
-	// Manager decision, 2026-10-13: Lockstep is a reference, so neither the core count nor the
-	// core type can switch it off. The first three rows are the ones that resolve either way.
+	// Lockstep is a reference mode, so neither the core count nor the core type switches it off.
+	// The first three rows resolve either way.
 	EXPECT_EQ(Resolve(true, true, true, kSd865), IopThreadMode::Lockstep);
 	EXPECT_EQ(Resolve(true, true, true, kM2Max), IopThreadMode::Lockstep);
 	EXPECT_EQ(Resolve(true, true, true, kM2), IopThreadMode::Lockstep);
@@ -349,8 +336,6 @@ TEST(IopThreadModeDevices, LockstepStillNeedsTheEnableFlag)
 	EXPECT_EQ(Resolve(false, true, true, Host(false, 1, 1)), IopThreadMode::Off);
 }
 
-// ---------------------------------------------------------------- the lag bound
-
 TEST(IopThreadModeLag, TheBoundsAreStrictlyAboveTheEventTestSpacing)
 {
 	// The EE checks the lag once per event test, and event tests are at most kEeWaitCycles apart.
@@ -364,10 +349,9 @@ TEST(IopThreadModeLag, TheBoundsAreStrictlyAboveTheEventTestSpacing)
 
 TEST(IopThreadModeLag, TheMinimumLeavesRoomForTheOvershootOfBothThreads)
 {
-	// Measured on the SD865 and MQ65 (iopthread/model/design-rules.md, "L just above the longest
-	// event-test spacing"): an event test lands past its target by up to 81 cycles at the 90th
-	// percentile, and the IOP ends its last block up to 57 cycles past what it was given. The
-	// floor keeps a margin of at least seven times their sum.
+	// 90th-percentile overshoot on the SD865 and MQ65: an event test lands up to 81 cycles past its
+	// target, and the IOP ends its last block up to 57 cycles past what it was given. The floor keeps
+	// a margin of at least seven times their sum.
 	constexpr int kEeOvershootP90 = 81;
 	constexpr int kIopOvershootP90 = 57;
 	EXPECT_GE(IopThread::kMinLag - IopThread::kEeWaitCycles, 7 * (kEeOvershootP90 + kIopOvershootP90));
@@ -375,8 +359,8 @@ TEST(IopThreadModeLag, TheMinimumLeavesRoomForTheOvershootOfBothThreads)
 
 TEST(IopThreadModeLag, TheMaximumIsSmallEnoughForTheEeToIopQueueAndBelowAMillisecond)
 {
-	// 4.9 million EE cycles per frame at 60 Hz, about 527 posts per frame into a 1024-entry queue
-	// (design 3.4.2): a window of the maximum lag holds a few dozen posts at most.
+	// About 527 posts per frame go into a 1024-entry queue, so a window of the maximum lag holds a
+	// few dozen posts at most.
 	constexpr double kEeCyclesPerFrame = 294912000.0 / 60.0;
 	constexpr double kPostsPerFrame = 527.0;
 	constexpr double kQueueEntries = 1024.0;
@@ -391,7 +375,7 @@ TEST(IopThreadModeLag, ValuesAtOrBelowTheEventTestSpacingAreRaisedToTheMinimum)
 	EXPECT_EQ(ClampLag(IopThread::kEeWaitCycles + 1), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(3200), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(IopThread::kMinLag - 1), IopThread::kMinLag);
-	EXPECT_EQ(ClampLag(512), IopThread::kMinLag); // the lower bound design 10.1 first gave
+	EXPECT_EQ(ClampLag(512), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(1), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(0), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(-1), IopThread::kMinLag);
@@ -441,8 +425,6 @@ TEST(IopThreadModeLag, ALagTheFileDoesNotNameIsTheDefault)
 	si.SetBoolValue("EmuCore/Speedhacks", "iopThread", true);
 	EXPECT_EQ(LoadHacks(si).iopThreadLag, 24576);
 }
-
-// ---------------------------------------------------------------- the INI keys
 
 TEST(IopThreadSetting, TheKeysLiveInTheSpeedhacksSectionAndRoundTrip)
 {
@@ -544,8 +526,6 @@ TEST(IopThreadSetting, NoOtherSpeedhackBitMoved)
 	EXPECT_EQ(only([](auto& h) { h.iopThread = true; }), 1u << 6);
 	EXPECT_EQ(only([](auto& h) { h.iopThreadLockstep = true; }), 1u << 7);
 }
-
-// ---------------------------------------------------------------- the game database key
 
 TEST(IopThreadGameDB, TheHackHasAnIniNameAndAGameDatabaseName)
 {

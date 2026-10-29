@@ -3,20 +3,16 @@
 
 // mVUclear must drop exactly the quick slots a full scan of quick[] would.
 //
-// mVUclear runs on every micro-memory write. Its quick-slot pass used to
-// visit all progSize/2 slots (2048 on VU1) to find the handful that hold a
-// program; it now visits only the occupied ones. That is a pure speed change,
-// so the behaviour pinned here is the old one: after a Clear of
-// [addr, addr+size), slot S is empty iff it was empty before or its
-// program's compiled ranges overlap the write — the per-slot rule the full
-// scan applied (QuickSlotWouldDrop). Nothing else may move.
+// After a Clear of [addr, addr+size), slot S is empty iff it was empty before
+// or its program's compiled ranges overlap the write (QuickSlotWouldDrop).
+// Nothing else may move.
 //
-// The danger of an occupied-slot index is an index that misses a slot: the
-// slot then survives a write that should have invalidated it, and the next
-// dispatch runs stale code with no diagnostic. So alongside the slot-set
-// comparison the test rewrites program bytes and checks the NEW code runs
-// after the Clear, and checks that the index (prog.quickOcc) agrees bit for
-// bit with a full scan of quick[] after every dispatch, Clear and reset.
+// mVUclear visits only the occupied slots, tracked by prog.quickOcc. An index
+// that misses a slot lets it survive a write that should have invalidated it,
+// and the next dispatch runs stale code with no diagnostic. So besides the
+// slot-set comparison, the test rewrites program bytes and checks the new code
+// runs after the Clear, and checks that quickOcc agrees bit for bit with a full
+// scan of quick[] after every dispatch, Clear and reset.
 //
 // Setup: eight tiny E-bit programs at evenly spaced PCs, each leaving a
 // distinct value in vi3, dispatched through the production path so each owns
@@ -101,7 +97,6 @@ void Dispatch(const VuUnderTest& v, u32 pc)
 	v.Cpu()->Execute(kBigBudget);
 }
 
-// Dispatch program i and check it left `value + 1` in vi3 and holds a slot.
 void RunAndCheck(const VuUnderTest& v, u32 i, u32 value, const char* what)
 {
 	vuRegs[v.idx].VI[vi::vi3].UL = 0;
@@ -247,13 +242,10 @@ void RunScenario(int vu_index)
 	EXPECT_GT(stats.dropped, 100u);
 	EXPECT_GT(stats.kept, 100u);
 
-	// A write over the whole micro memory drops every slot.
 	ClearAndCompare(v, 0, v.MicroBytes(), "whole memory", expect, stats);
 	BAIL_ON_FATAL();
 	EXPECT_EQ(mvu_test_hooks::QuickSlotCount(vu_index), 0u);
 
-	// A clear with nothing occupied changes nothing, and the next dispatches
-	// install slots again.
 	v.Cpu()->Clear(0x40, 8);
 	EXPECT_EQ(mvu_test_hooks::QuickSlotCount(vu_index), 0u);
 	for (u32 i = 0; i < kPrograms; i++)
@@ -263,8 +255,6 @@ void RunScenario(int vu_index)
 	}
 	ASSERT_EQ(mvu_test_hooks::QuickSlotCount(vu_index), kPrograms);
 
-	// A reset empties every slot; dispatching rebuilds them, and a clear
-	// afterwards still invalidates what it should.
 	RecompilerTestEnvironment::ResetVuBlockCache(vu_index);
 	EXPECT_EQ(mvu_test_hooks::QuickSlotCount(vu_index), 0u);
 	EXPECT_TRUE(mvu_test_hooks::QuickOccupancyMatchesScan(vu_index));

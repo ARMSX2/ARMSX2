@@ -4,12 +4,12 @@
 #pragma once
 
 // The "Backups..." window of the Memory Cards page: the snapshots MemcardBackup has taken of one card,
-// newest first, with Restore and Back Up Now. Reading the snapshot list, restoring and backing up all
-// run on a worker thread (they hash and unpack the whole card); the window stays responsive meanwhile.
+// newest first, with Restore and Back Up Now. Reading the list, restoring and backing up run on a
+// worker thread because they hash and unpack the whole card.
 //
 // Restoring and backing up are refused by the service while a VM exists (the console keeps its own
 // picture of the card in guest memory), so both buttons are disabled with an explanation while a game
-// runs. The state is read when the window opens and again after each action.
+// runs.
 
 #include "pcsx2/SIO/Memcard/MemcardBackup.h"
 

@@ -68,8 +68,7 @@ fun TextureManagerScreen(onBack: () -> Unit, viewModel: TextureManagerViewModel 
             ArmsTopBar(
                 title = str("renderer.section.texturePacks"),
                 subtitle = state.activeSerial ?: str("games.info.perGameSettings.body"),
-                // Reachable by the controller, so Up from the first control comes back to the top of
-                // the screen, which no control above it used to let it scroll to.
+                // Controller-reachable, so Up from the first control scrolls back to the top of the screen.
                 leading = { RoundAction("←", str("action.back"), onBack, controllerId = "textureMgr.top.back") },
                 actions = {
                     // Providers label .tar.zst inconsistently (application/zstd, octet-stream, or

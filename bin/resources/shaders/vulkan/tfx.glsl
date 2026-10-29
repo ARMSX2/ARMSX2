@@ -189,7 +189,6 @@ ProcessedVertex load_vertex(uint index)
 
 		vtx.t.xy = st;
 		#if VS_SPRITE_EDGE_CLAMP
-			// An FST sprite's ST carries its far-edge sample limit, normalised like the UV.
 			vtx.t.xy = st * TextureScale;
 		#endif
 		vtx.t.w = a_q;

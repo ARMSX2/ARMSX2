@@ -251,7 +251,6 @@ public class NativeApp {
 	/** Press/release one GUNCON_* binding on a port. */
 	public static native void usbLightgunButton(int port, int bind, boolean pressed);
 
-	// ---- Namco System 246/256 arcade games (.acgame) ----------------------------
 	/** Cabinet controls, from the core's JVS_MODE (pcsx2/DEV9/ACJV.h). */
 	public static final int ARCADE_MODE_GENERIC = 0;
 	public static final int ARCADE_MODE_LIGHTGUN = 1;
@@ -275,7 +274,6 @@ public class NativeApp {
 	/** The cabinet controls (ARCADE_MODE_*) the core gives a game ID such as NM00004. */
 	public static native int arcadeModeForGameId(String gameId);
 
-	/** Whether the running game is an arcade one. */
 	public static native boolean isArcadeSession();
 
 	/** A coin in player 1's (0) or player 2's (1) slot. */
@@ -287,7 +285,6 @@ public class NativeApp {
 	/** Flips the board's Test switch (the game's test menu). */
 	public static native void arcadeToggleTest();
 
-	/** Whether the Test switch is on. */
 	public static native boolean arcadeTestModeOn();
 
 	/** Whether a BIOS file is an arcade board's (COH-H). */
@@ -495,10 +492,9 @@ public class NativeApp {
 	 *  (applied on the CPU thread when the game is running). Returns null when the game has no
 	 *  file, else {hadRecord "1"/"0"} followed by kind, section, key, value for each key the record
 	 *  named. Kind "restored": put back, the value is what the file holds again (null: the key was
-	 *  deleted). Kind "absent": left alone because the key is not in the file, the value is what
-	 *  auto-tune wrote. Kind "changed": left alone because the file holds another value, the value
-	 *  is what auto-tune wrote. The app must do the same to its own copy of the game's settings
-	 *  (AutoTuneStore.applyReset). */
+	 *  deleted). Kind "absent" or "changed": left alone because the key is not in the file or the
+	 *  file holds another value, the value is what auto-tune wrote. The app must do the same to
+	 *  its own copy of the game's settings (AutoTuneStore.applyReset). */
 	public static native String[] autoTuneReset(String serial);
 
 	/** Called from native (the CPU thread) after auto-tune moved one setting into the game's
@@ -1055,7 +1051,7 @@ public class NativeApp {
 	// ---- Remote play (com.armsx2.remoteplay; core side in cpp/remote_play.cpp) ----
 	// The running game's frames and sound for the stream to a friend's device, pulled by the app's
 	// streaming threads (RemotePlayFrames, RemotePlayHost) so nothing calls into Java from the GS or
-	// SPU2 threads. Same calls and meanings as ARMSX3's, which the streaming code was written against.
+	// SPU2 threads. Same calls and meanings as ARMSX3's.
 	public static native boolean remotePlayStart(int maxWidth, int maxHeight);
 	public static native void remotePlayStop();
 	public static native int remotePlayPollVideo(java.nio.ByteBuffer buffer, int[] info, int timeoutMs);
@@ -1065,7 +1061,6 @@ public class NativeApp {
 	public static native void remotePlayDestroyImage(long image);
 	public static native void remotePlayReleaseFrame(int slot, int seq);
 	public static native void remotePlaySetHardware(boolean enabled);
-	/** Whether the game is paused, for the viewer's "your friend paused the game". */
 	public static native boolean remotePlayPaused();
 	// The host's router, asked to let the friend in for the session (UPnP): this device's address on
 	// the router's network or null, then the router's public "address:port" for a local UDP port or null.
@@ -1161,9 +1156,9 @@ public class NativeApp {
 	// in the savestate folder (see VMManager::SAVESTATE_SLOT_AUTOSAVE) so the
 	// numbered slots 0-9 stay user-controlled. saveAutosaveState is called
 	// from the in-game "Save State And Exit" menu; hasAutosaveState gates
-	// the load picker's autosave tile. That file is the newest autosave: saving moves the ones
-	// before it a place older, keeping `keep` (1-5) in all; the *At(n) calls reach the n-th newest
-	// (1 = the newest, 2 the one before it...) for the picker's tiles, null / false when there is none.
+	// the load picker's autosave tile. That file is the newest autosave: saving shifts the older
+	// ones back a place, keeping `keep` (1-5) in all. The *At(n) calls reach the n-th newest
+	// (1 = the newest) for the picker's tiles, null / false when there is none.
 	public static native boolean saveAutosaveState(int keep);
 	public static native boolean loadAutosaveState();
 	public static native boolean hasAutosaveState();

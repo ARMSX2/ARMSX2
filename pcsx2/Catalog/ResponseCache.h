@@ -18,9 +18,8 @@ namespace Catalog
 	/// the JSON itself) and the time it was fetched is the file's modification time: there is
 	/// no sidecar to fall out of step, and every Store() is atomic.
 	///
-	/// Freshness is the caller's policy: IsFresh() answers "is it younger than N" and Load()
-	/// returns the entry however old it is, which is how a stale copy serves as the offline
-	/// fallback.
+	/// Freshness is the caller's policy: IsFresh() tests the age and Load() returns the entry
+	/// however old it is, so a stale copy can serve as the offline fallback.
 	class ResponseCache
 	{
 	public:

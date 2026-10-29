@@ -331,11 +331,9 @@ TEST(VuReplay, Vu0ReplayRestoresRecordedVu1RegisterWindow)
 	EXPECT_EQ(result.interp_snapshot.regs.VI[2].US[0], 0x42u);
 }
 
-// VPU_STAT bit 12 says VU1's XGKICK is still transferring. The replay of a
-// program that left a kick running used to leave the bit set for the next
-// replay, whose VU1 VI[REG_VPU_STAT] copy then differed between two
-// replays of the same capture. The bit comes from the capture's own XGKICK
-// state.
+// VPU_STAT bit 12 says VU1's XGKICK is still transferring. A replay takes the bit from the
+// capture's own XGKICK state; a bit left set by a previous replay would make VU1's
+// VI[REG_VPU_STAT] differ between two replays of the same capture.
 TEST(VuReplay, ReplayDoesNotInheritXgkickBusyBitFromPreviousReplay)
 {
 	const auto rec = MakeVaddProgram(1);
@@ -408,8 +406,7 @@ TEST(VuReplay, RecordedVifStateClearsTheUnrecordedFlag)
 // The bench drivers run the JIT only, and microVU writes the host FPCR at
 // dispatch only when the EE and VU FPCRs differ, so a bench inherits its
 // caller's FPCR. They must set the VU FPCR themselves, as ReplayCapture
-// does, or they time arithmetic rounded differently from the game's (one
-// Armored Core 3 program looped to the cycle budget that way).
+// does, or they time arithmetic rounded differently from the game's.
 // (1 + 2^-23) * (1.5 + 2^-23) = 1.5 + 2.5 ulp + 2^-46: chop gives 1.5 + 2 ulp,
 // round-to-nearest gives 1.5 + 3 ulp.
 TEST(VuReplay, BenchDriversRunUnderTheVuFpcr)

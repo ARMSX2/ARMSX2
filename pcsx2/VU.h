@@ -198,7 +198,7 @@ struct alignas(16) VURegs
 
 	// The last three writes to a VI, newest first, for the earliest-write
 	// search in _vuBackupVI. These fill the 12 bytes of tail padding that
-	// alignas(16) leaves, so sizeof(VURegs) is what it was: microVU's emitted
+	// alignas(16) leaves, so they do not change sizeof(VURegs): microVU's emitted
 	// code reaches VU1's data memory through that size (kVU1MemFromState).
 	// Not part of a save state; a load drops them.
 	VIWriteRec VIWrites[3];
@@ -282,9 +282,9 @@ extern u32* GET_VU_MEM(VURegs* VU, u32 addr);
 
 // VU0's window onto VU1's registers is 64 quadwords (VF0-31, then VI0-31, selected by bit 0x400 of the
 // VI-based address): VU1's STATUS register, VI[16], is quadword 48. The vu-aot tier (ARM64 builds) drops
-// the sticky bits of STATUS from the programs it compiles until something reads them; a VU0 access to
+// the sticky bits of STATUS from the programs it compiles until something reads them. A VU0 access to
 // this quadword, by the interpreter (GET_VU_MEM) or by microVU0's code (mVUaddrFix), is one of those
-// reads, and says so here.
+// reads and reports it with vuAotNoteOutsideStatusRead().
 static constexpr u32 VU0_WINDOW_VU1_STATUS_QWORD = 32 + REG_STATUS_FLAG;
 // A new VM, booted or reset, starts with the tripwire armed again (a savestate load or a settings
 // change does not).

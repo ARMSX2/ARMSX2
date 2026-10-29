@@ -80,7 +80,7 @@ class AndroidGyroscopeInput(
     private val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var activeSensor: Sensor? = null
     private var activeKind = KIND_NONE
-    // The app is out of sight: the session stays, the sensor is unregistered. See setInSight.
+    // True while the app is out of sight. See setInSight.
     private var hidden = false
     private var mode = 0
     // Per axis (#592): the same value unless the player split them, and 0 turns that axis off.
@@ -148,8 +148,8 @@ class AndroidGyroscopeInput(
     /**
      * The app left the screen (false) or came back (true). Out of sight the sensor is off but the
      * session stays, so coming back carries on where it was. The caller's start/stop only runs on
-     * recomposition, which Compose holds back while the activity is stopped, so a pause that
-     * landed as the app left kept the sensor streaming into a locked device.
+     * recomposition, which Compose holds back while the activity is stopped, so it cannot be
+     * relied on to stop the sensor when the app leaves.
      */
     fun setInSight(inSight: Boolean) {
         if (hidden == !inSight) return

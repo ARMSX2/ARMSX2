@@ -11,8 +11,8 @@ import kr.co.iefriends.pcsx2.NativeApp
  * (Arcade controls, in All Settings > Controls and the pause menu's Controls). The jobs come from the core,
  * which knows each cabinet's controls (PCSX2x6's layouts); a button given another job stands in for that
  * job's own button there (NativeApp.setArcadeRemap). There is a layout for every arcade game (All arcade
- * games: the pad button each button acts as) and one per game on top of it, button by button. A game with
- * nothing changed plays as it always did, and the sticks and analog pedals stay where they are.
+ * games: the pad button each button acts as) and one per game on top of it, button by button. The sticks
+ * and analog pedals stay where they are.
  */
 object ArcadeControls {
     /** A job: its name, the pad keys doing it by default (the first stands in for it), and whether it is
@@ -23,14 +23,13 @@ object ArcadeControls {
 
     /** A game's jobs, and the mode its cabinet plays in (ACJV's JVS_MODE). */
     data class Layout(val mode: Int, val jobs: List<Job>) {
-        /** The job [key] does when nothing is changed, if any. */
         fun defaultJob(key: Int): Job? = jobs.firstOrNull { key in it.keys }
     }
 
     /** The job of a button that does nothing on the cabinet. */
     const val NOTHING = -1
 
-    /** The layout every arcade game starts from (All arcade games), where a per-game one would be. */
+    /** Layout id of the All arcade games layout, used where a game id would be. */
     const val GLOBAL = "global"
 
     // ACJV's JVS_MODE values, for what the settings say about the sticks.
@@ -42,7 +41,6 @@ object ArcadeControls {
     /** The pad's buttons, in the order the settings list them: pad keycodes (applyPadButton's). */
     val buttons: List<Int> = listOf(19, 20, 21, 22, 96, 97, 99, 100, 102, 103, 104, 105, 106, 107, 108, 109)
 
-    /** A pad button's name, as the controller settings name it. */
     fun buttonName(key: Int): String =
         com.armsx2.input.ControllerMappings.stickTargets.firstOrNull { it.code == key }?.label ?: "Key $key"
 

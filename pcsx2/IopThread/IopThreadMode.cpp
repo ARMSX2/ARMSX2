@@ -41,15 +41,13 @@ IopThreadMode IopThread::ResolveMode(const Pcsx2Config& config, const HostCpuInf
 	if (vm.ps1_mode || vm.arcade || vm.gs_dump_replay || vm.iop_breakpoints || vm.recompiler_test_harness)
 		return IopThreadMode::Off;
 
-	// The x86 IOP JIT has not been audited for running on another thread, and x86 is not a target
-	// for this feature (manager decision, 2026-10-13), so neither mode resolves there.
+	// The x86 IOP JIT has not been audited for running on another thread, so neither mode
+	// resolves there.
 	if (!host.is_arm64)
 		return IopThreadMode::Off;
 
-	// Lockstep is a reference for tests, eerunner and debugging. The core rule below keeps a
-	// player from being given a thread the machine cannot afford. Lockstep is not meant for play
-	// and runs the two threads in strict turns, so it needs no spare core and the rule has
-	// nothing to protect.
+	// Lockstep is a reference for tests, eerunner and debugging, not for play. It runs the two
+	// threads in strict turns and needs no spare core, so the core rule below does not apply.
 	if (config.Speedhacks.iopThreadLockstep)
 		return IopThreadMode::Lockstep;
 

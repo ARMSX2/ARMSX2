@@ -5,9 +5,9 @@
 //
 // The pad input fields (rawInputs, buttons, the analog bytes, the jog dial, the guitar's whammy) are written
 // by the host thread at vsync and read by the SIO2 pad commands, which run on the IOP thread when there is
-// one (IOP thread design 8.4). They became relaxed atomics for that. This file records what the pads do with
-// plain fields, as a hash of every poll response and every getter after each step of a script, so that the
-// change can be checked not to move any of it. The hashes were recorded on 2fbf24a5d0, before the change.
+// one, so they are relaxed atomics. The first half hashes every poll response and every getter after each
+// step of a script and compares against hashes recorded with plain fields, which shows the atomic type does
+// not change what the pads answer.
 //
 // The second half runs the host thread's side and the IOP thread's side of one pad on two threads at once. A
 // plain byte shared that way is a data race; a relaxed atomic one is not, and every poll must read a state
@@ -68,7 +68,6 @@ namespace
 			hash.Add(pad.SendCommandByte(0x00), 1);
 	}
 
-	// Everything the pad lets the host read back.
 	void Getters(PadBase& pad, u32 inputs, Hash& hash)
 	{
 		hash.Add(pad.GetButtons(), 4);
@@ -154,11 +153,12 @@ namespace
 		return hash.Value();
 	}
 
-	// Recorded on 2fbf24a5d0 (plain fields). Compare with the hash the test prints when one differs.
 	const std::vector<u32> kDualshock2Sticks = {
 		PadDualshock2::Inputs::PAD_L_UP, PadDualshock2::Inputs::PAD_L_RIGHT, PadDualshock2::Inputs::PAD_L_DOWN, PadDualshock2::Inputs::PAD_L_LEFT,
 		PadDualshock2::Inputs::PAD_R_UP, PadDualshock2::Inputs::PAD_R_RIGHT, PadDualshock2::Inputs::PAD_R_DOWN, PadDualshock2::Inputs::PAD_R_LEFT};
 
+	// Reference hashes, recorded with plain (non-atomic) pad fields. When one differs, compare with the hash the
+	// test prints.
 	constexpr u64 kDualshock2 = 0xaf454e6498ce44f7ull;
 	constexpr u64 kGuitar = 0xdafeb57743d1c08cull;
 	constexpr u64 kPopn = 0xcca1db8560d6f668ull;
@@ -200,8 +200,6 @@ TEST(PadInput, JogconAnswersAsItAlwaysDid)
 	PadJogcon pad(0, 0);
 	EXPECT_EQ(RunScript(pad, PadJogcon::Inputs::LENGTH, -1), kJogcon);
 }
-
-// ---------------------------------------------------------------- the field type
 
 static_assert(sizeof(SharedWord::Relaxed<u8>) == 1 && alignof(SharedWord::Relaxed<u8>) == 1);
 static_assert(sizeof(SharedWord::Relaxed<s16>) == 2 && alignof(SharedWord::Relaxed<s16>) == alignof(s16));
@@ -320,8 +318,8 @@ TEST(PadInput, APollOnAnotherThreadSeesAStateTheHostThreadWrote)
 	EXPECT_EQ(polls, 20000u);
 }
 
-// PadGuitar::Freeze writes the whammy bar through a temporary because the field is not a plain u8 any more. A saved
-// state must carry it and a loaded one must restore it.
+// PadGuitar::Freeze writes the whammy bar through a temporary because the field is not a plain u8. A saved state
+// must carry it and a loaded one must restore it.
 TEST(PadInput, TheGuitarsWhammyBarIsInASavedState)
 {
 	PadGuitar before(0, 0);

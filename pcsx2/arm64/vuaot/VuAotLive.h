@@ -5,29 +5,26 @@
 
 // The live tier: vu-aot running inside the emulator, behind
 // EmuCore/CPU/Recompiler/EnableVUAot (default off). The machinery lives in
-// microVU's translation unit (microVU_VuAot-arm64.inl), because it works on
-// microVU's programs and block managers; this header is the policy and what
-// the rest of the tree (and the test runners) may see of it.
+// microVU's translation unit (microVU_VuAot-arm64.inl) because it works on
+// microVU's programs and block managers; this header declares the policy and
+// what the rest of the tree and the test runners may see of it.
 //
-// What it does, in one paragraph: microVU keeps compiling and running every VU1
-// program as it always has. With the tier on, the dispatcher counts the runs of
-// each program, and the JR/JALR slow path counts the entries it resolves to a
-// program (the ones the dispatcher never enters). A program that reaches
-// kTierUpRuns (or kJumpTierUpRuns of the latter) asks for its tier-up: the
-// JR/JALR targets microVU has recorded for it (its jump caches) are collected
-// and a job goes to the tier's worker thread, which builds the vu-aot region
-// rooted at the entry the request came through while microVU runs on. When the
-// job is done, a slow path on the VU1 thread publishes it: the program's microVU
-// blocks are set aside (not freed: older code and stale jump caches can still
-// reach them) and its root compiles again, taking the region's code in. Blocks
-// microVU meets later in a tiered program become root jobs of their own, and
-// framed bodies where the region builder declines them. microVU remains the
-// fallback at every block boundary. A tiered program that meets new jump
-// targets asks for a new generation, a bounded number of times. Regions leave
-// the sticky bits of STATUS out (the exactness contract's relaxation 3) while
-// no reader of them is known, in either flag-hack mode; the first reader the
-// tier hears of sets the tripwire (StickyTripped below) and VU1 rebuilds exact.
-// Design: compiler-design.md sections 9x, 9aa and 9ad.
+// microVU keeps compiling and running every VU1 program as before. The
+// dispatcher counts runs per program, and the JR/JALR slow path counts the
+// entries it resolves to a program. A program that reaches kTierUpRuns (or
+// kJumpTierUpRuns slow-path entries) is queued to the worker thread, which
+// builds a vu-aot region rooted at the entry the request came through while
+// microVU keeps running. A slow path on the VU1 thread publishes the finished
+// job: the program's microVU blocks are set aside, not freed, because older
+// code and stale jump caches can still reach them, and its root compiles again
+// taking the region's code in. microVU is the fallback at every block boundary.
+// Blocks microVU meets later in a tiered program become root jobs of their own,
+// and a program that meets new jump targets is re-tiered a bounded number of
+// times.
+//
+// Regions leave out the sticky bits of STATUS while no reader of them is known.
+// The first reader the tier hears of sets the tripwire (StickyTripped below)
+// and VU1 rebuilds exact.
 
 #include "common/Pcsx2Defs.h"
 #include "VuAotMvuTrace.h"
@@ -43,33 +40,29 @@ namespace vuaot
 	namespace live
 	{
 		// Runs of one program (dispatches that resolve to it) before it is tiered
-		// up. 9n of compiler-design.md: 150-300 runs, a fraction of a second of
-		// play, put 85-93% of GoW2's runs in vu-aot and compile 140-430 programs
-		// per scene.
+		// up. 150-300 runs is a fraction of a second of play.
 		constexpr u32 kTierUpRuns = 200;
 
-		// A program the dispatcher (almost) never enters, reached through JR/JALR
-		// slow-path entries (the jump cache missed and the search resolved the target to
-		// it), is tiered up after this many of them. God of War II's overlays are such
-		// programs: the dispatcher enters a stub program, which jumps by JR into code
-		// microVU files as other programs, and every upload over an overlay nulls the quick
-		// slot of the program there, so each hot overlay entry goes through the slow path
-		// about 1,200 times in 300 frames. A program the dispatcher does enter keeps
-		// kTierUpRuns: tiering it from a jump into its middle roots its first compile there,
-		// and the regions come out split (Katamari at 900 frames, 1.6% more instructions).
-		// A slow-path entry is an entry, so the number is far below the break-even of a tier-up
-		// (a compile of about 30-70 M instructions, a quarter of a run saved); it only decides
-		// how soon the tier-up comes. Measured on three GoW2 savestates at 300 and 900 frames
-		// with 20, 50, 100, 200 and 400: lower tiers more programs, sooner, and wins at 900
-		// frames; 20 and 50 are within 1% of each other. 32.
+		// JR/JALR slow-path entries (the jump cache missed and the search resolved
+		// the target to a program) before a program the dispatcher almost never
+		// enters is tiered up. God of War II's overlays are such programs: the
+		// dispatcher enters a stub program, which jumps by JR into code microVU files
+		// as other programs, and every upload over an overlay nulls that program's
+		// quick slot, so each hot overlay entry goes through the slow path.
+		// A program the dispatcher does enter keeps kTierUpRuns: tiering it from a
+		// jump into its middle roots its first compile there, and the regions come
+		// out split.
+		// A slow-path entry is an entry, so this is far below the break-even of a
+		// tier-up and only decides how soon the tier-up comes. Lower values tier more
+		// programs sooner; 20 and 50 measured within 1% of each other.
 		constexpr u32 kJumpTierUpRuns = 32;
 
-		// A tiered program looks for new jump targets every this many runs
-		// (when any JR/JALR missed the jump cache since), and is compiled again
-		// when it finds some, at most kMaxRetiers times and not within
-		// kRetierMinRuns runs of its last compile. After kSettleChecks looks in a
-		// row that found nothing it stops looking: the jump cache misses whenever
-		// a game rewrites micro memory, so the miss count alone says little.
+		// A tiered program checks for new jump targets every kRetierCheckMask + 1 runs
+		// (when any JR/JALR missed the jump cache since), and is compiled again when it
+		// finds some, at most kMaxRetiers times and not within kRetierMinRuns runs of its
+		// last compile. After kSettleChecks checks in a row that find nothing it stops
+		// checking: the jump cache misses whenever a game rewrites micro memory, so the
+		// miss count alone says little.
 		constexpr u32 kRetierCheckMask = 0x3ff;
 		constexpr u32 kMaxRetiers = 2;
 		constexpr u32 kRetierMinRuns = 1024;
@@ -80,10 +73,9 @@ namespace vuaot
 		constexpr u32 kMaxTargetsPerJump = 48;
 		constexpr u32 kMaxTargetsPerProgram = 512;
 
-		// What set the sticky-STATUS tripwire off (owner decision j, 2026-10-14). While it is clear the
-		// regions drop the sticky byte of STATUS (RegionTier::dropSticky) whatever the flag hack; once
-		// anything below happens it stays set until the VM is reset or booted, and regions are built
-		// and kept exact.
+		// What set the sticky-STATUS tripwire off. While it is clear, regions drop the sticky byte
+		// of STATUS (RegionTier::dropSticky) whatever the flag hack; once anything below happens it
+		// stays set until the VM is reset or booted, and regions are built and kept exact.
 		enum class TripCause : u8
 		{
 			None,
@@ -92,7 +84,7 @@ namespace vuaot
 			Job,          // a tier job's copy of micro memory, or live micro memory at publication, has a sticky reader
 			OutsideRead,  // VU0 (micro or macro mode) touched VU1's STATUS register through its window onto VU1's registers
 			Forced,       // a test or a runner flag set it off
-			Remembered,   // the running title set it off in an earlier session (owner's default on decision 3, 2026-10-15)
+			Remembered,   // the running title set it off in an earlier session
 			kCount,
 		};
 		constexpr u32 kTripCauses = static_cast<u32>(TripCause::kCount);
@@ -121,17 +113,17 @@ namespace vuaot
 			u64 bailCompiles = 0;     // regions' blocks microVU compiled at run time (budget shortfalls)
 			u64 bailsEntry = 0;       // budget bails taken by regions at an entry from microVU (programs deleted so far)
 			u64 bailsLoopHead = 0;    // ... and at a loop head
-			// Static census of the compiled regions' flag reads (exactness contract, relaxation 3):
-			// status readers (FSAND/FSEQ/FSOR), those whose mask selects a sticky bit, compiles that
-			// dropped the sticky byte, and compiles whose micro memory has a sticky reader.
+			// Static census of the compiled regions' flag reads: status readers
+			// (FSAND/FSEQ/FSOR), those whose mask selects a sticky bit, compiles that dropped
+			// the sticky byte, and compiles whose micro memory has a sticky reader.
 			u64 statusReaders = 0;
 			u64 stickyReaders = 0;
 			u64 stickyDivReaders = 0; // ... of those, the ones that read the sticky I / D bits (STATUS bits 10-11)
 			u64 stickyDropped = 0;
 			u64 stickyImages = 0;
-			// The sticky-STATUS tripwire (section 9ad): the number of times it went off (0 in a
-			// normal session; a VM reset or boot re-arms it), by what set it off, and the VU1
-			// resets it asked for to rebuild the regions that had dropped the sticky byte.
+			// The sticky-STATUS tripwire: the number of times it went off (0 in a normal session;
+			// a VM reset or boot re-arms it), by what set it off, and the VU1 resets it asked for
+			// to rebuild the regions that had dropped the sticky byte.
 			u64 stickyTrips = 0;
 			u64 stickyTripsBy[kTripCauses] = {};
 			u64 stickyTripResets = 0;
@@ -143,10 +135,10 @@ namespace vuaot
 			u64 compileInsTiered = 0;
 			u64 compileInsPlain = 0;
 
-			// Section 9aa, the background compile. A job builds one region on the worker
-			// thread: a generation (the tier-up or a re-tier: a new graph for the
-			// program, rooted at the entry the request came through) or a root (a block
-			// microVU met in a program already tiered up).
+			// Background compile jobs. A job builds one region on the worker thread: a
+			// generation (the tier-up or a re-tier: a new graph for the program, rooted at
+			// the entry the request came through) or a root (a block microVU met in a
+			// program already tiered up).
 			u64 jobsGen = 0, jobsRoot = 0;
 			u64 jobsDropped = 0;      // the worker's queue was full
 			u64 jobsDone = 0;
@@ -169,15 +161,15 @@ namespace vuaot
 			u64 veneers = 0;          // branches from placed code to targets out of B/BL range
 			std::map<std::string, u32> regionDeclined;
 
-			// The program cache's sidecars (the saved plans, persistence-design.md). A program created or
-			// loaded with the cache on looks for its sidecar: found and accepted (planLoaded), refused by
-			// the parser (planRejected, by reason in planRejectedBy), or accepted but its generation's
-			// read set no longer matches micro memory (planStale). An accepted plan sends its generation
-			// at once (planGenJobs) and its roots when the generation is in (planRootJobs); a root plan is
-			// dropped when its read set no longer matches (planRootsStale) or when the graph already holds
-			// its root (planRootsCovered). planRootsTraced: microVU compiled a sent root before its job
-			// came back; planRootsUnplaced: a root job came back but its root was already compiled
-			// without the hook seeing it, so nothing was placed.
+			// The program cache's sidecars (saved plans). A program created or loaded with the cache
+			// on looks for its sidecar: found and accepted (planLoaded), refused by the parser
+			// (planRejected, by reason in planRejectedBy), or accepted but its generation's read set
+			// no longer matches micro memory (planStale). An accepted plan sends its generation at
+			// once (planGenJobs) and its roots when the generation is in (planRootJobs); a root plan
+			// is dropped when its read set no longer matches (planRootsStale) or when the graph
+			// already holds its root (planRootsCovered). planRootsTraced: microVU compiled a sent
+			// root before its job came back; planRootsUnplaced: a root job came back but its root was
+			// already compiled without the hook seeing it, so nothing was placed.
 			u64 planLookups = 0, planLoaded = 0, planRejected = 0, planStale = 0;
 			u64 planRejectedBy[16] = {};
 			u64 planGenJobs = 0, planRootJobs = 0, planRootsStale = 0, planRootsCovered = 0;
@@ -190,10 +182,10 @@ namespace vuaot
 			u64 firstRegions = 0, firstRegionRuns = 0, firstRegionDispatches = 0, firstRegionCycles = 0;
 			u64 planFirstRegions = 0, planFirstRegionRuns = 0, planFirstRegionDispatches = 0, planFirstRegionCycles = 0;
 
-			// Saved region code (persistence-design.md, the install half). A loaded sidecar whose generation
-			// record can be installed puts its records' code in place at load (aotPrograms programs,
-			// aotRecords records holding aotRegions regions and aotBytes bytes of code); a record that
-			// cannot is refused for the reason in aotRejectedBy (AotReject) and its plan goes to the worker.
+			// Saved region code. A loaded sidecar whose generation record can be installed puts its
+			// records' code in place at load (aotPrograms programs, aotRecords records holding
+			// aotRegions regions and aotBytes bytes of code); a record that cannot is refused for the
+			// reason in aotRejectedBy (AotReject) and its plan goes to the worker.
 			// aotRootsToPlan: root records refused while their generation went in. aotNoCode: published
 			// jobs saved without their code (an address nothing can re-base). installIns:
 			// pcsx2-eerunner --count-vu1-ins only, the VU1 thread's instructions in installs.
@@ -223,16 +215,16 @@ namespace vuaot
 		// gamefix vu-aot declines). Settled at init and at every reset.
 		bool IsEnabled();
 
-		// The sticky-STATUS tripwire across sessions (persistence-design.md, the owner's default on decision
-		// 3): a title (disc serial and CRC) that set the tripwire off is remembered in the program cache's
-		// directory (vu_jit/vuaot_tripped.txt), and every later session of it starts with the tripwire set.
-		// SetTitle is what VMManager calls when the disc details change; an empty serial is no title.
+		// The sticky-STATUS tripwire across sessions: a title (disc serial and CRC) that set the
+		// tripwire off is remembered in the program cache's directory (vu_jit/vuaot_tripped.txt),
+		// and every later session of it starts with the tripwire set. SetTitle is what VMManager
+		// calls when the disc details change; an empty serial is no title.
 		void SetTitle(const std::string& serial, u32 crc);
 
-		// The sticky-STATUS tripwire (section 9ad). Armed (false) at the start; set by the first
-		// sticky reader the tier hears of -- a micro image containing one is uploaded or compiled, or
-		// anything outside VU1 reads VU1's STATUS -- and then kept for the session: a savestate load or
-		// a settings change does not re-arm it, a VM reset or boot does (ResetStickyTripwire).
+		// The sticky-STATUS tripwire. Armed (false) at the start; set by the first sticky reader
+		// the tier hears of -- a micro image containing one is uploaded or compiled, or anything
+		// outside VU1 reads VU1's STATUS -- and then kept for the session: a savestate load or a
+		// settings change does not re-arm it, a VM reset or boot does (ResetStickyTripwire).
 		// Setting it off counts it, logs it once, and has VU1 reset at its next run so the regions
 		// built without the sticky byte are rebuilt exact; jobs made before it are not published.
 		bool StickyTripped();
@@ -252,8 +244,7 @@ namespace vuaot
 
 		// Deterministic mode: every job is waited for and published where it was
 		// asked for (at the tier-up's dispatch, or in place of the block microVU
-		// was about to compile), which is where the synchronous tier of 9x
-		// compiled. Off: the worker builds while microVU runs.
+		// was about to compile). Off: the worker builds while microVU runs.
 		void SetSynchronous(bool on);
 		bool IsSynchronous();
 		// The worker thread: whether it exists, and controls for interleaving tests.

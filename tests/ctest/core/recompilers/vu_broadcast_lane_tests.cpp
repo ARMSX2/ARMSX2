@@ -354,13 +354,8 @@ TEST(VuBroadcastLaneFold, MulSelectsTheEncodedLaneWithoutTheOperandClamp)
 	}
 }
 
-// =========================================================================
-//  The fold's scalar form, every destination lane against every broadcast
-//  lane, for each multiply that takes it: MUL, MADD, MSUB and their
-//  accumulator forms. ACC is (10, 20, 30, 40), so the accumulate's other
-//  three lanes are a check on their own: a single-lane accumulate must leave
-//  them standing. Both VUs, with the overflow clamp at its default and off.
-// =========================================================================
+// The fold's scalar form across every destination lane and broadcast lane. ACC is (10, 20, 30, 40)
+// so a single-lane accumulate that disturbs the other three lanes is caught.
 
 namespace {
 
@@ -453,17 +448,11 @@ TEST(VuBroadcastLaneFold, SingleLaneDestinationEveryBroadcastLane)
 	}
 }
 
-// =========================================================================
-//  A multiply by VF0.w is a multiply by +1.0. Behind the operand clamp of
-//  clamp mode 1 under an FZ FPCR that multiply is the identity, and microVU
-//  does not emit it; the result has to be what an emitted multiply by 1.0
-//  gives. Each op runs twice in one program -- broadcasting VF0.w, and
-//  broadcasting the x lane of a register that holds 1.0 -- over operands that
-//  exercise the clamp (exponent 255, both kinds of NaN pattern, denormals of
-//  both signs, -0) plus a plain normal, and the two results must agree
-//  word for word. Every clamp mode, FZ on and off, both VUs, a multi-lane and
-//  a single-lane field.
-// =========================================================================
+// A multiply by VF0.w is a multiply by +1.0. Behind the clamp-mode-1 operand clamp under an FZ FPCR
+// that multiply is the identity and microVU does not emit it, but the result must still match an
+// emitted multiply by 1.0. Each op runs twice, broadcasting VF0.w and the x lane of a register
+// holding 1.0, over clamp-sensitive operands (exponent 255, NaN patterns, denormals, -0); the two
+// results must agree word for word.
 
 namespace {
 

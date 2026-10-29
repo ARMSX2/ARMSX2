@@ -7,17 +7,16 @@
 // A VU0 program parked in a NOP-only wait loop (mvu_spin_ff_tests.cpp) is
 // answered by recMicroVU0::Execute's mVUspinBounce without entering the
 // recompiler: VU0.cycle advances by the floored grant and nothing else moves.
-// The stub now gives that same answer itself, before its pin flush and the C
-// call, whenever Execute has armed it. It may only skip host work:
+// Once Execute has armed it, the stub gives that same answer itself, before its
+// pin flush and the C call. It may only skip host work:
 //
-//   1. With VU0 parked, an EE block that syncs many times (bounces, a
-//      negative delta inside the 16-cycle floor, a release by CTC2 and the
-//      real run it causes, re-parking) ends with VURegs, the EE registers
-//      read through CFC2 (including VPU_STAT and TPC) and both clocks
-//      byte-identical across three arms: the emitted spin head only, the C++
-//      bounce only (master), and the stub's bounce. The stub arm must have
-//      taken it: fewer Execute calls than the C++ arm.
-//   2. A loop the detector rejects never arms the stub, and every sync of it
+//   1. An EE block that syncs many times against a parked VU0 (bounces, a
+//      negative delta inside the 16-cycle floor, a CTC2 release and the real
+//      run it causes, re-parking) ends with identical VURegs, EE registers
+//      read through CFC2 (including VPU_STAT and TPC) and both clocks in all
+//      three arms: emitted spin head only, C++ bounce only, and stub bounce.
+//      The stub arm must make fewer Execute calls than the C++ arm.
+//   2. A loop the detector rejects never arms the stub, so every sync of it
 //      still reaches Execute.
 //   3. A spin on two live VI registers, released by a CTC2 that leaves the
 //      second operand's upper half dirty, is seen through 16-bit reads.

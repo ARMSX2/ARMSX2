@@ -42,9 +42,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Arcade controls: what each pad button does on an arcade game's cabinet (ArcadeControls). In All Settings >
- * Controls ([pickGame]): the layout for every arcade game (All arcade games), or any arcade game's own in the
- * library, the one being played first. In the pause menu's Controls: the game being played ([gameId]).
+ * Arcade controls: what each pad button does on an arcade game's cabinet (ArcadeControls).
+ * With [pickGame] (All Settings > Controls) the player picks the layout shared by every arcade game or
+ * one game's own, starting on [gameId] if given. Without it (pause menu) the section edits the game
+ * being played ([gameId]).
  */
 @Composable
 internal fun ArcadeControlsSection(gameId: String?, pickGame: Boolean) {
@@ -86,7 +87,7 @@ internal fun ArcadeControlsSection(gameId: String?, pickGame: Boolean) {
     }
 }
 
-/** The All arcade games layout: the pad button each pad button acts as, in every arcade game. */
+/** The layout shared by all arcade games: each pad button can be remapped to another pad button. */
 @Composable
 private fun GlobalLayoutRows() {
     val tick = remember { mutableIntStateOf(0) }

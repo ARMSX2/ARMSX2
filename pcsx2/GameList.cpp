@@ -327,7 +327,6 @@ bool GameList::GetArcadeListEntry(const std::string& path, GameList::Entry* entr
 	if (!FileSystem::StatFile(path.c_str(), &sd))
 		return false;
 
-	// An .acgame, or an image kept as a file of its own with the game's ID in its name.
 	const std::optional<Arcade::AcGameInfo> game =
 		VMManager::IsArcadeGameFileName(path) ? Arcade::ReadAcGameInfo(path) : Arcade::ReadLooseImageInfo(path);
 	if (!game.has_value())
@@ -349,7 +348,6 @@ bool GameList::GetArcadeListEntry(const std::string& path, GameList::Entry* entr
 	entry->compatibility_rating = CompatibilityRating::Unknown;
 	entry->region = Region::Other;
 
-	// The .acgame's own name for the game comes first, then the game database's.
 	const GameDatabaseSchema::GameEntry* db_entry = GameDatabase::findGame(game->gameid);
 	if (db_entry)
 	{
@@ -371,8 +369,8 @@ bool GameList::GetArcadeListEntry(const std::string& path, GameList::Entry* entr
 		entry->title = Path::GetFileTitle(path);
 	}
 
-	// A game is as big as its media image; 0 when that is not there (yet). It is listed all the same, and booting it
-	// says what is missing.
+	// A game's size is its media image's, 0 when that is missing. It is still listed, and booting it says what
+	// is missing.
 	FILESYSTEM_STAT_DATA media_stat;
 	entry->total_size = FileSystem::StatFile(game->media_path.c_str(), &media_stat) ? static_cast<u64>(media_stat.Size) : 0;
 	return true;

@@ -1148,25 +1148,24 @@ static GenericInputBinding PadKeyToGeneric(jint key) {
     }
 }
 
-// ---- Namco System 246/256 arcade controls ----------------------------------------------------------
+// Namco System 246/256 arcade controls.
 //
 // An arcade board reads no DualShock: its controls come in over JVS (pcsx2/DEV9/ACJV, from PCSX2x6).
-// While an arcade game runs, every pad press (physical pad, on-screen buttons, macros, everything
-// through applyPadButton) also works the cabinet, laid out the way PCSX2x6 lays it out for each kind of
-// game; every JVS binding table there carries, as its generic mapping, the PS2 port's button for it.
-//   Start: Start. Select: a coin, for that player.
+// While an arcade game runs, every pad press (applyPadButton: physical pad, on-screen buttons, macros)
+// works the cabinet instead, laid out as PCSX2x6 does per game type. Each of its JVS binding tables
+// carries the PS2 port's button as its generic mapping.
+//   Start: Start. Select: a coin for that player.
 //   D-pad, and the left stick past half way: the lever.
-//   Square, Triangle, L1, Cross, Circle, R1: buttons 1 to 6, unless the game has a table of its own
-//     (fighting, racing and quiz games), which then says which button is which.
-//   Racing: the left stick steers, R2 accelerates, L2 brakes, the D-pad works the menus, and Square or
-//     Cross (button 1) or Circle (button 5) enters them, where the game's racing controls leave those free.
+//   Square, Triangle, L1, Cross, Circle, R1: buttons 1 to 6, unless the game has its own table
+//     (fighting, racing and quiz games).
+//   Racing: left stick steers, R2 accelerates, L2 brakes, D-pad works the menus, and Square/Cross
+//     (button 1) or Circle (button 5) enters them where the racing table leaves those free.
 //   Twin levers (Zoids): the sticks are the levers, L2/R2 the triggers, L1/R1 the buttons.
-//   Drums (Taiko): the D-pad hits the left half of the drum face (Don), the face buttons the right
-//     half, L1/L2 the left rim (Ka), R1/R2 the right rim.
-//   Light guns: R2 or Cross fires, L1 or L2 is the pedal (Time Crisis' cover, Vampire Night's reload),
-//     the right stick aims. On the touchscreen the gun layer aims and fires (usbLightgunAim/Button).
+//   Drums (Taiko): D-pad hits the left half of the drum face (Don), face buttons the right half,
+//     L1/L2 the left rim (Ka), R1/R2 the right rim.
+//   Light guns: R2 or Cross fires, L1 or L2 is the pedal (cover, reload), the right stick aims. On
+//     the touchscreen the gun layer aims and fires (usbLightgunAim/Button).
 //   Touch panel games: the gun layer is the panel.
-// The DualShock gets every press as well, which nothing on the board reads.
 namespace
 {
 	struct ArcadePad
@@ -1237,7 +1236,6 @@ static void ArcadeCommit(u32 player) {
 		ACJV::SetGunForceOffscreen(s_arcade_pad[0].pad_reload || s_arcade_pad[0].touch_offscreen);
 }
 
-// Recomputes the cabinet controls one player's pad holds.
 static void ArcadeApplyPad(u32 player) {
 	ArcadePad& p = s_arcade_pad[player];
 	const JVS_MODE mode = ACJV::GetMode();
@@ -2391,11 +2389,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_enablePad2(JNIEnv *env, jclass clazz) {
     ScopedVMPause vm_pause(false);
     if (!vm_pause.parked())
         return;
-    // Into the BASE layer, as setSetting and setMultitap write. Host::GetSettingsInterface() is the
-    // layered view and every setter on it is a pxFailRel: writing through it aborted the app the
-    // moment a second pad was plugged in with a game running, which is why hot-plug was switched off.
-    // Remote play (a friend as player 2) needs the port, so it is safe again. The SetBase* calls lock
-    // for themselves.
+    // Write into the BASE layer, as setSetting and setMultitap do. Host::GetSettingsInterface() is
+    // the layered view and every setter on it is a pxFailRel. The SetBase* calls take the settings
+    // lock themselves.
     Host::SetBaseStringSettingValue("Pad2", "Type", "DualShock2");
     Host::SetBaseFloatSettingValue("Pad2", "Deadzone", 0.0f);        // app shapes the stick (shapeStickMag)
     Host::SetBaseFloatSettingValue("Pad2", "AxisScale", 1.33f);      // PCSX2 default
@@ -2752,8 +2748,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbLightgunButton(JNIEnv*, jclass, jint por
         (pressed == JNI_TRUE) ? 1.0f : 0.0f);
 }
 
-// ---- Namco System 246/256 arcade sessions -------------------------------------------------------------
-
 // Where the frontend found the files an .acgame names (its ELF, media image and SRAM file); taken by
 // the next runVMThread. See VMBootParameters::arcade_*.
 static std::mutex s_arcade_launch_mutex;
@@ -2783,9 +2777,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getLastBootError(JNIEnv* env, jclass) {
     return env->NewStringUTF(s_last_boot_error.c_str());
 }
 
-/// The cabinet controls a game ID gets (JVS_MODE: 0 generic, 1 light gun, 2 fighting, 3 racing,
-/// 4 drums, 5 touch panel, 6 standard, 7 twin levers), for the frontend to lay out its controls before
-/// the game is up.
+/// The JVS_MODE a game ID's cabinet uses (0 generic, 1 light gun, 2 fighting, 3 racing, 4 drums,
+/// 5 touch panel, 6 standard, 7 twin levers), so the frontend can lay out controls before the game is up.
 extern "C"
 JNIEXPORT jint JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_arcadeModeForGameId(JNIEnv* env, jclass, jstring gameid) {
@@ -2823,8 +2816,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_arcadeService(JNIEnv*, jclass, jboolean pre
     ArcadeCommit(0);
 }
 
-/// Flips the board's Test switch: on, the game goes to its test menu (settings, input tests); off again
-/// to leave it.
+/// Flips the board's Test switch: the game goes to its test menu (settings, input tests) or leaves it.
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_arcadeToggleTest(JNIEnv*, jclass) {
@@ -2841,8 +2833,6 @@ JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_arcadeTestModeOn(JNIEnv*, jclass) {
     return (VMManager::HasValidVM() && Arcade::IsActive() && ACJV::GetDIPSwitchState(0)) ? JNI_TRUE : JNI_FALSE;
 }
-
-// ---- The Arcade controls settings --------------------------------------------------------------------
 
 /// The pad key a generic binding stands for (PadKeyToGeneric backwards), or -1.
 static jint GenericToPadKey(GenericInputBinding b) {
@@ -3079,9 +3069,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_isArcadeBios(JNIEnv* env, jclass, jstring p
     return (IsBIOS(p.c_str(), version, description, region, zone) && zone == "COH-H") ? JNI_TRUE : JNI_FALSE;
 }
 
-/// The board whose BIOS an arcade game needs when none of the arcade BIOS files in the BIOS folder runs it
-/// ("System 246" for Battle Gear 3, which rejects the System 256 one), else "" (one does, or there is no
-/// arcade BIOS at all, which isArcadeBios tells). The same choice the core makes at boot (FindArcadeBiosFor).
+/// The board whose BIOS an arcade game needs when no arcade BIOS in the BIOS folder runs it ("System 246"
+/// for Battle Gear 3, which rejects the System 256 one), else "". The same choice the core makes at boot
+/// (FindArcadeBiosFor); isArcadeBios says whether any arcade BIOS exists.
 extern "C"
 JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getArcadeBiosNeed(JNIEnv* env, jclass, jstring gameId) {
@@ -3525,10 +3515,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboo
 }
 
 // Whether the app's driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2,
-// keyed on the GL_RENDERER the app probes at startup). The list is the app's, so the app pushes the
-// answer once at startup, the way it pushes the GL strings for the Auto renderer
-// (setAutoRendererGpuStrings). The notice below pairs it with the driver the open Vulkan device is
-// on, which only native can read.
+// keyed on the GL_RENDERER the app probes at startup). The app pushes it once at startup, like the GL
+// strings for the Auto renderer (setAutoRendererGpuStrings). The notice below pairs it with the driver
+// the open Vulkan device is on, which only native can read.
 static std::atomic<bool> s_gpu_offers_malisx2{false};
 
 extern "C"
@@ -3538,18 +3527,17 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean
 }
 
 // The "get malisx2" notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan
-// hardware renderer on some other driver, Arm's own or another pack. Posted through the OSD like the
-// free-software notice and the unsafe-settings warnings, with the same duration as the latter, and
-// keyed so a repeat refreshes the one message. The driver is read off the open Vulkan device rather
-// than from the selected pack, since a pack that fails to load falls back to Arm's driver without
-// saying so, so it is only known once the device is open: this is called from OnVMStarted and from
-// the game-change call that follows the game's program starting.
+// hardware renderer on some other driver (Arm's own or another pack). Posted through the OSD with the
+// unsafe-settings warnings' duration, keyed so a repeat refreshes the one message. The driver is read
+// off the open Vulkan device, not from the selected pack, because a pack that fails to load falls back
+// to Arm's driver silently. So it is only known once the device is open: this runs from OnVMStarted and
+// from the game-change call that follows the game's program starting.
 //
-// Not shown to a user who selected a malisx2 pack: malisx2 needs a recent Mali kernel driver, and
-// on an older one it fails to open and the device ends up on Arm's driver, so the notice would tell
-// them to download what they already have. The selected pack is the driver request the Vulkan
-// library was loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in
-// applyRendererPrefs before each boot, so it is the per-game override when there is one.
+// Not shown when a malisx2 pack is selected: malisx2 needs a recent Mali kernel driver, and on an older
+// one it fails to open and the device ends up on Arm's driver, so the notice would tell the user to
+// download what they already have. The selected pack is the driver request the Vulkan library was
+// loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in applyRendererPrefs
+// before each boot.
 static void PostMaliSX2NoticeIfDue() {
     const bool hardware = GSIsHardwareRenderer();
     const bool offered = s_gpu_offers_malisx2.load(std::memory_order_relaxed);
@@ -3589,9 +3577,8 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
             10.0f);
     }
 
-    // The GS device is not open on the first call, when the disc is identified, so the notice is
-    // not due then. It is on the call when the game's own program starts, which refreshes this
-    // message along with the free-software one above.
+    // The GS device is not open on the first call (disc identified), so the notice is not due yet.
+    // It is on the call when the game's own program starts.
     if (game_loaded)
         PostMaliSX2NoticeIfDue();
 }
@@ -3608,11 +3595,10 @@ void Host::PumpMessagesOnCPUThread() {
 }
 
 // Hand the CPU thread role back on every exit of runVMThread. Under the lock the id goes empty, so
-// from here on RunOnCPUThread runs inline in its caller; the queue is taken, not cleared, and what
-// was in it runs here. Clearing it instead dropped every task posted during CPUThreadShutdown(), and
-// a blocking caller of one of those never woke. A drained task sees the same post-teardown world an
-// inline call made a moment later would, so the lambdas that relied only on their JNI entry's VM
-// check re-check inside (HasValidVM / MTGS::IsOpen).
+// RunOnCPUThread runs inline in its caller from here on. The queue is taken and run here, not cleared:
+// clearing would drop every task posted during CPUThreadShutdown(), and a blocking caller of one would
+// never wake. A drained task sees the same post-teardown world an inline call made a moment later would,
+// so lambdas that relied only on their JNI entry's VM check re-check inside (HasValidVM / MTGS::IsOpen).
 static void CloseCPUThreadQueue()
 {
     std::deque<std::function<void()>> queue;
@@ -3925,8 +3911,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
                 Host::PumpMessagesOnCPUThread();
                 if (s_app_backgrounded.load(std::memory_order_acquire)) {
                     // No menu to poll for in the background, and sixty wakeups a second with the
-                    // screen off add up overnight (#817). Sleep until a task arrives (a resume, a
-                    // stop, the return to the foreground) or a second has passed.
+                    // screen off add up overnight. Sleep until a task arrives (a resume, a stop,
+                    // the return to the foreground) or a second has passed.
                     std::unique_lock lock(s_cpu_thread_mutex);
                     s_cpu_thread_cv.wait_for(lock, std::chrono::seconds(1), []() {
                         return !s_cpu_thread_queue.empty() ||
@@ -4055,9 +4041,9 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setAppBackgrounded(JNIEnv *env, jclass clazz, jboolean backgrounded) {
     // From the activity's onStop (true) and onStart (false). The overlay pause that leaving the app
-    // opens keeps the audio device running; out of sight it now pauses for real, which lets Android
-    // stop holding its audio wakelock (#825). Coming back starts it again while the pause menu is
-    // still up, so Resume stays instant (#333).
+    // opens keeps the audio device running; out of sight it pauses for real, so Android can drop its
+    // audio wakelock. Coming back starts it again while the pause menu is still up, so Resume stays
+    // instant.
     const bool bg = (backgrounded == JNI_TRUE);
     s_app_backgrounded.store(bg, std::memory_order_release);
     SPU2::SetOutputBackgrounded(bg);
@@ -4200,10 +4186,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_hasActiveVM(JNIEnv *env, jclass clazz) {
 }
 
 
-// Whether this session's save states have a name. They are named by the disc's serial and CRC, and a CRC
+// Whether this session's save states have a name. They are named by the disc's serial and CRC; a CRC
 // of 0 means no game, so a session without one gets none. An arcade game is the exception: its own
 // program comes off its dongle after the boot program, so the core never has a disc CRC for it, but its
-// serial, the game ID, is set from the start and names its states as surely ("NM00031 (00000000).00.p2s").
+// serial (the game ID) is set from the start and names its states ("NM00031 (00000000).00.p2s").
 static bool SaveStatesHaveName() {
     return VMManager::GetDiscCRC() != 0 || (Arcade::IsActive() && !VMManager::GetDiscSerial().empty());
 }
@@ -4522,9 +4508,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getSaveStateImage(JNIEnv *env, jclass clazz
 // avoid clobbering user slot 0; the load picker surfaces the autosave
 // tile only when hasAutosaveState() returns true.
 //
-// That file is always the NEWEST autosave. The player can keep up to five ("Autosaves to keep"),
-// so that an autosave written just before a death is not the only one: each new autosave moves the
-// ones before it a place older, as `{serial} (CRC).autosave.N.p2s`, N = 2 to 5, oldest last.
+// That file is always the NEWEST autosave. Up to five are kept ("Autosaves to keep"), so an autosave
+// written just before a death is not the only one: each new autosave moves the older ones a place
+// back, as `{serial} (CRC).autosave.N.p2s`, N = 2 to 5, oldest last.
 
 static constexpr int kAutosaveKeepMax = 5;
 
@@ -4933,9 +4919,9 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false 
     std::condition_variable wait_cv;
     bool done = false;
     {
-        // Decide and enqueue under ONE hold of the lock. Deciding in one hold and pushing in a
-        // second lets CloseCPUThreadQueue() run in between: the task then lands in a queue nobody
-        // drains any more, and a blocking caller sleeps forever.
+        // Decide and enqueue under ONE hold of the lock. With two holds, CloseCPUThreadQueue() can
+        // run in between: the task lands in a queue nobody drains any more, and a blocking caller
+        // sleeps forever.
         std::unique_lock lock(s_cpu_thread_mutex);
         if (s_cpu_thread_id == std::thread::id() || s_cpu_thread_id == current_thread)
         {
@@ -6105,12 +6091,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniCommitWrite(JNIEnv*, jclass) {
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
-// ---- Auto-tune's record of a game ----
-//
-// What auto-tune changed lives in the game's file (gamesettings/<serial>_<CRC>.ini, the keys it set and an
-// [AutoTune] section recording what they were before). The app has no CRC to name that file until a game runs,
-// so these take the app's serial: the running game's file when that is the game, else the one file on disk
-// for that serial. A blank serial means the running game (a homebrew ELF has none).
+// What auto-tune changed lives in the game's file (gamesettings/<serial>_<CRC>.ini: the keys it set and an
+// [AutoTune] section recording their previous values). The app has no CRC to name that file until a game
+// runs, so these take the app's serial: the running game's file if that is the game, else the one file on
+// disk for that serial. A blank serial means the running game (a homebrew ELF has none).
 static bool AutoTuneResolveGame(const std::string& serial, std::string* out_serial, u32* out_crc) {
     if (VMManager::HasValidVM()) {
         const std::string disc_serial = VMManager::GetDiscSerial();
@@ -6148,7 +6132,7 @@ static jobjectArray AutoTuneStringArray(JNIEnv* env, const std::vector<std::stri
     jobjectArray array = env->NewObjectArray(static_cast<jsize>(items.size()), string_class, nullptr);
     for (size_t i = 0; i < items.size(); i++) {
         if (!items[i])
-            continue; // a null element
+            continue;
         jstring text = env->NewStringUTF(items[i]->c_str());
         env->SetObjectArrayElement(array, static_cast<jsize>(i), text);
         env->DeleteLocalRef(text);
@@ -6864,10 +6848,10 @@ void Native::onPadRumble(int pad, int largeMotor, int smallMotor) {
 // Called on the CPU thread; the app does the work on its own thread, so this returns at once.
 static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std::string_view value)
 {
-    // The resolution is the one lever the app's writer for the game's file does not emit (it keeps the resolution
-    // in the base layer, see renderUpscalemultiplier), so the next save from the app regenerates the file without
-    // the key and the base layer's older value would take over. Put the kept value there too. The emulator already
-    // runs at this value, so nothing is applied.
+    // The app's writer for the game's file does not emit the resolution (it keeps it in the base layer, see
+    // renderUpscalemultiplier), so the app's next save regenerates the file without the key and the base
+    // layer's older value would take over. Put the kept value there too. The emulator already runs at it,
+    // so nothing is applied.
     if (std::strcmp(section, "EmuCore/GS") == 0 && std::strcmp(key, "upscale_multiplier") == 0) {
         if (const auto parsed = StringUtil::FromChars<float>(value); parsed.has_value())
             Host::SetBaseFloatSettingValue(section, key, parsed.value());

@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The holds around the EE's entries into IOP state, and the demotion of Lockstep to Off at a PS1 mode switch (IOP
-// thread design sections 3.8, 6.2 and 9.6). In Lockstep a hold is only a marker, because the IOP thread is parked
-// whenever the EE runs, so the tests look at the hold depth and the hold counter.
+// The holds around the EE's entries into IOP state, and the demotion of Lockstep to Off at a PS1 mode
+// switch. In Lockstep a hold is only a marker, because the IOP thread is parked whenever the EE runs,
+// so the tests look at the hold depth and the hold counter.
 
 #include "IopThread/IopBridge.h"
 #include "IopThreadTestSupport.h"
@@ -11,8 +11,6 @@
 #include <vector>
 
 using namespace iopt;
-
-// ---------------------------------------------------------------- holds
 
 TEST(IopThreadHolds, AnEmuHoldIsALiveHoldInLockstepAndNothingInOff)
 {
@@ -155,8 +153,6 @@ TEST(IopThreadHolds, OffTakesNoHoldForTheSameAccesses)
 	EXPECT_EQ(IopBridge::MemRead32(0x100), 0x11223344u);
 	EXPECT_EQ(IopThread::g_thread.GetStats().hold_markers, before);
 }
-
-// ---------------------------------------------------------------- the PS1 mode switch
 
 namespace
 {

@@ -39,16 +39,14 @@ namespace GSDriverReport
 		uint32_t instance_api_version = 0;
 	};
 
-	/// The device extensions ARMSX2's Vulkan backend asks for, required or optional. The running
-	/// renderer records what it actually asked for; this list is what the command-line tool, which
-	/// has no renderer, checks a device against.
+	/// The device extensions ARMSX2's Vulkan backend asks for, required or optional. The
+	/// command-line tool has no renderer to record what it asked for, so it checks a device
+	/// against this list.
 	const std::vector<const char*>& GetArmsx2DeviceExtensionWishlist();
 
-	/// Writes one driver's whole Vulkan picture as a JSON object: the loader and instance
-	/// (version, extensions, layers), then every physical device in full -- properties and limits
-	/// through the Properties2 chain, features through the Features2 chain, device extensions with
-	/// spec versions, queue families, memory types and heaps, and format support for the formats
-	/// ARMSX2 uses. `selected` marks the device in use (may be null). Every query is its own step.
+	/// Writes one driver's whole Vulkan picture as a JSON object: the loader and instance, then
+	/// every physical device in full. `selected` marks the device in use (may be null). Every query
+	/// is its own step.
 	void WriteVulkanInstance(JsonWriter& w, StepLog& steps, std::string_view step_prefix, VkInstance instance,
 		VkPhysicalDevice selected, const VulkanLiveFacts* live, std::vector<VulkanDeviceSummary>* summaries);
 

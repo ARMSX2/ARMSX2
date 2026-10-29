@@ -263,10 +263,8 @@ void SettingsWindow::changeEvent(QEvent* event)
 {
 	QWidget::changeEvent(event);
 
-	// A game's settings file can change while this window is open: automatic performance tuning saves what it keeps into
-	// it while the game runs. This window holds its own copy and every change made here saves the whole copy, which would
-	// put the old file back over what auto-tune saved. Each change is saved as it is made, so the copy has nothing
-	// unsaved: read it again whenever the window comes to the front.
+	// Auto-tune can save into the game's settings file while this window is open, and every change here saves the whole
+	// in-memory copy over it. Changes are saved as made, so the copy has nothing unsaved: re-read it on activation.
 	if (m_sif && event->type() == QEvent::ActivationChange && isActiveWindow())
 	{
 		if (FileSystem::FileExists(m_sif->GetFileName().c_str()))

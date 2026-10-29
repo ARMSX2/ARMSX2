@@ -8,18 +8,18 @@
 // thread counted over the same stretch: the frames the limiter dropped, and the time the EE thread spent
 // blocked on the GS, VU1 and IOP threads.
 //
-// Where the counts come from, and why they line up. The EE governor's sampler (EECycleRateSampler) keeps
-// running totals at the frame limiter and at the MTGS/MTVU wait sites; auto-tune asks it to (RequestTally)
-// and reads the totals at each delivery. The totals only grow, so a window's figures are the difference
-// between two deliveries, and the share of time spent waiting is that difference divided by the time between
-// the same two deliveries on the same clock. Numerator and denominator are the same stretch by construction,
-// wherever the metrics window's edge fell on the CPU thread's timeline (it is closed on the GS thread, up to
-// a few frames behind the EE). The governor's own windows are not used: they are half a second of game time,
-// which is longer on the wall in a slow game and has no fixed relation to the metrics windows.
+// The counts come from EECycleRateSampler, which keeps running totals at the frame limiter and at the
+// MTGS/MTVU wait sites; auto-tune asks it to (RequestTally) and reads the totals at each delivery. A
+// window's figures are the difference between two deliveries, and the wait share is that difference
+// divided by the time between the same two deliveries on the same clock. Numerator and denominator
+// therefore cover the same stretch wherever the metrics window's edge fell on the CPU thread's timeline
+// (it is closed on the GS thread, up to a few frames behind the EE). The governor's own windows are not
+// used: they are half a second of game time, which is longer on the wall in a slow game, and have no
+// fixed relation to the metrics windows.
 //
 // Whether a window is usable is decided here from what the VM was doing: not paused, at the nominal
-// limiter, not frame-advancing, not a GS dump. The warm-up after a boot and the settle after a change are
-// the controller's, because they are about auto-tune's own actions.
+// limiter, not frame-advancing, not a GS dump. The warm-up after a boot and the settle after a change
+// belong to the controller, since they depend on auto-tune's own actions.
 
 #pragma once
 
@@ -79,7 +79,6 @@ public:
 	/// Poll against the live PerformanceMetrics and VMManager. CPU thread.
 	bool PollLive(AutoTuneWindow* out);
 
-	/// Reset against the live PerformanceMetrics.
 	void ResetLive();
 
 	uint32_t LastSequence() const { return m_last_sequence; }

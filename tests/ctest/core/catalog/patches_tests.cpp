@@ -4,9 +4,8 @@
 // Tests for the online patch browser (PatchRepo.h): search, file list caching and back-off, and
 // install. The .pnach text handling it relies on is tested in pnach_text_tests.cpp.
 //
-// The trees in fixtures/patches/ are the live GitHub file lists captured on 2026-10-08, cut down
-// to the entries each rule needs; the real .pnach samples are in the same folder. Everything else
-// a test downloads is a small file built in the test itself.
+// fixtures/patches/ holds the GitHub file lists, cut down to the entries each rule needs, and real
+// .pnach samples.
 
 #include "catalog_test_support.h"
 
@@ -155,7 +154,6 @@ namespace
 			return std::make_unique<PatchRepo>(m_http, ResponseCache(m_dir.File("trees")), Hooks());
 		}
 
-		/// The captured file lists of all five repositories.
 		void ScriptTrees()
 		{
 			m_http.Ok(TREE_OFFICIAL, ReadFixture("patches/pcsx2_patches.tree.json"))
@@ -229,8 +227,6 @@ namespace
 		std::string m_old_patches, m_old_cheats, m_old_game_settings;
 	};
 } // namespace
-
-// ---- Plain functions in PatchRepo.h ------------------------------------------------------------
 
 TEST(PatchRepoMatching, CheatFilesMatchByCrcInTheFileNameOnly)
 {
@@ -308,8 +304,6 @@ TEST(PatchRepoMatching, SourcesAreNamed)
 	EXPECT_STREQ(PatchSourceRepository(PatchSourceId::XiGuanChi), "XiGuanChi/PCSX2-CheatsDB");
 	EXPECT_STRNE(PatchSourceLabel(PatchSourceId::Pcsx2Patches), PatchSourceLabel(PatchSourceId::Gabominated));
 }
-
-// ---- Search ------------------------------------------------------------------------------------
 
 TEST_F(PatchRepoTest, CommunitySearchMergesTheFourSourcesAndDropsDuplicates)
 {
@@ -557,8 +551,6 @@ TEST_F(PatchRepoTest, AFailedSourceMakesAFoundListIncomplete)
 	EXPECT_EQ(Names(result.entries), (std::vector<std::string>{"Widescreen 16:9"}));
 }
 
-// ---- File list cache and back-off ---------------------------------------------------------------
-
 TEST_F(PatchRepoTest, FileListsAreKeptInMemoryAndOnDisk)
 {
 	ScriptTrees();
@@ -631,7 +623,6 @@ TEST_P(PatchRepoBackoffTest, AFailedListIsNotAskedForAgainUntilTheWaitIsOver)
 	const s32 status = GetParam().first;
 	const int wait_seconds = GetParam().second;
 
-	// Fails first, then works.
 	if (status == 0)
 		m_http.Fail(TREE_SHADOWNINJA, "connection reset");
 	else
@@ -659,7 +650,6 @@ TEST_P(PatchRepoBackoffTest, AFailedListIsNotAskedForAgainUntilTheWaitIsOver)
 	EXPECT_FALSE(result.incomplete);
 	EXPECT_EQ(result.entries.size(), 7u);
 
-	// And it is remembered as good: no further requests.
 	repo->Search(GodOfWarRequest());
 	EXPECT_EQ(m_http.RequestCount(TREE_SHADOWNINJA), 2u);
 }
@@ -685,8 +675,6 @@ TEST_F(PatchRepoTest, ABodyThatIsNotAFileListIsAFailureToo)
 	ResponseCache cache(m_dir.File("trees"));
 	EXPECT_FALSE(cache.Load("tree-shadowninja826.txt").has_value());
 }
-
-// ---- Large cheat database -----------------------------------------------------------------------
 
 TEST_F(PatchRepoTest, LargeDatabaseOnlyCountsItsThreeCheatFolders)
 {
@@ -783,8 +771,6 @@ TEST_F(PatchRepoTest, LargeDatabaseNamesWithHashAndPercentSurviveTheUrl)
 	EXPECT_NE(RawLarge(hash).find("%232"), std::string::npos);
 	EXPECT_NE(RawLarge(percent).find("120%25"), std::string::npos);
 }
-
-// ---- Cancellation, progress, worker thread ------------------------------------------------------
 
 TEST_F(PatchRepoTest, ACancelledTokenStopsBeforeAnyRequest)
 {
@@ -943,8 +929,6 @@ TEST_F(PatchRepoTest, DestroyingAJobCancelsAndJoinsIt)
 	releaser.join();
 }
 
-// ---- Install -----------------------------------------------------------------------------------
-
 TEST_F(PatchRepoTest, InstallWritesTheFilesTheEnableListsAndTheCheatSwitch)
 {
 	auto repo = MakeRepo();
@@ -978,7 +962,6 @@ TEST_F(PatchRepoTest, InstallWritesTheFilesTheEnableListsAndTheCheatSwitch)
 	ASSERT_TRUE(ini.Load());
 	EXPECT_TRUE(ini.GetBoolValue("EmuCore", "EnableCheats", false));
 
-	// The core finds what was written.
 	EXPECT_EQ(SectionNames(ReadFile(PatchesPnachPath())), (std::vector<std::string>{"Widescreen 16:9", "60 FPS"}));
 }
 
@@ -1180,8 +1163,6 @@ TEST_F(PatchRepoTest, InstallReportsAFolderItCannotWriteAndSavesNoSettings)
 	EXPECT_FALSE(FileSystem::FileExists(SettingsPath().c_str()));
 }
 
-// ---- Search and install together ---------------------------------------------------------------
-
 TEST_F(PatchRepoTest, InstalledEntriesAreFlaggedInTheNextSearch)
 {
 	ScriptTrees();
@@ -1193,7 +1174,6 @@ TEST_F(PatchRepoTest, InstalledEntriesAreFlaggedInTheNextSearch)
 	for (const PatchEntry& e : first.entries)
 		EXPECT_FALSE(e.installed) << e.name;
 
-	// Install the widescreen patch and two cheats.
 	PatchInstallRequest install = InstallRequest({});
 	install.game_title = first.game_title;
 	for (const PatchEntry& e : first.entries)

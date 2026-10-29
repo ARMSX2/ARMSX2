@@ -220,15 +220,11 @@ __forceinline static GSVector4 GSCoordinateGradientOnGrain(const GSVector4& dsca
 // the first one the scissor leaves; which one hardware uses is unknown.
 //
 // The bias is a hair, not a sixteenth: the two differ wherever the seed has bits
-// below a sixteenth. Spider-Man 3's vertical blur passes seed V at 1.53125 texels,
-// which puts the filter's sample point half a sixteenth above a sixteenth
-// boundary. A hair below it stays on the boundary's row; a whole sixteenth below
-// it reads the row above, and the console does not. Measured on that game's frame,
-// any bias from 1 to 2048 units (half a sixteenth) gives the same picture and 2049
-// units and up gives the sixteenth's. The captures that measured the term
-// (gs-tex1..7) seeded on whole sixteenths only, where a hair and a sixteenth land
-// on the same sixteenth, so nothing separates sizes inside that window; one unit is
-// the smallest bias and the size the triangle lag already uses (GSCoordinateLag.h).
+// below a sixteenth. A seed of V = 1.53125 texels puts the sample point half a
+// sixteenth above a sixteenth boundary; a hair below it stays on the boundary's
+// row, a whole sixteenth below it reads the row above, and the console does not.
+// Any bias from 1 to 2048 units (half a sixteenth) gives the same picture, so it
+// is one unit, the smallest and the size the triangle lag uses (GSCoordinateLag.h).
 //
 // A unit is 1/65536 of a texel, so a sixteenth is GS_UV_SIXTEENTH = 4096 units.
 static constexpr float GS_UV_SIXTEENTH = 4096.0f;

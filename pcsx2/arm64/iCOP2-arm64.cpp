@@ -1498,13 +1498,12 @@ static const u8* s_cop2SyncStubs[kCop2SyncStubCount];
 
 // Parked-spin bounce, run-ahead stub only (the "parked" tail below).
 //
-// UYA's VU0 runs one program that never ends: between jobs it sits in a
-// NOP-only wait loop on a VI register the EE writes. About two thirds of the
-// run-ahead syncs it sees find it still there, and all recMicroVU0::Execute
-// does with them is mVUspinBounce: VU0.cycle += max(delta, 16). Reaching
-// that answer cost the pin flush and reload, the register saves and two C
-// calls. While mVU0ParkedSpin is armed, the stub answers it here instead,
-// before touching the stack or the pins.
+// A VU0 program can sit in a NOP-only wait loop on a VI register the EE
+// writes. For a run-ahead sync that finds it still there, all
+// recMicroVU0::Execute does is mVUspinBounce: VU0.cycle += max(delta, 16).
+// While mVU0ParkedSpin is armed, the stub answers that here, before touching
+// the stack or the pins, instead of paying for the pin flush and reload, the
+// register saves and two C calls.
 //
 // It has to leave behind exactly what the C++ path does, step for step:
 //   vu0SyncRunAheadThin: publishes cpuRegs.cycle (the slow path's

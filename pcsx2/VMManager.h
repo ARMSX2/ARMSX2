@@ -273,7 +273,6 @@ namespace VMManager
 	/// Runs the virtual machine for the specified number of video frames, and then automatically pauses.
 	void FrameAdvance(u32 num_frames = 1);
 
-	/// Returns true while a frame-advance request still has frames left to run.
 	bool IsFrameAdvancing();
 
 	/// Changes the disc in the virtual CD/DVD drive. Passing an empty will remove any current disc.
@@ -441,7 +440,7 @@ namespace VMManager
 		/// there is no source for it on this platform (everything but Linux and Android).
 		u64 GetPerformanceCoreMask();
 
-		/// How many of them there are. The IOP thread's ResolveMode wants it (design 10.2).
+		/// How many of them there are.
 		u32 GetPerformanceCoreCount();
 
 		/// Whether this host can run the GS back thread beside the EE, VU1 and GS front threads: at least four performance-tier
@@ -456,7 +455,6 @@ namespace VMManager
 
 		const std::string& GetELFOverride();
 		bool IsExecutionInterrupted();
-		/// True while FrameAdvance() has frames left to run.
 		bool IsFrameAdvancing();
 		/// GetState() without the acquire, for the EE event test, which puts an acquire fence after it where it
 		/// relies on the value (see _cpuEventTest_Shared).

@@ -68,15 +68,12 @@ import com.armsx2.ui.common.PadModal
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
- * A texture pack's window, opened by its Get button. A banner in its creator's colours says what the
- * pack is; a row of tiles in the shape of the save state ones, larger, holds the creator (their
- * profile picture), the pack's source, and the creator's tip and socials pages; then the pack's
- * description, with Download last.
+ * A texture pack's window, opened by its Get button: a banner in the creator's colours, a row of
+ * tiles (creator, pack source, tip and socials pages), the description, and Download last.
  *
- * The creator's colour is picked from their picture once it loads, and from their name until then
- * (and for good when they have none), so every creator's window looks like theirs. Depth comes from
- * gradients and borders only: no shadows and no blur, which some Adreno and Mali drivers draw as
- * solid boxes (see controllerFocusable).
+ * The creator's colour comes from their picture once it loads, and from their name until then (and
+ * when they have no picture). Depth comes from gradients and borders only: no shadows and no blur,
+ * which some Adreno and Mali drivers draw as solid boxes (see controllerFocusable).
  */
 @Composable
 internal fun PackWindow(
@@ -91,7 +88,7 @@ internal fun PackWindow(
 ) {
     val layer = "tex-pack"
     val bodyScroll = rememberScrollState()
-    // One install at a time, as before; and an installed pack that is up to date has nothing to get.
+    // Only one install at a time, and nothing to get for a pack that is installed and up to date.
     val canDownload = !anyBusy && action != InstallAction.INSTALLED
     var picked by remember(pack.lead?.avatar) { mutableStateOf<Color?>(null) }
     val accent by animateColorAsState(
@@ -167,7 +164,6 @@ internal fun PackWindow(
     }
 }
 
-/** The pack's name and facts on the creator's colours, with their picture fading in at the right. */
 @Composable
 private fun Banner(
     pack: TextureCatalog.Pack,
@@ -180,7 +176,6 @@ private fun Banner(
         Modifier
             .fillMaxWidth()
             .background(deep)
-            // A glow of the creator's colour from the top left.
             .background(
                 Brush.radialGradient(
                     listOf(accent.copy(alpha = 0.75f), Color.Transparent),
@@ -206,7 +201,6 @@ private fun Banner(
                         alpha = 0.75f,
                         modifier = Modifier.fillMaxSize(),
                     )
-                    // Faded into the banner on its left, so it reads as part of it.
                     Box(
                         Modifier
                             .fillMaxSize()
@@ -268,7 +262,6 @@ private fun Banner(
     }
 }
 
-/** One fact on the banner: a small caption over its value, on frosted glass. */
 @Composable
 private fun Fact(label: String, value: String, dot: Color? = null) {
     Column(
@@ -398,7 +391,6 @@ private fun LinkTile(
 ) {
     TileFrame(id = id, size = size, borderColor = Color.White.copy(alpha = 0.14f), onClick = { openUrl(url) }) {
         Box(Modifier.fillMaxSize().background(Brush.linearGradient(colors)))
-        // A soft disc of light in the corner, for depth without a shadow.
         Box(
             Modifier
                 .size(size)
@@ -440,7 +432,6 @@ internal fun TileFrame(
     )
 }
 
-/** A tile's name over a dark fade, as on the save state tiles. */
 @Composable
 internal fun BoxScope.TileLabel(title: String, subtitle: String) {
     Box(
@@ -546,7 +537,7 @@ private fun statusColor(raw: String): Color = when (raw) {
 private fun host(url: String): String =
     runCatching { java.net.URI(url).host.orEmpty().removePrefix("www.") }.getOrDefault("")
 
-/** Each place a pack can come from in its own colours: plain gradients, no one's logo. */
+/** Tile gradient for a pack source, by host, with a default for unknown hosts. */
 private fun sourceColors(url: String): List<Color> {
     val h = host(url)
     return when {

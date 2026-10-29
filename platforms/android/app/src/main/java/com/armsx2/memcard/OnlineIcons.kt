@@ -26,17 +26,16 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 
 /**
- * Online Icons: the save icons of the PS2 Icon Open Database (ps2iodb.com, founded by Issun and
- * built by its contributors), for games with no save on the player's cards and no icon found on
- * their disc, and for the Icon Museum. The player picks what to download, one icon, the ones for
- * their games or the whole set, and can remove any of it again; what is downloaded stays on the
- * device, compressed, in an [OnlineIconStore]. tools/memcard-icons publishes the files at [BASE].
+ * Online Icons: save icons from the PS2 Icon Open Database (ps2iodb.com), used for games with no
+ * save on the player's cards and no icon found on their disc, and for the Icon Museum. The player
+ * downloads one icon, the ones for their games or the whole set, and can remove any of it again.
+ * Downloaded icons stay on the device, compressed, in an [OnlineIconStore]. [BASE] serves the files.
  */
 object OnlineIcons {
     const val BASE = "https://icons.ps2ktxpak.net/"
 
-    /** The download counter behind "Popular Today" (tools/memcard-icons/stats-worker): today's
-     *  most downloaded icons, and where the app says which icons it downloaded on purpose. */
+    /** The download counter behind "Popular Today": serves today's most downloaded icons and
+     *  receives which icons the app downloaded on purpose. */
     const val STATS = "https://iconstats.ps2ktxpak.net/"
     private const val ZIP = "memcard-icons.zip"
     private const val TAG = "OnlineIcons"
@@ -58,14 +57,12 @@ object OnlineIcons {
         data class Failed(val why: String) : Status
     }
 
-    /** What a download is doing, for the browser and the menu row. */
     val status = mutableStateOf<Status>(Status.Idle)
 
     /** Bumped when icons are downloaded or removed, or the catalog changes, so covers, the Museum
      *  and the browser look again. */
     val generation = mutableIntStateOf(0)
 
-    /** One icon in the catalog: which game, which of its saves, and who contributed it. */
     class Entry(val hash: String, val title: String, val label: String, val contributors: String)
 
     @Volatile private var store: OnlineIconStore? = null
@@ -82,8 +79,6 @@ object OnlineIcons {
         previews = File(context.cacheDir, PREVIEW_DIR)
     }
 
-    // ---- what is on the device ----------------------------------------------------------------
-
     /** The icon for [serial], by hash, whether downloaded or not. */
     fun hashFor(serial: String): String? = store?.hashFor(serial)
 
@@ -96,8 +91,6 @@ object OnlineIcons {
 
     /** A downloaded icon's bytes, icon.sys (964 bytes) and then the icon, or null. */
     fun read(hash: String): ByteArray? = store?.read(hash)
-
-    // ---- the server ---------------------------------------------------------------------------
 
     /** Fetches the index and the catalog when they changed. True when both are on the device,
      *  fetched now or before (offline, the last ones do). */
@@ -154,8 +147,6 @@ object OnlineIcons {
         cached?.let { f -> runCatching { f.parentFile?.mkdirs(); f.writeBytes(compressed) } }
         bytes
     }
-
-    // ---- downloads ----------------------------------------------------------------------------
 
     /** Downloads the whole set in the background, as one file unpacked as it arrives, or icon by
      *  icon when the server hasn't got the one file; [status] follows it. What arrived stays if it
@@ -232,12 +223,10 @@ object OnlineIcons {
         }
     }
 
-    // ---- Popular Today ---------------------------------------------------------------------------
-
     /** Today's most downloaded icons, most first, as the counter last said; null before it has. */
     val popular = mutableStateOf<List<String>?>(null)
 
-    /** Asks the counter for today's most downloaded icons. Keeps the last answer when it can't. */
+    /** Keeps the last answer when the counter can't be reached. */
     suspend fun refreshPopular() {
         val list = withContext(Dispatchers.IO) {
             val conn = open(STATS + "popular") ?: return@withContext null

@@ -46,8 +46,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
     ) {
         // Automatic performance tuning: when a game keeps missing frames, the core tries
         // performance settings one at a time and keeps the ones that help, in that game's own
-        // settings. At the top because it is the first thing to try, ahead of the manual levers
-        // below. The per-game list of what it changed, and its Reset, sit under it.
+        // settings. The per-game list of what it changed, and its Reset, sit under it.
         ToggleRow(
             label = str("perf.autoTune.label"),
             value = s.emuCore.autoTune,

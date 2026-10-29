@@ -9,10 +9,9 @@
 // The killer reproduces the SotC block 0x800046d4 shape that broke GE-M1: an
 // ADDU writes a register (which becomes a DIRTY allocator-resident value under
 // the flip), then MOVZ rd,v0,rd reads it as BOTH its rt condition and its old
-// rd value, then MULT reads it again. GE-M1 miscompiled this because the MOVZ
+// rd value, then MULT reads it again. That miscompiled because the MOVZ
 // leaf read it through the raw pin-only accessor (armLoadEERegPtr), which is
-// blind to allocator residency, so it saw the STALE pre-ADDU value. The game
-// used s1; s1 is a pin now, so these tests use s2, which is not. The harness
+// blind to allocator residency, so it saw the STALE pre-ADDU value. The harness
 // runs both the JIT and the interpreter from the same pre-state and diffs all
 // architectural state, so a stale-read regression turns the diff red here (or,
 // under a Devel build, trips the GE-M2 I3 tripwire first).
@@ -57,10 +56,10 @@ TEST(EeRecGeM2Coherence, MovzAfterDirtyWriteMoveTaken)
 	h.SetGpr64(reg::v1, 0x0000000000000002ull);
 	h.LoadProgram({
 		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = sext32(5 + -5) = 0  (dirty resident)
-		MOVZ(reg::s2, reg::v0, reg::s2),  // s2 == 0 -> s2 = v0
-		OR(reg::t0, reg::s2, reg::zero),  // read s2 back
-		MULT(reg::s2, reg::v1),           // read s2 again (HI/LO = s2 * v1)
-		MFLO(reg::t1),                    // t1 = LO
+		MOVZ(reg::s2, reg::v0, reg::s2),
+		OR(reg::t0, reg::s2, reg::zero),
+		MULT(reg::s2, reg::v1),
+		MFLO(reg::t1),
 	});
 	h.Run();
 	EXPECT_EQ(h.GetGpr64Interp(reg::s2), static_cast<u64>(kSentinelV0));
@@ -78,8 +77,8 @@ TEST(EeRecGeM2Coherence, MovzAfterDirtyWriteMoveNotTaken)
 	h.SetGpr64(reg::v0, kSentinelV0);
 	h.LoadProgram({
 		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = 7 (nonzero, dirty resident)
-		MOVZ(reg::s2, reg::v0, reg::s2),  // s2 != 0 -> unchanged
-		OR(reg::t0, reg::s2, reg::zero),  // read s2 back
+		MOVZ(reg::s2, reg::v0, reg::s2),
+		OR(reg::t0, reg::s2, reg::zero),
 	});
 	h.Run();
 	EXPECT_EQ(h.GetGpr64Interp(reg::s2), 7ull);
@@ -95,7 +94,7 @@ TEST(EeRecGeM2Coherence, MovnAfterDirtyWriteMoveTaken)
 	h.SetGpr64(reg::v0, kSentinelV0);
 	h.LoadProgram({
 		ADDU(reg::s2, reg::a0, reg::a1),  // s2 = 7 (nonzero, dirty resident)
-		MOVN(reg::s2, reg::v0, reg::s2),  // s2 != 0 -> s2 = v0
+		MOVN(reg::s2, reg::v0, reg::s2),
 		OR(reg::t0, reg::s2, reg::zero),
 	});
 	h.Run();

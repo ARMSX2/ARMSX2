@@ -108,7 +108,6 @@ object DiscordPresence {
     // times, and the poll below waits for the app to come back.
     private val foreground = MutableStateFlow(true)
 
-    /** From the activity's onStart (true) and onStop (false). */
     fun setForeground(fg: Boolean) {
         if (foreground.value == fg) return
         foreground.value = fg
@@ -244,10 +243,10 @@ object DiscordPresence {
     /** Re-publish the current game; used on (re)connect and whenever the running game changes. */
     /**
      * Where in ARMSX2 the player is, when it is neither a game nor the plain library:
-     * [PLACE_MUSEUM], [PLACE_ONLINE_ICONS]. Published the way a game is (as the title, with no
-     * serial and no cover), so a friend's client of any version shows it where it would show a
-     * game's name, and Discord reads it under ARMSX2. The bridge captions the image with the title
-     * when there is no serial, which a friend's client knows not to take for one. Null: the library.
+     * [PLACE_MUSEUM], [PLACE_ONLINE_ICONS]. Published as a game's title with no serial and no
+     * cover, so any client version shows it where a game's name would be. The bridge captions the
+     * image with the title when there is no serial, which a friend's client knows not to take for
+     * one. Null: the library.
      */
     val place = mutableStateOf<String?>(null)
     const val PLACE_MUSEUM = "In the Icon Museum"
@@ -259,7 +258,6 @@ object DiscordPresence {
      *  give the bridge puts "-" in it. Shown, never parsed: see [place]. */
     private const val PLACE_STATE = "\u2800\u2800"
 
-    /** The player is at [where] until [leave]. */
     fun enter(where: String) {
         place.value = where
     }

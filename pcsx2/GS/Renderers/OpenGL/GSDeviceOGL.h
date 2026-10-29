@@ -514,7 +514,7 @@ public:
 	GLuint GetPaletteSamplerID();
 
 #ifdef __ANDROID__
-	// ---- Remote play (GSRemotePlay.h). GS thread, apart from what the ring publishes. ----
+	// Remote play (GSRemotePlay.h). GS thread, apart from what the ring publishes.
 public:
 	void RemotePlayVSync(GSTexture* src, const GSVector4& src_uv, const GSVector4& area) override;
 

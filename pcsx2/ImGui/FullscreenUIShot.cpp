@@ -42,9 +42,7 @@ namespace FullscreenUI
 {
 	namespace
 	{
-		//////////////////////////////////////////////////////////////////////////
-		// Page names. The one place an agent's page name meets the Big Picture state.
-		//////////////////////////////////////////////////////////////////////////
+		// Page names: where a UIOpenPage name is mapped to Big Picture state.
 
 		void OpenLanding()
 		{
@@ -138,7 +136,6 @@ namespace FullscreenUI
 			return true;
 		}
 
-		// The Load State selector of the first game in the list: its numbered slots and autosaves.
 		bool OpenFirstGameLoadState(std::string* error)
 		{
 			std::string path;
@@ -226,7 +223,6 @@ namespace FullscreenUI
 			return true;
 		}
 
-		// A new SettingsPage needs a name above so UIOpenPage can reach it.
 		static_assert(std::size(kSettingsPages) == static_cast<size_t>(SettingsPage::Count),
 			"add the new SettingsPage to kSettingsPages in FullscreenUIShot.cpp");
 		static_assert(SettingsPageTableIsInEnumOrder(), "kSettingsPages must list SettingsPage in enum order");
@@ -270,9 +266,7 @@ namespace FullscreenUI
 			return true;
 		}
 
-		//////////////////////////////////////////////////////////////////////////
-		// textdialog: Big Picture's text entry dialog (the on-screen keyboard), open on a sample question
-		//////////////////////////////////////////////////////////////////////////
+		// textdialog: Big Picture's text entry dialog (the on-screen keyboard), open on a sample question.
 
 		struct ShotPadKey
 		{
@@ -298,7 +292,6 @@ namespace FullscreenUI
 			{"start", ImGuiKey_GamepadStart},
 		};
 
-		// A physical keyboard's editing keys.
 		constexpr ShotPadKey kShotKeyboardKeys[] = {
 			{"backspace", ImGuiKey_Backspace},
 			{"delete", ImGuiKey_Delete},
@@ -402,12 +395,12 @@ namespace FullscreenUI
 			return true;
 		}
 
-		// textdialog[:numeric|:ip][:text=<initial text>][:keys=<pad keys>][:type=<characters>][:pkeys=<keyboard keys>][:click=<x,y+x,y..>]
+		// textdialog[:long][:numeric|:ip][:text=<initial text>][:keys=<pad keys>][:type=<characters>][:pkeys=<keyboard keys>][:click=<x,y+x,y..>]
 		// Opens the text entry dialog over whatever is showing, as Local Link's Host Address row would (a number
-		// pad with :numeric or :ip), then plays what follows as a user would: pad buttons (up down left right
-		// south east west north l1 r1 l2 select start confirm cancel, e.g. keys=down*2,confirm), characters typed on
-		// a physical keyboard, keyboard keys (backspace delete left right home end enter escape), and mouse clicks.
-		// Needs --headless, which supplies the frames the presses are spread over. Values cannot contain ':'.
+		// pad with :numeric or :ip), then plays the options in the order listed: pad buttons (kShotPadKeys, e.g.
+		// keys=down*2,confirm), characters typed on a physical keyboard, keyboard keys (kShotKeyboardKeys), and
+		// mouse clicks. Those need --headless, which supplies the frames the presses are spread over.
+		// Values cannot contain ':'.
 		bool OpenTextDialog(std::string_view spec, std::string* error)
 		{
 			InputFilterType filter = InputFilterType::None;
@@ -671,12 +664,10 @@ namespace FullscreenUIShot
 		}
 
 		// ImGui's clock when a screenshot starts drawing. The selected item's border pulses with
-		// ImGui::GetTime(), so two shots of the same page differ unless they start from the same
-		// time. Frames carry a fixed time step in headless mode (ImGuiManager::NewFrame), so the
-		// only thing left to pin is where the clock starts, which is here, every time. That can
-		// move ImGui's clock backwards by the few seconds since the last shot; the absolute
-		// timestamps it affects (OSD message expiry, mouse double-click) just see a slightly
-		// longer or shorter interval once, which a screenshot tool can live with.
+		// ImGui::GetTime(), so two shots of the same page match only if they start from the same
+		// time. Headless frames use a fixed time step (ImGuiManager::NewFrame), so pinning the start
+		// is enough. Rewinding the clock only gives OSD message expiry and double-click timing one
+		// slightly different interval.
 		constexpr double kUiClockEpoch = 10000.0;
 		constexpr u32 kMaxSettleFrames = 3600;
 

@@ -247,8 +247,8 @@ static u32 ARMSX2ResolveControllerMacroGameplayMask(u32 gamepad_index, u32 raw_m
     state.current_replay_mask = 0;
 
     const u64 now = SDL_GetTicks();
-    // Only a modifier needs a grace window. Starting from the raw mask preserves master's
-    // immediate SDL delivery for D-pad, triggers, face/shoulder buttons, Select and stick clicks.
+    // Only a modifier needs a grace window; every other input (D-pad, triggers, face/shoulder
+    // buttons, Select, stick clicks) is delivered immediately from the raw mask.
     // A recognized chord still consumes its complete input mask until release.
     u32 gameplay_mask = raw_mask & ~modifier_mask;
     for (u32 index = 0; index < 16; index++) {
@@ -269,8 +269,8 @@ static u32 ARMSX2ResolveControllerMacroGameplayMask(u32 gamepad_index, u32 raw_m
             continue;
         }
 
-        // Secondary inputs reach the game at once, as on master. A chord Swift recognizes sets
-        // their consumed bit, which withholds them from the next poll until physical release.
+        // Secondary inputs reach the game at once. A chord Swift recognizes sets their consumed
+        // bit, which withholds them from the next poll until physical release.
         if (!is_modifier) {
             state.delivered_mask &= ~bit;
             state.replay_eligible_mask &= ~bit;
@@ -722,8 +722,8 @@ static float ARMSX2GameRumbleStrength()
 
 static u16 ARMSX2ScaleControllerRumbleMotor(u16 raw_intensity, float strength)
 {
-    // Preserve the standard controller output at 100%, then allow the setting
-    // to reach a true 2x maximum.
+    // Cap at the standard maximum first, so 100% leaves the standard output unchanged
+    // and 2x reaches twice that.
     const float baseline = static_cast<float>(std::min(raw_intensity, ARMSX2_GAMEPAD_RUMBLE_MAX_INTENSITY));
     return static_cast<u16>(std::clamp(std::lround(baseline * strength), 0l, 65535l));
 }
@@ -1997,8 +1997,7 @@ static const ARMSX2ControllerStickSettings& ARMSX2GetControllerStickSettings()
 static void ARMSX2ApplyControllerStickResponse(
     float& x, float& y, float dead_zone, bool instant_deadzone, float negative_deadzone)
 {
-    // Preserve the old per-axis 15% filtering at the default value. This avoids
-    // changing established controller feel for users who never touch the setting.
+    // Per-axis threshold first; the radial remap below runs only when instant deadzone is on.
     x = (std::abs(x) > dead_zone) ? x : 0.0f;
     y = (std::abs(y) > dead_zone) ? y : 0.0f;
     if (!instant_deadzone)

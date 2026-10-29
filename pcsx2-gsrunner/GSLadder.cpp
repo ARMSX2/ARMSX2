@@ -112,15 +112,11 @@ namespace GSLadder
 			// Ask for the download a game's own readback would trigger. A no-op under
 			// the software renderer, where local memory is already the result.
 			//
-			// ⚠️ Everything below addresses through `rc`, the rectangle THIS rung was
-			// asked for, and not through `s_opts`, the cadence rectangle. They are the
-			// same for a cadence rung and for a vsync rung, and they are different for
-			// every named rung whose region is not the cadence's -- which is what
-			// `-ladder-at` exists to take. Reading through the cadence base there
-			// silently returned a rung-sized window of the WRONG region under the
-			// named rung's descriptor: right shape, right tag, right packet, wrong
-			// memory. Measured on Stuntman, where a rung over 0x2d60 returned the
-			// frame buffer's words at (0,0) and nothing in the file said so.
+			// Everything below addresses through `rc`, the rectangle this rung was asked
+			// for, not `s_opts`, the cadence rectangle. They are the same for cadence and
+			// vsync rungs, but differ for a named rung (`-ladder-at`) whose region is not
+			// the cadence's: reading through the cadence base there returns a window of
+			// the wrong region under the named rung's descriptor.
 			GIFRegBITBLTBUF bb = {};
 			bb.SBP = rc.bp;
 			bb.SBW = rc.bw;
@@ -177,7 +173,6 @@ namespace GSLadder
 				MTGS::RunOnGSThread([packet_index, tag, cadence]() { CaptureOnGSThread(packet_index, tag, cadence); });
 			}
 
-			// ...and any checkpoint named for exactly this packet, with its own region.
 			for (size_t ai = 0; ai < s_opts.at.size(); ai++)
 			{
 				if (s_opts.at[ai].packet != packet_index)

@@ -124,7 +124,6 @@ object RemotePlayHost {
         }
     }
 
-    /** Host on this Wi-Fi: listen, and announce this device so viewers list it. */
     fun startWifi(context: Context) {
         if (server != null) return
         val game = runningGame() ?: return
@@ -142,7 +141,6 @@ object RemotePlayHost {
         watchGame()
     }
 
-    /** Online: prepare an offer and put it up under a short code for the friend to type. */
     fun createInvite(context: Context) {
         if (session != null) return
         val game = runningGame() ?: return
@@ -210,7 +208,6 @@ object RemotePlayHost {
         declined.clear()
     }
 
-    /** Lets in the friend the host is being asked about ([Status.Asking]). */
     fun accept() {
         if (_status.value !is Status.Asking) return
         session?.approve()
@@ -469,7 +466,6 @@ private class HostSession(
         main.postDelayed(askTimeout, ASK_TIMEOUT_MS)
     }
 
-    /** The host let the viewer in: the stream starts. */
     fun approve() {
         if (!asking || ended) return
         asking = false
@@ -479,7 +475,6 @@ private class HostSession(
         startStreaming()
     }
 
-    /** The host turned the viewer away: the session ends and the viewer is told so. */
     fun decline() {
         if (ended) return
         asking = false
@@ -583,7 +578,7 @@ private class HostSession(
         if (!connectedOnce) finish(null)
     }
 
-    /** Builds the peer and sends the offer once it is complete, candidates included. */
+    /** The offer goes out once it is complete, candidates included. */
     fun offer() {
         if (offered || ended) return
         offered = true
@@ -694,9 +689,8 @@ private class HostSession(
         RemotePlayCore.hostPlayer2(true)
 
         // The frame rate and the resolution never change; a tight network only softens the picture.
-        // Left to adapt, WebRTC lowered the resolution whenever the picture got busy (a scene
-        // change, moving again after standing still) and raised it once things calmed down, and
-        // every switch restarts the encoder here and the decoder on the viewer: a hitch each time.
+        // Each resolution switch by WebRTC's adaptation restarts the encoder here and the decoder
+        // on the viewer: a hitch each time.
         pc.senders.firstOrNull { it.track()?.kind() == "video" }?.let { sender ->
             val parameters = sender.parameters
             parameters.degradationPreference = RtpParameters.DegradationPreference.DISABLED

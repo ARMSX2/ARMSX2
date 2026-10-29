@@ -1,10 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Big Picture's Texture Packs page: the online catalog of community texture packs, a detail view for
-// each pack, installing and deleting packs, and the list of packs already installed. The page is a
-// settings page (SettingsPage::TexturePacks); the other FullscreenUI files call in here with one
-// line each (declarations at the end of FullscreenUI_Internal.h).
+// Big Picture's Texture Packs page (SettingsPage::TexturePacks). The other FullscreenUI files call in
+// here with one line each (declarations at the end of FullscreenUI_Internal.h).
 //
 // Threads. All state below belongs to the GS thread, which draws the page. The catalog download, the
 // install and the disk work (listing and deleting installed packs) run on worker threads and hand
@@ -14,7 +12,7 @@
 //     they only matter while the page is open.
 //   * An install keeps reporting while the page is closed, because its progress is a keyed
 //     notification. Its reports hop worker -> CPU thread -> GS thread, as the cover downloader's do
-//     (a push into the GS ring is only allowed from the CPU thread).
+//     (see PostToGSThread).
 //
 // The page runs under the settings lock (DrawSettingsWindow holds it around every page body), which is
 // a plain mutex: nothing drawn here may call a helper that takes Host::GetSettingsLock(). Work that
@@ -93,11 +91,6 @@ namespace
 		Installed,
 	};
 
-	//////////////////////////////////////////////////////////////////////////
-	// State (GS thread)
-	//////////////////////////////////////////////////////////////////////////
-
-	// A catalog pack plus what the list searches in.
 	struct PackEntry
 	{
 		Cat::TexturePack pack;
@@ -176,10 +169,6 @@ namespace
 	};
 	ShotAction s_shot_action = ShotAction::None;
 	std::string s_shot_id;
-
-	//////////////////////////////////////////////////////////////////////////
-	// Hand-over from the worker threads
-	//////////////////////////////////////////////////////////////////////////
 
 	struct LocalResult
 	{
@@ -272,10 +261,6 @@ namespace
 		});
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Text
-	//////////////////////////////////////////////////////////////////////////
-
 	std::string Lower(std::string_view text)
 	{
 		std::string out(text);
@@ -339,8 +324,8 @@ namespace
 		return raw;
 	}
 
-	// Who made the pack. An entry whose creators list is empty has nobody named: say so, and never
-	// show the "Unknown creator" placeholder the older catalog files keep in `authors`.
+	// Says nobody has named the creator when the creators list is empty, and never shows the "Unknown
+	// creator" placeholder that older catalog files keep in `authors`.
 	std::string CreatorsText(const Cat::TexturePack& pack)
 	{
 		if (pack.HasNamedCreators())
@@ -461,10 +446,6 @@ namespace
 
 	void StartLocalRefresh(std::string delete_folder = {}, std::string delete_name = {});
 
-	//////////////////////////////////////////////////////////////////////////
-	// Installed state
-	//////////////////////////////////////////////////////////////////////////
-
 	void RefreshRecordsIfChanged(bool force)
 	{
 		const u32 revision = Cat::TexturePackState::Revision();
@@ -504,7 +485,6 @@ namespace
 		return nullptr;
 	}
 
-	// The folder a pack is installed in, if it is.
 	const Cat::TexturePackInstaller::InstalledPack* FindInstalledForPack(const std::string& pack_id)
 	{
 		for (const auto& installed : s_installed)
@@ -551,10 +531,6 @@ namespace
 		}
 		return {};
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// The list
-	//////////////////////////////////////////////////////////////////////////
 
 	void RebuildView()
 	{
@@ -743,10 +719,6 @@ namespace
 		}
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Workers
-	//////////////////////////////////////////////////////////////////////////
-
 	std::optional<u64> FreeSpaceAt(const std::string& directory)
 	{
 		// The textures folder may not exist yet; the drive it will be on does.
@@ -869,10 +841,6 @@ namespace
 		});
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Install progress: worker -> CPU thread -> GS thread, shown as a keyed notification
-	//////////////////////////////////////////////////////////////////////////
-
 	void ShowInstallNotice(const std::string& title, const std::string& text, float seconds)
 	{
 		if (!IsInitialized())
@@ -968,7 +936,7 @@ namespace
 		}
 	}
 
-	// The Cancel Install button. Does nothing once the pack is being put in place.
+	// Does nothing once the pack is being put in place.
 	void CancelInstall()
 	{
 		if (!s_install.active || !s_install.cancellable || s_install.cancelling)
@@ -1061,10 +1029,6 @@ namespace
 		});
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Drawing: rows
-	//////////////////////////////////////////////////////////////////////////
-
 	struct RowText
 	{
 		std::string title;
@@ -1077,7 +1041,7 @@ namespace
 	};
 
 	// One pack or installed-folder row: the name, two lines of facts under it, and the state on the
-	// right with a fact beneath it. The text is only built for a row that is on screen: the list is
+	// right with a fact beneath it. make_text runs only for a row that is on screen: the list is
 	// hundreds long.
 	template <typename MakeText>
 	bool DrawPackRow(const char* id, MakeText&& make_text)
@@ -1312,10 +1276,6 @@ namespace
 		}
 	}
 
-	//////////////////////////////////////////////////////////////////////////
-	// Drawing: the pack window
-	//////////////////////////////////////////////////////////////////////////
-
 	// A fact on one line. Selecting copies it, which also lets a controller reach every row.
 	void InfoRow(const char* icon, const char* label, const std::string& value)
 	{
@@ -1382,7 +1342,6 @@ namespace
 		const Cat::TexturePack* pack = entry ? &entry->pack : nullptr;
 		const bool installing_this = s_install.active && pack && s_install.pack_id == pack->id;
 
-		// -- What can be done ---------------------------------------------------------------------
 		if (pack)
 		{
 			const Cat::InstallAction action = ActionOf(*pack);
@@ -1457,7 +1416,6 @@ namespace
 		if (!pack && !installed)
 			ImGui::SetItemDefaultFocus();
 
-		// -- Warnings -----------------------------------------------------------------------------
 		if (pack && pack->NeedsAstc() && s_astc == TPEngine::AstcSupport::Unsupported)
 		{
 			const std::string title = fmt::format("{} {}", ICON_FA_TRIANGLE_EXCLAMATION, FSUI_STR("This GPU Cannot Show These Textures"));
@@ -1477,7 +1435,6 @@ namespace
 			}
 		}
 
-		// -- The pack -----------------------------------------------------------------------------
 		if (pack)
 		{
 			MenuHeading(FSUI_CSTR("Pack"));
@@ -1529,7 +1486,6 @@ namespace
 				TextRow(ICON_FA_CIRCLE_INFO, FSUI_NSTR("Description"), pack->description);
 		}
 
-		// -- On this device -----------------------------------------------------------------------
 		if (installed)
 		{
 			MenuHeading(FSUI_CSTR("Installed"));
@@ -1617,10 +1573,6 @@ namespace
 			QueueResetFocus(FocusResetType::PopupClosed);
 		}
 	}
-
-	//////////////////////////////////////////////////////////////////////////
-	// Drawing: the page
-	//////////////////////////////////////////////////////////////////////////
 
 	bool CatalogStale()
 	{
@@ -1830,10 +1782,8 @@ namespace
 		}
 	}
 
-	//////////////////////////////////////////////////////////////////////////
 	// Screenshot harness: a pack and a network, so an install can be drawn and run without downloading
 	// anything. Reached only through OpenTexturePacksForShot().
-	//////////////////////////////////////////////////////////////////////////
 
 	// Serves one local file slowly, as every download, or with no file stalls part way through a
 	// download until it is cancelled.
@@ -1955,10 +1905,6 @@ namespace
 	}
 } // namespace
 
-//////////////////////////////////////////////////////////////////////////
-// The page
-//////////////////////////////////////////////////////////////////////////
-
 void FullscreenUI::DrawTexturePacksSettingsPage()
 {
 	const int frame = ImGui::GetFrameCount();
@@ -2074,10 +2020,6 @@ void FullscreenUI::ShutdownTexturePacks()
 	s_install_notice_up = false;
 	s_shot_action = ShotAction::None;
 }
-
-//////////////////////////////////////////////////////////////////////////
-// Screenshot harness
-//////////////////////////////////////////////////////////////////////////
 
 std::string FullscreenUI::TexturePacksShotVariants()
 {

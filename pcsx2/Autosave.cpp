@@ -39,10 +39,9 @@ namespace Autosave
 		std::mutex s_rotation_mutex;
 		int s_open_rotations = 0; // guarded by s_rotation_mutex
 
-		// A run cut short leaves "<slot>.drop": the autosave set aside to make room for one that was not
-		// written. If nothing has taken its slot since, it is an autosave again (with keep == 1 it can be the
-		// only one there is). If its slot is filled, a later step of that run got further and what the .drop
-		// holds was due to go: [remove_stale] deletes it.
+		// Restores "<slot>.drop" files left by a run that was cut short. A .drop whose slot is empty goes
+		// back to the slot (with keep == 1 it may be the only autosave). If the slot is filled, the .drop
+		// is stale; [remove_stale] deletes it.
 		void RecoverSetAside(const std::string& newest, Catalog::FileOps& ops, bool remove_stale)
 		{
 			for (int n = KEEP_MIN; n <= KEEP_MAX; n++)
@@ -66,8 +65,6 @@ namespace Autosave
 			}
 		}
 	} // namespace
-
-	// ---- Rotation -------------------------------------------------------------------------
 
 	Rotation::Rotation(std::string newest, int keep, Catalog::FileOps& ops)
 		: m_newest(std::move(newest))
@@ -112,7 +109,6 @@ namespace Autosave
 		m_open = true;
 		s_open_rotations++;
 
-		// Nothing to move when there is no autosave yet; the new one simply becomes the newest.
 		if (!m_ops.Exists(m_newest))
 			return true;
 
@@ -201,8 +197,6 @@ namespace Autosave
 		m_moves.clear();
 	}
 
-	// ---- saving ---------------------------------------------------------------------------
-
 	SaveResult RotatedSave(const std::string& newest, int keep,
 		const std::function<bool(const std::string& path, std::string* error)>& save, std::string* error,
 		Catalog::FileOps& ops)
@@ -278,8 +272,6 @@ namespace Autosave
 		return SaveRunningGame(keep, error);
 	}
 
-	// ---- the timer ------------------------------------------------------------------------
-
 	bool IntervalTimer::Advance(double seconds, int interval_minutes)
 	{
 		if (interval_minutes <= 0)
@@ -305,8 +297,6 @@ namespace Autosave
 			m_elapsed = 0.0;
 		}
 	}
-
-	// ---- hooks the VM calls ---------------------------------------------------------------
 
 	namespace
 	{
@@ -380,8 +370,6 @@ namespace Autosave
 		else if (result != SaveResult::NoGame)
 			ReportFailure(error);
 	}
-
-	// ---- listing --------------------------------------------------------------------------
 
 	std::vector<Entry> List(const std::string& newest)
 	{

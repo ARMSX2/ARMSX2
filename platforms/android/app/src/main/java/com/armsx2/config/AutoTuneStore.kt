@@ -13,35 +13,28 @@ import java.util.concurrent.Executors
 /**
  * The app's side of auto-tune (the emulator core's automatic performance tuning).
  *
- * The core keeps what auto-tune changed in the game's own settings file, `gamesettings/<serial>_<CRC>.ini`:
- * the keys it set, and an `[AutoTune]` section recording what they were before. On Android that file is
- * not the source of truth. The app owns per-game settings (`config.game.<key>`, a sparse JSON of the fields
- * the player overrode) and regenerates the file from it whenever it saves or boots a game, wiping every
- * `EmuCore*` section first. A value that only the file holds is therefore gone the next time the app writes
- * it. This object keeps the two in step, in both directions:
+ * The core writes what auto-tune changed into the game's settings file, `gamesettings/<serial>_<CRC>.ini`,
+ * with an `[AutoTune]` section recording the values before. On Android that file is not the source of
+ * truth: the app owns per-game settings (`config.game.<key>`, a sparse JSON of the fields the player
+ * overrode) and regenerates the file from it on every save or boot, wiping every `EmuCore*` section first.
+ * A value only the file holds is lost at the next write, so this object keeps the two in step:
  *
  *  - [onCommitted]: the core moved one setting into the file; write it into `config.game.<key>` too.
- *  - [reset]: the core put the file's keys back to what they were; do the same to `config.game.<key>`.
+ *  - [reset]: the core put the file's keys back; do the same to `config.game.<key>`.
  *
- * The core records what the *file* held before a commit, and the file is not where the player's own choices
- * live: a value picked in the quick menu is in the app's copy only until the file is next regenerated, so the
- * core's record says the key was absent and a reset would hand the game back to the global setting. [onCommitted]
- * therefore also notes the override the app's copy had before it wrote ([notePrior], kept in
- * `config.autotune.prior.<key>`), and [reset] puts that value back when there is one.
+ * The `[AutoTune]` section is outside the regenerated sections, so the record survives. It records what the
+ * *file* held, though, and a value the player picked in the quick menu lives only in the app's copy, so the
+ * record says the key was absent and a reset would hand the game back to the global setting. [onCommitted]
+ * therefore also notes the app's prior override ([notePrior], in `config.autotune.prior.<key>`), and
+ * [reset] puts it back.
  *
- * The `[AutoTune]` section is outside the sections the app regenerates, so it survives and still carries
- * the record.
+ * The resolution is the exception: the app's file writer never emits `upscale_multiplier`, because the app
+ * keeps the resolution in the core's base layer (renderUpscalemultiplier, pushed at boot and on a change).
+ * So the core also puts a kept resolution in the base layer when it commits it (AndroidOnAutoTuneCommitted
+ * in native-lib.cpp), and [reset] pushes the restored one back ([upscaleAfterRestore]).
  *
- * One lever is not carried by that regeneration: the resolution. The app's writer for the game's file never
- * emits `upscale_multiplier`; the app keeps the resolution in the core's base layer (renderUpscalemultiplier,
- * pushed at boot and on a change). A kept resolution that only the game's file holds is therefore gone from it
- * at the next save from the app, and the base layer's older value takes over. So the core also puts a kept
- * resolution in the base layer when it commits it (AndroidOnAutoTuneCommitted in native-lib.cpp), and [reset]
- * pushes the restored resolution back ([upscaleAfterRestore]).
- *
- * The same save also leaves out any other key whose value equals the global one, so after it the core can find
- * any lever's key missing from the file when it resets. The app's store, not the file, decides what that means
- * ([applyReset]).
+ * The writer also omits any key whose value equals the global one, so at reset the core can find a lever's
+ * key missing from the file. The app's store, not the file, decides what that means ([applyReset]).
  */
 object AutoTuneStore {
     enum class Kind { BOOL, INT, FLOAT }
@@ -64,11 +57,10 @@ object AutoTuneStore {
     )
 
     /**
-     * The player changed [previous] into [updated] by hand, in a game's own settings. When that moved a setting
-     * auto-tune writes (a [levers] field), auto-tune would go on adjusting what the player just chose, so it is
-     * turned off for that game: the result is [updated] with the switch off. A change to anything else, or
-     * auto-tune already being off, gives [updated] back as it is. What auto-tune already changed, and its
-     * record, stay.
+     * For a hand edit of a game's settings from [previous] to [updated]. If it moved a setting auto-tune writes
+     * (a [levers] field), auto-tune would keep adjusting what the player just chose, so the result is [updated]
+     * with auto-tune turned off for that game. Otherwise [updated] comes back unchanged. What auto-tune already
+     * changed, and its record, stay.
      */
     fun withAutoTuneOffForManualChange(previous: Settings, updated: Settings): Settings {
         if (!updated.emuCore.autoTune) return updated
@@ -142,18 +134,17 @@ object AutoTuneStore {
 
     /**
      * The resolution to push to the core's base layer after a reset, or null when the reset did not touch it. The
-     * core has put the game's file back by then, so what the emulator runs is whatever the base layer holds, and
-     * the base layer holds the resolution auto-tune last kept: [resolved] is what the stored settings say it is now.
+     * emulator runs whatever the base layer holds, and it still holds the resolution auto-tune kept, so
+     * [resolved] (what the stored settings say it is now) has to be pushed.
      */
     internal fun upscaleAfterRestore(restored: List<Restored>, resolved: Float): Float? =
         if (restored.any { it.section == UPSCALE_SECTION && it.key == UPSCALE_KEY }) resolved.coerceIn(0.25f, 8.0f) else null
 
     /**
-     * Notes, before [committed] is written over [overrides], the value the player's own override of [lever] had,
-     * in [priors] (`field -> {prior?, committed}`). Called for every commit; only the first step on a field takes
-     * the override as the player's: while the override still holds the value auto-tune committed last, it is
-     * auto-tune's own and the record keeps what was there before. If the override is something else now, the
-     * player set it since, and that is the value to give back. No override at all records no `prior`.
+     * Before [committed] is written over [overrides], records in [priors] (`field -> {prior?, committed}`) the
+     * value the player's own override of [lever] had, so a reset can give it back. An override that still holds
+     * the value auto-tune committed last is auto-tune's own, and the existing record is kept; anything else
+     * was set by the player since and becomes the new `prior`. No override records no `prior`.
      */
     internal fun notePrior(priors: JSONObject, overrides: JSONObject, lever: Lever, committed: Any) {
         val entry = priors.optJSONObject(lever.field)
@@ -181,11 +172,9 @@ object AutoTuneStore {
     }
 
     /**
-     * Puts back what a reset restored. A key the player had an override for before auto-tune ([priors]) gets that
-     * value back, whatever the core's file said. Otherwise: a key the core deleted had no value in the game's file,
-     * so the game followed global for it and the override goes; a key it restored to a value had one, and the
-     * override is that value again. A key the core left alone (the player changed it since) is not in [restored]
-     * and is not touched. Returns how many fields were touched.
+     * Puts back what a reset restored. A recorded player override ([priors]) wins over what the core's file
+     * said; otherwise the override mirrors the file (removed when the core deleted the key). A key the core
+     * left alone is not in [restored] and is not touched. Returns how many fields were touched.
      */
     internal fun applyRestore(overrides: JSONObject, restored: List<Restored>, priors: JSONObject? = null): Int {
         var touched = 0
@@ -251,17 +240,15 @@ object AutoTuneStore {
     /**
      * Applies the core's reset to the app's copy: [overrides] (null when the game has none) and [priors], in place.
      *
-     * The core puts a key back only while the game's file still holds the value it wrote, and counts a key missing
-     * from the file as the player's doing. On Android the file is not where the player's settings live: it is
-     * regenerated from the app's store at every save, and the app's writer leaves out the resolution always and any
-     * other key whose value equals the global one. So a kept value can be missing from the file with the player
-     * having done nothing, and the store is what says so. A key the core left alone because it is absent from the file,
-     * while the store still holds the value auto-tune committed, is auto-tune's own and goes back like one the core
-     * restored (the player's recorded value, or no override if there was none). If the store holds something else the
-     * player set it since, and it stays.
+     * The core puts a key back only while the game's file still holds the value it wrote, and counts a missing
+     * key as the player's doing. But the app regenerates that file and its writer omits the resolution and any
+     * key equal to the global value, so a kept value can be missing with the player having done nothing. The
+     * store decides: a key the core left alone because it is absent from the file, while the store still holds
+     * the value auto-tune committed, is auto-tune's own and goes back like one the core restored. If the store
+     * holds something else, the player set it since and it stays.
      *
-     * A recorded player value is dropped only for a key this dealt with: put back, or left alone because the player
-     * changed it. A key that cannot be compared keeps its record.
+     * A recorded player value is dropped only for a key this dealt with (put back, or left alone because the
+     * player changed it); a key that cannot be compared keeps its record.
      */
     internal fun applyReset(overrides: JSONObject?, priors: JSONObject, reply: CoreReset): ResetApplied {
         val takenBack = ArrayList<Restored>()
@@ -353,10 +340,9 @@ object AutoTuneStore {
         runCatching { NativeApp.autoTuneDescribe(nativeSerialFor(settingsKey)).toList() }.getOrDefault(emptyList())
 
     /**
-     * Puts back what auto-tune changed for the game: the core restores the game's file (and applies it, when that
-     * game is running), then this does the same to the app's copy ([applyReset], which also covers a key the file no
-     * longer has), and re-applies the app's settings to a running game so the core's base layer stops holding the
-     * old values. Null when the game has no settings file, so there is no record.
+     * Puts back what auto-tune changed for the game, in the core's file and then in the app's copy
+     * ([applyReset]), and re-applies the app's settings to a running game. Null when the game has no
+     * settings file, so there is no record.
      */
     suspend fun reset(settingsKey: String): ResetOutcome? {
         val raw = withContext(Dispatchers.IO) {

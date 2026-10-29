@@ -77,11 +77,10 @@ namespace GSLsfg
 		/// "failed": everything initialised, there is simply nowhere to put a generated frame.
 		std::atomic<bool> s_no_headroom{false};
 		std::atomic<bool> s_no_shaders{false};
-		/// The half-precision shaders are the ones running, for the overlay: "LSFG: 60.00 fp16".
 		std::atomic<bool> s_fp16_active{false};
 		/// Frame generation's own GPU time per frame, ms, averaged over a second; 0 when unmeasured.
 		std::atomic<float> s_gpu_ms{0.0f};
-		// Why the shaders failed, in a few words, for the overlay; set with s_no_shaders.
+		// Shown after "no shaders" on the overlay; set with s_no_shaders.
 		std::mutex s_failure_mutex;
 		std::string s_failure_reason;
 	} // namespace
@@ -223,8 +222,7 @@ namespace GSLsfg
 				break;
 			case Unavailable::InitFailed:
 				// Split out because the two have different fixes: "no shaders" means update
-				// Lossless Scaling (or says what else stopped them), "failed" means this device or
-				// driver refused.
+				// Lossless Scaling, "failed" means this device or driver refused.
 				if (s_no_shaders.load(std::memory_order_relaxed))
 				{
 					std::unique_lock lock(s_failure_mutex);
@@ -242,8 +240,7 @@ namespace GSLsfg
 		const float fps = s_display_fps.load(std::memory_order_relaxed);
 		if (fps <= 0.0f)
 			return "LSFG: starting";
-		// "LSFG: 60.00 fp16 · 1.23 ms": the display rate, the shader family when it is fp16, and
-		// frame generation's own GPU time per frame.
+		// e.g. "LSFG: 60.00 fp16 · 1.23 ms"; fp16 and the GPU time appear only when known.
 		std::string text = fmt::format("LSFG: {:.2f}", fps);
 		if (s_fp16_active.load(std::memory_order_relaxed))
 			text += " fp16";
@@ -318,13 +315,12 @@ namespace GSLsfg
 		};
 		std::vector<GenImage> s_gen_images;
 
-		/// Frame generation on the game's own image (CaptureGameFrame). The game frame is copied
-		/// into s_capture, screen-sized so it never has to be replaced as the game's resolution
-		/// changes: the copy uses its top-left s_capture_extent. That size follows the BIGGEST frame
-		/// seen, so a game switching resolution back and forth doesn't rebuild the passes every
-		/// time; a smaller frame is stretched to it, and the present stretches it back. s_captured
-		/// says this frame's copy is recorded, with where and how the present drew the frame, for
-		/// PresentWithGeneration to repeat on the generated ones.
+		/// The game's own frame (CaptureGameFrame) is copied into s_capture. It is screen-sized so it
+		/// is never replaced when the game's resolution changes; the copy uses its top-left
+		/// s_capture_extent, which follows the biggest frame seen so a game switching resolution
+		/// doesn't rebuild the passes each time. A smaller frame is stretched to it and the present
+		/// stretches it back. s_captured says this frame's copy is recorded, with s_draw_rect and
+		/// s_draw_linear giving how the present drew the frame, for PresentWithGeneration to repeat.
 		GenImage s_capture;
 		VkExtent2D s_capture_extent = {};
 		VkExtent2D s_peak_game = {};
@@ -374,9 +370,8 @@ namespace GSLsfg
 		};
 		std::vector<FrameSlot> s_slots;
 		VkCommandPool s_cmd_pool = VK_NULL_HANDLE;
-		/// For drawing the ImGui overlay onto a generated frame: the GS's own non-clearing pass for
-		/// swap chain images, the one its ImGui pipeline and the images' framebuffers were made with.
-		/// The GS owns it.
+		/// The GS's non-clearing render pass for swap chain images, which its ImGui pipeline and the
+		/// images' framebuffers were made with. Used to draw the overlay onto generated frames. The GS owns it.
 		VkRenderPass s_overlay_pass = VK_NULL_HANDLE;
 		/// One ImGui draw of this frame's overlay, prepared once (PrepareOverlay) and recorded onto
 		/// each generated frame (DrawOverlay).
@@ -391,17 +386,15 @@ namespace GSLsfg
 			s32 vertex_offset;
 		};
 		std::vector<OverlayDraw> s_overlay_draws;
-		/// Descriptor sets per slot for the overlay's textures, one per change of texture between
-		/// draws. The OSD's text is all one font texture; running out only means that frame
-		/// generates from the finished screen instead.
+		/// Descriptor sets per slot for the overlay's textures, one per texture change between draws.
+		/// The OSD is one font texture; running out only makes that frame use the finished screen.
 		constexpr u32 kOverlaySets = 256;
 		/// What frame generation last ran on, for the log: the game's image, or the finished screen.
 		VkExtent2D s_last_run_extent = {};
 		bool s_last_run_game = false;
-		/// LSFG's own GPU time: a timestamp at each end of a frame's command buffer (everything it
-		/// does for that frame, the passes over the real frame and every generated one with its
-		/// copy), read back once the slot's fence has signalled, so it never waits for the GPU.
-		/// Averaged over the display-rate window, for the overlay and the log.
+		/// LSFG's own GPU time: a timestamp at each end of a frame's command buffer, read back once
+		/// the slot's fence has signalled so it never waits on the GPU. Averaged over the display-rate
+		/// window.
 		VkQueryPool s_query_pool = VK_NULL_HANDLE;
 		double s_ns_per_tick = 0.0;
 		u64 s_tick_mask = 0;
@@ -497,13 +490,12 @@ namespace GSLsfg
 			return capacity != 0;
 		}
 
-		/// This frame's ImGui overlay, for the generated frames: the game image they are made from has
-		/// none, so each gets it drawn on top afresh, exactly as GSDeviceVK::RenderImGui drew it on the
-		/// real frame. Nothing is stepped: the draw data ImGui::Render made for this frame is valid until
-		/// the next ImGuiManager::NewFrame, which comes after this present. It is copied into the slot's
-		/// own buffers, because the GS reclaims its stream buffers when ITS frame is done, which can be
-		/// before this slot is. False when there is something to draw and it can't be, and frame
-		/// generation then works on the finished screen, where the GS drew the overlay itself.
+		/// Prepares this frame's ImGui overlay to be drawn on each generated frame, since the game image
+		/// they are made from has none. The draw data stays valid until the next ImGuiManager::NewFrame,
+		/// which comes after this present, but it is copied into the slot's own buffers because the GS
+		/// reclaims its stream buffers when ITS frame is done, which can be before this slot is.
+		/// False when there is something to draw and it can't be; frame generation then works on the
+		/// finished screen, where the GS drew the overlay itself.
 		bool PrepareOverlay(FrameSlot& slot)
 		{
 			s_overlay_draws.clear();
@@ -601,9 +593,9 @@ namespace GSLsfg
 			return true;
 		}
 
-		/// Draws the prepared overlay onto swap chain image `index`, which must be in
-		/// COLOR_ATTACHMENT_OPTIMAL, and leaves it there. The state RenderImGui draws in: the present
-		/// pass's full-screen viewport, a scissor per draw, the linear sampler.
+		/// Draws the prepared overlay into `framebuffer`'s swap chain image, which must be in
+		/// COLOR_ATTACHMENT_OPTIMAL and is left there. Uses the state RenderImGui draws in: a
+		/// full-screen viewport, a scissor per draw, the linear sampler.
 		void DrawOverlay(VkCommandBuffer cmd, VkFramebuffer framebuffer, const FrameSlot& slot)
 		{
 			GSDeviceVK* const dev = GSDeviceVK::GetInstance();
@@ -784,9 +776,8 @@ namespace GSLsfg
 					return false;
 			}
 
-			// The game frame is copied into this (CaptureGameFrame), and frame generation copies it out
-			// again at the start of its passes. Not fatal: without it frame generation works on the
-			// finished screen, as it always did.
+			// The game frame is copied into this (CaptureGameFrame). Not fatal: without it frame
+			// generation works on the finished screen.
 			{
 				VkImageCreateInfo ici = {};
 				ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -805,10 +796,9 @@ namespace GSLsfg
 					Console.Warning("LSFG: no image for the game frame; generating from the finished screen.");
 			}
 
-			// The ImGui overlay on generated frames, drawn with the GS's ImGui pipeline in the GS's own
-			// pass for swap chain images (the same key GSTextureVK::GetFramebuffer builds with). Not
-			// fatal either: without it the game's own image is not used while the overlay has
-			// something on screen, and generation works on the finished screen then.
+			// The overlay is drawn with the GS's ImGui pipeline in the GS's own pass for swap chain
+			// images (the same key GSTextureVK::GetFramebuffer builds with). Not fatal either: without
+			// it, generation works on the finished screen while the overlay is up.
 			s_overlay_pass = dev->GetImGuiPipeline() != VK_NULL_HANDLE ?
 								 dev->GetRenderPass(s_format, VK_FORMAT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD,
 									 VK_ATTACHMENT_STORE_OP_STORE) :
@@ -830,9 +820,9 @@ namespace GSLsfg
 			if (s_overlay_pass == VK_NULL_HANDLE)
 				Console.Warning("LSFG: can't draw the overlay on generated frames; the finished screen is used while it is up.");
 
-			// Two timestamps per slot for frame generation's own GPU time, where the graphics queue
-			// keeps them (the same test GSDeviceVK makes for its GPU timing). Without, there is
-			// simply no number on the overlay.
+			// Two timestamps per slot for frame generation's GPU time, if the graphics queue supports
+			// them (the same test GSDeviceVK makes for its GPU timing). Without them the overlay
+			// shows no time.
 			const VkPhysicalDeviceLimits& limits = dev->GetDeviceProperties().limits;
 			u32 family_count = 0;
 			vkGetPhysicalDeviceQueueFamilyProperties(dev->GetPhysicalDevice(), &family_count, nullptr);
@@ -985,12 +975,10 @@ namespace GSLsfg
 		// image count. If the driver still will not give us headroom, say so rather than claiming
 		// to be running.
 		//
-		// And rebuild it when it is not FIFO. CreateSwapChain forces FIFO for frame generation, but
-		// again only when it was on AT CREATION. With vsync off the chain is MAILBOX with three
-		// images; on a driver whose minimum is two that already leaves one spare, so the check
-		// above never fired and generation ran in MAILBOX, where the real frame presented right
-		// after each generated one replaces it: every generated frame paid for, none displayed.
-		// (ARMSX3 hit the same in its a909a0d3a.)
+		// It must also be FIFO: in MAILBOX the real frame presented right after each generated one
+		// replaces it, so no generated frame is displayed. CreateSwapChain only forces FIFO when
+		// frame generation was on at creation, and a MAILBOX chain can already have a spare image,
+		// so the image-count check alone doesn't catch it.
 		if (swap_chain->GetExtraAcquirableImages() == 0 || swap_chain->GetPresentMode() != VK_PRESENT_MODE_FIFO_KHR)
 		{
 			Console.WriteLn("LSFG: swap chain has no spare images or is not FIFO; rebuilding it.");
@@ -1028,8 +1016,8 @@ namespace GSLsfg
 			return;
 
 		// The biggest frame seen, shrunk to fit the screen: past the screen's size there is nothing
-		// to gain, and following the biggest rather than the current one keeps a game that switches
-		// resolution from rebuilding the passes every time it does.
+		// to gain, and following the biggest rather than the current frame avoids rebuilding the
+		// passes whenever the game switches resolution.
 		s_peak_game.width = std::max(s_peak_game.width, static_cast<u32>(game_w));
 		s_peak_game.height = std::max(s_peak_game.height, static_cast<u32>(game_h));
 		const float fit = std::min({1.0f, static_cast<float>(s_extent.width) / static_cast<float>(s_peak_game.width),
@@ -1037,9 +1025,9 @@ namespace GSLsfg
 		const VkExtent2D extent = {std::max(1u, static_cast<u32>(static_cast<float>(s_peak_game.width) * fit)),
 			std::max(1u, static_cast<u32>(static_cast<float>(s_peak_game.height) * fit))};
 
-		// The last reader of this image was frame generation, in an earlier submission; a barrier's
-		// first scope takes in everything earlier in submission order, which is what orders this
-		// write after that read. The old contents are not wanted.
+		// The last reader of this image was frame generation, in an earlier submission. A barrier's
+		// first scope covers everything earlier in submission order, which orders this write after
+		// that read. The old contents are not wanted.
 		TransitionImage(cmd, *s_capture.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
 			VK_ACCESS_TRANSFER_WRITE_BIT);
 		VkImageBlit blit = {};
@@ -1066,8 +1054,8 @@ namespace GSLsfg
 	bool PresentWithGeneration(
 		VkQueue present_queue, VKSwapChain* swap_chain, VkSemaphore render_finished, bool frame_has_new_content)
 	{
-		// Consumed on every call, generating or not, so a copy made for a frame that ends up declined
-		// can never be read as a later frame's.
+		// Consumed on every call, generating or not, so a copy from a declined frame is never read
+		// as a later frame's.
 		const bool captured = std::exchange(s_captured, false);
 
 		if (!s_active || !swap_chain || !s_frame_gen)
@@ -1121,7 +1109,6 @@ namespace GSLsfg
 			}
 		}
 		vkResetFences(s_vk_device, 1, &slot.fence);
-		// The slot's last frame is finished, so its timestamps are ready: no wait.
 		if (slot.timed)
 		{
 			u64 ticks[2] = {};
@@ -1134,8 +1121,6 @@ namespace GSLsfg
 			slot.timed = false;
 		}
 
-		// The game's own image, when this frame's overlay can be drawn onto each generated frame; the
-		// finished screen, which has the overlay, when it can't.
 		const bool game_res = captured && PrepareOverlay(slot);
 
 		const VkCommandBufferBeginInfo begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
@@ -1152,9 +1137,8 @@ namespace GSLsfg
 		const Vulkan::vk::CommandBuffer cmdbuf{slot.cmd};
 		if (game_res)
 		{
-			// The game's own frame, copied by CaptureGameFrame in this frame's command buffer. This
-			// barrier extends the render-finished wait, which covers only colour-attachment output,
-			// to the copy frame generation begins with, and makes the captured frame visible to it.
+			// The render-finished wait covers only colour-attachment output; this barrier extends it
+			// to the copy frame generation begins with and makes the captured frame visible to it.
 			TransitionImage(slot.cmd, *s_capture.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
 				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT);
 			s_frame_gen->Process(*s_device, cmdbuf, *s_capture.image, s_gen_images[0].view, s_capture_extent,
@@ -1171,10 +1155,9 @@ namespace GSLsfg
 			// Process only null-checks the view (Eden uses it as a capability probe) — the presented
 			// frame is COPIED into the chain, never written through a view. Hand it one of ours.
 			//
-			// The last argument is the size the game was really drawn at, which the automatic flow scale
-			// (the default, 100%) compares with the screen, so the optical flow runs at about the detail
-			// the frame has. It was passed the screen size, the ratio was always 1, and the default was
-			// the most expensive setting there is. The frame just presented is the GS device's current.
+			// The last argument must be the size the game was drawn at, not the screen's: the automatic
+			// flow scale compares it with the screen so the optical flow runs at about the detail the
+			// frame has. The frame just presented is the GS device's current.
 			VkExtent2D guest_extent = s_extent;
 			if (const GSTexture* const current = g_gs_device->GetCurrent())
 				guest_extent = {static_cast<u32>(current->GetWidth()), static_cast<u32>(current->GetHeight())};
@@ -1185,10 +1168,8 @@ namespace GSLsfg
 		s_last_run_game = game_res;
 		s_fp16_active.store(s_frame_gen->UsingFp16(), std::memory_order_relaxed);
 
-		// Frame generation turned itself off: its shaders could not be loaded or built. That used
-		// to be silent, the overlay reading the real rate as if all were well (#626, an Adreno 650
-		// under Turnip). Say why, once, on the overlay and in the log, and let the settings screen
-		// report it as the failure it is.
+		// Frame generation turned itself off: its shaders could not be loaded or built. Say why, once,
+		// on the overlay and in the log, and let the settings screen report it as a failure.
 		if (s_frame_gen->IsUnavailable() && !s_no_shaders.load(std::memory_order_relaxed))
 		{
 			const char* why = s_frame_gen->UnavailableReason();
@@ -1254,9 +1235,8 @@ namespace GSLsfg
 
 			if (game_res)
 			{
-				// Generated at the game's size: put it on screen the way the real frame went, the same
-				// scaled blit into the same rectangle, on black where the frame doesn't reach (the
-				// acquired image holds whatever it last showed).
+				// Generated at the game's size: blit it into the rectangle the real frame went to, on
+				// black where the frame doesn't reach (the acquired image holds whatever it last showed).
 				const auto edge = [](float v, u32 limit) {
 					return static_cast<s32>(std::clamp<long>(std::lround(v), 0, static_cast<long>(limit)));
 				};
@@ -1292,7 +1272,6 @@ namespace GSLsfg
 					VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 			}
 
-			// The overlay on top, afresh: the game image had none.
 			const VkFramebuffer overlay_fb = (game_res && !s_overlay_draws.empty()) ?
 												 swap_chain->GetTexture(image_index)->GetFramebuffer(false) :
 												 VK_NULL_HANDLE;

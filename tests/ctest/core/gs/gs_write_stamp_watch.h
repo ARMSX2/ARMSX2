@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Checks the write stamps of a GSLocalMemory against its bytes: every page whose bytes changed since
-// the watch began must have been marked since. This is the question the texture hash memo relies on,
-// asked of one write at a time, so a writer that stores into local memory without marking the pages it
-// stored to fails here and not only as a stale texture in a game.
+// Checks the write stamps of a GSLocalMemory against its bytes: every page whose bytes changed since the
+// watch began must have been marked since. The texture hash memo relies on this, so a writer that stores into
+// local memory without marking the pages it stored to fails here instead of showing up as a stale texture.
 //
-// The same question is asked of the 256-byte blocks and the dirty bitmap (GSLocalMemory::HashDirty), which
-// the per-block hash cache relies on in the same way. The watch clears the bitmap when it begins, so a bit
-// that is set afterwards was set by a mark.
+// The same check covers the 256-byte blocks and the dirty bitmap (GSLocalMemory::HashDirty), which the
+// per-block hash cache relies on. The watch clears the bitmap when it begins, so a bit set afterwards was set
+// by a mark.
 
 #pragma once
 
@@ -35,7 +34,6 @@ namespace GSWriteStamps
 				mem.TestAndClearHashDirty(block);
 		}
 
-		/// The pages whose bytes are not what they were when the watch began.
 		std::vector<u32> ChangedPages() const
 		{
 			std::vector<u32> pages;
@@ -71,7 +69,6 @@ namespace GSWriteStamps
 			return pages;
 		}
 
-		/// The blocks whose bytes are not what they were when the watch began.
 		std::vector<u32> ChangedBlocks() const
 		{
 			std::vector<u32> blocks;

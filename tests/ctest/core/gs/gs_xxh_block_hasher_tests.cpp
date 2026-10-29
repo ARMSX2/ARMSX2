@@ -39,10 +39,8 @@ namespace
 
 		u32 RandomBlock() { return static_cast<u32>(m_rng() % kBlocksInMemory); }
 
-		/// What XXH3 gives for the bytes, hashed in one piece.
 		static u64 OneShot(const std::vector<u8>& bytes) { return XXH3_64bits(bytes.data(), bytes.size()); }
 
-		/// What the plain streaming update gives when it is fed the same pieces.
 		struct Reference
 		{
 			Reference() { XXH3_64bits_reset(&state); }

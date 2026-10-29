@@ -7,11 +7,6 @@
 
 #pragma once
 
-/**
- * @file ACATAPI.h
- * ATAPI related code for the ACATA interface
- */
-
 #include "MemoryTypes.h"
 #include "common/Pcsx2Types.h"
 #include "common/Pcsx2Defs.h"
@@ -33,7 +28,7 @@ typedef union {
         u8 control2;
         u8 unknown;
     }pkt;
-}atapi_packet_t; // helper for atapi packets
+}atapi_packet_t;
 
 namespace ACATAPI
 {
@@ -93,7 +88,6 @@ enum ATAPICMD {
     SET_READ_AHEAD = 0xA7,
     READ_12 = 0xA8, // Extended read for larger capacities.
     WRITE_12 = 0xAA,
-    //READ MEDIA SERIAL NUMBER / SERVICE ACTION IN (12) =	0xAB / 0x01,
     GET_PERFORMANCE = 0xAC,
     READ_DISC_STRUCTURE = 0xAD,
     SECURITY_PROTOCOL_OUT = 0xB5,

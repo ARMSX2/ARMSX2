@@ -53,7 +53,7 @@ namespace
 	// How long a game's dongle may get when unpacked from a .gz (the biggest card the core makes is 66 MB).
 	constexpr u64 MAX_DONGLE_BYTES = Arcade::MAX_CARD_BYTES + (8ull << 20);
 
-	std::mutex s_install_mutex; // One download or install of the boot files at a time.
+	std::mutex s_install_mutex;
 	std::mutex s_prepare_mutex; // Prepare() copies files and keeps notes; two at once would trip over each other.
 
 	std::string BaseName(std::string_view path)
@@ -65,10 +65,6 @@ namespace
 	{
 		return a.size() == b.size() && StringUtil::Strncasecmp(a.data(), b.data(), a.size()) == 0;
 	}
-
-	// ----------------------------------------------------------------------------------------------
-	// Files
-	// ----------------------------------------------------------------------------------------------
 
 	// [path] if there is a file there, else the file in its folder that differs from it only in case (names in an
 	// .acgame are often typed by hand, and Linux cares), else empty.
@@ -276,10 +272,6 @@ namespace
 		return bytes;
 	}
 
-	// ----------------------------------------------------------------------------------------------
-	// Time
-	// ----------------------------------------------------------------------------------------------
-
 	s64 DaysFromCivil(s64 y, unsigned m, unsigned d)
 	{
 		y -= m <= 2;
@@ -302,10 +294,6 @@ namespace
 		return static_cast<std::time_t>(DaysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day)) * 86400 +
 										hour * 3600 + minute * 60 + second);
 	}
-
-	// ----------------------------------------------------------------------------------------------
-	// The boot files
-	// ----------------------------------------------------------------------------------------------
 
 	std::string BootZipPath(const Folders& folders)
 	{
@@ -449,7 +437,6 @@ namespace
 		return status;
 	}
 
-	// What GitHub says about the release's zip.
 	struct ReleaseInfo
 	{
 		std::string name;
@@ -570,10 +557,6 @@ namespace
 		return result;
 	}
 
-	// ----------------------------------------------------------------------------------------------
-	// The Conquest card and the dongle
-	// ----------------------------------------------------------------------------------------------
-
 	bool IsConquestCardFile(const std::string& path, bool unpack)
 	{
 		return Arcade::IsConquestCardHeader(HeadOf(path, unpack, Arcade::ConquestHeaderBytes()));
@@ -613,12 +596,11 @@ namespace
 	}
 
 	// Soul Calibur II's Conquest card, which the game reads in slot 2: NM00007.conquestcard in the memory cards
-	// folder. It is put there once and kept from then on, as the game writes its Conquest mode to it. It is the
-	// first of: the card already there; a Conquest card named as the dongle (NM00007.ps2), moved; the player's own
-	// beside the game's image ([siblings], loose games only); else the cleared card that comes with the app. The
-	// one exception to keeping it: a card still exactly the uncleared one the Android app once shipped, which
-	// the game never wrote, is swapped for the cleared one. Its name there, or empty when none could be put there:
-	// the game then starts without one.
+	// folder. Returns its name there, or empty when none could be put there (the game then starts without one).
+	// A card already there is kept, since the game writes its Conquest mode to it, except one that is still exactly
+	// the uncleared card the Android app once shipped: the game never wrote to that, so it is swapped for the
+	// cleared one. Otherwise the card comes from a Conquest card misnamed as the dongle (NM00007.ps2), the player's
+	// own beside the image ([siblings], loose games only), or the cleared one that ships with the app.
 	std::string EnsureConquestCard(const Folders& folders, const std::vector<Sibling>* siblings, const std::string& folder_id)
 	{
 		const std::string id = Arcade::CONQUEST_GAME;
@@ -673,9 +655,8 @@ namespace
 		return {};
 	}
 
-	// The dongle candidates of a loose game among the files beside its image: a .ps2 first, then a .bin, then a
-	// packed one. The likelier a file is the dongle, the earlier. Never Soul Calibur II's Conquest card, a card
-	// file as well.
+	// The dongle candidates of a loose game among the files beside its image, likeliest first: .ps2, then .bin,
+	// then packed. Never Soul Calibur II's Conquest card, which is a card file too.
 	std::vector<Sibling> DongleCandidates(const std::string& id, const std::string& folder_id, const std::vector<Sibling>& siblings)
 	{
 		std::vector<Sibling> candidates;
@@ -710,13 +691,11 @@ namespace
 		return {};
 	}
 
-	// The dongle of the loose game [id], in the memory cards folder: already there, else copied there from beside
-	// its image (unpacked, if it is a .gz). It is named after the game and what it holds (DongleName). Empty when
-	// there is none.
+	// The dongle of the loose game [id], in the memory cards folder: already there, else copied from beside its
+	// image (unpacked if it is a .gz) under the name DongleName gives. Empty when there is none.
 	//
-	// The copy there is kept, as the game writes to it, until the file it was copied from (dongle.from) is gone
-	// from beside the image and a different dongle is there: a key swapped for another (Soul Calibur II's
-	// Japanese one for its export one) then replaces it. The same key renamed keeps the copy.
+	// The copy is kept, since the game writes to it, unless the file it came from (recorded in dongle.from) is
+	// gone from beside the image and a different dongle is there; see Service::Prepare() in the header.
 	std::string PrepareLooseDongle(const Folders& folders, const std::string& id, const std::string& folder_id, const std::vector<Sibling>& siblings)
 	{
 		FileSystem::EnsureDirectoryExists(folders.memory_cards.c_str(), true);
@@ -777,10 +756,6 @@ namespace
 		}
 		return have;
 	}
-
-	// ----------------------------------------------------------------------------------------------
-	// A game, looked at
-	// ----------------------------------------------------------------------------------------------
 
 	std::string TitleOf(const std::string& id)
 	{
@@ -852,7 +827,6 @@ namespace
 			return in;
 		}
 
-		// A loose image.
 		const std::string name = BaseName(path);
 		const std::string folder(Path::GetDirectory(path));
 		in.folder_id = Arcade::FindGameIdInName(BaseName(folder));
@@ -896,10 +870,6 @@ namespace
 	}
 } // namespace
 
-// --------------------------------------------------------------------------------------------------
-// Public
-// --------------------------------------------------------------------------------------------------
-
 ArcadeSetup::Folders ArcadeSetup::Folders::FromEmuFolders()
 {
 	Folders folders;
@@ -924,7 +894,7 @@ std::string ArcadeSetup::BiosStatus::Summary() const
 
 std::string ArcadeSetup::FindBiosFor(const std::string& game_id, std::string* needs)
 {
-	// The old [Filenames] ArcadeBIOS pick only chooses between two dumps of one board; neither matters here.
+	// No dump is preferred: [picked] only breaks a tie between two dumps of one board.
 	return FindArcadeBiosFor(game_id, std::string(), needs);
 }
 
@@ -1010,8 +980,6 @@ ArcadeSetup::Service::Service(Folders folders)
 	: m_folders(std::move(folders))
 {
 }
-
-// ---- The boot files ----
 
 ArcadeSetup::BootFilesStatus ArcadeSetup::Service::GetBootFilesStatus() const
 {
@@ -1174,7 +1142,7 @@ ArcadeSetup::UpdateCheck ArcadeSetup::Service::CheckForBootFilesUpdate(Catalog::
 	ReleaseInfo release;
 	bool cancelled = false;
 	if (!FetchReleaseInfo(fetcher, cancel, &release, &check.error, &cancelled))
-		return check; // Failed
+		return check;
 
 	check.release_name = release.name;
 	check.release_time = release.time;
@@ -1193,8 +1161,6 @@ ArcadeSetup::UpdateCheck ArcadeSetup::Service::CheckForBootFilesUpdate(Catalog::
 		check.state = UpdateCheck::State::UpToDate;
 	return check;
 }
-
-// ---- The BIOS ----
 
 ArcadeSetup::BiosStatus ArcadeSetup::Service::GetBiosStatus() const
 {
@@ -1226,8 +1192,6 @@ ArcadeSetup::BiosStatus ArcadeSetup::Service::GetBiosStatus() const
 	std::sort(status.dumps.begin(), status.dumps.end(), [](const BiosDump& a, const BiosDump& b) { return a.file_name < b.file_name; });
 	return status;
 }
-
-// ---- Games ----
 
 ArcadeSetup::MissingReport ArcadeSetup::Service::Missing(const std::string& path) const
 {

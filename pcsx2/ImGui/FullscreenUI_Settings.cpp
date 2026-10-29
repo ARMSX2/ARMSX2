@@ -2716,7 +2716,7 @@ void FullscreenUI::DrawEmulationSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
 		FSUI_CSTR("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."),
 		"EmuCore", "AutoTune", false);
-#ifdef ARCH_ARM64 // vu-aot is part of the ARM64 recompilers only
+#ifdef ARCH_ARM64
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_MICROCHIP, "Enable VU1 Ahead-of-Time Compiler"),
 		FSUI_CSTR("Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache."),
 		"EmuCore/CPU/Recompiler", "EnableVUAot", true);
@@ -4204,7 +4204,6 @@ void FullscreenUI::DrawNetworkHDDSettingsPage()
 	}
 
 	// Local Link assigns the console's address itself, so the DHCP, IP and DNS rows below do not apply.
-	// The block is left at its old indentation on purpose, so this stays a three-line change.
 	if (!local_link)
 	{
 	AdapterOptions adapter_options = AdapterOptions::None;

@@ -13,9 +13,8 @@
 // microVU reads that value because analyzeBranchVI (microVU_Analyze.inl,
 // shared by the x86 and the ARM64 recompilers) walks back up to four cycles
 // from the branch and backs the VI up at the earliest write to it. The
-// interpreter used to read the value before the LAST write when anything but
-// another write to the same VI sat between two writes; _vuBackupVI now keeps
-// the last three writes and picks the earliest one inside the window.
+// interpreter's _vuBackupVI keeps the last three writes and picks the earliest
+// one inside the window.
 //
 // So with   setter ; <lead pairs> ; writer ; branch   and the setter inside the
 // window (one or two lead pairs), the branch reads the VI as it stood before
@@ -66,8 +65,6 @@ inline VuOp Nop() { return U(VNOP_U()); }
 // The VI the branch tests.
 constexpr u32 kV = vi::vi1;
 
-// ---- the branch -----------------------------------------------------------
-
 struct Branch
 {
 	const char* name;
@@ -85,8 +82,6 @@ const Branch kBranches[] = {
 	{"IBLEZ", [](s16 i) { return VIBLEZ_L(vi::vi1, i); }, [](u16 v) { return static_cast<s16>(v) <= 0; }},
 	{"IBGEZ", [](s16 i) { return VIBGEZ_L(vi::vi1, i); }, [](u16 v) { return static_cast<s16>(v) >= 0; }},
 };
-
-// ---- the setter: an instruction that leaves vi1 = X -----------------------
 
 struct Setter
 {
@@ -108,8 +103,6 @@ const Setter kSetters[] = {
 	{"ISUB", [](u16) { return true; }, [](u16) { return L(VISUB_L(kV, vi::vi5, vi::vi6)); },
 		[](VuTestHarness& h, u16 x) { h.SetVi(5, static_cast<u16>(x + 7)); h.SetVi(6, 7); }},
 };
-
-// ---- the writer: the instruction directly before the branch ---------------
 
 struct Writer
 {
@@ -142,8 +135,6 @@ const Writer kWriters[] = {
 		[](u16, u32 k) { return static_cast<u16>(k); }, [](VuTestHarness& h, u32 k) { h.SetVi(5, k); h.SetVi(6, 0); }},
 };
 
-// ---- the pairs between the setter and the writer --------------------------
-
 enum class Filler
 {
 	Nop,        // a NOP pair
@@ -173,8 +164,6 @@ VuOp FillerPair(Filler f)
 	return Nop();
 }
 
-// ---- what sits between the writer and the branch --------------------------
-
 enum class Gap
 {
 	None,    // the branch is the next pair after the writer
@@ -193,8 +182,6 @@ const char* GapName(Gap g)
 	return "?";
 }
 
-// ---- the branch's delay slot ----------------------------------------------
-
 struct Delay
 {
 	const char* name;
@@ -208,8 +195,6 @@ const Delay kDelays[] = {
 	{"read vi1", L(VIADD_L(vi::vi9, kV, vi::vi0))},
 	{"read and write vi1", L(VIADD_L(kV, kV, kV))},
 };
-
-// ---- program --------------------------------------------------------------
 
 struct Shape
 {
@@ -304,7 +289,6 @@ Result RunShape(int vu, const Shape& s)
 	return r;
 }
 
-// Values to try.
 const u16 kPs[] = {0, 1, 0x8000};
 const u16 kXs[] = {0, 1, 2, 5, 0x7fff, 0x8000, 0xffff};
 const u32 kKs[] = {1, 2};
@@ -389,8 +373,6 @@ std::string Summary(const Tally& t, const char* what)
 
 } // namespace
 
-// ---- the setter is one or two pairs before the writer ---------------------
-
 // Each setter, before ISUBIU / IADDIU, every branch, with one and two filler
 // pairs of each kind, NOP delay slot.
 TEST(MvuViBackup, SetterOneOrTwoPairsBeforeTheWriter)
@@ -442,11 +424,10 @@ TEST(MvuViBackup, EveryDelaySlotAfterAGappedSetter)
 	EXPECT_EQ(t.bad, 0u) << Summary(t, "delay slot variants");
 }
 
-// The counted loop the fault was first seen in: vi1 set by IADDIU, a counter
-// pair, then ISUBIU directly before IBNE. The setter is two cycles before the
-// decrement, inside the window, so the branch reads vi1 as it stood before the
-// IADDIU (zero) and the loop runs once on the console and in both engines. The
-// interpreter used to read the IADDIU's value and run trip+1 iterations.
+// A counted loop: vi1 set by IADDIU, a counter pair, then ISUBIU directly
+// before IBNE. The setter is two cycles before the decrement, inside the
+// window, so the branch reads vi1 as it stood before the IADDIU (zero) and the
+// loop runs once on the console and in both engines.
 TEST(MvuViBackup, CountedLoopWithAPairBetweenSetterAndDecrement)
 {
 	for (int vu = 0; vu < 2; vu++)
@@ -475,12 +456,9 @@ TEST(MvuViBackup, CountedLoopWithAPairBetweenSetterAndDecrement)
 		}
 }
 
-// ---- the shapes the two engines always agreed on --------------------------
-
 // No setter, a setter in the pair right before the writer, a setter outside
-// the four-pair window, and a pair between the writer and the branch. The
-// interpreter read the same value here before its window changed; these pin
-// that the change did not move them.
+// the four-pair window, and a pair between the writer and the branch. Both
+// engines read the same value in all of these, whatever the window rule does.
 TEST(MvuViBackup, ShapesTheEnginesAgreeOn)
 {
 	Tally t;

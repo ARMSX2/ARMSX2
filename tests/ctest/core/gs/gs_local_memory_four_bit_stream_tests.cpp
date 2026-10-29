@@ -2,26 +2,21 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // The host-to-local image writers of the 4-bit formats (PSMT4, PSMT4HL and PSMT4HH; GSLocalMemory::m_psm[psm].wi,
-// which GSState::ExecTransferRecord calls) against the console.
+// which GSState::ExecTransferRecord calls) against the console (SCPH-30001).
 //
-// The console (SCPH-30001, 2026-10-19; 459 cases per format) treats the bytes of a transfer into any of the three
-// formats as one stream of nibbles, the low nibble of each byte first. Nibble n goes to pixel
-// (DSAX + n mod RRW, DSAY + n div RRW). A row is not padded to a byte: on an odd width the last pixel of a row
-// takes the low nibble of a byte and the first pixel of the next row takes its high nibble. The transfer ends when
+// The console treats the bytes of a transfer into any of the three formats as one stream of nibbles, the low
+// nibble of each byte first. Nibble n goes to pixel (DSAX + n mod RRW, DSAY + n div RRW). A row is not padded
+// to a byte: on an odd width the last pixel of a row takes the low nibble of a byte and the first pixel of the
+// next row takes its high nibble. The transfer ends when
 // the bytes do or when the rectangle is full, so an odd pixel count drops its spare nibble, and nothing is stored
 // outside the rectangle, nor in any other nibble of the same word. A transfer that arrives in pieces carries on
 // where the last piece stopped. The console does this for every width and start x it was given, including odd widths
-// and start x values that are not a multiple of 4, and it does not reject, stall or fault on any of them.
+// and start x values that are not a multiple of 4, and it does not reject, stall or fault on any of them. That
+// includes an odd start x with a rectangle wide enough for the PSMT4 writer's block-aligned path (a whole 32-pixel
+// block column inside it).
 //
-// A second capture (SCPH-30001, 2026-10-19; 521 transfers) asked the same of an odd start x with a rectangle wide enough
-// for the PSMT4 writer's block-aligned path (a whole 32-pixel block column inside it), the one combination the first
-// capture left open: the console stores it by the same rule, whole or in pieces, at any start x.
-//
-// Four layers:
-//   - the console's own rows, 30 cases cut from the first capture, on all three formats, whole and in pieces;
-//   - 14 more rows cut from the second capture, PSMT4 at an odd and an even start x, wide, whole and in pieces;
-//   - the rule above as a property: random geometry, any width and start x, whole and cut into pieces of whole quadwords;
-//   - a pin on the even widths, which the writers have always stored right: a hash over random transfers.
+// The tests are the console's own rows (all three formats, then wide PSMT4 at odd and even start x; each whole and
+// in pieces), the rule as a property over random geometry, and a hash pin on the even widths.
 
 #include "GS/GSLocalMemory.h"
 
@@ -54,7 +49,6 @@ namespace
 	/// Bw counts 64-pixel columns; PSMT4 pages are 128 wide and take it in pairs. The console probe used 2 and 1.
 	u32 BwFor(u32 psm, u32 columns) { return psm == PSMT4 ? columns * 2 : columns; }
 
-	/// A row of the table in gs_four_bit_stream_console_rows.inc.
 	struct ConsoleRow
 	{
 		const char* name;
@@ -215,7 +209,7 @@ namespace
 	};
 
 	/// The console's stand-in for source nibble k in each of its runs: 0, k & 15, (k >> 4) & 15 and (k >> 8) & 15, so
-	/// a cell names the nibble it holds up to 4095. The first capture ran the first three, the second all four.
+	/// a cell names the nibble it holds up to 4095.
 	constexpr int kRuns = 4;
 	u32 Stamp(int run, int k)
 	{
@@ -316,10 +310,8 @@ namespace
 				ASSERT_NO_FATAL_FAILURE(RunConsoleRow(*m_mem, *m_model, row, psm));
 	}
 
-	// The second capture: PSMT4 rectangles wide enough for the block-aligned path, at a start x that is odd (the
-	// one combination the writer stored one nibble off, with the first pixel read from the byte before the source and
-	// the last nibble dropped) and, as a control, at an even one. The buffer is two pages wide, so a rectangle can cross
-	// x = 128.
+	// PSMT4 rectangles wide enough for the block-aligned path, at an odd start x and, as a control, at an even one.
+	// The buffer is two pages wide, so a rectangle can cross x = 128.
 	TEST_F(GSLocalMemoryFourBitStream, EveryWidePSMT4CaseTheConsoleRanFromAnOddStartXLandsWhereTheConsoleStoredIt)
 	{
 		for (const ConsoleRow& row : kOddXConsoleRows)
@@ -441,9 +433,8 @@ namespace
 		return g;
 	}
 
-	/// Cuts `total` bytes into pieces that are whole quadwords but for the last, as the GIF delivers them (an IMAGE tag
-	/// is quadwords and a HWREG write is 64 bits, so every piece boundary is a whole number of bytes, and a multiple of
-	/// 8 at that).
+	/// Cuts `total` bytes into pieces that are whole quadwords but for the last, as the GIF delivers them: an IMAGE tag
+	/// is quadwords and a HWREG write is 64 bits, so every piece boundary is a multiple of 8 bytes.
 	std::vector<size_t> RandomPieces(std::mt19937_64& rng, size_t total)
 	{
 		std::vector<size_t> pieces;
@@ -525,24 +516,22 @@ namespace
 		RunProperty(m_rng, *m_mem, *m_other, *m_model, PSMT4HH, Widths::Any, 300);
 	}
 
-	// Odd widths only, for more of the interesting ones in the same time.
 	TEST_F(GSLocalMemoryFourBitStream, AnOddWidthTransferIntoEachFourBitFormatIsOneStreamOfNibblesWholeOrInPieces)
 	{
 		for (const u32 psm : kFourBitPsms)
 			RunProperty(m_rng, *m_mem, *m_other, *m_model, psm, Widths::Odd, 300);
 	}
 
-	// The even widths were always stored right from an even start x, so this one holds for the writers as they were
-	// before the odd widths and the odd start x were repaired: it is what shows the rule and the way the tests above
-	// apply it are the writers' own for every shape that never had a fault.
+	// Even widths, the shapes that were never faulty in the writers: this also checks that the rule, as the tests
+	// above apply it, is the writers' own.
 	TEST_F(GSLocalMemoryFourBitStream, AnEvenWidthTransferIntoEachFourBitFormatIsOneStreamOfNibblesWholeOrInPieces)
 	{
 		for (const u32 psm : kFourBitPsms)
 			RunProperty(m_rng, *m_mem, *m_other, *m_model, psm, Widths::Even, 300);
 	}
 
-	// A wide even-width rectangle from an odd start x: PSMT4's block-aligned path used to read its source at byte x / 2
-	// and store every pixel one nibble late. The console stores it by the same rule as every other transfer.
+	// A wide even-width rectangle from an odd start x, which PSMT4 takes down its block-aligned path. The console
+	// stores it by the same rule as every other transfer.
 	TEST_F(GSLocalMemoryFourBitStream, AWideTransferFromAnOddStartXIntoEachFourBitFormatIsOneStreamOfNibblesWholeOrInPieces)
 	{
 		for (const u32 psm : kFourBitPsms)
@@ -550,19 +539,17 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------------------------------------------
-	// The even widths: pinned to what they stored before the odd widths and the odd start x were repaired.
+	// The even widths, pinned by a hash.
 	// ---------------------------------------------------------------------------------------------------------------
 
 	// A hash of local memory and of the cursors after 1500 random transfers of even width into each format, over
 	// memory that is not zero, with the rectangle in one piece and in up to three pieces of whole quadwords. Some of
-	// them take the block-aligned paths (a width and height that are multiples of 8, at a start that is). The values
-	// were recorded from the writers as they were before the odd-width repair (master at 6799cf5c0a), so this fails if a
-	// change to the 4-bit writers moves one even-width pixel or cursor.
+	// them take the block-aligned paths (a width and height that are multiples of 8, at a start that is). The pinned
+	// values fail if a change to the 4-bit writers moves one even-width pixel or cursor.
 	//
-	// `even_start_only` clears the low bit of the start x of a PSMT4 rectangle 32 or more wide. That is the one
-	// combination those writers stored wrong (every pixel one nibble late), so with it set the hash is still the value
-	// recorded then; without it, the transfers that start at an odd x are in the hash and are stored as the console
-	// stores them. The draws from the generator are the same either way: only the start x of those transfers moves.
+	// `even_start_only` clears the low bit of the start x of a PSMT4 rectangle 32 or more wide, so the hash holds no
+	// odd-start-x transfers of that shape; without it they are included, stored as the console stores them. The
+	// generator draws the same either way: only the start x of those transfers moves.
 	u64 EvenWidthHash(u32 psm, bool even_start_only = false)
 	{
 		std::mt19937_64 rng(psm * 7919 + 1);
@@ -622,16 +609,14 @@ namespace
 
 	TEST_F(GSLocalMemoryFourBitStream, EveryEvenWidthTransferIsStoredAsItWasBeforeTheOddWidthsWereRepaired)
 	{
-		// The value the PSMT4 hash had when it left out the odd start x of the wide rectangles: unchanged by the repair of
-		// that start x, which is the proof that no other transfer in the hash moved.
+		// PSMT4 with the odd start x of the wide rectangles left out of the hash.
 		EXPECT_EQ(EvenWidthHash(PSMT4, true), 5168402120249559249ull) << "PSMT4, wide rectangles from an even start x";
 		EXPECT_EQ(EvenWidthHash(PSMT4HL), 17258870135605540776ull) << "PSMT4HL";
 		EXPECT_EQ(EvenWidthHash(PSMT4HH), 10041492323775641200ull) << "PSMT4HH";
 	}
 
-	// The same transfers with the odd start x of the wide PSMT4 rectangles left in. They differ from the hash above only in
-	// those transfers, and the value is recorded from the writers after the repair, which the console rows and the property
-	// tests above show to be the console's rule.
+	// The same transfers with the odd start x of the wide PSMT4 rectangles included; it differs from the hash above only
+	// in those transfers.
 	TEST_F(GSLocalMemoryFourBitStream, EveryEvenWidthPSMT4TransferIncludingTheOddStartXOfTheWideOnesIsPinned)
 	{
 		EXPECT_EQ(EvenWidthHash(PSMT4), 934949934108528768ull) << "PSMT4";

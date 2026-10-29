@@ -81,8 +81,8 @@ void cpuReset()
 	EEsCycle = 0;
 	EEoCycle = cpuRegs.cycle;
 
-	// C18: the reset writes the IOP's registers and devices. A VM reset holds the IOP around this
-	// already; boot calls it before the IOP thread exists. The hold is for whoever calls it next.
+	// The reset writes the IOP's registers and devices, so the IOP must be held. A VM reset
+	// already holds it and boot runs before the IOP thread exists; the hold covers other callers.
 	{
 		IopBridge::EmuHold hold(IopThread::HoldKind::Lifecycle);
 		psxReset();
@@ -387,16 +387,15 @@ static bool cpuIntsEnabled(int Interrupt)
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
-// Twin-run tooling (ee_divtrace FingerprintSystem): how many EE event tests
-// ran and how many IOP time slices they handed out. Two builds that claim
-// identical emulated timing must agree on both at every frame.
+// Read by ee_divtrace's FingerprintSystem: EE event tests run and IOP time slices
+// handed out. Two builds with identical emulated timing must agree on both at
+// every frame.
 u64 g_twinEeEventTests = 0;
 u64 g_twinIopSlices = 0;
 #endif
 
-// What the IOP does with a slice, after the EE has settled its books: run its CPU for the budget
-// if it has work, then its event test. This is the second half of iopRunSliceForEE() below; in
-// Lockstep the IOP thread runs it while the EE waits in the handoff.
+// The second half of iopRunSliceForEE() below, run by the IOP thread in Lockstep
+// while the EE waits in the handoff.
 void iopRunSliceOnIopThread()
 {
 	// ExecuteBlock and iopEventTest are IOP-side entries. Neither carries the assert itself: they run
@@ -413,12 +412,11 @@ void iopRunSliceOnIopThread()
 }
 
 // The EE hands the IOP a time slice. This is the one place the EE runs IOP code.
-// (crossing C1 of the IOP thread design, section 7.1)
 //
-// Off runs the slice here, on the EE's thread, exactly as before. Lockstep hands it to the IOP
-// thread and waits (design section 6.2); the EE's side of the books is settled first, and the twin
-// counter is counted here, so both match Off. Threaded runs nothing here: the IOP paces itself from
-// the watermark, and the EE only makes sure it is not more than L ahead (W1, design section 4).
+// Off runs the slice here, on the EE's thread. Lockstep hands it to the IOP thread and waits;
+// the EE's side of the books is settled first and the twin counter is counted here, so both
+// match Off. Threaded runs nothing here: the IOP paces itself from the watermark, and the EE
+// only makes sure it is not too far ahead (IopThread::EeLagWait).
 template <IopThreadMode M>
 static __fi void iopRunSliceForEE()
 {
@@ -475,8 +473,8 @@ static __fi void iopRunSliceForEE()
 	iopEventTest();
 }
 
-// The EE decides how soon it comes back, from how far behind the IOP is and when the IOP's next
-// event is due. (crossing C2 of the IOP thread design, section 7.1)
+// The EE sets when it comes back from how far behind the IOP is and when the IOP's next
+// event is due.
 static __fi void eeScheduleForIop()
 {
 	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
@@ -491,7 +489,6 @@ static __fi void eeScheduleForIop()
 		// IOP extra timeslices in short order.
 
 		cpuSetNextEventDelta(48);
-		//Console.Warning( "EE ahead of the IOP -- Rapid Event!  %d", EEsCycle );
 	}
 	else
 	{
@@ -501,7 +498,7 @@ static __fi void eeScheduleForIop()
 }
 
 // Shared portion of the branch test, called from both the Interpreter
-// and the recompiler.  (moved here to help alleviate redundant code)
+// and the recompiler.
 template <IopThreadMode M>
 __fi void _cpuEventTest_Shared()
 {
@@ -512,19 +509,18 @@ __fi void _cpuEventTest_Shared()
 	cpuRegs.nextEventCycle = cpuRegs.cycle + eeWaitCycles;
 	cpuRegs.lastEventCycle = cpuRegs.cycle;
 
-	// Android's in-game Exit/Reset can flip the VM to Stopping from another
-	// thread while the EE recompiler is in its generated-code event path. Once
-	// Stopping is visible, do not continue into IOP counters/VU sync; return
-	// immediately so the recompiler's outer recEventTest can fastjmp out of
-	// Cpu->Execute(). Without this, PSX-vsync/IOP work can keep running after
-	// the stop latch and the Java shutdown call times out.
+	// Android's in-game Exit/Reset can flip the VM to Stopping from another thread while the EE
+	// recompiler is in its generated-code event path. Once Stopping is visible, return at once
+	// so the recompiler's outer recEventTest can fastjmp out of Cpu->Execute(); otherwise
+	// IOP/vsync work keeps running after the stop latch and the Java shutdown call times out.
 	//
-	// A relaxed load, and the acquire as a fence on the taken path, not GetState()'s acquire load. In
-	// Threaded mode the previous event test ended with a release store (STLR) of the IOP's watermark,
-	// to a line the IOP thread reads, and an acquire load (LDAR) may not complete before an earlier
-	// STLR has: GetState()'s LDAR would wait for that line. Same guarantee: a relaxed load that reads
-	// the release store of Stopping or Shutdown, followed by an acquire fence, synchronizes with that
-	// store. Any other state only means "go on", and nothing below reads data published with it.
+	// Use a relaxed load plus an acquire fence on the taken path, not GetState()'s acquire load.
+	// In Threaded mode the previous event test ended with a release store (STLR) of the IOP's
+	// watermark to a line the IOP thread reads, and an acquire load (LDAR) may not complete
+	// before an earlier STLR, so GetState() would wait for that line. A relaxed load that reads
+	// the release store of Stopping or Shutdown, followed by an acquire fence, synchronizes with
+	// that store. Any other state only means "go on", and nothing below reads data published
+	// with it.
 	const VMState vm_state = VMManager::Internal::GetStateForEventTest();
 	if (vm_state == VMState::Stopping || vm_state == VMState::Shutdown)
 	{
@@ -554,7 +550,6 @@ __fi void _cpuEventTest_Shared()
 			cpuException(mask, cpuRegs.branch);
 	}
 
-	// ---- IOP -------------
 	iopRunSliceForEE<M>();
 
 	if (cpuTestCycle(nextStartCounter, nextDeltaCounter))
@@ -599,10 +594,9 @@ __fi void _cpuEventTest_Shared()
 	// We're in a EventTest.  All dynarec registers are flushed
 	// so there is no need to freeze registers here.
 	//
-	// BaseVUmicroCPU::ExecuteBlock does nothing for a VU that is not running,
-	// and under MTVU VU1's sync is only Get_MTVUChanges, whatever VPU_STAT
-	// says. Make those tests here, so that the usual case, both VUs idle,
-	// costs no calls.
+	// BaseVUmicroCPU::ExecuteBlock does nothing for a VU that is not running, and under
+	// MTVU VU1's sync is only Get_MTVUChanges, whatever VPU_STAT says. Test here so the
+	// usual case, both VUs idle, costs no calls.
 	if (VU0.VI[REG_VPU_STAT].UL & 0x1)
 		CpuVU0->ExecuteBlock();
 	if (THREAD_VU1)
@@ -611,7 +605,7 @@ __fi void _cpuEventTest_Shared()
 		CpuVU1->ExecuteBlock();
 
 	// ---- Schedule Next Event Test --------------
-	// Threaded: the EE does not look at the IOP's events (C2), unless there is no IOP thread to do the work.
+	// Threaded: the IOP paces itself, so the EE ignores its events unless there is no IOP thread.
 	if constexpr (M == IopThreadMode::Threaded)
 	{
 		if (!IopThread::g_thread.IsRunning()) [[unlikely]]
@@ -919,7 +913,6 @@ void eeloadHook()
 				{
 					if (!strcmp((char*)PSM(g_osdsys_str), "rom0:OSDSYS"))
 					{
-						// Overwrite OSDSYS with game's ELF name
 						strcpy((char*)PSM(g_osdsys_str), elfname.c_str());
 						break;
 					}

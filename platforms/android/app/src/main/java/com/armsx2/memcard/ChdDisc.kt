@@ -142,7 +142,6 @@ class ChdDisc private constructor(
 
     val hunkCount: Int get() = types.size
 
-    /** How many hunks use each compression, from the map. */
     fun mapStats(): Map<String, Int> {
         val out = HashMap<String, Int>()
         for (t in types) out.merge(
@@ -362,7 +361,6 @@ internal class Huffman(private val numCodes: Int, private val maxBits: Int) {
                 }
             }
         }
-        // Canonical codes from the lengths.
         val histogram = IntArray(33)
         for (c in 0 until numCodes) {
             if (lengths[c] > maxBits) throw IOException("CHD Huffman code too long")

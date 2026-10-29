@@ -567,8 +567,7 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMt6897)
 		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints));
 }
 
-// The other polarity, which is the one that costs a whole device class if it is wrong: a Mali part
-// outside Valhall v9 and v11 keeps OpenGL. That is v10 (G310/G510/G610/G710), Bifrost, and the
+// A Mali part outside Valhall v9 and v11 keeps OpenGL: v10 (G310/G510/G610/G710), Bifrost, and the
 // 5th-gen parts, whose names read like v11 and are not (G620/G720 are arch 12, G625/G725 arch 13).
 // The GL fetch path is the fast one there, and none of these were measured on Vulkan.
 TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideValhallV9AndV11)
@@ -625,8 +624,8 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
 
 // Every Valhall v9 and v11 name a user can meet, in the two places it comes from: Arm's stock
 // GL_RENDERER (MC<n>, or MP<n> on some phones) and the bare and MC<n> names our malisx2 Vulkan
-// driver reports. Auto keys on the GL string alone, but a name that parsed as the wrong
-// architecture here would send a whole device class to the wrong renderer, so each one is pinned.
+// driver reports. Auto keys on the GL string alone, but each name is pinned so that none of them
+// parses as the wrong architecture.
 TEST(GSGpuDriverProfile, AutoResolvesToVulkanForEveryKnownValhallV9AndV11Name)
 {
 	for (const char* renderer : {"Mali-G57", "Mali-G57 MC2", "Mali-G57 MC4", "Mali-G57 MC6", "Mali-G68",
@@ -996,9 +995,9 @@ namespace
 	}
 } // namespace
 
-// The device this was measured on, its neighbours, and the 722 (an a730 derivative, run on the Duo
-// and stable on this road). Stock Turnip, no tag, and it still earns the preference -- that is the
-// whole point of this fact being about the part.
+// The device this was measured on (a740), its neighbours, and the 722 (an a730 derivative, stable on
+// this road when run on the Duo). Stock Turnip with no tag still earns the preference: the fact is
+// about the part, not the driver build.
 TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarriers)
 {
 	for (const char* device_name :
@@ -1013,10 +1012,9 @@ TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarrier
 	}
 }
 
-// Only the 730 and up, and the 722. The a740 is the one part this was measured on. Our table files
-// the 702, 710 and 720 -- and the 725 -- as 7xx too, but none was run, and the 702 is an a6xx-family
-// part as far as Mesa's freedreno device table is concerned. They keep origin/master's road: the
-// RT-copy workaround, no declared loop.
+// Only the 730 and up, and the 722. The a740 is the one part this was measured on. The table files
+// the 702, 710, 720 and 725 as 7xx too, but none was run, and Mesa's freedreno device table treats
+// the 702 as an a6xx-family part. They keep the RT-copy workaround and no declared loop.
 TEST(GSGpuDriverProfile, TurnipOnAdreno702To725DoesNotGetTheA7xxPreference)
 {
 	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 725"})
@@ -1086,8 +1084,8 @@ TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno650StillOrdersTheDeclaredLoop
 }
 
 // A generation-2 tag does not reach the a7xx parts below 730. The 702, 710, 720 and 725 were never
-// run. The 722 was, and with the barriers dropped it drew a different picture on each run of two
-// dumps (TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip).
+// run; the 722 was, and its output was not stable with the barriers dropped
+// (TheAdreno722KeepsItsBarriersUnderAGeneration2Turnip).
 TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno702To725MakesNoOrderingClaim)
 {
 	for (const char* device_name : {"Adreno (TM) 702", "Adreno (TM) 710", "Adreno (TM) 720", "Adreno (TM) 722",
@@ -1151,14 +1149,12 @@ TEST(GSGpuDriverProfile, TheA7xxPreferenceDoesNotClearTheRtCopyWorkaround)
 			.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback));
 }
 
-// ---------------------------------------------------------------------------------------------
-// The Adreno 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo). It is an a7xx generation 1 part derived
-// from the 730 and is on the barrier-kept declared-loop road under Turnip. It is not on the
-// generation-2 ordering claim: on the Duo, 2026-10-21, with the barriers dropped NASCAR Thunder 2002
-// and Splashdown differed from the barrier-kept frames by 12 to 19 % of pixels and from run to run,
-// with both the axfl2-a722 and axfl2-003 packs; with the barriers kept every dump was stable. These
-// pin what that means: the 740's rows and bits on every driver, the preference on every Turnip
-// build, the ordering claim on none, and nothing for the numbers beside it.
+// The Adreno 722 (Snapdragon 7 Gen 4, Retroid Pocket Duo) is an a7xx generation 1 part derived from
+// the 730 and is on the barrier-kept declared-loop road under Turnip. It is not on the generation-2
+// ordering claim: on the Duo with the barriers dropped, frames differed from the barrier-kept ones and
+// from run to run; with the barriers kept every dump was stable. These tests pin the 740's rows and
+// bits on every driver, the preference on every Turnip build, the ordering claim on none, and nothing
+// for the model numbers beside it.
 
 // Turnip's own name for the part is "Adreno (TM) 722" or "Turnip Adreno (TM) 722" depending on its
 // device table; the driver ID, not the name, says it is Turnip.
@@ -1519,7 +1515,6 @@ TEST(GSGpuDriverProfile, IsMaliSX2DriverMatchesEitherSpellingInDriverInfo)
 	EXPECT_FALSE(GpuProfileDetector::IsMaliSX2Driver(""));
 }
 
-// ---------------------------------------------------------------------------------------------
 // malisx2 against the rows written for Arm's r44p1 blob.
 
 // vk-arm-r44p1-attachment-self-read puts the device on the render-target copy road because the
@@ -1563,7 +1558,7 @@ TEST(GSGpuDriverProfile, MaliSX2ExemptedRowIsMatchedAndExemptButNotCounted)
 		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52, "
 		"vk-arm-r44p1-attachment-self-read (exempt: malisx2), vk-arm-g57-roaa-destination-read");
 
-	// The rows this commit does not exempt still apply to malisx2.
+	// Without the ROAA flag, the destination-read row still applies to malisx2.
 	EXPECT_TRUE(DeniesRoaaDestinationRead(sel));
 }
 
@@ -1577,10 +1572,9 @@ TEST(GSGpuDriverProfile, MaliSX2OnAnMt6897HasNoExemptedRowToRecord)
 	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(sel.driver).find("exempt"), std::string::npos);
 }
 
-// ---------------------------------------------------------------------------------------------
 // The destination-read rows and malisx2. Both deny the in-tile read on parts where Arm's blob
 // returns stale colour through it. malisx2 is exempt from them only when it advertises the access
-// itself; a pack without it behaves exactly as before.
+// itself; a pack that does not keeps the rows.
 
 TEST(GSGpuDriverProfile, MaliSX2G57KeepsTheDestinationReadRowUnlessItAdvertisesRoaa)
 {

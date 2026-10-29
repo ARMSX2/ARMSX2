@@ -26,7 +26,6 @@ namespace GSDriverReport
 		constexpr uint32_t MesaPanVK = 20;
 	} // namespace DriverIdValue
 
-	/// What the device reports about itself.
 	struct ServedDriverFacts
 	{
 		uint32_t vendor_id = 0;

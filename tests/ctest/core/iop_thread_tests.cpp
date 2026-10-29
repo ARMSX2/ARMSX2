@@ -16,7 +16,7 @@
 //
 // This file includes nothing from the emulator except IopThread.h, which only needs the common
 // threading and floating-point-control headers. It also builds on its own with
-// -fsanitize=thread, which is what checks the memory orderings (see the step 4 record).
+// -fsanitize=thread, which is what checks the memory orderings.
 
 #include <gtest/gtest.h>
 
@@ -42,9 +42,8 @@
 #define IOP_THREAD_TEST_CAN_READ_THREAD_NAME 1
 #endif
 
-// How long a test may run before its watchdog raises `aborted`. A compile-time knob so the "red"
-// run against a stub implementation can use a short one; a normal run finishes in well under a
-// second per test.
+// How long a test may run before its watchdog raises `aborted`. Overridable at compile time; a
+// normal run finishes in well under a second per test.
 #ifndef IOP_THREAD_TEST_LIMIT_MS
 #define IOP_THREAD_TEST_LIMIT_MS 30000
 #endif
@@ -366,11 +365,9 @@ namespace
 			return true;
 		}
 
-		// WaitEe() for the EE thread. A real EE does not publish once and then wait: it comes back to
-		// its event test a few microseconds later and wakes the IOP again if it is parked. The one
-		// wake-up the design accepts losing (iop_parked read just before the IOP sets it) is made up
-		// by that, and a test that published once and polled would hang on it about one run in
-		// twenty, right after Start(). Each poll therefore does what the next event test would.
+		// WaitFor for the EE thread: each poll wakes a parked IOP, as the EE's next event test would.
+		// The one wake-up the protocol accepts losing (iop_parked read just before the IOP sets it) is
+		// made up that way, and a test that published once and only polled could hang on it.
 		// The tests of the recovery itself do not use this.
 		template <class Pred>
 		bool WaitEe(Pred&& pred, std::chrono::milliseconds limit = 10s)
@@ -389,11 +386,10 @@ namespace
 			return WaitEe([&] { return thread->IsParked(); });
 		}
 
-		// The IOP has committed to sleeping: it set iop_parked, looked once more for work, found none
-		// and counted a park (a new one, if `parks_before` is the count from earlier). IsParked() alone
-		// is weaker: the flag is set before that last look, and a thread delayed between the two (a
-		// page fault under a sanitizer, say) can find work the EE published after it saw the flag.
-		// No pokes: tests of lost wake-ups need an IOP that only a wake-up can move.
+		// The IOP has committed to sleeping: it set iop_parked, re-checked for work, found none and
+		// counted a park beyond `parks_before`. IsParked() alone is weaker, since the flag is set before
+		// the re-check and a delayed thread can still find work the EE published after it saw the flag.
+		// Does not wake the IOP: tests of lost wake-ups need one that only a wake-up can move.
 		bool WaitAsleep(u64 parks_before = 0)
 		{
 			return WaitFor([&] { return thread->GetStats().parks > parks_before && thread->IsParked(); });
@@ -403,7 +399,6 @@ namespace
 			return WaitEe([&] { return fake.pos_mirror.load(std::memory_order_acquire) >= pos; });
 		}
 
-		// The EE moves its clock to `cycle` and publishes it, as an event test does.
 		void Publish(u64 cycle)
 		{
 			ee_cycle = cycle;
@@ -421,8 +416,6 @@ namespace
 	class IopThreadObjectLockstep : public IopThreadObject
 	{
 	};
-
-	// ============================================================ start, stop and thread setup
 
 	TEST_F(IopThreadObject, StartAndStopRepeatedlyInBothModes)
 	{
@@ -567,8 +560,6 @@ namespace
 		});
 		EXPECT_TRUE(reached) << "a host command must re-apply the FPCR on the IOP thread";
 	}
-
-	// ============================================================ pacing
 
 	TEST_F(IopThreadObject, TheIopRunsUpToTheWatermarkAndNoFurther)
 	{
@@ -883,8 +874,6 @@ namespace
 		}
 	}
 
-	// ============================================================ holds
-
 	TEST_F(IopThreadObject, AHoldReachesItsTargetWithAConsistentViewAndFreezesTheIop)
 	{
 		fake.block = 32;
@@ -1110,11 +1099,9 @@ namespace
 
 	TEST_F(IopThreadObject, AHoldDoesNotGiveUpWhenTheStopPredicateFires)
 	{
-		// The IOP is in a slice that outlasts many of the spin's stop checks, and for a lifecycle hold long enough to
-		// make it fall back to sleeping. The caller of a hold is in the middle of an operation that needs the IOP
-		// stopped (a SIF pump, the savestate a shutdown writes), so the hold waits for the IOP however long the slice
-		// takes and never asks whether the VM is stopping. The lag wait and the full queue wait are the ones that give
-		// up: their callers can return to the event test.
+		// A hold never gives up when the stop predicate fires, however long the IOP's slice takes: its
+		// caller is mid-operation (a SIF pump, the savestate a shutdown writes) and needs the IOP stopped.
+		// The lag wait and the full queue wait do give up, since their callers can return to the event test.
 		StopOnExit stop_on_exit(*thread);
 		for (const HoldKind kind : {HoldKind::Emulation, HoldKind::Lifecycle})
 		{
@@ -1248,9 +1235,9 @@ namespace
 
 	TEST_F(IopThreadObject, WhatTheIopDidBeforePublishingItsPositionIsVisibleToTheEeThatReadsIt)
 	{
-		// Design 3.9 says nothing depends on this ordering, and PublishedPos() promises it anyway:
-		// it loads with acquire what the IOP stored with release. The only thing that orders the
-		// plain array below is the position; ThreadSanitizer reports a race if the ordering is gone.
+		// Nothing in the protocol depends on this ordering, but PublishedPos() promises it anyway: it
+		// loads with acquire what the IOP stored with release. The only thing that orders the plain
+		// array below is the position; ThreadSanitizer reports a race if the ordering is gone.
 		constexpr u64 kRounds = 4000;
 		std::vector<u64> written(kRounds + 2, 0);
 		fake.block = 64;
@@ -1327,8 +1314,6 @@ namespace
 				found = true;
 		EXPECT_TRUE(found) << "the IOP must continue from the position it was resynchronised to";
 	}
-
-	// ============================================================ CallOnEE
 
 	TEST_F(IopThreadObject, CallOnEEWhileTheEeIsInALagSpinCompletes)
 	{
@@ -1507,13 +1492,11 @@ namespace
 		}
 	}
 
-	// ============================================================ wake-ups
-
 	TEST_F(IopThreadObject, AMissedWakeUpIsRecoveredByTheSpinsEntryWake)
 	{
-		// The narrow race of design 3.9: the EE publishes, reads iop_parked as false just before the
-		// IOP sets it, and the IOP's re-check misses the new watermark. The wake from the publish is
-		// "lost". The fault is injected by dropping that wake.
+		// The narrow race: the EE publishes, reads iop_parked as false just before the IOP sets it,
+		// and the IOP's re-check misses the new watermark, so the publish's wake is "lost". The fault
+		// is injected by dropping that wake.
 		Params p = BaseParams();
 		p.lag = 4096;
 		p.drop_wake = [](WakeSite site) { return site != WakeSite::SpinEntry; }; // only the wake on entering the spin survives
@@ -1680,8 +1663,6 @@ namespace
 		thread->Stop();
 		EXPECT_TRUE(fake.applied.empty()) << "an item queued before the resynchronisation must not be applied after it";
 	}
-
-	// ============================================================ queues
 
 	TEST_F(IopThreadObject, AFullE2IRingMakesTheEeSpinUntilTheIopDrainsIt)
 	{
@@ -1901,8 +1882,6 @@ namespace
 		}
 	}
 
-	// ============================================================ the spin loops
-
 	TEST_F(IopThreadObject, TheLagSpinChecksTheStopPredicateEvery1024Iterations)
 	{
 		Latch gate;
@@ -1966,8 +1945,6 @@ namespace
 		for (u32 i = 0; i < kItems; i++)
 			EXPECT_EQ(order[i], i);
 	}
-
-	// ============================================================ Lockstep
 
 	TEST_F(IopThreadObjectLockstep, HandoffsRunInOrderOnTheIopThreadAndCompleteBeforeReturning)
 	{
@@ -2145,8 +2122,6 @@ namespace
 		}
 	}
 
-	// ============================================================ everything at once
-
 	TEST_F(IopThreadObject, EverythingTogetherKeepsItsInvariants)
 	{
 		// Random EE operations against a fake IOP that stalls, calls the EE, posts to it and takes
@@ -2267,11 +2242,9 @@ namespace
 			ASSERT_EQ(fake.applied[i].item.arg, i);
 	}
 
-	// ---------------------------------------------------------------- step 11: counters, the hold hook, the spin knob
-
 	TEST_F(IopThreadObject, AWaitThatFindsTheIopParkedIsCountedWithItsStallTime)
 	{
-		// The accepted lost wake-up (design 3.9) made visible: the EE publishes, reads iop_parked as false, and the IOP sleeps
+		// The accepted lost wake-up made visible: the EE publishes, reads iop_parked as false, and the IOP sleeps
 		// with budget pending. The next wait the EE has finds it parked, and says so.
 		Params p = BaseParams();
 		p.lag = 4096;
@@ -2513,13 +2486,11 @@ namespace
 		EXPECT_EQ(thread->GetStats().sif_ee_pumps, 2u);
 	}
 
-	// ============================================================ the idle wait and the sleep handshake
-
 	TEST_F(IopThreadObject, AnIdleIopSeesEachPublishWithoutAWakeUp)
 	{
 		// The idle IOP watches the watermark itself for idle_spin_ns before it sleeps, and says it is
-		// sleeping only then. While it watches, a publish is a plain store: the EE sends no wake-up, which
-		// is the read-modify-write on the semaphore word the step 12 profile found on every event test.
+		// sleeping only then. While it watches, a publish is a plain store: the EE sends no wake-up, so
+		// there is no read-modify-write on the semaphore word on every event test.
 		Params p = BaseParams();
 		p.idle_spin_ns = 2'000'000'000; // longer than the test: it never sleeps
 		StopOnExit stop_on_exit(*thread);
@@ -2559,18 +2530,13 @@ namespace
 	// EE's store and the IOP's announcement land close together in most rounds. Run with each barrier: the
 	// default (membarrier where the kernel has it) and the plain fence on both sides.
 	//
-	// How long the run goes on is set by what it has covered, not by a round count. The test only means
-	// something once the IOP has gone to sleep many times, and how often it does depends on the machine:
-	// under load the IOP's membarrier call takes longer, more publishes arrive while it is inside, the IOP
-	// then finds work and does not sleep. With 200,000 rounds fixed, a loaded machine (load average 22 to 28)
-	// gave 7,500 to 9,300 sleeps in 4 repeats of 40, and six copies of the test running at once as low as
-	// 1,100, against 20,000 to 190,000 on a quiet one; no wake-up was lost in any of them. So the run goes
-	// on past kHammerMinRounds until the IOP has slept kHammerTargetSleeps times, up to a wall-clock budget
-	// (under the fixture's watchdog, which would turn a long run into a failure of its own). Losing a
-	// wake-up fails the test at any load. Reaching the budget with fewer than kHammerFloorSleeps sleeps
-	// fails it too (a run that covered almost nothing proves nothing); between the floor and the target it
-	// passes and says so. The worst load seen so far, six copies of the test at once, slept once in 330
-	// rounds, 3 million rounds in 30 s.
+	// The run is sized by what it has covered, not by a round count. The test only means something once
+	// the IOP has gone to sleep many times, and under load that happens less often: the IOP's membarrier
+	// call takes longer, more publishes arrive while it is inside, and the IOP then finds work instead of
+	// sleeping. So the run goes on past kHammerMinRounds until the IOP has slept kHammerTargetSleeps times,
+	// up to a wall-clock budget under the fixture's watchdog. Losing a wake-up fails the test at any load.
+	// Reaching the budget with fewer than kHammerFloorSleeps sleeps fails it too, since a run that covered
+	// almost nothing proves nothing; between the floor and the target it passes and says so.
 	constexpr u32 kHammerMinRounds = 200000;
 	constexpr u64 kHammerTargetSleeps = kHammerMinRounds / 20;
 	constexpr u64 kHammerFloorSleeps = kHammerTargetSleeps / 10;

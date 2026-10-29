@@ -14,9 +14,8 @@
 // left them, with a fixup for every place that holds an address of the process that made it (a C
 // helper, VU state, the program, a node's handle, a microVU block it links to, a placeholder for
 // microVU code compiled at install). A later session that loads the program checks a record's words
-// against live micro memory and either installs its code (persistence-design.md section 5, "install")
-// or, when it cannot, sends its plan to the worker at once.
-// Design: persistence-design.md (umbrella, campaigns/vu-aot-revival-eval).
+// against live micro memory and either installs its code or, when it cannot, sends its plan to the
+// worker at once.
 //
 // Layout (little-endian, packed):
 //   header (FileHeader)
@@ -40,9 +39,8 @@ namespace vuaot::persist
 	constexpr u32 kMagic = 0x544F4156u; // "VAOT"
 	constexpr u32 kFormatVersion = 3;
 	// The meaning of a record: what a root (PC, key) and a read set stand for, and what region code
-	// assumes of microVU (its boundary state, the bail record, the placeholders). Bumped with any change
-	// to them. (While vu-aot changes daily the build id keys the files too: persistence-design.md,
-	// decision 2.)
+	// assumes of microVU (its boundary state, the bail record, the placeholders). Bump it with any
+	// change to them.
 	constexpr u32 kVuAotAbiVersion = 2;
 
 	constexpr u32 kMicroWords = 0x4000 / 4;
@@ -62,7 +60,7 @@ namespace vuaot::persist
 	{
 		u64 contentHashLo = 0, contentHashHi = 0; // the program's (and the file name's)
 		u64 sentinelLo = 0, sentinelHi = 0;       // the VU1 directory's options sentinel
-		u64 buildLo = 0, buildHi = 0;             // the running build (the owner's default, 2026-10-15)
+		u64 buildLo = 0, buildHi = 0;             // the running build
 		u32 mvuAbi = 0;                           // kMvuCompilerAbiVersion
 		u32 layoutHash = 0;                       // the struct offsets region code bakes in (the caller's hash)
 	};

@@ -131,7 +131,7 @@ Arcade::SetClaims::SetClaims(const FileSystem::FindResultsArray& files)
 			{std::string(Path::GetFileName(file.FileName)), static_cast<u64>(std::max<s64>(file.Size, 0))});
 	}
 
-	// First what the .acgame files keep for themselves, everywhere in the scan: the games that have one are known
+	// The .acgame files come first, from everywhere in the scan, so the games that have one are known
 	// before the games kept as their own files are looked at.
 	std::unordered_set<std::string> acgame_games;
 	for (const auto& [folder, items] : by_folder)

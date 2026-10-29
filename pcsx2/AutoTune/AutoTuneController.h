@@ -110,10 +110,9 @@ struct AutoTunePolicy
 	double ee_blocked_on_iop_ratio = 0.25;
 
 	double warmup_seconds = 10.0;
-	/// Windows to ignore after a setting changes, before measuring. A resolution, blending or download mode
-	/// change shows its new figure in the first full window (SD865: 82% in the partial window, then 101.8%;
-	/// RG477V: 94.8%, then 100.1%), and after a keep the trace shows no hitch at all. A stray hitch window that
-	/// outlasts this is the median's and the extension's to absorb.
+	/// Time to ignore after a setting changes, before measuring. A resolution, blending or download mode change
+	/// shows its new figure in the first full window, so only the partial window is skipped. A stray hitch window
+	/// that outlasts this is the median's and the extension's to absorb.
 	double settle_seconds = 1.5;
 	/// The same for the levers that reset the recompilers or reopen the renderer, whose hitch is longer.
 	double settle_heavy_seconds = 6.0;
@@ -121,12 +120,10 @@ struct AutoTunePolicy
 	uint32_t trigger_windows = 4;
 	uint32_t measure_windows = 4;
 
-	/// The EE governor keeps its clocks in game time: two seconds of warm-up after the switch, two windows of
-	/// overload before a step, two seconds of cooldown after one. On a game running at half speed every one of
-	/// those takes twice as long on the wall, so a trial of it settles for this much game time spread over the
-	/// wall at the speed the game was running (on top of the usual settle for the cache reset the switch
-	/// causes), and measures after the governor has taken the steps it is going to take. A trial that measured
-	/// earlier would call the governor useless for a game it had not yet touched, and that is remembered.
+	/// The EE governor keeps its clocks in game time (warm-up, overload windows, cooldown), which take
+	/// proportionally longer on the wall for a slow game. A trial of it settles for this much game time spread
+	/// over the wall at the game's speed, on top of the usual settle, so it is measured after the governor has
+	/// taken its steps; measuring earlier would reject a governor that had not yet acted.
 	/// Derived from the governor's own policy so the two cannot drift apart.
 	double governor_settle_game_seconds = GovernorSettleGameSeconds(EECycleRatePolicy());
 	/// The slowest speed assumed when spreading it over the wall: a game at 5% does not get 130 seconds.
@@ -176,31 +173,27 @@ struct AutoTunePolicy
 	/// Windows with a figure for the targeted cost needed on both sides before the cost is used to judge.
 	uint32_t min_cost_windows = 3;
 
-	/// A trial is only judged against its baseline if the game stayed the same between them. Two things say it
-	/// did not. The first and the second half of the trial's windows differ in speed by more than the noise
-	/// (judged from this many windows on: halves of two windows are no evidence of anything, and a trial gets
-	/// that many only after being looked at for longer; the EE governor is exempt, it steps down and back up by
-	/// design). Or the cost of a resource the lever does not act on moved by more than scene_shift_fraction of
-	/// its baseline: the EE time per frame for resolution and blending; the GS and GPU time for the IOP thread and
-	/// the governor; the GPU time for the GS back thread and the download mode (which act on the GS threads and
-	/// on how long the EE waits for them, so the EE time moves with them). A rejection that is also explained by
-	/// that is not written down: the trial is undone and measured again from a fresh baseline, at most
-	/// max_extensions times for one step.
+	/// A trial is only judged against its baseline if the game stayed the same between them. Two tests say it
+	/// did not. The first and second half of the trial's windows differ in speed by more than the noise (only
+	/// from this many windows on, since halves of two windows prove nothing; the EE governor is exempt, it steps
+	/// down and back up by design). Or the cost of a resource the lever does not act on moved by more than
+	/// scene_shift_fraction of its baseline: the EE time per frame for resolution and blending; the GS and GPU
+	/// time for the IOP thread and the governor; the GPU time for the GS back thread and the download mode (which
+	/// act on the GS threads and on how long the EE waits for them, so the EE time moves with them). A rejection
+	/// that either test explains is not written down: the trial is undone and measured again from a fresh
+	/// baseline, at most max_extensions times for one step.
 	uint32_t scene_halves_min_windows = 8;
 	double scene_shift_fraction = 0.10;
 
 	/// Below this speed the game can be so far from full speed that one notch of resolution cannot close the gap
 	/// (a notch removes at most (r / (r - 1))^2 of the pixels: 1.3x at 8x, 1.7x at 4x), and the levers whose
 	/// effect is not bounded that way are tried before resolution: blending accuracy and the download mode.
-	/// Measured on a God of War II scene at 8x with Maximum blending, 9% speed: six resolution trials moved
-	/// the speed from 9.4% to 13.1% over 70 s, and one blending step moved it from 13% to 100%. 0 turns the
-	/// reordering off.
+	/// 0 turns the reordering off.
 	///
 	/// It applies only where both of these hold. The blending is above Basic: the one step from Basic to Minimum
-	/// is not that kind of lever (it was worth +4% and -12% on the SD865 and cost 25 to 29 s there). And one
-	/// notch cannot plausibly reach full speed: speed x (r / next notch)^2 is under 100, where r is the current
-	/// multiplier and the next notch is the one the resolution lever would step to (at 1x there is no notch).
-	/// Shadow of the Colossus at 2x and 26% would be at 104% after one notch, and measured +127% for it.
+	/// is not that kind of lever. And one notch cannot plausibly reach full speed: speed x (r / next notch)^2 is
+	/// under 100, where r is the current multiplier and the next notch is the one the resolution lever would
+	/// step to (at 1x there is no notch).
 	double cheap_levers_first_below_pct = 50.0;
 
 	/// After a diagnosis that found nothing to act on, wait this long before saying so again.
@@ -213,7 +206,6 @@ struct AutoTunePolicy
 	std::vector<double> resolution_notches = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 };
 
-/// What the sampler measured over one window.
 struct AutoTuneWindow
 {
 	/// False while the window cannot say anything about steady play (paused, not at the nominal limiter,
@@ -405,16 +397,14 @@ private:
 		AutoTuneLever lever = AutoTuneLever::Count;
 		double value = 0.0;
 		AutoTuneBottleneck bottleneck = AutoTuneBottleneck::None;
-		// The windows it is compared with, summarised once when the trial starts.
 		AutoTuneStat speed_before;
 		AutoTuneStat cost_before;
 		double late_before = 0.0;
-		// The costs of the resources the lever does not act on, summarised the same way: the baseline for the
-		// check that the scene stayed the same (see AutoTunePolicy::scene_shift_fraction).
+		// The costs of the resources the lever does not act on: the baseline for the check that the scene
+		// stayed the same (see AutoTunePolicy::scene_shift_fraction).
 		AutoTuneStat ee_before;
 		AutoTuneStat gs_before;
 		AutoTuneStat gpu_before;
-		// What the trial measured so far.
 		std::vector<double> speeds;
 		std::vector<double> costs;
 		std::vector<double> ee_ms;

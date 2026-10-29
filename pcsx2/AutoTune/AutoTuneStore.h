@@ -16,8 +16,7 @@
 // again, not freeze the global value into the file). The new value is the text the file holds. Rejected
 // lines are `lever@value`: a step that was tried and did not help.
 //
-// Everything here works on a SettingsInterface, so it runs on the per-game INI, on a memory interface in
-// a test, and without a VM.
+// Everything here works on a SettingsInterface, so it needs no VM.
 
 #pragma once
 
@@ -33,7 +32,6 @@ namespace AutoTune
 {
 	inline constexpr const char* kStoreSection = "AutoTune";
 
-	/// The settings key a lever writes.
 	struct LeverKey
 	{
 		const char* section;
@@ -62,7 +60,6 @@ namespace AutoTune
 	/// saves the file. What auto-tune already changed, and the record of it, stay.
 	bool DisableForManualChange(SettingsInterface& game_si, const char* section, const char* key, bool enabled_globally);
 
-	/// Writes a lever's value under its key, as the right type for that key.
 	void WriteLeverValue(SettingsInterface& si, AutoTuneLever lever, double value);
 
 	std::vector<Change> ReadChanges(const SettingsInterface& si);

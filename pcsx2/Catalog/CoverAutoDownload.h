@@ -3,34 +3,25 @@
 
 #pragma once
 
-// Automatic cover art for the game list: the entry point a UI calls. It reads the settings, picks
-// the games that have no cover, and runs CoverDownloadJob on a worker thread, saving each cover
-// as <EmuFolders::Covers>/<serial>.<jpg|png|webp> so GameList::GetCoverImagePathForEntry() finds
-// it. The manual cover downloader (GameList::DownloadCovers, CoverDownloadDialog) is untouched.
+// Automatic cover art for the game list: the entry point a UI calls. It picks the games that have
+// no cover and runs CoverDownloadJob on a worker thread, saving each cover as
+// <EmuFolders::Covers>/<serial>.<jpg|png|webp>, where GameList::GetCoverImagePathForEntry() finds
+// it. Separate from the manual downloader (GameList::DownloadCovers).
 //
-// What a UI does:
+// A UI calls StartAfterRefresh() once a game-list refresh has finished and Shutdown() before the
+// game list and the UI are torn down. StartAfterRefresh does nothing when the setting is off, when
+// a run is already going (games added meanwhile are picked up after the next refresh), or when a
+// rate-limit back-off is active.
 //
-//   // after a game-list refresh has finished (any thread):
-//   Catalog::AutoCovers::Callbacks cb;
-//   cb.on_cover_saved = [](const Catalog::CoverSaved& saved) { /* invalidate the cover cache of
-//       the game whose path is saved.id; runs on the worker thread, so queue it to the UI thread */ };
-//   Catalog::AutoCovers::StartAfterRefresh(cb);
+// Settings, in the base INI under [UI]:
+//   AutoDownloadCovers  bool, default true
+//   CoverArt3D          bool, default false: 3D case renders instead of flat scans
+//   CoverRegion         int 0..3, default 0: 0 disc's own, 1 USA, 2 Europe, 3 Japan/Asia
+//   CoverRegionPerGame  string, default "": e.g. "SLUS-21007=3,SLES-50021=1". A pin wins over
+//                       CoverRegion, and a pin of 0 follows the disc.
 //
-//   // at shutdown, before the game list and the UI are torn down:
-//   Catalog::AutoCovers::Shutdown();
-//
-// StartAfterRefresh does nothing when the setting is off, when a run is already going (the games
-// added meanwhile are picked up after the next refresh), or when a rate-limit back-off is active.
-//
-// Settings, all in the base INI under [UI]:
-//   AutoDownloadCovers  bool, default TRUE   the automatic download itself
-//   CoverArt3D          bool, default false  3D case renders instead of flat scans
-//   CoverRegion         int 0..3, default 0  0 disc's own, 1 USA, 2 Europe, 3 Japan/Asia
-//   CoverRegionPerGame  string, default ""   "SLUS-21007=3,SLES-50021=1": per-game pins that win
-//                                            over CoverRegion (a pin of 0 means "follow the disc")
-//
-// The style and region only decide which URL a NEW download uses. A game that already has a cover
-// keeps it until StartRedownload() replaces it, which a UI calls after the user changes them.
+// Style and region only choose the URL of a new download. A game that already has a cover keeps it
+// until StartRedownload() replaces it.
 
 #include "Catalog/CoverDownloadJob.h"
 #include "Catalog/CoverSources.h"
@@ -63,17 +54,13 @@ namespace Catalog
 			std::function<void(const CoverJobSummary&)> on_finished; ///< Last call of a run. Do not Start() from it.
 		};
 
-		// ---- Settings -----------------------------------------------------------------------
-		//
 		// Each setting has two forms: one that reads or writes the host's base INI (it takes the
 		// settings lock, so do not call it while holding it), and one that works on any
 		// SettingsInterface, which is what the tests and hosts with their own INI use.
 
-		/// [UI] AutoDownloadCovers.
 		bool IsEnabled();
 		bool IsEnabled(const SettingsInterface& si);
 
-		/// The style, library-wide region and pins from the INI.
 		CoverPreferences LoadPreferences();
 		CoverPreferences LoadPreferences(const SettingsInterface& si);
 
@@ -88,16 +75,12 @@ namespace Catalog
 		void SetGameRegionPin(const std::string& serial, std::optional<CoverRegion> pin);
 		void SetGameRegionPin(SettingsInterface& si, const std::string& serial, std::optional<CoverRegion> pin);
 
-		// ---- Work selection -----------------------------------------------------------------
-
 		/// The cover job for one game-list entry: PS2 and PS1 discs and arcade games with a usable
 		/// serial. Null for ELF, invalid and serial-less entries. Does not look at existing covers.
 		std::optional<CoverWorkItem> WorkItemForEntry(const GameList::Entry& entry);
 
 		/// Every entry with a usable serial and no cover yet. Takes the game list lock.
 		std::vector<CoverWorkItem> CollectMissingCovers();
-
-		// ---- Running ------------------------------------------------------------------------
 
 		/// Starts the automatic download for entries with no cover, if [UI] AutoDownloadCovers is
 		/// on. Returns true if a run was started. `fetcher` null means GetDefaultFetcher(); it must

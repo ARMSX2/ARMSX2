@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // The tasks the code under test posted with Host::RunOnCPUThread. StubHost.cpp keeps them for a test to look at and
-// run, where it used to drop them.
+// run.
 
 #pragma once
 

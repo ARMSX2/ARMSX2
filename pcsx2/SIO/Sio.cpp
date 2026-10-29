@@ -133,8 +133,7 @@ void AutoEject::ClearAll()
 //
 // Both words below are shared between the thread that runs the memory card commands (the IOP's, once it
 // has its own) and the CPU thread, which reads them at shutdown and savestate and decrements the ticks at
-// vsync. currentBusyTicks was already atomic, with orders stronger than it needs; sioLastFrameMcdBusy is a
-// plain word in the savestate, so it is accessed through relaxed atomics.
+// vsync. sioLastFrameMcdBusy is a plain word in the savestate, so it is accessed through relaxed atomics.
 static std::atomic_uint32_t currentBusyTicks = 0;
 
 uint32_t sioLastFrameMcdBusy = 0;

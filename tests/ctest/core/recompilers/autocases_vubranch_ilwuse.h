@@ -3,22 +3,19 @@
 //
 // GENERATED from a first-party capture taken on a real PS2.  Do not edit.
 //
-// Console rows where an instruction reads a VI that an ILW is still loading.  They are 40 of the
-// 6,158 programs of hardware-oracle/captures/vu-branch-vi-double-write-2026-10-15/ (the same
-// capture, console and protocol as autocases_vubranch_vidw.h; make_draft.py there emits any others).
+// Console rows where an instruction reads a VI that an ILW is still loading (40 programs, taken
+// with the same capture and protocol as autocases_vubranch_vidw.h).
 //
-// What the rows establish: ILW loads its VI for four cycles, and on the console an instruction
-// that reads that VI waits for the load, not only a branch.  A reader that waits issues later
-// than its pair count says, which moves it relative to the four-cycle window the branch looks
-// back through, and so changes which value the branch reads.  Two shapes:
+// ILW loads its VI for four cycles, and on the console any instruction that reads that VI waits
+// for the load, not only a branch.  A reader that waits issues later than its pair count says,
+// which moves it relative to the four-cycle window the branch looks back through, and so changes
+// which value the branch reads.  Two shapes:
 //   ILW.x vi1,0(vi0); N pair(s) (N = 0..2); IADDIU vi1,vi1,1 or LQI vf,(vi1++); the branch.
-//     The writer reads vi1 and waits for the load.
 //   ILW.x vi1,0(vi0); two more writers that read vi1 (IADDIU vi1,vi1,1 / LQI vf,(vi1++)), all
-//     back to back; the branch.  The first writer waits for the load.
+//     back to back; the branch.
 // ILW reads VU0 data memory quadword 0, which the probe zeroes (and the harness does), so the
-// loaded value is 0.  Each program, seeds and the vi5/vi6 convention are as in
-// autocases_vubranch_vidw.h: vi5 = 0x111 means the branch was NOT taken, vi6 = 0x222 is
-// reached on both paths.
+// loaded value is 0.  Seeds and the vi5/vi6 convention are as in autocases_vubranch_vidw.h:
+// vi5 = 0x111 means the branch was NOT taken, vi6 = 0x222 is reached on both paths.
 #pragma once
 
 #include "autocases_vubranch.h"

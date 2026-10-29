@@ -44,10 +44,10 @@ internal class RemotePlayWifi(context: Context) {
 
 /**
  * This device's Wi-Fi link, for the stream's stats: the band (from the channel frequency), the
- * link speeds and the signal. Stalls of 50 to 150 ms every second or so with packets lost are what
- * a weak or crowded link gives, a 2.4 GHz one most of all (Bluetooth shares that band too), so the
- * stats show it beside the stream's own numbers. Read through the network's capabilities, which
- * needs no permission beyond the network state the app already has. Null when not on Wi-Fi.
+ * link speeds and the signal. Periodic stalls with packet loss are what a weak or crowded link
+ * gives, a 2.4 GHz one most of all (Bluetooth shares that band too), so the stats show it beside
+ * the stream's own numbers. Read through the network's capabilities, which needs no permission
+ * beyond the network state the app already has. Null when not on Wi-Fi.
  */
 internal class WifiLink(val frequencyMhz: Int, val txMbps: Int, val rxMbps: Int, val rssiDbm: Int) {
     fun describe(): String {

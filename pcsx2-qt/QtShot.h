@@ -5,18 +5,18 @@
 
 // Screenshot harness for the Qt UI: renders a settings page, a dialog or the main window to a PNG with
 // QWidget::grab() and exits, so a UI change can be looked at with no display. Run armsx2-qt with
-// QT_QPA_PLATFORM=offscreen and a throwaway -datapath; -uishot list prints every page and dialog name. Nothing here runs unless a -uishot flag is on the command line,
-// and nothing reads the environment.
+// QT_QPA_PLATFORM=offscreen and a throwaway -datapath; -uishot list prints every page and dialog name.
+// Nothing here runs unless a -uishot flag is on the command line, and nothing reads the environment.
 //
 // Command line (all hidden from -help):
-//   -uishot <spec> <png>     take one shot; repeatable, shots run in order in one launch
+//   -uishot <spec> <png>     one shot; repeatable, shots run in order in one launch
 //   -uishot-game <path>      game for game:* shots; must be in the game list (a scanned directory)
-//   -uishot-size <WxH>       resize every shot's window to this before grabbing
+//   -uishot-size <WxH>       resize every shot's window before grabbing
 //   -uishot-wait <ms>        settle time after opening, before actions and the grab (default 300)
-//   -uishot-timeout <sec>    give up and exit 2 after this long (default 120)
-//   -uishot-any-platform     allow a platform other than offscreen. Without it, and without -datapath, the
-//                            harness exits 2 at once, so a stray run cannot open windows on a real desktop
-//                            or use the real settings.
+//   -uishot-timeout <sec>    exit 2 after this long (default 120)
+//   -uishot-any-platform     allow a platform other than offscreen
+// Without -datapath (or with -portable), or on another platform without -uishot-any-platform, the
+// harness exits 2 at once, so a stray run cannot open windows on a real desktop or use real settings.
 //
 // A spec is  target ('|' action)*  with
 //   target   main                   the main window (game list)
@@ -24,11 +24,11 @@
 //            game:<page>            per-game settings window on <page> (needs -uishot-game)
 //            dialog:<name>          a dialog from the registry below
 //            list                   print every name this build knows and exit
-//   <page>   the title shown in the category list or the page widget's class name, ignoring case and
-//            punctuation: "Memory Cards", memory-cards and memorycard all select MemoryCardSettingsWidget.
+//   <page>   the category title or the page widget's class name, ignoring case and punctuation:
+//            "Memory Cards", memory-cards and memorycard all select MemoryCardSettingsWidget.
 //            Every page added to SettingsWindow is reachable with no entry anywhere.
 //   action   focus=<objectName>     reveal a widget (selects its tab and settings page, scrolls to it), focus it
-//            tab=<text>             select the tab with this text in the window's tab widget
+//            tab=<text>             select the tab with this text
 //            click=<objectName>     click a button or trigger a QAction; a modal dialog it opens is what gets grabbed
 //            wait=<ms>              pause, for content that arrives later
 //            size=<WxH>             resize the window

@@ -94,8 +94,6 @@ namespace
 	};
 } // namespace
 
-// ---- names ------------------------------------------------------------------------------
-
 TEST(Autosave, NamesTheNewestAndTheOlderOnes)
 {
 	const std::string newest = "/sstates/SLUS-12345 (ABCD1234).autosave.p2s";
@@ -106,8 +104,6 @@ TEST(Autosave, NamesTheNewestAndTheOlderOnes)
 	// Not a .p2s name: there are no numbered neighbours.
 	EXPECT_EQ(Autosave::FileNameAt("/x/state.bin", 3), "/x/state.bin");
 }
-
-// ---- the rotation, success --------------------------------------------------------------
 
 TEST(AutosaveRotation, FirstAutosaveMovesNothing)
 {
@@ -317,8 +313,6 @@ TEST(AutosaveRotation, ACrashedKeepOneSaveThatFailsAgainLosesNothing)
 	EXPECT_EQ(Snapshot(f.dir.Dir()).size(), 1u);
 }
 
-// ---- the rotation, rollback -------------------------------------------------------------
-
 TEST(AutosaveRotation, RollbackPutsEverythingBackAndRemovesTheHalfWrittenFile)
 {
 	Fixture f;
@@ -397,8 +391,6 @@ TEST(AutosaveRotation, CommitAfterRollbackAndRollbackAfterCommitDoNothing)
 	EXPECT_EQ(Snapshot(f.dir.Dir()), after);
 }
 
-// ---- the rotation, a step failing -------------------------------------------------------
-
 // Fails each rename of Begin() in turn; the folder must come back exactly as it was.
 TEST(AutosaveRotation, AFailedStepUndoesTheStepsBeforeIt)
 {
@@ -458,8 +450,6 @@ TEST(AutosaveRotation, ANameThatCannotBeRotatedIsRefused)
 	Autosave::Rotation empty("", 3);
 	EXPECT_FALSE(empty.Begin());
 }
-
-// ---- RotatedSave ------------------------------------------------------------------------
 
 TEST(AutosaveSave, SavesAndRotates)
 {
@@ -578,8 +568,6 @@ TEST(AutosaveSave, WorksTwentyTimesInARowKeepingTheLastThree)
 	EXPECT_EQ(Snapshot(f.dir.Dir()).size(), 3u);
 }
 
-// ---- the timer --------------------------------------------------------------------------
-
 namespace
 {
 	// Plays `seconds` of one second frames; true if the timer was due at the last of them.
@@ -675,8 +663,6 @@ TEST(AutosaveTimer, ChangingTheIntervalTakesEffectAtOnce)
 	EXPECT_TRUE(timer.Advance(1.0, 1));
 }
 
-// ---- listing ----------------------------------------------------------------------------
-
 namespace
 {
 	void SetFileTime(const std::string& path, std::time_t t)
@@ -768,8 +754,6 @@ TEST(AutosaveList, AGameWithoutASerialHasNoAutosaves)
 {
 	EXPECT_TRUE(Autosave::List("", 0).empty());
 }
-
-// ---- settings ---------------------------------------------------------------------------
 
 namespace
 {

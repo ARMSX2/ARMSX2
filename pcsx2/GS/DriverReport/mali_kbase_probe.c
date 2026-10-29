@@ -6,17 +6,16 @@
 /*
  * Mali kernel driver (kbase) probe for the driver diagnostics.
  *
- * Reports what a Vulkan driver talking to kbase directly needs to know about
- * the device: which kbase flavour the kernel runs (CSF or job manager), its
- * user-kernel interface ("UK") version, the GPU's identity and core layout,
- * the vendor's Mali release where the kernel module names say it, and
- * whether each kernel call a CSF driver depends on works from this process
- * (SELinux ioctl filtering and vendor kernel changes show up here).
+ * Reports what a Vulkan driver talking to kbase directly needs to know: the
+ * kbase flavour (CSF or job manager), its user-kernel interface ("UK")
+ * version, the GPU's identity and core layout, the vendor's Mali release where
+ * the kernel module names say it, and whether each kernel call a CSF driver
+ * depends on works from this process (SELinux ioctl filtering and vendor
+ * kernel changes show up here).
  *
  * No GPU work is submitted: queues are created and torn down but never
- * kicked, so the probe cannot hang the GPU. It opens its own kbase
- * contexts, which the kernel frees with the file descriptor, and takes
- * about a millisecond.
+ * kicked, so the probe cannot hang the GPU. Its kbase contexts are freed by
+ * the kernel when the fd closes.
  *
  * Kernel structures are our own definitions of the kbase UAPI (the kernel's
  * headers are GPL-2.0 WITH Linux-syscall-note), checked by the static
@@ -41,9 +40,6 @@
 #include <unistd.h>
 
 int mali_kbase_probe(char *json, size_t cap);
-
-/* ---------------------------------------------------------------------- */
-/* kbase UAPI subset                                                        */
 
 #define KB_TYPE 0x80
 
@@ -302,9 +298,6 @@ enum {
    KP_COUNT = 86,
 };
 
-/* ---------------------------------------------------------------------- */
-/* JSON output                                                             */
-
 struct out {
    char *buf;
    size_t cap;
@@ -364,9 +357,6 @@ out_str(struct out *o, const char *s)
    }
    out_lit(o, "\"");
 }
-
-/* ---------------------------------------------------------------------- */
-/* Steps                                                                   */
 
 #define MAX_STEPS 32
 
@@ -466,9 +456,6 @@ kioctl(int fd, unsigned long req, void *arg)
    return r < 0 ? errno : 0;
 }
 
-/* ---------------------------------------------------------------------- */
-/* GPU properties                                                          */
-
 struct gpu_props {
    int valid;
    uint64_t v[KP_COUNT];
@@ -559,14 +546,11 @@ product_name(uint32_t product_id, unsigned cores)
    }
 }
 
-/* ---------------------------------------------------------------------- */
-/* The vendor's Mali release                                               */
-
-/* Vendors often build the kbase module under a name that carries the Mali
- * release it comes from (MediaTek: "mali_kbase_mt6897_r44"), and the
- * userspace driver ships from the same release. Reading the module names is
- * cheap; the release string inside the userspace driver is assembled at run
- * time and would need the whole library scanned. */
+/* Vendors often name the kbase module after the Mali release it comes from
+ * (MediaTek: "mali_kbase_mt6897_r44"), and the userspace driver ships from the
+ * same release. Module names are cheap to read; the release string inside the
+ * userspace driver is built at run time and would need the whole library
+ * scanned. */
 #define MAX_MODULES 8
 
 struct modules {
@@ -614,9 +598,6 @@ read_modules(struct modules *m)
    }
    closedir(d);
 }
-
-/* ---------------------------------------------------------------------- */
-/* CSF context checks                                                      */
 
 struct csf_info {
    int valid;
@@ -900,9 +881,6 @@ csf_checks(struct probe *p, int fd, struct csf_info *ci)
    step_end(p, "cpu_gpu_timeinfo", e, NULL);
 }
 
-/* ---------------------------------------------------------------------- */
-/* Report                                                                  */
-
 static void
 out_gpu(struct out *o, const struct gpu_props *gp)
 {
@@ -1061,7 +1039,6 @@ mali_kbase_probe(char *json, size_t cap)
    step_end(&p, "kernel_modules", mods.readable ? 0 : -1,
             mods.readable ? NULL : "/sys/module is not readable");
 
-   /* The JSON object. */
    out_lit(&o, "{\"node\":");
    out_str(&o, node);
    out_fmt(&o, ",\"opened\":%s,\"errno\":%d", fd >= 0 ? "true" : "false", open_err);

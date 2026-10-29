@@ -203,7 +203,6 @@ namespace Catalog
 
 		if (!FileSystem::RenamePath(staged.c_str(), target.c_str()))
 		{
-			// Put the old pack back rather than leaving the game with nothing.
 			if (had_previous)
 				FileSystem::RenamePath(backup.c_str(), target.c_str());
 			Console.Warning("Texture packs: could not move the staged pack into place");
@@ -280,9 +279,8 @@ namespace Catalog
 		if (available.has_value() && *available > 0 && *available < required)
 			return fail(fmt::format("Needs ~{} MB free, {} MB available", required / 1024 / 1024, *available / 1024 / 1024));
 
-		// -- Download -------------------------------------------------------------------------
 		// Parts stream straight into one file, in order: joining afterwards would hold the pieces
-		// and the joined archive at once, double the disk for a 4 GB pack.
+		// and the joined archive at once, doubling the disk use.
 		const std::string archive = Path::Combine(staging, "pack.download");
 		const std::vector<TexturePackPart> parts = pack.EffectiveParts();
 		const bool split = parts.size() > 1;
@@ -334,7 +332,6 @@ namespace Catalog
 			report(Phase::Downloading, done, pack.size_bytes);
 		}
 
-		// -- Verify the whole ------------------------------------------------------------------
 		// Still checked when every part passed: the parts can each be intact and yet be the wrong
 		// parts, or joined in the wrong order.
 		report(Phase::Verifying);
@@ -346,7 +343,6 @@ namespace Catalog
 		if (cancel.IsCancelled())
 			return cancelled();
 
-		// -- Extract ---------------------------------------------------------------------------
 		const std::string extracted = Path::Combine(staging, "out");
 		const auto extract_progress = [&report](u64 files_done, u64 files_total) { report(Phase::Extracting, files_done, files_total); };
 		ExtractResult extraction;
@@ -372,7 +368,6 @@ namespace Catalog
 			return fail("Archive contained no textures");
 		FileSystem::DeleteFilePath(archive.c_str());
 
-		// -- Commit ----------------------------------------------------------------------------
 		// From here on cancelling no longer works; the UI hides its Cancel button on this phase.
 		report(Phase::Installing);
 		const std::string target = Path::Combine(Path::Combine(m_config.textures_dir, *folder), REPLACEMENTS_NAME);
@@ -403,10 +398,6 @@ namespace Catalog
 		result.textures = extraction.textures;
 		return result;
 	}
-
-	// ---------------------------------------------------------------------------------------
-	// Installed packs
-	// ---------------------------------------------------------------------------------------
 
 	void TexturePackInstaller::LoadSizeCacheLocked()
 	{
@@ -510,9 +501,8 @@ namespace Catalog
 				pack.serial = name;
 				pack.directory = replacements;
 
-				// Sizes come from the cache, not a fresh walk: a real pack is thousands of files.
-				// The cache is keyed on the folder's mtime, so a changed pack is measured again
-				// and every untouched one costs nothing.
+				// Sizes come from the cache, keyed on the folder's mtime: a changed pack is measured
+				// again, an untouched one is not walked.
 				const s64 mtime = static_cast<s64>(FileSystem::GetFileTimestamp(replacements.c_str()).value_or(0));
 				const auto cached = m_sizes.find(name);
 				if (cached != m_sizes.end() && cached->second.mtime == mtime)

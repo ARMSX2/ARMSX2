@@ -5,23 +5,16 @@
 // guest kernel handler at the common exception vector that runs as JIT code,
 // MTC0 Status writes inside it, and ERET / EI back out.
 //
-// Each of those instructions is an interpreter call. The pins are newest and
-// memory is stale while a pin is dirty, so before a C callee reads a guest
-// GPR from memory its pin must be stored, and a pin in a caller-saved host
-// register (x11-x13) must be stored before and reloaded after any C call,
-// because the call destroys the register. A callee that writes no guest GPR
-// needs nothing more: callee-saved pins ride through the call in their
-// registers.
+// Each of those instructions is an interpreter call. A dirty pin is newer than
+// memory, so before a C callee reads a guest GPR from memory its pin must be
+// stored, and a pin in a caller-saved host register (x11-x13) must be stored
+// before and reloaded after any C call. A callee that writes no guest GPR needs
+// nothing more: callee-saved pins ride through the call.
 //
-// The correctness tests seed every pinned register from a run-time value
-// (not a constant), so all nine pins are dirty at the SYSCALL, and the
-// kernel handler reads pinned registers other than $v1 and $a0-$a2.
-// The pins are $sp $ra $v0 $v1 $a0 $a1 $a2 $s0 $s1, with $a2/$s0/$s1 in the
-// caller-saved host registers x12/x13/x11; the guard test at the end of the
-// file fails if the table stops matching what this file hard-codes. The
-// shape tests count the pin stores and reloads emitted at each seam, so a
-// seam that still flushes and reloads the whole table shows up even though
-// it computes the right answer.
+// The correctness tests seed every pin from a run-time value so all nine are
+// dirty at the SYSCALL. The shape tests count the pin stores and reloads at
+// each seam, so a seam that still flushes and reloads the whole table is caught
+// even though it computes the right answer.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -78,12 +71,10 @@ private:
 	size_t size_;
 };
 
-// The handler the round-trip tests install. It reads five pinned registers
-// that are neither $v1 nor $a0-$a2 into unpinned ones, makes two MTC0 Status
-// writes (one whose source is a callee-saved pin, $v0, and one whose source
-// is a caller-saved pin, $s1), steps EPC past the SYSCALL through $k0 as the
-// BIOS does, and returns with ERET. $k0 is plain scratch here (it is no longer
-// a pin).
+// The handler the round-trip tests install: reads pinned registers into
+// unpinned ones, writes Status from a callee-saved pin ($v0) and from a
+// caller-saved pin ($s1), steps EPC past the SYSCALL as the BIOS does, and
+// returns with ERET. $v0 and $s1 are restored before the ERET.
 std::vector<u32> RoundTripHandler()
 {
 	return {
@@ -96,12 +87,10 @@ std::vector<u32> RoundTripHandler()
 		// must be stored first.
 		MFC0(reg::v0, kCp0Status),
 		MTC0(reg::v0, kCp0Status),
-		DADDU(reg::v0, reg::t2, reg::zero), // give the caller its $v0 back
-		// Status <- $s1 (caller-saved pin).
+		DADDU(reg::v0, reg::t2, reg::zero),
 		MFC0(reg::s1, kCp0Status),
 		MTC0(reg::s1, kCp0Status),
-		DADDU(reg::s1, reg::t4, reg::zero), // give the caller its $s1 back
-		// EPC += 4, through $k0, as the BIOS does.
+		DADDU(reg::s1, reg::t4, reg::zero),
 		MFC0(reg::k0, kCp0Epc),
 		ADDIU(reg::k0, reg::k0, 4),
 		MTC0(reg::k0, kCp0Epc),
@@ -224,10 +213,9 @@ u32 CallerSavedPins()
 
 } // namespace
 
-// The whole round trip with a constant call number, the shape Shadow of the
-// Colossus runs 360,000 times a second: every pin dirty at the SYSCALL, the
-// kernel handler reading and writing pins as JIT code across two MTC0 Status
-// seams and an ERET, user code reading every pin after the return.
+// The whole round trip with a constant call number: every pin dirty at the
+// SYSCALL, the kernel handler reading and writing pins as JIT code across two
+// MTC0 Status seams and an ERET, user code reading every pin after the return.
 TEST(EeRecSyscallSeam, ConstantCallRoundTripWithEveryPinDirty)
 {
 	EeRecTestHarness h;
@@ -240,13 +228,11 @@ TEST(EeRecSyscallSeam, ConstantCallRoundTripWithEveryPinDirty)
 		ReadEveryPinThenPark(),
 	}));
 	h.Run();
-	// The kernel saw the caller's dirty values.
 	h.ExpectGpr64(reg::t0, 0x1111222233334441ull);
 	h.ExpectGpr64(reg::t1, 0x1111222233334442ull);
 	h.ExpectGpr64(reg::t2, 0x1111222233334443ull);
 	h.ExpectGpr64(reg::t3, 0x1111222233334447ull);
 	h.ExpectGpr64(reg::t4, 0x1111222233334448ull);
-	// The caller saw its own values back, and the kernel's $k0.
 	h.ExpectGpr64(reg::a3, 0x1111222233334441ull);
 	h.ExpectGpr64(reg::gp, 0x1111222233334442ull);
 	h.ExpectGpr64(reg::s8, 0x1111222233334443ull);
@@ -323,11 +309,9 @@ TEST(EeRecSyscallSeam, EiWithEveryPinDirty)
 	EXPECT_NE(h.GetCp0Interp(kCp0Status) & (1u << 16), 0u);
 }
 
-// ---- Shape: how much pin traffic each seam emits ----
-//
-// A seam whose callee reads at most a known set of GPRs and writes none
-// should store the pins it reads plus the caller-saved pins, and reload only
-// the caller-saved pins. The program blocks below contain no other C seam,
+// Shape tests. A seam whose callee reads at most a known set of GPRs and writes
+// none should store the pins it reads plus the caller-saved pins, and reload
+// only the caller-saved pins. The program blocks below contain no other C seam,
 // so every pin store or reload in them belongs to the seam under test.
 
 TEST(EeRecSyscallSeam, ConstantCallSyscallFlushesOnlyV1AndCallerSavedPins)
@@ -384,7 +368,6 @@ TEST(EeRecSyscallSeam, EiFlushesOnlyCallerSavedPins)
 	EXPECT_EQ(t.loads, CallerSavedPins());
 }
 
-// The dynamic call number keeps the full table flush and reload.
 TEST(EeRecSyscallSeam, DynamicCallSyscallKeepsFullFlushAndReload)
 {
 	EeRecTestHarness h;
@@ -413,7 +396,6 @@ TEST(EeRecSyscallSeam, TableMatchesTheRegistersThisFileHardCodes)
 		EXPECT_NE(armEEPinForGPR(static_cast<int>(gpr)), nullptr) << "guest r" << gpr << " is not pinned";
 	EXPECT_EQ(std::size(kEEPinTable), 9u);
 
-	// The Status writes: $v0 is the callee-saved case, $s1 the caller-saved one.
 	ASSERT_NE(armEEPinForGPR(reg::v0), nullptr);
 	ASSERT_NE(armEEPinForGPR(reg::s1), nullptr);
 	EXPECT_TRUE(armIsCalleeSavedRegister(static_cast<int>(armEEPinForGPR(reg::v0)->GetCode())));

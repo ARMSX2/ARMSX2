@@ -3,23 +3,20 @@
 
 #pragma once
 
-// Which catalog packs are installed, and at which version.
-//
-// The texture folder cannot answer this: a pack extracts to loose replacement files under
-// <Textures>/<SERIAL>/replacements with nothing recording where they came from. Without this
-// record the catalog could only ever offer "Get", never "Installed" or "Update available".
+// Which catalog packs are installed, and at which version. A pack extracts to loose replacement
+// files under <Textures>/<SERIAL>/replacements with nothing recording where they came from, so
+// the texture folder alone cannot say "Installed" or "Update available".
 //
 // The record is <DataRoot>/texture-packs.json, a JSON object keyed by pack id:
 //   { "<packId>": { "serial": "SLUS-21410", "version": "...", "name": "...",
 //                   "format": "zip|tar+zstd", "schema": 1|2, "archiveRevision": 0, "sha256": "" } }
-// It is written through a .tmp file with the previous copy kept as .bak, and read back from the
-// .bak when the main file is unreadable, so a truncated file never reads as "nothing installed".
+// It is written through a .tmp file with the previous copy kept as .bak, and read from the .bak
+// when the main file is unreadable.
 //
-// Only one pack is recorded per serial: the engine reads a single replacements folder per game,
-// and installing a pack replaces the whole folder (see TexturePackInstaller), so a new record for
-// a serial replaces the previous pack's record.
+// One pack is recorded per serial: the engine reads a single replacements folder per game and an
+// install replaces the whole folder (see TexturePackInstaller).
 //
-// Every call is safe from any thread; the file operations are serialised process-wide.
+// Every call is safe from any thread; file operations are serialised process-wide.
 
 #include "Catalog/TexturePackCatalog.h"
 
@@ -29,7 +26,6 @@
 
 namespace Catalog
 {
-	/// One installed pack.
 	struct TexturePackRecord
 	{
 		std::string pack_id;
@@ -47,7 +43,6 @@ namespace Catalog
 		bool IsTarZstd() const { return schema >= 2 && format == "tar+zstd"; }
 	};
 
-	/// What the catalog row offers relative to what is installed.
 	enum class InstallAction
 	{
 		Install, ///< not installed: button "Download"
@@ -62,12 +57,10 @@ namespace Catalog
 		/// The record at `file_path`. It need not exist yet.
 		explicit TexturePackState(std::string file_path);
 
-		/// <DataRoot>/texture-packs.json
 		static TexturePackState InDataRoot();
 
 		const std::string& FilePath() const { return m_path; }
 
-		/// Every record, by pack id.
 		std::map<std::string, TexturePackRecord> All() const;
 		std::optional<TexturePackRecord> Find(std::string_view pack_id) const;
 		std::optional<TexturePackRecord> FindForSerial(std::string_view serial) const;
@@ -80,14 +73,13 @@ namespace Catalog
 		bool ForgetSerial(std::string_view serial);
 
 		/// Drops every record whose serial is not in `present_serials_upper`, the serials that
-		/// really have a <Textures>/<SERIAL>/replacements folder. The record and the disk are two
-		/// stores that can disagree (a pack deleted in a file manager, a delete that only half
-		/// worked) and the disk is the truth: otherwise the catalog shows a permanent "Installed"
-		/// for a pack that is not there, and the disabled button blocks reinstalling it.
+		/// really have a <Textures>/<SERIAL>/replacements folder. When record and disk disagree
+		/// (pack deleted in a file manager, half-finished delete) the disk wins; otherwise the
+		/// catalog shows a permanent "Installed" and the disabled button blocks reinstalling.
 		///
-		/// A pack on disk with no record is left alone; it is a hand-copied folder and we cannot
-		/// name a version for it. An empty scan while records exist is almost always a failed scan
-		/// (unreadable folder, folder not mounted yet), so it changes nothing.
+		/// A pack on disk with no record is left alone: a hand-copied folder has no known version.
+		/// An empty scan while records exist is almost always a failed scan (unreadable folder,
+		/// not mounted yet), so it changes nothing.
 		void Reconcile(const std::set<std::string>& present_serials_upper);
 
 		/// Bumped whenever a write changed the record, so a UI can notice without re-reading.
@@ -104,7 +96,6 @@ namespace Catalog
 		/// the same game does not make this one "Installed"; installing this one replaces it.
 		InstallAction ActionForPack(const TexturePack& pack) const;
 
-		/// The record a successful install of `pack` into `serial` leaves behind.
 		static TexturePackRecord RecordFor(const TexturePack& pack, std::string_view serial);
 
 	private:

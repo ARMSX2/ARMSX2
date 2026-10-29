@@ -244,8 +244,7 @@ enum JVS { //https://github.com/TheOnlyJoey/openjvs/wiki/Command-list
     SUBSTRACT_PAYOUT = 0x36, //subtract payouts?
     OUTPUT_GENERAL_PURPOSE2 = 0x37, //general-purpose output 2
     OUTPUT_GENERAL_PURPOSE3 = 0x38, //general-purpose output 3
-    /// Manufacturer-specific
-    //60-7F	 	reserved for manufacturer-specific commands
+    /// Manufacturer-specific (0x60-0x7F are reserved for these)
     NAMCO_VENDOR = 0x70, //Namco extended command: sub-command + args (FCB touch panel init/status)
 };
 
@@ -263,7 +262,6 @@ enum DIPS {
     VIDEO_SYNC_SPLIT = 0x10,
 };
 
-// To improve and correct when adding more JVS controls from games
 enum JVSButton : u16 {
     JVS_BTN_START   = 0x80,
     JVS_BTN_SERVICE = 0x40,

@@ -102,21 +102,17 @@ private const val EXIT_SHOWN_MS = 4_000L
 private const val TOUCH_HIDE_MS = 15_000L
 
 /**
- * Stick and trigger movement goes to the host at most this often (125 times a second); a button
- * press or release goes at once. Input reaches the app the moment the controller reports it, which
- * for some built-in controllers is hundreds of times a second while a stick moves, and every
- * packet sent takes its turn on the Wi-Fi channel the video needs.
+ * Minimum spacing between stick and trigger updates sent to the host (125 per second); button
+ * presses and releases go at once. Some built-in controllers report hundreds of times a second
+ * while a stick moves, and every packet competes with the video for the Wi-Fi channel.
  */
 private const val ANALOG_SEND_MS = 8L
 
-/** How a viewer reaches its host. */
 internal sealed interface ViewerMode {
     data class Wifi(val host: String, val port: Int) : ViewerMode
 
-    /** From a pasted invite; [offer] is the decoded invite. */
     data class Invite(val offer: JSONObject) : ViewerMode
 
-    /** From a six-character code through the lobby service. */
     data class Lobby(val code: String) : ViewerMode
 }
 
@@ -133,7 +129,6 @@ class RemotePlayViewerActivity : ComponentActivity() {
         private const val EXTRA_OFFER = "offer"
         private const val EXTRA_LOBBY = "lobby"
 
-        /** Join a host on this Wi-Fi. */
         fun start(context: Context, host: String, port: Int, name: String) {
             launch(
                 context,
@@ -144,12 +139,11 @@ class RemotePlayViewerActivity : ComponentActivity() {
             )
         }
 
-        /** Join from a pasted invite. [offer] is the decoded invite (RemotePlayProtocol.decodeCode). */
         fun startWithInvite(context: Context, offer: JSONObject) {
             launch(context, Intent(context, RemotePlayViewerActivity::class.java).putExtra(EXTRA_OFFER, offer.toString()))
         }
 
-        /** Join with a six-character code, already normalized (RemotePlayLobby.normalize). */
+        /** [code] must already be normalized (RemotePlayLobby.normalize). */
         fun startWithLobby(context: Context, code: String) {
             launch(context, Intent(context, RemotePlayViewerActivity::class.java).putExtra(EXTRA_LOBBY, code))
         }
@@ -168,7 +162,6 @@ class RemotePlayViewerActivity : ComponentActivity() {
     private var session: ViewerSession? = null
     private val main = Handler(Looper.getMainLooper())
 
-    // Shown over the black screen until the first frame arrives.
     private val status = mutableStateOf("")
     private val playing = mutableStateOf(false)
     private val hintVisible = mutableStateOf(false)
@@ -201,7 +194,6 @@ class RemotePlayViewerActivity : ComponentActivity() {
 
     private val input = ViewerInput { pad -> session?.sendPad(pad) }
 
-    // The on-screen controls' presses, merged into player 2's pad.
     private val touchPad = TouchPadState { pad -> input.setTouch(pad) }
     private val padSink: (Int, Int, Boolean) -> Unit = { keycode, value, pressed -> touchPad.onKey(keycode, value, pressed) }
 
@@ -372,8 +364,7 @@ class RemotePlayViewerActivity : ComponentActivity() {
                         RemotePlayTouchControls()
                     }
 
-                    // Tap to reveal: the top middle of the screen is the exit button's, and only a
-                    // tap there brings it up. Above the touch controls, so it is never a button.
+                    // Tap to reveal. Above the touch controls, so it is never a button.
                     if (exitMode == RevealMode.TAP && !leaveAsked.value) {
                         ExitArea()
                     }
@@ -525,12 +516,12 @@ class RemotePlayViewerActivity : ComponentActivity() {
     }
 
     /**
-     * The stream runs at 60 fps, so while it plays the screen does too, as Moonlight does: each
+     * The stream runs at 60 fps, so the screen does too while it plays, as Moonlight does: each
      * frame then stays up for exactly one refresh. On a 90 or 120 Hz screen, frames shown as they
-     * arrive stay up for one refresh or two (or three), which reads as stutter, and evening that
-     * out by holding frames back cost both delay and frames (test 12 and 13: 45 to 48 fps on a 120
-     * Hz screen). Takes the screen's own 60 Hz mode at its current resolution; a screen without
-     * one stays as it is. Leaving this screen gives the rest of the app its usual rate back.
+     * arrive stay up for one refresh or two (or three), which reads as stutter, and holding frames
+     * back to even that out costs delay and dropped frames. Takes the screen's own 60 Hz mode at its
+     * current resolution; a screen without one stays as it is. Leaving this screen gives the rest of
+     * the app its usual rate back.
      */
     private fun preferSixtyHz() {
         val screen = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) this.display else null)
@@ -574,7 +565,6 @@ class RemotePlayViewerActivity : ComponentActivity() {
         main.postDelayed(hideExit, EXIT_SHOWN_MS)
     }
 
-    // Tap to reveal: the controls go away again after a while untouched.
     private fun touchActivity() {
         main.removeCallbacks(hideTouch)
         if (touchMode == RevealMode.TAP) main.postDelayed(hideTouch, TOUCH_HIDE_MS)
@@ -916,10 +906,10 @@ internal class ViewerInput(private val send: (RemotePlayProtocol.PadState) -> Un
     }
 }
 
-/** The viewer's connection: signaling, the peer, audio playback and the pad. Main thread. */
 private val RemotePlaySerialShape = Regex("[A-Za-z0-9][A-Za-z0-9._-]{2,23}")
 private val RemotePlayPartyShape = Regex("[A-Za-z0-9-]{2,64}")
 
+/** The viewer's connection: signaling, the peer, audio playback and the pad. Main thread. */
 internal class ViewerSession(
     private val context: Context,
     private val mode: ViewerMode,
@@ -984,9 +974,8 @@ internal class ViewerSession(
     // The pad goes out on every change and also every 10 ms, which fixes a lost packet within
     // one beat, tells the host the viewer is still there, and keeps this device's Wi-Fi radio
     // from dozing between frames: a dozing radio has the router hold the stream's packets and
-    // hand them over in a clump when it wakes (the round trip flipped between 8 and 83 ms in test
-    // 19 on a strong link, with 70 to 100 ms gaps between frames). About 80 kbit/s; the host
-    // ignores a pad state that has not changed.
+    // hand them over in a clump when it wakes. About 80 kbit/s; the host ignores a pad state
+    // that has not changed.
     private val heartbeat = object : Runnable {
         override fun run() {
             if (ended) return
@@ -1180,7 +1169,6 @@ internal class ViewerSession(
         }
     }
 
-    /** Answers the host's offer; the answer goes out once complete, candidates included. */
     // This goes on the player's own Discord profile, so only a plain name and a serial-shaped serial
     // are taken from the host. The cover comes from this device's own cover source, never a link.
     private fun takeOffer(offer: JSONObject) {
@@ -1191,6 +1179,7 @@ internal class ViewerSession(
         hostParty = com.armsx2.DiscordPresence.RemotePlayParty(party, game.ifBlank { "Remote play" }, serial)
     }
 
+    /** Answers the host's offer; the answer goes out once complete, candidates included. */
     private fun answer(offer: String) {
         if (peer != null || ended) return
         val created = RemotePlayRtc.createFactory(context, output).also { rtc = it }

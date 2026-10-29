@@ -18,19 +18,15 @@ class GSTexture;
 // offscreen texture the size of the Surfaceless WindowInfo: the game rect, the TV shaders,
 // FullscreenUI and the OSD, exactly as they would land in a swapchain image. The backend then
 // calls NotePresented() with that texture, and the readback functions below turn it into pixels.
-// It is the libretro backbuffer path (VKLibretro / GLLibretro) minus the frontend handoff.
-//
-// This is how a test with no monitor sees a Big Picture page: FullscreenUIShot.h has the PINE
-// commands that open a page and save it as a PNG.
 //
 // Threading: SetEnabled is called once by the host before the GS thread starts. Everything else
 // is GS-thread only, except PresentCount(), which any thread may read.
 namespace GSHeadless
 {
 	/// The pace of the no-game idle present, and the time every ImGui frame is told has passed
-	/// (ImGuiManager::NewFrame), so animations and the selected item's pulsing border depend on
-	/// how many frames were drawn rather than on how fast this machine drew them. The host should
-	/// report kFrameRate as the window's refresh rate.
+	/// (ImGuiManager::NewFrame), so animations depend on how many frames were drawn rather than
+	/// on how fast this machine drew them. The host should report kFrameRate as the window's
+	/// refresh rate.
 	constexpr float kFrameRate = 30.0f;
 	constexpr float kFrameTime = 1.0f / kFrameRate;
 

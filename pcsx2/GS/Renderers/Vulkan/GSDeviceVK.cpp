@@ -126,8 +126,8 @@ enum : u32
 	VERTEX_BUFFER_MAX_SIZE = 64 * 1024 * 1024,
 
 	// The texture upload ring grows the same way. A title that streams textures every frame
-	// (Baldur's Gate: Dark Alliance uploads ~19 MB a frame in one area) otherwise blocks on the GPU
-	// once a frame when the 32 MiB ring comes round, and CPU and GPU stop overlapping.
+	// otherwise blocks on the GPU once a frame when the 32 MiB ring comes round, and CPU and GPU
+	// stop overlapping.
 	TEXTURE_BUFFER_MAX_SIZE = 128 * 1024 * 1024,
 
 	// The smallest start gsrunner's -vertex-ring-kib may choose.
@@ -188,7 +188,6 @@ static std::mutex s_instance_mutex;
 // empty) list so the existing required-extension scan loops stay valid.
 static constexpr std::array<const char*, 0> s_required_device_extensions = {};
 
-// The instance extensions the last CreateVulkanInstance enabled, for the driver report.
 static std::vector<std::string> s_enabled_instance_extensions;
 
 GSDeviceVK::GSDeviceVK()
@@ -623,12 +622,10 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 
 #ifdef __ANDROID__
 	// Remote play hands its frames to the video encoder as AHardwareBuffers, so they never pass
-	// through the CPU. Both are on practically every Android driver; the foreign queue family is what
-	// lets the encoder's GL take a frame over, so the buffer extension is only asked for alongside it.
-	// Without them, frames are read back instead.
-	//
-	// Both or neither. SupportsExtension enables what it finds, so asking for the two in a row
-	// enabled the foreign queue family alone on a driver that lists it without the buffer one.
+	// through the CPU; without these extensions frames are read back instead. The foreign queue
+	// family is what lets the encoder's GL take a frame over.
+	// Both or neither: SupportsExtension enables what it finds, so asking for the two in a row
+	// would enable the foreign queue family alone on a driver that lists it without the buffer one.
 	const auto listed = [&available_extension_list](const char* name) {
 		return std::any_of(available_extension_list.begin(), available_extension_list.end(),
 			[name](const VkExtensionProperties& properties) { return !std::strcmp(name, properties.extensionName); });
@@ -3619,11 +3616,10 @@ void GSDeviceVK::EndPresent()
 	else if (GSLsfg::IsActive())
 		GSLsfg::Shutdown();
 
-	// Frame generation on the game's own image instead of the finished screen, when the present
-	// was only the plain scaled blit it can repeat for each generated frame (it draws the ImGui
-	// overlay onto them afresh as well). Here, after Initialize/Shutdown, which may replace the
-	// image copied into, and in this frame's command buffer, where the game texture's layout is
-	// tracked.
+	// Frame generation takes the game's own image instead of the finished screen when the present
+	// was only the plain scaled blit, which it can repeat for each generated frame (the ImGui overlay
+	// is drawn onto those afresh). This runs after Initialize/Shutdown, which may replace the image
+	// copied into, and in this frame's command buffer, where the game texture's layout is tracked.
 	if (GSLsfg::IsActive())
 	{
 		GSTextureVK* const current = static_cast<GSTextureVK*>(GetCurrent());
@@ -9365,11 +9361,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				// Built over the whole target, since the draws that share it can land anywhere.
 				m_date_copy.valid = false;
 				SetupDATE(draw_rt, config.ds, config.datm, GSVector4i::loadh(rtsize));
-				// The pass this opens holds the run that used to read the target, and a pass holding a
-				// declared feedback loop is never tiled on Turnip. Without a read left in it the
-				// driver's autotuner may tile it, and Indiana Jones' corpus scene then took 9.6 ms at
-				// 2x where it takes 7.0 untiled (Nova, axfl2-001). Declaring the loop on this one draw
-				// keeps the pass untiled, as it was, for one wait per run.
+				// The pass this opens holds the run that used to read the target, and Turnip never tiles
+				// a pass holding a declared feedback loop. Without a read left in it the driver's
+				// autotuner may tile it, which is slower here. Declaring the loop on this one draw keeps
+				// the pass untiled, for one wait per run.
 				if (draw_rt && UseFeedbackLoopLayout())
 				{
 					pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadAndWriteRT;
@@ -10097,9 +10092,7 @@ void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
 
 #ifdef __ANDROID__
 
-// ---- Remote play ---------------------------------------------------------------------------------
-//
-// The stream's frames (GS/GSRemotePlay.h). Every presented frame is drawn at the stream's size and
+// Remote play's frames (GS/GSRemotePlay.h). Every presented frame is drawn at the stream's size and
 // copied into a free slot, recorded into the frame's own command buffer ahead of the present, which
 // submits it with everything else. The app's video thread picks it up once the GPU marks it done.
 

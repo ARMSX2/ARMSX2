@@ -40,11 +40,10 @@ namespace GSSpriteEdgeSnap
 	/// Where a far edge at `a` has to sit for the upscaled raster to stop on the boundary of the
 	/// last native pixel the GS covers, which is pixel ceil(a) - 1.
 	///
-	/// `grid_shift` is how far, in 1/16 pixel, the draw's vertex transform puts that boundary
-	/// before a whole native coordinate. It is zero for the ordinary transform, which lands native
-	/// coordinate n on the start of native pixel n's device block, and 8 under the Native
-	/// half-pixel offset, which lands it on the middle of the block: there the edge that stops on
-	/// the boundary is ceil(a) - 0.5, and ceil(a) itself draws half a native pixel too many.
+	/// `grid_shift` is how far, in 1/16 pixel, the vertex transform puts that boundary before a
+	/// whole native coordinate. It is 0 for the ordinary transform (native coordinate n lands on
+	/// the start of its device block) and 8 under the Native half-pixel offset (n lands mid-block,
+	/// so ceil(a) itself would draw half a native pixel too many).
 	inline constexpr int FarTarget(int a, int grid_shift) { return SnapUp(a) - grid_shift; }
 
 	/// The pixel-grid snap for one sprite. X and Y are relative to XYOFFSET; adjust_uv says the
@@ -86,10 +85,9 @@ namespace GSSpriteEdgeSnap
 	/// The texture coordinate a sprite's last native pixel samples on one axis, which is as far as
 	/// any of its device pixels may sample once the snap has pushed the far edge out to `a1`.
 	///
-	/// The GS samples pixel k at k, and the last pixel a sprite covers is ceil(a1) - 1, so it
-	/// samples at SnapUp(a1) - 16 (1/16 units, relative to XYOFFSET) wherever the snap put the
-	/// edge. The coordinate is interpolated there along the sprite's own gradient. At 1x every
-	/// pixel samples at or before that point, so the limit changes nothing at native.
+	/// The GS samples pixel k at k and the last pixel covered is ceil(a1) - 1, so the limit is the
+	/// coordinate at SnapUp(a1) - 16 (1/16 units, relative to XYOFFSET), interpolated along the
+	/// sprite's own gradient. At 1x it changes nothing.
 	///
 	/// `a1`, `t0` and `t1` are the far edge and the near and far texture coordinates after the
 	/// snap. An unmoved axis gets no limit, signed for the direction the coordinate runs.

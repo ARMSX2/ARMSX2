@@ -78,7 +78,6 @@ GSTextureCache::HashCacheStats GSTextureCache::GetHashCacheStats()
 	return s_hash_cache_stats;
 }
 
-// Verify mode of the hash memo (GSTextureCache::SetHashMemoVerify).
 static GSTextureCache::HashMemoVerifyReport s_hash_memo_verify_report;
 static constexpr u64 HASH_MEMO_VERIFY_PRINT_LIMIT = 20; // lines printed per kind of finding
 
@@ -126,8 +125,6 @@ void GSTextureCache::VerifyWriteStamps(const GSLocalMemory& mem)
 	sweep.primed = true;
 }
 
-// --- The per-block hash cache (GSTextureCache::SetBlockHashCacheEnabled) ------------------------------------
-
 struct GSTextureCache::BlockHashCache
 {
 	/// GSLocalMemory::Id() of the memory the hashes describe. 0, which no memory has, before the first use.
@@ -144,10 +141,10 @@ static constexpr u64 BLOCK_HASH_VERIFY_PRINT_LIMIT = 20; // lines printed per ki
 /// tell whether the key used the cache at all.
 static u64 s_block_hash_levels_cached = 0;
 
-/// The block hashes of the level being keyed, in the order they are fed to the hash. A level is at most 1024
-/// texels each way, and the smallest block, of the 32-bit formats, is 8 x 8 texels; a window that starts away
-/// from a block edge reaches one block further each way. A level with more blocks than that is keyed without
-/// the cache (see HashTextureLevel), which no real level is.
+/// The block hashes of the level being keyed, in the order they are fed to the hash. Sized for a level of 1024
+/// texels each way with the smallest block (the 32-bit formats', 8 x 8 texels), plus one block each way for a
+/// window that starts away from a block edge. A level with more blocks is keyed without the cache (see
+/// HashTextureLevel); no real level is that large.
 static constexpr u32 BLOCK_HASH_GATHER_MAX = (1024 / 8 + 1) * (1024 / 8 + 1);
 static u64 s_block_hash_gather[BLOCK_HASH_GATHER_MAX];
 
@@ -174,15 +171,14 @@ GSTextureCache::BlockHashStats GSTextureCache::GetBlockHashStats()
 	return s_block_hash_stats;
 }
 
-/// The hash of one block's 256 bytes.
 __fi static u64 HashOneBlock(const u8* block)
 {
 	return GSXXH3_64bits(block, GS_BLOCK_SIZE);
 }
 
-/// The cache, bound to `mem`: made at first use, and every hash invalid again if it described another memory.
-/// A memory made after the one the cache described has an id of its own, so this also catches a renderer that
-/// was replaced under a texture cache that was kept.
+/// The cache, bound to `mem`: made at first use, with every hash invalidated if it described another memory.
+/// Each memory has its own id, so this also catches a renderer that was replaced under a texture cache that
+/// was kept.
 GSTextureCache::BlockHashCache& GSTextureCache::SyncBlockHashCache(GSLocalMemory& mem)
 {
 	if (!m_block_hash_cache)
@@ -390,7 +386,7 @@ void GSTextureCache::ResetUnionRetireStats()
 
 bool GSTextureCache::DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 bw, u32 rgba_mask, const GSVector4i& area_v, GSVector2i* hole)
 {
-	// A list longer than this is not swept: the target stays, which is what it did before.
+	// A list longer than this is not swept: the target stays.
 	static constexpr size_t MAX_RECTS = 128;
 
 	// Plain integers throughout: the rectangles are compared with each other many times over.
@@ -407,9 +403,9 @@ bool GSTextureCache::DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 b
 		return d.psm == psm && std::max(d.bw, 1u) == bw1 && (d.rgba._u32 & rgba_mask) == rgba_mask;
 	};
 
-	// The pixel an earlier test found in no rectangle, if it is still in none: then the list does not cover the
-	// area and nothing else needs looking at. The pixel is checked against this list, so an old one is only
-	// ever a missed shortcut. Most changes to a list that is not about to cover its target leave it uncovered.
+	// The pixel an earlier test found in no rectangle: if it is still in none, the list does not cover the
+	// area and nothing else needs looking at. It is checked against this list, so a stale pixel only misses
+	// the shortcut. Most changes to a list that is not about to cover its target leave it uncovered.
 	if (hole && hole->x >= area.x && hole->x < area.z && hole->y >= area.y && hole->y < area.w)
 	{
 		const int hx = hole->x, hy = hole->y;
@@ -429,8 +425,8 @@ bool GSTextureCache::DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 b
 	IRect rects[MAX_RECTS];
 	size_t n = 0;
 	s64 area_sum = 0;
-	// The area and every rectangle that counts have their edges on an 8 pixel grid (blocks are 8 pixels or a
-	// multiple of it), which is the usual case, and then a bitmap of 8x8 cells answers exactly and faster.
+	// The usual case is that the area and every rectangle that counts have their edges on an 8 pixel grid
+	// (blocks are 8 pixels or a multiple of it); a bitmap of 8x8 cells then answers exactly and faster.
 	bool on_grid = ((area.x | area.y | area.z | area.w) & 7) == 0;
 	for (const GSDirtyRect& d : list)
 	{
@@ -473,7 +469,6 @@ bool GSTextureCache::DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 b
 				const int w0 = x0 >> 6, w1 = (x1 - 1) >> 6;
 				if (w0 == w1)
 				{
-					// The cells x0..x1 of one word.
 					const int lo = x0 & 63, count = x1 - x0;
 					const u64 mask = (count == 64 ? ~u64(0) : ((u64(1) << count) - 1)) << lo;
 					for (int y = y0; y < y1; y++)
@@ -8117,11 +8112,9 @@ void GSTextureCache::AgeHashCache()
 		st.sum_bytes += hash_bytes;
 	}
 
-	// 800 entries used to be the whole limit. A game called Corvette draws its background FMVs with a ton of
-	// 17x17 tiles, which ends up being about 600 texture uploads per frame, so 800 was picked as an upper bound
-	// with a bit of a buffer. It is now the floor: nothing is dropped for memory while the cache is no larger.
-	// Above it the cache may grow to max_entries while the textures stay under max_bytes, so a title that comes
-	// back to the same thousand windows within 30 frames finds them instead of decoding and uploading them again.
+	// Nothing is dropped for memory while the cache has no more than floor_entries. Above that it may grow to
+	// max_entries while the textures stay under max_bytes, so a title that comes back to the same windows
+	// within 30 frames finds them instead of decoding and uploading them again.
 	const HashCacheLimits limits = s_hash_cache_limits;
 	const auto over_limit = [&]() {
 		const size_t entries = m_hash_cache.size();
@@ -10107,7 +10100,6 @@ __fi static GSTextureCache::HashType FinishBlockHash(BlockHashState& st)
 
 namespace
 {
-	/// The texels of a texture level that its hash covers.
 	struct HashLevelGeometry
 	{
 		int tw, th;
@@ -10128,16 +10120,17 @@ static HashLevelGeometry GetHashLevelGeometry(const GIFRegTEX0& TEX0, GSTextureC
 	return {tw, th, rect, rect.ralign<Align_Outside>(psm.bs)};
 }
 
-// True if the level used to be expanded to texels to be hashed: smaller than a block, a format that shares
-// its words with other data, or a window that starts away from the origin.
+// True if the level needs expanding to texels before it can be hashed: smaller than a block, a format that
+// shares its words with other data, or a window that starts away from the origin. HashLevelIsRaw() picks
+// out the ones that are hashed from raw blocks instead.
 static bool HashLevelIsExpanded(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, const GSTextureCache::SourceRegion& region)
 {
 	return geometry.tw < psm.bs.x || geometry.th < psm.bs.y || psm.fmsk != 0xFFFFFFFFu || region.GetMaxX() > 0 || region.GetMinY() > 0;
 }
 
-// True if a level that used to be expanded is hashed from the raw bytes of its blocks instead (see
+// True if a level that would be expanded is hashed from the raw bytes of its blocks instead (see
 // HashTextureLevel): a paletted window of at least a block each way, where the lookup allows it. A level
-// that was never expanded already hashed its blocks, and keeps doing exactly that.
+// that needs no expansion is hashed from its blocks anyway.
 static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, const GSTextureCache::SourceRegion& region, bool raw_blocks)
 {
 	return raw_blocks && psm.pal > 0 && geometry.tw >= psm.bs.x && geometry.th >= psm.bs.y && HashLevelIsExpanded(psm, geometry, region);
@@ -10156,19 +10149,19 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 	GSLocalMemory& mem = g_gs_renderer->m_mem;
 	const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 
-	// A paletted window of at least one block each way is hashed from the bytes of its blocks, in the order
-	// the unswizzle reads them, with no unswizzle. Its texels are a function of those bytes, the format, the
-	// size of the window, and where it starts inside its first block, so equal raw hashes (and equal offsets,
-	// returned below) mean equal texels. The blocks go in whole, so a byte of an edge block outside the window
-	// changes the hash: that can only turn a texel-hash hit into a miss, never the reverse.
+	// A paletted window of at least one block each way is hashed from the raw bytes of its blocks, in
+	// unswizzle order, with no unswizzle. Its texels depend only on those bytes, the format, the window
+	// size and where it starts inside its first block, so equal raw hashes and equal offsets (returned
+	// below) mean equal texels. Blocks go in whole, so bytes outside the window can only turn a
+	// texel-hash hit into a miss, never the reverse.
 	const bool raw = HashLevelIsRaw(psm, geometry, region, raw_blocks);
 
-	// With the block hash cache, a raw level is keyed by one hash of the hashes of its blocks, in the same
-	// order, instead of by the bytes: each block's hash is kept until a mark of the block's bytes, so a block
-	// that was not written since the last lookup is not read. Two windows have the same key here if and only
-	// if they have the same raw key, because a block hash is a function of the block's bytes alone, and the
-	// blocks a window reads, and where it starts inside the first, are what the rest of the key and the offset
-	// below say.
+	// With the block hash cache, a raw level is keyed by one hash of its blocks' hashes, in the same order,
+	// instead of by the bytes: a block's hash is kept until its bytes are marked written, so blocks not
+	// written since the last lookup are not read. Two windows have the same key here exactly when they
+	// have the same raw key, since a block hash depends only on the block's bytes, and which blocks a
+	// window reads and where it starts inside the first are covered by the rest of the key and the offset
+	// below.
 	const int right = block_rect.right >> off.blockShiftX();
 	const int bottom = block_rect.bottom >> off.blockShiftY();
 	if (raw && block_hashes &&
@@ -10427,10 +10420,10 @@ static constexpr u64 HASH_MEMO_TEX0_BITS = 0x00000003FFFFFFFFULL;
 // The bits of TEXA that the texture reads can depend on: TA0, AEM and TA1.
 static constexpr u64 HASH_MEMO_TEXA_BITS = 0x000000FF000080FFULL;
 
-// Set in HashCacheKey::TEX0 of a key whose window used to be hashed as texels and now is of raw blocks
-// (HashTextureLevel), in a bit of TBP0, which the key does not otherwise carry. A raw hash is not a texel
-// hash, so a key of one kind must never equal one of the other, even by a hash collision. A window that was
-// always hashed from its blocks has the same hash, and the same key, in both modes.
+// Set in HashCacheKey::TEX0, in a bit of TBP0 that the key does not otherwise carry, for a key whose window
+// is hashed from raw blocks (HashTextureLevel). A raw hash is not a texel hash, so a key of one kind must
+// never equal one of the other, even by a hash collision. A window that is hashed from its blocks whatever
+// raw_blocks says has the same hash and the same key either way.
 static constexpr u64 HASH_KEY_RAW_BLOCKS = 1;
 
 GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region, bool raw_blocks)
@@ -10448,7 +10441,6 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	ret.region_width = static_cast<u16>(region.GetWidth());
 	ret.region_height = static_cast<u16>(region.GetHeight());
 
-	// The levels to hash: the base, then the mipmaps of the chain when they are enabled.
 	const int basemip = lod ? lod->x : 0;
 	const u32 levels = lod ? static_cast<u32>(std::max(lod->y - lod->x, 0)) + 1 : 1;
 
@@ -10467,7 +10459,6 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 		BlockHashState hash_st;
 		BlockHashReset(hash_st);
 
-		// base level is always hashed
 		u64 window_offsets = HashTextureLevel(TEX0, TEXA, region, hash_st, s_unswizzle_buffer, raw_blocks, cache);
 
 		// hash and combine full mipmaps when enabled
@@ -10490,11 +10481,10 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	// A texture whose memory has not been written since it was last hashed hashes to the same value, so
 	// that value is reused. The hash is a function of the bytes of the pages the levels cover, and of
 	// everything HashTextureLevel reads besides them: the TEX0 bits above, the TEXA bits, and the region
-	// (the clut is not part of TEX0Hash). Only the whole key matching counts.
+	// (the clut is not part of TEX0Hash). Only a match of the whole key counts.
 	//
-	// Only a texture of some size is memoised. A frame hashes a hundred or more textures, most of them a
-	// few KiB and most of those written again before the next frame, and a memo of 32 entries that took
-	// them all would lose the one large texture that hits to the small ones that do not.
+	// Only a texture of some size is memoised: small ones are mostly written again before the next lookup,
+	// so they would push the large textures that do hit out of the 32-entry memo.
 	const int base_blocks = (base_geometry.block_rect.width() / psm.bs.x) * (base_geometry.block_rect.height() / psm.bs.y);
 
 	// Verify mode of the block hash cache: every lookup, memo or not, is keyed both ways and the two are compared.

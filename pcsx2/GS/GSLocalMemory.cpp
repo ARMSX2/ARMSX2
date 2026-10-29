@@ -673,9 +673,8 @@ void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
 		return;
 	}
 
-	// A page whose blocks are all set already holds every mark this rectangle can add. Render
-	// targets drawn on the CPU (two marks per draw, frame and depth) are seldom read back as textures, so their
-	// pages mostly stay that way, and the walk over the blocks is skipped.
+	// A page whose blocks are all set already holds every mark this rectangle can add, so the walk over the
+	// blocks is skipped.
 	const u64 seq = ++m_write_seq;
 	bool all_marked = true;
 	off.loopPages(r, [this, seq, &all_marked](u32 page) {
@@ -685,8 +684,8 @@ void GSLocalMemory::MarkPagesWritten(const GSOffset& off, const GSVector4i& r)
 	if (all_marked)
 		return;
 
-	// The blocks of the same rectangle. loopBlocks walks them with the swizzle of `off`, so the set is exactly
-	// the blocks a pixel of `r` lives in (the page set above is sometimes a page larger).
+	// loopBlocks walks the swizzle of `off`, so this marks exactly the blocks a pixel of `r` lives in (the
+	// page set above is sometimes a page larger).
 	off.loopBlocks(r, [this](u32 block) { SetBlockMarks(block); });
 }
 

@@ -27,9 +27,8 @@ u64 __noinline CURRENT_ISA::GSXXH3_64_Long(const void* data, size_t len)
 }
 
 // A GS block is XXH3's whole internal buffer, so after any update of a block the buffer holds exactly
-// that block and nothing has consumed it yet. GSXXH3_64_Block() reproduces the state XXH3_update()
-// leaves, without ever filling the buffer: the block is only remembered, and its stripes are
-// consumed from the caller's memory when the next block arrives.
+// that block and nothing has consumed it yet. GSXXH3_64_Block() reproduces that state without
+// filling the buffer (see GSXXH.h).
 static constexpr size_t BlockSize = 256;
 static_assert(BlockSize == XXH3_INTERNALBUFFER_SIZE, "a GS block must be the size of XXH3's internal buffer");
 

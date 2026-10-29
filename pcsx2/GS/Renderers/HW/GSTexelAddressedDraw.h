@@ -5,17 +5,14 @@
 
 // Which draws read a texture one texel at a time, as a colour.
 //
-// Katamari Damacy colours most of its world from a 128x128 atlas of flat swatches. A wall is one
-// triangle fan whose texture coordinates run from (65.0, 67.7) to (70.5, 71.3): 5 by 4 texels
-// inside a 5x5 swatch of one colour, stretched over 180 by 225 pixels under a nearest sampler. The
-// game relies on every texel it reads being that colour and on the neighbouring swatch never
-// leaking in. A generated upscale cannot promise either at the swatch border. It writes new, in
-// between values there, one per 2x texel, and at 32 pixels per texel each of them is a visible
-// block. (A pack that anti-aliases the swatch edges would show the same.)
+// Some games (Katamari Damacy) colour geometry from flat swatches of a texture atlas. They rely on
+// every texel read being the swatch's colour and on the neighbouring swatch never leaking in. A
+// generated upscale cannot promise either at a swatch border: it writes in-between values there,
+// and once a texel is magnified to many pixels each of them is a visible block.
 //
-// The rest of that game is better upscaled, so the draws have to be told apart, not the textures.
-// Rule: a draw reads texels as colours, and uses the guest's own texels in place of a generated
-// upscale, when
+// The rest of such a game is better upscaled, so the draws have to be told apart, not the
+// textures. A draw reads texels as colours, and uses the guest's own texels in place of a
+// generated upscale, when
 //
 //   * its sampler is NEAREST. A bilinear draw interpolates between texel centres and a 2x texture
 //     only refines that.
@@ -25,9 +22,9 @@
 //     difference between neighbouring ones shows. Below about 2 pixels per texel a 2x texel is one
 //     pixel and the extra detail is the point of upscaling.
 //
-// A draw can mix both uses, and takes one texture, so the vote is by area. A flat colour primitive,
-// whose texture coordinates are all equal, magnifies without limit and counts. A patch stretched
-// that far shows the native texels either way, so the fallback loses no sharpness.
+// A draw can mix both uses and takes one texture, so the vote is by area. A flat colour primitive,
+// whose texture coordinates are all equal, magnifies without limit and counts: stretched that far,
+// the native texels show either way, so the fallback loses no sharpness.
 //
 // See gs_texture_upscale_support_tests.cpp.
 

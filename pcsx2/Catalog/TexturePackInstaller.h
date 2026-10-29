@@ -7,26 +7,21 @@
 // folder GSTextureReplacements scans for the running disc's serial. Also lists, measures and
 // removes installed packs.
 //
-// Sizes here are unlike anything else the app downloads: the largest pack is 1.5 GB, on a
-// handheld's SD card. That drives a free-space check before anything starts, a digest computed
-// while the bytes arrive, and an atomic replace that can roll back.
+// Packs are large and land on a handheld's SD card, so Install() checks free space before
+// starting, hashes the bytes as they arrive, and replaces the old folder in a way that can roll
+// back.
 //
-//   1. Stage in <Textures>/.texturepacks-tmp (the same filesystem as the destination, so the
-//      commit is a rename, not a copy). Deleted and recreated at the start, deleted at the end.
-//   2. Check free space (RequiredFreeSpace()).
-//   3. Stream each part of the archive, appending to one file, hashing both the part and the
-//      whole as the bytes arrive. Each part's size and digest are checked as it finishes, so a
-//      bad piece is named and the remaining pieces are not downloaded for nothing. The whole
-//      archive's size and digest are checked after.
-//   4. Extract (TarZstdExtractor / ZipTextureExtractor) into staging/out, delete the archive.
-//   5. Commit: move the existing replacements folder aside as replacements.old, rename staging/out
-//      to replacements, put the old one back if that fails, else delete it. The whole folder is
-//      replaced, not merged: a game has one pack. A folder this installer did not make (no install
-//      record for the serial: textures the player made or copied by hand) is never deleted: it is
-//      kept as replacements.user-<date and time> beside the new one (InstallResult::kept_previous),
-//      and a UI asks first (HasUnrecordedReplacements()). A symbolic link is never followed when
-//      deleting; the link itself goes.
-//   6. Record the install (TexturePackState); a record of another pack for the serial is dropped.
+// Staging is in <Textures>/.texturepacks-tmp, on the same filesystem as the destination so the
+// commit is a rename, not a copy; it is deleted and recreated at the start of an install and
+// deleted at the end. Each part of a multi-part archive is checked as it finishes, so a bad part
+// is named and the remaining parts are not downloaded for nothing.
+//
+// The commit replaces the whole replacements folder rather than merging: a game has one pack. A
+// folder with no install record for the serial (textures the player made or copied by hand) is
+// never deleted. It is kept as replacements.user-<date and time> beside the new one
+// (InstallResult::kept_previous), and a UI should ask first (HasUnrecordedReplacements()). A
+// symbolic link is never followed when deleting; the link itself goes. The install is then recorded
+// in TexturePackState, dropping any record of another pack for the serial.
 //
 // One install runs at a time in the whole process; a second Install() returns Status::Busy.
 // Cancellation is honoured until the Installing phase is reported; after that the commit runs to
@@ -38,18 +33,6 @@
 // After a successful install the UI calls TexturePackEngine::ActivateAfterInstall() (turns
 // texture replacement on and reloads it in a running game), and PostInstallHit() if the player
 // allows it.
-//
-// Typical use, on a worker thread:
-//
-//   TexturePackState state = TexturePackState::InDataRoot();
-//   TexturePackInstaller installer(GetDefaultFetcher(), state, TexturePackInstaller::DefaultConfig());
-//   const std::string serial = pack.InstallSerialFor(context_serial, owned_serials);
-//   auto result = installer.Install(pack, serial, on_progress, cancel);
-//   if (result.IsOk())
-//   {
-//       TexturePackEngine::ActivateAfterInstall();
-//       PostInstallHit(GetDefaultFetcher(), pack.id, online_features_enabled);
-//   }
 
 #include "Catalog/CancelToken.h"
 #include "Catalog/Fetch.h"
@@ -92,17 +75,13 @@ namespace Catalog
 		/// `fetcher` and `state` must outlive the installer.
 		TexturePackInstaller(Fetcher& fetcher, TexturePackState& state, Config config);
 
-		// -----------------------------------------------------------------------------------
-		// Installing
-		// -----------------------------------------------------------------------------------
-
 		enum class Phase
 		{
-			Starting, ///< "Starting..."
+			Starting,
 			Downloading, ///< done/total are bytes of the whole archive (all parts)
-			Verifying, ///< "Verifying download..."
+			Verifying,
 			Extracting, ///< done/total are texture files
-			Installing, ///< "Installing...": the commit has begun, cancelling no longer works
+			Installing, ///< The commit has begun; cancelling no longer works.
 		};
 
 		struct Progress
@@ -118,7 +97,7 @@ namespace Catalog
 			Ok,
 			Cancelled,
 			Failed, ///< `error` says why, in a sentence fit to show.
-			Busy, ///< Another install is running.
+			Busy,
 		};
 
 		struct InstallResult
@@ -126,7 +105,7 @@ namespace Catalog
 			Status status = Status::Failed;
 			std::string error;
 			TexturePackRecord record; ///< Valid when status is Ok.
-			u64 textures = 0; ///< Texture files installed.
+			u64 textures = 0;
 			/// The name (inside the game's folder) the player's own replacements folder was kept
 			/// under, "replacements.user-<date and time>"; empty when there was none to keep.
 			std::string kept_previous;
@@ -143,7 +122,6 @@ namespace Catalog
 		/// True while any installer in the process is inside Install().
 		static bool IsInstalling();
 
-		/// Start of the name an unrecorded replacements folder is kept under.
 		static constexpr const char* KEPT_FOLDER_PREFIX = "replacements.user-";
 
 		/// True when <Textures>/<serial>/replacements exists and no install record names `serial`: a
@@ -163,14 +141,10 @@ namespace Catalog
 		/// tested; Install() uses it.
 		static bool CommitDirectory(const std::string& staged, const std::string& target);
 
-		// -----------------------------------------------------------------------------------
-		// Installed packs
-		// -----------------------------------------------------------------------------------
-
 		struct InstalledPack
 		{
 			std::string serial; ///< The folder's name under <Textures>, normally "SLUS-21410".
-			std::string directory; ///< Full path of its replacements folder.
+			std::string directory;
 			u64 file_count = 0;
 			u64 bytes = 0;
 			std::optional<TexturePackRecord> record; ///< Absent for a hand-copied folder.
@@ -179,17 +153,17 @@ namespace Catalog
 		/// Every <Textures>/<X>/replacements folder, sorted by name. Finishes deleting packs an
 		/// earlier Remove() could not delete completely, and reconciles the install record with
 		/// what is on disk. Counts and sizes come from a cache keyed on the folder's modification
-		/// time, so opening a page that lists sixty packs does not walk a quarter of a million
-		/// files. Blocking; use a worker thread. `cancel` is looked at before each pack's folder is
-		/// walked; a cancelled listing returns nothing and leaves the install record as it was.
+		/// time, so a listing does not walk every file. Blocking; use a worker thread. `cancel` is
+		/// looked at before each pack's folder is walked; a cancelled listing returns nothing and
+		/// leaves the install record as it was.
 		std::vector<InstalledPack> ListInstalled(const CancelToken& cancel = {});
 
 		/// Removes the pack in <Textures>/<folder_name>: takes it out of use in one rename (so a
 		/// delete that fails half way can never leave a half pack where the engine reads it),
 		/// then deletes the files (a symbolic link is removed, never followed), and finally the
-		/// folder itself if nothing else (texture dumps) is in it. The install record is dropped whatever happened on disk. Returns true when
-		/// no pack is left there. `folder_name` is a single folder name as ListInstalled()
-		/// reports it, not a path.
+		/// folder itself if nothing else (texture dumps) is in it. The install record is dropped
+		/// whatever happened on disk. Returns true when no pack is left there. `folder_name` is a
+		/// single folder name as ListInstalled() reports it, not a path.
 		bool Remove(std::string_view folder_name);
 
 		/// Finishes deleting packs Remove() could not delete completely.
@@ -218,10 +192,9 @@ namespace Catalog
 		std::unordered_map<std::string, SizeEntry> m_sizes;
 	};
 
-	/// "241 MB", "1.2 GB": a pack's size the way the catalog has always shown it.
+	/// A pack's size as the catalog shows it, e.g. "241 MB", "1.2 GB".
 	std::string FormatPackSize(u64 bytes);
 
-	/// An English fallback sentence for a progress report ("Downloading 241 MB of 1.2 GB",
-	/// "Extracting 32 / 4277 files"). UIs translate their own.
+	/// An English fallback sentence for a progress report. UIs translate their own.
 	std::string DescribeProgress(const TexturePackInstaller::Progress& progress);
 } // namespace Catalog

@@ -515,7 +515,7 @@ s32 FileMemoryCard::Save(uint slot, const u8* src, u32 adr, int size)
 		}
 
 		// Once per write, not once per byte: a game writing over unerased pages (Soul Calibur II
-		// rebuilding its Conquest card, before m_overwrite) logged thousands of lines a second.
+		// rebuilding its Conquest card, before m_overwrite) would log thousands of lines a second.
 		int uncleared = 0;
 		for (int i = 0; i < size; i++)
 		{
@@ -696,14 +696,13 @@ void FileMcd_Flush()
 
 void FileMcd_CancelEject()
 {
-	// Clears the eject ticks the IOP's SIO2 code counts down (IOP thread design 8.4).
+	// Clears the eject ticks the IOP's SIO2 code counts down.
 	IOP_SIDE_ASSERT();
 	AutoEject::ClearAll();
 }
 
 void FileMcd_Reopen(std::string new_serial)
 {
-	// Closes and reopens the cards the IOP's SIO2 code reads and writes.
 	IOP_SIDE_ASSERT();
 	Console.WriteLn("Reopening memory cards...");
 	FileMcd_EmuClose();

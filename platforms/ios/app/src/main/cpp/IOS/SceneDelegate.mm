@@ -1216,7 +1216,7 @@ static void ARMSX2StartJITKeepalive()
             s_vmThreadActive.load(std::memory_order_relaxed) ? 1 : 0, BiosPath.empty() ? 0 : 1);
     }
     // A folder card writes its last sectors two frames after the game stops writing, and a game in
-    // the background gets no more frames, so a kill there lost the end of an in-game save.
+    // the background gets no more frames, so a kill there would lose the end of an in-game save.
     if (VMManager::HasValidVM()) {
         Host::RunOnCPUThread([]() {
             if (!VMManager::HasValidVM())

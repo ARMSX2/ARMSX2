@@ -450,19 +450,11 @@ TEST(VuMinMaxOrder, MaxLeavesMacFlagsFromThePrecedingOp)
 		EXPECT_EQ(h.GetVfBitsJit(vf::vf6, kLane[i]), expect[i]) << "lane " << kLane[i];
 }
 
-// =========================================================================
-//  MAX / MINI against VF0.
-//
-//  VF0 is +0, +0, +0, +1.0, and microVU compiles a MAX or MINI with VF0 on
-//  either side as one integer SMAX/SMIN on the raw words: with one operand
-//  non-negative the raw-word order and the sign-magnitude order agree. The
-//  other operand runs through every pattern in the table, so a negative
-//  lane, both zeros, a denormal and the exponent-0xFF words all meet a VF0
-//  word, in the packed, broadcast, VF0-as-Fs and single-lane forms, on both
-//  VUs. Run() diffs the interpreter; the literal answer comes from the
-//  interpreter's own rule (both negative: the smaller raw word is the larger
-//  value).
-// =========================================================================
+// MAX / MINI against VF0. VF0 is +0, +0, +0, +1.0, and microVU compiles a MAX or MINI with VF0 on
+// either side as one integer SMAX/SMIN on the raw words: with one operand non-negative, the
+// raw-word order and the sign-magnitude order agree. The other operand runs through every pattern
+// in the table. Run() diffs the interpreter, and the literal answer comes from the interpreter's
+// own rule (both negative: the smaller raw word is the larger value).
 
 namespace {
 

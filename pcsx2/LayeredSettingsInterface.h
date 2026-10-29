@@ -14,10 +14,9 @@ public:
 	enum Layer : u32
 	{
 		LAYER_CMDLINE,
-		// Values auto-tune is trying out, in memory only. It sits above the game layer so a trial
-		// beats the game's own file, and below the command line so an explicit override still wins.
-		// LAYER_CMDLINE is not used for it because that slot is the command line's, and a trial must
-		// never outrank what the player typed.
+		// Values auto-tune is trying out, in memory only. Above the game layer so a trial beats the
+		// game's own file, below the command line so an explicit override still wins. Not stored in
+		// LAYER_CMDLINE: that slot holds what the player typed, which a trial must never outrank.
 		LAYER_AUTOTUNE,
 		LAYER_GAME,
 		LAYER_INPUT,

@@ -92,8 +92,7 @@ void CoverArtSettingsGroup::onRegionChanged(int index)
 
 void CoverArtSettingsGroup::offerRedownload(const QString& what)
 {
-	// The covers on disk still look the old way until they are downloaded again, which is the user's
-	// call: it is a lot of downloading.
+	// Redownloading is opt-in: it can be a lot of downloading.
 	if (QMessageBox::question(this, tr("Download Covers Again?"),
 			tr("Covers you already have keep their old %1 until they are downloaded again. Download them again now?").arg(what)) != QMessageBox::Yes)
 	{

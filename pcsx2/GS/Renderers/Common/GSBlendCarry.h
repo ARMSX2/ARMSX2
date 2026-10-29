@@ -12,15 +12,15 @@
 // can produce is exactly 1.0 that is Cs, and GSState::IsOpaque() says so (its alpha range clause),
 // so the renderer submits the draw with no blend. A run of such draws between draws of the same
 // equation with a varying alpha makes the backend bind a no-blend pipeline for each of them and the
-// blend-mix pipeline again after it. On Turnip a pipeline switch costs about 0.45 us on the CPU.
+// blend-mix pipeline again after it, and each pipeline switch costs CPU time.
 //
 // The blend-mix form of the equation at As = 1.0 writes the same pixels as the elided form: the
-// shader outputs Cs * As and the unit adds Cd * (1 - As) to it, which at As = 1.0 is Cs + 0 exactly.
-// So the elided draw can be submitted with the blended draw's blend bits and blend state instead.
-// The draws agree on everything else that selects a pipeline or reaches the output (the pixel
-// shader selector outside the blend bits, the colour mask, the depth state, the ALPHA register, the
-// render target and depth target), and both are plain 32-bit colour draws with no read of the target,
-// barrier, second pass, destination-alpha test or colour clamp emulation.
+// shader outputs Cs * As and the unit adds Cd * (1 - As), which at As = 1.0 is Cs + 0 exactly. So
+// the elided draw can take the blended draw's blend bits and blend state, provided the two agree on
+// everything else that selects a pipeline or reaches the output (the pixel shader selector outside
+// the blend bits, colour mask, depth state, ALPHA register, render target and depth target) and
+// both are plain 32-bit colour draws (no target read, barrier, second pass, destination-alpha test
+// or colour clamp emulation).
 //
 // Pure functions over the draw configuration, so the decision can be tested off-device.
 namespace GSBlendCarry
@@ -106,14 +106,13 @@ namespace GSBlendCarry
 		return d;
 	}
 
-	/// Whether the elided draw `c` may take the donor's blend.
 	inline bool Matches(const Donor& d, const GSHWDrawConfig& c, const void* rt, const void* ds, u32 alpha_abcd)
 	{
 		return d.valid && d.rt == rt && d.ds == ds && d.alpha_abcd == alpha_abcd && d.colormask.key == c.colormask.key &&
 		       d.depth.key == c.depth.key && WithoutBlendBits(d.ps) == WithoutBlendBits(c.ps);
 	}
 
-	/// The donor's blend-set bits and blend state. The donor stays the donor.
+	/// Copies the donor's blend bits and blend state into `c`.
 	inline void Adopt(const Donor& d, GSHWDrawConfig& c)
 	{
 		PSS& p = c.ps;

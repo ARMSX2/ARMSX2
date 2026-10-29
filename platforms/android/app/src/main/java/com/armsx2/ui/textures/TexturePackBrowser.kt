@@ -61,13 +61,12 @@ import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
- * The online texture packs, full screen, a page of cubes at a time: each pack is its game's cover,
- * its name, and its creator with their picture. Shaped after Online Icons: the controller moves
- * between the cubes that are composed, and left or right at the edge of a page turns it, so the
- * pages flip rather than scroll. Sort by game, serial or creator (the creators then are cubes of
- * their own, each opening their packs); show every pack, the ones for the player's games, or the
- * installed ones; search names, games, serials and creators. A pack opens its window (PackWindow),
- * where Download is, and a download goes on when the browser closes ([TexturePackDownloads]).
+ * Full-screen browser for the online texture packs, a page of cubes at a time. Each cube is a pack
+ * (its game's cover, its name, its creator) or, when sorted by creator, a creator. The controller
+ * moves between the cubes, and left or right at the edge of a page turns it, so pages flip rather
+ * than scroll. Filters: Popular Today, all packs, the player's games, installed; search covers
+ * names, games, serials and creators. A pack opens its window (PackWindow), where Download is, and
+ * a download continues after the browser closes ([TexturePackDownloads]).
  */
 @Composable
 internal fun TexturePackBrowser(
@@ -89,7 +88,7 @@ internal fun TexturePackBrowser(
     val fraction = TexturePackDownloads.progressFraction.floatValue
 
     var sortMode by rememberSaveable { mutableIntStateOf(SORT_GAME) }
-    // Opens on Popular Today, as Online Icons does; from a game's own texture settings, on its packs.
+    // Opens on Popular Today, or on the game's packs when opened from a game's texture settings.
     var filter by rememberSaveable { mutableIntStateOf(if (contextSerial != null) FILTER_MINE else FILTER_POPULAR) }
     var query by rememberSaveable { mutableStateOf("") }
     // The creator whose packs are showing, in creator mode; null shows the creators.
@@ -97,7 +96,7 @@ internal fun TexturePackBrowser(
     var page by rememberSaveable { mutableIntStateOf(0) }
     var openPackId by rememberSaveable { mutableStateOf<String?>(null) }
 
-    // Popular Today: asked of the counter every time the browser opens, as Online Icons does.
+    // Popular Today is requested from the counter each time the browser opens.
     LaunchedEffect(Unit) { TexturePackStats.refreshPopular() }
     val popular = TexturePackStats.popular.value
     val popularAsked = TexturePackStats.asked.value
@@ -134,9 +133,9 @@ internal fun TexturePackBrowser(
         else -> null
     }
     val count = packItems?.size ?: groups.size
-    // Shuffle, on All only, as in Online Icons: turning it on leaves the page as it is, and from then
-    // on every turn, either way, deals a page of random cubes ([dealt], indices into the list) instead
-    // of the next in order. Off, the list is back in order from the page the first cube showing is on.
+    // Shuffle (All only): turning it on keeps the current page, then every turn deals a random page
+    // ([dealt], indices into the list) instead of the next in order. Turning it off resumes list
+    // order at the page holding the first cube showing.
     var shuffleOn by remember { mutableStateOf(false) }
     var dealt by remember { mutableStateOf<List<Int>?>(null) }
     // A new filter, search or sort starts at the first page. Going into a creator and back out does
@@ -184,7 +183,6 @@ internal fun TexturePackBrowser(
 
     PadModal(
         key = LAYER,
-        // Back from a creator's packs goes to the creators first; from anywhere else it closes.
         onDismiss = { if (viewingCreator) backToCreators() else onClose() },
         scrimAlpha = 1f,
         initialFocusId = "$LAYER.tile.0",
@@ -223,7 +221,6 @@ internal fun TexturePackBrowser(
                         shuffleOn = shuffleOn,
                         onShuffle = {
                             if (shuffleOn) {
-                                // Back in order, at the page the first cube showing sits on.
                                 dealt?.firstOrNull()?.let { anchor -> page = anchor / perPageNow.coerceAtLeast(1) }
                                 dealt = null
                             }
@@ -245,7 +242,6 @@ internal fun TexturePackBrowser(
                         val pages = ((count + perPage - 1) / perPage).coerceAtLeast(1)
                         val current = page.coerceAtMost(pages - 1)
                         val first = current * perPage
-                        // Shuffling: Shuffle on, on All, with more than a page to deal from.
                         val shuffling = shuffleOn && filter == FILTER_ALL && count > perPage
                         val onPage: List<Int> = (if (shuffling) dealt?.filter { it < count }?.takeIf { it.isNotEmpty() } else null)
                             ?: (first until minOf(first + perPage, count)).toList()
@@ -383,7 +379,7 @@ internal fun TexturePackBrowser(
     }
 }
 
-/** What the browser is showing, how many there are, whose they are; and a download in progress. */
+/** Title and subtitle (with the creator's avatar in creator mode), and the download status. */
 @Composable
 private fun Header(title: String, subtitle: String, avatar: CreatorGroup?) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -516,7 +512,6 @@ private fun Controls(
     }
 }
 
-/** The selected cube's name and creator, and the page with its arrows. */
 @Composable
 private fun Footer(modifier: Modifier, selected: String, current: Int, pages: Int, shuffling: Boolean, onTurn: (Int) -> Unit) {
     Row(modifier.fillMaxWidth().height(FOOTER_H), verticalAlignment = Alignment.CenterVertically) {
@@ -537,8 +532,7 @@ private fun Footer(modifier: Modifier, selected: String, current: Int, pages: In
     }
 }
 
-/** One pack: its game's cover, its name, its creator with their picture; whether it is installed or
- *  has an update, and how far its download is. */
+/** One pack: cover, name, creator, an installed or update badge, and download progress. */
 @Composable
 private fun PackCube(
     pack: TextureCatalog.Pack,
@@ -619,7 +613,6 @@ private fun PackCube(
     }
 }
 
-/** One creator: their picture (their initials where there is none), their name, how many packs. */
 @Composable
 private fun CreatorCube(
     group: CreatorGroup,
@@ -684,7 +677,6 @@ private fun Badge(mark: String, color: Color) {
     }
 }
 
-/** A small rounded button: a sort, a filter, a page arrow, Cancel. */
 @Composable
 private fun BrowserChip(
     label: String,

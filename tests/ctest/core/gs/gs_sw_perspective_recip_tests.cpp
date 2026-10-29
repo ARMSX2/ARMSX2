@@ -17,12 +17,12 @@
 // so does anything wider. Fourteen is therefore the narrowest grid the captures
 // permit -- not a fitted value -- and nothing we hold separates it from wider.
 //
-// The grid is now fifteen bits below the leading bit, rounded as floor(x + 0.7)
+// The grid is fifteen bits below the leading bit, rounded as floor(x + 0.7)
 // (GSPerspectivePlane.h): with the console's own S, T and Q planes fixed, the game's
 // per-pixel reciprocal is a function of Q alone on that grid, and a fourteen-bit
 // grid is excluded. Both cases below sit at or inside every width the captures
-// allowed, so they read the same under the new rule; the case that tells the new
-// grid from the old is in gs_sw_scanline_lod_tests.cpp.
+// allowed, so they read the same either way; the case that tells fifteen bits from
+// fourteen is in gs_sw_scanline_lod_tests.cpp.
 //
 // Both cases below are driven through the real setup and scanline generators with
 // a still coordinate, so the texture-coordinate lag (gs_sw_scanline_tclag_tests)
@@ -291,8 +291,7 @@ TEST_F(SwPerspectiveRecipTest, TheGridKeepsFourteenMantissaBits)
 
 // And it is still a grid, not a divide. Here the true reciprocal has bits below
 // the grid, so the product is one unit short of texel 32 and the hardware samples
-// 31. An exact quotient would read 32 and be wrong -- this is the cell that keeps
-// the grid from being optimised away.
+// 31. An exact quotient would read 32 and be wrong.
 TEST_F(SwPerspectiveRecipTest, TheGridStillTruncates)
 {
 	int got[4];

@@ -9,13 +9,12 @@
 // here, one function per crossing, puts that change in one place per crossing instead of in the
 // middle of Counters.cpp, Memory.cpp and the SIF code.
 //
-// What each crossing does in each mode (the crossing numbers C8, C14, ... are the rows of section 7.1
-// of the IOP thread design):
+// What each crossing does in each mode:
 //
 //   Off        the call the call site always made. A function chosen by template (the blanking
 //              calls, which run inside the event test and are templated on its mode) or one load
 //              of the mode (the crossings that run at most a few thousand times a frame, none of them
-//              inside the event test). The blanking calls compile to what they were.
+//              inside the event test).
 //   Lockstep   a queued item or a hold. An EE-to-IOP effect (blanking, the IRQ, the once-a-frame
 //              jobs) becomes an item in the E2I queue, stamped with the EE's cycle, that the IOP thread
 //              applies before the EE goes on. The EE's access to IOP state takes a hold, which in
@@ -45,10 +44,8 @@
 
 namespace IopBridge
 {
-	// ---- Holding the IOP still ---------------------------------------------------------------
-
 	/// The IOP held still for the length of a scope, so the EE thread may touch IOP-owned state inside
-	/// it (design 3.8.1). Off has no IOP thread and nothing to hold: the cost is one load of the mode.
+	/// it. Off has no IOP thread and nothing to hold: the cost is one load of the mode.
 	/// In Lockstep the hold is a marker, because the IOP thread is parked whenever the EE runs; it is
 	/// what IOP_SIDE_ASSERT looks for.
 	class EmuHold
@@ -64,11 +61,11 @@ namespace IopBridge
 		std::optional<IopThread::ScopedHold> m_hold;
 	};
 
-	// ---- Blanking (C14) ----------------------------------------------------------------------
+	// ---- Blanking ----------------------------------------------------------------------------
 	// The EE's counters tell the IOP's counters that a blank started or ended. The calls are made
-	// where the EE's own blank handling reaches that point, in the same order as before.
+	// where the EE's own blank handling reaches that point.
 	//
-	// These run about 527 times a frame, inside the event test, so the mode is a template parameter
+	// These run hundreds of times a frame, inside the event test, so the mode is a template parameter
 	// (the mode of the event test instance that calls them) and Off is the direct call. Lockstep
 	// queues the item and waits until the IOP thread has applied it. Threaded queues it and goes on.
 
@@ -140,9 +137,9 @@ namespace IopBridge
 			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::VsyncPatchesIop);
 	}
 
-	// ---- The EE raises an IOP interrupt (C8) -------------------------------------------------
-	// A write to SBUS F240 with bit 18 set raises IOP interrupt line 1. Counted at step 5: never in
-	// gameplay, so the mode is read here.
+	// ---- The EE raises an IOP interrupt ------------------------------------------------------
+	// A write to SBUS F240 with bit 18 set raises IOP interrupt line 1. Not hit during gameplay, so
+	// the mode is read here.
 
 	__forceinline_odr void RaiseIopIrq(uint line)
 	{
@@ -152,10 +149,10 @@ namespace IopBridge
 			IopThread::ApplyOnIop(IopThread::E2IKind::IopIrq, line);
 	}
 
-	// ---- The PS1 mode switch (C9) ------------------------------------------------------------
+	// ---- The PS1 mode switch -----------------------------------------------------------------
 	// An EE write of F240 bit 19 resets the IOP into PS1 mode. PS1 mode forces Off, so the switch
 	// holds the IOP, stops the IOP thread if there is one and asks the EE core to regenerate its
-	// dispatcher for Off. The hold stays valid across the stop (design 9.6). Once per PS1 boot.
+	// dispatcher for Off. The hold stays valid across the stop. Once per PS1 boot.
 
 	class Ps1Switch
 	{
@@ -170,13 +167,13 @@ namespace IopBridge
 		IopThread::ScopedHold m_hold;
 	};
 
-	// ---- SIF DMA, started from the EE (C10, C11, C12) ----------------------------------------
+	// ---- SIF DMA, started from the EE --------------------------------------------------------
 	// dmaSIF0/1/2 start a transfer and then run the pump, which moves data on both sides and
 	// schedules both sides' completion interrupts. The pump is the call that touches the IOP.
 
 	// The pump runs on the EE thread and moves data on both sides, so the IOP is held while it does. In
-	// Threaded this is variant R's rendezvous (design 3.6.1): the EE spins until the IOP has run up to the EE's
-	// cycle and stopped, then runs the combined pump (W2). The ones the EE starts are counted.
+	// Threaded this is a rendezvous: the EE spins until the IOP has run up to the EE's cycle and
+	// stopped, then runs the combined pump. The pumps the EE starts are counted.
 
 	__forceinline_odr void CountSifPump()
 	{
@@ -188,11 +185,11 @@ namespace IopBridge
 	__forceinline_odr void Sif1Pump() { EmuHold hold; CountSifPump(); SIF1Dma(); }
 	__forceinline_odr void Sif2Pump() { EmuHold hold; CountSifPump(); SIF2Dma(); }
 
-	// ---- The EE reads and writes IOP address space (C16) -------------------------------------
+	// ---- The EE reads and writes IOP address space -------------------------------------------
 	// The EE's memory map sends these ranges to IOP-owned state: IOP RAM (0x1c000000), DEV9
 	// (0x14000000), the CDVD register page (0x1f400000) and SPU2 (0x1f900000). One function per
 	// access size. Each holds the IOP for the access (Lockstep: a marker; Off: one load of the mode).
-	// Counted at step 5: no access in any of the eleven titles after the first 150 frames.
+	// Not hit after boot in the titles checked, so the mode is read at run time.
 
 	__forceinline_odr u8 MemRead8(u32 mem) { EmuHold hold; return iopMemRead8(mem); }
 	__forceinline_odr u16 MemRead16(u32 mem) { EmuHold hold; return iopMemRead16(mem); }

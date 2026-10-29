@@ -4,20 +4,18 @@ import java.util.zip.CRC32
 
 /**
  * Finds a game's save icon on its own disc, so a game with no save yet can still have a Memory
- * Card Cover. The game has to keep the icon somewhere it can copy it to a memory card from, and
- * it is nearly always one of three places, tried cheapest first:
+ * Card Cover. The icon is nearly always in one of three places, tried cheapest first:
  *
  * 1. The main executable (named in SYSTEM.CNF) or a small file of its own (ICON.ICO, VIEW.ICO,
- *    SAVEGAME.ICO...): a few MB read, well under a second.
+ *    SAVEGAME.ICO...): a few MB read.
  * 2. An entry in the game's data archive. Entries start on a sector, and archives list where
  *    their entries start in a table near the front (or back) of the file, or in a small index
- *    file beside it. So rather than read a 4 GB disc, read those tables and look at the first
- *    bytes of each entry. Jackie Chan's DATA1.AIF lists its icons at 480 MB in; Chaos Legion's
- *    sit 16 KB into LEGION.DAT.
- * 3. Nowhere readable: packed in a compressed archive (Crash Twinsanity). Only a save helps then.
+ *    file beside it. So the tables are read and only the first bytes of each entry examined,
+ *    rather than the whole disc.
+ * 3. Nowhere readable, e.g. packed in a compressed archive. Only a save helps then.
  *
- * CVM files (CRI's ROFS, used by Persona, Tales and Sonic) are an ISO volume inside a file, so
- * their contents join the file list as if they were on the disc itself.
+ * CVM files (CRI's ROFS) are an ISO volume inside a file, so their contents join the file list as
+ * if they were on the disc itself.
  *
  * Every candidate is confirmed by parsing it whole as an icon, and the PS2's network-settings icon
  * (SYS_NET.ICO, shipped on online games' discs) is never taken for the game's own. No icon.sys is
@@ -117,8 +115,6 @@ object DiscIcons {
         return null
     }
 
-    // ---- the file system -----------------------------------------------------------------
-
     private fun files(disc: DiscImage): List<DiscFile> {
         val out = ArrayList<DiscFile>()
         val seen = HashSet<Long>()
@@ -183,8 +179,6 @@ object DiscIcons {
 
     private fun iconNamed(name: String) = name.endsWith(".ICO") || name.endsWith(".ICN") || "ICON" in name ||
         (name.endsWith(".SYS") && name != "SYSTEM.CNF")
-
-    // ---- icons in bytes ------------------------------------------------------------------
 
     /** Every icon in [f], a window at a time, so a 40 MB executable is never in memory whole. The
      *  windows overlap by more than the largest icon, so none is cut in two. */
@@ -270,8 +264,6 @@ object DiscIcons {
         if (p > b.size) return -1
         return (p - o).toInt()
     }
-
-    // ---- tables of contents --------------------------------------------------------------
 
     /**
      * Where entries of a file of [fileSize] bytes may start, going by any table of offsets in [b]:

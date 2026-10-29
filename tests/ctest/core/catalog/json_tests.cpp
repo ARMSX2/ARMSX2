@@ -14,8 +14,7 @@ using namespace Catalog;
 
 namespace
 {
-	// Far more levels than the 8 MiB main-thread stack of a recursive parser survives (rapidjson's recursive
-	// parser uses on the order of a hundred bytes of stack per level).
+	// Far more levels than an 8 MiB stack survives with a recursive parser (rapidjson's uses roughly a hundred bytes per level).
 	constexpr size_t DEPTH = 1000000;
 } // namespace
 

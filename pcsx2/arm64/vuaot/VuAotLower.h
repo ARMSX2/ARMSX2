@@ -7,12 +7,12 @@
 // (ir::BuildNodeLocal) to AArch64 through vixl.
 //
 // Every piece of VU state has a home: the place it lives whenever control is
-// at a node boundary. Milestone 2/3's homes are microVU's own block-boundary
+// at a node boundary. By default the homes are microVU's own block-boundary
 // locations (VF/VI/ACC/I/R in VURegs, status instances in w20-w23, MAC and
 // clip instances at [x24], Q/P in the lanes of q28, the divide flags, VI
 // backup and kick address in microVU's fields), so the body can run inside
-// microVU's block framing. Milestone 4's regions move some homes into host
-// registers for the whole region (HomeMap).
+// microVU's block framing. Regions move some homes into host registers for
+// the whole region (HomeMap).
 //
 // Inside a node, values live in host registers chosen by a local allocator:
 // an incoming value is read from its home where it is first used and kept;
@@ -40,7 +40,7 @@
 
 namespace vuaot
 {
-	// One flag per IR variable (milestone 8's region liveness).
+	// One flag per IR variable, used for region liveness.
 	using LiveSet = std::bitset<ir::var::Count>;
 
 	struct LowerEnv
@@ -59,8 +59,8 @@ namespace vuaot
 		bool clampExtra = false;        // CHECK_VU_EXTRA_OVERFLOW (modes 2-3): every FMAC step clamps its operands
 		bool clampSign = false;         // CHECK_VU_SIGN_OVERFLOW (mode 3): those clamps preserve the sign; no result clamp
 		bool softwareFlush = false;     // !FPCR.DAZ: the divide unit's denormal flush in software
-		// Milestone 9: list-schedule each node's operations for an in-order
-		// core (Cortex-A55/A53) before lowering.
+		// List-schedule each node's operations for an in-order core
+		// (Cortex-A55/A53) before lowering.
 		bool schedule = false;
 		// microVU's micro mode keeps VURegs::Mem in x29 (gprVUMem) for the
 		// whole dispatch: memory operations address off it.
@@ -87,7 +87,6 @@ namespace vuaot
 		u32 poolLimitV = 0, poolLimitG = 0;
 	};
 
-	// Where a variable lives at node boundaries.
 	enum class HomeKind : u8
 	{
 		Mem,  // microVU's boundary location
@@ -110,13 +109,13 @@ namespace vuaot
 		s8 memBase = -1;
 		// Register holding mVU.cycles (region mode), or -1.
 		s8 cycles = -1;
-		// Milestone 5: a register holding the clamped copy of a vector
-		// register the region never writes (1..31 VF, 32 ACC), or -1. Filled by
-		// the region's entry loader; never stored back.
+		// A register holding the clamped copy of a vector register the region
+		// never writes (1..31 VF, 32 ACC), or -1. Filled by the region's entry
+		// loader; never stored back.
 		s8 clampHome[33] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 			-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-		// Milestone 10: or a slot (0-7) of the top of microVU's backup area
-		// holding that clamped copy, filled where the map is entered.
+		// Or a slot (0-7) of the top of microVU's backup area holding that
+		// clamped copy, filled where the map is entered.
 		s8 clampSlot[33] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
 			-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
@@ -196,7 +195,7 @@ namespace vuaot
 		// result.
 		// `liveOut` (var::Count flags, or null for all): the variables live at
 		// the node's end; the others' final values are neither computed nor
-		// stored (milestone 8).
+		// stored.
 		static std::unique_ptr<NodeLowering> Check(const ir::Function& f, const LowerEnv& env, u32 counts[33], const LiveSet* liveOut = nullptr);
 		// Whether Check would succeed, without its analysis (a region decides
 		// node or exit with this, then analyses the nodes once it knows their
@@ -229,9 +228,9 @@ namespace vuaot
 		std::unique_ptr<Impl> impl_;
 	};
 	void EmitStoreHomes(const HomeMap& homes, const LowerEnv& env, s32 cyclesOff);
-	// Milestone 10: moves the variables in `live` (null: all) from where
-	// `from` keeps them to where `to` does (registers, microVU's locations),
-	// and fills `to`'s clamped homes. The cycle counter and memory base are
-	// the same in every map. Uses v0 and w16 as scratch.
+	// Moves the variables in `live` (null: all) from where `from` keeps them to
+	// where `to` does (registers, microVU's locations), and fills `to`'s clamped
+	// homes. The cycle counter and memory base are the same in every map. Uses
+	// v0 and w16 as scratch.
 	void EmitHomeTransfer(const HomeMap& from, const HomeMap& to, const LiveSet* live, const LowerEnv& env);
 } // namespace vuaot

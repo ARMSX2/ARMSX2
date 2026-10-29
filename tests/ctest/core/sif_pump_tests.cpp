@@ -5,10 +5,10 @@
 //
 // The pumps move data between IOP RAM and EE RAM through a 128-word FIFO. One call loops "IOP side
 // step, EE side step" until neither side can move, then clears its status bits in SBUS F240, and the
-// completion interrupts of both sides are scheduled on the way. The IOP thread work cuts the loop
-// body into one function per side. The cut must not change what the pumps do, so this test runs
-// scripted transfers through the real entry points (dmaSIF0/dmaSIF1 from the EE side,
-// psxDma9/psxDma10 from the IOP side) and compares, per script:
+// completion interrupts of both sides are scheduled on the way. The test pins down what the pumps do,
+// so that restructuring the loop body (for example into one function per side) cannot change it
+// unnoticed. It runs scripted transfers through the real entry points (dmaSIF0/dmaSIF1 from the EE
+// side, psxDma9/psxDma10 from the IOP side) and compares, per script:
 //
 //   - EE RAM (the 32 MB the DMA address translation exposes) and IOP RAM (2 MB);
 //   - the EE channel registers (sif0ch, sif1ch, sif2dma) and the IOP ones (hw_dma9, hw_dma10);
@@ -19,17 +19,16 @@
 //   - a digest of everything but the RAMs, taken after every entry call, so the state a transfer is
 //     left in half way through (one side started, the other not yet) is covered too.
 //
-// against hashes recorded from the pumps before the change (sif_pump_golden.inc). A script is a
-// chain of packets of 1 to 4096 words, with or without end and interrupt tags, started from either
-// side. Some scripts end with a side still armed, and one drives SIF1 through the DMAC's stall
-// control. The test does not say the recorded behaviour is right; it says it did not move.
+// against recorded hashes (sif_pump_golden.inc). A script is a chain of packets of 1 to 4096 words,
+// with or without end and interrupt tags, started from either side. Some scripts end with a side
+// still armed, and one drives SIF1 through the DMAC's stall control. The test does not say the
+// recorded behaviour is right; it says it did not move.
 //
 // What it cannot see: which of the two steps of a loop iteration runs first, and where in the
-// iteration SIF0's junk write sits. Swapping them was tried against 520 scripts (the producer's
-// completion always comes before the consumer's whichever way the steps are ordered, because the
-// consumer can only finish after the producer's last push) and nothing moved. A change that does
-// move the two steps is caught by the progress accounting, the stall flag, the junk write being
-// repeated each iteration, and the cycle counts, which were each tried and are caught.
+// iteration SIF0's junk write sits. The producer's completion always comes before the consumer's
+// whichever way the steps are ordered, because the consumer can only finish after the producer's last
+// push. A change to the progress accounting, the stall flag, the junk write being repeated each
+// iteration, or the cycle counts is caught.
 //
 // A hash proves nothing if the script never ran, so the scripts that finish also check what a
 // finished transfer has to look like: the payload arrived, both sides went idle, both completion
@@ -75,11 +74,8 @@ extern EE_intProcessStatus eeRunInterruptScan; // defined in R5900.cpp, declared
 
 namespace
 {
-	// ------------------------------------------------------------------------------------------
-	// Hashing. XXH64-shaped rounds, written out here so the test depends on nothing else and the
-	// recorded values are the same on every host (the PS2 side of all of this is little endian).
-	// ------------------------------------------------------------------------------------------
-
+	// XXH64-shaped rounds, written out here so the test depends on nothing else and the recorded values
+	// are the same on every host (the PS2 side of all of this is little endian).
 	constexpr u64 kP1 = 0x9E3779B185EBCA87ull;
 	constexpr u64 kP2 = 0xC2B2AE3D27D4EB4Full;
 	constexpr u64 kP3 = 0x165667B19E3779F9ull;
@@ -97,7 +93,7 @@ namespace
 		return h;
 	}
 
-	// Hash of a byte range. Four lanes, so a 32 MB RAM costs a few milliseconds.
+	// Four lanes keep the hash of a 32 MB RAM to a few milliseconds.
 	u64 HashBytes(const void* data, size_t size)
 	{
 		const u8* p = static_cast<const u8*>(data);
@@ -127,7 +123,6 @@ namespace
 		return Avalanche(h);
 	}
 
-	// Hash of a sequence of scalars.
 	class Digest
 	{
 	public:
@@ -165,10 +160,6 @@ namespace
 	private:
 		u64 m_s;
 	};
-
-	// ------------------------------------------------------------------------------------------
-	// Scripts
-	// ------------------------------------------------------------------------------------------
 
 	enum class Chan
 	{
@@ -229,10 +220,6 @@ namespace
 		std::vector<Call> calls;
 		Payload payload;
 	};
-
-	// ------------------------------------------------------------------------------------------
-	// The machine the scripts run on
-	// ------------------------------------------------------------------------------------------
 
 	template <typename T>
 	T Load(const u8* base, u32 off)
@@ -341,11 +328,10 @@ namespace
 		cpuRegs.cycle = 0x100001234ull; // past 32 bits, so a truncation shows
 		cpuRegs.nextEventCycle = cpuRegs.cycle + 3072;
 		psxRegs.cycle = 0x20000;
-		// With an IOP slice running (iopCycleEE > 0), CPU_INT breaks it (and zeroes iopCycleEE), and the
-		// IOP's PSX_INT asks the EE to look sooner when iopCycleEE is below the IOP's own next event, 8 EE
-		// cycles per IOP cycle away. So the slice scripts have an IOP event due in 1 IOP cycle, and a
-		// transfer whose EE completion is due in 9 to 28 cycles shows which of the two completions is
-		// scheduled first in the EE's next event cycle.
+		// With an IOP slice running (iopCycleEE > 0), CPU_INT breaks it and zeroes iopCycleEE, and PSX_INT
+		// asks the EE to look sooner when iopCycleEE is below the IOP's next event (8 EE cycles per IOP
+		// cycle). The slice scripts put an IOP event 1 IOP cycle out, so a transfer whose EE completion is
+		// due in 9 to 28 cycles shows which completion is scheduled first in the EE's next event cycle.
 		psxRegs.iopNextEventCycle = psxRegs.cycle + (s.iopSlice ? 1 : 1000);
 		psxRegs.iopCycleEE = s.iopSlice ? 500 : 0;
 		eeRunInterruptScan = s.scanRunning ? INT_RUNNING : INT_NOT_RUNNING;
@@ -362,16 +348,11 @@ namespace
 		psHu32(SBUS_F260) = 0x0260F260;
 	}
 
-	// ------------------------------------------------------------------------------------------
-	// Building the transfers
-	// ------------------------------------------------------------------------------------------
-
 	constexpr u32 kIopEnd = 0x40000000; // ID & 4 in an IOP tag
 	constexpr u32 kIopIrq = 0x80000000;
 
 	u32 EeTag(u32 qwc, u32 id, u32 irq) { return qwc | (id << 28) | (irq << 31); }
 
-	// What the last packet's tags carry for each way of ending the transfer.
 	struct EndFlags
 	{
 		u32 iopFlags = 0; // OR-ed into the IOP tag's address word
@@ -563,11 +544,10 @@ namespace
 
 		if (s.stall)
 		{
-			// The drain channel is SIF1 and the stall address is 36 quadwords in. The first chunk the EE
-			// side sends (32 quadwords, the FIFO's size) is under it; the next one (9 quadwords) is not,
-			// so the transfer stalls after the first chunk has moved, with the IOP side partway through
-			// it. The third call is made while still stalled, and must return without touching anything
-			// (it leaves the cycle counts of the call before it alone). Then STADR moves and it resumes.
+			// The stall address is 36 quadwords in. The first chunk the EE side sends (32 quadwords, the
+			// FIFO's size) is under it; the next one (9 quadwords) is not, so the transfer stalls after the
+			// first chunk with the IOP side partway through it. The third call is made while still stalled
+			// and must touch nothing, the cycle counts included. Then STADR moves and the transfer resumes.
 			dmacRegs.ctrl.STD = STD_SIF1;
 			dmacRegs.stadr.ADDR = sif1ch.madr + 36 * 16;
 			if (s.start == Start::EeFirst)
@@ -603,10 +583,6 @@ namespace
 				break;
 		}
 	}
-
-	// ------------------------------------------------------------------------------------------
-	// What gets hashed
-	// ------------------------------------------------------------------------------------------
 
 	struct Hashes
 	{
@@ -765,10 +741,6 @@ namespace
 		return r;
 	}
 
-	// ------------------------------------------------------------------------------------------
-	// The script list
-	// ------------------------------------------------------------------------------------------
-
 	const char* TermName(Term t)
 	{
 		switch (t)
@@ -817,7 +789,6 @@ namespace
 				for (const u32 w : {1u, 3u, 4u, 127u, 128u, 129u, 4096u})
 					all.push_back(Make(chan, start, {w}, Term::Both));
 
-				// The other ways to end it.
 				for (const Term term : {Term::TieIrq, Term::IopOnly, Term::EeOnly})
 					for (const u32 w : {4u, 127u, 129u, 4096u})
 						all.push_back(Make(chan, start, {w}, term));
@@ -852,8 +823,7 @@ namespace
 					//
 					// IOP first only. Started from the EE first, the two TTE words leave the FIFO with 2
 					// words free, WriteEEtoFifo then moves 0 quadwords, HandleEETransfer still counts that
-					// as progress, and with the IOP side not started SIF1Dma never returns. That is how the
-					// pump behaves today and is not this test's to change; the script would hang.
+					// as progress, and with the IOP side not started SIF1Dma never returns: the script hangs.
 					if (start == Start::IopFirst)
 					{
 						Script tte = Make(chan, start, {128}, Term::Both, "_tte");
@@ -862,7 +832,6 @@ namespace
 					}
 				}
 
-				// EE channel in NORMAL mode.
 				{
 					Script n = Make(chan, start, {128}, Term::Both, "_normal");
 					n.normalMode = true;
@@ -901,9 +870,6 @@ namespace
 		return all;
 	}
 
-	// A few hundred pseudo-random chains, so that the order of the steps inside a pump, and the junk
-	// logic meeting a full FIFO, are met in many alignments and not only in the hand-picked scripts.
-	// The generator is fixed, so the list is the same every time.
 	std::string Describe(const Script& s)
 	{
 		std::string d = std::string(s.chan == Chan::Sif0 ? "sif0 " : "sif1 ") + (s.start == Start::EeFirst ? "ee-first" : "iop-first") + " words " + Join(s.words) + " end " + TermName(s.term);
@@ -916,6 +882,9 @@ namespace
 		return d;
 	}
 
+	// A few hundred pseudo-random chains, so that the order of the steps inside a pump, and the junk
+	// logic meeting a full FIFO, are met in many alignments and not only in the hand-picked scripts.
+	// The generator is fixed, so the list is the same every time.
 	std::vector<Script> SweepScripts()
 	{
 		std::vector<Script> all;
@@ -975,10 +944,6 @@ namespace
 		}
 		return all;
 	}
-
-	// ------------------------------------------------------------------------------------------
-	// The recorded values
-	// ------------------------------------------------------------------------------------------
 
 	struct Golden
 	{
@@ -1053,10 +1018,6 @@ namespace
 	{
 		return !s.sweep && !s.stall && !s.normalMode && (s.term == Term::Both || s.term == Term::TieIrq);
 	}
-
-	// ------------------------------------------------------------------------------------------
-	// The fixture
-	// ------------------------------------------------------------------------------------------
 
 	// A pump that stops returning would otherwise hang the whole test binary until the CI timeout.
 	// The watchdog turns it into an abort that names the script.

@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// See ArcadeInput.h. The mapping below is a port of the Android arcade bridge (native-lib.cpp:
-// ArcadeApplyPad, ArcadeGunButton, ArcadeJobs), keyed on GenericInputBinding instead of Android keycodes.
-// Where the two differ, a comment says so. GetLayout() mirrors ApplyPad(): keep the two in step.
+// See ArcadeInput.h. A comment below that mentions Android marks a difference from the Android bridge's
+// copy of this mapping (native-lib.cpp). GetLayout() mirrors ApplyPad(): keep the two in step.
 
 #include "Arcade/ArcadeInput.h"
 
@@ -77,10 +76,6 @@ namespace
 	std::mutex s_runner_mutex;
 	std::function<void(std::function<void()>)> s_board_runner;
 
-	// ------------------------------------------------------------------------------------------------
-	// Tables
-	// ------------------------------------------------------------------------------------------------
-
 	constexpr ArcadeInput::ModeInfo s_modes[] = {
 		{JVS_MODE::DEFAULT, "default", TRANSLATE_NOOP("Arcade", "Generic"),
 			TRANSLATE_NOOP("Arcade", "The left stick works the lever too.")},
@@ -100,7 +95,7 @@ namespace
 			TRANSLATE_NOOP("Arcade", "The two sticks are the cabinet's levers.")},
 	};
 
-	// The order of Android's list, and so of its settings page.
+	// The order the settings page lists them in (the same as Android's).
 	constexpr ArcadeInput::ButtonInfo s_buttons[] = {
 		{GIB::DPadUp, "Up", TRANSLATE_NOOP("Arcade", "D-Pad Up")},
 		{GIB::DPadDown, "Down", TRANSLATE_NOOP("Arcade", "D-Pad Down")},
@@ -140,10 +135,6 @@ namespace
 		return nullptr;
 	}
 
-	// ------------------------------------------------------------------------------------------------
-	// Posting to the CPU thread
-	// ------------------------------------------------------------------------------------------------
-
 	// The game takes coins off the same counter, on the CPU thread, so a coin and the test switch are
 	// changed there.
 	void PostToBoard(std::function<void()> function)
@@ -166,10 +157,6 @@ namespace
 				ACJV::InsertCoin(player);
 		});
 	}
-
-	// ------------------------------------------------------------------------------------------------
-	// The mapping
-	// ------------------------------------------------------------------------------------------------
 
 	// The analog pedals of a driving cabinet stay on their triggers; no layout moves them.
 	bool IsFixedButton(JVS_MODE mode, GIB button)
@@ -207,7 +194,7 @@ namespace
 			return 0xFFFF;
 		const GunMapping& gm = ACJV::GetGunMapping();
 		const u16 start = (player == 0) ? gm.p1_start : gm.p2_start;
-		// ARMSX2: Service is the player's too (Android leaves it out, so Service does nothing on a gun game).
+		// Service is the player's too, so it works on a gun game (the Android bridge leaves it out).
 		return static_cast<u16>(((player == 0) ? (gm.p1_trigger | gm.pedal) : gm.p2_trigger) |
 								(start ? start : static_cast<u16>(JVS_BTN_START)) | JVS_BTN_SERVICE);
 	}
@@ -310,7 +297,6 @@ namespace
 		return true;
 	}
 
-	// Recomputes the cabinet controls one player's controller holds.
 	void ApplyPad(u32 player)
 	{
 		Player& p = s_players[player];
@@ -411,10 +397,9 @@ namespace
 				bits |= lever(false) | (buttons.empty() ? six_buttons() : table(buttons));
 				if (held(GIB::Start))
 					bits |= JVS_BTN_START;
-				// A test menu's ENTER switch is a cabinet button no racing control uses: in Ace Driver 3 the
-				// lever moves the highlight, and neither Start nor View enters. So the face buttons the game's
-				// racing table leaves free work the cabinet's free buttons: Square and Cross button 1 (Ridge
-				// Racer V's board takes ENTER from Square in PCSX2x6), Circle button 5.
+				// A test menu's ENTER switch is a cabinet button no racing control uses (Ace Driver 3: neither
+				// Start nor View enters). So the face buttons the racing table leaves free work the cabinet's
+				// free buttons: Square and Cross button 1, Circle button 5.
 				if (!buttons.empty())
 				{
 					u16 taken = 0;
@@ -483,8 +468,8 @@ namespace
 				if (held(GIB::Start))
 					bits |= JVS_BTN_START;
 
-				// ARMSX2: a touch panel has no touchscreen to work it here (Android's gun layer is that). R2 touches
-				// it, and the right stick points, like the light gun's.
+				// A touch panel has no touchscreen here (Android's gun layer is one), so R2 touches it and the
+				// right stick points, like the light gun's.
 				if (mode == JVS_MODE::TOUCH && player == 0)
 				{
 					p.touch_pad = held(GIB::R2);
@@ -505,7 +490,6 @@ namespace
 			break;
 		}
 
-		// Select is the coin, on the press.
 		const bool coin = held(GIB::Select);
 		if (coin && !p.coin_held)
 			PostCoin(player);
@@ -530,10 +514,6 @@ namespace
 			p.coin_held = false;
 		}
 	}
-
-	// ------------------------------------------------------------------------------------------------
-	// The jobs of a cabinet
-	// ------------------------------------------------------------------------------------------------
 
 	std::string Tr(const char* msg)
 	{
@@ -566,10 +546,6 @@ namespace
 	}
 } // namespace
 
-// ----------------------------------------------------------------------------------------------------
-// The running game
-// ----------------------------------------------------------------------------------------------------
-
 bool ArcadeInput::IsActive()
 {
 	return Arcade::IsActive();
@@ -584,10 +560,6 @@ JVS_MODE ArcadeInput::GetMode()
 {
 	return Arcade::IsActive() ? ACJV::GetMode() : JVS_MODE::DEFAULT;
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Control modes
-// ----------------------------------------------------------------------------------------------------
 
 std::span<const ArcadeInput::ModeInfo> ArcadeInput::GetModes()
 {
@@ -604,10 +576,6 @@ JVS_MODE ArcadeInput::GetModeForGameId(const std::string& gameid)
 {
 	return ACJV::ResolveModeFromGameId(gameid);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Coin, Service and Test
-// ----------------------------------------------------------------------------------------------------
 
 void ArcadeInput::InsertCoin(u32 player)
 {
@@ -643,10 +611,6 @@ bool ArcadeInput::IsTestOn()
 {
 	return Arcade::IsActive() && ACJV::GetDIPSwitchState(0);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Controller input
-// ----------------------------------------------------------------------------------------------------
 
 bool ArcadeInput::HandleBinding(u32 pad_index, GenericInputBinding binding, float value)
 {
@@ -761,10 +725,6 @@ void ArcadeInput::Reset()
 	ACJV::SetTouchPressed(false);
 	ACJV::SetTouchRelativeActive(false);
 }
-
-// ----------------------------------------------------------------------------------------------------
-// The player's own layout
-// ----------------------------------------------------------------------------------------------------
 
 std::span<const ArcadeInput::ButtonInfo> ArcadeInput::GetRemappableButtons()
 {
@@ -882,10 +842,6 @@ ArcadeInput::Remap ArcadeInput::GetActiveRemap()
 	return s_remap;
 }
 
-// ----------------------------------------------------------------------------------------------------
-// A game's controls, for a settings page
-// ----------------------------------------------------------------------------------------------------
-
 ArcadeInput::Layout ArcadeInput::GetLayout(const std::string& gameid)
 {
 	using GIBs = std::vector<GIB>;
@@ -983,7 +939,7 @@ ArcadeInput::Layout ArcadeInput::GetLayout(const std::string& gameid)
 			else
 				AddTableJobs(jobs, buttons);
 			AddJob(jobs, start, {GIB::Start});
-			// ARMSX2: the touch panel's touch, which Android's touchscreen does.
+			// R2 touches the panel; on Android the touchscreen does.
 			if (mode == JVS_MODE::TOUCH)
 				AddJob(jobs, Tr(TRANSLATE_NOOP("Arcade", "Touch")), {GIB::R2});
 		}
@@ -1043,10 +999,6 @@ void ArcadeInput::SetGlobalTarget(Remap& global, GenericInputBinding button, Gen
 	else
 		global[button] = target;
 }
-
-// ----------------------------------------------------------------------------------------------------
-// Testing
-// ----------------------------------------------------------------------------------------------------
 
 void ArcadeInput::SetBoardRunner(std::function<void(std::function<void()>)> runner)
 {

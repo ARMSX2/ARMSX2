@@ -132,7 +132,6 @@ static __fi void IopSbusWriteControl(u32 value)
 	});
 }
 
-// Replace the low half of a register word, keeping the high half.
 static __fi void IopSbusWriteLow16(u32& reg, u16 value)
 {
 	SharedWord::Update(reg, [value](u32 old) { return (old & 0xFFFF0000u) | value; });

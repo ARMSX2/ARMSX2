@@ -312,9 +312,8 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 		if (argv[i][0] == '-')
 		{
-			// Note for anyone arriving from the Qt frontend: this one takes only -bigpicture
-			// of its flags - no -fullscreen, -nogui, -batch or -fastboot. Fullscreen is always
-			// on, and with no ISO it starts in the Big Picture game-picker.
+			// Of the Qt frontend's flags only -bigpicture is taken (no -fullscreen, -nogui, -batch
+			// or -fastboot): fullscreen is always on, and with no ISO it starts in Big Picture.
 			std::fprintf(stderr, "Unknown argument: '%s'\nRun with --help for the accepted options.\n", argv[i]);
 			return false;
 		}
@@ -446,9 +445,9 @@ std::optional<WindowInfo> Pcsx2SDL::BuildWindowInfo()
 {
 	if (s_headless)
 	{
-		// Surfaceless: the GS draws every present into an offscreen texture of this size
-		// instead of a swapchain image. No SDL video, no compositor, no DRM master. The rate
-		// is the pace of the no-game idle present; nobody is watching it.
+		// Surfaceless: the GS draws every present into an offscreen texture of this size instead
+		// of a swapchain image, so there is no SDL video, compositor or DRM master. The refresh
+		// rate only paces the no-game idle present.
 		WindowInfo wi;
 		wi.type = WindowInfo::Type::Surfaceless;
 		wi.surface_width = s_headless_width;

@@ -177,11 +177,11 @@ static u64 s_gs_pin_mask = 0;
 static std::string s_gs_pin_effective("none");
 static const char* s_gs_pin_source = "none";
 
-// -gsbackpin. Where the GS back thread (GS multi-threading) runs. Without the flag it is
-// placed by VMManager exactly as the app places it -- next to the MTGS thread -- and
-// re-derived next to the -gspin set when -gspin moves the MTGS thread. "any" restores the
-// old unplaced behaviour (every processor), for A/B runs. s_gs_back_pin_applied is what
-// the stats JSON records: "vmmanager", "near-gspin", "any", or the CPU list given.
+// -gsbackpin. Where the GS back thread (GS multi-threading) runs. Without the flag VMManager
+// places it as the app does, next to the MTGS thread, and re-derives that placement next to
+// the -gspin set when -gspin moves the MTGS thread. "any" leaves it unplaced (every
+// processor), for A/B runs. s_gs_back_pin_applied is what the stats JSON records:
+// "vmmanager", "near-gspin", "any", or the CPU list given.
 static std::string s_gs_back_pin_request;
 static u64 s_gs_back_pin_mask = 0;
 static std::string s_gs_back_pin_applied("vmmanager");
@@ -1646,7 +1646,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				const std::optional<int> parsed = ParseNumericArg<int>("-backthread", mode_arg);
 				if (!parsed.has_value())
 					return false;
-				// 3 was the pipelined mode's number when the setting had four modes; older scripts pass it.
+				// 3 is a legacy value (the old pipelined mode); older scripts still pass it.
 				const int mode = parsed.value();
 				if (mode != 0 && mode != 1 && mode != 3)
 				{
@@ -2065,13 +2065,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			}
 			else if (CHECK_ARG("-texture-ring-no-grow"))
 			{
-				// Not a setting: the texture ring as it was before it could grow, for an A/B on one binary.
+				// Not a setting: a texture ring that keeps its starting size, for an A/B on one binary.
 				g_gs_measurement_overrides.texture_ring_no_growth = true;
 				continue;
 			}
 			else if (CHECK_ARG("-stream-rings-cached"))
 			{
-				// Not a setting: which road wins is measured per device and recorded in the driver database.
+				// Not a setting: whether cached stream-ring memory pays is measured per device and recorded in
+				// the driver database (DriverWorkaround::PreferCachedStreamRingMemory).
 				g_gs_measurement_overrides.stream_rings_cached = true;
 				continue;
 			}
@@ -2688,7 +2689,6 @@ bool GSRunner::ReportHashMemoVerify()
 	return report.mismatches == 0 && report.missed_writers == 0;
 }
 
-// The union-retire counters of the run: one UNION-RETIRE line.
 void GSRunner::ReportUnionRetire()
 {
 	const GSTextureCache::UnionRetireStats ur = GSTextureCache::GetUnionRetireStats();
@@ -3039,7 +3039,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			// the GS thread itself, to whichever processor its frequency sort ranked next.
 			// Moving this call any earlier means that pin quietly overwrites -gspin, and
 			// the only visible symptom would be that the flag stops doing anything.
-			// A hand placement (-gspin, -gsbackpin) is the experiment; the prime-core arbiter must not move it.
+			// A hand placement (-gspin, -gsbackpin) must not be moved by VMManager's automatic prime-core placement.
 			if (!s_gs_pin_request.empty() || !s_gs_back_pin_request.empty())
 				VMManager::Internal::DisablePrimeCorePlacement();
 			ApplyGSThreadPin();

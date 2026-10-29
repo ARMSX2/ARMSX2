@@ -258,8 +258,9 @@ internal class SignalingServer(private val onClient: (Socket) -> Unit) {
                 } catch (_: IOException) {
                     break
                 }
-                // A peer that connects and resets at once makes this throw. Uncaught on this thread
-                // it took the app down, and the host's game with it: drop that peer, keep listening.
+                // A peer that connects and resets at once makes this throw, and an uncaught
+                // exception on this thread takes the app and the host's game down. Drop that
+                // peer, keep listening.
                 try {
                     client.tcpNoDelay = true
                 } catch (_: IOException) {
@@ -278,7 +279,6 @@ internal class SignalingServer(private val onClient: (Socket) -> Unit) {
     }
 }
 
-/** A host found on this network. */
 data class RemotePlayHostInfo(
     val name: String,
     val game: String,

@@ -47,9 +47,8 @@ object Screenshots {
 
     /**
      * True once [png] ends with its IEND chunk. The core compresses straight into the file, and IEND
-     * is the last thing it writes. Waiting for the size to stop changing was not enough: at the
-     * default quality (zlib level 9) a dark frame can go longer than a poll without writing anything,
-     * and the gallery got copies cut off a few rows down, black below.
+     * is the last thing it writes. A stable file size is not a safe signal: at the default quality
+     * (zlib level 9) a dark frame can go longer than a poll without writing anything.
      */
     internal fun isCompletePng(png: File): Boolean = runCatching {
         RandomAccessFile(png, "r").use { file ->
@@ -97,7 +96,6 @@ object Screenshots {
     private val PNG_END = byteArrayOf(0, 0, 0, 0, 0x49, 0x45, 0x4E, 0x44, 0xAE.toByte(), 0x42, 0x60, 0x82.toByte())
 
     private const val POLL_MS = 100
-    // A large upscaled frame can take several seconds to compress on a slow phone, and the check is
-    // exact, so a long wait costs nothing but a sleeping thread.
+    // A large upscaled frame can take several seconds to compress on a slow phone.
     private const val PUBLISH_TIMEOUT_MS = 60_000
 }

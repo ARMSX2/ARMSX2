@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The IOP thread object (IOP-thread design sections 3.3 to 3.10, 4, 5 and 11): the thread, its
-// pacing loop, the EE's watermark (`ee_wm`) and the IOP's published position (`iop_pos`), holds,
-// CallOnEE, the parked flag and wake-ups, and the Lockstep handoff. The VM uses Lockstep through
-// IopThreadVm.h; Threaded is not wired in yet.
+// The IOP thread object: the thread, its pacing loop, the EE's watermark (`ee_wm`) and the IOP's
+// published position (`iop_pos`), holds, CallOnEE, the parked flag and wake-ups, and the Lockstep
+// handoff. The VM drives it through IopThreadVm.h.
 //
 // The object knows nothing about the IOP. It is given two functions, and a few optional ones:
 //   run_slice(from, target)  runs the IOP from EE cycle `from` towards `target` and returns the
@@ -13,22 +12,19 @@
 //   apply_item(item)         applies one EE-to-IOP item (blanking, an IRQ, a job).
 // A test hands it a fake IOP; the emulator hands it iopRunSliceOnIopThread() (IopThreadVm.cpp).
 //
-// ---------------------------------------------------------------------------------------------
 // Who calls what
 //   EE thread (the CPU thread): Start, Stop, PublishWatermark, CheckLag, PostE2I, KickIop,
 //     MayHaveI2E, DrainI2E, Wake, Resync, ScopedHold, LockstepRunSlice, LockstepApplyUpTo.
 //   IOP thread: CallOnEE, PostI2E, and the functions the object was given.
 //   Any thread: PostHostCommand, TryPostHostCommand, IsHostCommandDone, ReapplyFpcr, and the accessors.
 //
-// The three waits the EE has (design section 4) are CheckLag (W1, the lag bound), ScopedHold (W2
-// and W4, the holds) and PostE2I (W3, a full queue). None of them sleeps in the emulation path.
-// Each spins with the CPU's yield hint, empties the IOP-to-EE queue and runs CallOnEE functions on
-// every iteration, and the lag wait and the E2I-full wait ask Params::should_stop every 1024
-// iterations (a hold never gives up, see ScopedHold). A ScopedHold of kind
-// Lifecycle may fall back to short sleeps after SPIN_TIME_NS, because pause, savestate and reset
-// are not on the emulation path.
+// The EE has three waits: CheckLag (the lag bound), ScopedHold (the holds) and PostE2I (a full queue).
+// None of them sleeps in the emulation path. Each spins with the CPU's yield hint, empties the
+// IOP-to-EE queue and runs CallOnEE functions on every iteration. The lag wait and the E2I-full wait
+// ask Params::should_stop every kSpinCheckInterval iterations; a hold never gives up (see ScopedHold).
+// A ScopedHold of kind Lifecycle may fall back to short sleeps after SPIN_TIME_NS, because pause,
+// savestate and reset are not on the emulation path.
 //
-// ---------------------------------------------------------------------------------------------
 // States of the IOP thread (Threaded)
 //
 //   IDLE     no work, awake. The pacing loop watches the EE's words (the watermark's cache line) for
@@ -37,8 +33,8 @@
 //   SLEEPING no work for idle_spin_ns. `sleeping` is set and the thread blocks in the kernel
 //            (WorkSema::WaitForWork). Holds, CallOnEE and Lockstep park the same way (ParkUntil),
 //            spinning first on the semaphore.
-//   RUNNING  the pacing loop of design section 5.1: apply host commands, kicks and due items, run
-//            a slice to min(ee_wm, next item stamp), publish iop_pos.
+//   RUNNING  the pacing loop: apply host commands, kicks and due items, run a slice to
+//            min(ee_wm, next item stamp), publish iop_pos.
 //   HELD     the EE asked for a hold, the IOP ran up to the hold's cycle and stopped. It touches
 //            nothing until the EE releases it.
 //   BLOCKED  inside CallOnEE or PostI2E, waiting for the EE. It leaves when the EE serves the call
@@ -66,9 +62,7 @@
 //                       Idle) and returns false, a call already Running is waited out.
 //   any -> exit         Stop() stores shutdown (release), notifies, joins. A hold wait ends on shutdown.
 //
-// ---------------------------------------------------------------------------------------------
-// Going to sleep: why no wake-up is lost (step 12b; this replaces the accepted lost wake-up of
-// design 3.9)
+// Going to sleep: why no wake-up is lost
 //
 // The EE gives the IOP work by a store: the watermark (PublishWatermark, and PostE2I after its push),
 // the ring push, the kick bits, ee_spinning. Then it reads `sleeping` and wakes the IOP only if it is
@@ -81,7 +75,7 @@
 //
 // The order costs a full barrier on each side, and a full barrier after the EE's watermark store has
 // to wait for that store to leave the core: a cache-line transfer to the IOP's core on every event
-// test, which is what this design is avoiding. So the barrier is made asymmetric (SleepBarrier):
+// test. So the barrier is made asymmetric (SleepBarrier):
 //   - Linux and Android: the IOP calls membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) between its
 //     store and its re-check. The kernel interrupts every core running a thread of this process and
 //     runs a full barrier there, so the EE thread passes a full barrier at some point P between the
@@ -102,7 +96,6 @@
 // that are not filtered by `sleeping` stay unfiltered: releasing a hold, finishing a CallOnEE,
 // stopping, and posting a host command always notify.
 //
-// ---------------------------------------------------------------------------------------------
 // Why the EE spinning on the IOP cannot deadlock with the IOP waiting on the EE
 //
 // The IOP waits on the EE in exactly three places: CallOnEE, PostI2E on a full queue, and while
@@ -142,10 +135,9 @@
 
 namespace IopThread
 {
-	/// Which instruction the spin loops use between looks. The design chose yield; the repo's own
-	/// Threading::SpinWait is isb, and which is better for the 1024-iteration cadence of the lag spin is
-	/// a measurement (step 11 report). It is a testing knob (eerunner --iop-spin-hint), set before the
-	/// thread starts, so a relaxed load is all a spin pays for it.
+	/// Which instruction the spin loops use between looks: yield, or isb as Threading::SpinWait does.
+	/// A testing knob (eerunner --iop-spin-hint), set before the thread starts, so a relaxed load is all
+	/// a spin pays for it.
 	enum class SpinHintKind : u8
 	{
 		Yield,
@@ -153,8 +145,8 @@ namespace IopThread
 	};
 	inline std::atomic<SpinHintKind> g_spin_hint{SpinHintKind::Yield};
 
-	// The CPU's spin-wait hint, for the loops that wait for the other thread. It does not sleep and
-	// does not give the core away; it only tells the core a loop is spinning.
+	// The CPU's spin-wait hint, for the loops that wait for the other thread. It does not sleep or
+	// give the core away.
 	__fi inline void SpinHint() noexcept
 	{
 #if defined(_MSC_VER) && defined(_M_ARM64)
@@ -173,8 +165,8 @@ namespace IopThread
 #endif
 	}
 
-	/// IOP-to-EE item kinds (design section 3.5). Only CallOnEE means anything to the thread
-	/// object; the EE hands every other kind to Params::handle_i2e.
+	/// IOP-to-EE item kinds. Only CallOnEE means anything to the thread object; the EE hands every
+	/// other kind to Params::handle_i2e.
 	namespace I2EKind
 	{
 		inline constexpr u16 Sif0EeHalf = 0;
@@ -194,12 +186,10 @@ namespace IopThread
 	/// How long an idle IOP watches the watermark before it sleeps (Params::idle_spin_ns): 500 us. The EE
 	/// publishes every 0.1 to 6 us while it runs, so the IOP sleeps only when the EE stops publishing: a
 	/// frame-limiter sleep, a GS or VU sync, a pause. A short EE stall then ends with the IOP still watching,
-	/// and the EE does not have to wake it. Measured on the SD865 and the MQ65 against 50, 100 and 200 us
-	/// (step 12c): fewer sleeps and wake-ups, and against 50 us the EE's cycles are equal or lower in every
-	/// title. The watch waits in WFE, so it holds the core without spinning it.
+	/// and the EE does not have to wake it. The watch waits in WFE, so it holds the core without spinning it.
 	inline constexpr u32 kDefaultIdleSpinNs = 500'000;
 
-	/// The barrier of the sleep handshake (IopThread.h, "Going to sleep").
+	/// The barrier of the sleep handshake (see "Going to sleep" at the top of this file).
 	enum class SleepBarrier : u8
 	{
 		Auto, // membarrier(PRIVATE_EXPEDITED) on the IOP and a compiler barrier on the EE where the kernel has it; else Fence
@@ -213,18 +203,17 @@ namespace IopThread
 		Emulation, // on the emulation path (EE access to IOP space, SIF pumps): spins, never sleeps
 	};
 
-	/// Where an EE-side wake-up came from. Params::drop_wake sees it, so a test can lose chosen
-	/// wake-ups the way the race in design 3.9 loses them.
+	/// Where an EE-side wake-up came from. Params::drop_wake sees it, so a test can lose chosen wake-ups.
 	enum class WakeSite : u8
 	{
-		Publish, // PublishWatermark
+		Publish,
 		Post, // PostE2I and Wake()
-		Kick, // KickIop
+		Kick,
 		SpinEntry, // the first thing any spin does
 		SpinPeriodic, // every kSpinCheckInterval iterations of a spin
 	};
 
-	/// Everything the owner decides at Start().
+	/// Settings fixed at Start().
 	struct Params
 	{
 		/// Lockstep or Threaded. Start() refuses Off: with no IOP thread there is no object to run.
@@ -236,14 +225,14 @@ namespace IopThread
 
 		/// S_min: the IOP waits until its budget reaches this many cycles before it runs a slice,
 		/// unless an item is due at the end of the slice, an IOP event is pending or the EE is
-		/// spinning. 0 runs whenever there is budget (the owner's default).
+		/// spinning. 0, the default, runs whenever there is budget.
 		s32 min_slice = 0;
 
 		/// Where the clocks start: the EE's cycle (the first watermark) and the IOP's position.
 		u64 start_ee_cycle = 0;
 		u64 start_iop_pos = 0;
 
-		/// The IOP thread's floating-point control register (design 3.10): EmuConfig.Cpu.FPUFPCR.
+		/// The IOP thread's floating-point control register: EmuConfig.Cpu.FPUFPCR.
 		FPControlRegister fpcr = FPControlRegister::GetDefault();
 
 		/// 0 takes the platform default. The emulator passes VMManager::EMU_THREAD_STACK_SIZE.
@@ -308,19 +297,19 @@ namespace IopThread
 	struct Stats
 	{
 		// EE thread
-		u64 lag_spins; // CheckLag calls that had to wait (W1)
+		u64 lag_spins; // CheckLag calls that had to wait
 		u64 lag_spin_iterations;
-		u64 lag_stall_ns; // wall time spent in W1 spins
-		u64 lag_spins_parked; // W1 spins that found the IOP sleeping (or about to) when they began
+		u64 lag_stall_ns; // wall time spent in lag spins
+		u64 lag_spins_parked; // lag spins that found the IOP sleeping (or about to) when they began
 		u64 lag_parked_stall_ns; // ... and the wall time those spins took
-		u64 hold_requests; // holds that went through the handshake (W2/W4)
-		u64 emu_hold_requests; // ... of which on the emulation path (W2): EE access to IOP space, SIF pumps, the PS1 switch
+		u64 hold_requests; // holds that went through the handshake
+		u64 emu_hold_requests; // ... of which on the emulation path: EE access to IOP space, SIF pumps, the PS1 switch
 		u64 emu_hold_stall_ns; // wall time the EE spent waiting for those
-		u64 sif_ee_pumps; // SIF pumps the EE started (each one took a W2 hold)
+		u64 sif_ee_pumps; // SIF pumps the EE started (each one took an Emulation hold)
 		u64 hold_markers; // holds that were only a counter: Lockstep, nested, inside a CallOnEE function, no thread
 		u64 hold_spin_iterations;
 		u64 hold_sleeps; // polling sleeps of a Lifecycle hold
-		u64 e2i_full_spins; // PostE2I calls that found the ring full (W3)
+		u64 e2i_full_spins; // PostE2I calls that found the ring full
 		u64 e2i_full_iterations;
 		u64 e2i_full_failfast; // full-ring posts refused because the IOP cannot make room
 		u64 i2e_drained;
@@ -338,8 +327,7 @@ namespace IopThread
 		u64 calls_cancelled;
 		u64 i2e_full_waits; // PostI2E calls that found the queue full
 		u64 kicks_applied;
-		// Appended in step 12b (the eerunner IOPSTATS-RAW parsers read the fields above by name).
-		u64 lag_spins_idle; // EE: W1 spins that found the IOP idle and awake (watching the watermark)
+		u64 lag_spins_idle; // EE: lag spins that found the IOP idle and awake (watching the watermark)
 		u64 lag_idle_stall_ns; // EE: ... and their wall time
 		u64 idle_waits; // IOP: times the pacing loop went idle
 		u64 idle_ns; // IOP: wall time idle, sleeping included
@@ -372,17 +360,14 @@ namespace IopThread
 		using Ticket = HostCommandQueue::Ticket;
 
 		Thread();
-		/// Stops the thread if it is running.
 		~Thread();
 
 		Thread(const Thread&) = delete;
 		Thread& operator=(const Thread&) = delete;
 
-		// ------------------------------------------------------------ lifecycle (EE thread)
-
-		/// Creates the IOP thread and returns once its setup is done (design 3.10: the name, ADPF,
-		/// the per-thread page-fault handler, the FPCR). The thread is born parked. False if one is
-		/// already running, the mode is Off or there is no run_slice.
+		/// Creates the IOP thread and returns once its setup is done (the name, ADPF, the per-thread
+		/// page-fault handler, the FPCR). The thread is born parked. False if one is already running,
+		/// the mode is Off or there is no run_slice.
 		///
 		/// If a ScopedHold is live on this thread the IOP comes up held, at start_iop_pos, and is
 		/// released with that hold.
@@ -405,8 +390,6 @@ namespace IopThread
 		/// placement made for one thread says nothing about the next; the VM compares this to know it must place again.
 		u32 StartCount() const { return m_start_count; }
 
-		// ------------------------------------------------------------ EE side, Threaded
-
 		/// The EE's side of an event test: tell the IOP how far the EE has got (release store of
 		/// `ee_wm`), and wake it if it is parked and has budget.
 		__fi void PublishWatermark(u64 cycle)
@@ -423,7 +406,7 @@ namespace IopThread
 				WakeAfterPublish(cycle);
 		}
 
-		/// W1. Returns once cycle - iop_pos <= lag, so the EE is never more than L ahead after an
+		/// Returns once cycle - iop_pos <= lag, so the EE is never more than L ahead after an
 		/// event test. Spins (see the top of this file) while it waits. False if the stop predicate
 		/// ended the wait; the lag is then unmet and the caller must not carry on as if it held.
 		/// Returns true at once when the IOP is held or stopped, since it cannot catch up.
@@ -436,12 +419,10 @@ namespace IopThread
 				return true;
 			// Pairs with the release store of iop_pos in the IOP's loop: the EE goes on past the bound, and
 			// trusts this position at later event tests, only after the IOP's work up to it. A relaxed load
-			// and an acquire fence, not an acquire load: the event test has just made a release store of the
-			// watermark (STLR) to a line the IOP is reading, and an acquire load (LDAR) may not complete
-			// before that store has, so it would wait for the line. The fence (DMB ISHLD) orders this load
-			// before every later load and store, which is all the acquire load gave, and it does not wait for
-			// earlier stores. A relaxed load that reads the IOP's release store, followed by an acquire
-			// fence, synchronizes with that store.
+			// plus an acquire fence, not an acquire load: the event test has just made a release store (STLR)
+			// to a line the IOP is reading, and an acquire load (LDAR) may not complete before that store, so
+			// it would wait for the line; the fence (DMB ISHLD) does not wait for earlier stores. A relaxed
+			// load that reads a release store, then an acquire fence, still synchronizes with it.
 			const u64 pos = m_iop.pos_pub.load(std::memory_order_relaxed);
 			std::atomic_thread_fence(std::memory_order_acquire);
 			m_last_seen_iop_pos = pos;
@@ -451,7 +432,7 @@ namespace IopThread
 		}
 
 		/// Queues an item stamped `stamp` (the EE's cycle at the moment) for the IOP, publishes the
-		/// stamp as the watermark and wakes a parked IOP. W3 when the ring is full: spins until
+		/// stamp as the watermark and wakes a parked IOP. When the ring is full it spins until
 		/// there is room. False, with the item not queued, if the stop predicate ended the wait or
 		/// the IOP cannot make room (under a hold, inside a CallOnEE function, or not Threaded).
 		/// In Lockstep it only queues the item; LockstepApplyUpTo() applies it.
@@ -470,11 +451,9 @@ namespace IopThread
 		/// Wakes the IOP if it is parked.
 		void Wake();
 
-		/// Moves both clocks and empties the queues. For a savestate load or a mode conversion
-		/// (design 9.1), so only under a hold or while the thread is stopped.
+		/// Moves both clocks and empties the queues. For a savestate load or a mode conversion,
+		/// so only under a hold or while the thread is stopped.
 		void Resync(u64 ee_cycle, u64 iop_pos);
-
-		// ------------------------------------------------------------ EE side, Lockstep
 
 		/// Hands the IOP thread one slice, "run towards `target`", and waits until it is done.
 		/// Returns the cycle the IOP reached. The IOP thread runs it with the EE blocked here, so
@@ -485,8 +464,6 @@ namespace IopThread
 		/// whatever the IOP's position, and waits. Returns how many it applied. Lockstep applies an
 		/// item at the EE's point of execution, which is when the EE posts it.
 		size_t LockstepApplyUpTo(u64 stamp);
-
-		// ------------------------------------------------------------ IOP side
 
 		/// Runs `fn` on the EE thread and blocks until it has finished. The EE runs it from
 		/// DrainI2E(), including the drains inside its spins, so the IOP is stopped at a known
@@ -505,15 +482,13 @@ namespace IopThread
 		/// next event test. False if the object was stopped meanwhile and the item was not queued.
 		bool PostI2E(u16 kind, u32 arg = 0);
 
-		// ------------------------------------------------------------ any thread
-
 		/// Queues `command` to run on the IOP thread, in post order, between slices (Lockstep:
 		/// during the next handoff, so it never runs while the EE does). Wakes the IOP.
 		Ticket PostHostCommand(HostCommandQueue::Command command);
 		bool IsHostCommandDone(Ticket ticket) const { return m_host.IsDone(ticket); }
 
-		/// For a host thread that does not know whether an IOP thread exists (the physical-disc thread,
-		/// design 8.3). Like PostHostCommand while the thread is running, and 0, with the command not
+		/// For a host thread that does not know whether an IOP thread exists (the physical-disc thread).
+		/// Like PostHostCommand while the thread is running, and 0, with the command not
 		/// queued, while it is not (Off, or between Stop() and Start()): the caller then makes the call
 		/// itself, as it always did. The decision and the queueing are one step, so a Stop() that races
 		/// the post either refuses it or, having accepted it, runs it on the IOP thread before the thread
@@ -523,9 +498,7 @@ namespace IopThread
 		/// Sets the IOP thread's FPCR after a settings change, through a host command.
 		void ReapplyFpcr(FPControlRegister value);
 
-		/// The cycle the IOP has published, with acquire.
 		u64 PublishedPos() const { return m_iop.pos_pub.load(std::memory_order_acquire); }
-		/// The last watermark the EE published.
 		u64 Watermark() const { return m_ee.wm.load(std::memory_order_acquire); }
 		/// The IOP has nothing to do: idle (watching the watermark) or asleep, in the pacing loop or in any park.
 		bool IsParked() const { return m_iop.idle.load(std::memory_order_acquire) || IsSleeping(); }
@@ -651,7 +624,7 @@ namespace IopThread
 			std::atomic<u64> done_seq{0}; // Lockstep: the last request finished
 		} m_iop;
 
-		// The IOP's announcement that it is going to sleep (`sleeping`, design 3.9's iop_parked). A line of
+		// The IOP's announcement that it is going to sleep (`sleeping`). A line of
 		// its own, written only when the IOP sleeps and wakes, so the EE's load of it on every event test
 		// stays in the EE's cache.
 		struct alignas(kChannelLineSize) SleepWord
@@ -692,7 +665,6 @@ namespace IopThread
 			u64 result = 0;
 		} m_ls; // the Lockstep mailbox; ordered by req_seq and done_seq
 
-		// Statistics the EE thread writes.
 		detail::Counter m_lag_spins, m_lag_spin_iterations, m_hold_requests, m_hold_markers, m_hold_spin_iterations, m_hold_sleeps;
 		detail::Counter m_lag_stall_ns, m_lag_spins_parked, m_lag_parked_stall_ns, m_emu_hold_requests, m_emu_hold_stall_ns, m_sif_ee_pumps;
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
@@ -705,7 +677,7 @@ namespace IopThread
 		detail::Counter m_i2e_full_waits, m_kicks_applied, m_idle_waits, m_idle_ns;
 	};
 
-	/// A full stop of the IOP, for the EE thread to touch IOP state safely (design 3.8.1). Re-entrant.
+	/// A full stop of the IOP, for the EE thread to touch IOP state safely. Re-entrant.
 	///
 	/// The outermost hold publishes the EE's cycle, asks the IOP to run up to it, waits until it
 	/// has, and the IOP then stays still until the hold ends. Holds taken while one is live, or

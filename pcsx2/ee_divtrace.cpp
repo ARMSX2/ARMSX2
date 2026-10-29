@@ -209,7 +209,6 @@ namespace ee_divtrace
 			h = hash_mix(h, static_cast<u32>(c.deltaCycles));
 			h = hash_mix(h, c.mode.modeval);
 		}
-		// VU1 registers and clock.
 		for (int i = 0; i < 32; ++i)
 		{
 			h = hash_mix64(h, VU1.VF[i].UD[0]);

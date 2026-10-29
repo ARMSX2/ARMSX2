@@ -128,11 +128,10 @@ extern bool IsArcadeBIOS(const char* filename, std::string* board_serial = nullp
 extern bool IsBIOSFromFd(int fd, u32& version, std::string& description, u32& region, std::string& zone);
 extern bool IsBIOSAvailable(const std::string& full_path);
 
-// Namco arcade games: the arcade BIOS (a file name in the BIOS folder) the game [gameid] starts with. Every
-// arcade BIOS there is in use: the System 256 one for every game (PCSX2x6's default), and another only for a
-// game that does not run on it (Battle Gear 3 takes the System 246 one); of two dumps of one board, the
-// [picked] one (may be empty). Empty when there is none it runs on: [needs] then names the board whose BIOS
-// it needs ("System 246" for Battle Gear 3), and stays empty when there is no arcade BIOS at all.
+// Namco arcade games: the arcade BIOS (a file name in the BIOS folder) that [gameid] starts with. The System 256
+// BIOS is preferred (PCSX2x6's default); another board's is used only for a game that does not run on it. Of two
+// dumps of one board, [picked] (may be empty) wins. Returns empty when no installed BIOS runs the game: [needs]
+// then names the board whose BIOS it needs, and stays empty when there is no arcade BIOS at all.
 extern std::string FindArcadeBiosFor(const std::string& gameid, const std::string& picked, std::string* needs);
 
 extern bool LoadBIOS();

@@ -45,15 +45,13 @@ namespace GSTextureUpscaleSupport
 	/// bilinear grid: output pixel x reads source position x / 2 - 0.25, between source columns
 	/// (x + 1) / 2 - 1 and (x + 1) / 2, and likewise for rows, both clamped to the image.
 	///
-	/// A sharpening filter overshoots at a hard edge. Beside a step from 113 to 223 the RAISR
-	/// engine writes values down to 102 on the dark side and up to 229 on the bright side, which are
-	/// colours that neither side of the edge has (Intel's Sharp set, no longer shipped, went to 82
-	/// and 252). Sampled with a bilinear filter the extra detail
-	/// reads as a halo; sampled with a nearest filter and magnified, which games do to read a flat
-	/// colour out of a swatch atlas, every one of those texels becomes a visible block. After this
-	/// pass no output pixel is darker than the darkest or brighter than the brightest of the four
-	/// texels it comes from. Output that was already inside that range is not touched, and a region
-	/// of flat texels whose neighbours are flat in the same colour comes out exactly flat.
+	/// A sharpening filter overshoots at a hard edge, writing colours that neither side of the edge
+	/// has. Sampled with a bilinear filter the extra detail reads as a halo; sampled with a nearest
+	/// filter and magnified, which games do to read a flat colour out of a swatch atlas, every one of
+	/// those texels becomes a visible block. After this pass no output pixel is darker than the
+	/// darkest or brighter than the brightest of the four texels it comes from. Output that was
+	/// already inside that range is not touched, and a region of flat texels whose neighbours are
+	/// flat in the same colour comes out exactly flat.
 	inline void ClampUpscaledToSourceRange(const u8* src, u32 width, u32 height, u32 src_pitch, u8* dst, u32 dst_pitch)
 	{
 		if (width == 0 || height == 0)
@@ -96,42 +94,40 @@ namespace GSTextureUpscaleSupport
 	/// A difference in alpha, between source texels an output pixel is interpolated from, that
 	/// makes the edge between them a mask edge. Three quarters of 0x80, which is what the PS2 stores
 	/// for opaque. A mask is 0 against opaque, a step of 0x80 or more; a gradient has smaller steps.
-	/// Black's lightmaps are the nearest gradient found: their steps reach just under 0x40, and the
-	/// bands appear once the threshold is 0x38 or lower.
+	/// Baked lightmaps stored in alpha have steps up to just under 0x40, and treating them as mask
+	/// edges produces visible bands once the threshold is 0x38 or lower.
 	inline constexpr u32 HARD_ALPHA_STEP = 0x60;
 
 	/// Where a 2x upscale has interpolated across a hard alpha edge, takes the whole pixel, colour and
 	/// alpha, from the source texel the output pixel lies inside instead. Everywhere else dst is left
-	/// as the upscaler wrote it, which is the bilinear (or filtered) upscale of the source. Same layout
-	/// as ClampUpscaledToSourceRange.
+	/// as the upscaler wrote it. Same layout as ClampUpscaledToSourceRange.
 	///
 	/// An output pixel counts as being on a hard edge when the four source texels it is interpolated
 	/// from differ in alpha by HARD_ALPHA_STEP or more.
 	///
 	/// Alpha is data that games test against exact values and let decide depth writes, so a mask that
-	/// is interpolated is a different mask. Katamari Damacy draws the King of All Cosmos's eyes as two
-	/// rectangles of alpha 0x80 on alpha 0, tested NOTEQUAL 0 with depth writes, and draws his face
-	/// afterwards with a depth test that the eyes' pixels make it fail. Interpolating gave each
-	/// rectangle a ring of pixels with small non-zero alpha. They passed the test and kept the face
-	/// out, but blended little of the eye over the dark cloud behind it: a dark frame, like glasses.
-	/// With the texel's own alpha at the edge, a nearest sampled draw gets the original's mask and
-	/// blend alpha under any alpha test. A bilinear sampled draw gets a mask edge half a texel wide
-	/// instead of a texel, as it would from any 2x copy of the texture.
+	/// is interpolated is a different mask. A mask of alpha 0x80 on alpha 0, tested NOTEQUAL 0 with
+	/// depth writes, gets a ring of small non-zero alpha around it when interpolated. Those pixels
+	/// pass the test and write depth, which keeps later depth tested draws out of the ring, yet they
+	/// blend little of the mask's own colour, leaving a dark frame. With the texel's own alpha at
+	/// the edge, a nearest sampled draw gets the original's mask and blend alpha under any alpha
+	/// test. A bilinear sampled draw gets a mask edge half a texel wide instead of a texel, as it
+	/// would from any 2x copy of the texture.
 	///
 	/// Colour comes with it because the colour of a transparent texel is whatever the game stored, and
-	/// nothing is meant to show it. In the eyes it is black, against dark grey for the opaque texels.
-	/// Interpolation blends that black into the output pixel next to the edge on the opaque side, and
-	/// the clamp to the source range cannot stop it, since the black texel is one of the four sources.
-	/// With the alpha kept exact that pixel is drawn, a dark outline round each rectangle. A pixel
-	/// that is the texel it lies inside is what a nearest sample of the original gives, so it is right
-	/// however the game draws the texture: alpha tested, blended, or with alpha ignored, which shows
-	/// the transparent texels' colour as it is. Filling the transparent texels with the opaque colour
-	/// before the upscale would also hide the outline, but it changes what that last kind of draw shows.
+	/// nothing is meant to show it. Interpolation blends that colour into the output pixel next to
+	/// the edge on the opaque side, and the clamp to the source range cannot stop it, since the
+	/// transparent texel is one of the four sources. With the alpha kept exact that pixel is drawn,
+	/// as an outline round the mask. A pixel that is the texel it lies inside is what a nearest
+	/// sample of the original gives, so it is right however the game draws the texture: alpha
+	/// tested, blended, or with alpha ignored, which shows the transparent texels' colour as it is.
+	/// Filling the transparent texels with the opaque colour before the upscale would also hide the
+	/// outline, but it changes what that last kind of draw shows.
 	///
 	/// Alpha is not kept as the source texel's everywhere because gradients are also stored in
-	/// alpha. Black bakes its lighting into 256x256 lightmaps and reads them with a bilinear sampler
-	/// and a blend that scales the framebuffer by that alpha. Replacing the interpolated alpha with
-	/// each texel's own made a staircase that the blend turned into broad dark bands.
+	/// alpha, such as baked lightmaps read with a bilinear sampler and a blend that scales the
+	/// framebuffer by that alpha. Replacing the interpolated alpha with each texel's own makes a
+	/// staircase that the blend turns into broad dark bands.
 	inline void KeepHardAlphaEdges2x(const u8* src, u32 width, u32 height, u32 src_pitch, u8* dst, u32 dst_pitch)
 	{
 		if (width == 0 || height == 0)
@@ -168,10 +164,9 @@ namespace GSTextureUpscaleSupport
 		}
 	}
 
-	/// One 2x pass: RAISR clamped to the range of its source (the filters overshoot at hard edges,
-	/// and a game that reads a flat swatch with a nearest sampler shows every overshooting texel), or
-	/// bilinear when the image is too small for RAISR. Bilinear cannot leave that range. On either
-	/// road, output pixels on a hard alpha edge are replaced by the source texel they lie inside
+	/// One 2x pass: RAISR clamped to the range of its source (see ClampUpscaledToSourceRange), or
+	/// bilinear when the image is too small for RAISR; bilinear cannot leave that range. On either
+	/// path, output pixels on a hard alpha edge are replaced by the source texel they lie inside
 	/// (KeepHardAlphaEdges2x), so a mask's edge is exact in colour as well as alpha.
 	inline void UpscalePass2x(const GSTextureUpscaler::FilterSet& filters, const u8* src, u32 w, u32 h, u32 src_pitch,
 		u8* dst, u32 dst_pitch)
@@ -240,7 +235,6 @@ namespace GSTextureUpscaleSupport
 			}
 		}
 
-		/// Removes and returns the newest item.
 		std::optional<T> PopNewest()
 		{
 			if (m_items.empty())

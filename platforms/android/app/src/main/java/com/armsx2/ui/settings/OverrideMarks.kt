@@ -34,7 +34,6 @@ import com.armsx2.i18n.str
 import com.armsx2.ui.InGameOverlay
 import org.json.JSONObject
 
-/** Why a settings row is tinted. */
 enum class OverrideMark {
     None,
 
@@ -72,11 +71,11 @@ internal fun decideMark(
  * widgets), which is also the key the per-game store and the Reset buttons use. Keying on that
  * rather than on a Kotlin property keeps this independent of how [Settings] is grouped.
  *
- * Built lazily from [InGameOverlay]'s settings, scope and serial, which every settings tab already
- * edits, and kept until one of them changes: [current] hands every row on a screen the same
- * instance, so the work below runs once per change rather than once per row. The settings it is
- * given are what the screen shows, which on a game's screen already has the database's values in
- * it ([ConfigStore.resolveForDisplay]); which entries apply is decided on what is stored.
+ * [current] builds one instance from [InGameOverlay]'s settings, scope and serial and reuses it
+ * until one of them changes, so the work runs once per change rather than once per row. The
+ * settings it holds are what the screen shows, which on a game's screen already include the
+ * database's values ([ConfigStore.resolveForDisplay]); which entries apply is decided on what is
+ * stored.
  */
 internal class OverrideMarks private constructor(
     private val settings: Settings,
@@ -189,8 +188,8 @@ internal class OverrideMarks private constructor(
     }
 }
 
-/** Soft purple. Next to the red it stays apart under red-green colour blindness (purple reads as
- *  blue, the red as tan), where the green it replaced did not. */
+/** Soft purple. Next to the red it stays distinguishable under red-green colour blindness (purple
+ *  reads as blue, the red as tan). */
 private val GameDbTint = Color(0xFFA384DB)
 
 /** Dusty rose rather than a warning red: this is a note that something was changed, not an error. */
@@ -206,7 +205,6 @@ private const val TINTED_MIN_FILL_ALPHA = 0.60f
 
 private val MARKER_SIZE = 8.dp
 
-/** Space between the marker and the label it sits beside. */
 private val MARKER_GAP = 3.dp
 
 internal class RowTint(val container: Color, val border: Color, val mark: OverrideMark = OverrideMark.None)

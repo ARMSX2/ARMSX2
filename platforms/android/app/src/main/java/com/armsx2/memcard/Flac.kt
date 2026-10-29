@@ -5,8 +5,7 @@ import java.io.IOException
 /**
  * FLAC, as CHD's "cdfl" codec uses it: a hunk's sector bytes taken as 16-bit stereo samples at
  * 44.1 kHz and FLAC-compressed with a fixed block size. chdman picks whichever codec comes out
- * smallest for each hunk, so data hunks occasionally end up here too (one of Batman Vengeance's
- * 45,000, among its file-system sectors), which is why a data reader needs it.
+ * smallest for each hunk, so data hunks can end up here too, which is why a data reader needs it.
  *
  * The stream in a hunk is bare FLAC frames; libchdr puts a STREAMINFO header in front for libFLAC,
  * which only matters for the frames' "use the stream's value" codes (16 bits, 44.1 kHz). Every

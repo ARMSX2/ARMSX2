@@ -12,9 +12,9 @@
 // Games use bit 7 of the frame's alpha as a one-bit stencil: a draw with FBMSK 0x7FFFFFFF on a
 // 32-bit frame writes only that bit, a later draw tests it with the destination alpha test, and a
 // further masked draw writes it back. A mask that keeps part of a channel is emulated in the pixel
-// shader, which reads the target. Where that read costs a wait per draw (our generation-2 Turnip on
-// Adreno 7xx: the driver cleans the colour cache and waits for idle before every draw that declares
-// the feedback loop), Indiana Jones pays it on 292 draws a frame.
+// shader, which reads the target. That read costs a wait per draw on some drivers (generation-2
+// Turnip on Adreno 7xx cleans the colour cache and waits for idle before every draw that declares
+// the feedback loop).
 //
 // Writing one bit while keeping the others is a bitwise operation, and Vulkan's logic op does it on
 // the stored bits of a UNORM target. With the shader's alpha at exactly 0x80 (FBA) and only alpha
@@ -24,8 +24,8 @@
 // Bits 0..6 of the stored alpha are kept, as the mask keeps them.
 //
 // Which op a primitive needs comes from its alpha: bit 7 set (or FBA on) sets, clear clears. One
-// draw may do both -- Indiana Jones' marks set the bit on some triangles and clear it on the rest,
-// in two consecutive runs -- so the draw is issued as up to two runs in submission order, each with
+// draw may do both (marks that set the bit on some triangles and clear it on the rest, in two
+// consecutive runs), so the draw is issued as up to two runs in submission order, each with
 // its own op. The ops within a run are idempotent and commutative, and separate draws are rasterised
 // in order, so the result matches the PS2 for any overlap. Three or more runs keep the read.
 namespace GSAlphaBitLogicOp
@@ -99,8 +99,8 @@ namespace GSAlphaBitLogicOp
 	// buffer ends the render pass. That copy stays true for the rest of the pass while every draw
 	// that writes the target's alpha keeps it true: a DATE draw whose written alpha keeps bit 7 on
 	// the passing side, and a logic-op mark that writes the stencil where it writes the bit. So a run
-	// of DATE draws interleaved with marks (Indiana Jones: 291 a frame in one pass) pays for one copy.
-	// Any other alpha write, a stencil clear, or the end of the pass drops the copy.
+	// of DATE draws interleaved with marks pays for one copy. Any other alpha write, a stencil
+	// clear, or the end of the pass drops the copy.
 	enum DateCopy : u8
 	{
 		NoDateCopy = 0,

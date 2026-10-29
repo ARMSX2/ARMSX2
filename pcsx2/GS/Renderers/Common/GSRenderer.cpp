@@ -462,7 +462,7 @@ bool GSRenderer::Merge(int field)
 	// from the texture, so it would then letterbox the already-stretched result instead of
 	// correcting it. Matching the draw rect keeps the final present a 1:1 blit.
 	//
-	// m_real_size is deliberately left alone: in CalculateDrawSrcRect it only scales the Crop
+	// m_real_size is left alone: in CalculateDrawSrcRect it only scales the Crop
 	// values (with no crop the src rect is the whole texture either way), so holding it at the
 	// internal size keeps crop proportional to the frame rather than to the shaded target.
 	if (GSConfig.ShaderChainEnabled && !GSConfig.ShaderChainPreset.empty())
@@ -728,8 +728,8 @@ static GSVector4i CalculateDrawSrcRect(const GSTexture* src, const GSVector2i re
 	const GSVector2i size(src->GetSize());
 	const GSVector2 scale = GSVector2(size.x, size.y) / GSVector2(real_size.x, real_size.y).max(GSVector2(0.1f, 0.1f));
 	const float upscale = GSIsHardwareRenderer() ? GSConfig.UpscaleMultiplier : 1;
-	// Upscaled hardware rendering often leaves garbage in the outermost row/column of the
-	// frame. Rather than chase each cause, trim one native pixel off every edge.
+	// Upscaled hardware rendering often leaves garbage in the outermost row/column, so trim one
+	// native pixel off every edge.
 	const int trim = (GSConfig.TrimUpscaledEdges && upscale >= 2.0f) ? 1 : 0;
 	const int left = static_cast<int>(static_cast<float>((GSConfig.Crop[0] + trim) * scale.x) * upscale);
 	const int top = static_cast<int>(static_cast<float>((GSConfig.Crop[1] + trim) * scale.y) * upscale);
@@ -941,8 +941,8 @@ void GSRenderer::SubmitVsync(u32 field, bool registers_written)
 	GSBackQueue::VsyncRecord rec;
 	rec.field = field;
 	rec.registers_written = registers_written;
-	// Compares this object's draw and transfer serials with the last frame's. The back thread
-	// advances them as it executes records, so this has to follow the drain.
+	// The back thread advances the draw and transfer serials as it executes records, so this has
+	// to follow the drain.
 	rec.idle_frame = IsIdleFrame();
 	ExecVsyncRecord(rec);
 }
@@ -954,8 +954,8 @@ void GSRenderer::ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec)
 
 #ifdef __ANDROID__
 // Remote play: where the picture goes in the stream's frame, as fractions of it (x, y, width,
-// height). The friend sees it as this screen shows it, aspect ratio and all, with black around it;
-// a stretched picture fills the frame, since the friend's screen has its own shape to stretch to.
+// height). The aspect ratio is kept, with black around the picture; a stretched picture fills the
+// frame, since the viewer's screen does its own stretching.
 static GSVector4 RemotePlayArea(const GSVector4& draw_rect)
 {
 	const u32 size = GSRemotePlay::g_max_size.load(std::memory_order_relaxed);
@@ -1313,8 +1313,8 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 		}
 
 #ifdef __ANDROID__
-		// Remote play takes the frame as it is about to be shown, upscaled and sharpened, before the
-		// present pass opens. A blank frame goes out black, as the screen shows it.
+		// Remote play takes the frame as it will be shown (upscaled and sharpened), before the
+		// present pass opens. A blank frame goes out black.
 		if (current && !blank_frame)
 			g_gs_device->RemotePlayVSync(current, src_uv, RemotePlayArea(draw_rect));
 		else
@@ -1334,9 +1334,9 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				// path either has no output to draw or redraws the previous one. Frame generation
 				// reads it so it does not interpolate motion into frames the game never drew.
 				g_gs_device->NotePresentHasNewFrame();
-				// And how: the blit frame generation repeats for its generated frames when it runs on
-				// the game's own image, which needs the present to be only that blit. The upscalers and
-				// CAS above draw it themselves, a TV shader filters it, rotation turns it.
+				// Frame generation repeats this blit for its generated frames, so it needs the present
+				// to be only that blit: the upscalers and CAS above draw it themselves, a TV shader
+				// filters it, rotation turns it.
 				g_gs_device->NotePresentGeometry(src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
 					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
 						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY &&
@@ -1630,16 +1630,16 @@ void GSTranslateWindowToDisplayCoordinates(float window_x, float window_y, float
 	*display_y = rel_y / draw_height;
 }
 
-// The other way: where on the window a normalized display position is (an arcade light gun's stick aim,
-// for its crosshair).
+// Inverse of the above: the window position of a normalized display position (an arcade light gun's
+// crosshair).
 void GSTranslateDisplayToWindowCoordinates(float display_x, float display_y, float* window_x, float* window_y)
 {
 	*window_x = s_last_draw_rect.x + display_x * (s_last_draw_rect.z - s_last_draw_rect.x);
 	*window_y = s_last_draw_rect.y + display_y * (s_last_draw_rect.w - s_last_draw_rect.y);
 }
 
-// The same mapping without collapsing a position off the picture to (-1,-1): the caller gets graded
-// coordinates beyond [0,1] (an arcade lightgun's aim beside the screen, PCSX2x6).
+// Same mapping, but a position off the picture returns coordinates outside [0,1] instead of
+// (-1,-1), for an arcade light gun aimed beside the screen.
 void GSTranslateWindowToDisplayCoordinatesUnclamped(float window_x, float window_y, float* display_x, float* display_y)
 {
 	const float draw_width = s_last_draw_rect.z - s_last_draw_rect.x;

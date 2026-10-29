@@ -9,11 +9,10 @@
 
 namespace FullscreenUI
 {
-	/// Tells a settings page that has stayed the current page for a moment from one the D-pad is passing.
-	/// Left/right across the page list draws each page for a frame or two; a page that went to the network
-	/// when it opened would send a request for every page on the way (GitHub's API allows 60 an hour without
-	/// a token). A page keeps one of these, calls Settled() once per frame it is drawn, and starts its
-	/// requests only when that returns true.
+	/// Tells a settings page that has stayed current for a moment from one the D-pad is passing, so a page
+	/// that goes to the network when it opens does not send a request for every page scrolled past (GitHub's
+	/// API allows 60 an hour without a token). A page keeps one of these, calls Settled() once per frame it
+	/// is drawn, and starts its requests only when that returns true.
 	class PageDwell
 	{
 	public:

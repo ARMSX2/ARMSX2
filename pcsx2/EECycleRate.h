@@ -20,15 +20,13 @@
 //   interpreter's and microVU0's nominal-rate adjustment, and microVU's
 //   generated-code option sentinel.
 //
-// In static mode the two are equal by construction, so nothing changes: no
-// extra load, branch or multiply reaches generated code, and the emitted charge
-// sequence for a given selector is byte-identical to what it was before this
-// split existed.
+// In static mode the two are equal, so no extra load, branch or multiply
+// reaches generated code.
 //
-// A dynamic governor (later work) may lower EFFECTIVE below CONFIGURED to buy
-// back host time on a machine that cannot hold the frame deadline. It may never
-// raise it above CONFIGURED, and it may never write back into EmuConfig — a
-// transient decision is not user intent and must not be persisted.
+// A dynamic governor may lower EFFECTIVE below CONFIGURED to buy back host time
+// on a machine that cannot hold the frame deadline. It never raises it above
+// CONFIGURED and never writes back into EmuConfig: a transient decision is not
+// user intent and must not be persisted.
 namespace EECycleRate
 {
 	// The value all runtime consumers read. CPU-thread owned.
@@ -52,10 +50,11 @@ namespace EECycleRate
 	// Rejects (returns false, resets nothing) a selector outside
 	// [GetFloor(), GetConfigured()]. A selector equal to the current one
 	// returns true and resets nothing. Otherwise it stores the new value, then
-	// resets the EE recompiler and microVU0 — in that order, because the EE
-	// reset defers itself to the next safe execution boundary while mVU0's is
-	// immediate, and an EE block that calls into mVU0 in between only ever does
-	// so through a C entry point.
+	// updates the EE recompiler (patching its charge immediates in place when it
+	// can, else resetting it) and resets microVU0. The order matters when the EE
+	// reset is taken: it defers itself to the next safe execution boundary while
+	// mVU0's is immediate, and an EE block that calls into mVU0 in between only
+	// ever does so through a C entry point.
 	//
 	// Nothing else is reset: not the IOP recompiler, not microVU1, not the VIF
 	// unpack dynarec. None of them bake the EE selector into generated code.
@@ -67,21 +66,19 @@ namespace EECycleRate
 	// What the last transition that actually moved the selector cost, in the
 	// units GetCPUTicks() counts (divide by GetTickFrequency() for seconds).
 	//
-	// Split three ways because only one of the three is a candidate for
-	// removal. The EE recompiler's reset rewrites an 88 MiB block-pointer LUT
-	// and memsets a 32 MiB RAM snapshot; microVU0's reset is program-count
-	// work with no bulk memset. A design that patches the EE charge immediates
-	// in place instead of resetting has to know which of the two the measured
-	// transition cost actually is.
+	// Split three ways because the EE recompiler's reset is bulk work (a
+	// block-pointer LUT and a RAM snapshot) while microVU0's is program-count
+	// work, and a caller deciding whether to avoid the EE reset needs to know
+	// which one dominates.
 	//
-	// cpu_reset is the wall time of the `Cpu->Reset()` CALL, which is not the
+	// cpu_reset is the wall time of the `Cpu->Reset()` call, which is not the
 	// same thing as the EE rebuild: recResetEE defers to the next safe
 	// execution boundary when the EE is mid-execute, in which case the call
 	// returns in microseconds and the rebuild happens later. ee_rebuild is the
 	// EE recompiler's own measurement of the rebuild itself, whenever it last
-	// ran; ee_rebuild_generation is the value of GetResetGenerations().ee at
-	// that moment, so a reader can tell whether the rebuild it is looking at
-	// belongs to this transition or to an earlier one.
+	// ran; ee_rebuild_generation is GetResetGenerations().ee at that moment, so
+	// a reader can tell whether the rebuild belongs to this transition or to an
+	// earlier one.
 	struct TransitionCost
 	{
 		u64 cpu_reset = 0;              // Cpu->Reset()
@@ -90,10 +87,9 @@ namespace EECycleRate
 		u32 ee_rebuild_generation = 0;  // which EE reset ee_rebuild measured
 	};
 
-	// Which way the last transition that moved the selector actually went.
-	// The immediate-patching pass repairs the EE recompiler's baked charge
-	// immediates in place; when it cannot, the caller falls back to the reset
-	// this whole struct was written to measure.
+	// Which way the last transition that moved the selector went. The patch pass
+	// repairs the EE recompiler's baked charge immediates in place; when it
+	// cannot, the caller falls back to a reset.
 	struct TransitionPath
 	{
 		bool patched = false;       // true: the EE recompiler was NOT reset
@@ -109,17 +105,15 @@ namespace EECycleRate
 		u32 blocks_invalidated = 0; // blocks thrown away instead of patched
 		// Blocks the pass found unrepairable, whether or not it went ahead.
 		// Same as blocks_invalidated on a pass that ran; on a refused one it is
-		// the number that made it refuse, which is the only way to tell a cap
-		// refusal apart from every other reason without a debugger.
+		// the count that made it refuse.
 		u32 blocks_unpatchable = 0;
 	};
 
 	TransitionCost GetLastTransitionCost();
 	TransitionPath GetLastTransitionPath();
 
-	// Published by the EE recompiler's patch pass at every exit, taken or not.
-	// Separate from the cost struct because it is the recompiler that knows the
-	// reason, and because a refused pass still has one worth reporting.
+	// Published by the EE recompiler's patch pass at every exit, taken or not;
+	// a refused pass still reports its reason.
 	void NoteEePatchPass(const TransitionPath& path);
 
 	// Published by the EE recompiler's own reset with the duration it measured
@@ -141,25 +135,18 @@ namespace EECycleRate
 
 	ResetGenerations GetResetGenerations();
 
-	// Called from the provider resets themselves. Trivially cheap and nowhere
-	// near a hot path — a code-cache reset is a once-per-second event at worst.
+	// Called from each provider's reset.
 	void NoteEeReset();
 	void NoteIopReset();
 	void NoteVuReset(int vu_index);
 	void NoteVifReset();
 
 	// Everything the "may the governor act at all" answer depends on, in one struct.
-	//
-	// It is a struct rather than a pile of reads inside the resolver because the rules
-	// are the part worth testing and the VM is the part that makes testing them
-	// impossible: hardcore mode, the limiter, a GS dump replay and a frame-advance
-	// request are all global runtime state a unit test cannot stand up. Split this way
-	// the rules are a pure function over thirteen fields, and ReadEligibilityInputs()
-	// is the only piece that needs a running emulator.
+	// Hardcore mode, the limiter, a GS dump replay and a frame-advance request are global
+	// runtime state a unit test cannot stand up, so the rules are a pure function over these
+	// fields and ReadEligibilityInputs() is the only piece that needs a running emulator.
 	struct EligibilityInputs
 	{
-		// --- who chose the rate, and whether the governor was asked for ---
-
 		// EmuConfig.Speedhacks.DynamicEECycleRate as finally resolved: the global
 		// value, overlaid by whatever the per-game file says.
 		bool dynamic_setting = false;
@@ -176,8 +163,6 @@ namespace EECycleRate
 
 		// EmuConfig.Speedhacks.EECycleRate — the baseline, and the ceiling.
 		s8 configured = 0;
-
-		// --- conditions that suspend the governor whatever the setting says ---
 
 		// Hardcore mode forbids underclocking, which is the only thing the governor
 		// does. The settings clamp already forces the switch off; this is the second
@@ -201,8 +186,8 @@ namespace EECycleRate
 		bool vm_running = false;
 	};
 
-	// Why the resolver answered the way it did, for the log and for a test that wants
-	// to prove which rule fired rather than only that the answer was right.
+	// Why the resolver answered the way it did, for the log and for tests that check
+	// which rule fired.
 	struct EligibilityReasons
 	{
 		// Which precedence rule decided `enabled`.
@@ -211,28 +196,23 @@ namespace EECycleRate
 		const char* eligible = "";
 	};
 
-	// The rules, as a pure function. See KTD7: precedence is per-game dynamic key
-	// first, then any fixed-rate claim (database or per-game), then the global switch.
-	// Never value comparison — equal values can come from different layers.
+	// The rules, as a pure function. Precedence is per-game dynamic key first, then any
+	// fixed-rate claim (database or per-game), then the global switch. Never value
+	// comparison: equal values can come from different layers.
 	EECycleRateEligibility ResolveEligibility(const EligibilityInputs& in, EligibilityReasons* reasons = nullptr);
 
 	// Reads the live config and VM state. CPU thread only, and only valid once every
 	// settings and game-database mutation for this apply is complete.
 	EligibilityInputs ReadEligibilityInputs();
 
-	// ReadEligibilityInputs() + ResolveEligibility().
 	EECycleRateEligibility ResolveEligibility();
 
 	// Where the governor stands right now, for other consumers. Resolved afresh on each
 	// call from the live config and VM state; CPU thread only.
 	//
-	// `enabled` is whether it was asked for in this game (the per-game key, else the global
-	// switch when nothing claims the rate). `eligible` is whether anything is suspending it
-	// at this moment (hardcore, cycle skip, a non-nominal limiter, host-vsync pacing, GS
-	// dump replay, frame advance). `active` is both: the governor may move the selector.
-	// `configured` is the baseline and the ceiling, `effective` is what runs, and `floor`
-	// is the lowest the governor may take it. The reasons are static strings naming the
-	// rule that decided each answer, the same ones the log line carries.
+	// `enabled` is whether it was asked for in this game, `eligible` is whether nothing is
+	// suspending it at the moment, and `active` is both. The reasons are static strings
+	// naming the rule that decided each answer, the same ones the log line carries.
 	struct GovernorStatus
 	{
 		bool enabled = false;

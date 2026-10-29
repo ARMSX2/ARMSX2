@@ -84,7 +84,6 @@ class ArmsxH264Encoder implements VideoEncoder {
   private static final int DEQUEUE_OUTPUT_BUFFER_TIMEOUT_US = 100_000;
   private static final int MEDIA_CODEC_RELEASE_TIMEOUT_MS = 5000;
 
-  /** Frames handed to the codec, frames out of it and frames dropped, for the stream's stats. */
   static final AtomicInteger framesIn = new AtomicInteger();
   static final AtomicInteger framesOut = new AtomicInteger();
   static final AtomicInteger framesDropped = new AtomicInteger();
@@ -245,9 +244,9 @@ class ArmsxH264Encoder implements VideoEncoder {
       }
       // A floor on the quantizer, so no single frame grows far past the average. While the
       // picture is still, CBR spends its budget on ever finer detail; the first frames after
-      // moving again, and a key frame, then came out at up to 130 KB against about 15 KB usual
-      // (test 17), and every frame behind one waited for it. Still scenes lose detail nobody
-      // sees at 720p; busy ones sit above the floor anyway.
+      // movement, and key frames, then come out several times larger than usual and every
+      // frame behind one waits for it. Still scenes lose detail nobody sees at 720p; busy
+      // ones sit above the floor anyway.
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         format.setInteger(MediaFormat.KEY_VIDEO_QP_I_MIN, MIN_QP_KEY_FRAME);
         format.setInteger(MediaFormat.KEY_VIDEO_QP_P_MIN, MIN_QP_FRAME);

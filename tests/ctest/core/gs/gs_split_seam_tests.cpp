@@ -30,7 +30,6 @@ namespace
 			Fixture::TearDown();
 		}
 
-		// The renderer with its back thread running, and a front parser object on top of it.
 		void BringUpSplit()
 		{
 			GSConfig.BackThread = true;
@@ -392,7 +391,6 @@ TEST_F(GSSplitSeamStalled, DisplayBlitIsNotCountedForABufferDisplayedLater)
 
 namespace
 {
-	/// A bare parser object, to set up draw-buffer slots directly.
 	class DrawBufferProbe final : public GSState
 	{
 	public:

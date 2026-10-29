@@ -45,7 +45,7 @@ namespace GSDriverReport
 		/// NaN and infinities have no JSON spelling and are written as null.
 		void Double(double value);
 		void Null();
-		/// Hex string "0x..." for IDs and bit masks, which read better that way than as decimals.
+		/// Written as a "0x..." string, for IDs and bit masks.
 		void Hex(uint64_t value);
 		/// A value that is already JSON, inserted verbatim. The caller vouches for its validity.
 		void Raw(std::string_view json);
@@ -91,7 +91,6 @@ namespace GSDriverReport
 			Raw(json);
 		}
 
-		/// True once every Begin has been matched by an End.
 		bool IsComplete() const { return m_stack.empty() && m_wrote_root; }
 
 		const std::string& GetString() const { return m_out; }

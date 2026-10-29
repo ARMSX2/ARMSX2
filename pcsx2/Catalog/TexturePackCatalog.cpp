@@ -55,7 +55,7 @@ namespace Catalog
 			return Trimmed(std::string_view(it->value.GetString(), it->value.GetStringLength()));
 		}
 
-		// A https link, or empty. These go to the network stack and the browser on someone else's say-so.
+		// An https link, or empty. Catalog URLs are fetched and opened in a browser, so nothing else is accepted.
 		std::string GetLink(const rapidjson::Value& object, const char* key)
 		{
 			std::string value = GetString(object, key);
@@ -223,8 +223,8 @@ namespace Catalog
 				return std::nullopt;
 			pack.parts = std::move(*parts);
 
-			// A split pack has no single archive URL. Older apps drop an entry without one, which
-			// is what they should do with a pack they cannot reassemble.
+			// A split pack has no single archive URL; older apps drop such an entry because they
+			// cannot reassemble it.
 			pack.download_url = GetLink(entry, "downloadUrl");
 			if (pack.parts.empty() && pack.download_url.empty())
 				return std::nullopt;
@@ -237,8 +237,7 @@ namespace Catalog
 			if (pack.size_bytes == 0 || pack.size_bytes > MAX_ARCHIVE_BYTES)
 				return std::nullopt;
 
-			// The parts must add up to the archive they claim to be. Catching it here beats
-			// finding out after several gigabytes have been transferred.
+			// The parts must add up to the archive size; check now rather than after the download.
 			if (!pack.parts.empty())
 			{
 				u64 sum = 0;
@@ -248,8 +247,7 @@ namespace Catalog
 					return std::nullopt;
 			}
 
-			// The digest is the only thing between a damaged or substituted download and the
-			// player's texture folder.
+			// The digest is the only integrity check on the downloaded archive, so it is required.
 			pack.sha256 = NormalizeSha256(GetString(entry, "sha256"));
 			if (pack.sha256.empty())
 				return std::nullopt;
@@ -285,10 +283,6 @@ namespace Catalog
 			return !first && (c == '.' || c == '_' || c == '-');
 		}
 	} // namespace
-
-	// -------------------------------------------------------------------------------------
-	// TexturePack
-	// -------------------------------------------------------------------------------------
 
 	std::string TexturePack::CreatorText() const
 	{
@@ -418,10 +412,6 @@ namespace Catalog
 		return found;
 	}
 
-	// -------------------------------------------------------------------------------------
-	// TexturePackCatalog
-	// -------------------------------------------------------------------------------------
-
 	std::vector<std::string> TexturePackCatalog::DefaultMirrors()
 	{
 		return {
@@ -543,10 +533,6 @@ namespace Catalog
 			stale.error = last_error.empty() ? stale.error : last_error + "; " + stale.error;
 		return stale;
 	}
-
-	// -------------------------------------------------------------------------------------
-	// Popularity
-	// -------------------------------------------------------------------------------------
 
 	bool IsValidPackId(std::string_view id)
 	{

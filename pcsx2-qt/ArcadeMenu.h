@@ -3,9 +3,9 @@
 
 #pragma once
 
-// System > Arcade: the cabinet's coin slots, Service button and Test switch, for an arcade game that is running.
-// The same four things the hotkeys do (Hotkeys.cpp), for a player with a mouse and no spare buttons. The menu is
-// greyed out unless an arcade game is running; every press is posted to the CPU thread, where the board lives.
+// System > Arcade: coin slots, Service button and Test switch for a running arcade game. Does the same as
+// the hotkeys (Hotkeys.cpp). Disabled unless an arcade game is running; presses are posted to the CPU
+// thread, where the board lives.
 
 #include <QtCore/QObject>
 

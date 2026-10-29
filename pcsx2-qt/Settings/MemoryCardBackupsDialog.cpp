@@ -52,7 +52,7 @@ struct MemoryCardBackupsDialog::ActionOutcome
 
 struct MemoryCardBackupsDialog::LoadOutcome
 {
-	std::string card; ///< The card the snapshots are of.
+	std::string card;
 	std::vector<std::string> cards_with_backups;
 	std::vector<MemcardBackup::Snapshot> snapshots;
 };

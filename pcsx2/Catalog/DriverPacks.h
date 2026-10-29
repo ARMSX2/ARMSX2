@@ -3,37 +3,35 @@
 
 #pragma once
 
-// Downloadable GPU driver packs for desktop Linux (Turnip on Adreno today): list what a feed
-// offers, install a pack, list and delete installed packs, and point the process at the selected
-// pack before Vulkan starts. The Qt and Big Picture UIs are thin callers of this header.
+// Downloadable GPU driver packs for desktop Linux (Turnip on Adreno): list a feed's packs,
+// install a pack, list and delete installed packs, and point the process at the selected pack
+// before Vulkan starts.
 //
-// How a pack takes effect: the Vulkan loader reads VK_DRIVER_FILES / VK_ICD_FILENAMES once, when
-// libvulkan is first used in the process, so a pack is applied by setting those two variables in
-// main() before any GS or Vulkan code runs (ApplyEnvironment) and a change needs a restart
-// (RelaunchAtExit). Nothing is installed into the system; deleting the pack's folder removes
-// every trace.
+// The Vulkan loader reads VK_DRIVER_FILES / VK_ICD_FILENAMES once, when libvulkan is first used
+// in the process. So ApplyEnvironment() must set them in main() before any GS or Vulkan code
+// runs, and changing the selection needs a restart (RelaunchAtExit). Nothing is installed
+// system-wide.
 //
 // On disk, per installed pack:
 //
 //   <DataRoot>/drivers/<id>/
-//       meta.json                     what the installer knew (name, version, build tag, ...)
-//       freedreno_icd.aarch64.json    the loader manifest, WRITTEN BY THE INSTALLER with
-//                                     library_path set to this pack's library as an absolute
-//                                     path. The manifest shipped in the archive points at the
-//                                     builder's device (/storage/turnip/...) and is replaced.
+//       meta.json                     name, version, build tag, ...
+//       freedreno_icd.aarch64.json    loader manifest, written by the installer with library_path
+//                                     set to this pack's library as an absolute path. The archive's
+//                                     own manifest points at the builder's device
+//                                     (/storage/turnip/...) and is replaced.
 //       libvulkan_freedreno.so        the driver
-//       ...                           whatever else the archive had beside the manifest
+//       ...                           anything else the archive had beside the manifest
 //
-// Settings: [EmuCore/GS] LinuxDriverPack = <id>; empty or absent = the system driver. Global
-// only (the driver is per process, not per game).
+// Setting: [EmuCore/GS] LinuxDriverPack = <id>; empty or absent = the system driver. Global only,
+// since the driver is per process, not per game.
 //
-// Threading: Manager methods block (network, disk, a test load of the library) and are meant for
-// a worker thread; two installs never run at once (the second returns InstallStatus::Busy).
+// Threading: Manager methods block (network, disk, a test load of the library) and belong on a
+// worker thread; two installs never run at once (the second returns InstallStatus::Busy).
 // Callbacks run on the calling thread. The free functions are safe from any thread, except that
 // ApplyEnvironment() must run before other threads start using Vulkan.
 //
-// Everything that does work is Linux only (not Android). On other platforms the same API
-// compiles and reports "not available".
+// Linux only; on other platforms the API compiles and reports "not available".
 
 #include "Catalog/CancelToken.h"
 #include "Catalog/Fetch.h"
@@ -50,8 +48,6 @@
 
 namespace DriverPacks
 {
-	// ---- Settings ------------------------------------------------------------------------------
-
 	static constexpr const char* SETTING_SECTION = "EmuCore/GS";
 	static constexpr const char* SETTING_KEY = "LinuxDriverPack";
 
@@ -62,8 +58,6 @@ namespace DriverPacks
 	/// Stores the selection (empty clears it) and commits the base settings. Does not apply it:
 	/// the new value takes effect at the next start (see RelaunchAtExit). Same lock rule.
 	void SetSelectedPack(const std::string& id);
-
-	// ---- Platform and GPU gating ----------------------------------------------------------------
 
 	/// "linux-aarch64", "linux-x86_64", ..., or empty where driver packs do not exist (Windows,
 	/// macOS, Android, iOS).
@@ -93,14 +87,11 @@ namespace DriverPacks
 
 	Availability GetAvailability(const std::string& sysfs_root = "/sys");
 
-	// ---- Feeds -----------------------------------------------------------------------------------
-
 	/// Where packs come from. Feeds are data: adding a source is adding an entry here.
 	struct Feed
 	{
 		/// Short stable token that starts every pack id from this feed, e.g. "armsx2turnip".
 		std::string id_prefix;
-		/// Shown to the user.
 		std::string label;
 		/// GitHub releases API URL, e.g. https://api.github.com/repos/<owner>/<repo>/releases.
 		std::string releases_url;
@@ -116,7 +107,6 @@ namespace DriverPacks
 	/// Today: bmdhacks/armsx2-turnip, assets turnip-<tag>-aarch64.tar.gz for linux-aarch64.
 	std::vector<Feed> DefaultFeeds();
 
-	/// One installable pack as a feed describes it.
 	struct RemoteDriver
 	{
 		/// Install folder name and settings value: "<id_prefix>-<tag>", lowercased, anything
@@ -124,7 +114,7 @@ namespace DriverPacks
 		std::string id;
 		std::string feed_label;
 		std::string tag; ///< release tag, e.g. "axfl2-002"
-		std::string release_name; ///< the release title
+		std::string release_name;
 		std::string published_at; ///< ISO 8601 as GitHub sends it
 		bool prerelease = false;
 		std::string asset_name;
@@ -158,8 +148,6 @@ namespace DriverPacks
 		bool used_stale_cache = false;
 	};
 
-	// ---- Installed packs ----------------------------------------------------------------------------
-
 	struct InstalledDriver
 	{
 		std::string id;
@@ -168,8 +156,8 @@ namespace DriverPacks
 		std::string feed_label; ///< empty for an imported archive
 		std::string build_tag; ///< the pack's own build tag, e.g. "axfl2-002"
 		/// The text this driver appends to Vulkan's driverInfo, e.g. "(git-axfl2-002)". It shows
-		/// in the GS log line "VK: GPU ... driver='...' (Mesa <ver> (git-<tag>))", which is how a
-		/// run proves the pack loaded. Empty if the pack did not say.
+		/// in the GS log line "VK: GPU ... driver='...' (Mesa <ver> (git-<tag>))", so a log proves
+		/// which pack loaded. Empty if the pack did not say.
 		std::string driver_info_token;
 		std::string mesa_version;
 		/// Window systems the build supports ("wayland"); a pack built for wayland only cannot
@@ -182,8 +170,6 @@ namespace DriverPacks
 		std::string manifest_path; ///< what VK_DRIVER_FILES points at
 		std::string library_path;
 	};
-
-	// ---- Install ------------------------------------------------------------------------------------
 
 	enum class InstallStage
 	{
@@ -208,14 +194,14 @@ namespace DriverPacks
 	{
 		Ok,
 		Cancelled,
-		Busy, ///< another install is running
+		Busy,
 		Unsupported, ///< not Linux
 		NoSpace,
 		DownloadFailed,
 		ChecksumMissing, ///< the release publishes no checksum; nothing was installed
 		ChecksumMismatch,
 		BadArchive, ///< not a .tar.gz, unsafe or oversized contents, no manifest or library
-		LoadFailed, ///< the library did not pass the test load
+		LoadFailed,
 		IoError,
 	};
 
@@ -315,10 +301,7 @@ namespace DriverPacks
 	/// Plain folder name: [a-z0-9._-], 1 to 128 characters, not starting with '.'.
 	bool IsValidDriverId(std::string_view id);
 
-	/// <DataRoot>/drivers.
 	std::string DriversDirectory();
-
-	// ---- Applying a pack to this process ----------------------------------------------------------------
 
 	enum class ApplyOutcome
 	{
@@ -358,17 +341,15 @@ namespace DriverPacks
 	/// "your launcher overrides this".
 	ApplyResult GetLastApplyResult();
 
-	// ---- First-run setup ------------------------------------------------------------------------------------
-
-	/// What the first-run setup (the Qt wizard, Big Picture) needs to know to decide whether to offer
-	/// the recommended pack. Plain data, so the decision is testable.
+	/// Inputs to the first-run decision of whether to offer the recommended pack. Plain data, so
+	/// the decision is testable.
 	struct SetupContext
 	{
 		Availability availability;
 		std::string selected_pack;
-		/// VK_DRIVER_FILES or VK_ICD_FILENAMES is in the environment: a launcher (ROCKNIX's) picked the
-		/// driver, and a selection would be ignored. ApplyEnvironment() does not note this while nothing is
-		/// selected, so the environment is read directly.
+		/// VK_DRIVER_FILES or VK_ICD_FILENAMES is in the environment: a launcher (ROCKNIX's) picked
+		/// the driver and a selection would be ignored. Read directly, because ApplyEnvironment()
+		/// does not record this while nothing is selected.
 		bool environment_sets_driver = false;
 		size_t installed_count = 0;
 		/// The packs present Wayland, so an X11 session cannot show one.
@@ -376,8 +357,7 @@ namespace DriverPacks
 	};
 
 	/// True when the setup should offer the recommended pack: this machine can use packs, the player
-	/// has neither chosen nor installed one, and no launcher decides the driver (the ROCKNIX launcher
-	/// sets VK_DRIVER_FILES, which a selection cannot override).
+	/// has neither chosen nor installed one, and no launcher decides the driver.
 	bool ShouldOfferInSetup(const SetupContext& context);
 
 	/// Reads the context from this process: the manager's availability and installed packs, the
@@ -388,9 +368,6 @@ namespace DriverPacks
 	/// the first. Listings are newest first. Null for an empty list.
 	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers);
 
-	// ---- Restart ------------------------------------------------------------------------------------------
-
-	/// What it takes to start this program again with the same arguments.
 	struct RelaunchPlan
 	{
 		/// File to execute. /proc/self/exe, or the image named by $APPIMAGE when running from an
@@ -426,11 +403,10 @@ namespace DriverPacks
 	/// The same exit-handler mechanism with a plan of the caller's choosing.
 	bool RelaunchAtExit(const RelaunchPlan& plan, std::string* error = nullptr);
 
-	/// The one for "Apply & Restart": captures the plan now (so a later failure to build it is
-	/// reported to the user while the app is still open) and registers an exit handler that runs
-	/// it. The UI then quits normally (stops the VM, saves settings, joins its threads); when
-	/// main() returns, this process is replaced by a fresh one. Safe to call twice (the
-	/// second call replaces the plan). No-op returning false on non-Linux. After a clean quit the
-	/// exit status of the old process no longer matters.
+	/// The one for "Apply & Restart": captures the plan now (so a failure to build it can be
+	/// reported while the app is still open) and registers an exit handler that runs it. The UI
+	/// then quits normally (stops the VM, saves settings, joins its threads); when main() returns,
+	/// this process is replaced by a fresh one. A second call replaces the plan. Returns false
+	/// without doing anything on non-Linux.
 	bool RelaunchAtExit(std::string* error = nullptr);
 } // namespace DriverPacks

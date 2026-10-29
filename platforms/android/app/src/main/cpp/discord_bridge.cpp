@@ -166,8 +166,8 @@ namespace
 		// one consumer has it.
 		std::string fresh_token;
 		// The refresh token from the same sign-in: handed to Kotlin the same way (fresh_refresh) and
-		// kept for this session (refresh_token). Discord's access tokens run out after about a
-		// week, and this renews one without sending the player through the sign-in again.
+		// kept for this session (refresh_token). Access tokens expire after about a week; this
+		// renews one without another sign-in.
 		std::string fresh_refresh;
 		std::string refresh_token;
 		// One renewal per refusal: a renewed token that is refused too means signing in again.
@@ -473,9 +473,9 @@ namespace
 			}
 			else if (status == discordpp::Client::Status::Disconnected)
 			{
-				// Discord refused the token, which it does once one runs out (about a week). Renew it
-				// from the refresh token and stay Connecting meanwhile; only when that cannot work is
-				// this a real disconnect, and then the sign-in is over (RenewSignIn tells Kotlin).
+				// Discord refuses an expired token (about a week). Renew it from the refresh token and
+				// stay Connecting; only when that cannot work is this a real disconnect (RenewSignIn
+				// tells Kotlin).
 				if (code == kAuthenticationFailed && RenewSignIn())
 					return;
 				SetStatus(BridgeStatus::Disconnected);

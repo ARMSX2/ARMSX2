@@ -453,16 +453,12 @@ void GSLocalMemoryFunctions::WriteImage(GSLocalMemory& mem, int& tx, int& ty, co
 	if (TRXREG.RRW == 0)
 		return;
 
-	// An odd width 4bpp transfer is one stream of nibbles that runs on across rows: the last pixel of a row takes the low
-	// nibble of a byte and the first pixel of the next row takes its high nibble, as on the console. Its rows do not start
-	// on a byte, so none of the code below, which moves whole bytes per row, can write it. WriteImageX walks the nibbles
-	// and keeps the cursor, so a transfer that arrives in pieces carries on from where the last piece stopped.
-	// GT3 demo, Jak 2 Japanese subtitles, and the BG Dark Alliance minimap do this.
-	//
-	// An odd start x is the same case for the same reason: the paths below take pixel x from nibble x & 1 of byte x / 2
-	// from a base they round down to a byte, so for an odd x every pixel would get its left neighbour's nibble, the first
-	// from the byte before the source, and the last nibble would be dropped. The console stores it as the same stream, at
-	// any width, so it goes the same way.
+	// A 4bpp transfer with an odd width or an odd start x is one stream of nibbles that runs on across rows, as on the
+	// console (see writeNibbleStream): the rows do not start on a byte. The paths below move whole bytes per row and
+	// take pixel x from nibble x & 1 of byte x / 2 of a base rounded down to a byte, so for an odd x every pixel would
+	// get its left neighbour's nibble, the first from the byte before the source, and the last nibble would be dropped.
+	// WriteImageX walks the nibbles and keeps the cursor, so a transfer that arrives in pieces carries on from where
+	// the last piece stopped.
 	if (trbpp == 4 && ((TRXREG.RRW | TRXPOS.DSAX) & 0x1))
 	{
 		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
@@ -662,8 +658,8 @@ void GSLocalMemoryFunctions::WriteImage4HL(GSLocalMemory& mem, int& tx, int& ty,
 	if (TRXREG.RRW == 0)
 		return;
 
-	// An odd width never takes the aligned path below (a row of it is not a whole number of bytes), and for a width of 1
-	// RRW / 2 is 0, which the length is divided by. Say so up front.
+	// An odd width is not a whole number of bytes per row, so it cannot take the aligned path below, and for a width
+	// of 1 RRW / 2 is 0, which the length is divided by.
 	if (TRXREG.RRW & 1)
 	{
 		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
@@ -705,8 +701,7 @@ void GSLocalMemoryFunctions::WriteImage4HH(GSLocalMemory& mem, int& tx, int& ty,
 	if (TRXREG.RRW == 0)
 		return;
 
-	// An odd width never takes the aligned path below (a row of it is not a whole number of bytes), and for a width of 1
-	// RRW / 2 is 0, which the length is divided by. Say so up front.
+	// As in WriteImage4HL: an odd width cannot take the aligned path, and RRW / 2 is 0 for a width of 1.
 	if (TRXREG.RRW & 1)
 	{
 		WriteImageX(mem, tx, ty, src, len, BITBLTBUF, TRXPOS, TRXREG);
@@ -834,7 +829,6 @@ static void writeNibbleStream(int& tx, int& ty, const u8* src, int len, int sx, 
 	if (ty >= ey)
 		return;
 
-	// The nibbles to write: what the bytes hold, or what is left of the rectangle if that is less.
 	int remaining = std::min(len * 2, (ey - ty) * w - (tx - sx));
 	int remX = ex - tx;
 

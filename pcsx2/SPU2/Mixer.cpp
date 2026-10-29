@@ -585,7 +585,7 @@ void spu2Mix()
 	// Note: Playmode 4 is SPDIF, which overrides other inputs.
 	// An arcade board's SPDIF (Time Crisis 4's EXSOUND board) consumes core 0's input at the HiFi rate,
 	// two samples per read, and has no transmitter we emulate: its raw ADMA input is mixed directly,
-	// bypassing InpVol (PCSX2x6). A console's SPDIF stays silent here, as before.
+	// bypassing InpVol (PCSX2x6). A console's SPDIF stays silent here.
 	const bool arcade_spdif = Arcade::IsActive() && (PlayMode & 4);
 	StereoOut32 RawInput0;
 	if (arcade_spdif)

@@ -67,15 +67,13 @@ static Threading::ThreadHandle s_cpu_thread_handle;
 static u64 s_last_cpu_time = 0;
 
 // The CPU thread's frame-work clock, in GetCPUTicks() units. It opens at the limiter's
-// post-sleep return and closes at the next Throttle() entry, so the interval it measures is
-// the frame's active work with the deliberate limiter sleep taken out. Zero means no period
-// is open, which is how a frame the limiter did not pace is refused rather than reported.
+// post-sleep return and closes at the next Throttle() entry, so it measures the frame's
+// active work with the deliberate limiter sleep taken out. Zero means no period is open, which
+// is how a frame the limiter did not pace is refused rather than reported.
 //
-// It is CPU-thread-owned and deliberately in the GetCPUTicks() domain rather than
-// Common::Timer's: on AArch64 that is one mrs of the architected counter instead of a vDSO
-// call, it is the same clock the limiter's own target is expressed in, and Throttle() already
-// reads it once per frame - so both consumers, the Android ADPF hint and the dynamic EE
-// cycle-rate sampler, share a single timestamp per frame instead of taking one each.
+// CPU-thread-owned. It uses the GetCPUTicks() domain rather than Common::Timer's: on AArch64
+// that is one mrs of the architected counter instead of a vDSO call, and it is the clock the
+// limiter's own target is expressed in.
 static u64 s_frame_work_start = 0;
 static u64 s_last_gs_time = 0;
 static u64 s_last_gs_back_time = 0;
@@ -653,11 +651,9 @@ static void AdpfEndWorkSegment(bool segment_open, u64 segment_ticks, bool frame_
 
 u64 PerformanceMetrics::OnFrameWorkSegmentComplete(u64 now_ticks, bool frame_end)
 {
-	// Called at Throttle() entry — the instant this segment of the frame's active CPU work
-	// finished, before the limiter sleep — so (now - work_start) excludes the deliberate limiter
-	// sleep. It is NOT pure CPU compute: the EE can still block behind a full MTGS queue that is
-	// itself stalled on presentation, so some present-wait leaks in. That is exactly why the
-	// cycle-rate sampler times the EE thread's GS and VU1 waits separately and subtracts them.
+	// Not pure CPU compute: the EE can still block behind a full MTGS queue that is itself
+	// stalled on presentation, so some present-wait leaks in. The cycle-rate sampler times the
+	// EE thread's GS and VU1 waits separately and subtracts them.
 	const bool segment_open = (s_frame_work_start != 0);
 	const u64 segment_ticks = (segment_open && now_ticks > s_frame_work_start) ? (now_ticks - s_frame_work_start) : 0;
 
@@ -672,8 +668,6 @@ u64 PerformanceMetrics::OnFrameWorkSegmentComplete(u64 now_ticks, bool frame_end
 
 void PerformanceMetrics::OnFrameWorkBegin()
 {
-	// Opens a work period at the post-sleep instant (Throttle exit), so the deliberate limiter
-	// sleep is excluded from the next measured duration.
 	s_frame_work_start = GetCPUTicks();
 }
 

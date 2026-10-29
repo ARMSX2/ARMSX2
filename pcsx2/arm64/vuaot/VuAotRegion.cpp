@@ -35,9 +35,7 @@ namespace vuaot
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
 		// With the sticky accumulators (LowerEnv::stickyAcc) these registers, the
-		// top of the allocation pools, are theirs for the whole region. (Taken from
-		// the home lists instead they cost the loops more than the accumulators
-		// saved: the homes they displaced were read in every block.)
+		// top of the allocation pools, are reserved for the whole region.
 		constexpr int kSaZReg = 14, kSaSReg = 13, kStkReg = 10;
 
 		// The ring slot holding a block's newest STATUS instance when it is entered
@@ -147,8 +145,8 @@ namespace vuaot
 			void* blk = nullptr;
 			u32 clamped[33] = {}; // clamped uses of each incoming vector register (NodeLowering::Check)
 			std::unique_ptr<NodeLowering> low; // analysed lowering of fn (refers to fn: Nodes do not move)
-			LiveSet liveOut;                   // variables live at the node's end (milestone 8)
-			LiveSet liveIn;                    // variables live at the node's head
+			LiveSet liveOut;
+			LiveSet liveIn;
 			// What the node's operations and its end read of the incoming state, and what its
 			// end writes (a value that is not the variable's own incoming one). `useAll` is
 			// microVU's reading of the block; `useNoChain` leaves out a status update's read of
@@ -162,15 +160,15 @@ namespace vuaot
 			// Checkpoints: what a bail to microVU's block for this node needs exact (see
 			// ComputeHandoffMasks). All variables unless the ring instances the block hides are dead.
 			LiveSet bailMask;
-			int map = 0;                       // its home map (maps_)
+			int map = 0;
 			int taken = 0x7fffffff, fall = 0x7fffffff; // >= 0: node; < 0: exit -(k+1)
 			std::vector<std::pair<u32, int>> jumps;    // JR/JALR: recorded target PC -> node / exit
 			a64::Label head;
 			void* entry = nullptr;
-			// Milestone 8: the cycle budget is tested only at checkpoints (loop
-			// heads) and at entries from microVU, against what the run can
-			// spend before the next test; short of it, the run goes on in
-			// microVU's own code for this block (bail).
+			// The cycle budget is tested only at checkpoints (loop heads) and at
+			// entries from microVU, against what the run can spend before the next
+			// test; short of it, the run goes on in microVU's own code for this
+			// block (bail).
 			bool checkpoint = false;
 			u32 need = 1;                  // budget that guarantees no microVU test fails before the next test
 			a64::Label bail, rec;
@@ -198,10 +196,10 @@ namespace vuaot
 		RegionTier& t_;
 		const MvuEmitEnv& env_;
 		LowerEnv le_;
-		bool acc_ = false; // sticky STATUS accumulation in this region
+		bool acc_ = false;
 		std::vector<std::unique_ptr<Node>> nodes_;
 		std::vector<std::unique_ptr<Exit>> exits_;
-		std::vector<HomeMap> maps_; // per map: the homes its nodes keep variables in (milestone 10)
+		std::vector<HomeMap> maps_; // per map: the homes its nodes keep variables in
 		bool hasMem_ = false;
 
 		ir::BuildOptions BuildOpts() const
@@ -217,8 +215,7 @@ namespace vuaot
 			return bo;
 		}
 
-		// Builds the node's IR and checks it lowers; `clamped`: its clamped uses
-		// of incoming vector registers, for the home choice.
+		// Builds the node's IR and checks that it lowers.
 		bool Lowerable(BlockResult& br, Node& n) const
 		{
 			if (!Internal(br))
@@ -323,15 +320,14 @@ namespace vuaot
 		nodes_[id]->taken = t;
 	}
 
-	// Milestone 8: where the cycle budget is tested. microVU tests it at every
-	// block's entry (mVUtestCycles: break when it is below 1, then spend the
-	// block's cycles). A run that starts a stretch of blocks with at least
-	// the most any path through the stretch spends before its last block,
-	// plus one, passes every one of those tests, so only the stretch's head
-	// needs one. Stretches end at checkpoints, the targets of the region's
-	// back edges (every cycle passes through one), and at exits, where
-	// microVU's own blocks test again. Every entry from microVU is tested the
-	// same way.
+	// Where the cycle budget is tested. microVU tests it at every block's entry
+	// (mVUtestCycles: break when it is below 1, then spend the block's cycles).
+	// A run that starts a stretch of blocks with at least the most any path
+	// through the stretch spends before its last block, plus one, passes every
+	// one of those tests, so only the stretch's head needs one. Stretches end at
+	// checkpoints (the targets of the region's back edges, so every cycle passes
+	// through one) and at exits, where microVU's own blocks test again. Every
+	// entry from microVU is tested the same way.
 	void RegionBuilder::PlanChecks()
 	{
 		const size_t NN = nodes_.size();
@@ -486,25 +482,18 @@ namespace vuaot
 		return true;
 	}
 
-	// Variant merging (RegionTier::merge). Two nodes may share one body when the body would be
-	// the same code and every link out of it goes to the same place: the coarsest partition of
-	// the nodes in which the members of a class have the same IR (SameCode) and, link by link,
-	// successors in one class (or the same exit). A class's members then run the same
-	// instructions, charge the same cycles and leave through the same links, whichever variant
-	// the run entered; so the body of its first member serves them all. What stays per node is
-	// its identity: its entry stub (the budget test against the class's need and the home
-	// loader, then the shared body), its bail record (an entry's budget bail resumes microVU's
-	// code for its own block) and its registration in microVU's block manager, which the walk
-	// has already made, unchanged.
+	// Variant merging (RegionTier::merge). Nodes share one body when they have the same
+	// IR (SameCode) and, link by link, their successors are in one class (or are the
+	// same exit): the coarsest partition with that property. The first member's body
+	// serves the whole class; each node keeps only its entry stub, its bail record (an
+	// entry's budget bail resumes microVU's code for its own block) and its
+	// registration in microVU's block manager.
 	//
-	// A node whose body names its own block cannot share: a loop head (its budget bail resumes
-	// microVU's code for that block, entered with its key) and a JR/JALR with run-time targets
-	// (its tail is microVU's jump cache for the block, and the key it compiles targets with).
-	// They stay classes of one. Every cycle of the region passes through a loop head, so no
-	// loop's nodes merge with another loop's, and the loop heads PlanChecks found stay valid
-	// for the merged graph: every cycle of it is the image of a cycle of the original. The
-	// class's need (PlanChecks) is part of the first split; members of a class have equal needs
-	// anyway, since their successors are pairwise in one class.
+	// A loop head (its budget bail resumes microVU's code for its own block) and a
+	// JR/JALR with run-time targets (its tail uses microVU's jump cache for its block)
+	// name their own block, so they stay classes of one. Every cycle passes through a
+	// loop head, so the loop heads PlanChecks found stay valid for the merged graph.
+	// The class's need (PlanChecks) is part of the first split.
 	void RegionBuilder::MergeVariants()
 	{
 		const size_t NN = nodes_.size();
@@ -713,20 +702,20 @@ namespace vuaot
 		}
 	}
 
-	// A bail at a checkpoint hands the run to microVU's own code for the node's block, and
-	// microVU's code carries on through its blocks from there. Under the exactness contract
-	// (exactness-contract.md) the flag-ring copies it hands over only have to be the ones that
-	// code can still READ: the copies that, on some path from the head, a reader or the first
-	// status update of a chain reads before anything overwrites them, and all twelve wherever the
-	// continuation leaves the region (a link out, a JR fallback), since what follows there is not
-	// analysed. A program end overwrites the whole ring with its broadcast, so only the copies
-	// it keeps (fS, fM, fC) survive to it. Nothing else of the ring is ever read: a run that stops
-	// after the bail saves the other copies as they are, stale, and the next dispatch resumes in a
-	// block that overwrites them before it reads them.
+	// A bail at a checkpoint hands the run to microVU's own code for the node's block,
+	// which carries on through its blocks from there. The flag-ring copies handed over
+	// only have to be the ones that code can still READ: those that, on some path from
+	// the head, a reader or the first status update of a chain reads before anything
+	// overwrites them. Where the continuation leaves the region (a link out, a JR
+	// fallback) all twelve are live, since what follows is not analysed. A program end
+	// overwrites the whole ring with its broadcast, so only the copies it keeps (fS,
+	// fM, fC) survive to it. The other copies are saved as they are, stale, and the
+	// next dispatch resumes in a block that overwrites them before it reads them.
 	//
-	// The analysis is the region's own liveness over the ring bits alone, with microVU's reads
-	// (useAll: the status chain's read of the previous instance included) and with a link into a
-	// checkpoint an ordinary edge, since microVU's continuation passes through the same blocks.
+	// The analysis is the region's liveness over the ring bits alone, with microVU's
+	// reads (useAll: the status chain's read of the previous instance included) and a
+	// link into a checkpoint as an ordinary edge, since microVU's continuation passes
+	// through the same blocks.
 	void RegionBuilder::ComputeHandoffMasks()
 	{
 		const LiveSet ring = RingBits();
@@ -790,12 +779,11 @@ namespace vuaot
 		}
 	}
 
-	// Milestone 8: which variables each node's end must hand on. Between the
-	// budget tests nothing outside the region sees the state, so a final value
-	// that every path overwrites before the next observation is dead: the
-	// observations are exits to microVU (links, JR fallbacks, program ends)
-	// and the heads of checkpoints (a bail there hands the run to microVU's block,
-	// which needs what ComputeHandoffMasks says).
+	// Which variables each node's end must hand on. Between the budget tests nothing
+	// outside the region sees the state, so a final value that every path overwrites
+	// before the next observation is dead. The observations are exits to microVU
+	// (links, JR fallbacks, program ends) and the heads of checkpoints (a bail there
+	// hands the run to microVU's block, which needs what ComputeHandoffMasks says).
 	void RegionBuilder::ComputeLiveness()
 	{
 		using namespace ir;
@@ -833,7 +821,6 @@ namespace vuaot
 			};
 			if (n.br.endKind == BlockEnd::EBit)
 			{
-				// A program end hands microVU one instance of each flag.
 				observe[i] = 1;
 				if (n.fn.end.valid)
 				{
@@ -1093,7 +1080,7 @@ namespace vuaot
 		// What a home saves: one load per node that reads the variable's
 		// incoming value and one store per node that writes it. What a clamped
 		// home saves: the clamp (two instructions) in each node that clamps the
-		// incoming value (a node clamps a value once, milestone 5).
+		// incoming value (a node clamps a value once).
 		// Blocks inside a loop (a cycle of region links) count eight times.
 		const size_t NN = nodes_.size();
 		std::vector<u32> weight(NN, 1);
@@ -1102,9 +1089,9 @@ namespace vuaot
 			std::vector<u8> cyclic;
 			int ncomp = 0;
 			FindLoops(comp, cyclic, ncomp);
-			// Milestone 10: each loop (a cyclic strongly connected component)
-			// gets its own homes, chosen for its own nodes; the rest share one
-			// map. Links between maps transfer the live variables.
+			// Each loop (a cyclic strongly connected component) gets its own
+			// homes, chosen for its own nodes; the rest share one map. Links
+			// between maps transfer the live variables.
 			std::vector<int> compMap(ncomp, -1);
 			int nmaps = 1;
 			for (size_t i = 0; i < NN; i++)
@@ -1459,7 +1446,6 @@ namespace vuaot
 			armAsm->Adr(a64::x8, &r.head);
 			armAsm->B(&loadAll[r.map]);
 		}
-		// Bodies.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
@@ -2009,15 +1995,15 @@ namespace vuaot
 		le.vuMemPinned = env.vuMemPinned;
 		if (dropSticky)
 		{
-			// (counted whatever the flag hack: the census of the premise)
+			// (counted whatever the flag hack is)
 			const bool readsSticky = ImageReadsSticky();
 			if (readsSticky)
 				stickyReaderImages_++;
 			else
 			{
-				// Owner decision j (2026-10-14): the flag hack on or off. With it off microVU's
-				// sticky bits are exact and the final STATUS of a program loses them here; the live
-				// tier's tripwire (microVU_VuAot-arm64.inl) turns `dropSticky` off for the rest of the
+				// Applies with the flag hack on or off. With it off microVU's sticky bits are
+				// exact, so the final STATUS of a program loses them here. The live tier's
+				// tripwire (microVU_VuAot-arm64.inl) turns `dropSticky` off for the rest of the
 				// session when a reader of those bits turns up.
 				le.dropSticky = true;
 				le.dropStickyMutation = dropStickyMutation;

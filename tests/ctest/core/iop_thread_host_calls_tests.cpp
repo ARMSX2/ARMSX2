@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// A call that only the CPU thread may make and nothing waits for (IOP thread design 8.4 and 8.12): pad and USB
-// vibration. Off and Lockstep make the call where the IOP code runs; Threaded posts it to the CPU thread.
+// Pad and USB vibration are calls that only the CPU thread may make and nothing waits for. Off and
+// Lockstep make the call where the IOP code runs; Threaded posts it to the CPU thread.
 
 #include "IopThread/EeBridge.h"
 #include "IopThreadTestSupport.h"
@@ -11,8 +11,6 @@
 #include <vector>
 
 using namespace iopt;
-
-// ================================================================ a call only the CPU thread may make
 
 TEST(CallOnCpuThread, OffAndLockstepCallItHere)
 {

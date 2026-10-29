@@ -16,15 +16,14 @@
 #include <string>
 #include <unordered_map>
 
-// ARMSX2: what an arcade game writes to a hard drive that is a CHD. A CHD cannot be written, and PCSX2x6
-// drops those writes, so a game read back what it wrote as it was before, in that session and the next.
-// They are kept here instead, in a file of their own beside the game's SRAM, and read back over the CHD.
+// ARMSX2: writes an arcade game makes to a hard drive that is a CHD. A CHD cannot be written, and PCSX2x6
+// drops those writes, so a game read back its old data in that session and the next. They are kept here
+// instead, in a file beside the game's SRAM, and applied over the CHD's data on read.
 //
-// The file is a header naming the drive it belongs to (its size and the CHD's SHA-1), then a record per
-// sector written: the sector's number (8 bytes) and its bytes. A sector written again is rewritten in its
-// record. A file made for another image (another dump of the game) is set aside, never read; a record a
-// crash cut short is left out. Little-endian, as every host is. Used on the emulator's CPU thread only, as
-// the rest of the drive is.
+// The file is a header naming the drive it belongs to (its size and the CHD's SHA-1), then one record per
+// written sector: the sector number (8 bytes) and its bytes. A sector written again is rewritten in place.
+// A file made for another image (another dump of the game) is set aside, never read; a record a crash cut
+// short is dropped. Little-endian. Emulator CPU thread only, like the rest of the drive.
 class ChdWrites
 {
 public:
@@ -134,7 +133,6 @@ public:
 		}
 	}
 
-	// How many sectors are kept.
 	size_t Count() const { return m_records.size(); }
 
 private:

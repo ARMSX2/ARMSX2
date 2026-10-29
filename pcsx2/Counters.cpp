@@ -615,7 +615,7 @@ static __fi void VSyncEnd(u64 sCycle)
 	if (!GSSMODE1reg.SINT)
 	{
 		hwIntcIrq(INTC_VBLANK_E); // HW Irq
-		IopBridge::VBlankEnd<M>(); // psxCounters vBlank End
+		IopBridge::VBlankEnd<M>();
 		rcntEndGate(true, sCycle); // Counters End Gate Code
 	}
 

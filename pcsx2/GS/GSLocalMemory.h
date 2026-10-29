@@ -520,20 +520,17 @@ protected:
 		return true;
 	}
 
-	/// Sets the bit of `block`.
 	__forceinline void SetBlockMarks(u32 block)
 	{
 		m_hash_dirty[block >> 6] |= u64(1) << (block & 63);
 	}
 
-	/// The 32 blocks of a page are half a word of the bitmap.
 	__forceinline void SetPageBlockMarks(u32 page)
 	{
 		static_assert(GS_BLOCKS_PER_PAGE == 32, "a page is half a word of the dirty bitmap");
 		m_hash_dirty[(page % GS_MAX_PAGES) >> 1] |= u64(0xFFFFFFFFu) << ((page & 1) * 32);
 	}
 
-	/// Whether all 32 blocks of a page are set.
 	__forceinline bool PageBlocksAllMarked(u32 page) const
 	{
 		const u64 bits = u64(0xFFFFFFFFu) << ((page & 1) * 32);
@@ -576,9 +573,9 @@ public:
 	// reads local memory knows its result still holds while no page it read has a stamp past the note (the
 	// texture hash memo does this).
 	//
-	// Marks are unconditional, whether or not the store changed a byte: an extra mark costs a recomputation, a
-	// missing one a stale result. Stores through a raw pointer (the CPU fallbacks in the hardware renderer, the
-	// software rasterizer) mark at their call site.
+	// Marks are unconditional, whether or not the store changed a byte, and may cover more than was written: an
+	// extra mark costs a recomputation, a missing one a stale result. Stores through a raw pointer (the CPU
+	// fallbacks in the hardware renderer, the software rasterizer) mark at their call site.
 	//
 	// Not atomic: stores and readers run on the thread that executes draws (the GS thread, or the back thread
 	// when the split is on, with the other thread drained at the seams).
@@ -607,13 +604,12 @@ public:
 	// hash cache: a block whose bit is set has no valid cached hash, and the cache clears the bit when it hashes
 	// the block. Nothing else clears it.
 	//
-	// It starts all set. The constructor's memset of local memory is not a mark, so a fresh memory has to read
-	// as entirely unseen. A hash cache that outlives the memory it described compares Id() with the id it last
-	// synced against and marks everything dirty (MarkAllHashDirty) on a mismatch.
+	// It starts all set (the constructor's memset is not a mark). A hash cache that outlives the memory it
+	// described compares Id() with the id it last synced against and marks everything dirty (MarkAllHashDirty)
+	// on a mismatch.
 	//
-	// A block is marked when any byte of a rectangle's pixels may live in it, not when its bytes changed: a
-	// mark that rewrites the same bytes is an extra rehash, never a missed one. Same threading as the stamps:
-	// not atomic.
+	// A block is marked when any byte of a rectangle's pixels may live in it, so a mark that rewrites the same
+	// bytes is an extra rehash, never a missed one. Not atomic, like the stamps.
 
 	/// Unique among every GSLocalMemory the process has made, and never reused.
 	__forceinline u32 Id() const { return m_id; }
@@ -622,7 +618,6 @@ public:
 	__forceinline bool HashDirty(u32 block) const { return DirtyBit(m_hash_dirty, block); }
 	/// Returns whether the bit was set, and clears it.
 	__forceinline bool TestAndClearHashDirty(u32 block) { return TestAndClearDirtyBit(m_hash_dirty, block); }
-	/// Sets the bit of every block.
 	void MarkAllHashDirty();
 
 	/// Marks of everything so far: a rectangle with no page set (MarkPagesWritten), a page range of every page,

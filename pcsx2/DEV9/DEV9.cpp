@@ -1335,8 +1335,8 @@ void DEV9async(u32 cycles)
 
 void DEV9CheckChanges(const Pcsx2Config& old_config)
 {
-	// Reopens the network adapter and the disk the IOP's DEV9 code is using: the CPU thread holds the IOP
-	// (IOP thread design 8.5).
+	// Reopens the network adapter and the disk the IOP's DEV9 code is using, so the CPU thread must hold
+	// the IOP while it runs.
 	IOP_SIDE_ASSERT();
 	if (!isRunning)
 		return;

@@ -17,7 +17,6 @@ class DiscDevTest {
         return DiscImage.open(ChannelSource(raf.channel) { raf.close() })
     }
 
-    /** Every hunk of every CHD decoded and checked against its stored CRC. */
     @Test
     fun chdHunksMatchTheirCrcs() {
         val discs = discs().filter { it.endsWith(".chd", ignoreCase = true) }
@@ -42,7 +41,6 @@ class DiscDevTest {
         }
     }
 
-    /** The disc-icon search on each image: where it found the icon, what it read, how long. */
     @Test
     fun findsIcons() {
         val discs = discs()
@@ -82,7 +80,6 @@ class DiscDevTest {
         javax.imageio.ImageIO.write(sheet, "png", File(dir, "sheet.png"))
     }
 
-    /** The volume descriptor and root directory read through each image. */
     @Test
     fun readsTheFileSystem() {
         val discs = discs()

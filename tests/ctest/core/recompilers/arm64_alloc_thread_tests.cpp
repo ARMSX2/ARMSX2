@@ -4,15 +4,14 @@
 // The register allocator's state belongs to the thread that is compiling.
 //
 // The EE recompiler, the IOP recompiler and mVU's COP2 macro mode share one allocator (iCore-arm64.cpp).
-// With the IOP on its own thread (IOP thread design, Threaded mode) an EE block and an IOP block compile
-// at the same time, so every piece of allocator state a compile reads or writes between its start and its
-// end has to be per thread: the GPR and NEON maps, the copies a branch saves and restores, the current
-// instruction's liveness info, and the allocation counters. A compile starts by clearing the maps
-// (_initArm64GPRregs, _initArm64NEONregs), so a map shared between threads is wiped under the compile
-// that is in the middle of using it.
+// With the IOP on its own thread an EE block and an IOP block compile at the same time, so all allocator
+// state a compile touches between its start and its end has to be per thread: the GPR and NEON maps, the
+// copies a branch saves and restores, the current instruction's liveness info, and the allocation
+// counters. A compile starts by clearing the maps (_initArm64GPRregs, _initArm64NEONregs), so a shared
+// map would be wiped under a compile that is still using it.
 //
 // Each test lets one thread get part way through a compile, lets a second thread run a whole compile's
-// worth of allocator calls, and then checks that the first thread's state is exactly what it left.
+// worth of allocator calls, and then checks that the first thread's state is unchanged.
 
 #include "arm64/iCore-arm64.h"
 
@@ -27,12 +26,11 @@
 
 namespace
 {
-	// Two threads take turns: Pass() hands the turn to the other and waits for it to come back. A turn that
-	// does not return in 20 s fails the test instead of hanging it.
+	// Two threads take turns: Give() hands the turn to the other and Wait() blocks until it comes back. A turn
+	// that does not return in 20 s fails the test instead of hanging it.
 	class Turns
 	{
 	public:
-		// Blocks until it is `who`'s turn.
 		bool Wait(int who)
 		{
 			std::unique_lock<std::mutex> lock(m_mutex);
@@ -148,7 +146,6 @@ TEST(Arm64AllocatorThreads, AnotherThreadsCompileDoesNotDisturbTheMaps)
 	bool unchanged = false, timed_out = false;
 	RunInterleaved(
 		[] {
-			// The IOP thread starts a block: it clears everything, then allocates a different amount.
 			EEINST other_inst = {};
 			FakeCompileStart(&other_inst, 9, 6);
 		},
@@ -159,7 +156,6 @@ TEST(Arm64AllocatorThreads, AnotherThreadsCompileDoesNotDisturbTheMaps)
 
 TEST(Arm64AllocatorThreads, TheMapsOfBothThreadsHoldWhatEachAllocated)
 {
-	// Each thread allocates a different number of registers and then reads back how many are in use.
 	std::atomic<int> a_in_use{-1}, b_in_use{-1};
 	Turns turns;
 	std::atomic<bool> timed_out{false};

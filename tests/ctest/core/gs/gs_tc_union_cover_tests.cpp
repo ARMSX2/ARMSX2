@@ -5,8 +5,8 @@
 //
 // The texture cache already retires a target when ONE dirty rectangle covers it: every pixel of the
 // target is then newer in local memory than on the GPU, so the GPU copy will never be used. The same
-// is true when several rectangles cover it between them (Call of Duty 2 and 3 fill two bloom targets
-// in 28 to 47 fragments a frame), and GSTextureCache::FullRectDirtyByUnion says so.
+// is true when several rectangles cover it between them, and GSTextureCache::FullRectDirtyByUnion
+// says so.
 //
 // DirtyRectsCover is pinned against a pixel-by-pixel model on random rectangle lists. The target
 // tests then go through InvalidateVideoMem, the call the renderer makes, and check that the target is
@@ -221,7 +221,7 @@ TEST(GSTcUnionCover, TheAreaIsTheValidRectangleNotTheTexture)
 	EXPECT_FALSE(Covers(l, PSMCT32, 10, 0xf, valid));
 }
 
-// More rectangles than the sweep holds: the target stays, which is what it did before this existed.
+// More rectangles than the sweep holds: the list is not treated as a cover, and the target stays.
 TEST(GSTcUnionCover, ALongerListThanTheSweepHoldsIsNotACover)
 {
 	std::vector<GSDirtyRect> l;
@@ -249,7 +249,6 @@ TEST(GSTcUnionCover, MatchesThePixelModelOnRandomLists)
 		const int style = static_cast<int>(rng() % 3);
 		if (style == 0)
 		{
-			// Rectangles at random.
 			const int n = 1 + static_cast<int>(rng() % 14);
 			for (int i = 0; i < n; i++)
 			{
@@ -395,8 +394,8 @@ TEST(GSTcUnionCover, MatchesThePixelModelOnTheEightPixelGrid)
 // What one test of a 47-rectangle list costs, for the record. Run with --gtest_also_run_disabled_tests.
 TEST(GSTcUnionCover, DISABLED_CostOfOneSweep)
 {
-	// 47 fragments that overlap and miss 128 pixels of 256x192: the shape of CoD2's target 279. Once with
-	// edges on the 8 pixel grid (the bitmap), once with the first rectangle's edge moved off it (the sweep).
+	// 47 fragments that overlap and miss 128 pixels of 256x192. Once with edges on the 8 pixel grid
+	// (the bitmap), once with the first rectangle's edge moved off it (the sweep).
 	for (const bool on_grid : {true, false})
 	{
 		std::vector<GSDirtyRect> l;
@@ -426,8 +425,6 @@ TEST(GSTcUnionCover, DISABLED_CostOfOneSweep)
 		}
 	}
 }
-
-// ---- the targets ----
 
 namespace
 {
@@ -502,7 +499,7 @@ TEST_F(GSTcUnionRetire, FragmentsThatTileTheTargetRetireIt)
 	EXPECT_EQ(GSTextureCache::GetUnionRetireStats().retired, before.retired + 1);
 }
 
-// The same writes with the retirement off leave the target, fully dirty, as it was before the change.
+// The same writes with the retirement off leave the target fully dirty.
 TEST_F(GSTcUnionRetire, OffLeavesTheFullyDirtyTargetAlone)
 {
 	BringUp();

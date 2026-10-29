@@ -39,9 +39,8 @@ namespace
 	// a start only to the CPU thread, so only the CPU thread reaches the wait accumulation.
 	EECycleRateTally s_tally;
 
-	// Charged to the frame in progress and read out at the frame boundary. CPU-thread
-	// owned: BeginWait() hands out a start only to the CPU thread, so only the CPU thread
-	// can reach the accumulate.
+	// Charged to the frame in progress and read out at the frame boundary. CPU-thread owned,
+	// for the same reason as s_tally.
 	u64 s_frame_gs_wait_ticks = 0;
 	u64 s_frame_vu1_wait_ticks = 0;
 
@@ -55,7 +54,7 @@ namespace
 		s_frame.Clear();
 	}
 
-	// --- window state, all CPU-thread owned --------------------------------------------
+	// The window state below is CPU-thread owned.
 
 	// Sampling at all. One predictable branch at the top of the per-frame entry point, so
 	// a build with the governor off pays a load and a not-taken branch per frame.
@@ -82,12 +81,9 @@ namespace
 	u64 s_tick_frequency = 0;
 	u64 s_window_close_ticks = 0;
 
-	// --- shadow mode and the development trace ------------------------------------------
-
-	// The controller runs and its decisions are recorded, but nothing is applied. This is
-	// what the trace is for: it says what the governor would have done to a run whose
-	// timing it did not change, which is the only way to judge a classifier against a
-	// fixed-rate A/B of the same scene.
+	// Shadow mode: the controller runs and its decisions are traced, but nothing is applied.
+	// The trace then shows what the governor would have done to a run whose timing it did
+	// not change, which allows comparing it against a fixed-rate A/B of the same scene.
 	bool s_shadow = false;
 
 	std::FILE* s_trace = nullptr;
@@ -105,16 +101,14 @@ namespace
 	bool s_ran_this_session = false;
 
 	// Transitions and ineffective verdicts for the whole session. The controller's own
-	// counters cannot answer this: they are per-run, and every lifecycle reset zeroes them
-	// - including the pause that precedes a shutdown, which is why the session line used to
-	// report zero of both however busy the run had been. The trace's per-window columns
-	// still come from the controller, because there they mean the run they are in.
+	// counters are per-run and every lifecycle reset zeroes them (including the pause that
+	// precedes a shutdown), so they cannot give session totals. The trace's per-window columns
+	// still come from the controller, because there they describe the run they are in.
 	u32 s_session_transitions = 0;
 	u32 s_session_ineffective = 0;
 
-	// Take the controller's counters into the session totals. Every caller is about to make
-	// them unreachable - a reset zeroes them, and at shutdown the session is over - so
-	// nothing is counted twice.
+	// Adds the controller's counters to the session totals. Every caller is about to lose them
+	// (a reset zeroes them, shutdown ends the session), so nothing is counted twice.
 	void FoldControllerCountsIntoSession()
 	{
 		const EECycleRateController::Snapshot snap = s_controller.GetSnapshot();
@@ -122,7 +116,6 @@ namespace
 		s_session_ineffective += snap.ineffective_count;
 	}
 
-	// The latest closed window, for EECycleRateSampler::GetLastWindow(). CPU-thread owned.
 	EECycleRateSampler::LastWindow s_last_window;
 	bool s_have_last_window = false;
 	u32 s_window_serial = 0;
@@ -235,8 +228,7 @@ namespace
 		if (path.empty() || s_trace)
 			return;
 
-		// Append: a scene is usually captured over several runs, and a run that silently
-		// truncated the one before it is a lost afternoon.
+		// Append rather than truncate: a scene is usually captured over several runs.
 		s_trace = FileSystem::OpenCFile(path.c_str(), "ab");
 		s_trace_header_written = false;
 		s_trace_game_written = false;
@@ -296,11 +288,9 @@ namespace
 		s_measuring_waits.store(s_active || s_tally_requested, std::memory_order_relaxed);
 	}
 
-	// The session summary's raw material. Time is charged to the selector the window
-	// actually ran at, which is why the caller passes it in rather than letting this read
-	// the live one: by the time this is called the window's own decision may already have
-	// moved the selector, and charging the window to the rate that replaced it would put
-	// the cost of a slow scene against the step taken to answer it.
+	// The session summary's raw material. Time is charged to the selector the window actually
+	// ran at, so the caller passes it in rather than this reading the live one: the window's
+	// own decision may already have moved the selector.
 	void AccountWindow(const EECycleRateWindowSample& sample, s8 effective_during_window)
 	{
 		s_windows_seen++;
@@ -351,7 +341,6 @@ namespace
 		gs_wait_seconds *= to_seconds;
 		vu1_wait_seconds *= to_seconds;
 
-		// Columns 1-12 are the replay contract; everything after is diagnostics.
 		std::fprintf(s_trace,
 			"%d,%u,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%s,"
 			"%u,%d,%.6f,%.6f,%.6f,%s,%d,%d,%d,%u,%u,%.3f,%.3f,%u,%u,%d,%d,%u,%u,%u,%u,%u,%s,%s\n",
@@ -365,15 +354,13 @@ namespace
 			snap.ineffective_count, applied ? 1 : 0, s_shadow ? 1 : 0, gen.ee, gen.iop, gen.vu0, gen.vu1, gen.vif,
 			CsvSafe(why.enabled).c_str(), CsvSafe(why.eligible).c_str());
 
-		// Per window, not per session: a trace whose tail is missing because the run was
-		// killed is exactly the trace of the run worth looking at.
+		// Flushed per window so the trace survives a killed run.
 		std::fflush(s_trace);
 	}
 
-	// Deliberately not inlined into OnFrameThrottled(). It is a big function - the window
-	// arithmetic, an eligibility resolution, a trace row - and inlined it forces its whole
-	// register save and its 576-byte stack frame onto the per-frame path, which runs it
-	// thirty times for every once this does.
+	// Not inlined into OnSegmentThrottled(). It is large (window arithmetic, eligibility
+	// resolution, a trace row), and inlined it would put its register saves and stack frame on
+	// the per-frame path, which runs about thirty times for each call of this.
 	__noinline void CloseWindow()
 	{
 		EECycleRateSampler::WindowInputs in;
@@ -393,21 +380,16 @@ namespace
 		EECycleRate::EligibilityReasons why;
 		const EECycleRateEligibility eligibility = EECycleRate::ResolveEligibility(EECycleRate::ReadEligibilityInputs(), &why);
 
-		// Shadow mode answers "what would the governor have done to this run", so the
-		// controller has to be told the switch is on - fed the real answer it would sit in
-		// Disabled and classify nothing, which is the opposite of observing. The suspension
-		// half is left alone: turbo and hardcore really do suspend it, and a shadow run
-		// should show that happening.
-		//
-		// The trace records what the controller was fed rather than what the settings say,
-		// because the twelve replay columns have to reproduce the decision column. The
-		// header's mode= says which run it was.
+		// Shadow mode: the controller has to be told the switch is on, or it sits in Disabled
+		// and classifies nothing. Suspensions (turbo, hardcore) are left alone so a shadow run
+		// still shows them. The trace records what the controller was fed, because the twelve
+		// replay columns have to reproduce the decision column; the header's mode= says which
+		// kind of run it was.
 		EECycleRateEligibility fed = eligibility;
 		if (s_shadow)
 		{
 			fed.enabled = true;
-			// ...and the reason column says so, rather than leaving the row claiming the
-			// governor is enabled next to a reason explaining that it is off.
+			// Keep the reason column consistent with that.
 			why.enabled = "shadow mode: the switch is off and the controller is told it is on";
 		}
 
@@ -471,8 +453,7 @@ EECycleRateWindowSample EECycleRateSampler::BuildWindowSample(const WindowInputs
 	if (in.frames == nullptr || in.frame_count == 0 || in.frame_count > kMaxWindowFrames || in.tick_frequency == 0)
 		return out; // valid stays false
 
-	// Per-frame ratios for the percentile, and running sums for everything else. One pass,
-	// because the window is at most kMaxWindowFrames long and this runs twice a second.
+	// Per-frame ratios for the percentile, and running sums for everything else.
 	float ratios[kMaxWindowFrames];
 	u32 ratio_count = 0;
 	u32 late_frames = 0;
@@ -517,10 +498,9 @@ EECycleRateWindowSample EECycleRateSampler::BuildWindowSample(const WindowInputs
 	out.gs_wait_ratio = SafeRatio(gs_wait_ticks, active_ticks);
 	out.vu1_wait_ratio = SafeRatio(vu1_wait_ticks, active_ticks);
 
-	// The CPU-time cross-check is optional: a platform or a harness that cannot read the
-	// thread's CPU time reports zero rather than invalidating the window, because nothing
-	// in the policy gates on it - it is there to be read in a trace when a downshift looks
-	// wrong.
+	// The CPU-time cross-check is optional: a platform or harness that cannot read the
+	// thread's CPU time reports zero rather than invalidating the window. No policy rule
+	// gates on it; it is for reading in a trace when a downshift looks wrong.
 	if (in.cpu_time_frequency != 0)
 	{
 		const double cpu_seconds = static_cast<double>(in.cpu_time_delta) / static_cast<double>(in.cpu_time_frequency);
@@ -699,8 +679,7 @@ void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks,
 		return;
 
 	// Every paced frame goes into the tally, measurable or not: a frame with a missing segment
-	// has no known length, but it still ended at the limiter and is one of the frames the speed
-	// is made of.
+	// has no known length, but it still ended at the limiter.
 	s_tally.NoteFrame(s_frame);
 
 	if (!s_active)
@@ -729,9 +708,8 @@ void EECycleRateSampler::OnSegmentThrottled(u64 segment_ticks, u64 target_ticks,
 
 	ClearFrameInProgress();
 
-	// The array bound is the second close condition, not a drop condition: a limiter target
-	// short enough to fit more than kMaxWindowFrames into the window closes it early, and
-	// the sample still describes exactly the frames it counted.
+	// The array bound is a second close condition: a limiter target short enough to fit more
+	// than kMaxWindowFrames into the window closes it early instead of dropping frames.
 	if (s_window_target_ticks >= s_window_close_ticks || s_frame_count >= kMaxWindowFrames)
 		CloseWindow();
 }

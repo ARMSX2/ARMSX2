@@ -112,8 +112,8 @@ static void atapi_complete_nodata() {
     ACCORE::intr(ACCORE::INTRN_ATA);
 }
 
-// Signal command error: clears transfer state and sets R_NSECTOR=0x03 (I/O=1, C/D=1)
-// to indicate the device is ready for a new command after an error.
+// Command error: clears transfer state; R_NSECTOR=0x03 (I/O=1, C/D=1) tells the host the device
+// is ready for a new command.
 static void atapi_complete_error() {
     atapi_pio_len = 0;
     atapi_pio_pos = 0;
@@ -139,7 +139,7 @@ u16 ACATAPI::pio_read_word() {
             CLRB(ACATA::R_STATUS, ATA_STAT_DRQ);
             ACATA::R_STATUS |= ATA_STAT_READY;
             ACCORE::intr(ACCORE::INTRN_ATA);
-        } else if (atapi_pio_chunk && (bytepos % atapi_pio_chunk) == 0) { // end of a chunk: set up the next one
+        } else if (atapi_pio_chunk && (bytepos % atapi_pio_chunk) == 0) {
             CLRB(ACATA::R_STATUS, ATA_STAT_DRQ);
             ACATA::R_STATUS |= ATA_STAT_BUSY;
             atapi_pio_chunk_busy = 1;
@@ -158,7 +158,7 @@ bool ACATAPI::has_pio_data() {
 void ACATAPI::chunk_poll() {
     if (atapi_pio_chunk_busy == 0)
         return;
-    if (atapi_pio_chunk_busy++ < 3) // wait a few polls before offering the next chunk
+    if (atapi_pio_chunk_busy++ < 3)
         return;
     atapi_pio_chunk_busy = 0;
     u32 next = std::min(atapi_pio_len - atapi_pio_pos * 2, atapi_pio_chunk);

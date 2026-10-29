@@ -1,13 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Tests for the parts of the texture upscaler that have no GS dependencies
-// (GS/Renderers/HW/GSTextureUpscaleSupport.h): the bounded newest-first job queue, the scale a
-// texture is upscaled by, the count of guest mip levels an upscaled texture can take, the one or
-// two 2x passes of a level's upscale, the pass that clamps an upscaled image to the range of its
-// source, the pass that keeps hard alpha edges, the CPU box filtered mip chain, and the rule for which draws read texels as colours
-// (GS/Renderers/HW/GSTexelAddressedDraw.h, header only like the rest).
-//
+// Tests for the texture upscaler's GS-independent parts (GS/Renderers/HW/GSTextureUpscaleSupport.h)
+// and the rule for which draws read texels as colours (GS/Renderers/HW/GSTexelAddressedDraw.h).
 // The upscale tests run the real engine with the shipped filters in bin/resources/upscale/raisr/ps2.
 
 #include "GS/Renderers/HW/GSTexelAddressedDraw.h"
@@ -39,7 +34,7 @@ namespace
 		std::vector<u8> data;
 	};
 
-	// Pixel (x, y) of an RGBA8 image with the given pitch.
+	// An RGBA8 image of w x h at the given byte pitch, channel c of pixel (x, y) from fn.
 	std::vector<u8> MakeImage(u32 w, u32 h, u32 pitch, u8 (*fn)(u32 x, u32 y, u32 c))
 	{
 		std::vector<u8> img(static_cast<size_t>(pitch) * h, 0xEE); // padding is poisoned
@@ -74,10 +69,6 @@ namespace
 	}
 } // namespace
 
-// ---------------------------------------------------------------------------------------------
-//  BoundedLifoQueue
-// ---------------------------------------------------------------------------------------------
-
 TEST(GsTextureUpscaleQueue, PopsNewestFirst)
 {
 	BoundedLifoQueue<int> q(8, 1000);
@@ -105,7 +96,6 @@ TEST(GsTextureUpscaleQueue, ItemCapDropsTheOldest)
 	for (int i = 1; i <= 5; i++)
 		q.Push(i, 1, &dropped);
 
-	// 1 and 2 were pushed out, in the order they were the oldest.
 	EXPECT_EQ(dropped, (std::vector<int>{1, 2}));
 	EXPECT_EQ(q.Size(), 3u);
 	EXPECT_EQ(*q.PopNewest(), 5);
@@ -208,10 +198,6 @@ TEST(GsTextureUpscaleQueue, PendingMarksFollowTheQueue)
 	EXPECT_TRUE(pending.insert(3).second);
 }
 
-// ---------------------------------------------------------------------------------------------
-//  UpscaledMipLevelCount
-// ---------------------------------------------------------------------------------------------
-
 TEST(GsTextureUpscaleLevels, PowerOfTwoSquareTakesEveryLevel)
 {
 	// The native texture never asks for more levels than its size has (log2 + 1), or than the
@@ -308,10 +294,6 @@ TEST(GsTextureUpscaleLevels, ScaleFourTakesTheSameLevelsAsScaleTwo)
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
-//  UpscaleScaleForSize
-// ---------------------------------------------------------------------------------------------
-
 TEST(GsTextureUpscaleScale, FourTimesUpToFiveHundredTwelve)
 {
 	EXPECT_EQ(UpscaleScaleForSize(true, 512, 512), 4u);
@@ -338,10 +320,6 @@ TEST(GsTextureUpscaleScale, TwoTimesWhenTheFourTimesModeIsOff)
 	EXPECT_EQ(UpscaleScaleForSize(false, 1024, 1024), 2u);
 }
 
-// ---------------------------------------------------------------------------------------------
-//  UpscaleRGBA8: one or two 2x passes
-// ---------------------------------------------------------------------------------------------
-
 namespace
 {
 	std::shared_ptr<const GSTextureUpscaler::FilterSet> LoadShipped()
@@ -366,7 +344,6 @@ namespace
 		});
 	}
 
-	// A pitch-w*4 image of one colour.
 	std::vector<u8> ConstantImage(u32 w, u32 h, u8 r, u8 g, u8 b, u8 a)
 	{
 		std::vector<u8> img(static_cast<size_t>(w) * h * 4);
@@ -619,13 +596,11 @@ TEST(GsTextureUpscaleAlpha, ABinaryMaskKeepsItsExactEdges)
 	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
-	// Katamari's King of All Cosmos draws his eyes as a 64x32 texture of two rectangles: alpha 0x80
-	// inside each and 0 around them. Draws against it alpha test NOTEQUAL 0 with depth writes, and
-	// the face is drawn after, behind them. Interpolated alpha gave each rectangle a ring of small
-	// non-zero alpha: it passed the test and kept the face out, but blended almost none of the eye
-	// over the dark cloud behind, a dark frame like glasses. A mask has to come out with the
-	// original's edges, whatever the scale and whichever pass made the colours (the filter, or
-	// bilinear for a level too small for it).
+	// A binary alpha mask (here Katamari's eye mask: 0x80 inside two rectangles, 0 around them) must
+	// come out with the original's edges at any scale, whichever pass made the colours (the filter, or
+	// bilinear for a level too small for it). Interpolated alpha would leave a ring of small non-zero
+	// alpha that passes the game's alpha test NOTEQUAL 0 and writes depth but blends almost nothing,
+	// a dark frame round each rectangle.
 	const std::pair<u32, u32> sizes[] = {{64, 32}, {24, 16}, {8, 8}, {7, 9}, {4, 4}, {3, 5}, {1, 8}};
 	const std::pair<u8, u8> levels[] = {{0, 0x80}, {0x10, 0xFF}};
 	for (const auto& [lo, hi] : levels)
@@ -660,13 +635,12 @@ TEST(GsTextureUpscaleAlpha, ABinaryMaskKeepsItsExactEdges)
 
 TEST(GsTextureUpscaleAlpha, DarkTransparentTexelsDoNotDarkenTheOpaqueSide)
 {
-	// Katamari's King of All Cosmos eye mask: the texels around the two rectangles are black and
-	// alpha 0, the rectangles dark grey and alpha 0x80. The colour of a transparent texel is the
-	// game's to choose and nothing on screen is meant to show it, but interpolating across the edge
-	// blends it into the opaque pixel next to the edge, and the clamp to the range of the four source
-	// texels allows that because the black texel is one of them. With the alpha edge kept exact that
-	// pixel is drawn, a dark outline round each rectangle. No pixel on the opaque side may come out
-	// darker than the opaque colour, which is the darkest thing in the opaque texels.
+	// Katamari's eye mask: the texels around the two rectangles are black with alpha 0, the rectangles
+	// dark grey with alpha 0x80. A transparent texel's colour is not meant to show, but interpolating
+	// across the edge blends it into the opaque pixel next to the edge, and the clamp to the range of
+	// the four source texels allows that because the black texel is one of them. With the alpha edge
+	// kept exact that pixel is drawn, as a dark outline. So no pixel on the opaque side may come out
+	// darker than the opaque colour, the darkest thing in the opaque texels.
 	const u8 opaque[3] = {62, 60, 56};
 	const u32 w = 64, h = 32;
 	std::vector<u8> src(static_cast<size_t>(w) * h * 4, 0);
@@ -717,11 +691,10 @@ TEST(GsTextureUpscaleAlpha, AGradientKeepsItsInterpolatedAlpha)
 	const auto f = LoadShipped();
 	ASSERT_TRUE(f);
 
-	// Black bakes its lighting into the alpha of 256x256 lightmaps and reads them with a bilinear
-	// sampler and a blend that scales the framebuffer by that alpha. Replacing a gradient's
-	// interpolated alpha with each texel's own made it a staircase, which the blend turned into
-	// broad dark bands. Where neighbouring texels differ by less than a hard edge, alpha has to come
-	// out as the plain bilinear upscale of the source.
+	// Where neighbouring texels differ by less than a hard edge, alpha must come out as the plain
+	// bilinear upscale of the source. Replacing it with each texel's own alpha makes a staircase, which
+	// a blend that scales the framebuffer by that alpha (lightmaps read with a bilinear sampler) turns
+	// into broad dark bands.
 	const std::pair<u32, u32> sizes[] = {{32, 16}, {6, 5}};
 	for (const auto& [w, h] : sizes)
 	{
@@ -762,10 +735,6 @@ TEST(GsTextureUpscaleChain, ASixHundredSquareTextureIsUpscaledByTwoNotFour)
 	for (size_t i = out_bytes; i < dst.size(); i++)
 		ASSERT_EQ(dst[i], 0xEE) << "past the end at " << i;
 }
-
-// ---------------------------------------------------------------------------------------------
-//  BuildBoxMipChain
-// ---------------------------------------------------------------------------------------------
 
 TEST(GsTextureUpscaleMips, ChainSizesMatchAFullTexture)
 {
@@ -938,10 +907,6 @@ TEST(GsTextureUpscaleMips, NoLevelsRequested)
 	EXPECT_TRUE(mips.empty());
 }
 
-// ---------------------------------------------------------------------------------------------
-//  ClampUpscaledToSourceRange
-// ---------------------------------------------------------------------------------------------
-
 namespace
 {
 	// Smallest and largest value of channel c over the four source texels output pixel (x, y) is
@@ -1029,9 +994,9 @@ TEST(GsTextureUpscaleClamp, OutputInsideTheRangeIsNotTouched)
 
 TEST(GsTextureUpscaleClamp, ARingingEdgeComesOutFlatOnBothSides)
 {
-	// A vertical step from 113 to 223 between source columns 7 and 8, with the values from the
-	// Katamari swatch that showed this. The "upscaler output" overshoots the way Intel's sharp
-	// RAISR filters did: 82 and 87 below the dark side, 252 and 248 above the bright side.
+	// A vertical step from 113 to 223 between source columns 7 and 8 (values from a Katamari swatch).
+	// The simulated upscaler output overshoots the way sharp RAISR filters do: 82 and 87 below the
+	// dark side, 252 and 248 above the bright side.
 	const u32 w = 16, h = 4;
 	const std::vector<u8> src = MakeImage(w, h, w * 4, [](u32 x, u32, u32 c) -> u8 {
 		return c == 3 ? 128 : (x < 8 ? 113 : 223);
@@ -1081,10 +1046,6 @@ TEST(GsTextureUpscaleClamp, EmptyImageIsANoOp)
 	for (u8 b : dst)
 		EXPECT_EQ(b, 0x55);
 }
-
-// ---------------------------------------------------------------------------------------------
-//  GSTexelAddressedDraw.h
-// ---------------------------------------------------------------------------------------------
 
 TEST(GsTexelAddressedDraw, KatamariWallMagnifiesItsTexels)
 {
