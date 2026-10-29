@@ -44,6 +44,11 @@ static float ARMSX2EnforceRetroAchievementsHardcoreFloatSetting(const char* sect
             ARMSX2LogRetroAchievementsHardcoreBlock("slowdown_slomo_scalar");
             return 1.0f;
         }
+        // 0 is unlimited, which the core's hardcore clamp keeps too.
+        if (std::strcmp(key, "TurboScalar") == 0 && value > 0.0f && value < 1.0f) {
+            ARMSX2LogRetroAchievementsHardcoreBlock("slowdown_turbo_scalar");
+            return 1.0f;
+        }
     } else if (std::strcmp(section, "EmuCore/GS") == 0) {
         if (std::strcmp(key, "FramerateNTSC") == 0 &&
             std::fabs(value - Pcsx2Config::GSOptions::DEFAULT_FRAME_RATE_NTSC) > 0.001f) {
@@ -86,13 +91,13 @@ static void ARMSX2ApplyLiveFloatSetting(const char* section, const char* key, fl
     if (std::strcmp(section, "Framerate") != 0)
         return;
 
-    const float clamped = ARMSX2SanitizedNominalScalar(value);
     if (std::strcmp(key, "NominalScalar") == 0) {
+        const float clamped = ARMSX2SanitizedNominalScalar(value);
         ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.NominalScalar = clamped; });
     } else if (std::strcmp(key, "TurboScalar") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.TurboScalar = clamped; });
+        ARMSX2ApplyLiveTargetSpeedSetting([value]() { EmuConfig.EmulationSpeed.TurboScalar = value; });
     } else if (std::strcmp(key, "SlomoScalar") == 0) {
-        ARMSX2ApplyLiveTargetSpeedSetting([clamped]() { EmuConfig.EmulationSpeed.SlomoScalar = clamped; });
+        ARMSX2ApplyLiveTargetSpeedSetting([value]() { EmuConfig.EmulationSpeed.SlomoScalar = value; });
     }
 }
 
@@ -327,6 +332,10 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 
 + (void)setINIFloat:(nonnull NSString *)section key:(nonnull NSString *)key value:(float)value {
     if (!ARMSX2HasBaseSettings()) return;
+    const bool speedScalar = std::strcmp(section.UTF8String, "Framerate") == 0 &&
+        (std::strcmp(key.UTF8String, "TurboScalar") == 0 || std::strcmp(key.UTF8String, "SlomoScalar") == 0);
+    if (speedScalar && (!std::isfinite(value) || value < 0.0f))
+        return;
     float valueToStore = value;
     valueToStore = ARMSX2EnforceRetroAchievementsHardcoreFloatSetting(section.UTF8String, key.UTF8String, valueToStore);
     if (std::strcmp(section.UTF8String, "Framerate") == 0 && std::strcmp(key.UTF8String, "NominalScalar") == 0)
