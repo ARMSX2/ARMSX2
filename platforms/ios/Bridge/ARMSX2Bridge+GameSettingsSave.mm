@@ -25,7 +25,8 @@ static constexpr int ARMSX2TriFilterUseGlobalSentinel = std::numeric_limits<int>
 // Exact 7 only.
 void ARMSX2MigratePerGameDeinterlaceBlend(SettingsInterface* si)
 {
-    if (!si || si->GetBoolValue("ARMSX2iOS/Migrations", "PerGameDeinterlaceBlendV1", false))
+    // si is Host's base layer, kept for the null check; the flag goes through the locked accessors.
+    if (!si || Host::GetBaseBoolSettingValue("ARMSX2iOS/Migrations", "PerGameDeinterlaceBlendV1", false))
         return;
 
     FileSystem::FindResultsArray files;
@@ -47,8 +48,8 @@ void ARMSX2MigratePerGameDeinterlaceBlend(SettingsInterface* si)
             repaired++;
     }
 
-    si->SetBoolValue("ARMSX2iOS/Migrations", "PerGameDeinterlaceBlendV1", true);
-    si->Save();
+    Host::SetBaseBoolSettingValue("ARMSX2iOS/Migrations", "PerGameDeinterlaceBlendV1", true);
+    Host::CommitBaseSettingChanges();
     std::fprintf(stderr, "@@IOS_DEINTERLACE_MIGRATION@@ scanned=%zu repaired=%u\n", files.size(), repaired);
     std::fflush(stderr);
 }
@@ -198,16 +199,16 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
             else
                 si.SetBoolValue(section, key, value);
         };
-        const bool globalEnableCheats = g_p44_settings_interface ?
-            g_p44_settings_interface->GetBoolValue("EmuCore", "EnableCheats", false) : false;
-        const bool globalEnablePatches = g_p44_settings_interface ?
-            g_p44_settings_interface->GetBoolValue("EmuCore", "EnablePatches", true) : true;
-        const bool globalEnableGameFixes = g_p44_settings_interface ?
-            g_p44_settings_interface->GetBoolValue("EmuCore", "EnableGameFixes", true) : true;
-        const bool globalUserHacks = g_p44_settings_interface ?
-            g_p44_settings_interface->GetBoolValue("EmuCore/GS", "UserHacks", false) : false;
-        const int globalEECoreType = g_p44_settings_interface ?
-            g_p44_settings_interface->GetIntValue("EmuCore/CPU", "CoreType", 2) : 2;
+        const bool globalEnableCheats = ARMSX2HasBaseSettings() ?
+            Host::GetBaseBoolSettingValue("EmuCore", "EnableCheats", false) : false;
+        const bool globalEnablePatches = ARMSX2HasBaseSettings() ?
+            Host::GetBaseBoolSettingValue("EmuCore", "EnablePatches", true) : true;
+        const bool globalEnableGameFixes = ARMSX2HasBaseSettings() ?
+            Host::GetBaseBoolSettingValue("EmuCore", "EnableGameFixes", true) : true;
+        const bool globalUserHacks = ARMSX2HasBaseSettings() ?
+            Host::GetBaseBoolSettingValue("EmuCore/GS", "UserHacks", false) : false;
+        const int globalEECoreType = ARMSX2HasBaseSettings() ?
+            Host::GetBaseIntSettingValue("EmuCore/CPU", "CoreType", 2) : 2;
         writeIfDifferent("EmuCore", "EnableCheats", enableCheats, globalEnableCheats);
         writeIfDifferent("EmuCore", "EnablePatches", enablePatches, globalEnablePatches);
         writeIfDifferent("EmuCore", "EnableGameFixes", enableGameFixes, globalEnableGameFixes);
@@ -219,8 +220,8 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
             si.SetIntValue("EmuCore/CPU", "CoreType", eeCoreType);
             si.SetBoolValue("EmuCore/CPU", "UseArm64Dynarec", eeCoreType == 2);
         }
-        const bool globalMTVU = g_p44_settings_interface ?
-            g_p44_settings_interface->GetBoolValue("EmuCore/Speedhacks", "vuThread", true) : true;
+        const bool globalMTVU = ARMSX2HasBaseSettings() ?
+            Host::GetBaseBoolSettingValue("EmuCore/Speedhacks", "vuThread", true) : true;
         if (mtvu == globalMTVU) {
             si.DeleteValue("ARMSX2iOS/PerGame", "ManualMTVU");
             si.DeleteValue("ARMSX2iOS/PerGame", "ManualMTVUVersion");

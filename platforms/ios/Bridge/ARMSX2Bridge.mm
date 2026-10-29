@@ -525,9 +525,9 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
             result = VMManager::ChangeDisc(CDVD_SourceType::Iso, nativePath);
         }, true);
 
-        if (result && g_p44_settings_interface) {
-            g_p44_settings_interface->SetStringValue("GameISO", "BootISO", isoName.UTF8String);
-            g_p44_settings_interface->Save();
+        if (result && ARMSX2HasBaseSettings()) {
+            Host::SetBaseStringSettingValue("GameISO", "BootISO", isoName.UTF8String);
+            Host::CommitBaseSettingChanges();
         }
 
         ARMSX2_PostRuntimeMenuStateChanged();
@@ -566,7 +566,7 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 }
 
 + (void)bootISO:(nonnull NSString *)isoName {
-	if (!g_p44_settings_interface) {
+	if (!ARMSX2HasBaseSettings()) {
 		std::fprintf(stderr, "@@BOOT_SET_ISO@@ status=no_settings input=\"%s\"\n", isoName ? isoName.UTF8String : "");
 		std::fflush(stderr);
 		return;
@@ -582,13 +582,14 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 		isoName ? isoName.UTF8String : "", bootValue ? bootValue.UTF8String : "", resolvedPath ? resolvedPath.UTF8String : "",
 		resolvedPath.length > 0 ? 1 : 0, bootValue.isAbsolutePath ? 1 : 0);
 	std::fflush(stderr);
-	g_p44_settings_interface->SetStringValue("GameISO", "BootISO", bootValue.UTF8String);
-	const bool fastBoot = g_p44_settings_interface->GetBoolValue(
-		"GameISO", "FastBoot",
-		g_p44_settings_interface->GetBoolValue("EmuCore", "EnableFastBoot", false));
-	g_p44_settings_interface->SetBoolValue("GameISO", "FastBoot", fastBoot);
-	g_p44_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
-	g_p44_settings_interface->Save();
+	bool fastBoot = false;
+	ARMSX2EditBaseSettings([&](SettingsInterface& si) {
+		si.SetStringValue("GameISO", "BootISO", bootValue.UTF8String);
+		fastBoot = si.GetBoolValue("GameISO", "FastBoot", si.GetBoolValue("EmuCore", "EnableFastBoot", false));
+		si.SetBoolValue("GameISO", "FastBoot", fastBoot);
+		si.SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
+	});
+	Host::CommitBaseSettingChanges();
 	std::fprintf(stderr, "@@BOOT_FASTBOOT_SET@@ value=%d source=settings\n", fastBoot ? 1 : 0);
 	std::fflush(stderr);
 }
@@ -596,14 +597,14 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 #pragma mark - Favorites
 
 + (BOOL)isFavorite:(nonnull NSString *)isoName {
-    if (!g_p44_settings_interface) return NO;
-    return g_p44_settings_interface->GetBoolValue("Favorites", isoName.UTF8String, false);
+    if (!ARMSX2HasBaseSettings()) return NO;
+    return Host::GetBaseBoolSettingValue("Favorites", isoName.UTF8String, false);
 }
 
 + (void)setFavorite:(nonnull NSString *)isoName favorite:(BOOL)favorite {
-    if (!g_p44_settings_interface) return;
-    g_p44_settings_interface->SetBoolValue("Favorites", isoName.UTF8String, favorite);
-    g_p44_settings_interface->Save();
+    if (!ARMSX2HasBaseSettings()) return;
+    Host::SetBaseBoolSettingValue("Favorites", isoName.UTF8String, favorite);
+    Host::CommitBaseSettingChanges();
 }
 
 @end

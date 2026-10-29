@@ -130,7 +130,6 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         s_secrets_settings_interface = new INISettingsInterface(secretsPath);
         s_secrets_settings_interface->Load();
         Host::Internal::SetSecretsSettingsLayer(s_secrets_settings_interface);
-        g_p44_settings_interface = s_settings_interface; // expose to Bridge
 	// Load gamepad button mapping from INI
         for (int i = 0; i < 16; i++) {
             char key[32]; snprintf(key, sizeof(key), "Button%d", i);

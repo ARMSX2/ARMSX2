@@ -44,7 +44,6 @@ namespace Host {
 // ---------------------------------------------------------------------------
 extern INISettingsInterface* s_settings_interface;
 extern INISettingsInterface* s_secrets_settings_interface;
-extern INISettingsInterface* g_p44_settings_interface;
 
 // ---------------------------------------------------------------------------
 // Game render view (CAMetalLayer-backed ARMSX2GameView)

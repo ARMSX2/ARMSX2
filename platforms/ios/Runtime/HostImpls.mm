@@ -364,8 +364,13 @@ namespace Host
     }
     void CommitBaseSettingChanges()
     {
-        if (s_settings_interface)
-            s_settings_interface->Save();
+        {
+            auto lock = Host::GetSettingsLock();
+            if (s_settings_interface)
+                s_settings_interface->Save();
+        }
+        // Achievements takes the secrets lock before the base one, so never hold both here.
+        auto secrets_lock = Host::GetSecretsSettingsLock();
         if (s_secrets_settings_interface)
             s_secrets_settings_interface->Save();
     }

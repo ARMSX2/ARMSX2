@@ -1041,7 +1041,3 @@ extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reaso
         });
     }
 }
-
-#pragma mark - Bridge settings handle
-// Expose to ARMSX2Bridge.mm via extern
-INISettingsInterface* g_p44_settings_interface = nullptr;

@@ -224,19 +224,21 @@ static NSArray<NSString*>* ARMSX2SupportedAudioPackRoles()
 }
 
 + (int)emulatorVolumePercent {
-    const int value = g_p44_settings_interface ?
-        g_p44_settings_interface->GetIntValue("SPU2/Output", "StandardVolume", ARMSX2DefaultAudioVolumePercent) :
+    const int value = ARMSX2HasBaseSettings() ?
+        Host::GetBaseIntSettingValue("SPU2/Output", "StandardVolume", ARMSX2DefaultAudioVolumePercent) :
         ARMSX2DefaultAudioVolumePercent;
     return ARMSX2ClampInt(value, 0, ARMSX2DefaultAudioVolumePercent);
 }
 
 + (void)setEmulatorVolumePercent:(int)value {
-    if (!g_p44_settings_interface)
+    if (!ARMSX2HasBaseSettings())
         return;
 
     const int clampedValue = ARMSX2ClampInt(value, 0, ARMSX2DefaultAudioVolumePercent);
-    g_p44_settings_interface->SetIntValue("SPU2/Output", "StandardVolume", clampedValue);
-    g_p44_settings_interface->SetIntValue("SPU2/Output", "FastForwardVolume", clampedValue);
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) {
+        si.SetIntValue("SPU2/Output", "StandardVolume", clampedValue);
+        si.SetIntValue("SPU2/Output", "FastForwardVolume", clampedValue);
+    });
     ARMSX2ScheduleINISave();
 
     if (!VMManager::HasValidVM())

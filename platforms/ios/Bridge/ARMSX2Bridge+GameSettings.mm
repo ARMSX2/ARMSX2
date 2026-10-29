@@ -14,41 +14,62 @@
 // Builds the per-game settings dictionary seeded with the current global values.
 static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
 {
-    const float globalUpscale = g_p44_settings_interface ? g_p44_settings_interface->GetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f) : 1.0f;
-    const std::string globalAspect = g_p44_settings_interface ? g_p44_settings_interface->GetStringValue("EmuCore/GS", "AspectRatio", "Auto 4:3/3:2") : std::string("Auto 4:3/3:2");
-    const int globalTextureFiltering = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "filter", 2) : 2;
-    const bool globalHardwareMipmapping = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/GS", "hw_mipmap", true) : true;
-    const int globalBlendingAccuracy = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "accurate_blending_unit", 1) : 1;
-    // 0 is GSInterlaceMode::Automatic. Not 7, whatever the old picker labelled it.
-    const int globalInterlaceMode = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "deinterlace_mode", 0) : 0;
-    const int globalTrilinearFiltering = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "TriFilter", -1) : -1;
-    const int globalHalfPixelOffset = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_HalfPixelOffset", 0) : 0;
-    const int globalRoundSprite = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", 0) : 0;
-    const bool globalAlignSprite = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", false) : false;
-    const bool globalMergeSprite = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", false) : false;
-    const bool globalWildArmsOffset = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", false) : false;
-    const int globalTextureOffsetX = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_TCOffsetX", 0) : 0;
-    const int globalTextureOffsetY = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_TCOffsetY", 0) : 0;
-    const int globalSkipDrawStart = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", 0) : 0;
-    const int globalSkipDrawEnd = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_End", 0) : 0;
-    const bool globalEnableCheats = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore", "EnableCheats", false) : false;
-    const bool globalEnablePatches = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore", "EnablePatches", true) : true;
-    const bool globalEnableGameFixes = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore", "EnableGameFixes", true) : true;
-    const bool globalEnableGameDBHardwareFixes = g_p44_settings_interface ? !g_p44_settings_interface->GetBoolValue("EmuCore/GS", "UserHacks", false) : true;
-    const int globalEECoreType = g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/CPU", "CoreType", 2) : 2;
-    const bool globalMTVU = g_p44_settings_interface ? g_p44_settings_interface->GetBoolValue("EmuCore/Speedhacks", "vuThread", true) : true;
-    const int globalEECycleRate = ARMSX2ClampInt(
-        g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("EmuCore/Speedhacks", "EECycleRate", 0) : 0,
-        -3,
-        3);
-    const bool globalFastBoot = g_p44_settings_interface ?
-        g_p44_settings_interface->GetBoolValue(
-            "EmuCore", "EnableFastBoot",
-            g_p44_settings_interface->GetBoolValue("GameISO", "FastBoot", false)) : false;
-    const int globalVolumePercent = ARMSX2ClampInt(
-        g_p44_settings_interface ? g_p44_settings_interface->GetIntValue("SPU2/Output", "StandardVolume", ARMSX2DefaultAudioVolumePercent) : ARMSX2DefaultAudioVolumePercent,
-        0,
-        ARMSX2DefaultAudioVolumePercent);
+    float globalUpscale = 1.0f;
+    std::string globalAspect = "Auto 4:3/3:2";
+    int globalTextureFiltering = 2;
+    bool globalHardwareMipmapping = true;
+    int globalBlendingAccuracy = 1;
+    int globalInterlaceMode = 0;
+    int globalTrilinearFiltering = -1;
+    int globalHalfPixelOffset = 0;
+    int globalRoundSprite = 0;
+    bool globalAlignSprite = false;
+    bool globalMergeSprite = false;
+    bool globalWildArmsOffset = false;
+    int globalTextureOffsetX = 0;
+    int globalTextureOffsetY = 0;
+    int globalSkipDrawStart = 0;
+    int globalSkipDrawEnd = 0;
+    bool globalEnableCheats = false;
+    bool globalEnablePatches = true;
+    bool globalEnableGameFixes = true;
+    bool globalEnableGameDBHardwareFixes = true;
+    int globalEECoreType = 2;
+    bool globalMTVU = true;
+    int globalEECycleRate = 0;
+    bool globalFastBoot = false;
+    int globalVolumePercent = ARMSX2DefaultAudioVolumePercent;
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) {
+        globalUpscale = si.GetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f);
+        globalAspect = si.GetStringValue("EmuCore/GS", "AspectRatio", "Auto 4:3/3:2");
+        globalTextureFiltering = si.GetIntValue("EmuCore/GS", "filter", 2);
+        globalHardwareMipmapping = si.GetBoolValue("EmuCore/GS", "hw_mipmap", true);
+        globalBlendingAccuracy = si.GetIntValue("EmuCore/GS", "accurate_blending_unit", 1);
+        // 0 is GSInterlaceMode::Automatic. Not 7, whatever the old picker labelled it.
+        globalInterlaceMode = si.GetIntValue("EmuCore/GS", "deinterlace_mode", 0);
+        globalTrilinearFiltering = si.GetIntValue("EmuCore/GS", "TriFilter", -1);
+        globalHalfPixelOffset = si.GetIntValue("EmuCore/GS", "UserHacks_HalfPixelOffset", 0);
+        globalRoundSprite = si.GetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", 0);
+        globalAlignSprite = si.GetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", false);
+        globalMergeSprite = si.GetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", false);
+        globalWildArmsOffset = si.GetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", false);
+        globalTextureOffsetX = si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetX", 0);
+        globalTextureOffsetY = si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetY", 0);
+        globalSkipDrawStart = si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", 0);
+        globalSkipDrawEnd = si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_End", 0);
+        globalEnableCheats = si.GetBoolValue("EmuCore", "EnableCheats", false);
+        globalEnablePatches = si.GetBoolValue("EmuCore", "EnablePatches", true);
+        globalEnableGameFixes = si.GetBoolValue("EmuCore", "EnableGameFixes", true);
+        globalEnableGameDBHardwareFixes = !si.GetBoolValue("EmuCore/GS", "UserHacks", false);
+        globalEECoreType = si.GetIntValue("EmuCore/CPU", "CoreType", 2);
+        globalMTVU = si.GetBoolValue("EmuCore/Speedhacks", "vuThread", true);
+        globalEECycleRate = ARMSX2ClampInt(si.GetIntValue("EmuCore/Speedhacks", "EECycleRate", 0), -3, 3);
+        globalFastBoot = si.GetBoolValue("EmuCore", "EnableFastBoot", si.GetBoolValue("GameISO", "FastBoot", false));
+        globalVolumePercent = ARMSX2ClampInt(
+            si.GetIntValue("SPU2/Output", "StandardVolume", ARMSX2DefaultAudioVolumePercent),
+            0,
+            ARMSX2DefaultAudioVolumePercent);
+    });
     return [@{
         @"enabled": @NO,
         @"path": @"",

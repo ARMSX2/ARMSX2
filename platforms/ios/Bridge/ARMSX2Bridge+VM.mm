@@ -93,9 +93,9 @@
             pos = OsdOverlayPos::TopRight;
     }
 
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->SetIntValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(pos));
-        g_p44_settings_interface->Save();
+    if (ARMSX2HasBaseSettings()) {
+        Host::SetBaseIntSettingValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(pos));
+        Host::CommitBaseSettingChanges();
     }
 
     // GSConfig is the GS thread's and EmuConfig the CPU thread's, both bitfields, so a UI write
@@ -381,8 +381,8 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
 
 + (void)requestVMBootLoadingLastSaveState:(BOOL)loadLastSaveState {
 	std::string bootISO;
-	if (g_p44_settings_interface)
-		bootISO = g_p44_settings_interface->GetStringValue("GameISO", "BootISO", "");
+	if (ARMSX2HasBaseSettings())
+		bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
 	const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
 	std::fprintf(stderr, "@@BOOT_REQUEST@@ posted=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
 		(!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,

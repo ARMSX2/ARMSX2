@@ -153,11 +153,11 @@
     if (ps2Index >= 0 && ps2Index < 16) {
         s_buttonMap[ps2Index] = sdlButton;
         // Persist to INI
-        if (g_p44_settings_interface) {
+        if (ARMSX2HasBaseSettings()) {
             char key[32];
             snprintf(key, sizeof(key), "Button%d", ps2Index);
-            g_p44_settings_interface->SetIntValue("ARMSX2iOS/GamepadMapping", key, sdlButton);
-            g_p44_settings_interface->Save();
+            Host::SetBaseIntSettingValue("ARMSX2iOS/GamepadMapping", key, sdlButton);
+            Host::CommitBaseSettingChanges();
         }
     }
 }
@@ -179,9 +179,9 @@
         SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK,
     };
     for (int i = 0; i < 16; i++) s_buttonMap[i] = defMap[i];
-    if (g_p44_settings_interface) {
-        g_p44_settings_interface->RemoveSection("ARMSX2iOS/GamepadMapping");
-        g_p44_settings_interface->Save();
+    if (ARMSX2HasBaseSettings()) {
+        ARMSX2EditBaseSettings([](SettingsInterface& si) { si.RemoveSection("ARMSX2iOS/GamepadMapping"); });
+        Host::CommitBaseSettingChanges();
     }
 }
 
