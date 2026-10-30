@@ -41,7 +41,7 @@ struct GSFeedbackLoopCarryInputs
 	/// Broadcom/V3D: carries unconditionally.
 	bool device_always_carries = false;
 
-	/// Mali: the fetch road's carry was measured here.
+	/// Mali: the fetch road's carry was measured here. PowerVR's in-tile road takes it too.
 	bool device_is_measured_vendor = false;
 
 	/// Adreno under Turnip: the driver orders the layout road's read (a declared loop untiles the

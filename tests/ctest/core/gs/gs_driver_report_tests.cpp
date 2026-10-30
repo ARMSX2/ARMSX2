@@ -257,6 +257,7 @@ TEST(GSDriverReport, GpuProfileWritesEveryVulkanDeviceRuleByName)
 		"\"self_read_costs_measured\": false",
 		"\"barrier_road_measured\": true",
 		"\"exempt_malisx2_push_descriptors\": false",
+		"\"ordered_input_attachment_read\": false",
 	};
 	for (const char* line : expected)
 	{

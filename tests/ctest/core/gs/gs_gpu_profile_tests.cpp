@@ -610,3 +610,43 @@ TEST(GSGpuProfileDriver, OpenGLVersionsComeFromEachVendorsBuildTag)
 	EXPECT_EQ(powervr.driver.version.minor, 9);
 	EXPECT_EQ(powervr.driver.version.build, 4850625u);
 }
+
+// ---------------------------------------------------------------------------------------------
+// PowerVR
+
+TEST(GSGpuProfilePowerVR, TheCSeriesIsARecognisedFlagship)
+{
+	// Pixel 11 Pro (Tensor G6), Vulkan device name and the ANGLE GL renderer string.
+	for (const char* name : {"PowerVR C-Series CXTP-48-1536 MC1",
+			 "ANGLE (Imagination Technologies, Vulkan 1.4.317 (PowerVR C-Series CXTP-48-1536 MC1 (0x70061042)), "
+			 "PowerVR C-Series Vulkan Driver-1.662.3024)"})
+	{
+		const std::string lowered = GpuProfileDetail::ToLowerASCII(name);
+		ASSERT_TRUE(GpuProfileDetail::LooksLikePowerVR(lowered)) << name;
+		const ResolvedGpuProfile p = GpuProfileDetail::ResolvePowerVRProfile(lowered);
+		EXPECT_EQ(p.gpu.architecture, MobileGpuArchitecture::PowerVR);
+		EXPECT_TRUE(p.gpu.recognized) << name;
+		EXPECT_EQ(p.gpu.name, "PowerVR C-Series") << name;
+		ExpectTuning(p.tuning, 144, 10, 8, true);
+	}
+}
+
+TEST(GSGpuProfilePowerVR, OtherSeriesKeepTheirSizing)
+{
+	const auto Resolve = [](const char* name) {
+		return GpuProfileDetail::ResolvePowerVRProfile(GpuProfileDetail::ToLowerASCII(name));
+	};
+	const ResolvedGpuProfile d = Resolve("PowerVR D-Series DXT-48-1536 MC1");
+	EXPECT_EQ(d.gpu.name, "PowerVR D-Series");
+	ExpectTuning(d.tuning, 112, 8, 7, false);
+	const ResolvedGpuProfile b = Resolve("PowerVR B-Series BXM-8-256");
+	EXPECT_EQ(b.gpu.name, "PowerVR B-Series");
+	ExpectTuning(b.tuning, 112, 8, 7, false);
+	const ResolvedGpuProfile rogue = Resolve("PowerVR Rogue GE8320");
+	EXPECT_FALSE(rogue.gpu.recognized);
+	ExpectTuning(rogue.tuning, 72, 6, 5, false);
+	// The small C-Series parts are not the flagship one.
+	const ResolvedGpuProfile cxm = Resolve("PowerVR C-Series CXM-4-3200 MC1");
+	EXPECT_NE(cxm.gpu.name, "PowerVR C-Series");
+	ExpectTuning(cxm.tuning, 72, 6, 5, false);
+}

@@ -92,6 +92,13 @@ const Device kAdrenoUnknownDriver = {GpuVendorID::Qualcomm, 0, "Adreno (TM) 650"
 	QualcommVersion(744)};
 const Device kPowerVR = {GpuVendorID::Imagination, kImaginationDriver, "PowerVR B-Series BXM-8-256", "", 0,
 	0x00582558u};
+// Pixel 11 Pro (Tensor G6), as its driver reports itself.
+const Device kPowerVRCSeries = {GpuVendorID::Imagination, kImaginationDriver, "PowerVR C-Series CXTP-48-1536 MC1",
+	"25.3@6908880", 0x70061042u, 0x00696bd0u};
+// Mesa's PowerVR driver (VK_DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA).
+constexpr u32 kPowerVRMesaDriver = 25;
+const Device kPowerVRMesa = {GpuVendorID::Imagination, kPowerVRMesaDriver, "PowerVR B-Series BXS-4-64 MC1",
+	"Mesa 25.2.0", 0, PackVulkanVersion(25, 2, 0)};
 const Device kAppleM2 = {0x10005u, kHoneykrispDriver, "Apple M2 Max (G14C B1)", "Mesa 25.3.0", 0,
 	PackVulkanVersion(25, 3, 0)};
 const Device kRadv = {GpuVendorID::AMD, kRadvDriver, "AMD Radeon RX 7900 XTX (RADV NAVI31)", "Mesa 25.0", 0,
@@ -110,6 +117,34 @@ TEST(GSVulkanDeviceRules, OnlyTheMaliG615HasBrokenTimestampQueries)
 	Device renamed = kAdreno650Turnip;
 	renamed.name = "Mali-G615 MC6";
 	EXPECT_FALSE(Rules(renamed).broken_timestamp_queries);
+}
+
+TEST(GSVulkanDeviceRules, ImaginationsDriverAvoidsTheFeedbackLoopLayout)
+{
+	// The database's DisableAttachmentFeedbackLoopLayout for vk-powervr-proprietary, made effective.
+	EXPECT_TRUE(Rules(kPowerVR).avoid_feedback_loop_layout);
+	EXPECT_TRUE(Rules(kPowerVRCSeries).avoid_feedback_loop_layout);
+	// Keyed on the driver: Mesa's PowerVR driver is not covered by that row.
+	EXPECT_FALSE(Rules(kPowerVRMesa).avoid_feedback_loop_layout);
+	// And on the vendor: another vendor reporting the same driver ID is left alone.
+	Device not_imagination = kPowerVRCSeries;
+	not_imagination.vendor = GpuVendorID::AMD;
+	EXPECT_FALSE(Rules(not_imagination).avoid_feedback_loop_layout);
+}
+
+TEST(GSVulkanDeviceRules, OnlyImaginationsDriverOrdersTheInputAttachmentRead)
+{
+	EXPECT_TRUE(Rules(kPowerVR).ordered_input_attachment_read);
+	EXPECT_TRUE(Rules(kPowerVRCSeries).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kPowerVRMesa).ordered_input_attachment_read);
+	// r44p1 avoids the layout too, and is not on this road: its in-pass read loses the device.
+	EXPECT_FALSE(Rules(kRg477v).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kMaliG57).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kAdreno740Turnip).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kAppleM2).ordered_input_attachment_read);
+	EXPECT_FALSE(Rules(kRadv).ordered_input_attachment_read);
+	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kPowerVRCSeries)),
+		"avoid_feedback_loop_layout, ordered_input_attachment_read");
 }
 
 TEST(GSVulkanDeviceRules, OnlyAnR44p1DriverAvoidsTheFeedbackLoopLayout)

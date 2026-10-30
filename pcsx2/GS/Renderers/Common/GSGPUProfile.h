@@ -333,8 +333,16 @@ struct VulkanDeviceRules
 {
 	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
 	bool broken_timestamp_queries = false;
-	/// Mali on a driver whose driverInfo names r44p1: the attachment-feedback-loop layout is not
-	/// used. The rest of the r44p1 workaround is rule vk-arm-r44p1-attachment-self-read.
+	/// The attachment-feedback-loop layout is not used, so the in-pass self-read is spelled as a
+	/// subpass input attachment instead.
+	///   - Mali on a driver whose driverInfo names r44p1. The rest of the r44p1 workaround is rule
+	///     vk-arm-r44p1-attachment-self-read.
+	///   - PowerVR on Imagination's driver, which the database already marks
+	///     BrokenAttachmentFeedbackLoopLayout / DisableAttachmentFeedbackLoopLayout (rule
+	///     vk-powervr-proprietary) without anything acting on it. On that layout every feedback
+	///     barrier samples the attachment through the texture unit, which on a tiler means storing
+	///     the tile first; measured ~0.1 ms per barrier on a Pixel 11 Pro (CXTP-48-1536), ~3500 per
+	///     frame in NFS Underground at Full blending. subpassLoad keeps the read in the tile.
 	bool avoid_feedback_loop_layout = false;
 	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
 	/// Qualcomm driver and Turnip only. malisx2 is exempt when it advertises the extension with
@@ -360,6 +368,16 @@ struct VulkanDeviceRules
 	/// VULKAN_PUSH_DESCRIPTORS_REQUIRED descriptors. Recorded so a log shows the exemption, not just
 	/// the absence of the avoid.
 	bool exempt_malisx2_push_descriptors = false;
+	/// PowerVR on Imagination's driver: a single-sample subpassLoad of the attachment being written
+	/// is coherent and in primitive order in tile memory, without
+	/// VK_EXT_rasterization_order_attachment_access. The extension cannot be advertised on this
+	/// hardware only because it also promises coherent reads of OTHER samples of a pixel, which IMG
+	/// does not give; ANGLE relies on the single-sample guarantee to expose coherent
+	/// GL_EXT/ARM_shader_framebuffer_fetch on the same driver (vk_renderer.cpp,
+	/// mIsColorFramebufferFetchCoherent). Puts the device on the in-tile fetch road with no per-draw
+	/// barriers. Needs the input-attachment spelling, so it applies only with
+	/// avoid_feedback_loop_layout. Fixes tab -> Disable Framebuffer Fetch returns to the barrier road.
+	bool ordered_input_attachment_read = false;
 };
 
 /// A VulkanDeviceRules flag and the name the log and the driver report print it under.
@@ -382,6 +400,7 @@ inline constexpr VulkanDeviceRuleName VULKAN_DEVICE_RULE_NAMES[] = {
 	{"self_read_costs_measured", &VulkanDeviceRules::self_read_costs_measured},
 	{"barrier_road_measured", &VulkanDeviceRules::barrier_road_measured},
 	{"exempt_malisx2_push_descriptors", &VulkanDeviceRules::exempt_malisx2_push_descriptors},
+	{"ordered_input_attachment_read", &VulkanDeviceRules::ordered_input_attachment_read},
 };
 static_assert(sizeof(VulkanDeviceRules) == sizeof(VULKAN_DEVICE_RULE_NAMES) / sizeof(VULKAN_DEVICE_RULE_NAMES[0]),
 	"VulkanDeviceRules is all bool flags; every one needs a VULKAN_DEVICE_RULE_NAMES entry");

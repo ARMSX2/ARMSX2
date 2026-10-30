@@ -124,6 +124,16 @@ public:
 		        !m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	}
 
+	// Whether the TFX render-target and depth bindings are INPUT_ATTACHMENT descriptors. The shader
+	// reads them with subpassLoad whenever the layout spelling is off, so the descriptor type has to
+	// match. Mali and PowerVR get real input-attachment descriptors; Adreno keeps the sampled-image
+	// descriptor it has always had (it flickers with input-attachment descriptors, EmuCoreX
+	// 30b09c8). Used by the set layout and by every write, which must agree.
+	__fi bool UseInputAttachmentDescriptors() const
+	{
+		return m_features.texture_barrier && !UseFeedbackLoopLayout() && (IsDeviceMali() || IsDevicePowerVR());
+	}
+
 	// Helpers for getting constants
 	__fi u32 GetBufferCopyOffsetAlignment() const
 	{

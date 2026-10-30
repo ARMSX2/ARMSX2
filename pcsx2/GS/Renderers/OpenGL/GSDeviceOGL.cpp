@@ -1244,7 +1244,7 @@ bool GSDeviceOGL::CheckFeatures()
 		GetMobileDriverProfile().UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
 	const GSFramebufferFetchDecision fbfetch = DecideGLFramebufferFetch(GLAD_GL_ARM_shader_framebuffer_fetch,
 		GLAD_GL_EXT_shader_framebuffer_fetch, GLAD_GL_EXT_shader_pixel_local_storage, fbfetch_driver_blocklisted,
-		GSConfig.DisableFramebufferFetch, use_mali_profile);
+		GSConfig.DisableFramebufferFetch, use_mali_profile, use_powervr_profile);
 	m_features.framebuffer_fetch = fbfetch.enabled;
 	// Whether fetch also orders overlapping primitives within one draw is a property of the
 	// extension, not of the API: ARM's guarantees it by spec and EXT's does not (see
@@ -1390,8 +1390,10 @@ bool GSDeviceOGL::CheckFeatures()
 		// PowerVR (Imagination) is tile-based like Mali but ships EXT/PLS fbfetch
 		// (PLS originated on PowerVR). framebuffer_fetch + texture_barrier values
 		// from line ~882/908 already reflect the EXT path, so no override needed —
-		// just confirm the path is wired up.
-		Console.WriteLn(Color_Yellow, "GL: PowerVR profile active (EXT/PLS framebuffer fetch).");
+		// just confirm the path is wired up. Under ANGLE the read is the ARM builtin instead
+		// (DecideGLFramebufferFetch), so name the backend that was actually chosen.
+		Console.WriteLn(Color_Yellow, "GL: PowerVR profile active (%s framebuffer fetch).",
+			(fbfetch.backend == GSFramebufferFetchBackend::ARM) ? "ARM" : "EXT/PLS");
 	}
 	else if (use_adreno_profile)
 	{
@@ -2446,7 +2448,13 @@ std::string GSDeviceOGL::GenGlslHeader(const std::string_view entry, GLenum type
         {
             if (GLAD_GL_ARM_shader_framebuffer_fetch)
                 header += "#extension GL_ARM_shader_framebuffer_fetch : require\n";
-            else if (GLAD_GL_EXT_shader_framebuffer_fetch)
+            // tfx_fs.glsl declares an EXT `inout` output wherever HAS_EXT_SHADER_FRAMEBUFFER_FETCH is
+            // set on a profile other than Mali: the colour read on Adreno / Generic, and the
+            // depth-as-colour output (DEPTH_FEEDBACK_SUPPORT 2) on PowerVR, whose colour read is ARM.
+            // A strict compiler (ANGLE) rejects `inout` unless this directive is enabled, so a driver
+            // that advertises both gets both. Mali keeps the ARM directive only, as before.
+            if (GLAD_GL_EXT_shader_framebuffer_fetch &&
+                (!GLAD_GL_ARM_shader_framebuffer_fetch || !IsMaliGPUProfile()))
                 header += "#extension GL_EXT_shader_framebuffer_fetch : require\n";
         }
 

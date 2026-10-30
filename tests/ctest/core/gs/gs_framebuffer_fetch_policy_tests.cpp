@@ -34,11 +34,13 @@ namespace
 		bool blocklisted = false;
 		bool user_disabled = false;
 		bool mali_profile = false;
+		bool powervr_profile = false;
 	};
 
 	GSFramebufferFetchDecision Decide(const Caps& c)
 	{
-		return DecideGLFramebufferFetch(c.arm, c.ext, c.pls, c.blocklisted, c.user_disabled, c.mali_profile);
+		return DecideGLFramebufferFetch(
+			c.arm, c.ext, c.pls, c.blocklisted, c.user_disabled, c.mali_profile, c.powervr_profile);
 	}
 } // namespace
 
@@ -108,6 +110,23 @@ TEST(GSFramebufferFetchPolicy, NonMaliProfilesPreferExtAndFallBackToArm)
 	// ARM builtin still has a working read, so fetch stays on rather than falling off the fast path.
 	EXPECT_EQ(Decide({.arm = true}).backend, GSFramebufferFetchBackend::ARM);
 	EXPECT_TRUE(Decide({.arm = true}).enabled);
+}
+
+// Pixel 10/11 (Tensor G5/G6) under ANGLE: ARM and EXT are both advertised and the header enables
+// only the ARM directive, so the EXT `inout` declaration does not compile. PowerVR must take the
+// ARM builtin there, and gets ARM's overlap ordering with it.
+TEST(GSFramebufferFetchPolicy, PowerVRPrefersArmFetchWhereAdvertised)
+{
+	const GSFramebufferFetchDecision d = Decide({.arm = true, .ext = true, .powervr_profile = true});
+	EXPECT_TRUE(d.enabled);
+	EXPECT_EQ(d.backend, GSFramebufferFetchBackend::ARM);
+	EXPECT_TRUE(FbFetchOrdersOverlappingPrims(d.backend));
+	EXPECT_FALSE(d.demote_mali_to_powervr);
+
+	// A native IMG driver with EXT/PLS only keeps the EXT arm.
+	EXPECT_EQ(Decide({.ext = true, .pls = true, .powervr_profile = true}).backend, GSFramebufferFetchBackend::EXT);
+	// The user's setting still wins.
+	EXPECT_FALSE(Decide({.arm = true, .ext = true, .user_disabled = true, .powervr_profile = true}).enabled);
 }
 
 TEST(GSFramebufferFetchPolicy, NoExtensionMeansNoFetchAndNoBackend)
