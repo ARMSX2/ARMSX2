@@ -62,8 +62,9 @@ object CustomDriver {
      *  Mali-G52 and the Mali-G76. Not v10 (G310/G510/G610/G710), not the other Bifrost parts, not
      *  Midgard or the 5th-gen parts. GL_RENDERER reads like "Mali-G57 MC2" or
      *  "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a longer
-     *  model number from matching on its prefix. The Mali-G76 is accepted by malisx2 as of
-     *  bmdhacks/malisx2#4 (measured kbase product id 0x7211, Mesa PAN_PROD_ID(7, 2, 1)). */
+     *  model number from matching on its prefix. Both Bifrost parts are accepted as of malisx2
+     *  0.3.1: the G52 at any arch minor and revision, the G76 at product id 0x7211 (measured,
+     *  Mesa's PAN_PROD_ID(7, 2, 1)). The other arch 7 parts are skipped by the driver. */
     private val MALISX2_SUPPORTED_MALI = Regex("""\bG(?:52|57|68|76|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
     internal fun isMaliSX2Supported(renderer: String?): Boolean =
         renderer != null &&
