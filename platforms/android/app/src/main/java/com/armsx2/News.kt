@@ -36,7 +36,16 @@ object News {
         val authorAvatar: String = "",
         // People @-mentioned in the notes: who this release actually credits.
         val credited: List<Contributor> = emptyList(),
+        // The notes with their pictures, in reading order, for the opened card; notes is the
+        // text alone, for the preview.
+        val blocks: List<Block> = emptyList(),
     )
+
+    /** A run of note text, or a picture embedded between two of them. */
+    sealed interface Block {
+        data class Text(val text: String) : Block
+        data class Image(val url: String, val aspectRatio: Float) : Block
+    }
 
     /** Somebody credited in a release: their handle and their picture. */
     data class Contributor(
@@ -111,12 +120,13 @@ object News {
                             // Releases are often published with no name; the tag is the fallback
                             // rather than an empty heading.
                             title = o.optString("name").trim().ifEmpty { tag },
-                            notes = tidy(o.optString("body", "")),
+                            notes = tidy(withoutImages(o.optString("body", ""))),
                             published = o.optString("published_at").take(10), // yyyy-MM-dd
                             prerelease = o.optBoolean("prerelease", false),
                             authorLogin = o.optJSONObject("author")?.optString("login").orEmpty(),
                             authorAvatar = o.optJSONObject("author")?.optString("avatar_url").orEmpty(),
                             credited = creditsFrom(o.optString("body", "")),
+                            blocks = blocksFrom(o.optString("body", "")),
                         ),
                     )
                 }
@@ -141,6 +151,45 @@ object News {
         }
         .replace(Regex("\n{3,}"), "\n\n")
         .trim()
+
+    // GitHub stores a picture pasted into a release as an HTML <img> tag, and markdown's
+    // ![alt](url) turns up too; left in the text, either shows as raw markup.
+    private val HTML_IMAGE = Regex("<img\\b[^>]*>", RegexOption.IGNORE_CASE)
+    private val MD_IMAGE = Regex("!\\[[^\\]]*]\\((\\S+?)(?:\\s+\"[^\"]*\")?\\)")
+
+    private fun withoutImages(raw: String): String = raw.replace(HTML_IMAGE, "").replace(MD_IMAGE, "")
+
+    private fun attribute(tag: String, name: String): String? =
+        Regex("\\b$name\\s*=\\s*[\"']([^\"']*)[\"']", RegexOption.IGNORE_CASE).find(tag)?.groupValues?.get(1)
+
+    private fun blocksFrom(raw: String): List<Block> {
+        val images = (HTML_IMAGE.findAll(raw) + MD_IMAGE.findAll(raw)).sortedBy { it.range.first }
+        val blocks = mutableListOf<Block>()
+        var pos = 0
+
+        for (match in images) {
+            if (match.range.first < pos) continue
+            tidy(raw.substring(pos, match.range.first)).takeIf { it.isNotEmpty() }?.let { blocks += Block.Text(it) }
+            imageOf(match)?.let { blocks += it }
+            pos = match.range.last + 1
+        }
+
+        tidy(raw.substring(pos)).takeIf { it.isNotEmpty() }?.let { blocks += Block.Text(it) }
+        return blocks
+    }
+
+    private fun imageOf(match: MatchResult): Block.Image? {
+        val tag = match.value
+        val url = if (tag.startsWith("!")) match.groupValues[1] else attribute(tag, "src")
+        // Only https, which is all GitHub produces; nothing else is fetched from a release body
+        if (url == null || !url.startsWith("https://")) return null
+
+        // The size GitHub records lets the card make room before the picture arrives
+        val width = attribute(tag, "width")?.toFloatOrNull()
+        val height = attribute(tag, "height")?.toFloatOrNull()
+        val ratio = if (width != null && height != null && width > 0f && height > 0f) width / height else 16f / 9f
+        return Block.Image(url, ratio.coerceIn(0.25f, 4f))
+    }
 
     private fun get(url: String): String? {
         var conn: HttpURLConnection? = null
