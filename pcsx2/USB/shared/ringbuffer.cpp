@@ -26,6 +26,11 @@ void RingBuffer::reset(size_t capacity)
 		m_data = std::make_unique<uint8_t[]>(capacity);
 }
 
+size_t RingBuffer::capacity() const
+{
+	return m_capacity;
+}
+
 size_t RingBuffer::size() const
 {
 	if (m_wpos == m_rpos)

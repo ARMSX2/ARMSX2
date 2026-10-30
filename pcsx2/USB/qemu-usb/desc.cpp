@@ -432,6 +432,9 @@ int usb_desc_parse_config(const u8* data, int len, USBDescDevice& dev)
 	while (pos < len)
 	{
 		d = (USBDescriptor*)(data + pos);
+		if (!d->bLength)
+			break; // terminator, if any
+
 		switch (d->bDescriptorType)
 		{
 			case USB_DT_CONFIG:
@@ -496,7 +499,6 @@ int usb_desc_parse_config(const u8* data, int len, USBDescDevice& dev)
 				iface->descs.push_back({d->bLength, data + pos});
 			}
 			break;
-			case 0x00: // terminator, if any
 			case USB_DT_OTHER_SPEED_CONFIG:
 			case USB_DT_DEBUG:
 				break;
@@ -504,9 +506,6 @@ int usb_desc_parse_config(const u8* data, int len, USBDescDevice& dev)
 				return -1;
 		}
 		pos += d->bLength;
-
-		if (!d->bLength)
-			break;
 	}
 	return pos;
 }

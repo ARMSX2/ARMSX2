@@ -46,6 +46,7 @@
 #include "Input/InputManager.h"
 #include "USB/USB.h"
 #include "USB/deviceproxy.h"
+#include "USB/usb-mic/audiodev-oboe.h" // Android microphone capture (Audio settings, Microphone)
 #include "DEV9/ACJV.h"
 #include "DEV9/ACSRAM.h"
 #include "common/ARCADE.h"
@@ -70,6 +71,7 @@
 #include "libchdr/chd.h"
 #include <zlib.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "common/HostSys.h"
@@ -2644,6 +2646,21 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceType(JNIEnv* env, jclass, jint 
     if (!si)
         return;
     USB::SetConfigDevice(*si, static_cast<u32>(port), type.c_str());
+    // SingStar (and its Konami/Logitech variants) needs a host audio *input* to read from. On Android
+    // the mic device opens the built-in microphone through Oboe when the configured source is
+    // "cubeb_default" — the backend-neutral marker for "the platform's default device". If the user has
+    // never set one, seed it here so attaching a SingStar port works out of the box instead of failing
+    // with "Neither player 1 nor 2 is connected". Existing configs keep their own values.
+    if (type == "singstar")
+    {
+        const std::string section = USB::GetConfigSection(port);
+        static const char* kDefaultDeviceName = "cubeb_default";
+        for (const char* key : {"input_device_name", "player1_device_name", "player2_device_name"})
+        {
+            if (!USB::ConfigKeyExists(*si, static_cast<u32>(port), "singstar", key))
+                si->SetStringValue(section.c_str(), fmt::format("singstar_{}", key).c_str(), kDefaultDeviceName);
+        }
+    }
     si->Save();
     Console.WriteLnFmt("@@ANDROID_USB@@ port={} type={} index={}", port + 1, type,
         USB::DeviceTypeNameToIndex(type));
@@ -2701,6 +2718,120 @@ Java_kr_co_iefriends_pcsx2_NativeApp_usbSetDeviceSubtype(JNIEnv* env, jclass, ji
     lock.unlock();
     RebuildUsbGenericBinds(static_cast<u32>(port));
     ApplyUsbPortsToRunningVM();
+}
+
+// The phone's microphones, for the one picked in Audio settings: one "<Android device id>\t<name>" per
+// line, where the name is what the settings store (MicDevices.kt). Android lists input devices to Java
+// only, and a device gets a new id each time it is plugged in, so the app sends the list again before
+// every game starts and whenever one comes or goes.
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMicDevices(JNIEnv* env, jclass, jstring j_list) {
+    if (!j_list)
+        return;
+
+    const char* raw = env->GetStringUTFChars(j_list, nullptr);
+    std::string list(raw ? raw : "");
+    if (raw)
+        env->ReleaseStringUTFChars(j_list, raw);
+
+    std::vector<std::pair<std::string, s32>> devices;
+    size_t start = 0;
+    while (true)
+    {
+        const size_t nl = list.find('\n', start);
+        const std::string line = (nl == std::string::npos) ? list.substr(start) : list.substr(start, nl - start);
+
+        if (!line.empty())
+        {
+            const size_t tab = line.find('\t');
+            if (tab != std::string::npos)
+            {
+                auto parsed = StringUtil::FromChars<s32>(std::string_view(line.data(), tab));
+                if (parsed.has_value())
+                    devices.emplace_back(line.substr(tab + 1), *parsed);
+            }
+        }
+
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+
+    usb_mic::audiodev_oboe::OboeAudioDevice::SetDeviceList(std::move(devices));
+}
+
+// The microphone test in Audio settings: the capture a game gets (the Oboe source device, at the rate
+// and channel count the emulated mic asks for), reduced to how loud it is.
+static std::mutex s_mic_test_mutex;
+static std::unique_ptr<usb_mic::audiodev_oboe::OboeAudioDevice> s_mic_test;
+static float s_mic_test_level = 0.0f;
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_micTestStart(JNIEnv* env, jclass, jstring j_device) {
+    const char* raw = j_device ? env->GetStringUTFChars(j_device, nullptr) : nullptr;
+    std::string device(raw ? raw : "");
+    if (raw)
+        env->ReleaseStringUTFChars(j_device, raw);
+
+    const std::lock_guard lock(s_mic_test_mutex);
+    s_mic_test.reset();
+    s_mic_test_level = 0.0f;
+
+    // The settings' input gain (decibels), so the test bar shows what a game would receive.
+    if (SettingsInterface* si = Host::Internal::GetBaseSettingsLayer())
+        usb_mic::audiodev_oboe::OboeAudioDevice::SetInputGain(std::pow(10.0f, USB::GetConfigFloat(*si, 0, "singstar", "input_gain", 0.0f) / 20.0f));
+
+    auto test = std::make_unique<usb_mic::audiodev_oboe::OboeAudioDevice>(AUDIODIR_SOURCE, 1, device, 50);
+    if (!test->Start())
+        return false;
+
+    s_mic_test = std::move(test);
+    return true;
+}
+
+// How loud what arrived since the last call was, 0 to 1 over -60 to 0 dBFS; -1 with no test running.
+extern "C"
+JNIEXPORT jfloat JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_micTestLevel(JNIEnv*, jclass) {
+    const std::lock_guard lock(s_mic_test_mutex);
+
+    if (!s_mic_test)
+        return -1.0f;
+
+    std::array<short, 2400> buf{};
+    u64 count = 0;
+    double sum = 0.0;
+
+    while (true)
+    {
+        const uint32_t read = s_mic_test->GetBuffer(buf.data(), static_cast<uint32_t>(buf.size()));
+        for (uint32_t i = 0; i < read; i++)
+            sum += static_cast<double>(buf[i]) * buf[i];
+
+        count += read;
+
+        if (read < buf.size())
+            break;
+    }
+
+    // Nothing new since the last call: keep the last reading rather than flicker to silence.
+    if (count)
+    {
+        const double rms = std::sqrt(sum / static_cast<double>(count)) / 32768.0;
+        s_mic_test_level = static_cast<float>(std::clamp((20.0 * std::log10(std::max(rms, 1e-6)) + 60.0) / 60.0, 0.0, 1.0));
+    }
+
+    return s_mic_test_level;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_micTestStop(JNIEnv*, jclass) {
+    const std::lock_guard lock(s_mic_test_mutex);
+    s_mic_test.reset();
+    s_mic_test_level = 0.0f;
 }
 
 extern "C"
