@@ -3293,12 +3293,18 @@ bool GSDeviceVK::UpdateWindow()
 	}
 
 	VkPresentModeKHR present_mode;
-	if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode) ||
-		!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
-			  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
+	if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
 	{
 		Console.Error("VK: Failed to create swap chain");
 		VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, surface);
+		return false;
+	}
+
+	// Create() owns the surface now and already destroyed it on failure, so don't destroy it again.
+	if (!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+			  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
+	{
+		Console.Error("VK: Failed to create swap chain");
 		return false;
 	}
 
@@ -3938,8 +3944,14 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	if (surface != VK_NULL_HANDLE)
 	{
 		VkPresentModeKHR present_mode;
-		if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode) ||
-			!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+		if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
+		{
+			ERROR_LOG("Failed to create swap chain");
+			return false;
+		}
+
+		// Create() owns the surface now and already destroyed it on failure.
+		if (!(m_swap_chain = VKSwapChain::Create(m_window_info, std::exchange(surface, VK_NULL_HANDLE), present_mode,
 				  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
 		{
 			ERROR_LOG("Failed to create swap chain");
