@@ -244,6 +244,22 @@ public class NativeApp {
 	/** Pick a subtype for whatever device is in {@code port}; devices without subtypes ignore it. */
 	public static native void usbSetDeviceSubtype(int port, int subtype);
 
+	// ---- Microphone (Audio settings) -------------------------------------------
+
+	/** The phone's microphones as one {@code "<Android device id>\t<name>"} per line, where the name is
+	 *  what the settings store. Android lists input devices to Java only and re-ids a device on every
+	 *  plug-in, so this goes again before each game starts and whenever one comes or goes. */
+	public static native void setMicDevices(String list);
+
+	/** Start the microphone test: opens the capture a game gets (the Oboe source device) for {@code device}. */
+	public static native boolean micTestStart(String device);
+
+	/** How loud what arrived since the last call was, 0 to 1 over -60 to 0 dBFS; -1 with no test running. */
+	public static native float micTestLevel();
+
+	/** Stop the microphone test and release the capture. */
+	public static native void micTestStop();
+
 	/** Aim, as a fraction (0..1) of the screen area the game surface covers. Native scales it
 	 *  to the surface buffer, which can have fewer pixels than the screen. */
 	public static native void usbLightgunAim(float x, float y);

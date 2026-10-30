@@ -274,6 +274,21 @@ data class AudioSettings(
      *  can't keep up even with NEON reverb; default off = full reverb. Applies
      *  live (read per-sample in MixCore). */
     val spu2LightweightMix: Boolean = false,
+
+    // ---- Microphone (emulated USB mic on port 0) ----
+    /** The microphone a singing game is given: 0 = Off, 1 = Standard (one microphone),
+     *  2 = SingStar (two singers, one microphone each). Emulated as the core's "singstar"
+     *  USB device; takes effect when a game starts. */
+    val micType: Int = 0,
+    /** Player 1's / the single microphone, a MicDevices name ("builtin", "usb:<product>", ...);
+     *  "Default" is the microphone Android picks (a USB one when plugged in). */
+    val micDevice1: String = "Default",
+    /** The second singer's microphone (SingStar only), same naming; empty = none. */
+    val micDevice2: String = "",
+    /** Input gain for the microphone, in decibels (0 = unity). The handheld's built-in mic is quieter than
+     *  the dynamic capsule SingStar games were tuned for, so a game may need its input boosted; takes
+     *  effect when a game starts. */
+    val micLevel: Int = 0,
 )
 
 /** Patches, cheats, boot options, RetroAchievements and the other EmuCore toggles. Part of [Settings]. */
@@ -1114,11 +1129,30 @@ data class Settings(
         // the emulated HID keyboard on the next boot. The live attach/detach on a
         // running VM is NativeApp.usbApplyPorts below.
         //
-        // Port 1 is shared with the USB device picker (UsbDevices), so the switch owns it
-        // only while it is on. Off, the port carries what the picker put there. This used
-        // to write "None" instead, at every settings apply and every game launch, which
-        // unplugged a GunCon 2 or Buzz set on Port 1 before the game ever saw it.
-        put("USB1", "Type", "string", if (system.usbKeyboard) "hidkbd" else com.armsx2.input.UsbDevices.storedType(0))
+        // Port 0 is shared with the USB device picker (UsbDevices) and, while it is on,
+        // with the microphone in Audio settings: the keyboard switch owns it first, then
+        // the mic; off both, the port carries what the picker put there. The picker no
+        // longer offers "singstar" — the microphone lives in Audio settings (Microphone).
+        val micType = audio.micType.coerceIn(0, 2)
+        if (system.usbKeyboard) {
+            put("USB1", "Type", "string", "hidkbd")
+        } else if (micType != 0) {
+            // The emulated microphone: subtype 0 = SingStar (dual), 1 = Logitech (single).
+            // Device names are what MicDevices stores; the core opens them through Oboe.
+            put("USB1", "Type", "string", "singstar")
+            put("USB1", "singstar_subtype", "int", if (micType == 2) "0" else "1")
+            // Input gain in decibels: the core boosts what reaches the emulated microphone by this much.
+            put("USB1", "singstar_input_gain", "float", audio.micLevel.coerceIn(0, 24).toString())
+            if (micType == 2) {
+                put("USB1", "singstar_player1_device_name", "string", audio.micDevice1.ifEmpty { "Default" })
+                put("USB1", "singstar_player2_device_name", "string", audio.micDevice2)
+            } else {
+                put("USB1", "singstar_input_device_name", "string", audio.micDevice1.ifEmpty { "Default" })
+            }
+        } else {
+            // Off: leave whatever the picker (or an older build's mic flow) put on port 0.
+            put("USB1", "Type", "string", com.armsx2.input.UsbDevices.storedType(0))
+        }
         // Recompiler enables. Picked up by VMManager::ApplySettings →
         // SysCpuProviderPack rebind. Toggling these on a running VM swaps
         // the dispatch pointer; existing JIT block caches are flushed by
@@ -1298,6 +1332,22 @@ data class Settings(
                 audioOpenSLES = boolAt("SPU2/Output/AndroidOpenSLES") ?: this.audio.audioOpenSLES,
                 audioRecordingCompatible = boolAt("SPU2/Output/AndroidRecordingCompatible") ?: this.audio.audioRecordingCompatible,
                 spu2LightweightMix = boolAt("SPU2/Output/LightweightMode") ?: this.audio.spu2LightweightMix,
+                // ---- Microphone (USB1/singstar) — 0 = Off, 1 = Standard, 2 = SingStar ----
+                micType = strAt("USB1/Type")?.let { t ->
+                    if (t != "singstar") 0 else if ((intAt("USB1/singstar_subtype") ?: 0) == 0) 2 else 1
+                } ?: this.audio.micType,
+                micDevice1 = strAt("USB1/Type")?.let { t ->
+                    if (t != "singstar") "Default"
+                    else if ((intAt("USB1/singstar_subtype") ?: 0) == 0) strAt("USB1/singstar_player1_device_name").orEmpty().ifEmpty { "Default" }
+                    else strAt("USB1/singstar_input_device_name").orEmpty().ifEmpty { "Default" }
+                } ?: this.audio.micDevice1,
+                micDevice2 = strAt("USB1/Type")?.let { t ->
+                    if (t != "singstar" || (intAt("USB1/singstar_subtype") ?: 0) != 0) ""
+                    else strAt("USB1/singstar_player2_device_name").orEmpty()
+                } ?: this.audio.micDevice2,
+                micLevel = strAt("USB1/Type")?.let { t ->
+                    if (t != "singstar") 0 else (floatAt("USB1/singstar_input_gain") ?: 0f).toInt().coerceIn(0, 24)
+                } ?: this.audio.micLevel,
             ),
             emuCore = this.emuCore.copy(
                 // ---- EmuCore patches / cheats ----
@@ -1998,6 +2048,10 @@ data class Settings(
         put("audioOpenSLES", audio.audioOpenSLES)
         put("audioRecordingCompatible", audio.audioRecordingCompatible)
         put("spu2LightweightMix", audio.spu2LightweightMix)
+        put("micType", audio.micType)
+        put("micDevice1", audio.micDevice1)
+        put("micLevel", audio.micLevel)
+        put("micDevice2", audio.micDevice2)
         put("renderer", output.renderer)
         put("upscaleFloat", output.upscaleFloat.toDouble())
         put("customDriverId", output.customDriverId)
@@ -2350,6 +2404,10 @@ data class Settings(
                     audioOpenSLES = json.optBoolean("audioOpenSLES", def.audio.audioOpenSLES),
                     audioRecordingCompatible = json.optBoolean("audioRecordingCompatible", def.audio.audioRecordingCompatible),
                     spu2LightweightMix = json.optBoolean("spu2LightweightMix", def.audio.spu2LightweightMix),
+                    micType = json.optInt("micType", def.audio.micType),
+                    micDevice1 = json.optString("micDevice1", def.audio.micDevice1),
+                    micLevel = json.optInt("micLevel", def.audio.micLevel),
+                    micDevice2 = json.optString("micDevice2", def.audio.micDevice2),
                 ),
                 emuCore = EmuCoreSettings(
                     enablePatches = json.optBoolean("enablePatches", def.emuCore.enablePatches),
@@ -2638,6 +2696,10 @@ data class Settings(
             if (current.audio.audioOpenSLES != base.audio.audioOpenSLES) j.put("audioOpenSLES", current.audio.audioOpenSLES)
             if (current.audio.audioRecordingCompatible != base.audio.audioRecordingCompatible) j.put("audioRecordingCompatible", current.audio.audioRecordingCompatible)
             if (current.audio.spu2LightweightMix != base.audio.spu2LightweightMix) j.put("spu2LightweightMix", current.audio.spu2LightweightMix)
+            if (current.audio.micType != base.audio.micType) j.put("micType", current.audio.micType)
+            if (current.audio.micDevice1 != base.audio.micDevice1) j.put("micDevice1", current.audio.micDevice1)
+            if (current.audio.micLevel != base.audio.micLevel) j.put("micLevel", current.audio.micLevel)
+            if (current.audio.micDevice2 != base.audio.micDevice2) j.put("micDevice2", current.audio.micDevice2)
             if (current.output.renderer != base.output.renderer) j.put("renderer", current.output.renderer)
             if (current.output.upscaleFloat != base.output.upscaleFloat) j.put("upscaleFloat", current.output.upscaleFloat.toDouble())
             if (current.output.customDriverId != base.output.customDriverId) j.put("customDriverId", current.output.customDriverId)
@@ -2917,6 +2979,10 @@ data class Settings(
                 audioOpenSLES = if (overrides.has("audioOpenSLES")) overrides.getBoolean("audioOpenSLES") else base.audio.audioOpenSLES,
                 audioRecordingCompatible = if (overrides.has("audioRecordingCompatible")) overrides.getBoolean("audioRecordingCompatible") else base.audio.audioRecordingCompatible,
                 spu2LightweightMix = if (overrides.has("spu2LightweightMix")) overrides.getBoolean("spu2LightweightMix") else base.audio.spu2LightweightMix,
+                micType = if (overrides.has("micType")) overrides.getInt("micType") else base.audio.micType,
+                micDevice1 = if (overrides.has("micDevice1")) overrides.getString("micDevice1") else base.audio.micDevice1,
+                micLevel = if (overrides.has("micLevel")) overrides.getInt("micLevel") else base.audio.micLevel,
+                micDevice2 = if (overrides.has("micDevice2")) overrides.getString("micDevice2") else base.audio.micDevice2,
             ),
             emuCore = EmuCoreSettings(
                 enablePatches = if (overrides.has("enablePatches")) overrides.getBoolean("enablePatches") else base.emuCore.enablePatches,

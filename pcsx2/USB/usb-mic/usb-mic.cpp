@@ -31,7 +31,13 @@
 #include "USB/usb-mic/usb-mic.h"
 #include "USB/usb-mic/audiodev.h"
 #include "USB/usb-mic/audiodev-noop.h"
+#if ARMSX2_USE_OBOE
+// Android: Oboe is the platform's audio backend, so the mic device talks to AAudio through it.
+// The cubeb path below stays for every other platform (and as the fallback when oboe is disabled).
+#include "USB/usb-mic/audiodev-oboe.h"
+#else
 #include "USB/usb-mic/audiodev-cubeb.h"
+#endif
 #include "USB/usb-mic/audio.h"
 #include "USB/USB.h"
 #include "Host.h"
@@ -40,6 +46,8 @@
 #include "common/Console.h"
 
 #include "fmt/format.h"
+
+#include <cmath>
 
 static FILE* file = NULL;
 
@@ -838,7 +846,6 @@ namespace usb_mic
 		SINGSTARMICState* s = USB_CONTAINER_OF(dev, SINGSTARMICState, dev);
 		int ret = 0;
 
-
 		ret = usb_desc_handle_control(dev, p, request, value, index, length, data);
 		if (ret >= 0)
 		{
@@ -1073,6 +1080,14 @@ namespace usb_mic
 		if (subtype >= MIC_COUNT)
 			return nullptr;
 
+		// The handheld's built-in mic is quieter than the dynamic capsule SingStar games were tuned for, so
+		// the settings may boost what reaches the emulated device. Stored in decibels on port 0 ("USB1");
+		// applied to every capture stream this device opens (Oboe only; other backends run at unity).
+#if ARMSX2_USE_OBOE
+		const float gain_db = USB::GetConfigFloat(si, port, devtype, "input_gain", 0.0f);
+		audiodev_oboe::OboeAudioDevice::SetInputGain(std::pow(10.0f, gain_db / 20.0f));
+#endif
+
 		SINGSTARMICState* s = new SINGSTARMICState();
 
 		if (dual_mic)
@@ -1108,6 +1123,7 @@ namespace usb_mic
 		{
 			std::string dev0(USB::GetConfigString(si, port, devtype, "input_device_name"));
 			const s32 latency0 = USB::GetConfigInt(si, port, devtype, "input_latency", AudioDevice::DEFAULT_LATENCY);
+
 			if (!dev0.empty())
 				s->audsrc[0] = AudioDevice::CreateDevice(AUDIODIR_SOURCE, 1, std::move(dev0), latency0);
 
@@ -1148,23 +1164,41 @@ namespace usb_mic
 			case MIC_SINGSTAR:
 				s->desc.str = singstar_desc_strings;
 				if (usb_desc_parse_dev(singstar_dev_descriptor, sizeof(singstar_dev_descriptor), s->desc, s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse device descriptor");
 					goto fail;
+				}
 				if (usb_desc_parse_config(singstar_config_descriptor, sizeof(singstar_config_descriptor), s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse config descriptor");
 					goto fail;
+				}
 				break;
 			case MIC_LOGITECH:
 				s->desc.str = logitech_desc_strings;
 				if (usb_desc_parse_dev(logitech_dev_descriptor, sizeof(logitech_dev_descriptor), s->desc, s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse device descriptor");
 					goto fail;
+				}
 				if (usb_desc_parse_config(logitech_config_descriptor, sizeof(logitech_config_descriptor), s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse config descriptor");
 					goto fail;
+				}
 				break;
 			case MIC_KONAMI:
 				s->desc.str = ak5370_desc_strings;
 				if (usb_desc_parse_dev(ak5370_dev_descriptor, sizeof(ak5370_dev_descriptor), s->desc, s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse device descriptor");
 					goto fail;
+				}
 				if (usb_desc_parse_config(ak5370_config_descriptor, sizeof(ak5370_config_descriptor), s->desc_dev) < 0)
+				{
+					Console.Error("USB-Mic: failed to parse config descriptor");
 					goto fail;
+				}
 				break;
 		}
 
@@ -1294,15 +1328,27 @@ std::unique_ptr<AudioDevice> AudioDevice::CreateNoopDevice(AudioDir dir, u32 cha
 
 std::unique_ptr<AudioDevice> AudioDevice::CreateDevice(AudioDir dir, u32 channels, std::string devname, s32 latency)
 {
+#if ARMSX2_USE_OBOE
+	return std::make_unique<usb_mic::audiodev_oboe::OboeAudioDevice>(dir, channels, std::move(devname), latency);
+#else
 	return std::make_unique<usb_mic::audiodev_cubeb::CubebAudioDevice>(dir, channels, std::move(devname), latency);
+#endif
 }
 
 std::vector<std::pair<std::string, std::string>> AudioDevice::GetInputDeviceList()
 {
+#if ARMSX2_USE_OBOE
+	return usb_mic::audiodev_oboe::OboeAudioDevice::GetDeviceList(true);
+#else
 	return usb_mic::audiodev_cubeb::CubebAudioDevice::GetDeviceList(true);
+#endif
 }
 
 std::vector<std::pair<std::string, std::string>> AudioDevice::GetOutputDeviceList()
 {
+#if ARMSX2_USE_OBOE
+	return usb_mic::audiodev_oboe::OboeAudioDevice::GetDeviceList(false);
+#else
 	return usb_mic::audiodev_cubeb::CubebAudioDevice::GetDeviceList(false);
+#endif
 }

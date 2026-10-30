@@ -846,6 +846,8 @@ open class MainActivityRuntime : ComponentActivity() {
                         }
                     }
                     stagePerGameSettingsFile(currentGame.value?.settingsKey)
+                    // The microphones as they are now, by name, for a game that opens one (MicDevices).
+                    runCatching { instance?.applicationContext?.let { com.armsx2.input.MicDevices.push(it) } }
                     if (arcadeLaunch)
                         runArcadeGame(m_szGamefile)
                     else
@@ -940,6 +942,8 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.arcade.Arcade.sessionGameId.value = launch.game.gameId
             // The player's own layout for this game's cabinet (Arcade controls), before any press arrives.
             com.armsx2.arcade.ArcadeControls.apply(launch.game.gameId)
+            // The microphones as they are now, by name, for a game that opens one (MicDevices).
+            runCatching { com.armsx2.input.MicDevices.push(ctx) }
             try {
                 // The game's .acgame, or for a game kept as its own files the one written for it.
                 NativeApp.runVMThread(launch.manifest)
@@ -6059,6 +6063,8 @@ open class MainActivityRuntime : ComponentActivity() {
         super.onStart()
         runCatching { NativeApp.setAppBackgrounded(false) }
         com.armsx2.DiscordPresence.setForeground(true)
+        // Keeps the core's microphone list current while microphones are plugged in and out (MicDevices).
+        com.armsx2.input.MicDevices.watch(applicationContext)
     }
 
     // Stopped, not paused: a split-screen or picture-in-picture app is paused but still in sight.
