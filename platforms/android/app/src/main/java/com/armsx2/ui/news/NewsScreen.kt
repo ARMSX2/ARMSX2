@@ -46,6 +46,8 @@ import com.armsx2.ui.common.ArmsBackdrop
 import com.armsx2.ui.common.ArmsTopBar
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
+import com.armsx2.ui.settings.ControllerAutoScroll
+import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 
 /**
@@ -60,8 +62,12 @@ fun NewsScreen(onBack: () -> Unit, viewModel: NewsViewModel = viewModel()) {
     val state = viewModel.state.value
     LaunchedEffect(Unit) { viewModel.load() }
 
+    // The right stick scrolls freely, as on the settings pages and the licences
+    val scroll = rememberScrollState()
+    ControllerAutoScroll(scroll)
+
     ArmsBackdrop {
-        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
             ArmsTopBar(
                 title = str("news.title"),
                 leading = { RoundAction("←", str("action.back"), onBack) },
@@ -160,11 +166,11 @@ private fun ReleaseContributors(people: List<News.Contributor>) {
  * then the space is held at the picture's shape.
  */
 @Composable
-private fun NotePicture(image: News.Block.Image) {
+private fun NotePicture(image: News.Block.Image, modifier: Modifier = Modifier) {
     var near by remember(image.url) { mutableStateOf(false) }
 
     Box(
-        Modifier
+        modifier
             .fillMaxWidth()
             .aspectRatio(image.aspectRatio)
             .clip(RoundedCornerShape(8.dp))
@@ -258,10 +264,29 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
                 Text(str("news.noNotes"), style = MaterialTheme.typography.bodySmall)
             } else {
                 if (expanded) {
+                    // A pad stop per paragraph and picture, so Down reads through a long release
+                    // instead of jumping past it
+                    var stop = 0
+                    // Closing from inside takes the paragraph's stop away; the selection goes to the
+                    // card rather than falling back to the top of the screen
+                    val collapse = {
+                        expanded = false
+                        SettingsControllerNav.selectById("news.${item.tag}")
+                        Unit
+                    }
                     item.blocks.forEach { block ->
                         when (block) {
-                            is News.Block.Text -> Text(block.text, style = MaterialTheme.typography.bodySmall)
-                            is News.Block.Image -> NotePicture(block)
+                            is News.Block.Text -> block.text.split("\n\n").forEach { paragraph ->
+                                Text(
+                                    paragraph,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse),
+                                )
+                            }
+                            is News.Block.Image -> NotePicture(
+                                block,
+                                Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse),
+                            )
                         }
                     }
                 } else {
