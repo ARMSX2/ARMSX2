@@ -574,6 +574,9 @@ internal fun Modifier.controllerFocusable(
     onConfirm: (() -> Unit)? = null,
     onLeft: (() -> Unit)? = null,
     onRight: (() -> Unit)? = null,
+    // False for a stop that should not draw the selection ring, such as the paragraphs of an
+    // opened release on the news board, where the card itself carries it
+    ring: Boolean = true,
 ): Modifier = composed {
     // Which layer this control belongs to is decided by WHERE IT SITS, not by an argument the
     // call site has to remember to pass. That is what lets an unmodified ToggleRow or slider be
@@ -647,7 +650,7 @@ internal fun Modifier.controllerFocusable(
             // Only while the pad drives the UI: Compose focus lands on controls by itself (the
             // first focusable one when the game surface lets go), and under touch a ring there is
             // a selection nobody made.
-            if ((focused || selected) && com.armsx2.ui.common.PadInput.active.value) {
+            if (ring && (focused || selected) && com.armsx2.ui.common.PadInput.active.value) {
                 // Driver-safe selection ring: solid inner + translucent outer border. We
                 // deliberately avoid Modifier.shadow with a custom ambient/spot color here —
                 // Adreno / Mali / Turnip drivers frequently ignore the tint and render the

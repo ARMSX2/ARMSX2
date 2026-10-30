@@ -46,7 +46,6 @@ import com.armsx2.ui.common.ArmsBackdrop
 import com.armsx2.ui.common.ArmsTopBar
 import com.armsx2.ui.common.GlassPanel
 import com.armsx2.ui.common.RoundAction
-import com.armsx2.ui.settings.ControllerAutoScroll
 import com.armsx2.ui.settings.SettingsControllerNav
 import com.armsx2.ui.settings.controllerFocusable
 
@@ -62,19 +61,15 @@ fun NewsScreen(onBack: () -> Unit, viewModel: NewsViewModel = viewModel()) {
     val state = viewModel.state.value
     LaunchedEffect(Unit) { viewModel.load() }
 
-    // The right stick scrolls freely, as on the settings pages and the licences
-    val scroll = rememberScrollState()
-    ControllerAutoScroll(scroll)
-
     ArmsBackdrop {
-        Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
             ArmsTopBar(
                 title = str("news.title"),
-                leading = { RoundAction("←", str("action.back"), onBack) },
+                leading = { RoundAction("←", str("action.back"), onBack, controllerId = "news.back") },
                 actions = {
                     // Named, not a trailing lambda: RoundAction's last parameter is glyphColor, so
                     // a trailing lambda binds there rather than to onClick.
-                    RoundAction("⟳", str("news.refresh"), onClick = { viewModel.load(force = true) })
+                    RoundAction("⟳", str("news.refresh"), onClick = { viewModel.load(force = true) }, controllerId = "news.refresh")
                 },
             )
 
@@ -199,16 +194,18 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
     var expanded by rememberSaveable(item.tag) { mutableStateOf(initiallyExpanded) }
     val toggle = { expanded = !expanded }
 
-    GlassPanel(Modifier.fillMaxWidth()) {
+    // The pad's outline goes on the panel, in its shape, so it traces the card's edge
+    GlassPanel(
+        Modifier
+            .fillMaxWidth()
+            .controllerFocusable("news.${item.tag}", shape = RoundedCornerShape(28.dp), onConfirm = toggle),
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
-                // clickable AND controllerFocusable: the latter only wires the pad's confirm
-                // button into the nav registry, it does not make anything respond to a finger.
-                // Shipping only the focusable left "Show more" dead to touch, which is how every
-                // phone user meets this screen.
-                .clickable(onClick = toggle)
-                .controllerFocusable("news.${item.tag}", onConfirm = toggle),
+                // clickable as well as the pad stop above, which only wires the pad's confirm
+                // button into the nav registry and does not make anything respond to a finger
+                .clickable(onClick = toggle),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
@@ -280,12 +277,12 @@ private fun ReleaseCard(item: News.Item, initiallyExpanded: Boolean) {
                                 Text(
                                     paragraph,
                                     style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse),
+                                    modifier = Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse, ring = false),
                                 )
                             }
                             is News.Block.Image -> NotePicture(
                                 block,
-                                Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse),
+                                Modifier.controllerFocusable("news.${item.tag}.${stop++}", onConfirm = collapse, ring = false),
                             )
                         }
                     }
