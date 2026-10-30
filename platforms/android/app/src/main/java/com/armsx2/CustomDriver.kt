@@ -57,17 +57,18 @@ object CustomDriver {
         val supports: (renderer: String?) -> Boolean = { true },
     )
 
-    /** Mali Valhall architectures v9 and v11, the GPUs our MaliSX2 packs drive and the set Auto
-     *  sends to Vulkan: G57, G68, G77, G78 (G78AE included) and G615, G715 (Immortalis-G715
-     *  included). Not v10 (G310/G510/G610/G710), Bifrost or the 5th-gen parts. Same list as
-     *  GpuProfileDetector::MaliValhallArch returning 9 or 11. GL_RENDERER reads like "Mali-G57 MC2"
-     *  or "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a
-     *  longer model number from matching on its prefix. */
-    private val MALI_VALHALL_V9_V11 = Regex("""\bG(?:57|68|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
-    internal fun isMaliValhallV9OrV11(renderer: String?): Boolean =
+    /** The GPUs our MaliSX2 packs drive: Mali Valhall v9 (G57, G68, G77, G78 — G78AE included) and
+     *  v11 (G615, G715 — Immortalis-G715 included), plus the Bifrost v7 parts malisx2 accepts: the
+     *  Mali-G52 and the Mali-G76. Not v10 (G310/G510/G610/G710), not the other Bifrost parts, not
+     *  Midgard or the 5th-gen parts. GL_RENDERER reads like "Mali-G57 MC2" or
+     *  "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a longer
+     *  model number from matching on its prefix. The Mali-G76 is accepted by malisx2 as of
+     *  bmdhacks/malisx2#4 (measured kbase product id 0x7211, Mesa PAN_PROD_ID(7, 2, 1)). */
+    private val MALISX2_SUPPORTED_MALI = Regex("""\bG(?:52|57|68|76|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isMaliSX2Supported(renderer: String?): Boolean =
         renderer != null &&
             (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
-            MALI_VALHALL_V9_V11.containsMatchIn(renderer)
+            MALISX2_SUPPORTED_MALI.containsMatchIn(renderer)
 
     // Our own Vulkan driver for Mali, replacing Arm's on the kbase kernel driver. One
     // adrenotools pack per release (meta.json + libvulkan_malisx2.so), loaded the
@@ -78,7 +79,7 @@ object CustomDriver {
         "ARMSX2 · MaliSX2",
         "https://api.github.com/repos/bmdhacks/malisx2/releases",
         "armsx2libmali",
-        supports = ::isMaliValhallV9OrV11,
+        supports = ::isMaliSX2Supported,
     )
 
     /** Whether the driver list offers malisx2 for [renderer] (GL_RENDERER). The wrong-driver
