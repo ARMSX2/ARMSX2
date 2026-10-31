@@ -5,6 +5,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -83,7 +84,8 @@ class TexturePackInstallerTest {
         val game = gameFolder()
         val textures = game.parentFile!!
         val stuck = File(game, "replacements/sub")
-        assertTrue(stuck.setWritable(false)) // b.ktx inside it can no longer be deleted
+        // b.ktx inside it can no longer be deleted. Windows cannot take write access from a directory.
+        assumeTrue(stuck.setWritable(false))
         try {
             assertTrue(TexturePackInstaller.removePack(game))
             assertFalse(File(game, "replacements").exists())
