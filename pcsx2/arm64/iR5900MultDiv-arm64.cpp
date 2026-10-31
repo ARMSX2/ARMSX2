@@ -286,6 +286,49 @@ static bool recDivuConstPow2(bool upper)
 	return true;
 }
 
+// DIV, DIVU and the pipeline-1 forms by a constant divisor the shift forms
+// leave, with no zero test. A zero divisor stores the divide-by-zero result,
+// LO = -1 (DIV: 1 for a negative rs) and HI = rs; any other is the generic
+// path's divide and msub, the divisor built in w9 for the msub. Returns false
+// for a divisor that is not constant.
+static bool recDivConstDivisor(bool is_signed, bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (g_cpuConstRegs[_Rt_].UL[0] == 0)
+	{
+		armAsm->Mov(RXSCRATCH, -1);
+		if (is_signed)
+		{
+			armAsm->Cmp(rs32, 0);
+			armAsm->Cneg(RXSCRATCH, RXSCRATCH, a64::lt);
+		}
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, hi);
+		return true;
+	}
+
+	const a64::Register rt32 = loadRt32();
+	if (is_signed)
+		armAsm->Sdiv(a64::w0, rs32, rt32);
+	else
+		armAsm->Udiv(a64::w0, rs32, rt32);
+	armAsm->Msub(a64::w10, a64::w0, rt32, rs32);
+
+	armAsm->Sxtw(RXSCRATCH, a64::w0);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->Sxtw(RXSCRATCH, a64::w10);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
+}
+
 //// DIV — signed 32-bit divide. LO = quotient, HI = remainder.
 // PS2 div-by-zero: LO = (rs >= 0 ? -1 : 1), HI = rs (sign-extended into 64-bit
 // HI/LO). Matches the interpreter and the PS2 hardware spec.
@@ -322,6 +365,8 @@ void recDIV()
 	}
 
 	if (recDivConstPow2(false))
+		return;
+	if (recDivConstDivisor(true, false))
 		return;
 
 	flushDirtyAllocatorRegs();
@@ -387,6 +432,8 @@ void recDIVU()
 	}
 
 	if (recDivuConstPow2(false))
+		return;
+	if (recDivConstDivisor(false, false))
 		return;
 
 	flushDirtyAllocatorRegs();
@@ -533,6 +580,8 @@ void recDIV1()
 
 	if (recDivConstPow2(true))
 		return;
+	if (recDivConstDivisor(true, true))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
@@ -591,6 +640,8 @@ void recDIVU1()
 	}
 
 	if (recDivuConstPow2(true))
+		return;
+	if (recDivConstDivisor(false, true))
 		return;
 
 	flushDirtyAllocatorRegs();
