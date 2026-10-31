@@ -8,6 +8,8 @@
 
 #include "arm64/iR5900-arm64.h"
 
+#include <bit>
+
 namespace a64 = vixl::aarch64;
 
 namespace R5900 {
@@ -84,6 +86,55 @@ static void recWritebackRd()
 	_eeStoreGPRDestReg(_Rd_, RXSCRATCH);
 }
 
+// One operand a constant 0 or 2^k: the product is the other operand's low
+// word, sign- or zero-extended, shifted left by k. The signed forms stop at
+// k = 30, as 0x80000000 is INT_MIN. Returns false for the multiply path.
+static bool recMultConstOperand(bool is_signed, bool upper)
+{
+	int var_gpr;
+	u32 c;
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		c = g_cpuConstRegs[_Rs_].UL[0];
+		var_gpr = _Rt_;
+	}
+	else if (GPR_IS_CONST1(_Rt_))
+	{
+		c = g_cpuConstRegs[_Rt_].UL[0];
+		var_gpr = _Rs_;
+	}
+	else
+		return false;
+
+	if (c == 0)
+	{
+		armAsm->Str(a64::xzr, armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]));
+		armAsm->Str(a64::xzr, armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]));
+		if (_Rd_)
+		{
+			_deleteEEreg(_Rd_, 0);
+			g_cpuConstRegs[_Rd_].SD[0] = 0;
+			GPR_SET_CONST(_Rd_);
+		}
+		return true;
+	}
+
+	if (!std::has_single_bit(c) || (is_signed && c == 0x80000000u))
+		return false;
+
+	flushDirtyAllocatorRegs();
+	const a64::Register var = _eeGetGPRSourceReg(a64::w1, var_gpr).X();
+	const unsigned k = std::countr_zero(c);
+	if (is_signed)
+		armAsm->Sbfiz(a64::x0, var, k, 32);
+	else
+		armAsm->Ubfiz(a64::x0, var, k, 32);
+
+	recWritebackHILO(upper);
+	recWritebackRd();
+	return true;
+}
+
 //// MULT — signed 32-bit multiply, result in HI:LO, optionally Rd
 void recMULT()
 {
@@ -105,6 +156,9 @@ void recMULT()
 		}
 		return;
 	}
+
+	if (recMultConstOperand(true, false))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
@@ -137,6 +191,9 @@ void recMULTU()
 		}
 		return;
 	}
+
+	if (recMultConstOperand(false, false))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
@@ -306,6 +363,9 @@ void recMULT1()
 		return;
 	}
 
+	if (recMultConstOperand(true, true))
+		return;
+
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
@@ -337,6 +397,9 @@ void recMULTU1()
 		}
 		return;
 	}
+
+	if (recMultConstOperand(false, true))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
