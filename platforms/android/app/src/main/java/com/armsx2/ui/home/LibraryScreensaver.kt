@@ -67,7 +67,7 @@ import kotlin.math.abs
 import kotlin.random.Random
 
 /**
- * The library's screensaver: after a set time with no input on the library (10 minutes unless
+ * The library's screensaver: after a set time with no input on the library (5 minutes unless
  * the player picks 1 to 60), the save icons take the screen one game at a time, each on its own
  * background with the game's name, drifting slowly. Any input wakes it, and only wakes it: the
  * press that does is not passed on, so it can't also start a game. Only over the library, never
@@ -79,7 +79,7 @@ import kotlin.random.Random
 object LibraryScreensaver {
     private const val KEY_ENABLED = "library.screensaver"
     private const val KEY_MINUTES = "library.screensaver.minutes"
-    const val DEFAULT_MINUTES = 10
+    const val DEFAULT_MINUTES = 5
 
     val enabled = mutableStateOf(true)
     val minutes = mutableIntStateOf(DEFAULT_MINUTES)
