@@ -80,6 +80,7 @@ bool g_maySignalException = false;
 // g_eeUnalignedFuseCount is a diagnostic/test tally.
 bool g_eeUnalignedFused = false;
 u32 g_eeUnalignedFuseCount = 0;
+u32 g_eeShiftPairPc = ~0u;
 
 // Constant propagation — defined here, declared extern in iR5900-arm64.h
 
@@ -2966,6 +2967,8 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	EEINST* old_inst_info = g_pCurInstInfo;
 
 	cpuRegs.code = memRead32(pc);
+	const bool shift_pair_second = !delayslot && pc == g_eeShiftPairPc;
+	g_eeShiftPairPc = ~0u;
 
 	// EP-2b: default-flush seam — any op that is not a cache-aware
 	// hand-rolled COP2 macro op kills the VF residency cache (dirty
@@ -3102,7 +3105,9 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 #else
 		constexpr bool forcedInterp = false;
 #endif
-		if (isBranchInDelaySlot || !opcode.recompile || forcedInterp)
+		if (shift_pair_second)
+			; // emitted with the first half
+		else if (isBranchInDelaySlot || !opcode.recompile || forcedInterp)
 		{
 			if ((opcode.flags & IS_BRANCH) && !isBranchInDelaySlot)
 				recBranchCall(opcode.interpret);
@@ -5153,6 +5158,7 @@ StartRecomp:
 		// Sweep any LDL/LDR fusion residue from an aborted prior compile (the
 		// per-pair gate otherwise guarantees same-block consume).
 		g_eeUnalignedFused = false;
+		g_eeShiftPairPc = ~0u;
 		// SL-03: sweep side-exit residue the same way (recEmitPendingSideExits
 		// drains the list on every completed compile).
 		s_numSideExits = 0;

@@ -6,6 +6,11 @@
 // No register allocation for scalar ops.
 
 #include "arm64/iR5900-arm64.h"
+#include "Memory.h"
+#include "Patch.h"
+
+#include <algorithm>
+#include <bit>
 
 namespace a64 = vixl::aarch64;
 
@@ -56,6 +61,150 @@ static a64::Register memDestD()
 }
 
 /*********************************************************
+ * Shift pairs — two instructions, one bitfield op        *
+ *********************************************************/
+
+// The second instruction reads and overwrites the first one's destination:
+//   SLL then SRA/SRL, DSLL/DSLL32 then DSRA/DSRL/DSRA32/DSRL32: sbfx/ubfx or
+//   sbfiz/ubfiz. SLL then SRL by 0 is signed.
+//   SRL/SRA/DSRL/DSRA/DSRL32/DSRA32 then ANDI 2^n-1: ubfx. An arithmetic
+//   shift fuses only when the field stays below the sign bit.
+//   ANDI 2^n-1 then SLL/DSLL/DSLL32: ubfiz, or sbfiz once SLL moves the field
+//   into bit 31.
+struct ShiftPairField
+{
+	bool is_signed;
+	bool insert; // bfiz when set, bfx otherwise
+	u32 lsb;
+	u32 width;
+};
+
+enum ShiftKind { kNotShift, kLeft, kRightLogical, kRightArith };
+
+// A constant-amount shift's kind, total amount and word size.
+static ShiftKind decodeShift(u32 code, u32* amount, u32* bits)
+{
+	if ((code >> 26) != 0)
+		return kNotShift;
+	const u32 sa = (code >> 6) & 0x1f;
+	*amount = sa;
+	*bits = 32;
+	switch (code & 0x3f)
+	{
+		case 0x00: return kLeft; // SLL
+		case 0x02: return kRightLogical; // SRL
+		case 0x03: return kRightArith; // SRA
+	}
+	*bits = 64;
+	switch (code & 0x3f)
+	{
+		case 0x38: return kLeft; // DSLL
+		case 0x3a: return kRightLogical; // DSRL
+		case 0x3b: return kRightArith; // DSRA
+	}
+	*amount = sa + 32;
+	switch (code & 0x3f)
+	{
+		case 0x3c: return kLeft; // DSLL32
+		case 0x3e: return kRightLogical; // DSRL32
+		case 0x3f: return kRightArith; // DSRA32
+	}
+	return kNotShift;
+}
+
+// n for an ANDI mask of 2^n-1, else 0.
+static u32 andiLowMaskBits(u32 code)
+{
+	const u32 m = code & 0xffff;
+	return (m & (m + 1)) == 0 ? static_cast<u32>(std::popcount(m)) : 0;
+}
+
+static bool shiftPairField(u32 first, u32 second, ShiftPairField* f)
+{
+	const bool first_andi = (first >> 26) == 0x0c;
+	const u32 dest = first_andi ? (first >> 16) & 0x1f : (first >> 11) & 0x1f;
+	const bool second_andi = (second >> 26) == 0x0c;
+	const u32 second_src = second_andi ? (second >> 21) & 0x1f : (second >> 16) & 0x1f;
+	const u32 second_dest = second_andi ? (second >> 16) & 0x1f : (second >> 11) & 0x1f;
+	if (dest == 0 || second_src != dest || second_dest != dest)
+		return false;
+
+	u32 a, a_bits, b, b_bits;
+	if (first_andi)
+	{
+		const u32 n = andiLowMaskBits(first);
+		if (n == 0 || decodeShift(second, &b, &b_bits) != kLeft)
+			return false;
+		if (b_bits == 32 && b + n >= 32)
+			*f = {true, true, b, 32 - b};
+		else
+			*f = {false, true, b, std::min(n, b_bits - b)};
+		return true;
+	}
+
+	const ShiftKind k = decodeShift(first, &a, &a_bits);
+	if (k == kNotShift)
+		return false;
+	if (k != kLeft)
+	{
+		const u32 n = second_andi ? andiLowMaskBits(second) : 0;
+		if (n == 0 || (k == kRightArith && a + n > a_bits))
+			return false;
+		*f = {false, false, a, std::min(n, a_bits - a)};
+		return true;
+	}
+
+	const ShiftKind k2 = decodeShift(second, &b, &b_bits);
+	if ((k2 != kRightLogical && k2 != kRightArith) || b_bits != a_bits || (a_bits == 64 && a == 0 && b == 0))
+		return false;
+	const bool is_signed = k2 == kRightArith || (a_bits == 32 && b == 0);
+	if (b >= a)
+		*f = {is_signed, false, b - a, a_bits - b};
+	else
+		*f = {is_signed, true, a - b, a_bits - a};
+	return true;
+}
+
+// Called by the first instruction's non-constant path. When the next
+// instruction completes a pair in the same block, emit the pair and leave its
+// pc in g_eeShiftPairPc so recompileNextInstruction emits nothing for it.
+// Returns false otherwise, having emitted nothing.
+bool recShiftPairLead()
+{
+	// In a delay slot pc is still the slot's own address.
+	if (g_recompilingDelaySlot || pc >= recCurrentBlockEndPC())
+		return false;
+	// recompileNextInstruction would apply these before reading the second
+	// instruction; applying them twice writes the same words.
+	if (EmuConfig.EnablePatches)
+		Patch::ApplyDynamicPatches(pc);
+	const u32 second = memRead32(pc);
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (EERecFallback::Selected(second))
+		return false;
+#endif
+	ShiftPairField f;
+	if (!shiftPairField(cpuRegs.code, second, &f))
+		return false;
+
+	const bool andi = _Opcode_ == 0x0c;
+	const int dest = andi ? _Rt_ : _Rd_;
+	const a64::Register src = _eeGetGPRSourceReg(RXSCRATCH, andi ? _Rs_ : _Rt_);
+	const a64::Register dst = _eeGetGPRDestReg(dest, RXSCRATCH);
+	if (f.insert && f.is_signed)
+		armAsm->Sbfiz(dst, src, f.lsb, f.width);
+	else if (f.insert)
+		armAsm->Ubfiz(dst, src, f.lsb, f.width);
+	else if (f.is_signed)
+		armAsm->Sbfx(dst, src, f.lsb, f.width);
+	else
+		armAsm->Ubfx(dst, src, f.lsb, f.width);
+	_eeStoreGPRDestReg(dest, dst);
+	g_eeShiftPairPc = pc;
+	return true;
+}
+
+/*********************************************************
  * Shift with constant amount — rd = rt SHIFT sa         *
  * Uses eeRecompileCodeRC2_MEM                            *
  *********************************************************/
@@ -68,6 +217,8 @@ static void recSLL_const()
 
 static void recSLL_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT32();
 	const a64::Register dst = memDestD();
 	if (_Sa_ != 0)
@@ -94,6 +245,8 @@ static void recSRL_const()
 
 static void recSRL_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT32();
 	const a64::Register dst = memDestD();
 	if (_Sa_ != 0)
@@ -119,6 +272,8 @@ static void recSRA_const()
 
 static void recSRA_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT32();
 	const a64::Register dst = memDestD();
 	if (_Sa_ != 0)
@@ -143,6 +298,8 @@ static void recDSLL_const()
 
 static void recDSLL_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	if (_Sa_ != 0)
 	{
@@ -166,6 +323,8 @@ static void recDSRL_const()
 
 static void recDSRL_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	if (_Sa_ != 0)
 	{
@@ -189,6 +348,8 @@ static void recDSRA_const()
 
 static void recDSRA_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	if (_Sa_ != 0)
 	{
@@ -212,6 +373,8 @@ static void recDSLL32_const()
 
 static void recDSLL32_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	const a64::Register dst = memDestD();
 	armAsm->Lsl(dst, rt, _Sa_ + 32);
@@ -228,6 +391,8 @@ static void recDSRL32_const()
 
 static void recDSRL32_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	const a64::Register dst = memDestD();
 	armAsm->Lsr(dst, rt, _Sa_ + 32);
@@ -244,6 +409,8 @@ static void recDSRA32_const()
 
 static void recDSRA32_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	const a64::Register rt = memLoadT64();
 	const a64::Register dst = memDestD();
 	armAsm->Asr(dst, rt, _Sa_ + 32);

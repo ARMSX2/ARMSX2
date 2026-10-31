@@ -706,6 +706,10 @@ extern bool g_recompilingDelaySlot;
 extern bool g_eeUnalignedFused;
 extern u32 g_eeUnalignedFuseCount;
 
+// Guest pc of the second half of a shift pair the first half emitted
+// (recShiftPairLead, iR5900Shift-arm64.cpp), or ~0u. Cleared at block start.
+extern u32 g_eeShiftPairPc;
+
 // Exclusive end PC of the block currently being recompiled. Used by the LDL/LDR
 // fusion to confirm the peeked partner instruction is in the same block.
 u32 recCurrentBlockEndPC();
@@ -987,6 +991,11 @@ namespace R5900
 	namespace Dynarec
 	{
 		extern void recDoBranchImm(u32 branchTo, u32* jmpSkip, bool isLikely = false, bool swappedDelaySlot = false);
+
+		namespace OpcodeImpl
+		{
+			bool recShiftPairLead();
+		}
 	}
 }
 

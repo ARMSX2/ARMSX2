@@ -43,6 +43,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_mult_const_operand_tests.cpp
 	ee_rec_div_const_pow2_tests.cpp
 	ee_rec_div_const_divisor_tests.cpp
+	ee_rec_shift_pair_tests.cpp
 	ee_rec_madd_tests.cpp
 	ee_rec_alu_imm_tests.cpp
 	ee_rec_branch_tests.cpp
