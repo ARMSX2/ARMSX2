@@ -1510,17 +1510,6 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	key.color_feedback_loop = color_feedback_loop;
 	key.depth_sampling = depth_sampling;
 
-	// Mali driver bug (ported from PPSSPP): a packed depth/stencil attachment whose
-	// depth vs stencil load-ops MISMATCH corrupts on ARM Mali. PCSX2's GS uses one
-	// combined D24S8/D32S8 attachment whose aspects are normally loaded/cleared
-	// together, so this is a no-op in practice — normalize defensively (prefer the
-	// depth aspect's op) so a stray mismatch can't trip the bug. Mali-only.
-	if (IsDeviceMali() && key.stencil_load_op != key.depth_load_op)
-	{
-		key.stencil_load_op = key.depth_load_op;
-		key.stencil_store_op = key.depth_store_op;
-	}
-
 	auto it = m_render_pass_cache.find(key.key);
 	if (it != m_render_pass_cache.end())
 		return it->second;
@@ -2408,8 +2397,48 @@ void GSDeviceVK::DisableDebugUtils()
 	}
 }
 
-VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
+bool GSDeviceVK::MatchesDepthStencilLoadOps() const
 {
+	return IsDeviceMali() && m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_PANVK && !IsDeviceMaliSX2();
+}
+
+VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey requested)
+{
+	// The pass is cached under the ops asked for; `key` is what the driver is given.
+	RenderPassCacheKey key = requested;
+	LateDepthStencilClear late_clear = {};
+	const VkFormat depth_format = static_cast<VkFormat>(key.depth_format);
+	const bool has_stencil = (depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+	                          depth_format == VK_FORMAT_D24_UNORM_S8_UINT || depth_format == VK_FORMAT_D16_UNORM_S8_UINT);
+	if (!has_stencil && key.depth_load_op != key.stencil_load_op && MatchesDepthStencilLoadOps())
+	{
+		// No stencil aspect, so the ops mean nothing, but keep handing Arm's driver matching ones as it always got.
+		key.stencil_load_op = key.depth_load_op;
+		key.stencil_store_op = key.depth_store_op;
+	}
+	else if (has_stencil && key.depth_load_op != key.stencil_load_op && MatchesDepthStencilLoadOps())
+	{
+		// An unread aspect takes the other's op. CLEAR + LOAD becomes LOAD for both, with the clear done in the pass.
+		if (key.depth_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+			key.depth_load_op = key.stencil_load_op;
+		else if (key.stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+			key.stencil_load_op = key.depth_load_op;
+		else
+		{
+			late_clear.aspects = (key.depth_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ? VK_IMAGE_ASPECT_DEPTH_BIT :
+			                                                                          VK_IMAGE_ASPECT_STENCIL_BIT;
+			late_clear.attachment = (key.color_format != VK_FORMAT_UNDEFINED) ? 1u : 0u;
+			key.depth_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+			key.stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+		}
+		// Either aspect's contents may be wanted later, so a store asked for one is kept for both.
+		if (key.depth_store_op == VK_ATTACHMENT_STORE_OP_STORE || key.stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE)
+		{
+			key.depth_store_op = VK_ATTACHMENT_STORE_OP_STORE;
+			key.stencil_store_op = VK_ATTACHMENT_STORE_OP_STORE;
+		}
+	}
+
 	VkAttachmentReference color_reference;
 	VkAttachmentReference* color_reference_ptr = nullptr;
 	VkAttachmentReference depth_reference;
@@ -2629,7 +2658,9 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		return VK_NULL_HANDLE;
 	}
 
-	m_render_pass_cache.emplace(key.key, pass);
+	m_render_pass_cache.emplace(requested.key, pass);
+	if (late_clear.aspects != 0)
+		m_late_depth_stencil_clears.emplace(pass, late_clear);
 	return pass;
 }
 
@@ -7636,6 +7667,7 @@ void GSDeviceVK::DestroyResources()
 	for (auto& it : m_render_pass_cache)
 		vkDestroyRenderPass(m_device, it.second, nullptr);
 	m_render_pass_cache.clear();
+	m_late_depth_stencil_clears.clear();
 
 	if (m_allocator != VK_NULL_HANDLE)
 		vmaDestroyAllocator(m_allocator);
@@ -8834,11 +8866,23 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
+	const VkRect2D area = {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}};
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
-		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}},
-		cv_count, cv};
+		m_current_framebuffer, area, cv_count, cv};
 
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+	// The aspect this pass was created to LOAD in place of the CLEAR it asked for.
+	if (!m_late_depth_stencil_clears.empty())
+	{
+		const auto late = m_late_depth_stencil_clears.find(rp);
+		if (late != m_late_depth_stencil_clears.end() && late->second.attachment < cv_count)
+		{
+			const VkClearAttachment clear = {late->second.aspects, 0, cv[late->second.attachment]};
+			const VkClearRect clear_rect = {area, 0, 1};
+			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &clear, 1, &clear_rect);
+		}
+	}
 }
 
 void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color)
