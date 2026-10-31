@@ -859,6 +859,7 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 	const bool qualcomm_driver = (context.driver_id == DRIVER_ID_QUALCOMM_PROPRIETARY);
 	const bool turnip = (context.driver_id == DRIVER_ID_MESA_TURNIP);
 	const bool honeykrisp = (context.driver_id == DRIVER_ID_MESA_HONEYKRISP);
+	const bool panvk = (context.driver_id == DRIVER_ID_MESA_PANVK);
 	const auto name_has = [device_name](std::string_view part) {
 		return device_name.find(part) != std::string_view::npos;
 	};
@@ -878,11 +879,11 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 		(mali && context.driver_info.find("r44p1") != std::string_view::npos) || imagination_proprietary;
 	// The Mali crash is in Arm's blob. malisx2 reports Arm's identity but is our own driver, and is
 	// trusted with push descriptors once it advertises as many as the backend binds; a build without
-	// the extension, or with fewer, keeps the avoid.
+	// the extension, or with fewer, keeps the avoid. PanVK isn't the blob, so it keeps push descriptors.
 	rules.exempt_malisx2_push_descriptors = mali && GpuProfileDetector::IsMaliSX2Driver(context.driver_info) &&
 	                                        context.max_push_descriptors >= VULKAN_PUSH_DESCRIPTORS_REQUIRED;
-	rules.avoid_push_descriptors =
-		(mali && !rules.exempt_malisx2_push_descriptors) || (adreno && !qualcomm_driver && !turnip);
+	rules.avoid_push_descriptors = (mali && !panvk && !rules.exempt_malisx2_push_descriptors) ||
+	                               (adreno && !qualcomm_driver && !turnip);
 	rules.broken_provoking_vertex = adreno && qualcomm_driver;
 	rules.broken_colormask_with_depth =
 		adreno && !turnip && (context.device_id < 0x06000000u || context.driver_version < 0x801EA000u);

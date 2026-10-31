@@ -1206,8 +1206,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		m_use_push_descriptors = false;
 	}
 	// Arm's Mali blob crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and
-	// an Adreno driver other than Qualcomm's or Turnip is untested with it. malisx2 is exempt from the
-	// Mali half in the rule (exempt_malisx2_push_descriptors).
+	// an Adreno driver other than Qualcomm's or Turnip is untested with it. PanVK and malisx2 aren't the
+	// blob and are exempt.
 	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)

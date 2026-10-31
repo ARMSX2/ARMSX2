@@ -342,7 +342,7 @@ constexpr u32 VULKAN_PUSH_DESCRIPTORS_REQUIRED = 7;
 /// Vulkan device rules keyed on the device's own identity (vendor ID, device name, driver ID,
 /// driverInfo) rather than matched in the driver-bug database. Each keeps the exact condition the
 /// backend has always applied, which is not always the database's: the push-descriptor rule covers
-/// Mali on every driver but malisx2, where the database names Arm's.
+/// Mali on every driver but malisx2 and PanVK, where the database names Arm's.
 struct VulkanDeviceRules
 {
 	/// Mali-G615: timestamp queries never resolve, and the present spin that waits on them stalls.
@@ -358,7 +358,7 @@ struct VulkanDeviceRules
 	///     the tile first; measured ~0.1 ms per barrier on a Pixel 11 Pro (CXTP-48-1536), ~3500 per
 	///     frame in NFS Underground at Full blending. subpassLoad keeps the read in the tile.
 	bool avoid_feedback_loop_layout = false;
-	/// Mali crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
+	/// Arm's Mali driver crashes inside vkCmdPushDescriptorSetKHR. Adreno is trusted with push descriptors on the
 	/// Qualcomm driver and Turnip only. malisx2 is exempt when it advertises the extension with
 	/// enough descriptors (exempt_malisx2_push_descriptors).
 	bool avoid_push_descriptors = false;
