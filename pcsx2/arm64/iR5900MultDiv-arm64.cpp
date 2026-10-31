@@ -550,16 +550,10 @@ void recMADD()
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
-	// x0 = Rs * Rt (signed 32x32→64)
-	armAsm->Smull(a64::x0, rs32, rt32);
-
-	// Load existing HI:LO into x1
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[0]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[0]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	// Add
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Smaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(false);
 	recWritebackRd();
@@ -588,13 +582,10 @@ void recMADDU()
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
-	armAsm->Umull(a64::x0, rs32, rt32);
-
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[0]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[0]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Umaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(false);
 	recWritebackRd();
@@ -623,13 +614,10 @@ void recMADD1()
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
-	armAsm->Smull(a64::x0, rs32, rt32);
-
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[2]);  // LO1 = LO.UL[2] (upper 64 bits)
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[2]); // HI1 = HI.UL[2] (w8: reserved scratch — w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Smaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(true);
 	recWritebackRd1();
@@ -658,13 +646,10 @@ void recMADDU1()
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
-	armAsm->Umull(a64::x0, rs32, rt32);
-
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[2]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[2]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Umaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(true);
 	recWritebackRd1();
