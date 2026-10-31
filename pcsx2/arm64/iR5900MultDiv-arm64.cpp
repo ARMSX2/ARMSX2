@@ -17,16 +17,23 @@ namespace OpcodeImpl {
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
 
+// Flush dirty registers without materializing pending constants.
+static void flushDirtyAllocatorRegs()
+{
+	_flushArm64GPRregs();
+	_flushNEONregs();
+}
+
 // Fetch Rs/Rt lower 32 bits for the mul/div ops. Substitution-aware
 // (EE-SRA 2 WS-C6): returns the pin / MODE_READ allocator reg directly (zero
 // insns) or materializes into w1/w9. Every caller sits right after
-// _eeFlushAllDirty (the post-flush coherence contract), and every consumer
-// below is read-only on the sources — EXCEPT the DIVU remainder Msub, which
-// therefore targets w10 rather than writing a source in place.
+// flushDirtyAllocatorRegs (the post-flush coherence contract), and every
+// consumer below is read-only on the sources — EXCEPT the DIVU remainder Msub,
+// which therefore targets w10 rather than writing a source in place.
 //
 // ⚠️ Scratch choice: w9/w10 (non-allocatable), NOT w2/w3. A resident FCR31
 // (ARM64TYPE_FPRC, GE-12) lives in the {x2-x7, x14, x15} pool ACROSS ops —
-// _eeFlushAllDirty writes it back but keeps residency, so a raw w2/w3
+// flushDirtyAllocatorRegs writes it back but keeps residency, so a raw w2/w3
 // clobber here poisons the flag a later BC1x/CFC1/DIV-flag-RMW reads (same
 // class as the fpuEmitGuardedAddSub SotC bug; pinned by
 // EeRecFpu.CompareSurvivesInterposed{Mult,Div}).
@@ -99,7 +106,7 @@ void recMULT()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -131,7 +138,7 @@ void recMULTU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -176,7 +183,7 @@ void recDIV()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -238,7 +245,7 @@ void recDIVU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -299,7 +306,7 @@ void recMULT1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -331,7 +338,7 @@ void recMULTU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -374,7 +381,7 @@ void recDIV1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -430,7 +437,7 @@ void recDIVU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -464,7 +471,7 @@ void recMADD()
 		s64 result = (s64)(s32)g_cpuConstRegs[_Rs_].UL[0] * (s64)(s32)g_cpuConstRegs[_Rt_].UL[0];
 
 		// Add to existing HI:LO — load, add, store
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[0]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[0]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -476,7 +483,7 @@ void recMADD()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -502,7 +509,7 @@ void recMADDU()
 	{
 		u64 result = (u64)g_cpuConstRegs[_Rs_].UL[0] * (u64)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[0]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[0]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -514,7 +521,7 @@ void recMADDU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -537,7 +544,7 @@ void recMADD1()
 	{
 		s64 result = (s64)(s32)g_cpuConstRegs[_Rs_].UL[0] * (s64)(s32)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[2]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[2]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -549,7 +556,7 @@ void recMADD1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -572,7 +579,7 @@ void recMADDU1()
 	{
 		u64 result = (u64)g_cpuConstRegs[_Rs_].UL[0] * (u64)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[2]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[2]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -584,7 +591,7 @@ void recMADDU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
