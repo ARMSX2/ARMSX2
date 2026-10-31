@@ -32,9 +32,9 @@ class GpuInfoRecommendationTest {
     }
 
     @Test
-    fun adreno8xxKeepsTheQualcommTunedPack() {
+    fun adreno8xxIsRecommendedStevenMXZsGen8Turnip() {
         for (r in listOf("Adreno (TM) 825", "Adreno (TM) 830", "Adreno (TM) 840"))
-            assertEquals(r, "GameHub 8Elite", GpuInfo.recommendation(r)?.sourceLabel)
+            assertEquals(r, "StevenMXZ · Adreno-Tools", GpuInfo.recommendation(r)?.sourceLabel)
     }
 
     @Test

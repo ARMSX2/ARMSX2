@@ -84,7 +84,8 @@ object GpuInfo {
         if (!r.contains("Adreno", ignoreCase = true)) return null
         val model = Regex("""(\d{3,4})""").find(r.substringAfter("Adreno", ""))?.value?.toIntOrNull()
         return when {
-            model != null && model >= 800 -> Recommendation("GameHub 8Elite", "Turnip tuned for Snapdragon 8 Elite / Adreno 8xx")
+            // StevenMXZ's Turnip gen8 builds, the pick ARMSX3 makes too; the GameHub 8Elite packs stay in the list.
+            model != null && model >= 800 -> Recommendation("StevenMXZ · Adreno-Tools", "Turnip gen8 builds for Snapdragon 8 Elite / Adreno 8xx")
             // Our own Turnip for all of 6xx and 7xx: the same range the first-run setup offers it on, so the two agree.
             CustomDriver.isAdreno6xxOr7xx(r) -> Recommendation("ARMSX2 Turnip", "ARMSX2's own Turnip for Adreno 6xx and 7xx")
             else -> Recommendation("KIMCHI", "AdrenoTools Turnip (Adreno)")
