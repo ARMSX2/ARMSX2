@@ -205,6 +205,87 @@ void recMULTU()
 	recWritebackRd();
 }
 
+// DIV/DIV1 by a constant ±1 or ±2^k without an sdiv. A negative dividend is
+// biased by 2^k - 1 before the shift; a negative divisor negates the quotient
+// after HI is taken. INT_MIN is the k = 31 case, and INT_MIN / -1 wraps to
+// LO = INT_MIN, HI = 0 as sdiv does. Returns false for any other divisor.
+static bool recDivConstPow2(bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	const u32 d = g_cpuConstRegs[_Rt_].UL[0];
+	const bool negative = static_cast<s32>(d) < 0;
+	const u32 mag = negative ? 0u - d : d;
+	if (!std::has_single_bit(mag))
+		return false;
+	const unsigned k = std::countr_zero(mag);
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (k == 0)
+	{
+		if (negative)
+		{
+			armAsm->Neg(a64::w0, rs32);
+			armAsm->Sxtw(RXSCRATCH, a64::w0);
+		}
+		else
+			armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Str(a64::xzr, hi);
+		return true;
+	}
+
+	armAsm->Asr(a64::w10, rs32, 31);
+	armAsm->Add(a64::w0, rs32, a64::Operand(a64::w10, a64::LSR, 32 - k));
+	armAsm->Asr(a64::w0, a64::w0, k);
+	armAsm->Sub(a64::w10, rs32, a64::Operand(a64::w0, a64::LSL, k));
+	if (negative)
+		armAsm->Neg(a64::w0, a64::w0);
+
+	armAsm->Sxtw(RXSCRATCH, a64::w0);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->Sxtw(RXSCRATCH, a64::w10);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
+}
+
+// DIVU/DIVU1 by a constant 2^k without a udiv. For k >= 1 LO and HI have bit
+// 31 clear, so they need no sxtw. Returns false for any other divisor.
+static bool recDivuConstPow2(bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	const u32 d = g_cpuConstRegs[_Rt_].UL[0];
+	if (!std::has_single_bit(d))
+		return false;
+	const unsigned k = std::countr_zero(d);
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (k == 0)
+	{
+		armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Str(a64::xzr, hi);
+		return true;
+	}
+
+	armAsm->Ubfx(RXSCRATCH, rs32.X(), k, 32 - k);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->And(RXSCRATCH, rs32.X(), (u64{1} << k) - 1);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
+}
+
 //// DIV — signed 32-bit divide. LO = quotient, HI = remainder.
 // PS2 div-by-zero: LO = (rs >= 0 ? -1 : 1), HI = rs (sign-extended into 64-bit
 // HI/LO). Matches the interpreter and the PS2 hardware spec.
@@ -239,6 +320,9 @@ void recDIV()
 		armAsm->Str(RXSCRATCH, armCpuRegMem(&cpuRegs.HI.UD[0]));
 		return;
 	}
+
+	if (recDivConstPow2(false))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
@@ -301,6 +385,9 @@ void recDIVU()
 		armAsm->Str(RXSCRATCH, armCpuRegMem(&cpuRegs.HI.UD[0]));
 		return;
 	}
+
+	if (recDivuConstPow2(false))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
@@ -444,6 +531,9 @@ void recDIV1()
 		return;
 	}
 
+	if (recDivConstPow2(true))
+		return;
+
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
@@ -499,6 +589,9 @@ void recDIVU1()
 		armAsm->Str(RXSCRATCH, armCpuRegMem(&cpuRegs.HI.UD[1]));
 		return;
 	}
+
+	if (recDivuConstPow2(true))
+		return;
 
 	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
