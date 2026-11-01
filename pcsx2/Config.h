@@ -740,6 +740,9 @@ struct TraceLogFilters
 //
 struct Pcsx2Config
 {
+	// Hosts with less RAM than this keep the smaller GIF path 2/3 buffers.
+	static constexpr u64 LOW_MEMORY_HOST_BYTES = 2ull << 30;
+
 	struct ProfilerOptions
 	{
 		BITFIELD32()

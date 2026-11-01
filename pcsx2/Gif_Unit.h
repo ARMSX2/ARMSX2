@@ -9,6 +9,8 @@
 #include "GS.h"
 #include "GS/GSRegs.h"
 #include "MTGS.h"
+#include "Config.h"
+#include "common/HostSys.h"
 
 // FIXME common path ?
 #include "common/boost_spsc_queue.hpp"
@@ -574,8 +576,15 @@ struct Gif_Unit
 		, lastTranType(GIF_TRANS_INVALID)
 	{
 		gifPath[0].Init(GIF_PATH_1, _1mb * 9, _1mb + _1kb);
-		gifPath[1].Init(GIF_PATH_2, _1mb * 9, _1mb + _1kb);
-		gifPath[2].Init(GIF_PATH_3, _1mb * 9, _1mb + _1kb);
+		gifPath[1].Init(GIF_PATH_2, EePathBufferBytes(GetPhysicalMemory()), _1mb + _1kb);
+		gifPath[2].Init(GIF_PATH_3, EePathBufferBytes(GetPhysicalMemory()), _1mb + _1kb);
+	}
+
+	// Path 2/3 buffer size for `physical_memory` bytes of RAM (0 if unknown): 32 MB, or 9 MB below
+	// LOW_MEMORY_HOST_BYTES.
+	static constexpr u32 EePathBufferBytes(u64 physical_memory)
+	{
+		return (physical_memory == 0 || physical_memory >= Pcsx2Config::LOW_MEMORY_HOST_BYTES) ? _1mb * 32 : _1mb * 9;
 	}
 
 	// Enable softReset when resetting during game emulation
