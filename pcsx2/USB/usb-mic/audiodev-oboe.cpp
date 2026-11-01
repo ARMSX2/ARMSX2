@@ -1,4 +1,5 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team
+// SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "USB/usb-mic/audiodev-oboe.h"
@@ -163,6 +164,10 @@ namespace usb_mic
 					// The negotiated buffer size plays the role of cubeb's min-latency query: it is how long one
 					// native burst sits inside AAudio before it reaches us, so the ring must hold at least that.
 					mStreamLatency = static_cast<u32>(m_stream->getBufferSizeInFrames());
+
+					// Size the gain scratch before the stream starts, so the data callback does not allocate.
+					// A callback never delivers more than the buffer capacity.
+					mGainScratch.reserve(static_cast<size_t>(std::max(m_stream->getBufferCapacityInFrames(), 0)) * mChannels);
 
 					Console.WriteLn("(audiodev_oboe)[%d] stream opened: %d Hz, ch=%u, bufFrames=%u", m_id, m_stream->getSampleRate(), mChannels, mStreamLatency);
 					return true;

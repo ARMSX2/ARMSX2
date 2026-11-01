@@ -1150,8 +1150,12 @@ data class Settings(
                 put("USB1", "singstar_input_device_name", "string", audio.micDevice1.ifEmpty { "Default" })
             }
         } else {
-            // Off: leave whatever the picker (or an older build's mic flow) put on port 0.
-            put("USB1", "Type", "string", com.armsx2.input.UsbDevices.storedType(0))
+            // Off: leave whatever the picker put on port 0, unless that is the microphone. Before the
+            // Audio settings section existed the picker offered "singstar" and saved it; writing that
+            // back here would attach the microphone with the setting Off, and the next readFromIni
+            // would turn the setting on again.
+            val picked = com.armsx2.input.UsbDevices.storedType(0)
+            put("USB1", "Type", "string", if (picked == "singstar") com.armsx2.input.UsbDevices.NONE else picked)
         }
         // Recompiler enables. Picked up by VMManager::ApplySettings →
         // SysCpuProviderPack rebind. Toggling these on a running VM swaps
@@ -1333,20 +1337,28 @@ data class Settings(
                 audioRecordingCompatible = boolAt("SPU2/Output/AndroidRecordingCompatible") ?: this.audio.audioRecordingCompatible,
                 spu2LightweightMix = boolAt("SPU2/Output/LightweightMode") ?: this.audio.spu2LightweightMix,
                 // ---- Microphone (USB1/singstar) — 0 = Off, 1 = Standard, 2 = SingStar ----
+                // With the microphone off (or Standard, for the second singer) the INI holds no device
+                // or level for it, so keep the saved choice rather than resetting it to the default.
                 micType = strAt("USB1/Type")?.let { t ->
-                    if (t != "singstar") 0 else if ((intAt("USB1/singstar_subtype") ?: 0) == 0) 2 else 1
+                    when (t) {
+                        "singstar" -> if ((intAt("USB1/singstar_subtype") ?: 0) == 0) 2 else 1
+                        // The USB keyboard takes port 0 ahead of the microphone; keep the setting so the
+                        // microphone comes back when the keyboard is turned off.
+                        "hidkbd" -> this.audio.micType
+                        else -> 0
+                    }
                 } ?: this.audio.micType,
                 micDevice1 = strAt("USB1/Type")?.let { t ->
-                    if (t != "singstar") "Default"
+                    if (t != "singstar") this.audio.micDevice1
                     else if ((intAt("USB1/singstar_subtype") ?: 0) == 0) strAt("USB1/singstar_player1_device_name").orEmpty().ifEmpty { "Default" }
                     else strAt("USB1/singstar_input_device_name").orEmpty().ifEmpty { "Default" }
                 } ?: this.audio.micDevice1,
                 micDevice2 = strAt("USB1/Type")?.let { t ->
-                    if (t != "singstar" || (intAt("USB1/singstar_subtype") ?: 0) != 0) ""
+                    if (t != "singstar" || (intAt("USB1/singstar_subtype") ?: 0) != 0) this.audio.micDevice2
                     else strAt("USB1/singstar_player2_device_name").orEmpty()
                 } ?: this.audio.micDevice2,
                 micLevel = strAt("USB1/Type")?.let { t ->
-                    if (t != "singstar") 0 else (floatAt("USB1/singstar_input_gain") ?: 0f).toInt().coerceIn(0, 24)
+                    if (t != "singstar") this.audio.micLevel else (floatAt("USB1/singstar_input_gain") ?: 0f).toInt().coerceIn(0, 24)
                 } ?: this.audio.micLevel,
             ),
             emuCore = this.emuCore.copy(

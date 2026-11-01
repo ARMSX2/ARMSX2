@@ -1071,7 +1071,7 @@ namespace usb_mic
 		if (subtype >= MIC_COUNT)
 			return nullptr;
 
-		static const bool dual_mic = subtype == MIC_SINGSTAR;
+		const bool dual_mic = subtype == MIC_SINGSTAR;
 		return CreateDevice(si, port, subtype, dual_mic, 48000, MicrophoneDevice::TypeName());
 	}
 

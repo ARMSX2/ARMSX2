@@ -15,8 +15,8 @@ import androidx.core.content.ContextCompat
 /**
  * RECORD_AUDIO for the emulated PS2 mic. The SingStar device reads the host's built-in microphone
  * through Oboe (pcsx2/USB/usb-mic/audiodev-oboe.cpp), so attaching a mic port needs this permission.
- * It is declared in AndroidManifest.xml and requested here, only when the user explicitly attaches a
- * SingStar port — nothing else in the app touches the microphone, and online play's WebRTC path never
+ * It is declared in AndroidManifest.xml and requested here, only when the user turns the microphone
+ * on in Settings → Audio — nothing else in the app touches the microphone, and online play's WebRTC path never
  * opens one either (RemotePlayRtc.kt).
  */
 internal object Microphone {

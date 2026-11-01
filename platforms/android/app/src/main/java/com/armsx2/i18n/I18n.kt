@@ -549,7 +549,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "audio.lightweight.label" to "Lightweight audio (skip reverb)",
     "audio.lightweight.description" to "Skips SPU2 reverb processing to save CPU on low-end devices. This removes all echo and spatial reverb (caves, halls and ambience sound flat), so only enable it if you need the extra performance and SPU2 SIMD audio isn't enough. Off (default) plays full audio. Applies instantly.",
     "audio.mic.label" to "Microphone",
-    "audio.mic.description" to "For games you sing or talk into, like SingStar, Rock Band and Guitar Hero. Standard is one microphone. SingStar gives each of two singers their own. Takes effect when a game starts.",
+    "audio.mic.description" to "For games you sing or talk into. SingStar emulates the SingStar microphone converter, with one microphone per singer; SingStar games only recognise this one, even with a single singer. Standard emulates a single Logitech USB microphone, for other games that take one. Takes effect when a game starts.",
     "audio.mic.standard" to "Standard",
     "audio.mic.device" to "Microphone device",
     "audio.mic.device.description" to "Automatic uses a USB microphone when one is plugged in, and the built-in microphone otherwise.",

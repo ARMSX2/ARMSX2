@@ -178,12 +178,9 @@
         </activity>
 
         <!--
-            Discord Social SDK's OAuth landing activity. Declared here rather than inherited from
-            the vendor .aar on purpose: that .aar's manifest also declares RECORD_AUDIO, three
-            foreground-service permissions and Bluetooth for its voice features, and the merger
-            would fold every one of them into ARMSX2 — the Play listing would show "Microphone" and
-            need a data-safety declaration for a feature we do not ship. Declaring only this one
-            activity means we inherit no permissions at all.
+            Discord Social SDK's OAuth landing activity. Its voice permissions are handled at the
+            top of this file: RECORD_AUDIO is kept for the emulated PS2 microphone, the rest are
+            removed.
 
             The scheme must match the redirect URI registered in the Discord developer portal
             (discord-<application id>) or the browser hands the code back to nothing and the sign-in
