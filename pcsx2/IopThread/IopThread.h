@@ -321,6 +321,10 @@ namespace IopThread
 		u64 emu_hold_requests; // ... of which on the emulation path: EE access to IOP space, SIF pumps, the PS1 switch
 		u64 emu_hold_stall_ns; // wall time the EE spent waiting for those
 		u64 sif_ee_pumps; // SIF pumps the EE started (each one took an Emulation hold)
+		u64 sif_deferred; // SIF pumps the EE started and did not hold for: posted as a SifPump item (iopThreadDeferSif, a Lockstep skew)
+		u64 near_waits; // SBUS mailbox accesses that had to wait for the near bound (lag above the default)
+		u64 near_wait_iterations;
+		u64 near_wait_ns; // wall time spent in those waits
 		u64 hold_markers; // holds that were only a counter: Lockstep, nested, inside a CallOnEE function, no thread
 		u64 hold_spin_iterations;
 		u64 hold_sleeps; // polling sleeps of a Lifecycle hold
@@ -342,6 +346,7 @@ namespace IopThread
 		u64 calls_cancelled;
 		u64 i2e_full_waits; // PostI2E calls that found the queue full
 		u64 kicks_applied;
+		u64 sif_deferred_applied; // SifPump items the IOP applied (each is one CallOnEE: the IOP waits for the EE to run the pump)
 		u64 lag_spins_idle; // EE: lag spins that found the IOP idle and awake (watching the watermark)
 		u64 lag_idle_stall_ns; // EE: ... and their wall time
 		u64 idle_waits; // IOP: times the pacing loop went idle
@@ -563,6 +568,10 @@ namespace IopThread
 
 		/// EE thread. Counts a SIF pump the EE started (it holds the IOP for the pump).
 		void CountSifPump() { m_sif_ee_pumps.Add(); }
+		/// EE thread. Counts a SIF pump the EE started and posted as an item instead of holding the IOP for it.
+		void CountSifDeferred() { m_sif_deferred.Add(); }
+		/// IOP thread. Counts a deferred pump item the IOP applied.
+		void CountSifDeferredApplied() { m_sif_deferred_applied.Add(); }
 
 		Stats GetStats() const;
 
@@ -709,12 +718,13 @@ namespace IopThread
 		detail::Counter m_lag_stall_ns, m_lag_spins_parked, m_lag_parked_stall_ns, m_emu_hold_requests, m_emu_hold_stall_ns, m_sif_ee_pumps;
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
 		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs, m_lag_spins_idle, m_lag_idle_stall_ns;
+		detail::Counter m_sif_deferred, m_near_waits, m_near_wait_iterations, m_near_wait_ns;
 
 		// IOP-thread private, with the IOP's counters, on lines of their own. The EE writes m_iop_pos only
 		// under a hold or while stopped.
 		alignas(kChannelLineSize) u64 m_iop_pos = 0;
 		detail::Counter m_slices, m_items_applied, m_parks, m_holds_entered, m_calls_posted, m_calls_cancelled;
-		detail::Counter m_i2e_full_waits, m_kicks_applied, m_idle_waits, m_idle_ns;
+		detail::Counter m_i2e_full_waits, m_kicks_applied, m_idle_waits, m_idle_ns, m_sif_deferred_applied;
 	};
 
 	/// A full stop of the IOP, for the EE thread to touch IOP state safely. Re-entrant.

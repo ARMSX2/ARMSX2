@@ -151,7 +151,7 @@ namespace IopThread
 				 &m_e2i_full_spins, &m_e2i_full_iterations, &m_e2i_full_failfast, &m_i2e_drained, &m_calls_served, &m_wakes_sent,
 				 &m_wakes_dropped, &m_stop_checks, &m_handoffs, &m_slices, &m_items_applied, &m_parks, &m_holds_entered,
 				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied, &m_lag_spins_idle, &m_lag_idle_stall_ns,
-				 &m_idle_waits, &m_idle_ns})
+				 &m_idle_waits, &m_idle_ns, &m_sif_deferred, &m_near_waits, &m_near_wait_iterations, &m_near_wait_ns, &m_sif_deferred_applied})
 			c->Reset();
 
 		// A hold that is live when the thread starts keeps it stopped: the IOP comes up held at the
@@ -611,7 +611,7 @@ namespace IopThread
 		if (m_mode != IopThreadMode::Threaded || !m_running || m_hold_depth > 0 || m_in_call)
 			return true;
 
-		// The near bound's waits are not the lag bound's: they stay out of its counters.
+		// The near bound's waits are not the lag bound's: they have counters of their own.
 		if (!near_bound)
 			m_lag_spins.Add();
 		// What the IOP was doing when the wait began, read before the wake-up below: asleep (or on its
@@ -646,10 +646,15 @@ namespace IopThread
 			}
 		}
 		m_ee.spinning.store(false, std::memory_order_relaxed);
-		if (near_bound)
-			return reached;
-		m_lag_spin_iterations.Add(iterations);
 		const u64 stall_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count());
+		if (near_bound)
+		{
+			m_near_waits.Add();
+			m_near_wait_iterations.Add(iterations);
+			m_near_wait_ns.Add(stall_ns);
+			return reached;
+		}
+		m_lag_spin_iterations.Add(iterations);
 		m_lag_stall_ns.Add(stall_ns);
 		if (found_parked)
 		{
@@ -1010,6 +1015,11 @@ namespace IopThread
 		s.emu_hold_requests = m_emu_hold_requests.Get();
 		s.emu_hold_stall_ns = m_emu_hold_stall_ns.Get();
 		s.sif_ee_pumps = m_sif_ee_pumps.Get();
+		s.sif_deferred = m_sif_deferred.Get();
+		s.near_waits = m_near_waits.Get();
+		s.near_wait_iterations = m_near_wait_iterations.Get();
+		s.near_wait_ns = m_near_wait_ns.Get();
+		s.sif_deferred_applied = m_sif_deferred_applied.Get();
 		s.hold_requests = m_hold_requests.Get();
 		s.hold_markers = m_hold_markers.Get();
 		s.hold_spin_iterations = m_hold_spin_iterations.Get();

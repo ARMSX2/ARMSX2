@@ -1192,6 +1192,8 @@ TEST_F(ThreadedMachine, TheRealPumpsRunOnTheEeThreadWhenTheIopReachesThemAndTake
 	EXPECT_EQ(stats.calls_posted, 2u);
 	EXPECT_EQ(stats.calls_served, 2u);
 	EXPECT_EQ(stats.sif_ee_pumps, 0u) << "a deferred pump is not a pump that held the IOP";
+	EXPECT_EQ(stats.sif_deferred, 2u);
+	EXPECT_EQ(stats.sif_deferred_applied, 2u);
 	EXPECT_EQ(stats.emu_hold_requests, 0u);
 	EXPECT_EQ(s_violations.load(), 0u);
 }
@@ -1220,7 +1222,11 @@ TEST_F(ThreadedMachine, AnSbusAccessWaitsForTheIopToComeWithinTheDefaultLagWhenT
 
 	EXPECT_GE(waited, 80ms) << "the access went through while the IOP was far behind";
 	EXPECT_LE(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), IopThread::kDefaultLag);
-	EXPECT_EQ(IopThread::GetStats().lag_spins, 0u) << "the near bound's wait is not counted as a lag-bound wait";
+	const IopThread::Stats stats = IopThread::GetStats();
+	EXPECT_EQ(stats.lag_spins, 0u) << "the near bound's wait is not counted as a lag-bound wait";
+	EXPECT_EQ(stats.near_waits, 1u);
+	EXPECT_GT(stats.near_wait_iterations, 0u);
+	EXPECT_GE(stats.near_wait_ns, 80'000'000u);
 }
 
 TEST_F(ThreadedMachine, TheEesRealMailboxHandlersEachWaitAtTheNearBound)
@@ -1288,6 +1294,7 @@ TEST_F(ThreadedMachine, AnSbusAccessDoesNotWaitWhenTheIopIsWithinTheDefaultLag)
 	IopThread::EeSbusNearBound(cpuRegs.cycle);
 	EXPECT_LT(std::chrono::steady_clock::now() - begin, 500ms);
 	s_hold_slice = false;
+	EXPECT_EQ(IopThread::GetStats().near_waits, 0u);
 }
 
 TEST_F(ThreadedMachine, AnSbusAccessWithTheIopHeldDoesNotWait)

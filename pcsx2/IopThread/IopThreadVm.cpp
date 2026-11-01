@@ -169,7 +169,11 @@ namespace IopThread
 					params.has_event = [] { return iopEventAction; };
 				}
 			}
-			params.apply_item = [](const E2IItem& item) { ApplyE2IItem(item, s_e2i_actions ? *s_e2i_actions : kRealE2IActions); };
+			params.apply_item = [](const E2IItem& item) {
+				if (item.kind == E2IKind::SifPump)
+					g_thread.CountSifDeferredApplied();
+				ApplyE2IItem(item, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
+			};
 			params.ee_cycle = [] { return static_cast<u64>(cpuRegs.cycle); };
 			params.should_stop = [] {
 				const VMState state = VMManager::GetState();
@@ -602,6 +606,7 @@ namespace IopThread
 		// Stamped with the EE's cycle at the moment Off would have run the pump. Lockstep applies it before
 		// this returns (ApplyOnIop waits for the IOP thread), which is Off's order.
 		ApplyOnIop(E2IKind::SifPump, channel);
+		g_thread.CountSifDeferred();
 		return true;
 	}
 
@@ -732,11 +737,15 @@ namespace IopThread
 	std::string FormatStats(const Stats& t, double frames)
 	{
 		const double f = std::max(frames, 1.0);
-		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP asleep {:.2f}/f {:.1f} us/f, idle {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f iop {:.2f}/f | IOP sleeps {:.1f}/f wakes {:.1f}/f idle {:.0f} us/f | slices {:.0f}/f",
+		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP asleep {:.2f}/f {:.1f} us/f, idle {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f deferred {:.2f}/f (applied {:.2f}/f) iop {:.2f}/f | SBUS near-bound waits {:.2f}/f {:.1f} us/f | IOP sleeps {:.1f}/f wakes {:.1f}/f idle {:.0f} us/f | slices {:.0f}/f",
 			t.lag_spins / f, t.lag_stall_ns / 1000.0 / f, t.lag_spins_parked / f, t.lag_parked_stall_ns / 1000.0 / f,
 			t.lag_spins_idle / f, t.lag_idle_stall_ns / 1000.0 / f,
 			t.emu_hold_requests / f, t.emu_hold_stall_ns / 1000.0 / f, t.i2e_drained / f,
-			t.sif_ee_pumps / f, t.calls_posted / f, t.parks / f, t.wakes_sent / f, t.idle_ns / 1000.0 / f, t.slices / f);
+			t.sif_ee_pumps / f, t.sif_deferred / f, t.sif_deferred_applied / f,
+			// CallOnEE requests are the IOP-started pumps and the deferred ones; the deferred ones have their own figure.
+			(t.calls_posted > t.sif_deferred_applied ? t.calls_posted - t.sif_deferred_applied : 0) / f,
+			t.near_waits / f, t.near_wait_ns / 1000.0 / f,
+			t.parks / f, t.wakes_sent / f, t.idle_ns / 1000.0 / f, t.slices / f);
 	}
 
 	std::string OsdStatsLine()
