@@ -149,6 +149,9 @@ MULTI_ISA_DEF(
 	// only ever reaches it through ipu_dither()'s own fallback arm.
 	extern void ipu_dither_reference(const macroblock_rgb32& rgb32, macroblock_rgb16& rgb16, int dte);
 
+	// The step after yuv2rgb(): alpha thresholds and, with `sgn`, the RGB sign flip. Exposed for tests.
+	extern void ipu_csc_alpha_and_sign(macroblock_rgb32& rgb32, int sgn);
+
 	void IPUWorker();
 )
 

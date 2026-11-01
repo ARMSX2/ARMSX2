@@ -1877,10 +1877,14 @@ __ri static bool ipuPACK(tIPU_CMD_CSC csc)
 
 __fi static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
 {
+	yuv2rgb();
+	ipu_csc_alpha_and_sign(rgb32, sgn);
+}
+
+void ipu_csc_alpha_and_sign(macroblock_rgb32& rgb32, int sgn)
+{
 	int i;
 	u8* p = (u8*)&rgb32;
-
-	yuv2rgb();
 
 	if (g_ipu_thresh[0] > 0)
 	{
@@ -1902,6 +1906,8 @@ __fi static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
 	}
 	if (sgn)
 	{
+		// From the start again: the threshold loops above leave `p` at the end of the block.
+		p = (u8*)&rgb32;
 		for (i = 0; i < 16*16; i++, p += 4)
 		{
 			*(u32*)p ^= 0x808080;

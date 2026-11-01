@@ -4,6 +4,7 @@
 add_pcsx2_test(ipu_dither_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	ipu_dither_tests.cpp
+	ipu_csc_tests.cpp
 )
 
 target_include_directories(ipu_dither_tests PRIVATE
