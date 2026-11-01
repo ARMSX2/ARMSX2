@@ -55,8 +55,11 @@ object UsbDevices {
             if (parts.size < 2) return@mapNotNull null
             Device(parts[0], parts[1], parts.drop(2))
         }
-        if (list.isNotEmpty()) cached = list
-        return list
+        // The microphone is configured in Audio settings (Microphone), not here: it owns port 0 while
+        // it is on, and offering it twice would let the two pickers clobber each other.
+        val shown = list.filterNot { it.type == "singstar" }
+        if (shown.isNotEmpty()) cached = shown
+        return shown
     }
 
     /**

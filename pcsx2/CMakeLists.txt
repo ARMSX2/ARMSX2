@@ -1553,6 +1553,14 @@ if(ANDROID)
 	if(ARMSX2_USE_OBOE)
 		list(APPEND pcsx2HostSources
 			Host/OboeAudioStream.cpp)
+		# The emulated PS2 mic (SingStar et al.) needs a host audio *input* device. On Android that is
+		# Oboe/AAudio, so the usb-mic stack gets its own oboe-backed AudioDevice next to cubeb's; the
+		# factory in usb-mic.cpp picks it via ARMSX2_USE_OBOE. The header is listed conditionally too,
+		# so desktop IDEs don't see an <oboe/Oboe.h> include they can't resolve.
+		list(APPEND pcsx2USBSources
+			USB/usb-mic/audiodev-oboe.cpp)
+		list(APPEND pcsx2USBHeaders
+			USB/usb-mic/audiodev-oboe.h)
 		target_link_libraries(PCSX2_FLAGS INTERFACE
 			oboe)
 		target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_USE_OBOE)

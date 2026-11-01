@@ -35,16 +35,22 @@
         The Discord Social SDK .aar is now a real dependency, so its manifest merges into ours and
         brings its <queries> for CustomTabsService with it — no need to restate that here.
 
-        What we DO have to undo is its voice permissions. The SDK declares RECORD_AUDIO, three
-        foreground-service permissions and Bluetooth for features we do not ship, and merged
-        unchallenged they would put "Microphone" on the Play listing and require a data-safety
-        declaration for a capability that does not exist in this app.
+        RECORD_AUDIO below is deliberate: the emulated PS2 mic (SingStar et al.) reads the host's
+        built-in microphone through Oboe on Android, so "Microphone" genuinely belongs on the Play
+        listing and needs a data-safety declaration. The permission is only *requested* at runtime
+        when the user turns the microphone on in Settings -> Audio (see input/Microphone.kt);
+        nothing else in this app touches the microphone, and online play's WebRTC path never opens
+        one either.
+
+        What we DO have to undo are the SDK's other voice permissions: three foreground-service
+        permissions and MODIFY_AUDIO_SETTINGS for features we do not ship, which merged unchallenged
+        would declare capabilities that do not exist in this app.
 
         tools:node="remove" is the supported way to drop a merged permission, and it is checked:
-        build-play-aab.sh fails the build if RECORD_AUDIO or REQUEST_INSTALL_PACKAGES survive into
-        the bundle, so a regression here cannot ship quietly.
+        build-play-aab.sh fails the build if REQUEST_INSTALL_PACKAGES survives into the bundle or if
+        RECORD_AUDIO goes missing from it, so a regression here cannot ship quietly.
     -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" tools:node="remove" />

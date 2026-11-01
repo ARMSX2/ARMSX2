@@ -139,6 +139,14 @@ matches "REQUEST_INSTALL_PACKAGES" "$MANIFEST"
 if [[ $MATCHES -gt 0 ]]; then
 	echo "  !! FATAL: REQUEST_INSTALL_PACKAGES present in play AAB (in-app updater leaked into the Play build)" >&2; exit 1
 else echo "  absent OK"; fi
+echo "-- RECORD_AUDIO must be PRESENT (the emulated PS2 mic reads the built-in microphone) --"
+# The inverse of the checks above: this one fails when the permission is *missing*. SingStar et al.
+# need it, and a manifest-merger regression that stripped it would ship a build where attaching a
+# mic port silently does nothing — no error anywhere to notice it by.
+matches "RECORD_AUDIO" "$MANIFEST"
+if [[ $MATCHES -eq 0 ]]; then
+	echo "  !! FATAL: RECORD_AUDIO missing from play AAB (mic support regressed)" >&2; exit 1
+else echo "  present OK"; fi
 echo "-- no frame-generation code in the core (github flavour only) --"
 # There is no separate libarmsx2_lsfg.so any more: frame generation is compiled into the core
 # itself, gated on ARMSX2_ENABLE_LSFG which the play flavour sets to OFF. So the check moved
