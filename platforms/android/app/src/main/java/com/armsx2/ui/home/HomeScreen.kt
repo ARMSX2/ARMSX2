@@ -1087,23 +1087,21 @@ fun HomeScreen(
                 }
                 // Save states for this game, straight from the library. Only offered when some
                 // exist — a "Load state" row that opens onto nothing is worse than no row.
-                val slots by androidx.compose.runtime.produceState(initialValue = emptyList<com.armsx2.SaveSlotLookup.Slot>(), game.serial) {
+                val hasSaves by androidx.compose.runtime.produceState(initialValue = false, game.serial) {
                     value = withContext(Dispatchers.IO) {
-                        com.armsx2.SaveSlotLookup.slotsFor(context, game.serial)
+                        com.armsx2.ui.saves.SaveCatalog.hasSaves(context, game.serial)
                     }
                 }
-                if (slots.isNotEmpty())
+                if (hasSaves)
                 {
                     GameMenuAction("💾", str("games.loadState"), "game-menu.loadstate") {
                         menuGame = null
-                        // ★ The real Save Manager, not a bespoke list.
-                        //
-                        // It already renders slots as a grid with preview thumbnails and has its
-                        // own back button — which is both what was asked for and the answer to a
-                        // modal with no touch exit. contextGame exists for exactly this: it is how
-                        // the Save Manager already operates on a game that is not running.
-                        com.armsx2.runtime.MainActivityRuntime.contextGame.value = game
-                        com.armsx2.navigation.UiNavigator.navigate(com.armsx2.navigation.AppRoute.SaveManager)
+                        // The same Save Manager the drawer opens, listing every game's saves,
+                        // scrolled to this one. It reads the save folders and the library, so it
+                        // needs no game in context.
+                        com.armsx2.navigation.UiNavigator.navigate(
+                            com.armsx2.navigation.AppRoute.SaveManager(focusSerial = game.serial),
+                        )
                     }
                 }
                 GameMenuAction("⚙", str("action.settings"), "game-menu.settings") {

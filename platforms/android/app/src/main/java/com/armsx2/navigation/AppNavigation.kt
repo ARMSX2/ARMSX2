@@ -99,7 +99,8 @@ fun AppNavigation() {
                 )
                 is AppRoute.MemoryCardManager ->
                     MemoryCardScreen(onBack = UiNavigator::home, game = destination.game)
-                AppRoute.SaveManager -> SaveManagerScreen(onBack = UiNavigator::home)
+                is AppRoute.SaveManager ->
+                    SaveManagerScreen(onBack = UiNavigator::home, focusSerial = destination.focusSerial)
                 AppRoute.ControllerManager -> ControllerManagerScreen(onBack = UiNavigator::home)
                 AppRoute.PatchManager -> PatchManagerScreen(onBack = UiNavigator::home)
                 AppRoute.TextureManager -> TextureManagerScreen(onBack = UiNavigator::home)

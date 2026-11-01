@@ -797,11 +797,11 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         // hold anything or how old they are, so picking a slot to overwrite after a long
         // session was guesswork -- the Save Manager has had the dates all along, but the quick
         // picker is where the choice actually gets made. Read off disk once per menu open;
-        // SaveSlotLookup is blocking, hence produceState rather than a composition-time call.
-        // ★ getGamePathSlot, NOT SaveSlotLookup.
+        // the read is blocking, hence produceState rather than a composition-time call.
+        // ★ getGamePathSlot, NOT SaveCatalog.
         //
-        // SaveSlotLookup exists for the LIBRARY, where nothing is booted and the only way to
-        // find states is to match `<serial> (title).NN.p2s` on disk. In here a VM is running, so
+        // SaveCatalog exists for the LIBRARY, where nothing is booted and the only way to
+        // find states is to match `<serial> (CRC).NN.p2s` on disk. In here a VM is running, so
         // the native side already knows the exact path for each slot — and it is authoritative
         // where the filename match is a guess that silently returns nothing when the serial is
         // absent or formatted differently, which is what made this show "Empty" for every slot.

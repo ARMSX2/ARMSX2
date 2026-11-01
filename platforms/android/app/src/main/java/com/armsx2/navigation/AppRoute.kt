@@ -15,7 +15,9 @@ sealed interface AppRoute {
     // returnToArcade: opened from the arcade screen's BIOS step, so Back goes back there.
     data class BiosManager(val game: GameInfo? = null, val returnToArcade: Boolean = false) : AppRoute
     data class MemoryCardManager(val game: GameInfo? = null) : AppRoute
-    data object SaveManager : AppRoute
+    // Every game's saves, grouped by game. focusSerial scrolls the list to one game's section (the
+    // library's long-press menu); null, from the drawer, opens at the top. It is the same list either way.
+    data class SaveManager(val focusSerial: String? = null) : AppRoute
     data object ControllerManager : AppRoute
     data object PatchManager : AppRoute
     data object TextureManager : AppRoute
