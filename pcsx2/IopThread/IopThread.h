@@ -415,12 +415,17 @@ namespace IopThread
 		/// event test. Spins (see the top of this file) while it waits. False if the stop predicate
 		/// ended the wait; the lag is then unmet and the caller must not carry on as if it held.
 		/// Returns true at once when the IOP is held or stopped, since it cannot catch up.
-		__fi bool CheckLag(u64 cycle)
+		__fi bool CheckLag(u64 cycle) { return CheckLagTo(cycle, m_lag, false); }
+
+		/// CheckLag with the bound given. The fast path is the same: one compare against the last position seen.
+		/// `near_bound` says the wait is not the lag bound (the SBUS near bound, CheckNearLag), which keeps its
+		/// time out of the lag statistics.
+		__fi bool CheckLagTo(u64 cycle, s64 bound, bool near_bound)
 		{
 			// The position only moves forward (Resync moves it only under a hold, and updates the copy), so
 			// a bound that holds against the last position seen holds against the current one, and the EE
 			// does not have to read the IOP's line.
-			if (static_cast<s64>(cycle - m_last_seen_iop_pos) <= m_lag) [[likely]]
+			if (static_cast<s64>(cycle - m_last_seen_iop_pos) <= bound) [[likely]]
 				return true;
 			// Pairs with the release store of iop_pos in the IOP's loop: the EE goes on past the bound, and
 			// trusts this position at later event tests, only after the IOP's work up to it. A relaxed load
@@ -431,9 +436,22 @@ namespace IopThread
 			const u64 pos = m_iop.pos_pub.load(std::memory_order_relaxed);
 			std::atomic_thread_fence(std::memory_order_acquire);
 			m_last_seen_iop_pos = pos;
-			if (static_cast<s64>(cycle - pos) <= m_lag) [[likely]]
+			if (static_cast<s64>(cycle - pos) <= bound) [[likely]]
 				return true;
-			return LagSpin(cycle);
+			return LagSpin(cycle, bound, near_bound);
+		}
+
+		/// The near bound for the EE's accesses to the SBUS mailbox words (F200..F260). Those words are live
+		/// shared memory, not queued items, so with a lag bound far above the default the IOP could read an EE
+		/// write up to L cycles early in its own time, and the EE could read an IOP write that late. When L is above
+		/// kDefaultLag this waits until the IOP is within kDefaultLag of `cycle`, which is the skew the mailbox
+		/// handshakes of an IOP reboot were tested at. At or below kDefaultLag the event test's bound already
+		/// holds and this returns at once. False if the stop predicate ended the wait.
+		__fi bool CheckNearLag(u64 cycle)
+		{
+			if (m_lag <= kDefaultLag) [[likely]]
+				return true;
+			return CheckLagTo(cycle, kDefaultLag, true);
 		}
 
 		/// Queues an item stamped `stamp` (the EE's cycle at the moment) for the IOP, publishes the
@@ -573,7 +591,7 @@ namespace IopThread
 		void ParkUntil(Ready&& ready);
 
 		// ---- EE thread: the waits
-		bool LagSpin(u64 cycle);
+		bool LagSpin(u64 cycle, s64 bound, bool near_bound);
 		bool WaitForE2ISpace(u64 stamp, u16 kind, u32 arg);
 		void AcquireHold(HoldKind kind);
 		void ReleaseHold();

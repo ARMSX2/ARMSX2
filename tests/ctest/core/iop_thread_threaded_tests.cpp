@@ -28,6 +28,7 @@
 #include "IopThread/OwnerAsserts.h"
 #include "IopThreadTestSupport.h"
 #include "PerformanceMetrics.h"
+#include "ps2/HwInternal.h"
 #include "R3000A.h"
 #include "R5900.h"
 #include "SIO/Pad/Pad.h"
@@ -1193,6 +1194,115 @@ TEST_F(ThreadedMachine, TheRealPumpsRunOnTheEeThreadWhenTheIopReachesThemAndTake
 	EXPECT_EQ(stats.sif_ee_pumps, 0u) << "a deferred pump is not a pump that held the IOP";
 	EXPECT_EQ(stats.emu_hold_requests, 0u);
 	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+// The near bound for the SBUS mailbox. The IOP is parked inside its first fake slice, the EE is far past the default lag
+// but inside a much larger configured one, so the event test lets it go and only the mailbox access waits.
+TEST_F(ThreadedMachine, AnSbusAccessWaitsForTheIopToComeWithinTheDefaultLagWhenTheConfiguredLagIsLarger)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded(200000);
+	s_hold_slice = true;
+	EventTest(100000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	ASSERT_GT(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), IopThread::kDefaultLag);
+	EXPECT_EQ(IopThread::GetStats().lag_spins, 0u) << "the event test waited: the lag was not the large one";
+
+	std::thread release([] {
+		std::this_thread::sleep_for(100ms);
+		s_hold_slice = false;
+	});
+	const auto begin = std::chrono::steady_clock::now();
+	IopThread::EeSbusNearBound(cpuRegs.cycle);
+	const auto waited = std::chrono::steady_clock::now() - begin;
+	release.join();
+
+	EXPECT_GE(waited, 80ms) << "the access went through while the IOP was far behind";
+	EXPECT_LE(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), IopThread::kDefaultLag);
+	EXPECT_EQ(IopThread::GetStats().lag_spins, 0u) << "the near bound's wait is not counted as a lag-bound wait";
+}
+
+TEST_F(ThreadedMachine, TheEesRealMailboxHandlersEachWaitAtTheNearBound)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded(200000);
+
+	const u32 regs[] = {SBUS_F200, SBUS_F210, SBUS_F220, SBUS_F230, SBUS_F240, SBUS_F260};
+	for (int op = 0; op < 2; op++)
+	{
+		for (const u32 reg : regs)
+		{
+			s_hold_slice = true;
+			s_slices_started = 0;
+			EventTest(100000);
+			ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+			ASSERT_GT(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), IopThread::kDefaultLag);
+
+			std::thread release([] {
+				std::this_thread::sleep_for(60ms);
+				s_hold_slice = false;
+			});
+			const auto begin = std::chrono::steady_clock::now();
+			if (op == 0)
+				(void)hwRead32<0x0f>(reg);
+			else
+				hwWrite32<0x0f>(reg, 0);
+			const auto waited = std::chrono::steady_clock::now() - begin;
+			release.join();
+			EXPECT_GE(waited, 45ms) << (op == 0 ? "read " : "write ") << std::hex << reg << " did not wait";
+			EXPECT_LE(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), IopThread::kDefaultLag);
+		}
+	}
+}
+
+TEST_F(ThreadedMachine, AnSbusAccessDoesNotWaitWhenTheConfiguredLagIsNotAboveTheDefault)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded(IopThread::kDefaultLag);
+	s_hold_slice = true;
+	EventTest(1000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	cpuRegs.cycle += 100000; // far behind, and no event test has made the lag bound wait yet
+
+	const auto begin = std::chrono::steady_clock::now();
+	IopThread::EeSbusNearBound(cpuRegs.cycle);
+	(void)hwRead32<0x0f>(SBUS_F200);
+	EXPECT_LT(std::chrono::steady_clock::now() - begin, 500ms);
+	s_hold_slice = false;
+}
+
+TEST_F(ThreadedMachine, AnSbusAccessDoesNotWaitWhenTheIopIsWithinTheDefaultLag)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded(200000);
+	s_hold_slice = true;
+	EventTest(1000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	cpuRegs.cycle += 10000; // behind, but by less than the default lag
+
+	const auto begin = std::chrono::steady_clock::now();
+	IopThread::EeSbusNearBound(cpuRegs.cycle);
+	EXPECT_LT(std::chrono::steady_clock::now() - begin, 500ms);
+	s_hold_slice = false;
+}
+
+TEST_F(ThreadedMachine, AnSbusAccessWithTheIopHeldDoesNotWait)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded(200000);
+	cpuRegs.cycle += 100000;
+	{
+		IopThread::VmHold hold(IopThread::HoldKind::Emulation);
+		const auto begin = std::chrono::steady_clock::now();
+		IopThread::EeSbusNearBound(cpuRegs.cycle);
+		(void)hwRead32<0x0f>(SBUS_F240);
+		EXPECT_LT(std::chrono::steady_clock::now() - begin, 500ms) << "a held IOP cannot catch up";
+	}
 }
 
 TEST_F(ThreadedMachine, NothingIsDeferredWhileTheIopIsHeld)

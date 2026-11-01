@@ -8,6 +8,7 @@
 #include "ps2/eeHwTraceLog.inl"
 
 #include "ps2/pgif.h"
+#include "IopThread/IopThreadVm.h"
 #include "IopThread/SharedWord.h"
 
 using namespace R5900;
@@ -155,13 +156,16 @@ mem32_t _hwRead32(u32 mem)
 				case SBUS_F210:
 				case SBUS_F220:
 				case SBUS_F230:
+					IopThread::EeSbusNearBound(cpuRegs.cycle);
 					return SharedWord::LoadAcquire(psHu32(mem));
 				case SBUS_F240:
+					IopThread::EeSbusNearBound(cpuRegs.cycle);
 #if PSX_EXTRALOGS
 					DevCon.Warning("Read  SBUS_F240  %x ", psHu32(SBUS_F240));
 #endif
 					return SharedWord::LoadAcquire(psHu32(SBUS_F240)) | 0xF0000102;
 				case SBUS_F260:
+					IopThread::EeSbusNearBound(cpuRegs.cycle);
 #if PSX_EXTRALOGS
 					DevCon.Warning("Read  SBUS_F260  %x ", psHu32(SBUS_F260));
 #endif

@@ -224,6 +224,19 @@ namespace IopThread
 		return true;
 	}
 
+	/// The near bound: called by the EE before it reads or writes an SBUS mailbox word (HwRead.cpp, HwWrite.cpp).
+	/// In Threaded with a lag bound above kDefaultLag it waits until the IOP is within kDefaultLag of `cycle`, so
+	/// the mailbox handshakes (an IOP reboot makes many; gameplay makes none) see the skew they were tested at.
+	/// One load of the mode otherwise.
+	__forceinline_odr void EeSbusNearBound(u64 cycle)
+	{
+		if (GetMode() != IopThreadMode::Threaded) [[likely]]
+			return;
+		if (!g_thread.IsRunning()) [[unlikely]]
+			return;
+		g_thread.CheckNearLag(cycle);
+	}
+
 	/// A SIF pump that the IOP starts. The pump moves data on both sides and schedules both sides' completion
 	/// events, so it runs on the EE thread with the IOP stopped: the IOP posts it with CallOnEE and blocks until the
 	/// EE has run it (at its next event test, or sooner inside any EE wait). On the EE thread it just runs.

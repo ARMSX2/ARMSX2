@@ -603,13 +603,15 @@ namespace IopThread
 		m_sema.NotifyOfWork(); // not filtered: the IOP may be asleep waiting for exactly this
 	}
 
-	bool Thread::LagSpin(u64 cycle)
+	bool Thread::LagSpin(u64 cycle, s64 bound, bool near_bound)
 	{
 		// A held or stopped IOP cannot catch up, and a CallOnEE function runs with the IOP blocked.
 		if (m_mode != IopThreadMode::Threaded || !m_running || m_hold_depth > 0 || m_in_call)
 			return true;
 
-		m_lag_spins.Add();
+		// The near bound's waits are not the lag bound's: they stay out of its counters.
+		if (!near_bound)
+			m_lag_spins.Add();
 		// What the IOP was doing when the wait began, read before the wake-up below: asleep (or on its
 		// way), so the EE also waits for it to wake, or idle and awake, watching a watermark that gives it
 		// less than S_min to run.
@@ -628,7 +630,7 @@ namespace IopThread
 			if (m_i2e.MayHaveItems())
 				DrainI2E();
 			const u64 pos = m_iop.pos_pub.load(std::memory_order_acquire);
-			if (static_cast<s64>(cycle - pos) <= m_lag)
+			if (static_cast<s64>(cycle - pos) <= bound)
 			{
 				m_last_seen_iop_pos = pos;
 				reached = true;
@@ -642,6 +644,8 @@ namespace IopThread
 			}
 		}
 		m_ee.spinning.store(false, std::memory_order_relaxed);
+		if (near_bound)
+			return reached;
 		m_lag_spin_iterations.Add(iterations);
 		const u64 stall_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count());
 		m_lag_stall_ns.Add(stall_ns);
