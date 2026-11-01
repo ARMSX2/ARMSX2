@@ -122,7 +122,7 @@ data class CpuSettings(
      *  breakpoint is set, so the switch can stay on everywhere. */
     val iopThread: Boolean = false,
     /** EmuCore/Speedhacks/iopThreadLag — how many EE cycles the EE may run ahead of the IOP thread before
-     *  it waits for it. Advanced. The core clamps it to 4096..196608; keep the pickers inside that. */
+     *  it waits for it. Advanced. The core clamps it to 4096..9830400 (two frames); keep the pickers inside that. */
     val iopThreadLag: Int = 24576,
     /** EmuCore/CPU/Recompiler/EnableVUAot — vu-aot, the VU1 ahead-of-time compiler. Programs that run often
      *  are recompiled in the background above microVU, and the compiled VU code is kept on disk (the VU

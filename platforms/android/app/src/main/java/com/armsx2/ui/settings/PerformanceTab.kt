@@ -453,7 +453,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             ToggleRow(str("perf.hack.mtvu"), s.cpu.mtvu, description = str("perf.hack.mtvu.desc"), field = "mtvu") { apply(s.copy(cpu = s.cpu.copy(mtvu = it))) }
             ToggleRow(str("perf.hack.iopThread"), s.cpu.iopThread, description = str("perf.hack.iopThread.desc"), field = "iopThread") { apply(s.copy(cpu = s.cpu.copy(iopThread = it))) }
             // The lag bound is advanced: only the usual choices are offered, and a value the file holds
-            // that is not one of them shows the nearest (the core clamps it to 4096..196608 anyway).
+            // that is not one of them shows the nearest (the core clamps it to 4096..9830400, two frames, anyway).
             val lagChoices = listOf(4096, 6144, 12288, 24576)
             SegmentedRow(
                 label = str("perf.hack.iopThreadLag"),

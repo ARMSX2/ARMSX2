@@ -161,6 +161,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	dialog()->registerWidgetHelp(m_ui.iopThreadLag, tr("IOP Thread Lag Bound"), QString::number(IopThread::kDefaultLag),
 		tr("How many EE cycles the main game thread may run ahead of the IOP thread before it waits for it. "
 		   "Larger values wait less often, but let the IOP's answers reach the game later. "
+		   "A frame is about 4.9 million cycles, and the box goes up to two frames. "
 		   "Only used while the IOP thread is enabled."));
 
 	dialog()->registerWidgetHelp(m_ui.gameFixes, tr("Enable Game Fixes"), tr("Checked"),

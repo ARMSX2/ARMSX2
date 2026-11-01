@@ -34,7 +34,9 @@
 
 namespace IopThread
 {
-	inline constexpr size_t kE2IRingCapacity = 1024;
+	// 8192 entries (128 KiB) hold two frames of the busiest titles' posts (the blanking items, about 1052 per
+	// frame on OutRun) and the SIF items: the most the lag bound (kMaxLag, two frames) lets pile up.
+	inline constexpr size_t kE2IRingCapacity = 8192;
 	inline constexpr size_t kI2EQueueCapacity = 256;
 
 	// The alignment that keeps one side's hot words off the other side's cache line.

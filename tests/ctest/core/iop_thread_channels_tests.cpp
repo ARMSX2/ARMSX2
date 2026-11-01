@@ -469,7 +469,7 @@ namespace
 
 TEST(IopChannelsLayout, TheCapacitiesAreThePowersOfTwoTheDesignNames)
 {
-	EXPECT_EQ(kE2IRingCapacity, 1024u);
+	EXPECT_EQ(kE2IRingCapacity, 8192u);
 	EXPECT_EQ(kI2EQueueCapacity, 256u);
 	EXPECT_EQ(kE2IRingCapacity & (kE2IRingCapacity - 1), 0u);
 	EXPECT_EQ(kI2EQueueCapacity & (kI2EQueueCapacity - 1), 0u);

@@ -43,16 +43,23 @@ namespace IopThread
 	// target by 81 cycles at the 90th percentile, and the IOP ends its last block up to 57 cycles
 	// past what it was given. 1024 is more than seven times the sum of those.
 	//
-	// The maximum, 64 times kEeWaitCycles, is a sanity bound. It is a twenty-fifth of a frame
-	// (4.9 million EE cycles at 60 Hz), so the cycle-stamped EE-to-IOP queue (1024 entries, about
-	// 527 posts per frame) cannot fill within one window, and the largest delay the EE can see an
-	// IOP effect after is still below a millisecond.
+	// The maximum, 3200 times kEeWaitCycles, is two NTSC frames (4.9 million EE cycles each at 60 Hz).
+	// It lets an experiment give the IOP a whole frame of slack, so that the idle time the EE skips
+	// almost instantly can be emulated by the IOP while the EE does its next busy stretch. The values
+	// the shipped UI offers stay at the small end. The cycle-stamped EE-to-IOP queue holds
+	// kE2IRingCapacity entries, which is about three times the posts of a maximum window (about 527
+	// posts per frame, 1052 on OutRun, plus the SIF items), so it cannot fill within one window. The
+	// largest delay the EE can see an IOP effect after is the lag plus one event-test spacing: about
+	// 33 ms at the maximum.
 	inline constexpr s32 kDefaultLag = 8 * kEeWaitCycles;
 	inline constexpr s32 kMinLag = kEeWaitCycles + 1024;
-	inline constexpr s32 kMaxLag = 64 * kEeWaitCycles;
+	inline constexpr s32 kMaxLag = 3200 * kEeWaitCycles;
 
 	static_assert(kMinLag > kEeWaitCycles);
 	static_assert(kMinLag <= kDefaultLag && kDefaultLag <= kMaxLag);
+	static_assert(kMaxLag % kEeWaitCycles == 0, "the maximum is a whole number of event-test spacings");
+	// The lag is kept as an s32 (Params::lag, the EE-side books). Leave room for the cycle differences added to it.
+	static_assert(kMaxLag > 0 && kMaxLag < INT32_MAX / 64, "the lag bound must leave s32 headroom");
 
 	/// The legal value nearest to `requested`. A value from a settings file, a per-game override
 	/// or a command line goes through this before anything uses it as L.
