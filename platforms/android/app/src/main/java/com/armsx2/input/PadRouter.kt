@@ -195,6 +195,23 @@ object PadRouter {
         return out.values.toList()
     }
 
+    /** True while any real gamepad or joystick is attached, a handheld's built-in pad included.
+     *  Virtual devices (the on-screen keyboard and the like, negative id) don't count. A pad the USB
+     *  takeover drives has no Android input device at all, so it is counted separately. Asks the OS
+     *  every time, so the answer is right straight after a hot-plug. */
+    fun hasPhysicalGamepad(): Boolean {
+        if (syntheticDeviceId != 0) return true
+        for (id in runCatching { InputDevice.getDeviceIds() }.getOrDefault(IntArray(0))) {
+            val dev = InputDevice.getDevice(id) ?: continue
+            if (dev.isVirtual) continue
+            val src = dev.sources
+            if ((src and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (src and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+            ) return true
+        }
+        return false
+    }
+
     /**
      * A pad we deliver ourselves, and the slot it belongs to.
      *

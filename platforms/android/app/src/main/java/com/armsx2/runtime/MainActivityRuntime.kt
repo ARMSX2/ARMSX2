@@ -6004,12 +6004,20 @@ open class MainActivityRuntime : ComponentActivity() {
     /** Frees a pad's slot in PadRouter when its controller is unplugged / power-cycled, so a
      *  re-enumerated device (a NEW deviceId after AYANEO sleep/wake) re-claims Player 1 instead of
      *  the stale dead id owning it and shunting gameplay to an un-armed pad (#394). Registered in
-     *  onCreate and kept alive across pause so the wake-time remove/add is caught. */
+     *  onCreate and kept alive across pause so the wake-time remove/add is caught.
+     *
+     *  Also keeps TouchControls.gamepadConnected current, which is what hides the on-screen
+     *  controls (Auto mode) and the pause button while a pad is attached. */
     private val inputDeviceListener = object : android.hardware.input.InputManager.InputDeviceListener {
-        override fun onInputDeviceAdded(deviceId: Int) {}
-        override fun onInputDeviceChanged(deviceId: Int) {}
+        override fun onInputDeviceAdded(deviceId: Int) {
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
+        }
+        override fun onInputDeviceChanged(deviceId: Int) {
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
+        }
         override fun onInputDeviceRemoved(deviceId: Int) {
             com.armsx2.input.PadRouter.forgetDevice(deviceId)
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
         }
     }
 

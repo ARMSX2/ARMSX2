@@ -275,7 +275,7 @@ fun TouchControlsOverlay() {
             }
         }
 
-        val showPad = edit || (visMode != 0 && TouchControls.visible.value)
+        val showPad = edit || TouchControls.padShown()
         if (!showPad) return@BoxWithConstraints
 
         if (edit) {
@@ -1238,8 +1238,11 @@ private fun PauseWidget(cfg: TouchButtonCfg, edit: Boolean) {
     } else {
         val opacity = TouchControls.opacity.floatValue
         // Drawn unless the user picked tap-to-reveal, or disabled the widget outright — a disabled
-        // pause is treated as hidden-but-tappable rather than gone, so it can't strand you.
-        val alwaysVisible = cfg.enabled && !TouchControls.pauseTapToReveal.value
+        // pause is treated as hidden-but-tappable rather than gone, so it can't strand you. Also
+        // not drawn while a gamepad is attached: its Back button opens the menu, and the glyph is
+        // only in the way. The corner still answers a tap or long-press either way.
+        val alwaysVisible = cfg.enabled && !TouchControls.pauseTapToReveal.value &&
+            !TouchControls.gamepadConnected.value
         var revealed by remember { mutableStateOf(false) }
         LaunchedEffect(revealed) {
             if (revealed) {

@@ -799,25 +799,32 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             // Controller hotkeys now live in their own dedicated "Hotkeys" tab
             // (see HotkeysTab) so they're easier to find than buried under Pad.
             SettingsDivider()
-            val visibilityOff = str("setup.toggle.off")
-            val visibilityAuto = str("backend.renderer.auto")
-            val visibilityAlways = str("pad.onScreenControls.always")
-            IntSliderRow(
+            // Four named choices instead of one 0..12 slider where Off was the far-left stop and
+            // the seconds and the two modes shared a track. The stored values are unchanged.
+            val visibilityMode = TouchControls.visibilityMode.intValue
+            SegmentedRow(
                 label = str("pad.onScreenControls.label"),
-                value = TouchControls.visibilityMode.value,
-                min = 0,
-                max = TouchControls.VISIBILITY_ALWAYS,
+                // In the order of TouchControls.visibilityChoices.
+                options = listOf(
+                    str("backend.renderer.auto"),
+                    str("pad.onScreenControls.always"),
+                    str("setup.toggle.off"),
+                    str("pad.onScreenControls.autoHide"),
+                ),
+                selectedIndex = TouchControls.visibilityChoices.indexOf(TouchControls.visibilityChoice()),
                 description = str("pad.onScreenControls.description"),
-                valueFormatter = {
-                    when (it) {
-                        0 -> visibilityOff
-                        11 -> visibilityAuto
-                        TouchControls.VISIBILITY_ALWAYS -> visibilityAlways
-                        else -> "${it}s"
-                    }
-                },
-                onChange = { TouchControls.setVisibilityMode(it) },
+                onChange = { TouchControls.chooseVisibility(TouchControls.visibilityChoices[it]) },
             )
+            if (visibilityMode in 1..10) {
+                IntSliderRow(
+                    label = str("pad.onScreenControls.autoHideAfter"),
+                    value = visibilityMode,
+                    min = 1,
+                    max = 10,
+                    valueFormatter = { "${it}s" },
+                    onChange = { TouchControls.setVisibilityMode(it) },
+                )
+            }
             SettingsDivider()
             // Touch as Player 2: one person on a controller, another on the screen. Asked for by
             // players who share a device; Player 1 is the controller's, so nothing else changes.
