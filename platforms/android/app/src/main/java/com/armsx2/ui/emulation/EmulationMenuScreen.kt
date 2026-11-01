@@ -797,11 +797,11 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
         // hold anything or how old they are, so picking a slot to overwrite after a long
         // session was guesswork -- the Save Manager has had the dates all along, but the quick
         // picker is where the choice actually gets made. Read off disk once per menu open;
-        // SaveSlotLookup is blocking, hence produceState rather than a composition-time call.
-        // ★ getGamePathSlot, NOT SaveSlotLookup.
+        // the read is blocking, hence produceState rather than a composition-time call.
+        // ★ getGamePathSlot, NOT SaveCatalog.
         //
-        // SaveSlotLookup exists for the LIBRARY, where nothing is booted and the only way to
-        // find states is to match `<serial> (title).NN.p2s` on disk. In here a VM is running, so
+        // SaveCatalog exists for the LIBRARY, where nothing is booted and the only way to
+        // find states is to match `<serial> (CRC).NN.p2s` on disk. In here a VM is running, so
         // the native side already knows the exact path for each slot — and it is authoritative
         // where the filename match is a guess that silently returns nothing when the serial is
         // absent or formatted differently, which is what made this show "Empty" for every slot.
@@ -1379,8 +1379,35 @@ private fun PerformancePane(state: EmulationMenuUiState, viewModel: EmulationMen
 
 @Composable
 private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuViewModel) {
-    MenuSwitchRow(str("pad.onScreenControls.label"), state.touchControlsVisible) {
-        viewModel.toggleTouchControls()
+    // The persisted on-screen controls setting itself, the same value All Settings > Controls
+    // edits, with a button for every choice. This row used to flip a temporary flag that the next
+    // screen touch undid, and after that to step through the choices one tap at a time.
+    val visibilityMode = TouchControls.visibilityMode.intValue
+    val gamepadAttached = TouchControls.gamepadConnected.value
+    SectionCard(str("pad.onScreenControls.label")) {
+        HorizontalOptionRow(
+            options = listOf(
+                TouchControls.VISIBILITY_AUTO to str("backend.renderer.auto"),
+                TouchControls.VISIBILITY_ALWAYS to str("pad.onScreenControls.always"),
+                TouchControls.VISIBILITY_OFF to str("setup.toggle.off"),
+                TouchControls.CHOICE_AUTO_HIDE to str("pad.onScreenControls.autoHide"),
+            ),
+            selected = TouchControls.visibilityChoice(),
+            keyPrefix = "onscreen",
+            onSelect = TouchControls::chooseVisibility,
+        )
+        // Auto and Auto-hide change by themselves, so say what they are doing right now.
+        val status = when {
+            visibilityMode == TouchControls.VISIBILITY_AUTO && gamepadAttached ->
+                str("pad.onScreenControls.nowHidden")
+            visibilityMode == TouchControls.VISIBILITY_AUTO -> str("pad.onScreenControls.nowShown")
+            visibilityMode in 1..10 -> str("pad.onScreenControls.hidesAfter").format(visibilityMode)
+            else -> null
+        }
+        if (status != null) {
+            Spacer(Modifier.height(6.dp))
+            Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
     MenuSwitchRow(
         title = str("pad.rumble.label"),

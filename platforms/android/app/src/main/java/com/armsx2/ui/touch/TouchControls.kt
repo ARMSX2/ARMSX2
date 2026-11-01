@@ -460,17 +460,65 @@ object TouchControls {
         macroPressureHeld.clear()
     }
 
-    /** On-screen touch controls visibility. 0 = Never show (for physical-
-     *  controls devices like the RP6 — also hides the settings cog so nothing
-     *  overlaps R1); 1..10 = auto-hide after that many seconds of no touch;
-     *  11 = Auto — show on screen touch, hide when a controller is used (the
-     *  default / legacy behavior); 12 = Always, never hidden by anything but the
-     *  in-game menu's switch. Persisted.
+    /** On-screen touch controls visibility. 0 = Off, never shown (for physical-controls devices
+     *  like the RP6); 1..10 = auto-hide after that many seconds of no touch; 11 = Auto, shown
+     *  unless a gamepad is connected (the default): with one connected they stay hidden and a touch
+     *  does not bring them back, so a handheld's screen is not covered by buttons it has in
+     *  hardware; 12 = Always, shown even with a gamepad connected. Persisted.
      *
-     *  Always exists for people who play with a controller AND touch buttons at once: Auto hid
-     *  the touch buttons on every controller input, and a timer hid them between touches. */
-    val visibilityMode = mutableIntStateOf(11)
+     *  Always exists for people who play with a controller AND touch buttons at once. Whether the
+     *  pad is drawn right now is [padShown], not this value alone. */
+    val visibilityMode = mutableIntStateOf(VISIBILITY_AUTO)
+    const val VISIBILITY_OFF = 0
+    const val VISIBILITY_AUTO = 11
     const val VISIBILITY_ALWAYS = 12
+
+    /** True while a real gamepad is attached ([com.armsx2.input.PadRouter.hasPhysicalGamepad]).
+     *  Decides whether Auto shows the touch controls, and hides the on-screen pause button, since
+     *  the pad's Back button opens the menu. Kept current by MainActivityRuntime's input-device
+     *  listener through [refreshGamepadConnected]. */
+    val gamepadConnected = mutableStateOf(false)
+
+    private val padHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private val padGoneCheck = Runnable {
+        gamepadConnected.value = com.armsx2.input.PadRouter.hasPhysicalGamepad()
+    }
+
+    /** Re-read whether a gamepad is attached. Appearing is acted on at once; disappearing only
+     *  after [GAMEPAD_GONE_DEBOUNCE_MS], because some handhelds drop and re-add their built-in pad
+     *  around sleep/wake and the touch controls would flash on every time. */
+    fun refreshGamepadConnected() {
+        padHandler.removeCallbacks(padGoneCheck)
+        if (com.armsx2.input.PadRouter.hasPhysicalGamepad()) gamepadConnected.value = true
+        else if (gamepadConnected.value) padHandler.postDelayed(padGoneCheck, GAMEPAD_GONE_DEBOUNCE_MS)
+    }
+
+    private const val GAMEPAD_GONE_DEBOUNCE_MS = 2000L
+
+    /** Whether the on-screen pad is drawn and answers touches (the layout editor aside). The one
+     *  rule behind the overlay, so the setting, the quick-menu row and the screen cannot disagree.
+     *  Auto ignores [visible] while a gamepad is attached: a stray touch must not bring the buttons
+     *  back. Reads Compose state, so a composable that calls it recomposes when any input changes. */
+    fun padShown(): Boolean = when (visibilityMode.intValue) {
+        VISIBILITY_OFF -> false
+        VISIBILITY_AUTO -> visible.value && !gamepadConnected.value
+        else -> visible.value
+    }
+
+    /** The four named choices the settings screen and the pause menu both offer: Auto, Always, Off
+     *  and Auto-hide, which stands for any of the timed modes 1..10. [visibilityChoice] maps the
+     *  stored mode onto one of them and [chooseVisibility] maps one back, so the two screens show
+     *  and set the same thing. */
+    const val CHOICE_AUTO_HIDE = 1
+    val visibilityChoices = intArrayOf(VISIBILITY_AUTO, VISIBILITY_ALWAYS, VISIBILITY_OFF, CHOICE_AUTO_HIDE)
+
+    fun visibilityChoice(): Int = visibilityMode.intValue.let { if (it in 1..10) CHOICE_AUTO_HIDE else it }
+
+    /** Pick one of [visibilityChoices]. Auto-hide keeps the seconds already chosen, else starts at 5. */
+    fun chooseVisibility(choice: Int) {
+        val now = visibilityMode.intValue
+        setVisibilityMode(if (choice == CHOICE_AUTO_HIDE) (if (now in 1..10) now else 5) else choice)
+    }
 
     /** Which player the on-screen controls play as: 0 = Player 1, 1 = Player 2. Player 2 is for
      *  two people on one device, one on a controller and one on the touch screen. Persisted; the
@@ -899,6 +947,7 @@ object TouchControls {
         visibilityMode.intValue = MainActivityRuntime.prefs.getInt(KEY_VIS_MODE, 11).coerceIn(0, VISIBILITY_ALWAYS)
         touchPlayer.intValue = MainActivityRuntime.prefs.getInt(KEY_TOUCH_PLAYER, 0).coerceIn(0, 1)
         if (visibilityMode.intValue == 0) visible.value = false
+        refreshGamepadConnected()
         // #357: show/hide became tap-to-reveal (inverted). Seed the new pref from the old one so
         // anyone who had the button hidden keeps it hidden — now as tap-to-reveal, which still
         // opens the menu. Defaults chain to false (glyph visible) for everyone else.
@@ -1453,7 +1502,8 @@ object TouchControls {
 
     /** Latched off the touch controls when a controller key/axis fires.
      *  Only in "Auto" mode (11) — when an auto-hide timeout is set (1..10) the
-     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent.
+     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent. This is the fallback for
+     *  a pad [gamepadConnected] could not see; a pad it does see already keeps Auto hidden.
      *
      *  Only for a controller playing the SAME player as the touch controls ([port]): with the
      *  touch controls on Player 2, Player 1's controller is somebody else, and hiding the touch

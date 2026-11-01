@@ -1608,7 +1608,14 @@ open class MainActivityRuntime : ComponentActivity() {
         @Volatile
         private var pendingFileLoadOnBoot: PendingFileLoad? = null
 
-        private data class PendingFileLoad(val path: String, val onResult: (Boolean) -> Unit)
+        /** A load to run once the booted game is up. [autosave] is the autosave to load (1 = newest)
+         *  instead of the file at [path]: the core's load-by-file only accepts a numbered slot's
+         *  name, so an autosave has to go through its own loaders. */
+        private data class PendingFileLoad(
+            val path: String,
+            val onResult: (Boolean) -> Unit,
+            val autosave: Int? = null,
+        )
 
         private fun failPendingFileLoadOnBoot() {
             val request = synchronized(vmLifecycleLock) {
@@ -1625,21 +1632,28 @@ open class MainActivityRuntime : ComponentActivity() {
         // library. GitHub #374 — "exit, press Load → nothing boots" because currentGame was null.
         val contextGame = mutableStateOf<GameInfo?>(null)
 
-        fun launchCurrentGameFromSaveSlot(slot: Int): Boolean
-        {
-            val game = currentGame.value ?: contextGame.value ?: return false
-            return launchGameFromSaveSlot(game, slot)
-        }
+        /**
+         * Boot [game] and load the save-state file at [path] once it is running; [onResult] gets
+         * whether the load worked, on the main thread. Takes the file itself rather than a slot
+         * number so a numbered slot or a backup copy of one loads whichever of the save folders it
+         * sits in. (Not an autosave: see [launchGameFromAutosave].) Launching over a running game
+         * stops that one first.
+         */
+        fun launchGameFromSaveFile(game: GameInfo, path: String, onResult: (Boolean) -> Unit): Boolean =
+            path.isNotBlank() && launchWithPendingLoad(game, PendingFileLoad(path, onResult))
 
-        fun launchCurrentGameFromSaveFile(path: String, onResult: (Boolean) -> Unit): Boolean {
-            val game = currentGame.value ?: contextGame.value ?: return false
+        /** Boot [game] and load its autosave number [n] (1 = the newest) once it is running. */
+        fun launchGameFromAutosave(game: GameInfo, n: Int, onResult: (Boolean) -> Unit): Boolean =
+            launchWithPendingLoad(game, PendingFileLoad("", onResult, autosave = n))
+
+        private fun launchWithPendingLoad(game: GameInfo, pending: PendingFileLoad): Boolean {
             val launchPath = if (game.uri.scheme == "file") {
                 game.uri.path ?: game.uri.toString()
             } else {
                 game.uri.toString()
             }
-            if (launchPath.isBlank() || path.isBlank()) return false
-            pendingFileLoadOnBoot = PendingFileLoad(path, onResult)
+            if (launchPath.isBlank()) return false
+            pendingFileLoadOnBoot = pending
             pendingSlotLoadOnBoot = null
             pendingAutoLoadOnBoot = false
             launchGame(launchPath, game)
@@ -1649,9 +1663,9 @@ open class MainActivityRuntime : ComponentActivity() {
         /**
          * Boot [game] and load save slot [slot] once it is running.
          *
-         * Split out of launchCurrentGameFromSaveSlot so the library's long-press menu can name the
-         * game explicitly: from the library nothing is booted, so currentGame and contextGame are
-         * both null and the original could never fire there.
+         * Names the game explicitly: from the library nothing is booted, so currentGame and
+         * contextGame can both be null. The Save Manager loads by file ([launchGameFromSaveFile])
+         * instead, since a slot number cannot say which save folder the file is in.
          */
         fun launchGameFromSaveSlot(game: GameInfo, slot: Int): Boolean {
             val launchPath = if (game.uri.scheme == "file") {
@@ -1825,6 +1839,17 @@ open class MainActivityRuntime : ComponentActivity() {
                         return
                     }
                     if (requestedFile != null) {
+                        val autosave = requestedFile.autosave
+                        if (autosave != null) {
+                            // The core finds an autosave itself, by the running game's name, and
+                            // says no until the game's disc ID is known, so keep asking.
+                            val ok = runCatching {
+                                if (autosave > 1) NativeApp.loadAutosaveStateAt(autosave) else NativeApp.loadAutosaveState()
+                            }.getOrDefault(false)
+                            if (!ok && ++attempts < 60) handler.postDelayed(this, 250)
+                            else requestedFile.onResult(ok)
+                            return
+                        }
                         val status = runCatching { NativeApp.loadStateFromFile(requestedFile.path) }.getOrDefault(-1)
                         if (status == 0 && ++attempts < 60) handler.postDelayed(this, 250)
                         else requestedFile.onResult(status == 1)
@@ -6008,12 +6033,20 @@ open class MainActivityRuntime : ComponentActivity() {
     /** Frees a pad's slot in PadRouter when its controller is unplugged / power-cycled, so a
      *  re-enumerated device (a NEW deviceId after AYANEO sleep/wake) re-claims Player 1 instead of
      *  the stale dead id owning it and shunting gameplay to an un-armed pad (#394). Registered in
-     *  onCreate and kept alive across pause so the wake-time remove/add is caught. */
+     *  onCreate and kept alive across pause so the wake-time remove/add is caught.
+     *
+     *  Also keeps TouchControls.gamepadConnected current, which is what hides the on-screen
+     *  controls (Auto mode) and the pause button while a pad is attached. */
     private val inputDeviceListener = object : android.hardware.input.InputManager.InputDeviceListener {
-        override fun onInputDeviceAdded(deviceId: Int) {}
-        override fun onInputDeviceChanged(deviceId: Int) {}
+        override fun onInputDeviceAdded(deviceId: Int) {
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
+        }
+        override fun onInputDeviceChanged(deviceId: Int) {
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
+        }
         override fun onInputDeviceRemoved(deviceId: Int) {
             com.armsx2.input.PadRouter.forgetDevice(deviceId)
+            com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
         }
     }
 

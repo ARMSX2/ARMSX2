@@ -27,7 +27,6 @@ data class EmulationMenuUiState(
     val tab: EmulationMenuTab = EmulationMenuTab.Session,
     val saveSlot: Int = 0,
     val settings: Settings = Settings(),
-    val touchControlsVisible: Boolean = true,
     val rumbleEnabled: Boolean = true,
     val multitapEnabled: Boolean = false,
     val hardcore: Boolean = false,
@@ -77,7 +76,6 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
             tab = initialTab ?: state.value.tab,
             saveSlot = MainActivityRuntime.currentSaveSlot.value,
             settings = settings,
-            touchControlsVisible = com.armsx2.ui.touch.TouchControls.visible.value,
             rumbleEnabled = ControllerMappings.rumbleEnabled(),
             multitapEnabled = ControllerMappings.multitapEnabled(),
             hardcore = runCatching { NativeApp.isHardcoreMode() }.getOrDefault(false),
@@ -263,12 +261,6 @@ class EmulationMenuViewModel(application: Application) : AndroidViewModel(applic
     fun editTouchControls() {
         dismissHandler = null
         InGameOverlay.editTouchLayout()
-    }
-
-    fun toggleTouchControls() {
-        val enabled = !state.value.touchControlsVisible
-        com.armsx2.ui.touch.TouchControls.visible.value = enabled
-        state.value = state.value.copy(touchControlsVisible = enabled)
     }
 
     // Hardcore toggle is confirmed (both directions): enabling restarts the game and

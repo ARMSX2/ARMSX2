@@ -499,19 +499,20 @@ private fun SlotTile(
 }
 
 @Composable
-private fun TileFrame(
+internal fun TileFrame(
     controllerId: String?,
     borderColor: Color,
     backgroundColor: Color,
     enabled: Boolean = true,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    /** The tile's size. The in-game picker's two-row grid wants a fixed-width tile that fills its
+     *  row; the Save Manager's wrapping grid sizes its tiles from the cell instead. */
+    sizing: Modifier = Modifier.width(TILE_WIDTH_DP.dp).fillMaxHeight(),
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
-        Modifier
-            .width(TILE_WIDTH_DP.dp)
-            .fillMaxHeight()
+        sizing
             .controllerFocusable(controllerId, RoundedCornerShape(12.dp), onConfirm = { if (enabled) onClick() })
             .clip(RoundedCornerShape(12.dp))
             .background(backgroundColor)
@@ -526,7 +527,7 @@ private fun TileFrame(
 }
 
 /** Slot timestamp for a tile subtitle, or null when the file gave us nothing usable. */
-private fun formatSlotStamp(stamp: Long): String? =
+internal fun formatSlotStamp(stamp: Long): String? =
     if (stamp <= 0L) null
     else runCatching {
         java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault())
@@ -534,7 +535,7 @@ private fun formatSlotStamp(stamp: Long): String? =
     }.getOrNull()
 
 @Composable
-private fun BoxScope.BottomLabel(title: String, subtitle: String?, titleColor: Color) {
+internal fun BoxScope.BottomLabel(title: String, subtitle: String?, titleColor: Color) {
     Box(
         Modifier
             .align(Alignment.BottomStart)
