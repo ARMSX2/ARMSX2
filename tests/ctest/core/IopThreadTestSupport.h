@@ -39,6 +39,7 @@ namespace iopt
 		SettingsGuard()
 			: m_iop_thread(EmuConfig.Speedhacks.iopThread)
 			, m_lockstep(EmuConfig.Speedhacks.iopThreadLockstep)
+			, m_defer_sif(EmuConfig.Speedhacks.iopThreadDeferSif)
 			, m_cpu(Cpu)
 		{
 		}
@@ -47,12 +48,13 @@ namespace iopt
 			IopThread::StopThread();
 			EmuConfig.Speedhacks.iopThread = m_iop_thread;
 			EmuConfig.Speedhacks.iopThreadLockstep = m_lockstep;
+			EmuConfig.Speedhacks.iopThreadDeferSif = m_defer_sif;
 			Cpu = m_cpu;
 			IopThread::ChooseMode();
 		}
 
 	private:
-		bool m_iop_thread, m_lockstep;
+		bool m_iop_thread, m_lockstep, m_defer_sif;
 		R5900cpu* m_cpu;
 	};
 
@@ -87,6 +89,7 @@ namespace iopt
 		[] { Record("vblank_end"); },
 		[](u32 line) { Record("iop_irq", line); },
 		[](u32 job) { Record("job", job); },
+		[](u32 channel) { Record("sif_pump", channel); },
 	};
 
 	class Recorder

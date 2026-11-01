@@ -22,6 +22,7 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "SIO/Sio.h"
+#include "Sif.h"
 #include "VMManager.h"
 
 #include "common/ARCADE.h"
@@ -495,6 +496,7 @@ namespace IopThread
 					break;
 			}
 		},
+		[](u32 channel) { RunSifPumpOnEe(channel == 0 ? &SIF0DmaFromEe : &SIF1DmaFromEe); },
 	};
 
 	void ApplyE2IItem(const E2IItem& item, const E2IActions& actions)
@@ -518,6 +520,10 @@ namespace IopThread
 				break;
 			case E2IKind::Call:
 				actions.job(item.arg);
+				break;
+			case E2IKind::SifPump:
+				pxAssertRel(actions.sif_pump, "an E2I table without a SIF pump action was given a SifPump item");
+				actions.sif_pump(item.arg);
 				break;
 			default:
 				pxFailRel("unknown E2I item kind");
@@ -563,6 +569,21 @@ namespace IopThread
 
 		// No IOP thread (Off, or a mode switch or a shutdown in progress), or it is stopped: the call Off makes.
 		ApplyE2IItem(E2IItem{stamp, kind, 0, arg}, s_e2i_actions ? *s_e2i_actions : kRealE2IActions);
+	}
+
+	bool DeferSifPump(u32 channel)
+	{
+		pxAssertMsg(channel <= 1, "only SIF0 and SIF1 pumps are deferred");
+		if (s_mode == IopThreadMode::Off || !EmuConfig.Speedhacks.iopThreadDeferSif)
+			return false;
+		// No thread, or the IOP is already stopped (a hold, a CallOnEE function): nothing to wait for, so the
+		// caller's pump runs in place, exactly as with the setting off.
+		if (!g_thread.IsRunning() || g_thread.IopIsStopped())
+			return false;
+		// Stamped with the EE's cycle at the moment Off would have run the pump. Lockstep applies it before
+		// this returns (ApplyOnIop waits for the IOP thread), which is Off's order.
+		ApplyOnIop(E2IKind::SifPump, channel);
+		return true;
 	}
 
 	bool TryPostToIop(HostCommandQueue::Command command)

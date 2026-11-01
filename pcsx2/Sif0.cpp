@@ -363,6 +363,18 @@ __fi void  EEsif0Interrupt()
 	sif0ch.chcr.STR = false;
 }
 
+// The part of the EE's start that has an effect on the IOP's side of the machine: the EE side is marked busy
+// (an IOP-started pump moves data into the EE only while it is) and the pump runs. It has no effect of its own
+// that anything can see before the pump finishes: the F240 bit it sets is cleared again at the end of SIF0Dma.
+// Run in place with the IOP held, or later, from the IOP's queue, when the IOP thread defers the pump so that
+// the data moves at the IOP's time of the start and not at the EE's.
+__fi void SIF0DmaFromEe()
+{
+	SharedWord::FetchOr(psHu32(SBUS_F240), 0x2000u);
+	sif0.ee.busy = true;
+	SIF0Dma();
+}
+
 __fi void dmaSIF0()
 {
 	SIF_LOG("dmaSIF0 %s", sif0ch.cmqt_to_str().c_str());
@@ -373,8 +385,6 @@ __fi void dmaSIF0()
 	}
 
 	//if(sif0ch.chcr.MOD == CHAIN_MODE && sif0ch.qwc > 0) DevCon.Warning(L"SIF0 QWC on Chain CHCR " + sif0ch.chcr.desc());
-	SharedWord::FetchOr(psHu32(SBUS_F240), 0x2000u);
-	sif0.ee.busy = true;
 
 	// Okay, this here is needed currently (r3644).
 	// FFX battles in the thunder plains map die otherwise, Phantasy Star 4 as well
@@ -388,6 +398,7 @@ __fi void dmaSIF0()
 	// Legend of Legaia doesn't throw a warning either :)
 	sif0.ee.end = false;
 	CPU_SET_DMASTALL(DMAC_SIF0, false);
+	// The F240 busy bit and sif0.ee.busy are set by SIF0DmaFromEe, where the pump starts.
 	IopBridge::Sif0Pump();
 
 }

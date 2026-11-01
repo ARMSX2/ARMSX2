@@ -174,6 +174,7 @@ namespace
 			m_lag = EmuConfig.Speedhacks.iopThreadLag;
 			m_iop_thread = EmuConfig.Speedhacks.iopThread;
 			m_lockstep = EmuConfig.Speedhacks.iopThreadLockstep;
+			m_defer_sif = EmuConfig.Speedhacks.iopThreadDeferSif;
 			m_next_delta = nextDeltaCounter;
 			m_next_start = nextStartCounter;
 			m_psx_next_delta = psxNextDeltaCounter;
@@ -237,6 +238,7 @@ namespace
 			EmuConfig.Speedhacks.iopThreadLag = m_lag;
 			EmuConfig.Speedhacks.iopThread = m_iop_thread;
 			EmuConfig.Speedhacks.iopThreadLockstep = m_lockstep;
+			EmuConfig.Speedhacks.iopThreadDeferSif = m_defer_sif;
 			IopThread::ChooseMode();
 			nextDeltaCounter = m_next_delta;
 			nextStartCounter = m_next_start;
@@ -321,7 +323,7 @@ namespace
 		R5900cpu* m_cpu_provider;
 		BaseVUmicroCPU* m_vu0;
 		BaseVUmicroCPU* m_vu1;
-		bool m_vu_thread, m_iop_thread, m_lockstep;
+		bool m_vu_thread, m_iop_thread, m_lockstep, m_defer_sif;
 		s32 m_lag;
 		s32 m_next_delta, m_psx_next_delta;
 		u64 m_next_start, m_psx_next_start;
@@ -807,6 +809,7 @@ namespace
 		},
 		[](u32 line) { Record("iop_irq", line); },
 		[](u32 job) { Record("job", job); },
+		[](u32 channel) { Record("sif_pump", channel); },
 	};
 
 	// A Recorder whose vblank_end action also reads the fake IOP's clock.
@@ -1007,6 +1010,204 @@ TEST_F(ThreadedMachine, AnEeStartedSifPumpStillHoldsTheIopWhenTheVmIsStoppingAnd
 	IopBridge::Sif1Pump();
 	release_again.join();
 	EXPECT_EQ(s_violations.load(), violations_before) << "the IOP's half of the pump ran with the IOP not held";
+}
+
+namespace
+{
+	// The IOP's clock (the fake slices' running total) when a deferred pump item was applied, and the thread that did it.
+	std::atomic<u64> s_advance_at_sif_item{~0ull};
+	std::atomic<u32> s_sif_items{0};
+	std::atomic<u32> s_sif_channel_mask{0};
+	std::thread::id s_sif_item_thread;
+
+	// A table whose SifPump action does what the real one does (the IOP posts the pump to the EE and blocks until it
+	// has run), with LoggedPump standing in for the transfer.
+	const IopThread::E2IActions kDeferredPumpActions = {
+		[] {},
+		[] {},
+		[] {},
+		[] {},
+		[](u32) {},
+		[](u32) {},
+		[](u32 channel) {
+			s_advance_at_sif_item.store(s_fake_advance.load());
+			s_sif_item_thread = std::this_thread::get_id();
+			s_sif_channel_mask.fetch_or(1u << channel);
+			s_sif_items.fetch_add(1);
+			IopThread::RunSifPumpOnEe(&LoggedPump);
+		},
+	};
+
+	class DeferredPumpActions
+	{
+	public:
+		DeferredPumpActions()
+		{
+			s_advance_at_sif_item = ~0ull;
+			s_sif_items = 0;
+			s_sif_channel_mask = 0;
+			m_previous = IopThread::SetE2IActionsForTests(&kDeferredPumpActions);
+		}
+		~DeferredPumpActions() { IopThread::SetE2IActionsForTests(m_previous); }
+
+	private:
+		const IopThread::E2IActions* m_previous;
+	};
+} // namespace
+
+TEST_F(ThreadedMachine, WithTheDeferralOffAnEeStartedSifPumpIsNotDeferred)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = false;
+	Recorder recorder;
+
+	EXPECT_FALSE(IopThread::DeferSifPump(0));
+	EXPECT_FALSE(IopThread::DeferSifPump(1));
+	EXPECT_EQ(IopThread::GetStats().items_applied, 0u);
+	EXPECT_TRUE(recorder.Items().empty());
+}
+
+TEST_F(ThreadedMachine, ADeferredSifPumpPostsAnItemAndTheEeDoesNotHoldTheIop)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true;
+	Recorder recorder;
+
+	// The IOP is busy in a slice that will not end, so a hold would not be granted until it did.
+	s_hold_slice = true;
+	EventTest(1000);
+	ASSERT_TRUE(WaitFor([] { return s_slices_started.load() >= 1; }));
+	cpuRegs.cycle += 200;
+
+	const auto begin = std::chrono::steady_clock::now();
+	EXPECT_TRUE(IopThread::DeferSifPump(0));
+	EXPECT_TRUE(IopThread::DeferSifPump(1));
+	EXPECT_LT(std::chrono::steady_clock::now() - begin, 1s) << "the EE waited for the IOP";
+	EXPECT_EQ(IopThread::GetStats().hold_requests, 0u) << "a deferred pump takes no hold";
+	EXPECT_TRUE(recorder.Items().empty()) << "an item was applied while the IOP was inside a slice";
+
+	s_hold_slice = false;
+	ASSERT_TRUE(WaitFor([&] {
+		std::lock_guard lock(s_seen_mutex);
+		return s_seen && s_seen->size() >= 2;
+	}));
+	std::lock_guard lock(s_seen_mutex);
+	ASSERT_EQ(recorder.Items().size(), 2u);
+	EXPECT_STREQ(recorder.Items()[0].what, "sif_pump");
+	EXPECT_EQ(recorder.Items()[0].arg, 0u);
+	EXPECT_STREQ(recorder.Items()[1].what, "sif_pump");
+	EXPECT_EQ(recorder.Items()[1].arg, 1u);
+	for (const Applied& item : recorder.Items())
+		EXPECT_NE(item.thread, std::this_thread::get_id()) << item.what << " ran on the EE thread";
+}
+
+TEST_F(ThreadedMachine, ADeferredSifPumpRunsWhenTheIopReachesTheStampAndThePumpRunsOnTheEeThread)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true;
+	DeferredPumpActions actions;
+	PumpLog log;
+	s_pump_log = &log;
+
+	cpuRegs.cycle += 40000;
+	const u64 stamp = cpuRegs.cycle;
+	ASSERT_TRUE(IopThread::DeferSifPump(1));
+	// The EE serves the IOP's request at its next drain, here the WaitFor loop's.
+	ASSERT_TRUE(WaitFor([&] {
+		std::lock_guard lock(log.mutex);
+		return !log.order.empty();
+	}));
+	ASSERT_TRUE(WaitFor([] { return s_sif_items.load() >= 1; }));
+	s_pump_log = nullptr;
+
+	ASSERT_NE(s_advance_at_sif_item.load(), ~0ull);
+	EXPECT_GE(static_cast<s64>(start + s_advance_at_sif_item.load() - stamp), 0) << "the item was applied before the IOP's clock reached its stamp";
+	EXPECT_NE(s_sif_item_thread, std::this_thread::get_id());
+	EXPECT_EQ(s_sif_channel_mask.load(), 2u);
+	ASSERT_EQ(log.order.size(), 1u);
+	EXPECT_EQ(log.pump_thread, std::this_thread::get_id()) << "the pump touches both machines: it runs on the EE thread";
+	EXPECT_TRUE(log.allowed_inside);
+	const IopThread::Stats stats = IopThread::GetStats();
+	EXPECT_EQ(stats.calls_posted, 1u);
+	EXPECT_EQ(stats.calls_served, 1u);
+	EXPECT_EQ(stats.hold_requests, 0u);
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+TEST_F(ThreadedMachine, AHoldTakenWhileDeferredSifPumpsAreQueuedAppliesThemBeforeItIsGranted)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true;
+	DeferredPumpActions actions;
+	PumpLog log;
+	s_pump_log = &log;
+
+	// Two pumps queued, the IOP not yet at their stamps. A hold (a savestate, a pause, a settings change) catches the
+	// IOP up to the EE's cycle: each item then makes the IOP post a pump and block, and the EE, spinning in the
+	// hold, has to serve it, or the hold and the IOP wait for each other.
+	cpuRegs.cycle += 30000;
+	ASSERT_TRUE(IopThread::DeferSifPump(0));
+	cpuRegs.cycle += 30000;
+	ASSERT_TRUE(IopThread::DeferSifPump(1));
+	cpuRegs.cycle += 30000;
+	{
+		IopThread::VmHold hold(IopThread::HoldKind::Emulation);
+		EXPECT_EQ(IopThread::g_thread.HoldDepth(), 1u);
+		std::lock_guard lock(log.mutex);
+		EXPECT_EQ(log.order.size(), 2u) << "the hold was granted with a deferred pump still queued";
+	}
+	s_pump_log = nullptr;
+	EXPECT_EQ(s_sif_channel_mask.load(), 3u);
+	EXPECT_EQ(IopThread::GetStats().calls_served, 2u);
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+TEST_F(ThreadedMachine, TheRealPumpsRunOnTheEeThreadWhenTheIopReachesThemAndTakeNoHold)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true;
+	cpuRegs.cycle += 5000; // the IOP is behind
+
+	// The real table, the real pumps: the EE's SIF0 and SIF1 starts post items and go on, the IOP applies them and
+	// has the EE run SIF0DmaFromEe and SIF1DmaFromEe. The pump asserts the IOP side (a CallOnEE function on the EE
+	// thread) and the EE side (not the IOP thread) of every step it takes.
+	IopBridge::Sif0Pump();
+	IopBridge::Sif1Pump();
+	EXPECT_EQ(IopThread::GetStats().hold_requests, 0u);
+	ASSERT_TRUE(WaitFor([] { return IopThread::GetStats().calls_served >= 2; }));
+
+	const IopThread::Stats stats = IopThread::GetStats();
+	EXPECT_EQ(stats.calls_posted, 2u);
+	EXPECT_EQ(stats.calls_served, 2u);
+	EXPECT_EQ(stats.sif_ee_pumps, 0u) << "a deferred pump is not a pump that held the IOP";
+	EXPECT_EQ(stats.emu_hold_requests, 0u);
+	EXPECT_EQ(s_violations.load(), 0u);
+}
+
+TEST_F(ThreadedMachine, NothingIsDeferredWhileTheIopIsHeld)
+{
+	REQUIRE_ARM64_HOST();
+	Reset();
+	StartThreaded();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true;
+	Recorder recorder;
+	cpuRegs.cycle += 5000;
+	{
+		IopThread::VmHold hold(IopThread::HoldKind::Emulation);
+		EXPECT_FALSE(IopThread::DeferSifPump(0)) << "the IOP is stopped: the pump runs in place";
+	}
+	EXPECT_TRUE(recorder.Items().empty());
 }
 
 TEST_F(ThreadedMachine, AStartedThreadTakesItsPositionFromTheBooks)

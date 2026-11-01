@@ -436,6 +436,7 @@ void Pcsx2Config::SpeedhackOptions::LoadSave(SettingsWrapper& wrap)
 	SettingsWrapBitBool(vu1Instant);
 	SettingsWrapBitBool(iopThread);
 	SettingsWrapBitBool(iopThreadLockstep);
+	SettingsWrapBitBool(iopThreadDeferSif);
 	SettingsWrapEntry(iopThreadLag);
 	SettingsWrapBitBool(DynamicEECycleRate);
 	SettingsWrapEntry(DynamicEECycleRateTrace);

@@ -27,6 +27,7 @@ namespace
 		[] {},
 		[](u32) {},
 		[](u32) {},
+		[](u32) {},
 	};
 
 	class FpcrGuard

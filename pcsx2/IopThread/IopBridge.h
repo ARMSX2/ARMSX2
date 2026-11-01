@@ -174,6 +174,11 @@ namespace IopBridge
 	// The pump runs on the EE thread and moves data on both sides, so the IOP is held while it does. In
 	// Threaded this is a rendezvous: the EE spins until the IOP has run up to the EE's cycle and
 	// stopped, then runs the combined pump. The pumps the EE starts are counted.
+	//
+	// SIF0 and SIF1 can instead be deferred (EmuConfig.Speedhacks.iopThreadDeferSif in Threaded, and always in
+	// Lockstep with a skew): the EE posts an item stamped with its cycle and goes on, and the IOP runs the
+	// same pump (SIF0DmaFromEe / SIF1DmaFromEe) through CallOnEE when its clock reaches the stamp. See
+	// IopThread::DeferSifPump. SIF2 always holds.
 
 	__forceinline_odr void CountSifPump()
 	{
@@ -181,8 +186,30 @@ namespace IopBridge
 			IopThread::g_thread.CountSifPump();
 	}
 
-	__forceinline_odr void Sif0Pump() { EmuHold hold; CountSifPump(); SIF0Dma(); }
-	__forceinline_odr void Sif1Pump() { EmuHold hold; CountSifPump(); SIF1Dma(); }
+	__forceinline_odr void Sif0Pump()
+	{
+		if (IopThread::GetMode() != IopThreadMode::Off) [[unlikely]]
+		{
+			if (IopThread::DeferSifPump(0))
+				return;
+		}
+		EmuHold hold;
+		CountSifPump();
+		SIF0DmaFromEe();
+	}
+
+	__forceinline_odr void Sif1Pump()
+	{
+		if (IopThread::GetMode() != IopThreadMode::Off) [[unlikely]]
+		{
+			if (IopThread::DeferSifPump(1))
+				return;
+		}
+		EmuHold hold;
+		CountSifPump();
+		SIF1DmaFromEe();
+	}
+
 	__forceinline_odr void Sif2Pump() { EmuHold hold; CountSifPump(); SIF2Dma(); }
 
 	// ---- The EE reads and writes IOP address space -------------------------------------------

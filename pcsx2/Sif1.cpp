@@ -335,6 +335,17 @@ __fi void  EEsif1Interrupt()
 	sif1ch.chcr.STR = false;
 }
 
+// The part of the EE's start that has an effect on the IOP's side of the machine: the EE side is marked busy
+// (an IOP-started pump moves the EE's data into IOP RAM only while it is) and the pump runs. See SIF0DmaFromEe.
+// The F240 bit is cleared again at the end of SIF1Dma, except when SIF1Dma returns early because the DMAC's
+// stall control still holds the transfer; that is the case before and after this function existed.
+__fi void SIF1DmaFromEe()
+{
+	SharedWord::FetchOr(psHu32(SBUS_F240), 0x4000u);
+	sif1.ee.busy = true;
+	SIF1Dma();
+}
+
 // Do almost exactly the same thing as psxDma10 in IopDma.cpp.
 // Main difference is this checks for iop, where psxDma10 checks for ee.
 __fi void dmaSIF1()
@@ -345,9 +356,6 @@ __fi void dmaSIF1()
 	{
 		SIF_LOG("warning, sif1.fifoReadPos != sif1.fifoWritePos");
 	}
-
-	SharedWord::FetchOr(psHu32(SBUS_F240), 0x4000u);
-	sif1.ee.busy = true;
 
 	CPU_SET_DMASTALL(DMAC_SIF1, false);
 	// Okay, this here is needed currently (r3644).
@@ -370,6 +378,7 @@ __fi void dmaSIF1()
 		}
 	}
 
+	// The F240 busy bit and sif1.ee.busy are set by SIF1DmaFromEe, where the pump starts.
 	IopBridge::Sif1Pump();
 
 }

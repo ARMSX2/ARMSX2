@@ -112,6 +112,11 @@
 //  - A missed wake-up is recovered by the spin that follows it (above).
 //  - In Lockstep the IOP never waits on the EE at all: it calls EE code directly while the EE is
 //    in the handoff.
+//  - A deferred SIF pump (a SifPump item, IopThreadVm.h) is one more CallOnEE, made from ApplyDueItems on
+//    the IOP's own turn: from the pacing loop, or from the catch-up of a hold, which the EE spends in the
+//    hold's spin, draining. The EE posts the item and goes on; it never waits for the IOP to apply it. A
+//    hold that the EE takes while such an item is queued has its catch-up apply the item first (the stamp
+//    is at or before the hold's cycle), so every item is gone by the time the hold is granted.
 //
 // A function given to CallOnEE therefore must not wait for the IOP. That is a rule on callers.
 

@@ -1164,6 +1164,73 @@ TEST_P(SifPump, MatchesRecordedBehaviour)
 					  << Row(s.name, r.h, r.summary);
 }
 
+// The IOP thread can run the EE's pump later than the transfer started (iopThreadDeferSif), and a pump can find the
+// transfer already finished. It must then change nothing the rest of the machine can see. The only fields it writes are
+// the two cycle counters, which a pump zeroes when it starts and reads only after it has added to them; the F240 bits it
+// clears are already clear.
+namespace
+{
+	class SifPumpIdle : public ::testing::Test
+	{
+	protected:
+		static void SetUpTestSuite() { s_ready = BringUpMachine(); }
+		static void TearDownTestSuite()
+		{
+			TearDownMachine();
+			s_ready = false;
+		}
+		void SetUp() override { ASSERT_TRUE(s_ready) << "could not allocate the EE and IOP RAM blocks"; }
+		static bool s_ready;
+	};
+	bool SifPumpIdle::s_ready = false;
+
+	// The digest of everything but the RAMs, with the cycle counters of both sides taken out.
+	u64 DigestWithoutCycleCounters()
+	{
+		const s32 c[6] = {static_cast<s32>(sif0.ee.cycles), static_cast<s32>(sif0.iop.cycles), static_cast<s32>(sif1.ee.cycles),
+			static_cast<s32>(sif1.iop.cycles), static_cast<s32>(sif2.ee.cycles), static_cast<s32>(sif2.iop.cycles)};
+		sif0.ee.cycles = sif0.iop.cycles = sif1.ee.cycles = sif1.iop.cycles = sif2.ee.cycles = sif2.iop.cycles = 0;
+		const u64 digest = StepDigest();
+		sif0.ee.cycles = c[0];
+		sif0.iop.cycles = c[1];
+		sif1.ee.cycles = c[2];
+		sif1.iop.cycles = c[3];
+		sif2.ee.cycles = c[4];
+		sif2.iop.cycles = c[5];
+		return digest;
+	}
+} // namespace
+
+TEST_F(SifPumpIdle, APumpAfterTheTransferFinishedChangesNothingTheMachineCanSee)
+{
+	for (const Chan chan : {Chan::Sif0, Chan::Sif1})
+	{
+		for (const u32 words : {4u, 129u, 4096u})
+		{
+			for (const Start start : {Start::EeFirst, Start::IopFirst})
+			{
+				const Script s = Make(chan, start, {words}, Term::Both);
+				const RunResult r = RunScript(s);
+				ExpectFinished(s, r.built);
+				ASSERT_FALSE(HasFatalFailure()) << s.name;
+
+				const u64 before = DigestWithoutCycleCounters();
+				const u64 eeram = HashBytes(eeMem->Main, Ps2MemSize::ExposedRam);
+				const u64 iopram = HashBytes(iopMem->Main, Ps2MemSize::ExposedIopRam);
+
+				if (chan == Chan::Sif0)
+					SIF0Dma();
+				else
+					SIF1Dma();
+
+				EXPECT_EQ(before, DigestWithoutCycleCounters()) << s.name << ": the extra pump changed the machine";
+				EXPECT_EQ(eeram, HashBytes(eeMem->Main, Ps2MemSize::ExposedRam)) << s.name;
+				EXPECT_EQ(iopram, HashBytes(iopMem->Main, Ps2MemSize::ExposedIopRam)) << s.name;
+			}
+		}
+	}
+}
+
 INSTANTIATE_TEST_SUITE_P(Scripts, SifPump, ::testing::ValuesIn(AllScripts()),
 	[](const ::testing::TestParamInfo<Script>& info) { return info.param.name; });
 INSTANTIATE_TEST_SUITE_P(Sweep, SifPump, ::testing::ValuesIn(SweepScripts()),

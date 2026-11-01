@@ -447,6 +447,7 @@ TEST(IopThreadSetting, TheKeysLiveInTheSpeedhacksSectionAndRoundTrip)
 	Pcsx2Config::SpeedhackOptions hacks;
 	hacks.iopThread = true;
 	hacks.iopThreadLockstep = true;
+	hacks.iopThreadDeferSif = true;
 	hacks.iopThreadLag = 9000;
 
 	MemorySettingsInterface si;
@@ -455,18 +456,21 @@ TEST(IopThreadSetting, TheKeysLiveInTheSpeedhacksSectionAndRoundTrip)
 		hacks.LoadSave(wrap);
 	}
 
-	bool enabled = false, lockstep = false;
+	bool enabled = false, lockstep = false, defer_sif = false;
 	s32 lag = 0;
 	ASSERT_TRUE(si.GetBoolValue("EmuCore/Speedhacks", "iopThread", &enabled));
 	ASSERT_TRUE(si.GetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", &lockstep));
+	ASSERT_TRUE(si.GetBoolValue("EmuCore/Speedhacks", "iopThreadDeferSif", &defer_sif));
 	ASSERT_TRUE(si.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", &lag));
 	EXPECT_TRUE(enabled);
 	EXPECT_TRUE(lockstep);
+	EXPECT_TRUE(defer_sif);
 	EXPECT_EQ(lag, 9000);
 
 	const Pcsx2Config::SpeedhackOptions loaded = LoadHacks(si);
 	EXPECT_TRUE(loaded.iopThread);
 	EXPECT_TRUE(loaded.iopThreadLockstep);
+	EXPECT_TRUE(loaded.iopThreadDeferSif);
 	EXPECT_EQ(loaded.iopThreadLag, 9000);
 }
 
@@ -475,9 +479,11 @@ TEST(IopThreadSetting, TheKeysAreReadFromTheFile)
 	MemorySettingsInterface si;
 	si.SetBoolValue("EmuCore/Speedhacks", "iopThread", true);
 	si.SetBoolValue("EmuCore/Speedhacks", "iopThreadLockstep", true);
+	si.SetBoolValue("EmuCore/Speedhacks", "iopThreadDeferSif", true);
 	const Pcsx2Config::SpeedhackOptions hacks = LoadHacks(si);
 	EXPECT_TRUE(hacks.iopThread);
 	EXPECT_TRUE(hacks.iopThreadLockstep);
+	EXPECT_TRUE(hacks.iopThreadDeferSif);
 }
 
 TEST(IopThreadSetting, ASetFlagThatTheFileLeavesOutStaysSetLikeTheOtherSpeedhacks)
@@ -504,6 +510,10 @@ TEST(IopThreadSetting, EachKeyTakesPartInEquality)
 	b.iopThreadLockstep = true;
 	EXPECT_TRUE(b != base);
 
+	Pcsx2Config::SpeedhackOptions d = base;
+	d.iopThreadDeferSif = true;
+	EXPECT_TRUE(d != base);
+
 	Pcsx2Config::SpeedhackOptions c = base;
 	c.iopThreadLag = base.iopThreadLag + 1;
 	EXPECT_TRUE(c != base);
@@ -516,9 +526,11 @@ TEST(IopThreadSetting, DisableAllTurnsTheFeatureOff)
 	Pcsx2Config::SpeedhackOptions hacks;
 	hacks.iopThread = true;
 	hacks.iopThreadLockstep = true;
+	hacks.iopThreadDeferSif = true;
 	hacks.DisableAll();
 	EXPECT_FALSE(hacks.iopThread);
 	EXPECT_FALSE(hacks.iopThreadLockstep);
+	EXPECT_FALSE(hacks.iopThreadDeferSif);
 }
 
 TEST(IopThreadSetting, NoOtherSpeedhackBitMoved)
@@ -541,6 +553,15 @@ TEST(IopThreadSetting, NoOtherSpeedhackBitMoved)
 	EXPECT_EQ(only([](auto& h) { h.vu1Instant = true; }), 1u << 5);
 	EXPECT_EQ(only([](auto& h) { h.iopThread = true; }), 1u << 6);
 	EXPECT_EQ(only([](auto& h) { h.iopThreadLockstep = true; }), 1u << 7);
+	EXPECT_EQ(only([](auto& h) { h.DynamicEECycleRate = true; }), 1u << 8);
+	EXPECT_EQ(only([](auto& h) { h.iopThreadDeferSif = true; }), 1u << 9);
+}
+
+TEST(IopThreadSetting, TheSifDeferralIsOffByDefaultAndHasNoGameDatabaseName)
+{
+	EXPECT_FALSE(Pcsx2Config::SpeedhackOptions().iopThreadDeferSif);
+	// INI only: not one of the SpeedHack ids a game entry or a per-game override can carry.
+	EXPECT_FALSE(Pcsx2Config::SpeedhackOptions::ParseSpeedHackName("iopThreadDeferSif").has_value());
 }
 
 TEST(IopThreadGameDB, TheHackHasAnIniNameAndAGameDatabaseName)

@@ -103,6 +103,7 @@ namespace IopThread
 		inline constexpr u16 VBlankEnd = 3; // psxVBlankEnd()
 		inline constexpr u16 IopIrq = 4; // iopIntcIrq(arg)
 		inline constexpr u16 Call = 5; // the job whose number is arg (E2IJob)
+		inline constexpr u16 SifPump = 6; // the pump of an EE-started SIF DMA, deferred (DeferSifPump); arg is the channel, 0 for SIF0 and 1 for SIF1
 	} // namespace E2IKind
 
 	/// The once-a-frame jobs the EE runs for IOP devices.
@@ -123,6 +124,9 @@ namespace IopThread
 		void (*vblank_end)();
 		void (*iop_irq)(u32 line);
 		void (*job)(u32 job);
+		/// Last, so a table written before the kind existed is still a valid initializer. A SifPump item finds
+		/// it null only in a table that never posts one.
+		void (*sif_pump)(u32 channel);
 	};
 	extern const E2IActions kRealE2IActions;
 
@@ -137,6 +141,17 @@ namespace IopThread
 	/// applied it. With no IOP thread (a mode switch or shutdown in progress, or Off) the item is applied
 	/// here, directly. EE thread only.
 	void ApplyOnIop(u16 kind, u32 arg = 0);
+
+	/// EE thread. The EE has started a SIF DMA (SIF0 or SIF1, `channel` 0 or 1) and is about to run its pump. If
+	/// the IOP thread is to defer pumps, posts a SifPump item stamped with the EE's cycle and returns true: the
+	/// caller must not run the pump. The IOP applies the item when its clock reaches the stamp and runs the pump
+	/// through CallOnEE (RunSifPumpOnEe), so the EE blocks for nothing and the data moves at the IOP's time of the
+	/// start. False when the caller should run the pump itself, holding the IOP as before: no IOP thread, the IOP
+	/// already stopped (a hold, inside a CallOnEE function), or deferral not wanted.
+	///
+	/// Deferral is wanted in Threaded when EmuConfig.Speedhacks.iopThreadDeferSif is set, and in Lockstep when
+	/// it is set too (the item is then applied at once, which is Off's order).
+	bool DeferSifPump(u32 channel);
 
 	/// Any thread. For a host thread that calls into IOP state directly and cannot take a hold (the
 	/// physical-disc thread's new-disc callback). With an IOP thread running, queues `command` for it and

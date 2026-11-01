@@ -183,6 +183,12 @@ extern void SIF2Dma();
 
 extern void dmaSIF0();
 extern void dmaSIF1();
+
+// What the EE's start of a transfer does once the pump may run: mark the EE side busy and run the pump. dmaSIF0
+// and dmaSIF1 reach them through IopBridge::Sif0Pump/Sif1Pump, directly with the IOP held, or later as a queued
+// item when the IOP thread defers the pump (IopThread::DeferSifPump).
+extern void SIF0DmaFromEe();
+extern void SIF1DmaFromEe();
 extern void dmaSIF2();
 
 extern void EEsif0Interrupt();
