@@ -1087,6 +1087,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               frame N, as a settings dialog does on a paused VM, and log the mode and the thread before and after as PAUSE-TOGGLE:.\n");
 	std::fprintf(stderr, "  --iop-min-slice N: Threaded IOP thread: S_min, the budget in EE cycles the IOP lets build up before it runs a\n");
 	std::fprintf(stderr, "               slice (design 5.3). Default 0 (run whenever there is budget). A measurement knob, not a setting.\n");
+	std::fprintf(stderr, "  --iop-lockstep-skew N: Lockstep IOP thread (iopThread and iopThreadLockstep on): keep the IOP N EE cycles behind the EE\n");
+	std::fprintf(stderr, "               at every handoff instead of catching it up, apply EE-to-IOP items when the IOP's clock reaches their stamp, and\n");
+	std::fprintf(stderr, "               defer EE-started SIF0/SIF1 pumps. 0 (default) is plain Lockstep. Deterministic. A test knob, not a setting;\n");
+	std::fprintf(stderr, "               not for runs that save or load states.\n");
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
 	std::fprintf(stderr, "  --iop-idle-spin-us N: Threaded IOP thread: how long an idle IOP watches the watermark before it sleeps, in\n");
 	std::fprintf(stderr, "               microseconds (0 sleeps at once). Default: the built-in window. A measurement knob, not a setting.\n");
@@ -1529,6 +1533,17 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				IopThread::SetThreadedMinSlice(v.value());
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--iop-lockstep-skew"))
+			{
+				const auto v = StringUtil::FromChars<s64>(argv[++i]);
+				if (!v.has_value() || v.value() < 0 || v.value() > IopThread::kMaxLag)
+				{
+					Console.Error(fmt::format("--iop-lockstep-skew expects a number of EE cycles, 0 to {}.", IopThread::kMaxLag));
+					return false;
+				}
+				IopThread::SetLockstepSkew(v.value());
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-idle-spin-us"))

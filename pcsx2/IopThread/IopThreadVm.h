@@ -246,6 +246,20 @@ namespace IopThread
 	/// The minimum Threaded slice size (S_min) for the next Start(); 0 by default. Not a setting.
 	void SetThreadedMinSlice(s32 min_slice);
 	s32 ThreadedMinSlice();
+	/// Lockstep, for testing only (eerunner --iop-lockstep-skew; not a setting). The IOP is kept `cycles` EE cycles behind
+	/// the EE at every handoff instead of being brought up to it, E2I items are applied when the IOP's clock reaches their
+	/// stamp, and EE-started SIF0/SIF1 pumps are deferred as with iopThreadDeferSif. Every run of a state with the same
+	/// skew is the same run. 0, the default, is Lockstep as before, bit for bit. Takes effect at the next Start() of a Lockstep
+	/// thread; clamped to 0..kMaxLag.
+	///
+	/// What stays direct: the EE's reads and writes of IOP address space and its SIF2 pumps still touch the IOP where it
+	/// is, D behind, and the SBUS words are live. The mode is for states whose play makes none of them. Do not take or load
+	/// a savestate, or change settings, during a skewed run: the items still queued for the IOP are not part of a state.
+	void SetLockstepSkew(s64 cycles);
+	s64 LockstepSkewSetting();
+	/// The skew the running Lockstep thread has, 0 otherwise. What the EE core's event test reads.
+	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkew()); }
+
 	/// The idle-watch window for the next Start(): how long an idle IOP watches the watermark before it sleeps
 	/// (Params::idle_spin_ns; default kDefaultIdleSpinNs). Not a setting.
 	void SetThreadedIdleSpinNs(u32 ns);

@@ -107,6 +107,7 @@ namespace IopThread
 		m_mode = m_params.mode;
 		m_lag = m_params.lag;
 		m_min_slice = std::max<s32>(m_params.min_slice, 0);
+		m_lockstep_skew = (m_mode == IopThreadMode::Lockstep) ? std::clamp<s64>(m_params.lockstep_skew, 0, kMaxLag) : 0;
 		m_idle_spin_ns = m_params.idle_spin_ns;
 #if defined(__linux__)
 		m_use_membarrier = (m_params.sleep_barrier == SleepBarrier::Auto) && RegisterMembarrier();
@@ -205,6 +206,7 @@ namespace IopThread
 		m_running = false;
 		m_iop_tid = std::thread::id();
 		m_mode = IopThreadMode::Off;
+		m_lockstep_skew = 0;
 	}
 
 	void Thread::ThreadMain()
@@ -892,9 +894,16 @@ namespace IopThread
 
 				if (m_ls.kind == kLsRunSlice)
 				{
-					const u64 reached = m_params.run_slice(m_iop_pos, m_ls.arg);
-					pxAssertMsg(reached >= m_iop_pos, "run_slice moved the IOP backwards");
-					m_iop_pos = std::max(reached, m_iop_pos);
+					if (m_lockstep_skew > 0)
+					{
+						LockstepSkewedSlice(m_ls.arg);
+					}
+					else
+					{
+						const u64 reached = m_params.run_slice(m_iop_pos, m_ls.arg);
+						pxAssertMsg(reached >= m_iop_pos, "run_slice moved the IOP backwards");
+						m_iop_pos = std::max(reached, m_iop_pos);
+					}
 					m_iop.pos_pub.store(m_iop_pos, std::memory_order_relaxed);
 					m_ls.result = m_iop_pos;
 				}
@@ -928,6 +937,43 @@ namespace IopThread
 				return m_ee.req_seq.load(std::memory_order_seq_cst) != done || m_ee.shutdown.load(std::memory_order_seq_cst);
 			});
 		}
+	}
+
+	// The Lockstep handoff with a skew. The IOP runs towards `ee_cycle - skew`, one slice per item, as the Threaded loop
+	// does: it applies the items that are due, runs to the next item's stamp or to the goal, whichever comes first, and
+	// repeats. So an item takes effect when the IOP's own clock reaches its stamp, and the IOP ends the handoff
+	// at the goal, D behind the EE, plus the overshoot of its last block (which the next handoff takes into account:
+	// it runs from where the IOP really is). Until the EE has run `skew` cycles from where the IOP started there is no
+	// budget, and the IOP does not run.
+	//
+	// The one extra slice with no budget is the pending-event case of the pacing loop (has_event): the IOP has work of
+	// its own (an interrupt) even though the clock has nothing to give it, once per handoff, as in Off.
+	u64 Thread::LockstepSkewedSlice(u64 ee_cycle)
+	{
+		const s64 goal = static_cast<s64>(ee_cycle) - m_lockstep_skew;
+		bool event_slice_run = false;
+		for (;;)
+		{
+			ApplyDueItems();
+
+			s64 stop = goal;
+			const u64 next = m_e2i.NextStamp();
+			if (next != StampedRing<kE2IRingCapacity>::kNoStamp && static_cast<s64>(next) < stop)
+				stop = static_cast<s64>(next);
+
+			if (stop - static_cast<s64>(m_iop_pos) <= 0)
+			{
+				if (event_slice_run || !m_params.has_event || !m_params.has_event())
+					break;
+				event_slice_run = true;
+			}
+
+			const u64 reached = m_params.run_slice(m_iop_pos, static_cast<u64>(stop));
+			pxAssertMsg(reached >= m_iop_pos, "run_slice moved the IOP backwards");
+			m_iop_pos = std::max(reached, m_iop_pos);
+			m_slices.Add();
+		}
+		return m_iop_pos;
 	}
 
 	Thread::Ticket Thread::PostHostCommand(HostCommandQueue::Command command)

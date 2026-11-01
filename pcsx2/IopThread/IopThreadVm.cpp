@@ -52,6 +52,9 @@ namespace IopThread
 		// Minimum Threaded slice size (testing knob); 0 runs a slice whenever there is budget.
 		s32 s_min_slice = 0;
 
+		// The testing knob for Lockstep's skew (Params::lockstep_skew).
+		s64 s_lockstep_skew = 0;
+
 		// The testing knob for the idle-watch window (Params::idle_spin_ns).
 		u32 s_idle_spin_ns = kDefaultIdleSpinNs;
 
@@ -156,6 +159,15 @@ namespace IopThread
 			else
 			{
 				params.run_slice = RunIopSlice;
+				if (s_lockstep_skew > 0)
+				{
+					// The skewed handoff runs to a target, not to what the EE's books say it owes, so it uses the
+					// Threaded slice (IOP-side only, EEsCycle untouched). RunLockstepSlice writes the books from the
+					// position the handoff returns.
+					params.lockstep_skew = s_lockstep_skew;
+					params.run_slice = RunIopSliceThreaded;
+					params.has_event = [] { return iopEventAction; };
+				}
 			}
 			params.apply_item = [](const E2IItem& item) { ApplyE2IItem(item, s_e2i_actions ? *s_e2i_actions : kRealE2IActions); };
 			params.ee_cycle = [] { return static_cast<u64>(cpuRegs.cycle); };
@@ -546,11 +558,15 @@ namespace IopThread
 			{
 				if (g_thread.PostE2I(stamp, kind, arg))
 				{
-					// The EE waits here until the IOP thread has applied the item, so it takes effect at this
-					// point of the EE's execution and not later.
-					g_thread.LockstepApplyUpTo(stamp);
+					// With a skew the item waits in the queue for the IOP's clock to reach the stamp (the handoff
+					// applies it); the skew is capped at kMaxLag so the ring cannot fill. Without one the EE waits here
+					// until the IOP thread has applied the item, so it takes effect at this point of the EE's
+					// execution and not later.
+					if (g_thread.LockstepSkew() == 0)
+						g_thread.LockstepApplyUpTo(stamp);
 					return;
 				}
+				pxAssertMsg(g_thread.LockstepSkew() == 0, "an EE-to-IOP item could not be queued under a Lockstep skew");
 			}
 			else
 			{
@@ -574,11 +590,14 @@ namespace IopThread
 	bool DeferSifPump(u32 channel)
 	{
 		pxAssertMsg(channel <= 1, "only SIF0 and SIF1 pumps are deferred");
-		if (s_mode == IopThreadMode::Off || !EmuConfig.Speedhacks.iopThreadDeferSif)
+		if (s_mode == IopThreadMode::Off)
 			return false;
 		// No thread, or the IOP is already stopped (a hold, a CallOnEE function): nothing to wait for, so the
 		// caller's pump runs in place, exactly as with the setting off.
 		if (!g_thread.IsRunning() || g_thread.IopIsStopped())
+			return false;
+		// A Lockstep skew always defers: pumping at once would hand the IOP the data D cycles early.
+		if (!EmuConfig.Speedhacks.iopThreadDeferSif && g_thread.LockstepSkew() == 0)
 			return false;
 		// Stamped with the EE's cycle at the moment Off would have run the pump. Lockstep applies it before
 		// this returns (ApplyOnIop waits for the IOP thread), which is Off's order.
@@ -603,7 +622,12 @@ namespace IopThread
 
 	void RunLockstepSlice()
 	{
-		g_thread.LockstepRunSlice(cpuRegs.cycle);
+		const u64 reached = g_thread.LockstepRunSlice(cpuRegs.cycle);
+		// With a skew the slice did not touch the books (it ran to a target), so they are written from where the IOP
+		// is: what it is owed is what the EE has run beyond its position, about the skew. Without one the slice has
+		// left them where Off does.
+		if (g_thread.LockstepSkew() > 0)
+			EEsCycle = static_cast<s32>(cpuRegs.cycle - reached);
 
 		// A pause the IOP asked for from inside the slice: the CPU thread makes it, and leaves its
 		// execution loop, exactly where Off would have made it.
@@ -683,6 +707,16 @@ namespace IopThread
 	s32 ThreadedMinSlice()
 	{
 		return s_min_slice;
+	}
+
+	void SetLockstepSkew(s64 cycles)
+	{
+		s_lockstep_skew = std::clamp<s64>(cycles, 0, kMaxLag);
+	}
+
+	s64 LockstepSkewSetting()
+	{
+		return s_lockstep_skew;
 	}
 
 	void SetThreadedIdleSpinNs(u32 ns)

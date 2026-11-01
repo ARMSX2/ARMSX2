@@ -440,7 +440,12 @@ static __fi void iopRunSliceForEE()
 	EEsCycle += cpuRegs.cycle - EEoCycle;
 	EEoCycle = cpuRegs.cycle;
 
-	if (EEsCycle > 0)
+	// A Lockstep skew (testing only) keeps the IOP that many cycles behind, so what it is owed to run is the books
+	// less the skew. 0 for Off and Threaded, and for Lockstep without the knob.
+	s32 owed = EEsCycle;
+	if constexpr (M == IopThreadMode::Lockstep)
+		owed -= IopThread::LockstepSkewCycles();
+	if (owed > 0)
 		iopEventAction = true;
 
 	if constexpr (M == IopThreadMode::Lockstep)
@@ -475,15 +480,20 @@ static __fi void iopRunSliceForEE()
 
 // The EE sets when it comes back from how far behind the IOP is and when the IOP's next
 // event is due.
-static __fi void eeScheduleForIop()
+static __fi void eeScheduleForIop(s32 skew)
 {
 	const float mutiplier = static_cast<float>(PS2CLK) / static_cast<float>(PSXCLK);
 	// See R3000A.cpp:PSX_INT for the host-divergence rationale: cast the u32
 	// cycle delta to s32 *before* the float multiply.
 	const s32 iopCyclesUntilEvent = static_cast<s32>(psxRegs.iopNextEventCycle - psxRegs.cycle);
 	const int nextIopEventDeta = static_cast<s32>(iopCyclesUntilEvent * mutiplier);
+	// A Lockstep skew (testing only) keeps the IOP `skew` cycles behind on purpose, which is not the IOP running late:
+	// it is owed what the books say less the skew, and its next event comes that much later in the EE's time. Without
+	// this the EE would find the IOP "way behind" at every event test and look again every 48 cycles.
+	const s32 owed = EEsCycle - skew;
+
 	// 8 or more cycles behind and there's an event scheduled
-	if (EEsCycle >= nextIopEventDeta)
+	if (owed >= nextIopEventDeta)
 	{
 		// EE's running way ahead of the IOP still, so we should branch quickly to give the
 		// IOP extra timeslices in short order.
@@ -493,7 +503,7 @@ static __fi void eeScheduleForIop()
 	else
 	{
 		// Otherwise IOP is caught up/not doing anything so we can wait for the next event.
-		cpuSetNextEventDelta(nextIopEventDeta - EEsCycle);
+		cpuSetNextEventDelta(nextIopEventDeta - owed);
 	}
 }
 
@@ -609,10 +619,12 @@ __fi void _cpuEventTest_Shared()
 	if constexpr (M == IopThreadMode::Threaded)
 	{
 		if (!IopThread::g_thread.IsRunning()) [[unlikely]]
-			eeScheduleForIop();
+			eeScheduleForIop(0);
 	}
+	else if constexpr (M == IopThreadMode::Lockstep)
+		eeScheduleForIop(IopThread::LockstepSkewCycles());
 	else
-		eeScheduleForIop();
+		eeScheduleForIop(0);
 
 	// Apply vsync and other counter nextCycles
 	cpuSetNextEvent(nextStartCounter, nextDeltaCounter);

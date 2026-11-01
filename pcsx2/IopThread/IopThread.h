@@ -233,6 +233,16 @@ namespace IopThread
 		/// spinning. 0, the default, runs whenever there is budget.
 		s32 min_slice = 0;
 
+		/// Lockstep only, and for tests: the IOP is kept this many EE cycles behind the EE at every handoff instead of
+		/// being brought up to it, and E2I items are applied when the IOP's own clock reaches their stamp instead of at
+		/// the moment they are posted. 0, the default, is Lockstep as it has always been. The caller clamps it to at most
+		/// kMaxLag so that the E2I ring cannot fill. Ignored in Threaded.
+		///
+		/// A handoff then runs `run_slice` towards min(EE cycle - skew, next item's stamp), item by item, so the budget
+		/// has to come from the target and not from the EE's books (the Threaded slice, not the Lockstep one); the
+		/// caller writes the books from the position the handoff returns.
+		s64 lockstep_skew = 0;
+
 		/// Where the clocks start: the EE's cycle (the first watermark) and the IOP's position.
 		u64 start_ee_cycle = 0;
 		u64 start_iop_pos = 0;
@@ -483,6 +493,11 @@ namespace IopThread
 		/// it may call EE code directly. Host commands run at the start of each handoff.
 		u64 LockstepRunSlice(u64 target);
 
+		/// The skew this Lockstep thread was started with (Params::lockstep_skew), 0 in Threaded and with no thread. With
+		/// a skew above 0, LockstepRunSlice(target) runs the IOP to target - skew, applying the items that fall due on the
+		/// way, and LockstepApplyUpTo() must not be used. EE thread.
+		s64 LockstepSkew() const { return m_lockstep_skew; }
+
 		/// Hands the IOP thread the order "apply every queued item stamped at or before `stamp`"
 		/// whatever the IOP's position, and waits. Returns how many it applied. Lockstep applies an
 		/// item at the EE's point of execution, which is when the EE posts it.
@@ -585,6 +600,7 @@ namespace IopThread
 		void RunOneSlice(u64 target);
 		void ApplyDueItems();
 		void ApplyKicks();
+		u64 LockstepSkewedSlice(u64 ee_cycle);
 		bool WaitForI2ESpace(u16 kind, u32 arg);
 		bool CallOnEEImpl(void (*fn)(void*), void* arg);
 		template <class Ready>
@@ -617,6 +633,7 @@ namespace IopThread
 		IopThreadMode m_mode = IopThreadMode::Off;
 		s64 m_lag = 0;
 		s64 m_min_slice = 0;
+		s64 m_lockstep_skew = 0; // Lockstep only; written by Start() and Stop()
 		u64 m_idle_spin_ns = 0;
 		bool m_use_membarrier = false; // the IOP's half of the sleep handshake
 

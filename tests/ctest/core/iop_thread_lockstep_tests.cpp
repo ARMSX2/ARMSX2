@@ -16,6 +16,7 @@
 #include "Config.h"
 #include "Counters.h"
 #include "IopHw.h"
+#include "IopThread/IopBridge.h"
 #include "IopThread/IopThreadMode.h"
 #include "IopThread/IopThreadVm.h"
 #include "R3000A.h"
@@ -385,6 +386,7 @@ namespace
 
 	std::vector<IopCall>* s_calls = nullptr;
 	bool s_pause_in_slice = false;
+	u64 s_iop_ran = 0; // EE cycles the fake IOP has run, overshoot included
 
 	// Runs the whole budget and a bit more, like the JIT finishing its last block, and gives the
 	// leftover (negative when it overshot) back, as ExecuteBlock does.
@@ -398,6 +400,8 @@ namespace
 			IopThread::RequestPause();
 		}
 		const s32 overshoot = (ee_cycles > 0) ? (ee_cycles % 23) : 0;
+		if (ee_cycles > 0)
+			s_iop_ran += static_cast<u64>(ee_cycles) + overshoot;
 		return ee_cycles > 0 ? -overshoot : ee_cycles;
 	}
 
@@ -642,6 +646,298 @@ TEST_F(LockstepMachine, TheIopIsHandedWhatTheEeOwesItAsItsBudgetInBothModes)
 		EXPECT_EQ(EEoCycle, cpuRegs.cycle) << "mode " << static_cast<int>(mode);
 		EXPECT_FALSE(iopEventAction) << "mode " << static_cast<int>(mode);
 	}
+}
+
+namespace
+{
+	// A skew is a testing knob that outlives the thread, so a test puts it back.
+	class SkewGuard
+	{
+	public:
+		~SkewGuard() { IopThread::SetLockstepSkew(0); }
+	};
+
+	// What the skewed IOP's clock was when an item was applied: where it started plus what the fake has run.
+	u64 s_probe_start = 0;
+	struct Probe
+	{
+		const char* what;
+		u32 arg;
+		u64 iop_pos;
+		std::thread::id thread;
+	};
+	std::vector<Probe>* s_probes = nullptr;
+
+	void ProbeItem(const char* what, u32 arg = 0)
+	{
+		if (s_probes)
+			s_probes->push_back({what, arg, s_probe_start + s_iop_ran, std::this_thread::get_id()});
+	}
+
+	const IopThread::E2IActions kProbeActions = {
+		[] { ProbeItem("hblank_start"); },
+		[] { ProbeItem("hblank_end"); },
+		[] { ProbeItem("vblank_start"); },
+		[] { ProbeItem("vblank_end"); },
+		[](u32 line) { ProbeItem("iop_irq", line); },
+		[](u32 job) { ProbeItem("job", job); },
+		[](u32 channel) { ProbeItem("sif_pump", channel); },
+	};
+
+	class ProbeGuard
+	{
+	public:
+		explicit ProbeGuard(std::vector<Probe>& probes, u64 start)
+		{
+			s_probes = &probes;
+			s_probe_start = start;
+			m_previous = IopThread::SetE2IActionsForTests(&kProbeActions);
+		}
+		~ProbeGuard()
+		{
+			IopThread::SetE2IActionsForTests(m_previous);
+			s_probes = nullptr;
+		}
+
+	private:
+		const IopThread::E2IActions* m_previous;
+	};
+} // namespace
+
+// The skewed handoff: the IOP is kept D cycles behind the EE, items are applied when the IOP's clock reaches their
+// stamp, and the EE's books follow the IOP's position. The fake IOP overshoots every slice by up to 22 cycles.
+TEST_F(LockstepMachine, ASkewKeepsTheIopThatManyCyclesBehindTheEeAtEveryHandoff)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 100000;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	IopThread::SetLockstepSkew(kSkew);
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle)); // 500 ahead of the EE
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	ASSERT_EQ(IopThread::g_thread.LockstepSkew(), kSkew);
+	ASSERT_EQ(IopThread::LockstepSkewCycles(), kSkew);
+
+	std::vector<IopCall> calls;
+	s_calls = &calls;
+	s_iop_ran = 0;
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	u32 handoffs_with_budget = 0;
+	for (u32 i = 0; i < 400; i++)
+	{
+		const size_t calls_before = calls.size();
+		cpuRegs.cycle += 3072;
+		test();
+		const s64 behind = static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos());
+		if (static_cast<s64>(cpuRegs.cycle) - static_cast<s64>(start) < kSkew)
+		{
+			// The EE has not yet run a skew's worth from where the IOP started: the IOP has nothing to run.
+			EXPECT_EQ(calls.size(), 0u) << "handoff " << i;
+			EXPECT_EQ(IopThread::g_thread.PublishedPos(), start) << "handoff " << i;
+		}
+		else
+		{
+			// At the goal, or past it by the overshoot of its last block (22 at most); never short of it.
+			EXPECT_GE(behind, kSkew - 22) << "handoff " << i;
+			EXPECT_LE(behind, kSkew) << "handoff " << i;
+		}
+		if (calls.size() != calls_before)
+			handoffs_with_budget++;
+		// The books say the same: the IOP is owed what the EE has run beyond it.
+		EXPECT_EQ(EEsCycle, static_cast<s32>(cpuRegs.cycle - IopThread::g_thread.PublishedPos())) << "handoff " << i;
+		EXPECT_EQ(EEoCycle, cpuRegs.cycle) << "handoff " << i;
+	}
+	s_calls = nullptr;
+	EXPECT_GT(handoffs_with_budget, 300u);
+	for (const IopCall& call : calls)
+		EXPECT_NE(call.thread, std::this_thread::get_id());
+}
+
+TEST_F(LockstepMachine, TwoSkewedRunsOfTheSameScriptAreTheSameRun)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	IopThread::SetLockstepSkew(50000);
+
+	std::vector<std::vector<s32>> budgets;
+	std::vector<std::vector<After>> afters;
+	for (int run = 0; run < 2; run++)
+	{
+		Reset();
+		IopThread::StopThread();
+		IopThread::ChooseMode();
+		IopThread::SyncThread();
+		ASSERT_TRUE(IopThread::LockstepActive());
+		std::vector<IopCall> calls;
+		s_calls = &calls;
+		const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+		std::vector<After> after;
+		static constexpr u32 kSteps[] = {1, 40, 3072, 17, 5000, 300, 3072, 3072, 8, 90, 2500, 1};
+		for (u32 i = 0; i < 240; i++)
+		{
+			cpuRegs.cycle += kSteps[i % std::size(kSteps)];
+			if (i % 7 == 3)
+				iopEventAction = true;
+			test();
+			after.push_back({EEsCycle, EEoCycle, iopEventAction, cpuRegs.nextEventCycle, psxRegs.iopNextEventCycle});
+		}
+		s_calls = nullptr;
+		std::vector<s32> b;
+		for (const IopCall& c : calls)
+			b.push_back(c.budget);
+		budgets.push_back(std::move(b));
+		afters.push_back(std::move(after));
+	}
+	EXPECT_EQ(budgets[0], budgets[1]);
+	ASSERT_EQ(afters[0].size(), afters[1].size());
+	for (size_t i = 0; i < afters[0].size(); i++)
+		EXPECT_TRUE(afters[0][i] == afters[1][i]) << "after event test " << i;
+}
+
+TEST_F(LockstepMachine, ASkewAppliesAnItemWhenTheIopsClockReachesItsStampAndNotWhenItIsPosted)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 60000;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	IopThread::SetLockstepSkew(kSkew);
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	s_iop_ran = 0;
+	std::vector<Probe> probes;
+	ProbeGuard probe_guard(probes, start);
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+
+	// Let the IOP get to its D-behind position first.
+	for (u32 i = 0; i < 40; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+	ASSERT_GT(s_iop_ran, 0u);
+	ASSERT_TRUE(probes.empty());
+
+	// Two items, 5000 cycles apart, posted by the EE at its cycle.
+	const u64 stamp_a = cpuRegs.cycle;
+	IopBridge::HBlankStart<IopThreadMode::Lockstep>();
+	cpuRegs.cycle += 5000;
+	const u64 stamp_b = cpuRegs.cycle;
+	IopBridge::HBlankEnd<IopThreadMode::Lockstep>();
+	EXPECT_TRUE(probes.empty()) << "an item was applied at the moment it was posted";
+
+	u64 a_seen_at = 0, b_seen_at = 0;
+	for (u32 i = 0; i < 200 && probes.size() < 2; i++)
+	{
+		cpuRegs.cycle += 700;
+		test();
+		if (a_seen_at == 0 && !probes.empty())
+			a_seen_at = cpuRegs.cycle;
+		if (b_seen_at == 0 && probes.size() >= 2)
+			b_seen_at = cpuRegs.cycle;
+	}
+	ASSERT_EQ(probes.size(), 2u);
+	EXPECT_STREQ(probes[0].what, "hblank_start");
+	EXPECT_STREQ(probes[1].what, "hblank_end");
+
+	// Each was applied by the handoff whose goal (EE cycle less the skew) first reached its stamp...
+	EXPECT_GE(static_cast<s64>(a_seen_at) - kSkew, static_cast<s64>(stamp_a));
+	EXPECT_LT(static_cast<s64>(a_seen_at) - 700 - kSkew, static_cast<s64>(stamp_a));
+	EXPECT_GE(static_cast<s64>(b_seen_at) - kSkew, static_cast<s64>(stamp_b));
+	// ...and at the IOP's clock reaching the stamp, within the overshoot of the slice that got it there.
+	EXPECT_GE(probes[0].iop_pos, stamp_a);
+	EXPECT_LE(probes[0].iop_pos, stamp_a + 22);
+	EXPECT_GE(probes[1].iop_pos, stamp_b);
+	EXPECT_LE(probes[1].iop_pos, stamp_b + 22);
+	for (const Probe& p : probes)
+		EXPECT_NE(p.thread, std::this_thread::get_id());
+}
+
+TEST_F(LockstepMachine, ASkewDefersAnEeStartedSifPumpToTheStampWhateverTheSetting)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 40000;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	EmuConfig.Speedhacks.iopThreadDeferSif = false;
+	IopThread::SetLockstepSkew(kSkew);
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	s_iop_ran = 0;
+	std::vector<Probe> probes;
+	ProbeGuard probe_guard(probes, start);
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 30; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+
+	const u64 stamp = cpuRegs.cycle;
+	ASSERT_TRUE(IopThread::DeferSifPump(1)) << "pumping at once would hand the IOP the data a skew early";
+	EXPECT_TRUE(probes.empty());
+	for (u32 i = 0; i < 30 && probes.empty(); i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+	ASSERT_EQ(probes.size(), 1u);
+	EXPECT_STREQ(probes[0].what, "sif_pump");
+	EXPECT_EQ(probes[0].arg, 1u);
+	EXPECT_GE(probes[0].iop_pos, stamp);
+	EXPECT_NE(probes[0].thread, std::this_thread::get_id());
+}
+
+TEST_F(LockstepMachine, ASkewDoesNotMakeTheEeLookAgainEvery48CyclesBecauseTheIopIsBehind)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 100000;
+	for (const s64 skew : {s64(0), kSkew})
+	{
+		SettingsGuard guard;
+		SkewGuard skew_guard;
+		AskForLockstep();
+		IopThread::SetLockstepSkew(skew);
+		Reset();
+		IopThread::ChooseMode();
+		IopThread::SyncThread();
+		ASSERT_TRUE(IopThread::LockstepActive());
+		const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+		// An IOP event 2500 IOP cycles (20000 EE cycles) away, and the EE running in 3072-cycle steps.
+		for (u32 i = 0; i < 120; i++)
+		{
+			psxRegs.iopNextEventCycle = psxRegs.cycle + 2500;
+			cpuRegs.cycle += 3072;
+			test();
+			if (skew > 0 && i > 60)
+				EXPECT_GT(cpuRegs.nextEventCycle - cpuRegs.cycle, 48u) << "event test " << i << " skew " << skew;
+		}
+		IopThread::StopThread();
+	}
+}
+
+TEST_F(LockstepMachine, TheSkewIsClampedToTheLagCeilingSoTheEeToIopRingCannotFill)
+{
+	SkewGuard skew_guard;
+	IopThread::SetLockstepSkew(-5);
+	EXPECT_EQ(IopThread::LockstepSkewSetting(), 0);
+	IopThread::SetLockstepSkew(IopThread::kMaxLag + 1000);
+	EXPECT_EQ(IopThread::LockstepSkewSetting(), IopThread::kMaxLag);
+	IopThread::SetLockstepSkew(1200000);
+	EXPECT_EQ(IopThread::LockstepSkewSetting(), 1200000);
 }
 
 TEST_F(LockstepMachine, ThePlainNameTheX86RecompilersCallIsTheOffInstance)
