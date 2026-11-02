@@ -66,6 +66,7 @@ namespace IopThread
 		m_have_frame = false;
 		m_f_replies = m_f_late = m_f_events = m_f_max_late = m_f_ff_start = m_f_cycle_start = 0;
 		m_f_unbroken = m_f_share90 = 0;
+		m_wake_n = 0;
 		m_trace.clear();
 		m_trace_on = trace;
 		std::fill(std::begin(m_ring), std::end(m_ring), Sample{0, 0});
@@ -115,6 +116,24 @@ namespace IopThread
 		}
 
 		const u64 prev = m_have_prev ? m_prev : cycle;
+		for (u32 i = 0; i < m_wake_n;)
+		{
+			Wake& w = m_wake[i];
+			const u64 lo = std::max(prev, w.from);
+			const u64 hi = std::min(cycle, w.until);
+			if (!via_ff && hi > lo)
+				w.busy += hi - lo;
+			if (cycle >= w.until)
+			{
+				m_stats.wake_decile[std::min<u64>(w.busy * 10 / (w.until - w.from), 10)]++;
+				m_stats.wake_done++;
+				m_wake[i] = m_wake[--m_wake_n];
+			}
+			else
+			{
+				i++;
+			}
+		}
 		m_stats.event_tests++;
 		if (via_ff)
 		{
@@ -225,6 +244,8 @@ namespace IopThread
 			m_stats.idle_overshoot_max = std::max(m_stats.idle_overshoot_max, late);
 			m_stats.overshoot[kind].Add(late);
 			m_f_events++;
+			if (m_wake_n < kMaxWake)
+				m_wake[m_wake_n++] = Wake{now, now + kWakeWindow, 0};
 		}
 		else if (!idle_now)
 		{

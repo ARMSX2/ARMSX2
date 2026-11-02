@@ -308,3 +308,47 @@ TEST(ReplyMonitor, FrameBinsFollowTheirLabels)
 	EXPECT_EQ(FrameBin(9), 5u);
 	EXPECT_EQ(FrameBin(1000), 5u);
 }
+
+TEST(ReplyMonitor, AnOvershootThatWakesTheGuestShowsAsBusyTimeInTheWindowAfterIt)
+{
+	ReplyMonitor m;
+	m.OnEventTest(kBase, false, 1);
+	const u64 t = kBase;
+	const u64 now = Tick(m, kBase, kBase + 60 * kStep, true);
+	ASSERT_TRUE(m.OnReply(ReplyKind::SbusIrq, Stamp(t), now, true).overshoot);
+	// After the reply the EE runs for half of the window (an interval that is not idle is counted whole), then idles again.
+	const u64 half = kWakeWindow / 2;
+	u64 c = now;
+	while (c < now + half)
+	{
+		c += kStep;
+		m.OnEventTest(c, false, 1);
+	}
+	Tick(m, c, now + kWakeWindow + kStep, true);
+	EXPECT_EQ(m.Stats().wake_done, 1u);
+	EXPECT_EQ(m.Stats().wake_decile[5], 1u) << "about half of the window the EE ran";
+}
+
+TEST(ReplyMonitor, AnOvershootAfterWhichTheEeStaysIdleHasNoBusyTimeInTheWindow)
+{
+	ReplyMonitor m;
+	m.OnEventTest(kBase, false, 1);
+	const u64 now = Tick(m, kBase, kBase + 60 * kStep, true);
+	ASSERT_TRUE(m.OnReply(ReplyKind::Call, Stamp(kBase), now, true).overshoot);
+	m.OnEventTest(now + kStep, false, 1); // a handler: one interval of running
+	Tick(m, now + kStep, now + kWakeWindow + 2 * kStep, true);
+	EXPECT_EQ(m.Stats().wake_done, 1u);
+	EXPECT_EQ(m.Stats().wake_decile[0], 1u) << "3,072 of 98,304 cycles is under a tenth";
+}
+
+TEST(ReplyMonitor, TheWindowIsClosedByTheEventTestThatPassesIt)
+{
+	ReplyMonitor m;
+	m.OnEventTest(kBase, false, 1);
+	const u64 now = Tick(m, kBase, kBase + 60 * kStep, true);
+	ASSERT_TRUE(m.OnReply(ReplyKind::Call, Stamp(kBase), now, true).overshoot);
+	Tick(m, now, now + kWakeWindow - kStep, true);
+	EXPECT_EQ(m.Stats().wake_done, 0u) << "not over yet";
+	m.OnEventTest(now + kWakeWindow, true, 1);
+	EXPECT_EQ(m.Stats().wake_done, 1u);
+}

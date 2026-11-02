@@ -45,6 +45,10 @@ namespace IopThread
 	/// an overshoot in idle, in percent.
 	inline constexpr u32 kIdleShareMin = 50;
 
+	/// How long after an overshoot in idle the monitor watches the EE, to see whether the reply woke the guest (it ran for a good part
+	/// of the window) or only ran a handler and went back to idle. In EE cycles.
+	inline constexpr u32 kWakeWindow = 2 * kOvershootMin;
+
 	/// What the EE takes from the IOP.
 	namespace ReplyKind
 	{
@@ -93,6 +97,8 @@ namespace IopThread
 		u64 late_idle_light = 0; // late, idle event test, but less than kIdleShareMin percent of [production, taken] idle
 		u64 late_idle_light_cycles = 0;
 		u64 late_idle_unknown = 0; // late replies whose production time is older than the ledger's samples (counted in the groups above too)
+		u64 wake_decile[11] = {}; // overshoots in idle by the share of the kWakeWindow after them that the EE ran (was not idle), in tenths: 0 .. 10
+		u64 wake_done = 0; // overshoots whose window has ended
 		u64 coverage_decile[11] = {}; // late replies by the idle share of [production, now], in tenths: 0 .. 10
 		u64 frames = 0; // frames seen (completed)
 		u64 frames_with_overshoot = 0;
@@ -166,6 +172,15 @@ namespace IopThread
 		/// The ledger at the end of the last bucket that finished at or before `t`. False if the samples do not reach back that far.
 		bool IdleCyclesAt(u64 t, u64& cum) const;
 		void EndFrame();
+
+		// Overshoots in idle whose kWakeWindow is still open.
+		struct Wake
+		{
+			u64 from, until, busy;
+		};
+		static constexpr u32 kMaxWake = 8;
+		Wake m_wake[kMaxWake] = {};
+		u32 m_wake_n = 0;
 
 		ReplyStats m_stats;
 

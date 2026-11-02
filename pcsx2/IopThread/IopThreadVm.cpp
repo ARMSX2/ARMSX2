@@ -883,6 +883,10 @@ namespace IopThread
 		for (u32 i = 0; i <= 10; i++)
 			dec += fmt::format(" {}", r.coverage_decile[i]);
 		lines.push_back(fmt::format("IOPLATE: late replies by idle share of [production, taken] in tenths (0..10):{}", dec));
+		std::string wake;
+		for (u32 i = 0; i <= 10; i++)
+			wake += fmt::format(" {}", r.wake_decile[i]);
+		lines.push_back(fmt::format("IOPLATE: idle overshoots by the share of the next {} cycles the EE then ran, in tenths (0..10):{}", kWakeWindow, wake));
 		lines.push_back(fmt::format("IOPLATE: frames={} with_overshoot={} by overshoots in the frame (0 1 2 3-4 5-8 9+): {} {} {} {} {} {}", r.frames, r.frames_with_overshoot,
 			r.frame_bins[0], r.frame_bins[1], r.frame_bins[2], r.frame_bins[3], r.frame_bins[4], r.frame_bins[5]));
 		lines.push_back(fmt::format("IOPLATE: event_tests={} ff_event_tests={} ({:.1f}%) ff_cycles={} ee_cycles={} ({:.1f}% idle)", r.event_tests, r.ff_event_tests,
