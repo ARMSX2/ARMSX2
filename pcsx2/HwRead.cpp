@@ -216,6 +216,12 @@ mem32_t _hwRead32(u32 mem)
 		//If STR is already unset, it won't make the slightest difference.
 		return (psHu32(mem) & ~0x100);
 	}*/
+	// The EE reading the status of a SIF DMA channel that is running is polling for the end of a transfer, which can be waiting for the IOP.
+	if constexpr (page == 0x0c)
+	{
+		if ((mem == D5_CHCR || mem == D6_CHCR) && (psHu32(mem) & 0x100)) [[unlikely]]
+			IopThread::EeNoteSifPoll();
+	}
 	return psHu32(mem);
 }
 

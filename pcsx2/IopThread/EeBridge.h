@@ -112,7 +112,7 @@ namespace EeBridge
 	{
 		if (IopThread::GetMode() == IopThreadMode::Threaded) [[unlikely]]
 		{
-			IopThread::RunSifPumpOnEe(&SIF0Dma);
+			IopThread::RunSifPumpOnEe(&IopThread::Sif0PumpFromIop);
 			return;
 		}
 		EE_SIDE_ASSERT();

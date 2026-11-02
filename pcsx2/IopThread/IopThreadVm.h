@@ -246,12 +246,28 @@ namespace IopThread
 	/// One load of the mode otherwise.
 	__forceinline_odr void EeSbusNearBound(u64 cycle)
 	{
-		if (GetMode() != IopThreadMode::Threaded) [[likely]]
+		const IopThreadMode mode = GetMode();
+		if (mode == IopThreadMode::Off) [[likely]]
 			return;
 		if (!g_thread.IsRunning()) [[unlikely]]
 			return;
-		g_thread.CheckNearLag(cycle);
+		// An IOP reboot handshakes through these words; the lag rules hold the bound tight for a while after one.
+		g_thread.NoteEeMailboxAccess(cycle);
+		if (mode == IopThreadMode::Threaded)
+			g_thread.CheckNearLag(cycle);
 	}
+
+	/// EE thread. The EE started a SIF DMA on `channel` (0: it armed SIF0 to receive, 1: it sent on SIF1), before its pump runs. A request
+	/// went out, so the lag rules hold the bound tight until the reply (LagRule::Window, IdleOutstanding). A load of the mode in Off.
+	void EeNoteSifStart(u32 channel);
+
+	/// EE thread. The EE read the status of D5 or D6 (CHCR) with STR set: it polls for the end of a SIF transfer, which may be waiting
+	/// for the IOP (LagRule::Poll).
+	void EeNoteSifPoll();
+
+	/// The SIF0 pump the IOP starts: the data and the completion reach the EE. Counts as the IOP's reply for the lag rules, then pumps.
+	/// Runs on the EE thread (Threaded: through CallOnEE).
+	void Sif0PumpFromIop();
 
 	/// A SIF pump that the IOP starts. The pump moves data on both sides and schedules both sides' completion
 	/// events, so it runs on the EE thread with the IOP stopped: the IOP posts it with CallOnEE and blocks until the
@@ -284,7 +300,7 @@ namespace IopThread
 	void SetLockstepSkewHoldChannels(u32 mask);
 	bool LockstepSkewHolds();
 	/// The skew the running Lockstep thread has, 0 otherwise. What the EE core's event test reads.
-	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkew()); }
+	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkewCurrent()); }
 
 	/// Keep a record of every frame's late replies (IOPLATE-FRAME: lines in eerunner), for the next Start(). Not a setting.
 	void SetReplyTrace(bool on);

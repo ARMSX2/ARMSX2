@@ -3,6 +3,7 @@
 
 #include "IopThread/IopThreadVm.h"
 
+#include "CDVD/CDVD.h"
 #include "Common.h"
 #include "Config.h"
 #include "Counters.h"
@@ -22,6 +23,7 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "SIO/Sio.h"
+#include "SPU2/defs.h"
 #include "Sif.h"
 #include "VMManager.h"
 
@@ -176,11 +178,38 @@ namespace IopThread
 			EEoCycle = cpuRegs.cycle;
 		}
 
+		// The rules that tighten a large lag bound (IopLagRules.h).
+		LagRulesConfig EffectiveRules()
+		{
+			LagRulesConfig cfg;
+			cfg.mask = LagRule::Bit(LagRule::Window) | LagRule::Bit(LagRule::IdleOutstanding) | LagRule::Bit(LagRule::Stream) |
+			           LagRule::Bit(LagRule::Mailbox) | LagRule::Bit(LagRule::Poll);
+			return cfg;
+		}
+
+		// What the IOP's devices are doing, sampled by the IOP thread at the end of each slice (LagRule::Stream). The SPU2 auto-DMA
+		// control word has the core's bit set while the game streams audio into that core, and the drive is busy while a read or a
+		// seek is running; both are IOP-owned state the IOP thread reads without a lock.
+		u32 SampleDeviceStreams()
+		{
+			u32 bits = 0;
+			if (Cores[0].AutoDMACtrl & 1)
+				bits |= StreamBit::SpuAdmaCore0;
+			if (Cores[1].AutoDMACtrl & 2)
+				bits |= StreamBit::SpuAdmaCore1;
+			if (cdvd.Reading || cdvd.Action != 0) // 0 is cdvdAction_None (CDVD_internal.h, which defines a variable and cannot be included twice)
+				bits |= StreamBit::CdvdBusy;
+			return bits;
+		}
+
 		Params MakeParams()
 		{
 			Params params;
 			params.mode = s_mode;
 			params.lag = ClampLag(EmuConfig.Speedhacks.iopThreadLag);
+			params.rules = EffectiveRules();
+			params.start_frame = g_FrameCount;
+			params.sample_streams = SampleDeviceStreams;
 			params.min_slice = s_mode == IopThreadMode::Threaded ? s_min_slice : 0;
 			params.idle_spin_ns = s_idle_spin_ns;
 			params.start_ee_cycle = cpuRegs.cycle;
@@ -662,6 +691,26 @@ namespace IopThread
 		return true;
 	}
 
+	void EeNoteSifStart(u32 channel)
+	{
+		if (s_mode == IopThreadMode::Off || !g_thread.IsRunning())
+			return;
+		g_thread.NoteEeSifStart(cpuRegs.cycle, channel);
+	}
+
+	void EeNoteSifPoll()
+	{
+		if (s_mode == IopThreadMode::Off || !g_thread.IsRunning())
+			return;
+		g_thread.NoteEePoll(cpuRegs.cycle);
+	}
+
+	void Sif0PumpFromIop()
+	{
+		g_thread.NoteIopSif0Reply(cpuRegs.cycle);
+		SIF0Dma();
+	}
+
 	bool SyncIopForSifChannelStop(u32 channel)
 	{
 		pxAssertMsg(channel <= 1, "only the SIF0 and SIF1 channels are synchronised at a stop");
@@ -833,6 +882,8 @@ namespace IopThread
 		if (s_mode != IopThreadMode::Lockstep || !g_thread.IsRunning() || !g_thread.OnIopThread())
 			return;
 		g_thread.NoteReply(kind, static_cast<u32>(IopTimeNow()));
+		if (kind == ReplyKind::SbusIrq || kind == ReplyKind::Sif0Pump)
+			g_thread.NoteIopSif0Reply(cpuRegs.cycle);
 	}
 
 	void SetThreadedIdleSpinNs(u32 ns)

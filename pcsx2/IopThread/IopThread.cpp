@@ -119,6 +119,12 @@ namespace IopThread
 		// Nothing else touches any of this: the IOP thread does not exist yet. The thread's creation
 		// orders these writes before its first read.
 		m_replies.Reset();
+		m_rules.Configure(m_params.rules);
+		m_rules.Reset(m_params.start_frame);
+		m_streams.store(0, std::memory_order_relaxed);
+		m_ev_idle = false;
+		m_ev_frame = 0;
+		m_lockstep_skew_cur = m_lockstep_skew;
 		m_e2i.Reset();
 		m_e2i_spill.clear();
 		m_e2i_spill_total = 0;
@@ -214,6 +220,7 @@ namespace IopThread
 		m_iop_tid = std::thread::id();
 		m_mode = IopThreadMode::Off;
 		m_lockstep_skew = 0;
+		m_lockstep_skew_cur = 0;
 	}
 
 	void Thread::ThreadMain()
@@ -368,9 +375,20 @@ namespace IopThread
 			reached = m_iop_pos;
 		m_iop_pos = reached;
 		ApplyDueItems();
+		SampleStreams();
 		// Pairs with the acquire load in CheckLag, the hold handshake and PublishedPos().
 		m_iop.pos_pub.store(m_iop_pos, std::memory_order_release);
 		m_slices.Add();
+	}
+
+	// IOP thread, at the end of a slice: what the IOP's devices are doing, for LagRule::Stream. Written only when it changes.
+	void Thread::SampleStreams()
+	{
+		if (!m_params.sample_streams)
+			return;
+		const u32 now = m_params.sample_streams();
+		if (now != m_streams.load(std::memory_order_relaxed))
+			m_streams.store(now, std::memory_order_relaxed);
 	}
 
 	void Thread::ThreadedLoop()
@@ -590,7 +608,10 @@ namespace IopThread
 			else
 			{
 				if (item.kind == I2EKind::SbusIrq)
+				{
 					NoteReply(ReplyKind::SbusIrq, item.stamp);
+					m_rules.OnIopReply(m_params.ee_cycle ? m_params.ee_cycle() : m_ee_wm_local);
+				}
 				if (m_params.handle_i2e)
 					m_params.handle_i2e(item);
 			}
@@ -967,7 +988,7 @@ namespace IopThread
 				{
 					if (m_lockstep_skew > 0)
 					{
-						LockstepSkewedSlice(m_ls.arg, m_lockstep_skew);
+						LockstepSkewedSlice(m_ls.arg, m_lockstep_skew_cur);
 					}
 					else
 					{
@@ -975,6 +996,7 @@ namespace IopThread
 						pxAssertMsg(reached >= m_iop_pos, "run_slice moved the IOP backwards");
 						m_iop_pos = std::max(reached, m_iop_pos);
 					}
+					SampleStreams();
 					m_iop.pos_pub.store(m_iop_pos, std::memory_order_relaxed);
 					m_ls.result = m_iop_pos;
 				}
@@ -1044,6 +1066,7 @@ namespace IopThread
 			m_iop_pos = std::max(reached, m_iop_pos);
 			m_slices.Add();
 		}
+		SampleStreams();
 		return m_iop_pos;
 	}
 

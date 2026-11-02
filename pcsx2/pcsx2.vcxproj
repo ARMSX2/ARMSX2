@@ -695,6 +695,7 @@
     <ClCompile Include="IopMem.cpp" />
     <ClCompile Include="IopThread\IopChannels.cpp" />
     <ClCompile Include="IopThread\IopLagControl.cpp" />
+    <ClCompile Include="IopThread\IopLagRules.cpp" />
     <ClCompile Include="IopThread\IopPlacement.cpp" />
     <ClCompile Include="IopThread\IopThread.cpp" />
     <ClCompile Include="IopThread\IopThreadMode.cpp" />
@@ -1218,6 +1219,7 @@
     <ClInclude Include="IopThread\IopBridge.h" />
     <ClInclude Include="IopThread\IopChannels.h" />
     <ClInclude Include="IopThread\IopLagControl.h" />
+    <ClInclude Include="IopThread\IopLagRules.h" />
     <ClInclude Include="IopThread\IopPlacement.h" />
     <ClInclude Include="IopThread\IopThread.h" />
     <ClInclude Include="IopThread\IopThreadMode.h" />

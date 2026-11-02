@@ -190,6 +190,7 @@ namespace IopBridge
 	{
 		if (IopThread::GetMode() != IopThreadMode::Off) [[unlikely]]
 		{
+			IopThread::EeNoteSifStart(0);
 			if (IopThread::DeferSifPump(0))
 				return;
 		}
@@ -202,6 +203,7 @@ namespace IopBridge
 	{
 		if (IopThread::GetMode() != IopThreadMode::Off) [[unlikely]]
 		{
+			IopThread::EeNoteSifStart(1);
 			if (IopThread::DeferSifPump(1))
 				return;
 		}

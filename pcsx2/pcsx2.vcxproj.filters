@@ -638,6 +638,9 @@
     <ClCompile Include="IopThread\IopLagControl.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
+    <ClCompile Include="IopThread\IopLagRules.cpp">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClCompile>
     <ClCompile Include="IopThread\IopPlacement.cpp">
       <Filter>System\Ps2\Iop</Filter>
     </ClCompile>
@@ -1836,6 +1839,9 @@
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\IopLagControl.h">
+      <Filter>System\Ps2\Iop</Filter>
+    </ClInclude>
+    <ClInclude Include="IopThread\IopLagRules.h">
       <Filter>System\Ps2\Iop</Filter>
     </ClInclude>
     <ClInclude Include="IopThread\IopPlacement.h">
