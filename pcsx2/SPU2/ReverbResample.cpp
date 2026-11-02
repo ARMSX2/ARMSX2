@@ -4,6 +4,8 @@
 #include "GS/GSVector.h"
 #include "SPU2/defs.h"
 
+#include <algorithm>
+
 MULTI_ISA_UNSHARED_START
 
 static constexpr u32 NUM_TAPS = 39;
@@ -137,6 +139,36 @@ s32 __forceinline ReverbDownsample_sse(V_Core& core, bool right)
 	return acc.I16[0];
 }
 
+#if defined(__aarch64__)
+#include <arm_neon.h>
+
+// On AArch64 the two resamplers are written in NEON directly. They do what the GSVector4i versions do, tap group by tap
+// group and in the same order of saturating adds, with one change of instruction: mul16hrs is a widening multiply and a
+// rounding narrowing shift, which vqrdmulhq_s16 does in one instruction. The two differ for exactly one pair of
+// operands, -32768 * -32768 (+32768 wraps in the first and saturates to 32767 in the second), and no coefficient of
+// either filter is -32768, so they agree for every input.
+static_assert(std::ranges::min(filter_down_coefs) > INT16_MIN && std::ranges::min(filter_up_coefs) > INT16_MIN);
+
+// hadds16 applied to a vector with itself, as the SSE-style code does it three times to fold eight lanes into lane 0.
+static __forceinline int16x8_t FoldPairs(int16x8_t a)
+{
+	return vqaddq_s16(vuzp1q_s16(a, a), vuzp2q_s16(a, a));
+}
+
+s32 ReverbDownsample(V_Core& core, bool right)
+{
+	const s16* const src = &core.RevbDownBuf[right][(core.RevbSampleBufPos - NUM_TAPS) & 63];
+
+	int16x8_t acc = vqrdmulhq_s16(vld1q_s16(src), vld1q_s16(&filter_down_coefs[0]));
+	acc = vqaddq_s16(acc, vqrdmulhq_s16(vld1q_s16(src + 8), vld1q_s16(&filter_down_coefs[8])));
+	acc = vqaddq_s16(acc, vqrdmulhq_s16(vld1q_s16(src + 16), vld1q_s16(&filter_down_coefs[16])));
+	acc = vqaddq_s16(acc, vqrdmulhq_s16(vld1q_s16(src + 24), vld1q_s16(&filter_down_coefs[24])));
+	acc = vqaddq_s16(acc, vqrdmulhq_s16(vld1q_s16(src + 32), vld1q_s16(&filter_down_coefs[32])));
+
+	acc = FoldPairs(FoldPairs(FoldPairs(acc)));
+	return vgetq_lane_s16(acc, 0);
+}
+#else
 s32 ReverbDownsample(V_Core& core, bool right)
 {
 #if _M_SSE >= 0x501
@@ -145,6 +177,7 @@ s32 ReverbDownsample(V_Core& core, bool right)
 	return ReverbDownsample_sse(core, right);
 #endif
 }
+#endif
 
 StereoOut32 __forceinline ReverbUpsample_reference(V_Core& core)
 {
@@ -248,6 +281,28 @@ StereoOut32 __forceinline ReverbUpsample_sse(V_Core& core)
 	return {lacc.I16[0], racc.I16[0]};
 }
 
+#if defined(__aarch64__)
+StereoOut32 ReverbUpsample(V_Core& core)
+{
+	const u32 index = (core.RevbSampleBufPos - NUM_TAPS) & 63;
+	const s16* const l = &core.RevbUpBuf[0][index];
+	const s16* const r = &core.RevbUpBuf[1][index];
+
+	int16x8_t c = vld1q_s16(&filter_up_coefs[0]);
+	int16x8_t lacc = vqrdmulhq_s16(vld1q_s16(l), c);
+	int16x8_t racc = vqrdmulhq_s16(vld1q_s16(r), c);
+	for (u32 k = 8; k <= 32; k += 8)
+	{
+		c = vld1q_s16(&filter_up_coefs[k]);
+		lacc = vqaddq_s16(lacc, vqrdmulhq_s16(vld1q_s16(l + k), c));
+		racc = vqaddq_s16(racc, vqrdmulhq_s16(vld1q_s16(r + k), c));
+	}
+
+	lacc = FoldPairs(FoldPairs(FoldPairs(lacc)));
+	racc = FoldPairs(FoldPairs(FoldPairs(racc)));
+	return {vgetq_lane_s16(lacc, 0), vgetq_lane_s16(racc, 0)};
+}
+#else
 StereoOut32 ReverbUpsample(V_Core& core)
 {
 #if _M_SSE >= 0x501
@@ -256,5 +311,6 @@ StereoOut32 ReverbUpsample(V_Core& core)
 	return ReverbUpsample_sse(core);
 #endif
 }
+#endif
 
 MULTI_ISA_UNSHARED_END
