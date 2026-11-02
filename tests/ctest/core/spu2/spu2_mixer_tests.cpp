@@ -317,7 +317,16 @@ namespace
 				vc.ADSR.Counter = r.Below(0x8000);
 				vc.ADSR.Value = r.Below(0x8000);
 				const u32 pick = r.Below(100);
-				vc.ADSR.Phase = pick < 40 ? V_ADSR::PHASE_STOPPED : pick < 52 ? V_ADSR::PHASE_ATTACK : pick < 62 ? V_ADSR::PHASE_DECAY : pick < 82 ? V_ADSR::PHASE_SUSTAIN : V_ADSR::PHASE_RELEASE;
+				if (pick < 40)
+					vc.ADSR.Phase = V_ADSR::PHASE_STOPPED;
+				else if (pick < 52)
+					vc.ADSR.Phase = V_ADSR::PHASE_ATTACK;
+				else if (pick < 62)
+					vc.ADSR.Phase = V_ADSR::PHASE_DECAY;
+				else if (pick < 82)
+					vc.ADSR.Phase = V_ADSR::PHASE_SUSTAIN;
+				else
+					vc.ADSR.Phase = V_ADSR::PHASE_RELEASE;
 				if (r.Chance(35))
 				{
 					// The values the envelope's comparisons and clamps turn on, and a counter about to overflow.
@@ -400,7 +409,16 @@ namespace
 		}
 
 		const u32 pm = r.Below(100);
-		PlayMode = pm < 80 ? 0 : pm < 85 ? 1 : pm < 90 ? 2 : pm < 95 ? 4 : 8;
+		if (pm < 80)
+			PlayMode = 0;
+		else if (pm < 85)
+			PlayMode = 1;
+		else if (pm < 90)
+			PlayMode = 2;
+		else if (pm < 95)
+			PlayMode = 4;
+		else
+			PlayMode = 8;
 		OutPos = static_cast<u16>(r.Below(0x200));
 		InputPos = 0;
 		Cycles = r.Chance(30) ? (0xFFFFFFF0u - r.Below(64)) : r.U32();
@@ -644,7 +662,12 @@ namespace
 				u64 v = 0;
 				if (read(e.fd, &v, sizeof(v)) != sizeof(v))
 					v = 0;
-				(e.kind == 0 ? *instructions : e.kind == 1 ? *cycles : *branch_misses) += v;
+				if (e.kind == 0)
+					*instructions += v;
+				else if (e.kind == 1)
+					*cycles += v;
+				else
+					*branch_misses += v;
 			}
 		}
 
@@ -671,7 +694,13 @@ namespace
 				return;
 			int kind = 1;
 			if (type == PERF_TYPE_HARDWARE)
-				kind = (config & 0xffffffff) == PERF_COUNT_HW_INSTRUCTIONS ? 0 : (config & 0xffffffff) == PERF_COUNT_HW_BRANCH_MISSES ? 2 : 1;
+			{
+				const u64 generic = config & 0xffffffff;
+				if (generic == PERF_COUNT_HW_INSTRUCTIONS)
+					kind = 0;
+				else if (generic == PERF_COUNT_HW_BRANCH_MISSES)
+					kind = 2;
+			}
 			else if (config == 0x8c)
 				kind = 0;
 			m_events.push_back({fd, kind});
