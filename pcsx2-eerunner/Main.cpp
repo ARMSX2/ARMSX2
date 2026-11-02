@@ -216,6 +216,7 @@ struct SetOverride
 };
 static std::vector<SetOverride> s_set_overrides; // --set Section/Key=Value (repeatable)
 static u32 s_iop_stats_every = 0;      // --iop-stats-every N: in a --liverun, log the IOP thread's Threaded counters every N frames
+static bool s_frame_limiter = false;   // --frame-limiter: a --liverun at the nominal frame rate (the limiter sleeps the EE as it does on a device)
 static bool s_stress = false;          // --iop-stress <seed>: a --liverun that does random lifecycle things between frames
 static u32 s_stress_seed = 1;
 static u32 s_pause_toggle_at = 0;      // --pause-toggle N: in a --liverun, flip the IOP thread setting while the VM is paused after frame N
@@ -1091,6 +1092,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               at every handoff instead of catching it up, apply EE-to-IOP items when the IOP's clock reaches their stamp, and\n");
 	std::fprintf(stderr, "               defer EE-started SIF0/SIF1 pumps. 0 (default) is plain Lockstep. Deterministic. A test knob, not a setting;\n");
 	std::fprintf(stderr, "               not for runs that save or load states.\n");
+	std::fprintf(stderr, "  --frame-limiter: in a --liverun, run at the nominal frame rate instead of unlimited, so the EE sleeps in the frame limiter as it does on a\n");
+	std::fprintf(stderr, "               device. A measurement knob.\n");
 	std::fprintf(stderr, "  --iop-late-trace: print an IOPLATE-FRAME: line per frame with that frame's late-reply counts (the IOPLATE: lines at the end of the run\n");
 	std::fprintf(stderr, "               are always printed with the IOP thread on). A measurement knob, not a setting.\n");
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
@@ -1578,6 +1581,11 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				IopThread::SetThreadedIdleSpinNs(v.value() * 1000u);
 				continue;
 			}
+			else if (CHECK_ARG("--frame-limiter"))
+			{
+				s_frame_limiter = true;
+				continue;
+			}
 			else if (CHECK_ARG("--iop-late-trace"))
 			{
 				IopThread::SetReplyTrace(true);
@@ -2017,7 +2025,7 @@ void EERunner::SettingsOverride()
 	s_settings_interface.SetIntValue("EmuCore/GS", "FramesToSkip", 0);
 
 	// Don't limit speed (also set on the VM via SetLimiterMode after init).
-	s_settings_interface.SetBoolValue("EmuCore/GS", "FrameLimitEnable", false);
+	s_settings_interface.SetBoolValue("EmuCore/GS", "FrameLimitEnable", s_frame_limiter);
 	s_settings_interface.SetIntValue("EmuCore/GS", "VsyncEnable", 0);
 
 	// Disable input sources; we drive nothing.
@@ -5778,7 +5786,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 		{
 			// Run unlimited — the runner steps frame-by-frame and needs no
 			// wall-clock pacing.
-			VMManager::SetLimiterMode(LimiterModeType::Unlimited);
+			VMManager::SetLimiterMode(s_frame_limiter ? LimiterModeType::Nominal : LimiterModeType::Unlimited);
 			VMManager::SetState(VMState::Paused);
 
 			int code = EXIT_FAILURE;
