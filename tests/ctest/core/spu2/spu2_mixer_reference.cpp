@@ -13,3 +13,13 @@ void ReferenceSpu2Mix()
 {
 	isa_reference::spu2Mix();
 }
+
+s32 ReferenceReverbDownsample(V_Core& core, bool right)
+{
+	return isa_reference::RefReverbDownsample(core, right);
+}
+
+StereoOut32 ReferenceReverbUpsample(V_Core& core)
+{
+	return isa_reference::RefReverbUpsample(core);
+}

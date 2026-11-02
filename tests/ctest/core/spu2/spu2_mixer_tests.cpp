@@ -37,6 +37,8 @@
 
 void ReferenceSpu2Mix();
 void CurrentSpu2Mix();
+s32 ReferenceReverbDownsample(V_Core& core, bool right);
+StereoOut32 ReferenceReverbUpsample(V_Core& core);
 
 namespace
 {
@@ -293,12 +295,15 @@ namespace
 			rv.APF1_R_DST = r.Chance(10) ? 0 : addr();
 			rv.APF2_L_DST = r.Chance(10) ? 0 : addr();
 			rv.APF2_R_DST = r.Chance(10) ? 0 : addr();
+			// Reverb filter taps: usually well inside the 16-bit range, and in one state in four the whole range, so that the
+			// resamplers' saturating adds and the reverb's own clamps are reached.
+			const bool full_range = r.Chance(25);
 			for (auto& ch : c.RevbDownBuf)
 				for (s16& s : ch)
-					s = static_cast<s16>(r.Below(40000) - 20000);
+					s = full_range ? static_cast<s16>(r.U32()) : static_cast<s16>(r.Below(40000) - 20000);
 			for (auto& ch : c.RevbUpBuf)
 				for (s16& s : ch)
-					s = static_cast<s16>(r.Below(40000) - 20000);
+					s = full_range ? static_cast<s16>(r.U32()) : static_cast<s16>(r.Below(40000) - 20000);
 			c.RevbSampleBufPos = r.Below(64);
 
 			for (u32 vi = 0; vi < V_Core::NumVoices; vi++)
@@ -524,6 +529,41 @@ TEST_F(Spu2Mixer, CurrentMixerMatchesTheFrozenOneOnRandomStates)
 			return;
 	}
 	s_cov.Print();
+}
+
+TEST_F(Spu2Mixer, ReverbResamplersMatchTheFrozenOnesAtEveryBufferPosition)
+{
+	// The 39-tap filters, from the buffer contents at every write position, with taps drawn from the whole 16-bit range
+	// (so the saturating adds are hit), from the extremes only, and from small values.
+	Rng r(77);
+	V_Core& core = Cores[0];
+	for (int round = 0; round < 3000; round++)
+	{
+		const u32 mode = round % 3;
+		auto tap = [&]() -> s16 {
+			if (mode == 0)
+				return static_cast<s16>(r.U32());
+			if (mode == 1)
+				return r.Chance(50) ? INT16_MAX : INT16_MIN;
+			return static_cast<s16>(static_cast<s32>(r.Below(2001)) - 1000);
+		};
+		for (auto& ch : core.RevbDownBuf)
+			for (s16& s : ch)
+				s = tap();
+		for (auto& ch : core.RevbUpBuf)
+			for (s16& s : ch)
+				s = tap();
+		for (u32 pos = 0; pos < 64; pos++)
+		{
+			core.RevbSampleBufPos = pos;
+			for (const bool right : {false, true})
+				ASSERT_EQ(ReferenceReverbDownsample(core, right), ReverbDownsample(core, right)) << "round " << round << " pos " << pos;
+			const StereoOut32 ref = ReferenceReverbUpsample(core);
+			const StereoOut32 cur = ReverbUpsample(core);
+			ASSERT_EQ(ref.Left, cur.Left) << "round " << round << " pos " << pos;
+			ASSERT_EQ(ref.Right, cur.Right) << "round " << round << " pos " << pos;
+		}
+	}
 }
 
 TEST_F(Spu2Mixer, CurrentMixerMatchesWithTheLightweightReverbBypass)
