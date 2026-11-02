@@ -76,23 +76,36 @@ static void __forceinline XA_decode_block(s16* buffer, const s16* block, s32& pr
 	}
 }
 
-static void __forceinline IncrementNextA(V_Core& thiscore, uint voiceidx)
+// The address each core raises its SPU2 IRQ on, for the mix in progress: IRQA while the core's IRQ is enabled, and an address
+// no voice position can have while it is not. IRQA and IRQEnable are guest registers and nothing inside spu2Mix writes them
+// (SetIrqCall sets a bit of Spdif.Info and raises an IOP interrupt flag), so reading them once per mix serves every voice and
+// turns the enable test and the address compare into one compare per core.
+struct IrqWatch
+{
+	u32 a[2];
+
+	IrqWatch()
+		: a{Cores[0].IRQEnable ? Cores[0].IRQA : 0xFFFFFFFFu, Cores[1].IRQEnable ? Cores[1].IRQA : 0xFFFFFFFFu}
+	{
+	}
+
+	// Both cores signal IRQ when an address is read, regardless of which core's voice reads it.
+	__forceinline void Check(u32 addr) const
+	{
+		if (addr == a[0])
+			SetIrqCall(0);
+		if (addr == a[1])
+			SetIrqCall(1);
+	}
+};
+
+static void __forceinline IncrementNextA(V_Core& thiscore, uint voiceidx, const IrqWatch& irq)
 {
 	V_Voice& vc(thiscore.Voices[voiceidx]);
 
 	// Important!  Both cores signal IRQ when an address is read, regardless of
 	// which core actually reads the address.
-
-	for (int i = 0; i < 2; i++)
-	{
-		if (Cores[i].IRQEnable && (vc.NextA == Cores[i].IRQA))
-		{
-			//if( IsDevBuild )
-			//	ConLog(" * SPU2 Core %d: IRQ Requested (IRQA (%05X) passed; voice %d).\n", i, Cores[i].IRQA, thiscore.Index * 24 + voiceidx);
-
-			SetIrqCall(i);
-		}
-	}
+	irq.Check(vc.NextA);
 
 	vc.NextA++;
 	vc.NextA &= 0xFFFFF;
@@ -208,13 +221,11 @@ static __forceinline StereoOut32 ApplyVolume(const StereoOut32& data, const V_Vo
 #endif
 }
 
-static __forceinline void UpdateBlockHeader(V_Core& thiscore, uint voiceidx)
+static __forceinline void UpdateBlockHeader(V_Core& thiscore, uint voiceidx, const IrqWatch& irq)
 {
 	V_Voice& vc(thiscore.Voices[voiceidx]);
 
-	for (int i = 0; i < 2; i++)
-		if (Cores[i].IRQEnable && Cores[i].IRQA == (vc.NextA & 0xFFFF8))
-			SetIrqCall(i);
+	irq.Check(vc.NextA & 0xFFFF8);
 
 	s16* memptr = GetMemPtr(vc.NextA & 0xFFFF8);
 	vc.LoopFlags = *memptr >> 8; // grab loop flags from the upper byte.
@@ -225,13 +236,13 @@ static __forceinline void UpdateBlockHeader(V_Core& thiscore, uint voiceidx)
 	}
 }
 
-static __forceinline void DecodeSamples(uint coreidx, uint voiceidx)
+static __forceinline void DecodeSamples(uint coreidx, uint voiceidx, const IrqWatch& irq)
 {
 	V_Core& thiscore(Cores[coreidx]);
 	V_Voice& vc(thiscore.Voices[voiceidx]);
 
 	// Update the block header on every audio frame
-	UpdateBlockHeader(thiscore, voiceidx);
+	UpdateBlockHeader(thiscore, voiceidx, irq);
 
 	// When a voice is started at 0 pitch, NAX quickly advances to SSA + 5
 	// So that would mean the decode buffer holds around 12 samples
@@ -247,7 +258,7 @@ static __forceinline void DecodeSamples(uint coreidx, uint voiceidx)
 
 	vc.DecPosWrite += 4;
 
-	IncrementNextA(thiscore, voiceidx);
+	IncrementNextA(thiscore, voiceidx, irq);
 	if ((vc.NextA & 7) == 0)
 	{
 		if (vc.LoopFlags & XAFLAG_LOOP_END)
@@ -266,7 +277,7 @@ static __forceinline void DecodeSamples(uint coreidx, uint voiceidx)
 			}
 		}
 
-		IncrementNextA(thiscore, voiceidx);
+		IncrementNextA(thiscore, voiceidx, irq);
 		vc.SBuffer = nullptr;
 	}
 }
@@ -386,17 +397,10 @@ static __forceinline s32 GetNoiseValues(V_Core& thiscore)
 // writes a signed value to the SPU2 ram
 // Performs no cache invalidation -- use only for dynamic memory ranges
 // of the SPU2 (between 0x0000 and SPU2_DYN_MEMLINE)
-static __forceinline void spu2M_WriteFast(u32 addr, s16 value)
+static __forceinline void spu2M_WriteFast(u32 addr, s16 value, const IrqWatch& irq)
 {
 	// Fixes some of the oldest hangs in pcsx2's history! :p
-	for (int i = 0; i < 2; i++)
-	{
-		if (Cores[i].IRQEnable && Cores[i].IRQA == addr)
-		{
-			//printf("Core %d special write IRQ Called (IRQ passed). IRQA = %x\n",i,addr);
-			SetIrqCall(i);
-		}
-	}
+	irq.Check(addr);
 // throw an assertion if the memory range is invalid:
 #ifndef DEBUG_FAST
 	pxAssume(addr < SPU2_DYN_MEMLINE);
@@ -405,7 +409,7 @@ static __forceinline void spu2M_WriteFast(u32 addr, s16 value)
 }
 
 
-static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
+static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx, const IrqWatch& irq)
 {
 	V_Core& thiscore(Cores[coreidx]);
 	V_Voice& vc(thiscore.Voices[voiceidx]);
@@ -416,7 +420,7 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
 
 	vc.Volume.Update();
 
-	DecodeSamples(coreidx, voiceidx);
+	DecodeSamples(coreidx, voiceidx, irq);
 
 	StereoOut32 voiceOut(0, 0);
 	s32 Value = 0;
@@ -450,14 +454,14 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
 
 	// Write-back of raw voice data (post ADSR applied)
 	if (voiceidx == 1)
-		spu2M_WriteFast(((0 == coreidx) ? 0x400 : 0xc00) + OutPos, Value);
+		spu2M_WriteFast(((0 == coreidx) ? 0x400 : 0xc00) + OutPos, Value, irq);
 	else if (voiceidx == 3)
-		spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, Value);
+		spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, Value, irq);
 
 	return voiceOut;
 }
 
-static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx)
+static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx, const IrqWatch& irq)
 {
 	V_Core& thiscore(Cores[coreidx]);
 
@@ -469,7 +473,7 @@ static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx)
 	int32x4_t accum = vld1q_s32(&dest.Dry.Left);
 	for (uint voiceidx = 0; voiceidx < V_Core::NumVoices; ++voiceidx)
 	{
-		const StereoOut32 VVal(MixVoice(coreidx, voiceidx));
+		const StereoOut32 VVal(MixVoice(coreidx, voiceidx, irq));
 		const int32x2_t lr   = vld1_s32(&VVal.Left);
 		const int32x4_t vval = vcombine_s32(lr, lr);
 		const int32x4_t gate = vld1q_s32(&thiscore.VoiceGates[voiceidx].DryL);
@@ -479,7 +483,7 @@ static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx)
 #else
 	for (uint voiceidx = 0; voiceidx < V_Core::NumVoices; ++voiceidx)
 	{
-		StereoOut32 VVal(MixVoice(coreidx, voiceidx));
+		StereoOut32 VVal(MixVoice(coreidx, voiceidx, irq));
 
 		// Note: Results from MixVoice are ranged at 16 bits.
 
@@ -491,7 +495,7 @@ static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx)
 #endif
 }
 
-static __forceinline StereoOut32 MixCore(const uint coreidx, const VoiceMixSet& inVoices, const StereoOut32& Input, const StereoOut32& Ext)
+static __forceinline StereoOut32 MixCore(const uint coreidx, const VoiceMixSet& inVoices, const StereoOut32& Input, const StereoOut32& Ext, const IrqWatch& irq)
 {
 	V_Core& thiscore(Cores[coreidx]);
 
@@ -502,10 +506,10 @@ static __forceinline StereoOut32 MixCore(const uint coreidx, const VoiceMixSet& 
 	const VoiceMixSet Voices(clamp_mix(inVoices.Dry), clamp_mix(inVoices.Wet));
 
 	// Write Mixed results To Output Area
-	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1000 : 0x1800) + OutPos, Voices.Dry.Left);
-	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1200 : 0x1A00) + OutPos, Voices.Dry.Right);
-	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1400 : 0x1C00) + OutPos, Voices.Wet.Left);
-	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1600 : 0x1E00) + OutPos, Voices.Wet.Right);
+	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1000 : 0x1800) + OutPos, Voices.Dry.Left, irq);
+	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1200 : 0x1A00) + OutPos, Voices.Dry.Right, irq);
+	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1400 : 0x1C00) + OutPos, Voices.Wet.Left, irq);
+	spu2M_WriteFast(((0 == thiscore.Index) ? 0x1600 : 0x1E00) + OutPos, Voices.Wet.Right, irq);
 
 	// Write mixed results to logfile (if enabled)
 
@@ -617,10 +621,11 @@ void spu2Mix()
 	// Todo: Replace me with memzero initializer!
 	VoiceMixSet VoiceData[2] = {{StereoOut32(), StereoOut32()}, {StereoOut32(), StereoOut32()}}; // mixed voice data for each core.
 
-	MixCoreVoices(VoiceData[0], 0);
-	MixCoreVoices(VoiceData[1], 1);
+	const IrqWatch irq;
+	MixCoreVoices(VoiceData[0], 0, irq);
+	MixCoreVoices(VoiceData[1], 1, irq);
 
-	StereoOut32 Ext(MixCore(0, VoiceData[0], InputData[0], StereoOut32::Empty));
+	StereoOut32 Ext(MixCore(0, VoiceData[0], InputData[0], StereoOut32::Empty, irq));
 
 	if (arcade_spdif)
 	{
@@ -636,15 +641,15 @@ void spu2Mix()
 	}
 
 	// Commit Core 0 output to ram before mixing Core 1:
-	spu2M_WriteFast(0x800 + OutPos, Ext.Left);
-	spu2M_WriteFast(0xA00 + OutPos, Ext.Right);
+	spu2M_WriteFast(0x800 + OutPos, Ext.Left, irq);
+	spu2M_WriteFast(0xA00 + OutPos, Ext.Right, irq);
 
 #ifdef PCSX2_DEVBUILD
 	WaveDump::WriteCore(0, CoreSrc_External, Ext);
 #endif
 
 	Ext = ApplyVolume(Ext, Cores[1].ExtVol);
-	StereoOut32 Out(MixCore(1, VoiceData[1], InputData[1], Ext));
+	StereoOut32 Out(MixCore(1, VoiceData[1], InputData[1], Ext, irq));
 
 	if (PlayMode & 8)
 	{
