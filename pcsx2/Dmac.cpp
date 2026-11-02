@@ -4,6 +4,8 @@
 #include "Common.h"
 #include "Hardware.h"
 #include "MTVU.h"
+#include "IopThread/IopThreadVm.h"
+#include "Sif.h"
 
 #include "IPU/IPUdma.h"
 #include "ps2/HwInternal.h"
@@ -219,6 +221,27 @@ static __ri void DmaExec( void (*func)(), u32 mem, u32 value )
 	if (reg.chcr.STR)
 	{
 		const uint channel = ChannelNumber(mem);
+
+		// A stop of a SIF channel is the BIOS's sceSifSetDma making room for its next transfer: see SyncIopForSifChannelStop.
+		if (chcr.STR == 0 && (channel == DMAC_SIF0 || channel == DMAC_SIF1) &&
+			IopThread::SyncIopForSifChannelStop(channel == DMAC_SIF0 ? 0 : 1))
+		{
+			// A transfer the IOP finished on the way has its completion scheduled, a few cycles ahead: deliver it now, the stop would cancel it.
+			if (cpuRegs.interrupt & (1u << channel))
+			{
+				cpuClearInt(channel);
+				if (channel == DMAC_SIF0)
+					EEsif0Interrupt();
+				else
+					EEsif1Interrupt();
+			}
+			if (!reg.chcr.STR)
+			{
+				// Nothing is running any more, so the write lands on an idle channel.
+				reg.chcr.set(chcr._u32);
+				return;
+			}
+		}
 
 		//As the manual states "Fields other than STR can only be written to when the DMA is stopped"
 		//Also "The DMA may not stop properly just by writing 0 to STR"

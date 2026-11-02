@@ -154,6 +154,21 @@ namespace IopThread
 	/// it is set too (the item is then applied at once, which is Off's order).
 	bool DeferSifPump(u32 channel);
 
+	/// EE thread. The EE is about to stop a SIF channel that is running: a write of STR=0 to D5_CHCR or D6_CHCR (`channel` 0 for SIF0, 1 for
+	/// SIF1). The BIOS's sceSifSetDma does this at every call, to make room for its next transfer, and rebuilds the channel from the registers
+	/// the stop leaves. A transfer in flight may be waiting for the IOP: the IOP has not yet re-armed its DMA 9 or 10 after the transfer before.
+	/// On a console the IOP did that within microseconds, so by the time of the next call the transfer is done; an IOP that runs behind the EE
+	/// has not got there, and the stop cuts the transfer in the middle of a block, saves the rest as a new tag, and cancels the completion
+	/// interrupt. The IOP then gets a stream whose block boundaries are not where its tags say, and the BIOS's count of finished transfers is
+	/// one short for good.
+	///
+	/// So the IOP is brought up to the EE's cycle first, as for a pump the EE starts (a Threaded hold, a Lockstep catch-up), and a transfer it
+	/// then finishes completes before the stop. True when the IOP was brought up, and the caller should deliver a completion interrupt that
+	/// the transfer scheduled meanwhile instead of letting the stop cancel it. False, and nothing done, in Off, with no IOP thread, with the
+	/// IOP already stopped (a hold, a CallOnEE function), and in Lockstep without a skew or with that channel's holds off (the skew test arms
+	/// that defer the pump).
+	bool SyncIopForSifChannelStop(u32 channel);
+
 	/// Any thread. For a host thread that calls into IOP state directly and cannot take a hold (the
 	/// physical-disc thread's new-disc callback). With an IOP thread running, queues `command` for it and
 	/// returns true: it runs on the IOP thread between slices (Lockstep: in the next handoff). Without one

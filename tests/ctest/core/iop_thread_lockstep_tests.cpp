@@ -19,7 +19,9 @@
 #include "IopThread/IopBridge.h"
 #include "IopThread/IopThreadMode.h"
 #include "IopThread/IopThreadVm.h"
+#include "ps2/HwInternal.h"
 #include "R3000A.h"
+#include "Sif.h"
 #include "R5900.h"
 #include "VMManager.h"
 #include "VUmicro.h"
@@ -996,6 +998,95 @@ TEST_F(LockstepMachine, AHoldOnOneChannelLeavesTheOtherDeferred)
 	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 0u);
 	EXPECT_FALSE(IopThread::DeferSifPump(1)) << "SIF1 is held";
 	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 1u);
+}
+
+// The BIOS's sceSifSetDma writes D6_CHCR = 0 at every call, to stop the SIF1 channel and rebuild it. A transfer in flight is waiting for
+// the IOP to re-arm its DMA 10, which a console's IOP did long before, and an IOP that runs a skew behind has not: the stop then cuts
+// the transfer in the middle of a block and cancels its completion interrupt (MGS3, fade into a cutscene: the audio stream dies, and at a
+// skew of one frame the game hangs). The stop is a point where the IOP has to be current, like the start of a pump.
+TEST_F(LockstepMachine, StoppingARunningSifChannelRunsASkewedIopUpFirstAndKeepsAFinishedTransfersCompletion)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 60000;
+	for (const u32 sif : {0u, 1u})
+	{
+		SettingsGuard guard;
+		SkewGuard skew_guard;
+		AskForLockstep();
+		IopThread::SetLockstepSkew(kSkew);
+		IopThread::SetLockstepSkewHoldChannels(sif == 0 ? 1 : 2);
+		Reset();
+		IopThread::ChooseMode();
+		IopThread::SyncThread();
+		ASSERT_TRUE(IopThread::LockstepActive());
+		const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+		for (u32 i = 0; i < 40; i++)
+		{
+			cpuRegs.cycle += 3072;
+			test();
+		}
+		ASSERT_GT(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()), kSkew - 23);
+
+		// The channel the EE started and the IOP has not taken up yet, with the end-of-transfer interrupt of a transfer the IOP
+		// finishes in its catch-up scheduled the way EndEE schedules it.
+		const u32 chcr_reg = sif == 0 ? D5_CHCR : D6_CHCR;
+		const EE_EventType event = sif == 0 ? DMAC_SIF0 : DMAC_SIF1;
+		psHu32(chcr_reg) = 0x184;
+		psHu32(DMAC_STAT) &= 0xFFFF; // no interrupt status bit set
+		CPU_INT(event, 8);
+		const u64 catchups = IopThread::g_thread.LockstepCatchUps();
+		const u64 cycle = cpuRegs.cycle;
+
+		hwWrite32<0x0c>(chcr_reg, 0);
+
+		EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), catchups + 1) << "SIF" << sif << ": the IOP is run up to the EE before the stop";
+		EXPECT_GE(IopThread::g_thread.PublishedPos(), cycle) << "SIF" << sif;
+		EXPECT_EQ(psHu32(chcr_reg) & 0x100, 0u) << "SIF" << sif << ": the channel is stopped";
+		EXPECT_FALSE(cpuRegs.interrupt & (1u << event)) << "SIF" << sif;
+		EXPECT_NE(psHu32(DMAC_STAT) & (1u << event), 0u) << "SIF" << sif << ": the completion was delivered, not cancelled with the stop";
+		IopThread::StopThread();
+	}
+}
+
+TEST_F(LockstepMachine, StoppingARunningSifChannelDoesNothingMoreThanItDidWithoutASkewOrWithTheChannelDeferred)
+{
+	REQUIRE_ARM64_HOST();
+	struct Arm
+	{
+		s64 skew;
+		u32 hold_mask;
+		const char* what;
+	};
+	for (const Arm arm : {Arm{0, 3, "no skew"}, Arm{60000, 0, "deferring skew"}, Arm{60000, 1, "skew holding SIF0 only"}})
+	{
+		SettingsGuard guard;
+		SkewGuard skew_guard;
+		AskForLockstep();
+		IopThread::SetLockstepSkew(arm.skew);
+		IopThread::SetLockstepSkewHoldChannels(arm.hold_mask);
+		Reset();
+		IopThread::ChooseMode();
+		IopThread::SyncThread();
+		ASSERT_TRUE(IopThread::LockstepActive());
+		const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+		for (u32 i = 0; i < 40; i++)
+		{
+			cpuRegs.cycle += 3072;
+			test();
+		}
+		psHu32(D6_CHCR) = 0x184;
+		psHu32(DMAC_STAT) &= 0xFFFF;
+		CPU_INT(DMAC_SIF1, 8);
+		const u64 catchups = IopThread::g_thread.LockstepCatchUps();
+
+		hwWrite32<0x0c>(D6_CHCR, 0);
+
+		EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), catchups) << arm.what << ": no catch-up";
+		EXPECT_EQ(psHu32(D6_CHCR) & 0x100, 0u) << arm.what;
+		EXPECT_FALSE(cpuRegs.interrupt & (1u << DMAC_SIF1)) << arm.what << ": the stop cancels the pending completion, as it always did";
+		EXPECT_EQ(psHu32(DMAC_STAT) & (1u << DMAC_SIF1), 0u) << arm.what;
+		IopThread::StopThread();
+	}
 }
 
 TEST_F(LockstepMachine, HoldsDoNothingWithASkewOfZero)

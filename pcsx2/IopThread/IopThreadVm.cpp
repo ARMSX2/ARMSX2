@@ -662,6 +662,33 @@ namespace IopThread
 		return true;
 	}
 
+	bool SyncIopForSifChannelStop(u32 channel)
+	{
+		pxAssertMsg(channel <= 1, "only the SIF0 and SIF1 channels are synchronised at a stop");
+		if (s_mode == IopThreadMode::Off)
+			return false;
+		if (!g_thread.IsRunning() || g_thread.IopIsStopped())
+			return false;
+		if (s_mode == IopThreadMode::Threaded)
+		{
+			// The IOP runs up to the EE's cycle and stops; the hold ends with the scope. What it did on the way, the IOP-started pump
+			// included, ran on this thread (the hold's spin serves it) before the scope ended.
+			ScopedHold hold(g_thread, HoldKind::Emulation);
+			return true;
+		}
+		// Lockstep: the IOP is current already unless a skew keeps it behind, and then only the holds variant catches it up at an EE event
+		// (the deferring variant would hand the IOP the stop D cycles early).
+		if (g_thread.LockstepSkew() > 0 && ((s_lockstep_skew_holds >> channel) & 1))
+		{
+			const u64 reached = g_thread.LockstepCatchUp(cpuRegs.cycle);
+			// RunLockstepSlice's books for a skew, as at a held pump.
+			EEsCycle = static_cast<s32>(cpuRegs.cycle - reached);
+			EEoCycle = cpuRegs.cycle;
+			return true;
+		}
+		return false;
+	}
+
 	bool TryPostToIop(HostCommandQueue::Command command)
 	{
 		return g_thread.TryPostHostCommand(std::move(command)) != 0;
