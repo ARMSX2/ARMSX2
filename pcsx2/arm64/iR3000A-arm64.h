@@ -77,6 +77,19 @@ void iopStoreClearHit(u32 addr);
 // call them with a single BL so the fast path adds no per-site icache cost.
 extern const void* g_iopStoreStub[3];
 
+// Out-of-line RAM-load fast-path stubs, same lifetime and calling style as the
+// store stubs: w0 = address in, extended loaded value in w0 out. Indexed by
+// IopLoadKind.
+enum class IopLoadKind : int
+{
+	LB = 0,
+	LBU = 1,
+	LH = 2,
+	LHU = 3,
+	LW = 4,
+};
+extern const void* g_iopLoadStub[5];
+
 void _psxFlushConstReg(int reg);
 void _psxFlushConstRegs();
 

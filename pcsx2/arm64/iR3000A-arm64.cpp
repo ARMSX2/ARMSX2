@@ -283,6 +283,87 @@ static const void* _DynGen_StoreStub(int size)
 	return retval;
 }
 
+// Out-of-line RAM-load fast path, one stub per access kind (see
+// rpsxLoadGeneric, which emits a single BL here per load site).
+//
+// Calling convention: w0 = guest address; returns the loaded value in w0 with
+// the sign/zero extension of the access already applied. Called after a full
+// register flush like the store stubs, so every caller-saved register is
+// scratch; x21 = RPSXSTATE is callee-saved across the slow-path call.
+//
+// Routing is the store stub's: (addr & 0x1f800000) == 0 exactly selects the
+// pages iopMemRead* serves from psxMemRLUT as plain RAM (t < 0x80 after the
+// 0x1fffffff physical mask, every KUSEG/KSEG0/KSEG1 mirror alike), and the
+// byte read is Main[addr & (ExposedIopRam-1)] -- the same byte the C path
+// reads, since its ((page & mask) << 16) | (mem & 0xffff) reduces to that mask
+// for both the 2MB and the 8MB configuration. iopMemRead* does not look at
+// CP0 Status.IsC, and neither does the stub. Anything else (hardware pages,
+// ROM, SIF, DEV9, the parallel-port page, unmapped space) runs iopMemRead*.
+//
+// Regenerated on every recResetIOP, so the baked mask and RAM base follow
+// extra-memory-mode flips.
+const void* g_iopLoadStub[5] = {};
+
+static const void* _DynGen_LoadStub(IopLoadKind kind)
+{
+	u8* retval = armGetCurrentCodePointer();
+
+	const u32 ram_mask = Ps2MemSize::ExposedIopRam - 1;
+	a64::Label slowPath;
+
+	armAsm->Tst(a64::w0, 0x1f800000);
+	armAsm->B(&slowPath, a64::ne);
+
+	armMoveAddressToReg(a64::x4, iopMem->Main);
+	armAsm->And(a64::w2, a64::w0, ram_mask);
+	switch (kind)
+	{
+		case IopLoadKind::LB:  armAsm->Ldrsb(a64::w0, a64::MemOperand(a64::x4, a64::x2)); break;
+		case IopLoadKind::LBU: armAsm->Ldrb(a64::w0, a64::MemOperand(a64::x4, a64::x2));  break;
+		case IopLoadKind::LH:  armAsm->Ldrsh(a64::w0, a64::MemOperand(a64::x4, a64::x2)); break;
+		case IopLoadKind::LHU: armAsm->Ldrh(a64::w0, a64::MemOperand(a64::x4, a64::x2));  break;
+		case IopLoadKind::LW:  armAsm->Ldr(a64::w0, a64::MemOperand(a64::x4, a64::x2));   break;
+	}
+	armAsm->Ret();
+
+	armAsm->Bind(&slowPath);
+	if (kind == IopLoadKind::LW)
+	{
+		// Nothing to extend: tail-jump to C, which returns to the load site.
+		armEmitJmp((void*)iopMemRead32);
+	}
+	else
+	{
+		// The C functions return a u8/u16 whose upper register bits are not
+		// defined, so extend after the call, as the site used to.
+		armAsm->Sub(a64::sp, a64::sp, 16);
+		armAsm->Stp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+		switch (kind)
+		{
+			case IopLoadKind::LB:
+			case IopLoadKind::LBU:
+				armEmitCall((void*)iopMemRead8);
+				if (kind == IopLoadKind::LB)
+					armAsm->Sxtb(a64::w0, a64::w0);
+				else
+					armAsm->Uxtb(a64::w0, a64::w0);
+				break;
+			default:
+				armEmitCall((void*)iopMemRead16);
+				if (kind == IopLoadKind::LH)
+					armAsm->Sxth(a64::w0, a64::w0);
+				else
+					armAsm->Uxth(a64::w0, a64::w0);
+				break;
+		}
+		armAsm->Ldp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+		armAsm->Add(a64::sp, a64::sp, 16);
+		armAsm->Ret();
+	}
+
+	return retval;
+}
+
 // Error handler for jumps to unmapped memory
 static const void* _DynGen_UnmappedRecLUTPage()
 {
@@ -307,6 +388,8 @@ static void _DynGen_Dispatchers()
 	g_iopStoreStub[0] = _DynGen_StoreStub(8);
 	g_iopStoreStub[1] = _DynGen_StoreStub(16);
 	g_iopStoreStub[2] = _DynGen_StoreStub(32);
+	for (int k = 0; k < 5; k++)
+		g_iopLoadStub[k] = _DynGen_LoadStub(static_cast<IopLoadKind>(k));
 
 	// Block linker: stale / not-yet-compiled link sites divert to
 	// iopDispatcherReg — re-dispatch from the pc the site's tail already

@@ -644,34 +644,41 @@ static void rpsxLoadGeneric(int size, bool sign)
 			armAsm->Add(RWARG1, RWARG1, static_cast<s64>(static_cast<s32>(_Imm_)));
 	}
 
-	// Call iopMemRead — address in w0, result returned in w0
-	switch (size)
+	// Compile-time hardware/ROM/unmapped targets skip the stub and call C
+	// straight away -- a hardware read's result is only known after the call.
+	// Everything else goes through the per-kind RAM stub, which also falls
+	// back to iopMemRead* for a runtime address that is not RAM; it returns
+	// the value already extended (see _DynGen_LoadStub).
+	const IopLoadKind kind = size == 8 ? (sign ? IopLoadKind::LB : IopLoadKind::LBU)
+	                       : size == 16 ? (sign ? IopLoadKind::LH : IopLoadKind::LHU)
+	                                    : IopLoadKind::LW;
+	if (rs_const && ((rs_val + _Imm_) & 0x1f800000) != 0)
 	{
-		case 8:  armEmitCall((void*)iopMemRead8);  break;
-		case 16: armEmitCall((void*)iopMemRead16); break;
-		case 32: armEmitCall((void*)iopMemRead32); break;
+		switch (size)
+		{
+			case 8:  armEmitCall((void*)iopMemRead8);  break;
+			case 16: armEmitCall((void*)iopMemRead16); break;
+			case 32: armEmitCall((void*)iopMemRead32); break;
+		}
+
+		if (!_Rt_)
+			return; // dummy read
+
+		switch (kind)
+		{
+			case IopLoadKind::LB:  armAsm->Sxtb(RWARG1, RWARG1); break;
+			case IopLoadKind::LBU: armAsm->Uxtb(RWARG1, RWARG1); break;
+			case IopLoadKind::LH:  armAsm->Sxth(RWARG1, RWARG1); break;
+			case IopLoadKind::LHU: armAsm->Uxth(RWARG1, RWARG1); break;
+			case IopLoadKind::LW:  break;
+		}
 	}
-
-	if (!_Rt_)
-		return; // dummy read
-
-	// Sign/zero extend result (w0)
-	switch (size)
+	else
 	{
-		case 8:
-			if (sign)
-				armAsm->Sxtb(RWARG1, RWARG1);
-			else
-				armAsm->Uxtb(RWARG1, RWARG1);
-			break;
-		case 16:
-			if (sign)
-				armAsm->Sxth(RWARG1, RWARG1);
-			else
-				armAsm->Uxth(RWARG1, RWARG1);
-			break;
-		case 32:
-			break; // no extension needed
+		armEmitCall(g_iopLoadStub[static_cast<int>(kind)]);
+
+		if (!_Rt_)
+			return; // dummy read
 	}
 
 	// Store result to destination register
