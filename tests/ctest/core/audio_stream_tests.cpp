@@ -42,7 +42,8 @@ namespace
 		{
 		}
 
-		void Init(bool stretch)
+		// threaded = false is the reference: the same expansion and stretching, run on the calling thread.
+		void Init(bool stretch, bool threaded = true)
 		{
 			static constexpr const std::array<SampleReader, static_cast<size_t>(AudioExpansionMode::Count)> readers = {{
 				&StereoSampleReaderImpl,
@@ -58,7 +59,7 @@ namespace
 					READ_CHANNEL_FRONT_CENTER, READ_CHANNEL_LFE, READ_CHANNEL_SIDE_LEFT, READ_CHANNEL_SIDE_RIGHT,
 					READ_CHANNEL_REAR_LEFT, READ_CHANNEL_REAR_RIGHT>,
 			}};
-			BaseInitialize(readers[static_cast<size_t>(m_parameters.expansion_mode)], stretch);
+			BaseInitialize(readers[static_cast<size_t>(m_parameters.expansion_mode)], stretch, threaded);
 		}
 
 		u32 OutputChannels() const { return m_output_channels; }
@@ -102,6 +103,46 @@ namespace
 		p.expansion_mode = AudioExpansionMode::Disabled;
 		p.buffer_ms = 50;
 		return p;
+	}
+
+	// Waits until the stretch worker has processed everything written so far.
+	bool WaitUntilProcessed(const AudioStream& s)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+		while (s.GetPendingInputChunks() != 0)
+		{
+			if (std::chrono::steady_clock::now() > deadline)
+				return false;
+			std::this_thread::yield();
+		}
+		return true;
+	}
+
+	// Feeds the same chunks to a stream run inline and to one run by the worker, with no consumer reading in
+	// between, and returns both outputs. Without a reader the stretcher's inputs (the chunks and the ring's
+	// fullness) do not depend on timing, so the two must agree to the bit.
+	struct Pair
+	{
+		std::vector<float> inline_out;
+		std::vector<float> threaded_out;
+	};
+
+	Pair FeedBoth(const AudioStreamParameters& params, bool stretch, u64 chunks)
+	{
+		TestStream inline_stream(params);
+		TestStream threaded_stream(params);
+		inline_stream.Init(stretch, false);
+		threaded_stream.Init(stretch, true);
+
+		std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+		for (u64 i = 0; i < chunks; i++)
+		{
+			FillChunk(chunk.data(), i);
+			inline_stream.WriteChunk(chunk.data());
+			threaded_stream.WriteChunk(chunk.data());
+		}
+		EXPECT_TRUE(WaitUntilProcessed(threaded_stream));
+		return {inline_stream.Drain(), threaded_stream.Drain()};
 	}
 } // namespace
 
@@ -158,8 +199,9 @@ TEST(AudioStream, WithoutStretchAFullRingDropsTheNewChunksAndKeepsTheOldOnes)
 
 TEST(AudioStream, StretchedOutputTracksTheInputWhenTheConsumerKeepsUp)
 {
+	// Inline, so that each chunk has been stretched by the time the consumer looks at the ring.
 	TestStream s(DefaultParams());
-	s.Init(true);
+	s.Init(true, false);
 	ASSERT_TRUE(s.IsStretchEnabled());
 
 	// A consumer that leaves the target amount buffered and then takes exactly what the producer gives it. The
@@ -188,6 +230,161 @@ TEST(AudioStream, StretchedOutputTracksTheInputWhenTheConsumerKeepsUp)
 	EXPECT_TRUE(finite);
 	EXPECT_GT(out_frames, in_frames * 9 / 10);
 	EXPECT_LT(out_frames, in_frames * 11 / 10);
+}
+
+TEST(AudioStream, TheWorkerStretchesToTheSameBitsAsTheInlinePath)
+{
+	// 400 chunks is 0.5 s of input and fits the ring; the stretcher is active the whole time because the ring
+	// starts empty.
+	const Pair p = FeedBoth(DefaultParams(), true, 400);
+	ASSERT_FALSE(p.inline_out.empty());
+	ASSERT_EQ(p.inline_out.size(), p.threaded_out.size());
+	EXPECT_EQ(0, std::memcmp(p.inline_out.data(), p.threaded_out.data(), p.inline_out.size() * sizeof(float)));
+}
+
+TEST(AudioStream, AQueueFullOfChunksMakesTheProducerWaitInsteadOfDroppingThem)
+{
+	// Far more chunks than the worker's queue holds, written as fast as the producer can, so the producer has to wait
+	// for room many times. Nothing may be lost or reordered: the result matches the inline path.
+	const Pair p = FeedBoth(DefaultParams(), true, 6000);
+	ASSERT_FALSE(p.inline_out.empty());
+	ASSERT_EQ(p.inline_out.size(), p.threaded_out.size());
+	EXPECT_EQ(0, std::memcmp(p.inline_out.data(), p.threaded_out.data(), p.inline_out.size() * sizeof(float)));
+}
+
+TEST(AudioStream, TheWorkerExpandsToTheSameBitsAsTheInlinePath)
+{
+	for (const bool stretch : {false, true})
+	{
+		AudioStreamParameters params = DefaultParams();
+		params.expansion_mode = AudioExpansionMode::Quadraphonic;
+		params.expand_block_size = 512;
+		const Pair p = FeedBoth(params, stretch, 800);
+		ASSERT_FALSE(p.inline_out.empty()) << "stretch " << stretch;
+		ASSERT_EQ(p.inline_out.size(), p.threaded_out.size()) << "stretch " << stretch;
+		EXPECT_EQ(0, std::memcmp(p.inline_out.data(), p.threaded_out.data(), p.inline_out.size() * sizeof(float)))
+			<< "stretch " << stretch;
+	}
+}
+
+TEST(AudioStream, EmptyBufferThrowsAwayQueuedInputAndTheStreamKeepsWorking)
+{
+	TestStream s(DefaultParams());
+	s.Init(true);
+
+	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+	for (u64 i = 0; i < 100; i++)
+	{
+		FillChunk(chunk.data(), i);
+		s.WriteChunk(chunk.data());
+	}
+	s.EmptyBuffer();
+	// Nothing queued before the call survives it: whatever the worker had not got to is gone and the ring is empty.
+	EXPECT_EQ(s.GetPendingInputChunks(), 0u);
+	EXPECT_EQ(s.GetBufferedFramesRelaxed(), 0u);
+
+	// Chunks written afterwards flow as before.
+	for (u64 i = 100; i < 300; i++)
+	{
+		FillChunk(chunk.data(), i);
+		s.WriteChunk(chunk.data());
+	}
+	ASSERT_TRUE(WaitUntilProcessed(s));
+	EXPECT_GT(s.GetBufferedFramesRelaxed(), 0u);
+	const std::vector<float> out = s.Drain();
+	EXPECT_FALSE(out.empty());
+	for (const float v : out)
+		ASSERT_TRUE(std::isfinite(v));
+}
+
+TEST(AudioStream, TurningStretchOffAndOnMovesTheWriterBetweenTheWorkerAndTheCaller)
+{
+	TestStream s(DefaultParams());
+	s.Init(true);
+	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+
+	for (u64 i = 0; i < 50; i++)
+	{
+		FillChunk(chunk.data(), i);
+		s.WriteChunk(chunk.data());
+	}
+	ASSERT_TRUE(WaitUntilProcessed(s));
+	EXPECT_GT(s.GetBufferedFramesRelaxed(), 0u);
+
+	// Off: the ring is rebuilt empty and chunks are copied straight in, bit for bit.
+	s.SetStretchEnabled(false);
+	EXPECT_FALSE(s.IsStretchEnabled());
+	EXPECT_EQ(s.GetBufferedFramesRelaxed(), 0u);
+	FillChunk(chunk.data(), 1000);
+	s.WriteChunk(chunk.data());
+	EXPECT_EQ(s.GetPendingInputChunks(), 0u);
+	std::vector<float> got = s.Drain();
+	ASSERT_EQ(got.size(), chunk.size());
+	EXPECT_EQ(0, std::memcmp(got.data(), chunk.data(), chunk.size() * sizeof(float)));
+
+	// On again: a new worker.
+	s.SetStretchEnabled(true);
+	EXPECT_TRUE(s.IsStretchEnabled());
+	for (u64 i = 0; i < 50; i++)
+	{
+		FillChunk(chunk.data(), 2000 + i);
+		s.WriteChunk(chunk.data());
+	}
+	ASSERT_TRUE(WaitUntilProcessed(s));
+	EXPECT_GT(s.GetBufferedFramesRelaxed(), 0u);
+}
+
+TEST(AudioStream, DestroyingAStreamWithInputStillQueuedStopsTheWorker)
+{
+	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+	for (int round = 0; round < 20; round++)
+	{
+		TestStream s(DefaultParams());
+		s.Init(true);
+		for (u64 i = 0; i < 120; i++)
+		{
+			FillChunk(chunk.data(), i);
+			s.WriteChunk(chunk.data());
+		}
+		// Destroyed here with the worker mid-queue; the test passes by returning.
+	}
+	SUCCEED();
+}
+
+TEST(AudioStream, AConsumerThreadReadingWhileTheWorkerWritesGetsFiniteAudio)
+{
+	TestStream s(DefaultParams());
+	s.Init(true);
+
+	std::atomic<bool> stop{false};
+	std::atomic<bool> bad{false};
+	std::atomic<u64> got_frames{0};
+	std::thread consumer([&]() {
+		std::vector<float> block(480 * 2);
+		while (!stop.load(std::memory_order_acquire))
+		{
+			const u32 got = s.PullFrames(block.data(), 480);
+			for (u32 k = 0; k < got * 2; k++)
+				if (!std::isfinite(block[k]) || std::fabs(block[k]) > 2.0f)
+					bad.store(true);
+			got_frames.fetch_add(got, std::memory_order_relaxed);
+			std::this_thread::sleep_for(std::chrono::microseconds(500));
+		}
+	});
+
+	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+	for (u64 i = 0; i < 3000; i++)
+	{
+		FillChunk(chunk.data(), i);
+		s.WriteChunk(chunk.data());
+		if (i % 8 == 7)
+			std::this_thread::sleep_for(std::chrono::microseconds(300));
+	}
+	EXPECT_TRUE(WaitUntilProcessed(s));
+	stop.store(true, std::memory_order_release);
+	consumer.join();
+	EXPECT_FALSE(bad.load());
+	EXPECT_GT(got_frames.load(), 10000u);
 }
 
 #ifdef AUDIO_STREAM_TEST_HAS_CPU_CLOCKS

@@ -16,6 +16,7 @@
 class Error;
 
 class FreeSurroundDecoder;
+class StretchWorker;
 namespace soundtouch
 {
 	class SoundTouch;
@@ -63,13 +64,16 @@ public:
 	__fi u32 GetBufferSize() const { return m_buffer_size; }
 	__fi u32 GetTargetBufferSize() const { return m_target_buffer_size; }
 	__fi u32 GetOutputVolume() const { return m_volume; }
-	__fi float GetNominalTempo() const { return m_nominal_rate; }
+	__fi float GetNominalTempo() const { return m_nominal_rate.load(std::memory_order_relaxed); }
 	__fi AudioExpansionMode GetExpansionMode() const { return m_parameters.expansion_mode; }
 	__fi bool IsExpansionEnabled() const { return m_parameters.expansion_mode != AudioExpansionMode::Disabled; }
 	__fi bool IsStretchEnabled() const { return m_stretch_enabled; }
 	__fi bool IsPaused() const { return m_paused; }
 
 	u32 GetBufferedFramesRelaxed() const;
+
+	/// Chunks written with WriteChunk() that the stretch worker has not finished yet; always 0 when there is no worker.
+	u32 GetPendingInputChunks() const;
 
 	// libretro: pull up to num_frames decoded frames out of the ring; the
 	// frontend drives audio timing instead of a backend device thread.
@@ -81,6 +85,9 @@ public:
 
 	void SetOutputVolume(u32 volume);
 
+	/// Hands one chunk (CHUNK_SIZE stereo frames) to the stream. Without stretching or expansion it is copied into the
+	/// ring at once. With either, it is queued for the stretch worker thread, which does the expansion and the
+	/// time stretching and then writes the ring; this call only copies the chunk. Call it from one thread at a time.
 	void WriteChunk(const SampleType* chunk);
 
 	void BeginWrite(SampleType** buffer_ptr, u32* num_frames);
@@ -118,7 +125,10 @@ protected:
 	using SampleReader = void (*)(SampleType* dest, const SampleType* src, u32 num_frames);
 
 	AudioStream(u32 sample_rate, const AudioStreamParameters& parameters);
-	void BaseInitialize(SampleReader sample_reader, bool stretch_enabled);
+
+	/// threaded = false runs expansion and stretching inline on the thread that calls WriteChunk(), which is the same
+	/// work the worker does. Tests use it as the reference; a stream also falls back to it if a thread cannot be started.
+	void BaseInitialize(SampleReader sample_reader, bool stretch_enabled, bool threaded = true);
 
 	void ReadFrames(SampleType* samples, u32 num_frames);
 
@@ -139,6 +149,8 @@ protected:
 	bool m_paused = false;
 
 private:
+	friend class StretchWorker;
+
 	static constexpr u32 AVERAGING_BUFFER_SIZE = 256;
 	static constexpr u32 AVERAGING_WINDOW = 50;
 	static constexpr u32 STRETCH_RESET_THRESHOLD = 5;
@@ -165,7 +177,14 @@ private:
 
 	void StretchAllocate();
 	void StretchDestroy();
+
+	/// Expansion and stretching of one chunk, then the write into the ring. Runs on the stretch worker, or on the
+	/// WriteChunk() caller when there is none.
+	void ProcessChunk(const SampleType* chunk);
 	void StretchWriteBlock(const float* block);
+
+	void StartWorker();
+	void StopWorker();
 	void StretchUnderrun();
 	void StretchOverrun();
 
@@ -182,10 +201,12 @@ private:
 	std::unique_ptr<soundtouch::SoundTouch> m_soundtouch;
 
 	u32 m_target_buffer_size = 0;
-	u32 m_stretch_reset = STRETCH_RESET_THRESHOLD;
+	// Raised by the consumer (underrun) and by whoever writes the ring (overrun), cleared by the stretcher.
+	std::atomic<u32> m_stretch_reset{STRETCH_RESET_THRESHOLD};
 
 	u32 m_stretch_ok_count = 0;
-	float m_nominal_rate = 1.0f;
+	// Set from the producer's side, read by the stretcher.
+	std::atomic<float> m_nominal_rate{1.0f};
 	float m_dynamic_target_usage = 0.0f;
 
 	u32 m_average_position = 0;
@@ -194,8 +215,16 @@ private:
 
 	std::array<float, AVERAGING_BUFFER_SIZE> m_average_fullness = {};
 
-	// temporary staging buffer, used for timestretching
+	// staging buffer for BeginWrite()/WriteFrame()/EndWrite()
 	std::unique_ptr<SampleType[]> m_staging_buffer;
+
+	// output of the stretcher for one chunk; only the thread running ProcessChunk() touches it
+	std::unique_ptr<SampleType[]> m_stretch_out_buffer;
+
+	// The thread that expands and stretches, and the queue that feeds it. Null when neither is enabled, and when
+	// BaseInitialize() was told not to (or could not) start it.
+	std::unique_ptr<StretchWorker> m_worker;
+	bool m_threaded = true;
 
 	std::unique_ptr<FreeSurroundDecoder> m_expander;
 

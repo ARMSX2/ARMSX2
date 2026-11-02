@@ -13,6 +13,7 @@
 #include "common/Pcsx2Defs.h"
 #include "common/SettingsWrapper.h"
 #include "common/SmallString.h"
+#include "common/Threading.h"
 #include "common/Timer.h"
 
 #include "SoundTouch.h"
@@ -20,8 +21,10 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <limits>
+#include <mutex>
 
 //#define LOG_UNDERRUN(...) DEV_LOG(__VA_ARGS__)
 #define LOG_UNDERRUN(...) (void)0
@@ -36,6 +39,151 @@ static constexpr const std::array<std::pair<u8, u8>, static_cast<size_t>(AudioEx
 		{u8(6), u8(6)}, // Surround51
 		{u8(8), u8(8)}, // Surround71
 	}};
+
+
+// Runs expansion and time stretching for an AudioStream on a thread of its own, so that the thread producing SPU2 output
+// only copies each chunk into a queue.
+//
+// The queue is a ring of whole chunks with one producer (whoever calls WriteChunk(); callers are mutually exclusive) and
+// one consumer (the worker). The consumer end is also usable by a thread that holds StateMutex(), which is how
+// EmptyBuffer() discards what is queued. StateMutex() guards everything the stretcher and expander own, and the
+// worker holds it while it processes a chunk, not while it waits.
+//
+// A chunk stays counted as pending until it has been processed, so Pending() == 0 means every chunk handed over has
+// reached the ring.
+class StretchWorker
+{
+public:
+	explicit StretchWorker(AudioStream& stream)
+		: m_stream(stream)
+		, m_slots(std::make_unique<float[]>(static_cast<size_t>(QUEUE_CHUNKS) * CHUNK_FLOATS))
+	{
+	}
+
+	~StretchWorker() { Stop(); }
+
+	bool Start() { return m_thread.Start([this]() { Run(); }); }
+
+	void Stop()
+	{
+		if (!m_thread.Joinable())
+			return;
+		{
+			std::lock_guard<std::mutex> lock(m_wake_mutex);
+			m_quit = true;
+			m_sleeping.store(false, std::memory_order_seq_cst);
+		}
+		m_wake_cv.notify_one();
+		m_space_cv.notify_one();
+		m_thread.Join();
+	}
+
+	u32 Pending() const { return m_wpos.load(std::memory_order_acquire) - m_rpos.load(std::memory_order_acquire); }
+
+	std::mutex& StateMutex() { return m_state_mutex; }
+
+	// The caller holds StateMutex(), so the worker is not inside a chunk.
+	void DiscardPending() { m_rpos.store(m_wpos.load(std::memory_order_acquire), std::memory_order_release); }
+
+	// Producer side. Copies the chunk and wakes the worker if it is asleep. A full queue means the worker is more than
+	// QUEUE_CHUNKS behind (170 ms of audio); the producer then waits for room, which is the back-pressure the
+	// stretcher used to apply by running on the producer's thread.
+	void Push(const float* chunk)
+	{
+		const u32 w = m_wpos.load(std::memory_order_relaxed);
+		if (w - m_rpos.load(std::memory_order_acquire) >= QUEUE_CHUNKS) [[unlikely]]
+			WaitForSpace(w);
+
+		std::memcpy(&m_slots[static_cast<size_t>(w % QUEUE_CHUNKS) * CHUNK_FLOATS], chunk, CHUNK_FLOATS * sizeof(float));
+		m_wpos.store(w + 1, std::memory_order_seq_cst);
+
+		// Pairs with the seq_cst store of m_sleeping in Run(): either the worker sees this chunk when it re-checks the
+		// queue, or this load sees that it is about to sleep.
+		if (m_sleeping.load(std::memory_order_seq_cst))
+		{
+			{
+				std::lock_guard<std::mutex> lock(m_wake_mutex);
+				m_sleeping.store(false, std::memory_order_seq_cst);
+			}
+			m_wake_cv.notify_one();
+		}
+	}
+
+private:
+	static constexpr u32 QUEUE_CHUNKS = 128;
+	static constexpr u32 CHUNK_FLOATS = AudioStream::CHUNK_SIZE * AudioStream::NUM_INPUT_CHANNELS;
+
+	// Takes one chunk off the queue and processes it. False when the queue was empty.
+	bool ProcessOne()
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_state_mutex);
+			const u32 r = m_rpos.load(std::memory_order_relaxed);
+			if (r == m_wpos.load(std::memory_order_acquire))
+				return false;
+			m_stream.ProcessChunk(&m_slots[static_cast<size_t>(r % QUEUE_CHUNKS) * CHUNK_FLOATS]);
+			m_rpos.store(r + 1, std::memory_order_seq_cst);
+		}
+		if (m_producer_waiting.load(std::memory_order_seq_cst))
+		{
+			{
+				std::lock_guard<std::mutex> lock(m_wake_mutex);
+			}
+			m_space_cv.notify_one();
+		}
+		return true;
+	}
+
+	void Run()
+	{
+		Threading::SetNameOfCurrentThread("AudioStretch");
+		for (;;)
+		{
+			while (ProcessOne())
+			{
+			}
+
+			m_sleeping.store(true, std::memory_order_seq_cst);
+			if (m_wpos.load(std::memory_order_seq_cst) != m_rpos.load(std::memory_order_relaxed))
+			{
+				m_sleeping.store(false, std::memory_order_seq_cst);
+				continue;
+			}
+
+			std::unique_lock<std::mutex> lock(m_wake_mutex);
+			m_wake_cv.wait(lock, [this]() { return m_quit || !m_sleeping.load(std::memory_order_seq_cst); });
+			if (m_quit)
+				return;
+		}
+	}
+
+	void WaitForSpace(u32 w)
+	{
+		std::unique_lock<std::mutex> lock(m_wake_mutex);
+		m_producer_waiting.store(true, std::memory_order_seq_cst);
+		// The timeout is a safety net, not the mechanism: the worker notifies after every chunk while this is set.
+		while (w - m_rpos.load(std::memory_order_seq_cst) >= QUEUE_CHUNKS && !m_quit)
+			m_space_cv.wait_for(lock, std::chrono::milliseconds(2));
+		m_producer_waiting.store(false, std::memory_order_seq_cst);
+	}
+
+	AudioStream& m_stream;
+	std::unique_ptr<float[]> m_slots;
+	Threading::Thread m_thread;
+
+	// Chunk counters that only ever grow; the slot is the counter modulo QUEUE_CHUNKS.
+	alignas(64) std::atomic<u32> m_wpos{0};
+	alignas(64) std::atomic<u32> m_rpos{0};
+	alignas(64) std::atomic<bool> m_sleeping{false};
+	std::atomic<bool> m_producer_waiting{false};
+
+	std::mutex m_state_mutex;
+
+	std::mutex m_wake_mutex;
+	std::condition_variable m_wake_cv;
+	std::condition_variable m_space_cv;
+	bool m_quit = false; // guarded by m_wake_mutex
+};
 
 AudioStream::DeviceInfo::DeviceInfo(std::string name_, std::string display_name_, u32 minimum_latency_)
 	: name(std::move(name_))
@@ -56,6 +204,7 @@ AudioStream::AudioStream(u32 sample_rate, const AudioStreamParameters& parameter
 
 AudioStream::~AudioStream()
 {
+	StopWorker();
 	DestroyBuffer();
 }
 
@@ -225,6 +374,11 @@ std::optional<AudioExpansionMode> AudioStream::ParseExpansionMode(const char* na
 	}
 
 	return std::nullopt;
+}
+
+u32 AudioStream::GetPendingInputChunks() const
+{
+	return m_worker ? m_worker->Pending() : 0;
 }
 
 u32 AudioStream::GetBufferedFramesRelaxed() const
@@ -404,15 +558,37 @@ void AudioStream::InternalWriteFrames(const SampleType* data, u32 num_frames)
 	m_wpos.store(wpos, std::memory_order_release);
 }
 
-void AudioStream::BaseInitialize(SampleReader sample_reader, bool stretch_enabled)
+void AudioStream::BaseInitialize(SampleReader sample_reader, bool stretch_enabled, bool threaded)
 {
 	m_stretch_enabled = stretch_enabled;
 	m_paused = false;
 	m_sample_reader = sample_reader;
+	m_threaded = threaded;
 
 	AllocateBuffer();
 	ExpandAllocate();
 	StretchAllocate();
+	StartWorker();
+}
+
+void AudioStream::StartWorker()
+{
+	pxAssert(!m_worker);
+	if (!m_threaded || (!IsStretchEnabled() && !IsExpansionEnabled()))
+		return;
+
+	m_worker = std::make_unique<StretchWorker>(*this);
+	if (!m_worker->Start())
+	{
+		WARNING_LOG("Could not start the audio stretch thread, stretching on the emulation thread instead.");
+		m_worker.reset();
+	}
+}
+
+void AudioStream::StopWorker()
+{
+	// Joins the thread; chunks still queued are dropped.
+	m_worker.reset();
 }
 
 void AudioStream::AllocateBuffer()
@@ -424,6 +600,7 @@ void AudioStream::AllocateBuffer()
 
 	m_buffer = std::make_unique<float[]>(m_buffer_size * m_internal_channels);
 	m_staging_buffer = std::make_unique<float[]>(CHUNK_SIZE * m_internal_channels);
+	m_stretch_out_buffer = std::make_unique<float[]>(CHUNK_SIZE * m_internal_channels);
 
 	if (IsExpansionEnabled())
 		m_expand_buffer = std::make_unique<float[]>(m_parameters.expand_block_size * NUM_INPUT_CHANNELS);
@@ -437,6 +614,7 @@ void AudioStream::AllocateBuffer()
 void AudioStream::DestroyBuffer()
 {
 	m_expand_buffer.reset();
+	m_stretch_out_buffer.reset();
 	m_staging_buffer.reset();
 	m_buffer.reset();
 	m_buffer_size = 0;
@@ -446,6 +624,15 @@ void AudioStream::DestroyBuffer()
 
 void AudioStream::EmptyBuffer()
 {
+	// With the worker running, hold off its next chunk while the stretcher and expander are reset, and throw away
+	// what it has not got to.
+	std::unique_lock<std::mutex> worker_lock;
+	if (m_worker)
+	{
+		worker_lock = std::unique_lock<std::mutex>(m_worker->StateMutex());
+		m_worker->DiscardPending();
+	}
+
 	if (IsExpansionEnabled())
 	{
 		m_expander->Flush();
@@ -457,7 +644,7 @@ void AudioStream::EmptyBuffer()
 	{
 		m_soundtouch->clear();
 		if (IsStretchEnabled())
-			m_soundtouch->setTempo(m_nominal_rate);
+			m_soundtouch->setTempo(m_nominal_rate.load(std::memory_order_relaxed));
 	}
 
 	m_wpos.store(m_rpos.load(std::memory_order_acquire), std::memory_order_release);
@@ -465,13 +652,17 @@ void AudioStream::EmptyBuffer()
 
 void AudioStream::SetNominalRate(float tempo)
 {
-	m_nominal_rate = tempo;
+	m_nominal_rate.store(tempo, std::memory_order_relaxed);
 }
 
 void AudioStream::UpdateTargetTempo(float tempo)
 {
 	if (!IsStretchEnabled())
 		return;
+
+	std::unique_lock<std::mutex> worker_lock;
+	if (m_worker)
+		worker_lock = std::unique_lock<std::mutex>(m_worker->StateMutex());
 
 	// undo sqrt()
 	if (tempo)
@@ -481,10 +672,10 @@ void AudioStream::UpdateTargetTempo(float tempo)
 	m_average_available = AVERAGING_WINDOW;
 	std::fill_n(m_average_fullness.data(), AVERAGING_WINDOW, tempo);
 	m_soundtouch->setTempo(tempo);
-	m_stretch_reset = 0;
+	m_stretch_reset.store(0, std::memory_order_relaxed);
 	m_stretch_inactive = false;
 	m_stretch_ok_count = 0;
-	m_dynamic_target_usage = static_cast<float>(m_target_buffer_size) * m_nominal_rate;
+	m_dynamic_target_usage = static_cast<float>(m_target_buffer_size) * m_nominal_rate.load(std::memory_order_relaxed);
 }
 
 void AudioStream::SetStretchEnabled(bool enabled)
@@ -497,12 +688,14 @@ void AudioStream::SetStretchEnabled(bool enabled)
 	if (!paused)
 		SetPaused(true);
 
+	StopWorker();
 	DestroyBuffer();
 	StretchDestroy();
 	m_stretch_enabled = enabled;
 
 	AllocateBuffer();
 	StretchAllocate();
+	StartWorker();
 
 	if (!paused)
 		SetPaused(false);
@@ -580,15 +773,25 @@ void AudioStream::EndWrite(u32 num_frames)
 
 void AudioStream::WriteChunk(const SampleType* chunk)
 {
+	if (m_worker)
+	{
+		m_worker->Push(chunk);
+		return;
+	}
+
 	if (!IsExpansionEnabled() && !IsStretchEnabled())
 	{
 		InternalWriteFrames(chunk, CHUNK_SIZE);
 		return;
 	}
 
+	ProcessChunk(chunk);
+}
+
+void AudioStream::ProcessChunk(const SampleType* chunk)
+{
 	if (IsExpansionEnabled())
 	{
-		// StretchWriteBlock() overwrites the staging buffer on output, so we need to copy into the expand buffer first.
 		std::memcpy(m_expand_buffer.get() + m_expand_buffer_pos * NUM_INPUT_CHANNELS, chunk, CHUNK_SIZE * NUM_INPUT_CHANNELS * sizeof(SampleType));
 
 		// Output the corresponding block.
@@ -631,9 +834,9 @@ void AudioStream::StretchAllocate()
 	m_soundtouch->setSetting(SETTING_SEEKWINDOW_MS, m_parameters.stretch_seekwindow_ms);
 	m_soundtouch->setSetting(SETTING_OVERLAP_MS, m_parameters.stretch_overlap_ms);
 
-	m_soundtouch->setTempo(m_nominal_rate);
+	m_soundtouch->setTempo(m_nominal_rate.load(std::memory_order_relaxed));
 
-	m_stretch_reset = STRETCH_RESET_THRESHOLD;
+	m_stretch_reset.store(STRETCH_RESET_THRESHOLD, std::memory_order_relaxed);
 	m_stretch_inactive = false;
 	m_stretch_ok_count = 0;
 	m_dynamic_target_usage = 0.0f;
@@ -655,9 +858,9 @@ void AudioStream::StretchWriteBlock(const float* block)
 		m_soundtouch->putSamples(block, CHUNK_SIZE);
 
 		u32 tempProgress;
-		while (tempProgress = m_soundtouch->receiveSamples(m_staging_buffer.get(), CHUNK_SIZE), tempProgress != 0)
+		while (tempProgress = m_soundtouch->receiveSamples(m_stretch_out_buffer.get(), CHUNK_SIZE), tempProgress != 0)
 		{
-			InternalWriteFrames(m_staging_buffer.get(), tempProgress);
+			InternalWriteFrames(m_stretch_out_buffer.get(), tempProgress);
 		}
 
 		if (IsStretchEnabled())
@@ -671,7 +874,7 @@ void AudioStream::StretchWriteBlock(const float* block)
 
 float AudioStream::AddAndGetAverageTempo(float val)
 {
-	if (m_stretch_reset >= STRETCH_RESET_THRESHOLD)
+	if (m_stretch_reset.load(std::memory_order_relaxed) >= STRETCH_RESET_THRESHOLD)
 		m_average_available = 0;
 	if (m_average_available < AVERAGING_BUFFER_SIZE)
 		m_average_available++;
@@ -701,10 +904,12 @@ void AudioStream::UpdateStretchTempo()
 	static constexpr u32 INACTIVE_MIN_OK_COUNT = 50;
 	static constexpr u32 COMPENSATION_DIVIDER = 100;
 
-	float base_target_usage = static_cast<float>(m_target_buffer_size) * m_nominal_rate;
+	const float nominal_rate = m_nominal_rate.load(std::memory_order_relaxed);
+	float base_target_usage = static_cast<float>(m_target_buffer_size) * nominal_rate;
 
 	// state vars
-	if (m_stretch_reset >= STRETCH_RESET_THRESHOLD)
+	const u32 stretch_reset = m_stretch_reset.load(std::memory_order_relaxed);
+	if (stretch_reset >= STRETCH_RESET_THRESHOLD)
 	{
 		LOG_UNDERRUN("___ Stretcher is being reset.");
 		m_stretch_inactive = false;
@@ -755,7 +960,7 @@ void AudioStream::UpdateStretchTempo()
 	}
 
 	if (m_stretch_inactive)
-		tempo = m_nominal_rate;
+		tempo = nominal_rate;
 
 	if constexpr (LOG_TIMESTRETCH_STATS)
 	{
@@ -768,7 +973,7 @@ void AudioStream::UpdateStretchTempo()
 		{
 			DEV_LOG("buffers: {:4} ms ({:3.0f}%), tempo: {}, comp: {:2.3f}, iters: {}, reset:{}",
 				(ibuffer_usage * 1000u) / m_sample_rate, 100.0f * buffer_usage / base_target_usage, tempo,
-				m_dynamic_target_usage / base_target_usage, iterations, m_stretch_reset);
+				m_dynamic_target_usage / base_target_usage, iterations, stretch_reset);
 
 			last_log_time = now;
 			iterations = 0;
@@ -779,20 +984,20 @@ void AudioStream::UpdateStretchTempo()
 
 	m_soundtouch->setTempo(tempo);
 
-	if (m_stretch_reset >= STRETCH_RESET_THRESHOLD)
-		m_stretch_reset = 0;
+	if (m_stretch_reset.load(std::memory_order_relaxed) >= STRETCH_RESET_THRESHOLD)
+		m_stretch_reset.store(0, std::memory_order_relaxed);
 }
 
 void AudioStream::StretchUnderrun()
 {
 	// Didn't produce enough frames in time.
-	m_stretch_reset++;
+	m_stretch_reset.fetch_add(1, std::memory_order_relaxed);
 }
 
 void AudioStream::StretchOverrun()
 {
 	// Produced more frames than can fit in the buffer.
-	m_stretch_reset++;
+	m_stretch_reset.fetch_add(1, std::memory_order_relaxed);
 
 	// Drop two packets to give the time stretcher a bit more time to slow things down.
 	const u32 discard = CHUNK_SIZE * 2;
