@@ -62,7 +62,10 @@ public:
 
 	~StretchWorker() { Stop(); }
 
-	bool Start() { return m_thread.Start([this]() { Run(); }); }
+	bool Start()
+	{
+		return m_thread.Start([this]() { Run(); });
+	}
 
 	void Stop()
 	{
@@ -71,6 +74,7 @@ public:
 		{
 			std::lock_guard<std::mutex> lock(m_wake_mutex);
 			m_quit = true;
+			m_stop.store(true, std::memory_order_relaxed);
 			m_sleeping.store(false, std::memory_order_seq_cst);
 		}
 		m_wake_cv.notify_one();
@@ -139,9 +143,12 @@ private:
 		Threading::SetNameOfCurrentThread("AudioStretch");
 		for (;;)
 		{
-			while (ProcessOne())
+			// Stop() does not wait for the queue to empty: what is queued when a stream is torn down is dropped.
+			while (!m_stop.load(std::memory_order_relaxed) && ProcessOne())
 			{
 			}
+			if (m_stop.load(std::memory_order_relaxed))
+				return;
 
 			m_sleeping.store(true, std::memory_order_seq_cst);
 			if (m_wpos.load(std::memory_order_seq_cst) != m_rpos.load(std::memory_order_relaxed))
@@ -176,6 +183,7 @@ private:
 	alignas(64) std::atomic<u32> m_rpos{0};
 	alignas(64) std::atomic<bool> m_sleeping{false};
 	std::atomic<bool> m_producer_waiting{false};
+	std::atomic<bool> m_stop{false}; // mirrors m_quit for the worker's drain loop, which does not take m_wake_mutex
 
 	std::mutex m_state_mutex;
 
