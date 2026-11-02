@@ -77,9 +77,7 @@ void iopStoreClearHit(u32 addr);
 // call them with a single BL so the fast path adds no per-site icache cost.
 extern const void* g_iopStoreStub[3];
 
-// Out-of-line RAM-load fast-path stubs, same lifetime and calling style as the
-// store stubs: w0 = address in, extended loaded value in w0 out. Indexed by
-// IopLoadKind.
+// Kinds of guest load, indexing g_iopLoadColdStub.
 enum class IopLoadKind : int
 {
 	LB = 0,
@@ -88,7 +86,27 @@ enum class IopLoadKind : int
 	LHU = 3,
 	LW = 4,
 };
-extern const void* g_iopLoadStub[5];
+
+// Slow path of the inline RAM-load fast path, one per IopLoadKind, JIT-emitted
+// per reset with the dispatchers: w8 = address in, extended value in w9 out,
+// every allocator register preserved (see _DynGen_LoadColdStub).
+extern const void* g_iopLoadColdStub[5];
+
+// Emit "dst = load(kind) from base + imm" with a RAM fast path inline and a
+// cold site (emitted by psxEmitLoadColdSites at the end of the block) for any
+// other address. Does not flush or free any allocator register: dst and base
+// are host registers the caller allocated (base is read before dst is
+// written, so they may be the same register); everything else in the
+// allocator is untouched across the load. Clobbers w8, w9 and x17.
+void psxEmitRamLoad(IopLoadKind kind, const vixl::aarch64::Register& dst, const vixl::aarch64::Register& base, s32 imm);
+
+// The same for an address known at compile time: a RAM address is one
+// instruction pair, anything else a call of the cold stub in line.
+void psxEmitConstLoad(IopLoadKind kind, const vixl::aarch64::Register& dst, u32 addr);
+
+// Emit the cold sites psxEmitRamLoad queued for the block being compiled.
+// Called once, after the block's last instruction.
+void psxEmitLoadColdSites();
 
 void _psxFlushConstReg(int reg);
 void _psxFlushConstRegs();

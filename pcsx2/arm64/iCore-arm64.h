@@ -211,6 +211,8 @@ struct _arm64neonregs
 extern thread_local _arm64gprregs arm64gprs[NUM_ARM_GPR_REGS], s_saveArm64GPRregs[NUM_ARM_GPR_REGS];
 
 bool _isAllocatableArm64GPR(int armreg);
+// Bit n set = x_n is in the pool ARM64TYPE_PSX values are allocated from.
+uint32_t _iopAllocatableMask();
 void _initArm64GPRregs();
 int _getFreeArm64GPR(int mode, u32 pool);
 int _allocArm64GPR(int type, int reg, int mode);

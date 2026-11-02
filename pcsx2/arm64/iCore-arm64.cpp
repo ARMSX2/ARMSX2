@@ -155,6 +155,11 @@ static constexpr uint32_t EE_ALLOCATABLE_MASK = ~((3u << 0)
 static constexpr uint32_t IOP_ALLOCATABLE_MASK =
 	EE_ALLOCATABLE_MASK | (3u << 0) | (3u << 2) | (7u << 11) | (1u << 26) | (1u << 27);
 
+uint32_t _iopAllocatableMask()
+{
+	return IOP_ALLOCATABLE_MASK;
+}
+
 bool _isAllocatableArm64GPR(int armreg)
 {
 	// EE-mask semantics: callers outside the allocator use this as "may EE

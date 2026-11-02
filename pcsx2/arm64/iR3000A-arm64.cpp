@@ -24,6 +24,8 @@
 #include "common/HeapArray.h"
 #include "common/Perf.h"
 
+#include <deque>
+
 namespace a64 = vixl::aarch64;
 
 using namespace R3000A;
@@ -283,83 +285,69 @@ static const void* _DynGen_StoreStub(int size)
 	return retval;
 }
 
-// Out-of-line RAM-load fast path, one stub per access kind (see
-// rpsxLoadGeneric, which emits a single BL here per load site).
+// Slow path of the inline RAM-load fast path (psxEmitRamLoad), one stub per
+// access kind. It is the C call a load makes when its address is not RAM, made
+// from a cold site out of line, with the register allocator's state live in
+// the caller-saved pool registers -- so unlike a C call at a flushed site, it
+// has to give every one of them back.
 //
-// Calling convention: w0 = guest address; returns the loaded value in w0 with
-// the sign/zero extension of the access already applied. Called after a full
-// register flush like the store stubs, so every caller-saved register is
-// scratch; x21 = RPSXSTATE is callee-saved across the slow-path call.
+// Calling convention: w8 = guest address; returns the loaded value, sign or
+// zero extended for the access, in w9. Preserves x0-x7, x11-x15 and lr (every
+// caller-saved register the IOP pool can hold a guest value in; x26-x28 are
+// callee-saved and survive the C call by themselves) and x21-x28. Clobbers
+// x8, x9, x10, x16, x17 and the flags, none of which the allocator uses.
 //
-// Routing is the store stub's: (addr & 0x1f800000) == 0 exactly selects the
-// pages iopMemRead* serves from psxMemRLUT as plain RAM (t < 0x80 after the
-// 0x1fffffff physical mask, every KUSEG/KSEG0/KSEG1 mirror alike), and the
-// byte read is Main[addr & (ExposedIopRam-1)] -- the same byte the C path
-// reads, since its ((page & mask) << 16) | (mem & 0xffff) reduces to that mask
-// for both the 2MB and the 8MB configuration. iopMemRead* does not look at
-// CP0 Status.IsC, and neither does the stub. Anything else (hardware pages,
-// ROM, SIF, DEV9, the parallel-port page, unmapped space) runs iopMemRead*.
-//
-// Regenerated on every recResetIOP, so the baked mask and RAM base follow
-// extra-memory-mode flips.
-const void* g_iopLoadStub[5] = {};
+// Cost does not matter here: this runs for the few percent of loads that are
+// not RAM (interrupt controller, SPU2 and DMA registers, ROM).
+const void* g_iopLoadColdStub[5] = {};
 
-static const void* _DynGen_LoadStub(IopLoadKind kind)
+static const void* _DynGen_LoadColdStub(IopLoadKind kind)
 {
 	u8* retval = armGetCurrentCodePointer();
 
-	const u32 ram_mask = Ps2MemSize::ExposedIopRam - 1;
-	a64::Label slowPath;
+	// Seven pairs, 112 bytes: keeps sp 16-byte aligned for the C call.
+	armAsm->Stp(a64::x0, a64::x1, a64::MemOperand(a64::sp, -112, a64::PreIndex));
+	armAsm->Stp(a64::x2, a64::x3, a64::MemOperand(a64::sp, 16));
+	armAsm->Stp(a64::x4, a64::x5, a64::MemOperand(a64::sp, 32));
+	armAsm->Stp(a64::x6, a64::x7, a64::MemOperand(a64::sp, 48));
+	armAsm->Stp(a64::x11, a64::x12, a64::MemOperand(a64::sp, 64));
+	armAsm->Stp(a64::x13, a64::x14, a64::MemOperand(a64::sp, 80));
+	armAsm->Stp(a64::x15, a64::lr, a64::MemOperand(a64::sp, 96));
 
-	armAsm->Tst(a64::w0, 0x1f800000);
-	armAsm->B(&slowPath, a64::ne);
-
-	armMoveAddressToReg(a64::x4, iopMem->Main);
-	armAsm->And(a64::w2, a64::w0, ram_mask);
+	armAsm->Mov(a64::w0, a64::w8);
 	switch (kind)
 	{
-		case IopLoadKind::LB:  armAsm->Ldrsb(a64::w0, a64::MemOperand(a64::x4, a64::x2)); break;
-		case IopLoadKind::LBU: armAsm->Ldrb(a64::w0, a64::MemOperand(a64::x4, a64::x2));  break;
-		case IopLoadKind::LH:  armAsm->Ldrsh(a64::w0, a64::MemOperand(a64::x4, a64::x2)); break;
-		case IopLoadKind::LHU: armAsm->Ldrh(a64::w0, a64::MemOperand(a64::x4, a64::x2));  break;
-		case IopLoadKind::LW:  armAsm->Ldr(a64::w0, a64::MemOperand(a64::x4, a64::x2));   break;
+		case IopLoadKind::LB:
+		case IopLoadKind::LBU:
+			armEmitCall((void*)iopMemRead8);
+			break;
+		case IopLoadKind::LH:
+		case IopLoadKind::LHU:
+			armEmitCall((void*)iopMemRead16);
+			break;
+		case IopLoadKind::LW:
+			armEmitCall((void*)iopMemRead32);
+			break;
 	}
-	armAsm->Ret();
 
-	armAsm->Bind(&slowPath);
-	if (kind == IopLoadKind::LW)
+	// The C functions return a u8/u16 whose upper register bits are not defined.
+	switch (kind)
 	{
-		// Nothing to extend: tail-jump to C, which returns to the load site.
-		armEmitJmp((void*)iopMemRead32);
+		case IopLoadKind::LB:  armAsm->Sxtb(a64::w9, a64::w0); break;
+		case IopLoadKind::LBU: armAsm->Uxtb(a64::w9, a64::w0); break;
+		case IopLoadKind::LH:  armAsm->Sxth(a64::w9, a64::w0); break;
+		case IopLoadKind::LHU: armAsm->Uxth(a64::w9, a64::w0); break;
+		case IopLoadKind::LW:  armAsm->Mov(a64::w9, a64::w0);  break;
 	}
-	else
-	{
-		// The C functions return a u8/u16 whose upper register bits are not
-		// defined, so extend after the call, as the site used to.
-		armAsm->Sub(a64::sp, a64::sp, 16);
-		armAsm->Stp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
-		switch (kind)
-		{
-			case IopLoadKind::LB:
-			case IopLoadKind::LBU:
-				armEmitCall((void*)iopMemRead8);
-				if (kind == IopLoadKind::LB)
-					armAsm->Sxtb(a64::w0, a64::w0);
-				else
-					armAsm->Uxtb(a64::w0, a64::w0);
-				break;
-			default:
-				armEmitCall((void*)iopMemRead16);
-				if (kind == IopLoadKind::LH)
-					armAsm->Sxth(a64::w0, a64::w0);
-				else
-					armAsm->Uxth(a64::w0, a64::w0);
-				break;
-		}
-		armAsm->Ldp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
-		armAsm->Add(a64::sp, a64::sp, 16);
-		armAsm->Ret();
-	}
+
+	armAsm->Ldp(a64::x15, a64::lr, a64::MemOperand(a64::sp, 96));
+	armAsm->Ldp(a64::x13, a64::x14, a64::MemOperand(a64::sp, 80));
+	armAsm->Ldp(a64::x11, a64::x12, a64::MemOperand(a64::sp, 64));
+	armAsm->Ldp(a64::x6, a64::x7, a64::MemOperand(a64::sp, 48));
+	armAsm->Ldp(a64::x4, a64::x5, a64::MemOperand(a64::sp, 32));
+	armAsm->Ldp(a64::x2, a64::x3, a64::MemOperand(a64::sp, 16));
+	armAsm->Ldp(a64::x0, a64::x1, a64::MemOperand(a64::sp, 112, a64::PostIndex));
+	armAsm->Ret();
 
 	return retval;
 }
@@ -388,8 +376,12 @@ static void _DynGen_Dispatchers()
 	g_iopStoreStub[0] = _DynGen_StoreStub(8);
 	g_iopStoreStub[1] = _DynGen_StoreStub(16);
 	g_iopStoreStub[2] = _DynGen_StoreStub(32);
+	// The load cold stub saves a fixed register set (x0-x7, x11-x15); it is only
+	// correct while that is the caller-saved half of the IOP pool.
+	pxAssertRel((_iopAllocatableMask() & ((1u << 19) - 1)) == 0xf8ffu,
+		"IOP load cold stub: caller-saved allocator pool changed");
 	for (int k = 0; k < 5; k++)
-		g_iopLoadStub[k] = _DynGen_LoadStub(static_cast<IopLoadKind>(k));
+		g_iopLoadColdStub[k] = _DynGen_LoadColdStub(static_cast<IopLoadKind>(k));
 
 	// Block linker: stale / not-yet-compiled link sites divert to
 	// iopDispatcherReg — re-dispatch from the pc the site's tail already
@@ -418,6 +410,117 @@ static void iopRecError(int err)
 	}
 
 	EeBridge::RequestPause();
+}
+
+// =====================================================================================================
+//  Inline RAM-load fast path
+// =====================================================================================================
+//
+// A load is
+//
+//     [add w8, base, #imm]            only when imm != 0
+//     tst  addr, #0x1f800000
+//     b.ne cold                       out of line, at the end of the block
+//     and  w9, addr, #ram_mask
+//     adrp x17, iopMem->Main
+//     ldr[s]{b,h}/ldr dst, [x17, x9]
+//   resume:
+//
+// with the routing the store stub derives (see _DynGen_StoreStub): bits 23-28
+// clear selects every RAM mirror of every segment, and the byte read is
+// Main[addr & (ExposedIopRam-1)], the byte iopMemRead* reads. CP0 Status.IsC is
+// not consulted, as in iopMemRead*. The register allocator is not touched, so
+// the guest registers around the load stay in their host registers; that is
+// what a flush before the call cost, on top of the call.
+//
+// The cold site moves the address to w8, calls the kind's cold stub (which
+// gives every pool register back) and moves w9 to dst. It runs for the few
+// percent of loads that are not RAM.
+
+namespace
+{
+struct IopLoadColdSite
+{
+	a64::Label cold;
+	a64::Label resume;
+	IopLoadKind kind;
+	int addr_code; // host register holding the address, or 8 when w8 already does
+	int dst_code;
+};
+
+// Deque, not vector: a vixl Label is referenced by address from the code it was
+// used in, and must not move.
+std::deque<IopLoadColdSite> s_loadColdSites;
+} // namespace
+
+static void iopEmitLoadInstr(IopLoadKind kind, const a64::Register& dst, const a64::MemOperand& mem)
+{
+	switch (kind)
+	{
+		case IopLoadKind::LB:  armAsm->Ldrsb(dst, mem); break;
+		case IopLoadKind::LBU: armAsm->Ldrb(dst, mem);  break;
+		case IopLoadKind::LH:  armAsm->Ldrsh(dst, mem); break;
+		case IopLoadKind::LHU: armAsm->Ldrh(dst, mem);  break;
+		case IopLoadKind::LW:  armAsm->Ldr(dst, mem);   break;
+	}
+}
+
+void psxEmitRamLoad(IopLoadKind kind, const a64::Register& dst, const a64::Register& base, s32 imm)
+{
+	pxAssert(dst.IsW() && base.IsW());
+	const u32 ram_mask = Ps2MemSize::ExposedIopRam - 1;
+
+	// The address is formed in w8 when there is an offset to add, else it is the
+	// base register itself. Either way it is still intact at the branch to the
+	// cold site, even when dst is the base register.
+	a64::Register addr = base;
+	if (imm != 0)
+	{
+		armAsm->Add(RWSCRATCH, base, static_cast<s64>(imm));
+		addr = RWSCRATCH;
+	}
+
+	IopLoadColdSite& site = s_loadColdSites.emplace_back();
+	site.kind = kind;
+	site.addr_code = addr.GetCode();
+	site.dst_code = dst.GetCode();
+
+	armAsm->Tst(addr, 0x1f800000);
+	armAsm->B(&site.cold, a64::ne);
+	armAsm->And(a64::w9, addr, ram_mask);
+	armMoveAddressToReg(RSCRATCHADDR, iopMem->Main);
+	iopEmitLoadInstr(kind, dst, a64::MemOperand(RSCRATCHADDR, a64::x9));
+	armAsm->Bind(&site.resume);
+}
+
+void psxEmitConstLoad(IopLoadKind kind, const a64::Register& dst, u32 addr)
+{
+	pxAssert(dst.IsW());
+	if ((addr & 0x1f800000) == 0)
+	{
+		const u32 ram_mask = Ps2MemSize::ExposedIopRam - 1;
+		armMoveAddressToReg(RSCRATCHADDR, iopMem->Main + (addr & ram_mask));
+		iopEmitLoadInstr(kind, dst, a64::MemOperand(RSCRATCHADDR));
+		return;
+	}
+
+	armAsm->Mov(RWSCRATCH, addr);
+	armEmitCall(g_iopLoadColdStub[static_cast<int>(kind)]);
+	armAsm->Mov(dst, a64::w9);
+}
+
+void psxEmitLoadColdSites()
+{
+	for (IopLoadColdSite& site : s_loadColdSites)
+	{
+		armAsm->Bind(&site.cold);
+		if (site.addr_code != RWSCRATCH.GetCode())
+			armAsm->Mov(RWSCRATCH, a64::Register(site.addr_code, a64::kWRegSize));
+		armEmitCall(g_iopLoadColdStub[static_cast<int>(site.kind)]);
+		armAsm->Mov(a64::Register(site.dst_code, a64::kWRegSize), a64::w9);
+		armAsm->B(&site.resume);
+	}
+	s_loadColdSites.clear();
 }
 
 // =====================================================================================================
@@ -1389,6 +1492,7 @@ static void iopRecRecompile(const u32 startpc)
 
 	armSetAsmPtr(recPtr, recPtrEnd - recPtr + _64kb, &s_iopConstantPool);
 	armStartBlock();
+	pxAssert(s_loadColdSites.empty());
 
 	s_pCurBlock = PSX_GETBLOCK(startpc);
 	pxAssert(s_pCurBlock->GetFnptr() == (uptr)iopJITCompile);
@@ -1605,6 +1709,11 @@ StartRecomp:
 			psxbranch = 3;
 		}
 	}
+
+	// The slow paths of the block's loads go after its last instruction, which
+	// never falls through (every block ends in a branch to a linked block, the
+	// dispatcher or the exit).
+	psxEmitLoadColdSites();
 
 	pxAssert(armGetCurrentCodePointer() < SysMemory::GetIOPRecEnd());
 

@@ -615,74 +615,40 @@ static void rpsxMTLO()
 ////////////////////////////////////////////////////////////////////
 // Load/Store
 //
-// Loads:  compute address in w0, flush, call iopMemReadN, sign/zero extend, store result
+// Loads:  RAM fast path inline, no flush; any other address calls iopMemReadN out of line
 // Stores: compute address in w0, value in w1, flush, call iopMemWriteN
 
 static void rpsxLoadGeneric(int size, bool sign)
 {
-	// Read Rs const value FIRST — before deleting Rt (critical when Rs==Rt,
-	// since _psxDeleteReg clears const state and frees the host register).
-	const bool rs_const = PSX_IS_CONST1(_Rs_);
-	const u32 rs_val = rs_const ? g_psxConstRegs[_Rs_] : 0;
-
-	// Delete destination register (flush=1 to write back, in case Rs==Rt
-	// and Rs is in a host register — need the value in memory).
-	if (_Rt_)
-		_psxDeleteReg(_Rt_, 1);
-
-	_psxFlushCall(FLUSH_EVERYTHING);
-
-	// Compute address: base + imm16 (after flush, safe to use w0)
-	if (rs_const)
-	{
-		armAsm->Mov(RWARG1, rs_val + _Imm_);
-	}
-	else
-	{
-		armLoadPsxRegPtr(RWARG1, &psxRegs.GPR.r[_Rs_]);
-		if (_Imm_ != 0)
-			armAsm->Add(RWARG1, RWARG1, static_cast<s64>(static_cast<s32>(_Imm_)));
-	}
-
-	// Compile-time hardware/ROM/unmapped targets skip the stub and call C
-	// straight away -- a hardware read's result is only known after the call.
-	// Everything else goes through the per-kind RAM stub, which also falls
-	// back to iopMemRead* for a runtime address that is not RAM; it returns
-	// the value already extended (see _DynGen_LoadStub).
 	const IopLoadKind kind = size == 8 ? (sign ? IopLoadKind::LB : IopLoadKind::LBU)
 	                       : size == 16 ? (sign ? IopLoadKind::LH : IopLoadKind::LHU)
 	                                    : IopLoadKind::LW;
-	if (rs_const && ((rs_val + _Imm_) & 0x1f800000) != 0)
-	{
-		switch (size)
-		{
-			case 8:  armEmitCall((void*)iopMemRead8);  break;
-			case 16: armEmitCall((void*)iopMemRead16); break;
-			case 32: armEmitCall((void*)iopMemRead32); break;
-		}
 
-		if (!_Rt_)
-			return; // dummy read
+	// Read Rs const value FIRST -- before the destination is allocated, which
+	// clears its const state (Rs==Rt).
+	const bool rs_const = PSX_IS_CONST1(_Rs_);
+	const u32 rs_val = rs_const ? g_psxConstRegs[_Rs_] : 0;
 
-		switch (kind)
-		{
-			case IopLoadKind::LB:  armAsm->Sxtb(RWARG1, RWARG1); break;
-			case IopLoadKind::LBU: armAsm->Uxtb(RWARG1, RWARG1); break;
-			case IopLoadKind::LH:  armAsm->Sxth(RWARG1, RWARG1); break;
-			case IopLoadKind::LHU: armAsm->Uxth(RWARG1, RWARG1); break;
-			case IopLoadKind::LW:  break;
-		}
-	}
+	// Nothing is flushed: the allocator keeps every guest register where it is
+	// across the load (see the inline fast path in iR3000A-arm64.cpp), so mark
+	// the operands needed before allocating the destination can evict one.
+	_addNeededPSXtoArm64GPR(_Rs_);
+	_addNeededPSXtoArm64GPR(_Rt_);
+
+	const int rs = rs_const ? -1 : _allocArm64GPR(ARM64TYPE_PSX, _Rs_, MODE_READ);
+
+	// A load into $zero is a dummy read: it still happens, for what the device
+	// does when read, into a scratch register nothing looks at.
+	const a64::Register dst = _Rt_ ? armWRegister(_allocArm64GPR(ARM64TYPE_PSX, _Rt_, MODE_WRITE)) : a64::w10;
+
+	if (rs_const)
+		psxEmitConstLoad(kind, dst, rs_val + _Imm_);
 	else
-	{
-		armEmitCall(g_iopLoadStub[static_cast<int>(kind)]);
+		psxEmitRamLoad(kind, dst, armWRegister(rs), static_cast<s32>(_Imm_));
 
-		if (!_Rt_)
-			return; // dummy read
-	}
-
-	// Store result to destination register
-	armStorePsxRegPtr(RWARG1, &psxRegs.GPR.r[_Rt_]);
+	_clearNeededArm64GPRregs();
+	if (_Rt_)
+		PSX_DEL_CONST(_Rt_);
 }
 
 // Emit the C fallback for a store — address in w0, value in w1.

@@ -355,3 +355,207 @@ TEST(IopLoadFastPath, StoreThenLoadAcrossMirrors)
 	EXPECT_EQ(h.GetGprJit(reg::v0), 0xCAFEBABEu);
 	EXPECT_EQ(h.GetGprInterp(reg::v1), 0xCAFEu);
 }
+
+// How many guest registers are live (computed from a runtime value, so each sits
+// dirty in a host register) decides which host register the load's destination
+// gets and which ones the slow path has to give back. Sweep it from none to more
+// than the allocator has, for a RAM load and for loads that leave RAM.
+TEST(IopLoadFastPath, LiveRegisterCountSweep)
+{
+	// 24 guest registers a program can use freely (not the ones it needs for operands).
+	static const u32 pool[] = {reg::t0, reg::t1, reg::t2, reg::t3, reg::t4, reg::t5, reg::t6, reg::t7,
+	                           reg::s0, reg::s1, reg::s2, reg::s3, reg::s4, reg::s5, reg::s6, reg::s7,
+	                           reg::t8, reg::t9, reg::gp, reg::s8, reg::at, reg::k0, reg::k1, reg::a3};
+	static const u32 addrs[] = {kBase, 0xA0420000u, 0x1F801070u, 0x1F801074u, 0x1FC00000u, 0x00800000u};
+	for (const u32 addr : addrs)
+	{
+		for (size_t live = 0; live <= std::size(pool); live++)
+		{
+			SCOPED_TRACE("addr " + std::to_string(addr) + ", live " + std::to_string(live));
+			JitTestHarness h;
+			SeedRam(h);
+			h.SetGpr(reg::a0, 0x1000u);
+			h.SetGpr(reg::a1, addr);
+			std::vector<u32> prog;
+			for (size_t i = 0; i < live; i++)
+				prog.push_back(ADDIU(pool[i], reg::a0, static_cast<s16>(i + 1)));
+			prog.push_back(LW(reg::v0, 0, reg::a1));
+			prog.push_back(LBU(reg::v1, 3, reg::a1));
+			// use every live value after the loads
+			for (size_t i = 0; i < live; i++)
+				prog.push_back(XOR(reg::a2, reg::a2, pool[i]));
+			h.LoadProgramAt(RecompilerTestEnvironment::kProgramPc, prog.data(), prog.size(), true);
+			h.Run();
+		}
+	}
+}
+
+// A load in a branch delay slot is compiled once when the delay slot can be hoisted above the
+// branch and twice (taken and not-taken) when it cannot; either way its slow path sits in
+// the block with the allocator in whatever state that path had.
+TEST(IopLoadFastPath, LoadInABranchDelaySlot)
+{
+	static const u32 addrs[] = {kBase, 0x1F801070u, 0x1FC00000u};
+	for (const u32 addr : addrs)
+	{
+		for (const bool taken : {false, true})
+		{
+			for (const int form : {0, 1, 2, 3})
+			{
+				SCOPED_TRACE("addr " + std::to_string(addr) + (taken ? ", taken" : ", not taken") + ", form " + std::to_string(form));
+				JitTestHarness h;
+				SeedRam(h);
+				h.SetGpr(reg::a0, 0x2000u);
+				h.SetGpr(reg::a1, addr);
+				h.SetGpr(reg::a2, 5);
+				h.SetGpr(reg::a3, taken ? 5u : 6u);
+				u32 branch, delay;
+				switch (form)
+				{
+					case 0: branch = BEQ(reg::a2, reg::a3, 7); delay = LW(reg::v0, 0, reg::a1); break;   // hoistable
+					case 1: branch = BEQ(reg::a2, reg::a3, 7); delay = LW(reg::a2, 0, reg::a1); break;   // writes a branch source
+					case 2: branch = BNE(reg::a2, reg::a3, 7); delay = LBU(reg::a3, 1, reg::a1); break;  // writes the other source
+					default: branch = BGTZ(reg::a2, 7); delay = LH(reg::v0, 2, reg::a1); break;
+				}
+				if (form == 2)
+					h.SetGpr(reg::a3, taken ? 6u : 5u); // BNE: taken when they differ
+				if (form == 3)
+					h.SetGpr(reg::a2, taken ? 5u : 0u); // BGTZ: taken when positive
+				h.LoadProgramNoTerm({
+					ADDIU(reg::t0, reg::a0, 1), // live across the delay-slot load
+					ADDIU(reg::t1, reg::a0, 2),
+					branch,
+					delay,
+					ADDIU(reg::t2, reg::t0, 100), ADDIU(reg::v1, reg::zero, 1), J(RecompilerTestEnvironment::kParkingPc), NOP,
+					NOP,
+					ADDIU(reg::t2, reg::t1, 200), ADDIU(reg::v1, reg::zero, 2), J(RecompilerTestEnvironment::kParkingPc), NOP,
+				});
+				h.Run();
+			}
+		}
+	}
+}
+
+// JR and JALR take their target from a register while the delay slot loads.
+TEST(IopLoadFastPath, LoadInAJumpRegisterDelaySlot)
+{
+	static const u32 addrs[] = {kBase, 0x1F801070u};
+	for (const u32 addr : addrs)
+	{
+		SCOPED_TRACE(addr);
+		JitTestHarness h;
+		SeedRam(h);
+		h.SetGpr(reg::a0, 0x3000u);
+		h.SetGpr(reg::a1, addr);
+		h.SetGpr(reg::t5, RecompilerTestEnvironment::kParkingPc);
+		h.LoadProgramNoTerm({
+			ADDIU(reg::t0, reg::a0, 1),
+			ADDIU(reg::t1, reg::a0, 2),
+			JALR(reg::ra, reg::t5),
+			LW(reg::v0, 0, reg::a1),
+			NOP,
+		});
+		h.Run();
+	}
+}
+
+// LWL/LWR/SWL/SWR still flush and call C; they have to find the registers a load before
+// them left dirty.
+TEST(IopLoadFastPath, UnalignedOpsAfterLoads)
+{
+	JitTestHarness h;
+	SeedRam(h);
+	h.TrackMemWindow(kBase + 0x40, 16);
+	h.SetGpr(reg::a0, kBase);
+	h.SetGpr(reg::a1, 0x1F801070u);
+	h.LoadProgram({
+		LW(reg::t0, 0, reg::a0),
+		LBU(reg::t1, 5, reg::a0),
+		LW(reg::t2, 0, reg::a1),
+		ADDU(reg::t3, reg::t0, reg::t1),
+		LWL(reg::t3, 6, reg::a0),
+		LWR(reg::t3, 3, reg::a0),
+		LH(reg::t4, 0, reg::a0),
+		SWL(reg::t3, 0x42, reg::a0),
+		SWR(reg::t3, 0x45, reg::a0),
+		LW(reg::t5, 0x40, reg::a0),
+		ADDU(reg::t6, reg::t5, reg::t4),
+	});
+	h.Run();
+}
+
+// ---------------------------------------------------------------------------
+// The cold stub's contract, called directly: every allocator register comes
+// back, and the value is extended. Whether the C function it calls happens to
+// use a given register is up to the compiler, so check a spread of handlers.
+// ---------------------------------------------------------------------------
+
+#include "IopMem.h"
+#include "arm64/iR3000A-arm64.h"
+
+namespace {
+
+// In: x0-x7, x11-x15 from `in`, w8 = address. Out: the same registers, and x9.
+void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13], u64& x9)
+{
+	asm volatile(
+		"ldp x0, x1, [%[in], #0]\n\t"
+		"ldp x2, x3, [%[in], #16]\n\t"
+		"ldp x4, x5, [%[in], #32]\n\t"
+		"ldp x6, x7, [%[in], #48]\n\t"
+		"ldp x11, x12, [%[in], #64]\n\t"
+		"ldp x13, x14, [%[in], #80]\n\t"
+		"ldr x15, [%[in], #96]\n\t"
+		"mov w8, %w[addr]\n\t"
+		"blr %[stub]\n\t"
+		"stp x0, x1, [%[out], #0]\n\t"
+		"stp x2, x3, [%[out], #16]\n\t"
+		"stp x4, x5, [%[out], #32]\n\t"
+		"stp x6, x7, [%[out], #48]\n\t"
+		"stp x11, x12, [%[out], #64]\n\t"
+		"stp x13, x14, [%[out], #80]\n\t"
+		"str x15, [%[out], #96]\n\t"
+		"str x9, [%[x9]]\n\t"
+		:
+		: [in] "r"(in), [out] "r"(out), [stub] "r"(stub), [addr] "r"(addr), [x9] "r"(&x9)
+		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
+		  "x30", "memory", "cc");
+}
+
+} // namespace
+
+TEST(IopLoadFastPath, ColdStubGivesEveryAllocatorRegisterBack)
+{
+	JitTestHarness h; // brings the IOP recompiler (and its stubs) up
+	static const u32 addrs[] = {0x1F801070u, 0x1F801074u, 0x1F801078u, 0x1F8010F4u, 0x1F801450u, 0x1F801000u, 0x1F803000u,
+	                            0x1F808260u, 0x1F802000u, 0x1F9005C8u, 0x1F900188u, 0x1D000000u, 0x1D000040u, 0x10000000u,
+	                            0x1FC00000u, 0x1E000000u, 0x1F000000u, 0x1F400000u, 0x00800000u, 0x1F801100u, 0x1F801800u};
+	for (const Kind kind : kAllKinds)
+	{
+		const void* stub = g_iopLoadColdStub[static_cast<int>(kind)];
+		ASSERT_NE(stub, nullptr);
+		for (const u32 addr : addrs)
+		{
+			SCOPED_TRACE(std::string(KindName(kind)) + " " + std::to_string(addr));
+			u64 in[13], out[13], x9 = 0;
+			for (int i = 0; i < 13; i++)
+				in[i] = 0xA5A5000000000000ull | (static_cast<u64>(i + 1) << 32) | (0x0F0F0000u + i);
+			CallColdStub(stub, addr, in, out, x9);
+			for (int i = 0; i < 13; i++)
+				EXPECT_EQ(out[i], in[i]) << "register slot " << i;
+
+			// the value is what iopMemRead* gives, extended; read it with the registers the same
+			u32 want;
+			switch (kind)
+			{
+				case Kind::LB:  want = static_cast<u32>(static_cast<s32>(static_cast<s8>(iopMemRead8(addr)))); break;
+				case Kind::LBU: want = iopMemRead8(addr); break;
+				case Kind::LH:  want = static_cast<u32>(static_cast<s32>(static_cast<s16>(iopMemRead16(addr)))); break;
+				case Kind::LHU: want = iopMemRead16(addr); break;
+				default:        want = iopMemRead32(addr); break;
+			}
+			EXPECT_EQ(static_cast<u32>(x9), want);
+			EXPECT_EQ(x9 >> 32, 0u) << "w9 write must leave the upper half clear";
+		}
+	}
+}
