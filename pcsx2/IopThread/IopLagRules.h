@@ -31,7 +31,7 @@ namespace IopThread
 		/// or until the IOP's next SIF0 transfer reaches the EE, whichever is first.
 		inline constexpr u32 Window = 0;
 		/// The EE is idle (the event test was reached by a fast-forward) and a request is outstanding: the EE started a SIF1 transfer
-		/// and no SIF0 transfer or SBUS interrupt has come from the IOP since, for at most `outstanding_max_age` cycles.
+		/// and no SIF0 transfer or SBUS interrupt has come from the IOP since, for at most `outstanding_max_age` cycles from the latest send.
 		inline constexpr u32 IdleOutstanding = 1;
 		/// The EE is idle, whatever it has sent. Experiment: what idle alone costs a game whose EE is mostly busy.
 		inline constexpr u32 IdleAny = 2;

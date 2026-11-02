@@ -178,12 +178,15 @@ namespace IopThread
 			EEoCycle = cpuRegs.cycle;
 		}
 
-		// The rules that tighten a large lag bound (IopLagRules.h).
-		LagRulesConfig EffectiveRules()
+		// The rules that tighten a large lag bound (IopLagRules.h): the built-in set.
+		LagRulesConfig DefaultRules()
 		{
+			// One rule is on: while the EE is idle with a request out to the IOP, it may not run ahead of the IOP by more than the tight
+			// bound (LagRule::IdleOutstanding). In a lockstep run with a one-frame bound it held the bound tight for 1.8 percent of the EE's
+			// cycles in a Burnout 3 race and for 0.00 to 0.03 percent in God of War II. The other rules in IopLagRules.h are off:
+			// idling alone (IdleAny) held it tight for 38 to 60 percent of God of War II, and the rest were not needed for Burnout 3.
 			LagRulesConfig cfg;
-			cfg.mask = LagRule::Bit(LagRule::Window) | LagRule::Bit(LagRule::IdleOutstanding) | LagRule::Bit(LagRule::Stream) |
-			           LagRule::Bit(LagRule::Mailbox) | LagRule::Bit(LagRule::Poll);
+			cfg.mask = LagRule::Bit(LagRule::IdleOutstanding);
 			return cfg;
 		}
 
@@ -207,9 +210,10 @@ namespace IopThread
 			Params params;
 			params.mode = s_mode;
 			params.lag = ClampLag(EmuConfig.Speedhacks.iopThreadLag);
-			params.rules = EffectiveRules();
+			params.rules = DefaultRules();
 			params.start_frame = g_FrameCount;
-			params.sample_streams = SampleDeviceStreams;
+			if (params.rules.mask & LagRule::Bit(LagRule::Stream))
+				params.sample_streams = SampleDeviceStreams;
 			params.min_slice = s_mode == IopThreadMode::Threaded ? s_min_slice : 0;
 			params.idle_spin_ns = s_idle_spin_ns;
 			params.start_ee_cycle = cpuRegs.cycle;

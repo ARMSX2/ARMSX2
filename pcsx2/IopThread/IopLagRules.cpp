@@ -54,8 +54,9 @@ namespace IopThread
 	{
 		if (!m_cfg.mask || channel > 1)
 			return;
-		if (channel == 1 && !m_outstanding)
+		if (channel == 1)
 		{
+			// A new send is the request now; an older one nobody answered is forgotten.
 			m_outstanding = true;
 			m_outstanding_since = cycle;
 		}
