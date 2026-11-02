@@ -244,7 +244,12 @@ u32 AudioStream::PullFrames(SampleType* samples, u32 num_frames)
 
 void AudioStream::ReadFrames(SampleType* samples, u32 num_frames)
 {
-	const u32 available_frames = GetBufferedFramesRelaxed();
+	// The acquire pairs with the release store of m_wpos in InternalWriteFrames(): the frames counted here have been
+	// written when this load sees them. A relaxed load does not order the reads of the ring after it on a weakly
+	// ordered CPU.
+	const u32 rpos_now = m_rpos.load(std::memory_order_relaxed);
+	const u32 wpos_now = m_wpos.load(std::memory_order_acquire);
+	const u32 available_frames = (wpos_now + m_buffer_size - rpos_now) % m_buffer_size;
 	u32 frames_to_read = num_frames;
 	u32 silence_frames = 0;
 
@@ -356,7 +361,10 @@ void AudioStream::StereoSampleReaderImpl(SampleType* dest, const SampleType* src
 
 void AudioStream::InternalWriteFrames(const SampleType* data, u32 num_frames)
 {
-	const u32 free = m_buffer_size - GetBufferedFramesRelaxed();
+	// The acquire pairs with the release store of m_rpos in ReadFrames(): the space counted as free here has been read
+	// out of when this load sees it, so the writes below cannot land on frames the consumer is still reading.
+	const u32 buffered = (m_wpos.load(std::memory_order_relaxed) + m_buffer_size - m_rpos.load(std::memory_order_acquire)) % m_buffer_size;
+	const u32 free = m_buffer_size - buffered;
 	if (free <= num_frames)
 	{
 		if (IsStretchEnabled())
