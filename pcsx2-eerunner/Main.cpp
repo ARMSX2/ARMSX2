@@ -1097,6 +1097,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --iop-lockstep-skew-holds: with --iop-lockstep-skew N > 0, do not defer EE-started SIF0/SIF1 pumps: hold, as a Threaded hold\n");
 	std::fprintf(stderr, "               does. The IOP is run up to the EE's cycle (items due on the way applied), the pump runs at once, and the skew then\n");
 	std::fprintf(stderr, "               re-grows as the EE runs on. A test knob. Does nothing with a skew of 0.\n");
+	std::fprintf(stderr, "  --iop-lockstep-skew-holds-sif0 / --iop-lockstep-skew-holds-sif1: the same for one channel only; the other is deferred.\n");
 	std::fprintf(stderr, "  --iop-stats-every N: in a --liverun, log the Threaded IOP counters per frame every N frames. The IOPSTATS: line\n");
 	std::fprintf(stderr, "               at the end of the run gives the whole-run figures.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
@@ -1552,6 +1553,16 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("--iop-lockstep-skew-holds"))
 			{
 				IopThread::SetLockstepSkewHolds(true);
+				continue;
+			}
+			else if (CHECK_ARG("--iop-lockstep-skew-holds-sif0"))
+			{
+				IopThread::SetLockstepSkewHoldChannels(1);
+				continue;
+			}
+			else if (CHECK_ARG("--iop-lockstep-skew-holds-sif1"))
+			{
+				IopThread::SetLockstepSkewHoldChannels(2);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-idle-spin-us"))

@@ -972,6 +972,32 @@ TEST_F(LockstepMachine, ASkewWithHoldsRunsTheIopUpToTheEeAtAPumpAndTheSkewRegrow
 	EXPECT_GT(calls.size(), 10u);
 }
 
+TEST_F(LockstepMachine, AHoldOnOneChannelLeavesTheOtherDeferred)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 40000;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	EmuConfig.Speedhacks.iopThreadDeferSif = false;
+	IopThread::SetLockstepSkew(kSkew);
+	IopThread::SetLockstepSkewHoldChannels(2); // SIF1 held, SIF0 deferred
+	Reset();
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 30; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+	EXPECT_TRUE(IopThread::DeferSifPump(0)) << "SIF0 is still deferred";
+	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 0u);
+	EXPECT_FALSE(IopThread::DeferSifPump(1)) << "SIF1 is held";
+	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 1u);
+}
+
 TEST_F(LockstepMachine, HoldsDoNothingWithASkewOfZero)
 {
 	REQUIRE_ARM64_HOST();

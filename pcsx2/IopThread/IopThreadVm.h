@@ -263,6 +263,9 @@ namespace IopThread
 	/// skew ahead of it). So the pump reads and writes EE memory at the EE's cycle of the start, as on a console, and the IOP side of it
 	/// happens at the EE's time and not a skew late. Does nothing with a skew of 0. Takes effect at once.
 	void SetLockstepSkewHolds(bool holds);
+	/// The same per channel: bit 0 holds SIF0 pumps, bit 1 SIF1 pumps; the channel without its bit is deferred as before. 3 is
+	/// SetLockstepSkewHolds(true). eerunner --iop-lockstep-skew-holds-sif0 / -sif1. For finding which channel's deferral matters.
+	void SetLockstepSkewHoldChannels(u32 mask);
 	bool LockstepSkewHolds();
 	/// The skew the running Lockstep thread has, 0 otherwise. What the EE core's event test reads.
 	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkew()); }
