@@ -601,9 +601,6 @@ static void recLoad(u32 bits, bool sign)
 		// (vtlb_DynBackpatchLoadStore) saves/restores live registers per the
 		// masks recorded at emit time, which become nonzero with this change.
 		// What must remain:
-		//   - _flushConstRegs: the VALUE writeback is integral at L/S sites;
-		//     the marks are kept (delete_const=false) so the GPR_IS_CONST1
-		//     fold below stays live - vtlb callees can't write guest GPRs.
 		//   - Rs coherence: a dirty NEON dual-residence (or MODE_WRITE GPR)
 		//     copy of Rs means the pin/memory value is stale — write it back
 		//     (mapping kept). Same writeback today's eviction performed,
@@ -611,7 +608,6 @@ static void recLoad(u32 bits, bool sign)
 		//   - x0 eviction below (the load result target when Rt is unpinned;
 		//     x0 is an allocator pool member).
 		// Rt dest invalidation is recStoreLoadResult's job (unchanged).
-		_flushConstRegs(false);
 		if (GPR_IS_CONST1(_Rs_))
 		{
 			armAsm->Mov(a64::w9, g_cpuConstRegs[_Rs_].UL[0] + _Imm_);
@@ -782,7 +778,6 @@ static void recStore(u32 bits)
 		// dirty NEON/GPR copy written back (mappings kept); the store emit
 		// itself clobbers no allocator pool member (w9/w10/x8/x17 are all
 		// outside the pool).
-		_flushConstRegs(false);
 
 		// Both write-backs first (mappings kept), then the two operands from
 		// where the values live: a pin or an allocator slot is used as it is,
@@ -969,18 +964,15 @@ void recLQ()
 	// scalar readers either probe the slot via _eeMoveGPRtoR or force the
 	// writeback via _deleteEEreg — the exact state an MMI Rd write creates).
 	// No iFlushCall: GE-07's fault-thunk live-mask machinery saves/restores
-	// allocator state, only constants must be memory-visible for the
-	// slow-path C handler. Rt==0 keeps the legacy flush + q0-discard shape
+	// allocator state. Rt==0 keeps the legacy flush + q0-discard shape
 	// (the load must still happen for MMIO side effects, and q0 is only
 	// safe to clobber once the allocator is evicted).
 	if (useFastmem && _Rt_)
 	{
 		// Address BEFORE the dest alloc (rt may alias rs, and the MODE_WRITE
 		// alloc invalidates rt's prior GPR/const residency).
-		// w9 is immune to both: the flush materializes into pins/RXSCRATCH and
-		// the alloc's evictions are NEON stores.
+		// w9 is immune to both: the alloc's evictions are NEON stores.
 		recComputeAddrMasked(~0xFu);
-		_flushConstRegs(false);
 
 		const int qd = _allocGPRtoNEONreg(_Rt_, MODE_WRITE);
 		_validateRegs();
@@ -1020,10 +1012,8 @@ void recSQ()
 	// rt currently lives before the alloc can move it.
 	if (useFastmem)
 	{
-		// Address first (w9 is immune to the flush and alloc emissions — see
-		// recLQ).
+		// Address first (w9 is immune to the alloc emissions — see recLQ).
 		recComputeAddrMasked(~0xFu);
-		_flushConstRegs(false);
 		const int qs = _allocGPRtoNEONreg(_Rt_, MODE_READ);
 		_validateRegs();
 		vtlbFastmemWrite128(9, qs);
@@ -1714,8 +1704,7 @@ void recLQC2()
 
 	// S4-3 fastmem path: no iFlushCall — the allocator (caller-saved scalar
 	// GPRs, FPRC, NEON quads/FPRs) rides through, matching the GE-14 recLQ
-	// shape. Address from live registers via recComputeAddr; only
-	// constants must be memory-visible for the fault-path C handler. The
+	// shape. Address from live registers via recComputeAddr. The
 	// quad lands in RQSCRATCH (q30) — per-op scratch, never allocator-
 	// tracked, so no q0 detach is needed — and is stored to VU0.VF[ft]
 	// directly (ft's memory is current here: LQC2 is VF-cache-classifier-
@@ -1724,7 +1713,6 @@ void recLQC2()
 	if (useFastmem)
 	{
 		recComputeAddrMasked(~0xFu);
-		_flushConstRegs(false);
 		vtlbFastmemRead128(9, RQSCRATCH.GetCode());
 		if (_Rt_)
 			armAsm->Str(RQSCRATCH, armVU0Mem(&VU0.VF[_Rt_]));
@@ -1756,7 +1744,6 @@ void recSQC2()
 	if (useFastmem)
 	{
 		recComputeAddrMasked(~0xFu);
-		_flushConstRegs(false);
 		armAsm->Ldr(RQSCRATCH, armVU0Mem(&VU0.VF[_Rt_]));
 		vtlbFastmemWrite128(9, RQSCRATCH.GetCode());
 		return;

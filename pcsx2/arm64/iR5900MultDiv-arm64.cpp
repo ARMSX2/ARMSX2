@@ -8,6 +8,8 @@
 
 #include "arm64/iR5900-arm64.h"
 
+#include <bit>
+
 namespace a64 = vixl::aarch64;
 
 namespace R5900 {
@@ -17,16 +19,23 @@ namespace OpcodeImpl {
 namespace Interp = R5900::Interpreter::OpcodeImpl;
 
 
+// Flush dirty registers without materializing pending constants.
+static void flushDirtyAllocatorRegs()
+{
+	_flushArm64GPRregs();
+	_flushNEONregs();
+}
+
 // Fetch Rs/Rt lower 32 bits for the mul/div ops. Substitution-aware
 // (EE-SRA 2 WS-C6): returns the pin / MODE_READ allocator reg directly (zero
 // insns) or materializes into w1/w9. Every caller sits right after
-// _eeFlushAllDirty (the post-flush coherence contract), and every consumer
-// below is read-only on the sources — EXCEPT the DIVU remainder Msub, which
-// therefore targets w10 rather than writing a source in place.
+// flushDirtyAllocatorRegs (the post-flush coherence contract), and every
+// consumer below is read-only on the sources — EXCEPT the DIVU remainder Msub,
+// which therefore targets w10 rather than writing a source in place.
 //
 // ⚠️ Scratch choice: w9/w10 (non-allocatable), NOT w2/w3. A resident FCR31
 // (ARM64TYPE_FPRC, GE-12) lives in the {x2-x7, x14, x15} pool ACROSS ops —
-// _eeFlushAllDirty writes it back but keeps residency, so a raw w2/w3
+// flushDirtyAllocatorRegs writes it back but keeps residency, so a raw w2/w3
 // clobber here poisons the flag a later BC1x/CFC1/DIV-flag-RMW reads (same
 // class as the fpuEmitGuardedAddSub SotC bug; pinned by
 // EeRecFpu.CompareSurvivesInterposed{Mult,Div}).
@@ -77,6 +86,55 @@ static void recWritebackRd()
 	_eeStoreGPRDestReg(_Rd_, RXSCRATCH);
 }
 
+// One operand a constant 0 or 2^k: the product is the other operand's low
+// word, sign- or zero-extended, shifted left by k. The signed forms stop at
+// k = 30, as 0x80000000 is INT_MIN. Returns false for the multiply path.
+static bool recMultConstOperand(bool is_signed, bool upper)
+{
+	int var_gpr;
+	u32 c;
+	if (GPR_IS_CONST1(_Rs_))
+	{
+		c = g_cpuConstRegs[_Rs_].UL[0];
+		var_gpr = _Rt_;
+	}
+	else if (GPR_IS_CONST1(_Rt_))
+	{
+		c = g_cpuConstRegs[_Rt_].UL[0];
+		var_gpr = _Rs_;
+	}
+	else
+		return false;
+
+	if (c == 0)
+	{
+		armAsm->Str(a64::xzr, armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]));
+		armAsm->Str(a64::xzr, armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]));
+		if (_Rd_)
+		{
+			_deleteEEreg(_Rd_, 0);
+			g_cpuConstRegs[_Rd_].SD[0] = 0;
+			GPR_SET_CONST(_Rd_);
+		}
+		return true;
+	}
+
+	if (!std::has_single_bit(c) || (is_signed && c == 0x80000000u))
+		return false;
+
+	flushDirtyAllocatorRegs();
+	const a64::Register var = _eeGetGPRSourceReg(a64::w1, var_gpr).X();
+	const unsigned k = std::countr_zero(c);
+	if (is_signed)
+		armAsm->Sbfiz(a64::x0, var, k, 32);
+	else
+		armAsm->Ubfiz(a64::x0, var, k, 32);
+
+	recWritebackHILO(upper);
+	recWritebackRd();
+	return true;
+}
+
 //// MULT — signed 32-bit multiply, result in HI:LO, optionally Rd
 void recMULT()
 {
@@ -99,7 +157,10 @@ void recMULT()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recMultConstOperand(true, false))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -131,7 +192,10 @@ void recMULTU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recMultConstOperand(false, false))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -139,6 +203,130 @@ void recMULTU()
 
 	recWritebackHILO(false);
 	recWritebackRd();
+}
+
+// DIV/DIV1 by a constant ±1 or ±2^k without an sdiv. A negative dividend is
+// biased by 2^k - 1 before the shift; a negative divisor negates the quotient
+// after HI is taken. INT_MIN is the k = 31 case, and INT_MIN / -1 wraps to
+// LO = INT_MIN, HI = 0 as sdiv does. Returns false for any other divisor.
+static bool recDivConstPow2(bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	const u32 d = g_cpuConstRegs[_Rt_].UL[0];
+	const bool negative = static_cast<s32>(d) < 0;
+	const u32 mag = negative ? 0u - d : d;
+	if (!std::has_single_bit(mag))
+		return false;
+	const unsigned k = std::countr_zero(mag);
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (k == 0)
+	{
+		if (negative)
+		{
+			armAsm->Neg(a64::w0, rs32);
+			armAsm->Sxtw(RXSCRATCH, a64::w0);
+		}
+		else
+			armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Str(a64::xzr, hi);
+		return true;
+	}
+
+	armAsm->Asr(a64::w10, rs32, 31);
+	armAsm->Add(a64::w0, rs32, a64::Operand(a64::w10, a64::LSR, 32 - k));
+	armAsm->Asr(a64::w0, a64::w0, k);
+	armAsm->Sub(a64::w10, rs32, a64::Operand(a64::w0, a64::LSL, k));
+	if (negative)
+		armAsm->Neg(a64::w0, a64::w0);
+
+	armAsm->Sxtw(RXSCRATCH, a64::w0);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->Sxtw(RXSCRATCH, a64::w10);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
+}
+
+// DIVU/DIVU1 by a constant 2^k without a udiv. For k >= 1 LO and HI have bit
+// 31 clear, so they need no sxtw. Returns false for any other divisor.
+static bool recDivuConstPow2(bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	const u32 d = g_cpuConstRegs[_Rt_].UL[0];
+	if (!std::has_single_bit(d))
+		return false;
+	const unsigned k = std::countr_zero(d);
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (k == 0)
+	{
+		armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Str(a64::xzr, hi);
+		return true;
+	}
+
+	armAsm->Ubfx(RXSCRATCH, rs32.X(), k, 32 - k);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->And(RXSCRATCH, rs32.X(), (u64{1} << k) - 1);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
+}
+
+// DIV, DIVU and the pipeline-1 forms by a constant divisor the shift forms
+// leave, with no zero test. A zero divisor stores the divide-by-zero result,
+// LO = -1 (DIV: 1 for a negative rs) and HI = rs; any other is the generic
+// path's divide and msub, the divisor built in w9 for the msub. Returns false
+// for a divisor that is not constant.
+static bool recDivConstDivisor(bool is_signed, bool upper)
+{
+	if (!GPR_IS_CONST1(_Rt_))
+		return false;
+
+	flushDirtyAllocatorRegs();
+	const a64::Register rs32 = loadRs32();
+	const a64::MemOperand lo = armCpuRegMem(upper ? &cpuRegs.LO.UD[1] : &cpuRegs.LO.UD[0]);
+	const a64::MemOperand hi = armCpuRegMem(upper ? &cpuRegs.HI.UD[1] : &cpuRegs.HI.UD[0]);
+
+	if (g_cpuConstRegs[_Rt_].UL[0] == 0)
+	{
+		armAsm->Mov(RXSCRATCH, -1);
+		if (is_signed)
+		{
+			armAsm->Cmp(rs32, 0);
+			armAsm->Cneg(RXSCRATCH, RXSCRATCH, a64::lt);
+		}
+		armAsm->Str(RXSCRATCH, lo);
+		armAsm->Sxtw(RXSCRATCH, rs32);
+		armAsm->Str(RXSCRATCH, hi);
+		return true;
+	}
+
+	const a64::Register rt32 = loadRt32();
+	if (is_signed)
+		armAsm->Sdiv(a64::w0, rs32, rt32);
+	else
+		armAsm->Udiv(a64::w0, rs32, rt32);
+	armAsm->Msub(a64::w10, a64::w0, rt32, rs32);
+
+	armAsm->Sxtw(RXSCRATCH, a64::w0);
+	armAsm->Str(RXSCRATCH, lo);
+	armAsm->Sxtw(RXSCRATCH, a64::w10);
+	armAsm->Str(RXSCRATCH, hi);
+	return true;
 }
 
 //// DIV — signed 32-bit divide. LO = quotient, HI = remainder.
@@ -176,7 +364,12 @@ void recDIV()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recDivConstPow2(false))
+		return;
+	if (recDivConstDivisor(true, false))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -238,7 +431,12 @@ void recDIVU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recDivuConstPow2(false))
+		return;
+	if (recDivConstDivisor(false, false))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -299,7 +497,10 @@ void recMULT1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recMultConstOperand(true, true))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -331,7 +532,10 @@ void recMULTU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recMultConstOperand(false, true))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -374,7 +578,12 @@ void recDIV1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recDivConstPow2(true))
+		return;
+	if (recDivConstDivisor(true, true))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -430,7 +639,12 @@ void recDIVU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	if (recDivuConstPow2(true))
+		return;
+	if (recDivConstDivisor(false, true))
+		return;
+
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
@@ -464,7 +678,7 @@ void recMADD()
 		s64 result = (s64)(s32)g_cpuConstRegs[_Rs_].UL[0] * (s64)(s32)g_cpuConstRegs[_Rt_].UL[0];
 
 		// Add to existing HI:LO — load, add, store
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[0]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[0]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -476,20 +690,14 @@ void recMADD()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
 
-	// x0 = Rs * Rt (signed 32x32→64)
-	armAsm->Smull(a64::x0, rs32, rt32);
-
-	// Load existing HI:LO into x1
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[0]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[0]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	// Add
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Smaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(false);
 	recWritebackRd();
@@ -502,7 +710,7 @@ void recMADDU()
 	{
 		u64 result = (u64)g_cpuConstRegs[_Rs_].UL[0] * (u64)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[0]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[0]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -514,17 +722,14 @@ void recMADDU()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
-
-	armAsm->Umull(a64::x0, rs32, rt32);
 
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[0]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[0]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Umaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(false);
 	recWritebackRd();
@@ -537,7 +742,7 @@ void recMADD1()
 	{
 		s64 result = (s64)(s32)g_cpuConstRegs[_Rs_].UL[0] * (s64)(s32)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[2]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[2]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -549,17 +754,14 @@ void recMADD1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
-
-	armAsm->Smull(a64::x0, rs32, rt32);
 
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[2]);  // LO1 = LO.UL[2] (upper 64 bits)
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[2]); // HI1 = HI.UL[2] (w8: reserved scratch — w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Smaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(true);
 	recWritebackRd1();
@@ -572,7 +774,7 @@ void recMADDU1()
 	{
 		u64 result = (u64)g_cpuConstRegs[_Rs_].UL[0] * (u64)g_cpuConstRegs[_Rt_].UL[0];
 
-		_eeFlushAllDirty();
+		flushDirtyAllocatorRegs();
 		armLoadEERegPtr(a64::w1, &cpuRegs.LO.UL[2]);
 		armLoadEERegPtr(a64::w9, &cpuRegs.HI.UL[2]);
 		armAsm->Orr(a64::x1, a64::x1, a64::Operand(a64::x9, a64::LSL, 32));
@@ -584,17 +786,14 @@ void recMADDU1()
 		return;
 	}
 
-	_eeFlushAllDirty();
+	flushDirtyAllocatorRegs();
 	const a64::Register rs32 = loadRs32();
 	const a64::Register rt32 = loadRt32();
-
-	armAsm->Umull(a64::x0, rs32, rt32);
 
 	armLoadEERegPtr(a64::w10, &cpuRegs.LO.UL[2]);
 	armLoadEERegPtr(RWSCRATCH, &cpuRegs.HI.UL[2]); // w8: reserved scratch (w4 is allocatable)
 	armAsm->Orr(a64::x10, a64::x10, a64::Operand(RXSCRATCH, a64::LSL, 32));
-
-	armAsm->Add(a64::x0, a64::x0, a64::x10);
+	armAsm->Umaddl(a64::x0, rs32, rt32, a64::x10);
 
 	recWritebackHILO(true);
 	recWritebackRd1();

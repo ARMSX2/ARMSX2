@@ -96,6 +96,8 @@ static void recANDI_const()
 
 static void recANDI_(int info)
 {
+	if (recShiftPairLead())
+		return;
 	if (_ImmU_ == 0)
 	{
 		memStoreT(a64::xzr);
