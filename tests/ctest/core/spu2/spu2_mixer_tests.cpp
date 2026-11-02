@@ -20,6 +20,14 @@
 
 #include <gtest/gtest.h>
 
+#if defined(__linux__)
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#define SPU2_TEST_HAS_PMU 1
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -529,3 +537,207 @@ TEST_F(Spu2Mixer, CurrentMixerMatchesWithTheLightweightReverbBypass)
 	}
 	EmuConfig.SPU2.LightweightMode = false;
 }
+
+#ifdef SPU2_TEST_HAS_PMU
+
+namespace
+{
+	// User-space instruction and cycle counters for the calling thread. On the Apple cores under Asahi the generic hardware
+	// events only exist per core type, so the performance and efficiency core PMUs are both opened and whichever one the
+	// thread ran on has the counts.
+	class Pmu
+	{
+	public:
+		Pmu()
+		{
+			static const char* const pmus[] = {"apple_avalanche_pmu", "apple_blizzard_pmu"};
+			bool any = false;
+			for (const char* name : pmus)
+			{
+				char path[128];
+				std::snprintf(path, sizeof(path), "/sys/bus/event_source/devices/%s/type", name);
+				std::FILE* f = std::fopen(path, "r");
+				if (!f)
+					continue;
+				u32 type = 0;
+				const int got = std::fscanf(f, "%u", &type);
+				std::fclose(f);
+				if (got == 1)
+				{
+					Open(type, 0x8c);
+					Open(type, 0x2);
+					any = true;
+				}
+			}
+			if (!any)
+			{
+				Open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_INSTRUCTIONS);
+				Open(PERF_TYPE_HARDWARE, PERF_COUNT_HW_CPU_CYCLES);
+			}
+		}
+
+		~Pmu()
+		{
+			for (const Event& e : m_events)
+				close(e.fd);
+		}
+
+		void Start()
+		{
+			for (const Event& e : m_events)
+			{
+				ioctl(e.fd, PERF_EVENT_IOC_RESET, 0);
+				ioctl(e.fd, PERF_EVENT_IOC_ENABLE, 0);
+			}
+		}
+
+		void Stop(u64* instructions, u64* cycles)
+		{
+			*instructions = 0;
+			*cycles = 0;
+			for (const Event& e : m_events)
+			{
+				ioctl(e.fd, PERF_EVENT_IOC_DISABLE, 0);
+				u64 v = 0;
+				if (read(e.fd, &v, sizeof(v)) != sizeof(v))
+					v = 0;
+				(e.is_instructions ? *instructions : *cycles) += v;
+			}
+		}
+
+		bool Ok() const { return !m_events.empty(); }
+
+	private:
+		struct Event
+		{
+			int fd;
+			bool is_instructions;
+		};
+
+		void Open(u32 type, u64 config)
+		{
+			perf_event_attr attr = {};
+			attr.size = sizeof(attr);
+			attr.type = type;
+			attr.config = config;
+			attr.disabled = 1;
+			attr.exclude_kernel = 1;
+			attr.exclude_hv = 1;
+			const int fd = static_cast<int>(syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
+			if (fd >= 0)
+				m_events.push_back({fd, config == 0x8c || (type == PERF_TYPE_HARDWARE && config == PERF_COUNT_HW_INSTRUCTIONS)});
+		}
+
+		std::vector<Event> m_events;
+	};
+
+	// A state shaped like a game's: some voices playing, the rest stopped but still running with a pitch set, reverb on, no
+	// IRQ, no slides.
+	void ShapeState(Rng& r, u32 active0, u32 active1)
+	{
+		RandomState(r);
+		for (size_t blk = 0; blk < 0x100000; blk += 8)
+		{
+			u16 header = static_cast<u16>(_spu2mem[blk]);
+			header = static_cast<u16>((header & 0xf8ff) | (r.Chance(5) ? (2u << 8) : 0u));
+			_spu2mem[blk] = static_cast<s16>(header);
+		}
+		const u32 active[2] = {active0, active1};
+		for (int ci = 0; ci < 2; ci++)
+		{
+			V_Core& c = Cores[ci];
+			c.IRQEnable = false;
+			c.Mute = false;
+			c.FxEnable = true;
+			c.EffectsStartA = 0x20000;
+			c.EffectsEndA = 0x20000 + 0x8000;
+			for (V_VoiceGates& g : c.VoiceGates)
+				g.DryL = g.DryR = g.WetL = g.WetR = -1;
+			c.MasterVol.Left.Reg_VOL = c.MasterVol.Right.Reg_VOL = 0x3fff;
+			c.MasterVol.Left.Value = c.MasterVol.Right.Value = 0x3fff;
+			for (u32 vi = 0; vi < V_Core::NumVoices; vi++)
+			{
+				V_Voice& vc = c.Voices[vi];
+				vc.Volume.Left.Reg_VOL &= 0x7fff;
+				vc.Volume.Right.Reg_VOL &= 0x7fff;
+				vc.Modulated = false;
+				vc.Noise = false;
+				vc.LoopMode = 0;
+				if (vi < active[ci])
+				{
+					vc.ADSR.Phase = V_ADSR::PHASE_SUSTAIN;
+					vc.ADSR.Value = 0x2000 + r.Below(0x5000);
+					vc.ADSR.reg32 = 0xdfff1fc0 & ~0x40000000u; // sustain at the current level: shift 0x1f, rate field all ones
+					vc.ADSR.UpdateCache();
+					vc.Volume.Left.Value = static_cast<s16>(r.Below(0x6000)) - 0x3000;
+					vc.Volume.Right.Value = static_cast<s16>(r.Below(0x6000)) - 0x3000;
+					vc.Pitch = static_cast<u16>(0x800 + r.Below(0x1800));
+				}
+				else
+				{
+					vc.ADSR.Phase = V_ADSR::PHASE_STOPPED;
+					vc.ADSR.Value = 0;
+					static const u16 idle[] = {0x800, 0x1000, 0x1000, 0x1400};
+					vc.Pitch = idle[r.Below(4)];
+				}
+			}
+		}
+		PlayMode = 0;
+	}
+
+	template <typename Fn>
+	void BenchMix(const char* shape, const char* impl, const Snapshot& snap, Fn mix, Pmu& pmu)
+	{
+		const u32 warm = 400, n = 6000;
+		std::vector<StereoOut32> out;
+		out.reserve(warm + n + 8);
+		snap.Restore();
+		s_capture = &out;
+		for (u32 i = 0; i < warm; i++)
+		{
+			Cycles++;
+			mix();
+		}
+		out.clear();
+		u64 instr = 0, cyc = 0;
+		pmu.Start();
+		for (u32 i = 0; i < n; i++)
+		{
+			Cycles++;
+			mix();
+		}
+		pmu.Stop(&instr, &cyc);
+		s_capture = nullptr;
+		std::printf("BENCH2 shape=%s impl=%s mixes=%u instructions_per_mix=%.1f cycles_per_mix=%.1f ipc=%.2f\n", shape, impl, n,
+			static_cast<double>(instr) / n, static_cast<double>(cyc) / n, cyc ? static_cast<double>(instr) / cyc : 0.0);
+	}
+} // namespace
+
+// Instructions and cycles one spu2Mix() takes, user space only, for states with a game-like split of playing and stopped
+// voices: the numbers of playing voices on core 0 and core 1 are
+//   busy 20+20, mixed 15+7 (God of War II), quiet 0+2 (Metal Gear Solid 3, Dragon Quest VIII).
+// Prints the frozen reference too, for scale; it is the old mixer with the three helpers it called compiled into the
+// same file, not the old mixer as it was linked. Disabled by default:
+//   spu2_tests --gtest_also_run_disabled_tests --gtest_filter='*DISABLED_InstructionsPerMix*'
+// Pin the thread (taskset) to pick the core type.
+TEST_F(Spu2Mixer, DISABLED_InstructionsPerMix)
+{
+	Pmu pmu;
+	ASSERT_TRUE(pmu.Ok()) << "perf_event_open failed";
+	struct Shape
+	{
+		const char* name;
+		u32 a0, a1;
+	};
+	for (const Shape sh : {Shape{"busy", 20, 20}, Shape{"mixed", 15, 7}, Shape{"quiet", 0, 2}})
+	{
+		Rng r(4242);
+		ShapeState(r, sh.a0, sh.a1);
+		auto snap = std::make_unique<Snapshot>();
+		snap->Take();
+		BenchMix(sh.name, "current", *snap, CurrentSpu2Mix, pmu);
+		BenchMix(sh.name, "reference", *snap, ReferenceSpu2Mix, pmu);
+	}
+}
+
+#endif // SPU2_TEST_HAS_PMU
