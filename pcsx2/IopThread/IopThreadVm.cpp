@@ -58,6 +58,9 @@ namespace IopThread
 		// The testing knob that turns a skewed Lockstep's deferred SIF pumps into held ones (SetLockstepSkewHolds): bit 0 SIF0, bit 1 SIF1.
 		u32 s_lockstep_skew_holds = 0;
 
+		// The testing knob that keeps a record of every frame's late replies (SetReplyTrace).
+		bool s_reply_trace = false;
+
 		// The testing knob for the idle-watch window (Params::idle_spin_ns).
 		u32 s_idle_spin_ns = kDefaultIdleSpinNs;
 
@@ -183,6 +186,7 @@ namespace IopThread
 			params.start_ee_cycle = cpuRegs.cycle;
 			params.start_iop_pos = IopPosition();
 			params.iop_now = IopTimeNow;
+			params.ee_in_event_test = [] { return eeEventTestIsActive; };
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
 			params.stack_size = VMManager::EMU_THREAD_STACK_SIZE;
 			if (s_mode == IopThreadMode::Threaded)
@@ -323,6 +327,8 @@ namespace IopThread
 			StopRunningThread();
 			Console.WriteLn(Color_StrongGreen, "IOP thread: stopped.");
 		}
+		if (s_mode != IopThreadMode::Off)
+			g_thread.SetReplyTrace(s_reply_trace);
 		if (s_mode != IopThreadMode::Off && g_thread.Start(MakeParams()))
 		{
 			eeFastForwardKind = 0; // a skip made while the mode was Off has no event test to belong to
@@ -785,6 +791,23 @@ namespace IopThread
 		return s_lockstep_skew_holds != 0;
 	}
 
+	void SetReplyTrace(bool on)
+	{
+		s_reply_trace = on;
+	}
+
+	bool ReplyTrace()
+	{
+		return s_reply_trace;
+	}
+
+	void NoteDirectReply(u32 kind)
+	{
+		if (s_mode != IopThreadMode::Lockstep || !g_thread.IsRunning() || !g_thread.OnIopThread())
+			return;
+		g_thread.NoteReply(kind, static_cast<u32>(IopTimeNow()));
+	}
+
 	void SetThreadedIdleSpinNs(u32 ns)
 	{
 		s_idle_spin_ns = ns;
@@ -798,7 +821,7 @@ namespace IopThread
 	std::string FormatStats(const Stats& t, double frames)
 	{
 		const double f = std::max(frames, 1.0);
-		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP asleep {:.2f}/f {:.1f} us/f, idle {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f deferred {:.2f}/f (applied {:.2f}/f) iop {:.2f}/f | SBUS near-bound waits {:.2f}/f {:.1f} us/f | IOP sleeps {:.1f}/f wakes {:.1f}/f idle {:.0f} us/f | slices {:.0f}/f",
+		return fmt::format("W1 {:.2f}/f {:.1f} us/f (found IOP asleep {:.2f}/f {:.1f} us/f, idle {:.2f}/f {:.1f} us/f) | W2 {:.2f}/f {:.1f} us/f | I2E {:.1f}/f | SIF pumps ee {:.2f}/f deferred {:.2f}/f (applied {:.2f}/f) iop {:.2f}/f | SBUS near-bound waits {:.2f}/f {:.1f} us/f | IOP sleeps {:.1f}/f wakes {:.1f}/f idle {:.0f} us/f | slices {:.0f}/f | replies {:.2f}/f late {:.2f}/f idle overshoots {:.2f}/f (max {} cycles, unbroken {:.2f}/f, 90% {:.2f}/f; late but EE busy {:.2f}/f, idle light {:.2f}/f)",
 			t.lag_spins / f, t.lag_stall_ns / 1000.0 / f, t.lag_spins_parked / f, t.lag_parked_stall_ns / 1000.0 / f,
 			t.lag_spins_idle / f, t.lag_idle_stall_ns / 1000.0 / f,
 			t.emu_hold_requests / f, t.emu_hold_stall_ns / 1000.0 / f, t.i2e_drained / f,
@@ -806,7 +829,75 @@ namespace IopThread
 			// CallOnEE requests are the IOP-started pumps and the deferred ones; the deferred ones have their own figure.
 			(t.calls_posted > t.sif_deferred_applied ? t.calls_posted - t.sif_deferred_applied : 0) / f,
 			t.near_waits / f, t.near_wait_ns / 1000.0 / f,
-			t.parks / f, t.wakes_sent / f, t.idle_ns / 1000.0 / f, t.slices / f);
+			t.parks / f, t.wakes_sent / f, t.idle_ns / 1000.0 / f, t.slices / f,
+			t.replies / f, t.late_replies / f, t.idle_overshoots / f, t.idle_overshoot_max, t.idle_overshoots_unbroken / f, t.idle_overshoots_90 / f,
+			t.late_ee_busy / f, t.late_idle_light / f);
+	}
+
+	namespace
+	{
+		std::string HistLine(const char* what, const char* kind, const LateHist& h)
+		{
+			std::string line = fmt::format("IOPLATE: {} {} n={} mean={:.0f} max={} |", what, kind, h.count, h.Mean(), h.max);
+			for (u32 i = 0; i < kLateBuckets; i++)
+				line += fmt::format(" {}", h.bucket[i]);
+			return line;
+		}
+	} // namespace
+
+	std::vector<std::string> FormatReplyStats(const ReplyStats& r)
+	{
+		std::vector<std::string> lines;
+		std::string edges;
+		for (u32 i = 0; i < kLateEdgeCount; i++)
+			edges += fmt::format(" <{}", kLateEdges[i]);
+		edges += fmt::format(" >={}", kLateEdges[kLateEdgeCount - 1]);
+		lines.push_back(fmt::format("IOPLATE: buckets (EE cycles late):{}", edges));
+		lines.push_back(fmt::format(
+			"IOPLATE: replies={} late={} (>= {} cycles) idle_overshoots={} (idle share >= {}%) overshoot_cycles={} overshoot_max={} unbroken={} share90={} late_ee_busy={} (cycles {}) "
+			"late_idle_light={} (cycles {}) late_idle_unknown={}",
+			r.replies, r.late, kOvershootMin, r.idle_overshoots, kIdleShareMin, r.idle_overshoot_cycles, r.idle_overshoot_max, r.idle_overshoots_unbroken, r.idle_overshoots_90,
+			r.late_ee_busy, r.late_ee_busy_cycles, r.late_idle_light, r.late_idle_light_cycles, r.late_idle_unknown));
+		LateHist all_kinds, over_kinds;
+		for (u32 k = 0; k < ReplyKind::kCount; k++)
+		{
+			for (const LateHist* src : {&r.all[k], &r.overshoot[k]})
+			{
+				LateHist& dst = (src == &r.all[k]) ? all_kinds : over_kinds;
+				dst.count += src->count;
+				dst.sum += src->sum;
+				dst.max = std::max(dst.max, src->max);
+				for (u32 i = 0; i < kLateBuckets; i++)
+					dst.bucket[i] += src->bucket[i];
+			}
+		}
+		lines.push_back(HistLine("all", "total", all_kinds));
+		for (u32 k = 0; k < ReplyKind::kCount; k++)
+			if (r.all[k].count)
+				lines.push_back(HistLine("all", ReplyKind::Name(k), r.all[k]));
+		lines.push_back(HistLine("idle_overshoot", "total", over_kinds));
+		for (u32 k = 0; k < ReplyKind::kCount; k++)
+			if (r.overshoot[k].count)
+				lines.push_back(HistLine("idle_overshoot", ReplyKind::Name(k), r.overshoot[k]));
+		std::string dec;
+		for (u32 i = 0; i <= 10; i++)
+			dec += fmt::format(" {}", r.coverage_decile[i]);
+		lines.push_back(fmt::format("IOPLATE: late replies by idle share of [production, taken] in tenths (0..10):{}", dec));
+		lines.push_back(fmt::format("IOPLATE: frames={} with_overshoot={} by overshoots in the frame (0 1 2 3-4 5-8 9+): {} {} {} {} {} {}", r.frames, r.frames_with_overshoot,
+			r.frame_bins[0], r.frame_bins[1], r.frame_bins[2], r.frame_bins[3], r.frame_bins[4], r.frame_bins[5]));
+		lines.push_back(fmt::format("IOPLATE: event_tests={} ff_event_tests={} ({:.1f}%) ff_cycles={} ee_cycles={} ({:.1f}% idle)", r.event_tests, r.ff_event_tests,
+			r.event_tests ? 100.0 * r.ff_event_tests / r.event_tests : 0.0, r.ff_cycles, r.ee_cycles, r.ee_cycles ? 100.0 * r.ff_cycles / r.ee_cycles : 0.0));
+		return lines;
+	}
+
+	std::vector<std::string> FormatReplyTrace(const std::vector<FrameRecord>& trace)
+	{
+		std::vector<std::string> lines;
+		lines.reserve(trace.size());
+		for (const FrameRecord& r : trace)
+			lines.push_back(fmt::format("IOPLATE-FRAME: frame={} replies={} late={} idle_overshoots={} unbroken={} share90={} max_late={} ff_cycles={} ee_cycles={}", r.frame, r.replies,
+				r.late, r.idle_overshoots, r.unbroken, r.share90, r.max_late, r.ff_cycles, r.ee_cycles));
+		return lines;
 	}
 
 	std::string OsdStatsLine()

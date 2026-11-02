@@ -31,6 +31,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace IopThread
 {
@@ -270,10 +271,26 @@ namespace IopThread
 	/// The skew the running Lockstep thread has, 0 otherwise. What the EE core's event test reads.
 	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkew()); }
 
+	/// Keep a record of every frame's late replies (IOPLATE-FRAME: lines in eerunner), for the next Start(). Not a setting.
+	void SetReplyTrace(bool on);
+	bool ReplyTrace();
+
+	/// IOP thread, Lockstep, with the EE blocked in the handoff: the IOP has an effect on the EE directly, where Threaded queues an
+	/// item (the SBUS interrupt, a SIF pump the IOP started). Counts it as a reply of `kind` (ReplyKind) at the IOP's time now. Does
+	/// nothing in any other mode.
+	void NoteDirectReply(u32 kind);
+
 	/// The idle-watch window for the next Start(): how long an idle IOP watches the watermark before it sleeps
 	/// (Params::idle_spin_ns; default kDefaultIdleSpinNs). Not a setting.
 	void SetThreadedIdleSpinNs(u32 ns);
 	u32 ThreadedIdleSpinNs();
+
+	/// The late-reply books as text, for the run reports: a total line, a line per kind for every reply and for the overshoots in idle (count, mean,
+	/// max, and the histogram of lateness), the idle share of the late replies in tenths, and the frames by overshoots in idle.
+	/// Each line starts with IOPLATE:.
+	std::vector<std::string> FormatReplyStats(const ReplyStats& stats);
+	/// One IOPLATE-FRAME: line per completed frame, when the trace is on.
+	std::vector<std::string> FormatReplyTrace(const std::vector<FrameRecord>& trace);
 
 	/// One line of the Threaded counters, per frame over the time since the last call, for the OSD. Empty unless
 	/// the mode is Threaded.

@@ -546,7 +546,7 @@ __fi void _cpuEventTest_Shared()
 	{
 		const u8 ff_kind = eeFastForwardKind;
 		eeFastForwardKind = 0;
-		IopThread::g_thread.NoteEventTest(cpuRegs.cycle, ff_kind);
+		IopThread::g_thread.NoteEventTest(cpuRegs.cycle, ff_kind, g_FrameCount);
 	}
 
 	// Threaded: publish where the EE has got and take what the IOP queued for it (the SBUS interrupt, a

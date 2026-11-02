@@ -123,6 +123,7 @@
 #pragma once
 
 #include "IopThread/IopChannels.h"
+#include "IopThread/IopLagControl.h"
 #include "IopThread/IopThreadMode.h"
 
 #include "common/FPControl.h"
@@ -289,6 +290,10 @@ namespace IopThread
 		/// the last published watermark is used.
 		std::function<u64()> ee_cycle;
 
+		/// Optional. EE thread. True while the EE is inside an event test: a reply taken then can be an overshoot in idle
+		/// (ReplyMonitor::OnReply). Empty counts every reply as taken inside one.
+		std::function<bool()> ee_in_event_test;
+
 		/// Optional. Called on the EE thread when an outermost hold has been granted, with the IOP stopped
 		/// at its position and the I2E queue emptied once more. The VM uses it to rewrite the EE-side books
 		/// (EEsCycle, EEoCycle) from the IOP's position, which a savestate or a mode change reads.
@@ -347,6 +352,15 @@ namespace IopThread
 		u64 ee_ff_wait_loop; // ... of which were reached through a recompiler wait loop fast-forward
 		u64 ee_ff_timeout_loop; // ... through a recompiler timeout loop skip
 		u64 ee_ff_interpreter; // ... through the interpreter's wait loop skip
+		u64 replies; // what the IOP produced for the EE and the EE took (the SBUS interrupt, the SIF pumps the IOP started)
+		u64 late_replies; // ... late by at least kOvershootMin EE cycles
+		u64 idle_overshoots; // ... of which the EE took in an idle event test, idle since the reply was produced (ReplyMonitor)
+		u64 idle_overshoot_cycles; // their lateness, summed
+		u64 idle_overshoot_max; // and the largest
+		u64 late_ee_busy; // late replies taken while the EE was not idle
+		u64 late_idle_light; // late replies taken in an idle event test with less than kIdleShareMin percent of the lateness idle
+		u64 idle_overshoots_unbroken; // idle overshoots read strictly: no EE run between the production and now
+		u64 idle_overshoots_90; // ... and read with a 90 percent idle share
 		// IOP thread
 		u64 slices;
 		u64 items_applied;
@@ -439,7 +453,7 @@ namespace IopThread
 		/// EE thread, first thing in every event test of a Lockstep or Threaded EE (after the stopping check). `ff_kind` is the
 		/// FastForward bits (IopThreadMode.h) the skip that ended in this event test left, 0 when the EE got here by running. An event test
 		/// reached by a fast-forward is one the EE spent idle: the guest was waiting and its clock was jumped to the next event.
-		__fi void NoteEventTest(u64 /*cycle*/, u8 ff_kind)
+		__fi void NoteEventTest(u64 cycle, u8 ff_kind, u32 frame)
 		{
 			m_ee_event_tests.Add();
 			if (ff_kind != 0) [[unlikely]]
@@ -451,7 +465,23 @@ namespace IopThread
 				if (ff_kind & FastForward::Interpreter)
 					m_ee_ff_interpreter.Add();
 			}
+			m_replies.OnEventTest(cycle, ff_kind != 0, frame);
 		}
+
+		/// EE thread, or the IOP thread in Lockstep with the EE blocked in the handoff. The EE takes something the IOP produced
+		/// (ReplyKind) at the IOP time whose low 32 bits are `stamp_lo`, at the EE's cycle now (Params::ee_cycle). Threaded counts
+		/// its I2E items and CallOnEE requests itself; the VM calls this for the effects a Lockstep IOP has on the EE directly.
+		ReplyMonitor::Verdict NoteReply(u32 kind, u32 stamp_lo)
+		{
+			const u64 now = m_params.ee_cycle ? m_params.ee_cycle() : m_ee_wm_local;
+			const bool in_event_test = m_params.ee_in_event_test ? m_params.ee_in_event_test() : true;
+			return m_replies.OnReply(kind, stamp_lo, now, in_event_test);
+		}
+
+		/// The late-reply books. Read them when the EE (and in Lockstep the IOP) is not running, or accept a snapshot a moment old.
+		const ReplyMonitor& Replies() const { return m_replies; }
+		/// Keep a record of every frame (before Start(), which resets the books and keeps this).
+		void SetReplyTrace(bool on) { m_replies.EnableTrace(on); }
 
 		/// Returns once cycle - iop_pos <= lag, so the EE is never more than L ahead after an
 		/// event test. Spins (see the top of this file) while it waits. False if the stop predicate
@@ -734,8 +764,11 @@ namespace IopThread
 		{
 			void (*fn)(void*) = nullptr;
 			void* arg = nullptr;
+			u32 stamp = 0; // the IOP's time of the request (the low 32 bits of IopNow()), written with fn and arg
 			std::atomic<u32> state{kCallIdle};
 		} m_call;
+
+		ReplyMonitor m_replies; // EE thread; in Lockstep also the IOP thread, with the EE blocked in the handoff
 
 		StampedRing<kE2IRingCapacity> m_e2i;
 		// Lockstep skew only (a testing mode): the EE-to-IOP items that did not fit the ring, oldest first. A skewed IOP does not

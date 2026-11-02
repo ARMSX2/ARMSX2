@@ -98,6 +98,8 @@ namespace EeBridge
 			return;
 		}
 		EE_SIDE_ASSERT();
+		if (IopThread::GetMode() == IopThreadMode::Lockstep) [[unlikely]]
+			IopThread::NoteDirectReply(IopThread::ReplyKind::SbusIrq);
 		hwIntcIrq(INTC_SBUS);
 	}
 
@@ -114,6 +116,8 @@ namespace EeBridge
 			return;
 		}
 		EE_SIDE_ASSERT();
+		if (IopThread::GetMode() == IopThreadMode::Lockstep) [[unlikely]]
+			IopThread::NoteDirectReply(IopThread::ReplyKind::Sif0Pump);
 		SIF0Dma();
 	}
 
@@ -125,6 +129,8 @@ namespace EeBridge
 			return;
 		}
 		EE_SIDE_ASSERT();
+		if (IopThread::GetMode() == IopThreadMode::Lockstep) [[unlikely]]
+			IopThread::NoteDirectReply(IopThread::ReplyKind::Sif1Pump);
 		SIF1Dma();
 	}
 

@@ -16,6 +16,7 @@ add_pcsx2_test(core_test
 	iop_thread_placement_tests.cpp
 	iop_thread_metrics_tests.cpp
 	iop_thread_channels_tests.cpp
+	iop_lag_control_tests.cpp
 	iop_thread_tests.cpp
 	iop_thread_lockstep_tests.cpp
 	iop_thread_queue_tests.cpp

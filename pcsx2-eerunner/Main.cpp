@@ -1091,6 +1091,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               at every handoff instead of catching it up, apply EE-to-IOP items when the IOP's clock reaches their stamp, and\n");
 	std::fprintf(stderr, "               defer EE-started SIF0/SIF1 pumps. 0 (default) is plain Lockstep. Deterministic. A test knob, not a setting;\n");
 	std::fprintf(stderr, "               not for runs that save or load states.\n");
+	std::fprintf(stderr, "  --iop-late-trace: print an IOPLATE-FRAME: line per frame with that frame's late-reply counts (the IOPLATE: lines at the end of the run\n");
+	std::fprintf(stderr, "               are always printed with the IOP thread on). A measurement knob, not a setting.\n");
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
 	std::fprintf(stderr, "  --iop-idle-spin-us N: Threaded IOP thread: how long an idle IOP watches the watermark before it sleeps, in\n");
 	std::fprintf(stderr, "               microseconds (0 sleeps at once). Default: the built-in window. A measurement knob, not a setting.\n");
@@ -1574,6 +1576,11 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				IopThread::SetThreadedIdleSpinNs(v.value() * 1000u);
+				continue;
+			}
+			else if (CHECK_ARG("--iop-late-trace"))
+			{
+				IopThread::SetReplyTrace(true);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-spin-hint"))
@@ -5851,6 +5858,14 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				if (IopThread::GetMode() != IopThreadMode::Off)
 					Console.WriteLn(fmt::format("IOPFF: ee_event_tests={} ff_wait_loop={} ff_timeout_loop={} ff_interpreter={}", st.ee_event_tests, st.ee_ff_wait_loop,
 						st.ee_ff_timeout_loop, st.ee_ff_interpreter));
+				// How late the EE took what the IOP produced (the SBUS interrupt, the SIF pumps the IOP started), and whether the EE was idle across it.
+				if (IopThread::GetMode() != IopThreadMode::Off)
+				{
+					for (const std::string& line : IopThread::FormatReplyStats(IopThread::g_thread.Replies().Stats()))
+						Console.WriteLn(line);
+					for (const std::string& line : IopThread::FormatReplyTrace(IopThread::g_thread.Replies().Trace()))
+						Console.WriteLn(line);
+				}
 				// Lockstep skew: EE-to-IOP items that did not fit the ring and went to the spill queue.
 				Console.WriteLn(fmt::format("E2ISPILL: items={} max_depth={}", IopThread::g_thread.E2ISpillTotal(), IopThread::g_thread.E2ISpillMax()));
 				if (IopThread::LockstepSkewHolds() && IopThread::g_thread.LockstepSkew() > 0)

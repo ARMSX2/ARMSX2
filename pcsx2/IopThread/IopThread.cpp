@@ -118,6 +118,7 @@ namespace IopThread
 
 		// Nothing else touches any of this: the IOP thread does not exist yet. The thread's creation
 		// orders these writes before its first read.
+		m_replies.Reset();
 		m_e2i.Reset();
 		m_e2i_spill.clear();
 		m_e2i_spill_total = 0;
@@ -492,6 +493,7 @@ namespace IopThread
 
 		m_call.fn = fn;
 		m_call.arg = arg;
+		m_call.stamp = static_cast<u32>(IopNow());
 		// Pairs with the acquire CAS in ServeCall().
 		m_call.state.store(kCallPosted, std::memory_order_release);
 		m_calls_posted.Add();
@@ -582,9 +584,16 @@ namespace IopThread
 			m_i2e.Pop();
 			taken++;
 			if (item.kind == I2EKind::CallOnEE)
+			{
 				ServeCall();
-			else if (m_params.handle_i2e)
-				m_params.handle_i2e(item);
+			}
+			else
+			{
+				if (item.kind == I2EKind::SbusIrq)
+					NoteReply(ReplyKind::SbusIrq, item.stamp);
+				if (m_params.handle_i2e)
+					m_params.handle_i2e(item);
+			}
 		}
 		m_i2e_drained.Add(taken);
 		return taken;
@@ -601,6 +610,7 @@ namespace IopThread
 
 		void (*fn)(void*) = m_call.fn;
 		void* arg = m_call.arg;
+		NoteReply(ReplyKind::Call, m_call.stamp);
 		const bool was_in_call = m_in_call;
 		m_in_call = true;
 		fn(arg);
@@ -1093,6 +1103,16 @@ namespace IopThread
 		s.ee_ff_wait_loop = m_ee_ff_wait_loop.Get();
 		s.ee_ff_timeout_loop = m_ee_ff_timeout_loop.Get();
 		s.ee_ff_interpreter = m_ee_ff_interpreter.Get();
+		const ReplyStats& r = m_replies.Stats();
+		s.replies = r.replies;
+		s.late_replies = r.late;
+		s.idle_overshoots = r.idle_overshoots;
+		s.idle_overshoot_cycles = r.idle_overshoot_cycles;
+		s.idle_overshoot_max = r.idle_overshoot_max;
+		s.late_ee_busy = r.late_ee_busy;
+		s.late_idle_light = r.late_idle_light;
+		s.idle_overshoots_unbroken = r.idle_overshoots_unbroken;
+		s.idle_overshoots_90 = r.idle_overshoots_90;
 		s.slices = m_slices.Get();
 		s.items_applied = m_items_applied.Get();
 		s.parks = m_parks.Get();
