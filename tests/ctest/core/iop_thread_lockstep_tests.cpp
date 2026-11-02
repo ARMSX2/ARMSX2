@@ -929,6 +929,51 @@ TEST_F(LockstepMachine, ASkewDoesNotMakeTheEeLookAgainEvery48CyclesBecauseTheIop
 	}
 }
 
+TEST_F(LockstepMachine, ASkewKeepsMoreItemsThanTheRingHoldsAndAppliesThemInOrder)
+{
+	REQUIRE_ARM64_HOST();
+	// The IOP does not run until the EE is a skew ahead, so a burst of posts inside that stretch (a state whose counters catch up,
+	// a guest loop that starts a SIF DMA every few hundred cycles while the deferred pump is pending) can hold more items than
+	// the ring has slots. They go to a spill queue, behind the ring's, and come out in the order they went in.
+	constexpr s64 kSkew = 900000;
+	constexpr u32 kItems = IopThread::kE2IRingCapacity * 2 + 123;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	IopThread::SetLockstepSkew(kSkew);
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	s_iop_ran = 0;
+	std::vector<Probe> probes;
+	ProbeGuard probe_guard(probes, start);
+
+	// One item every 3 cycles: all of them well inside the first skew's worth of EE time, where the IOP has no budget.
+	for (u32 i = 0; i < kItems; i++)
+	{
+		cpuRegs.cycle += 3;
+		IopThread::ApplyOnIop(IopThread::E2IKind::SifPump, i & 1);
+	}
+	EXPECT_TRUE(probes.empty()) << "an item was applied at the moment it was posted";
+	EXPECT_EQ(IopThread::g_thread.E2ISpillTotal(), kItems - IopThread::kE2IRingCapacity);
+
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 2000 && probes.size() < kItems; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+	ASSERT_EQ(probes.size(), kItems);
+	for (u32 i = 0; i < kItems; i++)
+	{
+		EXPECT_STREQ(probes[i].what, "sif_pump") << "item " << i;
+		ASSERT_EQ(probes[i].arg, i & 1) << "item " << i << " came out of order";
+	}
+	EXPECT_EQ(IopThread::g_thread.E2ISpillMax(), kItems - IopThread::kE2IRingCapacity);
+}
+
 TEST_F(LockstepMachine, TheSkewIsClampedToTheLagCeilingSoTheEeToIopRingCannotFill)
 {
 	SkewGuard skew_guard;

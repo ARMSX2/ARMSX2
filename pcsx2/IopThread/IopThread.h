@@ -130,6 +130,7 @@
 #include "common/Threading.h"
 
 #include <atomic>
+#include <deque>
 #include <functional>
 #include <thread>
 #include <type_traits>
@@ -236,7 +237,7 @@ namespace IopThread
 		/// Lockstep only, and for tests: the IOP is kept this many EE cycles behind the EE at every handoff instead of
 		/// being brought up to it, and E2I items are applied when the IOP's own clock reaches their stamp instead of at
 		/// the moment they are posted. 0, the default, is Lockstep as it has always been. The caller clamps it to at most
-		/// kMaxLag so that the E2I ring cannot fill. Ignored in Threaded.
+		/// kMaxLag. Items the E2I ring cannot hold go to a spill queue (m_e2i_spill). Ignored in Threaded.
 		///
 		/// A handoff then runs `run_slice` towards min(EE cycle - skew, next item's stamp), item by item, so the budget
 		/// has to come from the target and not from the EE's books (the Threaded slice, not the Lockstep one); the
@@ -503,6 +504,10 @@ namespace IopThread
 		/// way, and LockstepApplyUpTo() must not be used. EE thread.
 		s64 LockstepSkew() const { return m_lockstep_skew; }
 
+		/// Lockstep skew only: how many items went to the spill queue instead of the ring this run, and its deepest point.
+		u64 E2ISpillTotal() const { return m_e2i_spill_total; }
+		u64 E2ISpillMax() const { return m_e2i_spill_max; }
+
 		/// Hands the IOP thread the order "apply every queued item stamped at or before `stamp`"
 		/// whatever the IOP's position, and waits. Returns how many it applied. Lockstep applies an
 		/// item at the EE's point of execution, which is when the EE posts it.
@@ -610,6 +615,8 @@ namespace IopThread
 		void ApplyDueItems();
 		void ApplyKicks();
 		u64 LockstepSkewedSlice(u64 ee_cycle);
+		bool PopDueE2I(u64 now, E2IItem& out);
+		u64 NextE2IStamp();
 		bool WaitForI2ESpace(u16 kind, u32 arg);
 		bool CallOnEEImpl(void (*fn)(void*), void* arg);
 		template <class Ready>
@@ -691,6 +698,15 @@ namespace IopThread
 		} m_call;
 
 		StampedRing<kE2IRingCapacity> m_e2i;
+		// Lockstep skew only (a testing mode): the EE-to-IOP items that did not fit the ring, oldest first. A skewed IOP does not
+		// run until the EE is a skew ahead, so a burst of posts (a state whose counters have to catch up, a guest loop that starts
+		// a SIF DMA every few hundred cycles while the deferred pump is pending) can exceed any fixed capacity. Items go here once
+		// the ring is full and until this is empty again, so every item in it is newer than every item in the ring and the order
+		// holds. The EE appends while the IOP is parked in the handoff wait and the IOP consumes while the EE is blocked in the
+		// handoff, so the two never touch it at once. Never used with a skew of 0 or in Threaded.
+		std::deque<E2IItem> m_e2i_spill;
+		u64 m_e2i_spill_total = 0; // items that went to the spill
+		u64 m_e2i_spill_max = 0; // its deepest point
 		I2EQueue<kI2EQueueCapacity> m_i2e;
 		KickBits m_e2i_kicks;
 		HostCommandQueue m_host;

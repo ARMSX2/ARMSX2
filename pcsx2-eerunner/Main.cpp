@@ -5828,6 +5828,8 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={} holds={}",
 					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
 					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
+				// Lockstep skew: EE-to-IOP items that did not fit the ring and went to the spill queue.
+				Console.WriteLn(fmt::format("E2ISPILL: items={} max_depth={}", IopThread::g_thread.E2ISpillTotal(), IopThread::g_thread.E2ISpillMax()));
 				if (s_mode == RunMode::LiveRun && s_stress)
 				{
 					Console.WriteLn(fmt::format("STRESS-SUMMARY: seed={} iop_thread_switches={} lag_changes={} saves={} loads={} (failed {}) pauses={} resets={} hotkeys={}",

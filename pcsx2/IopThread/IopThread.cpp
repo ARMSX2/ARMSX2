@@ -119,6 +119,9 @@ namespace IopThread
 		// Nothing else touches any of this: the IOP thread does not exist yet. The thread's creation
 		// orders these writes before its first read.
 		m_e2i.Reset();
+		m_e2i_spill.clear();
+		m_e2i_spill_total = 0;
+		m_e2i_spill_max = 0;
 		m_i2e.Reset();
 		m_e2i_kicks.TakeAll();
 		m_call.fn = nullptr;
@@ -331,7 +334,7 @@ namespace IopThread
 	void Thread::ApplyDueItems()
 	{
 		E2IItem item;
-		while (m_e2i.TryPopDue(m_iop_pos, item))
+		while (PopDueE2I(m_iop_pos, item))
 		{
 			if (m_params.apply_item)
 				m_params.apply_item(item);
@@ -669,8 +672,39 @@ namespace IopThread
 		return reached;
 	}
 
+	bool Thread::PopDueE2I(u64 now, E2IItem& out)
+	{
+		if (m_e2i.TryPopDue(now, out))
+			return true;
+		// The ring is older than the spill, so the spill is looked at only once the ring has nothing due (and nothing at all
+		// behind a head that is not due).
+		if (m_e2i_spill.empty() || m_e2i.NextStamp() != StampedRing<kE2IRingCapacity>::kNoStamp || m_e2i_spill.front().stamp > now)
+			return false;
+		out = m_e2i_spill.front();
+		m_e2i_spill.pop_front();
+		return true;
+	}
+
+	u64 Thread::NextE2IStamp()
+	{
+		const u64 ring = m_e2i.NextStamp();
+		if (ring != StampedRing<kE2IRingCapacity>::kNoStamp || m_e2i_spill.empty())
+			return ring;
+		return m_e2i_spill.front().stamp;
+	}
+
 	bool Thread::PostE2I(u64 stamp, u16 kind, u32 arg)
 	{
+		if (m_mode == IopThreadMode::Lockstep && m_lockstep_skew > 0) [[unlikely]]
+		{
+			// Never fails and never waits: see m_e2i_spill.
+			if (m_e2i_spill.empty() && m_e2i.TryPush(stamp, kind, arg))
+				return true;
+			m_e2i_spill.push_back(E2IItem{stamp, kind, 0, arg});
+			m_e2i_spill_total++;
+			m_e2i_spill_max = std::max<u64>(m_e2i_spill_max, m_e2i_spill.size());
+			return true;
+		}
 		if (!m_e2i.TryPush(stamp, kind, arg))
 		{
 			if (!WaitForE2ISpace(stamp, kind, arg))
@@ -834,6 +868,7 @@ namespace IopThread
 	{
 		pxAssertMsg(m_hold_depth > 0 || !m_running, "Resync() needs the IOP held or stopped");
 		m_e2i.Reset();
+		m_e2i_spill.clear();
 		m_i2e.Reset();
 		m_e2i_kicks.TakeAll();
 		m_ee_wm_local = ee_cycle;
@@ -962,7 +997,7 @@ namespace IopThread
 			ApplyDueItems();
 
 			s64 stop = goal;
-			const u64 next = m_e2i.NextStamp();
+			const u64 next = NextE2IStamp();
 			if (next != StampedRing<kE2IRingCapacity>::kNoStamp && static_cast<s64>(next) < stop)
 				stop = static_cast<s64>(next);
 

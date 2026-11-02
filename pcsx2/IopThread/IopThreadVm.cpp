@@ -563,9 +563,9 @@ namespace IopThread
 				if (g_thread.PostE2I(stamp, kind, arg))
 				{
 					// With a skew the item waits in the queue for the IOP's clock to reach the stamp (the handoff
-					// applies it); the skew is capped at kMaxLag so the ring cannot fill. Without one the EE waits here
-					// until the IOP thread has applied the item, so it takes effect at this point of the EE's
-					// execution and not later.
+					// applies it); PostE2I does not fail under a skew, because what the ring cannot hold goes to a
+					// spill queue. Without one the EE waits here until the IOP thread has applied the item, so it
+					// takes effect at this point of the EE's execution and not later.
 					if (g_thread.LockstepSkew() == 0)
 						g_thread.LockstepApplyUpTo(stamp);
 					return;
