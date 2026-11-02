@@ -172,10 +172,14 @@ public:
 	{
 	}
 
-	void Update()
+	// A voice's volume slides only when a game sets the slide bit, which almost none do, so the test is made here, in the
+	// mixer's inlined path, instead of in two calls that each return at once.
+	__forceinline void Update()
 	{
-		Left.Update();
-		Right.Update();
+		if (Left.Enable)
+			Left.Update();
+		if (Right.Enable)
+			Right.Update();
 	}
 
 #ifdef PCSX2_DEVBUILD
