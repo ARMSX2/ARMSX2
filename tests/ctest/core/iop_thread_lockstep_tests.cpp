@@ -654,7 +654,11 @@ namespace
 	class SkewGuard
 	{
 	public:
-		~SkewGuard() { IopThread::SetLockstepSkew(0); }
+		~SkewGuard()
+		{
+			IopThread::SetLockstepSkew(0);
+			IopThread::SetLockstepSkewHolds(false);
+		}
 	};
 
 	// What the skewed IOP's clock was when an item was applied: where it started plus what the fake has run.
@@ -899,6 +903,90 @@ TEST_F(LockstepMachine, ASkewDefersAnEeStartedSifPumpToTheStampWhateverTheSettin
 	EXPECT_EQ(probes[0].arg, 1u);
 	EXPECT_GE(probes[0].iop_pos, stamp);
 	EXPECT_NE(probes[0].thread, std::this_thread::get_id());
+}
+
+// The holds variant: an EE-started SIF pump is not deferred. The IOP is run up to the EE's cycle (applying the items due on the
+// way), the caller pumps in place, and the skew grows back as the EE runs on.
+TEST_F(LockstepMachine, ASkewWithHoldsRunsTheIopUpToTheEeAtAPumpAndTheSkewRegrows)
+{
+	REQUIRE_ARM64_HOST();
+	constexpr s64 kSkew = 60000;
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	EmuConfig.Speedhacks.iopThreadDeferSif = true; // the hold wins over the setting
+	IopThread::SetLockstepSkew(kSkew);
+	IopThread::SetLockstepSkewHolds(true);
+	Reset();
+	const u64 start = static_cast<u64>(cpuRegs.cycle) - static_cast<u64>(static_cast<s64>(EEsCycle));
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	s_iop_ran = 0;
+	std::vector<Probe> probes;
+	ProbeGuard probe_guard(probes, start);
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 40; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+	EXPECT_EQ(static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos()) > kSkew - 23, true);
+
+	// An item the EE posted a little ago: not due for the skewed IOP, due for the EE's cycle.
+	IopBridge::HBlankStart<IopThreadMode::Lockstep>();
+	cpuRegs.cycle += 700;
+	EXPECT_TRUE(probes.empty());
+
+	ASSERT_FALSE(IopThread::DeferSifPump(1)) << "a hold pumps in place";
+	ASSERT_EQ(probes.size(), 1u) << "the catch-up applies the items that are due on the way";
+	EXPECT_STREQ(probes[0].what, "hblank_start");
+	EXPECT_NE(probes[0].thread, std::this_thread::get_id());
+	const u64 hold_cycle = cpuRegs.cycle;
+	EXPECT_GE(IopThread::g_thread.PublishedPos(), hold_cycle) << "the IOP is at the EE's cycle";
+	EXPECT_LE(IopThread::g_thread.PublishedPos(), hold_cycle + 22) << "or past it by the overshoot of its last block";
+	EXPECT_LE(EEsCycle, 0);
+	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 1u);
+
+	// From there the IOP does not run until the EE is a skew ahead of it, and then it is a skew behind again.
+	std::vector<IopCall> calls;
+	s_calls = &calls;
+	for (u32 i = 0; i < 60; i++)
+	{
+		const size_t before = calls.size();
+		cpuRegs.cycle += 3072;
+		test();
+		const s64 ahead = static_cast<s64>(cpuRegs.cycle - IopThread::g_thread.PublishedPos());
+		if (static_cast<s64>(cpuRegs.cycle) - kSkew <= static_cast<s64>(hold_cycle) + 22)
+		{
+			EXPECT_EQ(calls.size(), before) << "event test " << i << ": no budget yet";
+			EXPECT_LT(ahead, kSkew) << "event test " << i;
+		}
+		else if (static_cast<s64>(cpuRegs.cycle) - kSkew > static_cast<s64>(hold_cycle) + 22 + 3072)
+		{
+			EXPECT_GE(ahead, kSkew - 22) << "event test " << i;
+			EXPECT_LE(ahead, kSkew) << "event test " << i;
+		}
+	}
+	s_calls = nullptr;
+	EXPECT_GT(calls.size(), 10u);
+}
+
+TEST_F(LockstepMachine, HoldsDoNothingWithASkewOfZero)
+{
+	REQUIRE_ARM64_HOST();
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	EmuConfig.Speedhacks.iopThreadDeferSif = false;
+	IopThread::SetLockstepSkew(0);
+	IopThread::SetLockstepSkewHolds(true);
+	Reset();
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	EXPECT_FALSE(IopThread::DeferSifPump(0));
+	EXPECT_EQ(IopThread::g_thread.LockstepCatchUps(), 0u);
 }
 
 TEST_F(LockstepMachine, ASkewDoesNotMakeTheEeLookAgainEvery48CyclesBecauseTheIopIsBehind)

@@ -1094,6 +1094,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --iop-spin-hint yield|isb: the instruction the Threaded spin loops use between looks (default yield).\n");
 	std::fprintf(stderr, "  --iop-idle-spin-us N: Threaded IOP thread: how long an idle IOP watches the watermark before it sleeps, in\n");
 	std::fprintf(stderr, "               microseconds (0 sleeps at once). Default: the built-in window. A measurement knob, not a setting.\n");
+	std::fprintf(stderr, "  --iop-lockstep-skew-holds: with --iop-lockstep-skew N > 0, do not defer EE-started SIF0/SIF1 pumps: hold, as a Threaded hold\n");
+	std::fprintf(stderr, "               does. The IOP is run up to the EE's cycle (items due on the way applied), the pump runs at once, and the skew then\n");
+	std::fprintf(stderr, "               re-grows as the EE runs on. A test knob. Does nothing with a skew of 0.\n");
 	std::fprintf(stderr, "  --iop-stats-every N: in a --liverun, log the Threaded IOP counters per frame every N frames. The IOPSTATS: line\n");
 	std::fprintf(stderr, "               at the end of the run gives the whole-run figures.\n");
 	std::fprintf(stderr, "  --set Section/Key=Value: base-layer settings override, applied after the harness pinning\n");
@@ -1544,6 +1547,11 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				IopThread::SetLockstepSkew(v.value());
+				continue;
+			}
+			else if (CHECK_ARG("--iop-lockstep-skew-holds"))
+			{
+				IopThread::SetLockstepSkewHolds(true);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("--iop-idle-spin-us"))
@@ -5830,6 +5838,8 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
 				// Lockstep skew: EE-to-IOP items that did not fit the ring and went to the spill queue.
 				Console.WriteLn(fmt::format("E2ISPILL: items={} max_depth={}", IopThread::g_thread.E2ISpillTotal(), IopThread::g_thread.E2ISpillMax()));
+				if (IopThread::LockstepSkewHolds() && IopThread::g_thread.LockstepSkew() > 0)
+					Console.WriteLn(fmt::format("SKEWHOLDS: catchups={} catchup_cycles={}", IopThread::g_thread.LockstepCatchUps(), IopThread::g_thread.LockstepCatchUpCycles()));
 				if (s_mode == RunMode::LiveRun && s_stress)
 				{
 					Console.WriteLn(fmt::format("STRESS-SUMMARY: seed={} iop_thread_switches={} lag_changes={} saves={} loads={} (failed {}) pauses={} resets={} hotkeys={}",

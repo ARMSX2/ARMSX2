@@ -257,6 +257,13 @@ namespace IopThread
 	/// a savestate, or change settings, during a skewed run: the items still queued for the IOP are not part of a state.
 	void SetLockstepSkew(s64 cycles);
 	s64 LockstepSkewSetting();
+	/// Lockstep skew, for testing only (eerunner --iop-lockstep-skew-holds; not a setting). With a skew above 0 the EE-started SIF0/SIF1
+	/// pumps are not deferred but HELD, as a Threaded hold does them: the EE runs the IOP up to its own cycle (applying the items due on the
+	/// way), runs the combined pump at once, and the skew then re-grows as the EE runs on (the IOP does not run again until the EE is a
+	/// skew ahead of it). So the pump reads and writes EE memory at the EE's cycle of the start, as on a console, and the IOP side of it
+	/// happens at the EE's time and not a skew late. Does nothing with a skew of 0. Takes effect at once.
+	void SetLockstepSkewHolds(bool holds);
+	bool LockstepSkewHolds();
 	/// The skew the running Lockstep thread has, 0 otherwise. What the EE core's event test reads.
 	inline s32 LockstepSkewCycles() { return static_cast<s32>(g_thread.LockstepSkew()); }
 

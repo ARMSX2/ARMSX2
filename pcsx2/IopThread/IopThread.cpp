@@ -122,6 +122,8 @@ namespace IopThread
 		m_e2i_spill.clear();
 		m_e2i_spill_total = 0;
 		m_e2i_spill_max = 0;
+		m_catchups = 0;
+		m_catchup_cycles = 0;
 		m_i2e.Reset();
 		m_e2i_kicks.TakeAll();
 		m_call.fn = nullptr;
@@ -917,6 +919,16 @@ namespace IopThread
 		return static_cast<size_t>(LockstepCall(kLsApplyUpTo, stamp));
 	}
 
+	u64 Thread::LockstepCatchUp(u64 ee_cycle)
+	{
+		const u64 before = m_iop_pos;
+		const u64 reached = LockstepCall(kLsCatchUp, ee_cycle);
+		m_catchups++;
+		if (reached > before)
+			m_catchup_cycles += reached - before;
+		return reached;
+	}
+
 	void Thread::LockstepLoop()
 	{
 		u64 done = 0;
@@ -932,11 +944,17 @@ namespace IopThread
 				if (m_host.HasPending())
 					m_host.RunPending();
 
-				if (m_ls.kind == kLsRunSlice)
+				if (m_ls.kind == kLsCatchUp)
+				{
+					LockstepSkewedSlice(m_ls.arg, 0);
+					m_iop.pos_pub.store(m_iop_pos, std::memory_order_relaxed);
+					m_ls.result = m_iop_pos;
+				}
+				else if (m_ls.kind == kLsRunSlice)
 				{
 					if (m_lockstep_skew > 0)
 					{
-						LockstepSkewedSlice(m_ls.arg);
+						LockstepSkewedSlice(m_ls.arg, m_lockstep_skew);
 					}
 					else
 					{
@@ -988,9 +1006,9 @@ namespace IopThread
 	//
 	// The one extra slice with no budget is the pending-event case of the pacing loop (has_event): the IOP has work of
 	// its own (an interrupt) even though the clock has nothing to give it, once per handoff, as in Off.
-	u64 Thread::LockstepSkewedSlice(u64 ee_cycle)
+	u64 Thread::LockstepSkewedSlice(u64 ee_cycle, s64 skew)
 	{
-		const s64 goal = static_cast<s64>(ee_cycle) - m_lockstep_skew;
+		const s64 goal = static_cast<s64>(ee_cycle) - skew;
 		bool event_slice_run = false;
 		for (;;)
 		{

@@ -504,6 +504,16 @@ namespace IopThread
 		/// way, and LockstepApplyUpTo() must not be used. EE thread.
 		s64 LockstepSkew() const { return m_lockstep_skew; }
 
+		/// Lockstep skew only, testing. A hold: runs the IOP up to `ee_cycle` itself, whatever the skew (applying the items due on the
+		/// way, as the skewed slice does), and returns the cycle it reached, at or a little past `ee_cycle`. The next handoff's goal is
+		/// `ee_cycle - skew` again, so the IOP then waits for the EE to run a skew ahead of it: the skew re-grows as the EE runs on.
+		/// EE thread, Lockstep thread running.
+		u64 LockstepCatchUp(u64 ee_cycle);
+
+		/// How many catch-ups were made, and the EE cycles the IOP ran in them (what the skew had grown to, summed).
+		u64 LockstepCatchUps() const { return m_catchups; }
+		u64 LockstepCatchUpCycles() const { return m_catchup_cycles; }
+
 		/// Lockstep skew only: how many items went to the spill queue instead of the ring this run, and its deepest point.
 		u64 E2ISpillTotal() const { return m_e2i_spill_total; }
 		u64 E2ISpillMax() const { return m_e2i_spill_max; }
@@ -595,6 +605,7 @@ namespace IopThread
 		{
 			kLsRunSlice,
 			kLsApplyUpTo,
+			kLsCatchUp, // Lockstep skew, testing: run the IOP to the EE's cycle itself, as a Threaded hold does
 		};
 
 		struct Plan
@@ -614,7 +625,7 @@ namespace IopThread
 		void RunOneSlice(u64 target);
 		void ApplyDueItems();
 		void ApplyKicks();
-		u64 LockstepSkewedSlice(u64 ee_cycle);
+		u64 LockstepSkewedSlice(u64 ee_cycle, s64 skew);
 		bool PopDueE2I(u64 now, E2IItem& out);
 		u64 NextE2IStamp();
 		bool WaitForI2ESpace(u16 kind, u32 arg);
@@ -705,6 +716,8 @@ namespace IopThread
 		// holds. The EE appends while the IOP is parked in the handoff wait and the IOP consumes while the EE is blocked in the
 		// handoff, so the two never touch it at once. Never used with a skew of 0 or in Threaded.
 		std::deque<E2IItem> m_e2i_spill;
+		u64 m_catchups = 0; // LockstepCatchUp calls
+		u64 m_catchup_cycles = 0; // EE cycles the IOP ran in them
 		u64 m_e2i_spill_total = 0; // items that went to the spill
 		u64 m_e2i_spill_max = 0; // its deepest point
 		I2EQueue<kI2EQueueCapacity> m_i2e;

@@ -55,6 +55,9 @@ namespace IopThread
 		// The testing knob for Lockstep's skew (Params::lockstep_skew).
 		s64 s_lockstep_skew = 0;
 
+		// The testing knob that turns a skewed Lockstep's deferred SIF pumps into held ones (SetLockstepSkewHolds).
+		bool s_lockstep_skew_holds = false;
+
 		// The testing knob for the idle-watch window (Params::idle_spin_ns).
 		u32 s_idle_spin_ns = kDefaultIdleSpinNs;
 
@@ -600,6 +603,15 @@ namespace IopThread
 		// caller's pump runs in place, exactly as with the setting off.
 		if (!g_thread.IsRunning() || g_thread.IopIsStopped())
 			return false;
+		// The holds variant of a Lockstep skew (testing): bring the IOP up to the EE, and let the caller pump in place.
+		if (g_thread.LockstepSkew() > 0 && s_lockstep_skew_holds)
+		{
+			const u64 reached = g_thread.LockstepCatchUp(cpuRegs.cycle);
+			// RunLockstepSlice's books for a skew: the IOP is owed what the EE has run beyond where it is (now about nothing).
+			EEsCycle = static_cast<s32>(cpuRegs.cycle - reached);
+			EEoCycle = cpuRegs.cycle;
+			return false;
+		}
 		// A Lockstep skew always defers: pumping at once would hand the IOP the data D cycles early.
 		if (!EmuConfig.Speedhacks.iopThreadDeferSif && g_thread.LockstepSkew() == 0)
 			return false;
@@ -722,6 +734,16 @@ namespace IopThread
 	s64 LockstepSkewSetting()
 	{
 		return s_lockstep_skew;
+	}
+
+	void SetLockstepSkewHolds(bool holds)
+	{
+		s_lockstep_skew_holds = holds;
+	}
+
+	bool LockstepSkewHolds()
+	{
+		return s_lockstep_skew_holds;
 	}
 
 	void SetThreadedIdleSpinNs(u32 ns)
