@@ -337,6 +337,26 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 	V_Voice& vc(thiscore.Voices[voiceidx]);
 
 	int phase = (vc.SP & 0x0ff0) >> 4;
+
+#if defined(__aarch64__)
+	// Four taps, each shifted down before they are summed, as in the scalar code below. The four FIFO entries are
+	// contiguous unless the position is within three of the end of the 32-entry ring.
+	const u32 pos = vc.DecPosRead & 31;
+	int32x4_t samples;
+	if (pos <= 28) [[likely]]
+	{
+		samples = vld1q_s32(&vc.DecodeFifo[pos]);
+	}
+	else
+	{
+		samples = vdupq_n_s32(vc.DecodeFifo[pos]);
+		samples = vsetq_lane_s32(vc.DecodeFifo[(pos + 1) & 31], samples, 1);
+		samples = vsetq_lane_s32(vc.DecodeFifo[(pos + 2) & 31], samples, 2);
+		samples = vsetq_lane_s32(vc.DecodeFifo[(pos + 3) & 31], samples, 3);
+	}
+	const int32x4_t coefs = vmovl_s16(vld1_s16(interpTable[phase].data()));
+	return vaddvq_s32(vshrq_n_s32(vmulq_s32(coefs, samples), 15));
+#else
 	s32 out = 0;
 	out += (interpTable[phase][0] * vc.DecodeFifo[(vc.DecPosRead + 0) % 32]) >> 15;
 	out += (interpTable[phase][1] * vc.DecodeFifo[(vc.DecPosRead + 1) % 32]) >> 15;
@@ -344,6 +364,7 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 	out += (interpTable[phase][3] * vc.DecodeFifo[(vc.DecPosRead + 3) % 32]) >> 15;
 
 	return out;
+#endif
 }
 
 // This is Dr. Hell's noise algorithm as implemented in pcsxr
