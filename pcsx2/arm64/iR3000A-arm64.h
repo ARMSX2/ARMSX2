@@ -13,7 +13,8 @@
 #define RPSXSTATE vixl::aarch64::x21
 
 // The IOP clocks while compiled code runs, in two callee-saved registers (the IOP
-// rec saves x19-x28 in its stack frame and uses neither for anything else):
+// rec saves them in its stack frame, see iopBeginStackFrame, and uses neither for
+// anything else):
 //
 //   RIOPCYC (x19) = psxRegs.cycle - psxRegs.iopNextEventCycle, signed 64-bit.
 //                   A block end adds the block's cycles; the event test is due

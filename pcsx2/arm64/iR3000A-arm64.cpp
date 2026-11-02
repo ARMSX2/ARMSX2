@@ -196,13 +196,39 @@ static const void* _DynGen_JITCompile()
 	return retval;
 }
 
+// The callee-saved registers IOP code and its stubs write: the clocks (x19, x20), the psxRegs
+// pointer (x21), the pool's x26-x28, and the frame pointer / link register. Nothing the IOP rec
+// emits touches x22-x25 (the EE recompiler's pins), so they are left alone: armBeginStackFrame
+// saves all of x19-x28, which is two stores and two loads more per slice.
+static void iopBeginStackFrame()
+{
+	armAsm->Sub(a64::sp, a64::sp, 80);
+	armAsm->Stp(a64::x19, a64::x20, a64::MemOperand(a64::sp, 0));
+	armAsm->Stp(a64::x21, a64::x26, a64::MemOperand(a64::sp, 16));
+	armAsm->Stp(a64::x27, a64::x28, a64::MemOperand(a64::sp, 32));
+	armAsm->Stp(a64::x29, a64::lr, a64::MemOperand(a64::sp, 48));
+}
+
+static void iopEndStackFrame()
+{
+	armAsm->Ldp(a64::x29, a64::lr, a64::MemOperand(a64::sp, 48));
+	armAsm->Ldp(a64::x27, a64::x28, a64::MemOperand(a64::sp, 32));
+	armAsm->Ldp(a64::x21, a64::x26, a64::MemOperand(a64::sp, 16));
+	armAsm->Ldp(a64::x19, a64::x20, a64::MemOperand(a64::sp, 0));
+	armAsm->Add(a64::sp, a64::sp, 80);
+}
+
 // Entry point called from C code — sets up stack frame, enters dispatcher loop
 static const void* _DynGen_EnterRecompiledCode()
 {
 	u8* retval = armGetCurrentCodePointer();
 
+	// The pool must stay inside the registers the frame saves.
+	// (Of the callee-saved registers the pool may hold only x26-x28.)
+	pxAssertRel((_iopAllocatableMask() & (0xFFFu << 19)) == (7u << 26), "IOP register pool reaches a callee-saved register its frame does not save");
+
 	// Save callee-saved registers and set up stack frame
-	armBeginStackFrame(false);
+	iopBeginStackFrame();
 
 	// Pin &psxRegs into RPSXSTATE for the duration of IOP JIT execution. Like
 	// EE's RSTATE, this turns "armMoveAddressToReg(scratch, &psxRegs.X); ldr"
@@ -219,7 +245,7 @@ static const void* _DynGen_EnterRecompiledCode()
 	iopExitRecompiledCode = armGetCurrentCodePointer();
 	iopEmitSpill();
 	iopExitRecompiledCodeSpilled = armGetCurrentCodePointer();
-	armEndStackFrame(false);
+	iopEndStackFrame();
 	armAsm->Ret();
 
 	return retval;
