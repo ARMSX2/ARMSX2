@@ -86,6 +86,9 @@ add_subdirectory(catalog)
 # Namco arcade cabinet controls and library entries.
 add_subdirectory(arcade)
 
+# SPU2 mixer against a frozen copy of itself.
+add_subdirectory(spu2)
+
 
 set(multi_isa_sources
 	GS/swizzle_test_main.cpp
