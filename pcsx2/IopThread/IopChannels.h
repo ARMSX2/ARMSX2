@@ -289,8 +289,12 @@ namespace IopThread
 		u16 kind;
 		u16 pad;
 		u32 arg;
+		/// The IOP's time of production, in EE cycles: the low 32 bits of the IOP's position (Thread::IopNow()) when it
+		/// queued the item. The EE takes the item at its own cycle `now`; (s32)(u32(now) - stamp) is how late it is.
+		/// A modular difference is exact because the lag bound (kMaxLag, two frames) is far below 2^31.
+		u32 stamp;
 	};
-	static_assert(sizeof(I2EItem) == 8);
+	static_assert(sizeof(I2EItem) == 12);
 
 	/// The IOP-to-EE queue: an ordered ring, so the EE sees the IOP's effects in the order the IOP
 	/// produced them (an SBUS interrupt raised after SIF data was produced cannot overtake it).
@@ -304,9 +308,9 @@ namespace IopThread
 	public:
 		static constexpr size_t Capacity() { return N; }
 
-		[[nodiscard]] bool TryPush(u16 kind, u32 arg = 0) noexcept
+		[[nodiscard]] bool TryPush(u16 kind, u32 arg = 0, u32 stamp = 0) noexcept
 		{
-			return m_ring.TryPush(I2EItem{kind, 0, arg});
+			return m_ring.TryPush(I2EItem{kind, 0, arg, stamp});
 		}
 
 		[[nodiscard]] bool TryPop(I2EItem& out) noexcept { return m_ring.TryPop(out); }

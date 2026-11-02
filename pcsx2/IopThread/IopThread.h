@@ -270,6 +270,11 @@ namespace IopThread
 		/// work even with a zero budget.
 		std::function<bool()> has_event;
 
+		/// Optional. The IOP's position in EE cycles right now, from inside a slice: how far `run_slice` has got, to the
+		/// precision of a block. PostI2E stamps its items with it (I2EItem::stamp). Empty takes the position at the start
+		/// of the slice, which is as exact as an IOP with no clock inside its slice can be.
+		std::function<u64()> iop_now;
+
 		/// Optional. Receives the E2IKick bits raised since the last call.
 		std::function<void(u32 kicks)> apply_kicks;
 
@@ -566,6 +571,9 @@ namespace IopThread
 		bool EeSpinning() const { return m_ee.spinning.load(std::memory_order_relaxed); }
 		/// True on the IOP thread, between Start() and Stop().
 		bool OnIopThread() const { return m_iop_tid == std::this_thread::get_id(); }
+		/// IOP thread. The IOP's time in EE cycles at this moment (Params::iop_now, else the position at the start of the slice).
+		/// What an item it queues is stamped with.
+		u64 IopNow() const { return m_params.iop_now ? m_params.iop_now() : m_iop_pos; }
 		/// EE thread. How many ScopedHolds are live, nested ones included.
 		u32 HoldDepth() const { return m_hold_depth; }
 		/// EE thread. True while the EE runs a CallOnEE function: the IOP is blocked at a known point, as under a hold.
@@ -628,7 +636,7 @@ namespace IopThread
 		u64 LockstepSkewedSlice(u64 ee_cycle, s64 skew);
 		bool PopDueE2I(u64 now, E2IItem& out);
 		u64 NextE2IStamp();
-		bool WaitForI2ESpace(u16 kind, u32 arg);
+		bool WaitForI2ESpace(u16 kind, u32 arg, u32 stamp);
 		bool CallOnEEImpl(void (*fn)(void*), void* arg);
 		template <class Ready>
 		void ParkUntil(Ready&& ready);

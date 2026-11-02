@@ -453,22 +453,24 @@ namespace IopThread
 
 	bool Thread::PostI2E(u16 kind, u32 arg)
 	{
-		if (m_i2e.TryPush(kind, arg)) [[likely]]
+		// The time of production is the IOP's now, not the time the item gets into the queue, which is later when the queue is full.
+		const u32 stamp = static_cast<u32>(IopNow());
+		if (m_i2e.TryPush(kind, arg, stamp)) [[likely]]
 			return true;
-		return WaitForI2ESpace(kind, arg);
+		return WaitForI2ESpace(kind, arg, stamp);
 	}
 
 	// The IOP waits for the EE here, which the deadlock argument in IopThread.h allows. The EE empties
 	// the queue at every event test and in every spin, so this is short. It polls rather than parks so
 	// that the EE's drain has nothing to notify.
-	bool Thread::WaitForI2ESpace(u16 kind, u32 arg)
+	bool Thread::WaitForI2ESpace(u16 kind, u32 arg, u32 stamp)
 	{
 		m_i2e_full_waits.Add();
 		for (u32 n = 0;; n++)
 		{
 			if (m_ee.shutdown.load(std::memory_order_acquire))
 				return false;
-			if (m_i2e.TryPush(kind, arg))
+			if (m_i2e.TryPush(kind, arg, stamp))
 				return true;
 			if (n < kI2ESpaceSpins)
 				SpinHint();

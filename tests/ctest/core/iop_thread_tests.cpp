@@ -1841,6 +1841,96 @@ namespace
 			EXPECT_EQ(received[i], i) << "the IOP-to-EE queue must keep its order";
 	}
 
+	TEST_F(IopThreadObject, AnI2EItemIsStampedWithTheIopsTimeWhenItWasProduced)
+	{
+		// The IOP's clock inside a slice is Params::iop_now. An item takes the time at the post, not the time it gets
+		// into the queue and not the time the EE takes it.
+		std::atomic<u64> clock{0};
+		fake.in_slice_hook = [&, once = false](u64, u64) mutable {
+			if (once)
+				return;
+			once = true;
+			clock.store(0x1'0000'1234ull);
+			thread->PostI2E(I2EKind::SbusIrq, 1);
+			clock.store(0x1'0000'5678ull);
+			thread->PostI2E(I2EKind::SbusIrq, 2);
+		};
+		std::vector<I2EItem> received;
+		Params p = BaseParams();
+		p.iop_now = [&] { return clock.load(); };
+		p.handle_i2e = [&](const I2EItem& item) { received.push_back(item); };
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Publish(100);
+		ASSERT_TRUE(WaitPos(100));
+		ASSERT_TRUE(WaitEe([&] {
+			if (thread->MayHaveI2E())
+				thread->DrainI2E();
+			return received.size() == 2;
+		}));
+		EXPECT_EQ(received[0].stamp, 0x1234u) << "the low 32 bits of the IOP's time";
+		EXPECT_EQ(received[1].stamp, 0x5678u);
+		const u64 now = 0x1'0000'9000ull; // the EE takes the item 0x9000 - 0x5678 cycles after it was produced, across the 2^32 wrap
+		EXPECT_EQ(static_cast<s32>(static_cast<u32>(now) - received[1].stamp), 0x9000 - 0x5678);
+	}
+
+	TEST_F(IopThreadObject, AnI2EItemWithNoIopClockIsStampedWithTheSliceStart)
+	{
+		fake.in_slice_hook = [&, once = false](u64 from, u64) mutable {
+			if (once || from == 0)
+				return;
+			once = true;
+			thread->PostI2E(I2EKind::SbusIrq, 9);
+		};
+		std::vector<I2EItem> received;
+		Params p = BaseParams();
+		p.handle_i2e = [&](const I2EItem& item) { received.push_back(item); };
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Publish(640);
+		ASSERT_TRUE(WaitPos(640));
+		Publish(1280);
+		ASSERT_TRUE(WaitPos(1280));
+		ASSERT_TRUE(WaitEe([&] {
+			if (thread->MayHaveI2E())
+				thread->DrainI2E();
+			return received.size() == 1;
+		}));
+		EXPECT_EQ(received[0].stamp, 640u) << "no iop_now: the position at the start of the slice that posted";
+	}
+
+	TEST_F(IopThreadObject, AnItemThatWaitedForRoomKeepsTheTimeItWasProduced)
+	{
+		constexpr u32 kItems = static_cast<u32>(kI2EQueueCapacity) + 20;
+		std::atomic<u64> clock{1000};
+		fake.in_slice_hook = [&, once = false](u64, u64) mutable {
+			if (once)
+				return;
+			once = true;
+			for (u32 i = 0; i < kItems; i++)
+			{
+				clock.store(1000 + i);
+				thread->PostI2E(I2EKind::SbusIrq, i);
+			}
+		};
+		std::vector<I2EItem> received;
+		Params p = BaseParams();
+		p.iop_now = [&] { return clock.load(); };
+		p.handle_i2e = [&](const I2EItem& item) { received.push_back(item); };
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+		Publish(100);
+		ASSERT_TRUE(WaitEe([&] { return thread->GetStats().i2e_full_waits >= 1; }));
+		std::this_thread::sleep_for(2ms);
+		ASSERT_TRUE(WaitEe([&] {
+			if (thread->MayHaveI2E())
+				thread->DrainI2E();
+			return received.size() == kItems;
+		}));
+		for (u32 i = 0; i < kItems; i++)
+			ASSERT_EQ(received[i].stamp, 1000u + i) << "item " << i << " (the ones past the capacity waited for room)";
+	}
+
 	TEST_F(IopThreadObject, ShutdownWhileTheIopWaitsForI2ESpaceCompletes)
 	{
 		bool all_posted = true;

@@ -77,13 +77,41 @@ namespace IopThread
 			return cpuRegs.cycle - static_cast<s64>(EEsCycle);
 		}
 
+		// Where the IOP is inside the slice it is running, for stamping what it queues for the EE (Params::iop_now). The slice
+		// functions below write it around ExecuteBlock; the IOP thread reads it from inside, so it has one thread.
+		// `ExecuteBlock` leaves psxRegs.iopCycleEE at what is still owed, so the IOP has run `budget - iopCycleEE` EE cycles
+		// since `from`, to the precision of a block (the recompiler updates it at block ends).
+		struct SliceClock
+		{
+			u64 from = 0;
+			s32 budget = 0;
+			u64 end = 0; // where the slice ended, for what the IOP's event test does after ExecuteBlock
+			bool live = false; // inside ExecuteBlock
+		};
+		SliceClock s_slice;
+
+		u64 IopTimeNow()
+		{
+			if (!s_slice.live)
+				return s_slice.end;
+			const s64 ran = static_cast<s64>(s_slice.budget) - static_cast<s64>(psxRegs.iopCycleEE);
+			return s_slice.from + static_cast<u64>(std::max<s64>(ran, 0));
+		}
+
 		// The Lockstep slice: the same code Off runs on the EE thread, iopRunSliceOnIopThread(). This only keeps
 		// the thread object's view of the IOP's position in step with the books; a reset or a state load moves
 		// the books itself and calls ResyncClocks().
 		u64 RunIopSlice(u64 from, u64 /*target*/)
 		{
+			// iopRunSliceOnIopThread runs ExecuteBlock(EEsCycle) when the IOP has an event, and nothing else that moves the clock. The
+			// books are what it runs from, so the origin is where they say the IOP is.
+			const u64 origin = IopPosition();
+			s_slice = {origin, EEsCycle, origin, iopEventAction};
 			iopRunSliceOnIopThread();
-			return std::max(from, IopPosition());
+			s_slice.live = false;
+			const u64 reached = std::max(from, IopPosition());
+			s_slice.end = reached;
+			return reached;
 		}
 
 		// The Threaded slice. The budget comes from the thread's watermark instead of EEsCycle, and the EE's
@@ -96,12 +124,16 @@ namespace IopThread
 			const s64 owed = static_cast<s64>(target - from);
 			const s32 budget = static_cast<s32>(std::clamp<s64>(owed, INT32_MIN / 2, INT32_MAX / 2));
 			s32 remaining = budget;
+			s_slice = {from, budget, from, false};
 
 			if (budget > 0)
 				iopEventAction = true;
 			if (iopEventAction)
 			{
+				s_slice.live = true;
 				remaining = psxCpu->ExecuteBlock(budget);
+				s_slice.live = false;
+				s_slice.end = from + static_cast<u64>(std::max<s64>(static_cast<s64>(budget) - static_cast<s64>(remaining), 0));
 				iopEventAction = false;
 			}
 			iopEventTest();
@@ -150,6 +182,7 @@ namespace IopThread
 			params.idle_spin_ns = s_idle_spin_ns;
 			params.start_ee_cycle = cpuRegs.cycle;
 			params.start_iop_pos = IopPosition();
+			params.iop_now = IopTimeNow;
 			params.fpcr = EmuConfig.Cpu.FPUFPCR;
 			params.stack_size = VMManager::EMU_THREAD_STACK_SIZE;
 			if (s_mode == IopThreadMode::Threaded)

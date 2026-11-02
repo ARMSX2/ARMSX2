@@ -355,7 +355,7 @@ namespace
 			for (u64 i = 0; i < items; i++)
 			{
 				jitter.Step();
-				while (!queue->TryPush(KindOf(i), ArgOf(i)))
+				while (!queue->TryPush(KindOf(i), ArgOf(i), static_cast<u32>(StampOf(i) * 40503u)))
 				{
 					producer_stats.full_hits++;
 					if (log.Failed())
@@ -417,7 +417,7 @@ namespace
 					if (!got)
 						break;
 
-					if (item.kind != KindOf(next) || item.arg != ArgOf(next) || item.pad != 0)
+					if (item.kind != KindOf(next) || item.arg != ArgOf(next) || item.pad != 0 || item.stamp != static_cast<u32>(StampOf(next) * 40503u))
 					{
 						log.Fail("item " + std::to_string(next) + " came out as kind " + std::to_string(item.kind) +
 								 " arg " + std::to_string(item.arg));
@@ -480,7 +480,7 @@ TEST(IopChannelsLayout, TheCapacitiesAreThePowersOfTwoTheDesignNames)
 TEST(IopChannelsLayout, TheItemsHaveTheSizesTheDesignGives)
 {
 	EXPECT_EQ(sizeof(E2IItem), 16u);
-	EXPECT_EQ(sizeof(I2EItem), 8u);
+	EXPECT_EQ(sizeof(I2EItem), 12u);
 }
 
 TEST(IopChannelsLayout, TheLineSizeCoversTheAppleM2AndTheProjectConstant)
@@ -890,6 +890,20 @@ TEST(I2EQueue, ItemsComeOutInTheOrderTheyWentIn)
 	EXPECT_FALSE(queue.MayHaveItems());
 }
 
+TEST(I2EQueue, TheStampTravelsWithTheItemInOrder)
+{
+	I2EQueue<8> queue;
+	for (u32 i = 0; i < 6; i++)
+		ASSERT_TRUE(queue.TryPush(static_cast<u16>(i), 100 + i, 0xFFFFFF00u + i * 3));
+	for (u32 i = 0; i < 6; i++)
+	{
+		I2EItem out{};
+		ASSERT_TRUE(queue.TryPop(out));
+		EXPECT_EQ(out.arg, 100u + i);
+		EXPECT_EQ(out.stamp, 0xFFFFFF00u + i * 3);
+	}
+}
+
 TEST(I2EQueue, ADefaultArgumentIsZero)
 {
 	I2EQueue<4> queue;
@@ -898,6 +912,7 @@ TEST(I2EQueue, ADefaultArgumentIsZero)
 	ASSERT_TRUE(queue.TryPop(out));
 	EXPECT_EQ(out.kind, 9u);
 	EXPECT_EQ(out.arg, 0u);
+	EXPECT_EQ(out.stamp, 0u);
 }
 
 TEST(I2EQueue, ItIsFullAfterCapacityItemsAndThenRefusesWithoutLosingAnything)
