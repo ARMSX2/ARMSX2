@@ -430,7 +430,9 @@ static __forceinline void spu2M_WriteFast(u32 addr, s16 value, const IrqWatch& i
 }
 
 
-static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx, const IrqWatch& irq)
+// Mixes one voice for one output sample. Returns false when the voice is not playing, which contributes nothing to the sum;
+// otherwise the voice's stereo output is stored in voiceOut.
+static __forceinline bool MixVoice(uint coreidx, uint voiceidx, const IrqWatch& irq, StereoOut32& voiceOut)
 {
 	V_Core& thiscore(Cores[coreidx]);
 	V_Voice& vc(thiscore.Voices[voiceidx]);
@@ -443,11 +445,12 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx, const Irq
 
 	DecodeSamples(coreidx, voiceidx, irq);
 
-	StereoOut32 voiceOut(0, 0);
+	bool playing = false;
 	s32 Value = 0;
 
 	if (vc.ADSR.Phase > V_ADSR::PHASE_STOPPED)
 	{
+		playing = true;
 		if (vc.Noise)
 			Value = GetNoiseValues(thiscore);
 		else
@@ -479,7 +482,7 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx, const Irq
 	else if (voiceidx == 3)
 		spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, Value, irq);
 
-	return voiceOut;
+	return playing;
 }
 
 static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx, const IrqWatch& irq)
@@ -487,24 +490,31 @@ static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx, c
 	V_Core& thiscore(Cores[coreidx]);
 
 #if defined(__aarch64__)
-	// dest is {Dry.L, Dry.R, Wet.L, Wet.R} = 4 contiguous s32, and each
-	// V_VoiceGates entry is the same {DryL, DryR, WetL, WetR} contiguous s32x4.
-	// Per voice: vval = {VVal.L, VVal.R, VVal.L, VVal.R}, accum += vval & gates.
+	// dest is {Dry.L, Dry.R, Wet.L, Wet.R} = 4 contiguous s32, and each V_VoiceGates entry is the same
+	// {DryL, DryR, WetL, WetR}. The two halves are summed in two s32x2 registers, which the loop can keep in the
+	// callee-saved halves of v8-v15 across the calls it makes (SetIrqCall), instead of spilling a 128-bit accumulator
+	// after every voice. A voice that is not playing adds (0 & gate) = 0, so it is skipped.
 	// Bit-identical to the scalar version below.
-	int32x4_t accum = vld1q_s32(&dest.Dry.Left);
+	int32x2_t dry = vld1_s32(&dest.Dry.Left);
+	int32x2_t wet = vld1_s32(&dest.Wet.Left);
 	for (uint voiceidx = 0; voiceidx < V_Core::NumVoices; ++voiceidx)
 	{
-		const StereoOut32 VVal(MixVoice(coreidx, voiceidx, irq));
-		const int32x2_t lr   = vld1_s32(&VVal.Left);
-		const int32x4_t vval = vcombine_s32(lr, lr);
-		const int32x4_t gate = vld1q_s32(&thiscore.VoiceGates[voiceidx].DryL);
-		accum = vaddq_s32(accum, vandq_s32(vval, gate));
+		StereoOut32 VVal;
+		if (!MixVoice(coreidx, voiceidx, irq, VVal))
+			continue;
+		const int32x2_t lr = vld1_s32(&VVal.Left);
+		const V_VoiceGates& gate = thiscore.VoiceGates[voiceidx];
+		dry = vadd_s32(dry, vand_s32(lr, vld1_s32(&gate.DryL)));
+		wet = vadd_s32(wet, vand_s32(lr, vld1_s32(&gate.WetL)));
 	}
-	vst1q_s32(&dest.Dry.Left, accum);
+	vst1_s32(&dest.Dry.Left, dry);
+	vst1_s32(&dest.Wet.Left, wet);
 #else
 	for (uint voiceidx = 0; voiceidx < V_Core::NumVoices; ++voiceidx)
 	{
-		StereoOut32 VVal(MixVoice(coreidx, voiceidx, irq));
+		StereoOut32 VVal;
+		if (!MixVoice(coreidx, voiceidx, irq, VVal))
+			continue;
 
 		// Note: Results from MixVoice are ranged at 16 bits.
 
