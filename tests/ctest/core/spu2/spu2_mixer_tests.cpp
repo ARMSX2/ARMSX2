@@ -818,4 +818,128 @@ TEST_F(Spu2Mixer, DISABLED_InstructionsPerMix)
 	}
 }
 
+// The same count with the data cache emptied between mixes, which is closer to what the IOP thread sees: it runs the IOP
+// recompiler's blocks, the counters and the event tests between two mixes, and the mixer's own state (about 15 KB of voice
+// structures, a line of SPU2 RAM per voice, the reverb's working addresses) is not in the first-level cache when it starts.
+// Each mix is followed by reading POLLUTE bytes of unrelated memory; the cost of that reading is measured on its own and
+// subtracted. Prints the difference per mix. Disabled by default:
+//   spu2_tests --gtest_also_run_disabled_tests --gtest_filter='*DISABLED_ColdCache*'
+TEST_F(Spu2Mixer, DISABLED_ColdCache)
+{
+	Pmu pmu;
+	ASSERT_TRUE(pmu.Ok()) << "perf_event_open failed";
+	const char* kb_env = std::getenv("SPU2_TEST_POLLUTE_KB");
+	const size_t pollute = (kb_env ? std::strtoul(kb_env, nullptr, 10) : 256) * 1024;
+	struct Shape
+	{
+		const char* name;
+		u32 a0, a1;
+	};
+	std::vector<u8> junk(16 << 20, 1);
+	for (const Shape sh : {Shape{"busy", 20, 20}, Shape{"mixed", 15, 7}, Shape{"quiet", 0, 2}})
+	{
+		Rng r(4242);
+		ShapeState(r, sh.a0, sh.a1);
+		auto snap = std::make_unique<Snapshot>();
+		snap->Take();
+		const u32 warm = 400, n = 4000;
+		std::vector<StereoOut32> out;
+		out.reserve(warm + n + 8);
+		auto sweep = [&](size_t& at) {
+			u32 sum = 0;
+			for (size_t b = 0; b < pollute; b += 64)
+				sum += junk[(at + b) % junk.size()];
+			at = (at + pollute) % junk.size();
+			return sum;
+		};
+		volatile u32 sink = 0;
+		double warm_instr = 0, warm_cyc = 0, cold_instr = 0, cold_cyc = 0;
+		for (int pass = 0; pass < 3; pass++)
+		{
+			// 0: mix only (warm), 1: pollution only, 2: mix then pollution.
+			snap->Restore();
+			out.clear();
+			s_capture = &out;
+			size_t at = 0;
+			for (u32 i = 0; i < warm; i++)
+			{
+				Cycles++;
+				if (pass != 1)
+					CurrentSpu2Mix();
+				if (pass != 0)
+					sink = sink + sweep(at);
+			}
+			u64 instr = 0, cyc = 0, bm = 0;
+			pmu.Start();
+			for (u32 i = 0; i < n; i++)
+			{
+				Cycles++;
+				if (pass != 1)
+					CurrentSpu2Mix();
+				if (pass != 0)
+					sink = sink + sweep(at);
+			}
+			pmu.Stop(&instr, &cyc, &bm);
+			s_capture = nullptr;
+			static double pollute_instr, pollute_cyc;
+			if (pass == 0)
+			{
+				warm_instr = static_cast<double>(instr) / n;
+				warm_cyc = static_cast<double>(cyc) / n;
+			}
+			else if (pass == 1)
+			{
+				pollute_instr = static_cast<double>(instr) / n;
+				pollute_cyc = static_cast<double>(cyc) / n;
+			}
+			else
+			{
+				cold_instr = static_cast<double>(instr) / n - pollute_instr;
+				cold_cyc = static_cast<double>(cyc) / n - pollute_cyc;
+			}
+		}
+		std::printf("COLD shape=%s pollute_kb=%zu warm: instructions_per_mix=%.0f cycles_per_mix=%.0f | cold: instructions_per_mix=%.0f cycles_per_mix=%.0f (+%.0f%%)\n", sh.name,
+			pollute / 1024, warm_instr, warm_cyc, cold_instr, cold_cyc, 100.0 * (cold_cyc - warm_cyc) / warm_cyc);
+	}
+}
+
+// A driver for `valgrind --tool=cachegrind`, to count the data cache misses of one spu2Mix() under a small cache. On a device
+// the IOP thread runs other code between two mixes (the IOP recompiler's blocks, the counters, the event tests), which evicts
+// part of what the mixer used last time; SPU2_TEST_POLLUTE_KB is how much other memory is read between two mixes to stand in
+// for it, so 0 is the mixer with a cache to itself and a value at or above the cache size is the mixer starting cold.
+// Disabled by default:
+//   SPU2_TEST_POLLUTE_KB=64 valgrind --tool=cachegrind --D1=32768,4,64 --LL=262144,8,64 spu2_tests --gtest_also_run_disabled_tests --gtest_filter='*DISABLED_CacheModelDriver*'
+TEST_F(Spu2Mixer, DISABLED_CacheModelDriver)
+{
+	const char* kb_env = std::getenv("SPU2_TEST_POLLUTE_KB");
+	const size_t pollute_bytes = (kb_env ? std::strtoul(kb_env, nullptr, 10) : 0) * 1024;
+	const char* mixes_env = std::getenv("SPU2_TEST_MIXES");
+	const u32 mixes = mixes_env ? static_cast<u32>(std::strtoul(mixes_env, nullptr, 10)) : 1500;
+
+	Rng r(4242);
+	ShapeState(r, 15, 7);
+	auto snap = std::make_unique<Snapshot>();
+	snap->Take();
+	snap->Restore();
+
+	std::vector<StereoOut32> out;
+	out.reserve(mixes + 8);
+	s_capture = &out;
+	std::vector<u8> junk(8 << 20, 1);
+	size_t at = 0;
+	volatile u32 sink = 0;
+	for (u32 i = 0; i < mixes; i++)
+	{
+		Cycles++;
+		CurrentSpu2Mix();
+		u32 sum = 0;
+		for (size_t b = 0; b < pollute_bytes; b += 64)
+			sum += junk[(at + b) % junk.size()];
+		at = (at + pollute_bytes) % junk.size();
+		sink = sink + sum;
+	}
+	s_capture = nullptr;
+	std::printf("CACHEMODEL mixes=%u pollute_kb=%zu\n", mixes, pollute_bytes / 1024);
+}
+
 #endif // SPU2_TEST_HAS_PMU
