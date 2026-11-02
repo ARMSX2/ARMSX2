@@ -347,9 +347,13 @@ jobs:
       - name: Install Ninja
         run: brew install ninja
 
+      # The runner image is in the key because the precompiled header records the mtime of every
+      # SDK header it read, and each macOS image installs the SDK with its own mtimes. A core
+      # built on one image fails to compile on the other ("has been modified since the
+      # precompiled header was built").
       - name: Compute the core cache key
         id: core-key
-        run: echo "key=ios-core-device-$({ xcodebuild -version; cmake --version | head -1; ninja --version; rustc --version; git rev-parse HEAD:pcsx2 HEAD:common HEAD:3rdparty HEAD:cmake HEAD:bin/resources/shaders HEAD:platforms/android/app/src/main/cpp/3rdparty HEAD:platforms/ios/CMakeLists.txt HEAD:platforms/ios/cmake HEAD:platforms/ios/3rdparty HEAD:platforms/ios/patches HEAD:platforms/ios/scripts/build-ios-core.sh; } | shasum | cut -c1-40)" >> "$GITHUB_OUTPUT"
+        run: echo "key=ios-core-device-$({ xcodebuild -version; echo "${ImageOS:-}-${ImageVersion:-}"; cmake --version | head -1; ninja --version; rustc --version; git rev-parse HEAD:pcsx2 HEAD:common HEAD:3rdparty HEAD:cmake HEAD:bin/resources/shaders HEAD:platforms/android/app/src/main/cpp/3rdparty HEAD:platforms/ios/CMakeLists.txt HEAD:platforms/ios/cmake HEAD:platforms/ios/3rdparty HEAD:platforms/ios/patches HEAD:platforms/ios/scripts/build-ios-core.sh; } | shasum | cut -c1-40)" >> "$GITHUB_OUTPUT"
 
       - name: Restore the prebuilt core
         id: core-cache
