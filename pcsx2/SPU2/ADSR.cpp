@@ -38,59 +38,6 @@ void V_ADSR::UpdateCache()
 	CachedPhases[PHASE_RELEASE].Target = 0;
 }
 
-bool V_ADSR::Calculate(int voiceidx)
-{
-	pxAssume(Phase != PHASE_STOPPED);
-
-	auto& p = CachedPhases.at(Phase);
-
-	// maybe not correct for the "infinite" settings
-	u32 counter_inc = 0x8000 >> std::max(0, p.Shift - 11);
-	s32 level_inc = p.Step << std::max(0, 11 - p.Shift);
-
-	if (p.Exp)
-	{
-		if (!p.Decr && Value > 0x6000)
-		{
-			counter_inc >>= 2;
-		}
-
-		if (p.Decr)
-		{
-			level_inc = (s16)((level_inc * Value) >> 15);
-		}
-	}
-
-	counter_inc = std::max<u32>(1, counter_inc);
-	Counter += counter_inc;
-
-	if (Counter >= 0x8000)
-	{
-		Counter = 0;
-		Value = std::clamp<s32>(Value + level_inc, 0, INT16_MAX);
-	}
-
-	// Stay in sustain until key off or silence
-	if (Phase == PHASE_SUSTAIN)
-	{
-		return Value != 0;
-	}
-
-	// Check if target is reached to advance phase
-	if ((!p.Decr && Value >= p.Target) || (p.Decr && Value <= p.Target))
-	{
-		Phase++;
-	}
-
-	// All phases done, stop the voice
-	if (Phase > PHASE_RELEASE)
-	{
-		return false;
-	}
-
-	return true;
-}
-
 void V_ADSR::Attack()
 {
 	Phase = PHASE_ATTACK;

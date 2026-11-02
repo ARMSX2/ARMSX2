@@ -5,6 +5,8 @@
 
 #include "GS/MultiISA.h"
 
+#include "common/Assertions.h"
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -241,10 +243,61 @@ struct V_ADSR
 
 public:
 	void UpdateCache();
+	// Steps the envelope once for the mix. Defined below, inline, because the mixer calls it for every playing voice on
+	// every output sample.
 	bool Calculate(int voiceidx);
 	void Attack();
 	void Release();
 };
+
+// Same arithmetic as the out-of-line version this replaced, in the same order, except that the step added to the level
+// is worked out only on the sample where the counter overflows: it depends on the phase's constants and the current
+// level, and the level changes only there.
+__forceinline_odr bool V_ADSR::Calculate(int voiceidx)
+{
+	pxAssume(Phase != PHASE_STOPPED);
+
+	const CachedADSR& p = CachedPhases.at(Phase);
+
+	// maybe not correct for the "infinite" settings
+	u32 counter_inc = 0x8000 >> std::max(0, p.Shift - 11);
+
+	if (p.Exp && !p.Decr && Value > 0x6000)
+		counter_inc >>= 2;
+
+	counter_inc = std::max<u32>(1, counter_inc);
+	Counter += counter_inc;
+
+	if (Counter >= 0x8000)
+	{
+		s32 level_inc = p.Step << std::max(0, 11 - p.Shift);
+		if (p.Exp && p.Decr)
+			level_inc = (s16)((level_inc * Value) >> 15);
+
+		Counter = 0;
+		Value = std::clamp<s32>(Value + level_inc, 0, INT16_MAX);
+	}
+
+	// Stay in sustain until key off or silence
+	if (Phase == PHASE_SUSTAIN)
+	{
+		return Value != 0;
+	}
+
+	// Check if target is reached to advance phase
+	if ((!p.Decr && Value >= p.Target) || (p.Decr && Value <= p.Target))
+	{
+		Phase++;
+	}
+
+	// All phases done, stop the voice
+	if (Phase > PHASE_RELEASE)
+	{
+		return false;
+	}
+
+	return true;
+}
 
 
 struct V_Voice
