@@ -566,6 +566,8 @@ namespace
 				{
 					Open(type, 0x8c);
 					Open(type, 0x2);
+					// A generic event on one core type's PMU: the PMU's type goes in the upper half of the config.
+					Open(PERF_TYPE_HARDWARE, (static_cast<u64>(type) << 32) | PERF_COUNT_HW_BRANCH_MISSES);
 					any = true;
 				}
 			}
@@ -591,17 +593,18 @@ namespace
 			}
 		}
 
-		void Stop(u64* instructions, u64* cycles)
+		void Stop(u64* instructions, u64* cycles, u64* branch_misses)
 		{
 			*instructions = 0;
 			*cycles = 0;
+			*branch_misses = 0;
 			for (const Event& e : m_events)
 			{
 				ioctl(e.fd, PERF_EVENT_IOC_DISABLE, 0);
 				u64 v = 0;
 				if (read(e.fd, &v, sizeof(v)) != sizeof(v))
 					v = 0;
-				(e.is_instructions ? *instructions : *cycles) += v;
+				(e.kind == 0 ? *instructions : e.kind == 1 ? *cycles : *branch_misses) += v;
 			}
 		}
 
@@ -611,7 +614,7 @@ namespace
 		struct Event
 		{
 			int fd;
-			bool is_instructions;
+			int kind; // 0 instructions, 1 cycles, 2 branch misses
 		};
 
 		void Open(u32 type, u64 config)
@@ -624,8 +627,14 @@ namespace
 			attr.exclude_kernel = 1;
 			attr.exclude_hv = 1;
 			const int fd = static_cast<int>(syscall(__NR_perf_event_open, &attr, 0, -1, -1, 0));
-			if (fd >= 0)
-				m_events.push_back({fd, config == 0x8c || (type == PERF_TYPE_HARDWARE && config == PERF_COUNT_HW_INSTRUCTIONS)});
+			if (fd < 0)
+				return;
+			int kind = 1;
+			if (type == PERF_TYPE_HARDWARE)
+				kind = (config & 0xffffffff) == PERF_COUNT_HW_INSTRUCTIONS ? 0 : (config & 0xffffffff) == PERF_COUNT_HW_BRANCH_MISSES ? 2 : 1;
+			else if (config == 0x8c)
+				kind = 0;
+			m_events.push_back({fd, kind});
 		}
 
 		std::vector<Event> m_events;
@@ -699,17 +708,17 @@ namespace
 			mix();
 		}
 		out.clear();
-		u64 instr = 0, cyc = 0;
+		u64 instr = 0, cyc = 0, bm = 0;
 		pmu.Start();
 		for (u32 i = 0; i < n; i++)
 		{
 			Cycles++;
 			mix();
 		}
-		pmu.Stop(&instr, &cyc);
+		pmu.Stop(&instr, &cyc, &bm);
 		s_capture = nullptr;
-		std::printf("BENCH2 shape=%s impl=%s mixes=%u instructions_per_mix=%.1f cycles_per_mix=%.1f ipc=%.2f\n", shape, impl, n,
-			static_cast<double>(instr) / n, static_cast<double>(cyc) / n, cyc ? static_cast<double>(instr) / cyc : 0.0);
+		std::printf("BENCH2 shape=%s impl=%s mixes=%u instructions_per_mix=%.1f cycles_per_mix=%.1f ipc=%.2f branch_misses_per_mix=%.1f\n", shape, impl, n,
+			static_cast<double>(instr) / n, static_cast<double>(cyc) / n, cyc ? static_cast<double>(instr) / cyc : 0.0, static_cast<double>(bm) / n);
 	}
 } // namespace
 
