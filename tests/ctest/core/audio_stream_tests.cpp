@@ -334,6 +334,47 @@ TEST(AudioStream, TurningStretchOffAndOnMovesTheWriterBetweenTheWorkerAndTheCall
 	EXPECT_GT(s.GetBufferedFramesRelaxed(), 0u);
 }
 
+TEST(AudioStream, AfterALongPauseTheIdleWorkerWakesForTheNextChunks)
+{
+	// The worker polls on a timer while chunks are flowing and, after a while with none, sleeps with no timer until the
+	// producer wakes it. Chunks written after such a pause must still get processed, and must give the same output as the
+	// inline path given the same input.
+	TestStream threaded(DefaultParams());
+	TestStream inline_stream(DefaultParams());
+	threaded.Init(true, true);
+	inline_stream.Init(true, false);
+
+	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
+	u64 index = 0;
+	for (int round = 0; round < 4; round++)
+	{
+		for (int i = 0; i < 12; i++, index++)
+		{
+			FillChunk(chunk.data(), index);
+			threaded.WriteChunk(chunk.data());
+			inline_stream.WriteChunk(chunk.data());
+		}
+		ASSERT_TRUE(WaitUntilProcessed(threaded)) << "round " << round;
+		// Long enough for the worker to find nothing on every poll it makes and go to sleep.
+		std::this_thread::sleep_for(std::chrono::milliseconds(120));
+	}
+
+	const std::vector<float> a = inline_stream.Drain();
+	const std::vector<float> b = threaded.Drain();
+	ASSERT_EQ(a.size(), b.size());
+	EXPECT_EQ(0, std::memcmp(a.data(), b.data(), a.size() * sizeof(float)));
+}
+
+TEST(AudioStream, ABurstLargerThanTheHighWaterMarkIsProcessedWithoutWaitingForTheNextPoll)
+{
+	// 40 chunks at once is far over the mark at which the producer nudges the worker. Whatever the timing, all of them must
+	// come out, in order.
+	const Pair p = FeedBoth(DefaultParams(), true, 40);
+	ASSERT_FALSE(p.inline_out.empty());
+	ASSERT_EQ(p.inline_out.size(), p.threaded_out.size());
+	EXPECT_EQ(0, std::memcmp(p.inline_out.data(), p.threaded_out.data(), p.inline_out.size() * sizeof(float)));
+}
+
 TEST(AudioStream, DestroyingAStreamWithInputStillQueuedStopsTheWorker)
 {
 	std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
@@ -442,7 +483,9 @@ TEST(AudioStream, DISABLED_ProducerCostPerChunkAtSeveralSpeeds)
 		const u64 chunks = static_cast<u64>(seconds * 1e6 / chunk_period_us);
 		std::vector<float> chunk(AudioStream::CHUNK_SIZE * 2);
 		std::vector<double> call_us;
+		std::vector<u32> backlog;
 		call_us.reserve(chunks);
+		backlog.reserve(chunks);
 
 		const double cpu0 = ThreadCpuUs();
 		const double proc0 = ProcessCpuUs();
@@ -452,6 +495,9 @@ TEST(AudioStream, DISABLED_ProducerCostPerChunkAtSeveralSpeeds)
 			FillChunk(chunk.data(), i);
 			std::this_thread::sleep_until(t0 + std::chrono::nanoseconds(static_cast<long long>(i * chunk_period_us * 1e3)));
 			const auto a = std::chrono::steady_clock::now();
+			// Chunks the stretch worker has not finished when this one is handed over: the delay the queue adds is this
+			// many chunks of audio (1.33 ms each) plus the time to stretch them.
+			backlog.push_back(s.GetPendingInputChunks());
 			const double c0 = ThreadCpuUs();
 			s.WriteChunk(chunk.data());
 			const double c1 = ThreadCpuUs();
@@ -470,10 +516,16 @@ TEST(AudioStream, DISABLED_ProducerCostPerChunkAtSeveralSpeeds)
 		double sum = 0;
 		for (double v : call_us)
 			sum += v;
-		std::printf("BENCH speed=%.2f chunks=%llu WriteChunk_cpu_us mean=%.2f p50=%.2f p99=%.2f max=%.2f | producer_thread_cpu_us_per_chunk=%.2f (incl. the fill) | process_cpu_us_per_chunk=%.2f consumer_cpu_us_per_chunk=%.2f other_threads_us_per_chunk=%.2f\n",
+		std::vector<u32> sorted_backlog = backlog;
+		std::sort(sorted_backlog.begin(), sorted_backlog.end());
+		double backlog_sum = 0;
+		for (u32 v : backlog)
+			backlog_sum += v;
+		std::printf("BENCH speed=%.2f chunks=%llu WriteChunk_cpu_us mean=%.2f p50=%.2f p99=%.2f max=%.2f | producer_thread_cpu_us_per_chunk=%.2f (incl. the fill) | process_cpu_us_per_chunk=%.2f consumer_cpu_us_per_chunk=%.2f other_threads_us_per_chunk=%.2f | backlog_chunks mean=%.2f p99=%u max=%u\n",
 			speed, static_cast<unsigned long long>(chunks), sum / call_us.size(), sorted[sorted.size() / 2],
 			sorted[sorted.size() * 99 / 100], sorted.back(), producer_cpu / chunks, proc_cpu / chunks,
-			consumer_cpu_us.load() / chunks, (proc_cpu - producer_cpu - consumer_cpu_us.load()) / chunks);
+			consumer_cpu_us.load() / chunks, (proc_cpu - producer_cpu - consumer_cpu_us.load()) / chunks,
+			backlog_sum / backlog.size(), sorted_backlog[sorted_backlog.size() * 99 / 100], sorted_backlog.back());
 	}
 }
 

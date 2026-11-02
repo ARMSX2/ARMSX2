@@ -51,6 +51,18 @@ static constexpr const std::array<std::pair<u8, u8>, static_cast<size_t>(AudioEx
 //
 // A chunk stays counted as pending until it has been processed, so Pending() == 0 means every chunk handed over has
 // reached the ring.
+//
+// Waking the worker. A futex wake-up from the producer costs the producer far more than the copy it follows: on the RG 55G1
+// the IOP thread (an A55) spent 7.5% of its cycles in the kernel, against 1.0% before the worker existed, when it woke the
+// worker once per chunk (about 750 times a second). So the producer does not wake the worker per chunk. While chunks are
+// flowing the worker finds them itself: it sleeps POLL_INTERVAL on a timer, drains whatever has queued, and sleeps again.
+// The producer enters the kernel only when
+//   - the worker has gone idle (it found nothing for IDLE_POLLS_BEFORE_SLEEP polls in a row and now waits for the next
+//     chunk without a timer, so a paused stream costs no wake-ups) and a chunk arrives: once per resume;
+//   - the queue has reached HIGH_WATER chunks, which means the worker's timer is late: one nudge, not one per chunk;
+//   - the queue is full and the producer has to wait for room.
+// What it adds is delay: a chunk waits for the worker's next poll, POLL_INTERVAL at most plus the time to stretch what is
+// ahead of it, against an output buffer of tens of milliseconds that the tempo controller keeps filled.
 class StretchWorker
 {
 public:
@@ -75,7 +87,6 @@ public:
 			std::lock_guard<std::mutex> lock(m_wake_mutex);
 			m_quit = true;
 			m_stop.store(true, std::memory_order_relaxed);
-			m_sleeping.store(false, std::memory_order_seq_cst);
 		}
 		m_wake_cv.notify_one();
 		m_space_cv.notify_one();
@@ -89,8 +100,8 @@ public:
 	// The caller holds StateMutex(), so the worker is not inside a chunk.
 	void DiscardPending() { m_rpos.store(m_wpos.load(std::memory_order_acquire), std::memory_order_release); }
 
-	// Producer side. Copies the chunk and wakes the worker if it is asleep. A full queue means the worker is more than
-	// QUEUE_CHUNKS behind (170 ms of audio); the producer then waits for room, which is the back-pressure the
+	// Producer side. Copies the chunk; see above for when it also wakes the worker. A full queue means the worker is more
+	// than QUEUE_CHUNKS behind (170 ms of audio); the producer then waits for room, which is the back-pressure the
 	// stretcher used to apply by running on the producer's thread.
 	void Push(const float* chunk)
 	{
@@ -101,21 +112,32 @@ public:
 		std::memcpy(&m_slots[static_cast<size_t>(w % QUEUE_CHUNKS) * CHUNK_FLOATS], chunk, CHUNK_FLOATS * sizeof(float));
 		m_wpos.store(w + 1, std::memory_order_seq_cst);
 
-		// Pairs with the seq_cst store of m_sleeping in Run(): either the worker sees this chunk when it re-checks the
-		// queue, or this load sees that it is about to sleep.
-		if (m_sleeping.load(std::memory_order_seq_cst))
-		{
-			{
-				std::lock_guard<std::mutex> lock(m_wake_mutex);
-				m_sleeping.store(false, std::memory_order_seq_cst);
-			}
-			m_wake_cv.notify_one();
-		}
+		// Pairs with the seq_cst store of m_idle in Run(): either the worker sees this chunk when it re-checks the queue
+		// before it sleeps untimed, or this load sees that it is about to.
+		if (m_idle.load(std::memory_order_seq_cst))
+			Wake();
+		else if (w + 1 - m_rpos.load(std::memory_order_relaxed) >= HIGH_WATER && !m_nudged.exchange(true, std::memory_order_relaxed))
+			Wake();
 	}
 
 private:
 	static constexpr u32 QUEUE_CHUNKS = 128;
 	static constexpr u32 CHUNK_FLOATS = AudioStream::CHUNK_SIZE * AudioStream::NUM_INPUT_CHANNELS;
+
+	// The wake policy (see the comment on the class).
+	static constexpr std::chrono::milliseconds POLL_INTERVAL{4}; // three chunks of audio
+	static constexpr u32 HIGH_WATER = 8; // chunks, 10.7 ms
+	static constexpr u32 IDLE_POLLS_BEFORE_SLEEP = 8; // 32 ms with nothing to do
+
+	void Wake()
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_wake_mutex);
+			m_wake_requested = true;
+			m_idle.store(false, std::memory_order_seq_cst);
+		}
+		m_wake_cv.notify_one();
+	}
 
 	// Takes one chunk off the queue and processes it. False when the queue was empty.
 	bool ProcessOne()
@@ -141,24 +163,42 @@ private:
 	void Run()
 	{
 		Threading::SetNameOfCurrentThread("AudioStretch");
+		u32 empty_polls = 0;
 		for (;;)
 		{
+			m_nudged.store(false, std::memory_order_relaxed);
+
 			// Stop() does not wait for the queue to empty: what is queued when a stream is torn down is dropped.
+			bool did_work = false;
 			while (!m_stop.load(std::memory_order_relaxed) && ProcessOne())
-			{
-			}
+				did_work = true;
 			if (m_stop.load(std::memory_order_relaxed))
 				return;
 
-			m_sleeping.store(true, std::memory_order_seq_cst);
+			empty_polls = did_work ? 0 : empty_polls + 1;
+			if (empty_polls < IDLE_POLLS_BEFORE_SLEEP)
+			{
+				std::unique_lock<std::mutex> lock(m_wake_mutex);
+				m_wake_cv.wait_for(lock, POLL_INTERVAL, [this]() { return m_quit || m_wake_requested; });
+				m_wake_requested = false;
+				if (m_quit)
+					return;
+				continue;
+			}
+
+			// Nothing has arrived for a while: sleep until the producer says otherwise.
+			m_idle.store(true, std::memory_order_seq_cst);
 			if (m_wpos.load(std::memory_order_seq_cst) != m_rpos.load(std::memory_order_relaxed))
 			{
-				m_sleeping.store(false, std::memory_order_seq_cst);
+				m_idle.store(false, std::memory_order_seq_cst);
+				empty_polls = 0;
 				continue;
 			}
 
 			std::unique_lock<std::mutex> lock(m_wake_mutex);
-			m_wake_cv.wait(lock, [this]() { return m_quit || !m_sleeping.load(std::memory_order_seq_cst); });
+			m_wake_cv.wait(lock, [this]() { return m_quit || m_wake_requested; });
+			m_wake_requested = false;
+			empty_polls = 0;
 			if (m_quit)
 				return;
 		}
@@ -166,6 +206,8 @@ private:
 
 	void WaitForSpace(u32 w)
 	{
+		// Only the worker can make room, and it may be in the middle of a poll interval.
+		Wake();
 		std::unique_lock<std::mutex> lock(m_wake_mutex);
 		m_producer_waiting.store(true, std::memory_order_seq_cst);
 		// The timeout is a safety net, not the mechanism: the worker notifies after every chunk while this is set.
@@ -181,7 +223,8 @@ private:
 	// Chunk counters that only ever grow; the slot is the counter modulo QUEUE_CHUNKS.
 	alignas(64) std::atomic<u32> m_wpos{0};
 	alignas(64) std::atomic<u32> m_rpos{0};
-	alignas(64) std::atomic<bool> m_sleeping{false};
+	alignas(64) std::atomic<bool> m_idle{false}; // the worker waits for the next chunk with no timer
+	std::atomic<bool> m_nudged{false}; // a high-water wake-up has been sent and the worker has not looked at the queue since
 	std::atomic<bool> m_producer_waiting{false};
 	std::atomic<bool> m_stop{false}; // mirrors m_quit for the worker's drain loop, which does not take m_wake_mutex
 
@@ -191,6 +234,7 @@ private:
 	std::condition_variable m_wake_cv;
 	std::condition_variable m_space_cv;
 	bool m_quit = false; // guarded by m_wake_mutex
+	bool m_wake_requested = false; // guarded by m_wake_mutex
 };
 
 AudioStream::DeviceInfo::DeviceInfo(std::string name_, std::string display_name_, u32 minimum_latency_)
