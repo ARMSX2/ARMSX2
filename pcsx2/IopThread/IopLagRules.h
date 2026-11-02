@@ -76,8 +76,9 @@ namespace IopThread
 		/// LagRule::Mailbox and Poll: window lengths.
 		u32 mailbox_window = 4915200;
 		u32 poll_window = 98304;
-		/// LagRule::Stream: which StreamBit bits count.
-		u32 stream_bits = StreamBit::SpuAdmaCore0 | StreamBit::SpuAdmaCore1 | StreamBit::CdvdBusy;
+		/// LagRule::Stream: which StreamBit bits count. SPU2 auto-DMA only: with a disc read counted too the rule held the bound tight for 59 percent
+		/// of the EE's cycles in a God of War II state, whose engine reads the disc all the time, and gained nothing for the games that need it.
+		u32 stream_bits = StreamBit::SpuAdmaCore0 | StreamBit::SpuAdmaCore1;
 		/// LagRule::Boot: frames after a boot or reset.
 		u32 boot_frames = 600;
 	};

@@ -181,12 +181,13 @@ namespace IopThread
 		// The rules that tighten a large lag bound (IopLagRules.h): the built-in set.
 		LagRulesConfig DefaultRules()
 		{
-			// One rule is on: while the EE is idle with a request out to the IOP, it may not run ahead of the IOP by more than the tight
-			// bound (LagRule::IdleOutstanding). In a lockstep run with a one-frame bound it held the bound tight for 1.8 percent of the EE's
-			// cycles in a Burnout 3 race and for 0.00 to 0.03 percent in God of War II. The other rules in IopLagRules.h are off:
-			// idling alone (IdleAny) held it tight for 38 to 60 percent of God of War II, and the rest were not needed for Burnout 3.
+			// Two rules are on. IdleOutstanding: while the EE is idle with a request out to the IOP, it may not run ahead of the IOP by more
+			// than the tight bound (Burnout 3). Stream: while SPU2 auto-DMA is running, the same, because the EE refills the audio ring from
+			// an IOP callback and a late callback makes the SPU2 replay the ring (the Devil May Cry and Metal Gear Solid 3 intros). The other
+			// rules in IopLagRules.h are off: idling alone (IdleAny) held the bound tight for 38 to 60 percent of God of War II, and a CDVD read
+			// counted as a stream for 59 percent of it.
 			LagRulesConfig cfg;
-			cfg.mask = LagRule::Bit(LagRule::IdleOutstanding);
+			cfg.mask = LagRule::Bit(LagRule::IdleOutstanding) | LagRule::Bit(LagRule::Stream);
 			return cfg;
 		}
 

@@ -26,6 +26,7 @@ namespace
 		c.poll_window = 50000;
 		c.outstanding_max_age = 1'000'000;
 		c.boot_frames = 10;
+		c.stream_bits = StreamBit::SpuAdmaCore0 | StreamBit::SpuAdmaCore1 | StreamBit::CdvdBusy; // all of them, whatever the default says
 		return c;
 	}
 
@@ -273,4 +274,16 @@ TEST(LagRules, AResetForgetsEverything)
 	r.Reset(1000);
 	EXPECT_EQ(r.Stats().total_event_tests, 0u);
 	EXPECT_EQ(At(r, kBase + 20, false, 0, 5000), kLoose) << "no window, no outstanding request, past the boot frames";
+}
+
+TEST(LagRules, TheDefaultStreamBitsAreTheSpuAutoDmaAndNotTheDisc)
+{
+	LagRulesConfig c;
+	c.mask = LagRule::Bit(LagRule::Stream);
+	LagRules r;
+	r.Configure(c);
+	r.Reset();
+	EXPECT_EQ(At(r, kBase, false, StreamBit::CdvdBusy), kLoose) << "a disc read alone is not a stream: a God of War II state reads the disc all the time";
+	EXPECT_EQ(At(r, kBase + 3072, false, StreamBit::SpuAdmaCore0), static_cast<s64>(c.tight));
+	EXPECT_EQ(At(r, kBase + 6144, false, StreamBit::SpuAdmaCore1 | StreamBit::CdvdBusy), static_cast<s64>(c.tight));
 }

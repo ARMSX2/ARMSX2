@@ -2985,4 +2985,46 @@ namespace
 		EXPECT_LE(static_cast<s64>(cycle - thread->PublishedPos()), kTightBound);
 		EXPECT_EQ(thread->GetStats().lag_spins, 1u);
 	}
+	// SPU2 auto-DMA running on the IOP (the streams word the IOP thread samples at the end of each slice) holds a skewed IOP within the
+	// tight bound whatever the EE is doing, and lets the skew grow back when it stops.
+	TEST_F(IopThreadObjectLockstep, AnAutoDmaStreamKeepsASkewedIopWithinTheTightBoundUntilItStops)
+	{
+		constexpr s64 kSkew = 400000;
+		constexpr s32 kTightBound = 8192;
+		std::atomic<u32> streams{0};
+		Params p = BaseParams(IopThreadMode::Lockstep);
+		p.lockstep_skew = kSkew;
+		p.rules.mask = LagRule::Bit(LagRule::Stream);
+		p.rules.tight = kTightBound;
+		p.rules.stream_bits = StreamBit::SpuAdmaCore0;
+		p.sample_streams = [&] { return streams.load(); };
+		StopOnExit stop_on_exit(*thread);
+		ASSERT_TRUE(thread->Start(p));
+
+		u64 cycle = 0;
+		const auto event_test = [&] {
+			cycle += 3072;
+			ee_cycle = cycle;
+			thread->NoteEventTest(cycle, 0, 100); // a busy EE
+			thread->LockstepRunSlice(cycle);
+		};
+		for (int i = 0; i < 200; i++)
+			event_test();
+		EXPECT_GE(static_cast<s64>(cycle - thread->PublishedPos()), kSkew - fake.block);
+
+		// The stream starts: the IOP sees it at the end of its next slice, the EE at the event test after that.
+		streams.store(StreamBit::SpuAdmaCore0);
+		event_test();
+		event_test();
+		const s64 behind = static_cast<s64>(cycle - thread->PublishedPos());
+		EXPECT_LE(behind, kTightBound);
+		EXPECT_EQ(thread->LockstepSkewCurrent(), kTightBound);
+
+		// A disc read is not in the stream bits.
+		streams.store(StreamBit::CdvdBusy);
+		for (int i = 0; i < 200; i++)
+			event_test();
+		EXPECT_EQ(thread->LockstepSkewCurrent(), kSkew);
+		EXPECT_GE(static_cast<s64>(cycle - thread->PublishedPos()), kSkew - fake.block);
+	}
 } // namespace
