@@ -97,6 +97,34 @@ static bool extraRam = false;
 // Constant pool for the IOP recompiler
 static ArmConstantPool s_iopConstantPool;
 
+// Memory <- RIOPCYC/RIOPEE. Clobbers x9. `scratch` is the register used for iopNextEventCycle.
+static void iopEmitSpill(const a64::Register& scratch = a64::x9)
+{
+	armAsm->Ldr(scratch, armPsxRegMem(&psxRegs.iopNextEventCycle));
+	armAsm->Add(scratch, scratch, RIOPCYC);
+	armAsm->Str(scratch, armPsxRegMem(&psxRegs.cycle));
+	armAsm->Str(RIOPEE, armPsxRegMem(&psxRegs.iopCycleEE));
+}
+
+// RIOPCYC/RIOPEE <- memory. Clobbers x9, x10.
+static void iopEmitReload()
+{
+	armAsm->Ldr(a64::x9, armPsxRegMem(&psxRegs.cycle));
+	armAsm->Ldr(a64::x10, armPsxRegMem(&psxRegs.iopNextEventCycle));
+	armAsm->Sub(RIOPCYC, a64::x9, a64::x10);
+	armAsm->Ldr(RIOPEE, armPsxRegMem(&psxRegs.iopCycleEE));
+}
+
+void psxEmitSpill()
+{
+	armEmitCall(g_iopSpillStub);
+}
+
+void psxEmitReload()
+{
+	armEmitCall(g_iopReloadStub);
+}
+
 // =====================================================================================================
 //  Dynamically Compiled Dispatchers - R3000A ARM64
 // =====================================================================================================
@@ -106,7 +134,11 @@ static void iopRecRecompile(u32 startpc);
 static const void* iopDispatcherReg = nullptr;
 static const void* iopJITCompile = nullptr;
 static const void* iopEnterRecompiledCode = nullptr;
-static const void* iopExitRecompiledCode = nullptr;
+static const void* iopExitRecompiledCode = nullptr;        // spills RIOPCYC/RIOPEE, then leaves
+static const void* iopExitRecompiledCodeSpilled = nullptr; // memory is already current
+const void* g_iopSpillStub = nullptr;
+const void* g_iopReloadStub = nullptr;
+const void* g_iopEventStub = nullptr;
 static const void* iopUnmappedRecLUTPage = nullptr;
 
 // ARM64 dispatcher: Load PC → two-level LUT lookup → jump to block
@@ -177,11 +209,16 @@ static const void* _DynGen_EnterRecompiledCode()
 	// into a single ldr [RPSXSTATE, #off]. Callee-saved across all C calls.
 	armMoveAddressToReg(RPSXSTATE, &psxRegs);
 
+	// The clocks go into their registers for the duration (see RIOPCYC).
+	iopEmitReload();
+
 	// Jump into the dispatcher
 	armEmitJmp(iopDispatcherReg);
 
-	// Exit point — restore callee-saved registers and return
+	// Exit point — hand the clocks back to memory, restore callee-saved registers and return
 	iopExitRecompiledCode = armGetCurrentCodePointer();
+	iopEmitSpill();
+	iopExitRecompiledCodeSpilled = armGetCurrentCodePointer();
 	armEndStackFrame(false);
 	armAsm->Ret();
 
@@ -225,7 +262,7 @@ static const void* _DynGen_EnterRecompiledCode()
 // aliases and keeps such a block dispatchable from every mirror. Collapsing
 // the whole domain (cross-alias SMC pinned in iop_smc_tests.cpp) closed that.
 //
-// Anything else tail-jumps to the C handler, which returns to the store site.
+// Anything else calls the C handler, with the IOP clocks made current around it.
 //
 // Regenerated on every recResetIOP, so the baked ExposedIopRam mask and RAM
 // base track extra-memory-mode flips (which discard all blocks).
@@ -273,14 +310,22 @@ static const void* _DynGen_StoreStub(int size)
 	armAsm->Add(a64::sp, a64::sp, 16);
 	armAsm->Ret();
 
-	// Hw/unmapped target: tail-jump to C, which returns to the store site.
+	// Hw/unmapped target: a device may read or move the IOP clocks, so memory is
+	// made current around the call (the spill stub keeps w0/w1).
 	armAsm->Bind(&slowPath);
+	armAsm->Sub(a64::sp, a64::sp, 16);
+	armAsm->Stp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+	armEmitCall(g_iopSpillStub);
 	switch (size)
 	{
-		case 8:  armEmitJmp((void*)iopMemWrite8);  break;
-		case 16: armEmitJmp((void*)iopMemWrite16); break;
-		case 32: armEmitJmp((void*)iopMemWrite32); break;
+		case 8:  armEmitCall((void*)iopMemWrite8);  break;
+		case 16: armEmitCall((void*)iopMemWrite16); break;
+		case 32: armEmitCall((void*)iopMemWrite32); break;
 	}
+	armEmitCall(g_iopReloadStub);
+	armAsm->Ldp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+	armAsm->Add(a64::sp, a64::sp, 16);
+	armAsm->Ret();
 
 	return retval;
 }
@@ -294,8 +339,9 @@ static const void* _DynGen_StoreStub(int size)
 // Calling convention: w8 = guest address; returns the loaded value, sign or
 // zero extended for the access, in w9. Preserves x0-x7, x11-x15 and lr (every
 // caller-saved register the IOP pool can hold a guest value in; x26-x28 are
-// callee-saved and survive the C call by themselves) and x21-x28. Clobbers
-// x8, x9, x10, x16, x17 and the flags, none of which the allocator uses.
+// callee-saved and survive the C call by themselves) and x19-x28. Clobbers
+// x8, x9, x10, x16, x17 and the flags, none of which the allocator uses. The IOP
+// clocks are made current in memory for the call and taken back after (RIOPCYC).
 //
 // Cost does not matter here: this runs for the few percent of loads that are
 // not RAM (interrupt controller, SPU2 and DMA registers, ROM).
@@ -314,6 +360,8 @@ static const void* _DynGen_LoadColdStub(IopLoadKind kind)
 	armAsm->Stp(a64::x13, a64::x14, a64::MemOperand(a64::sp, 80));
 	armAsm->Stp(a64::x15, a64::lr, a64::MemOperand(a64::sp, 96));
 
+	// A device may read or move the IOP clocks (the spill stub keeps w8).
+	armEmitCall(g_iopSpillStub);
 	armAsm->Mov(a64::w0, a64::w8);
 	switch (kind)
 	{
@@ -329,6 +377,7 @@ static const void* _DynGen_LoadColdStub(IopLoadKind kind)
 			armEmitCall((void*)iopMemRead32);
 			break;
 	}
+	armEmitCall(g_iopReloadStub); // keeps w0
 
 	// The C functions return a u8/u16 whose upper register bits are not defined.
 	switch (kind)
@@ -364,15 +413,50 @@ static const void* _DynGen_UnmappedRecLUTPage()
 	return retval;
 }
 
+static const void* _DynGen_SpillStub()
+{
+	u8* retval = armGetCurrentCodePointer();
+	iopEmitSpill();
+	armAsm->Ret();
+	return retval;
+}
+
+static const void* _DynGen_ReloadStub()
+{
+	u8* retval = armGetCurrentCodePointer();
+	iopEmitReload();
+	armAsm->Ret();
+	return retval;
+}
+
+// What a block end does when the event test is due: memory current, iopEventTest(),
+// registers back. Reached by BL from a cold site.
+static const void* _DynGen_EventStub()
+{
+	u8* retval = armGetCurrentCodePointer();
+	armAsm->Sub(a64::sp, a64::sp, 16);
+	armAsm->Stp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+	iopEmitSpill();
+	armEmitCall((void*)iopEventTest);
+	iopEmitReload();
+	armAsm->Ldp(a64::x29, a64::lr, a64::MemOperand(a64::sp));
+	armAsm->Add(a64::sp, a64::sp, 16);
+	armAsm->Ret();
+	return retval;
+}
+
 // Generate all dispatcher stubs during reset
 static void _DynGen_Dispatchers()
 {
 	const u8* start = armGetCurrentCodePointer();
 
+	g_iopSpillStub = _DynGen_SpillStub();
+	g_iopReloadStub = _DynGen_ReloadStub();
 	iopDispatcherReg = _DynGen_DispatcherReg();
 	iopJITCompile = _DynGen_JITCompile();
 	iopEnterRecompiledCode = _DynGen_EnterRecompiledCode();
 	iopUnmappedRecLUTPage = _DynGen_UnmappedRecLUTPage();
+	g_iopEventStub = _DynGen_EventStub();
 	g_iopStoreStub[0] = _DynGen_StoreStub(8);
 	g_iopStoreStub[1] = _DynGen_StoreStub(16);
 	g_iopStoreStub[2] = _DynGen_StoreStub(32);
@@ -509,7 +593,31 @@ void psxEmitConstLoad(IopLoadKind kind, const a64::Register& dst, u32 addr)
 	armAsm->Mov(dst, a64::w9);
 }
 
-void psxEmitLoadColdSites()
+// A block end whose event test is due: out of line, so the common case (nothing due)
+// falls through to the link branch. newpc is the pc the block ends on, or
+// 0xffffffff when it ends by a register jump; the stub returns with the clocks
+// reloaded and the dispatcher takes over if the event test moved pc.
+namespace
+{
+struct IopEventColdSite
+{
+	a64::Label cold;
+	a64::Label resume;
+	u32 newpc;
+};
+std::deque<IopEventColdSite> s_eventColdSites;
+} // namespace
+
+// Emits the branch to a new cold site and binds the site's resume label here.
+static void iopEmitEventCheck(u32 newpc)
+{
+	IopEventColdSite& site = s_eventColdSites.emplace_back();
+	site.newpc = newpc;
+	armAsm->Tbz(RIOPCYC, 63, &site.cold); // cycle - iopNextEventCycle >= 0: due
+	armAsm->Bind(&site.resume);
+}
+
+void psxEmitColdSites()
 {
 	for (IopLoadColdSite& site : s_loadColdSites)
 	{
@@ -521,6 +629,20 @@ void psxEmitLoadColdSites()
 		armAsm->B(&site.resume);
 	}
 	s_loadColdSites.clear();
+
+	for (IopEventColdSite& site : s_eventColdSites)
+	{
+		armAsm->Bind(&site.cold);
+		armEmitCall(g_iopEventStub);
+		if (site.newpc != 0xffffffff)
+		{
+			armAsm->Ldr(RWSCRATCH, armPsxRegMem(&psxRegs.pc));
+			armAsm->Cmp(RWSCRATCH, site.newpc);
+			armEmitCondBranch(a64::ne, iopDispatcherReg);
+		}
+		armAsm->B(&site.resume);
+	}
+	s_eventColdSites.clear();
 }
 
 // =====================================================================================================
@@ -676,7 +798,9 @@ void psxRecompileIrxImport()
 	armAsm->Str(RWSCRATCH, armPsxRegMem(&psxRegs.pc));
 
 	_psxFlushCall(FLUSH_NODESTROY);
+	psxEmitSpill();
 	armEmitCall(reinterpret_cast<const void*>(hle));
+	psxEmitReload();
 
 	// HLE handled it (returned non-zero) → it set psxRegs.pc; re-dispatch.
 	armEmitCbnz(a64::w0, iopDispatcherReg);
@@ -751,11 +875,64 @@ static __fi u32 psxScaleBlockCycles()
 	return s_psxBlockCycles;
 }
 
-// Contract: leaves the new iopCycleEE value in RWSCRATCH, and the flags of the
-// subtraction that produced it, so a caller's timeslice exit is a bare b.le
-// with nothing between. Must not clobber x2 (the caller's freshly-stored
-// psxRegs.cycle, still live for the event check).
-static void iPsxAddEECycles(u32 blockCycles)
+// A block end's clock accounting in the pinned registers (RIOPCYC, RIOPEE):
+//   cycle += blockCycles
+//   iopCycleEE -= blockCycles scaled to EE cycles, flags set by the subtraction
+//   when set_flags (so a caller's timeslice exit is a bare b.le)
+// Clobbers x9 and, in PS1 mode, x0, x1, x3 and w8.
+static void iPsxAddCycles(u32 blockCycles, bool set_flags)
+{
+	if (blockCycles < 4096)
+		armAsm->Add(RIOPCYC, RIOPCYC, blockCycles);
+	else
+	{
+		armAsm->Mov(a64::x9, static_cast<u64>(blockCycles));
+		armAsm->Add(RIOPCYC, RIOPCYC, a64::x9);
+	}
+
+	if (!(psxHu32(HW_ICFG) & (1 << 3))) [[likely]]
+	{
+		// PS2 mode: flat 1:8 IOP:EE ratio. Subtract cycles * 8 from iopCycleEE.
+		if (blockCycles * 8 < 4096)
+		{
+			if (set_flags)
+				armAsm->Subs(RIOPEE, RIOPEE, blockCycles * 8);
+			else
+				armAsm->Sub(RIOPEE, RIOPEE, blockCycles * 8);
+		}
+		else
+		{
+			armAsm->Mov(a64::w9, blockCycles * 8);
+			if (set_flags)
+				armAsm->Subs(RIOPEE, RIOPEE, a64::w9);
+			else
+				armAsm->Sub(RIOPEE, RIOPEE, a64::w9);
+		}
+		return;
+	}
+
+	// PS1 backwards-compat mode: see iPsxAddEECyclesMem.
+	const u32 cnum = 1280;  // PS2CLK / F
+	const u32 cdenom = 147; // PSXCLK / F
+	armAsm->Mov(a64::w0, blockCycles * cnum);
+	armAsm->Ldr(RWSCRATCH, armPsxRegMem(&psxRegs.iopCycleEECarry));
+	armAsm->Add(a64::w0, a64::w0, RWSCRATCH);
+	armAsm->Mov(a64::w1, cdenom);
+	armAsm->Udiv(a64::w3, a64::w0, a64::w1);
+	armAsm->Msub(a64::w1, a64::w3, a64::w1, a64::w0);
+	armAsm->Str(a64::w1, armPsxRegMem(&psxRegs.iopCycleEECarry));
+	if (set_flags)
+		armAsm->Subs(RIOPEE, RIOPEE, a64::w3);
+	else
+		armAsm->Sub(RIOPEE, RIOPEE, a64::w3);
+}
+
+// The same accounting on the memory copies of the clocks, for the wait-loop
+// fast-forward (its arithmetic is on psxRegs.cycle directly). The caller has
+// spilled. Contract: leaves the new iopCycleEE value in RWSCRATCH, and the
+// flags of the subtraction that produced it, so a caller's timeslice exit is a
+// bare b.le with nothing between.
+static void iPsxAddEECyclesMem(u32 blockCycles)
 {
 	if (!(psxHu32(HW_ICFG) & (1 << 3))) [[likely]]
 	{
@@ -817,6 +994,10 @@ static void iPsxBranchTest(u32 newpc, u32 cpuBranch)
 		// clamped to iopNextEventCycle. Matches x86 iR3000A.cpp:1179.
 		// new_cycle = old_cycle + (iopCycleEE + 7) / 8
 		// new_cycle = min(new_cycle, iopNextEventCycle)
+		//
+		// This arm works on the memory copies of the clocks: they are spilled
+		// first, and taken back after the event test.
+		psxEmitSpill();
 		armAsm->Ldr(a64::x2, armPsxRegMem(&psxRegs.cycle));   // x2 = old cycle
 		armAsm->Mov(a64::x4, a64::x2);                        // x4 = old cycle (saved)
 
@@ -845,12 +1026,13 @@ static void iPsxBranchTest(u32 newpc, u32 cpuBranch)
 		armAsm->Lsl(a64::w0, a64::w0, 3);
 
 		// Subtract consumed cycles from iopCycleEE
-		iPsxAddEECycles(0xFFFFFFFF); // uses w0 as the cycle count
+		iPsxAddEECyclesMem(0xFFFFFFFF); // uses w0 as the cycle count
 
-		armEmitCondBranch(a64::le, iopExitRecompiledCode);
+		armEmitCondBranch(a64::le, iopExitRecompiledCodeSpilled);
 
 		// Call event test
 		armEmitCall((void*)iopEventTest);
+		psxEmitReload();
 
 		if (newpc != 0xffffffff)
 		{
@@ -861,40 +1043,11 @@ static void iPsxBranchTest(u32 newpc, u32 cpuBranch)
 	}
 	else
 	{
-		// Normal path: add block cycles and check events
-		armAsm->Ldr(a64::x2, armPsxRegMem(&psxRegs.cycle));
-		if (blockCycles < 4096)
-			armAsm->Add(a64::x2, a64::x2, blockCycles);
-		else
-		{
-			armAsm->Mov(a64::x3, static_cast<u64>(blockCycles));
-			armAsm->Add(a64::x2, a64::x2, a64::x3);
-		}
-		armAsm->Str(a64::x2, armPsxRegMem(&psxRegs.cycle));
-
-		// Subtract from iopCycleEE — exit if <= 0
-		iPsxAddEECycles(blockCycles);
+		// Normal path: add block cycles, leave the slice if its budget is spent,
+		// else call the event test if it is due (cold, out of line).
+		iPsxAddCycles(blockCycles, true);
 		armEmitCondBranch(a64::le, iopExitRecompiledCode);
-
-		// Check if event is pending: cycle >= iopNextEventCycle
-		armAsm->Ldr(a64::x3, armPsxRegMem(&psxRegs.iopNextEventCycle));
-		armAsm->Cmp(a64::x2, a64::x3);
-		a64::Label noEvent;
-		// Unsigned predicate — see clamp note above. Both operands are u32;
-		// signed lt would mis-fire after either crosses 2^31.
-		armAsm->B(&noEvent, a64::lo);
-
-		// Event pending — call event test
-		armEmitCall((void*)iopEventTest);
-
-		if (newpc != 0xffffffff)
-		{
-			armAsm->Ldr(RWSCRATCH, armPsxRegMem(&psxRegs.pc));
-			armAsm->Cmp(RWSCRATCH, newpc);
-			armEmitCondBranch(a64::ne, iopDispatcherReg);
-		}
-
-		armAsm->Bind(&noEvent);
+		iopEmitEventCheck(newpc);
 	}
 }
 
@@ -1095,16 +1248,7 @@ void rpsxSYSCALL()
 	// and re-dispatch. (x86 carries a "did pc change?" fall-through check
 	// here; it can only trigger for a SYSCALL sitting AT the vector, and
 	// falling through into the block tail would be wrong even then.)
-	armAsm->Ldr(a64::x0, armPsxRegMem(&psxRegs.cycle));
-	if (psxScaleBlockCycles() < 4096)
-		armAsm->Add(a64::x0, a64::x0, psxScaleBlockCycles());
-	else
-	{
-		armAsm->Mov(a64::x1, static_cast<u64>(psxScaleBlockCycles()));
-		armAsm->Add(a64::x0, a64::x0, a64::x1);
-	}
-	armAsm->Str(a64::x0, armPsxRegMem(&psxRegs.cycle));
-	iPsxAddEECycles(psxScaleBlockCycles());
+	iPsxAddCycles(psxScaleBlockCycles(), false);
 	armEmitJmp(iopDispatcherReg);
 }
 
@@ -1123,16 +1267,7 @@ void rpsxBREAK()
 	armEmitCall((void*)psxException);
 
 	// See rpsxSYSCALL — pc always changed, dispatch unconditionally.
-	armAsm->Ldr(a64::x0, armPsxRegMem(&psxRegs.cycle));
-	if (psxScaleBlockCycles() < 4096)
-		armAsm->Add(a64::x0, a64::x0, psxScaleBlockCycles());
-	else
-	{
-		armAsm->Mov(a64::x1, static_cast<u64>(psxScaleBlockCycles()));
-		armAsm->Add(a64::x0, a64::x0, a64::x1);
-	}
-	armAsm->Str(a64::x0, armPsxRegMem(&psxRegs.cycle));
-	iPsxAddEECycles(psxScaleBlockCycles());
+	iPsxAddCycles(psxScaleBlockCycles(), false);
 	armEmitJmp(iopDispatcherReg);
 }
 
@@ -1492,7 +1627,7 @@ static void iopRecRecompile(const u32 startpc)
 
 	armSetAsmPtr(recPtr, recPtrEnd - recPtr + _64kb, &s_iopConstantPool);
 	armStartBlock();
-	pxAssert(s_loadColdSites.empty());
+	pxAssert(s_loadColdSites.empty() && s_eventColdSites.empty());
 
 	s_pCurBlock = PSX_GETBLOCK(startpc);
 	pxAssert(s_pCurBlock->GetFnptr() == (uptr)iopJITCompile);
@@ -1529,7 +1664,9 @@ static void iopRecRecompile(const u32 startpc)
 	// BIOS call interception
 	if ((psxHu32(HW_ICFG) & 8) && (HWADDR(startpc) == 0xa0 || HWADDR(startpc) == 0xb0 || HWADDR(startpc) == 0xc0))
 	{
+		psxEmitSpill();
 		armEmitCall((void*)psxBiosCall);
+		psxEmitReload();
 		// If psxBiosCall returns non-zero, skip to dispatcher. CBNZ folds
 		// the Tst + B.ne pair (AX-12, after ARMSX2 1c1d0b880).
 		armEmitCbnz(RWRET, iopDispatcherReg);
@@ -1678,17 +1815,7 @@ StartRecomp:
 			// slot.
 			_psxFlushCall(FLUSH_EVERYTHING);
 
-			armAsm->Ldr(a64::x0, armPsxRegMem(&psxRegs.cycle));
-			u32 scaledCycles = psxScaleBlockCycles();
-			if (scaledCycles < 4096)
-				armAsm->Add(a64::x0, a64::x0, scaledCycles);
-			else
-			{
-				armAsm->Mov(a64::x1, static_cast<u64>(scaledCycles));
-				armAsm->Add(a64::x0, a64::x0, a64::x1);
-			}
-			armAsm->Str(a64::x0, armPsxRegMem(&psxRegs.cycle));
-			iPsxAddEECycles(psxScaleBlockCycles());
+			iPsxAddCycles(psxScaleBlockCycles(), false);
 		}
 
 		if (link_next_block || !psxbranch)
@@ -1713,7 +1840,7 @@ StartRecomp:
 	// The slow paths of the block's loads go after its last instruction, which
 	// never falls through (every block ends in a branch to a linked block, the
 	// dispatcher or the exit).
-	psxEmitLoadColdSites();
+	psxEmitColdSites();
 
 	pxAssert(armGetCurrentCodePointer() < SysMemory::GetIOPRecEnd());
 

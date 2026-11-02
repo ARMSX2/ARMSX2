@@ -495,8 +495,9 @@ TEST(IopLoadFastPath, UnalignedOpsAfterLoads)
 
 namespace {
 
-// In: x0-x7, x11-x15 from `in`, w8 = address. Out: the same registers, and x9.
-void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13], u64& x9)
+// In: x0-x7, x11-x15 from `in`, w8 = address, x21 = &psxRegs, x19 = rc, w20 = re (the pinned
+// clocks, see RIOPCYC). Out: the same registers, and x9.
+void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13], u64& x9, u64& rc, u32& re)
 {
 	asm volatile(
 		"ldp x0, x1, [%[in], #0]\n\t"
@@ -507,6 +508,9 @@ void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13
 		"ldp x13, x14, [%[in], #80]\n\t"
 		"ldr x15, [%[in], #96]\n\t"
 		"mov w8, %w[addr]\n\t"
+		"mov x21, %[state]\n\t"
+		"ldr x19, [%[rc]]\n\t"
+		"ldr w20, [%[re]]\n\t"
 		"blr %[stub]\n\t"
 		"stp x0, x1, [%[out], #0]\n\t"
 		"stp x2, x3, [%[out], #16]\n\t"
@@ -516,10 +520,13 @@ void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13
 		"stp x13, x14, [%[out], #80]\n\t"
 		"str x15, [%[out], #96]\n\t"
 		"str x9, [%[x9]]\n\t"
+		"str x19, [%[rc]]\n\t"
+		"str w20, [%[re]]\n\t"
 		:
-		: [in] "r"(in), [out] "r"(out), [stub] "r"(stub), [addr] "r"(addr), [x9] "r"(&x9)
+		: [in] "r"(in), [out] "r"(out), [stub] "r"(stub), [addr] "r"(addr), [x9] "r"(&x9), [state] "r"(&psxRegs), [rc] "r"(&rc),
+		  [re] "r"(&re)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x30", "memory", "cc");
+		  "x19", "x20", "x21", "x30", "memory", "cc");
 }
 
 } // namespace
@@ -540,9 +547,26 @@ TEST(IopLoadFastPath, ColdStubGivesEveryAllocatorRegisterBack)
 			u64 in[13], out[13], x9 = 0;
 			for (int i = 0; i < 13; i++)
 				in[i] = 0xA5A5000000000000ull | (static_cast<u64>(i + 1) << 32) | (0x0F0F0000u + i);
-			CallColdStub(stub, addr, in, out, x9);
+			// The pinned clocks: the stub must make memory say what they say (and give them back unchanged;
+			// the device read here does not move them).
+			// (The SPU2 registers advance the SPU2 to psxRegs.cycle, which the test environment has no SPU2 for:
+			// the clocks there stay at zero.)
+			const bool spu2 = (addr & 0x1FFF0000u) == 0x1F900000u;
+			const u64 next = spu2 ? 0 : 20000;
+			psxRegs.cycle = 12345;
+			psxRegs.iopNextEventCycle = next;
+			psxRegs.iopCycleEE = 99;
+			u64 rc = spu2 ? 0 : 777; // cycle - iopNextEventCycle
+			u32 re = 4321;
+			if (spu2)
+				psxRegs.cycle = 0;
+			CallColdStub(stub, addr, in, out, x9, rc, re);
 			for (int i = 0; i < 13; i++)
 				EXPECT_EQ(out[i], in[i]) << "register slot " << i;
+			EXPECT_EQ(psxRegs.cycle, next + (spu2 ? 0 : 777u)) << "the stub spills RIOPCYC to psxRegs.cycle";
+			EXPECT_EQ(psxRegs.iopCycleEE, 4321) << "the stub spills RIOPEE to psxRegs.iopCycleEE";
+			EXPECT_EQ(rc, spu2 ? 0u : 777u) << "RIOPCYC comes back as it was";
+			EXPECT_EQ(re, 4321u) << "RIOPEE comes back as it was";
 
 			// the value is what iopMemRead* gives, extended; read it with the registers the same
 			u32 want;

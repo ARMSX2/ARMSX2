@@ -26,6 +26,7 @@ add_pcsx2_test(recompiler_tests
 	iop_muldiv_tests.cpp
 	iop_loadstore_tests.cpp
 	iop_load_fastpath_tests.cpp
+	iop_cycle_accounting_tests.cpp
 	iop_jump_tests.cpp
 	iop_branch_tests.cpp
 	iop_cop0_tests.cpp
