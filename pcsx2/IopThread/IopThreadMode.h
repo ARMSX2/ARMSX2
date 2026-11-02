@@ -61,6 +61,14 @@ namespace IopThread
 	// The lag is kept as an s32 (Params::lag, the EE-side books). Leave room for the cycle differences added to it.
 	static_assert(kMaxLag > 0 && kMaxLag < INT32_MAX / 64, "the lag bound must leave s32 headroom");
 
+	/// What jumped the EE's clock to its next event because the guest was idle: the bits of eeFastForwardKind (R5900.h).
+	namespace FastForward
+	{
+		inline constexpr u8 WaitLoop = 1 << 0; // recompiler: a block that spins on itself with nothing to change
+		inline constexpr u8 TimeoutLoop = 1 << 1; // recompiler: a counted delay loop, cut short by the event
+		inline constexpr u8 Interpreter = 1 << 2; // interpreter: a spin on one branch target
+	} // namespace FastForward
+
 	/// The legal value nearest to `requested`. A value from a settings file, a per-game override
 	/// or a command line goes through this before anything uses it as L.
 	s32 ClampLag(s32 requested);

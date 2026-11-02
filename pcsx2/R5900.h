@@ -367,6 +367,12 @@ static __fi void fpuRegsFromWire(const fpuRegistersWire& wire)
 
 extern bool eeEventTestIsActive;
 
+// Set when the EE's clock was jumped to its next event because the guest was waiting: the recompiler's wait loop and timeout
+// loop skips (SetBranchImm, recSkipTimeoutLoop) and the interpreter's wait loop skip. The bits are IopThread::FastForward
+// (IopThreadMode.h). The skip writes it and the next event test, which is the one the jump ends in, takes it (reads and clears
+// it). The IOP thread's late-reply statistics use it to know the EE was idle (IopThread::Thread::NoteEventTest).
+extern u8 eeFastForwardKind;
+
 void intUpdateCPUCycles();
 void intEventTest();
 void intSetBranch();

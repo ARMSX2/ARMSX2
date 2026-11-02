@@ -156,7 +156,8 @@ namespace IopThread
 				 &m_e2i_full_spins, &m_e2i_full_iterations, &m_e2i_full_failfast, &m_i2e_drained, &m_calls_served, &m_wakes_sent,
 				 &m_wakes_dropped, &m_stop_checks, &m_handoffs, &m_slices, &m_items_applied, &m_parks, &m_holds_entered,
 				 &m_calls_posted, &m_calls_cancelled, &m_i2e_full_waits, &m_kicks_applied, &m_lag_spins_idle, &m_lag_idle_stall_ns,
-				 &m_idle_waits, &m_idle_ns, &m_sif_deferred, &m_near_waits, &m_near_wait_iterations, &m_near_wait_ns, &m_sif_deferred_applied})
+				 &m_idle_waits, &m_idle_ns, &m_sif_deferred, &m_near_waits, &m_near_wait_iterations, &m_near_wait_ns, &m_sif_deferred_applied,
+				 &m_ee_event_tests, &m_ee_ff_wait_loop, &m_ee_ff_timeout_loop, &m_ee_ff_interpreter})
 			c->Reset();
 
 		// A hold that is live when the thread starts keeps it stopped: the IOP comes up held at the
@@ -1088,6 +1089,10 @@ namespace IopThread
 		s.wakes_dropped = m_wakes_dropped.Get();
 		s.stop_checks = m_stop_checks.Get();
 		s.handoffs = m_handoffs.Get();
+		s.ee_event_tests = m_ee_event_tests.Get();
+		s.ee_ff_wait_loop = m_ee_ff_wait_loop.Get();
+		s.ee_ff_timeout_loop = m_ee_ff_timeout_loop.Get();
+		s.ee_ff_interpreter = m_ee_ff_interpreter.Get();
 		s.slices = m_slices.Get();
 		s.items_applied = m_items_applied.Get();
 		s.parks = m_parks.Get();

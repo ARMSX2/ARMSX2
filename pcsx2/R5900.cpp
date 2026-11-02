@@ -49,6 +49,7 @@ R5900cpu *Cpu = NULL;
 static constexpr uint eeWaitCycles = IopThread::kEeWaitCycles;
 
 bool eeEventTestIsActive = false;
+u8 eeFastForwardKind = 0;
 EE_intProcessStatus eeRunInterruptScan = INT_NOT_RUNNING;
 
 u32 g_eeloadMain = 0, g_eeloadExec = 0, g_osdsys_str = 0;
@@ -537,6 +538,15 @@ __fi void _cpuEventTest_Shared()
 		std::atomic_thread_fence(std::memory_order_acquire);
 		eeEventTestIsActive = false;
 		return;
+	}
+
+	// Lockstep and Threaded: how the EE got here. A fast-forward (a wait loop skipped to the next event) leaves its mark, which this
+	// event test takes. Off has no consumer and leaves it set; SyncThread clears it when a thread starts.
+	if constexpr (M != IopThreadMode::Off)
+	{
+		const u8 ff_kind = eeFastForwardKind;
+		eeFastForwardKind = 0;
+		IopThread::g_thread.NoteEventTest(cpuRegs.cycle, ff_kind);
 	}
 
 	// Threaded: publish where the EE has got and take what the IOP queued for it (the SBUS interrupt, a

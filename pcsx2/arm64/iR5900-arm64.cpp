@@ -1931,6 +1931,17 @@ static void SetBranchBackedge()
 #endif
 }
 
+// A fast-forward is about to jump to DispatcherEvent: tell the event test that is the way it is reached (eeFastForwardKind). One
+// byte store through a scratch address register, on a path that costs a whole event test anyway. Clobbers RWSCRATCH and RSCRATCHADDR;
+// every caller has flushed.
+static void emitNoteFastForward(u8 kind)
+{
+	armMoveAddressToReg(RSCRATCHADDR, &eeFastForwardKind);
+	armAsm->Ldrb(RWSCRATCH, a64::MemOperand(RSCRATCHADDR));
+	armAsm->Orr(RWSCRATCH, RWSCRATCH, kind);
+	armAsm->Strb(RWSCRATCH, a64::MemOperand(RSCRATCHADDR));
+}
+
 void SetBranchImm(u32 imm)
 {
 	if (s_loopResident && !s_loopBackedgeEmitted && imm == s_loopTopPc)
@@ -1970,6 +1981,7 @@ void SetBranchImm(u32 imm)
 		recEeNoteChargeSite(EeChargeSite::WaitLoopFastFwd);
 		armAsm->Cmp(RECCYCLE, 0);
 		armAsm->Csel(RECCYCLE, RECCYCLE, a64::xzr, a64::gt);
+		emitNoteFastForward(IopThread::FastForward::WaitLoop); // the flags are dead: DispatcherEvent does not read them
 		armEmitJmp(DispatcherEvent);
 		return;
 	}
@@ -4504,8 +4516,15 @@ static bool recSkipTimeoutLoop(s32 reg, bool is_timeout_loop)
 	armAsm->Sxtw(a64::x9, a64::w9);
 	armStoreEERegPtr(a64::x9, &cpuRegs.GPR.r[reg].UD[0]);
 
-	// if reg != 0, event interrupted the loop — go to dispatcher
-	armEmitCbnz(a64::w9, DispatcherEvent);
+	// if reg != 0, event interrupted the loop — go to dispatcher. The jump ended in the event the loop was waiting out, so it is a
+	// fast-forward as far as the event test is concerned; a loop that ran to its end is not (the clock went by its own cost).
+	{
+		a64::Label loop_finished;
+		armAsm->Cbz(a64::w9, &loop_finished);
+		emitNoteFastForward(IopThread::FastForward::TimeoutLoop);
+		armEmitJmp(DispatcherEvent);
+		armAsm->Bind(&loop_finished);
+	}
 
 	// Loop finished — set PC to end of block and dispatch
 	armAsm->Mov(RWSCRATCH, s_nEndBlock);

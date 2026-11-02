@@ -5847,6 +5847,10 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 				Console.WriteLn(fmt::format("IOPTHREAD: mode={} handoffs={} parks={} wakes_sent={} slices={} items={} violations={} holds={}",
 					mode_names[static_cast<int>(IopThread::GetMode())], st.handoffs, st.parks, st.wakes_sent, st.slices,
 					st.items_applied, IopThread::ViolationCount(), st.hold_requests + st.hold_markers));
+				// How many of the EE's event tests were reached by a fast-forward (the guest idle), by kind.
+				if (IopThread::GetMode() != IopThreadMode::Off)
+					Console.WriteLn(fmt::format("IOPFF: ee_event_tests={} ff_wait_loop={} ff_timeout_loop={} ff_interpreter={}", st.ee_event_tests, st.ee_ff_wait_loop,
+						st.ee_ff_timeout_loop, st.ee_ff_interpreter));
 				// Lockstep skew: EE-to-IOP items that did not fit the ring and went to the spill queue.
 				Console.WriteLn(fmt::format("E2ISPILL: items={} max_depth={}", IopThread::g_thread.E2ISpillTotal(), IopThread::g_thread.E2ISpillMax()));
 				if (IopThread::LockstepSkewHolds() && IopThread::g_thread.LockstepSkew() > 0)

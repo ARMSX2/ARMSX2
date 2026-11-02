@@ -325,6 +325,7 @@ namespace IopThread
 		}
 		if (s_mode != IopThreadMode::Off && g_thread.Start(MakeParams()))
 		{
+			eeFastForwardKind = 0; // a skip made while the mode was Off has no event test to belong to
 			PerformanceMetrics::SetIOPThread(g_thread.GetThreadHandle());
 			const char* const names[] = {"Off", "Lockstep", "Threaded"};
 			Console.WriteLn(Color_StrongGreen, "IOP thread: started in %s mode.", names[static_cast<int>(s_mode)]);

@@ -324,6 +324,7 @@ static __fi void _doBranch_shared(u32 tar)
 						cpuRegs.cycle = cpuRegs.nextEventCycle;
 					else
 						cpuRegs.nextEventCycle = cpuRegs.cycle;
+					eeFastForwardKind |= IopThread::FastForward::Interpreter;
 				}
 			}
 		}

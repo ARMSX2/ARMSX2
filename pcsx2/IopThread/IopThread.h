@@ -343,6 +343,10 @@ namespace IopThread
 		u64 wakes_dropped; // ... and ones Params::drop_wake lost
 		u64 stop_checks; // calls of Params::should_stop
 		u64 handoffs; // Lockstep requests
+		u64 ee_event_tests; // event tests the EE made with this thread running (NoteEventTest)
+		u64 ee_ff_wait_loop; // ... of which were reached through a recompiler wait loop fast-forward
+		u64 ee_ff_timeout_loop; // ... through a recompiler timeout loop skip
+		u64 ee_ff_interpreter; // ... through the interpreter's wait loop skip
 		// IOP thread
 		u64 slices;
 		u64 items_applied;
@@ -430,6 +434,23 @@ namespace IopThread
 			EeStoreLoadBarrier();
 			if (m_sleep.sleeping.load(std::memory_order_relaxed)) [[unlikely]]
 				WakeAfterPublish(cycle);
+		}
+
+		/// EE thread, first thing in every event test of a Lockstep or Threaded EE (after the stopping check). `ff_kind` is the
+		/// FastForward bits (IopThreadMode.h) the skip that ended in this event test left, 0 when the EE got here by running. An event test
+		/// reached by a fast-forward is one the EE spent idle: the guest was waiting and its clock was jumped to the next event.
+		__fi void NoteEventTest(u64 /*cycle*/, u8 ff_kind)
+		{
+			m_ee_event_tests.Add();
+			if (ff_kind != 0) [[unlikely]]
+			{
+				if (ff_kind & FastForward::WaitLoop)
+					m_ee_ff_wait_loop.Add();
+				if (ff_kind & FastForward::TimeoutLoop)
+					m_ee_ff_timeout_loop.Add();
+				if (ff_kind & FastForward::Interpreter)
+					m_ee_ff_interpreter.Add();
+			}
 		}
 
 		/// Returns once cycle - iop_pos <= lag, so the EE is never more than L ahead after an
@@ -756,6 +777,7 @@ namespace IopThread
 		detail::Counter m_e2i_full_spins, m_e2i_full_iterations, m_e2i_full_failfast, m_i2e_drained, m_calls_served;
 		detail::Counter m_wakes_sent, m_wakes_dropped, m_stop_checks, m_handoffs, m_lag_spins_idle, m_lag_idle_stall_ns;
 		detail::Counter m_sif_deferred, m_near_waits, m_near_wait_iterations, m_near_wait_ns;
+		detail::Counter m_ee_event_tests, m_ee_ff_wait_loop, m_ee_ff_timeout_loop, m_ee_ff_interpreter;
 
 		// IOP-thread private, with the IOP's counters, on lines of their own. The EE writes m_iop_pos only
 		// under a hold or while stopped.
