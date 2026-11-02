@@ -903,6 +903,76 @@ TEST_F(Spu2Mixer, DISABLED_ColdCache)
 	}
 }
 
+// Writes the three game-shaped states (busy, mixed, quiet) to $SPU2_TEST_SNAPSHOT_DIR/<shape>.snap, for tools/devlib_bench, which
+// runs the spu2Mix of a device build of libemucore on them. The file is: a header of four u32 (magic 'SPU2', sizeof(Cores),
+// pcm cache entries, sizeof(PcmCacheEntry)), the bytes of Cores with each voice's SBuffer turned into a byte offset into the
+// decoded-block cache (-1 for null), SPU2 RAM (4 MB), the decoded-block cache, then Spdif (14 bytes), OutPos, InputPos (u16),
+// Cycles (u32), PlayMode (s32), and last the expected result: a hash of SPU2 RAM below 0x2800 and OutPos after 100 mixes
+// by the frozen reference mixer, so that the tool can tell its mixer computes the same thing.
+// Disabled by default:
+//   SPU2_TEST_SNAPSHOT_DIR=/path spu2_tests --gtest_also_run_disabled_tests --gtest_filter='*DISABLED_DumpSnapshots*'
+TEST_F(Spu2Mixer, DISABLED_DumpSnapshots)
+{
+	const char* dir = std::getenv("SPU2_TEST_SNAPSHOT_DIR");
+	ASSERT_NE(dir, nullptr);
+	struct Shape
+	{
+		const char* name;
+		u32 a0, a1;
+	};
+	for (const Shape sh : {Shape{"busy", 20, 20}, Shape{"mixed", 15, 7}, Shape{"quiet", 0, 2}})
+	{
+		Rng r(4242);
+		ShapeState(r, sh.a0, sh.a1);
+		auto snap = std::make_unique<Snapshot>();
+		snap->Take();
+
+		std::vector<StereoOut32> out;
+		out.reserve(128);
+		snap->Restore();
+		s_capture = &out;
+		for (int i = 0; i < 100; i++)
+		{
+			Cycles++;
+			ReferenceSpu2Mix();
+		}
+		s_capture = nullptr;
+		const u64 expect = Hash(_spu2mem, 0x2800 * sizeof(s16), Hash(&OutPos, sizeof(OutPos)));
+		snap->Restore();
+
+		std::vector<u8> cores(sizeof(Cores));
+		std::memcpy(cores.data(), Cores, sizeof(Cores));
+		for (int c = 0; c < 2; c++)
+		{
+			for (u32 v = 0; v < V_Core::NumVoices; v++)
+			{
+				const V_Voice& vc = Cores[c].Voices[v];
+				const size_t field = reinterpret_cast<const u8*>(&vc.SBuffer) - reinterpret_cast<const u8*>(Cores);
+				const s64 off = vc.SBuffer ? (reinterpret_cast<const u8*>(vc.SBuffer) - reinterpret_cast<const u8*>(pcm_cache_data)) : -1;
+				std::memcpy(cores.data() + field, &off, sizeof(off));
+			}
+		}
+		char path[512];
+		std::snprintf(path, sizeof(path), "%s/%s.snap", dir, sh.name);
+		std::FILE* f = std::fopen(path, "wb");
+		ASSERT_NE(f, nullptr) << path;
+		const u32 header[4] = {0x32555053u, static_cast<u32>(sizeof(Cores)), static_cast<u32>(pcm_BlockCount), static_cast<u32>(sizeof(PcmCacheEntry))};
+		std::fwrite(header, sizeof(header), 1, f);
+		std::fwrite(cores.data(), cores.size(), 1, f);
+		std::fwrite(_spu2mem, sizeof(_spu2mem), 1, f);
+		std::fwrite(pcm_cache_data, sizeof(PcmCacheEntry), pcm_BlockCount, f);
+		std::fwrite(&Spdif, sizeof(Spdif), 1, f);
+		std::fwrite(&OutPos, sizeof(OutPos), 1, f);
+		std::fwrite(&InputPos, sizeof(InputPos), 1, f);
+		std::fwrite(&Cycles, sizeof(Cycles), 1, f);
+		std::fwrite(&PlayMode, sizeof(PlayMode), 1, f);
+		std::fwrite(&expect, sizeof(expect), 1, f);
+		std::fclose(f);
+		std::printf("SNAPSHOT %s sizeof(Cores)=%zu sizeof(PcmCacheEntry)=%zu sizeof(V_Voice)=%zu offsetof(SBuffer)=%zu expected hash %016llx\n", path, sizeof(Cores),
+			sizeof(PcmCacheEntry), sizeof(V_Voice), offsetof(V_Voice, SBuffer), static_cast<unsigned long long>(expect));
+	}
+}
+
 // A driver for `valgrind --tool=cachegrind`, to count the data cache misses of one spu2Mix() under a small cache. On a device
 // the IOP thread runs other code between two mixes (the IOP recompiler's blocks, the counters, the event tests), which evicts
 // part of what the mixer used last time; SPU2_TEST_POLLUTE_KB is how much other memory is read between two mixes to stand in
