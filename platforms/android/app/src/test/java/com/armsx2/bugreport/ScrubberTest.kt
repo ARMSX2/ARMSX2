@@ -97,6 +97,101 @@ class ScrubberTest {
     }
 
     @Test
+    fun aFileUriLosesItsFoldersAndKeepsTheGameName() {
+        assertEquals("file://<redacted>/Jak.iso", scrubber.text("file:///storage/emulated/0/Games/Jak.iso"))
+        assertEquals("opening file://<redacted>/Katamari Damacy.iso now", scrubber.text("opening file:///storage/9C33-6BBD/roms/Katamari%20Damacy.iso now"))
+        assertEquals("file://<data>/logs/emulog.txt", scrubber.text("file://$root/logs/emulog.txt"))
+        assertEquals("file://<data>/Android/data/com.armsx2/files/x", scrubber.text("file:///sdcard/Android/data/com.armsx2/files/x"))
+    }
+
+    @Test
+    fun aContentUriStillKeepsOnlyTheFileName() {
+        val uri = "content://com.android.externalstorage.documents/document/primary%3AGames%2FJak.iso"
+        assertEquals("content://<redacted>/Jak.iso", scrubber.text(uri))
+    }
+
+    @Test
+    fun theUsernameIsReplacedWhereverItAppears() {
+        val named = Scrubber(listOf(root), listOf("BobTheGamer"))
+        assertEquals(
+            "Achievements: Attempting login with user '<user>'...",
+            named.text("Achievements: Attempting login with user 'BobTheGamer'..."),
+        )
+        assertEquals("badge user_<user>.png", named.text("badge user_bobthegamer.png"))
+        // A name inside a longer word is a different word.
+        assertEquals("BobTheGamerPro is fine", named.text("BobTheGamerPro is fine"))
+    }
+
+    @Test
+    fun theLoginLogLinesAreReducedEvenForANameNobodyToldUsAbout() {
+        assertEquals(
+            "Achievements: Attempting login with user '<user>'...",
+            scrubber.text("Achievements: Attempting login with user 'someone_else'..."),
+        )
+        assertEquals("RCHEEVOS: <user> logged in successfully", scrubber.text("RCHEEVOS: Some1 logged in successfully"))
+        assertEquals("Attempting to log in <user> (with token)", scrubber.text("Attempting to log in Some1 (with token)"))
+        assertEquals("Attempting to log in <user> (with password)", scrubber.text("Attempting to log in Some1 (with password)"))
+        assertEquals("Logging <user> out", scrubber.text("Logging Some1 out"))
+    }
+
+    @Test
+    fun aVeryShortUsernameDoesNotEatTheLog() {
+        val named = Scrubber(listOf(root), listOf("GS"))
+        assertEquals("GS: 42% busy", named.text("GS: 42% busy"))
+        assertEquals("<user> logged in successfully", named.text("GS logged in successfully"))
+    }
+
+    @Test
+    fun iniUsernamesAreReadFromTheAchievementsSectionOnly() {
+        val ini = "[EmuCore]\nUsername = nobody\n[Achievements]\nEnabled = true\nUsername = BobTheGamer\nToken = x\n[Other]\nUsername = other\n"
+        assertEquals(listOf("BobTheGamer"), AccountNames.fromIni(ini))
+        assertEquals(emptyList<String>(), AccountNames.fromIni("[Achievements]\nUsername =\n"))
+    }
+
+    @Test
+    fun settingsDropTheRoomCodeAndMicrophoneNames() {
+        val settings = JSONObject(
+            """{"localLinkRoomCode":"ABCD","micDevice1":"Pixel Buds of Brian","micDevice2":"","mtvu":true}""",
+        )
+        val out = scrubber.settings(settings)
+        assertFalse(out.has("localLinkRoomCode"))
+        assertFalse(out.has("micDevice1"))
+        assertFalse(out.has("micDevice2"))
+        assertTrue(out.getBoolean("mtvu"))
+    }
+
+    @Test
+    fun settingsBlankNetworkAddressesButKeepTheUnset() {
+        val settings = JSONObject(
+            """{"localLinkAddress":"192.168.1.20","dev9Ps2Ip":"192.168.1.50","dev9Mask":"255.255.255.0","dev9Gateway":"192.168.1.1",""" +
+                """"dev9Dns1":"8.8.8.8","dev9Dns2":"0.0.0.0","localLinkPort":19072,""" +
+                """"dev9EthHosts":[{"url":"my.private.server","ip":"10.0.0.7","enabled":true}]}""",
+        )
+        val out = scrubber.settings(settings)
+        assertEquals("<redacted>", out.getString("localLinkAddress"))
+        assertEquals("<redacted>", out.getString("dev9Ps2Ip"))
+        assertEquals("<redacted>", out.getString("dev9Mask"))
+        assertEquals("<redacted>", out.getString("dev9Gateway"))
+        assertEquals("<redacted>", out.getString("dev9Dns1"))
+        assertEquals("0.0.0.0", out.getString("dev9Dns2"))
+        assertEquals(19072, out.getInt("localLinkPort"))
+        val host = out.getJSONArray("dev9EthHosts").getJSONObject(0)
+        assertEquals("<redacted>", host.getString("url"))
+        assertEquals("<redacted>", host.getString("ip"))
+        assertTrue(host.getBoolean("enabled"))
+        assertFalse(out.toString().contains("192.168"))
+        assertFalse(out.toString().contains("my.private.server"))
+    }
+
+    @Test
+    fun theOriginalSettingsAreNotChangedByBlanking() {
+        val settings = JSONObject("""{"localLinkAddress":"192.168.1.20","micDevice1":"x"}""")
+        scrubber.settings(settings)
+        assertEquals("192.168.1.20", settings.getString("localLinkAddress"))
+        assertTrue(settings.has("micDevice1"))
+    }
+
+    @Test
     fun theHostNameIsDroppedFromTheDriverReport() {
         val report = """{"game":{"dump":"$root/snaps/x"},"device":{"model":"Pocket 5","uname":{"sysname":"Linux","nodename":"brians-phone","release":"5.4"}}}"""
         val out = JSONObject(scrubber.driverReport(report))

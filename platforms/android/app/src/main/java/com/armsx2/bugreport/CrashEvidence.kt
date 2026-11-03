@@ -68,7 +68,7 @@ object CrashEvidence {
     fun complete(context: Context, dataRoot: File, preserved: Preserved) {
         val dir = preserved.dir
         val marker = preserved.marker
-        val scrubber = Scrubber(listOf(dataRoot.path))
+        val scrubber = Scrubber(listOf(dataRoot.path), AccountNames.read(dataRoot))
         val collected = JSONObject()
         val failed = JSONObject()
 

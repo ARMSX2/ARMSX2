@@ -153,7 +153,10 @@ object BugReport {
             CrashEvidence.awaitComplete(dir, 45_000)
         }
         val root = com.armsx2.runtime.MainActivityRuntime.dataRootOrNull()
-        val scrubber = Scrubber(listOfNotNull(root, "/storage/emulated/0/Android/data/${app.packageName}"))
+        val scrubber = Scrubber(
+            listOfNotNull(root, "/storage/emulated/0/Android/data/${app.packageName}"),
+            AccountNames.read(root?.let(::File), listOfNotNull(runCatching { com.armsx2.RaLibrary.userName }.getOrNull())),
+        )
         val collector = ReportCollector(app, dir, origin, scrubber)
         collector.collectLight()
         session.collector = collector

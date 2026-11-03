@@ -29,7 +29,10 @@ interface GameControl {
 /**
  * Builds one report's folder: the always-collected files first, the heavy ones (save state, GS
  * dump) when the user agreed, then `report.json` and `state.json`. Everything goes through
- * [Scrubber] on its way into the folder, so what is on disk is what will be sent.
+ * [Scrubber] on its way into the folder, so what is on disk is what will be sent, with one
+ * exception: `tombstone.pb`, Android's native crash report, is a protobuf copied byte for byte
+ * (see [CrashEvidence]). It is kept raw because it is the best evidence a native crash leaves, and
+ * it can hold file paths and memory contents that a text scrubber cannot reach.
  *
  * Blocking; run on a background thread. A step that fails is recorded in [failed] with its reason
  * and the report carries on without it, because a report with only the logs is still worth having.

@@ -19,35 +19,81 @@ import java.util.zip.ZipOutputStream
  *  - A game's path becomes its file name (a `content://` URI becomes `content://<redacted>/name`).
  *    The folders someone keeps their games in say nothing a developer needs.
  *  - `uname.nodename` in the driver report is dropped. It is the device's host name.
- *  - Settings keys that hold a token, password or login are dropped.
+ *  - Settings keys that hold a token, password or login are dropped, and so are the ones that name
+ *    a person's network or hardware: the Local Link room code and the microphone device names go,
+ *    the Local Link address and the DEV9 network addresses are blanked.
+ *  - The account names in [accountNames] (the RetroAchievements user) become `<user>` wherever they
+ *    appear, and the log lines that print one by shape do too, whatever the name was.
  *
  * Never sent at all, by the collector rather than here: `achievements.ini`, memory cards, BIOS
- * images and game images.
+ * images and game images. The one file that is sent without passing through here is the native
+ * crash report (`tombstone.pb`): it is Android's own protobuf, copied as it came, and is the
+ * most useful thing a crash can give us.
  *
  * [dataRoots] are the folders to name `<data>` first: the root the core was started with, and any
  * other spelling of it the caller knows. The generic volume-prefix rule catches the rest, so a log
  * line that spells the same folder as `/sdcard/Android/data/...` still loses its volume.
  */
-class Scrubber(dataRoots: Collection<String>) {
+class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> = emptyList()) {
     private val roots: List<String> = dataRoots
         .map { it.trimEnd('/') }
         .filter { it.length > 1 }
         .distinct()
         .sortedByDescending { it.length }
 
+    // One alternation of the names, longest first so a name that contains another is taken whole.
+    // A name is only matched as a whole word, and names shorter than MIN_NAME_LENGTH are left to
+    // the log-shape rules: a two-letter user name would otherwise eat every "GS" in the log.
+    private val accountPattern: Regex? = accountNames
+        .map { it.trim() }
+        .filter { it.length >= MIN_NAME_LENGTH }
+        .distinct()
+        .sortedByDescending { it.length }
+        .takeIf { it.isNotEmpty() }
+        ?.let { names ->
+            Regex("(?<![A-Za-z0-9])(?:" + names.joinToString("|") { Regex.escape(it) } + ")(?![A-Za-z0-9])", RegexOption.IGNORE_CASE)
+        }
+
     /** [input] with paths and URIs reduced as described above. */
     fun text(input: String): String {
         if (input.isEmpty()) return input
         var s = input
+        if (accountPattern != null) s = accountPattern.replace(s, USER)
+        if (s.indexOf(' ') >= 0) s = reduceAccountLines(s)
         for (root in roots) {
             if (s.contains(root)) s = s.replace(root, DATA)
         }
         if (s.contains("content://")) s = CONTENT_URI.replace(s) { contentUri(it.value) }
         if (s.indexOf('/') >= 0) {
-            s = GAME_PATH.replace(s) { it.groupValues[2] }
+            val before = s
+            s = GAME_PATH.replace(before) { m ->
+                // A file URI keeps its scheme, with the folders replaced the way content:// ones are.
+                val isUri = before.startsWith(FILE_SCHEME, m.range.first - FILE_SCHEME.length)
+                val name = gameFileName(m.groupValues[2], decode = isUri)
+                if (isUri) "$REDACTED/$name" else name
+            }
             s = VOLUME_PREFIX.replace(s, DATA)
         }
         return s
+    }
+
+    /** The log lines that print an account name by shape, so a name nobody told us about still goes. */
+    private fun reduceAccountLines(line: String): String {
+        var s = line
+        if (s.contains("log in ")) s = LOGIN_ATTEMPT.replace(s) { "${it.groupValues[1]}$USER${it.groupValues[3]}" }
+        if (s.contains("login with user")) s = LOGIN_USER.replace(s) { "${it.groupValues[1]}$USER${it.groupValues[3]}" }
+        if (s.contains("logged in successfully")) s = LOGIN_DONE.replace(s) { "$USER${it.groupValues[2]}" }
+        if (s.contains("Logging ")) s = LOGGING_OUT.replace(s) { "${it.groupValues[1]}$USER${it.groupValues[3]}" }
+        return s
+    }
+
+    private fun gameFileName(name: String, decode: Boolean): String {
+        if (!decode || !name.contains('%')) return name
+        return try {
+            URLDecoder.decode(name.replace("+", "%2B"), "UTF-8")
+        } catch (_: Exception) {
+            name
+        }
     }
 
     /** A copy of [value] (a JSON object, array or scalar) with every string passed through [text] and every key [dropKey] names removed. */
@@ -65,12 +111,35 @@ class Scrubber(dataRoots: Collection<String>) {
     }
 
     /**
-     * The settings document (global settings, per-game overrides) with credentials removed and
-     * paths reduced. Nothing in the settings the app keeps today is a credential; the key filter is
-     * there so one added later does not leave the device by accident.
+     * The settings document (global settings, per-game overrides) with credentials removed, the
+     * network and hardware names blanked, and paths reduced. The key filter catches a credential
+     * added later without anyone remembering to list it; the explicit lists in [DROPPED_SETTINGS]
+     * and [BLANKED_SETTINGS] cover the keys that are not credentials by name but identify a person
+     * or their network.
      */
     fun settings(settings: JSONObject): JSONObject =
-        json(settings, ::isSensitiveKey) as JSONObject
+        blank(json(settings) { isSensitiveKey(it) || it in DROPPED_SETTINGS }) as JSONObject
+
+    /** Replaces the value of a [BLANKED_SETTINGS] key (and of a DNS-host mapping's `url` and `ip`) with a marker, anywhere in [value]. */
+    private fun blank(value: Any?, inHostMap: Boolean = false): Any? = when (value) {
+        is JSONObject -> value.also { obj ->
+            for (key in obj.keys().asSequence().toList()) {
+                val child = obj.get(key)
+                if (child is String && (key in BLANKED_SETTINGS || (inHostMap && (key == "url" || key == "ip")))) {
+                    obj.put(key, blankedValue(child))
+                } else {
+                    obj.put(key, blank(child, inHostMap || key == "dev9EthHosts"))
+                }
+            }
+        }
+        is JSONArray -> value.also { array ->
+            for (i in 0 until array.length()) array.put(i, blank(array.get(i), inHostMap))
+        }
+        else -> value
+    }
+
+    private fun blankedValue(text: String): String =
+        if (text.isEmpty() || text == "0.0.0.0") text else REDACTED
 
     /**
      * The GS driver report with the host name removed and paths reduced. If [reportJson] is not
@@ -176,7 +245,23 @@ class Scrubber(dataRoots: Collection<String>) {
 
     companion object {
         const val DATA = "<data>"
+        const val USER = "<user>"
+        const val REDACTED = "<redacted>"
         const val DEFAULT_MAX_TEXT_BYTES = 48L * 1024 * 1024
+        private const val MIN_NAME_LENGTH = 3
+        private const val FILE_SCHEME = "file://"
+
+        /** Settings that are removed outright: a secret, and names of hardware that identify the owner. */
+        val DROPPED_SETTINGS = setOf("localLinkRoomCode", "micDevice1", "micDevice2")
+
+        /** Settings whose value is a person's network address; a value that is set becomes `<redacted>`. */
+        val BLANKED_SETTINGS = setOf("localLinkAddress", "dev9Ps2Ip", "dev9Mask", "dev9Gateway", "dev9Dns1", "dev9Dns2")
+
+        // Lines the core and rcheevos print with an account name in them (Achievements.cpp, rc_client.c).
+        private val LOGIN_USER = Regex("(login with user ')([^']*)(')")
+        private val LOGIN_ATTEMPT = Regex("(Attempting to log in )(\\S+)( \\(with (?:password|token)\\))")
+        private val LOGIN_DONE = Regex("(\\S+)( logged in successfully)")
+        private val LOGGING_OUT = Regex("(Logging )(\\S+)( out)")
 
         private val SENSITIVE_KEY = Regex("token|passw|secret|login|username|userid|apikey|api_key|credential|cookie|bearer", RegexOption.IGNORE_CASE)
 
@@ -190,6 +275,11 @@ class Scrubber(dataRoots: Collection<String>) {
 
         private val CONTENT_URI = Regex("content://[^\\s\"'<>)\\]]+")
 
+        // Where an absolute path may start: not in the middle of a word or of a longer path
+        // ("a/storage/x", "../storage/x"), but right after "file://" ("file:///storage/x"), where the
+        // character before the path is the third slash of the scheme.
+        private const val PATH_START = "(?<![A-Za-z0-9_.-])(?<![A-Za-z0-9_.-]/)"
+
         // The image extensions a game can have. A path ending in one is a game path, whatever
         // folder it sits in, and is reduced to its file name.
         private const val GAME_EXT = "iso|bin|chd|cso|zso|gz|elf|cue|img|mdf|nrg|isz|dax|ciso|cdi|ps2"
@@ -197,14 +287,14 @@ class Scrubber(dataRoots: Collection<String>) {
         // "/storage/..." and friends, up to a game image's name. The folders are matched lazily and
         // may hold spaces, the name may hold spaces; the match ends where a delimiter follows the extension.
         private val GAME_PATH = Regex(
-            "(?<![A-Za-z0-9_./-])(/(?:storage|sdcard|mnt)(?:/[^\\r\\n\"'<>|]*?)?/([^/\\r\\n\"'<>|]+?\\.(?:$GAME_EXT)))" +
+            "$PATH_START(/(?:storage|sdcard|mnt)(?:/[^\\r\\n\"'<>|]*?)?/([^/\\r\\n\"'<>|]+?\\.(?:$GAME_EXT)))" +
                 "(?=$|[\\s\"'<>|,;:)\\]}])",
             RegexOption.IGNORE_CASE,
         )
 
         // The volume part of a shared-storage path. What follows it is kept.
         private val VOLUME_PREFIX = Regex(
-            "(?<![A-Za-z0-9_./-])(?:/storage/emulated/\\d+|/storage/self/primary|/storage/[^/\\s\"'<>|]+" +
+            "$PATH_START(?:/storage/emulated/\\d+|/storage/self/primary|/storage/[^/\\s\"'<>|]+" +
                 "|/sdcard\\d?|/mnt/sdcard|/mnt/media_rw/[^/\\s\"'<>|]+|/mnt/user/\\d+/[^/\\s\"'<>|]+)" +
                 "(?=/|$|[\\s\"'<>|,;:)\\]}])",
         )
