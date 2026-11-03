@@ -31,6 +31,18 @@ s32 IopThread::ClampLag(s32 requested)
 	return std::clamp(requested, kMinLag, kMaxLag);
 }
 
+bool IopThread::DefaultOnForHost(const HostCpuInfo& host, bool mtvu)
+{
+	if (host.performance_cores < kMinPerformanceCores || host.performance_cores > kMaxDefaultOnPerformanceCores)
+		return false;
+
+	Pcsx2Config config;
+	config.Speedhacks.iopThread = true;
+	config.Speedhacks.iopThreadLockstep = false;
+	config.Speedhacks.vuThread = mtvu;
+	return ResolveMode(config, host, VmConditions{}) == IopThreadMode::Threaded;
+}
+
 IopThreadMode IopThread::ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm)
 {
 	if (!config.Speedhacks.iopThread)

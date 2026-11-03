@@ -708,18 +708,42 @@ static constexpr const char* IOP_THREAD_LAG_MIGRATED_KEY = "IopThreadLagMigrated
 // has the same value, is the tight bound the lag rules use, and has to be free to move without moving this.
 static constexpr int IOP_THREAD_LAG_OLD_DEFAULT = 24576;
 
+// The same for the IOP thread default on a host with a narrow performance tier (IopThread::DefaultOnForHost).
+static constexpr const char* IOP_THREAD_NARROW_TIER_MIGRATED_KEY = "IopThreadNarrowTierMigrated";
+
 bool VMManager::Internal::MigrateSettings(SettingsInterface& bsi)
 {
-	if (bsi.GetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, false))
-		return false;
+	// The host is read only when the move that needs it has not run yet.
+	const bool host_needed = !bsi.GetBoolValue("UI", IOP_THREAD_NARROW_TIER_MIGRATED_KEY, false);
+	return MigrateSettings(bsi, host_needed ? IopThread::CurrentHostInfo() : IopThread::HostCpuInfo{});
+}
 
-	bsi.SetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, true);
+bool VMManager::Internal::MigrateSettings(SettingsInterface& bsi, const IopThread::HostCpuInfo& host)
+{
+	bool changed = false;
 
-	int lag = 0;
-	if (bsi.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", &lag) && lag == IOP_THREAD_LAG_OLD_DEFAULT)
-		bsi.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", IopThread::kDefaultSettingLag);
+	if (!bsi.GetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, false))
+	{
+		bsi.SetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, true);
+		changed = true;
 
-	return true;
+		int lag = 0;
+		if (bsi.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", &lag) && lag == IOP_THREAD_LAG_OLD_DEFAULT)
+			bsi.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", IopThread::kDefaultSettingLag);
+	}
+
+	if (!bsi.GetBoolValue("UI", IOP_THREAD_NARROW_TIER_MIGRATED_KEY, false))
+	{
+		bsi.SetBoolValue("UI", IOP_THREAD_NARROW_TIER_MIGRATED_KEY, true);
+		changed = true;
+
+		// The file's own MTVU setting counts one more thread in the host rule, as it will when the file is loaded.
+		const bool mtvu = bsi.GetBoolValue("EmuCore/Speedhacks", "vuThread", false);
+		if (IopThread::DefaultOnForHost(host, mtvu) && !bsi.GetBoolValue("EmuCore/Speedhacks", "iopThread", false))
+			bsi.SetBoolValue("EmuCore/Speedhacks", "iopThread", true);
+	}
+
+	return changed;
 }
 
 void VMManager::Internal::LoadStartupSettings()
@@ -759,8 +783,10 @@ void VMManager::SetDefaultSettings(
 		SettingsSaveWrapper ssw(si);
 		temp_config.LoadSave(ssw);
 
-		// The defaults just written are the current ones, so nothing in this file needs MigrateSettings.
+		// The defaults just written are the current ones, so nothing in this file needs MigrateSettings. The
+		// host-dependent ones follow just below (SetHardwareDependentDefaultSettings).
 		si.SetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, true);
+		si.SetBoolValue("UI", IOP_THREAD_NARROW_TIER_MIGRATED_KEY, true);
 
 		// Settings not part of the Pcsx2Config struct.
 		si.SetBoolValue("EmuCore", "EnableFastBoot", true);
@@ -4913,7 +4939,8 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
 
 	Console.WriteLn(fmt::format("CPU cores count: {}", core_count));
 
-	if (core_count >= 3)
+	const bool mtvu = (core_count >= 3);
+	if (mtvu)
 	{
 		Console.WriteLn("  Enabling MTVU.");
 		si.SetBoolValue("EmuCore/Speedhacks", "vuThread", true);
@@ -4923,6 +4950,14 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
 		Console.WriteLn("  Disabling MTVU.");
 		si.SetBoolValue("EmuCore/Speedhacks", "vuThread", false);
 	}
+
+	// The IOP thread starts on where the performance tier is two or three cores (IopThread::DefaultOnForHost has the
+	// rule and the measurement behind it), and off everywhere else. The MTVU setting just chosen counts in it.
+	const IopThread::HostCpuInfo host = IopThread::CurrentHostInfo();
+	const bool iop_thread = IopThread::DefaultOnForHost(host, mtvu);
+	Console.WriteLn(fmt::format("  {} the IOP thread ({} performance cores of {}).", iop_thread ? "Enabling" : "Leaving off",
+		host.performance_cores, host.total_cores));
+	si.SetBoolValue("EmuCore/Speedhacks", "iopThread", iop_thread);
 
 	const int extra_threads = (core_count > 3) ? 3 : 2;
 	Console.WriteLn(fmt::format("  Setting Extra Software Rendering Threads to {}.", extra_threads));
@@ -4997,6 +5032,7 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
 u64 VMManager::Internal::GetPerformanceCoreMask()
 {
 #if defined(__linux__)
+	EnsureCPUInfoInitialized(); // callable before the VM exists: the settings defaults and migration ask it
 	return GetPerformanceCoresMask();
 #else
 	return 0; // no capacity source: the cores cannot be told apart, so Threaded is not offered
@@ -5445,6 +5481,7 @@ void VMManager::SetEmuThreadAffinities()
 	}
 
 	const bool mtvu = EmuConfig.Speedhacks.vuThread;
+
 	if (!new_pin_enable || s_processor_list.size() < (mtvu ? 3 : 2))
 	{
 		if (new_pin_enable)

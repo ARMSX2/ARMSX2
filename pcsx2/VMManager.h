@@ -20,6 +20,7 @@ enum class CDVD_SourceType : uint8_t;
 namespace IopThread
 {
 	struct PrimeLoad;
+	struct HostCpuInfo;
 }
 
 namespace Threading
@@ -351,16 +352,24 @@ namespace VMManager
 		/// SetDefaultSettings() is already marked and is left alone. Returns true when it changed the file, which
 		/// includes marking it, so the caller saves it; false when this file was moved before.
 		///
-		/// What it moves today: iopThreadLag = 24576, the old default, becomes IopThread::kDefaultSettingLag. A file
-		/// made while that was the default holds it, and a game the game database turns the IOP thread on for runs with
-		/// the global lag, so a stale 24576 would keep costing it. A key the file does not have is not created, since a
-		/// missing key already loads as the new default, and any other lag stays as it is. Nothing else is touched: the
-		/// IOP thread setting itself is off by default and stays whatever the file says. After the mark is set a lag the
-		/// user picks, 24576 included, stays.
+		/// What it moves, each with a mark of its own in [UI] so one can run without the other:
+		///  - iopThreadLag = 24576, the old default, becomes IopThread::kDefaultSettingLag. A file made while that was
+		///    the default holds it, and a game the game database turns the IOP thread on for runs with the global lag,
+		///    so a stale 24576 would keep costing it. A key the file does not have is not created, since a missing key
+		///    already loads as the new default, and any other lag stays as it is.
+		///  - on a host where the IOP thread now starts on (IopThread::DefaultOnForHost: two or three fast cores, and
+		///    ResolveMode can run it), iopThread = false, or no iopThread key at all, becomes true. The setting was off
+		///    by default before, so both are the stored default. A host with four or more fast cores, or one that cannot
+		///    run the thread, keeps what the file says.
+		/// After a mark is set the user's own choice for that setting stays, turning the thread off again included.
 		///
 		/// This is for frontends that keep the settings in an ini file (Qt, the SDL handheld frontend). The Android app
-		/// keeps its own copy of the settings and moves it itself (ConfigStore.migrateIopThreadLag).
+		/// keeps its own copy of the settings and moves it itself (ConfigStore.migrateIopThreadLag and
+		/// migrateIopThreadNarrowTier).
 		bool MigrateSettings(SettingsInterface& bsi);
+
+		/// The same for a host the caller describes, so a test can say which device it is.
+		bool MigrateSettings(SettingsInterface& bsi, const IopThread::HostCpuInfo& host);
 
 		/// Loads early settings. Call once on startup.
 		void LoadStartupSettings();

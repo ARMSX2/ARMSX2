@@ -87,6 +87,14 @@ namespace IopThread
 	/// threads are the two that are busy all the time, and they are the ones that should sit on fast cores.
 	inline constexpr u32 kMinPerformanceCores = 2;
 
+	/// The most performance-tier cores a host can have for the IOP thread to be requested by default. With two or three
+	/// fast cores EE, GS and VU1 (each 85 to 95% busy) already compete for them, and the IOP thread's work moves to an
+	/// otherwise idle slow core: measured on the MQ65 with two A73 online, +3 to +6% speed with MTVU on and +7 to +15% with
+	/// it off in God of War II, Shadow of the Colossus and Burnout 3. With four fast cores those games are GS-bound, the
+	/// thread gains nothing and takes a fast core, so there it stays a choice (and the game database's, for titles that
+	/// are EE-bound). Three fast cores was not measured; it is included by decision.
+	inline constexpr u32 kMaxDefaultOnPerformanceCores = 3;
+
 	/// What ResolveMode needs to know about the host. A test describes a device with it; the
 	/// emulator fills it from the CPU topology.
 	struct HostCpuInfo
@@ -129,6 +137,14 @@ namespace IopThread
 	/// The tier may be narrower than the threads: the IOP thread then runs outside it, on the
 	/// slower cores (UnpinnedIopThreadMask in IopPlacement.h).
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
+
+	/// Whether the iopThread setting should start on for this host: its performance tier holds between
+	/// kMinPerformanceCores and kMaxDefaultOnPerformanceCores cores, and ResolveMode would give Threaded with the setting
+	/// on (`mtvu` is the host's MTVU setting, which counts one more thread). False on a host ResolveMode can never run
+	/// the thread on, and on four or more fast cores. This is the one place the rule is written: the settings defaults
+	/// (SetHardwareDependentDefaultSettings, the Android app through NativeApp) and the one-time move of an existing
+	/// install ask it, and the tests describe devices to it.
+	bool DefaultOnForHost(const HostCpuInfo& host, bool mtvu);
 
 	/// The mode in effect. A plain variable, written on the CPU thread only, by ChooseMode(). The EE
 	/// core reads it only where it builds something for the mode (the JIT dispatcher at a recompiler
