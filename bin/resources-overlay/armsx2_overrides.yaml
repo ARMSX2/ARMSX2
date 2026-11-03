@@ -1486,8 +1486,10 @@ SCES-52456:
 # Not checked: a heavy colossus fight. The hack's busy/idle alternation is shared with about 18 other GIF_STAT
 # reads in the game, so a scene that cannot make 30 might drop to 15 rather than 20.
 #
-# gameFixes replaces the upstream list, and upstream has none for any of these entries. The five retail
-# releases that already carry iopThread keep it below.
+# gameFixes replaces the upstream list, and upstream has none for any of these entries. The retail releases
+# that already carry iopThread keep it below. bmdhacks, 2026-11-02: the two Korean Shadow of the Colossus
+# releases (SCKA-20061 and SCKA-20106) added. That makes every retail serial the database lists for the three
+# titles: seven Shadow of the Colossus, ten God of War and eight God of War II. The demos and trials stay out.
 
 # Shadow of the Colossus, five releases (SCUS-97472 measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
 # bmdhacks, 2026-10-22: OPHFlagHack added (see the block above); SCUS-97472 measured.
@@ -1546,6 +1548,9 @@ SCPS-19335:
 # Shadow of the Colossus, the Korean release and two demos (none measured). bmdhacks, 2026-10-22: OPHFlagHack added
 # (see the OPHFlagHack block above); NetherSX2 sets it on these too. No iopThread: they were not measured for it.
 # bmdhacks, 2026-10-22: nativeCounterDraws added (see its block above), same game engine.
+# bmdhacks, 2026-11-02: iopThread added to SCKA-20061, the Korean retail release, like the other retail releases of the
+# game above. Not measured; same game and engine as SCUS-97472. Checked only by parsing this file with the upstream
+# GameIndex.yaml in core_test (IopThreadGameDb.*), not booted. The two demos below stay without it.
 SCKA-20061:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
@@ -1554,6 +1559,15 @@ SCKA-20061:
     halfPixelOffset: 5 # Upstream: fixes misalignments and borders on side.
     nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
     nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
+  speedHacks:
+    iopThread: 1 # Not measured; same game as SCUS-97472. See the block above.
+# Shadow of the Colossus, the Korean "PlayStation 2 BigHit Series" re-release (not measured). bmdhacks, 2026-11-02:
+# iopThread added; this serial had no overlay entry before. speedHacks only: gsHWFixes is not named, so the upstream
+# graphics fixes for this serial are untouched, and upstream has no speedHacks or gameFixes for it. Checked only by
+# parsing this file with the upstream GameIndex.yaml in core_test (IopThreadGameDb.*), not booted.
+SCKA-20106:
+  speedHacks:
+    iopThread: 1 # Not measured; same game as SCUS-97472. See the block above.
 SCED-53962:
   gameFixes:
     - OPHFlagHack # Holds a steady 30 fps; see the OPHFlagHack block above.
