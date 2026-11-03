@@ -68,6 +68,15 @@ IopThread::TierPlan IopThread::PlanTier(u64 performance_mask, bool mtvu, bool io
 	return plan;
 }
 
+u64 IopThread::UnpinnedIopThreadMask(u64 performance_mask, u64 all_mask, bool mtvu, bool concurrent)
+{
+	if (!concurrent || performance_mask == 0)
+		return 0;
+	if (PlanTier(performance_mask, mtvu, true).tier_fits)
+		return 0;
+	return all_mask & ~performance_mask;
+}
+
 IopThread::RankPlan IopThread::PlanRanks(int affinity_mode, bool mtvu, bool iop_thread, size_t list_size)
 {
 	// Rows are {ee_rank, vu_rank, gs_rank}; the row order matches the UI order.

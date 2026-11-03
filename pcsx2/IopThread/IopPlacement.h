@@ -66,6 +66,17 @@ namespace IopThread
 	};
 	TierPlan PlanTier(u64 performance_mask, bool mtvu, bool iop_thread);
 
+	/// The processors the IOP thread runs on when nothing places it on one of its own (the caller asks for "any
+	/// processor"), for a concurrent IOP thread on a host whose performance tier is narrower than the threads that want
+	/// it (PlanTier says the tier does not fit): every processor outside the tier. 0, meaning any processor, when the
+	/// IOP thread takes turns with the EE (Lockstep), when the tier cannot be read, when the tier has room for all the
+	/// threads, or when there is no processor outside it.
+	///
+	/// The thread spins while it waits for the EE. Left to float it spends part of its time on the big cores and
+	/// pushes the EE, GS and VU1 threads onto the little ones: on the RG 55G1 (two Cortex-A78, six Cortex-A55) 41% of
+	/// its cycles landed on the big cores when it floated.
+	u64 UnpinnedIopThreadMask(u64 performance_mask, u64 all_mask, bool mtvu, bool concurrent);
+
 	/// Android's ranked modes (1 to 6): each thread gets one processor from the list ordered fastest
 	/// first. ee, vu and gs are ranks; the caller clamps them to the list. The IOP thread
 	/// takes the first rank none of the others uses. -1 when there is no IOP thread to place or the
