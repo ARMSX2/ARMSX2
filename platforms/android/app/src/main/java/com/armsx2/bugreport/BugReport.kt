@@ -41,6 +41,26 @@ data class ReportProgress(
 )
 
 /**
+ * Progress by report folder name, with a state of its own per report. A screen that shows one report
+ * reads only that report's state, so the ten-a-second progress writes of one upload do not redraw
+ * the lines of all the others (a plain state map notifies every reader on any write).
+ */
+class ProgressBoard {
+    private val states = mutableStateMapOf<String, androidx.compose.runtime.MutableState<ReportProgress>>()
+
+    operator fun get(localId: String): ReportProgress? = states[localId]?.value
+
+    operator fun set(localId: String, value: ReportProgress) {
+        val state = states[localId]
+        if (state == null) states[localId] = mutableStateOf(value) else state.value = value
+    }
+
+    fun remove(localId: String) {
+        states.remove(localId)
+    }
+}
+
+/**
  * Evidence from a crash, waiting for the user to say whether to send it. [closedBySystem] is true
  * when Android ended the process (memory, resources) rather than it crashing, which the prompt says.
  */
@@ -48,6 +68,7 @@ data class PendingCrash(
     val dir: File,
     val title: String,
     val serial: String,
+    /** Name of the GPU driver pack it ran on; empty means the system driver (the screens say which). */
     val driverLabel: String,
     val armedAt: Long,
     val marker: CrashMarker.Marker,
@@ -85,7 +106,7 @@ object BugReport {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Process-wide. A report in flight is visible here to every screen that wants to show it. */
-    val progress = mutableStateMapOf<String, ReportProgress>()
+    val progress = ProgressBoard()
 
     /** Set at startup when the previous run crashed; the library asks whether to send it. */
     var pendingCrash by mutableStateOf<PendingCrash?>(null)
@@ -196,7 +217,7 @@ object BugReport {
         thread(isDaemon = true, name = "bugreport-startup") {
             if (preserved != null) {
                 runCatching { CrashEvidence.complete(app, root, preserved) }
-                val driver = preserved.marker.driverName.ifBlank { preserved.marker.driverId }.ifBlank { "system" }
+                val driver = preserved.marker.driverName.ifBlank { preserved.marker.driverId }
                 history.upsert(
                     HistoryEntry(
                         localId = preserved.dir.name, code = "", kind = ReportKind.CRASH.wire,
@@ -304,6 +325,9 @@ object BugReport {
                 AccountNames.read(root?.let(::File), listOfNotNull(runCatching { com.armsx2.RaLibrary.userName }.getOrNull())),
             )
             collector = ReportCollector(app, dir, origin, scrubber)
+            if (session.keepDumpCopy) {
+                collector.keepDumpCopyIn = File(com.armsx2.runtime.MainActivityRuntime.assetCopyRoot(app), "snaps")
+            }
             collector.collectLight()
         } catch (t: Throwable) {
             println("@@BUGREPORT@@ gathering the report failed: ${t.javaClass.simpleName}: ${t.message}")
@@ -547,9 +571,13 @@ object BugReport {
     fun crashFor(localId: String): PendingCrash? {
         val dir = localDir(localId) ?: return null
         val (marker, closedBySystem) = CrashEvidence.readMarker(dir) ?: return null
-        val driver = marker.driverName.ifBlank { marker.driverId }.ifBlank { "system" }
+        val driver = marker.driverName.ifBlank { marker.driverId }
         return PendingCrash(dir, marker.title, marker.serial, driver, marker.armedAt, marker, closedBySystem)
     }
+
+    /** The newest crash whose evidence is on the device and not yet sent, or null. Reads the disk. */
+    fun latestUnsentCrash(): PendingCrash? =
+        CrashEvidence.unsent(ReportCollector.bundleRoot(app)).firstNotNullOfOrNull { crashFor(it.name) }
 
     /** Removes a report's files and its "My reports" entry (crash evidence the user does not want). */
     fun delete(localId: String) {

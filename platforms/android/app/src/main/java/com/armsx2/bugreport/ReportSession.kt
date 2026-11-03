@@ -29,6 +29,9 @@ class ReportSession(val origin: ReportOrigin, initialKind: ReportKind) {
     var includeSavestate by mutableStateOf(origin.canCapture && initialKind.savestateByDefault)
     var includeGsDump by mutableStateOf(origin.canCapture && initialKind.gsDumpByDefault)
 
+    /** Keep a copy of the graphics dump in the snaps folder, as the plain "Save GS dump" would. */
+    var keepDumpCopy = false
+
     /** The collector, once the always-collected files have been gathered. */
     var collector: ReportCollector? = null
 

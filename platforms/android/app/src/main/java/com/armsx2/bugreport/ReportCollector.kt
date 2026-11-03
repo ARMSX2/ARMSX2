@@ -126,6 +126,9 @@ class ReportCollector(
     /** Problems in the report's own making that no file name goes with, raw, for `report.json`. */
     val errors = mutableListOf<String>()
 
+    /** Where a copy of the graphics dump is also saved for the user, or null. */
+    var keepDumpCopyIn: File? = null
+
     /** Set when the user chose to send without the save state and graphics dump, or to cancel: captures that finish later are dropped. */
     @Volatile
     private var captureAbandoned = false
@@ -252,6 +255,7 @@ class ReportCollector(
                 }
                 collected[ReportFiles.GS_DUMP] = target.length()
             }
+            copyDumpForUser(target)
             return true
         } catch (e: Exception) {
             synchronized(captureLock) {
@@ -261,6 +265,19 @@ class ReportCollector(
             return false
         } finally {
             work.deleteRecursively()
+        }
+    }
+
+    /** Saves a copy of the (scrubbed) dump in the snaps folder, named for the game and the time. A failure is only noted. */
+    private fun copyDumpForUser(dump: File) {
+        val snaps = keepDumpCopyIn ?: return
+        try {
+            snaps.mkdirs()
+            val serial = origin.game?.serial?.takeIf { it.isNotBlank() } ?: "game"
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            dump.copyTo(File(snaps, "${serial}_$stamp.gs.zip"), overwrite = true)
+        } catch (t: Throwable) {
+            errors += "Could not keep a copy of the graphics dump in snaps: ${t.message ?: t.javaClass.simpleName}"
         }
     }
 

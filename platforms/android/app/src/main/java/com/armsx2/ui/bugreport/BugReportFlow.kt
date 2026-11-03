@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,7 +29,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,6 +62,7 @@ import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.runtime.MainActivityRuntime
 import com.armsx2.ui.WindowImpl
+import com.armsx2.ui.common.ConfirmOverlay
 import com.armsx2.ui.common.PadModal
 import com.armsx2.ui.home.LibraryKeyboard
 import com.armsx2.ui.settings.ToggleRow
@@ -66,10 +71,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kr.co.iefriends.pcsx2.NativeApp
+import java.text.DateFormat
+import java.util.Date
 
 /** How long capturing and packing may take before the working screen offers a way out. */
 private const val TOO_LONG_MS = 60_000L
+
+/** One formatter for every date on these screens, made once. Used from the main thread only. */
+internal val reportDateFormat: DateFormat = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
 
 /** The screens of the report flow, in order. */
 enum class FlowStage { KIND, DESCRIBE, CONSENT, WORKING }
@@ -96,41 +105,80 @@ object BugReportFlow {
     var gsDumpChoice by mutableStateOf<GsDumpChoice?>(null)
     var showMyReports by mutableStateOf(false)
 
+    /** True while an entry point is reading the app's state off the main thread; the host says "Preparing". */
+    var opening by mutableStateOf(false)
+        private set
+    private var openToken = 0
+
     /**
      * From the pause menu and the GS dump choice: the running game, with a save state and GS dump
      * available. Graphics is preselected unless [kind] says otherwise, since the scene on screen is
-     * what the pause menu is best for.
+     * what the pause menu is best for. [keepDumpInSnaps] also saves the dump to the snaps folder,
+     * which is what "Save and send" promises.
      */
-    fun openInGame(context: Context, kind: ReportKind? = null) {
-        start(ReportOrigins.running(context), kind ?: ReportKind.GRAPHICS)
-    }
+    fun openInGame(context: Context, kind: ReportKind? = null, keepDumpInSnaps: Boolean = false): Boolean =
+        openAsync(kind ?: ReportKind.GRAPHICS, keepDumpInSnaps) { ReportOrigins.running(context) }
 
     /** From the drawer. */
-    fun openGeneral(context: Context) {
-        start(ReportOrigins.general(context), ReportKind.OTHER)
-    }
+    fun openGeneral(context: Context): Boolean = openAsync(ReportKind.OTHER) { ReportOrigins.general(context) }
 
     /** From a game's menu in the library. Reads the disc for its CRC, so it suspends. */
     suspend fun openForGame(context: Context, game: GameInfo) {
-        val origin = withContext(Dispatchers.IO) { ReportOrigins.libraryGame(context, game) }
-        start(origin, ReportKind.OTHER)
+        if (session != null || opening) return
+        val token = beginOpening()
+        val origin = withContext(Dispatchers.IO) { runCatching { ReportOrigins.libraryGame(context, game) }.getOrNull() }
+        finishOpening(token, origin, ReportKind.OTHER, false)
     }
 
-    /** From the crash prompt, or an unsent crash in My reports. */
-    fun openForCrash(pending: PendingCrash) {
-        start(ReportOrigins.crash(pending), ReportKind.CRASH)
-    }
+    /** From the crash prompt, or an unsent crash in My reports. False if a report is already being made. */
+    fun openForCrash(pending: PendingCrash): Boolean = start(ReportOrigins.crash(pending), ReportKind.CRASH)
 
     /** From the "the game could not start" notice. The kind is preselected as a crash; the user can change it. */
-    fun openForBootFailure(context: Context, failure: BootFailure) {
-        start(ReportOrigins.bootFailure(context, failure), ReportKind.CRASH)
+    fun openForBootFailure(context: Context, failure: BootFailure): Boolean =
+        openAsync(ReportKind.CRASH) { ReportOrigins.bootFailure(context, failure) }
+
+    /** The user gave up waiting for an entry point to finish reading the app's state. */
+    fun cancelOpening() {
+        openToken++
+        opening = false
     }
 
-    private fun start(origin: ReportOrigin, kind: ReportKind) {
-        if (session != null) return
-        session = ReportSession(origin, kind)
+    private fun beginOpening(): Int {
+        opening = true
+        return ++openToken
+    }
+
+    private fun finishOpening(token: Int, origin: ReportOrigin?, kind: ReportKind, keepDump: Boolean) {
+        if (token != openToken) return // cancelled meanwhile
+        opening = false
+        if (origin != null) start(origin, kind, keepDump)
+    }
+
+    /** Works out the origin off the main thread (it reads disk and the core), then starts the flow. */
+    private fun openAsync(kind: ReportKind, keepDump: Boolean = false, makeOrigin: () -> ReportOrigin): Boolean {
+        if (session != null || opening) return false
+        val token = beginOpening()
+        BugReport.scope.launch {
+            val origin = runCatching { makeOrigin() }.getOrNull()
+            finishOpening(token, origin, kind, keepDump)
+        }
+        return true
+    }
+
+    private fun start(origin: ReportOrigin, kind: ReportKind, keepDump: Boolean = false): Boolean {
+        if (session != null) return false
+        session = ReportSession(origin, kind).also { it.keepDumpCopy = keepDump }
         stage = FlowStage.KIND
         workingId = null
+        return true
+    }
+
+    /** The user chose to send a crash that was saved earlier instead of describing a new one. */
+    fun switchToSavedCrash(pending: PendingCrash) {
+        val old = session ?: return
+        BugReport.scope.launch { BugReport.discard(old) }
+        session = ReportSession(ReportOrigins.crash(pending), ReportKind.CRASH).also { it.description = old.description }
+        stage = FlowStage.DESCRIBE
     }
 
     fun goTo(next: FlowStage) {
@@ -181,6 +229,7 @@ private object RuntimeGameControl : GameControl {
 fun BugReportFlowHost() {
     BugReportFlow.gsDumpChoice?.let { GsDumpChoiceModal(it) }
     BugReport.bootFailure?.let { BootFailureModal(it) }
+    if (BugReportFlow.opening) OpeningModal()
     if (BugReportFlow.showMyReports) MyReportsModal(onClose = { BugReportFlow.showMyReports = false })
     val session = BugReportFlow.session ?: return
     when (BugReportFlow.stage) {
@@ -202,6 +251,20 @@ private fun KindModal(session: ReportSession) {
         Triple(ReportKind.SLOW, "bugreport.kind.slow", "bugreport.kind.slow.detail"),
         Triple(ReportKind.OTHER, "bugreport.kind.other", "bugreport.kind.other.detail"),
     )
+    val scope = rememberCoroutineScope()
+    // A crash that was saved at the last launch and never sent: offered before a new one is described.
+    var offer by remember { mutableStateOf<PendingCrash?>(null) }
+    val next = {
+        if (session.kind == ReportKind.CRASH && session.origin.crashDir == null) {
+            scope.launch {
+                val saved = withContext(Dispatchers.IO) { BugReport.latestUnsentCrash() }
+                if (saved != null) offer = saved else BugReportFlow.goTo(FlowStage.DESCRIBE)
+            }
+        } else {
+            BugReportFlow.goTo(FlowStage.DESCRIBE)
+        }
+        Unit
+    }
     FlowCard(layer = layer, onDismiss = { BugReportFlow.close() }, initialFocusId = "$layer.${session.kind.wire}") {
         Title(str("bugreport.kind.title"))
         Spacer(Modifier.height(10.dp))
@@ -218,7 +281,24 @@ private fun KindModal(session: ReportSession) {
         Spacer(Modifier.height(8.dp))
         Buttons(
             FlowButtonSpec(str("action.cancel"), "$layer.cancel") { BugReportFlow.close() },
-            FlowButtonSpec(str("bugreport.action.next"), "$layer.next", primary = true) { BugReportFlow.goTo(FlowStage.DESCRIBE) },
+            FlowButtonSpec(str("bugreport.action.next"), "$layer.next", primary = true, onClick = next),
+        )
+    }
+    offer?.let { saved ->
+        ConfirmOverlay(
+            title = str("bugreport.crash.offer.title"),
+            message = String.format(str("bugreport.crash.offer"), reportDateFormat.format(Date(saved.armedAt))),
+            confirmLabel = str("bugreport.crash.offer.use"),
+            dismissLabel = str("bugreport.crash.offer.new"),
+            idPrefix = "bugreport.offer",
+            onConfirm = {
+                offer = null
+                BugReportFlow.switchToSavedCrash(saved)
+            },
+            onDismiss = {
+                offer = null
+                BugReportFlow.goTo(FlowStage.DESCRIBE)
+            },
         )
     }
 }
@@ -227,19 +307,23 @@ private fun KindModal(session: ReportSession) {
 private fun DescribeModal(session: ReportSession) {
     val layer = "bugreport.describe"
     val fieldLabel = str("bugreport.describe.field")
-    val edit = {
+    // A controller gets the key grid, with a page of punctuation; a finger gets the system keyboard,
+    // which is what someone typing a sentence wants. The description survives going back and forward.
+    fun edit(systemKeyboard: Boolean) {
         LibraryKeyboard.open(
             session.description,
             { session.description = it.take(ReportLimits.MAX_DESCRIPTION) },
             fieldLabel,
+            punctuation = true,
+            systemKeyboard = systemKeyboard,
         )
     }
-    FlowCard(layer = layer, onDismiss = { BugReportFlow.close() }, initialFocusId = "$layer.field") {
+    FlowCard(layer = layer, onDismiss = { BugReportFlow.goTo(FlowStage.KIND) }, initialFocusId = "$layer.field") {
         Title(str("bugreport.describe.title"))
         Spacer(Modifier.height(10.dp))
         Surface(
-            onClick = edit,
-            modifier = Modifier.fillMaxWidth().controllerFocusable("$layer.field", RoundedCornerShape(12.dp), onConfirm = edit),
+            onClick = { edit(systemKeyboard = true) },
+            modifier = Modifier.fillMaxWidth().controllerFocusable("$layer.field", RoundedCornerShape(12.dp), onConfirm = { edit(systemKeyboard = false) }),
             shape = RoundedCornerShape(12.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
         ) {
@@ -289,7 +373,15 @@ private fun ConsentModal(session: ReportSession) {
     val total = session.totalBytes()
     val metered = remember { BugReport.isMetered(context) }
 
-    FlowCard(layer = layer, onDismiss = { BugReportFlow.close() }, initialFocusId = "$layer.send", scroll = scroll) {
+    // Opens on Cancel, the safe button, at the top of the list. Focusing a button at the bottom
+    // scrolls it into view, so the list is put back at the top once that has happened.
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        withFrameNanos { }
+        scroll.scrollTo(0)
+    }
+
+    FlowCard(layer = layer, onDismiss = { BugReportFlow.goTo(FlowStage.DESCRIBE) }, initialFocusId = "$layer.cancel", scroll = scroll) {
         Title(str("bugreport.consent.title"))
         Spacer(Modifier.height(8.dp))
         Text(str("bugreport.consent.intro"), style = MaterialTheme.typography.bodyMedium)
@@ -337,6 +429,13 @@ private fun ConsentModal(session: ReportSession) {
             String.format(str("bugreport.consent.total"), Formatter.formatShortFileSize(context, total)),
             style = MaterialTheme.typography.labelLarge,
         )
+        // A game picked in the library is not running, so there is no scene to capture.
+        if (!session.origin.canCapture && session.origin.crashDir == null &&
+            (session.kind == ReportKind.GRAPHICS || session.kind == ReportKind.SLOW)
+        ) {
+            Spacer(Modifier.height(6.dp))
+            Text(str("bugreport.consent.startGame"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (metered && total > ReportLimits.METERED_NOTE_BYTES) {
             Text(
                 String.format(str("bugreport.consent.metered"), Formatter.formatShortFileSize(context, total)),
@@ -371,6 +470,19 @@ private fun WorkingModal(localId: String) {
     val running = stage == ReportStage.CAPTURING || stage == ReportStage.PREPARING
     val done = stage == ReportStage.DONE
     val shownCode = code.takeIf { it.isNotEmpty() }?.let { c -> ReportCode.normalize(c)?.let(ReportCode::format) ?: c }
+
+    val scope = rememberCoroutineScope()
+    // Whether the files a retry needs are still on the device. Looked up off the main thread.
+    val canRetry by produceState(initialValue = false, localId, stage) {
+        value = withContext(Dispatchers.IO) { BugReport.canRetry(localId) }
+    }
+    val retry = {
+        scope.launch {
+            val result = withContext(Dispatchers.IO) { BugReport.retry(localId) }
+            if (result == BugReport.RetryResult.GONE) Toast.makeText(context, I18n.get("bugreport.retry.gone"), Toast.LENGTH_LONG).show()
+        }
+        Unit
+    }
 
     // Capturing and packing normally take seconds. After a minute the game is probably stuck, and
     // the user is offered a way out that does not lose the report.
@@ -444,6 +556,15 @@ private fun WorkingModal(localId: String) {
                 ReasonLine(progress?.reason)
             }
         }
+        // A report that failed before it was saved has nothing to retry; say so rather than offer a button that does nothing.
+        if (stage == ReportStage.FAILED && !canRetry) {
+            Text(
+                str("bugreport.progress.noRetry"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         if (shownCode != null) {
             Spacer(Modifier.height(12.dp))
             Text(
@@ -485,11 +606,11 @@ private fun WorkingModal(localId: String) {
                 if (stage == ReportStage.UPLOADING) {
                     add(FlowButtonSpec(str("bugreport.action.stop"), "$layer.stop") { BugReport.stop(localId) })
                 }
-                if (stage == ReportStage.WAITING_WIFI) {
-                    add(FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.sendNow") { BugReport.retry(localId) })
+                if (stage == ReportStage.WAITING_WIFI && canRetry) {
+                    add(FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.sendNow", onClick = retry))
                 }
-                if (stage == ReportStage.WAITING || stage == ReportStage.FAILED || stage == ReportStage.STOPPED) {
-                    add(FlowButtonSpec(str("bugreport.action.retry"), "$layer.retry") { BugReport.retry(localId) })
+                if ((stage == ReportStage.WAITING || stage == ReportStage.FAILED || stage == ReportStage.STOPPED) && canRetry) {
+                    add(FlowButtonSpec(str("bugreport.action.retry"), "$layer.retry", onClick = retry))
                 }
                 add(FlowButtonSpec(str("bugreport.myReports.title"), "$layer.my") { BugReportFlow.showMyReports = true })
                 add(FlowButtonSpec(str("bugreport.action.close"), "$layer.close", primary = true) { BugReportFlow.close() })
@@ -531,7 +652,7 @@ private fun GsDumpChoiceModal(choice: GsDumpChoice) {
             id = "$layer.send", label = str("bugreport.gsdump.send"), detail = str("bugreport.gsdump.send.detail"), selected = false,
             onClick = {
                 dismiss()
-                BugReportFlow.openInGame(context, ReportKind.GRAPHICS)
+                BugReportFlow.openInGame(context, ReportKind.GRAPHICS, keepDumpInSnaps = true)
             },
         )
         Spacer(Modifier.height(10.dp))
@@ -553,8 +674,7 @@ private fun BootFailureModal(failure: BootFailure) {
         Buttons(
             FlowButtonSpec(str("bugreport.action.close"), "$layer.close", onClick = close),
             FlowButtonSpec(str("bugreport.menu.title"), "$layer.report", primary = true) {
-                close()
-                BugReportFlow.openForBootFailure(context, failure)
+                if (BugReportFlow.openForBootFailure(context, failure)) close()
             },
         )
     }
@@ -567,32 +687,52 @@ private fun BootFailureModal(failure: BootFailure) {
 @Composable
 fun CrashReportPrompt() {
     val pending = BugReport.pendingCrash ?: return
+    val context = LocalContext.current
     val layer = "bugreport.crash"
-    FlowCard(layer = layer, onDismiss = ::notNow, initialFocusId = "$layer.send") {
+    // Not now: the evidence stays, and the line below says where to find it.
+    val notNow = {
+        BugReport.pendingCrash = null
+        Toast.makeText(context, I18n.get("bugreport.crash.savedNote"), Toast.LENGTH_LONG).show()
+    }
+    FlowCard(layer = layer, onDismiss = notNow, initialFocusId = "$layer.send") {
         Title(str("bugreport.crash.title"))
         Spacer(Modifier.height(8.dp))
         Text(
             String.format(
                 str(if (pending.closedBySystem) "bugreport.crash.messageSystem" else "bugreport.crash.message"),
                 pending.title.ifBlank { str("bugreport.crash.unknownGame") },
-                pending.driverLabel,
+                pending.driverLabel.ifBlank { str("bugreport.driver.system") },
             ),
             style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(14.dp))
         Buttons(
-            FlowButtonSpec(str("bugreport.action.notNow"), "$layer.later", onClick = ::notNow),
+            FlowButtonSpec(str("bugreport.action.notNow"), "$layer.later", onClick = notNow),
             FlowButtonSpec(str("bugreport.action.sendReport"), "$layer.send", primary = true) {
-                BugReport.pendingCrash = null
-                BugReportFlow.openForCrash(pending)
+                // Only forgotten once the flow has really opened; if another report is open, the prompt stays.
+                if (BugReportFlow.openForCrash(pending)) BugReport.pendingCrash = null
             },
         )
     }
 }
 
-private fun notNow() {
-    // The folder stays, listed under My reports as not sent, until a week has passed.
-    BugReport.pendingCrash = null
+/** A short "Preparing" card while an entry point reads the app's state. Shown only if it takes a moment. */
+@Composable
+private fun OpeningModal() {
+    val layer = "bugreport.opening"
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(250)
+        visible = true
+    }
+    if (!visible) return
+    FlowCard(layer = layer, onDismiss = { BugReportFlow.cancelOpening() }, initialFocusId = "$layer.cancel") {
+        Title(str("bugreport.opening.title"))
+        Spacer(Modifier.height(8.dp))
+        Text(str("bugreport.opening"), style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(14.dp))
+        Buttons(FlowButtonSpec(str("action.cancel"), "$layer.cancel") { BugReportFlow.cancelOpening() })
+    }
 }
 
 // ---- pieces --------------------------------------------------------------------------------
@@ -669,13 +809,15 @@ internal class FlowButtonSpec(
     val onClick: () -> Unit,
 )
 
+/** A row of buttons that wraps onto more lines on a narrow screen instead of squeezing or clipping. */
 @Composable
 internal fun Buttons(vararg specs: FlowButtonSpec) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        specs.forEachIndexed { i, spec ->
-            if (i > 0) Spacer(Modifier.width(10.dp))
-            FlowButton(spec)
-        }
+    FlowRow(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        for (spec in specs) FlowButton(spec)
     }
 }
 

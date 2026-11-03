@@ -15,7 +15,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -31,8 +38,16 @@ import com.armsx2.bugreport.ReportKind
 import com.armsx2.bugreport.ReportStage
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
-import java.text.DateFormat
+import com.armsx2.ui.common.GlobalConfirm
+import com.armsx2.ui.settings.SettingsControllerNav
 import java.util.Date
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** What is still on the device for a report: its folder, and the state file a retry needs. */
+private class LocalFiles(val folder: Boolean, val state: Boolean)
 
 /**
  * Past reports: code, date, kind, game and state, with Copy and Retry. This is where someone who
@@ -42,6 +57,29 @@ import java.util.Date
 fun MyReportsModal(onClose: () -> Unit) {
     val layer = "bugreport.my"
     val entries = BugReport.history.list()
+    val scope = rememberCoroutineScope()
+
+    // After Retry or Delete a row's buttons change or go. The pad is put back on the same row (a
+    // row whose buttons still exist) or, if the row went, the next one, rather than dropping to the
+    // top of the list. An empty string means "the Close button".
+    var refocus by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(refocus) {
+        val row = refocus ?: return@LaunchedEffect
+        repeat(10) {
+            withFrameNanos { }
+            val ids = if (row.isEmpty()) listOf("$layer.close") else ROW_BUTTONS.map { "$layer.$row.$it" }
+            if (ids.any { SettingsControllerNav.selectById(it) }) {
+                refocus = null
+                return@LaunchedEffect
+            }
+        }
+        if (!SettingsControllerNav.selectById("$layer.close")) SettingsControllerNav.selectFirstInLayer()
+        refocus = null
+    }
+    val nextRowAfter = { id: String ->
+        val i = entries.indexOfFirst { it.localId == id }
+        (entries.getOrNull(i + 1) ?: entries.getOrNull(i - 1))?.localId.orEmpty()
+    }
 
     FlowCard(layer = layer, onDismiss = onClose, initialFocusId = if (entries.isEmpty()) "$layer.close" else null) {
         Title(str("bugreport.myReports.title"))
@@ -50,7 +88,11 @@ fun MyReportsModal(onClose: () -> Unit) {
             Text(str("bugreport.myReports.empty"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         for (entry in entries) {
-            ReportRow(entry, layer, onClose = onClose)
+            ReportRow(
+                entry, layer, scope, onClose = onClose,
+                keepFocusOnRow = { refocus = entry.localId },
+                focusNextRow = { refocus = nextRowAfter(entry.localId) },
+            )
             Spacer(Modifier.height(8.dp))
         }
         Spacer(Modifier.height(6.dp))
@@ -58,9 +100,20 @@ fun MyReportsModal(onClose: () -> Unit) {
     }
 }
 
+/** The buttons a row can have, most useful first: the pad lands on the first one that exists. */
+private val ROW_BUTTONS = listOf("stop", "copy", "retry", "sendNow", "send", "delete")
+
 @Composable
-private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
+private fun ReportRow(
+    entry: HistoryEntry,
+    layer: String,
+    scope: CoroutineScope,
+    onClose: () -> Unit,
+    keepFocusOnRow: () -> Unit,
+    focusNextRow: () -> Unit,
+) {
     val context = LocalContext.current
+    // Only this report's own progress is read, so another report's upload does not redraw this line.
     val live = BugReport.progress[entry.localId]
     val code = entry.code.ifEmpty { live?.code.orEmpty() }
     val shownCode = code.takeIf { it.isNotEmpty() }?.let { c -> ReportCode.normalize(c)?.let(ReportCode::format) ?: c }
@@ -68,7 +121,11 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
         live?.stage == ReportStage.UPLOADING && entry.status != HistoryStatus.SENT -> HistoryStatus.UPLOADING
         else -> entry.status
     }
-    val exists = remember(entry.localId, status) { BugReport.localDir(entry.localId) != null }
+    val files by produceState(LocalFiles(folder = false, state = false), entry.localId, status) {
+        value = withContext(Dispatchers.IO) {
+            LocalFiles(BugReport.localDir(entry.localId) != null, BugReport.canRetry(entry.localId))
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -96,7 +153,7 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
             )
             Text(
                 listOf(
-                    DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(entry.createdAt)),
+                    reportDateFormat.format(Date(entry.createdAt)),
                     Formatter.formatShortFileSize(context, entry.bytes),
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
@@ -114,32 +171,44 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
             noteText(entry.note)?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
+            val id = entry.localId
             val actions = buildList {
-                if (shownCode != null) add(FlowButtonSpec(str("bugreport.action.copy"), "$layer.${entry.localId}.copy") { copyCode(context, shownCode) })
-                if (exists && (status == HistoryStatus.UPLOADING || status == HistoryStatus.WAITING_RETRY || status == HistoryStatus.WAITING_WIFI)) {
-                    add(FlowButtonSpec(str("bugreport.action.stop"), "$layer.${entry.localId}.stop") { BugReport.stop(entry.localId) })
+                if (shownCode != null) add(FlowButtonSpec(str("bugreport.action.copy"), "$layer.$id.copy") { copyCode(context, shownCode) })
+                if (files.state && (status == HistoryStatus.UPLOADING || status == HistoryStatus.WAITING_RETRY || status == HistoryStatus.WAITING_WIFI)) {
+                    add(
+                        FlowButtonSpec(str("bugreport.action.stop"), "$layer.$id.stop") {
+                            keepFocusOnRow()
+                            scope.launch(Dispatchers.IO) { BugReport.stop(id) }
+                        },
+                    )
                 }
                 when (status) {
-                    HistoryStatus.WAITING_WIFI -> if (exists) {
-                        add(FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.${entry.localId}.sendNow") { BugReport.retry(entry.localId) })
-                    }
-                    HistoryStatus.WAITING_RETRY, HistoryStatus.FAILED, HistoryStatus.STOPPED -> if (exists) {
+                    HistoryStatus.WAITING_WIFI -> if (files.state) {
                         add(
-                            FlowButtonSpec(str("bugreport.action.retry"), "$layer.${entry.localId}.retry") {
-                                if (BugReport.retry(entry.localId) == BugReport.RetryResult.GONE) {
-                                    Toast.makeText(context, I18n.get("bugreport.retry.gone"), Toast.LENGTH_LONG).show()
-                                }
+                            FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.$id.sendNow") {
+                                keepFocusOnRow()
+                                retryInBackground(scope, context, id)
                             },
                         )
                     }
-                    HistoryStatus.NOT_SENT -> if (exists) {
+                    HistoryStatus.WAITING_RETRY, HistoryStatus.FAILED, HistoryStatus.STOPPED -> if (files.state) {
                         add(
-                            FlowButtonSpec(str("bugreport.action.sendReport"), "$layer.${entry.localId}.send") {
-                                val pending = BugReport.crashFor(entry.localId)
-                                if (pending != null) {
-                                    onClose()
-                                    BugReportFlow.close()
-                                    BugReportFlow.openForCrash(pending)
+                            FlowButtonSpec(str("bugreport.action.retry"), "$layer.$id.retry") {
+                                keepFocusOnRow()
+                                retryInBackground(scope, context, id)
+                            },
+                        )
+                    }
+                    HistoryStatus.NOT_SENT -> if (files.folder) {
+                        add(
+                            FlowButtonSpec(str("bugreport.action.sendReport"), "$layer.$id.send") {
+                                scope.launch {
+                                    val pending = withContext(Dispatchers.IO) { BugReport.crashFor(id) }
+                                    if (pending != null) {
+                                        onClose()
+                                        BugReportFlow.close()
+                                        BugReportFlow.openForCrash(pending)
+                                    }
                                 }
                             },
                         )
@@ -148,8 +217,17 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
                 }
                 if (status == HistoryStatus.NOT_SENT || status == HistoryStatus.FAILED || status == HistoryStatus.STOPPED) {
                     add(
-                        FlowButtonSpec(str("bugreport.action.delete"), "$layer.${entry.localId}.delete") {
-                            BugReport.delete(entry.localId)
+                        FlowButtonSpec(str("bugreport.action.delete"), "$layer.$id.delete") {
+                            // Deleting throws the files away; ask first. Cancel is the focused button.
+                            GlobalConfirm.ask(
+                                title = I18n.get("bugreport.delete.title"),
+                                message = I18n.get("bugreport.delete.message"),
+                                confirmLabel = I18n.get("bugreport.action.delete"),
+                                destructive = true,
+                            ) {
+                                focusNextRow()
+                                scope.launch(Dispatchers.IO) { BugReport.delete(id) }
+                            }
                         },
                     )
                 }
@@ -158,6 +236,16 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 Buttons(*actions.toTypedArray())
             }
+        }
+    }
+}
+
+/** Retry or Send now, off the main thread; says so if the files are gone. */
+private fun retryInBackground(scope: CoroutineScope, context: android.content.Context, localId: String) {
+    scope.launch {
+        val result = withContext(Dispatchers.IO) { BugReport.retry(localId) }
+        if (result == BugReport.RetryResult.GONE) {
+            Toast.makeText(context, I18n.get("bugreport.retry.gone"), Toast.LENGTH_LONG).show()
         }
     }
 }
