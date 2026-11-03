@@ -1035,6 +1035,13 @@ public class NativeApp {
 	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
 	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
 	public static native void setAffinityMode(int mode);
+
+	/**
+	 * Whether the IOP thread setting should start on for this device (IopThread::DefaultOnForHost in the core): the
+	 * performance tier is two or three cores and the core would run the thread. mtvu is the MTVU setting, which counts
+	 * one more thread. Callable before the VM exists.
+	 */
+	public static native boolean iopThreadDefaultOn(boolean mtvu);
 	public static native void renderPreloading(int value);
 
 	/** Flip texture dumping on/off live (PCSX2's ToggleTextureDumping hotkey).

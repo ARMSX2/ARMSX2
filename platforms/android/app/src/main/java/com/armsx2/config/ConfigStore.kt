@@ -197,14 +197,27 @@ object ConfigStore {
      * zero-frame GS queue on capable devices. Low-end devices retain the smoother
      * two-frame queue. Once persisted, this never changes an existing user's choice.
      */
-    fun seedFreshInstallDefaults(context: android.content.Context) {
+    fun seedFreshInstallDefaults(
+        context: android.content.Context,
+        iopThreadDefaultOn: (mtvu: Boolean) -> Boolean = { com.armsx2.DeviceTier.iopThreadDefault(it) },
+    ) {
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) != null) return
         // Low Latency (zero-frame GS queue) is NOT the default any more — it was briefly seeded on
         // capable devices, but a zero-frame queue gives the GS thread no slack and cost smoothness
         // on too many setups. Everyone starts on PCSX2's two-frame queue and can opt in from the
         // Performance tab. Settings.vsyncQueueSize already defaults to 2, so this just materialises
         // the global save that the rest of the config layer keys "is this a fresh install?" off.
-        saveGlobal(Settings())
+        saveGlobal(freshInstallSettings(iopThreadDefaultOn))
+    }
+
+    /**
+     * The settings a new install starts with: [Settings] defaults, with the IOP thread on where the device's performance
+     * tier is two or three cores ([com.armsx2.DeviceTier.iopThreadDefault]). The rule is [iopThreadDefaultOn], given the
+     * MTVU setting the install starts with.
+     */
+    internal fun freshInstallSettings(iopThreadDefaultOn: (mtvu: Boolean) -> Boolean): Settings {
+        val defaults = Settings()
+        return defaults.copy(cpu = defaults.cpu.copy(iopThread = iopThreadDefaultOn(defaults.cpu.mtvu)))
     }
 
     // Migration 1 (config.migrated.lowLatencyDefault) flipped existing capable devices ON. It is
@@ -313,6 +326,38 @@ object ConfigStore {
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
         val global = loadGlobal()
         val migrated = withIopThreadLagMigrated(global)
+        if (migrated !== global) saveGlobal(migrated)
+    }
+
+    private const val KEY_IOP_THREAD_NARROW_TIER_MIGRATED = "config.migrated.iopThreadNarrowTier"
+
+    /**
+     * [settings] with the IOP thread turned on, when [hostDefaultsOn] says the thread now starts on for this device (two or
+     * three fast cores and the core can run it). A device where it does not keeps [settings] as they are, saved off or on,
+     * and so does one where it is saved on. Returns [settings] itself when nothing changes.
+     *
+     * The old default cannot be told from a choice: Settings.toJson wrote every field, so a global save holds
+     * iopThread=false whether the player turned it off or never touched it. The player who did turn it off on such a
+     * device is moved with the rest, once (the accepted cost, as in [migrateIopThreadLag]); after
+     * config.migrated.iopThreadNarrowTier is set, turning it off again is a choice that stays.
+     */
+    internal fun withIopThreadNarrowTierMigrated(settings: Settings, hostDefaultsOn: Boolean): Settings =
+        if (hostDefaultsOn && !settings.cpu.iopThread) settings.copy(cpu = settings.cpu.copy(iopThread = true)) else settings
+
+    /**
+     * One-time: on a device whose performance tier is two or three cores, moves the stored global IOP thread setting from
+     * off to on (see [withIopThreadNarrowTierMigrated]). Its mark is its own, apart from the lag move's. Like that one it
+     * works on `config.global` in SharedPreferences and leaves the per-game blobs alone: an iopThread in one is that game's
+     * own choice. [hostDefaultOn] is the device's answer for the stored MTVU setting; the app asks the core
+     * ([com.armsx2.DeviceTier.iopThreadDefault]), a test passes its own.
+     */
+    fun migrateIopThreadNarrowTier(hostDefaultOn: (mtvu: Boolean) -> Boolean = { com.armsx2.DeviceTier.iopThreadDefault(it) }) {
+        if (MainActivityRuntime.prefs.getBoolean(KEY_IOP_THREAD_NARROW_TIER_MIGRATED, false)) return
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_IOP_THREAD_NARROW_TIER_MIGRATED, true).apply()
+        // A genuinely empty install has no save to move; a fresh install is seeded by seedFreshInstallDefaults.
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
+        val global = loadGlobal()
+        val migrated = withIopThreadNarrowTierMigrated(global, hostDefaultOn(global.cpu.mtvu))
         if (migrated !== global) saveGlobal(migrated)
     }
 

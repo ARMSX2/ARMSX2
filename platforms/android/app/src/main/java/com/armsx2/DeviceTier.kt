@@ -31,6 +31,22 @@ object DeviceTier {
      *  first-run wizard defaults and the Low-End preset. */
     fun mtvuDefault(): Boolean = coreCount() >= 6
 
+    /**
+     * Whether the IOP thread setting should start on for this device: its performance tier is two or three cores and
+     * the emulator core would run the thread (IopThread::DefaultOnForHost, asked through JNI so the rule is written once).
+     * [mtvu] is the MTVU setting the caller has, which counts one more thread in the core's rule. False when the native
+     * library did not load or the call fails: the setting stays off, as it was.
+     *
+     * This does NOT change the persisted Settings default (a save written by an older build holds the old value): it
+     * seeds a new install ([com.armsx2.config.ConfigStore.seedFreshInstallDefaults]), moves an existing one once
+     * ([com.armsx2.config.ConfigStore.migrateIopThreadNarrowTier]) and answers a Reset.
+     */
+    fun iopThreadDefault(mtvu: Boolean = true): Boolean = try {
+        !kr.co.iefriends.pcsx2.NativeApp.hasNoNativeBinary && kr.co.iefriends.pcsx2.NativeApp.iopThreadDefaultOn(mtvu)
+    } catch (_: Throwable) {
+        false
+    }
+
     /** Total physical RAM in bytes, or Long.MAX_VALUE if it can't be read (so a
      *  bad read never trips the low-RAM branch). */
     private fun totalMemBytes(context: Context): Long = try {

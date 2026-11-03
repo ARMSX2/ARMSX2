@@ -12,6 +12,8 @@
 #include "pcsx2/GS.h"
 #include "pcsx2/Counters.h"
 #include "pcsx2/Elfheader.h" // ElfObject, for the boot-ELF disc pairing
+#include "pcsx2/IopThread/IopThreadMode.h"
+#include "pcsx2/IopThread/IopThreadVm.h"
 #include "pcsx2/IopThread/OwnerAsserts.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/AutoTune/AutoTuneApplier.h" // per-game auto-tune record: read, reset, write back
@@ -3419,6 +3421,15 @@ extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setAffinityMode(JNIEnv*, jclass, jint mode) {
     g_android_affinity_mode = (mode < 0 || mode > 7) ? 0 : static_cast<int>(mode);
+}
+
+// The IOP thread setting's default for this device (IopThread::DefaultOnForHost): on where the performance tier is two or
+// three cores and the core would run the thread, off elsewhere. The app asks it for a new install and for the one-time
+// move of an existing one, so the rule is the core's and not a copy in Kotlin. Needs no VM.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_iopThreadDefaultOn(JNIEnv*, jclass, jboolean mtvu) {
+    return IopThread::DefaultOnForHost(IopThread::CurrentHostInfo(), mtvu == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C"
