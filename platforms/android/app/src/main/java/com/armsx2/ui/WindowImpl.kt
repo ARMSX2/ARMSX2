@@ -220,6 +220,9 @@ object WindowImpl {
                 // Authors the app-wide confirmation prompt (GlobalConfirm.ask). It is composed
                 // here, but drawn by PadModalHost above — this call renders nothing itself.
                 com.armsx2.ui.common.GlobalConfirm.Host()
+
+                // The "Report a problem" flow and My reports. Authored here, drawn by PadModalHost.
+                com.armsx2.ui.bugreport.BugReportFlowHost()
             }
         }
     }

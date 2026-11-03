@@ -1220,6 +1220,10 @@ fun HomeScreen(
                     viewModel.setHidden(game, !hidden)
                     menuGame = null
                 }
+                GameMenuAction("⚑", str("bugreport.menu.game"), "game-menu.report") {
+                    menuGame = null
+                    scope.launch { com.armsx2.ui.bugreport.BugReportFlow.openForGame(context, game) }
+                }
             }
           }
         }
@@ -1228,6 +1232,9 @@ fun HomeScreen(
     categoryGame?.let { game ->
         CategorySheet(game = game, onDismiss = { categoryGame = null })
     }
+
+    // After a crash: the evidence was set aside at startup, and the library is where the user is.
+    com.armsx2.ui.bugreport.CrashReportPrompt()
 
     quickLoadConfirm?.let { game ->
         val needBytes = remember(game.uri) { com.armsx2.QuickLoadSetup.estimatedBytes(context, game) }
