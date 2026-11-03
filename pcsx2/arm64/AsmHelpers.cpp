@@ -536,7 +536,12 @@ void armMoveAddressToReg(const vixl::aarch64::Register& reg, const void* addr)
 		}
 		if (armAddressRecorder)
 			armAddressRecorder->OnAdrp(armGetCurrentCodePointer() - 4, addr);
-		armAsm->Add(reg, reg, page_offset);
+		// Always emit the add, even for page-aligned addresses: a lone ADRP followed by a load or store through
+		// it can hit Cortex-A53 erratum 843419, and the linker fix doesn't cover JIT code.
+		{
+			a64::SingleEmissionCheckScope guard(armAsm);
+			armAsm->add(reg, reg, page_offset);
+		}
 	}
 	else if (vixl::IsInt21(page_displacement) && a64::Assembler::IsImmLogical(page_offset, 64))
 	{
