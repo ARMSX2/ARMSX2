@@ -18,6 +18,10 @@ import com.armsx2.ui.InGameOverlay
 import androidx.core.content.edit
 import kotlin.math.roundToInt
 
+/** The lag bounds the IOP thread's picker offers, in EE cycles. 4915200 is one frame and the default of
+ *  [com.armsx2.config.CpuSettings.iopThreadLag]; the others are the earlier choices. */
+internal val IOP_THREAD_LAG_CHOICES = listOf(4096, 6144, 12288, 24576, 4915200)
+
 /**
  * Performance section of the in-game settings overlay.
  *
@@ -454,7 +458,7 @@ fun PerformanceTab(state: MutableState<Settings>) {
             ToggleRow(str("perf.hack.iopThread"), s.cpu.iopThread, description = str("perf.hack.iopThread.desc"), field = "iopThread") { apply(s.copy(cpu = s.cpu.copy(iopThread = it))) }
             // The lag bound is advanced: only the usual choices are offered, and a value the file holds
             // that is not one of them shows the nearest (the core clamps it to 4096..9830400, two frames, anyway).
-            val lagChoices = listOf(4096, 6144, 12288, 24576)
+            val lagChoices = IOP_THREAD_LAG_CHOICES
             SegmentedRow(
                 label = str("perf.hack.iopThreadLag"),
                 options = lagChoices.map { it.toString() },

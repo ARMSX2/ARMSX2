@@ -56,7 +56,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.iopRecompiler, "EmuCore/CPU/Recompiler", "EnableIOP", true);
 	// The bounds are the ones the core clamps the setting to, so the box never offers a value that would be changed.
 	m_ui.iopThreadLag->setRange(IopThread::kMinLag, IopThread::kMaxLag);
-	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.iopThreadLag, "EmuCore/Speedhacks", "iopThreadLag", IopThread::kDefaultLag);
+	SettingWidgetBinder::BindWidgetToIntSetting(sif, m_ui.iopThreadLag, "EmuCore/Speedhacks", "iopThreadLag", IopThread::kDefaultSettingLag);
 
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.gameFixes, "EmuCore", "EnableGameFixes", true);
 	SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.patches, "EmuCore", "EnablePatches", true);
@@ -158,7 +158,7 @@ AdvancedSettingsWidget::AdvancedSettingsWidget(SettingsWindow* settings_dialog, 
 	dialog()->registerWidgetHelp(m_ui.iopRecompiler, tr("Enable Recompiler"), tr("Checked"),
 		tr("Performs just-in-time binary translation of 32-bit MIPS-I machine code to native code."));
 
-	dialog()->registerWidgetHelp(m_ui.iopThreadLag, tr("IOP Thread Lag Bound"), QString::number(IopThread::kDefaultLag),
+	dialog()->registerWidgetHelp(m_ui.iopThreadLag, tr("IOP Thread Lag Bound"), QString::number(IopThread::kDefaultSettingLag),
 		tr("How many EE cycles the main game thread may run ahead of the IOP thread before it waits for it. "
 		   "Larger values wait less often, but let the IOP's answers reach the game later. "
 		   "A frame is about 4.9 million cycles, and the box goes up to two frames. "

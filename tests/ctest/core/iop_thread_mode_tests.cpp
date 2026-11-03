@@ -10,6 +10,7 @@
 #include "Config.h"
 #include "GameDatabase.h"
 #include "IopThread/IopChannels.h"
+#include "IopThread/IopLagRules.h"
 #include "IopThread/IopThreadMode.h"
 #include "PerGameOverrides.h"
 
@@ -88,14 +89,36 @@ TEST(IopThreadMode, AnEmptySettingsFileLoadsAsOff)
 	const Pcsx2Config::SpeedhackOptions hacks = LoadHacks(si);
 	EXPECT_FALSE(hacks.iopThread);
 	EXPECT_FALSE(hacks.iopThreadLockstep);
-	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultLag);
+	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultSettingLag);
 }
 
-TEST(IopThreadMode, TheDefaultLagIsTwentyFourThousandFiveHundredSeventySixCycles)
+TEST(IopThreadMode, TheDefaultOfTheLagSettingIsOneFrame)
 {
-	// Eight times kEeWaitCycles, the longest the EE runs between event tests.
+	// One NTSC frame of EE cycles: 294,912,000 a second at 60 Hz.
+	EXPECT_EQ(IopThread::kOneFrameLag, 294912000 / 60);
+	EXPECT_EQ(IopThread::kDefaultSettingLag, 4915200);
+	EXPECT_EQ(Pcsx2Config().Speedhacks.iopThreadLag, 4915200);
+	EXPECT_EQ(Pcsx2Config::SpeedhackOptions().iopThreadLag, IopThread::kDefaultSettingLag);
+	// The default is a value the core keeps as it is.
+	EXPECT_EQ(IopThread::ClampLag(IopThread::kDefaultSettingLag), IopThread::kDefaultSettingLag);
+}
+
+TEST(IopThreadMode, TheTightBoundStaysTwentyFourThousandFiveHundredSeventySixCycles)
+{
+	// Eight times kEeWaitCycles, the longest the EE runs between event tests. It is no longer the default of the
+	// setting, but the lag rules fall back to it while the EE waits on the IOP, and a bound at or below it
+	// turns the rules off, so it must not move with the setting's default.
 	EXPECT_EQ(IopThread::kDefaultLag, 24576);
-	EXPECT_EQ(Pcsx2Config().Speedhacks.iopThreadLag, 24576);
+	EXPECT_EQ(IopThread::LagRulesConfig().tight, 24576);
+	EXPECT_LT(IopThread::kDefaultLag, IopThread::kDefaultSettingLag);
+}
+
+TEST(IopThreadMode, DisableAllPutsTheLagBackToTheDefaultOfTheSetting)
+{
+	Pcsx2Config::SpeedhackOptions hacks;
+	hacks.iopThreadLag = IopThread::kMinLag;
+	hacks.DisableAll();
+	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultSettingLag);
 }
 
 TEST(IopThreadMode, TheEnableFlagAloneGivesThreaded)
@@ -409,6 +432,7 @@ TEST(IopThreadModeLag, ValuesInRangeAreKept)
 	EXPECT_EQ(ClampLag(IopThread::kMinLag), IopThread::kMinLag);
 	EXPECT_EQ(ClampLag(IopThread::kMinLag + 1), IopThread::kMinLag + 1);
 	EXPECT_EQ(ClampLag(IopThread::kDefaultLag), 24576);
+	EXPECT_EQ(ClampLag(IopThread::kDefaultSettingLag), 4915200);
 	EXPECT_EQ(ClampLag(12288), 12288);
 	EXPECT_EQ(ClampLag(196608), 196608); // the old maximum is an ordinary value now
 	EXPECT_EQ(ClampLag(4900000), 4900000); // about one frame
@@ -439,7 +463,13 @@ TEST(IopThreadModeLag, ALagTheFileDoesNotNameIsTheDefault)
 {
 	MemorySettingsInterface si;
 	si.SetBoolValue("EmuCore/Speedhacks", "iopThread", true);
-	EXPECT_EQ(LoadHacks(si).iopThreadLag, 24576);
+	EXPECT_EQ(LoadHacks(si).iopThreadLag, IopThread::kDefaultSettingLag);
+}
+
+TEST(IopThreadModeLag, ALagTheFileNamesStaysWhateverTheDefaultIs)
+{
+	// A settings file written while 24576 was the default has that value in it, and loads as 24576.
+	EXPECT_EQ(LoadLag(24576), 24576);
 }
 
 TEST(IopThreadSetting, TheKeysLiveInTheSpeedhacksSectionAndRoundTrip)
@@ -579,7 +609,7 @@ TEST(IopThreadGameDB, SetWritesTheEnableFlagOnly)
 	hacks.Set(SpeedHack::IOPThread, 1);
 	EXPECT_TRUE(hacks.iopThread);
 	EXPECT_FALSE(hacks.iopThreadLockstep);
-	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultLag);
+	EXPECT_EQ(hacks.iopThreadLag, IopThread::kDefaultSettingLag);
 	hacks.Set(SpeedHack::IOPThread, 0);
 	EXPECT_FALSE(hacks.iopThread);
 }

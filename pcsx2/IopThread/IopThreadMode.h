@@ -30,11 +30,14 @@ namespace IopThread
 	inline constexpr s32 kEeWaitCycles = 3072;
 
 	// The lag bound L: how many EE cycles the EE may be ahead of the IOP at an event test before
-	// it waits. All three values are in EE cycles.
+	// it waits. All the values below are in EE cycles.
 	//
-	// The default is eight times kEeWaitCycles. A larger L lets the EE run further ahead of the
+	// kDefaultLag is eight times kEeWaitCycles. A larger L lets the EE run further ahead of the
 	// IOP, which lowered the EE's time per frame on a big core; the gain flattened above 12288
-	// in some titles.
+	// in some titles. It is the tight bound: the lag the IOP thread object starts with when a
+	// caller names none, the bound the lag rules (IopLagRules.h) fall back to while the EE waits on
+	// the IOP, and the bound of the SBUS mailbox accesses. It is not the default of the iopThreadLag
+	// setting; that is kDefaultSettingLag.
 	//
 	// The minimum has to be strictly greater than kEeWaitCycles. The IOP only runs up to the cycle
 	// the EE published at its previous event test, so at the next one the EE is already about
@@ -43,20 +46,27 @@ namespace IopThread
 	// target by 81 cycles at the 90th percentile, and the IOP ends its last block up to 57 cycles
 	// past what it was given. 1024 is more than seven times the sum of those.
 	//
-	// The maximum, 3200 times kEeWaitCycles, is two NTSC frames (4.9 million EE cycles each at 60 Hz).
-	// It lets an experiment give the IOP a whole frame of slack, so that the idle time the EE skips
-	// almost instantly can be emulated by the IOP while the EE does its next busy stretch. The values
-	// the shipped UI offers stay at the small end. The cycle-stamped EE-to-IOP queue holds
-	// kE2IRingCapacity entries, which is about three times the posts of a maximum window (about 527
-	// posts per frame, 1052 on OutRun, plus the SIF items), so it cannot fill within one window. The
+	// kOneFrameLag is one NTSC frame (294,912,000 EE cycles a second at 60 Hz is 4,915,200 cycles).
+	// kDefaultSettingLag, what the iopThreadLag setting starts at, is that: a whole frame of slack
+	// lets the IOP thread emulate the idle time the EE skips almost instantly while the EE does its
+	// next busy stretch, and the lag rules pull the bound back to kDefaultLag at the moments when
+	// the EE is waiting on the IOP, which is where a bound that large costs.
+	//
+	// The maximum, 3200 times kEeWaitCycles, is two NTSC frames. The cycle-stamped EE-to-IOP queue
+	// holds kE2IRingCapacity entries, which is about three times the posts of a maximum window (about
+	// 527 posts per frame, 1052 on OutRun, plus the SIF items), so it cannot fill within one window. The
 	// largest delay the EE can see an IOP effect after is the lag plus one event-test spacing: about
 	// 33 ms at the maximum.
 	inline constexpr s32 kDefaultLag = 8 * kEeWaitCycles;
 	inline constexpr s32 kMinLag = kEeWaitCycles + 1024;
+	inline constexpr s32 kOneFrameLag = 1600 * kEeWaitCycles;
+	inline constexpr s32 kDefaultSettingLag = kOneFrameLag;
 	inline constexpr s32 kMaxLag = 3200 * kEeWaitCycles;
 
 	static_assert(kMinLag > kEeWaitCycles);
 	static_assert(kMinLag <= kDefaultLag && kDefaultLag <= kMaxLag);
+	static_assert(kDefaultLag <= kDefaultSettingLag && kDefaultSettingLag <= kMaxLag, "the setting starts no tighter than the tight bound");
+	static_assert(kOneFrameLag == 4915200, "one NTSC frame of EE cycles");
 	static_assert(kMaxLag % kEeWaitCycles == 0, "the maximum is a whole number of event-test spacings");
 	// The lag is kept as an s32 (Params::lag, the EE-side books). Leave room for the cycle differences added to it.
 	static_assert(kMaxLag > 0 && kMaxLag < INT32_MAX / 64, "the lag bound must leave s32 headroom");
