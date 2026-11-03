@@ -2711,7 +2711,7 @@ void FullscreenUI::DrawEmulationSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_USERS, "Enable Multithreaded VU1 (MTVU)"),
 		FSUI_CSTR("Generally a speedup on CPUs with 4 or more cores. Safe for most games, but a few are incompatible and may hang."), "EmuCore/Speedhacks", "vuThread", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_USERS, "Enable IOP Thread"),
-		FSUI_CSTR("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores."),
+		FSUI_CSTR("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. On by default on CPUs with two or three fast cores, off on the others; the game database turns it on for a few games that need it. Used only on ARM64 CPUs with at least two fast cores and enough other cores for the rest of the emulator."),
 		"EmuCore/Speedhacks", "iopThread", false);
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_WAND_MAGIC, "Automatic Performance Tuning"),
 		FSUI_CSTR("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game."),

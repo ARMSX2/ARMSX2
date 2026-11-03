@@ -1447,7 +1447,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "perf.hack.vuNeonFusions" to "VU NEON Fusions",
     "perf.hack.waitLoop" to "Wait Loop",
     // Per-setting descriptions for the Advanced Speedhacks toggles (restored after the UI rework).
-    "perf.hack.iopThread.desc" to "Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. Faster on devices with four or more fast cores. It turns itself off on devices without spare cores, and for PS1 and arcade games. Off by default.",
+    "perf.hack.iopThread.desc" to "Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. On by default on devices with two or three fast cores, off on the others; the game database turns it on for a few games that need it. It is used only on devices with at least two fast cores and enough other cores for the rest of the emulator, and never for PS1 and arcade games.",
     "perf.hack.iopThreadLag.desc" to "How many EE cycles the game thread may run ahead of the IOP thread before it waits for it. Larger values wait less often but let the IOP's answers reach the game later. Used only with the IOP thread on.",
     "perf.hack.vuAot.desc" to "Optimises VU1 programs in the background and keeps the compiled VU code on disk, so later launches start with it. Faster in games that spend much of their time in VU1. Turning it off clears the compiled cache. On by default.",
     "perf.hack.mtvu.desc" to "Runs VU1 on its own CPU thread. Faster on multi-core devices, but can break games needing tight EE/VU1 sync. On by default.",

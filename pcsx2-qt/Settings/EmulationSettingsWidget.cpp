@@ -136,10 +136,11 @@ EmulationSettingsWidget::EmulationSettingsWidget(SettingsWindow* settings_dialog
 		tr("Generally a speedup on CPUs with 4 or more cores. "
 		   "Safe for most games, but a few are incompatible and may hang."));
 	//: IOP = the PS2's I/O processor, which runs sound, disc access, controllers and memory cards.
-	dialog()->registerWidgetHelp(m_ui.iopThread, tr("Enable IOP Thread"), tr("Unchecked"),
+	dialog()->registerWidgetHelp(m_ui.iopThread, tr("Enable IOP Thread"), tr("Depends on the CPU"),
 		tr("Runs the PS2's I/O processor (sound, disc, controllers and memory cards) on its own thread. "
-		   "A speedup on CPUs with at least four fast cores. It turns itself off on CPUs without spare cores, "
-		   "and for PS1 games, arcade games and while an IOP breakpoint is set."));
+		   "On by default on CPUs with two or three fast cores, off on the others; the game database turns it on for a few "
+		   "games that need it. It is used only on ARM64 CPUs with at least two fast cores and enough other cores for the "
+		   "rest of the emulator, and never for PS1 games, arcade games or while an IOP breakpoint is set."));
 	dialog()->registerWidgetHelp(m_ui.autoTune, tr("Automatic Performance Tuning"), tr("Unchecked"),
 		tr("When a game keeps missing frames, tries performance settings one at a time and keeps the ones that help, saved per game. "
 		   "What it changed is listed in the game's properties, where it can also be reset."));
