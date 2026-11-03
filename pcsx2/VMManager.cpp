@@ -4130,7 +4130,7 @@ void VMManager::CheckForMiscConfigChanges(const Pcsx2Config& old_config)
 	// threads to place, so the others' places can change with it.
 	if (HasValidVM() && (EmuConfig.EnableThreadPinning != old_config.EnableThreadPinning ||
 							EmuConfig.EnablePrimeCorePlacement != old_config.EnablePrimeCorePlacement ||
-							(s_thread_affinities_set && EmuConfig.Speedhacks.vuThread != old_config.Speedhacks.vuThread) ||
+							((s_thread_affinities_set || EmuConfig.EnableThreadPinning) && EmuConfig.Speedhacks.vuThread != old_config.Speedhacks.vuThread) ||
 							IopThread::PlacementToken() != s_iop_placement_token))
 	{
 		SetEmuThreadAffinities();
@@ -4969,11 +4969,23 @@ void VMManager::SetHardwareDependentDefaultSettings(SettingsInterface& si)
 	// on Apple Silicon under Asahi and Intel Alder Lake-class hybrid systems.
 	// SetEmuThreadAffinities already sorts processors by frequency, so pinning
 	// to indices 0..2 lands on the fastest cores.
+	//
+	// Not where the performance tier cannot hold the EE, GS and (with MTVU) VU1 threads: the ordered pin gives out the
+	// fastest processors first, so with two fast cores it puts the GS thread on a slow one (IopThread::OrderedPinAllowed).
 	if (cpuinfo_get_clusters_count() > 1 && core_count >= 3)
 	{
-		Console.WriteLn(fmt::format("  Heterogeneous CPU detected ({} clusters); enabling thread pinning.",
-			cpuinfo_get_clusters_count()));
-		si.SetBoolValue("EmuCore", "EnableThreadPinning", true);
+		if (IopThread::OrderedPinAllowed(VMManager::Internal::GetPerformanceCoreMask(), mtvu))
+		{
+			Console.WriteLn(fmt::format("  Heterogeneous CPU detected ({} clusters); enabling thread pinning.",
+				cpuinfo_get_clusters_count()));
+			si.SetBoolValue("EmuCore", "EnableThreadPinning", true);
+		}
+		else
+		{
+			Console.WriteLn(fmt::format("  Heterogeneous CPU detected ({} clusters), but its {} performance cores cannot hold the EE, GS{} "
+										"threads; leaving thread pinning off.",
+				cpuinfo_get_clusters_count(), host.performance_cores, mtvu ? " and VU1" : ""));
+		}
 	}
 }
 
@@ -5463,14 +5475,14 @@ void VMManager::SetEmuThreadAffinities()
 	// pinning off, and a VM boot with pinning off is exactly the call a toggle check would skip.
 	// Threads we never narrowed are left alone, so a mask inherited from taskset survives.
 	const bool vm_running = (GetState() != VMState::Shutdown);
-	const bool new_pin_enable = (vm_running && EmuConfig.EnableThreadPinning);
+	const bool pin_requested = (vm_running && EmuConfig.EnableThreadPinning);
 	const bool was_pinned = s_thread_affinities_set;
 	static bool s_gs_tier_confined = false;
 
 	// Track whether pinning is *currently effective*, not just EmuConfig.EnableThreadPinning
 	// (matches refresh-experimental — a shutdown call with pinning enabled must not leave this
 	// flag true while the affinity + SW-renderer proc list get cleared).
-	s_thread_affinities_set = new_pin_enable;
+	s_thread_affinities_set = pin_requested;
 
 	EnsureCPUInfoInitialized();
 
@@ -5482,6 +5494,21 @@ void VMManager::SetEmuThreadAffinities()
 
 	const bool mtvu = EmuConfig.Speedhacks.vuThread;
 
+	// The ordered pin hands out the fastest processors first: EE, VU1, GS. On a performance tier of two that puts the GS
+	// thread on a slow core, and measured on two fast cores it lost 30 to 45% speed whether or not the IOP thread ran.
+	// Where the tier can be read and cannot hold those threads, fall back to the unpinned placement below, as Android's
+	// Performance Cores mode does (IopThread::OrderedPinAllowed).
+	const u64 perf_mask = Internal::GetPerformanceCoreMask();
+	const bool tier_too_narrow = pin_requested && !IopThread::OrderedPinAllowed(perf_mask, mtvu);
+	if (tier_too_narrow)
+	{
+		INFO_LOG("Thread pinning is on, but the performance tier has {} core(s) and the EE, GS{} threads need {}: not pinning them in "
+				 "order, using the unpinned placement instead.",
+			std::popcount(perf_mask), mtvu ? " and VU1" : "", mtvu ? 3 : 2);
+	}
+	const bool new_pin_enable = pin_requested && !tier_too_narrow;
+	s_thread_affinities_set = new_pin_enable;
+
 	if (!new_pin_enable || s_processor_list.size() < (mtvu ? 3 : 2))
 	{
 		if (new_pin_enable)
@@ -5491,6 +5518,14 @@ void VMManager::SetEmuThreadAffinities()
 		{
 			vu1Thread.GetThreadHandle().SetAffinity(0);
 			s_vm_thread_handle.SetAffinity(0);
+			SetIopThreadAffinity(0);
+		}
+		else if (GetIopThreadOutsideTierMask() != 0)
+		{
+			// Unpinned, with a tier too narrow for every thread that wants it: the IOP thread would float over the fast
+			// cores beside the EE, GS and VU1 threads (SetIopThreadAffinity says why that is wrong), so it is placed
+			// outside the tier. A host whose tier fits them all, or one with no IOP thread, gets no mask here and is
+			// left as it was.
 			SetIopThreadAffinity(0);
 		}
 		s_software_renderer_processor_list = {};

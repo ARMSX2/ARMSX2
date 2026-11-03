@@ -875,7 +875,7 @@ TEST(IopThreadGsSplit, ASettingThatNeverRunsCostsNoCore)
 	EXPECT_NE(IopThread::ResolveMode(config, one_fast, {}), IopThreadMode::Threaded);
 }
 
-// ---------------------------------------------------------------- the IOP thread default
+// ---------------------------------------------------------------- the IOP thread default and the ordered pin
 
 namespace
 {
@@ -995,4 +995,53 @@ TEST(IopThreadDefaultOn, ItAgreesWithResolveModeWhereItSaysOn)
 				EXPECT_EQ(ResolveFor(cpus, false, mtvu), IopThreadMode::Threaded) << cpus.size() << " cores, mtvu " << mtvu;
 		}
 	}
+}
+
+TEST(IopThreadOrderedPin, TwoFastCoresCannotHoldEeGsAndVu1)
+{
+	// With MTVU on the pin needs three fast cores for EE, VU1 and GS; with it off, two for EE and GS.
+	for (const auto& cpus : {Rg55g1(), Mq65TwoFast()})
+	{
+		const u64 tier = PerformanceMask(cpus);
+		ASSERT_EQ(std::popcount(tier), 2);
+		EXPECT_FALSE(IopThread::OrderedPinAllowed(tier, true));
+		EXPECT_TRUE(IopThread::OrderedPinAllowed(tier, false));
+	}
+}
+
+TEST(IopThreadOrderedPin, OneFastCoreCannotHoldThemWithMtvuOnOrOff)
+{
+	const u64 tier = PerformanceMask(OneFastCore());
+	ASSERT_EQ(std::popcount(tier), 1);
+	EXPECT_FALSE(IopThread::OrderedPinAllowed(tier, true));
+	EXPECT_FALSE(IopThread::OrderedPinAllowed(tier, false));
+}
+
+TEST(IopThreadOrderedPin, ThreeOrMoreFastCoresKeepThePin)
+{
+	// The IOP thread is not counted: it goes outside the tier, so three is enough for EE, VU1 and GS.
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Mq65ThreeFast()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Mq65()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Sd865()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Dimensity8300()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(M2Max()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Uniform8()), true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(PerformanceMask(Rk3562()), true)); // four alike cores
+}
+
+TEST(IopThreadOrderedPin, ATierThatCannotBeReadLeavesThePinAlone)
+{
+	// A host with no capacity source (Windows) has no mask; the pin is as it was there.
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(0, true));
+	EXPECT_TRUE(IopThread::OrderedPinAllowed(0, false));
+}
+
+TEST(IopThreadOrderedPin, TheSamePlannerSaysWhereTheIopThreadGoesWhenThePinIsSkipped)
+{
+	// Where the pin is skipped the thread goes outside the tier: the processors that are not fast. (The IOP thread is
+	// placed there by SetEmuThreadAffinities through UnpinnedIopThreadMask.)
+	const std::vector<CpuCapacity> cpus = Mq65TwoFast();
+	const u64 tier = PerformanceMask(cpus);
+	ASSERT_FALSE(IopThread::OrderedPinAllowed(tier, true));
+	EXPECT_EQ(IopThread::UnpinnedIopThreadMask(tier, AllProcessors(cpus), true, true), 0xFu);
 }

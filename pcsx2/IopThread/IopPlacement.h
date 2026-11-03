@@ -67,6 +67,13 @@ namespace IopThread
 	};
 	TierPlan PlanTier(u64 performance_mask, bool mtvu, bool iop_thread);
 
+	/// Whether the Linux ordered thread pin (EnableThreadPinning) may be applied: false only when the performance tier can
+	/// be read and cannot hold the EE, GS and, with MTVU, VU1 threads. The pin hands out processors fastest first, so on
+	/// a tier of two it puts the GS thread on a slow core, and measured on the MQ65 with two fast cores it lost 30 to 45%
+	/// speed in every game. The IOP thread is not counted: it goes outside the tier (UnpinnedIopThreadMask). True when the
+	/// tier cannot be read (mask 0), which leaves a host that has no capacity source as it was.
+	bool OrderedPinAllowed(u64 performance_mask, bool mtvu);
+
 	/// Whether the game database's GS back-thread split fits on a host: the EE, VU1, GS front and GS back threads each
 	/// want a performance core, and a concurrent IOP thread wants a fifth. It is busy 40 to 99% of a core, and with it
 	/// running and only four big cores the split measured slower than a single GS thread in most games tried, even with
