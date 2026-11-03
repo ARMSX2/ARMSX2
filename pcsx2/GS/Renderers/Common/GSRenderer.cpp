@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <deque>
 #include <thread>
 #include <mutex>
@@ -51,6 +52,29 @@ static constexpr std::array<PresentShader, 8> s_tv_shader_indices = {
 
 static std::deque<std::thread> s_screenshot_threads;
 static std::mutex s_screenshot_threads_mutex;
+
+// Where the last GS dump request is, for GSGetDumpStatus(). The GS thread writes these (QueueSnapshot
+// and VSync both run on it) and any thread reads. The counts are stored before the phase that makes
+// them meaningful, with release, so a reader that sees the phase sees its counts.
+static std::atomic<u32> s_dump_phase{static_cast<u32>(GSDumpPhase::Idle)};
+static std::atomic<u32> s_dump_vsyncs_to_open{0};
+static std::atomic<u32> s_dump_vsyncs_to_recorded{0};
+// GS thread only: vsyncs seen, and the count when the current dump request was accepted.
+static u32 s_vsync_count = 0;
+static u32 s_dump_request_vsync = 0;
+
+static void SetDumpPhase(GSDumpPhase phase)
+{
+	s_dump_phase.store(static_cast<u32>(phase), std::memory_order_release);
+}
+
+GSDumpStatus GSGetDumpStatus()
+{
+	// The phase first: the counts it vouches for were stored before it was.
+	const GSDumpPhase phase = static_cast<GSDumpPhase>(s_dump_phase.load(std::memory_order_acquire));
+	return GSDumpStatus{phase, s_dump_vsyncs_to_open.load(std::memory_order_relaxed),
+		s_dump_vsyncs_to_recorded.load(std::memory_order_relaxed)};
+}
 
 std::unique_ptr<GSRenderer> g_gs_renderer;
 
@@ -106,6 +130,9 @@ void GSRenderer::Reset(bool hardware_reset)
 
 void GSRenderer::Destroy()
 {
+	// A request that was still waiting or recording will not be served; a poller must not wait on it.
+	SetDumpPhase(GSDumpPhase::Idle);
+
 	// The probe target and its readback buffer belong to the device, which is torn down right
 	// after this. Hand them back while it still exists.
 	m_field_shift.Reset();
@@ -979,6 +1006,8 @@ static GSVector4 RemotePlayArea(const GSVector4& draw_rect)
 
 void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	s_vsync_count++;
+
 	if (GSConfig.ShouldDump(s_n, g_perfmon.GetFrame()))
 	{
 		if (GSConfig.SaveInfo)
@@ -1451,6 +1480,9 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 					(m_dump_frames == 1) ? TRANSLATE_SV("GS", "single frame") : TRANSLATE_SV("GS", "multi-frame"), compression_str,
 					Path::GetFileName(m_dump->GetFinalPath())),
 				Host::OSD_INFO_DURATION);
+
+			s_dump_vsyncs_to_open.store(s_vsync_count - s_dump_request_vsync, std::memory_order_relaxed);
+			SetDumpPhase(GSDumpPhase::Recording);
 		}
 
 		const bool internal_resolution = (GSConfig.ScreenshotSize >= GSScreenshotSize::InternalResolution);
@@ -1481,11 +1513,21 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 	{
 		if (m_dump->VSync(field, snapshot_action.dump_is_last, m_regs))
 		{
+			// Every frame is in the dump. What follows (writing the screenshot, finishing the
+			// compressed stream, building the zip) takes seconds on a handheld and needs no running
+			// game, so a poller that wants the game to stop at the recorded frame must not wait for
+			// the zip.
+			s_dump_vsyncs_to_recorded.store(s_vsync_count - s_dump_request_vsync, std::memory_order_relaxed);
+			SetDumpPhase(GSDumpPhase::Packing);
+			Console.WriteLn("GSDump: recorded; opened %u vsync(s) and finished %u vsync(s) after the request.",
+				s_dump_vsyncs_to_open.load(std::memory_order_relaxed), s_dump_vsyncs_to_recorded.load(std::memory_order_relaxed));
+
 			Host::AddKeyedOSDMessage("GSDump",
 				fmt::format(TRANSLATE_FS("GS", "Saved GS dump to '{}'."), Path::GetFileName(m_dump->GetFinalPath())),
 				Host::OSD_INFO_DURATION);
 			// Closes the dump and packs the zip. A failed pack replaces the message above.
 			m_dump.reset();
+			SetDumpPhase(GSDumpPhase::Done);
 		}
 		else if (!snapshot_action.dump_is_last)
 		{
@@ -1510,6 +1552,16 @@ bool GSRenderer::QueueSnapshot(const std::string& path, const u32 gsdump_frames)
 
 	// this is really gross, but wx we get the snapshot request after shift...
 	m_snapshot_dump_frames = gsdump_frames;
+
+	// A dump request starts a new status. One that lands on a recording already running is refused
+	// at the VSync that serves it and must not reset what that recording reports.
+	if (gsdump_frames > 0 && !m_dump)
+	{
+		s_dump_vsyncs_to_open.store(0, std::memory_order_relaxed);
+		s_dump_vsyncs_to_recorded.store(0, std::memory_order_relaxed);
+		s_dump_request_vsync = s_vsync_count;
+		SetDumpPhase(GSDumpPhase::Queued);
+	}
 	return true;
 }
 

@@ -134,6 +134,14 @@ public class NativeApp {
 	public static native boolean captureGsDumpTo(String basePath, int frames);
 
 	/**
+	 * Where the dump queued by captureGsDumpTo has got to, as {phase, vsyncsToOpen, vsyncsToRecorded}
+	 * (null if the array could not be allocated). Phase: 0 idle, 1 queued, 2 recording, 3 packing
+	 * (every frame is recorded, the zip is still being built), 4 done. The vsync counts are GS
+	 * vsyncs since the request, 0 until known. Cheap and safe from any thread.
+	 */
+	public static native long[] getGsDumpStatus();
+
+	/**
 	 * Writes a save state to [path] and nowhere else: it never touches the numbered slots, the
 	 * autosave or their backups. Refused (false) while the memory card is busy, with no game CRC
 	 * or with no VM. Blocks until the file is complete; not for the UI thread.

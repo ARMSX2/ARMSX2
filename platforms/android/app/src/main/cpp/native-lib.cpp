@@ -318,6 +318,27 @@ Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDumpTo(JNIEnv* env, jclass, jstrin
     return queued ? JNI_TRUE : JNI_FALSE;
 }
 
+// Where the dump requested with captureGsDumpTo has got to: {phase, vsyncsToOpen, vsyncsToRecorded}.
+// Phase is GSDumpPhase: 0 idle, 1 queued, 2 recording, 3 packing, 4 done. "Packing" is the moment
+// every frame is in the dump, before the screenshot is written and the zip built, which takes
+// seconds on a handheld; the problem report pauses the game on it instead of on the finished zip.
+// Reads atomics only, so it is cheap, callable from any thread, and works with no game running
+// (idle, or whatever the last request left).
+extern "C"
+JNIEXPORT jlongArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGsDumpStatus(JNIEnv* env, jclass) {
+    const GSDumpStatus status = GSGetDumpStatus();
+    const jlong values[3] = {
+        static_cast<jlong>(status.phase),
+        static_cast<jlong>(status.vsyncs_to_open),
+        static_cast<jlong>(status.vsyncs_to_recorded),
+    };
+    jlongArray out = env->NewLongArray(3);
+    if (out != nullptr)
+        env->SetLongArrayRegion(out, 0, 3, values);
+    return out;
+}
+
 // The GS driver report on its own, for a problem report made with no GS dump to take it from.
 // Works with no game running: the device, driver pack and kernel sections need none, and the
 // renderer sections are left empty (their steps say why).
