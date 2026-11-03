@@ -124,8 +124,9 @@ data class CpuSettings(
     /** EmuCore/Speedhacks/iopThreadLag — how many EE cycles the EE may run ahead of the IOP thread before
      *  it waits for it. Advanced. The core clamps it to 4096..9830400 (two frames); keep the pickers inside that.
      *  The default is one frame, 4915200 cycles (IopThread::kDefaultSettingLag in IopThreadMode.h); the core pulls
-     *  the bound back to 24576 by itself at the moments the EE is waiting on the IOP. A value saved before the
-     *  default changed stays as it was saved. */
+     *  the bound back to 24576 by itself at the moments the EE is waiting on the IOP. A save that still holds the
+     *  old default, 24576, is moved to the new one once (ConfigStore.migrateIopThreadLag); any other saved value
+     *  stays as it was saved. */
     val iopThreadLag: Int = 4915200,
     /** EmuCore/CPU/Recompiler/EnableVUAot — vu-aot, the VU1 ahead-of-time compiler. Programs that run often
      *  are recompiled in the background above microVU, and the compiled VU code is kept on disk (the VU

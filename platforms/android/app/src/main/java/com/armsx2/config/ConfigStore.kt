@@ -275,6 +275,47 @@ object ConfigStore {
         if (g.output.affinityMode == 0) saveGlobal(g.copy(output = g.output.copy(affinityMode = 7)))
     }
 
+    private const val KEY_IOP_THREAD_LAG_MIGRATED = "config.migrated.iopThreadLag"
+
+    /** What [CpuSettings.iopThreadLag] defaulted to before it became one frame (IopThread::kDefaultSettingLag). */
+    internal const val IOP_THREAD_LAG_OLD_DEFAULT = 24576
+
+    /**
+     * [settings] with an iopThreadLag of exactly [IOP_THREAD_LAG_OLD_DEFAULT] moved to the current default, one frame.
+     * Any other lag stays, and so does everything else: the IOP thread setting is off by default and is not touched.
+     * Returns [settings] itself when nothing changes.
+     *
+     * The old default cannot be told from a choice. Settings.toJson wrote every field, so a global save holds
+     * iopThreadLag=24576 whether the player picked it or never touched it, and the player who did pick it is moved
+     * with the rest, once. That is the accepted cost (the same as [migrateAffinityPerfCores]): after this has run, a
+     * lag the player picks, 24576 included, stays. The lag matters because a game the game database turns the IOP
+     * thread on for runs with the global lag.
+     */
+    internal fun withIopThreadLagMigrated(settings: Settings): Settings {
+        if (settings.cpu.iopThreadLag != IOP_THREAD_LAG_OLD_DEFAULT) return settings
+        return settings.copy(cpu = settings.cpu.copy(iopThreadLag = Settings().cpu.iopThreadLag))
+    }
+
+    /**
+     * One-time: moves the stored global settings' old default lag to the current one (see [withIopThreadLagMigrated]).
+     * Runs against the live store, `config.global` in SharedPreferences; the `armsx2-settings.json` in the data folder is
+     * only a mirror that [saveGlobal] writes through to, and is read back only when `config.global` is missing, so it
+     * needs nothing here.
+     *
+     * The per-game blobs (`config.game.<serial>`) are NOT touched. A blob is sparse: it holds a key only because the
+     * player changed that setting for that game, and a key once pinned stays pinned ([save]), so an iopThreadLag in one
+     * is that game's own choice, not a stored default.
+     */
+    fun migrateIopThreadLag() {
+        if (MainActivityRuntime.prefs.getBoolean(KEY_IOP_THREAD_LAG_MIGRATED, false)) return
+        MainActivityRuntime.prefs.edit().putBoolean(KEY_IOP_THREAD_LAG_MIGRATED, true).apply()
+        // A genuinely empty install has no save to move; Settings() already holds the new default.
+        if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) == null) return
+        val global = loadGlobal()
+        val migrated = withIopThreadLagMigrated(global)
+        if (migrated !== global) saveGlobal(migrated)
+    }
+
     /** Load the sparse per-game override blob, or null if there are none. */
     fun loadOverrides(serial: String): JSONObject? {
         val raw = MainActivityRuntime.prefs.getString(keyForGame(serial), null) ?: return null
