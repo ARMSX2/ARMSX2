@@ -156,7 +156,7 @@ object BugReport {
     }
 
     /** Records that a game is about to run. Call right before the VM thread starts. */
-    fun armCrashMarker(serial: String, title: String, driverId: String) {
+    fun armCrashMarker(serial: String, title: String, driverId: String, crc: String = "") {
         val name = if (driverId.isBlank()) "" else {
             runCatching { CustomDriver.listInstalled(app).firstOrNull { it.id == driverId }?.name }.getOrNull().orEmpty()
         }
@@ -164,7 +164,7 @@ object BugReport {
             app,
             CrashMarker.Marker(
                 System.currentTimeMillis(), Process.myPid(), serial, title, driverId, name,
-                foreground = activityStarted, bootCount = bootCount(app),
+                foreground = activityStarted, bootCount = bootCount(app), crc = ReportCrc.normalize(crc),
             ),
         )
     }
@@ -188,7 +188,9 @@ object BugReport {
     /** Remembers that the core could not start a game, for [bootFailure]. */
     fun noteBootFailure(message: String) {
         val current = com.armsx2.runtime.MainActivityRuntime.currentGame.value
-        val game = current?.let { ReportGame(it.serial.orEmpty(), "", it.title, it.settingsKey) }
+        // The marker is still armed here (it is cleared once the boot has been dealt with) and holds the CRC.
+        val crc = CrashMarker.read(app)?.takeIf { it.pid == Process.myPid() }?.crc.orEmpty()
+        val game = current?.let { ReportGame(it.serial.orEmpty(), crc, it.title, it.settingsKey) }
         bootFailure = BootFailure(message, game, com.armsx2.runtime.MainActivityRuntime.customDriverId.value.orEmpty())
     }
 

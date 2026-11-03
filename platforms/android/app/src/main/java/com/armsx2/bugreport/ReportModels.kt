@@ -32,6 +32,24 @@ data class ReportGame(
     val settingsKey: String?,
 )
 
+/**
+ * CRCs as a report carries them: 8 hex digits, upper case, or "" when not known. The core reports
+ * 00000000 for an image it could not identify, which is "not known" and not a CRC.
+ */
+object ReportCrc {
+    private val PATTERN = Regex("[0-9A-Fa-f]{8}")
+    private const val UNIDENTIFIED = "00000000"
+
+    fun normalize(raw: String?): String {
+        val text = raw?.trim().orEmpty()
+        return if (PATTERN.matches(text) && text != UNIDENTIFIED) text.uppercase() else ""
+    }
+
+    /** The first of [candidates], in order, that is a usable CRC; "" if none is. */
+    fun firstKnown(vararg candidates: String?): String =
+        candidates.asSequence().map(::normalize).firstOrNull { it.isNotEmpty() } ?: ""
+}
+
 /** The commit the build is from, as `report.json` and the create call name it. */
 object AppCommit {
     const val UNKNOWN = "unknown"

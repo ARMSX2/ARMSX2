@@ -20,6 +20,9 @@ import org.json.JSONObject
  * It also says whether the app was in the foreground, and which boot of the device it was written
  * in. A process that dies while the app is in the background is not something to ask about, and
  * neither is one that a reboot ended; [CrashDecision] uses both.
+ *
+ * It also holds the disc's CRC, resolved before the game boots (the running VM often reports 0 for
+ * ISO and CHD images), because a crash report is built from the marker in a later process.
  */
 object CrashMarker {
     private const val PREFS = "armsx2_bugreport"
@@ -40,11 +43,13 @@ object CrashMarker {
         val foreground: Boolean = true,
         /** `Settings.Global.BOOT_COUNT` when the marker was written, or -1 if the system would not say. */
         val bootCount: Int = -1,
+        /** The disc's CRC as 8 upper-case hex digits, or "" if it could not be worked out before boot. */
+        val crc: String = "",
     ) {
         fun toJson(): JSONObject = JSONObject()
             .put("armedAt", armedAt).put("pid", pid).put("serial", serial).put("title", title)
             .put("driverId", driverId).put("driverName", driverName)
-            .put("foreground", foreground).put("bootCount", bootCount)
+            .put("foreground", foreground).put("bootCount", bootCount).put("crc", crc)
 
         companion object {
             fun fromJson(json: JSONObject) = Marker(
@@ -58,6 +63,7 @@ object CrashMarker {
                 // foreground, same boot", which is what the older rule assumed.
                 foreground = json.optBoolean("foreground", true),
                 bootCount = json.optInt("bootCount", -1),
+                crc = ReportCrc.normalize(json.optString("crc", "")),
             )
         }
     }

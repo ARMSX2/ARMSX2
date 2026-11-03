@@ -642,14 +642,22 @@ open class MainActivityRuntime : ComponentActivity() {
          *  LAUNCHER rotation (reported as "BIOS ignores the Renderer rotation and goes portrait"). */
         private var emulationOwnsOrientation = false
 
-        /** Writes the crash marker for the VM about to run: which game and which GPU driver it is on. */
-        private fun armBugReportMarker() {
+        /** Writes the crash marker for the VM about to run: which game, which GPU driver, and the disc's CRC.
+         *
+         *  The CRC is worked out from the image here, before the VM exists, because the running VM
+         *  reports 0 for some ISO and CHD boots and a crash report wants it. This is the only point
+         *  it can be read without the VM's one CDVD being busy (see DiscIdentity); the result is
+         *  memoised, so a repeat boot of the same file costs nothing. [identifyDisc] is false for a
+         *  BIOS boot (no disc) and an arcade launch (not a disc image). */
+        private fun armBugReportMarker(identifyDisc: Boolean = true) {
             runCatching {
                 val game = currentGame.value
+                val crc = if (identifyDisc) runCatching { com.armsx2.DiscIdentity.crcOf(m_szGamefile) }.getOrNull().orEmpty() else ""
                 com.armsx2.bugreport.BugReport.armCrashMarker(
                     serial = game?.serial.orEmpty(),
                     title = game?.title ?: "BIOS",
                     driverId = customDriverId.value.orEmpty(),
+                    crc = crc,
                 )
             }
         }
@@ -865,7 +873,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     runCatching { instance?.applicationContext?.let { com.armsx2.input.MicDevices.push(it) } }
                     // Armed on disk before the VM can take the process down, cleared below when the
                     // VM thread returns in an orderly way. Still armed at the next launch = a crash.
-                    armBugReportMarker()
+                    armBugReportMarker(identifyDisc = !arcadeLaunch)
                     if (arcadeLaunch)
                         runArcadeGame(m_szGamefile)
                     else
@@ -1351,7 +1359,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     }
                     // No game of its own, so nothing staged by an earlier launch may be written.
                     stagePerGameSettingsFile(null)
-                    armBugReportMarker()
+                    armBugReportMarker(identifyDisc = false)
                     NativeApp.runVMThread(m_szGamefile)
                     vmReturned = true
                     noteBootFailure("bugreport.boot.message")

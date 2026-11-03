@@ -128,4 +128,66 @@ class ReportModelsTest {
         // An "unknown" passed on from somewhere must not shadow a real value after it.
         assertEquals("05f55b8e19", AppCommit.pick("unknown", "05f55b8e19"))
     }
+
+    @Test
+    fun theCrashMarkerKeepsTheCrcThroughItsFile() {
+        val marker = CrashMarker.Marker(
+            1_762_000_000_000L, 4242, "SCUS-97481", "God of War II", "pack", "Pack", crc = "ABCD1234",
+        )
+        val back = CrashMarker.Marker.fromJson(JSONObject(marker.toJson().toString()))
+        assertEquals(marker, back)
+        assertEquals("ABCD1234", back.crc)
+    }
+
+    @Test
+    fun aMarkerFromBeforeTheCrcWasRecordedHasNone() {
+        val old = JSONObject("""{"armedAt":5,"pid":9,"serial":"S","title":"T","driverId":"","driverName":"","foreground":true,"bootCount":3}""")
+        assertEquals("", CrashMarker.Marker.fromJson(old).crc)
+    }
+
+    @Test
+    fun aCrcInAMarkerFileThatIsNotACrcReadsAsUnknown() {
+        val bad = JSONObject("""{"armedAt":5,"pid":9,"crc":"00000000"}""")
+        assertEquals("", CrashMarker.Marker.fromJson(bad).crc)
+        assertEquals("", CrashMarker.Marker.fromJson(JSONObject("""{"armedAt":5,"pid":9,"crc":"xyz"}""")).crc)
+    }
+
+    @Test
+    fun aCrcIsEightUpperCaseHexDigitsOrNothing() {
+        assertEquals("ABCD1234", ReportCrc.normalize("abcd1234"))
+        assertEquals("0000ABCD", ReportCrc.normalize(" 0000abcd "))
+        assertEquals("", ReportCrc.normalize(null))
+        assertEquals("", ReportCrc.normalize(""))
+        // The core's "could not identify this image".
+        assertEquals("", ReportCrc.normalize("00000000"))
+        assertEquals("", ReportCrc.normalize("ABCD123"))
+        assertEquals("", ReportCrc.normalize("ABCD12345"))
+        assertEquals("", ReportCrc.normalize("ABCD123G"))
+    }
+
+    @Test
+    fun theFirstUsableCrcWinsAndAZeroFromTheRunningVmFallsThrough() {
+        // The running VM said 0 (an ISO or CHD boot); the marker has the one read from the image.
+        assertEquals("FDD12792", ReportCrc.firstKnown("00000000", "fdd12792"))
+        assertEquals("11111111", ReportCrc.firstKnown("11111111", "22222222"))
+        assertEquals("", ReportCrc.firstKnown("00000000", null, ""))
+        assertEquals("", ReportCrc.firstKnown())
+    }
+
+    @Test
+    fun aCrashReportAboutAGameCarriesTheCrcItsMarkerRecorded() {
+        val marker = CrashMarker.Marker(1L, 4242, "SCUS-97481", "God of War II", "", "", crc = "FDD12792")
+        val origin = ReportOrigins.crash(PendingCrash(java.io.File("crash-1"), "God of War II", "SCUS-97481", "", 1L, marker))
+        assertEquals("FDD12792", origin.game?.crc)
+        // And that is what the summary the server indexes says.
+        val summary = ReportJson.summary("", origin.game, "d", "s", "g", "system", "os")
+        assertEquals("FDD12792", summary.getString("crc"))
+    }
+
+    @Test
+    fun aCrashReportWhoseMarkerHasNoCrcLeavesItEmptyRatherThanInventingOne() {
+        val marker = CrashMarker.Marker(1L, 4242, "SCUS-97481", "God of War II", "", "")
+        val origin = ReportOrigins.crash(PendingCrash(java.io.File("crash-1"), "God of War II", "SCUS-97481", "", 1L, marker))
+        assertEquals("", origin.game?.crc)
+    }
 }

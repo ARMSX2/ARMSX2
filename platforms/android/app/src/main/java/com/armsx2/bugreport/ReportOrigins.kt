@@ -2,6 +2,7 @@
 package com.armsx2.bugreport
 
 import android.content.Context
+import android.os.Process
 import com.armsx2.CustomDriver
 import com.armsx2.DiscIdentity
 import com.armsx2.EmuState
@@ -19,8 +20,12 @@ object ReportOrigins {
     fun running(context: Context): ReportOrigin {
         val current = MainActivityRuntime.currentGame.value
         val serial = runCatching { NativeApp.getGameSerial() }.getOrNull().orEmpty().ifBlank { current?.serial.orEmpty() }
-        val crc = runCatching { NativeApp.getGameCRC() }.getOrNull().orEmpty().uppercase()
-            .takeIf { it != "00000000" && it.matches(DiscIdentity.CRC_PATTERN) }.orEmpty()
+        // The running VM reports 0 for some ISO and CHD boots. The marker holds the CRC the app
+        // worked out from the image before booting, which is the same game's.
+        val crc = ReportCrc.firstKnown(
+            runCatching { NativeApp.getGameCRC() }.getOrNull(),
+            CrashMarker.read(context)?.takeIf { it.pid == Process.myPid() }?.crc,
+        )
         val title = current?.title ?: runCatching { NativeApp.getPauseGameTitle() }.getOrNull().orEmpty()
         val game = if (serial.isBlank() && title.isBlank()) null
         else ReportGame(serial, crc, title, current?.settingsKey ?: serial.ifBlank { null })
@@ -45,7 +50,7 @@ object ReportOrigins {
     /** From a library game's menu: that game, and the driver its settings would run it on. No capture. */
     suspend fun libraryGame(context: Context, info: GameInfo): ReportOrigin {
         val serial = info.serial.orEmpty()
-        val crc = runCatching { DiscIdentity.resolve(info.uri, info.serial) }.getOrNull().orEmpty().uppercase()
+        val crc = ReportCrc.normalize(runCatching { DiscIdentity.resolve(info.uri, info.serial) }.getOrNull())
         val resolved = ConfigStore.resolveForGame(info.settingsKey)
         val global = ConfigStore.loadGlobal()
         val driverId = effectiveDriverId(context, resolved.output.customDriverId, global.output.customDriverId)
@@ -60,7 +65,7 @@ object ReportOrigins {
     /** From the crash prompt or an unsent line in "My reports". */
     fun crash(pending: PendingCrash): ReportOrigin = ReportOrigin(
         game = if (pending.serial.isBlank() && pending.title.isBlank()) null
-        else ReportGame(pending.serial, "", pending.title, pending.serial.ifBlank { null }),
+        else ReportGame(pending.serial, ReportCrc.normalize(pending.marker.crc), pending.title, pending.serial.ifBlank { null }),
         canCapture = false,
         driverId = pending.marker.driverId,
         driverName = pending.marker.driverName,
