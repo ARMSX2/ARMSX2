@@ -94,8 +94,9 @@ data class BootFailure(
  *    evidence of a crash, tidies old bundles and resumes uploads a previous run left unfinished.
  *  - [ReportSession] objects carry one report through the user flow; [prepare], [submit] and
  *    [discard] drive them.
- *  - Uploads run one at a time on a background thread and survive the user leaving the flow. If the
- *    process dies they resume on the next launch from `state.json`.
+ *  - Uploads run on background threads (one per report, two moving bytes at once) and survive the
+ *    user leaving the flow. If the process dies they resume on the next launch from `state.json`,
+ *    except that a big report on a metered connection waits for Wi-Fi (see [MeteredRule]).
  */
 object BugReport {
     private const val PREFS = "armsx2_bugreport"
@@ -193,6 +194,8 @@ object BugReport {
 
     // ---- startup --------------------------------------------------------------------------
 
+    private val startupRan = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /**
      * Called once the data folder is pinned and before any game can boot. Cheap on the calling
      * thread (the emulog is renamed, nothing is copied); the rest is done on a background thread.
@@ -203,6 +206,8 @@ object BugReport {
      * halfway therefore still finds the marker and does it again.
      */
     fun onDataRootReady(dataRoot: String) {
+        // Once per process: a second call would find the marker the first is still working on.
+        if (!startupRan.compareAndSet(false, true)) return
         val root = File(dataRoot)
         val marker = CrashMarker.read(app)
         var preserved: CrashEvidence.Preserved? = null
