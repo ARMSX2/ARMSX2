@@ -299,12 +299,16 @@ class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> =
                 "(?=/|$|[\\s\"'<>|,;:)\\]}])",
         )
 
-        /** Lower-case hex SHA-256 of [file], read in blocks. */
-        fun sha256(file: File): String {
+        /**
+         * Lower-case hex SHA-256 of [file], read in blocks. [shouldStop] is asked between blocks; when
+         * it says yes the hash is abandoned with [UploadCancelled], so a big file does not hold up a cancel.
+         */
+        fun sha256(file: File, shouldStop: () -> Boolean = { false }): String {
             val digest = java.security.MessageDigest.getInstance("SHA-256")
             file.inputStream().use { input ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
+                    if (shouldStop()) throw UploadCancelled()
                     val n = input.read(buffer)
                     if (n < 0) break
                     digest.update(buffer, 0, n)

@@ -16,6 +16,45 @@ import java.io.File
 import java.io.IOException
 import java.util.zip.GZIPOutputStream
 
+/**
+ * Takes a save state, and when the memory card was busy lets the game run for a moment and tries
+ * once more. The card's write counter only goes down at vertical sync, so a paused game never
+ * clears it; a state taken while it is nonzero would not match the card and is refused.
+ */
+object SavestateAttempt {
+    /** How long the game may run to let the card finish. */
+    const val MEMCARD_WAIT_MS = 2_000L
+
+    enum class Result { SAVED, MEMCARD_BUSY, FAILED }
+
+    fun run(
+        save: () -> Boolean,
+        memcardBusy: () -> Boolean,
+        control: GameControl,
+        abandoned: () -> Boolean = { false },
+        waitMs: Long = MEMCARD_WAIT_MS,
+        now: () -> Long = { System.currentTimeMillis() },
+        sleep: (Long) -> Unit = { Thread.sleep(it) },
+    ): Result {
+        if (save()) return Result.SAVED
+        if (!memcardBusy()) return Result.FAILED
+        val wasPaused = control.isPaused()
+        try {
+            if (wasPaused) {
+                control.resume()
+                control.awaitRunning(waitMs)
+            }
+            val deadline = now() + waitMs
+            while (now() < deadline && !abandoned() && memcardBusy()) sleep(50)
+        } finally {
+            if (wasPaused) control.pause()
+        }
+        if (abandoned()) return Result.FAILED
+        if (save()) return Result.SAVED
+        return if (memcardBusy()) Result.MEMCARD_BUSY else Result.FAILED
+    }
+}
+
 /** How the collector asks the running game to move, without knowing how the app pauses it. */
 interface GameControl {
     fun isPaused(): Boolean
@@ -25,6 +64,39 @@ interface GameControl {
     /** Waits up to [timeoutMs] for the game to be running after [resume]. */
     fun awaitRunning(timeoutMs: Long): Boolean
 }
+
+/**
+ * Why a file is not in a report, in a form the screens can word. [detail] is the raw reason (an
+ * exception's text, the platform's message) and goes into `report.json` only; the consent screen
+ * says what [kind] means in the app's own words.
+ */
+enum class CollectFailure(val key: String) {
+    /** There was nothing to collect: no log yet, or it was not saved when the app restarted. */
+    UNAVAILABLE("bugreport.fail.unavailable"),
+
+    /** The memory card was being written to, so a save state was refused. */
+    MEMCARD("bugreport.fail.memcard"),
+
+    /** The graphics dump could not be started. */
+    NOT_STARTED("bugreport.fail.notstarted"),
+
+    /** The game drew no frame in time for the graphics dump. */
+    NO_FRAME("bugreport.fail.noframe"),
+
+    /** Over the server's limit for one file. */
+    TOO_LARGE("bugreport.fail.toolarge"),
+
+    /** Dropped to keep the whole report under the size limit. */
+    LEFT_OUT("bugreport.fail.leftout"),
+
+    /** The user chose to send without it. */
+    SKIPPED("bugreport.fail.skipped"),
+
+    /** Anything else; [Failure.detail] has the platform's words. */
+    ERROR("bugreport.fail.error"),
+}
+
+class Failure(val kind: CollectFailure, val detail: String = "")
 
 /**
  * Builds one report's folder: the always-collected files first, the heavy ones (save state, GS
@@ -49,10 +121,23 @@ class ReportCollector(
     val collected = linkedMapOf<String, Long>()
 
     /** File name to why it is not there. */
-    val failed = linkedMapOf<String, String>()
+    val failed = linkedMapOf<String, Failure>()
+
+    /** Problems in the report's own making that no file name goes with, raw, for `report.json`. */
+    val errors = mutableListOf<String>()
+
+    /** Set when the user chose to send without the save state and graphics dump, or to cancel: captures that finish later are dropped. */
+    @Volatile
+    private var captureAbandoned = false
+    private val captureLock = Any()
 
     /** The GS driver report as it will be sent, once either source of it has produced one. */
     private var systemReport: String? = null
+
+    /** Records a problem with building the report for `report.json`; it is never shown as it is. */
+    fun noteError(text: String) {
+        errors += text
+    }
 
     /** Gathers the files every report carries. */
     fun collectLight() {
@@ -70,7 +155,7 @@ class ReportCollector(
             for (name in listOf(ReportFiles.EMULOG, ReportFiles.LOGCAT)) {
                 val f = File(dir, name)
                 if (f.isFile && f.length() > 0) collected[name] = f.length()
-                else failed.putIfAbsent(name, "not saved when the app restarted")
+                else failed.putIfAbsent(name, Failure(CollectFailure.UNAVAILABLE, "not saved when the app restarted"))
             }
         }
         step(ReportFiles.SETTINGS) { writeSettings() }
@@ -83,19 +168,43 @@ class ReportCollector(
         }
     }
 
-    /** Writes a save state of the paused game. The game is not resumed. */
-    fun captureSavestate(): Boolean {
+    /**
+     * Writes a save state of the game. The game is paused, and stays paused unless the memory card
+     * was busy: see [SavestateAttempt].
+     */
+    fun captureSavestate(control: GameControl): Boolean {
+        if (captureAbandoned) return false
         val target = File(dir, ReportFiles.SAVESTATE)
         target.delete()
-        val ok = runCatching { NativeApp.saveStateToPath(target.absolutePath) }.getOrDefault(false)
-        if (!ok || !target.isFile || target.length() == 0L) {
-            target.delete()
-            failed[ReportFiles.SAVESTATE] =
-                "The game could not be saved just now (the memory card may have been busy)."
-            return false
+        val result = SavestateAttempt.run(
+            save = {
+                val ok = runCatching { NativeApp.saveStateToPath(target.absolutePath) }.getOrDefault(false)
+                if (!ok || !target.isFile || target.length() == 0L) {
+                    target.delete()
+                    false
+                } else {
+                    true
+                }
+            },
+            memcardBusy = { runCatching { NativeApp.isMemcardBusy() }.getOrDefault(false) },
+            control = control,
+            abandoned = { captureAbandoned },
+        )
+        synchronized(captureLock) {
+            if (captureAbandoned) {
+                target.delete()
+                return false
+            }
+            if (result != SavestateAttempt.Result.SAVED) {
+                failed[ReportFiles.SAVESTATE] = Failure(
+                    if (result == SavestateAttempt.Result.MEMCARD_BUSY) CollectFailure.MEMCARD else CollectFailure.ERROR,
+                    "saveStateToPath refused: $result",
+                )
+                return false
+            }
+            collected[ReportFiles.SAVESTATE] = target.length()
+            return true
         }
-        collected[ReportFiles.SAVESTATE] = target.length()
-        return true
     }
 
     /**
@@ -103,6 +212,7 @@ class ReportCollector(
      * resumed for the time it takes and paused again afterwards if it was paused before.
      */
     fun captureGsDump(control: GameControl): Boolean {
+        if (captureAbandoned) return false
         val work = File(dir, ".gsdump").apply { deleteRecursively(); mkdirs() }
         try {
             val base = File(work, "dump")
@@ -110,7 +220,7 @@ class ReportCollector(
             val wasPaused = control.isPaused()
             val queued = runCatching { NativeApp.captureGsDumpTo(base.absolutePath, 1) }.getOrDefault(false)
             if (!queued) {
-                failed[ReportFiles.GS_DUMP] = "The graphics dump could not be started (is a game running?)."
+                failed[ReportFiles.GS_DUMP] = Failure(CollectFailure.NOT_STARTED, "captureGsDumpTo returned false")
                 return false
             }
             try {
@@ -119,27 +229,34 @@ class ReportCollector(
                     control.awaitRunning(3_000)
                 }
                 val deadline = System.currentTimeMillis() + GS_DUMP_WAIT_MS
-                while (!zip.isFile && System.currentTimeMillis() < deadline) Thread.sleep(100)
+                while (!zip.isFile && System.currentTimeMillis() < deadline && !captureAbandoned) Thread.sleep(100)
             } finally {
                 if (wasPaused) control.pause()
             }
             if (!zip.isFile) {
-                failed[ReportFiles.GS_DUMP] = "The game did not draw a frame in time, so there is no graphics dump."
+                synchronized(captureLock) {
+                    if (!captureAbandoned) failed[ReportFiles.GS_DUMP] = Failure(CollectFailure.NO_FRAME, "no dump bundle after ${GS_DUMP_WAIT_MS} ms")
+                }
                 return false
             }
             val target = File(dir, ReportFiles.GS_DUMP)
-            val report = scrubber.rewriteGsBundle(zip, target)
-            // The dump's own report was written when the renderer was running: better than the
-            // standalone one, which has no renderer sections.
-            if (report != null) {
-                File(dir, ReportFiles.SYSTEM).writeText(report)
-                systemReport = report
-                collected[ReportFiles.SYSTEM] = File(dir, ReportFiles.SYSTEM).length()
+            synchronized(captureLock) {
+                if (captureAbandoned) return false
+                val report = scrubber.rewriteGsBundle(zip, target)
+                // The dump's own report was written when the renderer was running: better than the
+                // standalone one, which has no renderer sections.
+                if (report != null) {
+                    File(dir, ReportFiles.SYSTEM).writeText(report)
+                    systemReport = report
+                    collected[ReportFiles.SYSTEM] = File(dir, ReportFiles.SYSTEM).length()
+                }
+                collected[ReportFiles.GS_DUMP] = target.length()
             }
-            collected[ReportFiles.GS_DUMP] = target.length()
             return true
         } catch (e: Exception) {
-            failed[ReportFiles.GS_DUMP] = e.message ?: "The graphics dump could not be read."
+            synchronized(captureLock) {
+                if (!captureAbandoned) failed[ReportFiles.GS_DUMP] = Failure(CollectFailure.ERROR, e.message ?: e.javaClass.simpleName)
+            }
             File(dir, ReportFiles.GS_DUMP).delete()
             return false
         } finally {
@@ -148,19 +265,61 @@ class ReportCollector(
     }
 
     /**
+     * Gives up on the save state and the graphics dump, whether or not they have finished: the user
+     * chose to send without them, or to cancel. A capture that finishes after this is discarded.
+     */
+    fun abandonCapture() {
+        synchronized(captureLock) {
+            captureAbandoned = true
+            for (name in listOf(ReportFiles.GS_DUMP, ReportFiles.SAVESTATE)) {
+                if (name !in collected) failed[name] = Failure(CollectFailure.SKIPPED, "skipped by the user")
+            }
+        }
+    }
+
+    /**
      * Writes `report.json` and `state.json`, hashes every file and returns the state the uploader
      * works from. Files over the server's limits are dropped (the biggest first) and noted.
      */
-    fun finish(kind: ReportKind, description: String, perfAfterResume: String?): UploadState {
+    fun finish(
+        kind: ReportKind,
+        description: String,
+        perfAfterResume: String?,
+        /** True once the user has chosen to send without the save state and graphics dump. */
+        skipHeavy: () -> Boolean = { false },
+        /** True once the user has cancelled; ends the work with [UploadCancelled]. */
+        isCancelled: () -> Boolean = { false },
+    ): UploadState {
+        // The logs go in last, so a failure during capture is in them.
+        refreshLogs()
         enforceLimits()
         val commit = systemReport?.let(::appCommitFrom) ?: "unknown"
+        val heavy = setOf(ReportFiles.GS_DUMP, ReportFiles.SAVESTATE)
+        // Heavy files are dropped before report.json is written, so it says they were left out.
+        if (skipHeavy()) dropHeavy(heavy)
         val report = buildReport(kind, description, commit, perfAfterResume)
         File(dir, ReportFiles.REPORT).writeText(report.toString(2))
         collected[ReportFiles.REPORT] = File(dir, ReportFiles.REPORT).length()
 
         val files = ReportFiles.ALL.mapNotNull { name ->
             val f = File(dir, name)
-            if (!f.isFile || f.length() == 0L) null else FileState(name, f.length(), Scrubber.sha256(f))
+            if (!f.isFile || f.length() == 0L) return@mapNotNull null
+            if (isCancelled()) throw UploadCancelled()
+            if (name in heavy && skipHeavy()) {
+                // Chosen after report.json was written: the file is simply not sent.
+                f.delete()
+                failed[name] = Failure(CollectFailure.SKIPPED, "skipped by the user")
+                return@mapNotNull null
+            }
+            val stop = { isCancelled() || (name in heavy && skipHeavy()) }
+            try {
+                FileState(name, f.length(), Scrubber.sha256(f, stop))
+            } catch (_: UploadCancelled) {
+                if (isCancelled()) throw UploadCancelled()
+                f.delete()
+                failed[name] = Failure(CollectFailure.SKIPPED, "skipped by the user")
+                null
+            }
         }.toMutableList()
 
         val summary = ReportJson.summary(
@@ -187,13 +346,57 @@ class ReportCollector(
 
     // ---- the always-collected files -------------------------------------------------------
 
-    private fun writeEmulog() {
+    /** Removes the files named in [names] and notes that the user chose to leave them out. */
+    private fun dropHeavy(names: Set<String>) {
+        for (name in names) {
+            val f = File(dir, name)
+            if (f.isFile) {
+                f.delete()
+                collected.remove(name)
+                failed[name] = Failure(CollectFailure.SKIPPED, "skipped by the user")
+            }
+        }
+    }
+
+    /**
+     * Takes the emulog and logcat again now that capture is over, so that anything that went wrong
+     * while capturing is in them. The first copies stay if a new one cannot be made. A crash
+     * report's logs are the previous run's and are not touched.
+     */
+    private fun refreshLogs() {
+        if (origin.crashDir != null) return
+        refresh(ReportFiles.EMULOG) { writeEmulogTo(it) }
+        refresh(ReportFiles.LOGCAT) {
+            val result = LogcatSnapshot.write(scrubber, it)
+            if (!result.ok) throw IOException(result.error ?: "logcat failed")
+        }
+    }
+
+    private fun refresh(name: String, write: (File) -> Unit) {
+        val target = File(dir, name)
+        val fresh = File(dir, "$name.new")
+        try {
+            write(fresh)
+            if (fresh.isFile && fresh.length() > 0 && fresh.renameTo(target)) {
+                collected[name] = target.length()
+                failed.remove(name)
+            }
+        } catch (t: Throwable) {
+            errors += "Could not refresh $name after capture: ${t.message ?: t.javaClass.simpleName}"
+        } finally {
+            fresh.delete()
+        }
+    }
+
+    private fun writeEmulog() = writeEmulogTo(File(dir, ReportFiles.EMULOG))
+
+    private fun writeEmulogTo(dest: File) {
         val root = MainActivityRuntime.dataRootOrNull() ?: throw IOException("the data folder is not available")
         val src = File(root, "logs/emulog.txt")
         if (!src.isFile) throw IOException("there is no emulog.txt yet (no game has been started)")
         val length = src.length()
         src.inputStream().use { input ->
-            scrubber.copyText(input, length, GZIPOutputStream(File(dir, ReportFiles.EMULOG).outputStream().buffered()))
+            scrubber.copyText(input, length, GZIPOutputStream(dest.outputStream().buffered()))
         }
     }
 
@@ -289,8 +492,13 @@ class ReportCollector(
         )
         report.put(
             "failed",
-            JSONArray().also { a -> for ((name, why) in failed) a.put(JSONObject().put("name", name).put("reason", why)) },
+            JSONArray().also { a ->
+                for ((name, why) in failed) {
+                    a.put(JSONObject().put("name", name).put("kind", why.kind.name).put("reason", why.detail.ifBlank { why.kind.name }))
+                }
+            },
         )
+        report.put("errors", JSONArray(errors))
         return report
     }
 
@@ -349,7 +557,7 @@ class ReportCollector(
         for (name in ReportFiles.ALL) {
             val f = File(dir, name)
             if (f.isFile && f.length() > ReportLimits.MAX_FILE_BYTES) {
-                failed[name] = "Too large to send (${f.length() / (1024 * 1024)} MB)."
+                failed[name] = Failure(CollectFailure.TOO_LARGE, "${f.length() / (1024 * 1024)} MB")
                 f.delete()
                 collected.remove(name)
             }
@@ -359,7 +567,7 @@ class ReportCollector(
             val total = present.sumOf { it.length() }
             if (present.size <= ReportLimits.MAX_FILES && total <= ReportLimits.MAX_TOTAL_BYTES) return
             val largest = present.maxByOrNull { it.length() } ?: return
-            failed[largest.name] = "Left out to keep the report under the size limit."
+            failed[largest.name] = Failure(CollectFailure.LEFT_OUT, "left out to keep the report under the size limit")
             largest.delete()
             collected.remove(largest.name)
         }
@@ -371,7 +579,7 @@ class ReportCollector(
         if (!notes.isFile) return
         runCatching {
             val json = JSONObject(notes.readText())
-            json.optJSONObject("failed")?.let { f -> for (k in f.keys()) failed[k] = f.getString(k) }
+            json.optJSONObject("failed")?.let { f -> for (k in f.keys()) failed[k] = Failure(CollectFailure.UNAVAILABLE, f.getString(k)) }
         }
     }
 
@@ -388,11 +596,11 @@ class ReportCollector(
                 collected[name] = target.length()
                 failed.remove(name)
             } else if (!optional) {
-                failed[name] = "nothing to collect"
+                failed[name] = Failure(CollectFailure.UNAVAILABLE, "nothing to collect")
             }
         } catch (t: Throwable) {
             target.delete()
-            if (!optional) failed[name] = t.message ?: t.javaClass.simpleName
+            if (!optional) failed[name] = Failure(CollectFailure.ERROR, t.message ?: t.javaClass.simpleName)
         }
     }
 

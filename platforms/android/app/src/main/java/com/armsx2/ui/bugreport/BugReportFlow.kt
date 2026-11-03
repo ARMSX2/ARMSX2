@@ -63,9 +63,13 @@ import com.armsx2.ui.home.LibraryKeyboard
 import com.armsx2.ui.settings.ToggleRow
 import com.armsx2.ui.settings.controllerFocusable
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.NativeApp
+
+/** How long capturing and packing may take before the working screen offers a way out. */
+private const val TOO_LONG_MS = 60_000L
 
 /** The screens of the report flow, in order. */
 enum class FlowStage { KIND, DESCRIBE, CONSENT, WORKING }
@@ -269,12 +273,16 @@ private fun ConsentModal(session: ReportSession) {
     val context = LocalContext.current
     val scroll = rememberScrollState()
 
-    // Gather the always-collected files now, so the list below shows real sizes.
+    // Gather the always-collected files now, so the list below shows real sizes. prepare() does not
+    // throw; the flag is reset however this ends (including the screen being left mid-way).
     LaunchedEffect(session) {
-        if (session.collector == null) {
+        if (session.collector == null && !session.prepareFailed) {
             session.preparing = true
-            withContext(Dispatchers.IO) { runCatching { BugReport.prepare(session) } }
-            session.preparing = false
+            try {
+                withContext(Dispatchers.IO) { BugReport.prepare(session) }
+            } finally {
+                session.preparing = false
+            }
         }
     }
     val items = session.consentItems()
@@ -290,11 +298,19 @@ private fun ConsentModal(session: ReportSession) {
             Text(str("bugreport.consent.gathering"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         for (item in items) ItemLine(context, item)
+        if (session.prepareFailed) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                str(if (session.collector == null) "bugreport.consent.prepareFailed" else "bugreport.consent.prepareFailedSome"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         if (session.failedItems.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Text(str("bugreport.consent.failedHeader"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             for ((name, why) in session.failedItems) {
-                Text("$name: $why", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${itemLabel(name)}: ${str(why.kind.key)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (session.origin.canCapture) {
@@ -355,6 +371,17 @@ private fun WorkingModal(localId: String) {
     val running = stage == ReportStage.CAPTURING || stage == ReportStage.PREPARING
     val done = stage == ReportStage.DONE
     val shownCode = code.takeIf { it.isNotEmpty() }?.let { c -> ReportCode.normalize(c)?.let(ReportCode::format) ?: c }
+
+    // Capturing and packing normally take seconds. After a minute the game is probably stuck, and
+    // the user is offered a way out that does not lose the report.
+    var tooLong by remember(localId) { mutableStateOf(false) }
+    LaunchedEffect(localId, running) {
+        tooLong = false
+        if (running) {
+            delay(TOO_LONG_MS)
+            tooLong = true
+        }
+    }
 
     FlowCard(
         layer = layer,
@@ -437,6 +464,21 @@ private fun WorkingModal(localId: String) {
             }
         }
         Spacer(Modifier.height(14.dp))
+        if (running && tooLong) {
+            Text(str("bugreport.progress.tooLong.title"), style = MaterialTheme.typography.titleSmall)
+            Text(str("bugreport.progress.tooLong"), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+            Spacer(Modifier.height(10.dp))
+            Buttons(
+                FlowButtonSpec(str("action.cancel"), "$layer.cancel") {
+                    BugReport.cancelSubmit(localId)
+                    BugReportFlow.close()
+                },
+                FlowButtonSpec(str("bugreport.action.sendWithout"), "$layer.without", primary = true) {
+                    BugReport.skipHeavy(localId)
+                    tooLong = false
+                },
+            )
+        }
         if (!running) {
             val specs = buildList {
                 if (shownCode != null) add(FlowButtonSpec(str("bugreport.action.copy"), "$layer.copy") { copyCode(context, shownCode) })

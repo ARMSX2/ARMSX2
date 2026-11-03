@@ -4,6 +4,18 @@ package com.armsx2.bugreport
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import java.util.concurrent.atomic.AtomicBoolean
+
+/** What the user can still say while a report is captured and packed. Read by the thread doing it. */
+class SubmitControl {
+    /** Send without the save state and graphics dump. */
+    @Volatile
+    var skipHeavy = false
+
+    /** Throw the report away. */
+    @Volatile
+    var cancelled = false
+}
 
 /**
  * One report as the user builds it: what is wrong, what they typed, which heavy items they agreed
@@ -24,10 +36,26 @@ class ReportSession(val origin: ReportOrigin, initialKind: ReportKind) {
     var lightItems by mutableStateOf<List<BundleItem>>(emptyList())
 
     /** What could not be gathered and why. Shown on the consent screen so nothing is hidden. */
-    var failedItems by mutableStateOf<Map<String, String>>(emptyMap())
+    var failedItems by mutableStateOf<Map<String, Failure>>(emptyMap())
 
     /** True while the always-collected files are being gathered. */
     var preparing by mutableStateOf(false)
+
+    /** Gathering went wrong; the consent screen says so. What was gathered before it is still listed. */
+    var prepareFailed by mutableStateOf(false)
+
+    /** The user left the flow. A gathering still in progress removes its own folder when it ends. */
+    @Volatile
+    var closed = false
+
+    /** Held while the files are being gathered, so going back and forward in the flow cannot start a second gathering. */
+    val prepareLock = Any()
+
+    /** Set when [BugReport.submit] starts, so a second Send does not start a second report. */
+    val submitStarted = AtomicBoolean(false)
+
+    /** The user's say while the report is captured and packed. */
+    val stop = SubmitControl()
 
     /** True once the user has changed a switch, so changing the kind no longer resets them. */
     var switchesTouched by mutableStateOf(false)

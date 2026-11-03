@@ -300,7 +300,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDumpTo(JNIEnv* env, jclass, jstrin
     const u32 n = (frames > 0) ? static_cast<u32>(frames) : 1u;
     bool queued = false;
     Host::RunOnCPUThread([&]() {
-        if (!MTGS::IsOpen())
+        // Checked again here: the VM can shut down between the check above and this task running,
+        // and a shut-down VM has no GS thread to hand the request to.
+        if (!VMManager::HasValidVM() || !MTGS::IsOpen())
             return;
         MTGS::RunOnGSThread([&]() {
             // A second request while one records would take a screenshot and write no dump, and
@@ -318,8 +320,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDumpTo(JNIEnv* env, jclass, jstrin
 
 // The GS driver report on its own, for a problem report made with no GS dump to take it from.
 // Works with no game running: the device, driver pack and kernel sections need none, and the
-// renderer sections are left empty (their steps say why). With a renderer up the report reads GS
-// thread state, so it is built there.
+// renderer sections are left empty (their steps say why).
+//
+// Only the device and renderer sections read GS-thread state, so only they run there (briefly);
+// the file-system and kernel checks, which can take seconds on a cold cache, run on this thread.
+// The report used to be built entirely on the GS thread and could stall emulation for as long.
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_writeSystemReport(JNIEnv* env, jclass, jstring jsonPath) {
@@ -327,21 +332,27 @@ Java_kr_co_iefriends_pcsx2_NativeApp_writeSystemReport(JNIEnv* env, jclass, jstr
     if (path.empty())
         return JNI_FALSE;
 
-    bool ok = false;
-    const auto write = [&]() { ok = GSDriverReport::WriteStandaloneReport(path); };
-    if (MTGS::IsOpen()) {
+    const auto run_on_gs_thread = [](const std::function<void()>& work) {
+        if (!MTGS::IsOpen())
+        {
+            work();
+            return;
+        }
         Host::RunOnCPUThread([&]() {
-            if (MTGS::IsOpen()) {
-                MTGS::RunOnGSThread(write);
+            // Checked on the CPU thread, which is also the one that shuts the VM down, so the answer
+            // holds for the rest of this task.
+            if (VMManager::HasValidVM() && MTGS::IsOpen())
+            {
+                MTGS::RunOnGSThread(work);
                 MTGS::WaitGS(false);
-            } else {
-                write();
+            }
+            else
+            {
+                work();
             }
         }, /*block=*/true);
-    } else {
-        write();
-    }
-    return ok ? JNI_TRUE : JNI_FALSE;
+    };
+    return GSDriverReport::WriteStandaloneReport(path, run_on_gs_thread) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ADPF (PerformanceHintManager): hint the OS scheduler to raise the EE/GS/MTVU threads' CPU

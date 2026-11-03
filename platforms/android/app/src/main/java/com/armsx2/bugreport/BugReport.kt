@@ -280,52 +280,88 @@ object BugReport {
     /**
      * Gathers the always-collected files so the consent screen can list them with their sizes.
      * Safe to call again once it has finished. Blocking: call it from a background thread.
+     *
+     * Never throws. If gathering goes wrong the session says so ([ReportSession.prepareFailed]) and
+     * keeps whatever was gathered, so the user can still send the rest. If the user backed out
+     * while it ran ([ReportSession.closed]), the folder it made is removed here, as nobody else
+     * knows it exists.
      */
-    fun prepare(session: ReportSession) {
-        if (session.collector != null) return
+    fun prepare(session: ReportSession) = synchronized(session.prepareLock) { prepareLocked(session) }
+
+    private fun prepareLocked(session: ReportSession) {
+        if (session.collector != null || session.closed) return
         val origin = session.origin
         val dir = origin.crashDir ?: File(ReportCollector.bundleRoot(app), "report-${System.currentTimeMillis()}")
-        if (origin.crashDir != null) {
-            // The background half of the evidence may still be running; a crash report needs it.
-            CrashEvidence.awaitComplete(dir, 45_000)
+        var collector: ReportCollector? = null
+        try {
+            if (origin.crashDir != null) {
+                // The background half of the evidence may still be running; a crash report needs it.
+                CrashEvidence.awaitComplete(dir, 45_000)
+            }
+            val root = com.armsx2.runtime.MainActivityRuntime.dataRootOrNull()
+            val scrubber = Scrubber(
+                listOfNotNull(root, "/storage/emulated/0/Android/data/${app.packageName}"),
+                AccountNames.read(root?.let(::File), listOfNotNull(runCatching { com.armsx2.RaLibrary.userName }.getOrNull())),
+            )
+            collector = ReportCollector(app, dir, origin, scrubber)
+            collector.collectLight()
+        } catch (t: Throwable) {
+            println("@@BUGREPORT@@ gathering the report failed: ${t.javaClass.simpleName}: ${t.message}")
+            collector?.noteError("gathering: ${t.message ?: t.javaClass.simpleName}")
+            session.prepareFailed = true
         }
-        val root = com.armsx2.runtime.MainActivityRuntime.dataRootOrNull()
-        val scrubber = Scrubber(
-            listOfNotNull(root, "/storage/emulated/0/Android/data/${app.packageName}"),
-            AccountNames.read(root?.let(::File), listOfNotNull(runCatching { com.armsx2.RaLibrary.userName }.getOrNull())),
-        )
-        val collector = ReportCollector(app, dir, origin, scrubber)
-        collector.collectLight()
-        session.collector = collector
-        session.lightItems = collector.collected.map { (name, bytes) -> BundleItem(name, bytes) }
-        session.failedItems = collector.failed.toMap()
+        if (session.closed) {
+            if (origin.crashDir == null) dir.deleteRecursively()
+            return
+        }
+        if (collector != null) {
+            session.collector = collector
+            session.lightItems = collector.collected.map { (name, bytes) -> BundleItem(name, bytes) }
+            session.failedItems = collector.failed.toMap()
+        }
+    }
+
+    /** What the user can do to a report that is being captured or packed, by folder name. */
+    private val submissions = HashMap<String, SubmitControl>()
+
+    /** The user chose to send without the save state and graphics dump. */
+    fun skipHeavy(localId: String) {
+        synchronized(submissions) { submissions[localId]?.skipHeavy = true }
+    }
+
+    /** The user cancelled while the report was being captured or packed. */
+    fun cancelSubmit(localId: String) {
+        synchronized(submissions) { submissions[localId]?.cancelled = true }
     }
 
     /**
      * Captures what was agreed, builds the bundle and starts the upload. Returns once the upload is
      * queued; progress is in [progress] under the session's folder name. Blocking: call it from a
-     * background thread.
+     * background thread. A second call for the same session (Send pressed twice) returns at once.
      */
     fun submit(session: ReportSession, control: GameControl?) {
         val collector = session.collector ?: return
+        if (!session.submitStarted.compareAndSet(false, true)) return
         val localId = collector.dir.name
         val game = session.origin.game
+        val stop = session.stop
+        synchronized(submissions) { submissions[localId] = stop }
         fun report(stage: ReportStage) {
             progress[localId] = ReportProgress(localId, stage)
         }
 
-        var perfAfter: String? = null
         try {
+            var perfAfter: String? = null
             if (session.origin.canCapture && control != null && (session.includeSavestate || session.includeGsDump)) {
                 report(ReportStage.CAPTURING)
-                if (session.includeSavestate) collector.captureSavestate()
-                if (session.includeGsDump) {
-                    collector.captureGsDump(control)
-                    perfAfter = runCatching { kr.co.iefriends.pcsx2.NativeApp.getPerfSnapshot() }.getOrNull()
-                }
+                perfAfter = capture(session, collector, control)
             }
+            if (stop.cancelled) throw UploadCancelled()
             report(ReportStage.PREPARING)
-            val state = collector.finish(session.kind, session.description.trim(), perfAfter)
+            val state = collector.finish(
+                session.kind, session.description.trim(), perfAfter,
+                skipHeavy = { stop.skipHeavy }, isCancelled = { stop.cancelled },
+            )
             history.upsert(
                 HistoryEntry(
                     localId = localId, code = "", kind = session.kind.wire, createdAt = state.createdAt,
@@ -334,18 +370,75 @@ object BugReport {
                 ),
             )
             progress[localId] = ReportProgress(localId, ReportStage.UPLOADING, 0, state.totalBytes)
+            // The user pressed Send knowing the size (the consent screen said if it was a lot on mobile data).
             enqueueUpload(collector.dir)
+        } catch (_: UploadCancelled) {
+            collector.abandonCapture()
+            if (session.origin.crashDir == null) collector.dir.deleteRecursively()
+            progress.remove(localId)
         } catch (t: Throwable) {
+            // The raw reason goes to the log and, if the report gets that far, report.json; the screen gets a plain sentence.
+            println("@@BUGREPORT@@ making report $localId failed: ${t.javaClass.simpleName}: ${t.message}")
+            collector.noteError("submit: ${t.message ?: t.javaClass.simpleName}")
+            collector.abandonCapture()
             progress[localId] = ReportProgress(localId, ReportStage.FAILED, reason = UploadReason.LOCAL)
+            // A line in My reports, so the failure is not only on a screen that can be closed. There is
+            // no state file, so there is nothing to retry; the user can delete the line.
+            history.upsert(
+                HistoryEntry(
+                    localId = localId, code = "", kind = session.kind.wire, createdAt = System.currentTimeMillis(),
+                    title = game?.title.orEmpty(), serial = game?.serial.orEmpty(),
+                    status = HistoryStatus.FAILED, bytes = dirBytes(collector.dir), note = UploadReason.LOCAL.key,
+                ),
+            )
+        } finally {
+            synchronized(submissions) { submissions.remove(localId) }
         }
+    }
+
+    /**
+     * Takes the graphics dump and the save state on a helper thread and waits for it, so that the
+     * user's "send without it" or "cancel" is heard even if a native call does not return. The dump
+     * goes first: it runs the game for a frame, which also lets a memory card that was mid-write
+     * finish before the save state is taken. Returns the performance numbers read after the dump.
+     */
+    private fun capture(session: ReportSession, collector: ReportCollector, control: GameControl): String? {
+        val perf = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val done = java.util.concurrent.CountDownLatch(1)
+        thread(isDaemon = true, name = "bugreport-capture") {
+            try {
+                if (session.includeGsDump) {
+                    collector.captureGsDump(control)
+                    perf.set(runCatching { kr.co.iefriends.pcsx2.NativeApp.getPerfSnapshot() }.getOrNull())
+                }
+                if (session.includeSavestate) collector.captureSavestate(control)
+            } catch (t: Throwable) {
+                collector.noteError("capture: ${t.message ?: t.javaClass.simpleName}")
+            } finally {
+                done.countDown()
+            }
+        }
+        while (!done.await(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (session.stop.skipHeavy || session.stop.cancelled) {
+                collector.abandonCapture()
+                break
+            }
+        }
+        return perf.get()
     }
 
     /** Drops a report the user backed out of before sending. Crash evidence is kept for later. */
     fun discard(session: ReportSession) {
+        // If the files are still being gathered, prepare() sees this and removes its own folder.
+        session.closed = true
         val collector = session.collector ?: return
         session.collector = null
         if (session.origin.crashDir == null) collector.dir.deleteRecursively()
     }
+
+    /** True if the report's upload state is still on the device, which is what a retry needs. */
+    fun canRetry(localId: String): Boolean =
+        File(File(ReportCollector.bundleRoot(app), localId), ReportUploader.STATE_FILE).isFile
 
     /**
      * Puts an upload on the queue. A report that is already queued or running is not started twice:
