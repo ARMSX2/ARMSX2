@@ -52,5 +52,12 @@ namespace GSDriverReport
 	/// thread with a deadline, so a node that blocks costs the report its section, not the dump.
 	void WriteSidecarForDump(const std::string& dump_base);
 
+	/// Collects the same report with no dump behind it and writes it to `path`. Needs no game and no
+	/// renderer: the device, driver pack, kernel and vendor library sections come from the system,
+	/// and the renderer sections are left empty with their steps recording why. With a renderer open
+	/// it reads GS thread state, so call it on the GS thread then. Returns false when the file cannot
+	/// be written.
+	bool WriteStandaloneReport(const std::string& path);
+
 	std::string SidecarPath(const std::string& dump_base);
 } // namespace GSDriverReport

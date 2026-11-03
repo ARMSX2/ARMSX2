@@ -429,4 +429,16 @@ namespace GSDriverReport
 		if (!FileSystem::WriteStringToFile(path.c_str(), json))
 			Console.Warning("GS: could not write the driver report '%s'.", path.c_str());
 	}
+
+	bool WriteStandaloneReport(const std::string& path)
+	{
+		// No dump, so the report's "game.dump" is empty.
+		const std::string json = BuildReport(std::string());
+		if (!FileSystem::WriteStringToFile(path.c_str(), json))
+		{
+			Console.Warning("GS: could not write the driver report '%s'.", path.c_str());
+			return false;
+		}
+		return true;
+	}
 } // namespace GSDriverReport
