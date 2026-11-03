@@ -211,11 +211,15 @@ private object RuntimeGameControl : GameControl {
 
     override fun pause() = MainActivityRuntime.pauseForOverlay()
 
-    override fun awaitRunning(timeoutMs: Long): Boolean {
+    override fun awaitRunning(timeoutMs: Long): Boolean = awaitState(EmuState.RUNNING, timeoutMs)
+
+    override fun awaitPaused(timeoutMs: Long): Boolean = awaitState(EmuState.PAUSED, timeoutMs)
+
+    private fun awaitState(wanted: EmuState, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
-        while (MainActivityRuntime.eState.value != EmuState.RUNNING) {
+        while (MainActivityRuntime.eState.value != wanted) {
             if (System.currentTimeMillis() > deadline) return false
-            Thread.sleep(50)
+            Thread.sleep(10)
         }
         return true
     }

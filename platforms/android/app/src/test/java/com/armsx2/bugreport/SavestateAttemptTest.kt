@@ -14,6 +14,7 @@ class SavestateAttemptTest {
         override fun resume() { events += "resume"; paused = false }
         override fun pause() { events += "pause"; paused = true }
         override fun awaitRunning(timeoutMs: Long): Boolean { events += "await"; return true }
+        override fun awaitPaused(timeoutMs: Long): Boolean { events += "awaitPaused"; return true }
     }
 
     private var clock = 0L
@@ -27,6 +28,15 @@ class SavestateAttemptTest {
         val result = SavestateAttempt.run({ true }, { false }, control, now = now, sleep = sleep)
         assertEquals(Result.SAVED, result)
         assertTrue(control.events.isEmpty())
+    }
+
+    @Test
+    fun onceMakesOneTryAndNeverRunsTheGame() {
+        var saves = 0
+        assertEquals(Result.SAVED, SavestateAttempt.once({ saves++; true }, { true }))
+        assertEquals(Result.MEMCARD_BUSY, SavestateAttempt.once({ saves++; false }, { true }))
+        assertEquals(Result.FAILED, SavestateAttempt.once({ saves++; false }, { false }))
+        assertEquals(3, saves)
     }
 
     @Test

@@ -27,6 +27,12 @@ object SavestateAttempt {
 
     enum class Result { SAVED, MEMCARD_BUSY, FAILED }
 
+    /** One try with the game as it is: [Result.MEMCARD_BUSY] if it was refused because the card is busy, [Result.FAILED] for any other refusal. */
+    fun once(save: () -> Boolean, memcardBusy: () -> Boolean): Result {
+        if (save()) return Result.SAVED
+        return if (memcardBusy()) Result.MEMCARD_BUSY else Result.FAILED
+    }
+
     fun run(
         save: () -> Boolean,
         memcardBusy: () -> Boolean,
@@ -36,8 +42,8 @@ object SavestateAttempt {
         now: () -> Long = { System.currentTimeMillis() },
         sleep: (Long) -> Unit = { Thread.sleep(it) },
     ): Result {
-        if (save()) return Result.SAVED
-        if (!memcardBusy()) return Result.FAILED
+        val first = once(save, memcardBusy)
+        if (first != Result.MEMCARD_BUSY) return first
         val wasPaused = control.isPaused()
         try {
             if (wasPaused) {
@@ -63,6 +69,13 @@ interface GameControl {
 
     /** Waits up to [timeoutMs] for the game to be running after [resume]. */
     fun awaitRunning(timeoutMs: Long): Boolean
+
+    /**
+     * Waits up to [timeoutMs] for the game to be paused after [pause]. The app only reports the
+     * game paused once the graphics thread has caught up, so with a graphics dump still being
+     * closed this can take as long as the dump does.
+     */
+    fun awaitPaused(timeoutMs: Long): Boolean
 }
 
 /**
@@ -134,6 +147,22 @@ class ReportCollector(
     private var captureAbandoned = false
     private val captureLock = Any()
 
+    // What the capture did to the game's clock, for `report.json` (see captureJson). Written by the
+    // capture thread, read when the report is built.
+    private val runClock = RunClock()
+
+    @Volatile
+    private var captureRan = false
+
+    @Volatile
+    private var savestateTiming: SavestateTiming? = null
+
+    @Volatile
+    private var dumpStartFrames: Int? = null
+
+    @Volatile
+    private var dumpRecordedFrames: Int? = null
+
     /** The GS driver report as it will be sent, once either source of it has produced one. */
     private var systemReport: String? = null
 
@@ -172,49 +201,96 @@ class ReportCollector(
     }
 
     /**
-     * Writes a save state of the game. The game is paused, and stays paused unless the memory card
-     * was busy: see [SavestateAttempt].
+     * Takes the save state and the graphics dump in the order [CaptureSequence] describes, and
+     * returns the performance numbers read after the dump (null when no dump was asked for). What
+     * the capture did to the game's clock is kept for `report.json`: see [captureJson].
      */
-    fun captureSavestate(control: GameControl): Boolean {
-        if (captureAbandoned) return false
+    fun capture(control: GameControl, savestate: Boolean, gsDump: Boolean): String? {
+        captureRan = true
+        val timed = TimedControl(control, runClock)
+        var perf: String? = null
+        val outcome = CaptureSequence.run(
+            savestate, gsDump, control.isPaused(),
+            object : CaptureSequence.Steps {
+                override fun saveNow() = saveStateNow()
+
+                override fun saveAfterResume() = saveStateAfterResume(timed)
+
+                override fun dump() {
+                    captureGsDump(timed)
+                    perf = runCatching { NativeApp.getPerfSnapshot() }.getOrNull()
+                }
+            },
+        )
+        synchronized(captureLock) {
+            if (!captureAbandoned) savestateTiming = outcome.timing
+        }
+        return perf
+    }
+
+    /**
+     * One try at the save state with the game as it is. A refusal for a busy memory card is not
+     * recorded: [saveStateAfterResume] gets a second chance and decides.
+     */
+    private fun saveStateNow(): SavestateAttempt.Result {
+        if (captureAbandoned) return SavestateAttempt.Result.FAILED
+        val target = File(dir, ReportFiles.SAVESTATE)
+        target.delete()
+        val result = SavestateAttempt.once(save = { writeSavestate(target) }, memcardBusy = ::memcardBusy)
+        if (result != SavestateAttempt.Result.MEMCARD_BUSY) recordSavestate(result, target)
+        return result
+    }
+
+    /** The retry after a busy memory card: the game may run for a moment to clear it. See [SavestateAttempt]. */
+    private fun saveStateAfterResume(control: GameControl): SavestateAttempt.Result {
+        if (captureAbandoned) return SavestateAttempt.Result.FAILED
         val target = File(dir, ReportFiles.SAVESTATE)
         target.delete()
         val result = SavestateAttempt.run(
-            save = {
-                val ok = runCatching { NativeApp.saveStateToPath(target.absolutePath) }.getOrDefault(false)
-                if (!ok || !target.isFile || target.length() == 0L) {
-                    target.delete()
-                    false
-                } else {
-                    true
-                }
-            },
-            memcardBusy = { runCatching { NativeApp.isMemcardBusy() }.getOrDefault(false) },
+            save = { writeSavestate(target) },
+            memcardBusy = ::memcardBusy,
             control = control,
             abandoned = { captureAbandoned },
         )
+        recordSavestate(result, target)
+        return result
+    }
+
+    private fun memcardBusy(): Boolean = runCatching { NativeApp.isMemcardBusy() }.getOrDefault(false)
+
+    private fun writeSavestate(target: File): Boolean {
+        val ok = runCatching { NativeApp.saveStateToPath(target.absolutePath) }.getOrDefault(false)
+        if (!ok || !target.isFile || target.length() == 0L) {
+            target.delete()
+            return false
+        }
+        return true
+    }
+
+    /** Notes the final answer for the save state, unless the capture was given up on meanwhile. */
+    private fun recordSavestate(result: SavestateAttempt.Result, target: File) {
         synchronized(captureLock) {
             if (captureAbandoned) {
                 target.delete()
-                return false
+                return
             }
             if (result != SavestateAttempt.Result.SAVED) {
                 failed[ReportFiles.SAVESTATE] = Failure(
                     if (result == SavestateAttempt.Result.MEMCARD_BUSY) CollectFailure.MEMCARD else CollectFailure.ERROR,
                     "saveStateToPath refused: $result",
                 )
-                return false
+                return
             }
             collected[ReportFiles.SAVESTATE] = target.length()
-            return true
         }
     }
 
     /**
-     * Takes a GS dump of the next frame. The dump is opened when the GS draws, so the game is
-     * resumed for the time it takes and paused again afterwards if it was paused before.
+     * Takes a GS dump of the next frame. The dump is opened when the GS draws, so a paused game is
+     * resumed, and paused again as soon as the core says the dump's frames are recorded; the zip
+     * is then waited for with the game stopped (see [GsDumpRun]).
      */
-    fun captureGsDump(control: GameControl): Boolean {
+    private fun captureGsDump(control: GameControl): Boolean {
         if (captureAbandoned) return false
         val work = File(dir, ".gsdump").apply { deleteRecursively(); mkdirs() }
         try {
@@ -226,19 +302,31 @@ class ReportCollector(
                 failed[ReportFiles.GS_DUMP] = Failure(CollectFailure.NOT_STARTED, "captureGsDumpTo returned false")
                 return false
             }
-            try {
-                if (wasPaused) {
-                    control.resume()
-                    control.awaitRunning(3_000)
+            val last = GsDumpRun.run(
+                resume = wasPaused,
+                control = control,
+                status = { GsDumpStatus.fromNative(runCatching { NativeApp.getGsDumpStatus() }.getOrNull()) },
+                zipReady = { zip.isFile },
+                abandoned = { captureAbandoned },
+                budgetMs = GS_DUMP_WAIT_MS,
+            )
+            // The app calls the game paused once the graphics thread is idle again, which is after the
+            // zip. Waiting for it here means the save state retry, if there is one, sees a stopped game.
+            if (wasPaused && !captureAbandoned) control.awaitPaused(3_000)
+            synchronized(captureLock) {
+                if (!captureAbandoned && last != null) {
+                    dumpStartFrames = last.vsyncsToOpen.takeIf { it > 0 }
+                    dumpRecordedFrames = last.vsyncsToRecorded.takeIf { it > 0 }
                 }
-                val deadline = System.currentTimeMillis() + GS_DUMP_WAIT_MS
-                while (!zip.isFile && System.currentTimeMillis() < deadline && !captureAbandoned) Thread.sleep(100)
-            } finally {
-                if (wasPaused) control.pause()
             }
             if (!zip.isFile) {
                 synchronized(captureLock) {
-                    if (!captureAbandoned) failed[ReportFiles.GS_DUMP] = Failure(CollectFailure.NO_FRAME, "no dump bundle after ${GS_DUMP_WAIT_MS} ms")
+                    if (!captureAbandoned) {
+                        failed[ReportFiles.GS_DUMP] = Failure(
+                            CollectFailure.NO_FRAME,
+                            "no dump bundle within ${GS_DUMP_WAIT_MS} ms; the core's dump phase was ${last?.phase ?: "not reported"}",
+                        )
+                    }
                 }
                 return false
             }
@@ -493,6 +581,7 @@ class ReportCollector(
         report.put("driver", driverJson())
         origin.perfAtOpen?.let { report.put("perf", parse(it)) }
         perfAfterResume?.let { report.put("perf_after_resume", parse(it)) }
+        captureJson()?.let { report.put("capture", it) }
         origin.crashMarker?.let {
             report.put(
                 "crash_marker",
@@ -517,6 +606,31 @@ class ReportCollector(
         )
         report.put("errors", JSONArray(errors))
         return report
+    }
+
+    /**
+     * How far the capture drifted from the moment the user paused the game, so whoever reads the
+     * report knows how much to trust the save state and the dump as "what the user saw":
+     *
+     *  - `savestate_timing`: `paused_moment`, `after_resume` (a busy memory card made the game run
+     *    first) or `running` (the game was not paused when the capture began). Only present when a
+     *    save state is in the report.
+     *  - `game_ran_ms`: wall-clock milliseconds the capture had the game running, from each resume
+     *    request to the next pause request.
+     *  - `dump_start_frames`, `dump_recorded_frames`: GS vertical syncs from the dump request, made
+     *    while paused, to the one the dump opened on and to its last frame. Absent when the core
+     *    could not say.
+     *
+     * Null when the report had no capture (a crash report, or nothing running).
+     */
+    private fun captureJson(): JSONObject? {
+        if (!captureRan) return null
+        val json = JSONObject()
+        if (ReportFiles.SAVESTATE in collected) savestateTiming?.let { json.put("savestate_timing", it.wire) }
+        json.put("game_ran_ms", runClock.totalMs())
+        dumpStartFrames?.let { json.put("dump_start_frames", it) }
+        dumpRecordedFrames?.let { json.put("dump_recorded_frames", it) }
+        return json
     }
 
     /** The driver pack the game was set to, what its `meta.json` says, and what the loader reports. */

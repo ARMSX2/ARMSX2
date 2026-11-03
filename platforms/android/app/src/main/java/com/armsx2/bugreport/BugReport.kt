@@ -443,21 +443,17 @@ object BugReport {
     }
 
     /**
-     * Takes the graphics dump and the save state on a helper thread and waits for it, so that the
-     * user's "send without it" or "cancel" is heard even if a native call does not return. The dump
-     * goes first: it runs the game for a frame, which also lets a memory card that was mid-write
-     * finish before the save state is taken. Returns the performance numbers read after the dump.
+     * Takes the save state and the graphics dump on a helper thread and waits for it, so that the
+     * user's "send without it" or "cancel" is heard even if a native call does not return. The
+     * order, and why, is [CaptureSequence]'s: the save state first, while the game is still paused
+     * where the user left it. Returns the performance numbers read after the dump.
      */
     private fun capture(session: ReportSession, collector: ReportCollector, control: GameControl): String? {
         val perf = java.util.concurrent.atomic.AtomicReference<String?>(null)
         val done = java.util.concurrent.CountDownLatch(1)
         thread(isDaemon = true, name = "bugreport-capture") {
             try {
-                if (session.includeGsDump) {
-                    collector.captureGsDump(control)
-                    perf.set(runCatching { kr.co.iefriends.pcsx2.NativeApp.getPerfSnapshot() }.getOrNull())
-                }
-                if (session.includeSavestate) collector.captureSavestate(control)
+                perf.set(collector.capture(control, session.includeSavestate, session.includeGsDump))
             } catch (t: Throwable) {
                 collector.noteError("capture: ${t.message ?: t.javaClass.simpleName}")
             } finally {
