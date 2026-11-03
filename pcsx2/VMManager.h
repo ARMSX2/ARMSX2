@@ -346,6 +346,22 @@ namespace VMManager
 		/// Checks settings version. Call once on startup. If it returns false, you should prompt the user to reset.
 		bool CheckSettingsVersion();
 
+		/// Moves a settings file that was written before a default changed to the new default, once. Call on startup,
+		/// after the file has been loaded or defaulted and CheckSettingsVersion() has passed. A file made by
+		/// SetDefaultSettings() is already marked and is left alone. Returns true when it changed the file, which
+		/// includes marking it, so the caller saves it; false when this file was moved before.
+		///
+		/// What it moves today: iopThreadLag = 24576, the old default, becomes IopThread::kDefaultSettingLag. A file
+		/// made while that was the default holds it, and a game the game database turns the IOP thread on for runs with
+		/// the global lag, so a stale 24576 would keep costing it. A key the file does not have is not created, since a
+		/// missing key already loads as the new default, and any other lag stays as it is. Nothing else is touched: the
+		/// IOP thread setting itself is off by default and stays whatever the file says. After the mark is set a lag the
+		/// user picks, 24576 included, stays.
+		///
+		/// This is for frontends that keep the settings in an ini file (Qt, the SDL handheld frontend). The Android app
+		/// keeps its own copy of the settings and moves it itself (ConfigStore.migrateIopThreadLag).
+		bool MigrateSettings(SettingsInterface& bsi);
+
 		/// Loads early settings. Call once on startup.
 		void LoadStartupSettings();
 

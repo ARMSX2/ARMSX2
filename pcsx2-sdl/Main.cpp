@@ -194,6 +194,10 @@ bool Pcsx2SDL::InitializeConfig()
 		VMManager::SetDefaultSettings(*s_base_settings, true, true, true, true, true);
 	}
 
+	// A file from before a default changed is moved to the new default once; the Save below writes it. A file just
+	// made by SetDefaultSettings() is already marked.
+	VMManager::Internal::MigrateSettings(*s_base_settings);
+
 	// Secrets layer (achievements credentials etc). Created on first run;
 	// failure to create is non-fatal — just log and continue.
 	const std::string secrets_path = Path::Combine(EmuFolders::Settings, "secrets.ini");

@@ -1377,6 +1377,11 @@ bool QtHost::InitializeConfig()
 			SaveSettings();
 	}
 
+	// A file from before a default changed is moved to the new default once. A file just made by SetDefaultSettings()
+	// is already marked and comes back false.
+	if (VMManager::Internal::MigrateSettings(*s_base_settings_interface) && !s_base_settings_interface->Save(&error))
+		Console.ErrorFmt("Failed to save the migrated settings: {}", error.GetDescription());
+
 	// Layer secrets ini on top
 	const std::string secrets_path = Path::Combine(EmuFolders::Settings, "secrets.ini");
 	const bool secrets_settings_exists = FileSystem::FileExists(secrets_path.c_str());

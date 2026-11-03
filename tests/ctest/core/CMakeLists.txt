@@ -38,6 +38,7 @@ add_pcsx2_test(core_test
 	sbus_tests.cpp
 	savestate_legacy_tests.cpp
 	settings_precedence_tests.cpp
+	settings_migration_tests.cpp
 	gsrunner_affinity_tests.cpp
 	headless_shot_tests.cpp
 	onscreen_keyboard_tests.cpp

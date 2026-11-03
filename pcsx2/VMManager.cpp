@@ -699,6 +699,29 @@ bool VMManager::Internal::CheckSettingsVersion()
 	return (bsi->GetUIntValue("UI", "SettingsVersion", &settings_version) && settings_version == SETTINGS_VERSION);
 }
 
+// A settings file marks itself with this key in [UI] once the lag default has been dealt with: SetDefaultSettings sets it
+// in a new file, and MigrateSettings sets it after moving an old one.
+static constexpr const char* IOP_THREAD_LAG_MIGRATED_KEY = "IopThreadLagMigrated";
+
+// What iopThreadLag defaulted to before it became one frame (IopThread::kDefaultSettingLag). A file made then holds this
+// exact value, so it is a stored default and not a choice. Kept as a number of its own: IopThread::kDefaultLag, which
+// has the same value, is the tight bound the lag rules use, and has to be free to move without moving this.
+static constexpr int IOP_THREAD_LAG_OLD_DEFAULT = 24576;
+
+bool VMManager::Internal::MigrateSettings(SettingsInterface& bsi)
+{
+	if (bsi.GetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, false))
+		return false;
+
+	bsi.SetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, true);
+
+	int lag = 0;
+	if (bsi.GetIntValue("EmuCore/Speedhacks", "iopThreadLag", &lag) && lag == IOP_THREAD_LAG_OLD_DEFAULT)
+		bsi.SetIntValue("EmuCore/Speedhacks", "iopThreadLag", IopThread::kDefaultSettingLag);
+
+	return true;
+}
+
 void VMManager::Internal::LoadStartupSettings()
 {
 	SettingsInterface* bsi = Host::Internal::GetBaseSettingsLayer();
@@ -735,6 +758,9 @@ void VMManager::SetDefaultSettings(
 		Pcsx2Config temp_config;
 		SettingsSaveWrapper ssw(si);
 		temp_config.LoadSave(ssw);
+
+		// The defaults just written are the current ones, so nothing in this file needs MigrateSettings.
+		si.SetBoolValue("UI", IOP_THREAD_LAG_MIGRATED_KEY, true);
 
 		// Settings not part of the Pcsx2Config struct.
 		si.SetBoolValue("EmuCore", "EnableFastBoot", true);
