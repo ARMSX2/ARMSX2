@@ -86,7 +86,8 @@ StereoOut32 V_Core::ReadInput_HiFi()
 
 StereoOut32 V_Core::ReadInput()
 {
-	StereoOut32 retval;
+	// Bypass mode below leaves this untouched: the input is silence, not whatever the caller's registers held.
+	StereoOut32 retval(0, 0);
 	u16 ReadIndex = OutPos;
 
 	for (int i = 0; i < 2; i++)

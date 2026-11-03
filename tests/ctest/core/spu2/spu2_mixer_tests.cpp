@@ -596,6 +596,34 @@ TEST_F(Spu2Mixer, CurrentMixerMatchesWithTheLightweightReverbBypass)
 	EmuConfig.SPU2.LightweightMode = false;
 }
 
+// In bypass mode (PlayMode bit 1) core 0's input does not go through the SPU2, and the mixers add silence for it. V_Core::ReadInput
+// used to return its result uninitialized on that path, so the mixers added whatever the caller's registers held. That is why a
+// random state with PlayMode 2 compared differently from run to run, and from one build of the test to the next: the frozen mixer
+// and the current one both call the same ReadInput and each read a different leftover.
+TEST_F(Spu2Mixer, BypassModeInputOfCoreZeroIsSilent)
+{
+	Cores[0].Init(0);
+	Cores[1].Init(1);
+	for (u32 i = 0x2000; i < 0x2800; i++)
+		_spu2mem[i] = static_cast<s16>(0x1234 + i);
+	OutPos = 5; // not one of the positions where ReadInput refills the AutoDMA buffer
+
+	PlayMode = 0;
+	const StereoOut32 core0 = Cores[0].ReadInput();
+	EXPECT_EQ(core0.Left, _spu2mem[0x2000 + 5]);
+	EXPECT_EQ(core0.Right, _spu2mem[0x2200 + 5]);
+
+	PlayMode = 2;
+	const StereoOut32 bypassed = Cores[0].ReadInput();
+	EXPECT_EQ(bypassed.Left, 0);
+	EXPECT_EQ(bypassed.Right, 0);
+
+	// Core 1 is not bypassed.
+	const StereoOut32 core1 = Cores[1].ReadInput();
+	EXPECT_EQ(core1.Left, _spu2mem[0x2400 + 5]);
+	EXPECT_EQ(core1.Right, _spu2mem[0x2600 + 5]);
+}
+
 #ifdef SPU2_TEST_HAS_PMU
 
 namespace
