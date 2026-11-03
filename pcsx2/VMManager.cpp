@@ -5012,12 +5012,15 @@ bool VMManager::Internal::CanSplitGS()
 {
 #if defined(__linux__)
 	EnsureCPUInfoInitialized();
-	// EE, VU1, GS front and GS back, plus the IOP thread when it is asked for: that one is busy 40 to 99% of a core, and a
-	// split beside it needs a fifth performance core: with the IOP thread on and only four big cores, the split
-	// measured slower than a single GS thread in most games tried, even with the prime core rule.
-	const u32 needed = 4 + (EmuConfig.Speedhacks.iopThread ? 1 : 0);
-	const u32 tier = GetPerformanceCoreCount();
-	return tier >= needed && tier < cpuinfo_get_processors_count();
+	// EE, VU1, GS front and GS back, plus the IOP thread when it will run on a thread of its own (IopThread::GsSplitFits
+	// says why it takes a fifth core). The setting being on is not enough: it can be on (a player turned it on, or
+	// the game database did) on a host ResolveMode can never give Threaded (not ARM64, fewer than two performance cores,
+	// too few cores in total), and there the thread never exists and must not cost the split a core. The VM conditions are left at their defaults: this is a
+	// question about the host. For an arcade title, or while an IOP breakpoint is set, the thread is Off for that VM
+	// and the split is withheld anyway, which errs on the side of the measured result.
+	const bool iop_thread_threaded =
+		IopThread::ResolveMode(EmuConfig, IopThread::CurrentHostInfo(), IopThread::VmConditions{}) == IopThreadMode::Threaded;
+	return IopThread::GsSplitFits(GetPerformanceCoreCount(), cpuinfo_get_processors_count(), iop_thread_threaded);
 #else
 	return false;
 #endif

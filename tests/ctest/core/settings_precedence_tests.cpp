@@ -18,6 +18,8 @@
 
 #include "Config.h"
 #include "GameDatabase.h"
+#include "IopThread/IopThreadMode.h"
+#include "IopThread/IopThreadVm.h"
 #include "PerGameOverrides.h"
 #include "VMManager.h"
 
@@ -344,20 +346,37 @@ TEST(SettingsPrecedenceApply, TheDatabaseTurnsTheBackThreadOnOnlyWhereTheHostCan
 	EXPECT_EQ(gs.BackThread, VMManager::Internal::CanSplitGS()) << "on exactly when this host can run the split";
 }
 
-TEST(SettingsPrecedenceApply, TheIopThreadAsksForAFifthPerformanceCoreBeforeTheDatabaseSplitsTheGs)
+TEST(SettingsPrecedenceApply, TheIopThreadAsksForAFifthPerformanceCoreOnlyOnAHostThatRunsIt)
 {
 	GameDatabaseSchema::GameEntry entry;
 	entry.gsHWFixes.emplace_back(GameDatabaseSchema::GSHWFixId::BackThread, 1);
 
 	const bool old_iop = EmuConfig.Speedhacks.iopThread;
+
 	EmuConfig.Speedhacks.iopThread = true;
+	// Whether the thread would run here: the host's own answer, with the setting on.
+	const bool thread_runs = IopThread::ResolveMode(EmuConfig, IopThread::CurrentHostInfo(), {}) == IopThreadMode::Threaded;
+	const bool can_split_with_setting = VMManager::Internal::CanSplitGS();
 	Pcsx2Config::GSOptions gs;
 	gs.BackThread = false;
 	entry.applyGSHardwareFixes(gs, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+
+	EmuConfig.Speedhacks.iopThread = false;
+	const bool can_split_without_setting = VMManager::Internal::CanSplitGS();
+
 	EmuConfig.Speedhacks.iopThread = old_iop;
-	// Four performance cores (the handhelds) are not enough with the IOP thread on; a host with five or more may split.
-	if (VMManager::Internal::GetPerformanceCoreCount() < 5)
-		EXPECT_FALSE(gs.BackThread);
+
+	EXPECT_EQ(gs.BackThread, can_split_with_setting);
+	if (!thread_runs)
+	{
+		// A host that cannot run the thread loses nothing to the setting being on.
+		EXPECT_EQ(can_split_with_setting, can_split_without_setting);
+	}
+	else if (VMManager::Internal::GetPerformanceCoreCount() < 5)
+	{
+		// Four performance cores (the handhelds) are not enough with the IOP thread running; a host with five or more may split.
+		EXPECT_FALSE(can_split_with_setting);
+	}
 }
 
 TEST(SettingsPrecedenceApply, APlayersBackThreadSettingForTheGameKeepsTheDatabaseOut)

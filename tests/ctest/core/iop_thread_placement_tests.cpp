@@ -819,3 +819,58 @@ TEST(IopThreadPrimeArbiter, NothingRunningKeepsTheOwnerAsItWas)
 	ASSERT_EQ(PrimeArbiterUpdate(a, Load(95, 20, 40, 30)), IopThread::kPrimeEE);
 	EXPECT_EQ(PrimeArbiterUpdate(a, Load(-1, -1, -1, -1)), IopThread::kPrimeEE);
 }
+
+// ---------------------------------------------------------------- the GS split and the IOP thread
+
+TEST(IopThreadGsSplit, FourPerformanceCoresSplitWithoutAnIopThread)
+{
+	// EE, VU1, GS front and GS back, and a slower core left over.
+	EXPECT_TRUE(IopThread::GsSplitFits(4, 8, false));
+	EXPECT_TRUE(IopThread::GsSplitFits(5, 8, false));
+	EXPECT_FALSE(IopThread::GsSplitFits(3, 8, false));
+}
+
+TEST(IopThreadGsSplit, AConcurrentIopThreadNeedsAFifthPerformanceCore)
+{
+	// The measured result: four big cores and the IOP thread, the split was slower than one GS thread.
+	EXPECT_FALSE(IopThread::GsSplitFits(4, 8, true)); // SD865, MQ65, Dimensity 8300
+	EXPECT_TRUE(IopThread::GsSplitFits(5, 8, true));
+	EXPECT_TRUE(IopThread::GsSplitFits(8, 12, true)); // M2 Max
+	EXPECT_FALSE(IopThread::GsSplitFits(2, 8, true)); // RG 55G1
+}
+
+TEST(IopThreadGsSplit, ATierThatIsEveryProcessorHasNothingSlowerToKeepTheRestOn)
+{
+	EXPECT_FALSE(IopThread::GsSplitFits(8, 8, false));
+	EXPECT_FALSE(IopThread::GsSplitFits(8, 8, true));
+	EXPECT_FALSE(IopThread::GsSplitFits(4, 4, false));
+}
+
+TEST(IopThreadGsSplit, ASettingThatNeverRunsCostsNoCore)
+{
+	// An x86 Linux hybrid with four P-cores and E-cores, the IOP thread setting on (a player turned it on, or the game
+	// database did): ResolveMode gives Off on x86, and the split keeps the four-core answer. CanSplitGS feeds the helper
+	// this ResolveMode answer.
+	IopThread::HostCpuInfo x86_hybrid;
+	x86_hybrid.is_arm64 = false;
+	x86_hybrid.total_cores = 12;
+	x86_hybrid.performance_cores = 4;
+	Pcsx2Config config;
+	config.Speedhacks.iopThread = true;
+	const bool threaded = IopThread::ResolveMode(config, x86_hybrid, {}) == IopThreadMode::Threaded;
+	EXPECT_FALSE(threaded);
+	EXPECT_TRUE(IopThread::GsSplitFits(x86_hybrid.performance_cores, x86_hybrid.total_cores, threaded));
+
+	// The same four fast cores on an ARM64 phone that does run the thread: no split.
+	IopThread::HostCpuInfo arm_phone = x86_hybrid;
+	arm_phone.is_arm64 = true;
+	arm_phone.total_cores = 8;
+	const bool arm_threaded = IopThread::ResolveMode(config, arm_phone, {}) == IopThreadMode::Threaded;
+	EXPECT_TRUE(arm_threaded);
+	EXPECT_FALSE(IopThread::GsSplitFits(arm_phone.performance_cores, arm_phone.total_cores, arm_threaded));
+
+	// And one that cannot run it (one fast core): not Threaded, and too few cores for the split either way.
+	IopThread::HostCpuInfo one_fast = arm_phone;
+	one_fast.performance_cores = 1;
+	EXPECT_NE(IopThread::ResolveMode(config, one_fast, {}), IopThreadMode::Threaded);
+}
