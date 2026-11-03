@@ -7,8 +7,9 @@
 // and takes a place in the same plans.
 //
 // The same file holds the one rule shared with ResolveMode: which processors are the performance
-// tier. ResolveMode counts them to decide whether the host has a core to spare, and the Android
-// tier mode confines the emulation threads to them, so both read the same mask.
+// tier. ResolveMode needs the tier to be readable, the Android tier mode confines the emulation
+// threads to it, and a concurrent IOP thread is kept out of a tier that is too narrow for the
+// threads, so all of them read the same mask.
 
 #pragma once
 

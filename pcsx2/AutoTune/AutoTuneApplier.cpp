@@ -328,14 +328,11 @@ bool AutoTune::IopThreadPlaceable(bool vu_thread, bool lockstep, IopThread::Host
 		return false;
 
 	// The GS back thread is a busy thread that needs a core of its own, and ResolveMode does not know about it.
-	// Taking one performance core and one core away from the host has the same effect as counting it.
-	if (gs_back_thread_running)
-	{
-		if (host.performance_cores > 0)
-			host.performance_cores--;
-		if (host.total_cores > 0)
-			host.total_cores--;
-	}
+	// Taking one core away from the host has the same effect as counting it. The performance tier is left as
+	// it is: ResolveMode only asks it to be readable, and an IOP thread on a tier too narrow for the threads
+	// runs outside it.
+	if (gs_back_thread_running && host.total_cores > 0)
+		host.total_cores--;
 
 	Pcsx2Config hypothetical;
 	hypothetical.Speedhacks.iopThread = true;

@@ -194,16 +194,27 @@ TEST(IopThreadEventTest, ThreadedResolvesToThreadedOnAHostWithCoresToSpare)
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Lockstep);
 }
 
-TEST(IopThreadEventTest, ThreadedFallsBackToOffOnAHostWithNoSpareBigCore)
+TEST(IopThreadEventTest, ThreadedOnANarrowTierRunsAndOnAHostWithNoSpareCoreFallsBackToOff)
 {
 	SettingsGuard guard;
 	EmuConfig.Speedhacks.iopThread = true;
 	EmuConfig.Speedhacks.iopThreadLockstep = false;
 	HostCpuInfo host = Arm64Host();
-	host.performance_cores = 2; // the EE, the GS and the IOP need three
+	host.performance_cores = 2; // fewer than the three threads: the IOP thread runs outside the tier
+	IopThread::ChooseModeFor(host, IopThread::VmConditions());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Threaded);
+	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Threaded));
+
+	host = Arm64Host();
+	host.total_cores = 4; // the EE, the GS and the IOP need three, and two more for the rest
 	IopThread::ChooseModeFor(host, IopThread::VmConditions());
 	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
 	EXPECT_EQ(g_intEventTestShared, cpuEventTestFor(IopThreadMode::Off));
+
+	host = Arm64Host();
+	host.performance_cores = 0; // the cores cannot be read
+	IopThread::ChooseModeFor(host, IopThread::VmConditions());
+	EXPECT_EQ(IopThread::GetMode(), IopThreadMode::Off);
 
 	// The conditions that force Off do so for Threaded as well.
 	IopThread::VmConditions ps1;

@@ -117,10 +117,12 @@ namespace IopThread
 	/// With the lockstep flag set it then returns Lockstep. Lockstep is the correctness reference
 	/// used by tests, eerunner and debugging, so the core rule below does not apply to it.
 	///
-	/// Without the lockstep flag it returns Threaded, unless the host has no spare big core. The
-	/// threads are the EE, the GS, the IOP and, with MTVU on, the VU1 thread. It needs at least
-	/// that many performance cores, and at least two more cores in total for the OS, the GS back
-	/// thread and the audio callback.
+	/// Without the lockstep flag it returns Threaded, unless the host has too few cores or cannot say
+	/// which are the fast ones. The threads are the EE, the GS, the IOP and, with MTVU on, the VU1
+	/// thread. It needs at least that many cores in total plus two more for the OS, the GS back
+	/// thread and the audio callback, and a readable performance tier (performance_cores above 0).
+	/// The tier may be narrower than the threads: the IOP thread then runs outside it, on the
+	/// slower cores (UnpinnedIopThreadMask in IopPlacement.h).
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
 
 	/// The mode in effect. A plain variable, written on the CPU thread only, by ChooseMode(). The EE

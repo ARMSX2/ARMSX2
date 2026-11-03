@@ -528,20 +528,40 @@ TEST(AutoTuneHost, TheGsBackThreadCountsAsABusyCore)
 {
 	IopThread::HostCpuInfo host;
 	host.is_arm64 = true;
-	host.total_cores = 6;
+	host.total_cores = 5;
 	host.performance_cores = 3;
 	const IopThread::VmConditions vm;
 
-	// EE, GS and IOP fit on three performance cores, and six cores leave two for the rest...
+	// EE, GS and IOP, and five cores leave two for the rest...
 	EXPECT_TRUE(AutoTune::IopThreadPlaceable(false, false, host, vm, false));
 	// ...but not once the back thread has one of them.
 	EXPECT_FALSE(AutoTune::IopThreadPlaceable(false, false, host, vm, true));
 
 	// MTVU makes it four threads.
-	host.total_cores = 8;
+	host.total_cores = 6;
 	host.performance_cores = 4;
 	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, false));
 	EXPECT_FALSE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
+}
+
+TEST(AutoTuneHost, AHostWithTwoBigCoresAndSixLittleOnesCanHaveTheIopThread)
+{
+	// The RG 55G1. The IOP thread runs on the little cores, so the two big cores do not rule it out, with MTVU on or
+	// off, and with the GS back thread running (seven cores are left for EE, GS, IOP, VU1 and two more).
+	IopThread::HostCpuInfo host;
+	host.is_arm64 = true;
+	host.total_cores = 8;
+	host.performance_cores = 2;
+	const IopThread::VmConditions vm;
+
+	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, false));
+	EXPECT_TRUE(AutoTune::IopThreadPlaceable(false, false, host, vm, false));
+	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
+	EXPECT_TRUE(AutoTune::IopThreadPlaceable(false, false, host, vm, true));
+
+	// One big core is a tier too, and the back thread does not take it away: the tier only has to be readable.
+	host.performance_cores = 1;
+	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
 }
 
 TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)

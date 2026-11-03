@@ -235,17 +235,36 @@ TEST(IopThreadResolveFromMask, TheRk3562StillRunsLockstep)
 	EXPECT_EQ(ResolveFor(Rk3562(), true, true), IopThreadMode::Lockstep);
 }
 
-TEST(IopThreadResolveFromMask, ADeviceWithTooFewFastCoresForTheThreadsIsOff)
+TEST(IopThreadResolveFromMask, ADeviceWithFewerFastCoresThanThreadsIsStillThreaded)
 {
-	// Three fast cores and five slow ones: eight cores in total, but a tier of three cannot hold the EE,
-	// the GS, the VU1 thread and the IOP.
+	// Three fast cores and five slow ones: a tier of three cannot hold the EE, the GS, the VU1 thread and the IOP, so
+	// the IOP thread runs on the slow ones (UnpinnedIopThreadMask). Eight cores leave two for the rest.
 	std::vector<CpuCapacity> cpus;
 	Add(cpus, 0, 5, 300);
 	Add(cpus, 5, 3, 1024);
 	EXPECT_EQ(PerformanceMask(cpus), 0xE0u);
-	EXPECT_EQ(ResolveFor(cpus, false, true), IopThreadMode::Off);
-	// Without MTVU it needs three, and has three.
+	EXPECT_EQ(ResolveFor(cpus, false, true), IopThreadMode::Threaded);
 	EXPECT_EQ(ResolveFor(cpus, false, false), IopThreadMode::Threaded);
+}
+
+TEST(IopThreadResolveFromMask, TheRg55g1HasTwoBigCoresAndIsThreadedWithTheIopThreadOnTheLittleOnes)
+{
+	const std::vector<CpuCapacity> cpus = Rg55g1();
+	EXPECT_EQ(PerformanceMask(cpus), 0xC0u);
+	for (const bool mtvu : {true, false})
+	{
+		EXPECT_EQ(ResolveFor(cpus, false, mtvu), IopThreadMode::Threaded);
+		// And the thread is placed outside the two big cores, which is what makes Threaded safe there.
+		EXPECT_EQ(IopThread::UnpinnedIopThreadMask(PerformanceMask(cpus), AllProcessors(cpus), mtvu, true), 0x3Fu);
+	}
+}
+
+TEST(IopThreadResolveFromMask, AHostWithTwoBigAndTwoLittleCoresStillHasNoCoreToSpare)
+{
+	std::vector<CpuCapacity> cpus;
+	Add(cpus, 0, 2, 280);
+	Add(cpus, 2, 2, 1024);
+	EXPECT_EQ(ResolveFor(cpus, false, false), IopThreadMode::Off);
 }
 
 TEST(IopThreadResolveFromMask, ADeviceWhoseCoresCannotBeReadIsOffForThreadedAndOnForLockstep)

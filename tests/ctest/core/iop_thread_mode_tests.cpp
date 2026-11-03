@@ -270,10 +270,32 @@ TEST(IopThreadModeDevices, TheSd662ClassIsOnButUntested)
 
 TEST(IopThreadModeDevices, TheCoreRuleCountsTheVuThread)
 {
-	// threads = EE + GS + IOP, plus one when MTVU is on.
-	const HostCpuInfo three_big = Host(true, 8, 3);
-	EXPECT_EQ(Resolve(true, false, false, three_big), IopThreadMode::Threaded); // needs 3 performance, 5 total
-	EXPECT_EQ(Resolve(true, false, true, three_big), IopThreadMode::Off); // needs 4 performance, 6 total
+	// threads = EE + GS + IOP, plus one when MTVU is on, and two cores more for the rest.
+	const HostCpuInfo five_cores = Host(true, 5, 3);
+	EXPECT_EQ(Resolve(true, false, false, five_cores), IopThreadMode::Threaded); // needs 5 cores in total
+	EXPECT_EQ(Resolve(true, false, true, five_cores), IopThreadMode::Off); // needs 6 in total
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 6, 3)), IopThreadMode::Threaded);
+}
+
+TEST(IopThreadModeDevices, ATierNarrowerThanTheThreadsDoesNotSwitchItOff)
+{
+	// The RG 55G1: two big cores and six little ones. The IOP thread runs on the little ones (UnpinnedIopThreadMask),
+	// so the big cores are not needed for it, with MTVU on or off.
+	const HostCpuInfo rg55g1 = Host(true, 8, 2);
+	EXPECT_EQ(Resolve(true, false, true, rg55g1), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, false, rg55g1), IopThreadMode::Threaded);
+	// A tier of three, MTVU on: four threads on three fast cores.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 3)), IopThreadMode::Threaded);
+	// One fast core is still a readable tier.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 1)), IopThreadMode::Threaded);
+}
+
+TEST(IopThreadModeDevices, ANarrowTierStillNeedsTheCoresForTheRest)
+{
+	// Two big and two little cores: the tier is fine to read, but four cores leave nothing for the OS, the GS back
+	// thread and the audio callback.
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 4, 2)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 5, 2)), IopThreadMode::Threaded);
 }
 
 TEST(IopThreadModeDevices, TheCoreRuleNeedsTwoSpareCoresBeyondTheThreads)
@@ -301,7 +323,6 @@ TEST(IopThreadModeDevices, LockstepIgnoresTheCoreRuleOnEveryHost)
 	// The rows below are Off for Threaded and must not be for Lockstep.
 	EXPECT_EQ(Resolve(true, true, true, Host(true, 4, 4)), IopThreadMode::Lockstep); // RK3562 shape
 	EXPECT_EQ(Resolve(true, true, true, Host(true, 5, 4)), IopThreadMode::Lockstep); // one core short of 6
-	EXPECT_EQ(Resolve(true, true, true, Host(true, 8, 3)), IopThreadMode::Lockstep); // 3 big cores, MTVU on
 	EXPECT_EQ(Resolve(true, true, true, Host(true, 8, 0)), IopThreadMode::Lockstep); // cores not told apart
 	EXPECT_EQ(Resolve(true, true, true, Host(true, 1, 1)), IopThreadMode::Lockstep); // a single core
 	EXPECT_EQ(Resolve(true, true, true, Host(true, 0, 0)), IopThreadMode::Lockstep); // topology unreadable
@@ -313,7 +334,6 @@ TEST(IopThreadModeDevices, TheSameHostsAreOffForThreaded)
 	// for Threaded, so the difference between the two modes is the mode and nothing else.
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 4, 4)), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 5, 4)), IopThreadMode::Off);
-	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 3)), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 0)), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 1, 1)), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 0, 0)), IopThreadMode::Off);
