@@ -4,7 +4,6 @@ package com.armsx2.ui.bugreport
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.net.ConnectivityManager
 import android.text.format.Formatter
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
@@ -54,6 +53,7 @@ import com.armsx2.bugreport.ReportOrigin
 import com.armsx2.bugreport.ReportOrigins
 import com.armsx2.bugreport.ReportSession
 import com.armsx2.bugreport.ReportStage
+import com.armsx2.bugreport.UploadReason
 import com.armsx2.i18n.I18n
 import com.armsx2.i18n.str
 import com.armsx2.runtime.MainActivityRuntime
@@ -279,7 +279,7 @@ private fun ConsentModal(session: ReportSession) {
     }
     val items = session.consentItems()
     val total = session.totalBytes()
-    val metered = remember { isMetered(context) }
+    val metered = remember { BugReport.isMetered(context) }
 
     FlowCard(layer = layer, onDismiss = { BugReportFlow.close() }, initialFocusId = "$layer.send", scroll = scroll) {
         Title(str("bugreport.consent.title"))
@@ -368,6 +368,8 @@ private fun WorkingModal(localId: String) {
                 ReportStage.PREPARING -> str("bugreport.progress.packing")
                 ReportStage.UPLOADING -> str("bugreport.progress.uploading.title")
                 ReportStage.WAITING -> str("bugreport.progress.waiting.title")
+                ReportStage.WAITING_WIFI -> str("bugreport.progress.wifi.title")
+                ReportStage.STOPPED -> str("bugreport.progress.stopped.title")
                 ReportStage.DONE -> str("bugreport.done.title")
                 ReportStage.FAILED -> str("bugreport.progress.failed.title")
             },
@@ -396,19 +398,24 @@ private fun WorkingModal(localId: String) {
             }
             ReportStage.WAITING -> {
                 Text(str("bugreport.progress.waiting"), style = MaterialTheme.typography.bodyMedium)
-                progress?.message?.takeIf { it.isNotEmpty() }?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-                }
+                ReasonLine(progress?.reason)
             }
+            ReportStage.WAITING_WIFI -> Text(str("bugreport.progress.wifi"), style = MaterialTheme.typography.bodyMedium)
+            ReportStage.STOPPED -> Text(str("bugreport.progress.stopped"), style = MaterialTheme.typography.bodyMedium)
             ReportStage.DONE -> {
-                progress?.message?.takeIf { it.isNotEmpty() }?.let {
-                    Text(String.format(str("bugreport.done.missing"), it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                val missing = progress?.missing.orEmpty()
+                if (missing.isNotEmpty()) {
+                    Text(
+                        String.format(str("bugreport.done.missing"), missing.map { itemLabel(it) }.joinToString(", ")),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
-            ReportStage.FAILED -> Text(
-                String.format(str("bugreport.progress.failed"), progress?.message.orEmpty()),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            ReportStage.FAILED -> {
+                Text(str("bugreport.progress.failed"), style = MaterialTheme.typography.bodyMedium)
+                ReasonLine(progress?.reason)
+            }
         }
         if (shownCode != null) {
             Spacer(Modifier.height(12.dp))
@@ -433,7 +440,13 @@ private fun WorkingModal(localId: String) {
         if (!running) {
             val specs = buildList {
                 if (shownCode != null) add(FlowButtonSpec(str("bugreport.action.copy"), "$layer.copy") { copyCode(context, shownCode) })
-                if (stage == ReportStage.WAITING || stage == ReportStage.FAILED) {
+                if (stage == ReportStage.UPLOADING) {
+                    add(FlowButtonSpec(str("bugreport.action.stop"), "$layer.stop") { BugReport.stop(localId) })
+                }
+                if (stage == ReportStage.WAITING_WIFI) {
+                    add(FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.sendNow") { BugReport.retry(localId) })
+                }
+                if (stage == ReportStage.WAITING || stage == ReportStage.FAILED || stage == ReportStage.STOPPED) {
                     add(FlowButtonSpec(str("bugreport.action.retry"), "$layer.retry") { BugReport.retry(localId) })
                 }
                 add(FlowButtonSpec(str("bugreport.myReports.title"), "$layer.my") { BugReportFlow.showMyReports = true })
@@ -442,6 +455,18 @@ private fun WorkingModal(localId: String) {
             Buttons(*specs.toTypedArray())
         }
     }
+}
+
+/** One line saying why an upload is waiting or failed, in the app's words. Nothing for no reason. */
+@Composable
+internal fun ReasonLine(reason: UploadReason?) {
+    if (reason == null) return
+    Text(
+        str(reason.key),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 @Composable
@@ -658,13 +683,6 @@ internal fun copyCode(context: Context, code: String) {
     val clipboard = context.getSystemService(ClipboardManager::class.java) ?: return
     clipboard.setPrimaryClip(ClipData.newPlainText("ARMSX2 report code", code))
     Toast.makeText(context, I18n.get("bugreport.copied"), Toast.LENGTH_SHORT).show()
-}
-
-/** True on a metered connection. Never throws: no permission or no network reads as "not metered". */
-private fun isMetered(context: Context): Boolean = try {
-    context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered == true
-} catch (_: Exception) {
-    false
 }
 
 /**

@@ -16,7 +16,8 @@ internal const val REPORT_SERVER = "https://reports.ps2ktxpak.net"
  * A call the server refused or that never got an answer.
  *
  * @param status HTTP status, or 0 when the request failed before one came back (no network, timeout).
- * @param code the server's machine-readable error, or "" if it sent none.
+ * @param code the server's machine-readable error, or "" if it sent none (or sent something that was
+ *   not the server's JSON at all, which is what a captive portal or the CDN's own error page looks like).
  */
 class ApiException(
     val status: Int,
@@ -26,11 +27,23 @@ class ApiException(
     /** The server's `Retry-After`, in seconds, or 0 if it sent none. */
     val retryAfterSeconds: Int = 0,
 ) : IOException(message, cause) {
-    /** A failure that may pass on its own: no connection, a server error, or being rate limited. */
-    val retryable: Boolean get() = status == 0 || status >= 500 || status == 408 || status == 429
+    /**
+     * The token was refused by the server itself: 401 with `bad_token` or `token_expired`. Nothing
+     * else counts. A 403, or an answer that is not the server's JSON, comes from something in front of
+     * the server (the CDN, a captive portal) and says nothing about the token.
+     */
+    val tokenRejected: Boolean get() = status == 401 && (code == "bad_token" || code == "token_expired")
 
-    /** The token was refused (`bad_token`, `token_expired`), which a retry with the same token cannot fix. */
-    val tokenRejected: Boolean get() = status == 401 || status == 403
+    /**
+     * A failure that may pass on its own: no connection, a server error, being rate limited, or an
+     * answer the server did not write (a 403 or any error without the server's JSON, an unreadable
+     * success), which is how a CDN or a captive portal says "not now".
+     */
+    val retryable: Boolean
+        get() = !tokenRejected && (
+            status == 0 || status >= 500 || status == 408 || status == 429 || status == 403 ||
+                code == "bad_response" || (status >= 400 && code.isEmpty())
+            )
 
     /**
      * True if trying again within the next minute or two is worth it. The daily byte budget is spent
@@ -39,9 +52,51 @@ class ApiException(
      */
     val worthBackoff: Boolean get() = retryable && code != "budget_exhausted" && retryAfterSeconds <= MAX_BACKOFF_WAIT_SECONDS
 
+    /** What went wrong, for the screens, without the server's or the exception's own wording. */
+    val reason: UploadReason
+        get() = when {
+            tokenRejected -> UploadReason.TOKEN
+            status == 0 -> UploadReason.NETWORK
+            status == 429 || code == "budget_exhausted" -> UploadReason.BUSY
+            retryable -> UploadReason.SERVER
+            else -> UploadReason.REFUSED
+        }
+
     companion object {
         /** A Retry-After longer than this is not slept through. The rate limiter asks for 60. */
         const val MAX_BACKOFF_WAIT_SECONDS = 90
+    }
+}
+
+/** Why an upload is not going through, as the screens say it. Each has a string; the server's own text is only detail. */
+enum class UploadReason(val key: String) {
+    /** No connection, or it dropped. */
+    NETWORK("bugreport.reason.network"),
+
+    /** The server or something in front of it had a problem; it may pass. */
+    SERVER("bugreport.reason.server"),
+
+    /** Rate limited, or today's budget is spent. */
+    BUSY("bugreport.reason.busy"),
+
+    /** A metered connection and a big report: waiting for Wi-Fi. */
+    WIFI("bugreport.reason.wifi"),
+
+    /** The server will not take it and asking again will not change that. */
+    REFUSED("bugreport.reason.refused"),
+
+    /** The upload link for this report ended; what is left goes in a new report. */
+    TOKEN("bugreport.reason.token"),
+
+    /** Something on this device: the state file or a report file is gone or changed. */
+    LOCAL("bugreport.reason.local"),
+
+    /** The user stopped sending. */
+    STOPPED("bugreport.reason.stopped"),
+    ;
+
+    companion object {
+        fun fromKey(key: String?): UploadReason? = entries.firstOrNull { it.key == key }
     }
 }
 
@@ -75,8 +130,48 @@ data class CreatedResponse(val created: CreatedReport, val uploads: Map<String, 
 
 data class FinishResponse(val code: String, val missing: List<String>)
 
+/** Thrown out of an upload when the user stops it. Deliberately not an IOException: the HTTP code treats those as a lost connection. */
+class UploadCancelled : RuntimeException("The upload was stopped.")
+
+/** Cuts [conn] if [touch] has not been called for [stallMs]: HttpURLConnection has no write timeout. */
+private class StallGuard(private val conn: HttpURLConnection, private val stallMs: Long) : AutoCloseable {
+    @Volatile
+    private var last = System.nanoTime()
+
+    @Volatile
+    private var closed = false
+
+    private val watcher = kotlin.concurrent.thread(isDaemon = true, name = "bugreport-stall-guard") {
+        while (!closed) {
+            try {
+                Thread.sleep(1_000)
+            } catch (_: InterruptedException) {
+                return@thread
+            }
+            if ((System.nanoTime() - last) / 1_000_000 > stallMs) {
+                runCatching { conn.disconnect() }
+                return@thread
+            }
+        }
+    }
+
+    fun touch() {
+        last = System.nanoTime()
+    }
+
+    override fun close() {
+        closed = true
+        watcher.interrupt()
+    }
+}
+
 /** [ReportApi] over HttpURLConnection, with every part streamed from disk at a fixed length. */
 class HttpReportApi(private val baseUrl: String = REPORT_SERVER) : ReportApi {
+    private companion object {
+        const val CONNECT_TIMEOUT_MS = 20_000
+        const val READ_TIMEOUT_MS = 60_000
+        const val STALL_MS = 60_000L
+    }
 
     override fun create(body: JSONObject): CreatedResponse {
         val json = postJson("/v1/reports", body, token = null)
@@ -119,27 +214,37 @@ class HttpReportApi(private val baseUrl: String = REPORT_SERVER) : ReportApi {
             // server requires Content-Length (no chunked encoding).
             conn.setFixedLengthStreamingMode(length)
             conn.doOutput = true
+            // The timeouts above cover connecting and waiting for the answer; a write that stalls
+            // has none, so a guard cuts the connection if the body stops moving.
+            val guard = StallGuard(conn, STALL_MS)
             try {
-                RandomAccessFile(file, "r").use { raf ->
-                    raf.seek(offset)
-                    conn.outputStream.use { out ->
-                        val buffer = ByteArray(32 * 1024)
-                        var left = length
-                        while (left > 0) {
-                            val read = raf.read(buffer, 0, minOf(buffer.size, left))
-                            if (read < 0) throw IOException("${file.name} is shorter than it was when the report was made")
-                            out.write(buffer, 0, read)
-                            left -= read
-                            onBytes(read)
+                try {
+                    RandomAccessFile(file, "r").use { raf ->
+                        raf.seek(offset)
+                        conn.outputStream.use { out ->
+                            val buffer = ByteArray(32 * 1024)
+                            var left = length
+                            while (left > 0) {
+                                val read = raf.read(buffer, 0, minOf(buffer.size, left))
+                                if (read < 0) throw IOException("${file.name} is shorter than it was when the report was made")
+                                out.write(buffer, 0, read)
+                                guard.touch()
+                                left -= read
+                                // May throw to stop the upload (UploadCancelled is not an IOException, so it gets through).
+                                onBytes(read)
+                            }
                         }
                     }
+                } catch (e: IOException) {
+                    // A server that rejects the part early closes the stream; its answer is still readable.
+                    throw failure(conn, e)
                 }
-            } catch (e: IOException) {
-                // A server that rejects the part early closes the stream; its answer is still readable.
-                throw failure(conn, e)
+                guard.touch()
+                val json = readJson(conn)
+                return json.optString("etag").ifEmpty { throw ApiException(conn.responseCode, "bad_response", "The server did not return an etag for part $n.") }
+            } finally {
+                guard.close()
             }
-            val json = readJson(conn)
-            return json.optString("etag").ifEmpty { throw ApiException(conn.responseCode, "bad_response", "The server did not return an etag for part $n.") }
         } finally {
             conn.disconnect()
         }
@@ -169,9 +274,10 @@ class HttpReportApi(private val baseUrl: String = REPORT_SERVER) : ReportApi {
             throw ApiException(0, "connect", "Could not reach the report server.", e)
         }
         conn.requestMethod = method
-        conn.connectTimeout = 15_000
+        // Set explicitly: the defaults are "wait forever", and a stalled part has to fail to be retried.
+        conn.connectTimeout = CONNECT_TIMEOUT_MS
         // A part is 8 MiB; the server answers after it has relayed it to storage.
-        conn.readTimeout = 90_000
+        conn.readTimeout = READ_TIMEOUT_MS
         conn.instanceFollowRedirects = false
         conn.setRequestProperty("Accept", "application/json")
         if (token != null) conn.setRequestProperty("Authorization", "Bearer $token")

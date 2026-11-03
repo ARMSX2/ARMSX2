@@ -42,4 +42,10 @@ class HousekeepingTest {
         assertEquals(Verdict.KEEP, Housekeeping.decide(info(hasState = false, phase = null, lastModified = now - day / 2), now))
         assertEquals(Verdict.DELETE, Housekeeping.decide(info(hasState = false, phase = null, lastModified = now - 2 * day), now))
     }
+
+    @Test
+    fun aStoppedReportKeepsItsLineAndLosesItsFilesAfterAWeek() {
+        assertEquals(Verdict.KEEP, Housekeeping.decide(info(phase = ReportPhase.STOPPED, createdAt = now - 2 * day), now))
+        assertEquals(Verdict.DELETE, Housekeeping.decide(info(phase = ReportPhase.STOPPED, createdAt = now - 8 * day), now))
+    }
 }

@@ -71,6 +71,16 @@ object ReportLimits {
     const val METERED_NOTE_BYTES = 25L * 1024 * 1024
 }
 
+/**
+ * Whether a report may go out without the user pressing anything: on an unmetered connection, or
+ * when little is left to send. A report the user just sent, or one they chose to "Send now", is
+ * their decision and goes regardless.
+ */
+object MeteredRule {
+    fun allowed(metered: Boolean, bytesLeft: Long, userAsked: Boolean): Boolean =
+        userAsked || !metered || bytesLeft < ReportLimits.METERED_NOTE_BYTES
+}
+
 /** One item the consent screen lists. */
 data class BundleItem(
     val name: String,

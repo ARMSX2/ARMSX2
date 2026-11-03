@@ -27,6 +27,23 @@ object PartMath {
 /** One uploaded part, as the server acknowledged it. */
 data class PartRecord(val n: Int, val etag: String)
 
+/**
+ * Whether a file that was given up on can be tried again. A file with no kind (a state file from
+ * before kinds were recorded) is treated as [TRANSIENT]: Retry gives it another go.
+ */
+enum class FailureKind(val wire: String) {
+    /** The cause may have passed: the file was not there (storage unmounted), for one. */
+    TRANSIENT("transient"),
+
+    /** Trying again cannot change it: the server refused the file, or its size changed on disk. */
+    PERMANENT("permanent"),
+    ;
+
+    companion object {
+        fun fromWire(text: String?): FailureKind? = entries.firstOrNull { it.wire == text }
+    }
+}
+
 /** Where one file of a report stands. */
 class FileState(
     val name: String,
@@ -37,8 +54,9 @@ class FileState(
     val parts: MutableList<PartRecord> = mutableListOf(),
     /** True once the server has completed the upload and confirmed its size. */
     var complete: Boolean = false,
-    /** Why this file was given up on, or null. A file with a reason is not tried again. */
+    /** Why this file was given up on, or null. A file with a reason is not sent again until [retryFailures] clears it. */
     var failure: String? = null,
+    var failureKind: FailureKind? = null,
 ) {
     /** The lowest part number not acknowledged yet, or null if every part is. */
     fun nextPart(partSize: Int): Int? {
@@ -54,6 +72,23 @@ class FileState(
 
     /** True if nothing more will be sent for this file: sent in full, or given up on. */
     val settled: Boolean get() = complete || failure != null
+
+    /** Gives a file that failed for a reason that may have passed another try. Returns true if it changed. */
+    fun retryFailure(): Boolean {
+        if (complete || failure == null || failureKind == FailureKind.PERMANENT) return false
+        failure = null
+        failureKind = null
+        return true
+    }
+
+    /** Forgets everything the server was told about this file, so it can go up under a new report. */
+    fun resetForNewReport() {
+        uploadId = null
+        parts.clear()
+        complete = false
+        failure = null
+        failureKind = null
+    }
 }
 
 /** What `POST /v1/reports` returned, kept so a later launch can carry on. */
@@ -83,6 +118,9 @@ enum class ReportPhase(val wire: String) {
     /** `finish` succeeded. */
     FINISHED("finished"),
 
+    /** The user stopped sending. What the server already had was kept and `finish` was called if it could be. */
+    STOPPED("stopped"),
+
     /** Given up on for good. */
     FAILED("failed"),
     ;
@@ -106,16 +144,60 @@ class UploadState(
     var phase: ReportPhase = ReportPhase.READY,
     var created: CreatedReport? = null,
     var finishedAt: Long = 0L,
-    /** The last error shown to the user, or null. */
+    /** The server's or the exception's own words for the last problem, for logs; never shown as they are. Null if none. */
     var lastError: String? = null,
+    /** [UploadReason.key] of the last problem, for the screens. Null if none. */
+    var lastReason: String? = null,
     /** Files the server reported missing from `finish`. */
     var missing: List<String> = emptyList(),
+    /** The server said the upload link is no longer good (`bad_token`, `token_expired`). What is left needs a new report. */
+    var tokenDead: Boolean = false,
+    /** Codes of the reports this one carries on from, oldest first: the files they took are not in [files]. */
+    var earlierCodes: List<String> = emptyList(),
 ) {
     val totalBytes: Long get() = files.sumOf { it.size }
 
     fun bytesDone(): Long {
         val partSize = created?.partSize ?: return 0L
         return files.sumOf { it.bytesDone(partSize) }
+    }
+
+    /** Bytes still to send: what is not complete and not given up on for good. */
+    fun bytesLeft(): Long {
+        val partSize = created?.partSize
+        return files.filter { !it.complete && it.failureKind != FailureKind.PERMANENT }
+            .sumOf { if (partSize == null) it.size else it.size - it.bytesDone(partSize) }
+    }
+
+    /** The files a new report would carry: not sent, and not refused for good. */
+    fun leftover(): List<FileState> = files.filter { !it.complete && it.failureKind != FailureKind.PERMANENT }
+
+    /**
+     * Gets the state ready for another try. Files that failed for a reason that may have passed
+     * become unsettled again. If the server said the link is dead, the report cannot go on: what
+     * arrived stays under the old code, and this state becomes a new report for [leftover] with the
+     * old code remembered in [earlierCodes] and named in the summary. Returns false when there is
+     * nothing left to send either way.
+     */
+    fun prepareRetry(): Boolean {
+        if (phase == ReportPhase.FINISHED) return false
+        for (f in files) f.retryFailure()
+        if (tokenDead) {
+            val rest = leftover()
+            if (rest.isEmpty()) return false
+            val old = created
+            if (old != null && old.code !in earlierCodes) earlierCodes = earlierCodes + old.code
+            files.retainAll(rest.toSet())
+            for (f in files) f.resetForNewReport()
+            created = null
+            tokenDead = false
+            missing = emptyList()
+            request.optJSONObject("summary")?.put("continues", earlierCodes.joinToString(", "))
+        }
+        lastError = null
+        lastReason = null
+        phase = if (created == null) ReportPhase.READY else ReportPhase.WAITING_RETRY
+        return true
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -127,6 +209,9 @@ class UploadState(
         put("request", request)
         put("finishedAt", finishedAt)
         lastError?.let { put("lastError", it) }
+        lastReason?.let { put("lastReason", it) }
+        put("tokenDead", tokenDead)
+        put("earlierCodes", JSONArray(earlierCodes))
         put("missing", JSONArray(missing))
         created?.let {
             put(
@@ -146,6 +231,7 @@ class UploadState(
                             .put("uploadId", f.uploadId ?: JSONObject.NULL)
                             .put("complete", f.complete)
                             .put("failure", f.failure ?: JSONObject.NULL)
+                            .put("failureKind", f.failureKind?.wire ?: JSONObject.NULL)
                             .put(
                                 "parts",
                                 JSONArray().also { parts ->
@@ -200,10 +286,13 @@ class UploadState(
                     parts = parts,
                     complete = f.optBoolean("complete", false),
                     failure = f.optString("failure", "").takeIf { it.isNotEmpty() && !f.isNull("failure") },
+                    failureKind = f.optString("failureKind", "").takeIf { !f.isNull("failureKind") }?.let(FailureKind::fromWire),
                 )
             }
             val missing = mutableListOf<String>()
             json.optJSONArray("missing")?.let { m -> for (i in 0 until m.length()) missing += m.getString(i) }
+            val earlier = mutableListOf<String>()
+            json.optJSONArray("earlierCodes")?.let { m -> for (i in 0 until m.length()) earlier += m.getString(i) }
             val created = json.optJSONObject("created")?.let {
                 CreatedReport(
                     id = it.getString("id"),
@@ -223,7 +312,10 @@ class UploadState(
                 created = created,
                 finishedAt = json.optLong("finishedAt", 0L),
                 lastError = json.optString("lastError", "").takeIf { it.isNotEmpty() },
+                lastReason = json.optString("lastReason", "").takeIf { it.isNotEmpty() },
                 missing = missing,
+                tokenDead = json.optBoolean("tokenDead", false),
+                earlierCodes = earlier,
             )
         }
 

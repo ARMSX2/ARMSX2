@@ -102,16 +102,31 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (entry.note.isNotBlank()) {
-                Text(entry.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (entry.earlierCodes.isNotBlank()) {
+                val earlier = entry.earlierCodes.split(',').filter { it.isNotBlank() }
+                    .joinToString(", ") { c -> ReportCode.normalize(c)?.let(ReportCode::format) ?: c }
+                Text(
+                    String.format(str("bugreport.myReports.earlier"), earlier),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            noteText(entry.note)?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
             val actions = buildList {
                 if (shownCode != null) add(FlowButtonSpec(str("bugreport.action.copy"), "$layer.${entry.localId}.copy") { copyCode(context, shownCode) })
+                if (exists && (status == HistoryStatus.UPLOADING || status == HistoryStatus.WAITING_RETRY || status == HistoryStatus.WAITING_WIFI)) {
+                    add(FlowButtonSpec(str("bugreport.action.stop"), "$layer.${entry.localId}.stop") { BugReport.stop(entry.localId) })
+                }
                 when (status) {
-                    HistoryStatus.WAITING_RETRY, HistoryStatus.FAILED -> if (exists) {
+                    HistoryStatus.WAITING_WIFI -> if (exists) {
+                        add(FlowButtonSpec(str("bugreport.action.sendNow"), "$layer.${entry.localId}.sendNow") { BugReport.retry(entry.localId) })
+                    }
+                    HistoryStatus.WAITING_RETRY, HistoryStatus.FAILED, HistoryStatus.STOPPED -> if (exists) {
                         add(
                             FlowButtonSpec(str("bugreport.action.retry"), "$layer.${entry.localId}.retry") {
-                                if (!BugReport.retry(entry.localId)) {
+                                if (BugReport.retry(entry.localId) == BugReport.RetryResult.GONE) {
                                     Toast.makeText(context, I18n.get("bugreport.retry.gone"), Toast.LENGTH_LONG).show()
                                 }
                             },
@@ -131,7 +146,7 @@ private fun ReportRow(entry: HistoryEntry, layer: String, onClose: () -> Unit) {
                     }
                     else -> Unit
                 }
-                if (status == HistoryStatus.NOT_SENT || status == HistoryStatus.FAILED) {
+                if (status == HistoryStatus.NOT_SENT || status == HistoryStatus.FAILED || status == HistoryStatus.STOPPED) {
                     add(
                         FlowButtonSpec(str("bugreport.action.delete"), "$layer.${entry.localId}.delete") {
                             BugReport.delete(entry.localId)
@@ -156,9 +171,18 @@ private fun statusLabel(status: HistoryStatus, live: com.armsx2.bugreport.Report
         else str("bugreport.status.uploading")
     }
     HistoryStatus.WAITING_RETRY -> str("bugreport.status.waiting")
+    HistoryStatus.WAITING_WIFI -> str("bugreport.status.wifi")
+    HistoryStatus.STOPPED -> str("bugreport.status.stopped")
     HistoryStatus.SENT -> str("bugreport.status.sent")
     HistoryStatus.FAILED -> str("bugreport.status.failed")
 }
+
+/**
+ * A history line's note in the app's words. Notes are string keys; one from an earlier build that
+ * stored English text is not shown.
+ */
+@Composable
+private fun noteText(note: String): String? = note.takeIf { it.startsWith("bugreport.") }?.let { str(it) }
 
 @Composable
 private fun kindLabel(wire: String): String = str(

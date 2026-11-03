@@ -12,6 +12,12 @@ enum class HistoryStatus(val wire: String) {
     NOT_SENT("not-sent"),
     UPLOADING("uploading"),
     WAITING_RETRY("waiting-retry"),
+
+    /** On a metered connection with a big report left: held back until Wi-Fi, or until the user says send now. */
+    WAITING_WIFI("waiting-wifi"),
+
+    /** The user stopped sending. */
+    STOPPED("stopped"),
     SENT("sent"),
     FAILED("failed"),
     ;
@@ -33,12 +39,18 @@ data class HistoryEntry(
     val serial: String,
     val status: HistoryStatus,
     val bytes: Long,
-    /** A short reason for a failed or waiting report, or "". */
+    /**
+     * Why a failed or waiting report is in that state: an i18n key (an [UploadReason.key] or a
+     * `bugreport.note.*` one), never English text. "" if there is nothing to say.
+     */
     val note: String = "",
+    /** Codes of the reports this one carries on from ([UploadState.earlierCodes]), comma separated; "" if none. */
+    val earlierCodes: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("localId", localId).put("code", code).put("kind", kind).put("createdAt", createdAt)
         .put("title", title).put("serial", serial).put("status", status.wire).put("bytes", bytes).put("note", note)
+        .put("earlierCodes", earlierCodes)
 
     companion object {
         fun fromJson(json: JSONObject) = HistoryEntry(
@@ -51,6 +63,7 @@ data class HistoryEntry(
             status = HistoryStatus.fromWire(json.optString("status")),
             bytes = json.optLong("bytes"),
             note = json.optString("note"),
+            earlierCodes = json.optString("earlierCodes"),
         )
     }
 }

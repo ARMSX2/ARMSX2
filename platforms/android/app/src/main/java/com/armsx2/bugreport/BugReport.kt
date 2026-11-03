@@ -2,6 +2,9 @@
 package com.armsx2.bugreport
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Process
 import android.provider.Settings
@@ -12,13 +15,15 @@ import androidx.compose.runtime.setValue
 import com.armsx2.CustomDriver
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.Semaphore
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /** Where a report is in its life, for the progress screen and "My reports". */
-enum class ReportStage { CAPTURING, PREPARING, UPLOADING, WAITING, DONE, FAILED }
+enum class ReportStage { CAPTURING, PREPARING, UPLOADING, WAITING, WAITING_WIFI, STOPPED, DONE, FAILED }
 
 /** What the progress screen shows for one report. */
 data class ReportProgress(
@@ -28,7 +33,10 @@ data class ReportProgress(
     val total: Long = 0,
     /** The report code, once the server has created the report. */
     val code: String = "",
-    val message: String = "",
+    /** Why it is waiting or failed, for the screen to word. */
+    val reason: UploadReason? = null,
+    /** Files that were declared but did not arrive, once the report is done. */
+    val missing: List<String> = emptyList(),
     val currentFile: String = "",
 )
 
@@ -87,10 +95,21 @@ object BugReport {
 
     val history: ReportHistory by lazy { ReportHistory(app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)) }
 
-    private val uploader = Executors.newSingleThreadExecutor { r ->
+    // One thread per report that is being sent, and at most MAX_TRANSFERS of them moving bytes at a
+    // time. A report backing off between retries gives its place up, so a new one never waits
+    // behind another report's sleep (see runUpload's `sleep`).
+    private val uploaders = Executors.newCachedThreadPool { r ->
         Thread(r, "bugreport-upload").apply { isDaemon = true }
     }
-    private val active = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val transfers = Semaphore(MAX_TRANSFERS)
+    private const val MAX_TRANSFERS = 2
+
+    /** Guards [active], [rerun] and [stopRequested] together: a retry asked for as a run ends must not be lost. */
+    private val lock = Any()
+    private val active = HashSet<String>()
+    private val rerun = HashSet<String>()
+    private val stopRequested = HashSet<String>()
+    private var unmeteredWatcher: ConnectivityManager.NetworkCallback? = null
 
     fun init(context: Context) {
         app = context.applicationContext
@@ -197,16 +216,63 @@ object BugReport {
         }
     }
 
-    /** Starts every upload an earlier run left unfinished. */
-    fun resumePending() {
+    /**
+     * Starts the uploads an earlier run left unfinished. On a metered connection a report with
+     * [ReportLimits.METERED_NOTE_BYTES] or more still to send waits for Wi-Fi instead (see
+     * [MeteredRule]); [userAsked] is the "Send now" button, which does not wait.
+     */
+    fun resumePending(userAsked: Boolean = false) {
         val root = ReportCollector.bundleRoot(app)
         val dirs = root.listFiles { f -> f.isDirectory && File(f, ReportUploader.STATE_FILE).isFile }.orEmpty()
+        val metered = isMetered(app)
+        var held = false
         for (dir in dirs) {
             val state = UploadState.load(File(dir, ReportUploader.STATE_FILE)) ?: continue
-            if (state.phase == ReportPhase.READY || state.phase == ReportPhase.UPLOADING || state.phase == ReportPhase.WAITING_RETRY) {
+            if (state.phase != ReportPhase.READY && state.phase != ReportPhase.UPLOADING && state.phase != ReportPhase.WAITING_RETRY) continue
+            if (MeteredRule.allowed(metered, state.bytesLeft(), userAsked)) {
                 enqueueUpload(dir)
+            } else {
+                held = true
+                holdForWifi(dir.name, state)
             }
         }
+        if (held) watchForUnmetered()
+    }
+
+    /** Marks a report as waiting for an unmetered connection. */
+    private fun holdForWifi(localId: String, state: UploadState) {
+        progress[localId] = ReportProgress(localId, ReportStage.WAITING_WIFI, state.bytesDone(), state.totalBytes, state.created?.code.orEmpty(), UploadReason.WIFI)
+        history.find(localId)?.let { history.upsert(it.copy(status = HistoryStatus.WAITING_WIFI, note = UploadReason.WIFI.key)) }
+    }
+
+    /** True on a metered connection. Never throws: no permission or no network reads as "not metered". */
+    fun isMetered(context: Context): Boolean = try {
+        context.getSystemService(ConnectivityManager::class.java)?.isActiveNetworkMetered == true
+    } catch (_: Exception) {
+        false
+    }
+
+    /** Sends the held-back reports as soon as the default connection stops being metered. */
+    private fun watchForUnmetered() {
+        val cm = runCatching { app.getSystemService(ConnectivityManager::class.java) }.getOrNull() ?: return
+        synchronized(lock) {
+            if (unmeteredWatcher != null) return
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                    if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) return
+                    unwatchUnmetered()
+                    scope.launch { resumePending() }
+                }
+            }
+            unmeteredWatcher = callback
+            runCatching { cm.registerDefaultNetworkCallback(callback) }.onFailure { unmeteredWatcher = null }
+        }
+    }
+
+    private fun unwatchUnmetered() {
+        val cm = runCatching { app.getSystemService(ConnectivityManager::class.java) }.getOrNull()
+        val callback = synchronized(lock) { unmeteredWatcher.also { unmeteredWatcher = null } } ?: return
+        runCatching { cm?.unregisterNetworkCallback(callback) }
     }
 
     // ---- one report -----------------------------------------------------------------------
@@ -244,8 +310,8 @@ object BugReport {
         val collector = session.collector ?: return
         val localId = collector.dir.name
         val game = session.origin.game
-        fun report(stage: ReportStage, message: String = "") {
-            progress[localId] = ReportProgress(localId, stage, message = message)
+        fun report(stage: ReportStage) {
+            progress[localId] = ReportProgress(localId, stage)
         }
 
         var perfAfter: String? = null
@@ -270,7 +336,7 @@ object BugReport {
             progress[localId] = ReportProgress(localId, ReportStage.UPLOADING, 0, state.totalBytes)
             enqueueUpload(collector.dir)
         } catch (t: Throwable) {
-            progress[localId] = ReportProgress(localId, ReportStage.FAILED, message = t.message ?: t.javaClass.simpleName)
+            progress[localId] = ReportProgress(localId, ReportStage.FAILED, reason = UploadReason.LOCAL)
         }
     }
 
@@ -281,31 +347,103 @@ object BugReport {
         if (session.origin.crashDir == null) collector.dir.deleteRecursively()
     }
 
-    /** Puts an upload on the queue, unless that report is already queued or running. */
+    /**
+     * Puts an upload on the queue. A report that is already queued or running is not started twice:
+     * if it is on its way out when this is asked, it runs once more after it ends, so a Retry
+     * pressed just as an attempt gives up is not lost.
+     */
     fun enqueueUpload(dir: File) {
         val id = dir.name
-        if (!active.add(id)) return
-        uploader.execute {
+        synchronized(lock) {
+            stopRequested.remove(id)
+            if (!active.add(id)) {
+                rerun.add(id)
+                return
+            }
+        }
+        startWorker(dir)
+    }
+
+    private fun startWorker(dir: File) {
+        val id = dir.name
+        uploaders.execute {
             try {
-                runUpload(dir)
+                do {
+                    transfers.acquireUninterruptibly()
+                    try {
+                        runUpload(dir)
+                    } finally {
+                        transfers.release()
+                    }
+                    val again = synchronized(lock) {
+                        val wanted = rerun.remove(id)
+                        if (!wanted) active.remove(id)
+                        wanted
+                    }
+                } while (again)
             } finally {
-                active.remove(id)
+                // Only reached with the id still active if runUpload threw something it did not expect.
+                synchronized(lock) {
+                    if (active.remove(id)) rerun.remove(id)
+                }
             }
         }
     }
 
-    /** Tries a report again from "My reports". Returns false if its files are gone. */
-    fun retry(localId: String): Boolean {
+    /**
+     * Tries a report again from "My reports" or the progress screen, or sends one that was held for
+     * Wi-Fi ("Send now"). What it does depends on the report ([UploadState.prepareRetry]): files
+     * that were missing get another chance, and a report whose upload link ended is turned into a
+     * new report for what is left, keeping the old code in the history line.
+     */
+    fun retry(localId: String): RetryResult {
         val dir = File(ReportCollector.bundleRoot(app), localId)
-        if (!File(dir, ReportUploader.STATE_FILE).isFile) return false
-        val state = UploadState.load(File(dir, ReportUploader.STATE_FILE)) ?: return false
-        if (state.phase == ReportPhase.FAILED) {
-            state.phase = ReportPhase.WAITING_RETRY
-            state.save(File(dir, ReportUploader.STATE_FILE))
+        val stateFile = File(dir, ReportUploader.STATE_FILE)
+        if (!stateFile.isFile) return RetryResult.GONE
+        val state = UploadState.load(stateFile) ?: return RetryResult.GONE
+        if (!state.prepareRetry()) {
+            // Nothing is left to send. A report that only lacked its final confirmation is as sent as it will get.
+            if (state.phase != ReportPhase.FINISHED) {
+                state.phase = ReportPhase.FINISHED
+                state.finishedAt = System.currentTimeMillis()
+                state.save(stateFile)
+                history.find(localId)?.let { history.upsert(it.copy(status = HistoryStatus.SENT, note = "")) }
+                progress[localId] = ReportProgress(localId, ReportStage.DONE, code = state.created?.code ?: state.earlierCodes.lastOrNull().orEmpty())
+            }
+            return RetryResult.NOTHING_LEFT
         }
-        progress[localId] = ReportProgress(localId, ReportStage.UPLOADING, state.bytesDone(), state.totalBytes, state.created?.code.orEmpty())
+        state.save(stateFile)
+        val code = state.created?.code.orEmpty()
+        history.find(localId)?.let {
+            history.upsert(it.copy(status = HistoryStatus.UPLOADING, code = code, note = "", earlierCodes = state.earlierCodes.joinToString(",")))
+        }
+        progress[localId] = ReportProgress(localId, ReportStage.UPLOADING, state.bytesDone(), state.totalBytes, code)
         enqueueUpload(dir)
-        return true
+        return RetryResult.STARTED
+    }
+
+    /** What [retry] did. */
+    enum class RetryResult { STARTED, NOTHING_LEFT, GONE }
+
+    /**
+     * Stops sending a report: what the server already has is kept, `finish` is called if it will
+     * take it, and the line says Stopped. A report that is not running right now is stopped the
+     * same way, so it is not picked up again at the next launch.
+     */
+    fun stop(localId: String) {
+        val dir = File(ReportCollector.bundleRoot(app), localId)
+        val idle = synchronized(lock) {
+            stopRequested.add(localId)
+            localId !in active
+        }
+        if (idle) {
+            if (!File(dir, ReportUploader.STATE_FILE).isFile) {
+                synchronized(lock) { stopRequested.remove(localId) }
+                return
+            }
+            synchronized(lock) { active.add(localId) }
+            startWorker(dir)
+        }
     }
 
     /** The folder of a report still on the device, or null once it has been cleaned up. */
@@ -322,6 +460,8 @@ object BugReport {
 
     /** Removes a report's files and its "My reports" entry (crash evidence the user does not want). */
     fun delete(localId: String) {
+        // An upload still running for it ends at its next step instead of writing into a folder that is going.
+        synchronized(lock) { if (localId in active) stopRequested.add(localId) }
         File(ReportCollector.bundleRoot(app), localId).deleteRecursively()
         history.remove(localId)
         progress.remove(localId)
@@ -348,24 +488,46 @@ object BugReport {
                 progress[localId] = ReportProgress(localId, ReportStage.UPLOADING, done, total, knownCode, currentFile = file)
             }
         }
+        // While a report sleeps between retries it gives its place to another one.
+        val uploader = ReportUploader(
+            HttpReportApi(),
+            sleep = { ms ->
+                transfers.release()
+                try {
+                    Thread.sleep(ms)
+                } finally {
+                    transfers.acquireUninterruptibly()
+                }
+            },
+        )
         val outcome = try {
-            ReportUploader(HttpReportApi()).run(dir, listener)
+            uploader.run(dir, listener, isCancelled = { synchronized(lock) { localId in stopRequested } })
         } catch (t: Throwable) {
-            ReportUploader.Outcome.WaitingRetry(t.message ?: t.javaClass.simpleName)
+            println("@@BUGREPORT@@ upload of $localId stopped on ${t.javaClass.simpleName}: ${t.message}")
+            ReportUploader.Outcome.WaitingRetry(UploadReason.LOCAL, t.message ?: t.javaClass.simpleName)
         }
+        synchronized(lock) { stopRequested.remove(localId) }
+        val state = UploadState.load(File(dir, ReportUploader.STATE_FILE))
+        val earlier = state?.earlierCodes?.joinToString(",").orEmpty()
         val prior = history.find(localId)
         when (outcome) {
             is ReportUploader.Outcome.Finished -> {
-                progress[localId] = ReportProgress(localId, ReportStage.DONE, code = outcome.code.ifEmpty { knownCode }, message = if (outcome.missing.isEmpty()) "" else outcome.missing.joinToString(", "))
-                prior?.let { history.upsert(it.copy(code = outcome.code.ifEmpty { knownCode }, status = HistoryStatus.SENT, note = "")) }
+                val code = outcome.code.ifEmpty { knownCode }
+                progress[localId] = ReportProgress(localId, ReportStage.DONE, code = code, missing = outcome.missing)
+                prior?.let { history.upsert(it.copy(code = code, status = HistoryStatus.SENT, note = "", earlierCodes = earlier)) }
             }
             is ReportUploader.Outcome.WaitingRetry -> {
-                progress[localId] = ReportProgress(localId, ReportStage.WAITING, code = knownCode, message = outcome.reason)
-                prior?.let { history.upsert(it.copy(status = HistoryStatus.WAITING_RETRY, note = outcome.reason)) }
+                progress[localId] = ReportProgress(localId, ReportStage.WAITING, code = knownCode, reason = outcome.reason)
+                prior?.let { history.upsert(it.copy(status = HistoryStatus.WAITING_RETRY, note = outcome.reason.key, earlierCodes = earlier)) }
             }
             is ReportUploader.Outcome.Failed -> {
-                progress[localId] = ReportProgress(localId, ReportStage.FAILED, code = knownCode, message = outcome.reason)
-                prior?.let { history.upsert(it.copy(status = HistoryStatus.FAILED, note = outcome.reason)) }
+                progress[localId] = ReportProgress(localId, ReportStage.FAILED, code = knownCode, reason = outcome.reason)
+                prior?.let { history.upsert(it.copy(status = HistoryStatus.FAILED, note = outcome.reason.key, earlierCodes = earlier)) }
+            }
+            is ReportUploader.Outcome.Stopped -> {
+                val code = outcome.code.ifEmpty { knownCode }
+                progress[localId] = ReportProgress(localId, ReportStage.STOPPED, code = code, missing = outcome.missing)
+                prior?.let { history.upsert(it.copy(code = code, status = HistoryStatus.STOPPED, note = "", earlierCodes = earlier)) }
             }
         }
     }

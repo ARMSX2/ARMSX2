@@ -9,6 +9,9 @@ import java.io.File
  * sent after a week or beyond the newest few, and folders a cancelled report left behind.
  */
 object Housekeeping {
+    /** The history note (an i18n key) for a report whose files were cleaned up before it could be sent. */
+    const val NOTE_EXPIRED = "bugreport.note.expired"
+
     private const val WEEK_MS = 7L * 24 * 3600 * 1000
     private const val DAY_MS = 24L * 3600 * 1000
 
@@ -44,6 +47,8 @@ object Housekeeping {
         }
         return when (info.phase) {
             ReportPhase.FINISHED -> if (now - info.finishedAt > WEEK_MS) Verdict.DELETE else Verdict.KEEP
+            // The user chose to stop; the line stays, the files go with the rest.
+            ReportPhase.STOPPED -> if (now - info.createdAt > WEEK_MS) Verdict.DELETE else Verdict.KEEP
             ReportPhase.FAILED, ReportPhase.WAITING_RETRY, ReportPhase.UPLOADING, ReportPhase.READY ->
                 if (now - info.createdAt > WEEK_MS) Verdict.DELETE_AND_MARK_EXPIRED else Verdict.KEEP
             else -> Verdict.KEEP
@@ -75,7 +80,7 @@ object Housekeeping {
                 Verdict.DELETE_AND_MARK_EXPIRED -> {
                     dir.deleteRecursively()
                     history.find(dir.name)?.let {
-                        if (it.status != HistoryStatus.SENT) history.upsert(it.copy(status = HistoryStatus.FAILED, note = "Expired before it could be sent."))
+                        if (it.status != HistoryStatus.SENT) history.upsert(it.copy(status = HistoryStatus.FAILED, note = NOTE_EXPIRED))
                     }
                 }
             }

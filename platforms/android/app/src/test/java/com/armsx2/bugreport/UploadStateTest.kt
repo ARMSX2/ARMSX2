@@ -156,4 +156,61 @@ class UploadStateTest {
         assertEquals(ReportPhase.WAITING_RETRY, ReportPhase.fromWire("waiting-retry"))
         assertEquals(ReportPhase.EVIDENCE, ReportPhase.fromWire(JSONObject("""{"p":"evidence"}""").getString("p")))
     }
+
+    @Test
+    fun theDeadTokenFlagFailureKindsAndEarlierCodesSurviveTheStateFile() {
+        val state = UploadState(
+            localId = "report-1", kind = "crash", createdAt = 5,
+            request = JSONObject().put("summary", JSONObject()),
+            files = mutableListOf(
+                FileState("a.bin", 10, "aa", failure = "gone", failureKind = FailureKind.TRANSIENT),
+                FileState("b.bin", 10, "bb", failure = "refused", failureKind = FailureKind.PERMANENT),
+                FileState("c.bin", 10, "cc"),
+            ),
+            phase = ReportPhase.FAILED,
+            lastReason = UploadReason.TOKEN.key,
+            tokenDead = true,
+            earlierCodes = listOf("AX-AAAA-BBBB"),
+        )
+        val file = tmp.newFile("state.json")
+        state.save(file)
+        val back = UploadState.load(file)!!
+
+        assertTrue(back.tokenDead)
+        assertEquals(listOf("AX-AAAA-BBBB"), back.earlierCodes)
+        assertEquals(UploadReason.TOKEN.key, back.lastReason)
+        assertEquals(FailureKind.TRANSIENT, back.files[0].failureKind)
+        assertEquals(FailureKind.PERMANENT, back.files[1].failureKind)
+        assertNull(back.files[2].failureKind)
+        assertEquals(ReportPhase.FAILED, back.phase)
+    }
+
+    @Test
+    fun anOldStateFileWithNoneOfThatLoadsWithSafeDefaults() {
+        val old = JSONObject("""{"schema":1,"localId":"r","kind":"other","createdAt":1,"phase":"waiting-retry","request":{},"files":[{"name":"a.bin","size":3,"sha256":"x","failure":"The upload token was refused."}]}""")
+        val back = UploadState.fromJson(old)
+        assertFalse(back.tokenDead)
+        assertEquals(emptyList<String>(), back.earlierCodes)
+        assertNull(back.files[0].failureKind)
+        assertEquals("The upload token was refused.", back.files[0].failure)
+    }
+
+    @Test
+    fun bytesLeftCountsWhatIsNotSentAndNotRefusedForGood() {
+        val partSize = 4
+        val state = UploadState(
+            "r", "other", 1, JSONObject(),
+            mutableListOf(
+                FileState("a.bin", 8, "aa", complete = true),
+                FileState("b.bin", 8, "bb", parts = mutableListOf(PartRecord(1, "e"))),
+                FileState("c.bin", 100, "cc", failure = "no", failureKind = FailureKind.PERMANENT),
+                FileState("d.bin", 6, "dd", failure = "gone", failureKind = FailureKind.TRANSIENT),
+            ),
+        )
+        // Before the report exists nothing has been sent: the whole of b.bin and d.bin.
+        assertEquals(8L + 6L, state.bytesLeft())
+        state.created = CreatedReport("ID", "AX-1111-2222", "t", 1, partSize)
+        // b.bin has sent one 4-byte part of two; d.bin is all still to go.
+        assertEquals(4L + 6L, state.bytesLeft())
+    }
 }
