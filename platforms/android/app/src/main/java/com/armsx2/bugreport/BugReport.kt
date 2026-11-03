@@ -412,8 +412,9 @@ object BugReport {
             collector.abandonCapture()
             progress[localId] = ReportProgress(localId, ReportStage.FAILED, reason = UploadReason.LOCAL)
             // A line in My reports, so the failure is not only on a screen that can be closed. There is
-            // no state file, so there is nothing to retry; the user can delete the line.
-            history.upsert(
+            // no state file, so there is nothing to retry; the user can delete the line. A crash keeps
+            // the "not sent" line it already has, so it can be sent from there.
+            if (session.origin.crashDir == null) history.upsert(
                 HistoryEntry(
                     localId = localId, code = "", kind = session.kind.wire, createdAt = System.currentTimeMillis(),
                     title = game?.title.orEmpty(), serial = game?.serial.orEmpty(),
