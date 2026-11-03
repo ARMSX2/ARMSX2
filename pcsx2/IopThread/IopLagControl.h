@@ -32,6 +32,7 @@
 
 #include "common/Pcsx2Types.h"
 
+#include <cstddef>
 #include <vector>
 
 namespace IopThread
@@ -160,7 +161,7 @@ namespace IopThread
 
 		static constexpr u32 kBucketShift = 12;
 		static constexpr u32 kBuckets = 4096; // 16.7 million cycles of history: more than kMaxLag, less than 4 frames
-		static constexpr size_t kMaxTrace = 1 << 14;
+		static constexpr std::size_t kMaxTrace = 1 << 14;
 
 	private:
 		struct Sample
