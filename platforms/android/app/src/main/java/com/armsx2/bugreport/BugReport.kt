@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kr.co.iefriends.pcsx2.NativeApp
 
 /** Where a report is in its life, for the progress screen and "My reports". */
 enum class ReportStage { CAPTURING, PREPARING, UPLOADING, WAITING, WAITING_WIFI, STOPPED, DONE, FAILED }
@@ -167,6 +168,19 @@ object BugReport {
                 foreground = activityStarted, bootCount = bootCount(app), crc = ReportCrc.normalize(crc),
             ),
         )
+    }
+
+    /**
+     * Call when the game's renderer has opened (the VM has reached running). Copies the core's
+     * custom-driver status into the marker, so that if this run crashes the report can say whether
+     * the driver pack opened: the new process that builds it cannot ask the core. Cheap to call
+     * again on every resume; the first status of a run is the one kept.
+     */
+    fun noteRendererOpened() {
+        scope.launch {
+            val status = runCatching { NativeApp.getCustomDriverStatus() }.getOrNull().orEmpty()
+            CrashMarker.setDriverStatus(app, status)
+        }
     }
 
     /** Records that the game stopped in an orderly way. */

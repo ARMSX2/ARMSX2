@@ -1849,6 +1849,8 @@ open class MainActivityRuntime : ComponentActivity() {
          *  Polls every 250ms, giving up after ~15s if the game never starts presenting. */
         @JvmStatic
         fun onVmRunning() {
+            // The GS device is open by the time the VM runs: record which driver it really got.
+            runCatching { com.armsx2.bugreport.BugReport.noteRendererOpened() }
             adoptExternalGameIdentity()
             val requestedSlot = pendingSlotLoadOnBoot
             val requestedFile = pendingFileLoadOnBoot

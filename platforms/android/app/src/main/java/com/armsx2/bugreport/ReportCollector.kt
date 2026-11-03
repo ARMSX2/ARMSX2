@@ -530,8 +530,14 @@ class ReportCollector(
                 json.put("pack_meta", scrubber.json(it))
             }
         }
-        val status = runCatching { NativeApp.getCustomDriverStatus() }.getOrNull()
-        if (status != null) json.put("native_status", scrubber.json(parse(status)))
+        // A crash report is collected in a new process, where the core's answer would describe a run
+        // that never happened. See DriverStatusEntry.
+        val entry = DriverStatusEntry.choose(origin.crashMarker) { runCatching { NativeApp.getCustomDriverStatus() }.getOrNull() }
+        when (entry) {
+            is DriverStatusEntry.Status -> json.put("native_status", scrubber.json(parse(entry.json)))
+            is DriverStatusEntry.Note -> json.put("native_status_note", entry.text)
+            null -> {}
+        }
         return json
     }
 

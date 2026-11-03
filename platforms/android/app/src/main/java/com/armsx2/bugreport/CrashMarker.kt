@@ -21,8 +21,10 @@ import org.json.JSONObject
  * in. A process that dies while the app is in the background is not something to ask about, and
  * neither is one that a reboot ended; [CrashDecision] uses both.
  *
- * It also holds the disc's CRC, resolved before the game boots (the running VM often reports 0 for
- * ISO and CHD images), because a crash report is built from the marker in a later process.
+ * Two more things are recorded because only the crashed process knew them. The disc's CRC is
+ * resolved before the game boots (the running VM often reports 0 for ISO and CHD images). The
+ * native custom-driver status is added once the renderer has opened ([setDriverStatus]): the core
+ * keeps it in process memory, so the new process that collects the report cannot ask for it.
  */
 object CrashMarker {
     private const val PREFS = "armsx2_bugreport"
@@ -45,11 +47,18 @@ object CrashMarker {
         val bootCount: Int = -1,
         /** The disc's CRC as 8 upper-case hex digits, or "" if it could not be worked out before boot. */
         val crc: String = "",
+        /**
+         * The core's custom-driver status (the JSON `NativeApp.getCustomDriverStatus` returns), taken
+         * once the renderer had opened. "" while the game has not got that far, and in markers
+         * written before this was recorded.
+         */
+        val nativeDriverStatus: String = "",
     ) {
         fun toJson(): JSONObject = JSONObject()
             .put("armedAt", armedAt).put("pid", pid).put("serial", serial).put("title", title)
             .put("driverId", driverId).put("driverName", driverName)
-            .put("foreground", foreground).put("bootCount", bootCount).put("crc", crc)
+            .put("foreground", foreground).put("bootCount", bootCount)
+            .put("crc", crc).put("nativeDriverStatus", nativeDriverStatus)
 
         companion object {
             fun fromJson(json: JSONObject) = Marker(
@@ -64,6 +73,7 @@ object CrashMarker {
                 foreground = json.optBoolean("foreground", true),
                 bootCount = json.optInt("bootCount", -1),
                 crc = ReportCrc.normalize(json.optString("crc", "")),
+                nativeDriverStatus = json.optString("nativeDriverStatus", ""),
             )
         }
     }
@@ -110,5 +120,17 @@ object CrashMarker {
         val now = read(context) ?: return
         if (now.pid != pid || now.foreground == foreground) return
         arm(context, now.copy(foreground = foreground))
+    }
+
+    /**
+     * Adds the native custom-driver [status] to the marker of the game this process is running. Only
+     * a marker written by this process is touched, for the reason given on [setForeground]; the
+     * first status recorded for a run stays, since the driver cannot change under a running game.
+     */
+    @Synchronized
+    fun setDriverStatus(context: Context, status: String, pid: Int = android.os.Process.myPid()) {
+        val now = read(context) ?: return
+        if (now.pid != pid || now.nativeDriverStatus.isNotEmpty() || status.isBlank()) return
+        arm(context, now.copy(nativeDriverStatus = status))
     }
 }

@@ -190,4 +190,22 @@ class ReportModelsTest {
         val origin = ReportOrigins.crash(PendingCrash(java.io.File("crash-1"), "God of War II", "SCUS-97481", "", 1L, marker))
         assertEquals("", origin.game?.crc)
     }
+
+    @Test
+    fun theCrashMarkerKeepsTheDriverStatusThroughItsFile() {
+        val status = """{"requested":true,"opened":true,"required":false,"dir":"/d","name":"libvulkan_x.so","redirect_dir":"","hook_lib_dir":"","failure":""}"""
+        val marker = CrashMarker.Marker(
+            1_762_000_000_000L, 4242, "SCUS-97481", "God of War II", "pack", "Pack",
+            crc = "ABCD1234", nativeDriverStatus = status,
+        )
+        val back = CrashMarker.Marker.fromJson(JSONObject(marker.toJson().toString()))
+        assertEquals(marker, back)
+        assertEquals(status, back.nativeDriverStatus)
+    }
+
+    @Test
+    fun aMarkerFromBeforeTheDriverStatusWasRecordedHasNone() {
+        val old = JSONObject("""{"armedAt":5,"pid":9,"serial":"S","title":"T","driverId":"","driverName":"","foreground":true,"bootCount":3,"crc":"ABCD1234"}""")
+        assertEquals("", CrashMarker.Marker.fromJson(old).nativeDriverStatus)
+    }
 }
