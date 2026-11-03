@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -497,36 +498,68 @@ namespace {
 
 // In: x0-x7, x11-x15 from `in`, w8 = address, x21 = &psxRegs, x19 = rc, w20 = re (the pinned
 // clocks, see RIOPCYC). Out: the same registers, and x9.
+//
+// The asm takes one input, a pointer to this block, and keeps it in x22 for the whole call. Eight
+// separate register operands do not fit: the asm clobbers x0-x17, x19-x21 and x30, which leaves
+// x22-x28 and, where they are not reserved, x18 and x29. On Darwin x18 and x29 are reserved, so
+// seven registers are left for eight operands and the compiler gives up. Elsewhere it would put an
+// operand in x18, which a C call in the stub is free to overwrite, and the asm reads that operand
+// again after the call. x22 is callee-saved, so the stub's C calls give it back.
+struct ColdStubCall
+{
+	const void* stub;  // 0
+	const u64* in;     // 8
+	u64* out;          // 16
+	u64* x9;           // 24
+	u64* rc;           // 32
+	u32* re;           // 40
+	void* state;       // 48
+	u64 addr;          // 56
+};
+static_assert(offsetof(ColdStubCall, stub) == 0 && offsetof(ColdStubCall, in) == 8 && offsetof(ColdStubCall, out) == 16 &&
+              offsetof(ColdStubCall, x9) == 24 && offsetof(ColdStubCall, rc) == 32 && offsetof(ColdStubCall, re) == 40 &&
+              offsetof(ColdStubCall, state) == 48 && offsetof(ColdStubCall, addr) == 56,
+	"the asm in CallColdStub addresses these fields by offset");
+
 void CallColdStub(const void* stub, u32 addr, const u64 (&in)[13], u64 (&out)[13], u64& x9, u64& rc, u32& re)
 {
+	ColdStubCall call = {stub, in, out, &x9, &rc, &re, &psxRegs, addr};
 	asm volatile(
-		"ldp x0, x1, [%[in], #0]\n\t"
-		"ldp x2, x3, [%[in], #16]\n\t"
-		"ldp x4, x5, [%[in], #32]\n\t"
-		"ldp x6, x7, [%[in], #48]\n\t"
-		"ldp x11, x12, [%[in], #64]\n\t"
-		"ldp x13, x14, [%[in], #80]\n\t"
-		"ldr x15, [%[in], #96]\n\t"
-		"mov w8, %w[addr]\n\t"
-		"mov x21, %[state]\n\t"
-		"ldr x19, [%[rc]]\n\t"
-		"ldr w20, [%[re]]\n\t"
-		"blr %[stub]\n\t"
-		"stp x0, x1, [%[out], #0]\n\t"
-		"stp x2, x3, [%[out], #16]\n\t"
-		"stp x4, x5, [%[out], #32]\n\t"
-		"stp x6, x7, [%[out], #48]\n\t"
-		"stp x11, x12, [%[out], #64]\n\t"
-		"stp x13, x14, [%[out], #80]\n\t"
-		"str x15, [%[out], #96]\n\t"
-		"str x9, [%[x9]]\n\t"
-		"str x19, [%[rc]]\n\t"
-		"str w20, [%[re]]\n\t"
+		"mov x22, %[call]\n\t"
+		"ldr x16, [x22, #8]\n\t" // in
+		"ldp x0, x1, [x16, #0]\n\t"
+		"ldp x2, x3, [x16, #16]\n\t"
+		"ldp x4, x5, [x16, #32]\n\t"
+		"ldp x6, x7, [x16, #48]\n\t"
+		"ldp x11, x12, [x16, #64]\n\t"
+		"ldp x13, x14, [x16, #80]\n\t"
+		"ldr x15, [x16, #96]\n\t"
+		"ldr w8, [x22, #56]\n\t"  // addr
+		"ldr x21, [x22, #48]\n\t" // state
+		"ldr x16, [x22, #32]\n\t" // rc
+		"ldr x19, [x16]\n\t"
+		"ldr x16, [x22, #40]\n\t" // re
+		"ldr w20, [x16]\n\t"
+		"ldr x17, [x22, #0]\n\t" // stub
+		"blr x17\n\t"
+		"ldr x16, [x22, #16]\n\t" // out
+		"stp x0, x1, [x16, #0]\n\t"
+		"stp x2, x3, [x16, #16]\n\t"
+		"stp x4, x5, [x16, #32]\n\t"
+		"stp x6, x7, [x16, #48]\n\t"
+		"stp x11, x12, [x16, #64]\n\t"
+		"stp x13, x14, [x16, #80]\n\t"
+		"str x15, [x16, #96]\n\t"
+		"ldr x16, [x22, #24]\n\t" // x9
+		"str x9, [x16]\n\t"
+		"ldr x16, [x22, #32]\n\t" // rc
+		"str x19, [x16]\n\t"
+		"ldr x16, [x22, #40]\n\t" // re
+		"str w20, [x16]\n\t"
 		:
-		: [in] "r"(in), [out] "r"(out), [stub] "r"(stub), [addr] "r"(addr), [x9] "r"(&x9), [state] "r"(&psxRegs), [rc] "r"(&rc),
-		  [re] "r"(&re)
+		: [call] "r"(&call)
 		: "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17",
-		  "x19", "x20", "x21", "x30", "memory", "cc");
+		  "x19", "x20", "x21", "x22", "x30", "memory", "cc");
 }
 
 } // namespace
