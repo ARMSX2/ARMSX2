@@ -310,7 +310,7 @@ class ReportCollector(
         // The logs go in last, so a failure during capture is in them.
         refreshLogs()
         enforceLimits()
-        val commit = systemReport?.let(::appCommitFrom) ?: "unknown"
+        val commit = AppCommit.pick(BuildConfig.GIT_COMMIT, systemReport?.let(::appCommitFrom))
         val heavy = setOf(ReportFiles.GS_DUMP, ReportFiles.SAVESTATE)
         // Heavy files are dropped before report.json is written, so it says they were left out.
         if (skipHeavy()) dropHeavy(heavy)
@@ -565,9 +565,10 @@ class ReportCollector(
 
     private fun gpuName(): String = runCatching { GpuInfo.rendererName() }.getOrNull().orEmpty()
 
-    private fun appCommitFrom(systemJson: String): String = runCatching {
+    /** The commit the core reports for itself in the driver report, if it knows one. */
+    private fun appCommitFrom(systemJson: String): String? = runCatching {
         JSONObject(systemJson).optJSONObject("app")?.optString("commit").orEmpty().ifBlank { null }
-    }.getOrNull() ?: "unknown"
+    }.getOrNull()
 
     /** Drops files the server would refuse, the largest first, and says so in [failed]. */
     private fun enforceLimits() {

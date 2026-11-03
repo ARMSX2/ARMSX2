@@ -46,6 +46,27 @@ val armsx2ApplicationId = providers.gradleProperty("armsx2.applicationId").orEls
 // label (see ci-nightly-dualcore.sh) so they install alongside the stable app instead of replacing
 // it; the updater reads CHANNEL to decide whether to follow nightly or stable releases.
 val armsx2Channel = providers.gradleProperty("armsx2.channel").orElse("stable")
+// The commit this APK is built from, baked into BuildConfig.GIT_COMMIT so a problem report can name
+// it without depending on the native driver report (which is empty when the core was built outside
+// a git checkout). -Parmsx2.commit wins: a build from a copied source tree with no .git
+// passes it, since git cannot be asked there. Otherwise it is the short hash of HEAD of the
+// checkout this build is in, or "" if there is none. Anything that is not a hex hash is dropped so
+// the value can never break the generated source.
+val armsx2GitCommit: Provider<String> = providers.gradleProperty("armsx2.commit").orElse(
+    providers.provider {
+        val repoRoot = rootDir.resolve("../..").canonicalFile
+        if (!repoRoot.resolve(".git").exists()) {
+            ""
+        } else {
+            runCatching {
+                providers.exec {
+                    commandLine("git", "-C", repoRoot.path, "rev-parse", "--short=10", "HEAD")
+                    isIgnoreExitValue = true
+                }.standardOutput.asText.get()
+            }.getOrDefault("")
+        }
+    },
+).map { raw -> raw.trim().takeIf { Regex("[0-9a-fA-F]{7,40}").matches(it) }?.lowercase() ?: "" }
 // Home-screen label. The nightly overrides this with @string/app_name_nightly so the two installs
 // are distinguishable; everything else keeps the localized default.
 val armsx2AppLabel = providers.gradleProperty("armsx2.appLabel").orElse("@string/app_name")
@@ -129,6 +150,7 @@ android {
         // Which release stream this APK came from: "stable" or "nightly". Read by the in-app
         // updater instead of inferring it from versionCode magnitude.
         buildConfigField("String", "CHANNEL", "\"${armsx2Channel.get()}\"")
+        buildConfigField("String", "GIT_COMMIT", "\"${armsx2GitCommit.get()}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {

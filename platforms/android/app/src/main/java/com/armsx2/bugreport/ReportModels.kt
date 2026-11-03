@@ -32,6 +32,20 @@ data class ReportGame(
     val settingsKey: String?,
 )
 
+/** The commit the build is from, as `report.json` and the create call name it. */
+object AppCommit {
+    const val UNKNOWN = "unknown"
+
+    /**
+     * The first of [candidates] that names a commit, in order of trust; "unknown" if none does.
+     * The Gradle build's own value comes first because it exists whether or not the driver report
+     * could be written, and the driver report's value is what is left when the build had no git.
+     */
+    fun pick(vararg candidates: String?): String =
+        candidates.asSequence().map { it?.trim().orEmpty() }
+            .firstOrNull { it.isNotEmpty() && !it.equals(UNKNOWN, ignoreCase = true) } ?: UNKNOWN
+}
+
 /** The file names a report can contain. All match the server's `^[a-z0-9][a-z0-9._-]{0,63}$`. */
 object ReportFiles {
     const val REPORT = "report.json"

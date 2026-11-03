@@ -112,4 +112,20 @@ class ReportModelsTest {
         assertTrue(marker.foreground)
         assertEquals(-1, marker.bootCount)
     }
+
+    @Test
+    fun theCommitIsTheBuildsOwnBeforeWhatTheDriverReportSaid() {
+        assertEquals("05f55b8e19", AppCommit.pick("05f55b8e19", "9999999999999999999999999999999999999999"))
+        assertEquals("9999999999", AppCommit.pick("", "9999999999"))
+        assertEquals("9999999999", AppCommit.pick(null, " 9999999999 "))
+    }
+
+    @Test
+    fun aCommitNobodyKnowsIsTheWordUnknown() {
+        assertEquals("unknown", AppCommit.pick("", ""))
+        assertEquals("unknown", AppCommit.pick(null, null))
+        assertEquals("unknown", AppCommit.pick())
+        // An "unknown" passed on from somewhere must not shadow a real value after it.
+        assertEquals("05f55b8e19", AppCommit.pick("unknown", "05f55b8e19"))
+    }
 }
