@@ -642,6 +642,18 @@ open class MainActivityRuntime : ComponentActivity() {
          *  LAUNCHER rotation (reported as "BIOS ignores the Renderer rotation and goes portrait"). */
         private var emulationOwnsOrientation = false
 
+        /** Writes the crash marker for the VM about to run: which game and which GPU driver it is on. */
+        private fun armBugReportMarker() {
+            runCatching {
+                val game = currentGame.value
+                com.armsx2.bugreport.BugReport.armCrashMarker(
+                    serial = game?.serial.orEmpty(),
+                    title = game?.title ?: "BIOS",
+                    driverId = customDriverId.value.orEmpty(),
+                )
+            }
+        }
+
         /** The single "we're back in the library" cleanup: drop the current-game pointer (so
          *  Settings reverts to Global scope) and hand the Activity's rotation back to the
          *  launcher preference.
@@ -789,6 +801,9 @@ open class MainActivityRuntime : ComponentActivity() {
             memoryCardRecoveryBypass = false
 
             invoke {
+                // Set once the VM thread has returned. A Java exception or a dead process leaves it
+                // false and the crash marker armed (see BugReport.armCrashMarker).
+                var vmReturned = false
                 try {
                     eState.value = EmuState.RUNNING
                     clearLatches()
@@ -848,11 +863,16 @@ open class MainActivityRuntime : ComponentActivity() {
                     stagePerGameSettingsFile(currentGame.value?.settingsKey)
                     // The microphones as they are now, by name, for a game that opens one (MicDevices).
                     runCatching { instance?.applicationContext?.let { com.armsx2.input.MicDevices.push(it) } }
+                    // Armed on disk before the VM can take the process down, cleared below when the
+                    // VM thread returns in an orderly way. Still armed at the next launch = a crash.
+                    armBugReportMarker()
                     if (arcadeLaunch)
                         runArcadeGame(m_szGamefile)
                     else
                         NativeApp.runVMThread(m_szGamefile)
+                    vmReturned = true
                 } finally {
+                    if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
                     // observed). Drop back to STOPPED only after native has
                     // actually unwound, so users can't launch the next game
@@ -1297,6 +1317,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 return
             }
             invoke {
+                var vmReturned = false
                 try {
                     eState.value = EmuState.RUNNING
                     clearLatches()
@@ -1317,8 +1338,11 @@ open class MainActivityRuntime : ComponentActivity() {
                     }
                     // No game of its own, so nothing staged by an earlier launch may be written.
                     stagePerGameSettingsFile(null)
+                    armBugReportMarker()
                     NativeApp.runVMThread(m_szGamefile)
+                    vmReturned = true
                 } finally {
+                    if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     eState.value = EmuState.STOPPED
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
@@ -1956,6 +1980,8 @@ open class MainActivityRuntime : ComponentActivity() {
          *  chosen data root. Used after the user moves app data between Internal
          *  and SD in the setup wizard. */
         fun restartApp(context: Context) {
+            // An exit the app chose is not a crash, even with a game running.
+            runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -2299,6 +2325,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // than deciding again, every Kotlin caller of assetCopyRoot gets it from here on, and a
         // later storage change is detected against it to trigger a restart.
         lastInitDataRoot = lastInitDataRoot ?: resolveDataRoot(applicationContext)
+        // Before the core starts and before any game can boot: if the last run died with a game
+        // running, its emulog is still on disk and the next boot would truncate it.
+        runCatching { lastInitDataRoot?.let { com.armsx2.bugreport.BugReport.onDataRootReady(it) } }
 
         // #9: one-time recovery for a fresh install that reuses an old data folder — restore
         // settings from the in-folder mirror, or seed from the folder's old PCSX2-Android.ini,
