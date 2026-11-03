@@ -155,7 +155,8 @@ namespace AutoTune
 	/// Whether IopThread::ResolveMode would give an IOP thread a place on this host. The GS back thread, when it
 	/// is running, takes one of the cores overall, so it is counted as busy: an IOP thread on a host that has
 	/// room for it only without the back thread would not be placed. A performance tier narrower than the
-	/// threads does not rule it out (the IOP thread runs outside the tier); a tier that cannot be read does.
+	/// threads does not rule it out (the IOP thread runs outside the tier); a tier of fewer than
+	/// IopThread::kMinPerformanceCores, or one that cannot be read, does.
 	bool IopThreadPlaceable(bool vu_thread, bool lockstep, IopThread::HostCpuInfo host, const IopThread::VmConditions& vm,
 		bool gs_back_thread_running);
 

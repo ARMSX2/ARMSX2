@@ -83,6 +83,10 @@ namespace IopThread
 	/// or a command line goes through this before anything uses it as L.
 	s32 ClampLag(s32 requested);
 
+	/// The fewest performance-tier cores a host needs for ResolveMode to give the Threaded mode. The EE and GS
+	/// threads are the two that are busy all the time, and they are the ones that should sit on fast cores.
+	inline constexpr u32 kMinPerformanceCores = 2;
+
 	/// What ResolveMode needs to know about the host. A test describes a device with it; the
 	/// emulator fills it from the CPU topology.
 	struct HostCpuInfo
@@ -90,7 +94,8 @@ namespace IopThread
 		bool is_arm64 = false; // both modes are ARM64-only: the x86 IOP JIT is not audited for a second thread
 		u32 total_cores = 0;
 		/// Cores of at least 0.75 of the fastest core's speed (GetPerformanceCoresMask() in
-		/// VMManager.cpp). 0 when the cores cannot be told apart or cannot be read.
+		/// VMManager.cpp). On a part whose cores are all the same speed that is every core. 0 only when no
+		/// core's speed can be read, and on hosts with no capacity source (everything but Linux and Android).
 		u32 performance_cores = 0;
 	};
 
@@ -117,10 +122,10 @@ namespace IopThread
 	/// With the lockstep flag set it then returns Lockstep. Lockstep is the correctness reference
 	/// used by tests, eerunner and debugging, so the core rule below does not apply to it.
 	///
-	/// Without the lockstep flag it returns Threaded, unless the host has too few cores or cannot say
-	/// which are the fast ones. The threads are the EE, the GS, the IOP and, with MTVU on, the VU1
-	/// thread. It needs at least that many cores in total plus two more for the OS, the GS back
-	/// thread and the audio callback, and a readable performance tier (performance_cores above 0).
+	/// Without the lockstep flag it returns Threaded, unless the host has too few cores or too few fast ones.
+	/// The threads are the EE, the GS, the IOP and, with MTVU on, the VU1 thread. It needs at least that
+	/// many cores in total plus two more for the OS, the GS back thread and the audio callback, and a
+	/// performance tier of at least kMinPerformanceCores cores (a tier that cannot be read counts as none).
 	/// The tier may be narrower than the threads: the IOP thread then runs outside it, on the
 	/// slower cores (UnpinnedIopThreadMask in IopPlacement.h).
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);

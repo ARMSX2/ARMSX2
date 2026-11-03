@@ -44,6 +44,8 @@ namespace
 	const HostCpuInfo kM2Max = Host(true, 12, 8); // 8 performance + 4 efficiency
 	const HostCpuInfo kRk3562 = Host(true, 4, 4); // 4 A53, all alike
 	const HostCpuInfo kSd662 = Host(true, 8, 4); // 4 A73 + 4 A53
+	const HostCpuInfo kRg55g1 = Host(true, 8, 2); // 2 A78 + 6 A55
+	const HostCpuInfo kUniform8 = Host(true, 8, 8); // 8 cores of one speed: every one is in the tier
 
 	Pcsx2Config Requested(bool iop_thread, bool lockstep, bool mtvu)
 	{
@@ -281,13 +283,60 @@ TEST(IopThreadModeDevices, ATierNarrowerThanTheThreadsDoesNotSwitchItOff)
 {
 	// The RG 55G1: two big cores and six little ones. The IOP thread runs on the little ones (UnpinnedIopThreadMask),
 	// so the big cores are not needed for it, with MTVU on or off.
-	const HostCpuInfo rg55g1 = Host(true, 8, 2);
-	EXPECT_EQ(Resolve(true, false, true, rg55g1), IopThreadMode::Threaded);
-	EXPECT_EQ(Resolve(true, false, false, rg55g1), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, true, kRg55g1), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, false, kRg55g1), IopThreadMode::Threaded);
 	// A tier of three, MTVU on: four threads on three fast cores.
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 3)), IopThreadMode::Threaded);
-	// One fast core is still a readable tier.
-	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 1)), IopThreadMode::Threaded);
+	// Two fast cores is the narrowest tier that is enough.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 2)), IopThreadMode::Threaded);
+}
+
+TEST(IopThreadModeDevices, TheTierNeedsAtLeastTwoPerformanceCores)
+{
+	EXPECT_EQ(IopThread::kMinPerformanceCores, 2u);
+
+	// One fast core: the EE and GS threads cannot both have one. Off with MTVU on or off, on a host with cores to spare.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 1)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 8, 1)), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 16, 1)), IopThreadMode::Off);
+	// The same host with a second fast core resolves.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 2)), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 8, 2)), IopThreadMode::Threaded);
+	// Nothing to count is no tier either.
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 8, 0)), IopThreadMode::Off);
+}
+
+TEST(IopThreadModeDevices, TheTwoCoreTierDoesNotWaiveTheTotalCoreRule)
+{
+	// Two fast cores and too few cores in total is still Off: the two rules are independent.
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 4, 2)), IopThreadMode::Off); // 3 threads need 5 cores
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 5, 2)), IopThreadMode::Off); // 4 threads need 6 cores
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 6, 2)), IopThreadMode::Threaded);
+}
+
+TEST(IopThreadModeDevices, TheLockstepModeIgnoresTheTwoCoreTierToo)
+{
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 8, 1)), IopThreadMode::Lockstep);
+	EXPECT_EQ(Resolve(true, true, true, Host(true, 2, 1)), IopThreadMode::Lockstep);
+}
+
+TEST(IopThreadModeDevices, AHostWhoseCoresAreAllAlikeIsJudgedByItsCoreCountAlone)
+{
+	// GetPerformanceCoresMask() puts every core of at least 0.75 of the fastest into the tier, so on a part with one
+	// core speed the tier is every core. It is only 0 when no core's speed can be read.
+	//
+	// RK3566 (4 x A55) and RK3562 (4 x A53): the tier holds four cores, but four cores leave nothing over once the
+	// threads have theirs (3 threads need 5 cores, 4 need 6).
+	EXPECT_EQ(Resolve(true, false, true, kRk3562), IopThreadMode::Off);
+	EXPECT_EQ(Resolve(true, false, false, kRk3562), IopThreadMode::Off);
+	// Five alike cores: enough without MTVU, not with it.
+	EXPECT_EQ(Resolve(true, false, false, Host(true, 5, 5)), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 5, 5)), IopThreadMode::Off);
+	// Six and eight alike cores resolve, with MTVU on or off. The tier holds all four threads, so nothing is placed
+	// outside it.
+	EXPECT_EQ(Resolve(true, false, true, Host(true, 6, 6)), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, true, kUniform8), IopThreadMode::Threaded);
+	EXPECT_EQ(Resolve(true, false, false, kUniform8), IopThreadMode::Threaded);
 }
 
 TEST(IopThreadModeDevices, ANarrowTierStillNeedsTheCoresForTheRest)
@@ -306,9 +355,10 @@ TEST(IopThreadModeDevices, TheCoreRuleNeedsTwoSpareCoresBeyondTheThreads)
 	EXPECT_EQ(Resolve(true, false, false, Host(true, 5, 3)), IopThreadMode::Threaded);
 }
 
-TEST(IopThreadModeDevices, AHostThatCannotTellItsCoresApartIsOff)
+TEST(IopThreadModeDevices, AHostThatCannotReadItsCoreSpeedsIsOff)
 {
-	// GetPerformanceCoresMask() returns 0 when the cores look identical or cannot be read.
+	// GetPerformanceCoresMask() returns 0 when no core's speed can be read (and on a host with no capacity source, such
+	// as macOS or Windows). Cores that merely look alike are not this case: see the test above.
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 8, 0)), IopThreadMode::Off);
 	EXPECT_EQ(Resolve(true, false, true, Host(true, 0, 0)), IopThreadMode::Off);
 }

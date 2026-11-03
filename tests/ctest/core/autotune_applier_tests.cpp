@@ -559,9 +559,10 @@ TEST(AutoTuneHost, AHostWithTwoBigCoresAndSixLittleOnesCanHaveTheIopThread)
 	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
 	EXPECT_TRUE(AutoTune::IopThreadPlaceable(false, false, host, vm, true));
 
-	// One big core is a tier too, and the back thread does not take it away: the tier only has to be readable.
+	// One big core is not a tier: ResolveMode wants at least IopThread::kMinPerformanceCores, so the lever is not offered.
 	host.performance_cores = 1;
-	EXPECT_TRUE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
+	EXPECT_FALSE(AutoTune::IopThreadPlaceable(true, false, host, vm, true));
+	EXPECT_FALSE(AutoTune::IopThreadPlaceable(false, false, host, vm, false));
 }
 
 TEST(AutoTuneHost, TheGsBackThreadIsNotOfferedWhereItWouldShareABusyCore)

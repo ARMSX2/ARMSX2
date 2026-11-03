@@ -55,9 +55,13 @@ IopThreadMode IopThread::ResolveMode(const Pcsx2Config& config, const HostCpuInf
 	const u32 threads = 2 + (config.Speedhacks.vuThread ? 1 : 0) + 1;
 	const u32 spare_cores_for_the_rest = 2;
 	// A performance tier narrower than the threads is not a reason for Off: the IOP thread then runs on the cores outside
-	// it (UnpinnedIopThreadMask), which is where the RG 55G1 (two big cores, six little) runs it. A tier that cannot be
-	// read (no performance cores counted) is: nothing can say where the IOP thread would not be in the way.
-	if (host.performance_cores == 0 || host.total_cores < threads + spare_cores_for_the_rest)
+	// it (UnpinnedIopThreadMask), which is where the RG 55G1 (two big cores, six little) runs it. A tier of fewer than
+	// kMinPerformanceCores is: with one fast core the EE and GS threads cannot both have one, and a tier that cannot be
+	// read (no performance cores counted) cannot say where the IOP thread would not be in the way.
+	//
+	// A part whose cores are all alike has every core in the tier, so it passes the tier test and is then judged by the core
+	// count alone: four alike cores (RK3566) are Off, eight alike cores are Threaded.
+	if (host.performance_cores < kMinPerformanceCores || host.total_cores < threads + spare_cores_for_the_rest)
 		return IopThreadMode::Off;
 
 	return IopThreadMode::Threaded;
