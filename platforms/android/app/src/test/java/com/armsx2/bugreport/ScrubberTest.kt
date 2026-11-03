@@ -41,6 +41,64 @@ class ScrubberTest {
     }
 
     @Test
+    fun theAppsPrivateFolderBecomesAppAndTheDriverPackKeepsItsId() {
+        val dir = "/data/user/0/com.armsx2.reporttest/files/drivers/armsx2libmali-v0.3.2-malisx2-0.3.2-4d0ebb3d63/"
+        assertEquals("<app>/files/drivers/armsx2libmali-v0.3.2-malisx2-0.3.2-4d0ebb3d63/", scrubber.text(dir))
+        assertEquals("<app>/files/drivers/p/cache/", scrubber.text("/data/user/0/com.armsx2.reporttest/files/drivers/p/cache/"))
+        assertEquals("<app>/files/x", scrubber.text("/data/data/com.armsx2/files/x"))
+        assertEquals("<app>/cache", scrubber.text("/data/user_de/0/com.armsx2.nightly/cache"))
+        assertEquals("opened <app>/files/lib.so ok", scrubber.text("opened /data/user/10/com.armsx2/files/lib.so ok"))
+    }
+
+    @Test
+    fun theInstallFolderLosesItsRandomPartsOnBothAndroidLayouts() {
+        assertEquals(
+            "<app>/lib/arm64",
+            scrubber.text("/data/app/~~S3j43didhb3PeO9tNa4ACQ==/com.armsx2.reporttest-aX7YEbFbOM7E04PLCVaMtw==/lib/arm64"),
+        )
+        // base64url alphabet: - and _ inside the random parts.
+        assertEquals("<app>/base.apk", scrubber.text("/data/app/~~a-b_c==/com.armsx2-x_y-z==/base.apk"))
+        assertEquals("<app>/base.apk", scrubber.text("/data/app/com.armsx2-1/base.apk"))
+        assertEquals("dlopen <app>/lib/arm64/libemucore.so failed", scrubber.text("dlopen /data/app/~~Zz9==/com.armsx2-Qq1==/lib/arm64/libemucore.so failed"))
+    }
+
+    @Test
+    fun theDriverStatusPathsInReportJsonAreScrubbed() {
+        val status = JSONObject(
+            """{"requested":true,"opened":true,"required":false,
+            "dir":"/data/user/0/com.armsx2.reporttest/files/drivers/pack-1/","name":"libvulkan_x.so",
+            "redirect_dir":"/data/user/0/com.armsx2.reporttest/files/drivers/pack-1/cache/",
+            "hook_lib_dir":"/data/app/~~S3j43didhb3PeO9tNa4ACQ==/com.armsx2.reporttest-aX7YEbFbOM7E04PLCVaMtw==/lib/arm64","failure":""}""",
+        )
+        val out = scrubber.json(status) as JSONObject
+        assertEquals("<app>/files/drivers/pack-1/", out.getString("dir"))
+        assertEquals("<app>/files/drivers/pack-1/cache/", out.getString("redirect_dir"))
+        assertEquals("<app>/lib/arm64", out.getString("hook_lib_dir"))
+        assertEquals("libvulkan_x.so", out.getString("name"))
+        assertFalse(out.toString().contains("S3j43"))
+        assertFalse(out.toString().contains("/data/user"))
+    }
+
+    @Test
+    fun aDriverReportsPackPathsAreScrubbedToo() {
+        val report = """{"selected_driver":{"pack_path":"/data/user/0/com.armsx2/files/drivers/p/","driver_file":{"path":"/data/user/0/com.armsx2/files/drivers/p/lib.so"}}}"""
+        val out = scrubber.driverReport(report)
+        assertFalse(out.contains("/data/user"))
+        assertTrue(out.contains("<app>/files/drivers/p/lib.so"))
+    }
+
+    @Test
+    fun otherDataPathsAreNotTakenForTheApp() {
+        // Not an application id (no dot), and not under /data at its root.
+        assertEquals("/data/user/0/files/x", scrubber.text("/data/user/0/files/x"))
+        assertEquals("/data/local/tmp/x", scrubber.text("/data/local/tmp/x"))
+        assertEquals("/data/app/something/x", scrubber.text("/data/app/something/x"))
+        // The shared-storage spelling of the app folder is the data root's job, and already is.
+        assertEquals("<data>/Android/data/com.armsx2/files/logs", scrubber.text("/sdcard/Android/data/com.armsx2/files/logs"))
+        assertEquals("x/data/user/0/com.armsx2/y", scrubber.text("x/data/user/0/com.armsx2/y"))
+    }
+
+    @Test
     fun aGamePathBecomesItsFileName() {
         assertEquals("Booting Ratchet & Clank.iso now", scrubber.text("Booting /storage/emulated/0/ROMs/PS2/Ratchet & Clank.iso now"))
         assertEquals("Game.chd", scrubber.text("/storage/9C33-6BBD/roms/ps2/Game.chd"))
@@ -62,9 +120,10 @@ class ScrubberTest {
     }
 
     @Test
-    fun privatePackagePathsAreKeptBecauseTheyNameTheDriverPack() {
+    fun aPrivatePackagePathKeepsTheDriverPackItNamesAndLosesThePackage() {
+        // The pack id is what a developer needs from this path; the package and user number are not.
         val line = "/data/user/0/com.armsx2/files/drivers/turnip-axfl3/libvulkan_freedreno.so"
-        assertEquals(line, scrubber.text(line))
+        assertEquals("<app>/files/drivers/turnip-axfl3/libvulkan_freedreno.so", scrubber.text(line))
     }
 
     @Test

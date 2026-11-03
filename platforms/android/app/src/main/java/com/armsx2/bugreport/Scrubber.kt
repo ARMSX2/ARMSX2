@@ -16,6 +16,10 @@ import java.util.zip.ZipOutputStream
  * text.
  *
  *  - The data root, and any other `/storage/...` or `/sdcard/...` prefix, becomes `<data>`.
+ *  - The app's own folders under `/data` become `<app>`: its private data (`/data/user/0/<package>`)
+ *    and where Android installed it (`/data/app/~~<random>==/<package>-<random>==`, whose random
+ *    parts are specific to the install). What follows is kept, so a driver pack's folder still
+ *    shows as `<app>/files/drivers/<pack id>/`.
  *  - A game's path becomes its file name (a `content://` URI becomes `content://<redacted>/name`).
  *    The folders someone keeps their games in say nothing a developer needs.
  *  - `uname.nodename` in the driver report is dropped. It is the device's host name.
@@ -63,6 +67,7 @@ class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> =
         for (root in roots) {
             if (s.contains(root)) s = s.replace(root, DATA)
         }
+        if (s.contains("/data/")) s = APP_INSTALL.replace(APP_DATA.replace(s, APP), APP)
         if (s.contains("content://")) s = CONTENT_URI.replace(s) { contentUri(it.value) }
         if (s.indexOf('/') >= 0) {
             val before = s
@@ -247,6 +252,7 @@ class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> =
         const val DATA = "<data>"
         const val USER = "<user>"
         const val REDACTED = "<redacted>"
+        const val APP = "<app>"
         const val DEFAULT_MAX_TEXT_BYTES = 48L * 1024 * 1024
         private const val MIN_NAME_LENGTH = 3
         private const val FILE_SCHEME = "file://"
@@ -279,6 +285,17 @@ class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> =
         // ("a/storage/x", "../storage/x"), but right after "file://" ("file:///storage/x"), where the
         // character before the path is the third slash of the scheme.
         private const val PATH_START = "(?<![A-Za-z0-9_.-])(?<![A-Za-z0-9_.-]/)"
+
+        // An application id: reverse-DNS, so at least one dot. That keeps "/data/data/0/..." and the
+        // like from being taken for a package.
+        private const val PACKAGE = "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+"
+
+        // The app's private data: /data/user/0/<package>, /data/user_de/0/<package>, /data/data/<package>.
+        private val APP_DATA = Regex("$PATH_START/data/(?:user(?:_de)?/\\d+|data)/$PACKAGE")
+
+        // Where it is installed: /data/app/~~<random>==/<package>-<random>== (Android 11+), or
+        // /data/app/<package>-<random> on older versions. The random parts are base64 and may hold - and _.
+        private val APP_INSTALL = Regex("$PATH_START/data/app/(?:~~[^/\\s\"'<>|]+/)?$PACKAGE-[^/\\s\"'<>|]+")
 
         // The image extensions a game can have. A path ending in one is a game path, whatever
         // folder it sits in, and is reduced to its file name.
