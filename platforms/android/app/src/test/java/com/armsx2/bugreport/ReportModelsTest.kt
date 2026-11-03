@@ -90,17 +90,26 @@ class ReportModelsTest {
     }
 
     @Test
-    fun exitReasonsAreNamedAndOnlyDeliberateExitsAreNotCrashes() {
+    fun exitReasonsAreNamed() {
         assertEquals("CRASH_NATIVE", ExitInfo.reasonName(5))
         assertEquals("ANR", ExitInfo.reasonName(6))
         assertEquals("REASON_99", ExitInfo.reasonName(99))
-        for (deliberate in listOf(1, 8, 10, 11, 15, 16)) assertTrue(ExitInfo.endedOnRequest(deliberate))
-        for (trouble in listOf(0, 2, 3, 4, 5, 6, 7, 9, 12, 13, 14)) assertFalse("reason $trouble", ExitInfo.endedOnRequest(trouble))
     }
 
     @Test
     fun theCrashMarkerRoundTrips() {
-        val marker = CrashMarker.Marker(1_762_000_000_000L, 4242, "SCUS-97265", "Ratchet & Clank", "turnip-axfl3", "turnip axfl3-1")
+        val marker = CrashMarker.Marker(
+            1_762_000_000_000L, 4242, "SCUS-97265", "Ratchet & Clank", "turnip-axfl3", "turnip axfl3-1",
+            foreground = false, bootCount = 17,
+        )
         assertEquals(marker, CrashMarker.Marker.fromJson(JSONObject(marker.toJson().toString())))
+    }
+
+    @Test
+    fun aMarkerFromBeforeTheForegroundFlagReadsAsForegroundOfAnUnknownBoot() {
+        val old = JSONObject("""{"armedAt":5,"pid":9,"serial":"S","title":"T","driverId":"","driverName":""}""")
+        val marker = CrashMarker.Marker.fromJson(old)
+        assertTrue(marker.foreground)
+        assertEquals(-1, marker.bootCount)
     }
 }

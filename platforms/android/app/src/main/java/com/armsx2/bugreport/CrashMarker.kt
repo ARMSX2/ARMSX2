@@ -16,6 +16,10 @@ import org.json.JSONObject
  *
  * The record names the game and the GPU driver because by the next launch the settings may have
  * moved on, and "which driver was it using" is the question a crash report is mostly about.
+ *
+ * It also says whether the app was in the foreground, and which boot of the device it was written
+ * in. A process that dies while the app is in the background is not something to ask about, and
+ * neither is one that a reboot ended; [CrashDecision] uses both.
  */
 object CrashMarker {
     private const val PREFS = "armsx2_bugreport"
@@ -32,10 +36,15 @@ object CrashMarker {
         val driverId: String,
         /** Display name of that pack, or "" for the system driver. */
         val driverName: String,
+        /** True while the activity is started (visible); false once it has stopped. See [CrashMarker.setForeground]. */
+        val foreground: Boolean = true,
+        /** `Settings.Global.BOOT_COUNT` when the marker was written, or -1 if the system would not say. */
+        val bootCount: Int = -1,
     ) {
         fun toJson(): JSONObject = JSONObject()
             .put("armedAt", armedAt).put("pid", pid).put("serial", serial).put("title", title)
             .put("driverId", driverId).put("driverName", driverName)
+            .put("foreground", foreground).put("bootCount", bootCount)
 
         companion object {
             fun fromJson(json: JSONObject) = Marker(
@@ -45,6 +54,10 @@ object CrashMarker {
                 title = json.optString("title", ""),
                 driverId = json.optString("driverId", ""),
                 driverName = json.optString("driverName", ""),
+                // A marker written before these were recorded says nothing; read it as "in the
+                // foreground, same boot", which is what the older rule assumed.
+                foreground = json.optBoolean("foreground", true),
+                bootCount = json.optInt("bootCount", -1),
             )
         }
     }
@@ -53,17 +66,43 @@ object CrashMarker {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     /** Records that a game is starting. Synchronous: on disk when this returns. */
+    @Synchronized
     fun arm(context: Context, marker: Marker) {
         runCatching { prefs(context).edit().putString(KEY, marker.toJson().toString()).commit() }
     }
 
     /** The marker left by the previous run, or null if it ended in an orderly way. */
+    @Synchronized
     fun read(context: Context): Marker? = runCatching {
         prefs(context).getString(KEY, null)?.let { Marker.fromJson(JSONObject(it)) }
     }.getOrNull()
 
     /** Marks the game as stopped in an orderly way. Synchronous. */
+    @Synchronized
     fun clear(context: Context) {
         runCatching { prefs(context).edit().remove(KEY).commit() }
+    }
+
+    /**
+     * Removes the marker only if it is still [expected], the one an earlier run left. The startup
+     * work that deals with that marker finishes some seconds into the new run, by which time a game
+     * may have been started and have armed a marker of its own; that one must stay.
+     */
+    @Synchronized
+    fun clearIfUnchanged(context: Context, expected: Marker) {
+        val now = read(context) ?: return
+        if (now.pid == expected.pid && now.armedAt == expected.armedAt) clear(context)
+    }
+
+    /**
+     * Records that the activity came into view ([foreground] true) or went out of it. Only a marker
+     * written by this process is touched: at startup the marker on disk may still be the previous
+     * run's, and a process that died in the background must stay recorded as one that did.
+     */
+    @Synchronized
+    fun setForeground(context: Context, foreground: Boolean, pid: Int = android.os.Process.myPid()) {
+        val now = read(context) ?: return
+        if (now.pid != pid || now.foreground == foreground) return
+        arm(context, now.copy(foreground = foreground))
     }
 }

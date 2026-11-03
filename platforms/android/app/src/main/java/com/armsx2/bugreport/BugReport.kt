@@ -2,7 +2,9 @@
 package com.armsx2.bugreport
 
 import android.content.Context
+import android.os.Build
 import android.os.Process
+import android.provider.Settings
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +32,10 @@ data class ReportProgress(
     val currentFile: String = "",
 )
 
-/** Evidence from a crash, waiting for the user to say whether to send it. */
+/**
+ * Evidence from a crash, waiting for the user to say whether to send it. [closedBySystem] is true
+ * when Android ended the process (memory, resources) rather than it crashing, which the prompt says.
+ */
 data class PendingCrash(
     val dir: File,
     val title: String,
@@ -38,6 +43,18 @@ data class PendingCrash(
     val driverLabel: String,
     val armedAt: Long,
     val marker: CrashMarker.Marker,
+    val closedBySystem: Boolean = false,
+)
+
+/**
+ * A game that could not start: the core reported why instead of running. Nothing crashed and no
+ * marker was left, so this is how the app offers a report for it. The game and driver are kept
+ * here because the library forgets the game as soon as the boot has failed.
+ */
+data class BootFailure(
+    val message: String,
+    val game: ReportGame?,
+    val driverId: String,
 )
 
 /**
@@ -65,6 +82,9 @@ object BugReport {
     /** Set at startup when the previous run crashed; the library asks whether to send it. */
     var pendingCrash by mutableStateOf<PendingCrash?>(null)
 
+    /** Set when a game failed to boot; the screen offers a report for it. */
+    var bootFailure by mutableStateOf<BootFailure?>(null)
+
     val history: ReportHistory by lazy { ReportHistory(app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)) }
 
     private val uploader = Executors.newSingleThreadExecutor { r ->
@@ -78,34 +98,83 @@ object BugReport {
 
     // ---- crash marker ---------------------------------------------------------------------
 
+    /** True while the activity is started (on screen). The marker records it, see [CrashMarker]. */
+    @Volatile
+    private var activityStarted = false
+
+    /** Call from the activity's `onStart`. A game that is running is back in view: re-arm its marker as foreground. */
+    fun onActivityStarted() {
+        activityStarted = true
+        CrashMarker.setForeground(app, true)
+    }
+
+    /** Call from the activity's `onStop`. A process that dies from here on is not a crash the user saw. */
+    fun onActivityStopped() {
+        activityStarted = false
+        CrashMarker.setForeground(app, false)
+    }
+
     /** Records that a game is about to run. Call right before the VM thread starts. */
     fun armCrashMarker(serial: String, title: String, driverId: String) {
         val name = if (driverId.isBlank()) "" else {
             runCatching { CustomDriver.listInstalled(app).firstOrNull { it.id == driverId }?.name }.getOrNull().orEmpty()
         }
-        CrashMarker.arm(app, CrashMarker.Marker(System.currentTimeMillis(), Process.myPid(), serial, title, driverId, name))
+        CrashMarker.arm(
+            app,
+            CrashMarker.Marker(
+                System.currentTimeMillis(), Process.myPid(), serial, title, driverId, name,
+                foreground = activityStarted, bootCount = bootCount(app),
+            ),
+        )
     }
 
     /** Records that the game stopped in an orderly way. */
     fun clearCrashMarker() = CrashMarker.clear(app)
+
+    /** `Settings.Global.BOOT_COUNT`: how many times the device has booted, or -1 if it will not say. */
+    internal fun bootCount(context: Context): Int =
+        runCatching { Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT, -1) }.getOrDefault(-1)
+
+    /** Looks up what [CrashDecision] needs for [marker] and asks it. Returns the verdict and the exit record it used. */
+    private fun assess(marker: CrashMarker.Marker): Pair<CrashDecision.Verdict, ExitRecord?> {
+        val sdk = Build.VERSION.SDK_INT
+        val record = if (sdk >= 30) ExitInfo.recordFor(app, marker.pid, marker.armedAt) else null
+        val logs = File(app.getExternalFilesDir(null) ?: app.filesDir, "logs")
+        val javaCrash = runCatching { CrashDecision.javaCrashAfter(logs, marker.armedAt) }.getOrDefault(false)
+        return CrashDecision.decide(sdk, marker, record, javaCrash, bootCount(app)) to record
+    }
+
+    /** Remembers that the core could not start a game, for [bootFailure]. */
+    fun noteBootFailure(message: String) {
+        val current = com.armsx2.runtime.MainActivityRuntime.currentGame.value
+        val game = current?.let { ReportGame(it.serial.orEmpty(), "", it.title, it.settingsKey) }
+        bootFailure = BootFailure(message, game, com.armsx2.runtime.MainActivityRuntime.customDriverId.value.orEmpty())
+    }
 
     // ---- startup --------------------------------------------------------------------------
 
     /**
      * Called once the data folder is pinned and before any game can boot. Cheap on the calling
      * thread (the emulog is renamed, nothing is copied); the rest is done on a background thread.
+     *
+     * The order matters, and is the reverse of what is easy to write: the evidence is kept first
+     * (the emulog is renamed here, the logcat snapshot and exit records are taken on the thread),
+     * only then is the marker cleared, and only then does housekeeping run. A launch that is killed
+     * halfway therefore still finds the marker and does it again.
      */
     fun onDataRootReady(dataRoot: String) {
         val root = File(dataRoot)
         val marker = CrashMarker.read(app)
         var preserved: CrashEvidence.Preserved? = null
         // A marker from this very process is a game that is running now (the activity was recreated).
-        if (marker != null && marker.pid != Process.myPid()) {
-            CrashMarker.clear(app)
-            preserved = runCatching { CrashEvidence.preserve(app, root, marker) }.getOrNull()
+        val stale = marker?.takeIf { it.pid != Process.myPid() }
+        if (stale != null) {
+            val (verdict, record) = assess(stale)
+            if (verdict is CrashDecision.Verdict.Prompt) {
+                preserved = runCatching { CrashEvidence.preserve(app, root, stale, record, verdict.closedBySystem) }.getOrNull()
+            }
         }
         thread(isDaemon = true, name = "bugreport-startup") {
-            runCatching { Housekeeping.run(history, ReportCollector.bundleRoot(app)) }
             if (preserved != null) {
                 runCatching { CrashEvidence.complete(app, root, preserved) }
                 val driver = preserved.marker.driverName.ifBlank { preserved.marker.driverId }.ifBlank { "system" }
@@ -119,9 +188,11 @@ object BugReport {
                 )
                 pendingCrash = PendingCrash(
                     preserved.dir, preserved.marker.title, preserved.marker.serial, driver,
-                    preserved.marker.armedAt, preserved.marker,
+                    preserved.marker.armedAt, preserved.marker, preserved.closedBySystem,
                 )
             }
+            if (stale != null) CrashMarker.clearIfUnchanged(app, stale)
+            runCatching { Housekeeping.run(history, ReportCollector.bundleRoot(app)) }
             resumePending()
         }
     }
@@ -244,9 +315,9 @@ object BugReport {
     /** The crash behind an unsent "My reports" line, rebuilt from its folder, or null if it is gone. */
     fun crashFor(localId: String): PendingCrash? {
         val dir = localDir(localId) ?: return null
-        val marker = runCatching { CrashMarker.Marker.fromJson(org.json.JSONObject(File(dir, CrashEvidence.MARKER_FILE).readText())) }.getOrNull() ?: return null
+        val (marker, closedBySystem) = CrashEvidence.readMarker(dir) ?: return null
         val driver = marker.driverName.ifBlank { marker.driverId }.ifBlank { "system" }
-        return PendingCrash(dir, marker.title, marker.serial, driver, marker.armedAt, marker)
+        return PendingCrash(dir, marker.title, marker.serial, driver, marker.armedAt, marker, closedBySystem)
     }
 
     /** Removes a report's files and its "My reports" entry (crash evidence the user does not want). */

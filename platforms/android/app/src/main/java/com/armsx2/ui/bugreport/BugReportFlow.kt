@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.armsx2.EmuState
 import com.armsx2.GameInfo
+import com.armsx2.bugreport.BootFailure
 import com.armsx2.bugreport.BugReport
 import com.armsx2.bugreport.BundleItem
 import com.armsx2.bugreport.GameControl
@@ -116,6 +117,11 @@ object BugReportFlow {
         start(ReportOrigins.crash(pending), ReportKind.CRASH)
     }
 
+    /** From the "the game could not start" notice. The kind is preselected as a crash; the user can change it. */
+    fun openForBootFailure(context: Context, failure: BootFailure) {
+        start(ReportOrigins.bootFailure(context, failure), ReportKind.CRASH)
+    }
+
     private fun start(origin: ReportOrigin, kind: ReportKind) {
         if (session != null) return
         session = ReportSession(origin, kind)
@@ -170,6 +176,7 @@ private object RuntimeGameControl : GameControl {
 @Composable
 fun BugReportFlowHost() {
     BugReportFlow.gsDumpChoice?.let { GsDumpChoiceModal(it) }
+    BugReport.bootFailure?.let { BootFailureModal(it) }
     if (BugReportFlow.showMyReports) MyReportsModal(onClose = { BugReportFlow.showMyReports = false })
     val session = BugReportFlow.session ?: return
     when (BugReportFlow.stage) {
@@ -465,6 +472,27 @@ private fun GsDumpChoiceModal(choice: GsDumpChoice) {
     }
 }
 
+/** Shown when the core reported that a game could not start: why, and a way to report it. */
+@Composable
+private fun BootFailureModal(failure: BootFailure) {
+    val layer = "bugreport.boot"
+    val context = LocalContext.current
+    val close = { BugReport.bootFailure = null }
+    FlowCard(layer = layer, onDismiss = close, initialFocusId = "$layer.close") {
+        Title(str("bugreport.boot.title"))
+        Spacer(Modifier.height(8.dp))
+        Text(failure.message, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.height(14.dp))
+        Buttons(
+            FlowButtonSpec(str("bugreport.action.close"), "$layer.close", onClick = close),
+            FlowButtonSpec(str("bugreport.menu.title"), "$layer.report", primary = true) {
+                close()
+                BugReportFlow.openForBootFailure(context, failure)
+            },
+        )
+    }
+}
+
 /**
  * The library's prompt after a crash: what closed, which driver it was on, and whether to send it.
  * Shown in the library only; the evidence is kept until sent or a week has passed.
@@ -478,7 +506,7 @@ fun CrashReportPrompt() {
         Spacer(Modifier.height(8.dp))
         Text(
             String.format(
-                str("bugreport.crash.message"),
+                str(if (pending.closedBySystem) "bugreport.crash.messageSystem" else "bugreport.crash.message"),
                 pending.title.ifBlank { str("bugreport.crash.unknownGame") },
                 pending.driverLabel,
             ),

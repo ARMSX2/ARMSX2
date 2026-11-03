@@ -43,20 +43,29 @@ object ExitInfo {
         16 to "PACKAGE_UPDATED",
     )
 
+    // ApplicationExitInfo.REASON_*, by number, for the decision in [CrashDecision].
+    const val REASON_UNKNOWN = 0
+    const val REASON_EXIT_SELF = 1
+    const val REASON_SIGNALED = 2
+    const val REASON_LOW_MEMORY = 3
+    const val REASON_CRASH = 4
     const val REASON_CRASH_NATIVE = 5
     const val REASON_ANR = 6
+    const val REASON_INITIALIZATION_FAILURE = 7
+    const val REASON_PERMISSION_CHANGE = 8
+    const val REASON_EXCESSIVE_RESOURCE_USAGE = 9
+    const val REASON_USER_REQUESTED = 10
+    const val REASON_USER_STOPPED = 11
+    const val REASON_DEPENDENCY_DIED = 12
+    const val REASON_OTHER = 13
+    const val REASON_FREEZER = 14
+    const val REASON_PACKAGE_STATE_CHANGE = 15
+    const val REASON_PACKAGE_UPDATED = 16
+
+    /** `RunningAppProcessInfo.IMPORTANCE_FOREGROUND`: the process was what the user was looking at. Lower is more important. */
+    const val IMPORTANCE_FOREGROUND = 100
 
     fun reasonName(reason: Int): String = NAMES[reason] ?: "REASON_$reason"
-
-    /**
-     * True if the process ended because the user or the app asked for it: swiped away, force
-     * stopped, the app's own exit(), or a permission or package change. A game that was running at
-     * that point did not crash, so no crash prompt should follow.
-     */
-    fun endedOnRequest(reason: Int): Boolean = when (reason) {
-        1, 8, 10, 11, 15, 16 -> true // EXIT_SELF, PERMISSION_CHANGE, USER_REQUESTED, USER_STOPPED, PACKAGE_*
-        else -> false
-    }
 
     /** Recent exits of this app, newest first. Empty below API 30 or if the platform will not say. */
     fun read(context: Context, maxNum: Int = 8): List<ExitRecord> {
@@ -65,6 +74,20 @@ object ExitInfo {
             val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             am.getHistoricalProcessExitReasons(context.packageName, 0, maxNum).map { it.toRecord() }
         }.getOrDefault(emptyList())
+    }
+
+    /**
+     * The system's record of how process [pid] ended, if it ended at or after [sinceMs]. The time
+     * check is there because a pid can be handed out again: an older process that happened to have
+     * the same number is not the one the crash marker is about. Null below API 30 or when there is
+     * no such record.
+     */
+    fun recordFor(context: Context, pid: Int, sinceMs: Long): ExitRecord? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.getHistoricalProcessExitReasons(context.packageName, pid, 1).firstOrNull()?.toRecord()
+        }.getOrNull()?.takeIf { it.pid == pid && it.timestamp >= sinceMs }
     }
 
     /** A trace the system kept for an exit: [reason] says whether it is a tombstone or an ANR trace. */

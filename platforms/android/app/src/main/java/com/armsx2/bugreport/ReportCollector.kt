@@ -278,7 +278,8 @@ class ReportCollector(
                 "crash_marker",
                 JSONObject().put("armed_at_ms", it.armedAt).put("pid", it.pid)
                     .put("serial", it.serial).put("title", it.title)
-                    .put("driver_id", it.driverId).put("driver_name", it.driverName),
+                    .put("driver_id", it.driverId).put("driver_name", it.driverName)
+                    .put("foreground", it.foreground).put("boot_count", it.bootCount),
             )
         }
         report.put("exit_records", exitRecordsJson())

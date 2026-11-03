@@ -68,6 +68,17 @@ object ReportOrigins {
         crashMarker = pending.marker,
     )
 
+    /**
+     * From the "the game could not start" notice: the game and driver it tried, nothing to capture.
+     * The logs are the failed boot's own, which the next boot has not overwritten yet.
+     */
+    fun bootFailure(context: Context, failure: BootFailure): ReportOrigin = ReportOrigin(
+        game = failure.game,
+        canCapture = false,
+        driverId = failure.driverId,
+        driverName = driverName(context, failure.driverId),
+    )
+
     private fun vmActive(): Boolean = runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
 
     private fun effectiveDriverId(context: Context, gameId: String, globalId: String): String =

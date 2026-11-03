@@ -871,6 +871,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     else
                         NativeApp.runVMThread(m_szGamefile)
                     vmReturned = true
+                    if (!arcadeLaunch) noteBootFailure("bugreport.boot.message")
                 } finally {
                     if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
@@ -972,8 +973,20 @@ open class MainActivityRuntime : ComponentActivity() {
                 com.armsx2.arcade.Arcade.sessionGameId.value = null
                 com.armsx2.arcade.ArcadeControls.apply(null)
             }
-            runCatching { NativeApp.getLastBootError() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { error ->
-                com.armsx2.arcade.Arcade.notice.value = com.armsx2.i18n.I18n.get("arcade.error.boot").format(error)
+            // Shown with a "Report a problem" button, like any other game that fails to start.
+            noteBootFailure("arcade.error.boot")
+        }
+
+        /**
+         * After a VM thread returns: if the core says the game could not boot, show why and offer a
+         * problem report. [messageKey] is the string that wraps the core's description. The marker
+         * was never going to say anything about this, since nothing crashed.
+         */
+        private fun noteBootFailure(messageKey: String) {
+            val error = runCatching { NativeApp.getLastBootError() }.getOrNull().orEmpty()
+            if (error.isBlank()) return
+            runCatching {
+                com.armsx2.bugreport.BugReport.noteBootFailure(com.armsx2.i18n.I18n.get(messageKey).format(error))
             }
         }
 
@@ -1341,6 +1354,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     armBugReportMarker()
                     NativeApp.runVMThread(m_szGamefile)
                     vmReturned = true
+                    noteBootFailure("bugreport.boot.message")
                 } finally {
                     if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     eState.value = EmuState.STOPPED
@@ -6125,6 +6139,8 @@ open class MainActivityRuntime : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // A game that is running is in view again: its crash marker says foreground (BugReport).
+        runCatching { com.armsx2.bugreport.BugReport.onActivityStarted() }
         runCatching { NativeApp.setAppBackgrounded(false) }
         com.armsx2.DiscordPresence.setForeground(true)
         // Keeps the core's microphone list current while microphones are plugged in and out (MicDevices).
@@ -6136,6 +6152,9 @@ open class MainActivityRuntime : ComponentActivity() {
     // resume; out of sight that kept Android's audio mixer holding a wakelock overnight with the
     // device locked. Native pauses it for real until onStart. Discord idles too.
     override fun onStop() {
+        // First, and on disk before anything else here can stall: from now on a death of this
+        // process is not one the user was there to see.
+        runCatching { com.armsx2.bugreport.BugReport.onActivityStopped() }
         runCatching { NativeApp.setAppBackgrounded(true) }
         com.armsx2.DiscordPresence.setForeground(false)
         super.onStop()
@@ -6195,6 +6214,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // down (it would flicker away and rebuild on every rotation/density change).
         runCatching { com.armsx2.SecondScreen.release(applicationContext) }
         NativeApp.shutdown()
+        // The game was stopped by the app's own exit. The VM thread's own clear races the kill
+        // below, so do it here, where it is certain to run before the process goes.
+        runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
         super.onDestroy()
 
         val appPid = Process.myPid()
