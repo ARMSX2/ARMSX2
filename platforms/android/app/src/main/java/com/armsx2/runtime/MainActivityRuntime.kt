@@ -642,6 +642,26 @@ open class MainActivityRuntime : ComponentActivity() {
          *  LAUNCHER rotation (reported as "BIOS ignores the Renderer rotation and goes portrait"). */
         private var emulationOwnsOrientation = false
 
+        /** Writes the crash marker for the VM about to run: which game, which GPU driver, and the disc's CRC.
+         *
+         *  The CRC is worked out from the image here, before the VM exists, because the running VM
+         *  reports 0 for some ISO and CHD boots and a crash report wants it. This is the only point
+         *  it can be read without the VM's one CDVD being busy (see DiscIdentity); the result is
+         *  memoised, so a repeat boot of the same file costs nothing. [identifyDisc] is false for a
+         *  BIOS boot (no disc) and an arcade launch (not a disc image). */
+        private fun armBugReportMarker(identifyDisc: Boolean = true) {
+            runCatching {
+                val game = currentGame.value
+                val crc = if (identifyDisc) runCatching { com.armsx2.DiscIdentity.crcOf(m_szGamefile) }.getOrNull().orEmpty() else ""
+                com.armsx2.bugreport.BugReport.armCrashMarker(
+                    serial = game?.serial.orEmpty(),
+                    title = game?.title ?: "BIOS",
+                    driverId = customDriverId.value.orEmpty(),
+                    crc = crc,
+                )
+            }
+        }
+
         /** The single "we're back in the library" cleanup: drop the current-game pointer (so
          *  Settings reverts to Global scope) and hand the Activity's rotation back to the
          *  launcher preference.
@@ -789,6 +809,9 @@ open class MainActivityRuntime : ComponentActivity() {
             memoryCardRecoveryBypass = false
 
             invoke {
+                // Set once the VM thread has returned. A Java exception or a dead process leaves it
+                // false and the crash marker armed (see BugReport.armCrashMarker).
+                var vmReturned = false
                 try {
                     eState.value = EmuState.RUNNING
                     clearLatches()
@@ -848,11 +871,17 @@ open class MainActivityRuntime : ComponentActivity() {
                     stagePerGameSettingsFile(currentGame.value?.settingsKey)
                     // The microphones as they are now, by name, for a game that opens one (MicDevices).
                     runCatching { instance?.applicationContext?.let { com.armsx2.input.MicDevices.push(it) } }
+                    // Armed on disk before the VM can take the process down, cleared below when the
+                    // VM thread returns in an orderly way. Still armed at the next launch = a crash.
+                    armBugReportMarker(identifyDisc = !arcadeLaunch)
                     if (arcadeLaunch)
                         runArcadeGame(m_szGamefile)
                     else
                         NativeApp.runVMThread(m_szGamefile)
+                    vmReturned = true
+                    if (!arcadeLaunch) noteBootFailure("bugreport.boot.message")
                 } finally {
+                    if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
                     // observed). Drop back to STOPPED only after native has
                     // actually unwound, so users can't launch the next game
@@ -952,8 +981,20 @@ open class MainActivityRuntime : ComponentActivity() {
                 com.armsx2.arcade.Arcade.sessionGameId.value = null
                 com.armsx2.arcade.ArcadeControls.apply(null)
             }
-            runCatching { NativeApp.getLastBootError() }.getOrNull()?.takeIf { it.isNotBlank() }?.let { error ->
-                com.armsx2.arcade.Arcade.notice.value = com.armsx2.i18n.I18n.get("arcade.error.boot").format(error)
+            // Shown with a "Report a problem" button, like any other game that fails to start.
+            noteBootFailure("arcade.error.boot")
+        }
+
+        /**
+         * After a VM thread returns: if the core says the game could not boot, show why and offer a
+         * problem report. [messageKey] is the string that wraps the core's description. The marker
+         * was never going to say anything about this, since nothing crashed.
+         */
+        private fun noteBootFailure(messageKey: String) {
+            val error = runCatching { NativeApp.getLastBootError() }.getOrNull().orEmpty()
+            if (error.isBlank()) return
+            runCatching {
+                com.armsx2.bugreport.BugReport.noteBootFailure(com.armsx2.i18n.I18n.get(messageKey).format(error))
             }
         }
 
@@ -1297,6 +1338,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 return
             }
             invoke {
+                var vmReturned = false
                 try {
                     eState.value = EmuState.RUNNING
                     clearLatches()
@@ -1317,8 +1359,12 @@ open class MainActivityRuntime : ComponentActivity() {
                     }
                     // No game of its own, so nothing staged by an earlier launch may be written.
                     stagePerGameSettingsFile(null)
+                    armBugReportMarker(identifyDisc = false)
                     NativeApp.runVMThread(m_szGamefile)
+                    vmReturned = true
+                    noteBootFailure("bugreport.boot.message")
                 } finally {
+                    if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     eState.value = EmuState.STOPPED
                     val restartNow = synchronized(vmLifecycleLock) {
                         vmRunLoopActive = false
@@ -1803,6 +1849,8 @@ open class MainActivityRuntime : ComponentActivity() {
          *  Polls every 250ms, giving up after ~15s if the game never starts presenting. */
         @JvmStatic
         fun onVmRunning() {
+            // The GS device is open by the time the VM runs: record which driver it really got.
+            runCatching { com.armsx2.bugreport.BugReport.noteRendererOpened() }
             adoptExternalGameIdentity()
             val requestedSlot = pendingSlotLoadOnBoot
             val requestedFile = pendingFileLoadOnBoot
@@ -1956,6 +2004,8 @@ open class MainActivityRuntime : ComponentActivity() {
          *  chosen data root. Used after the user moves app data between Internal
          *  and SD in the setup wizard. */
         fun restartApp(context: Context) {
+            // An exit the app chose is not a crash, even with a game running.
+            runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
             val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -2299,6 +2349,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // than deciding again, every Kotlin caller of assetCopyRoot gets it from here on, and a
         // later storage change is detected against it to trigger a restart.
         lastInitDataRoot = lastInitDataRoot ?: resolveDataRoot(applicationContext)
+        // Before the core starts and before any game can boot: if the last run died with a game
+        // running, its emulog is still on disk and the next boot would truncate it.
+        runCatching { lastInitDataRoot?.let { com.armsx2.bugreport.BugReport.onDataRootReady(it) } }
 
         // #9: one-time recovery for a fresh install that reuses an old data folder — restore
         // settings from the in-folder mirror, or seed from the folder's old PCSX2-Android.ini,
@@ -6096,6 +6149,8 @@ open class MainActivityRuntime : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // A game that is running is in view again: its crash marker says foreground (BugReport).
+        runCatching { com.armsx2.bugreport.BugReport.onActivityStarted() }
         runCatching { NativeApp.setAppBackgrounded(false) }
         com.armsx2.DiscordPresence.setForeground(true)
         // Keeps the core's microphone list current while microphones are plugged in and out (MicDevices).
@@ -6107,6 +6162,9 @@ open class MainActivityRuntime : ComponentActivity() {
     // resume; out of sight that kept Android's audio mixer holding a wakelock overnight with the
     // device locked. Native pauses it for real until onStart. Discord idles too.
     override fun onStop() {
+        // First, and on disk before anything else here can stall: from now on a death of this
+        // process is not one the user was there to see.
+        runCatching { com.armsx2.bugreport.BugReport.onActivityStopped() }
         runCatching { NativeApp.setAppBackgrounded(true) }
         com.armsx2.DiscordPresence.setForeground(false)
         super.onStop()
@@ -6166,6 +6224,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // down (it would flicker away and rebuild on every rotation/density change).
         runCatching { com.armsx2.SecondScreen.release(applicationContext) }
         NativeApp.shutdown()
+        // The game was stopped by the app's own exit. The VM thread's own clear races the kill
+        // below, so do it here, where it is certain to run before the process goes.
+        runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
         super.onDestroy()
 
         val appPid = Process.myPid()

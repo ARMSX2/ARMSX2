@@ -35,7 +35,9 @@
 #include "GS/Renderers/Common/GSDevice.h" // GSDevice::SetShaderChainParams (shader chain params)
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h" // LSFG availability query (JNI)
+#include "GS/DriverReport/GSDriverReport.h" // standalone driver report (problem report)
 #include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (malisx2 notice)
+#include "GS/DriverReport/GSDriverReportJson.h" // JsonWriter, for the status getters below
 #include "GS/DriverReport/GSDriverReportClassify.h" // IsMaliSX2Pack (malisx2 notice)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
@@ -262,6 +264,116 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveScreenshot(JNIEnv* env, jclass, jstring
     }
     // Callable from the input path (UI thread) as well as a hotkey, so marshal like captureGsDump.
     Host::RunOnGSThread([target = std::move(target)]() { GSQueueSnapshot(target, 0); });
+}
+
+// A GS dump whose output location the caller chooses, for the problem report. captureGsDump above
+// lets the core name the file, so nobody but the core knows where the zip will be; here the caller
+// passes the base name, and the finished bundle is GSDumpBundle::ZipPath(base) = "<base>.gs.zip".
+// The zip appears whole or not at all once the dump closes, so Kotlin polls for it. Same shape as
+// PINE's QueueGSDump, for the same reason: the request has to be handed to the GS thread from the
+// CPU thread (the MTGS ring is single-producer), and the answer is only "was it accepted", since
+// GSQueueSnapshot refuses when a snapshot is already pending.
+//
+// Needs a running VM that draws frames: the dump is opened at the next present, so a game that
+// stays paused never produces it. The caller resumes the game and waits.
+//
+// Blocks until the GS thread has taken the request, so not from the UI thread.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_captureGsDumpTo(JNIEnv* env, jclass, jstring basePath, jint frames) {
+    if (!VMManager::HasValidVM())
+        return JNI_FALSE;
+
+    std::string base = GetJavaString(env, basePath);
+    // QueueSnapshot takes the base name from a path ending in .png and silently falls back to an
+    // auto-named file in snaps/ for anything else, so drop whatever suffix the caller spelled out
+    // and add .png ourselves.
+    for (const std::string_view suffix : {".gs.zip", ".gs.zst", ".gs.xz", ".gs", ".png"}) {
+        if (StringUtil::EndsWithNoCase(base, suffix)) {
+            base.erase(base.size() - suffix.size());
+            break;
+        }
+    }
+    if (base.empty())
+        return JNI_FALSE;
+
+    const u32 n = (frames > 0) ? static_cast<u32>(frames) : 1u;
+    bool queued = false;
+    Host::RunOnCPUThread([&]() {
+        // Checked again here: the VM can shut down between the check above and this task running,
+        // and a shut-down VM has no GS thread to hand the request to.
+        if (!VMManager::HasValidVM() || !MTGS::IsOpen())
+            return;
+        MTGS::RunOnGSThread([&]() {
+            // A second request while one records would take a screenshot and write no dump, and
+            // the caller would then wait for a zip that never appears.
+            if (GSIsDumpRecording())
+                return;
+            queued = GSQueueSnapshot(base + ".png", n);
+        });
+        MTGS::WaitGS(false);
+    }, /*block=*/true);
+
+    Console.WriteLn("@@ANDROID_GSDUMP_TO@@ queued=%d frames=%u", queued ? 1 : 0, n);
+    return queued ? JNI_TRUE : JNI_FALSE;
+}
+
+// Where the dump requested with captureGsDumpTo has got to: {phase, vsyncsToOpen, vsyncsToRecorded}.
+// Phase is GSDumpPhase: 0 idle, 1 queued, 2 recording, 3 packing, 4 done. "Packing" is the moment
+// every frame is in the dump, before the screenshot is written and the zip built, which takes
+// seconds on a handheld; the problem report pauses the game on it instead of on the finished zip.
+// Reads atomics only, so it is cheap, callable from any thread, and works with no game running
+// (idle, or whatever the last request left).
+extern "C"
+JNIEXPORT jlongArray JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getGsDumpStatus(JNIEnv* env, jclass) {
+    const GSDumpStatus status = GSGetDumpStatus();
+    const jlong values[3] = {
+        static_cast<jlong>(status.phase),
+        static_cast<jlong>(status.vsyncs_to_open),
+        static_cast<jlong>(status.vsyncs_to_recorded),
+    };
+    jlongArray out = env->NewLongArray(3);
+    if (out != nullptr)
+        env->SetLongArrayRegion(out, 0, 3, values);
+    return out;
+}
+
+// The GS driver report on its own, for a problem report made with no GS dump to take it from.
+// Works with no game running: the device, driver pack and kernel sections need none, and the
+// renderer sections are left empty (their steps say why).
+//
+// Only the device and renderer sections read GS-thread state, so only they run there (briefly);
+// the file-system and kernel checks, which can take seconds on a cold cache, run on this thread.
+// The report used to be built entirely on the GS thread and could stall emulation for as long.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_writeSystemReport(JNIEnv* env, jclass, jstring jsonPath) {
+    const std::string path = GetJavaString(env, jsonPath);
+    if (path.empty())
+        return JNI_FALSE;
+
+    const auto run_on_gs_thread = [](const std::function<void()>& work) {
+        if (!MTGS::IsOpen())
+        {
+            work();
+            return;
+        }
+        Host::RunOnCPUThread([&]() {
+            // Checked on the CPU thread, which is also the one that shuts the VM down, so the answer
+            // holds for the rest of this task.
+            if (VMManager::HasValidVM() && MTGS::IsOpen())
+            {
+                MTGS::RunOnGSThread(work);
+                MTGS::WaitGS(false);
+            }
+            else
+            {
+                work();
+            }
+        }, /*block=*/true);
+    };
+    return GSDriverReport::WriteStandaloneReport(path, run_on_gs_thread) ? JNI_TRUE : JNI_FALSE;
 }
 
 // ADPF (PerformanceHintManager): hint the OS scheduler to raise the EE/GS/MTVU threads' CPU
@@ -1021,6 +1133,65 @@ extern "C"
 JNIEXPORT jfloat JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getAverageFrameTime(JNIEnv*, jclass) {
     return VMManager::HasValidVM() ? static_cast<jfloat>(PerformanceMetrics::GetAverageFrameTime()) : 0.0f;
+}
+
+// Which Vulkan driver the last LoadVulkanLibrary was asked for and what it got, as JSON. A custom
+// driver that fails to open falls back to the system loader without any other sign, so the problem
+// report records `opened` next to `requested`. Readable with no game running.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getCustomDriverStatus(JNIEnv *env, jclass) {
+    const Vulkan::CustomDriverStatus status = Vulkan::GetCustomDriverStatus();
+    GSDriverReport::JsonWriter w;
+    w.BeginObject();
+    w.KeyBool("requested", status.requested);
+    w.KeyBool("opened", status.opened);
+    w.KeyBool("required", status.required);
+    w.KeyString("dir", status.dir);
+    w.KeyString("name", status.name);
+    w.KeyString("redirect_dir", status.redirect_dir);
+    w.KeyString("hook_lib_dir", status.hook_lib_dir);
+    w.KeyString("failure", status.failure);
+    w.EndObject();
+    return env->NewStringUTF(w.TakeString().c_str());
+}
+
+// The performance numbers the in-game stats overlay shows, as JSON, for a "running slow" report.
+// `valid` is false with no VM, and every number is then 0. Threads or timers a device lacks
+// (no GS back thread, no IOP thread, no GPU timestamps) are null rather than a misleading 0.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getPerfSnapshot(JNIEnv *env, jclass) {
+    const bool valid = VMManager::HasValidVM();
+    GSDriverReport::JsonWriter w;
+    w.BeginObject();
+    w.KeyBool("valid", valid);
+    if (valid) {
+        w.KeyDouble("fps", PerformanceMetrics::GetFPS());
+        w.KeyDouble("vps", PerformanceMetrics::GetInternalFPS());
+        w.KeyDouble("nominal_fps", VMManager::GetFrameRate());
+        w.KeyDouble("speed_percent", PerformanceMetrics::GetSpeed());
+        w.KeyDouble("ee_percent", PerformanceMetrics::GetCPUThreadUsage());
+        w.KeyDouble("gs_percent", PerformanceMetrics::GetGSThreadUsage());
+        if (PerformanceMetrics::HasGSBackThread())
+            w.KeyDouble("gs_back_percent", PerformanceMetrics::GetGSBackThreadUsage());
+        else
+            w.KeyNull("gs_back_percent");
+        w.KeyDouble("vu_percent", PerformanceMetrics::GetVUThreadUsage());
+        if (PerformanceMetrics::HasIOPThread())
+            w.KeyDouble("iop_percent", PerformanceMetrics::GetIOPThreadUsage());
+        else
+            w.KeyNull("iop_percent");
+        if (PerformanceMetrics::HasGPUTimer())
+            w.KeyDouble("gpu_percent", PerformanceMetrics::GetGPUUsage());
+        else
+            w.KeyNull("gpu_percent");
+        w.KeyDouble("frame_ms_avg", PerformanceMetrics::GetAverageFrameTime());
+        w.KeyDouble("frame_ms_min", PerformanceMetrics::GetMinimumFrameTime());
+        w.KeyDouble("frame_ms_max", PerformanceMetrics::GetMaximumFrameTime());
+    }
+    w.EndObject();
+    return env->NewStringUTF(w.TakeString().c_str());
 }
 
 extern "C"
@@ -4413,6 +4584,55 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, 
     if (filename.empty() || !FileSystem::FileExists(filename.c_str()))
         return fail("file_missing");
     Console.WriteLn("@@ANDROID_SAVESTATE@@ slot=%d ok=1", p_slot);
+    return JNI_TRUE;
+}
+
+// A save state written to a file the caller names, for the problem report. It is a plain
+// VMManager::SaveState to that path: it never touches the numbered slots, the autosave or their
+// .backup files, so taking one cannot overwrite anything the player saved. Same guards as
+// saveStateToSlot, for the same reasons (see there): refused while the memory card is busy,
+// because the state does not contain the card image, and refused with no game CRC.
+//
+// Blocks until the zip is on disk. Not from the UI thread.
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToPath(JNIEnv *env, jclass clazz, jstring p_path) {
+    const std::string path = GetJavaString(env, p_path);
+    const auto fail = [](const char* reason) -> jboolean {
+        Console.Error("@@ANDROID_SAVESTATE_PATH@@ ok=0 reason=%s mcd_busy=%d crc=%08X serial=%s",
+            reason, MemcardBusy::IsBusy() ? 1 : 0, VMManager::GetDiscCRC(),
+            VMManager::GetDiscSerial().c_str());
+        return JNI_FALSE;
+    };
+    if (path.empty())
+        return fail("empty_path");
+    if (!VMManager::HasValidVM())
+        return fail("no_vm");
+    if (!SaveStatesHaveName())
+        return fail("crc_zero");
+    if (MemcardBusy::IsBusy())
+        return fail("memcard_busy");
+    const ScopedVMPause pause_guard;
+    if (!pause_guard.parked())
+        return fail("cpu_thread_not_parked");
+    // Marshalled to the CPU thread for the reason given in saveStateToSlot: the state download and
+    // the screenshot push to the MTGS ring, which only that thread may do.
+    std::string save_error;
+    Host::RunOnCPUThread([&path, &save_error]() {
+        if (!VMManager::HasValidVM()) {
+            save_error = "VM shut down";
+            return;
+        }
+        VMManager::SaveState(path.c_str(), /*zip_on_thread=*/false, /*backup_old_state=*/false,
+            [&save_error](const std::string& error) { save_error = error; });
+    }, /*block=*/true);
+    if (!save_error.empty()) {
+        Console.Error("saveStateToPath: %s", save_error.c_str());
+        return fail("save_error");
+    }
+    if (!FileSystem::FileExists(path.c_str()))
+        return fail("file_missing");
+    Console.WriteLn("@@ANDROID_SAVESTATE_PATH@@ ok=1");
     return JNI_TRUE;
 }
 

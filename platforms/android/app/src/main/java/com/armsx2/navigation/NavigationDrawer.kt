@@ -235,6 +235,10 @@ private fun DrawerContent(selected: AppRoute, onNavigate: (AppRoute) -> Unit, on
         // About left the settings tab strip: it is a read-only page, not a setting, and it sat in
         // the tab row costing a slot on every settings visit.
         DrawerItem("about.title", "ℹ️", AppRoute.About),
+        // Problems outside a game (or with the one running behind the library). In-game reports
+        // start from the pause menu, where the scene can be captured.
+        DrawerItem("bugreport.menu.title", "⚑",
+            onAction = { com.armsx2.ui.bugreport.BugReportFlow.openGeneral(context); onDismiss() }),
     )
     // Exit gets its own trailing section. It was briefly filed under ABOUT, next to the Discord and
     // GitHub links, where nobody would think to look for "quit".

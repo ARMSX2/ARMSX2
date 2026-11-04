@@ -14,6 +14,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 namespace GSDriverReport
@@ -51,6 +52,17 @@ namespace GSDriverReport
 	/// a dump opens. Work that touches the file system or the kernel runs on a helper
 	/// thread with a deadline, so a node that blocks costs the report its section, not the dump.
 	void WriteSidecarForDump(const std::string& dump_base);
+
+	/// Collects the same report with no dump behind it and writes it to `path`. Needs no game and no
+	/// renderer: the device, driver pack, kernel and vendor library sections come from the system,
+	/// and the renderer sections are left empty with their steps recording why.
+	///
+	/// Only the device and renderer sections read GS-thread state, so only they run on the GS thread:
+	/// `run_on_gs_thread` is called once with the work to run there and must run it to completion
+	/// before returning (pass an empty function when no renderer is open). The slow part, the file
+	/// system and kernel checks, which can take seconds on a cold cache, runs on the calling thread
+	/// and never holds the GS thread. Returns false when the file cannot be written.
+	bool WriteStandaloneReport(const std::string& path, const std::function<void(const std::function<void()>&)>& run_on_gs_thread);
 
 	std::string SidecarPath(const std::string& dump_base);
 } // namespace GSDriverReport

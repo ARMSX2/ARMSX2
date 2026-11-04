@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -230,41 +231,102 @@ namespace GSDriverReport
 		}
 	} // namespace
 
-	static std::string BuildReport(const std::string& dump_base)
+	namespace
 	{
-		const double start = StepLog::NowMs();
-		StepLog steps;
+		/// What the report reads from state that belongs to the GS thread (the device, the GS
+		/// config, the renderer), taken in one go so the rest of the report can be put together
+		/// on any thread. Only the device and renderer sections need the GS thread; the file-system
+		/// and kernel part, which is the slow one, does not.
+		struct GSThreadPart
+		{
+			BackendReport backend;
+			StepLog steps;
+			PackInfo pack;
+			bool is_vulkan = false;
+			/// The report's "game" object and "renderer" object, each a complete JSON object.
+			std::string game_json;
+			std::string renderer_json;
+		};
 
-		// The selected driver, as the Vulkan loader recorded it.
-		PackInfo pack;
-		BackendReport backend;
-		const bool have_device = static_cast<bool>(g_gs_device);
-		if (have_device)
+		/// GS thread only (it reads the device, GSConfig and the renderer).
+		GSThreadPart TakeGSThreadPart(const std::string& dump_base)
 		{
-			steps.Run("backend.collect", [&](std::string&) {
-				g_gs_device->CollectDriverReport(backend);
-				return true;
-			});
-		}
-		else
-		{
-			steps.Add("backend.collect", false, "no GS device", 0.0);
-		}
-		const bool is_vulkan = (backend.api == "Vulkan");
+			GSThreadPart part;
+			StepLog& steps = part.steps;
+			BackendReport& backend = part.backend;
+
+			// The selected driver, as the Vulkan loader recorded it.
+			if (g_gs_device)
+			{
+				steps.Run("backend.collect", [&](std::string&) {
+					g_gs_device->CollectDriverReport(backend);
+					return true;
+				});
+			}
+			else
+			{
+				steps.Add("backend.collect", false, "no GS device", 0.0);
+			}
+			part.is_vulkan = (backend.api == "Vulkan");
 #ifdef ENABLE_VULKAN
-		if (is_vulkan)
-		{
-			const Vulkan::CustomDriverStatus status = Vulkan::GetCustomDriverStatus();
-			pack.custom_selected = status.requested;
-			pack.opened = status.opened;
-			pack.required = status.required;
-			pack.pack_path = status.dir;
-			pack.library_name = status.name;
-			pack.redirect_dir = status.redirect_dir;
-			pack.hook_lib_dir = status.hook_lib_dir;
-			pack.failure = status.failure;
-		}
+			if (part.is_vulkan)
+			{
+				const Vulkan::CustomDriverStatus status = Vulkan::GetCustomDriverStatus();
+				part.pack.custom_selected = status.requested;
+				part.pack.opened = status.opened;
+				part.pack.required = status.required;
+				part.pack.pack_path = status.dir;
+				part.pack.library_name = status.name;
+				part.pack.redirect_dir = status.redirect_dir;
+				part.pack.hook_lib_dir = status.hook_lib_dir;
+				part.pack.failure = status.failure;
+			}
 #endif
+
+			{
+				JsonWriter w;
+				w.BeginObject();
+				steps.Run("game", [&](std::string&) {
+					w.KeyString("serial", VMManager::GetDiscSerial());
+					w.KeyHex("crc", VMManager::GetDiscCRC());
+					w.KeyString("title", VMManager::GetTitle(true));
+					return true;
+				});
+				w.KeyString("dump", dump_base);
+				w.EndObject();
+				part.game_json = w.TakeString();
+			}
+
+			{
+				JsonWriter w;
+				w.BeginObject();
+				w.KeyString("api", backend.api);
+				w.KeyString("configured", Pcsx2Config::GSOptions::GetRendererName(GSConfig.Renderer));
+				w.KeyBool("hardware", GSIsHardwareRenderer());
+				w.KeyDouble("upscale_multiplier", GSConfig.UpscaleMultiplier);
+				w.KeyInt("blending_accuracy", static_cast<int64_t>(GSConfig.AccurateBlendingUnit));
+				w.KeyString("driver_info_text", backend.driver_info_text);
+				if (!backend.backend_json.empty())
+					w.KeyRaw("device", backend.backend_json);
+				steps.Run("renderer.settings", [&](std::string&) {
+					w.Key("settings");
+					WriteSettings(w);
+					return true;
+				});
+				w.EndObject();
+				part.renderer_json = w.TakeString();
+			}
+			return part;
+		}
+	} // namespace
+
+	/// Any thread. Runs the file-system and kernel part under its deadline and puts the report together.
+	static std::string AssembleReport(GSThreadPart gs, const double start)
+	{
+		StepLog steps = std::move(gs.steps);
+		BackendReport& backend = gs.backend;
+		PackInfo pack = gs.pack;
+		const bool is_vulkan = gs.is_vulkan;
 
 		// Files and the kernel on a helper thread, under a deadline.
 		auto part = std::make_shared<SystemPart>();
@@ -298,16 +360,7 @@ namespace GSDriverReport
 		w.KeyString("date", BuildVersion::GitDate);
 		w.EndObject();
 
-		w.Key("game");
-		w.BeginObject();
-		steps.Run("game", [&](std::string&) {
-			w.KeyString("serial", VMManager::GetDiscSerial());
-			w.KeyHex("crc", VMManager::GetDiscCRC());
-			w.KeyString("title", VMManager::GetTitle(true));
-			return true;
-		});
-		w.KeyString("dump", dump_base);
-		w.EndObject();
+		w.KeyRaw("game", gs.game_json);
 
 		if (timed_out || part->device_json.empty())
 			w.KeyNull("device");
@@ -371,22 +424,7 @@ namespace GSDriverReport
 			w.KeyRaw((pack.custom_selected && pack.opened) ? "custom" : "system", backend.vulkan_json);
 		w.EndObject();
 
-		w.Key("renderer");
-		w.BeginObject();
-		w.KeyString("api", backend.api);
-		w.KeyString("configured", Pcsx2Config::GSOptions::GetRendererName(GSConfig.Renderer));
-		w.KeyBool("hardware", GSIsHardwareRenderer());
-		w.KeyDouble("upscale_multiplier", GSConfig.UpscaleMultiplier);
-		w.KeyInt("blending_accuracy", static_cast<int64_t>(GSConfig.AccurateBlendingUnit));
-		w.KeyString("driver_info_text", backend.driver_info_text);
-		if (!backend.backend_json.empty())
-			w.KeyRaw("device", backend.backend_json);
-		steps.Run("renderer.settings", [&](std::string&) {
-			w.Key("settings");
-			WriteSettings(w);
-			return true;
-		});
-		w.EndObject();
+		w.KeyRaw("renderer", gs.renderer_json);
 
 		if (!backend.gl_json.empty())
 			w.KeyRaw("gl", backend.gl_json);
@@ -422,11 +460,39 @@ namespace GSDriverReport
 		return w.TakeString();
 	}
 
+	/// All of it on the calling thread, which must be the GS thread when a renderer is open.
+	static std::string BuildReport(const std::string& dump_base)
+	{
+		const double start = StepLog::NowMs();
+		return AssembleReport(TakeGSThreadPart(dump_base), start);
+	}
+
 	void WriteSidecarForDump(const std::string& dump_base)
 	{
 		const std::string path = SidecarPath(dump_base);
 		const std::string json = BuildReport(dump_base);
 		if (!FileSystem::WriteStringToFile(path.c_str(), json))
 			Console.Warning("GS: could not write the driver report '%s'.", path.c_str());
+	}
+
+	bool WriteStandaloneReport(const std::string& path, const std::function<void(const std::function<void()>&)>& run_on_gs_thread)
+	{
+		// No dump, so the report's "game.dump" is empty.
+		const double start = StepLog::NowMs();
+		GSThreadPart gs;
+		const auto take = [&gs]() { gs = TakeGSThreadPart(std::string()); };
+		if (run_on_gs_thread)
+			run_on_gs_thread(take);
+		else
+			take();
+		// The slow part (file system, kernel) runs here, on the caller's thread: the GS thread was
+		// only held for the device and renderer sections above.
+		const std::string json = AssembleReport(std::move(gs), start);
+		if (!FileSystem::WriteStringToFile(path.c_str(), json))
+		{
+			Console.Warning("GS: could not write the driver report '%s'.", path.c_str());
+			return false;
+		}
+		return true;
 	}
 } // namespace GSDriverReport

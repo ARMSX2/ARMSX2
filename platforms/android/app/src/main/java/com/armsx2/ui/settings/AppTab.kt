@@ -104,6 +104,34 @@ fun AppTab() {
             }
         }
 
+        // Past problem reports: the codes, and what became of each. Sending a new one starts from
+        // the library's menu, the drawer or the pause menu.
+        Surface(
+            onClick = { com.armsx2.ui.bugreport.BugReportFlow.showMyReports = true },
+            modifier = Modifier.fillMaxWidth().controllerFocusable(
+                "app.myReports", RoundedCornerShape(20.dp),
+                onConfirm = { com.armsx2.ui.bugreport.BugReportFlow.showMyReports = true },
+            ),
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.46f)),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(str("bugreport.myReports.title"), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        str("bugreport.myReports.detail"),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text("›", color = MaterialTheme.colorScheme.primary, fontSize = 26.sp)
+            }
+        }
+
         // Theme picker. NOT a SegmentedRow: that's a fixed-width Box, so eleven options would
         // squeeze into unreadable slivers — this wraps instead. Driven straight off the enum so
         // adding a colour needs no index bookkeeping; the old version mapped index<->mode by hand

@@ -689,10 +689,19 @@ private fun SessionPane(state: EmulationMenuUiState, viewModel: EmulationMenuVie
             // a GS dump is what gets asked for when someone reports a graphics bug, and this is
             // one tap from the game. It also resumes, because the dump is of the NEXT frame the GS
             // draws, and none is drawn while this menu holds the game paused.
+            //
+            // It is now a choice: keep the dump in the snaps folder as before, or start a problem
+            // report with a fresh dump of this scene.
             MenuAction(str("renderer.gsDump.label"), str("gsdump.quick.detail"), "⧉", null) {
-                runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
-                android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
-                viewModel.resume()
+                com.armsx2.ui.bugreport.askGsDumpChoice {
+                    runCatching { kr.co.iefriends.pcsx2.NativeApp.captureGsDump(1) }
+                    android.widget.Toast.makeText(context, gsDumpQueued, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.resume()
+                }
+            },
+            // Best place to report graphics and slowness: the scene is still here to capture.
+            MenuAction(str("bugreport.menu.title"), str("bugreport.menu.detail"), "⚑", null) {
+                com.armsx2.ui.bugreport.BugReportFlow.openInGame(context)
             },
         ) + arcadeActions(viewModel) + listOf(
             MenuAction(str("action.close"), MainActivityRuntime.currentGame.value?.title.orEmpty(), "■", Danger) {

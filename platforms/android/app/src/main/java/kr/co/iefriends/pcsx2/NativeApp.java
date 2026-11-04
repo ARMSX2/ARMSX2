@@ -123,6 +123,43 @@ public class NativeApp {
 	/** PNG screenshot into the snapshots folder. No-op with no VM. */
 	public static native void saveScreenshot(String pngPath);
 
+	/**
+	 * GS dump with the output location chosen by the caller, for the problem report. Queues a dump
+	 * of the next [frames] frames whose bundle will be "[basePath].gs.zip" (anything after a
+	 * trailing .gs.zip/.gs/.png on [basePath] is dropped). The zip appears whole once the dump has
+	 * closed, so the caller polls for it. Needs a running VM that draws frames: a paused game never
+	 * opens the dump, so resume it and wait. Blocks until the GS thread has taken the request; not
+	 * for the UI thread. False if there is no VM or a snapshot is already pending.
+	 */
+	public static native boolean captureGsDumpTo(String basePath, int frames);
+
+	/**
+	 * Where the dump queued by captureGsDumpTo has got to, as {phase, vsyncsToOpen, vsyncsToRecorded}
+	 * (null if the array could not be allocated). Phase: 0 idle, 1 queued, 2 recording, 3 packing
+	 * (every frame is recorded, the zip is still being built), 4 done. The vsync counts are GS
+	 * vsyncs since the request, 0 until known. Cheap and safe from any thread.
+	 */
+	public static native long[] getGsDumpStatus();
+
+	/**
+	 * Writes a save state to [path] and nowhere else: it never touches the numbered slots, the
+	 * autosave or their backups. Refused (false) while the memory card is busy, with no game CRC
+	 * or with no VM. Blocks until the file is complete; not for the UI thread.
+	 */
+	public static native boolean saveStateToPath(String path);
+
+	/**
+	 * The GS driver report (the same JSON that sits beside a GS dump) written to [jsonPath]. Works
+	 * with no game running; the renderer sections are then empty. Blocks; not for the UI thread.
+	 */
+	public static native boolean writeSystemReport(String jsonPath);
+
+	/** What the last Vulkan load was asked for and what it got, as JSON. Works with no game. */
+	public static native String getCustomDriverStatus();
+
+	/** fps, speed, thread usage and frame times as JSON. {"valid":false} with no VM. */
+	public static native String getPerfSnapshot();
+
 	// ADPF (PerformanceHintManager): hint the OS to clock the EE/GS threads' cores up toward
 	// the frame deadline instead of the DVFS governor under-clocking emulation. Applies live;
 	// no-op below API 33. Persisted app-side (pref "ui.adpf") and re-applied at startup.

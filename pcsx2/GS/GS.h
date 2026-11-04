@@ -111,6 +111,30 @@ bool GSQueueSnapshot(const std::string& path, u32 gsdump_frames = 0);
 // True while a dump is open and taking frames. Queueing a snapshot over one of these does not
 // start a second dump -- it overwrites the remaining frame count and cuts the recording short.
 bool GSIsDumpRecording();
+
+// Where the most recent GS dump request has got to. One request at a time: a new one starts over.
+enum class GSDumpPhase : u32
+{
+	Idle, // no request, or the renderer was closed before it was served
+	Queued, // accepted; the next VSync opens the dump
+	Recording, // open and taking frames
+	Packing, // every frame is recorded; the dump is closing (screenshot written, zip built)
+	Done, // closed; the zip is on disk unless packing failed
+};
+
+struct GSDumpStatus
+{
+	GSDumpPhase phase;
+	// GS vsyncs from the request to the one that opened the dump (1 = the very next one). 0 until it opened.
+	u32 vsyncs_to_open;
+	// GS vsyncs from the request to the last recorded one. 0 until the recording finished.
+	u32 vsyncs_to_recorded;
+};
+
+// Any thread. Two reads of the same recording can disagree about phase and counts only across a new
+// request, which resets both.
+GSDumpStatus GSGetDumpStatus();
+
 // True when the two-object split is live: a pipelined back thread with its own front parser.
 // Not the same question as the BackThreadMode setting, which downgrades to lockstep when the
 // split is unsupported, so this is the only way to tell whether the mode really engaged.

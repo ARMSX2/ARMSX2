@@ -31,6 +31,7 @@ class Pasx2Application : Application(), ImageLoaderFactory {
 
 	override fun onCreate() {
 		super.onCreate()
+		com.armsx2.bugreport.BugReport.init(this)
 		installCrashLogging()
 	}
 

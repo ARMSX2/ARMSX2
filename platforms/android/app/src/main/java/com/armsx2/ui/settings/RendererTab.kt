@@ -1133,8 +1133,11 @@ private fun GsDumpCaptureRow() {
                 if (MainActivityRuntime.eState.value == com.armsx2.EmuState.STOPPED) {
                     Toast.makeText(context, I18n.get("renderer.gsDump.startGameFirst"), Toast.LENGTH_LONG).show()
                 } else {
-                    runCatching { NativeApp.captureGsDump(1) }
-                    Toast.makeText(context, I18n.get("renderer.gsDump.queued"), Toast.LENGTH_LONG).show()
+                    // The same choice as the pause menu's: keep the dump, or send it with a report.
+                    com.armsx2.ui.bugreport.askGsDumpChoice {
+                        runCatching { NativeApp.captureGsDump(1) }
+                        Toast.makeText(context, I18n.get("renderer.gsDump.queued"), Toast.LENGTH_LONG).show()
+                    }
                 }
             }
             .padding(horizontal = 6.dp, vertical = 5.dp),

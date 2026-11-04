@@ -7,6 +7,9 @@
     <uses-permission android:name="archos.permission.FULLSCREEN.FULL" />
     <!-- Cover artwork can be loaded from the configured remote artwork source. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Problem reports: the consent screen says when the connection is metered before a large
+         upload. A normal permission; nothing is asked of the user. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Remote play: finding hosts on the same Wi-Fi (DNS-SD). Some drivers drop the multicast
          replies unless an app holds a multicast lock. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
