@@ -1066,6 +1066,19 @@ private:
 
 	VkBuffer m_index_buffer = VK_NULL_HANDLE;
 
+	// malisx2's own entry point (Bifrost v7, Mali-G52/G76, since malisx2 0.3.2): the index range of the
+	// next indexed draw. Without it, v7 reads every indexed draw's indices back on the CPU, from the
+	// write-combined stream buffer, for its vertex range. Null on every other driver and architecture.
+	using PFN_vkCmdSetIndexRangeMALISX2 = void(VKAPI_PTR*)(
+		VkCommandBuffer commandBuffer, uint32_t firstIndex, uint32_t indexCount, uint32_t minIndex, uint32_t maxIndex);
+	PFN_vkCmdSetIndexRangeMALISX2 m_cmd_set_index_range = nullptr;
+
+	// The smallest and largest index in m_index, when m_index_range_valid: the same range malisx2's
+	// read-back finds, taken from the indices while they are still in cached memory.
+	u16 m_index_min = 0;
+	u16 m_index_max = 0;
+	bool m_index_range_valid = false;
+
 	GSTextureVK* m_current_render_target = nullptr;
 	GSTextureVK* m_current_depth_target = nullptr;
 	VkFramebuffer m_current_framebuffer = VK_NULL_HANDLE;
