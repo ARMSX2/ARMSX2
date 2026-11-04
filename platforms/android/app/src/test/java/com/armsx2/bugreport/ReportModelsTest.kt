@@ -11,7 +11,7 @@ class ReportModelsTest {
     @Test
     fun heavyItemDefaultsFollowTheDesignTable() {
         assertTrue(ReportKind.GRAPHICS.gsDumpByDefault)
-        assertFalse(ReportKind.GRAPHICS.savestateByDefault)
+        assertTrue(ReportKind.GRAPHICS.savestateByDefault)
         assertTrue(ReportKind.SLOW.gsDumpByDefault)
         assertTrue(ReportKind.SLOW.savestateByDefault)
         assertFalse(ReportKind.OTHER.gsDumpByDefault)

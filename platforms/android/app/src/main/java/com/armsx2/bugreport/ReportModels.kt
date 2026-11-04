@@ -15,8 +15,12 @@ enum class ReportKind(val wire: String) {
     /** Whether the consent screen starts with the GS dump switched on. */
     val gsDumpByDefault: Boolean get() = this == GRAPHICS || this == SLOW
 
-    /** Whether the consent screen starts with the save state switched on. */
-    val savestateByDefault: Boolean get() = this == SLOW
+    /**
+     * Whether the consent screen starts with the save state switched on. On for graphics too: the
+     * GS dump records frames after the pause, so a save state of the paused moment is often the
+     * only way back to what the user saw.
+     */
+    val savestateByDefault: Boolean get() = this == GRAPHICS || this == SLOW
 
     companion object {
         fun fromWire(text: String?): ReportKind = entries.firstOrNull { it.wire == text } ?: OTHER
