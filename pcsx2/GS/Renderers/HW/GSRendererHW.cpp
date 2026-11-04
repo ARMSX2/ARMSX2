@@ -3763,6 +3763,14 @@ void GSRendererHW::Draw()
 	if (m_fast_stencil_shadow)
 		m_process_texture = false;
 
+	// The CPU sprite verdict reads this draw's cover test (directly, and through GetTextureMinMax), so
+	// compute it first; otherwise it sees whatever the previous draw left in the member. This is the
+	// cover of the draw as submitted. The clear detectors below can rewrite the vertices and m_r, so
+	// the call after them stays and recomputes it for everything downstream. When the road is off the
+	// verdict returns before it reads anything, so skip the work.
+	if (GSConfig.UserHacks_CPUSpriteRenderBW != 0)
+		CalculatePrimitiveCoversWithoutGaps();
+
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
 	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
 	{
