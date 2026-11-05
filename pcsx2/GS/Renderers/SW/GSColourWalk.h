@@ -144,6 +144,7 @@ struct GSColourWalk
 		GSVector4 cfrac; ///< the colour fraction those tables were built from
 		GSVector4 ffrac; ///< the fog fraction, likewise
 		int state;       ///< GSColourWalkTablesState
+		u32 entries;     ///< with state Built: the entries s (bit s) built for those fractions
 	} tables;
 };
 

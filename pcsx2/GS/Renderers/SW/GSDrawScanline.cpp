@@ -290,7 +290,9 @@ __forceinline static VectorI GSStoredVertexColor(const VectorI& c)
 	return GSWalkColorByte(c).sll16<7>();
 }
 
-void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
+static void BuildColourWalkEntries(GSScanlineLocalData& local, u32 entries);
+
+void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y, int left)
 {
 	// Builds the colour and fog tables from the primitive's walk (GSColourWalk.h).
 	// From a base that is a multiple of eight, lane i sits
@@ -307,9 +309,6 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	// likewise, fog replicated. Lanes are masked to 0..65535 first, so the
 	// unsigned pack is the identity and a negative offset survives; a signed
 	// pack would corrupt values from 32768 up.
-	constexpr int vlen = sizeof(VectorF) / sizeof(float);
-	constexpr VectorI mask16 = VectorI::cxpr(0xFFFF);
-
 	const GSColourWalk& w = local.cwalk;
 
 	if (!w.live)
@@ -366,19 +365,52 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	const GSVector4 cfrac = rowc - rowc.floor();
 	const GSVector4 ffrac = rowf - rowf.floor();
 
-	// The row reaches the tables only through these two fractions, so skip the
-	// rebuild when they repeat. SetupPrim clears the state, so the tables cannot
-	// be from another primitive.
+	// The row reaches the tables only through these two fractions, so the entries
+	// already built for them are reused when they repeat. SetupPrim clears the
+	// state, so the tables cannot be from another primitive.
+	//
+	// A span reads one entry: s = left & 7 (and, for the stepped tables, the pair
+	// of the vector s starts in). Only that one is built; the rest are built when a
+	// row starting there asks for them, or by CompleteColourWalkTables.
+	const u32 want = 1u << (left & 7);
 	if (w.tables.state == GSColourWalkTablesBuilt
 		&& (w.tables.cfrac == cfrac).alltrue()
 		&& (w.tables.ffrac == ffrac).alltrue())
 	{
-		return;
+		if (w.tables.entries & want)
+			return;
+	}
+	else
+	{
+		local.cwalk.tables.cfrac = cfrac;
+		local.cwalk.tables.ffrac = ffrac;
+		local.cwalk.tables.state = GSColourWalkTablesBuilt;
+		local.cwalk.tables.entries = 0;
 	}
 
-	local.cwalk.tables.cfrac = cfrac;
-	local.cwalk.tables.ffrac = ffrac;
-	local.cwalk.tables.state = GSColourWalkTablesBuilt;
+	BuildColourWalkEntries(local, want);
+}
+
+void GSDrawScanline::CompleteColourWalkTables(GSScanlineLocalData& local)
+{
+	const u32 entries = local.cwalk.tables.entries;
+	if (local.cwalk.tables.state == GSColourWalkTablesBuilt && entries != 0xff)
+		BuildColourWalkEntries(local, 0xff & ~entries);
+}
+
+// Builds the entries s (bit s of `entries`) of the tables for the fractions
+// local.cwalk.tables records, and the per-vector steps the first time any entry
+// is built for them.
+static void BuildColourWalkEntries(GSScanlineLocalData& local, u32 entries)
+{
+	constexpr int vlen = sizeof(VectorF) / sizeof(float);
+	constexpr VectorI mask16 = VectorI::cxpr(0xFFFF);
+
+	const GSColourWalk& w = local.cwalk;
+	const GSVector4 cfrac = w.tables.cfrac;
+	const GSVector4 ffrac = w.tables.ffrac;
+	const u32 built = w.tables.entries;
+	local.cwalk.tables.entries = built | entries;
 
 	const VectorF gcv(w.c.gc);
 	const VectorF dwv(w.c.dw);
@@ -437,6 +469,9 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 	// pixel to lane l of the vector s starts in.
 	for (int s = 0; s < 8; s++)
 	{
+		if (!(entries & (1u << s)))
+			continue;
+
 		const int base = s & ~(vlen - 1);
 
 		for (int l = 0; l < vlen; l++)
@@ -460,13 +495,19 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 
 #if _M_SSE >= 0x501
 	// One vector is eight pixels, so the per-vector step is 8g, a whole number of units.
-	GSVector4i::storel(&local.d8.c, (GSVector4i(w.c.g8) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32());
-	local.d8.p.f = GSVector4i(w.f.g8).extract32<3>();
+	if (built == 0)
+	{
+		GSVector4i::storel(&local.d8.c, (GSVector4i(w.c.g8) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32());
+		local.d8.p.f = GSVector4i(w.f.g8).extract32<3>();
+	}
 #else
 	// 4g, for the x86 SSE4 generator, which steps one vector without a block.
 	// ARM64 and the C++ path use the alternating pair below.
-	local.d4.c = (GSVector4i(w.c.g * GSVector4::cxpr(4.0f)) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32();
-	local.d4.f = GSVector4i(w.f.g * GSVector4::cxpr(4.0f)).zzzzh().wwww();
+	if (built == 0)
+	{
+		local.d4.c = (GSVector4i(w.c.g * GSVector4::cxpr(4.0f)) & GSVector4i::cxpr(0xFFFF)).xzyw().pu32();
+		local.d4.f = GSVector4i(w.f.g * GSVector4::cxpr(4.0f)).zzzzh().wwww();
+	}
 
 	// The per-vector step pair: the first is off[base+4+l] - off[base+l], the
 	// second is the rest of 8g. It depends on the starting vector, not on s < 4:
@@ -481,9 +522,14 @@ void GSDrawScanline::SetupColourWalkTables(GSScanlineLocalData& local, int y)
 
 	const GSVector4 kv = GSVector4::load<true>(kbuf);
 
-	// The step depends only on `base`, so all entries of a vector share one pair.
+	// The step depends only on `base`, so all entries of a vector share one pair,
+	// built with the first of them.
 	for (int base = 0; base < 8; base += vlen)
 	{
+		const u32 group = ((1u << vlen) - 1) << base;
+		if (!(entries & group) || (built & group))
+			continue;
+
 		steps(w.c, base);
 		const GSVector4 hi = GSVector4::load<true>(hibuf);
 		const GSVector4 lo = GSVector4::load<true>(lobuf);

@@ -329,7 +329,8 @@ protected:
 		// The tables follow the ROW now -- their jumps are floored with the row's
 		// own fraction in them, which is what makes the walk one floor per pixel
 		// (gs-cwalk). Row 0 is what this suite's walk is written against.
-		isa_native::GSDrawScanline::SetupColourWalkTables(local, 0);
+		isa_native::GSDrawScanline::SetupColourWalkTables(local, 0, 0);
+		isa_native::GSDrawScanline::CompleteColourWalkTables(local);
 
 		for (int i = 0; i < 4; i++)
 		{

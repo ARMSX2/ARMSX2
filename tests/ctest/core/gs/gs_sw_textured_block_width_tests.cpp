@@ -348,7 +348,8 @@ protected:
 		// (GSColourWalk.h). These tests drive the scanline directly, so they hand
 		// over a walk of their own and build the tables the same way.
 		MakeWalk(local, dscan, phase);
-		isa_native::GSDrawScanline::SetupColourWalkTables(local, 0);
+		isa_native::GSDrawScanline::SetupColourWalkTables(local, 0, 0);
+		isa_native::GSDrawScanline::CompleteColourWalkTables(local);
 
 		out.d4c = local.d4.c;
 		out.d4stq = local.d4.stq;

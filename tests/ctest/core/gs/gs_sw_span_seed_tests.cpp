@@ -70,10 +70,12 @@ namespace
 	void RecordSpan(int, int left, int top, const GSVertexSW& scan, GSScanlineLocalData& local)
 	{
 		// The tables are built between the setup callback and the first span, so
-		// this is the first place they can be read.
+		// this is the first place they can be read. A row builds only the entry its
+		// span reads; the copy is completed so every entry of the row is checked.
 		if (!g_rec.tables_seen)
 		{
 			g_rec.local = local;
+			isa_native::GSDrawScanline::CompleteColourWalkTables(g_rec.local);
 			g_rec.tables_top = top;
 			g_rec.tables_seen = true;
 		}

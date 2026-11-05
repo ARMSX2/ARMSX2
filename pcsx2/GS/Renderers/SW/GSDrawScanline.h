@@ -46,9 +46,14 @@ public:
 	/// Draw pre-calculations, computed per-thread.
 	static void BeginDraw(const GSRasterizerData& data, GSScanlineLocalData& local);
 
-	/// Builds the scanline's colour and fog tables from local.cwalk (GSColourWalk.h).
-	/// Neither SetupPrim builds them, so the rasterizer calls this after each one.
-	static void SetupColourWalkTables(GSScanlineLocalData& local, int y);
+	/// Builds the scanline's colour and fog tables from local.cwalk (GSColourWalk.h) for the row `y` whose span
+	/// starts at pixel `left`. Neither SetupPrim builds them, so the rasterizer calls this before each row. Only the
+	/// entry the span reads is built (see the definition).
+	static void SetupColourWalkTables(GSScanlineLocalData& local, int y, int left);
+
+	/// Builds every entry of the tables last built, for a reader that does not go through SetupColourWalkTables
+	/// (the AA1 edge pass reads the tables its primitive's last row left).
+	static void CompleteColourWalkTables(GSScanlineLocalData& local);
 
 	/// Not currently jitted.
 	static void DrawRect(const GSVector4i& r, const GSVertexSW& v, GSScanlineLocalData& local);
