@@ -1,5 +1,6 @@
 add_pcsx2_test(core_test
 	ee_fpu_regfile_tests.cpp
+	soundtouch_crosscorr_tests.cpp
 	ee_clamp_mode_tests.cpp
 	vu_clamp_mode_tests.cpp
 	vuaot_setting_tests.cpp
@@ -169,3 +170,7 @@ if(WIN32 AND TARGET SDL3::SDL3)
 			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SDL3_DLL_PATH}" "$<TARGET_FILE_DIR:core_test>")
 	endif()
 endif()
+
+# soundtouch_crosscorr_tests reaches TDStretch, a SoundTouch source header the library does not export.
+target_include_directories(core_test PRIVATE ${CMAKE_SOURCE_DIR}/3rdparty/soundtouch/source/SoundTouch)
+target_link_libraries(core_test PRIVATE SoundTouch::SoundTouch)
