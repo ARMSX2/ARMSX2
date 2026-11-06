@@ -2244,14 +2244,14 @@ constexpr GSState::GIFPackedRegHandlerC GSState::LayoutHandlerOrNull()
 
 // Whether the auto_flush instantiation of this prim's fused handler routes its
 // chunks between the kernel and the staged loop (stage 3b), or stays on the
-// staged loop outright. Sprites stay: IsAutoFlushDraw's EarlyDetectShuffle reads
-// the incoming vertex out of m_v for the sprite class, so the predicate is
-// per-prim state there and not invariant across a chunk. For the triangle
-// classes EarlyDetectShuffle is a constant false and the predicate is invariant.
+// staged loop outright. Every prim the kernel carries routes. For the triangle
+// classes EarlyDetectShuffle is a constant false and the predicate is invariant
+// across a chunk. For sprites EarlyDetectShuffle reads the incoming vertex out
+// of m_v, so the routing asks the predicate without it (IsAutoFlushDrawImpl).
 template <u32 prim>
 static constexpr bool KickRoutesAutoFlush()
 {
-	return KickKernelCarriesPrim<prim>() && prim != GS_SPRITE;
+	return KickKernelCarriesPrim<prim>();
 }
 
 // Parse one packed vertex and kick it through the per-vertex path, cursor loaded
@@ -2566,7 +2566,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		if constexpr (auto_flush)
 		{
 			int tex_layer = 0;
-			if (IsAutoFlushDraw(prim, tex_layer))
+			const bool live = (prim == GS_SPRITE) ? IsAutoFlushDrawImpl<false>(prim, tex_layer) :
+			                                        IsAutoFlushDraw(prim, tex_layer);
+			if (live)
 			{
 				KickPackedStagedRun<prim, layout>(r + k * stride, chunk);
 				k += chunk;
@@ -7324,6 +7326,16 @@ void GSState::GetQuadRasterizedPoints(GSVector4& xy, bool keep_order)
 
 __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 {
+	return IsAutoFlushDrawImpl<true>(prim, tex_layer);
+}
+
+// check_shuffle = false leaves out EarlyDetectShuffle, the one input that reads
+// the incoming vertex. Every other test reads registers only, and the shuffle
+// test can only make the answer false, so a false answer without it is a false
+// answer for every vertex of a run the registers do not change under.
+template <bool check_shuffle>
+__forceinline bool GSState::IsAutoFlushDrawImpl(u32 prim, int& tex_layer)
+{
 	// The engine's level, not the hardware key. A software run whose GameDB entry asks
 	// for SpritesOnly used to refuse the split for every non-sprite primitive here, while
 	// ResetHandlers had already armed the full handlers from the SW rule -- so Jak 3's
@@ -7351,7 +7363,7 @@ __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 	}
 
 	// Try to detect shuffles, because these will not autoflush, they by design clash.
-	if (EarlyDetectShuffle(prim))
+	if (check_shuffle && EarlyDetectShuffle(prim))
 		return false;
 
 	// Check if one of the texture being used is the same as the FRAME or ZBUF.
