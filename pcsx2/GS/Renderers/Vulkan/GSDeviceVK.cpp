@@ -3962,6 +3962,14 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 bool GSDeviceVK::CheckFeatures()
 {
 	PublishGPUProfile();
+
+	m_cmd_set_index_range = IsDeviceMaliSX2() ?
+		reinterpret_cast<PFN_vkCmdSetIndexRangeMALISX2>(vkGetDeviceProcAddr(m_device, "vkCmdSetIndexRangeMALISX2")) :
+		nullptr;
+	if (IsDeviceMaliSX2())
+		Console.WriteLn("VK: malisx2 index ranges from the application: %s", m_cmd_set_index_range ? "yes" : "no");
+	m_index_range_valid = false;
+
 	const GSSelfReadRoadDecision road = ResolveSelfReadRoad();
 	ResolveFeatureTable();
 	ResolveFeedbackConsumers(road);
@@ -4681,7 +4689,13 @@ void GSDeviceVK::DrawIndexedPrimitive(int offset, int count)
 {
 	pxAssert(offset + count <= (int)m_index.count);
 	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
-	vkCmdDrawIndexed(GetCurrentCommandBuffer(), count, 1, m_index.start + offset, m_vertex.start, 0);
+	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+	// Only a draw of all of m_index: a part of it could use fewer vertices than the whole range, and
+	// is left to the driver's read-back as before. The index buffer is bound by now (ApplyTFXState /
+	// ApplyUtilityState), which is what the driver matches the range to.
+	if (m_cmd_set_index_range && m_index_range_valid && offset == 0 && count == static_cast<int>(m_index.count))
+		m_cmd_set_index_range(cmdbuf, m_index.start, static_cast<u32>(count), m_index_min, m_index_max);
+	vkCmdDrawIndexed(cmdbuf, count, 1, m_index.start + offset, m_vertex.start, 0);
 }
 
 void GSDeviceVK::DrawIndexedPrimitiveVSExpand(int offset, int count, bool vs_indexing, int vs_indexing_expansion)
@@ -5003,6 +5017,10 @@ void GSDeviceVK::DoMultiStretchRects(
 	m_vertex.count = vcount;
 	m_index.start = m_index_stream_buffer.GetCurrentOffset() / sizeof(u16);
 	m_index.count = icount;
+	// Four vertices a rect from 0, each one indexed.
+	m_index_min = 0;
+	m_index_max = static_cast<u16>(vcount - 1);
+	m_index_range_valid = (vcount > 0);
 	m_vertex_stream_buffer.CommitMemory(vcount * sizeof(GSVertexPT1));
 	m_index_stream_buffer.CommitMemory(icount * sizeof(u16));
 	SetIndexBuffer(m_index_stream_buffer.GetBuffer());
@@ -5684,12 +5702,28 @@ void GSDeviceVK::IASetIndexBuffer(const void* index, size_t count)
 {
 	UploadIndices(m_index_stream_buffer, index, count);
 
+	m_index_range_valid = false;
+	if (m_cmd_set_index_range && count > 0)
+	{
+		const u16* indices = static_cast<const u16*>(index);
+		u16 lo = indices[0], hi = indices[0];
+		for (size_t i = 1; i < count; i++)
+		{
+			lo = std::min(lo, indices[i]);
+			hi = std::max(hi, indices[i]);
+		}
+		m_index_min = lo;
+		m_index_max = hi;
+		m_index_range_valid = true;
+	}
+
 	SetIndexBuffer(m_index_stream_buffer.GetBuffer());
 }
 
 void GSDeviceVK::VSSetIndexBuffer(const void* index, size_t count)
 {
 	UploadIndices(m_expand_index_stream_buffer, index, count);
+	m_index_range_valid = false;
 }
 
 void GSDeviceVK::OMSetRenderTargets(
@@ -9914,6 +9948,7 @@ void GSDeviceVK::UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config)
 	{
 		m_index.start = 0;
 		m_index.count = config.nindices;
+		m_index_range_valid = false;
 		SetIndexBuffer(m_expand_index_buffer);
 	}
 	else if (config.vs.UseVSExpandIndexBuffer())
