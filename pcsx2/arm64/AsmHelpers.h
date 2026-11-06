@@ -10,6 +10,13 @@
 #include "vixl/aarch64/constants-aarch64.h"
 #include "vixl/aarch64/macro-assembler-aarch64.h"
 
+// The recompilers may only emit ARMv8.0 FP and AdvSIMD (the -march=armv8-a baseline). Debug builds
+// assert on anything beyond that.
+inline vixl::CPUFeatures armBaselineCPUFeatures()
+{
+	return vixl::CPUFeatures(vixl::CPUFeatures::kFP, vixl::CPUFeatures::kNEON);
+}
+
 #include <unordered_map>
 #include <vector>
 

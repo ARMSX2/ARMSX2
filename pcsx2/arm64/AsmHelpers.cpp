@@ -165,6 +165,7 @@ u8* armStartBlock()
 	// every displacement computed from it remain in execute space.
 	armAsm = new (s_armAsmStorage) vixl::aarch64::MacroAssembler(
 		static_cast<vixl::byte*>(armGetWritableCodePtr(armAsmPtr)), armAsmCapacity);
+	armAsm->SetCPUFeatures(armBaselineCPUFeatures());
 	armAsm->GetScratchVRegisterList()->Remove(31);
 	armAsm->GetScratchRegisterList()->Remove(RSCRATCHADDR.GetCode());
 	return armAsmPtr;
@@ -699,6 +700,7 @@ u8* ArmConstantPool::GetJumpTrampoline(const void* target)
 	HostSys::BeginCodeWriteRange(trampoline_ptr, TRAMPOLINE_WRITE_WINDOW);
 	// Emit into the RW alias; trampoline_ptr (RX) is what callers branch to.
 	a64::MacroAssembler masm(static_cast<vixl::byte*>(armGetWritableCodePtr(trampoline_ptr)), m_capacity - offset);
+	masm.SetCPUFeatures(armBaselineCPUFeatures());
 	masm.Mov(RXVIXLSCRATCH, reinterpret_cast<intptr_t>(target));
 	masm.Br(RXVIXLSCRATCH);
 	masm.FinalizeCode();

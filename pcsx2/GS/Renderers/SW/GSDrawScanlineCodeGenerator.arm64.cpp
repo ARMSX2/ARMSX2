@@ -115,6 +115,8 @@ GSDrawScanlineCodeGenerator::GSDrawScanlineCodeGenerator(u64 key, void* code, si
 	, m_sel(key)
 	, m_code_rx(static_cast<const u8*>(code))
 {
+	// ARMv8.0 FP and AdvSIMD only; debug builds assert on anything more.
+	m_emitter.SetCPUFeatures(vixl::CPUFeatures(vixl::CPUFeatures::kFP, vixl::CPUFeatures::kNEON));
 	// hopefully no constants which need to be moved to register first..
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch.GetCode());
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch2.GetCode());
