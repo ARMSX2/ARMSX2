@@ -2774,6 +2774,9 @@ open class MainActivityRuntime : ComponentActivity() {
         // while the activity is paused.
         getSystemService(android.hardware.input.InputManager::class.java)
             ?.registerInputDeviceListener(inputDeviceListener, null)
+        // The listener only reports changes from here on, and the activity can be recreated while
+        // the process (and TouchControls' last answer) lives on, so ask again.
+        com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
         setupComplete.value = prefs.getBoolean("setupComplete", false)
         systemDir.value = prefs.getString("systemDir", null)
         bios.value = prefs.getString("bios", null)
