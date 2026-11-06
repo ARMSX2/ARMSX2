@@ -1936,6 +1936,7 @@ public:
 	static int GetMipmapLevelsForSize(int width, int height);
 
 	__fi u64 GetPoolMemoryUsage() const { return m_pool_memory_usage; }
+	__fi u32 GetFrame() const { return m_frame; }
 
 	__fi FeatureSupport Features() const { return m_features; }
 	__fi u32 GetMaxTextureSize() const { return m_max_texture_size; }

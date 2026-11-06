@@ -118,6 +118,12 @@ protected:
 	// different purpose than texture cache ages, do not attempt to merge
 	u32 m_last_frame_used = 0;
 
+	// TakeDestinationAlphaLoop: the frame being counted, its stencil-one draws so far, and whether the
+	// target has taken the loop.
+	u32 m_destination_alpha_frame = 0;
+	u32 m_destination_alpha_draws = 0;
+	bool m_destination_alpha_loop = false;
+
 	bool m_needs_mipmaps_generated = true;
 	ClearValue m_clear_value = {};
 
@@ -280,6 +286,25 @@ public:
 
 	__fi u32 GetLastFrameUsed() const { return m_last_frame_used; }
 	void SetLastFrameUsed(u32 frame) { m_last_frame_used = frame; }
+
+	/// GSDevice::FeatureSupport::destination_alpha_loop: counts a stencil-one destination-alpha draw on
+	/// this target and says whether it reads the target in the pass. That holds once the target has had
+	/// more than `min_draws` of them in one frame, and from then on; before that they keep the stencil
+	/// setup pass. See GSRendererHW::EmulateDATEGetConfig.
+	bool TakeDestinationAlphaLoop(u32 frame, u32 min_draws)
+	{
+		if (!m_destination_alpha_loop)
+		{
+			if (m_destination_alpha_frame != frame)
+			{
+				m_destination_alpha_frame = frame;
+				m_destination_alpha_draws = 0;
+			}
+			m_destination_alpha_loop = ++m_destination_alpha_draws > min_draws;
+		}
+		return m_destination_alpha_loop;
+	}
+	__fi bool TookDestinationAlphaLoop() const { return m_destination_alpha_loop; }
 
 	__fi u32 GetClearColor() const { return m_clear_value.color; }
 	__fi float GetClearDepth() const { return m_clear_value.depth; }
