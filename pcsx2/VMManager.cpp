@@ -5588,11 +5588,47 @@ void VMManager::SetEmuThreadAffinities()
 
 	// A thread that exists but has no slot (Lockstep, or a list with none left) is released rather than left on the
 	// EE's processor, which it inherited.
-	const u64 iop_affinity = plan.iop >= 0 ? (static_cast<u64>(1) << s_processor_list[plan.iop]) : 0;
+	u64 iop_affinity = plan.iop >= 0 ? (static_cast<u64>(1) << s_processor_list[plan.iop]) : 0;
+
+	// The IOP slot is the last free performance core and the GS back thread runs: the back thread would share it
+	// with the IOP thread (GSPlaceBackThread falls back to an occupied core) and wait runnable behind it. The back
+	// thread is the busier of the two on a GS-heavy scene, so it keeps the fast core and the IOP thread goes to
+	// every processor outside the tier. RK3588 (four A76, four A55), Shadow of the Colossus on Vulkan: the back
+	// thread spent 31% of its time runnable behind the IOP thread on cpu7; with the IOP thread on the A55s,
+	// 35.7 -> 54.6 vps, the back thread at 97% and the IOP thread at 80% of an A55.
+#if defined(__linux__) || defined(_WIN32)
+	{
+		bool back_running;
+		{
+			std::unique_lock lock(s_gs_back_thread_mutex);
+			back_running = static_cast<bool>(s_gs_back_thread_handle);
+		}
+		const u64 placed = ee_affinity | gs_affinity | (mtvu ? (static_cast<u64>(1) << vu_index) : 0);
+		if (back_running && perf_mask != 0 && (iop_affinity & perf_mask) != 0 &&
+			(perf_mask & ~(placed | iop_affinity)) == 0)
+		{
+			u64 all = 0;
+			const u32 count = cpuinfo_get_processors_count();
+			for (u32 i = 0; i < count; i++)
+			{
+				const cpuinfo_processor* proc = cpuinfo_get_processor(i);
+				if (proc && GetProcessorIdForProcessor(proc) < 64)
+					all |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
+			}
+			if (const u64 outside = all & ~perf_mask; outside != 0)
+			{
+				INFO_LOG("  IOP thread moved outside the performance tier (0x{:x}): the GS back thread keeps the last fast core",
+					outside);
+				iop_affinity = outside;
+			}
+		}
+	}
+#endif
+
 	if (IopThread::g_thread.IsRunning())
 	{
 		if (iop_affinity != 0)
-			INFO_LOG("  IOP thread is on processor {} (0x{:x})", s_processor_list[plan.iop], iop_affinity);
+			INFO_LOG("  IOP thread is on mask 0x{:x}", iop_affinity);
 		else
 			INFO_LOG("  IOP thread is not pinned");
 	}
