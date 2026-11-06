@@ -608,8 +608,12 @@ bool GSDevice::AcquireWindow(bool recreate_window)
 
 bool GSDevice::ShouldSkipPresentingFrame()
 {
-	// Only needed with FIFO.
-	if (!m_allow_present_throttle || m_vsync_mode != GSVSyncMode::FIFO)
+	// Only needed where a present can block on the display: FIFO, and mailbox, which is not always
+	// the non-blocking mode it is specified as. Arm's Mali WSI layer on Wayland, where vsync-off
+	// falls back from immediate to mailbox, paces every present to the refresh rate, so fast
+	// forward sat at 100% in any stretch that presents a frame per vsync (NFSU2's intro, 60 unique
+	// frames a second). A frame skipped here could not have been displayed before the next one.
+	if (!m_allow_present_throttle || (m_vsync_mode != GSVSyncMode::FIFO && m_vsync_mode != GSVSyncMode::Mailbox))
 		return false;
 
 	const float throttle_rate = (m_window_info.surface_refresh_rate > 0.0f) ? m_window_info.surface_refresh_rate : 60.0f;
