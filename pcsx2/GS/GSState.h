@@ -840,6 +840,12 @@ public:
 	void FlushBuffers(bool flush_base_only = false, bool use_flush_reason = false, GSFlushReason flush_reason = GSFlushReason::CONTEXTCHANGE);
 	void PushBuffer();
 	void SetDrawBufferEnv();
+	// The environment a buffered draw was built with. With draw buffering off the
+	// draw's only copy is m_prev_env (see SetDrawBufferEnv).
+	__fi const GSDrawingEnvironment& BufferEnv(int i) const
+	{
+		return GSConfig.UserHacks_DrawBuffering ? m_env_buffers[i].m_env : m_prev_env;
+	}
 	void SetDrawBuffDirty();
 	bool CanBufferNewDraw();
 	void Flush(GSFlushReason reason);
@@ -847,7 +853,12 @@ public:
 	u32 CalcMask(int exp, int max_exp);
 	void FlushPrim();
 	bool TestDrawChanged();
-	void FlushWrite();
+	__fi void FlushWrite()
+	{
+		if (m_tr.write)
+			FlushWriteSlow();
+	}
+	void FlushWriteSlow();
 	virtual void Draw() = 0;
 	virtual void PurgeTextureCache(bool sources, bool targets, bool hash_cache);
 	virtual void ReadbackTextureCache();
