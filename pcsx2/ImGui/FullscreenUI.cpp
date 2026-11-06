@@ -45,6 +45,10 @@
 
 #include "fmt/chrono.h"
 
+#include <cstdlib>
+#include <optional>
+#include <string>
+
 //////////////////////////////////////////////////////////////////////////
 // Utility
 //////////////////////////////////////////////////////////////////////////
@@ -70,6 +74,30 @@ TinyString FullscreenUI::TimeToPrintableString(time_t t)
 #endif
 	return ret;
 }
+
+#ifndef _WIN32
+// The format of the clock in the menu heading. On a handheld or TV box running EmulationStation (ROCKNIX and
+// similar) the menu follows the clock the frontend shows, so the time reads the same in both: ES keeps a bool
+// ClockMode12 in its settings, absent means 24-hour, and draws "%H:%M" or "%I:%M %p". Anywhere else the
+// locale's own time format, as before. Read when the menu opens, so a change made in ES applies on the next open.
+static const char* s_menu_clock_format = "%X";
+
+static void RefreshMenuClockFormat()
+{
+	s_menu_clock_format = "%X";
+	const char* home = std::getenv("HOME");
+	if (!home || !*home)
+		return;
+
+	const std::string path = Path::Combine(home, ".config/emulationstation/es_settings.cfg");
+	const std::optional<std::string> settings = FileSystem::ReadFileToString(path.c_str());
+	if (!settings.has_value())
+		return;
+
+	const bool twelve_hour = (settings->find("name=\"ClockMode12\" value=\"true\"") != std::string::npos);
+	s_menu_clock_format = twelve_hour ? "%I:%M %p" : "%H:%M";
+}
+#endif
 
 void FullscreenUI::GetStandardSelectionFooterText(SmallStringBase& dest, bool back_instead_of_cancel)
 {
@@ -327,6 +355,9 @@ bool FullscreenUI::Initialize()
 	ImGuiFullscreen::UpdateFontScale();
 	ApplyLayoutSettings();
 	PreferEnglishGameListChanged();
+#ifndef _WIN32
+	RefreshMenuClockFormat();
+#endif
 
 	if (!ImGuiFullscreen::Initialize("fullscreenui/placeholder.png") || !LoadResources())
 	{
@@ -524,6 +555,9 @@ void FullscreenUI::OpenPauseMenu()
 
 		PauseForMenuOpen(true);
 		ForceKeyNavEnabled();
+#ifndef _WIN32
+		RefreshMenuClockFormat();
+#endif
 		s_current_main_window = MainWindowType::PauseMenu;
 		s_current_pause_submenu = PauseSubMenu::None;
 		QueueResetFocus(FocusResetType::WindowChanged);
@@ -1356,7 +1390,7 @@ void FullscreenUI::DrawLandingTemplate(ImVec2* menu_pos, ImVec2* menu_size)
 			heading_str.assign(StringUtil::WideStringToUTF8String(buf));
 #else
 			char buf[256];
-			std::strftime(buf, std::size(buf), "%X", &tm_local);
+			std::strftime(buf, std::size(buf), s_menu_clock_format, &tm_local);
 			heading_str.assign(buf);
 #endif
 
