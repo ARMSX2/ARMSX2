@@ -135,6 +135,12 @@ struct GSSelfReadRoadInputs
 	/// the barrier-less declared road races there. If both facts are set, the ordering one wins.
 	bool driver_prefers_declared_loop_with_barriers = false;
 
+	/// MobileDriverProfile::prefers_declared_loop_for_destination_alpha: the copy road for every
+	/// self-read except the destination-alpha draws, which read the target in the pass under a
+	/// declared loop with one barrier. Applies only where the copy road is the answer, on auto, with
+	/// no arm.
+	bool driver_prefers_destination_alpha_loop = false;
+
 	/// GSConfig.OverrideTextureBarriers: -1 auto, 0 force off, 1 force on. An explicit 0 is the
 	/// way back to the copy road and outranks the arm. The driver facts apply on auto only, so an
 	/// explicit 1 gets the in-pass read the extension list picks.
@@ -188,6 +194,12 @@ struct GSSelfReadRoadDecision
 	/// ⚠️ Downstream code that needs to know a loop is declared must read this, not arm_applied,
 	/// which misses the driver-fact entrance.
 	bool loop_declared = false;
+
+	/// Copy road, except that a destination-alpha draw may read the target in the pass under a
+	/// declared feedback loop with one barrier (the stencil-one mode without its setup pass). The
+	/// layout spelling is forced so such a pass can be opened; texture_barrier stays false, so no
+	/// other draw reads in the pass. -> GSDevice::FeatureSupport::destination_alpha_loop.
+	bool destination_alpha_loop = false;
 
 	/// The declared road came from a driver fact rather than the experiment key. Reported in the
 	/// banner. The ordering fact lands on InPassOrdered and the a7xx preference on InPassBarrier,
@@ -257,6 +269,10 @@ constexpr GSSelfReadRoadDecision DecideSelfReadRoad(const GSSelfReadRoadInputs& 
 	{
 		d.road = GSSelfReadRoad::Copy;
 		d.spelling = GSSelfReadSpelling::Clone;
+		d.destination_alpha_loop = !arm_requested && in.driver_prefers_destination_alpha_loop &&
+		                           in.layout_road_available && barriers_on_auto;
+		d.force_feedback_loop_layout = d.destination_alpha_loop;
+		d.selected_by_driver_fact = d.destination_alpha_loop;
 		return d;
 	}
 
@@ -322,6 +338,18 @@ constexpr bool PublishedBitsNameTheSameRoad()
 }
 static_assert(PublishedBitsNameTheSameRoad());
 
+// The destination-alpha loop: copy road, layout spelling forced, texture barriers off; only on auto,
+// only with the layout extension, never with an arm, and never where a fuller road is chosen.
+static_assert(DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true}).destination_alpha_loop);
+static_assert(DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true}).force_feedback_loop_layout);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true}).texture_barrier);
+static_assert(DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true}).road == GSSelfReadRoad::Copy);
+static_assert(!DecideSelfReadRoad({.roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true}).destination_alpha_loop);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true, .override_texture_barriers = 0}).destination_alpha_loop);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_destination_alpha_loop = true, .arm = static_cast<u8>(GSSelfReadArm::DeclaredKeepBarriers)}).destination_alpha_loop);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true, .driver_prefers_declared_loop_with_barriers = true, .driver_prefers_destination_alpha_loop = true}).destination_alpha_loop);
+static_assert(!DecideSelfReadRoad({.layout_road_available = true, .roaa_available = true, .rt_self_read_is_broken = true}).force_feedback_loop_layout);
+
 /// One phrase naming both axes and, on the declared road, which entrance was used: "experiment
 /// key" is gsrunner -declare-feedback-loop, "driver fact" is the driver database.
 constexpr const char* GSSelfReadRoadName(const GSSelfReadRoadDecision& d)
@@ -329,7 +357,9 @@ constexpr const char* GSSelfReadRoadName(const GSSelfReadRoadDecision& d)
 	switch (d.road)
 	{
 		case GSSelfReadRoad::Copy:
-			return "copy (clone the target per feedback draw)";
+			return d.destination_alpha_loop ?
+			           "copy (clone the target per feedback draw), destination-alpha draws in a declared loop (driver fact)" :
+			           "copy (clone the target per feedback draw)";
 		case GSSelfReadRoad::InPassBarrier:
 			if (d.spelling != GSSelfReadSpelling::FeedbackLoopLayout)
 				return "in-pass, barrier-ordered, input attachment";

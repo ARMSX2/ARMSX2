@@ -403,7 +403,8 @@ namespace
 			.feedback_loop_layout = f.feedback_loop_layout,
 			.fetch_orders_overlap = f.framebuffer_fetch_orders_overlap,
 			.declared_loop_orders_overlap = f.declared_feedback_loop_orders_overlap,
-			.carry = f.feedback_carry};
+			.carry = f.feedback_carry,
+			.destination_alpha_loop = f.destination_alpha_loop};
 	}
 
 	/// Called once per draw, after the last change to anything it reads.
@@ -420,7 +421,13 @@ namespace
 				.any_barrier = conf.require_one_barrier || conf.require_full_barrier ||
 				               (second.enable && (second.require_one_barrier || second.require_full_barrier)),
 				.writes_depth = (depth_attached && conf.depth.zwe) || (second.enable && second.depth.zwe),
-				.offset_read_hits_write = conf.offset_read_hits_write});
+				.offset_read_hits_write = conf.offset_read_hits_write,
+				// Stencil-one without its setup pass: the destination-alpha test is the read, and one
+				// barrier serves it. Anything that needs more than that keeps the copy.
+				.destination_alpha_read = conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne &&
+				                          conf.require_one_barrier && !conf.require_full_barrier &&
+				                          conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE &&
+				                          !(second.enable && conf.IsFeedbackLoopRT(second.ps))});
 	}
 } // namespace
 
@@ -7042,7 +7049,9 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	else if (date_options.stencil_one)
 	{
 		const bool multidraw_fb_copy = m_conf.require_one_barrier || (m_conf.require_full_barrier && features.multidraw_fb_copy);
-		if (features.texture_barrier || multidraw_fb_copy)
+		// With the destination-alpha loop the draw reads the target in the pass (GSDrawRoad.h); if it
+		// does not qualify there it reads a copy, which still skips the stencil setup pass.
+		if (features.texture_barrier || multidraw_fb_copy || features.destination_alpha_loop)
 		{
 			m_conf.require_one_barrier = true;
 			m_conf.ps.date = 5 + m_cached_ctx.TEST.DATM;

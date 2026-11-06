@@ -269,6 +269,15 @@ struct MobileDriverProfile
 	/// different picture on each run, so it keeps them.
 	bool prefers_declared_loop_with_barriers = false;
 
+	/// Only the destination-alpha draws that the stencil-one mode would otherwise serve with a stencil
+	/// setup pass take the declared loop with a barrier; every other self-read stays on the copy
+	/// road. Weaker than both facts above, which put every self-read in the pass and win if set.
+	///
+	/// True for Turnip on the Adreno 613. On its copy road each such draw ends the pass twice (about
+	/// 1,070 a frame in Stuntman); the full declared loop removes that but renders other titles
+	/// differently from run to run, so the loop is kept to these draws.
+	bool prefers_declared_loop_for_destination_alpha = false;
+
 	std::string driver_name;
 
 	constexpr bool HasBug(DriverBug bug) const

@@ -1039,6 +1039,44 @@ TEST(GSGpuDriverProfile, TurnipOnAdreno6xxDoesNotGetTheA7xxPreference)
 	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(ResolveTurnipVK("Adreno (TM) 630", kStockTurnipDriverInfo)));
 }
 
+// The Adreno 613 (RG 55G1) takes the declared loop for its destination-alpha draws only: on the copy
+// road every stencil-one draw builds its stencil in a pass of its own. Stock and tagged builds alike;
+// never the full barrier-kept loop (unstable run to run on this part) and never the ordering claim.
+TEST(GSGpuDriverProfile, TurnipOnAdreno613TakesTheDestinationAlphaLoopOnly)
+{
+	for (const char* device_name : {"Adreno (TM) 613", "Turnip Adreno (TM) 613"})
+	{
+		for (const char* driver_info : {kStockTurnipDriverInfo, kFixedTurnipDriverInfo})
+		{
+			const GpuProfileSelection sel = ResolveTurnipVK(device_name, driver_info);
+			EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno6xx) << device_name;
+			EXPECT_EQ(sel.gpu.model_number, 613) << device_name;
+			EXPECT_TRUE(sel.driver.prefers_declared_loop_for_destination_alpha) << device_name << " " << driver_info;
+			EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel)) << device_name << " " << driver_info;
+			EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name << " " << driver_info;
+			EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback)) << device_name;
+		}
+	}
+}
+
+// The other a6xx parts below 650, and every a7xx part, do not take it.
+TEST(GSGpuDriverProfile, TheDestinationAlphaLoopIsThe613sAlone)
+{
+	for (const char* device_name : {"Adreno (TM) 610", "Adreno (TM) 618", "Adreno (TM) 619", "Adreno (TM) 630",
+			 "Adreno (TM) 650", "Adreno (TM) 722", "Adreno (TM) 740"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kFixedTurnipDriverInfo);
+		EXPECT_FALSE(sel.driver.prefers_declared_loop_for_destination_alpha) << device_name;
+	}
+	for (const char* device_name : {"Adreno (TM) 610", "Adreno (TM) 618", "Adreno (TM) 619", "Adreno (TM) 630"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kFixedTurnipDriverInfo);
+		EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback)) << device_name;
+	}
+}
+
 // The two facts are measured on different drivers on different parts, so no part may hold both.
 // A tagged build on an a740 gets the preference like any other Turnip and the ordering claim from
 // nobody -- the tag buys ordering, and ordering is what a7xx does not have.
@@ -1364,10 +1402,12 @@ TEST(GSGpuDriverProfile, TheRg55g1TurnipTakesTheAdreno613sRows)
 	ExpectSameDriverProfile(sel, ResolveRg55g1VK("Adreno (TM) 613", true), "turnip");
 
 	// Below the 650 the fix generation earns no ordering claim, and the 613 is not the 610 the
-	// cached stream rings were measured on.
+	// cached stream rings were measured on. The copy road stays, with the destination-alpha draws alone
+	// in a declared loop (TurnipOnAdreno613TakesTheDestinationAlphaLoopOnly).
 	EXPECT_TRUE(TakesTheRenderTargetCopyPath(sel));
 	EXPECT_FALSE(OrdersDeclaredLoop(sel));
 	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
+	EXPECT_TRUE(sel.driver.prefers_declared_loop_for_destination_alpha);
 	EXPECT_FALSE(sel.driver.UsesWorkaround(DriverWorkaround::PreferCachedStreamRingMemory));
 }
 

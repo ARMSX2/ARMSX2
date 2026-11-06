@@ -343,6 +343,21 @@ static constexpr bool PrefersDeclaredLoopOnA7xx(u16 model)
 	return model >= 730 || model == 722;
 }
 
+// The Adreno 6xx parts on which Turnip takes the barrier-kept declared loop for the destination-alpha
+// draws only (MobileDriverProfile::prefers_declared_loop_for_destination_alpha). Only the 613 (RG 55G1)
+// has been run. On the render-target copy road a destination-alpha draw that cannot ride a barrier
+// builds its stencil from the target in a pass of its own, so every such draw ends the pass twice:
+// Stuntman issues about 1,070 a frame, 2,170 passes against 18 with the loop. The loop for every
+// self-read (the a7xx preference) rendered Black, OutRun, Katamari and Shadow of the Colossus
+// differently from run to run on this part, with the barriers kept; the copy road was stable.
+//
+// Not in the list: the 610 and the other parts below 650, which have not been run on this road, and the
+// 650 and up, which take the ordering fact with a tagged build and the copy road without one.
+static constexpr bool PrefersDestinationAlphaLoopOnA6xx(u16 model)
+{
+	return model == 613;
+}
+
 // The Adreno 7xx parts on which a generation-2 Turnip build is trusted to order the declared loop
 // with no barrier from us (MobileDriverProfile::orders_declared_feedback_loop): the 730 and up. The
 // 722 is NOT in this list, although it is in the one above.
@@ -743,6 +758,10 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
 		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
 		                                          PrefersDeclaredLoopOnA7xx(selection.gpu.model_number);
+	profile.prefers_declared_loop_for_destination_alpha =
+		(context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		(selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&
+		PrefersDestinationAlphaLoopOnA6xx(selection.gpu.model_number);
 
 	for (size_t row = 0; row < s_driver_rules.size(); row++)
 	{

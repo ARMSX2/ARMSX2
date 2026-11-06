@@ -4136,6 +4136,9 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	// Adreno 730 and up and on the 722, where the copy road renders wrong.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
+	// Turnip on the Adreno 613: the copy road, with the destination-alpha draws alone in a declared loop.
+	road_inputs.driver_prefers_destination_alpha_loop =
+		GetMobileDriverProfile().prefers_declared_loop_for_destination_alpha;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
 	// Harness-only (gsrunner -declare-feedback-loop); Off on every other run.
 	road_inputs.arm = static_cast<u8>(g_gs_measurement_overrides.self_read_arm);
@@ -4175,6 +4178,8 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	// Copy road, with the destination-alpha draws alone reading in the pass (Turnip on the Adreno 613).
+	m_features.destination_alpha_loop = road.destination_alpha_loop;
 	// Our generation-2 Turnip on Adreno 7xx: the driver orders the draw against earlier ones with a
 	// wait for idle, and orders overlapping primitives within it only on request.
 	const bool declared_ordered = road.orders_overlapping_prims && !road.in_tile_read && order_on_request;
@@ -9560,7 +9565,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	if (pipe.IsRTFeedbackLoop() && draw_rt)
 	{
-		pxAssertMsg(m_features.texture_barrier, "Texture barriers enabled");
+		pxAssertMsg(m_features.texture_barrier || m_features.destination_alpha_loop, "Texture barriers enabled");
 		PSSetShaderResource(TFX_TEXTURE_RT, draw_rt, false);
 
 		if (m_tfx_textures[TFX_TEXTURE_RT_ROV] == draw_rt)
@@ -9949,7 +9954,9 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
 	bool one_barrier, bool full_barrier)
 {
-	if (!m_features.texture_barrier) [[unlikely]]
+	// Without texture barriers only the destination-alpha loop reads in the pass, and the callers pass
+	// a target only for a draw whose pipeline declares that loop.
+	if (!m_features.texture_barrier && !(m_features.destination_alpha_loop && (draw_rt || draw_ds))) [[unlikely]]
 	{
 		Draw(config);
 		return;
