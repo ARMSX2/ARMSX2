@@ -61,6 +61,7 @@
 #include "pcsx2/Catalog/DriverPacks.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSHeadlessPresent.h"
+#include "pcsx2/GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "pcsx2/GameList.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/IopThread/OwnerAsserts.h"
@@ -253,6 +254,7 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			std::fprintf(stderr, "  --bios-only              Boot the BIOS without loading a disc\n");
 			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
 			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
+			std::fprintf(stderr, "  --stream-rings-cached    Measurement: Vulkan stream rings on cached memory (as gsrunner's -stream-rings-cached)\n");
 			std::fprintf(stderr, "  -h, --help               Show this help and exit\n");
 			std::fprintf(stderr, "  --version                Show version and exit\n");
 			return false;
@@ -312,6 +314,13 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		if (ARG("--no-fast-boot"))
 		{
 			params.fast_boot = false;
+			continue;
+		}
+		// Measurement only: prices the cached stream-ring road on a device the driver database has
+		// no rule for, the same switch gsrunner exposes, so a live game can A/B it on one binary.
+		if (ARG("--stream-rings-cached"))
+		{
+			g_gs_measurement_overrides.stream_rings_cached = true;
 			continue;
 		}
 		if (argv[i][0] == '-')
