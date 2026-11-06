@@ -85,12 +85,24 @@ public:
 
 	VkFramebuffer GetLinkedFramebuffer(GSTextureVK* depth_texture, bool feedback_loop_color, bool feedback_loop_depth);
 
+	/// Moves the texture to a new image the driver lays out without framebuffer compression
+	/// (VK_EXT_image_compression_control), copying what it holds. The GSTextureVK keeps its
+	/// identity, so the texture cache and the pool are unaffected; the old image, view and
+	/// framebuffers are destroyed once the GPU is done with them. Ends the render pass. Returns false,
+	/// leaving the texture as it was, if the new image cannot be made. See GSDeviceVK::DoRenderHW.
+	bool MakeUncompressed();
+	__fi bool IsUncompressed() const { return m_uncompressed; }
+
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
 
 private:
 	GSTextureVK(Usage usage, Format format, int width, int height, int levels, VkImage image, VmaAllocation allocation,
 		VkImageView view, VkFormat vk_format);
+
+	static bool AllocateImage(Usage usage, Format format, VkFormat vk_format, int width, int height, int levels,
+		bool uncompressed, VkImage* out_image, VmaAllocation* out_allocation, VkImageView* out_view);
+	void DestroyFramebuffers(bool defer);
 
 	VkCommandBuffer GetCommandBufferForUpdate();
 	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;
@@ -103,6 +115,9 @@ private:
 	VkImageView m_view = VK_NULL_HANDLE;
 	VkFormat m_vk_format = VK_FORMAT_UNDEFINED;
 	Layout m_layout = Layout::Undefined;
+
+	// Created (or recreated by MakeUncompressed) with compression disabled.
+	bool m_uncompressed = false;
 
 	// Contains the fence counter when the texture was last used.
 	// When this matches the current fence counter, the texture was used this command buffer.

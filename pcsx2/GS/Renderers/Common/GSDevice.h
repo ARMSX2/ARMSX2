@@ -1613,6 +1613,7 @@ public:
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		bool broken_blend_constant : 1; ///< Driver applies a CONST_COLOR / INV_CONST_COLOR blend factor as if the constant were zero. A fixed (AFIX) factor rides the second fragment output instead -- see GSBlendConstantPolicy.h.
 		bool native_counter_draws : 1; ///< Can draw a fresh convert-and-resolve colclip draw at native resolution (GSHWDrawConfig::colclip_native_scale).
+		bool destination_alpha_loop : 1; ///< Copy road for self-reads, except a destination-alpha draw in the stencil-one mode, which reads the target in the pass under a declared feedback loop with one barrier instead of building its stencil in a setup pass. Vulkan only (Turnip on the Adreno 613); see GSSelfReadRoadPolicy.h.
 		GSFeedbackCarry feedback_carry; ///< Which draws may keep the open pass's feedback-loop bits. Vulkan only; see GSDrawRoad.h.
 		FeatureSupport()
 		{
@@ -1935,6 +1936,7 @@ public:
 	static int GetMipmapLevelsForSize(int width, int height);
 
 	__fi u64 GetPoolMemoryUsage() const { return m_pool_memory_usage; }
+	__fi u32 GetFrame() const { return m_frame; }
 
 	__fi FeatureSupport Features() const { return m_features; }
 	__fi u32 GetMaxTextureSize() const { return m_max_texture_size; }

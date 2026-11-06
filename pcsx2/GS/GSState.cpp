@@ -610,6 +610,28 @@ static constexpr u32 MaxVerticesForPrim(u32 prim)
 
 void GSState::ResetDrawBufferIdx()
 {
+	// One buffer, and it is the current one: the loop below keeps it in place and
+	// changes nothing but its rects when it is empty.
+	if (m_used_buffers_idx == 1 && m_current_buffer_idx == 0) [[likely]]
+	{
+		m_index = &m_index_buffers[0];
+		m_vertex = &m_vertex_buffers[0];
+		if (m_index->tail == 0)
+		{
+			m_env_buffers[0].draw_rect = GSVector4i::zero();
+			m_env_buffers[0].native_draw_rect = GSVector4i::zero();
+			m_backed_up_ctx = -1;
+			m_dirty_gs_regs = 0;
+		}
+		else
+		{
+			m_dirty_gs_regs = m_env_buffers[0].m_dirty_regs;
+			temp_draw_rect = m_env_buffers[0].draw_rect;
+			temp_native_draw_rect = m_env_buffers[0].native_draw_rect;
+		}
+		return;
+	}
+
 	int entry_ptr = 0;
 
 	for (int i = 0; i < m_used_buffers_idx; i++)
@@ -969,6 +991,34 @@ void GSState::ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec)
 // exclude_current is used if there is a flush for a reason other than the normal context change.
 void GSState::FlushBuffers(bool flush_base_only, bool use_flush_reason, GSFlushReason flush_reason)
 {
+	// Draw by reference. With buffering off there is one buffer and its draw's
+	// environment is already in m_prev_env (the kick's first-primitive snapshot),
+	// so the copy in and the copy back that the loop below makes are both the
+	// identity -- except for what the draw itself writes into m_prev_env, which is
+	// SCANMSK (the GSC_IRem hook and the split's repeat of it), restored here as
+	// the copy back used to.
+	if (m_used_buffers_idx == 1 && m_current_buffer_idx == 0 && !GSConfig.UserHacks_DrawBuffering) [[likely]]
+	{
+		if (m_index_buffers[0].tail == 0)
+			return;
+
+		m_index = &m_index_buffers[0];
+		m_vertex = &m_vertex_buffers[0];
+		m_backed_up_ctx = m_env_buffers[0].m_backed_up_ctx;
+		m_dirty_gs_regs = m_env_buffers[0].m_dirty_regs;
+		temp_draw_rect = m_env_buffers[0].draw_rect;
+		temp_native_draw_rect = m_env_buffers[0].native_draw_rect;
+
+		const GIFRegSCANMSK scanmsk = m_prev_env.SCANMSK;
+
+		FlushDraw(use_flush_reason ? flush_reason : GSFlushReason::CONTEXTCHANGE);
+
+		m_index = &m_index_buffers[0];
+		m_vertex = &m_vertex_buffers[0];
+		m_prev_env.SCANMSK = scanmsk;
+		return;
+	}
+
 	const int current_idx = m_current_buffer_idx;
 	bool restore_env = false;
 
@@ -1287,55 +1337,23 @@ bool GSState::CanBufferNewDraw()
 }
 
 // Snapshot the environment the current draw buffer was built with. Called once per
-// draw from the vertex kick, so its cost is a per-draw memcpy on every title.
+// draw from the vertex kick.
 //
 // With draw buffering ON the whole environment is copied, because the buffer list is
 // live and CanBufferNewDraw/PushBuffer walk it.
 //
 // With it OFF only buffer 0 exists -- CanBufferNewDraw returns at its first line and
-// PushBuffer never runs, so m_used_buffers_idx stays 1 -- and only part of the
-// snapshot is ever read back:
-//   FlushBuffers            the env head, both contexts' register blocks, and the
-//                           backed-up context's scissor and offset (it restores
-//                           exactly those into m_prev_env);
-//   GIFRegHandlerTEX0,      the m_used_buffers_idx loops, all of which read PRIM and
-//   CheckWriteOverlap,      register-block members only.
-//   CheckCLUTValidity
-// Nothing reads the transfer registers at the tail of the env head, and nothing reads
-// the INACTIVE context's derived scissor or offset. So copy 480 bytes instead of 768
-// and leave the rest of the snapshot stale -- it is unreachable on this path.
+// PushBuffer never runs, so m_used_buffers_idx stays 1 -- and the draw's environment
+// lives in m_prev_env alone: the kick's first-primitive snapshot takes both contexts'
+// register blocks, and every reader of the buffered copy (GIFRegHandlerTEX0's CLUT
+// loop, CheckWriteOverlap, CheckCLUTValidity) reads it through BufferEnv(), which
+// answers m_prev_env. Only the backed-up context is read from the buffer.
 void GSState::SetDrawBufferEnv()
 {
 	GSDrawBufferEnv& buf = m_env_buffers[m_current_buffer_idx];
 
 	if (GSConfig.UserHacks_DrawBuffering)
-	{
 		memcpy(&buf.m_env, &m_env, sizeof(GSDrawingEnvironment));
-	}
-	else
-	{
-		// The 88 and the 96 are the same literals FlushBuffers restores with, and
-		// they are only the register prefixes while the transfer registers stay at
-		// the tail of the environment and scissor still follows a context's
-		// registers. Both are pinned by GsDrawEnvSnapshot.SnapshotLayoutConstants
-		// (offsetof on these types is not standard-layout-clean, so the pin lives in
-		// the test rather than in a static_assert here).
-		//
-		// The reader indexes the derived state by the backed-up context, and the kick
-		// sets that from PRIM.CTXT immediately before calling us.
-		const int ctx = m_env.PRIM.CTXT;
-		pxAssert(m_backed_up_ctx == ctx);
-
-		std::memcpy(&buf.m_env, &m_env, 88);
-		std::memcpy(&buf.m_env.CTXT[0], &m_env.CTXT[0], 96);
-		std::memcpy(&buf.m_env.CTXT[1], &m_env.CTXT[1], 96);
-		// Assigned rather than memcpy'd: both are small and trivially copyable, so
-		// this emits loads and stores in place instead of a libc call on a per-draw
-		// path. That is the whole instruction-count difference -- the shape that
-		// leaves a call here saves half as much.
-		buf.m_env.CTXT[ctx].scissor = m_env.CTXT[ctx].scissor;
-		buf.m_env.CTXT[ctx].offset = m_env.CTXT[ctx].offset;
-	}
 
 	buf.m_backed_up_ctx = m_backed_up_ctx;
 }
@@ -2244,14 +2262,14 @@ constexpr GSState::GIFPackedRegHandlerC GSState::LayoutHandlerOrNull()
 
 // Whether the auto_flush instantiation of this prim's fused handler routes its
 // chunks between the kernel and the staged loop (stage 3b), or stays on the
-// staged loop outright. Sprites stay: IsAutoFlushDraw's EarlyDetectShuffle reads
-// the incoming vertex out of m_v for the sprite class, so the predicate is
-// per-prim state there and not invariant across a chunk. For the triangle
-// classes EarlyDetectShuffle is a constant false and the predicate is invariant.
+// staged loop outright. Every prim the kernel carries routes. For the triangle
+// classes EarlyDetectShuffle is a constant false and the predicate is invariant
+// across a chunk. For sprites EarlyDetectShuffle reads the incoming vertex out
+// of m_v, so the routing asks the predicate without it (IsAutoFlushDrawImpl).
 template <u32 prim>
 static constexpr bool KickRoutesAutoFlush()
 {
-	return KickKernelCarriesPrim<prim>() && prim != GS_SPRITE;
+	return KickKernelCarriesPrim<prim>();
 }
 
 // Parse one packed vertex and kick it through the per-vertex path, cursor loaded
@@ -2566,7 +2584,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		if constexpr (auto_flush)
 		{
 			int tex_layer = 0;
-			if (IsAutoFlushDraw(prim, tex_layer))
+			const bool live = (prim == GS_SPRITE) ? IsAutoFlushDrawImpl<false>(prim, tex_layer) :
+			                                        IsAutoFlushDraw(prim, tex_layer);
+			if (live)
 			{
 				KickPackedStagedRun<prim, layout>(r + k * stride, chunk);
 				k += chunk;
@@ -3108,7 +3128,7 @@ void GSState::ApplyTEX0(GIFRegTEX0& TEX0)
 	{
 		for (int b = 0; b < m_used_buffers_idx; b++)
 		{
-			GSDrawingEnvironment& buffered_env = m_env_buffers[b].m_env;
+			const GSDrawingEnvironment& buffered_env = BufferEnv(b);
 			if ((buffered_env.PRIM.TME && (buffered_env.CTXT[buffered_env.PRIM.CTXT].TEX0.PSM & 0x7) >= 3) || (m_mem.m_clut.IsInvalid() & 2))
 				Flush(GSFlushReason::CLUTCHANGE);
 		}
@@ -3767,11 +3787,8 @@ void GSState::FlushDraw(GSFlushReason reason)
 	m_state_flush_reason = GSFlushReason::UNKNOWN;
 }
 
-void GSState::FlushWrite()
+void GSState::FlushWriteSlow()
 {
-	if (!m_tr.write)
-		return;
-
 	const int len = m_tr.end - m_tr.start;
 
 	if (len <= 0)
@@ -4382,8 +4399,8 @@ void GSState::CheckWriteOverlap(bool req_write, bool req_read)
 	{
 		GSIndexBuff* cur_index_buff = &m_index_buffers[i];
 		GSVertexBuff* cur_vertex_buff = &m_vertex_buffers[i];
-		const GSDrawingContext& prev_ctx = m_env_buffers[i].m_env.CTXT[m_env_buffers[i].m_backed_up_ctx];
-		const GSDrawingEnvironment& prev_env = m_env_buffers[i].m_env;
+		const GSDrawingEnvironment& prev_env = BufferEnv(i);
+		const GSDrawingContext& prev_ctx = prev_env.CTXT[m_env_buffers[i].m_backed_up_ctx];
 		GSVector4i tex_rect = prev_env.PRIM.TME ? GetTEX0Rect(prev_ctx) : GSVector4i::zero();
 
 		if (cur_index_buff->tail > 0)
@@ -7324,6 +7341,16 @@ void GSState::GetQuadRasterizedPoints(GSVector4& xy, bool keep_order)
 
 __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 {
+	return IsAutoFlushDrawImpl<true>(prim, tex_layer);
+}
+
+// check_shuffle = false leaves out EarlyDetectShuffle, the one input that reads
+// the incoming vertex. Every other test reads registers only, and the shuffle
+// test can only make the answer false, so a false answer without it is a false
+// answer for every vertex of a run the registers do not change under.
+template <bool check_shuffle>
+__forceinline bool GSState::IsAutoFlushDrawImpl(u32 prim, int& tex_layer)
+{
 	// The engine's level, not the hardware key. A software run whose GameDB entry asks
 	// for SpritesOnly used to refuse the split for every non-sprite primitive here, while
 	// ResetHandlers had already armed the full handlers from the SW rule -- so Jak 3's
@@ -7351,7 +7378,7 @@ __forceinline bool GSState::IsAutoFlushDraw(u32 prim, int& tex_layer)
 	}
 
 	// Try to detect shuffles, because these will not autoflush, they by design clash.
-	if (EarlyDetectShuffle(prim))
+	if (check_shuffle && EarlyDetectShuffle(prim))
 		return false;
 
 	// Check if one of the texture being used is the same as the FRAME or ZBUF.
@@ -7415,7 +7442,7 @@ __forceinline void GSState::CheckCLUTValidity(u32 prim)
 
 	for (int i = 0; i < m_used_buffers_idx; i++)
 	{
-		GSDrawingEnvironment& buffered_env = m_env_buffers[i].m_env;
+		const GSDrawingEnvironment& buffered_env = BufferEnv(i);
 		const GSDrawingContext& ctx = buffered_env.CTXT[buffered_env.PRIM.CTXT];
 		if ((m_index_buffers[i].tail > 0 || (m_vertex_buffers[i].tail == n - 1)) && (GSLocalMemory::m_psm[ctx.TEX0.PSM].pal == 0 || !buffered_env.PRIM.TME))
 		{
@@ -8020,6 +8047,13 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 		const int ctx = m_env.PRIM.CTXT;
 		std::memcpy(&m_prev_env, &m_env, 88);
 		std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
+		// With draw buffering off this snapshot is the draw's only copy of its
+		// environment (see SetDrawBufferEnv), so it also takes the other context's
+		// register block, which FlushBuffers used to install from buffer 0 at flush
+		// time. Same value, captured at the same moment; nothing reads the inactive
+		// context of m_prev_env in between.
+		if (!GSConfig.UserHacks_DrawBuffering)
+			std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
 		std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
 		std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
 		m_dirty_gs_regs = 0;

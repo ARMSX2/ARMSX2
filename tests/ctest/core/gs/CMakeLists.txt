@@ -88,7 +88,6 @@ add_pcsx2_test(gs_vertex_tests
 	gs_texture_cache_grid_tests.cpp
 	gs_texture_cache_move_tests.cpp
 	gs_target_update_tests.cpp
-	gs_exact_dirty_mapping_tests.cpp
 	gs_target_rebase_tests.cpp
 	gs_target_rebase_integration_tests.cpp
 	gs_dither_scale_tests.cpp
@@ -99,7 +98,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_field_shift_detector_tests.cpp
 	gs_channel_shuffle_cover_tests.cpp
 	gs_sw_palette_block_copy_tests.cpp
-	gs_tc_union_cover_tests.cpp
+	gs_target_dirty_tests.cpp
 	gs_cache_file_tests.cpp
 	gs_hash_cache_inject_tests.cpp
 	gs_hash_cache_limits_tests.cpp

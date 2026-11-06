@@ -583,6 +583,12 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// vkGetDeviceFaultInfoEXT and the fault's addresses and reasons go to the log,
 	// so the next occurrence arrives with its own diagnosis instead of a rate.
 	m_optional_extensions.vk_ext_device_fault = SupportsExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, false);
+	// VK_EXT_image_compression_control: on Turnip a draw that reads its own colour target in a
+	// declared feedback loop on the Adreno 613 reads stale data while the target is UBWC-compressed,
+	// so the destination-alpha loop recreates each target it reads without compression
+	// (GSTextureVK::MakeUncompressed). Requested on Adreno only, so no other device changes.
+	m_optional_extensions.vk_ext_image_compression_control =
+		IsDeviceAdreno() && SupportsExtension(VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME, false);
 
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 	{
@@ -842,6 +848,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
 	VkPhysicalDeviceFaultFeaturesEXT device_fault_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+	VkPhysicalDeviceImageCompressionControlFeaturesEXT image_compression_control_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT};
 
 	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
 	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
@@ -874,6 +882,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VkPhysicalDeviceShaderFloat16Int8FeaturesKHR probe_f16 = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR};
 		VkPhysicalDeviceFaultFeaturesEXT probe_fault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
+		VkPhysicalDeviceImageCompressionControlFeaturesEXT probe_icc = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
 		// not something the spec promises anything about.
@@ -898,6 +908,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_f16);
 		if (m_optional_extensions.vk_ext_device_fault)
 			Vulkan::AddPointerToChain(&probe, &probe_fault);
+		if (m_optional_extensions.vk_ext_image_compression_control)
+			Vulkan::AddPointerToChain(&probe, &probe_icc);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
 
 		// Returns the flag rather than taking it by reference: m_optional_extensions members are
@@ -940,6 +952,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_robustness2_null_descriptor, probe_r2.nullDescriptor == VK_TRUE);
 		m_optional_extensions.vk_ext_device_fault = keep("VK_EXT_device_fault",
 			m_optional_extensions.vk_ext_device_fault, probe_fault.deviceFault == VK_TRUE);
+		m_optional_extensions.vk_ext_image_compression_control = keep("VK_EXT_image_compression_control",
+			m_optional_extensions.vk_ext_image_compression_control, probe_icc.imageCompressionControl == VK_TRUE);
 		m_optional_extensions.vk_khr_shader_float16_int8 = keep("VK_KHR_shader_float16_int8 (shaderFloat16)",
 			m_optional_extensions.vk_khr_shader_float16_int8, probe_f16.shaderFloat16 == VK_TRUE);
 
@@ -1002,6 +1016,11 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	{
 		device_fault_feature.deviceFault = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &device_fault_feature);
+	}
+	if (m_optional_extensions.vk_ext_image_compression_control)
+	{
+		image_compression_control_feature.imageCompressionControl = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &image_compression_control_feature);
 	}
 	if (m_optional_extensions.vk_khr_shader_float16_int8)
 	{
@@ -4136,6 +4155,9 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	// Adreno 730 and up and on the 722, where the copy road renders wrong.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
+	// Turnip on the Adreno 613: the copy road, with the destination-alpha draws alone in a declared loop.
+	road_inputs.driver_prefers_destination_alpha_loop =
+		GetMobileDriverProfile().prefers_declared_loop_for_destination_alpha;
 	road_inputs.override_texture_barriers = GSConfig.OverrideTextureBarriers;
 	// Harness-only (gsrunner -declare-feedback-loop); Off on every other run.
 	road_inputs.arm = static_cast<u8>(g_gs_measurement_overrides.self_read_arm);
@@ -4175,6 +4197,8 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	m_features.framebuffer_fetch = road.in_tile_read;
 	m_features.texture_barrier = road.texture_barrier;
 	m_features.declared_feedback_loop_orders_overlap = road.orders_overlapping_prims;
+	// Copy road, with the destination-alpha draws alone reading in the pass (Turnip on the Adreno 613).
+	m_features.destination_alpha_loop = road.destination_alpha_loop;
 	// Our generation-2 Turnip on Adreno 7xx: the driver orders the draw against earlier ones with a
 	// wait for idle, and orders overlapping primitives within it only on request.
 	const bool declared_ordered = road.orders_overlapping_prims && !road.in_tile_read && order_on_request;
@@ -4462,6 +4486,13 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 		GSSelfReadRoadName(road), m_features.texture_barrier ? "on" : "off",
 		m_features.framebuffer_fetch ? "on" : "off", UseFeedbackLoopLayout() ? "on" : "off",
 		m_features.declared_feedback_loop_orders_overlap ? "claimed" : "no");
+	if (m_features.destination_alpha_loop)
+	{
+		Console.WriteLn("VK: destination-alpha loop targets: %s",
+			m_optional_extensions.vk_ext_image_compression_control ?
+				"recreated without compression the first time the loop reads them" :
+				"COMPRESSED (no VK_EXT_image_compression_control; the loop's reads can race the compression)");
+	}
 	// Printed whenever a driver claims the fix, including when the part disqualifies it, so a user who
 	// installed the driver pack can see the tag was read.
 	if (const u32 fix_generation = GetMobileDriverProfile().declared_loop_fix_generation;
@@ -9558,9 +9589,24 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			Console.Warning("VK: Failed to allocate temp texture for RT copy.");
 	}
 
+	// The destination-alpha loop (Turnip on the Adreno 613) reads the target in the pass. While the
+	// target is UBWC-compressed that read races the compression: replays of the same frames differ
+	// from run to run, and stop differing with compression off. Only targets the loop reads pay for
+	// that, once: the target is moved to an uncompressed image the first time, contents copied.
+	if (m_features.destination_alpha_loop && m_optional_extensions.vk_ext_image_compression_control &&
+		pipe.IsRTFeedbackLoop() && draw_rt && !draw_rt->IsUncompressed() && config.IsFeedbackLoopRT(pipe.ps))
+	{
+		if (draw_rt->MakeUncompressed())
+			Console.WriteLn("VK: destination-alpha loop: %dx%d target recreated without compression",
+				draw_rt->GetWidth(), draw_rt->GetHeight());
+		else
+			Console.Warning("VK: destination-alpha loop: could not recreate a %dx%d target without compression",
+				draw_rt->GetWidth(), draw_rt->GetHeight());
+	}
+
 	if (pipe.IsRTFeedbackLoop() && draw_rt)
 	{
-		pxAssertMsg(m_features.texture_barrier, "Texture barriers enabled");
+		pxAssertMsg(m_features.texture_barrier || m_features.destination_alpha_loop, "Texture barriers enabled");
 		PSSetShaderResource(TFX_TEXTURE_RT, draw_rt, false);
 
 		if (m_tfx_textures[TFX_TEXTURE_RT_ROV] == draw_rt)
@@ -9949,7 +9995,9 @@ void GSDeviceVK::DeclareDrawFeedbackLoop(const GSHWDrawConfig& config, const Pip
 void GSDeviceVK::SendHWDraw(const GSHWDrawConfig& config, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
 	bool one_barrier, bool full_barrier)
 {
-	if (!m_features.texture_barrier) [[unlikely]]
+	// Without texture barriers only the destination-alpha loop reads in the pass, and the callers pass
+	// a target only for a draw whose pipeline declares that loop.
+	if (!m_features.texture_barrier && !(m_features.destination_alpha_loop && (draw_rt || draw_ds))) [[unlikely]]
 	{
 		Draw(config);
 		return;
@@ -10112,6 +10160,7 @@ void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
 	OPT(vk_khr_vulkan_memory_model);
 	OPT(vk_ext_robustness2_null_descriptor);
 	OPT(vk_ext_device_fault);
+	OPT(vk_ext_image_compression_control);
 #undef OPT
 	w.EndObject();
 

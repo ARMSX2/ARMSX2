@@ -403,7 +403,8 @@ namespace
 			.feedback_loop_layout = f.feedback_loop_layout,
 			.fetch_orders_overlap = f.framebuffer_fetch_orders_overlap,
 			.declared_loop_orders_overlap = f.declared_feedback_loop_orders_overlap,
-			.carry = f.feedback_carry};
+			.carry = f.feedback_carry,
+			.destination_alpha_loop = f.destination_alpha_loop};
 	}
 
 	/// Called once per draw, after the last change to anything it reads.
@@ -420,7 +421,14 @@ namespace
 				.any_barrier = conf.require_one_barrier || conf.require_full_barrier ||
 				               (second.enable && (second.require_one_barrier || second.require_full_barrier)),
 				.writes_depth = (depth_attached && conf.depth.zwe) || (second.enable && second.depth.zwe),
-				.offset_read_hits_write = conf.offset_read_hits_write});
+				.offset_read_hits_write = conf.offset_read_hits_write,
+				// Stencil-one without its setup pass: the destination-alpha test is the read, and one
+				// barrier serves it. Anything that needs more than that keeps the copy.
+				.destination_alpha_read = conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne &&
+				                          conf.rt->TookDestinationAlphaLoop() &&
+				                          conf.require_one_barrier && !conf.require_full_barrier &&
+				                          conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE &&
+				                          !(second.enable && conf.IsFeedbackLoopRT(second.ps))});
 	}
 } // namespace
 
@@ -2299,7 +2307,7 @@ bool GSRendererHW::TryToResolveSinglePageFramebuffer(GIFRegFRAME& FRAME, bool on
 				// Try with Z or FRAME (whichever we're not using).
 				tgt = g_texture_cache->GetTargetWithSharedBits(start_bp, new_psm ^ 0x30);
 			}
-			if (tgt && ((start_bp + (m_split_clear_pages * GS_BLOCKS_PER_PAGE)) - 1) <= tgt->m_end_block)
+			if (tgt && ((start_bp + (m_split_clear_pages * GS_BLOCKS_PER_PAGE)) - 1) <= tgt->EndBlock())
 			{
 				GL_INS("HW: TryToResolveSinglePageWidth(): Using FBW of %u and PSM %s from existing target",
 					tgt->m_TEX0.PSM, GSUtil::GetPSMName(tgt->m_TEX0.PSM));
@@ -4490,7 +4498,7 @@ void GSRendererHW::Draw()
 
 			if (vertical_offset < 0)
 			{
-				ds->m_TEX0.TBP0 = m_cached_ctx.ZBUF.Block();
+				ds->SetTBP0(m_cached_ctx.ZBUF.Block());
 				GSVector2i new_size = ds->m_unscaled_size;
 				// Make sure to use the original format for the offset.
 				const int new_offset = std::abs((vertical_offset / zbuf_psm.pgs.y) * GSLocalMemory::m_psm[ds->m_TEX0.PSM].pgs.y);
@@ -4520,13 +4528,15 @@ void GSRendererHW::Draw()
 
 				g_texture_cache->CombineAlignedInsideTargets(ds, src);
 
-				if (ds->m_dirty.size())
+				if (!ds->m_dirty.empty())
 				{
-					for (int i = 0; i < static_cast<int>(ds->m_dirty.size()); i++)
-					{
-						ds->m_dirty[i].r.y += new_offset;
-						ds->m_dirty[i].r.w += new_offset;
-					}
+					ds->m_dirty.EditRects([new_offset](std::vector<GSDirtyRect>& rects) {
+						for (GSDirtyRect& dirty : rects)
+						{
+							dirty.r.y += new_offset;
+							dirty.r.w += new_offset;
+						}
+					}, ds->m_TEX0.PSM, ds->m_TEX0.TBW);
 				}
 
 				t_size.y += std::abs(vertical_offset);
@@ -4537,7 +4547,7 @@ void GSRendererHW::Draw()
 			{
 				// Thankfully this doesn't really happen, but catwoman moves the framebuffer backwards 1 page with a channel shuffle, which is really messy and not easy to deal with.
 				// Hopefully the quick channel shuffle will just guess this and run with it.
-				ds->m_TEX0.TBP0 += horizontal_offset;
+				ds->SetTBP0(ds->m_TEX0.TBP0 + horizontal_offset);
 				horizontal_offset = 0;
 			}
 
@@ -4773,7 +4783,7 @@ void GSRendererHW::Draw()
 					{
 						RGBAMask rgba_mask;
 						rgba_mask._u32 = GSUtil::GetChannelMask(rt->m_TEX0.PSM);
-						g_texture_cache->AddDirtyRectTarget(rt, m_r, FRAME_TEX0.PSM, FRAME_TEX0.TBW, rgba_mask, GSLocalMemory::m_psm[FRAME_TEX0.PSM].trbpp >= 16);
+						g_texture_cache->MarkTargetDirty(rt, m_r, FRAME_TEX0.PSM, FRAME_TEX0.TBW, rgba_mask, GSLocalMemory::m_psm[FRAME_TEX0.PSM].trbpp >= 16);
 					}
 				}
 			}
@@ -4788,7 +4798,7 @@ void GSRendererHW::Draw()
 
 			if (vertical_offset < 0)
 			{
-				rt->m_TEX0.TBP0 = m_cached_ctx.FRAME.Block();
+				rt->SetTBP0(m_cached_ctx.FRAME.Block());
 				GSVector2i new_size = rt->m_unscaled_size;
 				// Make sure to use the original format for the offset.
 				const int new_offset = std::abs((vertical_offset / frame_psm.pgs.y) * GSLocalMemory::m_psm[rt->m_TEX0.PSM].pgs.y);
@@ -4818,13 +4828,15 @@ void GSRendererHW::Draw()
 
 				g_texture_cache->CombineAlignedInsideTargets(rt, src);
 
-				if (rt->m_dirty.size())
+				if (!rt->m_dirty.empty())
 				{
-					for (int i = 0; i < static_cast<int>(rt->m_dirty.size()); i++)
-					{
-						rt->m_dirty[i].r.y += new_offset;
-						rt->m_dirty[i].r.w += new_offset;
-					}
+					rt->m_dirty.EditRects([new_offset](std::vector<GSDirtyRect>& rects) {
+						for (GSDirtyRect& dirty : rects)
+						{
+							dirty.r.y += new_offset;
+							dirty.r.w += new_offset;
+						}
+					}, rt->m_TEX0.PSM, rt->m_TEX0.TBW);
 				}
 
 				t_size.y += std::abs(vertical_offset);
@@ -4835,7 +4847,7 @@ void GSRendererHW::Draw()
 			{
 				// Thankfully this doesn't really happen, but catwoman moves the framebuffer backwards 1 page with a channel shuffle, which is really messy and not easy to deal with.
 				// Hopefully the quick channel shuffle will just guess this and run with it.
-				rt->m_TEX0.TBP0 += horizontal_offset;
+				rt->SetTBP0(rt->m_TEX0.TBP0 + horizontal_offset);
 				horizontal_offset = 0;
 			}
 
@@ -5049,7 +5061,7 @@ void GSRendererHW::Draw()
 			m_last_channel_shuffle_tbp = src->m_TEX0.TBP0;
 
 			// If it's a new target, we don't know where the end is as it's starting on a shuffle, so just do every shuffle following.
-			m_last_channel_shuffle_end_block = (rt->m_last_draw >= s_n) ? (GS_MAX_BLOCKS - 1) : (rt->m_end_block < rt->m_TEX0.TBP0 ? (rt->m_end_block + GS_MAX_BLOCKS) : rt->m_end_block);
+			m_last_channel_shuffle_end_block = (rt->m_last_draw >= s_n) ? (GS_MAX_BLOCKS - 1) : (rt->EndBlock() < rt->m_TEX0.TBP0 ? (rt->EndBlock() + GS_MAX_BLOCKS) : rt->EndBlock());
 		}
 		else
 			m_last_channel_shuffle_end_block = 0xFFFF;
@@ -5170,16 +5182,16 @@ void GSRendererHW::Draw()
 				m_last_channel_shuffle_tbp = src->m_TEX0.TBP0;
 				// Urban Chaos goes from Z16 to C32, so let's just use the rt's original end block.
 				if (!src->m_from_target || GSLocalMemory::m_psm[src->m_from_target_TEX0.PSM].bpp != GSLocalMemory::m_psm[rt->m_TEX0.PSM].bpp)
-					m_last_channel_shuffle_end_block = rt->m_end_block;
+					m_last_channel_shuffle_end_block = rt->EndBlock();
 				else
-					m_last_channel_shuffle_end_block = (rt->m_TEX0.TBP0 + (src->m_from_target->m_end_block - src->m_from_target_TEX0.TBP0));
+					m_last_channel_shuffle_end_block = (rt->m_TEX0.TBP0 + (src->m_from_target->EndBlock() - src->m_from_target_TEX0.TBP0));
 
 				if (m_last_channel_shuffle_end_block < rt->m_TEX0.TBP0)
 					m_last_channel_shuffle_end_block += GS_MAX_BLOCKS;
 
 				// if the RT is bigger, then use that instead.
-				if (m_last_channel_shuffle_end_block < rt->m_end_block)
-					m_last_channel_shuffle_end_block = rt->m_end_block;
+				if (m_last_channel_shuffle_end_block < rt->EndBlock())
+					m_last_channel_shuffle_end_block = rt->EndBlock();
 			}
 		}
 		else
@@ -5355,7 +5367,7 @@ void GSRendererHW::Draw()
 			if (FRAME_TEX0.TBW != 1 || (m_r.width() > frame_psm.pgs.x || m_r.height() > frame_psm.pgs.y) || (scale_draw == 1 && !scaled_copy))
 			{
 				FRAME_TEX0.TBP0 = rt->m_TEX0.TBP0;
-				rt->m_TEX0 = FRAME_TEX0;
+				rt->SetTEX0(FRAME_TEX0);
 			}
 
 			if (valid_width_change)
@@ -5371,7 +5383,7 @@ void GSRendererHW::Draw()
 			if (ZBUF_TEX0.TBW != 1 || (m_r.width() > frame_psm.pgs.x || m_r.height() > frame_psm.pgs.y) || (scale_draw == 1 && !scaled_copy))
 			{
 				ZBUF_TEX0.TBP0 = ds->m_TEX0.TBP0;
-				ds->m_TEX0 = ZBUF_TEX0;
+				ds->SetTEX0(ZBUF_TEX0);
 			}
 			if (valid_width_change)
 			{
@@ -5482,7 +5494,7 @@ void GSRendererHW::Draw()
 
 		if (rt)
 		{
-			const u32 old_end_block = rt->m_end_block;
+			const u32 old_end_block = rt->EndBlock();
 			const bool new_rect = rt->m_valid.rempty();
 			const bool new_height = new_h > rt->GetUnscaledHeight();
 			const int old_height = rt->m_texture->GetHeight();
@@ -5500,13 +5512,13 @@ void GSRendererHW::Draw()
 				if (new_w > rt->m_unscaled_size.x)
 				{
 					GSVector4i width_dirty_rect = GSVector4i(rt->m_unscaled_size.x, 0, new_w, new_h);
-					g_texture_cache->AddDirtyRectTarget(rt, width_dirty_rect, rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask);
+					g_texture_cache->MarkTargetDirty(rt, width_dirty_rect, rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask);
 				}
 
 				if (new_h > rt->m_unscaled_size.y)
 				{
 					GSVector4i height_dirty_rect = GSVector4i(0, rt->m_unscaled_size.y, new_w, new_h);
-					g_texture_cache->AddDirtyRectTarget(rt, height_dirty_rect, rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask);
+					g_texture_cache->MarkTargetDirty(rt, height_dirty_rect, rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask);
 				}
 			}*/
 
@@ -5519,12 +5531,12 @@ void GSRendererHW::Draw()
 			{
 				// if the height cache gave a different size to our final size, we need to check if it needs preloading.
 				// Pirates - Legend of the Black Kat starts a draw of 416, but Z is 448 and it preloads the background.
-				if (rt->m_drawn_since_read.rempty() && rt->m_dirty.size() > 0 && new_height && (preserve_rt_color || preserve_rt_alpha))
+				if (rt->m_drawn_since_read.rempty() && !rt->m_dirty.empty() && new_height && (preserve_rt_color || preserve_rt_alpha))
 				{
 					RGBAMask mask;
 					mask._u32 = preserve_rt_color ? 0x7 : 0;
 					mask.c.a |= preserve_rt_alpha;
-					g_texture_cache->AddDirtyRectTarget(rt, GSVector4i(rt->m_valid.x, rt->m_valid.w, rt->m_valid.z, new_h), rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask, false);
+					g_texture_cache->MarkTargetDirty(rt, GSVector4i(rt->m_valid.x, rt->m_valid.w, rt->m_valid.z, new_h), rt->m_TEX0.PSM, rt->m_TEX0.TBW, mask, false);
 					g_texture_cache->GetTargetSize(rt->m_TEX0.TBP0, rt->m_TEX0.TBW, rt->m_TEX0.PSM, 0, new_h);
 				}
 				const bool rt_cover = full_cover_clear && (m_r.height() + frame_psm.pgs.y) >= rt->m_valid.height();
@@ -5554,7 +5566,7 @@ void GSRendererHW::Draw()
 			// Probably changing to double buffering, so invalidate any old target that was next to it.
 			// This resolves an issue where the PCRTC will find the old target in FMV's causing flashing.
 			// Grandia Xtreme, Onimusha Warlord.
-			if (!new_rect && new_height && old_end_block != rt->m_end_block)
+			if (!new_rect && new_height && old_end_block != rt->EndBlock())
 			{
 				old_rt = g_texture_cache->FindTargetOverlap(rt, GSTextureCache::RenderTarget, m_cached_ctx.FRAME.PSM);
 
@@ -5576,7 +5588,7 @@ void GSRendererHW::Draw()
 		}
 		if (ds)
 		{
-			const u32 old_end_block = ds->m_end_block;
+			const u32 old_end_block = ds->EndBlock();
 			const bool new_rect = ds->m_valid.rempty();
 			const bool new_height = new_h > ds->GetUnscaledHeight();
 			const int old_height = ds->m_texture->GetHeight();
@@ -5637,7 +5649,7 @@ void GSRendererHW::Draw()
 				ds->UpdateDrawn(m_r, z_update && (can_update_size || m_r.w <= (resolution.y * 2)));
 			}
 
-			if (!new_rect && new_height && old_end_block != ds->m_end_block)
+			if (!new_rect && new_height && old_end_block != ds->EndBlock())
 			{
 				old_ds = g_texture_cache->FindTargetOverlap(ds, GSTextureCache::DepthStencil, m_cached_ctx.ZBUF.PSM);
 
@@ -6964,6 +6976,14 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	if (m_conf.ps.scanmsk & 2)
 		date_options.primid = false; // to have discard in the shader work correctly
 
+	// The destination-alpha loop leaves the pass that holds it untiled, and on Turnip its target
+	// uncompressed (GSDeviceVK::DoRenderHW): a cost every frame, which the stencil setup passes it
+	// saves repay only in numbers. On the RG 55G1 Stuntman has about 1,070 such draws a frame on one
+	// target and gains 13-19 ms of GPU; Shadow of the Colossus has 24 and loses about 1 ms. So a
+	// target takes the loop after more than 64 in one frame.
+	const bool destination_alpha_loop = features.destination_alpha_loop && date_options.stencil_one &&
+	                                     m_conf.rt->TakeDestinationAlphaLoop(g_gs_device->GetFrame(), 64);
+
 	if (date_options.stencil_one)
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::StencilOne;
 	else if (date_options.primid)
@@ -7038,7 +7058,9 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	else if (date_options.stencil_one)
 	{
 		const bool multidraw_fb_copy = m_conf.require_one_barrier || (m_conf.require_full_barrier && features.multidraw_fb_copy);
-		if (features.texture_barrier || multidraw_fb_copy)
+		// With the destination-alpha loop the draw reads the target in the pass (GSDrawRoad.h); if it
+		// does not qualify there it reads a copy, which still skips the stencil setup pass.
+		if (features.texture_barrier || multidraw_fb_copy || destination_alpha_loop)
 		{
 			m_conf.require_one_barrier = true;
 			m_conf.ps.date = 5 + m_cached_ctx.TEST.DATM;
@@ -11687,7 +11709,7 @@ bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_t
 				const u32 start_bp = GSLocalMemory::GetStartBlockAddress(m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW, m_cached_ctx.TEX0.PSM, tr);
 				const u32 end_bp = GSLocalMemory::GetEndBlockAddress(m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW, m_cached_ctx.TEX0.PSM, tr);
 
-				for (GSDirtyRect& rc : src_target->m_dirty)
+				for (const GSDirtyRect& rc : src_target->m_dirty)
 				{
 					const GSVector4i dirty_rect = rc.GetDirtyRect(src_target->m_TEX0, false);
 					const u32 dirty_start_bp = GSLocalMemory::GetStartBlockAddress(src_target->m_TEX0.TBP0, src_target->m_TEX0.TBW, src_target->m_TEX0.PSM, dirty_rect);

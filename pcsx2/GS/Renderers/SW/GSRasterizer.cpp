@@ -1840,6 +1840,10 @@ void GSRasterizer::Flush(const GSVertexSW* vertex, const u16* index, const GSVer
 
 	if (count > 0)
 	{
+		// The edge pass's scanlines read the colour tables the primitive's last row left, without building any.
+		if (edge)
+			GSDrawScanline::CompleteColourWalkTables(m_local);
+
 		SetupPrim(vertex, index, dscan, cwalk_live);
 
 		const GSVertexSW* RESTRICT e = m_edge.buff;
@@ -1891,7 +1895,7 @@ void GSRasterizer::DrawScanline(int pixels, int left, int top, const GSVertexSW&
 	// fractional part included (GSDrawScanline.cpp). Zero tables for a walkless
 	// primitive are already what every row wants.
 	if (m_local.cwalk.live || m_local.cwalk.tables.state != GSColourWalkTablesZero)
-		GSDrawScanline::SetupColourWalkTables(m_local, top);
+		GSDrawScanline::SetupColourWalkTables(m_local, top, left);
 
 	m_draw_scanline(pixels, left, top, scan, m_local);
 }

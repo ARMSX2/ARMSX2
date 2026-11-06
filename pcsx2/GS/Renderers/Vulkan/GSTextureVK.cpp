@@ -87,10 +87,28 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	pxAssert(ValidateUsageAndFormat(usage, format));
 
 	const VkFormat vk_format = GSDeviceVK::GetInstance()->LookupNativeFormat(format);
+	VkImage image;
+	VmaAllocation allocation;
+	VkImageView view;
+	if (!AllocateImage(usage, format, vk_format, width, height, levels, false, &image, &allocation, &view))
+		return {};
 
+	return std::unique_ptr<GSTextureVK>(
+		new GSTextureVK(usage, format, width, height, levels, image, allocation, view, vk_format));
+}
+
+bool GSTextureVK::AllocateImage(Usage usage, Format format, VkFormat vk_format, int width, int height, int levels,
+	bool uncompressed, VkImage* out_image, VmaAllocation* out_allocation, VkImageView* out_view)
+{
 	VkImageCreateInfo ici = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, nullptr, 0, VK_IMAGE_TYPE_2D, vk_format,
 		{static_cast<u32>(width), static_cast<u32>(height), 1}, static_cast<u32>(levels), 1, VK_SAMPLE_COUNT_1_BIT,
 		VK_IMAGE_TILING_OPTIMAL};
+
+	// VK_EXT_image_compression_control: the driver lays the image out without framebuffer compression.
+	VkImageCompressionControlEXT compression = {VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_CONTROL_EXT, nullptr,
+		VK_IMAGE_COMPRESSION_DISABLED_EXT, 0, nullptr};
+	if (uncompressed)
+		ici.pNext = &compression;
 
 	VmaAllocationCreateInfo aci = {};
 	aci.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -151,12 +169,12 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	if (res == VK_ERROR_OUT_OF_DEVICE_MEMORY)
 	{
 		DevCon.WriteLn("Failed to allocate device memory for %ux%u texture", width, height);
-		return {};
+		return false;
 	}
 	else if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vmaCreateImage failed: ");
-		return {};
+		return false;
 	}
 
 	VkImageView view = VK_NULL_HANDLE;
@@ -166,11 +184,72 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 	{
 		LOG_VULKAN_ERROR(res, "vkCreateImageView failed: ");
 		vmaDestroyImage(GSDeviceVK::GetInstance()->GetAllocator(), image, allocation);
-		return {};
+		return false;
 	}
 
-	return std::unique_ptr<GSTextureVK>(
-		new GSTextureVK(usage, format, width, height, levels, image, allocation, view, vk_format));
+	*out_image = image;
+	*out_allocation = allocation;
+	*out_view = view;
+	return true;
+}
+
+bool GSTextureVK::MakeUncompressed()
+{
+	if (m_uncompressed)
+		return true;
+	pxAssert(IsRenderTarget() && m_mipmap_levels == 1);
+
+	GSDeviceVK* const dev = GSDeviceVK::GetInstance();
+	VkImage image;
+	VmaAllocation allocation;
+	VkImageView view;
+	if (m_allocation == VK_NULL_HANDLE ||
+		!AllocateImage(m_usage, m_format, m_vk_format, m_size.x, m_size.y, m_mipmap_levels, true, &image, &allocation, &view))
+	{
+		return false;
+	}
+
+	// Drops every binding and the open pass if they use this texture; the descriptors and the
+	// framebuffer are rebuilt from the new image on the next draw.
+	dev->UnbindTexture(this);
+	dev->EndRenderPass();
+	const VkCommandBuffer cmdbuf = dev->GetCurrentCommandBuffer();
+
+	// A pending clear stays pending and lands on the new image through the next pass's load op.
+	// Anything else is copied, invalidated contents included, so a read of them sees what it saw before.
+	const bool copy = (m_state != State::Cleared);
+	if (copy)
+		TransitionToLayout(cmdbuf, Layout::TransferSrc);
+
+	const VkImage old_image = m_image;
+	const VmaAllocation old_allocation = m_allocation;
+	const VkImageView old_view = m_view;
+	DestroyFramebuffers(true);
+	m_image = image;
+	m_allocation = allocation;
+	m_view = view;
+	m_layout = Layout::Undefined;
+	m_uncompressed = true;
+
+	if (copy)
+	{
+		TransitionToLayout(cmdbuf, Layout::TransferDst);
+		const VkImageCopy ic = {{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+			{VK_IMAGE_ASPECT_COLOR_BIT, 0u, 0u, 1u}, {0, 0, 0},
+			{static_cast<u32>(m_size.x), static_cast<u32>(m_size.y), 1u}};
+		vkCmdCopyImage(cmdbuf, old_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &ic);
+	}
+	SetUseFenceCounter(dev->GetCurrentFenceCounter());
+
+	dev->DeferImageViewDestruction(old_view);
+	dev->DeferImageDestruction(old_image, old_allocation);
+
+#ifdef PCSX2_DEVBUILD
+	const std::string name = std::move(m_debug_name);
+	SetDebugName(name);
+#endif
+	return true;
 }
 
 std::unique_ptr<GSTextureVK> GSTextureVK::Adopt(
@@ -197,33 +276,36 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Adopt(
 		new GSTextureVK(usage, format, width, height, levels, image, VK_NULL_HANDLE, view, vk_format));
 }
 
+void GSTextureVK::DestroyFramebuffers(bool defer)
+{
+	for (const auto& [other_tex, fb, feedback_color, feedback_depth] : m_framebuffers)
+	{
+		if (other_tex)
+		{
+			for (auto other_it = other_tex->m_framebuffers.begin(); other_it != other_tex->m_framebuffers.end(); ++other_it)
+			{
+				if (std::get<0>(*other_it) == this)
+				{
+					other_tex->m_framebuffers.erase(other_it);
+					break;
+				}
+			}
+		}
+
+		if (defer)
+			GSDeviceVK::GetInstance()->DeferFramebufferDestruction(fb);
+		else
+			vkDestroyFramebuffer(GSDeviceVK::GetInstance()->GetDevice(), fb, nullptr);
+	}
+	m_framebuffers.clear();
+}
+
 void GSTextureVK::Destroy(bool defer)
 {
 	GSDeviceVK::GetInstance()->UnbindTexture(this);
 
 	if (IsRenderTargetOrDepthStencil())
-	{
-		for (const auto& [other_tex, fb, feedback_color, feedback_depth] : m_framebuffers)
-		{
-			if (other_tex)
-			{
-				for (auto other_it = other_tex->m_framebuffers.begin(); other_it != other_tex->m_framebuffers.end(); ++other_it)
-				{
-					if (std::get<0>(*other_it) == this)
-					{
-						other_tex->m_framebuffers.erase(other_it);
-						break;
-					}
-				}
-			}
-
-			if (defer)
-				GSDeviceVK::GetInstance()->DeferFramebufferDestruction(fb);
-			else
-				vkDestroyFramebuffer(GSDeviceVK::GetInstance()->GetDevice(), fb, nullptr);
-		}
-		m_framebuffers.clear();
-	}
+		DestroyFramebuffers(defer);
 
 	if (m_view != VK_NULL_HANDLE)
 	{

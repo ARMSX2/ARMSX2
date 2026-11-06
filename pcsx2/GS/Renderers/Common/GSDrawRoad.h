@@ -109,6 +109,10 @@ struct GSDrawRoadDevice
 	bool declared_loop_orders_overlap = false;
 
 	GSFeedbackCarry carry = GSFeedbackCarry::None;
+
+	/// Copy road, but a destination-alpha draw that qualifies (GSDrawRoadDraw::destination_alpha_read)
+	/// reads in the pass under a declared loop with its one barrier.
+	bool destination_alpha_loop = false;
 };
 
 /// What the renderer knows about a draw when it decides its road.
@@ -140,6 +144,12 @@ struct GSDrawRoadDraw
 	/// pixels the draw itself writes. A barrier orders the read against earlier draws only, so
 	/// what such a texel returns depends on which of the draw's own fragments ran first.
 	bool offset_read_hits_write = false;
+
+	/// A stencil-one destination-alpha draw whose only reason to read the target is the
+	/// destination-alpha test plus reads one barrier serves (no full barrier, no alpha second pass
+	/// that reads the target, no texture taken from the target). Read only with
+	/// GSDrawRoadDevice::destination_alpha_loop.
+	bool destination_alpha_read = false;
 };
 
 /// The per-draw result, carried in GSHWDrawConfig::road. The renderer decides it once per draw;
@@ -171,10 +181,12 @@ struct GSDrawRoad
 constexpr GSDrawRoad GSDecideDrawRoad(const GSDrawRoadDevice& dev, const GSDrawRoadDraw& draw)
 {
 	GSDrawRoad road = {};
-	road.rt_loop = dev.texture_barrier && draw.reads_rt;
+	const bool rt_in_pass = dev.texture_barrier ||
+	                        (dev.destination_alpha_loop && draw.destination_alpha_read && !draw.offset_read_hits_write);
+	road.rt_loop = rt_in_pass && draw.reads_rt;
 	road.depth_loop = dev.texture_barrier && draw.reads_depth;
 	road.depth_read = draw.samples_attached_depth && !road.depth_loop;
-	road.clone_rt = (!dev.texture_barrier && draw.one_barrier && (draw.reads_rt || draw.second_pass_reads_rt)) ||
+	road.clone_rt = (!rt_in_pass && draw.one_barrier && (draw.reads_rt || draw.second_pass_reads_rt)) ||
 	                draw.offset_read_hits_write;
 	road.carry_rt = dev.carry == GSFeedbackCarry::All || (dev.carry == GSFeedbackCarry::NonReaders && !draw.any_barrier);
 	road.carry_depth = road.carry_rt && !draw.writes_depth;
@@ -265,3 +277,10 @@ static_assert(!GSDecideDrawRoad({.carry = GSFeedbackCarry::All}, {.writes_depth 
 static_assert(GSDecideDrawRoad({}, {.reads_rt = true, .one_barrier = true}).clone_rt);
 static_assert(!GSDecideDrawRoad({.texture_barrier = true}, {.reads_rt = true, .one_barrier = true}).clone_rt);
 static_assert(GSDecideDrawRoad({.texture_barrier = true}, {.reads_rt = true, .one_barrier = true}).rt_loop);
+// The destination-alpha loop serves only the draws it names; everything else on that device copies.
+static_assert(GSDecideDrawRoad({.destination_alpha_loop = true}, {.reads_rt = true, .one_barrier = true, .destination_alpha_read = true}).rt_loop);
+static_assert(!GSDecideDrawRoad({.destination_alpha_loop = true}, {.reads_rt = true, .one_barrier = true, .destination_alpha_read = true}).clone_rt);
+static_assert(GSDecideDrawRoad({.destination_alpha_loop = true}, {.reads_rt = true, .one_barrier = true}).clone_rt);
+static_assert(!GSDecideDrawRoad({.destination_alpha_loop = true}, {.reads_rt = true, .one_barrier = true}).rt_loop);
+static_assert(GSDecideDrawRoad({}, {.reads_rt = true, .one_barrier = true, .destination_alpha_read = true}).clone_rt);
+static_assert(GSDecideDrawRoad({.destination_alpha_loop = true}, {.reads_rt = true, .one_barrier = true, .offset_read_hits_write = true, .destination_alpha_read = true}).clone_rt);

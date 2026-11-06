@@ -292,6 +292,7 @@ protected:
 
 	void GrowVertexBuffer();
 	bool IsAutoFlushDraw(u32 prim, int& tex_layer);
+	template <bool check_shuffle> bool IsAutoFlushDrawImpl(u32 prim, int& tex_layer);
 	template<u32 prim> void HandleAutoFlush();
 	bool EarlyDetectShuffle(u32 prim);
 	void CheckCLUTValidity(u32 prim);
@@ -504,15 +505,17 @@ protected:
 	// And which of those enter the two-pass kernel, which is the expensive half:
 	// RunChunk, its driver and its seam kick are about 9 KB of .text a pair.
 	//
-	// Sprites never enter it -- they are auto_flush = true at both GameDB levels
-	// and under the software renderer, so they stay on the staged loop, and
-	// 27,164 sprite handler calls across the corpus produced ZERO kernel entries.
 	// Both triangle-strip pairs enter it -- the NOP-padded triple 12,214 times
-	// and {RGBAQ, XYZ2} 11,600 -- and that is all of it.
+	// and {RGBAQ, XYZ2} 11,600 across the corpus -- and so do the two sprite
+	// pairs. Sprites are auto_flush = true at both GameDB levels and under the
+	// software renderer, so their chunks are routed: the chunk routing asks the
+	// autoflush predicate without its shuffle test, which is exact, because the
+	// shuffle test can only turn a true answer false, so a chunk for which the
+	// rest of the predicate is false is false for every vertex in it.
 	template <u32 prim, GSVertexKernels::PackedLayout layout>
 	static constexpr bool LayoutUsesKernel()
 	{
-		return prim == GS_TRIANGLESTRIP && LayoutHandlerExists<prim, layout>();
+		return (prim == GS_TRIANGLESTRIP || prim == GS_SPRITE) && LayoutHandlerExists<prim, layout>();
 	}
 
 	// The fused handler for a (prim, layout) pair, or null when the corpus shows
@@ -837,6 +840,12 @@ public:
 	void FlushBuffers(bool flush_base_only = false, bool use_flush_reason = false, GSFlushReason flush_reason = GSFlushReason::CONTEXTCHANGE);
 	void PushBuffer();
 	void SetDrawBufferEnv();
+	// The environment a buffered draw was built with. With draw buffering off the
+	// draw's only copy is m_prev_env (see SetDrawBufferEnv).
+	__fi const GSDrawingEnvironment& BufferEnv(int i) const
+	{
+		return GSConfig.UserHacks_DrawBuffering ? m_env_buffers[i].m_env : m_prev_env;
+	}
 	void SetDrawBuffDirty();
 	bool CanBufferNewDraw();
 	void Flush(GSFlushReason reason);
@@ -844,7 +853,12 @@ public:
 	u32 CalcMask(int exp, int max_exp);
 	void FlushPrim();
 	bool TestDrawChanged();
-	void FlushWrite();
+	__fi void FlushWrite()
+	{
+		if (m_tr.write)
+			FlushWriteSlow();
+	}
+	void FlushWriteSlow();
 	virtual void Draw() = 0;
 	virtual void PurgeTextureCache(bool sources, bool targets, bool hash_cache);
 	virtual void ReadbackTextureCache();

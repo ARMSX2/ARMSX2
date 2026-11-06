@@ -7,7 +7,6 @@
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
-#include "GS/Renderers/HW/GSExactDirtyMapping.h"
 
 #include <array>
 #include <deque>
@@ -205,14 +204,51 @@ public:
 		~Surface();
 
 		bool OverlapsHelper(u32 start_block0, u32 end_block0, u32 bp, u32 bw, u32 psm, const GSVector4i& rect) const;
+
+		/// Set by Target's constructor: a target's block range is kept in the texture cache's target page index,
+		/// so every change of its base block or end block goes through RangeChanged().
+		bool m_is_target = false;
+
+	private:
+		u32 m_end_block = MAX_BP; // Hint of the surface area.
+
+		/// Tells the target page index that a target's base block or end block may have changed.
+		void RangeChanged();
+
 	public:
 		GSTexture* m_texture = nullptr;
+		/// Read freely. Write the base block only through SetTEX0() or SetTBP0(), which keep the target page index
+		/// right; the other fields do not move the block range.
 		GIFRegTEX0 m_TEX0 = {};
 		GIFRegTEXA m_TEXA = {};
 		GSVector2i m_unscaled_size = {};
 		float m_scale = 0.0f;
 		int m_age = 0;
-		u32 m_end_block = MAX_BP; // Hint of the surface area.
+
+		/// The end block: a hint of the surface area.
+		u32 EndBlock() const { return m_end_block; }
+		void SetEndBlock(u32 end_block)
+		{
+			if (m_end_block == end_block)
+				return;
+			m_end_block = end_block;
+			RangeChanged();
+		}
+		void SetTBP0(u32 tbp)
+		{
+			if (m_TEX0.TBP0 == tbp)
+				return;
+			m_TEX0.TBP0 = tbp;
+			RangeChanged();
+		}
+		void SetTEX0(const GIFRegTEX0& TEX0)
+		{
+			const bool moved = m_TEX0.TBP0 != TEX0.TBP0;
+			m_TEX0 = TEX0;
+			if (moved)
+				RangeChanged();
+		}
+
 		bool m_32_bits_fmt = false; // Allow to detect the casting of 32 bits as 16 bits texture
 		bool m_was_dst_matched = false;
 		bool m_shared_texture = false;
@@ -326,13 +362,11 @@ public:
 		bool m_is_frame = false;
 		bool m_used = false;
 		float OffsetHack_modxy = 0.0f;
-		GSDirtyRectList m_dirty;
-		/// Rectangles AddDirtyRectTarget has pushed onto m_dirty, and the count FullRectDirtyByUnion last
-		/// tested the list at: the list gets one union test per change, not one per call.
-		u32 m_dirty_adds = 0;
-		u32 m_dirty_cover_checked = 0;
-		/// A pixel the last union test found in none of the rectangles; tried first by the next one.
-		GSVector2i m_dirty_hole = GSVector2i(-1, -1);
+		GSTargetDirty m_dirty;
+		/// The pages of block space this target was last entered under in the target page index (see
+		/// GSTextureCache::ReindexTarget), inclusive, in unwrapped block numbering.
+		u16 m_index_lo = 0, m_index_hi = 0;
+		bool m_indexed = false;
 		GSVector4i m_valid{};
 		GSVector4i m_drawn_since_read{};
 		int readbacks_since_draw = 0;
@@ -776,39 +810,30 @@ public:
 	/// stale frame instead of nothing.
 	void NoteColdStart() { m_no_display_hit_since_purge = true; }
 	void ReadbackAll();
-	static void AddDirtyRectTarget(Target* target, GSVector4i rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
+	/// Marks `rect` (format `psm`, width `bw`) of the target dirty in the channels of `rgba`. Returns whether
+	/// anything became dirty that was not.
+	static bool MarkTargetDirty(Target* target, const GSVector4i& rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);
 	void ResizeTarget(Target* t, GSVector4i rect, u32 tbp, u32 psm, u32 tbw);
 	static bool FullRectDirty(Target* target, u32 rgba_mask);
 	static bool FullRectDirty(Target* target);
+	/// FullRectDirty for dirt of more than one rectangle: the target's own channels are dirty in every pixel of
+	/// its valid rectangle, so no pixel of it is newer than local memory.
+	static bool DirtCoversTarget(Target* target);
+	/// The end of a mark that changed the target's dirt: drops the drawn area once the dirt covers it.
+	static void NoteDirtyAdded(Target* target);
 
-	/// Whether the rectangles of `list` that name every channel of `rgba_mask`, in format `psm` at buffer width
-	/// `bw`, together cover every pixel of `area`. Rectangles in another format or width, or missing a channel
-	/// of the mask, are not counted. FullRectDirty's test is the case of one rectangle. `hole`, if given, is a
-	/// pixel an earlier call found uncovered: it is tried first, so a list that still misses it is answered at
-	/// once. When the list does not cover `area`, `hole` is set to an uncovered pixel, if one was found, for
-	/// the next call.
-	static bool DirtyRectsCover(const GSDirtyRectList& list, u32 psm, u32 bw, u32 rgba_mask, const GSVector4i& area, GSVector2i* hole = nullptr);
-	/// FullRectDirty for a list of several rectangles: the target's own channels are dirty in every pixel of
-	/// its valid rectangle, so no pixel of it is newer than local memory. Tests the list once per change to
-	/// it (Target::m_dirty_adds), so a caller may ask after every call that can have changed it.
-	static bool FullRectDirtyByUnion(Target* target);
-	/// Retire a target by FullRectDirtyByUnion (on by default). Off is the same-binary control of an A/B
-	/// (pcsx2-gsrunner -union-retire) and the other arm of a differential test.
-	static void SetUnionRetire(bool enable);
-	static bool GetUnionRetire();
-	struct UnionRetireStats
-	{
-		u64 tests = 0; ///< lists tested (a list of two or more rectangles, changed since its last test)
-		u64 sweeps = 0; ///< of those, the ones whose rectangles' areas could add up to the target's
-		u64 retired = 0; ///< targets retired because their rectangles together cover them
-	};
-	static UnionRetireStats GetUnionRetireStats();
-	static void ResetUnionRetireStats();
+	/// The target page index: for each page of unwrapped block space (0 to 2 * GS_MAX_PAGES), how many targets'
+	/// block ranges ([TBP0, UnwrappedEndBlock()]) touch it. Every target is in it from its constructor to its
+	/// destructor, whether or not it is in a target list, so it can only over-state which targets a write may
+	/// reach; Surface's setters keep each target's entry at its current range.
+	static void ReindexTarget(Target* t);
+	static void UnindexTarget(Target* t);
+	/// Whether some target's block range may meet blocks [bp, end_bp] (end_bp unwrapped). False means no
+	/// target in either list is in reach of the write, so InvalidateVideoMem's target half has nothing to do.
+	static bool TargetsMayReach(u32 bp, u32 end_bp);
 	bool CanTranslate(u32 bp, u32 bw, u32 spsm, GSVector4i r, u32 dbp, u32 dpsm, u32 dbw);
 	GSVector4i TranslateAlignedRectByPage(u32 tbp, u32 tebp, u32 tbw, u32 tpsm, GSVector4i t_r, u32 sbp, u32 spsm, u32 sbw, GSVector4i src_r, bool is_invalidation = false);
 	GSVector4i TranslateAlignedRectByPage(Target* t, u32 sbp, u32 spsm, u32 sbw, GSVector4i src_r, bool is_invalidation = false);
-	void DirtyRectByPage(u32 sbp, u32 spsm, u32 sbw, Target* t, GSVector4i src_r);
-	void DirtyRectByPageOld(u32 sbp, u32 spsm, u32 sbw, Target* t, GSVector4i src_r);
 	GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size);
 	std::shared_ptr<Palette> LookupPaletteObject(const u32* clut, u16 pal, bool need_gs_texture);
 
@@ -819,10 +844,22 @@ public:
 	void CombineAlignedInsideTargets(Target* target, GSTextureCache::Source* src = nullptr);
 
 private:
-	// This set depends only on its source layout and rect, never GS memory contents, so it cannot go stale.
-	GSExactDirtyMapping::WrittenPages m_written_c32_blocks;
+	/// The blocks of local memory one write touched: one bit per block, by block address, in pages of 32. A
+	/// block the write covers in all its pixels is in `full`; one it covers in part is in `part`. `pages` lists
+	/// the pages with a bit, so the set is emptied page by page.
+	struct WrittenBlocks
+	{
+		std::array<u32, GS_MAX_PAGES> full{};
+		std::array<u32, GS_MAX_PAGES> part{};
+		std::vector<u16> pages;
+	};
+	WrittenBlocks m_written;
 
-	bool TryDirtyRectByC32Blocks(u32 sbp, u32 spsm, u32 sbw, Target* target, const GSVector4i& rect);
+	/// Finds the blocks the write of `rect` in `off` touches.
+	void BuildWrittenBlocks(const GSOffset& off, const GSVector4i& rect);
+	/// Marks dirty, in the channels of `rgba`, the blocks of `t` inside `region` (target coordinates) whose
+	/// memory the last BuildWrittenBlocks found. Returns whether any bit was new.
+	bool MarkWrittenBlocks(Target* t, const GSVector4i& region, RGBAMask rgba);
 	bool TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX0& incoming, const GSVector4i& draw_rect,
 		const Source* source, const Target* depth, u32 width_page_offset, bool is_shuffle);
 	void CommitTargetRebase(Target* target, GSTexture* texture, const GSTargetRebase::Plan& plan);

@@ -773,6 +773,49 @@ TEST_F(GSSwPaletteBlockCopy, TakesTheTileDraw)
 	EXPECT_EQ(Compare(c), 1u);
 }
 
+// The palette block copy is decided before the rasterizer's texture snapshot and reads its texels from local
+// memory: with the copy on nothing goes through the snapshot, with it off the snapshot converts the texture.
+TEST_F(GSSwPaletteBlockCopy, TakesThePaletteBlockCopyWithoutASnapshotOfTheTexture)
+{
+	Case c;
+	c.seed = 57;
+	c.draws.push_back(Tile(5));
+	EXPECT_EQ(Compare(c), 1u);
+	EXPECT_GT(m_ref_unswizzled, 0.0);
+	EXPECT_EQ(m_got_unswizzled, 0.0);
+}
+
+// A sprite over whole blocks of a 32-bit frame with an odd number of rows: the row pairs are written a block row
+// pair at a time and the last row a pixel at a time, and both must be the rasterizer's.
+TEST_F(GSSwPaletteBlockCopy, WritesWholeBlockRowPairsAndAnOddLastRow)
+{
+	Case c;
+	c.seed = 58;
+	Draw d = Tile(2);
+	Sprite& s = d.sprites[0];
+	s.x0 = (2048 + 16) * 16;
+	s.y0 = (2048 + 2) * 16;
+	s.x1 = s.x0 + 32 * 16;
+	s.y1 = s.y0 + 4 * 16;
+	s.u0 = 8;
+	s.v0 = 8;
+	s.u1 = s.u0 + 32 * 16;
+	s.v1 = s.v0 + 4 * 16;
+	c.draws.push_back(d);
+	Draw e = Tile(3);
+	Sprite& t = e.sprites[0];
+	t.x0 = (2048 + 8) * 16;
+	t.y0 = (2048 + 1) * 16;
+	t.x1 = t.x0 + 16 * 16;
+	t.y1 = t.y0 + 8 * 16;
+	t.u0 = 8;
+	t.v0 = 8;
+	t.u1 = t.u0 + 16 * 16;
+	t.v1 = t.v0 + 8 * 16;
+	c.draws.push_back(e);
+	EXPECT_EQ(Compare(c), 2u);
+}
+
 // Consecutive tiles that change only the sub-palette, as Call of Duty's texture expansion draws them.
 TEST_F(GSSwPaletteBlockCopy, TakesARunOfSubPaletteTiles)
 {

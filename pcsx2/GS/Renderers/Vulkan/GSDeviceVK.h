@@ -75,6 +75,10 @@ public:
 		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
 		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
+		/// VK_EXT_image_compression_control: an image can be created without framebuffer
+		/// compression. Requested on Adreno only; used by the Adreno 613's destination-alpha loop to
+		/// leave uncompressed the targets that loop reads (GSTextureVK::MakeUncompressed).
+		bool vk_ext_image_compression_control : 1;
 		/// VK_ANDROID_external_memory_android_hardware_buffer with VK_EXT_queue_family_foreign:
 		/// remote play's frames go to the video encoder as shared buffers (GSRemotePlay.h).
 		bool vk_android_external_memory_ahb : 1;

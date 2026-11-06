@@ -8,6 +8,14 @@
 #include "GSVector.h"
 #include "MultiISA.h"
 
+// A loop the compiler keeps as a loop: the block readers below repeat the same column code for the second half of a
+// block, and one copy of it is less code for the instruction cache than two.
+#if defined(__clang__)
+#define GS_BLOCK_NO_UNROLL _Pragma("clang loop unroll(disable)")
+#else
+#define GS_BLOCK_NO_UNROLL
+#endif
+
 MULTI_ISA_UNSHARED_START
 
 class GSBlock
@@ -692,13 +700,15 @@ public:
 
 	static void ReadBlock8(const u8* RESTRICT src, u8* RESTRICT dst, int dstpitch)
 	{
-		ReadColumn8<0>(src, dst, dstpitch);
-		dst += dstpitch * 4;
-		ReadColumn8<1>(src, dst, dstpitch);
-		dst += dstpitch * 4;
-		ReadColumn8<2>(src, dst, dstpitch);
-		dst += dstpitch * 4;
-		ReadColumn8<3>(src, dst, dstpitch);
+		// Columns 2 and 3 are columns 0 and 1, 128 bytes on.
+		GS_BLOCK_NO_UNROLL
+		for (int j = 0; j < 2; j++, src += 128)
+		{
+			ReadColumn8<0>(src, dst, dstpitch);
+			dst += dstpitch * 4;
+			ReadColumn8<1>(src, dst, dstpitch);
+			dst += dstpitch * 4;
+		}
 	}
 
 	static void ReadBlock4(const u8* RESTRICT src, u8* RESTRICT dst, int dstpitch)
@@ -768,6 +778,7 @@ public:
 
 		GSVector4i mask(0x0f0f0f0f);
 
+		GS_BLOCK_NO_UNROLL
 		for (int i = 0; i < 2; i++)
 		{
 			// col 0, 2

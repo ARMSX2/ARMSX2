@@ -141,7 +141,7 @@ namespace
 				return nullptr;
 			target->m_valid = GSVector4i(0, 0, 256, 288);
 			target->m_drawn_since_read = GSVector4i(0, 64, 256, 288);
-			target->m_end_block = GSLocalMemory::GetEndBlockAddress(0x2f20, 4, PSMCT32, target->m_valid);
+			target->SetEndBlock(GSLocalMemory::GetEndBlockAddress(0x2f20, 4, PSMCT32, target->m_valid));
 			target->m_dirty.clear();
 			target->m_valid_rgb = true;
 			target->m_valid_alpha_low = true;
@@ -204,7 +204,7 @@ namespace
 		EXPECT_EQ(rebased->m_unscaled_size.y, 224);
 		EXPECT_TRUE(rebased->m_valid.eq(GSVector4i(0, 0, 256, 224)));
 		EXPECT_TRUE(rebased->m_drawn_since_read.eq(rebased->m_valid));
-		EXPECT_EQ(rebased->m_end_block, GSLocalMemory::GetEndBlockAddress(0x3020, 4, PSMCT32, rebased->m_valid));
+		EXPECT_EQ(rebased->EndBlock(), GSLocalMemory::GetEndBlockAddress(0x3020, 4, PSMCT32, rebased->m_valid));
 		EXPECT_TRUE(rebased->m_valid_rgb);
 		EXPECT_TRUE(rebased->m_valid_alpha_low);
 		EXPECT_TRUE(rebased->m_valid_alpha_high);
@@ -277,7 +277,7 @@ namespace
 				return nullptr;
 			target->m_valid = GSVector4i(0, 0, 256, 128);
 			target->m_drawn_since_read = target->m_valid;
-			target->m_end_block = GSLocalMemory::GetEndBlockAddress(0x1000, 4, layout.PSM, target->m_valid);
+			target->SetEndBlock(GSLocalMemory::GetEndBlockAddress(0x1000, 4, layout.PSM, target->m_valid));
 			target->m_dirty.clear();
 			target->m_valid_rgb = true;
 			target->m_valid_alpha_low = true;
