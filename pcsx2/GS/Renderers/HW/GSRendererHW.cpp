@@ -541,7 +541,8 @@ bool GSRendererHW::AA1LineExpandsAboveNative(float target_scale)
 	// on the finer grid: Sly 3's cel outlines grow a background-coloured strip between the outline
 	// and the fill, and step in native-pixel blocks. The expansion computes the coverage per device
 	// pixel. It needs no feedback loop for lines, only vertex-shader expansion.
-	return target_scale != 1.0f && g_gs_device->Features().vs_expand && AA1LineCoverageFromPixelRuns();
+	return target_scale != 1.0f && g_gs_device->Features().vs_expand && !g_gs_device->Features().line_vs_expand_faults &&
+	       AA1LineCoverageFromPixelRuns();
 }
 
 template<u32 primclass, bool fst>
@@ -6208,7 +6209,7 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.indices_per_prim = 6;
 					ExpandLineIndices();
 				}
-				else if (no_rt && unscale_pt_ln && features.vs_expand)
+				else if (no_rt && unscale_pt_ln && features.vs_expand && !features.line_vs_expand_faults)
 				{
 					// Above native, a line that writes only depth takes the same vertex-shader expansion,
 					// centred on the line, as the AA1 colour lines do. Games that outline with AA1 lines
@@ -6307,7 +6308,7 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 						{
 							m_conf.line_expand = true;
 						}
-						else if (features.vs_expand)
+						else if (features.vs_expand && !features.line_vs_expand_faults)
 						{
 							m_conf.vs.expand = GSHWDrawConfig::VSExpand::Line;
 							m_conf.cb_vs.point_size = GSVector2(16.0f * sx, 16.0f * sy);

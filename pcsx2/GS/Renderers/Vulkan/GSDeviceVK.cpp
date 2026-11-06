@@ -4251,6 +4251,16 @@ void GSDeviceVK::ResolveFeatureTable()
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
+
+	// Arm's proprietary Mali driver (g6p0 on RK3588) loses the device on lines expanded in the vertex shader: a GPU
+	// page fault at the same address every time, with no API or synchronisation error under validation. Burnout
+	// Revenge above native resolution, replayed from a GS dump: 100% device loss; with neither AA1 nor plain lines
+	// expanded, 0 of 2; with only one of the two kinds kept out, still 2 of 2. Points, sprites and the rest of the
+	// expansion are unaffected. Lines then take the pixel runs, or a GPU line when those are refused.
+	m_features.line_vs_expand_faults = IsDeviceMali() && m_optional_extensions.vk_khr_driver_properties &&
+		m_device_driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+	if (m_features.line_vs_expand_faults)
+		Console.WriteLn("VK: lines are not expanded in the vertex shader (Arm's Mali driver).");
 	m_features.sprite_edge_clamp = true;
 
 	if (!m_features.texture_barrier)
@@ -4429,7 +4439,7 @@ bool GSDeviceVK::ResolveDepthFeedback(const GSSelfReadRoadDecision& road)
 	// the depth probe asks for it.
 	if (road.loop_declared)
 		m_features.depth_feedback = declare_depth_loop;
-	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && m_features.feedback_loops();
+	m_features.aa1 = GSConfig.HWAA1 && m_features.vs_expand && !m_features.line_vs_expand_faults && m_features.feedback_loops();
 
 	return declare_depth_loop;
 }
