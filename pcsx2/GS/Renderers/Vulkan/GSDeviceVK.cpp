@@ -4379,6 +4379,7 @@ void GSDeviceVK::ResolveFeedbackConsumers(const GSSelfReadRoadDecision& road)
 	// road; framebuffer_fetch is itself masked by texture_barrier.
 	carry.barriers_order_reads = m_features.texture_barrier;
 	carry.device_is_barrier_road_vendor = m_device_rules.barrier_road_measured;
+	carry.device_is_input_barrier_road_vendor = IsDeviceMali();
 	carry.framebuffer_fetch = m_features.framebuffer_fetch;
 	carry.feedback_loop_layout = UseFeedbackLoopLayout();
 	m_features.feedback_carry = GSFeedbackCarryForDevice(carry);

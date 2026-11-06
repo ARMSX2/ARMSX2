@@ -54,6 +54,9 @@ struct GSFeedbackLoopCarryInputs
 	/// Apple silicon under Honeykrisp: the barrier-ordered layout carry was measured here.
 	bool device_is_barrier_road_vendor = false;
 
+	/// Mali without framebuffer fetch (the g6p0 blob): the barrier-ordered input-attachment road.
+	bool device_is_input_barrier_road_vendor = false;
+
 	bool framebuffer_fetch = false;
 	bool feedback_loop_layout = false;
 };
@@ -67,6 +70,10 @@ struct GSFeedbackLoopCarryInputs
 ///     declare the loop. Adreno.
 ///   - Layout road, barrier-ordered: the readers keep their own barriers inside the held pass.
 ///     Honeykrisp. Desktop drivers on the same road were never timed and keep draw-local bits.
+///   - Input-attachment road, barrier-ordered: same pass shape as the fetch road (one unused input
+///     attachment on a non-reader), and the readers keep their own barriers inside the held pass.
+///     Mali g6p0 blob, which has neither fetch nor the layout extension: ~4400 pass restarts per
+///     frame in Shadow of the Colossus on RK3588 without it, all from reader/non-reader switches.
 ///
 /// ⚠️ Do not widen it without measuring the device: carried state has left later draws in a stale
 /// feedback pass or layout and flickered on Vulkan, and an earlier vendor-scoped carry was reverted.
@@ -82,7 +89,8 @@ constexpr GSFeedbackCarry GSFeedbackCarryForDevice(const GSFeedbackLoopCarryInpu
 	const bool ordered = in.feedback_loop_layout ?
 	                         (in.device_is_layout_road_vendor ||
 	                             (in.barriers_order_reads && in.device_is_barrier_road_vendor)) :
-	                         (in.device_is_measured_vendor && in.framebuffer_fetch);
+	                         ((in.device_is_measured_vendor && in.framebuffer_fetch) ||
+	                             (in.barriers_order_reads && in.device_is_input_barrier_road_vendor));
 	return ordered ? GSFeedbackCarry::NonReaders : GSFeedbackCarry::None;
 }
 
@@ -263,6 +271,10 @@ static_assert(GSFeedbackCarryForDevice({.device_is_layout_road_vendor = true, .f
 			  GSFeedbackCarry::NonReaders);
 static_assert(GSFeedbackCarryForDevice({.barriers_order_reads = true, .device_is_barrier_road_vendor = true,
 				  .feedback_loop_layout = true}) == GSFeedbackCarry::NonReaders);
+static_assert(GSFeedbackCarryForDevice({.barriers_order_reads = true, .device_is_input_barrier_road_vendor = true}) ==
+			  GSFeedbackCarry::NonReaders);
+// Mali on the copy road (no texture barrier) keeps draw-local bits.
+static_assert(GSFeedbackCarryForDevice({.device_is_input_barrier_road_vendor = true}) == GSFeedbackCarry::None);
 // Desktop on the layout road, and the copy road, keep draw-local bits.
 static_assert(GSFeedbackCarryForDevice({.barriers_order_reads = true, .feedback_loop_layout = true}) ==
 			  GSFeedbackCarry::None);
