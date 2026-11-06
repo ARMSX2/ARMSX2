@@ -941,6 +941,10 @@ struct Pcsx2Config
 					PrecompilePipelines : 1,
 					DisableFramebufferFetch : 1,
 					ForceMaliFramebufferFetch : 1,
+					// Mali without ROAA (the g6p0 blob): treat an input-attachment read of the attachment being
+					// written as ordered in tile, as PowerVR's is, and drop the per-primitive barriers. Not
+					// guaranteed by the spec: an accuracy shortcut, off by default, settable per game.
+					MaliOrderedInputAttachment : 1,
 					DisableVertexShaderExpand : 1,
 					SkipDuplicateFrames : 1,
 					AdvancedFrameDisplay : 1,

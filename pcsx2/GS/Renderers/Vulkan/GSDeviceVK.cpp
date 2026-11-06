@@ -4134,7 +4134,10 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	// PowerVR on Imagination's driver orders a single-sample subpassLoad in tile memory without the
 	// extension (VulkanDeviceRules::ordered_input_attachment_read). Only where the layout extension
 	// is off, so the read is spelled subpassLoad: the ordering says nothing about a sampler read.
-	fetch_inputs.ordered_without_roaa = m_device_rules.ordered_input_attachment_read &&
+	// MaliOrderedInputAttachment (off by default) asks the same of Mali's blob: an accuracy shortcut, not a
+	// measured ordering.
+	fetch_inputs.ordered_without_roaa = (m_device_rules.ordered_input_attachment_read ||
+	                                        (is_mali_vk && GSConfig.MaliOrderedInputAttachment)) &&
 	                                    !m_optional_extensions.vk_ext_attachment_feedback_loop_layout;
 	const GSVulkanFramebufferFetchDecision fetch_decision = DecideVulkanFramebufferFetch(fetch_inputs);
 	if (fetch_decision.force_key_ignored)
