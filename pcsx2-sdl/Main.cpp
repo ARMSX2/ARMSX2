@@ -915,6 +915,10 @@ void Pcsx2SDL::CPUThreadMain(VMBootParameters initial_params, bool start_in_fsui
 			return;
 		}
 		MTGS::SetRunIdle(true);
+
+		// Scan once at startup, as the Qt frontend does: without it the game-picker opens on an empty list until
+		// the user asks for a refresh. Incremental (cache kept), on the background thread.
+		Host::RefreshGameListAsync(false);
 	}
 
 	// The "initial" boot is the ISO/state passed on the CLI. When launching
