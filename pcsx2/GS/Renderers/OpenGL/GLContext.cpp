@@ -141,9 +141,38 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 	}
 	else
 	{
-		if (!gladLoadGLES2([](const char* name) { return reinterpret_cast<GLADapiproc>(context_being_created->GetProcAddress(name)); }))
+		const int gles_version = gladLoadGLES2([](const char* name) { return reinterpret_cast<GLADapiproc>(context_being_created->GetProcAddress(name)); });
+		if (!gles_version)
 		{
 			Error::SetStringView(error, "Failed to load GLES functions for GLAD");
+			return nullptr;
+		}
+
+		// The renderer needs ES 3.0 or newer. On an ES 2.0 context GLAD loads none of the 3.x
+		// entry points, so the first call to one (glInvalidateFramebuffer in RenderBlankFrame)
+		// jumps to null. The 2.0 entry in vlist stays: a context is how we find out what the
+		// driver offers. ANGLE on old Vulkan 1.1 drivers is the usual case.
+		if (GLAD_VERSION_MAJOR(gles_version) < 3)
+		{
+			const char* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+			const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+			Console.ErrorFmt("GL: refusing an OpenGL ES {}.{} context. GL_RENDERER: {} GL_VERSION: {}",
+				GLAD_VERSION_MAJOR(gles_version), GLAD_VERSION_MINOR(gles_version), renderer ? renderer : "",
+				version ? version : "");
+			if (renderer && std::strstr(renderer, "ANGLE"))
+			{
+				Error::SetStringFmt(error,
+					"ANGLE on this device offers only OpenGL ES {}.{}, which ARMSX2 cannot use. "
+					"Use the Vulkan renderer with a custom GPU driver instead.",
+					GLAD_VERSION_MAJOR(gles_version), GLAD_VERSION_MINOR(gles_version));
+			}
+			else
+			{
+				Error::SetStringFmt(error,
+					"This GPU driver offers only OpenGL ES {}.{}, which ARMSX2 cannot use: the OpenGL "
+					"renderer needs OpenGL ES 3.0 or newer. Use the Vulkan renderer instead.",
+					GLAD_VERSION_MAJOR(gles_version), GLAD_VERSION_MINOR(gles_version));
+			}
 			return nullptr;
 		}
 	}
