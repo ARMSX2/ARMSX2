@@ -226,7 +226,7 @@ namespace
 		{
 			RGBAMask mask = {};
 			mask._u32 = alpha ? 0xf : 0x7;
-			t->m_dirty.push_back(GSDirtyRect(rect, t->m_TEX0.PSM, t->m_TEX0.TBW, mask, false));
+			t->m_dirty.Mark(GSDirtyRect(rect, t->m_TEX0.PSM, t->m_TEX0.TBW, mask, false), t->m_TEX0.PSM, t->m_TEX0.TBW);
 		}
 
 		/// Every texel the update texture carried for `rects` is the picture's pixel at that place.
@@ -508,8 +508,8 @@ namespace
 					written_words.insert(source.pa(x, y));
 				}
 
-			// Exercise the cache adapter, then the actual unswizzle/upload path.
-			g_texture_cache->DirtyRectByPage(source_bp, PSMCT32, source_bw, target, write);
+			// The write as the renderer reports it, then the actual unswizzle/upload path.
+			g_texture_cache->InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(source_bp, source_bw, PSMCT32), write);
 			ASSERT_FALSE(target->m_dirty.empty());
 			auto& device = *static_cast<RecordingDevice*>(m_device);
 			device.m_uploads.clear();
