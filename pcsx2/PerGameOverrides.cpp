@@ -121,6 +121,7 @@ namespace
 		"vuThread", // SpeedHack::MTVU
 		"EECycleRate", // SpeedHack::EECycleRate
 		"iopThread", // SpeedHack::IOPThread
+		"iopThreadLag", // SpeedHack::IOPThreadLag
 		"DynamicEECycleRate", // SpeedHack::DynamicEECycleRate
 	};
 } // namespace

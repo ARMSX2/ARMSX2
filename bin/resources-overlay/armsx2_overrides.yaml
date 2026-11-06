@@ -1585,68 +1585,92 @@ SCUS-97505:
     nativeScaling: 3 # Upstream: fixes post effects shadows and DOF effects.
     nativeCounterDraws: 1 # Shadow volumes at native resolution; see the nativeCounterDraws block above.
 
+# matheus, 2026-11-06: iopThreadLag 24576 added to every God of War and God of War II release below. With the
+# IOP thread at the one-frame default lag, streamed FMV speech repeats in 150 ms blocks ("pa pa, the the") at any
+# speed, fast forward included; 19% of the opening FMV's loud 50 ms chunks were sample-exact copies of the audio
+# 150 ms earlier, 0% at lag 24576 and 0% with the IOP thread off. Gameplay speed (slot 1, PGO build) was not lower at
+# the tight bound. Verified on SCUS-97481 only, LTO build, Vulkan, RK3588 (Mali-G610 g6p0); God of War is the same
+# engine, not measured.
 # God of War, ten releases (none measured). bmdhacks, 2026-10-21: iopThread added; upstream has no speedHacks here.
 SCUS-97399:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCES-51533:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCES-53133:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCAJ-30010:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCKA-30002:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCKA-30003:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-66167:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-67010:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-67011:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-67012:
   speedHacks:
     iopThread: 1 # Not measured; same engine as God of War II. See the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 
 # God of War II, eight releases (SCUS-97481 measured). bmdhacks, 2026-10-21: iopThread added to the upstream mvuFlag.
 SCUS-97481:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCES-54206:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCAJ-20190:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCAJ-30011:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCKA-30006:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SCKA-30007:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-67013:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.
 SLPM-67017:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+    iopThreadLag: 24576 # Streamed FMV audio repeats at the one-frame default; see the God of War block above.

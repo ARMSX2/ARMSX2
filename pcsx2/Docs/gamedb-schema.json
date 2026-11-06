@@ -381,6 +381,11 @@
               "type": "integer",
               "minimum": 0,
               "maximum": 1
+            },
+            "iopThreadLag": {
+              "type": "integer",
+              "minimum": 4096,
+              "maximum": 9830400
             }
           },
           "additionalProperties": false

@@ -139,6 +139,33 @@ TEST_F(IopThreadGameDb, TheKoreanBigHitReleaseKeepsItsUpstreamGraphicsFixes)
 	EXPECT_FALSE(entry->gsHWFixes.empty());
 }
 
+TEST_F(IopThreadGameDb, GodOfWarBindsTheIopToTheTightLagForItsStreamedAudio)
+{
+	// At the one-frame default, streamed FMV speech repeats in 150 ms blocks (see the overlay comment).
+	std::vector<const char*> serials = kGodOfWar;
+	serials.insert(serials.end(), kGodOfWarII.begin(), kGodOfWarII.end());
+	for (const char* serial : serials)
+	{
+		const GameDatabaseSchema::GameEntry* entry = Entry(serial);
+		ASSERT_NE(entry, nullptr) << serial;
+		EXPECT_EQ(SpeedHackValue(*entry, SpeedHack::IOPThreadLag), std::optional<int>(IopThread::kDefaultLag)) << serial;
+
+		Pcsx2Config config;
+		entry->applyGameFixes(config, true, {}, GameDatabaseSchema::ApplyMode::Hypothetical);
+		EXPECT_EQ(config.Speedhacks.iopThreadLag, IopThread::kDefaultLag) << serial;
+	}
+}
+
+TEST_F(IopThreadGameDb, ShadowOfTheColossusKeepsTheSettingsLag)
+{
+	for (const char* serial : kShadowOfTheColossus)
+	{
+		const GameDatabaseSchema::GameEntry* entry = Entry(serial);
+		ASSERT_NE(entry, nullptr) << serial;
+		EXPECT_EQ(SpeedHackValue(*entry, SpeedHack::IOPThreadLag), std::nullopt) << serial;
+	}
+}
+
 TEST_F(IopThreadGameDb, TheEntryTurnsTheThreadOnOverTheDefaultOfOff)
 {
 	for (const char* serial : AllSerials())

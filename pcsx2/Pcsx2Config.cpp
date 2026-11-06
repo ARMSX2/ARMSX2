@@ -328,6 +328,7 @@ static constexpr const char* s_speed_hack_names[] = {
 	"mtvu",
 	"eeCycleRate",
 	"iopThread",
+	"iopThreadLag",
 	// Not a game database name. gamedb-schema.json's speedHacks object is closed, so
 	// no entry can carry this one; it is here because GetSpeedHackName() is also the
 	// log and diagnostic spelling, and the table has to stay the length of the enum.
@@ -371,6 +372,9 @@ void Pcsx2Config::SpeedhackOptions::Set(SpeedHack id, int value)
 			break;
 		case SpeedHack::IOPThread:
 			iopThread = (value != 0);
+			break;
+		case SpeedHack::IOPThreadLag:
+			iopThreadLag = std::clamp<int>(value, IopThread::kMinLag, IopThread::kMaxLag);
 			break;
 		case SpeedHack::DynamicEECycleRate:
 			DynamicEECycleRate = (value != 0);

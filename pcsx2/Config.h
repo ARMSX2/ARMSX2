@@ -188,6 +188,10 @@ enum class SpeedHack
 	MTVU,
 	EECycleRate,
 	IOPThread,
+	// How far the EE may run ahead of a threaded IOP, in EE cycles (iopThreadLag). A game database
+	// key so a title whose streamed audio repeats under the one-frame default can carry a tighter
+	// bound without moving every other title's.
+	IOPThreadLag,
 	// The dynamic EE cycle-rate governor. It is in this enum for its bit in
 	// PerGameOverrides::speedhacks, which records that the player wrote the key in the
 	// per-game file (an opt-in the governor must obey). Not a game database key:
