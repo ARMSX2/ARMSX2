@@ -147,6 +147,14 @@ matches "RECORD_AUDIO" "$MANIFEST"
 if [[ $MATCHES -eq 0 ]]; then
 	echo "  !! FATAL: RECORD_AUDIO missing from play AAB (mic support regressed)" >&2; exit 1
 else echo "  present OK"; fi
+echo "-- the microphone must be OPTIONAL (RECORD_AUDIO implies one) --"
+# Play makes the hardware a permission implies required unless the manifest declares it optional,
+# and hides the app from every device without it. The manifest's only uses-feature for the
+# microphone is the optional one, so its presence is the check.
+matches "android.hardware.microphone" "$MANIFEST"
+if [[ $MATCHES -eq 0 ]]; then
+	echo "  !! FATAL: RECORD_AUDIO without an optional android.hardware.microphone (Play would drop every device with no microphone)" >&2; exit 1
+else echo "  optional OK"; fi
 echo "-- no frame-generation code in the core (github flavour only) --"
 # There is no separate libarmsx2_lsfg.so any more: frame generation is compiled into the core
 # itself, gated on ARMSX2_ENABLE_LSFG which the play flavour sets to OFF. So the check moved

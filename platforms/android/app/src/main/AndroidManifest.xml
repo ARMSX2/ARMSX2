@@ -54,6 +54,10 @@
         RECORD_AUDIO goes missing from it, so a regression here cannot ship quietly.
     -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- RECORD_AUDIO implies a microphone, and Play hides an app from every device without the
+         hardware its permissions imply unless that hardware is declared optional. A game just hears
+         nothing on a device with no microphone. -->
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" tools:node="remove" />
