@@ -31,11 +31,31 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string_view>
+#include <unordered_set>
 
 static bool ShouldPreferESContext()
 {
 	const char* value = std::getenv("PREFER_GLES_CONTEXT");
 	return (value && std::strcmp(value, "1") == 0);
+}
+
+// GLAD assigns only the entry points the new context's version and extensions provide and leaves
+// the rest as they were, so a pointer from an earlier context in the process survives into one
+// that lacks the function. The null tests that pick a fallback (glColorMaski,
+// glDrawElementsBaseVertex) then skip it and the call goes into the old driver. The Android app
+// keeps one process across games, so a native GLES session followed by ANGLE hits this.
+//
+// Cleared after the load rather than before: under libretro the frontend thread presents through
+// these pointers while the GS thread can be creating a context, so the ones the new context
+// provides must not be null even briefly.
+static void ClearGLADFunctionsNotAssigned(const std::unordered_set<std::string_view>& assigned)
+{
+#define GLAD_FUNCTION(name) \
+	if (!assigned.contains(#name)) \
+		glad_##name = nullptr;
+#include "GS/Renderers/OpenGL/GLADFunctions.inl"
+#undef GLAD_FUNCTION
 }
 
 bool GLContext::AllowHeadless = false;
@@ -129,11 +149,20 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 
 	// NOTE: Not thread-safe. But this is okay, since we're not going to be creating more than one context at a time.
 	static GLContext* context_being_created;
+	static std::unordered_set<std::string_view>* names_being_assigned;
+	std::unordered_set<std::string_view> assigned;
 	context_being_created = context.get();
+	names_being_assigned = &assigned;
+	const GLADloadfunc load = [](const char* name) {
+		names_being_assigned->insert(name);
+		return reinterpret_cast<GLADapiproc>(context_being_created->GetProcAddress(name));
+	};
 
 	if (!context->IsGLES())
 	{
-		if (!gladLoadGL([](const char* name) { return reinterpret_cast<GLADapiproc>(context_being_created->GetProcAddress(name)); }))
+		const int gl_version = gladLoadGL(load);
+		ClearGLADFunctionsNotAssigned(assigned);
+		if (!gl_version)
 		{
 			Error::SetStringView(error, "Failed to load GL functions for GLAD");
 			return nullptr;
@@ -141,7 +170,8 @@ std::unique_ptr<GLContext> GLContext::Create(const WindowInfo& wi, Error* error)
 	}
 	else
 	{
-		const int gles_version = gladLoadGLES2([](const char* name) { return reinterpret_cast<GLADapiproc>(context_being_created->GetProcAddress(name)); });
+		const int gles_version = gladLoadGLES2(load);
+		ClearGLADFunctionsNotAssigned(assigned);
 		if (!gles_version)
 		{
 			Error::SetStringView(error, "Failed to load GLES functions for GLAD");

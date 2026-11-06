@@ -786,6 +786,7 @@ if(USE_OPENGL)
 		GS/Renderers/OpenGL/GSTextureOGL.cpp
 	)
 	list(APPEND pcsx2GSHeaders
+		GS/Renderers/OpenGL/GLADFunctions.inl
 		GS/Renderers/OpenGL/GLContext.h
 		GS/Renderers/OpenGL/GLProgram.h
 		GS/Renderers/OpenGL/GLShaderCache.h
