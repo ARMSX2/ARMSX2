@@ -212,6 +212,7 @@ namespace FullscreenUI
 	void UpdateGameDetails(std::string path, std::string serial, std::string title, u32 disc_crc, u32 crc);
 	bool AreAnyDialogsOpen();
 	void PauseForMenuOpen(bool set_pause_menu_open);
+	void StashMenuAndResumeGame();
 	void ClosePauseMenu();
 	void OpenPauseSubMenu(PauseSubMenu submenu);
 	void DrawLandingTemplate(ImVec2* menu_pos, ImVec2* menu_size);
@@ -522,6 +523,15 @@ namespace FullscreenUI
 	void DoCreateMemoryCard(std::string name, MemoryCardType type, MemoryCardFileType file_type, bool use_ntfs_compression = false);
 
 	inline SettingsPage s_settings_page = SettingsPage::Interface;
+
+	/// Where the menu was when the pause menu hotkey closed it. The next press opens it there, then forgets it.
+	struct MenuResumeState
+	{
+		MainWindowType window = MainWindowType::None;
+		PauseSubMenu pause_submenu = PauseSubMenu::None;
+		SettingsPage settings_page = SettingsPage::Interface;
+	};
+	inline MenuResumeState s_menu_resume;
 	inline std::unique_ptr<INISettingsInterface> s_game_settings_interface;
 	inline std::unique_ptr<GameList::Entry> s_game_settings_entry;
 	// Whose settings are being edited. Kept beside the interface rather than read off

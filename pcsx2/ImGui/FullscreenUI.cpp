@@ -445,6 +445,7 @@ void FullscreenUI::OnVMDestroyed()
 		s_pause_menu_was_open = false;
 		s_was_paused_on_quick_menu_open = false;
 		s_current_pause_submenu = PauseSubMenu::None;
+		s_menu_resume = {};
 		ReturnToMainWindow();
 	});
 }
@@ -519,15 +520,53 @@ void FullscreenUI::OpenPauseMenu()
 	}
 
 	MTGS::RunOnGSThread([]() {
-		if (!ImGuiManager::InitializeFullscreenUI() || s_current_main_window != MainWindowType::None)
+		if (!ImGuiManager::InitializeFullscreenUI())
 			return;
+
+		if (s_current_main_window != MainWindowType::None)
+		{
+			// The pause menu hotkey pressed again while the menu is up: back to the game, remembering where the
+			// menu was, so that the next press opens it there (see s_menu_resume).
+			StashMenuAndResumeGame();
+			return;
+		}
 
 		PauseForMenuOpen(true);
 		ForceKeyNavEnabled();
-		s_current_main_window = MainWindowType::PauseMenu;
-		s_current_pause_submenu = PauseSubMenu::None;
+		if (s_menu_resume.window != MainWindowType::None)
+		{
+			// Re-entering the window gives ImGui its remembered navigation item, so the focus lands on the
+			// option that had it, not on the first one.
+			s_current_main_window = s_menu_resume.window;
+			s_current_pause_submenu = s_menu_resume.pause_submenu;
+			s_settings_page = s_menu_resume.settings_page;
+			s_menu_resume = {};
+		}
+		else
+		{
+			s_current_main_window = MainWindowType::PauseMenu;
+			s_current_pause_submenu = PauseSubMenu::None;
+		}
 		QueueResetFocus(FocusResetType::WindowChanged);
 	});
+}
+
+void FullscreenUI::StashMenuAndResumeGame()
+{
+	// Only the menus a running game opens. An open dialog is left alone, since it would stay on screen over the
+	// game; that includes the input binding prompt, where the hotkey's own buttons are the binding being captured
+	// (the binding hook takes those events before any hotkey sees them, so this is the second line, not the first).
+	// The controller and hotkey pages themselves are fine: there the hotkey closes the menu like anywhere else.
+	const bool from_pause_flow = (s_current_main_window == MainWindowType::PauseMenu ||
+		s_current_main_window == MainWindowType::Settings || s_current_main_window == MainWindowType::Achievements ||
+		s_current_main_window == MainWindowType::Leaderboards || s_current_main_window == MainWindowType::MemcardBackups);
+	if (!VMManager::HasValidVM() || !from_pause_flow || AreAnyDialogsOpen())
+		return;
+
+	s_menu_resume.window = s_current_main_window;
+	s_menu_resume.pause_submenu = s_current_pause_submenu;
+	s_menu_resume.settings_page = s_settings_page;
+	ClosePauseMenu();
 }
 
 void FullscreenUI::ClosePauseMenu()
@@ -584,6 +623,7 @@ void FullscreenUI::Shutdown(bool clear_state)
 		s_pause_menu_was_open = false;
 		s_was_paused_on_quick_menu_open = false;
 		s_about_window_open = false;
+		s_menu_resume = {};
 	}
 	s_hotkey_list_cache = {};
 
