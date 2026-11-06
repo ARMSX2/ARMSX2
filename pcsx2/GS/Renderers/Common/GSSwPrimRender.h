@@ -40,8 +40,20 @@ struct GSSwPrimRenderState
 	/// The palette index of each texel a masked texel copy reads, in the order it writes them.
 	std::vector<u8> texel_scratch;
 
-	/// The 32-bit texels a 32-bit texel copy reads, in the order it writes them.
-	std::vector<u32> texel_words;
+	/// The covered rectangle of an 8- or 4-bit texture, unswizzled, that GatherIndices() reads the indices from.
+	std::vector<u8> texel_linear;
+
+	/// Per sprite of palette_blocks, where GatherIndices() left its indices: the first row and the distance between
+	/// rows. Either a rectangle of texel_linear (a sprite whose coordinates do not wrap) or rows of texel_scratch.
+	struct TexelRows
+	{
+		const u8* first;
+		int stride;
+	};
+	std::vector<TexelRows> texel_rows;
+
+	/// The covered rectangle of a 32-bit texture, unswizzled, that the 32-bit texel copy reads its rows from.
+	std::vector<u32> texel_linear32;
 
 	/// When false every draw goes through the rasterizer, including the ones the palette block copy
 	/// and the masked texel copy would take. The copies are exact, so this changes no output; tests
