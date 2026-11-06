@@ -1178,7 +1178,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.macro.frequency.hold" to "Hold",
     "pad.macro.frequency.label" to "Frequency",
     "pad.macros.header" to "Macros (combo buttons, touch + physical)",
-    "pad.onScreenControls.description" to "On-screen touch buttons. Auto: shown, unless a controller is connected, and then they stay hidden even if you touch the screen. Always: shown even with a controller. Off: never shown. Auto-hide: hidden after the chosen seconds without a touch.",
+    "pad.onScreenControls.description" to "On-screen touch buttons. Auto: on a handheld they stay hidden while its controller is connected, even if you touch the screen; on a phone a controller's first button press hides them and a touch brings them back. Always: shown even with a controller. Off: never shown. Auto-hide: hidden after the chosen seconds without a touch.",
     "pad.onScreenControls.autoHide" to "Auto-hide",
     "pad.onScreenControls.autoHideAfter" to "Hide after (seconds)",
     "pad.onScreenControls.nowHidden" to "Hidden right now: a controller is connected.",

@@ -462,9 +462,10 @@ object TouchControls {
 
     /** On-screen touch controls visibility. 0 = Off, never shown (for physical-controls devices
      *  like the RP6); 1..10 = auto-hide after that many seconds of no touch; 11 = Auto, shown
-     *  unless a gamepad is connected (the default): with one connected they stay hidden and a touch
-     *  does not bring them back, so a handheld's screen is not covered by buttons it has in
-     *  hardware; 12 = Always, shown even with a gamepad connected. Persisted.
+     *  unless a gamepad is connected (the default): on a handheld ([autoFollowsGamepad]) they stay
+     *  hidden with one connected and a touch does not bring them back, so its screen is not covered
+     *  by buttons it has in hardware; elsewhere a pad's first press hides them and a touch brings
+     *  them back; 12 = Always, shown even with a gamepad connected. Persisted.
      *
      *  Always exists for people who play with a controller AND touch buttons at once. Whether the
      *  pad is drawn right now is [padShown], not this value alone. */
@@ -473,15 +474,26 @@ object TouchControls {
     const val VISIBILITY_AUTO = 11
     const val VISIBILITY_ALWAYS = 12
 
-    /** True while a real gamepad is attached ([com.armsx2.input.PadRouter.hasPhysicalGamepad]).
-     *  Decides whether Auto shows the touch controls, and hides the on-screen pause button, since
-     *  the pad's Back button opens the menu. Kept current by MainActivityRuntime's input-device
-     *  listener through [refreshGamepadConnected]. */
+    /** Whether Auto follows an attached gamepad at all. Only on a handheld, where the pad is built
+     *  in and the buttons would cover controls the device already has. On a phone a pad is
+     *  something paired, and an accessory can pass for one: a Bluetooth headset kept the buttons
+     *  hidden with no controller in sight. There Auto keeps the older rule, set out at
+     *  [onControllerInputDetected]: a pad's first press hides them, a touch brings them back. */
+    val autoFollowsGamepad by lazy { com.armsx2.input.ControllerMappings.handheldWithBuiltInPad() }
+
+    /** True while a real gamepad is attached ([com.armsx2.input.PadRouter.hasPhysicalGamepad]) on a
+     *  device where [autoFollowsGamepad]; always false elsewhere. Decides whether Auto shows the
+     *  touch controls, and hides the on-screen pause button, since the pad's Back button opens the
+     *  menu. Kept current by MainActivityRuntime's input-device listener through
+     *  [refreshGamepadConnected]. */
     val gamepadConnected = mutableStateOf(false)
+
+    private fun padAttached() =
+        autoFollowsGamepad && com.armsx2.input.PadRouter.hasPhysicalGamepad()
 
     private val padHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private val padGoneCheck = Runnable {
-        gamepadConnected.value = com.armsx2.input.PadRouter.hasPhysicalGamepad()
+        gamepadConnected.value = padAttached()
     }
 
     /** Re-read whether a gamepad is attached. Appearing is acted on at once; disappearing only
@@ -489,7 +501,7 @@ object TouchControls {
      *  around sleep/wake and the touch controls would flash on every time. */
     fun refreshGamepadConnected() {
         padHandler.removeCallbacks(padGoneCheck)
-        if (com.armsx2.input.PadRouter.hasPhysicalGamepad()) gamepadConnected.value = true
+        if (padAttached()) gamepadConnected.value = true
         else if (gamepadConnected.value) padHandler.postDelayed(padGoneCheck, GAMEPAD_GONE_DEBOUNCE_MS)
     }
 
@@ -1502,8 +1514,9 @@ object TouchControls {
 
     /** Latched off the touch controls when a controller key/axis fires.
      *  Only in "Auto" mode (11) — when an auto-hide timeout is set (1..10) the
-     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent. This is the fallback for
-     *  a pad [gamepadConnected] could not see; a pad it does see already keeps Auto hidden.
+     *  timer owns hiding, and "Never" (0) is already hidden. Idempotent. Off a handheld this is the
+     *  whole rule for a pad; on one it is the fallback for a pad [gamepadConnected] could not see,
+     *  since a pad it does see already keeps Auto hidden.
      *
      *  Only for a controller playing the SAME player as the touch controls ([port]): with the
      *  touch controls on Player 2, Player 1's controller is somebody else, and hiding the touch

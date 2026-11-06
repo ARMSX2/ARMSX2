@@ -425,7 +425,7 @@ object ControllerMappings {
      *
      * Only a DEFAULT. An explicit choice in the Pad tab is stored and always wins.
      */
-    private fun handheldWithBuiltInPad(): Boolean {
+    fun handheldWithBuiltInPad(): Boolean {
         val vendor = (android.os.Build.MANUFACTURER ?: "").lowercase()
         val brand = (android.os.Build.BRAND ?: "").lowercase()
         val model = (android.os.Build.MODEL ?: "").lowercase()
@@ -434,6 +434,11 @@ object ControllerMappings {
         // manufacturer like "dayna", and a false positive on a phone reintroduces #433.
         if (vendor == "ayn" || vendor == "gpd" || brand == "ayn" || brand == "gpd")
             return true
+
+        // Anbernic's Qualcomm handhelds put the SoC vendor in manufacturer and brand (the RG 55G1
+        // reports QUALCOMM / qti), so only the model names them: "RG 55G1", "RG 477V". Anchored
+        // at the start, with the space, so nothing merely containing "rg" matches.
+        if (model.startsWith("rg ")) return true
 
         // Distinctive enough to match anywhere in vendor, brand or model. Model matters
         // because these handhelds often report the SoC vendor as the brand: the Odin 3 says

@@ -1406,7 +1406,9 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
             onSelect = TouchControls::chooseVisibility,
         )
         // Auto and Auto-hide change by themselves, so say what they are doing right now.
+        // Off a handheld, Auto goes by the last button press, which no line here can state.
         val status = when {
+            visibilityMode == TouchControls.VISIBILITY_AUTO && !TouchControls.autoFollowsGamepad -> null
             visibilityMode == TouchControls.VISIBILITY_AUTO && gamepadAttached ->
                 str("pad.onScreenControls.nowHidden")
             visibilityMode == TouchControls.VISIBILITY_AUTO -> str("pad.onScreenControls.nowShown")
