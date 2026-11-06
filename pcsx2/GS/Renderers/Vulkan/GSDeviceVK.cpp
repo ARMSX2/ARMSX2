@@ -2238,6 +2238,10 @@ void GSDeviceVK::ActivateCommandBuffer(u32 index)
 	resources.descriptor_pool_cursor = 0;
 	resources.descriptor_pool_cursor_sets = 0;
 
+	// Every TFX texture set cached so far came from a pool that is either this one, just reset,
+	// or another frame's, which this command buffer must not bind. Retire them all.
+	m_tfx_texture_set_cache_generation++;
+
 	// Enable commands to be recorded to the two buffers again.
 	VkCommandBufferBeginInfo begin_info = {
 		VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
@@ -8952,9 +8956,44 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		// persist the rest in command-buffer state; allocated sets do not). Force all
 		// texture sub-flags on; all m_tfx_textures[] slots are always valid (null slots
 		// hold m_null_texture), so this is safe.
+		TFXTextureSetCacheEntry* cache_entry = nullptr;
+		TFXTextureSetKey cache_key;
 		if (!m_use_push_descriptors)
 		{
 			flags |= DIRTY_FLAG_TFX_TEXTURES;
+
+			// Every binding is written below, so the set is a pure function of this key.
+			if (!g_gs_measurement_overrides.no_tfx_texture_set_cache)
+			{
+				u64 hash = reinterpret_cast<uintptr_t>(m_tfx_sampler);
+				for (u32 i = 0; i < NUM_TFX_TEXTURES; i++)
+				{
+					cache_key.views[i] = m_tfx_textures[i]->GetView();
+					cache_key.layouts[i] = m_tfx_textures[i]->GetVkLayout();
+					hash = (hash ^ reinterpret_cast<uintptr_t>(cache_key.views[i]) ^
+							   (static_cast<u64>(cache_key.layouts[i]) << 56)) *
+						   0x9E3779B97F4A7C15ull;
+				}
+				cache_key.sampler = m_tfx_sampler;
+				cache_key.input_attachments = UseInputAttachmentDescriptors();
+				cache_entry = &m_tfx_texture_set_cache[(hash >> 32) & (TFX_TEXTURE_SET_CACHE_SIZE - 1)];
+				if (cache_entry->generation == m_tfx_texture_set_cache_generation && cache_entry->key == cache_key)
+				{
+					m_tfx_texture_set_cache_hits++;
+					vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout,
+						TFX_DESCRIPTOR_SET_TEXTURES, 1, &cache_entry->set, 0, nullptr);
+					ApplyBaseState(flags, cmdbuf);
+					return true;
+				}
+				if (++m_tfx_texture_set_cache_misses % 100000 == 0)
+				{
+					const u64 lookups = m_tfx_texture_set_cache_hits + m_tfx_texture_set_cache_misses;
+					Console.WriteLn("VK: TFX texture set cache: %.1f%% of %llu lookups hit.",
+						100.0 * static_cast<double>(m_tfx_texture_set_cache_hits) / static_cast<double>(lookups),
+						static_cast<unsigned long long>(lookups));
+				}
+			}
+
 			ds = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
 			if (ds == VK_NULL_HANDLE) [[unlikely]]
 			{
@@ -9033,6 +9072,15 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 			dsub.Update(m_device);
 			vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout,
 				TFX_DESCRIPTOR_SET_TEXTURES, 1, &ds, 0, nullptr);
+
+			// Recorded only now: a pool exhaustion above re-entered through a new command
+			// buffer, which bumped the generation, and the set written here belongs to it.
+			if (cache_entry)
+			{
+				cache_entry->key = cache_key;
+				cache_entry->set = ds;
+				cache_entry->generation = m_tfx_texture_set_cache_generation;
+			}
 		}
 	}
 

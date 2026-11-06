@@ -255,6 +255,7 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			std::fprintf(stderr, "  --state-from-file PATH   Resume from a save state file\n");
 			std::fprintf(stderr, "  --no-fast-boot           Skip fast boot (run full BIOS animation)\n");
 			std::fprintf(stderr, "  --stream-rings-cached    Measurement: Vulkan stream rings on cached memory (as gsrunner's -stream-rings-cached)\n");
+			std::fprintf(stderr, "  --no-tfx-set-cache       Measurement: write a fresh Vulkan TFX texture set on every change (non-push road)\n");
 			std::fprintf(stderr, "  -h, --help               Show this help and exit\n");
 			std::fprintf(stderr, "  --version                Show version and exit\n");
 			return false;
@@ -321,6 +322,11 @@ bool Pcsx2SDL::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		if (ARG("--stream-rings-cached"))
 		{
 			g_gs_measurement_overrides.stream_rings_cached = true;
+			continue;
+		}
+		if (ARG("--no-tfx-set-cache"))
+		{
+			g_gs_measurement_overrides.no_tfx_texture_set_cache = true;
 			continue;
 		}
 		if (argv[i][0] == '-')

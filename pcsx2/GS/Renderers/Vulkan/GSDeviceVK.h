@@ -1139,6 +1139,40 @@ private:
 
 	std::array<GSTextureVK*, NUM_TFX_TEXTURES> m_tfx_textures{};
 	VkSampler m_tfx_sampler = VK_NULL_HANDLE;
+
+	// Non-push descriptor road only (Mali's blob). Without push descriptors every texture change
+	// allocated a set from the frame pool and wrote all seven bindings, ~5.6% of the GS back thread
+	// in SotC's temple on RK3588, though draws keep returning to the same few combinations. A set
+	// written earlier in the CURRENT command buffer holds exactly what a fresh one would, so it is
+	// bound again instead. Sets live until their frame's pool resets, and that pool belongs to the
+	// command buffer being recorded, so entries carry the generation of the command buffer that
+	// wrote them and ActivateCommandBuffer retires them all by bumping it. Views and samplers are
+	// destroyed deferred, after the GPU is done with the frame, so a handle in a live entry cannot
+	// be reused for a different image while the entry can still hit.
+	struct TFXTextureSetKey
+	{
+		std::array<VkImageView, NUM_TFX_TEXTURES> views;
+		std::array<VkImageLayout, NUM_TFX_TEXTURES> layouts;
+		VkSampler sampler;
+		bool input_attachments;
+
+		bool operator==(const TFXTextureSetKey& rhs) const
+		{
+			return views == rhs.views && layouts == rhs.layouts && sampler == rhs.sampler &&
+			       input_attachments == rhs.input_attachments;
+		}
+	};
+	struct TFXTextureSetCacheEntry
+	{
+		TFXTextureSetKey key{};
+		VkDescriptorSet set = VK_NULL_HANDLE;
+		u64 generation = 0;
+	};
+	static constexpr u32 TFX_TEXTURE_SET_CACHE_SIZE = 256; // direct-mapped; a power of two
+	std::array<TFXTextureSetCacheEntry, TFX_TEXTURE_SET_CACHE_SIZE> m_tfx_texture_set_cache{};
+	u64 m_tfx_texture_set_cache_generation = 1;
+	u64 m_tfx_texture_set_cache_hits = 0;
+	u64 m_tfx_texture_set_cache_misses = 0;
 	u32 m_tfx_sampler_sel = 0;
 	VkDescriptorSet m_tfx_ubo_descriptor_set = VK_NULL_HANDLE;
 	VkDescriptorSet m_tfx_texture_descriptor_set = VK_NULL_HANDLE;
