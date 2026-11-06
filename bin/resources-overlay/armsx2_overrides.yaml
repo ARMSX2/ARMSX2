@@ -1650,3 +1650,125 @@ SLPM-67017:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+
+# Burnout Revenge -- halfPixelOffset 5 (Align to Native with texture offset) instead of upstream's 4.
+# Who/when: matheus, 2026-11-06. Source: player report of a frozen sun glare on RK3588.
+# Symptom: at a fractional upscale (1.75x) a frozen copy of the sun glare stays on screen after the
+# sun goes behind a bridge or into a tunnel, drawn as a dotted outline. The game hides the sun with a
+# 16x16 alpha-only sprite whose result becomes the glare's palette (gpuTargetCLUT). Under offset 4 that
+# sprite misses the first device row and column of its target at 1.75x, and the palette read takes 31
+# of its 256 entries from that stale row and column. Offsets 0, 1, 2 and 5 all leave no glare; 5 is
+# kept because it is the same family as 4 and is what upstream already gives Burnout 3 on this engine.
+# Verified: Vulkan, Mali-G610 (RK3588), 1.75x, SLUS-21242 from a save state under
+# the bridge: glare gone; the tester saw no texture misalignment or depth lines in play.
+# gsHWFixes replaces upstream's block, so upstream's keys are restated beside it.
+SLUS-21242:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLUS-29153:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLES-53506:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLES-53507:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLED-53512:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLED-53637:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLAJ-25066:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLKA-25304:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLPM-55004:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLPM-66108:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"
+SLPM-66652:
+  gsHWFixes:
+    recommendedBlendingLevel: 3
+    halfPixelOffset: 5
+    autoFlush: 2
+    gpuTargetCLUT: 1
+    bilinearUpscale: 2
+    nativeScaling: 2
+    getSkipCount: "GSC_BurnoutGames"
+    beforeDraw: "OI_BurnoutGames"

@@ -14,6 +14,7 @@ add_pcsx2_test(core_test
 	iop_fingerprint_tests.cpp
 	iop_thread_mode_tests.cpp
 	iop_thread_gamedb_tests.cpp
+	burnout_gamedb_tests.cpp
 	iop_thread_placement_tests.cpp
 	iop_thread_metrics_tests.cpp
 	iop_thread_channels_tests.cpp
@@ -53,7 +54,7 @@ add_pcsx2_test(core_test
 )
 
 # The game database tests parse the real GameIndex.yaml and the mobile overlay from the source tree.
-set_source_files_properties(iop_thread_gamedb_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+set_source_files_properties(iop_thread_gamedb_tests.cpp burnout_gamedb_tests.cpp PROPERTIES COMPILE_DEFINITIONS
 	"ARMSX2_GAMEINDEX_YAML=\"${CMAKE_SOURCE_DIR}/bin/resources/GameIndex.yaml\";ARMSX2_GAMEDB_OVERLAY_YAML=\"${CMAKE_SOURCE_DIR}/bin/resources-overlay/armsx2_overrides.yaml\"")
 
 # gsrunner_affinity_tests.cpp includes the runner's own -affinity parse header; the flag
