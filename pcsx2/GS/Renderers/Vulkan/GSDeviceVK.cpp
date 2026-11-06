@@ -4257,10 +4257,13 @@ void GSDeviceVK::ResolveFeatureTable()
 	// Revenge above native resolution, replayed from a GS dump: 100% device loss; with neither AA1 nor plain lines
 	// expanded, 0 of 2; with only one of the two kinds kept out, still 2 of 2. Points, sprites and the rest of the
 	// expansion are unaffected. Lines then take the pixel runs, or a GPU line when those are refused.
-	m_features.line_vs_expand_faults = IsDeviceMali() && m_optional_extensions.vk_khr_driver_properties &&
+	// MaliLineExpandFix overrides it either way, so a player on another Mali driver can try it, or turn it off.
+	const bool arm_proprietary_mali = IsDeviceMali() && m_optional_extensions.vk_khr_driver_properties &&
 		m_device_driver_properties.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+	m_features.line_vs_expand_faults = (GSConfig.MaliLineExpandFix < 0) ? arm_proprietary_mali : (GSConfig.MaliLineExpandFix > 0);
 	if (m_features.line_vs_expand_faults)
-		Console.WriteLn("VK: lines are not expanded in the vertex shader (Arm's Mali driver).");
+		Console.WriteLn("VK: lines are not expanded in the vertex shader (MaliLineExpandFix %s).",
+			GSConfig.MaliLineExpandFix < 0 ? "automatic" : "forced on");
 	m_features.sprite_edge_clamp = true;
 
 	if (!m_features.texture_barrier)

@@ -3560,6 +3560,11 @@ void FullscreenUI::DrawGraphicsSettingsPage(SettingsInterface* bsi, bool show_ad
 		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_SHIELD_HALVED, "Override Texture Barriers"),
 			FSUI_CSTR("Forces texture barrier functionality to the specified value."), "EmuCore/GS", "OverrideTextureBarriers", -1,
 			s_generic_options, std::size(s_generic_options), true, -1);
+		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_SHIELD_HALVED, "Mali Line Crash Fix"),
+			FSUI_CSTR("Draws lines without vertex-shader expansion. Mali GPUs on Arm's driver can crash (device lost) on "
+					  "expanded lines; Automatic turns the fix on there. Force Disabled checks whether your Mali still needs it."),
+			"EmuCore/GS", "MaliLineExpandFix", -1, s_generic_options, std::size(s_generic_options), true, -1,
+			(renderer == GSRendererType::Auto || renderer == GSRendererType::VK));
 		DrawIntListSetting(bsi, FSUI_ICONSTR(ICON_FA_FILE_ZIPPER, "GS Dump Compression"), FSUI_CSTR("Change the compression algorithm used when creating a GS dump."), "EmuCore/GS",
 			"GSDumpCompression", static_cast<int>(GSDumpCompressionMethod::LZMA), s_gsdump_compression, std::size(s_gsdump_compression), true);
 		DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_BAN, "Disable Framebuffer Fetch"),

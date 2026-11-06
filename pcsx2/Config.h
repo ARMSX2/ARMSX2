@@ -1090,6 +1090,9 @@ struct Pcsx2Config
 		GSBilinearDirtyMode UserHacks_BilinearHack = GSBilinearDirtyMode::Automatic;
 		TriFiltering TriFilter = DEFAULT_TRILINEAR_FILTERING_MODE;
 		s8 OverrideTextureBarriers = -1;
+		/// Draw lines without vertex-shader expansion: -1 automatic (on for Arm's proprietary Mali driver, where
+		/// expanded lines can fault the GPU and lose the device), 0 forced off, 1 forced on.
+		s8 MaliLineExpandFix = -1;
 		GSDepthFeedbackMode DepthFeedbackMode = GSDepthFeedbackMode::Auto;
 		/// GS multi-threading: a front thread parses GIF data while a back thread draws. The setting,
 		/// as the user or the game database asked for it; stored as the integer "GSBackThreadMode",
