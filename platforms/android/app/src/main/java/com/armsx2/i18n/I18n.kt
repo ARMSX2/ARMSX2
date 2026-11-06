@@ -2358,7 +2358,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "bugreport.gsdump.send" to "Save and send to ARMSX2",
     "bugreport.gsdump.send.detail" to "Keep it in the snaps folder and start a problem report with it",
     "bugreport.driver.system" to "system",
-    "bugreport.crash.savedNote" to "Saved under Settings > General > My reports for 7 days.",
+    "bugreport.crash.savedNote" to "Saved under Settings > App > My reports for 7 days.",
     "bugreport.crash.offer.title" to "A crash is saved",
     "bugreport.crash.offer" to "Send the report from the crash on %1\$s instead?",
     "bugreport.crash.offer.use" to "Send that one",
