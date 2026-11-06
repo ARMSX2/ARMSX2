@@ -9677,6 +9677,28 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	
 	PSSetROVs(draw_rt_rov, draw_ds_rov, config.ps.HasColorOutput(), config.ps.HasDepthROVWrite());
 
+	// A draw whose texture is its own target (TEX_IS_FB) samples it through the texture binding. On the
+	// input-attachment road that is not an attachment read (VUID-vkCmdDrawIndexed-None-04584): it reads memory,
+	// while the colour this pass has written so far is still in a tiler's tile buffer. It worked while every
+	// reader opened its own pass, because the writes before it had been stored. With non-readers carried in the
+	// pass (GSFeedbackCarry::NonReaders, Mali's g6p0 blob) they have not, and the sample reads the previous
+	// frame: Burnout Revenge reads the frame's alpha this way to hide its sun, and the sun showed through a
+	// bridge. So store the pass first, and make the stores visible to the sample: the layout does not change
+	// (it is the feedback layout on both sides), so no transition does it.
+	if (config.tex && static_cast<GSTextureVK*>(config.tex) == draw_rt && InRenderPass() &&
+		m_current_render_target == draw_rt && m_features.feedback_carry == GSFeedbackCarry::NonReaders &&
+		!UseFeedbackLoopLayout() && !m_features.framebuffer_fetch)
+	{
+		GL_INS("VK: storing the pass before a draw that samples its own target");
+		EndRenderPass();
+		const VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr,
+			VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INPUT_ATTACHMENT_READ_BIT,
+			draw_rt->GetVkLayout(), draw_rt->GetVkLayout(), VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+			draw_rt->GetImage(), {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 1u}};
+		vkCmdPipelineBarrier(GetCurrentCommandBuffer(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
 	OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 
 	// Begin render pass if new target or out of the area.
