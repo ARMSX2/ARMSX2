@@ -69,7 +69,7 @@ namespace
 			// lowest blending, no IOP thread or governor.
 			state.hw_renderer = true;
 			state.resolution = 1.0;
-			state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+			state.download_mode = AutoTuneDownloadMode::Disabled;
 			state.blending_level = 0;
 		}
 
@@ -678,7 +678,7 @@ TEST(AutoTuneTrace, AReadbackStallGetsTheDownloadModeBeforeTheBackThread)
 
 TEST(AutoTuneTrace, NothingLeftToTryIsSaidOnceEvenWhenTheClassFlipsNearTheSaturationLine)
 {
-	// Spider-Man 3 on the RG477V: the back thread is on, the download mode and the blending are known not to
+	// Spider-Man 3 on the RG477V: the back thread is on, every download mode and the blending are known not to
 	// help, so there is nothing to try. The back thread sits at 91-94% of a core against the 90% line; two
 	// windows at 85% pull the four-window mean under it and the class flips from GS (CPU) to GPU. The "nothing
 	// left to try" message must still be said once, not again after the flip.
@@ -690,7 +690,9 @@ TEST(AutoTuneTrace, NothingLeftToTryIsSaidOnceEvenWhenTheClassFlipsNearTheSatura
 	rig.state.gs_back_thread_allowed = true;
 	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
 	rig.state.blending_level = 1;
-	rig.state.rejected = {{AutoTuneLever::DownloadMode, static_cast<double>(AutoTuneDownloadMode::Asynchronous)}, {AutoTuneLever::Blending, 0.0}};
+	rig.state.rejected = {{AutoTuneLever::DownloadMode, static_cast<double>(AutoTuneDownloadMode::Asynchronous)},
+		{AutoTuneLever::DownloadMode, static_cast<double>(AutoTuneDownloadMode::NoReadbacks)},
+		{AutoTuneLever::DownloadMode, static_cast<double>(AutoTuneDownloadMode::Disabled)}, {AutoTuneLever::Blending, 0.0}};
 	rig.Feed(kSm3Relaunch);
 
 	ASSERT_EQ(rig.Count(Kind::Exhausted), 1u);

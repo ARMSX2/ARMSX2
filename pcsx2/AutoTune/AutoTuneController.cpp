@@ -35,6 +35,14 @@ namespace
 	};
 	static_assert(std::size(kBottleneckNames) == static_cast<size_t>(AutoTuneBottleneck::Count));
 
+	// The download modes a trial steps through, from the one that gives up the least to the one that gives up the
+	// most. See AutoTuneController::TargetFor for how the current mode picks its place on it.
+	constexpr int kDownloadLadder[] = {
+		AutoTuneDownloadMode::Asynchronous,
+		AutoTuneDownloadMode::NoReadbacks,
+		AutoTuneDownloadMode::Disabled,
+	};
+
 	// The order a bottleneck's levers are tried in. Every lever is tried at most once per value, so a lever
 	// that is not applicable (already on, forbidden, forced by the game database) is skipped.
 	constexpr AutoTuneLever kEeOrder[] = {AutoTuneLever::IopThread, AutoTuneLever::EeGovernor};
@@ -313,15 +321,42 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 			return std::nullopt;
 
 		case AutoTuneLever::DownloadMode:
+		{
 			if (!s.hw_renderer || s.download_mode_forced)
 				return std::nullopt;
-			// Only a mode that reads back has anything to give up. Accurate and Force Full both read back
-			// and wait for it; Asynchronous reads back without making the EE wait; No Readbacks stops.
-			if (s.download_mode == AutoTuneDownloadMode::Accurate || s.download_mode == AutoTuneDownloadMode::AccurateForceFull)
-				return static_cast<double>(AutoTuneDownloadMode::Asynchronous);
-			if (s.download_mode == AutoTuneDownloadMode::Asynchronous)
-				return static_cast<double>(AutoTuneDownloadMode::NoReadbacks);
+
+			// The first rung of kDownloadLadder the current mode has not reached yet.
+			// Accurate and Force Full both read back and make the EE wait for it, so every rung is ahead of them;
+			// Asynchronous reads back without the wait, No Readbacks stops reading back, Disabled also stops the EE
+			// waiting on the GS thread. Unsynchronized is not on the ladder: it is a deliberate choice, and not a
+			// deterministic one, so it is left where the player put it.
+			size_t next;
+			switch (s.download_mode)
+			{
+				case AutoTuneDownloadMode::Accurate:
+				case AutoTuneDownloadMode::AccurateForceFull:
+					next = 0;
+					break;
+				case AutoTuneDownloadMode::Asynchronous:
+					next = 1;
+					break;
+				case AutoTuneDownloadMode::NoReadbacks:
+					next = 2;
+					break;
+				default:
+					return std::nullopt;
+			}
+
+			// A rung that was tried and did not help is stepped over, not the end of the ladder: Asynchronous not
+			// paying says nothing about the modes that stop reading back altogether.
+			for (; next < std::size(kDownloadLadder); next++)
+			{
+				const double mode = static_cast<double>(kDownloadLadder[next]);
+				if (!IsRejected(lever, mode, s))
+					return mode;
+			}
 			return std::nullopt;
+		}
 
 		case AutoTuneLever::Blending:
 		{

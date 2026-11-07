@@ -421,7 +421,7 @@ TEST(AutoTuneController, GpuBoundStepsResolutionDownAndStopsAtNative)
 {
 	Rig rig;
 	rig.state.resolution = 3.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	rig.state.blending_level = 0;
 
 	AutoTuneAction a = rig.WarmAndTrigger(GpuBound(50.0));
@@ -473,7 +473,7 @@ TEST(AutoTuneController, ResolutionStepsToTheNotchBelowNotTheNextQuarter)
 	// Sub-native choices and 1x itself have nowhere to go.
 	Rig rig4;
 	rig4.state.resolution = 0.75;
-	rig4.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig4.state.download_mode = AutoTuneDownloadMode::Disabled;
 	EXPECT_EQ(rig4.WarmAndTrigger(GpuBound(50.0)).kind, Kind::Exhausted);
 }
 
@@ -500,7 +500,7 @@ TEST(AutoTuneController, GpuBoundTriesResolutionBeforeTheBackThread)
 	Rig rig2;
 	rig2.state.resolution = 1.0;
 	rig2.state.gs_back_thread_allowed = true;
-	rig2.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig2.state.download_mode = AutoTuneDownloadMode::Disabled;
 	EXPECT_EQ(rig2.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::GsBackThread);
 }
 
@@ -527,7 +527,7 @@ TEST(AutoTuneController, TheBackThreadIsOnlyTriedWhereItWouldRun)
 	Rig rig;
 	rig.state.resolution = 1.0;
 	rig.state.gs_back_thread_allowed = false; // not Vulkan, or Unsynchronized downloads
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	EXPECT_EQ(rig.WarmAndTrigger(GsCpuBound(60.0)).kind, Kind::Exhausted);
 }
 
@@ -553,10 +553,85 @@ TEST(AutoTuneController, DownloadModeStepsTowardFewerReadbacksOnlyWhileReadingBa
 	ASSERT_EQ(a.kind, Kind::StartTrial);
 	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::NoReadbacks));
 
-	// Modes that do not read back have nothing to give up.
-	EXPECT_EQ(first_target(AutoTuneDownloadMode::NoReadbacks).kind, Kind::Exhausted);
-	EXPECT_EQ(first_target(AutoTuneDownloadMode::Unsynchronized).kind, Kind::Exhausted);
+	// No Readbacks still has the EE waiting on the GS thread; Disabled is the step past it.
+	a = first_target(AutoTuneDownloadMode::NoReadbacks);
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::DownloadMode);
+	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::Disabled));
+
+	// Disabled is the end of the ladder. Unsynchronized is a deliberate, non-deterministic choice and is not on it.
 	EXPECT_EQ(first_target(AutoTuneDownloadMode::Disabled).kind, Kind::Exhausted);
+	EXPECT_EQ(first_target(AutoTuneDownloadMode::Unsynchronized).kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneController, DownloadModeStepsOverARungThatDidNotHelp)
+{
+	const auto first_target = [](int mode, std::vector<int> rejected) {
+		Rig rig;
+		rig.state.resolution = 1.0;
+		rig.state.download_mode = mode;
+		for (const int r : rejected)
+			rig.state.rejected.push_back({AutoTuneLever::DownloadMode, static_cast<double>(r)});
+		return rig.WarmAndTrigger(GpuBound(60.0));
+	};
+
+	// Asynchronous did nothing. The modes that stop reading back are not written off with it.
+	AutoTuneAction a = first_target(AutoTuneDownloadMode::Accurate, {AutoTuneDownloadMode::Asynchronous});
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::NoReadbacks));
+
+	// Asynchronous and No Readbacks both did nothing: Disabled is still tried, from the mode the game is in.
+	a = first_target(AutoTuneDownloadMode::Accurate, {AutoTuneDownloadMode::Asynchronous, AutoTuneDownloadMode::NoReadbacks});
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::Disabled));
+
+	a = first_target(AutoTuneDownloadMode::AccurateForceFull, {AutoTuneDownloadMode::Asynchronous});
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::NoReadbacks));
+
+	// Asynchronous kept, No Readbacks did nothing.
+	a = first_target(AutoTuneDownloadMode::Asynchronous, {AutoTuneDownloadMode::NoReadbacks});
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.value, static_cast<double>(AutoTuneDownloadMode::Disabled));
+
+	// A rung behind the current mode is not offered again, and a rejected last rung leaves nothing.
+	EXPECT_EQ(first_target(AutoTuneDownloadMode::NoReadbacks, {AutoTuneDownloadMode::Disabled}).kind, Kind::Exhausted);
+	EXPECT_EQ(first_target(AutoTuneDownloadMode::Accurate, {AutoTuneDownloadMode::Asynchronous, AutoTuneDownloadMode::NoReadbacks,
+																  AutoTuneDownloadMode::Disabled}).kind,
+		Kind::Exhausted);
+}
+
+TEST(AutoTuneController, DownloadModeStepsOverARungThatWasRejectedThisSession)
+{
+	// The same through the controller's own memory. Each trial does nothing and is undone (the caller puts the
+	// download mode back to Accurate), and the next diagnosis offers the next rung, not the end of the lever.
+	Rig rig;
+	rig.state.resolution = 1.0;
+	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
+
+	const double expected[] = {
+		static_cast<double>(AutoTuneDownloadMode::Asynchronous),
+		static_cast<double>(AutoTuneDownloadMode::NoReadbacks),
+		static_cast<double>(AutoTuneDownloadMode::Disabled),
+	};
+
+	AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	for (const double mode : expected)
+	{
+		ASSERT_EQ(a.kind, Kind::StartTrial);
+		EXPECT_EQ(a.lever, AutoTuneLever::DownloadMode);
+		EXPECT_EQ(a.value, mode);
+
+		a = rig.RunUntilAction(GpuBound(58.0));
+		ASSERT_EQ(a.kind, Kind::Revert);
+		EXPECT_TRUE(a.measured);
+
+		rig.FeedFor(GpuBound(60.0), 1.5);
+		a = rig.Trigger(GpuBound(60.0));
+	}
+
+	EXPECT_EQ(a.kind, Kind::Exhausted);
+	EXPECT_EQ(rig.Count(Kind::StartTrial), 3u);
 }
 
 TEST(AutoTuneController, AGameDatabaseDownloadModeIsLeftAlone)
@@ -572,7 +647,7 @@ TEST(AutoTuneController, BlendingStepsOneLevelAtATimeToTheFloor)
 {
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	rig.state.blending_level = 3;
 	rig.state.blending_floor = 1; // the game database's minimum
 
@@ -599,7 +674,7 @@ TEST(AutoTuneController, BasicToMinimumIsRejectedWhenItDoesNotHelpAndNotTriedAga
 {
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	rig.state.blending_level = 1; // Basic
 
 	AutoTuneAction a = rig.WarmAndTrigger(GsCpuBound(60.0));
@@ -627,7 +702,7 @@ TEST(AutoTuneController, BasicToMinimumIsNeverOfferedToAGpuBoundGame)
 	// the limit.
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	rig.state.blending_level = 1; // Basic
 	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
 	EXPECT_EQ(a.kind, Kind::Exhausted);
@@ -637,7 +712,7 @@ TEST(AutoTuneController, BasicToMinimumIsNeverOfferedToAGpuBoundGame)
 	// The same for the GPU case that has no GPU timer: the EE blocked on a GS that is not CPU-bound.
 	Rig blind;
 	blind.state.resolution = 1.0;
-	blind.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	blind.state.download_mode = AutoTuneDownloadMode::Disabled;
 	blind.state.blending_level = 1;
 	AutoTuneWindow w = Win(60.0);
 	w.ee_pct = 70.0;
@@ -652,7 +727,7 @@ TEST(AutoTuneController, TheStepsAboveBasicAreOfferedToEveryBottleneck)
 	{
 		Rig rig;
 		rig.state.resolution = 1.0;
-		rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+		rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 		rig.state.blending_level = 2; // Medium, one step above Basic
 		const AutoTuneAction a = rig.WarmAndTrigger(w);
 		ASSERT_EQ(a.kind, Kind::StartTrial);
@@ -665,7 +740,7 @@ TEST(AutoTuneController, WhatAnEarlierSessionRejectedIsNotTried)
 {
 	Rig rig;
 	rig.state.resolution = 3.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	rig.state.rejected = {{AutoTuneLever::Resolution, 2.0}};
 
 	// Resolution 3 -> 2 is remembered as useless, so the controller goes to blending.
@@ -679,7 +754,7 @@ TEST(AutoTuneController, ARejectionIsAboutOneStepNotTheWholeLever)
 {
 	Rig rig;
 	rig.state.resolution = 4.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	// 2x -> 1x was useless once. From 4x the step is 4x -> 3x, which is a different trial.
 	rig.state.rejected = {{AutoTuneLever::Resolution, 1.0}};
 	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
@@ -740,7 +815,7 @@ TEST(AutoTuneController, ExhaustedIsSaidOncePerSessionWhateverTheClass)
 	// left. The player is told once.
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	ASSERT_EQ(rig.WarmAndTrigger(GsCpuBound(70.0)).kind, Kind::Exhausted);
 	EXPECT_EQ(rig.FeedFor(GpuBound(70.0), 20.0).kind, Kind::None);
 	EXPECT_EQ(rig.FeedFor(GsCpuBound(70.0), 20.0).kind, Kind::None);
@@ -755,7 +830,7 @@ TEST(AutoTuneController, ABottleneckThatMovedGetsItsOwnLevers)
 {
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	ASSERT_EQ(rig.WarmAndTrigger(GpuBound(70.0)).kind, Kind::Exhausted);
 
 	// Later the game is EE-bound and the IOP thread has become available.
@@ -973,7 +1048,7 @@ TEST(AutoTuneController, ResetForgetsTheSession)
 {
 	Rig rig;
 	rig.state.resolution = 1.0;
-	rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+	rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 	ASSERT_EQ(rig.WarmAndTrigger(GpuBound(70.0)).kind, Kind::Exhausted);
 	rig.ctl.Reset();
 	EXPECT_EQ(rig.ctl.GetPhase(), AutoTuneController::Phase::WarmUp);
@@ -1261,7 +1336,7 @@ namespace
 	{
 		rig.state.hw_renderer = true;
 		rig.state.resolution = resolution;
-		rig.state.download_mode = AutoTuneDownloadMode::NoReadbacks;
+		rig.state.download_mode = AutoTuneDownloadMode::Disabled;
 		rig.state.blending_level = 0;
 		rig.state.gs_back_thread_allowed = false;
 	}
@@ -1918,11 +1993,14 @@ TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThr
 	rig.WarmUp();
 
 	std::vector<AutoTuneLever> tried;
-	for (int round = 0; round < 4; round++)
+	std::vector<double> download_modes;
+	for (int round = 0; round < 6; round++)
 	{
 		const AutoTuneAction start = rig.Trigger(Gpu(9.0));
 		ASSERT_EQ(start.kind, Kind::StartTrial) << "round " << round;
 		tried.push_back(start.lever);
+		if (start.lever == AutoTuneLever::DownloadMode)
+			download_modes.push_back(start.value);
 		// The back thread reopens the renderer: its settle is the longer one, before and after.
 		const double settle = start.lever == AutoTuneLever::GsBackThread ? 6.0 : 3.0;
 		rig.FeedFor(Gpu(9.0), settle);
@@ -1930,9 +2008,13 @@ TEST(AutoTuneOrder, FarBelowFullSpeedTheOrderIsBlendingDownloadResolutionBackThr
 		ASSERT_EQ(verdict.kind, Kind::Revert);
 		rig.FeedFor(Gpu(9.0), settle);
 	}
-	const std::vector<AutoTuneLever> expected = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode, AutoTuneLever::Resolution,
-		AutoTuneLever::GsBackThread};
+	// The download mode is three rungs, each tried although the one before did nothing, before the next lever.
+	const std::vector<AutoTuneLever> expected = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode, AutoTuneLever::DownloadMode,
+		AutoTuneLever::DownloadMode, AutoTuneLever::Resolution, AutoTuneLever::GsBackThread};
 	EXPECT_EQ(tried, expected);
+	const std::vector<double> expected_modes = {static_cast<double>(AutoTuneDownloadMode::Asynchronous),
+		static_cast<double>(AutoTuneDownloadMode::NoReadbacks), static_cast<double>(AutoTuneDownloadMode::Disabled)};
+	EXPECT_EQ(download_modes, expected_modes);
 }
 
 TEST(AutoTuneOrder, WithBasicBlendingThereIsNothingCheapToTryFirstSoTheResolutionGoesFirst)
@@ -2223,7 +2305,7 @@ TEST(AutoTuneReplay, TheResolutionWalkStopsAtTheStepThatShowsNothingInsteadOfWal
 				s.hw_renderer = true;
 				s.resolution = world.resolution;
 				s.blending_level = 0;
-				s.download_mode = AutoTuneDownloadMode::NoReadbacks;
+				s.download_mode = AutoTuneDownloadMode::Disabled;
 				s.rejected = persisted;
 				const AutoTuneAction a = controller.OnWindow(world.Next(), s);
 				if (a.kind == AutoTuneAction::Kind::None)

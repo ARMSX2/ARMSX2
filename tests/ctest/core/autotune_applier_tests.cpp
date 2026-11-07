@@ -738,7 +738,7 @@ namespace
 			AutoTuneLeverState s;
 			s.hw_renderer = true;
 			s.resolution = Num(fixture.env.Effective(GS, "upscale_multiplier"), 1.0);
-			s.download_mode = AutoTuneDownloadMode::NoReadbacks;
+			s.download_mode = AutoTuneDownloadMode::Disabled;
 			s.iop_thread_on = IsOn(fixture.env.Effective(SPEED, "iopThread"));
 			s.iop_thread_placeable = true;
 			s.ee_governor_on = IsOn(fixture.env.Effective(SPEED, "DynamicEECycleRate"));
