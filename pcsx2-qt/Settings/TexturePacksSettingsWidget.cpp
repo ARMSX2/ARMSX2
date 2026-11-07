@@ -178,14 +178,16 @@ TexturePacksSettingsWidget::TexturePacksSettingsWidget(SettingsWindow* dialog, Q
 	m_ui.packList->header()->setSortIndicator(-1, Qt::AscendingOrder);
 	m_ui.splitter->setSizes({250, 300});
 
-	// The filters, in the order of the Filter enum. A game's window has no "My Games": the list is
-	// already that game's.
+	// The filters, in the order of the Filter enum. A game's window has no "This Game" or "My
+	// Games": the list is already that game's.
 	m_ui.filterTabs->setDrawBase(false);
 	m_ui.filterTabs->setExpanding(false);
 	m_ui.filterTabs->addTab(tr("Popular"));
 	m_ui.filterTabs->addTab(tr("All"));
+	m_ui.filterTabs->addTab(tr("This Game"));
 	m_ui.filterTabs->addTab(tr("My Games"));
 	m_ui.filterTabs->addTab(tr("Installed"));
+	m_ui.filterTabs->setTabVisible(static_cast<int>(Filter::ThisGame), false);
 	m_ui.filterTabs->setTabVisible(static_cast<int>(Filter::MyGames), !m_per_game);
 	m_ui.filterTabs->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 	m_ui.filterTabs->updateGeometry();
@@ -237,7 +239,7 @@ void TexturePacksSettingsWidget::showEvent(QShowEvent* event)
 		if (m_per_game)
 			m_ui.filterTabs->setCurrentIndex(static_cast<int>(Filter::All));
 		else if (!m_context_serial.empty())
-			m_ui.filterTabs->setCurrentIndex(static_cast<int>(Filter::MyGames));
+			m_ui.filterTabs->setCurrentIndex(static_cast<int>(Filter::ThisGame));
 	}
 
 	if (m_service->catalog().status == TexturePackService::CatalogStatus::NotLoaded)
@@ -250,6 +252,7 @@ void TexturePacksSettingsWidget::showEvent(QShowEvent* event)
 void TexturePacksSettingsWidget::refreshContext()
 {
 	m_context_serial.clear();
+	m_context_title.clear();
 	if (m_per_game)
 	{
 		if (const std::optional<std::string> serial = Tex::NormalizeSerial(dialog()->getSerial()))
@@ -261,7 +264,8 @@ void TexturePacksSettingsWidget::refreshContext()
 			m_context_serial = *serial;
 	}
 
-	// The games in the library, which "My Games" and the choice of install folder use.
+	// The games in the library, which "My Games" and the choice of install folder use. The title
+	// gives "This Game" and the per-game notice a name to show beside the serial.
 	m_owned_serials.clear();
 	{
 		const auto lock = GameList::GetLock();
@@ -272,16 +276,38 @@ void TexturePacksSettingsWidget::refreshContext()
 			if (!entry)
 				continue;
 			if (const std::optional<std::string> serial = Tex::NormalizeSerial(entry->serial))
+			{
 				m_owned_serials.insert(*serial);
+				if (m_context_title.empty() && !m_context_serial.empty() && *serial == m_context_serial)
+					m_context_title = entry->GetTitle();
+			}
+		}
+	}
+
+	// "This Game" is a choice only while a game runs outside a game's own settings window.
+	const bool can_show_this_game = !m_per_game && !m_context_serial.empty();
+	{
+		// Hiding the tab that is current moves the selection; the filter is set here instead, and
+		// the caller refreshes the list.
+		const QSignalBlocker blocker(m_ui.filterTabs);
+		const int this_game_tab = static_cast<int>(Filter::ThisGame);
+		if (m_ui.filterTabs->isTabVisible(this_game_tab) != can_show_this_game)
+			m_ui.filterTabs->setTabVisible(this_game_tab, can_show_this_game);
+		if (!can_show_this_game && m_filter == Filter::ThisGame)
+		{
+			m_filter = Filter::Popular;
+			m_ui.filterTabs->setCurrentIndex(static_cast<int>(Filter::Popular));
 		}
 	}
 
 	if (m_per_game)
 	{
 		m_ui.scopeLabel->setVisible(true);
+		const QString game = m_context_title.empty() ? QString::fromStdString(m_context_serial) :
+		                                              QStringLiteral("%1 (%2)").arg(QString::fromStdString(m_context_title), QString::fromStdString(m_context_serial));
 		m_ui.scopeLabel->setText(m_context_serial.empty() ?
 									 tr("This game has no serial, so no texture packs can be matched to it.") :
-									 tr("Showing the texture packs for this game (%1).").arg(QString::fromStdString(m_context_serial)));
+									 tr("Showing the texture packs for this game (%1).").arg(game));
 	}
 }
 
@@ -525,6 +551,21 @@ void TexturePacksSettingsWidget::refreshList()
 				}
 				break;
 
+			case Filter::ThisGame:
+				// Only the game that is running, not the rest of the library.
+				if (!m_context_serial.empty())
+				{
+					for (const Tex::TexturePack& pack : *m_packs)
+					{
+						if (pack.MatchesSerial(m_context_serial))
+							add(pack);
+					}
+				}
+				std::stable_sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+					return QtHost::LocaleSensitiveCompare(QString::fromStdString(a.pack->name), QString::fromStdString(b.pack->name)) < 0;
+				});
+				break;
+
 			case Filter::All:
 				for (const Tex::TexturePack& pack : *m_packs)
 					add(pack);
@@ -607,6 +648,10 @@ void TexturePacksSettingsWidget::refreshList()
 			empty = tr("Can't reach the download counter right now.");
 		else if (m_filter == Filter::Popular && catalog.popular->empty())
 			empty = tr("Nothing has been downloaded yet today.");
+		else if (m_filter == Filter::ThisGame && m_context_serial.empty())
+			empty = tr("No game is running.");
+		else if (m_filter == Filter::ThisGame && needle.isEmpty())
+			empty = tr("No texture packs are listed for this game yet.");
 		else if (m_per_game && needle.isEmpty())
 			empty = tr("No texture packs are listed for this game yet.");
 		else if (m_filter == Filter::MyGames && m_owned_serials.empty() && m_context_serial.empty())
@@ -616,6 +661,19 @@ void TexturePacksSettingsWidget::refreshList()
 	}
 	m_ui.emptyLabel->setText(empty);
 	m_ui.listStack->setCurrentIndex(m_rows.empty() ? 1 : 0);
+
+	// "This Game" says which game, the way a game's own window does.
+	if (!m_per_game)
+	{
+		const bool showing_this_game = (m_filter == Filter::ThisGame && !m_context_serial.empty());
+		m_ui.scopeLabel->setVisible(showing_this_game);
+		if (showing_this_game)
+		{
+			const QString game = m_context_title.empty() ? QString::fromStdString(m_context_serial) :
+			                                              QStringLiteral("%1 (%2)").arg(QString::fromStdString(m_context_title), QString::fromStdString(m_context_serial));
+			m_ui.scopeLabel->setText(tr("Showing the texture packs for this game (%1).").arg(game));
+		}
+	}
 
 	onSelectionChanged();
 }
@@ -631,7 +689,7 @@ const TexturePacksSettingsWidget::Row* TexturePacksSettingsWidget::currentRow() 
 
 void TexturePacksSettingsWidget::onFilterChanged()
 {
-	m_filter = static_cast<Filter>(std::clamp(m_ui.filterTabs->currentIndex(), 0, 3));
+	m_filter = static_cast<Filter>(std::clamp(m_ui.filterTabs->currentIndex(), 0, static_cast<int>(Filter::Installed)));
 
 	// "My Games" reads the library as it is now.
 	refreshContext();
@@ -958,6 +1016,6 @@ QTSHOT_DIALOG("texture-packs-no-astc", "Texture Packs page on a GPU without ASTC
 QTSHOT_DIALOG("texture-packs-search", "Texture Packs page, All filter, searching for a game",
 	[](const QtShot::Context&) { return makeShotPage(1, QStringLiteral("burnout"), Engine::Unknown); });
 QTSHOT_DIALOG("texture-packs-installed", "Texture Packs page, Installed filter, searching for a pack",
-	[](const QtShot::Context&) { return makeShotPage(3, QStringLiteral("black"), Engine::Unknown); });
+	[](const QtShot::Context&) { return makeShotPage(4, QStringLiteral("black"), Engine::Unknown); });
 QTSHOT_DIALOG("texture-packs-demo", "Texture Packs page with the demo entry of a screenshot catalog selected",
 	[](const QtShot::Context&) { return makeShotPage(1, QStringLiteral("demo: install"), Engine::Unknown); });

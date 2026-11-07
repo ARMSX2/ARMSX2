@@ -18,9 +18,9 @@
 
 class TexturePackService;
 
-/// The Texture Packs page: browse the online catalog (Popular, All, My Games, Installed, with a
-/// search box), see a pack's details, and download, update or delete it. In a game's settings window
-/// it lists only the packs for that game.
+/// The Texture Packs page: browse the online catalog (Popular, All, This Game, My Games, Installed,
+/// with a search box), see a pack's details, and download, update or delete it. In a game's settings
+/// window it lists only the packs for that game.
 ///
 /// The page is a view. The catalog, the installed packs and the running install live in
 /// TexturePackService, so every Texture Packs page shows the same state and an install keeps going
@@ -57,6 +57,7 @@ private:
 	{
 		Popular,
 		All,
+		ThisGame,
 		MyGames,
 		Installed,
 	};
@@ -93,6 +94,7 @@ private:
 
 	/// The game the page is about: a game's own window, else the game that is running.
 	std::string m_context_serial;
+	std::string m_context_title; ///< the library's title for m_context_serial, when it has one
 	bool m_per_game;
 	std::unordered_set<std::string> m_owned_serials; ///< upper-case "SLUS-21410"
 
