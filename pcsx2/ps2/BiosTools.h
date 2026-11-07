@@ -128,6 +128,12 @@ extern bool IsArcadeBIOS(const char* filename, std::string* board_serial = nullp
 extern bool IsBIOSFromFd(int fd, u32& version, std::string& description, u32& region, std::string& zone);
 extern bool IsBIOSAvailable(const std::string& full_path);
 
+// Whether the file is a PlayStation 1 BIOS: the PS1's own 512 KB image, or a PS2-format ROM known to be one
+// (it passes for a PS2 BIOS otherwise). Neither runs PS2 games, and the BIOS lists and the search for a BIOS
+// leave both out. IsPs1BIOSFromFd takes ownership of fd (closed on return).
+extern bool IsPs1BIOS(const char* filename);
+extern bool IsPs1BIOSFromFd(int fd);
+
 // Namco arcade games: the arcade BIOS (a file name in the BIOS folder) that [gameid] starts with. The System 256
 // BIOS is preferred (PCSX2x6's default); another board's is used only for a game that does not run on it. Of two
 // dumps of one board, [picked] (may be empty) wins. Returns empty when no installed BIOS runs the game: [needs]
@@ -143,6 +149,9 @@ enum class BIOSLoadResult
 	Unreadable,
 	/// The file is not a PS2 BIOS image, or it is damaged.
 	NotABIOS,
+	/// The file is a PS1 BIOS (IsPs1BIOS). Also the result when no BIOS is configured or usable and the BIOS
+	/// folder holds a PS1 BIOS and no PS2 one; the path is then that file.
+	PS1BIOS,
 };
 
 // [path], when given, gets the file LoadBIOS tried, for a result other than NotFound.

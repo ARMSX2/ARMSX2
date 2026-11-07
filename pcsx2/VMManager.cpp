@@ -2181,6 +2181,12 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 				Path::GetFileName(bios_path));
 			return VMBootResult::BIOSNotUsable;
 		}
+		if (bios_result == BIOSLoadResult::PS1BIOS)
+		{
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "The BIOS file '{}' is a PlayStation 1 BIOS. PS1 BIOS files don't work for the PlayStation 2: use a BIOS dumped from a PlayStation 2."),
+				Path::GetFileName(bios_path));
+			return VMBootResult::BIOSNotUsable;
+		}
 		if (bios_result == BIOSLoadResult::NotFound)
 		{
 			if (Arcade::IsActive())
