@@ -10382,7 +10382,32 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 
 	const GSVector2i scaled_copy_size = GSVector2i(static_cast<int>(std::ceil(static_cast<float>(copy_size.x) * scale)),
 		static_cast<int>(std::ceil(static_cast<float>(copy_size.y) * scale)));
-	const bool clear = src_target->m_texture->IsRenderTarget();
+
+	// Where the copy will land in src_copy. Worked out before src_copy is fetched, because whether
+	// src_copy needs a clear depends on it. The downscale road fills src_copy its own way below.
+	GSVector4 src_rect = GSVector4::zero();
+	GSVector4 dst_rect = GSVector4::zero();
+	if (!m_downscale_source)
+	{
+		const GSVector4i offset = copy_range - GSVector4i(copy_dst_offset).xyxy();
+		// Adjust for bilinear, must be done after calculating offset.
+		copy_range.x -= 1;
+		copy_range.y -= 1;
+		copy_range.z += 1;
+		copy_range.w += 1;
+		copy_range = copy_range.rintersect(src_bounds);
+
+		src_rect = GSVector4(copy_range) / GSVector4(src_unscaled_size).xyxy();
+		dst_rect = (GSVector4(copy_range) - GSVector4(offset).xyxy()) * scale;
+	}
+
+	// A pooled texture comes back holding whatever its last user left, so a colour copy asks for a
+	// clear, and wherever the copy does not fill the whole texture the backend commits that clear
+	// over the whole texture (Vulkan: a vkCmdClearColorImage and a render pass end). That only
+	// matters if the draw can sample outside what the copy fills; when it provably cannot, the
+	// cleared texels are never read and the clear is skipped.
+	const bool clear = src_target->m_texture->IsRenderTarget() &&
+					   (m_downscale_source || !HazardCopyCoversSampling(rt, ds, tex, dst_rect, copy_size, scaled_copy_size, scale));
 	src_copy.reset(g_gs_device->CreateCompatible(src_target->m_texture, scaled_copy_size, clear));
 	if (!src_copy) [[unlikely]]
 	{
@@ -10420,20 +10445,164 @@ __ri void GSRendererHW::HandleTextureHazards(const GSTextureCache::Target* rt, c
 	}
 	else
 	{
-		const GSVector4i offset = copy_range - GSVector4i(copy_dst_offset).xyxy();
-		// Adjust for bilinear, must be done after calculating offset.
-		copy_range.x -= 1;
-		copy_range.y -= 1;
-		copy_range.z += 1;
-		copy_range.w += 1;
-		copy_range = copy_range.rintersect(src_bounds);
-
-		const GSVector4 src_rect = GSVector4(copy_range) / GSVector4(src_unscaled_size).xyxy();
-		const GSVector4 dst_rect = (GSVector4(copy_range) - GSVector4(offset).xyxy()) * scale;
-
 		g_gs_device->StretchRectAuto(src_target->m_texture, src_rect, src_copy.get(), dst_rect, Nearest);
 	}
 	m_conf.tex = src_copy.get();
+}
+
+// Whether every texel this draw can fetch from its hazard copy lies inside copied_rect, the part of
+// the copy texture HandleTextureHazards fills (device pixels). When it does, the rest of the copy
+// texture is never read and its clear is dead.
+//
+// The bound is taken from the vertices the GPU will get, not from the texture coverage the copy
+// rect was cut from: that coverage trims its own edges on heuristics (scissor, the inclusive +1),
+// which is fine for choosing what to copy but proves nothing about what is sampled. Interpolated
+// coordinates stay inside the vertices' per-axis range for every primitive class, as the vertex
+// positions are 2D and Q is constant (required below for STQ). From there each step the sampler
+// takes is applied as EmulateTextureSampler sets it up: the vertex shader's texture offset, the
+// bilinear footprint (every draw is treated as bilinear unless it cannot filter), the shader's
+// region clamp, and the sampler's clamp or repeat at the copy's edge.
+//
+// Roads whose coordinates are rewritten in ways not modelled here are refused: region repeat,
+// texture and channel shuffles, the downscale road, the TC offset hack, software anisotropic taps,
+// the upscaled sprite edge clamp, the manual deswizzle (it replaces the vertices after this), a
+// TW/TH that differs from the source's (STScale then resamples), and a copy texture whose size is
+// not exactly the copy size times the scale.
+bool GSRendererHW::HazardCopyCoversSampling(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
+	const GSTextureCache::Source* tex, const GSVector4& copied_rect, const GSVector2i& copy_size,
+	const GSVector2i& scaled_copy_size, float scale)
+{
+	if (!tex->m_target || tex->m_texture->IsDepthLike() || m_downscale_source || m_texture_shuffle ||
+		m_channel_shuffle || m_userhacks_tcoffset || m_sprite_edge_clamp)
+	{
+		return false;
+	}
+
+	const GIFRegCLAMP& CLAMP = m_cached_ctx.CLAMP;
+	if (CLAMP.WMS == CLAMP_REGION_REPEAT || CLAMP.WMT == CLAMP_REGION_REPEAT)
+		return false;
+
+	if (m_cached_ctx.TEX0.TW != tex->m_TEX0.TW || m_cached_ctx.TEX0.TH != tex->m_TEX0.TH)
+		return false;
+
+	if (m_vt.m_primclass == GS_TRIANGLE_CLASS && GSConfig.MaxAnisotropy > 1)
+		return false;
+
+	if (GSLocalMemory::m_psm[m_cached_ctx.TEX0.PSM].pal > 0 || (tex->m_from_target_TEX0.PSM & 0x30) == 0x30)
+		return false;
+
+	if (static_cast<float>(scaled_copy_size.x) != static_cast<float>(copy_size.x) * scale ||
+		static_cast<float>(scaled_copy_size.y) != static_cast<float>(copy_size.y) * scale)
+	{
+		return false;
+	}
+
+	const u32 count = m_index->tail;
+	if (count == 0)
+		return false;
+
+	// The same texture offset EmulateTextureSampler gives the vertex shader, which subtracts it from
+	// UV (sixteenths) or ST (normalised, before the divide by Q).
+	const GSVector4 half_pixel = RealignTargetTextureCoordinate(tex);
+	GSVector2 offset(half_pixel.x, half_pixel.y);
+	ApplyNativeWTexOffset(tex, rt, ds, offset);
+
+	// Coordinate range in texels. With TW/TH equal to the source's, STScale maps a texel of the
+	// draw's texture onto the same texel of the copy.
+	const GSVertex* RESTRICT v = m_vertex->buff;
+	const u16* RESTRICT index = m_index->buff;
+	GSVector4 cmin = GSVector4(FLT_MAX);
+	GSVector4 cmax = GSVector4(-FLT_MAX);
+	if (PRIM->FST)
+	{
+		for (u32 i = 0; i < count; i++)
+		{
+			const GSVertex& vi = v[index[i]];
+			const GSVector4 c = (GSVector4(static_cast<float>(vi.U), static_cast<float>(vi.V)) - GSVector4(offset.x, offset.y)) *
+								GSVector4(1.0f / 16.0f);
+			cmin = cmin.min(c);
+			cmax = cmax.max(c);
+		}
+	}
+	else
+	{
+		const float q = v[index[0]].RGBAQ.Q;
+		if (!std::isfinite(q) || q == 0.0f)
+			return false;
+
+		const GSVector4 size(static_cast<float>(1 << m_cached_ctx.TEX0.TW), static_cast<float>(1 << m_cached_ctx.TEX0.TH));
+		for (u32 i = 0; i < count; i++)
+		{
+			const GSVertex& vi = v[index[i]];
+			if (vi.RGBAQ.Q != q)
+				return false;
+
+			const GSVector4 c = ((GSVector4(vi.ST.S, vi.ST.T) - GSVector4(offset.x, offset.y)) / GSVector4(q)) * size;
+			cmin = cmin.min(c);
+			cmax = cmax.max(c);
+		}
+	}
+
+	// NaN and infinities fail here too. The bound keeps the float error of the coordinate inside the
+	// slack below.
+	constexpr float limit = 4096.0f;
+	if (!(cmin.x >= -limit && cmin.y >= -limit && cmax.x <= limit && cmax.y <= limit))
+		return false;
+
+	// The region clamp's bounds in texels, as EmulateTextureSampler computes MinMax.
+	const float clamp_lo_offset = (GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::Native && tex->GetScale() > 1.0f) ?
+									  (1.0f + 0.1f * tex->GetScale()) :
+									  0.5f;
+	constexpr float clamp_hi_offset = 0.1f;
+
+	// Bilinear reads the texels under the coordinate moved half a device texel either way, which is
+	// how both the sampler and the shader's emulation (HalfTexel, then point samples) take them; the
+	// texel under the coordinate itself is one of those two, so this bounds the nearest filter too.
+	// The slack, in device texels, covers the sampler rounding the coordinate to its sub-texel
+	// precision (at most one step, whichever way it rounds) and the float error of interpolating it
+	// (1/512).
+	const bool linear = m_vt.IsLinear() || GSConfig.TriFilter == TriFiltering::Forced;
+	const float half = linear ? (0.5f / scale) : 0.0f;
+	const u32 sub_texel_bits = g_gs_device->Features().sub_texel_precision_bits ? g_gs_device->Features().sub_texel_precision_bits : 4;
+	const float slack = std::ldexp(1.0f, -static_cast<int>(sub_texel_bits)) + (1.0f / 512.0f);
+	const auto axis_covered = [&](float lo_c, float hi_c, u32 mode, u32 region_min, u32 region_max, int size,
+								  float copied_lo, float copied_hi) {
+		float lo_t = lo_c - half;
+		float hi_t = hi_c + half;
+		if (mode == CLAMP_REGION_CLAMP)
+		{
+			// The shader clamps every tap's coordinate to the region, so a coordinate outside it
+			// lands on its edge.
+			const float region_lo = static_cast<float>(region_min) + clamp_lo_offset;
+			const float region_hi = static_cast<float>(region_max) + clamp_hi_offset;
+			if (!(region_lo <= region_hi))
+				return false;
+			lo_t = std::clamp(lo_t, region_lo, region_hi);
+			hi_t = std::clamp(hi_t, region_lo, region_hi);
+		}
+
+		int lo = static_cast<int>(std::floor(lo_t * scale - slack));
+		int hi = static_cast<int>(std::floor(hi_t * scale + slack));
+		if (mode == CLAMP_REPEAT)
+		{
+			// A fetch outside the texture would wrap to the far side.
+			if (lo < 0 || hi >= size)
+				return false;
+		}
+		else
+		{
+			// CLAMP and REGION_CLAMP sample with clamp-to-edge.
+			lo = std::clamp(lo, 0, size - 1);
+			hi = std::clamp(hi, 0, size - 1);
+		}
+
+		// The copy fills device texels [ceil(lo), floor(hi)) of its rect, whether it goes as an image
+		// copy (edges snapped to whole texels) or as a stretch draw (pixel centres inside the rect).
+		return lo >= static_cast<int>(std::ceil(copied_lo)) && hi < static_cast<int>(std::floor(copied_hi));
+	};
+
+	return axis_covered(cmin.x, cmax.x, CLAMP.WMS, CLAMP.MINU, CLAMP.MAXU, scaled_copy_size.x, copied_rect.x, copied_rect.z) &&
+		   axis_covered(cmin.y, cmax.y, CLAMP.WMT, CLAMP.MINV, CLAMP.MAXV, scaled_copy_size.y, copied_rect.y, copied_rect.w);
 }
 
 bool GSRendererHW::IsFastStencilShadowDraw() const

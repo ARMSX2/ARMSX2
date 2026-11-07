@@ -256,6 +256,9 @@ private:
 		bool& target_region, GSVector2i& unscaled_size, float& scale, GSDevice::RecycledTexture& src_copy);
 	bool CanUseTexIsFB(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex,
 		const TextureMinMaxResult& tmm);
+	bool HazardCopyCoversSampling(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
+		const GSTextureCache::Source* tex, const GSVector4& copied_rect, const GSVector2i& copy_size,
+		const GSVector2i& scaled_copy_size, float scale);
 
 	/// The texel step per native pixel that every sprite of this draw agrees on, per axis, in the
 	/// GS's own sixteenths. False -- and both steps zeroed -- when the draw has no sprites or two of

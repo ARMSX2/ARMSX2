@@ -4238,6 +4238,7 @@ void GSDeviceVK::ResolveFeatureTable()
 {
 	m_features.multidraw_fb_copy = false;
 	m_features.broken_point_sampler = false;
+	m_features.sub_texel_precision_bits = static_cast<u8>(std::min<u32>(m_device_properties.limits.subTexelPrecisionBits, 16));
 
 	// geometryShader is needed because gl_PrimitiveID is part of the Geometry SPIR-V Execution Model.
 	m_features.primitive_id = m_device_features.geometryShader;

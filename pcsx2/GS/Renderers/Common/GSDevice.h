@@ -1615,6 +1615,7 @@ public:
 		bool native_counter_draws : 1; ///< Can draw a fresh convert-and-resolve colclip draw at native resolution (GSHWDrawConfig::colclip_native_scale).
 		bool destination_alpha_loop : 1; ///< Copy road for self-reads, except a destination-alpha draw in the stencil-one mode, which reads the target in the pass under a declared feedback loop with one barrier instead of building its stencil in a setup pass. Vulkan only (Turnip on the Adreno 613); see GSSelfReadRoadPolicy.h.
 		GSFeedbackCarry feedback_carry; ///< Which draws may keep the open pass's feedback-loop bits. Vulkan only; see GSDrawRoad.h.
+		u8 sub_texel_precision_bits; ///< Fractional bits the sampler keeps of a texel coordinate (Vulkan's subTexelPrecisionBits), so how far it may round one. 0 = not known; read as Vulkan's minimum, 4.
 		FeatureSupport()
 		{
 			memset(this, 0, sizeof(*this));
