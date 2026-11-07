@@ -293,31 +293,47 @@ fun NetworkTab(state: MutableState<Settings>) {
         }
         SettingsDivider()
         HelpText(str("network.hostMappings.help"))
+        // The entries are answered only by the internal DNS server, which the PS2 is pointed at only
+        // when DNS 1 or DNS 2 is Internal. Say so beside them rather than let them sit unused.
+        if (s.network.dev9EthHosts.any { it.enabled } &&
+            s.network.dev9ModeDns1 != "Internal" && s.network.dev9ModeDns2 != "Internal")
+            HelpText(str("network.hostMappings.needsInternal"), Modifier.padding(top = 2.dp))
         run {
             val hosts = s.network.dev9EthHosts
-            for (i in 0..hosts.size) {
-                val entry = hosts.getOrNull(i)
-                EditableTextRow(if (entry == null) str("network.addHost") else "${str("network.host")} ${i + 1}", entry?.url ?: "") { newUrl ->
-                    val list = hosts.toMutableList()
-                    if (i >= list.size) {
-                        if (newUrl.isNotBlank())
-                            list.add(Dev9HostMapping(url = newUrl.trim(), ip = "0.0.0.0", enabled = true))
-                    } else if (newUrl.isBlank()) {
-                        list.removeAt(i)
-                    } else {
-                        list[i] = list[i].copy(url = newUrl.trim())
-                    }
-                    apply(s.copy(network = s.network.copy(dev9EthHosts = list)))
+            fun save(list: List<Dev9HostMapping>) = apply(s.copy(network = s.network.copy(dev9EthHosts = list)))
+            fun edit(i: Int, change: (Dev9HostMapping) -> Dev9HostMapping) =
+                save(hosts.toMutableList().also { it[i] = change(it[i]) })
+            hosts.forEachIndexed { i, entry ->
+                Text(
+                    "${str("network.host")} ${i + 1}" + if (entry.name.isNotBlank()) ": ${entry.name}" else "",
+                    color = Colors.pasx2_blue,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
+                )
+                EditableTextRow(str("network.host.name"), entry.name, emptyText = str("network.host.noName"), focusId = "host$i.name") { v ->
+                    edit(i) { it.copy(name = v) }
                 }
-                if (entry != null) {
-                    EditableTextRow("   ↳ " + str("network.mapsToIp"), entry.ip) { newIp ->
-                        val list = hosts.toMutableList()
-                        list[i] = list[i].copy(ip = newIp.trim().ifEmpty { "0.0.0.0" })
-                        apply(s.copy(network = s.network.copy(dev9EthHosts = list)))
-                    }
+                // Clearing the hostname removes the entry, as Remove does: an entry with no hostname
+                // matches nothing and is dropped when settings are read back anyway.
+                EditableTextRow(str("network.host.hostname"), entry.url, emptyText = "", focusId = "host$i.url") { v ->
+                    if (v.isBlank()) save(hosts.filterIndexed { j, _ -> j != i }) else edit(i) { it.copy(url = v) }
+                }
+                EditableTextRow(str("network.host.ip"), entry.ip, focusId = "host$i.ip") { v ->
+                    edit(i) { it.copy(ip = v.ifEmpty { "0.0.0.0" }) }
+                }
+                ToggleRow(str("network.host.enabled"), entry.enabled, focusId = "host$i.enabled") { on -> edit(i) { it.copy(enabled = on) } }
+                HostRemoveRow(str("network.host.remove"), focusId = "host$i.remove") {
+                    save(hosts.filterIndexed { j, _ -> j != i })
                 }
                 SettingsDivider()
             }
+            // A new entry starts from its hostname; its name and address are then set on its own rows.
+            EditableTextRow(str("network.addHost"), "", emptyText = "", focusId = "host.add") { newUrl ->
+                if (newUrl.isNotBlank())
+                    save(hosts + Dev9HostMapping(url = newUrl, ip = "0.0.0.0", enabled = true))
+            }
+            SettingsDivider()
         }
         } // end Online-only block
         ToggleRow(str("network.logDhcp"), s.network.dev9EthLogDhcp, field = "dev9EthLogDhcp") {
@@ -558,15 +574,24 @@ private fun LocalLinkRow(
     }
 }
 
+/** [emptyText] is shown when [value] is empty; the address rows show 0.0.0.0, the host entries' name
+ *  and hostname rows something else. [focusId] must be unique on the screen: the host entries repeat
+ *  their labels, so they pass their own. */
 @Composable
-private fun EditableTextRow(label: String, value: String, onChange: (String) -> Unit) {
+private fun EditableTextRow(
+    label: String,
+    value: String,
+    emptyText: String = "0.0.0.0",
+    focusId: String = label,
+    onChange: (String) -> Unit,
+) {
     // No modal at all. Text entry goes through LibraryKeyboard, exactly like LocalLinkRow above
     // — and these rows needed the change twice over: the dialog swallowed the pad, AND the row
     // carried no registry registration, so it could not be reached to open it in the first place.
-    val fieldLabel = str("network.address")
+    val fieldLabel = if (emptyText == "0.0.0.0") str("network.address") else label
     val edit = {
         com.armsx2.ui.home.LibraryKeyboard.open(
-            value.ifEmpty { "0.0.0.0" },
+            value.ifEmpty { if (emptyText == "0.0.0.0") "0.0.0.0" else "" },
             { onChange(it.trim()) },
             fieldLabel,
         )
@@ -578,19 +603,37 @@ private fun EditableTextRow(label: String, value: String, onChange: (String) -> 
             .clip(RoundedCornerShape(16.dp))
             .background(rowAura())
             .clickable(onClick = edit)
-            .controllerFocusable("network.field:$label", onConfirm = edit)
+            .controllerFocusable("network.field:$focusId", onConfirm = edit)
             .padding(horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.weight(1f))
         Text(
-            value.ifEmpty { "0.0.0.0" },
+            value.ifEmpty { emptyText },
             color = Color(0xFFCCCCCC),
             fontSize = 14.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/** Removes a DNS host entry. Same shape as the rows around it, in the error colour. */
+@Composable
+private fun HostRemoveRow(label: String, focusId: String, onRemove: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(rowAura())
+            .clickable(onClick = onRemove)
+            .controllerFocusable("network.field:$focusId", onConfirm = onRemove)
+            .padding(horizontal = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = MaterialTheme.colorScheme.error, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 

@@ -31,6 +31,7 @@ object TouchControls {
     private const val KEY_ACTIVE = "touch.active"
     private const val KEY_OPACITY = "touch.opacity"
     private const val KEY_PRESSURE_PERCENT = "touch.pressurePercent"
+    private const val KEY_STICK_TRAVEL = "touch.stickTravelPercent"
     // #357: pause button is now a visible top-right single-tap button; this toggles its glyph
     // (off = invisible but still tappable). The migration key one-shot relocates the old
     // invisible center pause hotspot to the new top-right spot for existing layouts.
@@ -395,6 +396,22 @@ object TouchControls {
         runCatching { MainActivityRuntime.prefs.edit().putInt(KEY_PRESSURE_PERCENT, c).apply() }
     }
 
+    /** How far a thumb moves from a touch stick's centre for full tilt, as a percentage of the
+     *  default reach (the thumb cap's travel, two thirds of the stick's radius). One value for
+     *  every touch stick: the on-screen ones and the invisible half-screen ones. A longer reach
+     *  leaves more of the drag for walking and slow aiming; the thumb art stays inside the ring
+     *  and reaches its edge exactly at full tilt either way. Persisted. */
+    val stickTravelPercent = mutableIntStateOf(100)
+
+    fun setStickTravelPercent(v: Int) {
+        val c = v.coerceIn(STICK_TRAVEL_MIN, STICK_TRAVEL_MAX)
+        stickTravelPercent.intValue = c
+        runCatching { MainActivityRuntime.prefs.edit().putInt(KEY_STICK_TRAVEL, c).apply() }
+    }
+
+    const val STICK_TRAVEL_MIN = 50
+    const val STICK_TRAVEL_MAX = 250
+
     // PS2 DualShock2 pressure-sensitive inputs (keycodes match native-lib.cpp's
     // setPadButton map): d-pad, face buttons, L1/L2/R1/R2. Start/Select/L3/R3 are
     // digital-only, so the modifier never touches them.
@@ -507,11 +524,25 @@ object TouchControls {
 
     private const val GAMEPAD_GONE_DEBOUNCE_MS = 2000L
 
+    /** Side-by-side VR is on (Settings' output.vrSideBySide): the phone sits in a headset, so the
+     *  on-screen pad is not drawn; a controller, Back or a long press still open the menu. Main
+     *  thread only: Settings posts it here. */
+    val sideBySideVR = mutableStateOf(false)
+
+    fun noteSideBySideVR(enabled: Boolean) {
+        sideBySideVR.value = enabled
+    }
+
     /** Whether the on-screen pad is drawn and answers touches (the layout editor aside). The one
      *  rule behind the overlay, so the setting, the quick-menu row and the screen cannot disagree.
      *  Auto ignores [visible] while a gamepad is attached: a stray touch must not bring the buttons
      *  back. Reads Compose state, so a composable that calls it recomposes when any input changes. */
-    fun padShown(): Boolean = when (visibilityMode.intValue) {
+    fun padShown(): Boolean = when {
+        sideBySideVR.value -> false
+        else -> padShownForMode()
+    }
+
+    private fun padShownForMode(): Boolean = when (visibilityMode.intValue) {
         VISIBILITY_OFF -> false
         VISIBILITY_AUTO -> visible.value && !gamepadConnected.value
         else -> visible.value
@@ -929,6 +960,8 @@ object TouchControls {
         activeLayout.value = match.layoutFor(portrait.value).copy()
         opacity.floatValue = MainActivityRuntime.prefs.getFloat(KEY_OPACITY, 0.55f).coerceIn(0.0f, 1.0f)
         pressurePercent.intValue = MainActivityRuntime.prefs.getInt(KEY_PRESSURE_PERCENT, 50).coerceIn(5, 95)
+        stickTravelPercent.intValue = MainActivityRuntime.prefs.getInt(KEY_STICK_TRAVEL, 100)
+            .coerceIn(STICK_TRAVEL_MIN, STICK_TRAVEL_MAX)
         faceMultiTouch.value = MainActivityRuntime.prefs.getBoolean(KEY_FACE_MULTI, true)
         gestureEnabled.value = MainActivityRuntime.prefs.getBoolean(KEY_GESTURE_ON, false)
         gestureSwipeUp.intValue = MainActivityRuntime.prefs.getInt(KEY_GESTURE_UP, 0)

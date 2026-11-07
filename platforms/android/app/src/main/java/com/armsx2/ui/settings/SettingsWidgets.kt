@@ -765,6 +765,8 @@ fun ToggleRow(
     value: Boolean,
     description: String? = null,
     field: String? = null,
+    // The controller focus id; pass one where the same label repeats on a screen.
+    focusId: String = label,
     onChange: (Boolean) -> Unit,
 ) {
     val tint = rowTint(field)
@@ -780,7 +782,7 @@ fun ToggleRow(
             .fillMaxWidth()
             .padding(vertical = 5.dp)
             .controllerFocusable(
-                controllerId = "toggle:$label",
+                controllerId = "toggle:$focusId",
                 // Only A flips it, so Left/Right can move focus past the switch without toggling it.
                 onConfirm = { emit(!value) },
             ),

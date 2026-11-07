@@ -125,12 +125,12 @@ class Scrubber(dataRoots: Collection<String>, accountNames: Collection<String> =
     fun settings(settings: JSONObject): JSONObject =
         blank(json(settings) { isSensitiveKey(it) || it in DROPPED_SETTINGS }) as JSONObject
 
-    /** Replaces the value of a [BLANKED_SETTINGS] key (and of a DNS-host mapping's `url` and `ip`) with a marker, anywhere in [value]. */
+    /** Replaces the value of a [BLANKED_SETTINGS] key (and of a DNS-host mapping's `name`, `url` and `ip`) with a marker, anywhere in [value]. */
     private fun blank(value: Any?, inHostMap: Boolean = false): Any? = when (value) {
         is JSONObject -> value.also { obj ->
             for (key in obj.keys().asSequence().toList()) {
                 val child = obj.get(key)
-                if (child is String && (key in BLANKED_SETTINGS || (inHostMap && (key == "url" || key == "ip")))) {
+                if (child is String && (key in BLANKED_SETTINGS || (inHostMap && (key == "name" || key == "url" || key == "ip")))) {
                     obj.put(key, blankedValue(child))
                 } else {
                     obj.put(key, blank(child, inHostMap || key == "dev9EthHosts"))

@@ -191,6 +191,15 @@ object CustomDriver {
             "https://api.github.com/repos/WearyConcern1165/ExynosTools/releases",
             "exynostools",
         ),
+        // avavo/MdiEx — the packs ExynosTools republishes, released here first and newer: one zip
+        // per Exynos chip (2200, 2400, 2600, ...) plus a chip-neutral "Nativo" base. Same meta.json
+        // zip format. Xclipse only, so it is listed only where GL_RENDERER names an Xclipse part.
+        DriverSource(
+            "avavo · MdiEx",
+            "https://api.github.com/repos/avavo/MdiEx/releases",
+            "mdiex",
+            supports = { r -> r == null || r.contains("Xclipse", ignoreCase = true) },
+        ),
     )
 
     /** Sane default for the driver's library soname when meta.json

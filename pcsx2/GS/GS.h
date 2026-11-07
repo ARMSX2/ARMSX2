@@ -152,6 +152,11 @@ void GSSetPortraitRenderTopAlign(bool enabled);
 void GSSetPortraitRenderTopInset(int pixels);
 /// Top-align the render in a LANDSCAPE window (foldables / clamshell controllers).
 void GSSetLandscapeRenderTopAlign(bool enabled);
+/// Side-by-side VR for phone headsets: the frame drawn twice, once in each half of the window.
+/// [size_percent] sizes each picture within its half (30-100); [distance_percent] moves the two
+/// pictures apart (positive) or together (negative) across the room their halves leave (-100-100);
+/// [height_percent] moves both down (positive) or up (negative) the same way.
+void GSSetSideBySideVR(bool enabled, int size_percent, int distance_percent, int height_percent);
 bool GSHasDisplayWindow();
 void GSResizeDisplayWindow(u32 width, u32 height, float scale);
 void GSUpdateDisplayWindow();

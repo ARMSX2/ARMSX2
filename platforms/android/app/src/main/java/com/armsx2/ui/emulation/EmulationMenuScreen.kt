@@ -1172,6 +1172,34 @@ private fun GraphicsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
     MenuSwitchRow(str("fixes.syncToHostRefresh.label"), settings.display.syncToHostRefresh, field = "syncToHostRefresh") {
         viewModel.updateSettings { current -> current.copy(display = current.display.copy(syncToHostRefresh = it)) }
     }
+    // Side-by-side VR, here as well as in Settings so it can be set up against the game itself.
+    MenuSwitchRow(str("renderer.vr.label"), settings.output.vrSideBySide, field = "vrSideBySide") {
+        viewModel.updateSettings { current -> current.copy(output = current.output.copy(vrSideBySide = it)) }
+    }
+    if (settings.output.vrSideBySide) {
+        com.armsx2.ui.settings.IntSliderRow(
+            label = str("renderer.vr.size"),
+            value = settings.output.vrSize,
+            min = 30,
+            max = 100,
+            valueFormatter = { "${it}%" },
+            field = "vrSize",
+        ) { v -> viewModel.updateSettings { current -> current.copy(output = current.output.copy(vrSize = v)) } }
+        com.armsx2.ui.settings.IntSliderRow(
+            label = str("renderer.vr.distance"),
+            value = settings.output.vrDistance,
+            min = -100,
+            max = 100,
+            field = "vrDistance",
+        ) { v -> viewModel.updateSettings { current -> current.copy(output = current.output.copy(vrDistance = v)) } }
+        com.armsx2.ui.settings.IntSliderRow(
+            label = str("renderer.vr.height"),
+            value = settings.output.vrHeight,
+            min = -100,
+            max = 100,
+            field = "vrHeight",
+        ) { v -> viewModel.updateSettings { current -> current.copy(output = current.output.copy(vrHeight = v)) } }
+    }
     // RetroArch shaders, end-to-end in-game: toggle → pick a preset → download more.
     // Same composables the Settings renderer tab renders (single definition in ui/common);
     // only the save lambda differs. updateSettings routes through InGameOverlay.saveSettings,

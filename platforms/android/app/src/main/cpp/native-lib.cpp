@@ -2000,6 +2000,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setLandscapeRenderTop(JNIEnv*, jclass, jboo
 
 extern "C"
 JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setSideBySideVR(JNIEnv*, jclass, jboolean enabled, jint size_percent,
+                                                     jint distance_percent, jint height_percent) {
+    // Side-by-side VR for phone headsets. GS statics read live per present, like the render-top
+    // flags, so it applies with or without a VM and while paused.
+    GSSetSideBySideVR(enabled == JNI_TRUE, static_cast<int>(size_percent), static_cast<int>(distance_percent),
+                      static_cast<int>(height_percent));
+}
+
+extern "C"
+JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setFrameSkip(JNIEnv *env, jclass clazz,
                                                   jint p_skip) {
     // Manual frameskip for low-end devices: present 1 of every (skip+1) frames.

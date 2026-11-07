@@ -1049,6 +1049,11 @@ public class NativeApp {
 	/** Top-align the render in a LANDSCAPE window (foldables / clamshell controllers). */
 	public static native void setLandscapeRenderTop(boolean top);
 
+	/** Side-by-side VR for phone headsets: the game drawn once in each half of the screen.
+	 *  [sizePercent] 30..100 of each half, [distancePercent] and [heightPercent] -100..100 of the
+	 *  room left around the pictures. Applies live. */
+	public static native void setSideBySideVR(boolean enabled, int sizePercent, int distancePercent, int heightPercent);
+
 	/** Pixels to keep clear at the top of a PORTRAIT render for a punch-hole/notch camera. Taken
 	 *  from the window's display cutout; 0 on devices without one. Only affects portrait
 	 *  top-aligned output. */

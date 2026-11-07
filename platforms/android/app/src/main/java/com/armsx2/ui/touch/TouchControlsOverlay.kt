@@ -1910,13 +1910,15 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
                         val o = origin.value!!
                         val dx = tracked.position.x - o.x
                         val dy = tracked.position.y - o.y
+                        // Full tilt at the chosen travel (TouchControls.stickTravelPercent of the
+                        // cap); the thumb art is scaled to that, so it meets the ring's edge exactly
+                        // at full tilt whatever the travel.
+                        val travelPx = capPx * TouchControls.stickTravelPercent.intValue / 100f
                         val r = hypot(dx, dy)
-                        val scale = if (r > capPx) capPx / r else 1f
-                        val capDx = dx * scale
-                        val capDy = dy * scale
-                        thumb.value = Offset(capDx, capDy)
-                        var nx = (capDx / capPx).coerceIn(-1f, 1f)
-                        var ny = (capDy / capPx).coerceIn(-1f, 1f)
+                        val scale = if (r > travelPx) travelPx / r else 1f
+                        var nx = (dx * scale / travelPx).coerceIn(-1f, 1f)
+                        var ny = (dy * scale / travelPx).coerceIn(-1f, 1f)
+                        thumb.value = Offset(nx * capPx, ny * capPx)
                         // Honor the per-stick axis correction (swap first, then inverts)
                         // exactly like the physical-pad path (MainActivityRuntime.dispatchStick) — the
                         // tester's "Right Stick Invert Y works on a gamepad but the touch
@@ -2304,10 +2306,12 @@ private class HalfStickInputNode(private var params: HalfStickParams) : Modifier
             val leftStick = t.leftHalf
             val dx = ch.position.x - t.origin.x
             val dy = ch.position.y - t.origin.y
+            // Full tilt at the chosen travel, as on the on-screen sticks.
+            val travelPx = p.capPx * TouchControls.stickTravelPercent.intValue / 100f
             val r = hypot(dx, dy)
-            val scale = if (r > p.capPx) p.capPx / r else 1f
-            var nx = ((dx * scale) / p.capPx).coerceIn(-1f, 1f)
-            var ny = ((dy * scale) / p.capPx).coerceIn(-1f, 1f)
+            val scale = if (r > travelPx) travelPx / r else 1f
+            var nx = ((dx * scale) / travelPx).coerceIn(-1f, 1f)
+            var ny = ((dy * scale) / travelPx).coerceIn(-1f, 1f)
             if (ControllerMappings.stickSwapXY(leftStick)) { val tmp = nx; nx = ny; ny = tmp }
             if (ControllerMappings.stickInvertX(leftStick)) nx = -nx
             if (ControllerMappings.stickInvertY(leftStick)) ny = -ny

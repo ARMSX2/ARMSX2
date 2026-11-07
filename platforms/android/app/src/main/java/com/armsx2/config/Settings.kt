@@ -30,8 +30,10 @@ import org.json.JSONObject
  *   4. Surface a widget in the appropriate Settings tab.
  */
 /** One DEV9 internal-DNS host override: [url] resolves to [ip] when DNS mode = Internal.
- *  Used for private/fan servers (e.g. obsrv for RE Outbreak) that redirect specific hostnames. */
+ *  Used for private/fan servers (e.g. obsrv for RE Outbreak) that redirect specific hostnames.
+ *  [name] is the player's own label for the entry, the core's Desc. */
 data class Dev9HostMapping(
+    val name: String = "",
     val url: String = "",
     val ip: String = "0.0.0.0",
     val enabled: Boolean = true,
@@ -618,6 +620,15 @@ data class OutputSettings(
      *  clamshell controllers (Backbone-style) open the screen downward, so a centred image sits
      *  too low. Applied live via NativeApp.setLandscapeRenderTop; only affects a landscape window. */
     val landscapeRenderTop: Boolean = false,
+    /** Side-by-side VR for phone headsets (Cardboard and its copies): the game drawn once in each
+     *  half of the screen. [vrSize] sizes each picture within its half (30..100 %); [vrDistance]
+     *  moves the two pictures apart (+) or together (-), [vrHeight] down (+) or up (-), each as a
+     *  percentage of the room left around the pictures (-100..100). Applied live via
+     *  NativeApp.setSideBySideVR; the on-screen controls are hidden while it is on. */
+    val vrSideBySide: Boolean = false,
+    val vrSize: Int = 80,
+    val vrDistance: Int = 0,
+    val vrHeight: Int = 0,
     /** Auto Progressive Scan: hold Triangle+Cross on port 1 through the boot sequence, which is
      *  the real-console combo a number of PS2 titles probe to offer 480p progressive output
      *  (Tekken 4, several Criterion games). Purely a synthetic pad hold — no core setting — so it
@@ -1026,6 +1037,16 @@ data class Settings(
         if (emitSink == null) NativeApp.setFrameSkip(frameLimit.frameSkip.coerceIn(0, 5))
         if (emitSink == null) NativeApp.setPortraitRenderTop(output.portraitRenderTop)
         if (emitSink == null) NativeApp.setLandscapeRenderTop(output.landscapeRenderTop)
+        if (emitSink == null) {
+            NativeApp.setSideBySideVR(output.vrSideBySide, output.vrSize.coerceIn(30, 100),
+                output.vrDistance.coerceIn(-100, 100), output.vrHeight.coerceIn(-100, 100))
+            // The on-screen pad hides while VR is on. TouchControls holds Compose state, so it is only
+            // ever created and touched on the main thread; applyTo can run on any thread.
+            val vr = output.vrSideBySide
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                com.armsx2.ui.touch.TouchControls.noteSideBySideVR(vr)
+            }
+        }
         // Audio (SPU2). Volume/mute are live native setters; the rest are written
         // to the base layer and applied on commit (SPU2 stream reconfigure).
         if (emitSink == null) NativeApp.setAudioVolume(audio.audioVolume.coerceIn(0, 200))
@@ -1122,7 +1143,7 @@ data class Settings(
         put("DEV9/Eth/Hosts", "Count", "int", network.dev9EthHosts.size.toString())
         network.dev9EthHosts.forEachIndexed { i, h ->
             put("DEV9/Eth/Hosts/Host$i", "Url", "string", h.url)
-            put("DEV9/Eth/Hosts/Host$i", "Desc", "string", "ARMSX2")
+            put("DEV9/Eth/Hosts/Host$i", "Desc", "string", h.name)
             put("DEV9/Eth/Hosts/Host$i", "Address", "string", h.ip.ifEmpty { "0.0.0.0" })
             put("DEV9/Eth/Hosts/Host$i", "Enabled", "bool", h.enabled.toString())
         }
@@ -1554,12 +1575,14 @@ data class Settings(
                 dev9AutoGateway = boolAt("DEV9/Eth/AutoGateway") ?: this.network.dev9AutoGateway,
                 dev9ModeDns1 = strAt("DEV9/Eth/ModeDNS1") ?: this.network.dev9ModeDns1,
                 dev9ModeDns2 = strAt("DEV9/Eth/ModeDNS2") ?: this.network.dev9ModeDns2,
-                // Internal-DNS host overrides — Count gates Host{i} sections (Desc is ignored).
+                // Internal-DNS host overrides — Count gates Host{i} sections. "ARMSX2" is the
+                // Desc every entry was written with before entries had names, so it reads as none.
                 dev9EthHosts = run {
                 val count = intAt("DEV9/Eth/Hosts/Count") ?: return@run this.network.dev9EthHosts
                 (0 until count).mapNotNull { idx ->
                     val url = ini["DEV9/Eth/Hosts/Host$idx/Url"] ?: return@mapNotNull null
                     Dev9HostMapping(
+                        name = ini["DEV9/Eth/Hosts/Host$idx/Desc"].orEmpty().takeIf { it != "ARMSX2" }.orEmpty(),
                         url = url,
                         ip = (ini["DEV9/Eth/Hosts/Host$idx/Address"] ?: "0.0.0.0").ifEmpty { "0.0.0.0" },
                         enabled = boolAt("DEV9/Eth/Hosts/Host$idx/Enabled") ?: true,
@@ -2077,6 +2100,10 @@ data class Settings(
         put("orientation", output.orientation)
         put("portraitRenderTop", output.portraitRenderTop)
         put("landscapeRenderTop", output.landscapeRenderTop)
+        put("vrSideBySide", output.vrSideBySide)
+        put("vrSize", output.vrSize)
+        put("vrDistance", output.vrDistance)
+        put("vrHeight", output.vrHeight)
         put("autoProgressiveScan", output.autoProgressiveScan)
         put("affinityMode", output.affinityMode)
         put("framerateNtsc", output.framerateNtsc.toDouble())
@@ -2189,6 +2216,7 @@ data class Settings(
         put("dev9EthHosts", JSONArray().apply {
             network.dev9EthHosts.forEach { h ->
                 put(JSONObject().apply {
+                    put("name", h.name)
                     put("url", h.url)
                     put("ip", h.ip)
                     put("enabled", h.enabled)
@@ -2554,6 +2582,10 @@ data class Settings(
                     orientation = json.optInt("orientation", def.output.orientation),
                     portraitRenderTop = json.optBoolean("portraitRenderTop", def.output.portraitRenderTop),
                     landscapeRenderTop = json.optBoolean("landscapeRenderTop", def.output.landscapeRenderTop),
+                    vrSideBySide = json.optBoolean("vrSideBySide", def.output.vrSideBySide),
+                    vrSize = json.optInt("vrSize", def.output.vrSize).coerceIn(30, 100),
+                    vrDistance = json.optInt("vrDistance", def.output.vrDistance).coerceIn(-100, 100),
+                    vrHeight = json.optInt("vrHeight", def.output.vrHeight).coerceIn(-100, 100),
                     autoProgressiveScan = json.optBoolean("autoProgressiveScan", def.output.autoProgressiveScan),
                     affinityMode = json.optInt("affinityMode", def.output.affinityMode),
                     framerateNtsc = json.optDouble("framerateNtsc", def.output.framerateNtsc.toDouble()).toFloat(),
@@ -2594,6 +2626,7 @@ data class Settings(
                     (0 until arr.length()).mapNotNull { idx ->
                         arr.optJSONObject(idx)?.let { o ->
                             Dev9HostMapping(
+                                name = o.optString("name", ""),
                                 url = o.optString("url", ""),
                                 ip = o.optString("ip", "0.0.0.0").ifEmpty { "0.0.0.0" },
                                 enabled = o.optBoolean("enabled", true),
@@ -2725,6 +2758,10 @@ data class Settings(
             if (current.output.orientation != base.output.orientation) j.put("orientation", current.output.orientation)
             if (current.output.portraitRenderTop != base.output.portraitRenderTop) j.put("portraitRenderTop", current.output.portraitRenderTop)
             if (current.output.landscapeRenderTop != base.output.landscapeRenderTop) j.put("landscapeRenderTop", current.output.landscapeRenderTop)
+            if (current.output.vrSideBySide != base.output.vrSideBySide) j.put("vrSideBySide", current.output.vrSideBySide)
+            if (current.output.vrSize != base.output.vrSize) j.put("vrSize", current.output.vrSize)
+            if (current.output.vrDistance != base.output.vrDistance) j.put("vrDistance", current.output.vrDistance)
+            if (current.output.vrHeight != base.output.vrHeight) j.put("vrHeight", current.output.vrHeight)
             if (current.output.autoProgressiveScan != base.output.autoProgressiveScan) j.put("autoProgressiveScan", current.output.autoProgressiveScan)
             if (current.output.affinityMode != base.output.affinityMode) j.put("affinityMode", current.output.affinityMode)
             if (current.output.framerateNtsc != base.output.framerateNtsc) j.put("framerateNtsc", current.output.framerateNtsc.toDouble())
@@ -2836,6 +2873,7 @@ data class Settings(
                 j.put("dev9EthHosts", JSONArray().apply {
                     current.network.dev9EthHosts.forEach { host ->
                         put(JSONObject().apply {
+                            put("name", host.name)
                             put("url", host.url)
                             put("ip", host.ip)
                             put("enabled", host.enabled)
@@ -3135,6 +3173,10 @@ data class Settings(
                 orientation = if (overrides.has("orientation")) overrides.getInt("orientation") else base.output.orientation,
                 portraitRenderTop = if (overrides.has("portraitRenderTop")) overrides.getBoolean("portraitRenderTop") else base.output.portraitRenderTop,
                 landscapeRenderTop = if (overrides.has("landscapeRenderTop")) overrides.getBoolean("landscapeRenderTop") else base.output.landscapeRenderTop,
+                vrSideBySide = if (overrides.has("vrSideBySide")) overrides.getBoolean("vrSideBySide") else base.output.vrSideBySide,
+                vrSize = if (overrides.has("vrSize")) overrides.getInt("vrSize").coerceIn(30, 100) else base.output.vrSize,
+                vrDistance = if (overrides.has("vrDistance")) overrides.getInt("vrDistance").coerceIn(-100, 100) else base.output.vrDistance,
+                vrHeight = if (overrides.has("vrHeight")) overrides.getInt("vrHeight").coerceIn(-100, 100) else base.output.vrHeight,
                 autoProgressiveScan = if (overrides.has("autoProgressiveScan")) overrides.getBoolean("autoProgressiveScan") else base.output.autoProgressiveScan,
                 affinityMode = if (overrides.has("affinityMode")) overrides.getInt("affinityMode") else base.output.affinityMode,
                 framerateNtsc = if (overrides.has("framerateNtsc")) overrides.getDouble("framerateNtsc").toFloat() else base.output.framerateNtsc,
@@ -3178,6 +3220,7 @@ data class Settings(
                             array.optJSONObject(index)?.let { host ->
                                 add(
                                     Dev9HostMapping(
+                                        name = host.optString("name"),
                                         url = host.optString("url"),
                                         ip = host.optString("ip", "0.0.0.0"),
                                         enabled = host.optBoolean("enabled", true),

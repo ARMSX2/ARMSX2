@@ -101,6 +101,12 @@ static int s_portrait_render_top_inset = 0;
 // awkwardly low and the letterbox lands where the hinge/controller is — reported as the one thing
 // keeping those users on another emulator. Default off (centre), so nothing changes unless asked.
 static bool s_landscape_render_top = false;
+// Side-by-side VR (GSSetSideBySideVR): the frame drawn once in each half of the window, for phone
+// headsets. Off unless a frontend turns it on.
+static bool s_sbs_vr = false;
+static int s_sbs_vr_size = 80;
+static int s_sbs_vr_distance = 0;
+static int s_sbs_vr_height = 0;
 
 // Defined further down alongside the present path. Forward-declared because Merge() needs the
 // frame's on-screen rect to size the RetroArch shader chain, and it runs before them.
@@ -750,6 +756,56 @@ static GSVector4 CalculateDrawDstRect(s32 window_width, s32 window_height, const
 	return ret;
 }
 
+/// The two eye rects of side-by-side VR. Each half of the window holds a box s_sbs_vr_size percent
+/// of the half, moved within the room left over by the distance and height settings; the frame is
+/// fitted into each box at its aspect ratio and centred there. The display alignment and render-top
+/// options do not apply: a headset's lenses are centred on its halves.
+static void CalculateSideBySideRects(s32 window_width, s32 window_height, const GSVector4i& src_rect,
+	const GSVector2i& src_size, bool flip_y, bool is_progressive, GSVector4* left, GSVector4* right)
+{
+	const float half_w = static_cast<float>(window_width) * 0.5f;
+	const float full_h = static_cast<float>(window_height);
+	const float scale = static_cast<float>(std::clamp(s_sbs_vr_size, 30, 100)) / 100.0f;
+	const float box_w = std::max(half_w * scale, 1.0f);
+	const float box_h = std::max(full_h * scale, 1.0f);
+	const float room_x = (half_w - box_w) * 0.5f;
+	const float room_y = (full_h - box_h) * 0.5f;
+	const float apart = room_x * static_cast<float>(std::clamp(s_sbs_vr_distance, -100, 100)) / 100.0f;
+	const float box_y = room_y + room_y * static_cast<float>(std::clamp(s_sbs_vr_height, -100, 100)) / 100.0f;
+	const float left_box_x = room_x - apart;
+	const float right_box_x = half_w + room_x + apart;
+
+	const GSVector4 fit = CalculateDrawDstRect(static_cast<s32>(box_w), static_cast<s32>(box_h), src_rect, src_size,
+		GSDisplayAlignment::Center, false, is_progressive);
+	const float fit_w = fit.z - fit.x;
+	const float fit_h = fit.w - fit.y;
+	const float in_x = (box_w - fit_w) * 0.5f;
+	float top = box_y + (box_h - fit_h) * 0.5f;
+	if (flip_y)
+		top = full_h - (top + fit_h);
+	*left = GSVector4(left_box_x + in_x, top, left_box_x + in_x + fit_w, top + fit_h);
+	*right = GSVector4(right_box_x + in_x, top, right_box_x + in_x + fit_w, top + fit_h);
+}
+
+/// Draws [current] at [draw_rect], or at both eye rects while side-by-side VR is on.
+static void PresentFrameRects(GSTexture* current, const GSVector4i& src_rect, const GSVector4& src_uv,
+	const GSVector4& draw_rect, bool is_progressive, float shader_time)
+{
+	const PresentShader shader = s_tv_shader_indices[GSConfig.TVShader];
+	const Filter filter = BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off);
+	if (!s_sbs_vr)
+	{
+		g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect, shader, shader_time, filter);
+		return;
+	}
+	const GSVector2i pres_size = g_gs_device->GetPresentationSize();
+	GSVector4 left, right;
+	CalculateSideBySideRects(pres_size.x, pres_size.y, src_rect, current->GetSize(), g_gs_device->UsesLowerLeftOrigin(),
+		is_progressive, &left, &right);
+	g_gs_device->PresentRect(current, src_uv, nullptr, left, shader, shader_time, filter);
+	g_gs_device->PresentRect(current, src_uv, nullptr, right, shader, shader_time, filter);
+}
+
 static GSVector4i CalculateDrawSrcRect(const GSTexture* src, const GSVector2i real_size)
 {
 	const GSVector2i size(src->GetSize());
@@ -1357,8 +1413,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				const u64 current_time = Common::Timer::GetCurrentValue();
 				const float shader_time = static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - m_shader_time_start));
 
-				g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect,
-					s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+				PresentFrameRects(current, src_rect, src_uv, draw_rect, GetVideoMode() == GSVideoMode::SDTV_480P, shader_time);
 				// This condition IS "the GS produced a frame this vsync" — every other present
 				// path either has no output to draw or redraws the previous one. Frame generation
 				// reads it so it does not interpolate motion into frames the game never drew.
@@ -1368,7 +1423,7 @@ void GSRenderer::VSync(u32 field, bool registers_written, bool idle_frame)
 				// filters it, rotation turns it.
 				g_gs_device->NotePresentGeometry(src_rect, draw_rect, GSConfig.LinearPresent != GSPostBilinearMode::Off,
 					GSConfig.Upscaler == GSUpscaler::Off && GSConfig.CASMode == GSCASMode::Disabled &&
-						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY &&
+						s_tv_shader_indices[GSConfig.TVShader] == PresentShader::COPY && !s_sbs_vr &&
 						GSConfig.LinearPresent != GSPostBilinearMode::BilinearSharp &&
 						g_gs_device->GetPresentRotation() == DisplayRotation::Rot0 && !g_gs_device->UsesLowerLeftOrigin());
 			}
@@ -1657,8 +1712,7 @@ void GSRenderer::PresentCurrentFrame()
 			const u64 current_time = Common::Timer::GetCurrentValue();
 			const float shader_time = static_cast<float>(Common::Timer::ConvertValueToSeconds(current_time - m_shader_time_start));
 
-			g_gs_device->PresentRect(current, src_uv, nullptr, draw_rect,
-				s_tv_shader_indices[GSConfig.TVShader], shader_time, BilnIf(GSConfig.LinearPresent != GSPostBilinearMode::Off));
+			PresentFrameRects(current, src_rect, src_uv, draw_rect, GetVideoMode() == GSVideoMode::SDTV_480P, shader_time);
 		}
 
 		EndPresentFrame();
@@ -1725,6 +1779,14 @@ void GSSetPortraitRenderTopAlign(bool enabled)
 void GSSetLandscapeRenderTopAlign(bool enabled)
 {
 	s_landscape_render_top = enabled;
+}
+
+void GSSetSideBySideVR(bool enabled, int size_percent, int distance_percent, int height_percent)
+{
+	s_sbs_vr_size = std::clamp(size_percent, 30, 100);
+	s_sbs_vr_distance = std::clamp(distance_percent, -100, 100);
+	s_sbs_vr_height = std::clamp(height_percent, -100, 100);
+	s_sbs_vr = enabled;
 }
 
 GSTexture* GSRenderer::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size)

@@ -224,7 +224,7 @@ class ScrubberTest {
         val settings = JSONObject(
             """{"localLinkAddress":"192.168.1.20","dev9Ps2Ip":"192.168.1.50","dev9Mask":"255.255.255.0","dev9Gateway":"192.168.1.1",""" +
                 """"dev9Dns1":"8.8.8.8","dev9Dns2":"0.0.0.0","localLinkPort":19072,""" +
-                """"dev9EthHosts":[{"url":"my.private.server","ip":"10.0.0.7","enabled":true}]}""",
+                """"dev9EthHosts":[{"name":"My server","url":"my.private.server","ip":"10.0.0.7","enabled":true}]}""",
         )
         val out = scrubber.settings(settings)
         assertEquals("<redacted>", out.getString("localLinkAddress"))
@@ -235,11 +235,13 @@ class ScrubberTest {
         assertEquals("0.0.0.0", out.getString("dev9Dns2"))
         assertEquals(19072, out.getInt("localLinkPort"))
         val host = out.getJSONArray("dev9EthHosts").getJSONObject(0)
+        assertEquals("<redacted>", host.getString("name"))
         assertEquals("<redacted>", host.getString("url"))
         assertEquals("<redacted>", host.getString("ip"))
         assertTrue(host.getBoolean("enabled"))
         assertFalse(out.toString().contains("192.168"))
         assertFalse(out.toString().contains("my.private.server"))
+        assertFalse(out.toString().contains("My server"))
     }
 
     @Test
