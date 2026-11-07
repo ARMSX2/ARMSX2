@@ -7243,6 +7243,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getBiosInfoFromFd(JNIEnv* env, jclass, jint
     return obj;
 }
 
+// True when the file is a PS1 BIOS (see IsPs1BIOS), so the import can say so instead of "not a BIOS".
+// Takes ownership of `fd`, like getBiosInfoFromFd.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isPs1BiosFromFd(JNIEnv*, jclass, jint fd)
+{
+    return IsPs1BIOSFromFd(static_cast<int>(fd)) ? JNI_TRUE : JNI_FALSE;
+}
+
 void Native::vmSetPaused(bool paused) {
     if (!s_jvm || !s_NativeApp_class || !s_vmSetPaused_mid) return;
 

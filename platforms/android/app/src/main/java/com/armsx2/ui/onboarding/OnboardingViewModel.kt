@@ -19,6 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.NativeApp
 
+private const val PS1_BIOS_ADVICE = "PS1 BIOS files don't work for the PlayStation 2: use a BIOS dumped from a PlayStation 2."
+
 /** One importable BIOS the user can pick from the setup list. */
 data class BiosCandidate(val name: String, val path: String, val info: BiosInfo)
 
@@ -221,7 +223,14 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 busy = false,
             )
         } else {
-            state.value.copy(busy = false, error = "The selected file is not a valid PlayStation 2 BIOS.")
+            state.value.copy(
+                busy = false,
+                error = if (isPs1Bios(context, uri)) {
+                    "This is a PlayStation 1 BIOS. $PS1_BIOS_ADVICE"
+                } else {
+                    "The selected file is not a valid PlayStation 2 BIOS."
+                },
+            )
         }
     }
 
@@ -236,6 +245,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         val context = getApplication<Application>()
         runCatching { context.contentResolver.takePersistableUriPermission(treeUri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         viewModelScope.launch {
+            var sawPs1 = false
             val options = withContext(Dispatchers.IO) {
                 val children = DocumentFile.fromTreeUri(context, treeUri)?.listFiles()?.filter(DocumentFile::isFile).orEmpty()
                 // Source stem -> imported stem, so the .mec/.nvm companions below can follow
@@ -252,6 +262,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                 // rejects them and they were dropped — the .bin arrived without the console
                 // settings that belong to it. Requested by Rei Ayanami.
                 copyBiosSiblings(context, children, importedStems)
+                if (candidates.isEmpty()) sawPs1 = children.any { isPs1Bios(context, it.uri) }
                 candidates
             }
             val chosen = options.firstOrNull()
@@ -266,7 +277,14 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
                     busy = false,
                 )
             } else {
-                state.value.copy(busy = false, error = "No PlayStation 2 BIOS files were found in that folder.")
+                state.value.copy(
+                    busy = false,
+                    error = if (sawPs1) {
+                        "Those are PlayStation 1 BIOS files. $PS1_BIOS_ADVICE"
+                    } else {
+                        "No PlayStation 2 BIOS files were found in that folder."
+                    },
+                )
             }
         }
     }
@@ -395,6 +413,12 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
     fun dismissError() {
         state.value = state.value.copy(error = null)
     }
+
+    /** Whether the document is a PS1 BIOS (a PS1's scph1001.bin, the PS3's ps1_rom.bin), so the error can say so. */
+    private fun isPs1Bios(context: Context, uri: Uri): Boolean = runCatching {
+        val descriptor = context.contentResolver.openFileDescriptor(uri, "r") ?: return@runCatching false
+        NativeApp.isPs1BiosFromFd(descriptor.detachFd())
+    }.getOrDefault(false)
 
     private fun probeFile(file: File): BiosInfo? = runCatching {
         val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)

@@ -1171,6 +1171,8 @@ public class NativeApp {
 	 * Returns null if the file isn't a valid BIOS image.
 	 */
 	public static native BiosInfo getBiosInfoFromFd(int fd);
+	/** Whether the file is a PS1 BIOS. Takes ownership of fd, like getBiosInfoFromFd. */
+	public static native boolean isPs1BiosFromFd(int fd);
 
 	/**
 	 * Read enough of a PS2 disc image to extract its serial (e.g.

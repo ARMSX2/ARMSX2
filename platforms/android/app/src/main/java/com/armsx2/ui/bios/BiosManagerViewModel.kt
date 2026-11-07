@@ -18,6 +18,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+private const val PS1_BIOS_ADVICE = "PS1 BIOS files don't work for the PlayStation 2: use a BIOS dumped from a PlayStation 2."
+private const val PS1_BIOS_FILE_ERROR = "This is a PlayStation 1 BIOS. $PS1_BIOS_ADVICE"
+
 data class InstalledBios(
     val file: File,
     val info: BiosInfo,
@@ -130,6 +133,7 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
     fun importFolder(treeUri: Uri) {
         scope.launch {
             state.value = state.value.copy(busy = true, error = null)
+            var sawPs1 = false
             val imported = withContext(Dispatchers.IO) {
                 val context = getApplication<Application>()
                 var count = 0
@@ -147,13 +151,18 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
                         if (sourceStem != null && target != null) {
                             importedStems[sourceStem] = target.name.substringBeforeLast('.')
                         }
+                    } else if (result.exceptionOrNull()?.message == PS1_BIOS_FILE_ERROR) {
+                        sawPs1 = true
                     }
                 }
                 copyBiosSiblings(context, children, importedStems)
                 count
             }
             if (imported == 0) {
-                state.value = state.value.copy(busy = false, error = "No valid PlayStation 2 BIOS found in that folder.")
+                state.value = state.value.copy(
+                    busy = false,
+                    error = if (sawPs1) "Those are PlayStation 1 BIOS files. $PS1_BIOS_ADVICE" else "No valid PlayStation 2 BIOS found in that folder.",
+                )
             } else {
                 refresh()
             }
@@ -238,7 +247,11 @@ class BiosManagerViewModel(application: Application) : AndroidViewModel(applicat
             return@runCatching dest
         }
         val descriptor = context.contentResolver.openFileDescriptor(uri, "r") ?: error("Unable to open the file.")
-        NativeApp.getBiosInfoFromFd(descriptor.detachFd()) ?: error("Not a valid PlayStation 2 BIOS.")
+        NativeApp.getBiosInfoFromFd(descriptor.detachFd()) ?: run {
+            val ps1 = context.contentResolver.openFileDescriptor(uri, "r")
+                ?.let { NativeApp.isPs1BiosFromFd(it.detachFd()) } == true
+            error(if (ps1) PS1_BIOS_FILE_ERROR else "Not a valid PlayStation 2 BIOS.")
+        }
         val directory = MainActivityRuntime.internalBiosDir(context).apply { mkdirs() }
         val safeName = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val target = uniqueFile(directory, safeName)
