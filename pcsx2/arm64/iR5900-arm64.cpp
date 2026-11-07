@@ -166,12 +166,12 @@ static u8 manual_counter[Ps2MemSize::TotalRam / 4096] = {};
 // Forward declarations
 static void recRecompile(const u32 startpc);
 static void recResetRaw();
-static void recExitExecution();
+[[noreturn]] static void recExitExecution();
 static void recSafeExitExecution();
 #ifdef PCSX2_RECOMPILER_TESTS
 static bool harnessShouldExit();
 #endif
-static void recError(u32 error);
+[[noreturn]] static void recError(u32 error);
 static void dyna_block_discard(u32 start, u32 sz);
 static void dyna_page_reset(u32 start, u32 sz);
 static void iopClearRecLUT(BASEBLOCK* base, int count);
@@ -195,6 +195,7 @@ static const void* EnterRecompiledCode = nullptr;
 static const void* DispatchBlockDiscard = nullptr;
 static const void* DispatchPageReset = nullptr;
 static const void* UnmappedRecLUTPage = nullptr;
+static const void* RecErrorExit = nullptr;
 
 // B.cond and CBZ reach ±1MB. The dispatchers are generated at the base of a
 // code cache tens of megabytes deep, so past its first megabyte the event
@@ -488,11 +489,26 @@ static const void* _DynGen_DispatchPageReset()
 	return retval;
 }
 
+// Every recLUT entry of an unmapped page points here. Falls into RecErrorExit.
 static const void* _DynGen_UnmappedRecLUTPage()
 {
 	u8* retval = armGetCurrentCodePointer();
 	armAsm->Mov(RWARG1, 0);
-	armEmitCall((void*)(void(*)(u32))recError);
+	return retval;
+}
+
+// Leaves generated code for good through recError, with w0 = recError's error
+// code. Jumped to, not called. recExitExecution restores only the host
+// registers fastjmp_set saved, so the cycle count and the pinned guest
+// registers are stored first, as DispatcherEvent does before an exit from
+// recEventTest.
+static const void* _DynGen_RecErrorExit()
+{
+	u8* retval = armGetCurrentCodePointer();
+	armFlushCycleDelta();
+	armFlushEEGPRPins();
+	armEmitCall((void*)recError);
+	armAsm->Brk(0); // recError does not return
 	return retval;
 }
 
@@ -556,6 +572,7 @@ static void _DynGen_Dispatchers()
 	DispatchBlockDiscard = _DynGen_DispatchBlockDiscard();
 	DispatchPageReset = _DynGen_DispatchPageReset();
 	UnmappedRecLUTPage = _DynGen_UnmappedRecLUTPage();
+	RecErrorExit = _DynGen_RecErrorExit(); // must follow UnmappedRecLUTPage
 
 	// Block linker: stale / not-yet-compiled link sites divert to
 	// DispatcherReg — re-dispatch from the pc the site's tail already
@@ -572,7 +589,7 @@ static void _DynGen_Dispatchers()
 //  Error handling
 // =====================================================================================================
 
-static void recError(u32 error)
+[[noreturn]] static void recError(u32 error)
 {
 	switch (error)
 	{
@@ -587,8 +604,11 @@ static void recError(u32 error)
 			break;
 	}
 
+	// Runs on the EE thread with fastjmp_set armed, so it can leave at once.
+	// Cpu->ExitExecution only sets the flag the next event test reads, and the
+	// generated code that called this has no path back to an event test.
 	VMManager::SetPaused(true);
-	Cpu->ExitExecution();
+	recExitExecution();
 }
 
 // =====================================================================================================
@@ -1768,7 +1788,7 @@ void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
 
 	armAsm->Bind(&unaligned);
 	armAsm->Mov(RWARG1, 1);
-	armEmitCall((void*)recError);
+	armEmitJmp(RecErrorExit);
 }
 
 // =====================================================================================================
@@ -4252,7 +4272,7 @@ static void recStep()
 {
 }
 
-static void recExitExecution()
+[[noreturn]] static void recExitExecution()
 {
 	fastjmp_jmp(&m_SetJmp_StateCheck, 1);
 }

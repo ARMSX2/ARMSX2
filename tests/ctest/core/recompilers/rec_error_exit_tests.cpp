@@ -85,3 +85,84 @@ TEST(RecErrorExit, IopJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 	ExpectOneReport("R3000A Exception", "Jump to unmapped recLUT page (PC: 0x10000000)");
 	EXPECT_EQ(psxRegs.pc, kIopUnmappedTarget);
 }
+
+// Jump into an unmapped page: the page's every table entry is the unmapped
+// stub, which reports and must leave generated code with pc still the target.
+TEST(RecErrorExit, EeJumpToUnmappedPageReportsAndLeavesPcAtTarget)
+{
+	StubHost::TakeErrorReports();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, kEeUnmappedTarget);
+	h.LoadProgramNoTerm({
+		JR(reg::t0),
+		ADDIU(reg::v0, reg::zero, 7),
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "Jump to unmapped recLUT page (PC: 0x1e800000)");
+	EXPECT_EQ(cpuRegs.pc, kEeUnmappedTarget);
+	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
+
+	// Resume: the same error again, and back here.
+	ReenterEe();
+	ExpectOneReport("R5900 Exception", "Jump to unmapped recLUT page (PC: 0x1e800000)");
+	EXPECT_EQ(cpuRegs.pc, kEeUnmappedTarget);
+}
+
+// The three forms SetBranchReg emits a register jump in: a plain jump, the
+// JR $ra return, and the JALR $ra call. Each tests the target's low bits before
+// transferring. The delay slot writes $v0 and the JALR writes $ra, both pinned
+// to host registers, so the values in cpuRegs show that the exit stored the
+// pins.
+TEST(RecErrorExit, EeJrToUnalignedAddressReportsAndStopsThere)
+{
+	StubHost::TakeErrorReports();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, kUnalignedTarget);
+	h.LoadProgramNoTerm({
+		JR(reg::t0),
+		ADDIU(reg::v0, reg::zero, 7),
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
+}
+
+TEST(RecErrorExit, EeJrRaToUnalignedAddressReportsAndStopsThere)
+{
+	StubHost::TakeErrorReports();
+
+	EeRecTestHarness h;
+	h.LoadProgramNoTerm({
+		ADDIU(reg::ra, reg::zero, static_cast<s16>(0x0103)),
+		JR(reg::ra),
+		ADDIU(reg::v0, reg::zero, 7),
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00000103)");
+	EXPECT_EQ(cpuRegs.pc, 0x0103u);
+	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
+}
+
+TEST(RecErrorExit, EeJalrRaToUnalignedAddressReportsAndStopsThere)
+{
+	StubHost::TakeErrorReports();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, kUnalignedTarget);
+	h.LoadProgramNoTerm({
+		JALR(reg::ra, reg::t0),
+		ADDIU(reg::v0, reg::zero, 7),
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
+	EXPECT_EQ(cpuRegs.GPR.n.ra.UD[0], kProgramPc + 8);
+}
