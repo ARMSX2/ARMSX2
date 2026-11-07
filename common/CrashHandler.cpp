@@ -176,14 +176,126 @@ void CrashHandler::WriteDumpForCaller()
 	WriteMinidumpAndCallstack(nullptr);
 }
 
-#elif !defined(__APPLE__) && defined(HAS_LIBBACKTRACE)
+#else
+
+#include <signal.h>
+
+#if !defined(__APPLE__)
+
+#include <atomic>
+#include <cerrno>
+#include <cstring>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+// How a crash ends on Linux and Android: our handlers log what they can, then
+// put back the action that was installed before the first of them and return.
+// The faulting instruction runs again and faults again, and this time the
+// signal goes where it would have gone without us: the default action on a
+// Linux desktop (a core dump, and the shell says "Segmentation fault"), or on
+// Android debuggerd's handler, whose tombstone then records the real signal,
+// fault address and registers. Calling abort() instead replaced all of that
+// with a SIGABRT from inside the handler.
+//
+// On Android the "action installed before us" is the one ART's sigchain hands
+// back: sigchain keeps its own handler in the kernel and treats ours as the
+// app's action, so our sigaction() calls only swap the app's action, and the
+// one PageFaultHandler::Install got back is debuggerd's. Putting that back from
+// inside the handler is a sigaction() through sigchain again. When the fault
+// repeats, sigchain asks ART first (ART declined the first time, and the pc is
+// in our code, not ART's) and then calls debuggerd's handler with the
+// faulting context.
+namespace CrashHandler
+{
+	struct PreviousAction
+	{
+		struct sigaction action;
+		bool known;
+	};
+	static PreviousAction s_previous[2] = {};
+
+	// The thread that last put an old action back. If that thread comes back
+	// here, the action we put back led here again (a handler of ours installed
+	// over another of ours), and it gets the default action instead.
+	static std::atomic<long> s_redelivered_by{0};
+
+	static int Slot(int signal)
+	{
+		return signal == SIGSEGV ? 0 : signal == SIGBUS ? 1 : -1;
+	}
+
+	static long CurrentThreadId()
+	{
+#if defined(__linux__)
+		return static_cast<long>(syscall(SYS_gettid));
+#else
+		return static_cast<long>(getpid());
+#endif
+	}
+
+	static void WriteToStderr(const char* text)
+	{
+		size_t left = std::strlen(text);
+		while (left > 0)
+		{
+			const ssize_t n = write(STDERR_FILENO, text, left);
+			if (n < 0 && errno == EINTR)
+				continue;
+			if (n <= 0)
+				break;
+			text += n;
+			left -= static_cast<size_t>(n);
+		}
+	}
+
+	static void Redeliver(int signal, siginfo_t* siginfo)
+	{
+		struct sigaction action = {};
+		sigemptyset(&action.sa_mask);
+		action.sa_handler = SIG_DFL;
+
+		const long tid = CurrentThreadId();
+		const int slot = Slot(signal);
+		if (slot >= 0 && s_previous[slot].known && s_redelivered_by.exchange(tid) != tid)
+			action = s_previous[slot].action;
+		sigaction(signal, &action, nullptr);
+
+		// A fault happens again when the instruction is retried; a signal
+		// that was sent (kill, tgkill, sigqueue) does not, so send it again.
+		// Our handlers are SA_NODEFER, so it arrives before this returns.
+		if (siginfo && siginfo->si_code <= 0)
+		{
+#if defined(__linux__)
+			if (syscall(SYS_rt_tgsigqueueinfo, getpid(), tid, signal, siginfo) != 0)
+				raise(signal);
+#else
+			raise(signal);
+#endif
+		}
+	}
+} // namespace CrashHandler
+
+void CrashHandler::RecordReplacedHandler(int signal, const struct sigaction& replaced)
+{
+	// Replacing our own crash handler: it already knows what came before it.
+	if ((replaced.sa_flags & SA_SIGINFO) && replaced.sa_sigaction == CrashSignalHandler)
+		return;
+
+	const int slot = Slot(signal);
+	if (slot < 0 || s_previous[slot].known)
+		return;
+	s_previous[slot].action = replaced;
+	s_previous[slot].known = true;
+}
+
+#endif // !defined(__APPLE__)
+
+#if !defined(__APPLE__) && defined(HAS_LIBBACKTRACE)
 
 #include "FileSystem.h"
 
 #include <backtrace.h>
-#include <signal.h>
 #include <sys/mman.h>
-#include <unistd.h>
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
@@ -297,17 +409,18 @@ void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
 {
 	std::unique_lock lock(s_crash_mutex);
 
-	// If we crash somewhere in libbacktrace, don't bother trying again.
-	if (!s_in_signal_handler)
+	// If we crash somewhere in libbacktrace, don't bother trying again. Without
+	// Install() there is no backtrace state to log a callstack with.
+	if (!s_in_signal_handler && s_backtrace_state)
 	{
 		s_in_signal_handler = true;
 
-#if defined(__APPLE__) && defined(__x86_64__)
-		void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext->__ss.__rip);
-#elif defined(__FreeBSD__) && defined(__x86_64__)
+#if defined(__FreeBSD__) && defined(__x86_64__)
 		void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.mc_rip);
 #elif defined(__x86_64__)
 		void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__linux__) && defined(__aarch64__)
+		void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.pc);
 #else
 		void* const exception_pc = nullptr;
 #endif
@@ -319,10 +432,10 @@ void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
 
 	lock.unlock();
 
-	// We can't continue from here. Just bail out and dump core.
-	std::fputs("Aborting application.\n", stderr);
-	std::fflush(stderr);
-	std::abort();
+	// The bug-report tooling looks for this line. The process does not abort
+	// any more: the signal itself kills it (see Redeliver).
+	WriteToStderr("Aborting application.\n");
+	Redeliver(signal, siginfo);
 }
 
 bool CrashHandler::Install()
@@ -337,10 +450,12 @@ bool CrashHandler::Install()
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_SIGINFO | SA_NODEFER;
 	sa.sa_sigaction = CrashSignalHandler;
-	if (sigaction(SIGBUS, &sa, nullptr) != 0)
+	if (sigaction(SIGBUS, &sa, &s_previous[Slot(SIGBUS)].action) != 0)
 		return false;
-	if (sigaction(SIGSEGV, &sa, nullptr) != 0)
+	s_previous[Slot(SIGBUS)].known = true;
+	if (sigaction(SIGSEGV, &sa, &s_previous[Slot(SIGSEGV)].action) != 0)
 		return false;
+	s_previous[Slot(SIGSEGV)].known = true;
 
 	return true;
 }
@@ -369,6 +484,12 @@ void CrashHandler::WriteDumpForCaller()
 {
 }
 
+#if defined(__APPLE__)
+
+void CrashHandler::RecordReplacedHandler(int signal, const struct sigaction& replaced)
+{
+}
+
 void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
 {
 	// We can't continue from here. Just bail out and dump core.
@@ -376,5 +497,19 @@ void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
 	std::fflush(stderr);
 	std::abort();
 }
+
+#else
+
+void CrashHandler::CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx)
+{
+	// The bug-report tooling looks for this line. The process does not abort
+	// any more: the signal itself kills it (see Redeliver).
+	WriteToStderr("Aborting application.\n");
+	Redeliver(signal, siginfo);
+}
+
+#endif
+
+#endif
 
 #endif

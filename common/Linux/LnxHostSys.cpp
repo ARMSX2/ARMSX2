@@ -458,7 +458,9 @@ void PageFaultHandler::SignalHandler(int sig, siginfo_t* info, void* ctx)
 	if (result == HandlerResult::ContinueExecution)
 		return;
 
-	// We couldn't handle it. Pass it off to the crash dumper.
+	// We couldn't handle it. Pass it off to the crash dumper, which hands the
+	// signal back to whoever had it before us: returning from here retries the
+	// instruction, and it faults under them.
 	CrashHandler::CrashSignalHandler(sig, info, ctx);
 }
 
@@ -478,19 +480,24 @@ bool PageFaultHandler::Install(Error* error)
 	sa.sa_flags = SA_SIGINFO | SA_NODEFER;
 	sa.sa_sigaction = SignalHandler;
 
-	if (sigaction(SIGSEGV, &sa, nullptr) != 0)
+	// What we replace is what a crash goes back to (CrashHandler). On Android
+	// that is debuggerd's handler, as ART's sigchain reports it.
+	struct sigaction replaced;
+	if (sigaction(SIGSEGV, &sa, &replaced) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGSEGV failed: ", errno);
 		return false;
 	}
+	CrashHandler::RecordReplacedHandler(SIGSEGV, replaced);
 
 #ifdef ARCH_ARM64
 	// We can get SIGBUS on ARM64.
-	if (sigaction(SIGBUS, &sa, nullptr) != 0)
+	if (sigaction(SIGBUS, &sa, &replaced) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGBUS failed: ", errno);
 		return false;
 	}
+	CrashHandler::RecordReplacedHandler(SIGBUS, replaced);
 #endif
 
 	s_installed = true;
