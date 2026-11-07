@@ -3064,6 +3064,37 @@ static std::string s_arcade_launch_sram;
 static std::mutex s_last_boot_error_mutex;
 static std::string s_last_boot_error;
 
+// What Host::ReportErrorAsync was told during the current boot, for s_last_boot_error. Guarded by
+// s_last_boot_error_mutex. Before VMManager::Initialize every report is kept: a failed
+// CPUThreadInitialize has no other description. Inside Initialize the boot thread's own failures
+// come back in its Error, and the reports it makes there are warnings that do not stop the boot
+// (memory cards, NVRAM), so only reports from other threads are kept: the GS thread's, when the
+// render device fails to open.
+enum class BootReportPhase
+{
+    None,
+    CPUThreadInit,
+    VMInit,
+};
+static BootReportPhase s_boot_report_phase = BootReportPhase::None;
+static std::thread::id s_boot_report_thread;
+static std::string s_boot_reports;
+
+static void BeginBootReports(BootReportPhase phase)
+{
+    std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+    s_boot_report_phase = phase;
+    s_boot_report_thread = std::this_thread::get_id();
+    s_boot_reports.clear();
+}
+
+static std::string EndBootReports()
+{
+    std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+    s_boot_report_phase = BootReportPhase::None;
+    return std::exchange(s_boot_reports, std::string());
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setArcadeLaunchFiles(JNIEnv* env, jclass, jstring elf,
@@ -4083,6 +4114,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         s_cpu_thread_id = std::this_thread::get_id();
         s_cpu_thread_queue.clear();
     }
+    {
+        std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+        s_last_boot_error.clear();
+    }
 
     const char* error;
     if (!VMManager::PerformEarlyHardwareChecks(&error)) {
@@ -4103,10 +4138,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         s_arcade_launch_media.clear();
         s_arcade_launch_sram.clear();
     }
-    {
-        std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
-        s_last_boot_error.clear();
-    }
     // fast_boot is deliberately left UNSET so VMManager::Initialize falls back to
     // EmuConfig.EnableFastBoot, which it reads late and on purpose ("Read fast boot setting
     // late so it can be overridden per-game").
@@ -4124,8 +4155,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     Console.WriteLnFmt("@@ANDROID_RUNVM_PATH@@ empty={} path={}",
         _szPath.empty() ? 1 : 0, _szPath);
     Console.Error("Loading %s", _szPath.c_str());
+    BeginBootReports(BootReportPhase::CPUThreadInit);
     if (!VMManager::Internal::CPUThreadInitialize()) {
         Console.Error("@@ANDROID_CPU_THREAD_INIT_FAILED@@");
+        {
+            std::string reports = EndBootReports();
+            std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+            s_last_boot_error = std::move(reports);
+        }
         VMManager::Internal::CPUThreadShutdown();
         CloseCPUThreadQueue();
         return false;
@@ -4155,7 +4192,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     GSDumpReplayer::SetIsDumpRunner(false);
 
     Error boot_error;
+    BeginBootReports(BootReportPhase::VMInit);
     const VMBootResult boot_result = VMManager::Initialize(boot_params, &boot_error);
+    std::string boot_reports = EndBootReports();
     if (boot_result == VMBootResult::StartupSuccess)
     {
         Console.Error("VM INIT");
@@ -4246,8 +4285,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     {
         Console.Error("@@ANDROID_VM_INIT_FAILED@@ result=%d error=%s",
             static_cast<int>(boot_result), boot_error.GetDescription().c_str());
+        // A render device that fails to open leaves only "Failed to initialize GS." in boot_error;
+        // the reason is in what the GS thread reported.
         std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
-        s_last_boot_error = boot_error.GetDescription();
+        s_last_boot_error = boot_reports.empty() ? boot_error.GetDescription() : std::move(boot_reports);
     }
     ////
     Host::PumpMessagesOnCPUThread();
@@ -5173,6 +5214,24 @@ void Host::ReportErrorAsync(const std::string_view title, const std::string_view
         ERROR_LOG("ReportErrorAsync: {}: {}", title, message);
     else if (!message.empty())
         ERROR_LOG("ReportErrorAsync: {}", message);
+
+    // Kept for the boot-failure card (see s_boot_reports). "Error" and "GS" say nothing the
+    // message does not, so those titles are dropped.
+    if (message.empty())
+        return;
+    std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+    if (s_boot_report_phase == BootReportPhase::CPUThreadInit ||
+        (s_boot_report_phase == BootReportPhase::VMInit && std::this_thread::get_id() != s_boot_report_thread))
+    {
+        if (!s_boot_reports.empty())
+            s_boot_reports += '\n';
+        if (!title.empty() && title != "Error" && title != "GS")
+        {
+            s_boot_reports.append(title);
+            s_boot_reports += ' ';
+        }
+        s_boot_reports.append(message);
+    }
 }
 
 //TODO
