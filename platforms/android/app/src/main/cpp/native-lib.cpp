@@ -3063,6 +3063,14 @@ static std::string s_arcade_launch_sram;
 // the BIOS, the media) than the frontend can check for, and this is how it can say which.
 static std::mutex s_last_boot_error_mutex;
 static std::string s_last_boot_error;
+// The VMBootResult of the last boot that failed, 0 (StartupSuccess) when it did not. The frontend picks
+// its own advice by it (NativeApp.BOOT_RESULT_*). Guarded by s_last_boot_error_mutex.
+static int s_last_boot_result = 0;
+static_assert(static_cast<int>(VMBootResult::StartupSuccess) == 0 &&
+                  static_cast<int>(VMBootResult::StartupFailure) == 1 &&
+                  static_cast<int>(VMBootResult::BIOSNotFound) == 3 &&
+                  static_cast<int>(VMBootResult::BIOSNotUsable) == 4,
+              "NativeApp.BOOT_RESULT_* mirror these values");
 
 // What Host::ReportErrorAsync was told during the current boot, for s_last_boot_error. Guarded by
 // s_last_boot_error_mutex. Before VMManager::Initialize every report is kept: a failed
@@ -3110,6 +3118,13 @@ JNIEXPORT jstring JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_getLastBootError(JNIEnv* env, jclass) {
     std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
     return env->NewStringUTF(s_last_boot_error.c_str());
+}
+
+extern "C"
+JNIEXPORT jint JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getLastBootResult(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
+    return static_cast<jint>(s_last_boot_result);
 }
 
 /// The JVS_MODE a game ID's cabinet uses (0 generic, 1 light gun, 2 fighting, 3 racing, 4 drums,
@@ -4117,6 +4132,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
     {
         std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
         s_last_boot_error.clear();
+        s_last_boot_result = 0;
     }
 
     const char* error;
@@ -4162,6 +4178,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
             std::string reports = EndBootReports();
             std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
             s_last_boot_error = std::move(reports);
+            s_last_boot_result = static_cast<int>(VMBootResult::StartupFailure);
         }
         VMManager::Internal::CPUThreadShutdown();
         CloseCPUThreadQueue();
@@ -4289,6 +4306,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_runVMThread(JNIEnv *env, jclass clazz,
         // the reason is in what the GS thread reported.
         std::lock_guard<std::mutex> lock(s_last_boot_error_mutex);
         s_last_boot_error = boot_reports.empty() ? boot_error.GetDescription() : std::move(boot_reports);
+        s_last_boot_result = static_cast<int>(boot_result);
     }
     ////
     Host::PumpMessagesOnCPUThread();

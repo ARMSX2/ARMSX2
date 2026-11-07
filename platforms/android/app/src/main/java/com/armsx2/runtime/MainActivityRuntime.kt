@@ -879,7 +879,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     else
                         NativeApp.runVMThread(m_szGamefile)
                     vmReturned = true
-                    if (!arcadeLaunch) noteBootFailure("bugreport.boot.message")
+                    if (!arcadeLaunch) noteBootFailure("bugreport.boot.message", biosAdvice = true)
                 } finally {
                     if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     // runVMThread blocks until the VM exits (Stopping/Shutdown
@@ -982,19 +982,31 @@ open class MainActivityRuntime : ComponentActivity() {
                 com.armsx2.arcade.ArcadeControls.apply(null)
             }
             // Shown with a "Report a problem" button, like any other game that fails to start.
-            noteBootFailure("arcade.error.boot")
+            noteBootFailure("arcade.error.boot", biosAdvice = false)
         }
 
         /**
          * After a VM thread returns: if the core says the game could not boot, show why and offer a
          * problem report. [messageKey] is the string that wraps the core's description. The marker
          * was never going to say anything about this, since nothing crashed.
+         *
+         * With [biosAdvice], a boot the core refused for want of a usable BIOS gets this app's own
+         * advice: the core's text for a missing BIOS describes the desktop app's folders and menus.
+         * Arcade launches go without it, since Arcade.prepare checks their BIOS before booting and
+         * the core's arcade text already says what to do.
          */
-        private fun noteBootFailure(messageKey: String) {
+        private fun noteBootFailure(messageKey: String, biosAdvice: Boolean) {
             val error = runCatching { NativeApp.getLastBootError() }.getOrNull().orEmpty()
             if (error.isBlank()) return
+            val result = runCatching { NativeApp.getLastBootResult() }.getOrDefault(NativeApp.BOOT_RESULT_FAILURE)
             runCatching {
-                com.armsx2.bugreport.BugReport.noteBootFailure(com.armsx2.i18n.I18n.get(messageKey).format(error))
+                val i18n = com.armsx2.i18n.I18n
+                val text = when {
+                    biosAdvice && result == NativeApp.BOOT_RESULT_BIOS_NOT_FOUND -> i18n.get("bugreport.boot.biosMissing")
+                    biosAdvice && result == NativeApp.BOOT_RESULT_BIOS_NOT_USABLE -> i18n.get("bugreport.boot.biosBad").format(error)
+                    else -> i18n.get(messageKey).format(error)
+                }
+                com.armsx2.bugreport.BugReport.noteBootFailure(text)
             }
         }
 
@@ -1362,7 +1374,7 @@ open class MainActivityRuntime : ComponentActivity() {
                     armBugReportMarker(identifyDisc = false)
                     NativeApp.runVMThread(m_szGamefile)
                     vmReturned = true
-                    noteBootFailure("bugreport.boot.message")
+                    noteBootFailure("bugreport.boot.message", biosAdvice = true)
                 } finally {
                     if (vmReturned) runCatching { com.armsx2.bugreport.BugReport.clearCrashMarker() }
                     eState.value = EmuState.STOPPED

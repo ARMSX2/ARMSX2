@@ -2352,6 +2352,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "bugreport.crash.unknownGame" to "a game",
     "bugreport.boot.title" to "The game did not start",
     "bugreport.boot.message" to "The game could not start. %s",
+    "bugreport.boot.biosMissing" to "The game could not start: no PS2 BIOS was found. Open BIOS Location from the menu and import the BIOS file from your PS2. If you imported one before, the file is no longer there and needs importing again.",
+    "bugreport.boot.biosBad" to "The game could not start. %s Open BIOS Location from the menu and import your PS2's BIOS again, or select another one.",
     "bugreport.gsdump.title" to "GS dump",
     "bugreport.gsdump.save" to "Save GS dump",
     "bugreport.gsdump.save.detail" to "Keep it in the snaps folder, as before",
