@@ -195,3 +195,34 @@ TEST(RecErrorExit, EeEntryWithUnalignedPcReportsAndDoesNotRun)
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
 	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
 }
+
+// The IOP. Its error paths already leave the slice (they jump to the
+// recompiler's exit after the report), but the pc stays at the unaligned
+// target, and the next slice starts there: with the IOP on its own thread that
+// is the next thing the thread does after asking for the pause.
+TEST(RecErrorExit, IopJrToUnalignedAddressReportsAndNextSliceDoesNotRun)
+{
+	StubHost::TakeErrorReports();
+	const ScopedRecCpu rec_cpu;
+
+	JitTestHarness h(JitTestHarness::Mode::JitOnly);
+	h.SetGpr(reg::a0, kUnalignedTarget);
+	h.LoadProgramNoTerm({
+		JR(reg::a0),
+		ADDIU(reg::v0, reg::zero, 7),
+	});
+	h.Run();
+
+	ExpectOneReport("R3000A Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(psxRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(psxRegs.GPR.n.v0, 7u);
+
+	// The next slice. It runs nothing, reports again, and says it used the
+	// whole budget: a slice that used none would be run again at once by the
+	// IOP thread, which would spin.
+	const u32 iop_cycle = psxRegs.cycle;
+	EXPECT_EQ(psxRec.ExecuteBlock(1000), 0);
+	ExpectOneReport("R3000A Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(psxRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(psxRegs.cycle, iop_cycle);
+}

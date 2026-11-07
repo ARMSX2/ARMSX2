@@ -1597,6 +1597,20 @@ static void recShutdown()
 static __noinline s32 recExecuteBlock(s32 eeCycles)
 {
 	psxRegs.iopBreak = 0;
+
+	// iopDispatcherReg finds a block with an 8-byte load at pc * 2 into the
+	// page's table, which reads the right entry only when pc is a multiple of
+	// 4. A jump to an unaligned address leaves the slice with pc at that
+	// address (psxSetBranchReg), and the IOP stays there: each slice reports it
+	// again and runs nothing. The slice says it used its whole budget, because
+	// the IOP thread runs a slice that used none again at once.
+	if (psxRegs.pc & 3) [[unlikely]]
+	{
+		iopRecError(1);
+		psxRegs.iopCycleEE = 0;
+		return 0;
+	}
+
 	psxRegs.iopCycleEE = eeCycles;
 
 	((void (*)())iopEnterRecompiledCode)();
