@@ -4309,6 +4309,18 @@ static void recCancelInstruction()
 	// rec-reachable caller is RaiseAddressError, which just logs.
 }
 
+// Runs generated code from cpuRegs.pc until something calls recExitExecution;
+// fastjmp_set must be armed. DispatcherReg finds a block with an 8-byte load at
+// pc * 2 into the page's table, which reads the right entry only when pc is a
+// multiple of 4. A jump to an unaligned address stops with pc at that address
+// (SetBranchReg), so the entry after it, a Resume, reports the error again.
+static void recEnterRecompiledCode()
+{
+	if (cpuRegs.pc & 3) [[unlikely]]
+		recError(1);
+	((void (*)())EnterRecompiledCode)();
+}
+
 static void recExecute()
 {
 	if (eeRecNeedsReset)
@@ -4331,7 +4343,7 @@ static void recExecute()
 	if (!fastjmp_set(&m_SetJmp_StateCheck))
 	{
 		eeCpuExecuting = true;
-		((void (*)())EnterRecompiledCode)();
+		recEnterRecompiledCode();
 	}
 
 	eeCpuExecuting = false;
@@ -4358,7 +4370,7 @@ s32 recEeExecuteBlock(s32 cycles, u32 park_pc)
 
 	if (!fastjmp_set(&m_SetJmp_StateCheck))
 	{
-		((void (*)())EnterRecompiledCode)();
+		recEnterRecompiledCode();
 	}
 
 	g_eeHarnessActive = false;

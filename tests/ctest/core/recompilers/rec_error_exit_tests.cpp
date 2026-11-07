@@ -166,3 +166,32 @@ TEST(RecErrorExit, EeJalrRaToUnalignedAddressReportsAndStopsThere)
 	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
 	EXPECT_EQ(cpuRegs.GPR.n.ra.UD[0], kProgramPc + 8);
 }
+
+// The Resume after an unaligned jump. The pc is still the unaligned target,
+// which the dispatcher's lookup cannot index: an entry has to report it again
+// and come back without running anything.
+TEST(RecErrorExit, EeEntryWithUnalignedPcReportsAndDoesNotRun)
+{
+	StubHost::TakeErrorReports();
+
+	EeRecTestHarness h;
+	h.SetGpr64(reg::t0, kUnalignedTarget);
+	h.LoadProgramNoTerm({
+		JR(reg::t0),
+		NOP,
+	});
+	h.RunJitNoDiff();
+	ASSERT_EQ(StubHost::TakeErrorReports().size(), 1u);
+	ASSERT_EQ(cpuRegs.pc, kUnalignedTarget);
+
+	const u64 cycle = cpuRegs.cycle;
+	ReenterEe();
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(cpuRegs.cycle, cycle);
+
+	// And every Resume after it.
+	ReenterEe();
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+}
