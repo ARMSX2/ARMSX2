@@ -1674,6 +1674,9 @@ public:
 
 protected:
 	std::string m_name = "Unknown";
+	/// Why Create() failed, when the backend knows and has not reported it itself. GSopen adds it
+	/// to its "Failed to create render device" report.
+	std::string m_create_error;
 	FeatureSupport m_features;
 	u32 m_max_texture_size = 0;
 	// ★ Unknown, NOT Adreno. Defaulting to a real vendor meant every backend that never calls
@@ -1877,6 +1880,9 @@ public:
 
 	/// Returns a string containing current adapter in use.
 	const std::string& GetName() const { return m_name; }
+
+	/// Why Create() failed, or empty. See m_create_error.
+	const std::string& GetCreateError() const { return m_create_error; }
 
 	GSTexture* GetColorClipTexture() const { return m_colclip_rt; }
 		

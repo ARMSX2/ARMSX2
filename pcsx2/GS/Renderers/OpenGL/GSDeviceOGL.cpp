@@ -351,6 +351,7 @@ bool GSDeviceOGL::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	if (!m_gl_context)
 	{
 		Console.ErrorFmt("GL: Failed to create any context: {}", error.GetDescription());
+		m_create_error = error.GetDescription();
 		return false;
 	}
 

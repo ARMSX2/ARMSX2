@@ -145,8 +145,9 @@ static RenderAPI GetAPIForRenderer(GSRendererType renderer)
 	}
 }
 
+// create_error receives the backend's reason when Create() fails and it has one (GSDevice::GetCreateError).
 static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool recreate_window,
-	GSVSyncMode vsync_mode, bool allow_present_throttle)
+	GSVSyncMode vsync_mode, bool allow_present_throttle, std::string* create_error = nullptr)
 {
 	const RenderAPI new_api = GetAPIForRenderer(renderer);
 	switch (new_api)
@@ -195,6 +196,8 @@ static bool OpenGSDevice(GSRendererType renderer, bool clear_state_on_fail, bool
 	else
 	{
 		Console.Error("Failed to create GS device");
+		if (create_error)
+			*create_error = g_gs_device->GetCreateError();
 	}
 
 	if (!okay)
@@ -607,7 +610,8 @@ bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* b
 	if (renderer == GSRendererType::Auto)
 		renderer = GSUtil::GetPreferredRenderer();
 
-	bool res = OpenGSDevice(renderer, true, false, vsync_mode, allow_present_throttle);
+	std::string create_error;
+	bool res = OpenGSDevice(renderer, true, false, vsync_mode, allow_present_throttle, &create_error);
 	if (res)
 	{
 		res = OpenGSRenderer(renderer, basemem);
@@ -617,10 +621,16 @@ bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* b
 
 	if (!res)
 	{
-		Host::ReportErrorAsync("Error",
+		std::string message =
 			fmt::format(TRANSLATE_FS("GS", "Failed to create render device. This may be due to your GPU not supporting the "
 			                               "chosen renderer ({}), or because your graphics drivers need to be updated."),
-			            Pcsx2Config::GSOptions::GetRendererName(GSConfig.Renderer)));
+			            Pcsx2Config::GSOptions::GetRendererName(GSConfig.Renderer));
+		if (!create_error.empty())
+		{
+			message += "\n\n";
+			message += create_error;
+		}
+		Host::ReportErrorAsync("Error", message);
 		return false;
 	}
 
