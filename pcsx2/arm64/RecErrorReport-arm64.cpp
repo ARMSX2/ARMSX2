@@ -151,9 +151,10 @@ namespace RecErrorReport
 
 		void CaptureMemory(Facts& f, const std::vector<Region>& regions, u32 sp)
 		{
-			if (f.jump)
+			if (f.jump || f.eret)
 			{
-				f.code = ReadWords(regions, f.jump->pc - kCodeBefore * 4, kCodeBefore + 1 + kCodeAfter);
+				const u32 at = f.jump ? f.jump->pc : f.eret->pc;
+				f.code = ReadWords(regions, at - kCodeBefore * 4, kCodeBefore + 1 + kCodeAfter);
 				return;
 			}
 			if (f.kind != Kind::UnmappedPage)
@@ -175,7 +176,6 @@ namespace RecErrorReport
 		struct Key
 		{
 			Cpu cpu;
-			Kind kind;
 			u32 pc;
 		};
 		std::vector<Key> s_logged;
@@ -184,16 +184,16 @@ namespace RecErrorReport
 		std::string s_last_logged;
 #endif
 
-		bool ShouldLog(Cpu cpu, Kind kind, u32 pc)
+		bool ShouldLog(Cpu cpu, u32 pc)
 		{
 			for (const Key& k : s_logged)
 			{
-				if (k.cpu == cpu && k.kind == kind && k.pc == pc)
+				if (k.cpu == cpu && k.pc == pc)
 					return false;
 			}
 			if (s_logged.size() >= kMaxLogged)
 				return false;
-			s_logged.push_back({cpu, kind, pc});
+			s_logged.push_back({cpu, pc});
 			return true;
 		}
 
@@ -212,11 +212,21 @@ namespace RecErrorReport
 		}
 	} // namespace
 
+	bool EretUsedErrorEpc(u32 status_after, u32 pc, u32 epc, u32 error_epc)
+	{
+		constexpr u32 kStatusExl = 1u << 1;
+		if (status_after & kStatusExl)
+			return true;
+		return pc == error_epc && pc != epc;
+	}
+
 	std::string Format(const Facts& f)
 	{
 		const char* const cpu = f.cpu == Cpu::EE ? "EE" : "IOP";
-		std::string out = fmt::format("{} recompiler stopped: jump to {} address 0x{:08x}", cpu,
-			f.kind == Kind::UnmappedPage ? "unmapped" : "unaligned", f.pc);
+		const char* const what = f.kind == Kind::UnmappedPage  ? "jump to unmapped" :
+		                         f.kind == Kind::UnalignedJump ? "jump to unaligned" :
+		                                                         "ERET to unaligned";
+		std::string out = fmt::format("{} recompiler stopped: {} address 0x{:08x}", cpu, what, f.pc);
 
 		if (f.jump)
 		{
@@ -226,6 +236,11 @@ namespace RecErrorReport
 			const char* const rs = RegName(j.rs);
 			out += fmt::format("\n  The jump at 0x{:08x}{} read {} = 0x{:08x} before its delay slot; {} now holds {}",
 				j.pc, insn, rs, j.target, rs, RegValue(f.cpu, f.gpr[j.rs & 31]));
+		}
+		else if (f.eret)
+		{
+			out += fmt::format("\n  The ERET at 0x{:08x} returned to {} = 0x{:08x} (Status.ERL was {})", f.eret->pc,
+				f.eret->from_error_epc ? "ErrorEPC" : "EPC", f.pc, f.eret->from_error_epc ? "set" : "clear");
 		}
 		else if (f.kind == Kind::UnalignedJump)
 		{
@@ -270,10 +285,24 @@ namespace RecErrorReport
 
 		if (!f.code.empty())
 		{
-			out += f.jump ? "\n  Code (> is the jump):" : "\n  Code before the pc:";
+			u32 marked = ~0u;
+			if (f.jump)
+			{
+				out += "\n  Code (> is the jump):";
+				marked = f.jump->pc;
+			}
+			else if (f.eret)
+			{
+				out += "\n  Code (> is the ERET):";
+				marked = f.eret->pc;
+			}
+			else
+			{
+				out += "\n  Code before the pc:";
+			}
 			for (const Word& w : f.code)
 			{
-				const char mark = (f.jump && w.addr == f.jump->pc) ? '>' : ' ';
+				const char mark = w.addr == marked ? '>' : ' ';
 				if (w.readable)
 					out += fmt::format("\n  {} {:08x}  {:08x}  {}", mark, w.addr, w.value, Disassemble(w.addr, w.value));
 				else
@@ -283,13 +312,14 @@ namespace RecErrorReport
 		return out;
 	}
 
-	Facts CaptureEe(Kind kind, const std::optional<Jump>& jump)
+	Facts CaptureEe(Kind kind, const std::optional<Jump>& jump, const std::optional<Eret>& eret)
 	{
 		Facts f;
 		f.cpu = Cpu::EE;
 		f.kind = kind;
 		f.pc = cpuRegs.pc;
 		f.jump = jump;
+		f.eret = eret;
 		for (u32 i = 0; i < 32; i++)
 			f.gpr[i] = cpuRegs.GPR.r[i].UD[0];
 		f.hi = cpuRegs.HI.UD[0];
@@ -328,14 +358,24 @@ namespace RecErrorReport
 	void LogEe(Kind kind, const std::optional<Jump>& jump)
 	{
 		std::lock_guard lock(s_mutex);
-		if (ShouldLog(Cpu::EE, kind, cpuRegs.pc))
+		if (ShouldLog(Cpu::EE, cpuRegs.pc))
 			Write(Format(CaptureEe(kind, jump)));
+	}
+
+	void LogEeEret(u32 eret_pc)
+	{
+		std::lock_guard lock(s_mutex);
+		if (!ShouldLog(Cpu::EE, cpuRegs.pc))
+			return;
+		const Eret eret{eret_pc, EretUsedErrorEpc(cpuRegs.CP0.n.Status.val, cpuRegs.pc, cpuRegs.CP0.n.EPC,
+									 cpuRegs.CP0.n.ErrorEPC)};
+		Write(Format(CaptureEe(Kind::UnalignedEret, std::nullopt, eret)));
 	}
 
 	void LogIop(Kind kind, const std::optional<Jump>& jump)
 	{
 		std::lock_guard lock(s_mutex);
-		if (ShouldLog(Cpu::IOP, kind, psxRegs.pc))
+		if (ShouldLog(Cpu::IOP, psxRegs.pc))
 			Write(Format(CaptureIop(kind, jump)));
 	}
 

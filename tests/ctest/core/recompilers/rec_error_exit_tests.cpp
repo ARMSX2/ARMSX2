@@ -27,6 +27,7 @@
 
 #include <initializer_list>
 #include <string>
+#include <vector>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -296,4 +297,111 @@ TEST(RecErrorExit, IopJrToUnalignedAddressReportsAndNextSliceDoesNotRun)
 	ExpectNothingLogged();
 	EXPECT_EQ(psxRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(psxRegs.cycle, iop_cycle);
+}
+
+// ERET returns to ErrorEPC when Status.ERL is set and to EPC otherwise, and a
+// guest can store any value in either. The recompiler runs ERET through the
+// interpreter's function and dispatches to the pc it set, so an unaligned
+// EPC reached the dispatcher's table lookup unchecked.
+namespace {
+
+constexpr u32 kCp0Status = 12;
+constexpr u32 kCp0Epc = 14;
+constexpr u32 kCp0ErrorEpc = 30;
+constexpr u32 kStatusExl = 1u << 1;
+constexpr u32 kStatusErl = 1u << 2;
+
+} // namespace
+
+TEST(RecErrorExit, EeEretToUnalignedEpcReportsAndStopsThere)
+{
+	ForgetEarlierErrors();
+
+	EeRecTestHarness h;
+	h.SetCp0(kCp0Status, kStatusExl);
+	h.SetGpr64(reg::t0, kUnalignedTarget);
+	h.LoadProgramNoTerm({
+		MTC0(reg::t0, kCp0Epc),
+		ADDIU(reg::v0, reg::zero, 7),
+		ee::ERET,
+		NOP,
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "ERET to unaligned address (PC: 0x00010102)");
+	ExpectLogged({
+		"EE recompiler stopped: ERET to unaligned address 0x00010102\n",
+		"\n  The ERET at 0x00010008 returned to EPC = 0x00010102 (Status.ERL was clear)\n",
+		"\n  > 00010008  42000018  eret\n",
+	});
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
+	EXPECT_EQ(cpuRegs.CP0.n.Status.b.EXL, 0u);
+
+	// Resume: the entry check reports it, and the log has it already.
+	ReenterEe();
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectNothingLogged();
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+}
+
+TEST(RecErrorExit, EeEretToUnalignedErrorEpcReportsAndStopsThere)
+{
+	ForgetEarlierErrors();
+
+	EeRecTestHarness h;
+	h.SetCp0(kCp0Status, kStatusErl);
+	h.SetGpr64(reg::t0, kUnalignedTarget + 4);
+	h.SetGpr64(reg::t1, kProgramPc + 0x100);
+	h.LoadProgramNoTerm({
+		MTC0(reg::t0, kCp0ErrorEpc),
+		MTC0(reg::t1, kCp0Epc),
+		ee::ERET,
+		NOP,
+	});
+	h.RunJitNoDiff();
+
+	ExpectOneReport("R5900 Exception", "ERET to unaligned address (PC: 0x00010106)");
+	ExpectLogged({
+		"EE recompiler stopped: ERET to unaligned address 0x00010106\n",
+		"\n  The ERET at 0x00010008 returned to ErrorEPC = 0x00010106 (Status.ERL was set)\n",
+		"  EPC 0x00010100  ErrorEPC 0x00010106\n",
+	});
+	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget + 4);
+	EXPECT_EQ(cpuRegs.CP0.n.Status.b.ERL, 0u);
+}
+
+// The aligned returns, against the interpreter: ERL set goes to ErrorEPC,
+// clear goes to EPC. Each lands on its pad, which marks $s6 and leaves for the
+// parking lot; the other address is the other pad.
+TEST(RecErrorExit, EeEretToAlignedAddressesMatchesTheInterpreter)
+{
+	constexpr u32 kPadA = kProgramPc + 0x100;
+	constexpr u32 kPadB = kProgramPc + 0x10c;
+	for (const bool erl : {false, true})
+	{
+		SCOPED_TRACE(erl ? "ERL" : "EXL");
+		EeRecTestHarness h;
+		h.SetCp0(kCp0Status, erl ? kStatusErl : kStatusExl);
+		h.SetGpr64(reg::t0, erl ? kPadB : kPadA); // EPC
+		h.SetGpr64(reg::t1, erl ? kPadA : kPadB); // ErrorEPC
+		h.SetGpr64(reg::s7, kParkingPc);
+		std::vector<u32> code = {
+			MTC0(reg::t0, kCp0Epc),
+			MTC0(reg::t1, kCp0ErrorEpc),
+			ee::ERET,
+			NOP,
+		};
+		code.resize((kPadA - kProgramPc) / 4, NOP);
+		for (const u32 mark : {0x111u, 0x222u})
+		{
+			code.push_back(ORI(reg::s6, reg::zero, static_cast<u16>(mark)));
+			code.push_back(JR(reg::s7));
+			code.push_back(NOP);
+		}
+		h.LoadProgramNoTerm(code);
+		h.Run();
+		EXPECT_EQ(h.GetGpr64Jit(reg::s6), 0x111u);
+		EXPECT_EQ(h.GetGpr64Interp(reg::s6), 0x111u);
+	}
 }

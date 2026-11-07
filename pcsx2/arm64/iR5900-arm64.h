@@ -737,6 +737,10 @@ vixl::aarch64::Label* recSuperblockAddSideExit(u32 branch_target, bool need_dela
 
 // B.cond to an island whose body is emitted in the cold arena at block end.
 void recEmitColdIslandBranch(vixl::aarch64::Condition cond, std::function<void()> body);
+
+// After ERET's call: stop through recError when the pc it set is not a
+// multiple of 4. eret_pc is the ERET's own pc.
+void recEmitEretTargetCheck(u32 eret_pc);
 #ifdef PCSX2_RECOMPILER_TESTS
 u32 recTestColdIslandBodiesEmitted();
 #endif

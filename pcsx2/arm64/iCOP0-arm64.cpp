@@ -148,7 +148,9 @@ REC_FUNC(TLBWR);
 // their registers.
 void recERET()
 {
+	const u32 eret_pc = pc - 4; // pc is past the ERET
 	recBranchCallNoGprWrite(Interp::ERET, 0);
+	recEmitEretTargetCheck(eret_pc);
 }
 
 void recEI()

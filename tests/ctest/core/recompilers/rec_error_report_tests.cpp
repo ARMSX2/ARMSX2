@@ -154,6 +154,40 @@ TEST(RecErrorReport, IopRegistersAre32BitsAndThereIsNoErrorEpc)
 	EXPECT_EQ(lines[6], "      a0 050202d3   a1 00000000   a2 00000000   a3 00000000");
 }
 
+TEST(RecErrorReport, EretSaysWhichRegisterItReturnedToAndWhy)
+{
+	Facts f = EeUnalignedJalr();
+	f.kind = Kind::UnalignedEret;
+	f.jump.reset();
+	f.eret = Eret{0x00123450, false};
+	f.code[1].value = 0x42000018; // eret
+	f.epc = f.pc;
+	std::vector<std::string> lines = Lines(Format(f));
+	ASSERT_GE(lines.size(), 17u);
+	EXPECT_EQ(lines[0], "EE recompiler stopped: ERET to unaligned address 0x80464a53");
+	EXPECT_EQ(lines[1], "  The ERET at 0x00123450 returned to EPC = 0x80464a53 (Status.ERL was clear)");
+	EXPECT_EQ(lines[3], "  Status 0x70030c13  Cause 0x00000008  EPC 0x80464a53  ErrorEPC 0x00000200");
+	EXPECT_EQ(lines[14], "  Code (> is the ERET):");
+	EXPECT_EQ(lines[16], "  > 00123450  42000018  eret");
+
+	f.eret->from_error_epc = true;
+	lines = Lines(Format(f));
+	EXPECT_EQ(lines[1], "  The ERET at 0x00123450 returned to ErrorEPC = 0x80464a53 (Status.ERL was set)");
+}
+
+// ERET with ERL set clears ERL and keeps EXL; without it, clears EXL.
+TEST(RecErrorReport, EretSourceIsWorkedOutFromTheStateItLeft)
+{
+	constexpr u32 kExl = 1u << 1;
+	// EXL still set: only the ErrorEPC path leaves it.
+	EXPECT_TRUE(EretUsedErrorEpc(kExl, 0x101, 0x101, 0x101));
+	// EXL clear: the register that holds the pc.
+	EXPECT_FALSE(EretUsedErrorEpc(0, 0x101, 0x101, 0x200));
+	EXPECT_TRUE(EretUsedErrorEpc(0, 0x101, 0x200, 0x101));
+	// Both hold it: EPC, the value is the same either way.
+	EXPECT_FALSE(EretUsedErrorEpc(0, 0x101, 0x101, 0x101));
+}
+
 // A Resume repeats the error at the same pc: logged the first time only. And
 // at most kMaxLogged errors are logged at all.
 TEST(RecErrorReport, EachErrorIsLoggedOnceAndOnlyAFewInAll)
@@ -167,11 +201,13 @@ TEST(RecErrorReport, EachErrorIsLoggedOnceAndOnlyAFewInAll)
 	LogEe(Kind::UnmappedPage, std::nullopt);
 	EXPECT_TRUE(TakeLoggedForTests().empty()) << "the same error twice";
 
-	// The same pc with the other kind is another error.
+	// A Resume after an unaligned jump or ERET meets the pc through the check
+	// on entry, which reports it as an unaligned pc of unknown origin: the
+	// same error, not logged again.
 	LogEe(Kind::UnalignedJump, std::nullopt);
-	EXPECT_FALSE(TakeLoggedForTests().empty());
+	EXPECT_TRUE(TakeLoggedForTests().empty()) << "the same pc reached another way";
 
-	for (u32 i = 2; i < kMaxLogged; i++)
+	for (u32 i = 1; i < kMaxLogged; i++)
 	{
 		cpuRegs.pc = 0x1e800000 + i * 0x10000;
 		LogEe(Kind::UnmappedPage, std::nullopt);

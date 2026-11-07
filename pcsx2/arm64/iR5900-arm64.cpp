@@ -178,6 +178,7 @@ enum RecErrorCode : u32
 	kRecErrorUnmappedPage = 0,
 	kRecErrorUnalignedJump = 1, // jump_pc and jump_rs are the jump's; its target is in cpuRegs.pc
 	kRecErrorUnalignedEntry = 2, // the pc was unaligned on entry; the others are unused
+	kRecErrorUnalignedEret = 3, // jump_pc is the ERET's; it returned to cpuRegs.pc
 };
 [[noreturn]] static void recError(u32 error, u32 jump_pc, u32 jump_rs);
 static void dyna_block_discard(u32 start, u32 sz);
@@ -605,6 +606,12 @@ static void _DynGen_Dispatchers()
 			fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", cpuRegs.pc));
 		RecErrorReport::LogEe(RecErrorReport::Kind::UnmappedPage, std::nullopt);
 	}
+	else if (error == kRecErrorUnalignedEret)
+	{
+		Host::ReportErrorAsync("R5900 Exception",
+			fmt::format("ERET to unaligned address (PC: 0x{:08x})", cpuRegs.pc));
+		RecErrorReport::LogEeEret(jump_pc);
+	}
 	else
 	{
 		Host::ReportErrorAsync("R5900 Exception",
@@ -620,6 +627,21 @@ static void _DynGen_Dispatchers()
 	// generated code that called this has no path back to an event test.
 	VMManager::SetPaused(true);
 	recExitExecution();
+}
+
+void recEmitEretTargetCheck(u32 eret_pc)
+{
+	// ERET takes the pc from EPC or ErrorEPC, which the guest can set to
+	// anything. The pins and the cycle count are live in their registers here
+	// (recBranchCallNoGprWrite reloaded them), which RecErrorExit expects. The
+	// error path is out of line: three instructions on the normal one.
+	armAsm->Ldr(RWSCRATCH, armCpuRegMem(&cpuRegs.pc));
+	armAsm->Tst(RWSCRATCH, 3);
+	recEmitColdIslandBranch(a64::ne, [eret_pc]() {
+		armAsm->Mov(a64::w1, eret_pc);
+		armAsm->Mov(RWARG1, kRecErrorUnalignedEret);
+		armEmitJmp(RecErrorExit);
+	});
 }
 
 // =====================================================================================================
