@@ -135,6 +135,7 @@ namespace ImGuiFullscreen
 		PopupOpened,
 		PopupClosed,
 		WindowChanged,
+		Resumed, ///< The window came back as it was left: keep its scroll, and ImGui puts the focus back on its last item.
 		Other,
 	};
 	void QueueResetFocus(FocusResetType type);

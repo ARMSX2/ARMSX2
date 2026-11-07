@@ -1989,7 +1989,8 @@ void FullscreenUI::DrawSettingsWindow()
 	if (IsFocusResetQueued())
 		if (FocusResetType focus_reset = GetQueuedFocusResetType(); focus_reset != FocusResetType::None &&
 																	focus_reset != FocusResetType::PopupOpened &&
-																	focus_reset != FocusResetType::PopupClosed)
+																	focus_reset != FocusResetType::PopupClosed &&
+																	focus_reset != FocusResetType::Resumed)
 		{
 			ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
 		}

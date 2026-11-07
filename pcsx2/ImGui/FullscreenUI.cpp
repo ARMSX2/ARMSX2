@@ -541,13 +541,16 @@ void FullscreenUI::OpenPauseMenu()
 			s_current_pause_submenu = s_menu_resume.pause_submenu;
 			s_settings_page = s_menu_resume.settings_page;
 			s_menu_resume = {};
+			// Resumed, not WindowChanged: the settings page scrolls back to the top on a window change, which
+			// left the restored item off screen.
+			QueueResetFocus(FocusResetType::Resumed);
 		}
 		else
 		{
 			s_current_main_window = MainWindowType::PauseMenu;
 			s_current_pause_submenu = PauseSubMenu::None;
+			QueueResetFocus(FocusResetType::WindowChanged);
 		}
-		QueueResetFocus(FocusResetType::WindowChanged);
 	});
 }
 
