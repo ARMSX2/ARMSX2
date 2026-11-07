@@ -125,7 +125,8 @@ jobs:
             -DWAYLAND_API=OFF \
             -DDISABLE_ADVANCE_SIMD=TRUE \
             -DOVERRIDE_HOST_PAGE_SIZE=4096 \
-            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DARMSX2_PGO_PROFILE="${{ github.workspace }}/platforms/linux/pgo/armsx2-linux-arm64.profdata"
 
       - name: Build armsx2-sdl
         working-directory: build
