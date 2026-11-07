@@ -29,6 +29,7 @@ add_pcsx2_test(recompiler_tests
 	iop_cycle_accounting_tests.cpp
 	iop_frame_tests.cpp
 	iop_jump_tests.cpp
+	iop_jump_target_tests.cpp
 	rec_error_exit_tests.cpp
 	iop_branch_tests.cpp
 	iop_cop0_tests.cpp
@@ -75,6 +76,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_gem2_coherence_tests.cpp
 	ee_rec_iop_handoff_tests.cpp
 	ee_rec_jump_tests.cpp
+	ee_rec_jump_target_tests.cpp
 	ee_rec_loadstore_tests.cpp
 	ee_rec_mmi_coherence_tests.cpp
 	ee_rec_mmi_simd_tests.cpp
