@@ -392,16 +392,51 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
 	list(APPEND DEFAULT_WARNINGS -Wno-attributes)
 endif()
 
-if (USE_PGO_GENERATE OR USE_PGO_OPTIMIZE)
-	add_compile_options("-fprofile-dir=${CMAKE_SOURCE_DIR}/profile")
+# Profile-guided optimization. With Clang, a profile is one merged .profdata file (llvm-profdata merge of the .profraw
+# files an instrumented build writes); ARMSX2_PGO_PROFILE names it and implies USE_PGO_OPTIMIZE. The profile covers the
+# emulator's own code (renderer, recompilers, SPU2), which every game runs, so one profile trained on a few games serves
+# all of them. It drifts slowly as that code changes: functions that changed lose their data and are compiled as
+# without PGO, and the rest keep it. platforms/linux/pgo/ holds the Linux arm64 profile and how to remake it; Android
+# uses the same scheme (platforms/android/pgo/).
+set(ARMSX2_PGO_PROFILE "" CACHE FILEPATH "Merged Clang .profdata to optimize with (implies USE_PGO_OPTIMIZE)")
+if (ARMSX2_PGO_PROFILE)
+	set(USE_PGO_OPTIMIZE ON)
 endif()
 
-if (USE_PGO_GENERATE)
-	add_compile_options(-fprofile-generate)
-endif()
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+	if (USE_PGO_GENERATE OR USE_PGO_OPTIMIZE)
+		# An internal-linkage function (static, anonymous namespace) is recorded under the source path exactly as the
+		# compiler was given it, so a profile would apply to those functions only from the path that made it. With
+		# this, only the file's base name is recorded. It is needed on both sides, as on Android.
+		add_compile_options("SHELL:-mllvm -static-func-full-module-prefix=false")
+	endif()
+	if (USE_PGO_GENERATE)
+		# The profile runtime has to be linked in as well. Where the .profraw goes is set at run time with
+		# LLVM_PROFILE_FILE (the build machine's paths mean nothing on the device that runs the training).
+		add_compile_options(-fprofile-generate)
+		add_link_options(-fprofile-generate)
+	endif()
+	if (USE_PGO_OPTIMIZE)
+		if (NOT ARMSX2_PGO_PROFILE)
+			message(FATAL_ERROR "USE_PGO_OPTIMIZE with Clang needs ARMSX2_PGO_PROFILE (a merged .profdata)")
+		endif()
+		add_compile_options("-fprofile-use=${ARMSX2_PGO_PROFILE}")
+		add_link_options("-fprofile-use=${ARMSX2_PGO_PROFILE}")
+		# A profile older than the source is expected; warn about none of the mismatches it brings.
+		add_compile_options(-Wno-profile-instr-out-of-date -Wno-profile-instr-unprofiled -Wno-backend-plugin)
+	endif()
+else()
+	if (USE_PGO_GENERATE OR USE_PGO_OPTIMIZE)
+		add_compile_options("-fprofile-dir=${CMAKE_SOURCE_DIR}/profile")
+	endif()
 
-if(USE_PGO_OPTIMIZE)
-	add_compile_options(-fprofile-use)
+	if (USE_PGO_GENERATE)
+		add_compile_options(-fprofile-generate)
+	endif()
+
+	if(USE_PGO_OPTIMIZE)
+		add_compile_options(-fprofile-use)
+	endif()
 endif()
 
 list(APPEND PCSX2_DEFS
