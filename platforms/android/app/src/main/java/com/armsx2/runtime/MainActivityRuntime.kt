@@ -692,24 +692,28 @@ open class MainActivityRuntime : ComponentActivity() {
         private const val PAD_CODE_TRIANGLE = 100
         private const val PAD_CODE_CROSS = 96
 
-        /** How long to keep the combo held. Titles probe it at very different points — some well
-         *  after the PS2 logo — so this deliberately spans the whole boot sequence. */
-        private const val AUTO_PROGRESSIVE_HOLD_MS = 30_000L
-        /// How often the synthetic Triangle+Cross hold is re-pressed. Must be well under a frame
-        /// budget's worth of pad polling so the game never samples a gap, and short enough that a
-        /// pad re-init can't swallow the whole hold.
+        /** Hard ceiling on the hold, from the first press: a full BIOS intro before the ELF plus the
+         *  post-ELF window below. Titles probe the combo at very different points, so this
+         *  deliberately spans the whole boot sequence. */
+        private const val AUTO_PROGRESSIVE_HOLD_MS = 60_000L
         // Achievement-progress capture cadence. The first wait lets RetroAchievements resolve the
         // set over the network after boot; the poll only exists so a process killed mid-session
         // still leaves a recent figure in the library. Neither is latency-sensitive.
         private const val ACHIEVEMENT_SNAPSHOT_FIRST_MS = 15_000L
         private const val ACHIEVEMENT_SNAPSHOT_POLL_MS = 120_000L
 
+        /// How often the synthetic Triangle+Cross hold is re-pressed. Must be well under a frame
+        /// budget's worth of pad polling so the game never samples a gap, and short enough that a
+        /// pad re-init can't swallow the whole hold.
         private const val AUTO_PROGRESSIVE_REASSERT_MS = 200L
-        /// Keep holding this long after the game's ELF starts, then let go — the 480p prompt is
-        /// checked at game start, and holding into the menus would fight the player. 8 s (up from 4)
-        /// gives margin for titles that probe a few seconds into the ELF, once past the intro logos;
-        /// a continuously-held button presents no fresh press edge, so it won't drive early menus.
-        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 8_000L
+        /// Re-press only until the ELF has run this long, which covers the pad setup at boot. After
+        /// that the hold rests on the pad state alone, so a button the player presses and lets go
+        /// stays released instead of being pressed again under them.
+        private const val AUTO_PROGRESSIVE_REASSERT_POST_ELF_MS = 3_000L
+        /// Keep holding this long after the game's ELF starts, then let go. Criterion titles such as
+        /// Burnout 3 look for the combo well into their intro, after the publisher logos. A held
+        /// button presents no fresh press edge, so it does not drive the menus in the meantime.
+        private const val AUTO_PROGRESSIVE_POST_ELF_MS = 30_000L
 
         /** Pad writes are dropped while no VM exists (applyPadButton bails on !HasValidVM), so
          *  wait for boot rather than pressing into the void. Bounded so a failed boot can't spin. */
@@ -734,23 +738,24 @@ open class MainActivityRuntime : ComponentActivity() {
                     if (!NativeApp.hasActiveVM())
                         return@launch
                     held = true
-                    // Re-assert on a short interval rather than pressing once. The state itself
-                    // persists (Pad::SetControllerState), so a single press would mostly work — but
-                    // re-pressing cheaply survives the pad (re)init during boot ("Pad: DS2 Config
+                    // Re-assert on a short interval through boot rather than pressing once. The state
+                    // itself persists (Pad::SetControllerState), so a single press would mostly work,
+                    // but re-pressing cheaply survives the pad (re)init during boot ("Pad: DS2 Config
                     // Finished" lands after the VM goes active) with no gap for the game to sample.
                     //
-                    // Release shortly after the game's own ELF starts rather than blocking for the
-                    // full timeout: the 480p prompt is checked at game start, and continuing to jam
-                    // Triangle+Cross into a booted game would fight the player in the menus. CRC
-                    // goes non-zero exactly when the ELF is running, so it is the right edge to
-                    // watch. AUTO_PROGRESSIVE_HOLD_MS remains the hard ceiling.
+                    // Let go once the game's own ELF has run for AUTO_PROGRESSIVE_POST_ELF_MS: holding
+                    // Triangle+Cross any longer would fight the player in the menus. CRC goes non-zero
+                    // exactly when the ELF is running, so it is the right edge to watch.
+                    // AUTO_PROGRESSIVE_HOLD_MS remains the hard ceiling.
                     var elapsed = 0L
                     var sinceElf = -1L
                     while (elapsed < AUTO_PROGRESSIVE_HOLD_MS) {
                         if (!NativeApp.hasActiveVM())
                             return@launch
-                        NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, true)
-                        NativeApp.setPadButton(PAD_CODE_CROSS, 0, true)
+                        if (sinceElf < AUTO_PROGRESSIVE_REASSERT_POST_ELF_MS) {
+                            NativeApp.setPadButton(PAD_CODE_TRIANGLE, 0, true)
+                            NativeApp.setPadButton(PAD_CODE_CROSS, 0, true)
+                        }
                         delay(AUTO_PROGRESSIVE_REASSERT_MS)
                         elapsed += AUTO_PROGRESSIVE_REASSERT_MS
                         val elfRunning = runCatching { NativeApp.getGameCRC() }.getOrNull()
