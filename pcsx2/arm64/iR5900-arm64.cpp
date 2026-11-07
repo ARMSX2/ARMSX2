@@ -27,6 +27,7 @@
 #include "R5900.h"
 #include "IopThread/IopThreadMode.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
 #include "Common.h"
 #include "VMManager.h"
@@ -171,7 +172,14 @@ static void recSafeExitExecution();
 #ifdef PCSX2_RECOMPILER_TESTS
 static bool harnessShouldExit();
 #endif
-[[noreturn]] static void recError(u32 error);
+// recError's codes. RecErrorExit passes w0-w2 through as its arguments.
+enum RecErrorCode : u32
+{
+	kRecErrorUnmappedPage = 0,
+	kRecErrorUnalignedJump = 1, // jump_pc and jump_rs are the jump's; its target is in cpuRegs.pc
+	kRecErrorUnalignedEntry = 2, // the pc was unaligned on entry; the others are unused
+};
+[[noreturn]] static void recError(u32 error, u32 jump_pc, u32 jump_rs);
 static void dyna_block_discard(u32 start, u32 sz);
 static void dyna_page_reset(u32 start, u32 sz);
 static void iopClearRecLUT(BASEBLOCK* base, int count);
@@ -497,8 +505,8 @@ static const void* _DynGen_UnmappedRecLUTPage()
 	return retval;
 }
 
-// Leaves generated code for good through recError, with w0 = recError's error
-// code. Jumped to, not called. recExitExecution restores only the host
+// Leaves generated code for good through recError, with w0-w2 its arguments
+// (w0 the code). Jumped to, not called. recExitExecution restores only the host
 // registers fastjmp_set saved, so the cycle count and the pinned guest
 // registers are stored first, as DispatcherEvent does before an exit from
 // recEventTest.
@@ -589,19 +597,22 @@ static void _DynGen_Dispatchers()
 //  Error handling
 // =====================================================================================================
 
-[[noreturn]] static void recError(u32 error)
+[[noreturn]] static void recError(u32 error, u32 jump_pc, u32 jump_rs)
 {
-	switch (error)
+	if (error == kRecErrorUnmappedPage)
 	{
-		case 0:
-			Host::ReportErrorAsync("R5900 Exception",
-				fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", cpuRegs.pc));
-			break;
-
-		case 1:
-			Host::ReportErrorAsync("R5900 Exception",
-				fmt::format("Jump to unaligned address (PC: 0x{:08x})", cpuRegs.pc));
-			break;
+		Host::ReportErrorAsync("R5900 Exception",
+			fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", cpuRegs.pc));
+		RecErrorReport::LogEe(RecErrorReport::Kind::UnmappedPage, std::nullopt);
+	}
+	else
+	{
+		Host::ReportErrorAsync("R5900 Exception",
+			fmt::format("Jump to unaligned address (PC: 0x{:08x})", cpuRegs.pc));
+		std::optional<RecErrorReport::Jump> jump;
+		if (error == kRecErrorUnalignedJump)
+			jump = RecErrorReport::Jump{jump_pc, jump_rs, cpuRegs.pc};
+		RecErrorReport::LogEe(RecErrorReport::Kind::UnalignedJump, jump);
 	}
 
 	// Runs on the EE thread with fastjmp_set armed, so it can leave at once.
@@ -1655,7 +1666,7 @@ static void emitCycleUpdateAndEventCheck()
 	emitDispatcherCondBranch(a64::ge, DispatcherEvent, s_condVeneerEvent);
 }
 
-void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
+void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg, u32 jump_pc, u32 jump_rs)
 {
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
@@ -1786,8 +1797,12 @@ void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg)
 		armEmitJmp(DispatcherReg);
 	}
 
+	// recError's arguments. The target it reports is the one stored to
+	// cpuRegs.pc above.
 	armAsm->Bind(&unaligned);
-	armAsm->Mov(RWARG1, 1);
+	armAsm->Mov(a64::w1, jump_pc);
+	armAsm->Mov(a64::w2, jump_rs);
+	armAsm->Mov(RWARG1, kRecErrorUnalignedJump);
 	armEmitJmp(RecErrorExit);
 }
 
@@ -4317,7 +4332,7 @@ static void recCancelInstruction()
 static void recEnterRecompiledCode()
 {
 	if (cpuRegs.pc & 3) [[unlikely]]
-		recError(1);
+		recError(kRecErrorUnalignedEntry, 0, 0);
 	((void (*)())EnterRecompiledCode)();
 }
 

@@ -9,7 +9,8 @@
 // dispatcher's table lookup on a pc it cannot index.
 //
 // No VM exists here, so VMManager::SetPaused does nothing. What the tests see
-// is the report (StubHost keeps it), that control came back to the test, and
+// is the report (StubHost keeps it), the post-mortem written to the log (once
+// per error, not again on a Resume), that control came back to the test, and
 // the guest state left behind.
 
 #include "harness/EeRecTestHarness.h"
@@ -17,10 +18,15 @@
 
 #include "../StubHostTasks.h"
 
+#include "arm64/RecErrorReport-arm64.h"
+
 #include "R3000A.h"
 #include "R5900.h"
 
 #include <gtest/gtest.h>
+
+#include <initializer_list>
+#include <string>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -44,6 +50,26 @@ void ExpectOneReport(const char* title, const char* message)
 	ASSERT_EQ(reports.size(), 1u);
 	EXPECT_EQ(reports[0].title, title);
 	EXPECT_EQ(reports[0].message, message);
+}
+
+// Each test reports errors at pcs earlier tests used.
+void ForgetEarlierErrors()
+{
+	StubHost::TakeErrorReports();
+	RecErrorReport::ResetForTests();
+}
+
+// The post-mortem the error wrote to the log has each of these lines.
+void ExpectLogged(std::initializer_list<const char*> lines)
+{
+	const std::string log = RecErrorReport::TakeLoggedForTests();
+	for (const char* line : lines)
+		EXPECT_NE(log.find(line), std::string::npos) << "missing: " << line << "\nin:\n" << log;
+}
+
+void ExpectNothingLogged()
+{
+	EXPECT_EQ(RecErrorReport::TakeLoggedForTests(), "");
 }
 
 // Cpu on the recompiler, as it is in a running VM; the test environment's
@@ -71,7 +97,7 @@ TEST(RecErrorExit, IopJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 {
 	constexpr u32 kIopUnmappedTarget = 0x10000000u;
 
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 	const ScopedRecCpu rec_cpu;
 
 	JitTestHarness h(JitTestHarness::Mode::JitOnly);
@@ -90,7 +116,7 @@ TEST(RecErrorExit, IopJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 // stub, which reports and must leave generated code with pc still the target.
 TEST(RecErrorExit, EeJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 
 	EeRecTestHarness h;
 	h.SetGpr64(reg::t0, kEeUnmappedTarget);
@@ -101,12 +127,19 @@ TEST(RecErrorExit, EeJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 	h.RunJitNoDiff();
 
 	ExpectOneReport("R5900 Exception", "Jump to unmapped recLUT page (PC: 0x1e800000)");
+	ExpectLogged({
+		"EE recompiler stopped: jump to unmapped address 0x1e800000\n",
+		"\n  0x1e800000 is the end of ROM2: the guest ran off the end of it.\n",
+		"\n  ra 00000000001f0000  sp 0000000000000000\n",
+		"\n      t0 000000001e800000 ",
+	});
 	EXPECT_EQ(cpuRegs.pc, kEeUnmappedTarget);
 	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
 
-	// Resume: the same error again, and back here.
+	// Resume: the same error again, and back here; the log has it already.
 	ReenterEe();
 	ExpectOneReport("R5900 Exception", "Jump to unmapped recLUT page (PC: 0x1e800000)");
+	ExpectNothingLogged();
 	EXPECT_EQ(cpuRegs.pc, kEeUnmappedTarget);
 }
 
@@ -117,7 +150,7 @@ TEST(RecErrorExit, EeJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 // pins.
 TEST(RecErrorExit, EeJrToUnalignedAddressReportsAndStopsThere)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 
 	EeRecTestHarness h;
 	h.SetGpr64(reg::t0, kUnalignedTarget);
@@ -128,13 +161,18 @@ TEST(RecErrorExit, EeJrToUnalignedAddressReportsAndStopsThere)
 	h.RunJitNoDiff();
 
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectLogged({
+		"EE recompiler stopped: jump to unaligned address 0x00010102\n",
+		"\n  The jump at 0x00010000 (jr ->t0) read t0 = 0x00010102 before its delay slot; t0 now holds 0000000000010102\n",
+		"\n  > 00010000  01000008  jr ->t0\n",
+	});
 	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
 }
 
 TEST(RecErrorExit, EeJrRaToUnalignedAddressReportsAndStopsThere)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 
 	EeRecTestHarness h;
 	h.LoadProgramNoTerm({
@@ -145,13 +183,16 @@ TEST(RecErrorExit, EeJrRaToUnalignedAddressReportsAndStopsThere)
 	h.RunJitNoDiff();
 
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00000103)");
+	ExpectLogged({
+		"\n  The jump at 0x00010004 (jr ->ra) read ra = 0x00000103 before its delay slot; ra now holds 0000000000000103\n",
+	});
 	EXPECT_EQ(cpuRegs.pc, 0x0103u);
 	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
 }
 
 TEST(RecErrorExit, EeJalrRaToUnalignedAddressReportsAndStopsThere)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 
 	EeRecTestHarness h;
 	h.SetGpr64(reg::t0, kUnalignedTarget);
@@ -162,6 +203,10 @@ TEST(RecErrorExit, EeJalrRaToUnalignedAddressReportsAndStopsThere)
 	h.RunJitNoDiff();
 
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectLogged({
+		"\n  The jump at 0x00010000 (jalr ->t0) read t0 = 0x00010102 before its delay slot; t0 now holds 0000000000010102\n",
+		" ra 0000000000010008\n",
+	});
 	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(cpuRegs.GPR.n.v0.UD[0], 7u);
 	EXPECT_EQ(cpuRegs.GPR.n.ra.UD[0], kProgramPc + 8);
@@ -172,7 +217,7 @@ TEST(RecErrorExit, EeJalrRaToUnalignedAddressReportsAndStopsThere)
 // and come back without running anything.
 TEST(RecErrorExit, EeEntryWithUnalignedPcReportsAndDoesNotRun)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 
 	EeRecTestHarness h;
 	h.SetGpr64(reg::t0, kUnalignedTarget);
@@ -184,16 +229,30 @@ TEST(RecErrorExit, EeEntryWithUnalignedPcReportsAndDoesNotRun)
 	ASSERT_EQ(StubHost::TakeErrorReports().size(), 1u);
 	ASSERT_EQ(cpuRegs.pc, kUnalignedTarget);
 
+	ExpectLogged({"\n  The jump at 0x00010000 (jr ->t0)"});
+
 	const u64 cycle = cpuRegs.cycle;
 	ReenterEe();
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectNothingLogged();
 	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(cpuRegs.cycle, cycle);
 
 	// And every Resume after it.
 	ReenterEe();
 	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectNothingLogged();
 	EXPECT_EQ(cpuRegs.pc, kUnalignedTarget);
+
+	// An unaligned pc that no jump reported (a savestate, say) is logged, with
+	// no jump to name.
+	cpuRegs.pc = kUnalignedTarget + 4;
+	ReenterEe();
+	ExpectOneReport("R5900 Exception", "Jump to unaligned address (PC: 0x00010106)");
+	ExpectLogged({
+		"EE recompiler stopped: jump to unaligned address 0x00010106\n",
+		"\n  The pc was already unaligned when the recompiler was entered; the jump that set it is not known.\n",
+	});
 }
 
 // The IOP. Its error paths already leave the slice (they jump to the
@@ -202,7 +261,7 @@ TEST(RecErrorExit, EeEntryWithUnalignedPcReportsAndDoesNotRun)
 // is the next thing the thread does after asking for the pause.
 TEST(RecErrorExit, IopJrToUnalignedAddressReportsAndNextSliceDoesNotRun)
 {
-	StubHost::TakeErrorReports();
+	ForgetEarlierErrors();
 	const ScopedRecCpu rec_cpu;
 
 	JitTestHarness h(JitTestHarness::Mode::JitOnly);

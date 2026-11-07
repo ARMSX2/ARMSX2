@@ -756,7 +756,9 @@ enum class EEBranchRegMode
 	Call,
 };
 // wbreg is the register recJR/recJALR captured the target in, or -1 without one.
-void SetBranchReg(EEBranchRegMode mode = EEBranchRegMode::Jump, u32 call_return_pc = 0, int wbreg = -1);
+// jump_pc and jump_rs are the jump's own pc and rs, for recError to report when
+// the target is unaligned.
+void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg, u32 jump_pc, u32 jump_rs);
 void SetBranchImm(u32 imm);
 // recJAL tail: SetBranchImm plus a call-ret frame push and a BL-form link
 // to the callee (falls back to SetBranchImm for WaitLoop-FF-shaped blocks).

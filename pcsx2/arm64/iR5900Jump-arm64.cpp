@@ -67,6 +67,7 @@ void recJAL()
 void recJR()
 {
 	const u32 rs = _Rs_;
+	const u32 jump_pc = pc - 4; // pc is past the JR; a swap advances it again
 
 	// A delay slot that neither writes rs nor needs the branch's own ordering
 	// is emitted ahead of the jump instead, which takes it out of the window
@@ -87,9 +88,9 @@ void recJR()
 	// Emit-gated off under GoemonTlbHack: SetBranchReg compares V2P-translated
 	// targets there, which can never match the virtual frame RAs.
 	if (rs == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Return, 0, wbreg);
+		SetBranchReg(EEBranchRegMode::Return, 0, wbreg, jump_pc, rs);
 	else
-		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg, jump_pc, rs);
 }
 
 //// JALR — jump to rs, link in rd
@@ -97,6 +98,7 @@ void recJALR()
 {
 	const u32 rs = _Rs_;
 	const u32 rd = _Rd_;
+	const u32 jump_pc = pc - 4;
 	const u32 newpc = pc + 4; // captured before a swap can advance pc past the slot
 
 	// See recJR. rd joins rs in the safety check because the link is written
@@ -138,9 +140,9 @@ void recJALR()
 	// Other link registers don't pair with the JR-$ra pop, so they take the
 	// plain jump (their returns just compare-miss if the callee uses jr $ra).
 	if (rd == 31 && !EmuConfig.Gamefixes.GoemonTlbHack)
-		SetBranchReg(EEBranchRegMode::Call, newpc, wbreg);
+		SetBranchReg(EEBranchRegMode::Call, newpc, wbreg, jump_pc, rs);
 	else
-		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg);
+		SetBranchReg(EEBranchRegMode::Jump, 0, wbreg, jump_pc, rs);
 }
 
 
