@@ -300,6 +300,22 @@ void GSTextureVK::DestroyFramebuffers(bool defer)
 	m_framebuffers.clear();
 }
 
+VkImageView GSTextureVK::GetStencilView()
+{
+	if (m_stencil_view != VK_NULL_HANDLE || m_vk_format != VK_FORMAT_D32_SFLOAT_S8_UINT)
+		return m_stencil_view;
+
+	const VkImageViewCreateInfo vci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr, 0, m_image,
+		VK_IMAGE_VIEW_TYPE_2D, m_vk_format, s_identity_swizzle, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1}};
+	const VkResult res = vkCreateImageView(GSDeviceVK::GetInstance()->GetDevice(), &vci, nullptr, &m_stencil_view);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkCreateImageView (stencil) failed: ");
+		m_stencil_view = VK_NULL_HANDLE;
+	}
+	return m_stencil_view;
+}
+
 void GSTextureVK::Destroy(bool defer)
 {
 	GSDeviceVK::GetInstance()->UnbindTexture(this);
@@ -314,6 +330,15 @@ void GSTextureVK::Destroy(bool defer)
 		else
 			vkDestroyImageView(GSDeviceVK::GetInstance()->GetDevice(), m_view, nullptr);
 		m_view = VK_NULL_HANDLE;
+	}
+
+	if (m_stencil_view != VK_NULL_HANDLE)
+	{
+		if (defer)
+			GSDeviceVK::GetInstance()->DeferImageViewDestruction(m_stencil_view);
+		else
+			vkDestroyImageView(GSDeviceVK::GetInstance()->GetDevice(), m_stencil_view, nullptr);
+		m_stencil_view = VK_NULL_HANDLE;
 	}
 
 	// If we don't have device memory allocated, the image is not owned by us (e.g. swapchain)

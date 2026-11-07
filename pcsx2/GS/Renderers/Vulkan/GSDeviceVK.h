@@ -533,6 +533,8 @@ public:
 				u32 line_width : 1;
 				u32 feedback_loop_flags : 3;
 				u32 raster_order : 1;
+				// GSHWDrawConfig::stencil_counter: 0 off, 1 INCR_WRAP, 2 DECR_WRAP where the depth test passes.
+				u32 stencil_counter : 2;
 			};
 
 			u32 key;
@@ -630,6 +632,12 @@ private:
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
 	VkPipeline m_colclip_setup_pipelines[2][2] = {}; // [depth][feedback_loop]
 	VkPipeline m_colclip_finish_pipelines[2][2] = {}; // [depth][feedback_loop]
+
+	// The stencil counter's resolve (DrawStencilCounter): reads a copy of the target and the stencil
+	// aspect, so it has its own two-texture layout. One pipeline per RGB write mask, made on first use.
+	VkDescriptorSetLayout m_stencil_counter_ds_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_stencil_counter_pipeline_layout = VK_NULL_HANDLE;
+	std::array<VkPipeline, 8> m_stencil_counter_resolve_pipelines = {};
 	VkRenderPass m_primid_image_setup_render_passes[2][2] = {}; // [depth][clear]
 	VkPipeline m_primid_image_setup_pipelines[2][4] = {}; // [depth][datm]
 	VkPipeline m_fxaa_pipeline = {};
@@ -931,6 +939,11 @@ public:
 	void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) override;
 
 	void SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSVector4i& bbox);
+	/// Draws a GSHWDrawConfig::stencil_counter draw: the count into the stencil, then the resolve into the
+	/// target. Returns false, having changed nothing, when it cannot (a temporary could not be made),
+	/// and the caller draws the config on the colour-clip road it was built for.
+	bool DrawStencilCounter(GSHWDrawConfig& config);
+	VkPipeline GetStencilCounterResolvePipeline(u32 rgb_mask);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);
 
 	void IASetVertexBuffer(const void* vertex, size_t stride, size_t count, size_t align_multiplier = 1);

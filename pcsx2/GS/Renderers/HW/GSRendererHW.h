@@ -304,6 +304,7 @@ private:
 	void SetTCOffset();
 	bool NextDrawColClip() const;
 	bool IsColClipCounterDraw() const;
+	bool SetupStencilCounterDraw(GSTextureCache::Target* rt);
 	bool IsPossibleChannelShuffle() const;
 	bool IsPageCopy() const;
 	bool NextDrawMatchesShuffle() const;
@@ -397,6 +398,11 @@ private:
 	// GSAlphaBitLogicOp: the target whose last destination-alpha draw could have shared a stencil
 	// copy, and its DATM. See the comment where m_date_draw_shares_copy is set.
 	GSTexture* m_date_chain_rt = nullptr;
+
+	// SetupStencilCounterDraw's index order, by sign, and its per-primitive scratch. The draw points at the
+	// indices until the backend has issued it.
+	std::vector<u16> m_stencil_counter_indices;
+	std::vector<u8> m_stencil_counter_signs;
 	u8 m_date_chain_datm = 0;
 
 	// Blend carry-over (GSBlendCarry.h): the last blended draw of the donor class, and whether the draw in

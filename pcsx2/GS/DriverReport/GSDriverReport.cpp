@@ -70,6 +70,7 @@ namespace GSDriverReport
 		FEATURE(ordered_read_costs_per_draw);
 		FEATURE(barrier_read_costs_per_draw);
 		FEATURE(stencil_buffer);
+		FEATURE(stencil_counter);
 		FEATURE(cas_sharpening);
 		FEATURE(test_and_sample_depth);
 		FEATURE(no_ps2_z_quantization);

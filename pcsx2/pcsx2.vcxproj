@@ -1097,6 +1097,7 @@
     <ClInclude Include="GS\Renderers\Common\GSAlphaBitLogicOp.h" />
     <ClInclude Include="GS\Renderers\Common\GSReplacementAlphaSnap.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStencilCounter.h" />
     <ClInclude Include="GS\Renderers\Common\GSFramebufferFetchPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSMeasurementOverrides.h" />
     <ClInclude Include="GS\Renderers\Common\GSInterlaceModePolicy.h" />

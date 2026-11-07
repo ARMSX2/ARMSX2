@@ -47,6 +47,9 @@ public:
 
 	__fi VkImage GetImage() const { return m_image; }
 	__fi VkImageView GetView() const { return m_view; }
+	/// A view of a depth-stencil image's stencil aspect, for sampling it as unsigned integers. Made on
+	/// first use; VK_NULL_HANDLE if the image has no stencil aspect or the view cannot be made.
+	VkImageView GetStencilView();
 	__fi Layout GetLayout() const { return m_layout; }
 	bool IsShaderWriteMode() const override { return GetLayout() == Layout::ReadWriteImage; }
 
@@ -113,6 +116,7 @@ private:
 	VkImage m_image = VK_NULL_HANDLE;
 	VmaAllocation m_allocation = VK_NULL_HANDLE;
 	VkImageView m_view = VK_NULL_HANDLE;
+	VkImageView m_stencil_view = VK_NULL_HANDLE;
 	VkFormat m_vk_format = VK_FORMAT_UNDEFINED;
 	Layout m_layout = Layout::Undefined;
 

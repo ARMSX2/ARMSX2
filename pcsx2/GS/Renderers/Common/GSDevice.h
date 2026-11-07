@@ -1433,6 +1433,20 @@ struct alignas(16) GSHWDrawConfig
 	/// the device reports native_counter_draws. See GSRendererHW::IsColClipCounterDraw().
 	float colclip_native_scale;
 
+	/// A colour-wrap counter draw counted in the stencil buffer instead of the colour-clip copy (see
+	/// GSRendererHW::SetupStencilCounterDraw). The indices are sorted by the sign of the step: the
+	/// primitives before `minus_start` add +step to the written colour channels, the rest -step, and
+	/// primitives that add nothing are left out when nothing else of theirs is written. The backend
+	/// draws the two runs with stencil INCR_WRAP and DECR_WRAP (colour writes limited to alpha, which
+	/// the draw writes as usual), then adds step * count mod 256 into the RGB channels the colour mask
+	/// enables. Only set when the device reports stencil_counter.
+	struct StencilCounter
+	{
+		u32 minus_start; ///< First index of the -step primitives.
+		u8 step[3];      ///< The +step per RGB channel, in the target's 8-bit units (0x08 on a 16-bit target); 0 where unwritten.
+		bool enable;
+	} stencil_counter;
+
 	VSConstantBuffer cb_vs;
 	PSConstantBuffer cb_ps;
 	
@@ -1613,6 +1627,7 @@ public:
 		bool broken_mad_deinterlace : 1; ///< Driver can't reliably preserve/read the two-bank FastMAD history target.
 		bool broken_blend_constant : 1; ///< Driver applies a CONST_COLOR / INV_CONST_COLOR blend factor as if the constant were zero. A fixed (AFIX) factor rides the second fragment output instead -- see GSBlendConstantPolicy.h.
 		bool native_counter_draws : 1; ///< Can draw a fresh convert-and-resolve colclip draw at native resolution (GSHWDrawConfig::colclip_native_scale).
+		bool stencil_counter : 1; ///< Can count a colour-wrap counter draw in the stencil buffer and add the count into the target (GSHWDrawConfig::stencil_counter). Vulkan only: needs the stencil buffer and a sampled stencil aspect.
 		bool destination_alpha_loop : 1; ///< Copy road for self-reads, except a destination-alpha draw in the stencil-one mode, which reads the target in the pass under a declared feedback loop with one barrier instead of building its stencil in a setup pass. Vulkan only (Turnip on the Adreno 613); see GSSelfReadRoadPolicy.h.
 		GSFeedbackCarry feedback_carry; ///< Which draws may keep the open pass's feedback-loop bits. Vulkan only; see GSDrawRoad.h.
 		u8 sub_texel_precision_bits; ///< Fractional bits the sampler keeps of a texel coordinate (Vulkan's subTexelPrecisionBits), so how far it may round one. 0 = not known; read as Vulkan's minimum, 4.

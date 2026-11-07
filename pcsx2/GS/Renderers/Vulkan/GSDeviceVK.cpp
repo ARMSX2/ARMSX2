@@ -4315,6 +4315,16 @@ void GSDeviceVK::ResolveFeatureTable()
 		g_gs_measurement_overrides.disable_stencil_buffer)
 		m_features.stencil_buffer = false;
 
+	// The colour-wrap counter in the stencil unit (GSStencilCounter.h) needs the stencil buffer and a
+	// stencil aspect it can sample for the resolve. Wherever the stencil buffer is on, its exactness
+	// is the stencil unit's wrapping arithmetic, so there is no per-driver rule.
+	{
+		VkFormatProperties props = {};
+		vkGetPhysicalDeviceFormatProperties(m_physical_device, VK_FORMAT_D32_SFLOAT_S8_UINT, &props);
+		m_features.stencil_counter =
+			m_features.stencil_buffer && (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+	}
+
 	// Mali-G57 drivers can return stale FastMAD history; GSRenderer::Merge then weaves and blends.
 	// Ported from sashkinbro/EmuCoreX.
 	m_features.broken_mad_deinterlace = m_device_rules.broken_mad_deinterlace;
@@ -6264,6 +6274,20 @@ bool GSDeviceVK::CreatePipelineLayouts()
 		return false;
 	Vulkan::SetObjectName(dev, m_utility_pipeline_layout, "Convert pipeline layout");
 
+	// Stencil counter resolve: the copy of the target and the stencil aspect.
+	if (m_use_push_descriptors)
+		dslb.SetPushFlag();
+	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT);
+	if ((m_stencil_counter_ds_layout = dslb.Create(dev)) == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(dev, m_stencil_counter_ds_layout, "Stencil counter descriptor layout");
+	plb.AddPushConstants(VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(u32) * 4);
+	plb.AddDescriptorSet(m_stencil_counter_ds_layout);
+	if ((m_stencil_counter_pipeline_layout = plb.Create(dev)) == VK_NULL_HANDLE)
+		return false;
+	Vulkan::SetObjectName(dev, m_stencil_counter_pipeline_layout, "Stencil counter pipeline layout");
+
 	//////////////////////////////////////////////////////////////////////////
 	// Draw/TFX Pipeline Layout
 	//////////////////////////////////////////////////////////////////////////
@@ -7526,6 +7550,16 @@ void GSDeviceVK::DestroyResources()
 		vkDestroyPipelineLayout(m_device, m_utility_pipeline_layout, nullptr);
 	if (m_utility_ds_layout != VK_NULL_HANDLE)
 		vkDestroyDescriptorSetLayout(m_device, m_utility_ds_layout, nullptr);
+	for (VkPipeline& pipeline : m_stencil_counter_resolve_pipelines)
+	{
+		if (pipeline != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, pipeline, nullptr);
+		pipeline = VK_NULL_HANDLE;
+	}
+	if (m_stencil_counter_pipeline_layout != VK_NULL_HANDLE)
+		vkDestroyPipelineLayout(m_device, m_stencil_counter_pipeline_layout, nullptr);
+	if (m_stencil_counter_ds_layout != VK_NULL_HANDLE)
+		vkDestroyDescriptorSetLayout(m_device, m_stencil_counter_ds_layout, nullptr);
 
 	if (m_null_framebuffer != VK_NULL_HANDLE)
 	{
@@ -7820,6 +7854,14 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	{
 		const VkStencilOpState sos{VK_STENCIL_OP_KEEP, p.dss.date_one ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_KEEP,
 			VK_STENCIL_OP_KEEP, VK_COMPARE_OP_EQUAL, 1u, 1u, 1u};
+		gpb.SetStencilState(true, sos, sos);
+	}
+	else if (p.stencil_counter)
+	{
+		// GSStencilCounter.h: the count of the primitives that pass the depth test, wrapping both ways.
+		const VkStencilOp op =
+			(p.stencil_counter == 1) ? VK_STENCIL_OP_INCREMENT_AND_WRAP : VK_STENCIL_OP_DECREMENT_AND_WRAP;
+		const VkStencilOpState sos{VK_STENCIL_OP_KEEP, op, VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0xFFu, 0xFFu, 0u};
 		gpb.SetStencilState(true, sos, sos);
 	}
 	else if (p.dss.alpha_bit_stencil)
@@ -9114,6 +9156,229 @@ void GSDeviceVK::SetVSPushConstants(u32 base_vertex, u32 base_index, bool force_
 	}
 }
 
+VkPipeline GSDeviceVK::GetStencilCounterResolvePipeline(u32 rgb_mask)
+{
+	pxAssert(rgb_mask != 0 && rgb_mask < m_stencil_counter_resolve_pipelines.size());
+	VkPipeline& pipeline = m_stencil_counter_resolve_pipelines[rgb_mask];
+	if (pipeline != VK_NULL_HANDLE)
+		return pipeline;
+
+	const std::optional<std::string> source = ReadShaderSource("shaders/vulkan/stencil_counter.glsl");
+	if (!source)
+	{
+		Console.Error("VK: Failed to read shaders/vulkan/stencil_counter.glsl.");
+		return VK_NULL_HANDLE;
+	}
+	VkShaderModule vs = GetUtilityVertexShader(*source);
+	VkShaderModule fs = (vs != VK_NULL_HANDLE) ? GetUtilityFragmentShader(*source) : VK_NULL_HANDLE;
+	if (vs != VK_NULL_HANDLE && fs != VK_NULL_HANDLE)
+	{
+		Vulkan::GraphicsPipelineBuilder gpb;
+		SetPipelineProvokingVertex(m_features, gpb);
+		gpb.SetPipelineLayout(m_stencil_counter_pipeline_layout);
+		gpb.SetRenderPass(m_utility_color_render_pass_load, 0);
+		gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+		gpb.SetNoCullRasterizationState();
+		gpb.SetNoDepthTestState();
+		gpb.SetNoStencilState();
+		gpb.SetNoBlendingState();
+		gpb.SetColorWriteMask(0, rgb_mask);
+		gpb.SetDynamicViewportAndScissorState();
+		gpb.SetVertexShader(vs);
+		gpb.SetFragmentShader(fs);
+		pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+		if (pipeline != VK_NULL_HANDLE)
+			Vulkan::SetObjectName(m_device, pipeline, "Stencil counter resolve (mask=%x)", rgb_mask);
+	}
+	if (fs != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, fs, nullptr);
+	if (vs != VK_NULL_HANDLE)
+		vkDestroyShaderModule(m_device, vs, nullptr);
+	return pipeline;
+}
+
+bool GSDeviceVK::DrawStencilCounter(GSHWDrawConfig& config)
+{
+	// GSStencilCounter.h. Three steps, each in its own pass: a copy of the target's draw area, which
+	// is the Cd the count is added to; the draw itself, counting into a stencil cleared over the draw
+	// area, with colour writes limited to alpha; and the resolve, (Cd + step * count) mod 256 into the
+	// RGB channels the draw writes. The draw is the renderer's own pipeline with the colour-clip copy,
+	// the blend and RGB taken out and the stencil op put in, so its coverage and depth test are the
+	// colour road's.
+	GSTextureVK* const rt = static_cast<GSTextureVK*>(config.rt);
+	if (!rt || rt->GetFormat() != GSTexture::Format::Color || config.ps.HasColorROV() || config.ps.HasDepthROV())
+		return false;
+
+	const u32 rgb_mask = config.colormask.wrgba & 7u;
+	const bool writes_alpha = config.colormask.wa;
+	const GSVector2i rtsize = rt->GetSize();
+	const GSVector4i area = config.drawarea;
+	if (rgb_mask == 0 || area.rempty() || GetStencilCounterResolvePipeline(rgb_mask) == VK_NULL_HANDLE)
+		return false;
+
+	// Temporaries first, so that failing to make one leaves the colour road with nothing changed.
+	GSTextureVK* ds = static_cast<GSTextureVK*>(config.ds);
+	GSTextureVK* const temp_ds = ds ? nullptr : static_cast<GSTextureVK*>(CreateDepthStencil(rtsize, false, true));
+	if (!ds && !temp_ds)
+		return false;
+	if (temp_ds)
+		ds = temp_ds;
+	if (area.z > ds->GetWidth() || area.w > ds->GetHeight())
+	{
+		if (temp_ds)
+			Recycle(temp_ds);
+		return false;
+	}
+	GSTextureVK* const cd = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, GSTexture::Format::Color, true));
+	if (!cd || ds->GetStencilView() == VK_NULL_HANDLE)
+	{
+		if (cd)
+			Recycle(cd);
+		if (temp_ds)
+			Recycle(temp_ds);
+		return false;
+	}
+
+	GL_PUSH("Stencil counter: %u+ %u- step %02x%02x%02x {%d,%d %dx%d}", config.stencil_counter.minus_start / 3,
+		(config.nindices - config.stencil_counter.minus_start) / 3, config.stencil_counter.step[0],
+		config.stencil_counter.step[1], config.stencil_counter.step[2], area.left, area.top, area.width(), area.height());
+
+	// The stencil is about to hold the count, not a destination-alpha copy.
+	m_date_copy.valid = false;
+	EndRenderPass();
+
+	// A clear still pending on either target lands now: the copy reads the target, and the counter
+	// pass covers the draw area only.
+	const VkCommandBuffer setup_cmdbuf = GetCurrentCommandBuffer();
+	if (rt->GetState() == GSTexture::State::Cleared)
+		rt->CommitClear(setup_cmdbuf);
+	rt->SetState(GSTexture::State::Dirty);
+	if (!temp_ds)
+	{
+		if (ds->GetState() == GSTexture::State::Cleared)
+			ds->CommitClear(setup_cmdbuf);
+		ds->SetState(GSTexture::State::Dirty);
+	}
+
+	DoCopyRect(rt, cd, area, area.left, area.top);
+
+	// The count. The pipeline is the draw's own: same vertex shader, pixel shader (which cannot discard;
+	// SetupStencilCounterDraw saw to that) and depth test.
+	SetVSConstantBuffer(config.cb_vs);
+	SetPSConstantBuffer(config.cb_ps);
+	PSSetShaderResource(TFX_TEXTURE_TEXTURE, nullptr, false);
+	PSSetShaderResource(TFX_TEXTURE_PALETTE, nullptr, false);
+	PSSetShaderResource(TFX_TEXTURE_RT, nullptr, false);
+	PSSetShaderResource(TFX_TEXTURE_DEPTH, nullptr, false);
+	PipelineSelector& pipe = m_pipeline_selector;
+	UpdateHWPipelineSelector(config, pipe);
+	pipe.ps.colclip_hw = 0;
+	pipe.ps.no_color = !writes_alpha;
+	pipe.ps.no_color1 = 1;
+	pipe.bs = {};
+	pipe.cms.key = 0;
+	pipe.cms.wa = writes_alpha;
+	pipe.rt = writes_alpha;
+	pipe.ds = true;
+	pipe.dss.zwe = 0;
+	pipe.dss.date = 0;
+	pipe.dss.date_one = 0;
+	pipe.dss.alpha_bit_stencil = 0;
+	pipe.feedback_loop_flags = FeedbackLoopFlag_None;
+	pipe.raster_order = 0;
+
+	UploadHWDrawVerticesAndIndices(config);
+	OMSetRenderTargets(writes_alpha ? rt : nullptr, ds, config.scissor, FeedbackLoopFlag_None);
+	// The vertex constants place the draw in the target's coordinates, which a depth-only framebuffer
+	// would size from the depth buffer.
+	SetViewport({0.0f, 0.0f, static_cast<float>(rtsize.x), static_cast<float>(rtsize.y), 0.0f, 1.0f});
+
+	// Stencil load and store ops equal to depth's: Mali wants them equal (GetRenderPass). The stencil is
+	// cleared over the draw area inside the pass, so a pass restarted mid-draw loads what it had.
+	const VkAttachmentLoadOp ds_load = temp_ds ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD;
+	const VkRenderPass count_rp = GetRenderPass(writes_alpha ? rt->GetVkFormat() : VK_FORMAT_UNDEFINED,
+		ds->GetVkFormat(), writes_alpha ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		writes_alpha ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE, ds_load,
+		VK_ATTACHMENT_STORE_OP_STORE, ds_load, VK_ATTACHMENT_STORE_OP_STORE);
+	BeginRenderPass(count_rp, area);
+	{
+		const VkClearAttachment ca = {VK_IMAGE_ASPECT_STENCIL_BIT, 0u, {.depthStencil = {0.0f, 0u}}};
+		const VkClearRect rc = {{{area.left, area.top}, {static_cast<u32>(area.width()), static_cast<u32>(area.height())}},
+			0u, 1u};
+		vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &rc);
+	}
+
+	const u32 minus_start = config.stencil_counter.minus_start;
+	pipe.stencil_counter = 1;
+	if (minus_start > 0 && BindDrawPipeline(pipe))
+		Draw(config, 0, static_cast<int>(minus_start));
+	pipe.stencil_counter = 2;
+	if (minus_start < config.nindices && BindDrawPipeline(pipe))
+		Draw(config, static_cast<int>(minus_start), static_cast<int>(config.nindices - minus_start));
+	pipe.stencil_counter = 0;
+	EndRenderPass();
+
+	// The resolve: one full-area triangle, (Cd + step * count) mod 256 per written RGB channel.
+	ds->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+	cd->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+	ds->SetUseFenceCounter(GetCurrentFenceCounter());
+	cd->SetUseFenceCounter(GetCurrentFenceCounter());
+	OMSetRenderTargets(rt, nullptr, area);
+	BeginRenderPass(m_utility_color_render_pass_load, area);
+
+	VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+	Vulkan::DescriptorSetUpdateBuilder dsub;
+	if (m_use_push_descriptors)
+	{
+		dsub.AddCombinedImageSamplerDescriptorWrite(VK_NULL_HANDLE, 0, cd->GetView(), m_point_sampler, cd->GetVkLayout());
+		dsub.AddCombinedImageSamplerDescriptorWrite(
+			VK_NULL_HANDLE, 1, ds->GetStencilView(), m_point_sampler, ds->GetVkLayout());
+		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_stencil_counter_pipeline_layout, 0, false);
+	}
+	else
+	{
+		VkDescriptorSet set = AllocateDescriptorSetFromFramePool(m_stencil_counter_ds_layout);
+		if (set == VK_NULL_HANDLE)
+		{
+			ExecuteCommandBufferAndRestartRenderPass(false, "Out of stencil counter descriptors");
+			cmdbuf = GetCurrentCommandBuffer();
+			set = AllocateDescriptorSetFromFramePool(m_stencil_counter_ds_layout);
+		}
+		if (set == VK_NULL_HANDLE)
+			Console.Error("VK: Failed to allocate the stencil counter resolve's descriptor set");
+		else
+		{
+			dsub.AddCombinedImageSamplerDescriptorWrite(set, 0, cd->GetView(), m_point_sampler, cd->GetVkLayout());
+			dsub.AddCombinedImageSamplerDescriptorWrite(set, 1, ds->GetStencilView(), m_point_sampler, ds->GetVkLayout());
+			dsub.Update(m_device);
+			vkCmdBindDescriptorSets(
+				cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_stencil_counter_pipeline_layout, 0, 1, &set, 0, nullptr);
+		}
+	}
+
+	const VkViewport viewport = {0.0f, 0.0f, static_cast<float>(rtsize.x), static_cast<float>(rtsize.y), 0.0f, 1.0f};
+	const VkRect2D scissor = {{area.left, area.top}, {static_cast<u32>(area.width()), static_cast<u32>(area.height())}};
+	const u32 step[4] = {config.stencil_counter.step[0], config.stencil_counter.step[1], config.stencil_counter.step[2], 0};
+	vkCmdBindPipeline(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, GetStencilCounterResolvePipeline(rgb_mask));
+	vkCmdSetViewport(cmdbuf, 0, 1, &viewport);
+	vkCmdSetScissor(cmdbuf, 0, 1, &scissor);
+	vkCmdPushConstants(cmdbuf, m_stencil_counter_pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(step), step);
+	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+	vkCmdDraw(cmdbuf, 3, 1, 0, 0);
+
+	// Everything bound above went around the state cache, so the next draw binds its own again.
+	m_current_pipeline_layout = PipelineLayout::Undefined;
+	m_dirty_flags |= DIRTY_FLAG_PIPELINE | DIRTY_FLAG_VIEWPORT | DIRTY_FLAG_SCISSOR;
+
+	Recycle(cd);
+	if (temp_ds)
+		Recycle(temp_ds);
+
+	config.colclip_mode = GSHWDrawConfig::ColClipMode::NoModify;
+	GL_POP();
+	return true;
+}
+
 void GSDeviceVK::SetupDATE(GSTexture* rt, GSTexture* ds, SetDATM datm, const GSVector4i& bbox)
 {
 	g_perfmon.Put(GSPerfMon::TextureCopies, 1);
@@ -9302,6 +9567,9 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	{
 		m_date_copy.valid = false;
 	}
+
+	if (config.stencil_counter.enable && DrawStencilCounter(config))
+		return;
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
 	GSTextureVK* draw_rt = config.ps.HasColorROV() ? nullptr : static_cast<GSTextureVK*>(config.rt);
@@ -9936,6 +10204,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	else if (config.road.depth_read)
 		pipe.feedback_loop_flags |= FeedbackLoopFlag_ReadDepth;
 	pipe.raster_order = config.raster_order && config.road.rt_loop;
+	pipe.stencil_counter = 0;
 
 	// enable point size in the vertex shader if we're rendering points regardless of upscaling.
 	pipe.vs.point_size |= (config.topology == GSHWDrawConfig::Topology::Point);

@@ -16,6 +16,7 @@
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSReplacementAlphaSnap.h"
+#include "GS/Renderers/Common/GSStencilCounter.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -1936,6 +1937,119 @@ bool GSRendererHW::IsColClipCounterDraw() const
 
 	// One direction alone only ever adds or subtracts, which is not a count of crossings.
 	return plus && minus;
+}
+
+// Counts a colour-wrap counter draw in the stencil buffer instead of the colour-clip copy
+// (GSStencilCounter.h has the arithmetic). Exact by construction, so it needs no game key: every test
+// below is either a register the draw's result depends on or a road that would change what the draw
+// writes. The draw is the shape IsColClipCounterDraw recognises, generalised: any step, a different
+// one per channel, only the channels the draw writes, and a 16-bit target's masked steps (Spider-Man 3:
+// 0x0b and 0xf9 are +8 and -8 once the low three bits go). Sorts the indices by sign into
+// m_stencil_counter_indices and points the draw at them.
+bool GSRendererHW::SetupStencilCounterDraw(GSTextureCache::Target* rt)
+{
+	const GSDevice::FeatureSupport& features = g_gs_device->Features();
+	if (!features.stencil_counter || !rt || m_conf.rt != rt->m_texture)
+		return false;
+
+	// A fresh colour-clip draw with nothing else riding on it. A run of colour-clip draws on one target
+	// (ConvertOnly, NoModify, ResolveOnly) keeps the colour-clip copy between draws, and stays on that road.
+	const GSHWDrawConfig::PSSelector& ps = m_conf.ps;
+	if (!ps.colclip_hw || m_conf.colclip_mode != GSHWDrawConfig::ColClipMode::ConvertAndResolve ||
+		g_gs_device->GetColorClipTexture())
+		return false;
+
+	// Nothing reads the target, the depth buffer or a texture, and nothing adds a pass or a barrier.
+	if (m_conf.tex || m_conf.pal || m_conf.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE ||
+		m_conf.require_one_barrier || m_conf.require_full_barrier || m_conf.alpha_second_pass.enable ||
+		m_conf.blend_multi_pass.enable || m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+		m_conf.colormask.logic_op != GSAlphaBitLogicOp::Off || ps.HasColorROV() || ps.HasDepthROV() ||
+		ps.IsFeedbackLoopRT() || ps.IsFeedbackLoopDepth() || m_channel_shuffle_width != 0)
+		return false;
+
+	// The source colour reaching the add is the flat vertex colour: no texture, fog, dither, AA1
+	// coverage, shuffle or framebuffer mask in between. And the shader cannot discard, so the stencil
+	// writes run with early depth and stencil: on Turnip (Adreno 613 and 650) a shader that can discard,
+	// writing stencil, was measured to lose steps in about 1% of frames when the stencil op changes
+	// between two draws of a pass, which is exactly how the backend draws the two signs.
+	if (PRIM->TME || PRIM->FGE || PRIM->AA1 || ps.tfx != TFX_NONE || ps.fog || ps.dither || ps.fbmask ||
+		ps.shuffle || ps.channel || ps.tex_is_fb || ps.blend_mix || ps.pabe || ps.HasShaderDiscard() ||
+		ps.IsAlphaTesting() || ps.aa1 != GSHWDrawConfig::PS_AA1::NONE || ps.date ||
+		m_conf.vs.expand != GSHWDrawConfig::VSExpand::None)
+		return false;
+
+	// Cs * 1 + Cd with colour wrap, the same register test as IsColClipCounterDraw.
+	const GIFRegALPHA& alpha = m_context->ALPHA;
+	if (!PRIM->ABE || m_draw_env->COLCLAMP.CLAMP || alpha.A != 0 || alpha.B != 2 || alpha.D != 1)
+		return false;
+	if (!((alpha.C == 2 && alpha.FIX == 128) || (alpha.C == 0 && m_vt.m_eq.a && m_vertex->buff[0].RGBAQ.A == 128)))
+		return false;
+
+	// Grouping primitives by sign reorders them, which is exact only while no fragment changes what a
+	// later one sees: no depth writes. RGB must be written somewhere, or there is nothing to count.
+	if (m_conf.depth.zwe || (m_conf.colormask.wrgba & 7) == 0)
+		return false;
+
+	if (m_conf.topology != GSHWDrawConfig::Topology::Triangle || m_conf.indices_per_prim != 3 ||
+		(m_conf.nindices % 3) != 0 || m_conf.nindices == 0)
+		return false;
+
+	// The primitive's colour is its last vertex's (HandleFlatShadedVertices has made the vertices of a flat
+	// primitive agree wherever the device takes the first). A gouraud primitive counts only if its three
+	// vertices agree, so the interpolated colour is that one value.
+	const u8 mask = GSStencilCounter::SourceColourMask(ps);
+	const u8 rgb_mask = m_conf.colormask.wrgba & 7;
+	const bool writes_alpha = m_conf.colormask.wa;
+	const u16* const idx = m_conf.indices;
+	const GSVertex* const v = m_conf.verts;
+	const u32 nprims = m_conf.nindices / 3;
+	GSStencilCounter::Step step;
+	bool have_step = false;
+	u32 nplus = 0, nminus = 0, nzero = 0;
+	m_stencil_counter_signs.resize(nprims);
+	const u32 alpha0 = v[idx[2]].RGBAQ.A;
+	for (u32 p = 0; p < nprims; p++)
+	{
+		const GIFRegRGBAQ& c = v[idx[p * 3 + 2]].RGBAQ;
+		if (m_conf.vs.iip && (v[idx[p * 3]].RGBAQ.U32[0] != c.U32[0] || v[idx[p * 3 + 1]].RGBAQ.U32[0] != c.U32[0]))
+			return false;
+		// Where the draw writes alpha, every primitive writes the same one, so the order is free there too.
+		if (writes_alpha && c.A != alpha0)
+			return false;
+		const GSStencilCounter::Sign sign =
+			GSStencilCounter::Classify(GSStencilCounter::StepOf(c.R, c.G, c.B, rgb_mask, mask), step, have_step);
+		if (sign == GSStencilCounter::Sign::NotACounter)
+			return false;
+		m_stencil_counter_signs[p] = static_cast<u8>(sign);
+		nplus += (sign == GSStencilCounter::Sign::Plus);
+		nminus += (sign == GSStencilCounter::Sign::Minus);
+		nzero += (sign == GSStencilCounter::Sign::Zero);
+	}
+
+	// One direction alone is not a count of crossings (IsColClipCounterDraw's rule). A primitive that adds
+	// nothing still writes its alpha where it lands; it is dropped only when the draw writes no alpha.
+	if (nplus == 0 || nminus == 0 || (nzero != 0 && writes_alpha))
+		return false;
+
+	m_stencil_counter_indices.resize((nplus + nminus) * 3);
+	u16* plus_out = m_stencil_counter_indices.data();
+	u16* minus_out = plus_out + nplus * 3;
+	for (u32 p = 0; p < nprims; p++)
+	{
+		const GSStencilCounter::Sign sign = static_cast<GSStencilCounter::Sign>(m_stencil_counter_signs[p]);
+		if (sign == GSStencilCounter::Sign::Zero)
+			continue;
+		u16*& out = (sign == GSStencilCounter::Sign::Plus) ? plus_out : minus_out;
+		std::memcpy(out, &idx[p * 3], sizeof(u16) * 3);
+		out += 3;
+	}
+
+	m_conf.indices = m_stencil_counter_indices.data();
+	m_conf.nindices = (nplus + nminus) * 3;
+	m_conf.stencil_counter.enable = true;
+	std::memcpy(m_conf.stencil_counter.step, step.c, sizeof(step.c));
+	m_conf.stencil_counter.minus_start = nplus * 3;
+	return true;
 }
 
 bool GSRendererHW::NextDrawColClip() const
@@ -11594,10 +11708,12 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	// Before the road and the draw log, which read the pixel shader selector this may change.
 	CarryBlendBeforeSubmit(rt, ds);
 
-	// A fresh colclip counter draw with nothing else riding on it: draw it at native resolution (GameDB
-	// nativeCounterDraws). Anything that would add a pass, a barrier or a destination-alpha setup keeps the
+	// A colour-wrap counter the stencil unit can count exactly takes that road on any title. Otherwise a
+	// fresh colclip counter draw with nothing else riding on it can be drawn at native resolution (GameDB
+	// nativeCounterDraws), which moves the edges of what it counts; that stays for devices without the
+	// stencil road. Anything that would add a pass, a barrier or a destination-alpha setup keeps the
 	// full-resolution path.
-	if (GSConfig.UserHacks_NativeCounterDraws && g_gs_device->Features().native_counter_draws && m_conf.ps.colclip_hw &&
+	if (!SetupStencilCounterDraw(rt) && GSConfig.UserHacks_NativeCounterDraws && g_gs_device->Features().native_counter_draws && m_conf.ps.colclip_hw &&
 		m_conf.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve && rt && rt->GetScale() > 1.0f &&
 		m_conf.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Off && !m_conf.require_one_barrier &&
 		!m_conf.require_full_barrier && !m_conf.alpha_second_pass.enable && !m_conf.blend_multi_pass.enable &&
