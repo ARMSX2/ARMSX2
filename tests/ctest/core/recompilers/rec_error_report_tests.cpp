@@ -7,6 +7,7 @@
 
 #include "arm64/RecErrorReport-arm64.h"
 
+#include "Memory.h"
 #include "R5900.h"
 
 #include <gtest/gtest.h>
@@ -219,4 +220,36 @@ TEST(RecErrorReport, EachErrorIsLoggedOnceAndOnlyAFewInAll)
 
 	cpuRegs.pc = saved_pc;
 	ResetForTests();
+}
+
+// The word readers the crash post-mortem uses: RAM through its segments and
+// mirrors, ROM, and nothing for an address with no memory behind it.
+TEST(RecErrorReport, WordReadersSeeRamRomAndNothingElse)
+{
+	ASSERT_NE(eeMem, nullptr);
+	ASSERT_NE(iopMem, nullptr);
+	const u32 ee_saved = *reinterpret_cast<u32*>(eeMem->Main + 0x1230);
+	const u32 iop_saved = *reinterpret_cast<u32*>(iopMem->Main + 0x4560);
+	*reinterpret_cast<u32*>(eeMem->Main + 0x1230) = 0x11223344;
+	*reinterpret_cast<u32*>(iopMem->Main + 0x4560) = 0x55667788;
+
+	u32 value = 0;
+	EXPECT_TRUE(ReadEeWord(0x00001230, &value));
+	EXPECT_EQ(value, 0x11223344u);
+	value = 0;
+	EXPECT_TRUE(ReadEeWord(0x80001232, &value)) << "kseg0, and the low bits are ignored";
+	EXPECT_EQ(value, 0x11223344u);
+	EXPECT_TRUE(ReadEeWord(0xbfc00000, &value)) << "the BIOS ROM";
+	EXPECT_FALSE(ReadEeWord(0x1e800000, &value));
+
+	value = 0;
+	EXPECT_TRUE(ReadIopWord(0x80004560, &value));
+	EXPECT_EQ(value, 0x55667788u);
+	value = 0;
+	EXPECT_TRUE(ReadIopWord(0x00204560, &value)) << "IOP RAM mirrors through the first 8 MB";
+	EXPECT_EQ(value, 0x55667788u);
+	EXPECT_FALSE(ReadIopWord(0x01000000, &value));
+
+	*reinterpret_cast<u32*>(eeMem->Main + 0x1230) = ee_saved;
+	*reinterpret_cast<u32*>(iopMem->Main + 0x4560) = iop_saved;
 }

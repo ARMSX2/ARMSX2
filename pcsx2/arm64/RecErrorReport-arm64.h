@@ -92,6 +92,13 @@ namespace RecErrorReport
 		std::vector<Word> stack; // words from $sp up
 	};
 
+	// One word of the EE's or the IOP's RAM or ROM, by guest address; false for
+	// an address with nothing behind it. No allocation and no locks, so the
+	// crash post-mortem (RecCrashReport-arm64.h) reads guest memory with these
+	// too.
+	bool ReadEeWord(u32 addr, u32* value);
+	bool ReadIopWord(u32 addr, u32* value);
+
 	// The facts as lines of text, without a trailing newline.
 	std::string Format(const Facts& facts);
 

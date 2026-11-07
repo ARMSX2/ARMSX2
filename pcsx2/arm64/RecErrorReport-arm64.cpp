@@ -79,33 +79,43 @@ namespace RecErrorReport
 			0xc0000000, 0xd0000000};
 		constexpr u32 kRomSegments[] = {0x00000000, 0x80000000, 0xa0000000};
 
-		std::vector<Region> EeRegions()
+		// Fixed size, so the crash handler can build one without allocating.
+		struct RegionTable
+		{
+			Region regions[4];
+			size_t count = 0;
+
+			const Region* begin() const { return regions; }
+			const Region* end() const { return regions + count; }
+		};
+
+		RegionTable EeRegions()
 		{
 			if (!eeMem)
 				return {};
-			return {
+			return {{
 				{"RAM", 0, Ps2MemSize::ExposedRam, ~0u, eeMem->Main, kEeRamSegments, std::size(kEeRamSegments)},
 				{"the BIOS ROM", 0x1fc00000, Ps2MemSize::Rom, ~0u, eeMem->ROM, kRomSegments, std::size(kRomSegments)},
 				{"ROM1", 0x1e000000, Ps2MemSize::Rom1, ~0u, eeMem->ROM1, kRomSegments, std::size(kRomSegments)},
 				{"ROM2", 0x1e400000, Ps2MemSize::Rom2, ~0u, eeMem->ROM2, kRomSegments, std::size(kRomSegments)},
-			};
+			}, 4};
 		}
 
-		std::vector<Region> IopRegions()
+		RegionTable IopRegions()
 		{
 			if (!iopMem || !eeMem)
 				return {};
 			// IOP RAM shows up mirrored through the first 8 MB, and ROM2 is eight
 			// pages (recResetIOP).
-			return {
+			return {{
 				{"IOP RAM", 0, static_cast<u32>(_8mb), Ps2MemSize::ExposedIopRam - 1, iopMem->Main, kRomSegments, std::size(kRomSegments)},
 				{"the BIOS ROM", 0x1fc00000, Ps2MemSize::Rom, ~0u, eeMem->ROM, kRomSegments, std::size(kRomSegments)},
 				{"ROM1", 0x1e000000, Ps2MemSize::Rom1, ~0u, eeMem->ROM1, kRomSegments, std::size(kRomSegments)},
 				{"ROM2", 0x1e400000, 8 * _64kb, ~0u, eeMem->ROM2, kRomSegments, std::size(kRomSegments)},
-			};
+			}, 4};
 		}
 
-		bool ReadWord(const std::vector<Region>& regions, u32 addr, u32* value)
+		bool ReadWord(const RegionTable& regions, u32 addr, u32* value)
 		{
 			addr &= ~3u;
 			for (const Region& r : regions)
@@ -123,7 +133,7 @@ namespace RecErrorReport
 			return false;
 		}
 
-		const char* EndOfRegion(const std::vector<Region>& regions, u32 addr)
+		const char* EndOfRegion(const RegionTable& regions, u32 addr)
 		{
 			for (const Region& r : regions)
 			{
@@ -136,7 +146,7 @@ namespace RecErrorReport
 			return nullptr;
 		}
 
-		std::vector<Word> ReadWords(const std::vector<Region>& regions, u32 first, u32 count)
+		std::vector<Word> ReadWords(const RegionTable& regions, u32 first, u32 count)
 		{
 			std::vector<Word> words;
 			for (u32 i = 0; i < count; i++)
@@ -149,7 +159,7 @@ namespace RecErrorReport
 			return words;
 		}
 
-		void CaptureMemory(Facts& f, const std::vector<Region>& regions, u32 sp)
+		void CaptureMemory(Facts& f, const RegionTable& regions, u32 sp)
 		{
 			if (f.jump || f.eret)
 			{
@@ -211,6 +221,16 @@ namespace RecErrorReport
 #endif
 		}
 	} // namespace
+
+	bool ReadEeWord(u32 addr, u32* value)
+	{
+		return ReadWord(EeRegions(), addr, value);
+	}
+
+	bool ReadIopWord(u32 addr, u32* value)
+	{
+		return ReadWord(IopRegions(), addr, value);
+	}
 
 	bool EretUsedErrorEpc(u32 status_after, u32 pc, u32 epc, u32 error_epc)
 	{
