@@ -9,6 +9,7 @@
 
 #include "fmt/format.h"
 
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -55,6 +56,7 @@ namespace Log
 	static FileSystem::ManagedCFilePtr s_file_handle;
 	static std::string s_file_path;
 	static std::mutex s_file_mutex;
+	static std::atomic<int> s_file_descriptor{-1};
 
 	static HostCallbackType s_host_callback;
 
@@ -351,11 +353,15 @@ bool Log::SetFileOutputLevel(LOGLEVEL level, std::string path)
 		{
 			if (!s_file_handle || s_file_path != path)
 			{
+				s_file_descriptor.store(-1, std::memory_order_release);
 				s_file_handle.reset();
 				s_file_handle = FileSystem::OpenManagedSharedCFile(path.c_str(), "wb", FileSystem::FileShareMode::DenyWrite);
 				if (s_file_handle)
 				{
 					s_file_path = std::move(path);
+#ifndef _WIN32
+					s_file_descriptor.store(fileno(s_file_handle.get()), std::memory_order_release);
+#endif
 				}
 				else
 				{
@@ -368,6 +374,7 @@ bool Log::SetFileOutputLevel(LOGLEVEL level, std::string path)
 		}
 		else
 		{
+			s_file_descriptor.store(-1, std::memory_order_release);
 			s_file_handle.reset();
 			s_file_path = {};
 		}
@@ -376,6 +383,11 @@ bool Log::SetFileOutputLevel(LOGLEVEL level, std::string path)
 	s_file_level = s_file_handle ? level : LOGLEVEL_NONE;
 	UpdateMaxLevel();
 	return IsFileOutputEnabled();
+}
+
+int Log::GetFileLogDescriptor()
+{
+	return s_file_descriptor.load(std::memory_order_acquire);
 }
 
 std::FILE* Log::GetFileLogHandle()

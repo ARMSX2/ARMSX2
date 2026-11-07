@@ -84,6 +84,12 @@ namespace Log
 	// returns the log file, this is really dangerous to use if it changes...
 	std::FILE* GetFileLogHandle();
 
+	// The log file's descriptor, or -1 when there is no log file. For a crash
+	// handler, which cannot take the log's lock or use stdio: it reads one
+	// lock-free atomic and writes with write(2), past the FILE buffer (empty,
+	// since every line is flushed). Not available on Windows.
+	int GetFileLogDescriptor();
+
 	// adds host output
 	bool IsHostOutputEnabled();
 	void SetHostOutputLevel(LOGLEVEL level, HostCallbackType callback);
