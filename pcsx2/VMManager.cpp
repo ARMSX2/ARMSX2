@@ -2167,13 +2167,21 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	if (!GSDumpReplayer::IsReplayingDump())
 	{
 		Console.WriteLn("Loading BIOS...");
-		if (!LoadBIOS())
+		std::string bios_path;
+		const BIOSLoadResult bios_result = LoadBIOS(&bios_path);
+		if (bios_result == BIOSLoadResult::Unreadable)
+		{
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "The BIOS file '{}' could not be read."),
+				Path::GetFileName(bios_path));
+			return VMBootResult::BIOSNotUsable;
+		}
+		if (bios_result == BIOSLoadResult::NotFound)
 		{
 			if (Arcade::IsActive())
 			{
 				Error::SetString(error, TRANSLATE_STR("VMManager",
 					"Arcade games need the BIOS of a Namco System 246 or 256 board (a COH-H BIOS) in the BIOS folder."));
-				return VMBootResult::StartupFailure;
+				return VMBootResult::BIOSNotFound;
 			}
 			Error::SetStringFmt(error,
 				TRANSLATE_FS("VMManager",
@@ -2183,7 +2191,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 					"PCSX2 will be able to run once you've placed your BIOS image inside the folder named \"bios\" within the data directory "
 					"(Tools Menu -> Open Data Directory)."),
 				PCSX2_DOCUMENTATION_BIOS_URL_SHORTENED);
-			return VMBootResult::StartupFailure;
+			return VMBootResult::BIOSNotFound;
 		}
 
 		// Must happen after BIOS load, depends on BIOS version.

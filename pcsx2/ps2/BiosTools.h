@@ -134,7 +134,17 @@ extern bool IsBIOSAvailable(const std::string& full_path);
 // then names the board whose BIOS it needs, and stays empty when there is no arcade BIOS at all.
 extern std::string FindArcadeBiosFor(const std::string& gameid, const std::string& picked, std::string* needs);
 
-extern bool LoadBIOS();
+enum class BIOSLoadResult
+{
+	Loaded,
+	/// No BIOS is configured, or the configured file is gone, and the BIOS folder has none to use instead.
+	NotFound,
+	/// The file could not be opened or read, or is empty.
+	Unreadable,
+};
+
+// [path], when given, gets the file LoadBIOS tried, for a result other than NotFound.
+extern BIOSLoadResult LoadBIOS(std::string* path = nullptr);
 extern void CopyBIOSToMemory();
 
 // Values in [][0] are the names on BIOSes v1.70 and below.

@@ -70,7 +70,12 @@ enum class VMBootResult
 	/// The boot failed because the user needs to be prompted to disable
 	/// hardcore mode. If the user agrees, VMManager::Initialize should be
 	/// called again with disable_achievements_hardcore_mode set to true.
-	PromptDisableHardcoreMode
+	PromptDisableHardcoreMode,
+	/// As StartupFailure: no BIOS is configured, or the configured one is
+	/// gone, and the BIOS folder has none to use instead.
+	BIOSNotFound,
+	/// As StartupFailure: the BIOS file was found but cannot be used.
+	BIOSNotUsable,
 };
 
 /// Callback used to restart the VM boot process after the user has consented

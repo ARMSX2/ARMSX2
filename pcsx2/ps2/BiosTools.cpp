@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "common/ARCADE.h"
+#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -500,7 +501,7 @@ bool IsBIOSAvailable(const std::string& full_path)
 // Exceptions:
 //   BadStream - Thrown if the primary bios file (usually .bin) is not found, corrupted, etc.
 //
-bool LoadBIOS()
+BIOSLoadResult LoadBIOS(std::string* path_out)
 {
 	pxAssertMsg(eeMem->ROM, "PS2 system memory has not been initialized yet.");
 
@@ -522,16 +523,26 @@ bool LoadBIOS()
 
 		path = FindBiosImage();
 		if (path.empty())
-			return false;
+			return BIOSLoadResult::NotFound;
 	}
 
-	auto fp = FileSystem::OpenManagedCFile(path.c_str(), "rb");
+	if (path_out)
+		*path_out = path;
+
+	Error error;
+	auto fp = FileSystem::OpenManagedCFile(path.c_str(), "rb", &error);
 	if (!fp)
-		return false;
+	{
+		Console.ErrorFmt("BIOS: cannot open '{}': {}", path, error.GetDescription());
+		return BIOSLoadResult::Unreadable;
+	}
 
 	const s64 filesize = FileSystem::FSize64(fp.get());
 	if (filesize <= 0)
-		return false;
+	{
+		Console.ErrorFmt("BIOS: '{}' is empty", path);
+		return BIOSLoadResult::Unreadable;
+	}
 
 	LoadBiosVersion(fp.get(), BiosVersion, BiosDescription, BiosRegion, BiosZone, BiosSerial);
 
@@ -540,7 +551,8 @@ bool LoadBIOS()
 	if (FileSystem::FSeek64(fp.get(), 0, SEEK_SET) ||
 		std::fread(BiosRom.data(), static_cast<size_t>(std::min<s64>(Ps2MemSize::Rom, filesize)), 1, fp.get()) != 1)
 	{
-		return false;
+		Console.ErrorFmt("BIOS: reading '{}' failed", path);
+		return BIOSLoadResult::Unreadable;
 	}
 
 	// If file is less than 2mb it doesn't have an OSD (Devel consoles)
@@ -558,7 +570,7 @@ bool LoadBIOS()
 
 	LoadExtraRom("rom1", Ps2MemSize::Rom, Ps2MemSize::Rom1);
 	LoadExtraRom("rom2", Ps2MemSize::Rom + Ps2MemSize::Rom1, Ps2MemSize::Rom2);
-	return true;
+	return BIOSLoadResult::Loaded;
 }
 
 void CopyBIOSToMemory()
