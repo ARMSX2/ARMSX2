@@ -2588,7 +2588,7 @@ void ImGuiFullscreen::DrawChoiceDialog()
 		ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
 
 		BeginMenuButtons();
-		ResetFocusHere();
+		const bool focus_reset = ResetFocusHere();
 
 		if (s_choice_dialog_checkable)
 		{
@@ -2615,8 +2615,16 @@ void ImGuiFullscreen::DrawChoiceDialog()
 					title += ICON_FA_CHECK " ";
 				title += option.first;
 
-				if (ActiveButtonWithRightText(option.first.c_str(), option.second ? ICON_FA_CHECK : nullptr, option.second,
-						true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+				const bool clicked = ActiveButtonWithRightText(option.first.c_str(), option.second ? ICON_FA_CHECK : nullptr,
+					option.second, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+				// Open on the option that is already chosen, not on the first one (e.g. 2x of the internal resolution
+				// list instead of 0.25x), and scroll it into view.
+				if (focus_reset && option.second)
+				{
+					ImGui::SetItemDefaultFocus();
+					ImGui::SetScrollHereY(0.5f);
+				}
+				if (clicked)
 				{
 					choice = i;
 					for (s32 j = 0; j < static_cast<s32>(s_choice_dialog_options.size()); j++)
