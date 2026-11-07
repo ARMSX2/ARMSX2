@@ -2175,6 +2175,12 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 				Path::GetFileName(bios_path));
 			return VMBootResult::BIOSNotUsable;
 		}
+		if (bios_result == BIOSLoadResult::NotABIOS)
+		{
+			Error::SetStringFmt(error, TRANSLATE_FS("VMManager", "The BIOS file '{}' is not a PlayStation 2 BIOS image, or it is damaged."),
+				Path::GetFileName(bios_path));
+			return VMBootResult::BIOSNotUsable;
+		}
 		if (bios_result == BIOSLoadResult::NotFound)
 		{
 			if (Arcade::IsActive())

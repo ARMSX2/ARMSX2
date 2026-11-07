@@ -141,6 +141,8 @@ enum class BIOSLoadResult
 	NotFound,
 	/// The file could not be opened or read, or is empty.
 	Unreadable,
+	/// The file is not a PS2 BIOS image, or it is damaged.
+	NotABIOS,
 };
 
 // [path], when given, gets the file LoadBIOS tried, for a result other than NotFound.

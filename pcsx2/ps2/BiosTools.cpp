@@ -544,7 +544,14 @@ BIOSLoadResult LoadBIOS(std::string* path_out)
 		return BIOSLoadResult::Unreadable;
 	}
 
-	LoadBiosVersion(fp.get(), BiosVersion, BiosDescription, BiosRegion, BiosZone, BiosSerial);
+	// The BIOS lists a player picks from (Qt, Big Picture, Android, iOS) and the search above only take
+	// files that pass this, so a configured file that fails it was damaged or replaced after it was
+	// picked, and the EE would start executing whatever the file holds.
+	if (!LoadBiosVersion(fp.get(), BiosVersion, BiosDescription, BiosRegion, BiosZone, BiosSerial))
+	{
+		Console.ErrorFmt("BIOS: '{}' has no PS2 BIOS ROM directory or version", path);
+		return BIOSLoadResult::NotABIOS;
+	}
 
 	BiosRom.resize(Ps2MemSize::Rom);
 
