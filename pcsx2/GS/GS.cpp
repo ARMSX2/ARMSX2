@@ -531,7 +531,11 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 	{
 		// We need a new render window when changing APIs.
 		const bool recreate_window = (g_gs_device->GetRenderAPI() != GetAPIForRenderer(GSConfig.Renderer));
-		const GSVSyncMode vsync_mode = g_gs_device->GetVSyncMode();
+		// The mode the settings ask for, as GSopen takes it, not the old device's: a device keeps the mode it fell
+		// back to. Vulkan without immediate present keeps Mailbox for vsync off, OpenGL turns Mailbox into FIFO, so a
+		// switch to OpenGL and back left Vulkan on blocking FIFO with two images (Shadow of the Colossus temple on
+		// RK3588: 100% before the round trip, 67% after it).
+		const GSVSyncMode vsync_mode = VMManager::GetEffectiveVSyncMode();
 		const bool allow_present_throttle = g_gs_device->IsPresentThrottleAllowed();
 		CloseGSDevice(false);
 
