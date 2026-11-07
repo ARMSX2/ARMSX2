@@ -53,8 +53,11 @@ object CustomDriver {
         val releasesUrl: String,
         val idPrefix: String,
         /** Whether to list this source for the device's GL_RENDERER (null when unknown).
-         *  Sources that only build for one GPU family say so here; the rest list everywhere. */
-        val supports: (renderer: String?) -> Boolean = { true },
+         *  A pack only ever loads on the GPU vendor it was built for, so every source names its
+         *  family here — there is no default — and the list never offers an Adreno pack to a Mali
+         *  device or the reverse. An unreadable renderer matches no source: the family is unknown,
+         *  so nothing is offered, and a local import stays available. */
+        val supports: (renderer: String?) -> Boolean,
     )
 
     /** The GPUs our MaliSX2 packs drive: Mali Valhall v9 (G57, G68, G77, G78 — G78AE included) and
@@ -93,11 +96,13 @@ object CustomDriver {
     // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up
     // (6xx only) under one of them (GSGPUDriverProfile.cpp). One release per pack, so the
     // release name is the row title.
-    // Listed on every GPU; the first-run setup offers it on Adreno 6xx and 7xx only ([setupSource]).
+    // Listed on Adreno only: it is a Qualcomm driver and loads on nothing else. The first-run
+    // setup offers it on Adreno 6xx and 7xx only ([setupSource]).
     private val ARMSX2_TURNIP_SOURCE = DriverSource(
         "ARMSX2 · turnip",
         "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases",
         "armsx2turnip",
+        supports = ::isAdreno,
     )
 
     /** Qualcomm's "A" marketing names, which some GL drivers report in GL_RENDERER instead of the
@@ -125,6 +130,17 @@ object CustomDriver {
         val r = withAdrenoModelNumber(renderer) ?: return false
         return ADRENO_6XX_7XX.containsMatchIn(r)
     }
+
+    /** Any Adreno, whatever its model: the Turnip and Adreno Tools packs drive Qualcomm's driver,
+     *  and none of them loads on another vendor's GPU. Read after [withAdrenoModelNumber] so a
+     *  marketing name ("Adreno (TM) A12") still counts as one. */
+    internal fun isAdreno(renderer: String?): Boolean =
+        withAdrenoModelNumber(renderer)?.contains("Adreno", ignoreCase = true) == true
+
+    /** Samsung's Xclipse (AMD RDNA based), which takes neither Arm's driver nor Turnip and has its
+     *  own pack sources in [DRIVER_SOURCES] (ExynosTools and MdiEx). */
+    internal fun isXclipse(renderer: String?): Boolean =
+        renderer?.contains("Xclipse", ignoreCase = true) == true
 
     /** The source the first-run setup offers for [renderer]: ours for the GPU, or null when none of
      *  our drivers is built for it (the system driver stays). The two predicates never overlap. */
@@ -155,11 +171,13 @@ object CustomDriver {
             "AdrenoToolsDrivers",
             "https://api.github.com/repos/K11MCH1/AdrenoToolsDrivers/releases",
             "",
+            supports = ::isAdreno,
         ),
         DriverSource(
             "MrPurple · purple-turnip",
             "https://api.github.com/repos/MrPurple666/purple-turnip/releases",
             "purpleturnip",
+            supports = ::isAdreno,
         ),
         // Scheduled biweekly freedreno/Turnip adrenotools builds (incl. Gen8 + a7xx
         // Qualcomm driver packages). Same GitHub-releases meta.json format as above.
@@ -167,6 +185,7 @@ object CustomDriver {
             "StevenMXZ · Adreno-Tools",
             "https://api.github.com/repos/StevenMXZ/Adreno-Tools-Drivers/releases",
             "stevenmxz",
+            supports = ::isAdreno,
         ),
         // crueter's GameHub Turnip packs, tuned for Snapdragon 8 Elite / Adreno 8xx
         // (Gen 8). Same GitHub-releases adrenotools zip format as the sources above.
@@ -174,6 +193,7 @@ object CustomDriver {
             "crueter · GameHub 8Elite",
             "https://api.github.com/repos/crueter/GameHub-8Elite-Drivers/releases",
             "gamehub8e",
+            supports = ::isAdreno,
         ),
         // PojavLauncherTeam/freedreno-builder — biweekly Mesa Turnip builds (archived at
         // Mesa ~Jan 2025). Each release ships a bare libvulkan_freedreno.so (no meta.json,
@@ -183,13 +203,16 @@ object CustomDriver {
             "PojavLauncherTeam · freedreno (A10)",
             "https://api.github.com/repos/PojavLauncherTeam/freedreno-builder/releases",
             "freedrenobuilder",
+            supports = ::isAdreno,
         ),
         // WearyConcern1165/ExynosTools — driver packs for Samsung Xclipse (Exynos) GPUs.
-        // Same GitHub-releases adrenotools .zip format as the sources above.
+        // Same GitHub-releases adrenotools .zip format as the sources above. Xclipse only,
+        // like MdiEx below: these packs drive that GPU and nothing else.
         DriverSource(
             "WearyConcern1165 · ExynosTools",
             "https://api.github.com/repos/WearyConcern1165/ExynosTools/releases",
             "exynostools",
+            supports = ::isXclipse,
         ),
         // avavo/MdiEx — the packs ExynosTools republishes, released here first and newer: one zip
         // per Exynos chip (2200, 2400, 2600, ...) plus a chip-neutral "Nativo" base. Same meta.json
@@ -198,7 +221,7 @@ object CustomDriver {
             "avavo · MdiEx",
             "https://api.github.com/repos/avavo/MdiEx/releases",
             "mdiex",
-            supports = { r -> r == null || r.contains("Xclipse", ignoreCase = true) },
+            supports = ::isXclipse,
         ),
     )
 
@@ -206,6 +229,12 @@ object CustomDriver {
      *  doesn't include one. Every Turnip release we care about uses
      *  this name, but the field is technically optional in the schema. */
     private const val DEFAULT_LIBRARY_NAME = "libvulkan_freedreno.so"
+
+    /** Labels of the sources the download list offers for [renderer] (the system GL_RENDERER), in
+     *  display order. This is the whole GPU-family rule the list applies; [fetchRemote] filters on
+     *  the same [DriverSource.supports] predicates. */
+    internal fun sourceLabelsFor(renderer: String?): List<String> =
+        DRIVER_SOURCES.filter { it.supports(renderer) }.map { it.label }
 
     /** A driver extracted under `<externalFilesDir>/drivers/<id>/`. */
     data class InstalledDriver(
@@ -297,7 +326,10 @@ object CustomDriver {
     // ---- GitHub release list ------------------------------------------------
 
     /** Fetch every source that supports [renderer] (the system GL_RENDERER)
-     *  and flatten into one RemoteDriver per .zip asset. Suspending — caller must wrap
+     *  and flatten into one RemoteDriver per .zip asset. The sources are filtered by GPU family
+     *  ([DriverSource.supports]), so a Mali device is never offered an Adreno pack or the reverse;
+     *  a GPU none of the sources builds for — including an unreadable GL_RENDERER — gets an empty
+     *  list. Suspending — caller must wrap
      *  in `withContext(Dispatchers.IO)` (the JNI call blocks the
      *  calling thread). Returns empty list on any network/parse error;
      *  callers can detect "I had drivers shown a moment ago, now

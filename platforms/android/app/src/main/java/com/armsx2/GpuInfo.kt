@@ -76,11 +76,15 @@ object GpuInfo {
 
     /**
      * Suggested driver source for [renderer], or null when no custom driver
-     * applies (custom Turnip packs are Adreno-only; Mali/Xclipse/PowerVR run the
-     * built-in system driver). [sourceLabel] matches friendlyDriverSource().
+     * applies (Xclipse and PowerVR run the built-in system driver, and so do Mali parts malisx2
+     * does not support). Adreno maps to a tuned Turnip pack, a supported Mali to malisx2 — the
+     * same sources the driver list offers it ([CustomDriver.sourceLabelsFor]).
      */
     fun recommendation(renderer: String?): Recommendation? {
         val r = CustomDriver.withAdrenoModelNumber(renderer) ?: return null
+        // Our own Mali driver, on exactly the parts malisx2 lists for: the card and the download
+        // list must not disagree about a device that is offered one.
+        if (CustomDriver.isMaliSX2Supported(r)) return Recommendation("ARMSX2 · MaliSX2", "ARMSX2's own Mali driver for this GPU")
         if (!r.contains("Adreno", ignoreCase = true)) return null
         val model = Regex("""(\d{3,4})""").find(r.substringAfter("Adreno", ""))?.value?.toIntOrNull()
         return when {

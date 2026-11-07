@@ -44,8 +44,10 @@ import kotlinx.coroutines.withContext
 
 /**
  * Vulkan custom-driver manager: pick the system driver or an installed one, download
- * fresh builds from the bundled sources (the MaliSX2 packs only on Mali Valhall v9 and v11),
- * import a local .zip, or delete an installed driver. Self-contained (plain Material3)
+ * fresh builds from the bundled sources, import a local .zip, or delete an installed driver.
+ * The download list is filtered to the device's GPU family ([CustomDriver.fetchRemote]): Turnip
+ * and Adreno Tools packs on Adreno, the MaliSX2 packs on the Mali parts they support, the Exynos
+ * packs on Xclipse. Self-contained (plain Material3)
  * so it drops into both the full Settings renderer tab and the in-game renderer pane.
  * Selecting a driver only takes effect on the next renderer init — the caller shows an
  * "Apply & Restart" affordance.
@@ -89,8 +91,9 @@ fun DriverManagerSection() {
         SectionTitle(str("backend.gpuDriver.label"), str("backend.gpuDriver.description"))
 
         // Eden-style hint: the detected GPU and the best custom-driver source for it. Adreno
-        // maps to a tuned Turnip pack; other vendors (Mali/Xclipse/PowerVR) run the built-in
-        // system driver best. Probes the system GL_RENDERER once (cached).
+        // maps to a tuned Turnip pack, a supported Mali to our MaliSX2; other GPUs (Xclipse,
+        // PowerVR, an unsupported Mali) run the built-in system driver best. Probes the system
+        // GL_RENDERER once (cached).
         val gpuModel = remember { com.armsx2.GpuInfo.rendererName() }
         val gpuRec = remember(gpuModel) { com.armsx2.GpuInfo.recommendation(gpuModel) }
         Surface(

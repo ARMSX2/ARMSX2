@@ -43,9 +43,19 @@ class GpuInfoRecommendationTest {
         assertEquals("KIMCHI", GpuInfo.recommendation("Adreno (TM) 506")?.sourceLabel)
     }
 
+    // Mali parts malisx2 lists for get malisx2 — the same predicate the download list uses, so the
+    // card above the list never says "system" while the only listed driver is ours.
+    @Test
+    fun supportedMaliIsRecommendedMaliSX2() {
+        for (r in listOf("Mali-G57 MC2", "Mali-G78AE MC20", "Mali-G615 MC6", "Mali-G715-Immortalis MC11", "Mali-G52 MC2", "Mali-G76 MC4"))
+            assertEquals(r, "ARMSX2 · MaliSX2", GpuInfo.recommendation(r)?.sourceLabel)
+    }
+
     @Test
     fun otherGpusGetNoRecommendation() {
-        for (r in listOf(null, "", "Mali-G715", "PowerVR B-Series BXM-8-256", "Xclipse 940"))
+        for (r in listOf(
+            null, "", "Mali", "Mali-G610 MC6", "Mali-G710 MC10", "PowerVR B-Series BXM-8-256", "Xclipse 940",
+        ))
             assertNull(r.toString(), GpuInfo.recommendation(r))
     }
 }

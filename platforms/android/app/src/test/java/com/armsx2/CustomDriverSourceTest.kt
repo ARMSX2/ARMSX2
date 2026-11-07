@@ -111,4 +111,78 @@ class CustomDriverSourceTest {
         for (r in nothingOffered)
             assertNull(r.toString(), CustomDriver.setupOfferLabel(r))
     }
+
+    // ---- Which sources the download list may show, by GPU family --------------------------
+
+    // Every source, in display order (DRIVER_SOURCES). Updated together with that list.
+    private val allSources = listOf(
+        "ARMSX2 · MaliSX2",
+        "ARMSX2 · turnip",
+        "AdrenoToolsDrivers",
+        "MrPurple · purple-turnip",
+        "StevenMXZ · Adreno-Tools",
+        "crueter · GameHub 8Elite",
+        "PojavLauncherTeam · freedreno (A10)",
+        "WearyConcern1165 · ExynosTools",
+        "avavo · MdiEx",
+    )
+    // Every Adreno source: our Turnip and the five third-party Turnip / Adreno Tools repos.
+    private val adrenoSources = listOf(
+        "ARMSX2 · turnip",
+        "AdrenoToolsDrivers",
+        "MrPurple · purple-turnip",
+        "StevenMXZ · Adreno-Tools",
+        "crueter · GameHub 8Elite",
+        "PojavLauncherTeam · freedreno (A10)",
+    )
+
+    @Test
+    fun maliIsOfferedMaliSX2AndNoAdrenoPack() {
+        for (r in valhallV9 + valhallV11 + bifrostV7)
+            assertEquals(r, listOf("ARMSX2 · MaliSX2"), CustomDriver.sourceLabelsFor(r))
+    }
+
+    @Test
+    fun aMaliWithoutAMalisx2PartIsOfferedNothing() {
+        // The Turnip and Adreno Tools packs load on Qualcomm's driver only, and the Xclipse packs on
+        // Samsung's: none of them is worth a download here, so the system driver is the answer.
+        for (r in listOf("Mali", "Immortalis", "Mali-G31 MP2", "Mali-G51", "Mali-G610 MC6", "Mali-G710 MC10", "Mali-T880 MP12"))
+            assertEquals(r, emptyList<String>(), CustomDriver.sourceLabelsFor(r))
+    }
+
+    @Test
+    fun adrenoIsOfferedTheTurnipSourcesAndNothingElse() {
+        // No MaliSX2 on Adreno, and no Xclipse pack: the reverse of the Mali rule.
+        for (r in listOf(
+            "Adreno (TM) 506", "Adreno (TM) 540", "Adreno (TM) 610", "Adreno (TM) 650",
+            "Adreno (TM) 740", "Adreno (TM) 840", "Adreno (TM) A12", "Adreno",
+        ))
+            assertEquals(r, adrenoSources, CustomDriver.sourceLabelsFor(r))
+    }
+
+    @Test
+    fun xclipseIsOfferedTheExynosSourcesOnly() {
+        for (r in listOf("Xclipse 920", "Xclipse 940"))
+            assertEquals(r, listOf("WearyConcern1165 · ExynosTools", "avavo · MdiEx"), CustomDriver.sourceLabelsFor(r))
+    }
+
+    @Test
+    fun everySourceIsReachableFromItsOwnFamily() {
+        // The three families together reach the whole list: a source whose family predicate matches
+        // nothing (a typo, the wrong predicate) would drop out here, as would one added to the list
+        // without a row above.
+        val reachable = listOf("Mali-G715 MC7", "Adreno (TM) 740", "Xclipse 940")
+            .flatMap { CustomDriver.sourceLabelsFor(it) }
+        assertEquals(allSources.toSet(), reachable.toSet())
+    }
+
+    @Test
+    fun anUnidentifiedGpuIsOfferedNothing() {
+        // The GL probe can fail, and an unreadable renderer names no family: offering every source
+        // would put Adreno packs in front of a Mali device and the reverse. Local import stays.
+        assertEquals(emptyList<String>(), CustomDriver.sourceLabelsFor(null))
+        assertEquals(emptyList<String>(), CustomDriver.sourceLabelsFor(""))
+        // A renderer that names no family we build for matches no source either.
+        assertEquals(emptyList<String>(), CustomDriver.sourceLabelsFor("PowerVR B-Series BXM-8-256"))
+    }
 }
