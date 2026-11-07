@@ -113,6 +113,7 @@ using ImGuiFullscreen::OpenInputStringDialog;
 using ImGuiFullscreen::PopPrimaryColor;
 using ImGuiFullscreen::PushPrimaryColor;
 using ImGuiFullscreen::QueueResetFocus;
+using ImGuiFullscreen::QueueRestoreFocus;
 using ImGuiFullscreen::ResetFocusHere;
 using ImGuiFullscreen::RightAlignNavButtons;
 using ImGuiFullscreen::SetFullscreenFooterText;
@@ -530,6 +531,7 @@ namespace FullscreenUI
 		MainWindowType window = MainWindowType::None;
 		PauseSubMenu pause_submenu = PauseSubMenu::None;
 		SettingsPage settings_page = SettingsPage::Interface;
+		ImGuiID focus_id = 0; ///< The item that had the keyboard/gamepad focus (GImGui->NavId).
 	};
 	inline MenuResumeState s_menu_resume;
 	inline std::unique_ptr<INISettingsInterface> s_game_settings_interface;

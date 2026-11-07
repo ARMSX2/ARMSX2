@@ -535,15 +535,17 @@ void FullscreenUI::OpenPauseMenu()
 		ForceKeyNavEnabled();
 		if (s_menu_resume.window != MainWindowType::None)
 		{
-			// Re-entering the window gives ImGui its remembered navigation item, so the focus lands on the
-			// option that had it, not on the first one.
+			// Back to the window, page and item the hotkey left.
 			s_current_main_window = s_menu_resume.window;
 			s_current_pause_submenu = s_menu_resume.pause_submenu;
 			s_settings_page = s_menu_resume.settings_page;
+			// Resumed, not WindowChanged: the settings page scrolls back to the top on a window change. And the
+			// item is put back explicitly, since focusing the window alone selects the first item in view.
+			if (s_menu_resume.focus_id != 0)
+				QueueRestoreFocus(s_menu_resume.focus_id);
+			else
+				QueueResetFocus(FocusResetType::Resumed);
 			s_menu_resume = {};
-			// Resumed, not WindowChanged: the settings page scrolls back to the top on a window change, which
-			// left the restored item off screen.
-			QueueResetFocus(FocusResetType::Resumed);
 		}
 		else
 		{
@@ -569,6 +571,7 @@ void FullscreenUI::StashMenuAndResumeGame()
 	s_menu_resume.window = s_current_main_window;
 	s_menu_resume.pause_submenu = s_current_pause_submenu;
 	s_menu_resume.settings_page = s_settings_page;
+	s_menu_resume.focus_id = GImGui->NavId;
 	ClosePauseMenu();
 }
 

@@ -91,6 +91,7 @@ namespace ImGuiFullscreen
 	static u32 s_menu_button_index = 0;
 	static u32 s_close_button_state = 0;
 	static FocusResetType s_focus_reset_queued = FocusResetType::None;
+	static ImGuiID s_restore_focus_id = 0; // QueueRestoreFocus(): the item ResetFocusHere() puts the focus back on
 
 	static LRUCache<std::string, std::shared_ptr<GSTexture>> s_texture_cache(128, true);
 	static LRUCache<std::string, std::vector<u8>> s_svg_data_cache(64, true);
@@ -786,6 +787,14 @@ void ImGuiFullscreen::PopResetLayout()
 void ImGuiFullscreen::QueueResetFocus(FocusResetType type)
 {
 	s_focus_reset_queued = type;
+	s_restore_focus_id = 0;
+	s_close_button_state = 0;
+}
+
+void ImGuiFullscreen::QueueRestoreFocus(ImGuiID id)
+{
+	s_focus_reset_queued = FocusResetType::Resumed;
+	s_restore_focus_id = id;
 	s_close_button_state = 0;
 }
 
@@ -800,6 +809,21 @@ bool ImGuiFullscreen::ResetFocusHere()
 
 	s_focus_reset_queued = FocusResetType::None;
 	ImGui::SetWindowFocus();
+
+	// Focusing the window alone lands on the first item in view, so a restored item is set explicitly. The caller's
+	// default-selection logic is skipped, since the item to select is already chosen.
+	if (s_restore_focus_id != 0)
+	{
+		ImGui::SetFocusID(s_restore_focus_id, ImGui::GetCurrentWindow());
+		// The window appearing queued a navigation init, which at the end of the frame would select the first
+		// item in view and replace the one just set.
+		ImGuiContext& g = *GImGui;
+		g.NavInitRequest = false;
+		g.NavInitRequestFromMove = false;
+		g.NavInitResult.ID = 0;
+		s_restore_focus_id = 0;
+		return false;
+	}
 
 	// only do the active selection magic when we're using keyboard/gamepad
 	return (GImGui->NavInputSource == ImGuiInputSource_Keyboard || GImGui->NavInputSource == ImGuiInputSource_Gamepad);

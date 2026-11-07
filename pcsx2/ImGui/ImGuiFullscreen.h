@@ -139,6 +139,8 @@ namespace ImGuiFullscreen
 		Other,
 	};
 	void QueueResetFocus(FocusResetType type);
+	/// A Resumed reset that also puts the keyboard/gamepad focus back on item `id` (a GImGui->NavId saved earlier).
+	void QueueRestoreFocus(ImGuiID id);
 	bool ResetFocusHere();
 	bool IsFocusResetQueued();
 	FocusResetType GetQueuedFocusResetType();
