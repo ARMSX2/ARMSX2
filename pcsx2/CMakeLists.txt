@@ -1432,6 +1432,7 @@ set(pcsx2arm64Sources
 	arm64/iR3000Atables-arm64.cpp
 	arm64/iR5900-arm64.cpp
 	arm64/iR5900Templates-arm64.cpp
+	arm64/RecCrashReport-arm64.cpp
 	arm64/RecErrorReport-arm64.cpp
 	x86/BaseblockEx.cpp  # arch-neutral baseblock manager, shared with the x86 build
 	arm64/iR5900Arit-arm64.cpp
@@ -1471,6 +1472,7 @@ set(pcsx2arm64Headers
 	arm64/FPU-divunit-arm64.h
 	arm64/iCore-arm64.h
 	arm64/iR3000A-arm64.h
+	arm64/RecCrashReport-arm64.h
 	arm64/RecErrorReport-arm64.h
 	arm64/iR5900-arm64.h
 	arm64/iR5900Analysis.h

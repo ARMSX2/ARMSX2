@@ -434,6 +434,22 @@ public:
 	// repairs every live block, such as a cycle-rate transition's cost.
 	__fi u32 size() const { return blocks.size(); }
 
+	// The block whose code holds host address `pc`, or null. A walk of the
+	// whole array, for the crash post-mortem (RecCrashReport-arm64.h): reads
+	// only, no locks, no allocation. The array belongs to the thread that
+	// compiles into it, and the post-mortem only looks here for a fault on
+	// that thread in this recompiler's code, so the array is not changing.
+	const BASEBLOCKEX* FindByHostPc(uptr pc) const
+	{
+		for (u32 i = 0; i < blocks.size(); i++)
+		{
+			const BASEBLOCKEX& b = blocks[i];
+			if (pc - b.fnptr < b.x86size)
+				return &b;
+		}
+		return nullptr;
+	}
+
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test-only introspection. Returns true iff a link patch site within the
 	// block containing src_pc targets a block at dst_pc. The link multimap

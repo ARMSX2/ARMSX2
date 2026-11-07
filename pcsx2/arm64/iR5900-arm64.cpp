@@ -27,6 +27,7 @@
 #include "R5900.h"
 #include "IopThread/IopThreadMode.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/RecCrashReport-arm64.h"
 #include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
 #include "Common.h"
@@ -106,6 +107,9 @@ static u8* recPtrEnd = nullptr;
 // rec region, so fastmem fault range checks and perf bucketing are unaffected.
 // Bump-allocated; recycled only by the full cache reset, like block memory.
 static u8* s_coldBase = nullptr;
+// Where blocks start: the dispatchers and stubs recResetRaw generates come
+// first. For the crash post-mortem.
+static u8* s_blocksStart = nullptr;
 static u8* s_coldPtr = nullptr;
 static u8* s_coldPtrEnd = nullptr;
 
@@ -3941,6 +3945,7 @@ static void recResetRaw()
 
 	const u8* dispEnd = armGetCurrentCodePointer();
 	recPtr = armEndBlock();
+	s_blocksStart = recPtr;
 
 	s_coldPtr = s_coldBase;
 
@@ -4289,8 +4294,37 @@ static void recShutdown()
 	recPtr = nullptr;
 	recPtrEnd = nullptr;
 	s_coldBase = nullptr;
+	s_blocksStart = nullptr;
 	s_coldPtr = nullptr;
 	s_coldPtrEnd = nullptr;
+}
+
+RecCrashReport::RecSlices RecCrashReport::EeSlices()
+{
+	RecSlices slices;
+	slices.blocks_start = reinterpret_cast<uptr>(s_blocksStart);
+	slices.cold_start = reinterpret_cast<uptr>(s_coldBase);
+	// recReserve puts the cold arena's end one slop below the constant pool.
+	slices.pool_start = s_coldPtrEnd ? reinterpret_cast<uptr>(s_coldPtrEnd) + _64kb : 0;
+	return slices;
+}
+
+bool RecCrashReport::FindEeBlock(uptr host_pc, BlockHit* hit)
+{
+	const BASEBLOCKEX* block = recBlocks.FindByHostPc(host_pc);
+	if (!block)
+		return false;
+	hit->guest_pc = block->startpc;
+	hit->guest_words = block->size;
+	hit->host_start = block->fnptr;
+	hit->host_size = block->x86size;
+	return true;
+}
+
+void RecCrashReport::EePinnedRegisters(const u64 host_x[31], u64 gpr[32])
+{
+	for (const EEPinnedGPR& pin : kEEPinTable)
+		gpr[pin.gpr] = host_x[pin.host.GetCode()];
 }
 
 static void recResetEE()

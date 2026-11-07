@@ -28,6 +28,10 @@
 #include <TargetConditionals.h>
 #endif
 
+#if defined(ARCH_ARM64)
+#include "arm64/RecCrashReport-arm64.h"
+#endif
+
 #include "common/BitUtils.h"
 #include "common/Error.h"
 
@@ -1442,6 +1446,11 @@ bool vtlb_Core_Alloc()
 		Host::ReportErrorAsync("Failed to install page fault handler.", error.GetDescription());
 		return false;
 	}
+
+#if defined(ARCH_ARM64) && defined(__linux__)
+	// A fault the handler cannot take gets a post-mortem in the log.
+	RecCrashReport::Install();
+#endif
 
 	return true;
 }

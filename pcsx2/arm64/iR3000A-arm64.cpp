@@ -7,6 +7,7 @@
 #include "Host.h"
 #include "R3000A.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/RecCrashReport-arm64.h"
 #include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
 #include "IopBios.h"
@@ -47,6 +48,9 @@ static BASEBLOCK* recROM2 = nullptr;
 static Arm64BaseBlocks recBlocks;
 static u8* recPtr = nullptr;
 static u8* recPtrEnd = nullptr;
+// Where blocks start: the dispatchers and stubs recResetIOP generates come
+// first. For the crash post-mortem.
+static u8* s_blocksStart = nullptr;
 u32 psxpc;
 int psxbranch;
 u32 g_iopCyclePenalty;
@@ -1533,6 +1537,7 @@ void recResetIOP()
 	armStartBlock();
 	_DynGen_Dispatchers();
 	recPtr = armEndBlock();
+	s_blocksStart = recPtr;
 
 	iopClearRecLUT(reinterpret_cast<BASEBLOCK*>(recLutReserve.data()),
 		Ps2MemSize::ExposedIopRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
@@ -1610,6 +1615,28 @@ static void recShutdown()
 
 	recPtr = nullptr;
 	recPtrEnd = nullptr;
+	s_blocksStart = nullptr;
+}
+
+RecCrashReport::RecSlices RecCrashReport::IopSlices()
+{
+	RecSlices slices;
+	slices.blocks_start = reinterpret_cast<uptr>(s_blocksStart);
+	// recReserve puts the code region's end one slop below the constant pool.
+	slices.pool_start = recPtrEnd ? reinterpret_cast<uptr>(recPtrEnd) + _64kb : 0;
+	return slices;
+}
+
+bool RecCrashReport::FindIopBlock(uptr host_pc, BlockHit* hit)
+{
+	const BASEBLOCKEX* block = recBlocks.FindByHostPc(host_pc);
+	if (!block)
+		return false;
+	hit->guest_pc = block->startpc;
+	hit->guest_words = block->size;
+	hit->host_start = block->fnptr;
+	hit->host_size = block->x86size;
+	return true;
 }
 
 static __noinline s32 recExecuteBlock(s32 eeCycles)
