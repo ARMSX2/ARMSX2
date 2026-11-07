@@ -29,6 +29,7 @@ add_pcsx2_test(recompiler_tests
 	iop_cycle_accounting_tests.cpp
 	iop_frame_tests.cpp
 	iop_jump_tests.cpp
+	rec_error_exit_tests.cpp
 	iop_branch_tests.cpp
 	iop_cop0_tests.cpp
 	iop_memory_access_tests.cpp

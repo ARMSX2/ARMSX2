@@ -510,7 +510,7 @@ static void iopRecError(int err)
 	{
 		case 0:
 			Host::ReportErrorAsync("R3000A Exception",
-				fmt::format("Unrecognized opcode (PC: 0x{:08x})", psxRegs.pc));
+				fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", psxRegs.pc));
 			break;
 
 		case 1:

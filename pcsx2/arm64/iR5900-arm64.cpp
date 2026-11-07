@@ -578,7 +578,7 @@ static void recError(u32 error)
 	{
 		case 0:
 			Host::ReportErrorAsync("R5900 Exception",
-				fmt::format("Unrecognized opcode (PC: 0x{:08x})", cpuRegs.pc));
+				fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", cpuRegs.pc));
 			break;
 
 		case 1:
