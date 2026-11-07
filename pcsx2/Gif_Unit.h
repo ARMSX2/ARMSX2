@@ -15,6 +15,7 @@
 
 struct GS_Packet;
 extern void Gif_MTGS_Wait(bool isMTVU);
+extern void Gif_MTGS_WaitForReadProgress(GIF_PATH path_idx, s32 read_amount);
 extern void Gif_FinishIRQ();
 extern bool Gif_HandlerAD(u8* pMem);
 extern void Gif_HandlerAD_MTVU(u8* pMem);
@@ -295,6 +296,20 @@ struct Gif_Path
 		Gif_MTGS_Wait(isMTVU());
 	}
 
+	// Waits until the MTGS has read more of this path's data, for the loops below that only need buffer space back. They
+	// re-check the space after every wait. The full drain mtgsReadWait() does made the EE sit out the whole GS queue: Burnout
+	// Revenge streams enough PATH3 data to reach the 8 MB limit, and waited 31 ms a time, three times a second, at max speed.
+	// The MTVU path keeps its own wait, which tracks packets rather than bytes.
+	void mtgsReadSpaceWait()
+	{
+		if (isMTVU())
+		{
+			mtgsReadWait();
+			return;
+		}
+		Gif_MTGS_WaitForReadProgress(idx, getReadAmount());
+	}
+
 	// Moves packet data to start of buffer
 	void RealignPacket()
 	{
@@ -309,7 +324,7 @@ struct Gif_Path
 			s32 frontFree = offset - getReadAmount();
 			if (frontFree >= sizeToAdd - intersect)
 				break;
-			mtgsReadWait();
+			mtgsReadSpaceWait();
 		}
 		if (offset < (s32)buffLimit)
 		{ // Needed for correct readAmount values
@@ -358,7 +373,7 @@ struct Gif_Path
 				break; // MTGS is reading in back of curOffset
 			if ((s32)buffLimit + readPos > (s32)curSize + (s32)size)
 				break;      // Enough free front space
-			mtgsReadWait(); // Let MTGS run to free up buffer space
+			mtgsReadSpaceWait(); // Let MTGS run to free up buffer space
 		}
 		pxAssertMsg(curSize + size <= buffSize, "Gif Path Buffer Overflow!");
 		memcpy(&buffer[curSize], pMem, size);

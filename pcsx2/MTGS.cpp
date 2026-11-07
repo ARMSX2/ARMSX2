@@ -16,6 +16,7 @@
 #include "common/StringUtil.h"
 #include "common/WrappedMemCopy.h"
 
+#include <chrono>
 #include <list>
 #include <mutex>
 #include <thread>
@@ -1153,4 +1154,25 @@ void Gif_AddBlankGSPacket(u32 size, GIF_PATH path)
 void Gif_MTGS_Wait(bool isMTVU)
 {
 	MTGS::WaitGS(false, true, isMTVU);
+}
+
+void Gif_MTGS_WaitForReadProgress(GIF_PATH path_idx, s32 read_amount)
+{
+	// Wakes the MTGS thread and waits until it has read more of this path's data than `read_amount`, rather than for the
+	// whole ring to drain: the GIF path loops that call this re-check their free space after every wait, and need only the
+	// front of the path buffer back. The first iterations yield, then the wait sleeps in 100 us steps, so a long wait does
+	// not hold the EE's core busy.
+	Gif_Path& path = gifUnit.gifPath[path_idx];
+	MTGS::SetEvent();
+	const u64 wait_begin = EECycleRateSampler::BeginWait();
+	for (u32 i = 0; path.getReadAmount() >= read_amount; i++)
+	{
+		if (!MTGS::IsOpen()) [[unlikely]]
+			break;
+		if (i < 64)
+			std::this_thread::yield();
+		else
+			std::this_thread::sleep_for(std::chrono::microseconds(100));
+	}
+	EECycleRateSampler::EndGSWait(wait_begin);
 }
