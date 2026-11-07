@@ -671,7 +671,7 @@ private fun DriverPage(state: OnboardingUiState, onInstall: () -> Unit, onRetry:
             if (pack != null) {
                 val megabytes = pack.sizeBytes / (1024.0 * 1024.0)
                 DriverPackCard(
-                    pack.releaseName.ifBlank { pack.assetName },
+                    pack.title.ifBlank { pack.assetName },
                     listOf(state.driverSource, pack.tagName, if (pack.sizeBytes > 0) "%.0f MB".format(megabytes) else "")
                         .filter(String::isNotBlank).joinToString(" · "),
                 )

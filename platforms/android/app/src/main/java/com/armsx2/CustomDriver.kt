@@ -235,6 +235,9 @@ object CustomDriver {
         val assetUrl: String,
         val sizeBytes: Long,
         val source: String = "",
+        /** What a list shows for it: the release's name, or the zip's own name when the release
+         *  ships one zip per device (MdiEx: 1480, 2200, 2400, ...), so each row says which one it is. */
+        val title: String = releaseName,
     )
 
     // ---- Installed drivers --------------------------------------------------
@@ -338,6 +341,9 @@ object CustomDriver {
             val releaseName = release.optString("name").ifEmpty { tag }
             val publishedAt = release.optString("published_at")
             val assets = release.optJSONArray("assets") ?: continue
+            val zips = (0 until assets.length()).count {
+                assets.optJSONObject(it)?.optString("name")?.endsWith(".zip", ignoreCase = true) == true
+            }
             for (j in 0 until assets.length()) {
                 val asset = assets.optJSONObject(j) ?: continue
                 val assetName = asset.optString("name")
@@ -358,11 +364,16 @@ object CustomDriver {
                     assetUrl = url,
                     sizeBytes = size,
                     source = src.label,
+                    title = if (zips > 1) zipTitle(assetName) else releaseName,
                 )
             }
         }
         return out
     }
+
+    /** "MdiEx_1480_v3.6.zip" -> "MdiEx 1480 v3.6". */
+    private fun zipTitle(assetName: String): String =
+        assetName.substring(0, assetName.length - ".zip".length).replace('_', ' ').trim().ifEmpty { assetName }
 
     /** Stable id from `<tag>-<assetBase>`. Strips ".zip" + non-filename
      *  chars so the driver dir name is dlopen-safe (paths get fed straight

@@ -200,7 +200,7 @@ fun DriverManagerSection() {
                             drivers.forEach { rd ->
                                 RemoteDriverRow(
                                     controllerId = "driver.remote.${rd.id}",
-                                    title = rd.releaseName.ifBlank { rd.assetName },
+                                    title = rd.title.ifBlank { rd.assetName },
                                     subtitle = listOf(rd.source, rd.tagName).filter(String::isNotBlank).joinToString(" · "),
                                     busy = busyId == rd.id,
                                     onDownload = {
