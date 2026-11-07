@@ -48,8 +48,19 @@ void Host::ReportInfoAsync(const std::string_view title, const std::string_view 
 {
 }
 
+static std::mutex s_error_reports_mutex;
+static std::vector<StubHost::ErrorReport> s_error_reports;
+
+std::vector<StubHost::ErrorReport> StubHost::TakeErrorReports()
+{
+	std::lock_guard lock(s_error_reports_mutex);
+	return std::exchange(s_error_reports, {});
+}
+
 void Host::ReportErrorAsync(const std::string_view title, const std::string_view message)
 {
+	std::lock_guard lock(s_error_reports_mutex);
+	s_error_reports.push_back({std::string(title), std::string(message)});
 }
 
 void Host::OpenURL(const std::string_view url)
