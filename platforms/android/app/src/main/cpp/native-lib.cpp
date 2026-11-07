@@ -199,6 +199,14 @@ static jmethodID  s_vmSetPaused_mid  = nullptr;
 static jmethodID  s_onPadRumble_mid  = nullptr;
 static jmethodID  s_playSound_mid    = nullptr;
 static jmethodID  s_onAutoTuneCommitted_mid = nullptr;
+static jmethodID  s_onAutoTuneDisplayScale_mid = nullptr;
+
+// The output surface's "Display Resolution (HW scaler)" as auto-tune sees it (AutoTune::DisplayScaler). Kotlin pushes
+// the setting in effect, an auto-tune trial included, and the size it shrinks from (EmulationSurface.applyOutputScale,
+// setOutputScaleState). Auto-tune's own trial value is stored here at once, because the surface follows it on the UI
+// thread a moment later and the trial is checked straight after it is started.
+static std::atomic<int> s_hw_scaler_effective{0};
+static std::atomic<int> s_hw_scaler_base_short_side{0};
 
 ////
 std::string GetJavaString(JNIEnv *env, jstring jstr) {
@@ -403,6 +411,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
 extern void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path);
 static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path);
 static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std::string_view value);
+static int AndroidDisplayScalerGet();
+static int AndroidDisplayScalerBaseShortSide();
+static void AndroidDisplayScalerSet(int value);
+static const AutoTune::DisplayScaler s_android_display_scaler = {
+    &AndroidDisplayScalerGet, &AndroidDisplayScalerBaseShortSide, &AndroidDisplayScalerSet};
 
 extern "C"
 JNIEXPORT void JNICALL
@@ -423,6 +436,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
     std::string _szBiosFolder = GetJavaString(env, p_szbiosfolder);
     g_android_before_game_settings_load = &AndroidWriteStagedGameIni;
     AutoTune::g_on_committed = &AndroidOnAutoTuneCommitted;
+    AutoTune::g_display_scaler = &s_android_display_scaler;
     EmuFolders::AppRoot = _szPath;
     EmuFolders::DataRoot = _szPath;
     EmuFolders::SetResourcesDirectory();
@@ -615,6 +629,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_initialize(JNIEnv *env, jclass clazz,
         s_playSound_mid   = env->GetStaticMethodID(s_NativeApp_class, "playSound", "(Ljava/lang/String;)V");
         s_onAutoTuneCommitted_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneCommitted",
             "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+        s_onAutoTuneDisplayScale_mid = env->GetStaticMethodID(s_NativeApp_class, "onAutoTuneDisplayScale", "(I)V");
     }
 
     // Bind the JNI-backed HTTP downloader's class + method IDs while we
@@ -3698,6 +3713,14 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setDisplayRefreshRate(JNIEnv *env, jclass c
     // in place when AcquireRenderWindow() reads it during window (re)acquisition.
     std::lock_guard<std::mutex> lock(s_window_mutex);
     s_window_refresh_rate = (p_hz > 1.0f) ? (float)p_hz : 0.0f;
+}
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setOutputScaleState(JNIEnv *env, jclass clazz, jint p_hw_scaler, jint p_base_short_side) {
+    // Read by auto-tune once per half second, from the CPU thread (AndroidDisplayScalerGet).
+    s_hw_scaler_effective.store(p_hw_scaler, std::memory_order_relaxed);
+    s_hw_scaler_base_short_side.store(p_base_short_side, std::memory_order_relaxed);
 }
 
 extern "C"
@@ -7343,6 +7366,50 @@ static void AndroidOnAutoTuneCommitted(const char* section, const char* key, std
     env->DeleteLocalRef(jsection);
     env->DeleteLocalRef(jkey);
     env->DeleteLocalRef(jvalue);
+
+    if (attached)
+        s_jvm->DetachCurrentThread();
+}
+
+// Auto-tune's view of the output surface (AutoTune::DisplayScaler). All three run on the CPU thread.
+static int AndroidDisplayScalerGet()
+{
+    return s_hw_scaler_effective.load(std::memory_order_relaxed);
+}
+
+static int AndroidDisplayScalerBaseShortSide()
+{
+    return s_hw_scaler_base_short_side.load(std::memory_order_relaxed);
+}
+
+// Auto-tune tries a hw scaler step (value >= 0) or hands the surface back to the saved setting (-1). The surface
+// is resized on the UI thread by the app, so this returns at once. A trial's value is what AndroidDisplayScalerGet
+// reports from now on; the saved setting is not known here, so -1 leaves the last value until the surface has
+// applied it and pushed the one in effect (setOutputScaleState).
+static void AndroidDisplayScalerSet(int value)
+{
+    if (value >= 0)
+        s_hw_scaler_effective.store(value, std::memory_order_relaxed);
+
+    if (!s_jvm || !s_NativeApp_class || !s_onAutoTuneDisplayScale_mid)
+        return;
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    const int status = s_jvm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED) {
+        if (s_jvm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+            return;
+        attached = true;
+    } else if (status != JNI_OK) {
+        return;
+    }
+
+    env->CallStaticVoidMethod(s_NativeApp_class, s_onAutoTuneDisplayScale_mid, static_cast<jint>(value));
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
 
     if (attached)
         s_jvm->DetachCurrentThread();

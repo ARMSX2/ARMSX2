@@ -33,6 +33,11 @@ import java.util.concurrent.Executors
  * So the core also puts a kept resolution in the base layer when it commits it (AndroidOnAutoTuneCommitted
  * in native-lib.cpp), and [reset] pushes the restored one back ([upscaleAfterRestore]).
  *
+ * The display resolution (hwScaler) is the other exception: the core does not read it at all. It is the size of
+ * the app's own output surface, so the core only asks for it through [onDisplayScale] (a trial, applied to the
+ * surface without being saved) and reports a kept one here like any other key. [onCommitted] ends the trial
+ * override once the value is in the store, so the surface does not step back to the old size in between.
+ *
  * The writer also omits any key whose value equals the global one, so at reset the core can find a lever's
  * key missing from the file. The app's store, not the file, decides what that means ([applyReset]).
  */
@@ -54,6 +59,7 @@ object AutoTuneStore {
         Lever("EmuCore/GS", "accurate_blending_unit", "accurateBlendingUnit", Kind.INT),
         Lever("EmuCore/Speedhacks", "iopThread", "iopThread", Kind.BOOL),
         Lever("EmuCore/Speedhacks", "DynamicEECycleRate", "dynamicEeCycleRate", Kind.BOOL),
+        Lever(DISPLAY_SCALE_SECTION, DISPLAY_SCALE_KEY, "hwScaler", Kind.INT),
     )
 
     /**
@@ -127,6 +133,21 @@ object AutoTuneStore {
 
     private const val UPSCALE_SECTION = "EmuCore/GS"
     private const val UPSCALE_KEY = "upscale_multiplier"
+
+    private const val DISPLAY_SCALE_SECTION = "EmuCore/GS"
+    private const val DISPLAY_SCALE_KEY = "HWScaler"
+
+    /** Whether a committed or restored [section]/[key] is the display resolution (hwScaler). */
+    internal fun isDisplayScale(section: String, key: String): Boolean =
+        section == DISPLAY_SCALE_SECTION && key == DISPLAY_SCALE_KEY
+
+    /**
+     * Auto-tune tries a display scale ([value] >= 0, the hwScaler step to use in place of the saved one) or hands the
+     * surface back to the saved setting (-1). Called on the core's CPU thread; the surface resizes on the UI thread.
+     */
+    fun onDisplayScale(value: Int) {
+        MainActivityRuntime.surface.value?.setAutoTuneScaler(value)
+    }
 
     /** The resolution a committed [section]/[key] sets, or null when it is another key or the text is not a number. */
     internal fun upscaleCommitted(section: String, key: String, value: String): Float? =
@@ -308,6 +329,9 @@ object AutoTuneStore {
                         savePriors(settingsKey, priors)
                         // What the app believes the emulator runs at, for the resolution hotkeys.
                         upscaleCommitted(section, key, value)?.let { MainActivityRuntime.upscale.value = it }
+                        // The store holds the kept display resolution now, so the trial's override can end: the
+                        // surface reads the same value from the store.
+                        if (isDisplayScale(section, key)) onDisplayScale(-1)
                         Log.i(TAG, "auto-tune: $section/$key = $value written to config.game.$settingsKey")
                     } else {
                         Log.w(TAG, "auto-tune: could not read '$value' for $section/$key")
@@ -378,6 +402,10 @@ object AutoTuneStore {
                 upscaleAfterRestore(applied.restored, resolved.output.upscaleFloat)?.let {
                     MainActivityRuntime.upscale.value = it
                     NativeApp.renderUpscalemultiplier(it)
+                }
+                // The display resolution is the surface's own size: it follows the restored setting.
+                if (applied.restored.any { isDisplayScale(it.section, it.key) }) {
+                    MainActivityRuntime.surface.value?.applyOutputScale()
                 }
             }
         }

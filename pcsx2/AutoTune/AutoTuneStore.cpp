@@ -160,6 +160,14 @@ namespace
 				}
 			}
 
+			case AutoTuneLever::DisplayScale:
+			{
+				const int step = static_cast<int>(std::lround(*v));
+				if (step <= 0)
+					return std::string(TRANSLATE_SV("AutoTune", "Screen"));
+				return fmt::format(TRANSLATE_FS("AutoTune", "{}x PS2"), step);
+			}
+
 			case AutoTuneLever::Blending:
 			{
 				switch (static_cast<int>(std::lround(*v)))
@@ -202,6 +210,8 @@ namespace
 				return std::string(TRANSLATE_SV("AutoTune", "Hardware download mode"));
 			case AutoTuneLever::Blending:
 				return std::string(TRANSLATE_SV("AutoTune", "Blending accuracy"));
+			case AutoTuneLever::DisplayScale:
+				return std::string(TRANSLATE_SV("AutoTune", "Display resolution (HW scaler)"));
 			default:
 				return "?";
 		}
@@ -224,6 +234,11 @@ AutoTune::LeverKey AutoTune::KeyForLever(AutoTuneLever lever)
 			return {"EmuCore/GS", "HWDownloadMode"};
 		case AutoTuneLever::Blending:
 			return {"EmuCore/GS", "accurate_blending_unit"};
+		case AutoTuneLever::DisplayScale:
+			// Not a key the core reads: the output surface belongs to the host, which keeps this setting itself
+			// (the Android app's hwScaler). The key is what a kept value is recorded under in the game's file, so
+			// that a reset can put it back and the host can be told which of its settings it names.
+			return {"EmuCore/GS", "HWScaler"};
 		default:
 			return {"", ""};
 	}
@@ -271,6 +286,7 @@ void AutoTune::WriteLeverValue(SettingsInterface& si, AutoTuneLever lever, doubl
 			break;
 		case AutoTuneLever::DownloadMode:
 		case AutoTuneLever::Blending:
+		case AutoTuneLever::DisplayScale:
 			si.SetIntValue(k.section, k.key, static_cast<int>(std::lround(value)));
 			break;
 		default:
@@ -450,6 +466,8 @@ std::string AutoTune::LeverLabel(AutoTuneLever lever, double value)
 			return fmt::format(TRANSLATE_FS("AutoTune", "download mode {}"), DisplayValue(lever, fmt::format("{:g}", value)));
 		case AutoTuneLever::Blending:
 			return fmt::format(TRANSLATE_FS("AutoTune", "blending {}"), DisplayValue(lever, fmt::format("{:g}", value)));
+		case AutoTuneLever::DisplayScale:
+			return fmt::format(TRANSLATE_FS("AutoTune", "display resolution {}"), DisplayValue(lever, fmt::format("{:g}", value)));
 		case AutoTuneLever::IopThread:
 			return std::string(TRANSLATE_SV("AutoTune", "IOP thread"));
 		case AutoTuneLever::EeGovernor:

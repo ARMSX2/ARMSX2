@@ -22,6 +22,7 @@ namespace
 		"gs-back-thread",
 		"download-mode",
 		"blending",
+		"display-scale",
 	};
 	static_assert(std::size(kLeverNames) == static_cast<size_t>(AutoTuneLever::Count));
 
@@ -49,18 +50,21 @@ namespace
 	// The GS threads are the cause and the GPU is not: the back thread splits the CPU work, so it goes first.
 	constexpr AutoTuneLever kGsCpuOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Resolution,
 		AutoTuneLever::DownloadMode, AutoTuneLever::Blending};
-	// The GPU is the cause: resolution moves the GPU's work most. Then the download mode, ahead of the back
-	// thread: a stall on readbacks reads as the GPU (the EE blocked on a GS that is not CPU-bound), the mode is
-	// cheap to try (the light settle, no renderer reopen), and the back thread costs two renderer reopens when
-	// it does not help.
-	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::Resolution, AutoTuneLever::DownloadMode,
-		AutoTuneLever::GsBackThread, AutoTuneLever::Blending};
+	// The GPU is the cause. The display scale goes first: it only takes the output surface down to the size the
+	// game is rendered at, so the picture loses nothing the render had, and the GPU stops scaling it up to the
+	// screen. It is offered only where the output is bigger than the render. Then the resolution, which moves the
+	// GPU's work most. Then the download mode, ahead of the back thread: a stall on readbacks reads as the GPU
+	// (the EE blocked on a GS that is not CPU-bound), the mode is cheap to try (the light settle, no renderer
+	// reopen), and the back thread costs two renderer reopens when it does not help.
+	constexpr AutoTuneLever kGpuOrder[] = {AutoTuneLever::DisplayScale, AutoTuneLever::Resolution,
+		AutoTuneLever::DownloadMode, AutoTuneLever::GsBackThread, AutoTuneLever::Blending};
 	// The same two when the game is so far under full speed that a notch of resolution cannot close the gap
-	// (AutoTunePolicy::cheap_levers_first_below_pct): blending and the download mode go before resolution.
+	// (AutoTunePolicy::cheap_levers_first_below_pct): blending and the download mode go before resolution. The
+	// display scale is still first: it costs no picture quality, so there is nothing to weigh it against.
 	constexpr AutoTuneLever kGsCpuFarOrder[] = {AutoTuneLever::GsBackThread, AutoTuneLever::Blending,
 		AutoTuneLever::DownloadMode, AutoTuneLever::Resolution};
-	constexpr AutoTuneLever kGpuFarOrder[] = {AutoTuneLever::Blending, AutoTuneLever::DownloadMode,
-		AutoTuneLever::Resolution, AutoTuneLever::GsBackThread};
+	constexpr AutoTuneLever kGpuFarOrder[] = {AutoTuneLever::DisplayScale, AutoTuneLever::Blending,
+		AutoTuneLever::DownloadMode, AutoTuneLever::Resolution, AutoTuneLever::GsBackThread};
 
 	double Mean(double sum, size_t n)
 	{
@@ -358,6 +362,28 @@ std::optional<double> AutoTuneController::TargetFor(AutoTuneLever lever, const A
 			return std::nullopt;
 		}
 
+		case AutoTuneLever::DisplayScale:
+		{
+			if (!s.hw_renderer || !s.display_scale_available || s.display_base_short_side <= 0)
+				return std::nullopt;
+
+			// The smallest hw scaler step whose surface still holds the render: the render's short side is 448
+			// lines times the multiplier, and the setting counts in whole multiples of 448. A render bigger than
+			// the largest step is left to the resolution lever: shrinking the surface under it would throw away
+			// detail the render has.
+			const int step = static_cast<int>(std::ceil(s.resolution - kValueEpsilon));
+			if (step < 1 || step > kAutoTuneMaxDisplayScale)
+				return std::nullopt;
+
+			// Only a step that makes the surface smaller is a step. "Screen" is the base size; a step in force
+			// holds the short side to its multiple of 448, unless the screen is smaller than that.
+			const double base = s.display_base_short_side;
+			const double now = s.display_scale > 0 ? std::min(base, kAutoTuneBaseHeight * s.display_scale) : base;
+			if (kAutoTuneBaseHeight * step >= now - kValueEpsilon)
+				return std::nullopt;
+			return static_cast<double>(step);
+		}
+
 		case AutoTuneLever::Blending:
 		{
 			if (!s.hw_renderer)
@@ -618,6 +644,7 @@ bool AutoTuneController::SceneChangedDuringTrial(double noise) const
 			return moved(m_trial.gs_before, m_trial.gs_ms) || moved(m_trial.gpu_before, m_trial.gpu_ms);
 		case AutoTuneLever::Resolution:
 		case AutoTuneLever::Blending:
+		case AutoTuneLever::DisplayScale:
 			return moved(m_trial.ee_before, m_trial.ee_ms);
 		case AutoTuneLever::GsBackThread:
 		case AutoTuneLever::DownloadMode:

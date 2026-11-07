@@ -38,6 +38,12 @@
 // advances a clock nor breaks a streak: it is as if it had not happened.
 //
 // The controller never undoes a kept change by itself. It only lowers settings, one step per trial.
+//
+// Two of the levers climb a ladder of steps and offer the next one that has not been written off: the
+// resolution (a notch at a time) and the hardware download mode (Asynchronous, No Readbacks, Disabled; a rung
+// that did not help is stepped over, not the end of the ladder). The display scale is not a setting the core
+// owns: it is the size of the output surface on a host that can shrink it, so it is offered only where the
+// host says it exists (AutoTuneLeverState::display_scale_available).
 
 #pragma once
 
@@ -56,6 +62,7 @@ enum class AutoTuneLever : uint8_t
 	GsBackThread, // GS multi-threading (a back thread draws while the front thread parses)
 	DownloadMode, // hardware download mode, towards fewer readbacks
 	Blending, // blending accuracy, one level down
+	DisplayScale, // the output surface ("Display Resolution (HW scaler)"), down to the render resolution
 
 	Count
 };
@@ -75,6 +82,12 @@ enum class AutoTuneBottleneck : uint8_t
 const char* AutoTuneLeverName(AutoTuneLever lever);
 const char* AutoTuneBottleneckName(AutoTuneBottleneck bottleneck);
 std::optional<AutoTuneLever> AutoTuneLeverFromName(const char* name);
+
+/// The largest hw scaler setting there is: the output surface's short side is held to 448 * N for N = 1..3.
+/// 0 is "Screen": the surface keeps the size of the screen.
+inline constexpr int kAutoTuneMaxDisplayScale = 3;
+/// The short side of the PS2's picture, which the hw scaler and the render resolution are both multiples of.
+inline constexpr double kAutoTuneBaseHeight = 448.0;
 
 /// Hardware download mode values as they are stored in the settings file (GSHardwareDownloadMode).
 /// AutoTuneApplier.cpp static_asserts that these match the enum.
@@ -257,6 +270,15 @@ struct AutoTuneLeverState
 	int download_mode = AutoTuneDownloadMode::Accurate; // AutoTuneDownloadMode::*
 	int blending_level = 0; // AccBlendLevel as an integer, 0 = Minimum
 
+	/// The host has an output surface it can make smaller than the screen (the Android app's "Display Resolution
+	/// (HW scaler)"; the other frontends have no such setting). Where it is false the lever is never offered.
+	bool display_scale_available = false;
+	/// The hw scaler in effect: 0 = the surface is the size of the screen, N = its short side is held to 448 * N.
+	int display_scale = 0;
+	/// The short side of the surface before the hw scaler shrinks it, in pixels (the screen, or the screen
+	/// resolution the player chose). 0 when not known yet, and the lever is not offered.
+	int display_base_short_side = 0;
+
 	bool iop_thread_on = false;
 	/// IopThread::ResolveMode would give the thread a place on this host (with the GS back thread counted as a
 	/// busy core).
@@ -429,7 +451,8 @@ private:
 	bool IsBad(const AutoTuneWindow& w) const;
 	AutoTuneAction Diagnose(const AutoTuneLeverState& state);
 	/// The value a trial of `lever` would try now, or nullopt when there is none. `bottleneck` is what the trial
-	/// is for: the step from Basic blending to Minimum is only offered against the GS on the CPU.
+	/// is for: the step from Basic blending to Minimum is only offered against the GS on the CPU. Steps that were
+	/// tried and did not help are never returned (and the download mode steps over them to the next one).
 	std::optional<double> TargetFor(AutoTuneLever lever, const AutoTuneLeverState& state, AutoTuneBottleneck bottleneck) const;
 	/// Whether blending accuracy and the download mode are worth trying before the resolution at this speed.
 	bool CheapLeversHaveSomethingToGive(double speed_pct, const AutoTuneLeverState& state) const;

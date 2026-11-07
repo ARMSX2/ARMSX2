@@ -22,6 +22,10 @@ class EmulationSurface(context: Context) :
     DisplayManager.DisplayListener {
     private var viewWidth = 0
     private var viewHeight = 0
+
+    // Auto-tune's trial of the hw scaler (AutoTuneStore.onDisplayScale): the step to use in place of the saved
+    // setting, -1 for none. Written from the core's thread, read on the UI thread.
+    @Volatile private var autoTuneScaler = -1
     private var gameActive = false
     private var lastRequestedFrameRate = Float.NaN
     private val displayManager =
@@ -246,6 +250,15 @@ class EmulationSurface(context: Context) :
         applyOutputScale()
     }
 
+    /**
+     * Auto-tune tries a hw scaler step: [value] >= 0 is used in place of the saved setting until it is set to -1,
+     * which goes back to the saved one. Any thread; the surface is resized on the UI thread.
+     */
+    fun setAutoTuneScaler(value: Int) {
+        autoTuneScaler = value
+        post { applyOutputScale() }
+    }
+
     fun applyOutputScale() {
         if (viewWidth <= 0 || viewHeight <= 0) return
         // Scoped, not a raw pref: both of these are per-game overridable, so resolve the
@@ -260,7 +273,7 @@ class EmulationSurface(context: Context) :
         val effective = runCatching {
             com.armsx2.config.ConfigStore.resolveForGame(MainActivityRuntime.currentGame.value?.settingsKey)
         }.getOrElse { com.armsx2.ui.InGameOverlay.settingsState.value }
-        val multiplier = effective.output.hwScaler
+        val multiplier = if (autoTuneScaler >= 0) autoTuneScaler else effective.output.hwScaler
 
         // Base output resolution: an explicit "WxH" override when set (fixes wrong panel detection,
         // e.g. a 1920x1080 panel mis-reported as 1920x1200 which squishes 16:9 games — issue #398),
@@ -276,6 +289,10 @@ class EmulationSurface(context: Context) :
                 short to (short.toLong() * viewHeight / viewWidth).toInt()
             }
         }
+
+        // Auto-tune reads the setting in effect and the size it shrinks from to decide whether lowering it would
+        // change anything (the display resolution lever).
+        NativeApp.setOutputScaleState(multiplier, minOf(baseW, baseH))
 
         // hwScaler (if > 0) downscales the short side to 448*multiplier for weak GPUs, applied to
         // whatever base we picked above.

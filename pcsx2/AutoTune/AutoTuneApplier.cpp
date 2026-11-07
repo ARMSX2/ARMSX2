@@ -40,6 +40,7 @@ static_assert(static_cast<int>(GSHardwareDownloadMode::Asynchronous) == AutoTune
 static_assert(static_cast<int>(AccBlendLevel::Minimum) == 0 && static_cast<int>(AccBlendLevel::Basic) == 1 && static_cast<int>(AccBlendLevel::Maximum) == 5);
 
 void (*AutoTune::g_on_committed)(const char* section, const char* key, std::string_view value) = nullptr;
+const AutoTune::DisplayScaler* AutoTune::g_display_scaler = nullptr;
 
 namespace
 {
@@ -90,24 +91,50 @@ void AutoTuneApplier::Begin(std::vector<AutoTuneRejection> persisted_rejections)
 
 void AutoTuneApplier::End()
 {
-	auto lock = m_env.LockSettings();
-	m_trial_layer.Clear();
-	m_trial_active = false;
-	m_trial_previous.reset();
+	{
+		auto lock = m_env.LockSettings();
+		m_trial_layer.Clear();
+		m_trial_active = false;
+		m_trial_previous.reset();
+	}
+
+	// A display scale kept for the session only must not outlive the game it was measured on.
+	if (m_display_scale_held || m_display_scale_session)
+	{
+		m_display_scale_held = false;
+		m_display_scale_session.reset();
+		m_env.SetDisplayScale(-1);
+	}
+}
+
+void AutoTuneApplier::ReleaseDisplayScale()
+{
+	if (!m_display_scale_held)
+		return;
+	m_display_scale_held = false;
+	m_env.SetDisplayScale(m_display_scale_session.value_or(-1));
 }
 
 void AutoTuneApplier::CancelTrial(bool apply)
 {
 	if (!m_trial_active)
 		return;
+	const bool host_lever = m_trial_lever == AutoTuneLever::DisplayScale;
 	RestoreTrialKey();
 	m_trial_active = false;
-	if (apply)
+	if (apply && !host_lever)
 		m_env.ApplySettings();
 }
 
 void AutoTuneApplier::RestoreTrialKey()
 {
+	// The display scale was never in the trial layer; it is in the host.
+	if (m_trial_lever == AutoTuneLever::DisplayScale)
+	{
+		ReleaseDisplayScale();
+		return;
+	}
+
 	const AutoTune::LeverKey k = AutoTune::KeyForLever(m_trial_lever);
 	auto lock = m_env.LockSettings();
 	if (m_trial_previous)
@@ -166,8 +193,17 @@ void AutoTuneApplier::StartTrial(const AutoTuneAction& action)
 	if (m_trial_active)
 		RestoreTrialKey();
 
-	const AutoTune::LeverKey k = AutoTune::KeyForLever(action.lever);
+	const bool host_lever = action.lever == AutoTuneLever::DisplayScale;
+	if (host_lever)
 	{
+		// Straight to the host: no key in the trial layer, and nothing for ApplySettings to rebuild.
+		m_trial_previous.reset();
+		m_display_scale_held = true;
+		m_env.SetDisplayScale(static_cast<int>(std::lround(action.value)));
+	}
+	else
+	{
+		const AutoTune::LeverKey k = AutoTune::KeyForLever(action.lever);
 		auto lock = m_env.LockSettings();
 		std::string previous;
 		m_trial_previous = m_trial_layer.GetStringValue(k.section, k.key, &previous) ? std::optional<std::string>(previous) : std::nullopt;
@@ -183,7 +219,8 @@ void AutoTuneApplier::StartTrial(const AutoTuneAction& action)
 	m_env.ShowMessage(fmt::format(TRANSLATE_FS("AutoTune", "Auto-tune: trying {}..."), label));
 
 	// The settle period starts after this returns: the controller waits out the windows that follow.
-	m_env.ApplySettings();
+	if (!host_lever)
+		m_env.ApplySettings();
 }
 
 void AutoTuneApplier::Keep(const AutoTuneAction& action)
@@ -212,6 +249,11 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 			auto lock = m_env.LockSettings();
 			m_trial_layer.DeleteValue(k.section, k.key);
 		}
+		// The host that owns the display scale is told below and ends its own override once it has saved the value
+		// (see DisplayScaler::set); handing the surface back here would step it to the old size meanwhile. It stays
+		// marked as held, so End() asks once more: a host that could not save the value has not let go of it.
+		if (action.lever == AutoTuneLever::DisplayScale)
+			m_display_scale_session.reset();
 		m_env.NotifyCommitted(change.section.c_str(), change.key.c_str(), change.value);
 		m_env.ReloadGameSettings();
 		m_env.Log(fmt::format("saved {}/{} = {} in the game's settings", change.section, change.key, change.value));
@@ -222,6 +264,8 @@ void AutoTuneApplier::Keep(const AutoTuneAction& action)
 		// and holds for this session only.
 		m_trial_active = false;
 		m_trial_previous.reset();
+		if (action.lever == AutoTuneLever::DisplayScale)
+			m_display_scale_session = static_cast<int>(std::lround(action.value)); // still in the host; End() hands it back
 		m_env.Log(fmt::format("could not save {} in the game's settings; kept for this session only", label));
 	}
 
@@ -277,7 +321,9 @@ void AutoTuneApplier::Revert(const AutoTuneAction& action)
 		m_env.Log(fmt::format("trial of {} cancelled", label));
 	}
 
-	m_env.ApplySettings();
+	// The display scale is not part of the settings layers, so there is nothing to rebuild for it.
+	if (action.lever != AutoTuneLever::DisplayScale)
+		m_env.ApplySettings();
 }
 
 AutoTune::GameDbForced AutoTune::ForcedByGameDb(const GameDatabaseSchema::GameEntry* entry)
@@ -456,6 +502,12 @@ namespace
 			if (AutoTune::g_on_committed)
 				AutoTune::g_on_committed(section, key, value);
 		}
+
+		void SetDisplayScale(int value) override
+		{
+			if (AutoTune::g_display_scaler)
+				AutoTune::g_display_scaler->set(value);
+		}
 	};
 
 	const char* ActionName(const AutoTuneAction& a)
@@ -625,6 +677,13 @@ namespace
 		s.ee_governor_forced = m_forced.ee_governor;
 		s.hardcore = Achievements::IsHardcoreModeActive();
 
+		if (const AutoTune::DisplayScaler* host = AutoTune::g_display_scaler)
+		{
+			s.display_scale_available = true;
+			s.display_scale = host->get();
+			s.display_base_short_side = host->base_short_side();
+		}
+
 		s.rejected = m_applier.Rejections();
 		return s;
 	}
@@ -643,6 +702,8 @@ namespace
 				return static_cast<int>(EmuConfig.GS.HWDownloadMode) == static_cast<int>(std::lround(value));
 			case AutoTuneLever::Blending:
 				return static_cast<int>(EmuConfig.GS.AccurateBlendingUnit) == static_cast<int>(std::lround(value));
+			case AutoTuneLever::DisplayScale:
+				return AutoTune::g_display_scaler && AutoTune::g_display_scaler->get() == static_cast<int>(std::lround(value));
 			case AutoTuneLever::EeGovernor:
 			{
 				// Asked for and not suspended. A pinned rate or a suspension (hardcore mode, a cycle skip) would
@@ -673,7 +734,8 @@ namespace
 		if (std::ftell(f) == 0)
 		{
 			std::fputs("t,seq,usable,seconds,speed,late,ee,mtgs,gsb,mtvu,iop,gpu,gpu_timer,wait_gs,wait_vu1,phase,streak,"
-					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop,ee_rate,ee_ms,gs_ms,gsb_ms,gpu_ms\n",
+					   "bottleneck,action,lever,value,gain,res,back_thread,download,blending,iop_thread,governor,wait_iop,ee_rate,ee_ms,gs_ms,gsb_ms,gpu_ms,"
+					   "display_scale\n",
 				f);
 		}
 		std::fprintf(f, "# session %s crc %08X\n", VMManager::GetDiscSerial().c_str(), VMManager::GetDiscCRC());
@@ -687,7 +749,7 @@ namespace
 			return;
 
 		const auto opt = [](const std::optional<double>& v) { return v ? fmt::format("{:.3f}", *v) : std::string(); };
-		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{},{},{:.2f},{:.2f},{:.2f},{:.2f}\n",
+		const std::string line = fmt::format("{:.2f},{},{},{:.3f},{:.1f},{:.3f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{:.1f},{},{},{},{},{},{},{},{},{},{:.3f},{:g},{},{},{},{},{},{},{},{:.2f},{:.2f},{:.2f},{:.2f},{}\n",
 			m_session_timer.GetTimeSeconds(), m_sampler.LastSequence(), w.usable ? 1 : 0, w.seconds, w.speed_pct, w.late_frame_ratio, w.ee_pct,
 			w.mtgs_pct, w.gs_back_pct, w.mtvu_pct, w.iop_pct, w.gpu_pct, w.has_gpu_timer ? 1 : 0, opt(w.ee_wait_gs_ratio),
 			opt(w.ee_wait_vu1_ratio), AutoTuneController::PhaseName(m_controller.GetPhase()), m_controller.BadStreak(),
@@ -700,7 +762,7 @@ namespace
 				std::string(),
 			a.gain, s.resolution, s.gs_back_thread_on ? 1 : 0, s.download_mode, s.blending_level, s.iop_thread_on ? 1 : 0,
 			s.ee_governor_on ? 1 : 0, opt(w.ee_wait_iop_ratio), static_cast<int>(EECycleRate::GetEffective()), w.ee_ms, w.mtgs_ms,
-			w.gs_back_ms, w.gpu_ms);
+			w.gs_back_ms, w.gpu_ms, s.display_scale);
 		std::fputs(line.c_str(), f);
 		std::fflush(f);
 	}

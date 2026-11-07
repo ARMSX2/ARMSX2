@@ -68,6 +68,9 @@ TEST(AutoTuneStore, EachLeverWritesItsOwnKeyAsTheRightType)
 
 	Commit(si, AutoTuneLever::Blending, 1.0, 0.1);
 	EXPECT_EQ(si.GetIntValue(GS, "accurate_blending_unit", -1), 1);
+
+	Commit(si, AutoTuneLever::DisplayScale, 2.0, 0.1);
+	EXPECT_EQ(si.GetIntValue(GS, "HWScaler", -1), 2);
 }
 
 TEST(AutoTuneStore, CommitRecordsWhatWasThereBefore)
@@ -358,6 +361,47 @@ TEST(AutoTuneStore, DescribeReadsAsSentences)
 	EXPECT_EQ(lines[4], "Tried without benefit: Hardware download mode -> Asynchronous");
 }
 
+TEST(AutoTuneStore, TheDisplayScaleIsRecordedLikeAnyOtherLeverAndPutBackByAReset)
+{
+	// The game's file does not have the key (the host keeps the setting itself), so it is recorded as absent and a
+	// reset deletes it, which hands the setting back to the host's saved value.
+	MemorySettingsInterface si;
+	const Change c = Commit(si, AutoTuneLever::DisplayScale, 2.0, 0.09);
+	EXPECT_FALSE(c.original.has_value());
+	EXPECT_EQ(c.section, GS);
+	EXPECT_EQ(c.key, "HWScaler");
+
+	const std::vector<Change> read = ReadChanges(si);
+	ASSERT_EQ(read.size(), 1u);
+	EXPECT_EQ(read[0].lever, AutoTuneLever::DisplayScale);
+	EXPECT_TRUE(SameValue(read[0].value, "2"));
+
+	RecordRejected(si, {AutoTuneLever::DisplayScale, 1.0});
+	const std::vector<AutoTuneRejection> rejected = ReadRejected(si);
+	ASSERT_EQ(rejected.size(), 1u);
+	EXPECT_EQ(rejected[0].lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(rejected[0].value, 1.0);
+
+	const ResetResult r = Reset(si);
+	ASSERT_EQ(r.restored.size(), 1u);
+	EXPECT_EQ(r.restored[0].key, "HWScaler");
+	EXPECT_FALSE(r.restored[0].value.has_value()) << "deleted, not set to a value";
+	EXPECT_FALSE(si.ContainsValue(GS, "HWScaler"));
+}
+
+TEST(AutoTuneStore, DescribeNamesTheDisplayScaleStepsTheWayTheAppDoes)
+{
+	MemorySettingsInterface si;
+	si.SetIntValue(GS, "HWScaler", 0);
+	Commit(si, AutoTuneLever::DisplayScale, 2.0, 0.09);
+	RecordRejected(si, {AutoTuneLever::DisplayScale, 1.0});
+
+	const std::vector<std::string> lines = Describe(si);
+	ASSERT_EQ(lines.size(), 2u);
+	EXPECT_EQ(lines[0], "Display resolution (HW scaler): Screen -> 2x PS2 (+9% speed)");
+	EXPECT_EQ(lines[1], "Tried without benefit: Display resolution (HW scaler) -> 1x PS2");
+}
+
 TEST(AutoTuneStore, DescribeOfAnUntouchedFileIsEmpty)
 {
 	MemorySettingsInterface si;
@@ -384,6 +428,8 @@ TEST(AutoTuneStore, LeverLabelsNameTheValue)
 	EXPECT_EQ(LeverLabel(AutoTuneLever::DownloadMode, 5.0), "download mode Asynchronous");
 	EXPECT_EQ(LeverLabel(AutoTuneLever::Blending, 0.0), "blending Minimum");
 	EXPECT_EQ(LeverLabel(AutoTuneLever::IopThread, 1.0), "IOP thread");
+	EXPECT_EQ(LeverLabel(AutoTuneLever::DisplayScale, 2.0), "display resolution 2x PS2");
+	EXPECT_EQ(LeverLabel(AutoTuneLever::DownloadMode, 4.0), "download mode Disabled");
 }
 
 TEST(AutoTuneManualChange, OnlyTheKeysAutoTuneWritesAreLeverKeys)

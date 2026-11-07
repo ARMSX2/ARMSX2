@@ -573,6 +573,21 @@ public class NativeApp {
 			android.util.Log.e("ARMSX2", "onAutoTuneCommitted failed: " + section + "/" + key, t);
 		}
 	}
+	/** The output surface as auto-tune has to see it, pushed from EmulationSurface.applyOutputScale:
+	 *  [hwScaler] is the "Display Resolution (HW scaler)" in effect, an auto-tune trial included (0 = Screen,
+	 *  N = the short side is held to 448 * N), and [baseShortSide] the surface's short side in pixels before
+	 *  the setting shrinks it. */
+	public static native void setOutputScaleState(int hwScaler, int baseShortSide);
+	/** Called from native (the CPU thread) when auto-tune tries a display scale: [value] >= 0 is put in
+	 *  effect in place of the saved setting, -1 hands the surface back to it (AutoTuneStore.onDisplayScale).
+	 *  Nothing may escape: native makes no exception check beyond clearing one. */
+	public static void onAutoTuneDisplayScale(int value) {
+		try {
+			com.armsx2.config.AutoTuneStore.INSTANCE.onDisplayScale(value);
+		} catch (Throwable t) {
+			android.util.Log.e("ARMSX2", "onAutoTuneDisplayScale failed: " + value, t);
+		}
+	}
 	/** What the game database sets for a serial: one line per setting a per-game key can claim,
 	 *  "name TAB value TAB flags TAB section/key|section/key". See GameDbOverrides. */
 	public static native String getGameDbEntries(String serial);

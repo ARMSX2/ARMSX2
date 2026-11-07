@@ -9,6 +9,7 @@
 #include "AutoTune/AutoTuneController.h"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -632,6 +633,212 @@ TEST(AutoTuneController, DownloadModeStepsOverARungThatWasRejectedThisSession)
 
 	EXPECT_EQ(a.kind, Kind::Exhausted);
 	EXPECT_EQ(rig.Count(Kind::StartTrial), 3u);
+}
+
+namespace
+{
+	// A host that can hold the output surface to 448 * N lines (the Android app's hw scaler), with nothing else on
+	// offer: the download mode and the blending are used up.
+	void DisplayScaleIsOpen(Rig& rig, double resolution, int display_scale = 0, int base_short_side = 1080)
+	{
+		rig.state.hw_renderer = true;
+		rig.state.resolution = resolution;
+		rig.state.display_scale_available = true;
+		rig.state.display_scale = display_scale;
+		rig.state.display_base_short_side = base_short_side;
+		rig.state.download_mode = AutoTuneDownloadMode::Disabled;
+		rig.state.blending_level = 0;
+	}
+} // namespace
+
+TEST(AutoTuneDisplayScale, AGpuBoundGameTakesTheOutputDownToTheRenderResolutionFirst)
+{
+	// Rendered at 2x (896 lines) and shown on a 1080 line screen: the surface comes down to 2x PS2. The resolution
+	// lever is available too, and comes after.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.0);
+	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(a.value, 2.0);
+	EXPECT_EQ(a.bottleneck, AutoTuneBottleneck::Gpu);
+}
+
+TEST(AutoTuneDisplayScale, ANativeRenderGetsANativeOutput)
+{
+	// The case that matters most: rendered at 1x (448 lines), the surface comes down to 1x PS2 whatever the screen
+	// is, so the GPU stops scaling a native picture up to the panel.
+	for (const int screen : {720, 1080, 1440, 2160})
+	{
+		Rig rig;
+		DisplayScaleIsOpen(rig, 1.0, 0, screen);
+		const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+		ASSERT_EQ(a.kind, Kind::StartTrial) << screen;
+		EXPECT_EQ(a.lever, AutoTuneLever::DisplayScale) << screen;
+		EXPECT_EQ(a.value, 1.0) << screen;
+	}
+
+	// A render under native rounds up to the same step.
+	Rig sub;
+	DisplayScaleIsOpen(sub, 0.75);
+	const AutoTuneAction s = sub.WarmAndTrigger(GpuBound(60.0));
+	ASSERT_EQ(s.kind, Kind::StartTrial);
+	EXPECT_EQ(s.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(s.value, 1.0);
+
+	// Already at 1x PS2, or on a screen no taller than the picture: nothing more to give, and nothing else is left.
+	Rig at_step;
+	DisplayScaleIsOpen(at_step, 1.0, 1);
+	EXPECT_EQ(at_step.WarmAndTrigger(GpuBound(60.0)).kind, Kind::Exhausted);
+
+	Rig tiny;
+	DisplayScaleIsOpen(tiny, 1.0, 0, 448);
+	EXPECT_EQ(tiny.WarmAndTrigger(GpuBound(60.0)).kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneDisplayScale, ARenderBetweenTwoStepsRoundsTheOutputUp)
+{
+	// 2.5x is 1120 lines. 3x PS2 (1344) still holds all of it; 2x (896) would throw some away.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.5, 0, 2160);
+	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(a.value, 3.0);
+
+	// On a 1080 line screen that step would make the surface bigger, so there is nothing for it to do.
+	Rig small;
+	DisplayScaleIsOpen(small, 2.5, 0, 1080);
+	EXPECT_EQ(small.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneDisplayScale, NotOfferedWhereTheOutputIsNoBiggerThanTheRender)
+{
+	// Rendered at 3x (1344 lines) and shown on 1080 lines: the screen is already the smaller of the two.
+	Rig screen;
+	DisplayScaleIsOpen(screen, 3.0);
+	EXPECT_EQ(screen.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+
+	// The step is already in force.
+	Rig at_step;
+	DisplayScaleIsOpen(at_step, 2.0, 2);
+	EXPECT_EQ(at_step.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+
+	// A step under the render is the player's choice, and not one to raise or to follow the render down.
+	Rig below;
+	DisplayScaleIsOpen(below, 3.0, 1);
+	EXPECT_EQ(below.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneDisplayScale, NotOfferedForARenderTheSettingCannotName)
+{
+	// 4x is 1792 lines and the largest step is 3x PS2: shrinking the surface under the render would lose detail it
+	// has, and that is the resolution lever's business.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 4.0, 0, 2160);
+	EXPECT_EQ(rig.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneDisplayScale, NotOfferedWithoutAHostThatHasIt)
+{
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.0);
+	rig.state.display_scale_available = false;
+	EXPECT_EQ(rig.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+
+	// And not before the host has measured its surface.
+	Rig unknown;
+	DisplayScaleIsOpen(unknown, 2.0, 0, 0);
+	EXPECT_EQ(unknown.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+
+	// Nor for the software renderer, which has no output surface worth shrinking.
+	Rig sw;
+	DisplayScaleIsOpen(sw, 2.0);
+	sw.state.hw_renderer = false;
+	EXPECT_EQ(sw.WarmAndTrigger(GpuBound(60.0)).kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneDisplayScale, ItIsAGpuLeverOnly)
+{
+	// The GS thread on the CPU does not care how big the surface is.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.0);
+	rig.state.gs_back_thread_allowed = true;
+	const AutoTuneAction a = rig.WarmAndTrigger(GsCpuBound(60.0));
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::GsBackThread);
+
+	Rig cpu;
+	DisplayScaleIsOpen(cpu, 2.0);
+	EXPECT_EQ(cpu.WarmAndTrigger(EeBound(60.0)).kind, Kind::Exhausted);
+}
+
+TEST(AutoTuneDisplayScale, AStepThatDidNotHelpIsNotOfferedAgain)
+{
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.0);
+	rig.state.rejected = {{AutoTuneLever::DisplayScale, 2.0}};
+	EXPECT_EQ(rig.WarmAndTrigger(GpuBound(60.0)).lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneDisplayScale, FollowsTheRenderResolutionDown)
+{
+	// Kept at 3x PS2 for a 3x render; the resolution lever later takes the render to 2x. The output is bigger than
+	// the render again, so the next diagnosis brings it down to 2x PS2 as well.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 2.0, 3, 2160);
+	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(60.0));
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(a.value, 2.0);
+}
+
+TEST(AutoTuneDisplayScale, StillFirstWhenTheGameIsFarBelowFullSpeed)
+{
+	// 9% speed puts the cheap levers (blending, download mode) ahead of the resolution; the display scale costs
+	// no picture, so it goes ahead of those.
+	Rig rig;
+	DisplayScaleIsOpen(rig, 3.0, 0, 2160);
+	rig.state.blending_level = 5;
+	rig.state.download_mode = AutoTuneDownloadMode::Accurate;
+	const AutoTuneAction a = rig.WarmAndTrigger(GpuBound(9.0));
+	ASSERT_EQ(a.kind, Kind::StartTrial);
+	EXPECT_EQ(a.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(a.value, 3.0);
+}
+
+TEST(AutoTuneDisplayScale, IsKeptWhenTheSpeedRisesAndUndoneWhenItDoesNot)
+{
+	Rig kept;
+	DisplayScaleIsOpen(kept, 2.0);
+	ASSERT_EQ(kept.WarmAndTrigger(GpuBound(70.0)).lever, AutoTuneLever::DisplayScale);
+	const AutoTuneAction keep = kept.RunUntilAction(GpuBound(85.0));
+	ASSERT_EQ(keep.kind, Kind::Keep);
+	EXPECT_EQ(keep.lever, AutoTuneLever::DisplayScale);
+	EXPECT_EQ(keep.value, 2.0);
+	EXPECT_GT(keep.gain, 0.05);
+
+	Rig undone;
+	DisplayScaleIsOpen(undone, 2.0);
+	ASSERT_EQ(undone.WarmAndTrigger(GpuBound(70.0)).lever, AutoTuneLever::DisplayScale);
+	const AutoTuneAction revert = undone.RunUntilAction(GpuBound(70.0));
+	ASSERT_EQ(revert.kind, Kind::Revert);
+	EXPECT_EQ(revert.lever, AutoTuneLever::DisplayScale);
+	EXPECT_TRUE(revert.measured);
+
+	// Written off, so the resolution is next and the same step is not tried again.
+	undone.FeedFor(GpuBound(70.0), 1.5);
+	const AutoTuneAction next = undone.Trigger(GpuBound(70.0));
+	ASSERT_EQ(next.kind, Kind::StartTrial);
+	EXPECT_EQ(next.lever, AutoTuneLever::Resolution);
+}
+
+TEST(AutoTuneDisplayScale, HasAKeyAndAName)
+{
+	EXPECT_STREQ(AutoTuneLeverName(AutoTuneLever::DisplayScale), "display-scale");
+	const std::optional<AutoTuneLever> back = AutoTuneLeverFromName("display-scale");
+	ASSERT_TRUE(back.has_value());
+	EXPECT_EQ(*back, AutoTuneLever::DisplayScale);
 }
 
 TEST(AutoTuneController, AGameDatabaseDownloadModeIsLeftAlone)

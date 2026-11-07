@@ -58,6 +58,7 @@ class AutoTuneManualChangeTest {
                 "accurateBlendingUnit" -> before.copy(graphics = before.graphics.copy(accurateBlendingUnit = 0))
                 "iopThread" -> before.copy(cpu = before.cpu.copy(iopThread = true))
                 "dynamicEeCycleRate" -> before.copy(cpu = before.cpu.copy(dynamicEeCycleRate = true))
+                "hwScaler" -> before.copy(output = before.output.copy(hwScaler = 2))
                 else -> error("no case for ${lever.field}: add one")
             }
             assertFalse(lever.field, AutoTuneStore.withAutoTuneOffForManualChange(before, updated).emuCore.autoTune)

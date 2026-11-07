@@ -65,6 +65,10 @@ public:
 	virtual void ShowMessage(const std::string& text) = 0;
 	virtual void Log(const std::string& text) = 0;
 	virtual void NotifyCommitted(const char* section, const char* key, const std::string& value) = 0;
+
+	/// Puts the display scale (AutoTuneLever::DisplayScale) in effect for now, without saving it; -1 hands the
+	/// output surface back to the saved setting. A host with no such setting never gets asked.
+	virtual void SetDisplayScale(int value) { (void)value; }
 };
 
 class AutoTuneApplier
@@ -101,15 +105,46 @@ private:
 	MemorySettingsInterface m_trial_layer;
 	std::vector<AutoTuneRejection> m_rejected;
 
+	void ReleaseDisplayScale();
+
 	bool m_trial_active = false;
 	AutoTuneLever m_trial_lever = AutoTuneLever::Count;
 	double m_trial_value = 0.0;
+	// The display scale is a host setting, not a key in the trial layer, so the host has to be handed the surface
+	// back when the trial ends. True from the moment the host was given a value until it was handed back; a saved
+	// keep leaves it true, because the host ends its own override then and End() only makes sure it did.
+	bool m_display_scale_held = false;
+	// A display scale that was kept but could not be saved (no settings file for the game): it holds for this
+	// session only, and a later trial that is undone goes back to it rather than to the saved setting.
+	std::optional<int> m_display_scale_session;
 	// What the trial layer held under the trial's key before the trial, so a revert puts it back.
 	std::optional<std::string> m_trial_previous;
 };
 
 namespace AutoTune
 {
+	/// The output surface of a host that can make it smaller than the screen: the Android app's "Display Resolution
+	/// (HW scaler)", which lives in the app and not in the settings files. Auto-tune offers the display scale lever
+	/// (AutoTuneLever::DisplayScale) only when a host has registered this, once at start-up, before any VM exists;
+	/// null on every other frontend.
+	struct DisplayScaler
+	{
+		/// The setting in effect now, a trial included: 0 = the surface is the size of the screen, N = its short
+		/// side is held to 448 * N. Cheap and callable from the CPU thread; read once per half second.
+		int (*get)();
+		/// The short side of the surface before the setting shrinks it, in pixels; 0 when not known yet.
+		int (*base_short_side)();
+		/// Puts `value` in effect for now without saving it, and -1 hands the surface back to the saved setting.
+		/// Returns at once (CPU thread) and `get` answers with `value` from then on, though the surface itself
+		/// may take a moment to follow.
+		///
+		/// A trial that is kept and saved is not ended by a set(-1): the host is told through g_on_committed
+		/// (the key is KeyForLever(AutoTuneLever::DisplayScale)), and ends the override itself once it holds the
+		/// saved value, so the surface does not step back to the old size in between.
+		void (*set)(int value);
+	};
+	extern const DisplayScaler* g_display_scaler;
+
 	/// Set by a host that keeps its own copy of the per-game settings; null (nothing to tell) otherwise. Auto-tune
 	/// calls it when it has moved one setting into the game's own settings file (section and key as in the file,
 	/// value as text), on the CPU thread. The Android app regenerates that file from its own store and drops what

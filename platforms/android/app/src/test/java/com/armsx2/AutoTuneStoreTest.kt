@@ -37,6 +37,9 @@ class AutoTuneStoreTest {
         val blending = Settings.merge(global, committed("EmuCore/GS", "accurate_blending_unit", "0"))
         assertEquals(0, blending.graphics.accurateBlendingUnit)
 
+        val displayScale = Settings.merge(global, committed("EmuCore/GS", "HWScaler", "2"))
+        assertEquals(2, displayScale.output.hwScaler)
+
         val iop = Settings.merge(global, committed("EmuCore/Speedhacks", "iopThread", "true"))
         assertTrue(iop.cpu.iopThread)
 
@@ -55,12 +58,13 @@ class AutoTuneStoreTest {
 
     @Test
     fun theLeverTableCoversTheCoreKeys() {
-        // pcsx2/AutoTune/AutoTuneStore.cpp KeyForLever names six keys; each must have a field here.
+        // pcsx2/AutoTune/AutoTuneStore.cpp KeyForLever names seven keys; each must have a field here.
         val keys = AutoTuneStore.levers.map { it.section + "/" + it.key }.toSet()
         assertEquals(
             setOf(
                 "EmuCore/GS/upscale_multiplier", "EmuCore/GS/GSBackThreadMode", "EmuCore/GS/HWDownloadMode",
                 "EmuCore/GS/accurate_blending_unit", "EmuCore/Speedhacks/iopThread", "EmuCore/Speedhacks/DynamicEECycleRate",
+                "EmuCore/GS/HWScaler",
             ),
             keys,
         )
@@ -73,6 +77,7 @@ class AutoTuneStoreTest {
         assertEquals(false, AutoTuneStore.jsonValue(AutoTuneStore.levers.first { it.key == "iopThread" }, "false"))
         assertEquals(3, AutoTuneStore.jsonValue(AutoTuneStore.levers.first { it.key == "HWDownloadMode" }, "3"))
         assertEquals(1.5, AutoTuneStore.jsonValue(AutoTuneStore.levers.first { it.key == "upscale_multiplier" }, "1.500000"))
+        assertEquals(2, AutoTuneStore.jsonValue(AutoTuneStore.levers.first { it.key == "HWScaler" }, "2"))
         assertEquals(null, AutoTuneStore.jsonValue(AutoTuneStore.levers.first { it.key == "iopThread" }, "maybe"))
     }
 
@@ -220,20 +225,21 @@ class AutoTuneStoreTest {
     }
 
     @Test
-    fun theResolutionIsTheOnlyLeverTheAppsWriterForTheGamesFileDoesNotCarry() {
+    fun theResolutionAndTheDisplayResolutionAreTheOnlyLeversTheAppsWriterForTheGamesFileDoesNotCarry() {
         // The app regenerates the game's file from the stored settings at every in-game save, so a kept value
         // survives only if that writer emits it. All of them do but the resolution, which the app keeps in the
-        // core's base layer; that is why AutoTuneStore pushes it there on a commit and on a reset.
+        // core's base layer (that is why AutoTuneStore pushes it there on a commit and on a reset), and the display
+        // resolution, which is the app's own surface and no setting of the core's at all.
         val sample = mapOf(
             "upscale_multiplier" to "3", "GSBackThreadMode" to "1", "HWDownloadMode" to "5",
-            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true",
+            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true", "HWScaler" to "2",
         )
         val baseline = global.emittedKeys()
         for (lever in AutoTuneStore.levers) {
             val id = lever.section + "/" + lever.key
             val tuned = Settings.merge(global, committed(lever.section, lever.key, sample.getValue(lever.key)))
             val carried = tuned.emittedKeys().let { it.containsKey(id) && it[id] != baseline[id] }
-            assertEquals(id, lever.key != "upscale_multiplier", carried)
+            assertEquals(id, lever.key !in notInTheFile, carried)
         }
     }
 
@@ -258,6 +264,9 @@ class AutoTuneStoreTest {
         assertEquals(null, AutoTuneStore.upscaleAfterRestore(restored.take(1), 8.0f))
         assertEquals(null, AutoTuneStore.upscaleAfterRestore(emptyList(), 8.0f))
     }
+
+    // The levers the app's writer for the game's file never emits (see the test that names them).
+    private val notInTheFile = setOf("upscale_multiplier", "HWScaler")
 
     private fun leftAbsent(section: String, key: String, written: String) =
         AutoTuneStore.CoreReset(true, emptyList(), listOf(AutoTuneStore.LeftAlone(section, key, written, absent = true)))
@@ -370,11 +379,11 @@ class AutoTuneStoreTest {
     fun everyLeverComesBackAfterAKeepAndAnUnrelatedSaveWhateverTheWriterDid() {
         val player = mapOf<String, Any>(
             "upscale_multiplier" to 8.0, "GSBackThreadMode" to 0, "HWDownloadMode" to 0,
-            "accurate_blending_unit" to 3, "iopThread" to false, "DynamicEECycleRate" to false,
+            "accurate_blending_unit" to 3, "iopThread" to false, "DynamicEECycleRate" to false, "HWScaler" to 3,
         )
         val kept = mapOf(
             "upscale_multiplier" to "3.000000", "GSBackThreadMode" to "1", "HWDownloadMode" to "5",
-            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true",
+            "accurate_blending_unit" to "0", "iopThread" to "true", "DynamicEECycleRate" to "true", "HWScaler" to "2",
         )
         // Two global settings: the stock one, and one that already has the kept value. The app writes into the game's
         // file only the keys that differ from global, so the second drops every key.
@@ -390,7 +399,7 @@ class AutoTuneStoreTest {
 
                 val tuned = Settings.merge(base, overrides)
                 val inFile = tuned.emittedKeys().let { it.containsKey(id) && it[id] != base.emittedKeys()[id] }
-                assertEquals("$label, $id: the writer carries every key but the resolution, and any equal to global", !globalHasKept && lever.key != "upscale_multiplier", inFile)
+                assertEquals("$label, $id: the writer carries every key but the resolution, and any equal to global", !globalHasKept && lever.key !in notInTheFile, inFile)
 
                 val reply = if (inFile) {
                     // Still in the file holding the kept value: the core puts it back (it was not in the file before).
