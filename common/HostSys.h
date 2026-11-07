@@ -138,6 +138,13 @@ namespace PageFaultHandler
 	HandlerResult HandlePageFault(void* exception_pc, void* fault_address, bool is_write);
 	bool Install(Error* error = nullptr);
 	bool InstallSecondaryThread();
+
+	// Linux and Android only. Called for a SIGSEGV or SIGBUS that
+	// HandlePageFault did not take, before the crash handler, with the
+	// handler's siginfo_t and ucontext_t. It runs inside the signal handler of
+	// a process about to die, so it must be async-signal-safe.
+	using UnhandledFaultReporter = void (*)(int signal, void* siginfo, void* ucontext);
+	void SetUnhandledFaultReporter(UnhandledFaultReporter reporter);
 } // namespace PageFaultHandler
 
 class SharedMemoryMappingArea
