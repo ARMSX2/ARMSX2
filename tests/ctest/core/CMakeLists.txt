@@ -1,5 +1,6 @@
 add_pcsx2_test(core_test
 	ee_fpu_regfile_tests.cpp
+	gif_tag_analyze_tests.cpp
 	soundtouch_crosscorr_tests.cpp
 	ee_clamp_mode_tests.cpp
 	vu_clamp_mode_tests.cpp
