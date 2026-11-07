@@ -161,7 +161,9 @@ extern u32 g_iopCyclePenalty;
 void psxSaveBranchState();
 void psxLoadBranchState();
 
-extern void psxSetBranchReg();
+// jump_pc and jump_rs are the jump's own pc and rs, for iopRecError to report
+// when the target is unaligned.
+extern void psxSetBranchReg(u32 jump_pc, u32 jump_rs);
 extern void psxSetBranchImm(u32 imm);
 extern void psxRecompileNextInstruction(bool delayslot, bool swapped_delayslot);
 

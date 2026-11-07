@@ -7,6 +7,7 @@
 #include "Host.h"
 #include "R3000A.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
 #include "IopBios.h"
 #include "IopHw.h"
@@ -79,7 +80,14 @@ extern void (*rpsxBSC[64])();
 void rpsxpropBSC(EEINST* prev, EEINST* pinst);
 
 static void iopClearRecLUT(BASEBLOCK* base, int count);
-static void iopRecError(int err);
+// iopRecError's codes.
+enum IopRecErrorCode : u32
+{
+	kIopRecErrorUnmappedPage = 0,
+	kIopRecErrorUnalignedJump = 1, // jump_pc and jump_rs are the jump's; its target is in psxRegs.pc
+	kIopRecErrorUnalignedEntry = 2, // the pc was unaligned at slice entry; the others are unused
+};
+static void iopRecError(u32 err, u32 jump_pc, u32 jump_rs);
 
 #define PSX_GETBLOCK(x) PC_GETBLOCK_(x, psxRecLUT)
 
@@ -432,9 +440,11 @@ static const void* _DynGen_UnmappedRecLUTPage()
 {
 	u8* retval = armGetCurrentCodePointer();
 
-	armAsm->Mov(RWARG1, 0);
+	// Memory current first, for the clock iopRecError logs.
+	iopEmitSpill();
+	armAsm->Mov(RWARG1, kIopRecErrorUnmappedPage);
 	armEmitCall((void*)iopRecError);
-	armEmitJmp(iopExitRecompiledCode);
+	armEmitJmp(iopExitRecompiledCodeSpilled);
 
 	return retval;
 }
@@ -504,19 +514,22 @@ static void _DynGen_Dispatchers()
 	Perf::any.Register(start, static_cast<u32>(armGetCurrentCodePointer() - start), "IOP Dispatcher");
 }
 
-static void iopRecError(int err)
+static void iopRecError(u32 err, u32 jump_pc, u32 jump_rs)
 {
-	switch (err)
+	if (err == kIopRecErrorUnmappedPage)
 	{
-		case 0:
-			Host::ReportErrorAsync("R3000A Exception",
-				fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", psxRegs.pc));
-			break;
-
-		case 1:
-			Host::ReportErrorAsync("R3000A Exception",
-				fmt::format("Jump to unaligned address (PC: 0x{:08x})", psxRegs.pc));
-			break;
+		Host::ReportErrorAsync("R3000A Exception",
+			fmt::format("Jump to unmapped recLUT page (PC: 0x{:08x})", psxRegs.pc));
+		RecErrorReport::LogIop(RecErrorReport::Kind::UnmappedPage, std::nullopt);
+	}
+	else
+	{
+		Host::ReportErrorAsync("R3000A Exception",
+			fmt::format("Jump to unaligned address (PC: 0x{:08x})", psxRegs.pc));
+		std::optional<RecErrorReport::Jump> jump;
+		if (err == kIopRecErrorUnalignedJump)
+			jump = RecErrorReport::Jump{jump_pc, jump_rs, psxRegs.pc};
+		RecErrorReport::LogIop(RecErrorReport::Kind::UnalignedJump, jump);
 	}
 
 	EeBridge::RequestPause();
@@ -836,7 +849,7 @@ void psxRecompileIrxImport()
 //  Branch handling
 // =====================================================================================================
 
-void psxSetBranchReg()
+void psxSetBranchReg(u32 jump_pc, u32 jump_rs)
 {
 	psxbranch = 1;
 
@@ -860,10 +873,15 @@ void psxSetBranchReg()
 
 	armEmitJmp(iopDispatcherReg);
 
+	// Memory current first, for the clock iopRecError logs. The target it
+	// reports is the one stored to psxRegs.pc above.
 	armAsm->Bind(&unaligned);
-	armAsm->Mov(RWARG1, 1);
+	iopEmitSpill();
+	armAsm->Mov(a64::w1, jump_pc);
+	armAsm->Mov(a64::w2, jump_rs);
+	armAsm->Mov(RWARG1, kIopRecErrorUnalignedJump);
 	armEmitCall((void*)iopRecError);
-	armEmitJmp(iopExitRecompiledCode);
+	armEmitJmp(iopExitRecompiledCodeSpilled);
 }
 
 void psxSetBranchImm(u32 imm)
@@ -1606,7 +1624,7 @@ static __noinline s32 recExecuteBlock(s32 eeCycles)
 	// the IOP thread runs a slice that used none again at once.
 	if (psxRegs.pc & 3) [[unlikely]]
 	{
-		iopRecError(1);
+		iopRecError(kIopRecErrorUnalignedEntry, 0, 0);
 		psxRegs.iopCycleEE = 0;
 		return 0;
 	}

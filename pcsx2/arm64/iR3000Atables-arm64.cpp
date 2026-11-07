@@ -959,6 +959,8 @@ static void rpsxJAL()
 
 static void rpsxJR()
 {
+	const u32 jump_pc = psxpc - 4; // psxpc is past the JR; a swap advances it again
+	const u32 rs = _Rs_;
 	// Save branch target to pcWriteback before delay slot — the delay slot's
 	// recCall will clobber w0 via _psxFlushCall.
 	_psxMoveGPRtoR(RWSCRATCH, _Rs_);
@@ -968,11 +970,13 @@ static void rpsxJR()
 	const bool swap = psxTrySwapDelaySlot(_Rs_, 0, 0);
 	if (!swap)
 		psxRecompileNextInstruction(true, false);
-	psxSetBranchReg();
+	psxSetBranchReg(jump_pc, rs);
 }
 
 static void rpsxJALR()
 {
+	const u32 jump_pc = psxpc - 4;
+	const u32 rs = _Rs_;
 	// Save branch target to pcWriteback before delay slot
 	_psxMoveGPRtoR(RWSCRATCH, _Rs_);
 	armAsm->Str(RWSCRATCH, armPsxRegMem(&psxRegs.pcWriteback));
@@ -995,7 +999,7 @@ static void rpsxJALR()
 	_psxFlushCall(FLUSH_EVERYTHING);
 	if (!swap)
 		psxRecompileNextInstruction(true, false);
-	psxSetBranchReg();
+	psxSetBranchReg(jump_pc, rs);
 }
 
 // Helper for conditional branches: compare Rs and Rt, branch if condition met

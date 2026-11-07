@@ -109,6 +109,11 @@ TEST(RecErrorExit, IopJumpToUnmappedPageReportsAndLeavesPcAtTarget)
 	h.Run();
 
 	ExpectOneReport("R3000A Exception", "Jump to unmapped recLUT page (PC: 0x10000000)");
+	ExpectLogged({
+		"IOP recompiler stopped: jump to unmapped address 0x10000000\n",
+		"\n  The word before it is not zero, or not in RAM or ROM.\n",
+		"\n  ra 001f0000  sp 00000000\n",
+	});
 	EXPECT_EQ(psxRegs.pc, kIopUnmappedTarget);
 }
 
@@ -273,6 +278,12 @@ TEST(RecErrorExit, IopJrToUnalignedAddressReportsAndNextSliceDoesNotRun)
 	h.Run();
 
 	ExpectOneReport("R3000A Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectLogged({
+		"IOP recompiler stopped: jump to unaligned address 0x00010102\n",
+		"\n  The jump at 0x00010000 (jr ->a0) read a0 = 0x00010102 before its delay slot; a0 now holds 00010102\n",
+		"\n      a0 00010102   a1 00000000 ",
+		"\n  > 00010000  00800008  jr ->a0\n",
+	});
 	EXPECT_EQ(psxRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(psxRegs.GPR.n.v0, 7u);
 
@@ -282,6 +293,7 @@ TEST(RecErrorExit, IopJrToUnalignedAddressReportsAndNextSliceDoesNotRun)
 	const u32 iop_cycle = psxRegs.cycle;
 	EXPECT_EQ(psxRec.ExecuteBlock(1000), 0);
 	ExpectOneReport("R3000A Exception", "Jump to unaligned address (PC: 0x00010102)");
+	ExpectNothingLogged();
 	EXPECT_EQ(psxRegs.pc, kUnalignedTarget);
 	EXPECT_EQ(psxRegs.cycle, iop_cycle);
 }
