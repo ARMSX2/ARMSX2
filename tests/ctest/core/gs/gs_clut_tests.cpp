@@ -145,6 +145,26 @@ TEST_F(GSClutTest, CSAOrsIntoTheGroupForT32I8)
 	}
 }
 
+// The 32-bit CSM1 loads checked against the actual palette layout, entry by entry.
+TEST_F(GSClutTest, T32I8LoadsEveryEntryFromItsTexel)
+{
+	SeedPalette(PSMCT32, 0);
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT8));
+	for (int e = 0; e < 256; e++)
+	{
+		const int l = (e & 0xE7) | ((e & 0x08) << 1) | ((e & 0x10) >> 1);
+		ASSERT_EQ((*m_clut)[e], Seed32(l & 15, l >> 4)) << "entry " << e;
+	}
+}
+
+TEST_F(GSClutTest, T32I4LoadsEveryEntryFromItsTexel)
+{
+	SeedPalette(PSMCT32, 0);
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT4));
+	for (int e = 0; e < 16; e++)
+		ASSERT_EQ((*m_clut)[e], Seed32(e & 7, e >> 3)) << "entry " << e;
+}
+
 // gs-clut result 2, four-bit half: CSA selects both the slot the load writes
 // and the slot the sampler reads, so it cancels and the expanded palette is
 // the same at every CSA. Already right before the OR fix; pinned so the OR

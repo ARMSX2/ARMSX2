@@ -573,6 +573,20 @@ __forceinline void GSClut::WriteCLUT_T32_I4_CSM1(const u32* RESTRICT src, u16* R
 	d[0] = v0;
 	d[16] = v1;
 
+#elif defined(ARCH_ARM64)
+
+	// LD2 splits the low and high halves, then UZPs put the pairs in the order the zips below would.
+	const uint16x8x2_t a = vld2q_u16(reinterpret_cast<const u16*>(src));
+	const uint16x8x2_t b = vld2q_u16(reinterpret_cast<const u16*>(src + 8));
+	const uint32x4_t la = vreinterpretq_u32_u16(a.val[0]);
+	const uint32x4_t ha = vreinterpretq_u32_u16(a.val[1]);
+	const uint32x4_t lb = vreinterpretq_u32_u16(b.val[0]);
+	const uint32x4_t hb = vreinterpretq_u32_u16(b.val[1]);
+	vst1q_u32(reinterpret_cast<u32*>(clut), vuzp1q_u32(la, lb));
+	vst1q_u32(reinterpret_cast<u32*>(clut + 8), vuzp2q_u32(la, lb));
+	vst1q_u32(reinterpret_cast<u32*>(clut + 256), vuzp1q_u32(ha, hb));
+	vst1q_u32(reinterpret_cast<u32*>(clut + 264), vuzp2q_u32(ha, hb));
+
 #else
 
 	GSVector4i* s = (GSVector4i*)src;
@@ -667,6 +681,14 @@ void GSClut::ReadCLUT_T32_I8(const u16* RESTRICT clut, u32* RESTRICT dst, int of
 
 __forceinline void GSClut::ReadCLUT_T32_I4(const u16* RESTRICT clut, u32* RESTRICT dst)
 {
+#if defined(ARCH_ARM64)
+	// Each entry is its low half from clut[0..15] and its high half from clut[256..271]: two interleaving stores.
+	uint16x8x2_t lo_hi0 = {vld1q_u16(clut), vld1q_u16(clut + 256)};
+	uint16x8x2_t lo_hi1 = {vld1q_u16(clut + 8), vld1q_u16(clut + 264)};
+	vst2q_u16(reinterpret_cast<u16*>(dst), lo_hi0);
+	vst2q_u16(reinterpret_cast<u16*>(dst + 8), lo_hi1);
+	return;
+#endif
 	GSVector4i* s = (GSVector4i*)clut;
 	GSVector4i* d = (GSVector4i*)dst;
 
