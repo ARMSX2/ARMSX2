@@ -6,6 +6,7 @@ add_pcsx2_test(common_test
 	pmu_counters_tests.cpp
 	small_string_tests.cpp
 	string_util_tests.cpp
+	texture_decode_tests.cpp
 )
 
 if(ARCH_X86)
