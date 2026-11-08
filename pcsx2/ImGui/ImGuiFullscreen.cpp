@@ -819,7 +819,7 @@ void ImGuiFullscreen::ForceKeyNavEnabled()
 {
 	ImGuiContext& g = *ImGui::GetCurrentContext();
 	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
-	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
+	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.NavInputSource;
 	g.NavCursorVisible = true;
 	g.NavHighlightItemUnderNav = true;
 }
