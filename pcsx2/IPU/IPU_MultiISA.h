@@ -152,6 +152,10 @@ MULTI_ISA_DEF(
 	// The step after yuv2rgb(): alpha thresholds and, with `sgn`, the RGB sign flip. Exposed for tests.
 	extern void ipu_csc_alpha_and_sign(macroblock_rgb32& rgb32, int sgn);
 
+	// The 8x8 inverse DCT the decoder uses (in place), and the scalar one it is held to. Exposed for the tests.
+	extern void ipu_idct_block(s16* block);
+	extern void ipu_idct_block_reference(s16* block);
+
 	void IPUWorker();
 )
 
