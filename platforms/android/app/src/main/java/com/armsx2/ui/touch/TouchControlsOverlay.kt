@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -1995,10 +1996,7 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
             alpha = opacity,
             modifier = Modifier
                 .fillMaxSize()
-                .offset(
-                    x = with(density) { baseShift.value.x.toDp() },
-                    y = with(density) { baseShift.value.y.toDp() },
-                ),
+                .stickShift { baseShift.value },
         )
         val thumbSizeDp = cfg.sizeDp * 0.62f
         Image(
@@ -2009,10 +2007,7 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
             alpha = opacity,
             modifier = Modifier
                 .align(Alignment.Center)
-                .offset(
-                    x = with(density) { (baseShift.value.x + thumb.value.x).toDp() },
-                    y = with(density) { (baseShift.value.y + thumb.value.y).toDp() },
-                )
+                .stickShift { baseShift.value + thumb.value }
                 .size(thumbSizeDp.dp),
         )
         // The extra analog button is no longer drawn here — it is its own widget (AnalogExtraWidget)
@@ -2022,6 +2017,15 @@ private fun StickWidget(cfg: TouchButtonCfg, edit: Boolean) {
         // handler ever sees it.
         if (edit) EditAdornment(cfg.id)
     }
+}
+
+/** Moves this element by [px], in whole pixels as a layout offset would. [px] is read in the layer
+ *  block and a translation is a property of the element's own render node, so a stick drag moves
+ *  it without recomposing the widget or re-recording the window's display list on every event. */
+private fun Modifier.stickShift(px: () -> Offset): Modifier = graphicsLayer {
+    val shift = px()
+    translationX = shift.x.roundToInt().toFloat()
+    translationY = shift.y.roundToInt().toFloat()
 }
 
 /* -------------------------------------------------------------------- */
