@@ -76,6 +76,10 @@ static bool GSCurrentPresenterOffsetsRead;
 // The API of the device that is open, kept apart from the device itself (which the GS thread creates and destroys)
 // so another thread can ask.
 static std::atomic<RenderAPI> GSCurrentRenderAPI{RenderAPI::None};
+// What the CPU thread last asked the device for, as given to GSopen() and GSSetVSyncMode(). GS thread only.
+// A device keeps the mode it fell back to, so GSreopen() uses these rather than asking the old device.
+static GSVSyncMode s_requested_vsync_mode = GSVSyncMode::Disabled;
+static bool s_requested_present_throttle = false;
 
 GSRendererType GSGetCurrentRenderer()
 {
@@ -534,8 +538,9 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 	{
 		// We need a new render window when changing APIs.
 		const bool recreate_window = (g_gs_device->GetRenderAPI() != GetAPIForRenderer(GSConfig.Renderer));
-		const GSVSyncMode vsync_mode = g_gs_device->GetVSyncMode();
-		const bool allow_present_throttle = g_gs_device->IsPresentThrottleAllowed();
+		// The new device gets the requested mode, not the old device's fallback result.
+		const GSVSyncMode vsync_mode = s_requested_vsync_mode;
+		const bool allow_present_throttle = s_requested_present_throttle;
 		CloseGSDevice(false);
 
 		if (!OpenGSDevice(new_renderer, false, recreate_window, vsync_mode, allow_present_throttle))
@@ -606,6 +611,8 @@ bool GSopen(const Pcsx2Config::GSOptions& config, GSRendererType renderer, u8* b
 	GSVSyncMode vsync_mode, bool allow_present_throttle)
 {
 	GSConfig = config;
+	s_requested_vsync_mode = vsync_mode;
+	s_requested_present_throttle = allow_present_throttle;
 
 	if (renderer == GSRendererType::Auto)
 		renderer = GSUtil::GetPreferredRenderer();
@@ -976,6 +983,9 @@ void GSSetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 	}};
 	Console.WriteLnFmt(Color_StrongCyan, "Setting vsync mode: {}{}", modes[static_cast<size_t>(mode)],
 		allow_present_throttle ? " (throttle allowed)" : "");
+
+	s_requested_vsync_mode = mode;
+	s_requested_present_throttle = allow_present_throttle;
 
 	DrainBackQueueBeforeDeviceMutation();
 
