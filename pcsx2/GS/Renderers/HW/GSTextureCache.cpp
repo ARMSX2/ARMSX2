@@ -9438,7 +9438,18 @@ GSTextureCache::PaletteMap::PaletteMap()
 
 std::shared_ptr<GSTextureCache::Palette> GSTextureCache::PaletteMap::LookupPalette(u16 pal, bool need_gs_texture)
 {
-	return LookupPalette(g_gs_renderer->m_mem.m_clut, pal, need_gs_texture);
+	const GSClut& clut = g_gs_renderer->m_mem.m_clut;
+	if (m_memo && m_memo_pal == pal && m_memo_serial == clut.GetReadSerial())
+	{
+		if (need_gs_texture && !m_memo->GetPaletteGSTexture())
+			m_memo->InitializeTexture();
+		return m_memo;
+	}
+	std::shared_ptr<Palette> palette = LookupPalette(clut, pal, need_gs_texture);
+	m_memo = palette;
+	m_memo_pal = pal;
+	m_memo_serial = clut.GetReadSerial();
+	return palette;
 }
 
 std::shared_ptr<GSTextureCache::Palette> GSTextureCache::PaletteMap::LookupPalette(const u32* clut, u16 pal, bool need_gs_texture)
@@ -9515,6 +9526,7 @@ std::shared_ptr<GSTextureCache::Palette> GSTextureCache::PaletteMap::LookupPalet
 
 void GSTextureCache::PaletteMap::Clear()
 {
+	m_memo.reset();
 	for (auto& map : m_maps)
 	{
 		map.clear(); // Clear all the nodes of the map, deleting Palette objects managed by shared pointers as they should be unused elsewhere

@@ -674,6 +674,9 @@ private:
 		m_tfx_fragment_shaders;
 	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
+	// The last lookup: consecutive draws often use the same pipeline, and a match skips the hash and bucket walk.
+	PipelineSelector m_last_tfx_selector = {};
+	VkPipeline m_last_tfx_pipeline = VK_NULL_HANDLE;
 
 	// Pipeline precompile. Each game's TFX pipeline keys are recorded in a pack in the game's cache
 	// directory as they are first created; when that game starts again, worker threads build the

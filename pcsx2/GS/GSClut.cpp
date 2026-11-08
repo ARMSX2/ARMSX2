@@ -117,6 +117,7 @@ void GSClut::Reset()
 	m_write.dirty = 1;
 	m_read = {};
 	m_read.dirty = true;
+	m_read_serial++;
 }
 
 bool GSClut::InvalidateRange(u32 start_block, u32 end_block, bool is_draw)
@@ -354,6 +355,7 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 		m_read.TEXA = TEXA;
 		m_read.dirty = false;
 		m_read.adirty = true;
+		m_read_serial++;
 
 		u16* clut = m_clut;
 

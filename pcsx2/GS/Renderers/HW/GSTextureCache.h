@@ -481,6 +481,11 @@ public:
 		// There is one PaletteKey per Palette, and the hashing and comparison of PaletteKey is done with custom operators PaletteKeyHash and PaletteKeyEqual.
 		std::array<std::unordered_map<PaletteKey, std::shared_ptr<Palette>, PaletteKeyHash, PaletteKeyEqual>, 2> m_maps;
 
+		// Last palette returned for the GS's own CLUT and its read serial, so an unchanged CLUT skips the hash.
+		std::shared_ptr<Palette> m_memo;
+		u32 m_memo_serial = 0;
+		u16 m_memo_pal = 0;
+
 	public:
 		PaletteMap();
 

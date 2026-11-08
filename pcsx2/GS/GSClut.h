@@ -44,6 +44,7 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 		bool IsDirty(const GIFRegTEX0& TEX0);
 		bool IsDirty(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
 	} m_read = {};
+	u32 m_read_serial = 0; // counts the rewrites of the expanded palette (m_buff32) in Read32
 
 	GSTexture* m_gpu_clut4 = nullptr;
 	GSTexture* m_gpu_clut8 = nullptr;
@@ -98,6 +99,9 @@ private:
 
 public:
 	GSClut(GSLocalMemory* mem);
+
+	/// Changes whenever Read32 rewrites the expanded palette; equal values mean the same contents.
+	u32 GetReadSerial() const { return m_read_serial; }
 	~GSClut();
 
 	__fi GSTexture* GetGPUTexture() const { return m_current_gpu_clut; }

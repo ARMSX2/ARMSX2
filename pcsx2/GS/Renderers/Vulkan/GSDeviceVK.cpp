@@ -7505,6 +7505,7 @@ void GSDeviceVK::DestroyResources()
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
+	m_last_tfx_pipeline = VK_NULL_HANDLE;
 	for (auto& it : m_tfx_pipelines)
 		vkDestroyPipeline(m_device, it.second, nullptr);
 	for (auto& it : m_tfx_fragment_shaders)
@@ -8031,9 +8032,16 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 
 VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 {
+	if (m_last_tfx_pipeline != VK_NULL_HANDLE && p == m_last_tfx_selector)
+		return m_last_tfx_pipeline;
+
 	const auto it = m_tfx_pipelines.find(p);
 	if (it != m_tfx_pipelines.end())
+	{
+		m_last_tfx_selector = p;
+		m_last_tfx_pipeline = it->second;
 		return it->second;
+	}
 
 	// A cache miss compiles SYNCHRONOUSLY on the GS thread, freezing the picture for as long as the
 	// driver takes. Normally invisible (a few ms, spread out), but fast-forward runs through content
