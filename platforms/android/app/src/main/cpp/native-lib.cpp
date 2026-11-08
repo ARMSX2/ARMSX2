@@ -407,6 +407,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
         Console.WriteLnFmt("{}", msg);
 }
 
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isEmulogOpen(JNIEnv *, jclass) {
+    // True while the core holds logs/emulog.txt open for writing. The frontend moves the log aside
+    // (BugReport's emulog backup) only while this is false: a file renamed under an open handle
+    // keeps receiving the log, and emulog.txt is not created again until the next reopen.
+    // GetFileLogDescriptor is one lock-free atomic load, safe from any thread.
+    return Log::GetFileLogDescriptor() >= 0 ? JNI_TRUE : JNI_FALSE;
+}
+
 // Defined in VMManager.cpp; see AndroidWriteStagedGameIni.
 extern void (*g_android_before_game_settings_load)(const std::string& serial, const std::string& path);
 static void AndroidWriteStagedGameIni(const std::string& serial, const std::string& path);
