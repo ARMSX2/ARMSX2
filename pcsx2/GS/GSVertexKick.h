@@ -1014,7 +1014,14 @@ namespace GSVertexKernels
 				// {S/Q, T/Q, Q, Q}, mask NaN lanes out of the min/max chains,
 				// record them in tnan.
 				const GSVector4 stq_raw = GSVector4::cast(m0);
+#ifdef ARCH_ARM64
+				// Only S/Q and T/Q are needed, so a two-lane FDIV does (same IEEE results, half the divider time).
+				const float32x4_t raw = stq_raw.v4s;
+				const float32x2_t q2 = vdup_laneq_f32(raw, 3);
+				const GSVector4 stq(vcombine_f32(vdiv_f32(vget_low_f32(raw), q2), q2));
+#else
 				const GSVector4 stq = (stq_raw / stq_raw.wwww()).xyww(stq_raw);
+#endif
 
 				const GSVector4i nan = GSVector4i::cast(stq != stq);
 				const GSVector4 keep = GSVector4::cast(~nan);
