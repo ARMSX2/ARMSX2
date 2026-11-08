@@ -242,7 +242,9 @@ add_subdirectory(3rdparty/imgui EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/cpuinfo EXCLUDE_FROM_ALL)
 disable_compiler_warnings_for_target(cpuinfo)
 add_subdirectory(3rdparty/libzip EXCLUDE_FROM_ALL)
-add_subdirectory(3rdparty/rcheevos EXCLUDE_FROM_ALL)
+# rcheevos comes from the repository root, like iOS: one copy for every platform, so the
+# Android build can't fall behind the RetroAchievements runtime the desktop builds ship.
+add_subdirectory("${ARMSX2_ROOT}/3rdparty/rcheevos" "${CMAKE_BINARY_DIR}/3rdparty/rcheevos" EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/rapidjson EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/discord-rpc EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/freesurround EXCLUDE_FROM_ALL)
