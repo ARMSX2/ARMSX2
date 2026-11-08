@@ -85,6 +85,27 @@ class ReportModelsTest {
     }
 
     @Test
+    fun theEmulogBackupIsListedRightAfterTheEmulogAndOnlyWhenThereIsOne() {
+        val names = { items: List<BundleItem> -> items.map { it.name } }
+        val with = listOf(BundleItem(ReportFiles.LOGCAT, 10), BundleItem(ReportFiles.EMULOG_PREVIOUS, 20), BundleItem(ReportFiles.EMULOG, 30))
+        assertEquals(
+            listOf(ReportFiles.REPORT, ReportFiles.EMULOG, ReportFiles.EMULOG_PREVIOUS, ReportFiles.LOGCAT),
+            names(ConsentItems.build(with, canCapture = false, savestate = false, gsDump = false)),
+        )
+        val without = listOf(BundleItem(ReportFiles.EMULOG, 30))
+        assertEquals(
+            listOf(ReportFiles.REPORT, ReportFiles.EMULOG),
+            names(ConsentItems.build(without, canCapture = false, savestate = false, gsDump = false)),
+        )
+    }
+
+    @Test
+    fun theEmulogBackupHasTheNameTheTriageToolsDownload() {
+        assertEquals("emulog-previous.txt.gz", ReportFiles.EMULOG_PREVIOUS)
+        assertTrue(ReportFiles.EMULOG_PREVIOUS in ReportFiles.ALL)
+    }
+
+    @Test
     fun theMeteredNoteThresholdIsTwentyFiveMegabytes() {
         assertEquals(25L * 1024 * 1024, ReportLimits.METERED_NOTE_BYTES)
     }

@@ -179,6 +179,8 @@ class ReportCollector(
         // current emulog and logcat belong to a different run and must not stand in for it.
         if (origin.crashDir == null) {
             step(ReportFiles.EMULOG) { writeEmulog() }
+            // With no backup there is nothing to say, so a missing one is not listed as failed.
+            if (previousEmulog()?.let { it.isFile && it.length() > 0 } == true) step(ReportFiles.EMULOG_PREVIOUS) { writePreviousEmulog() }
             step(ReportFiles.LOGCAT) {
                 val result = LogcatSnapshot.write(scrubber, File(dir, ReportFiles.LOGCAT))
                 if (!result.ok) throw IOException(result.error ?: "logcat failed")
@@ -189,6 +191,9 @@ class ReportCollector(
                 if (f.isFile && f.length() > 0) collected[name] = f.length()
                 else failed.putIfAbsent(name, Failure(CollectFailure.UNAVAILABLE, "not saved when the app restarted"))
             }
+            // The backup was copied in with the rest of the evidence, as it stood at the crash. A
+            // crash folder from before the backup existed has none; that is not a failure either.
+            File(dir, ReportFiles.EMULOG_PREVIOUS).takeIf { it.isFile && it.length() > 0 }?.let { collected[ReportFiles.EMULOG_PREVIOUS] = it.length() }
         }
         step(ReportFiles.SETTINGS) { writeSettings() }
         step(ReportFiles.JAVA_CRASHES, optional = true) { writeJavaCrashes() }
@@ -466,7 +471,8 @@ class ReportCollector(
     /**
      * Takes the emulog and logcat again now that capture is over, so that anything that went wrong
      * while capturing is in them. The first copies stay if a new one cannot be made. A crash
-     * report's logs are the previous run's and are not touched.
+     * report's logs are the previous run's and are not touched. The emulog backup is not taken
+     * again: nothing the capture does can change it.
      */
     private fun refreshLogs() {
         if (origin.crashDir != null) return
@@ -494,6 +500,15 @@ class ReportCollector(
     }
 
     private fun writeEmulog() = writeEmulogTo(File(dir, ReportFiles.EMULOG))
+
+    /** The emulog backup, or null if there is no data folder. It does not change while a report is made: only a launch or a game start moves it. */
+    private fun previousEmulog(): File? =
+        MainActivityRuntime.dataRootOrNull()?.let { LogBackup.previous(File(it, "logs")) }
+
+    private fun writePreviousEmulog() {
+        val src = previousEmulog() ?: throw IOException("the data folder is not available")
+        LogBackup.writeScrubbedGz(scrubber, src, File(dir, ReportFiles.EMULOG_PREVIOUS))
+    }
 
     private fun writeEmulogTo(dest: File) {
         val root = MainActivityRuntime.dataRootOrNull() ?: throw IOException("the data folder is not available")

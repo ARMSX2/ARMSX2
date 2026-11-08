@@ -2324,6 +2324,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "bugreport.item.report" to "Report summary (app version, game, device, driver)",
     "bugreport.item.system" to "GPU and driver report (device and driver details)",
     "bugreport.item.emulog" to "Emulator log",
+    "bugreport.item.emulogPrevious" to "Emulator log of the earlier run (backup)",
     "bugreport.item.logcat" to "Android log of this app",
     "bugreport.item.settings" to "Settings (global and this game's)",
     "bugreport.item.javacrashes" to "Recent app crash logs",
