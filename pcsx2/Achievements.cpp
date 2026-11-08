@@ -833,23 +833,33 @@ u32 Achievements::GetExposedEEMemorySize()
 
 bool Achievements::CreateClient(rc_client_t** client, std::unique_ptr<HTTPDownloader>* http, const std::string& custom_host)
 {
-	*http = HTTPDownloader::Create(Host::GetHTTPUserAgent());
+	rc_client_t* new_client = rc_client_create(ClientReadMemory, ClientServerCall);
+	if (!new_client)
+	{
+		Host::ReportErrorAsync("Achievements Error", "rc_client_create() failed, cannot use achievements");
+		return false;
+	}
+
+	// Append the rcheevos clause ("rcheevos/x.y") so the server can see which runtime
+	// version every request comes from, as the rc_client integration guide recommends.
+	std::string user_agent = Host::GetHTTPUserAgent();
+	char rc_user_agent_clause[128];
+	if (rc_client_get_user_agent_clause(new_client, rc_user_agent_clause, std::size(rc_user_agent_clause)) > 0)
+	{
+		user_agent += ' ';
+		user_agent += rc_user_agent_clause;
+	}
+
+	*http = HTTPDownloader::Create(std::move(user_agent));
 	if (!*http)
 	{
 		Host::ReportErrorAsync("Achievements Error", "Failed to create HTTPDownloader, cannot use achievements");
+		rc_client_destroy(new_client);
 		return false;
 	}
 
 	(*http)->SetTimeout(SERVER_CALL_TIMEOUT);
 	(*http)->SetMaxActiveRequests(MAX_CONCURRENT_SERVER_CALLS);
-
-	rc_client_t* new_client = rc_client_create(ClientReadMemory, ClientServerCall);
-	if (!new_client)
-	{
-		Host::ReportErrorAsync("Achievements Error", "rc_client_create() failed, cannot use achievements");
-		http->reset();
-		return false;
-	}
 
 #ifdef PCSX2_DEVBUILD
 	rc_client_enable_logging(new_client, RC_CLIENT_LOG_LEVEL_VERBOSE, ClientMessageCallback);
