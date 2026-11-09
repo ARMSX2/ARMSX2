@@ -19,6 +19,7 @@
 
 #if defined(__linux__)
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 namespace
@@ -26,7 +27,10 @@ namespace
 	size_t ResidentPages(const void* table)
 	{
 #if defined(__linux__)
-		std::vector<unsigned char> pages(mVUJumpTable::kBytes / __pagesize);
+		// mincore() reports one byte per page of the kernel's, which can be smaller than __pagesize (a 16K build on a
+		// 4K-page kernel).
+		const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+		std::vector<unsigned char> pages((mVUJumpTable::kBytes + page - 1) / page);
 		EXPECT_EQ(mincore(const_cast<void*>(table), mVUJumpTable::kBytes, pages.data()), 0);
 		size_t resident = 0;
 		for (unsigned char p : pages)

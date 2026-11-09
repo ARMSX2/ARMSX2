@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 #endif
 
 namespace
@@ -135,7 +136,8 @@ TEST(BlockLut, OnlyWrittenPagesCostMemory)
 		written++;
 	});
 	const size_t dirty = PrivateDirtyBytes(lut.data(), bytes);
-	EXPECT_GE(dirty, written * __pagesize);
+	// A write dirties one page of the kernel's, which can be smaller than __pagesize (a 16K build on a 4K-page kernel).
+	EXPECT_GE(dirty, written * static_cast<size_t>(sysconf(_SC_PAGESIZE)));
 	EXPECT_LT(dirty, 1u << 20) << "a written entry costs its page, not the table";
 
 	lut.Reset(STUB_A);
