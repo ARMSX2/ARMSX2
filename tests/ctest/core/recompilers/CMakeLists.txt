@@ -167,6 +167,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_lane_fmul_fold_tests.cpp
 	mvu_abi_digest_tests.cpp
 	mvu_persist_roundtrip_tests.cpp
+	mvu_jump_table_tests.cpp
 	mvu_persist_relocation_tests.cpp
 	mvu_block_sharing_cycles_tests.cpp
 	mvu_progcache_disk_tests.cpp

@@ -1124,7 +1124,7 @@ static void vuAotEmitJumpTail(u32 vu, void* block, const u8* endKey)
 	microBlock* blk = static_cast<microBlock*>(block);
 	std::memcpy(&blk->pStateEnd, endKey, sizeof(microRegInfo));
 	if (!blk->jumpCache)
-		blk->jumpCache = new microJumpCache[mProgSize / 2];
+		blk->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 
 	mVUldrField(mVU, RWARG1, &mVU.branch);
 	if (doJumpCaching)

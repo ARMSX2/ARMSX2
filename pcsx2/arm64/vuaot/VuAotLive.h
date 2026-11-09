@@ -312,5 +312,15 @@ namespace mvu_test_hooks
 	void GetVu1InstructionCount(u64& instructions, u64& dispatches);
 	// VU1 dispatches that ended on a cycle-budget break, all runs of a test build.
 	u64 GetVu1Stops();
+	// The jump tables of VU1's programs: those of the blocks in their graphs (live) and of the blocks a
+	// tier-up has set aside, and how many bytes of each the host has resident (0 where it cannot say).
+	struct JumpTableUsage
+	{
+		u64 liveTables = 0, liveResident = 0, asideTables = 0, asideResident = 0;
+		// Bytes in the pages that hold an entry. The tier's harvest reads every entry of a live table, and a read
+		// maps the host's shared zero page, which `Resident` counts and the process does not pay for.
+		u64 liveWritten = 0, asideWritten = 0;
+	};
+	JumpTableUsage GetJumpTableUsage();
 } // namespace mvu_test_hooks
 #endif
