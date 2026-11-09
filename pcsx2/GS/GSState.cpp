@@ -354,6 +354,9 @@ GSFrontState::GSFrontState(GSState* back)
 	SetCullGrid(EngineCullGrid());
 	// The front splits draws for the back's engine, so it leaves unsplit what that engine does.
 	m_unsplit_stencil_counter = back->m_unsplit_stencil_counter;
+	// The front parses for the back's engine, so it keeps Q the way that engine reads it.
+	m_keep_gif_q = back->m_keep_gif_q;
+	ResetHandlers();
 }
 
 GSFrontState::~GSFrontState()
@@ -1371,7 +1374,9 @@ void GSState::ResetHandlers()
 
 	m_fpGIFPackedRegHandlers[GIF_REG_PRIM] = (GIFPackedRegHandler)(GIFRegHandler)&GSState::GIFRegHandlerPRIM;
 	m_fpGIFPackedRegHandlers[GIF_REG_RGBA] = &GSState::GIFPackedRegHandlerRGBA;
-	m_fpGIFPackedRegHandlers[GIF_REG_STQ] = &GSState::GIFPackedRegHandlerSTQ;
+	m_parse_consts = GSVertexKernels::MakePackedParseConsts(m_keep_gif_q);
+
+	m_fpGIFPackedRegHandlers[GIF_REG_STQ] = m_keep_gif_q ? &GSState::GIFPackedRegHandlerSTQ<true> : &GSState::GIFPackedRegHandlerSTQ<false>;
 	m_fpGIFPackedRegHandlers[GIF_REG_UV] = GSConfig.UserHacks_ForceEvenSpritePosition ? &GSState::GIFPackedRegHandlerUV_Hack : &GSState::GIFPackedRegHandlerUV;
 	m_fpGIFPackedRegHandlers[GIF_REG_TEX0_1] = (GIFPackedRegHandler)(GIFRegHandler)&GSState::GIFRegHandlerTEX0<0>;
 	m_fpGIFPackedRegHandlers[GIF_REG_TEX0_2] = (GIFPackedRegHandler)(GIFRegHandler)&GSState::GIFRegHandlerTEX0<1>;
@@ -1398,8 +1403,8 @@ void GSState::ResetHandlers()
 	std::fill(std::begin(m_fpGIFRegHandlers), std::end(m_fpGIFRegHandlers), &GSState::GIFRegHandlerNull);
 
 	m_fpGIFRegHandlers[GIF_A_D_REG_PRIM] = &GSState::GIFRegHandlerPRIM;
-	m_fpGIFRegHandlers[GIF_A_D_REG_RGBAQ] = &GSState::GIFRegHandlerRGBAQ;
-	m_fpGIFRegHandlers[GIF_A_D_REG_RGBAQ + 0x10] = &GSState::GIFRegHandlerRGBAQ;
+	m_fpGIFRegHandlers[GIF_A_D_REG_RGBAQ] = m_keep_gif_q ? &GSState::GIFRegHandlerRGBAQ<true> : &GSState::GIFRegHandlerRGBAQ<false>;
+	m_fpGIFRegHandlers[GIF_A_D_REG_RGBAQ + 0x10] = m_fpGIFRegHandlers[GIF_A_D_REG_RGBAQ];
 	m_fpGIFRegHandlers[GIF_A_D_REG_ST] = &GSState::GIFRegHandlerST;
 	m_fpGIFRegHandlers[GIF_A_D_REG_UV] = GSConfig.UserHacks_ForceEvenSpritePosition ? &GSState::GIFRegHandlerUV_Hack : &GSState::GIFRegHandlerUV;
 	m_fpGIFRegHandlers[GIF_A_D_REG_TEX0_1] = &GSState::GIFRegHandlerTEX0<0>;
@@ -2135,6 +2140,7 @@ void GSState::GIFPackedRegHandlerRGBA(const GIFPackedReg* RESTRICT r)
 	m_v.RGBAQ.Q = m_q;
 }
 
+template <bool KeepGifQ>
 void GSState::GIFPackedRegHandlerSTQ(const GIFPackedReg* RESTRICT r)
 {
 	const GSVector4i st = GSVector4i::loadl(&r->U64[0]);
@@ -2142,13 +2148,16 @@ void GSState::GIFPackedRegHandlerSTQ(const GIFPackedReg* RESTRICT r)
 	GSVector4i q = GSVector4i::loadl(&r->U64[1]);
 	GSVector4i::storel(&m_v.ST, st);
 
-	// Vexx (character shadow)
-	// q = 0 (st also 0 on the first 16 vertices), setting it to 1.0f to avoid div by zero later
-	q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+	if constexpr (!KeepGifQ)
+	{
+		// Vexx (character shadow)
+		// q = 0 (st also 0 on the first 16 vertices), setting it to 1.0f to avoid div by zero later
+		q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
 
-	// Suikoden 4
-	// creates some nan for Q. Let's avoid undefined behavior (See GIFRegHandlerRGBAQ)
-	q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+		// Suikoden 4
+		// creates some nan for Q. Let's avoid undefined behavior (See GIFRegHandlerRGBAQ)
+		q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	}
 
 	GSVector4::store(&m_q, GSVector4::cast(q));
 
@@ -2288,9 +2297,9 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 	if constexpr (GSVertexKernels::LayoutIsContiguousTriple(layout))
 	{
 		if constexpr (xyzf2)
-			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m_parse_consts, m0, m1);
 		else
-			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m_parse_consts, m0, m1);
 	}
 	else
 	{
@@ -2301,7 +2310,7 @@ __noinline void GSState::KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u6
 		u64 uvf;
 		std::memcpy(&uvf, &m_v.UV, sizeof(uvf));
 		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
-		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvf, carry, m0, m1);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvf, carry, m_parse_consts, m0, m1);
 	}
 	ApplyDepthClampMode(depth_clamp, m1.U32[1]);
 
@@ -2337,20 +2346,20 @@ __fi void GSState::KickPackedOneStaged(const GIFPackedReg* RESTRICT rv)
 	GSVector4i m0, m1;
 	if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
 	{
-		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, m_v.UV, m0, m1);
+		GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, m_v.UV, m_parse_consts, m0, m1);
 	}
 	else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
 	{
 		u64 uvfog;
 		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
-		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+		GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m_parse_consts, m0, m1);
 	}
 	else
 	{
 		u64 uvfog;
 		std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
 		const GSVector4i carry = GSVertexKernels::MakeLayoutCarry(layout, GSVector4i(m_v.m[0]), m_q);
-		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
+		GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m_parse_consts, m0, m1);
 	}
 
 	m_v.m[0] = m0;
@@ -2411,11 +2420,11 @@ void GSState::KickPackedBatchLegacy(const GIFPackedReg* RESTRICT r, u32 count)
 		const GIFPackedReg* RESTRICT rv = r + i * stride;
 
 		if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZF2)
-			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(rv, static_cast<u32>(uvfog), m_parse_consts, m0, m1);
 		else if constexpr (layout == GSVertexKernels::PackedLayout::TripleXYZ2)
-			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(rv, uvfog, m_parse_consts, m0, m1);
 		else
-			GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m0, m1);
+			GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, m_packed_layout, uvfog, carry, m_parse_consts, m0, m1);
 		ApplyDepthClampMode(depth_clamp, m1.U32[1]);
 
 		if constexpr (xyzf2)
@@ -2455,6 +2464,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 	// against an environment that no longer exists.
 	GSVertexKickKernel::Invariants inv;
 	inv.uvfog = uvfog;
+	inv.keep_gif_q = m_keep_gif_q;
 	// The two clamp masks are read only by the depth-clamp instantiation of pass
 	// one, so on the default path (no title in the corpus enables the hack) they
 	// are two dead stores a call.
@@ -2676,7 +2686,7 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 		while (r < r_end)
 		{
 			GSVector4i m0, m1;
-			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m_parse_consts, m0, m1);
 
 			m_v.m[0] = m0;
 			m_v.m[1] = m1;
@@ -2705,7 +2715,7 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZF2(const GIFPackedReg* RESTRICT r, u3
 			while (r < r_end)
 			{
 				GSVector4i m0, m1;
-				GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m0, m1);
+				GSVertexKernels::ParsePackedSTQRGBAXYZF2_Fast(r, m_v.UV, m_parse_consts, m0, m1);
 
 				m_v.m[0] = m0;
 				m_v.m[1] = m1;
@@ -2770,7 +2780,7 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 			std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
 
 			GSVector4i m0, m1;
-			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
+			GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m_parse_consts, m0, m1);
 
 			m_v.m[0] = m0;
 			m_v.m[1] = m1;
@@ -2802,7 +2812,7 @@ void GSState::GIFPackedRegHandlerSTQRGBAXYZ2(const GIFPackedReg* RESTRICT r, u32
 				std::memcpy(&uvfog, &m_v.UV, sizeof(uvfog));
 
 				GSVector4i m0, m1;
-				GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m0, m1);
+				GSVertexKernels::ParsePackedSTQRGBAXYZ2_Fast(r, uvfog, m_parse_consts, m0, m1);
 
 				m_v.m[0] = m0;
 				m_v.m[1] = m1;
@@ -2854,8 +2864,11 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r, u32 size)
 void GSState::StoreLatchedQ(const GIFPackedReg* RESTRICT stq)
 {
 	GSVector4i q = GSVector4i::loadl(&stq->U64[1]);
-	q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
-	q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	if (!m_keep_gif_q)
+	{
+		q = q.blend8(GSVector4i::cast(GSVector4(FLT_MIN)), q == GSVector4i::zero());
+		q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	}
 	GSVector4::store(&m_q, GSVector4::cast(q));
 }
 
@@ -3033,16 +3046,22 @@ void GSState::GIFRegHandlerPRIM(const GIFReg* RESTRICT r)
 	ApplyPRIM(r->PRIM.U32[0]);
 }
 
+template <bool KeepGifQ>
 void GSState::GIFRegHandlerRGBAQ(const GIFReg* RESTRICT r)
 {
 	const GSVector4i rgbaq = (GSVector4i)r->RGBAQ;
 
-	GSVector4i q = rgbaq.blend8(GSVector4i::cast(GSVector4::m_one), rgbaq == GSVector4i::zero()).yyyy(); // see GIFPackedRegHandlerSTQ
+	GSVector4i q = rgbaq.yyyy();
 
-	// Silent Hill output a nan in Q to emulate the flash light. Unfortunately it
-	// breaks GSVertexTrace code that rely on min/max.
+	if constexpr (!KeepGifQ)
+	{
+		q = rgbaq.blend8(GSVector4i::cast(GSVector4::m_one), rgbaq == GSVector4i::zero()).yyyy(); // see GIFPackedRegHandlerSTQ
 
-	q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+		// Silent Hill output a nan in Q to emulate the flash light. Unfortunately it
+		// breaks GSVertexTrace code that rely on min/max.
+
+		q = GSVector4i::cast(GSVector4::cast(q).replace_nan(GSVector4::m_max));
+	}
 
 	m_v.RGBAQ = rgbaq.upl32(q);
 }

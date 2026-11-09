@@ -120,6 +120,9 @@ namespace GSVertexKickKernel
 		// per-prim decision: without draw buffering the heuristic that reads the
 		// rect returns at its first line and the accumulation is dead work.
 		bool track_native_rect;
+		// Leave a zero or NaN-looking Q as the GIF wrote it (see MakePackedParseConsts).
+		// Read once per chunk, when the parse constants are built.
+		bool keep_gif_q;
 	};
 
 	// The buffer cursor is NOT marshalled. Every field of it -- head, tail, next,
@@ -325,7 +328,7 @@ namespace GSVertexKickKernel
 		// Hoisted out of the loop on purpose: left inside the parse they are
 		// function-local statics that clang rematerializes from the frame every
 		// iteration.
-		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts();
+		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
 		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds, band_shift, banded, band_bias_x, band_bias_y);
 #endif
 
