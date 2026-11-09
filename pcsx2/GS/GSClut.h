@@ -45,6 +45,8 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 		bool IsDirty(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
 	} m_read = {};
 
+	u64 m_read_generation = 0; ///< See ReadGeneration().
+
 	GSTexture* m_gpu_clut4 = nullptr;
 	GSTexture* m_gpu_clut8 = nullptr;
 	GSTexture* m_current_gpu_clut = nullptr;
@@ -127,6 +129,9 @@ public:
 	void WriteDecision(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void WriteLoad(const GIFRegTEX0& TEX0, const GIFRegTEXCLUT& TEXCLUT);
 	void Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA);
+	/// Counts the times Read32 rebuilt the expanded palette. Two reads that see the same value see the
+	/// same entries, so a consumer that keys on the expanded palette hashes it once per value.
+	u64 ReadGeneration() const { return m_read_generation; }
 
 	/// Whether the GPU palette road (UserHacks_GPUTargetCLUTMode) reproduces the CPU
 	/// expansion for this palette configuration; Read32 refuses it when it does not, so

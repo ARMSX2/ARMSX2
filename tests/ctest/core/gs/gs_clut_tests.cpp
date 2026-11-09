@@ -314,6 +314,35 @@ TEST_F(GSClutTest, GetCLUTCSMReportsTheLoadsAddressingMode)
 	EXPECT_EQ(m_clut->GetCLUTCSM(), 0u);
 }
 
+// The read generation names the contents of the expanded palette: it moves exactly when Read32
+// rebuilds the buffer, so a reader that saw the same generation before sees the same entries. The
+// burst memo fingerprints the palette once per generation instead of once per draw.
+TEST_F(GSClutTest, ReadGenerationMovesExactlyWhenTheExpansionIsRebuilt)
+{
+	SeedPalette(PSMCT32, 0);
+	const u64 start = m_clut->ReadGeneration();
+	Load(ClutTEX0(0, PSMCT32, 0, 1, PSMT8));
+	const u64 loaded = m_clut->ReadGeneration();
+	EXPECT_NE(loaded, start);
+	const std::array<u32, 256> first = Snapshot();
+
+	// The same palette configuration again: nothing is rebuilt, and the entries are the ones read before.
+	m_clut->Read32(ClutTEX0(0, PSMCT32, 0, 0, PSMT8), m_texa);
+	EXPECT_EQ(m_clut->ReadGeneration(), loaded);
+	EXPECT_EQ(Snapshot(), first);
+
+	// Another CSA expands another part of the CLUT.
+	m_clut->Read32(ClutTEX0(0, PSMCT32, 1, 0, PSMT8), m_texa);
+	const u64 other_csa = m_clut->ReadGeneration();
+	EXPECT_NE(other_csa, loaded);
+
+	// A load from local memory dirties the read side, so the next read rebuilds even with the same
+	// configuration as the last.
+	SeedPalette(PSMCT32, 0x40);
+	Load(ClutTEX0(0x40, PSMCT32, 1, 1, PSMT8));
+	EXPECT_NE(m_clut->ReadGeneration(), other_csa);
+}
+
 // ---------------------------------------------------------------------------
 // The GPU palette road's refusal predicate.
 // ---------------------------------------------------------------------------
