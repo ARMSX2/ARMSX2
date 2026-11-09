@@ -723,28 +723,13 @@ void GSDrawScanlineCodeGenerator::TestZ(const VRegister& temp1, const VRegister&
 		{
 			zs = _temp_z0;
 		}
-		else if (m_sel.zoverflow)
-		{
-			// GSVector4i zl = z0.add64(VectorF::m_xc1e00000000fffff).f64toi32();
-			// GSVector4i zh = z1.add64(VectorF::m_xc1e00000000fffff).f64toi32();
-
-			armAsm->Movi(temp1.V2D(), GSVector4::m_xc1e00000000fffff.U64[0]);
-			armAsm->Fadd(_temp_z0.V2D(), _temp_z0.V2D(), temp1.V2D());
-			armAsm->Fadd(_temp_z1.V2D(), _temp_z1.V2D(), temp1.V2D());
-
-			// zs = GSVector8i(zl, zh);
-			armAsm->Fcvtzs(v0.V2D(), _temp_z0.V2D());
-			armAsm->Fcvtzs(temp1.V2D(), _temp_z1.V2D());
-			armAsm->Movi(_vscratch.V4S(), 0x80000000);
-			armAsm->Uzp1(v0.V4S(), v0.V4S(), temp1.V4S());
-
-			// zs += VectorI::x80000000();
-			armAsm->Add(v0.V4S(), v0.V4S(), _vscratch.V4S());
-			zs = v0;
-		}
 		else
 		{
 			// zs = GSVector8i(z0.f64toi32(), z1.f64toi32());
+			// Converting to 64 bits and keeping the low half is exact for every 32-bit z. x86's zoverflow path
+			// exists because it has no such conversion, and the selector never sets it here: NEON's float to
+			// int conversion saturates rather than returning 0x80000000.
+			pxAssert(!m_sel.zoverflow);
 
 			armAsm->Fcvtzs(v0.V2D(), _temp_z0.V2D());
 			armAsm->Fcvtzs(temp1.V2D(), _temp_z1.V2D());
