@@ -327,7 +327,12 @@ void main()
 	bool is_right = (vid & 1u) != 0u;
 	// Lines reach here as index pairs (a, a + 1) whatever the provoking vertex is; a provoking-first
 	// device gets its flat colours fixed on the CPU, not its indices reordered.
-	uint vid_other = is_bottom ? vid_base - 1 : vid_base + 1;
+	// vid_base counts from the draw's first vertex, BaseVertex is where that sits in the ring. No index
+	// names the bottom corner of vertex 0 or the top corner of the last vertex, but a GPU that shades
+	// every slot of the index range runs them, so neither read may leave the buffer: vertex 0 reads
+	// itself (vid_base - 1 would wrap to 2^32 - 1 when BaseVertex is 0), and the host leaves one vertex
+	// of ring slack after the draw for the last one.
+	uint vid_other = is_bottom ? max(vid_base, 1u) - 1u : vid_base + 1u;
 
 	vtx = load_vertex(vid_base);
 	ProcessedVertex other = load_vertex(vid_other);

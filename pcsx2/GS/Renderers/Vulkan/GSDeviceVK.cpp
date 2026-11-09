@@ -5665,6 +5665,9 @@ bool GSDeviceVK::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 void GSDeviceVK::IASetVertexBuffer(const void* vertex, size_t stride, size_t count, size_t align_multiplier)
 {
 	const u32 size = static_cast<u32>(stride) * static_cast<u32>(count);
+	// ReserveMemory sets aside size + alignment, and alignment is at least one vertex here, so the slot
+	// just past the draw's last vertex is inside the ring. The line-expansion vertex shader reads it
+	// (tfx.glsl, vid_other); keep that slack if this reservation changes.
 	if (!m_vertex_stream_buffer.ReserveMemory(size, static_cast<u32>(stride) * align_multiplier))
 	{
 		// While presenting, the swap-chain pass isn't tracked by m_current_render_pass, so the ordinary
