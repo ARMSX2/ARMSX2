@@ -752,6 +752,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSDrawScanline.h
 	GS/Renderers/SW/GSNewCodeGenerator.h
 	GS/Renderers/SW/GSPerspectivePlane.h
+	GS/Renderers/SW/GSStqExtremes.h
 	GS/Renderers/SW/GSRasterizer.h
 	GS/Renderers/SW/GSRendererSW.h
 	GS/Renderers/SW/GSScanlineEnvironment.h
