@@ -195,7 +195,7 @@ bool GSRunsVK::Init()
 			std::setvbuf(m_log, s_buf, _IOFBF, sizeof(s_buf));
 			std::fprintf(m_log, "# runs split=%s\n# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
 			                    "end_state end_target end_split end_pass end_other end_ring end_unmergeable end_textures end_compiling\n"
-			                    "# S pass spec variant draws textures\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
+			                    "# S pass spec variant draws textures changes(per state, draw to draw)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
 			                    "thread takes it)\n",
 				g_gs_measurement_overrides.runs_split_dear ? "dear" : "none");
 		}
@@ -305,6 +305,19 @@ void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal w
 	m_refusals[{static_cast<u32>(why), detail}]++;
 }
 
+u32 GSRunsVK::SplitStates(u32 flags) const
+{
+	const u32 mask = g_gs_measurement_overrides.runs_split_mask;
+	u32 out = 0;
+	for (u32 i = 0; mask && i < GSRunsPolicy::NUM_STATES; i++)
+	{
+		if ((mask >> i & 1) && (m_run.states.seen >> i & 1) && GSRunsPolicy::Field(flags, i) != m_run.states.value[i] &&
+			!((GSRunsPolicy::STATES_TEXTURED_ONLY >> i & 1) && !GSRunsPolicy::Textured(flags)))
+			out |= 1u << i;
+	}
+	return out;
+}
+
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
@@ -316,7 +329,8 @@ bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 	       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
 	       std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) == 0 && config.ps.rta_correction == r.rta &&
 	       config.ps.zfloor == r.zfloor && GSRunsPolicy::StrictKey(m_draw.flags, r.rta) == r.strict &&
-	       (!g_gs_measurement_overrides.runs_split_dear || GSRunsPolicy::Dear(m_draw.flags) == r.dear);
+	       (!g_gs_measurement_overrides.runs_split_dear || GSRunsPolicy::Dear(m_draw.flags) == r.dear) &&
+	       !SplitStates(m_draw.flags);
 }
 
 GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
@@ -326,6 +340,8 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
 	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict)
 		return END_SPLIT;
 	if (g_gs_measurement_overrides.runs_split_dear && GSRunsPolicy::Dear(m_draw.flags) != m_run.dear)
+		return END_SPLIT;
+	if (SplitStates(m_draw.flags))
 		return END_SPLIT;
 	return END_STATE;
 }
@@ -525,6 +541,12 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 			r.idx_count = 0;
 			r.vbuf = vring.GetBuffer();
 		}
+		if (m_log && r.ndraws != 0)
+		{
+			for (u32 i = 0; i < GSRunsPolicy::NUM_STATES; i++)
+				r.changes[i] += GSRunsPolicy::Field(d.flags, i) != GSRunsPolicy::Field(r.last_flags, i);
+		}
+		r.last_flags = d.flags;
 		r.ndraws++;
 		r.idx_count += nidx;
 		r.ways |= 1u << d.way;
@@ -756,8 +778,9 @@ void GSRunsVK::Flush(Why why)
 	const VkDescriptorSet set1 = WriteTextureSet();
 	if (m_log)
 	{
-		std::fprintf(m_log, "S %llu %08x %u %u %zu\n", static_cast<unsigned long long>(dev->m_render_pass_serial), SpecKey(),
-			variant, r.ndraws, m_textures.size());
+		std::fprintf(m_log, "S %llu %08x %u %u %zu %u,%u,%u,%u,%u,%u,%u,%u\n", static_cast<unsigned long long>(dev->m_render_pass_serial),
+			SpecKey(), variant, r.ndraws, m_textures.size(), r.changes[0], r.changes[1], r.changes[2], r.changes[3], r.changes[4],
+			r.changes[5], r.changes[6], r.changes[7]);
 	}
 	g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);

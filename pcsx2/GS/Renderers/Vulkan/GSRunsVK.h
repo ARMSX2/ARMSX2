@@ -105,6 +105,8 @@ private:
 		u32 ways = 0;
 		u32 dear = 0;
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
+		u32 last_flags = 0;
+		std::array<u32, GSRunsPolicy::NUM_STATES> changes{}; ///< -runs-log: how often each state changed between draws
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
 	};
@@ -122,6 +124,8 @@ private:
 	};
 
 	bool Matches(const GSHWDrawConfig& config) const;
+	/// The -runs-split-mask states whose value in flags differs from the open run's.
+	u32 SplitStates(u32 flags) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
 	Why EndReason(const GSHWDrawConfig& config) const;
 	u32 SpecKey() const;

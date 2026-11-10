@@ -81,6 +81,10 @@ struct GSMeasurementOverrides
 	/// from the run's. Default dear.
 	bool runs_split_dear = true;
 
+	/// -runs-split-mask M: a run also ends where any state in M (bits as -runs-read-mask) changes from one draw to the
+	/// next, so those states are constants of every run's program. For pricing a split rule state by state.
+	u32 runs_split_mask = 0;
+
 	/// -runs-nofill: each run's host draw is scissored to one pixel, so a no-fill arm prices a pass without its fill.
 	bool runs_nofill = false;
 
