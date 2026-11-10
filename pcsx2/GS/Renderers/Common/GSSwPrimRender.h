@@ -63,6 +63,9 @@ struct GSSwPrimRenderState
 	/// The last draw Run() took was drawn by one of the copies rather than the rasterizer, so it marked the
 	/// frame's pages alone and not the depth buffer's. The burst memo replays the marks from it.
 	bool last_draw_copied = false;
+	/// ... and the copy was one of the two block copies (the 32-bit texel copy or the palette block copy), the
+	/// cheapest the road has: the burst memo does not record what they draw (GSRendererHWBurstMemo.cpp).
+	bool last_draw_block_copy = false;
 };
 
 // The rectangle the scanline core walks and the caller accounts for in guest memory. One

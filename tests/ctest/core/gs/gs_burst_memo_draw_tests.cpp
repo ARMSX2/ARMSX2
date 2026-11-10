@@ -365,6 +365,45 @@ TEST_F(GSBurstMemoDraw, APalettedBurstIsSkippedWhenItsPaletteRepeats)
 	EXPECT_EQ(on.stats.hit_draws, 4u);
 }
 
+// A shape the road keeps drawing with a block copy stops being recorded: after enough of them ran in a row, a
+// burst that repeats from the same inputs is not skipped. The masked texel copy below is not a block copy, and a
+// burst of it is recorded however long it runs.
+TEST_F(GSBurstMemoDraw, AShapeTheRoadKeepsBlockCopyingIsNotRecorded)
+{
+	const std::vector<u8> vm = RandomMemory(11);
+	std::vector<Step> script;
+	// Five bursts, each onto a destination holding other bytes, so every draw runs: 20 palette block copies of the
+	// same shape in a row.
+	for (u32 i = 0; i < 5; i++)
+	{
+		Step other = RestoreDestination();
+		other.seed = 100 + i;
+		script = Concat({script, {other}, Burst(PSMT8), {Step{Step::Consume}}});
+	}
+	script = Concat({script, {RestoreDestination()}, Burst(PSMT8), {Step{Step::Consume}}, {RestoreDestination()}, Burst(PSMT8),
+		{Step{Step::Consume}}});
+	const Result off = Run(script, vm, false);
+	const Result on = Run(script, vm, true);
+	ExpectSameAsMemoOff(off, on);
+	EXPECT_GE(on.stats.not_recorded_block_copy, 4u);
+	EXPECT_EQ(on.stats.hit_draws, 0u);
+
+	std::vector<Step> masked;
+	for (u32 i = 0; i < 5; i++)
+	{
+		Step other = RestoreDestination(PSMCT16);
+		other.seed = 100 + i;
+		masked = Concat({masked, {other}, Burst(PSMT8, PSMCT16), {Step{Step::Consume}}});
+	}
+	masked = Concat({masked, {RestoreDestination(PSMCT16)}, Burst(PSMT8, PSMCT16), {Step{Step::Consume}}, {RestoreDestination(PSMCT16)},
+		Burst(PSMT8, PSMCT16), {Step{Step::Consume}}});
+	const Result moff = Run(masked, vm, false);
+	const Result mon = Run(masked, vm, true);
+	ExpectSameAsMemoOff(moff, mon);
+	EXPECT_EQ(mon.stats.not_recorded_block_copy, 0u);
+	EXPECT_EQ(mon.stats.hit_draws, 4u);
+}
+
 // A new palette loaded between the bursts: nothing is skipped.
 TEST_F(GSBurstMemoDraw, ANewPaletteRunsTheCopies)
 {

@@ -291,6 +291,7 @@ namespace GSBurstMemo
 		u64 stop_write = 0; ///< ... something else wrote a block the burst had written
 		u64 stop_state = 0; ///< ... the renderer was in a state the copy road would leave early
 		u64 not_recorded_target = 0; ///< copy-road draws the memo does not take: their verdict weighed a target
+		u64 not_recorded_block_copy = 0; ///< draws passed over: their shape is one the road keeps drawing with a block copy
 		u64 installs = 0;
 		u64 packet_checks = 0; ///< recorded draws compared with a draw in hand
 		u64 key_checks = 0; ///< recorded draws whose block and palette keys were checked
@@ -358,6 +359,13 @@ namespace GSBurstMemo
 		std::vector<u32> scratch_blocks;
 		/// The candidates' records at `position`, beside `candidates`.
 		std::vector<Record> records;
+
+		/// Per frame format and texture format (PSM, 6 bits each): how many copy-road draws in a row the road drew
+		/// with one of its block copies. Those copies cost little more than recording them, so once a shape has
+		/// been drawn that way BLOCK_COPY_RUN times in a row the memo stops recording it; a draw of the shape the
+		/// road takes another way resets the count.
+		static constexpr u8 BLOCK_COPY_RUN = 16;
+		u8 block_copy_run[64 * 64] = {};
 
 		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash, and its entries, so a rebuild of the
 		/// expansion that leaves the same entries (a CLUT loaded again from the same bytes) is found with a

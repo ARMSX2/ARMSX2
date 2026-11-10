@@ -2782,10 +2782,10 @@ void GSRunner::DumpStats()
 	{
 		const GSBurstMemo::Stats& bm = GSBurstMemo::GlobalStats();
 		const double frames = static_cast<double>(std::max<u64>(s_total_drawn_frames, 1));
-		Console.WriteLn(fmt::format("@HWSTAT@ Burst Memo: {} copies run ({} recorded, {} not taken: a target was weighed), {} skipped ({:.1f}% of copy-road "
+		Console.WriteLn(fmt::format("@HWSTAT@ Burst Memo: {} copies run ({} recorded, {} not taken: a target was weighed, {} a block copy), {} skipped ({:.1f}% of copy-road "
 									"draws; {:.1f}/frame) in {} bursts; stops: packet {}, bytes {}, target {}, write {}, state {}; "
 									"{} installs, peak {:.1f} MB, {} evicted by age, {} by budget; {} packet checks, {} key checks over {} blocks",
-			bm.copy_draws, bm.recorded, bm.not_recorded_target, bm.hit_draws, Ratio(bm.hit_draws, bm.hit_draws + bm.copy_draws),
+			bm.copy_draws, bm.recorded, bm.not_recorded_target, bm.not_recorded_block_copy, bm.hit_draws, Ratio(bm.hit_draws, bm.hit_draws + bm.copy_draws),
 			bm.hit_draws / frames, bm.sequences, bm.stop_packet, bm.stop_key, bm.stop_route, bm.stop_write, bm.stop_state,
 			bm.installs, bm.peak_bytes / 1048576.0, bm.evictions, bm.budget_evictions, bm.packet_checks, bm.key_checks, bm.key_blocks));
 	}

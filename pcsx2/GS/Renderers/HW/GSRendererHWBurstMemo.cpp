@@ -57,6 +57,7 @@ void GSRendererHW::RefreshBurstMemo()
 	m.last_was_copy = false;
 	m.frame_had_copies = false;
 	m.candidate = false;
+	std::memset(m.block_copy_run, 0, sizeof(m.block_copy_run));
 	m.palette_generation = ~u64(0);
 	m.palette_entries = 0;
 	m.palette_copy.clear();
@@ -89,6 +90,17 @@ bool GSRendererHW::SkipMemoizedDraw()
 	const u32 fbw = m_context->FRAME.FBW;
 	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || GSDrawLog::IsActive() || !m_sw_prim.palette_block_copy)
 	{
+		BurstMemoCloseRecording();
+		BurstMemoEndSequence();
+		return false;
+	}
+
+	// A shape the road keeps drawing with a block copy is left alone, neither recorded nor looked up: those copies
+	// cost about what recording and checking them would (on the M2, Call of Duty 3 and Stuntman ran 7% and 6%
+	// more instructions with them recorded). Every copy that runs still counts towards the shape's run.
+	if (PRIM->TME && m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)] >= Memo::BLOCK_COPY_RUN)
+	{
+		GlobalStats().not_recorded_block_copy++;
 		BurstMemoCloseRecording();
 		BurstMemoEndSequence();
 		return false;
@@ -379,6 +391,7 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 		return false;
 	}
 
+
 	// Something wrote a page the burst wrote since its last draw: this draw begins a new burst, whose
 	// keys see those bytes.
 	if (m.recording && BurstMemoPagesWrittenSince(m.recording_pages, m.recording_seq))
@@ -467,6 +480,11 @@ void GSRendererHW::BurstMemoAfterCopy(bool recorded, bool copied)
 	Stats& st = GlobalStats();
 	st.copy_draws++;
 	m.frame_had_copies = true;
+	if (PRIM->TME)
+	{
+		u8& run = m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)];
+		run = m_sw_prim.last_draw_block_copy ? static_cast<u8>(std::min(run + 1, 255)) : 0;
+	}
 	if (!recorded)
 		return;
 
