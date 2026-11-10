@@ -772,6 +772,11 @@ namespace GSCacheFile
 		}
 		std::sort(pending.begin(), pending.end(), [](const Pending& a, const Pending& b) { return a.seq < b.seq; });
 
+		// The writer's first pass removes empty title directories (CleanLeftovers), which takes the
+		// directory of a pack opened just before it and not yet written.
+		if (!exists)
+			FileSystem::EnsureDirectoryExists(std::string(Path::GetDirectory(m_path)).c_str(), true);
+
 		const std::string tmp_path = TempPathFor(m_path);
 		std::FILE* fp = exists ? FileSystem::OpenCFile(m_path.c_str(), "r+b") : nullptr;
 		if (fp)
