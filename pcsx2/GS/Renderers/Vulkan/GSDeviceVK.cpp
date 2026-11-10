@@ -8572,10 +8572,37 @@ void GSDeviceVK::ExecuteCommandBufferAndRestartPresent(bool wait_for_completion,
 	}
 }
 
+void GSDeviceVK::RollKickBudgetFrame()
+{
+	if (m_kick_budget_frame == m_frame)
+		return;
+	// Readback block time is averaged over recent frames (a quarter weight to the newest), so the budget
+	// neither collapses in the frame after the kicks have shortened the wait nor jumps on one slow read.
+	m_readback_block_ns_avg = (m_readback_block_ns_avg * 3 + m_readback_block_ns_frame) / 4;
+	m_readback_block_ns_frame = 0;
+	m_kick_ns_frame = 0;
+	m_kick_budget_frame = m_frame;
+}
+
+void GSDeviceVK::NoteKick(u64 ticks)
+{
+	const u64 ns = ticks * 1000000000ull / GetTickFrequency();
+	m_kick_ns_frame += ns;
+	m_kick_cost_ns = m_kick_cost_ns ? (m_kick_cost_ns * 7 + ns) / 8 : ns;
+}
+
+void GSDeviceVK::NoteReadbackBlock(u64 ticks)
+{
+	RollKickBudgetFrame();
+	m_readback_block_ns_frame += ticks * 1000000000ull / GetTickFrequency();
+}
+
 void GSDeviceVK::ExecuteCommandBufferForReadback()
 {
 	m_readback_frame = m_frame;
+	const u64 block_start = GetCPUTicks();
 	ExecuteCommandBuffer(true);
+	NoteReadbackBlock(GetCPUTicks() - block_start);
 	if (m_spinning_supported && GSConfig.HWSpinGPUForReadbacks)
 	{
 		m_spin_timer = 30;
@@ -9643,8 +9670,17 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes;
 	// After the gate refuses an in-pass kick, the next offer waits a few draws: offering at every draw
 	// would ask the driver for two fence states per draw while the GPU is behind.
+	//
+	// What a kick costs the GS thread depends on the device: on the Nova a submit is cheap and ending a
+	// 235-draw pass after 64 draws halves The Punisher's readback wait; on the Duo every submit costs
+	// a few hundred microseconds and the same spacing made every title slower. So the in-pass kick
+	// prices itself: the GS thread may spend on kicks in a frame at most a quarter of what it spent
+	// blocked on readbacks in recent frames (both measured here, see NoteReadbackBlock), and an
+	// in-pass kick is offered only while the measured cost of one more fits.
+	RollKickBudgetFrame();
+	const bool kick_affordable = (m_kick_ns_frame + m_kick_cost_ns) * 4 <= m_readback_block_ns_avg;
 	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= m_readback_kick_draws &&
-		m_draws_since_submit >= m_next_in_pass_kick_offer;
+		m_draws_since_submit >= m_next_in_pass_kick_offer && kick_affordable;
 	if (near_readback && (kick_at_boundary || kick_in_pass))
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
@@ -9657,8 +9693,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
 		{
 			// Submitting does not close an open pass, and this one ends at this draw anyway.
+			const u64 kick_start = GetCPUTicks();
 			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
+			NoteKick(GetCPUTicks() - kick_start);
 		}
 		else if (kick_in_pass)
 		{

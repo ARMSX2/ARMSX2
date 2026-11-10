@@ -1165,8 +1165,23 @@ private:
 	// pass before it ends the pass to submit them (see DoRenderHW). Only gsrunner's
 	// -readback-kick-draws moves the spacing.
 	u32 m_draws_since_submit = 0;
-	u32 m_readback_kick_draws = 256;
+	u32 m_readback_kick_draws = 64;
 	u32 m_next_in_pass_kick_offer = 0;
+	// The in-pass kick's budget (see DoRenderHW): what the GS thread spent blocked on readbacks, per
+	// frame and averaged over recent frames, what it spent on kicks this frame, and what one kick costs.
+	u64 m_readback_block_ns_frame = 0;
+	u64 m_readback_block_ns_avg = 0;
+	u64 m_kick_ns_frame = 0;
+	u64 m_kick_cost_ns = 0;
+	u32 m_kick_budget_frame = ~0u;
+	void RollKickBudgetFrame();
+	void NoteKick(u64 ticks);
+
+public:
+	/// A readback's blocking wait (submit and fence), in GetCPUTicks units.
+	void NoteReadbackBlock(u64 ticks);
+
+private:
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};
