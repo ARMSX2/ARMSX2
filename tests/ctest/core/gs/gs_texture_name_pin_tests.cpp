@@ -16,6 +16,7 @@
 
 #include "gs_write_stamp_drivers.h"
 
+#include "GS/GSXXH.h"
 #include "GS/Renderers/HW/GSTextureCache.h"
 
 #include <cinttypes>
@@ -184,5 +185,49 @@ namespace
 		for (const Case& c : kCases)
 			distinct.insert(c.tex0hash);
 		EXPECT_EQ(distinct.size(), std::size(kCases));
+	}
+	TEST_F(GSTextureNamePin, ThePaletteHashFollowsEveryRewriteOfTheRenderersPalette)
+	{
+		// A key made with the renderer's own expanded palette takes the palette's hash from a memo while the
+		// palette's read serial has not moved. Every rewrite must show, and the hash is always XXH3 of the entries.
+		BringUp();
+		FillKnown();
+		GSClut& clut = m_gs->m_mem.m_clut;
+		GIFRegTEX0 tex0 = {};
+		tex0.TBP0 = kTBP0;
+		tex0.TBW = kTBW;
+		tex0.PSM = PSMT8;
+		tex0.TW = 7;
+		tex0.TH = 7;
+		const GSVector2i lod(0, 0);
+		(void)lod;
+
+		u64 state = 99;
+		u64 last = 0;
+		for (int round = 0; round < 8; round++)
+		{
+			// A new palette in local memory at CBP 0x3000, loaded and expanded the way a draw does it.
+			for (int y = 0; y < 16; y++)
+				for (int x = 0; x < 16; x++)
+					m_gs->m_mem.WritePixel32(x, y, static_cast<u32>(SplitMix64(state)), 0x3000, 1);
+			GIFRegTEX0 load = tex0;
+			load.CBP = 0x3000;
+			load.CPSM = PSMCT32;
+			load.CLD = 1;
+			const GIFRegTEXCLUT tc = {};
+			clut.WriteTest(load, tc);
+			clut.WriteDecision(load, tc);
+			clut.WriteLoad(load, tc);
+			clut.Read32(load, GIFRegTEXA{});
+
+			const u32* entries = static_cast<const u32*>(clut);
+			for (const bool raw : {false, true})
+			{
+				const HashCacheKey key = HashCacheKey::Create(tex0, GIFRegTEXA{}, entries, nullptr, SourceRegion{}, raw);
+				EXPECT_EQ(key.CLUTHash, XXH3_64bits(entries, 256 * sizeof(u32))) << "round " << round << " raw " << raw;
+				EXPECT_NE(key.CLUTHash, last) << "round " << round;
+			}
+			last = HashCacheKey::Create(tex0, GIFRegTEXA{}, entries, nullptr, SourceRegion{}, false).CLUTHash;
+		}
 	}
 } // namespace

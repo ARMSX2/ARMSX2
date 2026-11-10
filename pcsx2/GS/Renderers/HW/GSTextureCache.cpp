@@ -10996,6 +10996,31 @@ static bool HashLevelUnwritten(const GSLocalMemory& mem, const GIFRegTEX0& TEX0,
 	return unwritten;
 }
 
+// The palette's hash in a key (PaletteKeyHash: XXH3 of its 16 or 256 entries, which names paletted textures). Most
+// lookups pass the renderer's own expanded palette, which GSClut rewrites only in Read32 (and Reset), moving its read
+// serial; while the serial has not moved the hash is the one taken last. The memo is bound to the local memory that
+// owns the palette by GSLocalMemory::Id(), which no later memory reuses, so a new renderer never inherits it.
+static u64 PaletteHash(const u32* clut, u16 pal)
+{
+	static u32 s_mem_id = 0; // no memory has id 0
+	static u32 s_serial = 0;
+	static u16 s_pal = 0;
+	static u64 s_hash = 0;
+
+	const GSLocalMemory& mem = g_gs_renderer->m_mem;
+	if (clut != static_cast<const u32*>(mem.m_clut))
+		return GSTextureCache::PaletteKeyHash{}({clut, pal});
+
+	if (s_mem_id != mem.Id() || s_serial != mem.m_clut.GetReadSerial() || s_pal != pal)
+	{
+		s_hash = GSTextureCache::PaletteKeyHash{}({clut, pal});
+		s_mem_id = mem.Id();
+		s_serial = mem.m_clut.GetReadSerial();
+		s_pal = pal;
+	}
+	return s_hash;
+}
+
 // The bits of TEX0 that HashTextureLevel reads: TBP0, TBW, PSM, TW and TH.
 static constexpr u64 HASH_MEMO_TEX0_BITS = 0x00000003FFFFFFFFULL;
 // The bits of TEXA that the texture reads can depend on: TA0, AEM and TA1.
@@ -11018,7 +11043,7 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	if (raw_blocks)
 		ret.TEX0.U64 |= HASH_KEY_RAW_BLOCKS;
 	ret.TEXA.U64 = (psm.pal == 0 && psm.fmt > 0) ? (TEXA.U64 & 0x000000FF000080FFULL) : 0;
-	ret.CLUTHash = clut ? GSTextureCache::PaletteKeyHash{}({clut, psm.pal}) : 0;
+	ret.CLUTHash = clut ? PaletteHash(clut, psm.pal) : 0;
 	ret.region_width = static_cast<u16>(region.GetWidth());
 	ret.region_height = static_cast<u16>(region.GetHeight());
 
