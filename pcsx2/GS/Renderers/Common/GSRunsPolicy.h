@@ -7,6 +7,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 
 #include <cmath>
+#include <cstring>
 
 /// Which draws the run machine (GS/Renderers/Vulkan/GSRunsVK.h) may merge, and what a merged draw's row says.
 ///
@@ -92,6 +93,52 @@ namespace GSRunsPolicy
 	constexpr u32 StrictKey(u32 flags, bool rta_correction)
 	{
 		return Passthrough(flags, rta_correction) ? (0x80000000u | (flags & COLOUR_STATES_MASK)) : 0u;
+	}
+
+	/// The split rule's constants for one class of GPU, chosen from the device's reported name (DeviceClassFor).
+	///   host_draw_ns  what one more host draw costs the GPU (the price of ending a run)
+	///   dear_px_ps    what a run program that carries a dear state (reads it from the rows) costs per pixel of fill over
+	///                 one that holds it constant (the price of not ending the run)
+	/// A run ends where a draw's dear class differs from the run's when the second price, over the run's fill so far and
+	/// the draw's, exceeds the first (SplitAtDear). Rows marked measured were fitted from that GPU's storm passes; the
+	/// others are the nearest measured class's until measured.
+	struct DeviceClass
+	{
+		const char* name;
+		const char* match; ///< a substring of VkPhysicalDeviceProperties::deviceName
+		float host_draw_ns;
+		float dear_px_ps;
+		const char* source;
+	};
+
+	// Adreno 650, Turnip (Retroid Flip 2, 2x): a host draw from the no-fill arm (4.65 ms classic floor against 0.54 ms for
+	// 171 host draws, 4,496 fewer), 0.9 us; the dear program from probe K1b (Spider-Man 3 heavy's storm pass 4.83 ms
+	// without the dear split against 4.08 with it, 151 more host draws, over 23.5 M pixels of draw rectangles), 38 ps.
+	// Mali-G615 (2x) and G57 (1x), malisx2: the Mali probe's storm passes (results/mali), the same fit.
+	inline constexpr DeviceClass DEVICE_CLASSES[] = {
+		{"Adreno 650", "650", 900.0f, 38.0f, "measured, Flip 2 (m1, probe K1b)"},
+		{"Adreno 613", "613", 900.0f, 38.0f, "the 650's, not measured"},
+		{"Adreno 740", "740", 900.0f, 38.0f, "the 650's, not measured"},
+		{"Mali-G615", "G615", 200.0f, 76.0f, "measured, Mali probe (merge-spec 3.57 ms against split 1.81)"},
+		{"Mali-G57", "G57", 2300.0f, 300.0f, "measured, Mali probe at 1x (spec 5.64 ms against split 4.20)"},
+	};
+	inline constexpr DeviceClass DEVICE_CLASS_DEFAULT = {"other", "", 900.0f, 38.0f, "the 650's, not measured"};
+
+	inline const DeviceClass& DeviceClassFor(const char* device_name)
+	{
+		for (const DeviceClass& c : DEVICE_CLASSES)
+		{
+			if (device_name && std::strstr(device_name, c.match))
+				return c;
+		}
+		return DEVICE_CLASS_DEFAULT;
+	}
+
+	/// Whether a draw of another dear class ends the run (true) or joins it, the run's program then reading the dear
+	/// states from its rows. run_area and draw_area are draw-rectangle pixels.
+	inline bool SplitAtDear(const DeviceClass& dc, u64 run_area, u64 draw_area)
+	{
+		return static_cast<double>(dc.dear_px_ps) * static_cast<double>(run_area + draw_area) > static_cast<double>(dc.host_draw_ns) * 1000.0;
 	}
 
 	struct Draw

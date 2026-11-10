@@ -16,6 +16,13 @@
 /// They are not settings on purpose: which road a driver wants is a property of the driver, and
 /// a user who forced the declared loop on a desktop GPU would drop the barriers and break
 /// blending. Every default is the shipped behaviour, so an untouched instance changes nothing.
+enum class GSRunsSplit : u8
+{
+	NoSplit, ///< -runs-split none
+	AtDear,  ///< -runs-split dear
+	ByCost,  ///< -runs-split cost (the default)
+};
+
 struct GSMeasurementOverrides
 {
 	/// -declare-feedback-loop <1|2>: the arm fed to DecideSelfReadRoad. Off is the device's own road.
@@ -82,9 +89,9 @@ struct GSMeasurementOverrides
 	/// baseline of the machine's A/Bs and of its picture checks.
 	bool runs_off = false;
 
-	/// -runs-split none|dear: whether a run ends where a draw's dear states (the hardware's lod, an alpha test) differ
-	/// from the run's. Default dear.
-	bool runs_split_dear = true;
+	/// -runs-split none|dear|cost: whether a run ends where a draw's dear states (the hardware's lod, an alpha test)
+	/// differ from the run's: never, always, or where the device class's cost model says so (the default).
+	GSRunsSplit runs_split = GSRunsSplit::ByCost;
 
 	/// -runs-split-mask M: a run also ends where any state in M (bits as -runs-read-mask) changes from one draw to the
 	/// next, so those states are constants of every run's program. For pricing a split rule state by state.
@@ -128,7 +135,7 @@ struct GSMeasurementOverrides
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
 		       alpha_bit_logic_op || date_copy_with_dst_alpha_blend || no_provoking_vertex || no_dual_source ||
-		       stream_rings_cached || runs_off || !runs_split_dear || runs_nofill;
+		       stream_rings_cached || runs_off || runs_split != GSRunsSplit::ByCost || runs_nofill;
 	}
 };
 

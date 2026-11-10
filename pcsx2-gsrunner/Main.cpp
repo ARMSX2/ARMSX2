@@ -1322,8 +1322,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -runs <on|off>: The Vulkan run machine (GSRunsVK.h), on by default where the device has its "
 						 "features. off draws every draw on the classic path: the baseline of the machine's A/Bs and "
 						 "picture checks. Development switch, not a setting.\n");
-	std::fprintf(stderr, "  -runs-split <none|dear>: Whether a run ends where a draw's dear states (the hardware's lod, "
-						 "an alpha test) differ from the run's. Default dear.\n");
+	std::fprintf(stderr, "  -runs-split <none|dear|cost>: Whether a run ends where a draw's dear states (the hardware's lod, "
+						 "an alpha test) differ from the run's: never, always, or by the GPU class's cost model (default).\n");
 	std::fprintf(stderr, "  -runs-split-mask <m>: Also end a run where a state in mask m changes (bits as -runs-read-mask).\n");
 	std::fprintf(stderr, "  -runs-no-continue: A draw that continues a run takes the device's whole draw path too.\n");
 	std::fprintf(stderr, "  -runs-nofill: Scissor each run's host draw to one pixel, to price a pass without its fill.\n");
@@ -2082,12 +2082,17 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG_PARAM("-runs-split"))
 			{
 				const char* arg = argv[++i];
-				if (std::strcmp(arg, "none") != 0 && std::strcmp(arg, "dear") != 0)
+				if (std::strcmp(arg, "none") == 0)
+					g_gs_measurement_overrides.runs_split = GSRunsSplit::NoSplit;
+				else if (std::strcmp(arg, "dear") == 0)
+					g_gs_measurement_overrides.runs_split = GSRunsSplit::AtDear;
+				else if (std::strcmp(arg, "cost") == 0)
+					g_gs_measurement_overrides.runs_split = GSRunsSplit::ByCost;
+				else
 				{
-					ArgError("-runs-split: expected none or dear.");
+					ArgError("-runs-split: expected none, dear or cost.");
 					return false;
 				}
-				g_gs_measurement_overrides.runs_split_dear = std::strcmp(arg, "dear") == 0;
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-runs-split-mask"))

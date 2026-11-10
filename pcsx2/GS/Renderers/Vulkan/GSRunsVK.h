@@ -108,7 +108,9 @@ private:
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
 		u32 last_flags = 0;
 		std::array<u32, GSRunsPolicy::NUM_STATES> changes{}; ///< -runs-log: how often each state changed between draws
-		std::array<u64, 4> area{}; ///< -runs-log: the draws' bounding-box area in GS pixels, by dear class
+		std::array<u64, 4> area{}; ///< -runs-log: the draws' draw-rectangle area in target pixels, by dear class
+		u64 area_total = 0; ///< the draws' draw-rectangle area in target pixels
+		bool dear_mixed = false; ///< the run holds draws of more than one dear class
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
 	};
@@ -126,6 +128,8 @@ private:
 	};
 
 	bool Matches(const GSHWDrawConfig& config) const;
+	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
+	bool SplitAtDear(const GSHWDrawConfig& config) const;
 	/// The -runs-split-mask states whose value in flags differs from the open run's.
 	u32 SplitStates(u32 flags) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
@@ -186,6 +190,7 @@ private:
 	std::unordered_map<u64, Pending> m_pending;
 	std::vector<FramePools> m_frame_pools;
 	u64 m_pool_fence = 0;
+	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
 	std::FILE* m_log = nullptr;
 	/// -runs-log's refusal census: (refusal kind, detail) -> draws.
 	std::map<std::pair<u32, u64>, u64> m_refusals;

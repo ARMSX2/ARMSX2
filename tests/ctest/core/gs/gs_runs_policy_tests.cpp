@@ -373,3 +373,23 @@ TEST(GSRunsPolicy, AdditiveWays)
 	for (float dst : {0.0f, 0.5f, 1.0f})
 		EXPECT_EQ(RunBlend(0.25f, 0.0f, dst), 0.25f + dst);
 }
+
+// The split rule's device classes come from the reported device name, and a run ends at a dear change only when the
+// price of carrying the dear state over the run's fill exceeds the price of a host draw.
+TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
+{
+	EXPECT_STREQ(DeviceClassFor("Turnip Adreno (TM) 650").name, "Adreno 650");
+	EXPECT_STREQ(DeviceClassFor("Mali-G615 MC6").name, "Mali-G615");
+	EXPECT_STREQ(DeviceClassFor("Mali-G57 MC2").name, "Mali-G57");
+	EXPECT_STREQ(DeviceClassFor("Apple M2 Max (G14C B1)").name, "other");
+	EXPECT_STREQ(DeviceClassFor(nullptr).name, "other");
+
+	const DeviceClass& a650 = DeviceClassFor("Turnip Adreno (TM) 650");
+	// 900 ns a host draw against 38 ps a pixel: the break-even is about 23,700 pixels of fill.
+	EXPECT_FALSE(SplitAtDear(a650, 10000, 1000));
+	EXPECT_TRUE(SplitAtDear(a650, 30000, 1000));
+	// A GPU where a host draw costs more merges larger runs before it splits.
+	const DeviceClass& g57 = DeviceClassFor("Mali-G57 MC2");
+	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
+	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
+}
