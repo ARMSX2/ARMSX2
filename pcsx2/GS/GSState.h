@@ -1086,7 +1086,8 @@ public:
 	// nothing at all on the shipped path.
 	GIFPackedLayout m_packed_layout = {3, 0, 1, 2};
 
-	// LAST IN THE CLASS ON PURPOSE, and it must stay last. This is 2 KB of scratch
+	// LAST IN THE CLASS ON PURPOSE (but for the draw record's environments below, which nothing else reads), and it
+	// must stay there. This is 2 KB of scratch
 	// that only the kernel touches. Declared anywhere else it pushes every member
 	// after it 2 KB further from `this`, which moves hot fields the rest of the
 	// front end reads -- for no benefit to anything, since nothing but the kernel
@@ -1095,6 +1096,14 @@ public:
 	// SD865.
 	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
 	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
+
+	// The draw record's two environments as the pipelined split's back object holds them: on the front parser
+	// object, what it last sent (it sends only the 64-byte blocks that differ from these); on the back object, those
+	// blocks applied, from which it installs m_prev_env and m_env in full. Behind the kernel's scratch, for the same
+	// reason the scratch is behind everything else: only the record touches them.
+	GSDrawingEnvironment m_rec_env[2] = {};
+	// Front side: m_rec_env holds what the back holds. False until the first draw record, which carries everything.
+	bool m_rec_env_valid = false;
 
 };
 

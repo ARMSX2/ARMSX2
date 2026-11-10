@@ -4085,8 +4085,24 @@ void GSState::FlushPrim()
 
 		// The record is written straight into its ring slot; the consumer releases the node after the tail runs.
 		PushRecordInPlace<GSBackQueue::DrawRecord>(GSBackQueue::RecordType::Draw, [&](GSBackQueue::DrawRecord& rec) {
-			CopyDrawingEnvironment(rec.draw_env, m_prev_env);
-			CopyDrawingEnvironment(rec.next_env, m_env);
+			// Only the blocks of the two environments that changed since the last record (section "What the back
+			// thread reads from a draw record" in ExecDrawRecord).
+			if (m_rec_env_valid) [[likely]]
+			{
+				rec.env_blocks[0] = static_cast<u16>(DeltaDrawingEnvironment(rec.draw_env, m_prev_env, m_rec_env[0]));
+				rec.env_blocks[1] = static_cast<u16>(DeltaDrawingEnvironment(rec.next_env, m_env, m_rec_env[1]));
+				rec.env_full = false;
+			}
+			else
+			{
+				CopyDrawingEnvironment(rec.draw_env, m_prev_env);
+				CopyDrawingEnvironment(rec.next_env, m_env);
+				CopyDrawingEnvironment(m_rec_env[0], m_prev_env);
+				CopyDrawingEnvironment(m_rec_env[1], m_env);
+				rec.env_blocks[0] = rec.env_blocks[1] = 0;
+				rec.env_full = true;
+				m_rec_env_valid = true;
+			}
 			rec.next_v = m_v;
 			rec.draw_rect = temp_draw_rect;
 			rec.native_draw_rect = temp_native_draw_rect;
@@ -4177,8 +4193,27 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	// at m_prev_env around this call, so no re-aim is needed); on the back
 	// object (GV7-1) this becomes the real staging install, which also aims the
 	// draw pointers the way FlushDraw does today.
-	CopyDrawingEnvironment(m_prev_env, rec.draw_env);
-	CopyDrawingEnvironment(m_env, rec.next_env);
+	//
+	// What the back thread reads from a draw record, and when: everything, here, before DrawRecordTail runs; nothing
+	// after (the slot is retired when this returns, and only rec.node outlives it, released after the tail). The two
+	// environments arrive as a delta against the previous record's: the blocks set in env_blocks are applied to the
+	// copies this object keeps (m_rec_env), which then equal the front's m_prev_env and m_env at the flush, and both
+	// are installed in full. The full install is what keeps this exact whatever the draw path wrote into m_prev_env
+	// or m_env since the last record (scissor and offsets through m_context, SCANMSK, TRXDIR): those writes are
+	// overwritten exactly as the whole-record copy overwrote them. A record built on the record-off path never comes
+	// here (FlushPrim calls DrawRecordTail directly).
+	if (rec.env_full)
+	{
+		CopyDrawingEnvironment(m_rec_env[0], rec.draw_env);
+		CopyDrawingEnvironment(m_rec_env[1], rec.next_env);
+	}
+	else
+	{
+		ApplyDrawingEnvironmentDelta(m_rec_env[0], rec.draw_env, rec.env_blocks[0]);
+		ApplyDrawingEnvironmentDelta(m_rec_env[1], rec.next_env, rec.env_blocks[1]);
+	}
+	CopyDrawingEnvironment(m_prev_env, m_rec_env[0]);
+	CopyDrawingEnvironment(m_env, m_rec_env[1]);
 	m_v = rec.next_v;
 	temp_draw_rect = rec.draw_rect;
 	temp_native_draw_rect = rec.native_draw_rect;
