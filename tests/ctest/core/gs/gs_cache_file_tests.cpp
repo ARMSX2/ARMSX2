@@ -676,6 +676,24 @@ TEST_F(GSCacheFileTest, LeftoversOfOlderCachesAndUnusedPacksAreRemoved)
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("gs_packs/U/open.pack").c_str()));
 }
 
+// The writer's first pass of a process removes empty title directories, and the Vulkan shader cache
+// opens the pack for the shaders built before any game is known (gs_packs/_) just before it, with
+// nothing in it yet. The directory goes; the pack's first write must still land.
+TEST_F(GSCacheFileTest, PackIsWrittenAfterItsEmptyDirectoryWasRemoved)
+{
+	const std::string dir = PathOf("gs_packs/_");
+	const std::shared_ptr<Pack> pack = OpenPack(dir, "vk_spirv", "vk_spirv_t", KIND_TEST, MakeStamp("A"), BIG);
+	CleanLeftovers(m_dir);
+	ASSERT_FALSE(FileSystem::DirectoryExists(dir.c_str()));
+
+	Put(*pack, 0);
+	EXPECT_FALSE(pack->Write().failed);
+
+	Pack again;
+	again.Open(Path::Combine(dir, "vk_spirv_t.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(again.GetEntryCount(), 1u);
+}
+
 #ifndef _WIN32
 // A full disk, simulated with a file size limit: the append fails part way, and the pack must stop
 // writing and leave a file the next start reads up to the failure. The limit is set in this process,
