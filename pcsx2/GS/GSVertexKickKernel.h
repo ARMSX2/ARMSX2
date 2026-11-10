@@ -243,6 +243,9 @@ namespace GSVertexKickKernel
 		return m;
 	}
 
+	// `keyed`: the class has no cull grid, and the band fields carry GSVertexKernels::TrimKey instead of a shifted
+	// coordinate (see MakeCullMirrorEntry). A template parameter, so the grid case is the code it always was.
+	template <bool keyed>
 	__forceinline_odr void BuildMirrorQuad(uint32x4_t v0, uint32x4_t v1, uint32x4_t v2, uint32x4_t v3,
 		const MirrorBounds& k, u64* RESTRICT xyp_out, u64* RESTRICT meta_out)
 	{
@@ -263,8 +266,19 @@ namespace GSVertexKickKernel
 
 		// SSHL by a negative amount is an arithmetic right shift, which is what a
 		// runtime band width needs -- the immediate form cannot take one.
-		const int32x4_t bx = vshlq_s32(vsubq_s32(wx, k.bias_x), k.band_shift);
-		const int32x4_t by = vshlq_s32(vsubq_s32(wy, k.bias_y), k.band_shift);
+		int32x4_t bx, by;
+		if constexpr (keyed)
+		{
+			// v + 1 where v is 15 mod 16: CMEQ's all-ones is -1, so subtracting it adds one.
+			const int32x4_t m15 = vdupq_n_s32(15);
+			bx = vsubq_s32(wx, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(wx, m15), m15)));
+			by = vsubq_s32(wy, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(wy, m15), m15)));
+		}
+		else
+		{
+			bx = vshlq_s32(vsubq_s32(wx, k.bias_x), k.band_shift);
+			by = vshlq_s32(vsubq_s32(wy, k.bias_y), k.band_shift);
+		}
 
 		// The outcode compares bands at native and raw 12.4 everywhere else; the
 		// bands are packed either way.
@@ -300,9 +314,10 @@ namespace GSVertexKickKernel
 	// than a per-vertex test because the disabled case is the default and must
 	// carry no cost at all.
 	// ------------------------------------------------------------------------
-	template <GSVertexKernels::PackedLayout layout, bool clamp>
+	// `band_shift` is the prim class's cull grid (GSVertexKernels::CullGrid::ShiftFor); `keyed` says it is 0.
+	template <GSVertexKernels::PackedLayout layout, bool clamp, bool keyed>
 	__forceinline_odr void PassOne(const GIFPackedReg* RESTRICT r, u32 count,
-		GSVertex* RESTRICT out, u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv)
+		GSVertex* RESTRICT out, u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, const int band_shift)
 	{
 		// Compile-time 3 / 2 for the two contiguous triples, so their addressing
 		// is the constant-offset addressing it has always been.
@@ -318,7 +333,6 @@ namespace GSVertexKickKernel
 		const int bl = inv.bounds.l, bt = inv.bounds.t, br = inv.bounds.r, bb = inv.bounds.b;
 		// The cull grid's log2 sub-texel step, and whether the outcode compares in
 		// band space. Both are invariant for the batch; see MakeCullMirrorEntry.
-		const int band_shift = inv.grid.shift;
 		const bool banded = (band_shift == 4);
 		const int band_bias_x = inv.grid.band_bias_x;
 		const int band_bias_y = inv.grid.band_bias_y;
@@ -359,7 +373,7 @@ namespace GSVertexKickKernel
 				out[i + j].m[1] = m1;
 			}
 
-			BuildMirrorQuad(
+			BuildMirrorQuad<keyed>(
 				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 0) * stride + off_xyz)),
 				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 1) * stride + off_xyz)),
 				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 2) * stride + off_xyz)),
@@ -370,7 +384,7 @@ namespace GSVertexKickKernel
 		if (i < count && count >= 4)
 		{
 			const u32 back = count - 4;
-			BuildMirrorQuad(
+			BuildMirrorQuad<keyed>(
 				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 0) * stride + off_xyz)),
 				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 1) * stride + off_xyz)),
 				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 2) * stride + off_xyz)),
@@ -417,8 +431,8 @@ namespace GSVertexKickKernel
 			const u32 raw_y = rv[off_xyz].U32[1];
 			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
 			const int wy = static_cast<int>(raw_y & 0xFFFFu) - ofy;
-			const int bx = (wx - band_bias_x) >> band_shift;
-			const int by = (wy - band_bias_y) >> band_shift;
+			const int bx = keyed ? GSVertexKernels::TrimKey(wx) : ((wx - band_bias_x) >> band_shift);
+			const int by = keyed ? GSVertexKernels::TrimKey(wy) : ((wy - band_bias_y) >> band_shift);
 			const int cx = banded ? bx : wx;
 			const int cy = banded ? by : wy;
 
@@ -469,10 +483,19 @@ namespace GSVertexKickKernel
 		const u32 tail0 = vertex_buf->tail;
 		const u32 xy_tail0 = vertex_buf->xy_tail;
 
-		if (inv.clamp_enabled)
-			PassOne<layout, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
+		// The class's own grid: a sprite has one only at native, a triangle wherever the scale is a power of two.
+		const int band_shift = inv.grid.ShiftFor<primclass>();
+		if (band_shift == 0)
+		{
+			if (inv.clamp_enabled)
+				PassOne<layout, true, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, 0);
+			else
+				PassOne<layout, false, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, 0);
+		}
+		else if (inv.clamp_enabled)
+			PassOne<layout, true, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, band_shift);
 		else
-			PassOne<layout, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv);
+			PassOne<layout, false, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, band_shift);
 
 		// m_v carries the last parsed vertex out of the batch. Pass one has just
 		// written it to its provisional slot and pass two has not run yet, so

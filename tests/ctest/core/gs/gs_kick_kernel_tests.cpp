@@ -416,6 +416,8 @@ namespace
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairSTQXYZ2>(prim);
 				case GSVertexKernels::PackedLayout::PairUVXYZ2:
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairUVXYZ2>(prim);
+				case GSVertexKernels::PackedLayout::PairUVXYZF2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairUVXYZF2>(prim);
 				case GSVertexKernels::PackedLayout::PairRGBAQXYZ2:
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(prim);
 				case GSVertexKernels::PackedLayout::UvTripleXYZF2:
@@ -1055,6 +1057,38 @@ TEST(GsKickKernel, NativeDrawRectMatchesLegacyAboveNative)
 	}
 }
 
+// The kernel where the prim's class has no cull grid: triangles at an upscale that is not a power of two (shift
+// 0), sprites at every upscale (2x and 4x as well). The kernel used to hand these back to the per-vertex kick; it now
+// decides them on TrimKey bands, and both arms must leave the same bytes. Sub-pixel streams put vertices on the
+// 16k - 1 / 16k pairs the key merges; the scalar decision itself is pinned against CullTest by
+// GsVertexCull.ScalarNoGridTrimBoundary and the scalar sweeps.
+TEST(GsKickKernel, MatchesLegacyWhereTheClassHasNoGrid)
+{
+	u32 seed = 4100;
+	for (int cull_shift : {0, 3, 2})
+	{
+		KickSetup s;
+		s.cull_shift = cull_shift;
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+		{
+			for (AdcPattern adc : {AdcPattern::None, AdcPattern::Stuntman, AdcPattern::Katamari})
+			{
+				for (u32 len : kRunLengths)
+				{
+					SCOPED_TRACE(::testing::Message() << "shift=" << cull_shift << " prim=" << prim
+													  << " adc=" << static_cast<int>(adc) << " len=" << len);
+					RunAndCompare(s, prim, false, MakeSubPixelStream(len, adc, seed++), {len});
+					RunAndCompare(s, prim, true, MakeSubPixelStream(len, adc, seed++), {len});
+					RunAndCompare(s, prim, false, MakeStream(len, adc, seed++), {len});
+				}
+			}
+			SCOPED_TRACE(::testing::Message() << "split shift=" << cull_shift << " prim=" << prim);
+			RunAndCompare(s, prim, false, MakeSubPixelStream(300, AdcPattern::Stuntman, seed++), {7, 7, 286});
+			RunAndCompare(s, prim, true, MakeSubPixelStream(300, AdcPattern::None, seed++), {1, 2, 3, 294});
+		}
+	}
+}
+
 // ...and the control for it, because a differential that compares two equal
 // things passes whatever the code does. Above native the two rects must actually
 // come out different over a sub-pixel stream; at the native grid the kick must not
@@ -1225,8 +1259,9 @@ namespace
 	GSVertexKernels::CullMirrorEntry ModelEntry(int wx, int wy, const GSVertexKernels::CullBounds& b,
 		bool banded, int band_shift, int bias_x = 1, int bias_y = 1)
 	{
-		const int bx = (wx - bias_x) >> band_shift;
-		const int by = (wy - bias_y) >> band_shift;
+		// Shift 0 is no grid: the band is the trim-box key, v + 1 where v is 15 mod 16.
+		const int bx = (band_shift == 0) ? wx + (((wx % 16) + 16) % 16 == 15 ? 1 : 0) : (wx - bias_x) >> band_shift;
+		const int by = (band_shift == 0) ? wy + (((wy % 16) + 16) % 16 == 15 ? 1 : 0) : (wy - bias_y) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -1257,6 +1292,12 @@ namespace
 			out.push_back(band * step + 1);        // first coordinate in the band
 			out.push_back(band * step + step / 2); // middle
 			out.push_back(band * step + step);     // last
+		}
+		// No grid: the key's own boundaries, 16k - 1 and 16k on both sides of zero.
+		if (band_shift == 0)
+		{
+			for (int v : {-33, -32, -17, -16, -15, -1, 0, 1, 15, 16, 17, 31, 32, 47, 48})
+				out.push_back(v);
 		}
 		return out;
 	}
@@ -1345,11 +1386,11 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 {
 	// Every band width the cull grid can ask for: 4 at native, 3 at 2x, 2 at 4x,
-	// 1 at 8x.
-	for (int band_shift : {4, 3, 2, 1})
+	// 1 at 8x, and 0, no grid (the trim-box key).
+	for (int band_shift : {4, 3, 2, 1, 0})
 	{
 		// Phase 0 is every mode but Native; half the step is Native's.
-		for (int phase : {0, 1 << (band_shift - 1)})
+		for (int phase : {0, band_shift ? 1 << (band_shift - 1) : 0})
 		{
 			const int bias = phase + 1;
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
@@ -1399,12 +1440,15 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 	{
 		for (int ofy : {0, 1808 * 16})
 		{
-		  for (int band_shift : {4, 3, 2, 1})
+		  for (int band_shift : {4, 3, 2, 1, 0})
 		  {
-		    for (int phase : {0, 1 << (band_shift - 1)})
+		    for (int phase : {0, band_shift ? 1 << (band_shift - 1) : 0})
 		    {
 		    for (bool banded : {true, false})
 		    {
+			// No grid only ever compares raw coordinates.
+			if (band_shift == 0 && banded)
+				continue;
 			const int bias = phase + 1;
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
 			const GSVector4i xyof(ofx, ofy, ofx, ofy);
@@ -1458,8 +1502,12 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 
 				alignas(16) u64 got_xyp[4] = {};
 				alignas(16) u64 got_meta[4] = {};
-				GSVertexKickKernel::BuildMirrorQuad(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
-					vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
+				if (band_shift == 0)
+					GSVertexKickKernel::BuildMirrorQuad<true>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
+						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
+				else
+					GSVertexKickKernel::BuildMirrorQuad<false>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
+						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
 
 				for (int k = 0; k < 4; k++)
 				{
@@ -1950,9 +1998,15 @@ TEST(GifSetTag, TwoRegisterLayouts)
 	const GIFPath uv = ClassifyTag({3, 5});
 	EXPECT_EQ(uv.type, static_cast<u32>(GIFPath::TYPE_UVXYZ2));
 
-	// The XYZF2 twins are deliberately NOT recognised (out of 3c's scope).
+	// {UV, XYZF2}: Call of Duty 3's sprite stream (29,000 vertices a vsync went through the per-qword replay).
+	const GIFPath uvf = ClassifyTag({3, 4});
+	EXPECT_EQ(uvf.type, static_cast<u32>(GIFPath::TYPE_UVXYZF2));
+	EXPECT_EQ(uvf.layout.stride, 2u);
+	EXPECT_EQ(uvf.layout.off_a, 0u);
+	EXPECT_EQ(uvf.layout.off_xyz, 1u);
+
+	// The other XYZF2 twin is not recognised: no corpus title carries it.
 	EXPECT_EQ(ClassifyTag({1, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
-	EXPECT_EQ(ClassifyTag({3, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
 	// Two positions and nothing else: no layout carries it.
 	EXPECT_EQ(ClassifyTag({5, 5}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
 }
@@ -1976,6 +2030,11 @@ TEST(GifSetTag, RepeatedPairHalvesNregAndDoublesNloop)
 	const GIFPath rgbaq = ClassifyTag({1, 5, 1, 5}, 11);
 	EXPECT_EQ(rgbaq.type, static_cast<u32>(GIFPath::TYPE_RGBAQXYZ2));
 	EXPECT_EQ(rgbaq.nloop * rgbaq.nreg, 11u * 4u);
+
+	const GIFPath uvf = ClassifyTag({3, 4, 3, 4}, 11);
+	EXPECT_EQ(uvf.type, static_cast<u32>(GIFPath::TYPE_UVXYZF2));
+	EXPECT_EQ(uvf.nreg, 2u);
+	EXPECT_EQ(uvf.nloop * uvf.nreg, 11u * 4u);
 
 	// A four-register tag that is not a repeat of a recognised pair stays unknown.
 	EXPECT_EQ(ClassifyTag({2, 4, 2, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
@@ -2246,6 +2305,7 @@ namespace
 	const LayoutCase kNopTriple52 = {"5:f,f,2,1,4", {0xF, 0xF, 2, 1, 4}, {5, 2, 3, 4}, GSVertexKernels::PackedLayout::NopTripleXYZF2};
 	const LayoutCase kPairSTQ = {"2:2,5", {2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
 	const LayoutCase kPairUV = {"2:3,5", {3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
+	const LayoutCase kPairUVF = {"2:3,4", {3, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZF2};
 	const LayoutCase kPairRGBAQ = {"2:1,5", {1, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
 	const LayoutCase kPairRGBAQNop = {"3:f,1,5", {0xF, 1, 5}, {3, 1, 0, 2}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
 	const LayoutCase kUvTriple = {"3:3,1,4", {3, 1, 4}, {3, 0, 1, 2}, GSVertexKernels::PackedLayout::UvTripleXYZF2};
@@ -2278,6 +2338,8 @@ TEST(GsKickKernel, LayoutsMatchThePerQwordPath)
 						KickSetup{}, prim, kPairSTQ, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
 						KickSetup{}, prim, kPairUV, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZF2>(
+						KickSetup{}, prim, kPairUVF, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
 						KickSetup{}, prim, kPairRGBAQ, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
@@ -2311,6 +2373,8 @@ TEST(GsKickKernel, LayoutsMatchAcrossCallSplits)
 				KickSetup{}, prim, kPairSTQ, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
 				KickSetup{}, prim, kPairUV, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZF2>(
+				KickSetup{}, prim, kPairUVF, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
 				KickSetup{}, prim, kPairRGBAQ, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
@@ -2606,7 +2670,7 @@ namespace
 TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 {
 	u32 seed = 9900;
-	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairRGBAQ, &kUvTriple,
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
 		&kUvTriple41};
 	for (const LayoutCase* lc : cases)
 	{
@@ -2651,7 +2715,7 @@ TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 {
 	u32 seed = 9700;
-	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV,
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF,
 		&kPairRGBAQ, &kPairRGBAQNop, &kUvTriple, &kUvTriple40, &kUvTriple41};
 	for (const LayoutCase* lc : cases)
 	{
@@ -2678,7 +2742,8 @@ TEST(GsKickKernel, RepeatedPairThroughTransferMatchesTheReplay)
 	u32 seed = 9800;
 	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
 	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
-	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv})
+	const LayoutCase repeated_uvf = {"4:3,4,3,4", {3, 4, 3, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZF2};
+	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv, &repeated_uvf})
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
 		{
