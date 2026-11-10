@@ -67,6 +67,11 @@ namespace GSVertexKickKernel
 	// to cover the instantiations whose fixed cost is higher than the strip's.
 	static constexpr u32 kMinKernelVertices = 6;
 
+	// At or below this many vertices a chunk is decided one vertex at a time: the
+	// four-wide pass costs about a hundred instructions to enter and leave and 85
+	// a quad, against about 40 a vertex.
+	static constexpr u32 kScalarDecideVertices = 5;
+
 	// Batch invariants. Everything here is fixed for the whole of a kernel entry:
 	// only a flush, a buffer switch or a register write can change any of them,
 	// and none of those can happen inside the kernel.
@@ -487,6 +492,86 @@ namespace GSVertexKickKernel
 		u32 colour_slot; // with flat shading only the provoking vertices' colours count: the slots from here on
 	};
 
+	// Pass three's whole interface: the boundary a conversion pass emitted at run
+	// time would stand behind, with the same differential suite in front of it.
+	struct ConvertArgs
+	{
+		const GIFPackedReg* rin;        // the chunk's first record
+		GSVertex* vbuff;
+		const ConvertJob* jobs;
+		const ConvertJob* jobs_end;
+		GSVertexKernels::FmmAcc* acc;   // triangle classes: read at entry, written at exit
+		const Invariants* inv;
+	};
+
+	// `triangle`: the class keeps fused vertex-trace bounds (strips and lists).
+	// `clamp`: the depth clamp, a compile-time arm of the loop rather than a test
+	// inside it -- no title in the corpus turns it on, and as a test the compiler
+	// makes eight instructions of select per vertex out of it.
+	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
+	__forceinline_odr void ConvertJobs(const ConvertArgs& args)
+	{
+		const Invariants& inv = *args.inv;
+		const GIFPackedLayout off = inv.off;
+		const u32 stride = GSVertexKernels::LayoutStride<layout>(off);
+		const GIFPackedReg* RESTRICT rin = args.rin;
+		GSVertex* RESTRICT vbuff = args.vbuff;
+		GSVector4i carry = GSVector4i::zero();
+		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+			carry = inv.carry_m0;
+		const u64 uvfog = inv.uvfog;
+		[[maybe_unused]] const GSVector4i clamp_keep = clamp ? inv.clamp_keep : GSVector4i::zero();
+		[[maybe_unused]] const GSVector4i clamp_shifted = clamp ? inv.clamp_shifted : GSVector4i::zero();
+		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
+#ifdef ARCH_ARM64
+		[[maybe_unused]] const u32 shade = inv.shade;
+		[[maybe_unused]] const bool tme = (shade & 1u) != 0;
+		[[maybe_unused]] const bool fst = (shade & 2u) != 0;
+		[[maybe_unused]] const bool iip = (shade & 4u) != 0;
+		GSVertexKernels::FmmAcc a;
+		if constexpr (triangle)
+			a = *args.acc;
+#endif
+
+		GSVector4i m0, m1;
+		for (const ConvertJob* RESTRICT q = args.jobs; q != args.jobs_end; q++)
+		{
+			const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
+			GSVertex* RESTRICT out = vbuff + q->slot;
+			u32 left = q->to - q->from;
+#ifdef ARCH_ARM64
+			[[maybe_unused]] u32 s = q->slot;
+			[[maybe_unused]] const u32 acc_slot = q->acc_slot;
+			[[maybe_unused]] const u32 colour_slot = q->colour_slot;
+#endif
+			do
+			{
+				GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, off, uvfog, carry, kc, m0, m1);
+				if constexpr (clamp)
+					m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
+
+				out->m[0] = m0;
+				out->m[1] = m1;
+
+#ifdef ARCH_ARM64
+				if constexpr (triangle)
+				{
+					if (s >= acc_slot)
+						GSVertexKernels::FmmAccumVertex(a, m0, m1, tme, fst, iip || s >= colour_slot);
+					s++;
+				}
+#endif
+				rv += stride;
+				out++;
+			} while (--left != 0);
+		}
+
+#ifdef ARCH_ARM64
+		if constexpr (triangle)
+			*args.acc = a;
+#endif
+	}
+
 	// ------------------------------------------------------------------------
 	// The kernel. `prim` is one of GS_TRIANGLESTRIP / GS_TRIANGLELIST /
 	// GS_SPRITE; `layout` says where the record's descriptors sit and which of
@@ -558,9 +643,16 @@ namespace GSVertexKickKernel
 		sd.native_rect = GSVertexKernels::NativeDrawRectNone();
 		sd.count = 0;
 		GSVector4i acc_rect = GSVertexKernels::NativeDrawRectNone();
+		u32 scalar_decided = 0;
 
 #ifdef ARCH_ARM64
-		if (count >= n)
+		if (count <= kScalarDecideVertices)
+		{
+			// Too few vertices to pay for the four-wide pass's entry and exit.
+			DecideScalar<prim>(rxyz, stride, count, pending, vertex_buf, inv, band_shift, accept, sd);
+			scalar_decided = sd.count;
+		}
+		else
 		{
 			// Which of twelve consecutive vertices complete a primitive: for a
 			// list, where (pending + i + 1) is a multiple of three.
@@ -584,13 +676,16 @@ namespace GSVertexKickKernel
 					GSVector4i(vd.minx, vd.miny, vd.maxx, vd.maxy), inv.grid, false);
 				acc_rect = GSVertexKernels::PrimDrawRect(bbox);
 			}
+
+			// The first n - 1 vertices have a partner from before the chunk, if any
+			// is pending. The vector pass found nothing there.
+			if (pending != 0)
+				DecideScalar<prim>(rxyz, stride, n - 1, pending, vertex_buf, inv, band_shift, accept, sd);
+			scalar_decided = sd.count;
 		}
-		// The first n - 1 vertices have a partner from before the chunk, if any is
-		// pending. The vector pass found nothing there.
-		if (pending != 0)
-			DecideScalar<prim>(rxyz, stride, std::min<u32>(count, n - 1), pending, vertex_buf, inv, band_shift, accept, sd);
 #else
 		DecideScalar<prim>(rxyz, stride, count, pending, vertex_buf, inv, band_shift, accept, sd);
+		scalar_decided = sd.count;
 #endif
 		if (sd.count != 0)
 			acc_rect = acc_rect.runion(sd.rect);
@@ -822,92 +917,41 @@ namespace GSVertexKickKernel
 		}
 
 		// ---- pass three: conversion ---------------------------------------------
+		if (job != jobs)
 		{
+			const ConvertArgs args = {rin, vbuff, jobs, job, &acc, &inv};
+			if (inv.clamp_enabled)
+				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
+			else
+				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, false>(args);
+		}
+#ifdef ARCH_ARM64
+		if constexpr (primclass == GS_TRIANGLE_CLASS)
+		{
+			if (fmm_dirty)
+				vertex_buf->fmm_acc = acc;
+		}
+#endif
+
+		// m_v carries the last parsed vertex out of the batch. It is the buffer's
+		// last vertex unless the chunk ended on a rejected list primitive or
+		// sprite, which leaves nothing of itself behind.
+		if (last_in_buffer)
+		{
+			*inv.last_out = vbuff[tail - 1];
+		}
+		else
+		{
+			GSVector4i m0, m1;
 			GSVector4i carry = GSVector4i::zero();
 			if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
 				carry = inv.carry_m0;
-			const u64 uvfog = inv.uvfog;
-			const bool clamp = inv.clamp_enabled;
-			const GSVector4i clamp_keep = clamp ? inv.clamp_keep : GSVector4i::zero();
-			const GSVector4i clamp_shifted = clamp ? inv.clamp_shifted : GSVector4i::zero();
-#ifdef ARCH_ARM64
-			const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
-			GSVertexKernels::FmmAcc a = acc;
-#endif
-			GSVector4i m0, m1;
-			// The depth clamp is a compile-time arm of the loop, not a test inside
-			// it: no title in the corpus turns it on, and as a test the compiler
-			// turns it into eight instructions of select per vertex.
-			const auto convert = [&](auto clamped) __attribute__((always_inline))
-			{
-				for (const ConvertJob* RESTRICT q = jobs; q != job; q++)
-				{
-					const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
-					GSVertex* RESTRICT out = vbuff + q->slot;
-					u32 left = q->to - q->from;
-#ifdef ARCH_ARM64
-					u32 s = q->slot;
-					const u32 acc_slot = q->acc_slot;
-					const u32 colour_slot = q->colour_slot;
-#endif
-					do
-					{
-#ifdef ARCH_ARM64
-						GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, off, uvfog, carry, kc, m0, m1);
-#else
-						GSVertexKernels::ParsePackedRecord<layout>(rv, off, uvfog, carry, m0, m1);
-#endif
-						if constexpr (decltype(clamped)::value)
-							m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
-
-						out->m[0] = m0;
-						out->m[1] = m1;
-
-#ifdef ARCH_ARM64
-						if constexpr (primclass == GS_TRIANGLE_CLASS)
-						{
-							if (s >= acc_slot)
-								GSVertexKernels::FmmAccumVertex(a, m0, m1, tme, fst, iip || s >= colour_slot);
-							s++;
-						}
-#endif
-						rv += stride;
-						out++;
-					} while (--left != 0);
-				}
-			};
-			if (clamp)
-				convert(std::true_type{});
-			else
-				convert(std::false_type{});
-#ifdef ARCH_ARM64
-			if constexpr (primclass == GS_TRIANGLE_CLASS)
-			{
-				if (fmm_dirty)
-					vertex_buf->fmm_acc = a;
-			}
-#endif
-
-			// m_v carries the last parsed vertex out of the batch. It is the
-			// buffer's last vertex unless the chunk ended on a rejected list
-			// primitive or sprite, which leaves nothing of itself behind.
-			if (last_in_buffer)
-			{
-				*inv.last_out = vbuff[tail - 1];
-			}
-			else
-			{
-				const GIFPackedReg* RESTRICT rv = rin + (count - 1) * stride;
-#ifdef ARCH_ARM64
-				GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, off, uvfog, carry, kc, m0, m1);
-#else
-				GSVertexKernels::ParsePackedRecord<layout>(rv, off, uvfog, carry, m0, m1);
-#endif
-				if (clamp)
-					m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
-				inv.last_out->m[0] = m0;
-				inv.last_out->m[1] = m1;
-			}
+			GSVertexKernels::ParsePackedRecord_Fast<layout>(rin + (count - 1) * stride, off, inv.uvfog, carry,
+				GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q), m0, m1);
+			if (inv.clamp_enabled)
+				m1 = (m1 & inv.clamp_keep) | (m1.srl32<8>() & inv.clamp_shifted);
+			inv.last_out->m[0] = m0;
+			inv.last_out->m[1] = m1;
 		}
 
 		// The sprite's first vertex takes the second's Q, and the native-grid rect
@@ -931,7 +975,7 @@ namespace GSVertexKickKernel
 		if (inv.track_native_rect)
 		{
 			const GSVector4i xyof = inv.xyof;
-			for (u32 t = itail0 + sd.count * n; t < itail; t += n)
+			for (u32 t = itail0 + scalar_decided * n; t < itail; t += n)
 			{
 				const u32 dst = ibuff[t];
 				const GSVector4i v0 = GSVector4i(vbuff[dst + n - 1].m[1]).xxxx().u16to32().sub32(xyof);
