@@ -14,6 +14,7 @@
 #include "GS/Renderers/Common/GSBlendConstantPolicy.h"
 #include "GS/Renderers/Common/GSDrawRoad.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
 #include "GS/Renderers/Common/GSReplacementAlphaSnap.h"
 #include "GS/Renderers/Common/GSStencilCounter.h"
@@ -6941,8 +6942,17 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	// The first draw of a run takes the normal read and starts the chain; the second and later take
 	// Stencil DATE, which EmulateDATEGetConfig picks when no other mode is asked for, and the backend
 	// builds the copy once and keeps it while the pass stays open.
+	//
+	// Not a draw that blends with destination alpha: without its read it blends in hardware, and
+	// that takes RT alpha correction, which rewrites the whole target to scale its alpha. The next
+	// mark rewrites it back, and the change of texture ends the chain, so each shared draw cost two
+	// full-target conversions and two pass breaks. PHASE PARADOX's tests blend
+	// (Cs - Cd) * Ad + Cd: 2,126 passes a frame on the Adreno 740 against 10 with the read.
+	const bool blends_with_destination_alpha =
+		PRIM->ABE && m_context->ALPHA.C == 1 && !g_gs_measurement_overrides.date_copy_with_dst_alpha_blend;
 	m_date_draw_shares_copy = features.alpha_bit_logic_op && features.stencil_buffer && m_conf.ds && rt &&
 		!PRIM->AA1 && !m_texture_shuffle && !m_channel_shuffle && !rt->m_rt_alpha_scale &&
+		!blends_with_destination_alpha &&
 		GSAlphaBitLogicOp::KeepsDATEResult(m_cached_ctx.TEST.DATM, m_conf.colormask.wa, GetAlphaMinMax().min,
 			GetAlphaMinMax().max, m_context->FBA.FBA);
 	if (m_date_draw_shares_copy && m_date_chain_rt == rt->GetTexture() && m_date_chain_datm == m_cached_ctx.TEST.DATM)

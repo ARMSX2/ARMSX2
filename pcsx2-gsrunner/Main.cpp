@@ -1195,6 +1195,9 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Turnip before Mesa 26.2 does, so destination-alpha tests take the no-stencil choices.\n");
 	std::fprintf(stderr, "  -alpha-bit-logic-op: Vulkan only. Set and clear alpha bit 7 (FBMSK 0x7FFFFFFF draws) with a "
 						 "logic op on any device with the logicOp feature, not only where a target read waits per draw.\n");
+	std::fprintf(stderr, "  -date-copy-with-ad-blend: Where alpha-bit marks take the logic op, let a destination-alpha "
+						 "draw that blends with destination alpha share the stencil copy, as before that was refused. "
+						 "Such a draw then takes RT alpha correction, a full-target conversion each way.\n");
 	std::fprintf(stderr, "  -vertex-ring-kib <n>: Vulkan only. Start the vertex ring at n KiB instead of the shipped "
 						 "size; it still grows on demand to its cap.\n");
 	std::fprintf(stderr, "  -readback-kick-passes <n>: Vulkan only. In a frame near a readback, submit at a render-pass "
@@ -2000,6 +2003,14 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// device with the logicOp feature, to check its pictures against the read.
 				g_gs_measurement_overrides.alpha_bit_logic_op = true;
 				Console.WriteLn("Forcing the alpha-bit logic op on (Vulkan, where logicOp exists)");
+				continue;
+			}
+			else if (CHECK_ARG("-date-copy-with-ad-blend"))
+			{
+				// Not a setting: the refusal it lifts is a cost fact about one road. This restores
+				// the earlier rule so the two can be priced on one binary.
+				g_gs_measurement_overrides.date_copy_with_dst_alpha_blend = true;
+				Console.WriteLn("Letting destination-alpha draws that blend with destination alpha share the stencil copy");
 				continue;
 			}
 			else if (CHECK_ARG("-no-provoking-vertex"))
