@@ -589,6 +589,9 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 	// (GSTextureVK::MakeUncompressed). Requested on Adreno only, so no other device changes.
 	m_optional_extensions.vk_ext_image_compression_control =
 		IsDeviceAdreno() && SupportsExtension(VK_EXT_IMAGE_COMPRESSION_CONTROL_EXTENSION_NAME, false);
+	// VK_EXT_descriptor_indexing: the run machine's per-draw textures (GSRunsVK.h). Its features are probed in
+	// CreateDevice; without them the machine stays off and the extension is enabled but unused.
+	m_optional_extensions.vk_ext_descriptor_indexing = SupportsExtension(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME, false);
 
 	if (m_optional_extensions.vk_swapchain_maintenance1)
 	{
@@ -850,6 +853,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 	VkPhysicalDeviceImageCompressionControlFeaturesEXT image_compression_control_feature = {
 		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT};
+	VkPhysicalDeviceDescriptorIndexingFeaturesEXT descriptor_indexing_feature = {
+		VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT};
 
 	// An advertised EXTENSION does not guarantee its FEATURE bit, and asking for a feature the
 	// driver does not have fails vkCreateDevice outright with VK_ERROR_FEATURE_NOT_PRESENT —
@@ -884,6 +889,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		VkPhysicalDeviceFaultFeaturesEXT probe_fault = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
 		VkPhysicalDeviceImageCompressionControlFeaturesEXT probe_icc = {
 			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_COMPRESSION_CONTROL_FEATURES_EXT};
+		VkPhysicalDeviceDescriptorIndexingFeaturesEXT probe_di = {
+			VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT};
 
 		// Only chain what we would actually enable: querying a struct whose extension is absent is
 		// not something the spec promises anything about.
@@ -910,6 +917,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			Vulkan::AddPointerToChain(&probe, &probe_fault);
 		if (m_optional_extensions.vk_ext_image_compression_control)
 			Vulkan::AddPointerToChain(&probe, &probe_icc);
+		if (m_optional_extensions.vk_ext_descriptor_indexing)
+			Vulkan::AddPointerToChain(&probe, &probe_di);
 		vkGetPhysicalDeviceFeatures2(m_physical_device, &probe);
 
 		// Returns the flag rather than taking it by reference: m_optional_extensions members are
@@ -956,6 +965,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			m_optional_extensions.vk_ext_image_compression_control, probe_icc.imageCompressionControl == VK_TRUE);
 		m_optional_extensions.vk_khr_shader_float16_int8 = keep("VK_KHR_shader_float16_int8 (shaderFloat16)",
 			m_optional_extensions.vk_khr_shader_float16_int8, probe_f16.shaderFloat16 == VK_TRUE);
+		m_optional_extensions.vk_ext_descriptor_indexing = keep("VK_EXT_descriptor_indexing (run machine features)",
+			m_optional_extensions.vk_ext_descriptor_indexing,
+			probe_di.shaderSampledImageArrayNonUniformIndexing == VK_TRUE && probe_di.runtimeDescriptorArray == VK_TRUE &&
+				probe_di.descriptorBindingVariableDescriptorCount == VK_TRUE && probe_di.descriptorBindingPartiallyBound == VK_TRUE);
 
 		// Depth ROAA is an optional sub-feature: a driver can offer the extension and colour
 		// access yet not depth.
@@ -1027,6 +1040,14 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		// shaderFloat16 only; shaderInt8 is nothing we use.
 		float16_int8_feature.shaderFloat16 = VK_TRUE;
 		Vulkan::AddPointerToChain(&device_info, &float16_int8_feature);
+	}
+	if (m_optional_extensions.vk_ext_descriptor_indexing)
+	{
+		descriptor_indexing_feature.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+		descriptor_indexing_feature.runtimeDescriptorArray = VK_TRUE;
+		descriptor_indexing_feature.descriptorBindingVariableDescriptorCount = VK_TRUE;
+		descriptor_indexing_feature.descriptorBindingPartiallyBound = VK_TRUE;
+		Vulkan::AddPointerToChain(&device_info, &descriptor_indexing_feature);
 	}
 
 	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
