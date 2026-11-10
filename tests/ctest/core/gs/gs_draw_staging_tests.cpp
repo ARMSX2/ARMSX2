@@ -252,3 +252,32 @@ TEST(GsDrawStaging, AStateBuiltAndDestroyedGivesBackItsDrawBuffers)
 	GTEST_SKIP() << "the heap is measured with glibc's mallinfo2";
 #endif
 }
+
+// Growth keeps its schedule: the starting 10,000 vertices, then half as much again each time (three held back as
+// slack at the end of the buffer).
+TEST(GsDrawStaging, GrowthIsHalfAsMuchAgain)
+{
+	auto s = std::make_unique<StagingProbe>();
+	s->SelectSlot(0);
+	EXPECT_EQ(s->m_vertex->maxcount, 10000u - 3u);
+	s->GrowCurrentSlotAtCapacity();
+	EXPECT_EQ(s->m_vertex->maxcount, (10000u - 3u) * 3 / 2 - 3u);
+}
+
+// A slot asked to grow past its ceiling fails loudly. Before the ceiling, the capacity and the sizes were 32-bit:
+// past about 134 million vertices the vertex size wrapped, the allocation came out smaller than the capacity the
+// slot then believed it had, and the next stores ran off its end.
+TEST(GsDrawStagingDeathTest, GrowthPastTheCeilingFailsLoudly)
+{
+	GTEST_FLAG_SET(death_test_style, "threadsafe");
+	EXPECT_DEATH(
+		{
+			auto s = std::make_unique<StagingProbe>();
+			s->SelectSlot(0);
+			s->m_vertex->tail = 0; // nothing to copy: the grow itself is the event
+			s->m_index->tail = 0;
+			s->m_vertex->maxcount = 0x0C000000u; // 201 million: half as much again wraps the 32-bit vertex size
+			s->GrowVertexBuffer();
+		},
+		"ceiling");
+}
