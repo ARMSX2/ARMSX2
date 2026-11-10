@@ -1325,6 +1325,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -runs-split <none|dear>: Whether a run ends where a draw's dear states (the hardware's lod, "
 						 "an alpha test) differ from the run's. Default dear.\n");
 	std::fprintf(stderr, "  -runs-split-mask <m>: Also end a run where a state in mask m changes (bits as -runs-read-mask).\n");
+	std::fprintf(stderr, "  -runs-no-continue: A draw that continues a run takes the device's whole draw path too.\n");
 	std::fprintf(stderr, "  -runs-nofill: Scissor each run's host draw to one pixel, to price a pass without its fill.\n");
 	std::fprintf(stderr, "  -runs-max-draws <n>: End each run after n draws (0, the default: the machine's own limit).\n");
 	std::fprintf(stderr, "  -runs-general: Draw every run under the general program, no specialisation.\n");
@@ -2098,6 +2099,11 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				g_gs_measurement_overrides.runs_split_mask = m.value();
+				continue;
+			}
+			else if (CHECK_ARG("-runs-no-continue"))
+			{
+				g_gs_measurement_overrides.runs_no_continue = true;
 				continue;
 			}
 			else if (CHECK_ARG("-runs-nofill"))

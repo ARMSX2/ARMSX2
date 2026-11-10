@@ -385,6 +385,8 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 
 bool GSRunsVK::Continue(const GSHWDrawConfig& config)
 {
+	if (g_gs_measurement_overrides.runs_no_continue)
+		return false;
 	GSDeviceVK* dev = m_dev;
 	// A draw without a depth buffer continues a run in a pass with one as the classic path draws it: depth untouched.
 	const bool ds_ok = config.ds ? (dev->m_current_depth_target == config.ds) : ((dev->m_current_depth_target == nullptr) == m_run.nods);

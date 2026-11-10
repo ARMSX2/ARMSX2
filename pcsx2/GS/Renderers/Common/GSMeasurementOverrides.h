@@ -112,6 +112,10 @@ struct GSMeasurementOverrides
 	/// device's compile queue while the draws that need it are drawn classically. Prices the asynchronous build.
 	bool runs_sync_compile = false;
 
+	/// -runs-no-continue: a draw that continues a run takes DoRenderHW's whole road too (GSRunsVK::Continue off), to
+	/// price the device work the shortcut skips.
+	bool runs_no_continue = false;
+
 	/// -runs-log <path>: one line per render pass with the machine's counts, and one per compiled run program.
 	std::string runs_log;
 
