@@ -57,6 +57,12 @@ public:
 	/// compile does not pay for its setup. Any thread; for the compile queue when the device opens.
 	static void WarmShaderCompiler();
 
+	/// What the driver's pipeline blob depends on: the driver, never the app's build.
+	static GSCacheFile::Stamp MakePipelineCacheStamp(
+		const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceDriverPropertiesKHR& drv, bool debug);
+	/// A blob read back larger than this starts over: it holds every pipeline any build ever made.
+	static constexpr size_t MAX_PIPELINE_CACHE_BYTES = 128u * 1024 * 1024;
+
 private:
 	// SPIR-V compiled code type
 	using SPIRVCodeType = u32;

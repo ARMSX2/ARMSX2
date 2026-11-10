@@ -457,15 +457,23 @@ GSCacheFile::Stamp VKShaderCache::GetSPIRVStamp(bool debug)
 
 GSCacheFile::Stamp VKShaderCache::GetPipelineCacheStamp(bool debug)
 {
+	return MakePipelineCacheStamp(GSDeviceVK::GetInstance()->GetDeviceProperties(),
+		GSDeviceVK::GetInstance()->GetDeviceDriverProperties(), debug);
+}
+
+GSCacheFile::Stamp VKShaderCache::MakePipelineCacheStamp(
+	const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceDriverPropertiesKHR& drv, bool debug)
+{
 	// Driver binaries: only valid for the driver that made them. pipelineCacheUUID alone is not
 	// trusted, since drivers have shipped updates without changing it; the version and the driver's
-	// own name and build string are in too. The build identity is in because what the blob holds
-	// depends on this build's pipelines, and a new build starting from an empty blob is what stops
-	// pipelines no build uses any more from piling up in it.
-	const VkPhysicalDeviceProperties& props = GSDeviceVK::GetInstance()->GetDeviceProperties();
-	const VkPhysicalDeviceDriverPropertiesKHR& drv = GSDeviceVK::GetInstance()->GetDeviceDriverProperties();
+	// own name and build string are in too.
+	//
+	// The app's build is not. The driver keys each binary by the SPIR-V and state it was made from and
+	// checks that key itself, so a binary for a shader this build no longer makes is never handed out,
+	// only kept. Stamping the blob with the build emptied it at every app update, and every pipeline of
+	// every game went through the driver's compiler again. Pipelines no build uses any more pile up
+	// instead; ReadExistingPipelineCache starts over past MAX_PIPELINE_CACHE_BYTES.
 	GSCacheFile::Stamp stamp;
-	stamp.Add("build", GSCacheFile::GetBuildId());
 	stamp.Add("shader_cache_version", SHADER_CACHE_VERSION);
 	stamp.Add("vendor", props.vendorID);
 	stamp.Add("device", props.deviceID);
@@ -613,6 +621,12 @@ bool VKShaderCache::ReadExistingPipelineCache()
 
 	// The stamp already covers the device, but the blob's own header is what the driver will judge,
 	// so it has to agree too.
+	if (data.size() > MAX_PIPELINE_CACHE_BYTES)
+	{
+		INFO_LOG("Vulkan: starting the pipeline cache over: {} bytes, past {}", data.size(), MAX_PIPELINE_CACHE_BYTES);
+		return false;
+	}
+
 	VK_PIPELINE_CACHE_HEADER header;
 	if (data.size() < sizeof(header))
 		return false;
