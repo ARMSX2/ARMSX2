@@ -823,6 +823,49 @@ namespace
 		EXPECT_EQ(Mismatches(kHeld), 0);
 	}
 
+	// The texture key of a lookup that names nothing is made from block identities kept per block (GSBlockId,
+	// GSTextureCache::BlockHash's cache). Identities kept from before the words went in must not survive their
+	// download: the download marks its pages, so the next key over them is the key of the words. The key is the
+	// same with the per-block cache and without it, so the one without is the reference.
+	TEST_P(DepthFormatMoveHeld, TheBlockIdentitiesOverThePagesAreTakenAfterTheWords)
+	{
+		GSTextureCache::Target* const depth = Hold();
+		ASSERT_NE(depth, nullptr);
+		m_gs->m_mem.MarkAllPagesWritten(); // Hold() wrote kBefore with no mark
+
+		GIFRegTEX0 tex0 = {};
+		tex0.TBP0 = kDepthBP;
+		tex0.TBW = kBW;
+		tex0.PSM = PSMCT32;
+		tex0.TW = 10;
+		tex0.TH = 8;
+		const auto key = [&](bool cache) {
+			GSTextureCache::SetBlockHashCacheEnabled(cache);
+			const GSTextureCache::HashCacheKey k = GSTextureCache::HashCacheKey::Create(tex0, GIFRegTEXA{}, nullptr, nullptr, GSTextureCache::SourceRegion{}, true);
+			GSTextureCache::SetBlockHashCacheEnabled(true);
+			return k;
+		};
+
+		// Identities of the bytes under the hold (kBefore), kept in the cache: what a lookup made before the
+		// move would have left there. Making a key does not materialise the words; reading a texture does.
+		const GSTextureCache::HashCacheKey before = key(true);
+		EXPECT_EQ(Materialised(), 0u);
+
+		GSTextureCache::SetBlockHashVerify(true);
+		depth->m_age = 5;
+		depth->m_used = false;
+		DrawTextured(kDepthBP, PSMCT32, 0x3000, 128, 64);
+		EXPECT_EQ(Materialised(), 1u);
+		EXPECT_EQ(Mismatches(kHeld), 0);
+
+		const GSTextureCache::HashCacheKey after = key(true);
+		EXPECT_TRUE(after == key(false)) << "a block identity kept from before the words went in";
+		EXPECT_FALSE(after == before);
+		const GSTextureCache::BlockHashVerifyReport report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 0u);
+		GSTextureCache::SetBlockHashVerify(false);
+	}
+
 	// A palette load from the pages reads local memory on the CPU: it gets the words.
 	TEST_P(DepthFormatMoveHeld, APaletteLoadGetsTheWords)
 	{
