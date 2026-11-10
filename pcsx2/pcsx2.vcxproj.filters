@@ -1046,6 +1046,9 @@
     <ClCompile Include="GS\GSCacheFile.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
+    <ClCompile Include="GS\GSBlockId.cpp">
+      <Filter>System\Ps2\GS</Filter>
+    </ClCompile>
     <ClCompile Include="GS\GSCompileQueue.cpp">
       <Filter>System\Ps2\GS</Filter>
     </ClCompile>
@@ -2205,6 +2208,9 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSCacheFile.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\GSBlockId.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\GSClut.h">

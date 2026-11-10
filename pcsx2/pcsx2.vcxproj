@@ -476,6 +476,7 @@
     <ClCompile Include="GS\GSBlock.cpp" />
     <ClCompile Include="GS\GSCapture.cpp" />
     <ClCompile Include="GS\GSCacheFile.cpp" />
+    <ClCompile Include="GS\GSBlockId.cpp" />
     <ClCompile Include="GS\GSCompileQueue.cpp" />
     <ClCompile Include="GS\GSClut.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp" />
@@ -1009,6 +1010,7 @@
     <ClInclude Include="GS\GSBlock.h" />
     <ClInclude Include="GS\GSCapture.h" />
     <ClInclude Include="GS\GSCacheFile.h" />
+    <ClInclude Include="GS\GSBlockId.h" />
     <ClInclude Include="GS\GSClut.h" />
     <ClInclude Include="GS\Renderers\Common\GSShaderEnums.h" />
     <ClInclude Include="GS\Renderers\Common\GSDevice.h" />

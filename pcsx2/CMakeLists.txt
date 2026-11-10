@@ -591,6 +591,7 @@ endif()
 set(pcsx2GSSources
 	GS/GS.cpp
 	GS/GSCacheFile.cpp
+	GS/GSBlockId.cpp
 	GS/GSCompileQueue.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
@@ -689,6 +690,7 @@ set(pcsx2GSHeaders
 	GS/GSTables.h
 	GS/GSUtil.h
 	GS/GSVector.h
+	GS/GSBlockId.h
 	GS/GSXXH.h
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendCarry.h
