@@ -903,8 +903,9 @@ void GSRunsVK::Flush(Why why)
 	if (other_vbuf)
 		dev->SetInitialState(cmd);
 
-	// The classic path rebinds all of its state for its next draw.
-	dev->m_current_pipeline = VK_NULL_HANDLE;
+	// The classic path rebinds all of its state for its next draw. m_current_pipeline is left alone: it is the pipeline
+	// the classic path wants bound, and a flush from inside ApplyTFXState or ApplyUtilityState comes after SetPipeline
+	// chose it; the dirty flag makes the apply bind it again.
 	dev->m_current_pipeline_layout = GSDeviceVK::PipelineLayout::Undefined;
 	dev->m_dirty_flags |= GSDeviceVK::DIRTY_FLAG_PIPELINE | GSDeviceVK::DIRTY_FLAG_TFX_UBO | GSDeviceVK::DIRTY_FLAG_TFX_TEXTURES |
 	                      GSDeviceVK::DIRTY_FLAG_VS_PUSH_CONSTANTS | GSDeviceVK::DIRTY_FLAG_VIEWPORT | GSDeviceVK::DIRTY_FLAG_SCISSOR |
