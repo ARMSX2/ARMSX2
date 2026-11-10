@@ -6564,9 +6564,7 @@ bool GSDeviceVK::CompileConvertPipelines()
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoBlendingState();
 	gpb.SetVertexShader(vs);
@@ -6758,9 +6756,7 @@ bool GSDeviceVK::CompilePresentPipelines()
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoBlendingState();
 	gpb.SetVertexShader(vs);
@@ -6813,9 +6809,7 @@ bool GSDeviceVK::CompileInterlacePipelines()
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoDepthTestState();
 	gpb.SetNoBlendingState();
@@ -6864,9 +6858,7 @@ bool GSDeviceVK::CompileMergePipelines()
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoDepthTestState();
 	gpb.SetRenderPass(rp, 0);
@@ -6904,9 +6896,7 @@ bool GSDeviceVK::CompilePostProcessingPipelines()
 	SetPipelineProvokingVertex(m_features, gpb);
 	AddUtilityVertexAttributes(gpb);
 	gpb.SetPipelineLayout(m_utility_pipeline_layout);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 	gpb.SetNoCullRasterizationState();
 	gpb.SetNoDepthTestState();
 	gpb.SetNoBlendingState();
@@ -7161,9 +7151,7 @@ bool GSDeviceVK::CompileImGuiPipeline()
 	gpb.SetNoDepthTestState();
 	gpb.SetBlendAttachment(0, true, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD,
 		VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD);
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 
 	m_imgui_pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(), false);
 	if (!m_imgui_pipeline)
@@ -7957,9 +7945,7 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	{
 		gpb.SetLineRasterizationMode(VK_LINE_RASTERIZATION_MODE_BRESENHAM_EXT);
 	}
-	gpb.SetDynamicViewportAndScissorState();
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	AddCachedDynamicState(gpb);
 
 	// Shaders
 	gpb.SetVertexShader(vs);
@@ -9294,6 +9280,24 @@ void GSDeviceVK::SetVSPushConstants(u32 base_vertex, u32 base_index, bool force_
 	}
 }
 
+void GSDeviceVK::AddCachedDynamicState(Vulkan::GraphicsPipelineBuilder& gpb)
+{
+	gpb.SetDynamicViewportAndScissorState();
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+}
+
+void GSDeviceVK::SetStencilCounterResolveState(Vulkan::GraphicsPipelineBuilder& gpb, u32 rgb_mask)
+{
+	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+	gpb.SetNoCullRasterizationState();
+	gpb.SetNoDepthTestState();
+	gpb.SetNoStencilState();
+	gpb.SetNoBlendingState();
+	gpb.SetColorWriteMask(0, rgb_mask);
+	AddCachedDynamicState(gpb);
+}
+
 VkPipeline GSDeviceVK::GetStencilCounterResolvePipeline(u32 rgb_mask)
 {
 	pxAssert(rgb_mask != 0 && rgb_mask < m_stencil_counter_resolve_pipelines.size());
@@ -9315,17 +9319,7 @@ VkPipeline GSDeviceVK::GetStencilCounterResolvePipeline(u32 rgb_mask)
 		SetPipelineProvokingVertex(m_features, gpb);
 		gpb.SetPipelineLayout(m_stencil_counter_pipeline_layout);
 		gpb.SetRenderPass(m_utility_color_render_pass_load, 0);
-		gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-		gpb.SetNoCullRasterizationState();
-		gpb.SetNoDepthTestState();
-		gpb.SetNoStencilState();
-		gpb.SetNoBlendingState();
-		gpb.SetColorWriteMask(0, rgb_mask);
-		gpb.SetDynamicViewportAndScissorState();
-		// Dynamic like every other pipeline's: a pipeline that holds them static overwrites them when bound, and the
-		// device would skip setting them again for a draw that wants the values it last set.
-		gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-		gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+		SetStencilCounterResolveState(gpb, rgb_mask);
 		gpb.SetVertexShader(vs);
 		gpb.SetFragmentShader(fs);
 		pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);

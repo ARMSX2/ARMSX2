@@ -29,6 +29,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_gpu_driver_profile_tests.cpp
 	gs_driver_report_tests.cpp
 	gs_vulkan_device_rules_tests.cpp
+	gs_vk_cached_dynamic_state_tests.cpp
 	gs_gpu_profile_tests.cpp
 	gs_draw_staging_tests.cpp
 	gs_draw_env_snapshot_tests.cpp

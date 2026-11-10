@@ -541,12 +541,24 @@ void Vulkan::GraphicsPipelineBuilder::SetNoBlendingState()
 
 void Vulkan::GraphicsPipelineBuilder::AddDynamicState(VkDynamicState state)
 {
+	if (HasDynamicState(state))
+		return;
 	pxAssert(m_dynamic_state.dynamicStateCount < MAX_DYNAMIC_STATE);
 
 	m_dynamic_state_values[m_dynamic_state.dynamicStateCount] = state;
 	m_dynamic_state.dynamicStateCount++;
 	m_dynamic_state.pDynamicStates = m_dynamic_state_values.data();
 	m_ci.pDynamicState = &m_dynamic_state;
+}
+
+bool Vulkan::GraphicsPipelineBuilder::HasDynamicState(VkDynamicState state) const
+{
+	for (u32 i = 0; i < m_dynamic_state.dynamicStateCount; i++)
+	{
+		if (m_dynamic_state_values[i] == state)
+			return true;
+	}
+	return false;
 }
 
 void Vulkan::GraphicsPipelineBuilder::SetDynamicViewportAndScissorState()
