@@ -962,8 +962,10 @@ public:
 	void ExecRecordSlot(const GSBackQueue::RecordSlot& slot);
 	virtual void ExecVsyncRecord(const GSBackQueue::VsyncRecord& rec);
 
-	template <typename T>
-	void PushRecord(GSBackQueue::RecordType type, const T& rec)
+	// Pushes a record built in place: `fill` writes it straight into the ring slot. A draw record is 1,664 bytes, so
+	// building it on the stack and copying it into the slot cost a third of the record's copying.
+	template <typename T, typename Fill>
+	void PushRecordInPlace(GSBackQueue::RecordType type, Fill&& fill)
 	{
 		// One producer: the ring is single-producer, and the MTGS thread is the only one allowed.
 		pxAssert(std::this_thread::get_id() == m_chan->drain_thread);
@@ -973,7 +975,7 @@ public:
 			if (slot)
 			{
 				slot->type = type;
-				std::memcpy(slot->As<T>(), &rec, sizeof(T));
+				fill(*slot->As<T>());
 				m_chan->ring.CommitPush();
 				m_chan->sema.NotifyOfWork();
 				break;
@@ -983,6 +985,12 @@ public:
 				return GSBackQueue::RecordRing::Capacity() - m_chan->ring.Size() >= GSBackQueue::Channel::kRingRefill;
 			});
 		}
+	}
+
+	template <typename T>
+	void PushRecord(GSBackQueue::RecordType type, const T& rec)
+	{
+		PushRecordInPlace<T>(type, [&rec](T& dst) { std::memcpy(&dst, &rec, sizeof(T)); });
 	}
 
 	GSVector4i GetTEX0Rect(GSDrawingContext prev_ctx);

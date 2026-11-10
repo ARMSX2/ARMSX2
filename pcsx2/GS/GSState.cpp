@@ -4083,22 +4083,24 @@ void GSState::FlushPrim()
 		m_vertex->maxcount = fresh_maxcount;
 		m_index->buff = fresh_ibuff;
 
-		GSBackQueue::DrawRecord rec;
-		std::memcpy(&rec.draw_env, &m_prev_env, sizeof(rec.draw_env));
-		std::memcpy(&rec.next_env, &m_env, sizeof(rec.next_env));
-		rec.next_v = m_v;
-		rec.draw_rect = temp_draw_rect;
-		rec.native_draw_rect = temp_native_draw_rect;
-		rec.vertex = &node->vb;
-		rec.index = &node->ib;
-		rec.node = node;
-		rec.draw_serial = s_n;
-		rec.backed_up_ctx = m_backed_up_ctx;
-		rec.dirty_gs_regs = m_dirty_gs_regs;
-		rec.flush_reason = m_state_flush_reason;
-		rec.channel_shuffle_finish = m_channel_shuffle_finish;
-		rec.packed_uv_hack_flag = m_isPackedUV_HackFlag;
-		rec.priv = priv;
+		// The record is written straight into its ring slot; the consumer releases the node after the tail runs.
+		PushRecordInPlace<GSBackQueue::DrawRecord>(GSBackQueue::RecordType::Draw, [&](GSBackQueue::DrawRecord& rec) {
+			CopyDrawingEnvironment(rec.draw_env, m_prev_env);
+			CopyDrawingEnvironment(rec.next_env, m_env);
+			rec.next_v = m_v;
+			rec.draw_rect = temp_draw_rect;
+			rec.native_draw_rect = temp_native_draw_rect;
+			rec.vertex = &node->vb;
+			rec.index = &node->ib;
+			rec.node = node;
+			rec.draw_serial = s_n;
+			rec.backed_up_ctx = m_backed_up_ctx;
+			rec.dirty_gs_regs = m_dirty_gs_regs;
+			rec.flush_reason = m_state_flush_reason;
+			rec.channel_shuffle_finish = m_channel_shuffle_finish;
+			rec.packed_uv_hack_flag = m_isPackedUV_HackFlag;
+			rec.priv = priv;
+		});
 
 		// m_channel_shuffle_finish is written on BOTH sides: the front's
 		// ApplyTEX0 sets it as a one-shot "abort shuffle skip" message, while
@@ -4109,9 +4111,6 @@ void GSState::FlushPrim()
 		// the member IS the authoritative copy: leave it alone.
 		if (m_mem_target != this)
 			m_channel_shuffle_finish = false;
-
-		// The consumer releases the node after the tail runs.
-		PushRecord(GSBackQueue::RecordType::Draw, rec);
 
 		// GSC_IRem clears SCANMSK in the parse environment at the start of the draw, and on a
 		// single object that clear lasts until the game writes SCANMSK again. On the split the
@@ -4178,8 +4177,8 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	// at m_prev_env around this call, so no re-aim is needed); on the back
 	// object (GV7-1) this becomes the real staging install, which also aims the
 	// draw pointers the way FlushDraw does today.
-	std::memcpy(&m_prev_env, &rec.draw_env, sizeof(m_prev_env));
-	std::memcpy(&m_env, &rec.next_env, sizeof(m_env));
+	CopyDrawingEnvironment(m_prev_env, rec.draw_env);
+	CopyDrawingEnvironment(m_env, rec.next_env);
 	m_v = rec.next_v;
 	temp_draw_rect = rec.draw_rect;
 	temp_native_draw_rect = rec.native_draw_rect;
