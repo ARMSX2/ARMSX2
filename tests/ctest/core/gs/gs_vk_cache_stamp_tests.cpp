@@ -5,6 +5,7 @@
 // driver, which the binaries in it belong to, and never the app's build, which changes them not at all.
 
 #include "GS/GSCacheFile.h"
+#include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 
 #include <gtest/gtest.h>
@@ -59,4 +60,36 @@ TEST(GSVkCacheStamp, PipelineBlobFollowsEveryPartOfTheDriver)
 	d.props.deviceID++;
 	EXPECT_NE(d.Digest(), base.Digest());
 	EXPECT_NE(VKShaderCache::MakePipelineCacheStamp(base.props, base.drv, true).GetDigest(), base.Digest());
+}
+
+// A key read back from a recorded list is built only if it could have come from a draw. Every field a
+// draw can set must pass, or the key is dropped from the list at each start and its pipeline is
+// compiled on the GS thread at the first draw instead of ahead of it.
+TEST(GSVkCacheStamp, RecordedKeysThatDrawsMakeAreLoadable)
+{
+	GSDeviceVK::PipelineSelector p;
+	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
+	p.topology = static_cast<u32>(GSHWDrawConfig::Topology::Triangle);
+	p.rt = 1;
+	p.ds = 1;
+	p.line_width = 1;
+	p.feedback_loop_flags = GSDeviceVK::FeedbackLoopFlag_ReadAndWriteRT | GSDeviceVK::FeedbackLoopFlag_ReadAndWriteDepth;
+	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
+	p.raster_order = 1;
+	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
+	p.stencil_counter = 2;
+	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
+}
+
+TEST(GSVkCacheStamp, RecordedKeysNoDrawMakesAreNot)
+{
+	GSDeviceVK::PipelineSelector p;
+	p.stencil_counter = 3;
+	EXPECT_FALSE(GSDeviceVK::IsLoadableTFXKey(p));
+	GSDeviceVK::PipelineSelector q;
+	q.topology = 3;
+	EXPECT_FALSE(GSDeviceVK::IsLoadableTFXKey(q));
+	GSDeviceVK::PipelineSelector r;
+	r.pad = 1;
+	EXPECT_FALSE(GSDeviceVK::IsLoadableTFXKey(r));
 }

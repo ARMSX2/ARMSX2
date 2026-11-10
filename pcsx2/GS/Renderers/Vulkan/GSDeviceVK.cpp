@@ -8100,29 +8100,26 @@ namespace
 		return (GetPhysicalMemory() >= 6 * GB) ? 2048 : 768;
 	}
 
-	/// Keys come from a list this build wrote (the stamp holds the build identity) and each record
-	/// passed its checksum, so these always hold. They are checked anyway, since a bad key would be
-	/// compiled on a worker thread: every field that indexes a table or names an enum, and every bit
-	/// a real key leaves zero.
-	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
-	{
-		// The bytes after the last member are padding, zero in every selector a draw builds.
-		static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
-											 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
-		static_assert(USED_BYTES <= sizeof(GSDeviceVK::PipelineSelector));
-		u8 tail[sizeof(GSDeviceVK::PipelineSelector) - USED_BYTES];
-		std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
-		if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
-			return false;
-
-		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
-			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
-			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
-			   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
-			   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
-			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
-	}
 } // namespace
+
+bool GSDeviceVK::IsLoadableTFXKey(const PipelineSelector& p)
+{
+	// The bytes after the last member are padding, zero in every selector a draw builds.
+	static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
+										 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
+	static_assert(USED_BYTES <= sizeof(PipelineSelector));
+	u8 tail[sizeof(PipelineSelector) - USED_BYTES];
+	std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
+	if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
+		return false;
+
+	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
+		   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
+		   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
+		   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
+		   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
+		   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
+}
 
 std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
 {

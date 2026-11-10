@@ -575,6 +575,12 @@ public:
 	static_assert(sizeof(PipelineSelector) == 32, "Pipeline selector is 32 bytes");
 	// TFX pipeline key layout: end.
 
+	/// Whether a key read back from a recorded list may be built. Keys come from a list written under
+	/// this key layout and each record passed its checksum, so these always hold. They are checked
+	/// anyway, since a bad key would be compiled on a worker thread: every field that indexes a table
+	/// or names an enum, and every bit a real key leaves zero.
+	static bool IsLoadableTFXKey(const PipelineSelector& p);
+
 	struct PipelineSelectorHash
 	{
 		std::size_t operator()(const PipelineSelector& e) const noexcept
