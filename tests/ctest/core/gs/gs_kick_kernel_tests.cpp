@@ -2527,7 +2527,7 @@ namespace
 	}
 
 	std::vector<GIFPackedReg> BuildPacket(const LayoutCase& lc, const std::vector<VertexSpec>& verts,
-		u32 verts_per_tag, bool reg_writes_between)
+		u32 verts_per_tag, bool reg_writes_between, bool blend_writes_between = false)
 	{
 		std::vector<GIFPackedReg> out;
 		const u32 stride = static_cast<u32>(lc.descs.size());
@@ -2541,6 +2541,14 @@ namespace
 				// XYOFFSET on the live context, alternating, which is a register
 				// TestDrawChanged reacts to.
 				AppendRegWrite(out, 0x18, (n & 2) ? 0u : 0x0000002000000010ull);
+			}
+			if (blend_writes_between)
+			{
+				// TEST on the live context, alternating between two depth tests: a
+				// register TestDrawChanged reacts to that is neither XYOFFSET nor a
+				// change of primitive class, so the position handler asks
+				// CheckFlushes only at a vertex without ADC.
+				AppendRegWrite(out, 0x47, (n & 1) ? 0x30000ull : 0x50000ull);
 			}
 			AppendTag(out, lc.descs, take);
 			std::vector<GIFPackedReg> body(take * stride);
@@ -2991,4 +2999,60 @@ TEST(GsKickKernel, RingPoisonGuardIsNotVacuous)
 	clean->KickCallDyn(GS_TRIANGLESTRIP, stream.data() + 6 * 3, 6 * 3, false);
 	wrecked->KickCallDyn(GS_TRIANGLESTRIP, stream.data() + 6 * 3, 6 * 3, false);
 	EXPECT_LT(wrecked->m_index->tail, clean->m_index->tail);
+}
+
+// A new draw's first vertices. A register other than XYOFFSET is written before
+// every tag, so each tag arrives with a draw pending and a register dirty, and
+// the per-qword position handler asks CheckFlushes at the tag's first vertex
+// without ADC and not before. The fused handler replays only that vertex and
+// kicks the ADC vertices ahead of it as a batch, so the flush has to land at the
+// same vertex: streams with no ADC, with one to five leading ADC vertices in
+// every tag, and with every vertex ADC.
+TEST(GsKickKernel, LayoutDrawStartFlushesAtTheSameVertex)
+{
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple};
+	u32 flushed_runs = 0;
+	for (const LayoutCase* lc : cases)
+	{
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
+		{
+			if (!KickProbe::LayoutShipsForDyn(lc->layout, prim))
+				continue;
+			for (u32 per_tag : {4u, 9u, 20u})
+			{
+				for (u32 leading : {0u, 1u, 2u, 3u, 5u, 99u})
+				{
+					for (bool buffering : {false, true})
+					{
+						SCOPED_TRACE(::testing::Message() << lc->name << " prim=" << prim << " per_tag=" << per_tag
+						                                  << " leading=" << leading << " buffering=" << buffering);
+						std::vector<VertexSpec> v = MakeDrawnStream(120, 15000 + per_tag * 7 + leading);
+						for (u32 i = 0; i < v.size(); i++)
+							v[i].adc = (i % per_tag) < leading;
+
+						KickSetup s;
+						s.draw_buffering = buffering;
+						const DrawBufferingGuard guard(s.draw_buffering);
+						const AutoFlushGuard af_guard(s.autoflush);
+						const std::vector<GIFPackedReg> packet = BuildPacket(*lc, v, per_tag, false, true);
+						auto run = [&](bool fuse) {
+							auto p = MakeProbe(s, prim, true);
+							SeedLatchedState(*p);
+							if (!fuse)
+								p->UnpublishLayoutHandlers();
+							p->FeedPacket(packet.data(), static_cast<u32>(packet.size()));
+							return p;
+						};
+						auto replay = run(false);
+						auto fused = run(true);
+						ExpectSameKickResult(*replay, *fused);
+						if (leading != 99 && replay->m_draws > 3)
+							flushed_runs++;
+					}
+				}
+			}
+		}
+	}
+	// The register write does end draws, or none of the above reached a flush.
+	EXPECT_GT(flushed_runs, 100u);
 }

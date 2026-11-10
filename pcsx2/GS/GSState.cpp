@@ -2952,8 +2952,33 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		const u32 off_rgba = m_packed_layout.off_rgba;
 		const u32 off_xyz = m_packed_layout.off_xyz;
 
-		while (done < count && m_dirty_gs_regs)
+		// CheckFlushes does nothing without a pending draw, whatever is dirty, so
+		// the replay is only needed while there is one. And of the vertices
+		// replayed, the per-qword position handler asks CheckFlushes only for one
+		// that has no ADC bit (or when the primitive class changed or XYOFFSET is
+		// dirty): a vertex with ADC set is kicked and nothing else, and a run of
+		// them is the per-vertex batch. So the replay proper is one vertex at each
+		// place the handler would ask.
+		while (done < count && m_dirty_gs_regs && m_index->tail != 0)
 		{
+			const bool asks_always = GSUtil::GetPrimClass(m_prev_env.PRIM.PRIM) != GSUtil::GetPrimClass(m_env.PRIM.PRIM) ||
+			                         (m_dirty_gs_regs & (1 << DIRTY_REG_XYOFFSET)) != 0;
+			u32 quiet = 0;
+			if (!asks_always)
+			{
+				while (done + quiet < count && r[(done + quiet) * stride + off_xyz].XYZ2.Skip())
+					quiet++;
+			}
+			if (quiet != 0)
+			{
+				if constexpr (auto_flush)
+					KickPackedStagedRun<prim, layout>(r + done * stride, quiet);
+				else
+					KickPackedBatchLegacy<prim, layout>(r + done * stride, quiet);
+				done += quiet;
+				continue;
+			}
+
 			const GIFPackedReg* RESTRICT rv = r + done * stride;
 			ReplayPackedQword(reg_a, rv + off_a);
 			if constexpr (GSVertexKernels::LayoutHasSeparateRgba(layout))
