@@ -3170,6 +3170,7 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 
 	// Everything a pipeline build reads (features, layouts, render passes, the TFX source) exists now.
 	m_compile_queue.Start(GSCompileQueue::GetDefaultWorkerCount(), "GS compile");
+	m_compile_queue.Submit(GSCompileQueue::Priority::Idle, []() { VKShaderCache::WarmShaderCompiler(); });
 
 	if (!CreateBuffers())
 		return false;

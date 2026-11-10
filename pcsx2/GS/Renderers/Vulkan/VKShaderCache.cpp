@@ -382,6 +382,34 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::CompileShaderToSPV(
 	return ret;
 }
 
+void VKShaderCache::WarmShaderCompiler()
+{
+	// The first compile of a process loads the compiler and builds glslang's tables of built-ins, once
+	// per stage: 57 ms on the M2 before the first shader's own work. With the shaders the device needs
+	// at startup read from the cache, that would otherwise fall on the first draw that needs a new one.
+	if (!OpenShaderCompiler())
+		return;
+	static constexpr const char* sources[] = {
+		"#version 460 core\nlayout(location = 0) in vec4 a;\nvoid main() { gl_Position = a; }\n",
+		"#version 460 core\nlayout(location = 0) out vec4 o;\nvoid main() { o = vec4(1.0); }\n",
+	};
+	static constexpr shaderc_shader_kind kinds[] = {shaderc_glsl_vertex_shader, shaderc_glsl_fragment_shader};
+	for (size_t i = 0; i < std::size(sources); i++)
+	{
+		shaderc_compile_options_t options = dyn_shaderc::shaderc_compile_options_initialize();
+		if (!options)
+			return;
+		dyn_shaderc::shaderc_compile_options_set_source_language(options, shaderc_source_language_glsl);
+		dyn_shaderc::shaderc_compile_options_set_target_env(options, shaderc_target_env_vulkan, 0);
+		dyn_shaderc::shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
+		const shaderc_compilation_result_t result = dyn_shaderc::shaderc_compile_into_spv(dyn_shaderc::s_compiler,
+			sources[i], std::strlen(sources[i]), kinds[i], "warm", "main", options);
+		if (result)
+			dyn_shaderc::shaderc_result_release(result);
+		dyn_shaderc::shaderc_compile_options_release(options);
+	}
+}
+
 
 VKShaderCache::VKShaderCache() = default;
 

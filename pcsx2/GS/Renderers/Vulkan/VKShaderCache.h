@@ -53,6 +53,10 @@ public:
 	VkShaderModule GetFragmentShader(std::string_view shader_code);
 	VkShaderModule GetComputeShader(std::string_view shader_code);
 
+	/// Loads the GLSL compiler and runs it once on a trivial shader of each stage, so the first real
+	/// compile does not pay for its setup. Any thread; for the compile queue when the device opens.
+	static void WarmShaderCompiler();
+
 private:
 	// SPIR-V compiled code type
 	using SPIRVCodeType = u32;
