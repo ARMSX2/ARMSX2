@@ -117,13 +117,16 @@ namespace
 
 		/// Swaps a "pack" texture into the hash-cache entry the draws use, as the pack loader does
 		/// when a file finishes loading. Alpha range 0-255, as the loader reports for ASTC.
+		///
+		/// The loader injects under the texel key, which the draws use while a pack is loaded. These draws run
+		/// with no pack loaded, so they look up the raw key (raw_blocks true), and the texture goes under that.
 		void LoadPackTexture()
 		{
 			GSTexture* const tex = g_gs_device->CreateTexture(512, 512, 1, GSTexture::Format::Color);
 			ASSERT_NE(tex, nullptr);
 			const GIFRegTEXA texa = {};
 			const GSTextureCache::HashCacheKey key =
-				GSTextureCache::HashCacheKey::Create(TextureTEX0(), texa, nullptr, nullptr, GSTextureCache::SourceRegion(), false);
+				GSTextureCache::HashCacheKey::Create(TextureTEX0(), texa, nullptr, nullptr, GSTextureCache::SourceRegion(), true);
 			g_texture_cache->InjectHashCacheTexture(key, tex, {0, 255}, false);
 		}
 	};

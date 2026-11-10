@@ -5,9 +5,11 @@
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
+#include "GS/Renderers/HW/GSReadbackStats.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 
 #include "common/Assertions.h"
+#include "common/HostSys.h"
 #include "common/Console.h"
 #include "common/BitUtils.h"
 
@@ -1153,10 +1155,18 @@ void GSDownloadTextureVK::Flush()
 			GSDeviceVK::GetInstance()->EndRenderPass();
 
 		GSDeviceVK::GetInstance()->ExecuteCommandBufferForReadback();
+		if (GSReadbackStats::s_read)
+			GSReadbackStats::OnReadWait(GSReadbackStats::s_last_submit_us, GSReadbackStats::s_last_wait_us);
 	}
 	else
 	{
+		const GSReadbackStats::Clock::time_point rb_t0 =
+			GSReadbackStats::s_read ? GSReadbackStats::Clock::now() : GSReadbackStats::Clock::time_point();
+		const u64 block_start = GetCPUTicks();
 		GSDeviceVK::GetInstance()->WaitForFenceCounter(m_copy_fence_counter);
+		GSDeviceVK::GetInstance()->NoteReadbackBlock(GetCPUTicks() - block_start);
+		if (GSReadbackStats::s_read)
+			GSReadbackStats::OnReadWait(0.0, GSReadbackStats::Us(rb_t0, GSReadbackStats::Clock::now()));
 	}
 }
 

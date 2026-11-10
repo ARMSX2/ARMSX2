@@ -11,7 +11,9 @@
 
 #pragma once
 
+#include "GS/GSBlockId.h"
 #include "GS/GSLocalMemory.h"
+#include "GS/Renderers/HW/GSTextureCache.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -92,14 +94,19 @@ namespace GSWriteStamps
 			return blocks;
 		}
 
-		/// The blocks whose bytes changed and that are not marked: writes the block hash cache would not see.
+		/// The blocks whose bytes changed and that are not marked: writes the block hash cache would not see. A
+		/// writer may give a block the identity of what it wrote instead of leaving it marked
+		/// (GSTextureCache::NoteBlocksFilled); such a block is seen, if the identity is that of its bytes.
 		std::vector<u32> UnmarkedChangedBlocks() const
 		{
 			std::vector<u32> blocks;
 			for (const u32 block : ChangedBlocks())
 			{
-				if (!m_mem.HashDirty(block))
-					blocks.push_back(block);
+				if (m_mem.HashDirty(block))
+					continue;
+				if (g_texture_cache && g_texture_cache->BlockHash(m_mem, block) == GSBlockId::Hash(m_mem.BlockPtr(block)))
+					continue;
+				blocks.push_back(block);
 			}
 			return blocks;
 		}

@@ -4517,9 +4517,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     // MTGS ring and must not be posted from the UI thread), because the GS thread owns the cache's
     // lifetime: from here it could be destroyed underneath us.
     //
-    // Fire-and-forget: the UI thread never waits (onPause is on a deadline). Rate-limited, since each
-    // save serialises the whole cache, and while that runs the driver holds the cache's lock against
-    // new pipelines.
+    // Fire-and-forget: the UI thread never waits (onPause is on a deadline). Rate-limited only against a
+    // burst of lifecycle events: a save writes nothing when nothing changed since the last one, and a
+    // paused game makes no new pipelines. It was 120 s, so leaving the app twice within two minutes and
+    // then swiping it away lost everything learned since the first time.
     if (!VMManager::HasValidVM() || !MTGS::IsOpen())
         return;
     static std::atomic<s64> s_last_flush_time{0};
@@ -4527,7 +4528,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    constexpr s64 MIN_FLUSH_INTERVAL_SEC = 120;
+    constexpr s64 MIN_FLUSH_INTERVAL_SEC = 5;
     s64 last = s_last_flush_time.load(std::memory_order_acquire);
     if (last != 0 && (now - last) < MIN_FLUSH_INTERVAL_SEC)
         return;

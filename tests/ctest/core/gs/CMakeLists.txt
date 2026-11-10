@@ -94,6 +94,8 @@ add_pcsx2_test(gs_vertex_tests
 	gs_ktx_tests.cpp
 	gs_texture_cache_grid_tests.cpp
 	gs_texture_cache_move_tests.cpp
+	gs_read_stash_tests.cpp
+	gs_depth_format_move_tests.cpp
 	gs_target_update_tests.cpp
 	gs_target_rebase_tests.cpp
 	gs_target_rebase_integration_tests.cpp
@@ -109,10 +111,13 @@ add_pcsx2_test(gs_vertex_tests
 	gs_lean_target_tests.cpp
 	gs_cache_file_tests.cpp
 	gs_compile_queue_tests.cpp
+	gs_vk_cache_stamp_tests.cpp
 	gs_hash_cache_inject_tests.cpp
 	gs_hash_cache_limits_tests.cpp
 	gs_xxh_block_hasher_tests.cpp
 	gs_texture_replacement_worker_tests.cpp
+	gs_texture_name_pin_tests.cpp
+	gs_block_id_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -50,6 +51,7 @@
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/GS.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
+#include "pcsx2/GS/Renderers/HW/GSTextureCache.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
 #include "pcsx2/GS/Renderers/Common/GSMeasurementOverrides.h"
 #if defined(ARMSX2_USE_ADRENOTOOLS)
@@ -63,6 +65,7 @@
 #include "pcsx2/GS/GSXXH.h"
 #include "pcsx2/GS/Renderers/Common/GSRenderer.h"
 #include "pcsx2/GS/Renderers/HW/GSBurstMemo.h"
+#include "pcsx2/GS/Renderers/HW/GSReadbackStats.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/HW/GSTextureCache.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
@@ -478,6 +481,7 @@ static u64 s_total_sprite_edge_clamp_draws = 0;
 static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
+static bool s_vm_hash_flush = false;
 static bool s_verify_hash_memo = false;
 static bool s_lean_check = false;
 static bool s_verify_block_hash = false;
@@ -779,9 +783,36 @@ void Host::BeginPresentFrame()
 	// anything reads it), so a change that must leave local memory alone is checked on this too.
 	if (s_vm_hash && g_gs_renderer)
 	{
+		// Readback lane scaffolding: every target written back first, so the hash is of local memory as a
+		// reader would find it, whichever targets hold what.
+		if (s_vm_hash_flush)
+			g_gs_renderer->ReadbackTextureCache();
 		const u64 hash = GSXXH3_64bits(g_gs_renderer->m_mem.m_vm8, GSLocalMemory::m_vmsize);
 		Console.WriteLn(fmt::format("GS local memory hash: loop {} frame {} {:016x}", s_loop_number, s_dump_frame_number, hash));
 	}
+
+	// Readback statistics of the frame just finished (measurement scaffolding of the readback lane).
+	if (GSReadbackStats::s_enabled)
+	{
+		const GSReadbackStats::Counters& c = GSReadbackStats::s_frame;
+		// This thread's (the GS thread's) CPU time since the last frame.
+		static u64 s_last_gs_cpu_ns = 0;
+		timespec ts = {};
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+		const u64 gs_cpu_ns = static_cast<u64>(ts.tv_sec) * 1000000000ull + static_cast<u64>(ts.tv_nsec);
+		const u64 gs_cpu_us = s_last_gs_cpu_ns ? (gs_cpu_ns - s_last_gs_cpu_ns) / 1000 : 0;
+		s_last_gs_cpu_ns = gs_cpu_ns;
+		Console.WriteLn(fmt::format("@RBF@ loop {} frame {} requests {} reads {} round_trips {} submits {} request_us {:.0f} "
+									"flush_draws_us {:.0f} record_us {:.0f} submit_us {:.0f} wait_us {:.0f} map_write_us {:.0f} read_px {} "
+									"fifo_bytes {} fifo_hash {:016x} stashed {} served {} held {} materialised {} dropped {} gs_cpu_us {}",
+			s_loop_number, s_dump_frame_number, c.requests, c.reads, c.round_trips, c.submits, c.request_us, c.flush_draws_us,
+			c.record_us, c.submit_us, c.wait_us, c.map_write_us, c.read_pixels, c.fifo_bytes, c.fifo_hash, c.stashed, c.served,
+			g_texture_cache ? g_texture_cache->GetHeldStats().held : 0, g_texture_cache ? g_texture_cache->GetHeldStats().materialised : 0,
+			g_texture_cache ? g_texture_cache->GetHeldStats().dropped : 0, gs_cpu_us));
+		GSReadbackStats::s_frame = {};
+	}
+	GSReadbackStats::s_loop = static_cast<int>(s_loop_number);
+	GSReadbackStats::s_frame_no = static_cast<int>(s_dump_frame_number) + 1;
 
 	if (GSIsHardwareRenderer())
 	{
@@ -1205,6 +1236,8 @@ static void PrintCommandLineHelp(const char* progname)
 						 "size; it still grows on demand to its cap.\n");
 	std::fprintf(stderr, "  -readback-kick-passes <n>: Vulkan only. In a frame near a readback, submit at a render-pass "
 						 "boundary only once n passes are unsubmitted (default 8).\n");
+	std::fprintf(stderr, "  -readback-kick-draws <n>: Vulkan only. In a frame near a readback, also end a render pass "
+						 "to submit once n draws are unsubmitted (default 256).\n");
 	std::fprintf(stderr, "  -vertex-ring-no-grow: Vulkan only. The vertex ring keeps its starting size and waits for "
 						 "the GPU when full.\n");
 	std::fprintf(stderr, "  -texture-ring-no-grow: Vulkan only. The texture upload ring keeps its starting size and "
@@ -1276,6 +1309,11 @@ static void PrintCommandLineHelp(const char* progname)
 						 "packets, so the two arms compare word for word.\n");
 	std::fprintf(stderr, "  -ladder-out <path>: Where to write the ladder rungs. Only used if -ladder is used.\n");
 	std::fprintf(stderr, "  -vmhash: Log a hash of GS local memory at every presented frame.\n");
+	std::fprintf(stderr, "  -vmhash-flush: -vmhash, with every texture cache target read back into local memory first.\n");
+	std::fprintf(stderr, "  -readback-stats: Log per frame the render-target readbacks, their GPU round trips and wait time,\n"
+						 "    and a hash of the bytes handed to the EE (@RBF@ lines).\n");
+	std::fprintf(stderr, "  -readback-trace: -readback-stats plus one @RBT@ line per readback request and per target read.\n");
+	std::fprintf(stderr, "  -readback-fifo-dump <file>: Write every GS-to-EE transfer's bytes to <file> (loop, frame, size, bytes).\n");
 	std::fprintf(stderr, "  -verify-hash-memo: Check the hardware renderer's memo of texture hashes and the write stamps "
 						 "it relies on. Every memo hit also hashes the texture afresh and compares, and at every frame "
 						 "boundary each page of local memory is hashed to find stores that were not marked. Prints one "
@@ -1836,9 +1874,36 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_perf_enable = true;
 				continue;
 			}
+			else if (CHECK_ARG("-readback-stats"))
+			{
+				GSReadbackStats::s_enabled = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-readback-fifo-dump"))
+			{
+				GSReadbackStats::s_fifo_dump = std::fopen(argv[++i], "wb");
+				if (!GSReadbackStats::s_fifo_dump)
+				{
+					ArgError("-readback-fifo-dump: cannot open the file.");
+					return false;
+				}
+				continue;
+			}
+			else if (CHECK_ARG("-readback-trace"))
+			{
+				GSReadbackStats::s_enabled = true;
+				GSReadbackStats::s_trace = true;
+				continue;
+			}
 			else if (CHECK_ARG("-vmhash"))
 			{
 				s_vm_hash = true;
+				continue;
+			}
+			else if (CHECK_ARG("-vmhash-flush"))
+			{
+				s_vm_hash = true;
+				s_vm_hash_flush = true;
 				continue;
 			}
 			else if (CHECK_ARG("-verify-hash-memo"))
@@ -2118,6 +2183,18 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				// Not a setting: what a submit costs is a property of the driver, priced per device.
 				g_gs_measurement_overrides.readback_kick_passes = passes.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-readback-kick-draws"))
+			{
+				const std::optional<u32> draws = ParseNumericArg<u32>("-readback-kick-draws", argv[++i]);
+				if (!draws.has_value() || draws.value() == 0)
+				{
+					ArgError("-readback-kick-draws: expected a draw count above zero.");
+					return false;
+				}
+				// Not a setting: the spacing that pays depends on the driver's cost of ending a pass.
+				g_gs_measurement_overrides.readback_kick_draws = draws.value();
 				continue;
 			}
 			else if (CHECK_ARG("-texture-ring-no-grow"))
@@ -3293,6 +3370,19 @@ void Host::PumpMessagesOnCPUThread()
 	{
 		s_clear_shader_cache_frame = -1;
 		GSClearShaderCache([](u32 removed) { INFO_LOG("gsrunner: cleared the shader cache ({} files)", removed); });
+	}
+
+	// Readback lane scaffolding: the replaying thread (the EE side of GS-to-EE reads) CPU time per frame.
+	if (GSReadbackStats::s_enabled)
+	{
+		static u64 s_last_ee_cpu_ns = 0;
+		timespec ts = {};
+		clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+		const u64 now = static_cast<u64>(ts.tv_sec) * 1000000000ull + static_cast<u64>(ts.tv_nsec);
+		if (s_last_ee_cpu_ns != 0)
+			Console.WriteLn(fmt::format("@EEF@ loop {} frame {} ee_cpu_us {}", GSDumpReplayer::GetLoopCount(),
+				GSDumpReplayer::GetFrameNumber(), (now - s_last_ee_cpu_ns) / 1000));
+		s_last_ee_cpu_ns = now;
 	}
 
 	// update GS thread copy of frame number

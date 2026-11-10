@@ -28,6 +28,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 
 namespace
@@ -373,6 +374,64 @@ TEST_F(GSClutTest, ReadSerialMovesWhenTheExpansionIsRebuilt)
 // into a 32-bit palette, so that is the configuration the road is refused for, and only
 // there. This pins the predicate directly; if the shader ever learns either rule, this is
 // the test that has to change with it.
+// The alpha range of an expanded palette (what a draw's alpha test and blend decisions read): the smallest and
+// largest top byte of its 256 or 16 entries, or TA0 for a 24-bit palette without AEM. Random palettes, every index
+// width and entry width, several CSAs and TEXA values; the reference is computed here from the expanded entries.
+TEST_F(GSClutTest, TheAlphaRangeIsThatOfTheExpandedEntries)
+{
+	u64 state = 0x0123456789ABCDEFull;
+	const auto next = [&state]() {
+		state ^= state << 13;
+		state ^= state >> 7;
+		state ^= state << 17;
+		return state;
+	};
+	for (int trial = 0; trial < 200; trial++)
+	{
+		for (int y = 0; y < 32; y++)
+		{
+			for (int x = 0; x < 32; x++)
+			{
+				u32 v = static_cast<u32>(next());
+				// Narrow alpha ranges too, so the extremes are not always 0 and 255.
+				if (trial & 1)
+					v = (v & 0x00FFFFFFu) | ((0x40u + static_cast<u32>(next() % 0x30u)) << 24);
+				m_mem->WritePixel32(x, y, v, 0, 1);
+			}
+		}
+		const u32 cpsm = (trial % 3 == 0) ? PSMCT16 : (trial % 3 == 1) ? PSMCT32 : PSMCT24;
+		const u32 psm = (trial & 2) ? PSMT4 : PSMT8;
+		const u32 csa = static_cast<u32>(next() % 16);
+		m_texa.TA0 = static_cast<u32>(next() & 0xFF);
+		m_texa.TA1 = static_cast<u32>(next() & 0xFF);
+		m_texa.AEM = static_cast<u32>(next() & 1);
+
+		m_clut->Reset();
+		const GIFRegTEX0 t = ClutTEX0(0, cpsm, csa, 1, psm);
+		const GIFRegTEXCLUT tc = {};
+		m_clut->WriteTest(t, tc);
+		m_clut->WriteDecision(t, tc);
+		m_clut->WriteLoad(t, tc);
+		m_clut->Read32(t, m_texa);
+
+		const int n = (psm == PSMT8) ? 256 : 16;
+		int lo = 255, hi = 0;
+		for (int e = 0; e < n; e++)
+		{
+			const int a = static_cast<int>((*m_clut)[e] >> 24);
+			lo = std::min(lo, a);
+			hi = std::max(hi, a);
+		}
+		if (cpsm == PSMCT24 && !m_texa.AEM)
+			lo = hi = static_cast<int>(m_texa.TA0);
+
+		int amin = -1, amax = -1;
+		m_clut->GetAlphaMinMax32(amin, amax);
+		ASSERT_EQ(amin, lo) << "trial " << trial << " cpsm " << cpsm << " psm " << psm;
+		ASSERT_EQ(amax, hi) << "trial " << trial << " cpsm " << cpsm << " psm " << psm;
+	}
+}
+
 TEST(GSClutGPUPaletteRoad, RefusedExactlyWhereTheShaderCannotReproduceTheExpansion)
 {
 	constexpr u32 kIdx8[] = {PSMT8, PSMT8H};

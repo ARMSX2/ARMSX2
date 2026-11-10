@@ -353,9 +353,16 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	const GSDrawingContext* context = m_context;
 	const bool copied = (d.h->flags & GSBurstMemo::REC_COPIED) != 0;
 
-	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them.
+	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them. Held depth words
+	// (GSTextureCache::MaterialiseHeldPages) in them go in first, for the rest of their pages: the CPU move they
+	// stand for came before this draw. A replay can reach held pages only once their depth target is gone, since
+	// a skip needs no target with shared bits at the frame (BurstMemoTargetAt) and a hold's pages lie under its
+	// target until then; no test builds that state. The order against the waiting invalidations is free: holds
+	// are made only by a move, which flushes them first, and this download writes local memory, not the
+	// texture cache, so the box's invalidation below still finds what the copy road's would have.
 	u8* const vm = m_mem.m_vm8;
 	const u32 blocks = d.h->nout;
+	g_texture_cache->MaterialiseHeldBlocks(d.out_blocks, blocks);
 	for (u32 i = 0; i < blocks; i++)
 		std::memcpy(vm + static_cast<size_t>(d.out_blocks[i]) * GS_BLOCK_SIZE, d.out_bytes + static_cast<size_t>(i) * GS_BLOCK_SIZE, GS_BLOCK_SIZE);
 	if (ControlCorruption()) [[unlikely]]

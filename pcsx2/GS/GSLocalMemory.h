@@ -639,6 +639,12 @@ public:
 	__forceinline bool HashDirty(u32 block) const { return DirtyBit(m_hash_dirty, block); }
 	/// Returns whether the bit was set, and clears it.
 	__forceinline bool TestAndClearHashDirty(u32 block) { return TestAndClearDirtyBit(m_hash_dirty, block); }
+	/// Clears the hash-dirty bits of every block of `page`, for a writer that has given them their hashes.
+	__forceinline void ClearPageHashDirty(u32 page)
+	{
+		static_assert(GS_BLOCKS_PER_PAGE == 32, "a page is half a word of the dirty bitmap");
+		m_hash_dirty[(page % GS_MAX_PAGES) >> 1] &= ~(u64(0xFFFFFFFFu) << ((page & 1) * 32));
+	}
 	void MarkAllHashDirty();
 
 	/// Marks of everything so far: a rectangle with no page set (MarkPagesWritten), a page range of every page,
