@@ -483,6 +483,7 @@ static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_kick_decide_check = false;
+static bool s_kick_convert_check = false;
 static bool s_vm_hash_flush = false;
 static bool s_verify_hash_memo = false;
 static bool s_lean_check = false;
@@ -1708,6 +1709,12 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				continue;
 			}
 #ifdef ARCH_ARM64
+			else if (CHECK_ARG("-kick-convert-check"))
+			{
+				GSVertexKickKernel::g_convert_check.store(true);
+				s_kick_convert_check = true;
+				continue;
+			}
 			else if (CHECK_ARG("-kick-decide-check"))
 			{
 				GSVertexKickKernel::g_decide_check.store(true);
@@ -2847,6 +2854,12 @@ void GSRunner::DumpStats()
 	// as "measured zero cost."
 	const char* const na = "n/a";
 #ifdef ARCH_ARM64
+	if (s_kick_convert_check)
+	{
+		Console.WriteLn(fmt::format("KICK CONVERT CHECK: {} calls checked, {} differ, {} vertices converted",
+			GSVertexKickKernel::g_convert_calls.load(), GSVertexKickKernel::g_convert_mismatches.load(),
+			GSVertexKickKernel::g_convert_vertices.load()));
+	}
 	if (s_kick_decide_check)
 	{
 		Console.WriteLn(fmt::format("KICK DECIDE CHECK: {} calls checked, {} differ, {} taken by the wide pass",
