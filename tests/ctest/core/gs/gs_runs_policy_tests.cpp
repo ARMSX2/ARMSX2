@@ -419,3 +419,18 @@ TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
 	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
 	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
 }
+
+TEST(GSRunsPolicy, LargeDrawsAreWhereAGeneralProgramCostsMoreThanAHostDraw)
+{
+	// The same price as the dear split, for one draw: the 650's host draw (0.9 us) buys 23,684 pixels at 38 ps.
+	const DeviceClass& a650 = DeviceClassFor("Turnip Adreno (TM) 650");
+	EXPECT_FALSE(LargeDraw(a650, 23000));
+	EXPECT_TRUE(LargeDraw(a650, 24000));
+	EXPECT_FALSE(LargeDraw(a650, 0));
+	// Spider-Man 3's storm draws (a few thousand pixels each) are small on every class.
+	for (const DeviceClass& c : DEVICE_CLASSES)
+		EXPECT_FALSE(LargeDraw(c, 2500)) << c.name;
+	const DeviceClass& g57 = DeviceClassFor("Mali-G57 MC2");
+	EXPECT_FALSE(LargeDraw(g57, 7600));
+	EXPECT_TRUE(LargeDraw(g57, 7700));
+}

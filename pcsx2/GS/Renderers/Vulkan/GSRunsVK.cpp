@@ -347,7 +347,8 @@ namespace
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
-	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS && !SplitAtDear(config);
+	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS && !SplitAtDear(config) &&
+	       !SplitAtLarge(config);
 }
 
 bool GSRunsVK::FollowsSame(const GSHWDrawConfig& config, u32 strict) const
@@ -388,13 +389,21 @@ bool GSRunsVK::SplitAtDear(const GSHWDrawConfig& config) const
 	return GSRunsPolicy::SplitAtDear(*m_class, r.area_total, DrawArea(config));
 }
 
+bool GSRunsVK::SplitAtLarge(const GSHWDrawConfig& config) const
+{
+	const Run& r = m_run;
+	if (r.uniform && m_draw.flags == r.first_flags)
+		return false;
+	return r.large || GSRunsPolicy::LargeDraw(*m_class, DrawArea(config));
+}
+
 GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 {
 	if (config.rt != m_run.rt || config.ds != m_run.ds)
 		return END_TARGET;
 	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict)
 		return END_SPLIT;
-	if (SplitAtDear(config))
+	if (SplitAtDear(config) || SplitAtLarge(config))
 		return END_SPLIT;
 	if (m_log)
 	{
@@ -694,6 +703,11 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		// fill: the split rule weighs the run's against the price of a host draw.
 		const u64 area = DrawArea(config);
 		r.area_total += area;
+		if (r.ndraws == 0)
+			r.first_flags = d.flags;
+		else
+			r.uniform = r.uniform && d.flags == r.first_flags;
+		r.large = r.large || GSRunsPolicy::LargeDraw(*m_class, area);
 		if (r.ndraws != 0 && GSRunsPolicy::Dear(d.flags) != r.dear)
 			r.dear_mixed = true;
 		if (m_log)
