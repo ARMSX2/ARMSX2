@@ -42,7 +42,16 @@ namespace
 	constexpr u32 MAX_TEXTURES = 1024;
 	constexpr u32 POOL_SETS = 256;
 	constexpr u32 POOL_DESCRIPTORS = 8192;
-	u32 Variant(bool dual, bool rta, bool zfloor) { return (dual ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u); }
+	// The pipeline variant: dual-source blending, RTA correction, the depth floor (all three in the program), and a pass
+	// without a depth attachment (the pipeline only).
+	u32 Variant(bool dual, bool rta, bool zfloor, bool nods)
+	{
+		return (dual ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u) | (nods ? 8u : 0u);
+	}
+	constexpr u32 VARIANT_NO_DEPTH = 8;
+	// The vertex selector bits a run's draws may differ in: texture mapping and shading (the run's vertex program does
+	// both always) and the expansion (a sprite is expanded on the CPU).
+	constexpr u32 VS_RUN_FREE = 0x06u | 0x70u;
 	u64 PipelineKey(u8 dss, u32 variant, u32 spec) { return static_cast<u64>(dss) | (static_cast<u64>(variant) << 8) | (static_cast<u64>(spec) << 16); }
 } // namespace
 
@@ -282,7 +291,7 @@ void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal w
 				config.colormask.logic_op != GSAlphaBitLogicOp::Off, ps.colclip_hw || m_dev->GetColorClipTexture() != nullptr,
 				config.road.clone_rt, config.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE, config.line_expand,
 				ps.HasColorROV() || ps.HasDepthROV(), config.road.rt_loop, config.road.depth_loop, config.road.depth_read, config.raster_order,
-				config.date_copy != GSAlphaBitLogicOp::NoDateCopy, config.colclip_native_scale > 1.0f, !config.rt, !config.ds};
+				config.date_copy != GSAlphaBitLogicOp::NoDateCopy, config.colclip_native_scale > 1.0f, !config.rt, false};
 			for (u32 i = 0; i < std::size(c); i++)
 				detail |= static_cast<u64>(c[i]) << i;
 			break;
@@ -334,7 +343,7 @@ bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 	const Run& r = m_run;
 	const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
 	const GSHWDrawConfig::VSConstantBuffer& b = r.cb_vs;
-	return config.rt == r.rt && config.ds == r.ds && config.depth.key == r.dss && (config.vs.key & ~0x06u) == r.vs &&
+	return config.rt == r.rt && config.ds == r.ds && config.depth.key == r.dss && (config.vs.key & ~VS_RUN_FREE) == r.vs &&
 	       config.scissor.eq(r.scissor) && r.ndraws < m_max_draws && std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) == 0 &&
 	       std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) == 0 &&
 	       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
@@ -360,7 +369,9 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
 bool GSRunsVK::Continue(const GSHWDrawConfig& config)
 {
 	GSDeviceVK* dev = m_dev;
-	if (!m_run.open || !dev->InRenderPass() || dev->m_current_render_target != config.rt || dev->m_current_depth_target != config.ds ||
+	// A draw without a depth buffer continues a run in a pass with one as the classic path draws it: depth untouched.
+	const bool ds_ok = config.ds ? (dev->m_current_depth_target == config.ds) : ((dev->m_current_depth_target == nullptr) == m_run.nods);
+	if (!m_run.open || !dev->InRenderPass() || dev->m_current_render_target != config.rt || !ds_ok ||
 		dev->m_current_framebuffer_feedback_loop != GSDeviceVK::FeedbackLoopFlag_None)
 		return false;
 	if (config.ps.tfx != 4)
@@ -383,7 +394,9 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 	Draw& d = m_draw;
 	d.cand = false;
 	GSDeviceVK* dev = m_dev;
-	if (!dev->InRenderPass() || dev->m_current_render_target != config.rt || dev->m_current_depth_target != config.ds ||
+	// A draw without a depth buffer is drawn in the open pass's: with it if the classic path kept it attached (its
+	// pipeline then has the depth attachment and the draw's depth state, which neither tests nor writes), else without.
+	if (!dev->InRenderPass() || dev->m_current_render_target != config.rt || (config.ds && dev->m_current_depth_target != config.ds) ||
 		dev->m_current_framebuffer_feedback_loop != GSDeviceVK::FeedbackLoopFlag_None || pipeline_feedback_flags != 0 || pipeline_colclip)
 	{
 		m_pass.why[WHY_NOT_IN_PASS]++;
@@ -402,7 +415,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		states.Note(d.flags);
 		const u32 ways = (open ? m_run.ways : 0u) | (1u << d.way);
 		const bool rta = config.ps.rta_correction;
-		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor);
+		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor, dev->m_current_depth_target == nullptr);
 		if (ProgramReady(config.depth.key, variant, SpecKeyOf(states, GSRunsPolicy::StrictKey(d.flags, rta))))
 			return true;
 		m_pass.why[WHY_COMPILING]++;
@@ -414,7 +427,19 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 
 	const VkPhysicalDeviceLimits& limits = dev->m_device_properties.limits;
 	const u32 align = std::max<u32>(64, static_cast<u32>(std::max(limits.minUniformBufferOffsetAlignment, limits.minStorageBufferOffsetAlignment)));
-	const u32 nidx = config.nindices, nvtx = config.nverts;
+	// A sprite (two vertices, the classic path expands it in its vertex program) becomes four vertices and two
+	// triangles here, the corners and index order the classic expansion makes (tfx.glsl VS_EXPAND_SPRITE, the expand
+	// index buffer): each corner is the right-bottom vertex with X, S, U from the left-top one on the right and Y, T, V
+	// on the bottom. Every value is a raw vertex field, so the vertex program computes from it what the classic
+	// expansion did.
+	const bool sprites = config.vs.expand == GSHWDrawConfig::VSExpand::Sprite;
+	if (sprites && (config.nverts & 1 || config.nindices != config.nverts * 3))
+	{
+		m_pass.why[WHY_TOPO]++;
+		Flush(END_UNMERGEABLE);
+		return false;
+	}
+	const u32 nidx = config.nindices, nvtx = sprites ? config.nverts * 2 : config.nverts;
 	VKStreamBuffer& vring = dev->m_vertex_stream_buffer;
 	for (u32 attempt = 0;; attempt++)
 	{
@@ -445,8 +470,9 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 			r.open = true;
 			r.rt = config.rt;
 			r.ds = config.ds;
+			r.nods = dev->m_current_depth_target == nullptr;
 			r.dss = config.depth.key;
-			r.vs = config.vs.key & ~0x06u;
+			r.vs = config.vs.key & ~VS_RUN_FREE;
 			r.scissor = config.scissor;
 			r.viewport = dev->m_viewport;
 			r.cb_vs = config.cb_vs;
@@ -524,15 +550,53 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		const u32 k = r.ndraws;
 		const u32 vstart = vring.GetCurrentOffset() / sizeof(GSVertex);
 		GSVertex* dst = reinterpret_cast<GSVertex*>(vring.GetCurrentHostPointer());
-		for (u32 i = 0; i < nvtx; i++)
+		if (sprites)
 		{
-			GSVertex v = config.verts[i];
-			v.FOG = (v.FOG & 0xFFu) | (k << 8);
-			dst[i] = v;
+			for (u32 s = 0; s < config.nverts; s += 2)
+			{
+				const GSVertex& lt = config.verts[s];
+				GSVertex rb = config.verts[s + 1];
+				rb.FOG = (rb.FOG & 0xFFu) | (k << 8);
+				for (u32 c = 0; c < 4; c++)
+				{
+					GSVertex v = rb;
+					if (c & 1)
+					{
+						v.XYZ.X = lt.XYZ.X;
+						v.ST.S = lt.ST.S;
+						v.U = lt.U;
+					}
+					if (c & 2)
+					{
+						v.XYZ.Y = lt.XYZ.Y;
+						v.ST.T = lt.ST.T;
+						v.V = lt.V;
+					}
+					dst[s * 2 + c] = v;
+				}
+				const u32 b = vstart + s * 2;
+				u32* q = idx + s * 3;
+				q[0] = b;
+				q[1] = b + 1;
+				q[2] = b + 2;
+				q[3] = b + 1;
+				q[4] = b + 2;
+				q[5] = b + 3;
+			}
+			vring.CommitMemory(vsize);
 		}
-		vring.CommitMemory(vsize);
-		for (u32 i = 0; i < nidx; i++)
-			idx[i] = vstart + config.indices[i];
+		else
+		{
+			for (u32 i = 0; i < nvtx; i++)
+			{
+				GSVertex v = config.verts[i];
+				v.FOG = (v.FOG & 0xFFu) | (k << 8);
+				dst[i] = v;
+			}
+			vring.CommitMemory(vsize);
+			for (u32 i = 0; i < nidx; i++)
+				idx[i] = vstart + config.indices[i];
+		}
 		m_index_stream.CommitMemory(nidx * 4);
 
 		u32 s[8];
@@ -583,6 +647,7 @@ u32 GSRunsVK::SpecKeyOf(const GSRunsPolicy::StateSet& states, u32 strict)
 
 VkShaderModule GSRunsVK::GetFragmentShader(u32 variant, u32 spec)
 {
+	variant &= ~VARIANT_NO_DEPTH; // the pipeline's, not the program's
 	const u64 key = spec | (static_cast<u64>(variant) << 32);
 	{
 		std::unique_lock lock(m_fs_mutex);
@@ -593,7 +658,7 @@ VkShaderModule GSRunsVK::GetFragmentShader(u32 variant, u32 spec)
 	std::string defines;
 	defines += "#define RUN_DUAL " + std::to_string(variant & 1) + "\n";
 	defines += "#define RUN_RTA_CORRECTION " + std::to_string((variant >> 1) & 1) + "\n";
-	defines += "#define RUN_ZFLOOR " + std::to_string(variant >> 2) + "\n";
+	defines += "#define RUN_ZFLOOR " + std::to_string((variant >> 2) & 1) + "\n";
 	for (u32 i = 0; i < GSRunsPolicy::NUM_STATES; i++)
 	{
 		const u32 v = (spec >> (4 * i)) & 0xF;
@@ -621,8 +686,9 @@ VkPipeline GSRunsVK::CreatePipeline(u8 dss_key, u32 variant, u32 spec)
 	if (m_dev->m_features.provoking_vertex_last)
 		gpb.SetProvokingVertex(VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT);
 	gpb.SetPipelineLayout(m_pipeline_layout);
-	gpb.SetRenderPass(m_dev->GetTFXRenderPass(true, true, false, false, false, false, VK_ATTACHMENT_LOAD_OP_LOAD,
-						  VK_ATTACHMENT_LOAD_OP_LOAD),
+	const bool ds = !(variant & VARIANT_NO_DEPTH);
+	gpb.SetRenderPass(m_dev->GetTFXRenderPass(true, ds, false, false, false, false, VK_ATTACHMENT_LOAD_OP_LOAD,
+						  ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 		0);
 	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	gpb.SetRasterizationState(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
@@ -644,7 +710,10 @@ VkPipeline GSRunsVK::CreatePipeline(u8 dss_key, u32 variant, u32 spec)
 	gpb.AddVertexAttribute(7, 0, VK_FORMAT_R32_UINT, 28); // FOG word: the draw's row in its high bytes
 	static constexpr VkCompareOp ztst[] = {
 		VK_COMPARE_OP_NEVER, VK_COMPARE_OP_ALWAYS, VK_COMPARE_OP_GREATER_OR_EQUAL, VK_COMPARE_OP_GREATER};
-	gpb.SetDepthState((dss.ztst != ZTST_ALWAYS || dss.zwe), dss.zwe, ztst[dss.ztst]);
+	if (ds)
+		gpb.SetDepthState((dss.ztst != ZTST_ALWAYS || dss.zwe), dss.zwe, ztst[dss.ztst]);
+	else
+		gpb.SetDepthState(false, false, VK_COMPARE_OP_ALWAYS);
 	if (dual)
 	{
 		gpb.SetBlendAttachment(0, true, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, VK_BLEND_OP_ADD,
@@ -708,7 +777,7 @@ VkPipeline GSRunsVK::GetPipeline(bool dual)
 {
 	const Run& r = m_run;
 	// Append let the run grow only while its program was built.
-	const auto it = m_pipelines.find(PipelineKey(r.dss, Variant(dual, r.rta, r.zfloor), SpecKey()));
+	const auto it = m_pipelines.find(PipelineKey(r.dss, Variant(dual, r.rta, r.zfloor, r.nods), SpecKey()));
 	if (it == m_pipelines.end())
 		pxFailRel("VK: a run grew past the program built for it");
 	return it->second;
@@ -784,7 +853,7 @@ void GSRunsVK::Flush(Why why)
 	const VkCommandBuffer cmd = dev->GetCurrentCommandBuffer();
 	// Way 2 alone needs no blending; any other way needs the dual-source blend.
 	const bool dual = (r.ways & ~(1u << 2)) != 0;
-	const u32 variant = Variant(dual, r.rta, r.zfloor);
+	const u32 variant = Variant(dual, r.rta, r.zfloor, r.nods);
 	const VkPipeline pipeline = GetPipeline(dual);
 	const VkDescriptorSet set1 = WriteTextureSet();
 	if (m_log)

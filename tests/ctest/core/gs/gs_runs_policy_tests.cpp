@@ -129,8 +129,12 @@ TEST(GSRunsPolicy, AnythingBesidesOnePlainDrawRefuses)
 	c.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
 	c = Way0();
-	c.ds = nullptr;
+	c.rt = nullptr;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
+	// A draw without a depth buffer is drawn in the pass's (GSRunsVK decides with or without its attachment).
+	c = Way0();
+	c.ds = nullptr;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
 	c = Way0();
 	EXPECT_EQ(Classify(c, Rgba8(), true).why, Refusal::Road) << "a colour-clip target in progress";
 	c = Way0();
@@ -138,6 +142,15 @@ TEST(GSRunsPolicy, AnythingBesidesOnePlainDrawRefuses)
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
 	c = Way0();
 	c.vs.fst = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+	// Sprites the classic path expands in its vertex program are accepted; lines and points are not.
+	c = Way0();
+	c.vs.expand = GSHWDrawConfig::VSExpand::Sprite;
+	c.indices_per_prim = 6;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
+	c.vs.expand = GSHWDrawConfig::VSExpand::Line;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
+	c.vs.expand = GSHWDrawConfig::VSExpand::Point;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo);
 }
 

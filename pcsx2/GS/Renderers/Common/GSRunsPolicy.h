@@ -172,13 +172,16 @@ namespace GSRunsPolicy
 			config.alpha_second_pass.enable || config.colormask.logic_op != GSAlphaBitLogicOp::Off || ps.colclip_hw || colclip_live ||
 			config.road.clone_rt || config.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE || config.line_expand || ps.HasColorROV() ||
 			ps.HasDepthROV() || config.road.rt_loop || config.road.depth_loop || config.road.depth_read || config.raster_order ||
-			config.date_copy != GSAlphaBitLogicOp::NoDateCopy || config.colclip_native_scale > 1.0f || !config.rt || !config.ds)
+			config.date_copy != GSAlphaBitLogicOp::NoDateCopy || config.colclip_native_scale > 1.0f || !config.rt)
 		{
 			d.why = Refusal::Road;
 			return d;
 		}
-		if (config.topology != GSHWDrawConfig::Topology::Triangle || config.vs.expand != GSHWDrawConfig::VSExpand::None ||
-			config.vs.point_size || config.vs.fst || config.vs.sprite_edge_clamp || config.indices_per_prim != 3)
+		// Triangles, or sprites the classic path expands in its vertex program (GSRunsVK expands them on the CPU).
+		const bool triangles = config.vs.expand == GSHWDrawConfig::VSExpand::None && config.indices_per_prim == 3;
+		const bool sprites = config.vs.expand == GSHWDrawConfig::VSExpand::Sprite && config.indices_per_prim == 6;
+		if (config.topology != GSHWDrawConfig::Topology::Triangle || !(triangles || sprites) || config.vs.point_size || config.vs.fst ||
+			config.vs.sprite_edge_clamp)
 		{
 			d.why = Refusal::Topo;
 			return d;

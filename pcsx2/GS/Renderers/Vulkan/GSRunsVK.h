@@ -104,6 +104,7 @@ private:
 		u32 header_off = 0, table_off = 0, idx_first = 0, idx_count = 0, ndraws = 0;
 		u32 ways = 0;
 		u32 dear = 0;
+		bool nods = false; ///< the pass has no depth attachment
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
 		u32 last_flags = 0;
 		std::array<u32, GSRunsPolicy::NUM_STATES> changes{}; ///< -runs-log: how often each state changed between draws
