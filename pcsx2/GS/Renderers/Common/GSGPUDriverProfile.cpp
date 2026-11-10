@@ -474,7 +474,7 @@ static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
-static constexpr std::array<DriverRule, 35> s_driver_rules = {{
+static constexpr std::array<DriverRule, 36> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -530,6 +530,11 @@ static constexpr std::array<DriverRule, 35> s_driver_rules = {{
 		Workaround(DriverWorkaround::UseDescriptorSets) |
 			Workaround(DriverWorkaround::DisableAttachmentFeedbackLoopLayout) |
 			Workaround(DriverWorkaround::ScalarizeVectorBitwiseAnd)},
+	// Arm's Mali driver before r30 segfaults compiling any pipeline that queries an image size.
+	{"vk-arm-image-query-before-r30", MobileGpuApi::Vulkan, RuntimeGpuProfile::Mali,
+		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {30, 0, 0},
+		0, 0, false, Bug(DriverBug::BrokenImageQuery),
+		Workaround(DriverWorkaround::PassTextureSizeInUniform)},
 	// Slow cached readback (from Dolphin's BUG_SLOW_CACHED_READBACK_MEMORY) measured backwards on
 	// r44p1 / Mali-G615: a non-coherent cached type with explicit invalidates beat the coherent
 	// map about 12x per readback. That does not prove it wrong on older parts, so the preference
@@ -854,6 +859,7 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 	const bool qualcomm_driver = (context.driver_id == DRIVER_ID_QUALCOMM_PROPRIETARY);
 	const bool turnip = (context.driver_id == DRIVER_ID_MESA_TURNIP);
 	const bool honeykrisp = (context.driver_id == DRIVER_ID_MESA_HONEYKRISP);
+	const bool panvk = (context.driver_id == DRIVER_ID_MESA_PANVK);
 	const auto name_has = [device_name](std::string_view part) {
 		return device_name.find(part) != std::string_view::npos;
 	};
@@ -873,11 +879,11 @@ VulkanDeviceRules GpuProfileDetector::ResolveVulkanDeviceRules(const GpuProfileS
 		(mali && context.driver_info.find("r44p1") != std::string_view::npos) || imagination_proprietary;
 	// The Mali crash is in Arm's blob. malisx2 reports Arm's identity but is our own driver, and is
 	// trusted with push descriptors once it advertises as many as the backend binds; a build without
-	// the extension, or with fewer, keeps the avoid.
+	// the extension, or with fewer, keeps the avoid. PanVK isn't the blob, so it keeps push descriptors.
 	rules.exempt_malisx2_push_descriptors = mali && GpuProfileDetector::IsMaliSX2Driver(context.driver_info) &&
 	                                        context.max_push_descriptors >= VULKAN_PUSH_DESCRIPTORS_REQUIRED;
-	rules.avoid_push_descriptors =
-		(mali && !rules.exempt_malisx2_push_descriptors) || (adreno && !qualcomm_driver && !turnip);
+	rules.avoid_push_descriptors = (mali && !panvk && !rules.exempt_malisx2_push_descriptors) ||
+	                               (adreno && !qualcomm_driver && !turnip);
 	rules.broken_provoking_vertex = adreno && qualcomm_driver;
 	rules.broken_colormask_with_depth =
 		adreno && !turnip && (context.device_id < 0x06000000u || context.driver_version < 0x801EA000u);

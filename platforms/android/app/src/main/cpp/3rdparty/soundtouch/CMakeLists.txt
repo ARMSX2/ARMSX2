@@ -42,7 +42,8 @@ if(NOT "${CMAKE_BUILD_TYPE}" MATCHES "Debug")
 	endif()
 endif()
 
-if(_M_ARM64)
+# Desktop and Android set ARCH_ARM64, iOS sets _M_ARM64.
+if(ARCH_ARM64 OR _M_ARM64)
 	target_compile_definitions(pcsx2-soundtouch PRIVATE SOUNDTOUCH_USE_NEON)
 endif()
 

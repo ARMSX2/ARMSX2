@@ -73,6 +73,9 @@ object ReportFiles {
     const val REPORT = "report.json"
     const val SYSTEM = "system.json"
     const val EMULOG = "emulog.txt.gz"
+
+    /** The emulog of the run before: the log of the last earlier run that started a game. See [LogBackup]. */
+    const val EMULOG_PREVIOUS = "emulog-previous.txt.gz"
     const val LOGCAT = "logcat.txt.gz"
     const val SETTINGS = "settings.json.gz"
     const val JAVA_CRASHES = "java-crashes.txt.gz"
@@ -84,7 +87,7 @@ object ReportFiles {
 
     /** Everything that may be in a bundle, in the order the consent screen lists it. */
     val ALL = listOf(
-        REPORT, SYSTEM, EMULOG, LOGCAT, SETTINGS, JAVA_CRASHES, EXIT_INFO, TOMBSTONE, ANR, GS_DUMP, SAVESTATE,
+        REPORT, SYSTEM, EMULOG, EMULOG_PREVIOUS, LOGCAT, SETTINGS, JAVA_CRASHES, EXIT_INFO, TOMBSTONE, ANR, GS_DUMP, SAVESTATE,
     )
 
     private val NAME = Regex("^[a-z0-9][a-z0-9._-]{0,63}$")

@@ -1069,7 +1069,7 @@ struct GSTriangleSetup
 
 __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index, const GSVector4& fscissor_y,
 	GSTriangleSetup& out, GSColourWalk& cwalk, int block_width, const GSCoordinateGrain* grain,
-	GSPerspectivePlaneWalk* pwalk, const s32* plane_shift)
+	GSPerspectivePlaneWalk* pwalk, const s32* plane_shift, bool plane_raw_words)
 {
 	GSVector4 y0011 = vertex[index[0]].p.yyyy(vertex[index[1]].p);
 	GSVector4 y1221 = vertex[index[1]].p.yyyy(vertex[index[2]].p).xzzx();
@@ -1197,8 +1197,9 @@ __noinline static bool SetupTriangle(const GSVertexSW* vertex, const u16* index,
 			return f;
 		};
 
-		const float unscale_s = pow2f(-plane_shift[0]);
-		const float unscale_t = pow2f(-plane_shift[1]);
+		// A draw that holds words a scale would destroy carries them unscaled.
+		const float unscale_s = plane_raw_words ? 1.0f : pow2f(-plane_shift[0]);
+		const float unscale_t = plane_raw_words ? 1.0f : pow2f(-plane_shift[1]);
 
 		for (int k = 0; k < 3; k++)
 		{
@@ -1335,7 +1336,8 @@ void GSRasterizer::DrawTriangle(const GSVertexSW* vertex, const u16* index)
 
 	GSTriangleSetup s;
 	if (!SetupTriangle(vertex, index, m_fscissor_y, s, m_local.cwalk, block_width,
-			takes_grain ? &grain : nullptr, takes_plane ? &m_local.pwalk : nullptr, m_local.gd->plane_shift))
+			takes_grain ? &grain : nullptr, takes_plane ? &m_local.pwalk : nullptr, m_local.gd->plane_shift,
+			m_local.gd->plane_raw_words))
 		return;
 
 	for (int n = 0; n < s.nsections; n++)

@@ -1206,7 +1206,16 @@ struct alignas(32) GIFPath
 
 		if (tag.FLG == GIF_FLG_PACKED)
 		{
-			if (regs.eq8(GSVector4i(0x0e0e0e0e)).mask() == (1 << nreg) - 1)
+#if defined(ARCH_ARM64)
+			// Every register nibble is A+D, checked on the packed word to avoid a movemask on NEON.
+			u64 regs64;
+			std::memcpy(&regs64, &src->REGS, sizeof(regs64));
+			const u64 used = (nreg == 16) ? ~0ULL : ((1ULL << (nreg * 4)) - 1);
+			const bool ad_only = ((regs64 ^ 0xEEEEEEEEEEEEEEEEULL) & used) == 0;
+#else
+			const bool ad_only = regs.eq8(GSVector4i(0x0e0e0e0e)).mask() == (1 << nreg) - 1;
+#endif
+			if (ad_only)
 			{
 				type = TYPE_ADONLY;
 			}

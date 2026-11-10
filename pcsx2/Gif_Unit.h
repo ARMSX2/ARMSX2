@@ -9,6 +9,8 @@
 #include "GS.h"
 #include "GS/GSRegs.h"
 #include "MTGS.h"
+#include "Config.h"
+#include "common/HostSys.h"
 
 // FIXME common path ?
 #include "common/boost_spsc_queue.hpp"
@@ -129,9 +131,11 @@ struct Gif_Tag
 		// get upper nibbles, interleave with lower nibbles, clear upper bits from low nibbles
 		vregs = vandq_u8(vzip1q_u8(vregs, vshrq_n_u8(vregs, 4)), vdupq_n_u8(0x0F));
 
-		// compare with GIF_REG_A_D, set hasAD if any lanes passed
-		const uint8x16_t comp = vceqq_u8(vregs, vdupq_n_u8(GIF_REG_A_D));
-		hasAD = vmaxvq_u8(comp) & 1;
+		// hasAD via a zero-nibble test on regs ^ 0xE...E (nibbles past nRegs were cleared, so they become 0xE
+		// and never match). Stays in GPRs, no vector compare.
+		static_assert(GIF_REG_A_D == 0xE);
+		const u64 x = REGS64 ^ 0xEEEEEEEEEEEEEEEEULL;
+		hasAD = ((x - 0x1111111111111111ULL) & ~x & 0x8888888888888888ULL) != 0;
 
 		// write out unpacked registers
 		vst1q_u8(regs, vregs);
@@ -572,8 +576,15 @@ struct Gif_Unit
 		, lastTranType(GIF_TRANS_INVALID)
 	{
 		gifPath[0].Init(GIF_PATH_1, _1mb * 9, _1mb + _1kb);
-		gifPath[1].Init(GIF_PATH_2, _1mb * 9, _1mb + _1kb);
-		gifPath[2].Init(GIF_PATH_3, _1mb * 9, _1mb + _1kb);
+		gifPath[1].Init(GIF_PATH_2, EePathBufferBytes(GetPhysicalMemory()), _1mb + _1kb);
+		gifPath[2].Init(GIF_PATH_3, EePathBufferBytes(GetPhysicalMemory()), _1mb + _1kb);
+	}
+
+	// Path 2/3 buffer size for `physical_memory` bytes of RAM (0 if unknown): 32 MB, or 9 MB below
+	// LOW_MEMORY_HOST_BYTES.
+	static constexpr u32 EePathBufferBytes(u64 physical_memory)
+	{
+		return (physical_memory == 0 || physical_memory >= Pcsx2Config::LOW_MEMORY_HOST_BYTES) ? _1mb * 32 : _1mb * 9;
 	}
 
 	// Enable softReset when resetting during game emulation

@@ -209,7 +209,7 @@ void VU_Thread::ExecuteRingBuffer()
 
 
 // Should only be called by ReserveSpace()
-__ri void VU_Thread::WaitOnSize(s32 size)
+__ri void VU_Thread::WaitOnSize(s32 size, bool before_wrap)
 {
 	// Hit on every VIF1 push, and almost always answered by one of the two breaks below,
 	// so the clock is not read until the first yield actually happens.
@@ -218,7 +218,8 @@ __ri void VU_Thread::WaitOnSize(s32 size)
 	for (;;)
 	{
 		s32 readPos = GetReadPos();
-		if (readPos <= m_write_pos)
+		// A reader still at 0 hasn't started this lap; once the writer wraps to 0 it would look caught up.
+		if (readPos <= m_write_pos && (readPos != 0 || !before_wrap))
 			break; // MTVU is reading in back of write_pos
 		// FIXME greg: there is a bug somewhere in the queue pointer
 		// management. It creates a deadlock/corruption in SotC intro (before
@@ -253,7 +254,7 @@ void VU_Thread::ReserveSpace(s32 size)
 
 	if (m_write_pos + size > (buffer_size - 1))
 	{
-		WaitOnSize(1); // Size of MTVU_NULL_PACKET
+		WaitOnSize(1, true); // Size of MTVU_NULL_PACKET
 		Write(MTVU_NULL_PACKET);
 		// Reset local write pointer/position
 		m_write_pos = 0;

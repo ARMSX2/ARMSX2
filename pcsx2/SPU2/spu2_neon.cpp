@@ -84,6 +84,12 @@ static int32_t ReverbDownsample_neon(V_Core& core, bool right)
 	return clamp_mix(sum);
 }
 
+// Same reduction as the default resampler: saturate at each of the three fold levels, not just at the end.
+static __forceinline int16x8_t FoldPairs(int16x8_t a)
+{
+	return vqaddq_s16(vuzp1q_s16(a, a), vuzp2q_s16(a, a));
+}
+
 // NEON ReverbUpsample — 39-tap FIR, L/R channels
 static StereoOut32 ReverbUpsample_neon(V_Core& core)
 {
@@ -102,15 +108,9 @@ static StereoOut32 ReverbUpsample_neon(V_Core& core)
 		r_acc = vqaddq_s16(r_acc, vqrdmulhq_s16(r_s, coef));
 	}
 
-	int32x4_t l_s32 = vpaddlq_s16(l_acc);
-	int32x2_t l_p   = vadd_s32(vget_low_s32(l_s32), vget_high_s32(l_s32));
-	int32_t l       = vget_lane_s32(l_p, 0) + vget_lane_s32(l_p, 1);
-
-	int32x4_t r_s32 = vpaddlq_s16(r_acc);
-	int32x2_t r_p   = vadd_s32(vget_low_s32(r_s32), vget_high_s32(r_s32));
-	int32_t r       = vget_lane_s32(r_p, 0) + vget_lane_s32(r_p, 1);
-
-	return {clamp_mix(l), clamp_mix(r)};
+	l_acc = FoldPairs(FoldPairs(FoldPairs(l_acc)));
+	r_acc = FoldPairs(FoldPairs(FoldPairs(r_acc)));
+	return {vgetq_lane_s16(l_acc, 0), vgetq_lane_s16(r_acc, 0)};
 }
 
 // ============================================================================

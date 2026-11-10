@@ -78,7 +78,7 @@ private:
 
 	void GIFPackedRegHandlerNull(const GIFPackedReg* RESTRICT r);
 	void GIFPackedRegHandlerRGBA(const GIFPackedReg* RESTRICT r);
-	void GIFPackedRegHandlerSTQ(const GIFPackedReg* RESTRICT r);
+	template <bool KeepGifQ> void GIFPackedRegHandlerSTQ(const GIFPackedReg* RESTRICT r);
 	void GIFPackedRegHandlerUV(const GIFPackedReg* RESTRICT r);
 	void GIFPackedRegHandlerUV_Hack(const GIFPackedReg* RESTRICT r);
 	template<u32 prim, u32 adc, bool auto_flush> void GIFPackedRegHandlerXYZF2(const GIFPackedReg* RESTRICT r);
@@ -105,7 +105,7 @@ private:
 
 	void GIFRegHandlerNull(const GIFReg* RESTRICT r);
 	void GIFRegHandlerPRIM(const GIFReg* RESTRICT r);
-	void GIFRegHandlerRGBAQ(const GIFReg* RESTRICT r);
+	template <bool KeepGifQ> void GIFRegHandlerRGBAQ(const GIFReg* RESTRICT r);
 	void GIFRegHandlerST(const GIFReg* RESTRICT r);
 	void GIFRegHandlerUV(const GIFReg* RESTRICT r);
 	void GIFRegHandlerUV_Hack(const GIFReg* RESTRICT r);
@@ -573,6 +573,9 @@ protected:
 	// must not touch the vertices: the console's plane is the same at every Z, and the
 	// rounding only fires under a constant one. Software renderer on ARM64 only.
 	virtual bool BuildsConsolePlane() { return false; }
+	/// True when the renderer resolves this draw's S, T and Q itself and the front
+	/// end's texel rounding (GSState.cpp) must leave the GIF's words alone.
+	virtual bool SkipsTexelRounding() { return BuildsConsolePlane(); }
 	// Which auto-flush rule ResetHandlers arms. The decision belongs to the renderer's DRAW
 	// ENGINE, not the process's renderer type: a renderer can run the SW engine as a fallback
 	// floor under a hardware GSCurrentRenderer, and the two flush shapes produce different
@@ -1077,6 +1080,15 @@ public:
 	// this, so it costs one 16-byte copy per NOP-padded or two-register tag and
 	// nothing at all on the shipped path.
 	GIFPackedLayout m_packed_layout = {3, 0, 1, 2};
+
+	// Whether the parse leaves a zero or NaN-looking Q as the GIF wrote it, instead of
+	// the long-standing fix-ups (Q == +0 to FLT_MIN or 1.0, a NaN to FLT_MAX). Decided by
+	// the renderer before it calls ResetHandlers; the front parser takes the back's.
+	bool m_keep_gif_q = false;
+
+	// The packed parse's constants for that choice, built by ResetHandlers. A member so
+	// the per-vertex parse loads them off `this` with no test of the flag.
+	GSVertexKernels::PackedParseConsts m_parse_consts;
 
 	// LAST IN THE CLASS ON PURPOSE, and it must stay last. This is 2 KB of scratch
 	// that only the kernel touches. Declared anywhere else it pushes every member

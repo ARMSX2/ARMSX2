@@ -213,7 +213,7 @@ __fi static void BUTTERFLY(int& t0, int& t1, int w0, int w1, int d0, int d1)
 	t1 = tmp - (w1 + w0) * d0;
 }
 
-__ri static void IDCT_Block(s16* block)
+__ri static void IDCT_Block_Scalar(s16* block)
 {
 	for (int i = 0; i < 8; i++)
 	{
@@ -322,9 +322,156 @@ __ri static void IDCT_Block(s16* block)
 	}
 }
 
+#if defined(ARCH_ARM64)
+namespace
+{
+	// Eight 32-bit lanes as two vectors: the transform's sums need more than 16 bits.
+	struct IdctLanes
+	{
+		int32x4_t l, h;
+	};
+
+	__fi IdctLanes IdctWide(int16x8_t v) { return {vmovl_s16(vget_low_s16(v)), vmovl_s16(vget_high_s16(v))}; }
+	__fi IdctLanes IdctAdd(IdctLanes a, IdctLanes b) { return {vaddq_s32(a.l, b.l), vaddq_s32(a.h, b.h)}; }
+	__fi IdctLanes IdctSub(IdctLanes a, IdctLanes b) { return {vsubq_s32(a.l, b.l), vsubq_s32(a.h, b.h)}; }
+	__fi IdctLanes IdctMul(IdctLanes a, int n) { return {vmulq_n_s32(a.l, n), vmulq_n_s32(a.h, n)}; }
+	__fi IdctLanes IdctAddN(IdctLanes a, int n) { return {vaddq_s32(a.l, vdupq_n_s32(n)), vaddq_s32(a.h, vdupq_n_s32(n))}; }
+	template <int S>
+	__fi IdctLanes IdctShl(IdctLanes a) { return {vshlq_n_s32(a.l, S), vshlq_n_s32(a.h, S)}; }
+	template <int S>
+	__fi IdctLanes IdctShr(IdctLanes a) { return {vshrq_n_s32(a.l, S), vshrq_n_s32(a.h, S)}; }
+	// >> S, then the s16 store's truncation.
+	template <int S>
+	__fi int16x8_t IdctNarrow(IdctLanes a) { return vcombine_s16(vmovn_s32(vshrq_n_s32(a.l, S)), vmovn_s32(vshrq_n_s32(a.h, S))); }
+
+	__fi void IdctButterfly(IdctLanes& t0, IdctLanes& t1, int w0, int w1, IdctLanes d0, IdctLanes d1)
+	{
+		const IdctLanes tmp = IdctMul(IdctAdd(d0, d1), w0);
+		t0 = IdctAdd(tmp, IdctMul(d1, w1 - w0));
+		t1 = IdctSub(tmp, IdctMul(d0, w1 + w0));
+	}
+
+	__fi void IdctTranspose(int16x8_t r[8])
+	{
+		const int16x8_t t0 = vtrn1q_s16(r[0], r[1]), t1 = vtrn2q_s16(r[0], r[1]);
+		const int16x8_t t2 = vtrn1q_s16(r[2], r[3]), t3 = vtrn2q_s16(r[2], r[3]);
+		const int16x8_t t4 = vtrn1q_s16(r[4], r[5]), t5 = vtrn2q_s16(r[4], r[5]);
+		const int16x8_t t6 = vtrn1q_s16(r[6], r[7]), t7 = vtrn2q_s16(r[6], r[7]);
+		const int32x4_t u0 = vtrn1q_s32(vreinterpretq_s32_s16(t0), vreinterpretq_s32_s16(t2));
+		const int32x4_t u2 = vtrn2q_s32(vreinterpretq_s32_s16(t0), vreinterpretq_s32_s16(t2));
+		const int32x4_t u1 = vtrn1q_s32(vreinterpretq_s32_s16(t1), vreinterpretq_s32_s16(t3));
+		const int32x4_t u3 = vtrn2q_s32(vreinterpretq_s32_s16(t1), vreinterpretq_s32_s16(t3));
+		const int32x4_t u4 = vtrn1q_s32(vreinterpretq_s32_s16(t4), vreinterpretq_s32_s16(t6));
+		const int32x4_t u6 = vtrn2q_s32(vreinterpretq_s32_s16(t4), vreinterpretq_s32_s16(t6));
+		const int32x4_t u5 = vtrn1q_s32(vreinterpretq_s32_s16(t5), vreinterpretq_s32_s16(t7));
+		const int32x4_t u7 = vtrn2q_s32(vreinterpretq_s32_s16(t5), vreinterpretq_s32_s16(t7));
+		r[0] = vreinterpretq_s16_s64(vtrn1q_s64(vreinterpretq_s64_s32(u0), vreinterpretq_s64_s32(u4)));
+		r[4] = vreinterpretq_s16_s64(vtrn2q_s64(vreinterpretq_s64_s32(u0), vreinterpretq_s64_s32(u4)));
+		r[1] = vreinterpretq_s16_s64(vtrn1q_s64(vreinterpretq_s64_s32(u1), vreinterpretq_s64_s32(u5)));
+		r[5] = vreinterpretq_s16_s64(vtrn2q_s64(vreinterpretq_s64_s32(u1), vreinterpretq_s64_s32(u5)));
+		r[2] = vreinterpretq_s16_s64(vtrn1q_s64(vreinterpretq_s64_s32(u2), vreinterpretq_s64_s32(u6)));
+		r[6] = vreinterpretq_s16_s64(vtrn2q_s64(vreinterpretq_s64_s32(u2), vreinterpretq_s64_s32(u6)));
+		r[3] = vreinterpretq_s16_s64(vtrn1q_s64(vreinterpretq_s64_s32(u3), vreinterpretq_s64_s32(u7)));
+		r[7] = vreinterpretq_s16_s64(vtrn2q_s64(vreinterpretq_s64_s32(u3), vreinterpretq_s64_s32(u7)));
+	}
+
+	// One IDCT_Block_Scalar pass over eight lanes, x[k] holding input k of each lane. Rows round with 128 and
+	// shift by 8; columns round with 65536 and shift by 17.
+	template <bool Row>
+	__fi void IdctPass(int16x8_t x[8])
+	{
+		const IdctLanes x0 = IdctWide(x[0]), x1 = IdctWide(x[1]), x2 = IdctWide(x[2]), x3 = IdctWide(x[3]);
+		const IdctLanes x4 = IdctWide(x[4]), x5 = IdctWide(x[5]), x6 = IdctWide(x[6]), x7 = IdctWide(x[7]);
+
+		const IdctLanes d0 = IdctAddN(IdctShl<11>(x0), Row ? 128 : 65536);
+		const IdctLanes d2 = IdctShl<11>(x2);
+		const IdctLanes e0 = IdctAdd(d0, d2);
+		const IdctLanes e1 = IdctSub(d0, d2);
+		IdctLanes e2, e3;
+		IdctButterfly(e2, e3, W6, W2, x3, x1);
+		const IdctLanes a0 = IdctAdd(e0, e2), a1 = IdctAdd(e1, e3), a2 = IdctSub(e1, e3), a3 = IdctSub(e0, e2);
+
+		IdctLanes t0, t1, t2, t3;
+		IdctButterfly(t0, t1, W7, W1, x7, x4);
+		IdctButterfly(t2, t3, W3, W5, x5, x6);
+		const IdctLanes b0 = IdctAdd(t0, t2);
+		const IdctLanes b3 = IdctAdd(t1, t3);
+		IdctLanes b1, b2;
+		if constexpr (Row)
+		{
+			const IdctLanes u0 = IdctSub(t0, t2), u1 = IdctSub(t1, t3);
+			b1 = IdctShr<8>(IdctMul(IdctAdd(u0, u1), 181));
+			b2 = IdctShr<8>(IdctMul(IdctSub(u0, u1), 181));
+		}
+		else
+		{
+			const IdctLanes u0 = IdctShr<8>(IdctSub(t0, t2)), u1 = IdctShr<8>(IdctSub(t1, t3));
+			b1 = IdctMul(IdctAdd(u0, u1), 181);
+			b2 = IdctMul(IdctSub(u0, u1), 181);
+		}
+
+		constexpr int S = Row ? 8 : 17;
+		x[0] = IdctNarrow<S>(IdctAdd(a0, b0));
+		x[1] = IdctNarrow<S>(IdctAdd(a1, b1));
+		x[2] = IdctNarrow<S>(IdctAdd(a2, b2));
+		x[3] = IdctNarrow<S>(IdctAdd(a3, b3));
+		x[4] = IdctNarrow<S>(IdctSub(a3, b3));
+		x[5] = IdctNarrow<S>(IdctSub(a2, b2));
+		x[6] = IdctNarrow<S>(IdctSub(a1, b1));
+		x[7] = IdctNarrow<S>(IdctSub(a0, b0));
+	}
+} // namespace
+
+// NEON IDCT_Block_Scalar: transpose, do all eight rows, transpose back, do the columns. Integer math with
+// no overflow, so it matches the scalar code exactly.
+__ri static void IDCT_Block_Neon(s16* block)
+{
+	int16x8_t r[8];
+	for (int i = 0; i < 8; i++)
+		r[i] = vld1q_s16(block + 8 * i);
+	IdctTranspose(r);
+	IdctPass<true>(r);
+	IdctTranspose(r);
+	IdctPass<false>(r);
+	for (int i = 0; i < 8; i++)
+		vst1q_s16(block + 8 * i, r[i]);
+}
+#endif
+
+__ri static void IDCT_Block(s16* block)
+{
+#if defined(ARCH_ARM64)
+	IDCT_Block_Neon(block);
+#else
+	IDCT_Block_Scalar(block);
+#endif
+}
+
+void ipu_idct_block(s16* block)
+{
+	IDCT_Block(block);
+}
+
+void ipu_idct_block_reference(s16* block)
+{
+	IDCT_Block_Scalar(block);
+}
+
 __ri static void IDCT_Copy(s16* block, u8* dest, const int stride)
 {
 	IDCT_Block(block);
+
+#if defined(ARCH_ARM64)
+	// The clip table is just a clamp to 0..255, so use a saturating narrow (also fine outside the table).
+	for (int i = 0; i < 8; i++)
+	{
+		vst1_u8(dest, vqmovun_s16(vld1q_s16(block)));
+		vst1q_s16(block, vdupq_n_s16(0));
+		dest += stride;
+		block += 8;
+	}
+	return;
+#endif
 
 	for (int i = 0; i < 8; i++)
 	{
@@ -1877,10 +2024,14 @@ __ri static bool ipuPACK(tIPU_CMD_CSC csc)
 
 __fi static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
 {
+	yuv2rgb();
+	ipu_csc_alpha_and_sign(rgb32, sgn);
+}
+
+void ipu_csc_alpha_and_sign(macroblock_rgb32& rgb32, int sgn)
+{
 	int i;
 	u8* p = (u8*)&rgb32;
-
-	yuv2rgb();
 
 	if (g_ipu_thresh[0] > 0)
 	{
@@ -1902,6 +2053,8 @@ __fi static void ipu_csc(macroblock_8& mb8, macroblock_rgb32& rgb32, int sgn)
 	}
 	if (sgn)
 	{
+		// From the start again: the threshold loops above leave `p` at the end of the block.
+		p = (u8*)&rgb32;
 		for (i = 0; i < 16*16; i++, p += 4)
 		{
 			*(u32*)p ^= 0x808080;

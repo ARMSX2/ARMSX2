@@ -495,10 +495,13 @@ TEST(GsSwPerspectivePlane, APrimitiveWithNoExponentOrNoAreaIsInvalid)
 	EXPECT_EQ(p.gx[0], 0);
 	EXPECT_EQ(p.value[2], 0);
 
+	// Exponent field 255 is an ordinary exponent on the console (gs-stq-extremes), so an
+	// "infinity" has a plane like any other word.
 	const float inf[3] = {std::numeric_limits<float>::infinity(), 1.0f, 1.0f};
 
 	GSPerspectivePlaneSetup(x, y, inf, one, one, p);
-	EXPECT_FALSE(p.valid);
+	EXPECT_TRUE(p.valid);
+	EXPECT_EQ(p.exp, 128);
 
 	// Three collinear vertices have no plane.
 	const s32 cx[3] = {0, 160, 320};

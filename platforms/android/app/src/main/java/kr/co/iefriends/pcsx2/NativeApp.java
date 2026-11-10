@@ -191,6 +191,11 @@ public class NativeApp {
 	 *  Save Log export. Used by the Joy-Con input diagnostic; no-ops if the console isn't open. */
 	public static native void emulog(String msg);
 
+	/** True while the core has logs/emulog.txt open for writing. It opens the file when the app
+	 *  starts and again at the boot of each game after the first, and closes it when a game ends.
+	 *  A caller that wants to move the file must wait until this is false. */
+	public static native boolean isEmulogOpen();
+
 	/**
 	 * Live GS-only reconfigure for a running VM. Reloads the whole EmuCore/GS
 	 * section from the base settings layer and pushes it to the GS thread via
@@ -1096,6 +1101,10 @@ public class NativeApp {
 	 *  instead of OpenGL. The decision needs the driver-bug database (keyed on a parsed driver
 	 *  revision), which lives natively, so the app supplies the strings rather than the verdict. */
 	public static native void setAutoRendererGpuStrings(String vendor, String renderer, String version);
+	/** The first instruction set extension this build was compiled for that the CPU lacks
+	 *  ("the dot product instructions", ...), or null if it has them all. Callable before the core
+	 *  is initialized; the app must not start the core when it is non-null. */
+	public static native String missingCpuFeature();
 	/** Whether the driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2).
 	 *  Pushed once at startup. The core pairs it with the driver the open Vulkan device is on and
 	 *  posts the "get malisx2" OSD notice at game start when that driver is not malisx2. */

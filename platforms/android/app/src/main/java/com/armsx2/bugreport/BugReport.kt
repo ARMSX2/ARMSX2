@@ -158,6 +158,9 @@ object BugReport {
 
     /** Records that a game is about to run. Call right before the VM thread starts. */
     fun armCrashMarker(serial: String, title: String, driverId: String, crc: String = "") {
+        // First: the marker's commit also says that the log now holds a game, and the backup needs
+        // that fact about the log as it was.
+        com.armsx2.runtime.MainActivityRuntime.dataRootOrNull()?.let(::backUpEmulog)
         val name = if (driverId.isBlank()) "" else {
             runCatching { CustomDriver.listInstalled(app).firstOrNull { it.id == driverId }?.name }.getOrNull().orEmpty()
         }
@@ -185,6 +188,23 @@ object BugReport {
 
     /** Records that the game stopped in an orderly way. */
     fun clearCrashMarker() = CrashMarker.clear(app)
+
+    /**
+     * Makes the emulog the backup if a game was started in it and the core does not have it open
+     * (see [LogBackup], which also says when that is). Called at launch, before the core starts, and
+     * as a game starts, which is when a later game's boot would truncate the previous one's log.
+     * Best effort: nothing here may stop the launch or the boot.
+     */
+    private fun backUpEmulog(dataRoot: String) {
+        runCatching {
+            val outcome = LogBackup.rotate(File(dataRoot, "logs"), CrashMarker.logHasGame(app), coreHoldsEmulog())
+            if (outcome.clearsFlag) CrashMarker.clearLogHasGame(app)
+            println("@@BUGREPORT@@ emulog backup: $outcome")
+        }
+    }
+
+    /** True while the core has the emulog open. A core that cannot be asked has not opened it. */
+    private fun coreHoldsEmulog(): Boolean = runCatching { NativeApp.isEmulogOpen() }.getOrDefault(false)
 
     /** `Settings.Global.BOOT_COUNT`: how many times the device has booted, or -1 if it will not say. */
     internal fun bootCount(context: Context): Int =
@@ -220,6 +240,9 @@ object BugReport {
      * (the emulog is renamed here, the logcat snapshot and exit records are taken on the thread),
      * only then is the marker cleared, and only then does housekeeping run. A launch that is killed
      * halfway therefore still finds the marker and does it again.
+     *
+     * The same rename also keeps the log of a run that was closed by hand (a hang the user force-closed
+     * is not a crash anyone is asked about) as the emulog backup, see [LogBackup].
      */
     fun onDataRootReady(dataRoot: String) {
         // Once per process: a second call would find the marker the first is still working on.
@@ -235,6 +258,9 @@ object BugReport {
                 preserved = runCatching { CrashEvidence.preserve(app, root, stale, record, verdict.closedBySystem) }.getOrNull()
             }
         }
+        // After the evidence was taken (a crash's emulog is the one renamed away above) and before the
+        // core starts, which opens the emulog for writing and truncates it.
+        backUpEmulog(dataRoot)
         thread(isDaemon = true, name = "bugreport-startup") {
             if (preserved != null) {
                 runCatching { CrashEvidence.complete(app, root, preserved) }

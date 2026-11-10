@@ -51,6 +51,8 @@ GSSetupPrimCodeGenerator::GSSetupPrimCodeGenerator(u64 key, void* code, size_t m
 	, m_sel(key)
 	, m_code_rx(static_cast<const u8*>(code))
 {
+	// ARMv8.0 FP and AdvSIMD only; debug builds assert on anything more.
+	m_emitter.SetCPUFeatures(vixl::CPUFeatures(vixl::CPUFeatures::kFP, vixl::CPUFeatures::kNEON));
 	m_en.z = m_sel.zb ? 1 : 0;
 	m_en.f = m_sel.fb && m_sel.fge ? 1 : 0;
 	m_en.t = m_sel.fb && m_sel.tfx != TFX_NONE ? 1 : 0;

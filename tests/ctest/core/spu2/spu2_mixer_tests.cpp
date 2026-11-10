@@ -17,6 +17,9 @@
 #include "IopMem.h"
 #include "SPU2/defs.h"
 #include "SPU2/spu2.h"
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "SPU2/spu2_neon.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -583,6 +586,55 @@ TEST_F(Spu2Mixer, ReverbResamplersMatchTheFrozenOnesAtEveryBufferPosition)
 		}
 	}
 }
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+// The opt-in NEON resamplers ("SPU2/NeonReverbSIMD", SPU2::RegisterNEONBackend) against the same frozen ones, from the
+// same three kinds of buffer contents.
+TEST_F(Spu2Mixer, TheOptInNeonReverbResamplersMatchTheFrozenOnes)
+{
+	struct Restore
+	{
+		StereoOut32 (*up)(V_Core&) = ReverbUpsample;
+		s32 (*down)(V_Core&, bool) = ReverbDownsample;
+		~Restore()
+		{
+			ReverbUpsample = up;
+			ReverbDownsample = down;
+		}
+	} restore;
+	SPU2::RegisterNEONBackend();
+
+	Rng r(78);
+	V_Core& core = Cores[0];
+	for (int round = 0; round < 1500; round++)
+	{
+		const u32 mode = round % 3;
+		auto tap = [&]() -> s16 {
+			if (mode == 0)
+				return static_cast<s16>(r.U32());
+			if (mode == 1)
+				return r.Chance(50) ? INT16_MAX : INT16_MIN;
+			return static_cast<s16>(static_cast<s32>(r.Below(2001)) - 1000);
+		};
+		for (auto& ch : core.RevbDownBuf)
+			for (s16& s : ch)
+				s = tap();
+		for (auto& ch : core.RevbUpBuf)
+			for (s16& s : ch)
+				s = tap();
+		for (u32 pos = 0; pos < 64; pos++)
+		{
+			core.RevbSampleBufPos = pos;
+			for (const bool right : {false, true})
+				ASSERT_EQ(ReferenceReverbDownsample(core, right), ReverbDownsample(core, right)) << "round " << round << " pos " << pos;
+			const StereoOut32 ref = ReferenceReverbUpsample(core);
+			const StereoOut32 cur = ReverbUpsample(core);
+			ASSERT_EQ(ref.Left, cur.Left) << "round " << round << " pos " << pos;
+			ASSERT_EQ(ref.Right, cur.Right) << "round " << round << " pos " << pos;
+		}
+	}
+}
+#endif
 
 TEST_F(Spu2Mixer, CurrentMixerMatchesWithTheLightweightReverbBypass)
 {

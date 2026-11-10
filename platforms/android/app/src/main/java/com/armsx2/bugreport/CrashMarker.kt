@@ -30,6 +30,13 @@ object CrashMarker {
     private const val PREFS = "armsx2_bugreport"
     private const val KEY = "crash.marker"
 
+    /**
+     * True once a game has been started in the log that is `logs/emulog.txt` now. Not part of the
+     * marker, which is cleared when a game stops in an orderly way: a log that holds a finished game
+     * is as worth keeping as one that holds a hang. See [LogBackup].
+     */
+    private const val KEY_LOG_HAS_GAME = "log.hasGame"
+
     data class Marker(
         /** Wall clock, milliseconds, when the game was started. */
         val armedAt: Long,
@@ -81,10 +88,25 @@ object CrashMarker {
     private fun prefs(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /** Records that a game is starting. Synchronous: on disk when this returns. */
+    /**
+     * Records that a game is starting, and that the emulog now holds one. Synchronous: on disk when
+     * this returns, in one commit, so the marker and the flag cannot disagree after a kill.
+     */
     @Synchronized
     fun arm(context: Context, marker: Marker) {
-        runCatching { prefs(context).edit().putString(KEY, marker.toJson().toString()).commit() }
+        runCatching {
+            prefs(context).edit().putString(KEY, marker.toJson().toString()).putBoolean(KEY_LOG_HAS_GAME, true).commit()
+        }
+    }
+
+    /** Whether a game was started in the current `logs/emulog.txt`. False if it never was, or the log was moved aside since. */
+    @Synchronized
+    fun logHasGame(context: Context): Boolean = runCatching { prefs(context).getBoolean(KEY_LOG_HAS_GAME, false) }.getOrDefault(false)
+
+    /** The emulog no longer holds a game: it was moved to the backup, taken as crash evidence, or is about to be truncated. Synchronous. */
+    @Synchronized
+    fun clearLogHasGame(context: Context) {
+        runCatching { prefs(context).edit().remove(KEY_LOG_HAS_GAME).commit() }
     }
 
     /** The marker left by the previous run, or null if it ended in an orderly way. */

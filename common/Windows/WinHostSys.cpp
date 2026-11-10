@@ -12,6 +12,7 @@
 
 #include "fmt/format.h"
 
+#include <cstring>
 #include <mutex>
 
 static DWORD ConvertToWinApi(const PageProtectionMode& mode)
@@ -58,6 +59,16 @@ void* HostSys::CreateSharedMemory(const char* name, size_t size)
 void HostSys::DestroySharedMemory(void* ptr)
 {
 	CloseHandle(static_cast<HANDLE>(ptr));
+}
+
+bool HostSys::DiscardSharedMemory(void* ptr, size_t offset, size_t size)
+{
+	return false;
+}
+
+void HostSys::DiscardMemory(void* ptr, size_t size)
+{
+	std::memset(ptr, 0, size);
 }
 
 size_t HostSys::GetRuntimePageSize()

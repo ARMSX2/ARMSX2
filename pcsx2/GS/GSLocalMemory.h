@@ -443,6 +443,9 @@ public:
 	typedef void (*readImage)(const GSLocalMemory& mem, int& tx, int& ty, u8* dst, int len, GIFRegBITBLTBUF& BITBLTBUF, GIFRegTRXPOS& TRXPOS, GIFRegTRXREG& TRXREG);
 	typedef void (*readTexture)(GSLocalMemory& mem, const GSOffset& off, const GSVector4i& r, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
 	typedef void (*readTextureBlock)(const GSLocalMemory& mem, u32 bp, u8* dst, int dstpitch, const GIFRegTEXA& TEXA);
+	/// Writes the block-aligned part of a readback with block writes and the edges per pixel. Returns false
+	/// (writing nothing) if no whole block fits in `r`. Doesn't mark pages.
+	typedef bool (*writeBlocksOfPixel)(GSLocalMemory& mem, u8* src, u32 pitch, const GSOffset& off, const GSVector4i& r, u32 write_mask);
 
 	enum PSM_FMT
 	{
@@ -473,6 +476,8 @@ public:
 
 	static psm_t m_psm[64];
 	static readImage m_readImageX;
+	static writeBlocksOfPixel m_writeBlocksOfPixel32; ///< Full or 24-bit write mask only.
+	static writeBlocksOfPixel m_writeBlocksOfPixel16; ///< Ignores the write mask: the 16-bit writes have none.
 
 	static constexpr int m_vmsize = 1024 * 1024 * 4;
 
@@ -1085,12 +1090,23 @@ public:
 
 	void WritePixel32(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
 	{
+		if (m_writeBlocksOfPixel32(*this, src, pitch, off, r, 0xffffffffu))
+		{
+			MarkPagesWritten(off, r);
+			return;
+		}
 		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = *src; });
 		MarkPagesWritten(off, r);
 	}
 
 	void WritePixel32(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r, u32 write_mask)
 	{
+		// The masks block writes can handle: 32-bit with alpha, or 24-bit.
+		if ((write_mask == 0xffffffffu || write_mask == 0x00ffffffu) && m_writeBlocksOfPixel32(*this, src, pitch, off, r, write_mask))
+		{
+			MarkPagesWritten(off, r);
+			return;
+		}
 		off.loopPixels(r, vm32(), (u32*)src, pitch, [&](u32* dst, u32* src) { *dst = (*dst & ~write_mask) | (*src & write_mask); });
 		MarkPagesWritten(off, r);
 	}
@@ -1107,6 +1123,11 @@ public:
 
 	void WritePixel16(u8* RESTRICT src, u32 pitch, const GSOffset& off, const GSVector4i& r)
 	{
+		if (m_writeBlocksOfPixel16(*this, src, pitch, off, r, 0xffffu))
+		{
+			MarkPagesWritten(off, r);
+			return;
+		}
 		off.loopPixels(r, vm16(), (u16*)src, pitch, [&](u16* dst, u16* src) { *dst = *src; });
 		MarkPagesWritten(off, r);
 	}

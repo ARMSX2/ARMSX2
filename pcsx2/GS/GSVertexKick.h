@@ -82,20 +82,25 @@ namespace GSVertexKernels
 		uint8x16_t pat_m1;   // XYZF2: {X|Y<<16, Z, -, F}
 		uint8x16_t pat_xyz;  // XYZ2:  {X|Y<<16, Z32} into the low half
 		uint32x4_t q_fixup;  // Q == +0.0 rewrites to FLT_MIN
+		uint32x4_t q_nan_lane; // lane 3 set: a NaN Q rewrites to FLT_MAX
 	};
 
-	__forceinline_odr PackedParseConsts MakePackedParseConsts()
+	// `keep_gif_q`: leave a zero or NaN-looking Q as the GIF wrote it (the software
+	// renderer on ARM64, GSStqExtremes.h). Every other caller takes the fix-ups.
+	__forceinline_odr PackedParseConsts MakePackedParseConsts(bool keep_gif_q)
 	{
 		alignas(16) static constexpr u8 pat_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
 		alignas(16) static constexpr u8 pat_m1[16] = {0, 1, 4, 5, 24, 25, 26, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 28, 0xFF, 0xFF, 0xFF};
 		alignas(16) static constexpr u8 pat_xyz[16] = {0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 		alignas(16) static constexpr u32 q_fixup[4] = {0, 0, 0, 0x00800000};
+		alignas(16) static constexpr u32 q_nan_lane[4] = {0, 0, 0, 0xFFFFFFFFu};
 
 		PackedParseConsts k;
 		k.pat_m0 = vld1q_u8(pat_m0);
 		k.pat_m1 = vld1q_u8(pat_m1);
 		k.pat_xyz = vld1q_u8(pat_xyz);
-		k.q_fixup = vld1q_u32(q_fixup);
+		k.q_fixup = keep_gif_q ? vdupq_n_u32(0) : vld1q_u32(q_fixup);
+		k.q_nan_lane = keep_gif_q ? vdupq_n_u32(0) : vld1q_u32(q_nan_lane);
 		return k;
 	}
 
@@ -131,30 +136,41 @@ namespace GSVertexKernels
 
 	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Neon(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
 	{
-		ParsePackedSTQRGBAXYZF2_Neon(r, uv, MakePackedParseConsts(), m0, m1);
+		ParsePackedSTQRGBAXYZF2_Neon(r, uv, MakePackedParseConsts(false), m0, m1);
 	}
 
 	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Neon(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
 	{
-		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, MakePackedParseConsts(), m0, m1);
+		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, MakePackedParseConsts(false), m0, m1);
+	}
+#else
+	struct PackedParseConsts
+	{
+	};
+
+	__forceinline_odr PackedParseConsts MakePackedParseConsts(bool)
+	{
+		return {};
 	}
 #endif // ARCH_ARM64
 
 	// Dispatchers the fused handlers call: aarch64 takes the TBL kernels, x86
 	// keeps the legacy path.
-	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Fast(const GIFPackedReg* RESTRICT r, u32 uv, GSVector4i& m0, GSVector4i& m1)
+	__forceinline_odr void ParsePackedSTQRGBAXYZF2_Fast(const GIFPackedReg* RESTRICT r, u32 uv,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
 	{
 #ifdef ARCH_ARM64
-		ParsePackedSTQRGBAXYZF2_Neon(r, uv, m0, m1);
+		ParsePackedSTQRGBAXYZF2_Neon(r, uv, k, m0, m1);
 #else
 		ParsePackedSTQRGBAXYZF2(r, uv, m0, m1);
 #endif
 	}
 
-	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Fast(const GIFPackedReg* RESTRICT r, u64 uvfog, GSVector4i& m0, GSVector4i& m1)
+	__forceinline_odr void ParsePackedSTQRGBAXYZ2_Fast(const GIFPackedReg* RESTRICT r, u64 uvfog,
+		const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
 	{
 #ifdef ARCH_ARM64
-		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, m0, m1);
+		ParsePackedSTQRGBAXYZ2_Neon(r, uvfog, k, m0, m1);
 #else
 		ParsePackedSTQRGBAXYZ2(r, uvfog, m0, m1);
 #endif
@@ -418,8 +434,7 @@ namespace GSVertexKernels
 				// See the portable branch above for why this layout needs it and
 				// the contiguous triples do not.
 				const float32x4_t f = vreinterpretq_f32_u32(v0);
-				const uint32x4_t q_lane = vsetq_lane_u32(0xFFFFFFFFu, vdupq_n_u32(0), 3);
-				const uint32x4_t q_is_nan = vbicq_u32(q_lane, vceqq_f32(f, f));
+				const uint32x4_t q_is_nan = vbicq_u32(k.q_nan_lane, vceqq_f32(f, f));
 				v0 = vbslq_u32(q_is_nan, vreinterpretq_u32_f32(vdupq_n_f32(FLT_MAX)), v0);
 
 				m0 = GSVector4i(vreinterpretq_s32_u32(v0));
@@ -474,10 +489,10 @@ namespace GSVertexKernels
 	// The dispatcher the per-vertex paths call.
 	template <PackedLayout L>
 	__forceinline_odr void ParsePackedRecord_Fast(const GIFPackedReg* RESTRICT rv, const GIFPackedLayout& off,
-		u64 uvfog, const GSVector4i& carry, GSVector4i& m0, GSVector4i& m1)
+		u64 uvfog, const GSVector4i& carry, const PackedParseConsts& k, GSVector4i& m0, GSVector4i& m1)
 	{
 #ifdef ARCH_ARM64
-		ParsePackedRecord_Neon<L>(rv, off, uvfog, carry, MakePackedParseConsts(), m0, m1);
+		ParsePackedRecord_Neon<L>(rv, off, uvfog, carry, k, m0, m1);
 #else
 		ParsePackedRecord<L>(rv, off, uvfog, carry, m0, m1);
 #endif
@@ -1014,7 +1029,14 @@ namespace GSVertexKernels
 				// {S/Q, T/Q, Q, Q}, mask NaN lanes out of the min/max chains,
 				// record them in tnan.
 				const GSVector4 stq_raw = GSVector4::cast(m0);
+#ifdef ARCH_ARM64
+				// Only S/Q and T/Q are needed, so a two-lane FDIV does (same IEEE results, half the divider time).
+				const float32x4_t raw = stq_raw.v4s;
+				const float32x2_t q2 = vdup_laneq_f32(raw, 3);
+				const GSVector4 stq(vcombine_f32(vdiv_f32(vget_low_f32(raw), q2), q2));
+#else
 				const GSVector4 stq = (stq_raw / stq_raw.wwww()).xyww(stq_raw);
+#endif
 
 				const GSVector4i nan = GSVector4i::cast(stq != stq);
 				const GSVector4 keep = GSVector4::cast(~nan);

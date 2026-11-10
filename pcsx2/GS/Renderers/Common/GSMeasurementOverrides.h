@@ -59,6 +59,11 @@ struct GSMeasurementOverrides
 	/// against the read on a GPU that does not need it.
 	bool alpha_bit_logic_op = false;
 
+	/// -date-copy-with-ad-blend: let a destination-alpha draw that blends with destination alpha
+	/// share the stencil copy, as before that was refused (GSRendererHW::EmulateDATESelectMethod).
+	/// For pricing the refusal on one binary. Unlike the switches above, read per draw.
+	bool date_copy_with_dst_alpha_blend = false;
+
 	/// -no-provoking-vertex: run Vulkan as a device without VK_EXT_provoking_vertex, as the rule
 	/// broken_provoking_vertex does for Qualcomm's stock Adreno driver. Pipelines keep the API's
 	/// first-vertex default, so the paths a provoking-first device takes (HandleFlatShadedVertices,
@@ -79,7 +84,8 @@ struct GSMeasurementOverrides
 	bool Any() const
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
-		       alpha_bit_logic_op || no_provoking_vertex || no_dual_source || stream_rings_cached;
+		       alpha_bit_logic_op || date_copy_with_dst_alpha_blend || no_provoking_vertex || no_dual_source ||
+		       stream_rings_cached;
 	}
 };
 

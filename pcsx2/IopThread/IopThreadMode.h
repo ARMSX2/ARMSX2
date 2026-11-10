@@ -90,8 +90,8 @@ namespace IopThread
 	/// The most performance-tier cores a host can have for the IOP thread to be requested by default. With two or three
 	/// fast cores EE, GS and VU1 (each 85 to 95% busy) already compete for them, and the IOP thread's work moves to an
 	/// otherwise idle slow core: measured on the MQ65 with two A73 online, +3 to +6% speed with MTVU on and +7 to +15% with
-	/// it off in God of War II, Shadow of the Colossus and Burnout 3. With four fast cores those games are GS-bound, the
-	/// thread gains nothing and takes a fast core, so there it stays a choice (and the game database's, for titles that
+	/// it off in God of War II, Shadow of the Colossus and Burnout 3. With four fast cores those games are GS-bound and the
+	/// thread gained nothing (measured while it still ran on a fast core), so there it stays a choice (and the game database's, for titles that
 	/// are EE-bound). Three fast cores was not measured; it is included by decision.
 	inline constexpr u32 kMaxDefaultOnPerformanceCores = 3;
 
@@ -134,8 +134,8 @@ namespace IopThread
 	/// The threads are the EE, the GS, the IOP and, with MTVU on, the VU1 thread. It needs at least that
 	/// many cores in total plus two more for the OS, the GS back thread and the audio callback, and a
 	/// performance tier of at least kMinPerformanceCores cores (a tier that cannot be read counts as none).
-	/// The tier may be narrower than the threads: the IOP thread then runs outside it, on the
-	/// slower cores (UnpinnedIopThreadMask in IopPlacement.h).
+	/// The tier may be narrower than the threads: the IOP thread runs outside it, on the
+	/// slower cores, in any case (SlowCoresMask in IopPlacement.h).
 	IopThreadMode ResolveMode(const Pcsx2Config& config, const HostCpuInfo& host, const VmConditions& vm);
 
 	/// Whether the iopThread setting should start on for this host: its performance tier holds between

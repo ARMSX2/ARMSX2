@@ -293,8 +293,16 @@ void ps_convert_primid_rgba8()
 }
 #endif
 
+#if HAS_BILN
+// Source size, pushed by GSDeviceVK since textureSize() crashes some Mali drivers.
+layout(push_constant) uniform cb10
+{
+	ivec2 u_source_size;
+};
+#endif
+
 #define SAMPLE_RGBA_DEPTH_BILN(CONVERT_FN) \
-	ivec2 dims = textureSize(samp0, 0); \
+	ivec2 dims = u_source_size; \
 	vec2 top_left_f = v_tex * vec2(dims) - 0.5f; \
 	ivec2 top_left = ivec2(floor(top_left_f)); \
 	ivec4 coords = clamp(ivec4(top_left, top_left + 1), ivec4(0), dims.xyxy - 1); \

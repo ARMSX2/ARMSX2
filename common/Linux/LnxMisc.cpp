@@ -21,6 +21,10 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__aarch64__)
+#include <asm/hwcap.h>
+#include <sys/auxv.h>
+#endif
 #if defined(X11_API)
 #include <X11/Xlib.h>
 #include <X11/extensions/XInput2.h>
@@ -496,3 +500,55 @@ void Threading::SleepUntil(u64 ticks)
 			return;
 	}
 }
+
+#if defined(__aarch64__)
+const char* HostSys::GetMissingBuildCpuFeature()
+{
+	[[maybe_unused]] const unsigned long hw = getauxval(AT_HWCAP);
+	const char* missing = nullptr;
+#if defined(__ARM_FEATURE_ATOMICS) && defined(HWCAP_ATOMICS)
+	if (!missing && !(hw & HWCAP_ATOMICS))
+		missing = "LSE atomics (ARMv8.1)";
+#endif
+#if defined(__ARM_FEATURE_CRC32) && defined(HWCAP_CRC32)
+	if (!missing && !(hw & HWCAP_CRC32))
+		missing = "the CRC32 instructions";
+#endif
+#if defined(__ARM_FEATURE_AES) && defined(HWCAP_AES)
+	if (!missing && !(hw & HWCAP_AES))
+		missing = "the AES instructions";
+#endif
+#if defined(__ARM_FEATURE_RCPC) && defined(HWCAP_LRCPC)
+	if (!missing && !(hw & HWCAP_LRCPC))
+		missing = "RCpc loads (ARMv8.3)";
+#endif
+#if defined(__ARM_FEATURE_DOTPROD) && defined(HWCAP_ASIMDDP)
+	if (!missing && !(hw & HWCAP_ASIMDDP))
+		missing = "the dot product instructions";
+#endif
+#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && defined(HWCAP_ASIMDHP)
+	if (!missing && !(hw & HWCAP_ASIMDHP))
+		missing = "half-precision vector arithmetic";
+#endif
+	return missing;
+}
+#endif
+
+#if defined(__aarch64__) && !defined(__ANDROID__)
+// Builds for more than ARMv8.0 die with SIGILL on older cores, often before main. Check the HWCAPs
+// before the other static constructors run and say what's missing. Android checks from the app
+// instead (NativeApp.missingCpuFeature), where it can show the player a message.
+__attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
+{
+	const char* const missing = HostSys::GetMissingBuildCpuFeature();
+	if (!missing)
+		return;
+
+	static constexpr char before[] = "ARMSX2: this build uses ";
+	static constexpr char after[] = ", which this CPU does not have. Use a build for ARMv8.0 (-march=armv8-a -moutline-atomics).\n";
+	[[maybe_unused]] ssize_t r = write(STDERR_FILENO, before, sizeof(before) - 1);
+	r = write(STDERR_FILENO, missing, __builtin_strlen(missing));
+	r = write(STDERR_FILENO, after, sizeof(after) - 1);
+	_exit(1);
+}
+#endif
