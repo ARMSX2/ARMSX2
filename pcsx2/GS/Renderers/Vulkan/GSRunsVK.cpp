@@ -147,13 +147,6 @@ bool GSRunsVK::Init()
 		return false;
 	}
 
-	if (!m_index_stream.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, RING_SIZE, "runs-index") ||
-		!m_table_stream.Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, RING_SIZE, "runs-table"))
-	{
-		Console.Error("VK: run machine rings failed");
-		return false;
-	}
-
 	Vulkan::DescriptorSetLayoutBuilder dslb;
 	dslb.AddBinding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 	dslb.AddBinding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT);
@@ -177,23 +170,6 @@ bool GSRunsVK::Init()
 	plb.AddDescriptorSet(m_set1_layout);
 	if ((m_pipeline_layout = plb.Create(device)) == VK_NULL_HANDLE)
 		return false;
-	// The header and table set comes from a pool of its own, sized for exactly its descriptors: the device's global pool
-	// counts only the types the classic path uses, and a driver that enforces per-type counts (malisx2) refuses the rest.
-	{
-		const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1}};
-		const VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 2, sizes};
-		if (vkCreateDescriptorPool(device, &pci, nullptr, &m_set0_pool) != VK_SUCCESS)
-			return false;
-		const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, m_set0_pool, 1, &m_set0_layout};
-		if (vkAllocateDescriptorSets(device, &ai, &m_set0) != VK_SUCCESS)
-			return false;
-	}
-	Vulkan::DescriptorSetUpdateBuilder dsub;
-	dsub.AddBufferDescriptorWrite(m_set0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0, HEADER_RANGE);
-	dsub.AddBufferDescriptorWrite(m_set0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0,
-		RUN_WINDOW - TABLE_SKIP);
-	dsub.Update(device);
-
 	m_frame_pools.resize(GSDeviceVK::NUM_COMMAND_BUFFERS);
 	m_textures.reserve(m_max_textures);
 	m_image_infos.reserve(m_max_textures);
@@ -222,6 +198,34 @@ bool GSRunsVK::Init()
 	m_class = &GSRunsPolicy::DeviceClassFor(m_dev->m_device_properties.deviceName);
 	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s)", m_max_textures, m_class->name,
 		m_class->source);
+	return true;
+}
+
+bool GSRunsVK::CreateRings()
+{
+	const VkDevice device = m_dev->m_device;
+	if (!m_index_stream.Create(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, RING_SIZE, "runs-index") ||
+		!m_table_stream.Create(VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, RING_SIZE, "runs-table"))
+	{
+		return false;
+	}
+	// The header and table set comes from a pool of its own, sized for exactly its descriptors: the device's global pool
+	// counts only the types the classic path uses, and a driver that enforces per-type counts (malisx2) refuses the rest.
+	const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1}};
+	const VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 2, sizes};
+	if (vkCreateDescriptorPool(device, &pci, nullptr, &m_set0_pool) != VK_SUCCESS)
+		return false;
+	const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, m_set0_pool, 1, &m_set0_layout};
+	if (vkAllocateDescriptorSets(device, &ai, &m_set0) != VK_SUCCESS)
+	{
+		m_set0 = VK_NULL_HANDLE;
+		return false;
+	}
+	Vulkan::DescriptorSetUpdateBuilder dsub;
+	dsub.AddBufferDescriptorWrite(m_set0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0, HEADER_RANGE);
+	dsub.AddBufferDescriptorWrite(m_set0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0,
+		RUN_WINDOW - TABLE_SKIP);
+	dsub.Update(device);
 	return true;
 }
 
@@ -404,6 +408,19 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		m_pass.why[WHY_NOT_IN_PASS]++;
 		Flush(END_UNMERGEABLE);
 		return false;
+	}
+	// The rings and the set that names them are made by the first draw that would join a run, so a title that forms
+	// none allocates nothing: its memory is laid out as with the machine off.
+	if (m_set0 == VK_NULL_HANDLE)
+	{
+		if (m_rings_failed)
+			return false;
+		if (!CreateRings())
+		{
+			Console.Error("VK: run machine rings failed; drawing every draw classically");
+			m_rings_failed = true;
+			return false;
+		}
 	}
 	if (m_run.open && !Matches(config))
 		Flush(EndReason(config));
