@@ -3056,3 +3056,59 @@ TEST(GsKickKernel, LayoutDrawStartFlushesAtTheSameVertex)
 	// The register write does end draws, or none of the above reached a flush.
 	EXPECT_GT(flushed_runs, 100u);
 }
+
+#ifdef ARCH_ARM64
+// One class of the four-wide decision worked by hand: a strip on the native grid,
+// scissor (0,0)-(639,447), no offset. It pins the pass's interface, so a second
+// implementation of the pass has a first case to be held to.
+//
+//   vertex   position (pixels)   ADC   the triangle it completes
+//   0        (100, 100)                none yet
+//   1        (200, 100)                none yet
+//   2        (100, 200)                drawn
+//   3        (200, 200)                drawn
+//   4        (200, 200)                rejected: repeats vertex 3
+//   5        (300, 100)                rejected: its other two vertices are equal
+//   6        (300, 300)          set   rejected: ADC
+//   7        (4000, 100)               drawn: off the right edge, but 5 and 6 are inside
+TEST(GsKickKernel, DecideVectorWorkedExample)
+{
+	struct P { u16 x, y; bool adc; };
+	const P pts[8] = {{100, 100, false}, {200, 100, false}, {100, 200, false}, {200, 200, false},
+		{200, 200, false}, {300, 100, false}, {300, 300, true}, {4000, 100, false}};
+
+	alignas(16) GIFPackedReg rec[8] = {};
+	for (u32 i = 0; i < 8; i++)
+	{
+		rec[i].U32[0] = pts[i].x * 16u;
+		rec[i].U32[1] = pts[i].y * 16u;
+		rec[i].U32[2] = 0x12345u + i;
+		rec[i].U32[3] = pts[i].adc ? 0x8000u : 0u;
+	}
+
+	// The native grid's bias is one sub-texel; the scissor's cull rect is the
+	// scissor in 12.4 widened by eight, and its band bounds shifted back up are
+	// 0 and 16 * (640 or 448).
+	GSVertexKickKernel::DecideBounds kb = {};
+	kb.bias_x = kb.bias_y = 1;
+	kb.ofx = kb.ofy = 1;
+	kb.l = 0;
+	kb.t = 0;
+	kb.r = 640 * 16;
+	kb.b = 448 * 16;
+	kb.step = 16;
+
+	u64 accept[2] = {~0ull, ~0ull};
+	GSVertexKickKernel::VectorDecided out = {};
+	GSVertexKickKernel::DecideVector<3, false, true>(reinterpret_cast<const u8*>(rec), sizeof(GIFPackedReg), 8, 0, kb,
+		accept, out);
+
+	EXPECT_EQ(accept[0], 0x8Cull); // vertices 2, 3 and 7
+	EXPECT_EQ(accept[1], 0ull);
+	ASSERT_TRUE(out.any);
+	EXPECT_EQ(out.minx, 100 * 16);
+	EXPECT_EQ(out.miny, 100 * 16);
+	EXPECT_EQ(out.maxx, 4000 * 16);
+	EXPECT_EQ(out.maxy, 300 * 16);
+}
+#endif
