@@ -353,7 +353,7 @@ bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 	       !SplitStates(m_draw.flags);
 }
 
-GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
+GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 {
 	if (config.rt != m_run.rt || config.ds != m_run.ds)
 		return END_TARGET;
@@ -363,6 +363,23 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
 		return END_SPLIT;
 	if (SplitStates(m_draw.flags))
 		return END_SPLIT;
+	if (m_log)
+	{
+		// -runs-log: which of the run's fixed state the draw changed (kind 0x40 in the refusal census).
+		const Run& r = m_run;
+		const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
+		const GSHWDrawConfig::VSConstantBuffer& b = r.cb_vs;
+		const bool c[] = {config.depth.key != r.dss, (config.vs.key & ~0x76u) != r.vs, !config.scissor.eq(r.scissor),
+			std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) != 0,
+			std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) != 0,
+			std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) != 0, a.max_depth != b.max_depth,
+			std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) != 0, config.ps.rta_correction != r.rta,
+			config.ps.zfloor != r.zfloor, r.ndraws >= m_max_draws};
+		u64 detail = 0;
+		for (u32 i = 0; i < std::size(c); i++)
+			detail |= static_cast<u64>(c[i]) << i;
+		m_refusals[{0x40u, detail}]++;
+	}
 	return END_STATE;
 }
 

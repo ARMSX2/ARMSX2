@@ -128,7 +128,7 @@ private:
 	/// The -runs-split-mask states whose value in flags differs from the open run's.
 	u32 SplitStates(u32 flags) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
-	Why EndReason(const GSHWDrawConfig& config) const;
+	Why EndReason(const GSHWDrawConfig& config);
 	u32 SpecKey() const;
 	/// Any thread.
 	VkShaderModule GetFragmentShader(u32 variant, u32 spec);
