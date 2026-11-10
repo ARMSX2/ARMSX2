@@ -393,17 +393,3 @@ TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
 	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
 	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
 }
-
-// A pass pays when the host draws its runs saved are worth more than what their programs cost over the classic ones.
-TEST(GSRunsPolicy, PassPays)
-{
-	const DeviceClass& a650 = DeviceClassFor("Turnip Adreno (TM) 650");
-	// Spider-Man 3 heavy's storm pass: 4,664 draws in 159 runs over 23.5 M pixels.
-	EXPECT_TRUE(PassPays(a650, 4664, 159, 23500000));
-	// The same fill saving two host draws does not pay.
-	EXPECT_FALSE(PassPays(a650, 10, 8, 23500000));
-	// A cheap host draw makes the same pass not pay where the 650 pays.
-	const DeviceClass& g615 = DeviceClassFor("Mali-G615 MC6");
-	EXPECT_TRUE(PassPays(a650, 3000, 140, 30000000));
-	EXPECT_FALSE(PassPays(g615, 3000, 140, 30000000));
-}

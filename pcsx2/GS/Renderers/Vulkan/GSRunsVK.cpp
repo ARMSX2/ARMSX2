@@ -213,7 +213,7 @@ bool GSRunsVK::Init()
 		{
 			static char s_buf[1 << 16];
 			std::setvbuf(m_log, s_buf, _IOFBF, sizeof(s_buf));
-			std::fprintf(m_log, "# runs split=%s\n# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling declined | "
+			std::fprintf(m_log, "# runs split=%s\n# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
 			                    "end_state end_target end_split end_pass end_other end_ring end_unmergeable end_textures end_compiling\n"
 			                    "# S pass spec variant draws textures changes(per state, draw to draw) draw_area(target px, by dear class 0..3)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
 			                    "thread takes it)\n",
@@ -240,13 +240,7 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 		tex.is_target = config.tex->IsRenderTargetOrDepthStencil();
 		tex.rgba8 = config.tex->GetFormat() == GSTexture::Format::Color;
 	}
-	GSRunsPolicy::Draw pd = GSRunsPolicy::Classify(config, tex, m_dev->GetColorClipTexture() != nullptr);
-	if (pd.why == GSRunsPolicy::Refusal::None && PassDeclined(config))
-	{
-		m_pass.why[WHY_DECLINED]++;
-		Flush(END_UNMERGEABLE);
-		return;
-	}
+	const GSRunsPolicy::Draw pd = GSRunsPolicy::Classify(config, tex, m_dev->GetColorClipTexture() != nullptr);
 	if (pd.why != GSRunsPolicy::Refusal::None)
 	{
 		static constexpr Why why[] = {WHY_ROAD, WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST};
@@ -905,7 +899,6 @@ void GSRunsVK::Flush(Why why)
 	m_pass.merged += r.ndraws;
 	m_pass.runs_multi += (r.ndraws > 1) ? 1 : 0;
 	m_pass.longest = std::max(m_pass.longest, r.ndraws);
-	m_pass.area += r.area_total;
 
 	GSDeviceVK* dev = m_dev;
 	const VkCommandBuffer cmd = dev->GetCurrentCommandBuffer();
@@ -965,31 +958,5 @@ void GSRunsVK::EndPass(u64 pass_serial)
 			std::fprintf(m_log, (i == END_STATE) ? " | %u" : " %u", m_pass.why[i]);
 		std::fputc('\n', m_log);
 	}
-	// The pass's verdict for later passes on the same targets. Keyed by the targets rather than by the pass's place in its
-	// frame, which moves with every pass a frame adds or drops. A target is declined after two passes in a row that did
-	// not pay, and tried again every DECLINE_RETRY passes, since nothing measures it while it is declined.
-	if (g_gs_measurement_overrides.runs_decline && m_pass_key != 0)
-	{
-		Decline& dl = m_declined[m_pass_key];
-		if (m_pass.runs != 0)
-		{
-			if (GSRunsPolicy::PassPays(*m_class, m_pass.merged, m_pass.runs, m_pass.area))
-				dl = {};
-			else if (++dl.strikes >= 2)
-				dl.left = DECLINE_RETRY;
-		}
-		else if (dl.left > 0)
-			dl.left--;
-	}
-	m_pass_key = 0;
 	m_pass = {};
-}
-
-bool GSRunsVK::PassDeclined(const GSHWDrawConfig& config)
-{
-	if (!g_gs_measurement_overrides.runs_decline)
-		return false;
-	m_pass_key = reinterpret_cast<uintptr_t>(config.rt) ^ (reinterpret_cast<uintptr_t>(config.ds) << 1);
-	const auto it = m_declined.find(m_pass_key);
-	return it != m_declined.end() && it->second.left > 0;
 }

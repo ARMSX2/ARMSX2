@@ -1326,8 +1326,6 @@ static void PrintCommandLineHelp(const char* progname)
 						 "an alpha test) differ from the run's: never, always, or by the GPU class's cost model (default).\n");
 	std::fprintf(stderr, "  -runs-split-mask <m>: Also end a run where a state in mask m changes (bits as -runs-read-mask).\n");
 	std::fprintf(stderr, "  -runs-no-continue: A draw that continues a run takes the device's whole draw path too.\n");
-	std::fprintf(stderr, "  -runs-decline <on|off>: Draw classically the targets whose passes' runs did not pay (default off, "
-						 "unfinished).\n");
 	std::fprintf(stderr, "  -runs-nofill-classic: Scissor every TFX draw to one pixel, classic ones included.\n");
 	std::fprintf(stderr, "  -runs-nofill: Scissor each run's host draw to one pixel, to price a pass without its fill.\n");
 	std::fprintf(stderr, "  -runs-max-draws <n>: End each run after n draws (0, the default: the machine's own limit).\n");
@@ -2112,17 +2110,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			else if (CHECK_ARG("-runs-no-continue"))
 			{
 				g_gs_measurement_overrides.runs_no_continue = true;
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-runs-decline"))
-			{
-				const char* arg = argv[++i];
-				if (std::strcmp(arg, "on") != 0 && std::strcmp(arg, "off") != 0)
-				{
-					ArgError("-runs-decline: expected on or off.");
-					return false;
-				}
-				g_gs_measurement_overrides.runs_decline = std::strcmp(arg, "on") == 0;
 				continue;
 			}
 			else if (CHECK_ARG("-runs-nofill-classic"))
