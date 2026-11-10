@@ -1161,6 +1161,11 @@ private:
 	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
 	// -readback-kick-passes moves it.
 	u32 m_readback_kick_passes = 8;
+	// Draws recorded since the last submit, and how many the kick lets pile up inside one render
+	// pass before it ends the pass to submit them (see DoRenderHW). Only gsrunner's
+	// -readback-kick-draws moves the spacing.
+	u32 m_draws_since_submit = 0;
+	u32 m_readback_kick_draws = 256;
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

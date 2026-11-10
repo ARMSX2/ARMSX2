@@ -202,6 +202,11 @@ GSDeviceVK::GSDeviceVK()
 		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
 		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
 	}
+	if (g_gs_measurement_overrides.readback_kick_draws != 0)
+	{
+		m_readback_kick_draws = g_gs_measurement_overrides.readback_kick_draws;
+		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted draws in a pass", m_readback_kick_draws);
+	}
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
@@ -1994,6 +1999,7 @@ void GSDeviceVK::WaitForCommandBufferCompletion(u32 index)
 void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 {
 	m_render_passes_since_submit = 0;
+	m_draws_since_submit = 0;
 
 	FrameResources& resources = m_frame_resources[m_current_frame];
 
@@ -9618,13 +9624,24 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// and the real number is 2, because ~3300 of ~3400 offers find the next command buffer
 	// still executing. So raising the threshold buys far less than it looks like it should.
 	// Sweeping it 8->16 measured -2% total GPU stall on Rogue Galaxy and +12% on OutRun 2006.
+	//
+	// Many readbacks come at the end of one long pass -- the frame buffer's, hundreds of draws
+	// long (SOCOM II probes it after 807 draws in 4 passes, Metal Gear Solid 3 reads after an
+	// 826-draw pass, The Punisher after a 235-draw one) -- so a pass boundary never comes and the
+	// whole pass waits for the readback's submit. In a readback-prone frame the kick also ends a
+	// pass that has m_readback_kick_draws unsubmitted draws, so the GPU starts on it while the GS
+	// thread records the rest. Ending a pass changes no pixel: the next draw begins a new one that
+	// loads the targets. It costs a store and a load of the pass's attachments on a tiler, which is
+	// why it waits for that many draws rather than kicking at every one.
 	constexpr u32 readback_window_frames = 3;
 	const bool near_readback = m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames;
+	const bool no_pass_state = !config.ps.HasColorROV() && !config.ps.HasDepthROV() && !g_gs_device->GetColorClipTexture();
 	const bool at_pass_boundary = !InRenderPass() ||
-		(!config.ps.HasColorROV() && !config.ps.HasDepthROV() && !g_gs_device->GetColorClipTexture() &&
-			!(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
+		(no_pass_state && !(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
 	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
-	if (near_readback && at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes)
+	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes;
+	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= m_readback_kick_draws;
+	if (near_readback && (kick_at_boundary || kick_in_pass))
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
 		// ActivateCommandBuffer fence-waits if that buffer's previous submission is still
@@ -9640,6 +9657,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			ExecuteCommandBuffer(WaitType::None);
 		}
 	}
+
+	m_draws_since_submit++;
 
 	// The shared destination-alpha stencil copy (GSAlphaBitLogicOp.h) survives only draws that keep
 	// it true: DATE draws sharing it, and logic-op marks, which write it where they write the bit.
