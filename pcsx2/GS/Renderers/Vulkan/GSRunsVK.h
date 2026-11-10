@@ -108,6 +108,7 @@ private:
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
 		u32 last_flags = 0;
 		std::array<u32, GSRunsPolicy::NUM_STATES> changes{}; ///< -runs-log: how often each state changed between draws
+		std::array<u64, 4> area{}; ///< -runs-log: the draws' bounding-box area in GS pixels, by dear class
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
 	};

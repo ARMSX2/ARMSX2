@@ -215,7 +215,7 @@ bool GSRunsVK::Init()
 			std::setvbuf(m_log, s_buf, _IOFBF, sizeof(s_buf));
 			std::fprintf(m_log, "# runs split=%s\n# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
 			                    "end_state end_target end_split end_pass end_other end_ring end_unmergeable end_textures end_compiling\n"
-			                    "# S pass spec variant draws textures changes(per state, draw to draw)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
+			                    "# S pass spec variant draws textures changes(per state, draw to draw) bbox_area(GS px, by dear class 0..3)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
 			                    "thread takes it)\n",
 				g_gs_measurement_overrides.runs_split_dear ? "dear" : "none");
 		}
@@ -641,6 +641,20 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 				r.changes[i] += GSRunsPolicy::Field(d.flags, i) != GSRunsPolicy::Field(r.last_flags, i);
 		}
 		r.last_flags = d.flags;
+		if (m_log)
+		{
+			// -runs-log: the draw's bounding box in GS pixels (XY is 12.4 fixed point), a ceiling on its fill, by dear class.
+			u32 x0 = 0xFFFF, y0 = 0xFFFF, x1 = 0, y1 = 0;
+			for (u32 i = 0; i < config.nverts; i++)
+			{
+				x0 = std::min<u32>(x0, config.verts[i].XYZ.X);
+				x1 = std::max<u32>(x1, config.verts[i].XYZ.X);
+				y0 = std::min<u32>(y0, config.verts[i].XYZ.Y);
+				y1 = std::max<u32>(y1, config.verts[i].XYZ.Y);
+			}
+			const u64 area = (config.nverts && x1 > x0 && y1 > y0) ? (static_cast<u64>(x1 - x0) * (y1 - y0)) >> 8 : 0;
+			r.area[GSRunsPolicy::Dear(d.flags)] += area;
+		}
 		r.ndraws++;
 		r.idx_count += nidx;
 		r.ways |= 1u << d.way;
@@ -877,9 +891,11 @@ void GSRunsVK::Flush(Why why)
 	const VkDescriptorSet set1 = WriteTextureSet();
 	if (m_log)
 	{
-		std::fprintf(m_log, "S %llu %08x %u %u %zu %u,%u,%u,%u,%u,%u,%u,%u\n", static_cast<unsigned long long>(dev->m_render_pass_serial),
-			SpecKey(), variant, r.ndraws, m_textures.size(), r.changes[0], r.changes[1], r.changes[2], r.changes[3], r.changes[4],
-			r.changes[5], r.changes[6], r.changes[7]);
+		std::fprintf(m_log, "S %llu %08x %u %u %zu %u,%u,%u,%u,%u,%u,%u,%u %llu,%llu,%llu,%llu\n",
+			static_cast<unsigned long long>(dev->m_render_pass_serial), SpecKey(), variant, r.ndraws, m_textures.size(), r.changes[0],
+			r.changes[1], r.changes[2], r.changes[3], r.changes[4], r.changes[5], r.changes[6], r.changes[7],
+			static_cast<unsigned long long>(r.area[0]), static_cast<unsigned long long>(r.area[1]), static_cast<unsigned long long>(r.area[2]),
+			static_cast<unsigned long long>(r.area[3]));
 	}
 	g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
