@@ -5,6 +5,7 @@
 
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/GSCacheFile.h"
+#include "GS/GSCompileQueue.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
@@ -660,6 +661,10 @@ private:
 		m_tfx_fragment_shaders;
 	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
+
+	/// The device's shader and pipeline builders, started with the device and stopped before anything a
+	/// job reads is destroyed. Anything that can build a pipeline off the GS thread submits to it.
+	GSCompileQueue m_compile_queue;
 
 	// Pipeline precompile. Each game's TFX pipeline keys are recorded in a pack in the game's cache
 	// directory as they are first created; when that game starts again, worker threads build the

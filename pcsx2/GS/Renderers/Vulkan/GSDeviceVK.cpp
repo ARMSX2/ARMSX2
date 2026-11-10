@@ -3137,6 +3137,9 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 	}
 
+	// Everything a pipeline build reads (features, layouts, render passes, the TFX source) exists now.
+	m_compile_queue.Start(GSCompileQueue::GetDefaultWorkerCount(), "GS compile");
+
 	if (!CreateBuffers())
 		return false;
 
@@ -7438,6 +7441,7 @@ void GSDeviceVK::DestroyResources()
 {
 	// Before anything a worker reads is destroyed.
 	StopPipelinePrecompile();
+	m_compile_queue.Stop();
 
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
