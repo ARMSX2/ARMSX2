@@ -416,6 +416,8 @@ namespace
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairSTQXYZ2>(prim);
 				case GSVertexKernels::PackedLayout::PairUVXYZ2:
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairUVXYZ2>(prim);
+				case GSVertexKernels::PackedLayout::PairUVXYZF2:
+					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairUVXYZF2>(prim);
 				case GSVertexKernels::PackedLayout::PairRGBAQXYZ2:
 					return LayoutShipsFor<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(prim);
 				case GSVertexKernels::PackedLayout::UvTripleXYZF2:
@@ -1996,9 +1998,15 @@ TEST(GifSetTag, TwoRegisterLayouts)
 	const GIFPath uv = ClassifyTag({3, 5});
 	EXPECT_EQ(uv.type, static_cast<u32>(GIFPath::TYPE_UVXYZ2));
 
-	// The XYZF2 twins are deliberately NOT recognised (out of 3c's scope).
+	// {UV, XYZF2}: Call of Duty 3's sprite stream (29,000 vertices a vsync went through the per-qword replay).
+	const GIFPath uvf = ClassifyTag({3, 4});
+	EXPECT_EQ(uvf.type, static_cast<u32>(GIFPath::TYPE_UVXYZF2));
+	EXPECT_EQ(uvf.layout.stride, 2u);
+	EXPECT_EQ(uvf.layout.off_a, 0u);
+	EXPECT_EQ(uvf.layout.off_xyz, 1u);
+
+	// The other XYZF2 twin is not recognised: no corpus title carries it.
 	EXPECT_EQ(ClassifyTag({1, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
-	EXPECT_EQ(ClassifyTag({3, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
 	// Two positions and nothing else: no layout carries it.
 	EXPECT_EQ(ClassifyTag({5, 5}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
 }
@@ -2022,6 +2030,11 @@ TEST(GifSetTag, RepeatedPairHalvesNregAndDoublesNloop)
 	const GIFPath rgbaq = ClassifyTag({1, 5, 1, 5}, 11);
 	EXPECT_EQ(rgbaq.type, static_cast<u32>(GIFPath::TYPE_RGBAQXYZ2));
 	EXPECT_EQ(rgbaq.nloop * rgbaq.nreg, 11u * 4u);
+
+	const GIFPath uvf = ClassifyTag({3, 4, 3, 4}, 11);
+	EXPECT_EQ(uvf.type, static_cast<u32>(GIFPath::TYPE_UVXYZF2));
+	EXPECT_EQ(uvf.nreg, 2u);
+	EXPECT_EQ(uvf.nloop * uvf.nreg, 11u * 4u);
 
 	// A four-register tag that is not a repeat of a recognised pair stays unknown.
 	EXPECT_EQ(ClassifyTag({2, 4, 2, 4}).type, static_cast<u32>(GIFPath::TYPE_UNKNOWN));
@@ -2292,6 +2305,7 @@ namespace
 	const LayoutCase kNopTriple52 = {"5:f,f,2,1,4", {0xF, 0xF, 2, 1, 4}, {5, 2, 3, 4}, GSVertexKernels::PackedLayout::NopTripleXYZF2};
 	const LayoutCase kPairSTQ = {"2:2,5", {2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
 	const LayoutCase kPairUV = {"2:3,5", {3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
+	const LayoutCase kPairUVF = {"2:3,4", {3, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZF2};
 	const LayoutCase kPairRGBAQ = {"2:1,5", {1, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
 	const LayoutCase kPairRGBAQNop = {"3:f,1,5", {0xF, 1, 5}, {3, 1, 0, 2}, GSVertexKernels::PackedLayout::PairRGBAQXYZ2};
 	const LayoutCase kUvTriple = {"3:3,1,4", {3, 1, 4}, {3, 0, 1, 2}, GSVertexKernels::PackedLayout::UvTripleXYZF2};
@@ -2324,6 +2338,8 @@ TEST(GsKickKernel, LayoutsMatchThePerQwordPath)
 						KickSetup{}, prim, kPairSTQ, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
 						KickSetup{}, prim, kPairUV, v, {len}, use_kernel);
+					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZF2>(
+						KickSetup{}, prim, kPairUVF, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
 						KickSetup{}, prim, kPairRGBAQ, v, {len}, use_kernel);
 					RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
@@ -2357,6 +2373,8 @@ TEST(GsKickKernel, LayoutsMatchAcrossCallSplits)
 				KickSetup{}, prim, kPairSTQ, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZ2>(
 				KickSetup{}, prim, kPairUV, v, calls);
+			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairUVXYZF2>(
+				KickSetup{}, prim, kPairUVF, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZ2>(
 				KickSetup{}, prim, kPairRGBAQ, v, calls);
 			RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
@@ -2652,7 +2670,7 @@ namespace
 TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 {
 	u32 seed = 9900;
-	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairRGBAQ, &kUvTriple,
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
 		&kUvTriple41};
 	for (const LayoutCase* lc : cases)
 	{
@@ -2697,7 +2715,7 @@ TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 {
 	u32 seed = 9700;
-	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV,
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF,
 		&kPairRGBAQ, &kPairRGBAQNop, &kUvTriple, &kUvTriple40, &kUvTriple41};
 	for (const LayoutCase* lc : cases)
 	{
@@ -2724,7 +2742,8 @@ TEST(GsKickKernel, RepeatedPairThroughTransferMatchesTheReplay)
 	u32 seed = 9800;
 	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
 	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
-	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv})
+	const LayoutCase repeated_uvf = {"4:3,4,3,4", {3, 4, 3, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZF2};
+	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv, &repeated_uvf})
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
 		{

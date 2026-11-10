@@ -183,12 +183,13 @@ namespace GSVertexKernels
 		PairUVXYZ2,     // {UV, XYZ2}: ST, colour and Q carried
 		PairRGBAQXYZ2,  // {RGBAQ, XYZ2}: ST carried, Q from the latch
 		UvTripleXYZF2,  // {UV, RGBAQ, XYZF2}, contiguous or NOP-padded: ST carried, Q from the latch
+		PairUVXYZF2,    // {UV, XYZF2}: ST, colour and Q carried, fog from the record
 	};
 
 	constexpr bool LayoutIsXYZF2(PackedLayout l)
 	{
 		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::NopTripleXYZF2 ||
-			   l == PackedLayout::UvTripleXYZF2;
+			   l == PackedLayout::UvTripleXYZF2 || l == PackedLayout::PairUVXYZF2;
 	}
 	constexpr bool LayoutIsContiguousTriple(PackedLayout l)
 	{
@@ -207,7 +208,7 @@ namespace GSVertexKernels
 	// Whether the record carries a UV descriptor.
 	constexpr bool LayoutHasUV(PackedLayout l)
 	{
-		return l == PackedLayout::PairUVXYZ2 || l == PackedLayout::UvTripleXYZF2;
+		return l == PackedLayout::PairUVXYZ2 || l == PackedLayout::UvTripleXYZF2 || l == PackedLayout::PairUVXYZF2;
 	}
 	// Whether m[0] is the carry with the record's colour and the latched Q put in,
 	// ST unchanged -- what GIFPackedRegHandlerRGBA leaves in m_v.
@@ -445,7 +446,7 @@ namespace GSVertexKernels
 			}
 			else
 			{
-				static_assert(L == PackedLayout::PairUVXYZ2);
+				static_assert(L == PackedLayout::PairUVXYZ2 || L == PackedLayout::PairUVXYZF2);
 				m0 = carry;
 			}
 

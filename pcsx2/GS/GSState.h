@@ -496,9 +496,11 @@ protected:
 		else if constexpr (prim == GS_SPRITE)
 		{
 			// spiderman3's whole sprite stream: {ST, XYZ2} 25,368 calls and
-			// {UV, XYZ2} 1,796.
+			// {UV, XYZ2} 1,796; and Call of Duty 3's {UV, XYZF2}, about 21,000
+			// vertices a vsync that went through the per-qword replay before.
 			return layout == GSVertexKernels::PackedLayout::PairSTQXYZ2 ||
-				   layout == GSVertexKernels::PackedLayout::PairUVXYZ2;
+				   layout == GSVertexKernels::PackedLayout::PairUVXYZ2 ||
+				   layout == GSVertexKernels::PackedLayout::PairUVXYZF2;
 		}
 		else
 		{

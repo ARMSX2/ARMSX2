@@ -543,7 +543,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVRGBAQXYZF2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
