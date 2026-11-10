@@ -639,6 +639,7 @@ namespace GSCacheFile
 		e.erased = false;
 		e.gen++;
 		m_ram_bytes += size;
+		m_changed = Clock::now();
 		return true;
 	}
 
@@ -653,6 +654,7 @@ namespace GSCacheFile
 		it->second.data.reset();
 		it->second.erased = true;
 		it->second.gen++;
+		m_changed = Clock::now();
 	}
 
 	void Pack::ForEach(u16 type, const Visitor& fn) const
@@ -683,6 +685,17 @@ namespace GSCacheFile
 		m_replace = true;
 		m_partial = false;
 		m_epoch++;
+		m_changed = Clock::now();
+	}
+
+	bool Pack::HasSettledWrites(Clock::time_point now, Clock::duration settle) const
+	{
+		{
+			std::unique_lock lock(m_mutex);
+			if (m_changed != Clock::time_point{} && now - m_changed < settle)
+				return false;
+		}
+		return HasPendingWrites();
 	}
 
 	bool Pack::HasPendingWrites() const
@@ -996,17 +1009,26 @@ namespace GSCacheFile
 		std::call_once(s_leftovers_once, [this]() { CleanLeftovers(m_cache_dir); });
 
 		std::unique_lock lock(m_mutex);
+		Clock::time_point next_full = Clock::now() + m_interval;
 		for (;;)
 		{
-			const Clock::time_point next = Clock::now() + m_interval;
-			m_cv.wait_until(lock, next, [this]() { return m_stop || m_asked > m_finished; });
+			const Clock::time_point wake = std::min(next_full, Clock::now() + SETTLE);
+			m_cv.wait_until(lock, wake, [this]() { return m_stop || m_asked > m_finished; });
 			if (m_stop)
 				break;
 			const u64 ticket = m_asked;
 			const bool asked = (ticket > m_finished);
+			if (!asked && Clock::now() < next_full)
+			{
+				lock.unlock();
+				QuickPass();
+				lock.lock();
+				continue;
+			}
 			lock.unlock();
 			Pass(Clock::time_point::max(), asked);
 			lock.lock();
+			next_full = Clock::now() + m_interval;
 			m_finished = ticket;
 			m_done_cv.notify_all();
 		}
@@ -1017,6 +1039,29 @@ namespace GSCacheFile
 		lock.lock();
 		m_finished = ticket;
 		m_done_cv.notify_all();
+	}
+
+	void PackWriter::QuickPass()
+	{
+		std::vector<std::shared_ptr<Pack>> packs;
+		{
+			std::unique_lock lock(m_mutex);
+			packs = m_packs;
+		}
+		const Clock::time_point now = Clock::now();
+		for (const std::shared_ptr<Pack>& pack : packs)
+		{
+			if (!pack->HasSettledWrites(now, SETTLE))
+				continue;
+			const Pack::WriteResult res = pack->Write();
+			if (res.records > 0)
+			{
+				DevCon.WriteLn("GS cache: wrote %u records (%llu KB) to '%s'", res.records,
+					static_cast<unsigned long long>(res.bytes / 1024), pack->GetPath().c_str());
+			}
+		}
+		if (m_extra)
+			m_extra(Clock::time_point::max(), false);
 	}
 
 	void PackWriter::Pass(Clock::time_point deadline, bool asked)

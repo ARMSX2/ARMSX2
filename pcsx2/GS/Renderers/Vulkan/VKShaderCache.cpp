@@ -608,7 +608,10 @@ VkPipelineCache VKShaderCache::GetPipelineCache(bool set_dirty /*= true*/)
 		return VK_NULL_HANDLE;
 
 	if (set_dirty)
+	{
 		m_pipeline_cache_dirty.store(true, std::memory_order_relaxed);
+		m_pipeline_cache_changed.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+	}
 	return m_pipeline_cache;
 }
 
@@ -677,14 +680,20 @@ void VKShaderCache::WritePipelineCache(GSCacheFile::Clock::time_point deadline, 
 		return;
 
 	// The whole cache is serialised and written each time (it is opaque, so there is nothing to
-	// append), so it is done at most once a minute while it keeps changing. Losing the last minute
-	// costs only compiling those pipelines again at the next start.
-	static constexpr std::chrono::seconds MIN_FLUSH_INTERVAL{60};
+	// append). Unasked, it is written once new pipelines have stopped coming for a few seconds, but
+	// not more than every MIN_FLUSH_INTERVAL, and at the latest MAX_FLUSH_INTERVAL after the last write
+	// while they keep coming: an app killed in the background then loses only the last moments.
+	static constexpr std::chrono::seconds MIN_FLUSH_INTERVAL{15};
+	static constexpr std::chrono::seconds MAX_FLUSH_INTERVAL{60};
+	static constexpr std::chrono::seconds SETTLE{5};
 	const auto now = std::chrono::steady_clock::now();
-	if (!asked && m_last_pipeline_cache_flush.time_since_epoch().count() != 0 &&
-		(now - m_last_pipeline_cache_flush) < MIN_FLUSH_INTERVAL)
+	if (!asked && m_last_pipeline_cache_flush.time_since_epoch().count() != 0)
 	{
-		return;
+		const auto since_flush = now - m_last_pipeline_cache_flush;
+		const auto changed = std::chrono::steady_clock::time_point(
+			std::chrono::steady_clock::duration(m_pipeline_cache_changed.load(std::memory_order_relaxed)));
+		if (since_flush < MIN_FLUSH_INTERVAL || (since_flush < MAX_FLUSH_INTERVAL && (now - changed) < SETTLE))
+			return;
 	}
 
 	// vkGetPipelineCacheData puts no external-synchronisation requirement on the cache, so this runs

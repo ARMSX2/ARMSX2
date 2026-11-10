@@ -108,6 +108,8 @@ private:
 	std::mutex m_pipeline_cache_mutex;
 	VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
 	std::atomic<bool> m_pipeline_cache_dirty{false};
+	/// steady_clock ticks of the newest pipeline added; the writer waits for a burst to settle.
+	std::atomic<s64> m_pipeline_cache_changed{0};
 	/// When the cache was last serialised. Writer thread.
 	std::chrono::steady_clock::time_point m_last_pipeline_cache_flush{};
 };

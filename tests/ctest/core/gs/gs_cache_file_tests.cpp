@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -530,6 +531,28 @@ TEST_F(GSCacheFileTest, PackWritePassIsSkippedWhileAnotherProcessWrites)
 	EXPECT_EQ(pack.Write().records, 1u);
 }
 #endif
+
+// A process killed between passes loses what it learned since the last one, so a change reaches the
+// disk soon after it stops changing, not only at the next full pass.
+TEST_F(GSCacheFileTest, WriterWritesASettledChangeWithoutBeingAsked)
+{
+	auto pack = std::make_shared<Pack>();
+	pack->Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	PackWriter writer;
+	writer.Start(m_dir, {}, std::chrono::hours(1));
+	writer.Add(pack);
+	Put(*pack, 0);
+	const Clock::time_point give_up = Clock::now() + PackWriter::SETTLE + std::chrono::seconds(5);
+	while (pack->HasPendingWrites() && Clock::now() < give_up)
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	EXPECT_FALSE(pack->HasPendingWrites());
+	{
+		Pack reader;
+		reader.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(reader.GetEntryCount(), 1u);
+	}
+	writer.Stop(Clock::now() + PackWriter::CLOSE_DEADLINE);
+}
 
 TEST_F(GSCacheFileTest, WriterWritesWhenAskedAndOnStop)
 {
