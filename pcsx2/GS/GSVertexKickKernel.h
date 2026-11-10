@@ -13,6 +13,7 @@
 #include <bit>
 #include <limits>
 #include <type_traits>
+#include <vector>
 
 // The packed-vertex kick kernel for the fused GIF handlers.
 //
@@ -611,12 +612,387 @@ namespace GSVertexKickKernel
 		const Invariants* inv;
 	};
 
+#ifdef ARCH_ARM64
+	// A value the optimiser is to take as given. ConvertParse's zero-Q select is
+	// one operation as written; knowing that its mask is "the lane is zero", the
+	// compiler rewrites it as an AND and an OR.
+	__forceinline_odr uint32x4_t Unfolded(uint32x4_t v)
+	{
+		__asm__("" : "+w"(v));
+		return v;
+	}
+
+	// One record of a layout as the two vectors of a GSVertex, for the conversion
+	// loops. The bytes are GSVertexKernels::ParsePackedRecord_Neon's, which the
+	// per-vertex paths keep; what differs is that everything a chunk fixes is a
+	// vector made once, so a vertex is loads, table lookups and the fix-ups and
+	// nothing crosses from a general register:
+	//
+	//   * a carried UV or {UV, FOG} is OR-ed into the lanes the table lookup leaves
+	//     zero, where the per-vertex parse inserts it;
+	//   * a UV the record carries is gathered by the same lookup that gathers the
+	//     position and masked to its fourteen bits a half, where the per-vertex parse
+	//     builds it in a general register;
+	//   * Q == +0.0 becomes FLT_MIN by selecting on "the lane is zero" over all four
+	//     lanes against a vector that is zero in the other three, so a zero S, T or
+	//     colour is replaced by zero;
+	//   * the NOP-padded triple's second fix-up, a NaN Q to FLT_MAX, is the compare,
+	//     the lane mask and the select.
+	// Under keep_gif_q both replacement masks are zero and both selects pass Q through.
+	template <GSVertexKernels::PackedLayout layout, bool clamp>
+	struct ConvertParse
+	{
+		uint8x16_t pat_m0;
+		uint8x16_t pat_m1;
+		uint32x4_t q_min;      // {0, 0, 0, FLT_MIN}
+		uint32x4_t q_nan_lane; // lane 3
+		uint32x4_t q_max;      // FLT_MAX
+		uint32x4_t carry;      // the carried m[0], for a layout that omits part of it
+		uint32x4_t m1_or;      // the carried UV and fog
+		uint32x4_t m1_and;     // a record's own UV keeps fourteen bits a half
+		uint32x4_t clamp_keep;
+		uint32x4_t clamp_shifted;
+		u32 off_a, off_c, off_xyz; // descriptors from the record's start
+
+		__forceinline explicit ConvertParse(const Invariants& inv)
+		{
+			using namespace GSVertexKernels;
+			alignas(16) static constexpr u8 k_m0[16] = {0, 1, 2, 3, 4, 5, 6, 7, 16, 20, 24, 28, 8, 9, 10, 11};
+			// {X | Y << 16, Z, UV, F} from {the record, the record >> 4 a lane} and,
+			// in the second row, the UV record as a third table.
+			alignas(16) static constexpr u8 k_m1_xyzf2[2][16] = {
+				{0, 1, 4, 5, 24, 25, 26, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 28, 0xFF, 0xFF, 0xFF},
+				{0, 1, 4, 5, 24, 25, 26, 0xFF, 32, 33, 36, 37, 28, 0xFF, 0xFF, 0xFF}};
+			// {X | Y << 16, Z, UV, FOG} from the record and, in the second row, the
+			// UV record as a second table.
+			alignas(16) static constexpr u8 k_m1_xyz2[2][16] = {
+				{0, 1, 4, 5, 8, 9, 10, 11, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+				{0, 1, 4, 5, 8, 9, 10, 11, 16, 17, 20, 21, 0xFF, 0xFF, 0xFF, 0xFF}};
+			constexpr bool xyzf2 = LayoutIsXYZF2(layout);
+			constexpr bool has_uv = LayoutHasUV(layout);
+
+			pat_m0 = vld1q_u8(k_m0);
+			pat_m1 = vld1q_u8(xyzf2 ? k_m1_xyzf2[has_uv] : k_m1_xyz2[has_uv]);
+
+			const uint32x4_t zero = vdupq_n_u32(0);
+			const u32 fix = inv.keep_gif_q ? 0u : ~0u;
+			q_min = vsetq_lane_u32(0x00800000u & fix, zero, 3);
+			q_nan_lane = vsetq_lane_u32(fix, zero, 3);
+			q_max = vreinterpretq_u32_f32(vdupq_n_f32(FLT_MAX));
+
+			carry = zero;
+			if constexpr (LayoutCarriesM0(layout))
+				carry = vreinterpretq_u32_s32(inv.carry_m0.v4s);
+
+			const u64 uvfog = inv.uvfog;
+			m1_and = vsetq_lane_u32(0x3FFF3FFFu, vdupq_n_u32(~0u), 2);
+			if constexpr (has_uv)
+				m1_or = vsetq_lane_u32(xyzf2 ? 0u : static_cast<u32>(uvfog >> 32), zero, 3);
+			else if constexpr (xyzf2)
+				m1_or = vsetq_lane_u32(static_cast<u32>(uvfog), zero, 2);
+			else
+				m1_or = vreinterpretq_u32_u64(vsetq_lane_u64(uvfog, vdupq_n_u64(0), 1));
+
+			clamp_keep = clamp ? vreinterpretq_u32_s32(inv.clamp_keep.v4s) : zero;
+			clamp_shifted = clamp ? vreinterpretq_u32_s32(inv.clamp_shifted.v4s) : zero;
+
+			off_a = LayoutOffA<layout>(inv.off);
+			off_xyz = LayoutOffXyz<layout>(inv.off);
+			off_c = 0;
+			if constexpr (LayoutIsTriple(layout))
+				off_c = LayoutOffRgba<layout>(inv.off);
+			else if constexpr (LayoutTakesColourOverCarry(layout))
+				off_c = LayoutOffColour<layout>(inv.off);
+		}
+
+		// Every load is one whole descriptor of the record at `rv`, so nothing is
+		// read outside the record.
+		__forceinline void operator()(const GIFPackedReg* RESTRICT rv, uint32x4_t& m0, uint32x4_t& m1) const
+		{
+			using namespace GSVertexKernels;
+			const auto ld = [rv](u32 off) __attribute__((always_inline)) { return vld1q_u8(reinterpret_cast<const u8*>(rv + off)); };
+
+			if constexpr (LayoutIsTriple(layout))
+			{
+				const uint8x16x2_t st_rgba = {ld(off_a), ld(off_c)};
+				uint32x4_t v0 = vreinterpretq_u32_u8(vqtbl2q_u8(st_rgba, pat_m0));
+				v0 = vbslq_u32(Unfolded(vceqzq_u32(v0)), q_min, v0);
+				if constexpr (layout == PackedLayout::NopTripleXYZF2)
+				{
+					// FCMEQ of a lane with itself is false only for a NaN.
+					const float32x4_t f = vreinterpretq_f32_u32(v0);
+					v0 = vbslq_u32(vbicq_u32(q_nan_lane, vceqq_f32(f, f)), q_max, v0);
+				}
+				m0 = v0;
+			}
+			else if constexpr (layout == PackedLayout::PairSTQXYZ2)
+			{
+				m0 = vreinterpretq_u32_u64(vcombine_u64(vld1_u64(reinterpret_cast<const u64*>(rv + off_a)),
+					vget_high_u64(vreinterpretq_u64_u32(carry))));
+			}
+			else if constexpr (LayoutTakesColourOverCarry(layout))
+			{
+				// The carry's lane 2 is the latched Q (MakeLayoutCarry), which pat_m0 puts last.
+				const uint8x16x2_t carry_rgba = {vreinterpretq_u8_u32(carry), ld(off_c)};
+				m0 = vreinterpretq_u32_u8(vqtbl2q_u8(carry_rgba, pat_m0));
+			}
+			else
+			{
+				m0 = carry;
+			}
+
+			const uint8x16_t xyz = ld(off_xyz);
+			uint32x4_t v1;
+			if constexpr (LayoutIsXYZF2(layout))
+			{
+				const uint8x16_t shifted = vreinterpretq_u8_u32(vshrq_n_u32(vreinterpretq_u32_u8(xyz), 4));
+				if constexpr (LayoutHasUV(layout))
+				{
+					const uint8x16x3_t t = {xyz, shifted, ld(off_a)};
+					v1 = vandq_u32(vreinterpretq_u32_u8(vqtbl3q_u8(t, pat_m1)), m1_and);
+				}
+				else
+				{
+					const uint8x16x2_t t = {xyz, shifted};
+					v1 = vorrq_u32(vreinterpretq_u32_u8(vqtbl2q_u8(t, pat_m1)), m1_or);
+				}
+			}
+			else if constexpr (LayoutHasUV(layout))
+			{
+				const uint8x16x2_t t = {xyz, ld(off_a)};
+				v1 = vorrq_u32(vandq_u32(vreinterpretq_u32_u8(vqtbl2q_u8(t, pat_m1)), m1_and), m1_or);
+			}
+			else
+			{
+				v1 = vorrq_u32(vreinterpretq_u32_u8(vqtbl1q_u8(xyz, pat_m1)), m1_or);
+			}
+			if constexpr (clamp)
+				v1 = vorrq_u32(vandq_u32(v1, clamp_keep), vandq_u32(vshrq_n_u32(v1, 8), clamp_shifted));
+			m1 = v1;
+		}
+	};
+#endif // ARCH_ARM64
+
 	// `triangle`: the class keeps fused vertex-trace bounds (strips and lists).
 	// `clamp`: the depth clamp, a compile-time arm of the loop rather than a test
-	// inside it -- no title in the corpus turns it on, and as a test the compiler
-	// makes eight instructions of select per vertex out of it.
+	// inside it -- no title in the corpus turns it on.
+	//
+	// A job's vertices fall, in slot order, into at most three stretches: below
+	// acc_slot they are converted and nothing else; from there to colour_slot their
+	// position and texture coordinates are folded into the bounds; from colour_slot
+	// on their colour is too. Gouraud shading folds every colour, so there the
+	// second stretch is empty, and each of the two that remain is a loop with no
+	// test in it: the convert loop, and one fold loop per texture mode, chosen per
+	// job. Flat shading is rare in volume and takes one loop that tests each vertex.
+	//
+	// The fold is GSVertexKernels::FmmAccumVertex's operations in its order, with
+	// the position gathered by one table lookup. The STQ divide and the masked IEEE
+	// min and max are that function's own: FMINNM and FMAXNM would not do, because
+	// the two Q lanes are the GIF's bits and can hold a signalling NaN.
 	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
 	__forceinline_odr void ConvertJobs(const ConvertArgs& args)
+	{
+		const Invariants& inv = *args.inv;
+		const u32 stride = GSVertexKernels::LayoutStride<layout>(inv.off);
+		GSVertex* RESTRICT vbuff = args.vbuff;
+#ifdef ARCH_ARM64
+		const ConvertParse<layout, clamp> parse(inv);
+		const GIFPackedReg* RESTRICT rin = args.rin;
+
+		[[maybe_unused]] const u32 shade = inv.shade;
+		[[maybe_unused]] const bool tme = (shade & 1u) != 0;
+		[[maybe_unused]] const bool fst = (shade & 2u) != 0;
+		[[maybe_unused]] const bool iip = (shade & 4u) != 0;
+
+		// {x, y, z, fog word} out of m[1]: GSVertexKernels::FmmPos.
+		alignas(16) static constexpr u8 k_pos[16] = {0, 1, 0xFF, 0xFF, 2, 3, 0xFF, 0xFF, 4, 5, 6, 7, 12, 13, 14, 15};
+		[[maybe_unused]] const uint8x16_t pat_pos = vld1q_u8(k_pos);
+		uint32x4_t pmin = vdupq_n_u32(0), pmax = pmin, tmin = pmin, tmax = pmin, tnan = pmin;
+		uint8x16_t cmin = vdupq_n_u8(0), cmax = cmin;
+		if constexpr (triangle)
+		{
+			const GSVertexKernels::FmmAcc& a = *args.acc;
+			pmin = vreinterpretq_u32_s32(a.pmin.v4s);
+			pmax = vreinterpretq_u32_s32(a.pmax.v4s);
+			tmin = vreinterpretq_u32_s32(a.tmin.v4s);
+			tmax = vreinterpretq_u32_s32(a.tmax.v4s);
+			tnan = vreinterpretq_u32_s32(a.tnan.v4s);
+			cmin = vreinterpretq_u8_s32(a.cmin.v4s);
+			cmax = vreinterpretq_u8_s32(a.cmax.v4s);
+		}
+
+		const auto put = [](GSVertex* RESTRICT out, uint32x4_t m0, uint32x4_t m1) __attribute__((always_inline))
+		{
+			out->m[0] = vreinterpretq_s32_u32(m0);
+			out->m[1] = vreinterpretq_s32_u32(m1);
+		};
+		const auto fold_position = [&](uint32x4_t m1) __attribute__((always_inline))
+		{
+			const uint32x4_t pos = vreinterpretq_u32_u8(vqtbl1q_u8(vreinterpretq_u8_u32(m1), pat_pos));
+			pmin = vminq_u32(pmin, pos);
+			pmax = vmaxq_u32(pmax, pos);
+		};
+		const auto fold_uv = [&](uint32x4_t m1) __attribute__((always_inline))
+		{
+			tmin = vreinterpretq_u32_u16(vminq_u16(vreinterpretq_u16_u32(tmin), vreinterpretq_u16_u32(m1)));
+			tmax = vreinterpretq_u32_u16(vmaxq_u16(vreinterpretq_u16_u32(tmax), vreinterpretq_u16_u32(m1)));
+		};
+		const auto fold_stq = [&](uint32x4_t m0) __attribute__((always_inline))
+		{
+			// {S/Q, T/Q, Q, Q}; a NaN lane leaves the bound as it was and is recorded.
+			const float32x4_t raw = vreinterpretq_f32_u32(m0);
+			const float32x2_t q2 = vdup_laneq_f32(raw, 3);
+			const float32x4_t stq = vcombine_f32(vdiv_f32(vget_low_f32(raw), q2), q2);
+			const uint32x4_t number = vceqq_f32(stq, stq);
+			const float32x4_t lo = vreinterpretq_f32_u32(tmin);
+			const float32x4_t hi = vreinterpretq_f32_u32(tmax);
+			tmin = vbslq_u32(number, vreinterpretq_u32_f32(vminq_f32(lo, stq)), tmin);
+			tmax = vbslq_u32(number, vreinterpretq_u32_f32(vmaxq_f32(hi, stq)), tmax);
+			tnan = vornq_u32(tnan, number);
+		};
+		const auto fold_colour = [&](uint32x4_t m0) __attribute__((always_inline))
+		{
+			cmin = vminq_u8(cmin, vreinterpretq_u8_u32(m0));
+			cmax = vmaxq_u8(cmax, vreinterpretq_u8_u32(m0));
+		};
+
+		uint32x4_t m0, m1;
+		for (const ConvertJob* RESTRICT q = args.jobs; q != args.jobs_end; q++)
+		{
+			const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
+			GSVertex* RESTRICT out = vbuff + q->slot;
+			const u32 n = q->to - q->from;
+			u32 only = n;
+			if constexpr (triangle)
+				only = std::min(n, q->acc_slot - std::min(q->acc_slot, q->slot));
+
+			for (GSVertex* const end = out + only; out != end; out++, rv += stride)
+			{
+				parse(rv, m0, m1);
+				put(out, m0, m1);
+			}
+
+			if constexpr (triangle)
+			{
+				if (only == n)
+					continue;
+				GSVertex* const end = out + (n - only);
+				if (!iip) [[unlikely]]
+				{
+					u32 s = q->slot + only;
+					const u32 colour_slot = q->colour_slot;
+					do
+					{
+						parse(rv, m0, m1);
+						put(out, m0, m1);
+						fold_position(m1);
+						if (tme)
+						{
+							if (fst)
+								fold_uv(m1);
+							else
+								fold_stq(m0);
+						}
+						if (s >= colour_slot)
+							fold_colour(m0);
+						s++;
+						rv += stride;
+					} while (++out != end);
+				}
+				else if (!tme)
+				{
+					do
+					{
+						parse(rv, m0, m1);
+						put(out, m0, m1);
+						fold_position(m1);
+						fold_colour(m0);
+						rv += stride;
+					} while (++out != end);
+				}
+				else if (fst)
+				{
+					do
+					{
+						parse(rv, m0, m1);
+						put(out, m0, m1);
+						fold_position(m1);
+						fold_uv(m1);
+						fold_colour(m0);
+						rv += stride;
+					} while (++out != end);
+				}
+				else
+				{
+					do
+					{
+						parse(rv, m0, m1);
+						put(out, m0, m1);
+						fold_position(m1);
+						fold_stq(m0);
+						fold_colour(m0);
+						rv += stride;
+					} while (++out != end);
+				}
+			}
+		}
+
+		if constexpr (triangle)
+		{
+			GSVertexKernels::FmmAcc& a = *args.acc;
+			a.pmin = GSVector4i(vreinterpretq_s32_u32(pmin));
+			a.pmax = GSVector4i(vreinterpretq_s32_u32(pmax));
+			a.tmin = GSVector4i(vreinterpretq_s32_u32(tmin));
+			a.tmax = GSVector4i(vreinterpretq_s32_u32(tmax));
+			a.tnan = GSVector4i(vreinterpretq_s32_u32(tnan));
+			a.cmin = GSVector4i(vreinterpretq_s32_u8(cmin));
+			a.cmax = GSVector4i(vreinterpretq_s32_u8(cmax));
+		}
+#else
+		// No vector parse and no fused bounds here: the portable parse, a vertex at a time.
+		const GIFPackedLayout off = inv.off;
+		const GIFPackedReg* RESTRICT rin = args.rin;
+		GSVector4i carry = GSVector4i::zero();
+		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+			carry = inv.carry_m0;
+		const u64 uvfog = inv.uvfog;
+		[[maybe_unused]] const GSVector4i clamp_keep = clamp ? inv.clamp_keep : GSVector4i::zero();
+		[[maybe_unused]] const GSVector4i clamp_shifted = clamp ? inv.clamp_shifted : GSVector4i::zero();
+		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
+
+		GSVector4i m0, m1;
+		for (const ConvertJob* RESTRICT q = args.jobs; q != args.jobs_end; q++)
+		{
+			const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
+			GSVertex* RESTRICT out = vbuff + q->slot;
+			u32 left = q->to - q->from;
+			do
+			{
+				GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, off, uvfog, carry, kc, m0, m1);
+				if constexpr (clamp)
+					m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
+
+				out->m[0] = m0;
+				out->m[1] = m1;
+
+				rv += stride;
+				out++;
+			} while (--left != 0);
+		}
+#endif
+	}
+
+	// Development scaffolding for gsrunner's -kick-convert-check, to be removed
+	// before the branch merges: the conversion pass as it stood before ConvertJobs
+	// was split into stretches, run beside ConvertJobs on every call into a buffer
+	// of its own, and a count of the calls whose vertices or bounds differ.
+	inline std::atomic<bool> g_convert_check{false};
+	inline std::atomic<u64> g_convert_calls{0};
+	inline std::atomic<u64> g_convert_vertices{0};
+	inline std::atomic<u64> g_convert_mismatches{0};
+
+	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
+	__forceinline_odr void ConvertJobsReference(const ConvertArgs& args)
 	{
 		const Invariants& inv = *args.inv;
 		const GIFPackedLayout off = inv.off;
@@ -677,6 +1053,35 @@ namespace GSVertexKickKernel
 		if constexpr (triangle)
 			*args.acc = a;
 #endif
+	}
+
+	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
+	__noinline void ConvertJobsChecked(const ConvertArgs& args)
+	{
+		static std::vector<GSVertex> ref;
+		u32 top = 0, vertices = 0;
+		for (const ConvertJob* q = args.jobs; q != args.jobs_end; q++)
+		{
+			top = std::max(top, q->slot + (q->to - q->from));
+			vertices += q->to - q->from;
+		}
+		if (ref.size() < top)
+			ref.resize(top);
+
+		GSVertexKernels::FmmAcc ref_acc = *args.acc;
+		ConvertArgs ref_args = args;
+		ref_args.vbuff = ref.data();
+		ref_args.acc = &ref_acc;
+		ConvertJobsReference<layout, triangle, clamp>(ref_args);
+		ConvertJobs<layout, triangle, clamp>(args);
+
+		bool same = !triangle || std::memcmp(&ref_acc, args.acc, sizeof(ref_acc)) == 0;
+		for (const ConvertJob* q = args.jobs; q != args.jobs_end; q++)
+			same = same && std::memcmp(&ref[q->slot], &args.vbuff[q->slot], (q->to - q->from) * sizeof(GSVertex)) == 0;
+		g_convert_calls.fetch_add(1, std::memory_order_relaxed);
+		g_convert_vertices.fetch_add(vertices, std::memory_order_relaxed);
+		if (!same)
+			g_convert_mismatches.fetch_add(1, std::memory_order_relaxed);
 	}
 
 	// ------------------------------------------------------------------------
@@ -1042,7 +1447,14 @@ namespace GSVertexKickKernel
 		if (job != jobs)
 		{
 			const ConvertArgs args = {rin, vbuff, jobs, job, &acc, &inv};
-			if (inv.clamp_enabled)
+			if (g_convert_check.load(std::memory_order_relaxed)) [[unlikely]]
+			{
+				if (inv.clamp_enabled)
+					ConvertJobsChecked<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
+				else
+					ConvertJobsChecked<layout, primclass == GS_TRIANGLE_CLASS, false>(args);
+			}
+			else if (inv.clamp_enabled)
 				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
 			else
 				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, false>(args);
