@@ -85,7 +85,14 @@ GSRunsVK::~GSRunsVK()
 			vkDestroyPipeline(device, job.result->pipeline, nullptr);
 	}
 	if (m_log)
+	{
+		// The refusal census: each refusal's detail and how many draws it kept off the machine, largest first.
+		std::vector<std::pair<std::pair<u32, u64>, u64>> rs(m_refusals.begin(), m_refusals.end());
+		std::sort(rs.begin(), rs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+		for (const auto& [k, n] : rs)
+			std::fprintf(m_log, "R %u %016llx %llu\n", k.first, static_cast<unsigned long long>(k.second), static_cast<unsigned long long>(n));
 		std::fclose(m_log);
+	}
 	for (auto& it : m_pipelines)
 		vkDestroyPipeline(device, it.second, nullptr);
 	for (auto& it : m_fs)
@@ -215,6 +222,8 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 	{
 		static constexpr Why why[] = {WHY_ROAD, WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST};
 		m_pass.why[why[static_cast<u32>(pd.why)]]++;
+		if (m_log)
+			NoteRefusal(config, pd.why);
 		Flush(END_UNMERGEABLE);
 		return;
 	}
@@ -244,6 +253,56 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 
 	if (m_run.open && !Matches(config))
 		Flush(EndReason(config));
+}
+
+void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why)
+{
+	// Detail per refusal kind (-runs-log only): road, the conditions that hold as bits; topology, the topology, expansion
+	// and VS bits; PS, the selector bits outside the run program's set (lo word, then hi word as a second record);
+	// blend, the blend state's key with the colour mask and the PS blend fields; texture, its format; constant, 0.
+	u64 detail = 0;
+	const GSHWDrawConfig::PSSelector& ps = config.ps;
+	switch (why)
+	{
+		case GSRunsPolicy::Refusal::Road:
+		{
+			const bool c[] = {config.stencil_counter.enable, config.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off,
+				config.require_one_barrier, config.require_full_barrier, config.blend_multi_pass.enable, config.alpha_second_pass.enable,
+				config.colormask.logic_op != GSAlphaBitLogicOp::Off, ps.colclip_hw || m_dev->GetColorClipTexture() != nullptr,
+				config.road.clone_rt, config.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE, config.line_expand,
+				ps.HasColorROV() || ps.HasDepthROV(), config.road.rt_loop, config.road.depth_loop, config.road.depth_read, config.raster_order,
+				config.date_copy != GSAlphaBitLogicOp::NoDateCopy, config.colclip_native_scale > 1.0f, !config.rt, !config.ds};
+			for (u32 i = 0; i < std::size(c); i++)
+				detail |= static_cast<u64>(c[i]) << i;
+			break;
+		}
+		case GSRunsPolicy::Refusal::Topo:
+			detail = static_cast<u64>(config.topology) | (static_cast<u64>(config.vs.key) << 8) | (static_cast<u64>(config.indices_per_prim) << 16);
+			break;
+		case GSRunsPolicy::Refusal::PS:
+		{
+			const GSHWDrawConfig::PSSelector& allowed = GSRunsPolicy::AllowedPS();
+			detail = ps.key_lo & ~allowed.key_lo;
+			if (ps.key_hi & ~allowed.key_hi)
+				m_refusals[{static_cast<u32>(why) | 0x100u, ps.key_hi & ~allowed.key_hi}]++;
+			if (ps.wms > 1 || ps.wmt > 1)
+				m_refusals[{static_cast<u32>(why) | 0x200u, (ps.wms << 2) | ps.wmt}]++;
+			if (static_cast<u32>(ps.atst) > 4 || config.pal)
+				m_refusals[{static_cast<u32>(why) | 0x300u, static_cast<u64>(ps.atst) | (config.pal ? 0x100 : 0)}]++;
+			break;
+		}
+		case GSRunsPolicy::Refusal::Blend:
+			detail = (config.blend.key & 0xFFFFFFFFull) | (static_cast<u64>(config.colormask.wrgba) << 32) |
+			         (static_cast<u64>(ps.blend_a | (ps.blend_b << 2) | (ps.blend_c << 4) | (ps.blend_d << 6) | (ps.blend_mix << 8) |
+			                           (ps.af_in_src1 << 10) | (ps.no_color1 << 11)) << 36);
+			break;
+		case GSRunsPolicy::Refusal::Tex:
+			detail = config.tex ? (static_cast<u64>(config.tex->GetFormat()) | (config.tex->IsRenderTargetOrDepthStencil() ? 0x100 : 0)) : 0xFFFF;
+			break;
+		default:
+			break;
+	}
+	m_refusals[{static_cast<u32>(why), detail}]++;
 }
 
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const

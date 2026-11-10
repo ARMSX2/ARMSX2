@@ -12,6 +12,7 @@
 #include <array>
 #include <mutex>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -121,6 +122,7 @@ private:
 	};
 
 	bool Matches(const GSHWDrawConfig& config) const;
+	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
 	Why EndReason(const GSHWDrawConfig& config) const;
 	u32 SpecKey() const;
 	/// Any thread.
@@ -178,4 +180,6 @@ private:
 	std::vector<FramePools> m_frame_pools;
 	u64 m_pool_fence = 0;
 	std::FILE* m_log = nullptr;
+	/// -runs-log's refusal census: (refusal kind, detail) -> draws.
+	std::map<std::pair<u32, u64>, u64> m_refusals;
 };
