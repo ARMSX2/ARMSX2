@@ -131,17 +131,17 @@ namespace
 		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZF2), LAYOUT_ROW(pass, PackedLayout::PairSTQXYZ2), \
 		LAYOUT_ROW(pass, PackedLayout::PairUVXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZ2), \
 		LAYOUT_ROW(pass, PackedLayout::UvTripleXYZF2), LAYOUT_ROW(pass, PackedLayout::PairUVXYZF2), \
-		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZ2), \
+		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZF2), \
 	}
 
-	constexpr u32 kLayouts = 9;
+	constexpr u32 kLayouts = 10;
 
 	// [layout][triangle][clamp]
 	constexpr PassFn kNewPass[kLayouts][2][2] = PASS_TABLE(NewPass);
 	constexpr PassFn kOldPass[kLayouts][2][2] = PASS_TABLE(OldPass);
 
 	constexpr const char* kLayoutNames[kLayouts] = {"TripleXYZF2", "TripleXYZ2", "NopTripleXYZF2", "PairSTQXYZ2",
-		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2", "NopTripleXYZ2"};
+		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2", "NopTripleXYZ2", "PairRGBAQXYZF2"};
 
 	// std::mt19937 with a 32-bit result, which is what it produces.
 	struct Rng

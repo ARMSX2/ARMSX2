@@ -550,7 +550,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZF2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZ2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZ2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZ2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZF2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2122,9 +2124,14 @@ __noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& t
 		return true;
 	}
 
-	// The two-register layouts, NOP-padded. XYZF2 twins are deliberately not
-	// recognised: no corpus title carries one, and every recognised type costs an
-	// instantiation of the kernel, the staged loop and the per-vertex batch.
+	// The two-register layouts, NOP-padded. Of the XYZF2 twins only {RGBAQ, XYZF2} is
+	// recognised here; it shares the contiguous form's handler.
+	if (n == 2 && desc[0] == GIF_REG_RGBA && desc[1] == GIF_REG_XYZF2)
+	{
+		type = GIFPath::TYPE_RGBAQXYZF2;
+		layout = {nreg, pos[0], 0, pos[1]};
+		return true;
+	}
 	if (n == 2 && desc[1] == GIF_REG_XYZ2)
 	{
 		switch (desc[0])
@@ -2956,7 +2963,8 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 	{
 		constexpr u32 reg_a = GSVertexKernels::LayoutHasUV(layout) ?
 								  GIF_REG_UV :
-								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2) ? GIF_REG_RGBA :
+								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2 ||
+									  layout == GSVertexKernels::PackedLayout::PairRGBAQXYZF2) ? GIF_REG_RGBA :
 																							  GIF_REG_STQ);
 		constexpr u32 reg_xyz = GSVertexKernels::LayoutIsXYZF2(layout) ? GIF_REG_XYZF2 : GIF_REG_XYZ2;
 		const u32 off_a = m_packed_layout.off_a;

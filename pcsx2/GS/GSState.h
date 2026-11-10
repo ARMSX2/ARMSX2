@@ -499,7 +499,8 @@ protected:
 			return layout == GSVertexKernels::PackedLayout::NopTripleXYZF2 ||
 				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2 ||
 				   layout == GSVertexKernels::PackedLayout::UvTripleXYZF2 ||
-				   layout == GSVertexKernels::PackedLayout::NopTripleXYZ2;
+				   layout == GSVertexKernels::PackedLayout::NopTripleXYZ2 ||
+				   layout == GSVertexKernels::PackedLayout::PairRGBAQXYZF2;
 		}
 		else if constexpr (prim == GS_SPRITE)
 		{
