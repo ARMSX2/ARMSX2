@@ -491,6 +491,21 @@ void GSClut::GetAlphaMinMax32(int& amin_out, int& amax_out)
 		}
 		else
 		{
+#if defined(ARCH_ARM64)
+			// LD4 splits the entries' bytes into four vectors; the fourth holds the alphas of 16 entries.
+			const u8* bytes = reinterpret_cast<const u8*>(m_buff32);
+			const int count = (GSLocalMemory::m_psm[m_read.TEX0.PSM].pal == 256) ? 256 : 16;
+			uint8x16_t amin = vdupq_n_u8(0xFF);
+			uint8x16_t amax = vdupq_n_u8(0);
+			for (int i = 0; i < count * 4; i += 64)
+			{
+				const uint8x16x4_t v = vld4q_u8(bytes + i);
+				amin = vminq_u8(amin, v.val[3]);
+				amax = vmaxq_u8(amax, v.val[3]);
+			}
+			m_read.amin = vminvq_u8(amin);
+			m_read.amax = vmaxvq_u8(amax);
+#else
 			const GSVector4i* p = (const GSVector4i*)m_buff32;
 
 			GSVector4i amin, amax;
@@ -534,6 +549,7 @@ void GSClut::GetAlphaMinMax32(int& amin_out, int& amax_out)
 
 			m_read.amin = v0.min_i16(v1).extract16<0>();
 			m_read.amax = v0.max_i16(v1).extract16<1>();
+#endif
 		}
 	}
 
