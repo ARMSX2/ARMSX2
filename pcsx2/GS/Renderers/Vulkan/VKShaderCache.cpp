@@ -506,8 +506,9 @@ void VKShaderCache::Open()
 		WritePipelineCache(deadline, asked);
 	});
 
-	// SPIR-V is kept per game, read whole when the game starts (SetGame); the shaders the device builds
-	// before any game is known have a pack of their own.
+	// SPIR-V is kept per game, read whole when the game starts (SetGame), and once more in the device's
+	// pack, read whole now: the shaders the device builds before any game is known, and every shader
+	// any game has made, which another game needing the same shader then finds.
 	m_spirv_stamp = GetSPIRVStamp(debug);
 	m_spirv_stem = fmt::format("vk_spirv{}_{}", debug ? "_debug" : "", GSCacheFile::ShortName(m_spirv_stamp.GetDigest()));
 	m_device_spirv = OpenGamePack(std::string(), 0, "vk_spirv", m_spirv_stem, GSCacheFile::KIND_VK_SPIRV, m_spirv_stamp);
@@ -748,9 +749,18 @@ std::optional<VKShaderCache::SPIRVCodeVector> VKShaderCache::GetShaderSPV(u32 ty
 		Console.Error("Vulkan: cached SPIR-V is not SPIR-V, recompiling");
 	}
 
+	// Into the game's pack, read whole when the game starts, and into the device's, read whole when the
+	// device opens, so that a game that needs a shader another game made finds it. The key is the whole
+	// source text, so what one game stored is exactly what another would compile.
 	std::optional<SPIRVCodeVector> spv = CompileShaderToSPV(type, shader_code, GSConfig.UseDebugDevice);
-	if (GSCacheFile::Pack* pack = game ? game.get() : device.get(); spv.has_value() && pack)
-		pack->Put(SPIRV_TYPE, key, sizeof(key), spv->data(), spv->size() * sizeof(SPIRVCodeType), 0, false);
+	if (spv.has_value())
+	{
+		for (GSCacheFile::Pack* pack : {game.get(), device.get()})
+		{
+			if (pack)
+				pack->Put(SPIRV_TYPE, key, sizeof(key), spv->data(), spv->size() * sizeof(SPIRVCodeType), 0, false);
+		}
+	}
 	return spv;
 }
 

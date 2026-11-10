@@ -84,7 +84,7 @@ private:
 	/// Writes the packs and the pipeline cache in the background. Not running when the cache is off.
 	GSCacheFile::PackWriter m_writer;
 
-	/// SPIR-V by GLSL source: the device's own shaders, and the running game's.
+	/// SPIR-V by GLSL source: the device's own shaders with every game's, and the running game's.
 	GSCacheFile::Stamp m_spirv_stamp;
 	std::string m_spirv_stem;
 	std::mutex m_spirv_mutex;
