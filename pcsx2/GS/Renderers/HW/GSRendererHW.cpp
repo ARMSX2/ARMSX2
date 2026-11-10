@@ -12700,6 +12700,12 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 	const u32 fbw = m_cached_ctx.FRAME.FBW;
 	const u32 pages_wide = r.z / 64u;
 	const GSVector2i& pgs = GSLocalMemory::m_psm[psm].pgs;
+
+	// The rows of whole pages the fast path fills, when it fills them with one word (no mask, and not the 24-bit
+	// format, which keeps the alpha byte). Every pixel this clear writes, on either path, gets that same word.
+	u32 filled_first_page = 0, filled_rows = 0, filled_word = 0;
+	bool filled_constant = false;
+
 	if (left == 0 && top == 0 && (right & (pgs.x - 1)) == 0 && pages_wide <= fbw)
 	{
 		const u32 pixels_per_page = pgs.x * pgs.y;
@@ -12711,7 +12717,10 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 			const u32 iterations_per_page = (pages_wide * pixels_per_page) / 4;
 			const GSVector4i mask = GSVector4i(drawing_mask);
 			pxAssert((off.bp() & (GS_BLOCKS_PER_PAGE - 1)) == 0);
-			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw)
+			filled_constant = !drawing_mask;
+			filled_word = vert_color;
+			filled_first_page = off.bp() >> 5;
+			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw, filled_rows++)
 			{
 				current_page &= (GS_MAX_PAGES - 1);
 				m_mem.MarkPageRangeWritten(current_page, pages_wide);
@@ -12767,7 +12776,10 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 			const GSVector4i mask = GSVector4i::broadcast16(converted_mask);
 			const u32 iterations_per_page = (pages_wide * pixels_per_page) / 8;
 			pxAssert((off.bp() & (GS_BLOCKS_PER_PAGE - 1)) == 0);
-			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw)
+			filled_constant = !converted_mask;
+			filled_word = static_cast<u32>(converted_color) | (static_cast<u32>(converted_color) << 16);
+			filled_first_page = off.bp() >> 5;
+			for (u32 current_page = off.bp() >> 5; top < page_aligned_bottom; top += pgs.y, current_page += fbw, filled_rows++)
 			{
 				current_page &= (GS_MAX_PAGES - 1);
 				m_mem.MarkPageRangeWritten(current_page, pages_wide);
@@ -12838,6 +12850,14 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 	// The fast path marked its pages by the page numbers it stepped through, which come from the cached FRAME.FBW
 	// and can differ from off's width after a width change. This marks the rows written pixel by pixel.
 	m_mem.MarkPagesWritten(off, r);
+
+	// Every block of the fast path's pages now holds the filled word, whatever the per-pixel rows wrote (the same
+	// word), so their identities are known without reading them.
+	if (filled_constant && g_texture_cache)
+	{
+		for (u32 row = 0; row < filled_rows; row++)
+			g_texture_cache->NoteBlocksFilled(m_mem, filled_first_page + row * fbw, pages_wide, filled_word);
+	}
 }
 
 bool GSRendererHW::OI_BlitFMV(GSTextureCache::Target* _rt, GSTextureCache::Source* tex, const GSVector4i& r_draw)

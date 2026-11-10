@@ -980,6 +980,9 @@ public:
 	/// Whether each of `count` blocks hashes to the value beside it, through BlockHash. Stops at the first
 	/// that does not; the burst memo checks a recorded draw's keys with it.
 	bool BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, const u64* hashes, u32 count);
+	/// A writer that has just filled `count` whole pages from `first_page` with `word` (and marked them) gives
+	/// their blocks the identity of a block of that word, so no lookup reads them to find it. Call after the marks.
+	void NoteBlocksFilled(GSLocalMemory& mem, u32 first_page, u32 count, u32 word);
 
 	void Read(Target* t, const GSVector4i& r, bool force_synchronous = false);
 	void Read(Source* t, const GSVector4i& r);

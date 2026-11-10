@@ -1310,4 +1310,122 @@ namespace
 		EXPECT_GT(report.false_hits, 0u);
 		GSTextureCache::SetBlockHashVerify(false);
 	}
+	TEST_F(GSBlockHashCache, AClearOfWholePagesGivesTheirBlocksTheIdentityOfWhatItWrote)
+	{
+		// A CPU clear of local memory that fills whole pages with one word stores the identity of a block of that
+		// word for each of their blocks, so the next lookup over them reads nothing. The key is still the one built
+		// from the bytes, and verify mode compares every cached identity with a fresh one.
+		BringUp();
+		GSTextureCache::SetBlockHashVerify(true);
+		for (const u32 frame_psm : {PSMCT32, PSMCT16})
+		{
+			Randomise();
+			Window win;
+			win.psm = frame_psm;
+			win.tbp0 = 0;
+			win.tbw = 10;
+			win.tw = 8;
+			win.th = 8;
+			const std::vector<u32> blocks = Blocks(win);
+			Key(win, true);
+
+			ClearDraw(*m_gs, frame_psm, 0, 0, 640, 448, false);
+			u32 dirty = 0;
+			for (const u32 bn : blocks)
+			{
+				ASSERT_EQ(m_gs->m_mem.BlockPtr(bn)[17], 0u) << "the clear did not reach block " << bn;
+				dirty += m_gs->m_mem.HashDirty(bn);
+			}
+			EXPECT_EQ(dirty, 0u) << "psm " << frame_psm << ": blocks the clear filled are left marked";
+
+			const GSTextureCache::BlockHashStats before = Stats3();
+			const HashCacheKey key = Key(win, true);
+			const GSTextureCache::BlockHashStats after = Stats3();
+			EXPECT_EQ(after.rehashed - before.rehashed, 0u) << "psm " << frame_psm << ": the clear left blocks to hash";
+			EXPECT_EQ(key.TEX0Hash, IdHashFromScratch(win)) << "psm " << frame_psm;
+		}
+
+		// A clear whose last row of pages is only partly filled: the whole pages are given identities, the rest is
+		// hashed by the next lookup, and the key is right either way.
+		Randomise();
+		Window win;
+		win.psm = PSMCT32;
+		win.tbp0 = 0;
+		win.tbw = 10;
+		win.tw = 9;
+		win.th = 9;
+		win.has_x = win.has_y = true;
+		win.x0 = 0;
+		win.w = 640;
+		win.y0 = 0;
+		win.h = 448;
+		Key(win, true);
+		ClearDraw(*m_gs, PSMCT32, 0, 0, 640, 447, false);
+		const GSTextureCache::BlockHashStats before = Stats3();
+		const HashCacheKey key = Key(win, true);
+		const GSTextureCache::BlockHashStats after = Stats3();
+		EXPECT_GT(after.rehashed - before.rehashed, 0u) << "the partly cleared pages were hashed again";
+		EXPECT_LT(after.rehashed - before.rehashed, Blocks(win).size()) << "the whole pages were not given identities";
+		EXPECT_EQ(key.TEX0Hash, IdHashFromScratch(win));
+
+		const GSTextureCache::BlockHashVerifyReport report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 0u);
+		EXPECT_EQ(report.extra_misses + report.false_hits, 0u);
+		GSTextureCache::SetBlockHashVerify(false);
+	}
+
+	TEST_F(GSBlockHashCache, AMaskedClearLeavesItsBlocksToBeHashed)
+	{
+		// A clear under a frame mask keeps some bits of what was there, so its blocks are not one word: none is given
+		// an identity, and the next lookup hashes them.
+		BringUp();
+		Randomise();
+		Window win;
+		win.psm = PSMCT32;
+		win.tbp0 = 0;
+		win.tbw = 10;
+		win.tw = 8;
+		win.th = 8;
+		Key(win, true);
+
+		// ClearDraw's sprite, with a frame mask.
+		Packet p;
+		GIFReg r = {};
+		r.U64 = 0;
+		r.SCISSOR.SCAX1 = 639;
+		r.SCISSOR.SCAY1 = 447;
+		p.Reg(GIF_A_D_REG_SCISSOR_1, r);
+		r.U64 = 0;
+		r.FRAME.FBP = 0;
+		r.FRAME.FBW = 10;
+		r.FRAME.PSM = PSMCT32;
+		r.FRAME.FBMSK = 0x0000FF00u;
+		p.Reg(GIF_A_D_REG_FRAME_1, r);
+		r.U64 = 0;
+		r.ZBUF.ZBP = 0x100;
+		r.ZBUF.PSM = PSMZ32;
+		r.ZBUF.ZMSK = 1;
+		p.Reg(GIF_A_D_REG_ZBUF_1, r);
+		r.U64 = 0;
+		r.TEST.ZTE = 1;
+		r.TEST.ZTST = ZTST_ALWAYS;
+		p.Reg(GIF_A_D_REG_TEST_1, r);
+		r.U64 = 0;
+		r.PRMODECONT.AC = 1;
+		p.Reg(GIF_A_D_REG_PRMODECONT, r);
+		r.U64 = 0;
+		r.RGBAQ.Q = 1.0f;
+		p.Reg(GIF_A_D_REG_RGBAQ, r);
+		p.Vertex(0, 0, 0, 0, 0);
+		p.Vertex(640 << 4, 448 << 4, 0, 0, 0);
+		GIFRegPRIM prim = {};
+		prim.PRIM = GS_SPRITE;
+		p.Send(*m_gs, prim);
+
+		const GSTextureCache::BlockHashStats before = Stats3();
+		const HashCacheKey key = Key(win, true);
+		const GSTextureCache::BlockHashStats after = Stats3();
+		EXPECT_EQ(key.TEX0Hash, IdHashFromScratch(win));
+		EXPECT_EQ(after.rehashed - before.rehashed, Blocks(win).size());
+	}
 } // namespace

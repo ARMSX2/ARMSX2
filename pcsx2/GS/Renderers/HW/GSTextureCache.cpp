@@ -237,6 +237,31 @@ bool GSTextureCache::BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, con
 	return true;
 }
 
+void GSTextureCache::NoteBlocksFilled(GSLocalMemory& mem, u32 first_page, u32 count, u32 word)
+{
+	if (!s_block_hash_cache_enabled || count == 0)
+		return;
+
+	// The identity of a block of `word`, kept for the next fill of the same word (a game clears with few colours).
+	static u32 s_last_word = 0;
+	static u64 s_last_id = GSBlockId::HashFill(0);
+	if (word != s_last_word)
+	{
+		s_last_id = GSBlockId::HashFill(word);
+		s_last_word = word;
+	}
+
+	BlockHashCache& cache = SyncBlockHashCache(mem);
+	u64* const hashes = cache.hash.get();
+	for (u32 i = 0; i < std::min<u32>(count, GS_MAX_PAGES); i++)
+	{
+		const u32 first_block = ((first_page + i) % GS_MAX_PAGES) * GS_BLOCKS_PER_PAGE;
+		for (u32 b = 0; b < GS_BLOCKS_PER_PAGE; b++)
+			hashes[first_block + b] = s_last_id;
+		mem.ClearPageHashDirty(first_page + i);
+	}
+}
+
 /// Verify mode, one lookup: the key the cache gave the window (`cached`, whose TEX0Hash is the cached form) and
 /// the hash it has without the cache. Checks that the two forms agree on which windows are one.
 static void VerifyBlockHashKey(const GSTextureCache::HashCacheKey& cached, u64 uncached_hash)
