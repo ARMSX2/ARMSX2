@@ -259,11 +259,34 @@ static bool OpenShaderCompiler()
 	return dyn_shaderc::Open();
 }
 
+#ifdef __ANDROID__
+// The versions of the two libraries shaderc is built from, linked into this binary with it.
+extern "C" const char* spvSoftwareVersionDetailsString(void);
+struct GLSLangVersion
+{
+	int major;
+	int minor;
+	int patch;
+	const char* flavor;
+};
+extern "C" void glslang_get_version(GLSLangVersion* version);
+#endif
+
 /// What produced the SPIR-V: part of the SPIR-V cache's stamp. The GLSL source is the key of every
 /// entry, so a new build keeps SPIR-V it would compile identically; this covers the compiler itself.
 static std::string GetShaderCompilerIdentity()
 {
-#if defined(__ANDROID__) || defined(ARMSX2_LINK_SHADERC)
+#if defined(__ANDROID__)
+	// The compiler is linked into this binary. It is named by the versions of the front end and the
+	// optimiser, not by the binary: the binary changes with every build of the app, and naming the
+	// compiler by it threw away every game's SPIR-V at every app update though the compiler had not
+	// changed. A local change to shaderc's own sources needs a SHADER_CACHE_VERSION bump, which every
+	// stamp carries.
+	GLSLangVersion glslang = {};
+	glslang_get_version(&glslang);
+	return fmt::format("linked glslang {}.{}.{}{} spirv-tools {}", glslang.major, glslang.minor, glslang.patch,
+		glslang.flavor ? glslang.flavor : "", spvSoftwareVersionDetailsString());
+#elif defined(ARMSX2_LINK_SHADERC)
 	// The compiler is linked into this binary, so the binary stands for it.
 	return fmt::format("linked {} {}", BuildVersion::GitHash, GSCacheFile::GetBuildId());
 #else
