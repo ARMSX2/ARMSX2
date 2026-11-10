@@ -9,45 +9,46 @@
 #include "GS/Renderers/Common/GSVertex.h"
 
 #include <algorithm>
+#include <bit>
+#include <limits>
+#include <type_traits>
 
-// Two-pass packed-vertex kick kernel for the fused GIF handlers.
+// The packed-vertex kick kernel for the fused GIF handlers.
 //
-// The legacy kick is a per-vertex state machine: parse, store, mirror, decide,
-// emit, accumulate, with the buffer cursor and the whole of GSState reachable at
-// every step. This replaces it, for the three prim types and two packed layouts
-// that carry the bulk of every title's vertices, with two loops over a chunk of
-// the register run:
+// The per-vertex kick is a state machine: parse, store, mirror, decide, emit,
+// accumulate, one vertex at a time, whether or not the vertex ends up in a drawn
+// primitive. On the titles this was sized on, between half and four fifths of
+// vertices do not: the game sets ADC on them, or the primitive they complete is
+// culled. The kernel carries the three primitive types and the packed layouts
+// that hold the bulk of every title's vertices, and takes a chunk of the register
+// run in three passes:
 //
-//   pass one   parses each vertex into the buffer at a PROVISIONAL position
-//              (tail at chunk entry, plus the vertex's index in the chunk) and
-//              writes one 16-byte side entry: the window position, the outcode,
-//              the two pixel bands, and the ADC bit. No state machine, no
-//              branches but the loop.
-//   pass two   walks the side table with head/tail/next/itail as locals and the
-//              three most recent side entries rotating in registers, rejects
-//              the majority with bit arithmetic alone, and runs the emission
-//              path only for accepted prims -- copying the prim's vertices from
-//              their provisional slots down to the position the legacy
-//              arithmetic puts them in.
+//   decide     for every vertex, whether the primitive it completes is drawn,
+//              from the packed position alone and four vertices at a time
+//              (DecideVector), plus the union of the drawn primitives' boxes;
+//   plan       over the drawn primitives only, with integer arithmetic alone:
+//              the indices, the cursor exactly as the per-vertex kick moves it,
+//              and the list of vertices that have to exist in the buffer and
+//              where (ConvertJob);
+//   convert    those vertices, each once, straight into its final slot, folding
+//              the newly referenced ones into the fused vertex-trace bounds.
 //
 // Nothing here calls out to GSState. Anything that needs the rest of it -- the
 // per-draw environment snapshot, a flush, a buffer growth, a draw-buffer switch
-// -- is the caller's business: the handler runs the legacy kick for those
+// -- is the caller's business: the handler runs the per-vertex kick for those
 // vertices and re-enters, and the kernel holds nothing across such a seam.
 //
 // Exactness (the differential suite in tests/ctest/core/gs/gs_kick_kernel_tests.cpp
-// pins all of it): every quantity is computed by the same expression on the same
-// inputs as the legacy kick. What changes is the order of independent stores and
-// where a value is read from -- the cull decision reads side entries in registers
-// instead of the mirror ring in memory, and the min/max accumulate reloads the
-// prim's vertices from the (L1-hot) buffer instead of using the parse's
-// registers. Provisional slots for rejected vertices always sit at or above the
-// eventual tail, which is outside the contract.
+// pins all of it against the per-vertex kick): the conversion and the bounds are
+// the same expressions on the same inputs; the decision is the scalar cull
+// restated on the primitive's box (see DecideVector); the cursor arithmetic is
+// the per-vertex kick's, applied once per drawn run instead of once per vertex.
+// What the kernel does not reproduce is what nothing can read: the vertex buffer
+// at or past the tail, and the two older entries of the four-deep cull rings.
 namespace GSVertexKickKernel
 {
-	// Vertices per kernel entry. The side table is 16 bytes a vertex, so this is
-	// a 2 KB working set. Bigger amortizes the entry/exit cost further; smaller
-	// wastes less parse work when the handler has to break out to a legacy kick.
+	// Vertices per kernel entry: two 64-bit accept words, and at most that many
+	// conversion steps on the stack.
 	static constexpr u32 kChunkVertices = 128;
 
 	// Below this many vertices in a handler call, the caller runs its own
@@ -66,21 +67,10 @@ namespace GSVertexKickKernel
 	// to cover the instantiations whose fixed cost is higher than the strip's.
 	static constexpr u32 kMinKernelVertices = 6;
 
-	// The ADC (skip) bit rides in CullMirrorEntry::meta's spare bits, so the side
-	// entry IS a mirror entry: the ring can be filled by copying and
-	// CullTestScalar runs on side entries unchanged. Bits 0-27 are the X band,
-	// 28-55 the Y band, 56-59 the outcode; 60-63 are unused by the mirror.
-	static constexpr u64 kCullMetaAdcBit = 1ull << 60;
-
-	static_assert((kCullMetaAdcBit & (GSVertexKernels::kCullMetaBandXMask |
-										 GSVertexKernels::kCullMetaBandYMask |
-										 GSVertexKernels::kCullMetaOutcodeMask)) == 0,
-		"the ADC bit must not collide with the mirror entry's band or outcode fields");
-
-	// GIFPacked XYZ2/XYZF2 both carry ADC in bit 15 of the fourth word (Skip()),
-	// so the bit lands in place with one shift.
-	static constexpr u32 kAdcShift = 45;
-	static_assert((static_cast<u64>(0x8000u) << kAdcShift) == kCullMetaAdcBit);
+	// At or below this many vertices a chunk is decided one vertex at a time: the
+	// four-wide pass costs about a hundred instructions to enter and leave and 85
+	// a quad, against about 40 a vertex.
+	static constexpr u32 kScalarDecideVertices = 5;
 
 	// Batch invariants. Everything here is fixed for the whole of a kernel entry:
 	// only a flush, a buffer switch or a register write can change any of them,
@@ -147,19 +137,9 @@ namespace GSVertexKickKernel
 		kAccReplace = 2,
 	};
 
-	// The kernel takes the two buffer objects rather than the seven pointers it
-	// reads out of them. Six of those seven -- the vertex and index arrays, both
-	// mirror rings and the fused min/max accumulator -- are the buffer's own
-	// members at compile-time offsets, so handing over the two objects costs the
-	// kernel two loads and saves the caller building and the callee unpacking a
-	// seven-pointer aggregate that AAPCS passes in memory. Only the side table,
-	// which lives in GSState rather than in the vertex buffer, stays an argument:
-	// two parallel u64 arrays rather than one array of CullMirrorEntry, because
-	// split, pass one's quad build writes each field straight out instead of
-	// interleaving the two against each other, and pass two's cull decision reads
-	// them as plain 64-bit scalars -- as one aggregate, clang keeps the entries in
-	// NEON registers and pays a cross-domain move for every field the decision
-	// touches, six per completed prim.
+	// The kernel takes the two buffer objects rather than the pointers it reads
+	// out of them: the vertex and index arrays, both mirror rings and the fused
+	// min/max accumulator are the buffers' own members at compile-time offsets.
 
 	// {wx, wy, wx, wy} from a mirror entry's packed position -- the shape
 	// ComputeCullBBox's runion consumes, and the shape the xy ring holds.
@@ -197,338 +177,534 @@ namespace GSVertexKickKernel
 		}
 	}
 
-#ifdef ARCH_ARM64
 	// ------------------------------------------------------------------------
-	// The mirror-entry build, four vertices at a time.
-	//
-	// Per vertex the offset subtract, the two band shifts, the four bound
-	// compares and the pack are 29 scalar instructions -- two thirds of pass one,
-	// which an objdump of the scalar build confirmed was the dominant cost. Every
-	// step of it is lane-parallel, so it goes four-wide over a transpose of the
-	// four packed XYZ words the parse has already loaded, and the four 16-byte
-	// entries come out of six zips.
-	//
-	// Byte-exact with MakeCullMirrorEntry<true> -- the band and outcode fields are
-	// the same expressions on the same inputs, and the entry is assembled in its
-	// memory layout rather than as a u64 pair. GsKickKernel.NeonMirrorQuadMatches
-	// pins it at every outcode boundary; the differential suite pins it again
-	// through the mirror ring.
-	//
-	// v0..v3 are the raw GIFPacked XYZ2/XYZF2 words of four consecutive vertices:
-	// lane 0 carries X in its low half, lane 1 carries Y, lane 3 carries ADC in
-	// bit 15. Both packed layouts agree on all three.
+	// The decision, scalar: one vertex at a time against the mirror ring, which is
+	// what the per-vertex kick does. It decides the first vertices of a chunk that
+	// begins inside a primitive -- their partners were kicked before the chunk and
+	// only the ring knows where they were -- and, where there is no vector pass,
+	// all of them. Sets accept bit i for each chunk vertex i that completes a
+	// drawn primitive, and folds those primitives' draw rects exactly as the
+	// per-vertex kick does.
 	// ------------------------------------------------------------------------
-	struct MirrorBounds
+	struct ScalarDecided
 	{
-		int32x4_t ofx, ofy, l, t, r, b;
-		int32x4_t band_shift;      // negative, so SSHL right-shifts by the grid's log2 step
-		int32x4_t bias_x, bias_y;  // the grid's phase plus one (see MakeCullMirrorEntry)
-		uint32x4_t banded;         // all-ones when the outcode compares bands, zero for raw 12.4
+		GSVector4i rect;        // union of PrimDrawRect over the primitives accepted here
+		GSVector4i native_rect; // the same on the native grid; only when Invariants::track_native_rect
+		u32 count;             // how many
 	};
 
-	__forceinline_odr MirrorBounds MakeMirrorBounds(const GSVector4i& xyof,
-		const GSVertexKernels::CullBounds& bounds, int band_shift, bool banded, int bias_x, int bias_y)
+	template <u32 prim>
+	__forceinline_odr void DecideScalar(const GIFPackedReg* RESTRICT rxyz, u32 stride, u32 end, u32 pending,
+		const GSBackQueue::VertexBuff* RESTRICT vertex_buf, const Invariants& inv, int band_shift,
+		u64* RESTRICT accept, ScalarDecided& out)
 	{
-		MirrorBounds m;
-		m.ofx = vdupq_n_s32(xyof.I32[0]);
-		m.ofy = vdupq_n_s32(xyof.I32[1]);
-		m.l = vdupq_n_s32(bounds.l);
-		m.t = vdupq_n_s32(bounds.t);
-		m.r = vdupq_n_s32(bounds.r);
-		m.b = vdupq_n_s32(bounds.b);
-		m.band_shift = vdupq_n_s32(-band_shift);
-		m.bias_x = vdupq_n_s32(bias_x);
-		m.bias_y = vdupq_n_s32(bias_y);
-		m.banded = vdupq_n_u32(banded ? 0xFFFFFFFFu : 0u);
-		return m;
+		constexpr u32 n = (prim == GS_SPRITE) ? 2u : 3u;
+		constexpr int primclass = GSUtil::GetPrimClass(prim);
+		constexpr bool strip = (prim == GS_TRIANGLESTRIP);
+
+		const int ofx = inv.xyof.I32[0];
+		const int ofy = inv.xyof.I32[1];
+		const u32 xyt = vertex_buf->xy_tail;
+
+		GSVertexKernels::CullMirrorEntry e0 = vertex_buf->kick_ring[(xyt - 1) & 3];
+		GSVertexKernels::CullMirrorEntry e1 = vertex_buf->kick_ring[(xyt - 2) & 3];
+		GSVertexKernels::CullMirrorEntry e2 = e1;
+
+		u32 m = pending;
+		for (u32 i = 0; i < end; i++)
+		{
+			const GIFPackedReg* RESTRICT rv = rxyz + i * stride;
+			const int wx = static_cast<int>(rv->U32[0] & 0xFFFFu) - ofx;
+			const int wy = static_cast<int>(rv->U32[1] & 0xFFFFu) - ofy;
+
+			e2 = e1;
+			e1 = e0;
+			e0 = (band_shift == 4) ?
+					 GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, inv.bounds, 4, inv.grid.band_bias_x, inv.grid.band_bias_y) :
+					 GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, inv.bounds, band_shift, inv.grid.band_bias_x, inv.grid.band_bias_y);
+
+			if (++m < n)
+				continue;
+			m = strip ? (n - 1) : 0;
+
+			if ((rv->U32[3] & 0x8000u) != 0 || GSVertexKernels::CullTestScalar<n, primclass>(e0, e1, e2) != 0)
+				continue;
+
+			accept[i >> 6] |= 1ull << (i & 63);
+
+			const GSVector4i bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(
+				BroadcastXY(e0.xyp), BroadcastXY(e1.xyp), BroadcastXY(e2.xyp), inv.grid, false);
+			out.rect = out.rect.runion(GSVertexKernels::PrimDrawRect(bbox));
+			if (inv.track_native_rect)
+				out.native_rect = out.native_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
+			out.count++;
+		}
 	}
 
-	// `keyed`: the class has no cull grid, and the band fields carry GSVertexKernels::TrimKey instead of a shifted
-	// coordinate (see MakeCullMirrorEntry). A template parameter, so the grid case is the code it always was.
-	template <bool keyed>
-	__forceinline_odr void BuildMirrorQuad(uint32x4_t v0, uint32x4_t v1, uint32x4_t v2, uint32x4_t v3,
-		const MirrorBounds& k, u64* RESTRICT xyp_out, u64* RESTRICT meta_out)
+#ifdef ARCH_ARM64
+	// ------------------------------------------------------------------------
+	// The decision, four vertices at a time.
+	//
+	// Whether the primitive a vertex completes is drawn depends on three things
+	// only -- the ADC bit, and the window positions of that vertex and the one or
+	// two before it -- and on nothing the previous decision left behind. So it is
+	// taken for four consecutive vertices in one go, with no branch, from the X, Y
+	// and ADC words of the packed position alone; the vertex is not converted.
+	//
+	// It is CullTestScalar restated on the primitive's bounding box instead of on
+	// per-vertex outcodes and bands:
+	//   * "every vertex beyond one scissor edge" is the box's far side being
+	//     beyond that edge. The outcode compares bands at the native grid; a band
+	//     is (v - bias) >> 4, and (a >> 4) < l is a < (l << 4), so the bounds are
+	//     shifted once and the compare is on the coordinate itself.
+	//   * "every vertex in one band on an axis" is the box's two sides being in
+	//     one band, because a band (and TrimKey, where the class has no grid) is
+	//     non-decreasing in the coordinate: (min ^ max) >> shift == 0, or
+	//     TrimKey(min) == TrimKey(max).
+	//   * "two positions equal" is three lane compares per axis.
+	// Coordinates are offset-subtracted s32 with the offset's lanes in 0..0xFFFF
+	// (the caller checks), so no subtraction here can wrap.
+	//
+	// The drawn primitives' boxes are unioned as the pass goes -- the draw rect of
+	// a run is the rounded box of its primitives, the rounding being non-decreasing
+	// in every coordinate -- so no accepted primitive needs its own box later.
+	//
+	// The vertices before the chunk are not this pass's business (DecideScalar
+	// takes the primitives that need them), and it needs no mask to stay away from
+	// them: the "previous" lanes start as copies of the chunk's first vertex, so
+	// the primitives that would reach back are a repeated position and reject
+	// themselves. The lanes past the end of the chunk repeat its last vertex and
+	// reject themselves the same way.
+	// ------------------------------------------------------------------------
+	struct DecideBounds
 	{
-		// Transpose to planar X / Y / flags.
-		const uint64x2_t a01 = vreinterpretq_u64_u32(vzip1q_u32(v0, v1));
-		const uint64x2_t a23 = vreinterpretq_u64_u32(vzip1q_u32(v2, v3));
-		const uint64x2_t b01 = vreinterpretq_u64_u32(vzip2q_u32(v0, v1));
-		const uint64x2_t b23 = vreinterpretq_u64_u32(vzip2q_u32(v2, v3));
-		const uint32x4_t X = vreinterpretq_u32_u64(vzip1q_u64(a01, a23));
-		const uint32x4_t Y = vreinterpretq_u32_u64(vzip2q_u64(a01, a23));
-		const uint32x4_t F = vreinterpretq_u32_u64(vzip2q_u64(b01, b23));
+		int ofx, ofy;     // XYOFFSET plus the band bias
+		int l, t, r, b;   // in the same biased space
+		int bias_x, bias_y;
+		u32 step;         // 1 << the grid's shift; unused where the class has no grid
+	};
 
-		// Window position: the raw 12.4 coordinate is the low half-word, and the
-		// offset subtract is over the full 32-bit lane, exactly as the ring's.
-		const uint32x4_t m16 = vdupq_n_u32(0xFFFFu);
-		const int32x4_t wx = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(X, m16)), k.ofx);
-		const int32x4_t wy = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(Y, m16)), k.ofy);
+	struct VectorDecided
+	{
+		int minx, miny, maxx, maxy; // union of the accepted primitives' raw window boxes
+		bool any;
+	};
 
-		// SSHL by a negative amount is an arithmetic right shift, which is what a
-		// runtime band width needs -- the immediate form cannot take one.
-		int32x4_t bx, by;
-		if constexpr (keyed)
+	__forceinline_odr DecideBounds MakeDecideBounds(const Invariants& inv, int band_shift)
+	{
+		DecideBounds k;
+		k.bias_x = (band_shift == 0) ? 0 : inv.grid.band_bias_x;
+		k.bias_y = (band_shift == 0) ? 0 : inv.grid.band_bias_y;
+		k.ofx = inv.xyof.I32[0] + k.bias_x;
+		k.ofy = inv.xyof.I32[1] + k.bias_y;
+		if (band_shift == 4)
 		{
-			// v + 1 where v is 15 mod 16: CMEQ's all-ones is -1, so subtracting it adds one.
-			const int32x4_t m15 = vdupq_n_s32(15);
-			bx = vsubq_s32(wx, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(wx, m15), m15)));
-			by = vsubq_s32(wy, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(wy, m15), m15)));
+			k.l = inv.bounds.l << 4;
+			k.t = inv.bounds.t << 4;
+			k.r = inv.bounds.r << 4;
+			k.b = inv.bounds.b << 4;
 		}
 		else
 		{
-			bx = vshlq_s32(vsubq_s32(wx, k.bias_x), k.band_shift);
-			by = vshlq_s32(vsubq_s32(wy, k.bias_y), k.band_shift);
+			k.l = inv.bounds.l - k.bias_x;
+			k.t = inv.bounds.t - k.bias_y;
+			k.r = inv.bounds.r - k.bias_x;
+			k.b = inv.bounds.b - k.bias_y;
+		}
+		k.step = 1u << band_shift;
+		return k;
+	}
+
+	alignas(16) inline constexpr u32 kDecideLaneMask[16][4] = {
+		{0, 0, 0, 0}, {~0u, 0, 0, 0}, {0, ~0u, 0, 0}, {~0u, ~0u, 0, 0},
+		{0, 0, ~0u, 0}, {~0u, 0, ~0u, 0}, {0, ~0u, ~0u, 0}, {~0u, ~0u, ~0u, 0},
+		{0, 0, 0, ~0u}, {~0u, 0, 0, ~0u}, {0, ~0u, 0, ~0u}, {~0u, ~0u, 0, ~0u},
+		{0, 0, ~0u, ~0u}, {~0u, 0, ~0u, ~0u}, {0, ~0u, ~0u, ~0u}, {~0u, ~0u, ~0u, ~0u}};
+
+	// `n` is the primitive's vertex count (3: triangle strip and list, 2: sprite);
+	// `keyed` says the class has no cull grid; `every` says every vertex completes
+	// a primitive (a strip), and otherwise `period` has a bit for each of twelve
+	// consecutive vertices that does, a pattern both a list's and a sprite's
+	// repeat with. Not a template on the layout: every layout reads the position
+	// the same way, at `step_bytes` from one record to the next. Writes
+	// accept[0..1] whole.
+	template <u32 n, bool keyed, bool every>
+	__noinline void DecideVector(const u8* RESTRICT pxyz, size_t step_bytes, u32 count, u32 period,
+		const DecideBounds& kb, u64* RESTRICT accept, VectorDecided& out)
+	{
+		const int32x4_t ofx = vdupq_n_s32(kb.ofx);
+		const int32x4_t ofy = vdupq_n_s32(kb.ofy);
+		const int32x4_t bl = vdupq_n_s32(kb.l);
+		const int32x4_t bt = vdupq_n_s32(kb.t);
+		const int32x4_t br = vdupq_n_s32(kb.r);
+		const int32x4_t bb = vdupq_n_s32(kb.b);
+		const uint32x4_t step = vdupq_n_u32(kb.step);
+		const uint32x4_t m16 = vdupq_n_u32(0xFFFFu);
+		const int32x4_t imax = vdupq_n_s32(std::numeric_limits<int>::max());
+		const int32x4_t imin = vdupq_n_s32(std::numeric_limits<int>::min());
+		alignas(16) static constexpr u32 lane_bits[4] = {1, 2, 4, 8};
+		const uint32x4_t bits = vld1q_u32(lane_bits);
+
+		// The validity of the three quads a list's pattern cycles through.
+		uint32x4_t valid0 = vdupq_n_u32(0), valid1 = valid0, valid2 = valid0;
+		if constexpr (!every)
+		{
+			valid0 = vld1q_u32(kDecideLaneMask[period & 15]);
+			valid1 = vld1q_u32(kDecideLaneMask[(period >> 4) & 15]);
+			valid2 = vld1q_u32(kDecideLaneMask[(period >> 8) & 15]);
 		}
 
-		// The outcode compares bands at native and raw 12.4 everywhere else; the
-		// bands are packed either way.
-		const int32x4_t cx = vbslq_s32(k.banded, bx, wx);
-		const int32x4_t cy = vbslq_s32(k.banded, by, wy);
+		const u32* RESTRICT first = reinterpret_cast<const u32*>(pxyz);
+		int32x4_t px = vdupq_n_s32(static_cast<int>(first[0] & 0xFFFFu) - kb.ofx);
+		int32x4_t py = vdupq_n_s32(static_cast<int>(first[1] & 0xFFFFu) - kb.ofy);
+		uint32x4_t peq = vdupq_n_u32(0);
+		int32x4_t amnx = imax, amny = imax, amxx = imin, amxy = imin;
 
-		uint32x4_t oc = vandq_u32(vcltq_s32(cx, k.l), vdupq_n_u32(1));
-		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(cx, k.r), vdupq_n_u32(2)));
-		oc = vorrq_u32(oc, vandq_u32(vcltq_s32(cy, k.t), vdupq_n_u32(4)));
-		oc = vorrq_u32(oc, vandq_u32(vcgeq_s32(cy, k.b), vdupq_n_u32(8)));
-		// ADC rides in meta bit 60, four above the outcode field, so it joins the
-		// outcode here and lands with it in one shift.
-		oc = vorrq_u32(oc, vshrq_n_u32(vandq_u32(F, vdupq_n_u32(0x8000u)), 11));
+		// Returns the quad's four accept bits.
+		const auto quad = [&](uint32x4_t v0, uint32x4_t v1, uint32x4_t v2, uint32x4_t v3) __attribute__((always_inline))
+		{
+			// The even half-words of a packed position are X, Y, the low half of Z
+			// and the half of the last word that carries ADC in its top bit. Two
+			// unzips leave X in the low half of each lane of one vector, and Y under
+			// that ADC half in the other, so ADC is the lane's sign.
+			const uint16x8_t t01 = vuzp1q_u16(vreinterpretq_u16_u32(v0), vreinterpretq_u16_u32(v1));
+			const uint16x8_t t23 = vuzp1q_u16(vreinterpretq_u16_u32(v2), vreinterpretq_u16_u32(v3));
+			const uint32x4_t X = vreinterpretq_u32_u16(vuzp1q_u16(t01, t23));
+			const uint32x4_t Y = vreinterpretq_u32_u16(vuzp2q_u16(t01, t23));
 
-		// meta, as its two words: low = bandx[0..27] | bandy[0..3] << 28,
-		// high = bandy[4..27] | outcode << 24.
-		const uint32x4_t lo = vorrq_u32(vandq_u32(vreinterpretq_u32_s32(bx), vdupq_n_u32(0x0FFFFFFFu)),
-			vshlq_n_u32(vreinterpretq_u32_s32(by), 28));
-		const uint32x4_t hi = vorrq_u32(vandq_u32(vshrq_n_u32(vreinterpretq_u32_s32(by), 4), vdupq_n_u32(0x00FFFFFFu)),
-			vshlq_n_u32(oc, 24));
+			const int32x4_t wx = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(X, m16)), ofx);
+			const int32x4_t wy = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(Y, m16)), ofy);
 
-		// One zip per pair and straight out: the two fields live in separate arrays,
-		// so nothing has to be interleaved against the other.
-		vst1q_u64(xyp_out + 0, vreinterpretq_u64_u32(vzip1q_u32(vreinterpretq_u32_s32(wx), vreinterpretq_u32_s32(wy))));
-		vst1q_u64(xyp_out + 2, vreinterpretq_u64_u32(vzip2q_u32(vreinterpretq_u32_s32(wx), vreinterpretq_u32_s32(wy))));
-		vst1q_u64(meta_out + 0, vreinterpretq_u64_u32(vzip1q_u32(lo, hi)));
-		vst1q_u64(meta_out + 2, vreinterpretq_u64_u32(vzip2q_u32(lo, hi)));
+			// The vertex before each lane's, and for a triangle the one before that.
+			const int32x4_t x1 = vextq_s32(px, wx, 3);
+			const int32x4_t y1 = vextq_s32(py, wy, 3);
+			int32x4_t mnx = vminq_s32(wx, x1);
+			int32x4_t mxx = vmaxq_s32(wx, x1);
+			int32x4_t mny = vminq_s32(wy, y1);
+			int32x4_t mxy = vmaxq_s32(wy, y1);
+
+			uint32x4_t rej = vcltzq_s32(vreinterpretq_s32_u32(Y));
+
+			if constexpr (n == 3)
+			{
+				const int32x4_t x2 = vextq_s32(px, wx, 2);
+				const int32x4_t y2 = vextq_s32(py, wy, 2);
+				mnx = vminq_s32(mnx, x2);
+				mxx = vmaxq_s32(mxx, x2);
+				mny = vminq_s32(mny, y2);
+				mxy = vmaxq_s32(mxy, y2);
+
+				// Two positions equal: this vertex and the last, this and the one
+				// before, and the last two, which is the first of these one lane on.
+				const uint32x4_t eq1 = vandq_u32(vceqq_s32(wx, x1), vceqq_s32(wy, y1));
+				const uint32x4_t eq2 = vandq_u32(vceqq_s32(wx, x2), vceqq_s32(wy, y2));
+				rej = vorrq_u32(rej, vorrq_u32(vorrq_u32(eq1, eq2), vextq_u32(peq, eq1, 3)));
+				peq = eq1;
+			}
+
+			rej = vorrq_u32(rej, vorrq_u32(vcltq_s32(mxx, bl), vcgeq_s32(mnx, br)));
+			rej = vorrq_u32(rej, vorrq_u32(vcltq_s32(mxy, bt), vcgeq_s32(mny, bb)));
+
+			if constexpr (keyed)
+			{
+				const int32x4_t m15 = vdupq_n_s32(15);
+				const auto key = [&](int32x4_t v) __attribute__((always_inline))
+				{
+					return vsubq_s32(v, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(v, m15), m15)));
+				};
+				rej = vorrq_u32(rej, vorrq_u32(vceqq_s32(key(mnx), key(mxx)), vceqq_s32(key(mny), key(mxy))));
+			}
+			else
+			{
+				const uint32x4_t dx = vreinterpretq_u32_s32(veorq_s32(mnx, mxx));
+				const uint32x4_t dy = vreinterpretq_u32_s32(veorq_s32(mny, mxy));
+				rej = vorrq_u32(rej, vorrq_u32(vcltq_u32(dx, step), vcltq_u32(dy, step)));
+			}
+
+			uint32x4_t acc;
+			if constexpr (every)
+			{
+				acc = vmvnq_u32(rej);
+			}
+			else
+			{
+				acc = vbicq_u32(valid0, rej);
+				const uint32x4_t t = valid0;
+				valid0 = valid1;
+				valid1 = valid2;
+				valid2 = t;
+			}
+
+			amnx = vminq_s32(amnx, vbslq_s32(acc, mnx, imax));
+			amny = vminq_s32(amny, vbslq_s32(acc, mny, imax));
+			amxx = vmaxq_s32(amxx, vbslq_s32(acc, mxx, imin));
+			amxy = vmaxq_s32(amxy, vbslq_s32(acc, mxy, imin));
+
+			px = wx;
+			py = wy;
+			return static_cast<u64>(vaddvq_u32(vandq_u32(acc, bits)));
+		};
+
+		const auto ld = [](const u8* p) __attribute__((always_inline)) { return vld1q_u32(reinterpret_cast<const u32*>(p)); };
+
+		// Sixty-four vertices to an accept word, so the word being built stays in
+		// a register.
+		const u8* RESTRICT p = pxyz;
+		u32 left = count;
+		for (u32 w = 0; w < 2; w++)
+		{
+			u64 word = 0;
+			u32 block = std::min<u32>(left, 64);
+			left -= block;
+			u32 shift = 0;
+			for (; block >= 4; block -= 4, shift += 4, p += 4 * step_bytes)
+				word |= quad(ld(p), ld(p + step_bytes), ld(p + 2 * step_bytes), ld(p + 3 * step_bytes)) << shift;
+			if (block != 0)
+			{
+				// The last one to three vertices of the chunk; nothing may be read
+				// past the packet.
+				const u8* const p1 = p + ((block > 1) ? step_bytes : 0);
+				const u8* const p2 = p1 + ((block > 2) ? step_bytes : 0);
+				word |= quad(ld(p), ld(p1), ld(p2), ld(p2)) << shift;
+			}
+			accept[w] = word;
+		}
+
+		out.any = (accept[0] | accept[1]) != 0;
+		if (out.any)
+		{
+			out.minx = vminvq_s32(amnx) + kb.bias_x;
+			out.miny = vminvq_s32(amny) + kb.bias_y;
+			out.maxx = vmaxvq_s32(amxx) + kb.bias_x;
+			out.maxy = vmaxvq_s32(amxy) + kb.bias_y;
+		}
 	}
 #endif // ARCH_ARM64
 
-	// ------------------------------------------------------------------------
-	// Pass one: parse, store, side entry. `clamp` is a template parameter rather
-	// than a per-vertex test because the disabled case is the default and must
-	// carry no cost at all.
-	// ------------------------------------------------------------------------
-	// `band_shift` is the prim class's cull grid (GSVertexKernels::CullGrid::ShiftFor); `keyed` says it is 0.
-	template <GSVertexKernels::PackedLayout layout, bool clamp, bool keyed>
-	__forceinline_odr void PassOne(const GIFPackedReg* RESTRICT r, u32 count,
-		GSVertex* RESTRICT out, u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, const int band_shift)
+	// One step of the conversion: chunk vertices [from, to) go to consecutive
+	// buffer slots from `slot`; the ones at or above `acc_slot` are folded into the
+	// fused vertex-trace bounds as they pass. A step is a run of drawn primitives
+	// with nothing rejected between them, or the vertices left after the last.
+	struct ConvertJob
 	{
-		// Compile-time 3 / 2 for the two contiguous triples, so their addressing
-		// is the constant-offset addressing it has always been.
-		const u32 stride = GSVertexKernels::LayoutStride<layout>(inv.off);
-		const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(inv.off);
+		u32 from, to, slot;
+		u32 acc_slot;    // ~0 for none
+		u32 colour_slot; // with flat shading only the provoking vertices' colours count: the slots from here on
+	};
+
+	// Pass three's whole interface: the boundary a conversion pass emitted at run
+	// time would stand behind, with the same differential suite in front of it.
+	struct ConvertArgs
+	{
+		const GIFPackedReg* rin;        // the chunk's first record
+		GSVertex* vbuff;
+		const ConvertJob* jobs;
+		const ConvertJob* jobs_end;
+		GSVertexKernels::FmmAcc* acc;   // triangle classes: read at entry, written at exit
+		const Invariants* inv;
+	};
+
+	// `triangle`: the class keeps fused vertex-trace bounds (strips and lists).
+	// `clamp`: the depth clamp, a compile-time arm of the loop rather than a test
+	// inside it -- no title in the corpus turns it on, and as a test the compiler
+	// makes eight instructions of select per vertex out of it.
+	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
+	__forceinline_odr void ConvertJobs(const ConvertArgs& args)
+	{
+		const Invariants& inv = *args.inv;
+		const GIFPackedLayout off = inv.off;
+		const u32 stride = GSVertexKernels::LayoutStride<layout>(off);
+		const GIFPackedReg* RESTRICT rin = args.rin;
+		GSVertex* RESTRICT vbuff = args.vbuff;
 		GSVector4i carry = GSVector4i::zero();
 		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
 			carry = inv.carry_m0;
-
 		const u64 uvfog = inv.uvfog;
-		const int ofx = inv.xyof.I32[0];
-		const int ofy = inv.xyof.I32[1];
-		const int bl = inv.bounds.l, bt = inv.bounds.t, br = inv.bounds.r, bb = inv.bounds.b;
-		// The cull grid's log2 sub-texel step, and whether the outcode compares in
-		// band space. Both are invariant for the batch; see MakeCullMirrorEntry.
-		const bool banded = (band_shift == 4);
-		const int band_bias_x = inv.grid.band_bias_x;
-		const int band_bias_y = inv.grid.band_bias_y;
-		const GSVector4i keep = inv.clamp_keep;
-		const GSVector4i shifted = inv.clamp_shifted;
-#ifdef ARCH_ARM64
-		// Hoisted out of the loop on purpose: left inside the parse they are
-		// function-local statics that clang rematerializes from the frame every
-		// iteration.
+		[[maybe_unused]] const GSVector4i clamp_keep = clamp ? inv.clamp_keep : GSVector4i::zero();
+		[[maybe_unused]] const GSVector4i clamp_shifted = clamp ? inv.clamp_shifted : GSVector4i::zero();
 		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
-		const MirrorBounds mb = MakeMirrorBounds(inv.xyof, inv.bounds, band_shift, banded, band_bias_x, band_bias_y);
-#endif
-
-		// The vertex parse is per vertex (one TBL pair each); the mirror build is
-		// four at a time.
-		//
-		// The remainder does not get a scalar mirror build: when there are four
-		// vertices to look back on, one more quad starting at count - 4 covers it,
-		// recomputing the entries the loop already wrote with the same values from
-		// the same inputs. That costs one quad and deletes the 33-instruction
-		// scalar tail, which on stuntman's 31-vertex tags is three vertices in
-		// every call. Only a run shorter than four vertices takes the scalar path
-		// below, which is also the whole of the non-aarch64 path.
-		u32 i = 0;
 #ifdef ARCH_ARM64
-		for (const u32 quads = count & ~3u; i < quads; i += 4)
-		{
-			for (u32 j = 0; j < 4; j++)
-			{
-				const GIFPackedReg* RESTRICT rv = r + (i + j) * stride;
-				GSVector4i m0, m1;
-				GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
-
-				if constexpr (clamp)
-					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
-
-				out[i + j].m[0] = m0;
-				out[i + j].m[1] = m1;
-			}
-
-			BuildMirrorQuad<keyed>(
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 0) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 1) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 2) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (i + 3) * stride + off_xyz)),
-				mb, side_xyp + i, side_meta + i);
-		}
-
-		if (i < count && count >= 4)
-		{
-			const u32 back = count - 4;
-			BuildMirrorQuad<keyed>(
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 0) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 1) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 2) * stride + off_xyz)),
-				vld1q_u32(reinterpret_cast<const u32*>(r + (back + 3) * stride + off_xyz)),
-				mb, side_xyp + back, side_meta + back);
-
-			for (; i < count; i++)
-			{
-				const GIFPackedReg* RESTRICT rv = r + i * stride;
-				GSVector4i m0, m1;
-				GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
-
-				if constexpr (clamp)
-					m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
-
-				out[i].m[0] = m0;
-				out[i].m[1] = m1;
-			}
-			return;
-		}
+		[[maybe_unused]] const u32 shade = inv.shade;
+		[[maybe_unused]] const bool tme = (shade & 1u) != 0;
+		[[maybe_unused]] const bool fst = (shade & 2u) != 0;
+		[[maybe_unused]] const bool iip = (shade & 4u) != 0;
+		GSVertexKernels::FmmAcc a;
+		if constexpr (triangle)
+			a = *args.acc;
 #endif
 
-		for (; i < count; i++)
+		GSVector4i m0, m1;
+		for (const ConvertJob* RESTRICT q = args.jobs; q != args.jobs_end; q++)
 		{
-			const GIFPackedReg* RESTRICT rv = r + i * stride;
-
-			GSVector4i m0, m1;
+			const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
+			GSVertex* RESTRICT out = vbuff + q->slot;
+			u32 left = q->to - q->from;
 #ifdef ARCH_ARM64
-			GSVertexKernels::ParsePackedRecord_Neon<layout>(rv, inv.off, uvfog, carry, kc, m0, m1);
-#else
-			GSVertexKernels::ParsePackedRecord<layout>(rv, inv.off, uvfog, carry, m0, m1);
+			[[maybe_unused]] u32 s = q->slot;
+			[[maybe_unused]] const u32 acc_slot = q->acc_slot;
+			[[maybe_unused]] const u32 colour_slot = q->colour_slot;
 #endif
+			do
+			{
+				GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, off, uvfog, carry, kc, m0, m1);
+				if constexpr (clamp)
+					m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
 
-			if constexpr (clamp)
-				m1 = (m1 & keep) | (m1.srl32<8>() & shifted);
+				out->m[0] = m0;
+				out->m[1] = m1;
 
-			out[i].m[0] = m0;
-			out[i].m[1] = m1;
-
-			// The window position and its cull metadata. Same expressions as
-			// MakeCullMirrorEntry, with the ADC bit folded into the spare meta
-			// bits -- and the same expressions BuildMirrorQuad evaluates lane-wise.
-			const u32 raw = rv[off_xyz].U32[0];
-			const u32 raw_y = rv[off_xyz].U32[1];
-			const int wx = static_cast<int>(raw & 0xFFFFu) - ofx;
-			const int wy = static_cast<int>(raw_y & 0xFFFFu) - ofy;
-			const int bx = keyed ? GSVertexKernels::TrimKey(wx) : ((wx - band_bias_x) >> band_shift);
-			const int by = keyed ? GSVertexKernels::TrimKey(wy) : ((wy - band_bias_y) >> band_shift);
-			const int cx = banded ? bx : wx;
-			const int cy = banded ? by : wy;
-
-			u32 oc = 0;
-			oc |= (cx < bl) ? 1u : 0u;
-			oc |= (cx >= br) ? 2u : 0u;
-			oc |= (cy < bt) ? 4u : 0u;
-			oc |= (cy >= bb) ? 8u : 0u;
-
-			side_xyp[i] = static_cast<u64>(static_cast<u32>(wx)) | (static_cast<u64>(static_cast<u32>(wy)) << 32);
-			side_meta[i] = (static_cast<u64>(static_cast<u32>(bx)) & GSVertexKernels::kCullMetaBandXMask) |
-			               ((static_cast<u64>(static_cast<u32>(by)) << 28) & GSVertexKernels::kCullMetaBandYMask) |
-			               (static_cast<u64>(oc) << 56) |
-			               (static_cast<u64>(rv[off_xyz].U32[3] & 0x8000u) << kAdcShift);
+#ifdef ARCH_ARM64
+				if constexpr (triangle)
+				{
+					if (s >= acc_slot)
+						GSVertexKernels::FmmAccumVertex(a, m0, m1, tme, fst, iip || s >= colour_slot);
+					s++;
+				}
+#endif
+				rv += stride;
+				out++;
+			} while (--left != 0);
 		}
+
+#ifdef ARCH_ARM64
+		if constexpr (triangle)
+			*args.acc = a;
+#endif
 	}
 
 	// ------------------------------------------------------------------------
 	// The kernel. `prim` is one of GS_TRIANGLESTRIP / GS_TRIANGLELIST /
 	// GS_SPRITE; `layout` says where the record's descriptors sit and which of
-	// them the tag omits -- the only per-layout part of the whole kernel is pass
-	// one's parse and the offset the position is read at. The caller guarantees:
-	//   * itail != 0, so the per-draw environment snapshot cannot fire inside;
+	// them the tag omits -- the only per-layout part of the kernel is the parse
+	// and the offset the position is read at. The caller guarantees:
+	//   * the per-draw environment snapshot cannot fire inside (it has been taken
+	//     for this call, or the index buffer is not empty);
 	//   * m_recent_buffer_switch is clear or draw buffering is off;
 	//   * the scissor is valid, so the ADC bit is the whole pre-cull rejection;
-	//   * the scalar-outcode cull applies -- the prim's class has a cull grid and
-	//     there is no AA1 expansion -- so the decision is the band/outcode pair and
-	//     the accepted-prim bbox takes whichever rounding inv.grid names;
+	//   * the scalar-outcode cull applies (no AA1 expansion), so the decision is
+	//     the band/outcode pair and the accepted-prim bbox takes whichever
+	//     rounding inv.grid names;
+	//   * XYOFFSET's two lanes are within 0..0xFFFF;
+	//   * tail - head is less than the primitive's vertex count;
 	//   * tail + count + 3 <= maxcount, so no growth can be needed;
 	//   * tail + count < MaxVerticesForPrim, so no VERTEXCOUNT flush can be
 	//     needed.
 	// Every vertex of the chunk is consumed; the caller advances by `count`.
+	//
+	// Three passes. The first decides, for every vertex, whether the primitive it
+	// completes is drawn (DecideVector, with DecideScalar for the primitives that
+	// began before the chunk). The second walks the drawn primitives with integer
+	// arithmetic alone: it writes their indices, moves the cursor exactly as the
+	// per-vertex kick does, and lists which vertices have to exist in the buffer
+	// and where. The third converts those vertices, each once, straight into its
+	// final slot.
+	//
+	// What is left is what the per-vertex kick leaves: the vertex buffer over
+	// [0, tail), the indices, head / tail / next, both rings, the fused min/max
+	// state and the last vertex. A vertex is converted only if it is below the
+	// tail at exit: the vertices of drawn primitives, and the ones kicked after
+	// the last drawn primitive, which the buffer keeps (a strip's whole rejected
+	// tail, a list's or a sprite's unfinished primitive). The rejected vertices
+	// between two drawn primitives are never converted; the per-vertex kick wrote
+	// them and then wrote over them or rewound past them.
 	// ------------------------------------------------------------------------
 	template <u32 prim, GSVertexKernels::PackedLayout layout>
 	__noinline GSVector4i RunChunk(const GIFPackedReg* RESTRICT rin, u32 count,
 		GSBackQueue::VertexBuff* RESTRICT vertex_buf, GSBackQueue::IndexBuff* RESTRICT index_buf,
-		u64* RESTRICT side_xyp, u64* RESTRICT side_meta, const Invariants& inv, u32* RESTRICT acc_state_out,
-		GSVector4i* RESTRICT native_acc_out)
+		const Invariants& inv, u32* RESTRICT acc_state_out, GSVector4i* RESTRICT native_acc_out)
 	{
 		constexpr u32 n = (prim == GS_SPRITE) ? 2u : 3u;
 		constexpr int primclass = GSUtil::GetPrimClass(prim);
 		constexpr bool strip = (prim == GS_TRIANGLESTRIP);
 		static_assert(prim == GS_TRIANGLESTRIP || prim == GS_TRIANGLELIST || prim == GS_SPRITE);
+		static_assert(kChunkVertices == 128, "the accept mask is two words");
 
 		GSVertex* RESTRICT vbuff = vertex_buf->buff;
 		u16* RESTRICT ibuff = index_buf->buff;
 
+		const GIFPackedLayout off = inv.off;
+		const u32 stride = GSVertexKernels::LayoutStride<layout>(off);
+		const u32 off_xyz = GSVertexKernels::LayoutOffXyz<layout>(off);
+		const GIFPackedReg* RESTRICT rxyz = rin + off_xyz;
+
+		const u32 head0 = vertex_buf->head;
 		const u32 tail0 = vertex_buf->tail;
 		const u32 xy_tail0 = vertex_buf->xy_tail;
+		const u32 itail0 = index_buf->tail;
+		const u32 pending = tail0 - head0;
 
 		// The class's own grid: a sprite has one only at native, a triangle wherever the scale is a power of two.
 		const int band_shift = inv.grid.ShiftFor<primclass>();
-		if (band_shift == 0)
+
+		// ---- pass one: the decision -------------------------------------------
+		u64 accept[2] = {0, 0};
+		ScalarDecided sd;
+		sd.rect = GSVertexKernels::NativeDrawRectNone();
+		sd.native_rect = GSVertexKernels::NativeDrawRectNone();
+		sd.count = 0;
+		GSVector4i acc_rect = GSVertexKernels::NativeDrawRectNone();
+		u32 scalar_decided = 0;
+
+#ifdef ARCH_ARM64
+		if (count <= kScalarDecideVertices)
 		{
-			if (inv.clamp_enabled)
-				PassOne<layout, true, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, 0);
-			else
-				PassOne<layout, false, true>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, 0);
+			// Too few vertices to pay for the four-wide pass's entry and exit.
+			DecideScalar<prim>(rxyz, stride, count, pending, vertex_buf, inv, band_shift, accept, sd);
+			scalar_decided = sd.count;
 		}
-		else if (inv.clamp_enabled)
-			PassOne<layout, true, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, band_shift);
 		else
-			PassOne<layout, false, false>(rin, count, vbuff + tail0, side_xyp, side_meta, inv, band_shift);
+		{
+			// Which of twelve consecutive vertices complete a primitive: for a
+			// list, where (pending + i + 1) is a multiple of three.
+			u32 period = 0;
+			if constexpr (prim == GS_TRIANGLELIST)
+				period = 0x249u << ((5 - pending) % 3);
+			else if constexpr (prim == GS_SPRITE)
+				period = pending ? 0x555u : 0xAAAu;
 
-		// m_v carries the last parsed vertex out of the batch. Pass one has just
-		// written it to its provisional slot and pass two has not run yet, so
-		// nothing has moved it: the batch tail is a 32-byte copy from there rather
-		// than a second parse of the last record by the caller (which cost 25
-		// instructions a call). Taken per chunk rather than per call, which is
-		// redundant on a multi-chunk call and free on a single-chunk one.
-		*inv.last_out = vbuff[tail0 + count - 1];
+			const DecideBounds kb = MakeDecideBounds(inv, band_shift);
+			const u8* const pxyz = reinterpret_cast<const u8*>(rxyz);
+			const size_t step_bytes = stride * sizeof(GIFPackedReg);
+			VectorDecided vd;
+			if (band_shift == 0)
+				DecideVector<n, true, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
+			else
+				DecideVector<n, false, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
+			if (vd.any)
+			{
+				const GSVector4i bbox = GSVertexKernels::RoundCullRect<primclass>(
+					GSVector4i(vd.minx, vd.miny, vd.maxx, vd.maxy), inv.grid, false);
+				acc_rect = GSVertexKernels::PrimDrawRect(bbox);
+			}
 
-		// ---- pass two -------------------------------------------------------
-		u32 head = vertex_buf->head;
-		u32 tail = tail0;
-		u32 next = vertex_buf->next;
-		u32 itail = index_buf->tail;
-		// The index write cursor walks: itail only ever grows inside a chunk, so
-		// carrying the pointer costs one register where carrying the base and
-		// recomputing the address costs one register and an add -- and, at this
-		// loop's pressure, a reload of the base from the frame on every accept.
-		u16* RESTRICT ib = ibuff + itail;
-		u32 watermark = vertex_buf->fmm_watermark;
-		bool fmm_valid = vertex_buf->fmm_valid;
-		u32 acc_state = kAccEmpty;
-		GSVector4i acc_rect = GSVector4i::zero();
-		GSVector4i native_acc_rect = GSVector4i::zero();
-		const bool track_native = inv.track_native_rect;
+			// The first n - 1 vertices have a partner from before the chunk, if any
+			// is pending. The vector pass found nothing there.
+			if (pending != 0)
+				DecideScalar<prim>(rxyz, stride, n - 1, pending, vertex_buf, inv, band_shift, accept, sd);
+			scalar_decided = sd.count;
+		}
+#else
+		DecideScalar<prim>(rxyz, stride, count, pending, vertex_buf, inv, band_shift, accept, sd);
+		scalar_decided = sd.count;
+#endif
+		if (sd.count != 0)
+			acc_rect = acc_rect.runion(sd.rect);
 
+		// ---- pass two: the cursor, the indices, and what to convert ------------
 		const u32 shade = inv.shade;
 		const bool tme = (shade & 1u) != 0;
 		const bool fst = (shade & 2u) != 0;
 		const bool iip = (shade & 4u) != 0;
 
-		GSVertexKernels::FmmAcc acc;
+		u32 head = head0;
+		u32 next = vertex_buf->next;
+		u32 itail = itail0;
+		u16* RESTRICT ib = ibuff + itail;
+		u32 watermark = vertex_buf->fmm_watermark;
+		bool fmm_valid = vertex_buf->fmm_valid;
 		bool fmm_dirty = false;
+
+		GSVertexKernels::FmmAcc acc;
 #ifdef ARCH_ARM64
 		if (primclass == GS_TRIANGLE_CLASS && fmm_valid)
 		{
@@ -542,248 +718,304 @@ namespace GSVertexKickKernel
 			GSVertexKernels::FmmAccReset(acc, false, false);
 		}
 
-		// The three most recent mirror entries, most recent first. Seeded from the
-		// ring because a chunk can begin mid-prim; after that they rotate in
-		// registers and the ring is not read again.
-		u64 xyp0 = vertex_buf->kick_ring[(xy_tail0 - 1) & 3].xyp, meta0 = vertex_buf->kick_ring[(xy_tail0 - 1) & 3].meta;
-		u64 xyp1 = vertex_buf->kick_ring[(xy_tail0 - 2) & 3].xyp, meta1 = vertex_buf->kick_ring[(xy_tail0 - 2) & 3].meta;
-		u64 xyp2 = vertex_buf->kick_ring[(xy_tail0 - 3) & 3].xyp, meta2 = vertex_buf->kick_ring[(xy_tail0 - 3) & 3].meta;
+		ConvertJob jobs[kChunkVertices + 1];
+		ConvertJob* RESTRICT job = jobs;
 
-		// Walked rather than indexed: the provisional cursor advances by exactly
-		// one vertex an iteration, so it is a post-incremented pointer instead of
-		// an address recomputed from tail0 + i every time.
-		const GSVertex* RESTRICT prov = vbuff + tail0;
+		// Chunk vertices [0, done) are accounted for; `base` is the slot chunk
+		// vertex `done` takes when it is written where the per-vertex kick's tail
+		// stood, which is every case but a strip's compaction.
+		u32 done = 0;
+		u32 base = tail0;
+		u32 tail = tail0;
+		bool last_in_buffer = true;
 
-		for (u32 i = 0; i < count; i++)
+		u32 word = 0;
+		u64 bitsleft = accept[0];
+		for (;;)
 		{
-			xyp2 = xyp1;
-			meta2 = meta1;
-			xyp1 = xyp0;
-			meta1 = meta0;
-			xyp0 = side_xyp[i];
-			meta0 = side_meta[i];
-
-			// Move the vertex from its provisional slot to the live tail, so the
-			// buffer below tail is what the per-vertex kick would have left there
-			// -- including the slots a rejected strip vertex passes through, which
-			// nothing indexes, but which the per-vertex kick would have written. The live tail
-			// never runs ahead of the provisional cursor, so the destination is at
-			// or below the source and a later vertex's source is never written
-			// over; when they coincide (an unbroken run of accepts, or any chunk
-			// with no compaction in it) this is a self-copy the store buffer eats.
-			vbuff[tail] = *prov++;
-
-			tail++;
-			if ((tail - head) < n)
-				continue;
-
-			// The ADC bit is the whole rejection test before the cull: a run with an
-			// invalid scissor never reaches the kernel (the handler keeps it on the
-			// per-vertex path), so nothing else has to be OR'd in here.
-			u32 skip = static_cast<u32>((meta0 >> 60) & 1u);
-			if (skip == 0)
+			if (bitsleft == 0 && word == 0)
 			{
-				const GSVertexKernels::CullMirrorEntry e0{xyp0, meta0};
-				const GSVertexKernels::CullMirrorEntry e1{xyp1, meta1};
-				const GSVertexKernels::CullMirrorEntry e2{xyp2, meta2};
-				skip = GSVertexKernels::CullTestScalar<n, primclass>(e0, e1, e2);
+				word = 1;
+				bitsleft = accept[1];
 			}
-
-			if (skip != 0)
+			// The next drawn primitive, and how many more follow it with nothing
+			// rejected between: the next vertex's for a strip, the next pair's for a
+			// sprite. A list's are taken one at a time (its flat-shaded colour bound
+			// wants every third vertex, and no title in the census sends lists in
+			// volume). A run stops at the accept word's end.
+			const bool drawn = (bitsleft != 0);
+			u32 i = count, run = 0;
+			if (drawn)
 			{
-				// A rejected strip vertex stays in the buffer until the next
-				// accept compacts over it; list classes rewind outright.
-				if constexpr (strip)
-					head = head + 1;
+				const u32 b = static_cast<u32>(std::countr_zero(bitsleft));
+				i = word * 64 + b;
+				if constexpr (prim == GS_TRIANGLELIST)
+				{
+					run = 1;
+					bitsleft &= bitsleft - 1;
+				}
 				else
-					tail = head;
-				continue;
+				{
+					constexpr u32 spacing = strip ? 1u : 2u;
+					constexpr u64 positions = strip ? ~0ull : 0x5555555555555555ull;
+					const u64 gap = ~(bitsleft >> b) & positions;
+					run = (gap != 0) ? (static_cast<u32>(std::countr_zero(gap)) / spacing) : ((64 - b + spacing - 1) / spacing);
+					const u32 end = b + run * spacing;
+					bitsleft = (end >= 64) ? 0 : ((bitsleft >> end) << end);
+				}
 			}
 
-			// The strip compaction, exactly as the per-vertex kick does it: the
-			// window slides down over the vertices the rejections left behind.
-			u32 dst = head;
+			// Which chunk vertices this step converts, [from, to), and the slot the
+			// first of them goes to.
+			u32 from, to, slot, dst = 0;
 			if constexpr (strip)
 			{
-				if (next < head)
+				from = done;
+				slot = base;
+				to = drawn ? (i + run) : count;
+				if (drawn)
 				{
-					vbuff[next + 0] = vbuff[head + 0];
-					vbuff[next + 1] = vbuff[head + 1];
-					vbuff[next + 2] = vbuff[head + 2];
-					dst = next;
-#ifdef ARCH_ARM64
-					// Vertices moved below the fused-FMM watermark must re-accumulate.
-					watermark = std::min(watermark, next);
-#endif
-				}
-			}
-
-			const GSVector4i bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(
-				BroadcastXY(xyp0), BroadcastXY(xyp1), BroadcastXY(xyp2), inv.grid, false);
-
-			if constexpr (prim == GS_TRIANGLESTRIP)
-			{
-				ib[0] = static_cast<u16>(dst + 0);
-				ib[1] = static_cast<u16>(dst + 1);
-				ib[2] = static_cast<u16>(dst + 2);
-				head = dst + 1;
-				next = dst + 3;
-				tail = dst + 3;
-				itail += 3;
-				ib += 3;
-			}
-			else if constexpr (prim == GS_TRIANGLELIST)
-			{
-				ib[0] = static_cast<u16>(dst + 0);
-				ib[1] = static_cast<u16>(dst + 1);
-				ib[2] = static_cast<u16>(dst + 2);
-				head = dst + 3;
-				next = dst + 3;
-				tail = dst + 3;
-				itail += 3;
-				ib += 3;
-			}
-			else
-			{
-				ib[0] = static_cast<u16>(dst + 0);
-				ib[1] = static_cast<u16>(dst + 1);
-				if (inv.sprite_q_fix)
-					vbuff[dst + 0].RGBAQ.Q = vbuff[dst + 1].RGBAQ.Q;
-				head = dst + 2;
-				next = dst + 2;
-				tail = dst + 2;
-				itail += 2;
-				ib += 2;
-			}
-
-#ifdef ARCH_ARM64
-			if constexpr (primclass == GS_TRIANGLE_CLASS)
-			{
-				const u32 last = tail - 1;
-				if (itail == n)
-				{
-					GSVertexKernels::FmmAccReset(acc, tme, fst);
-					fmm_valid = true;
-					watermark = last - 2;
-				}
-
-				if (fmm_valid)
-				{
-					for (u32 j = std::max(watermark, last - 2); j < last; j++)
+					// The per-vertex kick's head when this vertex completes its
+					// window: two below the slot the vertex itself takes.
+					const u32 window = base + (i - done) - 2;
+					dst = window;
+					if (next < window)
 					{
-						GSVertexKernels::FmmAccumVertex(acc, GSVector4i(vbuff[j].m[0]),
-							GSVector4i(vbuff[j].m[1]), tme, fst, iip);
+						// The window slides down over the vertices the rejections
+						// left behind. Its three vertices are the last three kicked:
+						// the ones from before the chunk are in the buffer and move,
+						// the rest are converted straight into place.
+						dst = next;
+						const u32 first = (i >= done + 2) ? (i - 2) : done;
+						const u32 moved = first + 2 - i;
+						for (u32 t = 0; t < moved; t++)
+							vbuff[dst + t] = vbuff[window + t];
+						from = first;
+						slot = dst + moved;
+#ifdef ARCH_ARM64
+						// Vertices moved below the fused-FMM watermark must re-accumulate.
+						watermark = std::min(watermark, dst);
+#endif
 					}
-					GSVertexKernels::FmmAccumVertex(acc, GSVector4i(vbuff[last].m[0]),
-						GSVector4i(vbuff[last].m[1]), tme, fst, true);
-					watermark = last + 1;
-					fmm_dirty = true;
+				}
+				else
+				{
+					tail = base + (count - done);
+					if (tail > head + 2)
+						head = tail - 2;
 				}
 			}
-#endif
-
-			// The native-grid twin sits inside each arm rather than above them, so
-			// that with draw buffering off the two arms are exactly the code that
-			// was here before -- no select and no second union per prim.
-			const GSVector4i draw_rect = GSVertexKernels::PrimDrawRect(bbox);
-			if (acc_state != 0)
-			{
-				acc_rect = acc_rect.runion(draw_rect);
-				if (track_native)
-					native_acc_rect = native_acc_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
-			}
 			else
 			{
-				acc_rect = draw_rect;
-				if (track_native)
-					native_acc_rect = GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox);
-				acc_state = (itail == n) ? kAccReplace : kAccUnion;
+				if (drawn)
+				{
+					dst = head;
+					from = (i + 1 >= n) ? (i + 1 - n) : 0;
+					slot = dst + (n - 1) - (i - from);
+					to = i + 1 + (run - 1) * n;
+				}
+				else
+				{
+					// The unfinished primitive at the end of the chunk.
+					const u32 unfinished = (pending + count) % n;
+					const u32 fresh = std::min(unfinished, count - done);
+					from = count - fresh;
+					slot = head + unfinished - fresh;
+					to = count;
+					tail = head + unfinished;
+					last_in_buffer = (unfinished != 0) || (done == count);
+				}
 			}
-		}
 
-		// ---- exit -----------------------------------------------------------
-		// The rings hold the last four kicked vertices. Nothing reads them
-		// mid-chunk: every reader runs inside a flush, and a flush only happens
-		// inside a legacy kick.
-		//
-		// Written straight-line, not looped. The ring is four deep, so a chunk of
-		// four or more vertices writes every slot exactly once and the loop is
-		// four iterations of a body whose three base pointers and whose xy_tail
-		// are all loop-invariant -- which clang reloaded on every one of them
-		// (measured: 19 instructions an entry, 76 a call, the largest single item
-		// in the kernel's fixed cost). Hoisted and unrolled it is the four stores
-		// plus the four slot computations.
-		{
-			GSVector4i* RESTRICT xy_ring = vertex_buf->xy;
-			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = vertex_buf->kick_ring;
-			const u32 xyt = xy_tail0;
-			const auto put = [&](u32 j) __attribute__((always_inline))
+			u32 acc_slot = ~0u;
+			u32 colour_slot = ~0u;
+			if (drawn)
 			{
-				const u32 slot = (xyt + j) & 3;
-				const u64 xyp = side_xyp[j];
-				xy_ring[slot] = BroadcastXY(xyp);
-				// The ring's entries carry no ADC bit -- the legacy kick's do not
-				// and the differential test compares the bytes.
-				kick_ring[slot].xyp = xyp;
-				kick_ring[slot].meta = side_meta[j] & ~kCullMetaAdcBit;
-			};
+				const bool first_of_draw = (itail == 0);
+				if constexpr (prim == GS_SPRITE)
+				{
+					for (u32 t = 0; t < run; t++, ib += 2)
+					{
+						ib[0] = static_cast<u16>(dst + 2 * t + 0);
+						ib[1] = static_cast<u16>(dst + 2 * t + 1);
+					}
+					head = dst + 2 * run;
+					next = head;
+					base = head;
+					itail += 2 * run;
+					done = to;
+				}
+				else if constexpr (strip)
+				{
+					for (u32 t = 0; t < run; t++, ib += 3)
+					{
+						ib[0] = static_cast<u16>(dst + t + 0);
+						ib[1] = static_cast<u16>(dst + t + 1);
+						ib[2] = static_cast<u16>(dst + t + 2);
+					}
+					head = dst + run;
+					next = dst + run + 2;
+					base = next;
+					itail += 3 * run;
+					done = to;
+				}
+				else
+				{
+					ib[0] = static_cast<u16>(dst + 0);
+					ib[1] = static_cast<u16>(dst + 1);
+					ib[2] = static_cast<u16>(dst + 2);
+					ib += 3;
+					head = dst + 3;
+					next = dst + 3;
+					base = next;
+					itail += 3;
+					done = to;
+				}
+				tail = base;
 
 #ifdef ARCH_ARM64
-			if (count >= 4)
-			{
-				// The four entries are four consecutive u64s of each side array
-				// and four 16-byte stores into each ring, so the whole writeback
-				// is two pairs of vector loads, one mask, and eight zips: the
-				// mirror entry {xyp, meta} is a zip of the two arrays, and the xy
-				// ring's entry is the position broadcast to both halves, which is
-				// a zip of the position with itself.
-				const u32 j0 = count - 4;
-				const uint64x2_t p01 = vld1q_u64(side_xyp + j0);
-				const uint64x2_t p23 = vld1q_u64(side_xyp + j0 + 2);
-				const uint64x2_t keep = vdupq_n_u64(~kCullMetaAdcBit);
-				const uint64x2_t m01 = vandq_u64(vld1q_u64(side_meta + j0), keep);
-				const uint64x2_t m23 = vandq_u64(vld1q_u64(side_meta + j0 + 2), keep);
+				if constexpr (primclass == GS_TRIANGLE_CLASS)
+				{
+					// The run's first primitive, as the per-vertex kick takes it.
+					// Each later one adds one vertex above the watermark, its own
+					// provoking vertex.
+					const u32 last = dst + 2;
+					if (first_of_draw)
+					{
+						GSVertexKernels::FmmAccReset(acc, tme, fst);
+						fmm_valid = true;
+						watermark = last - 2;
+					}
 
-				u64* RESTRICT kr = reinterpret_cast<u64*>(kick_ring);
-				const u32 s0 = (xyt + j0) & 3;
-				const u32 s1 = (s0 + 1) & 3, s2 = (s0 + 2) & 3, s3 = (s0 + 3) & 3;
-
-				vst1q_u64(kr + s0 * 2, vzip1q_u64(p01, m01));
-				vst1q_u64(kr + s1 * 2, vzip2q_u64(p01, m01));
-				vst1q_u64(kr + s2 * 2, vzip1q_u64(p23, m23));
-				vst1q_u64(kr + s3 * 2, vzip2q_u64(p23, m23));
-
-				u64* RESTRICT xr = reinterpret_cast<u64*>(xy_ring);
-				vst1q_u64(xr + s0 * 2, vzip1q_u64(p01, p01));
-				vst1q_u64(xr + s1 * 2, vzip2q_u64(p01, p01));
-				vst1q_u64(xr + s2 * 2, vzip1q_u64(p23, p23));
-				vst1q_u64(xr + s3 * 2, vzip2q_u64(p23, p23));
-			}
+					if (fmm_valid)
+					{
+						// The primitive's vertices that were in the buffer before
+						// this step are folded in from there; the ones this step
+						// converts are folded in as they are converted.
+						const u32 lo = std::max(watermark, last - 2);
+						for (u32 j = lo; j < std::min(slot, last); j++)
+						{
+							GSVertexKernels::FmmAccumVertex(acc, GSVector4i(vbuff[j].m[0]),
+								GSVector4i(vbuff[j].m[1]), tme, fst, iip);
+						}
+						acc_slot = std::max(lo, slot);
+						colour_slot = last;
+						watermark = next;
+						fmm_dirty = true;
+					}
+				}
 #else
-			if (count >= 4)
-			{
-				const u32 j0 = count - 4;
-				put(j0 + 0);
-				put(j0 + 1);
-				put(j0 + 2);
-				put(j0 + 3);
-			}
+				(void)first_of_draw;
 #endif
-			else
-			{
-				for (u32 j = 0; j < count; j++)
-					put(j);
 			}
+
+			if (from != to)
+				*job++ = {from, to, slot, acc_slot, colour_slot};
+
+			if (!drawn)
+				break;
 		}
 
+		// ---- pass three: conversion ---------------------------------------------
+		if (job != jobs)
+		{
+			const ConvertArgs args = {rin, vbuff, jobs, job, &acc, &inv};
+			if (inv.clamp_enabled)
+				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
+			else
+				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, false>(args);
+		}
 #ifdef ARCH_ARM64
 		if constexpr (primclass == GS_TRIANGLE_CLASS)
 		{
 			if (fmm_dirty)
 				vertex_buf->fmm_acc = acc;
 		}
-#else
+#endif
+
+		// m_v carries the last parsed vertex out of the batch. It is the buffer's
+		// last vertex unless the chunk ended on a rejected list primitive or
+		// sprite, which leaves nothing of itself behind.
+		if (last_in_buffer)
+		{
+			*inv.last_out = vbuff[tail - 1];
+		}
+		else
+		{
+			GSVector4i m0, m1;
+			GSVector4i carry = GSVector4i::zero();
+			if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
+				carry = inv.carry_m0;
+			GSVertexKernels::ParsePackedRecord_Fast<layout>(rin + (count - 1) * stride, off, inv.uvfog, carry,
+				GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q), m0, m1);
+			if (inv.clamp_enabled)
+				m1 = (m1 & inv.clamp_keep) | (m1.srl32<8>() & inv.clamp_shifted);
+			inv.last_out->m[0] = m0;
+			inv.last_out->m[1] = m1;
+		}
+
+		// The sprite's first vertex takes the second's Q, and the native-grid rect
+		// has no monotone shortcut -- a primitive that spans no native sample point
+		// contributes nothing -- so it is asked per primitive. Both read the
+		// primitives' vertices now that they are in place; the second runs only with
+		// draw buffering on above native, and the primitives DecideScalar took have
+		// theirs already.
+		GSVector4i native_acc_rect = sd.native_rect;
+		if constexpr (prim == GS_SPRITE)
+		{
+			if (inv.sprite_q_fix)
+			{
+				for (u32 t = itail0; t < itail; t += 2)
+				{
+					const u32 dst = ibuff[t];
+					vbuff[dst + 0].RGBAQ.Q = vbuff[dst + 1].RGBAQ.Q;
+				}
+			}
+		}
+		if (inv.track_native_rect)
+		{
+			const GSVector4i xyof = inv.xyof;
+			for (u32 t = itail0 + scalar_decided * n; t < itail; t += n)
+			{
+				const u32 dst = ibuff[t];
+				const GSVector4i v0 = GSVector4i(vbuff[dst + n - 1].m[1]).xxxx().u16to32().sub32(xyof);
+				const GSVector4i v1 = GSVector4i(vbuff[dst + n - 2].m[1]).xxxx().u16to32().sub32(xyof);
+				const GSVector4i v2 = (n == 3) ? GSVector4i(vbuff[dst].m[1]).xxxx().u16to32().sub32(xyof) : v0;
+				const GSVector4i bbox = GSVertexKernels::ComputeCullBBox<n, primclass>(v0, v1, v2, inv.grid, false);
+				native_acc_rect = native_acc_rect.runion(GSVertexKernels::PrimNativeDrawRectOrNone<primclass>(bbox));
+			}
+		}
+
+		// ---- exit -----------------------------------------------------------
+		// The two rings, for the chunk's last two vertices. A window never holds
+		// more than two vertices waiting for a third, so the two most recent
+		// entries are the only ones any decision can read before they are written
+		// again; the per-vertex kick keeps four because a mask of three is cheaper
+		// than a modulus, not because the older two are read.
+		{
+			GSVector4i* RESTRICT xy_ring = vertex_buf->xy;
+			GSVertexKernels::CullMirrorEntry* RESTRICT kick_ring = vertex_buf->kick_ring;
+			const int ofx = inv.xyof.I32[0];
+			const int ofy = inv.xyof.I32[1];
+			for (u32 j = (count > 2) ? (count - 2) : 0; j < count; j++)
+			{
+				const GIFPackedReg* RESTRICT rv = rxyz + j * stride;
+				const int wx = static_cast<int>(rv->U32[0] & 0xFFFFu) - ofx;
+				const int wy = static_cast<int>(rv->U32[1] & 0xFFFFu) - ofy;
+				const GSVertexKernels::CullMirrorEntry e = (band_shift == 4) ?
+					GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, inv.bounds, 4, inv.grid.band_bias_x, inv.grid.band_bias_y) :
+					GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, inv.bounds, band_shift, inv.grid.band_bias_x, inv.grid.band_bias_y);
+				const u32 slot = (xy_tail0 + j) & 3;
+				xy_ring[slot] = BroadcastXY(e.xyp);
+				kick_ring[slot] = e;
+			}
+		}
+
+#ifndef ARCH_ARM64
 		(void)fmm_dirty;
+		(void)tme;
+		(void)fst;
+		(void)iip;
 #endif
 
 		vertex_buf->head = head;
@@ -794,7 +1026,7 @@ namespace GSVertexKickKernel
 		vertex_buf->fmm_valid = fmm_valid;
 		index_buf->tail = itail;
 
-		*acc_state_out = acc_state;
+		*acc_state_out = (itail == itail0) ? kAccEmpty : ((itail0 == 0) ? kAccReplace : kAccUnion);
 		*native_acc_out = native_acc_rect;
 		return acc_rect;
 	}

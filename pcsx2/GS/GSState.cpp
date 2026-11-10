@@ -2502,7 +2502,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// Re-checked across the seam like the rest: a flush can restore an
 		// environment whose PRIM has AA1 set, and the kernel's scalar-outcode cull
 		// is only exact while the per-vertex kick would have taken it too.
-		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>();
+		// The kernel's four-wide decision also wants the window offset within the register's 16 bits (it is, unless
+		// a state load put something in the padding) and no more than a window's worth of vertices pending.
+		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>() &&
+		                     ((m_xyof.U32[0] | m_xyof.U32[1]) <= 0xFFFFu) && ((m_vertex->tail - m_vertex->head) < n);
 
 		// The autoflush arm's first escape. A run the kernel's cull does not
 		// cover -- an invalid scissor, or an environment a flush moved to one the
@@ -2523,7 +2526,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			}
 		}
 
-		if (overlap_active || snapshot_pending || !cull_ok)
+		// The snapshot is not a reason to leave the kernel: it does not depend on the vertex, so it is taken below
+		// for the chunk that holds the vertex which fills the first window.
+		if (overlap_active || !cull_ok)
 		{
 			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
 			if constexpr (auto_flush)
@@ -2574,6 +2579,16 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			k++;
 			snapshot_done = false;
 			continue;
+		}
+
+		// The per-draw environment snapshot, where the per-vertex kick takes it: at the vertex that fills a window
+		// while the draw has no primitive. Nothing in the chunk before that vertex can draw, flush or write a
+		// register, so taking it ahead of the chunk copies the same bytes; and a chunk too short to fill the window
+		// takes none, as its vertices would not.
+		if (snapshot_pending && ((m_vertex->tail - m_vertex->head) + chunk) >= n)
+		{
+			SnapshotDrawEnvironmentForChunk();
+			snapshot_done = true;
 		}
 
 		// The routing decision, once per chunk (stage 3b).
@@ -2644,7 +2659,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		u32 acc_state = GSVertexKickKernel::kAccEmpty;
 		GSVector4i native_acc_rect = GSVector4i::zero();
 		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
-			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state, &native_acc_rect);
+			m_vertex, m_index, inv, &acc_state, &native_acc_rect);
 
 		if (acc_state != GSVertexKickKernel::kAccEmpty)
 		{
@@ -2937,8 +2952,33 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		const u32 off_rgba = m_packed_layout.off_rgba;
 		const u32 off_xyz = m_packed_layout.off_xyz;
 
-		while (done < count && m_dirty_gs_regs)
+		// CheckFlushes does nothing without a pending draw, whatever is dirty, so
+		// the replay is only needed while there is one. And of the vertices
+		// replayed, the per-qword position handler asks CheckFlushes only for one
+		// that has no ADC bit (or when the primitive class changed or XYOFFSET is
+		// dirty): a vertex with ADC set is kicked and nothing else, and a run of
+		// them is the per-vertex batch. So the replay proper is one vertex at each
+		// place the handler would ask.
+		while (done < count && m_dirty_gs_regs && m_index->tail != 0)
 		{
+			const bool asks_always = GSUtil::GetPrimClass(m_prev_env.PRIM.PRIM) != GSUtil::GetPrimClass(m_env.PRIM.PRIM) ||
+			                         (m_dirty_gs_regs & (1 << DIRTY_REG_XYOFFSET)) != 0;
+			u32 quiet = 0;
+			if (!asks_always)
+			{
+				while (done + quiet < count && r[(done + quiet) * stride + off_xyz].XYZ2.Skip())
+					quiet++;
+			}
+			if (quiet != 0)
+			{
+				if constexpr (auto_flush)
+					KickPackedStagedRun<prim, layout>(r + done * stride, quiet);
+				else
+					KickPackedBatchLegacy<prim, layout>(r + done * stride, quiet);
+				done += quiet;
+				continue;
+			}
+
 			const GIFPackedReg* RESTRICT rv = r + done * stride;
 			ReplayPackedQword(reg_a, rv + off_a);
 			if constexpr (GSVertexKernels::LayoutHasSeparateRgba(layout))
@@ -8013,6 +8053,33 @@ __forceinline void GSState::ApplyDepthClamp(u32& z)
 	ApplyDepthClampMode(GetDepthClampMode(), z);
 }
 
+// The per-draw environment snapshot: what the kick takes at every vertex that fills a primitive's window while the
+// draw has no primitive yet. It reads and writes nothing of the vertex or of the vertex and index buffers, so the
+// kernel's driver takes it itself, once, for a chunk that holds such a vertex.
+__forceinline void GSState::SnapshotDrawEnvironment()
+{
+	const int ctx = m_env.PRIM.CTXT;
+	std::memcpy(&m_prev_env, &m_env, 88);
+	std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
+	// With draw buffering off this snapshot is the draw's only copy of its
+	// environment (see SetDrawBufferEnv), so it also takes the other context's
+	// register block, which FlushBuffers used to install from buffer 0 at flush
+	// time. Same value, captured at the same moment; nothing reads the inactive
+	// context of m_prev_env in between.
+	if (!GSConfig.UserHacks_DrawBuffering)
+		std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
+	std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
+	std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
+	m_dirty_gs_regs = 0;
+	m_backed_up_ctx = m_env.PRIM.CTXT;
+	SetDrawBufferEnv();
+}
+
+__noinline void GSState::SnapshotDrawEnvironmentForChunk()
+{
+	SnapshotDrawEnvironment();
+}
+
 // Staged-m_v entry point: piecemeal reg handlers build the vertex in m_v and kick
 // from there. The fused packed handlers use VertexKickDirect with the parsed vertex
 // still in registers instead. The depth clamp is applied here (persisting into m_v
@@ -8120,23 +8187,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// Neither the memcpys nor SetDrawBufferEnv touch the vertex/index buffer state,
 	// so the cursor rides through this block untouched.
 	if (c.itail == 0/* && ((m_backed_up_ctx != m_env.PRIM.CTXT) || m_dirty_gs_regs)*/)
-	{
-		const int ctx = m_env.PRIM.CTXT;
-		std::memcpy(&m_prev_env, &m_env, 88);
-		std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
-		// With draw buffering off this snapshot is the draw's only copy of its
-		// environment (see SetDrawBufferEnv), so it also takes the other context's
-		// register block, which FlushBuffers used to install from buffer 0 at flush
-		// time. Same value, captured at the same moment; nothing reads the inactive
-		// context of m_prev_env in between.
-		if (!GSConfig.UserHacks_DrawBuffering)
-			std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
-		std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
-		std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
-		m_dirty_gs_regs = 0;
-		m_backed_up_ctx = m_env.PRIM.CTXT;
-		SetDrawBufferEnv();
-	}
+		SnapshotDrawEnvironment();
 
 	// Skip draws when scissor is out of range (i.e. bottom-right is less than top-left), since everything will get clipped.
 	skip |= static_cast<u32>(m_scissor_invalid);
