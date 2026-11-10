@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GSTextureCache.h"
+#include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
@@ -454,7 +455,33 @@ private:
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;
 
+	// The burst memo (GSBurstMemo.h, GSRendererHWBurstMemo.cpp): copy-road draws recorded as they run, and
+	// skipped when a later burst repeats them.
+	GSBurstMemo::Memo m_burst_memo;
+	bool m_burst_memo_enabled = false;
+	/// Set by CanUseSwPrimRender: its true verdict rests on finding no target at the texture (if any) and, when
+	/// it looked there, at the frame. Only such a verdict can be reused by a skipped draw.
+	bool m_copy_road_no_targets = false;
+	bool m_copy_road_frame_checked = false;
+
+	bool BurstMemoBeforeCopy();
+	void BurstMemoAfterCopy(bool recorded, bool copied);
+	bool BurstMemoTryHit();
+	bool BurstMemoHit(const GSBurstMemo::Draw& first_candidate_draw);
+	void BurstMemoApply(const GSBurstMemo::Draw& d);
+	void BurstMemoCloseRecording();
+	void BurstMemoEndSequence();
+	void BurstMemoEndFrame(bool idle_frame);
+	bool BurstMemoBlocksMatch(const std::vector<GSBurstMemo::BlockKey>& keys);
+	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
+	u64 BurstMemoPaletteHash(u32 entries);
+	bool BurstMemoTargetAt(u32 bp, u32 psm) const;
+
 public:
+	/// Re-reads the settings the burst memo depends on, and forgets what it recorded.
+	void RefreshBurstMemo();
+	bool SkipMemoizedDraw() override;
+
 	GSRendererHW();
 	virtual ~GSRendererHW() override;
 

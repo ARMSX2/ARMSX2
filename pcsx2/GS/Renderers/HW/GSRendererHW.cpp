@@ -53,6 +53,8 @@ GSRendererHW::GSRendererHW()
 	// is the same GPU after a loss, and every setting that changes device features recreates the
 	// renderer as well.
 	m_unsplit_stencil_counter = g_gs_device->Features().fast_stencil_shadow;
+
+	RefreshBurstMemo();
 }
 
 void GSRendererHW::SetTCOffset()
@@ -113,6 +115,7 @@ void GSRendererHW::Reset(bool hardware_reset)
 	GSHwHack::ResetState();
 
 	GSRenderer::Reset(hardware_reset);
+	RefreshBurstMemo();
 }
 
 void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
@@ -127,10 +130,12 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 	GSRenderer::UpdateSettings(old_config);
 	m_mipmap = GSConfig.HWMipmap;
 	SetTCOffset();
+	RefreshBurstMemo();
 }
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
+	BurstMemoEndFrame(idle_frame);
 	m_blend_carry.valid = false;
 
 	if (GSTextureCache::IsHashMemoVerify()) [[unlikely]]
@@ -3896,7 +3901,10 @@ void GSRendererHW::Draw()
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
 	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
 	{
-		if (SwPrimRender(*this, true, true))
+		const bool memo_records = BurstMemoBeforeCopy();
+		const bool copied = SwPrimRender(*this, true, true);
+		BurstMemoAfterCopy(memo_records && copied, copied);
+		if (copied)
 		{
 			GL_CACHE("HW: Possible texture decompression, drawn with SwPrimRender() (BP %x BW %u TBP0 %x TBW %u)",
 				m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBMSK, m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW);
@@ -11938,6 +11946,10 @@ bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_t
 	const int bw = GSConfig.UserHacks_CPUSpriteRenderBW;
 	const int level = GSConfig.UserHacks_CPUSpriteRenderLevel;
 
+	// For the burst memo: whether a true verdict rests on finding no target at the texture or the frame.
+	m_copy_road_no_targets = false;
+	m_copy_road_frame_checked = false;
+
 	if (bw == 0)
 		return false;
 
@@ -12039,6 +12051,8 @@ bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_t
 	if (difficult_fbmsk || (PRIM->ABE && m_vt.m_eq.rgba == 0xffff && !m_context->ALPHA.IsOpaque(GetAlphaMinMax().min, GetAlphaMinMax().max)))
 	{
 		GSTextureCache::Target* rt = g_texture_cache->GetTargetWithSharedBits(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.PSM);
+		m_copy_road_frame_checked = true;
+		m_copy_road_no_targets = !rt;
 
 		if (!rt || (!rt->m_dirty.empty() && rt->m_dirty.GetTotalRect(rt->m_TEX0, rt->m_unscaled_size).rintersect(m_r).eq(m_r)))
 			return true;
@@ -12048,6 +12062,7 @@ bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_t
 	}
 
 	// We can use the sw prim render path!
+	m_copy_road_no_targets = true;
 	return true;
 }
 

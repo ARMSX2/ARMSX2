@@ -860,6 +860,11 @@ public:
 	}
 	void FlushWriteSlow();
 	virtual void Draw() = 0;
+	/// Called by the draw executor before the vertex trace. A renderer that can stand in for Draw() with
+	/// what it recorded when an earlier draw asked for the same thing (the hardware renderer's burst memo,
+	/// GSRendererHWBurstMemo.cpp) does so and returns true; the executor then skips the vertex trace, the
+	/// texel rounding and Draw(), and keeps its own bookkeeping.
+	virtual bool SkipMemoizedDraw() { return false; }
 	virtual void PurgeTextureCache(bool sources, bool targets, bool hash_cache);
 	virtual void ReadbackTextureCache();
 	virtual void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) {}

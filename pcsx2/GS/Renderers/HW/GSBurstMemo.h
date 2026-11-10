@@ -5,6 +5,7 @@
 
 #include "GS/GSDrawingContext.h"
 #include "GS/GSDrawingEnvironment.h"
+#include "GS/GSLocalMemory.h"
 #include "GS/GSRegs.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Common/GSVertex.h"
@@ -206,7 +207,63 @@ namespace GSBurstMemo
 		u64 stop_route = 0; ///< ... a target now sits at its texture or frame
 		u64 stop_write = 0; ///< ... something else wrote a block the burst had written
 		u64 stop_state = 0; ///< ... the renderer was in a state the copy road would leave early
-		u64 not_recorded = 0; ///< copy-road draws the memo does not take (mipmapped, or routed past a target)
+		u64 not_recorded_target = 0; ///< copy-road draws the memo does not take: their verdict weighed a target
 		u64 installs = 0;
+		u64 peak_bytes = 0; ///< the store's largest size
+		u64 evictions = 0; ///< entries that left the history
+		u64 budget_evictions = 0; ///< entries the budget pushed out
+	};
+
+	/// The counts over every renderer since the last ResetStats().
+	Stats& GlobalStats();
+	void ResetStats();
+
+	/// The negative control for the identity check: every skipped draw writes one wrong byte into each block
+	/// it writes (each, because a later draw of the burst rewrites the whole block). Frames that come out
+	/// identical with this on would mean the check cannot see a wrong skip. Off by default; gsrunner's
+	/// -burst-memo-control turns it on.
+	void SetControlCorruption(bool on);
+	bool ControlCorruption();
+
+	/// The memo inside a renderer: the store, the burst being recorded, and the burst being skipped.
+	struct Memo
+	{
+		Store store;
+
+		/// The burst being recorded: the copy-road draws that ran since the last other draw.
+		EntryPtr recording;
+		/// The blocks and pages its draws wrote; a set bit is a block in `recording_blocks`.
+		std::vector<u32> recording_blocks;
+		std::vector<u32> recording_pages;
+		u64 recording_written[GS_MAX_BLOCKS / 64] = {};
+		/// GSLocalMemory::WriteSeq() after its last draw.
+		u64 recording_seq = 0;
+
+		/// The burst being skipped: the entries whose first `position` draws it matched, the pages it
+		/// wrote, and WriteSeq() after its last draw.
+		std::vector<EntryPtr> candidates;
+		u32 position = 0;
+		std::vector<u32> sequence_pages;
+		u64 sequence_seq = 0;
+
+		/// The draw before this one went down the copy road, run or skipped.
+		bool last_was_copy = false;
+		/// This frame had copy-road draws: it counts towards the history.
+		bool frame_had_copies = false;
+
+		/// The draw in hand passed the copy road's register test, and its vertices before texel rounding.
+		bool candidate = false;
+		std::vector<GSVertex> raw_verts;
+
+		/// The draw in hand, between BurstMemoBeforeCopy and BurstMemoAfterCopy.
+		Draw pending;
+
+		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash.
+		u64 palette_generation = ~u64(0);
+		u32 palette_entries = 0;
+		u64 palette_hash = 0;
+
+		/// Scratch for the candidates that survive a draw.
+		std::vector<EntryPtr> survivors;
 	};
 } // namespace GSBurstMemo

@@ -9,6 +9,29 @@
 
 namespace GSBurstMemo
 {
+	static Stats s_stats;
+	static bool s_control_corruption = false;
+
+	Stats& GlobalStats()
+	{
+		return s_stats;
+	}
+
+	void ResetStats()
+	{
+		s_stats = {};
+	}
+
+	void SetControlCorruption(bool on)
+	{
+		s_control_corruption = on;
+	}
+
+	bool ControlCorruption()
+	{
+		return s_control_corruption;
+	}
+
 	// Word positions in Packet order.
 	enum : u32
 	{

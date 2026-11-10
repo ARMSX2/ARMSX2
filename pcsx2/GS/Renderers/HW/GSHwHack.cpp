@@ -1561,6 +1561,9 @@ void GSRendererHW::UpdateRenderFixes()
 			m_mv = GSHwHack::s_move_handler_functions[GSConfig.MoveHandlerFunctionId].ptr;
 		}
 	}
+
+	// The memo stays off under a game's skip-draw hook, which this sets.
+	RefreshBurstMemo();
 }
 
 bool GSRendererHW::DrawClearsScanMask() const

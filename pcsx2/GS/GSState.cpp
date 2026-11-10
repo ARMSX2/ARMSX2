@@ -4262,6 +4262,20 @@ void GSState::DrawRecordTail(u64 draw_serial)
 #endif
 	// Update scissor, it may have been modified by a previous draw
 	m_env.CTXT[PRIM->CTXT].UpdateScissor();
+
+	// A draw the renderer stands in for leaves what the rest of this tail leaves outside Draw(): the
+	// per-draw overlap state reset and the draw counts.
+	if (SkipMemoizedDraw())
+	{
+		m_quad_check_valid = false;
+		m_quad_check_valid_shuffle = false;
+		m_drawlist.clear();
+		m_drawlist_bbox.clear();
+		g_perfmon.Put(GSPerfMon::Draw, 1);
+		g_perfmon.Put(GSPerfMon::Prim, m_index->tail / GSUtil::GetVertexCount(PRIM->PRIM));
+		return;
+	}
+
 	m_vt.Update(m_vertex->buff, m_index->buff, m_vertex->tail, m_index->tail, GSUtil::GetPrimClass(PRIM->PRIM));
 
 	// Texel coordinate rounding

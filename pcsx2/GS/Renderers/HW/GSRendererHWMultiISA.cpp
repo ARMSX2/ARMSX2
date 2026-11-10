@@ -700,6 +700,7 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	}
 
 	MarkDrawWritten(hw.m_mem, context, bbox, !copied);
+	sw.last_draw_copied = copied;
 
 	return true;
 }
