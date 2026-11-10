@@ -49,8 +49,8 @@ namespace GSRunsPolicy
 	{
 		STATE_TFX, STATE_TCC, STATE_FOG, STATE_IIP, STATE_ATST, STATE_WAY, STATE_LOD, STATE_RTASRC, NUM_STATES
 	};
-	constexpr u32 STATE_SHIFT[NUM_STATES] = {0, 3, 4, 5, 6, 9, 11, 13};
-	constexpr u32 STATE_WIDTH[NUM_STATES] = {3, 1, 1, 1, 3, 2, 2, 1};
+	constexpr u32 STATE_SHIFT[NUM_STATES] = {0, 3, 4, 5, 6, 9, 12, 14};
+	constexpr u32 STATE_WIDTH[NUM_STATES] = {3, 1, 1, 1, 3, 3, 2, 1};
 	constexpr const char* STATE_NAME[NUM_STATES] = {"TFX", "TCC", "FOG", "IIP", "ATST", "WAY", "LOD", "RTASRC"};
 	/// States that mean nothing on an untextured draw (texture function 4): such a draw neither sets nor varies them.
 	constexpr u32 STATES_TEXTURED_ONLY = (1u << STATE_LOD) | (1u << STATE_RTASRC);
@@ -68,7 +68,7 @@ namespace GSRunsPolicy
 	}
 
 	/// The states that decide a draw's colour arithmetic.
-	constexpr u32 COLOUR_STATES_MASK = 0x63Fu; // tfx, tcc, fog, iip, way
+	constexpr u32 COLOUR_STATES_MASK = 0xE3Fu; // tfx, tcc, fog, iip, way
 
 	/// Whether a channel the draw writes is its interpolated vertex colour times a constant: the colour itself
 	/// (texture function 4, no fog, blending elided), or the alpha alone (texture function 4, or decal without the
@@ -158,6 +158,16 @@ namespace GSRunsPolicy
 			return 2;
 		if (!bs.enable && cms == 0x8 && none && !ps.af_in_src1)
 			return 3;
+		// Additive: (Cs - 0) * C + Cd with the product in the shader (no BLEND_MIX) and the target added by a ONE, ONE
+		// blend. Under the run's equation the second output 0 adds the target.
+		const bool additive = bs.enable && !bs.constant_enable && bs.op == GSDevice::OP_ADD && bs.src_factor == GSDevice::CONST_ONE &&
+		                      bs.dst_factor == GSDevice::CONST_ONE && bs.src_factor_alpha == GSDevice::CONST_ONE &&
+		                      bs.dst_factor_alpha == GSDevice::CONST_ZERO && cms == 0xF && ps.blend_a == 0 && ps.blend_b == 2 &&
+		                      ps.blend_d == 2 && ps.blend_mix == 0 && !ps.af_in_src1;
+		if (additive && ps.blend_c == 0)
+			return 4;
+		if (additive && ps.blend_c == 2)
+			return 5;
 		return -1;
 	}
 
@@ -201,7 +211,7 @@ namespace GSRunsPolicy
 		}
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		if ((ps.fog && (!ByteExact(fog.x) || !ByteExact(fog.y) || !ByteExact(fog.z))) ||
-			(way == 1 && !ByteExact(config.cb_ps.TA_MaxDepth_Af.w * 128.0f)))
+			((way == 1 || way == 5) && !ByteExact(config.cb_ps.TA_MaxDepth_Af.w * 128.0f)))
 		{
 			d.why = Refusal::Const;
 			return d;

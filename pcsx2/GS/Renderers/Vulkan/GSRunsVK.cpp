@@ -604,7 +604,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		s[1] = slot;
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		s[2] = (config.ps.fog ? (static_cast<u32>(fog.x) | (static_cast<u32>(fog.y) << 8) | (static_cast<u32>(fog.z) << 16)) : 0u) |
-		       ((d.way == 1) ? (static_cast<u32>(config.cb_ps.TA_MaxDepth_Af.w * 128.0f) << 24) : 0u);
+		       ((d.way == 1 || d.way == 5) ? (static_cast<u32>(config.cb_ps.TA_MaxDepth_Af.w * 128.0f) << 24) : 0u);
 		std::memcpy(&s[3], &fog.w, 4);
 		std::memcpy(&s[4], &config.cb_ps.LODParams, 16);
 		std::memcpy(row, s, 32);

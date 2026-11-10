@@ -344,3 +344,32 @@ TEST(GSRunsPolicy, PassthroughDraws)
 	c.ps.fog = 1;
 	EXPECT_NE(StrictKey(Classify(c, Rgba8(), false).flags, false), StrictKey(decal, false));
 }
+
+// Additive blending: Cs * As (or Af) in the shader, the target added by a ONE, ONE blend. Under the run's equation
+// (ONE, INV_SRC1_COLOR) the second output 0 adds the target.
+TEST(GSRunsPolicy, AdditiveWays)
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_mix = 0;
+	c.ps.no_color1 = 1;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_ONE, GSDevice::CONST_ONE, GSDevice::OP_ADD, GSDevice::CONST_ONE,
+		GSDevice::CONST_ZERO, false, 0);
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 4u);
+	EXPECT_EQ(Field(d.flags, STATE_WAY), 4u);
+	c.ps.blend_c = 2;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x20 / 128.0f;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 5u);
+	// The same blend with the alpha written by the target's term, or the colour masked, has no way.
+	c.blend.dst_factor_alpha = GSDevice::CONST_ONE;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c.blend.dst_factor_alpha = GSDevice::CONST_ZERO;
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	// The run equation with the second output 0 is an add.
+	for (float dst : {0.0f, 0.5f, 1.0f})
+		EXPECT_EQ(RunBlend(0.25f, 0.0f, dst), 0.25f + dst);
+}

@@ -11,11 +11,13 @@
 // The arithmetic is tfx.glsl's for the state set the machine accepts: FST 0, a 32-bit colour target, no palette in the
 // shader, the hardware's bilinear (LTF 0), CLAMP or REPEAT (the sampler's), alpha fail KEEP, the texture functions 0-4,
 // and the blend family (Cs - 0) * C + 0 in the shader with the rest in the blend unit (BLEND_MIX). How the classic path
-// chose to blend is one of four ways under the run's one dual-source pipeline:
+// chose to blend is one of six ways under the run's one dual-source pipeline (ONE, INV_SRC1_COLOR / ONE, ZERO):
 //   0  the shader blend, C = As, second output As
 //   1  the shader blend, C = Af (the blend constant, or the second output where the driver ignores the constant)
 //   2  blending elided, every channel written                (second output 1: the target's term is 0)
 //   3  blending elided, alpha written alone                  (colour 0 and second output 0: RGB kept)
+//   4  additive, Cs * As in the shader and the target added in the blend unit (second output 0)
+//   5  additive, Cs * Af likewise
 //
 // Specialisation: each per-draw state the run holds one value of arrives as a compile-time constant RUN_C_<state>; only
 // the states that vary inside the run are read from the row.
@@ -101,8 +103,8 @@ layout(location = 0, index = 1) out vec4 o_col1;
 layout(location = 0) out vec4 o_col0;
 #endif
 
-// s0.x, the draw's flags (GSRunsVK): 0-2 tfx, 3 tcc, 4 fog, 5 iip, 6-8 alpha test, 9-10 blend way,
-//   11-12 lod (0 none, 1 manual, 2 the hardware's), 13 RTA source correction
+// s0.x, the draw's flags (GSRunsPolicy.h): 0-2 tfx, 3 tcc, 4 fog, 5 iip, 6-8 alpha test, 9-11 blend way,
+//   12-13 lod (0 none, 1 manual, 2 the hardware's), 14 RTA source correction
 // s0.y: the draw's slot in the run's texture array
 // s0.z: fog colour in bytes 0-2, Af * 128 in byte 3
 // s0.w: AREF (float bits)
@@ -140,17 +142,17 @@ uint fld(uint v, int s, int n)
 #ifdef RUN_C_WAY
 #define S_WAY uint(RUN_C_WAY)
 #else
-#define S_WAY fld(f, 9, 2)
+#define S_WAY fld(f, 9, 3)
 #endif
 #ifdef RUN_C_LOD
 #define S_LOD uint(RUN_C_LOD)
 #else
-#define S_LOD fld(f, 11, 2)
+#define S_LOD fld(f, 12, 2)
 #endif
 #ifdef RUN_C_RTASRC
 #define S_RTASRC uint(RUN_C_RTASRC)
 #else
-#define S_RTASRC fld(f, 13, 1)
+#define S_RTASRC fld(f, 14, 1)
 #endif
 
 void main()
@@ -238,6 +240,12 @@ void main()
 		C.rgb = (C.rgb * min(Cb, 1.0f)) - (124.0f / 256.0f);
 		C.rgb = clamp(C.rgb, vec3(0.0f), vec3(255.0f));
 	}
+	else if (way >= 4u)
+	{
+		// BLEND_MIX 0: C unclamped, the product truncated (tfx.glsl's trunc((A - B) * C + D))
+		float Cb = (way == 4u) ? alpha_blend.a : (float(fld(s0.z, 24, 8)) / 128.0f);
+		C.rgb = clamp(trunc(C.rgb * Cb), vec3(0.0f), vec3(255.0f));
+	}
 
 #if RUN_RTA_CORRECTION
 	o_col0.a = C.a / 128.0f;
@@ -256,11 +264,13 @@ void main()
 		o_col1 = vec4(float(fld(s0.z, 24, 8)) / 128.0f);
 	else if (way == 2u)
 		o_col1 = vec4(1.0f);
-	else
+	else if (way == 3u)
 	{
 		o_col0.rgb = vec3(0.0f);
 		o_col1 = vec4(0.0f);
 	}
+	else
+		o_col1 = vec4(0.0f);
 #endif
 }
 
