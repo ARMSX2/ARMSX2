@@ -129,7 +129,26 @@ private:
 		u32 cursor = 0;
 	};
 
+	// The fixed state of the last draw that would have opened a run, drawn classically instead: a run opens only at the
+	// second of two consecutive draws that share it. A run of one draw costs the device more than its classic draw (the
+	// run's set and binds, then the classic path binding all of its state again), and a title whose fixed state changes
+	// at every draw (Sly 3's depth state) would otherwise pay that at every draw.
+	struct Primed
+	{
+		u64 draw = ~0ull; ///< m_draws when primed, or when a draw last joined a run
+		bool in_run = false; ///< that draw joined a run: compare with the run's fixed state, which outlives its flush
+		const GSTexture* rt = nullptr;
+		const GSTexture* ds = nullptr;
+		u8 dss = 0, vs = 0, rta = 0, zfloor = 0;
+		u32 strict = 0;
+		GSVector4i scissor;
+		GSHWDrawConfig::VSConstantBuffer cb_vs;
+		GSVector2 st_scale;
+	};
+
 	bool Matches(const GSHWDrawConfig& config) const;
+	/// Whether the draw follows a primed draw or a run's last draw and shares its fixed state; if not, the draw is primed.
+	bool SecondOfTwo(const GSHWDrawConfig& config);
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
@@ -148,6 +167,8 @@ private:
 	GSDeviceVK* m_dev;
 	Draw m_draw;
 	Run m_run;
+	Primed m_primed;
+	u64 m_draws = 0; ///< TFX draws classified
 	PassStats m_pass;
 	bool m_flushing = false;
 

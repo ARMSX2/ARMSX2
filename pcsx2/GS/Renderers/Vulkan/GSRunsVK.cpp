@@ -234,6 +234,7 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 	Draw& d = m_draw;
 	d.cand = false;
 	m_pass.tfx++;
+	m_draws++;
 	if (!m_log && (GSRunsPolicy::OutsidePS(config.ps) || GSRunsPolicy::OutsideVS(config.vs)))
 	{
 		m_pass.why[GSRunsPolicy::OutsideVS(config.vs) ? WHY_TOPO : WHY_PS]++;
@@ -317,18 +318,50 @@ void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal w
 	m_refusals[{static_cast<u32>(why), detail}]++;
 }
 
+namespace
+{
+	/// The draw's fixed state against a run's or the primed draw's (both hold the same fields).
+	template <typename Fixed>
+	bool SameFixed(const GSHWDrawConfig& config, const Fixed& f, u32 strict)
+	{
+		const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
+		const GSHWDrawConfig::VSConstantBuffer& b = f.cb_vs;
+		return config.rt == f.rt && config.ds == f.ds && config.depth.key == f.dss && (config.vs.key & ~VS_RUN_FREE) == f.vs &&
+		       config.scissor.eq(f.scissor) && std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) == 0 &&
+		       std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) == 0 &&
+		       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
+		       std::memcmp(&config.cb_ps.STScale, &f.st_scale, sizeof(GSVector2)) == 0 && config.ps.rta_correction == f.rta &&
+		       config.ps.zfloor == f.zfloor && strict == f.strict;
+	}
+} // namespace
+
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
-	const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
-	const GSHWDrawConfig::VSConstantBuffer& b = r.cb_vs;
-	return config.rt == r.rt && config.ds == r.ds && config.depth.key == r.dss && (config.vs.key & ~VS_RUN_FREE) == r.vs &&
-	       config.scissor.eq(r.scissor) && r.ndraws < MAX_DRAWS && std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) == 0 &&
-	       std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) == 0 &&
-	       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
-	       std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) == 0 && config.ps.rta_correction == r.rta &&
-	       config.ps.zfloor == r.zfloor && GSRunsPolicy::StrictKey(m_draw.flags, r.rta) == r.strict &&
-	       !SplitAtDear(config);
+	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS && !SplitAtDear(config);
+}
+
+bool GSRunsVK::SecondOfTwo(const GSHWDrawConfig& config)
+{
+	// The draw before this one was primed, or was in the run that just ended (a split, a ring or the texture array): the
+	// run that follows may open at once if the fixed state is the same.
+	Primed& p = m_primed;
+	const u32 strict = GSRunsPolicy::StrictKey(m_draw.flags, config.ps.rta_correction);
+	if (p.draw + 1 == m_draws && (p.in_run ? SameFixed(config, m_run, strict) : SameFixed(config, p, strict)))
+		return true;
+	p.draw = m_draws;
+	p.in_run = false;
+	p.rt = config.rt;
+	p.ds = config.ds;
+	p.dss = config.depth.key;
+	p.vs = config.vs.key & ~VS_RUN_FREE;
+	p.rta = config.ps.rta_correction;
+	p.zfloor = config.ps.zfloor;
+	p.strict = strict;
+	p.scissor = config.scissor;
+	p.cb_vs = config.cb_vs;
+	p.st_scale = config.cb_ps.STScale;
+	return false;
 }
 
 static u64 DrawArea(const GSHWDrawConfig& config)
@@ -409,6 +442,10 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		Flush(END_UNMERGEABLE);
 		return false;
 	}
+	if (m_run.open && !Matches(config))
+		Flush(EndReason(config));
+	if (!m_run.open && !SecondOfTwo(config))
+		return false;
 	// The rings and the set that names them are made by the first draw that would join a run, so a title that forms
 	// none allocates nothing: its memory is laid out as with the machine off.
 	if (m_set0 == VK_NULL_HANDLE)
@@ -422,8 +459,6 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 			return false;
 		}
 	}
-	if (m_run.open && !Matches(config))
-		Flush(EndReason(config));
 
 	// The run's program with this draw in it must be built. If it is not, it is asked for, the run ends, and the draw
 	// takes the classic path. Asked again below if the run ends for another reason before the draw is in it, since the
@@ -650,6 +685,8 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		if (m_log)
 			r.area[GSRunsPolicy::Dear(d.flags)] += area;
 		r.ndraws++;
+		m_primed.draw = m_draws;
+		m_primed.in_run = true;
 		r.idx_count += nidx;
 		r.ways |= 1u << d.way;
 		r.states.Note(d.flags); // which states the run holds one value of: those become constants of its program
