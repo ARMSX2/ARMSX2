@@ -27,6 +27,7 @@
 #include "R5900.h"
 #include "IopThread/IopThreadMode.h"
 #include "arm64/BaseblockEx-arm64.h"
+#include "arm64/BlockLut-arm64.h"
 #include "arm64/RecCrashReport-arm64.h"
 #include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
@@ -129,7 +130,7 @@ static bool s_nBlockFF;
 // Exposed for the LDL/LDR fusion in recVTLB-arm64.cpp (same-block partner check).
 u32 recCurrentBlockEndPC() { return s_nEndBlock; }
 
-static DynamicHeapArray<BASEBLOCK, 4096> recLutReserve_RAM;
+static BlockLut recLutReserve_RAM;
 static DynamicHeapArray<BASEBLOCK, 4096> recLutUnmapped;
 static DynamicHeapArray<u8> recRAMCopy;
 static size_t recLutEntries = 0;
@@ -3796,8 +3797,7 @@ static void recReserveRAM()
 	s_reservedRam = Ps2MemSize::ExposedRam;
 	recLutEntries = (Ps2MemSize::ExposedRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2) / 4;
 
-	if (recLutReserve_RAM.size() != recLutEntries)
-		recLutReserve_RAM.resize(recLutEntries);
+	recLutReserve_RAM.Resize(recLutEntries);
 
 	recLutUnmapped.resize(_64kb / 4);
 
@@ -3951,8 +3951,7 @@ static void recResetRaw()
 
 	Console.WriteLn(Color_Green, "EE ARM64: Dispatcher generated at %p (%zu bytes)", dispStart, (size_t)(dispEnd - dispStart));
 
-	iopClearRecLUT(recLutReserve_RAM.data(),
-		Ps2MemSize::ExposedRam + Ps2MemSize::Rom + Ps2MemSize::Rom1 + Ps2MemSize::Rom2);
+	recLutReserve_RAM.Reset((uptr)JITCompile);
 
 	BASEBLOCK* unmapped = recLutUnmapped.data();
 
@@ -4034,8 +4033,9 @@ static void recResetRaw()
 
 	memset(manual_page, 0, sizeof(manual_page));
 	memset(manual_counter, 0, sizeof(manual_counter));
+	// Discard instead of memset, which would keep all 32 MB resident.
 	if (recRAMCopy.data())
-		memset(recRAMCopy.data(), 0, recRAMCopy.size());
+		HostSys::DiscardMemory(recRAMCopy.data(), recRAMCopy.size());
 
 	g_branch = 0;
 
@@ -4285,7 +4285,7 @@ static void recShutdown()
 
 	s_eeConstantPool.Destroy();
 	recRAMCopy.deallocate();
-	recLutReserve_RAM.deallocate();
+	recLutReserve_RAM.Free();
 	recLutUnmapped.deallocate();
 
 	safe_free(s_pInstCache);

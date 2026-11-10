@@ -5185,8 +5185,8 @@ bool VMManager::Internal::GSBackThreadWouldShareBusyCore()
 int g_android_affinity_mode = 7;
 #endif
 
-// Where an IOP thread that was not given a processor of its own goes (IopThread::UnpinnedIopThreadMask): outside
-// the performance tier when the tier is too narrow for every thread that wants it. 0 when it can float.
+// The processors a concurrent IOP thread is confined to (IopThread::SlowCoresMask): everything outside the
+// performance tier. 0 when there is no such place, and whoever is placing the thread decides.
 static u64 GetIopThreadOutsideTierMask()
 {
 #if defined(__linux__)
@@ -5199,7 +5199,7 @@ static u64 GetIopThreadOutsideTierMask()
 		if (proc && GetProcessorIdForProcessor(proc) < 64)
 			all |= static_cast<u64>(1) << GetProcessorIdForProcessor(proc);
 	}
-	return IopThread::UnpinnedIopThreadMask(GetPerformanceCoresMask(), all, EmuConfig.Speedhacks.vuThread, IopThread::PlacesThread());
+	return IopThread::SlowCoresMask(GetPerformanceCoresMask(), all, IopThread::PlacesThread());
 #else
 	return 0; // no capacity source here: the tier cannot be read
 #endif
@@ -5209,19 +5209,18 @@ static u64 GetIopThreadOutsideTierMask()
 // thread, and that may have been narrowed to one core, so a thread that exists is always given a mask explicitly
 // (0 meaning any processor) rather than left to inherit one. Without a thread there is nothing to place.
 //
-// "Any processor" is the wrong answer on a host whose performance tier is narrower than the threads that want it,
-// whichever affinity mode asked for it: the thread spins while it waits, and floating it puts it on the big cores
-// beside the EE, GS and VU1 threads. Those requests become "every processor outside the tier".
+// On a host with slower cores the thread goes there whatever `mask` asks for, so no placement mode can put it on a
+// fast core. SlowCoresMask says why. `mask` only applies on a host with no slower core, or with no concurrent thread.
 static void SetIopThreadAffinity(u64 mask)
 {
 	if (!IopThread::g_thread.IsRunning())
 		return;
 
-	if (mask == 0)
+	const u64 slow_cores = GetIopThreadOutsideTierMask();
+	if (slow_cores != 0)
 	{
-		mask = GetIopThreadOutsideTierMask();
-		if (mask != 0)
-			INFO_LOG("IOP thread pinned outside the performance tier (mask 0x{:x})", mask);
+		mask = slow_cores;
+		INFO_LOG("IOP thread pinned outside the performance tier (mask 0x{:x})", mask);
 	}
 	IopThread::g_thread.GetThreadHandle().SetAffinity(mask);
 }
@@ -5399,8 +5398,7 @@ void VMManager::SetEmuThreadAffinities()
 		// can't be read, or the fast tier is too narrow, we do NOTHING rather than something
 		// harmful. Note this deliberately does NOT fall through to the ordered per-core path
 		// below; that path is the pinning this mode exists to avoid.
-		// The IOP thread, when it runs beside the EE, is one more of them.
-		const IopThread::TierPlan tier = IopThread::PlanTier(perf_mask, android_mtvu, iop_thread);
+		const IopThread::TierPlan tier = IopThread::PlanTier(perf_mask, android_mtvu);
 		const u32 threads_to_place = tier.threads_to_place;
 		if (tier.tier_fits)
 		{
@@ -5455,7 +5453,9 @@ void VMManager::SetEmuThreadAffinities()
 	// With MTVU off there is no VU thread to place, so GS inherits VU's slot when VU ranked
 	// higher — otherwise the faster core sits idle. Mirrors the desktop path's "steal vu's
 	// thread if mtvu is off". The IOP thread takes the first rank none of the others uses.
-	const IopThread::RankPlan ranks = IopThread::PlanRanks(g_android_affinity_mode, android_mtvu, iop_thread, s_processor_list.size());
+	// An IOP thread bound for the slow cores takes no rank from this list, which is fastest first.
+	const bool iop_takes_rank = iop_thread && GetIopThreadOutsideTierMask() == 0;
+	const IopThread::RankPlan ranks = IopThread::PlanRanks(g_android_affinity_mode, android_mtvu, iop_takes_rank, s_processor_list.size());
 	const int ee_rank = ranks.ee;
 	const int vu_rank = ranks.vu;
 	const int gs_rank = ranks.gs;
@@ -5542,10 +5542,9 @@ void VMManager::SetEmuThreadAffinities()
 		}
 		else if (GetIopThreadOutsideTierMask() != 0)
 		{
-			// Unpinned, with a tier too narrow for every thread that wants it: the IOP thread would float over the fast
-			// cores beside the EE, GS and VU1 threads (SetIopThreadAffinity says why that is wrong), so it is placed
-			// outside the tier. A host whose tier fits them all, or one with no IOP thread, gets no mask here and is
-			// left as it was.
+			// Unpinned: the IOP thread would float over the fast cores beside the EE, GS and VU1 threads
+			// (IopThread::SlowCoresMask says why that is wrong), so it is placed outside the tier. A host with no
+			// slower core, or with no IOP thread, gets no mask here and is left as it was.
 			SetIopThreadAffinity(0);
 		}
 		s_software_renderer_processor_list = {};
@@ -5581,7 +5580,8 @@ void VMManager::SetEmuThreadAffinities()
 	s_gs_tier_confined = false;
 
 	// steal vu's thread if mtvu is off; the IOP thread, when it runs beside the EE, takes the next slot
-	const IopThread::OrderedPlan plan = IopThread::PlanOrdered(s_processor_list.size(), mtvu, iop_thread);
+	// An IOP thread bound for the slow cores takes no slot from this list, which is fastest first.
+	const IopThread::OrderedPlan plan = IopThread::PlanOrdered(s_processor_list.size(), mtvu, iop_thread && GetIopThreadOutsideTierMask() == 0);
 	const u32 ee_index = s_processor_list[plan.ee];
 	const u32 vu_index = s_processor_list[plan.vu];
 	const u32 gs_index = s_processor_list[plan.gs];
@@ -5614,7 +5614,7 @@ void VMManager::SetEmuThreadAffinities()
 		if (iop_affinity != 0)
 			INFO_LOG("  IOP thread is on processor {} (0x{:x})", s_processor_list[plan.iop], iop_affinity);
 		else
-			INFO_LOG("  IOP thread is not pinned");
+			INFO_LOG("  IOP thread has no processor in this list");
 	}
 	SetIopThreadAffinity(iop_affinity);
 

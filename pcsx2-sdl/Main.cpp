@@ -133,12 +133,30 @@ static std::condition_variable s_cpu_queue_cv;
 // being called from the CPU thread itself (which would self-deadlock).
 static std::atomic<std::thread::id> s_cpu_thread_id{};
 
-// Background game-list scanner. FullscreenUI's GameList page calls
-// Host::RefreshGameListAsync, which spawns a single worker thread to
-// GameList::Refresh. The thread is joined (blocking) at shutdown and at
-// restart, to avoid two scans racing.
+// Background game-list scanner. The CPU thread starts one at launch, and Big
+// Picture's refresh buttons start more from the GS thread through
+// Host::RefreshGameListAsync.
+//
+// GameList::Refresh holds the CDVD lock for the whole scan, and
+// VMManager::Initialize fails if it cannot take that lock, so no scan may be
+// running when a game boots. Initialize calls Host::CancelGameListRefresh
+// first: that sets s_gamelist_cancel, which the scan polls between files, and
+// waits for the thread to end. It also blocks new scans until
+// Host::OnVMDestroyed, because the VM holds the lock from then on.
+//
+// RefreshGameListAsync never waits for the scan thread. Big Picture calls it
+// with the GameList lock held and the scan thread needs that lock to add
+// entries, so a wait there would deadlock. A request made during a scan
+// cancels it, and the scan thread runs the new one when it has ended.
+static std::mutex s_gamelist_lock; // guards everything below except s_gamelist_cancel
+static std::condition_variable s_gamelist_idle_cv;
 static std::thread s_gamelist_thread;
-static std::atomic<bool> s_gamelist_running{false};
+static bool s_gamelist_scanning = false; // the scan thread has not finished
+static bool s_gamelist_rescan = false; // a request arrived during the scan
+static bool s_gamelist_rescan_invalidate = false;
+static bool s_gamelist_blocked = false; // a game is booting or running, or we are exiting
+static bool s_gamelist_rescan_after_vm = false; // a scan was cut short or refused while blocked
+static std::atomic<bool> s_gamelist_cancel{false};
 
 //////////////////////////////////////////////////////////////////////////
 // Settings + lifecycle
@@ -618,6 +636,17 @@ void Host::OnVMStarted()
 
 void Host::OnVMDestroyed()
 {
+	// The CDVD lock is free again. Redo a scan that the game start cut short, so Big Picture does not come back to a
+	// partial list.
+	bool rescan;
+	{
+		std::lock_guard<std::mutex> lock(s_gamelist_lock);
+		s_gamelist_blocked = false;
+		rescan = std::exchange(s_gamelist_rescan_after_vm, false);
+	}
+
+	if (rescan && !s_shutdown_requested.load(std::memory_order_acquire))
+		Host::RefreshGameListAsync(false);
 }
 
 void Host::OnVMPaused()
@@ -714,26 +743,103 @@ void Host::RunOnCPUThread(std::function<void()> function, bool block)
 	s_cpu_queue_cv.notify_all();
 }
 
+namespace
+{
+	// GameList::Refresh and FileSystem::FindFiles poll IsCancelled(). Nothing reads the progress.
+	class GameListScanProgress final : public BaseProgressCallback
+	{
+	public:
+		bool IsCancelled() const override { return s_gamelist_cancel.load(std::memory_order_acquire); }
+
+		void SetTitle(const char* title) override {}
+
+		void DisplayError(const char* message) override { Console.Error("%s", message); }
+		void DisplayWarning(const char* message) override { Console.Warning("%s", message); }
+		void DisplayInformation(const char* message) override { Console.WriteLn("%s", message); }
+		void DisplayDebugMessage(const char* message) override { DevCon.WriteLn("%s", message); }
+
+		void ModalError(const char* message) override { Console.Error("%s", message); }
+		bool ModalConfirmation(const char* message) override
+		{
+			Console.WriteLn("%s", message);
+			return false;
+		}
+		void ModalInformation(const char* message) override { Console.WriteLn("%s", message); }
+	};
+} // namespace
+
+static void GameListScanThreadMain(bool invalidate_cache)
+{
+	Threading::SetNameOfCurrentThread("GameList Refresh");
+
+	GameListScanProgress progress;
+	for (;;)
+	{
+		GameList::Refresh(invalidate_cache, false, &progress);
+
+		std::lock_guard<std::mutex> lock(s_gamelist_lock);
+		if (!s_gamelist_rescan)
+		{
+			s_gamelist_scanning = false;
+			s_gamelist_idle_cv.notify_all();
+			return;
+		}
+
+		invalidate_cache = s_gamelist_rescan_invalidate;
+		s_gamelist_rescan = false;
+		s_gamelist_rescan_invalidate = false;
+		s_gamelist_cancel.store(false, std::memory_order_release);
+	}
+}
+
+// Cancels the running scan, drops any queued one, and waits for the thread to end. That takes as long as the scan
+// needs to finish the file it is on. Scans stay blocked afterwards: the caller is a game boot (the VM then holds the
+// CDVD lock until Host::OnVMDestroyed) or the frontend exiting.
 void Pcsx2SDL::StopGameListRefreshThread()
 {
-	if (!s_gamelist_thread.joinable())
-		return;
-	s_gamelist_thread.join();
+	std::unique_lock<std::mutex> lock(s_gamelist_lock);
+
+	s_gamelist_blocked = true;
+	s_gamelist_rescan = false;
+	s_gamelist_rescan_invalidate = false;
+	if (s_gamelist_scanning)
+	{
+		// The list is left partial: Host::OnVMDestroyed redoes the scan, which is incremental through the cache.
+		s_gamelist_rescan_after_vm = true;
+		s_gamelist_cancel.store(true, std::memory_order_release);
+	}
+
+	s_gamelist_idle_cv.wait(lock, []() { return !s_gamelist_scanning; });
+	if (s_gamelist_thread.joinable())
+		s_gamelist_thread.join();
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
 {
-	// Only one scan at a time — FullscreenUI's "rescan" button can fire
-	// multiple times in quick succession; coalesce by joining the previous
-	// scan first.
-	Pcsx2SDL::StopGameListRefreshThread();
+	std::lock_guard<std::mutex> lock(s_gamelist_lock);
 
-	s_gamelist_running.store(true, std::memory_order_release);
-	s_gamelist_thread = std::thread([invalidate_cache]() {
-		Threading::SetNameOfCurrentThread("GameList Refresh");
-		GameList::Refresh(invalidate_cache, false, nullptr);
-		s_gamelist_running.store(false, std::memory_order_release);
-	});
+	if (s_gamelist_blocked)
+	{
+		// The scan would fail on the CDVD lock. Do it when the VM is gone.
+		s_gamelist_rescan_after_vm = true;
+		return;
+	}
+
+	if (s_gamelist_scanning)
+	{
+		s_gamelist_rescan = true;
+		s_gamelist_rescan_invalidate |= invalidate_cache;
+		s_gamelist_cancel.store(true, std::memory_order_release);
+		return;
+	}
+
+	// The previous scan thread has finished, or is about to return without taking the lock again.
+	if (s_gamelist_thread.joinable())
+		s_gamelist_thread.join();
+
+	s_gamelist_cancel.store(false, std::memory_order_release);
+	s_gamelist_scanning = true;
+	s_gamelist_thread = std::thread(GameListScanThreadMain, invalidate_cache);
 }
 
 void Host::CancelGameListRefresh()
@@ -915,6 +1021,10 @@ void Pcsx2SDL::CPUThreadMain(VMBootParameters initial_params, bool start_in_fsui
 			return;
 		}
 		MTGS::SetRunIdle(true);
+
+		// Scan once at startup, as the Qt frontend does: without it the game picker opens on an empty list until
+		// the user asks for a refresh. Incremental (the cache is kept), on the background thread.
+		Host::RefreshGameListAsync(false);
 	}
 
 	// The "initial" boot is the ISO/state passed on the CLI. When launching

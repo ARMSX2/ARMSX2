@@ -115,6 +115,8 @@ GSDrawScanlineCodeGenerator::GSDrawScanlineCodeGenerator(u64 key, void* code, si
 	, m_sel(key)
 	, m_code_rx(static_cast<const u8*>(code))
 {
+	// ARMv8.0 FP and AdvSIMD only; debug builds assert on anything more.
+	m_emitter.SetCPUFeatures(vixl::CPUFeatures(vixl::CPUFeatures::kFP, vixl::CPUFeatures::kNEON));
 	// hopefully no constants which need to be moved to register first..
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch.GetCode());
 	m_emitter.GetScratchRegisterList()->Remove(_xscratch2.GetCode());
@@ -431,7 +433,19 @@ void GSDrawScanlineCodeGenerator::Init()
 
 						// The weight and the index have to read the same 12.4 field,
 						// and the loop saturates the index it re-forms from t.
-						SaturateCoordinate(_temp_vf, _vscratch);
+						if (m_sel.stqfield)
+						{
+							// The vertex took the half-texel step; the field reads it at
+							// the coordinate plus eight sixteenths (GSStqExtremes.h).
+							armAsm->Movi(_vscratch.V4S(), 0x8000);
+							armAsm->Add(_temp_vf.V4S(), _temp_vf.V4S(), _vscratch.V4S());
+							armAsm->Movi(_vscratch3.V4S(), 8);
+							FormCoordinateField(_temp_vf, _vscratch3, _vscratch, _vscratch2, v6);
+						}
+						else
+						{
+							SaturateCoordinate(_temp_vf, _vscratch);
+						}
 
 						armAsm->Trn1(_temp_vf.V8H(), _temp_vf.V8H(), _temp_vf.V8H());
 						armAsm->Ushr(_temp_vf.V8H(), _temp_vf.V8H(), 12);
@@ -709,28 +723,13 @@ void GSDrawScanlineCodeGenerator::TestZ(const VRegister& temp1, const VRegister&
 		{
 			zs = _temp_z0;
 		}
-		else if (m_sel.zoverflow)
-		{
-			// GSVector4i zl = z0.add64(VectorF::m_xc1e00000000fffff).f64toi32();
-			// GSVector4i zh = z1.add64(VectorF::m_xc1e00000000fffff).f64toi32();
-
-			armAsm->Movi(temp1.V2D(), GSVector4::m_xc1e00000000fffff.U64[0]);
-			armAsm->Fadd(_temp_z0.V2D(), _temp_z0.V2D(), temp1.V2D());
-			armAsm->Fadd(_temp_z1.V2D(), _temp_z1.V2D(), temp1.V2D());
-
-			// zs = GSVector8i(zl, zh);
-			armAsm->Fcvtzs(v0.V2D(), _temp_z0.V2D());
-			armAsm->Fcvtzs(temp1.V2D(), _temp_z1.V2D());
-			armAsm->Movi(_vscratch.V4S(), 0x80000000);
-			armAsm->Uzp1(v0.V4S(), v0.V4S(), temp1.V4S());
-
-			// zs += VectorI::x80000000();
-			armAsm->Add(v0.V4S(), v0.V4S(), _vscratch.V4S());
-			zs = v0;
-		}
 		else
 		{
 			// zs = GSVector8i(z0.f64toi32(), z1.f64toi32());
+			// Converting to 64 bits and keeping the low half is exact for every 32-bit z. x86's zoverflow path
+			// exists because it has no such conversion, and the selector never sets it here: NEON's float to
+			// int conversion saturates rather than returning 0x80000000.
+			pxAssert(!m_sel.zoverflow);
 
 			armAsm->Fcvtzs(v0.V2D(), _temp_z0.V2D());
 			armAsm->Fcvtzs(temp1.V2D(), _temp_z1.V2D());
@@ -817,6 +816,29 @@ void GSDrawScanlineCodeGenerator::SaturateCoordinate(const VRegister& c, const V
 	armAsm->Shl(c.V4S(), scratch.V4S(), GS_COORD_SIXTEENTH_SHIFT);
 }
 
+// The console's order at the field's limits (sel.stqfield, GSStqExtremes.h): at 0x8000
+// sixteenths or more the coordinate reads 0x7FFF, at -0x8000 or less it reads -0x8000,
+// and between them it takes `half` (the bilinear step, in sixteenths) unclamped.
+// GSDrawScanline.cpp's GSFormCoordinateField is the same.
+void GSDrawScanlineCodeGenerator::FormCoordinateField(const VRegister& c, const VRegister& half,
+	const VRegister& t0, const VRegister& t1, const VRegister& t2)
+{
+	armAsm->Sshr(t0.V4S(), c.V4S(), GS_COORD_SIXTEENTH_SHIFT);
+	armAsm->Sub(c.V4S(), t0.V4S(), half.V4S());
+
+	armAsm->Movi(t1.V4S(), 0x7f, LSL, 8);
+	armAsm->Orr(t1.V4S(), 0xff, 0); // 0x7FFF
+	armAsm->Cmgt(t2.V4S(), t0.V4S(), t1.V4S());
+	armAsm->Bit(c.V16B(), t1.V16B(), t2.V16B());
+
+	armAsm->Mvni(t1.V4S(), 0x7f, LSL, 8);
+	armAsm->Bic(t1.V4S(), 0xff, 0); // -0x8000
+	armAsm->Cmge(t2.V4S(), t1.V4S(), t0.V4S());
+	armAsm->Bit(c.V16B(), t1.V16B(), t2.V16B());
+
+	armAsm->Shl(c.V4S(), c.V4S(), GS_COORD_SIXTEENTH_SHIFT);
+}
+
 void GSDrawScanlineCodeGenerator::SampleTexture()
 {
 	if (!m_sel.fb || m_sel.tfx == TFX_NONE)
@@ -866,12 +888,22 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 			// (2^(16 + TW), 2^(16 + TH)) rides on the product. The reciprocal is taken of the
 			// count because cutting its mantissa commutes with a power-of-two scale.
 			armAsm->Sshr(v0.V4S(), _temp_q.V4S(), GS_PLANE_PIXEL_SHIFT);
+			if (m_sel.stqfield)
+				armAsm->Cmeq(_vscratch3.V4S(), v0.V4S(), 0);
 			armAsm->Scvtf(v0.V4S(), v0.V4S());
 			armAsm->Fmov(v1.V4S(), 1.0f);
 			armAsm->Fdiv(v0.V4S(), v1.V4S(), v0.V4S());
 			armAsm->Movi(v1.V4S(), GS_RECIP_ROUND_UP);
 			armAsm->Add(v0.V4S(), v0.V4S(), v1.V4S());
 			armAsm->Bic(v0.V4S(), 0xff, 0);
+
+			if (m_sel.stqfield)
+			{
+				// A Q count of zero takes the GS's fixed reciprocal, 2/g, which is 1/2 in
+				// these counts (GSStqExtremes.h); the host's 1/0 would be an infinity.
+				armAsm->Fmov(_vscratch.V4S(), 0.5f);
+				armAsm->Bit(v0.V16B(), _vscratch.V16B(), _vscratch3.V16B());
+			}
 
 			armAsm->Ldr(v1, _local(pwalk.stscale));
 			armAsm->Sshr(v2.V4S(), _temp_s.V4S(), GS_PLANE_PIXEL_SHIFT);
@@ -929,32 +961,56 @@ void GSDrawScanlineCodeGenerator::SampleTexture()
 	ureg = v2;
 	vreg = v3;
 
-	if (!m_sel.fst && m_sel.ltf)
+	if (m_sel.stqfield)
 	{
-		// u -= 0x8000;
-		// v -= 0x8000;
-		//
-		// Exactly eight sixteenths, so it moves the texel index and never the
-		// weight. It is our step onto the tap pair, not part of the hardware
-		// coordinate, so it comes after the truncation. It applies only to pixels
-		// that filter linearly; the two filters do not sample the same point.
-		armAsm->Movi(v1.V4S(), 0x8000);
+		// The console's order at the field's limits (GSStqExtremes.h). In sixteenths, with
+		// the half step applied here even on the fst route, whose vertices already took it.
+		armAsm->Movi(v1.V4S(), m_sel.ltf ? 8 : 0);
 
-		if (m_sel.ltfx)
+		if (m_sel.ltf && m_sel.fst)
+		{
+			armAsm->Movi(v0.V4S(), 0x8000);
+			armAsm->Add(ureg.V4S(), ureg.V4S(), v0.V4S());
+			armAsm->Add(vreg.V4S(), vreg.V4S(), v0.V4S());
+		}
+		else if (m_sel.ltf && m_sel.ltfx)
 		{
 			emit_ltfx_mask(v0);
 			armAsm->And(v1.V16B(), v1.V16B(), v0.V16B());
 		}
 
-		armAsm->Sub(ureg.V4S(), ureg.V4S(), v1.V4S());
-		armAsm->Sub(vreg.V4S(), vreg.V4S(), v1.V4S());
+		FormCoordinateField(ureg, v1, v0, _vscratch, _vscratch2);
+		FormCoordinateField(vreg, v1, v0, _vscratch, _vscratch2);
 	}
+	else
+	{
+		if (!m_sel.fst && m_sel.ltf)
+		{
+			// u -= 0x8000;
+			// v -= 0x8000;
+			//
+			// Exactly eight sixteenths, so it moves the texel index and never the
+			// weight. It is our step onto the tap pair, not part of the hardware
+			// coordinate, so it comes after the truncation. It applies only to pixels
+			// that filter linearly; the two filters do not sample the same point.
+			armAsm->Movi(v1.V4S(), 0x8000);
 
-	// The 12.4 field, taken after the half-texel step (so the top of the field
-	// reads weight 15, not the 7 that clamping first would give) and before the
-	// tap pair below.
-	SaturateCoordinate(ureg, v0);
-	SaturateCoordinate(vreg, v0);
+			if (m_sel.ltfx)
+			{
+				emit_ltfx_mask(v0);
+				armAsm->And(v1.V16B(), v1.V16B(), v0.V16B());
+			}
+
+			armAsm->Sub(ureg.V4S(), ureg.V4S(), v1.V4S());
+			armAsm->Sub(vreg.V4S(), vreg.V4S(), v1.V4S());
+		}
+
+		// The 12.4 field, taken after the half-texel step (so the top of the field
+		// reads weight 15, not the 7 that clamping first would give) and before the
+		// tap pair below.
+		SaturateCoordinate(ureg, v0);
+		SaturateCoordinate(vreg, v0);
+	}
 
 	if (m_sel.ltf)
 	{

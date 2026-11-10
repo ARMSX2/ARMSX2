@@ -67,7 +67,7 @@ IopThreadMode IopThread::ResolveMode(const Pcsx2Config& config, const HostCpuInf
 	const u32 threads = 2 + (config.Speedhacks.vuThread ? 1 : 0) + 1;
 	const u32 spare_cores_for_the_rest = 2;
 	// A performance tier narrower than the threads is not a reason for Off: the IOP thread then runs on the cores outside
-	// it (UnpinnedIopThreadMask), which is where the RG 55G1 (two big cores, six little) runs it. A tier of fewer than
+	// it (SlowCoresMask), which is where the RG 55G1 (two big cores, six little) runs it. A tier of fewer than
 	// kMinPerformanceCores is: with one fast core the EE and GS threads cannot both have one, and a tier that cannot be
 	// read (no performance cores counted) cannot say where the IOP thread would not be in the way.
 	//

@@ -1206,8 +1206,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		m_use_push_descriptors = false;
 	}
 	// Arm's Mali blob crashes in vkCmdPushDescriptorSetKHR even where it advertises the extension, and
-	// an Adreno driver other than Qualcomm's or Turnip is untested with it. malisx2 is exempt from the
-	// Mali half in the rule (exempt_malisx2_push_descriptors).
+	// an Adreno driver other than Qualcomm's or Turnip is untested with it. PanVK and malisx2 aren't the
+	// blob and are exempt.
 	if (m_use_push_descriptors && m_device_rules.avoid_push_descriptors)
 		m_use_push_descriptors = false;
 	if (!m_use_push_descriptors)
@@ -1509,17 +1509,6 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	key.stencil_store_op = stencil_store_op;
 	key.color_feedback_loop = color_feedback_loop;
 	key.depth_sampling = depth_sampling;
-
-	// Mali driver bug (ported from PPSSPP): a packed depth/stencil attachment whose
-	// depth vs stencil load-ops MISMATCH corrupts on ARM Mali. PCSX2's GS uses one
-	// combined D24S8/D32S8 attachment whose aspects are normally loaded/cleared
-	// together, so this is a no-op in practice — normalize defensively (prefer the
-	// depth aspect's op) so a stray mismatch can't trip the bug. Mali-only.
-	if (IsDeviceMali() && key.stencil_load_op != key.depth_load_op)
-	{
-		key.stencil_load_op = key.depth_load_op;
-		key.stencil_store_op = key.depth_store_op;
-	}
 
 	auto it = m_render_pass_cache.find(key.key);
 	if (it != m_render_pass_cache.end())
@@ -2408,8 +2397,48 @@ void GSDeviceVK::DisableDebugUtils()
 	}
 }
 
-VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
+bool GSDeviceVK::MatchesDepthStencilLoadOps() const
 {
+	return IsDeviceMali() && m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_PANVK && !IsDeviceMaliSX2();
+}
+
+VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey requested)
+{
+	// The pass is cached under the ops asked for; `key` is what the driver is given.
+	RenderPassCacheKey key = requested;
+	LateDepthStencilClear late_clear = {};
+	const VkFormat depth_format = static_cast<VkFormat>(key.depth_format);
+	const bool has_stencil = (depth_format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+	                          depth_format == VK_FORMAT_D24_UNORM_S8_UINT || depth_format == VK_FORMAT_D16_UNORM_S8_UINT);
+	if (!has_stencil && key.depth_load_op != key.stencil_load_op && MatchesDepthStencilLoadOps())
+	{
+		// No stencil aspect, so the ops mean nothing, but keep handing Arm's driver matching ones as it always got.
+		key.stencil_load_op = key.depth_load_op;
+		key.stencil_store_op = key.depth_store_op;
+	}
+	else if (has_stencil && key.depth_load_op != key.stencil_load_op && MatchesDepthStencilLoadOps())
+	{
+		// An unread aspect takes the other's op. CLEAR + LOAD becomes LOAD for both, with the clear done in the pass.
+		if (key.depth_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+			key.depth_load_op = key.stencil_load_op;
+		else if (key.stencil_load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+			key.stencil_load_op = key.depth_load_op;
+		else
+		{
+			late_clear.aspects = (key.depth_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) ? VK_IMAGE_ASPECT_DEPTH_BIT :
+			                                                                          VK_IMAGE_ASPECT_STENCIL_BIT;
+			late_clear.attachment = (key.color_format != VK_FORMAT_UNDEFINED) ? 1u : 0u;
+			key.depth_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+			key.stencil_load_op = VK_ATTACHMENT_LOAD_OP_LOAD;
+		}
+		// Either aspect's contents may be wanted later, so a store asked for one is kept for both.
+		if (key.depth_store_op == VK_ATTACHMENT_STORE_OP_STORE || key.stencil_store_op == VK_ATTACHMENT_STORE_OP_STORE)
+		{
+			key.depth_store_op = VK_ATTACHMENT_STORE_OP_STORE;
+			key.stencil_store_op = VK_ATTACHMENT_STORE_OP_STORE;
+		}
+	}
+
 	VkAttachmentReference color_reference;
 	VkAttachmentReference* color_reference_ptr = nullptr;
 	VkAttachmentReference depth_reference;
@@ -2629,7 +2658,9 @@ VkRenderPass GSDeviceVK::CreateCachedRenderPass(RenderPassCacheKey key)
 		return VK_NULL_HANDLE;
 	}
 
-	m_render_pass_cache.emplace(key.key, pass);
+	m_render_pass_cache.emplace(requested.key, pass);
+	if (late_clear.aspects != 0)
+		m_late_depth_stencil_clears.emplace(pass, late_clear);
 	return pass;
 }
 
@@ -3293,12 +3324,18 @@ bool GSDeviceVK::UpdateWindow()
 	}
 
 	VkPresentModeKHR present_mode;
-	if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode) ||
-		!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
-			  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
+	if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
 	{
 		Console.Error("VK: Failed to create swap chain");
 		VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, surface);
+		return false;
+	}
+
+	// Create() owns the surface now and already destroyed it on failure, so don't destroy it again.
+	if (!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+			  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
+	{
+		Console.Error("VK: Failed to create swap chain");
 		return false;
 	}
 
@@ -3938,8 +3975,14 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	if (surface != VK_NULL_HANDLE)
 	{
 		VkPresentModeKHR present_mode;
-		if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode) ||
-			!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+		if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
+		{
+			ERROR_LOG("Failed to create swap chain");
+			return false;
+		}
+
+		// Create() owns the surface now and already destroyed it on failure.
+		if (!(m_swap_chain = VKSwapChain::Create(m_window_info, std::exchange(surface, VK_NULL_HANDLE), present_mode,
 				  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
 		{
 			ERROR_LOG("Failed to create swap chain");
@@ -4903,6 +4946,12 @@ void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTextur
 	pxAssert(dTex);
 	filter = shader.SupportsBilinear() ? Nearest : filter; // Don't allow HW bilinear if SW bilinear is needed.
 	const bool allow_discard = (shader.Mask() == 0xf);
+	// SW bilinear reads the source's size from the push constants (see SAMPLE_RGBA_DEPTH_BILN in convert.glsl).
+	if (shader.Biln())
+	{
+		const GSVector2i source_size = sTex->GetSize();
+		SetUtilityPushConstants(&source_size, sizeof(source_size));
+	}
 	DoStretchRect(static_cast<GSTextureVK*>(sTex), sRect, static_cast<GSTextureVK*>(dTex), dRect,
 		GetConvertPipeline(shader), filter, allow_discard);
 }
@@ -5042,6 +5091,12 @@ void GSDeviceVK::DoMultiStretchRects(
 	if (!InRenderPass())
 		BeginRenderPassForStretchRect(dTex, rc, rc, false);
 	SetUtilityTexture(rects[0].src, rects[0].filter == Biln ? m_linear_sampler : m_point_sampler);
+	// SW bilinear reads the source's size from the push constants (see SAMPLE_RGBA_DEPTH_BILN in convert.glsl).
+	if (shader.Biln())
+	{
+		const GSVector2i source_size = rects[0].src->GetSize();
+		SetUtilityPushConstants(&source_size, sizeof(source_size));
+	}
 
 	SetPipeline(GetConvertPipeline(shader.SetMask(rects[0].wmask.wrgba)));
 
@@ -5478,6 +5533,9 @@ void GSDeviceVK::DoFXAA(GSTexture* sTex, GSTexture* dTex)
 	SetUtilityTexture(sTex, m_linear_sampler);
 	BeginRenderPass(m_utility_color_render_pass_discard, dRect);
 	dTex->SetState(GSTexture::State::Dirty);
+	// fxaa.fx reads the source's size from the push constants rather than with textureSize().
+	const GSVector2 source_size(static_cast<float>(sTex->GetWidth()), static_cast<float>(sTex->GetHeight()));
+	SetUtilityPushConstants(&source_size, sizeof(source_size));
 	SetPipeline(m_fxaa_pipeline);
 	DrawStretchRect(sRect, GSVector4(dRect), dTex->GetSize());
 	EndRenderPass();
@@ -5665,6 +5723,9 @@ bool GSDeviceVK::DoApplyShaderChain(GSTexture* sTex, GSTexture* dTex)
 void GSDeviceVK::IASetVertexBuffer(const void* vertex, size_t stride, size_t count, size_t align_multiplier)
 {
 	const u32 size = static_cast<u32>(stride) * static_cast<u32>(count);
+	// ReserveMemory sets aside size + alignment, and alignment is at least one vertex here, so the slot
+	// just past the draw's last vertex is inside the ring. The line-expansion vertex shader reads it
+	// (tfx.glsl, vid_other); keep that slack if this reservation changes.
 	if (!m_vertex_stream_buffer.ReserveMemory(size, static_cast<u32>(stride) * align_multiplier))
 	{
 		// While presenting, the swap-chain pass isn't tracked by m_current_render_pass, so the ordinary
@@ -6031,6 +6092,8 @@ static void AddShaderHeader(std::stringstream& ss)
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::ScalarizeVectorBitwiseAnd) ? 1 : 0);
 	AddMacro(ss, "DRIVER_REWRITE_UNIFORM_INDEXING",
 		dev->UsesMobileDriverWorkaround(DriverWorkaround::RewriteUniformIndexing) ? 1 : 0);
+	AddMacro(ss, "DRIVER_NO_IMAGE_QUERY",
+		dev->UsesMobileDriverWorkaround(DriverWorkaround::PassTextureSizeInUniform) ? 1 : 0);
 	// When no workaround is active these MUST expand to the bare operator, not to a function that
 	// happens to return it. Overloads cost an OpFunctionCall in the SPIR-V at every call site --
 	// including inside the texture loop in tfx.glsl and the region-clamp path -- and Qualcomm's
@@ -7442,6 +7505,7 @@ void GSDeviceVK::DestroyResources()
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
+	m_last_tfx_pipeline = VK_NULL_HANDLE;
 	for (auto& it : m_tfx_pipelines)
 		vkDestroyPipeline(m_device, it.second, nullptr);
 	for (auto& it : m_tfx_fragment_shaders)
@@ -7604,6 +7668,7 @@ void GSDeviceVK::DestroyResources()
 	for (auto& it : m_render_pass_cache)
 		vkDestroyRenderPass(m_device, it.second, nullptr);
 	m_render_pass_cache.clear();
+	m_late_depth_stencil_clears.clear();
 
 	if (m_allocator != VK_NULL_HANDLE)
 		vmaDestroyAllocator(m_allocator);
@@ -7967,9 +8032,16 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 
 VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 {
+	if (m_last_tfx_pipeline != VK_NULL_HANDLE && p == m_last_tfx_selector)
+		return m_last_tfx_pipeline;
+
 	const auto it = m_tfx_pipelines.find(p);
 	if (it != m_tfx_pipelines.end())
+	{
+		m_last_tfx_selector = p;
+		m_last_tfx_pipeline = it->second;
 		return it->second;
+	}
 
 	// A cache miss compiles SYNCHRONOUSLY on the GS thread, freezing the picture for as long as the
 	// driver takes. Normally invisible (a few ms, spread out), but fast-forward runs through content
@@ -8802,11 +8874,23 @@ void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, c
 	m_current_render_pass_area = rect;
 	CountRenderPassArea(rect);
 
+	const VkRect2D area = {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}};
 	const VkRenderPassBeginInfo begin_info = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, nullptr, m_current_render_pass,
-		m_current_framebuffer, {{rect.x, rect.y}, {static_cast<u32>(rect.width()), static_cast<u32>(rect.height())}},
-		cv_count, cv};
+		m_current_framebuffer, area, cv_count, cv};
 
 	vkCmdBeginRenderPass(GetCurrentCommandBuffer(), &begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+	// The aspect this pass was created to LOAD in place of the CLEAR it asked for.
+	if (!m_late_depth_stencil_clears.empty())
+	{
+		const auto late = m_late_depth_stencil_clears.find(rp);
+		if (late != m_late_depth_stencil_clears.end() && late->second.attachment < cv_count)
+		{
+			const VkClearAttachment clear = {late->second.aspects, 0, cv[late->second.attachment]};
+			const VkClearRect clear_rect = {area, 0, 1};
+			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &clear, 1, &clear_rect);
+		}
+	}
 }
 
 void GSDeviceVK::BeginClearRenderPass(VkRenderPass rp, const GSVector4i& rect, u32 clear_color)

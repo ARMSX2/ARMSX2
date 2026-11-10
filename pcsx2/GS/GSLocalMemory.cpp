@@ -46,6 +46,8 @@ constexpr GSSwizzleInfo GSLocalMemory::swizzle4;
 
 GSLocalMemory::psm_t GSLocalMemory::m_psm[64];
 GSLocalMemory::readImage GSLocalMemory::m_readImageX;
+GSLocalMemory::writeBlocksOfPixel GSLocalMemory::m_writeBlocksOfPixel32;
+GSLocalMemory::writeBlocksOfPixel GSLocalMemory::m_writeBlocksOfPixel16;
 
 //
 

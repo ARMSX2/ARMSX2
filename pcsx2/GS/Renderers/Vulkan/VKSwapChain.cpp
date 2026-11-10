@@ -684,10 +684,47 @@ bool VKSwapChain::SelectPresentMode(VkSurfaceKHR surface, GSVSyncMode* vsync_mod
 	return true;
 }
 
+bool VKSwapChain::SurfaceListsNoFormats(VkSurfaceKHR surface)
+{
+	u32 format_count = 0;
+	return vkGetPhysicalDeviceSurfaceFormatsKHR(
+			   GSDeviceVK::GetInstance()->GetPhysicalDevice(), surface, &format_count, nullptr) == VK_SUCCESS &&
+		   format_count == 0;
+}
+
 bool VKSwapChain::CreateSwapChain()
 {
 	// Select swap chain format
 	std::optional<VkSurfaceFormatKHR> surface_format = SelectSurfaceFormat(m_surface);
+
+	// Arm's Wayland WSI sometimes gives a surface an empty format list that never refills. A new surface
+	// fetches them again, so drop the swap chain and recreate the surface.
+	static constexpr u32 MAX_EMPTY_SURFACE_RECREATES = 3;
+	for (u32 attempt = 1; !surface_format.has_value() && attempt <= MAX_EMPTY_SURFACE_RECREATES &&
+						  SurfaceListsNoFormats(m_surface);
+		 attempt++)
+	{
+		Console.Warning("VK: the surface listed no formats; recreating it (%u of %u).", attempt,
+			MAX_EMPTY_SURFACE_RECREATES);
+		// DestroySwapChain() zeroes the surface size, which the new swap chain needs on a surface with no
+		// fixed extent (a resize has only just set it).
+		const u32 surface_width = m_window_info.surface_width;
+		const u32 surface_height = m_window_info.surface_height;
+		DestroySwapChain();
+		DestroySurface();
+		m_window_info.surface_width = surface_width;
+		m_window_info.surface_height = surface_height;
+		m_surface = CreateVulkanSurface(
+			GSDeviceVK::GetInstance()->GetVulkanInstance(), GSDeviceVK::GetInstance()->GetPhysicalDevice(), &m_window_info);
+		if (m_surface == VK_NULL_HANDLE)
+			return false;
+
+		// The validation layers want this asked before a swap chain is made on the surface.
+		VkBool32 present_supported = VK_FALSE;
+		vkGetPhysicalDeviceSurfaceSupportKHR(GSDeviceVK::GetInstance()->GetPhysicalDevice(),
+			GSDeviceVK::GetInstance()->GetPresentQueueFamilyIndex(), m_surface, &present_supported);
+		surface_format = SelectSurfaceFormat(m_surface);
+	}
 	if (!surface_format.has_value())
 		return false;
 
@@ -709,9 +746,12 @@ bool VKSwapChain::CreateSwapChain()
 	// image lets the GPU work on N+2 while N is on-screen and N+1 is queued, recovering
 	// ~33% throughput. Default to 3 images for VulkanDirect, and for MAILBOX
 	// present mode regardless of WSI.
+	// IMMEDIATE too: it never waits for vblank, so a third image adds no latency, and with two the acquire
+	// waits for the compositor to release the previous frame.
 	const bool use_triple =
 		(m_window_info.type == WindowInfo::Type::VulkanDirect) ||
-		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR);
+		(m_present_mode == VK_PRESENT_MODE_MAILBOX_KHR) ||
+		(m_present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
 	u32 desired_image_count = use_triple ? 3 : 2;
 
 	// ★ Frame generation needs images it can hold ON TOP of the one being presented.

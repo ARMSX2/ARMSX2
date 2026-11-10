@@ -384,7 +384,7 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	mVUsetupBranch(mVU, mFC);
 
 	if (!mVUpBlock->jumpCache)
-		mVUpBlock->jumpCache = new microJumpCache[mProgSize / 2];
+		mVUpBlock->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 
 	if (isEvilJump)
 	{

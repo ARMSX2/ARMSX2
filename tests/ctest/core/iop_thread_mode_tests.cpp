@@ -281,7 +281,7 @@ TEST(IopThreadModeDevices, TheCoreRuleCountsTheVuThread)
 
 TEST(IopThreadModeDevices, ATierNarrowerThanTheThreadsDoesNotSwitchItOff)
 {
-	// The RG 55G1: two big cores and six little ones. The IOP thread runs on the little ones (UnpinnedIopThreadMask),
+	// The RG 55G1: two big cores and six little ones. The IOP thread runs on the little ones (SlowCoresMask),
 	// so the big cores are not needed for it, with MTVU on or off.
 	EXPECT_EQ(Resolve(true, false, true, kRg55g1), IopThreadMode::Threaded);
 	EXPECT_EQ(Resolve(true, false, false, kRg55g1), IopThreadMode::Threaded);

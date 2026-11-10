@@ -123,6 +123,9 @@ namespace SysMemory
 	/// Returns the file mapping which backs the data memory.
 	void* GetDataFileHandle();
 
+	/// Zeroes part of data memory, giving the pages back to the host where possible.
+	void ZeroData(void* ptr, size_t size);
+
 	// clang-format off
 
 	//////////////////////////////////////////////////////////////////////////

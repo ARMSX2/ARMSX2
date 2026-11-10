@@ -31,6 +31,12 @@ layout(location = 0) in vec2 PSin_t;
 layout(location = 0) out vec4 SV_Target0;
 layout(set = 0, binding = 0) uniform sampler2D TextureSampler;
 
+// Source texture size, pushed by GSDeviceVK::DoFXAA since textureSize() crashes some Mali drivers.
+layout(push_constant) uniform cb10
+{
+	vec2 u_source_size;
+};
+
 #elif (FXAA_HLSL == 1)
 Texture2D Texture : register(t0);
 SamplerState TextureSampler : register(s0);
@@ -454,9 +460,11 @@ float4 FxaaPass(float4 FxaaColor, float2 uv0, texture2d<float> tex)
 	Texture.GetDimensions(PixelSize.x, PixelSize.y);
 	FxaaColor = FxaaPixelShader(uv0, tex, 1.0/PixelSize.xy, FxaaSubpixMax, FxaaEdgeThreshold, FxaaEdgeThresholdMin);
 
-	#elif (FXAA_GLSL_130 == 1 || FXAA_GLSL_VK == 1)
+	#elif (FXAA_GLSL_130 == 1)
 	vec2 PixelSize = vec2(textureSize(TextureSampler, 0));
 	FxaaColor = FxaaPixelShader(uv0, TextureSampler, 1.0/PixelSize.xy, FxaaSubpixMax, FxaaEdgeThreshold, FxaaEdgeThresholdMin);
+	#elif (FXAA_GLSL_VK == 1)
+	FxaaColor = FxaaPixelShader(uv0, TextureSampler, 1.0/u_source_size, FxaaSubpixMax, FxaaEdgeThreshold, FxaaEdgeThresholdMin);
 	#elif defined(__METAL_VERSION__)
 	float2 PixelSize = float2(tex.get_width(), tex.get_height());
 	FxaaColor = FxaaPixelShader(uv0, tex, 1.f/PixelSize, FxaaSubpixMax, FxaaEdgeThreshold, FxaaEdgeThresholdMin);

@@ -28,6 +28,10 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
+
 static u32 vuAotTotalRuns(const microProgram& p) { return p.vuAotRuns + p.vuAotJumpRuns; }
 
 static constexpr u32 kCheckShift = 10;
@@ -2900,6 +2904,11 @@ void mVUvuAotOnClose(microVU& mVU)
 		return;
 	if (s_vuaot.stats.tierUps || s_vuaot.stats.jobsGen)
 		Console.WriteLn(Color_StrongBlue, "%s", vuaot::live::FormatStats().c_str());
+#ifdef PCSX2_RECOMPILER_TESTS
+	const mvu_test_hooks::JumpTableUsage jt = mvu_test_hooks::GetJumpTableUsage();
+	Console.WriteLn("@JUMPTABLES@ live=%llu live_written_kb=%llu aside=%llu aside_written_kb=%llu", (unsigned long long)jt.liveTables,
+		(unsigned long long)(jt.liveWritten >> 10), (unsigned long long)jt.asideTables, (unsigned long long)(jt.asideWritten >> 10));
+#endif
 	s_vuaot.worker.reset();
 }
 
@@ -3079,6 +3088,78 @@ void mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regi
 	body = &vuAotLiveBodyHook;
 	bodyUser = cur->vuaot;
 }
+
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	static u64 JumpTableResidentBytes(const void* table)
+	{
+#if defined(__linux__)
+		const size_t bytes = sizeof(microJumpCache) * (mProgSize / 2);
+		const uptr begin = Common::AlignDownPow2(reinterpret_cast<uptr>(table), __pagesize);
+		const uptr end = Common::AlignUpPow2(reinterpret_cast<uptr>(table) + bytes, __pagesize);
+		std::vector<unsigned char> pages((end - begin) / __pagesize);
+		if (mincore(reinterpret_cast<void*>(begin), end - begin, pages.data()) != 0)
+			return 0;
+		u64 resident = 0;
+		for (unsigned char p : pages)
+			resident += p & 1;
+		return resident * __pagesize;
+#else
+		(void)table;
+		return 0;
+#endif
+	}
+
+	// The bytes of the pages of a table that hold any entry.
+	static u64 JumpTableWrittenBytes(const microJumpCache* table)
+	{
+		const u8* const b = reinterpret_cast<const u8*>(table);
+		const size_t bytes = sizeof(microJumpCache) * (mProgSize / 2);
+		u64 written = 0;
+		for (size_t off = 0; off < bytes; off += __pagesize)
+		{
+			const size_t end = std::min<size_t>(bytes, off + __pagesize);
+			written += std::any_of(b + off, b + end, [](u8 x) { return x != 0; }) ? (end - off) : 0;
+		}
+		return written;
+	}
+
+	JumpTableUsage GetJumpTableUsage()
+	{
+		JumpTableUsage u;
+		const auto visit = [&](microProgram* prog) {
+			if (!prog)
+				return;
+			for (u32 i = 0; i < mProgSize / 2; i++)
+				if (microBlockManager* m = prog->block[i])
+					m->forEachBlock([&](microBlock& b) {
+						if (b.jumpCache)
+						{
+							u.liveTables++;
+							u.liveResident += JumpTableResidentBytes(b.jumpCache);
+							u.liveWritten += JumpTableWrittenBytes(b.jumpCache);
+						}
+					});
+			if (prog->vuaot)
+				for (microBlockManager* m : prog->vuaot->graveyard)
+					m->forEachBlock([&](microBlock& b) {
+						if (b.jumpCache)
+						{
+							u.asideTables++;
+							u.asideResident += JumpTableResidentBytes(b.jumpCache);
+							u.asideWritten += JumpTableWrittenBytes(b.jumpCache);
+						}
+					});
+		};
+		for (const auto& e : microVU1.mvuContentMap)
+			visit(e.second);
+		for (microProgram* p : microVU1.mvuOrphanedProgs)
+			visit(p);
+		return u;
+	}
+} // namespace mvu_test_hooks
+#endif
 
 #ifdef PCSX2_RECOMPILER_TESTS
 namespace vuaot::live

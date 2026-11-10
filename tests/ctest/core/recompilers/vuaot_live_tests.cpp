@@ -2758,6 +2758,50 @@ InstallRun LoadInstall(const InstallCase& c, bool sync, bool fh, const std::vect
 }
 } // namespace
 
+// A tier-up keeps the blocks it replaces, because a stale jump cache elsewhere can still send execution into their code, and that code
+// indexes the block's table directly. So a set-aside block keeps its table, entries and all, until the program itself is deleted.
+TEST(VuAotLive, ATierUpLeavesTheTablesOfTheBlocksItSetsAside)
+{
+	Result ref;
+	{
+		LiveScope off(false, 4, false);
+		VuTestHarness h(1);
+		Prepare(h, JumpLoop(), SetupJump, 0);
+		h.RunNoDiff();
+		ref = Take(h);
+	}
+	LiveScope on(true, 4, false);
+	VuTestHarness h(1);
+	Prepare(h, JumpLoop(), SetupJump, 0);
+	h.RunNoDiff();
+	for (int i = 0; i < 40; i++)
+	{
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(Diff(ref, Take(h)), "") << "run " << i;
+	}
+	const mvu_test_hooks::JumpTableUsage u = mvu_test_hooks::GetJumpTableUsage();
+	ASSERT_GE(u.asideTables, 1u) << "the tier-up set the program's jumping blocks aside";
+	EXPECT_GT(u.asideWritten, 0u) << "a set-aside block lost the entries its table held";
+}
+
+// A resident 48 KiB table for every jumping block is a cost microVU pays even with vu-aot off: a block meets a handful of
+// targets, so most of its table stays zeros. Only the pages its targets fall in may be resident.
+TEST(VuAotLive, AJumpTableCostsOnlyThePagesItsTargetsFallIn)
+{
+	LiveScope off(false, 1000000, false);
+	VuTestHarness h(1);
+	Prepare(h, JumpLoop(), SetupJump, 0);
+	h.RunNoDiff();
+	for (int i = 0; i < 4; i++)
+		h.RunJitPreserveBlockCache();
+	const mvu_test_hooks::JumpTableUsage u = mvu_test_hooks::GetJumpTableUsage();
+	ASSERT_GE(u.liveTables, 1u) << "the program has a JR, so a block has a jump table";
+#if defined(__linux__)
+	constexpr u64 kJumpTableBytes = 24 * 2048;
+	EXPECT_LT(u.liveResident, u.liveTables * kJumpTableBytes) << "every jump table is resident in full";
+#endif
+}
+
 // A tiered program's regions are saved with their code, and the next session puts them in place as the program loads: no
 // generation job, no root job for a saved root, regions from the very first dispatch, and every run equals the tier off's.
 // The code lands at another offset of the code cache than where it was made, so every relocation is exercised.
@@ -2790,6 +2834,52 @@ TEST_F(VuAotCache, InstalledRegionsRunFromTheFirstDispatch)
 				EXPECT_NE(r.placed, madeAt) << where << ": the code went in where it was made, which proves nothing about its fixups";
 				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where;
 			}
+}
+
+// A reset with installed regions in place, the one a savestate load makes: everything the install built goes, and the program comes
+// back from the program cache and installs again. Every run, before and after, must equal the tier off's. The jump tables go back and
+// are handed out again; one that kept its contents would send a JR into code that no longer exists.
+TEST_F(VuAotCache, ResetAfterInstalledRegionsKeepsEveryRunIdentical)
+{
+	for (const InstallCase& c : InstallCases())
+		for (bool fh : {true, false})
+		{
+			const std::string where = std::string(c.name) + (fh ? " fh" : "");
+			const std::vector<Result> ref = References(c, fh, 0);
+			RecompilerTestEnvironment::ResetVuBlockCache(1);
+			NewProcess();
+			RecursiveRm(root_ + "/vu_jit");
+			std::string problems;
+			FillInstall(c, true, fh, ref, problems);
+			EXPECT_EQ(problems, "") << where;
+
+			NewProcess();
+			LiveScope s2(true, 1000000, fh, 1000000, true);
+			const vuaot::live::Stats s0 = vuaot::live::GetStats();
+			VuTestHarness h(1);
+			Prepare(h, c.prog, c.setup, 0);
+			h.SetStartPc(c.entries[0]);
+			h.RunNoDiff(); // (loads the program, then the reset drops and saves it)
+			const auto runAll = [&](const char* phase) {
+				for (size_t k = 0; k < c.entries.size(); k++)
+					for (int i = 0; i < 4; i++)
+					{
+						h.SetStartPc(c.entries[k]);
+						h.RunJitPreserveBlockCache();
+						if (const std::string d = Diff(ref[k], Take(h)); !d.empty())
+							problems += std::string(phase) + " entry " + std::to_string(k) + " run " + std::to_string(i) + ": " + d;
+					}
+			};
+			runAll("installed");
+			ASSERT_GE(vuaot::live::GetStats().aotPrograms, s0.aotPrograms + 1) << where << ": the regions were installed";
+			for (int reset = 0; reset < 3; reset++)
+			{
+				RecompilerTestEnvironment::ResetVuBlockCache(1);
+				runAll("after a reset");
+			}
+			EXPECT_EQ(problems, "") << where;
+			EXPECT_GE(vuaot::live::GetStats().aotPrograms, s0.aotPrograms + 4) << where << ": each reset's next load installed again";
+		}
 }
 
 // An installed program is found at every start PC it holds a block for, as one compiled by microVU is. A dispatch at a start

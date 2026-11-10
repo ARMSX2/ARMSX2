@@ -30,6 +30,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Text
 import androidx.compose.runtime.mutableStateOf
@@ -2303,6 +2304,15 @@ open class MainActivityRuntime : ComponentActivity() {
      *  per process. */
     private var emucoreInitDone = false
 
+    /** The instruction set extension this APK was compiled for that the CPU lacks, or null.
+     *  The a11/a13/a15 APKs are built for ARMv8.2 with FP16 and DotProd; on a CPU without them
+     *  the core dies with SIGILL, often minutes into a game. When this is non-null the core is
+     *  never started and the app shows [CpuUnsupportedScreen] instead. */
+    private val missingCpuFeature: String? by lazy {
+        if (NativeApp.hasNoNativeBinary) null
+        else runCatching { NativeApp.missingCpuFeature() }.getOrNull()
+    }
+
     /** Latch for the debug-build auto-boot-to-BIOS path. Fires once per
      *  process from kickoffEmucoreInit's tail so JIT tests finish first,
      *  then runs startBios() with no game disc. Used for perfape baseline
@@ -2348,7 +2358,7 @@ open class MainActivityRuntime : ComponentActivity() {
      * flipped).
      */
     private fun kickoffEmucoreInit() {
-        if (emucoreInitDone) return
+        if (emucoreInitDone || missingCpuFeature != null) return
         // A chosen SD card or custom folder must be reachable before the core is pointed at it.
         // If it is not, hold init rather than fall back: falling back is how saves "vanished",
         // since the core then ran from app-private storage with a fresh, empty set of cards.
@@ -2930,7 +2940,8 @@ open class MainActivityRuntime : ComponentActivity() {
             // reliable system UI is genuinely needed: the setup wizard, the touch-layout
             // editor, and the unsupported-hardware error screens. (Previously `showLibrary`
             // and plain STOPPED forced the bar on for the whole library.)
-            val showSystemBars = !setupComplete.value ||
+            val showSystemBars = missingCpuFeature != null ||
+                !setupComplete.value ||
                 setupEditorVisible.value ||
                 eState.value == EmuState.RENDER_UNSUPPORTED ||
                 eState.value == EmuState.EMULATOR_UNSUPPORTED
@@ -2988,7 +2999,10 @@ open class MainActivityRuntime : ComponentActivity() {
             // Setup wizard runs once. After it persists prefs and flips
             // setupComplete the main emulator UI takes over. Re-entering
             // setup requires clearing app data (or wiping the prefs key).
-            if (!setupComplete.value || setupEditorVisible.value) {
+            val missingCpu = missingCpuFeature
+            if (missingCpu != null) {
+                CpuUnsupportedScreen(missingCpu)
+            } else if (!setupComplete.value || setupEditorVisible.value) {
                 com.armsx2.ui.onboarding.OnboardingScreen()
             } else if (setupComplete.value) {
                 // The chosen data folder could not be reached at startup (see waitForDataRoot).
@@ -3391,6 +3405,27 @@ open class MainActivityRuntime : ComponentActivity() {
                     com.armsx2.remoteplay.RemotePlayNoticeBanner()
                 }
             }
+            }
+        }
+    }
+
+    /** In place of everything else when this APK needs instructions the CPU lacks. */
+    @androidx.compose.runtime.Composable
+    private fun CpuUnsupportedScreen(missing: String) {
+        Box(Modifier
+            .fillMaxSize()
+            .background(Colors.surface.value)) {
+            Column(Modifier
+                .align(Alignment.Center)
+                .padding(24.dp)) {
+                Text(
+                    str("cpu.unsupported.title"), fontSize = 22.sp, color = Colors.pasx2_blue,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                )
+                Text(
+                    str("cpu.unsupported.body").format(missing), fontSize = 16.sp, color = Colors.pasx2_blue,
+                    modifier = Modifier.padding(top = 16.dp)
+                )
             }
         }
     }

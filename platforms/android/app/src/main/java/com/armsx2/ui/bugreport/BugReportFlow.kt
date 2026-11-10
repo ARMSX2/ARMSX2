@@ -765,6 +765,7 @@ private fun itemLabel(name: String): String = str(
         ReportFiles.REPORT -> "bugreport.item.report"
         ReportFiles.SYSTEM -> "bugreport.item.system"
         ReportFiles.EMULOG -> "bugreport.item.emulog"
+        ReportFiles.EMULOG_PREVIOUS -> "bugreport.item.emulogPrevious"
         ReportFiles.LOGCAT -> "bugreport.item.logcat"
         ReportFiles.SETTINGS -> "bugreport.item.settings"
         ReportFiles.JAVA_CRASHES -> "bugreport.item.javacrashes"

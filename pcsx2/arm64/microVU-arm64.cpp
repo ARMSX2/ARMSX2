@@ -1261,6 +1261,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 		// space — only the byte stores land in the alias. Identity elsewhere.
 		mVU.jitAsm = std::make_unique<a64::MacroAssembler>(
 			static_cast<vixl::byte*>(armGetWritableCodePtr(mVU.prog.x86start)), blockCacheCapacity);
+		mVU.jitAsm->SetCPUFeatures(armBaselineCPUFeatures());
 		mVU.jitAsm->GetScratchVRegisterList()->Remove(31);
 		mVU.jitAsm->GetScratchRegisterList()->Remove(RSCRATCHADDR.GetCode());
 	}

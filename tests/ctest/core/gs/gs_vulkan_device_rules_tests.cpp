@@ -161,12 +161,12 @@ TEST(GSVulkanDeviceRules, OnlyAnR44p1DriverAvoidsTheFeedbackLoopLayout)
 	EXPECT_FALSE(Rules(adreno_with_tag).avoid_feedback_loop_layout);
 }
 
-TEST(GSVulkanDeviceRules, PushDescriptorsAreAvoidedOnMaliAndOnUnknownAdrenoDrivers)
+TEST(GSVulkanDeviceRules, PushDescriptorsAreAvoidedOnArmsMaliDriverAndOnUnknownAdrenoDrivers)
 {
-	// Mali on any driver, Arm's or PanVK.
+	// Arm's blob avoids them; PanVK is Mesa's driver and keeps them.
 	EXPECT_TRUE(Rules(kRg477v).avoid_push_descriptors);
 	EXPECT_TRUE(Rules(kMaliG52).avoid_push_descriptors);
-	EXPECT_TRUE(Rules(kMaliG610PanVK).avoid_push_descriptors);
+	EXPECT_FALSE(Rules(kMaliG610PanVK).avoid_push_descriptors);
 	EXPECT_FALSE(Rules(kAdreno650Turnip).avoid_push_descriptors);
 	EXPECT_FALSE(Rules(kAdreno830Qualcomm).avoid_push_descriptors);
 	EXPECT_TRUE(Rules(kAdrenoUnknownDriver).avoid_push_descriptors);
@@ -214,17 +214,21 @@ TEST(GSVulkanDeviceRules, MaliSX2KeepsThePushDescriptorAvoidWithoutTheExtensionO
 	}
 }
 
-// Everything else on Mali stays avoided however many descriptors it reports: Arm's own blob, with
-// the same device name and revision, and PanVK.
+// Arm's own blob stays avoided however many descriptors it reports; PanVK keeps push descriptors.
 TEST(GSVulkanDeviceRules, OtherMaliDriversKeepThePushDescriptorAvoid)
 {
-	for (Device d : {kRg477v, kMaliG52, kMaliG610PanVK})
+	for (Device d : {kRg477v, kMaliG52})
 	{
 		d.max_push_descriptors = 32;
 		const VulkanDeviceRules rules = Rules(d);
 		EXPECT_TRUE(rules.avoid_push_descriptors) << d.name;
 		EXPECT_FALSE(rules.exempt_malisx2_push_descriptors) << d.name;
 	}
+
+	Device panvk = kMaliG610PanVK;
+	panvk.max_push_descriptors = 32;
+	EXPECT_FALSE(Rules(panvk).avoid_push_descriptors);
+	EXPECT_FALSE(Rules(panvk).exempt_malisx2_push_descriptors);
 }
 
 // The exemption is about Mali. A device that is not Arm's cannot pick it up from its driverInfo.

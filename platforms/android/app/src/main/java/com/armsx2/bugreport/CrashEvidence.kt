@@ -15,8 +15,9 @@ import java.util.zip.GZIPOutputStream
  *
  *  - [preserve] is quick and runs on the startup path: for a crash [CrashDecision] said to ask
  *    about, it moves the emulog aside (a rename, not a copy, so it costs nothing).
- *  - [complete] runs on a background thread: the logcat snapshot, Android's exit records and the
- *    tombstone or ANR trace.
+ *  - [complete] runs on a background thread: the logcat snapshot, Android's exit records, the
+ *    tombstone or ANR trace, and the emulog backup (see [LogBackup]), which is the log of the run
+ *    before the crashed one.
  *
  * The folder is then a report waiting for the user's say-so. If they send it, [ReportCollector]
  * adds the rest and the same folder is uploaded; if not, it is deleted after a week.
@@ -101,6 +102,17 @@ object CrashEvidence {
             }
             if (!partial.renameTo(done)) throw IOException("could not finish the emulator log")
             raw.delete()
+        }
+        // The log of the run before the crashed one, if there is one. It is taken into the folder now
+        // so that a report sent days later does not pick up a newer run's backup. No backup is not a
+        // failure, so nothing is noted for it.
+        val backup = LogBackup.previous(File(dataRoot, "logs"))
+        if (backup.isFile && backup.length() > 0) {
+            piece(ReportFiles.EMULOG_PREVIOUS) {
+                // Already there from an earlier launch that was cut short.
+                if (File(dir, ReportFiles.EMULOG_PREVIOUS).length() > 0) return@piece
+                LogBackup.writeScrubbedGz(scrubber, backup, File(dir, ReportFiles.EMULOG_PREVIOUS))
+            }
         }
         piece(ReportFiles.LOGCAT) {
             val result = LogcatSnapshot.write(scrubber, File(dir, ReportFiles.LOGCAT))

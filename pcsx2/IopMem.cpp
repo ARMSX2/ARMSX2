@@ -101,7 +101,7 @@ void iopMemReset()
 	// but leaving it in for reference (air)
 	//for (i=0; i<0x0008; i++) psxMemWLUT[i + 0xbfc0] = (uptr)&psR[i << 16];
 
-	std::memset(iopMem, 0, sizeof(*iopMem));
+	SysMemory::ZeroData(iopMem, sizeof(*iopMem));
 	ACRAM::Clear(); // an arcade board's RAM resets with the IOP's (no-op on a console)
 }
 

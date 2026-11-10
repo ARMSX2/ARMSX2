@@ -1,10 +1,12 @@
 add_pcsx2_test(common_test
 	byteswap_tests.cpp
 	filesystem_tests.cpp
+	host_sys_tests.cpp
 	path_tests.cpp
 	pmu_counters_tests.cpp
 	small_string_tests.cpp
 	string_util_tests.cpp
+	texture_decode_tests.cpp
 )
 
 if(ARCH_X86)

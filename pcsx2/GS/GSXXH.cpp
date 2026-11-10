@@ -43,6 +43,18 @@ static void FlushPendingBlock(GSXXH3BlockState* h)
 	}
 }
 
+namespace CURRENT_ISA
+{
+	// One GS block's stripes without XXH3_accumulate's prefetch, which only fetches memory past the block.
+	// GSXXH3_64_Block prefetches the next block instead.
+	static void AccumulateBlockStripes(xxh_u64* XXH_RESTRICT acc, const xxh_u8* XXH_RESTRICT input,
+		const xxh_u8* XXH_RESTRICT secret, size_t nbStripes)
+	{
+		for (size_t n = 0; n < nbStripes; n++)
+			XXH3_accumulate_512(acc, input + n * XXH_STRIPE_LEN, secret + n * XXH_SECRET_CONSUME_RATE);
+	}
+} // namespace CURRENT_ISA
+
 void CURRENT_ISA::GSXXH3_64_Block(void* hasher, const void* block)
 {
 	GSXXH3BlockState* h = static_cast<GSXXH3BlockState*>(hasher);
@@ -50,10 +62,15 @@ void CURRENT_ISA::GSXXH3_64_Block(void* hasher, const void* block)
 
 	if (h->pending)
 	{
+#if defined(__GNUC__) || defined(__clang__)
+		// Start fetching the block passed in now; it's the next one hashed.
+		for (size_t i = 0; i < BlockSize; i += 64)
+			__builtin_prefetch(static_cast<const char*>(block) + i);
+#endif
 		// XXH3_update() on a full buffer consumes the buffer and then buffers the new block.
 		const unsigned char* secret = (st->extSecret == nullptr) ? st->customSecret : st->extSecret;
 		XXH3_consumeStripes(st->acc, &st->nbStripesSoFar, st->nbStripesPerBlock,
-			h->pending, BlockSize / XXH_STRIPE_LEN, secret, st->secretLimit, XXH3_accumulate, XXH3_scrambleAcc);
+			h->pending, BlockSize / XXH_STRIPE_LEN, secret, st->secretLimit, AccumulateBlockStripes, XXH3_scrambleAcc);
 	}
 	else if (st->totalLen != 0)
 	{

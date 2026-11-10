@@ -117,6 +117,7 @@ namespace vuaot::bg
 		// The same assembler setup as microVU's (mVUreset's persistent one):
 		// v31 and x17 are not vixl's to borrow.
 		auto* m = new a64::MacroAssembler(base_, kCapacity - kPlaceholderZone);
+		m->SetCPUFeatures(armBaselineCPUFeatures());
 		m->GetScratchVRegisterList()->Remove(31);
 		m->GetScratchRegisterList()->Remove(RSCRATCHADDR.GetCode());
 		masm_ = m;

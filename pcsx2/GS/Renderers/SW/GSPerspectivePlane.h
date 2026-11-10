@@ -6,6 +6,7 @@
 #include "common/Pcsx2Defs.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/SW/GSCoordinateWalk.h"
+#include "GS/Renderers/SW/GSStqExtremes.h"
 
 #include <algorithm>
 #include <bit>
@@ -62,7 +63,10 @@
 //   * The mantissa cut for values the front end has already cut (GSState.cpp does
 //     so under constant Z), which is a finer grid and so changes nothing for a
 //     positive value.
-//   * A vertex with Q exactly zero, which has no sign to carry and no quotient.
+//
+// S, T and Q have no error values (GSStqExtremes.h, capture gs-stq-extremes): the
+// exponent field 255 is ordinary, Q's sign bit moves to S and T even at Q = -0, and
+// a Q that floors to zero on the grid takes the fixed reciprocal in the scanline.
 //
 // The divide is not in this file. The scanline still multiplies by a truncated
 // reciprocal of Q.
@@ -78,8 +82,7 @@ static constexpr int GS_PLANE_PIXEL_SHIFT = GS_PLANE_ACCUM_BITS - 2;
 /// One primitive's S, T and Q planes, indexed [0] = S, [1] = T, [2] = Q.
 struct GSPerspectivePlane
 {
-	/// False for a primitive the rules cannot express (no non-zero finite value,
-	/// or no area). Every field below is then zero.
+	/// False for a primitive with no area or no non-zero value. Every field below is then zero.
 	bool valid;
 	s32 exp;       ///< E, the shared block exponent, unbiased
 	s32 anchor;    ///< the anchor vertex, as an index into the vertices given
@@ -96,40 +99,21 @@ __forceinline static float GSPlaneCutMantissa(float v)
 	u32 bits;
 
 	std::memcpy(&bits, &v, sizeof(bits));
-	bits &= 0xffffff00u;
+	bits &= GS_STQ_WORD_CUT;
 	std::memcpy(&v, &bits, sizeof(v));
 
 	return v;
 }
 
-/// One value as an integer count of the grid 2^(exp - 14), floored, as a
-/// fixed-point register drops low bits. `exp` is at or above the value's own
-/// exponent, so the count is the 24-bit significand shifted right by at least
-/// 23 - 14 bits: exact, with no floating point. A negative value floors away from zero.
+/// One value as an integer count of the grid 2^(exp - 14), floored toward minus
+/// infinity (GSStqExtremes.h): a fixed-point register drops low bits.
 __forceinline static s32 GSPlaneOnGrid(float v, int exp)
 {
 	u32 bits;
 
 	std::memcpy(&bits, &v, sizeof(bits));
 
-	const u32 field = (bits >> 23) & 0xff;
-
-	// Zero and denormals are below every grid the exponent can name.
-	if (field == 0)
-		return 0;
-
-	const u32 significand = (bits & 0x7fffffu) | 0x800000u;
-	const int shift = 23 - GS_PLANE_GRID_BITS + exp - (static_cast<int>(field) - 127);
-	const bool negative = (bits >> 31) != 0;
-
-	if (shift >= 32)
-		return negative ? -1 : 0;
-
-	if (!negative)
-		return static_cast<s32>(significand >> shift);
-
-	// floor(-x) = -ceil(x)
-	return -static_cast<s32>((significand + ((1u << shift) - 1)) >> shift);
+	return GSStqWordOnGrid(bits, exp);
 }
 
 /// Which vertex anchors the plane, by the colour walk's rule (GSColourWalk.h) in
@@ -306,31 +290,33 @@ __forceinline static void GSPerspectivePlaneSetup(const s32 x[3], const s32 y[3]
 {
 	std::memset(&out, 0, sizeof(out));
 
-	const float* in[3] = {s, t, q};
-	float cut[3][3];
+	// S, T and Q are read as the GIF wrote them, as words: exponent field 255 is an
+	// ordinary exponent and a negative zero Q carries its sign (GSStqExtremes.h).
+	u32 words[3][3];
+
+	std::memcpy(words[0], s, sizeof(words[0]));
+	std::memcpy(words[1], t, sizeof(words[1]));
+	std::memcpy(words[2], q, sizeof(words[2]));
+
 	u32 largest = 0;
 
-	for (int k = 0; k < 3; k++)
+	for (int i = 0; i < 3; i++)
 	{
-		for (int i = 0; i < 3; i++)
+		// Rule 0: the sign of Q moves to S and T (and to Q, as |Q|). The cut is symmetric
+		// in sign, so the order does not matter.
+		const u32 sign = words[2][i] & 0x80000000u;
+
+		for (int k = 0; k < 3; k++)
 		{
-			// Rule 0. Negating is exact and the cut below is symmetric in sign, so the
-			// order of the two does not matter.
-			const float value = (q[i] < 0.0f) ? -in[k][i] : in[k][i];
-
-			cut[k][i] = GSPlaneCutMantissa(value);
-
-			u32 bits;
-
-			std::memcpy(&bits, &cut[k][i], sizeof(bits));
-			largest = std::max(largest, bits & 0x7fffffffu);
+			words[k][i] = (words[k][i] ^ sign) & GS_STQ_WORD_CUT;
+			largest = std::max(largest, words[k][i] & 0x7fffffffu);
 		}
 	}
 
-	// All zero (or denormal), or an infinity or NaN, has no exponent to share.
+	// All zero (or denormal) has no exponent to share.
 	const u32 field = largest >> 23;
 
-	if (field == 0 || field == 0xff)
+	if (field == 0)
 		return;
 
 	const int anchor = GSPerspectiveAnchor(x, y);
@@ -357,7 +343,7 @@ __forceinline static void GSPerspectivePlaneSetup(const s32 x[3], const s32 y[3]
 		s32 n[3];
 
 		for (int i = 0; i < 3; i++)
-			n[i] = GSPlaneOnGrid(cut[k][i], out.exp);
+			n[i] = GSStqWordOnGrid(words[k][i], out.exp);
 
 		const s64 d1 = n[i1] - n[anchor];
 		const s64 d2 = n[i2] - n[anchor];

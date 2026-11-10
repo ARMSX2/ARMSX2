@@ -109,6 +109,11 @@ namespace GSLadder
 			// DOWNLOADFIFO is the reason the GIF's own TRXDIR=1 handler uses.
 			r->Flush(GSState::GSFlushReason::DOWNLOADFIFO);
 
+			// Local memory is the result only once the back thread has finished the draws
+			// already handed to it; it also syncs the software rasterizer, which one
+			// thread at a time may do.
+			GSDrainBackQueue();
+
 			// Ask for the download a game's own readback would trigger. A no-op under
 			// the software renderer, where local memory is already the result.
 			//

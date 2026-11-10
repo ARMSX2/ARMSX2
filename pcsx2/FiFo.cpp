@@ -29,7 +29,9 @@ void ReadFIFO_VIF1(mem128_t* out)
 		DevCon.Warning("Reading from vif1 fifo when stalled");
 
 	ZeroQWC(out); // Clear first in case no data gets written...
-	pxAssertRel(vif1Regs.stat.FQC != 0, "FQC = 0 on VIF FIFO READ!");
+	// The guest chooses when to read, so an empty FIFO is its doing, not ours. It reads zeroes.
+	if (vif1Regs.stat.FQC == 0)
+		DevCon.Warning("Reading from vif1 fifo when it is empty (FQC = 0)");
 	if (vif1Regs.stat.FDR)
 	{
 		if (vif1Regs.stat.FQC > vif1.GSLastDownloadSize)
