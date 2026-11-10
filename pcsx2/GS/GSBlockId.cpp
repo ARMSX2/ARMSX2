@@ -41,6 +41,17 @@ namespace
 		return GSXXH3_64bits(masked, kBlockSize);
 	}
 
+	void HashManyXXH3(const u8* const* blocks, u64* out, u32 count, u32 mask)
+	{
+		for (u32 i = 0; i < count; i++)
+			out[i] = (mask == 0xFFFFFFFFu) ? HashXXH3(blocks[i]) : HashXXH3Masked(blocks[i], mask);
+	}
+
+	u64 CombineXXH3(const u64* ids, u32 count)
+	{
+		return GSXXH3_64bits(ids, static_cast<size_t>(count) * sizeof(u64));
+	}
+
 #ifdef GS_BLOCK_ID_ARM64
 
 #if defined(__clang__)
@@ -96,6 +107,38 @@ namespace
 	GS_TARGET_AES u64 HashAES(const void* block) { return HashAESImpl<false>(block, 0); }
 	GS_TARGET_AES u64 HashAESMasked(const void* block, u32 mask) { return HashAESImpl<true>(block, mask); }
 
+	GS_TARGET_AES void HashManyAES(const u8* const* blocks, u64* out, u32 count, u32 mask)
+	{
+		if (mask == 0xFFFFFFFFu)
+		{
+			for (u32 i = 0; i < count; i++)
+				out[i] = HashAESImpl<false>(blocks[i], 0);
+		}
+		else
+		{
+			for (u32 i = 0; i < count; i++)
+				out[i] = HashAESImpl<true>(blocks[i], mask);
+		}
+	}
+
+	// The identities are themselves the outputs of the block identity, so a change of one is a change of its whole
+	// 64 bits, not a structured few bytes: one round per two identities spreads it before the next pair arrives.
+	// Two more rounds after the last, with the count, and the halves folded.
+	GS_TARGET_AES u64 CombineAES(const u64* ids, u32 count)
+	{
+		uint8x16_t s = vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(0x6A09E667F3BCC908ULL), vcreate_u64(0xBB67AE8584CAA73BULL)));
+		const uint8x16_t k = vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(0x3C6EF372FE94F82BULL), vcreate_u64(0xA54FF53A5F1D36F1ULL)));
+		u32 i = 0;
+		for (; i + 2 <= count; i += 2)
+			s = vaesmcq_u8(vaeseq_u8(s, vreinterpretq_u8_u64(vld1q_u64(ids + i))));
+		const u64 last = (i < count) ? ids[i] : 0;
+		s = vaesmcq_u8(vaeseq_u8(s, vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(last), vcreate_u64(count)))));
+		s = vaesmcq_u8(vaeseq_u8(s, k));
+		s = vaesmcq_u8(vaeseq_u8(s, k));
+		const uint64x2_t q = vreinterpretq_u64_u8(s);
+		return vgetq_lane_u64(q, 0) ^ vgetq_lane_u64(q, 1);
+	}
+
 	__forceinline u64 Fmix64(u64 k)
 	{
 		k ^= k >> 33;
@@ -136,6 +179,20 @@ namespace
 	GS_TARGET_CRC u64 HashCRC(const void* block) { return HashCRCImpl<false>(block, 0); }
 	GS_TARGET_CRC u64 HashCRCMasked(const void* block, u32 mask) { return HashCRCImpl<true>(block, mask); }
 
+	GS_TARGET_CRC void HashManyCRC(const u8* const* blocks, u64* out, u32 count, u32 mask)
+	{
+		if (mask == 0xFFFFFFFFu)
+		{
+			for (u32 i = 0; i < count; i++)
+				out[i] = HashCRCImpl<false>(blocks[i], 0);
+		}
+		else
+		{
+			for (u32 i = 0; i < count; i++)
+				out[i] = HashCRCImpl<true>(blocks[i], mask);
+		}
+	}
+
 	bool HasAES()
 	{
 #if defined(__ARM_FEATURE_AES) || defined(__ARM_FEATURE_CRYPTO)
@@ -165,17 +222,19 @@ namespace
 		GSBlockId::Kind kind;
 		u64 (*hash)(const void*);
 		u64 (*masked)(const void*, u32);
+		void (*many)(const u8* const*, u64*, u32, u32);
+		u64 (*combine)(const u64*, u32);
 	};
 
 	Impl Select()
 	{
 #ifdef GS_BLOCK_ID_ARM64
 		if (HasAES())
-			return {GSBlockId::Kind::AES, HashAES, HashAESMasked};
+			return {GSBlockId::Kind::AES, HashAES, HashAESMasked, HashManyAES, CombineAES};
 		if (HasCRC())
-			return {GSBlockId::Kind::CRC, HashCRC, HashCRCMasked};
+			return {GSBlockId::Kind::CRC, HashCRC, HashCRCMasked, HashManyCRC, CombineXXH3};
 #endif
-		return {GSBlockId::Kind::XXH3, HashXXH3, HashXXH3Masked};
+		return {GSBlockId::Kind::XXH3, HashXXH3, HashXXH3Masked, HashManyXXH3, CombineXXH3};
 	}
 
 	const Impl s_impl = Select();
@@ -207,6 +266,16 @@ u64 GSBlockId::Hash(const void* block)
 u64 GSBlockId::HashMasked(const void* block, u32 mask)
 {
 	return s_impl.masked(block, mask);
+}
+
+void GSBlockId::HashMany(const u8* const* blocks, u64* out, u32 count, u32 mask)
+{
+	s_impl.many(blocks, out, count, mask);
+}
+
+u64 GSBlockId::Combine(const u64* ids, u32 count)
+{
+	return s_impl.combine(ids, count);
 }
 
 u64 GSBlockId::HashFill(u32 word)

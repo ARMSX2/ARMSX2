@@ -44,6 +44,14 @@ namespace GSBlockId
 	/// 24-bit ones, whose other bits belong to other data).
 	u64 HashMasked(const void* block, u32 mask);
 
+	/// out[i] = HashMasked(blocks[i], mask) for each of `count` blocks (Hash() where the mask is all ones), in one call.
+	void HashMany(const u8* const* blocks, u64* out, u32 count, u32 mask);
+
+	/// One value for a sequence of identities, in order: equal sequences give equal values, different ones (in any
+	/// identity, the order or the length) different values except with odds of about 2^-64. Inside one run only,
+	/// like the identities.
+	u64 Combine(const u64* ids, u32 count);
+
 	/// The identity of a block filled with `word`: equal to Hash() of such a block.
 	u64 HashFill(u32 word);
 

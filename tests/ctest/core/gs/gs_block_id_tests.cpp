@@ -201,4 +201,53 @@ namespace
 			}
 		}
 	}
+	TEST(GSBlockId, ManyIsEachOneAtATime)
+	{
+		std::mt19937_64 rng(6);
+		std::vector<Block> blks;
+		for (int i = 0; i < 37; i++)
+			blks.push_back(RandomBlock(rng));
+		std::vector<const u8*> ptrs;
+		for (const Block& b : blks)
+			ptrs.push_back(b.b);
+		for (const u32 mask : {0xFFFFFFFFu, 0x00FFFFFFu, 0xFF000000u})
+		{
+			std::vector<u64> out(blks.size());
+			GSBlockId::HashMany(ptrs.data(), out.data(), static_cast<u32>(ptrs.size()), mask);
+			for (size_t i = 0; i < blks.size(); i++)
+				EXPECT_EQ(out[i], GSBlockId::HashMasked(blks[i].b, mask)) << i << " mask " << std::hex << mask;
+		}
+	}
+
+	TEST(GSBlockId, ACombinedSequenceSeesEveryIdentityItsOrderAndItsLength)
+	{
+		std::mt19937_64 rng(7);
+		std::vector<u64> ids(64);
+		for (u64& id : ids)
+			id = rng();
+		std::set<u64> seen;
+		for (u32 n = 0; n <= ids.size(); n++)
+			EXPECT_TRUE(seen.insert(GSBlockId::Combine(ids.data(), n)).second) << "length " << n;
+		const u64 base = GSBlockId::Combine(ids.data(), 64);
+		for (u32 i = 0; i < 64; i++)
+		{
+			for (u32 bit = 0; bit < 64; bit += 7)
+			{
+				std::vector<u64> changed = ids;
+				changed[i] ^= u64(1) << bit;
+				EXPECT_TRUE(seen.insert(GSBlockId::Combine(changed.data(), 64)).second) << "id " << i << " bit " << bit;
+			}
+			for (u32 j = i + 1; j < 64; j++)
+			{
+				std::vector<u64> swapped = ids;
+				std::swap(swapped[i], swapped[j]);
+				EXPECT_NE(GSBlockId::Combine(swapped.data(), 64), base) << i << " and " << j;
+			}
+		}
+		// A sequence of one repeated identity: only the count tells them apart.
+		std::vector<u64> same(20, 0x1234);
+		std::set<u64> by_count;
+		for (u32 n = 1; n <= 20; n++)
+			EXPECT_TRUE(by_count.insert(GSBlockId::Combine(same.data(), n)).second) << n;
+	}
 } // namespace

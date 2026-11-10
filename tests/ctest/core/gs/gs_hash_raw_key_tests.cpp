@@ -176,12 +176,12 @@ namespace
 
 		/// The hash of a single-level window keyed from its blocks, built here from the bytes of local memory with
 		/// no cache: the identity of each block (of its masked words, for the formats that share them), in the order
-		/// the unswizzle reads them, then where the window starts inside its first block if that is not the corner,
-		/// all hashed once more with XXH3.
+		/// the unswizzle reads them, combined into one value (GSBlockId::Combine), then where the window starts
+		/// inside its first block if that is not the corner, both hashed with XXH3.
 		u64 IdHashFromScratch(const Window& win)
 		{
 			const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[win.psm];
-			std::vector<u8> bytes;
+			std::vector<u64> ids;
 			for (const u32 bn : Blocks(win))
 			{
 				const u8* block = m_gs->m_mem.BlockPtr(bn);
@@ -198,9 +198,10 @@ namespace
 				{
 					h = GSBlockId::Hash(block);
 				}
-				const u8* hp = reinterpret_cast<const u8*>(&h);
-				bytes.insert(bytes.end(), hp, hp + sizeof(h));
+				ids.push_back(h);
 			}
+			const u64 level = GSBlockId::Combine(ids.data(), static_cast<u32>(ids.size()));
+			std::vector<u8> bytes(reinterpret_cast<const u8*>(&level), reinterpret_cast<const u8*>(&level) + sizeof(level));
 
 			const GSVector4i rect = Rect(win);
 			const GSVector4i block_rect = BlockRect(win);
@@ -1427,5 +1428,34 @@ namespace
 		const GSTextureCache::BlockHashStats after = Stats3();
 		EXPECT_EQ(key.TEX0Hash, IdHashFromScratch(win));
 		EXPECT_EQ(after.rehashed - before.rehashed, Blocks(win).size());
+	}
+	TEST_F(GSBlockHashCache, AWindowWiderThanItsBufferReadsItsRepeatedBlocksRight)
+	{
+		// A window wider than its buffer width visits some blocks twice. Both visits must carry the block's identity
+		// as its bytes are now, though the first one takes the identity and clears the mark.
+		BringUp();
+		GSTextureCache::SetBlockHashVerify(true);
+		for (const u32 psm : {PSMCT32, PSMCT16, PSMZ32})
+		{
+			Randomise();
+			Window win;
+			win.psm = psm;
+			win.tbp0 = 64;
+			win.tbw = 1;
+			win.tw = 8;
+			win.th = 7;
+			const std::vector<u32> blocks = Blocks(win);
+			ASSERT_GT(blocks.size(), std::set<u32>(blocks.begin(), blocks.end()).size()) << "no block is visited twice";
+			EXPECT_EQ(Key(win, true).TEX0Hash, IdHashFromScratch(win)) << "psm " << psm;
+
+			// Change and mark every block, then key again.
+			for (const u32 bn : blocks)
+				m_gs->m_mem.BlockPtr(bn)[11] ^= 0x5A;
+			m_gs->m_mem.MarkAllPagesWritten();
+			EXPECT_EQ(Key(win, true).TEX0Hash, IdHashFromScratch(win)) << "psm " << psm << " after a write";
+		}
+		const GSTextureCache::BlockHashVerifyReport report = GSTextureCache::GetBlockHashVerifyReport();
+		EXPECT_EQ(report.stale_blocks, 0u);
+		GSTextureCache::SetBlockHashVerify(false);
 	}
 } // namespace

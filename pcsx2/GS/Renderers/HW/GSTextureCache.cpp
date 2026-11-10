@@ -163,6 +163,12 @@ static u64 s_block_hash_levels_cached = 0;
 /// HashTextureLevel); no real level is that large.
 static constexpr u32 BLOCK_HASH_GATHER_MAX = (1024 / 8 + 1) * (1024 / 8 + 1);
 static u64 s_block_hash_gather[BLOCK_HASH_GATHER_MAX];
+/// The blocks of the level being keyed: every block in visiting order (s_block_hash_pending_slot), and those whose
+/// identities are taken now: where they are, their number, and the identities.
+static const u8* s_block_hash_pending_ptr[BLOCK_HASH_GATHER_MAX];
+static u32 s_block_hash_pending_slot[BLOCK_HASH_GATHER_MAX];
+static u32 s_block_hash_pending_block[BLOCK_HASH_GATHER_MAX];
+static u64 s_block_hash_pending_id[BLOCK_HASH_GATHER_MAX];
 
 /// What verify mode has seen of the keys of both forms: the key without the cache to the key with it, and back.
 /// Two lookups have the same window if and only if both maps keep one answer for the key.
@@ -10728,51 +10734,57 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 		u64* out = s_block_hash_gather;
 		u64 rehashed = 0;
 
-		if (fmsk == 0xFFFFFFFFu && !block_hashes)
+		// First the walk: every block's slot in the gather, its cached identity where it has one, and the blocks
+		// whose identity must be taken now. Then those identities, in one call.
+		u32 pending = 0;
+		if (fmsk == 0xFFFFFFFFu && block_hashes)
 		{
-			for (; bn.blkY() < bottom; bn.nextBlockY())
-			{
-				for (; bn.blkX() < right; bn.nextBlockX())
-				{
-					*out++ = HashOneBlock(mem.BlockPtr(bn.value()));
-					rehashed++;
-				}
-			}
-		}
-		else if (fmsk == 0xFFFFFFFFu)
-		{
+			// A window wider than its buffer reads some blocks twice, so the gather is filled from the cache only
+			// after every pending identity is in it: a second visit of a block finds its bit already cleared.
 			u64* const hashes = block_hashes->hash.get();
+			u32* const blocks = s_block_hash_pending_slot;
+			u32 visited = 0;
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
 				{
 					const u32 block = bn.value();
+					blocks[visited++] = block;
 					if (mem.TestAndClearHashDirty(block))
 					{
-						hashes[block] = HashOneBlock(mem.BlockPtr(block));
-						rehashed++;
+						s_block_hash_pending_ptr[pending] = mem.BlockPtr(block);
+						s_block_hash_pending_block[pending] = block;
+						pending++;
 					}
-					*out++ = hashes[block];
 				}
 			}
+			GSBlockId::HashMany(s_block_hash_pending_ptr, s_block_hash_pending_id, pending, fmsk);
+			for (u32 i = 0; i < pending; i++)
+				hashes[s_block_hash_pending_block[i]] = s_block_hash_pending_id[i];
+			for (u32 i = 0; i < visited; i++)
+				*out++ = hashes[blocks[i]];
 		}
 		else
 		{
-			// The H and 24-bit formats share their words with other data, which changes without the format's own
-			// bits changing, so a cached identity would be dirtied by writes that are not the format's. Take the
-			// identity of the format's bits only, afresh each time.
+			// No cache, or a format whose words it shares with other data (the H and 24-bit ones): their other
+			// bits change without the format's own changing, so a cached identity would be dirtied by writes that
+			// are not the format's. Every block's identity (of the format's bits only) is taken afresh.
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
 				{
-					*out++ = GSBlockId::HashMasked(mem.BlockPtr(bn.value()), fmsk);
-					rehashed++;
+					s_block_hash_pending_ptr[pending++] = mem.BlockPtr(bn.value());
+					out++;
 				}
 			}
+			GSBlockId::HashMany(s_block_hash_pending_ptr, s_block_hash_gather, pending, fmsk);
 		}
+		rehashed = pending;
 
+		// The level goes into the key as one value made from its identities in order.
 		const u64 count = static_cast<u64>(out - s_block_hash_gather);
-		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(s_block_hash_gather), static_cast<u32>(count * sizeof(u64)));
+		const u64 level_id = GSBlockId::Combine(s_block_hash_gather, static_cast<u32>(count));
+		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(&level_id), sizeof(level_id));
 
 		if (block_hashes)
 		{
