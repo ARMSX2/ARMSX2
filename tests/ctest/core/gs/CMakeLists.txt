@@ -115,6 +115,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_hash_cache_limits_tests.cpp
 	gs_xxh_block_hasher_tests.cpp
 	gs_texture_replacement_worker_tests.cpp
+	gs_texture_name_pin_tests.cpp
 )
 
 target_include_directories(gs_vertex_tests PRIVATE
