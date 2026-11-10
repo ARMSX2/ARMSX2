@@ -8113,7 +8113,10 @@ bool GSDeviceVK::IsLoadableTFXKey(const PipelineSelector& p)
 	if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
 		return false;
 
-	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
+	// The flag word holds topology (2 bits), rt, ds, line_width, feedback_loop_flags (3), raster_order and
+	// stencil_counter (2): eleven bits, and stencil_counter goes to 2.
+	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 11) == 0 &&
+		   p.stencil_counter <= 2 &&
 		   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
 		   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
 		   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
