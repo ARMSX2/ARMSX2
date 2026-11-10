@@ -77,33 +77,29 @@ bool GSRendererHW::SkipMemoizedDraw()
 	Memo& m = m_burst_memo;
 	m.candidate = false;
 	GlobalStats().draw_vertices += m_vertex->next;
-
-	// A burst does not run on across a draw that was not a copy.
 	const bool after_copy = m.last_was_copy;
 	m.last_was_copy = false;
-	if (!after_copy)
-	{
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
-	}
-
-	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road.
-	const u32 fbw = m_context->FRAME.FBW;
-	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || GSDrawLog::IsActive() || !m_sw_prim.palette_block_copy)
-	{
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
-		return false;
-	}
 
 	// A shape the road keeps drawing with a block copy is left alone, neither recorded nor looked up: those copies
 	// cost about what recording and checking them would (on the M2, Call of Duty 3 and Stuntman ran 7% and 6%
-	// more instructions with them recorded). Every copy that runs still counts towards the shape's run.
+	// more instructions with them recorded). Every copy that runs still counts towards the shape's run. Tested
+	// first, since on a title whose copies are all block copies this is the path every draw takes.
 	if (PRIM->TME && m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)] >= Memo::BLOCK_COPY_RUN)
 	{
 		GlobalStats().not_recorded_block_copy++;
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
+		BurstMemoStop();
+		return false;
+	}
+
+	// A burst does not run on across a draw that was not a copy.
+	if (!after_copy)
+		BurstMemoStop();
+
+	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road.
+	const u32 fbw = m_context->FRAME.FBW;
+	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || !m_sw_prim.palette_block_copy || GSDrawLog::IsActive())
+	{
+		BurstMemoStop();
 		return false;
 	}
 

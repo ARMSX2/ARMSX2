@@ -471,6 +471,15 @@ private:
 	void BurstMemoApply(const GSBurstMemo::Record& d);
 	void BurstMemoCloseRecording();
 	void BurstMemoEndSequence();
+	/// Closes the burst being recorded and ends the one being skipped, calling out only when there is one: most
+	/// draws a title makes pass here with neither.
+	void BurstMemoStop()
+	{
+		if (m_burst_memo.recording)
+			BurstMemoCloseRecording();
+		if (!m_burst_memo.candidates.empty() || m_burst_memo.position)
+			BurstMemoEndSequence();
+	}
 	void BurstMemoEndFrame(bool idle_frame);
 	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
 	u64 BurstMemoPaletteHash(u32 entries);
