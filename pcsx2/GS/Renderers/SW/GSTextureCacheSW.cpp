@@ -72,11 +72,17 @@ void GSTextureCacheSW::InvalidatePages(const GSOffset::PageLooper& pages, u32 ps
 				{
 					for (const GSVector2i& j : t->m_p2t[page])
 					{
+						if (valid[j.x] & ~j.y)
+							t->m_readers.Invalidated();
+
 						valid[j.x] &= j.y;
 					}
 				}
 				else
 				{
+					if (valid[page] != 0)
+						t->m_readers.Invalidated();
+
 					valid[page] = 0;
 				}
 
