@@ -63,7 +63,7 @@ void GSRendererHW::RefreshBurstMemo()
 	m.palette_copy.clear();
 
 	// The copy road has to be on, and nothing may be watching or changing draws the memo would skip.
-	m_burst_memo_enabled = GSConfig.BurstMemo && GSConfig.UserHacks_CPUSpriteRenderBW != 0 && !GSConfig.DumpGSData &&
+	m_burst_memo_enabled = !ForcedOff() && GSConfig.UserHacks_CPUSpriteRenderBW != 0 && !GSConfig.DumpGSData &&
 	                       !GSConfig.UserHacks_RewriteLargeSTCoords &&
 	                       GSConfig.UserHacks_GPUTargetCLUTMode == GSGPUTargetCLUTMode::Disabled && !m_gsc &&
 	                       GSConfig.SkipDrawEnd == 0;

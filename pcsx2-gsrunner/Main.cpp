@@ -1217,7 +1217,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
 						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <0|1>: GS multi-threading off or on (3 is accepted as on). Defaults to 0.\n");
-	std::fprintf(stderr, "  -burst-memo <on|off>: The burst memo (skips copy-road bursts that repeat), over the settings.\n");
+	std::fprintf(stderr, "  -burst-memo <on|off>: The burst memo (skips copy-road bursts that repeat) on, as always, or off for an A/B.\n");
 	std::fprintf(stderr, "  -burst-memo-control: The memo's negative control: every skipped draw writes a wrong byte into each "
 						 "block, so frames must differ wherever a skipped burst's output is shown.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
@@ -1670,7 +1670,7 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					ArgError("-burst-memo: expected on or off, got '{}'.", value);
 					return false;
 				}
-				s_settings_interface.SetBoolValue("EmuCore/GS", "BurstMemo", !std::strcmp(value, "on"));
+				GSBurstMemo::SetForcedOff(!std::strcmp(value, "off"));
 				continue;
 			}
 			else if (CHECK_ARG("-burst-memo-control"))

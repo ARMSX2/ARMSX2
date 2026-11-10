@@ -229,7 +229,7 @@ namespace
 		Result Run(const std::vector<Step>& script, const std::vector<u8>& vm, bool memo, bool control = false)
 		{
 			Result out;
-			GSConfig.BurstMemo = memo;
+			GSBurstMemo::SetForcedOff(!memo);
 			GSBurstMemo::ResetStats();
 			GSBurstMemo::SetControlCorruption(control);
 			BringUp();
@@ -261,6 +261,7 @@ namespace
 			out.device_draws = m_device->m_draws;
 			out.stats = GSBurstMemo::GlobalStats();
 			GSBurstMemo::SetControlCorruption(false);
+			GSBurstMemo::SetForcedOff(false);
 			Destroy();
 			return out;
 		}

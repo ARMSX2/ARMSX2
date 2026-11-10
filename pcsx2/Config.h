@@ -983,10 +983,6 @@ struct Pcsx2Config
 					// where every pass boundary is a full tile load and store. Hot-
 					// appliable: turning it off just stops deferring.
 					CoalesceRenderPasses : 1,
-					// Record the copy road's bursts of CPU sprite copies and skip a burst that repeats one
-					// of the last four frames with the same inputs (GSRendererHWBurstMemo.cpp). Exact: a
-					// skipped draw writes the bytes the copy wrote and replays what else it did.
-					BurstMemo : 1,
 					ManualUserHacks : 1,
 					UserHacks_AlignSpriteX : 1,
 					UserHacks_CPUFBConversion : 1,
