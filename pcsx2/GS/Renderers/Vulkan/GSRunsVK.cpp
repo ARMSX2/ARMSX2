@@ -367,21 +367,23 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		Flush(EndReason(config));
 
 	// The run's program with this draw in it must be built. If it is not, it is asked for, the run ends, and the draw
-	// takes the classic path.
-	{
+	// takes the classic path. Asked again below if the run ends for another reason before the draw is in it, since the
+	// draw then opens a run of its own.
+	const auto ready = [&]() {
 		const bool open = m_run.open;
 		GSRunsPolicy::StateSet states = open ? m_run.states : GSRunsPolicy::StateSet();
 		states.Note(d.flags);
 		const u32 ways = (open ? m_run.ways : 0u) | (1u << d.way);
 		const bool rta = config.ps.rta_correction;
 		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor);
-		if (!ProgramReady(config.depth.key, variant, SpecKeyOf(states, GSRunsPolicy::StrictKey(d.flags, rta))))
-		{
-			m_pass.why[WHY_COMPILING]++;
-			Flush(END_COMPILING);
-			return false;
-		}
-	}
+		if (ProgramReady(config.depth.key, variant, SpecKeyOf(states, GSRunsPolicy::StrictKey(d.flags, rta))))
+			return true;
+		m_pass.why[WHY_COMPILING]++;
+		Flush(END_COMPILING);
+		return false;
+	};
+	if (!ready())
+		return false;
 
 	const VkPhysicalDeviceLimits& limits = dev->m_device_properties.limits;
 	const u32 align = std::max<u32>(64, static_cast<u32>(std::max(limits.minUniformBufferOffsetAlignment, limits.minStorageBufferOffsetAlignment)));
@@ -395,6 +397,8 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		Run& r = m_run;
 		if (!r.open)
 		{
+			if (attempt != 0 && !ready())
+				return false;
 			if (!m_table_stream.ReserveMemory(RUN_WINDOW, align))
 			{
 				dev->ExecuteCommandBufferAndRestartRenderPass(false, "runs table ring");
@@ -672,7 +676,8 @@ VkPipeline GSRunsVK::GetPipeline(bool dual)
 	const Run& r = m_run;
 	// Append let the run grow only while its program was built.
 	const auto it = m_pipelines.find(PipelineKey(r.dss, Variant(dual, r.rta, r.zfloor), SpecKey()));
-	pxAssert(it != m_pipelines.end());
+	if (it == m_pipelines.end())
+		pxFailRel("VK: a run grew past the program built for it");
 	return it->second;
 }
 
