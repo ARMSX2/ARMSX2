@@ -12,7 +12,9 @@
 /// must never be written anywhere or used to name anything: the texture names of dumps and replacement packs are the
 /// XXH3 texel hash and are made elsewhere (HashCacheKey::Create with raw_blocks false).
 ///
-/// Three implementations, chosen once from the CPU's features:
+/// Three implementations. The ones this CPU has are timed against each other once, at the first use (the GS thread),
+/// and the fastest is used for the rest of the run; AES is kept unless another is more than a tenth faster. The choice
+/// never changes during a run, even if the thread later moves to another kind of core.
 ///   AES   four lanes, two AES rounds per 16 bytes (AESE+AESMC with the data as the first round key, a constant as
 ///         the second), the lanes chained into one state and taken through two more rounds, the halves folded to 64
 ///         bits. Each round is a bijection of the state for fixed data and of the data for a fixed state, so blocks
@@ -33,8 +35,14 @@ namespace GSBlockId
 		XXH3,
 	};
 
-	/// The implementation this CPU uses.
+	/// The implementation this run uses (chosen at the first call of any function here).
 	Kind Selected();
+
+	/// For tests only: use `kind` from now on, if this CPU has it. Identities taken before (in caches) are then from
+	/// another function, so a test that forces must not mix the two. False if the CPU lacks it.
+	bool ForceForTests(Kind kind);
+	/// For tests only: the time the startup choice measured for `kind` (ns for 128 blocks), 0 if not timed.
+	u64 TimedNanosecondsForTests(Kind kind);
 	const char* KindName(Kind kind);
 
 	/// The identity of the 256 bytes at `block`.

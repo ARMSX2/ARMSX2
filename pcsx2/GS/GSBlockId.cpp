@@ -4,7 +4,13 @@
 #include "GS/GSBlockId.h"
 #include "GS/GSXXH.h"
 
+#include "common/Console.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <mutex>
 
 #if defined(_M_ARM64) || defined(__aarch64__)
 #define GS_BLOCK_ID_ARM64 1
@@ -226,23 +232,131 @@ namespace
 		u64 (*combine)(const u64*, u32);
 	};
 
-	Impl Select()
+	bool ImplFor(GSBlockId::Kind kind, Impl* out)
 	{
+		switch (kind)
+		{
 #ifdef GS_BLOCK_ID_ARM64
-		if (HasAES())
-			return {GSBlockId::Kind::AES, HashAES, HashAESMasked, HashManyAES, CombineAES};
-		if (HasCRC())
-			return {GSBlockId::Kind::CRC, HashCRC, HashCRCMasked, HashManyCRC, CombineXXH3};
+			case GSBlockId::Kind::AES:
+				if (!HasAES())
+					return false;
+				*out = {GSBlockId::Kind::AES, HashAES, HashAESMasked, HashManyAES, CombineAES};
+				return true;
+			case GSBlockId::Kind::CRC:
+				if (!HasCRC())
+					return false;
+				*out = {GSBlockId::Kind::CRC, HashCRC, HashCRCMasked, HashManyCRC, CombineXXH3};
+				return true;
 #endif
-		return {GSBlockId::Kind::XXH3, HashXXH3, HashXXH3Masked, HashManyXXH3, CombineXXH3};
+			case GSBlockId::Kind::XXH3:
+				*out = {GSBlockId::Kind::XXH3, HashXXH3, HashXXH3Masked, HashManyXXH3, CombineXXH3};
+				return true;
+			default:
+				return false;
+		}
 	}
 
-	const Impl s_impl = Select();
+	// The choice is made once, on the first use (the GS thread, on whatever core it runs then), by timing each
+	// implementation the CPU has on the same 32 blocks: the best of five passes of 128 blocks each, about 100 to
+	// 300 microseconds in all on an A55 and a few tens on a big core. AES is kept unless another is more than a tenth
+	// faster. The choice never changes afterwards: a thread that later moves to a core of another kind keeps it (on a
+	// big.LITTLE part the result may then be the second best there, never wrong), since every identity of a run must
+	// come from one function.
+	constexpr u32 kTimingBlocks = 32;
+	constexpr u32 kTimingRepeats = 4;
+	constexpr u32 kTimingPasses = 5;
+
+	u64 TimeImpl(const Impl& impl, const u8* const* blocks)
+	{
+		u64 out[kTimingBlocks];
+		u64 sink = 0;
+		u64 best = ~u64(0);
+		for (u32 pass = 0; pass < kTimingPasses; pass++)
+		{
+			const auto t0 = std::chrono::steady_clock::now();
+			for (u32 r = 0; r < kTimingRepeats; r++)
+			{
+				impl.many(blocks, out, kTimingBlocks, 0xFFFFFFFFu);
+				sink ^= out[r];
+			}
+			const auto t1 = std::chrono::steady_clock::now();
+			best = std::min<u64>(best, static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+		}
+		volatile u64 keep = sink;
+		(void)keep;
+		return best;
+	}
+
+	Impl s_impl;
+	std::atomic<bool> s_ready{false};
+	std::mutex s_select_mutex;
+	u64 s_timing_ns[3] = {}; // per kind, for the log and the tests; 0 where not timed
+
+	void SelectByTiming()
+	{
+		alignas(16) static u8 buffer[kTimingBlocks * kBlockSize];
+		u64 state = 0x9E3779B97F4A7C15ULL;
+		for (size_t i = 0; i < sizeof(buffer); i += 8)
+		{
+			state ^= state << 13;
+			state ^= state >> 7;
+			state ^= state << 17;
+			std::memcpy(buffer + i, &state, 8);
+		}
+		const u8* blocks[kTimingBlocks];
+		for (u32 i = 0; i < kTimingBlocks; i++)
+			blocks[i] = buffer + i * kBlockSize;
+
+		const GSBlockId::Kind kinds[] = {GSBlockId::Kind::AES, GSBlockId::Kind::CRC, GSBlockId::Kind::XXH3};
+		Impl best_impl = {};
+		u64 best_ns = ~u64(0);
+		u64 aes_ns = 0;
+		Impl aes_impl = {};
+		for (const GSBlockId::Kind kind : kinds)
+		{
+			Impl impl;
+			if (!ImplFor(kind, &impl))
+				continue;
+			const u64 ns = std::max<u64>(1, TimeImpl(impl, blocks));
+			s_timing_ns[static_cast<int>(kind)] = ns;
+			if (kind == GSBlockId::Kind::AES)
+			{
+				aes_ns = ns;
+				aes_impl = impl;
+			}
+			if (ns < best_ns)
+			{
+				best_ns = ns;
+				best_impl = impl;
+			}
+		}
+		if (aes_ns && aes_ns * 10 <= best_ns * 11)
+			best_impl = aes_impl;
+		s_impl = best_impl;
+
+		const double per_block = 1.0 / (kTimingBlocks * kTimingRepeats);
+		Console.WriteLnFmt("GS: block identity {} (ns per block: AES {:.1f}, CRC32 {:.1f}, XXH3 {:.1f}; 0 = not on this CPU)",
+			GSBlockId::KindName(s_impl.kind), s_timing_ns[0] * per_block, s_timing_ns[1] * per_block, s_timing_ns[2] * per_block);
+	}
+
+	__forceinline const Impl& Current()
+	{
+		if (!s_ready.load(std::memory_order_acquire)) [[unlikely]]
+		{
+			std::lock_guard<std::mutex> lock(s_select_mutex);
+			if (!s_ready.load(std::memory_order_relaxed))
+			{
+				SelectByTiming();
+				s_ready.store(true, std::memory_order_release);
+			}
+		}
+		return s_impl;
+	}
 } // namespace
 
 GSBlockId::Kind GSBlockId::Selected()
 {
-	return s_impl.kind;
+	return Current().kind;
 }
 
 const char* GSBlockId::KindName(Kind kind)
@@ -260,22 +374,22 @@ const char* GSBlockId::KindName(Kind kind)
 
 u64 GSBlockId::Hash(const void* block)
 {
-	return s_impl.hash(block);
+	return Current().hash(block);
 }
 
 u64 GSBlockId::HashMasked(const void* block, u32 mask)
 {
-	return s_impl.masked(block, mask);
+	return Current().masked(block, mask);
 }
 
 void GSBlockId::HashMany(const u8* const* blocks, u64* out, u32 count, u32 mask)
 {
-	s_impl.many(blocks, out, count, mask);
+	Current().many(blocks, out, count, mask);
 }
 
 u64 GSBlockId::Combine(const u64* ids, u32 count)
 {
-	return s_impl.combine(ids, count);
+	return Current().combine(ids, count);
 }
 
 u64 GSBlockId::HashFill(u32 word)
@@ -283,7 +397,24 @@ u64 GSBlockId::HashFill(u32 word)
 	alignas(16) u32 block[kBlockSize / sizeof(u32)];
 	for (u32& w : block)
 		w = word;
-	return s_impl.hash(block);
+	return Current().hash(block);
+}
+
+bool GSBlockId::ForceForTests(Kind kind)
+{
+	Impl impl;
+	if (!ImplFor(kind, &impl))
+		return false;
+	std::lock_guard<std::mutex> lock(s_select_mutex);
+	s_impl = impl;
+	s_ready.store(true, std::memory_order_release);
+	return true;
+}
+
+u64 GSBlockId::TimedNanosecondsForTests(Kind kind)
+{
+	Current();
+	return s_timing_ns[static_cast<int>(kind)];
 }
 
 bool GSBlockId::HashWith(Kind kind, const void* block, u64* out)

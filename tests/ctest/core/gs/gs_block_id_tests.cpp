@@ -250,4 +250,61 @@ namespace
 		for (u32 n = 1; n <= 20; n++)
 			EXPECT_TRUE(by_count.insert(GSBlockId::Combine(same.data(), n)).second) << n;
 	}
+	TEST(GSBlockId, TheChoiceIsMadeOnceFromWhatThisCpuHasAndWasTimed)
+	{
+		const GSBlockId::Kind chosen = GSBlockId::Selected();
+		for (int i = 0; i < 100; i++)
+			ASSERT_EQ(GSBlockId::Selected(), chosen);
+		u64 probe;
+		Block blk = {};
+		EXPECT_TRUE(GSBlockId::HashWith(chosen, blk.b, &probe));
+		EXPECT_GT(GSBlockId::TimedNanosecondsForTests(chosen), 0u);
+		EXPECT_GT(GSBlockId::TimedNanosecondsForTests(GSBlockId::Kind::XXH3), 0u) << "XXH3 is on every CPU and is always timed";
+		for (const GSBlockId::Kind kind : kKinds)
+		{
+			// A kind the CPU has was timed; one it lacks was not.
+			const bool has = GSBlockId::HashWith(kind, blk.b, &probe);
+			EXPECT_EQ(GSBlockId::TimedNanosecondsForTests(kind) > 0, has) << GSBlockId::KindName(kind);
+		}
+	}
+
+	TEST(GSBlockId, EachImplementationThisCpuHasCanBeChosenAndGivesStableIdentities)
+	{
+		const GSBlockId::Kind chosen = GSBlockId::Selected();
+		std::mt19937_64 rng(8);
+		std::vector<Block> blks;
+		for (int i = 0; i < 16; i++)
+			blks.push_back(RandomBlock(rng));
+		std::vector<const u8*> ptrs;
+		for (const Block& b : blks)
+			ptrs.push_back(b.b);
+
+		u32 tried = 0;
+		for (const GSBlockId::Kind kind : kKinds)
+		{
+			if (!GSBlockId::ForceForTests(kind))
+				continue;
+			tried++;
+			ASSERT_EQ(GSBlockId::Selected(), kind);
+			std::vector<u64> ids(blks.size()), again(blks.size());
+			GSBlockId::HashMany(ptrs.data(), ids.data(), static_cast<u32>(ptrs.size()), 0xFFFFFFFFu);
+			for (size_t i = 0; i < blks.size(); i++)
+			{
+				u64 direct;
+				ASSERT_TRUE(GSBlockId::HashWith(kind, blks[i].b, &direct));
+				EXPECT_EQ(ids[i], direct) << GSBlockId::KindName(kind);
+				EXPECT_EQ(GSBlockId::Hash(blks[i].b), direct) << GSBlockId::KindName(kind);
+				EXPECT_EQ(GSBlockId::HashMasked(blks[i].b, 0xFFFFFFFFu), direct) << GSBlockId::KindName(kind);
+			}
+			GSBlockId::HashMany(ptrs.data(), again.data(), static_cast<u32>(ptrs.size()), 0xFFFFFFFFu);
+			EXPECT_EQ(ids, again) << GSBlockId::KindName(kind);
+			EXPECT_EQ(GSBlockId::Combine(ids.data(), 16), GSBlockId::Combine(again.data(), 16)) << GSBlockId::KindName(kind);
+			Block fill;
+			for (size_t i = 0; i < kBlock; i += 4)
+				std::memcpy(fill.b + i, "\x12\x34\x56\x78", 4);
+			EXPECT_EQ(GSBlockId::HashFill(0x78563412u), GSBlockId::Hash(fill.b)) << GSBlockId::KindName(kind);
+		}
+		EXPECT_GE(tried, 1u);
+		ASSERT_TRUE(GSBlockId::ForceForTests(chosen)) << "put the run's choice back";
+	}
 } // namespace
