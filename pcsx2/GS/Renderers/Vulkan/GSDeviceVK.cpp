@@ -8126,12 +8126,13 @@ namespace
 
 std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
 {
-	// The driver version is left out on purpose: an update keeps the key list. Anything that
-	// changes what a key builds -- features, workaround rules, attachment formats, the shader
-	// header -- is in.
+	// The driver version is left out on purpose: an update keeps the key list. So is the shader
+	// source: a key names a draw state, and when the shaders change the list is what lets the new ones
+	// be built ahead of the draws. Anything that changes which pipeline a key describes on this device
+	// -- features, workaround rules, attachment formats, the shader header -- is in.
 	std::stringstream ss;
 	ss << m_device_properties.vendorID << ' ' << m_device_properties.deviceID << ' '
-	   << static_cast<u32>(m_device_driver_properties.driverID) << ' ' << SHADER_CACHE_VERSION << ' '
+	   << static_cast<u32>(m_device_driver_properties.driverID) << ' '
 	   << sizeof(PipelineSelector) << ' ' << m_features.framebuffer_fetch << m_features.depth_feedback
 	   << m_features.provoking_vertex_last << m_features.texture_barrier << m_features.rov
 	   << m_features.primitive_id << m_features.vs_expand << m_optional_extensions.vk_ext_line_rasterization
@@ -8157,19 +8158,23 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	if (!GSConfig.PrecompilePipelines || GSConfig.DisableShaderCache || serial.empty())
 		return;
 
-	// The build identity is in the stamp because what a key means is defined by this build's code:
-	// a list from another build could name pipelines no draw of this one produces, or ones that do
-	// not compile. The device configuration is in the file name as well, so a switch of driver
-	// family or of a covered setting keeps both lists; the driver version is not, so a driver update
-	// keeps the list, which is the point of it.
+	// What a key means is defined by the selector layout (GSCacheFile::GetTfxKeyLayoutId, a hash of the
+	// selector definitions alone): a list written under another layout could name pipelines no draw of
+	// this build produces, or ones that do not compile. The rest of the build is not in: a key names a
+	// draw state, so a list survives the builds that change how its pipelines are made, and after one
+	// that changed the shaders, the list is what builds the new ones on worker threads at the game's
+	// next start instead of on the GS thread at each first draw. It was the whole build identity, which
+	// changes with any GS source, so every app update lost every game's list. The device configuration
+	// is in the file name as well, so a switch of driver family or of a covered setting keeps both
+	// lists; the driver version is not, so a driver update keeps the list too.
 	const std::string fingerprint = GetTFXPipelineKeyFingerprint();
-	const std::string& build_id = GSCacheFile::GetBuildId();
+	const std::string& layout_id = GSCacheFile::GetTfxKeyLayoutId();
 	GSCacheFile::Stamp stamp;
-	stamp.Add("build", build_id);
+	stamp.Add("key_layout", layout_id);
 	stamp.Add("device", fingerprint);
 	const std::string stem = fmt::format("vk_keys{}_{}_{}", GSConfig.UseDebugDevice ? "_debug" : "",
 		GSCacheFile::ShortName(GSCacheFile::Hash128(fingerprint.data(), fingerprint.size())),
-		GSCacheFile::ShortName(GSCacheFile::Hash128(build_id.data(), build_id.size())));
+		GSCacheFile::ShortName(GSCacheFile::Hash128(layout_id.data(), layout_id.size())));
 	m_tfx_key_pack = g_vulkan_shader_cache->OpenGamePack(serial, crc, "vk_keys", stem, GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp);
 	if (!m_tfx_key_pack)
 		return;
