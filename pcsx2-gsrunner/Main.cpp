@@ -1316,6 +1316,21 @@ static void PrintCommandLineHelp(const char* progname)
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
+	std::fprintf(stderr, "  -runs <on|off>: The Vulkan run machine (GSRunsVK.h), on by default where the device has its "
+						 "features. off draws every draw on the classic path: the baseline of the machine's A/Bs and "
+						 "picture checks. Development switch, not a setting.\n");
+	std::fprintf(stderr, "  -runs-split <none|dear>: Whether a run ends where a draw's dear states (the hardware's lod, "
+						 "an alpha test) differ from the run's. Default dear.\n");
+	std::fprintf(stderr, "  -runs-nofill: Scissor each run's host draw to one pixel, to price a pass without its fill.\n");
+	std::fprintf(stderr, "  -runs-max-draws <n>: End each run after n draws (0, the default: the machine's own limit).\n");
+	std::fprintf(stderr, "  -runs-general: Draw every run under the general program, no specialisation.\n");
+	std::fprintf(stderr, "  -runs-read-mask <m>: Read the run program's states in mask m from the rows even where a run "
+						 "holds one value (bits: tfx tcc fog iip atst way lod rtasrc).\n");
+	std::fprintf(stderr, "  -runs-draw-range <lo> <hi>: Only TFX draws lo..hi-1 may join a run; each is logged.\n");
+	std::fprintf(stderr, "  -runs-sync-compile: Build each run program on the GS thread when first needed, not on the "
+						 "device's compile queue while the draws that need it are drawn classically.\n");
+	std::fprintf(stderr, "  -runs-log <path>: Write the run machine's per-pass counts and its program compiles to "
+						 "<path>.\n");
 	std::fprintf(stderr, "  -no-provoking-vertex: Run as a device without VK_EXT_provoking_vertex, the way Qualcomm's "
 						 "stock Adreno driver does. Pipelines use the first-vertex default, so the provoking-first "
 						 "paths (software flat-shading fixup, expanded-line vertex shader) run on a device that has "
@@ -2038,6 +2053,83 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// fallback on a device that has the feature, for an A/B on one binary.
 				g_gs_measurement_overrides.no_dual_source = true;
 				Console.WriteLn("Forcing dual-source blending off (Vulkan, as a device without dualSrcBlend)");
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs"))
+			{
+				const char* arg = argv[++i];
+				if (std::strcmp(arg, "on") != 0 && std::strcmp(arg, "off") != 0)
+				{
+					ArgError("-runs: expected on or off.");
+					return false;
+				}
+				g_gs_measurement_overrides.runs_off = std::strcmp(arg, "off") == 0;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs-split"))
+			{
+				const char* arg = argv[++i];
+				if (std::strcmp(arg, "none") != 0 && std::strcmp(arg, "dear") != 0)
+				{
+					ArgError("-runs-split: expected none or dear.");
+					return false;
+				}
+				g_gs_measurement_overrides.runs_split_dear = std::strcmp(arg, "dear") == 0;
+				continue;
+			}
+			else if (CHECK_ARG("-runs-nofill"))
+			{
+				g_gs_measurement_overrides.runs_nofill = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs-max-draws"))
+			{
+				const std::optional<u32> n = ParseNumericArg<u32>("-runs-max-draws", argv[++i]);
+				if (!n.has_value())
+				{
+					ArgError("-runs-max-draws: expected a count.");
+					return false;
+				}
+				g_gs_measurement_overrides.runs_max_draws = n.value();
+				continue;
+			}
+			else if (CHECK_ARG("-runs-general"))
+			{
+				g_gs_measurement_overrides.runs_read_mask = 0xFF;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs-read-mask"))
+			{
+				const std::optional<u32> m = ParseNumericArg<u32>("-runs-read-mask", argv[++i]);
+				if (!m.has_value())
+				{
+					ArgError("-runs-read-mask: expected a mask.");
+					return false;
+				}
+				g_gs_measurement_overrides.runs_read_mask = m.value();
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs-draw-range") && (i + 2) < argc)
+			{
+				const std::optional<u64> lo = ParseNumericArg<u64>("-runs-draw-range", argv[++i]);
+				const std::optional<u64> hi = ParseNumericArg<u64>("-runs-draw-range", argv[++i]);
+				if (!lo.has_value() || !hi.has_value() || hi.value() <= lo.value())
+				{
+					ArgError("-runs-draw-range: expected LO HI with HI above LO.");
+					return false;
+				}
+				g_gs_measurement_overrides.runs_draw_lo = lo.value();
+				g_gs_measurement_overrides.runs_draw_hi = hi.value();
+				continue;
+			}
+			else if (CHECK_ARG("-runs-sync-compile"))
+			{
+				g_gs_measurement_overrides.runs_sync_compile = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-runs-log"))
+			{
+				g_gs_measurement_overrides.runs_log = argv[++i];
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))
