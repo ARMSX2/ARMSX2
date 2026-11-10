@@ -8,6 +8,7 @@
 #include "gs_hw_draw_harness.h"
 
 #include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 
 #include <initializer_list>
 #include <vector>
@@ -182,7 +183,8 @@ namespace
 		}
 
 		/// One flat triangle under the destination-alpha test (DATM 0) writing only alpha `alpha`.
-		void DateDraw(u8 alpha)
+		/// With `blend_ad`, it blends (Cs - Cd) * Ad + Cd, as PHASE PARADOX's tests do.
+		void DateDraw(u8 alpha, bool blend_ad = false)
 		{
 			Packet p;
 			Environment(p, kFBP, PSMCT32);
@@ -207,8 +209,19 @@ namespace
 			r.TEST.DATM = 0;
 			p.Reg(GIF_A_D_REG_TEST_1, r);
 
+			if (blend_ad)
+			{
+				r.U64 = 0;
+				r.ALPHA.A = 0;
+				r.ALPHA.B = 1;
+				r.ALPHA.C = 1;
+				r.ALPHA.D = 1;
+				p.Reg(GIF_A_D_REG_ALPHA_1, r);
+			}
+
 			r.U64 = 0;
 			r.PRIM.PRIM = GS_TRIANGLELIST;
+			r.PRIM.ABE = blend_ad;
 			p.Reg(GIF_A_D_REG_PRIM, r);
 
 			r.U64 = 0;
@@ -304,6 +317,44 @@ TEST_F(GSAlphaBitLogicOpDraw, SecondDateDrawOfARunSharesTheStencilCopy)
 	EXPECT_EQ(m_device->m_date_copy, GSAlphaBitLogicOp::UsesDateCopy);
 	EXPECT_FALSE(m_device->m_require_one_barrier);
 	EXPECT_FALSE(m_device->m_require_full_barrier);
+}
+
+// PHASE PARADOX's shadow tests blend with destination alpha. Without its read such a draw takes RT
+// alpha correction, a full-target conversion that the next mark undoes, so it keeps the read.
+TEST_F(GSAlphaBitLogicOpDraw, DateDrawThatBlendsWithDestinationAlphaDoesNotShare)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	Device(true);
+	m_device->MutableFeatures().stencil_buffer = true;
+
+	MarkDraw({0x80, 0x00});
+	DateDraw(0x01, true);
+	MarkDraw({0x80, 0x00});
+	DateDraw(0x00, true);
+	EXPECT_EQ(m_device->m_date_copy, GSAlphaBitLogicOp::NoDateCopy);
+	EXPECT_NE(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::Stencil);
+}
+
+// gsrunner -date-copy-with-ad-blend restores the earlier rule, for pricing the refusal.
+TEST_F(GSAlphaBitLogicOpDraw, DestinationAlphaBlendSharesUnderTheMeasurementSwitch)
+{
+	struct Restore
+	{
+		~Restore() { g_gs_measurement_overrides.date_copy_with_dst_alpha_blend = false; }
+	} restore;
+	g_gs_measurement_overrides.date_copy_with_dst_alpha_blend = true;
+
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	Device(true);
+	m_device->MutableFeatures().stencil_buffer = true;
+
+	MarkDraw({0x80, 0x00});
+	DateDraw(0x01, true);
+	MarkDraw({0x80, 0x00});
+	DateDraw(0x00, true);
+	EXPECT_EQ(m_device->m_date_copy, GSAlphaBitLogicOp::UsesDateCopy);
 }
 
 // A test draw that writes alpha with bit 7 set under DATM 0 would leave the copy stale: it reads.

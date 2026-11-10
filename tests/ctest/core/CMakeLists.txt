@@ -1,5 +1,8 @@
 add_pcsx2_test(core_test
 	ee_fpu_regfile_tests.cpp
+	gif_tag_analyze_tests.cpp
+	soundtouch_crosscorr_tests.cpp
+	gif_path_buffer_tests.cpp
 	ee_clamp_mode_tests.cpp
 	vu_clamp_mode_tests.cpp
 	vuaot_setting_tests.cpp
@@ -67,6 +70,7 @@ if(ARCH_ARM64)
 	# Phase 0.6: ARM64 JIT toolchain smoke test (emit + execute ARM64 code).
 	target_sources(core_test PRIVATE arm64_emit_test.cpp)
 	target_sources(core_test PRIVATE arm64_lane_gather_tests.cpp)
+	target_sources(core_test PRIVATE arm64_block_lut_tests.cpp)
 endif()
 
 # GSLsfg.cpp only builds with the Vulkan renderer, so its structural-PE-check test follows it.
@@ -168,3 +172,7 @@ if(WIN32 AND TARGET SDL3::SDL3)
 			COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${SDL3_DLL_PATH}" "$<TARGET_FILE_DIR:core_test>")
 	endif()
 endif()
+
+# soundtouch_crosscorr_tests reaches TDStretch, a SoundTouch source header the library does not export.
+target_include_directories(core_test PRIVATE ${CMAKE_SOURCE_DIR}/3rdparty/soundtouch/source/SoundTouch)
+target_link_libraries(core_test PRIVATE SoundTouch::SoundTouch)

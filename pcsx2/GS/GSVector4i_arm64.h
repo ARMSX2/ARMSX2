@@ -1561,10 +1561,15 @@ public:
 	template <class T>
 	__forceinline void gather32_8(const T* RESTRICT ptr, GSVector4i* RESTRICT dst) const
 	{
-		dst[0] = gather32_8<0>(ptr);
-		dst[1] = gather32_8<4>(ptr);
-		dst[2] = gather32_8<8>(ptr);
-		dst[3] = gather32_8<12>(ptr);
+		// Pull the 16 indices out as two 64-bit lanes and do the lookups and stores in GPRs, instead of a lane
+		// extract and insert per pixel.
+		const u64 lo = vgetq_lane_u64(vreinterpretq_u64_s32(v4s), 0);
+		const u64 hi = vgetq_lane_u64(vreinterpretq_u64_s32(v4s), 1);
+		u32* RESTRICT d = reinterpret_cast<u32*>(dst);
+		for (int i = 0; i < 8; i++)
+			d[i] = static_cast<u32>(ptr[(lo >> (i * 8)) & 0xFF]);
+		for (int i = 0; i < 8; i++)
+			d[8 + i] = static_cast<u32>(ptr[(hi >> (i * 8)) & 0xFF]);
 	}
 
 	template <class T>

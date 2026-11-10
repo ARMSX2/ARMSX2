@@ -5,6 +5,7 @@
 #include "GS/Renderers/SW/GSLevelOfDetail.h"
 #include "GS/Renderers/SW/GSCoordinateLag.h"
 #include "GS/Renderers/SW/GSVertexQDivide.h"
+#include "GS/Renderers/SW/GSStqExtremes.h"
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
@@ -27,6 +28,13 @@ static constexpr GSVector4 s_pos_scale = GSVector4::cxpr(1.0f / 16, 1.0f / 16, 1
 GSRendererSW::GSRendererSW(int threads)
 	: GSRenderer(), m_fzb(NULL)
 {
+#ifdef ARCH_ARM64
+	// S, T and Q reach the renderer as written (GSStqExtremes.h); the x86 route keeps
+	// the front end's fix-ups, since its per-pixel divide has nothing else to fall back on.
+	// ResetHandlers below arms the parse for it.
+	m_keep_gif_q = true;
+#endif
+
 	m_nativeres = true; // ignore ini, sw is always native
 	SetCullGrid(EngineCullGrid()); // ... and so is its cull grid
 
@@ -317,7 +325,21 @@ MULTI_ISA_UNSHARED_END
 void GSRendererSW::Draw()
 {
 	const GSDrawingContext* context = m_context;
-	if (!GSConfig.UserHacks_RewriteLargeSTCoords)
+
+	// Read the GIF's words before anything rewrites them (GSStqExtremes.h). The front
+	// end has computed this already when its texel rounding asked.
+	const u32 stq_need = m_stq_need_valid ? m_stq_need : ClassifyStqDraw();
+	m_stq_need_valid = false;
+
+	if (stq_need != 0)
+	{
+		// The vertex trace's bounds can be NaN or infinite here. FLT_MAX is how
+		// GetTextureMinMax is told to load the whole texture. The large-ST rewrite works
+		// around the same overflow the rule resolves, so it stays out of the way.
+		m_vt.m_min.t = GSVector4(-FLT_MAX, -FLT_MAX, m_vt.m_min.t.z, m_vt.m_min.t.w);
+		m_vt.m_max.t = GSVector4(FLT_MAX, FLT_MAX, m_vt.m_max.t.z, m_vt.m_max.t.w);
+	}
+	else if (!GSConfig.UserHacks_RewriteLargeSTCoords)
 	{
 		// SW rasterizer stores UV in 1.15.16 format so clamp to +/- (2^15 - 2) (-2 so bilinear doesn't overflow).
 		// Also only do this for CLAMP and CLAMP_REGION modes to reduce the performance impact.
@@ -342,10 +364,16 @@ void GSRendererSW::Draw()
 	SharedData* sd = static_cast<SharedData*>(data.get());
 
 	sd->primclass = m_vt.m_primclass;
-	sd->buff = (u8*)m_vertex_heap.alloc(sizeof(GSVertexSW) * ((m_vertex->next + 1) & ~1) + sizeof(u32) * m_index->tail, 64);
+
+	// A primitive that takes the vertex rule gets its own vertices: the rule's grid is per
+	// primitive, and strip neighbours need not share one.
+	const bool stq_rule = (stq_need & GS_STQ_NEED_PRIMITIVE_RULE) != 0;
+	const u32 vertex_count = stq_rule ? m_index->tail : m_vertex->next;
+
+	sd->buff = (u8*)m_vertex_heap.alloc(sizeof(GSVertexSW) * ((vertex_count + 1) & ~1) + sizeof(u32) * m_index->tail, 64);
 	sd->vertex = (GSVertexSW*)sd->buff;
-	sd->vertex_count = m_vertex->next;
-	sd->index = (u16*)(sd->buff + sizeof(GSVertexSW) * ((m_vertex->next + 1) & ~1));
+	sd->vertex_count = vertex_count;
+	sd->index = (u16*)(sd->buff + sizeof(GSVertexSW) * ((vertex_count + 1) & ~1));
 	sd->index_count = m_index->tail;
 	sd->scanmsk_value = m_draw_env->SCANMSK.MSK;
 
@@ -355,9 +383,36 @@ void GSRendererSW::Draw()
 	const u32 q_div = GSUseVertexQDivide(m_vt.m_primclass, IsMipMapActive(),
 		m_vt.m_eq.q != 0, m_vt.m_min.t.z) ? 1u : 0u;
 
-	GSVertexSW::s_cvb[m_vt.m_primclass][PRIM->TME][PRIM->FST][q_div](m_context, sd->vertex, m_vertex->buff, m_vertex->next);
+	if (stq_rule)
+	{
+		std::vector<GSVertexSW> converted(m_vertex->next + 1);
 
-	std::memcpy(sd->index, m_index->buff, sizeof(u16) * m_index->tail);
+		GSVertexSW::s_cvb[m_vt.m_primclass][PRIM->TME][PRIM->FST][q_div](m_context, converted.data(), m_vertex->buff, m_vertex->next);
+		ApplyStqRule(sd, converted.data());
+
+		for (u32 i = 0; i < m_index->tail; i++)
+			sd->index[i] = static_cast<u16>(i);
+	}
+	else
+	{
+		GSVertexSW::s_cvb[m_vt.m_primclass][PRIM->TME][PRIM->FST][q_div](m_context, sd->vertex, m_vertex->buff, m_vertex->next);
+
+		if ((stq_need & GS_STQ_NEED_RAW_WORDS) && BuildsConsolePlane())
+		{
+			// The plane reads S, T and Q as written; the 2^(16 + TW) scale cannot carry
+			// these words (GSStqExtremes.h).
+			for (u32 i = 0; i < m_vertex->next; i++)
+			{
+				GSVertexSW& v = sd->vertex[i];
+
+				v.t.x = std::bit_cast<float>(m_vertex->buff[i].ST.S);
+				v.t.y = std::bit_cast<float>(m_vertex->buff[i].ST.T);
+				v.t.z = std::bit_cast<float>(m_vertex->buff[i].RGBAQ.Q);
+			}
+		}
+
+		std::memcpy(sd->index, m_index->buff, sizeof(u16) * m_index->tail);
+	}
 
 	GSVector4i scissor = context->scissor.in;
 	GSVector4i bbox;
@@ -385,6 +440,8 @@ void GSRendererSW::Draw()
 	sd->scissor = scissor;
 	sd->bbox = bbox;
 	sd->frame = g_perfmon.GetFrame();
+
+	m_stq_applied = stq_need;
 
 	if (!GetScanlineGlobalData(sd))
 	{
@@ -590,6 +647,107 @@ void GSRendererSW::Queue(GSRingHeap::SharedPtr<GSRasterizerData>& item)
 	if (sd->global.sel.zwrite)
 	{
 		m_tc->InvalidatePages(sd->m_zb_pages, sd->m_zpsm);
+	}
+}
+
+u32 GSRendererSW::ClassifyStqDraw()
+{
+	const u32 primclass = m_vt.m_primclass;
+
+	m_stq_force_plane = false;
+
+	if (!PRIM->TME || PRIM->FST || (primclass != GS_SPRITE_CLASS && primclass != GS_TRIANGLE_CLASS))
+		return 0;
+
+	// No capture covers the mipmapped chain's extremes; it keeps its own route.
+	if (IsMipMapActive())
+		return 0;
+
+	const bool sprite = (primclass == GS_SPRITE_CLASS);
+	const bool plane = BuildsConsolePlane();
+
+	// The perspective triangles the plane does not cover (AA1, and every one on x86) keep
+	// their per-pixel divide and the old handling.
+	if (!sprite && !plane && !GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z))
+		return 0;
+
+	const int n = sprite ? 2 : 3;
+	const int tw = m_context->TEX0.TW;
+	const int th = m_context->TEX0.TH;
+	u32 need = 0;
+
+	for (u32 i = 0; i < m_index->tail; i += n)
+	{
+		GSStqWords w[3];
+
+		for (int k = 0; k < n; k++)
+		{
+			const GSVertex& v = m_vertex->buff[m_index->buff[i + k]];
+
+			w[k] = {std::bit_cast<u32>(v.ST.S), std::bit_cast<u32>(v.ST.T), std::bit_cast<u32>(v.RGBAQ.Q)};
+		}
+
+		need |= GSStqClassifyPrimitive(w, n, sprite, plane, tw, th);
+
+		if (need == (GS_STQ_NEED_RAW_WORDS | GS_STQ_NEED_FIELD_EDGE | GS_STQ_NEED_PRIMITIVE_RULE))
+			break;
+	}
+
+#ifdef ARCH_ARM64
+	// An affine triangle (Q identically one) that needs the rule is drawn on the plane
+	// route rather than rewritten at its vertices: the plane holds a huge S or T per
+	// pixel, which a 16.16 float seed and an integer step cannot, and with Q = 1 its
+	// reciprocal is exact. AA1 walks its own float vertices, so it stays out.
+	if (!sprite && !plane && (need & GS_STQ_NEED_PRIMITIVE_RULE) && !PRIM->AA1)
+	{
+		m_stq_force_plane = true;
+		need &= ~GS_STQ_NEED_PRIMITIVE_RULE;
+		need |= GS_STQ_NEED_FIELD_EDGE;
+	}
+#endif
+
+	return need;
+}
+
+bool GSRendererSW::SkipsTexelRounding()
+{
+	m_stq_need = ClassifyStqDraw();
+	m_stq_need_valid = true;
+
+	return m_stq_need != 0 || BuildsConsolePlane();
+}
+
+void GSRendererSW::ApplyStqRule(SharedData* sd, const GSVertexSW* converted)
+{
+	const bool sprite = (m_vt.m_primclass == GS_SPRITE_CLASS);
+	const int n = sprite ? 2 : 3;
+	const int tw = m_context->TEX0.TW;
+	const int th = m_context->TEX0.TH;
+
+	for (u32 i = 0; i < m_index->tail; i += n)
+	{
+		GSStqWords w[3];
+		GSStqCounts counts[3];
+		int exp;
+
+		for (int k = 0; k < n; k++)
+		{
+			const GSVertex& v = m_vertex->buff[m_index->buff[i + k]];
+
+			w[k] = {std::bit_cast<u32>(v.ST.S), std::bit_cast<u32>(v.ST.T), std::bit_cast<u32>(v.RGBAQ.Q)};
+			sd->vertex[i + k] = converted[m_index->buff[i + k]];
+		}
+
+		GSStqPrimitiveCounts(w, n, counts, exp);
+
+		for (int k = 0; k < n; k++)
+		{
+			// A sprite divides by the second vertex's Q, as its conversion does.
+			const u32 q = counts[sprite ? 1 : k].q;
+
+			sd->vertex[i + k].t.x = GSStqCoordinateFloat(GSStqCoordinate(counts[k].s, q, tw));
+			sd->vertex[i + k].t.y = GSStqCoordinateFloat(GSStqCoordinate(counts[k].t, q, th));
+		}
 	}
 }
 
@@ -1213,7 +1371,7 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				// takes the per-pixel reciprocal: the GS multiplies by a reciprocal
 				// truncated to 14 fractional bits, which a vertex divide would not
 				// reproduce. See GSVertexQDivide.h.
-				gd.sel.fst |= (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
+				gd.sel.fst |= !m_stq_force_plane && (GSUseVertexQDivide(primclass, IsMipMapActive(), m_vt.m_eq.q != 0,
 					m_vt.m_min.t.z) || GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z));
 
 				// An affine STQ triangle's coordinate is held to one grain for the whole
@@ -1225,7 +1383,8 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 				// the vertices are already truncated on a finer grid, so re-truncating
 				// them onto the primitive's grain is consistent with the front end.
 				if (primclass == GS_TRIANGLE_CLASS && !PRIM->FST && m_vt.m_eq.z
-					&& GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z))
+					&& GSUseAffineRoute(primclass, m_vt.m_eq.q != 0, m_vt.m_min.t.z)
+					&& !m_stq_force_plane && !(m_stq_applied & GS_STQ_NEED_PRIMITIVE_RULE))
 				{
 					gd.coord_grain_floor[0] = static_cast<s32>(context->TEX0.TW) + 2;
 					gd.coord_grain_floor[1] = static_cast<s32>(context->TEX0.TH) + 2;
@@ -1511,12 +1670,19 @@ bool GSRendererSW::GetScanlineGlobalData(SharedData* data)
 	// takes), so the scanline divides. Triangles only (a sprite's ST is resolved at the vertex; lines
 	// and points have no plane), and not AA1, whose edge pass walks its own float vertices. ARM64
 	// only, like ltfx and uvwalk: the x86 generators lack it.
-	if (gd.sel.tfx != TFX_NONE && GSUseConsolePlane(primclass, PRIM->FST != 0, gd.sel.aa1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z))
+	if (gd.sel.tfx != TFX_NONE && (m_stq_force_plane || GSUseConsolePlane(primclass, PRIM->FST != 0, gd.sel.aa1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z)))
 	{
 		gd.sel.stqplane = 1;
 		gd.plane_shift[0] = 16 + static_cast<s32>(context->TEX0.TW);
 		gd.plane_shift[1] = 16 + static_cast<s32>(context->TEX0.TH);
+		gd.plane_raw_words = (m_stq_applied & GS_STQ_NEED_RAW_WORDS) != 0;
 	}
+
+	// The console's limits on the formed coordinate (GSStqExtremes.h), keyed to the draw so
+	// nothing else pays for them. ARM64 only, like ltfx: the x86 generators keep the old
+	// half-then-saturate order.
+	if (gd.sel.tfx != TFX_NONE && !IsMipMapActive() && (m_stq_applied & GS_STQ_NEED_FIELD_EDGE))
+		gd.sel.stqfield = 1;
 #endif
 
 	return true;
@@ -1530,7 +1696,7 @@ bool GSRendererSW::IsCoverageAlphaSupported()
 bool GSRendererSW::BuildsConsolePlane()
 {
 #ifdef ARCH_ARM64
-	return PRIM->TME && GSUseConsolePlane(m_vt.m_primclass, PRIM->FST != 0, PRIM->AA1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z);
+	return PRIM->TME && (m_stq_force_plane || GSUseConsolePlane(m_vt.m_primclass, PRIM->FST != 0, PRIM->AA1 != 0, IsMipMapActive(), m_vt.m_eq.q != 0, m_vt.m_min.t.z));
 #else
 	return false;
 #endif

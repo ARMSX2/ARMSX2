@@ -79,6 +79,10 @@ union GSScanlineSelector
 		// floored to g/4 before the divide. See GSPerspectivePlane.h. ARM64 only, like
 		// ltfx and uvwalk: the x86 generators keep the exact plane.
 		u32 stqplane : 1;
+
+		// The draw can reach the console's limits on the formed coordinate: a saturated
+		// field, or (with stqplane) a Q count of zero (GSStqExtremes.h).
+		u32 stqfield : 1;
 	};
 
 	struct
@@ -207,6 +211,10 @@ struct alignas(32) GSScanlineGlobalData // per batch variables, this is like a p
 	// The plane rule's per-draw input: 16 + TEX0.TW and 16 + TEX0.TH, the power of
 	// two the vertex conversion scaled S and T by. Only read when sel.stqplane is set.
 	s32 plane_shift[2] = {};
+
+	// The draw holds a word that the 2^(16 + TW) scale of the vertex conversion cannot
+	// carry (GSStqExtremes.h); its vertices hold S, T and Q unscaled, as written.
+	bool plane_raw_words = false;
 
 #ifdef ARCH_ARM64
 	// Mini version of constant data for ARM64, we don't need all of it

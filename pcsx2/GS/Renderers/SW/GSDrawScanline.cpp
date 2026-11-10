@@ -178,6 +178,7 @@ bool GSDrawScanline::SetupDraw(GSRasterizerData& data, bool allow_compile)
 	sel.fst = global.sel.fst;
 	sel.uvwalk = global.sel.uvwalk;
 	sel.stqplane = global.sel.stqplane;
+	sel.stqfield = global.sel.stqfield;
 	sel.fge = global.sel.fge;
 	sel.prim = global.sel.prim;
 	sel.fb = global.sel.fb;
@@ -247,6 +248,22 @@ static __forceinline VectorI GSSaturateCoordinate(const VectorI& c)
 	    .sll32<GS_COORD_SIXTEENTH_SHIFT>();
 }
 
+// How the formed coordinate reaches the console's field when the draw can reach its
+// limits (sel.stqfield, GSStqExtremes.h): at 32768 sixteenths or more it reads 0x7FFF
+// (texel 2047, weight 15), at -32768 or less it reads -0x8000; anything between takes
+// the half-texel step unclamped, down to texel -2049. Works in sixteenths on the
+// truncated coordinate, before and instead of the half step and the saturate. Costs
+// nothing on a draw that cannot reach the field: there the ordinary path runs.
+__forceinline static VectorI GSFormCoordinateField(const VectorI& c16, const VectorI& half)
+{
+	const VectorI c = c16.sra32<GS_COORD_SIXTEENTH_SHIFT>();
+
+	return (c - half)
+		.blend8(VectorI(GS_COORD_SIXTEENTH_MAX), c > VectorI(GS_COORD_SIXTEENTH_MAX))
+		.blend8(VectorI(GS_COORD_SIXTEENTH_MIN), c <= VectorI(GS_COORD_SIXTEENTH_MIN))
+		.sll32<GS_COORD_SIXTEENTH_SHIFT>();
+}
+
 // The GS does not divide the texture coordinate by Q. It multiplies by a
 // reciprocal on a coarse grid, so a perspective coordinate is not the true
 // quotient. An exact divide differs from the console.
@@ -267,6 +284,16 @@ __forceinline static VectorF GSPerspectiveRecip(const VectorF& q)
 #else
 	return VectorF::cast(VectorI::cast(VectorF(1.0f) / q) & VectorI(0xfffffe00));
 #endif
+}
+
+// The plane route's reciprocal of a Q count (a count of g/4, GSPerspectivePlane.h).
+// Under sel.stqfield a count of zero is the GS's fixed reciprocal rather than the
+// host's infinity: 2/g, which in these counts is 1/2 (GSStqExtremes.h).
+__forceinline static VectorF GSPlaneReciprocal(const VectorF& qcount, bool zero_is_fixed)
+{
+	const VectorF r = GSPerspectiveRecip(qcount);
+
+	return zero_is_fixed ? r.blend32(VectorF(0.5f), qcount == VectorF::zero()) : r;
 }
 
 /// The walk's carried colour, as the byte the GS stores.
@@ -1027,7 +1054,12 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				}
 				else if (sel.ltf)
 				{
-					vf = GSSaturateCoordinate(GSTruncateCoordinate(v)).xxzzlh().srl16<12>();
+					// The vertex took the half-texel step, so the field's limits read
+					// it at the coordinate plus eight sixteenths.
+					const VectorI cv = GSTruncateCoordinate(v);
+					vf = (sel.stqfield ? GSFormCoordinateField(cv + VectorI(0x8000), VectorI(8))
+					                   : GSSaturateCoordinate(cv))
+					         .xxzzlh().srl16<12>();
 				}
 
 				s = VectorF::cast(u);
@@ -1206,7 +1238,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 				{
 					if (!sel.fst)
 					{
-						const VectorF r = GSPerspectiveRecip(qr);
+						const VectorF r = GSPlaneReciprocal(qr, sel.stqfield);
 
 						u = VectorI(sh * (r * uscale));
 						v = VectorI(th * (r * vscale));
@@ -1601,7 +1633,7 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 
 					if (!sel.fst)
 					{
-						const VectorF r = GSPerspectiveRecip(qr);
+						const VectorF r = GSPlaneReciprocal(qr, sel.stqfield);
 
 						u = VectorI(sh * (r * uscale));
 						v = VectorI(th * (r * vscale));
@@ -1623,29 +1655,57 @@ __ri void GSDrawScanline::CDrawScanline(int pixels, int left, int top, const GSV
 					u = GSTruncateCoordinate(u);
 					v = GSTruncateCoordinate(v);
 
-					if (!sel.fst && sel.ltf)
+					if (sel.stqfield)
 					{
-						// Nearest reads at the coordinate; linear straddles the pair half
-						// a texel back, so the bias applies only where linear wins. It is
-						// eight sixteenths, so it moves the texel and never the weight,
-						// and it follows the truncation because it is not part of the
-						// GS coordinate.
-						if (sel.ltfx)
-						{
-							const VectorI half = VectorI(0x8000) & lin;
+						// The console's order at the field's limits (GSStqExtremes.h).
+						// Everything here is in sixteenths and the fst route's vertices
+						// already took the half step, so that step comes back first.
+						VectorI half = VectorI::zero();
 
-							u -= half;
-							v -= half;
-						}
-						else
+						if (sel.ltf)
 						{
-							u -= 0x8000;
-							v -= 0x8000;
+							half = VectorI(8);
+
+							if (sel.fst)
+							{
+								u += 0x8000;
+								v += 0x8000;
+							}
+							else if (sel.ltfx)
+							{
+								half = half & lin;
+							}
 						}
+
+						u = GSFormCoordinateField(u, half);
+						v = GSFormCoordinateField(v, half);
 					}
+					else
+					{
+						if (!sel.fst && sel.ltf)
+						{
+							// Nearest reads at the coordinate; linear straddles the pair half
+							// a texel back, so the bias applies only where linear wins. It is
+							// eight sixteenths, so it moves the texel and never the weight,
+							// and it follows the truncation because it is not part of the
+							// GS coordinate.
+							if (sel.ltfx)
+							{
+								const VectorI half = VectorI(0x8000) & lin;
 
-					u = GSSaturateCoordinate(u);
-					v = GSSaturateCoordinate(v);
+								u -= half;
+								v -= half;
+							}
+							else
+							{
+								u -= 0x8000;
+								v -= 0x8000;
+							}
+						}
+
+						u = GSSaturateCoordinate(u);
+						v = GSSaturateCoordinate(v);
+					}
 
 					if (sel.ltf)
 					{

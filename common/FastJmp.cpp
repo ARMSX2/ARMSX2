@@ -53,7 +53,7 @@ asm(
 	"\t.global " PREFIX "fastjmp_set\n"
 	"\t.global " PREFIX "fastjmp_jmp\n"
 	"\t.text\n"
-	"\t.align 16\n"
+	"\t.p2align 4\n" // 16 bytes: on AArch64 .align takes a power of two
 	"\t" PREFIX "fastjmp_set:" R"(
 	mov x16, sp
 	stp x16, x30, [x0]
@@ -68,9 +68,9 @@ asm(
 	stp d12, d13, [x0, #144]
 	stp d14, d15, [x0, #160]
 	mov w0, wzr
-	br x30
+	ret
 )"
-".align 16\n"
+"\t.p2align 4\n"
 "\t" PREFIX "fastjmp_jmp:" R"(
 	ldp x16, x30, [x0]
 	mov sp, x16
@@ -85,8 +85,10 @@ asm(
 	ldp d12, d13, [x0, #144]
 	ldp d14, d15, [x0, #160]
 	mov w0, w1
-	br x30
+	ret
 )");
+
+static_assert(fastjmp_buf::BUF_SIZE >= 176, "fastjmp_set stores up to byte 176");
 
 #endif
 

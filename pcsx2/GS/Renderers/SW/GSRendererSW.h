@@ -81,6 +81,21 @@ protected:
 
 	bool IsCoverageAlphaSupported() override;
 	bool BuildsConsolePlane() override;
+	bool SkipsTexelRounding() override;
+	u32 ClassifyStqDraw();
+	void ApplyStqRule(SharedData* sd, const GSVertexSW* converted);
+
+	/// GSStqExtremes.h: why this draw needs the extreme S/T/Q rule (GSStqDrawNeed bits).
+	/// Computed before the front end's texel rounding so it reads the GIF's words.
+	u32 m_stq_need = 0;
+	bool m_stq_need_valid = false;
+
+	/// The need of the draw being set up, for GetScanlineGlobalData.
+	u32 m_stq_applied = 0;
+
+	/// A triangle with Q identically one takes the plane route instead of the affine one
+	/// for this draw, so its huge coordinates reach the per-pixel field (GSStqExtremes.h).
+	bool m_stq_force_plane = false;
 	GSVertexKernels::CullGrid EngineCullGrid() const override { return GSVertexKernels::MakeCullGrid(4, 4); }
 	GSHWAutoFlushLevel GetAutoFlushLevel() const override;
 public:

@@ -819,7 +819,7 @@ void ImGuiFullscreen::ForceKeyNavEnabled()
 {
 	ImGuiContext& g = *ImGui::GetCurrentContext();
 	g.ActiveIdSource = (g.ActiveIdSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
-	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.ActiveIdSource;
+	g.NavInputSource = (g.NavInputSource == ImGuiInputSource_Mouse) ? ImGuiInputSource_Keyboard : g.NavInputSource;
 	g.NavCursorVisible = true;
 	g.NavHighlightItemUnderNav = true;
 }
@@ -2588,7 +2588,8 @@ void ImGuiFullscreen::DrawChoiceDialog()
 		ImGui::PushStyleColor(ImGuiCol_Text, UIBackgroundTextColor);
 
 		BeginMenuButtons();
-		ResetFocusHere();
+		// True only for keyboard/gamepad navigation, the case where there is a cursor to place.
+		const bool focus_reset = ResetFocusHere();
 
 		if (s_choice_dialog_checkable)
 		{
@@ -2615,8 +2616,22 @@ void ImGuiFullscreen::DrawChoiceDialog()
 					title += ICON_FA_CHECK " ";
 				title += option.first;
 
-				if (ActiveButtonWithRightText(option.first.c_str(), option.second ? ICON_FA_CHECK : nullptr, option.second,
-						true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY))
+				const bool clicked = ActiveButtonWithRightText(option.first.c_str(), option.second ? ICON_FA_CHECK : nullptr,
+					option.second, true, LAYOUT_MENU_BUTTON_HEIGHT_NO_SUMMARY);
+
+				// Open on the option that is already chosen instead of the first one, and show it even when it is
+				// past the end of a long list. With keyboard/gamepad the cursor goes to it, and SetItemDefaultFocus
+				// scrolls an off-screen item to the middle of the window itself. Mouse/touch has no cursor to place,
+				// so scroll explicitly. Both only act on the frame the window appears.
+				if (option.second)
+				{
+					if (focus_reset)
+						ImGui::SetItemDefaultFocus();
+					else if (ImGui::IsWindowAppearing())
+						ImGui::SetScrollHereY(0.5f);
+				}
+
+				if (clicked)
 				{
 					choice = i;
 					for (s32 j = 0; j < static_cast<s32>(s_choice_dialog_options.size()); j++)

@@ -348,6 +348,18 @@ private:
 
 	VkRenderPass CreateCachedRenderPass(RenderPassCacheKey key);
 
+	/// Arm's driver mishandles depth/stencil attachments whose two aspects have different load ops.
+	/// PanVK and malisx2 take the ops as asked.
+	bool MatchesDepthStencilLoadOps() const;
+
+	/// An aspect that asked for CLEAR while the other asked for LOAD: both LOAD, and it gets cleared when the
+	/// pass begins.
+	struct LateDepthStencilClear
+	{
+		VkImageAspectFlags aspects;
+		u32 attachment;
+	};
+
 	void CommandBufferCompleted(u32 index);
 	void ActivateCommandBuffer(u32 index);
 	void WaitForCommandBufferCompletion(u32 index);
@@ -482,6 +494,8 @@ private:
 	bool m_last_submit_failed = false;
 
 	std::map<u32, VkRenderPass> m_render_pass_cache;
+	// Keyed by the pass handle, which is unique to the ops the pass was asked for.
+	std::unordered_map<VkRenderPass, LateDepthStencilClear> m_late_depth_stencil_clears;
 
 	VkDebugUtilsMessengerEXT m_debug_messenger_callback = VK_NULL_HANDLE;
 
@@ -669,6 +683,9 @@ private:
 		m_tfx_fragment_shaders;
 	/// GS thread only. A precompiled pipeline moves in here when it is first drawn with.
 	std::unordered_map<PipelineSelector, VkPipeline, PipelineSelectorHash> m_tfx_pipelines;
+	// The last lookup: consecutive draws often use the same pipeline, and a match skips the hash and bucket walk.
+	PipelineSelector m_last_tfx_selector = {};
+	VkPipeline m_last_tfx_pipeline = VK_NULL_HANDLE;
 
 	/// The device's shader and pipeline builders, started with the device and stopped before anything a
 	/// job reads is destroyed. Anything that can build a pipeline off the GS thread submits to it.

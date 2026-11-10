@@ -633,6 +633,55 @@ static inline void bc7_interp3_sse2(const color_rgba* endpoint_pair, color_rgba*
 }
 #endif
 
+#if !defined(BC7DECOMP_USE_SSE2) && (defined(__aarch64__) || defined(_M_ARM64))
+#include <arm_neon.h>
+#define BC7DECOMP_USE_NEON
+// NEON versions of bc7_interp2_sse2/bc7_interp3_sse2: same math, same colour order.
+static inline uint16x8_t bc7_interp_neon(uint16x8_t l, uint16x8_t h, uint16x8_t w, uint16x8_t iw)
+{
+	return vshrq_n_u16(vaddq_u16(vmlaq_u16(vmulq_u16(l, iw), h, w), vdupq_n_u16(32)), 6);
+}
+
+static inline void bc7_interp2_neon(const color_rgba* endpoint_pair, color_rgba* out_colors)
+{
+	const uint16x8_t e = vmovl_u8(vld1_u8(reinterpret_cast<const uint8_t*>(endpoint_pair)));
+	const uint16x8_t es = vextq_u16(e, e, 4);
+	// Lanes 0-3 colour 1 (e0 * 43 + e1 * 21), lanes 4-7 colour 2.
+	const uint16x8_t i = bc7_interp_neon(e, es, vdupq_n_u16(21), vdupq_n_u16(43));
+	const uint32x2_t ip = vreinterpret_u32_u8(vmovn_u16(i)); // {c1, c2}
+	const uint32x2_t ep = vreinterpret_u32_u8(vmovn_u16(e)); // {c0, c3}
+	const uint32x4_t all = vcombine_u32(vzip1_u32(ep, ip), vzip2_u32(ip, ep)); // {c0, c1, c2, c3}
+	vst1q_u8(reinterpret_cast<uint8_t*>(out_colors), vreinterpretq_u8_u32(all));
+}
+
+static inline void bc7_interp3_neon(const color_rgba* endpoint_pair, color_rgba* out_colors)
+{
+	static constexpr uint16_t w23[8] = {18, 18, 18, 18, 37, 37, 37, 37};
+	static constexpr uint16_t iw23[8] = {46, 46, 46, 46, 27, 27, 27, 27};
+	static constexpr uint16_t w45[8] = {37, 37, 37, 37, 18, 18, 18, 18};
+	static constexpr uint16_t iw45[8] = {27, 27, 27, 27, 46, 46, 46, 46};
+	const uint16x8_t e = vmovl_u8(vld1_u8(reinterpret_cast<const uint8_t*>(endpoint_pair)));
+	const uint16x8_t es = vextq_u16(e, e, 4);
+	const uint16x8_t i16 = bc7_interp_neon(e, es, vdupq_n_u16(9), vdupq_n_u16(55)); // {c1, c6}
+	const uint16x8_t i23 = bc7_interp_neon(e, es, vld1q_u16(w23), vld1q_u16(iw23)); // {c2, c3}
+	const uint16x8_t i45 = bc7_interp_neon(e, es, vld1q_u16(w45), vld1q_u16(iw45)); // {c4, c5}
+	const uint16x8_t i01 = vcombine_u16(vget_low_u16(e), vget_low_u16(i16));
+	const uint16x8_t i67 = vcombine_u16(vget_high_u16(i16), vget_high_u16(e));
+	vst1q_u8(reinterpret_cast<uint8_t*>(out_colors), vcombine_u8(vmovn_u16(i01), vmovn_u16(i23)));
+	vst1q_u8(reinterpret_cast<uint8_t*>(out_colors + 4), vcombine_u8(vmovn_u16(i45), vmovn_u16(i67)));
+}
+#endif
+
+#if defined(BC7DECOMP_USE_SSE2)
+#define BC7DECOMP_USE_SIMD_INTERP
+#define bc7_interp2_simd bc7_interp2_sse2
+#define bc7_interp3_simd bc7_interp3_sse2
+#elif defined(BC7DECOMP_USE_NEON)
+#define BC7DECOMP_USE_SIMD_INTERP
+#define bc7_interp2_simd bc7_interp2_neon
+#define bc7_interp3_simd bc7_interp3_neon
+#endif
+
 bool unpack_bc7_mode0_2(uint32_t mode, const uint64_t* data_chunks, color_rgba* pPixels)
 {
 	//const uint32_t SUBSETS = 3;
@@ -643,7 +692,7 @@ bool unpack_bc7_mode0_2(uint32_t mode, const uint64_t* data_chunks, color_rgba* 
 	const uint32_t ENDPOINT_BITS = (mode == 0) ? 4 : 5;
 	const uint32_t ENDPOINT_MASK = (1 << ENDPOINT_BITS) - 1;
 	const uint32_t PBITS = (mode == 0) ? 6 : 0;
-#ifndef BC7DECOMP_USE_SSE2
+#ifndef BC7DECOMP_USE_SIMD_INTERP
 	const uint32_t WEIGHT_VALS = 1 << WEIGHT_BITS;
 #endif
 	const uint32_t PART_BITS = (mode == 0) ? 4 : 6;
@@ -707,13 +756,13 @@ bool unpack_bc7_mode0_2(uint32_t mode, const uint64_t* data_chunks, color_rgba* 
 
 	color_rgba block_colors[3][8];
 
-#ifdef BC7DECOMP_USE_SSE2
+#ifdef BC7DECOMP_USE_SIMD_INTERP
 	for (uint32_t s = 0; s < 3; s++)
 	{
 		if (WEIGHT_BITS == 2)
-			bc7_interp2_sse2(endpoints + s * 2, block_colors[s]);
+			bc7_interp2_simd(endpoints + s * 2, block_colors[s]);
 		else
-			bc7_interp3_sse2(endpoints + s * 2, block_colors[s]);
+			bc7_interp3_simd(endpoints + s * 2, block_colors[s]);
 	}
 #else
 	for (uint32_t s = 0; s < 3; s++)
@@ -742,7 +791,7 @@ bool unpack_bc7_mode1_3_7(uint32_t mode, const uint64_t* data_chunks, color_rgba
 	const uint32_t ENDPOINT_MASK = (1 << ENDPOINT_BITS) - 1;
 	const uint32_t PBITS = (mode == 1) ? 2 : 4;
 	const uint32_t SHARED_PBITS = (mode == 1) ? true : false;
-#ifndef BC7DECOMP_USE_SSE2
+#ifndef BC7DECOMP_USE_SIMD_INTERP
 	const uint32_t WEIGHT_VALS = 1 << WEIGHT_BITS;
 #endif
 
@@ -812,13 +861,13 @@ bool unpack_bc7_mode1_3_7(uint32_t mode, const uint64_t* data_chunks, color_rgba
 			endpoints[e][c] = static_cast<uint8_t>((mode != 7U && c == 3U) ? 255 : bc7_dequant(endpoints[e][c], pbits[SHARED_PBITS ? (e >> 1) : e], ENDPOINT_BITS));
 		
 	color_rgba block_colors[2][8];
-#ifdef BC7DECOMP_USE_SSE2
+#ifdef BC7DECOMP_USE_SIMD_INTERP
 	for (uint32_t s = 0; s < 2; s++)
 	{
 		if (WEIGHT_BITS == 2)
-			bc7_interp2_sse2(endpoints + s * 2, block_colors[s]);
+			bc7_interp2_simd(endpoints + s * 2, block_colors[s]);
 		else
-			bc7_interp3_sse2(endpoints + s * 2, block_colors[s]);
+			bc7_interp3_simd(endpoints + s * 2, block_colors[s]);
 	}
 #else
 	for (uint32_t s = 0; s < 2; s++)
@@ -918,11 +967,11 @@ bool unpack_bc7_mode4_5(uint32_t mode, const uint64_t* data_chunks, color_rgba* 
 			endpoints[e][c] = static_cast<uint8_t>(bc7_dequant(endpoints[e][c], (c == 3) ? A_ENDPOINT_BITS : ENDPOINT_BITS));
 
 	color_rgba block_colors[8];
-#ifdef BC7DECOMP_USE_SSE2
+#ifdef BC7DECOMP_USE_SIMD_INTERP
 	if (weight_bits[0] == 3)
-		bc7_interp3_sse2(endpoints, block_colors);
+		bc7_interp3_simd(endpoints, block_colors);
 	else
-		bc7_interp2_sse2(endpoints, block_colors);
+		bc7_interp2_simd(endpoints, block_colors);
 #else
 	for (uint32_t i = 0; i < (1U << weight_bits[0]); i++)
 		for (uint32_t c = 0; c < 3; c++)

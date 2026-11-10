@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <mutex>
 #include "PrecompiledHeader.h"
+#include "common/HostSys.h"
 #include "common/StringUtil.h"
 #include "common/FileSystem.h"
 #include "common/ZipHelpers.h"
@@ -405,6 +406,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_emulog(JNIEnv *env, jclass, jstring p_msg) 
     const std::string msg = GetJavaString(env, p_msg);
     if (!msg.empty())
         Console.WriteLnFmt("{}", msg);
+}
+
+extern "C"
+JNIEXPORT jboolean JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_isEmulogOpen(JNIEnv *, jclass) {
+    // True while the core holds logs/emulog.txt open for writing. The frontend moves the log aside
+    // (BugReport's emulog backup) only while this is false: a file renamed under an open handle
+    // keeps receiving the log, and emulog.txt is not created again until the next reopen.
+    // GetFileLogDescriptor is one lock-free atomic load, safe from any thread.
+    return Log::GetFileLogDescriptor() >= 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 // Defined in VMManager.cpp; see AndroidWriteStagedGameIni.
@@ -3911,6 +3922,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboo
 // strings for the Auto renderer (setAutoRendererGpuStrings). The notice below pairs it with the driver
 // the open Vulkan device is on, which only native can read.
 static std::atomic<bool> s_gpu_offers_malisx2{false};
+
+// The first instruction set extension this build was compiled for that the CPU lacks, or null. The a11/a13/a15
+// APKs are built for armv8.2-a+fp16+dotprod; installed on a CPU without those, they die with SIGILL at the first
+// such instruction, often minutes in. The app asks before it starts the core and refuses with a message instead.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_missingCpuFeature(JNIEnv* env, jclass) {
+    const char* const missing = HostSys::GetMissingBuildCpuFeature();
+    return missing ? env->NewStringUTF(missing) : nullptr;
+}
 
 extern "C"
 JNIEXPORT void JNICALL

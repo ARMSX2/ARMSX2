@@ -437,8 +437,14 @@ static bool WrapJPEGDecompress(RGBA8Image* image, T setup_func)
 		return false;
 	}
 
+#ifdef JCS_ALPHA_EXTENSIONS
+	// libjpeg-turbo writes the RGBA rows directly (alpha 0xFF).
+	info.out_color_space = JCS_EXT_RGBA;
+	info.out_color_components = 4;
+#else
 	info.out_color_space = JCS_RGB;
 	info.out_color_components = 3;
+#endif
 
 	if (!jpeg_start_decompress(&info))
 	{
@@ -453,6 +459,9 @@ static bool WrapJPEGDecompress(RGBA8Image* image, T setup_func)
 	bool result = true;
 	for (u32 y = 0; y < info.image_height; y++)
 	{
+#ifdef JCS_ALPHA_EXTENSIONS
+		scanline_buffer[0] = reinterpret_cast<u8*>(image->GetRowPixels(y));
+#endif
 		if (jpeg_read_scanlines(&info, scanline_buffer, 1) != 1)
 		{
 			Console.ErrorFmt("jpeg_read_scanlines() failed at row {}", y);
@@ -460,6 +469,7 @@ static bool WrapJPEGDecompress(RGBA8Image* image, T setup_func)
 			break;
 		}
 
+#ifndef JCS_ALPHA_EXTENSIONS
 		// RGB -> RGBA
 		const u8* src_ptr = scanline.data();
 		u32* dst_ptr = image->GetRowPixels(y);
@@ -468,6 +478,7 @@ static bool WrapJPEGDecompress(RGBA8Image* image, T setup_func)
 			*(dst_ptr++) = (static_cast<u32>(src_ptr[0]) | (static_cast<u32>(src_ptr[1]) << 8) | (static_cast<u32>(src_ptr[2]) << 16) | 0xFF000000u);
 			src_ptr += 3;
 		}
+#endif
 	}
 
 	jpeg_finish_decompress(&info);
@@ -564,8 +575,14 @@ static bool WrapJPEGCompress(const RGBA8Image& image, u8 quality, T setup_func)
 
 	info.image_width = image.GetWidth();
 	info.image_height = image.GetHeight();
+#ifdef JCS_ALPHA_EXTENSIONS
+	// libjpeg-turbo reads the RGBA rows directly and ignores alpha.
+	info.in_color_space = JCS_EXT_RGBA;
+	info.input_components = 4;
+#else
 	info.in_color_space = JCS_RGB;
 	info.input_components = 3;
+#endif
 
 	jpeg_set_defaults(&info);
 	jpeg_set_quality(&info, quality, TRUE);
@@ -576,6 +593,9 @@ static bool WrapJPEGCompress(const RGBA8Image& image, u8 quality, T setup_func)
 	bool result = true;
 	for (u32 y = 0; y < info.image_height; y++)
 	{
+#ifdef JCS_ALPHA_EXTENSIONS
+		scanline_buffer[0] = const_cast<u8*>(reinterpret_cast<const u8*>(image.GetRowPixels(y)));
+#else
 		// RGBA -> RGB
 		u8* dst_ptr = scanline.data();
 		const u32* src_ptr = image.GetRowPixels(y);
@@ -586,6 +606,7 @@ static bool WrapJPEGCompress(const RGBA8Image& image, u8 quality, T setup_func)
 			*(dst_ptr++) = static_cast<u8>(rgba >> 8);
 			*(dst_ptr++) = static_cast<u8>(rgba >> 16);
 		}
+#endif
 
 		if (jpeg_write_scanlines(&info, scanline_buffer, 1) != 1)
 		{

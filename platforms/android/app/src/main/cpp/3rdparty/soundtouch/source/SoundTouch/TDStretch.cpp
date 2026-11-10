@@ -1023,6 +1023,50 @@ void TDStretch::calculateOverlapLength(int overlapInMsec)
 }
 
 
+#if defined(SOUNDTOUCH_USE_NEON) && (defined(__aarch64__) || defined(_M_ARM64))
+#include <arm_neon.h>
+
+// ARMSX2: NEON dot products with four accumulators (clang's auto-vectorization only uses two).
+// `length` is a multiple of 8 and `norm` may be null.
+static inline float NeonDotAndNorm(const float *a, const float *b, int length, float *norm)
+{
+    float32x4_t c0 = vdupq_n_f32(0.0f), c1 = c0, c2 = c0, c3 = c0;
+    float32x4_t n0 = c0, n1 = c0, n2 = c0, n3 = c0;
+    int i = 0;
+    for (; i + 16 <= length; i += 16)
+    {
+        const float32x4_t a0 = vld1q_f32(a + i), a1 = vld1q_f32(a + i + 4);
+        const float32x4_t a2 = vld1q_f32(a + i + 8), a3 = vld1q_f32(a + i + 12);
+        c0 = vfmaq_f32(c0, a0, vld1q_f32(b + i));
+        c1 = vfmaq_f32(c1, a1, vld1q_f32(b + i + 4));
+        c2 = vfmaq_f32(c2, a2, vld1q_f32(b + i + 8));
+        c3 = vfmaq_f32(c3, a3, vld1q_f32(b + i + 12));
+        if (norm)
+        {
+            n0 = vfmaq_f32(n0, a0, a0);
+            n1 = vfmaq_f32(n1, a1, a1);
+            n2 = vfmaq_f32(n2, a2, a2);
+            n3 = vfmaq_f32(n3, a3, a3);
+        }
+    }
+    if (i < length) // the last 8
+    {
+        const float32x4_t a0 = vld1q_f32(a + i), a1 = vld1q_f32(a + i + 4);
+        c0 = vfmaq_f32(c0, a0, vld1q_f32(b + i));
+        c1 = vfmaq_f32(c1, a1, vld1q_f32(b + i + 4));
+        if (norm)
+        {
+            n0 = vfmaq_f32(n0, a0, a0);
+            n1 = vfmaq_f32(n1, a1, a1);
+        }
+    }
+    if (norm)
+        *norm = vaddvq_f32(vaddq_f32(vaddq_f32(n0, n1), vaddq_f32(n2, n3)));
+    return vaddvq_f32(vaddq_f32(vaddq_f32(c0, c1), vaddq_f32(c2, c3)));
+}
+#define ST_NEON_CROSSCORR 1
+#endif
+
 /// Calculate cross-correlation
 double TDStretch::calcCrossCorr(const float *mixingPos, const float *compare, double &anorm)
 {
@@ -1039,12 +1083,17 @@ double TDStretch::calcCrossCorr(const float *mixingPos, const float *compare, do
     int ilength = (channels * overlapLength) & -8;
 
     corr = norm = 0;
+#ifdef ST_NEON_CROSSCORR
+    (void)i;
+    corr = NeonDotAndNorm(mixingPos, compare, ilength, &norm);
+#else
     // Same routine for stereo and mono
     for (i = 0; i < ilength; i ++)
     {
         corr += mixingPos[i] * compare[i];
         norm += mixingPos[i] * mixingPos[i];
     }
+#endif
 
     anorm = norm;
     return corr / sqrt((norm < 1e-9 ? 1.0 : norm));
@@ -1068,11 +1117,16 @@ double TDStretch::calcCrossCorrAccumulate(const float *mixingPos, const float *c
     // hint compiler autovectorization that loop length is divisible by 8
     int ilength = (channels * overlapLength) & -8;
 
+#ifdef ST_NEON_CROSSCORR
+    corr = NeonDotAndNorm(mixingPos, compare, ilength, nullptr);
+    i = ilength;
+#else
     // Same routine for stereo and mono
     for (i = 0; i < ilength; i ++)
     {
         corr += mixingPos[i] * compare[i];
     }
+#endif
 
     // update normalizer with last samples of this round
     for (int j = 0; j < channels; j ++)

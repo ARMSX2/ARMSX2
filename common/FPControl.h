@@ -108,7 +108,9 @@ struct FPControlRegister
 	static constexpr u32 RMODE_SHIFT = 22;
 	static constexpr u64 RMODE_MASK = 0x3ULL;
 	static constexpr u64 RMODE_BITS = (RMODE_MASK << RMODE_SHIFT);
-	static constexpr u32 EXCEPTION_MASK = (0x3Fu << 5);
+	// Trap enables: IOE, DZE, OFE, UFE, IXE (bits 8-12) and IDE (bit 15). u64 so ~EXCEPTION_MASK keeps the upper
+	// half.
+	static constexpr u64 EXCEPTION_MASK = (0x1FULL << 8) | (0x1ULL << 15);
 
 	__fi static FPControlRegister GetCurrent()
 	{
@@ -129,7 +131,8 @@ struct FPControlRegister
 #if defined(_MSC_VER) && !defined(__clang__)
 		_WriteStatusReg(ARM64_FPCR, static_cast<__int64>(value.bitmask));
 #else
-		asm volatile("\tmsr FPCR, %0\n" ::"r"(value.bitmask));
+		// "memory": loads and stores of floating-point values must not move across the mode change.
+		asm volatile("\tmsr FPCR, %0\n" ::"r"(value.bitmask) : "memory");
 #endif
 	}
 

@@ -48,6 +48,7 @@
 
 #if defined(ARCH_ARM64) && !defined(MULTI_ISA_SHARED_COMPILATION)
 
+#include "GS/Renderers/SW/GSDrawScanline.h"
 #include "GS/Renderers/SW/GSDrawScanlineCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSSetupPrimCodeGenerator.arm64.h"
 #include "GS/Renderers/SW/GSRasterizer.h"
@@ -211,7 +212,7 @@ protected:
 	// DECAL with TCC on: the stored pixel is the sampled texel and nothing else, so
 	// the framebuffer reports the coordinate directly. gs-mag1's arms are the same
 	// function against the same kind of namer.
-	static GSScanlineSelector MakeSelector(bool linear)
+	static GSScanlineSelector MakeSelector(bool linear, bool field = false)
 	{
 		GSScanlineSelector sel;
 		sel.key = 0;
@@ -236,6 +237,7 @@ protected:
 		sel.fwrite = 1;
 		sel.notest = 1;
 		sel.colclamp = 1;
+		sel.stqfield = field ? 1 : 0;
 		return sel;
 	}
 
@@ -285,12 +287,12 @@ protected:
 
 	/// Draws one arm and returns what it stored, one word per pixel. `u0` is the
 	/// coordinate at the rectangle's first column, in texels.
-	static bool Arm(bool linear, float u0, u32 out[kSize * kSize])
+	static bool Arm(bool linear, float u0, u32 out[kSize * kSize], bool field = false, bool ramp = true, bool cpath = false)
 	{
 		// Compiled once per filter: the generators are deterministic, and a pair
 		// per test would outrun the code buffer.
-		const int slot = linear ? 1 : 0;
-		const GSScanlineSelector sel = MakeSelector(linear);
+		const int slot = (linear ? 1 : 0) + (field ? 2 : 0);
+		const GSScanlineSelector sel = MakeSelector(linear, field);
 
 		if (!s_setup[slot])
 		{
@@ -299,7 +301,7 @@ protected:
 		}
 
 		SetupPrimPtr setup = s_setup[slot];
-		DrawScanlinePtr draw = s_draw[slot];
+		DrawScanlinePtr draw = cpath ? static_cast<DrawScanlinePtr>(&isa_native::GSDrawScanline::CDrawScanline) : s_draw[slot];
 
 		if (!setup || !draw)
 			return false;
@@ -354,7 +356,7 @@ protected:
 
 		GSVertexSW vertex[3] = {
 			Vertex(0.0f, 0.0f, u0, kRow, linear),
-			Vertex(span, 0.0f, u0 + span * kRamp, kRow, linear),
+			Vertex(span, 0.0f, u0 + span * (ramp ? kRamp : 0.0f), kRow, linear),
 			Vertex(0.0f, span, u0, kRow, linear),
 		};
 
@@ -391,15 +393,15 @@ protected:
 		}
 	}
 
-	static SetupPrimPtr s_setup[2];
-	static DrawScanlinePtr s_draw[2];
+	static SetupPrimPtr s_setup[4];
+	static DrawScanlinePtr s_draw[4];
 	static u8* s_code;
 	static size_t s_code_used;
 	static GSLocalMemory* s_mem;
 };
 
-SetupPrimPtr SwCoordinateFieldTest::s_setup[2] = {};
-DrawScanlinePtr SwCoordinateFieldTest::s_draw[2] = {};
+SetupPrimPtr SwCoordinateFieldTest::s_setup[4] = {};
+DrawScanlinePtr SwCoordinateFieldTest::s_draw[4] = {};
 u8* SwCoordinateFieldTest::s_code = nullptr;
 size_t SwCoordinateFieldTest::s_code_used = 0;
 GSLocalMemory* SwCoordinateFieldTest::s_mem = nullptr;
@@ -449,6 +451,33 @@ TEST_F(SwCoordinateFieldTest, ANegativeCoordinatePastTheFieldStopsAtMinus2048Und
 	ASSERT_TRUE(Arm(true, -2049.0f - 5.0f / 32.0f, got));
 
 	ExpectEveryPixel(got, Texel((-2048) & (kTex - 1), 8));
+}
+
+// gs-stq-extremes: with the field bit on (a draw that can reach the field's limits), exactly
+// 2048.0 reads weight 15 at the top, and -2047.9375 steps down half a texel unclamped to texel
+// -2049. Those two windows are the only places the order of the half step and the saturate
+// shows. Both the generated scanline and the C++ one.
+TEST_F(SwCoordinateFieldTest, TheFieldBitReadsWeightFifteenAtExactly2048)
+{
+	for (const bool cpath : {false, true})
+	{
+		u32 got[kSize * kSize];
+		ASSERT_TRUE(Arm(true, 2048.0f, got, true, false, cpath)) << cpath;
+
+		ExpectEveryPixel(got, Lerp16(Texel(2047 & (kTex - 1), 8), Texel(2048 & (kTex - 1), 8), 15));
+	}
+}
+
+TEST_F(SwCoordinateFieldTest, TheFieldBitLetsTheHalfTexelReachMinus2049)
+{
+	for (const bool cpath : {false, true})
+	{
+		u32 got[kSize * kSize];
+		ASSERT_TRUE(Arm(true, -2047.9375f, got, true, false, cpath)) << cpath;
+
+		// c = -32767 sixteenths; minus eight is -32775, which is texel -2049, weight 9.
+		ExpectEveryPixel(got, Lerp16(Texel((-2049) & (kTex - 1), 8), Texel((-2048) & (kTex - 1), 8), 9));
+	}
 }
 
 // The control gs-mag1 carries at every magnitude below the field: an arm at an

@@ -29,6 +29,7 @@
 #include "VuEfuModel.h"
 #include "VuMulBand.h"
 #include "microVU_Persist-arm64.h"
+#include "microVU_JumpTable-arm64.h"
 #include "vuaot/VuAotMvuTrace.h"
 
 #ifndef XXH_versionNumber
@@ -438,6 +439,7 @@ struct microRange
 };
 
 #define mProgSize (0x4000 / 4)
+static_assert(sizeof(microJumpCache) * (mProgSize / 2) == mVUJumpTable::kBytes, "mVUJumpTable::kBytes follows the jump cache");
 struct microProgram
 {
 	u32                data [mProgSize];
@@ -864,14 +866,14 @@ public:
 		for (microBlockLink* linkI = qBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			safe_delete_array(linkI->block.jumpCache);
+			mVUJumpTable::Free(linkI->block.jumpCache);
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
 		for (microBlockLink* linkI = fBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			safe_delete_array(linkI->block.jumpCache);
+			mVUJumpTable::Free(linkI->block.jumpCache);
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}

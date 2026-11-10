@@ -397,6 +397,14 @@ void* SysMemory::GetDataFileHandle()
 	return s_data_memory_file_handle;
 }
 
+void SysMemory::ZeroData(void* ptr, size_t size)
+{
+	const size_t offset = static_cast<u8*>(ptr) - s_data_memory;
+	pxAssert(offset + size <= HostMemoryMap::MainSize);
+	if (!HostSys::DiscardSharedMemory(s_data_memory_file_handle, offset, size))
+		std::memset(ptr, 0, size);
+}
+
 bool memGetExtraMemMode()
 {
 	return s_extra_memory;
@@ -1369,7 +1377,7 @@ void memReset()
 	s_dve_regs[0x7e] = 0x1C; // Status register. 0x1C seems to be the value it's expecting for everything being OK.
 
 	// BIOS is included in eeMem, so it needs to be copied after zeroing.
-	std::memset(eeMem, 0, sizeof(*eeMem));
+	SysMemory::ZeroData(eeMem, sizeof(*eeMem));
 	CopyBIOSToMemory();
 }
 

@@ -145,10 +145,9 @@ static void ConvertTexture_R8G8B8(u32 width, u32 height, std::vector<u8>& data, 
 
 		for (u32 x = 0; x < width; x++)
 		{
-			// This is BGR in memory.
-			u32 val;
-			std::memcpy(&val, rgb_data_ptr, sizeof(val));
-			val = ((val & 0x0000FF00) | ((val >> 16) & 0xFF) | ((val << 16) & 0xFF0000)) | 0xFF000000;
+			// BGR in memory, three bytes a pixel. A 4-byte load would read one byte past the end of the data at the last pixel.
+			const u32 val = static_cast<u32>(rgb_data_ptr[2]) | (static_cast<u32>(rgb_data_ptr[1]) << 8) |
+			                (static_cast<u32>(rgb_data_ptr[0]) << 16) | 0xFF000000u;
 			std::memcpy(data_ptr, &val, sizeof(u32));
 			data_ptr += sizeof(u32);
 			rgb_data_ptr += 3;
