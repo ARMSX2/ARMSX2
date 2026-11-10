@@ -297,16 +297,15 @@ bool GSRendererHW::BurstMemoHit()
 	st.hit_draws++;
 	st.hit_vertices += m_vertex->next;
 
-	// The burst's next draw is the next record: start loading its header and words while the next draw is
-	// decoded.
+	// The burst's next draw is the next record: start loading what its packet compare reads (the header, the
+	// compared words, the vertices and indices: under 1 KiB for Spider-Man 3's few-sprite draws) while the next draw
+	// is decoded. A prefetch past the record's end is harmless; it cannot fault.
 	const Entry& next = *m.candidates[0];
 	if (next.Count() > k + 1)
 	{
 		const char* p = static_cast<const char*>(next.Address(k + 1));
-		__builtin_prefetch(p);
-		__builtin_prefetch(p + 64);
-		__builtin_prefetch(p + 128);
-		__builtin_prefetch(p + 192);
+		for (u32 i = 0; i < 1024; i += 64)
+			__builtin_prefetch(p + i);
 	}
 	return true;
 }
