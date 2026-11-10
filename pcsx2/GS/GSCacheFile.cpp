@@ -43,6 +43,9 @@
 #if __has_include("gs_cache_build_id.h")
 #include "gs_cache_build_id.h"
 #endif
+#if __has_include("gs_key_layout_id.h")
+#include "gs_key_layout_id.h"
+#endif
 
 namespace GSCacheFile
 {
@@ -284,6 +287,16 @@ namespace GSCacheFile
 		static const std::string id = GS_CACHE_BUILD_ID;
 #else
 		static const std::string id = std::string("git ") + BuildVersion::GitHash;
+#endif
+		return id;
+	}
+
+	const std::string& GetTfxKeyLayoutId()
+	{
+#ifdef GS_TFX_KEY_LAYOUT_ID
+		static const std::string id = GS_TFX_KEY_LAYOUT_ID;
+#else
+		static const std::string& id = GetBuildId();
 #endif
 		return id;
 	}

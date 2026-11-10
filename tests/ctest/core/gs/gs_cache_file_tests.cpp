@@ -144,6 +144,14 @@ TEST_F(GSCacheFileTest, BuildIdIsSet)
 	EXPECT_EQ(GetBuildVersionWord(), GetBuildVersionWord());
 }
 
+// The key lists are named by the key layout, which only the selector definitions change, and not by
+// the build identity, which every GS source changes (cmake/GSKeyLayoutId.cmake).
+TEST_F(GSCacheFileTest, KeyLayoutIdIsGeneratedApartFromTheBuildId)
+{
+	EXPECT_EQ(GetTfxKeyLayoutId().size(), 32u);
+	EXPECT_NE(GetTfxKeyLayoutId(), GetBuildId());
+}
+
 TEST_F(GSCacheFileTest, FramedRoundTrip)
 {
 	const std::string path = PathOf("framed.bin");

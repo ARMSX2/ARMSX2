@@ -578,6 +578,8 @@ static inline ShaderConvertSelector GetConvertShaderMask(const GSTexture* src, c
 	return GetConvertShaderMask(src->GetFormat(), dst->GetFormat(), src_bpp, dst_bpp, red, green, blue, alpha);
 }
 
+// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 enum ChannelFetch
 {
 	ChannelFetch_NONE  = 0,
@@ -602,6 +604,7 @@ enum class HWBlendType
 	BMIX1_SRC_HALF          = 2, // Impossible blend will always be wrong on hw, divide Cs by 2.
 	BMIX2_OVERFLOW          = 3, // Blending Cs might overflow, try to compensate.
 };
+// TFX pipeline key layout: end.
 
 struct alignas(16) DisplayConstantBuffer
 {
@@ -696,6 +699,8 @@ struct HWBlend
 
 struct alignas(16) GSHWDrawConfig
 {
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	enum class Topology: u8
 	{
 		Point,
@@ -982,6 +987,7 @@ struct alignas(16) GSHWDrawConfig
 	};
 	static_assert(sizeof(PSSelector) == 16, "PSSelector is 12 bytes");
 #pragma pack(pop)
+	// TFX pipeline key layout: end.
 	struct PSSelectorHash
 	{
 		std::size_t operator()(const PSSelector& p) const
@@ -1051,6 +1057,8 @@ struct alignas(16) GSHWDrawConfig
 			return (triln >= static_cast<u8>(GS_MIN_FILTER::Nearest_Mipmap_Nearest));
 		}
 	};
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	struct DepthStencilSelector
 	{
 		union
@@ -1102,6 +1110,7 @@ struct alignas(16) GSHWDrawConfig
 		constexpr ColorMaskSelector(): key(0xF) {}
 		constexpr ColorMaskSelector(u8 c): key(0) { wrgba = c; }
 	};
+	// TFX pipeline key layout: end.
 
 #pragma pack(pop)
 	struct alignas(16) VSConstantBuffer
@@ -1257,6 +1266,8 @@ struct alignas(16) GSHWDrawConfig
 		}
 	};
 	// For hardware rendering backends
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	struct BlendState
 	{
 		typedef u8 BlendOp; /*GSDevice::BlendOp*/
@@ -1295,6 +1306,7 @@ struct alignas(16) GSHWDrawConfig
 		// Blending has no effect if RGB is masked.
 		bool IsEffective(ColorMaskSelector colormask) const;
 	};
+	// TFX pipeline key layout: end.
 
 	enum class AlphaTestMode
 	{
@@ -1673,6 +1685,8 @@ public:
 	};
 	using RecycledTexture = std::unique_ptr<GSTexture, TextureRecycleDeleter>;
 
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	enum BlendFactor : u8
 	{
 		// HW blend factors
@@ -1686,6 +1700,7 @@ public:
 		// HW blend operations
 		OP_ADD, OP_SUBTRACT, OP_REV_SUBTRACT
 	};
+	// TFX pipeline key layout: end.
 	// clang-format on
 
 protected:

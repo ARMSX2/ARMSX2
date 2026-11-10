@@ -53,6 +53,10 @@ namespace GSCacheFile
 	/// git hash.
 	const std::string& GetBuildId();
 
+	/// What a recorded Vulkan pipeline key's bits mean: a hash of the selector definitions only, computed
+	/// by the build (cmake/GSKeyLayoutId.cmake). Builds without the generated header use GetBuildId.
+	const std::string& GetTfxKeyLayoutId();
+
 	/// The build identity folded to the single version word the Direct3D caches carry, so they too are
 	/// discarded by any GS change instead of only by a SHADER_CACHE_VERSION bump.
 	u32 GetBuildVersionWord();

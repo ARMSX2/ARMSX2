@@ -507,6 +507,8 @@ private:
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;
 public:
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	enum FeedbackLoopFlag : u8
 	{
 		FeedbackLoopFlag_None = 0,
@@ -571,6 +573,7 @@ public:
 		__fi bool IsTestingAndSamplingDepth() const { return ((feedback_loop_flags & (FeedbackLoopFlag_ReadDepth | FeedbackLoopFlag_ReadAndWriteDepth)) != 0); }
 	};
 	static_assert(sizeof(PipelineSelector) == 32, "Pipeline selector is 32 bytes");
+	// TFX pipeline key layout: end.
 
 	struct PipelineSelectorHash
 	{
@@ -711,8 +714,9 @@ private:
 	/// nullopt if there is no job or the build failed (the caller builds p itself then).
 	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
 	void RecordTFXPipelineKey(const PipelineSelector& p);
-	/// What CreateTFXPipeline reads besides the key. A key list written under a different value is
-	/// discarded, so a key is never built on a device configuration it was not recorded on.
+	/// What decides which pipeline a key describes on this device, besides the key layout. A key list
+	/// written under a different value is set aside, so a key is never built on a device configuration
+	/// it was not recorded on.
 	std::string GetTFXPipelineKeyFingerprint() const;
 
 	VkRenderPass m_utility_color_render_pass_load = VK_NULL_HANDLE;
