@@ -9322,6 +9322,10 @@ VkPipeline GSDeviceVK::GetStencilCounterResolvePipeline(u32 rgb_mask)
 		gpb.SetNoBlendingState();
 		gpb.SetColorWriteMask(0, rgb_mask);
 		gpb.SetDynamicViewportAndScissorState();
+		// Dynamic like every other pipeline's: a pipeline that holds them static overwrites them when bound, and the
+		// device would skip setting them again for a draw that wants the values it last set.
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
+		gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
 		gpb.SetVertexShader(vs);
 		gpb.SetFragmentShader(fs);
 		pipeline = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
