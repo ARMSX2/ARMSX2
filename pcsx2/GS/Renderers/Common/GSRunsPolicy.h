@@ -313,14 +313,13 @@ namespace GSRunsPolicy
 			}
 		}
 
-		/// The program key, four bits a state: 0xF where the state is read from the rows, else its one value. States
-		/// in read_mask are read from the rows regardless (a development switch).
-		u32 Key(u32 read_mask = 0) const
+		/// The program key, four bits a state: 0xF where the state is read from the rows, else its one value.
+		u32 Key() const
 		{
 			u32 key = 0;
 			for (u32 i = 0; i < NUM_STATES; i++)
 			{
-				const u32 v = ((vary | read_mask) >> i & 1) ? 0xF : ((seen >> i & 1) ? value[i] : 0);
+				const u32 v = (vary >> i & 1) ? 0xF : ((seen >> i & 1) ? value[i] : 0);
 				key |= v << (4 * i);
 			}
 			return key;

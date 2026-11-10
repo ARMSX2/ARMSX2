@@ -298,8 +298,6 @@ TEST(GSRunsPolicy, ProgramKey)
 	u.Note(Classify(c, TextureFacts(), false).flags);
 	EXPECT_EQ((u.Key() >> (4 * STATE_LOD)) & 0xF, LOD_NONE);
 	EXPECT_EQ(u.Key() & 0xF, 0xFu);
-	// The read mask forces a state to the rows.
-	EXPECT_EQ((s.Key(1u << STATE_FOG) >> (4 * STATE_FOG)) & 0xF, 0xFu);
 }
 
 // A draw whose written channel is its interpolated colour times 1/255 keeps its colour states constant in its run

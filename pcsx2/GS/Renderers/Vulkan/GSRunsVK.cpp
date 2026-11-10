@@ -194,7 +194,6 @@ bool GSRunsVK::Init()
 		RUN_WINDOW - TABLE_SKIP);
 	dsub.Update(device);
 
-	m_max_draws = g_gs_measurement_overrides.runs_max_draws ? std::min(g_gs_measurement_overrides.runs_max_draws, MAX_DRAWS) : MAX_DRAWS;
 	m_frame_pools.resize(GSDeviceVK::NUM_COMMAND_BUFFERS);
 	m_textures.reserve(m_max_textures);
 	m_image_infos.reserve(m_max_textures);
@@ -213,12 +212,10 @@ bool GSRunsVK::Init()
 		{
 			static char s_buf[1 << 16];
 			std::setvbuf(m_log, s_buf, _IOFBF, sizeof(s_buf));
-			std::fprintf(m_log, "# runs split=%s\n# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
+			std::fprintf(m_log, "# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
 			                    "end_state end_target end_split end_pass end_other end_ring end_unmergeable end_textures end_compiling\n"
 			                    "# S pass spec variant draws textures changes(per state, draw to draw) draw_area(target px, by dear class 0..3)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
-			                    "thread takes it)\n",
-				g_gs_measurement_overrides.runs_split == GSRunsSplit::NoSplit ? "none" :
-				g_gs_measurement_overrides.runs_split == GSRunsSplit::AtDear ? "dear" : "cost");
+			                    "thread takes it)\n");
 		}
 	}
 
@@ -258,25 +255,6 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 		return;
 	}
 
-	const u64 seq = m_draw_seq++;
-	if (g_gs_measurement_overrides.runs_draw_hi != 0)
-	{
-		if (seq < g_gs_measurement_overrides.runs_draw_lo || seq >= g_gs_measurement_overrides.runs_draw_hi)
-		{
-			m_pass.why[WHY_ROAD]++;
-			Flush(END_UNMERGEABLE);
-			return;
-		}
-		if (m_log)
-		{
-			std::fprintf(m_log, "D %llu flags=%x way=%u ps=%016llx:%016llx vs=%02x dss=%02x bs=%016llx cms=%02x tex=%dx%d/%d sampler=%llx\n",
-				static_cast<unsigned long long>(seq), pd.flags, pd.way, static_cast<unsigned long long>(config.ps.key_hi),
-				static_cast<unsigned long long>(config.ps.key_lo), config.vs.key, config.depth.key,
-				static_cast<unsigned long long>(config.blend.key), config.colormask.key, config.tex ? config.tex->GetWidth() : 0,
-				config.tex ? config.tex->GetHeight() : 0, config.tex ? config.tex->GetMipmapLevels() : 0,
-				static_cast<unsigned long long>(config.sampler.key));
-		}
-	}
 	d.cand = true;
 	d.flags = pd.flags;
 	d.way = pd.way;
@@ -335,31 +313,18 @@ void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal w
 	m_refusals[{static_cast<u32>(why), detail}]++;
 }
 
-u32 GSRunsVK::SplitStates(u32 flags) const
-{
-	const u32 mask = g_gs_measurement_overrides.runs_split_mask;
-	u32 out = 0;
-	for (u32 i = 0; mask && i < GSRunsPolicy::NUM_STATES; i++)
-	{
-		if ((mask >> i & 1) && (m_run.states.seen >> i & 1) && GSRunsPolicy::Field(flags, i) != m_run.states.value[i] &&
-			!((GSRunsPolicy::STATES_TEXTURED_ONLY >> i & 1) && !GSRunsPolicy::Textured(flags)))
-			out |= 1u << i;
-	}
-	return out;
-}
-
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
 	const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
 	const GSHWDrawConfig::VSConstantBuffer& b = r.cb_vs;
 	return config.rt == r.rt && config.ds == r.ds && config.depth.key == r.dss && (config.vs.key & ~VS_RUN_FREE) == r.vs &&
-	       config.scissor.eq(r.scissor) && r.ndraws < m_max_draws && std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) == 0 &&
+	       config.scissor.eq(r.scissor) && r.ndraws < MAX_DRAWS && std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) == 0 &&
 	       std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) == 0 &&
 	       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
 	       std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) == 0 && config.ps.rta_correction == r.rta &&
 	       config.ps.zfloor == r.zfloor && GSRunsPolicy::StrictKey(m_draw.flags, r.rta) == r.strict &&
-	       !SplitAtDear(config) && !SplitStates(m_draw.flags);
+	       !SplitAtDear(config);
 }
 
 static u64 DrawArea(const GSHWDrawConfig& config)
@@ -372,16 +337,7 @@ bool GSRunsVK::SplitAtDear(const GSHWDrawConfig& config) const
 	const Run& r = m_run;
 	if (r.dear_mixed || GSRunsPolicy::Dear(m_draw.flags) == r.dear)
 		return false;
-	switch (g_gs_measurement_overrides.runs_split)
-	{
-		case GSRunsSplit::NoSplit:
-			return false;
-		case GSRunsSplit::AtDear:
-			return true;
-		case GSRunsSplit::ByCost:
-		default:
-			return GSRunsPolicy::SplitAtDear(*m_class, r.area_total, DrawArea(config));
-	}
+	return GSRunsPolicy::SplitAtDear(*m_class, r.area_total, DrawArea(config));
 }
 
 GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
@@ -391,8 +347,6 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict)
 		return END_SPLIT;
 	if (SplitAtDear(config))
-		return END_SPLIT;
-	if (SplitStates(m_draw.flags))
 		return END_SPLIT;
 	if (m_log)
 	{
@@ -405,7 +359,7 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 			std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) != 0,
 			std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) != 0, a.max_depth != b.max_depth,
 			std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) != 0, config.ps.rta_correction != r.rta,
-			config.ps.zfloor != r.zfloor, r.ndraws >= m_max_draws};
+			config.ps.zfloor != r.zfloor, r.ndraws >= MAX_DRAWS};
 		u64 detail = 0;
 		for (u32 i = 0; i < std::size(c); i++)
 			detail |= static_cast<u64>(c[i]) << i;
@@ -416,8 +370,6 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 
 bool GSRunsVK::Continue(const GSHWDrawConfig& config)
 {
-	if (g_gs_measurement_overrides.runs_no_continue)
-		return false;
 	GSDeviceVK* dev = m_dev;
 	// A draw without a depth buffer continues a run in a pass with one as the classic path draws it: depth untouched.
 	const bool ds_ok = config.ds ? (dev->m_current_depth_target == config.ds) : ((dev->m_current_depth_target == nullptr) == m_run.nods);
@@ -466,7 +418,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		const u32 ways = (open ? m_run.ways : 0u) | (1u << d.way);
 		const bool rta = config.ps.rta_correction;
 		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor, dev->m_current_depth_target == nullptr);
-		if (ProgramReady(config.depth.key, variant, SpecKeyOf(states, GSRunsPolicy::StrictKey(d.flags, rta))))
+		if (ProgramReady(config.depth.key, variant, states.Key()))
 			return true;
 		m_pass.why[WHY_COMPILING]++;
 		Flush(END_COMPILING);
@@ -692,15 +644,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 
 u32 GSRunsVK::SpecKey() const
 {
-	return SpecKeyOf(m_run.states, m_run.strict);
-}
-
-u32 GSRunsVK::SpecKeyOf(const GSRunsPolicy::StateSet& states, u32 strict)
-{
-	// A strict run keeps its colour states constants even under the read mask (GSRunsPolicy::Passthrough).
-	const u32 colour = (1u << GSRunsPolicy::STATE_TFX) | (1u << GSRunsPolicy::STATE_TCC) | (1u << GSRunsPolicy::STATE_FOG) |
-	                   (1u << GSRunsPolicy::STATE_IIP) | (1u << GSRunsPolicy::STATE_WAY);
-	return states.Key(g_gs_measurement_overrides.runs_read_mask & (strict ? ~colour : ~0u));
+	return m_run.states.Key();
 }
 
 VkShaderModule GSRunsVK::GetFragmentShader(u32 variant, u32 spec)
@@ -796,9 +740,9 @@ bool GSRunsVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 		return true;
 
 	GSCompileQueue& queue = m_dev->m_compile_queue;
-	if (g_gs_measurement_overrides.runs_sync_compile || !queue.IsRunning())
+	if (!queue.IsRunning())
 	{
-		// Built here and now, on the GS thread (-runs-sync-compile prices this).
+		// Built here and now, on the GS thread, only while the device has no compile queue.
 		const Common::Timer timer;
 		m_pipelines.emplace(key, CreatePipeline(dss, variant, spec));
 		m_compiles++;
@@ -927,9 +871,7 @@ void GSRunsVK::Flush(Why why)
 	const u32 offsets[2] = {r.header_off, r.table_off};
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_set0, 2, offsets);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 1, 1, &set1, 0, nullptr);
-	VkRect2D scissor = {{r.scissor.x, r.scissor.y}, {static_cast<u32>(r.scissor.width()), static_cast<u32>(r.scissor.height())}};
-	if (g_gs_measurement_overrides.runs_nofill)
-		scissor.extent = {1, 1};
+	const VkRect2D scissor = {{r.scissor.x, r.scissor.y}, {static_cast<u32>(r.scissor.width()), static_cast<u32>(r.scissor.height())}};
 	vkCmdSetViewport(cmd, 0, 1, &r.viewport);
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 	const bool other_vbuf = r.vbuf != dev->m_vertex_stream_buffer.GetBuffer();

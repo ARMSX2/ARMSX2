@@ -130,8 +130,6 @@ private:
 	bool Matches(const GSHWDrawConfig& config) const;
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
-	/// The -runs-split-mask states whose value in flags differs from the open run's.
-	u32 SplitStates(u32 flags) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
 	Why EndReason(const GSHWDrawConfig& config);
 	u32 SpecKey() const;
@@ -143,7 +141,6 @@ private:
 	bool ProgramReady(u8 dss, u32 variant, u32 spec);
 	/// The flushing run's pipeline, built (Append grows a run only while it is).
 	VkPipeline GetPipeline(bool dual);
-	static u32 SpecKeyOf(const GSRunsPolicy::StateSet& states, u32 strict);
 	VkDescriptorSet WriteTextureSet();
 
 	GSDeviceVK* m_dev;
@@ -156,8 +153,6 @@ private:
 	std::vector<Texture> m_textures;
 	std::vector<VkDescriptorImageInfo> m_image_infos;
 	u32 m_max_textures = 0;
-	u32 m_max_draws = 0;
-	u64 m_draw_seq = 0;
 	u64 m_sampler_key = ~0ull; ///< Continue's last sampler, so a run of draws on one sampler looks it up once
 	VkSampler m_sampler = VK_NULL_HANDLE;
 
