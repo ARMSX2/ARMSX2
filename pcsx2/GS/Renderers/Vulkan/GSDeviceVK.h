@@ -35,6 +35,10 @@
 
 class VKSwapChain;
 struct GSSelfReadRoadDecision;
+namespace Vulkan
+{
+	class GraphicsPipelineBuilder;
+}
 
 class GSDeviceVK final : public GSDevice
 {
@@ -961,6 +965,12 @@ public:
 	/// and the caller draws the config on the colour-clip road it was built for.
 	bool DrawStencilCounter(GSHWDrawConfig& config);
 	VkPipeline GetStencilCounterResolvePipeline(u32 rgb_mask);
+	/// The resolve pipeline's fixed state: everything but its layout, render pass and shaders.
+	static void SetStencilCounterResolveState(Vulkan::GraphicsPipelineBuilder& gpb, u32 rgb_mask);
+	/// Declares dynamic the state ApplyBaseState sets only when its value changes: viewport, scissor, blend constants
+	/// and line width. Every pipeline the device binds takes all of them dynamic. A pipeline that holds one static
+	/// overwrites it when bound, and the next draw that wants the value the device last set draws with the pipeline's.
+	static void AddCachedDynamicState(Vulkan::GraphicsPipelineBuilder& gpb);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);
 
 	void IASetVertexBuffer(const void* vertex, size_t stride, size_t count, size_t align_multiplier = 1);
