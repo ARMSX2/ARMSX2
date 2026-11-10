@@ -8,6 +8,7 @@
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
+#include "GS/GSBlockId.h"
 #include "GS/GSXXH.h"
 #include "GSTargetRebase.h"
 #include "GSReadbackStats.h"
@@ -188,7 +189,7 @@ GSTextureCache::BlockHashStats GSTextureCache::GetBlockHashStats()
 
 __fi static u64 HashOneBlock(const u8* block)
 {
-	return GSXXH3_64bits(block, GS_BLOCK_SIZE);
+	return GSBlockId::Hash(block);
 }
 
 /// The cache, bound to `mem`: made at first use, with every hash invalidated if it described another memory.
@@ -10653,12 +10654,19 @@ static bool HashLevelIsExpanded(const GSLocalMemory::psm_t& psm, const HashLevel
 	return geometry.tw < psm.bs.x || geometry.th < psm.bs.y || psm.fmsk != 0xFFFFFFFFu || region.GetMaxX() > 0 || region.GetMinY() > 0;
 }
 
-// True if a level that would be expanded is hashed from the raw bytes of its blocks instead (see
-// HashTextureLevel): a paletted window of at least a block each way, where the lookup allows it. A level
-// that needs no expansion is hashed from its blocks anyway.
-static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, const GSTextureCache::SourceRegion& region, bool raw_blocks)
+// True if the level is keyed by the identities of its blocks (see HashTextureLevel): a window of any format of
+// at least a block each way, in a lookup that is not dumped, replaced or upscaled (raw_blocks). Such a key lives
+// inside one run and names nothing.
+static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, bool raw_blocks)
 {
-	return raw_blocks && psm.pal > 0 && geometry.tw >= psm.bs.x && geometry.th >= psm.bs.y && HashLevelIsExpanded(psm, geometry, region);
+	return raw_blocks && geometry.tw >= psm.bs.x && geometry.th >= psm.bs.y;
+}
+
+// The bits of each 32-bit word of local memory that the format's texels are made of. psm.fmsk is a mask of the
+// 32-bit colour for the 16-bit formats (0x80F8F8F8), not of memory: every bit of a 16-bit word is texel data.
+static u32 HashMemoryMask(const GSLocalMemory::psm_t& psm)
+{
+	return psm.bpp == 32 ? psm.fmsk : 0xFFFFFFFFu;
 }
 
 // Hashes the texture level into hash_st, and returns where its window starts inside its first block as
@@ -10674,32 +10682,41 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 	GSLocalMemory& mem = g_gs_renderer->m_mem;
 	const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 
-	// A paletted window of at least one block each way is hashed from the raw bytes of its blocks, in
-	// unswizzle order, with no unswizzle. Its texels depend only on those bytes, the format, the window
-	// size and where it starts inside its first block, so equal raw hashes and equal offsets (returned
-	// below) mean equal texels. Blocks go in whole, so bytes outside the window can only turn a
-	// texel-hash hit into a miss, never the reverse.
-	const bool raw = HashLevelIsRaw(psm, geometry, region, raw_blocks);
+	// A window of at least one block each way, in a lookup that names nothing (raw_blocks), is keyed by the
+	// identities of its blocks (GSBlockId), in unswizzle order, with no unswizzle. Its texels depend only on
+	// those blocks' bytes (the format's bits of them), the format, TEXA, the window size and where it starts
+	// inside its first block, so equal identities and equal offsets (returned below) mean equal texels, up to
+	// the identity's odds of a collision. Blocks go in whole, so bytes outside the window can only turn a hit
+	// into a miss, never the reverse.
+	const bool raw = HashLevelIsRaw(psm, geometry, raw_blocks);
 
-	// With the block hash cache, a raw level is keyed by one hash of its blocks' hashes, in the same order,
-	// instead of by the bytes: a block's hash is kept until its bytes are marked written, so blocks not
-	// written since the last lookup are not read. Two windows have the same key here exactly when they
-	// have the same raw key, since a block hash depends only on the block's bytes, and which blocks a
-	// window reads and where it starts inside the first are covered by the rest of the key and the offset
-	// below.
+	// With the block hash cache, the identity of a full-mask block is kept until its bytes are marked
+	// written, so blocks not written since the last lookup are not read. The key is the same with the cache
+	// and without it: an identity depends only on the block's bytes.
 	const int right = block_rect.right >> off.blockShiftX();
 	const int bottom = block_rect.bottom >> off.blockShiftY();
-	if (raw && block_hashes &&
+	if (raw &&
 		static_cast<u64>((block_rect.width() >> off.blockShiftX())) * static_cast<u64>((block_rect.height() >> off.blockShiftY())) <= BLOCK_HASH_GATHER_MAX)
 	{
-		const u32 fmsk = psm.fmsk;
+		const u32 fmsk = HashMemoryMask(psm);
 		GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
-		u64* const hashes = block_hashes->hash.get();
 		u64* out = s_block_hash_gather;
 		u64 rehashed = 0;
 
-		if (fmsk == 0xFFFFFFFFu)
+		if (fmsk == 0xFFFFFFFFu && !block_hashes)
 		{
+			for (; bn.blkY() < bottom; bn.nextBlockY())
+			{
+				for (; bn.blkX() < right; bn.nextBlockX())
+				{
+					*out++ = HashOneBlock(mem.BlockPtr(bn.value()));
+					rehashed++;
+				}
+			}
+		}
+		else if (fmsk == 0xFFFFFFFFu)
+		{
+			u64* const hashes = block_hashes->hash.get();
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
@@ -10716,18 +10733,14 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 		}
 		else
 		{
-			// The H formats share their words with other data, which changes without the format's own bits
-			// changing, so a block hash would be dirtied by writes that are not the format's. Hash only the
-			// format's bits, afresh each time: these formats are rare, and nothing is gained by caching.
-			alignas(16) u32 masked[GS_BLOCK_SIZE / sizeof(u32)];
+			// The H and 24-bit formats share their words with other data, which changes without the format's own
+			// bits changing, so a cached identity would be dirtied by writes that are not the format's. Take the
+			// identity of the format's bits only, afresh each time.
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
 				{
-					const u32* block = reinterpret_cast<const u32*>(mem.BlockPtr(bn.value()));
-					for (u32 i = 0; i < GS_BLOCK_SIZE / sizeof(u32); i++)
-						masked[i] = block[i] & fmsk;
-					*out++ = HashOneBlock(reinterpret_cast<const u8*>(masked));
+					*out++ = GSBlockId::HashMasked(mem.BlockPtr(bn.value()), fmsk);
 					rehashed++;
 				}
 			}
@@ -10736,12 +10749,15 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 		const u64 count = static_cast<u64>(out - s_block_hash_gather);
 		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(s_block_hash_gather), static_cast<u32>(count * sizeof(u64)));
 
-		s_block_hash_levels_cached++;
-		s_block_hash_stats.levels++;
-		s_block_hash_stats.blocks += count;
-		s_block_hash_stats.rehashed += rehashed;
+		if (block_hashes)
+		{
+			s_block_hash_levels_cached++;
+			s_block_hash_stats.levels++;
+			s_block_hash_stats.blocks += count;
+			s_block_hash_stats.rehashed += rehashed;
+		}
 
-		if (GSTextureCache::IsBlockHashVerify()) [[unlikely]]
+		if (GSTextureCache::IsBlockHashVerify() && block_hashes) [[unlikely]]
 		{
 			// Each block of the full-mask formats, hashed afresh, against the hash the key was made from. A
 			// difference is a store into local memory that nothing marked. The cached hash is put right
@@ -10750,6 +10766,7 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 			report.levels++;
 			if (fmsk == 0xFFFFFFFFu)
 			{
+				u64* const hashes = block_hashes->hash.get();
 				GSOffset::BNHelper check = off.bnMulti(block_rect.left, block_rect.top);
 				const u64* used = s_block_hash_gather;
 				for (; check.blkY() < bottom; check.nextBlockY())
@@ -10816,7 +10833,9 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 
 	GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
 
-	if (psm.fmsk == 0xFFFFFFFFu)
+	// Only a raw level too large for the gather comes here with a format whose words are not all its own (a texel
+	// level of one is expanded above), so the mask is the memory mask.
+	if (HashMemoryMask(psm) == 0xFFFFFFFFu)
 	{
 		for (; bn.blkY() < bottom; bn.nextBlockY())
 		{
@@ -10831,7 +10850,7 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 		// The H formats keep their indices in some bits of 32-bit words and share the rest with other data,
 		// often a frame buffer's colour. Hash only the format's bits. The update copies what it is given, so
 		// the masked block does not have to outlive the call.
-		const u32 fmsk = psm.fmsk;
+		const u32 fmsk = HashMemoryMask(psm);
 		alignas(16) u32 masked[GS_BLOCK_SIZE / sizeof(u32)];
 		for (; bn.blkY() < bottom; bn.nextBlockY())
 		{
@@ -10945,10 +10964,10 @@ static constexpr u64 HASH_MEMO_TEX0_BITS = 0x00000003FFFFFFFFULL;
 // The bits of TEXA that the texture reads can depend on: TA0, AEM and TA1.
 static constexpr u64 HASH_MEMO_TEXA_BITS = 0x000000FF000080FFULL;
 
-// Set in HashCacheKey::TEX0, in a bit of TBP0 that the key does not otherwise carry, for a key whose window
-// is hashed from raw blocks (HashTextureLevel). A raw hash is not a texel hash, so a key of one kind must
-// never equal one of the other, even by a hash collision. A window that is hashed from its blocks whatever
-// raw_blocks says has the same hash and the same key either way.
+// Set in HashCacheKey::TEX0, in a bit of TBP0 that the key does not otherwise carry, for every key of a lookup
+// that is not dumped, replaced or upscaled (raw_blocks). Such a key is made from block identities (GSBlockId)
+// and lives inside one run; the others are texel hashes that name dumped and replacement textures. A key of one
+// kind must never equal one of the other, even by a hash collision.
 static constexpr u64 HASH_KEY_RAW_BLOCKS = 1;
 
 GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region, bool raw_blocks)
@@ -10959,7 +10978,7 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	HashCacheKey ret;
 	ret.TEX0.U64 = TEX0.U64 & 0x00000003FFF00000ULL; // PSM, TW, TH
 	static_assert((0x00000003FFF00000ULL & HASH_KEY_RAW_BLOCKS) == 0, "the tag must be a bit the key does not carry");
-	if (HashLevelIsRaw(psm, base_geometry, region, raw_blocks))
+	if (raw_blocks)
 		ret.TEX0.U64 |= HASH_KEY_RAW_BLOCKS;
 	ret.TEXA.U64 = (psm.pal == 0 && psm.fmt > 0) ? (TEXA.U64 & 0x000000FF000080FFULL) : 0;
 	ret.CLUTHash = clut ? GSTextureCache::PaletteKeyHash{}({clut, psm.pal}) : 0;
@@ -10974,11 +10993,10 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	for (u32 i = 1; i < std::min(levels, HASH_MEMO_MAX_LEVELS); i++)
 		level_tex0[i] = g_gs_renderer->GetTex0Layer(basemip + i);
 
-	// The raw levels of a lookup are keyed through the block hash cache when it is on. A paletted format is
-	// the only one with a raw level, so no other lookup makes the cache.
+	// The raw levels of a lookup are keyed through the block hash cache when it is on.
 	GSTextureCache* const tc = g_texture_cache.get();
 	GSTextureCache::BlockHashCache* const block_hashes =
-		(raw_blocks && psm.pal > 0 && s_block_hash_cache_enabled && tc) ? &tc->SyncBlockHashCache(g_gs_renderer->m_mem) : nullptr;
+		(raw_blocks && s_block_hash_cache_enabled && tc) ? &tc->SyncBlockHashCache(g_gs_renderer->m_mem) : nullptr;
 
 	const auto hash_levels = [&](GSTextureCache::BlockHashCache* cache) {
 		BlockHashState hash_st;
