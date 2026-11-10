@@ -748,11 +748,7 @@ VkPipeline GSRunsVK::CreatePipeline(u8 dss_key, u32 variant, u32 spec)
 		0);
 	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 	gpb.SetRasterizationState(VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_CLOCKWISE);
-	gpb.SetDynamicViewportAndScissorState();
-	// The classic pipelines' dynamic state: a pipeline with these static would overwrite the values the classic path
-	// set, and it re-emits them only when they change.
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
-	gpb.AddDynamicState(VK_DYNAMIC_STATE_LINE_WIDTH);
+	GSDeviceVK::AddCachedDynamicState(gpb);
 	gpb.SetVertexShader(m_vs);
 	gpb.SetFragmentShader(GetFragmentShader(variant, spec));
 	gpb.AddVertexBuffer(0, sizeof(GSVertex));
