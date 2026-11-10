@@ -1,0 +1,174 @@
+// SPDX-FileCopyrightText: 2026 ARMSX2 contributors
+// SPDX-License-Identifier: GPL-3.0+
+
+#pragma once
+
+#include "GS/Renderers/Common/GSDevice.h"
+#include "GS/GSCompileQueue.h"
+#include "GS/Renderers/Common/GSRunsPolicy.h"
+#include "GS/Renderers/Vulkan/VKLoader.h"
+#include "GS/Renderers/Vulkan/VKStreamBuffer.h"
+
+#include <array>
+#include <mutex>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+class GSDeviceVK;
+class GSTextureVK;
+
+/// The run machine. Inside a Vulkan render pass, consecutive TFX draws whose classic state differs only in what a row
+/// of data can carry (texture and sampler, texture function, fog, shading, alpha test, lod source, and how the classic
+/// path chose to blend inside one blend family) are drawn as one host draw under one pipeline and a run program
+/// (tfx_runs.glsl) specialised on the states the run holds one value of.
+///
+/// It sits entirely below the hand-off from GSRendererHW: DoRenderHW asks Classify() at its top whether the draw can
+/// join a run (and the open run ends there if not, before anything is recorded), and Append() at its draw point instead
+/// of binding and drawing. Everything else that records into the command buffer inside a render pass ends the open run
+/// first (Flush()).
+///
+/// Each draw samples its own texture view through its own sampler, from the run's descriptor array, with the same
+/// sampling call its classic program makes, so a merged draw reads exactly the texels its classic draw would have.
+class GSRunsVK
+{
+public:
+	/// Why a draw could not join a run (counted per draw), and why a run ended (counted per run).
+	enum Why : u32
+	{
+		WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST, WHY_NOT_IN_PASS,
+		WHY_COMPILING, ///< the run's program with this draw in it is still being built: the draw is drawn classically
+		WHY_DRAW_COUNT,
+		END_STATE = WHY_DRAW_COUNT, END_TARGET, END_SPLIT, END_PASS, END_OTHER, END_RING, END_UNMERGEABLE, END_TEXTURES,
+		END_COMPILING, WHY_COUNT
+	};
+
+	/// The machine on a device with the features it needs (descriptor indexing with non-uniform sampled-image
+	/// indexing, dual-source blending), nullptr elsewhere or when it is switched off for an A/B (-runs off).
+	static std::unique_ptr<GSRunsVK> Create(GSDeviceVK* dev);
+	~GSRunsVK();
+
+	/// At the top of DoRenderHW: decides whether this draw can join a run, and ends the open run when it cannot or
+	/// would not continue it.
+	void Classify(const GSHWDrawConfig& config);
+	/// The draw in hand was found able to join a run.
+	bool Candidate() const { return m_draw.cand; }
+	/// At DoRenderHW's draw point, for a candidate: writes the draw's vertices, indices and row, and adds it to the
+	/// open run (opening one). False: the draw takes the classic path after all, nothing of it written.
+	bool Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags, bool pipeline_colclip);
+	/// Records the open run's one host draw. A no-op without an open run, and while a flush is recording.
+	void Flush(Why why);
+	/// At the end of a render pass, after Flush: the pass's line in the log (-runs-log).
+	void EndPass(u64 pass_serial);
+
+private:
+	explicit GSRunsVK(GSDeviceVK* dev);
+	bool Init();
+
+	struct Draw // what Classify decided for the draw in hand
+	{
+		bool cand = false;
+		u32 flags = 0;
+		u32 way = 0;
+	};
+
+	struct Texture
+	{
+		VkImageView view;
+		VkSampler sampler;
+		VkImageLayout layout;
+	};
+
+	struct Run
+	{
+		bool open = false;
+		const GSTexture* rt = nullptr;
+		const GSTexture* ds = nullptr;
+		u8 dss = 0;
+		u8 vs = 0;
+		u8 rta = 0;
+		u8 zfloor = 0;
+		GSVector4i scissor;
+		VkViewport viewport;
+		GSHWDrawConfig::VSConstantBuffer cb_vs;
+		GSVector2 st_scale;
+		VkBuffer vbuf = VK_NULL_HANDLE;
+		u32 header_off = 0, table_off = 0, idx_first = 0, idx_count = 0, ndraws = 0;
+		u32 ways = 0;
+		u32 dear = 0;
+		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
+		GSRunsPolicy::StateSet states;
+		u32 last_slot = 0;
+	};
+
+	struct PassStats
+	{
+		u32 tfx = 0, merged = 0, runs = 0, runs_multi = 0, longest = 0;
+		std::array<u32, WHY_COUNT> why{};
+	};
+
+	struct FramePools // the runs' texture sets of one command buffer slot, reset when the slot is reused
+	{
+		std::vector<VkDescriptorPool> pools;
+		u32 cursor = 0;
+	};
+
+	bool Matches(const GSHWDrawConfig& config) const;
+	Why EndReason(const GSHWDrawConfig& config) const;
+	u32 SpecKey() const;
+	/// Any thread.
+	VkShaderModule GetFragmentShader(u32 variant, u32 spec);
+	/// Any thread.
+	VkPipeline CreatePipeline(u8 dss, u32 variant, u32 spec);
+	/// Whether the pipeline for this program is built; if it is not, asks the device's compile queue for it.
+	bool ProgramReady(u8 dss, u32 variant, u32 spec);
+	/// The flushing run's pipeline, built (Append grows a run only while it is).
+	VkPipeline GetPipeline(bool dual);
+	static u32 SpecKeyOf(const GSRunsPolicy::StateSet& states, u32 strict);
+	VkDescriptorSet WriteTextureSet();
+
+	GSDeviceVK* m_dev;
+	Draw m_draw;
+	Run m_run;
+	PassStats m_pass;
+	bool m_flushing = false;
+
+	// The run's textures, one descriptor per distinct (view, sampler) pair, in first-use order.
+	std::vector<Texture> m_textures;
+	std::vector<VkDescriptorImageInfo> m_image_infos;
+	u32 m_max_textures = 0;
+	u32 m_max_draws = 0;
+	u64 m_draw_seq = 0;
+
+	std::string m_source;
+	VKStreamBuffer m_index_stream;
+	VKStreamBuffer m_table_stream;
+	VkDescriptorSetLayout m_set0_layout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_set1_layout = VK_NULL_HANDLE;
+	VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
+	VkDescriptorSet m_set0 = VK_NULL_HANDLE;
+	VkShaderModule m_vs = VK_NULL_HANDLE;
+	std::mutex m_fs_mutex; ///< guards m_fs, which compile-queue jobs fill
+	std::unordered_map<u64, VkShaderModule> m_fs;
+	std::unordered_map<u64, VkPipeline> m_pipelines; ///< GS thread only
+	u32 m_compiles = 0;
+
+	// Run programs being built on the device's compile queue, by pipeline key. GS thread only; the job writes only its
+	// result, which the GS thread reads after the queue says the job ran.
+	struct Result
+	{
+		VkPipeline pipeline = VK_NULL_HANDLE;
+		float ms = 0.0f;
+	};
+	struct Pending
+	{
+		GSCompileQueue::Ticket ticket;
+		std::shared_ptr<Result> result;
+	};
+	std::unordered_map<u64, Pending> m_pending;
+	std::vector<FramePools> m_frame_pools;
+	u64 m_pool_fence = 0;
+	std::FILE* m_log = nullptr;
+};

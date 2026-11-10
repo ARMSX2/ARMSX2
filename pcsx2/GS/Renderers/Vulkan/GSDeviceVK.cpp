@@ -10,6 +10,7 @@
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
+#include "GS/Renderers/Vulkan/GSRunsVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
@@ -3204,6 +3205,8 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	if (!CompileImGuiPipeline())
 		return false;
 
+	m_runs = GSRunsVK::Create(this);
+
 	InitializeState();
 #ifdef __ANDROID__
 	GSRemotePlay::g_renderer_captures.store(true, std::memory_order_release);
@@ -4880,6 +4883,8 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 			const VkClearRect cr = {{{static_cast<s32>(destX), static_cast<s32>(destY)},
 										{static_cast<u32>(r.width()), static_cast<u32>(r.height())}},
 				0u, 1u};
+			if (m_runs)
+				m_runs->Flush(GSRunsVK::END_OTHER);
 			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &cr);
 			m_date_copy.valid = false; // see OMSetRenderTargets
 
@@ -5880,6 +5885,8 @@ void GSDeviceVK::OMSetRenderTargets(
 			{
 				const GSVector2i size = vkRt ? vkRt->GetSize() : vkDs->GetSize();
 				const VkClearRect cr = {{{0, 0}, {static_cast<u32>(size.x), static_cast<u32>(size.y)}}, 0u, 1u};
+				if (m_runs)
+					m_runs->Flush(GSRunsVK::END_OTHER);
 				vkCmdClearAttachments(GetCurrentCommandBuffer(), num_ca, cas.data(), 1, &cr);
 				// A clear inside the pass rewrites alpha the shared DATE stencil copy describes.
 				m_date_copy.valid = false;
@@ -6025,13 +6032,15 @@ static void AddMacro(std::stringstream& ss, const char* name, int value)
 	ss << "#define " << name << " " << value << "\n";
 }
 
-static void AddShaderHeader(std::stringstream& ss)
+static void AddShaderHeader(std::stringstream& ss, bool nonuniform = false)
 {
 	const GSDeviceVK* dev = GSDeviceVK::GetInstance();
 	const GSDevice::FeatureSupport features = dev->Features();
 
 	ss << "#version 460 core\n";
 	ss << "#extension GL_EXT_samplerless_texture_functions : require\n";
+	if (nonuniform)
+		ss << "#extension GL_EXT_nonuniform_qualifier : require\n";
 
 	// Mali driver-bug shader gate (currently the EQUAL_WZ_CORRUPTS_DEPTH z-nudge in
 	// tfx.glsl). 1 only on Mali; the guarded code compiles out on every other GPU.
@@ -6127,6 +6136,16 @@ static void AddShaderStageMacro(std::stringstream& ss, bool vs, bool gs, bool fs
 		ss << "#define GEOMETRY_SHADER 1\n";
 	else if (fs)
 		ss << "#define FRAGMENT_SHADER 1\n";
+}
+
+std::string GSDeviceVK::RunsShaderSource(bool vertex, const std::string& defines, const std::string& source) const
+{
+	std::stringstream ss;
+	AddShaderHeader(ss, true);
+	AddShaderStageMacro(ss, vertex, false, !vertex);
+	ss << defines;
+	ss << source;
+	return ss.str();
 }
 
 static void AddUtilityVertexAttributes(Vulkan::GraphicsPipelineBuilder& gpb)
@@ -7464,6 +7483,8 @@ void GSDeviceVK::DestroyResources()
 	StopPipelinePrecompile();
 	m_compile_queue.Stop();
 
+	m_runs.reset();
+
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
 
@@ -8752,6 +8773,8 @@ void GSDeviceVK::SetUtilityTexture(GSTexture* tex, VkSampler sampler)
 
 void GSDeviceVK::SetUtilityPushConstants(const void* data, u32 size)
 {
+	if (m_runs)
+		m_runs->Flush(GSRunsVK::END_OTHER);
 	// Cache so a mid-utility-draw command-buffer rollover can replay these. Ported from sashkinbro/EmuCoreX.
 	pxAssert(size <= m_utility_push_constants.size());
 	std::memcpy(m_utility_push_constants.data(), data, size);
@@ -8854,6 +8877,12 @@ void GSDeviceVK::EndRenderPass()
 	if (m_current_render_pass == VK_NULL_HANDLE)
 		return;
 
+	if (m_runs)
+	{
+		m_runs->Flush(GSRunsVK::END_PASS);
+		m_runs->EndPass(m_render_pass_serial);
+	}
+
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
@@ -8935,6 +8964,8 @@ __ri void GSDeviceVK::ApplyBaseState(u32 flags, VkCommandBuffer cmdbuf)
 
 bool GSDeviceVK::ApplyTFXState(bool already_execed)
 {
+	if (m_runs)
+		m_runs->Flush(GSRunsVK::END_OTHER);
 	if (m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0)
 		return true;
 
@@ -9110,6 +9141,8 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 
 bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 {
+	if (m_runs)
+		m_runs->Flush(GSRunsVK::END_OTHER);
 	if (m_current_pipeline_layout == PipelineLayout::Utility && m_dirty_flags == 0)
 		return true;
 
@@ -9170,6 +9203,8 @@ void GSDeviceVK::SetPSConstantBuffer(const GSHWDrawConfig::PSConstantBuffer& cb)
 
 void GSDeviceVK::SetVSPushConstants(u32 base_vertex, u32 base_index, bool force_update)
 {
+	if (m_runs)
+		m_runs->Flush(GSRunsVK::END_OTHER);
 	GSHWDrawConfig::VSPushConstants pc;
 	pc.base_vertex = base_vertex;
 	pc.base_index = base_index;
@@ -9330,6 +9365,8 @@ bool GSDeviceVK::DrawStencilCounter(GSHWDrawConfig& config)
 		const VkClearAttachment ca = {VK_IMAGE_ASPECT_STENCIL_BIT, 0u, {.depthStencil = {0.0f, 0u}}};
 		const VkClearRect rc = {{{area.left, area.top}, {static_cast<u32>(area.width()), static_cast<u32>(area.height())}},
 			0u, 1u};
+		if (m_runs)
+			m_runs->Flush(GSRunsVK::END_OTHER);
 		vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &rc);
 	}
 
@@ -9529,6 +9566,11 @@ bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
 
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
+	// The run machine (GSRunsVK.h) decides whether this draw can join a run, and ends the open run if not, before
+	// anything below records a command.
+	if (m_runs)
+		m_runs->Classify(config);
+
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
 	// readback-prone frame is recording, submit the work recorded so far once enough of it has
 	// piled up, so the GPU executes it while the GS thread records the rest instead of starting
@@ -10042,6 +10084,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		const VkClearRect rc = {{{config.drawarea.left, config.drawarea.top},
 									{static_cast<u32>(config.drawarea.width()), static_cast<u32>(config.drawarea.height())}},
 			0u, 1u};
+		if (m_runs)
+			m_runs->Flush(GSRunsVK::END_OTHER);
 		vkCmdClearAttachments(m_current_command_buffer, 1, &ca, 1, &rc);
 	}
 
@@ -10060,12 +10104,19 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 	}
 
+	// A draw the run machine takes writes its own vertices and indices, into its run.
+	const bool in_run = m_runs && m_runs->Candidate() && m_runs->Append(config, pipe.feedback_loop_flags, pipe.ps.colclip_hw);
+
 	// VB/IB upload, if we did DATE setup and it's not colclip hw this has already been done
-	if (!date_image || colclip_rt)
+	if (!in_run && (!date_image || colclip_rt))
 		UploadHWDrawVerticesAndIndices(config);
 
 	// now we can do the actual draw
-	if (config.colormask.logic_op != GSAlphaBitLogicOp::Off)
+	if (in_run)
+	{
+		// Drawn with its run, as one host draw, when the run ends.
+	}
+	else if (config.colormask.logic_op != GSAlphaBitLogicOp::Off)
 	{
 		// An alpha-bit mark (GSAlphaBitLogicOp.h): one run, or two in submission order when its
 		// primitives set the bit and then clear it (or the reverse), one op each. Nothing reads the

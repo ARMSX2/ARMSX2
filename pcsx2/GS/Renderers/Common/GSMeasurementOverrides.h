@@ -6,6 +6,8 @@
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
+#include <string>
+
 /// Switches that move the Vulkan self-read road, or size the vertex ring, for an A/B. Only
 /// pcsx2-gsrunner sets them, from its command line, before the VM starts; the Vulkan backend
 /// reads them once, while it resolves its features and before any pipeline, image or render pass
@@ -71,6 +73,39 @@ struct GSMeasurementOverrides
 	/// does not on a single binary.
 	bool no_dual_source = false;
 
+	/// -runs off: the Vulkan run machine (GSRunsVK.h) is not created, so every draw takes the classic path. The
+	/// baseline of the machine's A/Bs and of its picture checks.
+	bool runs_off = false;
+
+	/// -runs-split none|dear: whether a run ends where a draw's dear states (the hardware's lod, an alpha test) differ
+	/// from the run's. Default dear.
+	bool runs_split_dear = true;
+
+	/// -runs-nofill: each run's host draw is scissored to one pixel, so a no-fill arm prices a pass without its fill.
+	bool runs_nofill = false;
+
+	/// -runs-max-draws N: a run ends after N draws (0 = the machine's own limit). 1 draws every merged draw alone under
+	/// the run program, which separates the program's arithmetic from the merge in a picture check.
+	u32 runs_max_draws = 0;
+
+	/// -runs-general / -runs-read-mask M: the run program's states in M (bit i = the i-th state of a row's flags, in
+	/// tfx_runs.glsl's order: tfx tcc fog iip atst way lod rtasrc) are read from the rows even where the run holds one
+	/// value of them. -runs-general is M = 0xFF, the one general program. Prices the specialisation state by state and
+	/// separates its effect from the merge's in a picture check.
+	u32 runs_read_mask = 0;
+
+	/// -runs-draw-range LO HI: only the TFX draws numbered LO..HI-1 since the device was created may join a run (the
+	/// rest take the classic path), and each of them gets a D line in the log. Finds the draw behind a picture difference.
+	u64 runs_draw_lo = 0;
+	u64 runs_draw_hi = 0;
+
+	/// -runs-sync-compile: a run program is built on the GS thread when a run first needs it, instead of on the
+	/// device's compile queue while the draws that need it are drawn classically. Prices the asynchronous build.
+	bool runs_sync_compile = false;
+
+	/// -runs-log <path>: one line per render pass with the machine's counts, and one per compiled run program.
+	std::string runs_log;
+
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;
@@ -79,7 +114,8 @@ struct GSMeasurementOverrides
 	bool Any() const
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
-		       alpha_bit_logic_op || no_provoking_vertex || no_dual_source || stream_rings_cached;
+		       alpha_bit_logic_op || no_provoking_vertex || no_dual_source || stream_rings_cached || runs_off ||
+		       !runs_split_dear || runs_nofill;
 	}
 };
 

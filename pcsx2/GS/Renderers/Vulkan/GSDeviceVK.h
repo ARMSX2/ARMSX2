@@ -35,10 +35,14 @@
 #include <vector>
 
 class VKSwapChain;
+class GSRunsVK;
 struct GSSelfReadRoadDecision;
 
 class GSDeviceVK final : public GSDevice
 {
+	// The run machine records into this device's command buffers and keeps its state (GSRunsVK.h).
+	friend class GSRunsVK;
+
 public:
 	enum : u32
 	{
@@ -1132,6 +1136,11 @@ private:
 
 	/// Render passes ended so far; a stencil copy belongs to the pass it was built in.
 	u64 m_render_pass_serial = 0;
+
+	/// The run machine, where the device has its features (GSRunsVK.h); null elsewhere.
+	std::unique_ptr<GSRunsVK> m_runs;
+	/// A run program's source: the shared header with the non-uniform indexing extension, the stage, then defines.
+	std::string RunsShaderSource(bool vertex, const std::string& defines, const std::string& source) const;
 
 	/// GSAlphaBitLogicOp: the destination-alpha stencil copy that DATE draws with
 	/// GSHWDrawConfig::date_copy share, while it stays true. Valid only inside the pass it was
