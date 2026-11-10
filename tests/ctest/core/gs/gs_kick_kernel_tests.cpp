@@ -574,9 +574,19 @@ namespace
 		EXPECT_TRUE(SameBytes("index buffer [0, itail)", a.m_index->buff, b.m_index->buff,
 			sizeof(u16) * a.m_index->tail));
 
-		EXPECT_TRUE(SameBytes("xy ring", a.m_vertex->xy, b.m_vertex->xy, sizeof(a.m_vertex->xy)));
-		EXPECT_TRUE(SameBytes("kick_ring", a.m_vertex->kick_ring, b.m_vertex->kick_ring,
-			sizeof(a.m_vertex->kick_ring)));
+		// The two most recent entries of each ring. A window never holds more than
+		// two vertices waiting for a third, so those are the only entries a later
+		// decision can read; the kernel writes those two per chunk and leaves the
+		// older pair as it found them.
+		for (u32 back = 1; back <= 2; back++)
+		{
+			const u32 slot = (a.m_vertex->xy_tail - back) & 3;
+			EXPECT_TRUE(SameBytes("xy ring", &a.m_vertex->xy[slot], &b.m_vertex->xy[slot], sizeof(GSVector4i)))
+				<< "entry " << back << " back";
+			EXPECT_TRUE(SameBytes("kick_ring", &a.m_vertex->kick_ring[slot], &b.m_vertex->kick_ring[slot],
+				sizeof(GSVertexKernels::CullMirrorEntry)))
+				<< "entry " << back << " back";
+		}
 		EXPECT_TRUE(SameBytes("xyhead", &a.m_vertex->xyhead, &b.m_vertex->xyhead, sizeof(GSVector4i)));
 
 		EXPECT_EQ(a.m_vertex->fmm_valid, b.m_vertex->fmm_valid) << "fmm_valid";
@@ -612,6 +622,19 @@ namespace
 		EXPECT_EQ(a.m_draws, b.m_draws) << "draw count";
 	}
 
+	// Overwrite the two ring entries older than the two most recent with values that
+	// reject (every outcode bit, one band) and that no real vertex has.
+	void PoisonOlderRingEntries(KickProbe& p)
+	{
+		for (u32 back = 3; back <= 4; back++)
+		{
+			const u32 slot = (p.m_vertex->xy_tail - back) & 3;
+			p.m_vertex->xy[slot] = GSVector4i(0x7FFF0000, 0x7FFF0000, 0x7FFF0000, 0x7FFF0000);
+			p.m_vertex->kick_ring[slot].xyp = 0x7FFF00007FFF0000ull;
+			p.m_vertex->kick_ring[slot].meta = GSVertexKernels::kCullMetaBandXMask | GSVertexKernels::kCullMetaBandYMask | GSVertexKernels::kCullMetaOutcodeMask;
+		}
+	}
+
 	// Run one stream through both arms and compare. `call_sizes` is the number of
 	// vertices in each handler call; a stream is split across calls exactly the way
 	// a GIF tag walk splits it, and the per-call snapshot rule makes the split
@@ -642,6 +665,12 @@ namespace
 				const u32 take = std::min<u32>(nv, static_cast<u32>(verts.size()) - k);
 				p->KickCallDyn(prim, &stream[k * 3], take * 3, xyzf2);
 				k += take;
+				// The kernel leaves the rings' two older entries as it found them,
+				// on the claim that nothing reads them. Hold every reader to that: on
+				// the kernel arm they are wrecked after each call, so a decision or a
+				// bounding box that reads one no longer matches the per-vertex arm.
+				if (use_kernel && prim != GS_TRIANGLEFAN)
+					PoisonOlderRingEntries(*p);
 			}
 			// Whatever the call list did not cover goes in one last call.
 			if (k < verts.size())
@@ -801,17 +830,6 @@ namespace
 	// ones around it and the ones shorter than a prim.
 	const std::vector<u32> kRunLengths = {1, 2, 3, 5, 127, 128, 129, 1000};
 } // namespace
-
-// The kernel's side entry is a CullMirrorEntry with the ADC bit in meta's spare
-// bits. If a future band or outcode change reaches those bits the cull decision
-// silently changes, so pin the masks here as well as in the header's static_assert.
-TEST(GsKickKernel, SideEntryAdcBitDoesNotCollide)
-{
-	EXPECT_EQ(GSVertexKickKernel::kCullMetaAdcBit & GSVertexKernels::kCullMetaBandXMask, 0u);
-	EXPECT_EQ(GSVertexKickKernel::kCullMetaAdcBit & GSVertexKernels::kCullMetaBandYMask, 0u);
-	EXPECT_EQ(GSVertexKickKernel::kCullMetaAdcBit & GSVertexKernels::kCullMetaOutcodeMask, 0u);
-	EXPECT_EQ(static_cast<u64>(0x8000u) << GSVertexKickKernel::kAdcShift, GSVertexKickKernel::kCullMetaAdcBit);
-}
 
 // The three prim types the kernel carries, both packed layouts, every ADC
 // pattern, every run length. This is the bulk of the suite: a mismatch anywhere in
@@ -1431,99 +1449,6 @@ TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 }
 
 #ifdef ARCH_ARM64
-TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
-{
-	// The offsets are subtracted from the raw 12.4 coordinate, so a target window
-	// coordinate wx is reached as X = wx + ofx with X inside a u16. Both offsets
-	// are exercised: zero, and the usual PS2 screen-centre value.
-	for (int ofx : {0, 1728 * 16})
-	{
-		for (int ofy : {0, 1808 * 16})
-		{
-		  for (int band_shift : {4, 3, 2, 1, 0})
-		  {
-		    for (int phase : {0, band_shift ? 1 << (band_shift - 1) : 0})
-		    {
-		    for (bool banded : {true, false})
-		    {
-			// No grid only ever compares raw coordinates.
-			if (band_shift == 0 && banded)
-				continue;
-			const int bias = phase + 1;
-			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
-			const GSVector4i xyof(ofx, ofy, ofx, ofy);
-			const auto mb = GSVertexKickKernel::MakeMirrorBounds(xyof, bounds, band_shift, banded, bias, bias);
-
-			std::vector<int> xs, ys;
-			for (int v : BoundaryCoords(bounds.l, bounds.r, band_shift))
-			{
-				if (v + ofx >= 0 && v + ofx <= 0xFFFF)
-					xs.push_back(v);
-			}
-			for (int v : BoundaryCoords(bounds.t, bounds.b, band_shift))
-			{
-				if (v + ofy >= 0 && v + ofy <= 0xFFFF)
-					ys.push_back(v);
-			}
-			ASSERT_FALSE(xs.empty());
-			ASSERT_FALSE(ys.empty());
-
-			// Four vertices per call, so the sweep is walked four at a time with
-			// every lane carrying a different boundary and a different ADC bit.
-			std::vector<std::pair<int, int>> pts;
-			for (int wx : xs)
-			{
-				for (int wy : ys)
-					pts.emplace_back(wx, wy);
-			}
-			while (pts.size() % 4 != 0)
-				pts.push_back(pts.back());
-
-			for (size_t base = 0; base < pts.size(); base += 4)
-			{
-				alignas(16) u32 raw[4][4] = {};
-				GSVertexKernels::CullMirrorEntry expect[4];
-				for (int k = 0; k < 4; k++)
-				{
-					const int wx = pts[base + k].first;
-					const int wy = pts[base + k].second;
-					raw[k][0] = static_cast<u32>(wx + ofx) & 0xFFFFu;
-					raw[k][1] = static_cast<u32>(wy + ofy) & 0xFFFFu;
-					raw[k][2] = 0x12345678u;
-					// ADC on two lanes of every quad, so a stuck lane shows up.
-					raw[k][3] = (k & 1) ? 0x8000u : 0u;
-
-					expect[k] =
-						banded ? GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, bounds, band_shift, bias, bias) :
-								 GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, bounds, band_shift, bias, bias);
-					if (k & 1)
-						expect[k].meta |= GSVertexKickKernel::kCullMetaAdcBit;
-				}
-
-				alignas(16) u64 got_xyp[4] = {};
-				alignas(16) u64 got_meta[4] = {};
-				if (band_shift == 0)
-					GSVertexKickKernel::BuildMirrorQuad<true>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
-						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
-				else
-					GSVertexKickKernel::BuildMirrorQuad<false>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
-						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
-
-				for (int k = 0; k < 4; k++)
-				{
-					SCOPED_TRACE(::testing::Message() << "ofx=" << ofx << " ofy=" << ofy << " lane=" << k
-					                                  << " wx=" << pts[base + k].first
-					                                  << " wy=" << pts[base + k].second);
-					EXPECT_EQ(got_xyp[k], expect[k].xyp) << "xyp";
-					EXPECT_EQ(got_meta[k], expect[k].meta) << "meta";
-				}
-			}
-		    }
-		    }
-		  }
-		}
-	}
-}
 #endif // ARCH_ARM64
 
 // The environment moving under a run in progress.
@@ -2788,4 +2713,282 @@ TEST(GsKickKernel, LayoutsMatchThroughTransferWithDrawBuffering)
 			}
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The decide-then-convert kernel.
+//
+// The kernel decides every vertex of a chunk first, four at a time and from the
+// packed position alone, then converts only the vertices that end up below the
+// tail: those of drawn primitives, and the ones kicked after the last drawn
+// primitive. What that can get wrong is specific -- a decision that disagrees
+// with the per-vertex cull at one kind of rejection, a slot or an index that is
+// off where a run of drawn primitives starts or stops, a vertex that was not
+// converted and should have been, the hand-over between the vertices decided
+// against the ring and the ones decided four at a time, the accept word's and the
+// chunk's ends -- so these plant each kind of rejection at each such place in an
+// otherwise fully drawn stream, on every primitive type and cull grid.
+// ---------------------------------------------------------------------------
+namespace
+{
+	// A stream every primitive of which is drawn, whatever the primitive type: a
+	// zigzag whose consecutive vertices are at least two pixels apart on both
+	// axes, well inside the scissor.
+	std::vector<VertexSpec> MakeDrawnStream(u32 count, u32 seed)
+	{
+		std::mt19937 rng(seed);
+		std::vector<VertexSpec> v;
+		v.reserve(count);
+		for (u32 i = 0; i < count; i++)
+		{
+			VertexSpec s = {};
+			s.x = static_cast<u16>((40 + (i % 97) * 5 + ((i & 1) ? 37 : 0)) * 16 + (rng() % 16));
+			s.y = static_cast<u16>((30 + (i % 53) * 6 + ((i & 2) ? 41 : 0)) * 16 + (rng() % 16));
+			s.z = rng();
+			s.rgba = rng();
+			s.fog = rng() & 0xFF;
+			s.s = static_cast<float>(static_cast<int>(rng() % 2000) - 1000) / 64.0f;
+			s.t = static_cast<float>(static_cast<int>(rng() % 2000) - 1000) / 64.0f;
+			s.q = 1.0f + static_cast<float>(rng() % 100) / 32.0f;
+			s.uv_u = rng();
+			s.uv_v = rng();
+			v.push_back(s);
+		}
+		return v;
+	}
+
+	enum class Plant
+	{
+		Adc,          // the ADC bit
+		Repeat,       // the previous vertex's position
+		OffScreen,    // this vertex and the two before it right of the scissor
+		OneColumn,    // this vertex and the two before it in one pixel column
+		TrimPair,     // 16k - 1 and 16k: one sub-texel apart across a pixel boundary
+	};
+
+	void PlantAt(std::vector<VertexSpec>& v, u32 p, Plant kind)
+	{
+		switch (kind)
+		{
+			case Plant::Adc:
+				v[p].adc = true;
+				break;
+			case Plant::Repeat:
+				if (p > 0)
+				{
+					v[p].x = v[p - 1].x;
+					v[p].y = v[p - 1].y;
+				}
+				break;
+			case Plant::OffScreen:
+				for (u32 j = (p >= 2) ? (p - 2) : 0; j <= p; j++)
+					v[j].x = static_cast<u16>(3000 * 16 + j);
+				break;
+			case Plant::OneColumn:
+				for (u32 j = (p >= 2) ? (p - 2) : 0; j <= p; j++)
+					v[j].x = static_cast<u16>(200 * 16 + 3 + (j & 3));
+				break;
+			case Plant::TrimPair:
+				for (u32 j = (p >= 2) ? (p - 2) : 0; j <= p; j++)
+					v[j].x = static_cast<u16>(200 * 16 - ((j & 1) ? 1 : 0));
+				break;
+		}
+	}
+
+	// Where a plant matters: the chunk's first vertices, the accept word's end
+	// (64), the chunk's end (128) and the stream's end.
+	std::vector<u32> PlantPositions(u32 len)
+	{
+		std::vector<u32> p;
+		for (u32 i = 0; i < 9; i++)
+			p.push_back(i);
+		for (u32 i = 60; i < 69; i++)
+			p.push_back(i);
+		for (u32 i = 124; i < 133; i++)
+			p.push_back(i);
+		for (u32 i = len - 4; i < len; i++)
+			p.push_back(i);
+		return p;
+	}
+
+	constexpr int kPlantGrids[] = {4, 3, 1, 0};
+} // namespace
+
+TEST(GsKickKernel, EveryRejectionKindAtEveryPlaceInADrawnRun)
+{
+	constexpr u32 len = 141;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (int shift : kPlantGrids)
+		{
+			for (Plant kind : {Plant::Adc, Plant::Repeat, Plant::OffScreen, Plant::OneColumn, Plant::TrimPair})
+			{
+				for (u32 p : PlantPositions(len))
+				{
+					SCOPED_TRACE(::testing::Message() << "prim=" << prim << " shift=" << shift
+					                                  << " kind=" << static_cast<int>(kind) << " at=" << p);
+					std::vector<VertexSpec> v = MakeDrawnStream(len, 900 + p);
+					PlantAt(v, p, kind);
+					KickSetup s;
+					s.cull_shift = shift;
+					s.tme = 1;
+					RunAndCompare(s, prim, (p & 1) != 0, v, {len});
+				}
+			}
+		}
+	}
+}
+
+// Two plants, so a run of drawn primitives is bounded on both sides and a
+// rejected stretch has every length from none to a chunk's worth: this is where a
+// strip's window slides down over what the rejections left, and where the
+// vertices between two drawn primitives are never converted.
+TEST(GsKickKernel, RejectedStretchesOfEveryLengthBetweenDrawnRuns)
+{
+	constexpr u32 len = 150;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (int shift : {4, 0})
+		{
+			for (u32 start : {0u, 1u, 2u, 3u, 7u, 61u, 62u, 63u, 64u, 126u, 127u})
+			{
+				for (u32 gap : {1u, 2u, 3u, 4u, 5u, 6u, 9u, 20u, 64u, 65u, 130u})
+				{
+					if (start + gap > len)
+						continue;
+					SCOPED_TRACE(::testing::Message() << "prim=" << prim << " shift=" << shift
+					                                  << " start=" << start << " gap=" << gap);
+					std::vector<VertexSpec> v = MakeDrawnStream(len, 7000 + start * 131 + gap);
+					for (u32 j = start; j < start + gap; j++)
+						v[j].adc = true;
+					KickSetup s;
+					s.cull_shift = shift;
+					s.tme = 1;
+					s.iip = (gap & 1);
+					RunAndCompare(s, prim, false, v, {len});
+					// The same with the stretch culled rather than skipped.
+					for (u32 j = start; j < start + gap; j++)
+					{
+						v[j].adc = false;
+						v[j].x = static_cast<u16>(3000 * 16 + j);
+					}
+					RunAndCompare(s, prim, false, v, {len});
+				}
+			}
+		}
+	}
+}
+
+// A chunk that begins inside a primitive: its first one or two vertices are
+// decided against the ring, the rest four at a time, and the two must meet. Every
+// split point over the first vertices, with the first primitives drawn, skipped
+// and culled, and with nothing but the split vertex in the call.
+TEST(GsKickKernel, CallSplitsAtEveryPhaseHandOverFromTheRing)
+{
+	constexpr u32 len = 40;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (int shift : {4, 3, 0})
+		{
+			for (u32 variant = 0; variant < 6; variant++)
+			{
+				std::vector<VertexSpec> v = MakeDrawnStream(len, 12000 + variant);
+				if (variant == 1)
+					for (u32 j = 0; j < len; j += 3)
+						v[j].adc = true;
+				else if (variant == 2)
+					for (u32 j = 5; j < 12; j++)
+						v[j].x = static_cast<u16>(3000 * 16 + j);
+				else if (variant == 3)
+					PlantAt(v, 8, Plant::Repeat);
+				else if (variant == 4)
+					PlantAt(v, 9, Plant::OneColumn);
+				else if (variant == 5)
+					PlantAt(v, 7, Plant::TrimPair);
+
+				for (u32 a = 1; a <= 9; a++)
+				{
+					for (u32 b = 1; b <= 4; b++)
+					{
+						SCOPED_TRACE(::testing::Message() << "prim=" << prim << " shift=" << shift << " variant="
+						                                  << variant << " split=" << a << "," << b);
+						KickSetup s;
+						s.cull_shift = shift;
+						s.tme = 1;
+						s.fst = (variant & 1);
+						RunAndCompare(s, prim, (a & 1) != 0, v, {a, b, 1, 1, 2});
+					}
+				}
+			}
+		}
+	}
+}
+
+// The environment moves at every draw (scissor, offset, shading), so the ring's
+// entries for a pending window are re-derived under a call's feet and the next
+// chunk's first decisions read them.
+TEST(GsKickKernel, RingHandOverSurvivesAnEnvironmentMovingAtEveryDraw)
+{
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (u32 seed = 0; seed < 40; seed++)
+		{
+			SCOPED_TRACE(::testing::Message() << "prim=" << prim << " seed=" << seed);
+			KickSetup s;
+			const std::vector<VertexSpec> v = MakeStream(260, AdcPattern::Stuntman, 31000 + seed);
+			RunAndCompare(s, prim, false, v, {1 + seed % 7, 2 + seed % 5, 9, 130, 3}, true, true);
+		}
+	}
+}
+
+// The control: the planted streams do tell two kernels apart. Stream by stream the
+// suite above compares the kernel with the per-vertex kick; this checks that a
+// stream with a plant leaves a different result from the same stream without
+// it, so "equal" there is not two arms agreeing about nothing.
+TEST(GsKickKernel, PlantedStreamsAreNotVacuous)
+{
+	constexpr u32 len = 141;
+	for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+	{
+		for (Plant kind : {Plant::Adc, Plant::Repeat, Plant::OffScreen, Plant::OneColumn, Plant::TrimPair})
+		{
+			SCOPED_TRACE(::testing::Message() << "prim=" << prim << " kind=" << static_cast<int>(kind));
+			const std::vector<VertexSpec> clean = MakeDrawnStream(len, 900);
+			std::vector<VertexSpec> planted = clean;
+			// An odd position completes a sprite and (65 = 3 * 22 - 1) a list's triangle.
+			PlantAt(planted, 65, kind);
+
+			KickSetup s;
+			s.cull_shift = (kind == Plant::TrimPair) ? 0 : 4;
+			const std::vector<GIFPackedReg> a = EncodeStream(clean, false);
+			const std::vector<GIFPackedReg> b = EncodeStream(planted, false);
+			auto pa = MakeProbe(s, prim, true);
+			auto pb = MakeProbe(s, prim, true);
+			pa->KickCallDyn(prim, a.data(), len * 3, false);
+			pb->KickCallDyn(prim, b.data(), len * 3, false);
+			EXPECT_GT(pa->m_index->tail, 0u);
+			EXPECT_LT(pb->m_index->tail, pa->m_index->tail) << "the plant rejected nothing";
+		}
+	}
+}
+
+// The guard on the rings' older entries has teeth: wrecking one of the two LIVE
+// entries between calls does change what the next call decides.
+TEST(GsKickKernel, RingPoisonGuardIsNotVacuous)
+{
+	const std::vector<VertexSpec> v = MakeDrawnStream(12, 4242);
+	const std::vector<GIFPackedReg> stream = EncodeStream(v, false);
+	KickSetup s;
+	auto clean = MakeProbe(s, GS_TRIANGLESTRIP, true);
+	auto wrecked = MakeProbe(s, GS_TRIANGLESTRIP, true);
+	clean->KickCallDyn(GS_TRIANGLESTRIP, stream.data(), 6 * 3, false);
+	wrecked->KickCallDyn(GS_TRIANGLESTRIP, stream.data(), 6 * 3, false);
+	// The most recent entry takes the position of the one before it, so the first
+	// triangle the next call completes has a repeated position.
+	const u32 live = (wrecked->m_vertex->xy_tail - 1) & 3;
+	const u32 before = (wrecked->m_vertex->xy_tail - 2) & 3;
+	wrecked->m_vertex->kick_ring[live] = wrecked->m_vertex->kick_ring[before];
+	clean->KickCallDyn(GS_TRIANGLESTRIP, stream.data() + 6 * 3, 6 * 3, false);
+	wrecked->KickCallDyn(GS_TRIANGLESTRIP, stream.data() + 6 * 3, 6 * 3, false);
+	EXPECT_LT(wrecked->m_index->tail, clean->m_index->tail);
 }

@@ -1104,17 +1104,6 @@ public:
 	// the per-vertex parse loads them off `this` with no test of the flag.
 	GSVertexKernels::PackedParseConsts m_parse_consts;
 
-	// LAST IN THE CLASS ON PURPOSE (but for the draw record's environments below, which nothing else reads), and it
-	// must stay there. This is 2 KB of scratch
-	// that only the kernel touches. Declared anywhere else it pushes every member
-	// after it 2 KB further from `this`, which moves hot fields the rest of the
-	// front end reads -- for no benefit to anything, since nothing but the kernel
-	// reads these. Declared in the middle of the class it cost the autoflush
-	// handler, which never runs the kernel, measurable time on both the M2 and the
-	// SD865.
-	alignas(16) u64 m_kick_side_xyp[GSVertexKickKernel::kChunkVertices] = {};
-	alignas(16) u64 m_kick_side_meta[GSVertexKickKernel::kChunkVertices] = {};
-
 	// The draw record's two environments as the pipelined split's back object holds them: on the front parser
 	// object, what it last sent (it sends only the 64-byte blocks that differ from these); on the back object, those
 	// blocks applied, from which it installs m_prev_env and m_env in full. Behind the kernel's scratch, for the same
