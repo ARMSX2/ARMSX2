@@ -236,10 +236,11 @@ protected:
 	using GSVertexBuff = GSBackQueue::VertexBuff;
 	using GSIndexBuff = GSBackQueue::IndexBuff;
 
-	GSVertexBuff m_vertex_buffers[MAX_DRAW_BUFFERS];
+	// Zeroed, so the constructor's first ResetDrawBuffers() frees nothing.
+	GSVertexBuff m_vertex_buffers[MAX_DRAW_BUFFERS] = {};
 	GSVertexBuff* m_vertex = nullptr;
 
-	GSIndexBuff m_index_buffers[MAX_DRAW_BUFFERS];
+	GSIndexBuff m_index_buffers[MAX_DRAW_BUFFERS] = {};
 
 	GSIndexBuff* m_index;
 

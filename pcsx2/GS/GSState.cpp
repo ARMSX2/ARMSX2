@@ -736,6 +736,12 @@ void GSState::ResetDrawBuffers()
 
 	for (int i = 0; i < MAX_DRAW_BUFFERS; i++)
 	{
+		// The slot's buffers are its own (a draw handed to the back queue took the slot's arrays and left the node's
+		// in exchange), and the reset runs after the back queue drained and the pending draw flushed, so nothing
+		// points into them any more. Free them before the slot is cleared, or every reset leaks a set.
+		_aligned_free(m_index_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff_copy);
 		memset(&m_index_buffers[i], 0, sizeof(GSIndexBuff));
 		memset(&m_vertex_buffers[i], 0, sizeof(GSVertexBuff));
 		memset(&m_env_buffers[i], 0, sizeof(GSDrawBufferEnv));
