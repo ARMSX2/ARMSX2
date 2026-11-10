@@ -33,9 +33,10 @@ public:
 	int pixels;
 	int counter;
 	u8 scanmsk_value;
-	/// Set when the draw reaches past its buffer's page row, where addressing folds
-	/// onto rows a page away and two workers could write the same bytes. The
-	/// rasterizer list runs such draws whole, alone, on one thread.
+	/// Set when two of the draw's rows share bytes, so two workers could write the
+	/// same memory: the draw reaches past its buffer's page row, where addressing
+	/// folds onto rows a page away, or its frame and Z buffers lie over each other.
+	/// The rasterizer list runs such draws whole, alone, on one thread.
 	bool serial;
 
 	GSScanlineGlobalData global;
@@ -163,6 +164,9 @@ public:
 	/// Are rows `page_height` apart owned by different workers? If so, a draw
 	/// past its buffer's page row must run serially (GSRasterizerData::serial).
 	virtual bool RowsFoldAcrossWorkers(int page_height) const = 0;
+
+	/// Does a queued draw's rows go to more than one worker?
+	virtual bool SplitsDraws() const = 0;
 };
 
 class GSSingleRasterizer final : public IRasterizer
@@ -177,6 +181,7 @@ public:
 	int GetPixels(bool reset = true) override;
 	void PrintStats() override;
 	bool RowsFoldAcrossWorkers(int page_height) const override { return false; }
+	bool SplitsDraws() const override { return false; }
 
 	void Draw(GSRasterizerData& data);
 
@@ -219,6 +224,7 @@ public:
 	int GetPixels(bool reset) override;
 	void PrintStats() override;
 	bool RowsFoldAcrossWorkers(int page_height) const override;
+	bool SplitsDraws() const override { return m_workers.size() > 1; }
 };
 
 MULTI_ISA_UNSHARED_END

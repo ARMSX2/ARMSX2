@@ -6,6 +6,7 @@
 #include "GS/Renderers/SW/GSCoordinateLag.h"
 #include "GS/Renderers/SW/GSVertexQDivide.h"
 #include "GS/Renderers/SW/GSStqExtremes.h"
+#include "GS/Renderers/SW/GSSwTargetAlias.h"
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
@@ -498,6 +499,14 @@ void GSRendererSW::Draw()
 			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.fb.psm()].pgs.y)) ||
 		(sd->global.sel.zb && r.right > m_context->offset.zb.pageRowWidth() &&
 			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.zb.psm()].pgs.y));
+
+	// The same split fails when the frame and the Z buffer lie over each other: a
+	// frame row and a Z row that share bytes belong to different workers
+	// (GSSwTargetAlias.h). Reading both is harmless.
+	if (!sd->serial && fb_pages && zb_pages && (sd->global.sel.fwrite || sd->global.sel.zwrite) && m_rl->SplitsDraws())
+	{
+		sd->serial = GSSwFrameAndDepthSharePages(m_context->offset.fb, m_context->offset.zb, r);
+	}
 
 	// check if there is an overlap between this and previous targets
 
