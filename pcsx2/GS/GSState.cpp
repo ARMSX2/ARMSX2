@@ -1368,6 +1368,8 @@ void GSState::SetDrawBuffDirty()
 void GSState::ResetHandlers()
 	{
 	std::fill(std::begin(m_fpGIFPackedRegHandlers), std::end(m_fpGIFPackedRegHandlers), &GSState::GIFPackedRegHandlerNull);
+	// The fills below empty the XYZ entries UpdateVertexKick published, so the next PRIM write must publish again.
+	m_kick_published_prim = 0xFF;
 
 	m_fpGIFPackedRegHandlers[GIF_REG_PRIM] = (GIFPackedRegHandler)(GIFRegHandler)&GSState::GIFRegHandlerPRIM;
 	m_fpGIFPackedRegHandlers[GIF_REG_RGBA] = &GSState::GIFPackedRegHandlerRGBA;
@@ -3010,7 +3012,10 @@ __forceinline void GSState::ApplyPRIM(u32 prim)
 	else
 		m_dirty_gs_regs &= ~(1<< DIRTY_REG_PRIM);
 
-	UpdateVertexKick();
+	// The kick handlers depend on the primitive type alone; a PRIM write that keeps the type (most of them: a tag
+	// restarting a strip, or changing only shading, texturing or blending) finds them already published.
+	if (PRIM->PRIM != m_kick_published_prim)
+		UpdateVertexKick();
 
 	pxAssert(m_index->tail == 0 || m_index->buff[m_index->tail - 1] + 1 == m_vertex->next);
 
@@ -5768,6 +5773,8 @@ void GSState::UpdateVertexKick()
 
 	for (u32 i = 0; i < GIF_REG_COMPLEX_COUNT - 2; i++)
 		m_fpGIFPackedRegHandlersLayoutC[i] = m_fpGIFPackedRegHandlerLayout[i][prim];
+
+	m_kick_published_prim = static_cast<u8>(prim);
 }
 
 void GSState::GrowVertexBuffer()

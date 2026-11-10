@@ -215,6 +215,7 @@ protected:
 	{
 		for (GIFPackedRegHandlerC& e : m_fpGIFPackedRegHandlersLayoutC)
 			e = nullptr;
+		m_kick_published_prim = 0xFF;
 	}
 
 	// Executor-owned HOST->LOCAL write cursor (advanced by wi() across transfer
@@ -231,6 +232,9 @@ protected:
 	int  m_used_buffers_idx = 0;
 	int m_current_buffer_idx = 0;
 	bool m_recent_buffer_switch = false;
+	// The primitive type whose kick handlers UpdateVertexKick last published into the handler tables, or 0xFF when
+	// the tables hold none (ResetHandlers empties them). ApplyPRIM skips the republish when the type is unchanged.
+	u8 m_kick_published_prim = 0xFF;
 
 	// Definitions hoisted to GSBackQueue.h (DRAW record payload types).
 	using GSVertexBuff = GSBackQueue::VertexBuff;
