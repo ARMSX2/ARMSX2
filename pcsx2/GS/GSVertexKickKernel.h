@@ -9,6 +9,7 @@
 #include "GS/Renderers/Common/GSVertex.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <limits>
 #include <type_traits>
@@ -340,6 +341,15 @@ namespace GSVertexKickKernel
 		return k;
 	}
 
+	// Development scaffolding for gsrunner's -kick-decide-check, to be removed
+	// before the branch merges: how many calls the four-wide pass took, how many
+	// of them went to DecideVectorWide, and, when checking, how many disagreed
+	// with DecideVectorWide run on the same call.
+	inline std::atomic<bool> g_decide_check{false};
+	inline std::atomic<u64> g_decide_calls{0};
+	inline std::atomic<u64> g_decide_wide_calls{0};
+	inline std::atomic<u64> g_decide_mismatches{0};
+
 	alignas(16) inline constexpr u32 kDecideLaneMask[16][4] = {
 		{0, 0, 0, 0}, {~0u, 0, 0, 0}, {0, ~0u, 0, 0}, {~0u, ~0u, 0, 0},
 		{0, 0, ~0u, 0}, {~0u, 0, ~0u, 0}, {0, ~0u, ~0u, 0}, {~0u, ~0u, ~0u, 0},
@@ -439,6 +449,7 @@ namespace GSVertexKickKernel
 		const u32 low = keyed ? 15u : (kb.step - 1);
 		if (((static_cast<u32>(el | et | er | eb) | low) >> 16) != 0) [[unlikely]]
 		{
+			g_decide_wide_calls.fetch_add(1, std::memory_order_relaxed);
 			DecideVectorWide<n, keyed, every>(pxyz, step_bytes, count, period, kb, accept, out);
 			return;
 		}
@@ -766,6 +777,21 @@ namespace GSVertexKickKernel
 				DecideVector<n, true, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
 			else
 				DecideVector<n, false, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
+			if (g_decide_check.load(std::memory_order_relaxed)) [[unlikely]]
+			{
+				u64 wide_accept[2];
+				VectorDecided wide = vd;
+				if (band_shift == 0)
+					DecideVectorWide<n, true, strip>(pxyz, step_bytes, count, period, kb, wide_accept, wide);
+				else
+					DecideVectorWide<n, false, strip>(pxyz, step_bytes, count, period, kb, wide_accept, wide);
+				g_decide_calls.fetch_add(1, std::memory_order_relaxed);
+				if (wide_accept[0] != accept[0] || wide_accept[1] != accept[1] || wide.any != vd.any ||
+					(vd.any && (wide.minx != vd.minx || wide.miny != vd.miny || wide.maxx != vd.maxx || wide.maxy != vd.maxy)))
+				{
+					g_decide_mismatches.fetch_add(1, std::memory_order_relaxed);
+				}
+			}
 			if (vd.any)
 			{
 				const GSVector4i bbox = GSVertexKernels::RoundCullRect<primclass>(
