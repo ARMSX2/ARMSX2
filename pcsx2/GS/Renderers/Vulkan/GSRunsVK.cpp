@@ -104,6 +104,8 @@ GSRunsVK::~GSRunsVK()
 		for (VkDescriptorPool pool : fp.pools)
 			vkDestroyDescriptorPool(device, pool, nullptr);
 	}
+	if (m_set0_pool)
+		vkDestroyDescriptorPool(device, m_set0_pool, nullptr);
 	if (m_pipeline_layout)
 		vkDestroyPipelineLayout(device, m_pipeline_layout, nullptr);
 	if (m_set0_layout)
@@ -166,8 +168,17 @@ bool GSRunsVK::Init()
 	plb.AddDescriptorSet(m_set1_layout);
 	if ((m_pipeline_layout = plb.Create(device)) == VK_NULL_HANDLE)
 		return false;
-	if ((m_set0 = m_dev->AllocatePersistentDescriptorSet(m_set0_layout)) == VK_NULL_HANDLE)
-		return false;
+	// The header and table set comes from a pool of its own, sized for exactly its descriptors: the device's global pool
+	// counts only the types the classic path uses, and a driver that enforces per-type counts (malisx2) refuses the rest.
+	{
+		const VkDescriptorPoolSize sizes[] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1}};
+		const VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, 1, 2, sizes};
+		if (vkCreateDescriptorPool(device, &pci, nullptr, &m_set0_pool) != VK_SUCCESS)
+			return false;
+		const VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, m_set0_pool, 1, &m_set0_layout};
+		if (vkAllocateDescriptorSets(device, &ai, &m_set0) != VK_SUCCESS)
+			return false;
+	}
 	Vulkan::DescriptorSetUpdateBuilder dsub;
 	dsub.AddBufferDescriptorWrite(m_set0, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0, HEADER_RANGE);
 	dsub.AddBufferDescriptorWrite(m_set0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, m_table_stream.GetBuffer(), 0,

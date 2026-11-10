@@ -161,6 +161,7 @@ private:
 	VkDescriptorSetLayout m_set0_layout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_set1_layout = VK_NULL_HANDLE;
 	VkPipelineLayout m_pipeline_layout = VK_NULL_HANDLE;
+	VkDescriptorPool m_set0_pool = VK_NULL_HANDLE;
 	VkDescriptorSet m_set0 = VK_NULL_HANDLE;
 	VkShaderModule m_vs = VK_NULL_HANDLE;
 	std::mutex m_fs_mutex; ///< guards m_fs, which compile-queue jobs fill
