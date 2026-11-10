@@ -101,6 +101,34 @@ TEST(GSRunsPolicy, EveryOtherPixelShaderBitRefuses)
 	}
 }
 
+TEST(GSRunsPolicy, TheCheapRefusalsAgreeWithClassify)
+{
+	// What OutsidePS and OutsideVS refuse, before Classify runs, Classify refuses too.
+	GSHWDrawConfig c = Way0();
+	EXPECT_FALSE(OutsidePS(c.ps));
+	EXPECT_FALSE(OutsideVS(c.vs));
+	for (u32 bit = 0; bit < 8; bit++)
+	{
+		c = Way0();
+		c.vs.key |= static_cast<u8>(1u << bit);
+		if (OutsideVS(c.vs))
+			EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo) << "bit " << bit;
+	}
+	c = Way0();
+	c.vs.fst = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.vs.point_size = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.vs.sprite_edge_clamp = 1;
+	EXPECT_TRUE(OutsideVS(c.vs));
+	c = Way0();
+	c.ps.fst = 1;
+	EXPECT_TRUE(OutsidePS(c.ps));
+	EXPECT_NE(Classify(c, Rgba8(), false).why, Refusal::None);
+}
+
 TEST(GSRunsPolicy, RegionClampAndPaletteRefuse)
 {
 	GSHWDrawConfig c = Way0();

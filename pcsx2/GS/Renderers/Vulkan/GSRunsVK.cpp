@@ -234,9 +234,9 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 	Draw& d = m_draw;
 	d.cand = false;
 	m_pass.tfx++;
-	if (GSRunsPolicy::OutsidePS(config.ps) && !m_log)
+	if (!m_log && (GSRunsPolicy::OutsidePS(config.ps) || GSRunsPolicy::OutsideVS(config.vs)))
 	{
-		m_pass.why[WHY_PS]++;
+		m_pass.why[GSRunsPolicy::OutsideVS(config.vs) ? WHY_TOPO : WHY_PS]++;
 		if (m_run.open)
 			Flush(END_UNMERGEABLE);
 		return;

@@ -185,6 +185,18 @@ namespace GSRunsPolicy
 		return ((ps.key_lo & ~ALLOWED_PS.key_lo) | (ps.key_hi & ~ALLOWED_PS.key_hi)) != 0;
 	}
 
+	/// The vertex-selector bits Classify always refuses as a topology: one AND, taken first with OutsidePS.
+	inline GSHWDrawConfig::VSSelector MakeRefusedVS()
+	{
+		GSHWDrawConfig::VSSelector vs;
+		vs.fst = 1;
+		vs.point_size = 1;
+		vs.sprite_edge_clamp = 1;
+		return vs;
+	}
+	inline const u8 REFUSED_VS = MakeRefusedVS().key;
+	inline bool OutsideVS(const GSHWDrawConfig::VSSelector& vs) { return (vs.key & REFUSED_VS) != 0; }
+
 	inline bool ByteExact(float v) { return v >= 0.0f && v <= 255.0f && v == std::floor(v); }
 
 	/// The way the classic path's blend maps to, or -1.
