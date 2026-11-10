@@ -10,6 +10,7 @@ add_pcsx2_test(gs_vertex_tests
 	${CMAKE_CURRENT_SOURCE_DIR}/../StubHost.cpp
 	gs_vertex_tests.cpp
 	gs_kick_kernel_tests.cpp
+	gs_kick_decide_tests.cpp
 	gs_backqueue_tests.cpp
 	gs_back_thread_policy_tests.cpp
 	gs_interlace_policy_tests.cpp
