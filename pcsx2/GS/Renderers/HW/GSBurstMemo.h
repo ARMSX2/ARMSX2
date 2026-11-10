@@ -259,7 +259,7 @@ namespace GSBurstMemo
 		u64 BudgetEvictions() const { return m_budget_evictions; }
 
 	private:
-		void Remove(const EntryPtr& e);
+		void Remove(Entry* e);
 		void RebuildBloom();
 		/// Keeps a leaving entry's buffer for TakeBuffer(), unless a burst being skipped still reads it.
 		void Recycle(const EntryPtr& e);
@@ -359,9 +359,12 @@ namespace GSBurstMemo
 		/// The candidates' records at `position`, beside `candidates`.
 		std::vector<Record> records;
 
-		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash.
+		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash, and its entries, so a rebuild of the
+		/// expansion that leaves the same entries (a CLUT loaded again from the same bytes) is found with a
+		/// compare instead of a hash.
 		u64 palette_generation = ~u64(0);
 		u32 palette_entries = 0;
 		u64 palette_hash = 0;
+		std::vector<u32> palette_copy;
 	};
 } // namespace GSBurstMemo

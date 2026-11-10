@@ -58,6 +58,8 @@ void GSRendererHW::RefreshBurstMemo()
 	m.frame_had_copies = false;
 	m.candidate = false;
 	m.palette_generation = ~u64(0);
+	m.palette_entries = 0;
+	m.palette_copy.clear();
 
 	// The copy road has to be on, and nothing may be watching or changing draws the memo would skip.
 	m_burst_memo_enabled = GSConfig.BurstMemo && GSConfig.UserHacks_CPUSpriteRenderBW != 0 && !GSConfig.DumpGSData &&
@@ -402,9 +404,8 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 	d.bbox = GSSwPrimRenderBBox(m_vt, ctx.scissor.in);
 
 	// The blocks of the box; those no earlier draw of the burst wrote are keyed as they are now.
+	// A rectangle names each of its blocks once.
 	ctx.offset.fb.loopBlocks(d.bbox, [&d](u32 block) { d.out_blocks.push_back(block % GS_MAX_BLOCKS); });
-	std::sort(d.out_blocks.begin(), d.out_blocks.end());
-	d.out_blocks.erase(std::unique(d.out_blocks.begin(), d.out_blocks.end()), d.out_blocks.end());
 	for (const u32 block : d.out_blocks)
 	{
 		if (!TestBit(m.recording_written, block))
@@ -439,8 +440,7 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 				m_mem.GetOffset(level.TBP0, level.TBW, level.PSM).loopBlocks(r.rempty() ? level_whole : r, [&src](u32 block) { src.push_back(block % GS_MAX_BLOCKS); });
 			}
 		}
-		std::sort(src.begin(), src.end());
-		src.erase(std::unique(src.begin(), src.end()), src.end());
+		// The levels can share blocks; a block keyed twice costs a second check, nothing else.
 		for (const u32 block : src)
 		{
 			if (!TestBit(m.recording_written, block))
@@ -566,11 +566,15 @@ u64 GSRendererHW::BurstMemoPaletteHash(u32 entries)
 {
 	Memo& m = m_burst_memo;
 	const u64 generation = m_mem.m_clut.ReadGeneration();
-	if (generation != m.palette_generation || entries != m.palette_entries)
+	if (generation == m.palette_generation && entries == m.palette_entries)
+		return m.palette_hash;
+	const u32* palette = static_cast<const u32*>(m_mem.m_clut);
+	m.palette_generation = generation;
+	if (entries != m.palette_entries || std::memcmp(m.palette_copy.data(), palette, entries * sizeof(u32)) != 0)
 	{
-		m.palette_hash = GSXXH3_64bits(static_cast<const u32*>(m_mem.m_clut), entries * sizeof(u32));
-		m.palette_generation = generation;
+		m.palette_hash = GSXXH3_64bits(palette, entries * sizeof(u32));
 		m.palette_entries = entries;
+		m.palette_copy.assign(palette, palette + entries);
 	}
 	return m.palette_hash;
 }

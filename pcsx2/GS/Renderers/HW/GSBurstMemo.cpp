@@ -313,7 +313,13 @@ namespace GSBurstMemo
 
 	void Entry::Recount()
 	{
-		bytes = sizeof(Entry) + buf.capacity() * sizeof(Chunk) + offsets.capacity() * sizeof(u32);
+		// A buffer taken from an evicted entry can be much larger than this burst; give the excess back rather
+		// than hold it for as long as the entry stays. Below that, the budget counts what the entry holds, not
+		// the capacity it grew or inherited: counting capacity, the large buffers evictions hand back made the
+		// next bursts look large, which evicted more (Spider-Man 3 street, 2026-11-09).
+		if (buf.capacity() > 2 * buf.size() + (64u << 10) / sizeof(Chunk))
+			buf.shrink_to_fit();
+		bytes = sizeof(Entry) + buf.size() * sizeof(Chunk) + offsets.size() * sizeof(u32);
 	}
 
 	Store::Store() = default;
@@ -372,14 +378,15 @@ namespace GSBurstMemo
 
 		if (m_bytes > m_budget)
 		{
-			// Least recently used first; among equals, the oldest install (earlier in its list).
-			std::vector<EntryPtr> all;
+			// Least recently used first; among equals, the oldest install (earlier in its list). Plain pointers, so
+			// an entry nothing else holds is recycled when it goes.
+			std::vector<Entry*> all;
 			all.reserve(m_entries);
 			for (auto& [s, list] : m_index)
 				for (const EntryPtr& x : list)
-					all.push_back(x);
-			std::stable_sort(all.begin(), all.end(), [](const EntryPtr& a, const EntryPtr& b) { return a->last_used < b->last_used; });
-			for (const EntryPtr& x : all)
+					all.push_back(x.get());
+			std::stable_sort(all.begin(), all.end(), [](const Entry* a, const Entry* b) { return a->last_used < b->last_used; });
+			for (Entry* x : all)
 			{
 				if (m_bytes <= m_budget)
 					break;
@@ -422,13 +429,13 @@ namespace GSBurstMemo
 			RebuildBloom();
 	}
 
-	void Store::Remove(const EntryPtr& e)
+	void Store::Remove(Entry* e)
 	{
 		const auto it = m_index.find(e->first_signature);
 		if (it == m_index.end())
 			return;
 		std::vector<EntryPtr>& list = it->second;
-		const auto pos = std::find(list.begin(), list.end(), e);
+		const auto pos = std::find_if(list.begin(), list.end(), [e](const EntryPtr& x) { return x.get() == e; });
 		if (pos == list.end())
 			return;
 		e->stored = false;
