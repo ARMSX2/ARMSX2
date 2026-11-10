@@ -9048,13 +9048,28 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #endif
 }
 
+// GetEndBlockAddress of the target's layout and valid area. It is a function of those four values alone, and the
+// draw path asks for it three times a draw with none of them changed, so the last answer is kept beside its inputs.
+u32 GSTextureCache::Target::EndBlockOfValid()
+{
+	const u32 layout = m_TEX0.U32[0] & 0x3ffffff; // TBP0, TBW, PSM
+	if (!m_end_of_valid_known || layout != m_end_of_valid_layout || !m_valid.eq(m_end_of_valid_rect))
+	{
+		m_end_of_valid = GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid);
+		m_end_of_valid_layout = layout;
+		m_end_of_valid_rect = m_valid;
+		m_end_of_valid_known = true;
+	}
+	return m_end_of_valid;
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
 	{
 		m_valid = m_valid.rintersect(rect);
 		m_drawn_since_read = m_drawn_since_read.rintersect(rect);
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Else No valid size, so need to resize down.
@@ -9070,13 +9085,13 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 	{
 		m_valid = rect;
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 	else if (can_resize)
 	{
 		m_valid = m_valid.runion(rect);
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Growth matters to any claim of the form "every pixel of this target holds X": the

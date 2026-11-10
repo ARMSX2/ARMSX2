@@ -368,6 +368,11 @@ public:
 		u16 m_index_lo = 0, m_index_hi = 0;
 		bool m_indexed = false;
 		GSVector4i m_valid{};
+		/// EndBlockOfValid()'s last answer and the layout and valid area it was worked out for.
+		GSVector4i m_end_of_valid_rect{};
+		u32 m_end_of_valid_layout = 0;
+		u32 m_end_of_valid = 0;
+		bool m_end_of_valid_known = false;
 		GSVector4i m_drawn_since_read{};
 		int readbacks_since_draw = 0;
 
@@ -386,6 +391,8 @@ public:
 		void UpdateDrawn(const GSVector4i& rect, bool can_resize = true);
 		void ResizeValidity(const GSVector4i& rect);
 		void UpdateValidity(const GSVector4i& rect, bool can_resize = true);
+		/// GSLocalMemory::GetEndBlockAddress of this target's base block, width, format and valid area.
+		u32 EndBlockOfValid();
 
 		void ScaleRTAlpha();
 		void UnscaleRTAlpha();

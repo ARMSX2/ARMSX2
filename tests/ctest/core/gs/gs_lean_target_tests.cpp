@@ -289,3 +289,35 @@ TEST_F(GSLeanTarget, DrawsUnderTheCheckerAgree)
 	EXPECT_GT(report.invalidate_hits, 0u);
 	EXPECT_EQ(report.mismatches, 0u);
 }
+
+// The end block a target keeps for its valid area is GetEndBlockAddress of what the target is now, whatever
+// changed since it was last asked: the valid area, the base block, the width or the format.
+TEST_F(GSLeanTarget, TheKeptEndBlockFollowsTheLayoutAndTheValidArea)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	auto* target = MakeTarget();
+	ASSERT_NE(target, nullptr);
+
+	const auto fresh = [target]() {
+		return GSLocalMemory::GetEndBlockAddress(target->m_TEX0.TBP0, target->m_TEX0.TBW, target->m_TEX0.PSM, target->m_valid);
+	};
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+
+	target->m_valid = GSVector4i(0, 0, 320, 224);
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+	target->m_valid = GSVector4i(0, 0, 640, 448);
+	target->m_TEX0.TBW = 8;
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+	target->m_TEX0.PSM = PSMCT16;
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+	target->SetTBP0(kBlock + 0x40);
+	EXPECT_EQ(target->EndBlockOfValid(), fresh());
+
+	// Through the two callers.
+	target->UpdateValidity(GSVector4i(0, 0, 640, 480), true);
+	EXPECT_EQ(target->EndBlock(), fresh());
+	target->ResizeValidity(GSVector4i(0, 0, 512, 256));
+	EXPECT_EQ(target->EndBlock(), fresh());
+}
