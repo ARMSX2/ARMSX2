@@ -12660,6 +12660,20 @@ bool GSRendererHW::TryGSMemClear(bool no_rt, bool preserve_rt, bool invalidate_r
 	return ((invalidate_rt || no_rt) && (invalidate_z || no_ds));
 }
 
+// (old & mask) | fill, for a fill with no bits under the mask: one bit select (BIF) instead of an AND and an ORR, which
+// is a quarter of the clear's 24-bit and masked fill loops. In assembly because the compiler, seeing that the fill has
+// no bits under the mask, turns a BSL intrinsic back into the AND and the ORR.
+static __fi GSVector4i KeepMaskedBits(const GSVector4i& old, const GSVector4i& mask, const GSVector4i& fill)
+{
+#if (defined(__clang__) || defined(__GNUC__)) && defined(__aarch64__)
+	int32x4_t v = old.v4s;
+	__asm__("bif %0.16b, %1.16b, %2.16b" : "+w"(v) : "w"(fill.v4s), "w"(mask.v4s));
+	return GSVector4i(v);
+#else
+	return (old & mask) | fill;
+#endif
+}
+
 void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, u32 vert_color)
 {
 	GL_INS("HW: ClearGSLocalMemory(): %08X %d,%d => %d,%d @ BP %x BW %u %s", vert_color, r.x, r.y, r.z, r.w, off.bp(),
@@ -12705,9 +12719,12 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
 				if (drawing_mask)
 				{
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#endif
 					while (ptr != ptr_end)
 					{
-						*ptr = (*ptr & mask) | vcolor;
+						*ptr = KeepMaskedBits(*ptr, mask, vcolor);
 						ptr++;
 					}
 				}
@@ -12730,9 +12747,12 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 				m_mem.MarkPageRangeWritten(current_page, pages_wide);
 				GSVector4i* ptr = reinterpret_cast<GSVector4i*>(m_mem.vm8() + current_page * GS_PAGE_SIZE);
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#endif
 				while (ptr != ptr_end)
 				{
-					*ptr = (*ptr & mask) | vcolor;
+					*ptr = KeepMaskedBits(*ptr, mask, vcolor);
 					ptr++;
 				}
 			}
