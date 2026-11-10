@@ -3188,6 +3188,10 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 	}
 
+	// Everything a pipeline build reads (features, layouts, render passes, the TFX source) exists now.
+	m_compile_queue.Start(GSCompileQueue::GetDefaultWorkerCount(), "GS compile");
+	m_compile_queue.Submit(GSCompileQueue::Priority::Idle, []() { VKShaderCache::WarmShaderCompiler(); });
+
 	if (!CreateBuffers())
 		return false;
 
@@ -7521,6 +7525,7 @@ void GSDeviceVK::DestroyResources()
 {
 	// Before anything a worker reads is destroyed.
 	StopPipelinePrecompile();
+	m_compile_queue.Stop();
 
 	if (m_tfx_ubo_descriptor_set != VK_NULL_HANDLE)
 		FreePersistentDescriptorSet(m_tfx_ubo_descriptor_set);
@@ -8071,7 +8076,7 @@ VkPipeline GSDeviceVK::GetTFXPipeline(const PipelineSelector& p)
 	GSCompileStats::Add(GSCompileStats::TFXPipelineMisses, 1);
 	const GSCompileStats::ScopedTimer stall_timer(GSCompileStats::GSThreadStallNs);
 
-	if (m_precompile_active)
+	if (!m_precompile_jobs.empty())
 	{
 		if (const std::optional<VkPipeline> precompiled = TakePrecompiledTFXPipeline(p))
 		{
@@ -8115,38 +8120,39 @@ namespace
 		return (GetPhysicalMemory() >= 6 * GB) ? 2048 : 768;
 	}
 
-	/// Keys come from a list this build wrote (the stamp holds the build identity) and each record
-	/// passed its checksum, so these always hold. They are checked anyway, since a bad key would be
-	/// compiled on a worker thread: every field that indexes a table or names an enum, and every bit
-	/// a real key leaves zero.
-	static bool IsLoadableTFXKey(const GSDeviceVK::PipelineSelector& p)
-	{
-		// The bytes after the last member are padding, zero in every selector a draw builds.
-		static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
-											 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
-		static_assert(USED_BYTES <= sizeof(GSDeviceVK::PipelineSelector));
-		u8 tail[sizeof(GSDeviceVK::PipelineSelector) - USED_BYTES];
-		std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
-		if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
-			return false;
-
-		return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 8) == 0 &&
-			   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
-			   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
-			   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
-			   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
-			   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
-	}
 } // namespace
+
+bool GSDeviceVK::IsLoadableTFXKey(const PipelineSelector& p)
+{
+	// The bytes after the last member are padding, zero in every selector a draw builds.
+	static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
+										 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
+	static_assert(USED_BYTES <= sizeof(PipelineSelector));
+	u8 tail[sizeof(PipelineSelector) - USED_BYTES];
+	std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
+	if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
+		return false;
+
+	// The flag word holds topology (2 bits), rt, ds, line_width, feedback_loop_flags (3), raster_order and
+	// stencil_counter (2): eleven bits, and stencil_counter goes to 2.
+	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 11) == 0 &&
+		   p.stencil_counter <= 2 &&
+		   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
+		   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
+		   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
+		   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&
+		   p.ps.blend_hw <= static_cast<u32>(HWBlendType::INV_SRC_DST_BLEND_HALF);
+}
 
 std::string GSDeviceVK::GetTFXPipelineKeyFingerprint() const
 {
-	// The driver version is left out on purpose: an update keeps the key list. Anything that
-	// changes what a key builds -- features, workaround rules, attachment formats, the shader
-	// header -- is in.
+	// The driver version is left out on purpose: an update keeps the key list. So is the shader
+	// source: a key names a draw state, and when the shaders change the list is what lets the new ones
+	// be built ahead of the draws. Anything that changes which pipeline a key describes on this device
+	// -- features, workaround rules, attachment formats, the shader header -- is in.
 	std::stringstream ss;
 	ss << m_device_properties.vendorID << ' ' << m_device_properties.deviceID << ' '
-	   << static_cast<u32>(m_device_driver_properties.driverID) << ' ' << SHADER_CACHE_VERSION << ' '
+	   << static_cast<u32>(m_device_driver_properties.driverID) << ' '
 	   << sizeof(PipelineSelector) << ' ' << m_features.framebuffer_fetch << m_features.depth_feedback
 	   << m_features.provoking_vertex_last << m_features.texture_barrier << m_features.rov
 	   << m_features.primitive_id << m_features.vs_expand << m_optional_extensions.vk_ext_line_rasterization
@@ -8172,19 +8178,23 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 	if (!GSConfig.PrecompilePipelines || GSConfig.DisableShaderCache || serial.empty())
 		return;
 
-	// The build identity is in the stamp because what a key means is defined by this build's code:
-	// a list from another build could name pipelines no draw of this one produces, or ones that do
-	// not compile. The device configuration is in the file name as well, so a switch of driver
-	// family or of a covered setting keeps both lists; the driver version is not, so a driver update
-	// keeps the list, which is the point of it.
+	// What a key means is defined by the selector layout (GSCacheFile::GetTfxKeyLayoutId, a hash of the
+	// selector definitions alone): a list written under another layout could name pipelines no draw of
+	// this build produces, or ones that do not compile. The rest of the build is not in: a key names a
+	// draw state, so a list survives the builds that change how its pipelines are made, and after one
+	// that changed the shaders, the list is what builds the new ones on worker threads at the game's
+	// next start instead of on the GS thread at each first draw. It was the whole build identity, which
+	// changes with any GS source, so every app update lost every game's list. The device configuration
+	// is in the file name as well, so a switch of driver family or of a covered setting keeps both
+	// lists; the driver version is not, so a driver update keeps the list too.
 	const std::string fingerprint = GetTFXPipelineKeyFingerprint();
-	const std::string& build_id = GSCacheFile::GetBuildId();
+	const std::string& layout_id = GSCacheFile::GetTfxKeyLayoutId();
 	GSCacheFile::Stamp stamp;
-	stamp.Add("build", build_id);
+	stamp.Add("key_layout", layout_id);
 	stamp.Add("device", fingerprint);
 	const std::string stem = fmt::format("vk_keys{}_{}_{}", GSConfig.UseDebugDevice ? "_debug" : "",
 		GSCacheFile::ShortName(GSCacheFile::Hash128(fingerprint.data(), fingerprint.size())),
-		GSCacheFile::ShortName(GSCacheFile::Hash128(build_id.data(), build_id.size())));
+		GSCacheFile::ShortName(GSCacheFile::Hash128(layout_id.data(), layout_id.size())));
 	m_tfx_key_pack = g_vulkan_shader_cache->OpenGamePack(serial, crc, "vk_keys", stem, GSCacheFile::KIND_VK_PIPELINE_KEYS, stamp);
 	if (!m_tfx_key_pack)
 		return;
@@ -8228,24 +8238,22 @@ void GSDeviceVK::SetGameIdentity(const std::string& serial, u32 crc)
 			break;
 		if (session - rec.last_session > PRECOMPILE_SESSIONS || m_tfx_pipelines.find(rec.key) != m_tfx_pipelines.end())
 			continue;
-		m_precompile_jobs.emplace(rec.key, TFXPrecompileJob());
-		m_precompile_queue.push_back(rec.key);
+		TFXPrecompileJob job;
+		job.pipeline = std::make_shared<VkPipeline>(VK_NULL_HANDLE);
+		job.ticket = m_compile_queue.Submit(GSCompileQueue::Priority::Ahead,
+			[this, key = rec.key, out = job.pipeline]() {
+				*out = CreateTFXPipeline(key);
+				if (GSShaderCompileIndicator::t_background)
+					GSCompileStats::Add(GSCompileStats::PrecompileBuilt, 1);
+			});
+		m_precompile_jobs.emplace(rec.key, std::move(job));
 	}
 
-	if (m_precompile_queue.empty())
-		return;
-
-	// Half the cores less one, at most four: enough to stay ahead of a game's first frames without
-	// taking the cores the EE, GS and VU threads run on.
-	const u32 hw = std::max(std::thread::hardware_concurrency(), 2u);
-	const u32 num_workers = std::min<u32>(std::clamp(hw / 2 - 1, 1u, 4u), static_cast<u32>(m_precompile_queue.size()));
-	m_precompile_active = true;
-	m_precompile_start = Common::Timer::GetCurrentValue();
-	for (u32 i = 0; i < num_workers; i++)
-		m_precompile_workers.emplace_back(&GSDeviceVK::PrecompileWorker, this);
-
-	INFO_LOG("Vulkan: building {} of {} recorded pipelines for {} (session {}) on {} threads",
-		m_precompile_queue.size(), records.size(), serial, session, num_workers);
+	if (!m_precompile_jobs.empty())
+	{
+		INFO_LOG("Vulkan: building {} of {} recorded pipelines for {} (session {}) on the compile queue",
+			m_precompile_jobs.size(), records.size(), serial, session);
+	}
 }
 
 void GSDeviceVK::PrepareShaderCacheClear()
@@ -8257,77 +8265,23 @@ void GSDeviceVK::PrepareShaderCacheClear()
 		g_vulkan_shader_cache->ResetPipelineCache();
 }
 
-void GSDeviceVK::PrecompileWorker()
-{
-	Threading::SetNameOfCurrentThread("GS precompile"); // Linux keeps 15 characters.
-	GSShaderCompileIndicator::t_background = true;
-
-	// A thread inherits its creator's affinity, and the GS thread may be pinned to one core.
-	const Threading::ThreadHandle self = Threading::ThreadHandle::GetForCallingThread();
-	self.SetAffinity(0);
-	self.SetNicePriority(5);
-
-	u32 built = 0;
-	std::unique_lock lock(m_precompile_mutex);
-	while (!m_precompile_stop && !m_precompile_queue.empty())
-	{
-		const PipelineSelector p = m_precompile_queue.front();
-		m_precompile_queue.pop_front();
-
-		// Gone if the GS thread took it off the queue to build it itself.
-		const auto it = m_precompile_jobs.find(p);
-		if (it == m_precompile_jobs.end() || it->second.state != TFXPrecompileJob::State::Queued)
-			continue;
-		it->second.state = TFXPrecompileJob::State::Running;
-
-		lock.unlock();
-		const VkPipeline pipeline = CreateTFXPipeline(p);
-		lock.lock();
-
-		// Still present: the GS thread erases a Running job only after it has become Done.
-		TFXPrecompileJob& job = m_precompile_jobs.at(p);
-		job.pipeline = pipeline;
-		job.state = TFXPrecompileJob::State::Done;
-		m_precompile_done_cv.notify_all();
-		built++;
-	}
-
-	GSCompileStats::Add(GSCompileStats::PrecompileBuilt, built);
-	const double cpu_ms = static_cast<double>(self.GetCPUTime()) * 1000.0 / static_cast<double>(Threading::GetThreadTicksPerSecond());
-	const double wall_ms = Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - m_precompile_start);
-	INFO_LOG("Vulkan: precompile worker built {} pipelines, {:.1f} ms CPU, finished {:.1f} ms after start, last on CPU {}",
-		built, cpu_ms, wall_ms, self.GetCurrentCpu());
-}
-
 std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineSelector& p)
 {
-	std::unique_lock lock(m_precompile_mutex);
 	const auto it = m_precompile_jobs.find(p);
 	if (it == m_precompile_jobs.end())
 		return std::nullopt;
 
-	if (it->second.state == TFXPrecompileJob::State::Queued)
+	// Built here if no worker had started it: no slower than waiting behind the queue for one.
+	const Common::Timer::Value wait_start = Common::Timer::GetCurrentValue();
+	const u64 waited_ns = m_compile_queue.Finish(it->second.ticket);
+	if (waited_ns > 0)
 	{
-		// Building it here is no slower than waiting behind the queue for a worker.
-		m_precompile_jobs.erase(it);
-		return std::nullopt;
-	}
-
-	if (it->second.state == TFXPrecompileJob::State::Running)
-	{
-		const Common::Timer wait_timer;
-		m_precompile_done_cv.wait(lock, [this, &p]() {
-			return m_precompile_jobs.at(p).state == TFXPrecompileJob::State::Done;
-		});
-		const u64 waited_ns = static_cast<u64>(wait_timer.GetTimeNanoseconds());
-		GSShaderCompileIndicator::OnCompileDone(waited_ns, wait_timer.GetStartValue());
+		GSShaderCompileIndicator::OnCompileDone(waited_ns, wait_start);
 		GSCompileStats::Add(GSCompileStats::PrecompileWaits, 1);
 		GSCompileStats::Add(GSCompileStats::PrecompileWaitNs, waited_ns);
 	}
-
-	const auto done = m_precompile_jobs.find(p);
-	const VkPipeline pipeline = done->second.pipeline;
-	m_precompile_jobs.erase(done);
+	const VkPipeline pipeline = *it->second.pipeline;
+	m_precompile_jobs.erase(it);
 
 	// A worker's failure may be one the GS thread would not have had (memory pressure from several
 	// compiles at once), so it gets its own attempt rather than a permanent null for the session.
@@ -8338,25 +8292,21 @@ std::optional<VkPipeline> GSDeviceVK::TakePrecompiledTFXPipeline(const PipelineS
 
 void GSDeviceVK::StopPipelinePrecompile()
 {
+	// A job no worker has started never runs; one a worker has is waited for.
+	for (const auto& [key, job] : m_precompile_jobs)
 	{
-		std::unique_lock lock(m_precompile_mutex);
-		m_precompile_stop = true;
-		m_precompile_queue.clear();
+		if (!m_compile_queue.Cancel(job.ticket))
+			m_compile_queue.Finish(job.ticket);
 	}
-	for (std::thread& worker : m_precompile_workers)
-		worker.join();
-	m_precompile_workers.clear();
-	m_precompile_stop = false;
 
 	// Built and not drawn with this session. Never bound, so no command buffer holds them and they
 	// can go now rather than occupy driver memory until the device closes.
 	for (const auto& [key, job] : m_precompile_jobs)
 	{
-		if (job.pipeline != VK_NULL_HANDLE)
-			vkDestroyPipeline(m_device, job.pipeline, nullptr);
+		if (*job.pipeline != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, *job.pipeline, nullptr);
 	}
 	m_precompile_jobs.clear();
-	m_precompile_active = false;
 
 	// Written once more by the cache's writer, then let go.
 	if (m_tfx_key_pack && g_vulkan_shader_cache)

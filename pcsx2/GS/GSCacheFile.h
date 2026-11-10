@@ -53,6 +53,10 @@ namespace GSCacheFile
 	/// git hash.
 	const std::string& GetBuildId();
 
+	/// What a recorded Vulkan pipeline key's bits mean: a hash of the selector definitions only, computed
+	/// by the build (cmake/GSKeyLayoutId.cmake). Builds without the generated header use GetBuildId.
+	const std::string& GetTfxKeyLayoutId();
+
 	/// The build identity folded to the single version word the Direct3D caches carry, so they too are
 	/// discarded by any GS change instead of only by a SHADER_CACHE_VERSION bump.
 	u32 GetBuildVersionWord();
@@ -204,6 +208,8 @@ namespace GSCacheFile
 		void Clear();
 
 		bool HasPendingWrites() const;
+		/// Has pending writes, and nothing has changed for `settle`: what a quick pass writes.
+		bool HasSettledWrites(Clock::time_point now, Clock::duration settle) const;
 		/// Puts what changed on disk. Stops before a record that would start after `deadline`.
 		WriteResult Write(Clock::time_point deadline = Clock::time_point::max());
 
@@ -264,6 +270,8 @@ namespace GSCacheFile
 		/// The file ends in a broken record after m_file_bytes. Cut by the next Write.
 		bool m_torn = false;
 		bool m_write_failed = false;
+		/// When the newest change not yet written was made; unset while nothing is pending.
+		Clock::time_point m_changed{};
 	};
 
 	/// Opens `<dir>/<stem>.pack`, creating `dir` if need be, after removing the packs in `dir` of the
@@ -271,8 +279,9 @@ namespace GSCacheFile
 	std::shared_ptr<Pack> OpenPack(const std::string& dir, std::string_view prefix, const std::string& stem, Kind kind,
 		const Stamp& stamp, u64 ram_cap = GetDefaultPackRamCap());
 
-	/// The thread that writes a renderer's packs in the background: every `interval`, when asked, and
-	/// once more, within a deadline, when it stops. `extra` runs at the end of each pass, for whatever
+	/// The thread that writes a renderer's packs in the background: every `interval`, when asked, once
+	/// more, within a deadline, when it stops, and in between a pack whose changes have settled for
+	/// SETTLE (with `extra` run after each of those quick passes too). `extra` runs at the end of each pass, for whatever
 	/// else the owner saves; `asked` is true for a Flush or the last pass.
 	class PackWriter
 	{
@@ -280,6 +289,9 @@ namespace GSCacheFile
 		using Extra = std::function<void(Clock::time_point deadline, bool asked)>;
 
 		static constexpr std::chrono::seconds DEFAULT_INTERVAL{30};
+		/// A pack whose last change is this old is written between full passes, so a process killed
+		/// mid-session loses at most the last moments of what it learned.
+		static constexpr std::chrono::seconds SETTLE{2};
 		/// How long the last pass may take when a renderer closes.
 		static constexpr std::chrono::milliseconds CLOSE_DEADLINE{2000};
 
@@ -307,6 +319,8 @@ namespace GSCacheFile
 	private:
 		void Run();
 		void Pass(Clock::time_point deadline, bool asked);
+		/// Writes the packs whose changes have settled, then runs `extra`, between full passes.
+		void QuickPass();
 
 		std::string m_cache_dir;
 		Extra m_extra;

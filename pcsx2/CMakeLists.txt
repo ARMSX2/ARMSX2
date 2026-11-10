@@ -591,6 +591,7 @@ endif()
 set(pcsx2GSSources
 	GS/GS.cpp
 	GS/GSCacheFile.cpp
+	GS/GSCompileQueue.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
@@ -665,6 +666,7 @@ set(pcsx2GSHeaders
 	GS/GSBackQueue.h
 	GS/GSCacheFile.h
 	GS/GSClut.h
+	GS/GSCompileQueue.h
 	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
@@ -1802,8 +1804,26 @@ add_custom_command(
 	COMMENT "Hashing the GS sources for the shader cache identity"
 	VERBATIM)
 target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h")
+# What a recorded Vulkan pipeline key's bits mean (cmake/GSKeyLayoutId.cmake): the key lists are named by
+# it, not by the build identity, so they survive the builds that leave the selectors alone.
+set(ARMSX2_GS_KEY_LAYOUT_INPUTS
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSDevice.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSShaderEnums.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSAlphaBitLogicOp.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h")
+string(JOIN "|" ARMSX2_GS_KEY_LAYOUT_ARG ${ARMSX2_GS_KEY_LAYOUT_INPUTS})
+add_custom_command(
+	OUTPUT "${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h"
+	COMMAND ${CMAKE_COMMAND}
+		-DOUT=${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h
+		"-DFILES=${ARMSX2_GS_KEY_LAYOUT_ARG}"
+		-P "${ARMSX2_REPO_ROOT}/cmake/GSKeyLayoutId.cmake"
+	DEPENDS ${ARMSX2_GS_KEY_LAYOUT_INPUTS} "${ARMSX2_REPO_ROOT}/cmake/GSKeyLayoutId.cmake"
+	COMMENT "Hashing the TFX pipeline key layout"
+	VERBATIM)
+target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h")
 set_source_files_properties(GS/GSCacheFile.cpp PROPERTIES
-	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h;${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h"
 	INCLUDE_DIRECTORIES "${ARMSX2_GS_CACHE_ID_DIR}")
 
 # common Sources

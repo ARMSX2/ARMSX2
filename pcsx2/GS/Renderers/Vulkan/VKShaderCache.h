@@ -53,6 +53,16 @@ public:
 	VkShaderModule GetFragmentShader(std::string_view shader_code);
 	VkShaderModule GetComputeShader(std::string_view shader_code);
 
+	/// Loads the GLSL compiler and runs it once on a trivial shader of each stage, so the first real
+	/// compile does not pay for its setup. Any thread; for the compile queue when the device opens.
+	static void WarmShaderCompiler();
+
+	/// What the driver's pipeline blob depends on: the driver, never the app's build.
+	static GSCacheFile::Stamp MakePipelineCacheStamp(
+		const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceDriverPropertiesKHR& drv, bool debug);
+	/// A blob read back larger than this starts over: it holds every pipeline any build ever made.
+	static constexpr size_t MAX_PIPELINE_CACHE_BYTES = 128u * 1024 * 1024;
+
 private:
 	// SPIR-V compiled code type
 	using SPIRVCodeType = u32;
@@ -80,7 +90,7 @@ private:
 	/// Writes the packs and the pipeline cache in the background. Not running when the cache is off.
 	GSCacheFile::PackWriter m_writer;
 
-	/// SPIR-V by GLSL source: the device's own shaders, and the running game's.
+	/// SPIR-V by GLSL source: the device's own shaders with every game's, and the running game's.
 	GSCacheFile::Stamp m_spirv_stamp;
 	std::string m_spirv_stem;
 	std::mutex m_spirv_mutex;
@@ -98,6 +108,8 @@ private:
 	std::mutex m_pipeline_cache_mutex;
 	VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
 	std::atomic<bool> m_pipeline_cache_dirty{false};
+	/// steady_clock ticks of the newest pipeline added; the writer waits for a burst to settle.
+	std::atomic<s64> m_pipeline_cache_changed{0};
 	/// When the cache was last serialised. Writer thread.
 	std::chrono::steady_clock::time_point m_last_pipeline_cache_flush{};
 };

@@ -109,6 +109,8 @@ add_pcsx2_test(gs_vertex_tests
 	gs_target_dirty_tests.cpp
 	gs_lean_target_tests.cpp
 	gs_cache_file_tests.cpp
+	gs_compile_queue_tests.cpp
+	gs_vk_cache_stamp_tests.cpp
 	gs_hash_cache_inject_tests.cpp
 	gs_hash_cache_limits_tests.cpp
 	gs_xxh_block_hasher_tests.cpp
