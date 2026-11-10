@@ -391,7 +391,9 @@ namespace
 	// Every grid a rounded class can get is swept, which is the whole of the
 	// scalar path's contract: at native the outcode compares bands against the
 	// rounding-folded bounds, and at every finer grid it compares raw 12.4 against
-	// the plain cull rect while the bands carry the grid test.
+	// the plain cull rect while the bands carry the grid test. With no grid the
+	// band fields carry the trim-box key instead (MakeCullMirrorEntry), so the same
+	// equality test answers the shipped box's own empty test.
 	template <u32 n, int primclass>
 	void RunScalarCullSweep(u64 seed, int iters)
 	{
@@ -444,9 +446,10 @@ namespace
 				y2 &= ~0xF;
 			}
 
-			// Shift 4 (native) through 1 (8x) for a rounded class; point/line never
-			// consult the grid, so any value drives the same code there.
-			const int shift = rounded ? (1 + static_cast<int>(rng() % 4)) : 4;
+			// Shift 4 (native) through 1 (8x) for a rounded class, and 0: no grid, which is every
+			// upscale that is not a power of two for the triangle class and every upscale for the
+			// sprite class. Point/line never consult the grid, so any value drives the same code there.
+			const int shift = rounded ? static_cast<int>(rng() % 5) : 4;
 			const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(shift, shift);
 			const bool banded = rounded && (shift == 4);
 
@@ -938,3 +941,46 @@ TEST(GsVertexFmm, VaryingQSweep)
 }
 
 #endif // ARCH_ARM64
+
+// No cull grid (shift 0), directed: every pair (sprite) and every triple (triangle) of coordinates in a window
+// around the multiples of 16, on each axis with the other axis wide, decided by the scalar cull from TrimKey bands
+// and by CullTest on the shipped trim box. The window holds 16k - 1 / 16k, the pair the key merges, on both sides
+// of zero.
+TEST(GsVertexCull, ScalarNoGridTrimBoundary)
+{
+	const GSVertexKernels::CullGrid grid = GSVertexKernels::MakeCullGrid(0, 0);
+	const GSVector4i cull(-8, -8, 2047 * 16 + 8, 2047 * 16 + 8);
+	const GSVertexKernels::CullBounds bounds = GSVertexKernels::MakeRawCullBounds(cull);
+	const auto entry = [&](int x, int y) { return GSVertexKernels::MakeCullMirrorEntry<false>(x, y, bounds, 0); };
+
+	for (int axis = 0; axis < 2; axis++)
+	{
+		const auto pt = [&](int c, int k) { return axis == 0 ? std::pair<int, int>(c, 100 + k * 40) : std::pair<int, int>(100 + k * 40, c); };
+		for (int base : {-32, 0, 160, 1600})
+		{
+			for (int a = base - 18; a <= base + 18; a++)
+			{
+				for (int b = base - 18; b <= base + 18; b++)
+				{
+					const auto [ax, ay] = pt(a, 0);
+					const auto [bx, by] = pt(b, 1);
+					GSVector4i bbox;
+					const u32 sprite_ref = GSVertexKernels::CullTest<2, GS_SPRITE_CLASS>(WindowEntry(ax, ay), WindowEntry(bx, by),
+						WindowEntry(bx, by), cull, grid, false, bbox);
+					const u32 sprite_got = GSVertexKernels::CullTestScalar<2, GS_SPRITE_CLASS>(entry(ax, ay), entry(bx, by), entry(bx, by));
+					ASSERT_EQ(sprite_ref != 0, sprite_got != 0) << "sprite axis " << axis << " a=" << a << " b=" << b;
+
+					for (int c = base - 18; c <= base + 18; c++)
+					{
+						const auto [cx, cy] = pt(c, 2);
+						const u32 tri_ref = GSVertexKernels::CullTest<3, GS_TRIANGLE_CLASS>(WindowEntry(ax, ay), WindowEntry(bx, by),
+							WindowEntry(cx, cy), cull, grid, false, bbox);
+						const u32 tri_got =
+							GSVertexKernels::CullTestScalar<3, GS_TRIANGLE_CLASS>(entry(ax, ay), entry(bx, by), entry(cx, cy));
+						ASSERT_EQ(tri_ref != 0, tri_got != 0) << "triangle axis " << axis << " a=" << a << " b=" << b << " c=" << c;
+					}
+				}
+			}
+		}
+	}
+}

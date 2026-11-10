@@ -426,3 +426,61 @@ TEST(GsBackQueue, SpaceWaitPoolEmptySlowConsumer)
 		}
 	}
 }
+
+// The draw record's environment delta (GSDrawingEnvironment.h): a producer that sends only the 64-byte blocks that
+// changed, and a consumer that applies them to the copy it holds, must leave the consumer with the producer's live
+// environment after every record, whatever bytes change and however many records pass, and the producer's copy of
+// what it sent must equal the consumer's.
+TEST(GsBackQueue, EnvironmentDeltaReproducesLive)
+{
+	std::mt19937 rng(20261109);
+	alignas(32) GSDrawingEnvironment live = {};
+	alignas(32) GSDrawingEnvironment sent = {};
+	alignas(32) GSDrawingEnvironment held = {};
+	alignas(32) GSDrawingEnvironment rec;
+	u8* lb = reinterpret_cast<u8*>(&live);
+
+	// The first record carries everything.
+	for (size_t i = 0; i < sizeof(live); i++)
+		lb[i] = static_cast<u8>(rng());
+	CopyDrawingEnvironment(rec, live);
+	CopyDrawingEnvironment(sent, live);
+	CopyDrawingEnvironment(held, rec);
+	ASSERT_EQ(std::memcmp(&held, &live, sizeof(live)), 0);
+
+	constexpr u32 blocks = sizeof(GSDrawingEnvironment) / 64;
+	for (int r = 0; r < 20000; r++)
+	{
+		// From nothing changed to every byte changed; single bytes at block edges are the boundary cases.
+		const int changes = (r % 5 == 0) ? 0 : static_cast<int>(rng() % 24);
+		for (int c = 0; c < changes; c++)
+		{
+			const u32 which = rng() % 4;
+			size_t at = rng() % sizeof(live);
+			if (which == 0)
+				at = (rng() % blocks) * 64; // first byte of a block
+			else if (which == 1)
+				at = (rng() % blocks) * 64 + 63; // last byte of a block
+			lb[at] ^= static_cast<u8>(1u << (rng() % 8));
+		}
+		if (r % 997 == 0)
+			for (size_t i = 0; i < sizeof(live); i++)
+				lb[i] = static_cast<u8>(rng());
+
+		// Poison the record so a block the mask does not name cannot pass by accident.
+		std::memset(&rec, 0xA5, sizeof(rec));
+		alignas(32) GSDrawingEnvironment before;
+		CopyDrawingEnvironment(before, sent);
+		const u32 mask = DeltaDrawingEnvironment(rec, live, sent);
+
+		for (u32 b = 0; b < blocks; b++)
+		{
+			const bool differed = std::memcmp(reinterpret_cast<const u8*>(&before) + b * 64, lb + b * 64, 64) != 0;
+			ASSERT_EQ(((mask >> b) & 1) != 0, differed) << "record " << r << " block " << b;
+		}
+
+		ApplyDrawingEnvironmentDelta(held, rec, mask);
+		ASSERT_EQ(std::memcmp(&held, &live, sizeof(live)), 0) << "record " << r;
+		ASSERT_EQ(std::memcmp(&sent, &live, sizeof(live)), 0) << "record " << r;
+	}
+}

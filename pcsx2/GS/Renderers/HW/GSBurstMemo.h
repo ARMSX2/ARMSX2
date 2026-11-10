@@ -184,31 +184,72 @@ namespace GSBurstMemo
 		}
 	};
 
-	/// 16 bytes of an entry's buffer. Not initialised on construction, so growing the buffer does not first fill
-	/// it with zeros.
-	struct alignas(16) Chunk
+	/// The memory records live in: slabs of SLAB_BYTES, filled one record after another in the order the
+	/// records are made, whichever burst they belong to. A record never straddles two slabs (a record larger
+	/// than a slab gets a slab of its own size). A slab counts the bursts that hold records in it and goes
+	/// back to the pool when the last of them goes, so once the store has reached its working size,
+	/// recording takes no memory from the allocator: no fresh pages to fault in, nothing to copy on growth.
+	class SlabPool
 	{
-		u8 b[16];
-		Chunk() {}
-	};
-	using Buffer = std::vector<Chunk>;
+	public:
+		static constexpr size_t SLAB_BYTES = 64u << 10;
+		/// Free slabs kept for reuse; more than this go back to the allocator.
+		static constexpr size_t MAX_FREE_SLABS = 128;
 
-	/// The draws of one burst, laid out one record after another in one buffer, so a burst being skipped is
-	/// read front to back.
+		struct Slab
+		{
+			u8* data;
+			size_t size;
+			u32 refs; ///< bursts holding records in it, plus one while it is the slab being filled
+		};
+
+		SlabPool() = default;
+		SlabPool(const SlabPool&) = delete;
+		SlabPool& operator=(const SlabPool&) = delete;
+		~SlabPool();
+
+		/// Room for `bytes` (a multiple of 16) at a 16-byte boundary, in the slab being filled or a new one.
+		u8* Place(size_t bytes, Slab*& slab);
+		/// Drops one reference; the slab goes back to the pool at none.
+		void Release(Slab* slab);
+
+		/// Slabs taken from the allocator, ever (a pool that recycles stops counting up).
+		u64 Allocations() const { return m_allocations; }
+		/// Bytes of every slab the pool has handed out and not given back to the allocator, free ones included.
+		size_t HeldBytes() const { return m_held; }
+
+	private:
+		Slab* m_cur = nullptr;
+		size_t m_used = 0;
+		std::vector<Slab*> m_free;
+		u64 m_allocations = 0;
+		size_t m_held = 0;
+	};
+
+	/// The draws of one burst, laid out one record after another in the pool's slabs, so a burst being
+	/// skipped is read front to back.
 	struct Entry
 	{
-		Buffer buf;
-		std::vector<u32> offsets; ///< each record's start in `buf`
+		/// Records go into `pool`, the store's (Store::Pool()); an entry made without one makes its own.
+		explicit Entry(std::shared_ptr<SlabPool> pool = {});
+		Entry(const Entry&) = delete;
+		Entry& operator=(const Entry&) = delete;
+		~Entry();
+
+		std::shared_ptr<SlabPool> pool;
+		std::vector<SlabPool::Slab*> slabs; ///< each slab holding records of this entry, once
+		std::vector<const u8*> records; ///< each record's start
+		size_t record_bytes = 0; ///< the records' bytes
 		u64 first_signature = 0; ///< the first draw's Packet::Signature()
-		size_t bytes = 0;
+		size_t bytes = 0; ///< what the budget charges: the records and the entry itself (Recount())
 		u64 last_used = 0; ///< Store frame of the install or the last hit
 		u64 hits = 0; ///< draws skipped from this entry
 		bool stored = false; ///< in the store; false once evicted
 
-		u32 Count() const { return static_cast<u32>(offsets.size()); }
+		u32 Count() const { return static_cast<u32>(records.size()); }
 		Record At(u32 k) const;
 		/// Where record k starts, for a prefetch.
-		const void* Address(u32 k) const { return &buf[offsets[k]]; }
+		const void* Address(u32 k) const { return records[k]; }
 		void Append(const Draw& d);
 		void Recount();
 	};
@@ -242,9 +283,8 @@ namespace GSBurstMemo
 
 		/// Adds a burst. May evict others (the least recently used first) to stay in budget.
 		void Insert(EntryPtr e);
-		/// An empty buffer for a new entry, one an evicted entry left behind if there is one: a burst being
-		/// recorded then grows into memory that is already the process's, not fresh pages from the allocator.
-		Buffer TakeBuffer();
+		/// The slabs new entries record into.
+		const std::shared_ptr<SlabPool>& Pool() const { return m_pool; }
 		/// Records a hit: the entry stays HISTORY more frames.
 		void Touch(Entry& e) { e.last_used = m_frame; }
 		/// Ends a drawn frame that had copy-road draws: evicts the entries no frame of the history used.
@@ -261,11 +301,8 @@ namespace GSBurstMemo
 	private:
 		void Remove(Entry* e);
 		void RebuildBloom();
-		/// Keeps a leaving entry's buffer for TakeBuffer(), unless a burst being skipped still reads it.
-		void Recycle(const EntryPtr& e);
 
-		static constexpr size_t MAX_SPARE_BUFFERS = 64;
-		std::vector<Buffer> m_spare;
+		std::shared_ptr<SlabPool> m_pool = std::make_shared<SlabPool>();
 
 		std::unordered_map<u64, std::vector<EntryPtr>> m_index;
 		u64 m_bloom[64] = {};
@@ -292,10 +329,17 @@ namespace GSBurstMemo
 		u64 stop_state = 0; ///< ... the renderer was in a state the copy road would leave early
 		u64 not_recorded_target = 0; ///< copy-road draws the memo does not take: their verdict weighed a target
 		u64 not_recorded_block_copy = 0; ///< draws passed over: their shape is one the road keeps drawing with a block copy
+		u64 rests = 0; ///< times the memo went to rest (Memo::resting)
+		u64 not_copy_road = 0; ///< draws the copy road cannot take, from their registers (frame too wide; at level 0, not a textured sprite)
 		u64 installs = 0;
 		u64 packet_checks = 0; ///< recorded draws compared with a draw in hand
 		u64 key_checks = 0; ///< recorded draws whose block and palette keys were checked
 		u64 key_blocks = 0; ///< blocks whose hash those checks compared
+		u64 draw_vertices = 0; ///< vertices of every draw the memo saw (all draws, while it is on)
+		u64 hit_vertices = 0; ///< of those, vertices of the draws it skipped
+		u64 pool_peak_bytes = 0; ///< the most memory the store's slabs held, free ones included
+		u64 invalidations_waited = 0; ///< skipped draws whose texture cache invalidation waited
+		u64 invalidations_made = 0; ///< texture cache invalidations the waiting ones were made as
 		u64 peak_bytes = 0; ///< the store's largest size
 		u64 evictions = 0; ///< entries that left the history
 		u64 budget_evictions = 0; ///< entries the budget pushed out
@@ -308,6 +352,18 @@ namespace GSBurstMemo
 		return g_stats;
 	}
 	void ResetStats();
+
+	/// Measurement scaffolding, not a setting: the memo runs whenever its own preconditions hold, unless
+	/// gsrunner's -burst-memo off turns it off for an A/B. Read when the renderer refreshes the memo.
+	inline bool g_forced_off = false;
+	inline void SetForcedOff(bool off)
+	{
+		g_forced_off = off;
+	}
+	inline bool ForcedOff()
+	{
+		return g_forced_off;
+	}
 
 	/// The negative control for the identity check: every skipped draw writes one wrong byte into each block
 	/// it writes (each, because a later draw of the burst rewrites the whole block). Frames that come out
@@ -367,12 +423,29 @@ namespace GSBurstMemo
 		static constexpr u8 BLOCK_COPY_RUN = 16;
 		u8 block_copy_run[64 * 64] = {};
 
-		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash, and its entries, so a rebuild of the
+		/// Draws in a row the block-copy gate passed over, with no draw between them that the memo could record.
+		/// After REST_AFTER of them the memo rests: SkipMemoizedDraw only asks whether the draw is one the memo
+		/// could record, from its registers (BurstMemoWakes), and returns; a draw that is, or a copy of a shape the
+		/// gate no longer passes over, wakes it. On a title whose copies are all block copies that is every frame
+		/// after the first, and the memo then costs those few tests per draw.
+		static constexpr u32 REST_AFTER = 1024;
+		u32 passed_over_in_a_row = 0;
+		bool resting = false;
+
+		/// The last palette hashed: GSClut::GetReadSerial() (or none, ~0), entries, hash, and its entries, so a rebuild of the
 		/// expansion that leaves the same entries (a CLUT loaded again from the same bytes) is found with a
 		/// compare instead of a hash.
 		u64 palette_generation = ~u64(0);
 		u32 palette_entries = 0;
 		u64 palette_hash = 0;
 		std::vector<u32> palette_copy;
+
+		/// The texture cache invalidations of skipped draws not yet made, all of one frame layout (bp, bw, psm), in
+		/// the order the draws came: GSRendererHW::BurstMemoInvalidate() says why they may wait.
+		static constexpr u32 MAX_PENDING_RECTS = 64;
+		u32 pending_bp = 0, pending_bw = 0, pending_psm = 0;
+		u32 pending_count = 0;
+		GSVector4i pending_bounds = GSVector4i::zero();
+		GSVector4i pending_rects[MAX_PENDING_RECTS];
 	};
 } // namespace GSBurstMemo

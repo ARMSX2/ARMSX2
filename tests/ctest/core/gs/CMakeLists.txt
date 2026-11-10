@@ -88,6 +88,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_blend_carry_tests.cpp
 	gs_over_one_two_pass_tests.cpp
 	gs_autoflush_engine_level_tests.cpp
+	gs_kick_publish_tests.cpp
 	gs_draw_buffer_overlap_tests.cpp
 	gs_ktx_tests.cpp
 	gs_texture_cache_grid_tests.cpp
@@ -104,6 +105,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_channel_shuffle_cover_tests.cpp
 	gs_sw_palette_block_copy_tests.cpp
 	gs_target_dirty_tests.cpp
+	gs_lean_target_tests.cpp
 	gs_cache_file_tests.cpp
 	gs_compile_queue_tests.cpp
 	gs_vk_cache_stamp_tests.cpp

@@ -142,6 +142,7 @@ namespace GSRunner
 	static bool ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params);
 	static void DumpStats();
 	static bool ReportHashMemoVerify();
+	static bool ReportLeanCheck();
 	static bool ReportBlockHashVerify();
 
 	static bool CreatePlatformWindow();
@@ -478,6 +479,7 @@ static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_verify_hash_memo = false;
+static bool s_lean_check = false;
 static bool s_verify_block_hash = false;
 
 static u64 s_total_prims = 0;
@@ -1217,7 +1219,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
 						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <0|1>: GS multi-threading off or on (3 is accepted as on). Defaults to 0.\n");
-	std::fprintf(stderr, "  -burst-memo <on|off>: The burst memo (skips copy-road bursts that repeat), over the settings.\n");
+	std::fprintf(stderr, "  -burst-memo <on|off>: The burst memo (skips copy-road bursts that repeat) on, as always, or off for an A/B.\n");
+	std::fprintf(stderr, "  -lean <on|off|check>: Development switch of the lean draw path. 'on' is what ships; 'off' takes every "
+						 "walk the lean path skips; 'check' takes them after the lean path has said what they will do, prints "
+						 "LEAN-CHECK lines, and makes the run fail if it was ever wrong.\n");
 	std::fprintf(stderr, "  -burst-memo-control: The memo's negative control: every skipped draw writes a wrong byte into each "
 						 "block, so frames must differ wherever a skipped burst's output is shown.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
@@ -1670,7 +1675,25 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					ArgError("-burst-memo: expected on or off, got '{}'.", value);
 					return false;
 				}
-				s_settings_interface.SetBoolValue("EmuCore/GS", "BurstMemo", !std::strcmp(value, "on"));
+				GSBurstMemo::SetForcedOff(!std::strcmp(value, "off"));
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("-lean"))
+			{
+				// Development scaffolding of the lean draw path, not a setting: see GSTextureCache::LeanMode.
+				const char* value = argv[++i];
+				if (!std::strcmp(value, "on"))
+					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::On);
+				else if (!std::strcmp(value, "off"))
+					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Off);
+				else if (!std::strcmp(value, "check"))
+					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+				else
+				{
+					ArgError("-lean: '{}' is not on, off or check.", value);
+					return false;
+				}
+				s_lean_check = !std::strcmp(value, "check");
 				continue;
 			}
 			else if (CHECK_ARG("-burst-memo-control"))
@@ -2696,6 +2719,20 @@ bool GSRunner::ReportHashMemoVerify()
 	return report.mismatches == 0 && report.missed_writers == 0;
 }
 
+// Prints what -lean check found. False if a walk ever did something other than what the lean path said.
+bool GSRunner::ReportLeanCheck()
+{
+	if (!s_lean_check)
+		return true;
+
+	const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
+	const std::string line = fmt::format("LEAN-CHECK target_calls={} target_hits={} invalidate_calls={} invalidate_hits={} mismatches={}",
+		report.target_calls, report.target_hits, report.invalidate_calls, report.invalidate_hits, report.mismatches);
+	Console.WriteLn(line);
+	std::fprintf(stderr, "%s\n", line.c_str());
+	return report.mismatches == 0;
+}
+
 // Prints what -verify-block-hash found. False if a cached block hash was stale, which is a store into local
 // memory that nothing marked, or if keying with the cache and without it disagreed on which windows are one.
 bool GSRunner::ReportBlockHashVerify()
@@ -2795,10 +2832,14 @@ void GSRunner::DumpStats()
 		const double frames = static_cast<double>(std::max<u64>(s_total_drawn_frames, 1));
 		Console.WriteLn(fmt::format("@HWSTAT@ Burst Memo: {} copies run ({} recorded, {} not taken: a target was weighed, {} a block copy), {} skipped ({:.1f}% of copy-road "
 									"draws; {:.1f}/frame) in {} bursts; stops: packet {}, bytes {}, target {}, write {}, state {}; "
-									"{} installs, peak {:.1f} MB, {} evicted by age, {} by budget; {} packet checks, {} key checks over {} blocks",
+									"{} installs, peak {:.1f} MB, {} evicted by age, {} by budget; {} packet checks, {} key checks over {} blocks; "
+									"{} of {} vertices in skipped draws; slabs held at most {:.1f} MB; {} invalidations waited, made as {}; "
+									"{} draws the road cannot take, by their registers; rested {} times",
 			bm.copy_draws, bm.recorded, bm.not_recorded_target, bm.not_recorded_block_copy, bm.hit_draws, Ratio(bm.hit_draws, bm.hit_draws + bm.copy_draws),
 			bm.hit_draws / frames, bm.sequences, bm.stop_packet, bm.stop_key, bm.stop_route, bm.stop_write, bm.stop_state,
-			bm.installs, bm.peak_bytes / 1048576.0, bm.evictions, bm.budget_evictions, bm.packet_checks, bm.key_checks, bm.key_blocks));
+			bm.installs, bm.peak_bytes / 1048576.0, bm.evictions, bm.budget_evictions, bm.packet_checks, bm.key_checks, bm.key_blocks,
+			bm.hit_vertices, bm.draw_vertices, bm.pool_peak_bytes / 1048576.0,
+			bm.invalidations_waited, bm.invalidations_made, bm.not_copy_road, bm.rests));
 	}
 	// Marks of all of local memory (GSLocalMemory::MarkAllEvents): each one dirties every block, so a title that
 	// does it every frame rehashes and restages everything. Counted over the whole process.
@@ -3091,7 +3132,8 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			GSRunner::DumpStats();
 			const bool memo_verify_ok = GSRunner::ReportHashMemoVerify();
 			const bool block_hash_verify_ok = GSRunner::ReportBlockHashVerify();
-			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
+			const bool lean_check_ok = GSRunner::ReportLeanCheck();
+			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok && lean_check_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 
