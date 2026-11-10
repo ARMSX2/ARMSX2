@@ -2930,6 +2930,9 @@
     <ClCompile Include="GS\Renderers\Common\GSPassScheduler.cpp">
       <Filter>System\Ps2\GS\Renderers\Common</Filter>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\HW\GSBurstMemo.cpp">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClCompile>
@@ -3063,6 +3066,9 @@
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">

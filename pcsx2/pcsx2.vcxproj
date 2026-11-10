@@ -533,6 +533,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSTextureCache.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSBurstMemo.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSTextureCacheSW.cpp" />
     <ClCompile Include="GS\GSUtil.cpp" />
@@ -1080,6 +1081,7 @@
     <ClInclude Include="GS\Renderers\HW\GSTargetRebase.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
+    <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
