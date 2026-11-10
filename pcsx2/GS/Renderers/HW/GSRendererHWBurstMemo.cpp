@@ -44,6 +44,7 @@ static __fi bool TestBit(const u64* bits, u32 block)
 
 void GSRendererHW::RefreshBurstMemo()
 {
+	BurstMemoFlushWaiting();
 	Memo& m = m_burst_memo;
 	m.store.Clear();
 	m.recording.reset();
@@ -73,7 +74,15 @@ bool GSRendererHW::SkipMemoizedDraw()
 {
 	if (!m_burst_memo_enabled)
 		return false;
+	if (BurstMemoSkip())
+		return true;
+	// The draw runs, and reads the texture cache.
+	BurstMemoFlushWaiting();
+	return false;
+}
 
+bool GSRendererHW::BurstMemoSkip()
+{
 	Memo& m = m_burst_memo;
 	m.candidate = false;
 	GlobalStats().draw_vertices += m_vertex->next;
@@ -327,16 +336,17 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	if (!copied)
 		m_mem.MarkPagesWritten(context->offset.zb, grown);
 
-	// What SwPrimRender() did after Run(): the texture cache invalidation and the draw transfer.
-	GSOffset frame_offs = context->offset.fb;
+	// What SwPrimRender() did after Run(): the texture cache invalidation (of the frame, or of the channels its
+	// mask leaves written) and the draw transfer.
+	u32 invalidated_psm = context->FRAME.PSM;
 	if (GSLocalMemory::m_psm[context->FRAME.PSM].trbpp == 32 && context->FRAME.FBMSK)
 	{
 		if (context->FRAME.FBMSK == 0xFF000000)
-			frame_offs = m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMCT24);
+			invalidated_psm = PSMCT24;
 		else if (context->FRAME.FBMSK == 0x00FFFFFF)
-			frame_offs = m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMT8H);
+			invalidated_psm = PSMT8H;
 	}
-	g_texture_cache->InvalidateVideoMem(frame_offs, bbox);
+	BurstMemoInvalidate(context->FRAME.Block(), context->FRAME.FBW, invalidated_psm, bbox);
 
 	GSUploadQueue uq;
 	uq.transfer_type = EEGS_TransferType::EE_to_GS;
@@ -373,6 +383,67 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	m_fast_stencil_shadow = left.fast_stencil_shadow;
 	m_primitive_covers_without_gaps = static_cast<NoGapsType>(left.covers);
 	m_vt.m_primclass = static_cast<GS_PRIM_CLASS>(left.primclass);
+}
+
+// The copy road invalidates the texture cache after every draw (SwPrimRender). A skipped draw's invalidation waits
+// instead, and the waiting ones are made when something is about to read the texture cache
+// (BurstMemoFlushWaiting): as one, over the rectangle that bounds them, when no target is in reach of it, and
+// otherwise one by one in the order the copies made them. Why that leaves the same pictures:
+//  - Made one by one, they are the copies' own invalidations in the copies' order, and nothing between two draws of a
+//    burst changes the texture cache (only a draw makes a source or a target, and a draw that is not skipped
+//    flushes first), so each finds what it would have found.
+//  - Made as one with no target in reach, an invalidation only touches sources: each page of the rectangle has its
+//    sources' valid bits cleared or the source removed, and a source made from a target is removed when the
+//    rectangle overlaps it. All of it only takes things away, so the bounding rectangle does what the separate ones
+//    do and perhaps more, and the more can only make a source upload again from local memory, which holds what the
+//    copies wrote.
+//  - While they wait, the memo's own check for a target at a draw's texture or frame (BurstMemoTargetAt) may still
+//    see a target one of them would have removed. That stops the skip, and the draw that runs flushes first.
+//  - Everything else that reads the texture cache flushes first: the uploads, reads and moves (InvalidateVideoMem,
+//    InvalidateLocalMem, Move), the end of the frame, palette lookups, the output, purges and readbacks, and any
+//    change of settings or reset.
+void GSRendererHW::BurstMemoInvalidate(u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+{
+	Memo& m = m_burst_memo;
+	if (m.pending_count && (m.pending_bp != bp || m.pending_bw != bw || m.pending_psm != psm ||
+							   m.pending_count == Memo::MAX_PENDING_RECTS))
+		BurstMemoFlushWaitingSlow();
+	if (!m.pending_count)
+	{
+		m.pending_bp = bp;
+		m.pending_bw = bw;
+		m.pending_psm = psm;
+		m.pending_bounds = r;
+	}
+	else
+	{
+		m.pending_bounds = m.pending_bounds.runion(r);
+	}
+	m.pending_rects[m.pending_count++] = r;
+	GlobalStats().invalidations_waited++;
+}
+
+void GSRendererHW::BurstMemoFlushWaitingSlow()
+{
+	Memo& m = m_burst_memo;
+	const u32 n = m.pending_count;
+	m.pending_count = 0;
+	const GSOffset off = m_mem.GetOffset(m.pending_bp, m.pending_bw, m.pending_psm);
+	if (n > 1)
+	{
+		const GSVector4i& b = m.pending_bounds;
+		const u32 start = GSLocalMemory::GetStartBlockAddress(off.bp(), off.bw(), off.psm(), b);
+		const u32 end = b.rempty() ? start : GSLocalMemory::GetUnwrappedEndBlockAddress(off.bp(), off.bw(), off.psm(), b);
+		if (!GSTextureCache::TargetsMayReach(start, end))
+		{
+			g_texture_cache->InvalidateVideoMem(off, b);
+			GlobalStats().invalidations_made++;
+			return;
+		}
+	}
+	for (u32 i = 0; i < n; i++)
+		g_texture_cache->InvalidateVideoMem(off, m.pending_rects[i]);
+	GlobalStats().invalidations_made += n;
 }
 
 bool GSRendererHW::BurstMemoBeforeCopy()
@@ -552,6 +623,7 @@ void GSRendererHW::BurstMemoEndSequence()
 
 void GSRendererHW::BurstMemoEndFrame(bool idle_frame)
 {
+	BurstMemoFlushWaiting();
 	if (!m_burst_memo_enabled)
 		return;
 	Memo& m = m_burst_memo;

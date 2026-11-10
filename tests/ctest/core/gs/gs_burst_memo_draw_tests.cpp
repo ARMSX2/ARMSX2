@@ -9,9 +9,11 @@
 #include "gs_hw_draw_harness.h"
 
 #include "GS/GSLocalMemory.h"
+#include "GS/GSPerfMon.h"
 #include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
 
+#include <array>
 #include <functional>
 #include <random>
 #include <vector>
@@ -45,6 +47,8 @@ namespace
 		std::vector<Sprite> sprites;
 		u32 tex_psm = PSMCT32;
 		u32 frame_psm = PSMCT32;
+		u32 fbp = DEST_FBP; ///< Copy: the frame (pages)
+		u32 tbp = TEX_TBP; ///< Copy: the texture (blocks)
 		// Write: the rectangle of the surface (bp, bw, psm), and the value pattern's seed.
 		u32 bp = 0, bw = 1, psm = PSMCT32;
 		GSVector4i rect = GSVector4i::zero();
@@ -56,6 +60,9 @@ namespace
 		std::vector<u8> vm;
 		u32 device_draws = 0;
 		GSBurstMemo::Stats stats;
+		/// The texture cache's source lookups and what they uploaded (GSPerfMon): what the invalidations left
+		/// the sources needing.
+		std::array<double, 5> texture_cache = {};
 	};
 
 	class GSBurstMemoDraw : public Fixture
@@ -100,7 +107,7 @@ namespace
 			r.SCISSOR.SCAY1 = 63;
 			p.Reg(GIF_A_D_REG_SCISSOR_1, r);
 			r.U64 = 0;
-			r.FRAME.FBP = DEST_FBP;
+			r.FRAME.FBP = s.fbp;
 			r.FRAME.FBW = 1;
 			r.FRAME.PSM = s.frame_psm;
 			p.Reg(GIF_A_D_REG_FRAME_1, r);
@@ -127,7 +134,7 @@ namespace
 			r.CLAMP.WMT = CLAMP_CLAMP;
 			p.Reg(GIF_A_D_REG_CLAMP_1, r);
 			r.U64 = 0;
-			r.TEX0.TBP0 = TEX_TBP;
+			r.TEX0.TBP0 = s.tbp;
 			r.TEX0.TBW = 1;
 			r.TEX0.PSM = s.tex_psm;
 			r.TEX0.TW = 6;
@@ -237,6 +244,7 @@ namespace
 				return out;
 			std::memcpy(m_gs->m_mem.m_vm8, vm.data(), vm.size());
 			m_gs->m_mem.MarkAllPagesWritten();
+			const std::array<double, 5> texture_cache = TextureCacheCounters();
 
 			for (const Step& s : script)
 			{
@@ -260,10 +268,20 @@ namespace
 			out.vm.assign(m_gs->m_mem.m_vm8, m_gs->m_mem.m_vm8 + VM_SIZE);
 			out.device_draws = m_device->m_draws;
 			out.stats = GSBurstMemo::GlobalStats();
+			out.texture_cache = TextureCacheCounters();
+			for (size_t i = 0; i < texture_cache.size(); i++)
+				out.texture_cache[i] -= texture_cache[i];
 			GSBurstMemo::SetControlCorruption(false);
 			GSBurstMemo::SetForcedOff(false);
 			Destroy();
 			return out;
+		}
+
+		static std::array<double, 5> TextureCacheCounters()
+		{
+			return {g_perfmon.GetCounter(GSPerfMon::TCSourceHit), g_perfmon.GetCounter(GSPerfMon::TCSourceMiss),
+				g_perfmon.GetCounter(GSPerfMon::HashCacheHit), g_perfmon.GetCounter(GSPerfMon::HashCacheMiss),
+				g_perfmon.GetCounter(GSPerfMon::Unswizzle)};
 		}
 
 		static std::vector<u8> RandomMemory(u32 seed)
@@ -288,7 +306,7 @@ namespace
 
 		/// A burst of four draws into two blocks of the narrow frame, each draw a sprite or two, the later
 		/// draws writing over parts of the earlier ones.
-		static std::vector<Step> Burst(u32 tex_psm = PSMCT32, u32 frame_psm = PSMCT32)
+		static std::vector<Step> Burst(u32 tex_psm = PSMCT32, u32 frame_psm = PSMCT32, u32 fbp = DEST_FBP, u32 tbp = TEX_TBP)
 		{
 			std::vector<Step> b;
 			const std::vector<std::vector<Sprite>> draws = {
@@ -303,6 +321,8 @@ namespace
 				s.sprites = sprites;
 				s.tex_psm = tex_psm;
 				s.frame_psm = frame_psm;
+				s.fbp = fbp;
+				s.tbp = tbp;
 				b.push_back(s);
 			}
 			return b;
@@ -352,6 +372,47 @@ TEST_F(GSBurstMemoDraw, ARepeatedBurstIsSkippedAndLeavesTheSameMemory)
 	EXPECT_EQ(on.stats.hit_draws, 4u);
 	EXPECT_EQ(on.stats.sequences, 1u);
 	EXPECT_EQ(on.stats.copy_draws, 4u);
+}
+
+// A skipped draw invalidates the texture cache as its copy would: a texture made from the burst's destination is
+// looked up and uploaded after a skipped burst exactly as after the copies. The second burst finds its destination
+// holding the first one's output and is recorded; the third finds the same, after a draw has made a texture of the
+// destination, and is skipped.
+TEST_F(GSBurstMemoDraw, ASkippedBurstInvalidatesTheTexturesItWrites)
+{
+	const std::vector<u8> vm = RandomMemory(9);
+	const std::vector<Step> script = Concat({Burst(), {Step{Step::Consume}}, Burst(), {Step{Step::Consume}}, Burst(),
+		{Step{Step::Consume}}});
+	const Result off = Run(script, vm, false);
+	const Result on = Run(script, vm, true);
+	ExpectSameAsMemoOff(off, on);
+	EXPECT_EQ(on.stats.hit_draws, 4u);
+	EXPECT_GT(off.texture_cache[1] + off.texture_cache[3], 0.0) << "the consumer never looked a texture up";
+	const char* names[] = {"source hits", "source misses", "hash cache hits", "hash cache misses", "texels uploaded"};
+	for (size_t i = 0; i < off.texture_cache.size(); i++)
+		EXPECT_EQ(on.texture_cache[i], off.texture_cache[i]) << names[i];
+}
+
+// A burst that begins right after a skipped one, with no other draw between, checks its keys against what the
+// skipped burst wrote: here burst B copies from the destination burst A writes. B is recorded first, reading the
+// destination's restored bytes; later A is skipped (its own key check hashes the destination's blocks first) and B
+// follows at once. B must find the bytes A left, not the hashes from before them, and so run its copies.
+TEST_F(GSBurstMemoDraw, ABurstAfterASkippedOneSeesWhatItWrote)
+{
+	const std::vector<u8> vm = RandomMemory(10);
+	constexpr u32 OUT_FBP = 0x60;
+	Step restore_out = RestoreDestination();
+	restore_out.bp = OUT_FBP << 5;
+	restore_out.seed = 78;
+	const std::vector<Step> b_burst = Burst(PSMCT32, PSMCT32, OUT_FBP, DEST_FBP << 5);
+	const std::vector<Step> script = Concat({{RestoreDestination(), restore_out}, b_burst, {Step{Step::Consume}},
+		{RestoreDestination()}, Burst(), {Step{Step::Consume}},
+		{RestoreDestination(), restore_out}, Burst(), b_burst, {Step{Step::Consume}}});
+	const Result off = Run(script, vm, false);
+	const Result on = Run(script, vm, true);
+	ExpectSameAsMemoOff(off, on);
+	EXPECT_EQ(on.stats.hit_draws, 4u) << "A, the second time, and not B";
+	EXPECT_EQ(on.stats.stop_key, 1u) << "B turned away by the bytes A wrote";
 }
 
 // A palette block copy (an 8-bit texture into a 32-bit frame): the palette is part of what a draw read.

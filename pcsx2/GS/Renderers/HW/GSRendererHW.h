@@ -464,6 +464,7 @@ private:
 	bool m_copy_road_no_targets = false;
 	bool m_copy_road_frame_checked = false;
 
+	bool BurstMemoSkip();
 	bool BurstMemoBeforeCopy();
 	void BurstMemoAfterCopy(bool recorded, bool copied);
 	bool BurstMemoTryHit();
@@ -481,6 +482,15 @@ private:
 			BurstMemoEndSequence();
 	}
 	void BurstMemoEndFrame(bool idle_frame);
+	void BurstMemoInvalidate(u32 bp, u32 bw, u32 psm, const GSVector4i& r);
+	void BurstMemoFlushWaitingSlow();
+	/// Makes the texture cache invalidations skipped draws left waiting: before anything that reads the texture
+	/// cache.
+	void BurstMemoFlushWaiting()
+	{
+		if (m_burst_memo.pending_count)
+			BurstMemoFlushWaitingSlow();
+	}
 	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
 	u64 BurstMemoPaletteHash(u32 entries);
 	bool BurstMemoTargetAt(u32 bp, u32 psm) const;

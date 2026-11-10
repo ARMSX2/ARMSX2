@@ -72,6 +72,7 @@ GSRendererHW::~GSRendererHW()
 
 void GSRendererHW::Destroy()
 {
+	BurstMemoFlushWaiting();
 	g_texture_cache->RemoveAll(true, true, true);
 	GSRenderer::Destroy();
 }
@@ -80,17 +81,20 @@ void GSRendererHW::PurgeTextureCache(bool sources, bool targets, bool hash_cache
 {
 	// Queued draw records reach the TC; retire them before mutating it.
 	DrainBackQueue();
+	BurstMemoFlushWaiting();
 	g_texture_cache->RemoveAll(sources, targets, hash_cache);
 }
 
 void GSRendererHW::ReadbackTextureCache()
 {
 	DrainBackQueue();
+	BurstMemoFlushWaiting();
 	g_texture_cache->ReadbackAll();
 }
 
 GSTexture* GSRendererHW::LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size)
 {
+	BurstMemoFlushWaiting();
 	return g_texture_cache->LookupPaletteSource(CBP, CPSM, CBW, offset, scale, size);
 }
 
@@ -197,6 +201,7 @@ void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 
 GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 {
+	BurstMemoFlushWaiting();
 	int index = i >= 0 ? i : 1;
 
 	GSPCRTCRegs::PCRTCDisplay& curFramebuffer = PCRTCDisplays.PCRTCDisplays[index];
@@ -243,6 +248,7 @@ GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 
 GSTexture* GSRendererHW::GetFeedbackOutput(float& scale)
 {
+	BurstMemoFlushWaiting();
 	const int index = m_regs->EXTBUF.FBIN & 1;
 	const GSVector2i fb_size(PCRTCDisplays.GetFramebufferSize(index));
 
@@ -2756,6 +2762,7 @@ void GSRendererHW::HandleManualDeswizzle()
 
 void GSRendererHW::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
+	BurstMemoFlushWaiting();
 	// printf("HW: [%d] InvalidateVideoMem %d,%d - %d,%d %05x (%d)\n", static_cast<int>(g_perfmon.GetFrame()), r.left, r.top, r.right, r.bottom, static_cast<int>(BITBLTBUF.DBP), static_cast<int>(BITBLTBUF.DPSM));
 
 	// This is gross, but if the EE write loops, we need to split it on the 2048 border.
@@ -2793,6 +2800,7 @@ void GSRendererHW::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 
 void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut)
 {
+	BurstMemoFlushWaiting();
 	// printf("HW: [%d] InvalidateLocalMem %d,%d - %d,%d %05x (%d)\n", static_cast<int>(g_perfmon.GetFrame()), r.left, r.top, r.right, r.bottom, static_cast<int>(BITBLTBUF.SBP), static_cast<int>(BITBLTBUF.SPSM));
 
 	if (clut)
@@ -2824,6 +2832,7 @@ void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 
 void GSRendererHW::Move()
 {
+	BurstMemoFlushWaiting();
 	if (m_mv && m_mv(*this))
 	{
 		// Handled by HW hack.

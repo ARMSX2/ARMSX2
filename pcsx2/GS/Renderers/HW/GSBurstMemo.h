@@ -336,6 +336,8 @@ namespace GSBurstMemo
 		u64 draw_vertices = 0; ///< vertices of every draw the memo saw (all draws, while it is on)
 		u64 hit_vertices = 0; ///< of those, vertices of the draws it skipped
 		u64 pool_peak_bytes = 0; ///< the most memory the store's slabs held, free ones included
+		u64 invalidations_waited = 0; ///< skipped draws whose texture cache invalidation waited
+		u64 invalidations_made = 0; ///< texture cache invalidations the waiting ones were made as
 		u64 peak_bytes = 0; ///< the store's largest size
 		u64 evictions = 0; ///< entries that left the history
 		u64 budget_evictions = 0; ///< entries the budget pushed out
@@ -426,5 +428,13 @@ namespace GSBurstMemo
 		u32 palette_entries = 0;
 		u64 palette_hash = 0;
 		std::vector<u32> palette_copy;
+
+		/// The texture cache invalidations of skipped draws not yet made, all of one frame layout (bp, bw, psm), in
+		/// the order the draws came: GSRendererHW::BurstMemoInvalidate() says why they may wait.
+		static constexpr u32 MAX_PENDING_RECTS = 64;
+		u32 pending_bp = 0, pending_bw = 0, pending_psm = 0;
+		u32 pending_count = 0;
+		GSVector4i pending_bounds = GSVector4i::zero();
+		GSVector4i pending_rects[MAX_PENDING_RECTS];
 	};
 } // namespace GSBurstMemo
