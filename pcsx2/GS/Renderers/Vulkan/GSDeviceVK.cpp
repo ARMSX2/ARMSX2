@@ -9652,6 +9652,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
 	// The run machine (GSRunsVK.h) decides whether this draw can join a run, and ends the open run if not, before
 	// anything below records a command.
+	// -runs-nofill-classic (development): every TFX draw scissored to one pixel, so a classic arm prices its passes
+	// without their fill as -runs-nofill does a run's.
+	if (g_gs_measurement_overrides.runs_nofill_classic)
+		config.scissor = GSVector4i(0, 0, 1, 1);
+
 	if (m_runs)
 	{
 		m_runs->Classify(config);

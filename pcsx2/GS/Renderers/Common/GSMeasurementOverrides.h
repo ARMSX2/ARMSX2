@@ -123,6 +123,10 @@ struct GSMeasurementOverrides
 	/// price the device work the shortcut skips.
 	bool runs_no_continue = false;
 
+	/// -runs-nofill-classic: every TFX draw is scissored to one pixel (runs included), so a no-fill arm of the classic
+	/// path can be set against -runs-nofill's.
+	bool runs_nofill_classic = false;
+
 	/// -runs-log <path>: one line per render pass with the machine's counts, and one per compiled run program.
 	std::string runs_log;
 
