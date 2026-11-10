@@ -216,6 +216,8 @@ private:
 	CLUTDrawTestResult PossibleCLUTDraw();
 	CLUTDrawTestResult PossibleCLUTDrawAggressive();
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
+	/// Writes held depth words (GSTextureCache::MaterialiseHeldPages) under what the copy road reads and writes.
+	void MaterialiseHeldUnderCopy();
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
 
 	bool SnapSpriteEdgesToPixelGrid();
@@ -548,6 +550,7 @@ public:
 
 	void PurgeTextureCache(bool sources, bool targets, bool hash_cache) override;
 	void ReadbackTextureCache() override;
+	void MaterialiseHeldLocalMemory() override;
 
 	GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size) override;
 

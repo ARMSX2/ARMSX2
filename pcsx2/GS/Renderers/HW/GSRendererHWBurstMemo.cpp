@@ -309,9 +309,11 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	const GSDrawingContext* context = m_context;
 	const bool copied = (d.h->flags & GSBurstMemo::REC_COPIED) != 0;
 
-	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them.
+	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them. Held depth words
+	// in them go in first, for the rest of their pages.
 	u8* const vm = m_mem.m_vm8;
 	const u32 blocks = d.h->nout;
+	g_texture_cache->MaterialiseHeldBlocks(d.out_blocks, blocks);
 	for (u32 i = 0; i < blocks; i++)
 		std::memcpy(vm + static_cast<size_t>(d.out_blocks[i]) * GS_BLOCK_SIZE, d.out_bytes + static_cast<size_t>(i) * GS_BLOCK_SIZE, GS_BLOCK_SIZE);
 	if (ControlCorruption()) [[unlikely]]

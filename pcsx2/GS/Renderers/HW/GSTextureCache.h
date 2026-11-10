@@ -45,6 +45,27 @@ public:
 		u64 served = 0;
 	};
 
+	/// Words held for local memory (MaterialiseHeldPages): what a CPU move would have left in the pages of
+	/// `rect` in the layout (bp, bw, PSMZ24), at native size, RGB = the 24-bit depth word. `target` is the
+	/// depth target the move drew them into, null once it is gone (the words stay held: local memory outlives it).
+	class Target;
+	struct HeldWords
+	{
+		Target* target = nullptr;
+		GSTexture* words = nullptr;
+		GSVector4i rect = GSVector4i::zero();
+		u32 bp = 0;
+		u32 bw = 0;
+	};
+
+	/// Held pages made, materialised and dropped (MaterialiseHeldPages), for tests and the readback scaffolding.
+	struct HeldStats
+	{
+		u64 held = 0;
+		u64 materialised = 0;
+		u64 dropped = 0;
+	};
+
 	constexpr static GSVector4 FullSrcRect = GSVector4::cxpr(0.0f, 0.0f, 1.0f, 1.0f);
 
 	constexpr static bool CheckOverlap(const u32 a_bp, const u32 a_bp_end, const u32 b_bp, const u32 b_bp_end) noexcept
@@ -731,6 +752,20 @@ protected:
 	void StashRead(Target* t);
 	bool ServeReadFromStash(Target* t, const GSVector4i& r, u32 write_mask);
 
+	/// Held pages (MaterialiseHeldPages), and the union of their pages.
+	std::vector<HeldWords> m_held;
+	std::array<u64, GS_MAX_PAGES / 64> m_held_pages = {};
+	u32 m_held_block_lo = ~0u; ///< the held blocks' range, unwrapped (RebuildHeldPages)
+	u32 m_held_block_hi = 0;
+	HeldStats m_held_stats;
+	void HoldPages(Target* t, GSTexture* words, u32 bp, u32 bw, const GSVector4i& rect);
+	/// Writes hold `i`'s words into local memory, then drops it.
+	void MaterialiseHold(size_t i);
+	/// Drops hold `i` without writing it.
+	void DropHold(size_t i);
+	void RebuildHeldPages();
+	bool AnyHeldPage(u32 bp, u32 bw, u32 psm, const GSVector4i& r) const;
+
 	/// A GPU->CPU copy issued under GSHardwareDownloadMode::Asynchronous, waiting on its fence.
 	struct PendingDownload
 	{
@@ -1030,6 +1065,33 @@ public:
 	/// A whole-page PSMZ24 move from a colour target into a depth target (GSDepthFormatMove.h), made on the
 	/// GPU. False, with nothing changed, when it is not a move this can make exactly.
 	bool MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, int sy, u32 DBP, u32 DBW, int dx, int dy, int w, int h);
+
+	/// Held pages. After MoveColourPagesIntoDepthTarget, local memory under the destination is out of date and
+	/// the depth target holds, beside its own texture, the exact words the CPU move would have left there
+	/// (HeldWords). Whatever reads local memory over those pages, or writes part of them, calls
+	/// one of these first; they write the words into local memory (a synchronous download) and drop the hold.
+	/// Everything else about the target -- its texture, its drawn-since-read area -- is what the CPU move
+	/// would have left, so the rest of the readback bookkeeping needs nothing new.
+	bool HasHeldPages() const { return !m_held.empty(); }
+	/// The words `t` holds, if it holds any.
+	const HeldWords* HeldBy(const Target* t) const;
+	/// A target going away: words it holds stay held, without it.
+	void ReleaseHeld(Target* t);
+	/// Local memory is being replaced (a hardware reset, a savestate load): the holds are void.
+	void DropAllHeld();
+	/// Any held page among those `r` covers in the layout (bp, bw, psm).
+	void MaterialiseHeldPages(u32 bp, u32 bw, u32 psm, const GSVector4i& r);
+	/// Any held page among the blocks listed.
+	void MaterialiseHeldBlocks(const u32* blocks, u32 count);
+	/// The pages a whole texture reads, every mip level up to `lod` (null: the base level only).
+	void MaterialiseHeldTexture(const GIFRegTEX0& TEX0, const GSVector2i* lod);
+	void MaterialiseAllHeld();
+	/// Before local memory under (off, r) is written: a hold the write replaces in full is dropped without
+	/// a download, since nothing would read the words; one it touches in part is materialised first.
+	/// `all_low_24` says the write sets the low 24 bits of every word it touches (no masked bits).
+	void BeforeLocalMemoryWrite(const GSOffset& off, const GSVector4i& r, bool all_low_24);
+	const HeldStats& GetHeldStats() const { return m_held_stats; }
+
 	bool ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	bool PageMove(u32 SBP, u32 DBP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	void CopyPages(Target* src, u32 sbw, u32 src_offset, Target* dst, u32 dbw, u32 dst_offset, u32 num_pages,

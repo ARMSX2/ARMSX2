@@ -870,6 +870,9 @@ public:
 	virtual bool SkipMemoizedDraw() { return false; }
 	virtual void PurgeTextureCache(bool sources, bool targets, bool hash_cache);
 	virtual void ReadbackTextureCache();
+	/// Writes into local memory what the hardware renderer holds for it apart from its targets (moved depth
+	/// words, GSTextureCache::MaterialiseHeldPages), for anything that takes local memory as it stands.
+	virtual void MaterialiseHeldLocalMemory() {}
 	virtual void InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r) {}
 	virtual void InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r, bool clut = false) {}
 

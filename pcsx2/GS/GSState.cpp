@@ -5428,6 +5428,9 @@ int GSState::Freeze(freezeData* fd, bool sizeonly)
 	if (GSConfig.UserHacks_ReadTCOnClose)
 		m_mem_target->ReadbackTextureCache();
 
+	// Unconditionally, unlike the readback above: a CPU move would have left these bytes in local memory.
+	m_mem_target->MaterialiseHeldLocalMemory();
+
 	u8* data = fd->data;
 
 	WriteState(data, &version);

@@ -109,6 +109,8 @@ void GSRendererHW::Reset(bool hardware_reset)
 	// Read back on CSR Reset, conditional downloading on render swap etc handled elsewhere.
 	if (!hardware_reset)
 		g_texture_cache->ReadbackAll();
+	else
+		g_texture_cache->DropAllHeld(); // local memory is about to be replaced
 
 	m_blend_carry.valid = false;
 	g_texture_cache->RemoveAll(true, true, true);
@@ -2756,6 +2758,9 @@ void GSRendererHW::HandleManualDeswizzle()
 
 void GSRendererHW::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
+	// An EE upload or a CPU move is about to write local memory here: held words under it go in first, so
+	// the write lands over them.
+	g_texture_cache->MaterialiseHeldPages(BITBLTBUF.DBP, BITBLTBUF.DBW, BITBLTBUF.DPSM, r);
 	// printf("HW: [%d] InvalidateVideoMem %d,%d - %d,%d %05x (%d)\n", static_cast<int>(g_perfmon.GetFrame()), r.left, r.top, r.right, r.bottom, static_cast<int>(BITBLTBUF.DBP), static_cast<int>(BITBLTBUF.DPSM));
 
 	// This is gross, but if the EE write loops, we need to split it on the 2048 border.
@@ -2796,7 +2801,12 @@ void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 	// printf("HW: [%d] InvalidateLocalMem %d,%d - %d,%d %05x (%d)\n", static_cast<int>(g_perfmon.GetFrame()), r.left, r.top, r.right, r.bottom, static_cast<int>(BITBLTBUF.SBP), static_cast<int>(BITBLTBUF.SPSM));
 
 	if (clut)
-		return; // FIXME
+	{
+		// The palette is read from local memory on the CPU: held words under it go in first. No target is
+		// read back (FIXME).
+		g_texture_cache->MaterialiseHeldPages(BITBLTBUF.SBP, BITBLTBUF.SBW, BITBLTBUF.SPSM, r);
+		return;
+	}
 
 	auto iter = m_draw_transfers.end();
 	bool skip = false;
@@ -2973,6 +2983,8 @@ void GSRendererHW::SwSpriteRender()
 	constexpr bool invalidate_local_mem_before_fb_read = false;
 	if (invalidate_local_mem_before_fb_read && (alpha_blending_enabled || fb_mask_enabled))
 		g_texture_cache->InvalidateLocalMem(dpo, m_r);
+	// Held words under the frame go in before the frame is read or written in part.
+	g_texture_cache->MaterialiseHeldPages(dpo.bp(), dpo.bw(), dpo.psm(), GSVector4i(dx, dy, dx + w, dy + h));
 
 	for (int y = 0; y < h; y++, ++sy, ++dy)
 	{
@@ -3902,6 +3914,7 @@ void GSRendererHW::Draw()
 	// We trigger the sw prim render here super early, to avoid creating superfluous render targets.
 	if (CanUseSwPrimRender(no_rt, no_ds, draw_sprite_tex && m_process_texture))
 	{
+		MaterialiseHeldUnderCopy();
 		const bool memo_records = BurstMemoBeforeCopy();
 		const bool copied = SwPrimRender(*this, true, true);
 		BurstMemoAfterCopy(memo_records && copied, copied);
@@ -3948,6 +3961,7 @@ void GSRendererHW::Draw()
 		m_mem.m_clut.ClearDrawInvalidity();
 		if (result == CLUTDrawTestResult::CLUTDrawOnCPU && GSConfig.UserHacks_CPUCLUTRender > 0)
 		{
+			MaterialiseHeldUnderCopy();
 			if (SwPrimRender(*this, true, true))
 			{
 				GL_CACHE("HW: Possible clut draw, drawn with SwPrimRender()");
@@ -11950,6 +11964,28 @@ GSRendererHW::CLUTDrawTestResult GSRendererHW::PossibleCLUTDrawAggressive()
 	return CLUTDrawTestResult::CLUTDrawOnCPU;
 }
 
+void GSRendererHW::MaterialiseHeldUnderCopy()
+{
+	// The copy road reads and writes local memory on the CPU: the texture at every level it can sample, the
+	// frame over the draw, and the depth buffer when it tests depth. The palette was loaded already, and
+	// its load materialised what it read.
+	if (!g_texture_cache->HasHeldPages())
+		return;
+	if (PRIM->TME)
+	{
+		const GSVector2i levels(0, IsMipMapActive() ? static_cast<int>(m_context->TEX1.MXL) : 0);
+		g_texture_cache->MaterialiseHeldTexture(m_cached_ctx.TEX0, &levels);
+	}
+	g_texture_cache->MaterialiseHeldPages(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r);
+	if (m_cached_ctx.TEST.ZTE)
+		g_texture_cache->MaterialiseHeldPages(m_cached_ctx.ZBUF.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.ZBUF.PSM, m_r);
+}
+
+void GSRendererHW::MaterialiseHeldLocalMemory()
+{
+	g_texture_cache->MaterialiseAllHeld();
+}
+
 bool GSRendererHW::CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex)
 {
 	// Master enable.
@@ -12598,6 +12634,11 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 
 	const u32 psm = (off.psm() == PSMCT32 && m_cached_ctx.FRAME.FBMSK == 0xFF000000u) ? PSMCT24 : off.psm();
 	const int format = GSLocalMemory::m_psm[psm].fmt;
+
+	// Words a moved depth target holds for local memory there (GSTextureCache::MoveColourPagesIntoDepthTarget)
+	// go in first, unless this clear replaces them all.
+	g_texture_cache->BeforeLocalMemoryWrite(off, r,
+		GSLocalMemory::m_psm[off.psm()].depth || (m_cached_ctx.FRAME.FBMSK & 0x00FFFFFFu) == 0);
 
 	const int left = r.left;
 	const int right = r.right;

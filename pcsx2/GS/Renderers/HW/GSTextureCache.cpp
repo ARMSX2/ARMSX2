@@ -195,6 +195,8 @@ GSTextureCache::BlockHashCache& GSTextureCache::SyncBlockHashCache(GSLocalMemory
 
 u64 GSTextureCache::BlockHash(GSLocalMemory& mem, u32 block)
 {
+	if (!m_held.empty() && &mem == &g_gs_renderer->m_mem)
+		MaterialiseHeldBlocks(&block, 1);
 	BlockHashCache& cache = SyncBlockHashCache(mem);
 	block %= GS_MAX_BLOCKS;
 	if (mem.TestAndClearHashDirty(block))
@@ -204,6 +206,8 @@ u64 GSTextureCache::BlockHash(GSLocalMemory& mem, u32 block)
 
 bool GSTextureCache::BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, const u64* hashes, u32 count)
 {
+	if (!m_held.empty() && &mem == &g_gs_renderer->m_mem)
+		MaterialiseHeldBlocks(blocks, count);
 	BlockHashCache& cache = SyncBlockHashCache(mem);
 	u64* const hash = cache.hash.get();
 	for (u32 i = 0; i < count; i++)
@@ -287,6 +291,7 @@ GSTextureCache::GSTextureCache()
 GSTextureCache::~GSTextureCache()
 {
 	RemoveAll(true, true, true);
+	DropAllHeld();
 
 	s_hash_cache_purge_list = {};
 	_aligned_free(s_unswizzle_buffer);
@@ -294,6 +299,7 @@ GSTextureCache::~GSTextureCache()
 
 void GSTextureCache::ReadbackAll()
 {
+	MaterialiseAllHeld();
 	for (int type = 0; type < 2; type++)
 	{
 		for (auto t : m_dst[type])
@@ -5345,6 +5351,9 @@ void GSTextureCache::InvalidateLocalMem(
 	const u32 bp = off.bp();
 	const u32 psm = off.psm();
 	[[maybe_unused]] const u32 bw = off.bw();
+
+	// Held words first: the reads below may write target pixels over them, which are newer.
+	MaterialiseHeldPages(bp, bw, psm, r);
 	const u32 read_start = GSLocalMemory::m_psm[psm].info.bn(r.x, r.y, bp, bw);
 	const u32 read_end = GSLocalMemory::m_psm[psm].info.bn(r.z - 1, r.w - 1, bp, bw);
 
@@ -6104,6 +6113,10 @@ bool GSTextureCache::MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, in
 		}
 	}
 
+	// Holds left by earlier moves into these pages: one this move replaces in full holds nothing anyone will
+	// read (the CPU move overwrites the same low 24 bits), anything else is written out first.
+	BeforeLocalMemoryWrite(g_gs_renderer->m_mem.GetOffset(DBP, DBW, PSMZ24), dst_r, true);
+
 	GSTexture* const native = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, false);
 	GSTexture* const words = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, true);
 	if (!native || !words) [[unlikely]]
@@ -6173,17 +6186,270 @@ bool GSTextureCache::MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, in
 	const u32 bpp = GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp;
 	const ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, dst->m_texture->GetFormat(), bpp, bpp, 0xF, BilnIf(upscaled));
 	g_gs_device->DrawMultiStretchRects(&drect, 1, dst->m_texture, shader);
-	g_gs_device->Recycle(words);
 
-	// The moved data is now only on the GPU: local memory under the destination is stale, so the depth
-	// target is drawn-since-read there.
+	// The target now holds what Target::Update would have drawn from local memory after the CPU move.
 	dst->m_valid_rgb = true;
 	dst->UpdateValidity(dst_r);
-	dst->UpdateDrawn(dst_r);
+
+	// Its drawn-since-read area is what the CPU move leaves too: the move's dirty rectangle clears it when it
+	// covers it (NoteDirtyAdded; the destination had no dirty rectangles, so this one is the only one), and
+	// Target::Update does not add to it. The moved words are not in it: a readback of the target is not
+	// exact for them once upscaled (the depth was drawn through the bilinear conversion), so they are held
+	// apart, at native size, and written into local memory before anything reads or writes it there.
+	if (dst->m_drawn_since_read.rintersect(dst_r).eq(dst->m_drawn_since_read))
+		dst->m_drawn_since_read = GSVector4i::zero();
+	HoldPages(dst, words, DBP, DBW, dst_r);
 
 	// Sources over the destination are stale, as after any move.
 	InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(DBP, DBW, PSMZ24), dst_r, false);
 	return true;
+}
+
+namespace
+{
+	using PageBits = std::array<u64, GS_MAX_PAGES / 64>;
+
+	void AddPages(PageBits& bits, u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+	{
+		if (r.rempty())
+			return;
+		g_gs_renderer->m_mem.GetOffset(bp, bw, psm).loopPages(r, [&bits](u32 page) {
+			page %= GS_MAX_PAGES;
+			bits[page >> 6] |= u64(1) << (page & 63);
+		});
+	}
+
+	bool PagesMeet(const PageBits& a, const PageBits& b)
+	{
+		for (size_t i = 0; i < a.size(); i++)
+		{
+			if (a[i] & b[i])
+				return true;
+		}
+		return false;
+	}
+} // namespace
+
+void GSTextureCache::HoldPages(Target* t, GSTexture* words, u32 bp, u32 bw, const GSVector4i& rect)
+{
+	HeldWords h;
+	h.target = t;
+	h.words = words;
+	h.rect = rect;
+	h.bp = bp;
+	h.bw = bw;
+	m_held.push_back(h);
+	RebuildHeldPages();
+	m_held_stats.held++;
+}
+
+void GSTextureCache::RebuildHeldPages()
+{
+	m_held_pages = {};
+	m_held_block_lo = ~0u;
+	m_held_block_hi = 0;
+	for (const HeldWords& h : m_held)
+	{
+		AddPages(m_held_pages, h.bp, h.bw, PSMZ24, h.rect);
+		m_held_block_lo = std::min(m_held_block_lo, GSLocalMemory::GetStartBlockAddress(h.bp, h.bw, PSMZ24, h.rect));
+		m_held_block_hi = std::max(m_held_block_hi, GSLocalMemory::GetUnwrappedEndBlockAddress(h.bp, h.bw, PSMZ24, h.rect));
+	}
+}
+
+const GSTextureCache::HeldWords* GSTextureCache::HeldBy(const Target* t) const
+{
+	for (const HeldWords& h : m_held)
+	{
+		if (h.target == t)
+			return &h;
+	}
+	return nullptr;
+}
+
+void GSTextureCache::ReleaseHeld(Target* t)
+{
+	// The words stay held: local memory outlives the target, and they are what a CPU move left there.
+	for (HeldWords& h : m_held)
+	{
+		if (h.target == t)
+			h.target = nullptr;
+	}
+}
+
+void GSTextureCache::DropHold(size_t i)
+{
+	GSTexture* const words = m_held[i].words;
+	m_held.erase(m_held.begin() + static_cast<std::ptrdiff_t>(i));
+	RebuildHeldPages();
+	g_gs_device->Recycle(words);
+	m_held_stats.dropped++;
+}
+
+void GSTextureCache::DropAllHeld()
+{
+	while (!m_held.empty())
+		DropHold(m_held.size() - 1);
+}
+
+void GSTextureCache::MaterialiseHold(size_t i)
+{
+	// Readbacks are off: no target is ever written back, and these words are no different.
+	if (!IsHardwareDownloadReadbackEnabled(GSConfig.HWDownloadMode))
+	{
+		DropHold(i);
+		return;
+	}
+
+	const HeldWords h = m_held[i];
+	m_held.erase(m_held.begin() + static_cast<std::ptrdiff_t>(i));
+	RebuildHeldPages();
+
+	GIFRegTEX0 TEX0 = {};
+	TEX0.TBP0 = h.bp;
+	TEX0.TBW = h.bw;
+	TEX0.PSM = PSMZ24;
+
+	// The words as the CPU move writes them: the low 24 bits of each, the top byte left alone. Synchronous,
+	// like any read the reader would otherwise have made of the target.
+	const GSVector4i& r = h.rect;
+	const GSVector4i drc(0, 0, r.width(), r.height());
+	std::unique_ptr<GSDownloadTexture> dl = g_gs_device->CreateDownloadTexture(drc.z, drc.w, GSTexture::Format::Color);
+	if (dl)
+	{
+		g_gs_device->FlushBeforeReadback();
+		dl->CopyFromTexture(drc, h.words, drc, 0, true);
+		dl->Flush();
+		if (dl->Map(drc))
+		{
+			WriteReadPixels(TEX0, r, drc, 0x00FFFFFFu, false, const_cast<u8*>(dl->GetMapPointer()), dl->GetMapPitch());
+			dl->Unmap();
+		}
+	}
+	else
+	{
+		Console.Error("TC: failed to download %dx%d held depth words at 0x%x", drc.z, drc.w, TEX0.TBP0);
+	}
+
+	g_gs_device->Recycle(h.words);
+	m_held_stats.materialised++;
+}
+
+bool GSTextureCache::AnyHeldPage(u32 bp, u32 bw, u32 psm, const GSVector4i& r) const
+{
+	if (r.rempty())
+		return false;
+	// Every block of a held page is held, so a block range that misses the held ones misses their pages too.
+	// This is what most callers get (a texture lookup per draw while a hold lasts); a range that wraps the
+	// end of memory goes on to the page walk.
+	const u32 lo = GSLocalMemory::GetStartBlockAddress(bp, bw, psm, r);
+	const u32 hi = GSLocalMemory::GetUnwrappedEndBlockAddress(bp, bw, psm, r);
+	if (hi < GS_MAX_BLOCKS && m_held_block_hi < GS_MAX_BLOCKS && (hi < m_held_block_lo || lo > m_held_block_hi))
+		return false;
+	bool hit = false;
+	g_gs_renderer->m_mem.GetOffset(bp, bw, psm).pageLooperForRect(r).loopPagesWithBreak([this, &hit](u32 page) {
+		page %= GS_MAX_PAGES;
+		hit = (m_held_pages[page >> 6] >> (page & 63)) & 1;
+		return !hit;
+	});
+	return hit;
+}
+
+void GSTextureCache::MaterialiseHeldPages(u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+{
+	if (m_held.empty() || !AnyHeldPage(bp, bw, psm, r))
+		return;
+
+	PageBits asked = {};
+	AddPages(asked, bp, bw, psm, r);
+	for (size_t i = 0; i < m_held.size();)
+	{
+		PageBits held = {};
+		AddPages(held, m_held[i].bp, m_held[i].bw, PSMZ24, m_held[i].rect);
+		if (PagesMeet(asked, held))
+			MaterialiseHold(i); // removes it
+		else
+			i++;
+	}
+}
+
+void GSTextureCache::MaterialiseHeldBlocks(const u32* blocks, u32 count)
+{
+	if (m_held.empty())
+		return;
+
+	PageBits asked = {};
+	bool any = false;
+	for (u32 i = 0; i < count; i++)
+	{
+		const u32 page = (blocks[i] % GS_MAX_BLOCKS) / GS_BLOCKS_PER_PAGE;
+		if ((m_held_pages[page >> 6] >> (page & 63)) & 1)
+		{
+			asked[page >> 6] |= u64(1) << (page & 63);
+			any = true;
+		}
+	}
+	if (!any)
+		return;
+
+	for (size_t i = 0; i < m_held.size();)
+	{
+		PageBits held = {};
+		AddPages(held, m_held[i].bp, m_held[i].bw, PSMZ24, m_held[i].rect);
+		if (PagesMeet(asked, held))
+			MaterialiseHold(i);
+		else
+			i++;
+	}
+}
+
+void GSTextureCache::MaterialiseHeldTexture(const GIFRegTEX0& TEX0, const GSVector2i* lod)
+{
+	if (m_held.empty())
+		return;
+
+	const auto level = [this](const GIFRegTEX0& L) {
+		MaterialiseHeldPages(L.TBP0, L.TBW, L.PSM, GSVector4i(0, 0, 1 << L.TW, 1 << L.TH));
+	};
+	level(TEX0);
+	if (lod)
+	{
+		for (int i = lod->x + 1; i <= lod->y && !m_held.empty(); i++)
+			level(g_gs_renderer->GetTex0Layer(i));
+	}
+}
+
+void GSTextureCache::MaterialiseAllHeld()
+{
+	while (!m_held.empty())
+		MaterialiseHold(m_held.size() - 1);
+}
+
+void GSTextureCache::BeforeLocalMemoryWrite(const GSOffset& off, const GSVector4i& r, bool all_low_24)
+{
+	if (m_held.empty() || !AnyHeldPage(off.bp(), off.bw(), off.psm(), r))
+		return;
+
+	// Every 32-bit format has the same 64x32 page, so a rectangle of one that contains a whole-page held
+	// rectangle at the same base and width writes every word of it, and at least its low 24 bits.
+	const u32 psm = off.psm();
+	const bool writes_low_24 = all_low_24 && (psm == PSMCT32 || psm == PSMCT24 || psm == PSMZ32 || psm == PSMZ24);
+	PageBits asked = {};
+	AddPages(asked, off.bp(), off.bw(), psm, r);
+	for (size_t i = 0; i < m_held.size();)
+	{
+		const HeldWords& h = m_held[i];
+		PageBits held = {};
+		AddPages(held, h.bp, h.bw, PSMZ24, h.rect);
+		if (!PagesMeet(asked, held))
+		{
+			i++;
+			continue;
+		}
+		if (writes_low_24 && off.bp() == h.bp && off.bw() == h.bw && r.rintersect(h.rect).eq(h.rect))
+			DropHold(i);
+		else
+			MaterialiseHold(i);
+	}
 }
 
 bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h)
@@ -7235,6 +7501,9 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 		src->m_unscaled_size = GSVector2i(tw, th);
 		src->m_scale = 1.0f;
 
+		// A source from local memory: the hash cache and the upload read it.
+		MaterialiseHeldTexture(TEX0, lod);
+
 		// try the hash cache
 		if ((src->m_from_hash_cache = LookupHashCache(TEX0, TEXA, paltex, clut, lod, region)) != nullptr)
 		{
@@ -7847,6 +8116,7 @@ GSTexture* GSTextureCache::GetNativeTexture(const Source* s)
 
 		// The CPU palette expansion LookupHashCache's own upload does. A texture that gets a
 		// generated upscale never uses paltex, so its source has no palette texture to match.
+		MaterialiseHeldTexture(s->m_TEX0, nullptr);
 		PreloadTexture(s->m_TEX0, s->m_TEXA, region, g_gs_renderer->m_mem, false, tex, 0, nullptr);
 		e->native = tex;
 		m_hash_cache_memory_usage += tex->GetMemUsage();
@@ -8078,6 +8348,9 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 
 GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i& r, bool force_synchronous, bool pooled, ReadOp& op)
 {
+	// The read writes local memory, after any held words under it.
+	MaterialiseHeldPages(t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r);
+
 	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
 		return ReadIssue::None;
 
@@ -8480,6 +8753,7 @@ void GSTextureCache::Read(Source* t, const GSVector4i& r)
 {
 	if (r.rempty())
 		return;
+	MaterialiseHeldPages(t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r);
 
 	const GSVector4i drc(0, 0, r.width(), r.height());
 
@@ -8608,6 +8882,9 @@ void GSTextureCache::Source::Update(const GSVector4i& rect, int level)
 
 	if (m_target || m_from_hash_cache || (m_complete_layers & (1u << level)))
 		return;
+
+	// m_TEX0 is the level's (UpdateLayer sets it).
+	g_texture_cache->MaterialiseHeldTexture(m_TEX0, nullptr);
 
 	if (CanPreload())
 	{
@@ -8889,6 +9166,10 @@ GSTextureCache::Target::~Target()
 {
 	GSTextureCache::UnindexTarget(this);
 
+	// Words it held for local memory stay held without it (local memory outlives the target).
+	if (g_texture_cache)
+		g_texture_cache->ReleaseHeld(this);
+
 	// Targets should never be shared.
 	pxAssert(!m_shared_texture);
 
@@ -8932,6 +9213,13 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 	if (m_dirty.empty())
 		return;
+
+	// The dirty rectangles are drawn from local memory.
+	if (g_texture_cache->HasHeldPages())
+	{
+		g_texture_cache->MaterialiseHeldPages(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM,
+			m_dirty.GetTotalRect(m_TEX0, m_unscaled_size));
+	}
 
 	// No handling please
 	if (m_type == DepthStencil && GSConfig.UserHacks_DisableDepthSupport)
