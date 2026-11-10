@@ -12,10 +12,12 @@
 #include "VMManager.h"
 
 #include "common/FPControl.h"
+#include "common/HostSys.h"
 #include "common/ScopedGuard.h"
 #include "common/StringUtil.h"
 #include "common/WrappedMemCopy.h"
 
+#include <algorithm>
 #include <list>
 #include <mutex>
 #include <thread>
@@ -288,8 +290,44 @@ void MTGS::PostVsyncStart(bool registers_written)
 	EECycleRateSampler::EndGSWait(wait_begin);
 }
 
-/// GS thread only: the last packet it served answered a GS-to-EE read, so it spins for the next one.
+/// GS thread only: the last packet it served answered a GS-to-EE read, so it may spin for the next one.
 static bool s_read_fifo_served = false;
+
+namespace
+{
+	/// Whether spinning for the other side of a GS-to-EE read is paying, learnt from what it has
+	/// been doing. A spin is bounded: WorkSema spins up to SPIN_TIME_NS (50 us) in WFE, which the
+	/// architecture timer's event stream ends at most ~100 us later, and then sleeps. One that ran
+	/// out (the answer was a long GPU wait, or both threads share a core so the other could not run)
+	/// counts against spinning, an answer inside the window for it; while the count is negative the
+	/// side sleeps at once and only every 32nd wait spins, to notice when spinning pays again.
+	class ReadSpinLearner
+	{
+	public:
+		bool ShouldSpin()
+		{
+			if (m_score >= 0)
+				return true;
+			if (++m_skipped < 32)
+				return false;
+			m_skipped = 0;
+			return true;
+		}
+
+		void Record(u64 waited_ticks)
+		{
+			const u64 waited_ns = waited_ticks * 1000000000ull / GetTickFrequency();
+			m_score = (waited_ns <= SPIN_TIME_NS) ? std::min(m_score + 1, 8) : std::max(m_score - 2, -8);
+		}
+
+	private:
+		int m_score = 0;
+		u32 m_skipped = 0;
+	};
+
+	ReadSpinLearner s_ee_read_spin; // EE thread
+	ReadSpinLearner s_gs_read_spin; // GS thread
+} // namespace
 
 void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
 {
@@ -324,11 +362,20 @@ void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
 	// The answer usually comes back within tens of microseconds, and games that read GS memory read it
 	// in bursts (SOCOM II probes 179 positions a frame, The Punisher 18): spin for it before sleeping,
 	// as the GS thread does for the next packet after serving one (s_read_fifo_served). Sleeping on
-	// both sides turned every read into two kernel wake-ups.
+	// both sides turned every read into two kernel wake-ups. Bounded and learnt (ReadSpinLearner).
 	SetEvent();
 	const u64 wait_begin = EECycleRateSampler::BeginWait();
-	if (!s_sem_event.WaitForEmptyWithSpin())
+	if (s_ee_read_spin.ShouldSpin())
+	{
+		const u64 spin_begin = GetCPUTicks();
+		if (!s_sem_event.WaitForEmptyWithSpin())
+			pxFailRel("MTGS Thread Died");
+		s_ee_read_spin.Record(GetCPUTicks() - spin_begin);
+	}
+	else if (!s_sem_event.WaitForEmpty())
+	{
 		pxFailRel("MTGS Thread Died");
+	}
 	EECycleRateSampler::EndGSWait(wait_begin);
 }
 
@@ -373,13 +420,16 @@ void MTGS::MainLoop()
 			mtvu_lock.unlock();
 			// After serving a GS-to-EE read the next request of a burst is usually tens of
 			// microseconds away: spin for it before sleeping (see InitAndReadFIFO).
-			if (s_read_fifo_served)
+			if (s_read_fifo_served && s_gs_read_spin.ShouldSpin())
 			{
 				s_read_fifo_served = false;
+				const u64 spin_begin = GetCPUTicks();
 				s_sem_event.WaitForWorkWithSpin();
+				s_gs_read_spin.Record(GetCPUTicks() - spin_begin);
 			}
 			else
 			{
+				s_read_fifo_served = false;
 				s_sem_event.WaitForWork();
 			}
 			mtvu_lock.lock();
