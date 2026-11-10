@@ -254,27 +254,52 @@ namespace GSVertexKickKernel
 	// It is CullTestScalar restated on the primitive's bounding box instead of on
 	// per-vertex outcodes and bands:
 	//   * "every vertex beyond one scissor edge" is the box's far side being
-	//     beyond that edge. The outcode compares bands at the native grid; a band
-	//     is (v - bias) >> 4, and (a >> 4) < l is a < (l << 4), so the bounds are
-	//     shifted once and the compare is on the coordinate itself.
+	//     beyond that edge;
 	//   * "every vertex in one band on an axis" is the box's two sides being in
 	//     one band, because a band (and TrimKey, where the class has no grid) is
-	//     non-decreasing in the coordinate: (min ^ max) >> shift == 0, or
-	//     TrimKey(min) == TrimKey(max).
-	//   * "two positions equal" is three lane compares per axis.
-	// Coordinates are offset-subtracted s32 with the offset's lanes in 0..0xFFFF
-	// (the caller checks), so no subtraction here can wrap.
+	//     non-decreasing in the coordinate;
+	//   * "two positions equal" is a compare of positions.
 	//
-	// The drawn primitives' boxes are unioned as the pass goes -- the draw rect of
-	// a run is the rounded box of its primitives, the rounding being non-decreasing
-	// in every coordinate -- so no accepted primitive needs its own box later.
+	// DecideVectorWide is that statement taken literally, one vertex at a time on
+	// offset-subtracted 32-bit coordinates. It is exact for every input and is
+	// what DecideVector is held to.
+	//
+	// DecideVector takes the same decision on the raw 16-bit coordinates as the
+	// GIF wrote them, X and Y side by side in the two halves of one 32-bit lane,
+	// so every box operation covers both axes at once:
+	//   * the box is an unsigned 16-bit min/max of the two or three raw positions.
+	//     The offset is one constant for the chunk, so the raw order is the window
+	//     order;
+	//   * "beyond a scissor edge" compares the raw box with the edge moved into raw
+	//     space (edge + offset). An edge that lands below 0 is clamped to 0, which
+	//     keeps both kinds of test exact. One that lands above 0xFFFF cannot be
+	//     stated in sixteen bits, and neither can a grid step above 0x10000: those
+	//     calls go to DecideVectorWide;
+	//   * with d = max - min (exact, both raw) and a = min - (offset + bias) taken
+	//     modulo 2^16, min and max are in one band iff d <= (step - 1) & ~a. The
+	//     low bits of a are the low bits of the true biased coordinate, which is
+	//     all the band's remainder needs, and d carries the distance exactly, so a
+	//     box 65,521 or more units wide is not mistaken for a narrow one the way a
+	//     16-bit XOR of the two sides would be;
+	//   * where the class has no grid, TrimKey(min) == TrimKey(max) is
+	//     d == 0 || (d == 1 && (a & 15) == 15), taken as
+	//     (d -saturating- ((a & 15) == 15)) == 0;
+	//   * "two positions equal" compares the raw 32-bit X:Y lanes: this vertex and
+	//     the last, this and the one before, and the last two, which is the first
+	//     of these one lane on;
+	//   * ADC is the sign of the lane the other two unzipped words land in.
+	// The drawn primitives' boxes are unioned as the pass goes, in the same packed
+	// form: a rejected lane is forced to 0xFFFF for the minimum and 0 for the
+	// maximum. The draw rect of a run is the rounded box of its primitives, the
+	// rounding being non-decreasing in every coordinate, so no accepted primitive
+	// needs its own box later.
 	//
 	// The vertices before the chunk are not this pass's business (DecideScalar
 	// takes the primitives that need them), and it needs no mask to stay away from
 	// them: the "previous" lanes start as copies of the chunk's first vertex, so
-	// the primitives that would reach back are a repeated position and reject
-	// themselves. The lanes past the end of the chunk repeat its last vertex and
-	// reject themselves the same way.
+	// the primitives that would reach back are a repeated position (triangles) or
+	// an empty box (sprites) and reject themselves. The lanes past the end of the
+	// chunk repeat its last vertex and reject themselves the same way.
 	// ------------------------------------------------------------------------
 	struct DecideBounds
 	{
@@ -329,19 +354,103 @@ namespace GSVertexKickKernel
 	// the same way, at `step_bytes` from one record to the next. Writes
 	// accept[0..1] whole.
 	template <u32 n, bool keyed, bool every>
+	__noinline void DecideVectorWide(const u8* RESTRICT pxyz, size_t step_bytes, u32 count, u32 period,
+		const DecideBounds& kb, u64* RESTRICT accept, VectorDecided& out)
+	{
+		const auto word = [&](u32 i, u32 w) __attribute__((always_inline))
+		{
+			return reinterpret_cast<const u32*>(pxyz + i * step_bytes)[w];
+		};
+		const auto key = [](int v) __attribute__((always_inline)) { return v + (((v & 15) == 15) ? 1 : 0); };
+
+		// The two vertices before the chunk's first stand at the first.
+		int x1 = static_cast<int>(word(0, 0) & 0xFFFFu) - kb.ofx;
+		int y1 = static_cast<int>(word(0, 1) & 0xFFFFu) - kb.ofy;
+		int x2 = x1, y2 = y1;
+		bool last_two_equal = false;
+		int amnx = std::numeric_limits<int>::max(), amny = amnx;
+		int amxx = std::numeric_limits<int>::min(), amxy = amxx;
+
+		accept[0] = 0;
+		accept[1] = 0;
+		for (u32 i = 0; i < count; i++)
+		{
+			const int x = static_cast<int>(word(i, 0) & 0xFFFFu) - kb.ofx;
+			const int y = static_cast<int>(word(i, 1) & 0xFFFFu) - kb.ofy;
+			bool rej = (word(i, 3) & 0x8000u) != 0;
+
+			int mnx = std::min(x, x1), mxx = std::max(x, x1);
+			int mny = std::min(y, y1), mxy = std::max(y, y1);
+			if constexpr (n == 3)
+			{
+				mnx = std::min(mnx, x2);
+				mxx = std::max(mxx, x2);
+				mny = std::min(mny, y2);
+				mxy = std::max(mxy, y2);
+
+				const bool eq1 = (x == x1) && (y == y1);
+				const bool eq2 = (x == x2) && (y == y2);
+				rej = rej || eq1 || eq2 || last_two_equal;
+				last_two_equal = eq1;
+			}
+
+			rej = rej || mxx < kb.l || mnx >= kb.r || mxy < kb.t || mny >= kb.b;
+			if constexpr (keyed)
+				rej = rej || key(mnx) == key(mxx) || key(mny) == key(mxy);
+			else
+				rej = rej || static_cast<u32>(mnx ^ mxx) < kb.step || static_cast<u32>(mny ^ mxy) < kb.step;
+			if constexpr (!every)
+				rej = rej || ((period >> (i % 12)) & 1u) == 0;
+
+			if (!rej)
+			{
+				accept[i >> 6] |= 1ull << (i & 63);
+				amnx = std::min(amnx, mnx);
+				amny = std::min(amny, mny);
+				amxx = std::max(amxx, mxx);
+				amxy = std::max(amxy, mxy);
+			}
+
+			x2 = x1;
+			y2 = y1;
+			x1 = x;
+			y1 = y;
+		}
+
+		out.any = (accept[0] | accept[1]) != 0;
+		if (out.any)
+		{
+			out.minx = amnx + kb.bias_x;
+			out.miny = amny + kb.bias_y;
+			out.maxx = amxx + kb.bias_x;
+			out.maxy = amxy + kb.bias_y;
+		}
+	}
+
+	template <u32 n, bool keyed, bool every>
 	__noinline void DecideVector(const u8* RESTRICT pxyz, size_t step_bytes, u32 count, u32 period,
 		const DecideBounds& kb, u64* RESTRICT accept, VectorDecided& out)
 	{
-		const int32x4_t ofx = vdupq_n_s32(kb.ofx);
-		const int32x4_t ofy = vdupq_n_s32(kb.ofy);
-		const int32x4_t bl = vdupq_n_s32(kb.l);
-		const int32x4_t bt = vdupq_n_s32(kb.t);
-		const int32x4_t br = vdupq_n_s32(kb.r);
-		const int32x4_t bb = vdupq_n_s32(kb.b);
-		const uint32x4_t step = vdupq_n_u32(kb.step);
-		const uint32x4_t m16 = vdupq_n_u32(0xFFFFu);
-		const int32x4_t imax = vdupq_n_s32(std::numeric_limits<int>::max());
-		const int32x4_t imin = vdupq_n_s32(std::numeric_limits<int>::min());
+		// The scissor in raw space; an edge below zero is the same test at zero.
+		const int el = std::max(kb.l + kb.ofx, 0);
+		const int et = std::max(kb.t + kb.ofy, 0);
+		const int er = std::max(kb.r + kb.ofx, 0);
+		const int eb = std::max(kb.b + kb.ofy, 0);
+		const u32 low = keyed ? 15u : (kb.step - 1);
+		if (((static_cast<u32>(el | et | er | eb) | low) >> 16) != 0) [[unlikely]]
+		{
+			DecideVectorWide<n, keyed, every>(pxyz, step_bytes, count, period, kb, accept, out);
+			return;
+		}
+
+		const auto both = [](u32 x, u32 y) __attribute__((always_inline))
+		{
+			return vreinterpretq_u16_u32(vdupq_n_u32(x | (y << 16)));
+		};
+		const uint16x8_t near_edge = both(static_cast<u32>(el), static_cast<u32>(et));
+		const uint16x8_t far_edge = both(static_cast<u32>(er), static_cast<u32>(eb));
+		const uint16x8_t offset = both(static_cast<u32>(kb.ofx) & 0xFFFFu, static_cast<u32>(kb.ofy) & 0xFFFFu);
+		const uint16x8_t lowbits = vdupq_n_u16(static_cast<u16>(low)); // step - 1, or the key's fifteen
 		alignas(16) static constexpr u32 lane_bits[4] = {1, 2, 4, 8};
 		const uint32x4_t bits = vld1q_u32(lane_bits);
 
@@ -354,98 +463,82 @@ namespace GSVertexKickKernel
 			valid2 = vld1q_u32(kDecideLaneMask[(period >> 8) & 15]);
 		}
 
-		const u32* RESTRICT first = reinterpret_cast<const u32*>(pxyz);
-		int32x4_t px = vdupq_n_s32(static_cast<int>(first[0] & 0xFFFFu) - kb.ofx);
-		int32x4_t py = vdupq_n_s32(static_cast<int>(first[1] & 0xFFFFu) - kb.ofy);
+		const auto ld = [](const u8* p) __attribute__((always_inline)) { return vld1q_u32(reinterpret_cast<const u32*>(p)); };
+
+		// The "previous" lanes start as copies of the chunk's first vertex. peq
+		// needs no particular start: it reaches only the chunk's first lane, which
+		// the copy beside it has already rejected.
+		const uint16x8_t f = vreinterpretq_u16_u32(ld(pxyz));
+		const uint32x4_t fh = vreinterpretq_u32_u16(vuzp1q_u16(f, f));
+		uint32x4_t prev = vuzp1q_u32(fh, fh);
 		uint32x4_t peq = vdupq_n_u32(0);
-		int32x4_t amnx = imax, amny = imax, amxx = imin, amxy = imin;
+		uint16x8_t amn = vdupq_n_u16(0xFFFFu), amx = vdupq_n_u16(0);
 
 		// Returns the quad's four accept bits.
 		const auto quad = [&](uint32x4_t v0, uint32x4_t v1, uint32x4_t v2, uint32x4_t v3) __attribute__((always_inline))
 		{
 			// The even half-words of a packed position are X, Y, the low half of Z
 			// and the half of the last word that carries ADC in its top bit. Two
-			// unzips leave X in the low half of each lane of one vector, and Y under
-			// that ADC half in the other, so ADC is the lane's sign.
-			const uint16x8_t t01 = vuzp1q_u16(vreinterpretq_u16_u32(v0), vreinterpretq_u16_u32(v1));
-			const uint16x8_t t23 = vuzp1q_u16(vreinterpretq_u16_u32(v2), vreinterpretq_u16_u32(v3));
-			const uint32x4_t X = vreinterpretq_u32_u16(vuzp1q_u16(t01, t23));
-			const uint32x4_t Y = vreinterpretq_u32_u16(vuzp2q_u16(t01, t23));
-
-			const int32x4_t wx = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(X, m16)), ofx);
-			const int32x4_t wy = vsubq_s32(vreinterpretq_s32_u32(vandq_u32(Y, m16)), ofy);
+			// unzips leave X:Y in each lane of one vector and that ADC half on top
+			// of each lane of the other, so ADC is the lane's sign.
+			const uint32x4_t t01 = vreinterpretq_u32_u16(vuzp1q_u16(vreinterpretq_u16_u32(v0), vreinterpretq_u16_u32(v1)));
+			const uint32x4_t t23 = vreinterpretq_u32_u16(vuzp1q_u16(vreinterpretq_u16_u32(v2), vreinterpretq_u16_u32(v3)));
+			const uint32x4_t xy = vuzp1q_u32(t01, t23);
+			const uint32x4_t za = vuzp2q_u32(t01, t23);
 
 			// The vertex before each lane's, and for a triangle the one before that.
-			const int32x4_t x1 = vextq_s32(px, wx, 3);
-			const int32x4_t y1 = vextq_s32(py, wy, 3);
-			int32x4_t mnx = vminq_s32(wx, x1);
-			int32x4_t mxx = vmaxq_s32(wx, x1);
-			int32x4_t mny = vminq_s32(wy, y1);
-			int32x4_t mxy = vmaxq_s32(wy, y1);
+			const uint32x4_t xy1 = vextq_u32(prev, xy, 3);
+			uint16x8_t mn = vminq_u16(vreinterpretq_u16_u32(xy), vreinterpretq_u16_u32(xy1));
+			uint16x8_t mx = vmaxq_u16(vreinterpretq_u16_u32(xy), vreinterpretq_u16_u32(xy1));
 
-			uint32x4_t rej = vcltzq_s32(vreinterpretq_s32_u32(Y));
+			uint32x4_t rej32 = vcltzq_s32(vreinterpretq_s32_u32(za));
 
 			if constexpr (n == 3)
 			{
-				const int32x4_t x2 = vextq_s32(px, wx, 2);
-				const int32x4_t y2 = vextq_s32(py, wy, 2);
-				mnx = vminq_s32(mnx, x2);
-				mxx = vmaxq_s32(mxx, x2);
-				mny = vminq_s32(mny, y2);
-				mxy = vmaxq_s32(mxy, y2);
+				const uint32x4_t xy2 = vextq_u32(prev, xy, 2);
+				mn = vminq_u16(mn, vreinterpretq_u16_u32(xy2));
+				mx = vmaxq_u16(mx, vreinterpretq_u16_u32(xy2));
 
-				// Two positions equal: this vertex and the last, this and the one
-				// before, and the last two, which is the first of these one lane on.
-				const uint32x4_t eq1 = vandq_u32(vceqq_s32(wx, x1), vceqq_s32(wy, y1));
-				const uint32x4_t eq2 = vandq_u32(vceqq_s32(wx, x2), vceqq_s32(wy, y2));
-				rej = vorrq_u32(rej, vorrq_u32(vorrq_u32(eq1, eq2), vextq_u32(peq, eq1, 3)));
+				const uint32x4_t eq1 = vceqq_u32(xy, xy1);
+				const uint32x4_t eq2 = vceqq_u32(xy, xy2);
+				rej32 = vorrq_u32(vorrq_u32(rej32, eq1), vorrq_u32(eq2, vextq_u32(peq, eq1, 3)));
 				peq = eq1;
 			}
 
-			rej = vorrq_u32(rej, vorrq_u32(vcltq_s32(mxx, bl), vcgeq_s32(mnx, br)));
-			rej = vorrq_u32(rej, vorrq_u32(vcltq_s32(mxy, bt), vcgeq_s32(mny, bb)));
+			// The scissor: far side before the near edge, near side at or past the far edge.
+			uint16x8_t rej16 = vorrq_u16(vcgtq_u16(near_edge, mx), vcgeq_u16(mn, far_edge));
 
+			// No sample point between the two sides.
+			const uint16x8_t d = vsubq_u16(mx, mn);
+			const uint16x8_t a = vsubq_u16(mn, offset);
 			if constexpr (keyed)
 			{
-				const int32x4_t m15 = vdupq_n_s32(15);
-				const auto key = [&](int32x4_t v) __attribute__((always_inline))
-				{
-					return vsubq_s32(v, vreinterpretq_s32_u32(vceqq_s32(vandq_s32(v, m15), m15)));
-				};
-				rej = vorrq_u32(rej, vorrq_u32(vceqq_s32(key(mnx), key(mxx)), vceqq_s32(key(mny), key(mxy))));
+				const uint16x8_t one = vshrq_n_u16(vceqq_u16(vandq_u16(a, lowbits), lowbits), 15);
+				rej16 = vorrq_u16(rej16, vceqzq_u16(vqsubq_u16(d, one)));
 			}
 			else
 			{
-				const uint32x4_t dx = vreinterpretq_u32_s32(veorq_s32(mnx, mxx));
-				const uint32x4_t dy = vreinterpretq_u32_s32(veorq_s32(mny, mxy));
-				rej = vorrq_u32(rej, vorrq_u32(vcltq_u32(dx, step), vcltq_u32(dy, step)));
+				rej16 = vorrq_u16(rej16, vcgeq_u16(vbicq_u16(lowbits, a), d));
 			}
 
-			uint32x4_t acc;
-			if constexpr (every)
+			uint32x4_t any = vorrq_u32(vreinterpretq_u32_u16(rej16), rej32);
+			if constexpr (!every)
 			{
-				acc = vmvnq_u32(rej);
-			}
-			else
-			{
-				acc = vbicq_u32(valid0, rej);
+				any = vornq_u32(any, valid0);
 				const uint32x4_t t = valid0;
 				valid0 = valid1;
 				valid1 = valid2;
 				valid2 = t;
 			}
+			// Any bit of either half rejects the lane.
+			const uint32x4_t rej = vtstq_u32(any, any);
 
-			amnx = vminq_s32(amnx, vbslq_s32(acc, mnx, imax));
-			amny = vminq_s32(amny, vbslq_s32(acc, mny, imax));
-			amxx = vmaxq_s32(amxx, vbslq_s32(acc, mxx, imin));
-			amxy = vmaxq_s32(amxy, vbslq_s32(acc, mxy, imin));
+			amn = vminq_u16(amn, vorrq_u16(mn, vreinterpretq_u16_u32(rej)));
+			amx = vmaxq_u16(amx, vbicq_u16(mx, vreinterpretq_u16_u32(rej)));
 
-			px = wx;
-			py = wy;
-			return static_cast<u64>(vaddvq_u32(vandq_u32(acc, bits)));
+			prev = xy;
+			return static_cast<u64>(vaddvq_u32(vbicq_u32(bits, rej)));
 		};
-
-		const auto ld = [](const u8* p) __attribute__((always_inline)) { return vld1q_u32(reinterpret_cast<const u32*>(p)); };
 
 		// Sixty-four vertices to an accept word, so the word being built stays in
 		// a register.
@@ -473,10 +566,13 @@ namespace GSVertexKickKernel
 		out.any = (accept[0] | accept[1]) != 0;
 		if (out.any)
 		{
-			out.minx = vminvq_s32(amnx) + kb.bias_x;
-			out.miny = vminvq_s32(amny) + kb.bias_y;
-			out.maxx = vmaxvq_s32(amxx) + kb.bias_x;
-			out.maxy = vmaxvq_s32(amxy) + kb.bias_y;
+			// Raw to window: minus the offset. kb.of* hold offset plus bias.
+			const uint32x4_t mn32 = vreinterpretq_u32_u16(amn);
+			const uint32x4_t mx32 = vreinterpretq_u32_u16(amx);
+			out.minx = static_cast<int>(vminv_u16(vmovn_u32(mn32))) - kb.ofx + kb.bias_x;
+			out.miny = static_cast<int>(vminv_u16(vshrn_n_u32(mn32, 16))) - kb.ofy + kb.bias_y;
+			out.maxx = static_cast<int>(vmaxv_u16(vmovn_u32(mx32))) - kb.ofx + kb.bias_x;
+			out.maxy = static_cast<int>(vmaxv_u16(vshrn_n_u32(mx32, 16))) - kb.ofy + kb.bias_y;
 		}
 	}
 #endif // ARCH_ARM64
