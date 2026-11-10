@@ -424,6 +424,25 @@ TEST(RecCrashReport, AnUnhandledFaultKillsTheProcessWithItsOwnSignal)
 	EXPECT_EQ(lines.back(), "Aborting application.");
 }
 
+// A jump to an unmapped address: the pc itself is the bad address. The handler
+// must not read the instruction at the pc; doing so faulted again inside the
+// handler, which re-entered itself until the stack was gone, and the report
+// never got written.
+TEST(RecCrashReport, AJumpToAnUnmappedPcIsReportedAsItself)
+{
+	const Crash c = RunCrash([] {
+		reinterpret_cast<void (*)()>(static_cast<uintptr_t>(0x10))();
+	});
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGSEGV);
+
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 3u) << c.log;
+	EXPECT_EQ(lines[0], "Host fault: SIGSEGV (SEGV_MAPERR) at 0x0000000000000010");
+	EXPECT_EQ(lines[2], "  pc 0x0000000000000010: not in recompiled code");
+	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
 // The fault the bug reports could not tell apart: a load through a bad
 // pointer inside a recompiled EE block. The child overwrites the block's code
 // with one (its copy of the code area; the parent's is untouched) and calls it.

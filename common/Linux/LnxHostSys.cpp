@@ -26,6 +26,9 @@
 #ifndef __APPLE__
 #include <ucontext.h>
 #endif
+#if defined(__linux__) && defined(__aarch64__)
+#include <asm/sigcontext.h>
+#endif
 
 #include "fmt/format.h"
 
@@ -439,6 +442,36 @@ namespace PageFaultHandler
 	}
 }
 
+#if defined(__linux__)
+
+// Whether the fault was a write, from the ESR the kernel saves in the signal
+// frame. Not from the instruction at the pc: when the guest jumps through a
+// null or wild pointer the pc is the bad address itself, and reading it faults
+// again inside this handler, so the report describes the handler instead of
+// the fault.
+static bool IsWriteFault(const ucontext_t* uc)
+{
+	const u8* p = reinterpret_cast<const u8*>(uc->uc_mcontext.__reserved);
+	const u8* const end = p + sizeof(uc->uc_mcontext.__reserved);
+	while (static_cast<size_t>(end - p) >= sizeof(_aarch64_ctx))
+	{
+		const _aarch64_ctx* const head = reinterpret_cast<const _aarch64_ctx*>(p);
+		if (head->magic == 0 || head->size < sizeof(_aarch64_ctx) || head->size > static_cast<size_t>(end - p))
+			break;
+		if (head->magic == ESR_MAGIC && head->size >= sizeof(esr_context))
+		{
+			const u64 esr = reinterpret_cast<const esr_context*>(p)->esr;
+			const u32 ec = static_cast<u32>(esr >> 26) & 0x3f;
+			// Data abort from EL0 (0x24) or EL1 (0x25); bit 6 is WnR.
+			return (ec == 0x24 || ec == 0x25) && (esr & (1u << 6)) != 0;
+		}
+		p += head->size;
+	}
+	return false;
+}
+
+#endif // __linux__
+
 #endif // ARCH_ARM64
 
 namespace PageFaultHandler
@@ -456,7 +489,7 @@ void PageFaultHandler::SignalHandler(int sig, siginfo_t* info, void* ctx)
 	const bool is_write = (static_cast<ucontext_t*>(ctx)->uc_mcontext.gregs[REG_ERR] & 2) != 0;
 #elif defined(ARCH_ARM64)
 	void* const exception_pc = reinterpret_cast<void*>(static_cast<ucontext_t*>(ctx)->uc_mcontext.pc);
-	const bool is_write = IsStoreInstruction(exception_pc);
+	const bool is_write = IsWriteFault(static_cast<const ucontext_t*>(ctx));
 #endif
 
 #elif defined(__FreeBSD__)
