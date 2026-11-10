@@ -674,6 +674,9 @@ void GSRendererHW::BurstMemoEndFrame(bool idle_frame)
 	BurstMemoCloseRecording();
 	BurstMemoEndSequence();
 	m.last_was_copy = false;
+	// GSClut's read serial is 32 bits: forgotten once a frame, the value kept here can never meet a later one
+	// that wrapped round to it.
+	m.palette_generation = ~u64(0);
 	if (m.frame_had_copies && !idle_frame)
 	{
 		m.store.EndFrame();
@@ -697,7 +700,7 @@ bool GSRendererHW::BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64
 u64 GSRendererHW::BurstMemoPaletteHash(u32 entries)
 {
 	Memo& m = m_burst_memo;
-	const u64 generation = m_mem.m_clut.ReadGeneration();
+	const u64 generation = m_mem.m_clut.GetReadSerial();
 	if (generation == m.palette_generation && entries == m.palette_entries)
 		return m.palette_hash;
 	const u32* palette = static_cast<const u32*>(m_mem.m_clut);

@@ -432,7 +432,7 @@ namespace GSBurstMemo
 		u32 passed_over_in_a_row = 0;
 		bool resting = false;
 
-		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash, and its entries, so a rebuild of the
+		/// The last palette hashed: GSClut::GetReadSerial() (or none, ~0), entries, hash, and its entries, so a rebuild of the
 		/// expansion that leaves the same entries (a CLUT loaded again from the same bytes) is found with a
 		/// compare instead of a hash.
 		u64 palette_generation = ~u64(0);
