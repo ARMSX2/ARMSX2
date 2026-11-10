@@ -591,6 +591,7 @@ endif()
 set(pcsx2GSSources
 	GS/GS.cpp
 	GS/GSCacheFile.cpp
+	GS/GSCompileQueue.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
@@ -665,6 +666,7 @@ set(pcsx2GSHeaders
 	GS/GSBackQueue.h
 	GS/GSCacheFile.h
 	GS/GSClut.h
+	GS/GSCompileQueue.h
 	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
