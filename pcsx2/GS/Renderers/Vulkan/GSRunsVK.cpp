@@ -231,8 +231,15 @@ bool GSRunsVK::Init()
 void GSRunsVK::Classify(const GSHWDrawConfig& config)
 {
 	Draw& d = m_draw;
-	d = {};
+	d.cand = false;
 	m_pass.tfx++;
+	if (GSRunsPolicy::OutsidePS(config.ps) && !m_log)
+	{
+		m_pass.why[WHY_PS]++;
+		if (m_run.open)
+			Flush(END_UNMERGEABLE);
+		return;
+	}
 	GSRunsPolicy::TextureFacts tex;
 	if (config.tex)
 	{

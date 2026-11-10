@@ -150,32 +150,39 @@ namespace GSRunsPolicy
 
 	/// The PS selector fields a run's draws may set: the row's flags, the run's compile-time switches (rta_correction,
 	/// zfloor), and the blend fields the way is read from. Any other bit set refuses the draw.
-	inline const GSHWDrawConfig::PSSelector& AllowedPS()
+	inline GSHWDrawConfig::PSSelector MakeAllowedPS()
 	{
-		static const GSHWDrawConfig::PSSelector mask = [] {
-			GSHWDrawConfig::PSSelector m;
-			m.tfx = 7;
-			m.tcc = 1;
-			m.fog = 1;
-			m.iip = 1;
-			m.atst = static_cast<GSShader::PS_ATST>(7);
-			m.automatic_lod = 1;
-			m.manual_lod = 1;
-			m.blend_a = 3;
-			m.blend_b = 3;
-			m.blend_c = 3;
-			m.blend_d = 3;
-			m.blend_mix = 3;
-			m.no_color1 = 1;
-			m.wms = 3;
-			m.wmt = 3;
-			m.rta_source_correction = 1;
-			m.rta_correction = 1;
-			m.zfloor = 1;
-			m.af_in_src1 = 1;
-			return m;
-		}();
-		return mask;
+		GSHWDrawConfig::PSSelector m;
+		m.tfx = 7;
+		m.tcc = 1;
+		m.fog = 1;
+		m.iip = 1;
+		m.atst = static_cast<GSShader::PS_ATST>(7);
+		m.automatic_lod = 1;
+		m.manual_lod = 1;
+		m.blend_a = 3;
+		m.blend_b = 3;
+		m.blend_c = 3;
+		m.blend_d = 3;
+		m.blend_mix = 3;
+		m.no_color1 = 1;
+		m.wms = 3;
+		m.wmt = 3;
+		m.rta_source_correction = 1;
+		m.rta_correction = 1;
+		m.zfloor = 1;
+		m.af_in_src1 = 1;
+		return m;
+	}
+	/// Built once, at namespace scope, so a draw's check reads two words with no initialisation guard.
+	inline const GSHWDrawConfig::PSSelector ALLOWED_PS = MakeAllowedPS();
+	inline const GSHWDrawConfig::PSSelector& AllowedPS() { return ALLOWED_PS; }
+
+	/// The cheapest refusal, taken first: a pixel-shader bit outside the run program's set. Most refused draws of a
+	/// title that forms no runs stop here, so the machine costs such a title two masks a draw.
+	inline bool OutsidePS(const GSHWDrawConfig::PSSelector& ps)
+	{
+		return ((ps.key_lo & ~ALLOWED_PS.key_lo) | (ps.key_hi & ~ALLOWED_PS.key_hi)) != 0;
 	}
 
 	inline bool ByteExact(float v) { return v >= 0.0f && v <= 255.0f && v == std::floor(v); }
