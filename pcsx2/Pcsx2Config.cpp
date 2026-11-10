@@ -827,7 +827,7 @@ Pcsx2Config::GSOptions::GSOptions()
 	HWROVLogging = false;
 	HWROVBarriersVK = false;
 	CoalesceRenderPasses = false;
-	BurstMemo = false;
+	BurstMemo = true;
 
 	ManualUserHacks = false;
 	UserHacks_AlignSpriteX = false;
