@@ -288,6 +288,9 @@ void MTGS::PostVsyncStart(bool registers_written)
 	EECycleRateSampler::EndGSWait(wait_begin);
 }
 
+/// GS thread only: the last packet it served answered a GS-to-EE read, so it spins for the next one.
+static bool s_read_fifo_served = false;
+
 void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
 {
 	if (EmuConfig.GS.HWDownloadMode == GSHardwareDownloadMode::Asynchronous && GSIsHardwareRenderer())
@@ -317,7 +320,16 @@ void MTGS::InitAndReadFIFO(u8* mem, u32 qwc)
 	}
 
 	SendPointerPacket(Command::InitAndReadFIFO, qwc, mem);
-	WaitGS(false, false, false);
+
+	// The answer usually comes back within tens of microseconds, and games that read GS memory read it
+	// in bursts (SOCOM II probes 179 positions a frame, The Punisher 18): spin for it before sleeping,
+	// as the GS thread does for the next packet after serving one (s_read_fifo_served). Sleeping on
+	// both sides turned every read into two kernel wake-ups.
+	SetEvent();
+	const u64 wait_begin = EECycleRateSampler::BeginWait();
+	if (!s_sem_event.WaitForEmptyWithSpin())
+		pxFailRel("MTGS Thread Died");
+	EECycleRateSampler::EndGSWait(wait_begin);
 }
 
 union PacketTagType
@@ -359,7 +371,17 @@ void MTGS::MainLoop()
 		else
 		{
 			mtvu_lock.unlock();
-			s_sem_event.WaitForWork();
+			// After serving a GS-to-EE read the next request of a burst is usually tens of
+			// microseconds away: spin for it before sleeping (see InitAndReadFIFO).
+			if (s_read_fifo_served)
+			{
+				s_read_fifo_served = false;
+				s_sem_event.WaitForWorkWithSpin();
+			}
+			else
+			{
+				s_sem_event.WaitForWork();
+			}
 			mtvu_lock.lock();
 		}
 
@@ -568,6 +590,7 @@ void MTGS::MainLoop()
 						case Command::InitAndReadFIFO:
 							MTGS_LOG("(MTGS Packet Read) ringtype=Fifo2, size=%d", tag.data[0]);
 							GSInitAndReadFIFO((u8*)tag.pointer, tag.data[0]);
+							s_read_fifo_served = true;
 							break;
 
 						case Command::AsyncReadFIFO:
