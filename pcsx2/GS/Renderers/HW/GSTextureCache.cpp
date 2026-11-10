@@ -10,6 +10,7 @@
 #include "GS/GSUtil.h"
 #include "GS/GSXXH.h"
 #include "GSTargetRebase.h"
+#include "GSDepthFormatMove.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -5696,6 +5697,12 @@ void GSTextureCache::InvalidateLocalMem(
 
 bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u32 DBW, u32 DPSM, int dx, int dy, int w, int h)
 {
+	if (SPSM == PSMZ24 && DPSM == PSMZ24 && GSDepthFormatMove::WholePages(SBP, SBW, sx, sy, DBP, DBW, dx, dy, w, h) &&
+		MoveColourPagesIntoDepthTarget(SBP, SBW, sx, sy, DBP, DBW, dx, dy, w, h))
+	{
+		return true;
+	}
+
 	if (SBP == DBP && SPSM == DPSM && !GSLocalMemory::m_psm[SPSM].depth && ShuffleMove(SBP, SBW, SPSM, sx, sy, dx, dy, w, h))
 		return true;
 
@@ -6040,6 +6047,142 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	// Invalidate any sources that overlap with the target (since they're now stale).
 	InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(DBP, DBW, DPSM), GSVector4i(dx, dy, dx + w, dy + h), false);
 	CombineAlignedInsideTargets(dst);
+	return true;
+}
+
+bool GSTextureCache::MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, int sy, u32 DBP, u32 DBW, int dx, int dy, int w, int h)
+{
+	// The depth target has to end up exactly as the CPU fallback leaves it once it is uploaded again:
+	// GSRendererHW::Move reads the colour target back into local memory (the drawn part of the
+	// rectangle, unless dirty), GSLocalMemory::Move copies the low 24 bits of each word, the depth
+	// target is marked dirty, and Target::Update later reads local memory in the depth layout and draws
+	// it into the target. Every input of that chain has to be one this can reproduce on the GPU, or the
+	// CPU path runs.
+
+	// A depth target at the source is a depth-to-depth move, for the rest of Move().
+	if (GetExactTarget(SBP, SBW, DepthStencil, SBP))
+		return false;
+
+	Target* const src = GetExactTarget(SBP, SBW, RenderTarget, SBP);
+	Target* const dst = GetExactTarget(DBP, DBW, DepthStencil, DBP);
+	if (!src || !dst || src->m_TEX0.TBP0 != SBP || dst->m_TEX0.TBP0 != DBP || src->m_scale != dst->m_scale)
+		return false;
+	if ((src->m_TEX0.PSM != PSMCT32 && src->m_TEX0.PSM != PSMCT24) || dst->m_TEX0.PSM != PSMZ24)
+		return false;
+
+	const GSVector4i src_r(sx, sy, sx + w, sy + h);
+	const GSVector4i dst_r(dx, dy, dx + w, dy + h);
+
+	// The readback takes the whole rectangle from the GPU only when all of it was drawn since the last
+	// read and none of it is dirty; otherwise some of it would come from local memory.
+	if (!src->m_drawn_since_read.rintersect(src_r).eq(src_r))
+		return false;
+	if (!src->m_dirty.empty() && !src->m_dirty.GetTotalRect(src->m_TEX0, src->m_unscaled_size).rintersect(src_r).rempty())
+		return false;
+	// Older uploads into the depth target would be drawn together with the moved data.
+	if (!dst->m_dirty.empty())
+		return false;
+	if (src_r.z > src->m_unscaled_size.x || src_r.w > src->m_unscaled_size.y || dst_r.z > dst->m_unscaled_size.x ||
+		dst_r.w > dst->m_unscaled_size.y)
+	{
+		return false;
+	}
+	// Target::Update also refreshes the temporary Z copy of its address.
+	if (GetTemporaryZ() && GetTemporaryZInfo().ZBP == DBP)
+		return false;
+
+	// No other target may hold pages of either end: the readback would read it too, and the
+	// destination's invalidation would mark or drop it.
+	for (int type = 0; type < 2; type++)
+	{
+		for (Target* t : m_dst[type])
+		{
+			if (t == src || t == dst)
+				continue;
+			if (t->Overlaps(SBP, SBW, PSMCT32, src_r) || t->Overlaps(DBP, DBW, PSMZ24, dst_r))
+				return false;
+		}
+	}
+
+	GSTexture* const native = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, false);
+	GSTexture* const words = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, true);
+	if (!native || !words) [[unlikely]]
+	{
+		if (native)
+			g_gs_device->Recycle(native);
+		if (words)
+			g_gs_device->Recycle(words);
+		return false;
+	}
+
+	GL_CACHE("TC: Z24 move of colour pages into a depth target on the GPU after draw %lld 0x%x[BW:%u] <%d,%d->%d,%d> -> 0x%x[BW:%u] <%d,%d>",
+		GSRendererHW::GetInstance()->s_n, SBP, SBW, sx, sy, sx + w, sy + h, DBP, DBW, dx, dy);
+
+	// What the readback hands local memory: the colour target point-sampled at native resolution
+	// (GSTextureCache::Read). Only its RGB is moved.
+	const float scale = src->m_scale;
+	const GSVector4 src_uv = GSVector4(src_r) * GSVector4(scale) / GSVector4(src->m_texture->GetSize()).xyxy();
+	g_gs_device->StretchRect(src->m_texture, src_uv, native, GSVector4(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)),
+		ShaderConvert::COPY, Nearest);
+
+	// What Target::Update reads from local memory in the depth layout after the move: each 8x8 block of
+	// a page takes the RGB of the colour block GSDepthFormatMove names, and the top byte, which a Z24
+	// read expands from TEXA.TA0 = 0, is zero (the texture starts cleared and only RGB is written).
+	const u32 pages = static_cast<u32>((w / GSDepthFormatMove::kPageW) * (h / GSDepthFormatMove::kPageH));
+	const u32 nblocks = pages * GSDepthFormatMove::kBlocksX * GSDepthFormatMove::kBlocksY;
+	std::vector<GSDevice::MultiStretchRect> blocks(nblocks);
+	const GSVector4 inv_size = GSVector4(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h)).xyxy();
+	u32 n = 0;
+	for (int py = 0; py < h; py += GSDepthFormatMove::kPageH)
+	{
+		for (int px = 0; px < w; px += GSDepthFormatMove::kPageW)
+		{
+			for (int by = 0; by < GSDepthFormatMove::kBlocksY; by++)
+			{
+				for (int bx = 0; bx < GSDepthFormatMove::kBlocksX; bx++)
+				{
+					const GSVector2i cb = GSDepthFormatMove::ColourBlockForDepthBlock(bx, by);
+					const GSVector4i from(px + cb.x * GSDepthFormatMove::kBlockW, py + cb.y * GSDepthFormatMove::kBlockH,
+						px + (cb.x + 1) * GSDepthFormatMove::kBlockW, py + (cb.y + 1) * GSDepthFormatMove::kBlockH);
+					const GSVector4i to(px + bx * GSDepthFormatMove::kBlockW, py + by * GSDepthFormatMove::kBlockH,
+						px + (bx + 1) * GSDepthFormatMove::kBlockW, py + (by + 1) * GSDepthFormatMove::kBlockH);
+					GSDevice::MultiStretchRect& b = blocks[n++];
+					b.src = native;
+					b.src_rect = GSVector4(from) * inv_size;
+					b.dst_rect = GSVector4(to);
+					b.filter = Nearest;
+					b.wmask = static_cast<u8>(0x7);
+				}
+			}
+		}
+	}
+	g_gs_device->DrawMultiStretchRects(blocks.data(), n, words, ShaderConvert::COPY);
+	g_gs_device->Recycle(native);
+
+	// Target::Update's draw of a depth target's dirty rectangle: stretched to its scale, bilinear when
+	// upscaled, through the colour-to-depth conversion of the target's bit depth. Upscaled, the
+	// conversion filters in the shader from fetched texels (SAMPLE_RGBA_DEPTH_BILN), which is what the
+	// selector's filter picks; the sampler's own filter then reads nothing, so it is left at point.
+	const bool upscaled = scale != 1.0f;
+	GSDevice::MultiStretchRect drect;
+	drect.src = words;
+	drect.src_rect = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+	drect.dst_rect = GSVector4(dst_r) * GSVector4(scale);
+	drect.filter = Nearest;
+	drect.wmask = static_cast<u8>(0xF);
+	const u32 bpp = GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp;
+	const ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, dst->m_texture->GetFormat(), bpp, bpp, 0xF, BilnIf(upscaled));
+	g_gs_device->DrawMultiStretchRects(&drect, 1, dst->m_texture, shader);
+	g_gs_device->Recycle(words);
+
+	// The moved data is now only on the GPU: local memory under the destination is stale, so the depth
+	// target is drawn-since-read there.
+	dst->m_valid_rgb = true;
+	dst->UpdateValidity(dst_r);
+	dst->UpdateDrawn(dst_r);
+
+	// Sources over the destination are stale, as after any move.
+	InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(DBP, DBW, PSMZ24), dst_r, false);
 	return true;
 }
 

@@ -3,13 +3,19 @@
 
 // A PSMZ24 local-to-local move of colour pages into a depth buffer (GSDepthFormatMove.h).
 //
-// Pins, on the CPU against the transfer engine (GSLocalMemory::Move), what such a move leaves in local
-// memory when it moves whole pages: each depth pixel of the destination holds the low 24 bits of a
-// colour pixel of the source, found by a fixed permutation of 8x8 blocks inside the page, and keeps its
-// own top byte. A move that is not of whole pages does not have that shape, so it is refused.
+// Two layers. The first pins, on the CPU against the transfer engine (GSLocalMemory::Move), what such a
+// move leaves in local memory when it moves whole pages: each depth pixel of the destination holds the
+// low 24 bits of a colour pixel of the source, found by a fixed permutation of 8x8 blocks inside the
+// page, and keeps its own top byte. A move that is not of whole pages does not have that shape, so it
+// is refused. The second pins what the texture cache does with Elemental Gelade's move, a colour target
+// at the source and a depth target at the destination: it makes the move on the GPU instead of
+// declining it, which sent it to the CPU behind a synchronous readback of the colour target.
+
+#include "gs_hw_draw_harness.h"
 
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/HW/GSDepthFormatMove.h"
+#include "GS/Renderers/HW/GSTextureCache.h"
 
 #include <gtest/gtest.h>
 
@@ -17,6 +23,8 @@
 #include <memory>
 #include <random>
 #include <set>
+
+using namespace GSHWDrawHarness;
 
 namespace
 {
@@ -165,5 +173,126 @@ namespace
 		EXPECT_FALSE(GSDepthFormatMove::WholePages(0x10, 10, 0, 0, 0x8c0, 10, 0, 0, 640, 224));
 		// The destination's first page row is the source's last.
 		EXPECT_FALSE(GSDepthFormatMove::WholePages(0x0, 10, 0, 0, 0x780, 10, 0, 0, 640, 224));
+	}
+
+	// The texture cache: a colour target at the source and a depth target at the destination.
+	class DepthFormatMoveCache : public Fixture
+	{
+	protected:
+		static constexpr u32 kFrameBP = 0x0;
+		static constexpr u32 kDepthBP = 0x8c0;
+		static constexpr u32 kOtherFrameBP = 0x2300;
+		static constexpr u32 kBW = 10;
+		static constexpr int kW = 640;
+		static constexpr int kH = 224;
+
+		// One untextured sprite over a 640x224 PSMCT32 buffer at `frame_bp`; with `depth_bp` set it also
+		// writes Z24 there, so a depth target exists at that address.
+		void Draw(u32 frame_bp, u32 depth_bp, bool write_depth)
+		{
+			Packet p;
+			GIFReg r = {};
+
+			r.U64 = 0;
+			p.Reg(GIF_A_D_REG_XYOFFSET_1, r);
+
+			r.U64 = 0;
+			r.SCISSOR.SCAX1 = kW - 1;
+			r.SCISSOR.SCAY1 = kH - 1;
+			p.Reg(GIF_A_D_REG_SCISSOR_1, r);
+
+			r.U64 = 0;
+			r.FRAME.FBP = frame_bp / 32;
+			r.FRAME.FBW = kBW;
+			r.FRAME.PSM = PSMCT32;
+			p.Reg(GIF_A_D_REG_FRAME_1, r);
+
+			r.U64 = 0;
+			r.ZBUF.ZBP = depth_bp / 32;
+			r.ZBUF.PSM = PSMZ24 & 0xf;
+			r.ZBUF.ZMSK = write_depth ? 0 : 1;
+			p.Reg(GIF_A_D_REG_ZBUF_1, r);
+
+			r.U64 = 0;
+			r.TEST.ZTE = 1;
+			r.TEST.ZTST = ZTST_ALWAYS;
+			p.Reg(GIF_A_D_REG_TEST_1, r);
+
+			r.U64 = 0;
+			r.PRMODECONT.AC = 1;
+			p.Reg(GIF_A_D_REG_PRMODECONT, r);
+
+			r.U64 = 0;
+			r.RGBAQ.R = 0x40;
+			r.RGBAQ.G = 0x60;
+			r.RGBAQ.B = 0x20;
+			r.RGBAQ.A = 0x80;
+			r.RGBAQ.Q = 1.0f;
+			p.Reg(GIF_A_D_REG_RGBAQ, r);
+
+			p.Vertex(0, 0, 0x1234, 0, 0);
+			p.Vertex(kW << 4, kH << 4, 0x1234, 0, 0);
+
+			GIFRegPRIM prim = {};
+			prim.PRIM = GS_SPRITE;
+			p.Send(*m_gs, prim);
+		}
+
+		bool GameMove(int w = kW, int h = kH)
+		{
+			return g_texture_cache->Move(kFrameBP, kBW, PSMZ24, 0, 0, kDepthBP, kBW, PSMZ24, 0, 0, w, h);
+		}
+
+		GSTextureCache::Target* DepthAt(u32 bp)
+		{
+			return g_texture_cache->GetExactTarget(bp, kBW, GSTextureCache::DepthStencil, bp);
+		}
+
+		void TheGameMoveStaysOnTheGPU()
+		{
+			BringUp();
+			Draw(kOtherFrameBP, kDepthBP, true);
+			Draw(kFrameBP, 0x3000, false);
+			ASSERT_NE(g_texture_cache->GetExactTarget(kFrameBP, kBW, GSTextureCache::RenderTarget, kFrameBP), nullptr);
+			GSTextureCache::Target* const depth = DepthAt(kDepthBP);
+			ASSERT_NE(depth, nullptr);
+			depth->m_drawn_since_read = GSVector4i::zero();
+
+			EXPECT_TRUE(GameMove());
+
+			// The depth target now holds data local memory does not have: a later read of it has to come
+			// from the target.
+			EXPECT_EQ(DepthAt(kDepthBP), depth);
+			EXPECT_TRUE(depth->m_drawn_since_read.rintersect(GSVector4i(0, 0, kW, kH)).eq(GSVector4i(0, 0, kW, kH)));
+		}
+	};
+
+	TEST_F(DepthFormatMoveCache, TheGameMoveStaysOnTheGPUAtNativeScale)
+	{
+		GSConfig.UpscaleMultiplier = 1.0f;
+		TheGameMoveStaysOnTheGPU();
+	}
+
+	TEST_F(DepthFormatMoveCache, TheGameMoveStaysOnTheGPUUpscaled)
+	{
+		GSConfig.UpscaleMultiplier = 2.0f;
+		TheGameMoveStaysOnTheGPU();
+	}
+
+	// Without a depth target at the destination there is nothing on the GPU the CPU move would update:
+	// the move is left to the CPU.
+	TEST_F(DepthFormatMoveCache, NoDestinationTargetIsLeftToTheCPU)
+	{
+		BringUp();
+		Draw(kFrameBP, 0x3000, false);
+		EXPECT_FALSE(GameMove());
+	}
+
+	TEST_F(DepthFormatMoveCache, APartPageMoveIsLeftToTheCPU)
+	{
+		BringUp();
+		Draw(kOtherFrameBP, kDepthBP, true);
+		Draw(kFrameBP, 0x3000, false);
+		EXPECT_FALSE(GameMove(kW, 200));
 	}
 } // namespace

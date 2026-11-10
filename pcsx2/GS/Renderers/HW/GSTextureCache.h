@@ -1027,6 +1027,9 @@ public:
 	bool CopyRGBFromDepthToColor(Target* dst, Target* depth_src);
 
 	bool Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u32 DBW, u32 DPSM, int dx, int dy, int w, int h);
+	/// A whole-page PSMZ24 move from a colour target into a depth target (GSDepthFormatMove.h), made on the
+	/// GPU. False, with nothing changed, when it is not a move this can make exactly.
+	bool MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, int sy, u32 DBP, u32 DBW, int dx, int dy, int w, int h);
 	bool ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	bool PageMove(u32 SBP, u32 DBP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h);
 	void CopyPages(Target* src, u32 sbw, u32 src_offset, Target* dst, u32 dbw, u32 dst_offset, u32 num_pages,
