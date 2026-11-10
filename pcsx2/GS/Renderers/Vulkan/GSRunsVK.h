@@ -41,6 +41,7 @@ public:
 	{
 		WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST, WHY_NOT_IN_PASS,
 		WHY_COMPILING, ///< the run's program with this draw in it is still being built: the draw is drawn classically
+		WHY_DECLINED, ///< the pass did not pay on an earlier frame (GSRunsPolicy::PassPays)
 		WHY_DRAW_COUNT,
 		END_STATE = WHY_DRAW_COUNT, END_TARGET, END_SPLIT, END_PASS, END_OTHER, END_RING, END_UNMERGEABLE, END_TEXTURES,
 		END_COMPILING, WHY_COUNT
@@ -118,6 +119,7 @@ private:
 	struct PassStats
 	{
 		u32 tfx = 0, merged = 0, runs = 0, runs_multi = 0, longest = 0;
+		u64 area = 0; ///< the runs' draw-rectangle area
 		std::array<u32, WHY_COUNT> why{};
 	};
 
@@ -128,6 +130,8 @@ private:
 	};
 
 	bool Matches(const GSHWDrawConfig& config) const;
+	/// Whether the targets this draw is on were declined (their passes did not pay).
+	bool PassDeclined(const GSHWDrawConfig& config);
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
 	/// The -runs-split-mask states whose value in flags differs from the open run's.
@@ -191,6 +195,15 @@ private:
 	std::vector<FramePools> m_frame_pools;
 	u64 m_pool_fence = 0;
 	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
+	// Declined targets: left > 0, declined for that many more passes; strikes, passes in a row that did not pay.
+	static constexpr u8 DECLINE_RETRY = 32;
+	struct Decline
+	{
+		u8 left = 0;
+		u8 strikes = 0;
+	};
+	std::unordered_map<u64, Decline> m_declined;
+	u64 m_pass_key = 0; ///< the targets of the pass in progress, as PassDeclined last saw them
 	std::FILE* m_log = nullptr;
 	/// -runs-log's refusal census: (refusal kind, detail) -> draws.
 	std::map<std::pair<u32, u64>, u64> m_refusals;

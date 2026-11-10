@@ -127,6 +127,11 @@ struct GSMeasurementOverrides
 	/// path can be set against -runs-nofill's.
 	bool runs_nofill_classic = false;
 
+	/// -runs-decline on|off: targets whose passes' runs did not pay (GSRunsPolicy::PassPays) are drawn classically for a
+	/// while. Off by default: on the M2 the draw-rectangle fill estimate and the target key declined Spider-Man 3 heavy's
+	/// storm pass along with the small passes that share its targets, so the rule needs a measured per-pass signal first.
+	bool runs_decline = false;
+
 	/// -runs-log <path>: one line per render pass with the machine's counts, and one per compiled run program.
 	std::string runs_log;
 
@@ -139,7 +144,7 @@ struct GSMeasurementOverrides
 	{
 		return self_read_arm != GSSelfReadArm::Off || declare_depth_loop || loop_create_flag || disable_stencil_buffer ||
 		       alpha_bit_logic_op || date_copy_with_dst_alpha_blend || no_provoking_vertex || no_dual_source ||
-		       stream_rings_cached || runs_off || runs_split != GSRunsSplit::ByCost || runs_nofill;
+		       stream_rings_cached || runs_off || runs_split != GSRunsSplit::ByCost || runs_decline || runs_nofill;
 	}
 };
 

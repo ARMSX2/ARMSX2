@@ -99,6 +99,8 @@ namespace GSRunsPolicy
 	///   host_draw_ns  what one more host draw costs the GPU (the price of ending a run)
 	///   dear_px_ps    what a run program that carries a dear state (reads it from the rows) costs per pixel of fill over
 	///                 one that holds it constant (the price of not ending the run)
+	///   run_px_ps     what a run program costs per pixel of fill over the classic programs of its draws (the price of
+	///                 merging at all; a pass whose host draws saved are worth less is declined, PassPays)
 	/// A run ends where a draw's dear class differs from the run's when the second price, over the run's fill so far and
 	/// the draw's, exceeds the first (SplitAtDear). Rows marked measured were fitted from that GPU's storm passes; the
 	/// others are the nearest measured class's until measured.
@@ -108,6 +110,7 @@ namespace GSRunsPolicy
 		const char* match; ///< a substring of VkPhysicalDeviceProperties::deviceName
 		float host_draw_ns;
 		float dear_px_ps;
+		float run_px_ps;
 		const char* source;
 	};
 
@@ -116,13 +119,13 @@ namespace GSRunsPolicy
 	// without the dear split against 4.08 with it, 151 more host draws, over 23.5 M pixels of draw rectangles), 38 ps.
 	// Mali-G615 (2x) and G57 (1x), malisx2: the Mali probe's storm passes (results/mali), the same fit.
 	inline constexpr DeviceClass DEVICE_CLASSES[] = {
-		{"Adreno 650", "650", 900.0f, 38.0f, "measured, Flip 2 (m1, probe K1b)"},
-		{"Adreno 613", "613", 900.0f, 38.0f, "the 650's, not measured"},
-		{"Adreno 740", "740", 900.0f, 38.0f, "the 650's, not measured"},
-		{"Mali-G615", "G615", 200.0f, 76.0f, "measured, Mali probe (merge-spec 3.57 ms against split 1.81)"},
-		{"Mali-G57", "G57", 2300.0f, 300.0f, "measured, Mali probe at 1x (spec 5.64 ms against split 4.20)"},
+		{"Adreno 650", "650", 900.0f, 38.0f, 43.0f, "measured, Flip 2 (m1, probe K1b)"},
+		{"Adreno 613", "613", 900.0f, 38.0f, 43.0f, "the 650's, not measured"},
+		{"Adreno 740", "740", 900.0f, 38.0f, 43.0f, "the 650's, not measured"},
+		{"Mali-G615", "G615", 200.0f, 76.0f, 60.0f, "from the Mali probe (storm passes at 2x), not verified on a device here"},
+		{"Mali-G57", "G57", 2300.0f, 300.0f, 60.0f, "from the Mali probe (storm passes at 1x), not verified on a device here"},
 	};
-	inline constexpr DeviceClass DEVICE_CLASS_DEFAULT = {"other", "", 900.0f, 38.0f, "the 650's, not measured"};
+	inline constexpr DeviceClass DEVICE_CLASS_DEFAULT = {"other", "", 900.0f, 38.0f, 43.0f, "the 650's, not measured"};
 
 	inline const DeviceClass& DeviceClassFor(const char* device_name)
 	{
@@ -139,6 +142,14 @@ namespace GSRunsPolicy
 	inline bool SplitAtDear(const DeviceClass& dc, u64 run_area, u64 draw_area)
 	{
 		return static_cast<double>(dc.dear_px_ps) * static_cast<double>(run_area + draw_area) > static_cast<double>(dc.host_draw_ns) * 1000.0;
+	}
+
+	/// Whether a pass's runs paid: the host draws they saved (draws merged less runs) against what their programs cost
+	/// over the classic ones on the runs' fill. A pass that did not pay is declined on later frames (GSRunsVK).
+	inline bool PassPays(const DeviceClass& dc, u64 merged, u64 runs, u64 run_area)
+	{
+		const double saved = static_cast<double>(merged > runs ? merged - runs : 0) * dc.host_draw_ns * 1000.0;
+		return saved >= static_cast<double>(dc.run_px_ps) * static_cast<double>(run_area);
 	}
 
 	struct Draw
