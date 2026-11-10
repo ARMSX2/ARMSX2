@@ -49,6 +49,7 @@ namespace
 		u32 frame_psm = PSMCT32;
 		u32 fbp = DEST_FBP; ///< Copy: the frame (pages)
 		u32 tbp = TEX_TBP; ///< Copy: the texture (blocks)
+		bool tme = true; ///< Copy: textured; an untextured one is a fill
 		// Write: the rectangle of the surface (bp, bw, psm), and the value pattern's seed.
 		u32 bp = 0, bw = 1, psm = PSMCT32;
 		GSVector4i rect = GSVector4i::zero();
@@ -159,7 +160,7 @@ namespace
 			}
 			GIFRegPRIM prim = {};
 			prim.PRIM = GS_SPRITE;
-			prim.TME = 1;
+			prim.TME = s.tme;
 			prim.FST = 1;
 			p.Send(gs, prim);
 		}
@@ -413,6 +414,24 @@ TEST_F(GSBurstMemoDraw, ABurstAfterASkippedOneSeesWhatItWrote)
 	ExpectSameAsMemoOff(off, on);
 	EXPECT_EQ(on.stats.hit_draws, 4u) << "A, the second time, and not B";
 	EXPECT_EQ(on.stats.stop_key, 1u) << "B turned away by the bytes A wrote";
+}
+
+// At the copy road's default level it takes only textured sprites, so the memo leaves every other draw alone before
+// looking anything up or keeping its vertices; a burst of textured sprites is still skipped there.
+TEST_F(GSBurstMemoDraw, AtLevelZeroABurstOfTexturedSpritesIsStillSkipped)
+{
+	GSConfig.UserHacks_CPUSpriteRenderLevel = 0;
+	const std::vector<u8> vm = RandomMemory(11);
+	Step fill{Step::Copy};
+	fill.sprites = {{0, 0, 8, 8, 0, 0}};
+	fill.tme = false;
+	const std::vector<Step> script = Concat({{RestoreDestination()}, Burst(), {Step{Step::Consume}},
+		{RestoreDestination()}, Burst(), {Step{Step::Consume}, fill}});
+	const Result off = Run(script, vm, false);
+	const Result on = Run(script, vm, true);
+	ExpectSameAsMemoOff(off, on);
+	EXPECT_EQ(on.stats.hit_draws, 4u);
+	EXPECT_EQ(on.stats.not_copy_road, 3u) << "the two wide draws that sample the destination, and the narrow untextured fill";
 }
 
 // A palette block copy (an 8-bit texture into a 32-bit frame): the palette is part of what a draw read.

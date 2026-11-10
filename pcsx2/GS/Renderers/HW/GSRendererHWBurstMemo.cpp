@@ -104,10 +104,16 @@ bool GSRendererHW::BurstMemoSkip()
 	if (!after_copy)
 		BurstMemoStop();
 
-	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road.
+	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road, and at the
+	// road's default level only textured sprites do. A draw turned away here costs nothing more: no lookup, and no
+	// copy of its vertices (on Stuntman, whose draws carry many, that copy was 1.4% of the instructions). Draw() can
+	// turn a draw into a sprite later (ReplaceVerticesWithSprite); such a draw is only not recorded.
 	const u32 fbw = m_context->FRAME.FBW;
-	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || !m_sw_prim.palette_block_copy || GSDrawLog::IsActive())
+	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || !m_sw_prim.palette_block_copy || GSDrawLog::IsActive() ||
+		(GSConfig.UserHacks_CPUSpriteRenderLevel == 0 &&
+			!(PRIM->TME && GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS)))
 	{
+		GlobalStats().not_copy_road++;
 		BurstMemoStop();
 		return false;
 	}

@@ -329,6 +329,7 @@ namespace GSBurstMemo
 		u64 stop_state = 0; ///< ... the renderer was in a state the copy road would leave early
 		u64 not_recorded_target = 0; ///< copy-road draws the memo does not take: their verdict weighed a target
 		u64 not_recorded_block_copy = 0; ///< draws passed over: their shape is one the road keeps drawing with a block copy
+		u64 not_copy_road = 0; ///< draws the copy road cannot take, from their registers (frame too wide; at level 0, not a textured sprite)
 		u64 installs = 0;
 		u64 packet_checks = 0; ///< recorded draws compared with a draw in hand
 		u64 key_checks = 0; ///< recorded draws whose block and palette keys were checked
