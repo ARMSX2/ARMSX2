@@ -9075,7 +9075,6 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 
 		std::memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &m_vs_cb_cache, sizeof(m_vs_cb_cache));
 		m_tfx_dynamic_offsets[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
-		NoteCBUpload(m_vs_cb_up, m_tfx_dynamic_offsets[0]);
 		m_vertex_uniform_stream_buffer.CommitMemory(sizeof(m_vs_cb_cache));
 		flags |= DIRTY_FLAG_TFX_UBO;
 	}
@@ -9097,7 +9096,6 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 
 		std::memcpy(m_fragment_uniform_stream_buffer.GetCurrentHostPointer(), &m_ps_cb_cache, sizeof(m_ps_cb_cache));
 		m_tfx_dynamic_offsets[1] = m_fragment_uniform_stream_buffer.GetCurrentOffset();
-		NoteCBUpload(m_ps_cb_up, m_tfx_dynamic_offsets[1]);
 		m_fragment_uniform_stream_buffer.CommitMemory(sizeof(m_ps_cb_cache));
 		flags |= DIRTY_FLAG_TFX_UBO;
 	}
@@ -9275,63 +9273,16 @@ bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 	return true;
 }
 
-void GSDeviceVK::NoteCBUpload(UploadedCB& up, u32 offset)
-{
-	// A ring writes forward; an upload below the last one means it wrapped, and the previous upload may be written over.
-	if (offset < up.last_offset)
-		up.prev_valid = false;
-	up.last_offset = offset;
-	up.cur_offset = offset;
-	up.cur_uploaded = true;
-}
-
-template <typename CB>
-bool GSDeviceVK::SwapToPreviousCB(CB& cache, CB& prev, UploadedCB& up, const CB& cb)
-{
-	// cache != cb here. Either cb is the one uploaded before (swap, nothing to upload), or the current one becomes the
-	// previous one, if it was uploaded.
-	if (up.prev_valid && up.cur_uploaded && prev == cb)
-	{
-		std::swap(cache, prev);
-		std::swap(up.cur_offset, up.prev_offset);
-		return true;
-	}
-	if (up.cur_uploaded)
-	{
-		prev = cache;
-		up.prev_offset = up.cur_offset;
-		up.prev_valid = true;
-	}
-	up.cur_uploaded = false;
-	return false;
-}
-
 void GSDeviceVK::SetVSConstantBuffer(const GSHWDrawConfig::VSConstantBuffer& cb)
 {
-	if (m_vs_cb_cache == cb)
-		return;
-	if (SwapToPreviousCB(m_vs_cb_cache, m_vs_cb_prev, m_vs_cb_up, cb))
-	{
-		m_tfx_dynamic_offsets[0] = m_vs_cb_up.cur_offset;
-		m_dirty_flags |= DIRTY_FLAG_TFX_UBO;
-		return;
-	}
-	m_vs_cb_cache.Update(cb);
-	m_dirty_flags |= DIRTY_FLAG_VS_CONSTANT_BUFFER;
+	if (m_vs_cb_cache.Update(cb))
+		m_dirty_flags |= DIRTY_FLAG_VS_CONSTANT_BUFFER;
 }
 
 void GSDeviceVK::SetPSConstantBuffer(const GSHWDrawConfig::PSConstantBuffer& cb)
 {
-	if (m_ps_cb_cache == cb)
-		return;
-	if (SwapToPreviousCB(m_ps_cb_cache, m_ps_cb_prev, m_ps_cb_up, cb))
-	{
-		m_tfx_dynamic_offsets[1] = m_ps_cb_up.cur_offset;
-		m_dirty_flags |= DIRTY_FLAG_TFX_UBO;
-		return;
-	}
-	m_ps_cb_cache.Update(cb);
-	m_dirty_flags |= DIRTY_FLAG_PS_CONSTANT_BUFFER;
+	if (m_ps_cb_cache.Update(cb))
+		m_dirty_flags |= DIRTY_FLAG_PS_CONSTANT_BUFFER;
 }
 
 void GSDeviceVK::SetVSPushConstants(u32 base_vertex, u32 base_index, bool force_update)
