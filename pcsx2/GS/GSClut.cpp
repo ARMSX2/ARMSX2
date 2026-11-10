@@ -355,7 +355,6 @@ void GSClut::Read32(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA)
 		m_read.TEXA = TEXA;
 		m_read.dirty = false;
 		m_read.adirty = true;
-		m_read_generation++;
 		m_read_serial++;
 
 		u16* clut = m_clut;
