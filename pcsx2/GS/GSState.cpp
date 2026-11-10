@@ -2526,7 +2526,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			}
 		}
 
-		if (overlap_active || snapshot_pending || !cull_ok)
+		// The snapshot is not a reason to leave the kernel: it does not depend on the vertex, so it is taken below
+		// for the chunk that holds the vertex which fills the first window.
+		if (overlap_active || !cull_ok)
 		{
 			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
 			if constexpr (auto_flush)
@@ -2577,6 +2579,16 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			k++;
 			snapshot_done = false;
 			continue;
+		}
+
+		// The per-draw environment snapshot, where the per-vertex kick takes it: at the vertex that fills a window
+		// while the draw has no primitive. Nothing in the chunk before that vertex can draw, flush or write a
+		// register, so taking it ahead of the chunk copies the same bytes; and a chunk too short to fill the window
+		// takes none, as its vertices would not.
+		if (snapshot_pending && ((m_vertex->tail - m_vertex->head) + chunk) >= n)
+		{
+			SnapshotDrawEnvironmentForChunk();
+			snapshot_done = true;
 		}
 
 		// The routing decision, once per chunk (stage 3b).
@@ -8016,6 +8028,33 @@ __forceinline void GSState::ApplyDepthClamp(u32& z)
 	ApplyDepthClampMode(GetDepthClampMode(), z);
 }
 
+// The per-draw environment snapshot: what the kick takes at every vertex that fills a primitive's window while the
+// draw has no primitive yet. It reads and writes nothing of the vertex or of the vertex and index buffers, so the
+// kernel's driver takes it itself, once, for a chunk that holds such a vertex.
+__forceinline void GSState::SnapshotDrawEnvironment()
+{
+	const int ctx = m_env.PRIM.CTXT;
+	std::memcpy(&m_prev_env, &m_env, 88);
+	std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
+	// With draw buffering off this snapshot is the draw's only copy of its
+	// environment (see SetDrawBufferEnv), so it also takes the other context's
+	// register block, which FlushBuffers used to install from buffer 0 at flush
+	// time. Same value, captured at the same moment; nothing reads the inactive
+	// context of m_prev_env in between.
+	if (!GSConfig.UserHacks_DrawBuffering)
+		std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
+	std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
+	std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
+	m_dirty_gs_regs = 0;
+	m_backed_up_ctx = m_env.PRIM.CTXT;
+	SetDrawBufferEnv();
+}
+
+__noinline void GSState::SnapshotDrawEnvironmentForChunk()
+{
+	SnapshotDrawEnvironment();
+}
+
 // Staged-m_v entry point: piecemeal reg handlers build the vertex in m_v and kick
 // from there. The fused packed handlers use VertexKickDirect with the parsed vertex
 // still in registers instead. The depth clamp is applied here (persisting into m_v
@@ -8123,23 +8162,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// Neither the memcpys nor SetDrawBufferEnv touch the vertex/index buffer state,
 	// so the cursor rides through this block untouched.
 	if (c.itail == 0/* && ((m_backed_up_ctx != m_env.PRIM.CTXT) || m_dirty_gs_regs)*/)
-	{
-		const int ctx = m_env.PRIM.CTXT;
-		std::memcpy(&m_prev_env, &m_env, 88);
-		std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
-		// With draw buffering off this snapshot is the draw's only copy of its
-		// environment (see SetDrawBufferEnv), so it also takes the other context's
-		// register block, which FlushBuffers used to install from buffer 0 at flush
-		// time. Same value, captured at the same moment; nothing reads the inactive
-		// context of m_prev_env in between.
-		if (!GSConfig.UserHacks_DrawBuffering)
-			std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
-		std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
-		std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
-		m_dirty_gs_regs = 0;
-		m_backed_up_ctx = m_env.PRIM.CTXT;
-		SetDrawBufferEnv();
-	}
+		SnapshotDrawEnvironment();
 
 	// Skip draws when scissor is out of range (i.e. bottom-right is less than top-left), since everything will get clipped.
 	skip |= static_cast<u32>(m_scissor_invalid);

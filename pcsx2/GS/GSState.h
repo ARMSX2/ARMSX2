@@ -462,6 +462,8 @@ protected:
 	template<u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush> void KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneStaged(const GIFPackedReg* RESTRICT rv);
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedStagedRun(const GIFPackedReg* RESTRICT r, u32 count);
+	void SnapshotDrawEnvironment();
+	void SnapshotDrawEnvironmentForChunk();
 	template<u32 prim, GSVertexKernels::PackedLayout layout> void KickPackedOneLegacy(const GIFPackedReg* RESTRICT rv, u64 uvfog, GSLimit24BitDepth depth_clamp);
 	template<u32 prim> bool KickKernelApplies();
 	// Which (prim, layout) pairs stage 3c instantiates a fused handler for.
