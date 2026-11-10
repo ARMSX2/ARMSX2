@@ -760,6 +760,25 @@ private:
 
 	GSHWDrawConfig::VSConstantBuffer m_vs_cb_cache;
 	GSHWDrawConfig::PSConstantBuffer m_ps_cb_cache;
+
+	/// The constant buffer uploaded before the current one, and where it sits in its ring: draws that alternate two
+	/// sets of constants (a base and a lit pass per object) point the dynamic offset back at it instead of uploading
+	/// it again. Valid until the ring wraps, which is the first time anything could write over it.
+	struct UploadedCB
+	{
+		u32 cur_offset = 0; ///< where the current cache was uploaded, if cur_uploaded
+		u32 prev_offset = 0;
+		u32 last_offset = 0; ///< the ring's last upload, to see it wrap
+		bool cur_uploaded = false;
+		bool prev_valid = false;
+	};
+	GSHWDrawConfig::VSConstantBuffer m_vs_cb_prev;
+	GSHWDrawConfig::PSConstantBuffer m_ps_cb_prev;
+	UploadedCB m_vs_cb_up;
+	UploadedCB m_ps_cb_up;
+	void NoteCBUpload(UploadedCB& up, u32 offset);
+	template <typename CB>
+	bool SwapToPreviousCB(CB& cache, CB& prev, UploadedCB& up, const CB& cb);
 	GSHWDrawConfig::VSPushConstants m_vs_pc_cache;
 
 	std::string m_tfx_source;
