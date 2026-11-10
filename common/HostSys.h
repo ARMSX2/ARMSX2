@@ -126,6 +126,12 @@ namespace HostSys
 	void FlushInstructionCache(void* address, u32 size);
 #endif
 
+#if defined(__linux__) && defined(__aarch64__)
+	/// The first CPU feature this build was compiled to use that the running CPU does not
+	/// have, by the kernel's HWCAPs, or nullptr if it has them all. Safe to call before main.
+	const char* GetMissingBuildCpuFeature();
+#endif
+
 	/// Returns the size of pages for the current host.
 	size_t GetRuntimePageSize();
 

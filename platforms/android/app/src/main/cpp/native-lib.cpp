@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <mutex>
 #include "PrecompiledHeader.h"
+#include "common/HostSys.h"
 #include "common/StringUtil.h"
 #include "common/FileSystem.h"
 #include "common/ZipHelpers.h"
@@ -3921,6 +3922,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFreeSoftwareNotice(JNIEnv*, jclass, jboo
 // strings for the Auto renderer (setAutoRendererGpuStrings). The notice below pairs it with the driver
 // the open Vulkan device is on, which only native can read.
 static std::atomic<bool> s_gpu_offers_malisx2{false};
+
+// The first instruction set extension this build was compiled for that the CPU lacks, or null. The a11/a13/a15
+// APKs are built for armv8.2-a+fp16+dotprod; installed on a CPU without those, they die with SIGILL at the first
+// such instruction, often minutes in. The app asks before it starts the core and refuses with a message instead.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_missingCpuFeature(JNIEnv* env, jclass) {
+    const char* const missing = HostSys::GetMissingBuildCpuFeature();
+    return missing ? env->NewStringUTF(missing) : nullptr;
+}
 
 extern "C"
 JNIEXPORT void JNICALL

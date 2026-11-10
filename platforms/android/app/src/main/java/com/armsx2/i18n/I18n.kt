@@ -963,6 +963,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "memcard.backups.suspect" to "Unreadable when saved",
     "memcard.backups.title" to "Backups of %s",
     "memcard.backups.vmRunning" to "Stop the game before restoring a memory card. The console keeps its own picture of the card while it runs, and would write over the restored copy.",
+    "cpu.unsupported.title" to "This version of ARMSX2 can't run on this device",
+    "cpu.unsupported.body" to "This APK uses %s, which this device's processor does not have.\n\nInstall the APK whose name ends in -sdk26 from the same release instead. It runs on every device.",
     "dataroot.unavailable.title" to "Data folder not available",
     "dataroot.unavailable.body" to "ARMSX2 can't open your data folder:\n%s\n\nYour memory cards and save states are still there. The SD card may not be mounted yet, or storage access may have been turned off.\n\nUsing internal storage instead shows a separate set of memory cards until the next launch.",
     "dataroot.unavailable.retry" to "Retry",

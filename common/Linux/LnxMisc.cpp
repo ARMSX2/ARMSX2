@@ -21,7 +21,7 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#if defined(__aarch64__) && !defined(__ANDROID__)
+#if defined(__aarch64__)
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #endif
@@ -501,12 +501,10 @@ void Threading::SleepUntil(u64 ticks)
 	}
 }
 
-#if defined(__aarch64__) && !defined(__ANDROID__)
-// Builds for more than ARMv8.0 die with SIGILL on older cores, often before main. Check the HWCAPs
-// before the other static constructors run and say what's missing.
-__attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
+#if defined(__aarch64__)
+const char* HostSys::GetMissingBuildCpuFeature()
 {
-	const unsigned long hw = getauxval(AT_HWCAP);
+	[[maybe_unused]] const unsigned long hw = getauxval(AT_HWCAP);
 	const char* missing = nullptr;
 #if defined(__ARM_FEATURE_ATOMICS) && defined(HWCAP_ATOMICS)
 	if (!missing && !(hw & HWCAP_ATOMICS))
@@ -532,6 +530,17 @@ __attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
 	if (!missing && !(hw & HWCAP_ASIMDHP))
 		missing = "half-precision vector arithmetic";
 #endif
+	return missing;
+}
+#endif
+
+#if defined(__aarch64__) && !defined(__ANDROID__)
+// Builds for more than ARMv8.0 die with SIGILL on older cores, often before main. Check the HWCAPs
+// before the other static constructors run and say what's missing. Android checks from the app
+// instead (NativeApp.missingCpuFeature), where it can show the player a message.
+__attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
+{
+	const char* const missing = HostSys::GetMissingBuildCpuFeature();
 	if (!missing)
 		return;
 

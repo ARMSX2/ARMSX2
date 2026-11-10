@@ -1101,6 +1101,10 @@ public class NativeApp {
 	 *  instead of OpenGL. The decision needs the driver-bug database (keyed on a parsed driver
 	 *  revision), which lives natively, so the app supplies the strings rather than the verdict. */
 	public static native void setAutoRendererGpuStrings(String vendor, String renderer, String version);
+	/** The first instruction set extension this build was compiled for that the CPU lacks
+	 *  ("the dot product instructions", ...), or null if it has them all. Callable before the core
+	 *  is initialized; the app must not start the core when it is non-null. */
+	public static native String missingCpuFeature();
 	/** Whether the driver list offers malisx2 for this device's GPU (CustomDriver.offersMaliSX2).
 	 *  Pushed once at startup. The core pairs it with the driver the open Vulkan device is on and
 	 *  posts the "get malisx2" OSD notice at game start when that driver is not malisx2. */
