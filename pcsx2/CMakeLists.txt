@@ -735,6 +735,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineRuns.h
 	GS/Renderers/HW/GSBurstMemo.h
+	GS/Renderers/HW/GSDepthFormatMove.h
 	GS/Renderers/HW/GSLineWalk.h
 	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
