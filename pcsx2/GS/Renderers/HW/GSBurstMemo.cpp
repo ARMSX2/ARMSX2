@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstring>
+#include <new>
 
 namespace GSBurstMemo
 {
@@ -232,9 +233,72 @@ namespace GSBurstMemo
 		}
 	};
 
+	SlabPool::~SlabPool()
+	{
+		if (m_cur && --m_cur->refs == 0)
+			m_free.push_back(m_cur);
+		for (Slab* s : m_free)
+		{
+			::operator delete[](s->data, std::align_val_t(16));
+			delete s;
+		}
+	}
+
+	u8* SlabPool::Place(size_t bytes, Slab*& slab)
+	{
+		if (!m_cur || m_used + bytes > m_cur->size)
+		{
+			if (m_cur)
+				Release(m_cur);
+			if (bytes <= SLAB_BYTES && !m_free.empty())
+			{
+				m_cur = m_free.back();
+				m_free.pop_back();
+			}
+			else
+			{
+				const size_t size = std::max(bytes, SLAB_BYTES);
+				m_cur = new Slab{static_cast<u8*>(::operator new[](size, std::align_val_t(16))), size, 0};
+				m_allocations++;
+				m_held += size;
+			}
+			m_cur->refs = 1;
+			m_used = 0;
+		}
+		u8* const p = m_cur->data + m_used;
+		m_used += bytes;
+		slab = m_cur;
+		return p;
+	}
+
+	void SlabPool::Release(Slab* slab)
+	{
+		if (--slab->refs)
+			return;
+		if (slab->size == SLAB_BYTES && m_free.size() < MAX_FREE_SLABS)
+		{
+			m_free.push_back(slab);
+			return;
+		}
+		m_held -= slab->size;
+		::operator delete[](slab->data, std::align_val_t(16));
+		delete slab;
+	}
+
+	Entry::Entry(std::shared_ptr<SlabPool> p)
+		: pool(p ? std::move(p) : std::make_shared<SlabPool>())
+	{
+	}
+
+	Entry::~Entry()
+	{
+		for (SlabPool::Slab* s : slabs)
+			pool->Release(s);
+	}
+
 	Record Entry::At(u32 k) const
 	{
-		const u8* base = buf[offsets[k]].b;
+		const u8* base = records[k];
 		Record r;
 		r.h = reinterpret_cast<const RecordHeader*>(base);
 		r.words = reinterpret_cast<const u64*>(base + r.h->at_words);
@@ -260,13 +324,17 @@ namespace GSBurstMemo
 		const u32 nout = static_cast<u32>(d.out_blocks.size());
 		const Layout l(nwords, nverts, nindex, nsrc, npre, nout);
 
-		if (offsets.empty())
+		if (records.empty())
 			first_signature = p.Signature();
-		const size_t at = buf.size();
-		offsets.push_back(static_cast<u32>(at));
-		buf.resize(at + l.end / sizeof(Chunk));
-		u8* base = buf[at].b;
-
+		SlabPool::Slab* slab;
+		u8* const base = pool->Place(l.end, slab);
+		if (slabs.empty() || slabs.back() != slab)
+		{
+			slab->refs++;
+			slabs.push_back(slab);
+		}
+		records.push_back(base);
+		record_bytes += l.end;
 		RecordHeader h;
 		h.bytes = static_cast<u32>(l.end);
 		h.live = p.live;
@@ -313,13 +381,7 @@ namespace GSBurstMemo
 
 	void Entry::Recount()
 	{
-		// A buffer taken from an evicted entry can be much larger than this burst; give the excess back rather
-		// than hold it for as long as the entry stays. Below that, the budget counts what the entry holds, not
-		// the capacity it grew or inherited: counting capacity, the large buffers evictions hand back made the
-		// next bursts look large, which evicted more (Spider-Man 3 street, 2026-11-09).
-		if (buf.capacity() > 2 * buf.size() + (64u << 10) / sizeof(Chunk))
-			buf.shrink_to_fit();
-		bytes = sizeof(Entry) + buf.size() * sizeof(Chunk) + offsets.size() * sizeof(u32);
+		bytes = sizeof(Entry) + record_bytes + records.size() * sizeof(const u8*) + slabs.size() * sizeof(SlabPool::Slab*);
 	}
 
 	Store::Store() = default;
@@ -330,26 +392,9 @@ namespace GSBurstMemo
 			for (const EntryPtr& e : list)
 				e->stored = false;
 		m_index.clear();
-		m_spare.clear();
 		std::memset(m_bloom, 0, sizeof(m_bloom));
 		m_bytes = 0;
 		m_entries = 0;
-	}
-
-	Buffer Store::TakeBuffer()
-	{
-		if (m_spare.empty())
-			return {};
-		Buffer b = std::move(m_spare.back());
-		m_spare.pop_back();
-		b.clear();
-		return b;
-	}
-
-	void Store::Recycle(const EntryPtr& e)
-	{
-		if (e.use_count() == 1 && m_spare.size() < MAX_SPARE_BUFFERS)
-			m_spare.push_back(std::move(e->buf));
 	}
 
 	void Store::SetBudget(size_t bytes)
@@ -378,8 +423,7 @@ namespace GSBurstMemo
 
 		if (m_bytes > m_budget)
 		{
-			// Least recently used first; among equals, the oldest install (earlier in its list). Plain pointers, so
-			// an entry nothing else holds is recycled when it goes.
+			// Least recently used first; among equals, the oldest install (earlier in its list).
 			std::vector<Entry*> all;
 			all.reserve(m_entries);
 			for (auto& [s, list] : m_index)
@@ -414,7 +458,6 @@ namespace GSBurstMemo
 					m_bytes -= e.bytes;
 					m_entries--;
 					m_evictions++;
-					Recycle(list[i]);
 					list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
 					removed = true;
 				}
@@ -441,7 +484,6 @@ namespace GSBurstMemo
 		e->stored = false;
 		m_bytes -= e->bytes;
 		m_entries--;
-		Recycle(*pos);
 		list.erase(pos);
 		if (list.empty())
 			m_index.erase(it);

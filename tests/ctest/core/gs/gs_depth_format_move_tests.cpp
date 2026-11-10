@@ -14,6 +14,7 @@
 #include "gs_hw_draw_harness.h"
 
 #include "GS/GSLocalMemory.h"
+#include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/HW/GSDepthFormatMove.h"
 #include "GS/Renderers/HW/GSTextureCache.h"
 #include "GS/Renderers/SW/GSVertexSW.h"
@@ -364,6 +365,13 @@ namespace
 	{
 	protected:
 		std::unique_ptr<CaptureDevice> NewDevice() override { return std::make_unique<TagDevice>(); }
+
+		void TearDown() override
+		{
+			GSBurstMemo::SetForcedOff(false); // the copy-road tests switch it off
+			GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::On); // the lean-path tests check it
+			DepthFormatMoveCache::TearDown();
+		}
 
 		TagDevice* Tags() { return static_cast<TagDevice*>(m_device); }
 
@@ -757,7 +765,7 @@ namespace
 	{
 		GSConfig.UserHacks_CPUSpriteRenderBW = 10;
 		GSConfig.UserHacks_CPUSpriteRenderLevel = 0;
-		GSConfig.BurstMemo = false;
+		GSBurstMemo::SetForcedOff(true);
 		GSVertexSW::InitStatic();
 		ASSERT_NE(Hold(), nullptr);
 		DrawTextured(kDepthBP, PSMCT32, 0x3000, 64, 32);
@@ -777,7 +785,7 @@ namespace
 	{
 		GSConfig.UserHacks_CPUSpriteRenderBW = 10;
 		GSConfig.UserHacks_CPUSpriteRenderLevel = 0;
-		GSConfig.BurstMemo = false;
+		GSBurstMemo::SetForcedOff(true);
 		GSVertexSW::InitStatic();
 		ASSERT_NE(Hold(), nullptr);
 		DrawDepth(0, 0, 128, 64);
@@ -925,6 +933,60 @@ namespace
 
 
 
+
+	// The lean path's early return in GSTextureCache::InvalidateVideoMem (no source under the write) cannot skip a held
+	// word: a hold is not a source, and every writer of local memory writes the words in before it reaches that
+	// call. Here a constant clear over part of the pages, under the lean checker: the clear's post-draw
+	// invalidation finds no source under it and returns early, and the words went in before the clear all the same.
+	TEST_P(DepthFormatMoveHeld, TheLeanEarlyReturnDoesNotSkipTheWords)
+	{
+		ASSERT_NE(Hold(), nullptr);
+		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+		DrawColour(kDepthBP + 32 * kBW * 3, PSMCT32, kW, 64); // page rows 3 and 4
+		const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
+		EXPECT_GT(report.invalidate_hits, 0u);
+		EXPECT_EQ(report.mismatches, 0u);
+		EXPECT_EQ(Materialised(), 1u);
+		int bad = 0;
+		for (int y = 0; y < kH; y++)
+		{
+			for (int x = 0; x < kW; x++)
+			{
+				const u32 got = m_gs->m_mem.ReadPixel32Z(x, y, kDepthBP, kBW);
+				const bool cleared = y >= 96 && y < 160;
+				bad += cleared ? (got != 0x80206040u) : (got != ((kBefore & 0xFF000000u) | kHeld));
+			}
+		}
+		EXPECT_EQ(bad, 0);
+	}
+
+	TEST_P(DepthFormatMoveHeld, AnInvalidationWithNoSourceUnderItLeavesTheHold)
+	{
+		ASSERT_NE(Hold(), nullptr);
+		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+		g_texture_cache->InvalidateVideoMem(m_gs->m_mem.GetOffset(kDepthBP, kBW, PSMZ24), GSVector4i(0, 0, kW, kH), false);
+		EXPECT_GT(GSTextureCache::GetLeanReport().invalidate_hits, 0u);
+		EXPECT_TRUE(g_texture_cache->HasHeldPages());
+		EXPECT_EQ(Materialised(), 0u);
+		EXPECT_TRUE(Untouched());
+	}
+
+	// The front-of-list answer for a draw into the held depth target agrees with the walk: under the checker the
+	// walk runs after the front answer and must return the same target with every byte of it (the drawn-since-read
+	// area the move set included) unchanged, and the readback that follows lands over the words.
+	TEST_P(DepthFormatMoveHeld, TheFrontOfListAnswerAgreesWithTheWalkOnTheHeldTarget)
+	{
+		GSTextureCache::Target* const depth = Hold();
+		ASSERT_NE(depth, nullptr);
+		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+		DrawDepth(0, 0, 128, 64);
+		const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
+		EXPECT_GT(report.target_hits, 0u);
+		EXPECT_EQ(report.mismatches, 0u);
+		ASSERT_EQ(DepthAt(kDepthBP), depth);
+		m_gs->ReadbackTextureCache();
+		EXPECT_EQ(Mismatches(kOther, GSVector4i(0, 0, 128, 64)), 0);
+	}
 
 	INSTANTIATE_TEST_SUITE_P(Scale, DepthFormatMoveHeld, ::testing::Values(1.0f, 2.0f),
 		[](const ::testing::TestParamInfo<float>& info) { return info.param == 1.0f ? std::string("Native") : std::string("Upscaled"); });

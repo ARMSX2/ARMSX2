@@ -90,6 +90,20 @@ struct GSTextureCache::HashMemoSweep
 	bool primed = false;
 };
 
+static GSTextureCache::LeanReport s_lean_report;
+static constexpr u64 LEAN_CHECK_PRINT_LIMIT = 20;
+
+void GSTextureCache::SetLeanMode(LeanMode mode)
+{
+	s_lean_mode = static_cast<u8>(mode);
+	s_lean_report = {};
+}
+
+GSTextureCache::LeanReport GSTextureCache::GetLeanReport()
+{
+	return s_lean_report;
+}
+
 void GSTextureCache::SetHashMemoVerify(bool enable)
 {
 	s_hash_memo_verify = enable;
@@ -2614,7 +2628,98 @@ bool GSTextureCache::TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX
 	return true;
 }
 
+// The front of the list answers the lookup at once when the walk below would return it having done nothing to
+// the cache but three writes to it. Read against LookupDrawTargetWalk and ProcessTargetAfterLookup:
+//  - The walk starts at the front. With the base block equal it takes the exact-address branch, and with the
+//    buffer width equal every test in that branch that can refuse or delete the target is false (each has
+//    `TEX0.TBW != t->m_TEX0.TBW` as a factor). So it takes this target, moves it to the front, where it is, and
+//    ors in the 32-bit flag.
+//  - ProcessTargetAfterLookup then rescales only if the scales differ, converts only if the formats differ,
+//    repopulates RGB only if the target's RGB is not valid, and drops dirt or invalidates the texture only if
+//    nothing is preserved and the draw covers the whole valid area.
+//  - What is left is the tail of the lookup: the used flag and the readback counter.
+GSTextureCache::Target* GSTextureCache::FrontDrawTarget(const GIFRegTEX0& TEX0, float scale, int type, bool preserve_target,
+	const GSVector4i& draw_rect) const
+{
+	const FastList<Target*>& list = m_dst[type];
+	if (list.empty())
+		return nullptr;
+
+	Target* const t = *list.begin();
+	if (t->m_TEX0.TBP0 != TEX0.TBP0 || t->m_TEX0.TBW != TEX0.TBW || t->m_TEX0.PSM != TEX0.PSM || t->m_scale != scale || !t->m_valid_rgb)
+		return nullptr;
+	if (!preserve_target && draw_rect.rintersect(t->m_valid).eq(t->m_valid))
+		return nullptr;
+
+	return t;
+}
+
 GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type,
+	bool used, u32 fbmask, bool preload, bool preserve_rgb, bool preserve_alpha, const GSVector4i draw_rect,
+	bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset)
+{
+	if (s_lean_mode == static_cast<u8>(LeanMode::Off)) [[unlikely]]
+	{
+		return LookupDrawTargetWalk(TEX0, size, scale, type, used, fbmask, preload, preserve_rgb, preserve_alpha, draw_rect,
+			is_shuffle, possible_clear, preserve_scale, src, ds, offset);
+	}
+
+	Target* const front = FrontDrawTarget(TEX0, scale, type, preserve_rgb || preserve_alpha, draw_rect);
+	if (front)
+	{
+		front->m_32_bits_fmt |= (GSLocalMemory::m_psm[TEX0.PSM].bpp != 16);
+		front->m_used |= used;
+		front->readbacks_since_draw = 0;
+	}
+
+	if (s_lean_mode == static_cast<u8>(LeanMode::On)) [[likely]]
+	{
+		if (front)
+			return front;
+		return LookupDrawTargetWalk(TEX0, size, scale, type, used, fbmask, preload, preserve_rgb, preserve_alpha, draw_rect,
+			is_shuffle, possible_clear, preserve_scale, src, ds, offset);
+	}
+
+	// Check mode: the three writes are done, so the walk must now return this target and change nothing: not
+	// the target, not its texture's state, and not the order or the membership of either list.
+	s_lean_report.target_calls++;
+	if (!front)
+	{
+		return LookupDrawTargetWalk(TEX0, size, scale, type, used, fbmask, preload, preserve_rgb, preserve_alpha, draw_rect,
+			is_shuffle, possible_clear, preserve_scale, src, ds, offset);
+	}
+
+	s_lean_report.target_hits++;
+	std::vector<Target*> order_before;
+	for (int i = 0; i < 2; i++)
+		for (Target* t : m_dst[i])
+			order_before.push_back(t);
+	alignas(Target) u8 bytes_before[sizeof(Target)];
+	std::memcpy(bytes_before, static_cast<const void*>(front), sizeof(Target));
+	// The device side of what the walk can do to a target it keeps: it invalidates or clears the texture.
+	const GSTexture::State texture_state_before = front->m_texture->GetState();
+
+	Target* const walked = LookupDrawTargetWalk(TEX0, size, scale, type, used, fbmask, preload, preserve_rgb, preserve_alpha,
+		draw_rect, is_shuffle, possible_clear, preserve_scale, src, ds, offset);
+
+	std::vector<Target*> order_after;
+	for (int i = 0; i < 2; i++)
+		for (Target* t : m_dst[i])
+			order_after.push_back(t);
+	// The target is read back only if the lists still hold it.
+	const bool same = walked == front && order_before == order_after &&
+	                  std::memcmp(bytes_before, static_cast<const void*>(front), sizeof(Target)) == 0 &&
+	                  front->m_texture->GetState() == texture_state_before;
+	if (!same && ++s_lean_report.mismatches <= LEAN_CHECK_PRINT_LIMIT)
+	{
+		Console.Error(fmt::format("LEAN-CHECK target lookup: draw {} bp {:x} bw {} psm {:x} type {}: front {} walk {} lists {}",
+			GSRendererHW::GetInstance()->s_n, static_cast<u32>(TEX0.TBP0), static_cast<u32>(TEX0.TBW), static_cast<u32>(TEX0.PSM), type,
+			static_cast<const void*>(front), static_cast<const void*>(walked), order_before == order_after ? "same" : "changed"));
+	}
+	return walked;
+}
+
+GSTextureCache::Target* GSTextureCache::LookupDrawTargetWalk(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type,
 	bool used, u32 fbmask, bool preload, bool preserve_rgb, bool preserve_alpha, const GSVector4i draw_rect,
 	bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset)
 {
@@ -5125,6 +5230,59 @@ void GSTextureCache::InvalidateVideoMemType(int type, u32 bp, u32 write_psm, u32
 	}
 }
 
+bool GSTextureCache::SourceMap::AnyPageUsed(u32 first, u32 count) const
+{
+	if (count >= GS_MAX_PAGES)
+	{
+		for (const u64 word : m_page_used)
+			if (word)
+				return true;
+		return false;
+	}
+
+	u32 page = first % GS_MAX_PAGES;
+	while (count > 0)
+	{
+		// The bits of this word from `page` up, as many as are still wanted.
+		const u32 bit = page & 63;
+		const u32 take = std::min<u32>(64 - bit, count);
+		const u64 mask = (take == 64 ? ~u64(0) : ((u64(1) << take) - 1)) << bit;
+		if (m_page_used[page >> 6] & mask)
+			return true;
+		count -= take;
+		page = (page + take) % GS_MAX_PAGES;
+	}
+	return false;
+}
+
+// The lists InvalidateVideoMem's two source walks visit after a draw (target off), as page runs:
+//  - the first walk: `pages` lists from the buffer's base page, and with a buffer 16 or more pages wide the list of
+//    the block half way along it;
+//  - the second walk: the pages of the rectangle, all inside the looper's span.
+// A run may hold pages the walks do not visit, which only costs a hit.
+bool GSTextureCache::NoSourceUnderWrite(const GSOffset& off, const GSVector4i& rect, u32 start_bp, u32 end_bp) const
+{
+	const u32 bp = off.bp();
+	const u32 bw = off.bw();
+
+	const int pages = (end_bp + ((1 << 5) - 1) - start_bp) >> 5;
+	if (pages > 0)
+	{
+		if (pages > static_cast<int>(GS_MAX_PAGES) || m_src.AnyPageUsed(bp >> 5, static_cast<u32>(pages)))
+			return false;
+
+		const u32 bbp = bp + bw * 0x10;
+		if (bw >= 16 && bbp < 16384 && !m_src.m_map[bbp >> 5].empty())
+			return false;
+	}
+
+	u32 first, count;
+	if (!off.pageLooperForRect(rect).pageSpan(first, count))
+		return false;
+
+	return !m_src.AnyPageUsed(first, count);
+}
+
 // Goal: invalidate data sent to the GPU when the source (GS memory) is modified
 // Called each time you want to write to the GS memory
 void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& rect, bool target)
@@ -5141,6 +5299,42 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 	// so we need to prevent that from happening. Just make it a single block in that case, and hope for the best.
 	const u32 start_bp = GSLocalMemory::GetStartBlockAddress(off.bp(), off.bw(), off.psm(), rect);
 	const u32 end_bp = rect.rempty() ? start_bp : GSLocalMemory::GetUnwrappedEndBlockAddress(off.bp(), off.bw(), off.psm(), rect);
+
+	if (!target && s_lean_mode != static_cast<u8>(LeanMode::Off))
+	{
+		// Both source walks below only remove or mark sources they find in the page lists they visit, and
+		// with target off nothing follows them. If none of those lists holds a source they do nothing.
+		const bool none = NoSourceUnderWrite(off, rect, start_bp, end_bp);
+		if (s_lean_mode == static_cast<u8>(LeanMode::On)) [[likely]]
+		{
+			if (none)
+				return;
+		}
+		else
+		{
+			s_lean_report.invalidate_calls++;
+			if (none)
+			{
+				// Check mode: visit the lists the way the walks do and find them empty.
+				s_lean_report.invalidate_hits++;
+				bool held = false;
+				const int check_pages = (end_bp + ((1 << 5) - 1) - start_bp) >> 5;
+				for (int pgs = 0; pgs < check_pages; pgs++)
+				{
+					held |= !m_src.m_map[((bp >> 5) + pgs) & 0x1ff].empty();
+					const u32 bbp = bp + bw * 0x10;
+					if (bw >= 16 && bbp < 16384)
+						held |= !m_src.m_map[bbp >> 5].empty();
+				}
+				off.loopPages(rect, [this, &held](u32 page) { held |= !m_src.m_map[page].empty(); });
+				if (held && ++s_lean_report.mismatches <= LEAN_CHECK_PRINT_LIMIT)
+				{
+					Console.Error(fmt::format("LEAN-CHECK invalidate: draw {} bp {:x} bw {} psm {:x} rect {},{} {},{}: a visited page holds a source",
+						GSRendererHW::GetInstance()->s_n, bp, bw, psm, rect.x, rect.y, rect.z, rect.w));
+				}
+			}
+		}
+	}
 
 	if (!target)
 	{
@@ -9549,13 +9743,28 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #endif
 }
 
+// GetEndBlockAddress of the target's layout and valid area. It is a function of those four values alone, and the
+// draw path asks for it three times a draw with none of them changed, so the last answer is kept beside its inputs.
+u32 GSTextureCache::Target::EndBlockOfValid()
+{
+	const u32 layout = m_TEX0.U32[0] & 0x3ffffff; // TBP0, TBW, PSM
+	if (!m_end_of_valid_known || layout != m_end_of_valid_layout || !m_valid.eq(m_end_of_valid_rect))
+	{
+		m_end_of_valid = GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid);
+		m_end_of_valid_layout = layout;
+		m_end_of_valid_rect = m_valid;
+		m_end_of_valid_known = true;
+	}
+	return m_end_of_valid;
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
 	{
 		m_valid = m_valid.rintersect(rect);
 		m_drawn_since_read = m_drawn_since_read.rintersect(rect);
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Else No valid size, so need to resize down.
@@ -9571,13 +9780,13 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 	{
 		m_valid = rect;
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 	else if (can_resize)
 	{
 		m_valid = m_valid.runion(rect);
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Growth matters to any claim of the form "every pixel of this target holds X": the
@@ -9694,6 +9903,7 @@ void GSTextureCache::SourceMap::Add(Source* s, const GIFRegTEX0& TEX0)
 	// The source pointer will be stored/duplicated in all m_map[array of pages]
 	s->m_pages.loopPages([this, s](u32 page) {
 		s->m_erase_it[page] = m_map[page].InsertFront(s);
+		m_page_used[page >> 6] |= u64(1) << (page & 63);
 	});
 }
 
@@ -9726,6 +9936,7 @@ void GSTextureCache::SourceMap::RemoveAll()
 	{
 		item.clear();
 	}
+	m_page_used.fill(0);
 }
 
 void GSTextureCache::SourceMap::RemoveAt(Source* s)
@@ -9737,6 +9948,8 @@ void GSTextureCache::SourceMap::RemoveAt(Source* s)
 
 	s->m_pages.loopPages([this, s](u32 page) {
 		m_map[page].EraseIndex(s->m_erase_it[page]);
+		if (m_map[page].empty())
+			m_page_used[page >> 6] &= ~(u64(1) << (page & 63));
 	});
 
 	if (s->m_from_hash_cache)

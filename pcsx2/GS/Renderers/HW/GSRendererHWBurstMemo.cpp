@@ -44,6 +44,7 @@ static __fi bool TestBit(const u64* bits, u32 block)
 
 void GSRendererHW::RefreshBurstMemo()
 {
+	BurstMemoFlushWaiting();
 	Memo& m = m_burst_memo;
 	m.store.Clear();
 	m.recording.reset();
@@ -58,12 +59,14 @@ void GSRendererHW::RefreshBurstMemo()
 	m.frame_had_copies = false;
 	m.candidate = false;
 	std::memset(m.block_copy_run, 0, sizeof(m.block_copy_run));
+	m.passed_over_in_a_row = 0;
+	m.resting = false;
 	m.palette_generation = ~u64(0);
 	m.palette_entries = 0;
 	m.palette_copy.clear();
 
 	// The copy road has to be on, and nothing may be watching or changing draws the memo would skip.
-	m_burst_memo_enabled = GSConfig.BurstMemo && GSConfig.UserHacks_CPUSpriteRenderBW != 0 && !GSConfig.DumpGSData &&
+	m_burst_memo_enabled = !ForcedOff() && GSConfig.UserHacks_CPUSpriteRenderBW != 0 && !GSConfig.DumpGSData &&
 	                       !GSConfig.UserHacks_RewriteLargeSTCoords &&
 	                       GSConfig.UserHacks_GPUTargetCLUTMode == GSGPUTargetCLUTMode::Disabled && !m_gsc &&
 	                       GSConfig.SkipDrawEnd == 0;
@@ -73,40 +76,81 @@ bool GSRendererHW::SkipMemoizedDraw()
 {
 	if (!m_burst_memo_enabled)
 		return false;
+	if (m_burst_memo.resting)
+	{
+		if (!BurstMemoWakes())
+			return false;
+		m_burst_memo.resting = false;
+	}
+	if (BurstMemoSkip())
+		return true;
+	// The draw runs, and reads the texture cache.
+	BurstMemoFlushWaiting();
+	return false;
+}
 
+// While the memo rests: whether this draw is one it could record, from the registers alone (the tests BurstMemoSkip
+// makes before it looks anything up). Any other draw leaves it resting.
+bool GSRendererHW::BurstMemoWakes() const
+{
+	const u32 fbw = m_context->FRAME.FBW;
+	if (fbw > static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderBW) && fbw != 32)
+		return false;
+	const bool textured_sprite = PRIM->TME && GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS;
+	if (GSConfig.UserHacks_CPUSpriteRenderLevel == 0 && !textured_sprite)
+		return false;
+	return !(PRIM->TME &&
+			 m_burst_memo.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)] >= Memo::BLOCK_COPY_RUN);
+}
+
+bool GSRendererHW::BurstMemoSkip()
+{
 	Memo& m = m_burst_memo;
 	m.candidate = false;
-
-	// A burst does not run on across a draw that was not a copy.
+	GlobalStats().draw_vertices += m_vertex->next;
 	const bool after_copy = m.last_was_copy;
 	m.last_was_copy = false;
-	if (!after_copy)
-	{
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
-	}
-
-	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road.
-	const u32 fbw = m_context->FRAME.FBW;
-	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || GSDrawLog::IsActive() || !m_sw_prim.palette_block_copy)
-	{
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
-		return false;
-	}
 
 	// A shape the road keeps drawing with a block copy is left alone, neither recorded nor looked up: those copies
 	// cost about what recording and checking them would (on the M2, Call of Duty 3 and Stuntman ran 7% and 6%
-	// more instructions with them recorded). Every copy that runs still counts towards the shape's run.
+	// more instructions with them recorded). Every copy that runs still counts towards the shape's run. Tested
+	// first, since on a title whose copies are all block copies this is the path every draw takes.
 	if (PRIM->TME && m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)] >= Memo::BLOCK_COPY_RUN)
 	{
 		GlobalStats().not_recorded_block_copy++;
-		BurstMemoCloseRecording();
-		BurstMemoEndSequence();
+		BurstMemoStop();
+		if (++m.passed_over_in_a_row >= Memo::REST_AFTER)
+		{
+			// Nothing is open: the stop closed the recording and the sequence, and SkipMemoizedDraw flushes the
+			// invalidations next.
+			m.resting = true;
+			m.passed_over_in_a_row = 0;
+			m.last_was_copy = false;
+			GlobalStats().rests++;
+		}
+		return false;
+	}
+
+	// A burst does not run on across a draw that was not a copy.
+	if (!after_copy)
+		BurstMemoStop();
+
+	// The head of CanUseSwPrimRender, from the registers alone: a frame too wide never takes the copy road, and at the
+	// road's default level only textured sprites do. A draw turned away here costs nothing more: no lookup, and no
+	// copy of its vertices (on Stuntman, whose draws carry many, that copy was 1.4% of the instructions). Draw() can
+	// turn a draw into a sprite later (ReplaceVerticesWithSprite); such a draw is only not recorded.
+	const u32 fbw = m_context->FRAME.FBW;
+	if ((fbw > GSConfig.UserHacks_CPUSpriteRenderBW && fbw != 32) || !m_sw_prim.palette_block_copy || GSDrawLog::IsActive() ||
+		(GSConfig.UserHacks_CPUSpriteRenderLevel == 0 &&
+			!(PRIM->TME && GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS)))
+	{
+		GlobalStats().not_copy_road++;
+		BurstMemoStop();
 		return false;
 	}
 
 	m.candidate = true;
+	m.passed_over_in_a_row = 0;
 	if (BurstMemoTryHit())
 	{
 		m.last_was_copy = true;
@@ -289,17 +333,17 @@ bool GSRendererHW::BurstMemoHit()
 	m.sequence_seq = m_mem.WriteSeq();
 	m.position = k + 1;
 	st.hit_draws++;
+	st.hit_vertices += m_vertex->next;
 
-	// The burst's next draw is the next record: start loading its header and words while the next draw is
-	// decoded.
+	// The burst's next draw is the next record: start loading what its packet compare reads (the header, the
+	// compared words, the vertices and indices: under 1 KiB for Spider-Man 3's few-sprite draws) while the next draw
+	// is decoded. A prefetch past the record's end is harmless; it cannot fault.
 	const Entry& next = *m.candidates[0];
 	if (next.Count() > k + 1)
 	{
 		const char* p = static_cast<const char*>(next.Address(k + 1));
-		__builtin_prefetch(p);
-		__builtin_prefetch(p + 64);
-		__builtin_prefetch(p + 128);
-		__builtin_prefetch(p + 192);
+		for (u32 i = 0; i < 1024; i += 64)
+			__builtin_prefetch(p + i);
 	}
 	return true;
 }
@@ -310,7 +354,12 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	const bool copied = (d.h->flags & GSBurstMemo::REC_COPIED) != 0;
 
 	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them. Held depth words
-	// in them go in first, for the rest of their pages.
+	// (GSTextureCache::MaterialiseHeldPages) in them go in first, for the rest of their pages: the CPU move they
+	// stand for came before this draw. A replay can reach held pages only once their depth target is gone, since
+	// a skip needs no target with shared bits at the frame (BurstMemoTargetAt) and a hold's pages lie under its
+	// target until then; no test builds that state. The order against the waiting invalidations is free: holds
+	// are made only by a move, which flushes them first, and this download writes local memory, not the
+	// texture cache, so the box's invalidation below still finds what the copy road's would have.
 	u8* const vm = m_mem.m_vm8;
 	const u32 blocks = d.h->nout;
 	g_texture_cache->MaterialiseHeldBlocks(d.out_blocks, blocks);
@@ -331,16 +380,17 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	if (!copied)
 		m_mem.MarkPagesWritten(context->offset.zb, grown);
 
-	// What SwPrimRender() did after Run(): the texture cache invalidation and the draw transfer.
-	GSOffset frame_offs = context->offset.fb;
+	// What SwPrimRender() did after Run(): the texture cache invalidation (of the frame, or of the channels its
+	// mask leaves written) and the draw transfer.
+	u32 invalidated_psm = context->FRAME.PSM;
 	if (GSLocalMemory::m_psm[context->FRAME.PSM].trbpp == 32 && context->FRAME.FBMSK)
 	{
 		if (context->FRAME.FBMSK == 0xFF000000)
-			frame_offs = m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMCT24);
+			invalidated_psm = PSMCT24;
 		else if (context->FRAME.FBMSK == 0x00FFFFFF)
-			frame_offs = m_mem.GetOffset(context->FRAME.Block(), context->FRAME.FBW, PSMT8H);
+			invalidated_psm = PSMT8H;
 	}
-	g_texture_cache->InvalidateVideoMem(frame_offs, bbox);
+	BurstMemoInvalidate(context->FRAME.Block(), context->FRAME.FBW, invalidated_psm, bbox);
 
 	GSUploadQueue uq;
 	uq.transfer_type = EEGS_TransferType::EE_to_GS;
@@ -379,6 +429,67 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 	m_vt.m_primclass = static_cast<GS_PRIM_CLASS>(left.primclass);
 }
 
+// The copy road invalidates the texture cache after every draw (SwPrimRender). A skipped draw's invalidation waits
+// instead, and the waiting ones are made when something is about to read the texture cache
+// (BurstMemoFlushWaiting): as one, over the rectangle that bounds them, when no target is in reach of it, and
+// otherwise one by one in the order the copies made them. Why that leaves the same pictures:
+//  - Made one by one, they are the copies' own invalidations in the copies' order, and nothing between two draws of a
+//    burst changes the texture cache (only a draw makes a source or a target, and a draw that is not skipped
+//    flushes first), so each finds what it would have found.
+//  - Made as one with no target in reach, an invalidation only touches sources: each page of the rectangle has its
+//    sources' valid bits cleared or the source removed, and a source made from a target is removed when the
+//    rectangle overlaps it. All of it only takes things away, so the bounding rectangle does what the separate ones
+//    do and perhaps more, and the more can only make a source upload again from local memory, which holds what the
+//    copies wrote.
+//  - While they wait, the memo's own check for a target at a draw's texture or frame (BurstMemoTargetAt) may still
+//    see a target one of them would have removed. That stops the skip, and the draw that runs flushes first.
+//  - Everything else that reads the texture cache flushes first: the uploads, reads and moves (InvalidateVideoMem,
+//    InvalidateLocalMem, Move), the end of the frame, palette lookups, the output, purges and readbacks, and any
+//    change of settings or reset.
+void GSRendererHW::BurstMemoInvalidate(u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+{
+	Memo& m = m_burst_memo;
+	if (m.pending_count && (m.pending_bp != bp || m.pending_bw != bw || m.pending_psm != psm ||
+							   m.pending_count == Memo::MAX_PENDING_RECTS))
+		BurstMemoFlushWaitingSlow();
+	if (!m.pending_count)
+	{
+		m.pending_bp = bp;
+		m.pending_bw = bw;
+		m.pending_psm = psm;
+		m.pending_bounds = r;
+	}
+	else
+	{
+		m.pending_bounds = m.pending_bounds.runion(r);
+	}
+	m.pending_rects[m.pending_count++] = r;
+	GlobalStats().invalidations_waited++;
+}
+
+void GSRendererHW::BurstMemoFlushWaitingSlow()
+{
+	Memo& m = m_burst_memo;
+	const u32 n = m.pending_count;
+	m.pending_count = 0;
+	const GSOffset off = m_mem.GetOffset(m.pending_bp, m.pending_bw, m.pending_psm);
+	if (n > 1)
+	{
+		const GSVector4i& b = m.pending_bounds;
+		const u32 start = GSLocalMemory::GetStartBlockAddress(off.bp(), off.bw(), off.psm(), b);
+		const u32 end = b.rempty() ? start : GSLocalMemory::GetUnwrappedEndBlockAddress(off.bp(), off.bw(), off.psm(), b);
+		if (!GSTextureCache::TargetsMayReach(start, end))
+		{
+			g_texture_cache->InvalidateVideoMem(off, b);
+			GlobalStats().invalidations_made++;
+			return;
+		}
+	}
+	for (u32 i = 0; i < n; i++)
+		g_texture_cache->InvalidateVideoMem(off, m.pending_rects[i]);
+	GlobalStats().invalidations_made += n;
+}
+
 bool GSRendererHW::BurstMemoBeforeCopy()
 {
 	Memo& m = m_burst_memo;
@@ -400,8 +511,7 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 		BurstMemoCloseRecording();
 	if (!m.recording)
 	{
-		m.recording = std::make_shared<Entry>();
-		m.recording->buf = m.store.TakeBuffer();
+		m.recording = std::make_shared<Entry>(m.store.Pool());
 	}
 
 	const GSDrawingContext& ctx = *m_context;
@@ -486,6 +596,13 @@ void GSRendererHW::BurstMemoAfterCopy(bool recorded, bool copied)
 	{
 		u8& run = m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)];
 		run = m_sw_prim.last_draw_block_copy ? static_cast<u8>(std::min(run + 1, 255)) : 0;
+		// A copy the gate would not have passed over wakes the memo for the draws after it.
+		if (run < Memo::BLOCK_COPY_RUN)
+			m.resting = false;
+	}
+	else
+	{
+		m.resting = false;
 	}
 	if (!recorded)
 		return;
@@ -536,6 +653,7 @@ void GSRendererHW::BurstMemoCloseRecording()
 		Stats& st = GlobalStats();
 		st.installs++;
 		st.peak_bytes = std::max<u64>(st.peak_bytes, m.store.PeakBytes());
+		st.pool_peak_bytes = std::max<u64>(st.pool_peak_bytes, m.store.Pool()->HeldBytes());
 		st.budget_evictions = m.store.BudgetEvictions();
 	}
 	m.recording.reset();
@@ -556,12 +674,16 @@ void GSRendererHW::BurstMemoEndSequence()
 
 void GSRendererHW::BurstMemoEndFrame(bool idle_frame)
 {
+	BurstMemoFlushWaiting();
 	if (!m_burst_memo_enabled)
 		return;
 	Memo& m = m_burst_memo;
 	BurstMemoCloseRecording();
 	BurstMemoEndSequence();
 	m.last_was_copy = false;
+	// GSClut's read serial is 32 bits: forgotten once a frame, the value kept here can never meet a later one
+	// that wrapped round to it.
+	m.palette_generation = ~u64(0);
 	if (m.frame_had_copies && !idle_frame)
 	{
 		m.store.EndFrame();
@@ -585,7 +707,7 @@ bool GSRendererHW::BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64
 u64 GSRendererHW::BurstMemoPaletteHash(u32 entries)
 {
 	Memo& m = m_burst_memo;
-	const u64 generation = m_mem.m_clut.ReadGeneration();
+	const u64 generation = m_mem.m_clut.GetReadSerial();
 	if (generation == m.palette_generation && entries == m.palette_entries)
 		return m.palette_hash;
 	const u32* palette = static_cast<const u32*>(m_mem.m_clut);
