@@ -485,6 +485,23 @@ TEST_F(GSBurstMemoDraw, AShapeTheRoadKeepsBlockCopyingIsNotRecorded)
 	EXPECT_EQ(mon.stats.hit_draws, 4u);
 }
 
+// A long run of draws the gate passes over puts the memo to rest (on Call of Duty 3 nothing else happens all frame),
+// and the first copy of a shape the gate does not pass over wakes it: that burst is still recorded and skipped.
+TEST_F(GSBurstMemoDraw, TheMemoRestsThroughBlockCopiesAndWakesForAnotherShape)
+{
+	const std::vector<u8> vm = RandomMemory(12);
+	std::vector<Step> script;
+	for (u32 i = 0; i < 280; i++)
+		script = Concat({script, Burst(PSMT8)});
+	script = Concat({script, {Step{Step::Consume}}, {RestoreDestination(PSMCT16)}, Burst(PSMT8, PSMCT16), {Step{Step::Consume}},
+		{RestoreDestination(PSMCT16)}, Burst(PSMT8, PSMCT16), {Step{Step::Consume}}});
+	const Result off = Run(script, vm, false);
+	const Result on = Run(script, vm, true);
+	ExpectSameAsMemoOff(off, on);
+	EXPECT_GE(on.stats.rests, 1u) << "1,120 block copies in a row";
+	EXPECT_EQ(on.stats.hit_draws, 4u) << "the masked burst, the second time";
+}
+
 // A new palette loaded between the bursts: nothing is skipped.
 TEST_F(GSBurstMemoDraw, ANewPaletteRunsTheCopies)
 {

@@ -465,6 +465,7 @@ private:
 	bool m_copy_road_frame_checked = false;
 
 	bool BurstMemoSkip();
+	bool BurstMemoWakes() const;
 	bool BurstMemoBeforeCopy();
 	void BurstMemoAfterCopy(bool recorded, bool copied);
 	bool BurstMemoTryHit();

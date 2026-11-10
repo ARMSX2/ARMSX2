@@ -59,6 +59,8 @@ void GSRendererHW::RefreshBurstMemo()
 	m.frame_had_copies = false;
 	m.candidate = false;
 	std::memset(m.block_copy_run, 0, sizeof(m.block_copy_run));
+	m.passed_over_in_a_row = 0;
+	m.resting = false;
 	m.palette_generation = ~u64(0);
 	m.palette_entries = 0;
 	m.palette_copy.clear();
@@ -74,11 +76,31 @@ bool GSRendererHW::SkipMemoizedDraw()
 {
 	if (!m_burst_memo_enabled)
 		return false;
+	if (m_burst_memo.resting)
+	{
+		if (!BurstMemoWakes())
+			return false;
+		m_burst_memo.resting = false;
+	}
 	if (BurstMemoSkip())
 		return true;
 	// The draw runs, and reads the texture cache.
 	BurstMemoFlushWaiting();
 	return false;
+}
+
+// While the memo rests: whether this draw is one it could record, from the registers alone (the tests BurstMemoSkip
+// makes before it looks anything up). Any other draw leaves it resting.
+bool GSRendererHW::BurstMemoWakes() const
+{
+	const u32 fbw = m_context->FRAME.FBW;
+	if (fbw > static_cast<u32>(GSConfig.UserHacks_CPUSpriteRenderBW) && fbw != 32)
+		return false;
+	const bool textured_sprite = PRIM->TME && GSUtil::GetPrimClass(PRIM->PRIM) == GS_PRIM_CLASS::GS_SPRITE_CLASS;
+	if (GSConfig.UserHacks_CPUSpriteRenderLevel == 0 && !textured_sprite)
+		return false;
+	return !(PRIM->TME &&
+			 m_burst_memo.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)] >= Memo::BLOCK_COPY_RUN);
 }
 
 bool GSRendererHW::BurstMemoSkip()
@@ -97,6 +119,15 @@ bool GSRendererHW::BurstMemoSkip()
 	{
 		GlobalStats().not_recorded_block_copy++;
 		BurstMemoStop();
+		if (++m.passed_over_in_a_row >= Memo::REST_AFTER)
+		{
+			// Nothing is open: the stop closed the recording and the sequence, and SkipMemoizedDraw flushes the
+			// invalidations next.
+			m.resting = true;
+			m.passed_over_in_a_row = 0;
+			m.last_was_copy = false;
+			GlobalStats().rests++;
+		}
 		return false;
 	}
 
@@ -119,6 +150,7 @@ bool GSRendererHW::BurstMemoSkip()
 	}
 
 	m.candidate = true;
+	m.passed_over_in_a_row = 0;
 	if (BurstMemoTryHit())
 	{
 		m.last_was_copy = true;
@@ -557,6 +589,13 @@ void GSRendererHW::BurstMemoAfterCopy(bool recorded, bool copied)
 	{
 		u8& run = m.block_copy_run[(m_context->FRAME.PSM & 63) * 64 + (m_context->TEX0.PSM & 63)];
 		run = m_sw_prim.last_draw_block_copy ? static_cast<u8>(std::min(run + 1, 255)) : 0;
+		// A copy the gate would not have passed over wakes the memo for the draws after it.
+		if (run < Memo::BLOCK_COPY_RUN)
+			m.resting = false;
+	}
+	else
+	{
+		m.resting = false;
 	}
 	if (!recorded)
 		return;

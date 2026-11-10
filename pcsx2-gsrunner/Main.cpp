@@ -2797,12 +2797,12 @@ void GSRunner::DumpStats()
 									"draws; {:.1f}/frame) in {} bursts; stops: packet {}, bytes {}, target {}, write {}, state {}; "
 									"{} installs, peak {:.1f} MB, {} evicted by age, {} by budget; {} packet checks, {} key checks over {} blocks; "
 									"{} of {} vertices in skipped draws; slabs held at most {:.1f} MB; {} invalidations waited, made as {}; "
-									"{} draws the road cannot take, by their registers",
+									"{} draws the road cannot take, by their registers; rested {} times",
 			bm.copy_draws, bm.recorded, bm.not_recorded_target, bm.not_recorded_block_copy, bm.hit_draws, Ratio(bm.hit_draws, bm.hit_draws + bm.copy_draws),
 			bm.hit_draws / frames, bm.sequences, bm.stop_packet, bm.stop_key, bm.stop_route, bm.stop_write, bm.stop_state,
 			bm.installs, bm.peak_bytes / 1048576.0, bm.evictions, bm.budget_evictions, bm.packet_checks, bm.key_checks, bm.key_blocks,
 			bm.hit_vertices, bm.draw_vertices, bm.pool_peak_bytes / 1048576.0,
-			bm.invalidations_waited, bm.invalidations_made, bm.not_copy_road));
+			bm.invalidations_waited, bm.invalidations_made, bm.not_copy_road, bm.rests));
 	}
 	// Marks of all of local memory (GSLocalMemory::MarkAllEvents): each one dirties every block, so a title that
 	// does it every frame rehashes and restages everything. Counted over the whole process.

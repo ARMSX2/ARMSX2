@@ -329,6 +329,7 @@ namespace GSBurstMemo
 		u64 stop_state = 0; ///< ... the renderer was in a state the copy road would leave early
 		u64 not_recorded_target = 0; ///< copy-road draws the memo does not take: their verdict weighed a target
 		u64 not_recorded_block_copy = 0; ///< draws passed over: their shape is one the road keeps drawing with a block copy
+		u64 rests = 0; ///< times the memo went to rest (Memo::resting)
 		u64 not_copy_road = 0; ///< draws the copy road cannot take, from their registers (frame too wide; at level 0, not a textured sprite)
 		u64 installs = 0;
 		u64 packet_checks = 0; ///< recorded draws compared with a draw in hand
@@ -421,6 +422,15 @@ namespace GSBurstMemo
 		/// road takes another way resets the count.
 		static constexpr u8 BLOCK_COPY_RUN = 16;
 		u8 block_copy_run[64 * 64] = {};
+
+		/// Draws in a row the block-copy gate passed over, with no draw between them that the memo could record.
+		/// After REST_AFTER of them the memo rests: SkipMemoizedDraw only asks whether the draw is one the memo
+		/// could record, from its registers (BurstMemoWakes), and returns; a draw that is, or a copy of a shape the
+		/// gate no longer passes over, wakes it. On a title whose copies are all block copies that is every frame
+		/// after the first, and the memo then costs those few tests per draw.
+		static constexpr u32 REST_AFTER = 1024;
+		u32 passed_over_in_a_row = 0;
+		bool resting = false;
 
 		/// The last palette hashed: GSClut::ReadGeneration(), entries, hash, and its entries, so a rebuild of the
 		/// expansion that leaves the same entries (a CLUT loaded again from the same bytes) is found with a
