@@ -4857,6 +4857,7 @@ void GSTextureCache::DiscardPendingDownloads()
 {
 	m_pending_downloads.clear();
 	m_async_download_texture_pool.clear();
+	m_read_pool.clear();
 }
 
 /*void GSTextureCache::InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm, u32 write_bw)
@@ -5351,6 +5352,9 @@ void GSTextureCache::InvalidateLocalMem(
 		r.z,
 		r.w);
 
+	// Every target read this request makes shares one GPU round trip.
+	ReadBatchScope read_batch(*this);
+
 	// Could be reading Z24/32 back as CT32 (Gundam Battle Assault 3)
 	if (GSLocalMemory::m_psm[psm].bpp >= 16)
 	{
@@ -5461,7 +5465,10 @@ void GSTextureCache::InvalidateLocalMem(
 				{
 					// The draw rect and read rect overlap somewhat, we should update the target before downloading it.
 					if (t->m_TEX0.TBP0 == bp && !dirty_rect.rintersect(targetr).rempty())
+					{
+						FlushReadBatch(); // the update reads local memory the reads before it write
 						t->Update();
+					}
 
 					Read(t, draw_rect, force_synchronous);
 
@@ -5632,7 +5639,10 @@ void GSTextureCache::InvalidateLocalMem(
 
 				// The draw rect and read rect overlap somewhat, we should update the target before downloading it.
 				if (exact_bp && !dirty_rect.rintersect(targetr).rempty())
+				{
+					FlushReadBatch(); // the update reads local memory the reads before it write
 					t->Update();
+				}
 
 				Read(t, targetr, force_synchronous);
 
@@ -7893,8 +7903,20 @@ std::shared_ptr<GSTextureCache::Palette> GSTextureCache::LookupPaletteObject(con
 
 void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous)
 {
-	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
+	const bool batched = m_read_batch_depth > 0;
+	ReadOp op;
+	if (IssueRead(t, r, force_synchronous, batched, op) != ReadIssue::Pending)
 		return;
+	if (batched)
+		m_read_batch.push_back(std::move(op));
+	else
+		CompleteRead(op);
+}
+
+GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i& r, bool force_synchronous, bool pooled, ReadOp& op)
+{
+	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
+		return ReadIssue::None;
 
 	const GIFRegTEX0& TEX0 = t->m_TEX0;
 	const bool is_depth = (t->m_type == DepthStencil);
@@ -7943,7 +7965,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		break;
 
 		default:
-			return;
+			return ReadIssue::None;
 	}
 
 	// Don't overwrite bits which aren't used in the target's format.
@@ -7952,7 +7974,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 	if (write_mask == 0)
 	{
 		DbgCon.Warning("Not reading back target %x PSM %s due to no write mask", TEX0.TBP0, GSUtil::GetPSMName(TEX0.PSM));
-		return;
+		return ReadIssue::None;
 	}
 
 	GL_PERF("TC: Read Back Target: (0x%x)[fmt: 0x%x]. Size %dx%d", TEX0.TBP0, TEX0.PSM, r.width(), r.height());
@@ -7990,7 +8012,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 			// Keep the already-issued copies alive until their fences complete: dropping an
 			// incoming snapshot is safer than destroying an in-flight staging allocation, and
 			// it must never degrade back into a blocking readback when the GPU falls behind.
-			return;
+			return ReadIssue::None;
 		}
 
 		// Only recycle a staging texture of the same format — PrepareDownloadTexture() sizes
@@ -8007,15 +8029,30 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 
 		dltex = &asynchronous_dltex;
 	}
+	else if (pooled)
+	{
+		// A batched read keeps its pixels until the batch completes, so it needs a download texture
+		// of its own. The same format only, as above.
+		for (auto it = m_read_pool.begin(); it != m_read_pool.end(); ++it)
+		{
+			if ((*it)->GetFormat() != fmt)
+				continue;
+
+			op.owned = std::move(*it);
+			m_read_pool.erase(it);
+			break;
+		}
+		dltex = &op.owned;
+	}
 
 	if (!PrepareDownloadTexture(drc.z, drc.w, fmt, dltex))
-		return;
+		return ReadIssue::None;
 
 	// PrepareDownloadTexture() reports success even when CreateDownloadTexture() returned
 	// null (it null-checks the pointer-to-unique_ptr, not the unique_ptr). Don't let that
 	// put a null texture into the pending queue, where Poll() would dereference it.
-	if (asynchronous && !asynchronous_dltex)
-		return;
+	if (!dltex->get())
+		return ReadIssue::None;
 
 	g_gs_device->FlushBeforeReadback();
 
@@ -8035,7 +8072,9 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		else
 		{
 			Console.Error("Failed to allocate temporary %dx%d target for read.", drc.z, drc.w);
-			return;
+			if (op.owned)
+				m_read_pool.push_back(std::move(op.owned));
+			return ReadIssue::None;
 		}
 	}
 
@@ -8044,17 +8083,43 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		m_pending_downloads.push_back({std::move(asynchronous_dltex), TEX0, drc, r, write_mask,
 			static_cast<u64>(g_perfmon.GetFrame()), cpu_convert_rgb5a1,
 			g_gs_renderer->CaptureAsyncReadbackPageGenerations()});
-		return;
+		return ReadIssue::None;
 	}
 
-	dltex->get()->Flush();
-	if (!dltex->get()->Map(drc))
-		return;
+	op.t = t;
+	op.TEX0 = TEX0;
+	op.r = r;
+	op.drc = drc;
+	op.write_mask = write_mask;
+	op.cpu_convert_rgb5a1 = cpu_convert_rgb5a1;
+	op.direct = direct_read;
+	op.dltex = op.owned ? nullptr : dltex;
+	return ReadIssue::Pending;
+}
 
-	// Why does WritePixelNN() not take a const pointer?
-	u8* bits = const_cast<u8*>(dltex->get()->GetMapPointer());
-	const u32 pitch = dltex->get()->GetMapPitch();
+void GSTextureCache::CompleteRead(ReadOp& op)
+{
+	// A batched read owns its texture (op.dltex then pointed at the op's own member, which the move into
+	// the batch left behind).
+	GSDownloadTexture* const dl = op.owned ? op.owned.get() : op.dltex->get();
+	dl->Flush();
 
+	if (dl->Map(op.drc))
+	{
+		// Why does WritePixelNN() not take a const pointer?
+		u8* const bits = const_cast<u8*>(dl->GetMapPointer());
+		const u32 pitch = dl->GetMapPitch();
+		WriteReadPixels(op.TEX0, op.r, op.drc, op.write_mask, op.cpu_convert_rgb5a1, bits, pitch);
+		dl->Unmap();
+	}
+
+	if (op.owned)
+		m_read_pool.push_back(std::move(op.owned));
+}
+
+void GSTextureCache::WriteReadPixels(const GIFRegTEX0& TEX0, const GSVector4i& r, const GSVector4i& drc, u32 write_mask,
+	bool cpu_convert_rgb5a1, u8* bits, u32 pitch)
+{
 	std::vector<u16> packed;
 	if (cpu_convert_rgb5a1)
 	{
@@ -8118,8 +8183,14 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		write_download(g_gs_renderer->GetAsyncReadbackMemory());
 		g_gs_renderer->MarkAsyncReadbackPagesWrittenLocked(TEX0, r);
 	}
+}
 
-	dltex->get()->Unmap();
+void GSTextureCache::FlushReadBatch()
+{
+	// In issue order, so local memory receives the pixels in the order the reads were asked for.
+	for (ReadOp& op : m_read_batch)
+		CompleteRead(op);
+	m_read_batch.clear();
 }
 
 void GSTextureCache::Read(Source* t, const GSVector4i& r)

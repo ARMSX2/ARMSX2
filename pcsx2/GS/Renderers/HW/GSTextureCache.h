@@ -628,6 +628,52 @@ protected:
 	std::unique_ptr<GSDownloadTexture> m_uint16_download_texture;
 	std::unique_ptr<GSDownloadTexture> m_uint32_download_texture;
 
+	/// A target read in two halves: IssueRead records the copy into a download texture, CompleteRead
+	/// waits for it and writes the pixels into local memory. Read() does both at once, except inside a
+	/// ReadBatchScope, where every read is issued first and the batch completes when the scope ends:
+	/// the first completion submits and waits, and the rest find their copies already done, so the
+	/// reads one request makes cost one GPU round trip.
+	struct ReadOp
+	{
+		Target* t = nullptr;
+		GIFRegTEX0 TEX0 = {};
+		GSVector4i r = {};
+		GSVector4i drc = {};
+		u32 write_mask = 0;
+		bool cpu_convert_rgb5a1 = false;
+		bool direct = false;
+		std::unique_ptr<GSDownloadTexture>* dltex = nullptr; // a shared texture, when the read does not own one
+		std::unique_ptr<GSDownloadTexture> owned; // from m_read_pool, for a batched read
+	};
+	enum class ReadIssue
+	{
+		None, // nothing to complete: no read, an asynchronous one, or one served from the stash
+		Pending,
+	};
+	ReadIssue IssueRead(Target* t, const GSVector4i& r, bool force_synchronous, bool pooled, ReadOp& op);
+	void CompleteRead(ReadOp& op);
+	void WriteReadPixels(const GIFRegTEX0& TEX0, const GSVector4i& r, const GSVector4i& drc, u32 write_mask,
+		bool cpu_convert_rgb5a1, u8* bits, u32 pitch);
+	void FlushReadBatch();
+	std::vector<ReadOp> m_read_batch;
+	std::vector<std::unique_ptr<GSDownloadTexture>> m_read_pool;
+	u32 m_read_batch_depth = 0;
+
+	struct ReadBatchScope
+	{
+		GSTextureCache& tc;
+		explicit ReadBatchScope(GSTextureCache& tc_)
+			: tc(tc_)
+		{
+			tc.m_read_batch_depth++;
+		}
+		~ReadBatchScope()
+		{
+			if (--tc.m_read_batch_depth == 0)
+				tc.FlushReadBatch();
+		}
+	};
+
 	/// A GPU->CPU copy issued under GSHardwareDownloadMode::Asynchronous, waiting on its fence.
 	struct PendingDownload
 	{
