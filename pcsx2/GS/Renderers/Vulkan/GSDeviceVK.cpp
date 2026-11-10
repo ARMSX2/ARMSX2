@@ -9659,7 +9659,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			if (date_copy_valid && config.colormask.wa)
 				m_date_copy.valid = false;
 			if (m_runs->Continue(config))
+			{
+				// Still a draw waiting for the next submit, for the in-pass kick below.
+				m_draws_since_submit++;
 				return;
+			}
 			m_date_copy.valid = date_copy_valid;
 		}
 	}
