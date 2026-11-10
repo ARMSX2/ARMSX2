@@ -57,7 +57,12 @@ public:
 	bool Candidate() const { return m_draw.cand; }
 	/// At DoRenderHW's draw point, for a candidate: writes the draw's vertices, indices and row, and adds it to the
 	/// open run (opening one). False: the draw takes the classic path after all, nothing of it written.
-	bool Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags, bool pipeline_colclip);
+	bool Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags, bool pipeline_colclip, VkSampler sampler);
+	/// At the top of DoRenderHW, for a candidate: a draw that continues the open run in the open pass, whose texture
+	/// needs no transition and no clear, is appended without the classic path's per-draw device work (constant
+	/// buffers, bindings, pipeline selection), none of which a merged draw uses. False: the draw takes DoRenderHW's
+	/// ordinary road, which may still append it.
+	bool Continue(const GSHWDrawConfig& config);
 	/// Records the open run's one host draw. A no-op without an open run, and while a flush is recording.
 	void Flush(Why why);
 	/// At the end of a render pass, after Flush: the pass's line in the log (-runs-log).
@@ -141,6 +146,8 @@ private:
 	u32 m_max_textures = 0;
 	u32 m_max_draws = 0;
 	u64 m_draw_seq = 0;
+	u64 m_sampler_key = ~0ull; ///< Continue's last sampler, so a run of draws on one sampler looks it up once
+	VkSampler m_sampler = VK_NULL_HANDLE;
 
 	std::string m_source;
 	VKStreamBuffer m_index_stream;

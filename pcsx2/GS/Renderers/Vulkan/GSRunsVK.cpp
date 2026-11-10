@@ -271,7 +271,28 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config) const
 	return END_STATE;
 }
 
-bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags, bool pipeline_colclip)
+bool GSRunsVK::Continue(const GSHWDrawConfig& config)
+{
+	GSDeviceVK* dev = m_dev;
+	if (!m_run.open || !dev->InRenderPass() || dev->m_current_render_target != config.rt || dev->m_current_depth_target != config.ds ||
+		dev->m_current_framebuffer_feedback_loop != GSDeviceVK::FeedbackLoopFlag_None)
+		return false;
+	if (config.ps.tfx != 4)
+	{
+		// PSSetShaderResource would commit a clear or transition the texture, both outside the pass.
+		const GSTextureVK* tex = static_cast<const GSTextureVK*>(config.tex);
+		if (tex->GetState() != GSTexture::State::Dirty || tex->GetLayout() != GSTextureVK::Layout::ShaderReadOnly)
+			return false;
+	}
+	if (config.sampler.key != m_sampler_key)
+	{
+		m_sampler_key = config.sampler.key;
+		m_sampler = dev->GetSampler(config.sampler);
+	}
+	return Append(config, 0, false, m_sampler);
+}
+
+bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags, bool pipeline_colclip, VkSampler sampler)
 {
 	Draw& d = m_draw;
 	d.cand = false;
@@ -387,7 +408,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		if (config.ps.tfx != 4)
 		{
 			const GSTextureVK* tex = static_cast<const GSTextureVK*>(config.tex);
-			const Texture t = {tex->GetView(), dev->m_tfx_sampler, tex->GetVkLayout()};
+			const Texture t = {tex->GetView(), sampler, tex->GetVkLayout()};
 			const auto same = [&t](const Texture& o) { return o.view == t.view && o.sampler == t.sampler; };
 			if (r.last_slot < m_textures.size() && same(m_textures[r.last_slot]))
 				slot = r.last_slot;

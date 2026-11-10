@@ -9569,7 +9569,20 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// The run machine (GSRunsVK.h) decides whether this draw can join a run, and ends the open run if not, before
 	// anything below records a command.
 	if (m_runs)
+	{
 		m_runs->Classify(config);
+		// A draw that continues the open run skips the rest. Of what it skips, only this has an effect a merged draw
+		// shares: it writes alpha, so the shared DATE stencil copy is no longer true.
+		if (m_runs->Candidate())
+		{
+			const bool date_copy_valid = m_date_copy.valid;
+			if (date_copy_valid && config.colormask.wa)
+				m_date_copy.valid = false;
+			if (m_runs->Continue(config))
+				return;
+			m_date_copy.valid = date_copy_valid;
+		}
+	}
 
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
 	// readback-prone frame is recording, submit the work recorded so far once enough of it has
@@ -10105,7 +10118,8 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	}
 
 	// A draw the run machine takes writes its own vertices and indices, into its run.
-	const bool in_run = m_runs && m_runs->Candidate() && m_runs->Append(config, pipe.feedback_loop_flags, pipe.ps.colclip_hw);
+	const bool in_run =
+		m_runs && m_runs->Candidate() && m_runs->Append(config, pipe.feedback_loop_flags, pipe.ps.colclip_hw, m_tfx_sampler);
 
 	// VB/IB upload, if we did DATE setup and it's not colclip hw this has already been done
 	if (!in_run && (!date_image || colclip_rt))
