@@ -1166,6 +1166,7 @@ private:
 	// -readback-kick-draws moves the spacing.
 	u32 m_draws_since_submit = 0;
 	u32 m_readback_kick_draws = 256;
+	u32 m_next_in_pass_kick_offer = 0;
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

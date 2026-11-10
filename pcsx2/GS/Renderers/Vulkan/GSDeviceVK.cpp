@@ -2000,6 +2000,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 {
 	m_render_passes_since_submit = 0;
 	m_draws_since_submit = 0;
+	m_next_in_pass_kick_offer = 0;
 
 	FrameResources& resources = m_frame_resources[m_current_frame];
 
@@ -9640,7 +9641,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		(no_pass_state && !(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
 	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
 	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes;
-	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= m_readback_kick_draws;
+	// After the gate refuses an in-pass kick, the next offer waits a few draws: offering at every draw
+	// would ask the driver for two fence states per draw while the GPU is behind.
+	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= m_readback_kick_draws &&
+		m_draws_since_submit >= m_next_in_pass_kick_offer;
 	if (near_readback && (kick_at_boundary || kick_in_pass))
 	{
 		// The kick must never block: submitting cycles to the next command buffer, and
@@ -9655,6 +9659,10 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			// Submitting does not close an open pass, and this one ends at this draw anyway.
 			EndRenderPass();
 			ExecuteCommandBuffer(WaitType::None);
+		}
+		else if (kick_in_pass)
+		{
+			m_next_in_pass_kick_offer = m_draws_since_submit + 32;
 		}
 	}
 
