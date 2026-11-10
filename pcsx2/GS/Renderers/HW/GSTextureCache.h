@@ -501,6 +501,13 @@ public:
 	public:
 		std::unordered_set<Source*> m_surfaces;
 		std::array<FastList<Source*>, GS_MAX_PAGES> m_map;
+		/// One bit per page: set while m_map[page] holds a source. Kept by Add, RemoveAt and RemoveAll, the
+		/// only writers of m_map.
+		std::array<u64, GS_MAX_PAGES / 64> m_page_used = {};
+
+		/// True if any page `pos % GS_MAX_PAGES`, first <= pos < first + count, holds a source.
+		bool AnyPageUsed(u32 first, u32 count) const;
+
 		void Add(Source* s, const GIFRegTEX0& TEX0);
 		void SwapTexture(GSTexture* old_tex, GSTexture* new_tex);
 		void RemoveAll();
@@ -917,6 +924,8 @@ public:
 		Target* LookupDrawTargetWalk(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type, bool used, u32 fbmask,
 		bool preload, bool preserve_rgb, bool preserve_alpha,
 		const GSVector4i draw_rc, bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset);
+	/// True if no page the post-draw source walks of InvalidateVideoMem visit holds a source.
+	bool NoSourceUnderWrite(const GSOffset& off, const GSVector4i& rect, u32 start_bp, u32 end_bp) const;
 
 
 	/// Looks up a target in the cache, and only returns it if the BP/BW match exactly.

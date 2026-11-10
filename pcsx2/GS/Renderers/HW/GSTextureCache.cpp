@@ -5220,6 +5220,59 @@ void GSTextureCache::InvalidateVideoMemType(int type, u32 bp, u32 write_psm, u32
 	}
 }
 
+bool GSTextureCache::SourceMap::AnyPageUsed(u32 first, u32 count) const
+{
+	if (count >= GS_MAX_PAGES)
+	{
+		for (const u64 word : m_page_used)
+			if (word)
+				return true;
+		return false;
+	}
+
+	u32 page = first % GS_MAX_PAGES;
+	while (count > 0)
+	{
+		// The bits of this word from `page` up, as many as are still wanted.
+		const u32 bit = page & 63;
+		const u32 take = std::min<u32>(64 - bit, count);
+		const u64 mask = (take == 64 ? ~u64(0) : ((u64(1) << take) - 1)) << bit;
+		if (m_page_used[page >> 6] & mask)
+			return true;
+		count -= take;
+		page = (page + take) % GS_MAX_PAGES;
+	}
+	return false;
+}
+
+// The lists InvalidateVideoMem's two source walks visit after a draw (target off), as page runs:
+//  - the first walk: `pages` lists from the buffer's base page, and with a buffer 16 or more pages wide the list of
+//    the block half way along it;
+//  - the second walk: the pages of the rectangle, all inside the looper's span.
+// A run may hold pages the walks do not visit, which only costs a hit.
+bool GSTextureCache::NoSourceUnderWrite(const GSOffset& off, const GSVector4i& rect, u32 start_bp, u32 end_bp) const
+{
+	const u32 bp = off.bp();
+	const u32 bw = off.bw();
+
+	const int pages = (end_bp + ((1 << 5) - 1) - start_bp) >> 5;
+	if (pages > 0)
+	{
+		if (pages > static_cast<int>(GS_MAX_PAGES) || m_src.AnyPageUsed(bp >> 5, static_cast<u32>(pages)))
+			return false;
+
+		const u32 bbp = bp + bw * 0x10;
+		if (bw >= 16 && bbp < 16384 && !m_src.m_map[bbp >> 5].empty())
+			return false;
+	}
+
+	u32 first, count;
+	if (!off.pageLooperForRect(rect).pageSpan(first, count))
+		return false;
+
+	return !m_src.AnyPageUsed(first, count);
+}
+
 // Goal: invalidate data sent to the GPU when the source (GS memory) is modified
 // Called each time you want to write to the GS memory
 void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& rect, bool target)
@@ -5233,6 +5286,42 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 	// so we need to prevent that from happening. Just make it a single block in that case, and hope for the best.
 	const u32 start_bp = GSLocalMemory::GetStartBlockAddress(off.bp(), off.bw(), off.psm(), rect);
 	const u32 end_bp = rect.rempty() ? start_bp : GSLocalMemory::GetUnwrappedEndBlockAddress(off.bp(), off.bw(), off.psm(), rect);
+
+	if (!target && s_lean_mode != static_cast<u8>(LeanMode::Off))
+	{
+		// Both source walks below only remove or mark sources they find in the page lists they visit, and
+		// with target off nothing follows them. If none of those lists holds a source they do nothing.
+		const bool none = NoSourceUnderWrite(off, rect, start_bp, end_bp);
+		if (s_lean_mode == static_cast<u8>(LeanMode::On)) [[likely]]
+		{
+			if (none)
+				return;
+		}
+		else
+		{
+			s_lean_report.invalidate_calls++;
+			if (none)
+			{
+				// Check mode: visit the lists the way the walks do and find them empty.
+				s_lean_report.invalidate_hits++;
+				bool held = false;
+				const int check_pages = (end_bp + ((1 << 5) - 1) - start_bp) >> 5;
+				for (int pgs = 0; pgs < check_pages; pgs++)
+				{
+					held |= !m_src.m_map[((bp >> 5) + pgs) & 0x1ff].empty();
+					const u32 bbp = bp + bw * 0x10;
+					if (bw >= 16 && bbp < 16384)
+						held |= !m_src.m_map[bbp >> 5].empty();
+				}
+				off.loopPages(rect, [this, &held](u32 page) { held |= !m_src.m_map[page].empty(); });
+				if (held && ++s_lean_report.mismatches <= LEAN_CHECK_PRINT_LIMIT)
+				{
+					Console.Error(fmt::format("LEAN-CHECK invalidate: draw {} bp {:x} bw {} psm {:x} rect {},{} {},{}: a visited page holds a source",
+						GSRendererHW::GetInstance()->s_n, bp, bw, psm, rect.x, rect.y, rect.z, rect.w));
+				}
+			}
+		}
+	}
 
 	if (!target)
 	{
@@ -9104,6 +9193,7 @@ void GSTextureCache::SourceMap::Add(Source* s, const GIFRegTEX0& TEX0)
 	// The source pointer will be stored/duplicated in all m_map[array of pages]
 	s->m_pages.loopPages([this, s](u32 page) {
 		s->m_erase_it[page] = m_map[page].InsertFront(s);
+		m_page_used[page >> 6] |= u64(1) << (page & 63);
 	});
 }
 
@@ -9136,6 +9226,7 @@ void GSTextureCache::SourceMap::RemoveAll()
 	{
 		item.clear();
 	}
+	m_page_used.fill(0);
 }
 
 void GSTextureCache::SourceMap::RemoveAt(Source* s)
@@ -9147,6 +9238,8 @@ void GSTextureCache::SourceMap::RemoveAt(Source* s)
 
 	s->m_pages.loopPages([this, s](u32 page) {
 		m_map[page].EraseIndex(s->m_erase_it[page]);
+		if (m_map[page].empty())
+			m_page_used[page >> 6] &= ~(u64(1) << (page & 63));
 	});
 
 	if (s->m_from_hash_cache)

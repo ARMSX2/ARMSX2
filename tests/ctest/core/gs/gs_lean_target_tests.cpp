@@ -3,12 +3,16 @@
 
 // The lean draw path's target group.
 //
-// The lookup of a draw's target walks the target list and almost always finds the target at the front with
-// nothing to do. The lean path answers that case without walking. These tests pin the conditions under which
-// the lookup's answer is the front target with nothing else changed.
+// Two walks of the texture cache run for every draw and almost always do nothing: the lookup of the draw's
+// target, which finds it at the front of its list, and the invalidation of sources under what the draw
+// wrote, which finds none. The lean path answers both without walking. These tests pin the two claims that
+// rests on: the conditions under which the lookup's answer is the front target with nothing else changed,
+// and that the pages the invalidation visits are inside the page run it tests.
 
 #include "gs_hw_draw_harness.h"
 #include "GS/Renderers/HW/GSTextureCache.h"
+
+#include <set>
 
 using namespace GSHWDrawHarness;
 
@@ -199,7 +203,76 @@ TEST_F(GSLeanTarget, OffAndOnLeaveTheSameTarget)
 		EXPECT_EQ(flags[0][i], flags[1][i]) << i;
 }
 
-// Whole draws through the renderer with the checker on.
+// The page run tested instead of the walk holds every page the walk visits.
+TEST(GSLeanTargetPages, TheSpanHoldsEveryPageTheLoopVisits)
+{
+	GSLocalMemory mem;
+	const u32 psms[] = {PSMCT32, PSMCT24, PSMCT16, PSMCT16S, PSMZ32, PSMZ16, PSMZ16S, PSMT8, PSMT4};
+	const GSVector4i rects[] = {
+		GSVector4i(0, 0, 640, 448), GSVector4i(0, 0, 1, 1), GSVector4i(63, 31, 65, 33), GSVector4i(100, 200, 300, 208),
+		GSVector4i(0, 0, 64, 32), GSVector4i(511, 0, 513, 448), GSVector4i(17, 3, 600, 400), GSVector4i(0, 0, 2048, 2048),
+		GSVector4i(320, 224, 320, 224)};
+	u32 spans = 0;
+	for (const u32 psm : psms)
+	{
+		for (const u32 bp : {0u, 0x20u, 0x800u, 0x1234u, 0x3fe0u, 0x3fffu})
+		{
+			for (const u32 bw : {1u, 8u, 10u, 16u, 32u})
+			{
+				const GSOffset off = mem.GetOffset(bp, bw, psm);
+				for (const GSVector4i& r : rects)
+				{
+					const GSOffset::PageLooper looper = off.pageLooperForRect(r);
+					std::set<u32> visited;
+					looper.loopPages([&visited](u32 page) { visited.insert(page); });
+					u32 first = 0, count = 0;
+					if (!looper.pageSpan(first, count))
+						continue; // no claim made: the walk runs
+					spans++;
+					for (const u32 page : visited)
+					{
+						// The page is `pos % GS_MAX_PAGES` for some pos in [first, first + count).
+						const u32 delta = (page + GS_MAX_PAGES - (first % GS_MAX_PAGES)) % GS_MAX_PAGES;
+						EXPECT_TRUE(count >= GS_MAX_PAGES || delta < count)
+							<< "psm " << psm << " bp " << bp << " bw " << bw << " rect " << r.x << "," << r.y << "," << r.z << "," << r.w
+							<< " page " << page << " span " << first << "+" << count;
+					}
+				}
+			}
+		}
+	}
+	EXPECT_GT(spans, 1000u);
+}
+
+TEST(GSLeanTargetPages, AnyPageUsedReadsTheRunItIsGiven)
+{
+	auto map = std::make_unique<GSTextureCache::SourceMap>();
+	EXPECT_FALSE(map->AnyPageUsed(0, GS_MAX_PAGES));
+	EXPECT_FALSE(map->AnyPageUsed(0, 4 * GS_MAX_PAGES));
+
+	const auto set = [&map](u32 page) { map->m_page_used[page >> 6] |= u64(1) << (page & 63); };
+	set(70);
+	EXPECT_TRUE(map->AnyPageUsed(70, 1));
+	EXPECT_TRUE(map->AnyPageUsed(0, 71));
+	EXPECT_FALSE(map->AnyPageUsed(0, 70));
+	EXPECT_FALSE(map->AnyPageUsed(71, 441)); // 71..511
+	EXPECT_TRUE(map->AnyPageUsed(71, 512));
+	EXPECT_TRUE(map->AnyPageUsed(500, 100)); // wraps to 0..87
+	EXPECT_FALSE(map->AnyPageUsed(500, 82)); // wraps to 0..69
+	EXPECT_TRUE(map->AnyPageUsed(70 + 3 * GS_MAX_PAGES, 1)); // a position past the end of memory
+	EXPECT_FALSE(map->AnyPageUsed(70, 0));
+
+	set(511);
+	set(0);
+	EXPECT_TRUE(map->AnyPageUsed(511, 1));
+	EXPECT_TRUE(map->AnyPageUsed(510, 2));
+	EXPECT_FALSE(map->AnyPageUsed(1, 69));
+	EXPECT_TRUE(map->AnyPageUsed(64, 64));
+	EXPECT_FALSE(map->AnyPageUsed(128, 383));
+}
+
+// Whole draws through the renderer with the checker on: textured sprites, which put sources in the page
+// lists, and a draw over the texture's own pages, which the invalidation has to find.
 TEST_F(GSLeanTarget, DrawsUnderTheCheckerAgree)
 {
 	GSConfig.UpscaleMultiplier = 1.0f;
@@ -212,5 +285,7 @@ TEST_F(GSLeanTarget, DrawsUnderTheCheckerAgree)
 	const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
 	EXPECT_GT(report.target_calls, 0u);
 	EXPECT_GT(report.target_hits, 0u);
+	EXPECT_GT(report.invalidate_calls, 0u);
+	EXPECT_GT(report.invalidate_hits, 0u);
 	EXPECT_EQ(report.mismatches, 0u);
 }
