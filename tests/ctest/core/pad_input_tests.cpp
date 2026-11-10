@@ -29,6 +29,7 @@
 #include <memory>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace
@@ -175,6 +176,88 @@ TEST(PadInput, DualShock2AnswersAsItAlwaysDid)
 #endif
 	PadDualshock2 pad(0, 0);
 	EXPECT_EQ(RunScript(pad, PadDualshock2::Inputs::LENGTH, PadDualshock2::Inputs::PAD_ANALOG, kDualshock2Sticks), kDualshock2);
+}
+
+TEST(PadInput, DualShock2KeepsCrossHeldAcrossL1Edges)
+{
+	PadDualshock2 pad(0, 0);
+	pad.Set(PadDualshock2::PAD_CROSS, 1.0f);
+	pad.Set(PadDualshock2::PAD_L1, 1.0f);
+	EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+
+	pad.Set(PadDualshock2::PAD_L1, 0.0f);
+	EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+
+	pad.Set(PadDualshock2::PAD_CROSS, 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+}
+
+TEST(PadInput, DualShock2KeepsCrossHeldWhenL1IsReleasedInReverseOrder)
+{
+	PadDualshock2 pad(0, 0);
+	pad.Set(PadDualshock2::PAD_L1, 1.0f);
+	pad.Set(PadDualshock2::PAD_CROSS, 1.0f);
+	pad.Set(PadDualshock2::PAD_L1, 0.0f);
+	EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+}
+
+TEST(PadInput, DualShock2RepeatedDownsDoNotResetOtherButtons)
+{
+	PadDualshock2 pad(0, 0);
+	pad.Set(PadDualshock2::PAD_CROSS, 1.0f);
+	for (int i = 0; i < 8; i++)
+	{
+		pad.Set(PadDualshock2::PAD_CROSS, 1.0f); // Android key repeat.
+		pad.Set(PadDualshock2::PAD_L1, 1.0f);
+		pad.Set(PadDualshock2::PAD_L1, 1.0f);
+		EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+		EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+		pad.Set(PadDualshock2::PAD_L1, 0.0f);
+		EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	}
+}
+
+TEST(PadInput, DualShock2DigitalButtonCombinationsAreIndependent)
+{
+	constexpr std::array<std::pair<PadDualshock2::Inputs, PadDualshock2::Inputs>, 4> combinations = {{
+		{PadDualshock2::PAD_CROSS, PadDualshock2::PAD_R1},
+		{PadDualshock2::PAD_CROSS, PadDualshock2::PAD_L2},
+		{PadDualshock2::PAD_CROSS, PadDualshock2::PAD_L1},
+		{PadDualshock2::PAD_R2, PadDualshock2::PAD_L1},
+	}};
+	for (const auto& [held, other] : combinations)
+	{
+		SCOPED_TRACE(::testing::Message() << "held=" << static_cast<int>(held) << " other=" << static_cast<int>(other));
+		PadDualshock2 pad(0, 0);
+		pad.Set(held, 1.0f);
+		pad.Set(other, 1.0f);
+		EXPECT_GT(pad.GetEffectiveInput(held), 0.0f);
+		EXPECT_GT(pad.GetEffectiveInput(other), 0.0f);
+		pad.Set(other, 0.0f);
+		EXPECT_GT(pad.GetEffectiveInput(held), 0.0f);
+		EXPECT_EQ(pad.GetEffectiveInput(other), 0.0f);
+		pad.Set(held, 0.0f);
+		EXPECT_EQ(pad.GetEffectiveInput(held), 0.0f);
+	}
+}
+
+TEST(PadInput, DualShock2ThreeButtonsReleaseIndependently)
+{
+	PadDualshock2 pad(0, 0);
+	pad.Set(PadDualshock2::PAD_CROSS, 1.0f);
+	pad.Set(PadDualshock2::PAD_L1, 1.0f);
+	pad.Set(PadDualshock2::PAD_R1, 1.0f);
+	pad.Set(PadDualshock2::PAD_L1, 0.0f);
+	pad.Set(PadDualshock2::PAD_R1, 0.0f);
+	EXPECT_GT(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_L1), 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_R1), 0.0f);
+	pad.Set(PadDualshock2::PAD_CROSS, 0.0f);
+	EXPECT_EQ(pad.GetEffectiveInput(PadDualshock2::PAD_CROSS), 0.0f);
 }
 
 TEST(PadInput, GuitarAnswersAsItAlwaysDid)

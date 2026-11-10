@@ -1703,6 +1703,22 @@ static void ArcadeInputReset() {
 	ACJV::SetTouchPressed(false);
 }
 
+static std::atomic<bool> s_pad_input_log_enabled{false};
+
+// The Android opt-in controller diagnostic joins a raw KeyEvent to the actual native write and
+// the DualShock2 mask on both sides of it. Unlike logging only dispatchGameplayKey, this also
+// catches touch, macro, auto-progressive and analog-trigger writers. The masks are active-low.
+static void LogPadButtonWrite(u32 port, jint key, jint range, jboolean pressed,
+    u32 before, u32 after, bool has_dualshock_state) {
+    if (!s_pad_input_log_enabled.load(std::memory_order_relaxed))
+        return;
+    const std::string msg = StringUtil::StdStringFromFormat(
+        "PAD_WRITE port=%u key=%d range=%d pressed=%d before=0x%08x after=0x%08x pad_state=%d",
+        port, key, range, pressed != JNI_FALSE, before, after, has_dualshock_state);
+    __android_log_print(ANDROID_LOG_DEBUG, "ARMSX2_JOYCON", "%s", msg.c_str());
+    Console.WriteLnFmt("@@JOYCON@@ {}", msg);
+}
+
 static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPressed) {
     PadDualshock2::Inputs _key;
     switch (p_key) {
@@ -1743,10 +1759,14 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
     const float state = p_keyPressed
         ? ((p_range > 0) ? (p_range / 32767.0f) : 1.0f)
         : 0.0f;
+    const bool log_write = s_pad_input_log_enabled.load(std::memory_order_relaxed);
     // Pad input can arrive with no VM running (e.g. the gyroscope overlay emits a neutral
     // release when it first composes in the library) — the pads don't exist yet, so drop it.
-    if (!VMManager::HasValidVM())
+    if (!VMManager::HasValidVM()) {
+        if (log_write)
+            LogPadButtonWrite(port, p_key, p_range, p_keyPressed, 0, 0, false);
         return;
+    }
     // Held for the USB mirror too, not only the pad: a settings change can swap the USB device
     // out from under it (ApplyUsbPortsToRunningVM).
     std::lock_guard<std::mutex> lk(s_pad_mutex);
@@ -1769,10 +1789,18 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
     if (Arcade::IsActive())
     {
         ArcadePadEvent(port, p_key, state);
+        if (log_write)
+            LogPadButtonWrite(port, p_key, p_range, p_keyPressed, 0, 0, false);
         return;
     }
 
+    PadBase* const pad = log_write && port < Pad::NUM_CONTROLLER_PORTS
+        ? Pad::GetPad(static_cast<u8>(port)) : nullptr;
+    const u32 before = pad ? pad->GetButtons() : 0;
     Pad::SetControllerState(port, static_cast<u32>(_key), state);
+    if (log_write)
+        LogPadButtonWrite(port, p_key, p_range, p_keyPressed, before,
+            pad ? pad->GetButtons() : 0, pad != nullptr);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -1788,6 +1816,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setPadButtonForPort(JNIEnv *env, jclass cla
     // Local co-op: route to PS2 controller port 0 (P1) or 1 (P2). SetControllerState
     // ignores ports >= NUM_CONTROLLER_PORTS; a negative/unset port falls back to P1.
     applyPadButton(p_port < 0 ? 0u : static_cast<u32>(p_port), p_key, p_range, p_keyPressed);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setPadInputLogging(JNIEnv *, jclass, jboolean enabled) {
+    s_pad_input_log_enabled.store(enabled != JNI_FALSE, std::memory_order_relaxed);
 }
 
 extern "C" JNIEXPORT void JNICALL

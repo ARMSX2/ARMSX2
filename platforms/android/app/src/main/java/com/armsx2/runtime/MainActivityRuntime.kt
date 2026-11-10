@@ -5057,18 +5057,27 @@ open class MainActivityRuntime : ComponentActivity() {
     // Dumps EXACTLY what a physical controller emits so a reporter can capture
     // (adb logcat -s ARMSX2_JOYCON) what e.g. a Nintendo Joy-Con d-pad actually
     // sends on their Android build — the unknown that blocks the real remap fix.
-    // Pure logging, zero behaviour change. Release builds never enable this path.
-    // Debug builds default OFF and can opt in with prefs "debug.joyconLog"=true.
+    // Pure logging, zero input behaviour change. Every build defaults OFF and can opt in
+    // with prefs "debug.joyconLog"=true. Native PAD_WRITE lines include the active-low mask.
     // Full device info
     // is logged once per deviceId; the per-event axis dump is throttled + non-zero.
     private val joyconLoggedDevices = HashSet<Int>()
     private var lastJoyconMotionLogMs = 0L
-    private fun joyconLogEnabled(): Boolean =
+    private var joyconNativeLogEnabled: Boolean? = null
+    private fun joyconLogEnabled(): Boolean {
         // Pref-gated, NOT BuildConfig.DEBUG-gated. The old `BuildConfig.DEBUG && pref` form
         // made this permanently unreachable in a release build — i.e. unreachable for exactly
         // the testers whose controllers we need to identify. It cost a round trip on the
         // 8BitDo/Switch-Pro trigger report. Default off; costs one boolean read per event.
-        prefs.getBoolean("debug.joyconLog", false)
+        val enabled = prefs.getBoolean("debug.joyconLog", false)
+        if (joyconNativeLogEnabled != enabled) {
+            // Match the raw KEY/MOTION lines with every actual native pad write, including
+            // touch, macros and trigger axes which do not pass through dispatchGameplayKey.
+            runCatching { NativeApp.setPadInputLogging(enabled) }
+            joyconNativeLogEnabled = enabled
+        }
+        return enabled
+    }
 
     /** Emit a diagnostic line to BOTH logcat (adb `-s ARMSX2_JOYCON`) AND the emulog (in-app
      *  Save Log — so a handheld tester with no PC can capture it). NativeApp.emulog no-ops
