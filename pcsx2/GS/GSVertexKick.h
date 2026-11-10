@@ -850,6 +850,16 @@ namespace GSVertexKernels
 		return {cull.x, cull.y, cull.z, cull.w};
 	}
 
+	// The band of a coordinate where the class has no cull grid. Away from native the shipped box trims one
+	// sub-texel off a bottom/right edge that sits on a pixel boundary (RoundCullRect), so on one axis it is empty
+	// exactly when the vertices share a coordinate, or span two neighbours the higher of which is a multiple of 16.
+	// Merging each 16k - 1 into 16k turns that into equality: v + 1 when v is 15 mod 16, v otherwise. Two's
+	// complement makes the "15 mod 16" test right for negative coordinates too, as the trim's own & 0xF is.
+	__forceinline_odr int TrimKey(int v)
+	{
+		return v + static_cast<int>((v & 15) == 15);
+	}
+
 	// Build one mirror entry from a vertex's window position.
 	//
 	// `banded` selects which coordinate space the outcode compares in: bands at
@@ -865,12 +875,16 @@ namespace GSVertexKernels
 	// same two sample points", and with a phase those points are phase + k*step.
 	// It is 1 at native and wherever the phase is zero, which is every mode but
 	// HalfPixelOffset::Native.
+	//
+	// `band_shift` 0 means the class has no cull grid (a triangle at an upscale that is not a power of two, a sprite
+	// at any upscale), and then the band fields carry TrimKey instead: equal keys on an axis for every vertex of a
+	// prim is exactly the shipped trim box being empty on that axis, so CullTestScalar's one equality test serves.
 	template <bool banded>
 	__forceinline_odr CullMirrorEntry MakeCullMirrorEntry(
 		int wx, int wy, const CullBounds& bounds, int band_shift, int band_bias_x = 1, int band_bias_y = 1)
 	{
-		const int bx = (wx - band_bias_x) >> band_shift;
-		const int by = (wy - band_bias_y) >> band_shift;
+		const int bx = (band_shift == 0) ? TrimKey(wx) : ((wx - band_bias_x) >> band_shift);
+		const int by = (band_shift == 0) ? TrimKey(wy) : ((wy - band_bias_y) >> band_shift);
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 

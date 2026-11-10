@@ -1055,6 +1055,38 @@ TEST(GsKickKernel, NativeDrawRectMatchesLegacyAboveNative)
 	}
 }
 
+// The kernel where the prim's class has no cull grid: triangles at an upscale that is not a power of two (shift
+// 0), sprites at every upscale (2x and 4x as well). The kernel used to hand these back to the per-vertex kick; it now
+// decides them on TrimKey bands, and both arms must leave the same bytes. Sub-pixel streams put vertices on the
+// 16k - 1 / 16k pairs the key merges; the scalar decision itself is pinned against CullTest by
+// GsVertexCull.ScalarNoGridTrimBoundary and the scalar sweeps.
+TEST(GsKickKernel, MatchesLegacyWhereTheClassHasNoGrid)
+{
+	u32 seed = 4100;
+	for (int cull_shift : {0, 3, 2})
+	{
+		KickSetup s;
+		s.cull_shift = cull_shift;
+		for (u32 prim : {GS_TRIANGLESTRIP, GS_TRIANGLELIST, GS_SPRITE})
+		{
+			for (AdcPattern adc : {AdcPattern::None, AdcPattern::Stuntman, AdcPattern::Katamari})
+			{
+				for (u32 len : kRunLengths)
+				{
+					SCOPED_TRACE(::testing::Message() << "shift=" << cull_shift << " prim=" << prim
+													  << " adc=" << static_cast<int>(adc) << " len=" << len);
+					RunAndCompare(s, prim, false, MakeSubPixelStream(len, adc, seed++), {len});
+					RunAndCompare(s, prim, true, MakeSubPixelStream(len, adc, seed++), {len});
+					RunAndCompare(s, prim, false, MakeStream(len, adc, seed++), {len});
+				}
+			}
+			SCOPED_TRACE(::testing::Message() << "split shift=" << cull_shift << " prim=" << prim);
+			RunAndCompare(s, prim, false, MakeSubPixelStream(300, AdcPattern::Stuntman, seed++), {7, 7, 286});
+			RunAndCompare(s, prim, true, MakeSubPixelStream(300, AdcPattern::None, seed++), {1, 2, 3, 294});
+		}
+	}
+}
+
 // ...and the control for it, because a differential that compares two equal
 // things passes whatever the code does. Above native the two rects must actually
 // come out different over a sub-pixel stream; at the native grid the kick must not
@@ -1225,8 +1257,9 @@ namespace
 	GSVertexKernels::CullMirrorEntry ModelEntry(int wx, int wy, const GSVertexKernels::CullBounds& b,
 		bool banded, int band_shift, int bias_x = 1, int bias_y = 1)
 	{
-		const int bx = (wx - bias_x) >> band_shift;
-		const int by = (wy - bias_y) >> band_shift;
+		// Shift 0 is no grid: the band is the trim-box key, v + 1 where v is 15 mod 16.
+		const int bx = (band_shift == 0) ? wx + (((wx % 16) + 16) % 16 == 15 ? 1 : 0) : (wx - bias_x) >> band_shift;
+		const int by = (band_shift == 0) ? wy + (((wy % 16) + 16) % 16 == 15 ? 1 : 0) : (wy - bias_y) >> band_shift;
 		const int cx = banded ? bx : wx;
 		const int cy = banded ? by : wy;
 
@@ -1257,6 +1290,12 @@ namespace
 			out.push_back(band * step + 1);        // first coordinate in the band
 			out.push_back(band * step + step / 2); // middle
 			out.push_back(band * step + step);     // last
+		}
+		// No grid: the key's own boundaries, 16k - 1 and 16k on both sides of zero.
+		if (band_shift == 0)
+		{
+			for (int v : {-33, -32, -17, -16, -15, -1, 0, 1, 15, 16, 17, 31, 32, 47, 48})
+				out.push_back(v);
 		}
 		return out;
 	}
@@ -1345,11 +1384,11 @@ TEST(GsCullGrid, HalfPixelOffsetModesThatKeepTheGrid)
 TEST(GsKickKernel, ScalarMirrorEntryMatchesTheFormulaAtTheBounds)
 {
 	// Every band width the cull grid can ask for: 4 at native, 3 at 2x, 2 at 4x,
-	// 1 at 8x.
-	for (int band_shift : {4, 3, 2, 1})
+	// 1 at 8x, and 0, no grid (the trim-box key).
+	for (int band_shift : {4, 3, 2, 1, 0})
 	{
 		// Phase 0 is every mode but Native; half the step is Native's.
-		for (int phase : {0, 1 << (band_shift - 1)})
+		for (int phase : {0, band_shift ? 1 << (band_shift - 1) : 0})
 		{
 			const int bias = phase + 1;
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
@@ -1399,12 +1438,15 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 	{
 		for (int ofy : {0, 1808 * 16})
 		{
-		  for (int band_shift : {4, 3, 2, 1})
+		  for (int band_shift : {4, 3, 2, 1, 0})
 		  {
-		    for (int phase : {0, 1 << (band_shift - 1)})
+		    for (int phase : {0, band_shift ? 1 << (band_shift - 1) : 0})
 		    {
 		    for (bool banded : {true, false})
 		    {
+			// No grid only ever compares raw coordinates.
+			if (band_shift == 0 && banded)
+				continue;
 			const int bias = phase + 1;
 			const GSVertexKernels::CullBounds bounds = {13, 7, 41, 29};
 			const GSVector4i xyof(ofx, ofy, ofx, ofy);
@@ -1458,8 +1500,12 @@ TEST(GsKickKernel, NeonMirrorQuadMatchesTheScalarBuilder)
 
 				alignas(16) u64 got_xyp[4] = {};
 				alignas(16) u64 got_meta[4] = {};
-				GSVertexKickKernel::BuildMirrorQuad(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
-					vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
+				if (band_shift == 0)
+					GSVertexKickKernel::BuildMirrorQuad<true>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
+						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
+				else
+					GSVertexKickKernel::BuildMirrorQuad<false>(vld1q_u32(raw[0]), vld1q_u32(raw[1]),
+						vld1q_u32(raw[2]), vld1q_u32(raw[3]), mb, got_xyp, got_meta);
 
 				for (int k = 0; k < 4; k++)
 				{

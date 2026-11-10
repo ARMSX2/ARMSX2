@@ -2230,17 +2230,18 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r)
 bool GSState::s_fused_kick_use_kernel = true;
 
 // The kernel decides every prim with the scalar-outcode cull (GSVertexKick.h),
-// which is exact only for the shapes VertexKickDirect also takes it for: a
-// triangle or sprite class that has a cull grid, with no AA1 coverage expansion.
-// Everything else keeps the per-vertex path, which still has the legacy NEON
-// CullTest behind it. The sprite class has no grid away from native, so sprites
-// still leave the kernel there; the triangle classes no longer do.
+// which is exact for the shapes VertexKickDirect also takes it for: a triangle
+// or sprite class with no AA1 coverage expansion, at every scale. A class with no
+// cull grid (a sprite at any upscale, a triangle at an upscale that is not a
+// power of two) decides on GSVertexKernels::TrimKey bands; until those existed it
+// left the kernel, which cost 17 to 19% of the instructions per host draw at 1.5x
+// and 3x. Everything else keeps the per-vertex path, which still has the legacy
+// NEON CullTest behind it.
 template <u32 prim>
 __fi bool GSState::KickKernelApplies()
 {
-	constexpr int primclass = GSUtil::GetPrimClass(prim);
 	const bool aa1_expand = PRIM->AA1 && IsCoverageAlphaSupported();
-	return m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand;
+	return !aa1_expand;
 }
 
 // Whether the two-pass kernel (GSVertexKickKernel.h) carries this prim type at
@@ -2608,10 +2609,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 
 		// Re-read across the seam: see the comment on inv above.
 		inv.xyof = m_xyof;
-		// The kernel only carries triangle strips/lists and sprites, and only when
-		// the class has a grid, so this is the same choice MakeKickMirror makes.
+		// The kernel only carries triangle strips/lists and sprites, so this is the
+		// same choice MakeKickMirror makes for the prim's class.
 		inv.grid = m_cull_grid;
-		inv.bounds = (inv.grid.shift == 4) ? m_cull_bounds_band : m_cull_bounds_raw;
+		inv.bounds = (inv.grid.ShiftFor<GSUtil::GetPrimClass(prim)>() == 4) ? m_cull_bounds_band : m_cull_bounds_raw;
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 		// A carrying layout's carry is re-read here for the same reason the cull
@@ -8127,13 +8128,12 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 		const bool aa1_expand = rounded_class && PRIM->AA1 && IsCoverageAlphaSupported();
 
 		// Scalar-outcode decision (see GSVertexKick.h) for the hot shapes:
-		// point/line always, triangle strips/lists and sprites whenever the class
-		// has a cull grid and there is no AA1 expansion. Rejected prims never touch
+		// point/line always, triangle strips/lists and sprites whenever there is no
+		// AA1 expansion, with or without a cull grid. Rejected prims never touch
 		// NEON; accepted prims compute the bbox exactly as the legacy kernel does.
 		// Fans keep the legacy path (the head vertex sits outside the ring window).
 		constexpr bool fast_class = (prim != GS_TRIANGLEFAN);
-		const bool fast_cull =
-			fast_class && (!rounded_class || (m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand));
+		const bool fast_cull = fast_class && (!rounded_class || !aa1_expand);
 		if (fast_cull)
 		{
 			const GSVertexKernels::CullMirrorEntry& e0 = c.vb->kick_ring[(xy_tail - 1) & 3];

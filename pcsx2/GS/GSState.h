@@ -420,9 +420,9 @@ protected:
 		if (shift == 4)
 			return GSVertexKernels::MakeCullMirrorEntry<true>(wx, wy, m_cull_bounds_band, 4);
 
-		// shift 0 means this class has no grid, so nothing reads the bands; pack
-		// them at the native width rather than at a degenerate one.
-		return GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw, (shift != 0) ? shift : 4,
+		// A rounded class with no grid packs TrimKey bands (shift 0). Point and line
+		// never read the bands; pack them at the native width.
+		return GSVertexKernels::MakeCullMirrorEntry<false>(wx, wy, m_cull_bounds_raw, rounded ? shift : 4,
 			m_cull_grid.band_bias_x, m_cull_grid.band_bias_y);
 	}
 
