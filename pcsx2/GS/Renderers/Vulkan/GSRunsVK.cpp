@@ -242,6 +242,14 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 			Flush(END_UNMERGEABLE);
 		return;
 	}
+	// A draw that cannot open a run (no run open, and the draw before it did not share its fixed state) is drawn
+	// classically and remembered, before it costs a classification. With -runs-log every draw is classified, for the
+	// refusal census, and Append primes it instead.
+	if (!m_log && !m_run.open && !FollowsSame(config, ~0u))
+	{
+		Prime(config);
+		return;
+	}
 	GSRunsPolicy::TextureFacts tex;
 	if (config.tex)
 	{
@@ -321,6 +329,7 @@ void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal w
 namespace
 {
 	/// The draw's fixed state against a run's or the primed draw's (both hold the same fields).
+	/// strict ~0u: the draw is not classified yet, so its strict key is not compared.
 	template <typename Fixed>
 	bool SameFixed(const GSHWDrawConfig& config, const Fixed& f, u32 strict)
 	{
@@ -331,7 +340,7 @@ namespace
 		       std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) == 0 &&
 		       std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) == 0 && a.max_depth == b.max_depth &&
 		       std::memcmp(&config.cb_ps.STScale, &f.st_scale, sizeof(GSVector2)) == 0 && config.ps.rta_correction == f.rta &&
-		       config.ps.zfloor == f.zfloor && strict == f.strict;
+		       config.ps.zfloor == f.zfloor && (strict == ~0u || strict == f.strict);
 	}
 } // namespace
 
@@ -341,14 +350,18 @@ bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS && !SplitAtDear(config);
 }
 
-bool GSRunsVK::SecondOfTwo(const GSHWDrawConfig& config)
+bool GSRunsVK::FollowsSame(const GSHWDrawConfig& config, u32 strict) const
 {
 	// The draw before this one was primed, or was in the run that just ended (a split, a ring or the texture array): the
-	// run that follows may open at once if the fixed state is the same.
+	// run that follows may open at once if the fixed state is the same. A primed draw's strict key is not compared: it
+	// was primed before it was classified.
+	const Primed& p = m_primed;
+	return p.draw + 1 == m_draws && (p.in_run ? SameFixed(config, m_run, strict) : SameFixed(config, p, ~0u));
+}
+
+void GSRunsVK::Prime(const GSHWDrawConfig& config)
+{
 	Primed& p = m_primed;
-	const u32 strict = GSRunsPolicy::StrictKey(m_draw.flags, config.ps.rta_correction);
-	if (p.draw + 1 == m_draws && (p.in_run ? SameFixed(config, m_run, strict) : SameFixed(config, p, strict)))
-		return true;
 	p.draw = m_draws;
 	p.in_run = false;
 	p.rt = config.rt;
@@ -357,11 +370,9 @@ bool GSRunsVK::SecondOfTwo(const GSHWDrawConfig& config)
 	p.vs = config.vs.key & ~VS_RUN_FREE;
 	p.rta = config.ps.rta_correction;
 	p.zfloor = config.ps.zfloor;
-	p.strict = strict;
 	p.scissor = config.scissor;
 	p.cb_vs = config.cb_vs;
 	p.st_scale = config.cb_ps.STScale;
-	return false;
 }
 
 static u64 DrawArea(const GSHWDrawConfig& config)
@@ -444,8 +455,11 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 	}
 	if (m_run.open && !Matches(config))
 		Flush(EndReason(config));
-	if (!m_run.open && !SecondOfTwo(config))
+	if (!m_run.open && !FollowsSame(config, GSRunsPolicy::StrictKey(d.flags, config.ps.rta_correction)))
+	{
+		Prime(config);
 		return false;
+	}
 	// The rings and the set that names them are made by the first draw that would join a run, so a title that forms
 	// none allocates nothing: its memory is laid out as with the machine off.
 	if (m_set0 == VK_NULL_HANDLE)

@@ -140,15 +140,17 @@ private:
 		const GSTexture* rt = nullptr;
 		const GSTexture* ds = nullptr;
 		u8 dss = 0, vs = 0, rta = 0, zfloor = 0;
-		u32 strict = 0;
+		u32 strict = 0; ///< never compared: a draw is primed before it is classified
 		GSVector4i scissor;
 		GSHWDrawConfig::VSConstantBuffer cb_vs;
 		GSVector2 st_scale;
 	};
 
 	bool Matches(const GSHWDrawConfig& config) const;
-	/// Whether the draw follows a primed draw or a run's last draw and shares its fixed state; if not, the draw is primed.
-	bool SecondOfTwo(const GSHWDrawConfig& config);
+	/// Whether the draw follows a primed draw or a run's last draw and shares its fixed state (strict ~0u: not compared).
+	bool FollowsSame(const GSHWDrawConfig& config, u32 strict) const;
+	/// Remembers the draw's fixed state: the next draw may open a run with it.
+	void Prime(const GSHWDrawConfig& config);
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
