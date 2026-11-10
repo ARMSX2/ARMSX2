@@ -398,8 +398,7 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 		BurstMemoCloseRecording();
 	if (!m.recording)
 	{
-		m.recording = std::make_shared<Entry>();
-		m.recording->buf = m.store.TakeBuffer();
+		m.recording = std::make_shared<Entry>(m.store.Pool());
 	}
 
 	const GSDrawingContext& ctx = *m_context;

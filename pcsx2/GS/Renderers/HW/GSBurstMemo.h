@@ -184,31 +184,72 @@ namespace GSBurstMemo
 		}
 	};
 
-	/// 16 bytes of an entry's buffer. Not initialised on construction, so growing the buffer does not first fill
-	/// it with zeros.
-	struct alignas(16) Chunk
+	/// The memory records live in: slabs of SLAB_BYTES, filled one record after another in the order the
+	/// records are made, whichever burst they belong to. A record never straddles two slabs (a record larger
+	/// than a slab gets a slab of its own size). A slab counts the bursts that hold records in it and goes
+	/// back to the pool when the last of them goes, so once the store has reached its working size,
+	/// recording takes no memory from the allocator: no fresh pages to fault in, nothing to copy on growth.
+	class SlabPool
 	{
-		u8 b[16];
-		Chunk() {}
-	};
-	using Buffer = std::vector<Chunk>;
+	public:
+		static constexpr size_t SLAB_BYTES = 64u << 10;
+		/// Free slabs kept for reuse; more than this go back to the allocator.
+		static constexpr size_t MAX_FREE_SLABS = 128;
 
-	/// The draws of one burst, laid out one record after another in one buffer, so a burst being skipped is
-	/// read front to back.
+		struct Slab
+		{
+			u8* data;
+			size_t size;
+			u32 refs; ///< bursts holding records in it, plus one while it is the slab being filled
+		};
+
+		SlabPool() = default;
+		SlabPool(const SlabPool&) = delete;
+		SlabPool& operator=(const SlabPool&) = delete;
+		~SlabPool();
+
+		/// Room for `bytes` (a multiple of 16) at a 16-byte boundary, in the slab being filled or a new one.
+		u8* Place(size_t bytes, Slab*& slab);
+		/// Drops one reference; the slab goes back to the pool at none.
+		void Release(Slab* slab);
+
+		/// Slabs taken from the allocator, ever (a pool that recycles stops counting up).
+		u64 Allocations() const { return m_allocations; }
+		/// Bytes of every slab the pool has handed out and not given back to the allocator, free ones included.
+		size_t HeldBytes() const { return m_held; }
+
+	private:
+		Slab* m_cur = nullptr;
+		size_t m_used = 0;
+		std::vector<Slab*> m_free;
+		u64 m_allocations = 0;
+		size_t m_held = 0;
+	};
+
+	/// The draws of one burst, laid out one record after another in the pool's slabs, so a burst being
+	/// skipped is read front to back.
 	struct Entry
 	{
-		Buffer buf;
-		std::vector<u32> offsets; ///< each record's start in `buf`
+		/// Records go into `pool`, the store's (Store::Pool()); an entry made without one makes its own.
+		explicit Entry(std::shared_ptr<SlabPool> pool = {});
+		Entry(const Entry&) = delete;
+		Entry& operator=(const Entry&) = delete;
+		~Entry();
+
+		std::shared_ptr<SlabPool> pool;
+		std::vector<SlabPool::Slab*> slabs; ///< each slab holding records of this entry, once
+		std::vector<const u8*> records; ///< each record's start
+		size_t record_bytes = 0; ///< the records' bytes
 		u64 first_signature = 0; ///< the first draw's Packet::Signature()
-		size_t bytes = 0;
+		size_t bytes = 0; ///< what the budget charges: the records and the entry itself (Recount())
 		u64 last_used = 0; ///< Store frame of the install or the last hit
 		u64 hits = 0; ///< draws skipped from this entry
 		bool stored = false; ///< in the store; false once evicted
 
-		u32 Count() const { return static_cast<u32>(offsets.size()); }
+		u32 Count() const { return static_cast<u32>(records.size()); }
 		Record At(u32 k) const;
 		/// Where record k starts, for a prefetch.
-		const void* Address(u32 k) const { return &buf[offsets[k]]; }
+		const void* Address(u32 k) const { return records[k]; }
 		void Append(const Draw& d);
 		void Recount();
 	};
@@ -242,9 +283,8 @@ namespace GSBurstMemo
 
 		/// Adds a burst. May evict others (the least recently used first) to stay in budget.
 		void Insert(EntryPtr e);
-		/// An empty buffer for a new entry, one an evicted entry left behind if there is one: a burst being
-		/// recorded then grows into memory that is already the process's, not fresh pages from the allocator.
-		Buffer TakeBuffer();
+		/// The slabs new entries record into.
+		const std::shared_ptr<SlabPool>& Pool() const { return m_pool; }
 		/// Records a hit: the entry stays HISTORY more frames.
 		void Touch(Entry& e) { e.last_used = m_frame; }
 		/// Ends a drawn frame that had copy-road draws: evicts the entries no frame of the history used.
@@ -261,11 +301,8 @@ namespace GSBurstMemo
 	private:
 		void Remove(Entry* e);
 		void RebuildBloom();
-		/// Keeps a leaving entry's buffer for TakeBuffer(), unless a burst being skipped still reads it.
-		void Recycle(const EntryPtr& e);
 
-		static constexpr size_t MAX_SPARE_BUFFERS = 64;
-		std::vector<Buffer> m_spare;
+		std::shared_ptr<SlabPool> m_pool = std::make_shared<SlabPool>();
 
 		std::unordered_map<u64, std::vector<EntryPtr>> m_index;
 		u64 m_bloom[64] = {};

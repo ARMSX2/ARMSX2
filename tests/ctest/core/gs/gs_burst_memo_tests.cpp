@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <vector>
@@ -436,4 +437,73 @@ TEST(GSBurstMemoStore, ABurstLargerThanTheBudgetIsNotKept)
 	s.Insert(big);
 	EXPECT_FALSE(Holds(s, big));
 	EXPECT_EQ(s.Bytes(), 0u);
+}
+
+// A burst whose records run past one slab reads back record for record, a record never straddling two slabs.
+TEST(GSBurstMemoEntry, RecordsPastOneSlabReadBack)
+{
+	const auto pool = std::make_shared<SlabPool>();
+	Entry e(pool);
+	// About 5 KiB a record: well over SLAB_BYTES in all.
+	const u32 draws = static_cast<u32>(3 * SlabPool::SLAB_BYTES / (5u << 10));
+	for (u32 i = 0; i < draws; i++)
+	{
+		Draw dr;
+		DrawState d;
+		d.v[0].XYZ.X = static_cast<u16>(16 * i);
+		dr.packet = d.Take();
+		dr.out_blocks.resize(20);
+		dr.out_bytes.resize(20 * 256);
+		for (size_t b = 0; b < dr.out_blocks.size(); b++)
+			dr.out_blocks[b] = static_cast<u32>(i * 20 + b);
+		for (size_t b = 0; b < dr.out_bytes.size(); b++)
+			dr.out_bytes[b] = static_cast<u8>(b * 13 + i);
+		e.Append(dr);
+	}
+	ASSERT_EQ(e.Count(), draws);
+	EXPECT_GE(e.slabs.size(), 3u);
+	for (u32 i = 0; i < draws; i++)
+	{
+		const Record r = e.At(i);
+		ASSERT_EQ(r.h->nout, 20u) << "record " << i;
+		EXPECT_EQ(r.out_blocks[19], i * 20 + 19) << "record " << i;
+		EXPECT_EQ(r.out_bytes[20 * 256 - 1], static_cast<u8>((20 * 256 - 1) * 13 + i)) << "record " << i;
+		const u8* start = static_cast<const u8*>(e.Address(i));
+		const bool inside = std::any_of(e.slabs.begin(), e.slabs.end(), [&](const SlabPool::Slab* s) {
+			return start >= s->data && start + r.h->bytes <= s->data + s->size;
+		});
+		EXPECT_TRUE(inside) << "record " << i << " straddles a slab";
+	}
+}
+
+// Once the store has evicted bursts, new bursts record into the slabs those left: no memory from the allocator.
+TEST(GSBurstMemoStore, RecordingAfterEvictionsReusesSlabs)
+{
+	Store s;
+	const auto record = [&](u32 fbp) {
+		auto e = std::make_shared<Entry>(s.Pool());
+		DrawState d;
+		d.ctx().FRAME.FBP = fbp;
+		for (u32 i = 0; i < 40; i++)
+		{
+			Draw dr;
+			dr.packet = d.Take();
+			dr.out_blocks.resize(8);
+			dr.out_bytes.assign(8 * 256, 0x5A);
+			e->Append(dr);
+			d.v[0].XYZ.X += 16;
+		}
+		e->Recount();
+		s.Insert(e);
+	};
+	for (u32 i = 0; i < 8; i++)
+		record(0x100 + i);
+	for (u64 f = 0; f <= Store::HISTORY; f++)
+		s.EndFrame();
+	ASSERT_EQ(s.Entries(), 0u);
+	const u64 allocations = s.Pool()->Allocations();
+	EXPECT_GT(allocations, 0u);
+	for (u32 i = 0; i < 8; i++)
+		record(0x200 + i);
+	EXPECT_EQ(s.Pool()->Allocations(), allocations);
 }
