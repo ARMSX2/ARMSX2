@@ -201,6 +201,21 @@ u64 GSTextureCache::BlockHash(GSLocalMemory& mem, u32 block)
 	return cache.hash[block];
 }
 
+bool GSTextureCache::BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, const u64* hashes, u32 count)
+{
+	BlockHashCache& cache = SyncBlockHashCache(mem);
+	u64* const hash = cache.hash.get();
+	for (u32 i = 0; i < count; i++)
+	{
+		const u32 block = blocks[i] % GS_MAX_BLOCKS;
+		if (mem.TestAndClearHashDirty(block))
+			hash[block] = HashOneBlock(mem.BlockPtr(block));
+		if (hash[block] != hashes[i])
+			return false;
+	}
+	return true;
+}
+
 /// Verify mode, one lookup: the key the cache gave the window (`cached`, whose TEX0Hash is the cached form) and
 /// the hash it has without the cache. Checks that the two forms agree on which windows are one.
 static void VerifyBlockHashKey(const GSTextureCache::HashCacheKey& cached, u64 uncached_hash)

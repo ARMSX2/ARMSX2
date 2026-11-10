@@ -467,12 +467,11 @@ private:
 	bool BurstMemoBeforeCopy();
 	void BurstMemoAfterCopy(bool recorded, bool copied);
 	bool BurstMemoTryHit();
-	bool BurstMemoHit(const GSBurstMemo::Draw& first_candidate_draw);
-	void BurstMemoApply(const GSBurstMemo::Draw& d);
+	bool BurstMemoHit();
+	void BurstMemoApply(const GSBurstMemo::Record& d);
 	void BurstMemoCloseRecording();
 	void BurstMemoEndSequence();
 	void BurstMemoEndFrame(bool idle_frame);
-	bool BurstMemoBlocksMatch(const std::vector<GSBurstMemo::BlockKey>& keys);
 	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
 	u64 BurstMemoPaletteHash(u32 entries);
 	bool BurstMemoTargetAt(u32 bp, u32 psm) const;

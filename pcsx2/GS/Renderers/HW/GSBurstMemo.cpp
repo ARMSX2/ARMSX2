@@ -5,31 +5,14 @@
 #include "GS/GSLocalMemory.h"
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 namespace GSBurstMemo
 {
-	static Stats s_stats;
-	static bool s_control_corruption = false;
-
-	Stats& GlobalStats()
-	{
-		return s_stats;
-	}
-
 	void ResetStats()
 	{
-		s_stats = {};
-	}
-
-	void SetControlCorruption(bool on)
-	{
-		s_control_corruption = on;
-	}
-
-	bool ControlCorruption()
-	{
-		return s_control_corruption;
+		g_stats = {};
 	}
 
 	// Word positions in Packet order.
@@ -103,7 +86,6 @@ namespace GSBurstMemo
 	void Packet::Take(const GSDrawingContext& c, const GSDrawingEnvironment& e, u64 flags, const GSVertex* v, u32 nverts,
 		const u16* idx, u32 nindex)
 	{
-		Gather(c, e, flags, words);
 
 		const bool tme = e.PRIM.TME;
 		const bool fst = e.PRIM.FST;
@@ -116,6 +98,9 @@ namespace GSBurstMemo
 		const bool tex16 = tme && (tpsm.bpp == 16 || tpsm.trbpp == 24 || (pal && GSLocalMemory::m_psm[c.TEX0.CPSM].bpp == 16));
 		constexpr u64 all = ~u64(0);
 
+		u64 w[WORDS];
+		Gather(c, e, flags, w);
+		u64 mask[WORDS];
 		for (u64& m : mask)
 			m = all;
 		mask[W_TEX0] = tme ? (pal ? all : TEX0_NO_PALETTE) : 0;
@@ -131,8 +116,16 @@ namespace GSBurstMemo
 		mask[W_FOGCOL] = fge ? all : 0;
 		mask[W_DIMX] = dthe ? all : 0;
 		mask[W_PABE] = abe ? all : 0;
+		tex0_no_palette = tme && !pal;
+		live = 0;
+		words.clear();
 		for (u32 i = 0; i < WORDS; i++)
-			words[i] &= mask[i];
+		{
+			if (!mask[i])
+				continue;
+			live |= 1u << i;
+			words.push_back(w[i] & mask[i]);
+		}
 
 		const bool stq = tme && !fst;
 		vmask[0] = VertexHalf(stq, stq, true, stq);
@@ -145,32 +138,44 @@ namespace GSBurstMemo
 			GSVector4i::store<true>(&verts[i].m[1], GSVector4i(v[i].m[1]) & vmask[1]);
 		}
 		index.assign(idx, idx + nindex);
+		signature = Signature(c, e, v, nverts, nindex);
 	}
 
-	bool Packet::Matches(const GSDrawingContext& c, const GSDrawingEnvironment& e, u64 flags, const GSVertex* v, u32 nverts,
-		const u16* idx, u32 nindex) const
+	bool Packet::Compare(u32 live, bool tex0_no_palette, const u64* words, const GSVector4i* vmask, const u8* verts, u32 nverts,
+		const u16* index, u32 nindex, const GSDrawingContext& c, const GSDrawingEnvironment& e, u64 flags, const GSVertex* v, u32 nv,
+		const u16* idx, u32 ni)
 	{
-		if (nverts != verts.size() || nindex != index.size())
+		if (nv != nverts || ni != nindex)
 			return false;
 
-		u64 live[WORDS];
-		Gather(c, e, flags, live);
+		u64 w[WORDS];
+		Gather(c, e, flags, w);
+		w[W_PRIM] &= ~PRIM_CTXT_BIT;
+		if (tex0_no_palette)
+			w[W_TEX0] &= TEX0_NO_PALETTE;
 		u64 diff = 0;
-		for (u32 i = 0; i < WORDS; i++)
-			diff |= (live[i] & mask[i]) ^ words[i];
+		for (u32 bits = live; bits; bits &= bits - 1)
+			diff |= w[std::countr_zero(bits)] ^ *words++;
 		if (diff)
 			return false;
 
 		GSVector4i vdiff = GSVector4i::zero();
-		for (u32 i = 0; i < nverts; i++)
+		for (u32 i = 0; i < nv; i++, verts += sizeof(GSVertex))
 		{
-			vdiff |= (GSVector4i(v[i].m[0]) & vmask[0]) ^ GSVector4i(verts[i].m[0]);
-			vdiff |= (GSVector4i(v[i].m[1]) & vmask[1]) ^ GSVector4i(verts[i].m[1]);
+			vdiff |= (GSVector4i(v[i].m[0]) & vmask[0]) ^ GSVector4i::load<false>(verts);
+			vdiff |= (GSVector4i(v[i].m[1]) & vmask[1]) ^ GSVector4i::load<false>(verts + 16);
 		}
 		if (!vdiff.eq(GSVector4i::zero()))
 			return false;
 
-		return nindex == 0 || std::memcmp(idx, index.data(), nindex * sizeof(u16)) == 0;
+		return ni == 0 || std::memcmp(idx, index, ni * sizeof(u16)) == 0;
+	}
+
+	bool Packet::Matches(const GSDrawingContext& c, const GSDrawingEnvironment& e, u64 flags, const GSVertex* v, u32 nv,
+		const u16* idx, u32 ni) const
+	{
+		return Compare(live, tex0_no_palette, words.data(), vmask, reinterpret_cast<const u8*>(verts.data()),
+			static_cast<u32>(verts.size()), index.data(), static_cast<u32>(index.size()), c, e, flags, v, nv, idx, ni);
 	}
 
 	// The signature mixes fields no mask removes: FRAME, XYOFFSET, PRIM without the context bit, the first
@@ -193,23 +198,122 @@ namespace GSBurstMemo
 		return SignatureOf(c.FRAME.U64, c.XYOFFSET.U64, e.PRIM.U64, c.TEX0.U64, xy0, nindex);
 	}
 
-	u64 Packet::Signature() const
+	static constexpr size_t Align16(size_t n)
 	{
-		const u32 xy0 = verts.empty() ? 0 : (static_cast<u32>(verts[0].XYZ.X) | (static_cast<u32>(verts[0].XYZ.Y) << 16));
-		return SignatureOf(words[W_FRAME], words[W_XYOFFSET], words[W_PRIM], words[W_TEX0], xy0, static_cast<u32>(index.size()));
+		return (n + 15) & ~size_t(15);
 	}
 
-	size_t Draw::Bytes() const
+	// Byte offsets of a record's parts, from its counts (RecordHeader).
+	struct Layout
 	{
-		return sizeof(Draw) + packet.Bytes() + (src.size() + pre.size()) * sizeof(BlockKey) + out_blocks.size() * sizeof(u32) +
-		       out_bytes.size();
+		size_t words, verts, index, src_blocks, src_hashes, pre_blocks, pre_hashes, out_blocks, out_bytes, end;
+
+		Layout(u32 nwords, u32 nverts, u32 nindex, u32 nsrc, u32 npre, u32 nout)
+		{
+			size_t o = Align16(sizeof(RecordHeader));
+			words = o;
+			o = Align16(o + nwords * sizeof(u64));
+			verts = o;
+			o = Align16(o + nverts * sizeof(GSVertex));
+			index = o;
+			o = Align16(o + nindex * sizeof(u16));
+			src_blocks = o;
+			o = Align16(o + nsrc * sizeof(u32));
+			src_hashes = o;
+			o = Align16(o + nsrc * sizeof(u64));
+			pre_blocks = o;
+			o = Align16(o + npre * sizeof(u32));
+			pre_hashes = o;
+			o = Align16(o + npre * sizeof(u64));
+			out_blocks = o;
+			o = Align16(o + nout * sizeof(u32));
+			out_bytes = o;
+			end = Align16(o + nout * GS_BLOCK_SIZE);
+		}
+	};
+
+	Record Entry::At(u32 k) const
+	{
+		const u8* base = buf[offsets[k]].b;
+		Record r;
+		r.h = reinterpret_cast<const RecordHeader*>(base);
+		r.words = reinterpret_cast<const u64*>(base + r.h->at_words);
+		r.verts = base + r.h->at_verts;
+		r.index = reinterpret_cast<const u16*>(base + r.h->at_index);
+		r.src_blocks = reinterpret_cast<const u32*>(base + r.h->at_src_blocks);
+		r.src_hashes = reinterpret_cast<const u64*>(base + r.h->at_src_hashes);
+		r.pre_blocks = reinterpret_cast<const u32*>(base + r.h->at_pre_blocks);
+		r.pre_hashes = reinterpret_cast<const u64*>(base + r.h->at_pre_hashes);
+		r.out_blocks = reinterpret_cast<const u32*>(base + r.h->at_out_blocks);
+		r.out_bytes = base + r.h->at_out_bytes;
+		return r;
+	}
+
+	void Entry::Append(const Draw& d)
+	{
+		const Packet& p = d.packet;
+		const u32 nwords = static_cast<u32>(p.words.size());
+		const u32 nverts = static_cast<u32>(p.verts.size());
+		const u32 nindex = static_cast<u32>(p.index.size());
+		const u32 nsrc = static_cast<u32>(d.src.size());
+		const u32 npre = static_cast<u32>(d.pre.size());
+		const u32 nout = static_cast<u32>(d.out_blocks.size());
+		const Layout l(nwords, nverts, nindex, nsrc, npre, nout);
+
+		if (offsets.empty())
+			first_signature = p.Signature();
+		const size_t at = buf.size();
+		offsets.push_back(static_cast<u32>(at));
+		buf.resize(at + l.end / sizeof(Chunk));
+		u8* base = buf[at].b;
+
+		RecordHeader h;
+		h.bytes = static_cast<u32>(l.end);
+		h.live = p.live;
+		h.at_words = static_cast<u32>(l.words);
+		h.at_verts = static_cast<u32>(l.verts);
+		h.at_index = static_cast<u32>(l.index);
+		h.at_src_blocks = static_cast<u32>(l.src_blocks);
+		h.at_src_hashes = static_cast<u32>(l.src_hashes);
+		h.at_pre_blocks = static_cast<u32>(l.pre_blocks);
+		h.at_pre_hashes = static_cast<u32>(l.pre_hashes);
+		h.at_out_blocks = static_cast<u32>(l.out_blocks);
+		h.at_out_bytes = static_cast<u32>(l.out_bytes);
+		h.nverts = static_cast<u16>(nverts);
+		h.nindex = static_cast<u16>(nindex);
+		h.nsrc = static_cast<u16>(nsrc);
+		h.npre = static_cast<u16>(npre);
+		h.nout = static_cast<u16>(nout);
+		h.flags = (d.frame_target_checked ? REC_FRAME_TARGET_CHECKED : 0) | (d.copied ? REC_COPIED : 0) |
+		          (p.tex0_no_palette ? REC_TEX0_NO_PALETTE : 0);
+		h.nwords = static_cast<u8>(nwords);
+		h.palette_entries = d.palette_entries;
+		h.palette_hash = d.palette_hash;
+		h.bbox = d.bbox;
+		h.vmask[0] = p.vmask[0];
+		h.vmask[1] = p.vmask[1];
+		h.left = d.left;
+		std::memcpy(base, &h, sizeof(h));
+		std::memcpy(base + l.words, p.words.data(), nwords * sizeof(u64));
+		std::memcpy(base + l.verts, p.verts.data(), nverts * sizeof(GSVertex));
+		std::memcpy(base + l.index, p.index.data(), nindex * sizeof(u16));
+		for (u32 i = 0; i < nsrc; i++)
+		{
+			std::memcpy(base + l.src_blocks + i * sizeof(u32), &d.src[i].block, sizeof(u32));
+			std::memcpy(base + l.src_hashes + i * sizeof(u64), &d.src[i].hash, sizeof(u64));
+		}
+		for (u32 i = 0; i < npre; i++)
+		{
+			std::memcpy(base + l.pre_blocks + i * sizeof(u32), &d.pre[i].block, sizeof(u32));
+			std::memcpy(base + l.pre_hashes + i * sizeof(u64), &d.pre[i].hash, sizeof(u64));
+		}
+		std::memcpy(base + l.out_blocks, d.out_blocks.data(), nout * sizeof(u32));
+		std::memcpy(base + l.out_bytes, d.out_bytes.data(), d.out_bytes.size());
 	}
 
 	void Entry::Recount()
 	{
-		bytes = sizeof(Entry);
-		for (const Draw& d : draws)
-			bytes += d.Bytes();
+		bytes = sizeof(Entry) + buf.capacity() * sizeof(Chunk) + offsets.capacity() * sizeof(u32);
 	}
 
 	Store::Store() = default;
@@ -220,9 +324,26 @@ namespace GSBurstMemo
 			for (const EntryPtr& e : list)
 				e->stored = false;
 		m_index.clear();
+		m_spare.clear();
 		std::memset(m_bloom, 0, sizeof(m_bloom));
 		m_bytes = 0;
 		m_entries = 0;
+	}
+
+	Buffer Store::TakeBuffer()
+	{
+		if (m_spare.empty())
+			return {};
+		Buffer b = std::move(m_spare.back());
+		m_spare.pop_back();
+		b.clear();
+		return b;
+	}
+
+	void Store::Recycle(const EntryPtr& e)
+	{
+		if (e.use_count() == 1 && m_spare.size() < MAX_SPARE_BUFFERS)
+			m_spare.push_back(std::move(e->buf));
 	}
 
 	void Store::SetBudget(size_t bytes)
@@ -238,9 +359,9 @@ namespace GSBurstMemo
 
 	void Store::Insert(EntryPtr e)
 	{
-		if (e->draws.empty() || e->bytes > m_budget)
+		if (!e->Count() || e->bytes > m_budget)
 			return;
-		const u64 sig = e->draws[0].packet.Signature();
+		const u64 sig = e->first_signature;
 		e->last_used = m_frame;
 		e->stored = true;
 		m_bytes += e->bytes;
@@ -286,6 +407,7 @@ namespace GSBurstMemo
 					m_bytes -= e.bytes;
 					m_entries--;
 					m_evictions++;
+					Recycle(list[i]);
 					list.erase(list.begin() + static_cast<std::ptrdiff_t>(i));
 					removed = true;
 				}
@@ -302,7 +424,7 @@ namespace GSBurstMemo
 
 	void Store::Remove(const EntryPtr& e)
 	{
-		const auto it = m_index.find(e->draws[0].packet.Signature());
+		const auto it = m_index.find(e->first_signature);
 		if (it == m_index.end())
 			return;
 		std::vector<EntryPtr>& list = it->second;
@@ -312,6 +434,7 @@ namespace GSBurstMemo
 		e->stored = false;
 		m_bytes -= e->bytes;
 		m_entries--;
+		Recycle(*pos);
 		list.erase(pos);
 		if (list.empty())
 			m_index.erase(it);

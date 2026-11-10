@@ -251,7 +251,7 @@ namespace
 			for (size_t b = 0; b < out_blocks_per_draw; b++)
 				dr.out_blocks.push_back(static_cast<u32>(b));
 			dr.out_bytes.assign(out_blocks_per_draw * 256, 0xAB);
-			e->draws.push_back(std::move(dr));
+			e->Append(dr);
 			d.v[0].XYZ.X += 16;
 			d.v[1].XYZ.X += 16;
 		}
@@ -259,7 +259,7 @@ namespace
 		return e;
 	}
 
-	u64 FirstSignature(const Entry& e) { return e.draws[0].packet.Signature(); }
+	u64 FirstSignature(const Entry& e) { return e.first_signature; }
 
 	bool Holds(const Store& s, const EntryPtr& e)
 	{
@@ -275,6 +275,83 @@ namespace
 		return false;
 	}
 } // namespace
+
+// A draw laid out in an entry reads back as it was recorded, and its record matches exactly the draws its packet
+// matches.
+TEST(GSBurstMemoEntry, ARecordReadsBackAndMatchesAsItsPacket)
+{
+	auto e = std::make_shared<Entry>();
+	std::vector<DrawState> states(3);
+	states[1].ctx().TEST.ZTE = 1; // vertex Z compared
+	states[2].env.PRIM.FST = 0; // ST and Q compared, palette fields masked away from TEX0
+	for (u32 i = 0; i < states.size(); i++)
+	{
+		Draw dr;
+		dr.packet = states[i].Take();
+		dr.src = {{0x1000 + i, 0x1111 * (i + 1)}, {0x1001 + i, 0x2222}};
+		dr.pre = {{0x800 + i, 0x3333}};
+		dr.out_blocks = {0x800 + i, 0x801 + i};
+		dr.out_bytes.resize(2 * 256);
+		for (size_t b = 0; b < dr.out_bytes.size(); b++)
+			dr.out_bytes[b] = static_cast<u8>(b * 7 + i);
+		dr.palette_entries = i ? 256 : 0;
+		dr.palette_hash = 0xABCDu + i;
+		dr.frame_target_checked = i == 1;
+		dr.copied = i != 1;
+		dr.bbox = GSVector4i(1, 2, 3 + i, 4);
+		dr.left.fbmsk = 0xFF000000u + i;
+		dr.left.r = GSVector4i(5, 6, 7, 8 + i);
+		e->Append(dr);
+
+		const Record r = e->At(i);
+		EXPECT_EQ(r.h->nsrc, 2u);
+		EXPECT_EQ(r.src_blocks[1], 0x1001 + i);
+		EXPECT_EQ(r.src_hashes[0], 0x1111u * (i + 1));
+		EXPECT_EQ(r.pre_blocks[0], 0x800 + i);
+		EXPECT_EQ(r.pre_hashes[0], 0x3333u);
+		EXPECT_EQ(r.h->nout, 2u);
+		EXPECT_EQ(r.out_blocks[1], 0x801 + i);
+		EXPECT_EQ(std::memcmp(r.out_bytes, dr.out_bytes.data(), dr.out_bytes.size()), 0);
+		EXPECT_EQ(r.h->palette_entries, dr.palette_entries);
+		EXPECT_EQ(r.h->palette_hash, dr.palette_hash);
+		EXPECT_EQ((r.h->flags & REC_FRAME_TARGET_CHECKED) != 0, dr.frame_target_checked);
+		EXPECT_EQ((r.h->flags & REC_COPIED) != 0, dr.copied);
+		EXPECT_TRUE(r.h->bbox.eq(dr.bbox));
+		EXPECT_EQ(r.h->left.fbmsk, dr.left.fbmsk);
+		EXPECT_TRUE(r.h->left.r.eq(dr.left.r));
+	}
+	EXPECT_EQ(e->Count(), 3u);
+	EXPECT_EQ(e->first_signature, states[0].Take().Signature());
+
+	// The record and the packet give the same answer, for the draw itself and for changes in and out of its mask.
+	const std::vector<std::function<void(DrawState&)>> changes = {
+		[](DrawState&) {},
+		[](DrawState& d) { d.ctx().ALPHA.A = 2; },
+		[](DrawState& d) { d.v[0].XYZ.Z = 9; },
+		[](DrawState& d) { d.v[1].ST.S = 0.75f; },
+		[](DrawState& d) { d.v[1].U += 16; },
+		[](DrawState& d) { d.ctx().TEX0.CBP = 0x3000; },
+		[](DrawState& d) { d.ctx().FRAME.FBP = 0x101; },
+		[](DrawState& d) {
+			d.env.CTXT[1] = d.env.CTXT[0];
+			d.env.PRIM.CTXT = 1;
+		},
+	};
+	for (u32 i = 0; i < states.size(); i++)
+	{
+		const Packet p = states[i].Take();
+		const Record r = e->At(i);
+		for (size_t c = 0; c < changes.size(); c++)
+		{
+			DrawState d = states[i];
+			changes[c](d);
+			const bool by_packet = d.Matches(p);
+			const bool by_record = r.Matches(d.ctx(), d.env, d.flags, d.v.data(), static_cast<u32>(d.v.size()), d.idx.data(),
+				static_cast<u32>(d.idx.size()));
+			EXPECT_EQ(by_record, by_packet) << "record " << i << ", change " << c;
+		}
+	}
+}
 
 TEST(GSBurstMemoStore, FindsWhatItHoldsByTheFirstDrawsSignature)
 {

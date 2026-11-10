@@ -793,6 +793,9 @@ public:
 	/// The block hash of `block` of `mem`: of its 256 bytes, hashed now if its hash-dirty bit is set. The cache
 	/// is bound to the memory by GSLocalMemory::Id(); a different memory than the last one invalidates it.
 	u64 BlockHash(GSLocalMemory& mem, u32 block);
+	/// Whether each of `count` blocks hashes to the value beside it, through BlockHash. Stops at the first
+	/// that does not; the burst memo checks a recorded draw's keys with it.
+	bool BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, const u64* hashes, u32 count);
 
 	void Read(Target* t, const GSVector4i& r, bool force_synchronous = false);
 	void Read(Source* t, const GSVector4i& r);

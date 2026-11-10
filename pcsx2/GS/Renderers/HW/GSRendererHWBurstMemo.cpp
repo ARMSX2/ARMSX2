@@ -129,25 +129,37 @@ bool GSRendererHW::BurstMemoTryHit()
 	const u16* idx = m_index->buff;
 	const u32 ni = m_index->tail;
 
-	// Continue the burst being skipped: the entries whose next draw this one matches.
+	// Continue the burst being skipped: keep the entries whose next draw this one matches. Filtered in place,
+	// since moving a shared pointer leaves its count alone.
 	if (!m.candidates.empty())
 	{
-		m.survivors.clear();
-		for (const EntryPtr& e : m.candidates)
+		size_t keep = 0;
+		m.records.resize(m.candidates.size());
+		for (size_t i = 0; i < m.candidates.size(); i++)
 		{
-			if (e->draws.size() > m.position && e->draws[m.position].packet.Matches(ctx, env, flags, v, nv, idx, ni))
-				m.survivors.push_back(e);
+			const Entry& e = *m.candidates[i];
+			st.packet_checks++;
+			if (e.Count() <= m.position)
+				continue;
+			const GSBurstMemo::Record r = e.At(m.position);
+			if (r.Matches(ctx, env, flags, v, nv, idx, ni))
+			{
+				if (keep != i)
+					m.candidates[keep] = std::move(m.candidates[i]);
+				m.records[keep] = r;
+				keep++;
+			}
 		}
-		if (m.survivors.empty())
+		m.candidates.resize(keep);
+		m.records.resize(keep);
+		if (!keep)
 		{
 			st.stop_packet++;
 			BurstMemoEndSequence();
 		}
-		else
+		else if (BurstMemoHit())
 		{
-			std::swap(m.candidates, m.survivors);
-			if (BurstMemoHit(m.candidates[0]->draws[m.position]))
-				return true;
+			return true;
 		}
 	}
 
@@ -159,23 +171,29 @@ bool GSRendererHW::BurstMemoTryHit()
 	if (!list)
 		return false;
 	m.candidates.clear();
+	m.records.clear();
 	for (const EntryPtr& e : *list)
 	{
-		if (e->draws[0].packet.Matches(ctx, env, flags, v, nv, idx, ni))
+		st.packet_checks++;
+		const GSBurstMemo::Record r = e->At(0);
+		if (r.Matches(ctx, env, flags, v, nv, idx, ni))
+		{
 			m.candidates.push_back(e);
+			m.records.push_back(r);
+		}
 	}
 	if (m.candidates.empty())
 		return false;
 
 	m.position = 0;
 	m.sequence_pages.clear();
-	if (!BurstMemoHit(m.candidates[0]->draws[0]))
+	if (!BurstMemoHit())
 		return false;
 	st.sequences++;
 	return true;
 }
 
-bool GSRendererHW::BurstMemoHit(const GSBurstMemo::Draw& first)
+bool GSRendererHW::BurstMemoHit()
 {
 	Memo& m = m_burst_memo;
 	Stats& st = GlobalStats();
@@ -191,36 +209,47 @@ bool GSRendererHW::BurstMemoHit(const GSBurstMemo::Draw& first)
 		return false;
 	}
 
-	// The palette the copy reads, loaded the way Draw() loads it before the copy road.
+	// The palette the copy reads, loaded the way Draw() loads it before the copy road. The candidates matched
+	// this draw's packet, so they agree on whether there is one.
+	const u32 entries = m.records[0].h->palette_entries;
 	u64 palette = 0;
-	if (first.palette_entries)
+	if (entries)
 	{
 		m_mem.m_clut.Read32(ctx.TEX0, m_draw_env->TEXA);
-		palette = BurstMemoPaletteHash(first.palette_entries);
+		palette = BurstMemoPaletteHash(entries);
 	}
 
-	m.survivors.clear();
-	for (const EntryPtr& e : m.candidates)
+	size_t keep = 0;
+	for (size_t i = 0; i < m.candidates.size(); i++)
 	{
-		const GSBurstMemo::Draw& d = e->draws[k];
-		if (d.palette_entries != first.palette_entries || (d.palette_entries && d.palette_hash != palette))
+		const GSBurstMemo::Record d = m.records[i];
+		st.key_checks++;
+		st.key_blocks += d.h->nsrc + d.h->npre;
+		if (entries && d.h->palette_hash != palette)
 			continue;
-		if (!BurstMemoBlocksMatch(d.src) || !BurstMemoBlocksMatch(d.pre))
+		if (!g_texture_cache->BlockHashesMatch(m_mem, d.src_blocks, d.src_hashes, d.h->nsrc) ||
+			!g_texture_cache->BlockHashesMatch(m_mem, d.pre_blocks, d.pre_hashes, d.h->npre))
 			continue;
-		m.survivors.push_back(e);
+		if (keep != i)
+		{
+			m.candidates[keep] = std::move(m.candidates[i]);
+			m.records[keep] = d;
+		}
+		keep++;
 	}
-	if (m.survivors.empty())
+	m.candidates.resize(keep);
+	m.records.resize(keep);
+	if (!keep)
 	{
 		st.stop_key++;
 		BurstMemoEndSequence();
 		return false;
 	}
-	std::swap(m.candidates, m.survivors);
 
 	// The verdict looked for a target at the texture, and maybe at the frame, and found none.
-	const GSBurstMemo::Draw& d = m.candidates[0]->draws[k];
+	const GSBurstMemo::Record d = m.records[0];
 	if ((PRIM->TME && BurstMemoTargetAt(ctx.TEX0.TBP0, ctx.TEX0.PSM)) ||
-		(d.frame_target_checked && BurstMemoTargetAt(ctx.FRAME.Block(), ctx.FRAME.PSM)))
+		((d.h->flags & GSBurstMemo::REC_FRAME_TARGET_CHECKED) && BurstMemoTargetAt(ctx.FRAME.Block(), ctx.FRAME.PSM)))
 	{
 		st.stop_route++;
 		BurstMemoEndSequence();
@@ -237,40 +266,53 @@ bool GSRendererHW::BurstMemoHit(const GSBurstMemo::Draw& first)
 		m.store.Touch(*e);
 		e->hits++;
 	}
-	for (const u32 block : d.out_blocks)
+	for (u32 i = 0; i < d.h->nout; i++)
 	{
-		const u32 page = block >> 5;
+		const u32 page = d.out_blocks[i] >> 5;
 		if (std::find(m.sequence_pages.begin(), m.sequence_pages.end(), page) == m.sequence_pages.end())
 			m.sequence_pages.push_back(page);
 	}
 	m.sequence_seq = m_mem.WriteSeq();
 	m.position = k + 1;
 	st.hit_draws++;
+
+	// The burst's next draw is the next record: start loading its header and words while the next draw is
+	// decoded.
+	const Entry& next = *m.candidates[0];
+	if (next.Count() > k + 1)
+	{
+		const char* p = static_cast<const char*>(next.Address(k + 1));
+		__builtin_prefetch(p);
+		__builtin_prefetch(p + 64);
+		__builtin_prefetch(p + 128);
+		__builtin_prefetch(p + 192);
+	}
 	return true;
 }
 
-void GSRendererHW::BurstMemoApply(const GSBurstMemo::Draw& d)
+void GSRendererHW::BurstMemoApply(const GSBurstMemo::Record& d)
 {
 	const GSDrawingContext* context = m_context;
+	const bool copied = (d.h->flags & GSBurstMemo::REC_COPIED) != 0;
 
 	// What the kernel wrote: the whole blocks of the box, as the recorded draw left them.
 	u8* const vm = m_mem.m_vm8;
-	const size_t blocks = d.out_blocks.size();
-	for (size_t i = 0; i < blocks; i++)
-		std::memcpy(vm + static_cast<size_t>(d.out_blocks[i]) * GS_BLOCK_SIZE, &d.out_bytes[i * GS_BLOCK_SIZE], GS_BLOCK_SIZE);
+	const u32 blocks = d.h->nout;
+	for (u32 i = 0; i < blocks; i++)
+		std::memcpy(vm + static_cast<size_t>(d.out_blocks[i]) * GS_BLOCK_SIZE, d.out_bytes + static_cast<size_t>(i) * GS_BLOCK_SIZE, GS_BLOCK_SIZE);
 	if (ControlCorruption()) [[unlikely]]
 	{
-		for (size_t i = 0; i < blocks; i++)
+		for (u32 i = 0; i < blocks; i++)
 			vm[static_cast<size_t>(d.out_blocks[i]) * GS_BLOCK_SIZE + 17] ^= 0x5A;
 	}
 
 	// What GSSwPrimRenderFunctions::Run() did after the kernel: the marks, frame and, for the rasterizer, depth.
-	const GSVector4i& bbox = d.bbox;
+	const GSVector4i bbox = d.h->bbox;
 	const GSVector4i grown(std::max(bbox.x - 1, 0), std::max(bbox.y - 1, 0), bbox.z + 1, bbox.w + 1);
-	if (d.copied)
+	if (copied)
 		g_perfmon.Put(GSPerfMon::SwPaletteBlockCopies, 1);
 	m_mem.MarkPagesWritten(context->offset.fb, grown);
-	if (!d.copied)
+	if (!copied)
 		m_mem.MarkPagesWritten(context->offset.zb, grown);
 
 	// What SwPrimRender() did after Run(): the texture cache invalidation and the draw transfer.
@@ -295,7 +337,7 @@ void GSRendererHW::BurstMemoApply(const GSBurstMemo::Draw& d)
 	m_draw_transfers.push_back(uq);
 
 	// What Draw() left in its members on the way to the copy road.
-	const LeftState& left = d.left;
+	const LeftState& left = d.h->left;
 	m_draw_color_dispatch_accepted = false;
 	m_cached_ctx.TEX0 = context->TEX0;
 	m_cached_ctx.TEXA = m_draw_env->TEXA;
@@ -340,11 +382,20 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 	if (m.recording && BurstMemoPagesWrittenSince(m.recording_pages, m.recording_seq))
 		BurstMemoCloseRecording();
 	if (!m.recording)
+	{
 		m.recording = std::make_shared<Entry>();
+		m.recording->buf = m.store.TakeBuffer();
+	}
 
 	const GSDrawingContext& ctx = *m_context;
+	// The pending draw is reused, so its arrays keep their capacity from one draw to the next.
 	GSBurstMemo::Draw& d = m.pending;
-	d = GSBurstMemo::Draw();
+	d.src.clear();
+	d.pre.clear();
+	d.out_blocks.clear();
+	d.out_bytes.clear();
+	d.palette_entries = 0;
+	d.palette_hash = 0;
 	d.packet.Take(ctx, *m_draw_env, m_isPackedUV_HackFlag, m.raw_verts.data(), static_cast<u32>(m.raw_verts.size()),
 		m_index->buff, m_index->tail);
 	d.frame_target_checked = m_copy_road_frame_checked;
@@ -367,33 +418,26 @@ bool GSRendererHW::BurstMemoBeforeCopy()
 		GSVector4i cov(GetTextureMinMax(m_cached_ctx.TEX0, m_cached_ctx.CLAMP, m_vt.IsLinear(), false).coverage);
 		if (cov.rempty() || cov.left < 0 || cov.top < 0 || cov.right > whole.right || cov.bottom > whole.bottom)
 			cov = whole;
-		std::vector<u32> src;
+		std::vector<u32>& src = m.scratch_blocks;
+		src.clear();
 		m_mem.GetOffset(ctx.TEX0.TBP0, ctx.TEX0.TBW, ctx.TEX0.PSM).loopBlocks(cov, [&src](u32 block) { src.push_back(block % GS_MAX_BLOCKS); });
 
-		// A mipmapped draw reads the other levels too: every level the copy road's texture setup reads, over
-		// the coverage it computes there (GSSwPrimRenderFunctions::Run), with the coordinates and the clamp
-		// region halved per level, and bilinear assumed so the coverage is the wider one.
+		// A mipmapped draw reads the other levels too, every one up to MXL (GSSwPrimRenderFunctions::Run). The
+		// copy road's coverage of level i lies inside this level's coverage scaled down by 2^i, rounded outwards
+		// and widened by two texels (its coordinates and its clamp region are this level's halved i times, and
+		// its filter reaches one texel further), so that rectangle is keyed: a superset of what it reads.
 		if (IsMipMapActive())
 		{
-			const GSVector4 tmin = m_vt.m_min.t, tmax = m_vt.m_max.t;
-			GIFRegCLAMP clamp = ctx.CLAMP;
 			for (u32 i = 1, last = std::min<u32>(ctx.TEX1.MXL, 6); i <= last; i++)
 			{
 				const GIFRegTEX0 level = GetTex0Layer(i);
-				clamp.MINU >>= 1;
-				clamp.MINV >>= 1;
-				clamp.MAXU >>= 1;
-				clamp.MAXV >>= 1;
-				m_vt.m_min.t *= 0.5f;
-				m_vt.m_max.t *= 0.5f;
 				const GSVector4i level_whole(0, 0, 1 << std::min<u32>(level.TW, 10), 1 << std::min<u32>(level.TH, 10));
-				GSVector4i r(GetTextureMinMax(level, clamp, true, true).coverage);
-				if (r.rempty() || r.left < 0 || r.top < 0 || r.right > level_whole.right || r.bottom > level_whole.bottom)
-					r = level_whole;
-				m_mem.GetOffset(level.TBP0, level.TBW, level.PSM).loopBlocks(r, [&src](u32 block) { src.push_back(block % GS_MAX_BLOCKS); });
+				const int round = (1 << i) - 1;
+				const GSVector4i r = GSVector4i((cov.left >> i) - 2, (cov.top >> i) - 2, ((cov.right + round) >> i) + 2,
+					((cov.bottom + round) >> i) + 2)
+				                         .rintersect(level_whole);
+				m_mem.GetOffset(level.TBP0, level.TBW, level.PSM).loopBlocks(r.rempty() ? level_whole : r, [&src](u32 block) { src.push_back(block % GS_MAX_BLOCKS); });
 			}
-			m_vt.m_min.t = tmin;
-			m_vt.m_max.t = tmax;
 		}
 		std::sort(src.begin(), src.end());
 		src.erase(std::unique(src.begin(), src.end()), src.end());
@@ -454,7 +498,7 @@ void GSRendererHW::BurstMemoAfterCopy(bool recorded, bool copied)
 		if (std::find(m.recording_pages.begin(), m.recording_pages.end(), page) == m.recording_pages.end())
 			m.recording_pages.push_back(page);
 	}
-	m.recording->draws.push_back(std::move(d));
+	m.recording->Append(d);
 	m.recording_seq = m_mem.WriteSeq();
 	m.last_was_copy = true;
 	st.recorded++;
@@ -465,7 +509,7 @@ void GSRendererHW::BurstMemoCloseRecording()
 	Memo& m = m_burst_memo;
 	if (!m.recording)
 		return;
-	if (!m.recording->draws.empty())
+	if (m.recording->Count())
 	{
 		m.recording->Recount();
 		m.store.Insert(std::move(m.recording));
@@ -485,6 +529,7 @@ void GSRendererHW::BurstMemoEndSequence()
 {
 	Memo& m = m_burst_memo;
 	m.candidates.clear();
+	m.records.clear();
 	m.position = 0;
 	m.sequence_pages.clear();
 }
@@ -503,16 +548,6 @@ void GSRendererHW::BurstMemoEndFrame(bool idle_frame)
 		GlobalStats().evictions = m.store.Evictions();
 	}
 	m.frame_had_copies = false;
-}
-
-bool GSRendererHW::BurstMemoBlocksMatch(const std::vector<GSBurstMemo::BlockKey>& keys)
-{
-	for (const GSBurstMemo::BlockKey& k : keys)
-	{
-		if (g_texture_cache->BlockHash(m_mem, k.block) != k.hash)
-			return false;
-	}
-	return true;
 }
 
 bool GSRendererHW::BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const
