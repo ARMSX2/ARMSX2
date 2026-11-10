@@ -1832,10 +1832,14 @@ GSVector2i GSRendererHW::GetValidSize(const GSTextureCache::Source* tex, const b
 	const GSLocalMemory::psm_t& frame_psm = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM];
 	// We can check if the next draw is doing the same from the next page, and assume it's a per line clear.
 	// Battlefield 2 does this.
-	const int pages = ((GSLocalMemory::GetEndBlockAddress(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r) + 1) - m_cached_ctx.FRAME.Block()) >> 5;
-	if (m_cached_ctx.FRAME.FBW > 1 && m_r.height() == frame_psm.pgs.y && (pages % m_cached_ctx.FRAME.FBW) == 0 && m_env.CTXT[m_backed_up_ctx].FRAME.FBP == (m_cached_ctx.FRAME.FBP + pages) &&
-		!IsPossibleChannelShuffle() && NextDrawMatchesShuffle())
-		height = std::max<int>(m_context->scissor.in.w, height);
+	// The page count is only wanted for a draw exactly one page high, so it is worked out behind that test.
+	if (m_cached_ctx.FRAME.FBW > 1 && m_r.height() == frame_psm.pgs.y)
+	{
+		const int pages = ((GSLocalMemory::GetEndBlockAddress(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r) + 1) - m_cached_ctx.FRAME.Block()) >> 5;
+		if ((pages % m_cached_ctx.FRAME.FBW) == 0 && m_env.CTXT[m_backed_up_ctx].FRAME.FBP == (m_cached_ctx.FRAME.FBP + pages) &&
+			!IsPossibleChannelShuffle() && NextDrawMatchesShuffle())
+			height = std::max<int>(m_context->scissor.in.w, height);
+	}
 
 	// If the draw is less than a page high, FBW=0 is the same as FBW=1.
 	int width = std::min(std::max<int>(m_cached_ctx.FRAME.FBW, 1) * 64, m_context->scissor.in.z);
@@ -3937,7 +3941,9 @@ void GSRendererHW::Draw()
 	bool preserve_depth =
 		not_writing_to_all || (!no_ds && (!all_depth_tests_pass || !m_cached_ctx.DepthWrite() || m_cached_ctx.TEST.ATE));
 
-	const u32 frame_end_bp = GSLocalMemory::GetUnwrappedEndBlockAddress(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r);
+	// Only read, here and below, behind "a texture is processed and it starts at or after the frame", so only then worked out.
+	const u32 frame_end_bp = (m_process_texture && m_cached_ctx.TEX0.TBP0 >= m_cached_ctx.FRAME.Block()) ?
+		GSLocalMemory::GetUnwrappedEndBlockAddress(m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, m_cached_ctx.FRAME.PSM, m_r) : 0;
 
 	// This is a first pass, but it could be disabled further down.
 	bool tex_is_rt = (m_process_texture && m_cached_ctx.TEX0.TBP0 >= m_cached_ctx.FRAME.Block() &&
@@ -5553,7 +5559,8 @@ void GSRendererHW::Draw()
 	if (ds)
 		ds->UpdateValidChannels(ZBUF_TEX0.PSM, zm);
 
-	const GSVector2i resolution = PCRTCDisplays.GetResolution();
+	// Every read of the display resolution below sits behind "or the size can be updated", so it is only fetched otherwise.
+	const GSVector2i resolution = can_update_size ? GSVector2i(0, 0) : PCRTCDisplays.GetResolution();
 	GSTextureCache::Target* old_rt = nullptr;
 	GSTextureCache::Target* old_ds = nullptr;
 
@@ -12600,6 +12607,20 @@ bool GSRendererHW::TryGSMemClear(bool no_rt, bool preserve_rt, bool invalidate_r
 	return ((invalidate_rt || no_rt) && (invalidate_z || no_ds));
 }
 
+// (old & mask) | fill, for a fill with no bits under the mask: one bit select (BIF) instead of an AND and an ORR, which
+// is a quarter of the clear's 24-bit and masked fill loops. In assembly because the compiler, seeing that the fill has
+// no bits under the mask, turns a BSL intrinsic back into the AND and the ORR.
+static __fi GSVector4i KeepMaskedBits(const GSVector4i& old, const GSVector4i& mask, const GSVector4i& fill)
+{
+#if (defined(__clang__) || defined(__GNUC__)) && defined(__aarch64__)
+	int32x4_t v = old.v4s;
+	__asm__("bif %0.16b, %1.16b, %2.16b" : "+w"(v) : "w"(fill.v4s), "w"(mask.v4s));
+	return GSVector4i(v);
+#else
+	return (old & mask) | fill;
+#endif
+}
+
 void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, u32 vert_color)
 {
 	GL_INS("HW: ClearGSLocalMemory(): %08X %d,%d => %d,%d @ BP %x BW %u %s", vert_color, r.x, r.y, r.z, r.w, off.bp(),
@@ -12640,9 +12661,12 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
 				if (drawing_mask)
 				{
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#endif
 					while (ptr != ptr_end)
 					{
-						*ptr = (*ptr & mask) | vcolor;
+						*ptr = KeepMaskedBits(*ptr, mask, vcolor);
 						ptr++;
 					}
 				}
@@ -12665,9 +12689,12 @@ void GSRendererHW::ClearGSLocalMemory(const GSOffset& off, const GSVector4i& r, 
 				m_mem.MarkPageRangeWritten(current_page, pages_wide);
 				GSVector4i* ptr = reinterpret_cast<GSVector4i*>(m_mem.vm8() + current_page * GS_PAGE_SIZE);
 				GSVector4i* const ptr_end = ptr + iterations_per_page;
+#if defined(__clang__)
+#pragma clang loop unroll_count(4)
+#endif
 				while (ptr != ptr_end)
 				{
-					*ptr = (*ptr & mask) | vcolor;
+					*ptr = KeepMaskedBits(*ptr, mask, vcolor);
 					ptr++;
 				}
 			}

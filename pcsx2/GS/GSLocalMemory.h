@@ -380,6 +380,22 @@ public:
 		{
 			loopPagesWithBreak([fn = std::forward<Fn>(fn)](u32 page) { fn(page); return true; });
 		}
+
+		/// One run of page positions that holds every page the loop visits: the loop visits only pages
+		/// `pos % GS_MAX_PAGES` with `first <= pos < first + count`. It may hold pages the loop does not visit.
+		/// False when the rows give no such run (nothing to visit, or a start left of the buffer).
+		bool pageSpan(u32& first, u32& count) const
+		{
+			if (yCnt <= 0 || yInc < 0)
+				return false;
+			const int lo = bp + std::min(firstRowPgXStart, std::min(midRowPgXStart, lastRowPgXStart));
+			const int hi = bp + (yCnt - 1) * yInc + std::max(firstRowPgXEnd, std::max(midRowPgXEnd, lastRowPgXEnd));
+			if (lo < 0 || hi <= lo)
+				return false;
+			first = static_cast<u32>(lo);
+			count = static_cast<u32>(hi - lo);
+			return true;
+		}
 	};
 
 	/// Get an object for looping over the pages in the given rect

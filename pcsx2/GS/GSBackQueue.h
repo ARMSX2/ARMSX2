@@ -273,6 +273,11 @@ namespace GSBackQueue
 		bool channel_shuffle_finish;
 		bool packed_uv_hack_flag;
 		DrawPrivRegs priv;
+		// The environment delta. draw_env and next_env hold only the 64-byte blocks whose bits are set here, at their
+		// own offsets; every other block equals what the previous draw record carried, which the consumer keeps
+		// (GSState::m_rec_env). env_full: the whole of both environments is valid (the producer's first record).
+		u16 env_blocks[2];
+		bool env_full;
 	};
 
 	// ------------------------------------------------------------------
