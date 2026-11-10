@@ -38,6 +38,13 @@ public:
 
 	constexpr static u32 MAX_BP = 0x3fff;
 
+	/// Reads made ahead into the stash and reads answered from it (StashRead), for tests and measurement.
+	struct ReadStashStats
+	{
+		u64 stashed = 0;
+		u64 served = 0;
+	};
+
 	constexpr static GSVector4 FullSrcRect = GSVector4::cxpr(0.0f, 0.0f, 1.0f, 1.0f);
 
 	constexpr static bool CheckOverlap(const u32 a_bp, const u32 a_bp_end, const u32 b_bp, const u32 b_bp_end) noexcept
@@ -370,6 +377,8 @@ public:
 		GSVector4i m_valid{};
 		GSVector4i m_drawn_since_read{};
 		int readbacks_since_draw = 0;
+		/// The rectangle of the first read since the target was last drawn (GSTextureCache::StashRead).
+		GSVector4i m_first_read_rect = GSVector4i::zero();
 
 	public:
 		Target(GIFRegTEX0 TEX0, int type, const GSVector2i& unscaled_size, float scale, GSTexture* texture);
@@ -642,6 +651,7 @@ protected:
 		u32 write_mask = 0;
 		bool cpu_convert_rgb5a1 = false;
 		bool direct = false;
+		bool stash = false; // completes into m_read_stash instead of local memory
 		std::unique_ptr<GSDownloadTexture>* dltex = nullptr; // a shared texture, when the read does not own one
 		std::unique_ptr<GSDownloadTexture> owned; // from m_read_pool, for a batched read
 	};
@@ -673,6 +683,53 @@ protected:
 				tc.FlushReadBatch();
 		}
 	};
+
+	/// A read made ahead, in the same round trip as the read before it, of what the next read of the
+	/// same target will ask for: the whole drawn area, which InvalidateLocalMem reads at the second
+	/// read since the target was drawn (SOCOM II and The Punisher probe a few pixels a frame, and the
+	/// second probe reads the screen). Its pixels are kept here and handed to that read without
+	/// another round trip. They are the very bytes that read would download -- the same copy of the
+	/// same rectangle of an unchanged texture -- so it is used only while nothing that could change the
+	/// target has happened: no draw, no transfer, no new frame, no invalidation.
+	struct ReadStash
+	{
+		bool valid = false;
+		bool used = false;
+		const Target* t = nullptr;
+		const GSTexture* texture = nullptr;
+		GIFRegTEX0 TEX0 = {};
+		GSVector4i r = {};
+		GSVector4i first_read = {};
+		u32 write_mask = 0;
+		float scale = 0.0f;
+		bool rta = false;
+		bool cpu_convert_rgb5a1 = false;
+		u64 draw = 0;
+		u64 transfer = 0;
+		u64 frame = 0;
+		u32 pitch = 0;
+		std::vector<u8> bytes;
+	};
+	ReadStash m_read_stash;
+
+	/// First reads that a second read of the same target has followed before the next draw, by the
+	/// target's address, width and format: a game that clears its frame buffer each frame gets a new
+	/// target object each frame, and the pattern belongs to the buffer, not the object.
+	struct BurstFirstRead
+	{
+		u32 bp = 0;
+		u32 bw = 0;
+		u32 psm = 0;
+		GSVector4i r = GSVector4i::zero();
+	};
+	std::array<BurstFirstRead, 8> m_burst_first_reads = {};
+	u32 m_burst_next = 0;
+	bool IsBurstFirstRead(const Target* t, const GSVector4i& r) const;
+	void SetBurstFirstRead(const Target* t, const GSVector4i& r, bool burst);
+
+	ReadStashStats m_read_stash_stats;
+	void StashRead(Target* t);
+	bool ServeReadFromStash(Target* t, const GSVector4i& r, u32 write_mask);
 
 	/// A GPU->CPU copy issued under GSHardwareDownloadMode::Asynchronous, waiting on its fence.
 	struct PendingDownload
@@ -864,6 +921,7 @@ public:
 	/// stale frame instead of nothing.
 	void NoteColdStart() { m_no_display_hit_since_purge = true; }
 	void ReadbackAll();
+	const ReadStashStats& GetReadStashStats() const { return m_read_stash_stats; }
 	/// Marks `rect` (format `psm`, width `bw`) of the target dirty in the channels of `rgba`. Returns whether
 	/// anything became dirty that was not.
 	static bool MarkTargetDirty(Target* target, const GSVector4i& rect, u32 psm, u32 bw, RGBAMask rgba, bool req_linear = false);

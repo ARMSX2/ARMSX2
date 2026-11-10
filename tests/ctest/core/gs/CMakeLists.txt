@@ -92,6 +92,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_ktx_tests.cpp
 	gs_texture_cache_grid_tests.cpp
 	gs_texture_cache_move_tests.cpp
+	gs_read_stash_tests.cpp
 	gs_target_update_tests.cpp
 	gs_target_rebase_tests.cpp
 	gs_target_rebase_integration_tests.cpp

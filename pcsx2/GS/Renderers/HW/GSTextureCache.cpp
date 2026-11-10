@@ -4858,6 +4858,7 @@ void GSTextureCache::DiscardPendingDownloads()
 	m_pending_downloads.clear();
 	m_async_download_texture_pool.clear();
 	m_read_pool.clear();
+	m_read_stash = {};
 }
 
 /*void GSTextureCache::InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm, u32 write_bw)
@@ -5120,6 +5121,9 @@ void GSTextureCache::InvalidateVideoMemType(int type, u32 bp, u32 write_psm, u32
 // Called each time you want to write to the GS memory
 void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& rect, bool target)
 {
+	// A write into local memory may be one the stashed read's target holds next.
+	m_read_stash.valid = false;
+
 	const u32 bp = off.bp();
 	const u32 bw = off.bw();
 	const u32 psm = off.psm();
@@ -5470,10 +5474,18 @@ void GSTextureCache::InvalidateLocalMem(
 						t->Update();
 					}
 
+					if (t->readbacks_since_draw == 1)
+						t->m_first_read_rect = draw_rect;
+					else
+						SetBurstFirstRead(t, t->m_first_read_rect, true);
+
 					Read(t, draw_rect, force_synchronous);
 
 					if (draw_rect.rintersect(t->m_drawn_since_read).eq(t->m_drawn_since_read))
 						t->m_drawn_since_read = GSVector4i::zero();
+
+					if (t->readbacks_since_draw == 1)
+						StashRead(t);
 				}
 			}
 		}
@@ -5644,6 +5656,11 @@ void GSTextureCache::InvalidateLocalMem(
 					t->Update();
 				}
 
+				if (t->readbacks_since_draw == 1)
+					t->m_first_read_rect = targetr;
+				else
+					SetBurstFirstRead(t, t->m_first_read_rect, true);
+
 				Read(t, targetr, force_synchronous);
 
 				// Try to cut down how much we read next, if we can.
@@ -5666,6 +5683,9 @@ void GSTextureCache::InvalidateLocalMem(
 					else if (targetr.z >= t->m_drawn_since_read.z)
 						t->m_drawn_since_read.z = targetr.x;
 				}
+
+				if (t->readbacks_since_draw == 1)
+					StashRead(t);
 
 				if (exact_bp && read_end <= t->EndBlock())
 					return;
@@ -8004,6 +8024,11 @@ GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i&
 	const bool asynchronous = !force_synchronous &&
 		GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
 		g_gs_renderer->IsAsyncReadbackReady();
+
+	// The same pixels already downloaded, in the round trip of the read before this one.
+	if (!asynchronous && ServeReadFromStash(t, r, write_mask))
+		return ReadIssue::None;
+
 	std::unique_ptr<GSDownloadTexture> asynchronous_dltex;
 	if (asynchronous)
 	{
@@ -8109,9 +8134,26 @@ void GSTextureCache::CompleteRead(ReadOp& op)
 		// Why does WritePixelNN() not take a const pointer?
 		u8* const bits = const_cast<u8*>(dl->GetMapPointer());
 		const u32 pitch = dl->GetMapPitch();
-		WriteReadPixels(op.TEX0, op.r, op.drc, op.write_mask, op.cpu_convert_rgb5a1, bits, pitch);
+		if (op.stash)
+		{
+			// Row by row: the map is only as long as the copy, whose last row is not padded to the pitch.
+			const u32 row = static_cast<u32>(op.drc.z) * (dl->GetFormat() == GSTexture::Format::UInt16 ? 2u : 4u);
+			m_read_stash.pitch = row;
+			m_read_stash.bytes.resize(static_cast<size_t>(row) * static_cast<size_t>(op.drc.w));
+			for (int y = 0; y < op.drc.w; y++)
+				std::memcpy(&m_read_stash.bytes[static_cast<size_t>(y) * row], bits + static_cast<size_t>(y) * pitch, row);
+		}
+		else
+		{
+			WriteReadPixels(op.TEX0, op.r, op.drc, op.write_mask, op.cpu_convert_rgb5a1, bits, pitch);
+		}
 		dl->Unmap();
 	}
+	else if (op.stash)
+	{
+		m_read_stash.valid = false;
+	}
+	m_read_stash_stats.stashed += op.stash ? 1 : 0;
 
 	if (op.owned)
 		m_read_pool.push_back(std::move(op.owned));
@@ -8191,6 +8233,104 @@ void GSTextureCache::FlushReadBatch()
 	for (ReadOp& op : m_read_batch)
 		CompleteRead(op);
 	m_read_batch.clear();
+}
+
+bool GSTextureCache::IsBurstFirstRead(const Target* t, const GSVector4i& r) const
+{
+	if (r.rempty())
+		return false;
+	for (const BurstFirstRead& b : m_burst_first_reads)
+	{
+		if (b.bp == t->m_TEX0.TBP0 && b.bw == t->m_TEX0.TBW && b.psm == t->m_TEX0.PSM && b.r.eq(r))
+			return true;
+	}
+	return false;
+}
+
+void GSTextureCache::SetBurstFirstRead(const Target* t, const GSVector4i& r, bool burst)
+{
+	if (r.rempty())
+		return;
+	for (BurstFirstRead& b : m_burst_first_reads)
+	{
+		if (b.bp == t->m_TEX0.TBP0 && b.bw == t->m_TEX0.TBW && b.psm == t->m_TEX0.PSM && b.r.eq(r))
+		{
+			if (!burst)
+				b = {};
+			return;
+		}
+	}
+	if (burst)
+	{
+		m_burst_first_reads[m_burst_next] = {t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r};
+		m_burst_next = (m_burst_next + 1) % static_cast<u32>(m_burst_first_reads.size());
+	}
+}
+
+void GSTextureCache::StashRead(Target* t)
+{
+	// A stash the next read never took says that first read is not followed by a second one.
+	const ReadStash& prev = m_read_stash;
+	if (!prev.used && !prev.bytes.empty() && prev.TEX0.TBP0 == t->m_TEX0.TBP0 && prev.TEX0.TBW == t->m_TEX0.TBW &&
+		prev.TEX0.PSM == t->m_TEX0.PSM)
+	{
+		SetBurstFirstRead(t, prev.first_read, false);
+	}
+	m_read_stash.bytes.clear();
+	m_read_stash.valid = false;
+	m_read_stash.t = nullptr;
+
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous || m_read_batch_depth == 0 ||
+		!IsBurstFirstRead(t, t->m_first_read_rect) || t->m_drawn_since_read.rempty())
+	{
+		return;
+	}
+
+	const GSVector4i r = t->m_drawn_since_read;
+	ReadOp op;
+	if (IssueRead(t, r, false, true, op) != ReadIssue::Pending)
+		return;
+
+	op.stash = true;
+	ReadStash& st = m_read_stash;
+	st.valid = true;
+	st.used = false;
+	st.t = t;
+	st.texture = t->m_texture;
+	st.TEX0 = t->m_TEX0;
+	st.r = r;
+	st.first_read = t->m_first_read_rect;
+	st.write_mask = op.write_mask;
+	st.scale = t->m_scale;
+	st.rta = t->m_rt_alpha_scale;
+	st.cpu_convert_rgb5a1 = op.cpu_convert_rgb5a1;
+	st.draw = g_gs_renderer->s_n;
+	st.transfer = g_gs_renderer->s_transfer_n;
+	st.frame = static_cast<u64>(g_perfmon.GetFrame());
+	st.bytes.clear();
+	m_read_batch.push_back(std::move(op));
+}
+
+bool GSTextureCache::ServeReadFromStash(Target* t, const GSVector4i& r, u32 write_mask)
+{
+	ReadStash& st = m_read_stash;
+	if (!st.valid || st.t != t || st.bytes.empty())
+		return false;
+	if (st.texture != t->m_texture || st.TEX0.U64 != t->m_TEX0.U64 || !st.r.eq(r) || st.write_mask != write_mask ||
+		st.scale != t->m_scale || st.rta != t->m_rt_alpha_scale || st.draw != g_gs_renderer->s_n ||
+		st.transfer != g_gs_renderer->s_transfer_n || st.frame != static_cast<u64>(g_perfmon.GetFrame()))
+	{
+		st.valid = false;
+		return false;
+	}
+
+	// The read the stash was made for: the same target, format and conversion, so IssueRead made the
+	// same cpu_convert_rgb5a1 decision for it.
+	const GSVector4i drc(0, 0, r.width(), r.height());
+	WriteReadPixels(t->m_TEX0, r, drc, write_mask, st.cpu_convert_rgb5a1, st.bytes.data(), st.pitch);
+	st.used = true;
+	m_read_stash_stats.served++;
+	return true;
 }
 
 void GSTextureCache::Read(Source* t, const GSVector4i& r)
