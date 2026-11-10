@@ -9,6 +9,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/HW/GSReadbackStats.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
@@ -2001,6 +2002,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	m_render_passes_since_submit = 0;
 	m_draws_since_submit = 0;
 	m_next_in_pass_kick_offer = 0;
+	GSReadbackStats::OnSubmit();
 
 	FrameResources& resources = m_frame_resources[m_current_frame];
 
@@ -2286,8 +2288,14 @@ void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
 		return;
 
 	const u32 current_frame = m_current_frame;
+	const bool rb_time = GSReadbackStats::s_enabled && wait_for_completion != WaitType::None;
+	GSReadbackStats::Clock::time_point rb_t0, rb_t1;
+	if (rb_time)
+		rb_t0 = GSReadbackStats::Clock::now();
 	SubmitCommandBuffer(nullptr);
 	MoveToNextCommandBuffer();
+	if (rb_time)
+		rb_t1 = GSReadbackStats::Clock::now();
 
 	if (wait_for_completion != WaitType::None)
 	{
@@ -2304,6 +2312,11 @@ void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
 				ShortSpin();
 		}
 		WaitForCommandBufferCompletion(current_frame);
+		if (rb_time)
+		{
+			GSReadbackStats::s_last_submit_us = GSReadbackStats::Us(rb_t0, rb_t1);
+			GSReadbackStats::s_last_wait_us = GSReadbackStats::Us(rb_t1, GSReadbackStats::Clock::now());
+		}
 	}
 
 	// Push constants need to be refreshed each command buffer.
@@ -8950,6 +8963,7 @@ void GSDeviceVK::EndRenderPass()
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
+	GSReadbackStats::OnPass();
 	m_render_pass_serial++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
@@ -9622,6 +9636,7 @@ bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
 
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
+	GSReadbackStats::OnDraw();
 	// Mid-frame kick (see m_render_passes_since_submit in the header): while a
 	// readback-prone frame is recording, submit the work recorded so far once enough of it has
 	// piled up, so the GPU executes it while the GS thread records the rest instead of starting

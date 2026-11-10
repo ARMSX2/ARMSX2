@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GSState.h"
+#include "GS/Renderers/HW/GSReadbackStats.h"
 #include "GS/GSDump.h"
 #include "GS/Renderers/Common/GSFastStencilShadow.h"
 #include "GS/GSSpriteCover.h"
@@ -4698,7 +4699,19 @@ void GSState::InitReadFIFO(u8* mem, int len)
 	DrainBackQueue();
 
 	if (m_tr.x == sx && m_tr.y == sy)
+	{
+		GSReadbackStats::RequestScope rb_req("EE read");
 		m_mem_target->InvalidateLocalMem(m_env.BITBLTBUF, r);
+		rb_req.Finish();
+		if (rb_req.live && GSReadbackStats::s_trace)
+		{
+			std::printf("@RBT@ request loop %d frame %d draw %llu site EE-read sbp 0x%x sbw %u spsm 0x%x rect %d,%d-%d,%d (%dx%d) "
+						"fifo_bytes %d transfer_bytes %d reads %llu round_trips %llu us %.0f\n",
+				GSReadbackStats::s_loop, GSReadbackStats::s_frame_no, static_cast<unsigned long long>(s_n),
+				m_env.BITBLTBUF.SBP, m_env.BITBLTBUF.SBW, m_env.BITBLTBUF.SPSM, r.x, r.y, r.z, r.w, w, h, len * 16, m_tr.total,
+				static_cast<unsigned long long>(rb_req.reads), static_cast<unsigned long long>(rb_req.trips), rb_req.us);
+		}
+	}
 
 	// Read the image all in one go.
 	m_mem_target->m_mem.ReadImageX(m_tr.x, m_tr.y, m_tr.buff, m_tr.total, m_env.BITBLTBUF, m_env.TRXPOS, m_env.TRXREG);
