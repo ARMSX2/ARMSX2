@@ -2987,6 +2987,9 @@
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSRunsPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSBackThreadPolicy.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
