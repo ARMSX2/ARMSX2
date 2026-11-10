@@ -76,6 +76,7 @@ bool GSRendererHW::SkipMemoizedDraw()
 
 	Memo& m = m_burst_memo;
 	m.candidate = false;
+	GlobalStats().draw_vertices += m_vertex->next;
 
 	// A burst does not run on across a draw that was not a copy.
 	const bool after_copy = m.last_was_copy;
@@ -289,6 +290,7 @@ bool GSRendererHW::BurstMemoHit()
 	m.sequence_seq = m_mem.WriteSeq();
 	m.position = k + 1;
 	st.hit_draws++;
+	st.hit_vertices += m_vertex->next;
 
 	// The burst's next draw is the next record: start loading its header and words while the next draw is
 	// decoded.
@@ -533,6 +535,7 @@ void GSRendererHW::BurstMemoCloseRecording()
 		Stats& st = GlobalStats();
 		st.installs++;
 		st.peak_bytes = std::max<u64>(st.peak_bytes, m.store.PeakBytes());
+		st.pool_peak_bytes = std::max<u64>(st.pool_peak_bytes, m.store.Pool()->HeldBytes());
 		st.budget_evictions = m.store.BudgetEvictions();
 	}
 	m.recording.reset();

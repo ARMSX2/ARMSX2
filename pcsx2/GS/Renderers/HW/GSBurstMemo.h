@@ -333,6 +333,9 @@ namespace GSBurstMemo
 		u64 packet_checks = 0; ///< recorded draws compared with a draw in hand
 		u64 key_checks = 0; ///< recorded draws whose block and palette keys were checked
 		u64 key_blocks = 0; ///< blocks whose hash those checks compared
+		u64 draw_vertices = 0; ///< vertices of every draw the memo saw (all draws, while it is on)
+		u64 hit_vertices = 0; ///< of those, vertices of the draws it skipped
+		u64 pool_peak_bytes = 0; ///< the most memory the store's slabs held, free ones included
 		u64 peak_bytes = 0; ///< the store's largest size
 		u64 evictions = 0; ///< entries that left the history
 		u64 budget_evictions = 0; ///< entries the budget pushed out
