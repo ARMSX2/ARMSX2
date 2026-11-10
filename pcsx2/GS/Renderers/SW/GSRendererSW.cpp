@@ -1079,6 +1079,19 @@ bool GSRendererSW::CheckTargetPages(const GSOffset::PageLooper* fb_pages, const 
 
 bool GSRendererSW::CheckSourcePages(SharedData* sd)
 {
+	// A texture invalidated while a queued draw was reading its buffer: the refill
+	// waits for that draw (GSSwTextureReaders.h). Every level is asked, the answer
+	// clears the texture's flag.
+	bool readers = false;
+
+	for (size_t i = 0; sd->m_tex[i].t != NULL; i++)
+	{
+		readers |= sd->m_tex[i].t->m_readers.DrainBeforeUpdate();
+	}
+
+	if (readers)
+		return true;
+
 	if (!m_rl->IsSynced())
 	{
 		for (size_t i = 0; sd->m_tex[i].t != NULL; i++)
@@ -1767,6 +1780,7 @@ void GSRendererSW::SharedData::UsePages(const GSOffset::PageLooper* fb_pages, in
 		for (size_t i = 0; m_tex[i].t != NULL; i++)
 		{
 			GSRendererSW::GetInstance()->UsePages(m_tex[i].t->m_pages, 2);
+			m_tex[i].t->m_readers.Acquire();
 		}
 	}
 
@@ -1801,6 +1815,7 @@ void GSRendererSW::SharedData::ReleasePages()
 		for (size_t i = 0; m_tex[i].t != NULL; i++)
 		{
 			GSRendererSW::GetInstance()->ReleasePages(m_tex[i].t->m_pages, 2);
+			m_tex[i].t->m_readers.Release();
 		}
 	}
 

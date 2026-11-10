@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/SW/GSSwTextureDirty.h"
+#include "GS/Renderers/SW/GSSwTextureReaders.h"
 #include <unordered_set>
 
 class GSTextureCacheSW
@@ -35,6 +36,10 @@ public:
 		bool m_buff_stale = false;
 		GSSwTextureDirty m_dirty;
 		GSSwTextureDirty m_valid_dirty;
+
+		// The queued draws that read m_buff, and whether it may be refilled under them.
+		// Only the software renderer's cache uses it.
+		GSSwTextureReaders m_readers;
 
 		// m_valid
 		// fast mode: each u32 bits map to the 32 blocks of that page
