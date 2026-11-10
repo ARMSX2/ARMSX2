@@ -113,9 +113,6 @@ private:
 		std::array<u64, 4> area{}; ///< -runs-log: the draws' draw-rectangle area in target pixels, by dear class
 		u64 area_total = 0; ///< the draws' draw-rectangle area in target pixels
 		bool dear_mixed = false; ///< the run holds draws of more than one dear class
-		u32 first_flags = 0; ///< the first draw's state flags
-		bool uniform = true; ///< every draw so far has first_flags: the run's program holds every state constant
-		bool large = false; ///< the run holds a draw GSRunsPolicy::LargeDraw calls large
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
 	};
@@ -156,9 +153,6 @@ private:
 	void Prime(const GSHWDrawConfig& config);
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
-	/// Whether the draw ends the run because a large draw (in the run, or this one) would be drawn by a program that
-	/// no longer holds every state constant.
-	bool SplitAtLarge(const GSHWDrawConfig& config) const;
 	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
 	Why EndReason(const GSHWDrawConfig& config);
 	u32 SpecKey() const;

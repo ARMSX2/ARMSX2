@@ -141,15 +141,6 @@ namespace GSRunsPolicy
 		return static_cast<double>(dc.dear_px_ps) * static_cast<double>(run_area + draw_area) > static_cast<double>(dc.host_draw_ns) * 1000.0;
 	}
 
-	/// Whether a draw is large enough that drawing it with a run program less specialised than its own costs more in
-	/// fill than the host draw that merging it saves. dear_px_ps is the one measured price of a program reading a state
-	/// from its rows instead of holding it constant, and it is taken as the price of any state read so. On the Adreno
-	/// 650, above 23,684 pixels of draw rectangle. A run that holds such a draw keeps one state for all its draws.
-	inline bool LargeDraw(const DeviceClass& dc, u64 draw_area)
-	{
-		return static_cast<double>(dc.dear_px_ps) * static_cast<double>(draw_area) > static_cast<double>(dc.host_draw_ns) * 1000.0;
-	}
-
 	struct Draw
 	{
 		Refusal why = Refusal::None;
