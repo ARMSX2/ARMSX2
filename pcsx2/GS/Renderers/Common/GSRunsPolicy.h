@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSAlphaBitLogicOp.h"
 #include "GS/Renderers/Common/GSDevice.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -300,6 +301,97 @@ namespace GSRunsPolicy
 		d.way = static_cast<u32>(way);
 		return d;
 	}
+
+	/// Whether the run machine opens runs, decided from what the last frames' draws did. A title whose draws seldom form
+	/// runs gains nothing from the machine and still pays for the few runs it forms: each one's sets, binds and draw, then
+	/// the classic path binding all of its state again. On Turnip that is more command-stream bytes a frame, and Sly 3
+	/// (under half a percent of its draws merged) crossed the driver's 4 MiB stream line with them. So while the share of
+	/// draws that joined a run of two or more, over the last WINDOW frames the machine was awake, is under SLEEP_PERMILLE,
+	/// the machine is dormant: it opens no runs, and every draw takes the classic path, the same calls as with the machine
+	/// switched off. Every SAMPLE_PERIOD dormant frames it lets one frame form runs and wakes if that frame's share reaches
+	/// WAKE_PERMILLE, a higher line than the one it went to sleep under, so a title near either line does not flap.
+	class Dormancy
+	{
+	public:
+		static constexpr u32 WINDOW = 8;           ///< awake frames with draws that the share is taken over
+		static constexpr u32 SLEEP_PERMILLE = 30;  ///< 3%: under this over the window, go dormant
+		static constexpr u32 WAKE_PERMILLE = 150;  ///< 15%: a sample frame at or over this wakes the machine
+		static constexpr u32 SAMPLE_PERIOD = 120;  ///< dormant frames before the next sample frame (two seconds at 60)
+
+		/// Whether draws of the frame in hand may join runs.
+		bool OpensRuns() const { return m_state != State::Dormant; }
+
+		/// At the end of each frame. draws: the draws the machine saw while it could open runs; joined: those of them that
+		/// joined a run of two or more, or waited for their run's program to be built. A frame without draws decides
+		/// nothing.
+		void EndFrame(u32 draws, u32 joined)
+		{
+			switch (m_state)
+			{
+				case State::Awake:
+				{
+					if (draws == 0)
+						return;
+					m_draws[m_next] = draws;
+					m_joined[m_next] = joined;
+					m_next = (m_next + 1) % WINDOW;
+					m_filled = std::min(m_filled + 1, WINDOW);
+					if (m_filled < WINDOW)
+						return;
+					u64 d = 0, j = 0;
+					for (u32 i = 0; i < WINDOW; i++)
+					{
+						d += m_draws[i];
+						j += m_joined[i];
+					}
+					if (j * 1000 < d * SLEEP_PERMILLE)
+						Sleep();
+					return;
+				}
+				case State::Dormant:
+					if (++m_dormant_frames >= SAMPLE_PERIOD)
+						m_state = State::Sampling;
+					return;
+				case State::Sampling:
+					if (draws == 0)
+						return;
+					if (static_cast<u64>(joined) * 1000 >= static_cast<u64>(draws) * WAKE_PERMILLE)
+					{
+						// The sample is the new window's first frame.
+						m_state = State::Awake;
+						m_filled = 0;
+						m_next = 0;
+						EndFrame(draws, joined);
+					}
+					else
+					{
+						Sleep();
+					}
+					return;
+			}
+		}
+
+	private:
+		enum class State : u8
+		{
+			Awake,
+			Dormant,
+			Sampling, ///< one frame that may form runs, after SAMPLE_PERIOD dormant frames
+		};
+
+		void Sleep()
+		{
+			m_state = State::Dormant;
+			m_dormant_frames = 0;
+		}
+
+		State m_state = State::Awake;
+		u32 m_draws[WINDOW] = {};
+		u32 m_joined[WINDOW] = {};
+		u32 m_next = 0;
+		u32 m_filled = 0;
+		u32 m_dormant_frames = 0;
+	};
 
 	/// Which states a run holds one value of: those become constants of its program.
 	struct StateSet

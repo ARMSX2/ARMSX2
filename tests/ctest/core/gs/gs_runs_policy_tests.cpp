@@ -419,3 +419,104 @@ TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
 	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
 	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
 }
+
+namespace
+{
+	/// Feeds the policy frames of a fixed share (joined per thousand) of a fixed draw count; returns how many of them
+	/// could open runs.
+	u32 Frames(Dormancy& d, u32 frames, u32 draws, u32 joined_permille)
+	{
+		u32 open = 0;
+		for (u32 i = 0; i < frames; i++)
+		{
+			const bool opens = d.OpensRuns();
+			open += opens ? 1 : 0;
+			// A dormant frame forms no runs, so the machine sees no draws.
+			d.EndFrame(opens ? draws : 0, opens ? draws * joined_permille / 1000 : 0);
+		}
+		return open;
+	}
+} // namespace
+
+// The machine starts awake, and a title whose draws mostly join runs keeps it awake (Spider-Man 3: about 98%).
+TEST(GSRunsPolicy, DormancyStaysAwakeWhereRunsForm)
+{
+	Dormancy d;
+	EXPECT_TRUE(d.OpensRuns());
+	EXPECT_EQ(Frames(d, 1000, 4000, 980), 1000u);
+	// A stretch where runs form less, but above the line it sleeps under, does not put it to sleep.
+	EXPECT_EQ(Frames(d, 1000, 4000, Dormancy::SLEEP_PERMILLE), 1000u);
+}
+
+// A title whose runs hardly form (Sly 3: under half a percent; Tekken, Call of Duty 3: almost none) sleeps after one
+// window, and then opens runs only on one sample frame in every SAMPLE_PERIOD + 1.
+TEST(GSRunsPolicy, DormancySleepsWhereRunsDoNotForm)
+{
+	Dormancy d;
+	EXPECT_EQ(Frames(d, Dormancy::WINDOW, 2000, 5), Dormancy::WINDOW);
+	EXPECT_FALSE(d.OpensRuns());
+	const u32 cycles = 10;
+	EXPECT_EQ(Frames(d, cycles * (Dormancy::SAMPLE_PERIOD + 1), 2000, 5), cycles);
+
+	Dormancy none;
+	Frames(none, Dormancy::WINDOW, 2000, 0);
+	EXPECT_FALSE(none.OpensRuns());
+}
+
+// Asleep, a sample frame at or over the wake line wakes the machine, which then stays awake.
+TEST(GSRunsPolicy, DormancyWakesWhenASampleFormsRuns)
+{
+	Dormancy d;
+	Frames(d, Dormancy::WINDOW, 2000, 0);
+	ASSERT_FALSE(d.OpensRuns());
+	EXPECT_EQ(Frames(d, Dormancy::SAMPLE_PERIOD, 2000, 980), 0u);
+	EXPECT_TRUE(d.OpensRuns()); // the sample frame
+	EXPECT_EQ(Frames(d, 1000, 2000, 980), 1000u);
+}
+
+// Hysteresis: a title between the two lines stays in whichever state it is in, so it cannot flap.
+TEST(GSRunsPolicy, DormancyHysteresis)
+{
+	static_assert(Dormancy::SLEEP_PERMILLE < Dormancy::WAKE_PERMILLE);
+	const u32 between = (Dormancy::SLEEP_PERMILLE + Dormancy::WAKE_PERMILLE) / 2;
+
+	Dormancy awake;
+	EXPECT_EQ(Frames(awake, 2000, 3000, between), 2000u);
+
+	Dormancy asleep;
+	Frames(asleep, Dormancy::WINDOW, 3000, 0);
+	ASSERT_FALSE(asleep.OpensRuns());
+	const u32 cycles = 10;
+	EXPECT_EQ(Frames(asleep, cycles * (Dormancy::SAMPLE_PERIOD + 1), 3000, between), cycles);
+
+	// Just under the sleep line sleeps; at it, stays awake.
+	Dormancy under;
+	Frames(under, Dormancy::WINDOW, 1000, Dormancy::SLEEP_PERMILLE - 1);
+	EXPECT_FALSE(under.OpensRuns());
+	Dormancy at;
+	Frames(at, Dormancy::WINDOW, 1000, Dormancy::SLEEP_PERMILLE);
+	EXPECT_TRUE(at.OpensRuns());
+}
+
+// The share is of draws over the whole window, not an average of frames; frames without draws (a loading screen, a
+// repeated vsync) decide nothing, awake or sampling.
+TEST(GSRunsPolicy, DormancyWeighsDrawsAndIgnoresEmptyFrames)
+{
+	Dormancy d;
+	// Seven frames of 10 draws that all join, one of 10,000 that none join: 70 of 10,070, under the sleep line.
+	for (u32 i = 0; i < Dormancy::WINDOW - 1; i++)
+		d.EndFrame(10, 10);
+	for (u32 i = 0; i < 100; i++)
+		d.EndFrame(0, 0);
+	EXPECT_TRUE(d.OpensRuns());
+	d.EndFrame(10000, 0);
+	EXPECT_FALSE(d.OpensRuns());
+
+	Frames(d, Dormancy::SAMPLE_PERIOD, 10000, 0);
+	ASSERT_TRUE(d.OpensRuns());
+	for (u32 i = 0; i < 100; i++)
+		d.EndFrame(0, 0);
+	EXPECT_TRUE(d.OpensRuns()); // still the sample frame
+	d.EndFrame(10000, 0);
+	EXPECT_FALSE(d.OpensRuns());
+}

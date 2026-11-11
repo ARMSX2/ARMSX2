@@ -68,6 +68,9 @@ public:
 	void Flush(Why why);
 	/// At the end of a render pass, after Flush: the pass's line in the log (-runs-log).
 	void EndPass(u64 pass_serial);
+	/// At every vsync, outside a render pass (so no run is open): the frame's share of draws that joined runs decides
+	/// whether the next frame may open any (GSRunsPolicy::Dormancy).
+	void EndFrame();
 
 private:
 	explicit GSRunsVK(GSDeviceVK* dev);
@@ -171,6 +174,9 @@ private:
 	Run m_run;
 	Primed m_primed;
 	u64 m_draws = 0; ///< TFX draws classified
+	GSRunsPolicy::Dormancy m_dormancy;
+	u32 m_frame_draws = 0; ///< TFX draws of this frame seen while runs could open
+	u32 m_frame_joined = 0; ///< of those, draws in runs of two or more, or held back while their run's program builds
 	PassStats m_pass;
 	bool m_flushing = false;
 

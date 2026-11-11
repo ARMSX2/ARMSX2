@@ -3506,6 +3506,10 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 {
 	EndRenderPass();
 
+	// Every vsync, skipped or not: the run machine decides from the frame just finished whether the next may open runs.
+	if (m_runs)
+		m_runs->EndFrame();
+
 	// Check if the device was lost.
 	if (m_last_submit_failed)
 		return PresentResult::DeviceLost;

@@ -235,6 +235,11 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 	d.cand = false;
 	m_pass.tfx++;
 	m_draws++;
+	// Dormant: the draw takes the classic path, nothing of it is remembered. No run is open (runs end with their pass,
+	// and the machine sleeps only between frames).
+	if (!m_dormancy.OpensRuns())
+		return;
+	m_frame_draws++;
 	if (!m_log && (GSRunsPolicy::OutsidePS(config.ps) || GSRunsPolicy::OutsideVS(config.vs)))
 	{
 		m_pass.why[GSRunsPolicy::OutsideVS(config.vs) ? WHY_TOPO : WHY_PS]++;
@@ -487,6 +492,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		if (ProgramReady(config.depth.key, variant, states.Key()))
 			return true;
 		m_pass.why[WHY_COMPILING]++;
+		m_frame_joined++; // it would have joined: counted, so a title does not fall asleep while its programs build
 		Flush(END_COMPILING);
 		return false;
 	};
@@ -908,6 +914,8 @@ void GSRunsVK::Flush(Why why)
 	r.open = false;
 	if (r.ndraws == 0)
 		return;
+	if (r.ndraws > 1)
+		m_frame_joined += r.ndraws;
 	m_flushing = true;
 	m_pass.why[why]++;
 	m_pass.runs++;
@@ -972,4 +980,14 @@ void GSRunsVK::EndPass(u64 pass_serial)
 		std::fputc('\n', m_log);
 	}
 	m_pass = {};
+}
+
+void GSRunsVK::EndFrame()
+{
+	const bool opened = m_dormancy.OpensRuns();
+	m_dormancy.EndFrame(m_frame_draws, m_frame_joined);
+	if (m_log && (m_frame_draws || !opened))
+		std::fprintf(m_log, "F %u %u %u %u\n", m_frame_draws, m_frame_joined, opened ? 1u : 0u, m_dormancy.OpensRuns() ? 1u : 0u);
+	m_frame_draws = 0;
+	m_frame_joined = 0;
 }
