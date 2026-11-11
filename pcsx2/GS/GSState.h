@@ -240,10 +240,11 @@ protected:
 	using GSVertexBuff = GSBackQueue::VertexBuff;
 	using GSIndexBuff = GSBackQueue::IndexBuff;
 
-	GSVertexBuff m_vertex_buffers[MAX_DRAW_BUFFERS];
+	// Zeroed, so the constructor's first ResetDrawBuffers() frees nothing.
+	GSVertexBuff m_vertex_buffers[MAX_DRAW_BUFFERS] = {};
 	GSVertexBuff* m_vertex = nullptr;
 
-	GSIndexBuff m_index_buffers[MAX_DRAW_BUFFERS];
+	GSIndexBuff m_index_buffers[MAX_DRAW_BUFFERS] = {};
 
 	GSIndexBuff* m_index;
 
@@ -294,6 +295,9 @@ protected:
 
 	void UpdateVertexKick();
 
+	/// The most vertices a draw buffer slot may hold: 64 times a draw's own vertex limit (65,532 for most classes), so
+	/// only a runaway reaches it. GrowVertexBuffer fails loudly there instead of allocating.
+	static constexpr u32 MAX_VERTEX_CAPACITY = 1u << 22;
 	void GrowVertexBuffer();
 	bool IsAutoFlushDraw(u32 prim, int& tex_layer);
 	template <bool check_shuffle> bool IsAutoFlushDrawImpl(u32 prim, int& tex_layer);

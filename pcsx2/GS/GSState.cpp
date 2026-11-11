@@ -739,6 +739,12 @@ void GSState::ResetDrawBuffers()
 
 	for (int i = 0; i < MAX_DRAW_BUFFERS; i++)
 	{
+		// The slot's buffers are its own (a draw handed to the back queue took the slot's arrays and left the node's
+		// in exchange), and the reset runs after the back queue drained and the pending draw flushed, so nothing
+		// points into them any more. Free them before the slot is cleared, or every reset leaks a set.
+		_aligned_free(m_index_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff_copy);
 		memset(&m_index_buffers[i], 0, sizeof(GSIndexBuff));
 		memset(&m_vertex_buffers[i], 0, sizeof(GSVertexBuff));
 		memset(&m_env_buffers[i], 0, sizeof(GSDrawBufferEnv));
@@ -5857,18 +5863,28 @@ void GSState::UpdateVertexKick()
 
 void GSState::GrowVertexBuffer()
 {
-	const u32 maxcount = std::max<u32>(m_vertex->maxcount * 3 / 2, 10000);
-	const u32 old_vertex_size = sizeof(GSVertex) * m_vertex->tail;
-	const u32 new_vertex_size = sizeof(GSVertex) * maxcount;
-	const u32 old_index_size = sizeof(u16) * m_index->tail;
-	const u32 new_index_size = sizeof(u16) * maxcount * 6; // Worst case index list is a list of points with vs expansion, 6 indices per point
+	// Half as much again, at least the starting 10,000 vertices, in 64 bits so neither the capacity nor a size can
+	// wrap. Past the ceiling the request is a runaway (every caller grows only while it lacks room, so a caller
+	// asking for this much has lost track of its counts), and it fails here rather than allocate gigabytes.
+	const u64 want = std::max<u64>(static_cast<u64>(m_vertex->maxcount) * 3 / 2, 10000);
+	if (want > MAX_VERTEX_CAPACITY)
+	{
+		Console.Error("GS: the vertex buffer would grow to %llu vertices, past its ceiling of %u (tail %u, indices %u).",
+			static_cast<unsigned long long>(want), MAX_VERTEX_CAPACITY, m_vertex->tail, m_index->tail);
+		pxFailRel("GS: the vertex buffer would grow past its ceiling");
+	}
+	const u32 maxcount = static_cast<u32>(want);
+	const size_t old_vertex_size = sizeof(GSVertex) * static_cast<size_t>(m_vertex->tail);
+	const size_t new_vertex_size = sizeof(GSVertex) * static_cast<size_t>(maxcount);
+	const size_t old_index_size = sizeof(u16) * static_cast<size_t>(m_index->tail);
+	const size_t new_index_size = sizeof(u16) * static_cast<size_t>(maxcount) * 6; // Worst case index list is a list of points with vs expansion, 6 indices per point
 
 	// Structure describing buffers to reallocate
 	struct AllocDesc
 	{
 		void** pbuff;
-		u32 old_size;
-		u32 new_size;
+		size_t old_size;
+		size_t new_size;
 	};
 	// m_draw_vertex/m_draw_index are deliberately absent: they are staging arrays
 	// owned by EnsureDrawStaging, not parallel copies of these buffers. Sizing them
@@ -5882,7 +5898,7 @@ void GSState::GrowVertexBuffer()
 	}};
 
 	// For logging
-	u32 total_size = 0;
+	size_t total_size = 0;
 	for (const auto& desc : alloc_desc)
 		total_size += desc.new_size;
 
