@@ -79,7 +79,7 @@ void Threading::WorkSema::WaitForWorkWithSpin()
 	u32 waited = 0;
 	while (value < 0)
 	{
-		if (waited > SPIN_TIME_NS)
+		if (waited > GetSpinTimeNs())
 		{
 			if (!m_state.compare_exchange_weak(value, STATE_SLEEPING, std::memory_order_relaxed))
 				continue;
@@ -117,7 +117,7 @@ bool Threading::WorkSema::WaitForEmptyWithSpin()
 	{
 		if (value < 0)
 			return !IsDead(value); // STATE_SLEEPING or STATE_SPINNING, queue is empty!
-		if (waited > SPIN_TIME_NS && m_state.compare_exchange_weak(value, value | STATE_FLAG_WAITING_EMPTY, std::memory_order_acquire))
+		if (waited > GetSpinTimeNs() && m_state.compare_exchange_weak(value, value | STATE_FLAG_WAITING_EMPTY, std::memory_order_acquire))
 			break;
 		waited += ShortSpinOn(m_state, value);
 		value = m_state.load(std::memory_order_acquire);
@@ -156,7 +156,7 @@ void Threading::UserspaceSemaphore::WaitWithSpin()
 				return;
 			}
 		}
-		if (waited >= SPIN_TIME_NS)
+		if (waited >= GetSpinTimeNs())
 			break;
 		waited += ShortSpinOn(m_counter, counter);
 		counter = m_counter.load(std::memory_order_relaxed);

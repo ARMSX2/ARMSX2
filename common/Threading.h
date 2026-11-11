@@ -291,7 +291,7 @@ namespace Threading
 		}
 
 		/// Adaptive spin-before-block. Same semantics as Wait(), but spends up
-		/// to SPIN_TIME_NS in a userspace busy-wait checking the counter
+		/// to GetSpinTimeNs() in a userspace busy-wait checking the counter
 		/// before falling back to the kernel sema. Designed for high-frequency
 		/// producer-consumer pairs where the producer typically posts within
 		/// microseconds of the consumer's wait — avoids the futex syscall on

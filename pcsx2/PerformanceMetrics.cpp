@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "common/Console.h"
+#include "common/HostSys.h"
 #include "common/Timer.h"
 #include "common/Threading.h"
 
@@ -117,6 +119,30 @@ static u64 SampleIOPThreadCPUTime()
 	const u64 delta = (now > s_last_iop_time) ? (now - s_last_iop_time) : 0;
 	s_last_iop_time = now;
 	return delta;
+}
+
+// Threads that may run on fewer processors than their number take turns on them, and one that spins while it waits
+// holds a processor the thread it waits for may need. So waits spin only while each busy thread has one to itself.
+static void UpdateSpinWaits()
+{
+	u64 masks[4] = {s_cpu_thread_handle.GetAffinity(), MTGS::GetThreadHandle().GetAffinity(), 0, 0};
+	u32 threads = 2;
+	if (THREAD_VU1)
+		masks[threads++] = vu1Thread.GetThreadHandle().GetAffinity();
+	{
+		std::unique_lock lock(s_gs_back_thread_mutex);
+		if (s_gs_back_thread_handle)
+			masks[threads++] = s_gs_back_thread_handle.GetAffinity();
+	}
+
+	u64 processors = 0;
+	for (u32 i = 0; i < threads; i++)
+	{
+		if (masks[i] == 0)
+			return; // not readable here, so nothing is known
+		processors |= masks[i];
+	}
+	SetSpinWaitsEnabled(static_cast<u32>(std::popcount(processors)) >= threads);
 }
 
 #if defined(__ANDROID__)
@@ -437,6 +463,7 @@ void PerformanceMetrics::Update(bool gs_register_write, bool fb_blit, bool is_sk
 		load.busy[IopThread::kPrimeGSBack] = s_gs_back_thread_usage;
 		VMManager::Internal::UpdatePrimeCorePlacement(load);
 	}
+	UpdateSpinWaits();
 
 	for (GSSWThreadStats& thread : s_gs_sw_threads)
 	{

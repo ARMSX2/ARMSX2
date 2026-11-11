@@ -150,7 +150,7 @@ u32 ShortSpinOn(const std::atomic<s32>& word, s32 expected)
 	const u64 start = GetCPUTicks();
 	MonitoredWait(word, expected);
 	// Charge unmeasurably short waits as one tick, not zero: the caller
-	// accumulates this against SPIN_TIME_NS, and a zero would stall that count
+	// accumulates this against GetSpinTimeNs(), and a zero would stall that count
 	// forever.
 	const u64 elapsed = std::max<u64>(GetCPUTicks() - start, 1);
 	return static_cast<u32>((elapsed * 1000000000) / GetTickFrequency());
@@ -161,10 +161,13 @@ u32 ShortSpinOn(const std::atomic<s32>& word, s32 expected)
 #endif
 }
 
+static bool s_spin_time_fixed = false;
+
 static u32 GetSpinTime()
 {
 	if (char* req = getenv("WAIT_SPIN_MICROSECONDS"))
 	{
+		s_spin_time_fixed = true;
 		return 1000 * atoi(req);
 	}
 	else
@@ -173,7 +176,19 @@ static u32 GetSpinTime()
 	}
 }
 
-const u32 SPIN_TIME_NS = GetSpinTime();
+static const u32 s_default_spin_time_ns = GetSpinTime();
+static std::atomic<u32> s_spin_time_ns{s_default_spin_time_ns};
+
+u32 GetSpinTimeNs()
+{
+	return s_spin_time_ns.load(std::memory_order_relaxed);
+}
+
+void SetSpinWaitsEnabled(bool enabled)
+{
+	if (!s_spin_time_fixed)
+		s_spin_time_ns.store(enabled ? s_default_spin_time_ns : 0, std::memory_order_relaxed);
+}
 
 #ifdef __APPLE__
 // https://alastairs-place.net/blog/2013/01/10/interesting-os-x-crash-report-tidbits/

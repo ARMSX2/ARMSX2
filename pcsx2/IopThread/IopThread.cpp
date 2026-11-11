@@ -248,7 +248,7 @@ namespace IopThread
 	// Lockstep's wait for a request. `ready` re-reads everything that can end the wait after `sleeping`
 	// is set. Those wake-ups are never filtered by `sleeping` (hold release, call completion, Stop()) or,
 	// in Lockstep, are ordered by a seq_cst store and load on the EE side, so a seq_cst store here is
-	// enough. WorkSema spins for SPIN_TIME_NS before it blocks.
+	// enough. WorkSema spins for GetSpinTimeNs() before it blocks.
 	template <class Ready>
 	void Thread::ParkUntil(Ready&& ready)
 	{
@@ -861,7 +861,7 @@ namespace IopThread
 			else if ((iterations & (kSpinCheckInterval - 1)) == 0)
 			{
 				WakeIfParked(WakeSite::SpinPeriodic);
-				if (may_sleep && std::chrono::steady_clock::now() - begin >= std::chrono::nanoseconds(SPIN_TIME_NS))
+				if (may_sleep && std::chrono::steady_clock::now() - begin >= std::chrono::nanoseconds(GetSpinTimeNs()))
 					sleeping = true;
 			}
 		}

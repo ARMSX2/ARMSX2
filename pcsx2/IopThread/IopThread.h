@@ -22,7 +22,7 @@
 // None of them sleeps in the emulation path. Each spins with the CPU's yield hint, empties the
 // IOP-to-EE queue and runs CallOnEE functions on every iteration. The lag wait and the E2I-full wait
 // ask Params::should_stop every kSpinCheckInterval iterations; a hold never gives up (see ScopedHold).
-// A ScopedHold of kind Lifecycle may fall back to short sleeps after SPIN_TIME_NS, because pause,
+// A ScopedHold of kind Lifecycle may fall back to short sleeps after GetSpinTimeNs(), because pause,
 // savestate and reset are not on the emulation path.
 //
 // States of the IOP thread (Threaded)
@@ -208,7 +208,7 @@ namespace IopThread
 	/// What a hold is for. It only changes how the EE waits.
 	enum class HoldKind : u8
 	{
-		Lifecycle, // pause, savestate, reset, shutdown, settings: may sleep after SPIN_TIME_NS
+		Lifecycle, // pause, savestate, reset, shutdown, settings: may sleep after GetSpinTimeNs()
 		Emulation, // on the emulation path (EE access to IOP space, SIF pumps): spins, never sleeps
 	};
 
