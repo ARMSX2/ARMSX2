@@ -146,7 +146,8 @@ namespace
 				else
 				{
 					const size_t len = kSizes[m_rng() % (sizeof(kSizes) / sizeof(kSizes[0]))];
-					const u8* data = Block(RandomBlock()) + (m_rng() % 200); // not block aligned
+					// Not block aligned. The start stays far enough from the end of memory for the longest update.
+					const u8* data = Block(RandomBlock() % (kBlocksInMemory - 17)) + (m_rng() % 200);
 					GSXXH3_64bits_update(&hasher, data, len);
 					bytes.insert(bytes.end(), data, data + len);
 				}
