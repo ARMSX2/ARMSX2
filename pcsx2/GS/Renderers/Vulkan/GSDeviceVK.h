@@ -1188,10 +1188,9 @@ private:
 	// -readback-kick-passes moves it.
 	u32 m_readback_kick_passes = 8;
 	// Draws recorded since the last submit, and how many the kick lets pile up inside one render
-	// pass before it ends the pass to submit them (see DoRenderHW). Only gsrunner's
-	// -readback-kick-draws moves the spacing.
+	// pass before it ends the pass to submit them (see DoRenderHW).
 	u32 m_draws_since_submit = 0;
-	u32 m_readback_kick_draws = 64;
+	static constexpr u32 READBACK_KICK_DRAWS = 64;
 	u32 m_next_in_pass_kick_offer = 0;
 	// The in-pass kick's budget (see DoRenderHW): what the GS thread spent blocked on readbacks, per
 	// frame and averaged over recent frames, what it spent on kicks this frame, and what one kick costs.

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/HW/GSRendererHW.h"
-#include "GS/Renderers/HW/GSReadbackStats.h"
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
@@ -2883,20 +2882,7 @@ void GSRendererHW::Move()
 	// The CPU fallback below consumes the source out of local memory immediately, so it cannot
 	// work off a frame-old asynchronous snapshot. Only this uncommon fallback forces the read.
 	m_force_synchronous_local_readback = true;
-	{
-		GSReadbackStats::RequestScope rb_req("CPU-move");
-		GSRenderer::Move();
-		rb_req.Finish();
-		if (rb_req.live && GSReadbackStats::s_trace)
-		{
-			std::printf("@RBT@ request loop %d frame %d draw %llu site CPU-move sbp 0x%x sbw %u spsm 0x%x s %d,%d dbp 0x%x dbw %u dpsm 0x%x d %d,%d %dx%d "
-						"reads %llu round_trips %llu us %.0f\n",
-				GSReadbackStats::s_loop, GSReadbackStats::s_frame_no, static_cast<unsigned long long>(s_n),
-				m_env.BITBLTBUF.SBP, m_env.BITBLTBUF.SBW, m_env.BITBLTBUF.SPSM, sx, sy, m_env.BITBLTBUF.DBP, m_env.BITBLTBUF.DBW,
-				m_env.BITBLTBUF.DPSM, dx, dy, w, h, static_cast<unsigned long long>(rb_req.reads),
-				static_cast<unsigned long long>(rb_req.trips), rb_req.us);
-		}
-	}
+	GSRenderer::Move();
 	m_force_synchronous_local_readback = false;
 }
 

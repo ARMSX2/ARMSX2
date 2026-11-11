@@ -3,8 +3,6 @@
 
 #pragma once
 
-#include "GS/Renderers/HW/GSReadbackStats.h"
-
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
@@ -691,8 +689,6 @@ protected:
 		bool stash = false; // completes into m_read_stash instead of local memory
 		std::unique_ptr<GSDownloadTexture>* dltex = nullptr; // a shared texture, when the read does not own one
 		std::unique_ptr<GSDownloadTexture> owned; // from m_read_pool, for a batched read
-		GSReadbackStats::ReadTrace trace;
-		GSReadbackStats::Clock::time_point t0 = {};
 	};
 	enum class ReadIssue
 	{

@@ -26,8 +26,6 @@
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
-#include "GS/Renderers/HW/GSReadbackStats.h"
-#include "GS/GSXXH.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "VMManager.h"
 
@@ -682,20 +680,6 @@ void GSInitAndReadFIFO(u8* mem, u32 size)
 	GL_PERF("Init and read FIFO %u qwc", size);
 	GSParseTarget()->InitReadFIFO(mem, size);
 	GSParseTarget()->ReadFIFO(mem, size);
-	if (GSReadbackStats::s_enabled)
-	{
-		// The bytes the EE is handed: the identity gate of the readback lane compares these.
-		GSReadbackStats::s_frame.fifo_bytes += static_cast<u64>(size) * 16;
-		GSReadbackStats::s_frame.fifo_hash = GSReadbackStats::Combine(
-			GSReadbackStats::s_frame.fifo_hash, GSXXH3_64bits(mem, static_cast<size_t>(size) * 16));
-	}
-	if (GSReadbackStats::s_fifo_dump)
-	{
-		// Record: loop, frame in the dump, byte count, bytes.
-		const u32 head[3] = {static_cast<u32>(GSReadbackStats::s_loop), static_cast<u32>(GSReadbackStats::s_frame_no), size * 16};
-		std::fwrite(head, sizeof(head), 1, GSReadbackStats::s_fifo_dump);
-		std::fwrite(mem, 16, size, GSReadbackStats::s_fifo_dump);
-	}
 }
 
 void GSReadLocalMemoryUnsync(u8* mem, u32 qwc, u64 BITBLITBUF, u64 TRXPOS, u64 TRXREG)

@@ -9,7 +9,6 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
-#include "GS/Renderers/HW/GSReadbackStats.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/GSRunsVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
@@ -203,11 +202,6 @@ GSDeviceVK::GSDeviceVK()
 	{
 		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
 		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
-	}
-	if (g_gs_measurement_overrides.readback_kick_draws != 0)
-	{
-		m_readback_kick_draws = g_gs_measurement_overrides.readback_kick_draws;
-		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted draws in a pass", m_readback_kick_draws);
 	}
 }
 
@@ -2024,7 +2018,6 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	m_render_passes_since_submit = 0;
 	m_draws_since_submit = 0;
 	m_next_in_pass_kick_offer = 0;
-	GSReadbackStats::OnSubmit();
 
 	FrameResources& resources = m_frame_resources[m_current_frame];
 
@@ -2310,14 +2303,8 @@ void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
 		return;
 
 	const u32 current_frame = m_current_frame;
-	const bool rb_time = GSReadbackStats::s_enabled && wait_for_completion != WaitType::None;
-	GSReadbackStats::Clock::time_point rb_t0, rb_t1;
-	if (rb_time)
-		rb_t0 = GSReadbackStats::Clock::now();
 	SubmitCommandBuffer(nullptr);
 	MoveToNextCommandBuffer();
-	if (rb_time)
-		rb_t1 = GSReadbackStats::Clock::now();
 
 	if (wait_for_completion != WaitType::None)
 	{
@@ -2334,11 +2321,6 @@ void GSDeviceVK::ExecuteCommandBuffer(WaitType wait_for_completion)
 				ShortSpin();
 		}
 		WaitForCommandBufferCompletion(current_frame);
-		if (rb_time)
-		{
-			GSReadbackStats::s_last_submit_us = GSReadbackStats::Us(rb_t0, rb_t1);
-			GSReadbackStats::s_last_wait_us = GSReadbackStats::Us(rb_t1, GSReadbackStats::Clock::now());
-		}
 	}
 
 	// Push constants need to be refreshed each command buffer.
@@ -8953,7 +8935,6 @@ void GSDeviceVK::EndRenderPass()
 	m_current_render_pass = VK_NULL_HANDLE;
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 	m_render_passes_since_submit++;
-	GSReadbackStats::OnPass();
 	m_render_pass_serial++;
 
 	vkCmdEndRenderPass(GetCurrentCommandBuffer());
@@ -9646,8 +9627,6 @@ bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
 
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
-	GSReadbackStats::OnDraw();
-
 	// The run machine (GSRunsVK.h) decides whether this draw can join a run, and ends the open run if not, before
 	// anything below records a command.
 	if (m_runs)
@@ -9705,7 +9684,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// long (SOCOM II probes it after 807 draws in 4 passes, Metal Gear Solid 3 reads after an
 	// 826-draw pass, The Punisher after a 235-draw one) -- so a pass boundary never comes and the
 	// whole pass waits for the readback's submit. In a readback-prone frame the kick also ends a
-	// pass that has m_readback_kick_draws unsubmitted draws, so the GPU starts on it while the GS
+	// pass that has READBACK_KICK_DRAWS unsubmitted draws, so the GPU starts on it while the GS
 	// thread records the rest. Ending a pass changes no pixel: the next draw begins a new one that
 	// loads the targets. It costs a store and a load of the pass's attachments on a tiler, which is
 	// why it waits for that many draws rather than kicking at every one.
@@ -9727,7 +9706,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// in-pass kick is offered only while the measured cost of one more fits.
 	RollKickBudgetFrame();
 	const bool kick_affordable = (m_kick_ns_frame + m_kick_cost_ns) * 4 <= m_readback_block_ns_avg;
-	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= m_readback_kick_draws &&
+	const bool kick_in_pass = no_pass_state && m_draws_since_submit >= READBACK_KICK_DRAWS &&
 		m_draws_since_submit >= m_next_in_pass_kick_offer && kick_affordable;
 	if (near_readback && (kick_at_boundary || kick_in_pass))
 	{

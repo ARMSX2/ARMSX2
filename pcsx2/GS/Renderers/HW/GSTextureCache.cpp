@@ -11,7 +11,6 @@
 #include "GS/GSBlockId.h"
 #include "GS/GSXXH.h"
 #include "GSTargetRebase.h"
-#include "GSReadbackStats.h"
 #include "GSDepthFormatMove.h"
 
 #include "common/Console.h"
@@ -8722,24 +8721,7 @@ GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i&
 	if (!dltex->get())
 		return ReadIssue::None;
 
-	// Measurement scaffolding (gsrunner -readback-stats): the phases of this read.
-	op.trace.live = GSReadbackStats::s_enabled;
-	GSReadbackStats::Clock::time_point rb_t;
-	if (op.trace.live)
-	{
-		op.t0 = GSReadbackStats::Clock::now();
-		rb_t = op.t0;
-		op.trace.draws_pending = GSReadbackStats::s_draws_since_submit;
-		op.trace.passes_pending = GSReadbackStats::s_passes_since_submit;
-	}
-
 	g_gs_device->FlushBeforeReadback();
-	if (op.trace.live)
-	{
-		const GSReadbackStats::Clock::time_point now = GSReadbackStats::Clock::now();
-		op.trace.flush_draws_us = GSReadbackStats::Us(rb_t, now);
-		rb_t = now;
-	}
 
 	if (direct_read)
 	{
@@ -8762,9 +8744,6 @@ GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i&
 			return ReadIssue::None;
 		}
 	}
-
-	if (op.trace.live)
-		op.trace.record_us = GSReadbackStats::Us(rb_t, GSReadbackStats::Clock::now());
 
 	if (asynchronous)
 	{
@@ -8790,11 +8769,7 @@ void GSTextureCache::CompleteRead(ReadOp& op)
 	// A batched read owns its texture (op.dltex then pointed at the op's own member, which the move into
 	// the batch left behind).
 	GSDownloadTexture* const dl = op.owned ? op.owned.get() : op.dltex->get();
-	if (op.trace.live)
-		GSReadbackStats::s_read = &op.trace;
 	dl->Flush();
-	GSReadbackStats::s_read = nullptr;
-	const GSReadbackStats::Clock::time_point rb_mapped = op.trace.live ? GSReadbackStats::Clock::now() : GSReadbackStats::Clock::time_point();
 
 	if (dl->Map(op.drc))
 	{
@@ -8824,32 +8799,6 @@ void GSTextureCache::CompleteRead(ReadOp& op)
 
 	if (op.owned)
 		m_read_pool.push_back(std::move(op.owned));
-
-	if (op.trace.live)
-	{
-		GSReadbackStats::ReadTrace& rt = op.trace;
-		// A batched read is issued long before it completes: its own phases, not the time between.
-		rt.map_write_us = GSReadbackStats::Us(rb_mapped, GSReadbackStats::Clock::now());
-		const double total = rt.flush_draws_us + rt.record_us + rt.submit_us + rt.wait_us + rt.map_write_us;
-		GSReadbackStats::Counters& c = GSReadbackStats::s_frame;
-		c.reads++;
-		c.stashed += op.stash ? 1 : 0;
-		c.read_pixels += static_cast<u64>(op.r.width()) * static_cast<u64>(op.r.height());
-		c.flush_draws_us += rt.flush_draws_us;
-		c.record_us += rt.record_us;
-		c.map_write_us += rt.map_write_us;
-		if (GSReadbackStats::s_trace)
-		{
-			const Target* t = op.t;
-			std::printf("@RBT@ read loop %d frame %d draw %llu site %s %s bp 0x%x bw %u psm 0x%x scale %.2f rect %d,%d-%d,%d (%dx%d) %s %s "
-						"last_draw %llu pending draws %u passes %u round_trips %u us flush_draws %.0f record %.0f submit %.0f wait %.0f map_write %.0f total %.0f\n",
-				GSReadbackStats::s_loop, GSReadbackStats::s_frame_no, static_cast<unsigned long long>(g_gs_renderer->s_n),
-				GSReadbackStats::s_site ? GSReadbackStats::s_site : "?", t->m_type == DepthStencil ? "depth" : "colour",
-				op.TEX0.TBP0, op.TEX0.TBW, op.TEX0.PSM, t->m_scale, op.r.x, op.r.y, op.r.z, op.r.w, op.r.width(), op.r.height(),
-				op.direct ? "direct" : "convert", op.stash ? "stash" : "sync", static_cast<unsigned long long>(t->m_last_draw), rt.draws_pending,
-				rt.passes_pending, rt.round_trips, rt.flush_draws_us, rt.record_us, rt.submit_us, rt.wait_us, rt.map_write_us, total);
-		}
-	}
 }
 
 void GSTextureCache::WriteReadPixels(const GIFRegTEX0& TEX0, const GSVector4i& r, const GSVector4i& drc, u32 write_mask,
@@ -9023,8 +8972,6 @@ bool GSTextureCache::ServeReadFromStash(Target* t, const GSVector4i& r, u32 writ
 	WriteReadPixels(t->m_TEX0, r, drc, write_mask, st.cpu_convert_rgb5a1, st.bytes.data(), st.pitch);
 	st.used = true;
 	m_read_stash_stats.served++;
-	if (GSReadbackStats::s_enabled)
-		GSReadbackStats::s_frame.served++;
 	return true;
 }
 

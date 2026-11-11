@@ -3101,9 +3101,6 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthFormatMove.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\HW\GSReadbackStats.h">
-      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
-    </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>

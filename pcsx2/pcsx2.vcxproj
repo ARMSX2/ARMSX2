@@ -1095,7 +1095,6 @@
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthFormatMove.h" />
-    <ClInclude Include="GS\Renderers\HW\GSReadbackStats.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
