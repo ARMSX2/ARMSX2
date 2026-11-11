@@ -6,8 +6,6 @@
 #include "GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
-#include <string>
-
 /// Switches that move the Vulkan self-read road, or size the vertex ring, for an A/B. Only
 /// pcsx2-gsrunner sets them, from its command line, before the VM starts; the Vulkan backend
 /// reads them once, while it resolves its features and before any pipeline, image or render pass

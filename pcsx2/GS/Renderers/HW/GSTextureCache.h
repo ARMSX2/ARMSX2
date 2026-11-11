@@ -58,7 +58,7 @@ public:
 		u32 bw = 0;
 	};
 
-	/// Held pages made, materialised and dropped (MaterialiseHeldPages), for tests and the readback scaffolding.
+	/// Held pages made, materialised and dropped (MaterialiseHeldPages), for tests.
 	struct HeldStats
 	{
 		u64 held = 0;

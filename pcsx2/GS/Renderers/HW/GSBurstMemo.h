@@ -315,7 +315,7 @@ namespace GSBurstMemo
 		u64 m_budget_evictions = 0;
 	};
 
-	/// Counts for gsrunner's statistics.
+	/// Counts the memo's tests read.
 	struct Stats
 	{
 		u64 copy_draws = 0; ///< copy-road draws that ran
