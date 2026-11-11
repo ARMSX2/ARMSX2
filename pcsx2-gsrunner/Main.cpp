@@ -1324,8 +1324,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -runs <on|off>: The Vulkan run machine (GSRunsVK.h), on by default where the device has its "
 						 "features. off draws every draw on the classic path: the baseline of the machine's A/Bs and "
 						 "picture checks. Development switch, not a setting.\n");
-	std::fprintf(stderr, "  -runs-log <path>: Write the run machine's per-pass counts and its program compiles to "
-						 "<path>.\n");
 	std::fprintf(stderr, "  -no-provoking-vertex: Run as a device without VK_EXT_provoking_vertex, the way Qualcomm's "
 						 "stock Adreno driver does. Pipelines use the first-vertex default, so the provoking-first "
 						 "paths (software flat-shading fixup, expanded-line vertex shader) run on a device that has "
@@ -2057,11 +2055,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				g_gs_measurement_overrides.runs_off = std::strcmp(arg, "off") == 0;
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-runs-log"))
-			{
-				g_gs_measurement_overrides.runs_log = argv[++i];
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-vertex-ring-kib"))

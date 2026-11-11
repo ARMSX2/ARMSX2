@@ -8929,7 +8929,6 @@ void GSDeviceVK::EndRenderPass()
 	if (m_runs)
 	{
 		m_runs->Flush(GSRunsVK::END_PASS);
-		m_runs->EndPass(m_render_pass_serial);
 	}
 
 	m_current_render_pass = VK_NULL_HANDLE;

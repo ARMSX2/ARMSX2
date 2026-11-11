@@ -93,15 +93,6 @@ GSRunsVK::~GSRunsVK()
 		if (!m_dev->m_compile_queue.Cancel(job.ticket) && m_dev->m_compile_queue.IsDone(job.ticket) && job.result->pipeline)
 			vkDestroyPipeline(device, job.result->pipeline, nullptr);
 	}
-	if (m_log)
-	{
-		// The refusal census: each refusal's detail and how many draws it kept off the machine, largest first.
-		std::vector<std::pair<std::pair<u32, u64>, u64>> rs(m_refusals.begin(), m_refusals.end());
-		std::sort(rs.begin(), rs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
-		for (const auto& [k, n] : rs)
-			std::fprintf(m_log, "R %u %016llx %llu\n", k.first, static_cast<unsigned long long>(k.second), static_cast<unsigned long long>(n));
-		std::fclose(m_log);
-	}
 	for (auto& it : m_pipelines)
 		vkDestroyPipeline(device, it.second, nullptr);
 	for (auto& it : m_fs)
@@ -181,19 +172,6 @@ bool GSRunsVK::Init()
 		return false;
 	}
 
-	if (!g_gs_measurement_overrides.runs_log.empty())
-	{
-		m_log = std::fopen(g_gs_measurement_overrides.runs_log.c_str(), "w");
-		if (m_log)
-		{
-			static char s_buf[1 << 16];
-			std::setvbuf(m_log, s_buf, _IOFBF, sizeof(s_buf));
-			std::fprintf(m_log, "# K pass tfx merged runs runs_multi longest | road topo ps blend tex const not_in_pass compiling | "
-			                    "end_state end_target end_split end_pass end_other end_ring end_unmergeable end_textures end_compiling\n"
-			                    "# S pass spec variant draws textures changes(per state, draw to draw) draw_area(target px, by dear class 0..3)\n# C spec variant dss ms [sync] (a run program's pipeline, as the GS "
-			                    "thread takes it)\n");
-		}
-	}
 
 	m_class = &GSRunsPolicy::DeviceClassFor(m_dev->m_device_properties.deviceName);
 	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s)", m_max_textures, m_class->name,
@@ -233,24 +211,21 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 {
 	Draw& d = m_draw;
 	d.cand = false;
-	m_pass.tfx++;
 	m_draws++;
 	// Dormant: the draw takes the classic path, nothing of it is remembered. No run is open (runs end with their pass,
 	// and the machine sleeps only between frames).
 	if (!m_dormancy.OpensRuns())
 		return;
 	m_frame_draws++;
-	if (!m_log && (GSRunsPolicy::OutsidePS(config.ps) || GSRunsPolicy::OutsideVS(config.vs)))
+	if (GSRunsPolicy::OutsidePS(config.ps) || GSRunsPolicy::OutsideVS(config.vs))
 	{
-		m_pass.why[GSRunsPolicy::OutsideVS(config.vs) ? WHY_TOPO : WHY_PS]++;
 		if (m_run.open)
 			Flush(END_UNMERGEABLE);
 		return;
 	}
 	// A draw that cannot open a run (no run open, and the draw before it did not share its fixed state) is drawn
-	// classically and remembered, before it costs a classification. With -runs-log every draw is classified, for the
-	// refusal census, and Append primes it instead.
-	if (!m_log && !m_run.open && !FollowsSame(config, ~0u))
+	// classically and remembered, before it costs a classification.
+	if (!m_run.open && !FollowsSame(config, ~0u))
 	{
 		Prime(config);
 		return;
@@ -265,10 +240,6 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 	const GSRunsPolicy::Draw pd = GSRunsPolicy::Classify(config, tex, m_dev->GetColorClipTexture() != nullptr);
 	if (pd.why != GSRunsPolicy::Refusal::None)
 	{
-		static constexpr Why why[] = {WHY_ROAD, WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST};
-		m_pass.why[why[static_cast<u32>(pd.why)]]++;
-		if (m_log)
-			NoteRefusal(config, pd.why);
 		Flush(END_UNMERGEABLE);
 		return;
 	}
@@ -279,56 +250,6 @@ void GSRunsVK::Classify(const GSHWDrawConfig& config)
 
 	if (m_run.open && !Matches(config))
 		Flush(EndReason(config));
-}
-
-void GSRunsVK::NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why)
-{
-	// Detail per refusal kind (-runs-log only): road, the conditions that hold as bits; topology, the topology, expansion
-	// and VS bits; PS, the selector bits outside the run program's set (lo word, then hi word as a second record);
-	// blend, the blend state's key with the colour mask and the PS blend fields; texture, its format; constant, 0.
-	u64 detail = 0;
-	const GSHWDrawConfig::PSSelector& ps = config.ps;
-	switch (why)
-	{
-		case GSRunsPolicy::Refusal::Road:
-		{
-			const bool c[] = {config.stencil_counter.enable, config.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off,
-				config.require_one_barrier, config.require_full_barrier, config.blend_multi_pass.enable, config.alpha_second_pass.enable,
-				config.colormask.logic_op != GSAlphaBitLogicOp::Off, ps.colclip_hw || m_dev->GetColorClipTexture() != nullptr,
-				config.road.clone_rt, config.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE, config.line_expand,
-				ps.HasColorROV() || ps.HasDepthROV(), config.road.rt_loop, config.road.depth_loop, config.road.depth_read, config.raster_order,
-				config.date_copy != GSAlphaBitLogicOp::NoDateCopy, config.colclip_native_scale > 1.0f, !config.rt, false};
-			for (u32 i = 0; i < std::size(c); i++)
-				detail |= static_cast<u64>(c[i]) << i;
-			break;
-		}
-		case GSRunsPolicy::Refusal::Topo:
-			detail = static_cast<u64>(config.topology) | (static_cast<u64>(config.vs.key) << 8) | (static_cast<u64>(config.indices_per_prim) << 16);
-			break;
-		case GSRunsPolicy::Refusal::PS:
-		{
-			const GSHWDrawConfig::PSSelector& allowed = GSRunsPolicy::AllowedPS();
-			detail = ps.key_lo & ~allowed.key_lo;
-			if (ps.key_hi & ~allowed.key_hi)
-				m_refusals[{static_cast<u32>(why) | 0x100u, ps.key_hi & ~allowed.key_hi}]++;
-			if (ps.wms > 1 || ps.wmt > 1)
-				m_refusals[{static_cast<u32>(why) | 0x200u, (ps.wms << 2) | ps.wmt}]++;
-			if (static_cast<u32>(ps.atst) > 4 || config.pal)
-				m_refusals[{static_cast<u32>(why) | 0x300u, static_cast<u64>(ps.atst) | (config.pal ? 0x100 : 0)}]++;
-			break;
-		}
-		case GSRunsPolicy::Refusal::Blend:
-			detail = (config.blend.key & 0xFFFFFFFFull) | (static_cast<u64>(config.colormask.wrgba) << 32) |
-			         (static_cast<u64>(ps.blend_a | (ps.blend_b << 2) | (ps.blend_c << 4) | (ps.blend_d << 6) | (ps.blend_mix << 8) |
-			                           (ps.af_in_src1 << 10) | (ps.no_color1 << 11)) << 36);
-			break;
-		case GSRunsPolicy::Refusal::Tex:
-			detail = config.tex ? (static_cast<u64>(config.tex->GetFormat()) | (config.tex->IsRenderTargetOrDepthStencil() ? 0x100 : 0)) : 0xFFFF;
-			break;
-		default:
-			break;
-	}
-	m_refusals[{static_cast<u32>(why), detail}]++;
 }
 
 namespace
@@ -401,23 +322,6 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 		return END_SPLIT;
 	if (SplitAtDear(config))
 		return END_SPLIT;
-	if (m_log)
-	{
-		// -runs-log: which of the run's fixed state the draw changed (kind 0x40 in the refusal census).
-		const Run& r = m_run;
-		const GSHWDrawConfig::VSConstantBuffer& a = config.cb_vs;
-		const GSHWDrawConfig::VSConstantBuffer& b = r.cb_vs;
-		const bool c[] = {config.depth.key != r.dss, (config.vs.key & ~0x76u) != r.vs, !config.scissor.eq(r.scissor),
-			std::memcmp(&a.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) != 0,
-			std::memcmp(&a.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) != 0,
-			std::memcmp(&a.texture_offset, &b.texture_offset, sizeof(GSVector2)) != 0, a.max_depth != b.max_depth,
-			std::memcmp(&config.cb_ps.STScale, &r.st_scale, sizeof(GSVector2)) != 0, config.ps.rta_correction != r.rta,
-			config.ps.zfloor != r.zfloor, r.ndraws >= MAX_DRAWS};
-		u64 detail = 0;
-		for (u32 i = 0; i < std::size(c); i++)
-			detail |= static_cast<u64>(c[i]) << i;
-		m_refusals[{0x40u, detail}]++;
-	}
 	return END_STATE;
 }
 
@@ -454,7 +358,6 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 	if (!dev->InRenderPass() || dev->m_current_render_target != config.rt || (config.ds && dev->m_current_depth_target != config.ds) ||
 		dev->m_current_framebuffer_feedback_loop != GSDeviceVK::FeedbackLoopFlag_None || pipeline_feedback_flags != 0 || pipeline_colclip)
 	{
-		m_pass.why[WHY_NOT_IN_PASS]++;
 		Flush(END_UNMERGEABLE);
 		return false;
 	}
@@ -491,7 +394,6 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor, dev->m_current_depth_target == nullptr);
 		if (ProgramReady(config.depth.key, variant, states.Key()))
 			return true;
-		m_pass.why[WHY_COMPILING]++;
 		m_frame_joined++; // it would have joined: counted, so a title does not fall asleep while its programs build
 		Flush(END_COMPILING);
 		return false;
@@ -509,7 +411,6 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 	const bool sprites = config.vs.expand == GSHWDrawConfig::VSExpand::Sprite;
 	if (sprites && (config.nverts & 1 || config.nindices != config.nverts * 3))
 	{
-		m_pass.why[WHY_TOPO]++;
 		Flush(END_UNMERGEABLE);
 		return false;
 	}
@@ -690,20 +591,12 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 			r.idx_count = 0;
 			r.vbuf = vring.GetBuffer();
 		}
-		if (m_log && r.ndraws != 0)
-		{
-			for (u32 i = 0; i < GSRunsPolicy::NUM_STATES; i++)
-				r.changes[i] += GSRunsPolicy::Field(d.flags, i) != GSRunsPolicy::Field(r.last_flags, i);
-		}
-		r.last_flags = d.flags;
 		// The draw's area (the renderer's draw rectangle, clipped to the scissor, in target pixels), a ceiling on its
 		// fill: the split rule weighs the run's against the price of a host draw.
 		const u64 area = DrawArea(config);
 		r.area_total += area;
 		if (r.ndraws != 0 && GSRunsPolicy::Dear(d.flags) != r.dear)
 			r.dear_mixed = true;
-		if (m_log)
-			r.area[GSRunsPolicy::Dear(d.flags)] += area;
 		r.ndraws++;
 		m_primed.draw = m_draws;
 		m_primed.in_run = true;
@@ -813,11 +706,8 @@ bool GSRunsVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 	if (!queue.IsRunning())
 	{
 		// Built here and now, on the GS thread, only while the device has no compile queue.
-		const Common::Timer timer;
 		m_pipelines.emplace(key, CreatePipeline(dss, variant, spec));
 		m_compiles++;
-		if (m_log)
-			std::fprintf(m_log, "C %08x %u %u %.2f sync\n", spec, variant, dss, timer.GetTimeMilliseconds());
 		return true;
 	}
 
@@ -828,9 +718,7 @@ bool GSRunsVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 		Pending job;
 		job.result = std::make_shared<Result>();
 		job.ticket = queue.Submit(GSCompileQueue::Priority::Ahead, [this, dss, variant, spec, result = job.result]() {
-			const Common::Timer timer;
 			result->pipeline = CreatePipeline(dss, variant, spec);
-			result->ms = static_cast<float>(timer.GetTimeMilliseconds());
 		});
 		m_pending.emplace(key, std::move(job));
 		return false;
@@ -839,8 +727,6 @@ bool GSRunsVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 		return false;
 	m_pipelines.emplace(key, it->second.result->pipeline);
 	m_compiles++;
-	if (m_log)
-		std::fprintf(m_log, "C %08x %u %u %.2f\n", spec, variant, dss, it->second.result->ms);
 	m_pending.erase(it);
 	return true;
 }
@@ -906,7 +792,7 @@ VkDescriptorSet GSRunsVK::WriteTextureSet()
 	return set;
 }
 
-void GSRunsVK::Flush(Why why)
+void GSRunsVK::Flush(Why)
 {
 	Run& r = m_run;
 	if (!r.open || m_flushing)
@@ -917,27 +803,13 @@ void GSRunsVK::Flush(Why why)
 	if (r.ndraws > 1)
 		m_frame_joined += r.ndraws;
 	m_flushing = true;
-	m_pass.why[why]++;
-	m_pass.runs++;
-	m_pass.merged += r.ndraws;
-	m_pass.runs_multi += (r.ndraws > 1) ? 1 : 0;
-	m_pass.longest = std::max(m_pass.longest, r.ndraws);
 
 	GSDeviceVK* dev = m_dev;
 	const VkCommandBuffer cmd = dev->GetCurrentCommandBuffer();
 	// Way 2 alone needs no blending; any other way needs the dual-source blend.
 	const bool dual = (r.ways & ~(1u << 2)) != 0;
-	const u32 variant = Variant(dual, r.rta, r.zfloor, r.nods);
 	const VkPipeline pipeline = GetPipeline(dual);
 	const VkDescriptorSet set1 = WriteTextureSet();
-	if (m_log)
-	{
-		std::fprintf(m_log, "S %llu %08x %u %u %zu %u,%u,%u,%u,%u,%u,%u,%u %llu,%llu,%llu,%llu\n",
-			static_cast<unsigned long long>(dev->m_render_pass_serial), SpecKey(), variant, r.ndraws, m_textures.size(), r.changes[0],
-			r.changes[1], r.changes[2], r.changes[3], r.changes[4], r.changes[5], r.changes[6], r.changes[7],
-			static_cast<unsigned long long>(r.area[0]), static_cast<unsigned long long>(r.area[1]), static_cast<unsigned long long>(r.area[2]),
-			static_cast<unsigned long long>(r.area[3]));
-	}
 	g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	const u32 offsets[2] = {r.header_off, r.table_off};
@@ -969,25 +841,9 @@ void GSRunsVK::Flush(Why why)
 	m_flushing = false;
 }
 
-void GSRunsVK::EndPass(u64 pass_serial)
-{
-	if (m_log && (m_pass.tfx || m_pass.runs))
-	{
-		std::fprintf(m_log, "K %llu %u %u %u %u %u |", static_cast<unsigned long long>(pass_serial), m_pass.tfx, m_pass.merged,
-			m_pass.runs, m_pass.runs_multi, m_pass.longest);
-		for (u32 i = 0; i < WHY_COUNT; i++)
-			std::fprintf(m_log, (i == END_STATE) ? " | %u" : " %u", m_pass.why[i]);
-		std::fputc('\n', m_log);
-	}
-	m_pass = {};
-}
-
 void GSRunsVK::EndFrame()
 {
-	const bool opened = m_dormancy.OpensRuns();
 	m_dormancy.EndFrame(m_frame_draws, m_frame_joined);
-	if (m_log && (m_frame_draws || !opened))
-		std::fprintf(m_log, "F %u %u %u %u\n", m_frame_draws, m_frame_joined, opened ? 1u : 0u, m_dormancy.OpensRuns() ? 1u : 0u);
 	m_frame_draws = 0;
 	m_frame_joined = 0;
 }

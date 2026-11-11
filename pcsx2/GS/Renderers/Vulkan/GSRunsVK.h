@@ -12,7 +12,6 @@
 #include <array>
 #include <mutex>
 #include <cstdio>
-#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -36,14 +35,11 @@ class GSTextureVK;
 class GSRunsVK
 {
 public:
-	/// Why a draw could not join a run (counted per draw), and why a run ended (counted per run).
+	/// Why a run ended (each Flush says, for the reader of its call site).
 	enum Why : u32
 	{
-		WHY_ROAD, WHY_TOPO, WHY_PS, WHY_BLEND, WHY_TEX, WHY_CONST, WHY_NOT_IN_PASS,
-		WHY_COMPILING, ///< the run's program with this draw in it is still being built: the draw is drawn classically
-		WHY_DRAW_COUNT,
-		END_STATE = WHY_DRAW_COUNT, END_TARGET, END_SPLIT, END_PASS, END_OTHER, END_RING, END_UNMERGEABLE, END_TEXTURES,
-		END_COMPILING, WHY_COUNT
+		END_STATE, END_TARGET, END_SPLIT, END_PASS, END_OTHER, END_RING, END_UNMERGEABLE, END_TEXTURES,
+		END_COMPILING, ///< the run's program with the next draw in it is still being built: that draw is drawn classically
 	};
 
 	/// The machine on a device with the features it needs (descriptor indexing with non-uniform sampled-image
@@ -66,8 +62,6 @@ public:
 	bool Continue(const GSHWDrawConfig& config);
 	/// Records the open run's one host draw. A no-op without an open run, and while a flush is recording.
 	void Flush(Why why);
-	/// At the end of a render pass, after Flush: the pass's line in the log (-runs-log).
-	void EndPass(u64 pass_serial);
 	/// At every vsync, outside a render pass (so no run is open): the frame's share of draws that joined runs decides
 	/// whether the next frame may open any (GSRunsPolicy::Dormancy).
 	void EndFrame();
@@ -111,20 +105,12 @@ private:
 		u32 dear = 0;
 		bool nods = false; ///< the pass has no depth attachment
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
-		u32 last_flags = 0;
-		std::array<u32, GSRunsPolicy::NUM_STATES> changes{}; ///< -runs-log: how often each state changed between draws
-		std::array<u64, 4> area{}; ///< -runs-log: the draws' draw-rectangle area in target pixels, by dear class
 		u64 area_total = 0; ///< the draws' draw-rectangle area in target pixels
 		bool dear_mixed = false; ///< the run holds draws of more than one dear class
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
 	};
 
-	struct PassStats
-	{
-		u32 tfx = 0, merged = 0, runs = 0, runs_multi = 0, longest = 0;
-		std::array<u32, WHY_COUNT> why{};
-	};
 
 	struct FramePools // the runs' texture sets of one command buffer slot, reset when the slot is reused
 	{
@@ -156,7 +142,6 @@ private:
 	void Prime(const GSHWDrawConfig& config);
 	/// Whether the draw in hand ends the open run at a change of dear class (the device class's cost model).
 	bool SplitAtDear(const GSHWDrawConfig& config) const;
-	void NoteRefusal(const GSHWDrawConfig& config, GSRunsPolicy::Refusal why);
 	Why EndReason(const GSHWDrawConfig& config);
 	u32 SpecKey() const;
 	/// Any thread.
@@ -177,7 +162,6 @@ private:
 	GSRunsPolicy::Dormancy m_dormancy;
 	u32 m_frame_draws = 0; ///< TFX draws of this frame seen while runs could open
 	u32 m_frame_joined = 0; ///< of those, draws in runs of two or more, or held back while their run's program builds
-	PassStats m_pass;
 	bool m_flushing = false;
 
 	// The run's textures, one descriptor per distinct (view, sampler) pair, in first-use order.
@@ -207,7 +191,6 @@ private:
 	struct Result
 	{
 		VkPipeline pipeline = VK_NULL_HANDLE;
-		float ms = 0.0f;
 	};
 	struct Pending
 	{
@@ -218,7 +201,4 @@ private:
 	std::vector<FramePools> m_frame_pools;
 	u64 m_pool_fence = 0;
 	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
-	std::FILE* m_log = nullptr;
-	/// -runs-log's refusal census: (refusal kind, detail) -> draws.
-	std::map<std::pair<u32, u64>, u64> m_refusals;
 };

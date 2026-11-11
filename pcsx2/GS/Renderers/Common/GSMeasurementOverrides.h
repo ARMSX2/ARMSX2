@@ -82,9 +82,6 @@ struct GSMeasurementOverrides
 	/// baseline of the machine's A/Bs and of its picture checks.
 	bool runs_off = false;
 
-	/// -runs-log <path>: one line per render pass with the machine's counts, and one per compiled run program.
-	std::string runs_log;
-
 	GSLoopDeclarationSpelling LoopSpelling() const
 	{
 		return loop_create_flag ? GSLoopDeclarationSpelling::PipelineCreateFlag : kDefaultLoopDeclarationSpelling;
