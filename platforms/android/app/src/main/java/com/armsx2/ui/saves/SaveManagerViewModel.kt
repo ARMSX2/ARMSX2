@@ -104,7 +104,7 @@ class SaveManagerViewModel(application: Application) : AndroidViewModel(applicat
                     leave()
                     if (MainActivityRuntime.eState.value == EmuState.PAUSED) MainActivityRuntime.resume()
                 } else {
-                    fail(I18n.get("savestate.error.load"))
+                    fail(withContext(Dispatchers.IO) { withStateLoadReason(I18n.get("savestate.error.load")) })
                 }
             } else {
                 val onResult = { ok: Boolean ->

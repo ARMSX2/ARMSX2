@@ -4635,6 +4635,24 @@ static bool SaveStatesHaveName() {
     return VMManager::GetDiscCRC() != 0 || (Arcade::IsActive() && !VMManager::GetDiscSerial().empty());
 }
 
+// Why the core refused the last state load the frontend asked for (a memory size mismatch, a state from
+// another version), for the frontend's failure banner: the load is usually made from a menu over the
+// paused game, where an OSD message is never drawn. Empty when the last load was not refused by the core.
+static std::mutex s_state_load_error_mutex;
+static std::string s_state_load_error;
+
+static void SetStateLoadError(std::string reason) {
+    std::lock_guard lock(s_state_load_error_mutex);
+    s_state_load_error = std::move(reason);
+}
+
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getLastStateLoadError(JNIEnv *env, jclass clazz) {
+    std::lock_guard lock(s_state_load_error_mutex);
+    return env->NewStringUTF(s_state_load_error.c_str());
+}
+
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_saveStateToSlot(JNIEnv *env, jclass clazz, jint p_slot) {
@@ -4787,6 +4805,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
             reason, VMManager::GetDiscCRC(), VMManager::GetDiscSerial().c_str());
         return JNI_FALSE;
     };
+    SetStateLoadError({});
     if (!VMManager::HasValidVM())
         return fail("no_vm");
     const u32 _crc = VMManager::GetDiscCRC();
@@ -4813,9 +4832,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromSlot(JNIEnv *env, jclass clazz
         // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
         if (!VMManager::HasValidVM())
             return;
-        loaded = VMManager::LoadStateFromSlot(p_slot);
+        Error error;
+        loaded = VMManager::LoadStateFromSlot(p_slot, false, &error);
         if (loaded)
             MTGS::PresentCurrentFrame();
+        else
+            SetStateLoadError(error.GetDescription());
     }, /*block=*/true);
     return loaded;
 }
@@ -4841,6 +4863,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromFile(JNIEnv *env, jclass clazz
             reason, VMManager::GetDiscCRC(), VMManager::GetDiscSerial().c_str());
         return status;
     };
+    SetStateLoadError({});
     if (!VMManager::HasValidVM())
         return fail("no_vm", 0);
     if (!FileSystem::FileExists(path.c_str()))
@@ -4874,6 +4897,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadStateFromFile(JNIEnv *env, jclass clazz
         Error error;
         if (!VMManager::LoadState(path.c_str(), &error)) {
             Console.Error(fmt::format("loadStateFromFile: {}", error.GetDescription()));
+            SetStateLoadError(error.GetDescription());
             status = fail("load_failed", -1);
             return;
         }
@@ -5117,6 +5141,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_saveAutosaveState(JNIEnv *env, jclass clazz
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz) {
+    SetStateLoadError({});
     if (!VMManager::HasValidVM())
         return false;
     const u32 _crc = VMManager::GetDiscCRC();
@@ -5142,9 +5167,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveState(JNIEnv *env, jclass clazz
         // The VM can end while this waits in the queue (CloseCPUThreadQueue runs it then).
         if (!VMManager::HasValidVM())
             return;
-        loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE);
+        Error error;
+        loaded = VMManager::LoadStateFromSlot(VMManager::SAVESTATE_SLOT_AUTOSAVE, false, &error);
         if (loaded)
             MTGS::PresentCurrentFrame();
+        else
+            SetStateLoadError(error.GetDescription());
     }, /*block=*/true);
     return loaded;
 }
@@ -5238,6 +5266,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getAutosaveImageAt(JNIEnv *env, jclass claz
 extern "C"
 JNIEXPORT jboolean JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveStateAt(JNIEnv *env, jclass clazz, jint p_n) {
+    SetStateLoadError({});
     if (!VMManager::HasValidVM() || !SaveStatesHaveName() || p_n < 1 || p_n > kAutosaveKeepMax)
         return false;
     const std::string filename = AutosaveFileName(NewestAutosaveFileName(), p_n);
@@ -5257,10 +5286,12 @@ Java_kr_co_iefriends_pcsx2_NativeApp_loadAutosaveStateAt(JNIEnv *env, jclass cla
             return;
         Error error;
         loaded = VMManager::LoadState(filename.c_str(), &error);
-        if (loaded)
+        if (loaded) {
             MTGS::PresentCurrentFrame();
-        else
+        } else {
             Console.Error(fmt::format("loadAutosaveStateAt: {}", error.GetDescription()));
+            SetStateLoadError(error.GetDescription());
+        }
     }, /*block=*/true);
     return loaded;
 }

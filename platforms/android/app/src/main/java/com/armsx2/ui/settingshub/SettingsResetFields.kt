@@ -79,7 +79,7 @@ internal val SETTINGS_CATEGORY_FIELDS: Map<SettingsCategory, List<String>> = map
         "gamefixInstantDma", "gamefixOphFlag", "gamefixSkipMpeg",
         "gamefixSoftwareRendererFmv", "gamefixVif1Stall", "gamefixVuAddSub",
         "gamefixVuOverflow", "gamefixVuSync", "gamefixXgkick",
-        "enableFastmem", "recEE", "recIOP", "recVU0", "recVU1",
+        "enableFastmem", "recEE", "recIOP", "recVU0", "recVU1", "extraMemory",
         "alignSprite", "antiBlur", "autoFlush", "autoFlushSw", "bilinearUpscale", "cpuClutRender",
         "cpuFramebufferConversion", "cpuSpriteRenderBw", "cpuSpriteRenderLevel", "cropBottom",
         "cropLeft", "cropRight", "cropTop", "displayZoom", "disableDepthEmulation", "disableFramebufferFetch",
