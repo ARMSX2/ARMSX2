@@ -62,7 +62,6 @@
 #include "pcsx2/GS/GSPerfMon.h"
 #include "pcsx2/GS/GSXXH.h"
 #include "pcsx2/GS/Renderers/Common/GSRenderer.h"
-#include "pcsx2/GS/Renderers/HW/GSBurstMemo.h"
 #include "pcsx2/GS/Renderers/HW/GSDrawLog.h"
 #include "pcsx2/GS/Renderers/HW/GSTextureCache.h"
 #include "pcsx2/GS/Renderers/Null/GSDeviceNone.h"
@@ -1224,12 +1223,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
 						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <0|1>: GS multi-threading off or on (3 is accepted as on). Defaults to 0.\n");
-	std::fprintf(stderr, "  -burst-memo <on|off>: The burst memo (skips copy-road bursts that repeat) on, as always, or off for an A/B.\n");
 	std::fprintf(stderr, "  -lean <on|off|check>: Development switch of the lean draw path. 'on' is what ships; 'off' takes every "
 						 "walk the lean path skips; 'check' takes them after the lean path has said what they will do, prints "
 						 "LEAN-CHECK lines, and makes the run fail if it was ever wrong.\n");
-	std::fprintf(stderr, "  -burst-memo-control: The memo's negative control: every skipped draw writes a wrong byte into each "
-						 "block, so frames must differ wherever a skipped burst's output is shown.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
@@ -1678,17 +1674,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", mode ? 1 : 0);
 				continue;
 			}
-			else if (CHECK_ARG_PARAM("-burst-memo"))
-			{
-				const char* const value = argv[++i];
-				if (std::strcmp(value, "on") && std::strcmp(value, "off"))
-				{
-					ArgError("-burst-memo: expected on or off, got '{}'.", value);
-					return false;
-				}
-				GSBurstMemo::SetForcedOff(!std::strcmp(value, "off"));
-				continue;
-			}
 			else if (CHECK_ARG_PARAM("-lean"))
 			{
 				// Development scaffolding of the lean draw path, not a setting: see GSTextureCache::LeanMode.
@@ -1705,11 +1690,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 					return false;
 				}
 				s_lean_check = !std::strcmp(value, "check");
-				continue;
-			}
-			else if (CHECK_ARG("-burst-memo-control"))
-			{
-				GSBurstMemo::SetControlCorruption(true);
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-swthreads"))
@@ -2858,21 +2838,6 @@ void GSRunner::DumpStats()
 			block_hashes.levels, block_hashes.blocks, block_hashes.rehashed,
 			Ratio(block_hashes.rehashed, block_hashes.blocks),
 			block_hashes.rehashed * static_cast<double>(GS_BLOCK_SIZE) / frames / (1024.0 * 1024.0)));
-	}
-	// The burst memo: copy-road draws run and recorded, draws skipped, and why a burst stopped being skipped.
-	{
-		const GSBurstMemo::Stats& bm = GSBurstMemo::GlobalStats();
-		const double frames = static_cast<double>(std::max<u64>(s_total_drawn_frames, 1));
-		Console.WriteLn(fmt::format("@HWSTAT@ Burst Memo: {} copies run ({} recorded, {} not taken: a target was weighed, {} a block copy), {} skipped ({:.1f}% of copy-road "
-									"draws; {:.1f}/frame) in {} bursts; stops: packet {}, bytes {}, target {}, write {}, state {}; "
-									"{} installs, peak {:.1f} MB, {} evicted by age, {} by budget; {} packet checks, {} key checks over {} blocks; "
-									"{} of {} vertices in skipped draws; slabs held at most {:.1f} MB; {} invalidations waited, made as {}; "
-									"{} draws the road cannot take, by their registers; rested {} times",
-			bm.copy_draws, bm.recorded, bm.not_recorded_target, bm.not_recorded_block_copy, bm.hit_draws, Ratio(bm.hit_draws, bm.hit_draws + bm.copy_draws),
-			bm.hit_draws / frames, bm.sequences, bm.stop_packet, bm.stop_key, bm.stop_route, bm.stop_write, bm.stop_state,
-			bm.installs, bm.peak_bytes / 1048576.0, bm.evictions, bm.budget_evictions, bm.packet_checks, bm.key_checks, bm.key_blocks,
-			bm.hit_vertices, bm.draw_vertices, bm.pool_peak_bytes / 1048576.0,
-			bm.invalidations_waited, bm.invalidations_made, bm.not_copy_road, bm.rests));
 	}
 	// Marks of all of local memory (GSLocalMemory::MarkAllEvents): each one dirties every block, so a title that
 	// does it every frame rehashes and restages everything. Counted over the whole process.

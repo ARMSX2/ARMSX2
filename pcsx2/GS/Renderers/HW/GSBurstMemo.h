@@ -353,8 +353,8 @@ namespace GSBurstMemo
 	}
 	void ResetStats();
 
-	/// Measurement scaffolding, not a setting: the memo runs whenever its own preconditions hold, unless
-	/// gsrunner's -burst-memo off turns it off for an A/B. Read when the renderer refreshes the memo.
+	/// For tests only, not a setting: the memo runs whenever its own preconditions hold. The copy-road tests turn it
+	/// off to test the road alone. Read when the renderer refreshes the memo.
 	inline bool g_forced_off = false;
 	inline void SetForcedOff(bool off)
 	{
@@ -367,8 +367,7 @@ namespace GSBurstMemo
 
 	/// The negative control for the identity check: every skipped draw writes one wrong byte into each block
 	/// it writes (each, because a later draw of the burst rewrites the whole block). Frames that come out
-	/// identical with this on would mean the check cannot see a wrong skip. Off by default; gsrunner's
-	/// -burst-memo-control turns it on.
+	/// identical with this on would mean the check cannot see a wrong skip. For tests only; off by default.
 	inline bool g_control_corruption = false;
 	inline void SetControlCorruption(bool on)
 	{
