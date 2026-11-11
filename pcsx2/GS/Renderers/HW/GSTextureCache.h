@@ -635,7 +635,6 @@ protected:
 	HashMemo m_hash_memo;
 
 	static inline bool s_hash_memo_verify = false;
-	static inline u8 s_lean_mode = 0; ///< A LeanMode; see SetLeanMode().
 	struct HashMemoSweep;
 	std::unique_ptr<HashMemoSweep> m_hash_memo_sweep;
 
@@ -891,29 +890,6 @@ public:
 	/// Verify mode for the hash memo and the write stamps (pcsx2-gsrunner -verify-hash-memo), off by default.
 	/// While it is on, every memo hit also hashes the texture afresh and compares, and VerifyWriteStamps()
 	/// finds stores into local memory that nothing marked. Neither changes what the renderer does.
-	/// Development scaffolding of the lean draw path (pcsx2-gsrunner -lean), not a setting. On is what ships.
-	/// Off takes every walk the lean path would skip. Check takes them too, after the lean path has said what
-	/// they will do, and counts the times it was wrong.
-	enum class LeanMode : u8
-	{
-		On,
-		Off,
-		Check,
-	};
-
-	/// What check mode found. Totals over every cache of the process.
-	struct LeanReport
-	{
-		u64 target_calls = 0; ///< LookupDrawTarget calls.
-		u64 target_hits = 0; ///< Of those, answered from the front of the list.
-		u64 invalidate_calls = 0; ///< InvalidateVideoMem calls after a draw.
-		u64 invalidate_hits = 0; ///< Of those, with no source under the write.
-		u64 mismatches = 0; ///< Times the walk did something other than what the lean path said.
-	};
-
-	static void SetLeanMode(LeanMode mode);
-	static LeanReport GetLeanReport();
-
 	static void SetHashMemoVerify(bool enable);
 	static bool IsHashMemoVerify() { return s_hash_memo_verify; }
 	static HashMemoVerifyReport GetHashMemoVerifyReport();
@@ -1069,6 +1045,8 @@ public:
 	/// The target LookupDrawTarget's walk would return from the front of its list with nothing done to the
 	/// cache but three writes to that target, or null. See the definition for the conditions.
 	Target* FrontDrawTarget(const GIFRegTEX0& TEX0, float scale, int type, bool preserve_target, const GSVector4i& draw_rect) const;
+	/// The targets of one list (RenderTarget or DepthStencil), front first. For tests.
+	const FastList<Target*>& GetDst(int type) const { return m_dst[type]; }
 	/// The walk behind LookupDrawTarget.
 		Target* LookupDrawTargetWalk(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type, bool used, u32 fbmask,
 		bool preload, bool preserve_rgb, bool preserve_alpha,

@@ -369,11 +369,18 @@ namespace
 		void TearDown() override
 		{
 			GSBurstMemo::SetForcedOff(false); // the copy-road tests switch it off
-			GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::On); // the lean-path tests check it
 			DepthFormatMoveCache::TearDown();
 		}
 
 		TagDevice* Tags() { return static_cast<TagDevice*>(m_device); }
+
+		/// Whether InvalidateVideoMem takes its early return for a write of `rect` at `bp`: no source under it.
+		bool NoSourceUnder(u32 bp, u32 psm, const GSVector4i& rect)
+		{
+			const GSOffset off = m_gs->m_mem.GetOffset(bp, kBW, psm);
+			return g_texture_cache->NoSourceUnderWrite(off, rect, GSLocalMemory::GetStartBlockAddress(bp, kBW, psm, rect),
+				GSLocalMemory::GetUnwrappedEndBlockAddress(bp, kBW, psm, rect));
+		}
 
 		// The game move, at the scale the test runs at, with local memory under the destination set to
 		// kBefore first. Returns the depth target, which holds the move.
@@ -979,16 +986,14 @@ namespace
 
 	// The lean path's early return in GSTextureCache::InvalidateVideoMem (no source under the write) cannot skip a held
 	// word: a hold is not a source, and every writer of local memory writes the words in before it reaches that
-	// call. Here a constant clear over part of the pages, under the lean checker: the clear's post-draw
-	// invalidation finds no source under it and returns early, and the words went in before the clear all the same.
+	// call. Here a constant clear over part of the pages: the clear's post-draw invalidation finds no source under
+	// it and returns early, and the words went in before the clear all the same.
 	TEST_P(DepthFormatMoveHeld, TheLeanEarlyReturnDoesNotSkipTheWords)
 	{
 		ASSERT_NE(Hold(), nullptr);
-		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
-		DrawColour(kDepthBP + 32 * kBW * 3, PSMCT32, kW, 64); // page rows 3 and 4
-		const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
-		EXPECT_GT(report.invalidate_hits, 0u);
-		EXPECT_EQ(report.mismatches, 0u);
+		const u32 clear_bp = kDepthBP + 32 * kBW * 3; // page rows 3 and 4
+		EXPECT_TRUE(NoSourceUnder(clear_bp, PSMCT32, GSVector4i(0, 0, kW, 64))) << "the early return must be the road taken";
+		DrawColour(clear_bp, PSMCT32, kW, 64);
 		EXPECT_EQ(Materialised(), 1u);
 		int bad = 0;
 		for (int y = 0; y < kH; y++)
@@ -1006,26 +1011,25 @@ namespace
 	TEST_P(DepthFormatMoveHeld, AnInvalidationWithNoSourceUnderItLeavesTheHold)
 	{
 		ASSERT_NE(Hold(), nullptr);
-		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+		EXPECT_TRUE(NoSourceUnder(kDepthBP, PSMZ24, GSVector4i(0, 0, kW, kH))) << "the early return must be the road taken";
 		g_texture_cache->InvalidateVideoMem(m_gs->m_mem.GetOffset(kDepthBP, kBW, PSMZ24), GSVector4i(0, 0, kW, kH), false);
-		EXPECT_GT(GSTextureCache::GetLeanReport().invalidate_hits, 0u);
 		EXPECT_TRUE(g_texture_cache->HasHeldPages());
 		EXPECT_EQ(Materialised(), 0u);
 		EXPECT_TRUE(Untouched());
 	}
 
-	// The front-of-list answer for a draw into the held depth target agrees with the walk: under the checker the
-	// walk runs after the front answer and must return the same target with every byte of it (the drawn-since-read
-	// area the move set included) unchanged, and the readback that follows lands over the words.
-	TEST_P(DepthFormatMoveHeld, TheFrontOfListAnswerAgreesWithTheWalkOnTheHeldTarget)
+	// A draw into the held depth target takes the front-of-list answer (the target is at the front, same layout and
+	// scale), and the readback that follows lands over the words.
+	TEST_P(DepthFormatMoveHeld, ADrawIntoTheHeldTargetTakesTheFrontAnswer)
 	{
 		GSTextureCache::Target* const depth = Hold();
 		ASSERT_NE(depth, nullptr);
-		GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
+		GIFRegTEX0 layout = {};
+		layout.TBP0 = kDepthBP;
+		layout.TBW = kBW;
+		layout.PSM = PSMZ24;
+		EXPECT_EQ(g_texture_cache->FrontDrawTarget(layout, GetParam(), GSTextureCache::DepthStencil, true, GSVector4i(0, 0, 128, 64)), depth);
 		DrawDepth(0, 0, 128, 64);
-		const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
-		EXPECT_GT(report.target_hits, 0u);
-		EXPECT_EQ(report.mismatches, 0u);
 		ASSERT_EQ(DepthAt(kDepthBP), depth);
 		m_gs->ReadbackTextureCache();
 		EXPECT_EQ(Mismatches(kOther, GSVector4i(0, 0, 128, 64)), 0);

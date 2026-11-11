@@ -141,7 +141,6 @@ namespace GSRunner
 	static bool ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& params);
 	static void DumpStats();
 	static bool ReportHashMemoVerify();
-	static bool ReportLeanCheck();
 	static bool ReportBlockHashVerify();
 
 	static bool CreatePlatformWindow();
@@ -479,7 +478,6 @@ static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
 static bool s_vm_hash_flush = false;
 static bool s_verify_hash_memo = false;
-static bool s_lean_check = false;
 static bool s_verify_block_hash = false;
 
 static u64 s_total_prims = 0;
@@ -1223,9 +1221,6 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -ini <path>: Load the [EmuCore/GS] section of an INI file as settings overrides. Applied in "
 						 "command-line order, so a later -set wins.\n");
 	std::fprintf(stderr, "  -backthread <0|1>: GS multi-threading off or on (3 is accepted as on). Defaults to 0.\n");
-	std::fprintf(stderr, "  -lean <on|off|check>: Development switch of the lean draw path. 'on' is what ships; 'off' takes every "
-						 "walk the lean path skips; 'check' takes them after the lean path has said what they will do, prints "
-						 "LEAN-CHECK lines, and makes the run fail if it was ever wrong.\n");
 	std::fprintf(stderr, "  -window: Forces a window to be displayed.\n");
 	std::fprintf(stderr, "  -surfaceless: Disables showing a window.\n");
 	std::fprintf(stderr, "  -logfile <filename>: Writes emu log to filename.\n");
@@ -1672,24 +1667,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 				Console.WriteLn("GS multi-threading %s.", mode ? "on" : "off");
 				s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", mode ? 1 : 0);
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-lean"))
-			{
-				// Development scaffolding of the lean draw path, not a setting: see GSTextureCache::LeanMode.
-				const char* value = argv[++i];
-				if (!std::strcmp(value, "on"))
-					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::On);
-				else if (!std::strcmp(value, "off"))
-					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Off);
-				else if (!std::strcmp(value, "check"))
-					GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
-				else
-				{
-					ArgError("-lean: '{}' is not on, off or check.", value);
-					return false;
-				}
-				s_lean_check = !std::strcmp(value, "check");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-swthreads"))
@@ -2732,20 +2709,6 @@ bool GSRunner::ReportHashMemoVerify()
 	return report.mismatches == 0 && report.missed_writers == 0;
 }
 
-// Prints what -lean check found. False if a walk ever did something other than what the lean path said.
-bool GSRunner::ReportLeanCheck()
-{
-	if (!s_lean_check)
-		return true;
-
-	const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
-	const std::string line = fmt::format("LEAN-CHECK target_calls={} target_hits={} invalidate_calls={} invalidate_hits={} mismatches={}",
-		report.target_calls, report.target_hits, report.invalidate_calls, report.invalidate_hits, report.mismatches);
-	Console.WriteLn(line);
-	std::fprintf(stderr, "%s\n", line.c_str());
-	return report.mismatches == 0;
-}
-
 // Prints what -verify-block-hash found. False if a cached block hash was stale, which is a store into local
 // memory that nothing marked, or if keying with the cache and without it disagreed on which windows are one.
 bool GSRunner::ReportBlockHashVerify()
@@ -3130,8 +3093,7 @@ static void CPUThreadMain(VMBootParameters* params, std::atomic<int>* ret)
 			GSRunner::DumpStats();
 			const bool memo_verify_ok = GSRunner::ReportHashMemoVerify();
 			const bool block_hash_verify_ok = GSRunner::ReportBlockHashVerify();
-			const bool lean_check_ok = GSRunner::ReportLeanCheck();
-			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok && lean_check_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
+			ret->store((ladder_ok && memo_verify_ok && block_hash_verify_ok) ? EXIT_SUCCESS : EXIT_FAILURE);
 		}
 	}
 

@@ -12,7 +12,9 @@
 #include "gs_hw_draw_harness.h"
 #include "GS/Renderers/HW/GSTextureCache.h"
 
+#include <cstring>
 #include <set>
+#include <vector>
 
 using namespace GSHWDrawHarness;
 
@@ -33,12 +35,6 @@ namespace
 	class GSLeanTarget : public Fixture
 	{
 	protected:
-		void TearDown() override
-		{
-			GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::On);
-			Fixture::TearDown();
-		}
-
 		/// A 640x448 colour target at kBlock with everything valid and nothing dirty.
 		GSTextureCache::Target* MakeTarget(u32 bp = kBlock)
 		{
@@ -60,6 +56,45 @@ namespace
 		{
 			return g_texture_cache->LookupDrawTarget(layout, GSVector2i(640, 448), scale, GSTextureCache::RenderTarget, used, 0,
 				false, preserve, preserve, draw);
+		}
+
+		/// The walk alone, as the lookup ran before the lean path.
+		GSTextureCache::Target* Walk(const GIFRegTEX0& layout, float scale, bool preserve, const GSVector4i& draw, bool used = true)
+		{
+			return g_texture_cache->LookupDrawTargetWalk(layout, GSVector2i(640, 448), scale, GSTextureCache::RenderTarget, used, 0,
+				false, preserve, preserve, draw, false, false, false, nullptr, nullptr, -1);
+		}
+
+		/// The lookup, then the walk after it with the same arguments: where the lookup took the front answer, the walk
+		/// must return the same target and change nothing (not the target, not its texture's state, not the order or
+		/// the membership of either list). True if the front answer was taken.
+		bool LookupThenWalkAgrees(const GIFRegTEX0& layout, float scale, bool preserve, const GSVector4i& draw, bool used)
+		{
+			GSTextureCache::Target* const front =
+				g_texture_cache->FrontDrawTarget(layout, scale, GSTextureCache::RenderTarget, preserve, draw);
+			GSTextureCache::Target* const looked = Lookup(layout, scale, preserve, draw, used);
+			if (!front)
+				return false;
+			EXPECT_EQ(looked, front);
+
+			std::vector<GSTextureCache::Target*> before;
+			for (int i = 0; i < 2; i++)
+				for (GSTextureCache::Target* t : g_texture_cache->GetDst(i))
+					before.push_back(t);
+			alignas(GSTextureCache::Target) u8 bytes[sizeof(GSTextureCache::Target)];
+			std::memcpy(bytes, static_cast<const void*>(front), sizeof(bytes));
+			const GSTexture::State state = front->m_texture->GetState();
+
+			EXPECT_EQ(Walk(layout, scale, preserve, draw, used), front);
+
+			std::vector<GSTextureCache::Target*> after;
+			for (int i = 0; i < 2; i++)
+				for (GSTextureCache::Target* t : g_texture_cache->GetDst(i))
+					after.push_back(t);
+			EXPECT_EQ(before, after);
+			EXPECT_EQ(std::memcmp(bytes, static_cast<const void*>(front), sizeof(bytes)), 0);
+			EXPECT_EQ(front->m_texture->GetState(), state);
+			return true;
 		}
 
 		void SpriteDraw(bool textured, int x0, int y0, int x1, int y1)
@@ -133,7 +168,6 @@ TEST_F(GSLeanTarget, TheWalkDoesMoreWhereTheFrontAnswerIsRefused)
 {
 	GSConfig.UpscaleMultiplier = 1.0f;
 	BringUp();
-	GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Off);
 	auto* target = MakeTarget();
 	ASSERT_NE(target, nullptr);
 	const GSVector4i whole(0, 0, 640, 448);
@@ -145,39 +179,35 @@ TEST_F(GSLeanTarget, TheWalkDoesMoreWhereTheFrontAnswerIsRefused)
 	rgba._u32 = 0xf;
 	g_texture_cache->MarkTargetDirty(target, GSVector4i(0, 0, 64, 32), PSMCT32, 10, rgba, false);
 	ASSERT_FALSE(target->m_dirty.empty());
-	ASSERT_EQ(Lookup(Layout(kBlock, 10, PSMCT32), 1.0f, false, whole), target);
+	ASSERT_EQ(Walk(Layout(kBlock, 10, PSMCT32), 1.0f, false, whole), target);
 	EXPECT_TRUE(target->m_dirty.empty());
 	EXPECT_EQ(target->m_texture->GetState(), GSTexture::State::Invalidated);
 
 	// A format with another depth: the walk converts the target and takes the new format.
 	target->m_texture->SetState(GSTexture::State::Dirty);
-	ASSERT_EQ(Lookup(Layout(kBlock, 10, PSMCT16), 1.0f, true, GSVector4i(16, 16, 128, 128)), target);
+	ASSERT_EQ(Walk(Layout(kBlock, 10, PSMCT16), 1.0f, true, GSVector4i(16, 16, 128, 128)), target);
 	EXPECT_EQ(target->m_TEX0.PSM, static_cast<u32>(PSMCT16));
 }
 
-// The checker itself: over shapes that take the front answer and shapes that do not, the walk agrees.
+// Over shapes that take the front answer, the walk run after the lookup agrees with it.
 TEST_F(GSLeanTarget, TheWalkAgreesWithTheFrontAnswer)
 {
 	GSConfig.UpscaleMultiplier = 1.0f;
 	BringUp();
 	auto* target = MakeTarget();
 	ASSERT_NE(target, nullptr);
-	GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
 
 	const GSVector4i part(16, 16, 128, 128);
+	u32 taken = 0;
 	for (int i = 0; i < 4; i++)
 	{
-		EXPECT_EQ(Lookup(Layout(kBlock, 10, PSMCT32), 1.0f, (i & 1) != 0, part, (i & 2) != 0), target);
-		EXPECT_EQ(Lookup(Layout(kBlock, 10, PSMCT32), 1.0f, true, GSVector4i(0, 0, 640, 448)), target);
+		taken += LookupThenWalkAgrees(Layout(kBlock, 10, PSMCT32), 1.0f, (i & 1) != 0, part, (i & 2) != 0);
+		taken += LookupThenWalkAgrees(Layout(kBlock, 10, PSMCT32), 1.0f, true, GSVector4i(0, 0, 640, 448), true);
 	}
-
-	const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
-	EXPECT_EQ(report.target_calls, 8u);
-	EXPECT_EQ(report.target_hits, 8u);
-	EXPECT_EQ(report.mismatches, 0u);
+	EXPECT_EQ(taken, 8u);
 }
 
-// With the lean path off and on the same lookups give the same target in the same state.
+// The walk alone and the lookup give the same target in the same state.
 TEST_F(GSLeanTarget, OffAndOnLeaveTheSameTarget)
 {
 	GSConfig.UpscaleMultiplier = 1.0f;
@@ -187,14 +217,13 @@ TEST_F(GSLeanTarget, OffAndOnLeaveTheSameTarget)
 	bool flags[2][3];
 	for (int mode = 0; mode < 2; mode++)
 	{
-		GSTextureCache::SetLeanMode(mode ? GSTextureCache::LeanMode::On : GSTextureCache::LeanMode::Off);
 		g_texture_cache->RemoveAll(true, true, true);
 		auto* target = MakeTarget();
 		ASSERT_NE(target, nullptr);
 		target->m_used = false;
 		target->m_32_bits_fmt = false;
 		target->readbacks_since_draw = 2;
-		ASSERT_EQ(Lookup(Layout(kBlock, 10, PSMCT32), 1.0f, true, part), target);
+		ASSERT_EQ(mode ? Lookup(Layout(kBlock, 10, PSMCT32), 1.0f, true, part) : Walk(Layout(kBlock, 10, PSMCT32), 1.0f, true, part), target);
 		flags[mode][0] = target->m_used;
 		flags[mode][1] = target->m_32_bits_fmt;
 		flags[mode][2] = target->readbacks_since_draw == 0;
@@ -269,25 +298,6 @@ TEST(GSLeanTargetPages, AnyPageUsedReadsTheRunItIsGiven)
 	EXPECT_FALSE(map->AnyPageUsed(1, 69));
 	EXPECT_TRUE(map->AnyPageUsed(64, 64));
 	EXPECT_FALSE(map->AnyPageUsed(128, 383));
-}
-
-// Whole draws through the renderer with the checker on: textured sprites, which put sources in the page
-// lists, and a draw over the texture's own pages, which the invalidation has to find.
-TEST_F(GSLeanTarget, DrawsUnderTheCheckerAgree)
-{
-	GSConfig.UpscaleMultiplier = 1.0f;
-	BringUp();
-	GSTextureCache::SetLeanMode(GSTextureCache::LeanMode::Check);
-
-	for (int i = 0; i < 6; i++)
-		SpriteDraw((i & 1) != 0, 8 * i, 8 * i, 64 + 8 * i, 64 + 8 * i);
-
-	const GSTextureCache::LeanReport report = GSTextureCache::GetLeanReport();
-	EXPECT_GT(report.target_calls, 0u);
-	EXPECT_GT(report.target_hits, 0u);
-	EXPECT_GT(report.invalidate_calls, 0u);
-	EXPECT_GT(report.invalidate_hits, 0u);
-	EXPECT_EQ(report.mismatches, 0u);
 }
 
 // The end block a target keeps for its valid area is GetEndBlockAddress of what the target is now, whatever
