@@ -9,11 +9,9 @@
 #include "GS/Renderers/Common/GSVertex.h"
 
 #include <algorithm>
-#include <atomic>
 #include <bit>
 #include <limits>
 #include <type_traits>
-#include <vector>
 
 // The packed-vertex kick kernel for the fused GIF handlers.
 //
@@ -342,15 +340,6 @@ namespace GSVertexKickKernel
 		return k;
 	}
 
-	// Development scaffolding for gsrunner's -kick-decide-check, to be removed
-	// before the branch merges: how many calls the four-wide pass took, how many
-	// of them went to DecideVectorWide, and, when checking, how many disagreed
-	// with DecideVectorWide run on the same call.
-	inline std::atomic<bool> g_decide_check{false};
-	inline std::atomic<u64> g_decide_calls{0};
-	inline std::atomic<u64> g_decide_wide_calls{0};
-	inline std::atomic<u64> g_decide_mismatches{0};
-
 	alignas(16) inline constexpr u32 kDecideLaneMask[16][4] = {
 		{0, 0, 0, 0}, {~0u, 0, 0, 0}, {0, ~0u, 0, 0}, {~0u, ~0u, 0, 0},
 		{0, 0, ~0u, 0}, {~0u, 0, ~0u, 0}, {0, ~0u, ~0u, 0}, {~0u, ~0u, ~0u, 0},
@@ -450,7 +439,6 @@ namespace GSVertexKickKernel
 		const u32 low = keyed ? 15u : (kb.step - 1);
 		if (((static_cast<u32>(el | et | er | eb) | low) >> 16) != 0) [[unlikely]]
 		{
-			g_decide_wide_calls.fetch_add(1, std::memory_order_relaxed);
 			DecideVectorWide<n, keyed, every>(pxyz, step_bytes, count, period, kb, accept, out);
 			return;
 		}
@@ -982,108 +970,6 @@ namespace GSVertexKickKernel
 #endif
 	}
 
-	// Development scaffolding for gsrunner's -kick-convert-check, to be removed
-	// before the branch merges: the conversion pass as it stood before ConvertJobs
-	// was split into stretches, run beside ConvertJobs on every call into a buffer
-	// of its own, and a count of the calls whose vertices or bounds differ.
-	inline std::atomic<bool> g_convert_check{false};
-	inline std::atomic<u64> g_convert_calls{0};
-	inline std::atomic<u64> g_convert_vertices{0};
-	inline std::atomic<u64> g_convert_mismatches{0};
-
-	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
-	__forceinline_odr void ConvertJobsReference(const ConvertArgs& args)
-	{
-		const Invariants& inv = *args.inv;
-		const GIFPackedLayout off = inv.off;
-		const u32 stride = GSVertexKernels::LayoutStride<layout>(off);
-		const GIFPackedReg* RESTRICT rin = args.rin;
-		GSVertex* RESTRICT vbuff = args.vbuff;
-		GSVector4i carry = GSVector4i::zero();
-		if constexpr (GSVertexKernels::LayoutCarriesM0(layout))
-			carry = inv.carry_m0;
-		const u64 uvfog = inv.uvfog;
-		[[maybe_unused]] const GSVector4i clamp_keep = clamp ? inv.clamp_keep : GSVector4i::zero();
-		[[maybe_unused]] const GSVector4i clamp_shifted = clamp ? inv.clamp_shifted : GSVector4i::zero();
-		const GSVertexKernels::PackedParseConsts kc = GSVertexKernels::MakePackedParseConsts(inv.keep_gif_q);
-#ifdef ARCH_ARM64
-		[[maybe_unused]] const u32 shade = inv.shade;
-		[[maybe_unused]] const bool tme = (shade & 1u) != 0;
-		[[maybe_unused]] const bool fst = (shade & 2u) != 0;
-		[[maybe_unused]] const bool iip = (shade & 4u) != 0;
-		GSVertexKernels::FmmAcc a;
-		if constexpr (triangle)
-			a = *args.acc;
-#endif
-
-		GSVector4i m0, m1;
-		for (const ConvertJob* RESTRICT q = args.jobs; q != args.jobs_end; q++)
-		{
-			const GIFPackedReg* RESTRICT rv = rin + q->from * stride;
-			GSVertex* RESTRICT out = vbuff + q->slot;
-			u32 left = q->to - q->from;
-#ifdef ARCH_ARM64
-			[[maybe_unused]] u32 s = q->slot;
-			[[maybe_unused]] const u32 acc_slot = q->acc_slot;
-			[[maybe_unused]] const u32 colour_slot = q->colour_slot;
-#endif
-			do
-			{
-				GSVertexKernels::ParsePackedRecord_Fast<layout>(rv, off, uvfog, carry, kc, m0, m1);
-				if constexpr (clamp)
-					m1 = (m1 & clamp_keep) | (m1.srl32<8>() & clamp_shifted);
-
-				out->m[0] = m0;
-				out->m[1] = m1;
-
-#ifdef ARCH_ARM64
-				if constexpr (triangle)
-				{
-					if (s >= acc_slot)
-						GSVertexKernels::FmmAccumVertex(a, m0, m1, tme, fst, iip || s >= colour_slot);
-					s++;
-				}
-#endif
-				rv += stride;
-				out++;
-			} while (--left != 0);
-		}
-
-#ifdef ARCH_ARM64
-		if constexpr (triangle)
-			*args.acc = a;
-#endif
-	}
-
-	template <GSVertexKernels::PackedLayout layout, bool triangle, bool clamp>
-	__noinline void ConvertJobsChecked(const ConvertArgs& args)
-	{
-		static std::vector<GSVertex> ref;
-		u32 top = 0, vertices = 0;
-		for (const ConvertJob* q = args.jobs; q != args.jobs_end; q++)
-		{
-			top = std::max(top, q->slot + (q->to - q->from));
-			vertices += q->to - q->from;
-		}
-		if (ref.size() < top)
-			ref.resize(top);
-
-		GSVertexKernels::FmmAcc ref_acc = *args.acc;
-		ConvertArgs ref_args = args;
-		ref_args.vbuff = ref.data();
-		ref_args.acc = &ref_acc;
-		ConvertJobsReference<layout, triangle, clamp>(ref_args);
-		ConvertJobs<layout, triangle, clamp>(args);
-
-		bool same = !triangle || std::memcmp(&ref_acc, args.acc, sizeof(ref_acc)) == 0;
-		for (const ConvertJob* q = args.jobs; q != args.jobs_end; q++)
-			same = same && std::memcmp(&ref[q->slot], &args.vbuff[q->slot], (q->to - q->from) * sizeof(GSVertex)) == 0;
-		g_convert_calls.fetch_add(1, std::memory_order_relaxed);
-		g_convert_vertices.fetch_add(vertices, std::memory_order_relaxed);
-		if (!same)
-			g_convert_mismatches.fetch_add(1, std::memory_order_relaxed);
-	}
-
 	// ------------------------------------------------------------------------
 	// The kernel. `prim` is one of GS_TRIANGLESTRIP / GS_TRIANGLELIST /
 	// GS_SPRITE; `layout` says where the record's descriptors sit and which of
@@ -1182,21 +1068,6 @@ namespace GSVertexKickKernel
 				DecideVector<n, true, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
 			else
 				DecideVector<n, false, strip>(pxyz, step_bytes, count, period, kb, accept, vd);
-			if (g_decide_check.load(std::memory_order_relaxed)) [[unlikely]]
-			{
-				u64 wide_accept[2];
-				VectorDecided wide = vd;
-				if (band_shift == 0)
-					DecideVectorWide<n, true, strip>(pxyz, step_bytes, count, period, kb, wide_accept, wide);
-				else
-					DecideVectorWide<n, false, strip>(pxyz, step_bytes, count, period, kb, wide_accept, wide);
-				g_decide_calls.fetch_add(1, std::memory_order_relaxed);
-				if (wide_accept[0] != accept[0] || wide_accept[1] != accept[1] || wide.any != vd.any ||
-					(vd.any && (wide.minx != vd.minx || wide.miny != vd.miny || wide.maxx != vd.maxx || wide.maxy != vd.maxy)))
-				{
-					g_decide_mismatches.fetch_add(1, std::memory_order_relaxed);
-				}
-			}
 			if (vd.any)
 			{
 				const GSVector4i bbox = GSVertexKernels::RoundCullRect<primclass>(
@@ -1447,14 +1318,7 @@ namespace GSVertexKickKernel
 		if (job != jobs)
 		{
 			const ConvertArgs args = {rin, vbuff, jobs, job, &acc, &inv};
-			if (g_convert_check.load(std::memory_order_relaxed)) [[unlikely]]
-			{
-				if (inv.clamp_enabled)
-					ConvertJobsChecked<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
-				else
-					ConvertJobsChecked<layout, primclass == GS_TRIANGLE_CLASS, false>(args);
-			}
-			else if (inv.clamp_enabled)
+			if (inv.clamp_enabled)
 				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, true>(args);
 			else
 				ConvertJobs<layout, primclass == GS_TRIANGLE_CLASS, false>(args);

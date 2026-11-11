@@ -50,7 +50,6 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/GS.h"
-#include "pcsx2/GS/GSVertexKickKernel.h"
 #include "pcsx2/GS/Renderers/Common/GSDevice.h"
 #include "pcsx2/GS/Renderers/HW/GSTextureCache.h"
 #include "pcsx2/GS/Renderers/Common/GSGPUProfile.h"
@@ -482,8 +481,6 @@ static u64 s_total_sprite_edge_clamp_draws = 0;
 static double s_last_sw_palette_block_copies = 0;
 static u64 s_total_sw_palette_block_copies = 0;
 static bool s_vm_hash = false;
-static bool s_kick_decide_check = false;
-static bool s_kick_convert_check = false;
 static bool s_vm_hash_flush = false;
 static bool s_verify_hash_memo = false;
 static bool s_lean_check = false;
@@ -1713,20 +1710,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_settings_interface.SetIntValue("EmuCore/GS", "GSBackThreadMode", mode ? 1 : 0);
 				continue;
 			}
-#ifdef ARCH_ARM64
-			else if (CHECK_ARG("-kick-convert-check"))
-			{
-				GSVertexKickKernel::g_convert_check.store(true);
-				s_kick_convert_check = true;
-				continue;
-			}
-			else if (CHECK_ARG("-kick-decide-check"))
-			{
-				GSVertexKickKernel::g_decide_check.store(true);
-				s_kick_decide_check = true;
-				continue;
-			}
-#endif
 			else if (CHECK_ARG_PARAM("-burst-memo"))
 			{
 				const char* const value = argv[++i];
@@ -2874,20 +2857,6 @@ void GSRunner::DumpStats()
 	// for them -- those print "n/a" here rather than a fabricated 0.0 that a parser could read
 	// as "measured zero cost."
 	const char* const na = "n/a";
-#ifdef ARCH_ARM64
-	if (s_kick_convert_check)
-	{
-		Console.WriteLn(fmt::format("KICK CONVERT CHECK: {} calls checked, {} differ, {} vertices converted",
-			GSVertexKickKernel::g_convert_calls.load(), GSVertexKickKernel::g_convert_mismatches.load(),
-			GSVertexKickKernel::g_convert_vertices.load()));
-	}
-	if (s_kick_decide_check)
-	{
-		Console.WriteLn(fmt::format("KICK DECIDE CHECK: {} calls checked, {} differ, {} taken by the wide pass",
-			GSVertexKickKernel::g_decide_calls.load(), GSVertexKickKernel::g_decide_mismatches.load(),
-			GSVertexKickKernel::g_decide_wide_calls.load()));
-	}
-#endif
 	Console.WriteLn(fmt::format("======= HW STATISTICS FOR {} ({}) FRAMES ========", s_total_frames, s_total_drawn_frames));
 	Console.WriteLn(fmt::format("@HWSTAT@ Prims: {} (avg {})", s_total_prims, static_cast<u64>(std::ceil(s_total_prims / static_cast<double>(s_total_drawn_frames)))));
 	Console.WriteLn(fmt::format("@HWSTAT@ Draws: {} (avg {})", s_total_internal_draws, static_cast<u64>(std::ceil(s_total_internal_draws / static_cast<double>(s_total_drawn_frames)))));
