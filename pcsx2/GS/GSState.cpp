@@ -552,7 +552,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZ2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZF2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZF2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_SINGLEXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::SingleXYZ2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2999,7 +3001,8 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 			}
 
 			const GIFPackedReg* RESTRICT rv = r + done * stride;
-			ReplayPackedQword(reg_a, rv + off_a);
+			if constexpr (GSVertexKernels::LayoutHasA(layout))
+				ReplayPackedQword(reg_a, rv + off_a);
 			if constexpr (GSVertexKernels::LayoutHasSeparateRgba(layout))
 				ReplayPackedQword(GIF_REG_RGBA, rv + off_rgba);
 			ReplayPackedQword(reg_xyz, rv + off_xyz);

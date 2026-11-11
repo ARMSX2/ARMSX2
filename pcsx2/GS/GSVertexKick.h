@@ -202,6 +202,7 @@ namespace GSVertexKernels
 		PairUVXYZF2,    // {UV, XYZF2}: ST, colour and Q carried, fog from the record
 		NopTripleXYZ2,  // {ST, RGBAQ, XYZ2} with NOP descriptors between them
 		PairRGBAQXYZF2, // {RGBAQ, XYZF2}: ST carried, Q from the latch
+		SingleXYZ2,     // {XYZ2} alone: ST, colour, Q and UV carried
 	};
 
 	constexpr bool LayoutIsXYZF2(PackedLayout l)
@@ -244,6 +245,8 @@ namespace GSVertexKernels
 	}
 	// Whether the parse needs the carried m[0].
 	constexpr bool LayoutCarriesM0(PackedLayout l) { return !LayoutIsTriple(l); }
+	// Whether the record has a descriptor ahead of its position (ST, UV or RGBAQ).
+	constexpr bool LayoutHasA(PackedLayout l) { return l != PackedLayout::SingleXYZ2; }
 
 	template <PackedLayout L>
 	__forceinline_odr u32 LayoutStride(const GIFPackedLayout& o)
@@ -467,7 +470,8 @@ namespace GSVertexKernels
 			}
 			else
 			{
-				static_assert(L == PackedLayout::PairUVXYZ2 || L == PackedLayout::PairUVXYZF2);
+				static_assert(L == PackedLayout::PairUVXYZ2 || L == PackedLayout::PairUVXYZF2 ||
+					L == PackedLayout::SingleXYZ2);
 				m0 = carry;
 			}
 

@@ -132,16 +132,18 @@ namespace
 		LAYOUT_ROW(pass, PackedLayout::PairUVXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZ2), \
 		LAYOUT_ROW(pass, PackedLayout::UvTripleXYZF2), LAYOUT_ROW(pass, PackedLayout::PairUVXYZF2), \
 		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZF2), \
+		LAYOUT_ROW(pass, PackedLayout::SingleXYZ2), \
 	}
 
-	constexpr u32 kLayouts = 10;
+	constexpr u32 kLayouts = 11;
 
 	// [layout][triangle][clamp]
 	constexpr PassFn kNewPass[kLayouts][2][2] = PASS_TABLE(NewPass);
 	constexpr PassFn kOldPass[kLayouts][2][2] = PASS_TABLE(OldPass);
 
 	constexpr const char* kLayoutNames[kLayouts] = {"TripleXYZF2", "TripleXYZ2", "NopTripleXYZF2", "PairSTQXYZ2",
-		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2", "NopTripleXYZ2", "PairRGBAQXYZF2"};
+		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2", "NopTripleXYZ2", "PairRGBAQXYZF2",
+		"SingleXYZ2"};
 
 	// std::mt19937 with a 32-bit result, which is what it produces.
 	struct Rng
@@ -234,6 +236,11 @@ namespace
 		if (GSVertexKernels::LayoutIsContiguousTriple(l))
 		{
 			inv.off = {3, 0, 1, 2};
+		}
+		else if (!GSVertexKernels::LayoutHasA(l))
+		{
+			const u32 stride = 1 + rng() % 6;
+			inv.off = {stride, 0, 0, rng() % stride};
 		}
 		else
 		{
@@ -646,7 +653,7 @@ TEST(GsKickConvert, RecordUVIsMaskedAndTheRestIsCarried)
 			{
 				EXPECT_EQ(v.FOG, 0xA5A5A5A5u) << kLayoutNames[layout];
 			}
-			if (l == PackedLayout::PairUVXYZ2 || l == PackedLayout::PairUVXYZF2)
+			if (l == PackedLayout::PairUVXYZ2 || l == PackedLayout::PairUVXYZF2 || l == PackedLayout::SingleXYZ2)
 			{
 				EXPECT_EQ(std::memcmp(&v.m[0], &inv.carry_m0, 16), 0) << kLayoutNames[layout];
 			}
