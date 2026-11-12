@@ -60,15 +60,17 @@ object CustomDriver {
         val supports: (renderer: String?) -> Boolean,
     )
 
-    /** The GPUs our MaliSX2 packs drive: Mali Valhall v9 (G57, G68, G77, G78 — G78AE included) and
-     *  v11 (G615, G715 — Immortalis-G715 included), plus the Bifrost v7 parts malisx2 accepts: the
-     *  Mali-G52 and the Mali-G76. Not v10 (G310/G510/G610/G710), not the other Bifrost parts, not
-     *  Midgard or the 5th-gen parts. GL_RENDERER reads like "Mali-G57 MC2" or
+    /** The GPUs our MaliSX2 packs drive: Mali Valhall v9 (G57, G68, G77, G78 — G78AE included),
+     *  v10 (G610, G710) and v11 (G615, G715 — Immortalis-G715 included), plus the Bifrost v7 parts
+     *  malisx2 accepts: the Mali-G52 and the Mali-G76. Not the other v10 parts (G310, G510), not the
+     *  other Bifrost parts, not Midgard or the 5th-gen parts. GL_RENDERER reads like "Mali-G57 MC2" or
      *  "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a longer
      *  model number from matching on its prefix. Both Bifrost parts are accepted as of malisx2
      *  0.3.1: the G52 at any arch minor and revision, the G76 at product id 0x7211 (measured,
-     *  Mesa's PAN_PROD_ID(7, 2, 1)). The other arch 7 parts are skipped by the driver. */
-    private val MALISX2_SUPPORTED_MALI = Regex("""\bG(?:52|57|68|76|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
+     *  Mesa's PAN_PROD_ID(7, 2, 1)). The other arch 7 parts are skipped by the driver. The G610
+     *  (product 0xa007) and G710 (0xa002) need the first malisx2 release after 0.4.1; 0.4.1 and
+     *  older skip them. */
+    private val MALISX2_SUPPORTED_MALI = Regex("""\bG(?:52|57|68|76|77|78|610|615|710|715)(?!\d)""", RegexOption.IGNORE_CASE)
     internal fun isMaliSX2Supported(renderer: String?): Boolean =
         renderer != null &&
             (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&
