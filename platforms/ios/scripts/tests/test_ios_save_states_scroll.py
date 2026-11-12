@@ -7,6 +7,7 @@ from ios_source import block, read, swift, without_comments
 
 NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
 PANEL = swift("SaveStatesPanel.swift")
+GRAPH = swift("SaveStateGraph.swift")
 
 
 class SaveStatesScroll(unittest.TestCase):
@@ -20,7 +21,7 @@ class SaveStatesScroll(unittest.TestCase):
         self.assertNotIn("origin: scrollView.contentOffset", check)
 
     def test_the_first_and_last_slots_wrap_only_on_a_new_press(self):
-        graph = block(without_comments(read(PANEL)), "init(rows: [[Target]], wraps: Bool = true)")
+        graph = block(without_comments(read(GRAPH)), "init(rows: [[Target]], wraps: Bool = true)")
         self.assertIn("requiresFreshPress: true", graph)
         self.assertIn("nearest(in: above, to: target.column)", graph)
         self.assertIn("confinesHorizontalFocusMovement: true", read(PANEL))

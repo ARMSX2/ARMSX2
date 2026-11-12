@@ -7,6 +7,7 @@ from ios_source import block, read, swift, without_comments
 
 LIBRARY = swift("GameListView.swift")
 OVERLAYS = swift("ControllerGameContextMenu.swift")
+ALERT = swift("ControllerNavigationAlert.swift")
 
 
 class CardTextFollowsLargerText(unittest.TestCase):
@@ -31,7 +32,7 @@ class PromptsAreModal(unittest.TestCase):
     library behind them, and the scrub gesture did not close them."""
 
     def test_the_alert_and_the_context_menu(self):
-        overlays = without_comments(read(OVERLAYS))
+        overlays = without_comments(read(OVERLAYS) + read(ALERT))
         for view in ("struct ControllerGameContextMenu: View", "struct ControllerNavigationAlert: View"):
             with self.subTest(view=view):
                 body = block(overlays, view)
