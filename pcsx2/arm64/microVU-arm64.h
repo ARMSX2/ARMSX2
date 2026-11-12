@@ -174,7 +174,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 63;
+static constexpr u32 kMvuCompilerAbiVersion = 64;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of

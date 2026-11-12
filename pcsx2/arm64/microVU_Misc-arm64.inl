@@ -383,23 +383,35 @@ __fi void mVUaddrFix(mV, const a64::Register& gprReg)
 			armEmitCall((void*)mVU.waitMTVU);
 			armAsm->Bind(&notStatus);
 		}
-		armAsm->And(gprReg.W(), gprReg.W(), 0x3f);
-		// Add offset in u128 units (x86 mVUaddrFix uses pointer arithmetic so
-		// the delta is pre-scaled by sizeof(u128) = 16). The trailing Lsl by
-		// 4 below converts both the VI index and the offset to bytes in one
-		// shot. Casting to s64 first would produce a raw byte delta whose
-		// low bits get truncated by the (correctly 64-bit) shift.
-		const s64 vu1Offset = (u128*)VU1.VF - (u128*)VU0.Mem;
-		armAsm->Add(gprReg.X(), gprReg.X(), vu1Offset);
+		// The window is 64 quadwords starting at VU1's VF[0]: VF0..VF31, then VI0..VI31. Callers add
+		// what this answers to VU0.Mem, so the answer is the byte distance from VU0.Mem to the
+		// quadword. That distance is computed here at run time, from two registers, and never as a
+		// constant: VU1's registers are in the emulator image and VU0.Mem is in the data arena, the
+		// two move apart from one process to the next, and code the program cache persists would
+		// carry the recording process's distance. VU1's registers sit a fixed way past VU0's in
+		// vuState, which gprVUState points at (in macro mode too, see mVUmacroEmitPrologue).
+		static_assert(offsetof(VuStateStore, regs) == 0);
+		constexpr int64_t kVU1VFFromState = sizeof(VURegs) + offsetof(VURegs, VF);
+		armAsm->Ubfiz(gprReg.W(), gprReg.W(), 4, 6);
+		armAsm->Add(gprReg.X(), gprReg.X(), gprVUState);
+		armAsm->Add(gprReg.X(), gprReg.X(), kVU1VFFromState);
+		if (mVU.cop2)
+		{
+			// x29 is the EE's $v0 pin here, not VU0.Mem.
+			armAsm->Ldr(RXSCRATCH, mVUstateMem(offsetof(VURegs, Mem)));
+			armAsm->Sub(gprReg.X(), gprReg.X(), RXSCRATCH);
+		}
+		else
+		{
+			armAsm->Sub(gprReg.X(), gprReg.X(), gprVUMem);
+		}
 		armAsm->B(&done);
 
 		armAsm->Bind(&notVU1Access);
 		armAsm->And(gprReg.W(), gprReg.W(), 0xff);
+		armAsm->Lsl(gprReg.X(), gprReg.X(), 4);
 
 		armAsm->Bind(&done);
-		// 64-bit Lsl: the VU0->VU1 path stashed a relative offset in the
-		// upper bits via Add(.X()) above; a 32-bit shift would zero them.
-		armAsm->Lsl(gprReg.X(), gprReg.X(), 4);
 	}
 }
 

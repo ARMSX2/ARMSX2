@@ -868,6 +868,38 @@ TEST(EeVu0Cop2Macro, VlqiAcrossVu0Vu1AccessBoundaryLoadsVu1Vf)
 	EXPECT_EQ(h.GetVu0ViJit(1), h.GetVu0ViInterp(1));
 }
 
+// The store side of the same path, read back through the window. Macro mode emits mVUaddrFix inline in
+// the EE block, where x29 is the EE's $v0 pin and not VU0's memory pointer, so the window's distance from
+// VU0.Mem is taken from a pointer loaded for the purpose. $v0 is live across the two ops to show it is
+// left alone.
+TEST(EeVu0Cop2Macro, VsqiAcrossVu0Vu1AccessBoundaryStoresVu1Vf)
+{
+	EeRecTestHarness h;
+	h.EnableVu0Capture();
+	h.EnableCop1();
+	h.SeedVu0Vi(1, 0x40Cu); // store address: VU1.VF[12]
+	h.SeedVu0Vi(3, 0x40Cu); // load address: the same quadword
+	h.SeedVu0VfBits(2, 0x0BADF00Du, 0x600DCAFEu, 0x13572468u, 0x0F1E2D3Cu);
+	h.SeedVu0VfBits(5, 0x55555555u, 0x55555555u, 0x55555555u, 0x55555555u);
+	// A store that missed the window leaves this for the load to find.
+	h.SeedVu1VfBits(12, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAAAAAAAAu);
+	h.SetGpr64(reg::v0, 0x1122334455667788ull);
+	h.LoadProgram({
+		VSQI_C2(mask_xyzw, /*fs*/2, /*it*/1),
+		VLQI_C2(mask_xyzw, /*ft*/5, /*is*/3),
+	});
+	h.Run();
+	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'x'), 0x0BADF00Du);
+	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'y'), 0x600DCAFEu);
+	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'z'), 0x13572468u);
+	EXPECT_EQ(h.GetVu0VfBitsJit(5, 'w'), 0x0F1E2D3Cu);
+	for (char l : {'x', 'y', 'z', 'w'})
+		EXPECT_EQ(h.GetVu0VfBitsJit(5, l), h.GetVu0VfBitsInterp(5, l));
+	EXPECT_EQ(h.GetVu0ViJit(1), 0x40Du);
+	EXPECT_EQ(h.GetVu0ViJit(3), 0x40Du);
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0), 0x1122334455667788ull);
+}
+
 // =========================================================================
 //  COP2 macro-mode VOPMSUB / VOPMULA — outer-product cross math
 // =========================================================================
