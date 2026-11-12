@@ -7,7 +7,7 @@ import unittest
 
 from ios_source import swift
 
-NUMBER_ROW_PATH = swift("NumberRow.swift")
+NUMBER_ROW_PATH = swift("NumberFormat.swift")
 APP_LANGUAGE_PATH = swift("AppLanguage.swift")
 DYNAMIC_COLOURS_PATH = swift("DynamicColours.swift")
 
