@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-MENU = swift("ControllerGameContextMenu.swift")
+MENU = swift("StopGameConfirmation.swift")
 LIBRARY = swift("GameListView.swift")
 QUICK_MENU = swift("QuickMenuView.swift")
 
