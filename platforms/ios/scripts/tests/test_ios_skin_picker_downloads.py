@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-INSTALLER = swift("SkinInstaller.swift")
+INSTALLER = swift("AutomaticCustomSkinManager.swift")
 
 
 class SkinPickersDownloadOnApply(unittest.TestCase):

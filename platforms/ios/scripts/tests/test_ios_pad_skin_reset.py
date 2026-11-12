@@ -6,7 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 STORE = swift("PadLayoutPresetStore.swift")
-INSTALLER = swift("SkinInstaller.swift")
+INSTALLER = swift("AutomaticCustomSkinManager.swift")
 
 
 class PadResetsClearTheCatalogPick(unittest.TestCase):

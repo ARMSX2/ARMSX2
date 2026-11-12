@@ -26,7 +26,7 @@ class ControllerPromptDialogs(unittest.TestCase):
         self.assertEqual(native - NATIVE, set())
 
     def test_the_reset_button_asks_through_the_prompt(self):
-        button = block(without_comments(read(swift("NumberRow.swift"))),
+        button = block(without_comments(read(swift("ConfirmedSettingsResetButton.swift"))),
                        "struct ConfirmedSettingsResetButton")
         self.assertIn("ControllerPrompt.shared.ask(", button)
         self.assertNotIn(".confirmationDialog(", button)
