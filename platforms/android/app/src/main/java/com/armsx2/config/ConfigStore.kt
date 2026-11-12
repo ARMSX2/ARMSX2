@@ -200,6 +200,7 @@ object ConfigStore {
     fun seedFreshInstallDefaults(
         context: android.content.Context,
         iopThreadDefaultOn: (mtvu: Boolean) -> Boolean = { com.armsx2.DeviceTier.iopThreadDefault(it) },
+        hasVulkan11: () -> Boolean = { deviceHasVulkan11(context) },
     ) {
         if (MainActivityRuntime.prefs.getString(KEY_GLOBAL, null) != null) return
         // Low Latency (zero-frame GS queue) is NOT the default any more — it was briefly seeded on
@@ -207,17 +208,30 @@ object ConfigStore {
         // on too many setups. Everyone starts on PCSX2's two-frame queue and can opt in from the
         // Performance tab. Settings.vsyncQueueSize already defaults to 2, so this just materialises
         // the global save that the rest of the config layer keys "is this a fresh install?" off.
-        saveGlobal(freshInstallSettings(iopThreadDefaultOn))
+        saveGlobal(freshInstallSettings(iopThreadDefaultOn, hasVulkan11()))
     }
+
+    /** Whether the system Vulkan driver reports version 1.1 or newer, the version the Vulkan renderer asks for.
+     *  True when the package manager cannot be asked, so the default stands. */
+    private fun deviceHasVulkan11(context: android.content.Context): Boolean = runCatching {
+        context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00401000)
+    }.getOrDefault(true)
 
     /**
      * The settings a new install starts with: [Settings] defaults, with the IOP thread on where the device's performance
      * tier is two or three cores ([com.armsx2.DeviceTier.iopThreadDefault]). The rule is [iopThreadDefaultOn], given the
-     * MTVU setting the install starts with.
+     * MTVU setting the install starts with. The renderer is the default Vulkan, or Auto on a device without Vulkan 1.1
+     * ([hasVulkan11] false), where an explicit Vulkan pick could not start a game.
      */
-    internal fun freshInstallSettings(iopThreadDefaultOn: (mtvu: Boolean) -> Boolean): Settings {
+    internal fun freshInstallSettings(iopThreadDefaultOn: (mtvu: Boolean) -> Boolean): Settings =
+        freshInstallSettings(iopThreadDefaultOn, hasVulkan11 = true)
+
+    internal fun freshInstallSettings(iopThreadDefaultOn: (mtvu: Boolean) -> Boolean, hasVulkan11: Boolean): Settings {
         val defaults = Settings()
-        return defaults.copy(cpu = defaults.cpu.copy(iopThread = iopThreadDefaultOn(defaults.cpu.mtvu)))
+        return defaults.copy(
+            cpu = defaults.cpu.copy(iopThread = iopThreadDefaultOn(defaults.cpu.mtvu)),
+            output = if (hasVulkan11) defaults.output else defaults.output.copy(renderer = "auto"),
+        )
     }
 
     // Migration 1 (config.migrated.lowLatencyDefault) flipped existing capable devices ON. It is

@@ -3612,9 +3612,9 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderSoftware(JNIEnv *env, jclass clazz) {
 
 // Auto = let GSUtil::GetPreferredRenderer pick at runtime based on what
 // the device supports (Vulkan when available, OpenGL otherwise, SW as
-// last resort). Matches Pcsx2Config::DEFAULT_HW_RENDERER and is the
-// fresh-install default — the in-game overlay's renderer cycle still
-// allows explicit OPENGL/SW override on top.
+// last resort). Matches Pcsx2Config::DEFAULT_HW_RENDERER. The app's own
+// default is Vulkan (Settings.renderer); Auto is what a user picks, and what
+// a new install on a device without Vulkan 1.1 starts on.
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_renderAuto(JNIEnv *env, jclass clazz) {

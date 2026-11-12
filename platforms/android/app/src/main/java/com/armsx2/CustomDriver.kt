@@ -60,15 +60,16 @@ object CustomDriver {
         val supports: (renderer: String?) -> Boolean,
     )
 
-    /** The GPUs our MaliSX2 packs drive: Mali Valhall v9 (G57, G68, G77, G78 — G78AE included) and
-     *  v11 (G615, G715 — Immortalis-G715 included), plus the Bifrost v7 parts malisx2 accepts: the
-     *  Mali-G52 and the Mali-G76. Not v10 (G310/G510/G610/G710), not the other Bifrost parts, not
-     *  Midgard or the 5th-gen parts. GL_RENDERER reads like "Mali-G57 MC2" or
-     *  "Mali-G715-Immortalis MC11". No \b after the number so "G78AE" matches; (?!\d) keeps a longer
-     *  model number from matching on its prefix. Both Bifrost parts are accepted as of malisx2
-     *  0.3.1: the G52 at any arch minor and revision, the G76 at product id 0x7211 (measured,
-     *  Mesa's PAN_PROD_ID(7, 2, 1)). The other arch 7 parts are skipped by the driver. */
-    private val MALISX2_SUPPORTED_MALI = Regex("""\bG(?:52|57|68|76|77|78|615|715)(?!\d)""", RegexOption.IGNORE_CASE)
+    /** The GPUs our MaliSX2 packs drive: every Mali of arch 7 (Bifrost G31, G51, G52, G76), arch 9
+     *  (Valhall G57, G68, G77, G78 — G78AE included), arch 10 (G310, G510, G610, G710) and arch 11
+     *  (G615, G715 — Immortalis-G715 included), as malisx2 0.5.0 accepts them. Not the arch 6
+     *  Bifrost parts (G71, G72), not Midgard (T-series), not the 5th-gen parts (G620, G720, G625,
+     *  G725, G1). GL_RENDERER reads like "Mali-G57 MC2" or "Mali-G715-Immortalis MC11". No \b after
+     *  the number so "G78AE" matches; (?!\d) keeps a longer model number from matching on its prefix
+     *  (G31 against G310, G51 against G510). Releases before 0.5.0 drive fewer of these: 0.3.1 to
+     *  0.4.1 the G52, G76, arch 9 and arch 11 only. */
+    private val MALISX2_SUPPORTED_MALI =
+        Regex("""\bG(?:31|51|52|57|68|76|77|78|310|510|610|615|710|715)(?!\d)""", RegexOption.IGNORE_CASE)
     internal fun isMaliSX2Supported(renderer: String?): Boolean =
         renderer != null &&
             (renderer.contains("Mali", ignoreCase = true) || renderer.contains("Immortalis", ignoreCase = true)) &&

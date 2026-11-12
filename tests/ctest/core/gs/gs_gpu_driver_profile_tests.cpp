@@ -586,13 +586,13 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMt6897)
 		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints));
 }
 
-// A Mali part outside Valhall v9 and v11 keeps OpenGL: v10 (G310/G510/G610/G710), Bifrost, and the
-// 5th-gen parts, whose names read like v11 and are not (G620/G720 are arch 12, G625/G725 arch 13).
-// The GL fetch path is the fast one there, and none of these were measured on Vulkan.
-TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideValhallV9AndV11)
+// A Mali part outside arch 7, 9, 10 and 11 keeps OpenGL: the arch 6 Bifrost parts (G71, G72),
+// Midgard, and the 5th-gen parts, whose names read like v11 and are not (G620/G720 are arch 12,
+// G625/G725 arch 13). The GL fetch path is the fast one there, and none of these were measured on
+// Vulkan.
+TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideArch7To11)
 {
-	for (const char* renderer : {"Mali-G310 MC2", "Mali-G510 MC4", "Mali-G610 MC6", "Mali-G710 MC10",
-			 "Mali-G52 MC2", "Mali-G76 MC12", "Mali-G71 MP20", "Mali-G31 MP2", "Mali-G620 MC4",
+	for (const char* renderer : {"Mali-G71 MP20", "Mali-G71 MP2", "Mali-G72 MP12", "Mali-G72 MP3", "Mali-G620 MC4",
 			 "Mali-G720 MC7", "Mali-G625 MC6", "Mali-G725 MC6", "Immortalis-G925 MC12", "Mali-T880 MP12"})
 	{
 		EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
@@ -604,11 +604,11 @@ TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideValhallV9AndV11)
 	}
 }
 
-// Auto runs Vulkan on Mali Valhall v9 (G57, G68, G77, G78) and v11 (G615, G715, Immortalis
-// included), whatever the GL driver revision and with no SoC hint to go on. The answer comes from
+// Auto runs Vulkan on Mali Valhall v9 (G57, G68, G77, G78), v10 (G310, G510, G610, G710) and v11
+// (G615, G715, Immortalis included), whatever the GL driver revision and with no SoC hint to go on. The answer comes from
 // the GL strings alone, so it cannot depend on which Vulkan driver is installed -- Arm's or our
 // malisx2 pack -- because no Vulkan device exists when Auto is decided.
-TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9V10AndV11)
 {
 	struct Case
 	{
@@ -620,6 +620,10 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
 		{"Mali-G68 MC4", "Mali-G68 MC4 is Valhall v9, which Auto runs on Vulkan"},
 		{"Mali-G77 MC9", "Mali-G77 MC9 is Valhall v9, which Auto runs on Vulkan"},
 		{"Mali-G78 MC14", "Mali-G78 MC14 is Valhall v9, which Auto runs on Vulkan"},
+		{"Mali-G310 MC2", "Mali-G310 MC2 is Valhall v10, which Auto runs on Vulkan"},
+		{"Mali-G510 MC4", "Mali-G510 MC4 is Valhall v10, which Auto runs on Vulkan"},
+		{"Mali-G610 MC6", "Mali-G610 MC6 is Valhall v10, which Auto runs on Vulkan"},
+		{"Mali-G710 MC10", "Mali-G710 MC10 is Valhall v10, which Auto runs on Vulkan"},
 		{"Mali-G615 MC2", "Mali-G615 MC2 is Valhall v11, which Auto runs on Vulkan"},
 		{"Mali-G715 MC7", "Mali-G715 MC7 is Valhall v11, which Auto runs on Vulkan"},
 		{"Mali-G715-Immortalis MC11", "Immortalis-G715 MC11 is Valhall v11, which Auto runs on Vulkan"},
@@ -641,16 +645,16 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMaliValhallV9AndV11)
 	}
 }
 
-// Every Valhall v9 and v11 name a user can meet, in the two places it comes from: Arm's stock
-// GL_RENDERER (MC<n>, or MP<n> on some phones) and the bare and MC<n> names our malisx2 Vulkan
-// driver reports. Auto keys on the GL string alone, but each name is pinned so that none of them
+// Every Valhall v9, v10 and v11 name a user can meet, in the two places it comes from: Arm's stock GL_RENDERER (MC<n>, or MP<n> on some phones) and the bare and MC<n> names
+// our malisx2 Vulkan driver reports. Auto keys on the GL string alone, but each name is pinned so that none of them
 // parses as the wrong architecture.
-TEST(GSGpuDriverProfile, AutoResolvesToVulkanForEveryKnownValhallV9AndV11Name)
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanForEveryKnownName)
 {
 	for (const char* renderer : {"Mali-G57", "Mali-G57 MC2", "Mali-G57 MC4", "Mali-G57 MC6", "Mali-G68",
 			 "Mali-G68 MC4", "Mali-G77 MC7", "Mali-G77 MC9", "Mali-G78", "Mali-G78 MC14", "Mali-G78 MP14",
-			 "Mali-G78AE", "Mali-G78AE MC10", "Mali-G615", "Mali-G615 MC6", "Mali-G715", "Mali-G715 MC7",
-			 "Mali-G715-Immortalis MC11"})
+			 "Mali-G78AE", "Mali-G78AE MC10", "Mali-G310", "Mali-G510 MC2", "Mali-G610", "Mali-G610 MC4",
+			 "Mali-G710", "Mali-G710 MP7",
+			 "Mali-G615", "Mali-G615 MC6", "Mali-G715", "Mali-G715 MC7", "Mali-G715-Immortalis MC11"})
 	{
 		EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
 		EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("Valhall v"), std::string::npos)
@@ -658,23 +662,25 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanForEveryKnownValhallV9AndV11Name)
 	}
 }
 
-// Parts whose names sit one digit away from a v9 or v11 part. Each pair is decided by the whole
-// model number, so a prefix match (G71 inside G715, G31 inside G310, G72 inside G720) or a near
-// miss (G610 against G615, G710 against G715) would send one of them the wrong way.
+// Parts whose names sit one digit away from a part Auto runs on Vulkan. Each pair is decided by the
+// whole model number, so a prefix match (G71 inside G715, G31 inside G310, G51 inside G510, G72
+// inside G720) or a near miss (G720 against G710) would send one of them the wrong way.
 TEST(GSGpuDriverProfile, AutoDecidesByTheWholeMaliModelNumber)
 {
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G610 MC6", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G610 MC6", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G615 MC6", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G710 MC10", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G710 MC10", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G715 MC10", kMaliR44p1GlVersion));
 	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G71 MP8", kMaliR44p1GlVersion));
 	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G720 MC7", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G31 MP2", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G310 MC2", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G51 MP4", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G52 MC2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G31 MP2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G310 MC2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G51 MP4", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G72 MP12", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G76 MC4", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G52 MC2", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G57 MC2", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G510 MC4", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G510 MC4", kMaliR44p1GlVersion));
 	// The Immortalis name written with the brand first, as a tool that rebuilds the name would.
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Immortalis-G715 MC11", kMaliR44p1GlVersion));
 }
@@ -693,13 +699,32 @@ TEST(GSGpuDriverProfile, TheMaliArchitectureRuleLeavesOtherVendorsAlone)
 	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
 }
 
-// The policy on its own: v9 and v11 only. 0 is "not Valhall", which is what Bifrost and the 5th-gen
+// The Bifrost parts of arch 7 run Vulkan under Auto, the owner's choice of 2026-11-12, in every
+// form their names take: Arm's GL_RENDERER (bare, MC<n>, MP<n>) and Mesa's name for the G52 of arch
+// minor 4 ("G52 r1"). The arch 6 parts (G71, G72) do not.
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnTheBifrostArch7Parts)
+{
+	for (const char* renderer : {"Mali-G31", "Mali-G31 MP2", "Mali-G51", "Mali-G51 MP4", "Mali-G52", "Mali-G52 MC2",
+			 "Mali-G52 MC3", "Mali-G52 MP2", "Mali-G52 r1", "Mali-G76", "Mali-G76 MC4", "Mali-G76 MP10"})
+	{
+		EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
+		EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("is Bifrost arch 7, which Auto runs on Vulkan"),
+			std::string::npos)
+			<< renderer << ": " << GSUtil::AndroidAutoRendererReason();
+	}
+	for (u16 model : {31, 51, 52, 76})
+		EXPECT_TRUE(GSUtil::MaliBifrostModelPrefersVulkan(model)) << model;
+	for (u16 model : {71, 72})
+		EXPECT_FALSE(GSUtil::MaliBifrostModelPrefersVulkan(model)) << model;
+}
+
+// The policy on its own: v9, v10 and v11. 0 is "not Valhall", which is what Bifrost and the 5th-gen
 // parts report.
-TEST(GSGpuDriverProfile, OnlyValhallV9AndV11PreferVulkan)
+TEST(GSGpuDriverProfile, OnlyValhallV9V10AndV11PreferVulkan)
 {
 	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(0));
 	EXPECT_TRUE(GSUtil::MaliValhallArchPrefersVulkan(9));
-	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(10));
+	EXPECT_TRUE(GSUtil::MaliValhallArchPrefersVulkan(10));
 	EXPECT_TRUE(GSUtil::MaliValhallArchPrefersVulkan(11));
 	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(12));
 	EXPECT_FALSE(GSUtil::MaliValhallArchPrefersVulkan(13));

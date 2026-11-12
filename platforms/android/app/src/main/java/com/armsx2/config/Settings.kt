@@ -596,8 +596,10 @@ data class OutputSettings(
     val customAspectRatio: Float = 16f / 9f,
     /** Host graphics API: "auto" / "opengl" / "vulkan" / "software". Applied via
      *  the renderer JNI helpers on (re)launch; per-game so each title can pick its
-     *  own backend. Seeded from the legacy global "renderer" pref on first load. */
-    val renderer: String = "auto",
+     *  own backend. Seeded from the legacy global "renderer" pref on first load.
+     *  Vulkan by default; a new install on a device without Vulkan 1.1 starts on Auto
+     *  instead (ConfigStore.freshInstallSettings). Saved settings keep what they hold. */
+    val renderer: String = "vulkan",
     /** Internal resolution multiplier (0.25..5.0; 1.0 = native). Applied live via
      *  the GS upscale helper; per-game so each title keeps its own. Seeded from the
      *  legacy global "upscaleFloat" pref on first load. */

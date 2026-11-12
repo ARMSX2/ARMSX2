@@ -309,9 +309,17 @@ const char* GSUtil::AndroidAutoRendererReason()
 
 bool GSUtil::MaliValhallArchPrefersVulkan(u32 valhall_arch)
 {
-	// v9 and v11 run Vulkan by default. v10 (G310/G510/G610/G710) is deliberately left on OpenGL,
-	// as is Bifrost.
-	return valhall_arch == 9 || valhall_arch == 11;
+	// Every Valhall arch runs Vulkan by default: v9, v10 and v11. Bifrost is decided per part by
+	// MaliBifrostModelPrefersVulkan.
+	return valhall_arch == 9 || valhall_arch == 10 || valhall_arch == 11;
+}
+
+bool GSUtil::MaliBifrostModelPrefersVulkan(u16 model_number)
+{
+	// The owner's choice (2026-11-12): the arch 7 parts, the Bifrost parts malisx2 drives, run
+	// Vulkan by default. The arch 6 parts (G71, G72) keep OpenGL, whose framebuffer fetch is their
+	// fast path.
+	return model_number == 31 || model_number == 51 || model_number == 52 || model_number == 76;
 }
 
 bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_view gl_renderer,
@@ -370,7 +378,7 @@ bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_vi
 		return true;
 	}
 
-	// Mali Valhall v9 and v11 by architecture, whichever Vulkan driver is installed. Nothing here
+	// Mali Valhall v9, v10 and v11 by architecture, whichever Vulkan driver is installed. Nothing here
 	// looks at the Vulkan driver: Auto is decided from the system GL strings before a Vulkan device
 	// exists, and those are Arm's whether the user loads our malisx2 pack or not. Placed after the
 	// rules above so a device they already decide keeps the reason they report.
@@ -381,6 +389,14 @@ bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_vi
 		{
 			s_android_auto_reason_text = StringUtil::StdStringFromFormat(
 				"%s is Valhall v%u, which Auto runs on Vulkan", selection.gpu.name.c_str(), valhall_arch);
+			s_android_auto_reason = s_android_auto_reason_text.c_str();
+			return true;
+		}
+		if (selection.gpu.architecture == MobileGpuArchitecture::MaliBifrost &&
+			MaliBifrostModelPrefersVulkan(selection.gpu.model_number))
+		{
+			s_android_auto_reason_text = StringUtil::StdStringFromFormat(
+				"%s is Bifrost arch 7, which Auto runs on Vulkan", selection.gpu.name.c_str());
 			s_android_auto_reason = s_android_auto_reason_text.c_str();
 			return true;
 		}
@@ -406,10 +422,12 @@ GSRendererType GSUtil::GetPreferredRenderer()
 		preferred_renderer = D3D::GetPreferredRenderer();
 #elif defined(__ANDROID__)
 		// Android: Auto resolves to Vulkan HW on Adreno (the tile-memory framebuffer-fetch fast
-		// path), on any device whose GL driver cannot read the render target in-tile, and on Mali
-		// Valhall v9 and v11. OpenGL HW elsewhere (the other Mali parts run
-		// GL_ARM_shader_framebuffer_fetch, which is the fast path there; Xclipse has no working VK
-		// fbfetch). The app sets g_gs_android_prefer_vk from AndroidAutoPrefersVulkan before the
+		// path), on any device whose GL driver cannot read the render target in-tile, and on every
+		// Mali of arch 7 (Bifrost G31/G51/G52/G76), 9, 10 and 11 (Valhall), the parts malisx2
+		// drives. OpenGL HW elsewhere (the arch 6 Bifrost parts and Midgard run
+		// GL_ARM_shader_framebuffer_fetch, which is the fast path there; that was the reason Bifrost
+		// stayed on OpenGL until the owner chose Vulkan for arch 7 on 2026-11-12; Xclipse has no
+		// working VK fbfetch). The app sets g_gs_android_prefer_vk from AndroidAutoPrefersVulkan before the
 		// GS starts. This only steers Auto — an explicit Vulkan/OpenGL/SW pick still wins.
 #if defined(ENABLE_VULKAN) && defined(ENABLE_OPENGL)
 		preferred_renderer = g_gs_android_prefer_vk ? GSRendererType::VK : GSRendererType::OGL;

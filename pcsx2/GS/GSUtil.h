@@ -54,10 +54,16 @@ public:
 	static bool AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_view gl_renderer,
 		std::string_view gl_version, std::string_view platform_hints = std::string_view());
 
-	/// Auto runs Vulkan on Mali Valhall v9 (G57/G68/G77/G78) and v11 (G615/G715), on Arm's driver
-	/// and on ours alike; v10 and Bifrost stay on OpenGL. Takes the number from
-	/// GpuProfileDetector::MaliValhallArch.
+	/// Auto runs Vulkan on Mali Valhall v9 (G57/G68/G77/G78), v10 (G310/G510/G610/G710) and v11
+	/// (G615/G715), on Arm's driver and on ours alike; Bifrost stays on OpenGL. Takes the number
+	/// from GpuProfileDetector::MaliValhallArch.
 	static bool MaliValhallArchPrefersVulkan(u32 valhall_arch);
+
+	/// Auto runs Vulkan on the Bifrost parts of arch 7 (G31, G51, G52, G76), the owner's choice of
+	/// 2026-11-12: with Valhall, every Mali that malisx2 drives. The arch 6 Bifrost parts (G71, G72)
+	/// stay on OpenGL. Takes the model number from MobileGpuIdentity::model_number of a part the
+	/// model table puts in Bifrost, which holds both arches.
+	static bool MaliBifrostModelPrefersVulkan(u16 model_number);
 
 	/// Why the last AndroidAutoPrefersVulkan answered the way it did, in words, for the log line
 	/// in GetPreferredRenderer. The decision happens at app startup, before the log file exists,
