@@ -82,22 +82,38 @@ namespace DriverPacks
 	/// Nothing if the line has no such number or it does not fit any of these.
 	std::optional<u16> KbaseProductIdFromGpuInfo(std::string_view gpuinfo);
 
-	/// Whether malisx2 drives the GPU with this kbase product id: on arch 7 the Mali-G52 and
-	/// Mali-G76, every arch 9 part (G57, G68, G77, G78, G78AE), on arch 10 the Mali-G610 and
-	/// Mali-G710, on arch 11 the Mali-G615 and Mali-G715. The same test as malisx2's own
-	/// mali_device_name.
-	bool IsMalisx2ProductId(u16 product_id);
+	/// Which scheduler the kbase kernel driver was built with: the job manager (Bifrost and
+	/// first-generation Valhall, arches 6 to 9) or the command-stream frontend (arch 10 and later).
+	enum class KbaseFrontend
+	{
+		Unknown, ///< sysfs does not say; decide by the arch alone
+		JobManager,
+		CommandStream,
+	};
+
+	/// Read from the kbase device's sysfs attributes: a job-manager kbase has js_timeouts and
+	/// js_scheduling_period, a command-stream one csg_scheduling_period. Unknown when neither is
+	/// there (no kbase, or a vendor kernel that dropped them).
+	KbaseFrontend KbaseFrontendFromSysfs(const std::string& sysfs_root = "/sys");
+
+	/// malisx2's rule (mali_device_name and the frontend check at physical-device creation): every
+	/// GPU of arch 7 or 9 on a job-manager kbase, and of arch 10 or 11 on a command-stream kbase.
+	/// With KbaseFrontend::Unknown the arch alone decides. Arch 6 (G71, G72), Midgard and arch 12
+	/// and later are not malisx2's.
+	bool IsMalisx2Arch(unsigned arch_major, KbaseFrontend frontend = KbaseFrontend::Unknown);
+
+	/// IsMalisx2Arch on the product id's arch major (its top four bits).
+	bool IsMalisx2ProductId(u16 product_id, KbaseFrontend frontend = KbaseFrontend::Unknown);
 
 	/// The decision for one `gpuinfo` line ("Mali-G52 1 cores r1p0 0x07040002"): by the product id
-	/// when the hex number reads, else by the leading name ("Mali-G610"). The hex wins because
-	/// kbase's name table matches only arch major and product major, so it prints "Mali-G76" for
-	/// arch 7 parts malisx2 refuses, and "(Unknown Mali GPU)" for ids it does not list.
-	bool IsMalisx2GpuInfo(std::string_view gpuinfo);
+	/// when the hex number reads, else by the arch of the leading name ("Mali-G610"). The hex wins
+	/// because kbase prints names it does not know as "(Unknown Mali GPU)" or a code name.
+	bool IsMalisx2GpuInfo(std::string_view gpuinfo, KbaseFrontend frontend = KbaseFrontend::Unknown);
 
 	/// Best effort, readable before Vulkan is initialised: true if this machine runs Arm's kbase
 	/// kernel driver (`<dev_root>/mali0` exists) and its GPU (`<sysfs_root>/class/misc/mali0/device/
-	/// gpuinfo`) is one malisx2 supports. A Mali on panfrost or panthor has neither file, and
-	/// malisx2 cannot run there. The roots exist for tests.
+	/// gpuinfo`) is one malisx2 supports on this kbase's frontend (KbaseFrontendFromSysfs). A Mali on
+	/// panfrost or panthor has neither file, and malisx2 cannot run there. The roots exist for tests.
 	bool IsSupportedKbaseMaliGpu(const std::string& sysfs_root = "/sys", const std::string& dev_root = "/dev");
 
 	/// Which GPU a feed's packs, or an installed pack, are built for.

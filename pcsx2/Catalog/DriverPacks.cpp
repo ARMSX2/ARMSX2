@@ -287,27 +287,31 @@ namespace DriverPacks
 		return static_cast<u16>((arch_major << 12) | (arch_minor << 8) | (arch_rev << 4) | product_major);
 	}
 
-	bool IsMalisx2ProductId(u16 product_id)
+	bool IsMalisx2Arch(unsigned arch_major, KbaseFrontend frontend)
 	{
-		switch (product_id >> 12)
+		const bool job_manager = arch_major == 7 || arch_major == 9;
+		const bool command_stream = arch_major == 10 || arch_major == 11;
+		switch (frontend)
 		{
-			case 7: // Mali-G52 at any arch minor; Mali-G76 only as arch 7.2
-				return (product_id & 0xf00f) == 0x7002 || (product_id & 0xff0f) == 0x7201;
-			case 9: // every first-generation Valhall part
-				return true;
-			case 10: // Mali-G610, Mali-G710
-				return (product_id & 0xf00f) == 0xa007 || (product_id & 0xf00f) == 0xa002;
-			case 11: // Mali-G615, Mali-G715
-				return (product_id & 0xf00f) == 0xb003 || (product_id & 0xf00f) == 0xb002;
-			default:
-				return false;
+			case KbaseFrontend::JobManager:
+				return job_manager;
+			case KbaseFrontend::CommandStream:
+				return command_stream;
+			case KbaseFrontend::Unknown:
+				break;
 		}
+		return job_manager || command_stream;
 	}
 
-	bool IsMalisx2GpuInfo(std::string_view gpuinfo)
+	bool IsMalisx2ProductId(u16 product_id, KbaseFrontend frontend)
+	{
+		return IsMalisx2Arch(product_id >> 12, frontend);
+	}
+
+	bool IsMalisx2GpuInfo(std::string_view gpuinfo, KbaseFrontend frontend)
 	{
 		if (const std::optional<u16> product_id = KbaseProductIdFromGpuInfo(gpuinfo))
-			return IsMalisx2ProductId(*product_id);
+			return IsMalisx2ProductId(*product_id, frontend);
 
 		size_t start = 0;
 		while (start < gpuinfo.size() && std::isspace(static_cast<unsigned char>(gpuinfo[start])))
@@ -316,9 +320,32 @@ namespace DriverPacks
 		while (end < gpuinfo.size() && !std::isspace(static_cast<unsigned char>(gpuinfo[end])))
 			end++;
 		const std::string name = Lowercase(gpuinfo.substr(start, end - start));
-		static constexpr const char* supported[] = {"mali-g52", "mali-g76", "mali-g57", "mali-g68", "mali-g77", "mali-g78", "mali-g78ae",
-			"mali-g610", "mali-g710", "mali-g615", "mali-g715", "mali-g715-immortalis"};
-		return std::any_of(std::begin(supported), std::end(supported), [&name](const char* known) { return name == known; });
+		// kbase's names for the parts of the four arches; anything else (Midgard's T-series, the
+		// G71/G72, the fifth-generation G720/G620) is not malisx2's.
+		static constexpr std::pair<const char*, unsigned> names[] = {
+			{"mali-g31", 7}, {"mali-g51", 7}, {"mali-g52", 7}, {"mali-g76", 7},
+			{"mali-g57", 9}, {"mali-g68", 9}, {"mali-g77", 9}, {"mali-g78", 9}, {"mali-g78ae", 9},
+			{"mali-g310", 10}, {"mali-g510", 10}, {"mali-g610", 10}, {"mali-g710", 10},
+			{"mali-g615", 11}, {"mali-g715", 11}, {"mali-g715-immortalis", 11}};
+		for (const auto& [known, arch] : names)
+		{
+			if (name == known)
+				return IsMalisx2Arch(arch, frontend);
+		}
+		return false;
+	}
+
+	KbaseFrontend KbaseFrontendFromSysfs(const std::string& sysfs_root)
+	{
+		// kbase registers the job-manager scheduler's attributes or the command-stream
+		// scheduler's, never both (mali_kbase_core_linux.c, kbase_attrs).
+		const fs::path device = fs::path(sysfs_root) / "class" / "misc" / "mali0" / "device";
+		std::error_code ec;
+		if (fs::exists(device / "js_timeouts", ec) || fs::exists(device / "js_scheduling_period", ec))
+			return KbaseFrontend::JobManager;
+		if (fs::exists(device / "csg_scheduling_period", ec))
+			return KbaseFrontend::CommandStream;
+		return KbaseFrontend::Unknown;
 	}
 
 	namespace
@@ -346,7 +373,7 @@ namespace DriverPacks
 		if (!fs::exists(fs::path(dev_root) / "mali0", ec))
 			return false;
 		const std::optional<std::string> gpuinfo = ReadSmallFile((fs::path(sysfs_root) / "class" / "misc" / "mali0" / "device" / "gpuinfo").string());
-		return gpuinfo.has_value() && IsMalisx2GpuInfo(*gpuinfo);
+		return gpuinfo.has_value() && IsMalisx2GpuInfo(*gpuinfo, KbaseFrontendFromSysfs(sysfs_root));
 	}
 
 	const char* GpuFamilyKey(GpuFamily family)

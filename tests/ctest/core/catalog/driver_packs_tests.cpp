@@ -552,25 +552,44 @@ TEST(DriverPacksGpu, ReadsEveryKbaseGpuInfoFormat)
 	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0 0x07120002").has_value()); // a field past 4 bits
 }
 
-// The parts malisx2's mali_device_name accepts, and the neighbours it refuses.
-TEST(DriverPacksGpu, TheMalisx2ProductIdsAreTheOnesTheDriverAccepts)
+// malisx2's rule: every GPU of arch 7 or 9 on a job-manager kbase, of arch 10 or 11 on a
+// command-stream kbase. No product list.
+TEST(DriverPacksGpu, TheMalisx2ProductIdsAreEveryPartOfTheFourArches)
 {
-	for (const u16 id : {0x7002, 0x7212, 0x7402, // Mali-G52 at any arch minor
-			 0x7211, 0x7201, // Mali-G76 as arch 7.2
-			 0x9000, 0x9001, 0x9093, 0x9002, 0x9004, 0x9005, 0x9006, // every arch 9 part
-			 0xa867, 0xa007, 0xa862, // Mali-G610, Mali-G710
-			 0xb8a3, 0xb003, 0xb002}) // Mali-G615, Mali-G715
+	const u16 job_manager[] = {0x7002, 0x7212, 0x7402, // Mali-G52
+		0x7211, 0x7201, 0x7401, // Mali-G76, and other product major 1 parts kbase calls G76
+		0x7000, // Mali-G51
+		0x7093, 0x7003, // Mali-G31
+		0x7f0f, // an arch 7 product nobody has named
+		0x9000, 0x9001, 0x9093, 0x9002, 0x9004, 0x9005, 0x9006, 0x9f0f}; // every arch 9 part
+	const u16 command_stream[] = {0xa867, 0xa007, 0xa862, // Mali-G610, Mali-G710
+		0xa003, 0xa004, // Mali-G510, Mali-G310
+		0xaf0f, // an unnamed arch 10 product
+		0xb8a3, 0xb003, 0xb002, // Mali-G615, Mali-G715
+		0xb001, 0xbf0f}; // arch 11 products malisx2 has no name for
+	for (const u16 id : job_manager)
+	{
 		EXPECT_TRUE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_TRUE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+		// A job-manager arch on a command-stream kernel cannot happen; malisx2 would refuse it.
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+	}
+	for (const u16 id : command_stream)
+	{
+		EXPECT_TRUE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_TRUE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+	}
 
-	for (const u16 id : {0x7000, // Mali-G51
-			 0x7093, 0x7003, // Mali-G31
-			 0x7401, 0x7011, // product major 1 outside arch 7.2: kbase calls these G76 too
-			 0x6221, 0x6000, // Mali-G72, Mali-G71
-			 0xa003, 0xa004, // Mali-G510, Mali-G310
-			 0xb001, // an arch 11 part malisx2 does not name
-			 0xc000, 0xc001, // Mali-G720, Mali-G620
-			 0x0000, 0x0860}) // Midgard and nonsense
+	for (const u16 id : {0x6221, 0x6000, // Mali-G72, Mali-G71 (arch 6)
+			 0x8000, // arch 8: no such Mali
+			 0xc000, 0xc001, 0xd000, // Mali-G720, Mali-G620, arch 13
+			 0x0000, 0x0860, 0x0750, 0x6956}) // Midgard (T860, T760, T604) and nonsense
+	{
 		EXPECT_FALSE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+	}
 }
 
 TEST(DriverPacksGpu, TheHexDecidesAndTheNameStandsInWhenThereIsNone)
@@ -578,23 +597,64 @@ TEST(DriverPacksGpu, TheHexDecidesAndTheNameStandsInWhenThereIsNone)
 	EXPECT_TRUE(IsMalisx2GpuInfo(RK3562_GPUINFO));
 	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G610 4 cores r0p0 0xA8670005"));
 	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G615 6 cores r1p3 0xB8A3"));
-	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0 0x7093"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0 0x7093"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G51 2 cores r1p0 0x7000"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G76 4 cores r0p0 0x7401"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G72 12 cores r0p3 0x6221"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-T86x 4 cores r2p0 0x0860"));
 
 	// A name kbase does not have, or its "(Unknown Mali GPU)": the hex decides.
 	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-TTUX 6 cores r1p3 0xB8A3"));
 	EXPECT_TRUE(IsMalisx2GpuInfo("(Unknown Mali GPU) 2 cores r0p0 0x9003"));
 	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-TTUX 4 cores r0p0 0xC001"));
-	// kbase names every arch 7 product major 1 "Mali-G76"; malisx2 takes only the arch 7.2 one.
-	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G76 4 cores r0p0 0x7401"));
+	// A name of the right family on a number of the wrong one: the number wins.
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G52 1 cores r0p0 0x6221"));
 
-	// No number to read: the leading name.
+	// No number to read: the arch of the leading name.
 	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G610 4 cores r0p0"));
 	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G715-Immortalis 11 cores r0p0"));
 	EXPECT_TRUE(IsMalisx2GpuInfo("mali-g57\n"));
-	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G310 1 cores r0p0"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G72 12 cores r0p3"));
 	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G720 6 cores r0p0"));
 	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-TTUX"));
 	EXPECT_FALSE(IsMalisx2GpuInfo(""));
+
+	// The frontend, when sysfs gives it, has to match the arch.
+	EXPECT_TRUE(IsMalisx2GpuInfo(RK3562_GPUINFO, KbaseFrontend::JobManager));
+	EXPECT_FALSE(IsMalisx2GpuInfo(RK3562_GPUINFO, KbaseFrontend::CommandStream));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G510 2 cores r0p0", KbaseFrontend::CommandStream));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G510 2 cores r0p0", KbaseFrontend::JobManager));
+}
+
+TEST(DriverPacksGpu, TheKbaseFrontendComesFromItsSchedulerAttributes)
+{
+	ScopedTempDir dir;
+	const auto device = [&dir](const char* machine) { return fs::path(dir.File(machine)) / "class" / "misc" / "mali0" / "device"; };
+
+	MakeFakeKbase(dir.File("jm/sys"), dir.File("jm/dev"), RK3562_GPUINFO);
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("jm/sys") / "js_timeouts").string(), "0 0 0\n"));
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("jm/sys") / "js_scheduling_period").string(), "100\n"));
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("jm/sys")), KbaseFrontend::JobManager);
+
+	MakeFakeKbase(dir.File("csf/sys"), dir.File("csf/dev"), "Mali-G610 4 cores r0p0 0xA8670005\n");
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("csf/sys") / "csg_scheduling_period").string(), "100\n"));
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("csf/sys")), KbaseFrontend::CommandStream);
+
+	MakeFakeKbase(dir.File("bare/sys"), dir.File("bare/dev"), RK3562_GPUINFO);
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("bare/sys")), KbaseFrontend::Unknown);
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("nothing/sys")), KbaseFrontend::Unknown);
+
+	// The whole check: right arch on the right frontend; with no frontend attributes the arch decides.
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("jm/sys"), dir.File("jm/dev")));
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("csf/sys"), dir.File("csf/dev")));
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("bare/sys"), dir.File("bare/dev")));
+
+	// An arch 10 GPU reported by a job-manager kbase (impossible in practice): not offered.
+	MakeFakeKbase(dir.File("odd/sys"), dir.File("odd/dev"), "Mali-G310 1 cores r0p0 0xA004\n");
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("odd/sys") / "js_timeouts").string(), "0 0 0\n"));
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("odd/sys"), dir.File("odd/dev")));
 }
 
 TEST(DriverPacksGpu, AKbaseMaliNeedsBothTheDeviceNodeAndASupportedGpu)
@@ -611,9 +671,17 @@ TEST(DriverPacksGpu, AKbaseMaliNeedsBothTheDeviceNodeAndASupportedGpu)
 	MakeFakeKbase(dir.File("rk3588/sys"), dir.File("rk3588/dev"), "Mali-G610 4 cores r0p0 0xA8670005\n");
 	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("rk3588/sys"), dir.File("rk3588/dev")));
 
-	// A Mali-G31 on kbase: malisx2 refuses it.
+	// A Mali-G31 and a Mali-G510 on kbase: malisx2 serves every part of its arches.
 	MakeFakeKbase(dir.File("g31/sys"), dir.File("g31/dev"), "Mali-G31 1 cores r0p0 0x7093\n");
-	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("g31/sys"), dir.File("g31/dev")));
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("g31/sys"), dir.File("g31/dev")));
+	MakeFakeKbase(dir.File("g510/sys"), dir.File("g510/dev"), "Mali-G510 2 cores r0p0 0xA003\n");
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("g510/sys"), dir.File("g510/dev")));
+
+	// A Mali-G72 (arch 6) and a Midgard T860 on kbase: not malisx2's.
+	MakeFakeKbase(dir.File("g72/sys"), dir.File("g72/dev"), "Mali-G72 12 cores r0p3 0x6221\n");
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("g72/sys"), dir.File("g72/dev")));
+	MakeFakeKbase(dir.File("t860/sys"), dir.File("t860/dev"), "Mali-T86x 4 cores r2p0 0x0860\n");
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("t860/sys"), dir.File("t860/dev")));
 
 	// The sysfs entry without the device node (kbase gone, or the node not created): no.
 	MakeFakeKbase(dir.File("nonode/sys"), dir.File("nonode/dev"), RK3562_GPUINFO, false);
@@ -666,10 +734,10 @@ TEST(DriverPacksGpu, AvailabilityExplainsItself)
 	EXPECT_TRUE(kbase.manager->GetAvailability().IsAvailable());
 	EXPECT_EQ(kbase.manager->GetAvailability().gpu, GpuFamily::MaliKbase);
 
-	Rig g31(false);
-	g31.AddKbaseMali("Mali-G31 1 cores r0p0 0x7093");
-	EXPECT_EQ(g31.manager->GetAvailability().reason, Availability::Reason::NoMatchingGpu);
-	EXPECT_EQ(g31.manager->GetAvailability().message, "No driver packs for this GPU.");
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
+	EXPECT_EQ(g72.manager->GetAvailability().reason, Availability::Reason::NoMatchingGpu);
+	EXPECT_EQ(g72.manager->GetAvailability().message, "No driver packs for this GPU.");
 
 	Rig mali(false);
 	const Availability no_gpu = mali.manager->GetAvailability();
@@ -1011,10 +1079,10 @@ TEST(DriverPacksListing, OnlyTheFeedForThisMachinesGpuIsRead)
 	EXPECT_EQ(adreno.http.RequestCount(MALISX2_RELEASES_URL), 0u);
 
 	// A Mali that malisx2 refuses, or a Mali on panfrost: nothing is asked for.
-	Rig g31(false);
-	g31.AddKbaseMali("Mali-G31 1 cores r0p0 0x7093");
-	EXPECT_TRUE(g31.manager->ListAvailable({}).drivers.empty());
-	EXPECT_TRUE(g31.http.Requests().empty());
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
+	EXPECT_TRUE(g72.manager->ListAvailable({}).drivers.empty());
+	EXPECT_TRUE(g72.http.Requests().empty());
 }
 
 TEST(DriverPacksListing, OnlyFeedsForThisPlatformAreRead)
@@ -1911,16 +1979,16 @@ TEST(DriverPacksApply, AMalisx2PackAppliesOnlyOnAKbaseMaliItSupports)
 	unsetenv("VK_DRIVER_FILES");
 	unsetenv("VK_ICD_FILENAMES");
 
-	// The same pack on an Adreno, on the same board booted on panfrost, and on a Mali-G31 on kbase.
+	// The same pack on an Adreno, on the same board booted on panfrost, and on a Mali-G72 on kbase.
 	Rig adreno(true);
 	Rig panfrost(false);
 	MakeFakeSysfs(panfrost.dir.File("panfrost-sys"), "panfrost");
-	Rig g31(false);
-	g31.AddKbaseMali("Mali-G31 1 cores r0p0 0x7093");
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
 	const std::pair<std::string, std::string> elsewhere[] = {
 		{adreno.config.sysfs_root, adreno.config.dev_root},
 		{panfrost.dir.File("panfrost-sys"), panfrost.config.dev_root},
-		{g31.config.sysfs_root, g31.config.dev_root},
+		{g72.config.sysfs_root, g72.config.dev_root},
 	};
 	for (const auto& [sys, dev] : elsewhere)
 	{
