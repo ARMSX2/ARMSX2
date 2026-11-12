@@ -331,6 +331,32 @@ add_library(${ARMSX2_EMUCORE_LIBRARY_NAME} SHARED
 	remote_play_upnp.cpp
 )
 
+# Android before 10 (API 29) has no ELF TLS. Its linker ignores R_AARCH64_TLSDESC, so the descriptor
+# stays zero and the first thread_local access calls address 0 (armSetAsmPtr in VifUnpackSSE_Init,
+# at every game start). A build whose minimum API is below 29 must use emulated TLS.
+#
+# The compiler already chooses emulated TLS for API 26, but the core reaches this link as ThinLTO
+# bitcode (PCSX2_LTO), and this link line carries no -flto. Without it the clang driver does not
+# forward its code generation options to lld's LTO step, which then defaults to native TLS. Give the
+# LTO step the option directly. Builds for API 29 and up are unchanged.
+#
+# ANDROID_PLATFORM_LEVEL is the minimum API in both of the NDK's toolchain flows. Not
+# CMAKE_SYSTEM_VERSION: the legacy flow, which AGP uses, sets that to a placeholder 1.
+set(ARMSX2_ANDROID_MIN_API "${ANDROID_PLATFORM_LEVEL}")
+if(NOT ARMSX2_ANDROID_MIN_API MATCHES "^[0-9]+$")
+	message(FATAL_ERROR "Cannot tell the minimum Android API (ANDROID_PLATFORM_LEVEL='${ANDROID_PLATFORM_LEVEL}'), so cannot choose the TLS model for the core")
+endif()
+if(ARMSX2_ANDROID_MIN_API LESS 29)
+	target_link_options(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE "-Wl,-plugin-opt=-emulated-tls")
+	# Fail the build rather than ship a core that cannot start on its own minimum Android version.
+	if(CMAKE_READELF)
+		add_custom_command(TARGET ${ARMSX2_EMUCORE_LIBRARY_NAME} POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DLIB=$<TARGET_FILE:${ARMSX2_EMUCORE_LIBRARY_NAME}>
+				-DMIN_API=${ARMSX2_ANDROID_MIN_API} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckNoElfTls.cmake
+			VERBATIM)
+	endif()
+endif()
+
 # The Discord bridge is its OWN shared library, and emucore must never link it.
 #
 # ARMSX2 is GPL-3.0+; the Discord Social SDK is proprietary with no published licence. Linking the
