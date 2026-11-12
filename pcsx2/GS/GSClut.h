@@ -46,6 +46,7 @@ class alignas(32) GSClut final : public GSAlignedClass<32>
 	} m_read = {};
 	u32 m_read_serial = 0; // counts the rewrites of the expanded palette (m_buff32) in Read32
 
+
 	GSTexture* m_gpu_clut4 = nullptr;
 	GSTexture* m_gpu_clut8 = nullptr;
 	GSTexture* m_current_gpu_clut = nullptr;

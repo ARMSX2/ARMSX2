@@ -546,7 +546,9 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZ2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZ2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVRGBAQXYZF2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -736,6 +738,12 @@ void GSState::ResetDrawBuffers()
 
 	for (int i = 0; i < MAX_DRAW_BUFFERS; i++)
 	{
+		// The slot's buffers are its own (a draw handed to the back queue took the slot's arrays and left the node's
+		// in exchange), and the reset runs after the back queue drained and the pending draw flushed, so nothing
+		// points into them any more. Free them before the slot is cleared, or every reset leaks a set.
+		_aligned_free(m_index_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff);
+		_aligned_free(m_vertex_buffers[i].buff_copy);
 		memset(&m_index_buffers[i], 0, sizeof(GSIndexBuff));
 		memset(&m_vertex_buffers[i], 0, sizeof(GSVertexBuff));
 		memset(&m_env_buffers[i], 0, sizeof(GSDrawBufferEnv));
@@ -1371,6 +1379,8 @@ void GSState::SetDrawBuffDirty()
 void GSState::ResetHandlers()
 	{
 	std::fill(std::begin(m_fpGIFPackedRegHandlers), std::end(m_fpGIFPackedRegHandlers), &GSState::GIFPackedRegHandlerNull);
+	// The fills below empty the XYZ entries UpdateVertexKick published, so the next PRIM write must publish again.
+	m_kick_published_prim = 0xFF;
 
 	m_fpGIFPackedRegHandlers[GIF_REG_PRIM] = (GIFPackedRegHandler)(GIFRegHandler)&GSState::GIFRegHandlerPRIM;
 	m_fpGIFPackedRegHandlers[GIF_REG_RGBA] = &GSState::GIFPackedRegHandlerRGBA;
@@ -2237,17 +2247,18 @@ void GSState::GIFPackedRegHandlerNOP(const GIFPackedReg* RESTRICT r)
 bool GSState::s_fused_kick_use_kernel = true;
 
 // The kernel decides every prim with the scalar-outcode cull (GSVertexKick.h),
-// which is exact only for the shapes VertexKickDirect also takes it for: a
-// triangle or sprite class that has a cull grid, with no AA1 coverage expansion.
-// Everything else keeps the per-vertex path, which still has the legacy NEON
-// CullTest behind it. The sprite class has no grid away from native, so sprites
-// still leave the kernel there; the triangle classes no longer do.
+// which is exact for the shapes VertexKickDirect also takes it for: a triangle
+// or sprite class with no AA1 coverage expansion, at every scale. A class with no
+// cull grid (a sprite at any upscale, a triangle at an upscale that is not a
+// power of two) decides on GSVertexKernels::TrimKey bands; until those existed it
+// left the kernel, which cost 17 to 19% of the instructions per host draw at 1.5x
+// and 3x. Everything else keeps the per-vertex path, which still has the legacy
+// NEON CullTest behind it.
 template <u32 prim>
 __fi bool GSState::KickKernelApplies()
 {
-	constexpr int primclass = GSUtil::GetPrimClass(prim);
 	const bool aa1_expand = PRIM->AA1 && IsCoverageAlphaSupported();
-	return m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand;
+	return !aa1_expand;
 }
 
 // Whether the two-pass kernel (GSVertexKickKernel.h) carries this prim type at
@@ -2497,7 +2508,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		// Re-checked across the seam like the rest: a flush can restore an
 		// environment whose PRIM has AA1 set, and the kernel's scalar-outcode cull
 		// is only exact while the per-vertex kick would have taken it too.
-		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>();
+		// The kernel's four-wide decision also wants the window offset within the register's 16 bits (it is, unless
+		// a state load put something in the padding) and no more than a window's worth of vertices pending.
+		const bool cull_ok = !m_scissor_invalid && KickKernelApplies<prim>() &&
+		                     ((m_xyof.U32[0] | m_xyof.U32[1]) <= 0xFFFFu) && ((m_vertex->tail - m_vertex->head) < n);
 
 		// The autoflush arm's first escape. A run the kernel's cull does not
 		// cover -- an invalid scissor, or an environment a flush moved to one the
@@ -2518,7 +2532,9 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			}
 		}
 
-		if (overlap_active || snapshot_pending || !cull_ok)
+		// The snapshot is not a reason to leave the kernel: it does not depend on the vertex, so it is taken below
+		// for the chunk that holds the vertex which fills the first window.
+		if (overlap_active || !cull_ok)
 		{
 			const bool fills = ((m_vertex->tail + 1) - m_vertex->head) >= n;
 			if constexpr (auto_flush)
@@ -2571,6 +2587,16 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 			continue;
 		}
 
+		// The per-draw environment snapshot, where the per-vertex kick takes it: at the vertex that fills a window
+		// while the draw has no primitive. Nothing in the chunk before that vertex can draw, flush or write a
+		// register, so taking it ahead of the chunk copies the same bytes; and a chunk too short to fill the window
+		// takes none, as its vertices would not.
+		if (snapshot_pending && ((m_vertex->tail - m_vertex->head) + chunk) >= n)
+		{
+			SnapshotDrawEnvironmentForChunk();
+			snapshot_done = true;
+		}
+
 		// The routing decision, once per chunk (stage 3b).
 		//
 		// HandleAutoFlush performs no store and no flush when IsAutoFlushDraw is
@@ -2616,10 +2642,10 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 
 		// Re-read across the seam: see the comment on inv above.
 		inv.xyof = m_xyof;
-		// The kernel only carries triangle strips/lists and sprites, and only when
-		// the class has a grid, so this is the same choice MakeKickMirror makes.
+		// The kernel only carries triangle strips/lists and sprites, so this is the
+		// same choice MakeKickMirror makes for the prim's class.
 		inv.grid = m_cull_grid;
-		inv.bounds = (inv.grid.shift == 4) ? m_cull_bounds_band : m_cull_bounds_raw;
+		inv.bounds = (inv.grid.ShiftFor<GSUtil::GetPrimClass(prim)>() == 4) ? m_cull_bounds_band : m_cull_bounds_raw;
 		inv.shade = (PRIM->TME ? 1u : 0u) | (PRIM->FST ? 2u : 0u) | (PRIM->IIP ? 4u : 0u);
 		inv.sprite_q_fix = (prim == GS_SPRITE) && (m_env.PRIM.FST == 0);
 		// A carrying layout's carry is re-read here for the same reason the cull
@@ -2639,7 +2665,7 @@ void GSState::KickPackedBatchKernel(const GIFPackedReg* RESTRICT r, u32 count)
 		u32 acc_state = GSVertexKickKernel::kAccEmpty;
 		GSVector4i native_acc_rect = GSVector4i::zero();
 		const GSVector4i acc_rect = GSVertexKickKernel::RunChunk<prim, layout>(r + k * stride, chunk,
-			m_vertex, m_index, m_kick_side_xyp, m_kick_side_meta, inv, &acc_state, &native_acc_rect);
+			m_vertex, m_index, inv, &acc_state, &native_acc_rect);
 
 		if (acc_state != GSVertexKickKernel::kAccEmpty)
 		{
@@ -2932,8 +2958,33 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 		const u32 off_rgba = m_packed_layout.off_rgba;
 		const u32 off_xyz = m_packed_layout.off_xyz;
 
-		while (done < count && m_dirty_gs_regs)
+		// CheckFlushes does nothing without a pending draw, whatever is dirty, so
+		// the replay is only needed while there is one. And of the vertices
+		// replayed, the per-qword position handler asks CheckFlushes only for one
+		// that has no ADC bit (or when the primitive class changed or XYOFFSET is
+		// dirty): a vertex with ADC set is kicked and nothing else, and a run of
+		// them is the per-vertex batch. So the replay proper is one vertex at each
+		// place the handler would ask.
+		while (done < count && m_dirty_gs_regs && m_index->tail != 0)
 		{
+			const bool asks_always = GSUtil::GetPrimClass(m_prev_env.PRIM.PRIM) != GSUtil::GetPrimClass(m_env.PRIM.PRIM) ||
+			                         (m_dirty_gs_regs & (1 << DIRTY_REG_XYOFFSET)) != 0;
+			u32 quiet = 0;
+			if (!asks_always)
+			{
+				while (done + quiet < count && r[(done + quiet) * stride + off_xyz].XYZ2.Skip())
+					quiet++;
+			}
+			if (quiet != 0)
+			{
+				if constexpr (auto_flush)
+					KickPackedStagedRun<prim, layout>(r + done * stride, quiet);
+				else
+					KickPackedBatchLegacy<prim, layout>(r + done * stride, quiet);
+				done += quiet;
+				continue;
+			}
+
 			const GIFPackedReg* RESTRICT rv = r + done * stride;
 			ReplayPackedQword(reg_a, rv + off_a);
 			if constexpr (GSVertexKernels::LayoutHasSeparateRgba(layout))
@@ -3023,7 +3074,10 @@ __forceinline void GSState::ApplyPRIM(u32 prim)
 	else
 		m_dirty_gs_regs &= ~(1<< DIRTY_REG_PRIM);
 
-	UpdateVertexKick();
+	// The kick handlers depend on the primitive type alone; a PRIM write that keeps the type (most of them: a tag
+	// restarting a strip, or changing only shading, texturing or blending) finds them already published.
+	if (PRIM->PRIM != m_kick_published_prim)
+		UpdateVertexKick();
 
 	pxAssert(m_index->tail == 0 || m_index->buff[m_index->tail - 1] + 1 == m_vertex->next);
 
@@ -4102,22 +4156,40 @@ void GSState::FlushPrim()
 		m_vertex->maxcount = fresh_maxcount;
 		m_index->buff = fresh_ibuff;
 
-		GSBackQueue::DrawRecord rec;
-		std::memcpy(&rec.draw_env, &m_prev_env, sizeof(rec.draw_env));
-		std::memcpy(&rec.next_env, &m_env, sizeof(rec.next_env));
-		rec.next_v = m_v;
-		rec.draw_rect = temp_draw_rect;
-		rec.native_draw_rect = temp_native_draw_rect;
-		rec.vertex = &node->vb;
-		rec.index = &node->ib;
-		rec.node = node;
-		rec.draw_serial = s_n;
-		rec.backed_up_ctx = m_backed_up_ctx;
-		rec.dirty_gs_regs = m_dirty_gs_regs;
-		rec.flush_reason = m_state_flush_reason;
-		rec.channel_shuffle_finish = m_channel_shuffle_finish;
-		rec.packed_uv_hack_flag = m_isPackedUV_HackFlag;
-		rec.priv = priv;
+		// The record is written straight into its ring slot; the consumer releases the node after the tail runs.
+		PushRecordInPlace<GSBackQueue::DrawRecord>(GSBackQueue::RecordType::Draw, [&](GSBackQueue::DrawRecord& rec) {
+			// Only the blocks of the two environments that changed since the last record (section "What the back
+			// thread reads from a draw record" in ExecDrawRecord).
+			if (m_rec_env_valid) [[likely]]
+			{
+				rec.env_blocks[0] = static_cast<u16>(DeltaDrawingEnvironment(rec.draw_env, m_prev_env, m_rec_env[0]));
+				rec.env_blocks[1] = static_cast<u16>(DeltaDrawingEnvironment(rec.next_env, m_env, m_rec_env[1]));
+				rec.env_full = false;
+			}
+			else
+			{
+				CopyDrawingEnvironment(rec.draw_env, m_prev_env);
+				CopyDrawingEnvironment(rec.next_env, m_env);
+				CopyDrawingEnvironment(m_rec_env[0], m_prev_env);
+				CopyDrawingEnvironment(m_rec_env[1], m_env);
+				rec.env_blocks[0] = rec.env_blocks[1] = 0;
+				rec.env_full = true;
+				m_rec_env_valid = true;
+			}
+			rec.next_v = m_v;
+			rec.draw_rect = temp_draw_rect;
+			rec.native_draw_rect = temp_native_draw_rect;
+			rec.vertex = &node->vb;
+			rec.index = &node->ib;
+			rec.node = node;
+			rec.draw_serial = s_n;
+			rec.backed_up_ctx = m_backed_up_ctx;
+			rec.dirty_gs_regs = m_dirty_gs_regs;
+			rec.flush_reason = m_state_flush_reason;
+			rec.channel_shuffle_finish = m_channel_shuffle_finish;
+			rec.packed_uv_hack_flag = m_isPackedUV_HackFlag;
+			rec.priv = priv;
+		});
 
 		// m_channel_shuffle_finish is written on BOTH sides: the front's
 		// ApplyTEX0 sets it as a one-shot "abort shuffle skip" message, while
@@ -4128,9 +4200,6 @@ void GSState::FlushPrim()
 		// the member IS the authoritative copy: leave it alone.
 		if (m_mem_target != this)
 			m_channel_shuffle_finish = false;
-
-		// The consumer releases the node after the tail runs.
-		PushRecord(GSBackQueue::RecordType::Draw, rec);
 
 		// GSC_IRem clears SCANMSK in the parse environment at the start of the draw, and on a
 		// single object that clear lasts until the game writes SCANMSK again. On the split the
@@ -4197,8 +4266,27 @@ void GSState::ExecDrawRecord(const GSBackQueue::DrawRecord& rec)
 	// at m_prev_env around this call, so no re-aim is needed); on the back
 	// object (GV7-1) this becomes the real staging install, which also aims the
 	// draw pointers the way FlushDraw does today.
-	std::memcpy(&m_prev_env, &rec.draw_env, sizeof(m_prev_env));
-	std::memcpy(&m_env, &rec.next_env, sizeof(m_env));
+	//
+	// What the back thread reads from a draw record, and when: everything, here, before DrawRecordTail runs; nothing
+	// after (the slot is retired when this returns, and only rec.node outlives it, released after the tail). The two
+	// environments arrive as a delta against the previous record's: the blocks set in env_blocks are applied to the
+	// copies this object keeps (m_rec_env), which then equal the front's m_prev_env and m_env at the flush, and both
+	// are installed in full. The full install is what keeps this exact whatever the draw path wrote into m_prev_env
+	// or m_env since the last record (scissor and offsets through m_context, SCANMSK, TRXDIR): those writes are
+	// overwritten exactly as the whole-record copy overwrote them. A record built on the record-off path never comes
+	// here (FlushPrim calls DrawRecordTail directly).
+	if (rec.env_full)
+	{
+		CopyDrawingEnvironment(m_rec_env[0], rec.draw_env);
+		CopyDrawingEnvironment(m_rec_env[1], rec.next_env);
+	}
+	else
+	{
+		ApplyDrawingEnvironmentDelta(m_rec_env[0], rec.draw_env, rec.env_blocks[0]);
+		ApplyDrawingEnvironmentDelta(m_rec_env[1], rec.next_env, rec.env_blocks[1]);
+	}
+	CopyDrawingEnvironment(m_prev_env, m_rec_env[0]);
+	CopyDrawingEnvironment(m_env, m_rec_env[1]);
 	m_v = rec.next_v;
 	temp_draw_rect = rec.draw_rect;
 	temp_native_draw_rect = rec.native_draw_rect;
@@ -4281,6 +4369,20 @@ void GSState::DrawRecordTail(u64 draw_serial)
 #endif
 	// Update scissor, it may have been modified by a previous draw
 	m_env.CTXT[PRIM->CTXT].UpdateScissor();
+
+	// A draw the renderer stands in for leaves what the rest of this tail leaves outside Draw(): the
+	// per-draw overlap state reset and the draw counts.
+	if (SkipMemoizedDraw())
+	{
+		m_quad_check_valid = false;
+		m_quad_check_valid_shuffle = false;
+		m_drawlist.clear();
+		m_drawlist_bbox.clear();
+		g_perfmon.Put(GSPerfMon::Draw, 1);
+		g_perfmon.Put(GSPerfMon::Prim, m_index->tail / GSUtil::GetVertexCount(PRIM->PRIM));
+		return;
+	}
+
 	m_vt.Update(m_vertex->buff, m_index->buff, m_vertex->tail, m_index->tail, GSUtil::GetPrimClass(PRIM->PRIM));
 
 	// Texel coordinate rounding
@@ -5414,6 +5516,9 @@ int GSState::Freeze(freezeData* fd, bool sizeonly)
 	if (GSConfig.UserHacks_ReadTCOnClose)
 		m_mem_target->ReadbackTextureCache();
 
+	// Unconditionally, unlike the readback above: a CPU move would have left these bytes in local memory.
+	m_mem_target->MaterialiseHeldLocalMemory();
+
 	u8* data = fd->data;
 
 	WriteState(data, &version);
@@ -5739,22 +5844,34 @@ void GSState::UpdateVertexKick()
 
 	for (u32 i = 0; i < GIF_REG_COMPLEX_COUNT - 2; i++)
 		m_fpGIFPackedRegHandlersLayoutC[i] = m_fpGIFPackedRegHandlerLayout[i][prim];
+
+	m_kick_published_prim = static_cast<u8>(prim);
 }
 
 void GSState::GrowVertexBuffer()
 {
-	const u32 maxcount = std::max<u32>(m_vertex->maxcount * 3 / 2, 10000);
-	const u32 old_vertex_size = sizeof(GSVertex) * m_vertex->tail;
-	const u32 new_vertex_size = sizeof(GSVertex) * maxcount;
-	const u32 old_index_size = sizeof(u16) * m_index->tail;
-	const u32 new_index_size = sizeof(u16) * maxcount * 6; // Worst case index list is a list of points with vs expansion, 6 indices per point
+	// Half as much again, at least the starting 10,000 vertices, in 64 bits so neither the capacity nor a size can
+	// wrap. Past the ceiling the request is a runaway (every caller grows only while it lacks room, so a caller
+	// asking for this much has lost track of its counts), and it fails here rather than allocate gigabytes.
+	const u64 want = std::max<u64>(static_cast<u64>(m_vertex->maxcount) * 3 / 2, 10000);
+	if (want > MAX_VERTEX_CAPACITY)
+	{
+		Console.Error("GS: the vertex buffer would grow to %llu vertices, past its ceiling of %u (tail %u, indices %u).",
+			static_cast<unsigned long long>(want), MAX_VERTEX_CAPACITY, m_vertex->tail, m_index->tail);
+		pxFailRel("GS: the vertex buffer would grow past its ceiling");
+	}
+	const u32 maxcount = static_cast<u32>(want);
+	const size_t old_vertex_size = sizeof(GSVertex) * static_cast<size_t>(m_vertex->tail);
+	const size_t new_vertex_size = sizeof(GSVertex) * static_cast<size_t>(maxcount);
+	const size_t old_index_size = sizeof(u16) * static_cast<size_t>(m_index->tail);
+	const size_t new_index_size = sizeof(u16) * static_cast<size_t>(maxcount) * 6; // Worst case index list is a list of points with vs expansion, 6 indices per point
 
 	// Structure describing buffers to reallocate
 	struct AllocDesc
 	{
 		void** pbuff;
-		u32 old_size;
-		u32 new_size;
+		size_t old_size;
+		size_t new_size;
 	};
 	// m_draw_vertex/m_draw_index are deliberately absent: they are staging arrays
 	// owned by EnsureDrawStaging, not parallel copies of these buffers. Sizing them
@@ -5768,7 +5885,7 @@ void GSState::GrowVertexBuffer()
 	}};
 
 	// For logging
-	u32 total_size = 0;
+	size_t total_size = 0;
 	for (const auto& desc : alloc_desc)
 		total_size += desc.new_size;
 
@@ -7955,6 +8072,33 @@ __forceinline void GSState::ApplyDepthClamp(u32& z)
 	ApplyDepthClampMode(GetDepthClampMode(), z);
 }
 
+// The per-draw environment snapshot: what the kick takes at every vertex that fills a primitive's window while the
+// draw has no primitive yet. It reads and writes nothing of the vertex or of the vertex and index buffers, so the
+// kernel's driver takes it itself, once, for a chunk that holds such a vertex.
+__forceinline void GSState::SnapshotDrawEnvironment()
+{
+	const int ctx = m_env.PRIM.CTXT;
+	std::memcpy(&m_prev_env, &m_env, 88);
+	std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
+	// With draw buffering off this snapshot is the draw's only copy of its
+	// environment (see SetDrawBufferEnv), so it also takes the other context's
+	// register block, which FlushBuffers used to install from buffer 0 at flush
+	// time. Same value, captured at the same moment; nothing reads the inactive
+	// context of m_prev_env in between.
+	if (!GSConfig.UserHacks_DrawBuffering)
+		std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
+	std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
+	std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
+	m_dirty_gs_regs = 0;
+	m_backed_up_ctx = m_env.PRIM.CTXT;
+	SetDrawBufferEnv();
+}
+
+__noinline void GSState::SnapshotDrawEnvironmentForChunk()
+{
+	SnapshotDrawEnvironment();
+}
+
 // Staged-m_v entry point: piecemeal reg handlers build the vertex in m_v and kick
 // from there. The fused packed handlers use VertexKickDirect with the parsed vertex
 // still in registers instead. The depth clamp is applied here (persisting into m_v
@@ -8062,23 +8206,7 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 	// Neither the memcpys nor SetDrawBufferEnv touch the vertex/index buffer state,
 	// so the cursor rides through this block untouched.
 	if (c.itail == 0/* && ((m_backed_up_ctx != m_env.PRIM.CTXT) || m_dirty_gs_regs)*/)
-	{
-		const int ctx = m_env.PRIM.CTXT;
-		std::memcpy(&m_prev_env, &m_env, 88);
-		std::memcpy(&m_prev_env.CTXT[ctx], &m_env.CTXT[ctx], 96);
-		// With draw buffering off this snapshot is the draw's only copy of its
-		// environment (see SetDrawBufferEnv), so it also takes the other context's
-		// register block, which FlushBuffers used to install from buffer 0 at flush
-		// time. Same value, captured at the same moment; nothing reads the inactive
-		// context of m_prev_env in between.
-		if (!GSConfig.UserHacks_DrawBuffering)
-			std::memcpy(&m_prev_env.CTXT[ctx ^ 1], &m_env.CTXT[ctx ^ 1], 96);
-		std::memcpy(&m_prev_env.CTXT[ctx].offset, &m_env.CTXT[ctx].offset, sizeof(m_env.CTXT[ctx].offset));
-		std::memcpy(&m_prev_env.CTXT[ctx].scissor, &m_env.CTXT[ctx].scissor, sizeof(m_env.CTXT[ctx].scissor));
-		m_dirty_gs_regs = 0;
-		m_backed_up_ctx = m_env.PRIM.CTXT;
-		SetDrawBufferEnv();
-	}
+		SnapshotDrawEnvironment();
 
 	// Skip draws when scissor is out of range (i.e. bottom-right is less than top-left), since everything will get clipped.
 	skip |= static_cast<u32>(m_scissor_invalid);
@@ -8091,13 +8219,12 @@ __forceinline void GSState::VertexKickDirect(u32 skip, u32 xraw, u32 yraw, const
 		const bool aa1_expand = rounded_class && PRIM->AA1 && IsCoverageAlphaSupported();
 
 		// Scalar-outcode decision (see GSVertexKick.h) for the hot shapes:
-		// point/line always, triangle strips/lists and sprites whenever the class
-		// has a cull grid and there is no AA1 expansion. Rejected prims never touch
+		// point/line always, triangle strips/lists and sprites whenever there is no
+		// AA1 expansion, with or without a cull grid. Rejected prims never touch
 		// NEON; accepted prims compute the bbox exactly as the legacy kernel does.
 		// Fans keep the legacy path (the head vertex sits outside the ring window).
 		constexpr bool fast_class = (prim != GS_TRIANGLEFAN);
-		const bool fast_cull =
-			fast_class && (!rounded_class || (m_cull_grid.ShiftFor<primclass>() != 0 && !aa1_expand));
+		const bool fast_cull = fast_class && (!rounded_class || !aa1_expand);
 		if (fast_cull)
 		{
 			const GSVertexKernels::CullMirrorEntry& e0 = c.vb->kick_ring[(xy_tail - 1) & 3];

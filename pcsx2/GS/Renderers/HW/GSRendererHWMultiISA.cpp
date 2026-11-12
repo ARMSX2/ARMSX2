@@ -664,6 +664,7 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	// texture that the rasterizer (and the palette block copy below) would take. A draw into any other frame cannot
 	// be one, which is settled before the more thorough check so that it costs those draws one compare.
 	bool copied = false;
+	bool block_copy = false;
 	if (prepare_texture && sw.palette_block_copy && gd.sel.fpsm == 2)
 	{
 		const bool mip = hw.IsMipMapActive();
@@ -676,13 +677,19 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	// A 32-bit texture sprite draw into a 32-bit frame is copied the same way, texel for texel, with no palette. It
 	// is also settled before the snapshot, so a draw it takes never converts the blocks of its texture.
 	if (!copied && prepare_texture && sw.palette_block_copy && gd.sel.fpsm == 0 && context->TEX0.PSM == PSMCT32 && !hw.IsMipMapActive())
+	{
 		copied = IsPaletteBlockCopy(data, PRIM->FST, true) && DrawTexels32(hw, sw, data);
+		block_copy = copied;
+	}
 
 	// A paletted sprite draw into a 32-bit frame: the palette block copy, read from local memory itself like the
 	// masked copy above, so it too never takes the snapshot. Not mipmapped: the selector's level-of-detail bits are
 	// set only by the snapshot's setup, so a mipmapped draw is the rasterizer's here.
 	if (!copied && prepare_texture && sw.palette_block_copy && gd.sel.fpsm == 0 && gd.sel.tlu && !hw.IsMipMapActive())
+	{
 		copied = IsPaletteBlockCopy(data, PRIM->FST) && DrawPaletteBlocks(hw, sw, data);
+		block_copy = copied;
+	}
 
 	if (copied)
 	{
@@ -700,6 +707,8 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	}
 
 	MarkDrawWritten(hw.m_mem, context, bbox, !copied);
+	sw.last_draw_copied = copied;
+	sw.last_draw_block_copy = block_copy;
 
 	return true;
 }

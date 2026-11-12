@@ -380,6 +380,22 @@ public:
 		{
 			loopPagesWithBreak([fn = std::forward<Fn>(fn)](u32 page) { fn(page); return true; });
 		}
+
+		/// One run of page positions that holds every page the loop visits: the loop visits only pages
+		/// `pos % GS_MAX_PAGES` with `first <= pos < first + count`. It may hold pages the loop does not visit.
+		/// False when the rows give no such run (nothing to visit, or a start left of the buffer).
+		bool pageSpan(u32& first, u32& count) const
+		{
+			if (yCnt <= 0 || yInc < 0)
+				return false;
+			const int lo = bp + std::min(firstRowPgXStart, std::min(midRowPgXStart, lastRowPgXStart));
+			const int hi = bp + (yCnt - 1) * yInc + std::max(firstRowPgXEnd, std::max(midRowPgXEnd, lastRowPgXEnd));
+			if (lo < 0 || hi <= lo)
+				return false;
+			first = static_cast<u32>(lo);
+			count = static_cast<u32>(hi - lo);
+			return true;
+		}
 	};
 
 	/// Get an object for looping over the pages in the given rect
@@ -623,6 +639,12 @@ public:
 	__forceinline bool HashDirty(u32 block) const { return DirtyBit(m_hash_dirty, block); }
 	/// Returns whether the bit was set, and clears it.
 	__forceinline bool TestAndClearHashDirty(u32 block) { return TestAndClearDirtyBit(m_hash_dirty, block); }
+	/// Clears the hash-dirty bits of every block of `page`, for a writer that has given them their hashes.
+	__forceinline void ClearPageHashDirty(u32 page)
+	{
+		static_assert(GS_BLOCKS_PER_PAGE == 32, "a page is half a word of the dirty bitmap");
+		m_hash_dirty[(page % GS_MAX_PAGES) >> 1] &= ~(u64(0xFFFFFFFFu) << ((page & 1) * 32));
+	}
 	void MarkAllHashDirty();
 
 	/// Marks of everything so far: a rectangle with no page set (MarkPagesWritten), a page range of every page,

@@ -13,10 +13,14 @@ namespace GSDriverReport
 		std::atomic<ActiveVulkanDriver> s_active_driver{ActiveVulkanDriver::None};
 	} // namespace
 
-	void NoteActiveVulkanDriver(std::string_view driver_info)
+	void NoteActiveVulkanDriver(uint32_t driver_id, std::string_view driver_info)
 	{
-		s_active_driver.store(IsMaliSX2Driver(driver_info) ? ActiveVulkanDriver::MaliSX2 : ActiveVulkanDriver::Other,
-			std::memory_order_release);
+		ActiveVulkanDriver driver = ActiveVulkanDriver::Other;
+		if (IsMaliSX2Driver(driver_info))
+			driver = ActiveVulkanDriver::MaliSX2;
+		else if (driver_id == DriverIdValue::QualcommProprietary)
+			driver = ActiveVulkanDriver::QualcommProprietary;
+		s_active_driver.store(driver, std::memory_order_release);
 	}
 
 	void ClearActiveVulkanDriver()

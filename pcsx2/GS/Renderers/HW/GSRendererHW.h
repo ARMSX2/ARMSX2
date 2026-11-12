@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GSTextureCache.h"
+#include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
 #include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
@@ -215,6 +216,8 @@ private:
 	CLUTDrawTestResult PossibleCLUTDraw();
 	CLUTDrawTestResult PossibleCLUTDrawAggressive();
 	bool CanUseSwPrimRender(bool no_rt, bool no_ds, bool draw_sprite_tex);
+	/// Writes held depth words (GSTextureCache::MaterialiseHeldPages) under what the copy road reads and writes.
+	void MaterialiseHeldUnderCopy();
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
 
 	bool SnapSpriteEdgesToPixelGrid();
@@ -454,7 +457,52 @@ private:
 	// software sprite renderer state
 	GSSwPrimRenderState m_sw_prim;
 
+	// The burst memo (GSBurstMemo.h, GSRendererHWBurstMemo.cpp): copy-road draws recorded as they run, and
+	// skipped when a later burst repeats them.
+	GSBurstMemo::Memo m_burst_memo;
+	bool m_burst_memo_enabled = false;
+	/// Set by CanUseSwPrimRender: its true verdict rests on finding no target at the texture (if any) and, when
+	/// it looked there, at the frame. Only such a verdict can be reused by a skipped draw.
+	bool m_copy_road_no_targets = false;
+	bool m_copy_road_frame_checked = false;
+
+	bool BurstMemoSkip();
+	bool BurstMemoWakes() const;
+	bool BurstMemoBeforeCopy();
+	void BurstMemoAfterCopy(bool recorded, bool copied);
+	bool BurstMemoTryHit();
+	bool BurstMemoHit();
+	void BurstMemoApply(const GSBurstMemo::Record& d);
+	void BurstMemoCloseRecording();
+	void BurstMemoEndSequence();
+	/// Closes the burst being recorded and ends the one being skipped, calling out only when there is one: most
+	/// draws a title makes pass here with neither.
+	void BurstMemoStop()
+	{
+		if (m_burst_memo.recording)
+			BurstMemoCloseRecording();
+		if (!m_burst_memo.candidates.empty() || m_burst_memo.position)
+			BurstMemoEndSequence();
+	}
+	void BurstMemoEndFrame(bool idle_frame);
+	void BurstMemoInvalidate(u32 bp, u32 bw, u32 psm, const GSVector4i& r);
+	void BurstMemoFlushWaitingSlow();
+	/// Makes the texture cache invalidations skipped draws left waiting: before anything that reads the texture
+	/// cache.
+	void BurstMemoFlushWaiting()
+	{
+		if (m_burst_memo.pending_count)
+			BurstMemoFlushWaitingSlow();
+	}
+	bool BurstMemoPagesWrittenSince(const std::vector<u32>& pages, u64 seq) const;
+	u64 BurstMemoPaletteHash(u32 entries);
+	bool BurstMemoTargetAt(u32 bp, u32 psm) const;
+
 public:
+	/// Re-reads the settings the burst memo depends on, and forgets what it recorded.
+	void RefreshBurstMemo();
+	bool SkipMemoizedDraw() override;
+
 	GSRendererHW();
 	virtual ~GSRendererHW() override;
 
@@ -522,6 +570,7 @@ public:
 
 	void PurgeTextureCache(bool sources, bool targets, bool hash_cache) override;
 	void ReadbackTextureCache() override;
+	void MaterialiseHeldLocalMemory() override;
 
 	GSTexture* LookupPaletteSource(u32 CBP, u32 CPSM, u32 CBW, GSVector2i& offset, float* scale, const GSVector2i& size) override;
 

@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -141,6 +142,14 @@ TEST_F(GSCacheFileTest, BuildIdIsSet)
 {
 	EXPECT_FALSE(GetBuildId().empty());
 	EXPECT_EQ(GetBuildVersionWord(), GetBuildVersionWord());
+}
+
+// The key lists are named by the key layout, which only the selector definitions change, and not by
+// the build identity, which every GS source changes (cmake/GSKeyLayoutId.cmake).
+TEST_F(GSCacheFileTest, KeyLayoutIdIsGeneratedApartFromTheBuildId)
+{
+	EXPECT_EQ(GetTfxKeyLayoutId().size(), 32u);
+	EXPECT_NE(GetTfxKeyLayoutId(), GetBuildId());
 }
 
 TEST_F(GSCacheFileTest, FramedRoundTrip)
@@ -531,6 +540,28 @@ TEST_F(GSCacheFileTest, PackWritePassIsSkippedWhileAnotherProcessWrites)
 }
 #endif
 
+// A process killed between passes loses what it learned since the last one, so a change reaches the
+// disk soon after it stops changing, not only at the next full pass.
+TEST_F(GSCacheFileTest, WriterWritesASettledChangeWithoutBeingAsked)
+{
+	auto pack = std::make_shared<Pack>();
+	pack->Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+	PackWriter writer;
+	writer.Start(m_dir, {}, std::chrono::hours(1));
+	writer.Add(pack);
+	Put(*pack, 0);
+	const Clock::time_point give_up = Clock::now() + PackWriter::SETTLE + std::chrono::seconds(5);
+	while (pack->HasPendingWrites() && Clock::now() < give_up)
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	EXPECT_FALSE(pack->HasPendingWrites());
+	{
+		Pack reader;
+		reader.Open(PackPath(), KIND_TEST, MakeStamp("A"), BIG);
+		EXPECT_EQ(reader.GetEntryCount(), 1u);
+	}
+	writer.Stop(Clock::now() + PackWriter::CLOSE_DEADLINE);
+}
+
 TEST_F(GSCacheFileTest, WriterWritesWhenAskedAndOnStop)
 {
 	auto pack = std::make_shared<Pack>();
@@ -674,6 +705,24 @@ TEST_F(GSCacheFileTest, LeftoversOfOlderCachesAndUnusedPacksAreRemoved)
 	open.Close();
 	EXPECT_EQ(CleanLeftovers(m_dir), 0u);
 	EXPECT_TRUE(FileSystem::FileExists(PathOf("gs_packs/U/open.pack").c_str()));
+}
+
+// The writer's first pass of a process removes empty title directories, and the Vulkan shader cache
+// opens the pack for the shaders built before any game is known (gs_packs/_) just before it, with
+// nothing in it yet. The directory goes; the pack's first write must still land.
+TEST_F(GSCacheFileTest, PackIsWrittenAfterItsEmptyDirectoryWasRemoved)
+{
+	const std::string dir = PathOf("gs_packs/_");
+	const std::shared_ptr<Pack> pack = OpenPack(dir, "vk_spirv", "vk_spirv_t", KIND_TEST, MakeStamp("A"), BIG);
+	CleanLeftovers(m_dir);
+	ASSERT_FALSE(FileSystem::DirectoryExists(dir.c_str()));
+
+	Put(*pack, 0);
+	EXPECT_FALSE(pack->Write().failed);
+
+	Pack again;
+	again.Open(Path::Combine(dir, "vk_spirv_t.pack"), KIND_TEST, MakeStamp("A"), BIG);
+	EXPECT_EQ(again.GetEntryCount(), 1u);
 }
 
 #ifndef _WIN32

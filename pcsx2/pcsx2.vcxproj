@@ -409,6 +409,9 @@
     <ClCompile Include="GS\Renderers\Vulkan\GSDeviceVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="GS\Renderers\Vulkan\GSRunsVK.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="GS\Renderers\Vulkan\GSTextureVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
@@ -476,6 +479,8 @@
     <ClCompile Include="GS\GSBlock.cpp" />
     <ClCompile Include="GS\GSCapture.cpp" />
     <ClCompile Include="GS\GSCacheFile.cpp" />
+    <ClCompile Include="GS\GSBlockId.cpp" />
+    <ClCompile Include="GS\GSCompileQueue.cpp" />
     <ClCompile Include="GS\GSClut.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSDevice.cpp" />
     <ClCompile Include="GS\Renderers\Common\GSHeadlessPresent.cpp" />
@@ -518,6 +523,7 @@
     <ClCompile Include="GS\Renderers\Common\GSRenderer.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSLineRuns.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSRendererHWBurstMemo.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWMultiISA.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp" />
@@ -533,6 +539,7 @@
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSTextureCache.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSBurstMemo.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSTextureCacheSW.cpp" />
     <ClCompile Include="GS\GSUtil.cpp" />
@@ -948,6 +955,9 @@
     <ClInclude Include="GS\Renderers\Vulkan\GSDeviceVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Vulkan\GSRunsVK.h">
+      <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Vulkan\GSTextureVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
@@ -1006,6 +1016,7 @@
     <ClInclude Include="GS\GSBlock.h" />
     <ClInclude Include="GS\GSCapture.h" />
     <ClInclude Include="GS\GSCacheFile.h" />
+    <ClInclude Include="GS\GSBlockId.h" />
     <ClInclude Include="GS\GSClut.h" />
     <ClInclude Include="GS\Renderers\Common\GSShaderEnums.h" />
     <ClInclude Include="GS\Renderers\Common\GSDevice.h" />
@@ -1032,6 +1043,7 @@
     <ClInclude Include="GS\Renderers\Common\GSGPUProfilePrivate.h" />
     <ClInclude Include="GS\GSLocalMemory.h" />
     <ClInclude Include="GS\GSLzma.h" />
+    <ClInclude Include="GS\GSCompileQueue.h" />
     <ClInclude Include="GS\GSCompileStats.h" />
     <ClInclude Include="GS\GSPerfMon.h" />
     <ClInclude Include="GS\GSPng.h" />
@@ -1081,6 +1093,8 @@
     <ClInclude Include="GS\Renderers\HW\GSTargetRebase.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
+    <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h" />
+    <ClInclude Include="GS\Renderers\HW\GSDepthFormatMove.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineWalk.h" />
@@ -1092,6 +1106,7 @@
     <ClInclude Include="GS\Renderers\Common\GSFieldShiftPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendCarry.h" />
     <ClInclude Include="GS\Renderers\Common\GSBlendConstantPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRunsPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSBackThreadPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />

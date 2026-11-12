@@ -591,6 +591,8 @@ endif()
 set(pcsx2GSSources
 	GS/GS.cpp
 	GS/GSCacheFile.cpp
+	GS/GSBlockId.cpp
+	GS/GSCompileQueue.cpp
 	GS/GSClut.cpp
 	GS/GSDrawingContext.cpp
 	GS/GSDrawingEnvironment.cpp
@@ -633,10 +635,12 @@ set(pcsx2GSSources
 	GS/Renderers/Common/GSVertexTrace.cpp
 	GS/Renderers/Null/GSDeviceNone.cpp
 	GS/Renderers/Null/GSRendererNull.cpp
+	GS/Renderers/HW/GSBurstMemo.cpp
 	GS/Renderers/HW/GSDrawLog.cpp
 	GS/Renderers/HW/GSHwHack.cpp
 	GS/Renderers/HW/GSLineRuns.cpp
 	GS/Renderers/HW/GSRendererHW.cpp
+	GS/Renderers/HW/GSRendererHWBurstMemo.cpp
 	GS/Renderers/HW/GSTextureCache.cpp
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
 	GS/Renderers/HW/GSTextureReplacements.cpp
@@ -663,6 +667,7 @@ set(pcsx2GSHeaders
 	GS/GSBackQueue.h
 	GS/GSCacheFile.h
 	GS/GSClut.h
+	GS/GSCompileQueue.h
 	GS/GSCompileStats.h
 	GS/GSDrawingContext.h
 	GS/GSDrawingEnvironment.h
@@ -685,10 +690,12 @@ set(pcsx2GSHeaders
 	GS/GSTables.h
 	GS/GSUtil.h
 	GS/GSVector.h
+	GS/GSBlockId.h
 	GS/GSXXH.h
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendCarry.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
+	GS/Renderers/Common/GSRunsPolicy.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
 	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
@@ -732,6 +739,8 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSDrawLog.h
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineRuns.h
+	GS/Renderers/HW/GSBurstMemo.h
+	GS/Renderers/HW/GSDepthFormatMove.h
 	GS/Renderers/HW/GSLineWalk.h
 	GS/Renderers/HW/GSPointPlace.h
 	GS/Renderers/HW/GSRendererHW.h
@@ -759,6 +768,8 @@ set(pcsx2GSHeaders
 	GS/Renderers/SW/GSVertexQDivide.h
 	GS/Renderers/SW/GSSetupPrimCodeGenerator.all.h
 	GS/Renderers/SW/GSSwTextureDirty.h
+	GS/Renderers/SW/GSSwTargetAlias.h
+	GS/Renderers/SW/GSSwTextureReaders.h
 	GS/Renderers/SW/GSTextureCacheSW.h
 	GS/Renderers/SW/GSVertexSW.h
 	)
@@ -840,6 +851,7 @@ if(USE_VULKAN)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/Vulkan/GSDeviceVK.cpp
 		GS/Renderers/Vulkan/GSLsfg.cpp
+		GS/Renderers/Vulkan/GSRunsVK.cpp
 		GS/Renderers/Vulkan/GSTextureVK.cpp
 		GS/Renderers/Vulkan/vk_mem_alloc.cpp
 		GS/Renderers/Vulkan/VKBuilders.cpp
@@ -911,6 +923,7 @@ if(USE_VULKAN)
 	list(APPEND pcsx2GSHeaders
 		GS/Renderers/Vulkan/GSDeviceVK.h
 		GS/Renderers/Vulkan/GSLsfg.h
+		GS/Renderers/Vulkan/GSRunsVK.h
 		GS/Renderers/Vulkan/GSTextureVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h
@@ -1797,8 +1810,26 @@ add_custom_command(
 	COMMENT "Hashing the GS sources for the shader cache identity"
 	VERBATIM)
 target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h")
+# What a recorded Vulkan pipeline key's bits mean (cmake/GSKeyLayoutId.cmake): the key lists are named by
+# it, not by the build identity, so they survive the builds that leave the selectors alone.
+set(ARMSX2_GS_KEY_LAYOUT_INPUTS
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSDevice.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSShaderEnums.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Common/GSAlphaBitLogicOp.h"
+	"${ARMSX2_REPO_ROOT}/pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h")
+string(JOIN "|" ARMSX2_GS_KEY_LAYOUT_ARG ${ARMSX2_GS_KEY_LAYOUT_INPUTS})
+add_custom_command(
+	OUTPUT "${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h"
+	COMMAND ${CMAKE_COMMAND}
+		-DOUT=${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h
+		"-DFILES=${ARMSX2_GS_KEY_LAYOUT_ARG}"
+		-P "${ARMSX2_REPO_ROOT}/cmake/GSKeyLayoutId.cmake"
+	DEPENDS ${ARMSX2_GS_KEY_LAYOUT_INPUTS} "${ARMSX2_REPO_ROOT}/cmake/GSKeyLayoutId.cmake"
+	COMMENT "Hashing the TFX pipeline key layout"
+	VERBATIM)
+target_sources(PCSX2 PRIVATE "${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h")
 set_source_files_properties(GS/GSCacheFile.cpp PROPERTIES
-	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h"
+	OBJECT_DEPENDS "${ARMSX2_GS_CACHE_ID_DIR}/gs_cache_build_id.h;${ARMSX2_GS_CACHE_ID_DIR}/gs_key_layout_id.h"
 	INCLUDE_DIRECTORIES "${ARMSX2_GS_CACHE_ID_DIR}")
 
 # common Sources

@@ -54,6 +54,7 @@ import com.armsx2.BuildConfig
 import com.armsx2.EmuState
 import com.armsx2.FilenameParser
 import com.armsx2.GameInfo
+import com.armsx2.LegacyGpuCache
 import com.armsx2.MemoryCardBackup
 import com.armsx2.PlayTime
 import com.armsx2.i18n.str
@@ -2153,7 +2154,7 @@ open class MainActivityRuntime : ComponentActivity() {
         /**
          * Puts the APK's resources in the data folder for the core (shaders, the GameDB, fonts,
          * fullscreenui, patches.zip, the controller DB, at <data folder>/resources), and on a new install
-         * of the app drops the regenerable GPU caches. Off the main thread, before the core starts.
+         * of the app drops the GPU cache files older builds left (LegacyGpuCache). Off the main thread, before the core starts.
          *
          * The files kept in step with the APK are rewritten only when this install has not written them
          * yet: the marker beside them names the install that did, and is written after a clean pass, so a
@@ -2172,24 +2173,24 @@ open class MainActivityRuntime : ComponentActivity() {
             if (MainActivity.refreshShippedAssets && MainActivity.copyFailures == 0)
                 runCatching { shipped.writeText(install) }
 
-            // On any new install of the app, drop the regenerable GPU caches. The native caches carry
-            // their own build and driver stamps and discard themselves on a mismatch; this is the second
-            // line, for anything an older build wrote before those stamps existed. The marker lives in
-            // the data root beside the caches, not in this package's preferences: a data root shared by
-            // two installs is wiped whenever the other one last used it, and a data root that moved is
-            // wiped where it now is. The marker is written only after the wipe succeeded, so a failed
-            // wipe is retried on the next launch.
+            // On any new install of the app, drop what GPU caches from before the stamped format left
+            // (LegacyGpuCache). The current caches stay: each carries the stamps of what it depends on and
+            // discards itself on a mismatch, so a wipe here only made every game compile everything again
+            // after every update, and took the game list and catalog caches with it. The marker lives in
+            // the data root beside the caches, not in this package's preferences, and is written only
+            // after every legacy file went, so a failed pass is retried on the next launch.
             runCatching {
                 val cacheDir = File(root, "cache")
                 val marker = File(cacheDir, ".install")
                 val recorded = runCatching { marker.readText() }.getOrNull()
                 if (recorded != install) {
-                    val wiped = !cacheDir.exists() || cacheDir.deleteRecursively()
-                    if (wiped && cacheDir.mkdirs()) {
+                    val legacy = LegacyGpuCache.select(cacheDir.list()?.toList() ?: emptyList())
+                    val gone = legacy.all { name -> File(cacheDir, name).let { !it.exists() || it.deleteRecursively() } }
+                    if (gone && (cacheDir.isDirectory || cacheDir.mkdirs())) {
                         marker.writeText(install)
-                        android.util.Log.i("ARMSX2", "New install ($install): cleared GS shader/pipeline cache")
+                        android.util.Log.i("ARMSX2", "New install ($install): removed ${legacy.size} pre-stamp GPU cache files")
                     } else {
-                        android.util.Log.w("ARMSX2", "New install ($install): could not clear ${cacheDir.path}")
+                        android.util.Log.w("ARMSX2", "New install ($install): could not remove the pre-stamp GPU caches in ${cacheDir.path}")
                     }
                 }
             }

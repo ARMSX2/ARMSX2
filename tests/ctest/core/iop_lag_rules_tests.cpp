@@ -103,6 +103,23 @@ TEST(LagRules, AReplyDoesNotEndTheWindowWhenTheConfigurationSaysSo)
 	EXPECT_EQ(At(r, kBase + 6000), kTight);
 }
 
+TEST(LagRules, AReplyEndsTheOutstandingRequestButNotAWindowSetToRunItsLength)
+{
+	LagRulesConfig c = Config(LagRule::Bit(LagRule::Window) | LagRule::Bit(LagRule::IdleOutstanding));
+	c.window_close_on_reply = false;
+	LagRules r;
+	r.Configure(c);
+	r.Reset();
+	r.OnEeSifStart(kBase, 1);
+	r.OnIopReply(kBase + 5000);
+	EXPECT_EQ(r.Stats().window_closed_by_reply, 0u);
+	// The window is still open, with the EE running.
+	EXPECT_EQ(At(r, kBase + 6000), kTight);
+	EXPECT_EQ(r.LastRule(), static_cast<s32>(LagRule::Window));
+	// Past the window the request is no longer outstanding: an idle EE is not held.
+	EXPECT_EQ(At(r, kBase + 100001, true), kLoose);
+}
+
 TEST(LagRules, TheWindowChannelsSayWhichStartsOpenIt)
 {
 	LagRulesConfig c = Config(LagRule::Bit(LagRule::Window));

@@ -6,6 +6,7 @@
 #include "GS/Renderers/SW/GSCoordinateLag.h"
 #include "GS/Renderers/SW/GSVertexQDivide.h"
 #include "GS/Renderers/SW/GSStqExtremes.h"
+#include "GS/Renderers/SW/GSSwTargetAlias.h"
 #include "GS/GSGL.h"
 #include "GS/GSPng.h"
 #include "GS/GSUtil.h"
@@ -498,6 +499,14 @@ void GSRendererSW::Draw()
 			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.fb.psm()].pgs.y)) ||
 		(sd->global.sel.zb && r.right > m_context->offset.zb.pageRowWidth() &&
 			m_rl->RowsFoldAcrossWorkers(GSLocalMemory::m_psm[m_context->offset.zb.psm()].pgs.y));
+
+	// The same split fails when the frame and the Z buffer lie over each other: a
+	// frame row and a Z row that share bytes belong to different workers
+	// (GSSwTargetAlias.h). Reading both is harmless.
+	if (!sd->serial && fb_pages && zb_pages && (sd->global.sel.fwrite || sd->global.sel.zwrite) && m_rl->SplitsDraws())
+	{
+		sd->serial = GSSwFrameAndDepthSharePages(m_context->offset.fb, m_context->offset.zb, r);
+	}
 
 	// check if there is an overlap between this and previous targets
 
@@ -1079,6 +1088,19 @@ bool GSRendererSW::CheckTargetPages(const GSOffset::PageLooper* fb_pages, const 
 
 bool GSRendererSW::CheckSourcePages(SharedData* sd)
 {
+	// A texture invalidated while a queued draw was reading its buffer: the refill
+	// waits for that draw (GSSwTextureReaders.h). Every level is asked, the answer
+	// clears the texture's flag.
+	bool readers = false;
+
+	for (size_t i = 0; sd->m_tex[i].t != NULL; i++)
+	{
+		readers |= sd->m_tex[i].t->m_readers.DrainBeforeUpdate();
+	}
+
+	if (readers)
+		return true;
+
 	if (!m_rl->IsSynced())
 	{
 		for (size_t i = 0; sd->m_tex[i].t != NULL; i++)
@@ -1767,6 +1789,7 @@ void GSRendererSW::SharedData::UsePages(const GSOffset::PageLooper* fb_pages, in
 		for (size_t i = 0; m_tex[i].t != NULL; i++)
 		{
 			GSRendererSW::GetInstance()->UsePages(m_tex[i].t->m_pages, 2);
+			m_tex[i].t->m_readers.Acquire();
 		}
 	}
 
@@ -1801,6 +1824,7 @@ void GSRendererSW::SharedData::ReleasePages()
 		for (size_t i = 0; m_tex[i].t != NULL; i++)
 		{
 			GSRendererSW::GetInstance()->ReleasePages(m_tex[i].t->m_pages, 2);
+			m_tex[i].t->m_readers.Release();
 		}
 	}
 

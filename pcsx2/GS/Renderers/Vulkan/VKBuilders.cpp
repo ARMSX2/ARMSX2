@@ -77,6 +77,12 @@ const char* Vulkan::VkResultToString(VkResult res)
 		case VK_ERROR_TOO_MANY_OBJECTS:
 			return "VK_ERROR_TOO_MANY_OBJECTS";
 
+		case VK_ERROR_FRAGMENTED_POOL:
+			return "VK_ERROR_FRAGMENTED_POOL";
+
+		case VK_ERROR_OUT_OF_POOL_MEMORY:
+			return "VK_ERROR_OUT_OF_POOL_MEMORY";
+
 		case VK_ERROR_FORMAT_NOT_SUPPORTED:
 			return "VK_ERROR_FORMAT_NOT_SUPPORTED";
 
@@ -541,12 +547,24 @@ void Vulkan::GraphicsPipelineBuilder::SetNoBlendingState()
 
 void Vulkan::GraphicsPipelineBuilder::AddDynamicState(VkDynamicState state)
 {
+	if (HasDynamicState(state))
+		return;
 	pxAssert(m_dynamic_state.dynamicStateCount < MAX_DYNAMIC_STATE);
 
 	m_dynamic_state_values[m_dynamic_state.dynamicStateCount] = state;
 	m_dynamic_state.dynamicStateCount++;
 	m_dynamic_state.pDynamicStates = m_dynamic_state_values.data();
 	m_ci.pDynamicState = &m_dynamic_state;
+}
+
+bool Vulkan::GraphicsPipelineBuilder::HasDynamicState(VkDynamicState state) const
+{
+	for (u32 i = 0; i < m_dynamic_state.dynamicStateCount; i++)
+	{
+		if (m_dynamic_state_values[i] == state)
+			return true;
+	}
+	return false;
 }
 
 void Vulkan::GraphicsPipelineBuilder::SetDynamicViewportAndScissorState()

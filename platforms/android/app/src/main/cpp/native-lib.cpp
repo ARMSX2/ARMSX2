@@ -3969,6 +3969,18 @@ static void PostMaliSX2NoticeIfDue() {
         Host::OSD_WARNING_DURATION);
 }
 
+// The "get a Turnip driver" notice: the hardware renderer is on Qualcomm's own Vulkan driver, the
+// phone's built-in one or a pack of it. Same OSD, duration and timing as the malisx2 notice. Read off
+// the open device, so a Turnip pack that failed to load is warned too: the user is on Qualcomm's
+// driver either way.
+static void PostQualcommNoticeIfDue() {
+    if (!GSDriverReport::ShouldWarnQualcomm(GSIsHardwareRenderer(), GSDriverReport::GetActiveVulkanDriver()))
+        return;
+    Host::AddIconOSDMessage("armsx2_qualcomm_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
+        "Qualcomm's GPU driver is not supported. Please download a Turnip driver",
+        Host::OSD_WARNING_DURATION);
+}
+
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,
                          const std::string& disc_serial, u32 disc_crc, u32 current_crc) {
     const bool game_loaded = current_crc != 0 || !disc_path.empty() || !title.empty();
@@ -3992,8 +4004,10 @@ void Host::OnGameChanged(const std::string& title, const std::string& elf_overri
 
     // The GS device is not open on the first call (disc identified), so the notice is not due yet.
     // It is on the call when the game's own program starts.
-    if (game_loaded)
+    if (game_loaded) {
         PostMaliSX2NoticeIfDue();
+        PostQualcommNoticeIfDue();
+    }
 }
 
 void Host::PumpMessagesOnCPUThread() {
@@ -4517,9 +4531,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
     // MTGS ring and must not be posted from the UI thread), because the GS thread owns the cache's
     // lifetime: from here it could be destroyed underneath us.
     //
-    // Fire-and-forget: the UI thread never waits (onPause is on a deadline). Rate-limited, since each
-    // save serialises the whole cache, and while that runs the driver holds the cache's lock against
-    // new pipelines.
+    // Fire-and-forget: the UI thread never waits (onPause is on a deadline). Rate-limited only against a
+    // burst of lifecycle events: a save writes nothing when nothing changed since the last one, and a
+    // paused game makes no new pipelines. It was 120 s, so leaving the app twice within two minutes and
+    // then swiping it away lost everything learned since the first time.
     if (!VMManager::HasValidVM() || !MTGS::IsOpen())
         return;
     static std::atomic<s64> s_last_flush_time{0};
@@ -4527,7 +4542,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_flushShaderCache(JNIEnv *env, jclass clazz)
         std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
-    constexpr s64 MIN_FLUSH_INTERVAL_SEC = 120;
+    constexpr s64 MIN_FLUSH_INTERVAL_SEC = 5;
     s64 last = s_last_flush_time.load(std::memory_order_acquire);
     if (last != 0 && (now - last) < MIN_FLUSH_INTERVAL_SEC)
         return;
@@ -5372,6 +5387,7 @@ void Host::OnVMStarted()
     // The GS device is open by now. A BIOS-only start has no game program to start, so this is
     // the only point at which that boot can get the notice.
     PostMaliSX2NoticeIfDue();
+    PostQualcommNoticeIfDue();
 }
 
 void Host::OnVMDestroyed()

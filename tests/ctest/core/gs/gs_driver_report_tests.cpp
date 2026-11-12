@@ -16,6 +16,8 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+
 using namespace GSDriverReport;
 
 namespace
@@ -307,7 +309,7 @@ TEST(GSDriverReport, ActiveVulkanDriverIsNoneUntilADeviceIsNoted)
 	ClearActiveVulkanDriver();
 	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::None);
 
-	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
+	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r44p1-malisx2.0.2.s0123abcd");
 	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::MaliSX2);
 
 	// The device going away is not a driver: the next game may not be on Vulkan at all.
@@ -318,10 +320,15 @@ TEST(GSDriverReport, ActiveVulkanDriverIsNoneUntilADeviceIsNoted)
 TEST(GSDriverReport, ActiveVulkanDriverIsOtherForAnyDriverButMaliSX2)
 {
 	// Arm's stock blob shares malisx2's vendorID, driverID and device name; only driverInfo differs.
-	for (const char* info : {"v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "v1.r40p0-01eac0.abcdef",
-			 "Mesa 26.1.2 (git-axfl2-001)", ""})
+	const std::pair<uint32_t, const char*> drivers[] = {
+		{DriverIdValue::ArmProprietary, "v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688"},
+		{DriverIdValue::ArmProprietary, "v1.r40p0-01eac0.abcdef"},
+		{DriverIdValue::MesaTurnip, "Mesa 26.1.2 (git-axfl2-001)"},
+		{0, ""},
+	};
+	for (const auto& [id, info] : drivers)
 	{
-		NoteActiveVulkanDriver(info);
+		NoteActiveVulkanDriver(id, info);
 		EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other) << info;
 	}
 	ClearActiveVulkanDriver();
@@ -331,7 +338,7 @@ TEST(GSDriverReport, ActiveVulkanDriverCountsBothMaliSX2Spellings)
 {
 	for (const char* info : {"v1.r44p1-malisx2.0.2.s0123abcd", "v1.r44p1-libmali.0.1.s0123abcd"})
 	{
-		NoteActiveVulkanDriver(info);
+		NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, info);
 		EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::MaliSX2) << info;
 	}
 	ClearActiveVulkanDriver();
@@ -339,8 +346,8 @@ TEST(GSDriverReport, ActiveVulkanDriverCountsBothMaliSX2Spellings)
 
 TEST(GSDriverReport, ActiveVulkanDriverFollowsTheLatestDevice)
 {
-	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
-	NoteActiveVulkanDriver("v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
+	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r44p1-malisx2.0.2.s0123abcd");
+	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
 	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
 	ClearActiveVulkanDriver();
 }
@@ -353,7 +360,8 @@ TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWith
 	for (const bool hardware : {false, true})
 		for (const bool offered : {false, true})
 			for (const ActiveVulkanDriver driver :
-				{ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2, ActiveVulkanDriver::Other})
+				{ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2, ActiveVulkanDriver::QualcommProprietary,
+					ActiveVulkanDriver::Other})
 				for (const bool pack : {false, true})
 					EXPECT_EQ(ShouldWarnMaliSX2(hardware, offered, driver, pack),
 						hardware && offered && driver == ActiveVulkanDriver::Other && !pack)
@@ -364,9 +372,13 @@ TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWith
 TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 {
 	// Arm's stock driver and every pack that is not malisx2 both note as Other.
-	for (const char* info : {"v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688", "Mesa 26.1.2 (git-axfl2-001)"})
+	const std::pair<uint32_t, const char*> drivers[] = {
+		{DriverIdValue::ArmProprietary, "v1.r44p1-01eac0.030c4a3fb15fe65f485fb565f5e1b688"},
+		{DriverIdValue::MesaTurnip, "Mesa 26.1.2 (git-axfl2-001)"},
+	};
+	for (const auto& [id, info] : drivers)
 	{
-		NoteActiveVulkanDriver(info);
+		NoteActiveVulkanDriver(id, info);
 		EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false)) << info;
 	}
 	ClearActiveVulkanDriver();
@@ -374,7 +386,7 @@ TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnMaliSX2)
 {
-	NoteActiveVulkanDriver("v1.r44p1-malisx2.0.2.s0123abcd");
+	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r44p1-malisx2.0.2.s0123abcd");
 	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
 	ClearActiveVulkanDriver();
 }
@@ -385,7 +397,7 @@ TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenVulkanIsNotRunning)
 	ClearActiveVulkanDriver();
 	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
 	// A value outside the enum is not a Vulkan driver either.
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(3), false));
+	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(200), false));
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietUnderTheSoftwareRenderer)
@@ -404,12 +416,37 @@ TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenAMaliSX2PackIsSelectedButDidNotL
 {
 	// malisx2 fails to open on an older Mali kernel driver and Arm's driver answers instead. The
 	// device is on Other, but the user already has the pack, so the notice would be wrong.
-	NoteActiveVulkanDriver("v1.r40p0-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
+	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r40p0-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
 	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
 	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), true));
 	// The same device with no malisx2 pack selected (the system driver, or another pack) is warned.
 	EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
 	ClearActiveVulkanDriver();
+}
+
+// The Android host's "get a Turnip driver" notice: the hardware renderer on Qualcomm's own driver,
+// told apart by its driverID whatever its driverInfo says (the built-in driver and a pack of it read
+// alike there).
+TEST(GSDriverReport, ActiveVulkanDriverIsQualcommForQualcommsDriverId)
+{
+	for (const char* info : {"Compiler Version: E031.47.18.29", "", "Qualcomm Adreno 837.6"})
+	{
+		NoteActiveVulkanDriver(DriverIdValue::QualcommProprietary, info);
+		EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::QualcommProprietary) << info;
+	}
+	// Turnip on the same GPU is Mesa's driverID.
+	NoteActiveVulkanDriver(DriverIdValue::MesaTurnip, "Mesa 26.1.2 (git-axfl2-001)");
+	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
+	ClearActiveVulkanDriver();
+}
+
+TEST(GSDriverReport, QualcommNoticeIsOnlyForTheHardwareRendererOnQualcommsDriver)
+{
+	for (const bool hardware : {false, true})
+		for (const ActiveVulkanDriver driver : {ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2,
+				 ActiveVulkanDriver::QualcommProprietary, ActiveVulkanDriver::Other})
+			EXPECT_EQ(ShouldWarnQualcomm(hardware, driver), hardware && driver == ActiveVulkanDriver::QualcommProprietary)
+				<< "hardware=" << hardware << " driver=" << static_cast<int>(driver);
 }
 
 TEST(GSDriverReport, IsMaliSX2PackReadsThePackDirectoryAndLibraryName)

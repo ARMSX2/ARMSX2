@@ -5,6 +5,7 @@
 
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/GSCacheFile.h"
+#include "GS/GSCompileQueue.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
@@ -34,10 +35,18 @@
 #include <vector>
 
 class VKSwapChain;
+class GSRunsVK;
 struct GSSelfReadRoadDecision;
+namespace Vulkan
+{
+	class GraphicsPipelineBuilder;
+}
 
 class GSDeviceVK final : public GSDevice
 {
+	// The run machine records into this device's command buffers and keeps its state (GSRunsVK.h).
+	friend class GSRunsVK;
+
 public:
 	enum : u32
 	{
@@ -82,6 +91,10 @@ public:
 		/// VK_ANDROID_external_memory_android_hardware_buffer with VK_EXT_queue_family_foreign:
 		/// remote play's frames go to the video encoder as shared buffers (GSRemotePlay.h).
 		bool vk_android_external_memory_ahb : 1;
+		/// VK_EXT_descriptor_indexing with non-uniform sampled-image indexing, runtime arrays and partially bound
+		/// bindings: the run machine (GSRunsVK) samples each merged draw's own texture from one array. Requested
+		/// wherever the driver has all three features.
+		bool vk_ext_descriptor_indexing : 1;
 	};
 
 	// Global state accessors
@@ -506,6 +519,8 @@ private:
 	u32 m_max_framebuffer_width = 0;
 	u32 m_max_framebuffer_height = 0;
 public:
+	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
+	// the recorded key lists (GSDeviceVK::SetGameIdentity): a change here means old keys describe other pipelines.
 	enum FeedbackLoopFlag : u8
 	{
 		FeedbackLoopFlag_None = 0,
@@ -570,6 +585,13 @@ public:
 		__fi bool IsTestingAndSamplingDepth() const { return ((feedback_loop_flags & (FeedbackLoopFlag_ReadDepth | FeedbackLoopFlag_ReadAndWriteDepth)) != 0); }
 	};
 	static_assert(sizeof(PipelineSelector) == 32, "Pipeline selector is 32 bytes");
+	// TFX pipeline key layout: end.
+
+	/// Whether a key read back from a recorded list may be built. Keys come from a list written under
+	/// this key layout and each record passed its checksum, so these always hold. They are checked
+	/// anyway, since a bad key would be compiled on a worker thread: every field that indexes a table
+	/// or names an enum, and every bit a real key leaves zero.
+	static bool IsLoadableTFXKey(const PipelineSelector& p);
 
 	struct PipelineSelectorHash
 	{
@@ -678,30 +700,23 @@ private:
 	PipelineSelector m_last_tfx_selector = {};
 	VkPipeline m_last_tfx_pipeline = VK_NULL_HANDLE;
 
+	/// The device's shader and pipeline builders, started with the device and stopped before anything a
+	/// job reads is destroyed. Anything that can build a pipeline off the GS thread submits to it.
+	GSCompileQueue m_compile_queue;
+
 	// Pipeline precompile. Each game's TFX pipeline keys are recorded in a pack in the game's cache
-	// directory as they are first created; when that game starts again, worker threads build the
+	// directory as they are first created; when that game starts again, the compile queue builds the
 	// recorded pipelines in first-use order, ahead of the draws that need them. The pipelines are
 	// the ones the GS thread would have built -- same key, same CreateTFXPipeline -- so this moves
 	// work off the GS thread without changing what is drawn.
 	struct TFXPrecompileJob
 	{
-		enum class State : u8
-		{
-			Queued, ///< Not started. The GS thread may take it and build it itself.
-			Running, ///< A worker is building it. The GS thread waits for it.
-			Done,
-		};
-		State state = State::Queued;
-		VkPipeline pipeline = VK_NULL_HANDLE;
+		GSCompileQueue::Ticket ticket;
+		/// Written by whichever thread runs the job, read after the queue says it ran.
+		std::shared_ptr<VkPipeline> pipeline;
 	};
-	std::mutex m_precompile_mutex; ///< Guards the queue, the jobs and m_precompile_stop.
-	std::condition_variable m_precompile_done_cv;
-	std::deque<PipelineSelector> m_precompile_queue;
+	/// GS thread only.
 	std::unordered_map<PipelineSelector, TFXPrecompileJob, PipelineSelectorHash> m_precompile_jobs;
-	std::vector<std::thread> m_precompile_workers;
-	bool m_precompile_stop = false;
-	u64 m_precompile_start = 0; ///< Common::Timer value when the workers started; read by the workers.
-	bool m_precompile_active = false; ///< GS thread only: whether m_precompile_jobs can be non-empty.
 	/// The game's key list (each key with the last session that drew with it), held in RAM and written
 	/// by the shader cache's background writer, and this session's number in it. Swapped on the GS
 	/// thread only, with no draw in flight.
@@ -710,16 +725,16 @@ private:
 
 	void SetGameIdentity(const std::string& serial, u32 crc) override;
 	void PrepareShaderCacheClear() override;
-	/// Joins the workers and destroys every pipeline built but not drawn with. GS thread only.
+	/// Drops the precompile jobs no worker has started, waits for the ones a worker has, and destroys
+	/// every pipeline built but not drawn with. GS thread only.
 	void StopPipelinePrecompile();
-	void PrecompileWorker();
-	/// The result of a precompile job for p, waiting if a worker is building it (the only wait). nullopt
-	/// if there is no job, the job had not started, or the worker's build failed: the job is dropped
-	/// and the caller builds p itself.
+	/// The result of a precompile job for p: built here if no worker had started it, else waited for.
+	/// nullopt if there is no job or the build failed (the caller builds p itself then).
 	std::optional<VkPipeline> TakePrecompiledTFXPipeline(const PipelineSelector& p);
 	void RecordTFXPipelineKey(const PipelineSelector& p);
-	/// What CreateTFXPipeline reads besides the key. A key list written under a different value is
-	/// discarded, so a key is never built on a device configuration it was not recorded on.
+	/// What decides which pipeline a key describes on this device, besides the key layout. A key list
+	/// written under a different value is set aside, so a key is never built on a device configuration
+	/// it was not recorded on.
 	std::string GetTFXPipelineKeyFingerprint() const;
 
 	VkRenderPass m_utility_color_render_pass_load = VK_NULL_HANDLE;
@@ -961,6 +976,12 @@ public:
 	/// and the caller draws the config on the colour-clip road it was built for.
 	bool DrawStencilCounter(GSHWDrawConfig& config);
 	VkPipeline GetStencilCounterResolvePipeline(u32 rgb_mask);
+	/// The resolve pipeline's fixed state: everything but its layout, render pass and shaders.
+	static void SetStencilCounterResolveState(Vulkan::GraphicsPipelineBuilder& gpb, u32 rgb_mask);
+	/// Declares dynamic the state ApplyBaseState sets only when its value changes: viewport, scissor, blend constants
+	/// and line width. Every pipeline the device binds takes all of them dynamic. A pipeline that holds one static
+	/// overwrites it when bound, and the next draw that wants the value the device last set draws with the pipeline's.
+	static void AddCachedDynamicState(Vulkan::GraphicsPipelineBuilder& gpb);
 	GSTextureVK* SetupPrimitiveTrackingDATE(GSHWDrawConfig& config);
 
 	void IASetVertexBuffer(const void* vertex, size_t stride, size_t count, size_t align_multiplier = 1);
@@ -1141,6 +1162,11 @@ private:
 	/// Render passes ended so far; a stencil copy belongs to the pass it was built in.
 	u64 m_render_pass_serial = 0;
 
+	/// The run machine, where the device has its features (GSRunsVK.h); null elsewhere.
+	std::unique_ptr<GSRunsVK> m_runs;
+	/// A run program's source: the shared header with the non-uniform indexing extension, the stage, then defines.
+	std::string RunsShaderSource(bool vertex, const std::string& defines, const std::string& source) const;
+
 	/// GSAlphaBitLogicOp: the destination-alpha stencil copy that DATE draws with
 	/// GSHWDrawConfig::date_copy share, while it stays true. Valid only inside the pass it was
 	/// built in, for these targets and this DATM.
@@ -1161,6 +1187,26 @@ private:
 	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
 	// -readback-kick-passes moves it.
 	u32 m_readback_kick_passes = 8;
+	// Draws recorded since the last submit, and how many the kick lets pile up inside one render
+	// pass before it ends the pass to submit them (see DoRenderHW).
+	u32 m_draws_since_submit = 0;
+	static constexpr u32 READBACK_KICK_DRAWS = 64;
+	u32 m_next_in_pass_kick_offer = 0;
+	// The in-pass kick's budget (see DoRenderHW): what the GS thread spent blocked on readbacks, per
+	// frame and averaged over recent frames, what it spent on kicks this frame, and what one kick costs.
+	u64 m_readback_block_ns_frame = 0;
+	u64 m_readback_block_ns_avg = 0;
+	u64 m_kick_ns_frame = 0;
+	u64 m_kick_cost_ns = 0;
+	u32 m_kick_budget_frame = ~0u;
+	void RollKickBudgetFrame();
+	void NoteKick(u64 ticks);
+
+public:
+	/// A readback's blocking wait (submit and fence), in GetCPUTicks units.
+	void NoteReadbackBlock(u64 ticks);
+
+private:
 
 	GSVector4i m_scissor = GSVector4i::zero();
 	VkViewport m_viewport = {0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f};

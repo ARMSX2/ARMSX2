@@ -8,6 +8,7 @@
 #include "GS/Renderers/Vulkan/VKBuilders.h"
 
 #include "common/Assertions.h"
+#include "common/HostSys.h"
 #include "common/Console.h"
 #include "common/BitUtils.h"
 
@@ -1156,7 +1157,9 @@ void GSDownloadTextureVK::Flush()
 	}
 	else
 	{
+		const u64 block_start = GetCPUTicks();
 		GSDeviceVK::GetInstance()->WaitForFenceCounter(m_copy_fence_counter);
+		GSDeviceVK::GetInstance()->NoteReadbackBlock(GetCPUTicks() - block_start);
 	}
 }
 

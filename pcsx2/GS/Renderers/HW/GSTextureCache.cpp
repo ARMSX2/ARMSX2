@@ -8,8 +8,10 @@
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
+#include "GS/GSBlockId.h"
 #include "GS/GSXXH.h"
 #include "GSTargetRebase.h"
+#include "GSDepthFormatMove.h"
 
 #include "common/Console.h"
 #include "common/BitUtils.h"
@@ -146,6 +148,12 @@ static u64 s_block_hash_levels_cached = 0;
 /// HashTextureLevel); no real level is that large.
 static constexpr u32 BLOCK_HASH_GATHER_MAX = (1024 / 8 + 1) * (1024 / 8 + 1);
 static u64 s_block_hash_gather[BLOCK_HASH_GATHER_MAX];
+/// The blocks of the level being keyed: every block in visiting order (s_block_hash_pending_slot), and those whose
+/// identities are taken now: where they are, their number, and the identities.
+static const u8* s_block_hash_pending_ptr[BLOCK_HASH_GATHER_MAX];
+static u32 s_block_hash_pending_slot[BLOCK_HASH_GATHER_MAX];
+static u32 s_block_hash_pending_block[BLOCK_HASH_GATHER_MAX];
+static u64 s_block_hash_pending_id[BLOCK_HASH_GATHER_MAX];
 
 /// What verify mode has seen of the keys of both forms: the key without the cache to the key with it, and back.
 /// Two lookups have the same window if and only if both maps keep one answer for the key.
@@ -172,7 +180,7 @@ GSTextureCache::BlockHashStats GSTextureCache::GetBlockHashStats()
 
 __fi static u64 HashOneBlock(const u8* block)
 {
-	return GSXXH3_64bits(block, GS_BLOCK_SIZE);
+	return GSBlockId::Hash(block);
 }
 
 /// The cache, bound to `mem`: made at first use, with every hash invalidated if it described another memory.
@@ -194,11 +202,55 @@ GSTextureCache::BlockHashCache& GSTextureCache::SyncBlockHashCache(GSLocalMemory
 
 u64 GSTextureCache::BlockHash(GSLocalMemory& mem, u32 block)
 {
+	if (!m_held.empty() && &mem == &g_gs_renderer->m_mem)
+		MaterialiseHeldBlocks(&block, 1);
 	BlockHashCache& cache = SyncBlockHashCache(mem);
 	block %= GS_MAX_BLOCKS;
 	if (mem.TestAndClearHashDirty(block))
 		cache.hash[block] = HashOneBlock(mem.BlockPtr(block));
 	return cache.hash[block];
+}
+
+bool GSTextureCache::BlockHashesMatch(GSLocalMemory& mem, const u32* blocks, const u64* hashes, u32 count)
+{
+	if (!m_held.empty() && &mem == &g_gs_renderer->m_mem)
+		MaterialiseHeldBlocks(blocks, count);
+	BlockHashCache& cache = SyncBlockHashCache(mem);
+	u64* const hash = cache.hash.get();
+	for (u32 i = 0; i < count; i++)
+	{
+		const u32 block = blocks[i] % GS_MAX_BLOCKS;
+		if (mem.TestAndClearHashDirty(block))
+			hash[block] = HashOneBlock(mem.BlockPtr(block));
+		if (hash[block] != hashes[i])
+			return false;
+	}
+	return true;
+}
+
+void GSTextureCache::NoteBlocksFilled(GSLocalMemory& mem, u32 first_page, u32 count, u32 word)
+{
+	if (!s_block_hash_cache_enabled || count == 0)
+		return;
+
+	// The identity of a block of `word`, kept for the next fill of the same word (a game clears with few colours).
+	static u32 s_last_word = 0;
+	static u64 s_last_id = GSBlockId::HashFill(0);
+	if (word != s_last_word)
+	{
+		s_last_id = GSBlockId::HashFill(word);
+		s_last_word = word;
+	}
+
+	BlockHashCache& cache = SyncBlockHashCache(mem);
+	u64* const hashes = cache.hash.get();
+	for (u32 i = 0; i < std::min<u32>(count, GS_MAX_PAGES); i++)
+	{
+		const u32 first_block = ((first_page + i) % GS_MAX_PAGES) * GS_BLOCKS_PER_PAGE;
+		for (u32 b = 0; b < GS_BLOCKS_PER_PAGE; b++)
+			hashes[first_block + b] = s_last_id;
+		mem.ClearPageHashDirty(first_page + i);
+	}
 }
 
 /// Verify mode, one lookup: the key the cache gave the window (`cached`, whose TEX0Hash is the cached form) and
@@ -271,6 +323,7 @@ GSTextureCache::GSTextureCache()
 GSTextureCache::~GSTextureCache()
 {
 	RemoveAll(true, true, true);
+	DropAllHeld();
 
 	s_hash_cache_purge_list = {};
 	_aligned_free(s_unswizzle_buffer);
@@ -278,6 +331,7 @@ GSTextureCache::~GSTextureCache()
 
 void GSTextureCache::ReadbackAll()
 {
+	MaterialiseAllHeld();
 	for (int type = 0; type < 2; type++)
 	{
 		for (auto t : m_dst[type])
@@ -2591,7 +2645,50 @@ bool GSTextureCache::TryRebaseTargetForOverwrite(Target* target, const GIFRegTEX
 	return true;
 }
 
+// The front of the list answers the lookup at once when the walk below would return it having done nothing to
+// the cache but three writes to it. Read against LookupDrawTargetWalk and ProcessTargetAfterLookup:
+//  - The walk starts at the front. With the base block equal it takes the exact-address branch, and with the
+//    buffer width equal every test in that branch that can refuse or delete the target is false (each has
+//    `TEX0.TBW != t->m_TEX0.TBW` as a factor). So it takes this target, moves it to the front, where it is, and
+//    ors in the 32-bit flag.
+//  - ProcessTargetAfterLookup then rescales only if the scales differ, converts only if the formats differ,
+//    repopulates RGB only if the target's RGB is not valid, and drops dirt or invalidates the texture only if
+//    nothing is preserved and the draw covers the whole valid area.
+//  - What is left is the tail of the lookup: the used flag and the readback counter.
+GSTextureCache::Target* GSTextureCache::FrontDrawTarget(const GIFRegTEX0& TEX0, float scale, int type, bool preserve_target,
+	const GSVector4i& draw_rect) const
+{
+	const FastList<Target*>& list = m_dst[type];
+	if (list.empty())
+		return nullptr;
+
+	Target* const t = *list.begin();
+	if (t->m_TEX0.TBP0 != TEX0.TBP0 || t->m_TEX0.TBW != TEX0.TBW || t->m_TEX0.PSM != TEX0.PSM || t->m_scale != scale || !t->m_valid_rgb)
+		return nullptr;
+	if (!preserve_target && draw_rect.rintersect(t->m_valid).eq(t->m_valid))
+		return nullptr;
+
+	return t;
+}
+
 GSTextureCache::Target* GSTextureCache::LookupDrawTarget(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type,
+	bool used, u32 fbmask, bool preload, bool preserve_rgb, bool preserve_alpha, const GSVector4i draw_rect,
+	bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset)
+{
+	// The lean path: where the front target answers, the walk would return it with only these three writes.
+	Target* const front = FrontDrawTarget(TEX0, scale, type, preserve_rgb || preserve_alpha, draw_rect);
+	if (front)
+	{
+		front->m_32_bits_fmt |= (GSLocalMemory::m_psm[TEX0.PSM].bpp != 16);
+		front->m_used |= used;
+		front->readbacks_since_draw = 0;
+		return front;
+	}
+	return LookupDrawTargetWalk(TEX0, size, scale, type, used, fbmask, preload, preserve_rgb, preserve_alpha, draw_rect,
+		is_shuffle, possible_clear, preserve_scale, src, ds, offset);
+}
+
+GSTextureCache::Target* GSTextureCache::LookupDrawTargetWalk(GIFRegTEX0 TEX0, const GSVector2i& size, float scale, int type,
 	bool used, u32 fbmask, bool preload, bool preserve_rgb, bool preserve_alpha, const GSVector4i draw_rect,
 	bool is_shuffle, bool possible_clear, bool preserve_scale, GSTextureCache::Source* src, GSTextureCache::Target* ds, int offset)
 {
@@ -4842,6 +4939,8 @@ void GSTextureCache::DiscardPendingDownloads()
 {
 	m_pending_downloads.clear();
 	m_async_download_texture_pool.clear();
+	m_read_pool.clear();
+	m_read_stash = {};
 }
 
 /*void GSTextureCache::InvalidateContainedTargets(u32 start_bp, u32 end_bp, u32 write_psm, u32 write_bw)
@@ -5100,10 +5199,66 @@ void GSTextureCache::InvalidateVideoMemType(int type, u32 bp, u32 write_psm, u32
 	}
 }
 
+bool GSTextureCache::SourceMap::AnyPageUsed(u32 first, u32 count) const
+{
+	if (count >= GS_MAX_PAGES)
+	{
+		for (const u64 word : m_page_used)
+			if (word)
+				return true;
+		return false;
+	}
+
+	u32 page = first % GS_MAX_PAGES;
+	while (count > 0)
+	{
+		// The bits of this word from `page` up, as many as are still wanted.
+		const u32 bit = page & 63;
+		const u32 take = std::min<u32>(64 - bit, count);
+		const u64 mask = (take == 64 ? ~u64(0) : ((u64(1) << take) - 1)) << bit;
+		if (m_page_used[page >> 6] & mask)
+			return true;
+		count -= take;
+		page = (page + take) % GS_MAX_PAGES;
+	}
+	return false;
+}
+
+// The lists InvalidateVideoMem's two source walks visit after a draw (target off), as page runs:
+//  - the first walk: `pages` lists from the buffer's base page, and with a buffer 16 or more pages wide the list of
+//    the block half way along it;
+//  - the second walk: the pages of the rectangle, all inside the looper's span.
+// A run may hold pages the walks do not visit, which only costs a hit.
+bool GSTextureCache::NoSourceUnderWrite(const GSOffset& off, const GSVector4i& rect, u32 start_bp, u32 end_bp) const
+{
+	const u32 bp = off.bp();
+	const u32 bw = off.bw();
+
+	const int pages = (end_bp + ((1 << 5) - 1) - start_bp) >> 5;
+	if (pages > 0)
+	{
+		if (pages > static_cast<int>(GS_MAX_PAGES) || m_src.AnyPageUsed(bp >> 5, static_cast<u32>(pages)))
+			return false;
+
+		const u32 bbp = bp + bw * 0x10;
+		if (bw >= 16 && bbp < 16384 && !m_src.m_map[bbp >> 5].empty())
+			return false;
+	}
+
+	u32 first, count;
+	if (!off.pageLooperForRect(rect).pageSpan(first, count))
+		return false;
+
+	return !m_src.AnyPageUsed(first, count);
+}
+
 // Goal: invalidate data sent to the GPU when the source (GS memory) is modified
 // Called each time you want to write to the GS memory
 void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& rect, bool target)
 {
+	// A write into local memory may be one the stashed read's target holds next.
+	m_read_stash.valid = false;
+
 	const u32 bp = off.bp();
 	const u32 bw = off.bw();
 	const u32 psm = off.psm();
@@ -5113,6 +5268,11 @@ void GSTextureCache::InvalidateVideoMem(const GSOffset& off, const GSVector4i& r
 	// so we need to prevent that from happening. Just make it a single block in that case, and hope for the best.
 	const u32 start_bp = GSLocalMemory::GetStartBlockAddress(off.bp(), off.bw(), off.psm(), rect);
 	const u32 end_bp = rect.rempty() ? start_bp : GSLocalMemory::GetUnwrappedEndBlockAddress(off.bp(), off.bw(), off.psm(), rect);
+
+	// Both source walks below only remove or mark sources they find in the page lists they visit, and with target
+	// off nothing follows them. If none of those lists holds a source they do nothing.
+	if (!target && NoSourceUnderWrite(off, rect, start_bp, end_bp))
+		return;
 
 	if (!target)
 	{
@@ -5324,6 +5484,9 @@ void GSTextureCache::InvalidateLocalMem(
 	const u32 bp = off.bp();
 	const u32 psm = off.psm();
 	[[maybe_unused]] const u32 bw = off.bw();
+
+	// Held words first: the reads below may write target pixels over them, which are newer.
+	MaterialiseHeldPages(bp, bw, psm, r);
 	const u32 read_start = GSLocalMemory::m_psm[psm].info.bn(r.x, r.y, bp, bw);
 	const u32 read_end = GSLocalMemory::m_psm[psm].info.bn(r.z - 1, r.w - 1, bp, bw);
 
@@ -5335,6 +5498,9 @@ void GSTextureCache::InvalidateLocalMem(
 		r.y,
 		r.z,
 		r.w);
+
+	// Every target read this request makes shares one GPU round trip.
+	ReadBatchScope read_batch(*this);
 
 	// Could be reading Z24/32 back as CT32 (Gundam Battle Assault 3)
 	if (GSLocalMemory::m_psm[psm].bpp >= 16)
@@ -5446,12 +5612,23 @@ void GSTextureCache::InvalidateLocalMem(
 				{
 					// The draw rect and read rect overlap somewhat, we should update the target before downloading it.
 					if (t->m_TEX0.TBP0 == bp && !dirty_rect.rintersect(targetr).rempty())
+					{
+						FlushReadBatch(); // the update reads local memory the reads before it write
 						t->Update();
+					}
+
+					if (t->readbacks_since_draw == 1)
+						t->m_first_read_rect = draw_rect;
+					else
+						SetBurstFirstRead(t, t->m_first_read_rect, true);
 
 					Read(t, draw_rect, force_synchronous);
 
 					if (draw_rect.rintersect(t->m_drawn_since_read).eq(t->m_drawn_since_read))
 						t->m_drawn_since_read = GSVector4i::zero();
+
+					if (t->readbacks_since_draw == 1)
+						StashRead(t);
 				}
 			}
 		}
@@ -5617,7 +5794,15 @@ void GSTextureCache::InvalidateLocalMem(
 
 				// The draw rect and read rect overlap somewhat, we should update the target before downloading it.
 				if (exact_bp && !dirty_rect.rintersect(targetr).rempty())
+				{
+					FlushReadBatch(); // the update reads local memory the reads before it write
 					t->Update();
+				}
+
+				if (t->readbacks_since_draw == 1)
+					t->m_first_read_rect = targetr;
+				else
+					SetBurstFirstRead(t, t->m_first_read_rect, true);
 
 				Read(t, targetr, force_synchronous);
 
@@ -5642,6 +5827,9 @@ void GSTextureCache::InvalidateLocalMem(
 						t->m_drawn_since_read.z = targetr.x;
 				}
 
+				if (t->readbacks_since_draw == 1)
+					StashRead(t);
+
 				if (exact_bp && read_end <= t->EndBlock())
 					return;
 			}
@@ -5651,6 +5839,12 @@ void GSTextureCache::InvalidateLocalMem(
 
 bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u32 DBW, u32 DPSM, int dx, int dy, int w, int h)
 {
+	if (SPSM == PSMZ24 && DPSM == PSMZ24 && GSDepthFormatMove::WholePages(SBP, SBW, sx, sy, DBP, DBW, dx, dy, w, h) &&
+		MoveColourPagesIntoDepthTarget(SBP, SBW, sx, sy, DBP, DBW, dx, dy, w, h))
+	{
+		return true;
+	}
+
 	if (SBP == DBP && SPSM == DPSM && !GSLocalMemory::m_psm[SPSM].depth && ShuffleMove(SBP, SBW, SPSM, sx, sy, dx, dy, w, h))
 		return true;
 
@@ -5996,6 +6190,399 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(DBP, DBW, DPSM), GSVector4i(dx, dy, dx + w, dy + h), false);
 	CombineAlignedInsideTargets(dst);
 	return true;
+}
+
+bool GSTextureCache::MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, int sy, u32 DBP, u32 DBW, int dx, int dy, int w, int h)
+{
+	// The depth target has to end up exactly as the CPU fallback leaves it once it is uploaded again:
+	// GSRendererHW::Move reads the colour target back into local memory (the drawn part of the
+	// rectangle, unless dirty), GSLocalMemory::Move copies the low 24 bits of each word, the depth
+	// target is marked dirty, and Target::Update later reads local memory in the depth layout and draws
+	// it into the target. Every input of that chain has to be one this can reproduce on the GPU, or the
+	// CPU path runs.
+
+	// A depth target at the source is a depth-to-depth move, for the rest of Move().
+	if (GetExactTarget(SBP, SBW, DepthStencil, SBP))
+		return false;
+
+	Target* const src = GetExactTarget(SBP, SBW, RenderTarget, SBP);
+	Target* const dst = GetExactTarget(DBP, DBW, DepthStencil, DBP);
+	if (!src || !dst || src->m_TEX0.TBP0 != SBP || dst->m_TEX0.TBP0 != DBP || src->m_scale != dst->m_scale)
+		return false;
+	if ((src->m_TEX0.PSM != PSMCT32 && src->m_TEX0.PSM != PSMCT24) || dst->m_TEX0.PSM != PSMZ24)
+		return false;
+
+	const GSVector4i src_r(sx, sy, sx + w, sy + h);
+	const GSVector4i dst_r(dx, dy, dx + w, dy + h);
+
+	// The readback takes the whole rectangle from the GPU only when all of it was drawn since the last
+	// read and none of it is dirty; otherwise some of it would come from local memory.
+	if (!src->m_drawn_since_read.rintersect(src_r).eq(src_r))
+		return false;
+	if (!src->m_dirty.empty() && !src->m_dirty.GetTotalRect(src->m_TEX0, src->m_unscaled_size).rintersect(src_r).rempty())
+		return false;
+	// Older uploads into the depth target would be drawn together with the moved data.
+	if (!dst->m_dirty.empty())
+		return false;
+	if (src_r.z > src->m_unscaled_size.x || src_r.w > src->m_unscaled_size.y || dst_r.z > dst->m_unscaled_size.x ||
+		dst_r.w > dst->m_unscaled_size.y)
+	{
+		return false;
+	}
+	// Target::Update also refreshes the temporary Z copy of its address.
+	if (GetTemporaryZ() && GetTemporaryZInfo().ZBP == DBP)
+		return false;
+
+	// No other target may hold pages of either end: the readback would read it too, and the
+	// destination's invalidation would mark or drop it.
+	for (int type = 0; type < 2; type++)
+	{
+		for (Target* t : m_dst[type])
+		{
+			if (t == src || t == dst)
+				continue;
+			if (t->Overlaps(SBP, SBW, PSMCT32, src_r) || t->Overlaps(DBP, DBW, PSMZ24, dst_r))
+				return false;
+		}
+	}
+
+	// Holds left by earlier moves into these pages: one this move replaces in full holds nothing anyone will
+	// read (the CPU move overwrites the same low 24 bits), anything else is written out first.
+	BeforeLocalMemoryWrite(g_gs_renderer->m_mem.GetOffset(DBP, DBW, PSMZ24), dst_r, true);
+
+	GSTexture* const native = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, false);
+	GSTexture* const words = g_gs_device->CreateRenderTarget(w, h, GSTexture::Format::Color, true);
+	if (!native || !words) [[unlikely]]
+	{
+		if (native)
+			g_gs_device->Recycle(native);
+		if (words)
+			g_gs_device->Recycle(words);
+		return false;
+	}
+
+	GL_CACHE("TC: Z24 move of colour pages into a depth target on the GPU after draw %lld 0x%x[BW:%u] <%d,%d->%d,%d> -> 0x%x[BW:%u] <%d,%d>",
+		GSRendererHW::GetInstance()->s_n, SBP, SBW, sx, sy, sx + w, sy + h, DBP, DBW, dx, dy);
+
+	// What the readback hands local memory: the colour target point-sampled at native resolution
+	// (GSTextureCache::Read). Only its RGB is moved.
+	const float scale = src->m_scale;
+	const GSVector4 src_uv = GSVector4(src_r) * GSVector4(scale) / GSVector4(src->m_texture->GetSize()).xyxy();
+	g_gs_device->StretchRect(src->m_texture, src_uv, native, GSVector4(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h)),
+		ShaderConvert::COPY, Nearest);
+
+	// What Target::Update reads from local memory in the depth layout after the move: each 8x8 block of
+	// a page takes the RGB of the colour block GSDepthFormatMove names, and the top byte, which a Z24
+	// read expands from TEXA.TA0 = 0, is zero (the texture starts cleared and only RGB is written).
+	const u32 pages = static_cast<u32>((w / GSDepthFormatMove::kPageW) * (h / GSDepthFormatMove::kPageH));
+	const u32 nblocks = pages * GSDepthFormatMove::kBlocksX * GSDepthFormatMove::kBlocksY;
+	std::vector<GSDevice::MultiStretchRect> blocks(nblocks);
+	const GSVector4 inv_size = GSVector4(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h)).xyxy();
+	u32 n = 0;
+	for (int py = 0; py < h; py += GSDepthFormatMove::kPageH)
+	{
+		for (int px = 0; px < w; px += GSDepthFormatMove::kPageW)
+		{
+			for (int by = 0; by < GSDepthFormatMove::kBlocksY; by++)
+			{
+				for (int bx = 0; bx < GSDepthFormatMove::kBlocksX; bx++)
+				{
+					const GSVector2i cb = GSDepthFormatMove::ColourBlockForDepthBlock(bx, by);
+					const GSVector4i from(px + cb.x * GSDepthFormatMove::kBlockW, py + cb.y * GSDepthFormatMove::kBlockH,
+						px + (cb.x + 1) * GSDepthFormatMove::kBlockW, py + (cb.y + 1) * GSDepthFormatMove::kBlockH);
+					const GSVector4i to(px + bx * GSDepthFormatMove::kBlockW, py + by * GSDepthFormatMove::kBlockH,
+						px + (bx + 1) * GSDepthFormatMove::kBlockW, py + (by + 1) * GSDepthFormatMove::kBlockH);
+					GSDevice::MultiStretchRect& b = blocks[n++];
+					b.src = native;
+					b.src_rect = GSVector4(from) * inv_size;
+					b.dst_rect = GSVector4(to);
+					b.filter = Nearest;
+					b.wmask = static_cast<u8>(0x7);
+				}
+			}
+		}
+	}
+	g_gs_device->DrawMultiStretchRects(blocks.data(), n, words, ShaderConvert::COPY);
+	g_gs_device->Recycle(native);
+
+	// Target::Update's draw of a depth target's dirty rectangle: stretched to its scale, bilinear when
+	// upscaled, through the colour-to-depth conversion of the target's bit depth. Upscaled, the
+	// conversion filters in the shader from fetched texels (SAMPLE_RGBA_DEPTH_BILN), which is what the
+	// selector's filter picks; the sampler's own filter then reads nothing, so it is left at point.
+	const bool upscaled = scale != 1.0f;
+	GSDevice::MultiStretchRect drect;
+	drect.src = words;
+	drect.src_rect = GSVector4(0.0f, 0.0f, 1.0f, 1.0f);
+	drect.dst_rect = GSVector4(dst_r) * GSVector4(scale);
+	drect.filter = Nearest;
+	drect.wmask = static_cast<u8>(0xF);
+	const u32 bpp = GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp;
+	const ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, dst->m_texture->GetFormat(), bpp, bpp, 0xF, BilnIf(upscaled));
+	g_gs_device->DrawMultiStretchRects(&drect, 1, dst->m_texture, shader);
+
+	// The target now holds what Target::Update would have drawn from local memory after the CPU move.
+	dst->m_valid_rgb = true;
+	dst->UpdateValidity(dst_r);
+
+	// Its drawn-since-read area is what the CPU move leaves too: the move's dirty rectangle clears it when it
+	// covers it (NoteDirtyAdded; the destination had no dirty rectangles, so this one is the only one), and
+	// Target::Update does not add to it. The moved words are not in it: a readback of the target is not
+	// exact for them once upscaled (the depth was drawn through the bilinear conversion), so they are held
+	// apart, at native size, and written into local memory before anything reads or writes it there.
+	if (dst->m_drawn_since_read.rintersect(dst_r).eq(dst->m_drawn_since_read))
+		dst->m_drawn_since_read = GSVector4i::zero();
+	HoldPages(dst, words, DBP, DBW, dst_r);
+
+	// Sources over the destination are stale, as after any move.
+	InvalidateVideoMem(g_gs_renderer->m_mem.GetOffset(DBP, DBW, PSMZ24), dst_r, false);
+	return true;
+}
+
+namespace
+{
+	using PageBits = std::array<u64, GS_MAX_PAGES / 64>;
+
+	void AddPages(PageBits& bits, u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+	{
+		if (r.rempty())
+			return;
+		g_gs_renderer->m_mem.GetOffset(bp, bw, psm).loopPages(r, [&bits](u32 page) {
+			page %= GS_MAX_PAGES;
+			bits[page >> 6] |= u64(1) << (page & 63);
+		});
+	}
+
+	bool PagesMeet(const PageBits& a, const PageBits& b)
+	{
+		for (size_t i = 0; i < a.size(); i++)
+		{
+			if (a[i] & b[i])
+				return true;
+		}
+		return false;
+	}
+} // namespace
+
+void GSTextureCache::HoldPages(Target* t, GSTexture* words, u32 bp, u32 bw, const GSVector4i& rect)
+{
+	HeldWords h;
+	h.target = t;
+	h.words = words;
+	h.rect = rect;
+	h.bp = bp;
+	h.bw = bw;
+	m_held.push_back(h);
+	RebuildHeldPages();
+	m_held_stats.held++;
+}
+
+void GSTextureCache::RebuildHeldPages()
+{
+	m_held_pages = {};
+	m_held_block_lo = ~0u;
+	m_held_block_hi = 0;
+	for (const HeldWords& h : m_held)
+	{
+		AddPages(m_held_pages, h.bp, h.bw, PSMZ24, h.rect);
+		m_held_block_lo = std::min(m_held_block_lo, GSLocalMemory::GetStartBlockAddress(h.bp, h.bw, PSMZ24, h.rect));
+		m_held_block_hi = std::max(m_held_block_hi, GSLocalMemory::GetUnwrappedEndBlockAddress(h.bp, h.bw, PSMZ24, h.rect));
+	}
+}
+
+const GSTextureCache::HeldWords* GSTextureCache::HeldBy(const Target* t) const
+{
+	for (const HeldWords& h : m_held)
+	{
+		if (h.target == t)
+			return &h;
+	}
+	return nullptr;
+}
+
+void GSTextureCache::ReleaseHeld(Target* t)
+{
+	// The words stay held: local memory outlives the target, and they are what a CPU move left there.
+	for (HeldWords& h : m_held)
+	{
+		if (h.target == t)
+			h.target = nullptr;
+	}
+}
+
+void GSTextureCache::DropHold(size_t i)
+{
+	GSTexture* const words = m_held[i].words;
+	m_held.erase(m_held.begin() + static_cast<std::ptrdiff_t>(i));
+	RebuildHeldPages();
+	g_gs_device->Recycle(words);
+	m_held_stats.dropped++;
+}
+
+void GSTextureCache::DropAllHeld()
+{
+	while (!m_held.empty())
+		DropHold(m_held.size() - 1);
+}
+
+void GSTextureCache::MaterialiseHold(size_t i)
+{
+	// Readbacks are off: no target is ever written back, and these words are no different.
+	if (!IsHardwareDownloadReadbackEnabled(GSConfig.HWDownloadMode))
+	{
+		DropHold(i);
+		return;
+	}
+
+	const HeldWords h = m_held[i];
+	m_held.erase(m_held.begin() + static_cast<std::ptrdiff_t>(i));
+	RebuildHeldPages();
+
+	GIFRegTEX0 TEX0 = {};
+	TEX0.TBP0 = h.bp;
+	TEX0.TBW = h.bw;
+	TEX0.PSM = PSMZ24;
+
+	// The words as the CPU move writes them: the low 24 bits of each, the top byte left alone. Synchronous,
+	// like any read the reader would otherwise have made of the target.
+	const GSVector4i& r = h.rect;
+	const GSVector4i drc(0, 0, r.width(), r.height());
+	std::unique_ptr<GSDownloadTexture> dl = g_gs_device->CreateDownloadTexture(drc.z, drc.w, GSTexture::Format::Color);
+	if (dl)
+	{
+		g_gs_device->FlushBeforeReadback();
+		dl->CopyFromTexture(drc, h.words, drc, 0, true);
+		dl->Flush();
+		if (dl->Map(drc))
+		{
+			WriteReadPixels(TEX0, r, drc, 0x00FFFFFFu, false, const_cast<u8*>(dl->GetMapPointer()), dl->GetMapPitch());
+			dl->Unmap();
+		}
+	}
+	else
+	{
+		Console.Error("TC: failed to download %dx%d held depth words at 0x%x", drc.z, drc.w, TEX0.TBP0);
+	}
+
+	g_gs_device->Recycle(h.words);
+	m_held_stats.materialised++;
+}
+
+bool GSTextureCache::AnyHeldPage(u32 bp, u32 bw, u32 psm, const GSVector4i& r) const
+{
+	if (r.rempty())
+		return false;
+	// Every block of a held page is held, so a block range that misses the held ones misses their pages too.
+	// This is what most callers get (a texture lookup per draw while a hold lasts); a range that wraps the
+	// end of memory goes on to the page walk.
+	const u32 lo = GSLocalMemory::GetStartBlockAddress(bp, bw, psm, r);
+	const u32 hi = GSLocalMemory::GetUnwrappedEndBlockAddress(bp, bw, psm, r);
+	if (hi < GS_MAX_BLOCKS && m_held_block_hi < GS_MAX_BLOCKS && (hi < m_held_block_lo || lo > m_held_block_hi))
+		return false;
+	bool hit = false;
+	g_gs_renderer->m_mem.GetOffset(bp, bw, psm).pageLooperForRect(r).loopPagesWithBreak([this, &hit](u32 page) {
+		page %= GS_MAX_PAGES;
+		hit = (m_held_pages[page >> 6] >> (page & 63)) & 1;
+		return !hit;
+	});
+	return hit;
+}
+
+void GSTextureCache::MaterialiseHeldPages(u32 bp, u32 bw, u32 psm, const GSVector4i& r)
+{
+	if (m_held.empty() || !AnyHeldPage(bp, bw, psm, r))
+		return;
+
+	PageBits asked = {};
+	AddPages(asked, bp, bw, psm, r);
+	for (size_t i = 0; i < m_held.size();)
+	{
+		PageBits held = {};
+		AddPages(held, m_held[i].bp, m_held[i].bw, PSMZ24, m_held[i].rect);
+		if (PagesMeet(asked, held))
+			MaterialiseHold(i); // removes it
+		else
+			i++;
+	}
+}
+
+void GSTextureCache::MaterialiseHeldBlocks(const u32* blocks, u32 count)
+{
+	if (m_held.empty())
+		return;
+
+	PageBits asked = {};
+	bool any = false;
+	for (u32 i = 0; i < count; i++)
+	{
+		const u32 page = (blocks[i] % GS_MAX_BLOCKS) / GS_BLOCKS_PER_PAGE;
+		if ((m_held_pages[page >> 6] >> (page & 63)) & 1)
+		{
+			asked[page >> 6] |= u64(1) << (page & 63);
+			any = true;
+		}
+	}
+	if (!any)
+		return;
+
+	for (size_t i = 0; i < m_held.size();)
+	{
+		PageBits held = {};
+		AddPages(held, m_held[i].bp, m_held[i].bw, PSMZ24, m_held[i].rect);
+		if (PagesMeet(asked, held))
+			MaterialiseHold(i);
+		else
+			i++;
+	}
+}
+
+void GSTextureCache::MaterialiseHeldTexture(const GIFRegTEX0& TEX0, const GSVector2i* lod)
+{
+	if (m_held.empty())
+		return;
+
+	const auto level = [this](const GIFRegTEX0& L) {
+		MaterialiseHeldPages(L.TBP0, L.TBW, L.PSM, GSVector4i(0, 0, 1 << L.TW, 1 << L.TH));
+	};
+	level(TEX0);
+	if (lod)
+	{
+		for (int i = lod->x + 1; i <= lod->y && !m_held.empty(); i++)
+			level(g_gs_renderer->GetTex0Layer(i));
+	}
+}
+
+void GSTextureCache::MaterialiseAllHeld()
+{
+	while (!m_held.empty())
+		MaterialiseHold(m_held.size() - 1);
+}
+
+void GSTextureCache::BeforeLocalMemoryWrite(const GSOffset& off, const GSVector4i& r, bool all_low_24)
+{
+	if (m_held.empty() || !AnyHeldPage(off.bp(), off.bw(), off.psm(), r))
+		return;
+
+	// Every 32-bit format has the same 64x32 page, so a rectangle of one that contains a whole-page held
+	// rectangle at the same base and width writes every word of it, and at least its low 24 bits.
+	const u32 psm = off.psm();
+	const bool writes_low_24 = all_low_24 && (psm == PSMCT32 || psm == PSMCT24 || psm == PSMZ32 || psm == PSMZ24);
+	PageBits asked = {};
+	AddPages(asked, off.bp(), off.bw(), psm, r);
+	for (size_t i = 0; i < m_held.size();)
+	{
+		const HeldWords& h = m_held[i];
+		PageBits held = {};
+		AddPages(held, h.bp, h.bw, PSMZ24, h.rect);
+		if (!PagesMeet(asked, held))
+		{
+			i++;
+			continue;
+		}
+		if (writes_low_24 && off.bp() == h.bp && off.bw() == h.bw && r.rintersect(h.rect).eq(h.rect))
+			DropHold(i);
+		else
+			MaterialiseHold(i);
+	}
 }
 
 bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx, int dy, int w, int h)
@@ -7047,6 +7634,9 @@ GSTextureCache::Source* GSTextureCache::CreateSource(const GIFRegTEX0& TEX0, con
 		src->m_unscaled_size = GSVector2i(tw, th);
 		src->m_scale = 1.0f;
 
+		// A source from local memory: the hash cache and the upload read it.
+		MaterialiseHeldTexture(TEX0, lod);
+
 		// try the hash cache
 		if ((src->m_from_hash_cache = LookupHashCache(TEX0, TEXA, paltex, clut, lod, region)) != nullptr)
 		{
@@ -7659,6 +8249,7 @@ GSTexture* GSTextureCache::GetNativeTexture(const Source* s)
 
 		// The CPU palette expansion LookupHashCache's own upload does. A texture that gets a
 		// generated upscale never uses paltex, so its source has no palette texture to match.
+		MaterialiseHeldTexture(s->m_TEX0, nullptr);
 		PreloadTexture(s->m_TEX0, s->m_TEXA, region, g_gs_renderer->m_mem, false, tex, 0, nullptr);
 		e->native = tex;
 		m_hash_cache_memory_usage += tex->GetMemUsage();
@@ -7878,8 +8469,23 @@ std::shared_ptr<GSTextureCache::Palette> GSTextureCache::LookupPaletteObject(con
 
 void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous)
 {
-	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
+	const bool batched = m_read_batch_depth > 0;
+	ReadOp op;
+	if (IssueRead(t, r, force_synchronous, batched, op) != ReadIssue::Pending)
 		return;
+	if (batched)
+		m_read_batch.push_back(std::move(op));
+	else
+		CompleteRead(op);
+}
+
+GSTextureCache::ReadIssue GSTextureCache::IssueRead(Target* t, const GSVector4i& r, bool force_synchronous, bool pooled, ReadOp& op)
+{
+	// The read writes local memory, after any held words under it.
+	MaterialiseHeldPages(t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r);
+
+	if ((!t->m_dirty.empty() && !t->m_dirty.GetTotalRect(t->m_TEX0, t->m_unscaled_size).rintersect(r).rempty()) || r.width() == 0 || r.height() == 0)
+		return ReadIssue::None;
 
 	const GIFRegTEX0& TEX0 = t->m_TEX0;
 	const bool is_depth = (t->m_type == DepthStencil);
@@ -7928,7 +8534,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		break;
 
 		default:
-			return;
+			return ReadIssue::None;
 	}
 
 	// Don't overwrite bits which aren't used in the target's format.
@@ -7937,7 +8543,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 	if (write_mask == 0)
 	{
 		DbgCon.Warning("Not reading back target %x PSM %s due to no write mask", TEX0.TBP0, GSUtil::GetPSMName(TEX0.PSM));
-		return;
+		return ReadIssue::None;
 	}
 
 	GL_PERF("TC: Read Back Target: (0x%x)[fmt: 0x%x]. Size %dx%d", TEX0.TBP0, TEX0.PSM, r.width(), r.height());
@@ -7967,6 +8573,11 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 	const bool asynchronous = !force_synchronous &&
 		GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous &&
 		g_gs_renderer->IsAsyncReadbackReady();
+
+	// The same pixels already downloaded, in the round trip of the read before this one.
+	if (!asynchronous && ServeReadFromStash(t, r, write_mask))
+		return ReadIssue::None;
+
 	std::unique_ptr<GSDownloadTexture> asynchronous_dltex;
 	if (asynchronous)
 	{
@@ -7975,7 +8586,7 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 			// Keep the already-issued copies alive until their fences complete: dropping an
 			// incoming snapshot is safer than destroying an in-flight staging allocation, and
 			// it must never degrade back into a blocking readback when the GPU falls behind.
-			return;
+			return ReadIssue::None;
 		}
 
 		// Only recycle a staging texture of the same format — PrepareDownloadTexture() sizes
@@ -7992,15 +8603,30 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 
 		dltex = &asynchronous_dltex;
 	}
+	else if (pooled)
+	{
+		// A batched read keeps its pixels until the batch completes, so it needs a download texture
+		// of its own. The same format only, as above.
+		for (auto it = m_read_pool.begin(); it != m_read_pool.end(); ++it)
+		{
+			if ((*it)->GetFormat() != fmt)
+				continue;
+
+			op.owned = std::move(*it);
+			m_read_pool.erase(it);
+			break;
+		}
+		dltex = &op.owned;
+	}
 
 	if (!PrepareDownloadTexture(drc.z, drc.w, fmt, dltex))
-		return;
+		return ReadIssue::None;
 
 	// PrepareDownloadTexture() reports success even when CreateDownloadTexture() returned
 	// null (it null-checks the pointer-to-unique_ptr, not the unique_ptr). Don't let that
 	// put a null texture into the pending queue, where Poll() would dereference it.
-	if (asynchronous && !asynchronous_dltex)
-		return;
+	if (!dltex->get())
+		return ReadIssue::None;
 
 	g_gs_device->FlushBeforeReadback();
 
@@ -8020,7 +8646,9 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		else
 		{
 			Console.Error("Failed to allocate temporary %dx%d target for read.", drc.z, drc.w);
-			return;
+			if (op.owned)
+				m_read_pool.push_back(std::move(op.owned));
+			return ReadIssue::None;
 		}
 	}
 
@@ -8029,17 +8657,60 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		m_pending_downloads.push_back({std::move(asynchronous_dltex), TEX0, drc, r, write_mask,
 			static_cast<u64>(g_perfmon.GetFrame()), cpu_convert_rgb5a1,
 			g_gs_renderer->CaptureAsyncReadbackPageGenerations()});
-		return;
+		return ReadIssue::None;
 	}
 
-	dltex->get()->Flush();
-	if (!dltex->get()->Map(drc))
-		return;
+	op.t = t;
+	op.TEX0 = TEX0;
+	op.r = r;
+	op.drc = drc;
+	op.write_mask = write_mask;
+	op.cpu_convert_rgb5a1 = cpu_convert_rgb5a1;
+	op.direct = direct_read;
+	op.dltex = op.owned ? nullptr : dltex;
+	return ReadIssue::Pending;
+}
 
-	// Why does WritePixelNN() not take a const pointer?
-	u8* bits = const_cast<u8*>(dltex->get()->GetMapPointer());
-	const u32 pitch = dltex->get()->GetMapPitch();
+void GSTextureCache::CompleteRead(ReadOp& op)
+{
+	// A batched read owns its texture (op.dltex then pointed at the op's own member, which the move into
+	// the batch left behind).
+	GSDownloadTexture* const dl = op.owned ? op.owned.get() : op.dltex->get();
+	dl->Flush();
 
+	if (dl->Map(op.drc))
+	{
+		// Why does WritePixelNN() not take a const pointer?
+		u8* const bits = const_cast<u8*>(dl->GetMapPointer());
+		const u32 pitch = dl->GetMapPitch();
+		if (op.stash)
+		{
+			// Row by row: the map is only as long as the copy, whose last row is not padded to the pitch.
+			const u32 row = static_cast<u32>(op.drc.z) * (dl->GetFormat() == GSTexture::Format::UInt16 ? 2u : 4u);
+			m_read_stash.pitch = row;
+			m_read_stash.bytes.resize(static_cast<size_t>(row) * static_cast<size_t>(op.drc.w));
+			for (int y = 0; y < op.drc.w; y++)
+				std::memcpy(&m_read_stash.bytes[static_cast<size_t>(y) * row], bits + static_cast<size_t>(y) * pitch, row);
+		}
+		else
+		{
+			WriteReadPixels(op.TEX0, op.r, op.drc, op.write_mask, op.cpu_convert_rgb5a1, bits, pitch);
+		}
+		dl->Unmap();
+	}
+	else if (op.stash)
+	{
+		m_read_stash.valid = false;
+	}
+	m_read_stash_stats.stashed += op.stash ? 1 : 0;
+
+	if (op.owned)
+		m_read_pool.push_back(std::move(op.owned));
+}
+
+void GSTextureCache::WriteReadPixels(const GIFRegTEX0& TEX0, const GSVector4i& r, const GSVector4i& drc, u32 write_mask,
+	bool cpu_convert_rgb5a1, u8* bits, u32 pitch)
+{
 	std::vector<u16> packed;
 	if (cpu_convert_rgb5a1)
 	{
@@ -8103,14 +8774,119 @@ void GSTextureCache::Read(Target* t, const GSVector4i& r, bool force_synchronous
 		write_download(g_gs_renderer->GetAsyncReadbackMemory());
 		g_gs_renderer->MarkAsyncReadbackPagesWrittenLocked(TEX0, r);
 	}
+}
 
-	dltex->get()->Unmap();
+void GSTextureCache::FlushReadBatch()
+{
+	// In issue order, so local memory receives the pixels in the order the reads were asked for.
+	for (ReadOp& op : m_read_batch)
+		CompleteRead(op);
+	m_read_batch.clear();
+}
+
+bool GSTextureCache::IsBurstFirstRead(const Target* t, const GSVector4i& r) const
+{
+	if (r.rempty())
+		return false;
+	for (const BurstFirstRead& b : m_burst_first_reads)
+	{
+		if (b.bp == t->m_TEX0.TBP0 && b.bw == t->m_TEX0.TBW && b.psm == t->m_TEX0.PSM && b.r.eq(r))
+			return true;
+	}
+	return false;
+}
+
+void GSTextureCache::SetBurstFirstRead(const Target* t, const GSVector4i& r, bool burst)
+{
+	if (r.rempty())
+		return;
+	for (BurstFirstRead& b : m_burst_first_reads)
+	{
+		if (b.bp == t->m_TEX0.TBP0 && b.bw == t->m_TEX0.TBW && b.psm == t->m_TEX0.PSM && b.r.eq(r))
+		{
+			if (!burst)
+				b = {};
+			return;
+		}
+	}
+	if (burst)
+	{
+		m_burst_first_reads[m_burst_next] = {t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r};
+		m_burst_next = (m_burst_next + 1) % static_cast<u32>(m_burst_first_reads.size());
+	}
+}
+
+void GSTextureCache::StashRead(Target* t)
+{
+	// A stash the next read never took says that first read is not followed by a second one.
+	const ReadStash& prev = m_read_stash;
+	if (!prev.used && !prev.bytes.empty() && prev.TEX0.TBP0 == t->m_TEX0.TBP0 && prev.TEX0.TBW == t->m_TEX0.TBW &&
+		prev.TEX0.PSM == t->m_TEX0.PSM)
+	{
+		SetBurstFirstRead(t, prev.first_read, false);
+	}
+	m_read_stash.bytes.clear();
+	m_read_stash.valid = false;
+	m_read_stash.t = nullptr;
+
+	if (GSConfig.HWDownloadMode == GSHardwareDownloadMode::Asynchronous || m_read_batch_depth == 0 ||
+		!IsBurstFirstRead(t, t->m_first_read_rect) || t->m_drawn_since_read.rempty())
+	{
+		return;
+	}
+
+	const GSVector4i r = t->m_drawn_since_read;
+	ReadOp op;
+	if (IssueRead(t, r, false, true, op) != ReadIssue::Pending)
+		return;
+
+	op.stash = true;
+	ReadStash& st = m_read_stash;
+	st.valid = true;
+	st.used = false;
+	st.t = t;
+	st.texture = t->m_texture;
+	st.TEX0 = t->m_TEX0;
+	st.r = r;
+	st.first_read = t->m_first_read_rect;
+	st.write_mask = op.write_mask;
+	st.scale = t->m_scale;
+	st.rta = t->m_rt_alpha_scale;
+	st.cpu_convert_rgb5a1 = op.cpu_convert_rgb5a1;
+	st.draw = g_gs_renderer->s_n;
+	st.transfer = g_gs_renderer->s_transfer_n;
+	st.frame = static_cast<u64>(g_perfmon.GetFrame());
+	st.bytes.clear();
+	m_read_batch.push_back(std::move(op));
+}
+
+bool GSTextureCache::ServeReadFromStash(Target* t, const GSVector4i& r, u32 write_mask)
+{
+	ReadStash& st = m_read_stash;
+	if (!st.valid || st.t != t || st.bytes.empty())
+		return false;
+	if (st.texture != t->m_texture || st.TEX0.U64 != t->m_TEX0.U64 || !st.r.eq(r) || st.write_mask != write_mask ||
+		st.scale != t->m_scale || st.rta != t->m_rt_alpha_scale || st.draw != g_gs_renderer->s_n ||
+		st.transfer != g_gs_renderer->s_transfer_n || st.frame != static_cast<u64>(g_perfmon.GetFrame()))
+	{
+		st.valid = false;
+		return false;
+	}
+
+	// The read the stash was made for: the same target, format and conversion, so IssueRead made the
+	// same cpu_convert_rgb5a1 decision for it.
+	const GSVector4i drc(0, 0, r.width(), r.height());
+	WriteReadPixels(t->m_TEX0, r, drc, write_mask, st.cpu_convert_rgb5a1, st.bytes.data(), st.pitch);
+	st.used = true;
+	m_read_stash_stats.served++;
+	return true;
 }
 
 void GSTextureCache::Read(Source* t, const GSVector4i& r)
 {
 	if (r.rempty())
 		return;
+	MaterialiseHeldPages(t->m_TEX0.TBP0, t->m_TEX0.TBW, t->m_TEX0.PSM, r);
 
 	const GSVector4i drc(0, 0, r.width(), r.height());
 
@@ -8239,6 +9015,9 @@ void GSTextureCache::Source::Update(const GSVector4i& rect, int level)
 
 	if (m_target || m_from_hash_cache || (m_complete_layers & (1u << level)))
 		return;
+
+	// m_TEX0 is the level's (UpdateLayer sets it).
+	g_texture_cache->MaterialiseHeldTexture(m_TEX0, nullptr);
 
 	if (CanPreload())
 	{
@@ -8520,6 +9299,10 @@ GSTextureCache::Target::~Target()
 {
 	GSTextureCache::UnindexTarget(this);
 
+	// Words it held for local memory stay held without it (local memory outlives the target).
+	if (g_texture_cache)
+		g_texture_cache->ReleaseHeld(this);
+
 	// Targets should never be shared.
 	pxAssert(!m_shared_texture);
 
@@ -8563,6 +9346,13 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 	if (m_dirty.empty())
 		return;
+
+	// The dirty rectangles are drawn from local memory.
+	if (g_texture_cache->HasHeldPages())
+	{
+		g_texture_cache->MaterialiseHeldPages(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM,
+			m_dirty.GetTotalRect(m_TEX0, m_unscaled_size));
+	}
 
 	// No handling please
 	if (m_type == DepthStencil && GSConfig.UserHacks_DisableDepthSupport)
@@ -8839,13 +9629,28 @@ void GSTextureCache::Target::AssertAlphaKnownAgreesWithRange(const char* site) c
 #endif
 }
 
+// GetEndBlockAddress of the target's layout and valid area. It is a function of those four values alone, and the
+// draw path asks for it three times a draw with none of them changed, so the last answer is kept beside its inputs.
+u32 GSTextureCache::Target::EndBlockOfValid()
+{
+	const u32 layout = m_TEX0.U32[0] & 0x3ffffff; // TBP0, TBW, PSM
+	if (!m_end_of_valid_known || layout != m_end_of_valid_layout || !m_valid.eq(m_end_of_valid_rect))
+	{
+		m_end_of_valid = GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid);
+		m_end_of_valid_layout = layout;
+		m_end_of_valid_rect = m_valid;
+		m_end_of_valid_known = true;
+	}
+	return m_end_of_valid;
+}
+
 void GSTextureCache::Target::ResizeValidity(const GSVector4i& rect)
 {
 	if (!m_valid.eq(GSVector4i::zero()))
 	{
 		m_valid = m_valid.rintersect(rect);
 		m_drawn_since_read = m_drawn_since_read.rintersect(rect);
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Else No valid size, so need to resize down.
@@ -8861,13 +9666,13 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 	{
 		m_valid = rect;
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 	else if (can_resize)
 	{
 		m_valid = m_valid.runion(rect);
 
-		SetEndBlock(GSLocalMemory::GetEndBlockAddress(m_TEX0.TBP0, m_TEX0.TBW, m_TEX0.PSM, m_valid));
+		SetEndBlock(EndBlockOfValid());
 	}
 
 	// Growth matters to any claim of the form "every pixel of this target holds X": the
@@ -8984,6 +9789,7 @@ void GSTextureCache::SourceMap::Add(Source* s, const GIFRegTEX0& TEX0)
 	// The source pointer will be stored/duplicated in all m_map[array of pages]
 	s->m_pages.loopPages([this, s](u32 page) {
 		s->m_erase_it[page] = m_map[page].InsertFront(s);
+		m_page_used[page >> 6] |= u64(1) << (page & 63);
 	});
 }
 
@@ -9016,6 +9822,7 @@ void GSTextureCache::SourceMap::RemoveAll()
 	{
 		item.clear();
 	}
+	m_page_used.fill(0);
 }
 
 void GSTextureCache::SourceMap::RemoveAt(Source* s)
@@ -9027,6 +9834,8 @@ void GSTextureCache::SourceMap::RemoveAt(Source* s)
 
 	s->m_pages.loopPages([this, s](u32 page) {
 		m_map[page].EraseIndex(s->m_erase_it[page]);
+		if (m_map[page].empty())
+			m_page_used[page >> 6] &= ~(u64(1) << (page & 63));
 	});
 
 	if (s->m_from_hash_cache)
@@ -9730,12 +10539,19 @@ static bool HashLevelIsExpanded(const GSLocalMemory::psm_t& psm, const HashLevel
 	return geometry.tw < psm.bs.x || geometry.th < psm.bs.y || psm.fmsk != 0xFFFFFFFFu || region.GetMaxX() > 0 || region.GetMinY() > 0;
 }
 
-// True if a level that would be expanded is hashed from the raw bytes of its blocks instead (see
-// HashTextureLevel): a paletted window of at least a block each way, where the lookup allows it. A level
-// that needs no expansion is hashed from its blocks anyway.
-static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, const GSTextureCache::SourceRegion& region, bool raw_blocks)
+// True if the level is keyed by the identities of its blocks (see HashTextureLevel): a window of any format of
+// at least a block each way, in a lookup that is not dumped, replaced or upscaled (raw_blocks). Such a key lives
+// inside one run and names nothing.
+static bool HashLevelIsRaw(const GSLocalMemory::psm_t& psm, const HashLevelGeometry& geometry, bool raw_blocks)
 {
-	return raw_blocks && psm.pal > 0 && geometry.tw >= psm.bs.x && geometry.th >= psm.bs.y && HashLevelIsExpanded(psm, geometry, region);
+	return raw_blocks && geometry.tw >= psm.bs.x && geometry.th >= psm.bs.y;
+}
+
+// The bits of each 32-bit word of local memory that the format's texels are made of. psm.fmsk is a mask of the
+// 32-bit colour for the 16-bit formats (0x80F8F8F8), not of memory: every bit of a 16-bit word is texel data.
+static u32 HashMemoryMask(const GSLocalMemory::psm_t& psm)
+{
+	return psm.bpp == 32 ? psm.fmsk : 0xFFFFFFFFu;
 }
 
 // Hashes the texture level into hash_st, and returns where its window starts inside its first block as
@@ -9751,74 +10567,88 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 	GSLocalMemory& mem = g_gs_renderer->m_mem;
 	const GSOffset off = mem.GetOffset(TEX0.TBP0, TEX0.TBW, TEX0.PSM);
 
-	// A paletted window of at least one block each way is hashed from the raw bytes of its blocks, in
-	// unswizzle order, with no unswizzle. Its texels depend only on those bytes, the format, the window
-	// size and where it starts inside its first block, so equal raw hashes and equal offsets (returned
-	// below) mean equal texels. Blocks go in whole, so bytes outside the window can only turn a
-	// texel-hash hit into a miss, never the reverse.
-	const bool raw = HashLevelIsRaw(psm, geometry, region, raw_blocks);
+	// A window of at least one block each way, in a lookup that names nothing (raw_blocks), is keyed by the
+	// identities of its blocks (GSBlockId), in unswizzle order, with no unswizzle. Its texels depend only on
+	// those blocks' bytes (the format's bits of them), the format, TEXA, the window size and where it starts
+	// inside its first block, so equal identities and equal offsets (returned below) mean equal texels, up to
+	// the identity's odds of a collision. Blocks go in whole, so bytes outside the window can only turn a hit
+	// into a miss, never the reverse.
+	const bool raw = HashLevelIsRaw(psm, geometry, raw_blocks);
 
-	// With the block hash cache, a raw level is keyed by one hash of its blocks' hashes, in the same order,
-	// instead of by the bytes: a block's hash is kept until its bytes are marked written, so blocks not
-	// written since the last lookup are not read. Two windows have the same key here exactly when they
-	// have the same raw key, since a block hash depends only on the block's bytes, and which blocks a
-	// window reads and where it starts inside the first are covered by the rest of the key and the offset
-	// below.
+	// With the block hash cache, the identity of a full-mask block is kept until its bytes are marked
+	// written, so blocks not written since the last lookup are not read. The key is the same with the cache
+	// and without it: an identity depends only on the block's bytes.
 	const int right = block_rect.right >> off.blockShiftX();
 	const int bottom = block_rect.bottom >> off.blockShiftY();
-	if (raw && block_hashes &&
+	if (raw &&
 		static_cast<u64>((block_rect.width() >> off.blockShiftX())) * static_cast<u64>((block_rect.height() >> off.blockShiftY())) <= BLOCK_HASH_GATHER_MAX)
 	{
-		const u32 fmsk = psm.fmsk;
+		const u32 fmsk = HashMemoryMask(psm);
 		GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
-		u64* const hashes = block_hashes->hash.get();
 		u64* out = s_block_hash_gather;
 		u64 rehashed = 0;
 
-		if (fmsk == 0xFFFFFFFFu)
+		// First the walk: every block's slot in the gather, its cached identity where it has one, and the blocks
+		// whose identity must be taken now. Then those identities, in one call.
+		u32 pending = 0;
+		if (fmsk == 0xFFFFFFFFu && block_hashes)
 		{
+			// A window wider than its buffer reads some blocks twice, so the gather is filled from the cache only
+			// after every pending identity is in it: a second visit of a block finds its bit already cleared.
+			u64* const hashes = block_hashes->hash.get();
+			u32* const blocks = s_block_hash_pending_slot;
+			u32 visited = 0;
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
 				{
 					const u32 block = bn.value();
+					blocks[visited++] = block;
 					if (mem.TestAndClearHashDirty(block))
 					{
-						hashes[block] = HashOneBlock(mem.BlockPtr(block));
-						rehashed++;
+						s_block_hash_pending_ptr[pending] = mem.BlockPtr(block);
+						s_block_hash_pending_block[pending] = block;
+						pending++;
 					}
-					*out++ = hashes[block];
 				}
 			}
+			GSBlockId::HashMany(s_block_hash_pending_ptr, s_block_hash_pending_id, pending, fmsk);
+			for (u32 i = 0; i < pending; i++)
+				hashes[s_block_hash_pending_block[i]] = s_block_hash_pending_id[i];
+			for (u32 i = 0; i < visited; i++)
+				*out++ = hashes[blocks[i]];
 		}
 		else
 		{
-			// The H formats share their words with other data, which changes without the format's own bits
-			// changing, so a block hash would be dirtied by writes that are not the format's. Hash only the
-			// format's bits, afresh each time: these formats are rare, and nothing is gained by caching.
-			alignas(16) u32 masked[GS_BLOCK_SIZE / sizeof(u32)];
+			// No cache, or a format whose words it shares with other data (the H and 24-bit ones): their other
+			// bits change without the format's own changing, so a cached identity would be dirtied by writes that
+			// are not the format's. Every block's identity (of the format's bits only) is taken afresh.
 			for (; bn.blkY() < bottom; bn.nextBlockY())
 			{
 				for (; bn.blkX() < right; bn.nextBlockX())
 				{
-					const u32* block = reinterpret_cast<const u32*>(mem.BlockPtr(bn.value()));
-					for (u32 i = 0; i < GS_BLOCK_SIZE / sizeof(u32); i++)
-						masked[i] = block[i] & fmsk;
-					*out++ = HashOneBlock(reinterpret_cast<const u8*>(masked));
-					rehashed++;
+					s_block_hash_pending_ptr[pending++] = mem.BlockPtr(bn.value());
+					out++;
 				}
 			}
+			GSBlockId::HashMany(s_block_hash_pending_ptr, s_block_hash_gather, pending, fmsk);
+		}
+		rehashed = pending;
+
+		// The level goes into the key as one value made from its identities in order.
+		const u64 count = static_cast<u64>(out - s_block_hash_gather);
+		const u64 level_id = GSBlockId::Combine(s_block_hash_gather, static_cast<u32>(count));
+		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(&level_id), sizeof(level_id));
+
+		if (block_hashes)
+		{
+			s_block_hash_levels_cached++;
+			s_block_hash_stats.levels++;
+			s_block_hash_stats.blocks += count;
+			s_block_hash_stats.rehashed += rehashed;
 		}
 
-		const u64 count = static_cast<u64>(out - s_block_hash_gather);
-		BlockHashAccumulate(hash_st, reinterpret_cast<const u8*>(s_block_hash_gather), static_cast<u32>(count * sizeof(u64)));
-
-		s_block_hash_levels_cached++;
-		s_block_hash_stats.levels++;
-		s_block_hash_stats.blocks += count;
-		s_block_hash_stats.rehashed += rehashed;
-
-		if (GSTextureCache::IsBlockHashVerify()) [[unlikely]]
+		if (GSTextureCache::IsBlockHashVerify() && block_hashes) [[unlikely]]
 		{
 			// Each block of the full-mask formats, hashed afresh, against the hash the key was made from. A
 			// difference is a store into local memory that nothing marked. The cached hash is put right
@@ -9827,6 +10657,7 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 			report.levels++;
 			if (fmsk == 0xFFFFFFFFu)
 			{
+				u64* const hashes = block_hashes->hash.get();
 				GSOffset::BNHelper check = off.bnMulti(block_rect.left, block_rect.top);
 				const u64* used = s_block_hash_gather;
 				for (; check.blkY() < bottom; check.nextBlockY())
@@ -9893,7 +10724,9 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 
 	GSOffset::BNHelper bn = off.bnMulti(block_rect.left, block_rect.top);
 
-	if (psm.fmsk == 0xFFFFFFFFu)
+	// Only a raw level too large for the gather comes here with a format whose words are not all its own (a texel
+	// level of one is expanded above), so the mask is the memory mask.
+	if (HashMemoryMask(psm) == 0xFFFFFFFFu)
 	{
 		for (; bn.blkY() < bottom; bn.nextBlockY())
 		{
@@ -9908,7 +10741,7 @@ static u32 HashTextureLevel(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, GSTe
 		// The H formats keep their indices in some bits of 32-bit words and share the rest with other data,
 		// often a frame buffer's colour. Hash only the format's bits. The update copies what it is given, so
 		// the masked block does not have to outlive the call.
-		const u32 fmsk = psm.fmsk;
+		const u32 fmsk = HashMemoryMask(psm);
 		alignas(16) u32 masked[GS_BLOCK_SIZE / sizeof(u32)];
 		for (; bn.blkY() < bottom; bn.nextBlockY())
 		{
@@ -10017,15 +10850,40 @@ static bool HashLevelUnwritten(const GSLocalMemory& mem, const GIFRegTEX0& TEX0,
 	return unwritten;
 }
 
+// The palette's hash in a key (PaletteKeyHash: XXH3 of its 16 or 256 entries, which names paletted textures). Most
+// lookups pass the renderer's own expanded palette, which GSClut rewrites only in Read32 (and Reset), moving its read
+// serial; while the serial has not moved the hash is the one taken last. The memo is bound to the local memory that
+// owns the palette by GSLocalMemory::Id(), which no later memory reuses, so a new renderer never inherits it.
+static u64 PaletteHash(const u32* clut, u16 pal)
+{
+	static u32 s_mem_id = 0; // no memory has id 0
+	static u32 s_serial = 0;
+	static u16 s_pal = 0;
+	static u64 s_hash = 0;
+
+	const GSLocalMemory& mem = g_gs_renderer->m_mem;
+	if (clut != static_cast<const u32*>(mem.m_clut))
+		return GSTextureCache::PaletteKeyHash{}({clut, pal});
+
+	if (s_mem_id != mem.Id() || s_serial != mem.m_clut.GetReadSerial() || s_pal != pal)
+	{
+		s_hash = GSTextureCache::PaletteKeyHash{}({clut, pal});
+		s_mem_id = mem.Id();
+		s_serial = mem.m_clut.GetReadSerial();
+		s_pal = pal;
+	}
+	return s_hash;
+}
+
 // The bits of TEX0 that HashTextureLevel reads: TBP0, TBW, PSM, TW and TH.
 static constexpr u64 HASH_MEMO_TEX0_BITS = 0x00000003FFFFFFFFULL;
 // The bits of TEXA that the texture reads can depend on: TA0, AEM and TA1.
 static constexpr u64 HASH_MEMO_TEXA_BITS = 0x000000FF000080FFULL;
 
-// Set in HashCacheKey::TEX0, in a bit of TBP0 that the key does not otherwise carry, for a key whose window
-// is hashed from raw blocks (HashTextureLevel). A raw hash is not a texel hash, so a key of one kind must
-// never equal one of the other, even by a hash collision. A window that is hashed from its blocks whatever
-// raw_blocks says has the same hash and the same key either way.
+// Set in HashCacheKey::TEX0, in a bit of TBP0 that the key does not otherwise carry, for every key of a lookup
+// that is not dumped, replaced or upscaled (raw_blocks). Such a key is made from block identities (GSBlockId)
+// and lives inside one run; the others are texel hashes that name dumped and replacement textures. A key of one
+// kind must never equal one of the other, even by a hash collision.
 static constexpr u64 HASH_KEY_RAW_BLOCKS = 1;
 
 GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTEX0& TEX0, const GIFRegTEXA& TEXA, const u32* clut, const GSVector2i* lod, SourceRegion region, bool raw_blocks)
@@ -10036,10 +10894,10 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	HashCacheKey ret;
 	ret.TEX0.U64 = TEX0.U64 & 0x00000003FFF00000ULL; // PSM, TW, TH
 	static_assert((0x00000003FFF00000ULL & HASH_KEY_RAW_BLOCKS) == 0, "the tag must be a bit the key does not carry");
-	if (HashLevelIsRaw(psm, base_geometry, region, raw_blocks))
+	if (raw_blocks)
 		ret.TEX0.U64 |= HASH_KEY_RAW_BLOCKS;
 	ret.TEXA.U64 = (psm.pal == 0 && psm.fmt > 0) ? (TEXA.U64 & 0x000000FF000080FFULL) : 0;
-	ret.CLUTHash = clut ? GSTextureCache::PaletteKeyHash{}({clut, psm.pal}) : 0;
+	ret.CLUTHash = clut ? PaletteHash(clut, psm.pal) : 0;
 	ret.region_width = static_cast<u16>(region.GetWidth());
 	ret.region_height = static_cast<u16>(region.GetHeight());
 
@@ -10051,11 +10909,10 @@ GSTextureCache::HashCacheKey GSTextureCache::HashCacheKey::Create(const GIFRegTE
 	for (u32 i = 1; i < std::min(levels, HASH_MEMO_MAX_LEVELS); i++)
 		level_tex0[i] = g_gs_renderer->GetTex0Layer(basemip + i);
 
-	// The raw levels of a lookup are keyed through the block hash cache when it is on. A paletted format is
-	// the only one with a raw level, so no other lookup makes the cache.
+	// The raw levels of a lookup are keyed through the block hash cache when it is on.
 	GSTextureCache* const tc = g_texture_cache.get();
 	GSTextureCache::BlockHashCache* const block_hashes =
-		(raw_blocks && psm.pal > 0 && s_block_hash_cache_enabled && tc) ? &tc->SyncBlockHashCache(g_gs_renderer->m_mem) : nullptr;
+		(raw_blocks && s_block_hash_cache_enabled && tc) ? &tc->SyncBlockHashCache(g_gs_renderer->m_mem) : nullptr;
 
 	const auto hash_levels = [&](GSTextureCache::BlockHashCache* cache) {
 		BlockHashState hash_st;

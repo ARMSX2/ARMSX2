@@ -41,6 +41,10 @@
 #include <cstring>
 #include <memory>
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+
 #include "GS/GSState.h"
 
 namespace
@@ -65,6 +69,7 @@ namespace
 		using GSState::m_index_buffers;
 		using GSState::m_vertex;
 		using GSState::m_vertex_buffers;
+		using GSState::ResetDrawBuffers;
 
 		// Grow the currently-selected slot once, the way DrawingKick does: tail is
 		// at capacity, so the preserved copy of the *real* vertex buffer spans the
@@ -188,4 +193,91 @@ TEST(GsDrawStaging, StagingCoversABufferGrownElsewhere)
 	// The staging copies themselves, at full live size.
 	std::memcpy(s->m_draw_vertex.buff, s->m_vertex->buff, sizeof(GSVertex) * live_verts);
 	std::memcpy(s->m_draw_index.buff, s->m_index->buff, sizeof(u16) * live_indices);
+}
+
+namespace
+{
+#if defined(__GLIBC__)
+	/// Bytes the heap has handed out and not had back: the arena's in-use bytes plus the mmapped chunks (a draw
+	/// buffer is large enough to be mmapped until the allocator raises its threshold, then comes from the arena).
+	size_t HeapInUse()
+	{
+		const struct mallinfo2 mi = mallinfo2();
+		return mi.uordblks + mi.hblkhd;
+	}
+#endif
+
+	/// A draw buffer set at its starting capacity is about 2.2 MiB (three slots of vertices, their copies and
+	/// indices). A leak of one set per call shows as tens of MiB over the rounds below; anything left over that is
+	/// not a leak is far under this.
+	constexpr u32 kRounds = 32;
+	constexpr size_t kSlack = 4u << 20;
+} // namespace
+
+// Resetting the draw buffers (every GS reset and savestate load, and twice in the constructor) gives each slot fresh
+// buffers at the starting capacity. The buffers it had are freed, not dropped: a reset that only cleared the slots
+// leaked one set per call, which is what made the kick kernel's tests, building thousands of GS states, reach tens of
+// GiB.
+TEST(GsDrawStaging, ResettingTheDrawBuffersFreesTheOldOnes)
+{
+#if defined(__GLIBC__)
+	auto s = std::make_unique<StagingProbe>();
+	// A grown slot, so a reset also has a larger set to give back.
+	s->SelectSlot(0);
+	while (s->m_vertex->maxcount < 40000)
+		s->GrowCurrentSlotAtCapacity();
+
+	const size_t before = HeapInUse();
+	for (u32 i = 0; i < kRounds; i++)
+		s->ResetDrawBuffers();
+	const size_t after = HeapInUse();
+	EXPECT_LT(after, before + kSlack) << "the heap grew by " << (after - before) << " bytes over " << kRounds << " resets";
+	EXPECT_EQ(s->m_vertex_buffers[0].maxcount, 10000u - 3u) << "a reset starts every slot at the starting capacity";
+#else
+	GTEST_SKIP() << "the heap is measured with glibc's mallinfo2";
+#endif
+}
+
+// A GS state built and destroyed gives back everything it allocated.
+TEST(GsDrawStaging, AStateBuiltAndDestroyedGivesBackItsDrawBuffers)
+{
+#if defined(__GLIBC__)
+	std::make_unique<StagingProbe>().reset(); // the first state may allocate what every later one shares
+	const size_t before = HeapInUse();
+	for (u32 i = 0; i < kRounds; i++)
+		std::make_unique<StagingProbe>().reset();
+	const size_t after = HeapInUse();
+	EXPECT_LT(after, before + kSlack) << "the heap grew by " << (after - before) << " bytes over " << kRounds << " states";
+#else
+	GTEST_SKIP() << "the heap is measured with glibc's mallinfo2";
+#endif
+}
+
+// Growth keeps its schedule: the starting 10,000 vertices, then half as much again each time (three held back as
+// slack at the end of the buffer).
+TEST(GsDrawStaging, GrowthIsHalfAsMuchAgain)
+{
+	auto s = std::make_unique<StagingProbe>();
+	s->SelectSlot(0);
+	EXPECT_EQ(s->m_vertex->maxcount, 10000u - 3u);
+	s->GrowCurrentSlotAtCapacity();
+	EXPECT_EQ(s->m_vertex->maxcount, (10000u - 3u) * 3 / 2 - 3u);
+}
+
+// A slot asked to grow past its ceiling fails loudly. Before the ceiling, the capacity and the sizes were 32-bit:
+// past about 134 million vertices the vertex size wrapped, the allocation came out smaller than the capacity the
+// slot then believed it had, and the next stores ran off its end.
+TEST(GsDrawStagingDeathTest, GrowthPastTheCeilingFailsLoudly)
+{
+	GTEST_FLAG_SET(death_test_style, "threadsafe");
+	EXPECT_DEATH(
+		{
+			auto s = std::make_unique<StagingProbe>();
+			s->SelectSlot(0);
+			s->m_vertex->tail = 0; // nothing to copy: the grow itself is the event
+			s->m_index->tail = 0;
+			s->m_vertex->maxcount = 0x0C000000u; // 201 million: half as much again wraps the 32-bit vertex size
+			s->GrowVertexBuffer();
+		},
+		"ceiling");
 }

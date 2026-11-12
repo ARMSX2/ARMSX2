@@ -178,16 +178,26 @@ namespace IopThread
 			EEoCycle = cpuRegs.cycle;
 		}
 
+		// LagRule::Window in the built-in set: how long the bound stays tight after the EE starts a SIF transfer, in EE cycles.
+		constexpr u32 kRequestWindow = 196608;
+
 		// The rules that tighten a large lag bound (IopLagRules.h): the built-in set.
 		LagRulesConfig DefaultRules()
 		{
-			// Two rules are on. IdleOutstanding: while the EE is idle with a request out to the IOP, it may not run ahead of the IOP by more
+			// Three rules are on. IdleOutstanding: while the EE is idle with a request out to the IOP, it may not run ahead of the IOP by more
 			// than the tight bound (Burnout 3). Stream: while SPU2 auto-DMA is running, the same, because the EE refills the audio ring from
-			// an IOP callback and a late callback makes the SPU2 replay the ring (the Devil May Cry and Metal Gear Solid 3 intros). The other
-			// rules in IopLagRules.h are off: idling alone (IdleAny) held the bound tight for 38 to 60 percent of God of War II, and a CDVD read
-			// counted as a stream for 59 percent of it.
+			// an IOP callback and a late callback makes the SPU2 replay the ring (the Devil May Cry and Metal Gear Solid 3 intros).
+			// Window: for kRequestWindow cycles after every SIF transfer the EE starts, the same. God of War II's movie player sends a
+			// request and spins on its completion with a system call in the loop, so the EE is never idle and IdleOutstanding does not hold;
+			// at a one-frame bound each request then took a frame, the movie drew 6 to 16 fps and its sound buffer was played twice. The
+			// window is not closed by a reply: closed, it was tight for 3 percent of that movie's cycles and changed nothing. Open for
+			// 196,608 cycles it restores the movie (98,304 does not) and is tight for 2.4 percent of God of War II's gameplay.
+			// The other rules in IopLagRules.h are off: idling alone (IdleAny) held the bound tight for 38 to 60 percent of God of War II,
+			// and a CDVD read counted as a stream for 59 percent of it.
 			LagRulesConfig cfg;
-			cfg.mask = LagRule::Bit(LagRule::IdleOutstanding) | LagRule::Bit(LagRule::Stream);
+			cfg.mask = LagRule::Bit(LagRule::IdleOutstanding) | LagRule::Bit(LagRule::Stream) | LagRule::Bit(LagRule::Window);
+			cfg.window = kRequestWindow;
+			cfg.window_close_on_reply = false;
 			return cfg;
 		}
 
