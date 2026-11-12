@@ -3214,20 +3214,29 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	// host-defined, so this has to divide by GetTickFrequency() rather than scale by a constant.
 	const s32 msec = static_cast<s32>((sDeltaTime * -1000) / static_cast<s64>(GetTickFrequency()));
 
-	// If any integer value of milliseconds exists, sleep it off.
-	// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
-	// further testing suggests instead that this was utter bullshit.
-	if (msec > 1)
+	// With spin waits off the emulation threads share too few processors, and the GS and VU1 threads need the one this
+	// would spin on, so sleep all the way to the deadline.
+	if (GetSpinTimeNs() == 0)
 	{
-		Threading::Sleep(msec - 1);
+		Threading::SleepUntil(uExpectedEnd);
 	}
+	else
+	{
+		// If any integer value of milliseconds exists, sleep it off.
+		// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
+		// further testing suggests instead that this was utter bullshit.
+		if (msec > 1)
+		{
+			Threading::Sleep(msec - 1);
+		}
 
-	// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,
-	// spin the thread without sleeping until we finally reach our expected end time. Hint the
-	// spin with the calibrated pause bursts (pause on x86, isb on AArch64) instead of hammering
-	// the counter bare - the hint keeps the co-resident cores' throughput and cuts power.
-	while (GetCPUTicks() < uExpectedEnd)
-		ShortSpin();
+		// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,
+		// spin the thread without sleeping until we finally reach our expected end time. Hint the
+		// spin with the calibrated pause bursts (pause on x86, isb on AArch64) instead of hammering
+		// the counter bare - the hint keeps the co-resident cores' throughput and cuts power.
+		while (GetCPUTicks() < uExpectedEnd)
+			ShortSpin();
+	}
 
 	if (!vsync_start)
 	{
