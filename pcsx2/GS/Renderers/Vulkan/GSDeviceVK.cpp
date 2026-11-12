@@ -4136,7 +4136,7 @@ void GSDeviceVK::PublishGPUProfile()
 			m_device_properties.deviceName, m_device_driver_properties.driverName,
 			m_device_driver_properties.driverInfo);
 	}
-	GSDriverReport::NoteActiveVulkanDriver(m_device_driver_properties.driverInfo);
+	GSDriverReport::NoteActiveVulkanDriver(static_cast<u32>(m_device_driver_properties.driverID), m_device_driver_properties.driverInfo);
 	DevCon.WriteLn("VK: GPU profile hints: %s", mobile_profile.hints.c_str());
 }
 
