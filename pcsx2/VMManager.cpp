@@ -3200,11 +3200,13 @@ void VMManager::Internal::Throttle(bool vsync_start)
 		lateness = EECycleRateLateness::Late;
 	EECycleRateSampler::OnSegmentThrottled(segment_ticks, static_cast<u64>(s_limiter_ticks_per_frame), !vsync_start, lateness);
 
-	// If frame ran too long...
-	if (sDeltaTime >= s_limiter_ticks_per_frame)
+	// A frame running behind keeps the time it lost, so the light frames after a heavy one run without waiting and a
+	// game below full speed keeps all the speed it has. Only lag beyond a few frames is forgiven, so a hitch cannot
+	// buy a long burst of fast frames.
+	static constexpr s64 MAX_KEPT_LAG_FRAMES = 4;
+	if (sDeltaTime >= MAX_KEPT_LAG_FRAMES * s_limiter_ticks_per_frame)
 	{
-		// ... Fudge the next frame start over a bit. Prevents fast forward zoomies.
-		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame) * s_limiter_ticks_per_frame;
+		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame - (MAX_KEPT_LAG_FRAMES - 1)) * s_limiter_ticks_per_frame;
 		return;
 	}
 
