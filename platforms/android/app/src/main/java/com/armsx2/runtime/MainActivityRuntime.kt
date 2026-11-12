@@ -2397,7 +2397,8 @@ open class MainActivityRuntime : ComponentActivity() {
         // Steer the renderer's Auto resolution. Vulkan HW on Adreno (tile-memory framebuffer-fetch
         // fast path), on any device whose GL driver cannot read the render target in-tile (OpenGL then
         // flushes the tile on every self-referential draw), and on Mali Valhall v9 (G57/G68/G77/G78),
-        // v10 (G310/G510/G610/G710) and v11 (G615/G715); other Mali stays on OpenGL, its fast path. The
+        // v10 (G310/G510/G610/G710), v11 (G615/G715) and Bifrost arch 7 (G31/G51/G52/G76); other
+        // Mali stays on OpenGL, its fast path. The
         // verdict is computed natively, from the driver-bug database and the Mali model table; here we only hand over the
         // probed GL strings. Sets a native
         // flag GSUtil::GetPreferredRenderer reads before the GS starts, so an explicit GL/SW pick

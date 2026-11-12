@@ -586,12 +586,13 @@ TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnMt6897)
 		kMaliR44p1GlVendor, kMaliR44p1GlRenderer, kMaliR44p1GlVersion, kMt6897LinuxHints));
 }
 
-// A Mali part outside Valhall keeps OpenGL: Bifrost, and the 5th-gen parts, whose names read like
-// v11 and are not (G620/G720 are arch 12, G625/G725 arch 13). The GL fetch path is the fast one
-// there, and none of these were measured on Vulkan.
-TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideValhall)
+// A Mali part outside arch 7, 9, 10 and 11 keeps OpenGL: the arch 6 Bifrost parts (G71, G72),
+// Midgard, and the 5th-gen parts, whose names read like v11 and are not (G620/G720 are arch 12,
+// G625/G725 arch 13). The GL fetch path is the fast one there, and none of these were measured on
+// Vulkan.
+TEST(GSGpuDriverProfile, AutoStaysOnOpenGLForTheMaliPartsOutsideArch7To11)
 {
-	for (const char* renderer : {"Mali-G52 MC2", "Mali-G76 MC12", "Mali-G71 MP20", "Mali-G31 MP2", "Mali-G620 MC4",
+	for (const char* renderer : {"Mali-G71 MP20", "Mali-G71 MP2", "Mali-G72 MP12", "Mali-G72 MP3", "Mali-G620 MC4",
 			 "Mali-G720 MC7", "Mali-G625 MC6", "Mali-G725 MC6", "Immortalis-G925 MC12", "Mali-T880 MP12"})
 	{
 		EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
@@ -672,10 +673,12 @@ TEST(GSGpuDriverProfile, AutoDecidesByTheWholeMaliModelNumber)
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G715 MC10", kMaliR44p1GlVersion));
 	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G71 MP8", kMaliR44p1GlVersion));
 	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G720 MC7", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G31 MP2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G31 MP2", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G310 MC2", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G51 MP4", kMaliR44p1GlVersion));
-	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G52 MC2", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G51 MP4", kMaliR44p1GlVersion));
+	EXPECT_FALSE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G72 MP12", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G76 MC4", kMaliR44p1GlVersion));
+	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G52 MC2", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G57 MC2", kMaliR44p1GlVersion));
 	EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, "Mali-G510 MC4", kMaliR44p1GlVersion));
 	// The Immortalis name written with the brand first, as a tool that rebuilds the name would.
@@ -694,6 +697,25 @@ TEST(GSGpuDriverProfile, TheMaliArchitectureRuleLeavesOtherVendorsAlone)
 	EXPECT_FALSE(AutoPrefersVulkan("Samsung Electronics", "Samsung Xclipse 920", "OpenGL ES 3.2"));
 	EXPECT_FALSE(AutoPrefersVulkan("", "", ""));
 	EXPECT_STREQ(GSUtil::AndroidAutoRendererReason(), "no rule steers this device to Vulkan");
+}
+
+// The Bifrost parts of arch 7 run Vulkan under Auto, the owner's choice of 2026-11-12, in every
+// form their names take: Arm's GL_RENDERER (bare, MC<n>, MP<n>) and Mesa's name for the G52 of arch
+// minor 4 ("G52 r1"). The arch 6 parts (G71, G72) do not.
+TEST(GSGpuDriverProfile, AutoResolvesToVulkanOnTheBifrostArch7Parts)
+{
+	for (const char* renderer : {"Mali-G31", "Mali-G31 MP2", "Mali-G51", "Mali-G51 MP4", "Mali-G52", "Mali-G52 MC2",
+			 "Mali-G52 MC3", "Mali-G52 MP2", "Mali-G52 r1", "Mali-G76", "Mali-G76 MC4", "Mali-G76 MP10"})
+	{
+		EXPECT_TRUE(AutoPrefersVulkan(kMaliR44p1GlVendor, renderer, kMaliR44p1GlVersion)) << renderer;
+		EXPECT_NE(std::string(GSUtil::AndroidAutoRendererReason()).find("is Bifrost arch 7, which Auto runs on Vulkan"),
+			std::string::npos)
+			<< renderer << ": " << GSUtil::AndroidAutoRendererReason();
+	}
+	for (u16 model : {31, 51, 52, 76})
+		EXPECT_TRUE(GSUtil::MaliBifrostModelPrefersVulkan(model)) << model;
+	for (u16 model : {71, 72})
+		EXPECT_FALSE(GSUtil::MaliBifrostModelPrefersVulkan(model)) << model;
 }
 
 // The policy on its own: v9, v10 and v11. 0 is "not Valhall", which is what Bifrost and the 5th-gen
