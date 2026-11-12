@@ -1573,6 +1573,35 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	return CreateCachedRenderPass(key);
 }
 
+GSVector4i GSDeviceVK::AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& size)
+{
+	// The granularity is the tile size on every driver, so it is asked once. An unaligned area is only slower.
+	if (m_render_area_granularity.width == 0)
+	{
+		vkGetRenderAreaGranularity(m_device, rp, &m_render_area_granularity);
+		m_render_area_granularity.width = std::max(m_render_area_granularity.width, 1u);
+		m_render_area_granularity.height = std::max(m_render_area_granularity.height, 1u);
+	}
+	const s32 gw = static_cast<s32>(m_render_area_granularity.width);
+	const s32 gh = static_cast<s32>(m_render_area_granularity.height);
+	const GSVector4i aligned((area.left / gw) * gw, (area.top / gh) * gh, ((area.right + gw - 1) / gw) * gw,
+		((area.bottom + gh - 1) / gh) * gh);
+	return aligned.rintersect(GSVector4i::loadh(size));
+}
+
+bool GSDeviceVK::IsDevicePanVKBifrost() const
+{
+	if (m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_PANVK)
+		return false;
+	static constexpr const char* bifrost[] = {"Mali-G31", "Mali-G51", "Mali-G52", "Mali-G71", "Mali-G72", "Mali-G76"};
+	for (const char* name : bifrost)
+	{
+		if (std::strncmp(m_device_properties.deviceName, name, std::strlen(name)) == 0)
+			return true;
+	}
+	return false;
+}
+
 VkRenderPass GSDeviceVK::GetRenderPassForRestarting(VkRenderPass pass)
 {
 	for (const auto& it : m_render_pass_cache)
@@ -4440,6 +4469,10 @@ void GSDeviceVK::ResolveFeatureTable()
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
+	if (const char* narrow = std::getenv("ARMSX2_VK_NARROW_AREA"))
+		m_narrow_render_area = std::atoi(narrow) != 0;
+	else
+		m_narrow_render_area = IsDevicePanVKBifrost();
 	m_features.sprite_edge_clamp = true;
 	m_features.sprite_ramp = true;
 
@@ -10307,6 +10340,23 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 
+	// A pass opened over its draws cannot hold one that reaches outside it, and an open pass cannot be widened, so such a
+	// draw ends it and the pass reopens over the union of the two, or over the whole target the second time. drawarea
+	// gets a two-pixel margin: its edges can land a device pixel short, and it leaves out the vertex shader's offset.
+	static constexpr int RENDER_AREA_MARGIN = 2;
+	static constexpr u32 MAX_RENDER_AREA_GROWTHS = 1;
+	const GSVector4i narrow_area = (to_draw_size(config.drawarea) +
+		GSVector4i(-RENDER_AREA_MARGIN, -RENDER_AREA_MARGIN, RENDER_AREA_MARGIN, RENDER_AREA_MARGIN))
+		.rintersect(GSVector4i::loadh(draw_size));
+	GSVector4i grown_area = GSVector4i::zero();
+	if (m_narrow_render_area && InRenderPass() && !m_current_render_pass_area.rcontains(narrow_area))
+	{
+		grown_area = (m_render_area_growths < MAX_RENDER_AREA_GROWTHS) ? m_current_render_pass_area.runion(narrow_area) :
+		                                                                  GSVector4i::loadh(draw_size);
+		m_render_area_growths++;
+		EndRenderPass();
+	}
+
 	// Begin render pass if new target or out of the area.
 	if (!InRenderPass())
 	{
@@ -10327,16 +10377,25 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
 		// buffer size, otherwise it'll only clear the draw part of the depth buffer.
 		//
-		// A TFX pass is opened at the full render target on purpose. Sizing it to its draws instead
-		// (grow to the union of what it holds, pad 2 px, align to the render-area granularity)
-		// removed 98% of Stuntman's render-pass area and moved GPU time by +0.01%..+0.09% on Apple
-		// silicon, +0.59 ms on a Snapdragon 865, and flat to +40% on a Mali-G615. None of Turnip,
-		// Honeykrisp or the Mali driver charge for render-pass AREA -- each charges roughly 12-34
-		// microseconds per PASS, and a narrower area only forces more of them. Commit f9b5395855 has
-		// the mechanism this reverted, and the measurements behind these numbers.
-		const GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
+		// A TFX pass is opened at the full render target except where the driver pays for render-pass area
+		// (m_narrow_render_area). Turnip, Honeykrisp and Arm's Mali driver charge roughly 12-34 microseconds per
+		// PASS and nothing for area, so the extra passes a narrow area forces made them slower (commit f9b5395855).
+		// PanVK on Bifrost loads and stores every tile of the area, and there the narrow pass wins.
+		GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
 		                             ? to_draw_size(config.drawarea)
 		                             : GSVector4i::loadh(draw_size);
+
+		// Over its draws instead, except for a clearing pass (the clear is the load op), colclip (its blit covers the
+		// target) and a DONT_CARE load (narrowing would change which pixels are undefined).
+		if (m_narrow_render_area && !is_clearing_rt && !pipe.ps.colclip_hw &&
+			(!draw_rt || rt_op == VK_ATTACHMENT_LOAD_OP_LOAD) && (!draw_ds || ds_op == VK_ATTACHMENT_LOAD_OP_LOAD))
+		{
+			const GSVector4i want = grown_area.rempty() ? narrow_area : grown_area;
+			if (!want.rempty())
+				render_area = AlignRenderArea(rp, want, draw_size);
+		}
+		if (grown_area.rempty())
+			m_render_area_growths = 0;
 
 		if (is_clearing_rt)
 		{
@@ -10363,6 +10422,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			BeginRenderPass(rp, render_area);
 		}
 	}
+
+	// Nothing may render outside the render area. drawarea already bounds the geometry, so this only turns a wrong
+	// bound into a clip.
+	if (m_narrow_render_area)
+		SetScissor(to_draw_size(config.scissor).rintersect(m_current_render_pass_area));
 
 	// The kept target copy follows the target into the pass this draw opened. Nothing wrote the
 	// target between the pass it was live in and this one: only this function ran, and its setup

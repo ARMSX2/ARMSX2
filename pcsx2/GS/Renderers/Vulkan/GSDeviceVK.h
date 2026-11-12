@@ -1168,6 +1168,13 @@ private:
 	VkRenderPass m_current_render_pass = VK_NULL_HANDLE;
 	GSVector4i m_current_render_pass_area = GSVector4i::zero();
 
+	// TFX passes are opened over their draws instead of the whole target where the driver pays for render-pass area.
+	bool m_narrow_render_area = false;
+	u32 m_render_area_growths = 0;
+	VkExtent2D m_render_area_granularity = {};
+	GSVector4i AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& size);
+	bool IsDevicePanVKBifrost() const;
+
 	// Mid-frame submission for readback-prone frames: when a game synchronously reads
 	// GS memory back (local->host TRXDIR), the readback fence-waits on everything
 	// recorded before it. Submitting accumulated work at render-pass boundaries lets
