@@ -56,6 +56,10 @@ namespace
 	const std::string TARBALL_URL = "https://github.com/bmdhacks/armsx2-turnip/releases/download/axfl2-002/turnip-axfl2-002-aarch64.tar.gz";
 	const std::string SUM_URL = TARBALL_URL + ".sha256";
 	const std::string PLATFORM = "linux-aarch64";
+	const std::string MALISX2_RELEASES_URL = "https://api.github.com/repos/bmdhacks/malisx2/releases";
+
+	// What kbase prints in /sys/class/misc/mali0/device/gpuinfo on our RK3562 board (Debian 13).
+	const std::string RK3562_GPUINFO = "Mali-G52 1 cores r1p0 0x07040002\n";
 
 	// A sysfs with one DRM device bound to `driver`.
 	void MakeFakeSysfs(const std::string& root, const std::string& driver)
@@ -66,6 +70,19 @@ namespace
 		// A connector entry looks like a card to a sloppy match; it must not count.
 		fs::create_directories(fs::path(root) / "class" / "drm" / "card0-HDMI-A-1" / "device");
 		fs::create_symlink("../../../../bus/platform/drivers/msm", fs::path(root) / "class" / "drm" / "card0-HDMI-A-1" / "device" / "driver");
+	}
+
+	// A kbase machine: /dev/mali0 and the misc device's gpuinfo. Either may be left out.
+	void MakeFakeKbase(const std::string& sysfs_root, const std::string& dev_root, const std::string& gpuinfo, bool with_dev_node = true)
+	{
+		const fs::path device = fs::path(sysfs_root) / "class" / "misc" / "mali0" / "device";
+		fs::create_directories(device);
+		if (!gpuinfo.empty())
+			ASSERT_TRUE(CatalogTest::WriteBytes((device / "gpuinfo").string(), gpuinfo));
+		fs::create_directories(dev_root);
+		// A plain file stands in for the character device: only its presence is read.
+		if (with_dev_node)
+			ASSERT_TRUE(CatalogTest::WriteBytes((fs::path(dev_root) / "mali0").string(), ""));
 	}
 
 	std::string ReleasesJson(const std::string& tag, const std::string& asset, u64 size, const std::string& digest_hex, bool with_sum_asset)
@@ -112,6 +129,25 @@ namespace
 		return SHA256Digest::HashHex(bytes);
 	}
 
+	// The layout of a malisx2 Linux tarball: malisx2/<semver>/ with the library, the ICD manifest
+	// (library_path an absolute /storage path, as built), MANIFEST.json, SHA256SUMS and the wrapper.
+	// `manifest` replaces MANIFEST.json's contents.
+	std::string MakeMalisx2TarGz(const std::string& library, const std::string& manifest = {})
+	{
+		const std::string prefix = "malisx2/0.5.0/";
+		return BuildTarGz({
+			Entry(prefix + "malisx2_icd.aarch64.json",
+				R"({"ICD":{"api_version":"1.4.335","library_path":"/storage/malisx2/0.5.0/libvulkan_malisx2.so"},"file_format_version":"1.0.0"})"),
+			Entry(prefix + "MANIFEST.json",
+				manifest.empty() ?
+					R"json({"build_tag":"0.5.0","driver_info_token":"malisx2.0.5.0","mesa_version":"45ff8fa","platforms":"display,headless","gpu":"mali-kbase"})json" :
+					manifest),
+			Entry(prefix + "SHA256SUMS", Sha(library) + "  libvulkan_malisx2.so\n"),
+			Entry(prefix + "run-with-malisx2.sh", "#!/bin/sh\nexec \"$@\"\n", 0755),
+			Entry(prefix + "libvulkan_malisx2.so", library, 0755),
+		});
+	}
+
 #ifdef CATALOG_TEST_LIB_DIR
 	std::string TestLib(const char* name)
 	{
@@ -139,6 +175,7 @@ namespace
 			config.cache_dir = dir.File("cache");
 			config.platform = PLATFORM;
 			config.sysfs_root = dir.File("sys");
+			config.dev_root = dir.File("dev");
 			MakeFakeSysfs(config.sysfs_root, adreno ? "msm" : "asahi");
 			if (fake_library_check)
 			{
@@ -151,6 +188,26 @@ namespace
 		}
 
 		void Rebuild() { manager = std::make_unique<Manager>(http, config); }
+
+		// Gives this machine a kbase Mali with `gpuinfo` (its DRM card stays on the display driver).
+		void AddKbaseMali(const std::string& gpuinfo = RK3562_GPUINFO)
+		{
+			MakeFakeKbase(config.sysfs_root, config.dev_root, gpuinfo);
+			Rebuild();
+		}
+
+		// A malisx2 release scripted like Serve(): same checksum handling, the malisx2 feed's id and GPU.
+		RemoteDriver ServeMalisx2(const std::string& archive_bytes)
+		{
+			RemoteDriver driver = Serve(archive_bytes);
+			driver.id = "malisx2-v0.5.0";
+			driver.feed_label = "malisx2";
+			driver.tag = "v0.5.0";
+			driver.release_name = "malisx2 0.5.0";
+			driver.asset_name = "malisx2-0.5.0-aarch64.tar.gz";
+			driver.gpu = GpuFamily::MaliKbase;
+			return driver;
+		}
 
 		RemoteDriver Remote(const std::string& archive_bytes, bool with_sum_asset = true, bool with_digest = true) const
 		{
@@ -348,13 +405,67 @@ TEST(DriverPacksFeed, RejectsWhatIsNotAReleaseList)
 	EXPECT_TRUE(drivers.empty());
 }
 
-TEST(DriverPacksFeed, TheDefaultFeedIsTheTurnipRepoForLinuxAarch64)
+TEST(DriverPacksFeed, TheDefaultFeedsAreTurnipForAdrenoAndMalisx2ForKbaseMali)
 {
 	const std::vector<Feed> feeds = DefaultFeeds();
-	ASSERT_EQ(feeds.size(), 1u);
+	ASSERT_EQ(feeds.size(), 2u);
+	EXPECT_EQ(feeds[0].id_prefix, "armsx2turnip");
 	EXPECT_EQ(feeds[0].releases_url, RELEASES_URL);
 	EXPECT_EQ(feeds[0].platform, "linux-aarch64");
 	EXPECT_EQ(feeds[0].asset_pattern, "turnip-*-aarch64.tar.gz");
+	EXPECT_EQ(feeds[0].gpu, GpuFamily::Adreno);
+
+	EXPECT_EQ(feeds[1].id_prefix, "malisx2");
+	EXPECT_EQ(feeds[1].label, "malisx2");
+	EXPECT_EQ(feeds[1].releases_url, MALISX2_RELEASES_URL);
+	EXPECT_EQ(feeds[1].platform, "linux-aarch64");
+	EXPECT_EQ(feeds[1].asset_pattern, "malisx2-*-aarch64.tar.gz");
+	EXPECT_EQ(feeds[1].gpu, GpuFamily::MaliKbase);
+}
+
+// A malisx2 release carries the Android pack beside the Linux tarball; only the tarball is a Linux pack.
+TEST(DriverPacksFeed, TheMalisx2FeedTakesTheLinuxTarballAndNotTheAndroidZip)
+{
+	const std::string base = "https://github.com/bmdhacks/malisx2/releases/download/v0.5.0/";
+	const std::string json = fmt::format(R"([
+	  {{"tag_name":"v0.5.0","name":"malisx2 0.5.0","draft":false,"prerelease":true,"published_at":"2026-11-10T20:00:00Z","assets":[
+	    {{"name":"malisx2-0.5.0-6486a7c.zip","size":9000000,"browser_download_url":"{0}malisx2-0.5.0-6486a7c.zip"}},
+	    {{"name":"malisx2-0.5.0-6486a7c.zip.sha256","size":97,"browser_download_url":"{0}malisx2-0.5.0-6486a7c.zip.sha256"}},
+	    {{"name":"malisx2-0.5.0-aarch64.tar.gz","size":8000000,"digest":"sha256:{1}","browser_download_url":"{0}malisx2-0.5.0-aarch64.tar.gz"}},
+	    {{"name":"malisx2-0.5.0-aarch64.tar.gz.sha256","size":95,"browser_download_url":"{0}malisx2-0.5.0-aarch64.tar.gz.sha256"}}
+	  ]}},
+	  {{"tag_name":"v0.4.1","name":"malisx2 0.4.1","prerelease":false,"assets":[
+	    {{"name":"malisx2-0.4.1-a833123.zip","size":9000000,"browser_download_url":"https://github.com/bmdhacks/malisx2/releases/download/v0.4.1/malisx2-0.4.1-a833123.zip"}}
+	  ]}}
+	])", base, std::string(64, 'a'));
+
+	const std::vector<Feed> feeds = DefaultFeeds();
+	std::vector<RemoteDriver> drivers;
+	std::string error;
+	ASSERT_TRUE(ParseReleases(feeds[1], json, &drivers, &error)) << error;
+	ASSERT_EQ(drivers.size(), 1u); // v0.4.1 has only the Android zip
+	EXPECT_EQ(drivers[0].id, "malisx2-v0.5.0");
+	EXPECT_EQ(drivers[0].tag, "v0.5.0");
+	EXPECT_EQ(drivers[0].feed_label, "malisx2");
+	EXPECT_EQ(drivers[0].asset_name, "malisx2-0.5.0-aarch64.tar.gz");
+	EXPECT_EQ(drivers[0].download_url, base + "malisx2-0.5.0-aarch64.tar.gz");
+	EXPECT_EQ(drivers[0].checksum_url, base + "malisx2-0.5.0-aarch64.tar.gz.sha256");
+	EXPECT_EQ(drivers[0].api_digest, std::string(64, 'a'));
+	EXPECT_TRUE(drivers[0].prerelease);
+	EXPECT_EQ(drivers[0].gpu, GpuFamily::MaliKbase);
+
+	// The Turnip feed finds nothing in it, and the malisx2 feed nothing in Turnip's.
+	std::vector<RemoteDriver> none;
+	ASSERT_TRUE(ParseReleases(feeds[0], json, &none, &error));
+	EXPECT_TRUE(none.empty());
+	ASSERT_TRUE(ParseReleases(feeds[1], CatalogTest::ReadFixture("drivers/releases.json"), &none, &error));
+	EXPECT_TRUE(none.empty());
+
+	// A Turnip feed's packs say Adreno.
+	std::vector<RemoteDriver> turnip;
+	ASSERT_TRUE(ParseReleases(feeds[0], CatalogTest::ReadFixture("drivers/releases.json"), &turnip, &error));
+	ASSERT_FALSE(turnip.empty());
+	EXPECT_EQ(turnip[0].gpu, GpuFamily::Adreno);
 }
 
 TEST(DriverPacksIds, AreFolderSafe)
@@ -421,11 +532,212 @@ TEST(DriverPacksGpu, ADownstreamKgslDeviceCounts)
 	EXPECT_TRUE(IsAdrenoGpu(dir.File("sys")));
 }
 
+// kbase prints the GPU's product id in one of three shapes, depending on its version.
+TEST(DriverPacksGpu, ReadsEveryKbaseGpuInfoFormat)
+{
+	// Newer kbase: arch major, arch minor, arch revision, product major one byte each (our RK3562).
+	EXPECT_EQ(KbaseProductIdFromGpuInfo(RK3562_GPUINFO), std::optional<u16>(0x7402));
+	// The whole GPU_ID register, product id in the top half (an RK3588's Mali-G610).
+	EXPECT_EQ(KbaseProductIdFromGpuInfo("Mali-G610 4 cores r0p0 0xA8670005"), std::optional<u16>(0xa867));
+	// r44p1 and the like: the 16-bit product id (the RG 477V's Mali-G615, MediaTek's kbase).
+	EXPECT_EQ(KbaseProductIdFromGpuInfo("Mali-G615 6 cores r1p3 0xB8A3\n"), std::optional<u16>(0xb8a3));
+	EXPECT_EQ(KbaseProductIdFromGpuInfo("Mali-G57 4 cores r0p1 0x9093"), std::optional<u16>(0x9093));
+	EXPECT_EQ(KbaseProductIdFromGpuInfo("Mali-G52 2 cores r1p0 0x7402"), std::optional<u16>(0x7402));
+
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0").has_value());
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("").has_value());
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0 0xZZ").has_value());
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0 0x123456789").has_value()); // wider than any kbase prints
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0 0x00100002").has_value()); // arch 0
+	EXPECT_FALSE(KbaseProductIdFromGpuInfo("Mali-G52 1 cores r1p0 0x07120002").has_value()); // a field past 4 bits
+}
+
+// malisx2's rule: every GPU of arch 7 or 9 on a job-manager kbase, of arch 10 or 11 on a
+// command-stream kbase. No product list.
+TEST(DriverPacksGpu, TheMalisx2ProductIdsAreEveryPartOfTheFourArches)
+{
+	const u16 job_manager[] = {0x7002, 0x7212, 0x7402, // Mali-G52
+		0x7211, 0x7201, 0x7401, // Mali-G76, and other product major 1 parts kbase calls G76
+		0x7000, // Mali-G51
+		0x7093, 0x7003, // Mali-G31
+		0x7f0f, // an arch 7 product nobody has named
+		0x9000, 0x9001, 0x9093, 0x9002, 0x9004, 0x9005, 0x9006, 0x9f0f}; // every arch 9 part
+	const u16 command_stream[] = {0xa867, 0xa007, 0xa862, // Mali-G610, Mali-G710
+		0xa003, 0xa004, // Mali-G510, Mali-G310
+		0xaf0f, // an unnamed arch 10 product
+		0xb8a3, 0xb003, 0xb002, // Mali-G615, Mali-G715
+		0xb001, 0xbf0f}; // arch 11 products malisx2 has no name for
+	for (const u16 id : job_manager)
+	{
+		EXPECT_TRUE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_TRUE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+		// A job-manager arch on a command-stream kernel cannot happen; malisx2 would refuse it.
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+	}
+	for (const u16 id : command_stream)
+	{
+		EXPECT_TRUE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_TRUE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+	}
+
+	for (const u16 id : {0x6221, 0x6000, // Mali-G72, Mali-G71 (arch 6)
+			 0x8000, // arch 8: no such Mali
+			 0xc000, 0xc001, 0xd000, // Mali-G720, Mali-G620, arch 13
+			 0x0000, 0x0860, 0x0750, 0x6956}) // Midgard (T860, T760, T604) and nonsense
+	{
+		EXPECT_FALSE(IsMalisx2ProductId(id)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::JobManager)) << fmt::format("{:#06x}", id);
+		EXPECT_FALSE(IsMalisx2ProductId(id, KbaseFrontend::CommandStream)) << fmt::format("{:#06x}", id);
+	}
+}
+
+TEST(DriverPacksGpu, TheHexDecidesAndTheNameStandsInWhenThereIsNone)
+{
+	EXPECT_TRUE(IsMalisx2GpuInfo(RK3562_GPUINFO));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G610 4 cores r0p0 0xA8670005"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G615 6 cores r1p3 0xB8A3"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0 0x7093"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G51 2 cores r1p0 0x7000"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G76 4 cores r0p0 0x7401"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G72 12 cores r0p3 0x6221"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-T86x 4 cores r2p0 0x0860"));
+
+	// A name kbase does not have, or its "(Unknown Mali GPU)": the hex decides.
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-TTUX 6 cores r1p3 0xB8A3"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("(Unknown Mali GPU) 2 cores r0p0 0x9003"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-TTUX 4 cores r0p0 0xC001"));
+	// A name of the right family on a number of the wrong one: the number wins.
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G52 1 cores r0p0 0x6221"));
+
+	// No number to read: the arch of the leading name.
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G610 4 cores r0p0"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G715-Immortalis 11 cores r0p0"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("mali-g57\n"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G31 1 cores r0p0"));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G310 1 cores r0p0"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G72 12 cores r0p3"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G720 6 cores r0p0"));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-TTUX"));
+	EXPECT_FALSE(IsMalisx2GpuInfo(""));
+
+	// The frontend, when sysfs gives it, has to match the arch.
+	EXPECT_TRUE(IsMalisx2GpuInfo(RK3562_GPUINFO, KbaseFrontend::JobManager));
+	EXPECT_FALSE(IsMalisx2GpuInfo(RK3562_GPUINFO, KbaseFrontend::CommandStream));
+	EXPECT_TRUE(IsMalisx2GpuInfo("Mali-G510 2 cores r0p0", KbaseFrontend::CommandStream));
+	EXPECT_FALSE(IsMalisx2GpuInfo("Mali-G510 2 cores r0p0", KbaseFrontend::JobManager));
+}
+
+TEST(DriverPacksGpu, TheKbaseFrontendComesFromItsSchedulerAttributes)
+{
+	ScopedTempDir dir;
+	const auto device = [&dir](const char* machine) { return fs::path(dir.File(machine)) / "class" / "misc" / "mali0" / "device"; };
+
+	MakeFakeKbase(dir.File("jm/sys"), dir.File("jm/dev"), RK3562_GPUINFO);
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("jm/sys") / "js_timeouts").string(), "0 0 0\n"));
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("jm/sys") / "js_scheduling_period").string(), "100\n"));
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("jm/sys")), KbaseFrontend::JobManager);
+
+	MakeFakeKbase(dir.File("csf/sys"), dir.File("csf/dev"), "Mali-G610 4 cores r0p0 0xA8670005\n");
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("csf/sys") / "csg_scheduling_period").string(), "100\n"));
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("csf/sys")), KbaseFrontend::CommandStream);
+
+	MakeFakeKbase(dir.File("bare/sys"), dir.File("bare/dev"), RK3562_GPUINFO);
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("bare/sys")), KbaseFrontend::Unknown);
+	EXPECT_EQ(KbaseFrontendFromSysfs(dir.File("nothing/sys")), KbaseFrontend::Unknown);
+
+	// The whole check: right arch on the right frontend; with no frontend attributes the arch decides.
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("jm/sys"), dir.File("jm/dev")));
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("csf/sys"), dir.File("csf/dev")));
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("bare/sys"), dir.File("bare/dev")));
+
+	// An arch 10 GPU reported by a job-manager kbase (impossible in practice): not offered.
+	MakeFakeKbase(dir.File("odd/sys"), dir.File("odd/dev"), "Mali-G310 1 cores r0p0 0xA004\n");
+	ASSERT_TRUE(CatalogTest::WriteBytes((device("odd/sys") / "js_timeouts").string(), "0 0 0\n"));
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("odd/sys"), dir.File("odd/dev")));
+}
+
+TEST(DriverPacksGpu, AKbaseMaliNeedsBothTheDeviceNodeAndASupportedGpu)
+{
+	ScopedTempDir dir;
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("none/sys"), dir.File("none/dev")));
+
+	MakeFakeKbase(dir.File("rk3562/sys"), dir.File("rk3562/dev"), RK3562_GPUINFO);
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("rk3562/sys"), dir.File("rk3562/dev")));
+	EXPECT_TRUE(MachineHasGpuFamily(GpuFamily::MaliKbase, dir.File("rk3562/sys"), dir.File("rk3562/dev")));
+	EXPECT_FALSE(MachineHasGpuFamily(GpuFamily::Adreno, dir.File("rk3562/sys"), dir.File("rk3562/dev")));
+	EXPECT_FALSE(IsAdrenoGpu(dir.File("rk3562/sys")));
+
+	MakeFakeKbase(dir.File("rk3588/sys"), dir.File("rk3588/dev"), "Mali-G610 4 cores r0p0 0xA8670005\n");
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("rk3588/sys"), dir.File("rk3588/dev")));
+
+	// A Mali-G31 and a Mali-G510 on kbase: malisx2 serves every part of its arches.
+	MakeFakeKbase(dir.File("g31/sys"), dir.File("g31/dev"), "Mali-G31 1 cores r0p0 0x7093\n");
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("g31/sys"), dir.File("g31/dev")));
+	MakeFakeKbase(dir.File("g510/sys"), dir.File("g510/dev"), "Mali-G510 2 cores r0p0 0xA003\n");
+	EXPECT_TRUE(IsSupportedKbaseMaliGpu(dir.File("g510/sys"), dir.File("g510/dev")));
+
+	// A Mali-G72 (arch 6) and a Midgard T860 on kbase: not malisx2's.
+	MakeFakeKbase(dir.File("g72/sys"), dir.File("g72/dev"), "Mali-G72 12 cores r0p3 0x6221\n");
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("g72/sys"), dir.File("g72/dev")));
+	MakeFakeKbase(dir.File("t860/sys"), dir.File("t860/dev"), "Mali-T86x 4 cores r2p0 0x0860\n");
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("t860/sys"), dir.File("t860/dev")));
+
+	// The sysfs entry without the device node (kbase gone, or the node not created): no.
+	MakeFakeKbase(dir.File("nonode/sys"), dir.File("nonode/dev"), RK3562_GPUINFO, false);
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("nonode/sys"), dir.File("nonode/dev")));
+
+	// The device node without a gpuinfo to read: the GPU is unknown, so no.
+	MakeFakeKbase(dir.File("noinfo/sys"), dir.File("noinfo/dev"), "");
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("noinfo/sys"), dir.File("noinfo/dev")));
+}
+
+// The same RK3562 booted on panfrost (ROCKNIX switches at run time): a DRM render node, no mali0.
+TEST(DriverPacksGpu, AMaliOnPanfrostIsNotAKbaseMali)
+{
+	ScopedTempDir dir;
+	MakeFakeSysfs(dir.File("sys"), "panfrost");
+	fs::create_directories(dir.File("dev/dri"));
+	EXPECT_FALSE(IsSupportedKbaseMaliGpu(dir.File("sys"), dir.File("dev")));
+	EXPECT_FALSE(IsAdrenoGpu(dir.File("sys")));
+	EXPECT_FALSE(MachineHasGpuFamily(GpuFamily::Unknown, dir.File("sys"), dir.File("dev")));
+}
+
+TEST(DriverPacksGpu, AnAdrenoIsNotAKbaseMali)
+{
+	ScopedTempDir dir;
+	MakeFakeSysfs(dir.File("sys"), "msm");
+	fs::create_directories(dir.File("dev"));
+	EXPECT_TRUE(MachineHasGpuFamily(GpuFamily::Adreno, dir.File("sys"), dir.File("dev")));
+	EXPECT_FALSE(MachineHasGpuFamily(GpuFamily::MaliKbase, dir.File("sys"), dir.File("dev")));
+}
+
+TEST(DriverPacksGpu, FamilyKeysRoundTrip)
+{
+	for (const GpuFamily family : {GpuFamily::Adreno, GpuFamily::MaliKbase})
+		EXPECT_EQ(ParseGpuFamily(GpuFamilyKey(family)), family);
+	EXPECT_EQ(ParseGpuFamily(""), GpuFamily::Adreno); // metadata from before families were recorded
+	EXPECT_EQ(ParseGpuFamily("MALI-KBASE"), GpuFamily::MaliKbase);
+	EXPECT_EQ(ParseGpuFamily("mali-panthor"), GpuFamily::Unknown);
+	EXPECT_EQ(ParseGpuFamily(GpuFamilyKey(GpuFamily::Unknown)), GpuFamily::Unknown);
+}
+
 TEST(DriverPacksGpu, AvailabilityExplainsItself)
 {
 	Rig adreno(true);
 	EXPECT_TRUE(adreno.manager->GetAvailability().IsAvailable());
 	EXPECT_EQ(adreno.manager->GetAvailability().message, "");
+	EXPECT_EQ(adreno.manager->GetAvailability().gpu, GpuFamily::Adreno);
+
+	Rig kbase(false);
+	kbase.AddKbaseMali();
+	EXPECT_TRUE(kbase.manager->GetAvailability().IsAvailable());
+	EXPECT_EQ(kbase.manager->GetAvailability().gpu, GpuFamily::MaliKbase);
+
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
+	EXPECT_EQ(g72.manager->GetAvailability().reason, Availability::Reason::NoMatchingGpu);
+	EXPECT_EQ(g72.manager->GetAvailability().message, "No driver packs for this GPU.");
 
 	Rig mali(false);
 	const Availability no_gpu = mali.manager->GetAvailability();
@@ -442,10 +754,11 @@ TEST(DriverPacksGpu, AvailabilityExplainsItself)
 namespace
 {
 	// A machine the setup should offer a pack on: Adreno on Linux, nothing chosen, nothing installed.
-	SetupContext OfferableContext()
+	SetupContext OfferableContext(GpuFamily gpu = GpuFamily::Adreno)
 	{
 		SetupContext context;
 		context.availability.reason = Availability::Reason::Available;
+		context.availability.gpu = gpu;
 		return context;
 	}
 } // namespace
@@ -491,6 +804,51 @@ TEST(DriverPacksSetup, OffersNothingOnAnX11Session)
 	SetupContext x11 = OfferableContext();
 	x11.session_is_x11 = true;
 	EXPECT_FALSE(ShouldOfferInSetup(x11));
+}
+
+TEST(DriverPacksSetup, AnAdrenoOnWaylandIsOffered)
+{
+	SetupContext wayland = OfferableContext();
+	wayland.session_is_wayland = true;
+	EXPECT_TRUE(ShouldOfferInSetup(wayland));
+}
+
+// malisx2 presents on a display of its own (VK_KHR_display) or headless. Under a compositor it needs Arm's
+// separate WSI layer, which the setup cannot know is there, so it offers malisx2 only without one.
+TEST(DriverPacksSetup, Malisx2IsOfferedOnlyOutsideX11AndWayland)
+{
+	EXPECT_TRUE(ShouldOfferInSetup(OfferableContext(GpuFamily::MaliKbase)));
+
+	SetupContext x11 = OfferableContext(GpuFamily::MaliKbase);
+	x11.session_is_x11 = true;
+	EXPECT_FALSE(ShouldOfferInSetup(x11));
+
+	SetupContext wayland = OfferableContext(GpuFamily::MaliKbase);
+	wayland.session_is_wayland = true;
+	EXPECT_FALSE(ShouldOfferInSetup(wayland));
+
+	SetupContext installed = OfferableContext(GpuFamily::MaliKbase);
+	installed.installed_count = 1;
+	EXPECT_FALSE(ShouldOfferInSetup(installed));
+
+	EXPECT_FALSE(ShouldOfferInSetup(OfferableContext(GpuFamily::Unknown)));
+}
+
+TEST(DriverPacksSetup, TheContextCarriesTheMachinesFamilyAndSession)
+{
+	EnvGuard guard;
+	BaseLayer();
+	SetSelectedPack({});
+
+	Rig rig(false);
+	rig.AddKbaseMali();
+	const SetupContext display = GetSetupContext(*rig.manager, false, false);
+	EXPECT_EQ(display.availability.gpu, GpuFamily::MaliKbase);
+	EXPECT_TRUE(ShouldOfferInSetup(display));
+
+	const SetupContext wayland = GetSetupContext(*rig.manager, false, true);
+	EXPECT_TRUE(wayland.session_is_wayland);
+	EXPECT_FALSE(ShouldOfferInSetup(wayland));
 }
 
 TEST(DriverPacksSetup, AnEnvironmentThatNamesADriverCountsAsALauncherChoice)
@@ -562,6 +920,32 @@ TEST(DriverPacksSetup, TheRecommendedPackIsTheNewestThatIsNotAPrerelease)
 	const std::vector<RemoteDriver> only_prereleases = {beta};
 	ASSERT_NE(PickRecommended(only_prereleases), nullptr);
 	EXPECT_EQ(PickRecommended(only_prereleases)->id, "armsx2turnip-beta");
+}
+
+TEST(DriverPacksSetup, TheRecommendedPackIsForTheMachinesGpu)
+{
+	RemoteDriver turnip;
+	turnip.id = "armsx2turnip-stable";
+	RemoteDriver mali_beta;
+	mali_beta.id = "malisx2-v0.5.0";
+	mali_beta.prerelease = true;
+	mali_beta.gpu = GpuFamily::MaliKbase;
+	RemoteDriver mali_old;
+	mali_old.id = "malisx2-v0.3.1";
+	mali_old.gpu = GpuFamily::MaliKbase;
+
+	const std::vector<RemoteDriver> mixed = {turnip, mali_beta, mali_old};
+	ASSERT_NE(PickRecommended(mixed, GpuFamily::MaliKbase), nullptr);
+	EXPECT_EQ(PickRecommended(mixed, GpuFamily::MaliKbase)->id, "malisx2-v0.3.1");
+	EXPECT_EQ(PickRecommended(mixed, GpuFamily::Adreno)->id, "armsx2turnip-stable");
+	EXPECT_EQ(PickRecommended(mixed)->id, "armsx2turnip-stable"); // no family: any
+
+	// malisx2 publishes prereleases: with nothing else, the newest one is offered.
+	const std::vector<RemoteDriver> only_beta = {turnip, mali_beta};
+	ASSERT_NE(PickRecommended(only_beta, GpuFamily::MaliKbase), nullptr);
+	EXPECT_EQ(PickRecommended(only_beta, GpuFamily::MaliKbase)->id, "malisx2-v0.5.0");
+
+	EXPECT_EQ(PickRecommended({turnip}, GpuFamily::MaliKbase), nullptr);
 }
 
 TEST(DriverPacksListing, ReadsTheFeedAndSendsAGithubAcceptHeader)
@@ -667,6 +1051,38 @@ TEST(DriverPacksListing, MakesNoRequestOnAMachineWithoutAnAdrenoGpu)
 	const RemoteListing listing = rig.manager->ListAvailable({});
 	EXPECT_TRUE(listing.drivers.empty());
 	EXPECT_TRUE(rig.http.Requests().empty());
+}
+
+TEST(DriverPacksListing, OnlyTheFeedForThisMachinesGpuIsRead)
+{
+	const std::string malisx2_json = R"([{"tag_name":"v0.5.0","prerelease":true,"assets":[
+	  {"name":"malisx2-0.5.0-6486a7c.zip","browser_download_url":"https://github.com/bmdhacks/malisx2/releases/download/v0.5.0/malisx2-0.5.0-6486a7c.zip"},
+	  {"name":"malisx2-0.5.0-aarch64.tar.gz","size":8,"browser_download_url":"https://github.com/bmdhacks/malisx2/releases/download/v0.5.0/malisx2-0.5.0-aarch64.tar.gz"}]}])";
+
+	Rig mali(false);
+	mali.AddKbaseMali();
+	mali.http.Ok(RELEASES_URL, CatalogTest::ReadFixture("drivers/releases.json"));
+	mali.http.Ok(MALISX2_RELEASES_URL, malisx2_json);
+	RemoteListing listing = mali.manager->ListAvailable({});
+	ASSERT_EQ(listing.drivers.size(), 1u);
+	EXPECT_EQ(listing.drivers[0].id, "malisx2-v0.5.0");
+	EXPECT_EQ(listing.drivers[0].gpu, GpuFamily::MaliKbase);
+	EXPECT_EQ(mali.http.RequestCount(RELEASES_URL), 0u);
+	EXPECT_EQ(mali.http.RequestCount(MALISX2_RELEASES_URL), 1u);
+	ASSERT_NE(PickRecommended(listing.drivers, mali.manager->GetAvailability().gpu), nullptr);
+
+	Rig adreno(true);
+	adreno.http.Ok(RELEASES_URL, CatalogTest::ReadFixture("drivers/releases.json"));
+	adreno.http.Ok(MALISX2_RELEASES_URL, malisx2_json);
+	listing = adreno.manager->ListAvailable({});
+	EXPECT_EQ(listing.drivers.size(), 2u);
+	EXPECT_EQ(adreno.http.RequestCount(MALISX2_RELEASES_URL), 0u);
+
+	// A Mali that malisx2 refuses, or a Mali on panfrost: nothing is asked for.
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
+	EXPECT_TRUE(g72.manager->ListAvailable({}).drivers.empty());
+	EXPECT_TRUE(g72.http.Requests().empty());
 }
 
 TEST(DriverPacksListing, OnlyFeedsForThisPlatformAreRead)
@@ -1326,6 +1742,96 @@ TEST(DriverPacksInstall, AnArchiveFromDiskInstallsWithoutTheNetwork)
 	EXPECT_EQ(rig.manager->InstallFromFile(rig.dir.File("missing.tar.gz"), {}, {}).status, InstallStatus::IoError);
 }
 
+TEST(DriverPacksInstall, AMalisx2PackRecordsItsGpuFamily)
+{
+	Rig rig(false);
+	rig.AddKbaseMali();
+	const std::string archive = MakeMalisx2TarGz("malisx2 lib");
+	const InstallResult result = rig.Install(rig.ServeMalisx2(archive));
+	ASSERT_TRUE(result.Ok()) << result.message;
+	EXPECT_EQ(result.id, "malisx2-v0.5.0");
+
+	const std::string dir = rig.InstalledPath(result.id);
+	EXPECT_TRUE(fs::exists(Path::Combine(dir, "libvulkan_malisx2.so")));
+	EXPECT_TRUE(fs::exists(Path::Combine(dir, "run-with-malisx2.sh")));
+	EXPECT_EQ(Str(ReadJson(Path::Combine(dir, "malisx2_icd.aarch64.json"))["ICD"], "library_path"), Path::Combine(dir, "libvulkan_malisx2.so"));
+
+	const rapidjson::Document meta = ReadJson(Path::Combine(dir, "meta.json"));
+	EXPECT_EQ(Str(meta, "gpu"), "mali-kbase");
+	EXPECT_EQ(Str(meta, "buildTag"), "0.5.0");
+	EXPECT_EQ(Str(meta, "driverInfoToken"), "malisx2.0.5.0");
+	EXPECT_EQ(Str(meta, "platforms"), "display,headless");
+
+	const std::optional<InstalledDriver> installed = rig.manager->FindInstalled(result.id);
+	ASSERT_TRUE(installed.has_value());
+	EXPECT_EQ(installed->gpu, GpuFamily::MaliKbase);
+	EXPECT_EQ(installed->feed_label, "malisx2");
+}
+
+TEST(DriverPacksInstall, ATurnipPackRecordsAdreno)
+{
+	Rig rig;
+	ASSERT_TRUE(rig.Install(rig.Serve(MakePackTarGz("lib"))).Ok());
+	EXPECT_EQ(Str(ReadJson(rig.InstalledPath("armsx2turnip-axfl2-002", "meta.json")), "gpu"), "adreno");
+	EXPECT_EQ(rig.manager->FindInstalled("armsx2turnip-axfl2-002")->gpu, GpuFamily::Adreno);
+}
+
+TEST(DriverPacksInstall, APackThatContradictsItsFeedIsRefused)
+{
+	// A malisx2 tarball uploaded to the Turnip feed by mistake.
+	Rig rig;
+	RemoteDriver driver = rig.Serve(MakeMalisx2TarGz("malisx2 lib"));
+	const InstallResult result = rig.Install(driver);
+	EXPECT_EQ(result.status, InstallStatus::BadArchive);
+	EXPECT_NE(result.message.find("Mali"), std::string::npos) << result.message;
+	EXPECT_FALSE(fs::exists(rig.InstalledPath(driver.id)));
+	EXPECT_TRUE(rig.checked_libraries.empty()); // refused before the test load
+	EXPECT_FALSE(rig.StagingLeftOver());
+}
+
+TEST(DriverPacksInstall, AnArchiveFromDiskSaysItsOwnGpuFamily)
+{
+	Rig rig;
+	const auto install = [&](const std::string& name, const std::string& bytes) {
+		const std::string path = rig.dir.File(name);
+		EXPECT_TRUE(CatalogTest::WriteBytes(path, bytes));
+		return rig.manager->InstallFromFile(path, {}, {});
+	};
+
+	// MANIFEST.json says so.
+	InstallResult result = install("malisx2-0.5.0-aarch64.tar.gz", MakeMalisx2TarGz("lib"));
+	ASSERT_TRUE(result.Ok()) << result.message;
+	EXPECT_EQ(rig.manager->FindInstalled(result.id)->gpu, GpuFamily::MaliKbase);
+
+	// No "gpu" key: the library's name.
+	result = install("older-malisx2.tar.gz", MakeMalisx2TarGz("lib", R"({"build_tag":"0.4.1","platforms":"display,headless"})"));
+	ASSERT_TRUE(result.Ok()) << result.message;
+	EXPECT_EQ(rig.manager->FindInstalled(result.id)->gpu, GpuFamily::MaliKbase);
+
+	// A Turnip pack: neither says Mali.
+	result = install("my-turnip.tar.gz", MakePackTarGz("lib"));
+	ASSERT_TRUE(result.Ok()) << result.message;
+	EXPECT_EQ(rig.manager->FindInstalled(result.id)->gpu, GpuFamily::Adreno);
+
+	// A family this build does not know: refused, since it could never be applied.
+	result = install("future.tar.gz", MakeMalisx2TarGz("lib", R"({"build_tag":"9.0.0","gpu":"mali-panthor"})"));
+	EXPECT_EQ(result.status, InstallStatus::BadArchive);
+	EXPECT_NE(result.message.find("mali-panthor"), std::string::npos) << result.message;
+	EXPECT_FALSE(rig.manager->FindInstalled("local-future").has_value());
+}
+
+TEST(DriverPacksInstall, APackInstalledBeforeFamiliesExistedIsAdreno)
+{
+	Rig rig;
+	const std::string pack = Path::Combine(rig.config.drivers_dir, "armsx2turnip-axfl1-011");
+	fs::create_directories(fs::path(pack));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "meta.json"), R"({"manifest":"freedreno_icd.aarch64.json","library":"libvulkan_freedreno.so"})"));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "freedreno_icd.aarch64.json"), "{}"));
+	ASSERT_TRUE(CatalogTest::WriteBytes(Path::Combine(pack, "libvulkan_freedreno.so"), "lib"));
+	ASSERT_TRUE(rig.manager->FindInstalled("armsx2turnip-axfl1-011").has_value());
+	EXPECT_EQ(rig.manager->FindInstalled("armsx2turnip-axfl1-011")->gpu, GpuFamily::Adreno);
+}
+
 TEST(DriverPacksInstall, ListingIgnoresIncompleteFoldersAndSortsByName)
 {
 	Rig rig;
@@ -1455,6 +1961,76 @@ TEST(DriverPacksApply, ASelectedPackIsIgnoredOnAMachineWithoutAnAdrenoGpu)
 	Rig elsewhere(false);
 	const ApplyResult result = ApplyEnvironment(rig.config.drivers_dir, "armsx2turnip-axfl2-002", elsewhere.config.sysfs_root);
 	EXPECT_EQ(result.outcome, ApplyOutcome::GpuNotSupported);
+	EXPECT_EQ(Env("VK_DRIVER_FILES"), "<unset>");
+}
+
+TEST(DriverPacksApply, AMalisx2PackAppliesOnlyOnAKbaseMaliItSupports)
+{
+	EnvGuard env;
+	Rig mali(false);
+	mali.AddKbaseMali();
+	ASSERT_TRUE(mali.Install(mali.ServeMalisx2(MakeMalisx2TarGz("lib"))).Ok());
+
+	ApplyResult result = ApplyEnvironment(mali.config.drivers_dir, "malisx2-v0.5.0", mali.config.sysfs_root, mali.config.dev_root);
+	EXPECT_EQ(result.outcome, ApplyOutcome::Applied) << result.message;
+	EXPECT_EQ(result.gpu, GpuFamily::MaliKbase);
+	EXPECT_EQ(Env("VK_DRIVER_FILES"), mali.InstalledPath("malisx2-v0.5.0", "malisx2_icd.aarch64.json"));
+	EXPECT_NE(result.message.find("malisx2.0.5.0"), std::string::npos) << result.message;
+	unsetenv("VK_DRIVER_FILES");
+	unsetenv("VK_ICD_FILENAMES");
+
+	// The same pack on an Adreno, on the same board booted on panfrost, and on a Mali-G72 on kbase.
+	Rig adreno(true);
+	Rig panfrost(false);
+	MakeFakeSysfs(panfrost.dir.File("panfrost-sys"), "panfrost");
+	Rig g72(false);
+	g72.AddKbaseMali("Mali-G72 12 cores r0p3 0x6221");
+	const std::pair<std::string, std::string> elsewhere[] = {
+		{adreno.config.sysfs_root, adreno.config.dev_root},
+		{panfrost.dir.File("panfrost-sys"), panfrost.config.dev_root},
+		{g72.config.sysfs_root, g72.config.dev_root},
+	};
+	for (const auto& [sys, dev] : elsewhere)
+	{
+		result = ApplyEnvironment(mali.config.drivers_dir, "malisx2-v0.5.0", sys, dev);
+		EXPECT_EQ(result.outcome, ApplyOutcome::GpuNotSupported) << sys;
+		EXPECT_EQ(result.gpu, GpuFamily::MaliKbase);
+		EXPECT_NE(result.message.find("Mali"), std::string::npos) << result.message;
+		EXPECT_EQ(Env("VK_DRIVER_FILES"), "<unset>");
+		EXPECT_EQ(GetLastApplyResult().outcome, ApplyOutcome::GpuNotSupported);
+	}
+}
+
+TEST(DriverPacksApply, ATurnipPackIsNotAppliedOnAKbaseMali)
+{
+	EnvGuard env;
+	Rig rig(true);
+	ASSERT_TRUE(rig.Install(rig.Serve(MakePackTarGz("lib"))).Ok());
+	Rig mali(false);
+	mali.AddKbaseMali();
+	const ApplyResult result = ApplyEnvironment(rig.config.drivers_dir, "armsx2turnip-axfl2-002", mali.config.sysfs_root, mali.config.dev_root);
+	EXPECT_EQ(result.outcome, ApplyOutcome::GpuNotSupported);
+	EXPECT_EQ(result.gpu, GpuFamily::Adreno);
+	EXPECT_NE(result.message.find("Adreno"), std::string::npos) << result.message;
+	EXPECT_EQ(Env("VK_DRIVER_FILES"), "<unset>");
+}
+
+TEST(DriverPacksApply, APackOfAnUnknownFamilyIsNeverApplied)
+{
+	EnvGuard env;
+	Rig rig(true);
+	ASSERT_TRUE(rig.Install(rig.Serve(MakePackTarGz("lib"))).Ok());
+	// Metadata written by a newer ARMSX2 for a family this one does not know.
+	const std::string meta_path = rig.InstalledPath("armsx2turnip-axfl2-002", "meta.json");
+	std::string meta = FileSystem::ReadFileToString(meta_path.c_str()).value_or("");
+	const size_t at = meta.find("\"adreno\"");
+	ASSERT_NE(at, std::string::npos);
+	meta.replace(at, 8, "\"mali-panthor\"");
+	ASSERT_TRUE(CatalogTest::WriteBytes(meta_path, meta));
+
+	const ApplyResult result = ApplyEnvironment(rig.config.drivers_dir, "armsx2turnip-axfl2-002", rig.config.sysfs_root, rig.config.dev_root);
+	EXPECT_EQ(result.outcome, ApplyOutcome::GpuNotSupported);
+	EXPECT_EQ(result.gpu, GpuFamily::Unknown);
 	EXPECT_EQ(Env("VK_DRIVER_FILES"), "<unset>");
 }
 

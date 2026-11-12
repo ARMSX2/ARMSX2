@@ -504,12 +504,16 @@ void SetupWizardDialog::setupAutoTunePage()
 
 void SetupWizardDialog::setupDriverPage()
 {
-	// The page exists only where a pack can help: an Adreno on Linux whose player has not chosen or installed one
-	// and whose launcher does not set the driver itself. The page is skipped otherwise, and its step is hidden.
+	// The page exists only where a pack can help: a GPU a feed is for (an Adreno, or a Mali on kbase) on Linux whose
+	// player has not chosen or installed a pack, whose launcher does not set the driver itself, and whose session can
+	// show that pack's picture. The page is skipped otherwise, and its step is hidden.
 	m_driver_manager = std::make_shared<DriverPacks::Manager>(Catalog::GetDefaultFetcher(), DriverPacks::ManagerConfig::ForUser());
 	const QString platform = QGuiApplication::platformName();
 	const bool session_is_x11 = platform == QLatin1String("xcb") || platform == QLatin1String("x11");
-	m_driver_page_enabled = DriverPacks::ShouldOfferInSetup(DriverPacks::GetSetupContext(*m_driver_manager, session_is_x11));
+	const bool session_is_wayland = platform.startsWith(QLatin1String("wayland"));
+	const DriverPacks::SetupContext context = DriverPacks::GetSetupContext(*m_driver_manager, session_is_x11, session_is_wayland);
+	m_driver_gpu = context.availability.gpu;
+	m_driver_page_enabled = DriverPacks::ShouldOfferInSetup(context);
 	m_ui.labelDriver->setVisible(m_driver_page_enabled);
 
 	connect(m_ui.driverInstall, &QPushButton::clicked, this, &SetupWizardDialog::onDriverInstallClicked);
@@ -542,7 +546,7 @@ void SetupWizardDialog::loadDriverOffer()
 
 void SetupWizardDialog::showDriverOffer(const DriverPacks::RemoteListing& listing)
 {
-	if (const DriverPacks::RemoteDriver* pick = DriverPacks::PickRecommended(listing.drivers))
+	if (const DriverPacks::RemoteDriver* pick = DriverPacks::PickRecommended(listing.drivers, m_driver_gpu))
 	{
 		m_driver_offer = *pick;
 		QStringList parts;

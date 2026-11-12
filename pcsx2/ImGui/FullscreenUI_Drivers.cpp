@@ -211,6 +211,11 @@ namespace
 		return g_gs_device && g_gs_device->GetWindowInfo().type == WindowInfo::Type::X11;
 	}
 
+	bool SessionIsWayland()
+	{
+		return g_gs_device && g_gs_device->GetWindowInfo().type == WindowInfo::Type::Wayland;
+	}
+
 	bool PackIsUnusableHere(const DP::InstalledDriver& pack)
 	{
 		return PackIsWaylandOnly(pack.platforms) && SessionIsX11();
@@ -240,7 +245,7 @@ namespace
 			Pack, ///< a pack is in use
 			Launcher, ///< the launcher set VK_DRIVER_FILES / VK_ICD_FILENAMES; the selection is ignored
 			Missing, ///< a pack was selected at start but is not installed
-			NoGpu, ///< a pack was selected at start but this machine has no Adreno
+			NoGpu, ///< a pack was selected at start but this machine has no GPU of the pack's family
 		};
 
 		Kind kind = Kind::System;
@@ -285,7 +290,7 @@ namespace
 				break;
 		}
 
-		// A launcher's choice wins whatever is selected here, and without an Adreno there is nothing
+		// A launcher's choice wins whatever is selected here, and without the pack's GPU there is nothing
 		// to switch to. Otherwise a selection that differs from this run's driver needs a restart,
 		// unless it names a pack that is not installed (a restart would not change anything).
 		if (status.kind != Status::Kind::Launcher && status.kind != Status::Kind::NoGpu && selected != status.in_use_id)
@@ -310,6 +315,10 @@ namespace
 			case Status::Kind::Missing:
 				return fmt::format(FSUI_FSTR("The selected driver pack \"{}\" is not installed. The system driver is in use."), apply.pack_id);
 			case Status::Kind::NoGpu:
+				if (apply.gpu == DP::GpuFamily::MaliKbase)
+					return FSUI_STR("A malisx2 driver pack is selected, but this device has no Mali GPU that malisx2 supports on Arm's kernel driver. The system driver is in use.");
+				if (apply.gpu == DP::GpuFamily::Unknown)
+					return FSUI_STR("The selected driver pack is for a GPU this version of ARMSX2 does not know. The system driver is in use.");
 				return FSUI_STR("A driver pack is selected, but this device has no Adreno GPU. The system driver is in use.");
 			case Status::Kind::System:
 				break;
@@ -648,14 +657,15 @@ namespace
 	{
 		MenuHeading(FSUI_CSTR("GPU Drivers"));
 
-		// "No driver packs for this GPU." is the service's own message for a machine without an Adreno.
+		// "No driver packs for this GPU." is the service's own message for a machine whose GPU no feed is for.
 		if (availability.reason == DP::Availability::Reason::NoMatchingGpu)
 		{
 			if (MenuButton(FSUI_ICONSTR(ICON_FA_CIRCLE_INFO, "No driver packs for this GPU."),
-					FSUI_CSTR("Driver packs are Turnip builds for Qualcomm Adreno GPUs. This device uses its system driver.")))
+					FSUI_CSTR("Driver packs are Turnip for Qualcomm Adreno GPUs and malisx2 for Arm Mali GPUs on Arm's kernel driver. This device uses its system driver.")))
 			{
 				OpenInfoMessageDialog(FSUI_STR("GPU Drivers"),
-					FSUI_STR("Driver packs are Turnip builds for Qualcomm Adreno GPUs. This device has no Adreno GPU, so it keeps using its system driver."));
+					FSUI_STR("Driver packs are Turnip builds for Qualcomm Adreno GPUs and malisx2 builds for Arm Mali GPUs that run Arm's kernel driver (kbase). "
+							 "This device has neither, so it keeps using its system driver."));
 			}
 			return;
 		}
@@ -871,7 +881,7 @@ bool FullscreenUI::ShowDriversSettingsPage()
 	if (!s_supported)
 		return false;
 
-	// The page is for a machine with an Adreno GPU. Elsewhere it stays out of the list unless a pack is
+	// The page is for a machine whose GPU a feed is for. Elsewhere it stays out of the list unless a pack is
 	// installed or selected, which the user may want to undo. The GPU does not change while we run.
 	static const bool s_available = DP::GetAvailability().IsAvailable();
 	if (s_available)
@@ -960,7 +970,7 @@ void FullscreenUI::ShutdownDriversPage()
 
 bool FullscreenUI::ShouldOfferDriverInSetup()
 {
-	return DP::ShouldOfferInSetup(DP::GetSetupContext(GetManager(), SessionIsX11()));
+	return DP::ShouldOfferInSetup(DP::GetSetupContext(GetManager(), SessionIsX11(), SessionIsWayland()));
 }
 
 bool FullscreenUI::IsDriverSetupInstalling()
@@ -1026,7 +1036,7 @@ void FullscreenUI::DrawDriverSetupStep()
 		{
 			MenuButton(FSUI_ICONSTR(ICON_FA_CIRCLE_NOTCH, "Loading driver list..."), FSUI_CSTR("Asking GitHub which driver packs are available."));
 		}
-		else if (const DP::RemoteDriver* pick = DP::PickRecommended(s_state.listing.drivers))
+		else if (const DP::RemoteDriver* pick = DP::PickRecommended(s_state.listing.drivers, s_state.availability.gpu))
 		{
 			std::string summary = pick->tag;
 			if (pick->size > 0)
@@ -1059,6 +1069,8 @@ void FullscreenUI::DrawDriverSetupStep()
 #if 0
 // TRANSLATION-STRING-AREA-BEGIN
 TRANSLATE_NOOP("FullscreenUI", "Your launcher sets the Vulkan driver itself, so the choice below has no effect.");
+TRANSLATE_NOOP("FullscreenUI", "A malisx2 driver pack is selected, but this device has no Mali GPU that malisx2 supports on Arm's kernel driver. The system driver is in use.");
+TRANSLATE_NOOP("FullscreenUI", "The selected driver pack is for a GPU this version of ARMSX2 does not know. The system driver is in use.");
 TRANSLATE_NOOP("FullscreenUI", "A driver pack is selected, but this device has no Adreno GPU. The system driver is in use.");
 TRANSLATE_NOOP("FullscreenUI", "Using the system driver.");
 TRANSLATE_NOOP("FullscreenUI", "Set by Launcher");
@@ -1088,7 +1100,7 @@ TRANSLATE_NOOP("FullscreenUI", "Wayland only; this is an X11 session");
 TRANSLATE_NOOP("FullscreenUI", "Wayland only");
 TRANSLATE_NOOP("FullscreenUI", "Installed");
 TRANSLATE_NOOP("FullscreenUI", "GPU Drivers");
-TRANSLATE_NOOP("FullscreenUI", "Driver packs are Turnip builds for Qualcomm Adreno GPUs. This device has no Adreno GPU, so it keeps using its system driver.");
+TRANSLATE_NOOP("FullscreenUI", "Driver packs are Turnip builds for Qualcomm Adreno GPUs and malisx2 builds for Arm Mali GPUs that run Arm's kernel driver (kbase). This device has neither, so it keeps using its system driver.");
 TRANSLATE_NOOP("FullscreenUI", "Driver packs are only offered on Linux.");
 TRANSLATE_NOOP("FullscreenUI", "Driver In Use");
 TRANSLATE_NOOP("FullscreenUI", "The selected driver pack was built for Wayland sessions only, and ARMSX2 is running in an X11 session. It will probably not be able to show a picture. Choose the system driver or another pack, or start ARMSX2 in a Wayland session.");
@@ -1097,7 +1109,7 @@ TRANSLATE_NOOP("FullscreenUI", "Pre-release");
 TRANSLATE_NOOP("FullscreenUI", "Installing");
 TRANSLATE_NOOP("FullscreenUI", "Download");
 TRANSLATE_NOOP("FullscreenUI", "The feed has no driver packs for this device right now.");
-TRANSLATE_NOOP("FullscreenUI", "Driver packs are Turnip builds for Qualcomm Adreno GPUs. This device uses its system driver.");
+TRANSLATE_NOOP("FullscreenUI", "Driver packs are Turnip for Qualcomm Adreno GPUs and malisx2 for Arm Mali GPUs on Arm's kernel driver. This device uses its system driver.");
 TRANSLATE_NOOP("FullscreenUI", "Current Driver");
 TRANSLATE_NOOP("FullscreenUI", "The driver you chose applies the next time ARMSX2 starts. Restarting closes ARMSX2 and the running game, then opens it again.");
 TRANSLATE_NOOP("FullscreenUI", "The driver you chose applies the next time ARMSX2 starts. Restart now to use it; ARMSX2 opens again with the same options.");

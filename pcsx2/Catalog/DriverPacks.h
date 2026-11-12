@@ -3,9 +3,13 @@
 
 #pragma once
 
-// Downloadable GPU driver packs for desktop Linux (Turnip on Adreno): list a feed's packs,
-// install a pack, list and delete installed packs, and point the process at the selected pack
-// before Vulkan starts.
+// Downloadable GPU driver packs for desktop Linux (Turnip on Adreno, malisx2 on Arm Mali GPUs
+// driven by Arm's kbase kernel driver): list a feed's packs, install a pack, list and delete
+// installed packs, and point the process at the selected pack before Vulkan starts.
+//
+// Every feed and every installed pack is for one GPU family (GpuFamily). A feed is listed, and a
+// selected pack applied, only on a machine that has that family's GPU, detected from sysfs and
+// /dev at run time (ROCKNIX can switch a Mali board between kbase and panfrost/panthor).
 //
 // The Vulkan loader reads VK_DRIVER_FILES / VK_ICD_FILENAMES once, when libvulkan is first used
 // in the process. So ApplyEnvironment() must set them in main() before any GS or Vulkan code
@@ -15,7 +19,7 @@
 // On disk, per installed pack:
 //
 //   <DataRoot>/drivers/<id>/
-//       meta.json                     name, version, build tag, ...
+//       meta.json                     name, version, build tag, GPU family ("gpu"), ...
 //       freedreno_icd.aarch64.json    loader manifest, written by the installer with library_path
 //                                     set to this pack's library as an absolute path. The archive's
 //                                     own manifest points at the builder's device
@@ -68,16 +72,83 @@ namespace DriverPacks
 	/// `sysfs_root` exists for tests.
 	bool IsAdrenoGpu(const std::string& sysfs_root = "/sys");
 
+	/// The kbase product id (arch major, arch minor, arch revision, product major; 4 bits each, as
+	/// malisx2 and Mesa use it, e.g. 0x7402 for a Mali-G52 r1) from the hex number at the end of
+	/// kbase's `gpuinfo` sysfs file. kbase versions print one of:
+	///   - the 16-bit product id itself ("0x7402", "0xB8A3");
+	///   - the whole 32-bit GPU_ID register, product id in the top half ("0xA8670005");
+	///   - newer kbase: 0xAAmmRRPP, arch major, arch minor, arch revision and product major one byte
+	///     each ("0x07040002").
+	/// Nothing if the line has no such number or it does not fit any of these.
+	std::optional<u16> KbaseProductIdFromGpuInfo(std::string_view gpuinfo);
+
+	/// Which scheduler the kbase kernel driver was built with: the job manager (Bifrost and
+	/// first-generation Valhall, arches 6 to 9) or the command-stream frontend (arch 10 and later).
+	enum class KbaseFrontend
+	{
+		Unknown, ///< sysfs does not say; decide by the arch alone
+		JobManager,
+		CommandStream,
+	};
+
+	/// Read from the kbase device's sysfs attributes: a job-manager kbase has js_timeouts and
+	/// js_scheduling_period, a command-stream one csg_scheduling_period. Unknown when neither is
+	/// there (no kbase, or a vendor kernel that dropped them).
+	KbaseFrontend KbaseFrontendFromSysfs(const std::string& sysfs_root = "/sys");
+
+	/// malisx2's rule (mali_device_name and the frontend check at physical-device creation): every
+	/// GPU of arch 7 or 9 on a job-manager kbase, and of arch 10 or 11 on a command-stream kbase.
+	/// With KbaseFrontend::Unknown the arch alone decides. Arch 6 (G71, G72), Midgard and arch 12
+	/// and later are not malisx2's.
+	bool IsMalisx2Arch(unsigned arch_major, KbaseFrontend frontend = KbaseFrontend::Unknown);
+
+	/// IsMalisx2Arch on the product id's arch major (its top four bits).
+	bool IsMalisx2ProductId(u16 product_id, KbaseFrontend frontend = KbaseFrontend::Unknown);
+
+	/// The decision for one `gpuinfo` line ("Mali-G52 1 cores r1p0 0x07040002"): by the product id
+	/// when the hex number reads, else by the arch of the leading name ("Mali-G610"). The hex wins
+	/// because kbase prints names it does not know as "(Unknown Mali GPU)" or a code name.
+	bool IsMalisx2GpuInfo(std::string_view gpuinfo, KbaseFrontend frontend = KbaseFrontend::Unknown);
+
+	/// Best effort, readable before Vulkan is initialised: true if this machine runs Arm's kbase
+	/// kernel driver (`<dev_root>/mali0` exists) and its GPU (`<sysfs_root>/class/misc/mali0/device/
+	/// gpuinfo`) is one malisx2 supports on this kbase's frontend (KbaseFrontendFromSysfs). A Mali on
+	/// panfrost or panthor has neither file, and malisx2 cannot run there. The roots exist for tests.
+	bool IsSupportedKbaseMaliGpu(const std::string& sysfs_root = "/sys", const std::string& dev_root = "/dev");
+
+	/// Which GPU a feed's packs, or an installed pack, are built for.
+	enum class GpuFamily
+	{
+		Unknown, ///< a pack whose metadata names a family this build does not know; never applied
+		Adreno, ///< Turnip; Qualcomm Adreno on msm or kgsl
+		MaliKbase, ///< malisx2; the Arm Mali GPUs IsSupportedKbaseMaliGpu accepts
+	};
+
+	/// "adreno", "mali-kbase", "unknown": the value stored in meta.json and read from a pack's
+	/// MANIFEST.json "gpu" key.
+	const char* GpuFamilyKey(GpuFamily family);
+	/// The inverse of GpuFamilyKey (case-insensitive); an empty string is Adreno, since packs and
+	/// metadata written before families existed are Turnip. Anything else unrecognised is Unknown.
+	GpuFamily ParseGpuFamily(std::string_view key);
+	/// For messages: "Qualcomm Adreno GPU", "Arm Mali GPU that malisx2 supports", "GPU this version of
+	/// ARMSX2 does not know".
+	const char* GpuFamilyDescription(GpuFamily family);
+
+	/// Whether this machine has a GPU of `family` (IsAdrenoGpu, IsSupportedKbaseMaliGpu).
+	bool MachineHasGpuFamily(GpuFamily family, const std::string& sysfs_root = "/sys", const std::string& dev_root = "/dev");
+
 	struct Availability
 	{
 		enum class Reason
 		{
 			Available,
 			UnsupportedPlatform, ///< not desktop Linux
-			NoMatchingGpu, ///< packs are Turnip; this machine has no Adreno
+			NoMatchingGpu, ///< no feed for this platform is for this machine's GPU
 		};
 
 		Reason reason = Reason::UnsupportedPlatform;
+		/// The family of the first feed this machine matches; Unknown when not available.
+		GpuFamily gpu = GpuFamily::Unknown;
 		/// Ready to show: "Driver packs are not available on this platform." or
 		/// "No driver packs for this GPU." (empty when available).
 		std::string message;
@@ -85,7 +156,8 @@ namespace DriverPacks
 		bool IsAvailable() const { return reason == Reason::Available; }
 	};
 
-	Availability GetAvailability(const std::string& sysfs_root = "/sys");
+	/// Against DefaultFeeds() and CurrentPlatform().
+	Availability GetAvailability(const std::string& sysfs_root = "/sys", const std::string& dev_root = "/dev");
 
 	/// Where packs come from. Feeds are data: adding a source is adding an entry here.
 	struct Feed
@@ -102,9 +174,12 @@ namespace DriverPacks
 		std::string asset_pattern;
 		/// Which CurrentPlatform() this feed's assets are for.
 		std::string platform;
+		/// Which GPU its packs drive. The feed is read only on a machine that has one.
+		GpuFamily gpu = GpuFamily::Adreno;
 	};
 
-	/// Today: bmdhacks/armsx2-turnip, assets turnip-<tag>-aarch64.tar.gz for linux-aarch64.
+	/// bmdhacks/armsx2-turnip (assets turnip-<tag>-aarch64.tar.gz, Adreno) and bmdhacks/malisx2
+	/// (assets malisx2-<semver>-aarch64.tar.gz, Mali on kbase), both for linux-aarch64.
 	std::vector<Feed> DefaultFeeds();
 
 	struct RemoteDriver
@@ -124,6 +199,7 @@ namespace DriverPacks
 		std::string checksum_url;
 		/// Lowercase hex from the API's `"digest": "sha256:..."` field; empty if absent.
 		std::string api_digest;
+		GpuFamily gpu = GpuFamily::Adreno; ///< the feed's
 	};
 
 	/// Parses a GitHub releases response for one feed. Drafts are skipped, assets that do not
@@ -165,6 +241,8 @@ namespace DriverPacks
 		std::string platforms;
 		std::string archive_sha256;
 		s64 installed_at = 0; ///< unix time
+		/// meta.json "gpu"; a pack installed before families were recorded has none and is Adreno.
+		GpuFamily gpu = GpuFamily::Adreno;
 
 		std::string directory; ///< <drivers>/<id>
 		std::string manifest_path; ///< what VK_DRIVER_FILES points at
@@ -236,6 +314,7 @@ namespace DriverPacks
 		std::vector<Feed> feeds = DefaultFeeds();
 		std::string platform = CurrentPlatform();
 		std::string sysfs_root = "/sys";
+		std::string dev_root = "/dev";
 		/// A cached listing younger than this is used without asking the network.
 		std::chrono::seconds listing_max_age = std::chrono::hours(1);
 		/// Run on the library before a pack is accepted. Defaults to TestLoadLibrary; tests
@@ -253,11 +332,12 @@ namespace DriverPacks
 
 		const ManagerConfig& Config() const { return m_config; }
 
-		/// Whether packs make sense on this machine (platform, Adreno). The UI shows the
-		/// message when not available; ListAvailable() makes no request in that case.
+		/// Whether packs make sense on this machine: a feed for this platform whose GPU family the
+		/// machine has. The UI shows the message when not available; ListAvailable() makes no
+		/// request in that case.
 		Availability GetAvailability() const;
 
-		/// Reads every feed for this platform. Uses the cached listing when it is younger than
+		/// Reads every feed for this platform whose GPU family the machine has. Uses the cached listing when it is younger than
 		/// listing_max_age unless `force_refresh`; falls back to an older cached copy when the
 		/// request fails. A feed that fails with nothing cached is reported in `errors` and the
 		/// other feeds still list.
@@ -277,6 +357,8 @@ namespace DriverPacks
 
 		/// Installs a .tar.gz the user already has (no download, no checksum to compare; its
 		/// SHA-256 is recorded). The id is "local-<file name>", sanitised as in RemoteDriver::id.
+		/// The GPU family comes from the pack's MANIFEST.json "gpu" key, else from the library's
+		/// name (libvulkan_malisx2.so is Mali on kbase), else Adreno.
 		InstallResult InstallFromFile(const std::string& archive_path, const InstallProgressCallback& progress, const Catalog::CancelToken& cancel);
 
 		/// Removes the pack's folder. Does not touch the setting: if GetSelectedPack() == id the
@@ -309,7 +391,7 @@ namespace DriverPacks
 		Applied, ///< VK_DRIVER_FILES / VK_ICD_FILENAMES now point at the pack
 		EnvironmentAlreadySet, ///< the launcher or user set one of them; a selection is ignored
 		PackMissing, ///< selected but not usable on disk; falling back to the system driver
-		GpuNotSupported, ///< selected but this machine has no Adreno; falling back
+		GpuNotSupported, ///< selected, but this machine has no GPU of the pack's family; falling back
 		Unsupported, ///< not Linux
 	};
 
@@ -319,11 +401,13 @@ namespace DriverPacks
 		std::string pack_id;
 		std::string manifest_path; ///< what the variables were set to (Applied)
 		std::string message; ///< one log line, empty for SystemDriver / Unsupported
+		/// The selected pack's GPU family, once its metadata was read (Applied, GpuNotSupported).
+		GpuFamily gpu = GpuFamily::Unknown;
 	};
 
 	/// Call from main() right after the base settings are loaded and before anything can load
 	/// libvulkan: it reads GetSelectedPack(), and if that pack is installed and this machine has
-	/// an Adreno GPU it sets VK_DRIVER_FILES and VK_ICD_FILENAMES to the pack's manifest and
+	/// a GPU of the pack's family it sets VK_DRIVER_FILES and VK_ICD_FILENAMES to the pack's manifest and
 	/// clears VK_ADD_DRIVER_FILES (as the ROCKNIX launcher does, so no other driver can be
 	/// picked up beside the pack).
 	///
@@ -335,7 +419,8 @@ namespace DriverPacks
 	ApplyResult ApplyEnvironment();
 
 	/// The same with explicit inputs, for tests and tools.
-	ApplyResult ApplyEnvironment(const std::string& drivers_dir, const std::string& pack_id, const std::string& sysfs_root = "/sys");
+	ApplyResult ApplyEnvironment(const std::string& drivers_dir, const std::string& pack_id, const std::string& sysfs_root = "/sys",
+		const std::string& dev_root = "/dev");
 
 	/// What the last ApplyEnvironment() in this process decided; for a settings page to explain
 	/// "your launcher overrides this".
@@ -352,21 +437,28 @@ namespace DriverPacks
 		/// does not record this while nothing is selected.
 		bool environment_sets_driver = false;
 		size_t installed_count = 0;
-		/// The packs present Wayland, so an X11 session cannot show one.
+		/// Turnip packs present on Wayland, so an X11 session cannot show one.
 		bool session_is_x11 = false;
+		/// malisx2 packs present only on a display of their own (VK_KHR_display) or headless; under
+		/// a Wayland compositor only through Arm's separate WSI layer, which may not be installed.
+		bool session_is_wayland = false;
 	};
 
 	/// True when the setup should offer the recommended pack: this machine can use packs, the player
-	/// has neither chosen nor installed one, and no launcher decides the driver.
+	/// has neither chosen nor installed one, no launcher decides the driver, and the packs for this
+	/// machine's GPU (availability.gpu) can show a picture in this session: Turnip outside X11,
+	/// malisx2 outside both X11 and Wayland.
 	bool ShouldOfferInSetup(const SetupContext& context);
 
 	/// Reads the context from this process: the manager's availability and installed packs, the
 	/// selection in the base settings (takes the settings lock) and the environment.
-	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11);
+	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11, bool session_is_wayland = false);
 
 	/// The pack the setup installs from a listing: the first release that is not a prerelease, else
-	/// the first. Listings are newest first. Null for an empty list.
-	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers);
+	/// the first. Listings are newest first. With `gpu` other than Unknown, only that family's packs
+	/// count (a listing holds only the families the machine has, so the setup passes
+	/// Availability::gpu to stay on one feed). Null when nothing qualifies.
+	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers, GpuFamily gpu = GpuFamily::Unknown);
 
 	struct RelaunchPlan
 	{

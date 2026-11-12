@@ -253,31 +253,211 @@ namespace DriverPacks
 		return false;
 	}
 
+	std::optional<u16> KbaseProductIdFromGpuInfo(std::string_view gpuinfo)
+	{
+		// The number is the last "0x..." token.
+		std::string_view hex;
+		size_t pos = 0;
+		while (pos < gpuinfo.size())
+		{
+			while (pos < gpuinfo.size() && std::isspace(static_cast<unsigned char>(gpuinfo[pos])))
+				pos++;
+			size_t end = pos;
+			while (end < gpuinfo.size() && !std::isspace(static_cast<unsigned char>(gpuinfo[end])))
+				end++;
+			const std::string_view token = gpuinfo.substr(pos, end - pos);
+			if (token.size() > 2 && token[0] == '0' && (token[1] == 'x' || token[1] == 'X'))
+				hex = token.substr(2);
+			pos = end;
+		}
+		if (hex.empty() || hex.size() > 8 || !std::all_of(hex.begin(), hex.end(), [](unsigned char c) { return std::isxdigit(c) != 0; }))
+			return std::nullopt;
+
+		const u32 value = static_cast<u32>(std::strtoul(std::string(hex).c_str(), nullptr, 16));
+		if (value <= 0xFFFF)
+			return static_cast<u16>(value);
+		if ((value >> 28) != 0)
+			return static_cast<u16>(value >> 16); // GPU_ID register: arch major sits in the top nibble
+
+		// 0xAAmmRRPP. The top byte is the arch major, at least 6 on any GPU kbase drives; 0 means none
+		// of the three shapes.
+		const u32 arch_major = (value >> 24) & 0xff, arch_minor = (value >> 16) & 0xff, arch_rev = (value >> 8) & 0xff, product_major = value & 0xff;
+		if (arch_major == 0 || arch_major > 0xf || arch_minor > 0xf || arch_rev > 0xf || product_major > 0xf)
+			return std::nullopt;
+		return static_cast<u16>((arch_major << 12) | (arch_minor << 8) | (arch_rev << 4) | product_major);
+	}
+
+	bool IsMalisx2Arch(unsigned arch_major, KbaseFrontend frontend)
+	{
+		const bool job_manager = arch_major == 7 || arch_major == 9;
+		const bool command_stream = arch_major == 10 || arch_major == 11;
+		switch (frontend)
+		{
+			case KbaseFrontend::JobManager:
+				return job_manager;
+			case KbaseFrontend::CommandStream:
+				return command_stream;
+			case KbaseFrontend::Unknown:
+				break;
+		}
+		return job_manager || command_stream;
+	}
+
+	bool IsMalisx2ProductId(u16 product_id, KbaseFrontend frontend)
+	{
+		return IsMalisx2Arch(product_id >> 12, frontend);
+	}
+
+	bool IsMalisx2GpuInfo(std::string_view gpuinfo, KbaseFrontend frontend)
+	{
+		if (const std::optional<u16> product_id = KbaseProductIdFromGpuInfo(gpuinfo))
+			return IsMalisx2ProductId(*product_id, frontend);
+
+		size_t start = 0;
+		while (start < gpuinfo.size() && std::isspace(static_cast<unsigned char>(gpuinfo[start])))
+			start++;
+		size_t end = start;
+		while (end < gpuinfo.size() && !std::isspace(static_cast<unsigned char>(gpuinfo[end])))
+			end++;
+		const std::string name = Lowercase(gpuinfo.substr(start, end - start));
+		// kbase's names for the parts of the four arches; anything else (Midgard's T-series, the
+		// G71/G72, the fifth-generation G720/G620) is not malisx2's.
+		static constexpr std::pair<const char*, unsigned> names[] = {
+			{"mali-g31", 7}, {"mali-g51", 7}, {"mali-g52", 7}, {"mali-g76", 7},
+			{"mali-g57", 9}, {"mali-g68", 9}, {"mali-g77", 9}, {"mali-g78", 9}, {"mali-g78ae", 9},
+			{"mali-g310", 10}, {"mali-g510", 10}, {"mali-g610", 10}, {"mali-g710", 10},
+			{"mali-g615", 11}, {"mali-g715", 11}, {"mali-g715-immortalis", 11}};
+		for (const auto& [known, arch] : names)
+		{
+			if (name == known)
+				return IsMalisx2Arch(arch, frontend);
+		}
+		return false;
+	}
+
+	KbaseFrontend KbaseFrontendFromSysfs(const std::string& sysfs_root)
+	{
+		// kbase registers the job-manager scheduler's attributes or the command-stream
+		// scheduler's, never both (mali_kbase_core_linux.c, kbase_attrs).
+		const fs::path device = fs::path(sysfs_root) / "class" / "misc" / "mali0" / "device";
+		std::error_code ec;
+		if (fs::exists(device / "js_timeouts", ec) || fs::exists(device / "js_scheduling_period", ec))
+			return KbaseFrontend::JobManager;
+		if (fs::exists(device / "csg_scheduling_period", ec))
+			return KbaseFrontend::CommandStream;
+		return KbaseFrontend::Unknown;
+	}
+
+	namespace
+	{
+		/// Reads a small text file to EOF. Sysfs attributes report a size of a page whatever they
+		/// hold, so nothing here may trust the size.
+		std::optional<std::string> ReadSmallFile(const std::string& path)
+		{
+			std::FILE* fp = std::fopen(path.c_str(), "rb");
+			if (!fp)
+				return std::nullopt;
+			std::string data;
+			char buffer[1024];
+			size_t n;
+			while ((n = std::fread(buffer, 1, sizeof(buffer), fp)) > 0 && data.size() < 16384)
+				data.append(buffer, n);
+			std::fclose(fp);
+			return data;
+		}
+	} // namespace
+
+	bool IsSupportedKbaseMaliGpu(const std::string& sysfs_root, const std::string& dev_root)
+	{
+		std::error_code ec;
+		if (!fs::exists(fs::path(dev_root) / "mali0", ec))
+			return false;
+		const std::optional<std::string> gpuinfo = ReadSmallFile((fs::path(sysfs_root) / "class" / "misc" / "mali0" / "device" / "gpuinfo").string());
+		return gpuinfo.has_value() && IsMalisx2GpuInfo(*gpuinfo, KbaseFrontendFromSysfs(sysfs_root));
+	}
+
+	const char* GpuFamilyKey(GpuFamily family)
+	{
+		switch (family)
+		{
+			case GpuFamily::Adreno:
+				return "adreno";
+			case GpuFamily::MaliKbase:
+				return "mali-kbase";
+			case GpuFamily::Unknown:
+				break;
+		}
+		return "unknown";
+	}
+
+	GpuFamily ParseGpuFamily(std::string_view key)
+	{
+		const std::string lower = Lowercase(key);
+		if (lower.empty() || lower == "adreno")
+			return GpuFamily::Adreno;
+		if (lower == "mali-kbase")
+			return GpuFamily::MaliKbase;
+		return GpuFamily::Unknown;
+	}
+
+	const char* GpuFamilyDescription(GpuFamily family)
+	{
+		switch (family)
+		{
+			case GpuFamily::Adreno:
+				return "Qualcomm Adreno GPU";
+			case GpuFamily::MaliKbase:
+				return "Arm Mali GPU that malisx2 supports";
+			case GpuFamily::Unknown:
+				break;
+		}
+		return "GPU this version of ARMSX2 does not know";
+	}
+
+	bool MachineHasGpuFamily(GpuFamily family, const std::string& sysfs_root, const std::string& dev_root)
+	{
+		switch (family)
+		{
+			case GpuFamily::Adreno:
+				return IsAdrenoGpu(sysfs_root);
+			case GpuFamily::MaliKbase:
+				return IsSupportedKbaseMaliGpu(sysfs_root, dev_root);
+			case GpuFamily::Unknown:
+				break;
+		}
+		return false;
+	}
+
 	namespace
 	{
 		// `platform` is what the caller is running on; empty means packs are not supported there.
-		Availability AvailabilityFor(const std::string& platform, const std::string& sysfs_root)
+		Availability AvailabilityFor(const std::string& platform, const std::vector<Feed>& feeds, const std::string& sysfs_root, const std::string& dev_root)
 		{
 			Availability result;
 			if (platform.empty())
 			{
 				result.reason = Availability::Reason::UnsupportedPlatform;
 				result.message = "Driver packs are not available on this platform.";
+				return result;
 			}
-			else if (!IsAdrenoGpu(sysfs_root))
+			for (const Feed& feed : feeds)
 			{
-				result.reason = Availability::Reason::NoMatchingGpu;
-				result.message = "No driver packs for this GPU.";
+				if (feed.platform == platform && MachineHasGpuFamily(feed.gpu, sysfs_root, dev_root))
+				{
+					result.reason = Availability::Reason::Available;
+					result.gpu = feed.gpu;
+					return result;
+				}
 			}
-			else
-				result.reason = Availability::Reason::Available;
+			result.reason = Availability::Reason::NoMatchingGpu;
+			result.message = "No driver packs for this GPU.";
 			return result;
 		}
-	}
+	} // namespace
 
-	Availability GetAvailability(const std::string& sysfs_root)
+	Availability GetAvailability(const std::string& sysfs_root, const std::string& dev_root)
 	{
-		return AvailabilityFor(CurrentPlatform(), sysfs_root);
+		return AvailabilityFor(CurrentPlatform(), DefaultFeeds(), sysfs_root, dev_root);
 	}
 
 	std::vector<Feed> DefaultFeeds()
@@ -288,7 +468,19 @@ namespace DriverPacks
 		turnip.releases_url = "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases";
 		turnip.asset_pattern = "turnip-*-aarch64.tar.gz";
 		turnip.platform = "linux-aarch64";
-		return {std::move(turnip)};
+		turnip.gpu = GpuFamily::Adreno;
+
+		// The same releases carry the Android pack, malisx2-<semver>-<commit>.zip, which the pattern
+		// leaves out.
+		Feed malisx2;
+		malisx2.id_prefix = "malisx2";
+		malisx2.label = "malisx2";
+		malisx2.releases_url = "https://api.github.com/repos/bmdhacks/malisx2/releases";
+		malisx2.asset_pattern = "malisx2-*-aarch64.tar.gz";
+		malisx2.platform = "linux-aarch64";
+		malisx2.gpu = GpuFamily::MaliKbase;
+
+		return {std::move(turnip), std::move(malisx2)};
 	}
 
 	std::string MakeDriverId(std::string_view prefix, std::string_view tag)
@@ -389,6 +581,7 @@ namespace DriverPacks
 					continue;
 
 				driver.feed_label = feed.label;
+				driver.gpu = feed.gpu;
 				driver.tag = tag;
 				driver.release_name = release_name;
 				driver.published_at = JsonString(release, "published_at");
@@ -701,6 +894,7 @@ namespace DriverPacks
 			driver.mesa_version = JsonString(meta, "mesaVersion");
 			driver.platforms = JsonString(meta, "platforms");
 			driver.archive_sha256 = JsonString(meta, "archiveSha256");
+			driver.gpu = ParseGpuFamily(JsonString(meta, "gpu"));
 			const auto installed_at = meta.FindMember("installedAt");
 			if (installed_at != meta.MemberEnd() && installed_at->value.IsInt64())
 				driver.installed_at = installed_at->value.GetInt64();
@@ -732,7 +926,7 @@ namespace DriverPacks
 
 	Availability Manager::GetAvailability() const
 	{
-		return AvailabilityFor(m_config.platform, m_config.sysfs_root);
+		return AvailabilityFor(m_config.platform, m_config.feeds, m_config.sysfs_root, m_config.dev_root);
 	}
 
 	std::vector<InstalledDriver> Manager::ListInstalled() const
@@ -798,7 +992,7 @@ namespace DriverPacks
 
 		for (const Feed& feed : m_config.feeds)
 		{
-			if (feed.platform != m_config.platform)
+			if (feed.platform != m_config.platform || !MachineHasGpuFamily(feed.gpu, m_config.sysfs_root, m_config.dev_root))
 				continue;
 			if (cancel.IsCancelled())
 				break;
@@ -880,6 +1074,8 @@ namespace DriverPacks
 		std::string feed_label;
 		std::string source_url;
 		std::string archive_sha256;
+		/// The feed's family; nullopt for an archive from disk, whose pack says itself.
+		std::optional<GpuFamily> gpu;
 	};
 
 	namespace
@@ -1013,6 +1209,43 @@ namespace DriverPacks
 		if (ec)
 			return done(InstallStatus::IoError, fmt::format("Could not prepare the pack folder: {}", ec.message()));
 
+		// What the pack says about itself (turnip and malisx2 packs ship a MANIFEST.json beside the
+		// library).
+		std::string build_tag, info_token, mesa_version, platforms, declared_gpu;
+		if (const auto text = FileSystem::ReadFileToString(Path::Combine(pack_dir, "MANIFEST.json").c_str()))
+		{
+			rapidjson::Document about;
+			if (Catalog::ParseJson(*text, &about) && about.IsObject())
+			{
+				build_tag = JsonString(about, "build_tag");
+				info_token = JsonString(about, "driver_info_token");
+				mesa_version = JsonString(about, "mesa_version");
+				platforms = JsonString(about, "platforms");
+				declared_gpu = JsonString(about, "gpu");
+			}
+		}
+
+		// The GPU the pack is for: the feed's, else what the pack says, else its library's name. A pack
+		// that names a family and contradicts its feed is refused.
+		GpuFamily gpu = GpuFamily::Adreno;
+		if (!declared_gpu.empty())
+		{
+			gpu = ParseGpuFamily(declared_gpu);
+			if (gpu == GpuFamily::Unknown)
+				return done(InstallStatus::BadArchive, fmt::format("The pack is for a GPU this version of ARMSX2 does not know (\"{}\").", declared_gpu));
+		}
+		else if (Lowercase(Path::GetFileName(library_rel)) == "libvulkan_malisx2.so")
+			gpu = GpuFamily::MaliKbase;
+		if (source.gpu.has_value())
+		{
+			if (!declared_gpu.empty() && gpu != *source.gpu)
+			{
+				return done(InstallStatus::BadArchive, fmt::format("The pack says it is for a {}, but it was published for a {}.",
+					GpuFamilyDescription(gpu), GpuFamilyDescription(*source.gpu)));
+			}
+			gpu = *source.gpu;
+		}
+
 		if (cancel.IsCancelled())
 			return done(InstallStatus::Cancelled, {});
 		report(InstallStage::Checking);
@@ -1033,20 +1266,6 @@ namespace DriverPacks
 			Error write_error;
 			if (!Catalog::WriteJsonFileAtomic(Path::Combine(pack_dir, manifest.file_name), doc, &write_error))
 				return done(InstallStatus::IoError, fmt::format("Could not write the driver manifest: {}", write_error.GetDescription()));
-		}
-
-		// What the pack says about itself (turnip packs ship a MANIFEST.json beside the library).
-		std::string build_tag, info_token, mesa_version, platforms;
-		if (const auto text = FileSystem::ReadFileToString(Path::Combine(pack_dir, "MANIFEST.json").c_str()))
-		{
-			rapidjson::Document about;
-			if (Catalog::ParseJson(*text, &about) && about.IsObject())
-			{
-				build_tag = JsonString(about, "build_tag");
-				info_token = JsonString(about, "driver_info_token");
-				mesa_version = JsonString(about, "mesa_version");
-				platforms = JsonString(about, "platforms");
-			}
 		}
 
 		{
@@ -1070,6 +1289,7 @@ namespace DriverPacks
 			put("driverInfoToken", info_token);
 			put("mesaVersion", mesa_version);
 			put("platforms", platforms);
+			put("gpu", GpuFamilyKey(gpu));
 			Error write_error;
 			if (!Catalog::WriteJsonFileAtomic(Path::Combine(pack_dir, META_FILE), meta, &write_error))
 				return done(InstallStatus::IoError, fmt::format("Could not write the driver's metadata: {}", write_error.GetDescription()));
@@ -1203,6 +1423,7 @@ namespace DriverPacks
 		source.feed_label = driver.feed_label;
 		source.source_url = driver.download_url;
 		source.archive_sha256 = actual;
+		source.gpu = driver.gpu;
 		return InstallArchive(archive_path, stage_root, driver.id, source, progress, cancel);
 #else
 		(void)report;
@@ -1293,7 +1514,7 @@ namespace DriverPacks
 		}
 	} // namespace
 
-	ApplyResult ApplyEnvironment(const std::string& drivers_dir, const std::string& pack_id, const std::string& sysfs_root)
+	ApplyResult ApplyEnvironment(const std::string& drivers_dir, const std::string& pack_id, const std::string& sysfs_root, const std::string& dev_root)
 	{
 		ApplyResult result;
 		result.pack_id = pack_id;
@@ -1318,19 +1539,26 @@ namespace DriverPacks
 			return RecordApply(result);
 		}
 
-		if (!IsAdrenoGpu(sysfs_root))
-		{
-			result.outcome = ApplyOutcome::GpuNotSupported;
-			result.message = fmt::format("DriverPacks: driver pack '{}' is selected but this machine has no Adreno GPU; using the system driver.", pack_id);
-			Console.WarningFmt("{}", result.message);
-			return RecordApply(result);
-		}
-
 		const std::optional<InstalledDriver> installed = ReadInstalledDriver(DriversDirAbsolute(drivers_dir), pack_id);
 		if (!installed.has_value())
 		{
 			result.outcome = ApplyOutcome::PackMissing;
 			result.message = fmt::format("DriverPacks: driver pack '{}' is selected but is not installed under {}; using the system driver.", pack_id, drivers_dir);
+			Console.WarningFmt("{}", result.message);
+			return RecordApply(result);
+		}
+
+		// VK_DRIVER_FILES replaces the loader's search, so a pack for another GPU would leave no Vulkan
+		// device at all.
+		result.gpu = installed->gpu;
+		if (!MachineHasGpuFamily(installed->gpu, sysfs_root, dev_root))
+		{
+			result.outcome = ApplyOutcome::GpuNotSupported;
+			result.message = (installed->gpu == GpuFamily::Unknown) ?
+			                     fmt::format("DriverPacks: driver pack '{}' is selected but it is for a {}; using the system driver.", pack_id,
+									 GpuFamilyDescription(installed->gpu)) :
+			                     fmt::format("DriverPacks: driver pack '{}' is selected but it is for a {}, and this machine has none; using the system driver.",
+									 pack_id, GpuFamilyDescription(installed->gpu));
 			Console.WarningFmt("{}", result.message);
 			return RecordApply(result);
 		}
@@ -1353,6 +1581,7 @@ namespace DriverPacks
 #else
 		(void)drivers_dir;
 		(void)sysfs_root;
+		(void)dev_root;
 		result.outcome = ApplyOutcome::Unsupported;
 		return RecordApply(result);
 #endif
@@ -1371,11 +1600,21 @@ namespace DriverPacks
 
 	bool ShouldOfferInSetup(const SetupContext& context)
 	{
-		return context.availability.IsAvailable() && !context.session_is_x11 && context.selected_pack.empty() &&
-		       context.installed_count == 0 && !context.environment_sets_driver;
+		if (!context.availability.IsAvailable() || !context.selected_pack.empty() || context.installed_count != 0 || context.environment_sets_driver)
+			return false;
+		switch (context.availability.gpu)
+		{
+			case GpuFamily::Adreno:
+				return !context.session_is_x11;
+			case GpuFamily::MaliKbase:
+				return !context.session_is_x11 && !context.session_is_wayland;
+			case GpuFamily::Unknown:
+				break;
+		}
+		return false;
 	}
 
-	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11)
+	SetupContext GetSetupContext(const Manager& manager, bool session_is_x11, bool session_is_wayland)
 	{
 		SetupContext context;
 		context.availability = manager.GetAvailability();
@@ -1383,17 +1622,23 @@ namespace DriverPacks
 		context.environment_sets_driver = EnvIsSet("VK_DRIVER_FILES") || EnvIsSet("VK_ICD_FILENAMES");
 		context.installed_count = manager.ListInstalled().size();
 		context.session_is_x11 = session_is_x11;
+		context.session_is_wayland = session_is_wayland;
 		return context;
 	}
 
-	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers)
+	const RemoteDriver* PickRecommended(const std::vector<RemoteDriver>& drivers, GpuFamily gpu)
 	{
+		const RemoteDriver* first = nullptr;
 		for (const RemoteDriver& driver : drivers)
 		{
+			if (gpu != GpuFamily::Unknown && driver.gpu != gpu)
+				continue;
 			if (!driver.prerelease)
 				return &driver;
+			if (!first)
+				first = &driver;
 		}
-		return drivers.empty() ? nullptr : &drivers.front();
+		return first;
 	}
 
 	namespace
