@@ -307,13 +307,10 @@ const char* GSUtil::AndroidAutoRendererReason()
 	return s_android_auto_reason;
 }
 
-bool GSUtil::MaliValhallArchPrefersVulkan(u32 valhall_arch, u16 model_number)
+bool GSUtil::MaliValhallArchPrefersVulkan(u32 valhall_arch)
 {
-	// v9 and v11 run Vulkan by default, and of v10 the G610 and G710, the v10 parts malisx2
-	// drives. The G310 and G510 stay on OpenGL, as does Bifrost.
-	if (valhall_arch == 10)
-		return model_number == 610 || model_number == 710;
-	return valhall_arch == 9 || valhall_arch == 11;
+	// Every Valhall arch runs Vulkan by default: v9, v10 and v11. Bifrost stays on OpenGL.
+	return valhall_arch == 9 || valhall_arch == 10 || valhall_arch == 11;
 }
 
 bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_view gl_renderer,
@@ -372,14 +369,14 @@ bool GSUtil::AndroidAutoPrefersVulkan(std::string_view gl_vendor, std::string_vi
 		return true;
 	}
 
-	// Mali Valhall v9, v11 and the v10 G610/G710 by architecture, whichever Vulkan driver is installed. Nothing here
+	// Mali Valhall v9, v10 and v11 by architecture, whichever Vulkan driver is installed. Nothing here
 	// looks at the Vulkan driver: Auto is decided from the system GL strings before a Vulkan device
 	// exists, and those are Arm's whether the user loads our malisx2 pack or not. Placed after the
 	// rules above so a device they already decide keeps the reason they report.
 	if (selection.runtime_profile == RuntimeGpuProfile::Mali)
 	{
 		const u32 valhall_arch = GpuProfileDetector::MaliValhallArch(selection.gpu.architecture);
-		if (MaliValhallArchPrefersVulkan(valhall_arch, selection.gpu.model_number))
+		if (MaliValhallArchPrefersVulkan(valhall_arch))
 		{
 			s_android_auto_reason_text = StringUtil::StdStringFromFormat(
 				"%s is Valhall v%u, which Auto runs on Vulkan", selection.gpu.name.c_str(), valhall_arch);
@@ -409,7 +406,7 @@ GSRendererType GSUtil::GetPreferredRenderer()
 #elif defined(__ANDROID__)
 		// Android: Auto resolves to Vulkan HW on Adreno (the tile-memory framebuffer-fetch fast
 		// path), on any device whose GL driver cannot read the render target in-tile, and on Mali
-		// Valhall v9, v11 and the v10 G610/G710. OpenGL HW elsewhere (the other Mali parts run
+		// Valhall v9, v10 and v11. OpenGL HW elsewhere (the other Mali parts run
 		// GL_ARM_shader_framebuffer_fetch, which is the fast path there; Xclipse has no working VK
 		// fbfetch). The app sets g_gs_android_prefer_vk from AndroidAutoPrefersVulkan before the
 		// GS starts. This only steers Auto — an explicit Vulkan/OpenGL/SW pick still wins.
