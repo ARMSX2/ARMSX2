@@ -91,9 +91,9 @@ public:
 		/// VK_ANDROID_external_memory_android_hardware_buffer with VK_EXT_queue_family_foreign:
 		/// remote play's frames go to the video encoder as shared buffers (GSRemotePlay.h).
 		bool vk_android_external_memory_ahb : 1;
-		/// VK_EXT_descriptor_indexing with non-uniform sampled-image indexing, runtime arrays and a variable count:
-		/// the run machine (GSRunsVK) samples each merged draw's own texture from one array. Requested wherever
-		/// the driver has all four features.
+		/// VK_EXT_descriptor_indexing with non-uniform sampled-image indexing, runtime arrays and partially bound
+		/// bindings: the run machine (GSRunsVK) samples each merged draw's own texture from one array. Requested
+		/// wherever the driver has all three features.
 		bool vk_ext_descriptor_indexing : 1;
 	};
 

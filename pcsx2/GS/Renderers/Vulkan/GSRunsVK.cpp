@@ -39,9 +39,13 @@ namespace
 	constexpr u32 RUN_WINDOW = 256 * 1024;
 	constexpr u32 MAX_DRAWS = (RUN_WINDOW - TABLE_SKIP) / 32;
 	constexpr u32 RING_SIZE = 16 * 1024 * 1024;
-	constexpr u32 MAX_TEXTURES = 1024;
+	// Every run's texture set is the whole array, whatever the run holds: no variable descriptor count, which Qualcomm's
+	// 8xx-generation drivers refuse below the binding's size. Over the runs corpus and the report dumps the median run
+	// holds 1 texture and the 99th percentile 79 (Spider-Man 3); an array of 32 cuts 2% of runs and adds 2 host draws to
+	// the worst frame, and its pool of 256 sets is the 8,192 descriptors the variable sets had
+	// (umbrella campaigns/qcom8xx-lowmem-2026-11-11/census).
+	constexpr u32 MAX_TEXTURES = 32;
 	constexpr u32 POOL_SETS = 256;
-	constexpr u32 POOL_DESCRIPTORS = 8192;
 	// A slot's pools serve one command buffer's runs. Past this many, the allocations fail for another reason than full
 	// pools, and the machine stops rather than grow without bound.
 	constexpr u32 MAX_SLOT_POOLS = 64;
@@ -148,8 +152,8 @@ bool GSRunsVK::Init()
 		return false;
 
 	{
-		const VkDescriptorBindingFlagsEXT flags =
-			VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
+		// Partially bound: a run writes only the textures it holds.
+		const VkDescriptorBindingFlagsEXT flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
 		const VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bfci = {
 			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT, nullptr, 1, &flags};
 		const VkDescriptorSetLayoutBinding binding = {
@@ -766,8 +770,6 @@ VkDescriptorSet GSRunsVK::WriteTextureSet()
 	const u32 count = static_cast<u32>(m_textures.size());
 
 	VkDescriptorSet set = VK_NULL_HANDLE;
-	const VkDescriptorSetVariableDescriptorCountAllocateInfoEXT vci = {
-		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT, nullptr, 1, &count};
 	for (;;)
 	{
 		bool fresh = false;
@@ -781,7 +783,7 @@ VkDescriptorSet GSRunsVK::WriteTextureSet()
 				m_sets_failed = true;
 				return VK_NULL_HANDLE;
 			}
-			const VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, std::max(POOL_DESCRIPTORS, m_max_textures)};
+			const VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, POOL_SETS * m_max_textures};
 			const VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr, 0, POOL_SETS, 1, &size};
 			VkDescriptorPool pool;
 			if (vkCreateDescriptorPool(device, &pci, nullptr, &pool) != VK_SUCCESS)
@@ -790,14 +792,14 @@ VkDescriptorSet GSRunsVK::WriteTextureSet()
 			fresh = true;
 		}
 		const VkDescriptorSetAllocateInfo ai = {
-			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, &vci, fp.pools[fp.cursor], 1, &m_set1_layout};
+			VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, fp.pools[fp.cursor], 1, &m_set1_layout};
 		const VkResult res = vkAllocateDescriptorSets(device, &ai, &set);
 		if (res == VK_SUCCESS)
 			break;
 		if (fresh)
 		{
-			// An empty pool refused the set, so no new pool will take it (Qualcomm's 8xx-generation drivers). The pool
-			// was never used and goes now.
+			// An empty pool refused the set, so no new pool will take it (Qualcomm's 8xx-generation drivers did, for
+			// the variable-count sets this machine once used). The pool was never used and goes now.
 			Console.Error("VK: run machine stopped: an empty descriptor pool refused a set of %u textures (%s); drawing "
 						  "every draw classically",
 				count, Vulkan::VkResultToString(res));
