@@ -1573,6 +1573,51 @@ VkRenderPass GSDeviceVK::GetRenderPass(VkFormat color_format, VkFormat depth_for
 	return CreateCachedRenderPass(key);
 }
 
+GSVector4i GSDeviceVK::NarrowRenderArea(const GSVector4i& drawarea, const GSVector2i& size)
+{
+	// drawarea gets a two-pixel margin: its edges can land a device pixel short, and it leaves out the vertex shader's
+	// offset.
+	static constexpr int MARGIN = 2;
+	return (drawarea + GSVector4i(-MARGIN, -MARGIN, MARGIN, MARGIN)).rintersect(GSVector4i::loadh(size));
+}
+
+GSVector4i GSDeviceVK::AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& size)
+{
+	// The granularity is the tile size on every driver, so it is asked once. An unaligned area is only slower.
+	if (m_render_area_granularity.width == 0)
+	{
+		vkGetRenderAreaGranularity(m_device, rp, &m_render_area_granularity);
+		m_render_area_granularity.width = std::max(m_render_area_granularity.width, 1u);
+		m_render_area_granularity.height = std::max(m_render_area_granularity.height, 1u);
+	}
+	const s32 gw = static_cast<s32>(m_render_area_granularity.width);
+	const s32 gh = static_cast<s32>(m_render_area_granularity.height);
+	const GSVector4i aligned((area.left / gw) * gw, (area.top / gh) * gh, ((area.right + gw - 1) / gw) * gw,
+		((area.bottom + gh - 1) / gh) * gh);
+	return aligned.rintersect(GSVector4i::loadh(size));
+}
+
+bool GSDeviceVK::IsDeviceNamed(const char* name) const
+{
+	// Mesa names a Mali "Mali-" and its short name, then a space and more: "Mali-G31" must not match the G310.
+	const size_t len = std::strlen(name);
+	const char* device = m_device_properties.deviceName;
+	return std::strncmp(device, name, len) == 0 && (device[len] == '\0' || device[len] == ' ');
+}
+
+bool GSDeviceVK::IsDevicePanVKBifrost() const
+{
+	if (m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_PANVK)
+		return false;
+	static constexpr const char* bifrost[] = {"Mali-G31", "Mali-G51", "Mali-G52", "Mali-G71", "Mali-G72", "Mali-G76"};
+	for (const char* name : bifrost)
+	{
+		if (IsDeviceNamed(name))
+			return true;
+	}
+	return false;
+}
+
 VkRenderPass GSDeviceVK::GetRenderPassForRestarting(VkRenderPass pass)
 {
 	for (const auto& it : m_render_pass_cache)
@@ -4446,6 +4491,7 @@ void GSDeviceVK::ResolveFeatureTable()
 #endif
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
+	m_narrow_render_area = IsDevicePanVKBifrost();
 	m_features.sprite_edge_clamp = true;
 	m_features.sprite_ramp = true;
 
@@ -5252,6 +5298,9 @@ void GSDeviceVK::DoMultiStretchRects(
 	// Even though we're batching, a cmdbuffer submit could've messed this up.
 	const GSVector4i rc(dTex->GetRect());
 	OMSetRenderTargets(dTex->IsRenderTarget() ? dTex : nullptr, dTex->IsDepthStencil() ? dTex : nullptr, rc);
+	// A pass opened over its draws (m_narrow_render_area) holds the rects only if it covers the target.
+	if (m_narrow_render_area && InRenderPass() && !m_current_render_pass_area.rcontains(rc))
+		EndRenderPass();
 	if (!InRenderPass())
 		BeginRenderPassForStretchRect(dTex, rc, rc, false);
 	SetUtilityTexture(rects[0].src, rects[0].filter == Biln ? m_linear_sampler : m_point_sampler);
@@ -5334,6 +5383,14 @@ void GSDeviceVK::DoStretchRect(GSTextureVK* sTex, const GSVector4& sRect, GSText
 		OMSetRenderTargets(depth ? nullptr : dTex, depth ? dTex : nullptr, dst_rc);
 		if (InRenderPass() && dTex->GetState() == GSTexture::State::Cleared)
 			EndRenderPass();
+		// A pass opened over its draws (m_narrow_render_area) holds the stretch only if it covers it.
+		if (m_narrow_render_area && InRenderPass() &&
+			!m_current_render_pass_area.rcontains(GSVector4i(static_cast<int>(std::floor(dRect.x)),
+				static_cast<int>(std::floor(dRect.y)), static_cast<int>(std::ceil(dRect.z)),
+				static_cast<int>(std::ceil(dRect.w))).rintersect(dtex_rc)))
+		{
+			EndRenderPass();
+		}
 	}
 	else
 	{
@@ -10539,6 +10596,23 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	OMSetRenderTargets(draw_rt, draw_ds, to_draw_size(config.scissor), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 
+	// A pass opened over its draws cannot hold one that reaches outside it, and an open pass cannot be widened, so such a
+	// draw ends it and the pass reopens over the union of the two, or over the whole target the second time.
+	static constexpr u32 MAX_RENDER_AREA_GROWTHS = 1;
+	GSVector4i narrow_area, grown_area;
+	if (m_narrow_render_area) [[unlikely]]
+	{
+		narrow_area = NarrowRenderArea(to_draw_size(config.drawarea), draw_size);
+		grown_area = GSVector4i::zero();
+		if (InRenderPass() && !m_current_render_pass_area.rcontains(narrow_area))
+		{
+			grown_area = (m_render_area_growths < MAX_RENDER_AREA_GROWTHS) ? m_current_render_pass_area.runion(narrow_area) :
+			                                                                  GSVector4i::loadh(draw_size);
+			m_render_area_growths++;
+			EndRenderPass();
+		}
+	}
+
 	// Begin render pass if new target or out of the area.
 	if (!InRenderPass())
 	{
@@ -10559,16 +10633,28 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
 		// buffer size, otherwise it'll only clear the draw part of the depth buffer.
 		//
-		// A TFX pass is opened at the full render target on purpose. Sizing it to its draws instead
-		// (grow to the union of what it holds, pad 2 px, align to the render-area granularity)
-		// removed 98% of Stuntman's render-pass area and moved GPU time by +0.01%..+0.09% on Apple
-		// silicon, +0.59 ms on a Snapdragon 865, and flat to +40% on a Mali-G615. None of Turnip,
-		// Honeykrisp or the Mali driver charge for render-pass AREA -- each charges roughly 12-34
-		// microseconds per PASS, and a narrower area only forces more of them. Commit f9b5395855 has
-		// the mechanism this reverted, and the measurements behind these numbers.
-		const GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
+		// A TFX pass is opened at the full render target except where the driver pays for render-pass area
+		// (m_narrow_render_area). Turnip, Honeykrisp and Arm's Mali driver charge roughly 12-34 microseconds per
+		// PASS and nothing for area, so the extra passes a narrow area forces made them slower (commit f9b5395855).
+		// PanVK on Bifrost loads and stores every tile of the area, and there the narrow pass wins.
+		GSVector4i render_area = (pipe.ps.colclip_hw && (config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertAndResolve) && ds_op != VK_ATTACHMENT_LOAD_OP_CLEAR)
 		                             ? to_draw_size(config.drawarea)
 		                             : GSVector4i::loadh(draw_size);
+
+		// Over its draws instead, except for a clearing pass (the clear is the load op), colclip (its blit covers the
+		// target) and a DONT_CARE load (narrowing would change which pixels are undefined).
+		if (m_narrow_render_area)
+		{
+			if (!is_clearing_rt && !pipe.ps.colclip_hw && (!draw_rt || rt_op == VK_ATTACHMENT_LOAD_OP_LOAD) &&
+				(!draw_ds || ds_op == VK_ATTACHMENT_LOAD_OP_LOAD))
+			{
+				const GSVector4i want = grown_area.rempty() ? narrow_area : grown_area;
+				if (!want.rempty())
+					render_area = AlignRenderArea(rp, want, draw_size);
+			}
+			if (grown_area.rempty())
+				m_render_area_growths = 0;
+		}
 
 		if (is_clearing_rt)
 		{
@@ -10595,6 +10681,11 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			BeginRenderPass(rp, render_area);
 		}
 	}
+
+	// Nothing may render outside the render area. drawarea already bounds the geometry, so this only turns a wrong
+	// bound into a clip.
+	if (m_narrow_render_area)
+		SetScissor(to_draw_size(config.scissor).rintersect(m_current_render_pass_area));
 
 	// The kept target copy follows the target into the pass this draw opened. Nothing wrote the
 	// target between the pass it was live in and this one: only this function ran, and its setup
@@ -10831,6 +10922,11 @@ bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt,
 	if (draw_rt != m_current_render_target || draw_ds != m_current_depth_target ||
 		(draw_rt && draw_rt->GetState() != GSTexture::State::Dirty) || (draw_ds && draw_ds->GetState() != GSTexture::State::Dirty))
 		return refuse(3);
+	// A pass opened over its draws holds only the rows inside it, as DoRenderHW keeps only such draws in it: nothing may
+	// render outside a pass's area. The others take the full path, which opens a wider pass.
+	if (m_narrow_render_area &&
+		!m_current_render_pass_area.rcontains(NarrowRenderArea(config.drawarea, (draw_rt ? draw_rt : draw_ds)->GetSize())))
+		return refuse(9);
 	// The open pass's feedback bits, kept on the draw where its road carries them (the draw reads nothing itself).
 	// Anything else would end the pass.
 	u32 loop = FeedbackLoopFlag_None;
