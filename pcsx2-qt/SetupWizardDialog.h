@@ -111,6 +111,8 @@ private:
 	std::optional<DriverPacks::RemoteDriver> m_driver_offer;
 	Catalog::CancelToken m_driver_cancel;
 	bool m_driver_page_enabled = false;
+	/// The GPU family the offered pack must be for (the machine's), from setupDriverPage.
+	DriverPacks::GpuFamily m_driver_gpu = DriverPacks::GpuFamily::Unknown;
 	bool m_driver_listing_started = false;
 	bool m_driver_installing = false;
 	bool m_driver_installed = false;

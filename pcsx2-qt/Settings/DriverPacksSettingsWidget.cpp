@@ -114,7 +114,8 @@ void DriverPacksSettingsWidget::init()
 		m_ui.availabilityLabel->setText(
 			availability.reason == DriverPacks::Availability::Reason::UnsupportedPlatform ?
 				tr("Driver packs are not available on this platform.") :
-				tr("No driver packs for this GPU. Driver packs are Turnip builds of the Vulkan driver for Qualcomm Adreno GPUs, and this device has none."));
+				tr("No driver packs for this GPU. Driver packs are Turnip builds of the Vulkan driver for Qualcomm Adreno GPUs and malisx2 builds for Arm Mali GPUs "
+				   "that run Arm's kernel driver (kbase), and this device has neither."));
 		m_ui.availableGroup->setVisible(false);
 		if (!m_manageable)
 			return;
@@ -236,7 +237,12 @@ void DriverPacksSettingsWidget::refreshCurrent()
 
 		case DriverPacks::ApplyOutcome::GpuNotSupported:
 			text = tr("Using the system Vulkan driver.");
-			note = tr("The driver pack %1 is selected, but this device has no Adreno GPU, so it is not used.").arg(QString::fromStdString(applied.pack_id));
+			if (applied.gpu == DriverPacks::GpuFamily::MaliKbase)
+				note = tr("The driver pack %1 is selected, but this device has no Mali GPU that malisx2 supports on Arm's kernel driver, so it is not used.").arg(QString::fromStdString(applied.pack_id));
+			else if (applied.gpu == DriverPacks::GpuFamily::Unknown)
+				note = tr("The driver pack %1 is for a GPU this version of ARMSX2 does not know, so it is not used.").arg(QString::fromStdString(applied.pack_id));
+			else
+				note = tr("The driver pack %1 is selected, but this device has no Adreno GPU, so it is not used.").arg(QString::fromStdString(applied.pack_id));
 			break;
 
 		case DriverPacks::ApplyOutcome::SystemDriver:
@@ -691,6 +697,7 @@ namespace
 
 		DriverPacks::ManagerConfig config = DriverPacks::ManagerConfig::ForUser();
 		config.sysfs_root = s_sysfs->path().toStdString();
+		config.dev_root = root.filePath(QStringLiteral("dev")).toStdString(); // no /dev/mali0: not a kbase Mali either
 		DriverPacksSettingsWidget* page = new DriverPacksSettingsWidget(window, nullptr, std::move(config), platform_name);
 		page->resize(760, 820);
 		return page;
