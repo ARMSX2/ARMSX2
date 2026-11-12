@@ -200,5 +200,6 @@ private:
 	std::unordered_map<u64, Pending> m_pending;
 	std::vector<FramePools> m_frame_pools;
 	u64 m_pool_fence = 0;
+	bool m_sets_failed = false; ///< the driver refuses the run's texture sets: every draw is drawn classically from here on
 	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
 };
