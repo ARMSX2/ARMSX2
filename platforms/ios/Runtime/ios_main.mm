@@ -8,6 +8,7 @@
 #import <GameController/GameController.h>
 
 // SwiftUI integration — Xcode names the generated header after the Swift module.
+#import <MetalKit/MetalKit.h>
 #import "ARMSX2iOS-Swift.h"
 #import <SwiftUI/SwiftUI.h>
 

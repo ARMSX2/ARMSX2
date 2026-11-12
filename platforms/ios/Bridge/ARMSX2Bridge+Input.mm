@@ -3,6 +3,7 @@
 
 #import "ARMSX2BridgeInternal.h"
 #import <GameController/GameController.h>
+#import <MetalKit/MetalKit.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
 #import "ARMSX2iOS-Swift.h"

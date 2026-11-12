@@ -6,7 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 APPEARANCE = swift("SettingsStore+Appearance.swift")
-DYNAMIC = swift("DynamicBackgroundPresentation.swift")
+DYNAMIC = swift("DynamicBackgroundAppearanceSections.swift")
 
 
 class NoJITThemeRespectsTheUpgrader(unittest.TestCase):

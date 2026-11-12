@@ -18,6 +18,7 @@
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 
+#import <MetalKit/MetalKit.h>
 #import "ARMSX2iOS-Swift.h"
 #import "ARMSX2Bridge.h"
 

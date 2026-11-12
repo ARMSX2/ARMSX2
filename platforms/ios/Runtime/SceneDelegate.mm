@@ -49,6 +49,7 @@
 #import <GameController/GameController.h>
 
 // Xcode names the generated Swift bridge header after the Swift module.
+#import <MetalKit/MetalKit.h>
 #import "ARMSX2iOS-Swift.h"
 
 #include "IOSRuntime.h"
