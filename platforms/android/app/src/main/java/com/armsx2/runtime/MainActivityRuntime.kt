@@ -232,13 +232,13 @@ open class MainActivityRuntime : ComponentActivity() {
             prefs.edit { putStringSet(KEY_ROMS_DIRS_WITHOUT_SUBFOLDERS, updated) }
         }
 
-        // Default backend is "auto" — emucore's GSUtil::GetPreferredRenderer
-        // picks at runtime per device. The setup wizard no longer asks; the
-        // in-game overlay's Renderer tab is where users override (OpenGL /
-        // Software cycle, plus Mali/Adreno-specific paths once those land).
+        // Default backend is "vulkan", the same as Settings' default; the
+        // saved settings replace it at launch. "auto" lets emucore's
+        // GSUtil::GetPreferredRenderer pick per device. The setup wizard does
+        // not ask; the Renderer tab is where users override.
         // `upscale` (1.0..5.0) still persists; it's exposed in the in-game
         // overlay's Renderer tab.
-        val renderer = mutableStateOf("auto")
+        val renderer = mutableStateOf("vulkan")
         val upscale = androidx.compose.runtime.mutableFloatStateOf(1.0f)
 
         /** Active custom Vulkan driver id (matches `CustomDriver.InstalledDriver.id`).
