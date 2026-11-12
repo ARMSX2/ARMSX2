@@ -145,8 +145,11 @@ namespace mVUPersist
 	// Address-operand audit. While enabled, every recorded chunk is decoded
 	// in place and each instruction that carries a host address no fixup
 	// covers (out-of-chunk PC-relative operand, or an immediate-move run whose
-	// value lands in a mapped region) is counted by form and region. Enabling
-	// clears the census. A persistable chunk must audit clean: an uncovered
+	// value lands in a mapped region) is counted by form and region. A 64-bit
+	// immediate outside the signed 32-bit range that lands in no region is
+	// counted too, as "movseq->no-region": the distance between two regions
+	// is such a value, and it is only right in the process that emitted it.
+	// Enabling clears the census. A persistable chunk must audit clean: an uncovered
 	// address is one hydration in another process would leave stale.
 	void TestSetAuditEnabled(bool enabled);
 	u64 TestAuditUncoveredCount();

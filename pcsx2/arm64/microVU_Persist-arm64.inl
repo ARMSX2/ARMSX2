@@ -557,8 +557,13 @@ namespace mVUPersist
 		out.chunks++;
 		out.insns += n;
 
-		auto note = [&](u32 idx, const char* form, uptr value) {
+		// `wide`: a 64-bit immediate that is in no region still counts when it is too large to be a
+		// count, mask or offset. That is the distance between two regions (or an address the audit
+		// cannot place), which another process's layout makes wrong and no fixup can repair.
+		auto note = [&](u32 idx, const char* form, uptr value, bool wide = false) {
 			const char* region = AuditRegion(mVU, log, value);
+			if (!region && wide && !covered[idx])
+				region = "no-region";
 			if (!region)
 				return;
 			const std::string key = std::string(form) + "->" + region;
@@ -657,7 +662,10 @@ namespace mVUPersist
 					out.data32++;
 			}
 			else if (value >= 0x10000)
-				note(i, "movseq", static_cast<uptr>(value));
+			{
+				const s64 sv = static_cast<s64>(value);
+				note(i, "movseq", static_cast<uptr>(value), sv >= (s64{1} << 32) || sv < -(s64{1} << 31));
+			}
 			i = j - 1;
 		}
 	}

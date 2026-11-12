@@ -66,6 +66,8 @@ struct Program
 	const char* name;
 	std::function<void(VuTestHarness&)> setup;
 	std::vector<VuOp> pairs;
+	// Optional: what the run must leave behind, whichever engine or copy of the code ran it.
+	std::function<void(const VuSnapshot&, const char* who)> check;
 };
 
 // The programs the cross-process test records in a child and hydrates in the
@@ -115,6 +117,82 @@ const std::vector<Program>& Programs()
 	return progs;
 }
 
+// VU0's window onto VU1's register file: an address index with bit 0x400 set reaches 64 quadwords of VU1's
+// registers, VF0..VF31 then VI0..VI31. VU1's registers are in the emulator image and VU0's data memory is in
+// the data arena, so the code that turns the index into an address spans two regions that move apart from one
+// process to the next. The program loads a VF and a VI quadword through the window and stores one of each.
+constexpr u32 kWindow = 0x400;
+constexpr u32 kWindowVi = kWindow + 32;
+
+constexpr u32 Vu1VfPattern(u32 reg, u32 lane) { return 0xE0000000u | (reg << 8) | (lane << 4) | 3u; }
+constexpr u32 Vu1ViPattern(u32 reg) { return 0xF000u | (reg << 4) | 5u; }
+constexpr u32 kStoredVf[4] = {0x11110001u, 0x22220002u, 0x33330003u, 0x44440004u};
+constexpr u32 kStoredVi = 0x1234u;
+
+const Program& WindowProgram()
+{
+	static const Program prog = {"vu1-window",
+		[](VuTestHarness& h) {
+			h.SetVi(vi::vi1, kWindow + 7); // VU1's VF[7], loaded
+			h.SetVi(vi::vi2, kWindowVi + 5); // VU1's VI[5], loaded
+			h.SetVi(vi::vi3, kWindow + 9); // VU1's VF[9], stored
+			h.SetVi(vi::vi4, kWindowVi + 6); // VU1's VI[6], stored
+			h.SetVi(vi::vi5, kStoredVi);
+			h.SetVfBits(1, kStoredVf[0], kStoredVf[1], kStoredVf[2], kStoredVf[3]);
+			// The harness does not drive VU1's registers; it snapshots and restores them as VU0 state.
+			for (u32 r = 0; r < 32; r++)
+			{
+				for (u32 l = 0; l < 4; l++)
+					vuRegs[1].VF[r].UL[l] = Vu1VfPattern(r, l);
+				vuRegs[1].VI[r].UL = Vu1ViPattern(r);
+			}
+		},
+		{
+			LowerOnly(VLQ_L(mask::xyzw, vf::vf2, vi::vi1, 0)),
+			LowerOnly(VILW_L(mask::x, vi::vi6, vi::vi2, 0)),
+			LowerOnly(VSQ_L(mask::xyzw, vf::vf1, vi::vi3, 0)),
+			LowerOnly(VISW_L(mask::x, vi::vi5, vi::vi4, 0)),
+			EBitNopPair(),
+		},
+		[](const VuSnapshot& s, const char* who) {
+			for (u32 l = 0; l < 4; l++)
+				EXPECT_EQ(s.regs.VF[2].UL[l], Vu1VfPattern(7, l)) << who << ": LQ of VU1's VF[7], lane " << l;
+			EXPECT_EQ(s.regs.VI[6].UL & 0xffffu, Vu1ViPattern(5)) << who << ": ILW of VU1's VI[5]";
+
+			ASSERT_EQ(s.vu1_window.size(), 64u * 16u) << who;
+			u32 vf9[4], vi6;
+			std::memcpy(vf9, s.vu1_window.data() + 9 * 16, sizeof(vf9));
+			std::memcpy(&vi6, s.vu1_window.data() + (32 + 6) * 16, sizeof(vi6));
+			for (u32 l = 0; l < 4; l++)
+				EXPECT_EQ(vf9[l], kStoredVf[l]) << who << ": SQ into VU1's VF[9], lane " << l;
+			EXPECT_EQ(vi6 & 0xffffu, kStoredVi) << who << ": ISW into VU1's VI[6]";
+			// The neighbours on each side of both stores are untouched.
+			for (const u32 r : {8u, 10u})
+			{
+				u32 x;
+				std::memcpy(&x, s.vu1_window.data() + r * 16, sizeof(x));
+				EXPECT_EQ(x, Vu1VfPattern(r, 0)) << who << ": VU1's VF[" << r << "] changed";
+			}
+			for (const u32 r : {5u, 7u})
+			{
+				u32 x;
+				std::memcpy(&x, s.vu1_window.data() + (32 + r) * 16, sizeof(x));
+				EXPECT_EQ(x, Vu1ViPattern(r)) << who << ": VU1's VI[" << r << "] changed";
+			}
+		}};
+	return prog;
+}
+
+// Programs() and the window program: everything the cross-process test moves.
+std::vector<const Program*> AllPrograms()
+{
+	std::vector<const Program*> all;
+	for (const Program& p : Programs())
+		all.push_back(&p);
+	all.push_back(&WindowProgram());
+	return all;
+}
+
 void Load(VuTestHarness& h, const Program& p)
 {
 	p.setup(h);
@@ -144,6 +222,11 @@ void HydrateAndCompare(const Program& p, const std::vector<u8>& image)
 	Load(h, p);
 	h.Run(); // fresh compile in this process, and the pre-state for the replay below
 	const VuSnapshot fresh = h.JitSnapshot();
+	if (p.check)
+	{
+		p.check(h.InterpSnapshot(), "interpreter");
+		p.check(fresh, "fresh compile");
+	}
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
 
@@ -153,6 +236,8 @@ void HydrateAndCompare(const Program& p, const std::vector<u8>& image)
 	h.RunJitPreserveBlockCache();
 	EXPECT_EQ(mVUPersist::GetBlockCompileCount(0), compiles_before)
 		<< p.name << ": the hydrated program compiled";
+	if (p.check)
+		p.check(h.JitSnapshot(), "hydrated");
 	const auto diffs = DiffVu(fresh, h.JitSnapshot(), VuDiffMode::Strict);
 	EXPECT_TRUE(diffs.empty()) << [&] {
 		std::string s = std::string(p.name) + ": hydrated run diverged from a fresh compile:\n";
@@ -191,8 +276,8 @@ constexpr u32 kXprocMagic = 0x58505631u; // 'XPV1'
 TEST_F(MvuPersistRelocation, RecordedChunksCarryNoUncoveredAddress)
 {
 	mVUPersist::TestSetAuditEnabled(true);
-	for (const Program& p : Programs())
-		RecordProgram(p);
+	for (const Program* p : AllPrograms())
+		RecordProgram(*p);
 	EXPECT_EQ(mVUPersist::TestAuditUncoveredCount(), 0u) << mVUPersist::TestAuditReport();
 	EXPECT_GT(mVUPersist::TestAuditCoveredCount("movseq->image"), 0u)
 		<< "no image address was recorded; the probes no longer reach a C helper or global\n"
@@ -212,12 +297,14 @@ TEST_F(MvuPersistRelocation, CrossProcessChildRecord)
 	mVUPersist::TestGetRegionBases(image_base, data_base);
 	std::FILE* f = std::fopen(out, "wb");
 	ASSERT_NE(f, nullptr);
-	const u32 count = static_cast<u32>(Programs().size());
+	const std::vector<const Program*> programs = AllPrograms();
+	const u32 count = static_cast<u32>(programs.size());
 	std::fwrite(&kXprocMagic, sizeof(kXprocMagic), 1, f);
 	std::fwrite(&image_base, sizeof(image_base), 1, f);
 	std::fwrite(&count, sizeof(count), 1, f);
-	for (const Program& p : Programs())
+	for (const Program* pp : programs)
 	{
+		const Program& p = *pp;
 		const std::vector<u8> image = RecordProgram(p);
 		const u32 size = static_cast<u32>(image.size());
 		std::fwrite(&size, sizeof(size), 1, f);
@@ -269,7 +356,8 @@ TEST_F(MvuPersistRelocation, HydratesPayloadFromAnotherProcess)
 	ASSERT_EQ(magic, kXprocMagic);
 	ASSERT_EQ(std::fread(&child_image_base, sizeof(child_image_base), 1, f), 1u);
 	ASSERT_EQ(std::fread(&count, sizeof(count), 1, f), 1u);
-	ASSERT_EQ(count, Programs().size());
+	const std::vector<const Program*> programs = AllPrograms();
+	ASSERT_EQ(count, programs.size());
 	std::vector<std::vector<u8>> images(count);
 	for (auto& image : images)
 	{
@@ -290,15 +378,16 @@ TEST_F(MvuPersistRelocation, HydratesPayloadFromAnotherProcess)
 		                "the test proves nothing about relocation";
 
 	for (size_t i = 0; i < count; i++)
-		HydrateAndCompare(Programs()[i], images[i]);
+		HydrateAndCompare(*programs[i], images[i]);
 #endif
 }
 
 // (c) The recorded bases in the header are informational.
 TEST_F(MvuPersistRelocation, HeaderBasesDoNotGateHydration)
 {
-	for (const Program& p : Programs())
+	for (const Program* pp : AllPrograms())
 	{
+		const Program& p = *pp;
 		std::vector<u8> image = RecordProgram(p);
 		ASSERT_TRUE(mVUPersist::TestOverwriteHeaderBases(image, 0x0123456789ab0000ull));
 		HydrateAndCompare(p, image);
