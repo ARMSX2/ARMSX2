@@ -71,6 +71,9 @@ namespace IopThread
 		u32 window_channels = 3;
 		/// LagRule::Window and IdleOutstanding: a SIF0 transfer or SBUS interrupt from the IOP ends the window and the outstanding request.
 		bool close_on_reply = true;
+		/// LagRule::Window: with close_on_reply, whether a reply ends the window too. Off, the window runs its full length: the first thing
+		/// the IOP sends back after a request is often not the end of the request (God of War II's movie player, IopThreadVm.cpp).
+		bool window_close_on_reply = true;
 		/// LagRule::IdleOutstanding: a request older than this (EE cycles) is no longer outstanding.
 		u32 outstanding_max_age = 4915200;
 		/// LagRule::Mailbox and Poll: window lengths.

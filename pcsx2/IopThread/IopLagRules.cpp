@@ -72,7 +72,7 @@ namespace IopThread
 		if (!m_cfg.mask || !m_cfg.close_on_reply)
 			return;
 		m_outstanding = false;
-		if (Open(m_window_until, cycle))
+		if (m_cfg.window_close_on_reply && Open(m_window_until, cycle))
 		{
 			m_window_until = cycle;
 			m_stats.window_closed_by_reply++;
