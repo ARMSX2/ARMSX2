@@ -19,6 +19,7 @@
 //     recompiler sets at reserve and reset;
 //   - the faulting instruction word, inside the code area, which is mapped
 //     readable as a whole;
+//   - the loaded-module table ModuleMap keeps, for a pc outside the code area;
 //   - the block lists (BASEBLOCKEX arrays, microVU's programs), only
 //     for a pc in that recompiler's code, so only on the thread that compiles
 //     into them, which was running generated code and not changing them;
@@ -58,7 +59,17 @@
 // The first line names the signal and its si_code ("si_code N" when the code
 // has no name) and gives the fault address. The thread line has the kernel's
 // thread id and name. The pc line, for a pc outside the code area, ends
-// "not in recompiled code" and has no instruction. Otherwise it gives the
+// "not in recompiled code" and has no instruction; when the pc is in a loaded
+// module it goes on to name it, the pc's ELF address in it (what addr2line
+// and llvm-symbolizer take: the pc minus the module's load bias) and its GNU
+// build id, the hex of the note's bytes, all of them (40 digits for the usual
+// 20-byte id):
+//   pc 0x0000007a1b2c3d40: not in recompiled code (libvulkan_freedreno.so+0x1c3d40, build-id 5f0c3a9e0102030405060708090a0b0c0d0e0f10)
+// or "no build-id" for a module without one. The offset has as many digits as
+// it needs. The module table is refreshed at startup, after each library the
+// emulator loads (DynamicLibrary) and after the Vulkan instance and device are
+// made; a library loaded otherwise since the last refresh is not named.
+// Otherwise the pc line gives the
 // region (EE recompiler, IOP recompiler, VIF0 unpack recompiler, VIF1 unpack
 // recompiler, microVU0, microVU1, VIF unpack functions, GS software renderer)
 // with the pc's offset into it, for a recompiler the part in parentheses
@@ -115,6 +126,7 @@
 
 #include "arm64/RecErrorReport-arm64.h"
 
+#include "common/ModuleMap.h"
 #include "common/Pcsx2Defs.h"
 
 #include <cstddef>
@@ -273,6 +285,8 @@ namespace RecCrashReport
 		Where where;
 		bool have_instruction = false;
 		u32 instruction = 0;
+		bool have_module = false; // a pc outside the code area, in a known module
+		ModuleMap::Hit module;
 
 		Cpu block_cpu = Cpu::None; // whose block line to write, if any
 		bool block_found = false;
@@ -320,7 +334,8 @@ namespace RecCrashReport
 	// time it is called in the process.
 	void OnUnhandledFault(int signal, void* siginfo, void* ucontext);
 
-	// Registers OnUnhandledFault with PageFaultHandler.
+	// Registers OnUnhandledFault with PageFaultHandler, and takes the first
+	// snapshot of the loaded modules (common/ModuleMap.h).
 	void Install();
 
 	// Defined by the recompilers, for Capture and CurrentLayout.

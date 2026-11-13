@@ -31,11 +31,15 @@
 
 #include "common/Console.h"
 #include "common/CrashHandler.h"
+#include "common/DynamicLibrary.h"
+#include "common/ModuleMap.h"
 
 #include <gtest/gtest.h>
 
 #include <cerrno>
 #include <csignal>
+#include <dlfcn.h>
+#include <elf.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -47,6 +51,7 @@
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <link.h>
 
 using namespace recompiler_tests;
 using namespace mips;
@@ -177,6 +182,77 @@ bool CompileEeBlock(uptr* fnptr, u32* host_size)
 	h.RunJitNoDiff();
 	uptr lut = 0;
 	return recEeBlockHostInfo(kProgramPc, fnptr, host_size, &lut);
+}
+
+// The GNU build id of an ELF file, read from the file rather than from memory,
+// as hex; empty when it has none.
+std::string FileBuildId(const char* path)
+{
+	const int fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return {};
+	std::string hex;
+	ElfW(Ehdr) eh;
+	if (pread(fd, &eh, sizeof(eh), 0) == static_cast<ssize_t>(sizeof(eh)))
+	{
+		for (u32 i = 0; i < eh.e_phnum && hex.empty(); i++)
+		{
+			ElfW(Phdr) ph;
+			if (pread(fd, &ph, sizeof(ph), eh.e_phoff + i * eh.e_phentsize) != static_cast<ssize_t>(sizeof(ph)) ||
+				ph.p_type != PT_NOTE)
+				continue;
+			std::vector<u8> notes(ph.p_filesz);
+			if (pread(fd, notes.data(), notes.size(), ph.p_offset) != static_cast<ssize_t>(notes.size()))
+				continue;
+			for (size_t at = 0; at + sizeof(ElfW(Nhdr)) <= notes.size();)
+			{
+				ElfW(Nhdr) nh;
+				std::memcpy(&nh, &notes[at], sizeof(nh));
+				const size_t name_at = at + sizeof(nh);
+				const size_t desc_at = name_at + ((nh.n_namesz + 3) & ~3u);
+				if (desc_at + nh.n_descsz > notes.size())
+					break;
+				if (nh.n_type == NT_GNU_BUILD_ID && nh.n_namesz == 4 && std::memcmp(&notes[name_at], "GNU", 4) == 0)
+				{
+					for (u32 k = 0; k < nh.n_descsz; k++)
+					{
+						char b[3];
+						std::snprintf(b, sizeof(b), "%02x", notes[desc_at + k]);
+						hex += b;
+					}
+					break;
+				}
+				at = desc_at + ((nh.n_descsz + 3) & ~3u);
+			}
+		}
+	}
+	close(fd);
+	return hex;
+}
+
+std::string HitBuildId(const ModuleMap::Hit& hit)
+{
+	std::string hex;
+	for (u32 i = 0; i < hit.build_id_size; i++)
+	{
+		char b[3];
+		std::snprintf(b, sizeof(b), "%02x", hit.build_id[i]);
+		hex += b;
+	}
+	return hex;
+}
+
+std::string BaseName(const std::string& path)
+{
+	const size_t slash = path.rfind('/');
+	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string ExePath()
+{
+	char path[1024];
+	const ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+	return n > 0 ? std::string(path, static_cast<size_t>(n)) : std::string();
 }
 
 } // namespace
@@ -837,6 +913,72 @@ TEST(RecCrashReport, APcOutsideTheCodeAreaSaysSo)
 	EXPECT_EQ(Lines(Text(r))[0], "Host fault: SIGSEGV (SI_TKILL) at 0x0000000000001001");
 }
 
+TEST(RecCrashReport, APcInALibraryNamesItsModuleAndBuildId)
+{
+	Report r;
+	r.signal = SIGSEGV;
+	r.si_code = 1;
+	r.pc = 0x7a1b2c3d40;
+	r.have_module = true;
+	std::strcpy(r.module.name, "libvulkan_freedreno.so");
+	r.module.offset = 0x1c3d40;
+	const u8 id[20] = {0x5f, 0x0c, 0x3a, 0x9e, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+		0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10};
+	std::memcpy(r.module.build_id, id, sizeof(id));
+	r.module.build_id_size = sizeof(id);
+	EXPECT_EQ(Lines(Text(r))[2], "  pc 0x0000007a1b2c3d40: not in recompiled code "
+								 "(libvulkan_freedreno.so+0x1c3d40, build-id 5f0c3a9e0102030405060708090a0b0c0d0e0f10)");
+
+	r.module.build_id_size = 0;
+	r.module.offset = 0;
+	EXPECT_EQ(Lines(Text(r))[2], "  pc 0x0000007a1b2c3d40: not in recompiled code (libvulkan_freedreno.so+0x0, no build-id)");
+}
+
+// The module table, looked up as the handler does: the test binary and libc,
+// with the build ids their files carry.
+TEST(RecCrashReport, TheModuleMapNamesTheExecutableAndLibc)
+{
+	ModuleMap::Refresh();
+	EXPECT_GT(ModuleMap::Count(), 2u);
+	EXPECT_EQ(ModuleMap::Dropped(), 0u);
+
+	// The executable: no name from the dynamic linker, so its file's.
+	const std::string exe = ExePath();
+	ModuleMap::Hit hit;
+	const uptr in_exe = reinterpret_cast<uptr>(&FileBuildId);
+	ASSERT_TRUE(ModuleMap::Find(in_exe, &hit));
+	EXPECT_EQ(std::string(hit.name), BaseName(exe));
+	EXPECT_EQ(HitBuildId(hit), FileBuildId(exe.c_str()));
+	Dl_info info = {};
+	ASSERT_NE(dladdr(reinterpret_cast<void*>(in_exe), &info), 0);
+	EXPECT_EQ(hit.offset, in_exe - reinterpret_cast<uptr>(info.dli_fbase)) << "the ELF address (first segment at 0)";
+
+	// libc.
+	const uptr in_libc = reinterpret_cast<uptr>(&::write);
+	ASSERT_NE(dladdr(reinterpret_cast<void*>(in_libc), &info), 0);
+	ASSERT_TRUE(ModuleMap::Find(in_libc, &hit));
+	EXPECT_EQ(std::string(hit.name), BaseName(info.dli_fname));
+	EXPECT_EQ(std::string(hit.name).rfind("libc.so", 0), 0u) << hit.name;
+	EXPECT_EQ(HitBuildId(hit), FileBuildId(info.dli_fname));
+	EXPECT_GT(hit.build_id_size, 0u);
+
+	// Nothing there.
+	EXPECT_FALSE(ModuleMap::Find(0x10, &hit));
+}
+
+// A library the emulator loads is in the table straight after.
+TEST(RecCrashReport, TheModuleMapIsRefreshedWhenALibraryIsLoaded)
+{
+	DynamicLibrary lib;
+	if (!lib.Open("libvulkan.so.1", nullptr))
+		GTEST_SKIP() << "no libvulkan.so.1 here";
+	void* sym = nullptr;
+	ASSERT_TRUE(lib.GetSymbol("vkGetInstanceProcAddr", &sym));
+	ModuleMap::Hit hit;
+	ASSERT_TRUE(ModuleMap::Find(reinterpret_cast<uptr>(sym), &hit));
+	EXPECT_EQ(std::string(hit.name).rfind("libvulkan.so", 0), 0u) << hit.name;
+}
+
 // A fault in C++ code, outside the recompilers: still the real signal.
 TEST(RecCrashReport, AnUnhandledFaultKillsTheProcessWithItsOwnSignal)
 {
@@ -849,6 +991,12 @@ TEST(RecCrashReport, AnUnhandledFaultKillsTheProcessWithItsOwnSignal)
 	ASSERT_GE(lines.size(), 3u) << c.log;
 	EXPECT_EQ(lines[0], "Host fault: SIGSEGV (SEGV_MAPERR) at 0x0000000000000008");
 	EXPECT_NE(lines[2].find(": not in recompiled code"), std::string::npos) << lines[2];
+	// The fault is in this executable.
+	const std::string exe = ExePath();
+	const std::string module = ": not in recompiled code (" + BaseName(exe) + "+0x";
+	EXPECT_NE(lines[2].find(module), std::string::npos) << lines[2];
+	const std::string id = FileBuildId(exe.c_str());
+	EXPECT_NE(lines[2].find(id.empty() ? ", no build-id)" : ", build-id " + id + ")"), std::string::npos) << lines[2];
 	EXPECT_EQ(lines.back(), "Aborting application.");
 }
 

@@ -67,6 +67,15 @@ namespace RecCrashReport
 				return *this;
 			}
 
+			// As many digits as the value needs.
+			Line& HexMin(u64 value)
+			{
+				int digits = 1;
+				while (digits < 16 && (value >> (digits * 4)))
+					digits++;
+				return Hex(value, digits);
+			}
+
 			Line& Dec(s64 value)
 			{
 				if (value < 0)
@@ -602,6 +611,22 @@ namespace RecCrashReport
 		else
 		{
 			line.Str("not in recompiled code");
+			if (r.have_module)
+			{
+				const ModuleMap::Hit& m = r.module;
+				line.Str(" (").Str(m.name).Str("+0x").HexMin(m.offset).Str(", ");
+				if (m.build_id_size)
+				{
+					line.Str("build-id ");
+					for (u32 i = 0; i < m.build_id_size && i < ModuleMap::kMaxBuildIdSize; i++)
+						line.Hex(m.build_id[i], 2);
+				}
+				else
+				{
+					line.Str("no build-id");
+				}
+				line.Str(")");
+			}
 		}
 		line.End();
 	}
@@ -717,7 +742,10 @@ namespace RecCrashReport
 
 		r->where = Classify(layout, r->pc);
 		if (r->where.area == Area::None)
+		{
+			r->have_module = ModuleMap::Find(r->pc, &r->module);
 			return;
+		}
 
 		// The whole code area is mapped readable.
 		std::memcpy(&r->instruction, reinterpret_cast<const void*>(r->pc & ~static_cast<uptr>(3)), sizeof(u32));
@@ -825,6 +853,7 @@ namespace RecCrashReport
 
 	void Install()
 	{
+		ModuleMap::Refresh();
 		PageFaultHandler::SetUnhandledFaultReporter(OnUnhandledFault);
 	}
 

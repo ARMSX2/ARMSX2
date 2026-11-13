@@ -66,6 +66,7 @@ namespace
 #include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/HostSys.h"
+#include "common/ModuleMap.h"
 #include "common/Path.h"
 #include "common/ScopedGuard.h"
 #include "common/Threading.h"
@@ -250,6 +251,8 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 		LOG_VULKAN_ERROR(res, "vkCreateInstance failed: ");
 		return nullptr;
 	}
+	// The loader has opened the driver by now; the crash post-mortem can name it.
+	ModuleMap::Refresh();
 
 	s_enabled_instance_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 	return instance;
@@ -1056,6 +1059,8 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		LOG_VULKAN_ERROR(res, "vkCreateDevice failed: ");
 		return false;
 	}
+	// And whatever the driver loads for a device.
+	ModuleMap::Refresh();
 
 	// With the device created, we can fill the remaining entry points.
 	if (!Vulkan::LoadVulkanDeviceFunctions(m_device))

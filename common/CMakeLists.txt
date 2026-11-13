@@ -23,6 +23,7 @@ target_sources(common PRIVATE
 	MemoryInterface.cpp
 	MemorySettingsInterface.cpp
 	MD5Digest.cpp
+	ModuleMap.cpp
 	PrecompiledHeader.cpp
 	Perf.cpp
 	PmuCounters.cpp
@@ -67,6 +68,7 @@ target_sources(common PRIVATE
 	MemoryInterface.h
 	MemorySettingsInterface.h
 	MD5Digest.h
+	ModuleMap.h
 	MRCHelpers.h
 	Path.h
 	PmuCounters.h

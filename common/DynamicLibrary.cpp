@@ -6,6 +6,7 @@
 #include "common/Console.h"
 #include "common/Error.h"
 #include "common/FileSystem.h"
+#include "common/ModuleMap.h"
 #include "common/SmallString.h"
 #include "common/Path.h"
 #include "common/StringUtil.h"
@@ -122,6 +123,8 @@ bool DynamicLibrary::Open(const char* filename, Error* error)
 		return false;
 	}
 
+	// For the crash post-mortem: a fault in this library can then be named.
+	ModuleMap::Refresh();
 	return true;
 #endif
 }
@@ -133,6 +136,7 @@ void DynamicLibrary::Adopt(void* handle)
 	Close();
 
 	m_handle = handle;
+	ModuleMap::Refresh();
 }
 
 void DynamicLibrary::Close()
