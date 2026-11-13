@@ -92,13 +92,18 @@
 //   > 0x0120  host 0x0000000118d030c0  size 0x00000180, 12 pairs
 //     0x0040  host 0x0000000118d03400  size not recorded
 //     (2 higher blocks not shown)
-// and between the extent line and the map, the block's micro memory, when a
+// and between the extent line and the map, the block's microcode, when a
 // block is named:
 //   VU1 code at the block:
 //     0120  8000033c
-//     0124  000002ff
+//     0124  000002ff  micro memory now 000002fe
+//     0128  4a0002bc  from micro memory, not in the program's copy
 //     (one word a line, each pair's lower instruction first; the block's
 //     length, at most 16 words, cut at the end of micro memory)
+// A word comes from the program's copy of micro memory, the bytes the program
+// was compiled from, which holds its ranges only. When micro memory has since
+// changed, the line adds what it holds now; a word outside the copy is read
+// from micro memory and says so.
 // Each block records its extent when it is compiled (microBlock::extent): the
 // host bytes its compile produced and its guest instruction pairs. A block's
 // host extent includes the blocks compiled inside its compile (the not-taken
@@ -211,6 +216,7 @@ namespace RecCrashReport
 
 	static constexpr u32 kMaxVuWindow = 48;
 	static constexpr u32 kMaxVuWindowAbove = 8;
+	static constexpr u32 kMaxCodeWords = 16;
 
 	// The microVU block holding a host pc: the innermost block of the program
 	// being run whose extent holds it, else the one of any other program of that
@@ -233,6 +239,25 @@ namespace RecCrashReport
 		u32 blocks_below = 0; // blocks of the program below the window
 		u32 blocks_above = 0; // and above it
 		u32 blocks_unsized = 0; // blocks of the program with no recorded extent
+
+		// The first kMaxCodeWords words of the block named, from the program's
+		// copy of micro memory (what the program was compiled from); bit i of the
+		// mask is set when the copy holds word i (it holds the program's ranges
+		// only).
+		u32 program_code[kMaxCodeWords] = {};
+		u32 program_code_mask = 0;
+	};
+	static_assert(kMaxCodeWords <= 32, "VuHit::program_code_mask has a bit per word");
+
+	// A word of VU microcode at the block: from the program's copy when it holds
+	// it, and as micro memory has it now.
+	struct VuWord
+	{
+		u32 addr = 0; // byte address in micro memory
+		u32 program = 0;
+		u32 live = 0;
+		bool in_program = false;
+		bool live_readable = false;
 	};
 
 	// Picks VuHit's block and window out of a program's blocks, given one at a
@@ -265,8 +290,6 @@ namespace RecCrashReport
 		u32 m_above_count = 0;
 		u32 m_above_total = 0;
 	};
-
-	static constexpr u32 kMaxCodeWords = 16;
 
 	// The cap on the whole report. Its parts are bounded so it stays far below;
 	// past it, lines are dropped, one line says so, and the last line is still
@@ -305,10 +328,12 @@ namespace RecCrashReport
 		u32 guest_pc = 0;
 		u32 frame = 0;
 
-		// The guest code at the block: EE or IOP instructions, or for microVU
-		// words of micro memory.
+		// The guest code at the block: EE or IOP instructions.
 		RecErrorReport::Word code[kMaxCodeWords];
 		u32 code_count = 0;
+		// For microVU, the microcode at the block.
+		VuWord vu_code[kMaxCodeWords];
+		u32 vu_code_count = 0;
 	};
 
 	// Receives the report a line at a time, newline included.
@@ -318,10 +343,11 @@ namespace RecCrashReport
 	// last line is always written). Allocates nothing.
 	void Write(const Report& report, Sink sink, void* context, size_t limit = kMaxReportBytes);
 
-	// Up to kMaxCodeWords words of a VU's micro memory from the block's guest
-	// pc: the block's length (all 16 when it is not recorded), cut at the end of
-	// micro memory.
-	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuBlock& block, RecErrorReport::Word* code);
+	// Up to kMaxCodeWords words of microcode from the named block's guest pc:
+	// the block's length (all 16 when it is not recorded), cut at the end of
+	// micro memory. Each from the program's copy in hit.program_code where it
+	// holds the word, and from micro memory (null: none to read).
+	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuHit& hit, VuWord* code);
 
 	// The layout of the live code area and recompilers.
 	Layout CurrentLayout();

@@ -539,20 +539,26 @@ TEST(RecCrashReport, MicroVuCodeOutsideEveryBlockSaysSo)
 	EXPECT_EQ(lines[6], "  host registers:");
 }
 
-TEST(RecCrashReport, MicroVuCodeShowsTheBlocksMicroMemory)
+TEST(RecCrashReport, MicroVuCodeShowsTheBlocksMicrocode)
 {
 	Report r = SampleVuReport();
-	r.code[0] = {0x0120, 0x8000033c, true};
-	r.code[1] = {0x0124, 0x000002ff, true};
-	r.code_count = 2;
+	r.vu_code[0] = {0x0120, 0x8000033c, 0x8000033c, true, true};
+	r.vu_code[1] = {0x0124, 0x000002ff, 0x000002fe, true, true};
+	r.vu_code[2] = {0x0128, 0, 0x4a0002bc, false, true};
+	r.vu_code[3] = {0x012c, 0x000002ff, 0, true, false};
+	r.vu_code[4] = {0x0130, 0, 0, false, false};
+	r.vu_code_count = 5;
 	const std::vector<std::string> lines = Lines(Text(r));
-	ASSERT_GE(lines.size(), 10u);
+	ASSERT_GE(lines.size(), 13u);
 	EXPECT_EQ(lines[5].rfind("  VU0 block extent: ", 0), 0u);
 	EXPECT_EQ(lines[6], "  VU0 code at the block:");
 	EXPECT_EQ(lines[7], "    0120  8000033c");
-	EXPECT_EQ(lines[8], "    0124  000002ff");
-	EXPECT_EQ(lines[9].rfind("  VU0 block map, ", 0), 0u);
-	EXPECT_EQ(lines.size(), Lines(Text(SampleVuReport())).size() + 3);
+	EXPECT_EQ(lines[8], "    0124  000002ff  micro memory now 000002fe");
+	EXPECT_EQ(lines[9], "    0128  4a0002bc  from micro memory, not in the program's copy");
+	EXPECT_EQ(lines[10], "    012c  000002ff");
+	EXPECT_EQ(lines[11], "    0130  ????????");
+	EXPECT_EQ(lines[12].rfind("  VU0 block map, ", 0), 0u);
+	EXPECT_EQ(lines.size(), Lines(Text(SampleVuReport())).size() + 6);
 }
 
 TEST(RecCrashReport, VuCodeIsTheBlocksLengthAndStaysInMicroMemory)
@@ -560,23 +566,39 @@ TEST(RecCrashReport, VuCodeIsTheBlocksLengthAndStaysInMicroMemory)
 	u8 micro[0x100];
 	for (u32 i = 0; i < sizeof(micro); i++)
 		micro[i] = static_cast<u8>(i);
-	RecErrorReport::Word code[kMaxCodeWords];
+	VuWord code[kMaxCodeWords];
+	const auto hit = [](VuBlock b, u32 mask = 0) {
+		VuHit h;
+		h.found = true;
+		h.block = b;
+		for (u32 i = 0; i < kMaxCodeWords; i++)
+			h.program_code[i] = 0xc0de0000 + i;
+		h.program_code_mask = mask;
+		return h;
+	};
 
-	// Three pairs: six words.
-	ASSERT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0x40, 3), code), 6u);
+	// Three pairs: six words, the program's copy where it holds them.
+	ASSERT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0x10, 0, 0x40, 3), 0x3), code), 6u);
 	EXPECT_EQ(code[0].addr, 0x10u);
-	EXPECT_EQ(code[0].value, 0x13121110u);
+	EXPECT_TRUE(code[0].in_program);
+	EXPECT_EQ(code[0].program, 0xc0de0000u);
+	EXPECT_EQ(code[0].live, 0x13121110u);
+	EXPECT_TRUE(code[1].in_program);
+	EXPECT_FALSE(code[2].in_program);
 	EXPECT_EQ(code[5].addr, 0x24u);
-	EXPECT_TRUE(code[5].readable);
+	EXPECT_TRUE(code[5].live_readable);
 	// Long, or not recorded: sixteen.
-	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0x40, 40), code), kMaxCodeWords);
-	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0, 0), code), kMaxCodeWords);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0x10, 0, 0x40, 40)), code), kMaxCodeWords);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0x10, 0, 0, 0)), code), kMaxCodeWords);
 	// Near the end of micro memory: cut there.
-	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0xf0, 0, 0x40, 40), code), 4u);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0xf0, 0, 0x40, 40)), code), 4u);
 	EXPECT_EQ(code[3].addr, 0xfcu);
-	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0xfe, 0, 0x40, 1), code), 0u);
-	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x100, 0, 0x40, 1), code), 0u);
-	EXPECT_EQ(ReadVuCode(nullptr, sizeof(micro), Vb(0, 0, 0x40, 1), code), 0u);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0xfe, 0, 0x40, 1)), code), 0u);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), hit(Vb(0x100, 0, 0x40, 1)), code), 0u);
+	// No micro memory: the program's copy still.
+	ASSERT_EQ(ReadVuCode(nullptr, sizeof(micro), hit(Vb(0, 0, 0x40, 1), 0x1), code), 2u);
+	EXPECT_TRUE(code[0].in_program);
+	EXPECT_FALSE(code[0].live_readable);
 }
 
 // The triage parser (bugreport-worker/triage/hostfault.py) reads the block
@@ -709,6 +731,7 @@ TEST(RecCrashReport, TheReportStopsAtItsCap)
 	// Everything at once, as long as it gets: well under the cap.
 	r.guest = Cpu::EE;
 	r.code_count = kMaxCodeWords;
+	r.vu_code_count = kMaxCodeWords;
 	std::memset(r.thread_name, 'x', sizeof(r.thread_name) - 1);
 	text = Text(r);
 	EXPECT_LT(text.size(), kMaxReportBytes / 2) << text.size();
@@ -749,11 +772,29 @@ TEST(RecCrashReport, CompiledVuBlocksRecordTheirExtent)
 		if (b.guest_pc == 0)
 		{
 			EXPECT_EQ(b.guest_pairs, 3u) << "the entry block runs to the branch's delay slot";
-			RecErrorReport::Word code[kMaxCodeWords];
-			ASSERT_EQ(ReadVuCode(vuRegs[0].Micro, VU0_PROGSIZE, b, code), 6u);
-			EXPECT_EQ(code[0].value, VIADDIU_L(vi::vi2, vi::vi0, 3)) << "a pair's lower instruction first";
-			EXPECT_EQ(code[1].value, VNOP_U());
-			EXPECT_EQ(code[2].value, VIBNE_L(vi::vi1, vi::vi0, 3));
+			VuHit at;
+			FindVuBlock(0, b.host_start, &at);
+			VuWord code[kMaxCodeWords];
+			ASSERT_EQ(ReadVuCode(vuRegs[0].Micro, VU0_PROGSIZE, at, code), 6u);
+			for (u32 k = 0; k < 6; k++)
+			{
+				EXPECT_TRUE(code[k].in_program) << "word " << k << " is in the program's copy";
+				EXPECT_EQ(code[k].program, code[k].live) << "word " << k;
+			}
+			EXPECT_EQ(code[0].program, VIADDIU_L(vi::vi2, vi::vi0, 3)) << "a pair's lower instruction first";
+			EXPECT_EQ(code[1].program, VNOP_U());
+			EXPECT_EQ(code[2].program, VIBNE_L(vi::vi1, vi::vi0, 3));
+
+			// Micro memory written after the compile: the copy keeps what was
+			// compiled, and the change shows.
+			u32 saved;
+			std::memcpy(&saved, vuRegs[0].Micro + 8, 4);
+			const u32 changed = saved ^ 0x00010000;
+			std::memcpy(vuRegs[0].Micro + 8, &changed, 4);
+			ASSERT_EQ(ReadVuCode(vuRegs[0].Micro, VU0_PROGSIZE, at, code), 6u);
+			std::memcpy(vuRegs[0].Micro + 8, &saved, 4);
+			EXPECT_EQ(code[2].program, VIBNE_L(vi::vi1, vi::vi0, 3));
+			EXPECT_EQ(code[2].live, changed);
 		}
 
 		VuHit at;

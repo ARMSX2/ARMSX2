@@ -2839,6 +2839,31 @@ namespace
 		}
 	}
 
+	// The block's words from the program's copy of micro memory. The copy holds
+	// the program's ranges, [start, end) in bytes; an end of -1 is a range still
+	// open, not copied yet.
+	void CopyProgramCode(const microProgram& prog, RecCrashReport::VuHit* hit)
+	{
+		hit->program_code_mask = 0;
+		if (!prog.ranges)
+			return;
+		for (u32 i = 0; i < RecCrashReport::kMaxCodeWords; i++)
+		{
+			const u32 addr = hit->block.guest_pc + i * 4u;
+			if (addr / 4 >= mProgSize)
+				break;
+			for (const microRange& r : *prog.ranges)
+			{
+				if (r.end >= 0 && static_cast<s64>(addr) >= r.start && static_cast<s64>(addr) + 4 <= r.end)
+				{
+					hit->program_code[i] = prog.data[addr / 4];
+					hit->program_code_mask |= 1u << i;
+					break;
+				}
+			}
+		}
+	}
+
 	void ScanVuProgram(const microProgram& prog, uptr host_pc, RecCrashReport::VuHit* hit)
 	{
 		RecCrashReport::VuBlockScan scan(host_pc);
@@ -2848,6 +2873,8 @@ namespace
 		hit->found = scan.Best(&hit->block);
 		hit->contains = scan.Contains();
 		scan.FillWindow(hit);
+		if (hit->found)
+			CopyProgramCode(prog, hit);
 	}
 
 	bool VuProgramContains(const microProgram& prog, uptr host_pc)

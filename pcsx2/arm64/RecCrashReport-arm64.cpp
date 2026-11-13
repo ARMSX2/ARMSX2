@@ -356,11 +356,29 @@ namespace RecCrashReport
 			}
 			line.End();
 
-			if (r.code_count)
+			if (r.vu_code_count)
 			{
 				line.Str("  ").Str(vu).Str(" code at the block:").End();
-				for (u32 i = 0; i < r.code_count && i < kMaxCodeWords; i++)
-					line.Str("    ").Hex(r.code[i].addr, 4).Str("  ").Hex(r.code[i].value, 8).End();
+				for (u32 i = 0; i < r.vu_code_count && i < kMaxCodeWords; i++)
+				{
+					const VuWord& w = r.vu_code[i];
+					line.Str("    ").Hex(w.addr, 4).Str("  ");
+					if (w.in_program)
+					{
+						line.Hex(w.program, 8);
+						if (w.live_readable && w.live != w.program)
+							line.Str("  micro memory now ").Hex(w.live, 8);
+					}
+					else if (w.live_readable)
+					{
+						line.Hex(w.live, 8).Str("  from micro memory, not in the program's copy");
+					}
+					else
+					{
+						line.Str("????????");
+					}
+					line.End();
+				}
 			}
 
 			line.Str("  ").Str(vu).Str(" block map, program ").Dec(h.program).Str(" (start 0x").Hex(h.program_start, 4);
@@ -473,10 +491,9 @@ namespace RecCrashReport
 		hit->blocks_unsized = m_unsized;
 	}
 
-	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuBlock& block, RecErrorReport::Word* code)
+	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuHit& hit, VuWord* code)
 	{
-		if (!micro)
-			return 0;
+		const VuBlock& block = hit.block;
 		const u32 words = block.guest_pairs ? std::min(block.guest_pairs * 2u, kMaxCodeWords) : kMaxCodeWords;
 		u32 n = 0;
 		for (; n < words; n++)
@@ -484,9 +501,14 @@ namespace RecCrashReport
 			const u32 addr = block.guest_pc + n * 4u;
 			if (addr >= micro_size || micro_size - addr < sizeof(u32))
 				break;
-			code[n].addr = addr;
-			std::memcpy(&code[n].value, micro + addr, sizeof(u32));
-			code[n].readable = true;
+			VuWord& w = code[n];
+			w = VuWord{};
+			w.addr = addr;
+			w.in_program = (hit.program_code_mask >> n) & 1;
+			w.program = hit.program_code[n];
+			w.live_readable = micro != nullptr;
+			if (micro)
+				std::memcpy(&w.live, micro + addr, sizeof(u32));
 		}
 		return n;
 	}
@@ -802,7 +824,7 @@ namespace RecCrashReport
 				FindVuBlock(vu, r->pc, &r->vu);
 				r->vu.tpc = vuRegs[vu].VI[REG_TPC].UL;
 				if (r->vu.found)
-					r->code_count = ReadVuCode(vuRegs[vu].Micro, vu ? VU1_PROGSIZE : VU0_PROGSIZE, r->vu.block, r->code);
+					r->vu_code_count = ReadVuCode(vuRegs[vu].Micro, vu ? VU1_PROGSIZE : VU0_PROGSIZE, r->vu, r->vu_code);
 				break;
 			}
 
