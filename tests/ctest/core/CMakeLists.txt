@@ -73,9 +73,10 @@ if(ARCH_ARM64)
 	target_sources(core_test PRIVATE arm64_block_lut_tests.cpp)
 endif()
 
-# GSLsfg.cpp only builds with the Vulkan renderer, so its structural-PE-check test follows it.
+# GSLsfg.cpp only builds with the Vulkan renderer, so its tests follow it.
 if(USE_VULKAN)
 	target_sources(core_test PRIVATE lsfg_dll_check_tests.cpp)
+	target_sources(core_test PRIVATE lsfg_swap_chain_rebuild_tests.cpp)
 endif()
 
 # The recompiler differential-test harness drives the arm64 JIT through

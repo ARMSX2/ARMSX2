@@ -254,6 +254,16 @@ namespace GSLsfg
 		return GSConfig.LsfgEnabled &&
 			   (GetUnavailableReason() != Unavailable::Available || s_no_headroom.load(std::memory_order_relaxed));
 	}
+
+	bool SwapChainNeedsRebuild(
+		VkPresentModeKHR present_mode, u32 extra_acquirable_images, bool sized_for_frame_generation)
+	{
+		// FIFO_RELAXED is what SelectPresentMode picks for the FIFO that frame generation forces,
+		// where the surface has it. It queues like FIFO, so generated frames are displayed, and a
+		// rebuild would only pick it again.
+		const bool queues = (present_mode == VK_PRESENT_MODE_FIFO_KHR || present_mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+		return !queues || (extra_acquirable_images == 0 && !sized_for_frame_generation);
+	}
 } // namespace GSLsfg
 
 #ifndef ARMSX2_HAS_LSFG
@@ -910,6 +920,27 @@ namespace GSLsfg
 
 		Shutdown();
 
+		// The swap chain must already suit frame generation. GSDeviceVK rebuilds it for that at the
+		// start of a present, before it acquires an image (see SwapChainNeedsRebuild). Initialize
+		// used to do the rebuild itself, called from EndPresent between recording the present and
+		// submitting it: that destroyed the swap chain images, views and semaphores the recording
+		// command buffer still used, which crashed the Qualcomm driver in vkEndCommandBuffer and
+		// Turnip in its queue submit.
+		if (SwapChainNeedsRebuild(swap_chain->GetPresentMode(), swap_chain->GetExtraAcquirableImages(),
+				swap_chain->IsSizedForFrameGeneration()))
+		{
+			return false;
+		}
+
+		// Built for frame generation, and the driver still gave no image to spare. Checked before
+		// anything is allocated, since every frame asks again; logged once.
+		if (swap_chain->GetExtraAcquirableImages() == 0)
+		{
+			if (!s_no_headroom.exchange(true, std::memory_order_relaxed))
+				Console.Error("LSFG: the display cannot spare an image for generated frames.");
+			return false;
+		}
+
 		s_vk_device = dev->GetDevice();
 		s_extent = extent;
 		s_format = format;
@@ -962,43 +993,6 @@ namespace GSLsfg
 		s_frame_index = 0;
 		s_active = true;
 		s_init_failed.store(false, std::memory_order_relaxed);
-
-		// ★ The swap chain only asks for the extra images frame generation needs when
-		// GSConfig.LsfgEnabled was true AT CREATION (see VKSwapChain::CreateSwapChain). Enabling
-		// LSFG per-game turns it on LONG after that -- observed 17 seconds after the swap chain
-		// was built -- so the chain was sized without the extra image, GetExtraAcquirableImages()
-		// is 0, and every generation is silently skipped while this function still reports
-		// "active". Display rate then reads exactly the real rate forever, with nothing anywhere
-		// admitting why.
-		//
-		// Rebuild it now that the setting is actually on. Same size, so this is only about the
-		// image count. If the driver still will not give us headroom, say so rather than claiming
-		// to be running.
-		//
-		// It must also be FIFO: in MAILBOX the real frame presented right after each generated one
-		// replaces it, so no generated frame is displayed. CreateSwapChain only forces FIFO when
-		// frame generation was on at creation, and a MAILBOX chain can already have a spare image,
-		// so the image-count check alone doesn't catch it.
-		if (swap_chain->GetExtraAcquirableImages() == 0 || swap_chain->GetPresentMode() != VK_PRESENT_MODE_FIFO_KHR)
-		{
-			Console.WriteLn("LSFG: swap chain has no spare images or is not FIFO; rebuilding it.");
-			// Scale passed through explicitly: ResizeSwapChain defaults it to 1.0, which would
-			// silently drop a non-default surface scale while we are only after the image count.
-			if (!swap_chain->ResizeSwapChain(swap_chain->GetWidth(), swap_chain->GetHeight(),
-					swap_chain->GetScale()) ||
-				swap_chain->GetExtraAcquirableImages() == 0)
-			{
-				Console.Error("LSFG: the display cannot spare an image for generated frames.");
-				s_no_headroom.store(true, std::memory_order_relaxed);
-				s_active = false;
-				DestroyResources();
-				s_frame_gen.reset();
-				s_allocator.reset();
-				s_device.reset();
-				s_vk_device = VK_NULL_HANDLE;
-				return false;
-			}
-		}
 		s_no_headroom.store(false, std::memory_order_relaxed);
 
 		Console.WriteLn("LSFG: frame generation active (%ux, %ux%u).", multiplier, extent.width, extent.height);

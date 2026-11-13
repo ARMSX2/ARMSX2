@@ -611,7 +611,7 @@ bool VKSwapChain::SelectPresentMode(VkSurfaceKHR surface, GSVSyncMode* vsync_mod
 	// off, which resolves to MAILBOX here — LSFG reported "active" and both counters read 59.
 	//
 	// Gated on the setting rather than GSLsfg::IsAvailable(), which cannot answer yet: the DLL
-	// path only reaches GSLsfg from EndPresent, which has not run when the swapchain is built.
+	// path only reaches GSLsfg from the present path, which has not run when the swapchain is built.
 	// The user asking for frame generation is the intent worth honouring here.
 	if (GSConfig.LsfgEnabled && *vsync_mode != GSVSyncMode::FIFO)
 	{
@@ -771,7 +771,8 @@ bool VKSwapChain::CreateSwapChain()
 	//
 	// This is still only a REQUEST. The clamp below and the driver get the final say, which is
 	// why the budget is recomputed from the real numbers afterwards instead of being assumed.
-	if (GSConfig.LsfgEnabled)
+	m_sized_for_frame_generation = GSConfig.LsfgEnabled;
+	if (m_sized_for_frame_generation)
 	{
 		const u32 extra = std::max<u32>(GSConfig.LsfgMultiplier, 2u) - 1u;
 		desired_image_count = std::max(desired_image_count, surface_capabilities.minImageCount + extra);
@@ -1200,10 +1201,15 @@ bool VKSwapChain::SetPresentMode(VkPresentModeKHR present_mode)
 	if (m_present_mode == present_mode)
 		return true;
 
-	m_present_mode = present_mode;
-
 	// Recreate the swap chain with the new present mode.
 	INFO_LOG("Recreating swap chain to change present mode.");
+	return RebuildSwapChain(present_mode);
+}
+
+bool VKSwapChain::RebuildSwapChain(VkPresentModeKHR present_mode)
+{
+	m_present_mode = present_mode;
+
 	ReleaseCurrentImage();
 	DestroySwapChainImages();
 	if (!CreateSwapChain())

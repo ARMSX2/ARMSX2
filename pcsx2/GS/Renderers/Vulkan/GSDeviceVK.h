@@ -859,6 +859,12 @@ private:
 	void RenderImGui();
 	void RenderBlankFrame();
 
+	/// Brings frame generation up or down to match the settings, rebuilding the swap chain first when
+	/// it does not suit frame generation. Called from DoBeginPresent before the acquire, and nowhere
+	/// a recorded command buffer uses the swap chain.
+	void UpdateFrameGeneration();
+	bool RebuildSwapChainForFrameGeneration();
+
 	void DestroyResources();
 
 protected:

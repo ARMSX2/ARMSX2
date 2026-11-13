@@ -91,10 +91,24 @@ namespace GSLsfg
 	/// validate that it IS Lossless Scaling — only that it is a readable PE image.
 	bool LooksLikeLosslessDll(const std::string& path);
 
+	/// Whether a swap chain has to be rebuilt before frame generation can run on it. It needs a
+	/// present mode that queues (FIFO or FIFO_RELAXED: MAILBOX and IMMEDIATE replace each generated
+	/// frame with the real one presented after it) and an image it can acquire on top of the one
+	/// being presented. A chain built while frame generation was off can lack both. A chain built
+	/// for it that still has no spare image is not rebuilt, because the driver has given all it will.
+	///
+	/// GSDeviceVK does the rebuild at the start of a present, before it acquires an image. It is
+	/// not Initialize's job: see there.
+	bool SwapChainNeedsRebuild(
+		VkPresentModeKHR present_mode, u32 extra_acquirable_images, bool sized_for_frame_generation);
+
 	/// Bring the interpolator up against this swapchain. Idempotent: a second call with the same
 	/// swapchain geometry and multiplier is free, and a changed one tears down and rebuilds.
 	/// Returns false and leaves the feature disabled on any error — a failure here must never
 	/// take the renderer down with it.
+	///
+	/// It never rebuilds the swap chain, and returns false while SwapChainNeedsRebuild says the
+	/// chain needs it.
 	bool Initialize(VKSwapChain* swap_chain, u32 multiplier);
 
 	/// Release everything. Safe to call when never initialised. MUST be called before the

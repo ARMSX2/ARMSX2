@@ -3483,6 +3483,72 @@ void GSDeviceVK::SetVSyncMode(GSVSyncMode mode, bool allow_present_throttle)
 	}
 }
 
+void GSDeviceVK::UpdateFrameGeneration()
+{
+	// Bring frame generation up or down to match the settings, once per presented frame. Both calls
+	// are cheap no-ops in the steady state; the work happens only when the toggle, the multiplier, or
+	// the swapchain geometry actually changed. The path goes in first because availability is partly
+	// a question about that file.
+	GSLsfg::SetDllPath(GSConfig.LsfgDllPath);
+	if (!GSConfig.LsfgEnabled || !GSLsfg::IsAvailable())
+	{
+		if (GSLsfg::IsActive())
+			GSLsfg::Shutdown();
+		return;
+	}
+
+	if (GSLsfg::SwapChainNeedsRebuild(m_swap_chain->GetPresentMode(), m_swap_chain->GetExtraAcquirableImages(),
+			m_swap_chain->IsSizedForFrameGeneration()) &&
+		!RebuildSwapChainForFrameGeneration())
+	{
+		return;
+	}
+
+	GSLsfg::Initialize(m_swap_chain.get(), GSConfig.LsfgMultiplier);
+}
+
+bool GSDeviceVK::RebuildSwapChainForFrameGeneration()
+{
+	// The swap chain asks for frame generation's extra images, and SelectPresentMode forces FIFO,
+	// only when GSConfig.LsfgEnabled is on as the chain is built. Turned on later (the pause menu, a
+	// per-game setting) the chain is MAILBOX when vsync is off, where the real frame replaces each
+	// generated one, and may have no image to spare, where no generation runs. Either way it reports
+	// "active" and displays only real frames.
+	//
+	// This runs from DoBeginPresent before the acquire, where no command buffer uses the swap chain:
+	// the one recording holds only this frame's GS work, and the wait below covers earlier ones.
+	// It used to run inside GSLsfg::Initialize, called from EndPresent after the present was
+	// recorded, which crashed the drivers (see Initialize).
+	Console.WriteLn("LSFG: swap chain has no spare images or is not FIFO; rebuilding it.");
+
+	// m_vsync_mode keeps the mode SelectPresentMode resolved to, as SetVSyncMode does, so a later
+	// vsync change compares against the mode in use.
+	GSVSyncMode mode = m_vsync_mode;
+	VkPresentModeKHR present_mode;
+	if (!VKSwapChain::SelectPresentMode(m_swap_chain->GetSurface(), &mode, &present_mode))
+	{
+		// Every surface supports FIFO.
+		mode = GSVSyncMode::FIFO;
+		present_mode = VK_PRESENT_MODE_FIFO_KHR;
+	}
+	m_vsync_mode = mode;
+
+	// The image acquired early at the end of the last present is released with the old chain, as
+	// on a resize.
+	WaitForGPUIdle();
+	if (!m_swap_chain->RebuildSwapChain(present_mode))
+	{
+		// AcquireNextImage() will fail, and we'll recreate the surface.
+		Console.Error("LSFG: failed to rebuild the swap chain. Next present will fail.");
+		return false;
+	}
+
+	m_window_info = m_swap_chain->GetWindowInfo();
+	Console.WriteLn("LSFG: swap chain rebuilt with %u images, %u to spare.", m_swap_chain->GetImageCount(),
+		m_swap_chain->GetExtraAcquirableImages());
+	return true;
+}
+
 GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 {
 	EndRenderPass();
@@ -3568,6 +3634,9 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 		resources.pipeline_statistics_query = QueryState::Ready;
 		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
 	}
+
+	// Before anything below records a use of the swap chain: this may rebuild it.
+	UpdateFrameGeneration();
 
 	// SUBOPTIMAL is a success: the image is acquired and presentable. Adreno returns it when the
 	// compositor changes state (the touch overlay redrawing), and rebuilding the swap chain for it
@@ -3709,20 +3778,11 @@ void GSDeviceVK::EndPresent()
 	m_swap_chain->GetCurrentTexture()->TransitionToLayout(cmdbuffer, GSTextureVK::Layout::PresentSrc);
 	g_perfmon.Put(GSPerfMon::RenderPasses, 1);
 
-	// Bring frame generation up or down to match the settings, once per frame and immediately
-	// before the present it hooks. Both calls are cheap no-ops in the steady state; the work
-	// happens only when the toggle, the multiplier, or the swapchain geometry actually changed.
-	// The path goes in first because availability is partly a question about that file.
-	GSLsfg::SetDllPath(GSConfig.LsfgDllPath);
-	if (GSConfig.LsfgEnabled && GSLsfg::IsAvailable())
-		GSLsfg::Initialize(m_swap_chain.get(), GSConfig.LsfgMultiplier);
-	else if (GSLsfg::IsActive())
-		GSLsfg::Shutdown();
-
 	// Frame generation takes the game's own image instead of the finished screen when the present
 	// was only the plain scaled blit, which it can repeat for each generated frame (the ImGui overlay
-	// is drawn onto those afresh). This runs after Initialize/Shutdown, which may replace the image
-	// copied into, and in this frame's command buffer, where the game texture's layout is tracked.
+	// is drawn onto those afresh). This runs after this frame's Initialize/Shutdown (UpdateFrameGeneration,
+	// in DoBeginPresent), which may replace the image copied into, and in this frame's command buffer,
+	// where the game texture's layout is tracked.
 	if (GSLsfg::IsActive())
 	{
 		GSTextureVK* const current = static_cast<GSTextureVK*>(GetCurrent());
