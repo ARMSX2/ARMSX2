@@ -456,6 +456,17 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	mVU.cache        = vuIndex ? SysMemory::GetVU1Rec() : SysMemory::GetVU0Rec();
 	mVU.prog.x86end  = (vuIndex ? SysMemory::GetVU1RecEnd() : SysMemory::GetVU0RecEnd()) - (mVUcacheSafeZone * _1mb);
 
+	// Nothing is generated in the region yet; the first mVUreset emits the
+	// dispatchers. Pointers kept from a previous CPU thread session would aim
+	// into code memory that was released and mapped again zero-filled at the
+	// same address (Android ends the session with every game). mVUreset reads
+	// a null startFunct as "this VU has no dispatcher".
+	mVU.startFunct       = nullptr;
+	mVU.startFunctResume = nullptr;
+	mVU.startFunctXG     = nullptr;
+	mVU.resumeEntry      = nullptr;
+	mVU.resumeBlock      = nullptr;
+
 	mVU.regAlloc.reset(new microRegAlloc(mVU.index));
 
 	// Recording follows the config (UseVUProgramCache) and must be set before
@@ -1190,9 +1201,18 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	if (THREAD_VU1 && !vu1Idle)
 	{
 		DevCon.Warning("mVU Reset");
+		// MTVU switched on during gameplay: finish the running VU1 program here.
+		// Only a microVU1 with a dispatcher can be running one. At VM init the
+		// busy bit can be left over from the previous VM (vuMemReset clears it
+		// later, in SysMemory::Reset), and after a CPU thread session ended
+		// microVU1's code memory is zeroes until VU1's own reset, which comes
+		// after VU0's: calling into it was the SIGILL at the region's start.
 		if (VU0.VI[REG_VPU_STAT].UL & 0x100)
 		{
-			CpuVU1->Execute(vu1RunCycles);
+			if (CpuVU1 != &CpuMicroVU1 || microVU1.startFunct)
+				CpuVU1->Execute(vu1RunCycles);
+			else
+				DevCon.Warning("mVU Reset: VU1 marked busy with no microVU1 dispatcher, not run");
 		}
 		VU0.VI[REG_VPU_STAT].UL &= ~0x100;
 	}
