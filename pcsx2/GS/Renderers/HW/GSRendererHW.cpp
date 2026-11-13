@@ -7304,7 +7304,8 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
 	// The draw's own depth buffer decides: a game's depth may be kept without stencil (stencil_on_request).
-	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds);
+	// Without one, the device may rather read the target than make a temporary (date_reads_without_depth).
+	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds) && (m_conf.ds || !features.date_reads_without_depth);
 
 	// Date one can run with complex alpha test if there's no overlap.
 	const bool complex_alpha_test = m_cached_ctx.TEST.ATE &&
@@ -7478,7 +7479,7 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	}
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
-	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds);
+	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds) && (m_conf.ds || !features.date_reads_without_depth);
 
 	// Always swap DATE with DATE_BARRIER if we have barriers on when alpha write is masked.
 	// This is always enabled on VK/GL/DX12 but not on DX11 as copies are slow so we can selectively enable it like now.

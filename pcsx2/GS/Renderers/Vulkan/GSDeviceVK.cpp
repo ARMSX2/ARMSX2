@@ -4564,6 +4564,10 @@ void GSDeviceVK::ResolveFeatureTable()
 	if (m_features.stencil_on_request)
 		Console.WriteLn("VK: Depth carries stencil only where a draw uses it.");
 
+	// The same GPUs would rather copy the target for a DATE draw without depth than build its stencil
+	// in a temporary depth buffer.
+	m_features.date_reads_without_depth = IsDevicePanVKBifrost();
+
 	// The colour-wrap counter in the stencil unit (GSStencilCounter.h) needs the stencil buffer and a
 	// stencil aspect it can sample for the resolve. Wherever the stencil buffer is on, its exactness
 	// is the stencil unit's wrapping arithmetic, so there is no per-driver rule.
