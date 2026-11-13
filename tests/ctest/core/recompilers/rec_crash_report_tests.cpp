@@ -975,6 +975,50 @@ TEST(RecCrashReport, APcInALibraryNamesItsModuleAndBuildId)
 	EXPECT_EQ(Lines(Text(r))[2], "  pc 0x0000007a1b2c3d40: not in recompiled code (libvulkan_freedreno.so+0x0, no build-id)");
 }
 
+TEST(RecCrashReport, TheLrLineNamesTheCaller)
+{
+	Report r = SampleEeReport();
+	r.have_lr = true;
+	r.lr = 0x111d01200;
+	r.lr_where = {Area::EeBlocks, 0x1200, 0x1200};
+	std::vector<std::string> lines = Lines(Text(r));
+	ASSERT_EQ(lines.size(), 30u);
+	EXPECT_EQ(lines[3].rfind("  block: EE ", 0), 0u);
+	EXPECT_EQ(lines[4], "  lr 0x0000000111d01200: EE recompiler +0x00001200 (blocks), code area +0x00001200");
+	EXPECT_EQ(lines[5], "  host registers:");
+
+	r.lr = 0x7a1b2c3d40;
+	r.lr_where = {};
+	r.lr_have_module = true;
+	std::strcpy(r.lr_module.name, "libc.so");
+	r.lr_module.offset = 0x8d40;
+	lines = Lines(Text(r));
+	EXPECT_EQ(lines[4], "  lr 0x0000007a1b2c3d40: not in recompiled code (libc.so+0x8d40, no build-id)");
+	r.lr_have_module = false;
+	EXPECT_EQ(Lines(Text(r))[4], "  lr 0x0000007a1b2c3d40: not in recompiled code");
+
+	// After the microVU lines, too.
+	Report v = SampleVuReport();
+	v.have_lr = true;
+	v.lr = 0x118d00cc4;
+	v.lr_where = {Area::Vu0Shared, 0xcc4, HostMemoryMap::mVU0recOffset + 0xcc4};
+	lines = Lines(Text(v));
+	ASSERT_GE(lines.size(), 13u);
+	EXPECT_EQ(lines[11], "  lr 0x0000000118d00cc4: microVU0 +0x00000cc4 (shared code), code area +0x07000cc4");
+	EXPECT_EQ(lines[12], "  host registers:");
+}
+
+// A return address signed by PACIASP comes back as it was signed; on a core
+// without pointer authentication both are NOPs and nothing changes.
+TEST(RecCrashReport, TheLrLosesItsPointerAuthCode)
+{
+	const uptr plain = reinterpret_cast<uptr>(&FileBuildId);
+	EXPECT_EQ(StripPointerAuth(plain), plain);
+	uptr signed_lr;
+	asm volatile("mov x30, %1\n\thint #25\n\tmov %0, x30" : "=r"(signed_lr) : "r"(plain) : "x30"); // PACIASP
+	EXPECT_EQ(StripPointerAuth(signed_lr), plain) << std::hex << "signed as 0x" << signed_lr;
+}
+
 // The module table, looked up as the handler does: the test binary and libc,
 // with the build ids their files carry.
 TEST(RecCrashReport, TheModuleMapNamesTheExecutableAndLibc)
@@ -1057,6 +1101,10 @@ TEST(RecCrashReport, AJumpToAnUnmappedPcIsReportedAsItself)
 	ASSERT_GE(lines.size(), 3u) << c.log;
 	EXPECT_EQ(lines[0], "Host fault: SIGSEGV (SEGV_MAPERR) at 0x0000000000000010");
 	EXPECT_EQ(lines[2], "  pc 0x0000000000000010: not in recompiled code");
+	// The lr names where the jump came from.
+	ASSERT_GE(lines.size(), 4u);
+	EXPECT_EQ(lines[3].rfind("  lr 0x", 0), 0u) << lines[3];
+	EXPECT_NE(lines[3].find(": not in recompiled code (" + BaseName(ExePath()) + "+0x"), std::string::npos) << lines[3];
 	EXPECT_EQ(lines.back(), "Aborting application.");
 }
 
@@ -1086,7 +1134,7 @@ TEST(RecCrashReport, AFaultInAnEeBlockIsReportedAndKillsWithItsOwnSignal)
 	EXPECT_EQ(WTERMSIG(c.status), SIGSEGV);
 
 	const std::vector<std::string> lines = Lines(c.log);
-	ASSERT_GE(lines.size(), 30u) << c.log;
+	ASSERT_GE(lines.size(), 31u) << c.log;
 	char expect[256];
 	EXPECT_EQ(lines[0], "Host fault: SIGSEGV (SEGV_MAPERR) at 0x0000000000000008");
 	EXPECT_EQ(lines[1].rfind("  thread ", 0), 0u) << lines[1];
@@ -1101,12 +1149,16 @@ TEST(RecCrashReport, AFaultInAnEeBlockIsReportedAndKillsWithItsOwnSignal)
 	std::snprintf(expect, sizeof(expect), "host 0x%016llx +0x00000004 of 0x%08x",
 		static_cast<unsigned long long>(fnptr), host_size);
 	EXPECT_NE(lines[3].find(expect), std::string::npos) << lines[3];
-	EXPECT_EQ(lines[4], "  host registers:");
-	EXPECT_EQ(lines[5].rfind("      x0 0000000000000008", 0), 0u) << lines[5];
-	EXPECT_EQ(lines[14], "  EE registers (pinned ones from the host registers):");
-	EXPECT_EQ(lines[25], "  EE code at the block:");
+	// The block was called from this executable.
+	const std::string from_exe = ": not in recompiled code (" + BaseName(ExePath()) + "+0x";
+	EXPECT_EQ(lines[4].rfind("  lr 0x", 0), 0u) << lines[4];
+	EXPECT_NE(lines[4].find(from_exe), std::string::npos) << lines[4];
+	EXPECT_EQ(lines[5], "  host registers:");
+	EXPECT_EQ(lines[6].rfind("      x0 0000000000000008", 0), 0u) << lines[6];
+	EXPECT_EQ(lines[15], "  EE registers (pinned ones from the host registers):");
+	EXPECT_EQ(lines[26], "  EE code at the block:");
 	std::snprintf(expect, sizeof(expect), "    %08x  %08x", kProgramPc, first_word);
-	EXPECT_EQ(lines[26], expect);
+	EXPECT_EQ(lines[27], expect);
 	EXPECT_EQ(lines.back(), "Aborting application.");
 }
 

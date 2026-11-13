@@ -38,6 +38,7 @@
 //   thread 4242 "CPU Thread", signal 11, si_code 1
 //   pc 0x0000000111d01234: EE recompiler +0x00001234 (blocks), code area +0x00001234, instruction f9400021
 //   block: EE 0x00123450, 12 instructions, host 0x0000000111d01200 +0x00000034 of 0x00000180
+//   lr 0x0000aaaadd71e9cc: not in recompiled code (armsx2-qt+0x64e9cc, build-id <all of it, in hex>)
 //   host registers:
 //       x0 0000000000000000   x1 0000000000000001   x2 0000000000000002   x3 0000000000000003
 //     (8 such lines: x0 to x30, then sp; names right-aligned in 4 columns)
@@ -122,6 +123,14 @@
 // The map lists up to 48 blocks of the program named, by host address: the
 // ones nearest the pc, up to 8 of them above it. Guest addresses are byte
 // addresses in micro memory; "to" names the last pair's address.
+// The lr line is x30, the caller's return address, with any pointer-
+// authentication code taken off. It reads like the pc line, without the
+// instruction: the recompiler region and part, or "not in recompiled code"
+// with the module, offset and build id. Its block is not looked up. It comes
+// after the block lines and everything the microVU section adds, just before
+// "host registers:"; a report built without the registers has none (the
+// pinned examples in rec_crash_report_tests.cpp, except the lr test).
+//
 // The guest register, guest pc and guest code lines are there for EE and IOP
 // code only; the IOP's registers are 32 bits and its header is "IOP registers:".
 // The pinned EE registers are read from the host registers, as they are
@@ -183,6 +192,9 @@ namespace RecCrashReport
 	};
 
 	Where Classify(const Layout& layout, uptr pc);
+
+	// A code address with any pointer-authentication code taken off (XPACLRI).
+	uptr StripPointerAuth(uptr address);
 	const char* RegionName(Area area); // "EE recompiler", ...; null for None
 	const char* PartName(Area area); // "blocks", ...; null for a region with one part
 
@@ -310,6 +322,12 @@ namespace RecCrashReport
 		u32 instruction = 0;
 		bool have_module = false; // a pc outside the code area, in a known module
 		ModuleMap::Hit module;
+
+		bool have_lr = false; // x30, written as the lr line
+		uptr lr = 0; // without a pointer-authentication code
+		Where lr_where;
+		bool lr_have_module = false;
+		ModuleMap::Hit lr_module;
 
 		Cpu block_cpu = Cpu::None; // whose block line to write, if any
 		bool block_found = false;

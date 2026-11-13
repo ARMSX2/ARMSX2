@@ -513,6 +513,15 @@ namespace RecCrashReport
 		return n;
 	}
 
+	uptr StripPointerAuth(uptr address)
+	{
+		// XPACLRI works on x30 only, and is in the hint space: a NOP on a core
+		// without pointer authentication.
+		uptr out;
+		asm volatile("mov x30, %1\n\thint #7\n\tmov %0, x30" : "=r"(out) : "r"(address) : "x30");
+		return out;
+	}
+
 	Where Classify(const Layout& l, uptr pc)
 	{
 		Where w;
@@ -600,6 +609,37 @@ namespace RecCrashReport
 		}
 	}
 
+	// Where an address is, for the pc and lr lines: the recompiler's region and
+	// part, or the module.
+	static void WriteWhere(Line& line, const Where& w, const ModuleMap::Hit* module, const u32* instruction)
+	{
+		if (const char* region = RegionName(w.area))
+		{
+			line.Str(region).Str(" +0x").Hex(w.region_offset, 8);
+			if (const char* part = PartName(w.area))
+				line.Str(" (").Str(part).Str(")");
+			line.Str(", code area +0x").Hex(w.code_offset, 8);
+			if (instruction)
+				line.Str(", instruction ").Hex(*instruction, 8);
+			return;
+		}
+		line.Str("not in recompiled code");
+		if (!module)
+			return;
+		line.Str(" (").Str(module->name).Str("+0x").HexMin(module->offset).Str(", ");
+		if (module->build_id_size)
+		{
+			line.Str("build-id ");
+			for (u32 i = 0; i < module->build_id_size && i < ModuleMap::kMaxBuildIdSize; i++)
+				line.Hex(module->build_id[i], 2);
+		}
+		else
+		{
+			line.Str("no build-id");
+		}
+		line.Str(")");
+	}
+
 	// The first three lines: the signal, the thread and the pc. Written before
 	// the block lookup, the one part of the report that walks heap data.
 	static void WriteHead(const Report& r, Sink sink, void* context)
@@ -621,35 +661,7 @@ namespace RecCrashReport
 		line.Str(", si_code ").Dec(r.si_code).End();
 
 		line.Str("  pc 0x").Hex(r.pc, 16).Str(": ");
-		if (const char* region = RegionName(r.where.area))
-		{
-			line.Str(region).Str(" +0x").Hex(r.where.region_offset, 8);
-			if (const char* part = PartName(r.where.area))
-				line.Str(" (").Str(part).Str(")");
-			line.Str(", code area +0x").Hex(r.where.code_offset, 8);
-			if (r.have_instruction)
-				line.Str(", instruction ").Hex(r.instruction, 8);
-		}
-		else
-		{
-			line.Str("not in recompiled code");
-			if (r.have_module)
-			{
-				const ModuleMap::Hit& m = r.module;
-				line.Str(" (").Str(m.name).Str("+0x").HexMin(m.offset).Str(", ");
-				if (m.build_id_size)
-				{
-					line.Str("build-id ");
-					for (u32 i = 0; i < m.build_id_size && i < ModuleMap::kMaxBuildIdSize; i++)
-						line.Hex(m.build_id[i], 2);
-				}
-				else
-				{
-					line.Str("no build-id");
-				}
-				line.Str(")");
-			}
-		}
+		WriteWhere(line, r.where, r.have_module ? &r.module : nullptr, r.have_instruction ? &r.instruction : nullptr);
 		line.End();
 	}
 
@@ -689,6 +701,13 @@ namespace RecCrashReport
 			}
 			line.Str("  ").Str(vu).Str(" TPC 0x").Hex(r.vu.tpc, 4).Str(" as last stored").End();
 			WriteVuBlocks(r, sink, context);
+		}
+
+		if (r.have_lr)
+		{
+			line.Str("  lr 0x").Hex(r.lr, 16).Str(": ");
+			WriteWhere(line, r.lr_where, r.lr_have_module ? &r.lr_module : nullptr, nullptr);
+			line.End();
 		}
 
 		if (r.have_host_registers)
@@ -761,6 +780,14 @@ namespace RecCrashReport
 		r->sp = uc->uc_mcontext.sp;
 		r->pstate = uc->uc_mcontext.pstate;
 		r->have_host_registers = true;
+
+		// The caller, as x30 holds it, without a pointer-authentication code.
+		// Classified like the pc; the block lists are not looked at for it.
+		r->lr = StripPointerAuth(static_cast<uptr>(r->x[30]));
+		r->lr_where = Classify(layout, r->lr);
+		if (r->lr_where.area == Area::None)
+			r->lr_have_module = ModuleMap::Find(r->lr, &r->lr_module);
+		r->have_lr = true;
 
 		r->where = Classify(layout, r->pc);
 		if (r->where.area == Area::None)
