@@ -13,6 +13,7 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "VU.h"
+#include "VUmicro.h"
 
 #include "common/Console.h"
 #include "common/HostSys.h"
@@ -346,6 +347,13 @@ namespace RecCrashReport
 			}
 			line.End();
 
+			if (r.code_count)
+			{
+				line.Str("  ").Str(vu).Str(" code at the block:").End();
+				for (u32 i = 0; i < r.code_count && i < kMaxCodeWords; i++)
+					line.Str("    ").Hex(r.code[i].addr, 4).Str("  ").Hex(r.code[i].value, 8).End();
+			}
+
 			line.Str("  ").Str(vu).Str(" block map, program ").Dec(h.program).Str(" (start 0x").Hex(h.program_start, 4);
 			line.Str("), by host address; > the block named, + another block holding the pc:").End();
 			if (h.blocks_below)
@@ -454,6 +462,24 @@ namespace RecCrashReport
 		hit->blocks_below = m_below_total - n_below;
 		hit->blocks_above = m_above_total - n_above;
 		hit->blocks_unsized = m_unsized;
+	}
+
+	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuBlock& block, RecErrorReport::Word* code)
+	{
+		if (!micro)
+			return 0;
+		const u32 words = block.guest_pairs ? std::min(block.guest_pairs * 2u, kMaxCodeWords) : kMaxCodeWords;
+		u32 n = 0;
+		for (; n < words; n++)
+		{
+			const u32 addr = block.guest_pc + n * 4u;
+			if (addr >= micro_size || micro_size - addr < sizeof(u32))
+				break;
+			code[n].addr = addr;
+			std::memcpy(&code[n].value, micro + addr, sizeof(u32));
+			code[n].readable = true;
+		}
+		return n;
 	}
 
 	Where Classify(const Layout& l, uptr pc)
@@ -747,6 +773,8 @@ namespace RecCrashReport
 				r->block_cpu = vu ? Cpu::VU1 : Cpu::VU0;
 				FindVuBlock(vu, r->pc, &r->vu);
 				r->vu.tpc = vuRegs[vu].VI[REG_TPC].UL;
+				if (r->vu.found)
+					r->code_count = ReadVuCode(vuRegs[vu].Micro, vu ? VU1_PROGSIZE : VU0_PROGSIZE, r->vu.block, r->code);
 				break;
 			}
 

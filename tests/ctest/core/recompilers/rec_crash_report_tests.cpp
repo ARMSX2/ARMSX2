@@ -463,6 +463,46 @@ TEST(RecCrashReport, MicroVuCodeOutsideEveryBlockSaysSo)
 	EXPECT_EQ(lines[6], "  host registers:");
 }
 
+TEST(RecCrashReport, MicroVuCodeShowsTheBlocksMicroMemory)
+{
+	Report r = SampleVuReport();
+	r.code[0] = {0x0120, 0x8000033c, true};
+	r.code[1] = {0x0124, 0x000002ff, true};
+	r.code_count = 2;
+	const std::vector<std::string> lines = Lines(Text(r));
+	ASSERT_GE(lines.size(), 10u);
+	EXPECT_EQ(lines[5].rfind("  VU0 block extent: ", 0), 0u);
+	EXPECT_EQ(lines[6], "  VU0 code at the block:");
+	EXPECT_EQ(lines[7], "    0120  8000033c");
+	EXPECT_EQ(lines[8], "    0124  000002ff");
+	EXPECT_EQ(lines[9].rfind("  VU0 block map, ", 0), 0u);
+	EXPECT_EQ(lines.size(), Lines(Text(SampleVuReport())).size() + 3);
+}
+
+TEST(RecCrashReport, VuCodeIsTheBlocksLengthAndStaysInMicroMemory)
+{
+	u8 micro[0x100];
+	for (u32 i = 0; i < sizeof(micro); i++)
+		micro[i] = static_cast<u8>(i);
+	RecErrorReport::Word code[kMaxCodeWords];
+
+	// Three pairs: six words.
+	ASSERT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0x40, 3), code), 6u);
+	EXPECT_EQ(code[0].addr, 0x10u);
+	EXPECT_EQ(code[0].value, 0x13121110u);
+	EXPECT_EQ(code[5].addr, 0x24u);
+	EXPECT_TRUE(code[5].readable);
+	// Long, or not recorded: sixteen.
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0x40, 40), code), kMaxCodeWords);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x10, 0, 0, 0), code), kMaxCodeWords);
+	// Near the end of micro memory: cut there.
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0xf0, 0, 0x40, 40), code), 4u);
+	EXPECT_EQ(code[3].addr, 0xfcu);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0xfe, 0, 0x40, 1), code), 0u);
+	EXPECT_EQ(ReadVuCode(micro, sizeof(micro), Vb(0x100, 0, 0x40, 1), code), 0u);
+	EXPECT_EQ(ReadVuCode(nullptr, sizeof(micro), Vb(0, 0, 0x40, 1), code), 0u);
+}
+
 // The triage parser (bugreport-worker/triage/hostfault.py) reads the block
 // line by this prefix.
 TEST(RecCrashReport, TheMicroVuBlockLineKeepsTheParsersPrefix)
@@ -631,7 +671,14 @@ TEST(RecCrashReport, CompiledVuBlocksRecordTheirExtent)
 		ASSERT_GT(b.host_size, 0u);
 		ASSERT_GT(b.guest_pairs, 0u);
 		if (b.guest_pc == 0)
+		{
 			EXPECT_EQ(b.guest_pairs, 3u) << "the entry block runs to the branch's delay slot";
+			RecErrorReport::Word code[kMaxCodeWords];
+			ASSERT_EQ(ReadVuCode(vuRegs[0].Micro, VU0_PROGSIZE, b, code), 6u);
+			EXPECT_EQ(code[0].value, VIADDIU_L(vi::vi2, vi::vi0, 3)) << "a pair's lower instruction first";
+			EXPECT_EQ(code[1].value, VNOP_U());
+			EXPECT_EQ(code[2].value, VIBNE_L(vi::vi1, vi::vi0, 3));
+		}
 
 		VuHit at;
 		FindVuBlock(0, b.host_start, &at);
@@ -697,6 +744,72 @@ TEST(RecCrashReport, AHydratedVuProgramKeepsItsExtents)
 		EXPECT_EQ(hydrated.window[i].host_size, compiled.window[i].host_size);
 		EXPECT_EQ(hydrated.window[i].guest_pairs, compiled.window[i].guest_pairs);
 	}
+}
+
+// A fault inside a compiled VU0 block, end to end: the child overwrites the
+// block's code with a load through a bad pointer and calls it.
+TEST(RecCrashReport, AFaultInAVuBlockNamesTheBlockAndItsMicrocode)
+{
+	using namespace vu;
+	VuTestHarness h(0);
+	h.LoadProgram({
+		VuOp{VIADDIU_L(vi::vi2, vi::vi0, 3), VNOP_U()},
+		EBit(VuOp{VIADDIU_L(vi::vi3, vi::vi0, 4), VNOP_U()}),
+	});
+	h.RunNoDiff(); // its interpreter pass drops the compiled blocks
+	h.RunJitPreserveBlockCache();
+	VuHit all;
+	FindVuBlock(0, UINTPTR_MAX, &all);
+	VuBlock entry;
+	for (u32 i = 0; i < all.window_count; i++)
+	{
+		if (all.window[i].guest_pc == 0)
+			entry = all.window[i];
+	}
+	ASSERT_NE(entry.host_start, 0u);
+	ASSERT_GE(entry.host_size, 12u);
+
+	const uptr fnptr = entry.host_start;
+	const Crash c = RunCrash([fnptr] {
+		static constexpr u32 kCode[] = {
+			0xd2800100, // mov x0, #8
+			0xf9400001, // ldr x1, [x0]
+			0xd65f03c0, // ret
+		};
+		std::memcpy(reinterpret_cast<void*>(fnptr), kCode, sizeof(kCode));
+		__builtin___clear_cache(reinterpret_cast<char*>(fnptr), reinterpret_cast<char*>(fnptr + sizeof(kCode)));
+		reinterpret_cast<void (*)()>(fnptr)();
+	});
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGSEGV);
+
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 12u) << c.log;
+	EXPECT_NE(lines[2].find(": microVU0 +0x"), std::string::npos) << lines[2];
+	char expect[256];
+	std::snprintf(expect, sizeof(expect),
+		"  block: VU0 0x0000, nearest entry below the pc in program %d (start 0x0000), host 0x%016llx +0x00000004 of 0x%08x",
+		all.program, static_cast<unsigned long long>(fnptr), entry.host_size);
+	EXPECT_EQ(lines[3], expect);
+	EXPECT_EQ(lines[4].rfind("  VU0 TPC 0x", 0), 0u) << lines[4];
+	std::snprintf(expect, sizeof(expect),
+		"  VU0 block extent: host 0x%016llx +0x00000004 of 0x%08x, guest 0x0000 to 0x%04x (%u pairs), holds the pc",
+		static_cast<unsigned long long>(fnptr), entry.host_size, (entry.guest_pairs - 1u) * 8u, entry.guest_pairs);
+	EXPECT_EQ(lines[5], expect);
+	EXPECT_EQ(lines[6], "  VU0 code at the block:");
+	std::snprintf(expect, sizeof(expect), "    0000  %08x", VIADDIU_L(vi::vi2, vi::vi0, 3));
+	EXPECT_EQ(lines[7], expect);
+	std::snprintf(expect, sizeof(expect), "    0004  %08x", VNOP_U());
+	EXPECT_EQ(lines[8], expect);
+	bool map = false, named = false;
+	for (const std::string& l : lines)
+	{
+		map |= l.rfind("  VU0 block map, program ", 0) == 0;
+		named |= l.rfind("  > 0x0000  host ", 0) == 0;
+	}
+	EXPECT_TRUE(map && named) << c.log;
+	EXPECT_EQ(lines.back(), "Aborting application.");
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
 }
 
 TEST(RecCrashReport, APcOutsideTheCodeAreaSaysSo)

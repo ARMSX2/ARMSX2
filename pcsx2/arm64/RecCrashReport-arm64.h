@@ -81,6 +81,13 @@
 //   > 0x0120  host 0x0000000118d030c0  size 0x00000180, 12 pairs
 //     0x0040  host 0x0000000118d03400  size not recorded
 //     (2 higher blocks not shown)
+// and between the extent line and the map, the block's micro memory, when a
+// block is named:
+//   VU1 code at the block:
+//     0120  8000033c
+//     0124  000002ff
+//     (one word a line, each pair's lower instruction first; the block's
+//     length, at most 16 words, cut at the end of micro memory)
 // Each block records its extent when it is compiled (microBlock::extent): the
 // host bytes its compile produced and its guest instruction pairs. A block's
 // host extent includes the blocks compiled inside its compile (the not-taken
@@ -284,6 +291,8 @@ namespace RecCrashReport
 		u32 guest_pc = 0;
 		u32 frame = 0;
 
+		// The guest code at the block: EE or IOP instructions, or for microVU
+		// words of micro memory.
 		RecErrorReport::Word code[kMaxCodeWords];
 		u32 code_count = 0;
 	};
@@ -294,6 +303,11 @@ namespace RecCrashReport
 	// Writes the report in the format above, at most `limit` bytes of it (the
 	// last line is always written). Allocates nothing.
 	void Write(const Report& report, Sink sink, void* context, size_t limit = kMaxReportBytes);
+
+	// Up to kMaxCodeWords words of a VU's micro memory from the block's guest
+	// pc: the block's length (all 16 when it is not recorded), cut at the end of
+	// micro memory.
+	u32 ReadVuCode(const u8* micro, u32 micro_size, const VuBlock& block, RecErrorReport::Word* code);
 
 	// The layout of the live code area and recompilers.
 	Layout CurrentLayout();
