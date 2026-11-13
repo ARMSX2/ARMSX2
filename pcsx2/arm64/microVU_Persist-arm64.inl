@@ -99,6 +99,7 @@ namespace mVUPersist
 		u32 entryOffset; // within chunk
 		u32 startPC; // microMem byte offset
 		u32 hasJumpCache;
+		u32 extent; // microBlock::extent
 		microRegInfo pState;
 		microRegInfo pStateEnd;
 		microBlock* live; // manager's copy; not serialized
@@ -1011,6 +1012,7 @@ namespace mVUPersist
 				rec.entryOffset = eb.entryOffset;
 				rec.startPC = eb.startPC;
 				rec.hasJumpCache = (eb.live->jumpCache != nullptr) ? 1 : 0;
+				rec.extent = eb.live->extent;
 				std::memcpy(&rec.pState, &eb.live->pState, sizeof(microRegInfo));
 				std::memcpy(&rec.pStateEnd, &eb.live->pStateEnd, sizeof(microRegInfo));
 				rec.live = eb.live;
@@ -1136,7 +1138,9 @@ namespace mVUPersist
 	//    image fixup is an offset into the emulator module, which any other
 	//    build lays out differently, so a payload is only good for the build
 	//    that made it.
-	static constexpr u32 kImageVersion = 3;
+	// 4: a block's jump-cache flag shares its word with the block's extent
+	//    (DiskBlock::jumpCacheAndExtent).
+	static constexpr u32 kImageVersion = 4;
 
 	struct ImageHeader
 	{
@@ -1175,10 +1179,15 @@ namespace mVUPersist
 		u32 chunkIndex;
 		u32 entryOffset;
 		u32 startPC;
-		u32 hasJumpCache;
+		// Bit 31: the block has a jump cache. Bits 0-30: microBlock::extent, which
+		// only the crash post-mortem reads; one that does not fit the block's chunk
+		// is dropped (0), not a reason to reject the image.
+		u32 jumpCacheAndExtent;
 		u8 pState[sizeof(microRegInfo)];
 		u8 pStateEnd[sizeof(microRegInfo)];
 	};
+
+	static constexpr u32 kDiskJumpCacheBit = 0x80000000u;
 
 	struct DiskChunkHeader
 	{
@@ -1228,7 +1237,7 @@ namespace mVUPersist
 			db.chunkIndex = rec.chunkIndex;
 			db.entryOffset = rec.entryOffset;
 			db.startPC = rec.startPC;
-			db.hasJumpCache = rec.hasJumpCache;
+			db.jumpCacheAndExtent = (rec.hasJumpCache ? kDiskJumpCacheBit : 0) | (rec.extent & mVUBlockExtent::kMask);
 			std::memcpy(db.pState, &rec.pState, sizeof(microRegInfo));
 			std::memcpy(db.pStateEnd, &rec.pStateEnd, sizeof(microRegInfo));
 			AppendPod(out, db);
@@ -1640,11 +1649,14 @@ namespace mVUPersist
 			tmp.x86ptrStart = chunk_base[b.chunkIndex] + b.entryOffset;
 			tmp.hostEntry = tmp.x86ptrStart;
 			tmp.jumpCache = nullptr;
+			tmp.extent = b.jumpCacheAndExtent & mVUBlockExtent::kMask;
+			if (static_cast<u64>(b.entryOffset) + mVUBlockExtent::HostBytes(tmp.extent) > chunks[b.chunkIndex].codeSize)
+				tmp.extent = 0;
 
 			microBlock* installed = prog->block[slot]->add(mVU, &tmp);
 			// mVUcompileJIT dereferences jumpCache unguarded (it was allocated
 			// at compile time by normJumpCompile) — restore it eagerly.
-			if (b.hasJumpCache && !installed->jumpCache)
+			if ((b.jumpCacheAndExtent & kDiskJumpCacheBit) && !installed->jumpCache)
 				installed->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 			final_block[i] = installed;
 		}
@@ -1709,7 +1721,8 @@ namespace mVUPersist
 			rec.chunkIndex = blocks[i].chunkIndex;
 			rec.entryOffset = blocks[i].entryOffset;
 			rec.startPC = blocks[i].startPC;
-			rec.hasJumpCache = blocks[i].hasJumpCache;
+			rec.hasJumpCache = (blocks[i].jumpCacheAndExtent & kDiskJumpCacheBit) ? 1 : 0;
+			rec.extent = final_block[i]->extent;
 			std::memcpy(&rec.pState, blocks[i].pState, sizeof(microRegInfo));
 			std::memcpy(&rec.pStateEnd, blocks[i].pStateEnd, sizeof(microRegInfo));
 			rec.live = final_block[i];
@@ -1951,7 +1964,10 @@ namespace mVUPersist
 			AppendPod(canon, b.chunkIndex);
 			AppendPod(canon, b.entryOffset);
 			AppendPod(canon, b.startPC);
-			AppendPod(canon, b.hasJumpCache);
+			// The flag alone, as before the extent shared its word: the extent
+			// follows from the code, and the digest pins the code.
+			const u32 hasJumpCache = (b.jumpCacheAndExtent & kDiskJumpCacheBit) ? 1 : 0;
+			AppendPod(canon, hasJumpCache);
 		}
 		for (u32 i = 0; i < hdr.chunkCount; i++)
 		{

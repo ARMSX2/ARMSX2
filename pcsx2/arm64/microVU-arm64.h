@@ -174,7 +174,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 64;
+static constexpr u32 kMvuCompilerAbiVersion = 65;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -292,8 +292,38 @@ struct alignas(16) microBlock
 	u8              spinExitOnEq;
 	u8              spinViA;
 	u8              spinViB;
+	u32             extent;      // mVUBlockExtent: host and guest length, for the crash post-mortem
 };
-static_assert(sizeof(microBlock) == 224, "the spin memo rides microBlock's tail padding");
+static_assert(sizeof(microBlock) == 224, "the spin memo and the extent ride microBlock's tail padding");
+
+// How much code a block's compile produced, packed into one word so it fits
+// microBlock's padding: bits 0-19 the host bytes from x86ptrStart to where the
+// compile left the cursor, in 4-byte units (up to 4 MiB); bits 20-30 the guest
+// instruction pairs, minus one (1 to 2048). 0 means not recorded: vu-aot placed
+// the code, or the compile produced more than the field holds. Only the crash
+// post-mortem reads it (RecCrashReport-arm64.h).
+//
+// The host span includes every block compiled inside this one's compile: the
+// not-taken path of a branch is compiled in place, before the jump for the taken
+// path, so a block's span can hold other blocks whole. The innermost block whose
+// span holds a pc is the one running it.
+namespace mVUBlockExtent
+{
+	static constexpr u32 kHostUnits = 0xfffff;
+	static constexpr u32 kPairsShift = 20;
+	static constexpr u32 kPairsMask = 0x7ff;
+	static constexpr u32 kMask = 0x7fffffff; // bit 31 is free (the program cache's records use it)
+
+	static inline u32 Make(size_t host_bytes, u32 guest_pairs)
+	{
+		const size_t units = (host_bytes + 3) / 4;
+		if (units == 0 || units > kHostUnits || guest_pairs == 0 || guest_pairs > kPairsMask + 1)
+			return 0;
+		return static_cast<u32>(units) | ((guest_pairs - 1) << kPairsShift);
+	}
+	static inline u32 HostBytes(u32 extent) { return (extent & kHostUnits) * 4; }
+	static inline u32 GuestPairs(u32 extent) { return extent ? ((extent >> kPairsShift) & kPairsMask) + 1 : 0; }
+} // namespace mVUBlockExtent
 
 struct microTempRegInfo
 {

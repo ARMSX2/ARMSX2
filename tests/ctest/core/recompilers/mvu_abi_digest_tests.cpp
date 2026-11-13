@@ -459,6 +459,10 @@ constexpr AbiPin kPins[] = {
 	// the recording process's distance between the emulator image and the data arena and was wrong in
 	// any other. Only vu0LoadStore moves. The bump evicts every pack holding the constant.
 	{64, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0xac9ba26d82b481cf, 0x15c7e07ec93fdeb, 0x5dfd36d8bf388956, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0x9f82581ec2b20523, 0xbe0aaa4977c08f5a, 0x1d33ada241458b9a, 0x586a9035b7d90693, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0xacc16ea21944cbbd, 0x7a5f14e491b0ebc0}},
+	// abi 65: microBlock records its compile's extent and the program cache's block record carries it,
+	// for the crash post-mortem. No emitted code changes: every digest is abi 64's. The bump evicts
+	// every pack whose block records lack the extent.
+	{65, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0xac9ba26d82b481cf, 0x15c7e07ec93fdeb, 0x5dfd36d8bf388956, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0x9f82581ec2b20523, 0xbe0aaa4977c08f5a, 0x1d33ada241458b9a, 0x586a9035b7d90693, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0xacc16ea21944cbbd, 0x7a5f14e491b0ebc0}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -1188,9 +1192,9 @@ TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuAotIsWanted)
 	const u32 abi = mVUProgCache::GetCompilerAbiVersion();
 	EXPECT_EQ(off, findPin(abi)) << std::hex << "setting off: 0x" << off << ", abi " << std::dec << abi << " pinned 0x" << std::hex << findPin(abi);
 	// Re-pin it with the table when an emitter change moves it.
-	constexpr u64 kHookOnDigestAbi64 = 0x76323634adf8810a;
-	EXPECT_EQ(abi, 64u) << "the hook-on pin is for abi 64: re-pin kHookOnDigestAbi64";
-	EXPECT_EQ(on, kHookOnDigestAbi64) << std::hex << "setting on: 0x" << on << ", pinned 0x" << kHookOnDigestAbi64;
+	constexpr u64 kHookOnDigestAbi65 = 0x76323634adf8810a;
+	EXPECT_EQ(abi, 65u) << "the hook-on pin is for abi 65: re-pin kHookOnDigestAbi65";
+	EXPECT_EQ(on, kHookOnDigestAbi65) << std::hex << "setting on: 0x" << on << ", pinned 0x" << kHookOnDigestAbi65;
 }
 
 } // namespace recompiler_tests

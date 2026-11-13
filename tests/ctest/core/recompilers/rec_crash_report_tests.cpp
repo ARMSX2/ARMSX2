@@ -17,11 +17,16 @@
 
 #include "harness/EeRecTestHarness.h"
 #include "harness/JitTestHarness.h"
+#include "harness/RecompilerTestEnvironment.h"
+#include "harness/VuTestHarness.h"
 
 #include "arm64/RecCrashReport-arm64.h"
 
 #include "Memory.h"
 #include "R5900.h"
+#include "VU.h"
+#include "VUmicro.h"
+#include "arm64/microVU_Persist-arm64.h"
 #include "x86/BaseblockEx.h"
 
 #include "common/Console.h"
@@ -33,6 +38,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <fcntl.h>
 #include <sstream>
@@ -359,29 +365,338 @@ TEST(RecCrashReport, IopRegistersAre32Bits)
 	EXPECT_EQ(lines[25], "  IOP code at the block:");
 }
 
-TEST(RecCrashReport, MicroVuCodeGetsTheNearestBlockEntryAndTpc)
+VuBlock Vb(u16 guest_pc, uptr host_start, u32 host_size, u16 guest_pairs)
+{
+	VuBlock b;
+	b.guest_pc = guest_pc;
+	b.host_start = host_start;
+	b.host_size = host_size;
+	b.guest_pairs = guest_pairs;
+	return b;
+}
+
+// microVU code at 0x118d03100: inside block 0x0120 (host 0x118d030c0, 0x180
+// bytes), which was compiled inside block 0x0000's compile.
+Report SampleVuReport()
 {
 	Report r = SampleEeReport();
 	r.pc = 0x118d03100;
 	r.where = {Area::Vu0Blocks, 0x3100, HostMemoryMap::mVU0recOffset + 0x3100};
 	r.block_cpu = Cpu::VU0;
 	r.block_found = false;
-	r.vu = {true, 3, 0x0000, 0x0120, 0x118d030c0, 0x01a8};
 	r.guest = Cpu::None;
 	r.code_count = 0;
-	std::vector<std::string> lines = Lines(Text(r));
-	ASSERT_EQ(lines.size(), 16u);
-	EXPECT_EQ(lines[2], "  pc 0x0000000118d03100: microVU0 +0x00003100 (blocks), code area +0x07003100, instruction f9400021");
-	EXPECT_EQ(lines[3], "  block: VU0 0x0120, nearest entry below the pc in program 3 (start 0x0000), host 0x0000000118d030c0 +0x00000040");
-	EXPECT_EQ(lines[4], "  VU0 TPC 0x01a8 as last stored");
-	EXPECT_EQ(lines[5], "  host registers:");
-	EXPECT_EQ(lines[15], "Aborting application.");
+	VuHit& h = r.vu;
+	h.found = true;
+	h.contains = true;
+	h.program = 3;
+	h.current_program = 3;
+	h.block = Vb(0x0120, 0x118d030c0, 0x180, 12);
+	h.tpc = 0x01a8;
+	h.window[0] = Vb(0x0000, 0x118d03000, 0x400, 4);
+	h.window[1] = Vb(0x0120, 0x118d030c0, 0x180, 12);
+	h.window[2] = Vb(0x0040, 0x118d03400, 0, 0);
+	h.window_count = 3;
+	h.blocks_below = 5;
+	h.blocks_unsized = 1;
+	return r;
+}
 
-	r.vu.found = false;
+TEST(RecCrashReport, MicroVuCodeNamesTheBlockHoldingThePc)
+{
+	const Report r = SampleVuReport();
+	const std::vector<std::string> expected_vu = {
+		"  pc 0x0000000118d03100: microVU0 +0x00003100 (blocks), code area +0x07003100, instruction f9400021",
+		"  block: VU0 0x0120, nearest entry below the pc in program 3 (start 0x0000), host 0x0000000118d030c0 +0x00000040 of 0x00000180",
+		"  VU0 TPC 0x01a8 as last stored",
+		"  VU0 block extent: host 0x0000000118d030c0 +0x00000040 of 0x00000180, guest 0x0120 to 0x0178 (12 pairs), holds the pc",
+		"  VU0 block map, program 3 (start 0x0000), by host address; > the block named, + another block holding the pc:",
+		"    (5 lower blocks not shown)",
+		"  + 0x0000  host 0x0000000118d03000  size 0x00000400, 4 pairs",
+		"  > 0x0120  host 0x0000000118d030c0  size 0x00000180, 12 pairs",
+		"    0x0040  host 0x0000000118d03400  size not recorded",
+		"  host registers:",
+	};
+	const std::vector<std::string> lines = Lines(Text(r));
+	ASSERT_EQ(lines.size(), 2u + expected_vu.size() + 10u) << Text(r);
+	for (size_t i = 0; i < expected_vu.size(); i++)
+		EXPECT_EQ(lines[2 + i], expected_vu[i]) << "line " << 2 + i;
+	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
+TEST(RecCrashReport, MicroVuCodeOutsideEveryBlockSaysSo)
+{
+	Report r = SampleVuReport();
+	r.vu.contains = false;
+	r.vu.block = Vb(0x0040, 0x118d03000, 0x80, 2);
+	r.vu.window[0] = r.vu.block;
+	r.vu.window_count = 1;
+	r.vu.blocks_below = 0;
+	r.vu.blocks_above = 7;
+	std::vector<std::string> lines = Lines(Text(r));
+	ASSERT_GE(lines.size(), 9u);
+	EXPECT_EQ(lines[3], "  block: VU0 0x0040, nearest entry below the pc in program 3 (start 0x0000), host 0x0000000118d03000 +0x00000100 of 0x00000080");
+	EXPECT_EQ(lines[5], "  VU0 block extent: pc is not inside any block of program 3 or of another program of VU0 (1 blocks of program 3 have no recorded size)");
+	EXPECT_EQ(lines[7], "  > 0x0040  host 0x0000000118d03000  size 0x00000080, 2 pairs");
+	EXPECT_EQ(lines[8], "    (7 higher blocks not shown)");
+	EXPECT_EQ(lines[9], "  host registers:");
+
+	// The block of another program holds it.
+	r = SampleVuReport();
+	r.vu.program = 5;
+	EXPECT_EQ(Lines(Text(r))[5], "  VU0 block extent: host 0x0000000118d030c0 +0x00000040 of 0x00000180, guest 0x0120 to 0x0178 (12 pairs), holds the pc; program 5 is not the current program 3");
+
+	// A block with no recorded size: the old line, word for word.
+	r = SampleVuReport();
+	r.vu.contains = false;
+	r.vu.block.host_size = 0;
 	lines = Lines(Text(r));
-	ASSERT_GE(lines.size(), 5u);
+	EXPECT_EQ(lines[3], "  block: VU0 0x0120, nearest entry below the pc in program 3 (start 0x0000), host 0x0000000118d030c0 +0x00000040");
+
+	r.vu = VuHit{};
+	r.vu.tpc = 0x01a8;
+	lines = Lines(Text(r));
+	ASSERT_GE(lines.size(), 7u);
 	EXPECT_EQ(lines[3], "  block: none found");
 	EXPECT_EQ(lines[4], "  VU0 TPC 0x01a8 as last stored");
+	EXPECT_EQ(lines[5], "  VU0 block extent: no current program");
+	EXPECT_EQ(lines[6], "  host registers:");
+}
+
+// The triage parser (bugreport-worker/triage/hostfault.py) reads the block
+// line by this prefix.
+TEST(RecCrashReport, TheMicroVuBlockLineKeepsTheParsersPrefix)
+{
+	const std::vector<std::string> lines = Lines(Text(SampleVuReport()));
+	EXPECT_EQ(lines[3].rfind("  block: VU0 0x0120, nearest entry below the pc", 0), 0u) << lines[3];
+}
+
+TEST(RecCrashReport, AVuBlockScanFindsTheInnermostBlockHoldingThePc)
+{
+	const auto scan = [](uptr pc, std::initializer_list<VuBlock> blocks, VuHit* hit) {
+		VuBlockScan s(pc);
+		for (const VuBlock& b : blocks)
+			s.Add(b);
+		hit->found = s.Best(&hit->block);
+		hit->contains = s.Contains();
+		s.FillWindow(hit);
+	};
+	// A at 0x1000 for 0x300 holds B (0x1100 for 0x80), compiled inside it; C
+	// at 0x2000 for 0x40, after a gap.
+	const VuBlock a = Vb(0x0000, 0x1000, 0x300, 3);
+	const VuBlock b = Vb(0x0018, 0x1100, 0x80, 2);
+	const VuBlock c = Vb(0x0030, 0x2000, 0x40, 1);
+	VuHit h;
+
+	scan(0x1104, {c, a, b}, &h);
+	EXPECT_TRUE(h.found && h.contains);
+	EXPECT_EQ(h.block.guest_pc, 0x0018) << "the nested block, not the one it was compiled in";
+	EXPECT_EQ(h.block.host_size, 0x80u);
+
+	// Past B's end, still in A: A, though B is the nearer entry.
+	h = VuHit{};
+	scan(0x1200, {a, b, c}, &h);
+	EXPECT_TRUE(h.contains);
+	EXPECT_EQ(h.block.guest_pc, 0x0000);
+
+	// In the gap between A and C: the nearest entry, not holding it.
+	h = VuHit{};
+	scan(0x1800, {a, b, c}, &h);
+	EXPECT_TRUE(h.found);
+	EXPECT_FALSE(h.contains);
+	EXPECT_EQ(h.block.guest_pc, 0x0018);
+
+	// The last byte of C, and the first past it.
+	h = VuHit{};
+	scan(0x203f, {a, b, c}, &h);
+	EXPECT_TRUE(h.contains);
+	EXPECT_EQ(h.block.guest_pc, 0x0030);
+	h = VuHit{};
+	scan(0x2040, {a, b, c}, &h);
+	EXPECT_FALSE(h.contains);
+
+	// Below every block: nothing named, the blocks above in the window.
+	h = VuHit{};
+	scan(0x800, {a, b, c}, &h);
+	EXPECT_FALSE(h.found);
+	EXPECT_EQ(h.window_count, 3u);
+	EXPECT_EQ(h.window[0].host_start, 0x1000u);
+
+	// A block with no recorded size holds nothing.
+	h = VuHit{};
+	scan(0x1104, {Vb(0x0018, 0x1100, 0, 0)}, &h);
+	EXPECT_TRUE(h.found);
+	EXPECT_FALSE(h.contains);
+	EXPECT_EQ(h.blocks_unsized, 1u);
+}
+
+TEST(RecCrashReport, TheVuBlockWindowIsTheBlocksNearestThePc)
+{
+	// 100 blocks of 0x40 bytes, back to back from 0x10000; the pc in block 60.
+	VuBlockScan scan(0x10000 + 60 * 0x40 + 8);
+	for (u32 i = 100; i-- > 0;)
+		scan.Add(Vb(static_cast<u16>(i * 8), 0x10000 + i * 0x40, 0x40, 1));
+	VuHit h;
+	h.found = scan.Best(&h.block);
+	scan.FillWindow(&h);
+	ASSERT_EQ(h.window_count, kMaxVuWindow);
+	EXPECT_EQ(h.window[0].guest_pc, (61 - (kMaxVuWindow - kMaxVuWindowAbove)) * 8) << "the lowest one shown";
+	EXPECT_EQ(h.window[kMaxVuWindow - kMaxVuWindowAbove - 1].guest_pc, 60 * 8) << "the one holding the pc";
+	EXPECT_EQ(h.window[kMaxVuWindow - 1].guest_pc, (60 + kMaxVuWindowAbove) * 8);
+	EXPECT_EQ(h.blocks_below, 61 - (kMaxVuWindow - kMaxVuWindowAbove));
+	EXPECT_EQ(h.blocks_above, 39 - kMaxVuWindowAbove);
+	for (u32 i = 1; i < h.window_count; i++)
+		EXPECT_LT(h.window[i - 1].host_start, h.window[i].host_start);
+
+	// Fewer below than the window holds: more above make up the rest.
+	VuBlockScan low(0x10000 + 2 * 0x40);
+	for (u32 i = 0; i < 100; i++)
+		low.Add(Vb(static_cast<u16>(i * 8), 0x10000 + i * 0x40, 0x40, 1));
+	VuHit l;
+	low.FillWindow(&l);
+	ASSERT_EQ(l.window_count, kMaxVuWindow);
+	EXPECT_EQ(l.window[0].guest_pc, 0);
+	EXPECT_EQ(l.blocks_below, 0u);
+	EXPECT_EQ(l.blocks_above, 100 - kMaxVuWindow);
+
+	// The printed map: one line per block, and a marker for each side cut.
+	Report r = SampleVuReport();
+	r.pc = 0x10000 + 60 * 0x40 + 8;
+	r.vu.block = h.block;
+	std::copy(std::begin(h.window), std::end(h.window), std::begin(r.vu.window));
+	r.vu.window_count = h.window_count;
+	r.vu.blocks_below = h.blocks_below;
+	r.vu.blocks_above = h.blocks_above;
+	r.vu.blocks_unsized = 0;
+	const std::vector<std::string> lines = Lines(Text(r));
+	ASSERT_EQ(lines.size(), 7u + 1 + kMaxVuWindow + 1 + 10 + 1) << Text(r);
+	EXPECT_EQ(lines[7], "    (21 lower blocks not shown)");
+	EXPECT_EQ(lines[8 + kMaxVuWindow], "    (31 higher blocks not shown)");
+	EXPECT_EQ(lines[8 + kMaxVuWindow - kMaxVuWindowAbove - 1].rfind("  > 0x01e0  host ", 0), 0u);
+}
+
+// The whole report has a cap, and the last line is written past it.
+TEST(RecCrashReport, TheReportStopsAtItsCap)
+{
+	Report r = SampleVuReport();
+	r.vu.window_count = kMaxVuWindow;
+	for (u32 i = 0; i < kMaxVuWindow; i++)
+		r.vu.window[i] = Vb(static_cast<u16>(i * 8), 0x118d00000 + i * 0x40, 0x40, 1);
+	std::string text;
+	Write(r, AppendTo, &text, 1000);
+	const std::vector<std::string> lines = Lines(text);
+	EXPECT_LE(text.size(), 1000u);
+	ASSERT_GE(lines.size(), 3u);
+	EXPECT_EQ(lines[lines.size() - 2], "  (report cut short here, at its size cap)");
+	EXPECT_EQ(lines.back(), "Aborting application.");
+
+	// Everything at once, as long as it gets: well under the cap.
+	r.guest = Cpu::EE;
+	r.code_count = kMaxCodeWords;
+	std::memset(r.thread_name, 'x', sizeof(r.thread_name) - 1);
+	text = Text(r);
+	EXPECT_LT(text.size(), kMaxReportBytes / 2) << text.size();
+	EXPECT_EQ(text.find("cut short"), std::string::npos);
+}
+
+// Real blocks: each records its extent, the lookup finds each at its first
+// and last word, and a block compiled inside another is the one named.
+TEST(RecCrashReport, CompiledVuBlocksRecordTheirExtent)
+{
+	using namespace vu;
+	const auto lower = [](u32 op) { return VuOp{op, VNOP_U()}; };
+	VuTestHarness h(0);
+	h.SetVi(1, 1);
+	h.LoadProgram({
+		/* 0x00 */ lower(VIADDIU_L(vi::vi2, vi::vi0, 3)),
+		/* 0x08 */ lower(VIBNE_L(vi::vi1, vi::vi0, 3)), // to 0x30
+		/* 0x10 */ lower(0), // delay slot
+		/* 0x18 */ lower(VIADDIU_L(vi::vi3, vi::vi0, 1)), // not taken
+		/* 0x20 */ EBit(lower(0)),
+		/* 0x28 */ lower(0),
+		/* 0x30 */ EBit(lower(VIADDIU_L(vi::vi4, vi::vi0, 1))), // taken
+	});
+	h.RunNoDiff(); // its interpreter pass drops the compiled blocks
+	h.RunJitPreserveBlockCache();
+
+	VuHit all;
+	FindVuBlock(0, UINTPTR_MAX, &all);
+	ASSERT_GE(all.program, 0);
+	ASSERT_GE(all.window_count, 2u);
+	EXPECT_EQ(all.blocks_unsized, 0u);
+	bool nested = false;
+	for (u32 i = 0; i < all.window_count; i++)
+	{
+		const VuBlock& b = all.window[i];
+		ASSERT_GT(b.host_size, 0u);
+		ASSERT_GT(b.guest_pairs, 0u);
+		if (b.guest_pc == 0)
+			EXPECT_EQ(b.guest_pairs, 3u) << "the entry block runs to the branch's delay slot";
+
+		VuHit at;
+		FindVuBlock(0, b.host_start, &at);
+		EXPECT_TRUE(at.contains);
+		EXPECT_EQ(at.block.host_start, b.host_start) << "block 0x" << std::hex << b.guest_pc;
+		at = VuHit{};
+		FindVuBlock(0, b.host_start + b.host_size - 4, &at);
+		EXPECT_TRUE(at.contains);
+		for (u32 k = 0; k < all.window_count; k++)
+		{
+			const VuBlock& o = all.window[k];
+			if (k != i && o.host_start > b.host_start && o.host_start + o.host_size <= b.host_start + b.host_size)
+				nested = true;
+		}
+	}
+	EXPECT_TRUE(nested) << "the not-taken path is compiled inside the branching block";
+
+	// Past the last block's code.
+	const VuBlock& last = all.window[all.window_count - 1];
+	VuHit past;
+	FindVuBlock(0, last.host_start + last.host_size + 0x10000, &past);
+	EXPECT_TRUE(past.found);
+	EXPECT_FALSE(past.contains);
+}
+
+// The program cache keeps the extent: a hydrated program's blocks have the
+// sizes the compiled ones had.
+TEST(RecCrashReport, AHydratedVuProgramKeepsItsExtents)
+{
+	using namespace vu;
+	mVUPersist::SetRecordingEnabled(true);
+	VuTestHarness h(0);
+	h.SetVi(1, 1);
+	h.LoadProgram({
+		VuOp{VIADDIU_L(vi::vi2, vi::vi0, 3), VNOP_U()},
+		VuOp{VIBNE_L(vi::vi1, vi::vi0, 1), VNOP_U()},
+		VuOp{0, VNOP_U()},
+		EBit(VuOp{0, VNOP_U()}),
+	});
+	h.RunNoDiff(); // its interpreter pass drops the compiled blocks
+	h.RunJitPreserveBlockCache();
+	VuHit compiled;
+	FindVuBlock(0, UINTPTR_MAX, &compiled);
+	std::vector<u8> image;
+	ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(0, image));
+
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+	ASSERT_TRUE(mVUPersist::TestHydrate(0, image.data(), image.size()));
+	const u64 compiles = mVUPersist::GetBlockCompileCount(0);
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(0), compiles) << "the hydrated blocks ran, none was compiled";
+	VuHit hydrated;
+	FindVuBlock(0, UINTPTR_MAX, &hydrated);
+	mVUPersist::SetRecordingEnabled(false);
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+
+	ASSERT_GT(compiled.window_count, 0u);
+	ASSERT_EQ(hydrated.window_count, compiled.window_count);
+	for (u32 i = 0; i < compiled.window_count; i++)
+	{
+		EXPECT_EQ(hydrated.window[i].guest_pc, compiled.window[i].guest_pc);
+		EXPECT_EQ(hydrated.window[i].host_size, compiled.window[i].host_size);
+		EXPECT_EQ(hydrated.window[i].guest_pairs, compiled.window[i].guest_pairs);
+	}
 }
 
 TEST(RecCrashReport, APcOutsideTheCodeAreaSaysSo)

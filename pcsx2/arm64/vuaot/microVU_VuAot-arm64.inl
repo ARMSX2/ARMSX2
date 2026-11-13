@@ -1777,6 +1777,7 @@ static microBlock* vuAotRegisterNode(microVU& mVU, u32 pc, const microRegInfo& k
 		st->provisional.erase(b);
 	b->x86ptrStart = entry;
 	b->hostEntry = entry;
+	b->extent = 0; // vu-aot's code; its size is not recorded
 	return b;
 }
 

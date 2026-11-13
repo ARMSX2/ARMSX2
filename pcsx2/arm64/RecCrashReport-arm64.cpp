@@ -113,6 +113,35 @@ namespace RecCrashReport
 			size_t m_len = 0;
 		};
 
+		// Caps what goes through it at a byte count; past the cap it writes one
+		// line saying so, and drops the rest. The report's last line goes to the
+		// sink directly.
+		struct Budget
+		{
+			Sink sink;
+			void* context;
+			size_t limit;
+			size_t used = 0;
+			bool cut = false;
+		};
+
+		void BudgetSink(void* context, const char* text, size_t length)
+		{
+			static constexpr char kCut[] = "  (report cut short here, at its size cap)\n";
+			static constexpr size_t kReserve = sizeof(kCut) + sizeof("Aborting application.\n");
+			Budget* const b = static_cast<Budget*>(context);
+			if (b->cut)
+				return;
+			if (b->used + length + kReserve > b->limit)
+			{
+				b->cut = true;
+				b->sink(b->context, kCut, sizeof(kCut) - 1);
+				return;
+			}
+			b->used += length;
+			b->sink(b->context, text, length);
+		}
+
 		const char* SignalName(int signal)
 		{
 			switch (signal)
@@ -265,6 +294,78 @@ namespace RecCrashReport
 			}
 		}
 
+		bool SameBlock(const VuBlock& a, const VuBlock& b)
+		{
+			return a.host_start == b.host_start && a.guest_pc == b.guest_pc && a.host_size == b.host_size;
+		}
+
+		bool Holds(const VuBlock& b, uptr pc)
+		{
+			return b.host_size && pc - b.host_start < b.host_size;
+		}
+
+		void WriteGuestRange(Line& line, const VuBlock& b)
+		{
+			line.Str("guest 0x").Hex(b.guest_pc, 4).Str(" to 0x").Hex(b.guest_pc + (b.guest_pairs - 1u) * 8u, 4);
+			line.Str(" (").Dec(static_cast<u32>(b.guest_pairs)).Str(b.guest_pairs == 1 ? " pair)" : " pairs)");
+		}
+
+		// The lines after the TPC line for microVU code: whether the block holds
+		// the pc, and the block map around it.
+		void WriteVuBlocks(const Report& r, Sink sink, void* context)
+		{
+			const VuHit& h = r.vu;
+			const char* const vu = CpuName(r.block_cpu);
+			Line line(sink, context);
+
+			line.Str("  ").Str(vu).Str(" block extent: ");
+			if (h.program < 0)
+			{
+				line.Str("no current program").End();
+				return;
+			}
+			if (h.contains)
+			{
+				line.Str("host 0x").Hex(h.block.host_start, 16).Str(" +0x").Hex(r.pc - h.block.host_start, 8);
+				line.Str(" of 0x").Hex(h.block.host_size, 8).Str(", ");
+				WriteGuestRange(line, h.block);
+				line.Str(", holds the pc");
+				if (h.program != h.current_program)
+				{
+					line.Str("; program ").Dec(h.program).Str(" is not the current program");
+					if (h.current_program >= 0)
+						line.Str(" ").Dec(h.current_program);
+				}
+			}
+			else
+			{
+				line.Str("pc is not inside any block of program ").Dec(h.program);
+				line.Str(" or of another program of ").Str(vu);
+				if (h.blocks_unsized)
+					line.Str(" (").Dec(h.blocks_unsized).Str(" blocks of program ").Dec(h.program).Str(" have no recorded size)");
+			}
+			line.End();
+
+			line.Str("  ").Str(vu).Str(" block map, program ").Dec(h.program).Str(" (start 0x").Hex(h.program_start, 4);
+			line.Str("), by host address; > the block named, + another block holding the pc:").End();
+			if (h.blocks_below)
+				line.Str("    (").Dec(h.blocks_below).Str(" lower blocks not shown)").End();
+			for (u32 i = 0; i < h.window_count && i < kMaxVuWindow; i++)
+			{
+				const VuBlock& b = h.window[i];
+				const bool named = h.found && SameBlock(b, h.block);
+				line.Str(named ? "  > " : Holds(b, r.pc) ? "  + " : "    ");
+				line.Str("0x").Hex(b.guest_pc, 4).Str("  host 0x").Hex(b.host_start, 16);
+				if (b.host_size)
+					line.Str("  size 0x").Hex(b.host_size, 8).Str(", ").Dec(static_cast<u32>(b.guest_pairs)).Str(b.guest_pairs == 1 ? " pair" : " pairs");
+				else
+					line.Str("  size not recorded");
+				line.End();
+			}
+			if (h.blocks_above)
+				line.Str("    (").Dec(h.blocks_above).Str(" higher blocks not shown)").End();
+		}
+
 		void WriteToFd(void* context, const char* text, size_t length)
 		{
 			const int fd = static_cast<int>(reinterpret_cast<intptr_t>(context));
@@ -280,6 +381,80 @@ namespace RecCrashReport
 			}
 		}
 	} // namespace
+
+	void VuBlockScan::Add(const VuBlock& b)
+	{
+		if (!b.host_size)
+			m_unsized++;
+		// The innermost: a block compiled inside another starts after it.
+		if (Holds(b, m_pc) &&
+			(!m_inner_found || b.host_start > m_inner.host_start ||
+				(b.host_start == m_inner.host_start && b.host_size < m_inner.host_size)))
+		{
+			m_inner = b;
+			m_inner_found = true;
+		}
+
+		if (b.host_start <= m_pc)
+		{
+			if (!m_nearest_found || b.host_start > m_nearest.host_start)
+			{
+				m_nearest = b;
+				m_nearest_found = true;
+			}
+			// Keep the highest kMaxVuWindow, highest first.
+			m_below_total++;
+			u32 i = m_below_count < kMaxVuWindow ? m_below_count++ : kMaxVuWindow;
+			while (i > 0 && m_below[i - 1].host_start < b.host_start)
+			{
+				if (i < kMaxVuWindow)
+					m_below[i] = m_below[i - 1];
+				i--;
+			}
+			if (i < kMaxVuWindow)
+				m_below[i] = b;
+		}
+		else
+		{
+			// Keep the lowest kMaxVuWindow, lowest first.
+			m_above_total++;
+			u32 i = m_above_count < kMaxVuWindow ? m_above_count++ : kMaxVuWindow;
+			while (i > 0 && m_above[i - 1].host_start > b.host_start)
+			{
+				if (i < kMaxVuWindow)
+					m_above[i] = m_above[i - 1];
+				i--;
+			}
+			if (i < kMaxVuWindow)
+				m_above[i] = b;
+		}
+	}
+
+	bool VuBlockScan::Best(VuBlock* block) const
+	{
+		if (m_inner_found)
+			*block = m_inner;
+		else if (m_nearest_found)
+			*block = m_nearest;
+		return m_inner_found || m_nearest_found;
+	}
+
+	void VuBlockScan::FillWindow(VuHit* hit) const
+	{
+		// kMaxVuWindowAbove above the pc, or more when there are fewer below.
+		const u32 below_wanted = std::min(m_below_count, kMaxVuWindow - kMaxVuWindowAbove);
+		const u32 n_above = std::min(m_above_count, kMaxVuWindow - below_wanted);
+		const u32 n_below = std::min(m_below_count, kMaxVuWindow - n_above);
+		u32 n = 0;
+		for (u32 i = n_below; i > 0; i--)
+			hit->window[n++] = m_below[i - 1];
+		for (u32 i = 0; i < n_above; i++)
+			hit->window[n++] = m_above[i];
+		hit->window_count = n;
+		hit->blocks_below = m_below_total - n_below;
+		hit->blocks_above = m_above_total - n_above;
+		hit->blocks_unsized = m_unsized;
+	}
 
 	Where Classify(const Layout& l, uptr pc)
 	{
@@ -427,15 +602,20 @@ namespace RecCrashReport
 			const char* const vu = CpuName(r.block_cpu);
 			if (r.vu.found)
 			{
-				line.Str("  block: ").Str(vu).Str(" 0x").Hex(r.vu.block_pc, 4).Str(", nearest entry below the pc in program ");
-				line.Dec(r.vu.program).Str(" (start 0x").Hex(r.vu.program_start, 4).Str("), host 0x").Hex(r.vu.host_start, 16);
-				line.Str(" +0x").Hex(r.pc - r.vu.host_start, 8).End();
+				const VuBlock& b = r.vu.block;
+				line.Str("  block: ").Str(vu).Str(" 0x").Hex(b.guest_pc, 4).Str(", nearest entry below the pc in program ");
+				line.Dec(r.vu.program).Str(" (start 0x").Hex(r.vu.program_start, 4).Str("), host 0x").Hex(b.host_start, 16);
+				line.Str(" +0x").Hex(r.pc - b.host_start, 8);
+				if (b.host_size)
+					line.Str(" of 0x").Hex(b.host_size, 8);
+				line.End();
 			}
 			else
 			{
 				line.Str("  block: none found").End();
 			}
 			line.Str("  ").Str(vu).Str(" TPC 0x").Hex(r.vu.tpc, 4).Str(" as last stored").End();
+			WriteVuBlocks(r, sink, context);
 		}
 
 		if (r.have_host_registers)
@@ -462,14 +642,19 @@ namespace RecCrashReport
 
 		if (r.guest == Cpu::EE || r.guest == Cpu::IOP)
 			WriteRegisters(r, sink, context);
-
-		line.Str("Aborting application.").End();
 	}
 
-	void Write(const Report& r, Sink sink, void* context)
+	static void WriteLast(Sink sink, void* context)
 	{
-		WriteHead(r, sink, context);
-		WriteRest(r, sink, context);
+		Line(sink, context).Str("Aborting application.").End();
+	}
+
+	void Write(const Report& r, Sink sink, void* context, size_t limit)
+	{
+		Budget budget{sink, context, limit};
+		WriteHead(r, BudgetSink, &budget);
+		WriteRest(r, BudgetSink, &budget);
+		WriteLast(sink, context);
 	}
 
 	Layout CurrentLayout()
@@ -602,10 +787,12 @@ namespace RecCrashReport
 
 		// If the block lookup faults, the first lines are in the log already.
 		Report report;
+		Budget budget{WriteToFd, context, kMaxReportBytes};
 		CaptureHead(signal, siginfo, ucontext, CurrentLayout(), &report);
-		WriteHead(report, WriteToFd, context);
+		WriteHead(report, BudgetSink, &budget);
 		CaptureRest(&report);
-		WriteRest(report, WriteToFd, context);
+		WriteRest(report, BudgetSink, &budget);
+		WriteLast(WriteToFd, context);
 	}
 
 	void Install()
