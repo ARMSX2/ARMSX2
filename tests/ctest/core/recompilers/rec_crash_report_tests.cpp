@@ -171,6 +171,23 @@ void LoadFromAddress8()
 	*reinterpret_cast<volatile int*>(static_cast<uintptr_t>(8));
 }
 
+[[gnu::noinline]] void ExecuteUdf()
+{
+	asm volatile(".inst 0x00000000"); // UDF #0
+}
+
+// Writes code at `at` (the child's copy of the code area) and calls it.
+template <size_t N>
+void CallCode(uptr at, const u32 (&code)[N])
+{
+	std::memcpy(reinterpret_cast<void*>(at), code, sizeof(code));
+	__builtin___clear_cache(reinterpret_cast<char*>(at), reinterpret_cast<char*>(at + sizeof(code)));
+	reinterpret_cast<void (*)()>(at)();
+}
+
+constexpr u32 kNop = 0xd503201f;
+constexpr u32 kUdf = 0x00000000;
+
 // A host block for the EE program at kProgramPc, compiled.
 bool CompileEeBlock(uptr* fnptr, u32* host_size)
 {
@@ -1160,6 +1177,101 @@ TEST(RecCrashReport, AFaultInAnEeBlockIsReportedAndKillsWithItsOwnSignal)
 	std::snprintf(expect, sizeof(expect), "    %08x  %08x", kProgramPc, first_word);
 	EXPECT_EQ(lines[27], expect);
 	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
+// An illegal instruction in recompiled code: the same report, and the process
+// dies by SIGILL. SIGILL's fault address is the pc.
+TEST(RecCrashReport, AnIllegalInstructionInAnEeBlockIsReportedAndKillsWithSigill)
+{
+	uptr fnptr = 0;
+	u32 host_size = 0;
+	ASSERT_TRUE(CompileEeBlock(&fnptr, &host_size));
+	ASSERT_GE(host_size, 8u);
+
+	const Crash c = RunCrash([fnptr] { CallCode(fnptr, {kNop, kUdf}); });
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGILL);
+
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 6u) << c.log;
+	char expect[256];
+	std::snprintf(expect, sizeof(expect), "Host fault: SIGILL (ILL_ILLOPC) at 0x%016llx",
+		static_cast<unsigned long long>(fnptr + 4));
+	EXPECT_EQ(lines[0], expect);
+	EXPECT_EQ(lines[1].rfind("  thread ", 0), 0u) << lines[1];
+	EXPECT_NE(lines[1].find(", signal 4, si_code 1"), std::string::npos) << lines[1];
+	const Where w = Classify(CurrentLayout(), fnptr + 4);
+	std::snprintf(expect, sizeof(expect),
+		"  pc 0x%016llx: EE recompiler +0x%08llx (blocks), code area +0x%08llx, instruction 00000000",
+		static_cast<unsigned long long>(fnptr + 4), static_cast<unsigned long long>(w.region_offset),
+		static_cast<unsigned long long>(w.code_offset));
+	EXPECT_EQ(lines[2], expect);
+	std::snprintf(expect, sizeof(expect), "host 0x%016llx +0x00000004 of 0x%08x",
+		static_cast<unsigned long long>(fnptr), host_size);
+	EXPECT_EQ(lines[3].rfind("  block: EE ", 0), 0u) << lines[3];
+	EXPECT_NE(lines[3].find(expect), std::string::npos) << lines[3];
+	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
+// The second-boot reports' shape: an illegal word at the start of microVU1's
+// region, where its dispatcher is generated.
+TEST(RecCrashReport, AnIllegalInstructionAtTheMicroVu1RegionStartIsReported)
+{
+	const Layout l = CurrentLayout();
+	ASSERT_NE(l.code_base, 0u);
+	const uptr region = l.code_base + HostMemoryMap::mVU1recOffset;
+
+	const Crash c = RunCrash([region] { CallCode(region, {kUdf}); });
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGILL);
+
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 5u) << c.log;
+	EXPECT_EQ(lines[0].rfind("Host fault: SIGILL (ILL_ILLOPC) at 0x", 0), 0u) << lines[0];
+	char expect[256];
+	std::snprintf(expect, sizeof(expect),
+		"  pc 0x%016llx: microVU1 +0x00000000 (shared code), code area +0x%08x, instruction 00000000",
+		static_cast<unsigned long long>(region), HostMemoryMap::mVU1recOffset);
+	EXPECT_EQ(lines[2], expect);
+	EXPECT_EQ(lines[3], "  block: none found");
+	EXPECT_EQ(lines[4].rfind("  VU1 TPC 0x", 0), 0u) << lines[4];
+	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
+// In C++ code: the module line, and SIGILL kills it.
+TEST(RecCrashReport, AnIllegalInstructionInCppCodeNamesTheModule)
+{
+	const Crash c = RunCrash(ExecuteUdf);
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGILL);
+	EXPECT_NE(c.err.find("Aborting application."), std::string::npos) << c.err;
+
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 3u) << c.log;
+	EXPECT_EQ(lines[0].rfind("Host fault: SIGILL (ILL_ILLOPC) at 0x", 0), 0u) << lines[0];
+	EXPECT_NE(lines[2].find(": not in recompiled code (" + BaseName(ExePath()) + "+0x"), std::string::npos) << lines[2];
+	EXPECT_EQ(lines.back(), "Aborting application.");
+}
+
+TEST(RecCrashReport, ASentSigillIsSentAgain)
+{
+	const Crash c = RunCrash([] { raise(SIGILL); });
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGILL);
+	// A sent signal has no fault address; the report says who sent it.
+	const std::vector<std::string> lines = Lines(c.log);
+	ASSERT_GE(lines.size(), 1u) << c.log;
+	EXPECT_EQ(lines[0].rfind("Host fault: SIGILL (SI_TKILL) at 0x", 0), 0u) << lines[0];
+}
+
+TEST(RecCrashReport, OurHandlersHandingASigillToEachOtherDoNotLoop)
+{
+	const Crash c = RunCrash([] {
+		CrashHandler::Install();
+		ExecuteUdf();
+	});
+	ASSERT_TRUE(WIFSIGNALED(c.status)) << "status " << c.status;
+	EXPECT_EQ(WTERMSIG(c.status), SIGILL);
 }
 
 // A SIGSEGV someone sent is not raised again by retrying an instruction, so the

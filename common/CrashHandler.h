@@ -21,7 +21,7 @@ namespace CrashHandler
 	// abort()). A handler that calls this must return straight after.
 	void CrashSignalHandler(int signal, siginfo_t* siginfo, void* ctx);
 
-	// A handler that replaced another one for SIGSEGV or SIGBUS passes the one
+	// A handler that replaced another one for SIGSEGV, SIGBUS or SIGILL passes the one
 	// it replaced, for CrashSignalHandler to put back. The first one recorded
 	// for a signal stays; our own crash handler is not recorded.
 	void RecordReplacedHandler(int signal, const struct sigaction& replaced);

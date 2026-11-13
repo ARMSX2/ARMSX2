@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // What the process writes to the log when it takes a SIGSEGV or SIGBUS that
-// nothing handles (PageFaultHandler gave up on it), before the signal kills
-// it: the signal, the thread, where the host pc is (which recompiler's code,
+// nothing handles (PageFaultHandler gave up on it), or a SIGILL, before the
+// signal kills it: the signal, the thread, where the host pc is (which recompiler's code,
 // and which part of it), the recompiled block it is in, the host registers,
 // and for EE or IOP code the guest registers and the block's guest code.
 // RecErrorReport-arm64.h is the counterpart for errors the recompilers detect
@@ -58,7 +58,9 @@
 // size cap)", the rest is dropped, and "Aborting application." still ends it.
 //
 // The first line names the signal and its si_code ("si_code N" when the code
-// has no name) and gives the fault address. The thread line has the kernel's
+// has no name) and gives the fault address; for SIGILL that is the address of
+// the instruction, the pc, as the kernel reports it (ILL_ILLOPC for an
+// undefined instruction). The thread line has the kernel's
 // thread id and name. The pc line, for a pc outside the code area, ends
 // "not in recompiled code" and has no instruction; when the pc is in a loaded
 // module it goes on to name it, the pc's ELF address in it (what addr2line

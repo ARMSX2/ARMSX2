@@ -477,7 +477,22 @@ static bool IsWriteFault(const ucontext_t* uc)
 namespace PageFaultHandler
 {
 	static void SignalHandler(int sig, siginfo_t* info, void* ctx);
+#ifdef ARCH_ARM64
+	static void IllegalInstructionHandler(int sig, siginfo_t* info, void* ctx);
+#endif
 } // namespace PageFaultHandler
+
+#ifdef ARCH_ARM64
+// An illegal instruction is never ours to fix up, so there is no page fault
+// handling to try: the reporter writes its post-mortem, and the crash handler
+// hands the signal back to whoever had it before us.
+void PageFaultHandler::IllegalInstructionHandler(int sig, siginfo_t* info, void* ctx)
+{
+	if (const UnhandledFaultReporter reporter = s_unhandled_fault_reporter.load(std::memory_order_acquire))
+		reporter(sig, info, ctx);
+	CrashHandler::CrashSignalHandler(sig, info, ctx);
+}
+#endif
 
 void PageFaultHandler::SignalHandler(int sig, siginfo_t* info, void* ctx)
 {
@@ -571,6 +586,17 @@ bool PageFaultHandler::Install(Error* error)
 		return false;
 	}
 	CrashHandler::RecordReplacedHandler(SIGBUS, replaced);
+
+	// A jump into code that is not there (a stale dispatcher, zeroed code
+	// memory) usually ends in SIGILL, and gets the same post-mortem.
+	struct sigaction ill = sa;
+	ill.sa_sigaction = IllegalInstructionHandler;
+	if (sigaction(SIGILL, &ill, &replaced) != 0)
+	{
+		Error::SetErrno(error, "sigaction() for SIGILL failed: ", errno);
+		return false;
+	}
+	CrashHandler::RecordReplacedHandler(SIGILL, replaced);
 #endif
 
 	s_installed = true;

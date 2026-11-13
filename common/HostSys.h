@@ -152,7 +152,8 @@ namespace PageFaultHandler
 	bool InstallSecondaryThread();
 
 	// Linux and Android only. Called for a SIGSEGV or SIGBUS that
-	// HandlePageFault did not take, before the crash handler, with the
+	// HandlePageFault did not take, and on ARM64 for any SIGILL (there is no
+	// page fault handling for it), before the crash handler, with the
 	// handler's siginfo_t and ucontext_t. It runs inside the signal handler of
 	// a process about to die, so it must be async-signal-safe.
 	using UnhandledFaultReporter = void (*)(int signal, void* siginfo, void* ucontext);

@@ -212,7 +212,7 @@ namespace CrashHandler
 		struct sigaction action;
 		bool known;
 	};
-	static PreviousAction s_previous[2] = {};
+	static PreviousAction s_previous[3] = {};
 
 	// The thread that last put an old action back. If that thread comes back
 	// here, the action we put back led here again (a handler of ours installed
@@ -221,7 +221,7 @@ namespace CrashHandler
 
 	static int Slot(int signal)
 	{
-		return signal == SIGSEGV ? 0 : signal == SIGBUS ? 1 : -1;
+		return signal == SIGSEGV ? 0 : signal == SIGBUS ? 1 : signal == SIGILL ? 2 : -1;
 	}
 
 	static long CurrentThreadId()
@@ -330,6 +330,7 @@ const char* CrashHandler::GetSignalName(int signal_no)
 		// clang-format off
 		case SIGSEGV: return "SIGSEGV";
 		case SIGBUS: return "SIGBUS";
+		case SIGILL: return "SIGILL";
 		default: return "UNKNOWN";
 			// clang-format on
 	}
@@ -456,6 +457,9 @@ bool CrashHandler::Install()
 	if (sigaction(SIGSEGV, &sa, &s_previous[Slot(SIGSEGV)].action) != 0)
 		return false;
 	s_previous[Slot(SIGSEGV)].known = true;
+	if (sigaction(SIGILL, &sa, &s_previous[Slot(SIGILL)].action) != 0)
+		return false;
+	s_previous[Slot(SIGILL)].known = true;
 
 	return true;
 }

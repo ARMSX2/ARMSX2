@@ -205,6 +205,23 @@ namespace RecCrashReport
 					// clang-format on
 				}
 			}
+			if (signal == SIGILL)
+			{
+				switch (code)
+				{
+					// clang-format off
+					case 1: return "ILL_ILLOPC";
+					case 2: return "ILL_ILLOPN";
+					case 3: return "ILL_ILLADR";
+					case 4: return "ILL_ILLTRP";
+					case 5: return "ILL_PRVOPC";
+					case 6: return "ILL_PRVREG";
+					case 7: return "ILL_COPROC";
+					case 8: return "ILL_BADSTK";
+					default: return nullptr;
+					// clang-format on
+				}
+			}
 			return nullptr;
 		}
 
