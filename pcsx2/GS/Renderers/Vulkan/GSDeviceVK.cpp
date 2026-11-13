@@ -10720,9 +10720,21 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			rt_op = VK_ATTACHMENT_LOAD_OP_LOAD;
 		if (pipe.IsDepthFeedbackLoop() && ds_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
 			ds_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-		const VkRenderPass rp = GetTFXRenderPass(pipe.rt, DepthSlot(pipe), pipe.ps.colclip_hw,
-			config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil, pipe.IsRTFeedbackLoop(),
-			pipe.IsTestingAndSamplingDepth(), rt_op, ds_op);
+		// A stencil-one temporary is cleared over the draw in the pass and read by no later pass, so on the
+		// GPUs that would rather not build one it is neither loaded nor stored, and the pass may narrow.
+		const bool scratch_ds = m_features.date_reads_without_depth && config.ds_scratch && draw_ds == config.ds &&
+			config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne;
+		if (scratch_ds)
+			ds_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		const VkRenderPass rp = scratch_ds ?
+			GetRenderPass(draw_rt ? draw_rt->GetVkFormat() : VK_FORMAT_UNDEFINED, draw_ds->GetVkFormat(),
+				draw_rt ? rt_op : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				draw_rt ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+				VK_ATTACHMENT_STORE_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
+				pipe.IsRTFeedbackLoop(), pipe.IsTestingAndSamplingDepth()) :
+			GetTFXRenderPass(pipe.rt, DepthSlot(pipe), pipe.ps.colclip_hw,
+				config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil, pipe.IsRTFeedbackLoop(),
+				pipe.IsTestingAndSamplingDepth(), rt_op, ds_op);
 		const bool is_clearing_rt = (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
 
 		// Only draw to the active area of the colclip hw target. Except when depth is cleared, we need to use the full
@@ -10741,7 +10753,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		if (m_narrow_render_area)
 		{
 			if (!is_clearing_rt && !pipe.ps.colclip_hw && (!draw_rt || rt_op == VK_ATTACHMENT_LOAD_OP_LOAD) &&
-				(!draw_ds || ds_op == VK_ATTACHMENT_LOAD_OP_LOAD))
+				(!draw_ds || ds_op == VK_ATTACHMENT_LOAD_OP_LOAD || scratch_ds))
 			{
 				const GSVector4i want = grown_area.rempty() ? narrow_area : grown_area;
 				if (!want.rempty())
