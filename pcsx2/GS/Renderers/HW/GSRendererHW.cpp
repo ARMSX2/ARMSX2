@@ -7266,6 +7266,7 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 		if ((temp_ds.reset(g_gs_device->CreateDepthStencil(m_conf.rt->GetWidth(), m_conf.rt->GetHeight(), false, true, true)), temp_ds))
 		{
 			m_conf.ds = temp_ds.get();
+			m_conf.ds_scratch = true;
 		}
 		else if (need_barrier)
 		{
