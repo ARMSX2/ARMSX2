@@ -16,6 +16,7 @@ enum class TextureUsage : u8
 	RenderTarget = 2,
 	Feedback     = 4,
 	ShaderWrite  = 8,
+	Stencil      = 16, ///< Depth that carries a stencil aspect, where the device keeps the two apart (FeatureSupport::stencil_on_request).
 };
 
 MARK_ENUM_AS_FLAGS(TextureUsage);
@@ -126,6 +127,11 @@ protected:
 	u32 m_destination_alpha_frame = 0;
 	u32 m_destination_alpha_draws = 0;
 	bool m_destination_alpha_loop = false;
+
+	// AskForStencil: the frame being counted, its draws that wanted stencil, and whether enough did.
+	u32 m_stencil_frame = 0;
+	u32 m_stencil_draws = 0;
+	bool m_wants_stencil = false;
 
 	bool m_needs_mipmaps_generated = true;
 	ClearValue m_clear_value = {};
@@ -316,6 +322,25 @@ public:
 		return m_destination_alpha_loop;
 	}
 	__fi bool TookDestinationAlphaLoop() const { return m_destination_alpha_loop; }
+
+	/// Depth kept without stencil (stencil_on_request) counts the draws that wanted it; once more than
+	/// min_draws do in one frame, the renderer gives it stencil.
+	void AskForStencil(u32 frame, u32 min_draws)
+	{
+		if (m_stencil_frame != frame)
+		{
+			m_stencil_frame = frame;
+			m_stencil_draws = 0;
+		}
+		m_wants_stencil |= ++m_stencil_draws > min_draws;
+	}
+	__fi bool WantsStencil() const { return m_wants_stencil; }
+	void ForgetStencilRequest()
+	{
+		m_stencil_frame = 0;
+		m_stencil_draws = 0;
+		m_wants_stencil = false;
+	}
 
 	__fi u32 GetClearColor() const { return m_clear_value.color; }
 	__fi float GetClearDepth() const { return m_clear_value.depth; }

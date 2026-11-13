@@ -49,12 +49,15 @@ namespace
 	// full pools, and the run program stops rather than grow without bound.
 	constexpr u32 MAX_SLOT_POOLS = 64;
 	// The pipeline variant: dual-source blending (any way but 2 alone), RTA correction, the depth floor (all three in the
-	// program), and, the pipeline only, a pass without a depth attachment and the blend unit's own equation.
+	// program), and, the pipeline only, a pass without a depth attachment, the blend unit's own equation, and a pass
+	// whose depth carries stencil in a render pass of its own (GSDeviceVK::DepthSlot 2).
 	constexpr u32 VARIANT_NO_DEPTH = 8;
 	constexpr u32 VARIANT_UNIT = 16;
-	u32 Variant(u32 ways, bool rta, bool zfloor, bool nods)
+	constexpr u32 VARIANT_DEPTH_STENCIL = 32;
+	u32 Variant(u32 ways, bool rta, bool zfloor, u32 depth_slot)
 	{
-		return ((ways & ~(1u << 2)) != 0 ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u) | (nods ? VARIANT_NO_DEPTH : 0u) |
+		return ((ways & ~(1u << 2)) != 0 ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u) |
+		       (depth_slot == 0 ? VARIANT_NO_DEPTH : 0u) | (depth_slot == 2 ? VARIANT_DEPTH_STENCIL : 0u) |
 		       (GSRunsPolicy::UnitEquation(ways) ? VARIANT_UNIT : 0u);
 	}
 	// The vertex selector bits a group's rows may differ in: texture mapping and shading (the run's vertex program does
@@ -329,12 +332,12 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 
 	// The group's program with this row in it must be built. If it is not, it is asked for, the group ends, and the row
 	// is drawn classically; the next row of the class opens a group at once if its program is built by then.
-	const bool nods = dev->m_current_depth_target == nullptr;
+	const u32 depth_slot = dev->DepthSlot(dev->m_current_depth_target);
 	const auto ready = [&](const Group* with) {
 		GSRunsPolicy::StateSet states = with ? with->states : GSRunsPolicy::StateSet();
 		states.Note(d.flags);
 		const u32 ways = (with ? with->ways : 0u) | (1u << d.way);
-		return ProgramReady(config.depth.key, Variant(ways, config.ps.rta_correction, config.ps.zfloor, nods), states.Key());
+		return ProgramReady(config.depth.key, Variant(ways, config.ps.rta_correction, config.ps.zfloor, depth_slot), states.Key());
 	};
 	// A row whose state flags and way the group already holds changes neither its program nor its state set.
 	const bool same_program = g && d.flags == g->last_flags && (g->ways & (1u << d.way));
@@ -438,7 +441,7 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 			g->ds = config.ds;
 			g->pass_rt = dev->m_current_render_target;
 			g->pass_ds = dev->m_current_depth_target;
-			g->nods = nods;
+			g->depth_slot = static_cast<u8>(depth_slot);
 			g->dss = config.depth.key;
 			g->vs = config.vs.key & ~VS_RUN_FREE;
 			g->scissor = config.scissor;
@@ -689,7 +692,7 @@ void GSRunEmitterVK::Drop()
 
 VkShaderModule GSRunEmitterVK::GetFragmentShader(u32 variant, u32 spec)
 {
-	variant &= ~(VARIANT_NO_DEPTH | VARIANT_UNIT); // the pipeline's, not the program's
+	variant &= ~(VARIANT_NO_DEPTH | VARIANT_UNIT | VARIANT_DEPTH_STENCIL); // the pipeline's, not the program's
 	const u64 key = spec | (static_cast<u64>(variant) << 32);
 	{
 		std::unique_lock lock(m_fs_mutex);
@@ -731,7 +734,8 @@ VkPipeline GSRunEmitterVK::CreatePipeline(u8 dss_key, u32 variant, u32 spec)
 		gpb.SetProvokingVertex(VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT);
 	gpb.SetPipelineLayout(m_pipeline_layout);
 	const bool ds = !(variant & VARIANT_NO_DEPTH);
-	gpb.SetRenderPass(m_dev->GetTFXRenderPass(true, ds, false, false, false, false, VK_ATTACHMENT_LOAD_OP_LOAD,
+	const u32 depth_slot = ds ? ((variant & VARIANT_DEPTH_STENCIL) ? 2u : 1u) : 0u;
+	gpb.SetRenderPass(m_dev->GetTFXRenderPass(true, depth_slot, false, false, false, false, VK_ATTACHMENT_LOAD_OP_LOAD,
 						  ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 		0);
 	gpb.SetPrimitiveTopology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -807,7 +811,7 @@ bool GSRunEmitterVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 VkPipeline GSRunEmitterVK::GetPipeline(const Group& g)
 {
 	// JoinGroup let the group grow only while its program was built.
-	const auto it = m_pipelines.find(PipelineKey(g.dss, Variant(g.ways, g.rta, g.zfloor, g.nods), g.states.Key()));
+	const auto it = m_pipelines.find(PipelineKey(g.dss, Variant(g.ways, g.rta, g.zfloor, g.depth_slot), g.states.Key()));
 	if (it == m_pipelines.end())
 		pxFailRel("VK: a group grew past the program built for it");
 	return it->second;

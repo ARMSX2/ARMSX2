@@ -2073,6 +2073,13 @@ bool GSRendererHW::SetupStencilCounterDraw(GSTextureCache::Target* rt)
 	if (nplus == 0 || nminus == 0 || (nzero != 0 && writes_alpha))
 		return false;
 
+	// Depth kept without stencil counts on the colour road this time, and gets stencil for the next.
+	if (!g_gs_device->DepthHasStencil(m_conf.ds))
+	{
+		m_conf.ds->AskForStencil(g_gs_device->GetFrame(), 0);
+		return false;
+	}
+
 	m_stencil_counter_indices.resize((nplus + nminus) * 3);
 	u16* plus_out = m_stencil_counter_indices.data();
 	u16* minus_out = plus_out + nplus * 3;
@@ -7296,6 +7303,8 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		return;
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
+	// The draw's own depth buffer decides: a game's depth may be kept without stencil (stencil_on_request).
+	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds);
 
 	// Date one can run with complex alpha test if there's no overlap.
 	const bool complex_alpha_test = m_cached_ctx.TEST.ATE &&
@@ -7328,7 +7337,7 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	// (Cs - Cd) * Ad + Cd: 2,126 passes a frame on the Adreno 740 against 10 with the read.
 	const bool blends_with_destination_alpha =
 		PRIM->ABE && m_context->ALPHA.C == 1 && !g_gs_measurement_overrides.date_copy_with_dst_alpha_blend;
-	m_date_draw_shares_copy = features.alpha_bit_logic_op && features.stencil_buffer && m_conf.ds && rt &&
+	m_date_draw_shares_copy = features.alpha_bit_logic_op && stencil_buffer && m_conf.ds && rt &&
 		!PRIM->AA1 && !m_texture_shuffle && !m_channel_shuffle && !rt->m_rt_alpha_scale &&
 		!blends_with_destination_alpha &&
 		GSAlphaBitLogicOp::KeepsDATEResult(m_cached_ctx.TEST.DATM, m_conf.colormask.wa, GetAlphaMinMax().min,
@@ -7392,7 +7401,7 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 	}
 	// When Blending is disabled and Edge Anti Aliasing is enabled,
 	// the output alpha is Coverage (which we force to 128) so DATE will fail/pass guaranteed on second pass.
-	else if (m_conf.colormask.wa && !complex_alpha_test && (m_context->FBA.FBA || IsCoverageAlphaFixedOne()) && features.stencil_buffer)
+	else if (m_conf.colormask.wa && !complex_alpha_test && (m_context->FBA.FBA || IsCoverageAlphaFixedOne()) && stencil_buffer)
 	{
 		GL_PERF("DATE: Fast with FBA, all pixels will be >= 128");
 		date_options.stencil_one = !m_cached_ctx.TEST.DATM;
@@ -7402,13 +7411,13 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 		// Performance note: check alpha range with GetAlphaMinMax()
 		// Note: all my dump are already above 120fps, but it seems to reduce GPU load
 		// with big upscaling
-		if (m_cached_ctx.TEST.DATM && GetAlphaMinMax().max < 128 && features.stencil_buffer)
+		if (m_cached_ctx.TEST.DATM && GetAlphaMinMax().max < 128 && stencil_buffer)
 		{
 			// Only first pixel (write 0) will pass (alpha is 1)
 			GL_PERF("DATE: Fast with alpha %d-%d", GetAlphaMinMax().min, GetAlphaMinMax().max);
 			date_options.stencil_one = true;
 		}
-		else if (!m_cached_ctx.TEST.DATM && GetAlphaMinMax().min >= 128 && features.stencil_buffer)
+		else if (!m_cached_ctx.TEST.DATM && GetAlphaMinMax().min >= 128 && stencil_buffer)
 		{
 			// Only first pixel (write 1) will pass (alpha is 0)
 			GL_PERF("DATE: Fast with alpha %d-%d", GetAlphaMinMax().min, GetAlphaMinMax().max);
@@ -7440,7 +7449,7 @@ void GSRendererHW::EmulateDATESelectMethod(DATEOptions& date_options, GSTextureC
 			m_conf.require_full_barrier = true;
 			date_options.barrier = true;
 		}
-		else if (features.stencil_buffer)
+		else if (stencil_buffer)
 		{
 			// Might be inaccurate in some cases but we shouldn't hit this path.
 			GL_PERF("DATE: Fast with alpha %d-%d", GetAlphaMinMax().min, GetAlphaMinMax().max);
@@ -7469,6 +7478,7 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	}
 
 	const GSDevice::FeatureSupport& features = g_gs_device->Features();
+	const bool stencil_buffer = g_gs_device->DepthHasStencil(m_conf.ds);
 
 	// Always swap DATE with DATE_BARRIER if we have barriers on when alpha write is masked.
 	// This is always enabled on VK/GL/DX12 but not on DX11 as copies are slow so we can selectively enable it like now.
@@ -7506,7 +7516,7 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::PrimIDTracking;
 	else if (date_options.barrier)
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Full;
-	else if (features.stencil_buffer)
+	else if (stencil_buffer)
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil;
 	else
 	{
@@ -7527,6 +7537,10 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 		date_options.barrier = true;
 		m_conf.require_one_barrier = true;
 		m_conf.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Full;
+
+		// Depth kept without stencil (stencil_on_request) gets it once this costs enough (DrawPrims).
+		if (features.stencil_on_request && m_conf.ds)
+			m_conf.ds->AskForStencil(g_gs_device->GetFrame(), 8);
 	}
 
 	if (scale_rt_alpha)
@@ -7540,7 +7554,7 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	if (date_stencil_needs_ds)
 	{
 		const bool need_barrier = m_conf.require_one_barrier || (m_conf.require_full_barrier && features.feedback_loops());
-		if ((temp_ds.reset(g_gs_device->CreateDepthStencil(m_conf.rt->GetWidth(), m_conf.rt->GetHeight(), false)), temp_ds))
+		if ((temp_ds.reset(g_gs_device->CreateDepthStencil(m_conf.rt->GetWidth(), m_conf.rt->GetHeight(), false, true, true)), temp_ds))
 		{
 			m_conf.ds = temp_ds.get();
 		}
@@ -11813,6 +11827,11 @@ __ri void GSRendererHW::BeginDrawState(GSTextureCache::Target* rt, GSTextureCach
 	m_conf.ps.scanmsk = m_draw_env->SCANMSK.MSK;
 	m_conf.rt = rt ? rt->m_texture : nullptr;
 	m_conf.ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
+	if (g_gs_device->Features().stencil_on_request && m_conf.ds && m_conf.ds->WantsStencil() &&
+		!g_gs_device->DepthHasStencil(m_conf.ds)) [[unlikely]]
+	{
+		g_gs_device->GiveDepthStencil(m_conf.ds);
+	}
 
 	pxAssert(!ds || !rt || (m_conf.ds->GetSize().x == m_conf.rt->GetSize().x && m_conf.ds->GetSize().y == m_conf.rt->GetSize().y));
 }

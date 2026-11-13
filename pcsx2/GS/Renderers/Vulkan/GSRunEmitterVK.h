@@ -130,7 +130,7 @@ private:
 		u16 vs = 0;
 		u8 rta = 0;
 		u8 zfloor = 0;
-		bool nods = false; ///< the pass has no depth attachment
+		u8 depth_slot = 0; ///< the pass's depth attachment (GSDeviceVK::DepthSlot): none, depth, depth with stencil
 		GSVector4i scissor;
 		VkViewport viewport;
 		GSHWDrawConfig::VSConstantBuffer cb_vs;

@@ -4556,6 +4556,14 @@ void GSDeviceVK::ResolveFeatureTable()
 		g_gs_measurement_overrides.disable_stencil_buffer)
 		m_features.stencil_buffer = false;
 
+	// PanVK on Bifrost compresses D32F depth but not D32F_S8, and a game's depth rarely needs stencil,
+	// so depth carries stencil only when it is made for a stencil draw. The Mali-G31 has no AFBC, so
+	// there it would pay for the swaps and gain nothing.
+	m_features.stencil_on_request = IsDevicePanVKBifrost() && m_features.stencil_buffer &&
+		!IsDeviceNamed("Mali-G31");
+	if (m_features.stencil_on_request)
+		Console.WriteLn("VK: Depth carries stencil only where a draw uses it.");
+
 	// The colour-wrap counter in the stencil unit (GSStencilCounter.h) needs the stencil buffer and a
 	// stencil aspect it can sample for the resolve. Wherever the stencil buffer is on, its exactness
 	// is the stencil unit's wrapping arithmetic, so there is no per-driver rule.
@@ -5032,7 +5040,7 @@ VkFormat GSDeviceVK::LookupNativeFormat(GSTexture::Format format) const
 	if (format == GSTexture::Format::ColorClip && m_colorclip_fallback_to_hdr)
 		return VK_FORMAT_R16G16B16A16_SFLOAT;
 
-	return (format != GSTexture::Format::DepthStencil || m_features.stencil_buffer) ?
+	return (format != GSTexture::Format::DepthStencil || (m_features.stencil_buffer && !m_features.stencil_on_request)) ?
 		s_format_mapping[static_cast<int>(format)] :
 		VK_FORMAT_D32_SFLOAT;
 }
@@ -5126,6 +5134,16 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 	if (dTexVK->GetState() == GSTexture::State::Cleared && !full_draw_copy)
 		dTexVK->CommitClear();
 
+	// Depth with and without stencil (stencil_on_request keeps both kinds) cannot be copied as images: Vulkan copies
+	// depth only between equal formats. Draw the depth across instead.
+	if (sTexVK->GetVkFormat() != dTexVK->GetVkFormat() && sTexVK->IsDepthStencil() && dTexVK->IsDepthStencil()) [[unlikely]]
+	{
+		DoStretchRect(sTex, GSVector4(r) / GSVector4(sTexVK->GetSize()).xyxy(), dTex,
+			GSVector4(GSVector4i(destX, destY, destX + r.width(), destY + r.height())),
+			ShaderConvertSelector(ShaderConvert::DEPTH_COPY, 0xf, true), Nearest);
+		return;
+	}
+
 	// *now* we can do a normal image copy.
 	const VkImageAspectFlags src_aspect =
 		(sTexVK->IsDepthStencil()) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
@@ -5150,6 +5168,47 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 	dTexVK->SetState(GSTexture::State::Dirty);
 }
 
+void GSDeviceVK::GiveDepthStencil(GSTexture* ds)
+{
+	// Copy the depth into a spare that has stencil, then trade images: every holder of ds keeps it.
+	GSTextureVK* const tex = static_cast<GSTextureVK*>(ds);
+	if (!m_features.stencil_on_request || tex->HasStencilAspect())
+		return;
+	// The rows pending in the open pass were decided against the image ds has now, and may sample it.
+	EndRenderPass();
+	GSTextureVK* const spare = static_cast<GSTextureVK*>(CreateDepthStencil(tex->GetSize(), false, true, true));
+	if (!spare)
+		return;
+
+	switch (tex->GetState())
+	{
+		case GSTexture::State::Cleared:
+			ClearDepth(spare, tex->GetClearDepth());
+			break;
+		case GSTexture::State::Dirty:
+			DoStretchRect(tex, GSVector4(0, 0, 1, 1), spare, GSVector4(spare->GetRect()),
+				ShaderConvertSelector(ShaderConvert::DEPTH_COPY, 0xf, true), Nearest);
+			break;
+		default:
+			InvalidateRenderTarget(spare);
+			break;
+	}
+
+	tex->SwapStencilImage(spare);
+	Recycle(spare);
+
+	// A game that makes its depth anew each frame asks again each frame. Past 8 swaps within 60 frames, new depth is
+	// made with stencil for the next 600 frames, and then without it again: a game that still asks swaps its way back
+	// in, and one that stopped, or a game started since, has its depth compressed again.
+	if (m_frame - m_depth_stencil_gift_frame > 60)
+	{
+		m_depth_stencil_gift_frame = m_frame;
+		m_depth_stencil_gifts = 0;
+	}
+	if (++m_depth_stencil_gifts > 8)
+		m_depth_stencil_until = m_frame + 600;
+}
+
 void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTexture* dTex, const GSVector4& dRect,
 	ShaderConvertSelector shader, Filter filter)
 {
@@ -5163,7 +5222,7 @@ void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, GSTextur
 		SetUtilityPushConstants(&source_size, sizeof(source_size));
 	}
 	DoStretchRect(static_cast<GSTextureVK*>(sTex), sRect, static_cast<GSTextureVK*>(dTex), dRect,
-		GetConvertPipeline(shader), filter, allow_discard);
+		GetConvertPipelineFor(shader, static_cast<GSTextureVK*>(dTex)), filter, allow_discard);
 }
 
 void GSDeviceVK::DoStretchRect(GSTexture* sTex, const GSVector4& sRect, const GSVector4& dRect,
@@ -5311,7 +5370,7 @@ void GSDeviceVK::DoMultiStretchRects(
 		SetUtilityPushConstants(&source_size, sizeof(source_size));
 	}
 
-	SetPipeline(GetConvertPipeline(shader.SetMask(rects[0].wmask.wrgba)));
+	SetPipeline(GetConvertPipelineFor(shader.SetMask(rects[0].wmask.wrgba), dTex));
 
 	if (ApplyUtilityState())
 		DrawIndexedPrimitive();
@@ -5328,11 +5387,14 @@ void GSDeviceVK::BeginRenderPassForStretchRect(
 
 	if (dTex->IsDepthStencil())
 	{
+		const bool s8 = (DepthSlot(dTex) == 2);
 		if (load_op == VK_ATTACHMENT_LOAD_OP_CLEAR)
-			BeginClearRenderPass(m_utility_depth_render_pass_clear, dtex_rc, dTex->GetClearDepth(), 0);
+			BeginClearRenderPass(s8 ? m_utility_depth_s8_render_pass_clear : m_utility_depth_render_pass_clear, dtex_rc,
+				dTex->GetClearDepth(), 0);
+		else if (load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+			BeginRenderPass(s8 ? m_utility_depth_s8_render_pass_discard : m_utility_depth_render_pass_discard, dtex_rc);
 		else
-			BeginRenderPass((load_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE) ? m_utility_depth_render_pass_discard :
-			                                                               m_utility_depth_render_pass_load, dtex_rc);
+			BeginRenderPass(s8 ? m_utility_depth_s8_render_pass_load : m_utility_depth_render_pass_load, dtex_rc);
 	}
 	else if (dTex->GetFormat() == GSTexture::Format::Color)
 	{
@@ -6659,10 +6721,11 @@ bool GSDeviceVK::CreateRenderPasses()
 	const VkFormat rt_format = LookupNativeFormat(GSTexture::Format::Color);
 	const VkFormat colclip_rt_format = LookupNativeFormat(GSTexture::Format::ColorClip);
 	const VkFormat depth_format = LookupNativeFormat(GSTexture::Format::DepthStencil);
+	const VkFormat s8_format = m_features.stencil_on_request ? VK_FORMAT_D32_SFLOAT_S8_UINT : depth_format;
 
 	for (u32 rt = 0; rt < 2; rt++)
 	{
-		for (u32 ds = 0; ds < 2; ds++)
+		for (u32 ds = 0; ds < 3; ds++)
 		{
 			for (u32 colclip = 0; colclip < 2; colclip++)
 			{
@@ -6678,7 +6741,8 @@ bool GSDeviceVK::CreateRenderPasses()
 								{
 									const VkFormat rp_rt_format =
 										(rt != 0) ? ((colclip != 0) ? colclip_rt_format : rt_format) : VK_FORMAT_UNDEFINED;
-									const VkFormat rp_depth_format = (ds != 0) ? depth_format : VK_FORMAT_UNDEFINED;
+									const VkFormat rp_depth_format =
+										(ds == 0) ? VK_FORMAT_UNDEFINED : (ds == 2) ? s8_format : depth_format;
 									const VkAttachmentLoadOp opc = (!stencil || !m_features.stencil_buffer) ?
 									                                   VK_ATTACHMENT_LOAD_OP_DONT_CARE :
 									                                   VK_ATTACHMENT_LOAD_OP_LOAD;
@@ -6706,8 +6770,15 @@ bool GSDeviceVK::CreateRenderPasses()
 		VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
 	GET(m_utility_depth_render_pass_discard, VK_FORMAT_UNDEFINED, depth_format, false, false,
 		VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+	GET(m_utility_depth_s8_render_pass_load, VK_FORMAT_UNDEFINED, s8_format, false, false,
+		VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+	GET(m_utility_depth_s8_render_pass_clear, VK_FORMAT_UNDEFINED, s8_format, false, false,
+		VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_CLEAR, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
+	GET(m_utility_depth_s8_render_pass_discard, VK_FORMAT_UNDEFINED, s8_format, false, false,
+		VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE);
 
-	m_date_setup_render_pass = GetRenderPass(VK_FORMAT_UNDEFINED, depth_format, VK_ATTACHMENT_LOAD_OP_LOAD,
+	// Stencil DATE only runs on depth that has stencil.
+	m_date_setup_render_pass = GetRenderPass(VK_FORMAT_UNDEFINED, s8_format, VK_ATTACHMENT_LOAD_OP_LOAD,
 		VK_ATTACHMENT_STORE_OP_STORE, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE,
 		m_features.stencil_buffer ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 		m_features.stencil_buffer ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE);
@@ -6743,6 +6814,7 @@ bool GSDeviceVK::CompileConvertPipelines()
 	gpb.SetVertexShader(vs);
 
 	m_convert.resize(ShaderConvertSelector::NUM_TOTAL_SHADERS);
+	m_convert_s8.resize(ShaderConvertSelector::NUM_TOTAL_SHADERS);
 	for (u32 i = 0; i < ShaderConvertSelector::NUM_TOTAL_SHADERS; i++)
 	{
 		const ShaderConvertSelector shader = ShaderConvertSelector::Get(i);
@@ -6817,17 +6889,25 @@ bool GSDeviceVK::CompileConvertPipelines()
 			shader.Name(), shader.Mask(), static_cast<int>(shader.DepthOutput()),
 			static_cast<int>(shader.Biln()));
 
+		if (m_features.stencil_on_request && shader.DepthOutput() && !shader.DATMConvertShader())
+		{
+			gpb.SetRenderPass(m_utility_depth_s8_render_pass_load, 0);
+			m_convert_s8[i] = gpb.Create(m_device, g_vulkan_shader_cache->GetPipelineCache(true), false);
+			if (!m_convert_s8[i])
+				return false;
+		}
+
 		if (shader.Shader() == ShaderConvert::COLCLIP_INIT || shader.Shader() == ShaderConvert::COLCLIP_RESOLVE)
 		{
 			const bool is_setup = shader.Shader() == ShaderConvert::COLCLIP_INIT;
-			VkPipeline(&arr)[2][2] = *(is_setup ? &m_colclip_setup_pipelines : &m_colclip_finish_pipelines);
-			for (u32 ds = 0; ds < 2; ds++)
+			VkPipeline(&arr)[3][2] = *(is_setup ? &m_colclip_setup_pipelines : &m_colclip_finish_pipelines);
+			for (u32 ds = 0; ds < (m_features.stencil_on_request ? 3u : 2u); ds++)
 			{
 				for (u32 fbl = 0; fbl < 2; fbl++)
 				{
 					pxAssert(!arr[ds][fbl]);
 
-					gpb.SetRenderPass(GetTFXRenderPass(true, ds != 0, is_setup, false, fbl != 0, false,
+					gpb.SetRenderPass(GetTFXRenderPass(true, ds, is_setup, false, fbl != 0, false,
 						VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 						0);
 					// The feedback-loop (fbl) render pass carries the RASTERIZATION_ORDER_ATTACHMENT subpass flag
@@ -7768,7 +7848,12 @@ void GSDeviceVK::DestroyResources()
 		if (pipe != VK_NULL_HANDLE)
 			vkDestroyPipeline(m_device, pipe, nullptr);
 	}
-	for (u32 ds = 0; ds < 2; ds++)
+	for (const auto& pipe : m_convert_s8)
+	{
+		if (pipe != VK_NULL_HANDLE)
+			vkDestroyPipeline(m_device, pipe, nullptr);
+	}
+	for (u32 ds = 0; ds < 3; ds++)
 	{
 		for (u32 fbl = 0; fbl < 2; fbl++)
 		{
@@ -8079,12 +8164,13 @@ VkPipeline GSDeviceVK::CreateTFXPipeline(const PipelineSelector& p)
 	if (IsDATEModePrimIDInit(p.ps.date))
 	{
 		// DATE image prepass
+		pxAssert(DepthSlot(p) < 2); // primitive-ID DATE never runs on depth made for stencil
 		gpb.SetRenderPass(m_primid_image_setup_render_passes[p.ds][0], 0);
 	}
 	else
 	{
 		gpb.SetRenderPass(
-			GetTFXRenderPass(p.rt, p.ds, p.ps.colclip_hw, p.dss.date,
+			GetTFXRenderPass(p.rt, DepthSlot(p), p.ps.colclip_hw, p.dss.date,
 				p.IsRTFeedbackLoop(), p.IsTestingAndSamplingDepth(),
 				p.rt ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 				p.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
@@ -8346,9 +8432,10 @@ bool GSDeviceVK::IsLoadableTFXKey(const PipelineSelector& p)
 	if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
 		return false;
 
-	// The flag word holds topology (2 bits), rt, ds, line_width, feedback_loop_flags (3), raster_order and
-	// stencil_counter (2): eleven bits, and stencil_counter goes to 2. The vertex selector uses nine bits.
-	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 11) == 0 &&
+	// The flag word holds topology (2 bits), rt, ds, line_width, feedback_loop_flags (3), raster_order,
+	// stencil_counter (2) and TFX_KEY_DS_STENCIL: twelve bits, and stencil_counter goes to 2. The vertex selector uses
+	// nine bits.
+	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 12) == 0 &&
 		   p.stencil_counter <= 2 && (p.vs.key >> 9) == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
 		   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
 		   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
@@ -9769,7 +9856,9 @@ bool GSDeviceVK::DrawStencilCounter(GSHWDrawConfig& config)
 
 	// Temporaries first, so that failing to make one leaves the colour road with nothing changed.
 	GSTextureVK* ds = static_cast<GSTextureVK*>(config.ds);
-	GSTextureVK* const temp_ds = ds ? nullptr : static_cast<GSTextureVK*>(CreateDepthStencil(rtsize, false, true));
+	if (ds && !ds->HasStencilAspect())
+		return false;
+	GSTextureVK* const temp_ds = ds ? nullptr : static_cast<GSTextureVK*>(CreateDepthStencil(rtsize, false, true, true));
 	if (!ds && !temp_ds)
 		return false;
 	if (temp_ds)
@@ -9831,6 +9920,7 @@ bool GSDeviceVK::DrawStencilCounter(GSHWDrawConfig& config)
 	pipe.cms.wa = writes_alpha;
 	pipe.rt = writes_alpha;
 	pipe.ds = true;
+	SetDepthStencilSlot(pipe, IsStencilSlot(ds));
 	pipe.dss.zwe = 0;
 	pipe.dss.date = 0;
 	pipe.dss.date_one = 0;
@@ -10284,7 +10374,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				if (draw_ds)
 					cvs[cv_count++].depthStencil = {draw_ds->GetClearDepth(), 1};
 
-				BeginClearRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
+				BeginClearRenderPass(GetTFXRenderPass(true, DepthSlot(pipe), false, false, pipe.IsRTFeedbackLoop(),
 										 pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_CLEAR,
 										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 					draw_rt->GetRect(), cvs, cv_count);
@@ -10292,7 +10382,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			}
 			else
 			{
-				BeginRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
+				BeginRenderPass(GetTFXRenderPass(true, DepthSlot(pipe), false, false, pipe.IsRTFeedbackLoop(),
 									pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_LOAD,
 									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 					draw_rt->GetRect());
@@ -10300,7 +10390,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 			const GSVector4 drawareaf = GSVector4(config.colclip_update_area);
 			const GSVector4 sRect(drawareaf / GSVector4(rtsize).xyxy());
-			SetPipeline(m_colclip_finish_pipelines[pipe.ds][pipe.IsRTFeedbackLoop()]);
+			SetPipeline(m_colclip_finish_pipelines[DepthSlot(pipe)][pipe.IsRTFeedbackLoop()]);
 			SetUtilityTexture(colclip_rt, m_point_sampler);
 			DrawStretchRect(sRect, drawareaf, rtsize);
 
@@ -10414,7 +10504,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		// DoStretchRect, not StretchRect: the latter flushes deferred draws, and this is one of them.
 		// The depth-output flag is what makes the copy write depth at all.
 		EndRenderPass();
-		native_ds = static_cast<GSTextureVK*>(CreateDepthStencil(draw_size, false, true));
+		native_ds = static_cast<GSTextureVK*>(CreateDepthStencil(draw_size, false, true, full_ds->HasStencilAspect()));
 		if (!native_ds)
 		{
 			Console.Warning("VK: Failed to allocate native-resolution depth buffer, aborting draw.");
@@ -10451,6 +10541,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		{
 			draw_ds = m_current_depth_target;
 			m_pipeline_selector.ds = true;
+			SetDepthStencilSlot(m_pipeline_selector, IsStencilSlot(draw_ds));
 		}
 
 		// Keep the open pass's feedback bits across a run of draws on the same target, as the
@@ -10625,7 +10716,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			rt_op = VK_ATTACHMENT_LOAD_OP_LOAD;
 		if (pipe.IsDepthFeedbackLoop() && ds_op == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
 			ds_op = VK_ATTACHMENT_LOAD_OP_LOAD;
-		const VkRenderPass rp = GetTFXRenderPass(pipe.rt, pipe.ds, pipe.ps.colclip_hw,
+		const VkRenderPass rp = GetTFXRenderPass(pipe.rt, DepthSlot(pipe), pipe.ps.colclip_hw,
 			config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil, pipe.IsRTFeedbackLoop(),
 			pipe.IsTestingAndSamplingDepth(), rt_op, ds_op);
 		const bool is_clearing_rt = (rt_op == VK_ATTACHMENT_LOAD_OP_CLEAR || ds_op == VK_ATTACHMENT_LOAD_OP_CLEAR);
@@ -10700,9 +10791,9 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	if (config.date_copy != GSAlphaBitLogicOp::NoDateCopy && config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil)
 		m_date_copy = {true, config.rt, config.ds, config.datm, m_render_pass_serial};
 
-	// Guard on stencil_buffer: devices without a stencil attachment (e.g. Adreno, forced D32F) have no
-	// stencil aspect to clear.
-	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && m_features.stencil_buffer)
+	// Guard on the stencil aspect: depth without one (Adreno, forced D32F, stencil_on_request) has none to clear.
+	if (config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::StencilOne && config.ds &&
+		static_cast<GSTextureVK*>(config.ds)->HasStencilAspect())
 	{
 		m_date_copy.valid = false;
 		const VkClearAttachment ca = {VK_IMAGE_ASPECT_STENCIL_BIT, 0u, {.depthStencil = {0.0f, 1u}}};
@@ -10719,7 +10810,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	{
 		OMSetRenderTargets(draw_rt, draw_ds, GSVector4i::loadh(draw_size), static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), draw_size);
 		SetUtilityTexture(static_cast<GSTextureVK*>(config.rt), m_point_sampler);
-		SetPipeline(m_colclip_setup_pipelines[pipe.ds][pipe.IsRTFeedbackLoop()]);
+		SetPipeline(m_colclip_setup_pipelines[DepthSlot(pipe)][pipe.IsRTFeedbackLoop()]);
 
 		const GSVector4 drawareaf = GSVector4((config.colclip_mode == GSHWDrawConfig::ColClipMode::ConvertOnly) ? GSVector4i::loadh(rtsize) : config.drawarea);
 		const GSVector4 sRect(drawareaf / GSVector4(rtsize).xyxy());
@@ -10847,7 +10938,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 				if (draw_ds)
 					cvs[cv_count++].depthStencil = {draw_ds->GetClearDepth(), 1};
 
-				BeginClearRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
+				BeginClearRenderPass(GetTFXRenderPass(true, DepthSlot(pipe), false, false, pipe.IsRTFeedbackLoop(),
 										 pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_CLEAR,
 										 pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 					draw_rt->GetRect(), cvs, cv_count);
@@ -10855,7 +10946,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			}
 			else
 			{
-				BeginRenderPass(GetTFXRenderPass(true, pipe.ds, false, false, pipe.IsRTFeedbackLoop(),
+				BeginRenderPass(GetTFXRenderPass(true, DepthSlot(pipe), false, false, pipe.IsRTFeedbackLoop(),
 									pipe.IsTestingAndSamplingDepth(), VK_ATTACHMENT_LOAD_OP_LOAD,
 									pipe.ds ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_DONT_CARE),
 					draw_rt->GetRect());
@@ -10863,7 +10954,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 			const GSVector4 drawareaf = GSVector4(config.colclip_update_area);
 			const GSVector4 sRect(drawareaf / GSVector4(rtsize).xyxy());
-			SetPipeline(m_colclip_finish_pipelines[pipe.ds][pipe.IsRTFeedbackLoop()]);
+			SetPipeline(m_colclip_finish_pipelines[DepthSlot(pipe)][pipe.IsRTFeedbackLoop()]);
 			SetUtilityTexture(colclip_rt, m_point_sampler);
 			DrawStretchRect(sRect, drawareaf, rtsize);
 
@@ -10992,7 +11083,10 @@ VkPipeline GSDeviceVK::RowPipeline(GSHWDrawConfig& config, GSRowDeviceCache& cac
 	if (keep_rt)
 		pipe.rt = true;
 	if (keep_ds)
+	{
 		pipe.ds = true;
+		SetDepthStencilSlot(pipe, IsStencilSlot(m_current_depth_target));
+	}
 	// The pass's carried feedback bits (RowIsPlain checked they are exactly the pass's).
 	pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop;
 	// The entry's pipeline, remembered with the selector it was looked up for: the selector can still differ between
@@ -11488,6 +11582,7 @@ void GSDeviceVK::UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelect
 	pipe.topology = static_cast<u32>(config.topology);
 	pipe.rt = config.rt != nullptr && !config.ps.HasColorROV();
 	pipe.ds = config.ds != nullptr && !config.ps.HasDepthROV();
+	SetDepthStencilSlot(pipe, m_features.stencil_on_request && pipe.ds && static_cast<GSTextureVK*>(config.ds)->HasStencilAspect());
 	pipe.line_width = config.line_expand;
 	// Set from the read, not from the barrier request: the ordered roads drop a reader's barriers
 	// and the read is still in the pass.
@@ -11547,7 +11642,9 @@ VkImageMemoryBarrier GSDeviceVK::GetDepthStencilBufferFeedbackBarrier(GSTextureV
 	return {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, nullptr,
 		VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, dst_access, layout, layout,
 		VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, ds->GetImage(),
-		{VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0u, 1u, 0u, 1u}};
+		{static_cast<VkImageAspectFlags>(ds->HasStencilAspect() ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) :
+		                                                          VK_IMAGE_ASPECT_DEPTH_BIT),
+			0u, 1u, 0u, 1u}};
 }
 
 VkDependencyFlags GSDeviceVK::GetFeedbackBarrierDependencyFlags() const
