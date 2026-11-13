@@ -1635,7 +1635,7 @@ public:
 		bool barrier_read_costs_per_draw : 1; ///< A per-draw texture barrier on this device was measured to cost about what a per-draw copy of the target does, as it does on a tiler: Adreno under Turnip and Apple silicon under Honeykrisp. Set by the Vulkan backend only. GSCopyRoadBlendingPolicy.h reads it to decide whether a destination read on the barrier road is expensive; everywhere it is false -- desktop Vulkan, GL, D3D, Metal -- the barrier road is treated as cheap, as it was before the policy existed.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
 		bool stencil_on_request   : 1; ///< Depth buffers carry a stencil aspect only when created for stencil use (GSTexture::Usage::Stencil), because the device compresses depth alone but not depth with stencil. Vulkan only (PanVK on Bifrost).
-		bool date_reads_without_depth : 1; ///< DATE on a draw without a depth buffer reads the target instead of building stencil in a temporary depth buffer, which costs a tiler two pass breaks and an uncompressed load and store. Vulkan only (PanVK on Bifrost).
+		bool date_reads_without_depth : 1; ///< Read-only stencil DATE on a draw without a depth buffer reads the target instead of building stencil in a temporary depth buffer, which costs a tiler two pass breaks and an uncompressed load and store. Vulkan only (PanVK on Bifrost).
 		bool cas_sharpening       : 1; ///< Supports sufficient functionality for contrast adaptive sharpening.
 		bool test_and_sample_depth: 1; ///< Supports concurrently binding the depth-stencil buffer for sampling and depth testing.
 		bool no_ps2_z_quantization: 1; ///< Skip PS2 32-bit-fixed Z floor (saves SPIR-V DepthReplacing → re-enables early-ZS on tilers).
