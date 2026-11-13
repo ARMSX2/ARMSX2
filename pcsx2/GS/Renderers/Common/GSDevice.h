@@ -1634,6 +1634,7 @@ public:
 		bool ordered_read_costs_per_draw : 1; ///< The driver-ordered road still waits for the GPU to drain before each draw that reads the destination (our generation-2 Turnip on Adreno 7xx). GSCopyRoadBlendingPolicy.h treats that road like the barrier road on such a device.
 		bool barrier_read_costs_per_draw : 1; ///< A per-draw texture barrier on this device was measured to cost about what a per-draw copy of the target does, as it does on a tiler: Adreno under Turnip and Apple silicon under Honeykrisp. Set by the Vulkan backend only. GSCopyRoadBlendingPolicy.h reads it to decide whether a destination read on the barrier road is expensive; everywhere it is false -- desktop Vulkan, GL, D3D, Metal -- the barrier road is treated as cheap, as it was before the policy existed.
 		bool stencil_buffer       : 1; ///< Supports stencil buffer, and can use for DATE.
+		bool stencil_on_request   : 1; ///< Depth buffers carry a stencil aspect only when created for stencil use (GSTexture::Usage::Stencil), because the device compresses depth alone but not depth with stencil. Vulkan only (PanVK on Bifrost).
 		bool cas_sharpening       : 1; ///< Supports sufficient functionality for contrast adaptive sharpening.
 		bool test_and_sample_depth: 1; ///< Supports concurrently binding the depth-stencil buffer for sampling and depth testing.
 		bool no_ps2_z_quantization: 1; ///< Skip PS2 32-bit-fixed Z floor (saves SPIR-V DepthReplacing → re-enables early-ZS on tilers).
@@ -1746,6 +1747,7 @@ protected:
 
 	u32 m_frame = 0; // for ageing the pool
 	u32 m_frames_since_pool_cleanup = 0;
+	bool m_depth_stencil_by_default = false; // stencil_on_request: the game kept asking, so all depth gets stencil
 
 private:
 	std::array<FastList<GSTexture*>, 2> m_pool; // [texture, target]
@@ -2189,8 +2191,19 @@ public:
 	GSTexture* CreateFeedbackTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateShaderWriteTarget(int w, int h, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
 	GSTexture* CreateShaderWriteTarget(const GSVector2i& size, GSTexture::Format format, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateDepthStencil(int w, int h, bool clear = true, bool prefer_reuse = true);
-	GSTexture* CreateDepthStencil(const GSVector2i& size, bool clear = true, bool prefer_reuse = true);
+	/// stencil: the caller draws with stencil on it (see FeatureSupport::stencil_on_request).
+	GSTexture* CreateDepthStencil(int w, int h, bool clear = true, bool prefer_reuse = true, bool stencil = false);
+	GSTexture* CreateDepthStencil(const GSVector2i& size, bool clear = true, bool prefer_reuse = true, bool stencil = false);
+
+	/// Whether a draw on this depth buffer may use stencil. Without one, DATE makes a temporary that can.
+	bool DepthHasStencil(const GSTexture* ds) const
+	{
+		return m_features.stencil_buffer &&
+		       (!ds || !m_features.stencil_on_request || (ds->GetUsage() & GSTexture::Usage::Stencil));
+	}
+
+	/// Gives depth kept without stencil (stencil_on_request) a stencil aspect, keeping its contents and object.
+	virtual void GiveDepthStencil(GSTexture* ds) {}
 	GSTexture* CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
 	GSTexture* CreateTexture(const GSVector2i& size, int mipmap_levels, GSTexture::Format format, bool prefer_reuse = false);
 	GSTexture* CreateCompatible(GSTexture* tex, bool clear = true, bool prefer_reuse = true);

@@ -47,6 +47,8 @@ bool GSTexture::ValidateUsageAndFormat(Usage usage, Format format)
 {
 	if (IsDepthStencil(usage) && (usage & (Usage::ShaderWrite | Usage::RenderTarget)))
 		return false; // DS is not compatible with Write or RT
+	if ((usage & Usage::Stencil) && !IsDepthStencil(usage))
+		return false; // Only depth carries stencil
 	if (IsFeedback(usage) && !(usage & (Usage::DepthStencil | Usage::RenderTarget)))
 		return false; // Feedback requires RT or DS
 	if (usage == (Usage::ShaderWrite | Usage::RenderTarget))

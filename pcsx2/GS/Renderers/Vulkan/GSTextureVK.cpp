@@ -87,7 +87,8 @@ std::unique_ptr<GSTextureVK> GSTextureVK::Create(Usage usage, Format format, int
 {
 	pxAssert(ValidateUsageAndFormat(usage, format));
 
-	const VkFormat vk_format = GSDeviceVK::GetInstance()->LookupNativeFormat(format);
+	const VkFormat vk_format = (usage & Usage::Stencil) ? VK_FORMAT_D32_SFLOAT_S8_UINT :
+	                                                       GSDeviceVK::GetInstance()->LookupNativeFormat(format);
 	VkImage image;
 	VmaAllocation allocation;
 	VkImageView view;
@@ -251,6 +252,45 @@ bool GSTextureVK::MakeUncompressed()
 	SetDebugName(name);
 #endif
 	return true;
+}
+
+bool GSTextureVK::SwapStencilImage(GSTextureVK* o)
+{
+	if (!o || o == this || !IsDepthStencil() || (o->m_usage ^ m_usage) != Usage::Stencil ||
+		o->m_format != m_format || o->m_size.x != m_size.x || o->m_size.y != m_size.y ||
+		o->m_mipmap_levels != m_mipmap_levels || m_allocation == VK_NULL_HANDLE || o->m_allocation == VK_NULL_HANDLE)
+	{
+		return false;
+	}
+
+	SwapImages(o);
+	std::swap(m_usage, o->m_usage);
+	std::swap(m_vk_format, o->m_vk_format);
+	return true;
+}
+
+void GSTextureVK::SwapImages(GSTextureVK* o)
+{
+	// Drops every binding of either texture, and the open pass if either is attached to it. Draws
+	// already recorded keep the views they were recorded with; those stay alive, under the other object.
+	GSDeviceVK* const dev = GSDeviceVK::GetInstance();
+	dev->UnbindTexture(this);
+	dev->UnbindTexture(o);
+
+	// Framebuffers are keyed by object, and linked into other objects' lists; rebuilt on next use.
+	DestroyFramebuffers(true);
+	o->DestroyFramebuffers(true);
+
+	std::swap(m_image, o->m_image);
+	std::swap(m_allocation, o->m_allocation);
+	std::swap(m_view, o->m_view);
+	std::swap(m_stencil_view, o->m_stencil_view);
+	std::swap(m_layout, o->m_layout);
+	std::swap(m_uncompressed, o->m_uncompressed);
+	std::swap(m_use_fence_counter, o->m_use_fence_counter);
+	std::swap(m_state, o->m_state);
+	std::swap(m_clear_value, o->m_clear_value);
+	std::swap(m_needs_mipmaps_generated, o->m_needs_mipmaps_generated);
 }
 
 std::unique_ptr<GSTextureVK> GSTextureVK::Adopt(
@@ -733,7 +773,7 @@ void GSTextureVK::TransitionSubresourcesToLayout(
 	VkImageAspectFlags aspect;
 	if (IsDepthStencil())
 	{
-		aspect = g_gs_device->Features().stencil_buffer ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) :
+		aspect = HasStencilAspect() ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) :
 		                                                  VK_IMAGE_ASPECT_DEPTH_BIT;
 	}
 	else

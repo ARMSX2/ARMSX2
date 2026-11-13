@@ -1091,17 +1091,23 @@ GSTexture* GSDevice::CreateShaderWriteTarget(const GSVector2i& size, GSTexture::
 
 GSTexture::Usage GSDevice::GetDepthStencilUsage() const
 {
-	return m_features.depth_feedback ? GSTexture::FeedbackDepth : GSTexture::DepthStencil;
+	GSTexture::Usage usage = m_features.depth_feedback ? GSTexture::FeedbackDepth : GSTexture::DepthStencil;
+	if (m_depth_stencil_by_default && m_features.stencil_on_request)
+		usage |= GSTexture::Usage::Stencil;
+	return usage;
 }
 
-GSTexture* GSDevice::CreateDepthStencil(int w, int h, bool clear, bool prefer_reuse)
+GSTexture* GSDevice::CreateDepthStencil(int w, int h, bool clear, bool prefer_reuse, bool stencil)
 {
-	return FetchSurface(GetDepthStencilUsage(), w, h, 1, GSTexture::Format::DepthStencil, clear, prefer_reuse);
+	GSTexture::Usage usage = GetDepthStencilUsage();
+	if (stencil && m_features.stencil_on_request)
+		usage |= GSTexture::Usage::Stencil;
+	return FetchSurface(usage, w, h, 1, GSTexture::Format::DepthStencil, clear, prefer_reuse);
 }
 
-GSTexture* GSDevice::CreateDepthStencil(const GSVector2i& size, bool clear, bool prefer_reuse)
+GSTexture* GSDevice::CreateDepthStencil(const GSVector2i& size, bool clear, bool prefer_reuse, bool stencil)
 {
-	return FetchSurface(GetDepthStencilUsage(), size.x, size.y, 1, GSTexture::Format::DepthStencil, clear, prefer_reuse);
+	return CreateDepthStencil(size.x, size.y, clear, prefer_reuse, stencil);
 }
 
 GSTexture* GSDevice::CreateTexture(int w, int h, int mipmap_levels, GSTexture::Format format, bool prefer_reuse)
