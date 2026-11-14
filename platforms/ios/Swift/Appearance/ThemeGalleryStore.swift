@@ -78,7 +78,13 @@ struct GameLibraryViewOptionsSnapshot: Codable {
                 .doubleValue ?? fallback
         }
         booleans = [:]
-        for (key, fallback) in Self.booleanDefaults {
+        for (key, tableDefault) in Self.booleanDefaults {
+            // The view falls back to the pre-orientation key, except for these two, which fall back to true.
+            let legacyKey = key.replacingOccurrences(of: "Portrait", with: "")
+                .replacingOccurrences(of: "Landscape", with: "")
+            let hasLegacyKey = !key.hasSuffix("UseGamesLogo") && !key.hasSuffix("ShowsLabels")
+            let fallback = (hasLegacyKey ? UserDefaults.standard.object(forKey: legacyKey) as? Bool : nil)
+                ?? tableDefault
             let stored = GameLibraryAppearance.themeNumber(forKey: key)?.intValue
             booleans[key] = stored.map { $0 >= 0 ? $0 != 0 : fallback }
                 ?? fallback
