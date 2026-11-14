@@ -41,6 +41,9 @@
 #define CLUSTER_CPUS_FILENAME_SIZE \
 	(sizeof("/sys/devices/system/cpu/cpu" STRINGIFY(UINT32_MAX) "/topology/cluster_cpus_list"))
 #define CLUSTER_CPUS_FILENAME_FORMAT "/sys/devices/system/cpu/cpu%" PRIu32 "/topology/cluster_cpus_list"
+#define CLUSTER_ID_FILENAME_SIZE (sizeof("/sys/devices/system/cpu/cpu" STRINGIFY(UINT32_MAX) "/topology/cluster_id"))
+#define CLUSTER_ID_FILENAME_FORMAT "/sys/devices/system/cpu/cpu%" PRIu32 "/topology/cluster_id"
+#define CLUSTER_ID_FILESIZE 32
 #define PACKAGE_CPUS_FILENAME_SIZE \
 	(sizeof("/sys/devices/system/cpu/cpu" STRINGIFY(UINT32_MAX) "/topology/package_cpus_list"))
 #define PACKAGE_CPUS_FILENAME_FORMAT "/sys/devices/system/cpu/cpu%" PRIu32 "/topology/package_cpus_list"
@@ -513,6 +516,28 @@ bool cpuinfo_linux_detect_thread_siblings(
 			thread_siblings_filename);
 		return false;
 	}
+}
+
+static bool negative_number_parser(const char* filename, const char* text_start, const char* text_end, void* context) {
+	bool* negative_ptr = (bool*)context;
+	*negative_ptr = text_start != text_end && *text_start == '-';
+	return true;
+}
+
+bool cpuinfo_linux_has_unknown_cluster_id(uint32_t processor) {
+	char cluster_id_filename[CLUSTER_ID_FILENAME_SIZE];
+	const int chars_formatted =
+		snprintf(cluster_id_filename, CLUSTER_ID_FILENAME_SIZE, CLUSTER_ID_FILENAME_FORMAT, processor);
+	if ((unsigned int)chars_formatted >= CLUSTER_ID_FILENAME_SIZE) {
+		cpuinfo_log_warning("failed to format filename for cluster id of processor %" PRIu32, processor);
+		return false;
+	}
+
+	bool negative = false;
+	if (!cpuinfo_linux_parse_small_file(cluster_id_filename, CLUSTER_ID_FILESIZE, negative_number_parser, &negative)) {
+		return false;
+	}
+	return negative;
 }
 
 bool cpuinfo_linux_detect_cluster_cpus(
