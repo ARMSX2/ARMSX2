@@ -4,69 +4,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private struct CheatsControllerFocusModifier: ViewModifier {
-    let targetID: String
-    let isFocused: Bool
-    let cornerRadius: CGFloat
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.uiAccentColour) private var accentColour
-
-    func body(content: Content) -> some View {
-        content
-            .focusEffectDisabled()
-            .padding(.horizontal, 7)
-            .foregroundStyle(isFocused ? accentColour : Color.primary)
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(isFocused ? Color.black.opacity(0.2) : .clear)
-            }
-            .controllerFocusBoxPresentation(
-                isVisible: isFocused,
-                cornerRadius: cornerRadius,
-                performanceOptimized: true
-            )
-            .controllerNavigationOrbTarget(
-                id: "cheats.\(targetID)",
-                isActive: isFocused,
-                palette: .blue,
-                style: .plain,
-                inset: 2,
-                orbScale: 0.7,
-                priority: 10
-            )
-            .scaleEffect(isFocused && !reduceMotion ? 1.01 : 1)
-            .shadow(
-                color: .black.opacity(isFocused ? 0.1 : 0),
-                radius: isFocused ? 4 : 0,
-                y: isFocused ? 2 : 0
-            )
-            .animation(
-                reduceMotion ? .linear(duration: 0.1) : .smooth(duration: 0.2),
-                value: isFocused
-            )
-    }
-}
-
-private enum InstalledFileRemoval {
+enum InstalledFileRemoval {
     case patch
     case cheat
     case all
 }
 
 struct CheatsPatchesManagerView: View {
-    // Held by the in-game caller, since iPhone Duo's fold swaps the sheet for a hosted panel.
-    final class Session {
-        fileprivate var patchSourcesDraft: [String]?
-        fileprivate var cheatSourcesDraft: [String]?
-        fileprivate var showAdvanced = false
-        fileprivate var scrollShare: CGFloat?
-        fileprivate var restoreShare: CGFloat?
-        fileprivate var controllerTarget = ControllerTarget.done
-        fileprivate var shownBy: UUID?
-    }
 
-    fileprivate enum ControllerTarget: Hashable {
+    enum ControllerTarget: Hashable {
         case done
         case retryIdentity
         case dismissFeedback
@@ -89,7 +35,7 @@ struct CheatsPatchesManagerView: View {
     let launchContext: CheatsPatchesLaunchContext
     let controllerInput: MenuControllerInputRouter?
     let onClose: (() -> Void)?
-    let session: Session?
+    let session: CheatsPatchesSession?
 
     @State private var settings = SettingsStore.shared
     @State private var store = PatchStore.shared
@@ -112,7 +58,7 @@ struct CheatsPatchesManagerView: View {
         launchContext: CheatsPatchesLaunchContext = .library,
         controllerInput: MenuControllerInputRouter? = nil,
         onClose: (() -> Void)? = nil,
-        session: Session? = nil
+        session: CheatsPatchesSession? = nil
     ) {
         self.isoName = isoName
         self.gameTitle = gameTitle
@@ -428,113 +374,25 @@ struct CheatsPatchesManagerView: View {
                 }
             }
         }
-        installedSection
-        availableSection
+        CheatsInstalledSection(
+            controllerInput: controllerInput,
+            controllerTarget: controllerTarget,
+            pendingRemoval: $pendingRemoval,
+            pendingEntryRemoval: $pendingEntryRemoval
+        )
+        CheatsAvailableSection(
+            controllerInput: controllerInput,
+            controllerTarget: controllerTarget,
+            onDownload: { asCheat in startDatabaseDownload(asCheat: asCheat) }
+        )
         importSection
-        advancedSection
-    }
-
-    // MARK: - Installed
-
-    @ViewBuilder
-    private var installedSection: some View {
-        Section {
-            if store.installed.isEmpty {
-                Text(installedEmptyMessage)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(PatchDisplayGroup.allCases, id: \.self) { group in
-                    let entries = store.installed.filter { $0.displayGroup == group }
-                    if !entries.isEmpty {
-                        Text(settings.localized(group.title))
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .accessibilityAddTraits(.isHeader)
-                        ForEach(entries) { entry in
-                            installedRow(entry)
-                                .modifier(
-                                    controllerFocus(.installed(entry.id))
-                                )
-                                .id(ControllerTarget.installed(entry.id))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    if !entry.isLegacy && !entry.name.isEmpty {
-                                        Button(role: .destructive) {
-                                            pendingEntryRemoval = entry
-                                        } label: {
-                                            Label(settings.localized("Remove Entry"), systemImage: "trash")
-                                        }
-                                    }
-                                }
-                        }
-                    }
-                }
-
-                if hasNamedEntries {
-                    HStack(spacing: 16) {
-                        Button {
-                            store.setAllNamedEntries(enabled: true)
-                        } label: {
-                            Label(settings.localized("Enable All"), systemImage: "checkmark.circle")
-                                .modifier(controllerFocus(.enableAll))
-                        }
-                        .disabled(!store.canEnableAll)
-                        .id(ControllerTarget.enableAll)
-
-                        Button {
-                            store.setAllNamedEntries(enabled: false)
-                        } label: {
-                            Label(settings.localized("Disable All"), systemImage: "circle.slash")
-                                .modifier(controllerFocus(.disableAll))
-                        }
-                        .disabled(!store.canDisableAll)
-                        .id(ControllerTarget.disableAll)
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityElement(children: .contain)
-                }
-
-                Menu {
-                    if patchEntryCount > 0 {
-                        Button(role: .destructive) {
-                            pendingRemoval = .patch
-                        } label: {
-                            Label(String(format: settings.localized("Remove Patch File (%@)"), entryCountLabel(patchEntryCount)), systemImage: "trash")
-                        }
-                    }
-                    if cheatEntryCount > 0 {
-                        Button(role: .destructive) {
-                            pendingRemoval = .cheat
-                        } label: {
-                            Label(String(format: settings.localized("Remove Cheat File (%@)"), entryCountLabel(cheatEntryCount)), systemImage: "trash")
-                        }
-                    }
-                    if patchEntryCount > 0 && cheatEntryCount > 0 {
-                        Button(role: .destructive) {
-                            pendingRemoval = .all
-                        } label: {
-                            Label(settings.localized("Remove All Installed Files"), systemImage: "trash.fill")
-                        }
-                    }
-                } label: {
-                    Label(settings.localized("Remove Installed Files…"), systemImage: "trash")
-                        .modifier(controllerFocus(.removeInstalled))
-                }
-                .accessibilityHint(settings.localized("Removes complete installed files, not individual entries"))
-                .id(ControllerTarget.removeInstalled)
-            }
-        } header: {
-            Text(settings.localized("Installed"))
-        } footer: {
-            Text(settings.localized("Some changes only take effect after restarting the game."))
-        }
-    }
-
-    private var installedEmptyMessage: String {
-        store.canManageInstalledFiles
-            ? settings.localized("No cheats or patches are installed for this game yet.")
-            : settings.localized("No installed entries are available yet.")
+        CheatsSourceURLsSection(
+            controllerInput: controllerInput,
+            controllerTarget: controllerTarget,
+            showAdvanced: $showAdvanced,
+            patchSourcesDraft: $patchSourcesDraft,
+            cheatSourcesDraft: $cheatSourcesDraft
+        )
     }
 
     private var hasNamedEntries: Bool {
@@ -598,147 +456,6 @@ struct CheatsPatchesManagerView: View {
         pendingRemoval = nil
     }
 
-    @ViewBuilder
-    private func installedRow(_ entry: PatchEntry) -> some View {
-        let isOn = store.installed.first(where: { $0.id == entry.id })?.enabled ?? entry.enabled
-        let hcBlocks = PatchStore.hardcoreBlocksPnachContent()
-        let suppressed = hcBlocks && isOn && !PatchStore.hardcoreAllowsPatch(entry)
-        VStack(alignment: .leading, spacing: 7) {
-            if entry.isLegacy {
-                Label(entry.displayTitle, systemImage: "doc.text")
-                    .font(.body)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if suppressed {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(entry.displayTitle)
-                        .font(.body)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 4)
-                    Button {
-                        store.toggle(entry)
-                    } label: {
-                        Label(settings.localized("Suppressed by Hardcore"), systemImage: "lock.fill")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.orange)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityHint(settings.localized("Turns this entry off. It can’t be turned back on while Hardcore is active."))
-                }
-            } else {
-                Toggle(
-                    isOn: Binding(
-                        get: { isOn },
-                        set: { _ in store.toggle(entry) }
-                    )
-                ) {
-                    HStack(spacing: 6) {
-                        Text(entry.displayTitle)
-                            .font(.body)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if PatchStore.hardcoreAllowsPatch(entry) {
-                            Image(systemName: "checkmark.shield.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.green)
-                                .accessibilityLabel(settings.localized("Hardcore-safe"))
-                        }
-                    }
-                }
-                .accessibilityHint(settings.localized("Enables or disables this entry for the current game"))
-                .disabled(!isOn && !PatchStore.hardcorePermitsEnable(entry))
-            }
-
-            if !entry.summary.isEmpty {
-                Text(entry.summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 8) {
-                Text(settings.localized(entry.displayCategory.title))
-                    .font(.caption2.weight(.medium))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.15), in: Capsule())
-                Text(entry.sourceDisplayName)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if entry.isLegacy {
-                    Text(settings.localized("Legacy"))
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-                Spacer(minLength: 4)
-            }
-        }
-        .padding(.vertical, 3)
-    }
-
-    // MARK: - Available
-
-    private var availableSection: some View {
-        Section {
-            if store.hasConfiguredPatchDatabase {
-                Button {
-                    store.dismissMessage()
-                    startDatabaseDownload(asCheat: false)
-                } label: {
-                    Label(
-                        hasDatabasePatch ? settings.localized("Reinstall Patches") : settings.localized("Download Patches"),
-                        systemImage: hasDatabasePatch ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
-                    )
-                    .modifier(controllerFocus(.downloadPatches))
-                }
-                .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
-                .accessibilityHint(settings.localized(store.identityState.canUseDatabase ? "Downloads matching patches from every configured source" : "Requires an identified game CRC"))
-                .id(ControllerTarget.downloadPatches)
-            } else {
-                Text(settings.localized("No patch download source is configured. Add one in Advanced or import a file below."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            if store.hasConfiguredCheatDatabase {
-                Button {
-                    store.dismissMessage()
-                    startDatabaseDownload(asCheat: true)
-                } label: {
-                    Label(
-                        hasDatabaseCheat ? settings.localized("Reinstall Cheats") : settings.localized("Download Cheats"),
-                        systemImage: hasDatabaseCheat ? "arrow.clockwise.icloud" : "icloud.and.arrow.down"
-                    )
-                    .modifier(controllerFocus(.downloadCheats))
-                }
-                .disabled(!store.identityState.canUseDatabase || !store.canManageInstalledFiles || store.isDownloading)
-                .id(ControllerTarget.downloadCheats)
-            }
-
-            if store.isDownloading {
-                HStack(spacing: 10) {
-                    ProgressView()
-                    Text(settings.localized("Downloading…"))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel(settings.localized("Download in progress"))
-            }
-
-        } header: {
-            Text(settings.localized("Available"))
-        } footer: {
-            Text(settings.localized("Downloads query every configured source and merge results into one file after making a backup. Patches must match this game’s region and version."))
-        }
-    }
-
-    private var hasDatabasePatch: Bool {
-        store.installed.contains { $0.source == .database && !$0.isCheat }
-    }
-
-    private var hasDatabaseCheat: Bool {
-        store.installed.contains { $0.source == .database && $0.isCheat }
-    }
-
     private func startDatabaseDownload(asCheat: Bool) {
         downloadTask?.cancel()
         downloadTask = Task {
@@ -773,96 +490,10 @@ struct CheatsPatchesManagerView: View {
         }
     }
 
-    // MARK: - Advanced
-
-    private var advancedSection: some View {
-        Section {
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                Text(settings.localized("Patch sources"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityAddTraits(.isHeader)
-                ForEach(patchSourcesDraft.indices, id: \.self) { index in
-                    sourceRow(
-                        placeholder: settings.localized("Patch Source URL"),
-                        text: $patchSourcesDraft[index],
-                        label: settings.localized("Patch source URL")
-                    ) {
-                        guard patchSourcesDraft.indices.contains(index) else { return }
-                        patchSourcesDraft.remove(at: index)
-                    }
-                }
-                Button {
-                    patchSourcesDraft.append("")
-                } label: {
-                    Label(settings.localized("Add source"), systemImage: "plus.circle")
-                        .modifier(controllerFocus(.addPatchSource))
-                }
-                .buttonStyle(.borderless)
-                .id(ControllerTarget.addPatchSource)
-
-                Text(settings.localized("Cheat sources"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityAddTraits(.isHeader)
-                    .padding(.top, 8)
-                ForEach(cheatSourcesDraft.indices, id: \.self) { index in
-                    sourceRow(
-                        placeholder: settings.localized("Cheat Source URL"),
-                        text: $cheatSourcesDraft[index],
-                        label: settings.localized("Cheat source URL")
-                    ) {
-                        guard cheatSourcesDraft.indices.contains(index) else { return }
-                        cheatSourcesDraft.remove(at: index)
-                    }
-                }
-                Button {
-                    cheatSourcesDraft.append("")
-                } label: {
-                    Label(settings.localized("Add source"), systemImage: "plus.circle")
-                        .modifier(controllerFocus(.addCheatSource))
-                }
-                .buttonStyle(.borderless)
-                .id(ControllerTarget.addCheatSource)
-
-                Button(settings.localized("Save Source URLs")) {
-                    store.patchDatabaseURLTemplates = patchSourcesDraft
-                    store.cheatDatabaseURLTemplates = cheatSourcesDraft
-                    patchSourcesDraft = store.patchDatabaseURLTemplates
-                    cheatSourcesDraft = store.cheatDatabaseURLTemplates
-                    store.applyFeedback(settings.localized("Source URLs saved."), kind: .success)
-                }
-                .buttonStyle(.borderless)
-                .padding(.top, 8)
-                .modifier(controllerFocus(.saveSources))
-                .id(ControllerTarget.saveSources)
-
-                Text(settings.localized("Supported placeholders: \u{24}{serial}, \u{24}{crc}, and \u{24}{title}. Built-in sources provide PCSX2 patches, an UltraWidescreen / NaturalVision pack, and a community cheat collection. Only add sources you trust."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } label: {
-                Label(settings.localized("Source URLs"), systemImage: "link")
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .modifier(controllerFocus(.advanced))
-            }
-            .id(ControllerTarget.advanced)
-        } header: {
-            Text(settings.localized("Advanced"))
-        }
-    }
-
     private func controllerFocus(
         _ target: ControllerTarget
     ) -> CheatsControllerFocusModifier {
-        CheatsControllerFocusModifier(
-            targetID: String(describing: target),
-            isFocused:
-                controllerInput?.isControllerNavigationEnabled == true
-                    && controllerTarget == target,
-            cornerRadius: 12
-        )
+        cheatsControllerFocus(target, controllerInput: controllerInput, controllerTarget: controllerTarget)
     }
 
     private var controllerConfirmationActive: Bool {
@@ -1120,100 +751,5 @@ struct CheatsPatchesManagerView: View {
 
     private func close() {
         if let onClose { onClose() } else { dismiss() }
-    }
-
-    // One source-URL row. The text binding is captured per-row so SwiftUI tracks it
-    // independently of the surrounding indices; the remove closure guards its index.
-    @ViewBuilder
-    private func sourceRow(
-        placeholder: String,
-        text: Binding<String>,
-        label: String,
-        onRemove: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 8) {
-            TextField(placeholder, text: text, axis: .vertical)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.caption.monospaced())
-                .accessibilityLabel(label)
-            Button(action: onRemove) {
-                Image(systemName: "minus.circle.fill")
-                    .uiCriticalForegroundStyle()
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(settings.localized("Remove source"))
-        }
-    }
-}
-
-extension View {
-    @ViewBuilder
-    fileprivate func cheatsScrollMemory(_ session: CheatsPatchesManagerView.Session?, instance: UUID) -> some View {
-        if #available(iOS 18.0, *), let session {
-            modifier(CheatsScrollMemory(session: session, instance: instance))
-        } else {
-            self
-        }
-    }
-}
-
-// The sheet and the panel beside the fold differ in width, so the place is kept as a fraction of the scroll range.
-@available(iOS 18.0, *)
-private struct CheatsScrollMemory: ViewModifier {
-    let session: CheatsPatchesManagerView.Session
-    let instance: UUID
-
-    func body(content: Content) -> some View {
-        content.onScrollGeometryChange(for: CGFloat.self, of: { geometry in
-            let range = geometry.contentSize.height + geometry.contentInsets.top
-                + geometry.contentInsets.bottom - geometry.containerSize.height
-            return range > 0 ? (geometry.contentOffset.y + geometry.contentInsets.top) / range : 0
-        }) { _, share in
-            guard session.shownBy == instance else { return }
-            session.scrollShare = share
-        }
-    }
-}
-
-// SwiftUI cannot move a Form to an offset, so this marker in the first row moves its collection view.
-private struct CheatsScrollRestore: UIViewRepresentable {
-    let session: CheatsPatchesManagerView.Session
-
-    func makeUIView(context: Context) -> Marker { Marker(session: session) }
-    func updateUIView(_ marker: Marker, context: Context) {}
-
-    final class Marker: UIView {
-        private let session: CheatsPatchesManagerView.Session
-
-        init(session: CheatsPatchesManagerView.Session) {
-            self.session = session
-            super.init(frame: .zero)
-            isUserInteractionEnabled = false
-        }
-
-        required init?(coder: NSCoder) { nil }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            guard window != nil else { return }
-            // By the next turn the swapped-in view has taken the share and sized its rows.
-            DispatchQueue.main.async { [weak self] in self?.restore() }
-        }
-
-        private func restore() {
-            guard let share = session.restoreShare else { return }
-            var ancestor = superview
-            while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
-            guard let list = ancestor as? UIScrollView else { return }
-            session.restoreShare = nil
-            // Rows size as they come into view and change the range, so settle in a few passes.
-            for _ in 0..<3 {
-                let inset = list.adjustedContentInset
-                let range = list.contentSize.height + inset.top + inset.bottom - list.bounds.height
-                list.setContentOffset(CGPoint(x: list.contentOffset.x, y: share * max(range, 0) - inset.top), animated: false)
-                list.layoutIfNeeded()
-            }
-        }
     }
 }
