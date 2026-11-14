@@ -412,21 +412,9 @@ bool memGetExtraMemMode()
 
 void memSetExtraMemMode(bool mode)
 {
-#ifdef ARCH_ARM64
-	// The ARM64 EE recompiler sizes its LUT, recRAM, recRAMCopy and the
-	// manual_page/manual_counter arrays to Ps2MemSize::ExposedRam, as x86 does,
-	// but the 128MB map is only enabled with it for the Namco System 246/256
-	// boards, whose games need it. Elsewhere the option stays refused: a console
-	// game that works on 32MB is not the place to find out what else assumes it.
-	// The interpreter handles the 128MB map fine, so gate on the recompiler only.
-	if (mode && EmuConfig.Cpu.Recompiler.EnableEE && !Arcade::IsActive())
-	{
-		Console.Warning("Extended RAM (128MB) is not supported by the ARM64 EE recompiler; ignoring it. "
-						"Disable the EE recompiler if you need it.");
-		mode = false;
-	}
-#endif
-
+	// Both EE recompilers size their LUT, recRAM, recRAMCopy and the manual_page/manual_counter
+	// arrays to Ps2MemSize::ExposedRam and rebuild them when it changes, so the 128MB map runs
+	// on either of them as on the interpreter.
 	s_extra_memory = mode;
 
 	// update the amount of RAM exposed to the VM
@@ -1399,8 +1387,8 @@ bool SaveStateBase::memFreeze(Error* error)
 
 	if (extra_memory != s_extra_memory)
 	{
-		Error::SetStringFmt(error, "Memory size mismatch, save state requires {}, but VM currently has {}.",
-			extra_memory ? "128MB" : "32MB", s_extra_memory ? "128MB" : "32MB");
+		Error::SetStringFmt(error, "Memory size mismatch, this state was saved with Extended RAM {} (RAM size {}).",
+			extra_memory ? "on" : "off", extra_memory ? "128MB" : "32MB");
 		return false;
 	}
 

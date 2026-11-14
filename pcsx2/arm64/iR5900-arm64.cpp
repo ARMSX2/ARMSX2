@@ -3789,7 +3789,8 @@ static bool memory_protect_recompiled_code(u32 startpc, u32 size)
 // =====================================================================================================
 
 // Guest RAM the LUT, recRAM and recRAMCopy below were last sized for (Ps2MemSize::ExposedRam):
-// 32 MB, or 128 MB while a Namco System 246/256 arcade game runs (memSetExtraMemMode).
+// 32 MB, or 128 MB with Extended RAM, which every Namco System 246/256 arcade game runs with
+// (memSetExtraMemMode).
 static u32 s_reservedRam = 0;
 
 static void recReserveRAM()
@@ -3879,9 +3880,9 @@ static void recResetRaw()
 	Console.WriteLn(Color_Green, "iR5900-ARM64 Recompiler reset.");
 	EECycleRate::NoteEeReset();
 
-	// The RAM map changed size since the last reset (an arcade session's 128 MB, or back to 32 MB
-	// after one). Mirrors x86 recResetRaw; everything that points into the old arrays is rebuilt
-	// below.
+	// The RAM map changed size since the last reset (Extended RAM turned on or off, or an arcade
+	// session started or ended). Mirrors x86 recResetRaw; everything that points into the old
+	// arrays is rebuilt below.
 	if (s_reservedRam != Ps2MemSize::ExposedRam)
 		recReserveRAM();
 

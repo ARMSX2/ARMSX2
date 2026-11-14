@@ -4412,7 +4412,10 @@ open class MainActivityRuntime : ComponentActivity() {
                         running || !saving -> "savestate.error.memcardBusyLong"
                         else -> "savestate.error.memcardBusy"
                     }
-                    runOnUiThread { com.armsx2.ui.WelcomeBanner.show(com.armsx2.i18n.I18n.get(key)) }
+                    val text = com.armsx2.i18n.I18n.get(key).let {
+                        if (key == "savestate.error.load") com.armsx2.ui.saves.withStateLoadReason(it) else it
+                    }
+                    runOnUiThread { com.armsx2.ui.WelcomeBanner.show(text) }
                 }
             } finally {
                 quickStateRunning.set(false)

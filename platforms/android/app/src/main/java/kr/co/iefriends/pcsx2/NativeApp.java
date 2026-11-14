@@ -1240,6 +1240,9 @@ public class NativeApp {
 	 *  the card. The counter only ticks down while the VM runs, so it does NOT clear while paused. */
 	public static native boolean isMemcardBusy();
 	public static native boolean loadStateFromSlot(int slot);
+	/** Why the core refused the last state load (loadStateFromSlot, loadStateFromFile, loadAutosaveState,
+	 *  loadAutosaveStateAt), in the core's English; empty when the core did not refuse it. */
+	public static native String getLastStateLoadError();
 	/** 1 = loaded, 0 = transient refusal (retry), -1 = permanent failure. */
 	public static native int loadStateFromFile(String path);
 	public static native String getGamePathSlot(int slot);
