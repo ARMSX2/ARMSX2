@@ -57,6 +57,7 @@ final class GameLibraryControllerCoordinator {
     let focusScrollCoordinator = GameLibraryFocusScrollCoordinator()
     let coverFlowPreheater = GameLibraryCoverFlowPreheater()
     var libraryContainerSize: CGSize = .zero
+    @ObservationIgnored private var seededContainerSize: CGSize = .zero
     var landscapeControllerAutofocusPending = false
     var landscapeControllerAutofocusTask: Task<Void, Never>?
     var runningGameControllerFocusPending = false
@@ -138,14 +139,14 @@ final class GameLibraryControllerCoordinator {
     }
 
     var usesLandscapeGameCardScale: Bool {
-        // The geometry state updates after a layout transaction, so during rotation
-        // every per-orientation card setting read the old orientation. The window
-        // scene has already committed the new one when the rotated body runs.
-        if let orientation = activeMenuWindow()?.windowScene?.interfaceOrientation,
-           orientation != .unknown {
-            return orientation.isLandscape
-        }
-        return libraryContainerSize.width > libraryContainerSize.height
+        // The read of libraryContainerSize keeps views outside the geometry pass subscribed to rotations.
+        let observed = libraryContainerSize
+        let size = seededContainerSize == .zero ? observed : seededContainerSize
+        return size.width > size.height
+    }
+
+    func seedLibraryContainerSize(_ size: CGSize) {
+        seededContainerSize = size
     }
 
     var hideGameName: Bool {
