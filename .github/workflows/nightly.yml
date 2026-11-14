@@ -169,6 +169,7 @@ jobs:
       artifactPrefixName: "armsx2-macos-arm64"
       fetchTags: true
       sign_and_notarize: true
+      require_notarization: false
     secrets: inherit
 
   pc-linux-arm64:

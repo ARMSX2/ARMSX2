@@ -50,6 +50,7 @@ jobs:
       jobName: "macOS arm64"
       artifactPrefixName: "armsx2-macos-arm64"
       sign_and_notarize: true
+      require_notarization: false
     secrets: inherit
 
   pc-linux-arm64:

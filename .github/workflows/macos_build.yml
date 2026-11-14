@@ -29,6 +29,14 @@ on:
         required: false
         type: boolean
         default: false
+      # Notarization is fatal by default, the right thing for a release. Nightly
+      # and build-all pass false: Apple refusing the submission (a lapsed
+      # developer agreement, say) leaves a signed artifact and a warning instead
+      # of a failed job that hides real breakage.
+      require_notarization:
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   build_macos:
@@ -200,8 +208,16 @@ jobs:
           echo "${{ secrets.APPLE_SIGN_P12_B64 }}" | base64 -d > cert.p12
           echo "${{ secrets.APPLE_APPSTORECONNECT_CFG }}" | base64 -d > key.json
 
+      # The signature is what the app cannot do without (arm64 refuses unsigned
+      # code). Notarization is a separate, account-level thing: Apple's notary
+      # service answers 403 when a developer agreement lapses, which says nothing
+      # about this commit. So for builds that are not releases a refused
+      # submission is a warning, and the signature is checked straight after --
+      # a build whose signing failed still fails.
       - name: Sign the Application (Apple notarization)
+        id: sign_and_notarize
         if: ${{ inputs.sign_and_notarize == true && env.SIGN_KEY }}
+        continue-on-error: ${{ !inputs.require_notarization }}
         uses: indygreg/apple-code-sign-action@5e7a4a01fe4dffe948ef3bcf1f4538d963cb0c72
         with:
           input_path: 'ARMSX2.app'
@@ -221,6 +237,28 @@ jobs:
           # Despite what the docs say, I found that this file is required and I had 0 luck
           # passing the issuer id, key, etc through arguments.
           app_store_connect_api_key_json_file: 'key.json'
+
+      # Whatever the notary service said, the app must be properly signed: an
+      # unsigned arm64 binary does not launch at all.
+      - name: Verify the Application's Signature
+        if: ${{ inputs.sign_and_notarize == true && env.SIGN_KEY }}
+        run: codesign --verify --deep --strict --verbose=2 ARMSX2.app
+
+      - name: Note the Unnotarized Build
+        if: ${{ steps.sign_and_notarize.outcome == 'failure' && !inputs.require_notarization }}
+        run: |
+          echo "::warning::Notarization failed; ARMSX2.app is signed but not notarized. macOS will refuse its first launch until the user allows it in System Settings > Privacy & Security."
+          {
+            echo "### macOS artifact signed but not notarized"
+            echo ""
+            echo "The notary submission failed (see the 'Sign the Application' step); this"
+            echo "build does not require notarization, so it was published anyway."
+            echo "The app is Developer ID signed and runs once the user allows it:"
+            echo ""
+            echo "1. Try to open it once, then go to System Settings > Privacy & Security"
+            echo "   and choose Open Anyway; or"
+            echo "2. \`xattr -dr com.apple.quarantine ARMSX2.app\` before the first launch."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Fallback when Apple signing secrets aren't configured: ad-hoc sign so the
       # bundle launches on the build machine (matches the README manual build).
