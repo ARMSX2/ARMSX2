@@ -22,7 +22,7 @@ class CheatsPanelSize(unittest.TestCase):
 
     def test_it_is_as_tall_as_game_info(self):
         source = without_comments(read(LIBRARY))
-        cover = source[source.find(".fullScreenCover(item: $cheatsManagerTarget)"):][:400]
+        cover = source[source.find(".fullScreenCover(item: $controller.cheatsManagerTarget)"):][:400]
         self.assertIn("maximumHeight: 700", cover)
 
 

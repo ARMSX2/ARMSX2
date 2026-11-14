@@ -1738,36 +1738,8 @@ struct MenuTabView: View {
     @State private var gameRenamePresented = false
     @State private var controllerTabFocusState: MenuControllerTabFocusState
     @State private var menuViewportSize = CGSize.zero
-    @AppStorage("ARMSX2iOSHideGamesScreenTitle")
-    private var legacyHideGamesScreenTitle = true
-    @AppStorage("ARMSX2iOSPortraitHideGamesScreenTitle")
-    private var portraitHideGamesScreenTitle = -1
-    @AppStorage("ARMSX2iOSLandscapeHideGamesScreenTitle")
-    private var landscapeHideGamesScreenTitle = -1
-    @AppStorage("ARMSX2iOSPortraitUseGamesLogo")
-    private var portraitUseGamesLogo = -1
-    @AppStorage("ARMSX2iOSLandscapeUseGamesLogo")
-    private var landscapeUseGamesLogo = -1
-    @AppStorage("ARMSX2iOSPortraitBottomNavigationTabBarHeight")
-    private var portraitBottomNavigationTabBarHeight = 84.0
-    @AppStorage("ARMSX2iOSLandscapeBottomNavigationTabBarHeight")
-    private var landscapeBottomNavigationTabBarHeight = 84.0
-    @AppStorage("ARMSX2iOSPortraitBottomNavigationTabBarIconScale")
-    private var portraitBottomNavigationTabBarIconScale = 1.0
-    @AppStorage("ARMSX2iOSLandscapeBottomNavigationTabBarIconScale")
-    private var landscapeBottomNavigationTabBarIconScale = 1.0
-    @AppStorage("ARMSX2iOSPortraitBottomNavigationTabBarLabelScale")
-    private var portraitBottomNavigationTabBarLabelScale = 1.0
-    @AppStorage("ARMSX2iOSLandscapeBottomNavigationTabBarLabelScale")
-    private var landscapeBottomNavigationTabBarLabelScale = 1.0
-    @AppStorage("ARMSX2iOSPortraitBottomNavigationTabBarClearance")
-    private var portraitBottomNavigationTabBarClearance = 0.0
-    @AppStorage("ARMSX2iOSLandscapeBottomNavigationTabBarClearance")
-    private var landscapeBottomNavigationTabBarClearance = 0.0
-    @AppStorage("ARMSX2iOSPortraitBottomNavigationTabBarShowsLabels")
-    private var portraitBottomNavigationTabBarShowsLabels = 1
-    @AppStorage("ARMSX2iOSLandscapeBottomNavigationTabBarShowsLabels")
-    private var landscapeBottomNavigationTabBarShowsLabels = 1
+    @State private var tabBar = MenuTabBarAppearance.shared
+    @State private var appearance = GameLibraryAppearance.shared
     let backgroundHost: PersistentMenuBackgroundHost
     let controllerInput: MenuControllerInputRouter
     @Namespace private var largeTitleNamespace
@@ -1798,16 +1770,16 @@ struct MenuTabView: View {
     private var hideGamesScreenTitle: Bool {
         let isLandscape = menuViewportSize.width > menuViewportSize.height
         let stored = isLandscape
-            ? landscapeHideGamesScreenTitle
-            : portraitHideGamesScreenTitle
-        return stored >= 0 ? stored == 1 : legacyHideGamesScreenTitle
+            ? appearance.landscapeHideGamesScreenTitle
+            : appearance.portraitHideGamesScreenTitle
+        return stored >= 0 ? stored == 1 : appearance.legacyHideGamesScreenTitle
     }
 
     private var useGamesLogo: Bool {
         let isLandscape = menuViewportSize.width > menuViewportSize.height
         let stored = isLandscape
-            ? landscapeUseGamesLogo
-            : portraitUseGamesLogo
+            ? appearance.landscapeUseGamesLogo
+            : appearance.portraitUseGamesLogo
         return logoStore.hasLogo && (stored < 0 || stored == 1)
     }
 
@@ -1827,20 +1799,20 @@ struct MenuTabView: View {
             ? verticalSizeClass == .compact
             : menuViewportSize.width > menuViewportSize.height
         let height = isLandscape
-            ? landscapeBottomNavigationTabBarHeight
-            : portraitBottomNavigationTabBarHeight
+            ? tabBar.landscapeBottomNavigationTabBarHeight
+            : tabBar.portraitBottomNavigationTabBarHeight
         let iconScale = isLandscape
-            ? landscapeBottomNavigationTabBarIconScale
-            : portraitBottomNavigationTabBarIconScale
+            ? tabBar.landscapeBottomNavigationTabBarIconScale
+            : tabBar.portraitBottomNavigationTabBarIconScale
         let labelScale = isLandscape
-            ? landscapeBottomNavigationTabBarLabelScale
-            : portraitBottomNavigationTabBarLabelScale
+            ? tabBar.landscapeBottomNavigationTabBarLabelScale
+            : tabBar.portraitBottomNavigationTabBarLabelScale
         let clearance = isLandscape
-            ? landscapeBottomNavigationTabBarClearance
-            : portraitBottomNavigationTabBarClearance
+            ? tabBar.landscapeBottomNavigationTabBarClearance
+            : tabBar.portraitBottomNavigationTabBarClearance
         let storedShowsLabels = isLandscape
-            ? landscapeBottomNavigationTabBarShowsLabels
-            : portraitBottomNavigationTabBarShowsLabels
+            ? tabBar.landscapeBottomNavigationTabBarShowsLabels
+            : tabBar.portraitBottomNavigationTabBarShowsLabels
 
         return MenuBottomTabBarLayout(
             height: CGFloat(min(max(height, 42), 100)),

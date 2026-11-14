@@ -6,7 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 STORE = swift("SettingsStore.swift")
-LIBRARY = swift("GameListView.swift")
+COORDINATOR = swift("GameLibraryControllerCoordinator.swift")
 APPEARANCE = swift("AppearanceSettingsView.swift")
 
 
@@ -19,7 +19,7 @@ class GameMenuCoverColours(unittest.TestCase):
         self.assertIn('forKey: "ARMSX2iOSGameMenuCoverColoursEnabled"\n        ) as? Bool ?? true', source)
 
     def test_the_game_menu_preview_checks_it(self):
-        update = block(without_comments(read(LIBRARY)), "private func updateGameCoverThemePreview(")
+        update = block(without_comments(read(COORDINATOR)), "func updateGameCoverThemePreview(")
         self.assertIn("? settings.gameMenuCoverColoursEnabled", update)
         self.assertIn(": settings.favoriteGlowingEffectEnabled", update)
 

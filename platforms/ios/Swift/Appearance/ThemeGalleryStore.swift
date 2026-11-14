@@ -71,26 +71,26 @@ struct GameLibraryViewOptionsSnapshot: Codable {
         "ARMSX2iOSLandscapeBottomNavigationTabBarShowsLabels": true,
     ]
 
-    init(defaults: UserDefaults = .standard) {
+    init() {
         doubles = [:]
         for (key, fallback) in Self.doubleDefaults {
-            doubles[key] = (defaults.object(forKey: key) as? NSNumber)?
+            doubles[key] = GameLibraryAppearance.themeNumber(forKey: key)?
                 .doubleValue ?? fallback
         }
         booleans = [:]
         for (key, fallback) in Self.booleanDefaults {
-            let stored = (defaults.object(forKey: key) as? NSNumber)?.intValue
+            let stored = GameLibraryAppearance.themeNumber(forKey: key)?.intValue
             booleans[key] = stored.map { $0 >= 0 ? $0 != 0 : fallback }
                 ?? fallback
         }
     }
 
-    func restore(defaults: UserDefaults = .standard) {
+    @MainActor func restore() {
         for (key, value) in doubles where Self.doubleDefaults[key] != nil {
-            defaults.set(value, forKey: key)
+            GameLibraryAppearance.setThemeNumber(NSNumber(value: value), forKey: key)
         }
         for (key, value) in booleans where Self.booleanDefaults[key] != nil {
-            defaults.set(value ? 1 : 0, forKey: key)
+            GameLibraryAppearance.setThemeNumber(NSNumber(value: value ? 1 : 0), forKey: key)
         }
     }
 }

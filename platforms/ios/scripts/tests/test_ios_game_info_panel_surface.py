@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-LIBRARY = swift("GameListView.swift")
+PANELS = swift("GameLibraryPanels.swift")
 
 
 class GameInfoPanelSurface(unittest.TestCase):
@@ -13,8 +13,8 @@ class GameInfoPanelSurface(unittest.TestCase):
     the opaque system background, so testers saw a black screen with a large title."""
 
     def test_each_panel_hides_the_form_background_and_draws_glass(self):
-        source = without_comments(read(LIBRARY))
-        for name in ("private struct GameInfoPanel", "private struct DiscLinkPicker"):
+        source = without_comments(read(PANELS))
+        for name in ("struct GameInfoPanel", "struct DiscLinkPicker"):
             with self.subTest(panel=name):
                 body = block(source, name)
                 self.assertIn(".scrollContentBackground(.hidden)", body)
