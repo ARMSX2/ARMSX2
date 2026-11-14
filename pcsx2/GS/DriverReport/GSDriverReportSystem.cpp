@@ -1010,6 +1010,16 @@ namespace GSDriverReport
 		return true;
 	}
 
+	/// Writes one sysfs frequency in kHz. KGSL and devfreq report Hz; the key says kHz, so convert.
+	static bool AppendSysfsKhz(JsonWriter& w, const char* key, const std::string& path)
+	{
+		std::string v;
+		if (!ReadSysfsString(path, &v, 64))
+			return false;
+		w.KeyInt(key, std::strtoll(v.c_str(), nullptr, 10) / 1000);
+		return true;
+	}
+
 	static void AppendGpuSnapshot(JsonWriter& w)
 	{
 		const std::string kgsl = "/sys/class/kgsl/kgsl-3d0/";
@@ -1019,11 +1029,11 @@ namespace GSDriverReport
 		if (ReadSysfsString(kgsl + "gpuclk", &cur, 64))
 		{
 			w.KeyString("source", "kgsl");
-			w.KeyString("cur_khz", cur);
-			AppendSysfsString(w, "max_khz", kgsl + "max_gpuclk", 64);
+			w.KeyInt("cur_khz", std::strtoll(cur.c_str(), nullptr, 10) / 1000);
+			AppendSysfsKhz(w, "max_khz", kgsl + "max_gpuclk");
 			AppendSysfsString(w, "governor", kgsl + "devfreq/governor", 64);
-			AppendSysfsString(w, "devfreq_cur_khz", kgsl + "devfreq/cur_freq", 64);
-			AppendSysfsString(w, "devfreq_max_khz", kgsl + "devfreq/max_freq", 64);
+			AppendSysfsKhz(w, "devfreq_cur_khz", kgsl + "devfreq/cur_freq");
+			AppendSysfsKhz(w, "devfreq_max_khz", kgsl + "devfreq/max_freq");
 			AppendSysfsString(w, "cur_pwrlevel", kgsl + "cur_pwrlevel", 64);
 			AppendSysfsString(w, "min_pwrlevel", kgsl + "min_pwrlevel", 64);
 			AppendSysfsString(w, "max_pwrlevel", kgsl + "max_pwrlevel", 64);
@@ -1038,9 +1048,9 @@ namespace GSDriverReport
 			if (!ReadSysfsString(base + "cur_freq", &value, 64))
 				continue;
 			w.KeyString("source", "devfreq:" + name);
-			w.KeyString("cur_khz", value);
-			AppendSysfsString(w, "max_khz", base + "max_freq", 64);
-			AppendSysfsString(w, "min_khz", base + "min_freq", 64);
+			w.KeyInt("cur_khz", std::strtoll(value.c_str(), nullptr, 10) / 1000);
+			AppendSysfsKhz(w, "max_khz", base + "max_freq");
+			AppendSysfsKhz(w, "min_khz", base + "min_freq");
 			AppendSysfsString(w, "governor", base + "governor", 64);
 			return;
 		}
