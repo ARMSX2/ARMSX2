@@ -13671,6 +13671,8 @@ SLED-50488:
 SLED-50489:
   name: "Stuntman [Demo]"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -13708,6 +13710,8 @@ SLED-50980:
 SLED-51012:
   name: "Stuntman [Demo]"
   region: "PAL-E"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -15269,6 +15273,8 @@ SLES-50288:
   name: "Stuntman"
   region: "PAL-M5"
   compat: 5
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -16628,6 +16634,8 @@ SLES-50876:
   name: "Driv3r"
   region: "PAL-M5"
   compat: 4
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -19763,6 +19771,8 @@ SLES-52152:
 SLES-52153:
   name: "Driv3r"
   region: "PAL-E-S"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -32159,6 +32169,8 @@ SLKA-25196:
   name: "드라이버 3"
   name-en: "Driv3r"
   region: "NTSC-K"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -36732,6 +36744,8 @@ SLPM-61092:
   name-sort: "どらいばー3 [たいけんばん]"
   name-en: "Driv3r [Trial]"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -45632,6 +45646,8 @@ SLPM-65741:
   name-sort: "どらいばー3"
   name-en: "Driv3r"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -47290,6 +47306,8 @@ SLPM-66019:
   name-sort: "すたんとまん"
   name-en: "Stuntman"
   region: "NTSC-J"
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
@@ -65599,6 +65617,7 @@ SLUS-20250:
   region: "NTSC-U"
   compat: 5
   clampModes:
+    eeClampMode: 4 # Fixes AI pathing.
     vu0ClampMode: 4 # Fixes VU0 macro adds landing a ULP short of the console's adder.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
@@ -67367,6 +67386,8 @@ SLUS-20587:
   name: "Driv3r"
   region: "NTSC-U"
   compat: 5
+  clampModes:
+    eeClampMode: 4 # Fixes AI pathing in Lead On Baccus.
   gameFixes:
     - BlitInternalFPSHack # Fixes internal FPS detection.
   gsHWFixes:
