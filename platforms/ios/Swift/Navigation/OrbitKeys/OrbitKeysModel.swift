@@ -5,231 +5,6 @@ import Foundation
 @preconcurrency import GameController
 import UIKit
 
-// MARK: - Keyboard Types
-
-enum OrbitKeysGridPosition: Int, CaseIterable, Identifiable, Sendable {
-  case topLeft
-  case top
-  case topRight
-  case left
-  case center
-  case right
-  case bottomLeft
-  case bottom
-  case bottomRight
-
-  var id: Int { rawValue }
-
-  var row: Int {
-    switch self {
-    case .topLeft, .top, .topRight: 0
-    case .left, .center, .right: 1
-    case .bottomLeft, .bottom, .bottomRight: 2
-    }
-  }
-
-  var column: Int {
-    switch self {
-    case .topLeft, .left, .bottomLeft: 0
-    case .top, .center, .bottom: 1
-    case .topRight, .right, .bottomRight: 2
-    }
-  }
-
-  var spokenName: String {
-    switch self {
-    case .topLeft: "top left"
-    case .top: "top"
-    case .topRight: "top right"
-    case .left: "center left"
-    case .center: "center"
-    case .right: "center right"
-    case .bottomLeft: "bottom left"
-    case .bottom: "bottom"
-    case .bottomRight: "bottom right"
-    }
-  }
-
-  static func from(stickX x: Float, y: Float, deadZone: Float = 0.38) -> OrbitKeysGridPosition {
-    let column = x < -deadZone ? 0 : (x > deadZone ? 2 : 1)
-    let row = y > deadZone ? 0 : (y < -deadZone ? 2 : 1)
-    return allCases.first { $0.row == row && $0.column == column } ?? .center
-  }
-}
-
-enum OrbitKeysFaceButton: String, CaseIterable, Identifiable, Sendable {
-  case square
-  case cross
-  case circle
-  case triangle
-
-  var id: String { rawValue }
-
-  static func from(characterStickX x: Float, y: Float, threshold: Float = 0.68) -> OrbitKeysFaceButton? {
-    guard max(abs(x), abs(y)) >= threshold else { return nil }
-
-    if abs(x) > abs(y) {
-      return x < 0 ? .square : .circle
-    }
-    return y < 0 ? .cross : .triangle
-  }
-}
-
-enum OrbitKeysKeyboardMode: String, Sendable {
-  case letters
-  case shifted
-  case numbers
-}
-
-enum OrbitKeysArrangement: String, Sendable {
-  case alphabetical
-  case qaw
-}
-
-enum OrbitKeysSettingsOption: Int, CaseIterable, Identifiable, Sendable {
-  case normalKeyboard
-  case loopFullKeyboard
-  case legacyTheme
-  case layout
-  case faceIcons
-  case iconsOnAllKeys
-  case colorsOnAllBoxes
-  case orbitField
-  case orbsInForeground
-  case clearGlass
-  case transparency
-
-  var id: Int { rawValue }
-}
-
-enum OrbitKeysKeyCommand: Equatable, Sendable {
-  case insert(String)
-  case forwardDelete
-}
-
-struct OrbitKeysKeyboardKey: Equatable, Sendable {
-  let label: String
-  let command: OrbitKeysKeyCommand
-
-  var isAction: Bool {
-    switch command {
-    case .insert: false
-    case .forwardDelete: true
-    }
-  }
-}
-
-enum OrbitKeysLayout {
-  private static let base: [[String]] = [
-    ["a", "b", "c", ","],
-    ["d", "e", "f", "."],
-    ["g", "h", "i", "!"],
-    ["j", "k", "l", "-"],
-    ["m", "␣", "n", "Del"],
-    ["o", "p", "q", "?"],
-    ["r", "s", "t", "("],
-    ["u", "v", "w", ":"],
-    ["x", "y", "z", ")"],
-  ]
-
-  // Maps the grid to a controller-friendly QWERTY order while keeping center actions fixed.
-  private static let qaw: [[String]] = [
-    ["q", "a", "w", ","],
-    ["s", "e", "d", "."],
-    ["r", "f", "t", "!"],
-    ["g", "y", "h", "-"],
-    ["u", "␣", "j", "Del"],
-    ["i", "k", "o", "?"],
-    ["l", "p", "z", "("],
-    ["x", "c", "v", ":"],
-    ["b", "n", "m", ")"],
-  ]
-
-  // Maps face buttons as Square, Cross, Circle, Triangle; Circle holds 1-9 and Cross adds 0 in the last cell.
-  private static let numeric: [[String]] = [
-    ["[", "{", "1", "<"],
-    ["]", "}", "2", ">"],
-    ["#", "$", "3", "%"],
-    ["+", "×", "4", "÷"],
-    ["&", "␣", "5", "Del"],
-    ["\\", "|", "6", "~"],
-    ["€", "£", "7", "¥"],
-    ["'", "`", "8", "•"],
-    ["°", "0", "9", "§"],
-  ]
-
-  private static let shiftedPunctuation: [String: String] = [
-    ",": "^",
-    ".": "@",
-    "!": "*",
-    "-": "_",
-    "?": "\"",
-    "(": "=",
-    ":": ";",
-    ")": "/",
-  ]
-
-  static func key(
-    at position: OrbitKeysGridPosition,
-    face: OrbitKeysFaceButton,
-    mode: OrbitKeysKeyboardMode,
-    arrangement: OrbitKeysArrangement = .alphabetical
-  ) -> OrbitKeysKeyboardKey {
-    if position == .center, face == .cross {
-      return OrbitKeysKeyboardKey(label: "␣", command: .insert(" "))
-    }
-    if position == .center, face == .triangle {
-      return OrbitKeysKeyboardKey(label: "Del", command: .forwardDelete)
-    }
-
-    let faceIndex = OrbitKeysFaceButton.allCases.firstIndex(of: face) ?? 0
-    let rawLabel: String
-
-    switch mode {
-    case .letters:
-      let layout = arrangement == .qaw ? qaw : base
-      rawLabel = layout[position.rawValue][faceIndex]
-    case .shifted:
-      let layout = arrangement == .qaw ? qaw : base
-      let baseLabel = layout[position.rawValue][faceIndex]
-      rawLabel = shiftedPunctuation[baseLabel] ?? baseLabel.uppercased()
-    case .numbers:
-      rawLabel = numeric[position.rawValue][faceIndex]
-    }
-
-    return OrbitKeysKeyboardKey(label: rawLabel, command: .insert(rawLabel))
-  }
-}
-
-// MARK: - Haptic Feedback
-
-/// Plays the keyboard's feedback through the menu router, whose player applies
-/// Haptic Feedback and UI Rumble Strength.
-@MainActor
-struct OrbitKeysHaptics {
-  enum Feedback {
-    case selection
-    case key
-    case space
-    case delete
-    case mode
-    case success
-  }
-
-  weak var router: MenuControllerInputRouter?
-
-  func play(_ feedback: Feedback) {
-    let menuFeedback: MenuControllerFeedback = switch feedback {
-    case .selection: .move(.left)
-    case .key, .delete: .activate
-    case .space: .back
-    case .mode: .tabTransition
-    case .success: .favorite(isFavorite: true)
-    }
-    router?.playTouchHaptics(menuFeedback)
-  }
-}
-
 // MARK: - Keyboard Model
 
 @MainActor
@@ -239,12 +14,12 @@ final class OrbitKeysModel: ObservableObject {
   @Published private(set) var cursor = 0
   @Published private(set) var isKeyboardVisible = false
   @Published private(set) var committedText: String
-  @Published private(set) var pressedFace: OrbitKeysFaceButton?
-  @Published private(set) var stickX: Float = 0
-  @Published private(set) var stickY: Float = 0
-  @Published private(set) var rightStickX: Float = 0
-  @Published private(set) var rightStickY: Float = 0
-  @Published private(set) var rightStickFace: OrbitKeysFaceButton?
+  @Published var pressedFace: OrbitKeysFaceButton?
+  @Published var stickX: Float = 0
+  @Published var stickY: Float = 0
+  @Published var rightStickX: Float = 0
+  @Published var rightStickY: Float = 0
+  @Published var rightStickFace: OrbitKeysFaceButton?
   @Published private(set) var isLeftShoulderHeld = false
   @Published private(set) var isRightShoulderHeld = false
   @Published private(set) var usesFullQwerty =
@@ -256,10 +31,10 @@ final class OrbitKeysModel: ObservableObject {
   @Published private(set) var usesLegacyTheme =
     UserDefaults.standard.object(forKey: "OrbitKeys.keyboard.usesLegacyTheme") as? Bool
     ?? true
-  @Published private(set) var fullQwertySelection = OrbitKeysFullQwertyKeyPosition.home
-  @Published private(set) var fullQwertyToolbarSelection:
+  @Published var fullQwertySelection = OrbitKeysFullQwertyKeyPosition.home
+  @Published var fullQwertyToolbarSelection:
     OrbitKeysFullQwertyToolbarControl?
-  @Published private(set) var fullQwertyFeedbackSequence = 0
+  @Published var fullQwertyFeedbackSequence = 0
   @Published private(set) var lastActivatedFullQwertyPosition: OrbitKeysFullQwertyKeyPosition?
   @Published private(set) var keyboardArrangement: OrbitKeysArrangement = .alphabetical
   @Published private(set) var showsFaceIcons = true
@@ -272,35 +47,35 @@ final class OrbitKeysModel: ObservableObject {
   @Published private(set) var selectedKeyboardSettingsOption: OrbitKeysSettingsOption =
     .normalKeyboard
   @Published private(set) var feedbackSequence = 0
-  @Published private(set) var selectionSequence = 0
+  @Published var selectionSequence = 0
   @Published private(set) var characterSequence = 0
   @Published private(set) var lastActivatedFace: OrbitKeysFaceButton?
   @Published private(set) var lastActivatedPosition: OrbitKeysGridPosition?
   @Published private(set) var toastMessage: String?
   @Published private(set) var lastSubmittedText: String?
 
-  @Published private var isL2Held = false
-  @Published private var isR2Held = false
+  @Published var isL2Held = false
+  @Published var isR2Held = false
   @Published private var touchNumbersLocked = false
   @Published private var touchShiftLocked = false
-  private var activeController: GCController?
-  private var isRightStickLatched = false
-  private var isL3Pressed = false
-  private var isR3Pressed = false
+  var activeController: GCController?
+  var isRightStickLatched = false
+  var isL3Pressed = false
+  var isR3Pressed = false
   private var backspaceRepeatTask: Task<Void, Never>?
-  private var faceRepeatTask: Task<Void, Never>?
-  private var pressedFaceReleaseTask: Task<Void, Never>?
-  private var repeatingFace: OrbitKeysFaceButton?
-  private var cursorRepeatTask: Task<Void, Never>?
-  private var cursorRepeatOffset: Int?
-  private var fullQwertyMoveRepeatTask: Task<Void, Never>?
-  private var fullQwertyHeldDirection: OrbitKeysFullQwertyDirection?
-  private var fullQwertyKeyRepeatTask: Task<Void, Never>?
-  private var fullQwertyTouchBackspaceRepeatTask: Task<Void, Never>?
-  private var isFullQwertySelectHeld = false
-  private var keyboardSettingsDpadRepeatTask: Task<Void, Never>?
-  private var keyboardSettingsHeldDirection: OrbitKeysFullQwertyDirection?
-  private var observers: [NSObjectProtocol] = []
+  var faceRepeatTask: Task<Void, Never>?
+  var pressedFaceReleaseTask: Task<Void, Never>?
+  var repeatingFace: OrbitKeysFaceButton?
+  var cursorRepeatTask: Task<Void, Never>?
+  var cursorRepeatOffset: Int?
+  var fullQwertyMoveRepeatTask: Task<Void, Never>?
+  var fullQwertyHeldDirection: OrbitKeysFullQwertyDirection?
+  var fullQwertyKeyRepeatTask: Task<Void, Never>?
+  var fullQwertyTouchBackspaceRepeatTask: Task<Void, Never>?
+  var isFullQwertySelectHeld = false
+  var keyboardSettingsDpadRepeatTask: Task<Void, Never>?
+  var keyboardSettingsHeldDirection: OrbitKeysFullQwertyDirection?
+  var observers: [NSObjectProtocol] = []
   var haptics = OrbitKeysHaptics()
   private let onCommit: (String) -> Void
 
@@ -606,72 +381,6 @@ final class OrbitKeysModel: ObservableObject {
     MenuAudioPackManager.shared.playEvent(.toggle(isOn: isEnabled))
   }
 
-  func selectFullQwertyKey(_ position: OrbitKeysFullQwertyKeyPosition) {
-    selectFullQwertyKey(position, playsAudio: true)
-  }
-
-  private func selectFullQwertyKey(
-    _ position: OrbitKeysFullQwertyKeyPosition,
-    playsAudio: Bool
-  ) {
-    let nextPosition = OrbitKeysFullQwertyLayout.clampedPosition(position, mode: mode)
-    guard nextPosition != fullQwertySelection || fullQwertyToolbarSelection != nil else {
-      return
-    }
-    fullQwertyToolbarSelection = nil
-    fullQwertySelection = nextPosition
-    selectionSequence += 1
-    haptics.play(.selection)
-    if playsAudio {
-      MenuAudioPackManager.shared.playEvent(.navigation)
-    }
-  }
-
-  func activateFullQwertyKey(at position: OrbitKeysFullQwertyKeyPosition) {
-    selectFullQwertyKey(position, playsAudio: false)
-    activateFullQwertySelection()
-  }
-
-  func activateFullQwertySelection() {
-    guard isKeyboardVisible else { return }
-
-    if let toolbarSelection = fullQwertyToolbarSelection {
-      switch toolbarSelection {
-      case .send:
-        performPrimaryEditorAction()
-      case .settings:
-        openKeyboardSettings()
-      case .close:
-        cancelAndClose()
-      }
-      return
-    }
-
-    guard
-      let key = OrbitKeysFullQwertyLayout.key(at: fullQwertySelection, mode: mode)
-    else {
-      return
-    }
-
-    performFullQwertyKey(key)
-  }
-
-  func setFullQwertyTouchBackspaceHeld(_ isHeld: Bool) {
-    if isHeld {
-      guard fullQwertyTouchBackspaceRepeatTask == nil else { return }
-      performFullQwertyTouchBackspace()
-      fullQwertyTouchBackspaceRepeatTask = makeRepeatTask(
-        initialDelay: 420,
-        repeatDelay: 82
-      ) { model in
-        model.performFullQwertyTouchBackspace()
-        return true
-      }
-    } else {
-      stopFullQwertyTouchBackspaceRepeat()
-    }
-  }
-
   func insertSpace() {
     guard isKeyboardVisible else { return }
     insert(" ")
@@ -925,7 +634,7 @@ final class OrbitKeysModel: ObservableObject {
   }
 
   // Applies a full-keyboard key to the shared text buffer and keeps the visual feedback in sync.
-  private func performFullQwertyKey(_ key: OrbitKeysFullQwertyKey) {
+  func performFullQwertyKey(_ key: OrbitKeysFullQwertyKey) {
     switch key.action {
     case .character(let value):
       lastActivatedFullQwertyPosition = fullQwertySelection
@@ -964,7 +673,7 @@ final class OrbitKeysModel: ObservableObject {
     }
   }
 
-  private func performFullQwertyTouchBackspace() {
+  func performFullQwertyTouchBackspace() {
     backspace()
     fullQwertyFeedbackSequence += 1
   }
@@ -1007,7 +716,7 @@ final class OrbitKeysModel: ObservableObject {
     MenuAudioPackManager.shared.playEvent(.tabTransition)
   }
 
-  private func makeRepeatTask(
+  func makeRepeatTask(
     initialDelay: Int,
     repeatDelay: Int,
     action: @escaping @MainActor (OrbitKeysModel) -> Bool
@@ -1021,7 +730,7 @@ final class OrbitKeysModel: ObservableObject {
     }
   }
 
-  private func schedulePressedFaceRelease(
+  func schedulePressedFaceRelease(
     _ face: OrbitKeysFaceButton,
     after delay: Int,
     unlessRepeating: Bool = false
@@ -1035,7 +744,7 @@ final class OrbitKeysModel: ObservableObject {
     }
   }
 
-  private func resetTransientModeHolds() {
+  func resetTransientModeHolds() {
     guard isL2Held || isR2Held else { return }
     isL2Held = false
     isR2Held = false
@@ -1073,7 +782,7 @@ final class OrbitKeysModel: ObservableObject {
     }
   }
 
-  private func modeDidChange() {
+  func modeDidChange() {
     fullQwertySelection = OrbitKeysFullQwertyLayout.clampedPosition(
       fullQwertySelection,
       mode: mode
@@ -1081,674 +790,5 @@ final class OrbitKeysModel: ObservableObject {
     feedbackSequence += 1
     fullQwertyFeedbackSequence += 1
     haptics.play(.mode)
-  }
-
-  private func observeControllers() {
-    let center = NotificationCenter.default
-    observers.append(
-      center.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) {
-        [weak self] notification in
-        guard let controller = notification.object as? GCController else { return }
-        Task { @MainActor in self?.connect(controller) }
-      }
-    )
-    observers.append(
-      center.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) {
-        [weak self] notification in
-        guard let controller = notification.object as? GCController else { return }
-        Task { @MainActor in self?.disconnect(controller) }
-      }
-    )
-  }
-
-  private func connect(_ controller: GCController) {
-    guard activeController == nil || activeController === controller else { return }
-    guard let gamepad = controller.extendedGamepad else { return }
-    activeController = controller
-    GCController.stopWirelessControllerDiscovery()
-    if isKeyboardVisible {
-    }
-
-    gamepad.leftThumbstick.valueChangedHandler = { [weak self] _, x, y in
-      Task { @MainActor in self?.handleStick(x: x, y: y) }
-    }
-    gamepad.rightThumbstick.valueChangedHandler = { [weak self] _, x, y in
-      Task { @MainActor in self?.handleCharacterStick(x: x, y: y) }
-    }
-    gamepad.leftThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setL3Pressed(pressed) }
-    }
-    gamepad.rightThumbstickButton?.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setR3Pressed(pressed) }
-    }
-    // ARMSX2 owns the aggregate profile callback. OrbitKeys uses the
-    // per-element handlers above so both input systems can coexist while the
-    // keyboard's modal capture prevents the library from receiving commands.
-    controller.physicalInputProfile.buttons[
-      GCInputLeftThumbstickButton
-    ]?.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setL3Pressed(pressed) }
-    }
-    controller.physicalInputProfile.buttons[
-      GCInputRightThumbstickButton
-    ]?.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setR3Pressed(pressed) }
-    }
-
-    bind(gamepad.buttonX, to: .square)
-    bind(gamepad.buttonA, to: .cross)
-    bind(gamepad.buttonB, to: .circle)
-    bind(gamepad.buttonY, to: .triangle)
-    gamepad.buttonMenu.pressedChangedHandler = { [weak self] _, _, pressed in
-      guard pressed else { return }
-      Task { @MainActor in self?.commitAndClose() }
-    }
-    gamepad.buttonOptions?.pressedChangedHandler = { [weak self] _, _, pressed in
-      guard pressed else { return }
-      Task { @MainActor in self?.toggleKeyboardStyle() }
-    }
-
-    gamepad.leftShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setBackspaceHeld(pressed) }
-    }
-    gamepad.rightShoulder.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in self?.setSpaceHeld(pressed) }
-    }
-
-    gamepad.leftTrigger.valueChangedHandler = { [weak self] _, value, _ in
-      Task { @MainActor in self?.setL2Held(value > 0.45) }
-    }
-    gamepad.rightTrigger.valueChangedHandler = { [weak self] _, value, _ in
-      Task { @MainActor in self?.setR2Held(value > 0.45) }
-    }
-
-    gamepad.dpad.left.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in
-        guard let self else { return }
-        if self.handleKeyboardSettingsDpad(.left, isHeld: pressed) { return }
-        if self.usesFullQwerty {
-          self.setFullQwertyMoveHeld(.left, isHeld: pressed)
-        } else {
-          self.setCursorHeld(-1, isHeld: pressed)
-        }
-      }
-    }
-    gamepad.dpad.right.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in
-        guard let self else { return }
-        if self.handleKeyboardSettingsDpad(.right, isHeld: pressed) { return }
-        if self.usesFullQwerty {
-          self.setFullQwertyMoveHeld(.right, isHeld: pressed)
-        } else {
-          self.setCursorHeld(1, isHeld: pressed)
-        }
-      }
-    }
-    gamepad.dpad.up.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in
-        guard let self else { return }
-        if self.handleKeyboardSettingsDpad(.up, isHeld: pressed) { return }
-        if self.usesFullQwerty {
-          if self.isKeyboardVisible {
-            self.setFullQwertyMoveHeld(.up, isHeld: pressed)
-          } else if pressed {
-            self.openKeyboard()
-          }
-          return
-        }
-        guard pressed else { return }
-        self.isKeyboardVisible ? self.commitAndClose() : self.openKeyboard()
-      }
-    }
-    gamepad.dpad.down.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in
-        guard let self else { return }
-        if self.handleKeyboardSettingsDpad(.down, isHeld: pressed) { return }
-        if self.usesFullQwerty {
-          self.setFullQwertyMoveHeld(.down, isHeld: pressed)
-          return
-        }
-        guard pressed else { return }
-        self.commitAndClose()
-      }
-    }
-  }
-
-  private func handleKeyboardSettingsDpad(
-    _ direction: OrbitKeysFullQwertyDirection,
-    isHeld: Bool
-  ) -> Bool {
-    guard isKeyboardSettingsVisible else { return false }
-    setKeyboardSettingsDpadHeld(direction, isHeld: isHeld)
-    return true
-  }
-
-  private func setKeyboardSettingsDpadHeld(
-    _ direction: OrbitKeysFullQwertyDirection,
-    isHeld: Bool
-  ) {
-    guard isHeld else {
-      if keyboardSettingsHeldDirection == direction {
-        stopKeyboardSettingsDpadRepeat()
-      }
-      return
-    }
-    guard keyboardSettingsHeldDirection != direction else { return }
-
-    stopKeyboardSettingsDpadRepeat()
-    keyboardSettingsHeldDirection = direction
-    applyKeyboardSettingsDpad(direction)
-
-    guard shouldRepeatKeyboardSettingsDpad(direction) else { return }
-    let repeatDelay = keyboardSettingsRepeatDelay(for: direction)
-    keyboardSettingsDpadRepeatTask = makeRepeatTask(
-      initialDelay: 260,
-      repeatDelay: repeatDelay
-    ) { model in
-      guard model.keyboardSettingsHeldDirection == direction else { return false }
-      model.applyKeyboardSettingsDpad(direction)
-      return true
-    }
-  }
-
-  private func applyKeyboardSettingsDpad(_ direction: OrbitKeysFullQwertyDirection) {
-    switch direction {
-    case .up:
-      moveKeyboardSettingsSelection(by: -1)
-    case .down:
-      moveKeyboardSettingsSelection(by: 1)
-    case .left:
-      adjustKeyboardSettingsSelection(by: -1)
-    case .right:
-      adjustKeyboardSettingsSelection(by: 1)
-    }
-  }
-
-  private func shouldRepeatKeyboardSettingsDpad(_ direction: OrbitKeysFullQwertyDirection) -> Bool {
-    switch direction {
-    case .up, .down:
-      return true
-    case .left, .right:
-      return selectedKeyboardSettingsOption == .transparency
-    }
-  }
-
-  private func keyboardSettingsRepeatDelay(for direction: OrbitKeysFullQwertyDirection) -> Int {
-    switch direction {
-    case .up, .down:
-      return 76
-    case .left, .right:
-      return 34
-    }
-  }
-
-  private func stopKeyboardSettingsDpadRepeat() {
-    keyboardSettingsDpadRepeatTask?.cancel()
-    keyboardSettingsDpadRepeatTask = nil
-    keyboardSettingsHeldDirection = nil
-  }
-
-  private func bind(_ input: GCControllerButtonInput, to face: OrbitKeysFaceButton) {
-    input.pressedChangedHandler = { [weak self] _, _, pressed in
-      Task { @MainActor in
-        self?.setFaceHeld(face, isHeld: pressed)
-      }
-    }
-  }
-
-  private func disconnect(_ controller: GCController) {
-    guard controller === activeController else { return }
-    activeController = nil
-    setBackspaceHeld(false)
-    setSpaceHeld(false)
-    stopFaceRepeat()
-    stopCursorRepeat()
-    stopFullQwertyRepeats()
-    stopKeyboardSettingsDpadRepeat()
-    resetTransientModeHolds()
-    resetPublishedStickVector()
-    resetPublishedCharacterStickVector()
-    rightStickFace = nil
-    isRightStickLatched = false
-    isL3Pressed = false
-    isR3Pressed = false
-
-    if let nextController = GCController.controllers().first(where: { $0 !== controller }) {
-      connect(nextController)
-    }
-  }
-
-  private func handleStick(x: Float, y: Float) {
-    guard isKeyboardVisible else { return }
-    guard !isKeyboardSettingsVisible else {
-      resetPublishedStickVector()
-      stopFullQwertyMoveRepeat()
-      handleKeyboardSettingsStick(x: x, y: y)
-      return
-    }
-    if usesFullQwerty {
-      resetPublishedStickVector()
-      handleFullQwertyStick(x: x, y: y)
-      return
-    }
-    publishStickVector(x: x, y: y)
-    select(OrbitKeysGridPosition.from(stickX: x, y: y))
-  }
-
-  private func publishStickVector(x: Float, y: Float) {
-    let resolvedX: Float = abs(x) < 0.05 ? 0 : x
-    let resolvedY: Float = abs(y) < 0.05 ? 0 : y
-    guard abs(resolvedX - stickX) >= 0.06
-      || abs(resolvedY - stickY) >= 0.06
-    else {
-      return
-    }
-    stickX = resolvedX
-    stickY = resolvedY
-  }
-
-  private func resetPublishedStickVector() {
-    guard stickX != 0 || stickY != 0 else { return }
-    stickX = 0
-    stickY = 0
-  }
-
-  private func handleKeyboardSettingsStick(x: Float, y: Float) {
-    let deadZone: Float = 0.46
-    guard max(abs(x), abs(y)) >= deadZone else {
-      stopKeyboardSettingsDpadRepeat()
-      return
-    }
-
-    let direction: OrbitKeysFullQwertyDirection =
-      abs(x) > abs(y)
-      ? (x < 0 ? .left : .right)
-      : (y > 0 ? .up : .down)
-    setKeyboardSettingsDpadHeld(direction, isHeld: true)
-  }
-
-  private func handleCharacterStick(x: Float, y: Float) {
-    if isKeyboardSettingsVisible {
-      resetPublishedCharacterStickVector()
-      rightStickFace = nil
-      isRightStickLatched = false
-      return
-    }
-
-    if usesFullQwerty {
-      resetPublishedCharacterStickVector()
-      rightStickFace = nil
-      isRightStickLatched = false
-      return
-    }
-
-    publishCharacterStickVector(x: x, y: y)
-
-    if max(abs(x), abs(y)) < 0.32 {
-      rightStickFace = nil
-      isRightStickLatched = false
-      return
-    }
-
-    guard isKeyboardVisible,
-      let face = OrbitKeysFaceButton.from(characterStickX: x, y: y)
-    else {
-      return
-    }
-
-    rightStickFace = face
-    guard !isRightStickLatched else { return }
-    isRightStickLatched = true
-    activate(face)
-  }
-
-  private func publishCharacterStickVector(x: Float, y: Float) {
-    let resolvedX: Float = abs(x) < 0.05 ? 0 : x
-    let resolvedY: Float = abs(y) < 0.05 ? 0 : y
-    guard abs(resolvedX - rightStickX) >= 0.06
-      || abs(resolvedY - rightStickY) >= 0.06
-    else {
-      return
-    }
-    rightStickX = resolvedX
-    rightStickY = resolvedY
-  }
-
-  private func resetPublishedCharacterStickVector() {
-    guard rightStickX != 0 || rightStickY != 0 else { return }
-    rightStickX = 0
-    rightStickY = 0
-  }
-
-  private func setFaceHeld(_ face: OrbitKeysFaceButton, isHeld: Bool) {
-    if isKeyboardSettingsVisible {
-      handleKeyboardSettingsFace(face, isHeld: isHeld)
-      return
-    }
-
-    if usesFullQwerty, isKeyboardVisible {
-      setFullQwertyFaceHeld(face, isHeld: isHeld)
-      return
-    }
-
-    guard isHeld else {
-      if repeatingFace == face {
-        stopFaceRepeat()
-      }
-      if pressedFace == face {
-        pressedFaceReleaseTask?.cancel()
-        pressedFaceReleaseTask = nil
-        pressedFace = nil
-      }
-      return
-    }
-
-    guard isKeyboardVisible else {
-      activate(face)
-      return
-    }
-    guard repeatingFace != face else { return }
-
-    stopFaceRepeat()
-    repeatingFace = face
-    activate(face)
-    faceRepeatTask = makeRepeatTask(initialDelay: 420, repeatDelay: 82) { model in
-      guard model.repeatingFace == face else { return false }
-      model.activate(face)
-      return true
-    }
-  }
-
-  private func handleKeyboardSettingsFace(_ face: OrbitKeysFaceButton, isHeld: Bool) {
-    guard isHeld else {
-      if pressedFace == face {
-        pressedFace = nil
-      }
-      return
-    }
-
-    pressedFace = face
-    switch face {
-    case .cross:
-      activateKeyboardSettingsSelection()
-    case .circle, .triangle:
-      closeKeyboardSettings()
-    case .square:
-      clearText()
-    }
-
-    schedulePressedFaceRelease(face, after: 110)
-  }
-
-  private func stopFaceRepeat() {
-    faceRepeatTask?.cancel()
-    faceRepeatTask = nil
-    repeatingFace = nil
-    pressedFaceReleaseTask?.cancel()
-    pressedFaceReleaseTask = nil
-    pressedFace = nil
-  }
-
-  private func setCursorHeld(_ offset: Int, isHeld: Bool) {
-    guard isHeld else {
-      if cursorRepeatOffset == offset {
-        stopCursorRepeat()
-      }
-      return
-    }
-    guard isKeyboardVisible, cursorRepeatOffset != offset else {
-      return
-    }
-
-    stopCursorRepeat()
-    cursorRepeatOffset = offset
-    moveCursor(by: offset)
-    cursorRepeatTask = makeRepeatTask(initialDelay: 320, repeatDelay: 55) { model in
-      guard model.cursorRepeatOffset == offset else { return false }
-      model.moveCursor(by: offset)
-      return true
-    }
-  }
-
-  private func stopCursorRepeat() {
-    cursorRepeatTask?.cancel()
-    cursorRepeatTask = nil
-    cursorRepeatOffset = nil
-  }
-
-  // Converts analog stick movement into repeatable row-key navigation for the full keyboard.
-  private func handleFullQwertyStick(x: Float, y: Float) {
-    let deadZone: Float = 0.42
-    guard max(abs(x), abs(y)) >= deadZone else {
-      stopFullQwertyMoveRepeat()
-      return
-    }
-
-    let direction: OrbitKeysFullQwertyDirection =
-      abs(x) > abs(y)
-      ? (x < 0 ? .left : .right)
-      : (y > 0 ? .up : .down)
-    setFullQwertyMoveHeld(direction, isHeld: true)
-  }
-
-  // Starts or stops fast repeated movement across the QWERTY rows.
-  private func setFullQwertyMoveHeld(
-    _ direction: OrbitKeysFullQwertyDirection,
-    isHeld: Bool
-  ) {
-    guard isHeld else {
-      if fullQwertyHeldDirection == direction {
-        stopFullQwertyMoveRepeat()
-      }
-      return
-    }
-    guard isKeyboardVisible, fullQwertyHeldDirection != direction else {
-      return
-    }
-
-    stopFullQwertyMoveRepeat()
-    fullQwertyHeldDirection = direction
-    moveFullQwertySelection(direction, permitsToolbarEntry: true)
-    let initialDelay = fullQwertyMoveDelay(for: direction)
-    let repeatDelay = fullQwertyRepeatDelay(for: direction)
-    fullQwertyMoveRepeatTask = makeRepeatTask(
-      initialDelay: initialDelay,
-      repeatDelay: repeatDelay
-    ) { model in
-      guard model.fullQwertyHeldDirection == direction else { return false }
-      model.moveFullQwertySelection(direction, permitsToolbarEntry: false)
-      return true
-    }
-  }
-
-  private func fullQwertyMoveDelay(for direction: OrbitKeysFullQwertyDirection) -> Int {
-    switch direction {
-    case .up, .down:
-      return 440
-    case .left, .right:
-      return 220
-    }
-  }
-
-  private func fullQwertyRepeatDelay(for direction: OrbitKeysFullQwertyDirection) -> Int {
-    switch direction {
-    case .up, .down:
-      return 124
-    case .left, .right:
-      return 62
-    }
-  }
-
-  private func moveFullQwertySelection(
-    _ direction: OrbitKeysFullQwertyDirection,
-    permitsToolbarEntry: Bool
-  ) {
-    if let toolbarSelection = fullQwertyToolbarSelection {
-      let nextToolbarSelection: OrbitKeysFullQwertyToolbarControl?
-      switch direction {
-      case .left:
-        nextToolbarSelection = OrbitKeysFullQwertyToolbarControl(
-          rawValue: max(toolbarSelection.rawValue - 1, 0)
-        )
-      case .right:
-        nextToolbarSelection = OrbitKeysFullQwertyToolbarControl(
-          rawValue: min(
-            toolbarSelection.rawValue + 1,
-            OrbitKeysFullQwertyToolbarControl.allCases.count - 1
-          )
-        )
-      case .up:
-        nextToolbarSelection = toolbarSelection
-      case .down:
-        nextToolbarSelection = nil
-      }
-
-      if direction == .down {
-        // The selected key remains unchanged while Send/Settings/Close owns
-        // focus, so leaving the toolbar can restore that exact key.
-        selectFullQwertyKey(fullQwertySelection)
-      } else if let nextToolbarSelection,
-                nextToolbarSelection != toolbarSelection {
-        fullQwertyToolbarSelection = nextToolbarSelection
-        selectionSequence += 1
-        haptics.play(.selection)
-        MenuAudioPackManager.shared.playEvent(.navigation)
-      }
-      return
-    }
-
-    if direction == .up,
-       fullQwertySelection.row == 0,
-       permitsToolbarEntry {
-      fullQwertyToolbarSelection = .send
-      selectionSequence += 1
-      haptics.play(.selection)
-      MenuAudioPackManager.shared.playEvent(.navigation)
-      return
-    }
-
-    let nextPosition = OrbitKeysFullQwertyLayout.movedPosition(
-      from: fullQwertySelection,
-      direction: direction,
-      mode: mode,
-      loopsHorizontally: loopsFullQwertyRows
-    )
-    selectFullQwertyKey(nextPosition)
-  }
-
-  private func stopFullQwertyMoveRepeat() {
-    fullQwertyMoveRepeatTask?.cancel()
-    fullQwertyMoveRepeatTask = nil
-    fullQwertyHeldDirection = nil
-  }
-
-  // Maps the PlayStation face buttons to common full-keyboard actions.
-  private func setFullQwertyFaceHeld(_ face: OrbitKeysFaceButton, isHeld: Bool) {
-    guard isHeld else {
-      if face == .cross {
-        stopFullQwertyKeyRepeat()
-      }
-      if face == .square {
-        setBackspaceHeld(false)
-      }
-      if pressedFace == face {
-        pressedFaceReleaseTask?.cancel()
-        pressedFaceReleaseTask = nil
-        pressedFace = nil
-      }
-      return
-    }
-
-    pressedFace = face
-    switch face {
-    case .cross:
-      guard !isFullQwertySelectHeld else { return }
-      isFullQwertySelectHeld = true
-      activateFullQwertySelection()
-      startFullQwertyKeyRepeatIfNeeded()
-    case .square:
-      setBackspaceHeld(true)
-    case .circle:
-      insertSpace()
-    case .triangle:
-      insertSpace()
-      fullQwertyFeedbackSequence += 1
-    }
-  }
-
-  private func startFullQwertyKeyRepeatIfNeeded() {
-    guard fullQwertyToolbarSelection == nil,
-      let key = OrbitKeysFullQwertyLayout.key(at: fullQwertySelection, mode: mode),
-      key.repeatsWhileHeld,
-      fullQwertyKeyRepeatTask == nil
-    else {
-      return
-    }
-
-    fullQwertyKeyRepeatTask = makeRepeatTask(
-      initialDelay: 420,
-      repeatDelay: 82
-    ) { model in
-      guard model.isFullQwertySelectHeld,
-        let key = OrbitKeysFullQwertyLayout.key(at: model.fullQwertySelection, mode: model.mode),
-        key.repeatsWhileHeld
-      else {
-        return false
-      }
-
-      model.performFullQwertyKey(key)
-      return true
-    }
-  }
-
-  private func stopFullQwertyKeyRepeat() {
-    fullQwertyKeyRepeatTask?.cancel()
-    fullQwertyKeyRepeatTask = nil
-    isFullQwertySelectHeld = false
-  }
-
-  private func stopFullQwertyTouchBackspaceRepeat() {
-    fullQwertyTouchBackspaceRepeatTask?.cancel()
-    fullQwertyTouchBackspaceRepeatTask = nil
-  }
-
-  private func stopFullQwertyRepeats() {
-    stopFullQwertyMoveRepeat()
-    stopFullQwertyKeyRepeat()
-    stopFullQwertyTouchBackspaceRepeat()
-  }
-
-  private func setL3Pressed(_ isPressed: Bool) {
-    guard isL3Pressed != isPressed else { return }
-    isL3Pressed = isPressed
-    if isPressed {
-      if usesFullQwerty, isKeyboardVisible {
-        setFullQwertyEnabled(false)
-      } else {
-        toggleKeyboardArrangement()
-      }
-    }
-  }
-
-  private func setR3Pressed(_ isPressed: Bool) {
-    guard isR3Pressed != isPressed else { return }
-    isR3Pressed = isPressed
-    if isPressed {
-      toggleFaceIcons()
-    }
-  }
-
-  private func setL2Held(_ isHeld: Bool) {
-    guard isL2Held != isHeld else { return }
-    isL2Held = isHeld
-    modeDidChange()
-    MenuAudioPackManager.shared.playEvent(.toggle(isOn: isHeld))
-  }
-
-  private func setR2Held(_ isHeld: Bool) {
-    guard isR2Held != isHeld else { return }
-    isR2Held = isHeld
-    modeDidChange()
-    MenuAudioPackManager.shared.playEvent(.toggle(isOn: isHeld))
   }
 }

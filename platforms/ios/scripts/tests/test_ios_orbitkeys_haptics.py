@@ -5,7 +5,11 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-MODEL = swift("OrbitKeysModel.swift")
+MODEL = ("OrbitKeysModel.swift", "OrbitKeysModel+Input.swift", "OrbitKeysKeyboardTypes.swift")
+
+
+def model_text():
+    return without_comments("\n".join(read(swift(name)) for name in MODEL))
 
 
 class KeyboardHapticsGoThroughTheRouter(unittest.TestCase):
@@ -13,13 +17,13 @@ class KeyboardHapticsGoThroughTheRouter(unittest.TestCase):
     the phone and the pad with Haptic Feedback off or UI Rumble at 0%."""
 
     def test_no_generators_or_engines_of_its_own(self):
-        model = without_comments(read(MODEL))
+        model = model_text()
         for own in ("FeedbackGenerator(", "CHHapticEngine", "createEngine("):
             with self.subTest(own=own):
                 self.assertNotIn(own, model, "the keyboard plays haptics outside the settings again")
 
     def test_feedback_goes_through_play_touch_haptics(self):
-        haptics = block(without_comments(read(MODEL)), "struct OrbitKeysHaptics")
+        haptics = block(model_text(), "struct OrbitKeysHaptics")
         self.assertIn("router?.playTouchHaptics(", haptics)
 
 
