@@ -342,7 +342,7 @@ final class GameLibraryModel {
                 if lhs.isFavorite != rhs.isFavorite {
                     return lhs.isFavorite
                 }
-                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
             }
         }
         GameLibrarySnapshot.shared.update(games)
