@@ -33,6 +33,7 @@ constexpr const char* kMaliR44p1GlVersion = "OpenGL ES 3.2 v1.r44p1-01eac0.030c4
 // VkPhysicalDeviceDriverProperties reports Arm's revision in the packed Vulkan encoding, so an
 // r44p1 blob arrives as major 44, minor 1, patch 0. DRIVER_ID_ARM_PROPRIETARY is 9.
 constexpr u32 kArmDriverId = 9;
+constexpr u32 kPanVKDriverId = 20;
 constexpr u32 kMaliVendorId = 0x13B5u;
 constexpr u32 PackVulkanVersion(u32 major, u32 minor, u32 patch)
 {
@@ -1721,4 +1722,45 @@ TEST(GSGpuDriverProfile, MaliSX2OnAnUnmeasuredMediaTekIsExemptFromTheMediaTekRow
 		"Mali-G57", PackVulkanVersion(44, 1, 0), kOtherMediaTekHints, kMaliSX2DriverInfo, true);
 	EXPECT_FALSE(DeniesRoaaDestinationRead(g57));
 	EXPECT_EQ(g57.driver.matched_rule_count, 2u);
+}
+
+// panvk only advertises ROAA where it implements it, so that is the gate. no driverInfo check,
+// the bad destination read is a blob bug
+static GpuProfileSelection ResolvePanVK(const char* device_name, std::string_view platform_hints, bool roaa_color_access)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::Vulkan;
+	context.vendor_id = kMaliVendorId;
+	context.driver_id = kPanVKDriverId;
+	context.driver_version = PackVulkanVersion(26, 0, 0);
+	context.driver_name = "panvk";
+	context.driver_info = "Mesa 26.0.0";
+	context.platform_hints = platform_hints;
+	context.roaa_color_access = roaa_color_access;
+	return GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+}
+
+TEST(GSGpuDriverProfile, PanVKWithRoaaIsExemptFromTheDestinationReadRows)
+{
+	const GpuProfileSelection g57 = ResolvePanVK("Mali-G57 MC2", std::string_view(), true);
+	EXPECT_FALSE(DeniesRoaaDestinationRead(g57));
+	EXPECT_EQ(g57.driver.exempted_rules, u64{1} << RowOf("vk-arm-g57-roaa-destination-read"));
+	EXPECT_NE(GpuProfileDetector::DescribeMatchedRules(g57.driver)
+				  .find("vk-arm-g57-roaa-destination-read (exempt: panvk-roaa)"),
+		std::string::npos);
+
+	const GpuProfileSelection mediatek = ResolvePanVK("Mali-G615 MC6", kOtherMediaTekHints, true);
+	EXPECT_FALSE(DeniesRoaaDestinationRead(mediatek));
+	EXPECT_EQ(mediatek.driver.exempted_rules, u64{1} << RowOf("vk-mediatek-mali-roaa-destination-read"));
+}
+
+TEST(GSGpuDriverProfile, PanVKWithoutRoaaKeepsTheDestinationReadRows)
+{
+	const GpuProfileSelection g57 = ResolvePanVK("Mali-G57 MC2", std::string_view(), false);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(g57));
+	EXPECT_EQ(g57.driver.exempted_rules, 0u);
+
+	const GpuProfileSelection mediatek = ResolvePanVK("Mali-G615 MC6", kOtherMediaTekHints, false);
+	EXPECT_TRUE(DeniesRoaaDestinationRead(mediatek));
+	EXPECT_EQ(mediatek.driver.exempted_rules, 0u);
 }

@@ -463,10 +463,14 @@ static bool RuleMatches(const DriverRule& rule, const GpuProfileSelection& selec
 // the row is recorded as matched either way.
 static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext& context)
 {
-	if (rule.exempt_malisx2 == Malisx2Exemption::None ||
-		!GpuProfileDetector::IsMaliSX2Driver(context.driver_info))
-	{
+	if (rule.exempt_malisx2 == Malisx2Exemption::None)
 		return false;
+	// malisx2 first: matched by driverInfo, not driverID
+	if (!GpuProfileDetector::IsMaliSX2Driver(context.driver_info))
+	{
+		// PanVK: exempt only when it advertises ROAA
+		return context.driver_id == DRIVER_ID_MESA_PANVK &&
+			rule.exempt_malisx2 == Malisx2Exemption::WithRoaaColorAccess && context.roaa_color_access;
 	}
 	return rule.exempt_malisx2 != Malisx2Exemption::WithRoaaColorAccess || context.roaa_color_access;
 }

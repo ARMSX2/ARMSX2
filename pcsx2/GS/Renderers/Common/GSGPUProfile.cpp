@@ -426,7 +426,8 @@ std::string GpuProfileDetector::DescribeMatchedRules(const MobileDriverProfile& 
 		if (!(profile.matched_rules & bit))
 			continue;
 		if (profile.exempted_rules & bit)
-			AppendName(list, std::string(DriverRuleId(row)) + " (exempt: malisx2)");
+			AppendName(list, std::string(DriverRuleId(row)) +
+				(profile.driver == MobileGpuDriver::MesaPanVK ? " (exempt: panvk-roaa)" : " (exempt: malisx2)"));
 		else
 			AppendName(list, DriverRuleId(row));
 	}
