@@ -64,4 +64,13 @@ namespace GSDriverReport
 	/// The "kernel" object, chosen by which device node exists: KGSL on Adreno, kbase on Mali, and
 	/// the DRM render nodes' kernel drivers wherever there are any.
 	void WriteKernel(JsonWriter& w, StepLog& steps, KernelFacts* facts);
+
+	/// A compact snapshot of the live clock state: per-core current/rated/policy kHz and governor,
+	/// the GPU's current and maximum clock with its governor, and the thermal zones. This is the
+	/// part of the report that says whether a slow device was actually clocked down, so the app
+	/// samples it when a problem report opens and again with the game running.
+	///
+	/// File reads only and safe from any thread; needs no VM. Empty sections mean the kernel nodes
+	/// are not readable on this device, which is itself worth recording.
+	std::string TakePowerSnapshotJson();
 } // namespace GSDriverReport

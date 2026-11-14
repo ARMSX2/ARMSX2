@@ -36,6 +36,7 @@ object ReportOrigins {
             driverId = driverId,
             driverName = driverName(context, driverId),
             perfAtOpen = runCatching { NativeApp.getPerfSnapshot() }.getOrNull(),
+            powerAtOpen = runCatching { NativeApp.getPowerSnapshot() }.getOrNull(),
         )
     }
 

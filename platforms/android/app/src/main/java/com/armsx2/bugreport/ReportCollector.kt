@@ -166,6 +166,14 @@ class ReportCollector(
     /** The GS driver report as it will be sent, once either source of it has produced one. */
     private var systemReport: String? = null
 
+    /**
+     * The live clock state read with the game running again for the dump, from `getPowerSnapshot`.
+     * Paired with `origin.powerAtOpen` in `report.json`, it shows whether the clocks stayed clamped
+     * under load and not merely while the game was paused.
+     */
+    @Volatile
+    private var powerAfterResume: String? = null
+
     /** Records a problem with building the report for `report.json`; it is never shown as it is. */
     fun noteError(text: String) {
         errors += text
@@ -212,6 +220,7 @@ class ReportCollector(
      */
     fun capture(control: GameControl, savestate: Boolean, gsDump: Boolean): String? {
         captureRan = true
+        powerAfterResume = null
         val timed = TimedControl(control, runClock)
         var perf: String? = null
         val outcome = CaptureSequence.run(
@@ -224,6 +233,7 @@ class ReportCollector(
                 override fun dump() {
                     captureGsDump(timed)
                     perf = runCatching { NativeApp.getPerfSnapshot() }.getOrNull()
+                    powerAfterResume = runCatching { NativeApp.getPowerSnapshot() }.getOrNull()
                 }
             },
         )
@@ -520,8 +530,19 @@ class ReportCollector(
         }
     }
 
+    /**
+     * App-level power choices that the emulator settings do not carry. Sustained Performance
+     * deliberately caps the peak clock and ADPF asks for the opposite; neither is visible in
+     * `global`, so without this a slow report cannot say which one the user chose.
+     */
+    private fun appPowerJson(): JSONObject =
+        JSONObject()
+            .put("sustained_performance", MainActivityRuntime.prefs.getBoolean("ui.sustainedPerf", false))
+            .put("adpf", MainActivityRuntime.prefs.getBoolean("ui.adpf", false))
+
     private fun writeSettings() {
         val doc = JSONObject()
+        doc.put("app", appPowerJson())
         doc.put("global", scrubber.settings(ConfigStore.loadGlobal().toJson()))
         val key = origin.game?.settingsKey
         if (key != null) {
@@ -573,6 +594,37 @@ class ReportCollector(
         .put("hardware", Build.HARDWARE).put("soc", DeviceTier.socModel()).put("fingerprint", Build.FINGERPRINT)
         .put("sdk", Build.VERSION.SDK_INT).put("release", Build.VERSION.RELEASE)
         .put("abis", JSONArray(Build.SUPPORTED_ABIS.toList()))
+        .put("battery", batteryJson())
+
+    /**
+     * Battery and power state at the moment the report is built. Power saving is the one OS-level
+     * clock clamp that has a public API, and the battery temperature separates "slow because hot"
+     * from "slow because the user chose performance mode". Both are reads of a sticky broadcast and
+     * a public flag, so neither needs a permission.
+     */
+    private fun batteryJson(): JSONObject = JSONObject().also { json ->
+        runCatching {
+            val intent = context.registerReceiver(
+                null,
+                android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED),
+            )
+            if (intent != null) {
+                val level = intent.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = intent.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, -1)
+                if (level >= 0 && scale > 0) json.put("level", level * 100 / scale)
+                val tenths = intent.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, Int.MIN_VALUE)
+                if (tenths != Int.MIN_VALUE) json.put("c", tenths / 10.0)
+                val status = intent.getIntExtra(android.os.BatteryManager.EXTRA_STATUS, -1)
+                json.put(
+                    "charging",
+                    status == android.os.BatteryManager.BATTERY_STATUS_CHARGING ||
+                        status == android.os.BatteryManager.BATTERY_STATUS_FULL,
+                )
+            }
+            val power = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            if (power != null) json.put("power_save", power.isPowerSaveMode)
+        }
+    }
 
     // ---- report.json ----------------------------------------------------------------------
 
@@ -596,6 +648,11 @@ class ReportCollector(
         report.put("driver", driverJson())
         origin.perfAtOpen?.let { report.put("perf", parse(it)) }
         perfAfterResume?.let { report.put("perf_after_resume", parse(it)) }
+        // Clocks and thermals at the two points the perf snapshots were taken. The policy fields
+        // answer "was it clamped?" without needing load; the pair answers "did it stay clamped?".
+        report.put("app_power", appPowerJson())
+        origin.powerAtOpen?.let { report.put("power", parse(it)) }
+        powerAfterResume?.let { report.put("power_after_resume", parse(it)) }
         captureJson()?.let { report.put("capture", it) }
         origin.crashMarker?.let {
             report.put(

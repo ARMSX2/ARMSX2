@@ -4,8 +4,11 @@
 #include "GS/DriverReport/GSDriverReportSystem.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -96,6 +99,51 @@ namespace GSDriverReport
 		}
 		std::sort(names.begin(), names.end());
 		return names;
+	}
+
+	/// Reads a decimal sysfs scalar. /sys files have no usable size, so this goes through
+	/// ReadFileBytes like everything else.
+	static bool ReadSysfsLong(const std::string& path, long long* out)
+	{
+		std::string v;
+		if (!ReadFileBytes(path.c_str(), 64, &v, nullptr))
+			return false;
+		*out = std::strtoll(v.c_str(), nullptr, 10);
+		return true;
+	}
+
+	/// Reads a sysfs string, trimmed. False when the node cannot be opened or read.
+	static bool ReadSysfsString(const std::string& path, std::string* out, size_t max = 4096)
+	{
+		std::string v;
+		if (!ReadFileBytes(path.c_str(), max, &v, nullptr))
+			return false;
+		*out = Trim(std::move(v));
+		return true;
+	}
+
+	/// /sys/class/thermal units are vendor-specific: millidegrees, tenths, or whole degrees.
+	/// Same magnitude rule as Thermals.kt, so the report and the on-screen tiles agree.
+	static double ThermalToCelsius(long long raw)
+	{
+		if (raw > 10000)
+			return static_cast<double>(raw) / 1000.0;
+		if (raw > 1000)
+			return static_cast<double>(raw) / 100.0;
+		if (raw > 200)
+			return static_cast<double>(raw) / 10.0;
+		return static_cast<double>(raw);
+	}
+
+	/// Whether a /sys/class/devfreq entry is the GPU's rather than a CPU/DDR bus. Adreno is
+	/// "kgsl-3d0"; Arm integrations name theirs after the GPU or the "mali" driver.
+	static bool IsGpuDevfreqName(const std::string& name)
+	{
+		std::string lower = name;
+		std::transform(lower.begin(), lower.end(), lower.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return lower.find("gpu") != std::string::npos || lower.find("mali") != std::string::npos ||
+		       lower.find("kgsl") != std::string::npos || lower.find("3d0") != std::string::npos;
 	}
 #endif
 
@@ -258,9 +306,70 @@ namespace GSDriverReport
 				std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu);
 				if (ReadFileBytes(path, 64, &v, nullptr))
 					w.KeyInt("max_khz", std::atoll(v.c_str()));
+				// `max_khz` above is the rated table maximum and does not move when the user, the
+				// power HAL or thermal throttling clamps the CPU. These are the live policy and the
+				// clock actually in use, which is what a "this game is slow" report has to show.
+				std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", cpu);
+				if (ReadFileBytes(path, 64, &v, nullptr))
+					w.KeyInt("cur_khz", std::atoll(v.c_str()));
+				std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_min_freq", cpu);
+				if (ReadFileBytes(path, 64, &v, nullptr))
+					w.KeyInt("policy_min_khz", std::atoll(v.c_str()));
+				std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", cpu);
+				if (ReadFileBytes(path, 64, &v, nullptr))
+					w.KeyInt("policy_max_khz", std::atoll(v.c_str()));
+				std::snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_governor", cpu);
+				if (ReadFileBytes(path, 64, &v, nullptr))
+					w.KeyString("governor", Trim(v));
 				w.EndObject();
 			}
 			w.EndArray();
+			return true;
+		});
+
+		steps.Run("device.thermal", [&](std::string&) {
+			w.Key("thermal");
+			w.BeginArray();
+			for (const std::string& name : ListDir("/sys/class/thermal"))
+			{
+				if (name.compare(0, 12, "thermal_zone") != 0)
+					continue;
+				const std::string base = std::string("/sys/class/thermal/") + name;
+				std::string type;
+				long long raw = 0;
+				if (!ReadSysfsString(base + "/type", &type, 128) || !ReadSysfsLong(base + "/temp", &raw))
+					continue;
+				w.BeginObject();
+				w.KeyString("zone", name);
+				w.KeyString("type", type);
+				w.KeyInt("raw", raw);
+				w.KeyDouble("c", ThermalToCelsius(raw));
+				w.EndObject();
+			}
+			w.EndArray();
+			return true;
+		});
+
+		// The battery and charger nodes. The Kotlin side also reads the supported API; this
+		// section is the kernel's own view and is what carries the battery temperature on devices
+		// where the battery service does not.
+		steps.Run("device.power_supply", [&](std::string&) {
+			w.Key("power_supply");
+			w.BeginObject();
+			for (const std::string& name : ListDir("/sys/class/power_supply"))
+			{
+				const std::string base = std::string("/sys/class/power_supply/") + name;
+				std::string v;
+				w.Key(name);
+				w.BeginObject();
+				for (const char* leaf : {"type", "status", "capacity", "temp", "voltage_now", "current_now", "online"})
+				{
+					if (ReadSysfsString(base + "/" + leaf, &v, 128))
+						w.KeyString(leaf, v);
+				}
+				w.EndObject();
+			}
+			w.EndObject();
 			return true;
 		});
 #else
@@ -757,7 +866,9 @@ namespace GSDriverReport
 		steps.Run("kernel.kgsl.sysfs", [&](std::string&) {
 			w.Key("sysfs");
 			w.BeginObject();
-			for (const char* f : {"gpu_model", "max_gpuclk", "gpuclk", "devfreq/governor", "gpu_available_frequencies"})
+			for (const char* f : {"gpu_model", "max_gpuclk", "gpuclk", "devfreq/governor", "devfreq/cur_freq",
+					 "devfreq/min_freq", "devfreq/max_freq", "gpu_available_frequencies", "freq_table_mhz",
+					 "gpu_clock_stats", "cur_pwrlevel", "min_pwrlevel", "max_pwrlevel", "gpu_busy_percentage"})
 			{
 				std::string path = std::string("/sys/class/kgsl/kgsl-3d0/") + f;
 				std::string v, e;
@@ -855,6 +966,30 @@ namespace GSDriverReport
 			w.Key("mali");
 			WriteMali(w, steps);
 		}
+		// The generic GPU devfreq view. On Mali this is the only live clock there is (kbase's
+		// properties stop at the maximum), and it also covers Adreno kernels whose KGSL clock
+		// nodes are closed to the app.
+		steps.Run("kernel.devfreq_gpu", [&](std::string&) {
+			w.Key("devfreq_gpu");
+			w.BeginArray();
+			for (const std::string& name : ListDir("/sys/class/devfreq"))
+			{
+				if (!IsGpuDevfreqName(name))
+					continue;
+				const std::string base = std::string("/sys/class/devfreq/") + name;
+				std::string v;
+				w.BeginObject();
+				w.KeyString("name", name);
+				for (const char* leaf : {"governor", "cur_freq", "min_freq", "max_freq", "available_frequencies", "trans_stat"})
+				{
+					if (ReadSysfsString(base + "/" + leaf, &v, leaf[0] == 't' ? 8192 : 512))
+						w.KeyString(leaf, v);
+				}
+				w.EndObject();
+			}
+			w.EndArray();
+			return true;
+		});
 		w.Key("drm");
 		WriteDrm(w, steps);
 #else
@@ -862,5 +997,126 @@ namespace GSDriverReport
 		(void)facts;
 #endif
 		w.EndObject();
+	}
+
+#ifdef DRIVER_REPORT_LINUX
+	/// Writes one sysfs value as a JSON string, if it can be read.
+	static bool AppendSysfsString(JsonWriter& w, const char* key, const std::string& path, size_t max = 4096)
+	{
+		std::string v;
+		if (!ReadSysfsString(path, &v, max))
+			return false;
+		w.KeyString(key, v);
+		return true;
+	}
+
+	static void AppendGpuSnapshot(JsonWriter& w)
+	{
+		const std::string kgsl = "/sys/class/kgsl/kgsl-3d0/";
+		std::string cur;
+		// The current clock is the probe: on a kernel where KGSL's nodes are closed to the app,
+		// everything else under this prefix fails the same way, and devfreq is the fallback.
+		if (ReadSysfsString(kgsl + "gpuclk", &cur, 64))
+		{
+			w.KeyString("source", "kgsl");
+			w.KeyString("cur_khz", cur);
+			AppendSysfsString(w, "max_khz", kgsl + "max_gpuclk", 64);
+			AppendSysfsString(w, "governor", kgsl + "devfreq/governor", 64);
+			AppendSysfsString(w, "devfreq_cur_khz", kgsl + "devfreq/cur_freq", 64);
+			AppendSysfsString(w, "devfreq_max_khz", kgsl + "devfreq/max_freq", 64);
+			AppendSysfsString(w, "cur_pwrlevel", kgsl + "cur_pwrlevel", 64);
+			AppendSysfsString(w, "min_pwrlevel", kgsl + "min_pwrlevel", 64);
+			AppendSysfsString(w, "max_pwrlevel", kgsl + "max_pwrlevel", 64);
+			return;
+		}
+		for (const std::string& name : ListDir("/sys/class/devfreq"))
+		{
+			if (!IsGpuDevfreqName(name))
+				continue;
+			const std::string base = "/sys/class/devfreq/" + name + "/";
+			std::string value;
+			if (!ReadSysfsString(base + "cur_freq", &value, 64))
+				continue;
+			w.KeyString("source", "devfreq:" + name);
+			w.KeyString("cur_khz", value);
+			AppendSysfsString(w, "max_khz", base + "max_freq", 64);
+			AppendSysfsString(w, "min_khz", base + "min_freq", 64);
+			AppendSysfsString(w, "governor", base + "governor", 64);
+			return;
+		}
+	}
+#endif
+
+	std::string TakePowerSnapshotJson()
+	{
+		JsonWriter w;
+		w.BeginObject();
+#ifdef DRIVER_REPORT_LINUX
+		w.KeyBool("supported", true);
+		w.Key("sampled_at_ms");
+		w.Int(std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch())
+				.count());
+
+		w.Key("cpu");
+		w.BeginArray();
+		for (int cpu = 0; cpu < 64; cpu++)
+		{
+			char base[160];
+			std::snprintf(base, sizeof(base), "/sys/devices/system/cpu/cpu%d", cpu);
+			if (!PathExists(base))
+				break;
+			const std::string prefix = std::string(base) + "/cpufreq/";
+			long long cur = 0, rated = 0, policy_min = 0, policy_max = 0;
+			std::string governor;
+			const bool has_cur = ReadSysfsLong(prefix + "scaling_cur_freq", &cur);
+			const bool has_rated = ReadSysfsLong(prefix + "cpuinfo_max_freq", &rated);
+			const bool has_min = ReadSysfsLong(prefix + "scaling_min_freq", &policy_min);
+			const bool has_max = ReadSysfsLong(prefix + "scaling_max_freq", &policy_max);
+			const bool has_gov = ReadSysfsString(prefix + "scaling_governor", &governor, 64);
+			w.BeginObject();
+			w.KeyInt("index", cpu);
+			if (has_cur)
+				w.KeyInt("cur_khz", cur);
+			if (has_rated)
+				w.KeyInt("max_khz", rated);
+			if (has_min)
+				w.KeyInt("policy_min_khz", policy_min);
+			if (has_max)
+				w.KeyInt("policy_max_khz", policy_max);
+			if (has_gov)
+				w.KeyString("governor", governor);
+			w.EndObject();
+		}
+		w.EndArray();
+
+		w.Key("gpu");
+		w.BeginObject();
+		AppendGpuSnapshot(w);
+		w.EndObject();
+
+		w.Key("thermal");
+		w.BeginArray();
+		for (const std::string& name : ListDir("/sys/class/thermal"))
+		{
+			if (name.compare(0, 12, "thermal_zone") != 0)
+				continue;
+			const std::string base = std::string("/sys/class/thermal/") + name;
+			std::string type;
+			long long raw = 0;
+			if (!ReadSysfsString(base + "/type", &type, 128) || !ReadSysfsLong(base + "/temp", &raw))
+				continue;
+			w.BeginObject();
+			w.KeyString("type", type);
+			w.KeyInt("raw", raw);
+			w.KeyDouble("c", ThermalToCelsius(raw));
+			w.EndObject();
+		}
+		w.EndArray();
+#else
+		w.KeyBool("supported", false);
+#endif
+		w.EndObject();
+		return w.TakeString();
 	}
 } // namespace GSDriverReport

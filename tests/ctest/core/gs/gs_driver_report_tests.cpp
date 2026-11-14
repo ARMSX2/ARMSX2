@@ -13,6 +13,7 @@
 #include "GS/DriverReport/GSDriverReportClassify.h"
 #include "GS/DriverReport/GSDriverReportJson.h"
 #include "GS/DriverReport/GSDriverReportProfile.h"
+#include "GS/DriverReport/GSDriverReportSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -201,6 +202,26 @@ TEST(GSDriverReport, JsonEscapeReplacesInvalidUtf8)
 	EXPECT_EQ(EscapeJsonString("ok \xC3\xA9"), "ok \xC3\xA9");
 	EXPECT_EQ(EscapeJsonString("bad \xFF!"), "bad \xEF\xBF\xBD!");
 	EXPECT_EQ(EscapeJsonString("cut \xE2\x82"), "cut \xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+// The Android problem report samples this with the game idle and again with it running, so a
+// malformed document would lose the one field that can show a slow device was clocked down. On a
+// host that is not Linux it must still be valid JSON and say it is unsupported, not be absent.
+TEST(GSDriverReport, PowerSnapshotIsValidJsonAndSaysWhetherItCouldReadTheKernel)
+{
+	const std::string json = TakePowerSnapshotJson();
+	std::vector<std::pair<std::string, std::string>> scalars;
+	ASSERT_TRUE(ParseJsonObjectScalars(json, &scalars)) << json;
+	ASSERT_FALSE(scalars.empty()) << json;
+	EXPECT_EQ(scalars[0].first, "supported");
+#if defined(__linux__) || defined(__ANDROID__)
+	EXPECT_EQ(scalars[0].second, "true");
+	EXPECT_NE(json.find("\"cpu\":"), std::string::npos) << json;
+	EXPECT_NE(json.find("\"gpu\":"), std::string::npos) << json;
+	EXPECT_NE(json.find("\"thermal\":"), std::string::npos) << json;
+#else
+	EXPECT_EQ(scalars[0].second, "false");
+#endif
 }
 
 TEST(GSDriverReport, JsonReaderRejectsWhatIsNotOneObject)

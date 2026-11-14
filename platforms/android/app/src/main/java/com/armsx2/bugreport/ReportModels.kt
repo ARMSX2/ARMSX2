@@ -144,6 +144,12 @@ data class ReportOrigin(
     val crashMarker: CrashMarker.Marker? = null,
     /** The stats overlay's numbers when the flow opened, from `getPerfSnapshot`. */
     val perfAtOpen: String? = null,
+    /**
+     * The live clock and thermal state when the flow opened, from `getPowerSnapshot`. The policy
+     * fields (governor, policy max) are load-independent, so this alone can show that the device
+     * was clamped; `report.json` carries a second sample as `power_after_resume` for the load.
+     */
+    val powerAtOpen: String? = null,
 )
 
 /** `report.json`, and the summary the create call carries, built from plain values. */

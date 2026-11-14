@@ -39,6 +39,7 @@
 #include "GS/DriverReport/GSDriverReport.h" // standalone driver report (problem report)
 #include "GS/DriverReport/GSDriverReportActive.h" // which Vulkan driver is open (malisx2 notice)
 #include "GS/DriverReport/GSDriverReportJson.h" // JsonWriter, for the status getters below
+#include "GS/DriverReport/GSDriverReportSystem.h" // TakePowerSnapshotJson (problem report clocks)
 #include "GS/DriverReport/GSDriverReportClassify.h" // IsMaliSX2Pack (malisx2 notice)
 #include "GSDumpReplayer.h"
 #include "ImGui/ImGuiManager.h"
@@ -1180,6 +1181,16 @@ Java_kr_co_iefriends_pcsx2_NativeApp_getCustomDriverStatus(JNIEnv *env, jclass) 
     w.KeyString("failure", status.failure);
     w.EndObject();
     return env->NewStringUTF(w.TakeString().c_str());
+}
+
+// The live clock state and thermal zones, as JSON, for a "running slow" report. Unlike the perf
+// snapshot this needs no VM: the question is whether the device is clamped (governor, policy max,
+// thermal), and the policy fields do not depend on load. Read on the caller's thread; file reads
+// only.
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_getPowerSnapshot(JNIEnv *env, jclass) {
+    return env->NewStringUTF(GSDriverReport::TakePowerSnapshotJson().c_str());
 }
 
 // The performance numbers the in-game stats overlay shows, as JSON, for a "running slow" report.

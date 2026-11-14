@@ -160,6 +160,13 @@ public class NativeApp {
 	/** fps, speed, thread usage and frame times as JSON. {"valid":false} with no VM. */
 	public static native String getPerfSnapshot();
 
+	/**
+	 * Live clock state as JSON: per-core current/rated/policy kHz and governor, GPU current and
+	 * maximum clock with its governor, and the thermal zones. Works with no game running, and
+	 * unlike the perf snapshot the policy fields do not depend on load. File reads only.
+	 */
+	public static native String getPowerSnapshot();
+
 	// ADPF (PerformanceHintManager): hint the OS to clock the EE/GS threads' cores up toward
 	// the frame deadline instead of the DVFS governor under-clocking emulation. Applies live;
 	// no-op below API 33. Persisted app-side (pref "ui.adpf") and re-applied at startup.
