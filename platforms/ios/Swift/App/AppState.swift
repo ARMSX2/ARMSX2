@@ -24,7 +24,6 @@ final class AppState {
             }
         }
     }
-    var selectedTab: Int = 0
     var pendingLibraryExport: String?
     var externalDisplayConnected = false
     var sizeTransitions = 0
