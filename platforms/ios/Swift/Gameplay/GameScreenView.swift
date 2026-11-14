@@ -37,7 +37,6 @@ struct GameScreenView: View {
     @State private var skinLibrary = VPadSkinLibraryStore.shared
     @State private var touchActionSession = VirtualPadTouchActionSession()
     @Environment(\.menuControllerInputRouter) private var controllerInput
-    @State private var userVirtualPadVisible = true
     @State private var externalControllerConnected = false
     @State private var fullScreen = false
     @State private var menuButtonHidden = false
@@ -195,7 +194,7 @@ struct GameScreenView: View {
             GameplayOverlayHost(
                 overlay: overlay,
                 feedback: feedback,
-                userVirtualPadVisible: $userVirtualPadVisible,
+                userVirtualPadVisible: $session.userVirtualPadVisible,
                 fullScreen: $fullScreen,
                 menuButtonHidden: $menuButtonHidden,
                 vmMenuAvailable: vmMenuAvailable,
@@ -632,7 +631,7 @@ struct GameScreenView: View {
         if session.isEmulationOnlyMode {
             return session.emulationOnlyPresentation.showsVirtualControls
         }
-        return userVirtualPadVisible &&
+        return session.userVirtualPadVisible &&
             (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected) &&
             overlay.overlayRoute != .pausedPresenting(.padLayout)
     }
@@ -691,6 +690,6 @@ struct GameScreenView: View {
     }
 
     private var virtualPadHiddenByController: Bool {
-        userVirtualPadVisible && settings.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
+        session.userVirtualPadVisible && settings.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
     }
 }

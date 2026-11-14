@@ -85,7 +85,13 @@ final class GameSession {
     /// Changes only when a new VM boot begins. The root gameplay overlay uses
     /// this identity to show startup guidance once per emulation session,
     /// rather than every time GameScreenView remounts after visiting the menu.
-    private(set) var emulationSessionID: UUID?
+    private(set) var emulationSessionID: UUID? {
+        didSet {
+            userVirtualPadVisible = true
+        }
+    }
+    /// The pad toggle outlives GameScreenView, which the menu unmounts.
+    var userVirtualPadVisible = true
     var isEmulationOnlyMode: Bool = false
     var emulationOnlyPresentation = EmulationOnlyPresentation.minimal
     private(set) var emulationOnlyStartupReady: Bool = false
