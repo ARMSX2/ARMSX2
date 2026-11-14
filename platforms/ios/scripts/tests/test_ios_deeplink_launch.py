@@ -12,7 +12,7 @@ from ios_source import IOS_ROOT, ROOT, swift
 
 HANDLER = swift("ARMSX2DeepLinkHandler.swift")
 GAME_LIST = swift("GameListView.swift")
-APP_STATE = swift("AppState.swift")
+SESSION = swift("GameSession.swift")
 ROOT_VIEW = swift("RootView.swift")
 INFO = IOS_ROOT / "Info.plist.in"
 
@@ -123,7 +123,7 @@ class DeepLinkLaunch(unittest.TestCase):
     def test_a_link_asks_before_replacing_a_running_game(self):
         """Booting under a live VM rewrites its settings and breaks its disc reads, so bootGame
         hands a running game to the Restart VM prompt instead of booting over it."""
-        state = APP_STATE.read_text(encoding="utf-8")
+        state = SESSION.read_text(encoding="utf-8")
         start = state.find("    func bootGame(")
         self.assertGreaterEqual(start, 0, "bootGame disappeared")
         boot = state[start:state.find("\n    }\n", start)]

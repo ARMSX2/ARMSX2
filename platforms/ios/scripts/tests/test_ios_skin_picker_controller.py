@@ -5,14 +5,14 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-GAME_SCREEN = swift("GameScreenView.swift")
+PICKER = swift("RuntimeControllerSkinPicker.swift")
 
 
 class SkinPickerController(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.source = without_comments(read(GAME_SCREEN))
+        cls.source = without_comments(read(PICKER))
 
     def test_changing_skin_leaves_the_layout_switch_alone(self):
         select = block(self.source, "private func selectRuntimeControllerSkin(offset: Int)")

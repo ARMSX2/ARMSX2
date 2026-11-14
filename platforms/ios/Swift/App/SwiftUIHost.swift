@@ -376,7 +376,7 @@ class ARMSX2HostingController<Content: View>: UIHostingController<Content> {
 
     @MainActor
     @objc public static func suppressAutomaticGameStartup() {
-        AppState.shared.suppressAutomaticGameStartup()
+        GameSession.shared.suppressAutomaticGameStartup()
     }
 
     @MainActor
@@ -447,7 +447,7 @@ func usesLargeLayout(windowSize: CGSize? = nil) -> Bool {
     }
 }
 
-extension GeometryProxy {
+@MainActor extension GeometryProxy {
     /// The fold while the hinge is half open, in this proxy's space.
     func activeFold() -> CGRect? {
 #if canImport(SwiftUI, _version: 8.0.85)

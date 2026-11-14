@@ -514,11 +514,12 @@ struct GameplayControllerShortcutHelpOverlay: View {
 
 struct RootView: View {
     @State private var appState = AppState.shared
+    @State private var session = GameSession.shared
     @State private var settings = SettingsStore.shared
     @State private var frameRates = UIFrameRateSettings.shared
     @State private var gameCoverThemePreview = GameCoverThemePreviewStore.shared
     @State private var fileImporter = FileImportHandler.shared
-    @State private var showBootSplash = !AppState.shared.automaticGameStartupPending
+    @State private var showBootSplash = !GameSession.shared.automaticGameStartupPending
     @State private var showNoJITFinalConfirmation = false
     @State private var rootControllerAlertSelection = 0
     @State private var menuControllerInput = MenuControllerInputRouter()
@@ -544,13 +545,13 @@ struct RootView: View {
     }
 
     private var mainAudioInterfaceActive: Bool {
-        menuPresentationActive || appState.gameplayLaunchTransition != nil
+        menuPresentationActive || session.gameplayLaunchTransition != nil
     }
 
     private var menuPresentationActive: Bool {
         // Keep library layout, covers and dynamic background
         // rendering out of the intro's first-frame presentation transaction.
-        menuScreenActive && !showBootSplash && !appState.automaticGameStartupPending
+        menuScreenActive && !showBootSplash && !session.automaticGameStartupPending
     }
 
     private var coverPreviewAccentColor: Color {
@@ -704,27 +705,27 @@ struct RootView: View {
                 .ignoresSafeArea()
                 .opacity(
                     menuPresentationActive ||
-                    appState.gameplayLaunchBackgroundVisible ? 1 : 0
+                    session.gameplayLaunchBackgroundVisible ? 1 : 0
                 )
 
             // Do not construct the library or its renderer for direct startup.
             // The same host still survives ordinary tab changes.
-            if menuPresentationActive || appState.gameplayLaunchTransition != nil {
+            if menuPresentationActive || session.gameplayLaunchTransition != nil {
                 PersistentMenuBackgroundLayer(host: backgroundHost)
                     .opacity(
                         menuPresentationActive ||
-                        appState.gameplayLaunchBackgroundVisible ? 1 : 0
+                        session.gameplayLaunchBackgroundVisible ? 1 : 0
                     )
                     .zIndex(
                         appState.currentScreen == .playing &&
-                        appState.gameplayLaunchTransition != nil ? 80 : 0
+                        session.gameplayLaunchTransition != nil ? 80 : 0
                     )
             }
 
             // Keep the menu hierarchy alive for the launch transition so the
             // library fades behind the live SwiftUI card instead of vanishing
             // on the same update that starts the VM.
-            if menuPresentationActive || appState.gameplayLaunchTransition != nil {
+            if menuPresentationActive || session.gameplayLaunchTransition != nil {
                 MenuTabView(
                     backgroundHost: backgroundHost,
                     controllerInput: menuControllerInput,
@@ -739,13 +740,13 @@ struct RootView: View {
                     .allowsHitTesting(menuScreenActive)
                     .accessibilityHidden(!menuScreenActive)
                     .zIndex(
-                        appState.gameplayLaunchTransition == nil ? 1 : 85
+                        session.gameplayLaunchTransition == nil ? 1 : 85
                     )
             }
 
             if case .playing = appState.currentScreen {
-                if appState.isEmulationOnlyMode &&
-                    !appState.emulationOnlyPresentation.showsQuickMenu {
+                if session.isEmulationOnlyMode &&
+                    !session.emulationOnlyPresentation.showsQuickMenu {
                     EmulationOnlyGameView()
                 } else {
                     GameScreenView(
@@ -756,7 +757,7 @@ struct RootView: View {
                 }
             }
 
-            if let transition = appState.gameplayLaunchTransition {
+            if let transition = session.gameplayLaunchTransition {
                 GameplayLaunchOverlay(
                     transition: transition,
                     onBeginAudioFade: { duration in
@@ -766,10 +767,10 @@ struct RootView: View {
                             )
                     },
                     onRevealGameplay: {
-                        appState.revealGameplayLaunchControls()
+                        session.revealGameplayLaunchControls()
                     },
                     onComplete: {
-                        appState.completeGameplayLaunchTransition(id: transition.id)
+                        session.completeGameplayLaunchTransition(id: transition.id)
                     }
                 )
                 .zIndex(90)
@@ -777,11 +778,11 @@ struct RootView: View {
 
             if gameplayHelpBanner.content != nil,
                appState.currentScreen == .playing,
-               appState.gameplayLaunchTransition == nil,
+               session.gameplayLaunchTransition == nil,
                !showBootSplash,
-               appState.isEmulationOnlyMode,
+               session.isEmulationOnlyMode,
                menuControllerInput.hasConnectedController,
-               !appState.emulationOnlyPresentation.showsQuickMenu {
+               !session.emulationOnlyPresentation.showsQuickMenu {
                 GameplayControllerShortcutHelpOverlay(
                     settings: settings,
                     controllerInput: menuControllerInput
@@ -798,7 +799,7 @@ struct RootView: View {
                 .zIndex(100)
             }
 
-            if appState.automaticGameStartupPending {
+            if session.automaticGameStartupPending {
                 ZStack {
                     Color.black.ignoresSafeArea()
                     ProgressView(settings.localized("Starting Last Game…"))
@@ -874,7 +875,7 @@ struct RootView: View {
                 ? settings.hideIntroStatusBar
                 : (menuScreenActive && settings.hideMenuStatusBar)
             MenuAudioPackManager.shared.setAutomaticGameStartupActive(
-                appState.automaticGameStartupPending
+                session.automaticGameStartupPending
             )
             // RootView is hosted by SDL's UIKit scene rather than a SwiftUI
             // App/Scene. The scenePhase environment can therefore still be
@@ -905,9 +906,9 @@ struct RootView: View {
             scheduleGameplayControllerHelpIfReady()
         }
         .task {
-            appState.startAutomaticGameIfNeeded()
+            session.startAutomaticGameIfNeeded()
         }
-        .onChange(of: appState.automaticGameStartupPending) { _, pending in
+        .onChange(of: session.automaticGameStartupPending) { _, pending in
             // Update the destination before releasing the startup music gate;
             // controller-owned JIT prompts are not an emulation Quick Menu.
             menuControllerInput.setMenuActive(menuScreenActive)
@@ -928,7 +929,7 @@ struct RootView: View {
         .onChange(of: mainAudioInterfaceActive) { _, active in
             MenuAudioPackManager.shared.setMainInterfaceActive(active)
         }
-        .onChange(of: appState.gameplayLaunchTransition?.id) { previous, current in
+        .onChange(of: session.gameplayLaunchTransition?.id) { previous, current in
             if previous != nil, current == nil {
                 MenuAudioPackManager.shared.setMainInterfaceActive(
                     mainAudioInterfaceActive
@@ -937,7 +938,7 @@ struct RootView: View {
                 scheduleGameplayControllerHelpIfReady()
             }
         }
-        .onChange(of: appState.emulationSessionID) { _, _ in
+        .onChange(of: session.emulationSessionID) { _, _ in
             scheduleGameplayControllerHelpIfReady()
         }
         .onReceive(
@@ -950,7 +951,7 @@ struct RootView: View {
             settings.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
                 jitAvailable: ARMSX2Bridge.isJITAvailable()
             )
-            appState.resumeAutomaticGameAfterJITIfReady()
+            session.resumeAutomaticGameAfterJITIfReady()
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -993,7 +994,7 @@ struct RootView: View {
             }
         }
         .onChange(
-            of: appState.pendingJITGameBoot != nil,
+            of: session.pendingJITGameBoot != nil,
             initial: true
         ) { _, isPresented in
             guard isPresented else { return }
@@ -1107,12 +1108,12 @@ struct RootView: View {
         if let request = ControllerPrompt.shared.request {
             return .prompt(request.id)
         }
-        if appState.pendingJITGameBoot != nil {
+        if session.pendingJITGameBoot != nil {
             return showNoJITFinalConfirmation ? .jitFinal : .jitInitial
         }
-        if appState.pendingRestartGame != nil { return .restartVM }
+        if session.pendingRestartGame != nil { return .restartVM }
         if fileImporter.showImportAlert { return .fileImport }
-        if appState.bootDisclaimerMessage != nil { return .bios }
+        if session.bootDisclaimerMessage != nil { return .bios }
         if appState.pendingLibraryExport != nil { return .libraryExport }
         return nil
     }
@@ -1139,12 +1140,12 @@ struct RootView: View {
             await Task.yield()
             guard !showBootSplash,
                   appState.currentScreen == .playing,
-                  appState.gameplayLaunchTransition == nil,
+                  session.gameplayLaunchTransition == nil,
                   menuControllerInput.hasConnectedController,
                   GCController.controllers().contains(where: {
                       $0.extendedGamepad != nil
                   }),
-                  let sessionID = appState.emulationSessionID,
+                  let sessionID = session.emulationSessionID,
                   sessionID != presentedGameplayHelpSessionID else {
                 return
             }
@@ -1172,7 +1173,7 @@ struct RootView: View {
     ) -> String {
         switch kind {
         case .fileImport: settings.localized("File Import")
-        case .bios: settings.localized(appState.bootDisclaimerTitle)
+        case .bios: settings.localized(session.bootDisclaimerTitle)
         case .restartVM: settings.localized("Restart VM?")
         case .jitInitial, .jitFinal:
             "⚠️ \(settings.localized("JIT Access Not Detected"))"
@@ -1195,10 +1196,10 @@ struct RootView: View {
             settings.localized(fileImporter.lastImportMessage ?? "")
         case .bios:
             settings.localized(
-                appState.bootDisclaimerMessage ?? "BIOS not yet imported."
+                session.bootDisclaimerMessage ?? "BIOS not yet imported."
             )
         case .restartVM:
-            "\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(((appState.pendingRestartGame ?? "") as NSString).lastPathComponent)?"
+            "\(settings.localized("VM is currently running."))\n\(settings.localized("Shut down and start")) \(((session.pendingRestartGame ?? "") as NSString).lastPathComponent)?"
         case .jitInitial:
             settings.localized(
                 "JIT access is not available. Match the StikDebug script to the JIT Script setting in Emulator settings."
@@ -1334,18 +1335,18 @@ struct RootView: View {
             closeControllerAlert(kind, feedback: .activate)
         case .restartVM:
             if index == 0 {
-                appState.pendingRestartGame = nil
+                session.pendingRestartGame = nil
                 menuControllerInput.playFeedback(.back)
             } else {
-                if let game = appState.pendingRestartGame {
-                    appState.shutdownAndBoot(isoName: game)
+                if let game = session.pendingRestartGame {
+                    session.shutdownAndBoot(isoName: game)
                 }
-                appState.pendingRestartGame = nil
+                session.pendingRestartGame = nil
                 menuControllerInput.playFeedback(.activate)
             }
         case .jitInitial:
             if index == 0 {
-                appState.cancelPendingJITGameBoot()
+                session.cancelPendingJITGameBoot()
                 menuControllerInput.playFeedback(.back)
             } else {
                 rootControllerAlertSelection = 0
@@ -1355,10 +1356,10 @@ struct RootView: View {
         case .jitFinal:
             showNoJITFinalConfirmation = false
             if index == 0 {
-                appState.cancelPendingJITGameBoot()
+                session.cancelPendingJITGameBoot()
                 menuControllerInput.playFeedback(.back)
             } else {
-                appState.continuePendingJITGameBoot()
+                session.continuePendingJITGameBoot()
                 menuControllerInput.playFeedback(.activate)
             }
         case .navigationMode(let mode):
@@ -1417,7 +1418,7 @@ struct RootView: View {
             closeControllerAlert(kind, feedback: .back)
         case .jitInitial, .jitFinal:
             showNoJITFinalConfirmation = false
-            appState.cancelPendingJITGameBoot()
+            session.cancelPendingJITGameBoot()
             menuControllerInput.playFeedback(.back)
         case .navigationMode(let mode):
             menuControllerInput.cancelNavigationModeSwitch(mode)
@@ -1437,12 +1438,12 @@ struct RootView: View {
         case .fileImport:
             fileImporter.showImportAlert = false
         case .bios:
-            appState.bootDisclaimerMessage = nil
+            session.bootDisclaimerMessage = nil
         case .restartVM:
-            appState.pendingRestartGame = nil
+            session.pendingRestartGame = nil
         case .jitInitial, .jitFinal:
             showNoJITFinalConfirmation = false
-            appState.cancelPendingJITGameBoot()
+            session.cancelPendingJITGameBoot()
         case .navigationMode(let mode):
             menuControllerInput.cancelNavigationModeSwitch(mode)
         case .libraryExport:

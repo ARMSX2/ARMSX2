@@ -186,7 +186,7 @@ struct BIOSListView: View {
     @State private var pendingBIOSImportURLs: [URL] = []
     @State private var existingBIOSImportFileNames: [String] = []
     @State private var BIOSRefreshTask: Task<Void, Never>?
-    @State private var appState = AppState.shared
+    @State private var session = GameSession.shared
     @State private var focusedToolbarTargetID: String?
     @Environment(\.menuTabIsActive) private var menuTabIsActive
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -474,7 +474,7 @@ struct BIOSListView: View {
             ) {
                 Button(settings.localized("Cancel"), role: .cancel) {}
                 Button(settings.localized("Restart"), role: .destructive) {
-                    appState.shutdownAndBootBIOS()
+                    session.shutdownAndBootBIOS()
                 }
             } message: {
                 Text(String(format: settings.localized("VM is currently running.\nShut down and start %@?"), settings.localized("Boot BIOS")))
@@ -647,7 +647,7 @@ struct BIOSListView: View {
             showBIOSReplacementAlert = false
         case .restart:
             showRestartAlert = false
-            appState.shutdownAndBootBIOS()
+            session.shutdownAndBootBIOS()
         }
     }
 
@@ -801,12 +801,12 @@ struct BIOSListView: View {
     }
 
     private func performBootBIOSAction() {
-        if appState.runningGameName == "BIOS" {
-            appState.returnToGame()
-        } else if appState.runningGameName != nil {
+        if session.runningGameName == "BIOS" {
+            session.returnToGame()
+        } else if session.runningGameName != nil {
             showRestartAlert = true
         } else {
-            appState.bootBIOSOnly()
+            session.bootBIOSOnly()
         }
     }
 
