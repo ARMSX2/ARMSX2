@@ -61,116 +61,28 @@ final class MenuAudioPackManager {
 
     static let shared = MenuAudioPackManager()
 
-    private struct Installation: Sendable {
-        let displayName: String
-    }
-
-    private struct BundledResource: Sendable {
-        let name: String
-        let pathExtension: String
-        let subdirectory: String
-    }
-
-    private static let installedNameDefaultsKey = "ARMSX2.MenuAudioPack.InstalledName"
+    static let installedNameDefaultsKey = "ARMSX2.MenuAudioPack.InstalledName"
     private static let uiAudioVolumeDefaultsKey = "ARMSX2.MenuAudioPack.UIAudioVolume"
     private static let customAudioEnabledDefaultsKey =
         "ARMSX2.MenuAudioPack.CustomAudioEnabled"
-    private static let soundVolumeDefaultsKeyPrefix =
+    static let soundVolumeDefaultsKeyPrefix =
         "ARMSX2.MenuAudioPack.SoundVolume."
-    private nonisolated static let requiredSounds = Set(
-        Sound.allCases.filter { $0 != .startup && $0 != .pauseMusic }
-    )
-    private nonisolated static let bundledResources: [Sound: BundledResource] = [
-        .achievementToast: BundledResource(
-            name: "unlock",
-            pathExtension: "wav",
-            subdirectory: "sounds/achievements"
-        ),
-        .navigation: BundledResource(
-            name: "sfx_nav_a",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .tabTransition: BundledResource(
-            name: "sfx_nav_a",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .background: BundledResource(
-            name: "library_music",
-            pathExtension: "m4a",
-            subdirectory: "ui_audio/default"
-        ),
-        .pauseMusic: BundledResource(
-            name: "pause_music",
-            pathExtension: "mp3",
-            subdirectory: "ui_audio/default"
-        ),
-        .noJIT: BundledResource(
-            name: "sfx_reset",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .stoppingGame: BundledResource(
-            name: "sfx_popup_close",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .uiToast: BundledResource(
-            name: "sfx_popup_open",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .contextMenu: BundledResource(
-            name: "message",
-            pathExtension: "wav",
-            subdirectory: "sounds/achievements"
-        ),
-        .return: BundledResource(
-            name: "sfx_nav_b",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .switchToggleOff: BundledResource(
-            name: "sfx_toggle_off",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .launchGame: BundledResource(
-            name: "sfx_popup_open",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .select: BundledResource(
-            name: "sfx_nav_a",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        ),
-        .switchToggleOn: BundledResource(
-            name: "sfx_toggle_on",
-            pathExtension: "wav",
-            subdirectory: "ui_audio/default"
-        )
-    ]
-
     private(set) var installedPackName: String?
     private(set) var usesBundledDefault = false
-    private(set) var isWorking = false
+    var isWorking = false
     private(set) var uiAudioVolume = 1.0
     private(set) var customUIAudioEnabled = true
     private(set) var customSounds: Set<Sound> = []
 
     @ObservationIgnored private var soundURLs: [Sound: URL] = [:]
     @ObservationIgnored private var customSoundURLs: [Sound: URL] = [:]
-    @ObservationIgnored private var soundVolumes: [Sound: Double] = [:]
-    // Retain the encoded source bytes and prepared players for the lifetime of
-    // the installed pack. `AVAudioPlayer(data:)` then never has to reopen a
-    // file while rapid controller events are driving the UI.
+    @ObservationIgnored var soundVolumes: [Sound: Double] = [:]
+    // Kept for the pack's lifetime, so AVAudioPlayer(data:) never reopens a file mid-navigation.
     @ObservationIgnored private var soundData: [Sound: Data] = [:]
-    @ObservationIgnored private var introHasFinished = false
-    @ObservationIgnored private var interfaceIsActive = false
+    @ObservationIgnored var introHasFinished = false
+    @ObservationIgnored var interfaceIsActive = false
     @ObservationIgnored private var mainInterfaceIsActive = false
-    @ObservationIgnored private var applicationIsActive = true
+    @ObservationIgnored var applicationIsActive = true
     @ObservationIgnored private var audioSessionPrepared = false
     @ObservationIgnored private var startupPlayer: AVAudioPlayer?
     @ObservationIgnored private var startupCompletionTask: Task<Void, Never>?
@@ -186,18 +98,18 @@ final class MenuAudioPackManager {
     @ObservationIgnored private var gameLaunchAudioActive = false
     @ObservationIgnored private var automaticGameStartupActive = false
     @ObservationIgnored private var effectPlayers: [Sound: AVAudioPlayer] = [:]
-    @ObservationIgnored private var pendingTouchNavigationTask: Task<Void, Never>?
-    @ObservationIgnored private var stoppingGamePendingForMainInterface = false
-    @ObservationIgnored private var stoppingGameWaitsForVMShutdown = false
+    @ObservationIgnored var pendingTouchNavigationTask: Task<Void, Never>?
+    @ObservationIgnored var stoppingGamePendingForMainInterface = false
+    @ObservationIgnored var stoppingGameWaitsForVMShutdown = false
     @ObservationIgnored private var emulationAudioRecoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var selectionSuppressedUntil: TimeInterval = 0
-    @ObservationIgnored private var lastEventPlaybackTimes: [Event: TimeInterval] = [:]
+    @ObservationIgnored var selectionSuppressedUntil: TimeInterval = 0
+    @ObservationIgnored var lastEventPlaybackTimes: [Event: TimeInterval] = [:]
 
     var hasInstalledPack: Bool {
         installedPackName != nil && Self.containsRequiredSounds(soundURLs)
     }
 
-    private var shouldPlayBackgroundAudio: Bool {
+    var shouldPlayBackgroundAudio: Bool {
         introHasFinished
             && !automaticGameStartupActive
             && (mainInterfaceIsActive || gameLaunchAudioActive)
@@ -322,32 +234,6 @@ final class MenuAudioPackManager {
         }
     }
 
-    func importCustomSound(from sourceURL: URL, for sound: Sound) async throws {
-        guard !isWorking else { return }
-        isWorking = true
-        defer { isWorking = false }
-
-        try await Task.detached(priority: .userInitiated) {
-            try Self.installCustomSound(from: sourceURL, for: sound)
-        }.value
-
-        reloadInstalledPack()
-        reconcilePlayback()
-    }
-
-    func removeCustomSound(_ sound: Sound) async throws {
-        guard !isWorking, customSounds.contains(sound) else { return }
-        isWorking = true
-        defer { isWorking = false }
-
-        try await Task.detached(priority: .userInitiated) {
-            try Self.removeCustomSoundFile(for: sound)
-        }.value
-
-        reloadInstalledPack()
-        reconcilePlayback()
-    }
-
     func introDidFinish(playsStartupSound: Bool = true) {
         guard !introHasFinished else { return }
         introHasFinished = true
@@ -370,9 +256,8 @@ final class MenuAudioPackManager {
         let becameActive = active && !interfaceIsActive
         interfaceIsActive = active
         if becameActive, introHasFinished, applicationIsActive, hasInstalledPack {
-            // Quick Menu effects share the active emulator audio session. Do
-            // any one-time ownership/configuration work when the surface opens,
-            // outside the rapid directional-navigation path.
+            // Quick Menu effects share the emulator's audio session; set it up once when
+            // the surface opens, outside the directional-navigation path.
             _ = prepareAudioSessionIfNeeded()
         }
         reconcilePlayback()
@@ -384,9 +269,7 @@ final class MenuAudioPackManager {
         guard active != mainInterfaceIsActive else { return }
         mainInterfaceIsActive = active
 
-        // SDL owns the process audio session during emulation. Force one
-        // reconfiguration when ownership crosses between gameplay and the
-        // frontend, never for each navigation sound.
+        // SDL owns the audio session in game; reconfigure once per handoff, not per sound.
         audioSessionPrepared = false
         reconcilePlayback()
         playPendingMainInterfaceEventsIfPossible()
@@ -399,9 +282,8 @@ final class MenuAudioPackManager {
         stoppingGameWaitsForVMShutdown = false
         emulationAudioRecoveryTask?.cancel()
 
-        // AVAudioPlayer can retain isPlaying=true after SDL deactivates the
-        // process audio session. Pause once at the completed handoff so
-        // reconcilePlayback() necessarily issues a fresh play().
+        // AVAudioPlayer can keep isPlaying=true after SDL drops the session; pausing
+        // here makes reconcilePlayback() issue a fresh play().
         backgroundPlayer?.pause()
         audioSessionPrepared = false
         reconcilePlayback()
@@ -433,158 +315,6 @@ final class MenuAudioPackManager {
         }
         reconcilePlayback()
         playPendingMainInterfaceEventsIfPossible()
-    }
-
-    func play(_ feedback: MenuControllerFeedback) {
-        let event: Event?
-        switch feedback {
-        case .move:
-            event = .navigation
-        case .activate, .favorite, .submenu, .destination:
-            event = .select
-        case .toggle(let isOn):
-            event = .toggle(isOn: isOn)
-        case .contextMenu:
-            event = .contextMenu
-        case .back:
-            event = .return
-        case .previousTab, .nextTab, .tabTransition:
-            event = .tabTransition
-        case .boundary:
-            event = nil
-        case .silent:
-            event = nil
-        }
-
-        if let event {
-            playEvent(event)
-        }
-    }
-
-    func playEvent(_ event: Event) {
-        pendingTouchNavigationTask?.cancel()
-        pendingTouchNavigationTask = nil
-        guard introHasFinished, applicationIsActive, hasInstalledPack else { return }
-
-        // A semantic action can run inside a generic controller activation.
-        // Keep the semantic sound authoritative when the activation callback
-        // returns and the focus engine emits its fallback Select feedback.
-        switch event {
-        case .return, .stoppingGame, .contextMenu, .uiToast,
-             .tabTransition, .launchGame, .noJIT:
-            suppressGenericSelection()
-        case .navigation, .select, .toggle, .achievementToast:
-            break
-        }
-
-        let requiresActiveInterface: Bool
-        let sound: Sound
-        switch event {
-        case .navigation:
-            requiresActiveInterface = true
-            sound = .navigation
-        case .select:
-            let now = ProcessInfo.processInfo.systemUptime
-            guard now >= selectionSuppressedUntil else { return }
-            requiresActiveInterface = true
-            sound = .select
-        case .toggle(let isOn):
-            requiresActiveInterface = true
-            sound = isOn ? .switchToggleOn : .switchToggleOff
-        case .return:
-            requiresActiveInterface = true
-            sound = .return
-        case .stoppingGame:
-            requiresActiveInterface = false
-            sound = .stoppingGame
-            selectionSuppressedUntil = ProcessInfo.processInfo.systemUptime + 0.2
-        case .contextMenu:
-            requiresActiveInterface = true
-            sound = .contextMenu
-        case .achievementToast:
-            requiresActiveInterface = false
-            sound = .achievementToast
-        case .uiToast:
-            requiresActiveInterface = false
-            sound = .uiToast
-        case .tabTransition:
-            requiresActiveInterface = true
-            sound = .tabTransition
-        case .launchGame:
-            requiresActiveInterface = false
-            sound = .launchGame
-        case .noJIT:
-            requiresActiveInterface = false
-            sound = .noJIT
-        }
-        guard !requiresActiveInterface || interfaceIsActive,
-              shouldEmit(event) else { return }
-        playEffect(sound)
-    }
-
-    private func shouldEmit(_ event: Event) -> Bool {
-        let now = ProcessInfo.processInfo.systemUptime
-        let minimumInterval: TimeInterval
-        switch event {
-        case .navigation:
-            minimumInterval = 0.025
-        case .toggle:
-            minimumInterval = 0.04
-        default:
-            minimumInterval = 0.08
-        }
-        if let previous = lastEventPlaybackTimes[event],
-           now - previous < minimumInterval {
-            return false
-        }
-        lastEventPlaybackTimes[event] = now
-        return true
-    }
-
-    /// Defers generic tap feedback briefly so a semantic action fired by the
-    /// same touch (toggle, context menu, toast, return, tab change) can replace
-    /// it instead of producing two sounds.
-    func playTouchNavigation() {
-        pendingTouchNavigationTask?.cancel()
-        pendingTouchNavigationTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 60_000_000)
-            guard let self, !Task.isCancelled else { return }
-            self.pendingTouchNavigationTask = nil
-            self.playEvent(.navigation)
-        }
-    }
-
-    func playTouchToggle(isOn: Bool) {
-        playEvent(.toggle(isOn: isOn))
-    }
-
-    func playTouchContextMenu() {
-        playEvent(.contextMenu)
-    }
-
-    /// Removes the window-level tap fallback when the target action owns its
-    /// complete sound sequence (for example, launch_game).
-    func suppressPendingGenericActivation() {
-        pendingTouchNavigationTask?.cancel()
-        pendingTouchNavigationTask = nil
-        suppressGenericSelection()
-    }
-
-    /// A stop selected inside Quick Menu belongs to the destination frontend,
-    /// not to the overlay that is being dismantled.
-    func playStoppingGameOnMainInterface() {
-        pendingTouchNavigationTask?.cancel()
-        pendingTouchNavigationTask = nil
-        suppressGenericSelection()
-        stoppingGamePendingForMainInterface = true
-        stoppingGameWaitsForVMShutdown = true
-    }
-
-    private func suppressGenericSelection(for duration: TimeInterval = 0.2) {
-        selectionSuppressedUntil = max(
-            selectionSuppressedUntil,
-            ProcessInfo.processInfo.systemUptime + duration
-        )
     }
 
     func beginGameLaunch(hasVisualTransition: Bool) {
@@ -638,66 +368,7 @@ final class MenuAudioPackManager {
         }
     }
 
-    func importPack(from sourceURL: URL) async throws {
-        guard !isWorking else { return }
-        isWorking = true
-        defer { isWorking = false }
-
-        let installation = try await Task.detached(priority: .userInitiated) {
-            try Self.installPack(from: sourceURL)
-        }.value
-
-        stopAllPlayback()
-        UserDefaults.standard.set(
-            installation.displayName,
-            forKey: Self.installedNameDefaultsKey
-        )
-        resetPerSoundVolumesAfterPackImport()
-        reloadInstalledPack()
-        if shouldPlayBackgroundAudio {
-            startBackgroundIfNeeded()
-        }
-    }
-
-    /// A new pack is its own mix. Do not carry volume overrides from the
-    /// previously installed files into it; every imported sound starts at its
-    /// authored 100% level.
-    private func resetPerSoundVolumesAfterPackImport() {
-        let defaults = UserDefaults.standard
-        soundVolumes.removeAll(keepingCapacity: true)
-        for sound in Sound.allCases {
-            defaults.removeObject(
-                forKey: Self.soundVolumeDefaultsKey(for: sound)
-            )
-        }
-        applyConfiguredVolumes()
-    }
-
-    func removeInstalledPack() async throws {
-        guard !isWorking, hasInstalledPack, !usesBundledDefault else { return }
-        isWorking = true
-        defer { isWorking = false }
-        stopAllPlayback()
-
-        do {
-            try await Task.detached(priority: .userInitiated) {
-                let manager = FileManager.default
-                let activeDirectory = Self.activeDirectoryURL
-                if manager.fileExists(atPath: activeDirectory.path) {
-                    try manager.removeItem(at: activeDirectory)
-                }
-            }.value
-            UserDefaults.standard.removeObject(forKey: Self.installedNameDefaultsKey)
-            reloadInstalledPack()
-            reconcilePlayback()
-        } catch {
-            reloadInstalledPack()
-            reconcilePlayback()
-            throw error
-        }
-    }
-
-    private func reloadInstalledPack() {
+    func reloadInstalledPack() {
         stopAllPlayback()
         soundData.removeAll(keepingCapacity: false)
         startupPlayer = nil
@@ -719,9 +390,7 @@ final class MenuAudioPackManager {
                 forKey: Self.installedNameDefaultsKey
             ) ?? "Audio Pack"
 
-            // pause_music was added after the original audio-pack contract.
-            // Existing packs remain valid and inherit the bundled Quick Menu
-            // loop until they provide their own MP3 or WAV replacement.
+            // Packs from before pause_music fall back to the bundled Quick Menu loop.
             if baseURLs[.pauseMusic] == nil {
                 baseURLs[.pauseMusic] =
                     Self.resolveBundledSoundURLs()[.pauseMusic]
@@ -753,7 +422,7 @@ final class MenuAudioPackManager {
         }
     }
 
-    private func reconcilePlayback(shouldStartIntroAudio: Bool = false) {
+    func reconcilePlayback(shouldStartIntroAudio: Bool = false) {
         guard introHasFinished, applicationIsActive, hasInstalledPack else {
             stopStartup()
             backgroundPlayer?.pause()
@@ -858,7 +527,7 @@ final class MenuAudioPackManager {
         }
     }
 
-    private func startBackgroundIfNeeded() {
+    func startBackgroundIfNeeded() {
         guard shouldPlayBackgroundAudio, startupPlayer?.isPlaying != true else { return }
         guard prepareAudioSessionIfNeeded() else { return }
         guard let backgroundPlayer else { return }
@@ -880,7 +549,7 @@ final class MenuAudioPackManager {
         }
     }
 
-    private func playEffect(_ sound: Sound) {
+    func playEffect(_ sound: Sound) {
         guard prepareAudioSessionIfNeeded() else { return }
         guard let player = effectPlayers[sound] else { return }
         player.currentTime = 0
@@ -891,7 +560,7 @@ final class MenuAudioPackManager {
         Float(Self.clampedVolume(uiAudioVolume * volume(for: sound)))
     }
 
-    private func applyConfiguredVolumes() {
+    func applyConfiguredVolumes() {
         applyConfiguredVolume(for: .startup)
         applyConfiguredVolume(for: .background)
         applyConfiguredVolume(for: .pauseMusic)
@@ -933,7 +602,7 @@ final class MenuAudioPackManager {
         }
     }
 
-    private func stopAllPlayback() {
+    func stopAllPlayback() {
         pendingTouchNavigationTask?.cancel()
         pendingTouchNavigationTask = nil
         backgroundFadeTask?.cancel()
@@ -1004,9 +673,7 @@ final class MenuAudioPackManager {
         for sound in Sound.allCases {
             guard let url = soundURLs[sound] else { continue }
             do {
-                // Default Data loading copies the encoded file bytes into RAM;
-                // retaining `soundData` guarantees data-backed players never
-                // fall back to reopening the bundle or imported-pack file.
+                // soundData keeps these bytes, so the player never reopens the file.
                 let data = try Data(contentsOf: url)
                 let player = try AVAudioPlayer(data: data)
                 player.numberOfLoops =
@@ -1081,239 +748,5 @@ final class MenuAudioPackManager {
         audioSessionPrepared = true
         return true
 #endif
-    }
-
-    private nonisolated static var storageRootURL: URL {
-        let base = URL.applicationSupportDirectory
-        return base.appendingPathComponent("ARMSX2", isDirectory: true)
-            .appendingPathComponent("UIAudioPack", isDirectory: true)
-    }
-
-    private nonisolated static var activeDirectoryURL: URL {
-        storageRootURL.appendingPathComponent("Active", isDirectory: true)
-    }
-
-    private nonisolated static var customDirectoryURL: URL {
-        storageRootURL.appendingPathComponent("Custom", isDirectory: true)
-    }
-
-    private static func clampedVolume(_ volume: Double) -> Double {
-        min(max(volume, 0), 1)
-    }
-
-    private static func soundVolumeDefaultsKey(for sound: Sound) -> String {
-        soundVolumeDefaultsKeyPrefix + sound.rawValue
-    }
-
-    private nonisolated static func resolveBundledSoundURLs() -> [Sound: URL] {
-        var result: [Sound: URL] = [:]
-        for (sound, resource) in bundledResources {
-            if let url = Bundle.main.url(
-                forResource: resource.name,
-                withExtension: resource.pathExtension,
-                subdirectory: resource.subdirectory
-            ) {
-                result[sound] = url
-                continue
-            }
-
-            // Generated Xcode projects can flatten resource subdirectories.
-            // Only resolve the explicitly mapped Android/shared filename so a
-            // stale semantic iOS asset can never become the default again.
-            if let url = Bundle.main.url(
-                forResource: resource.name,
-                withExtension: resource.pathExtension
-            ) {
-                result[sound] = url
-            }
-        }
-        return result
-    }
-
-    private nonisolated static func containsRequiredSounds(_ urls: [Sound: URL]) -> Bool {
-        requiredSounds.allSatisfy { urls[$0] != nil }
-    }
-
-    private nonisolated static func resolveSoundURLs(in directory: URL) -> [Sound: URL] {
-        let manager = FileManager.default
-        var result: [Sound: URL] = [:]
-        for sound in Sound.allCases {
-            for pathExtension in ["mp3", "wav"] {
-                let candidate = directory
-                    .appendingPathComponent(sound.rawValue, isDirectory: false)
-                    .appendingPathExtension(pathExtension)
-                if manager.fileExists(atPath: candidate.path) {
-                    result[sound] = candidate
-                    break
-                }
-            }
-        }
-        return result
-    }
-
-    private nonisolated static func installPack(from sourceURL: URL) throws -> Installation {
-        guard sourceURL.pathExtension.caseInsensitiveCompare("zip") == .orderedSame else {
-            throw MenuAudioPackImportError.notZip
-        }
-
-        let manager = FileManager.default
-        let accessing = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        try manager.createDirectory(
-            at: storageRootURL,
-            withIntermediateDirectories: true
-        )
-        let stagingDirectory = storageRootURL.appendingPathComponent(
-            ".staging-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        try manager.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
-        defer {
-            if manager.fileExists(atPath: stagingDirectory.path) {
-                try? manager.removeItem(at: stagingDirectory)
-            }
-        }
-
-        var extractionError: NSError?
-        let extracted = ARMSX2Bridge.extractAudioPackArchive(
-            at: sourceURL,
-            to: stagingDirectory,
-            error: &extractionError
-        )
-        guard extracted.count >= requiredSounds.count else {
-            if let extractionError { throw extractionError }
-            throw MenuAudioPackImportError.incompletePack
-        }
-
-        let resolvedURLs = resolveSoundURLs(in: stagingDirectory)
-        guard containsRequiredSounds(resolvedURLs) else {
-            throw MenuAudioPackImportError.incompletePack
-        }
-        for sound in Sound.allCases {
-            guard let url = resolvedURLs[sound] else { continue }
-            do {
-                let player = try AVAudioPlayer(contentsOf: url)
-                guard player.duration.isFinite, player.duration > 0 else {
-                    throw MenuAudioPackImportError.unplayableFile(url.lastPathComponent)
-                }
-                guard player.prepareToPlay() else {
-                    throw MenuAudioPackImportError.unplayableFile(url.lastPathComponent)
-                }
-            } catch let error as MenuAudioPackImportError {
-                throw error
-            } catch {
-                throw MenuAudioPackImportError.unplayableFile(url.lastPathComponent)
-            }
-        }
-
-        let activeDirectory = activeDirectoryURL
-        let backupDirectory = storageRootURL.appendingPathComponent(
-            ".previous-\(UUID().uuidString)",
-            isDirectory: true
-        )
-        let hadPreviousPack = manager.fileExists(atPath: activeDirectory.path)
-        if hadPreviousPack {
-            try manager.moveItem(at: activeDirectory, to: backupDirectory)
-        }
-
-        do {
-            try manager.moveItem(at: stagingDirectory, to: activeDirectory)
-        } catch {
-            if hadPreviousPack,
-               manager.fileExists(atPath: backupDirectory.path),
-               !manager.fileExists(atPath: activeDirectory.path) {
-                try? manager.moveItem(at: backupDirectory, to: activeDirectory)
-            }
-            throw error
-        }
-        if hadPreviousPack {
-            try? manager.removeItem(at: backupDirectory)
-        }
-
-        let archiveName = sourceURL.deletingPathExtension().lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return Installation(displayName: archiveName.isEmpty ? "Audio Pack" : archiveName)
-    }
-
-    private nonisolated static func installCustomSound(
-        from sourceURL: URL,
-        for sound: Sound
-    ) throws {
-        let pathExtension = sourceURL.pathExtension.lowercased()
-        guard pathExtension == "mp3" || pathExtension == "wav" else {
-            throw MenuAudioPackImportError.unplayableFile(sourceURL.lastPathComponent)
-        }
-
-        let manager = FileManager.default
-        let accessing = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        try manager.createDirectory(
-            at: customDirectoryURL,
-            withIntermediateDirectories: true
-        )
-        let stagingURL = customDirectoryURL
-            .appendingPathComponent(".staging-\(UUID().uuidString)")
-            .appendingPathExtension(pathExtension)
-        defer {
-            if manager.fileExists(atPath: stagingURL.path) {
-                try? manager.removeItem(at: stagingURL)
-            }
-        }
-
-        try manager.copyItem(at: sourceURL, to: stagingURL)
-        do {
-            let player = try AVAudioPlayer(contentsOf: stagingURL)
-            guard player.duration.isFinite,
-                  player.duration > 0,
-                  player.prepareToPlay() else {
-                throw MenuAudioPackImportError.unplayableFile(
-                    sourceURL.lastPathComponent
-                )
-            }
-        } catch let error as MenuAudioPackImportError {
-            throw error
-        } catch {
-            throw MenuAudioPackImportError.unplayableFile(sourceURL.lastPathComponent)
-        }
-
-        let destinationURL = customDirectoryURL
-            .appendingPathComponent(sound.rawValue)
-            .appendingPathExtension(pathExtension)
-        if manager.fileExists(atPath: destinationURL.path) {
-            _ = try manager.replaceItemAt(destinationURL, withItemAt: stagingURL)
-        } else {
-            try manager.moveItem(at: stagingURL, to: destinationURL)
-        }
-
-        for alternateExtension in ["mp3", "wav"] where alternateExtension != pathExtension {
-            let alternateURL = customDirectoryURL
-                .appendingPathComponent(sound.rawValue)
-                .appendingPathExtension(alternateExtension)
-            if manager.fileExists(atPath: alternateURL.path) {
-                try manager.removeItem(at: alternateURL)
-            }
-        }
-    }
-
-    private nonisolated static func removeCustomSoundFile(for sound: Sound) throws {
-        let manager = FileManager.default
-        for pathExtension in ["mp3", "wav"] {
-            let url = customDirectoryURL
-                .appendingPathComponent(sound.rawValue)
-                .appendingPathExtension(pathExtension)
-            if manager.fileExists(atPath: url.path) {
-                try manager.removeItem(at: url)
-            }
-        }
     }
 }
