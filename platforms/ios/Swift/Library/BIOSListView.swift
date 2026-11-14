@@ -5,92 +5,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-struct BIOSLibraryEntry: Identifiable, Equatable, Sendable {
-    let fileName: String
-    let filePath: String
-    let regionName: String
-    let countryCode: String
-    let descriptionText: String
-    let valid: Bool
-
-    var id: String { filePath }
-
-    init(_ info: ARMSX2BIOSInfo) {
-        fileName = info.fileName
-        filePath = info.filePath
-        regionName = info.regionName
-        countryCode = info.countryCode
-        descriptionText = info.descriptionText
-        valid = info.valid
-    }
-}
-
-@MainActor
-@Observable
-final class BIOSLibraryState {
-    static let shared = BIOSLibraryState()
-
-    private(set) var entries: [BIOSLibraryEntry] = []
-    private(set) var defaultBIOS = ""
-    private(set) var hasLoaded = false
-    @ObservationIgnored private var refreshTask: Task<Void, Never>?
-    @ObservationIgnored private var needsRefresh = true
-    @ObservationIgnored private var refreshCompletions:
-        [([BIOSLibraryEntry]) -> Void] = []
-
-    private init() {}
-
-    func refreshIfNeeded() {
-        guard needsRefresh || !hasLoaded else { return }
-        refresh()
-    }
-
-    func markNeedsRefresh() {
-        needsRefresh = true
-    }
-
-    func refresh(
-        completion: (([BIOSLibraryEntry]) -> Void)? = nil
-    ) {
-        if let completion { refreshCompletions.append(completion) }
-        guard refreshTask == nil else {
-            needsRefresh = true
-            return
-        }
-        needsRefresh = false
-        refreshTask = Task { @MainActor [weak self] in
-            // BIOS validation reads imported files, so keep it away from tab
-            // and focus animations.
-            let loadedEntries = await Task.detached(priority: .userInitiated) {
-                ARMSX2Bridge.availableBIOSInfos().map(BIOSLibraryEntry.init)
-            }.value
-            guard let self, !Task.isCancelled else { return }
-            let loadedDefault = ARMSX2Bridge.defaultBIOSName()
-            entries = loadedEntries
-            defaultBIOS = loadedDefault
-            hasLoaded = true
-            refreshTask = nil
-            if defaultBIOS.isEmpty,
-               let firstValid = loadedEntries.first(where: \.valid) {
-                select(firstValid)
-            }
-            if needsRefresh {
-                refresh()
-                return
-            }
-            let completions = refreshCompletions
-            refreshCompletions.removeAll(keepingCapacity: true)
-            completions.forEach { $0(loadedEntries) }
-        }
-    }
-
-    func select(_ entry: BIOSLibraryEntry) {
-        guard entry.valid else { return }
-        ARMSX2Bridge.setDefaultBIOS(entry.fileName)
-        defaultBIOS = entry.fileName
-    }
-}
-
 private let biosControllerScope = "menu.bios"
 
 private enum BIOSControllerTarget {
@@ -190,7 +104,6 @@ struct BIOSListView: View {
     @State private var focusedToolbarTargetID: String?
     @Environment(\.menuTabIsActive) private var menuTabIsActive
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    @Environment(\.uiAccentColour) private var accentColour
     @Environment(\.uiCardTitleColour) private var contentTextColour
     @Environment(\.uiCardSubtitleColour) private var secondaryTextColour
 
@@ -294,9 +207,13 @@ struct BIOSListView: View {
                         }
 
                         ForEach(bioses, id: \.filePath) { bios in
-                            biosRow(bios)
-                                .id(bios.filePath)
-                                .gameCardTintMenuBackgroundListRow(backgroundActive)
+                            BIOSRow(
+                                bios: bios,
+                                isDefault: bios.fileName == library.defaultBIOS,
+                                backgroundActive: backgroundActive
+                            ) { selectBIOS(bios) }
+                            .id(bios.filePath)
+                            .gameCardTintMenuBackgroundListRow(backgroundActive)
                         }
                     }
                     .contentMargins(.top, 0, for: .scrollContent)
@@ -700,49 +617,6 @@ struct BIOSListView: View {
         }
     }
 
-    private func biosRow(_ bios: BIOSLibraryEntry) -> some View {
-        Button {
-            selectBIOS(bios)
-        } label: {
-            HStack(spacing: 12) {
-                regionBadge(for: bios)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(bios.fileName)
-                        .font(.body)
-                    Text(bios.valid ? "\(bios.regionName) BIOS" : settings.localized("Not a boot BIOS"))
-                        .font(.caption)
-                        .foregroundStyle(secondaryTextColour)
-                    if bios.valid && !bios.descriptionText.isEmpty {
-                        Text(bios.descriptionText)
-                            .font(.caption2)
-                            .foregroundStyle(secondaryTextColour.opacity(0.78))
-                            .lineLimit(1)
-                    } else if !bios.valid {
-                        Text(settings.localized("Companion ROM or unsupported BIOS dump"))
-                            .font(.caption2)
-                            .foregroundStyle(secondaryTextColour.opacity(0.78))
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                if bios.fileName == library.defaultBIOS {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(accentColour)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(contentTextColour)
-        .opacity(bios.valid ? 1 : 0.65)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(biosControllerLabel(for: bios))
-        .controllerAccessibilityActionTarget(
-            id: bios.filePath,
-            label: biosControllerLabel(for: bios)
-        ) { selectBIOS(bios) }
-    }
-
     private func selectBIOS(_ bios: BIOSLibraryEntry) {
         if bios.valid {
             library.select(bios)
@@ -750,13 +624,6 @@ struct BIOSListView: View {
             fileImporter.lastImportMessage = "\(bios.fileName) is visible in your BIOS folder, but it is not a bootable PS2 BIOS. Keep it if it is a companion ROM, and select a valid boot BIOS as default."
             fileImporter.showImportAlert = true
         }
-    }
-
-    private func biosControllerLabel(for bios: BIOSLibraryEntry) -> String {
-        if bios.valid {
-            return "\(bios.fileName), \(bios.regionName) BIOS"
-        }
-        return "\(bios.fileName), \(settings.localized("Not a boot BIOS"))"
     }
 
     private var emptyState: some View {
@@ -917,51 +784,5 @@ struct BIOSListView: View {
             return "\(fileMessage)\n\(setupMessage)"
         }
         return "\(fileMessage)\nNo bootable PS2 BIOS was found. Import a valid PS2 BIOS dump before starting games."
-    }
-
-    @ViewBuilder
-    private func regionBadge(for bios: BIOSLibraryEntry) -> some View {
-        if backgroundActive {
-            badgeContent(for: bios)
-                .frame(width: 44, height: 44)
-                .glassSurface(clear: true, cornerRadius: 12)
-                .accessibilityHidden(true)
-        } else {
-            badgeContent(for: bios)
-                .frame(width: 44, height: 44)
-                .background(
-                    Color(.secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
-                .accessibilityHidden(true)
-        }
-    }
-
-    @ViewBuilder
-    private func badgeContent(for bios: BIOSLibraryEntry) -> some View {
-        if let flag = flagEmoji(for: bios.countryCode) {
-            Text(flag)
-                .font(.title2)
-        } else {
-            Image(systemName: "globe")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func flagEmoji(for countryCode: String) -> String? {
-        let scalars = countryCode.uppercased().unicodeScalars
-        guard scalars.count == 2 else { return nil }
-
-        var unicodeScalars = String.UnicodeScalarView()
-        for scalar in scalars {
-            guard scalar.value >= 65, scalar.value <= 90,
-                  let regional = UnicodeScalar(0x1F1E6 + scalar.value - 65) else {
-                return nil
-            }
-            unicodeScalars.append(regional)
-        }
-
-        return String(unicodeScalars)
     }
 }
