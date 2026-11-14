@@ -239,7 +239,7 @@ extension GameLibraryControllerCoordinator {
 
         let usesCoverFlow = appearance.libraryLayout == "grid"
             && appearance.landscapeCoverFlowEnabled
-            && window.bounds.width > window.bounds.height
+            && usesLandscapeGameCardScale
         let style: GameplayLaunchCardStyle
         let coverSize: CGSize
         let cornerRadius: CGFloat

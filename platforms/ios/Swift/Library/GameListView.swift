@@ -185,6 +185,8 @@ struct GameListView: View {
 
                 if controller.renameTarget == nil {
                     GeometryReader { geo in
+                        // Before the card settings below read the orientation; onChange runs a pass late.
+                        let _ = controller.seedLibraryContainerSize(geo.size)
                         Group {
                             if library.games.isEmpty && controller.displayedRunningGameName == nil {
                                 GameLibraryEmptyLayout(
