@@ -14,39 +14,40 @@ final class GameplayLaunchCardRegistry {
         }
     }
 
-    private var cards: [String: WeakCardView] = [:]
+    // A card can have two views for a moment while a layout swaps, so each id keeps
+    // every live one; a single slot let a dying view's unregister drop the live one.
+    private var cards: [String: [WeakCardView]] = [:]
 
     func register(_ view: UIView, for gameID: String) {
-        guard cards[gameID]?.view !== view else { return }
-        cards[gameID] = WeakCardView(view)
+        var views = cards[gameID, default: []].filter { $0.view != nil }
+        guard !views.contains(where: { $0.view === view }) else { return }
+        views.append(WeakCardView(view))
+        cards[gameID] = views
     }
 
     func unregister(_ view: UIView, for gameID: String) {
-        guard cards[gameID]?.view === view else { return }
-        cards.removeValue(forKey: gameID)
+        let views = cards[gameID, default: []].filter { $0.view != nil && $0.view !== view }
+        cards[gameID] = views.isEmpty ? nil : views
     }
 
     func view(for gameID: String) -> UIView? {
-        guard let view = cards[gameID]?.view else {
-            cards.removeValue(forKey: gameID)
-            return nil
-        }
-        return view
+        let views = cards[gameID, default: []].compactMap(\.view)
+        return views.last { $0.window != nil } ?? views.last
     }
 
     /// Resolves a touch against the small set of currently mounted lazy cards.
     /// This lets touch browsing use one long-press recognizer per scroll view
     /// instead of attaching one recognizer per card.
     func gameID(at location: CGPoint, in coordinateView: UIView) -> String? {
-        cards = cards.filter { $0.value.view != nil }
-        for (gameID, weakCard) in cards {
-            guard let cardView = weakCard.view,
-                  cardView.window != nil,
-                  !cardView.isHidden,
-                  cardView.alpha >= 0.01 else { continue }
-            let localPoint = cardView.convert(location, from: coordinateView)
-            if cardView.bounds.contains(localPoint) {
-                return gameID
+        for (gameID, weakCards) in cards {
+            for cardView in weakCards.compactMap(\.view) {
+                guard cardView.window != nil,
+                      !cardView.isHidden,
+                      cardView.alpha >= 0.01 else { continue }
+                let localPoint = cardView.convert(location, from: coordinateView)
+                if cardView.bounds.contains(localPoint) {
+                    return gameID
+                }
             }
         }
         return nil
