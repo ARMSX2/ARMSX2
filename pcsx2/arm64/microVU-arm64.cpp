@@ -2804,6 +2804,10 @@ bool SaveStateBase::vuJITFreeze()
 //------------------------------------------------------------------
 // Crash post-mortem (RecCrashReport-arm64.h)
 //------------------------------------------------------------------
+// RecCrashReport-arm64.cpp, the post-mortem, is the only caller of this, and it
+// is Linux only -- as is VuBlockScan, the model these readers fill in. So this
+// is Linux only too; the declarations stay for every platform.
+#if defined(__linux__)
 
 uptr RecCrashReport::VuBlocksStart(int vu)
 {
@@ -2919,3 +2923,5 @@ void RecCrashReport::FindVuBlock(int vu, uptr host_pc, VuHit* hit)
 		}
 	}
 }
+
+#endif // defined(__linux__)
