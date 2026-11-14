@@ -8,6 +8,7 @@ from ios_source import block, read, swift, without_comments
 SETTINGS = swift("UIFrameRateSettings.swift")
 ROUTER = swift("MenuControllerInputRouter.swift")
 APPEARANCE = swift("AppearanceSettingsView.swift")
+INTERFACE = swift("AppearanceInterfaceSections.swift")
 
 
 class ThemeTriggerSetting(unittest.TestCase):
@@ -22,7 +23,7 @@ class ThemeTriggerSetting(unittest.TestCase):
         self.assertIn("UIFrameRateSettings.shared.changesThemeWithTriggers", trigger)
 
     def test_appearance_offers_it_to_the_pad(self):
-        source = without_comments(read(APPEARANCE))
+        source = without_comments(read(APPEARANCE) + read(INTERFACE))
         self.assertIn("isOn: $frameRates.changesThemeWithTriggers", source)
         self.assertEqual(source.count('"settings.appearance.theme-triggers"'), 2)
 
