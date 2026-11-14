@@ -16,9 +16,9 @@ enum SkinReplaceChoice {
     case cancel
 }
 
-/// Holds the answer the import is waiting on. The view owns one, so leaving the
-/// screen with the dialog still up unblocks the import on the way out instead of
-/// parking it on a continuation nobody is left to resume.
+/// Holds the answer the import is waiting on. The suspended import keeps its flow
+/// and so this gate alive, so only an answer resumes it, from a prompt button or
+/// the prompt's dismissal.
 @MainActor
 private final class SkinReplaceGate {
     private var continuation: CheckedContinuation<SkinReplaceChoice, Never>?
@@ -34,10 +34,6 @@ private final class SkinReplaceGate {
         guard let continuation else { return }
         self.continuation = nil
         continuation.resume(returning: choice)
-    }
-
-    deinit {
-        continuation?.resume(returning: .cancel)
     }
 }
 
