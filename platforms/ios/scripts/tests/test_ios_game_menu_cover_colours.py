@@ -8,6 +8,7 @@ from ios_source import block, read, swift, without_comments
 STORE = swift("SettingsStore.swift")
 COORDINATOR = swift("GameLibraryControllerCoordinator.swift")
 APPEARANCE = swift("AppearanceSettingsView.swift")
+INTERFACE = swift("AppearanceInterfaceSections.swift")
 
 
 class GameMenuCoverColours(unittest.TestCase):
@@ -24,7 +25,7 @@ class GameMenuCoverColours(unittest.TestCase):
         self.assertIn(": settings.favoriteGlowingEffectEnabled", update)
 
     def test_appearance_offers_it_to_the_pad(self):
-        source = without_comments(read(APPEARANCE))
+        source = without_comments(read(APPEARANCE) + read(INTERFACE))
         self.assertIn("isOn: $settings.gameMenuCoverColoursEnabled", source)
         self.assertEqual(source.count('"settings.appearance.game-menu-cover-colours"'), 2)
 
