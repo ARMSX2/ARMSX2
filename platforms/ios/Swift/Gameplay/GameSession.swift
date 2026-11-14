@@ -88,10 +88,12 @@ final class GameSession {
     private(set) var emulationSessionID: UUID? {
         didSet {
             userVirtualPadVisible = true
+            runtimeShortcutSpeedPercent = nil
         }
     }
-    /// The pad toggle outlives GameScreenView, which the menu unmounts.
+    /// The pad toggle and the speed shortcut outlive GameScreenView, which the menu unmounts.
     var userVirtualPadVisible = true
+    var runtimeShortcutSpeedPercent: Int?
     var isEmulationOnlyMode: Bool = false
     var emulationOnlyPresentation = EmulationOnlyPresentation.minimal
     private(set) var emulationOnlyStartupReady: Bool = false

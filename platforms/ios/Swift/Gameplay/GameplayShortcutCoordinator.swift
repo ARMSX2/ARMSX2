@@ -8,7 +8,7 @@ import SwiftUI
 final class GameplayShortcutCoordinator {
     private var saveStateShortcutOperationActive = false
     private let saveStateUndo = SaveStateUndoModel.shared
-    private var runtimeShortcutSpeedPercent: Int?
+    private let session = GameSession.shared
     private let settings = SettingsStore.shared
     private let feedback: GameplayFeedback
 
@@ -47,7 +47,7 @@ final class GameplayShortcutCoordinator {
             settings.setRuntimeFastForwardEnabled(true)
             feedback.presentStatusMessage(settings.localized("Fast Forward: ON (1000%)"))
         case .disableFastForward:
-            runtimeShortcutSpeedPercent = 100
+            session.runtimeShortcutSpeedPercent = 100
             settings.setRuntimeFastForwardEnabled(false)
             feedback.presentStatusMessage(settings.localized("Fast Forward: OFF (100%)"))
         case .undoSaveState:
@@ -74,7 +74,7 @@ final class GameplayShortcutCoordinator {
             key: "NominalScalar",
             defaultValue: 1.0
         ) * 100).rounded())
-        let currentPercent = runtimeShortcutSpeedPercent ?? storedPercent
+        let currentPercent = session.runtimeShortcutSpeedPercent ?? storedPercent
         let minimumPercent = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
             ? 100
             : 25
@@ -83,7 +83,7 @@ final class GameplayShortcutCoordinator {
             1_000
         )
         guard nextPercent != currentPercent else { return nil }
-        runtimeShortcutSpeedPercent = nextPercent
+        session.runtimeShortcutSpeedPercent = nextPercent
         ARMSX2Bridge.setRuntimeEmulationSpeedPercent(Int32(nextPercent))
         return nextPercent
     }

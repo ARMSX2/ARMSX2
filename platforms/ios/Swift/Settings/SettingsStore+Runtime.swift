@@ -188,6 +188,8 @@ extension SettingsStore {
         ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: targetFPS)
         ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: scalar)
         ARMSX2Bridge.setPresentFPSCap(frameLimiterEnabled ? targetFPS : 0.0)
+        // The shortcut's cached speed would otherwise override this write on its next press.
+        GameSession.shared.runtimeShortcutSpeedPercent = nil
     }
 
     /// Frame targets control presentation cadence rather than VM speed. The
