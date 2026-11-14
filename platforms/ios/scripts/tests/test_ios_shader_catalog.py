@@ -9,13 +9,13 @@ from ios_source import at, block, read, swift
 INSTALLER = swift("ShaderCatalogInstaller.swift")
 CATALOG = swift("ShaderCatalog.swift")
 BROWSER = swift("ShaderCatalogBrowserView.swift")
-ROOT_VIEW = swift("RootView.swift")
+ROOT_LIFECYCLE = swift("RootLifecycleModifier.swift")
 PER_GAME = swift("PerGameShaderSelection.swift")
 
 
 class Downloader(unittest.TestCase):
     def setUp(self):
-        for path in (INSTALLER, CATALOG, BROWSER, ROOT_VIEW, PER_GAME):
+        for path in (INSTALLER, CATALOG, BROWSER, ROOT_LIFECYCLE, PER_GAME):
             self.assertTrue(path.is_file(), "missing %s" % path)
         self.installer = read(INSTALLER)
         self.catalog = read(CATALOG)
@@ -62,8 +62,8 @@ class Downloader(unittest.TestCase):
     def test_the_staging_sweep_runs_at_launch(self):
         """`defer` does not run when iOS kills a backgrounded app mid-download."""
         self.assertIn("static func sweepStagedDownloads", self.installer)
-        self.assertIn("ShaderCatalogInstaller.sweepStagedDownloads()", read(ROOT_VIEW),
-                      "RootView does not call ShaderCatalogInstaller.sweepStagedDownloads()")
+        self.assertIn("ShaderCatalogInstaller.sweepStagedDownloads()", read(ROOT_LIFECYCLE),
+                      "RootLifecycleModifier does not call ShaderCatalogInstaller.sweepStagedDownloads()")
 
     def test_the_base_url_is_https_and_there_is_one_of_it(self):
         bases = re.findall(r'defaultBase\s*=\s*"([^"]+)"', self.catalog)

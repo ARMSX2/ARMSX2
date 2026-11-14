@@ -8,6 +8,7 @@ from ios_source import block, read, swift, without_comments
 
 BIOS = swift("BIOSListView.swift")
 ROOT = swift("RootView.swift")
+MENU_TABS = swift("MenuTabView.swift")
 
 
 class BIOSOnTheSharedNavigation(unittest.TestCase):
@@ -17,7 +18,7 @@ class BIOSOnTheSharedNavigation(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.bios = without_comments(read(BIOS))
-        cls.root = without_comments(read(ROOT))
+        cls.root = without_comments(read(ROOT) + read(MENU_TABS))
 
     def test_the_page_registers_a_navigation_session(self):
         self.assertIn(".controllerAccessibilityNavigation(", self.bios)
