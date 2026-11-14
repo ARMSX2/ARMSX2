@@ -290,13 +290,16 @@ struct SettingsRootView: View {
             }
 
             Section(settings.localized("About")) {
-                HStack {
-                    Text(settings.localized("Version"))
-                    Spacer()
-                    Text(SettingsStaticInfo.buildVersion)
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
+                NavigationLink(value: SettingsPane.about) {
+                    HStack {
+                        Text(settings.localized("Version"))
+                        Spacer()
+                        Text(SettingsStaticInfo.buildVersion)
+                            .foregroundStyle(.secondary)
+                            .font(.caption)
+                    }
                 }
+                .controllerSettingsDestination(.about, path: $navigationPath)
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
 
                 NavigationLink(value: SettingsPane.help) {
