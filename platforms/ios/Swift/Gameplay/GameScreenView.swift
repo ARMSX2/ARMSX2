@@ -419,7 +419,7 @@ struct GameScreenView: View {
     // The pause menu child last opened. Its row takes focus when the card returns.
     @State private var pauseMenuChild: QuickMenuDestination?
     @State private var pauseCardFoldMemory: QuickMenuFoldMemory?
-    @State private var cheatsSession = CheatsPatchesManagerView.Session()
+    @State private var cheatsSession = CheatsPatchesSession()
     @State private var runtimePerGameSettingsEntry: ISOEntry?
     @State private var runtimePerGameSettings: [String: Any]?
     @State private var runtimePerGameStartsInGameController = false
@@ -1713,7 +1713,7 @@ struct GameScreenView: View {
             )
         case .cheats:
             MenuAudioPackManager.shared.playEvent(.uiToast)
-            cheatsSession = CheatsPatchesManagerView.Session()
+            cheatsSession = CheatsPatchesSession()
             overlayRoute = .pausedPresenting(destination)
         case .controllerSkin:
             openRuntimeControllerSkinPicker()
