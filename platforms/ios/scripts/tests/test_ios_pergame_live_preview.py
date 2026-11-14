@@ -6,6 +6,8 @@ from ios_source import at, block, bridge_text, read, swift, without_comments
 
 
 PANEL = swift("PerGameSettingsPanel.swift")
+SESSION = swift("PerGameLivePreviewSession.swift")
+WRITERS = (PANEL, SESSION, swift("PerGameSettingsDraft.swift"), swift("PerGameSettingsDraft+Save.swift"))
 
 
 class LivePreviewKeepsCommittedWrites(unittest.TestCase):
@@ -16,14 +18,16 @@ class LivePreviewKeepsCommittedWrites(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.panel = without_comments(read(PANEL))
+        cls.session = without_comments(read(SESSION))
+        cls.writers = "\n".join(without_comments(read(p)) for p in WRITERS)
         cls.bridge = without_comments(bridge_text())
 
     def test_each_preview_write_refreshes_the_baseline_first(self):
-        loop = block(self.panel, "private func runLivePreviewLoop(")
+        loop = block(self.session, "private func runLivePreviewLoop(")
         refresh = at(loop, "refreshPerGameLivePreviewBaseline(token:", "the baseline refresh")
         write = at(loop, "writeCurrentSettings(normalizesEditableValues: false)", "the preview write")
         self.assertLess(refresh, write, "a preview write is not preceded by the baseline refresh")
-        self.assertEqual(self.panel.count("writeCurrentSettings(normalizesEditableValues: false)"), 1,
+        self.assertEqual(self.writers.count("writeCurrentSettings(normalizesEditableValues: false)"), 1,
                          "a second preview write site has no baseline refresh")
 
     def test_finish_only_retries_a_failed_restore(self):

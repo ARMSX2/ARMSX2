@@ -1,7 +1,7 @@
 """The per-game settings dictionary is matched by string key, not by type.
 
-PerGameSettingsPanel.save() builds it and ARMSX2WriteGameSettingsForIdentity
-reads it back one key at a time. A misspelled key still compiles and still
+PerGameSettingsDraft.writeCurrentSettings builds it and
+ARMSX2WriteGameSettingsForIdentity reads it back one key at a time. A misspelled key still compiles and still
 runs, and the value falls back to whatever that key's default is, so nothing
 reports it. These tests compare the key sets instead.
 """
@@ -12,7 +12,7 @@ import unittest
 from ios_source import block, bridge_text, read, swift
 
 
-PANEL = swift("PerGameSettingsPanel.swift")
+SAVE = swift("PerGameSettingsDraft+Save.swift")
 
 WRITER = "static void ARMSX2WriteGameSettingsForIdentity"
 BUILDER = "static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult"
@@ -34,8 +34,8 @@ def getter_keys():
 
 
 def swift_keys():
-    """Keys PerGameSettingsPanel.save() puts into the dictionary it sends."""
-    source = read(PANEL)
+    """Keys PerGameSettingsDraft.writeCurrentSettings puts into the dictionary it sends."""
+    source = read(SAVE)
     start = source.index(SWIFT_DICT)
     return set(re.findall(r'"([A-Za-z]+)"\s*:', source[start:source.index("\n        ]", start)]))
 
