@@ -15,6 +15,7 @@ GAME_LIST = swift("GameListView.swift")
 COORDINATOR = ("", "+Alerts", "+Focus", "+Menus", "+ContextMenu", "+Launch")
 SESSION = swift("GameSession.swift")
 ROOT_VIEW = swift("RootView.swift")
+ROOT_LIFECYCLE = swift("RootLifecycleModifier.swift")
 INFO = IOS_ROOT / "Info.plist.in"
 
 LAUNCH_VERBS = ("launch", "boot", "play")
@@ -149,8 +150,10 @@ class DeepLinkLaunch(unittest.TestCase):
             "FileImportHandler.shared.handleURL(url)", bridge,
             "DeepLinkBridge does not pass URLs that are not armsx2 links to FileImportHandler")
         self.assertNotIn(
-            ".onOpenURL", ROOT_VIEW.read_text(encoding="utf-8"),
-            "RootView has an onOpenURL, which never runs under the UIKit scene lifecycle")
+            ".onOpenURL",
+            ROOT_VIEW.read_text(encoding="utf-8") + ROOT_LIFECYCLE.read_text(encoding="utf-8"),
+            "RootView or its lifecycle modifier has an onOpenURL, which never runs under the UIKit "
+            "scene lifecycle")
 
     def test_the_launch_link_page_names_what_the_handler_accepts(self):
         """Frontend authors read platforms/ios/docs/launch-links.md, not this handler."""
