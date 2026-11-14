@@ -2226,6 +2226,7 @@ struct GameListView: View {
 
     @State private var games: [ISOEntry] = []
     @State private var appState = AppState.shared
+    @State private var session = GameSession.shared
 	@State private var settings = SettingsStore.shared
 	@State private var logoStore = ARMSX2LogoStore.shared
 	@State private var fileImporter = FileImportHandler.shared
@@ -2467,11 +2468,11 @@ struct GameListView: View {
         guard case .menu = appState.currentScreen else {
             return nil
         }
-        return appState.runningGameName
+        return session.runningGameName
     }
 
     private var canFocusNowRunning: Bool {
-        appState.runningGameName != nil && !nowRunningRemovalAnimationActive
+        session.runningGameName != nil && !nowRunningRemovalAnimationActive
     }
 
     private var usesLandscapeGameCardScale: Bool {
@@ -3394,17 +3395,17 @@ struct GameListView: View {
                         pendingGameplayLaunchTransition = nil
                         pendingGameplayPadSerial = nil
                         pendingGameplayPadCRC = nil
-                        appState.shutdownAndBootBIOS()
+                        session.shutdownAndBootBIOS()
                     } else {
                         let transition = pendingGameplayLaunchTransition
                         pendingGameplayLaunchTransition = nil
-                        appState.prepareGameplayPadSelection(
+                        session.prepareGameplayPadSelection(
                             forSerial: pendingGameplayPadSerial,
                             crc: pendingGameplayPadCRC
                         )
                         pendingGameplayPadSerial = nil
                         pendingGameplayPadCRC = nil
-                        appState.shutdownAndBoot(
+                        session.shutdownAndBoot(
                             isoName: pendingGameName,
                             launchTransition: transition
                         )
@@ -3913,7 +3914,7 @@ struct GameListView: View {
         }
         .onChange(of: controllerInput?.hasConnectedController) { _, connected in
             if connected == true {
-                if appState.runningGameName != nil {
+                if session.runningGameName != nil {
                     runningGameControllerFocusPending = true
                 }
                 if !focusRunningControllerGameIfAvailable() {
@@ -4030,7 +4031,7 @@ struct GameListView: View {
     private func handleReturnToMenu() {
         runningGameControllerFocusPending =
             controllerInput?.hasConnectedController == true
-            && appState.runningGameName != nil
+            && session.runningGameName != nil
         restoreCachedGamesIfNeeded()
         GameLibrarySnapshot.shared.markLibraryRefreshNeeded()
         _ = focusRunningControllerGameIfAvailable()
@@ -5026,17 +5027,17 @@ struct GameListView: View {
                 pendingGameplayLaunchTransition = nil
                 pendingGameplayPadSerial = nil
                 pendingGameplayPadCRC = nil
-                appState.shutdownAndBootBIOS()
+                session.shutdownAndBootBIOS()
             } else {
                 let transition = pendingGameplayLaunchTransition
                 pendingGameplayLaunchTransition = nil
-                appState.prepareGameplayPadSelection(
+                session.prepareGameplayPadSelection(
                     forSerial: pendingGameplayPadSerial,
                     crc: pendingGameplayPadCRC
                 )
                 pendingGameplayPadSerial = nil
                 pendingGameplayPadCRC = nil
-                appState.shutdownAndBoot(
+                session.shutdownAndBoot(
                     isoName: pendingGameName,
                     launchTransition: transition
                 )
@@ -5324,7 +5325,7 @@ struct GameListView: View {
                 controllerInput?.playFeedback(.activate)
                 switch nowRunningAction {
                 case .resume:
-                    appState.returnToGame()
+                    session.returnToGame()
                 case .stop:
                     showStopAlert = true
                 }
@@ -5429,7 +5430,7 @@ struct GameListView: View {
         // Returning from a Now Running action/confirmation restores that action,
         // not the older card retained separately for tab changes.
         let candidates = rememberedContent?.hasPrefix("now-running:") == true
-            && appState.runningGameName != nil && !nowRunningRemovalAnimationActive
+            && session.runningGameName != nil && !nowRunningRemovalAnimationActive
                 ? [rememberedContent, rememberedCard] : [rememberedCard, rememberedContent]
         guard let key = candidates.compactMap({ $0 }).first(where: { candidate in
             !candidate.hasPrefix("game:") || games.contains(where: { game in
@@ -5829,7 +5830,7 @@ struct GameListView: View {
     private func focusNowRunning(
         _ action: GameLibraryNowRunningControllerAction
     ) {
-        guard appState.runningGameName != nil, !nowRunningRemovalAnimationActive else {
+        guard session.runningGameName != nil, !nowRunningRemovalAnimationActive else {
             _ = focusFirstGame()
             return
         }
@@ -7076,7 +7077,7 @@ struct GameListView: View {
 
         return Section {
             Button {
-                appState.returnToGame()
+                session.returnToGame()
             } label: {
                 HStack {
                     HStack(spacing: 8) {
@@ -8133,7 +8134,7 @@ struct GameListView: View {
                 Spacer()
                 HStack(spacing: 8) {
                     Button(settings.localized("Resume")) {
-                        appState.returnToGame()
+                        session.returnToGame()
                     }
                     .buttonStyle(.borderedProminent)
                     .modifier(nowRunningControllerFocus(.resume))
@@ -8207,7 +8208,7 @@ struct GameListView: View {
             if !isStopping {
                 HStack(spacing: 8) {
                     Button(settings.localized("Resume")) {
-                        appState.returnToGame()
+                        session.returnToGame()
                     }
                     .buttonStyle(.borderedProminent)
                     .modifier(nowRunningControllerFocus(.resume))
@@ -8268,7 +8269,7 @@ struct GameListView: View {
 		guard controllerContextMenuState.gameID != game.id else { return }
 		MenuAudioPackManager.shared.suppressPendingGenericActivation()
 		if isRunning(game) {
-			appState.returnToGame()
+			session.returnToGame()
 			return
 		}
 
@@ -8306,18 +8307,18 @@ struct GameListView: View {
     ) {
         let padSerial = preferredPadSerial ?? game.metadata["serial"]
         let padCRC = game.metadata["crc"]
-        if appState.runningGameName != nil {
+        if session.runningGameName != nil {
             pendingGameName = game.bootName
             pendingGameplayLaunchTransition = transition
             pendingGameplayPadSerial = padSerial
             pendingGameplayPadCRC = padCRC
             showRestartAlert = true
         } else {
-            appState.prepareGameplayPadSelection(
+            session.prepareGameplayPadSelection(
                 forSerial: padSerial,
                 crc: padCRC
             )
-            appState.bootGame(
+            session.bootGame(
                 isoName: game.bootName,
                 launchTransition: transition
             )
@@ -8450,16 +8451,16 @@ struct GameListView: View {
     }
 
     private func performBootBIOSAction() {
-        if appState.runningGameName == "BIOS" {
-            appState.returnToGame()
-        } else if appState.runningGameName != nil {
+        if session.runningGameName == "BIOS" {
+            session.returnToGame()
+        } else if session.runningGameName != nil {
             pendingGameName = ""
             pendingGameplayLaunchTransition = nil
             pendingGameplayPadSerial = nil
             pendingGameplayPadCRC = nil
             showRestartAlert = true
         } else {
-            appState.bootBIOSOnly()
+            session.bootBIOSOnly()
         }
     }
 
@@ -8702,7 +8703,7 @@ struct GameListView: View {
         autoDownloadExternalCovers: Bool = false,
         forceMetadataRefresh: Bool = false
     ) {
-        let allowFullMetadata = appState.runningGameName == nil
+        let allowFullMetadata = session.runningGameName == nil
         let existingGames = GameLibrarySnapshot.shared.existingEntries(
             merging: games
         )
@@ -8925,7 +8926,7 @@ struct GameListView: View {
 	}
 
 	private func autoDownloadExternalCoversIfNeeded() {
-		guard appState.runningGameName == nil else { return }
+		guard session.runningGameName == nil else { return }
 
 		let targets = games.filter { game in
 			game.isExternal &&
@@ -8974,7 +8975,7 @@ struct GameListView: View {
     private func scheduleStopRunningGame() {
         showStopAlert = false
         guard !nowRunningRemovalAnimationActive,
-              let runningGameName = appState.runningGameName else {
+              let runningGameName = session.runningGameName else {
             return
         }
         MenuAudioPackManager.shared.playEvent(.stoppingGame)
@@ -9024,7 +9025,7 @@ struct GameListView: View {
             // the now-invisible layout placeholder alive while a drag or
             // deceleration is active, so removing it cannot move the content
             // underneath the user's finger.
-            appState.stopGame()
+            session.stopGame()
 
             while gameLibraryActivity.isScrolling {
                 try? await Task.sleep(for: .milliseconds(50))
@@ -9126,7 +9127,7 @@ struct GameListView: View {
 
 	private func isRunning(_ game: ISOEntry) -> Bool {
         let runningIdentifiers = gameLibraryActivity.runningIdentifiers(
-            for: appState.runningGameName
+            for: session.runningGameName
         )
         return !runningIdentifiers.isDisjoint(
             with: game.normalizedIdentifiers

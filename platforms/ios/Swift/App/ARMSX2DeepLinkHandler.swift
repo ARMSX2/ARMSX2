@@ -184,7 +184,7 @@ enum ARMSX2DeepLinkHandler {
         }
 
         NSLog("[ARMSX2 iOS DeepLink] launching game=%@ boot=%@", game, bootName)
-        AppState.shared.bootGame(isoName: bootName)
+        GameSession.shared.bootGame(isoName: bootName)
     }
 
     private static func bootName(forListedName name: String) -> String? {

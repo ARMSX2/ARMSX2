@@ -5,6 +5,8 @@ from ios_source import at, block, swift, without_comments
 
 QUICK_MENU = swift("QuickMenuView.swift")
 GAME_SCREEN = swift("GameScreenView.swift")
+OVERLAY_MODEL = swift("GameplayOverlayModel.swift")
+OVERLAY_HOST = swift("GameplayOverlayHost.swift")
 WORKSPACE = swift("ShaderWorkspaceView.swift")
 
 SECTION = "ShaderChainSection("
@@ -18,6 +20,8 @@ class QuickMenuShaderRoutePolicy(unittest.TestCase):
     def setUpClass(cls):
         cls.quick_menu = without_comments(QUICK_MENU.read_text(encoding="utf-8"))
         cls.game_screen = without_comments(GAME_SCREEN.read_text(encoding="utf-8"))
+        cls.overlay_model = without_comments(OVERLAY_MODEL.read_text(encoding="utf-8"))
+        cls.overlay_host = without_comments(OVERLAY_HOST.read_text(encoding="utf-8"))
 
     def test_the_section_is_not_mounted_inside_the_pause_card(self):
         self.assertNotIn(
@@ -28,7 +32,7 @@ class QuickMenuShaderRoutePolicy(unittest.TestCase):
     def test_the_hosted_workspace_mounts_the_section_in_a_form(self):
         """In game, .shaders opens the per-game panel on its shader workspace. The section
         pushes nothing (test_ios_shader_catalog), so a Form is all it needs."""
-        self.assertIn("initiallySelectsShaders:", self.game_screen,
+        self.assertIn("initiallySelectsShaders:", self.overlay_host,
                       "the in-game shader route no longer opens the shader workspace")
         workspace = block(without_comments(WORKSPACE.read_text(encoding="utf-8")),
                           "private var managementContent")
@@ -39,7 +43,7 @@ class QuickMenuShaderRoutePolicy(unittest.TestCase):
                                 f"the workspace mounts {mount} outside its Form")
 
     def test_the_route_table_stays_exhaustive(self):
-        router = block(self.game_screen, f"private func {ROUTER}(")
+        router = block(self.overlay_model, f"func {ROUTER}(")
         self.assertNotRegex(
             router, r"(?m)^\s*default:",
             f"{ROUTER} has a default: arm, so a new destination can reach .pausedPresenting "
@@ -49,7 +53,8 @@ class QuickMenuShaderRoutePolicy(unittest.TestCase):
             "openPauseMenuChild does not route .shaders")
 
     def test_neither_file_applies_graphics_by_hand(self):
-        for path, source in ((QUICK_MENU, self.quick_menu), (GAME_SCREEN, self.game_screen)):
+        game = self.game_screen + self.overlay_model + self.overlay_host
+        for path, source in ((QUICK_MENU, self.quick_menu), (GAME_SCREEN, game)):
             with self.subTest(path=path.name):
                 self.assertNotIn(
                     APPLY, source,

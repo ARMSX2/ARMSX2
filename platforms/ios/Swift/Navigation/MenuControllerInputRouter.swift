@@ -1412,7 +1412,7 @@ final class MenuControllerInputRouter {
     var canChangeMainMenuTheme: Bool {
         isMenuActive
             && AppState.shared.currentScreen == .menu
-            && AppState.shared.gameplayLaunchTransition == nil
+            && GameSession.shared.gameplayLaunchTransition == nil
             && launchInputInterceptor == nil
             && frontmostManualNavigationCapture == nil
             && (frontmostNavigationSessionEntry?.value.priority ?? 0) < 100

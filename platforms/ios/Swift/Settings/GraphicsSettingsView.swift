@@ -5,7 +5,7 @@ import SwiftUI
 
 struct GraphicsSettingsView: View {
     @State private var settings = SettingsStore.shared
-    @State private var appState = AppState.shared
+    @State private var session = GameSession.shared
     @State private var showingShaderSettings = false
     @State private var showShaderCacheClearConfirm = false
     @State private var shaderCacheResult: String?
@@ -15,7 +15,7 @@ struct GraphicsSettingsView: View {
     // while this screen is open. Switching renderer then sends the next settings
     // apply through a full GS teardown under that game.
     private var gameIsLoaded: Bool {
-        appState.runningGameName != nil
+        session.runningGameName != nil
     }
 
     private var manualAdvancedHacks: Bool {
@@ -61,7 +61,7 @@ struct GraphicsSettingsView: View {
         case .needsUpscaling:
             return settings.localized("Ignored at 1x Internal Resolution.")
         case .fromGameDatabase:
-            if let game = appState.runningGameName {
+            if let game = session.runningGameName {
                 return String(format: settings.localized("The game database is setting this for %@."), game)
             }
             return settings.localized("The game database is setting this for this game.")

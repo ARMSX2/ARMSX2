@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-GAME_SCREEN = swift("GameScreenView.swift")
+PANEL = swift("SpeedControlPanel.swift")
 
 
 class SpeedPanelOrder(unittest.TestCase):
@@ -13,7 +13,7 @@ class SpeedPanelOrder(unittest.TestCase):
     went down to Fast Forward Speed and Down from it jumped back up to Done."""
 
     def test_done_comes_first(self):
-        panel = block(without_comments(read(GAME_SCREEN)), "private struct SpeedControlPanel")
+        panel = block(without_comments(read(PANEL)), "struct SpeedControlPanel")
         order = panel[panel.find("controllerTargetOrder = ["):]
         self.assertLess(order.find('"runtime.speed.done"'), order.find('"runtime.speed.fast-forward"'))
         self.assertNotIn("preferredTrailingFocusLabels", panel)
