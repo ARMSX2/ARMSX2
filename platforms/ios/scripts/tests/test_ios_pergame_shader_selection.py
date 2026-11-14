@@ -6,7 +6,7 @@ from ios_source import BRIDGE_DIR, SWIFT, block, bridge_text, swift, without_com
 BRIDGE_H = BRIDGE_DIR / "ARMSX2Bridge.h"
 SELECTION = swift("PerGameShaderSelection.swift")
 APP_STATE = swift("AppState.swift")
-PANEL = swift("PerGameSettingsPanel.swift")
+DRAFT = swift("PerGameSettingsDraft.swift")
 SECTION = swift("PerGameShaderSection.swift")
 
 STRING_METHODS = (
@@ -52,7 +52,7 @@ class PerGameShaderSelectionPolicy(unittest.TestCase):
         cls.impl = bridge_text()
         cls.selection = without_comments(SELECTION.read_text(encoding="utf-8"))
         cls.app_state = without_comments(APP_STATE.read_text(encoding="utf-8"))
-        cls.panel = without_comments(PANEL.read_text(encoding="utf-8"))
+        cls.draft = without_comments(DRAFT.read_text(encoding="utf-8"))
         cls.section = without_comments(SECTION.read_text(encoding="utf-8"))
 
     def test_the_per_game_bridge_can_carry_a_string(self):
@@ -119,9 +119,9 @@ class PerGameShaderSelectionPolicy(unittest.TestCase):
             "resolve, so the game falls back to the global preset")
 
     def test_save_notices_a_shader_only_change(self):
-        body = block(self.panel, FINGERPRINT)
+        body = block(self.draft, FINGERPRINT)
         if "perGameLivePreviewFingerprint()" in body:
-            body += block(self.panel, "func perGameLivePreviewFingerprint")
+            body += block(self.draft, "func perGameLivePreviewFingerprint")
         for state in PANEL_STATES:
             with self.subTest(state=state):
                 self.assertIn(
