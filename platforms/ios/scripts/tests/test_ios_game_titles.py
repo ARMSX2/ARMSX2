@@ -12,10 +12,10 @@ class CustomTitleKey(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.library = without_comments(read(swift("GameListView.swift")))
+        cls.library = without_comments(read(swift("GameLibraryModel.swift")))
 
     def test_rename_keys_by_the_boot_name(self):
-        self.assertIn("for: game.bootName", block(self.library, "private func renameGame("),
+        self.assertIn("for: game.bootName", block(self.library, "func renameGame("),
                       "a rename is stored under a key that changes on reinstall")
 
     def test_the_lookup_uses_the_same_key(self):

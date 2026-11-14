@@ -12,6 +12,7 @@ from ios_source import IOS_ROOT, ROOT, swift
 
 HANDLER = swift("ARMSX2DeepLinkHandler.swift")
 GAME_LIST = swift("GameListView.swift")
+COORDINATOR = ("", "+Alerts", "+Focus", "+Menus", "+ContextMenu", "+Launch")
 SESSION = swift("GameSession.swift")
 ROOT_VIEW = swift("RootView.swift")
 INFO = IOS_ROOT / "Info.plist.in"
@@ -111,12 +112,15 @@ class DeepLinkLaunch(unittest.TestCase):
                 "games exist" % reader)
 
     def test_the_game_menu_copies_the_handlers_link(self):
-        menu = GAME_LIST.read_text(encoding="utf-8")
+        launch = swift("GameLibraryControllerCoordinator+Launch.swift").read_text(encoding="utf-8")
         self.assertIn(
-            "ARMSX2DeepLinkHandler.launchURL(forISO:", menu,
+            "ARMSX2DeepLinkHandler.launchURL(forISO:", launch,
             "Copy Launch Link no longer asks the handler for the link")
+        library = "".join(
+            swift("GameLibraryControllerCoordinator%s.swift" % part).read_text(encoding="utf-8")
+            for part in COORDINATOR) + GAME_LIST.read_text(encoding="utf-8")
         self.assertNotIn(
-            '"armsx2://', menu,
+            '"armsx2://', library,
             "the game list builds a launch link by hand, which can drift from what the "
             "handler accepts")
 

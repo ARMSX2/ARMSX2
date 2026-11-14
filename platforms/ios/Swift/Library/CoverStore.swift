@@ -3,6 +3,7 @@
 
 import Foundation
 import ImageIO
+import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -59,6 +60,38 @@ final class CoverStore {
     var isDownloadingCovers = false
 
     private init() {}
+
+    /// True when the photo became the game's cover, so the caller reloads the library.
+    func importCoverPhoto(_ photoItem: PhotosPickerItem, forGameNamed gameName: String) async -> Bool {
+        do {
+            guard let data = try await photoItem.loadTransferable(type: Data.self) else {
+                lastCoverMessage = "The selected photo could not be loaded."
+                showCoverAlert = true
+                return false
+            }
+            importCoverData(data, forGameNamed: gameName)
+            return true
+        } catch {
+            lastCoverMessage = "Cover import failed: \(error.localizedDescription)"
+            showCoverAlert = true
+            return false
+        }
+    }
+
+    /// True when the library has games whose missing covers should download now.
+    func saveCoverURLTemplate(_ draft: String, libraryIsEmpty: Bool) -> Bool {
+        coverURLTemplate = draft
+        guard libraryIsEmpty else { return true }
+        lastCoverMessage = "Cover URL template saved."
+        showCoverAlert = true
+        return false
+    }
+
+    func resetCoverURLTemplate() {
+        coverURLTemplate = Self.defaultCoverURLTemplate
+        lastCoverMessage = "Cover URL template reset to the ARMSX2 Android default."
+        showCoverAlert = true
+    }
 
     var primaryCoverDirectory: URL {
         let docs = URL.documentsDirectory
