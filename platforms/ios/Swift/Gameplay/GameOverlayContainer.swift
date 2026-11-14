@@ -20,6 +20,25 @@ enum PauseLayoutVariant {
     case phonePortrait
 }
 
+extension PauseLayoutVariant {
+    /// Two columns only when the measured card can keep both columns comfortable.
+    /// iPhone portrait always uses one column, while compact landscape and iPad
+    /// layouts fall back to one column below their respective usable-size threshold.
+    func supportsTwoColumns(width: CGFloat, height: CGFloat) -> Bool {
+        switch self {
+        case .phonePortrait:
+            return false
+        case .ipadTwoColumn:
+            return width >= 500 && height >= 320
+        case .phoneLandscape:
+            // Notched 19.5:9 iPhones retain at least 640 points after safe-area
+            // clearance; smaller 16:9 phones continue using the compact column. The height
+            // leaves room for the controller shortcut bar under a 12 Pro Max card.
+            return width >= 640 && height >= 280
+        }
+    }
+}
+
 /// Adaptive sizing values for an in-game overlay card, derived from the available
 /// geometry, the device class (iPad vs iPhone), and the host's safe-area insets.
 ///

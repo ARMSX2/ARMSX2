@@ -7,6 +7,7 @@ from ios_source import block, bridge_text, read, swift, without_comments
 
 GAME = swift("GameScreenView.swift")
 QUICK = swift("QuickMenuView.swift")
+PANEL = swift("ChangeDiscPanel.swift")
 
 
 class ChangeDiscPanel(unittest.TestCase):
@@ -22,7 +23,7 @@ class ChangeDiscPanel(unittest.TestCase):
         self.assertNotIn("RuntimeDiscSwapPanel", read(GAME))
 
     def test_the_panel_uses_the_pause_menu_parts(self):
-        panel = block(without_comments(read(QUICK)), "struct ChangeDiscPanel")
+        panel = block(without_comments(read(PANEL)), "struct ChangeDiscPanel")
         self.assertNotIn("NavigationStack", panel)
         for part in ("OverlayPanelScaffold", "LandscapeCommandBar(", "OverlayHeader(",
                      "QuickMenuFooter(", "Insert Disc (No Reboot)", "Restart With Disc",
