@@ -731,7 +731,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "fixes.pine.enable" to "Enable PINE",
     "fixes.pine.enable.desc" to "Lets an external tool drive the emulator over a local port: read and write guest memory, take savestates, capture GS dumps.",
     "fixes.extraMemory.label" to "Extended RAM (Dev Console)",
-    "fixes.extraMemory.desc" to "Expands EE memory to 128MB and IOP memory to 8MB, as on a development console. Only debug builds, prototypes and some homebrew use it; retail games do not, and some may behave differently. Restart the game to apply.",
+    "fixes.extraMemory.desc" to "Expands EE memory to 128MB and IOP memory to 8MB, as on a development console. Only debug builds, prototypes and some homebrew use it; retail games do not, and some may behave differently. Save states made with it on do not load with it off, or the other way round. Restart the game to apply.",
     "fixes.section.hardware" to "Hardware Fixes",
     "fixes.section.hardware.help" to "Manual renderer hacks. The master toggle auto-enables when any fix below is changed from its default.",
     "fixes.section.memory" to "Memory",
