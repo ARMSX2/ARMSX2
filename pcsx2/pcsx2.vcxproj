@@ -1115,6 +1115,7 @@
     <ClInclude Include="GS\Renderers\Common\GSCopyRoadBlendingPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSDynamicFeedbackLoopPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSAlphaBitLogicOp.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRunSnapshot.h" />
     <ClInclude Include="GS\Renderers\Common\GSReplacementAlphaSnap.h" />
     <ClInclude Include="GS\Renderers\Common\GSFastStencilShadow.h" />
     <ClInclude Include="GS\Renderers\Common\GSStencilCounter.h" />

@@ -1185,6 +1185,19 @@ private:
 		u64 pass_serial = 0;
 	};
 	DateCopy m_date_copy;
+	/// The copy of a render target kept for a run of draws on the copy road (GSRunSnapshot.h).
+	/// Live only inside the pass `pass_serial` names.
+	struct RunSnapshot
+	{
+		GSTextureVK* tex = nullptr;
+		const GSTextureVK* rt = nullptr;
+		GSVector4i area = GSVector4i::zero();
+		u64 pass_serial = 0;
+		/// Alpha bits of the target written since the copy.
+		u8 stale = 0;
+	};
+	RunSnapshot m_run_snapshot;
+	void DropRunSnapshot();
 	/// The next DeclareDrawFeedbackLoop declares the colour loop although the draw does not read (see
 	/// the shared DATE copy's setup in DoRenderHW).
 	bool m_declare_rt_loop_without_read = false;

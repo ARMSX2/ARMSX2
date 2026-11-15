@@ -7163,6 +7163,20 @@ void GSRendererHW::EmulateDATEGetConfig(DATEOptions& date_options, bool scale_rt
 	if (!m_conf.colormask.wa && (m_conf.require_one_barrier || (m_conf.require_full_barrier && features.feedback_loops())))
 		date_options.barrier = true;
 
+	// The same when the shader-emulated mask keeps alpha bit 7. No primitive of the draw changes
+	// the bit the test reads, so the test against the target as it stood before the draw is the
+	// exact one, and the mask's read of the target already fetches it. Only a draw that would
+	// otherwise take the plain stencil test, whose setup ends the render pass. Not a shuffle,
+	// where the mask's alpha byte is not the target's alpha.
+	const bool reads_rt = m_conf.require_one_barrier || (m_conf.require_full_barrier && features.feedback_loops());
+	if (m_conf.colormask.wa && m_conf.ps.fbmask && (m_conf.cb_ps.FbMask.a & 0x80) && reads_rt &&
+		!date_options.barrier && !date_options.stencil_one && !date_options.primid && !m_conf.date_copy &&
+		!m_texture_shuffle && !m_channel_shuffle && !m_conf.ps.shuffle && !m_conf.ps.write_rg)
+	{
+		GL_PERF("DATE: in the shader, the mask keeps alpha bit 7");
+		date_options.barrier = true;
+	}
+
 	if (m_conf.ps.scanmsk & 2)
 		date_options.primid = false; // to have discard in the shader work correctly
 
