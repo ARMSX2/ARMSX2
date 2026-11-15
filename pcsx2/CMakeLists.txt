@@ -705,6 +705,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSHeadlessPresent.h
 	GS/Renderers/Common/GSAlphaBitLogicOp.h
+	GS/Renderers/Common/GSRunSnapshot.h
 	GS/Renderers/Common/GSReplacementAlphaSnap.h
 	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSStencilCounter.h
@@ -734,6 +735,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Null/GSNullDeviceProfile.h
 	GS/Renderers/Null/GSRendererNull.h
 	GS/Renderers/HW/GSAlphaKnownBits.h
+	GS/Renderers/HW/GSAlphaKnownRects.h
 	GS/Renderers/HW/GSDepthCoverage.h
 	GS/Renderers/HW/GSDrawAlphaMask.h
 	GS/Renderers/HW/GSDrawLog.h

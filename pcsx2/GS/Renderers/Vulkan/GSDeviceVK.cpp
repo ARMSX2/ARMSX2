@@ -48,6 +48,7 @@ namespace
 #include "GS/Renderers/Common/GSFramebufferFetchPolicy.h"
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
+#include "GS/Renderers/Common/GSRunSnapshot.h"
 #include "GS/DriverReport/GSDriverReport.h"
 #include "GS/DriverReport/GSDriverReportActive.h"
 #include "GS/DriverReport/GSDriverReportClassify.h"
@@ -3270,6 +3271,8 @@ void GSDeviceVK::Destroy()
 		s_libretro_present_count = 0;
 	}
 
+	DropRunSnapshot();
+
 	std::unique_lock lock(s_instance_mutex);
 
 	GSDriverReport::ClearActiveVulkanDriver();
@@ -5002,6 +5005,7 @@ void GSDeviceVK::DoCopyRect(GSTexture* sTex, GSTexture* dTex, const GSVector4i& 
 				m_runs->Flush(GSRunsVK::END_OTHER);
 			vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &cr);
 			m_date_copy.valid = false; // see OMSetRenderTargets
+			m_run_snapshot.stale = 0xFF;
 
 			return;
 		}
@@ -5943,6 +5947,12 @@ void GSDeviceVK::OMSetRenderTargets(
 		// open narrower than their attachment today, so this is reachable now, not hypothetical.
 		// End the pass instead and leave the Cleared state alone, which puts the clear on the next
 		// pass's load op -- exactly what happens when this is reached outside a pass.
+
+		// Whichever way a pending clear or discard of the target is settled below, the kept copy of
+		// the target predates it.
+		if (vkRt && vkRt->GetState() != GSTexture::State::Dirty)
+			m_run_snapshot.stale = 0xFF;
+
 		const bool clear_pending = (vkRt && vkRt->GetState() == GSTexture::State::Cleared) ||
 								   (vkDs && vkDs->GetState() == GSTexture::State::Cleared);
 		if (clear_pending &&
@@ -9257,6 +9267,10 @@ bool GSDeviceVK::ApplyUtilityState(bool already_execed)
 {
 	if (m_runs)
 		m_runs->Flush(GSRunsVK::END_OTHER);
+	// A utility draw into the open pass (a stretch onto the target it is already bound to) writes
+	// the target the kept copy describes.
+	if (m_run_snapshot.tex && m_current_render_target == m_run_snapshot.rt)
+		m_run_snapshot.stale = 0xFF;
 	if (m_current_pipeline_layout == PipelineLayout::Utility && m_dirty_flags == 0)
 		return true;
 
@@ -9684,6 +9698,13 @@ GSTextureVK* GSDeviceVK::SetupPrimitiveTrackingDATE(GSHWDrawConfig& config)
 	return image;
 }
 
+void GSDeviceVK::DropRunSnapshot()
+{
+	if (m_run_snapshot.tex)
+		Recycle(m_run_snapshot.tex);
+	m_run_snapshot = {};
+}
+
 bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
 {
 	return m_date_copy.valid && InRenderPass() && m_date_copy.pass_serial == m_render_pass_serial &&
@@ -9692,6 +9713,13 @@ bool GSDeviceVK::DateCopyLive(const GSHWDrawConfig& config)
 
 void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 {
+	// What the draw writes makes those bits of the kept target copy stale (GSRunSnapshot.h). Here,
+	// because a draw the run machine merges returns below. The draw's own decision reads the set
+	// as it stood before.
+	const u8 snapshot_stale = m_run_snapshot.stale;
+	if (m_run_snapshot.tex)
+		m_run_snapshot.stale |= GSRunSnapshot::DrawWrites(config);
+
 	// The run machine (GSRunsVK.h) decides whether this draw can join a run, and ends the open run if not, before
 	// anything below records a command.
 	if (m_runs)
@@ -9811,6 +9839,18 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	if (config.stencil_counter.enable && DrawStencilCounter(config))
 		return;
+
+	// The kept copy serves the pass it was taken for, on that pass's target. Every write to the
+	// target from outside this function ends the pass, marks the copy stale, or is still pending
+	// on the texture (GSRunSnapshot::Live).
+	const bool snapshot_pass_open = m_run_snapshot.tex && InRenderPass() &&
+	                                m_run_snapshot.pass_serial == m_render_pass_serial &&
+	                                m_run_snapshot.rt == m_current_render_target;
+	const bool snapshot_live = GSRunSnapshot::Live(m_run_snapshot.tex != nullptr, snapshot_pass_open,
+		snapshot_pass_open && m_current_render_target->GetState() == GSTexture::State::Dirty,
+		g_gs_device->GetColorClipTexture() != nullptr);
+	if (m_run_snapshot.tex && !snapshot_live)
+		DropRunSnapshot();
 
 	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
 	GSTextureVK* draw_rt = config.ps.HasColorROV() ? nullptr : static_cast<GSTextureVK*>(config.rt);
@@ -10089,9 +10129,39 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 	if (draw_rt && config.road.clone_rt)
 	{
-		// Requires a copy of the RT.
-		draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
-		if (draw_rt_clone)
+		// Requires a copy of the RT: the kept one where it still holds what this draw reads
+		// (GSRunSnapshot.h), else a new one.
+		const GSRunSnapshot::Reads reads = colclip_rt ? GSRunSnapshot::Reads() : GSRunSnapshot::DrawReads(config);
+		const bool live = snapshot_live && m_run_snapshot.rt == draw_rt;
+		const bool covered = live && m_run_snapshot.area.rintersect(config.drawarea).eq(config.drawarea);
+		const GSRunSnapshot::Copy copy = GSRunSnapshot::Decide(live, snapshot_stale, covered, reads);
+		if (copy == GSRunSnapshot::Copy::Reuse)
+		{
+			draw_rt_clone = m_run_snapshot.tex;
+			PSSetShaderResource(2, draw_rt_clone, true);
+		}
+		else if (copy != GSRunSnapshot::Copy::Private)
+		{
+			if (m_run_snapshot.tex && (m_run_snapshot.tex->GetSize() != rtsize || m_run_snapshot.tex->GetFormat() != draw_rt->GetFormat()))
+				DropRunSnapshot();
+			if (!m_run_snapshot.tex)
+				m_run_snapshot.tex = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true));
+			draw_rt_clone = m_run_snapshot.tex;
+			if (draw_rt_clone)
+			{
+				const GSVector4i area = (copy == GSRunSnapshot::Copy::Target) ? GSVector4i::loadh(rtsize) : config.drawarea;
+				GL_PUSH("VK: Copy RT to kept texture {%d,%d %dx%d}", area.left, area.top, area.width(), area.height());
+				EndRenderPass();
+				DoCopyRect(draw_rt, draw_rt_clone, area, area.left, area.top);
+				m_run_snapshot.rt = draw_rt;
+				m_run_snapshot.area = area;
+				m_run_snapshot.stale = GSRunSnapshot::DrawWrites(config);
+				PSSetShaderResource(2, draw_rt_clone, true);
+			}
+			else
+				Console.Warning("VK: Failed to allocate temp texture for RT copy.");
+		}
+		else if ((draw_rt_clone = static_cast<GSTextureVK*>(CreateTexture(rtsize.x, rtsize.y, 1, draw_rt->GetFormat(), true))))
 		{
 			GL_PUSH("VK: Copy RT to temp texture {%d,%d %dx%d}",
 				config.drawarea.left, config.drawarea.top,
@@ -10245,6 +10315,15 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
+	// The kept target copy follows the target into the pass this draw opened. Nothing wrote the
+	// target between the pass it was live in and this one: only this function ran, and its setup
+	// draws write depth, stencil and scratch images.
+	if (m_run_snapshot.tex && m_run_snapshot.rt == m_current_render_target && !colclip_rt &&
+		(snapshot_live || draw_rt_clone == m_run_snapshot.tex))
+	{
+		m_run_snapshot.pass_serial = m_render_pass_serial;
+	}
+
 	// The pass the shared copy lives in is open now: this draw built the copy or found it live.
 	if (config.date_copy != GSAlphaBitLogicOp::NoDateCopy && config.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Stencil)
 		m_date_copy = {true, config.rt, config.ds, config.datm, m_render_pass_serial};
@@ -10365,7 +10444,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		}
 	}
 
-	if (draw_rt_clone)
+	if (draw_rt_clone && draw_rt_clone != m_run_snapshot.tex)
 		Recycle(draw_rt_clone);
 
 	if (date_image)

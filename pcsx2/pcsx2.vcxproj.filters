@@ -3023,6 +3023,9 @@
     <ClInclude Include="GS\Renderers\Common\GSAlphaBitLogicOp.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSRunSnapshot.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSReplacementAlphaSnap.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
@@ -3093,6 +3096,9 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h">
+      <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\HW\GSAlphaKnownRects.h">
       <Filter>System\Ps2\GS\Renderers\Hardware</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSTargetRebase.h">

@@ -7,6 +7,7 @@
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
+#include "GS/Renderers/HW/GSAlphaKnownRects.h"
 
 #include <array>
 #include <deque>
@@ -378,6 +379,11 @@ public:
 		/// byte-identity-tested against the dump corpus and is not re-litigated here.
 		bool m_alpha_known_via_union = false;
 
+		/// Alpha bits known inside rectangles of the texture, where a gapless write established
+		/// them without covering m_valid. Read by the exact FBMSK-drop rule only when m_alpha_known
+		/// does not answer. See GSAlphaKnownRects.h.
+		GSAlphaKnownRects::Set m_alpha_rects;
+
 		// Valid alpha means "we have rendered to the alpha channel of this target".
 		// A false value means that the alpha in local memory is still valid/up-to-date.
 		bool m_valid_alpha_low = false;
@@ -430,6 +436,21 @@ public:
 		/// Devbuild tripwire for m_alpha_known drifting away from m_alpha_min/max. Cheap, and a
 		/// no-op outside devbuilds.
 		void AssertAlphaKnownAgreesWithRange(const char* site) const;
+
+		/// Replaces what is known about the target's alpha: the whole-target pair becomes `k` and
+		/// every rectangle is forgotten. For anything that writes the texture other than a draw.
+		void ResetAlphaKnown(GSAlphaKnownBits::Known k)
+		{
+			m_alpha_known = k;
+			m_alpha_known_via_union = false;
+			m_alpha_rects.Clear();
+		}
+
+		/// What m_alpha_rects describe: this texture allocation under this base, width and format.
+		GSAlphaKnownRects::Key AlphaRectsKey() const
+		{
+			return {m_texture ? m_texture->GetLease() : 0, m_TEX0.U32[0] & 0x3ffffffu};
+		}
 
 		void Update(bool cannot_scale = false);
 
