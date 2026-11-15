@@ -51,6 +51,13 @@ public:
 	// to land at the same start_pc with a matching microRegInfo. Call from
 	// the VU harness's SeedEntryState() (i.e. once per Run()).
 	static void ResetVuBlockCache(int vu_index);
+
+	// Switches the VM between the 32MB and the 128MB (Extended RAM) map and
+	// redoes Initialize's memory and CPU resets, which rebuild the recompilers'
+	// RAM tables for the new size. Guest memory is zeroed, so the parking lot,
+	// the exception vector stubs and the counter setup are installed again.
+	// A test that turns it on turns it off again before it ends.
+	static void SetExtraMemory(bool enabled);
 };
 
 // Opt a test into the IEEE-ish FP environment: round-to-nearest, denormals

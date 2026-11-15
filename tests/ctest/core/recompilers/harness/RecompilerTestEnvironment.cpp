@@ -293,4 +293,31 @@ void RecompilerTestEnvironment::ResetVuBlockCache(int vu_index)
 		CpuMicroVU1.Reset();
 }
 
+void RecompilerTestEnvironment::SetExtraMemory(bool enabled)
+{
+	// Steps 6-11 of Initialize, in the same order, with the map size changed
+	// first: memReset maps ExposedRam, and the recompilers' Reset rebuilds
+	// their LUTs when ExposedRam differs from the size they were built for.
+	memSetExtraMemMode(enabled);
+	SysMemory::Reset();
+	psxRec.Reset();
+	psxInt.Reset();
+	recCpu.Reset();
+	intCpu.Reset();
+	CpuMicroVU0.Reset();
+	CpuMicroVU1.Reset();
+	mmap_ResetBlockTracking();
+	psxCpu = &psxInt;
+	Cpu = &intCpu;
+	CpuVU0 = &CpuIntVU0;
+	CpuVU1 = &CpuIntVU1;
+	InstallParkingLot();
+	InstallEeExceptionVectorStubs();
+	psxRcntInit();
+	psxNextDeltaCounter = 0x7FFFFFFF;
+	psxNextStartCounter = 0;
+	nextDeltaCounter = 0x7FFFFFFF;
+	nextStartCounter = 0;
+}
+
 } // namespace recompiler_tests
