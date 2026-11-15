@@ -934,6 +934,7 @@
     <ClInclude Include="Host\AudioStreamTypes.h" />
     <ClInclude Include="ImGui\FullscreenUI.h" />
     <ClInclude Include="ImGui\FullscreenUI_Internal.h" />
+    <ClInclude Include="ImGui\FullscreenUI_PageDwell.h" />
     <ClInclude Include="ImGui\FullscreenUIShot.h" />
     <ClInclude Include="ImGui\ImGuiAnimated.h" />
     <ClInclude Include="ImGui\ImGuiFullscreen.h" />
@@ -1080,6 +1081,8 @@
     <ClInclude Include="GS\Renderers\HW\GSTextureCache.h" />
     <ClInclude Include="GS\Renderers\SW\GSTextureCacheSW.h" />
     <ClInclude Include="GS\Renderers\SW\GSSwTextureDirty.h" />
+    <ClInclude Include="GS\Renderers\SW\GSSwTargetAlias.h" />
+    <ClInclude Include="GS\Renderers\SW\GSSwTextureReaders.h" />
     <ClInclude Include="GS\GSJobQueue.h" />
     <ClInclude Include="GS\GSUtil.h" />
     <ClInclude Include="GS\GSVector.h" />

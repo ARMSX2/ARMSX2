@@ -2357,6 +2357,12 @@
     <ClInclude Include="GS\Renderers\SW\GSSwTextureDirty.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSSwTargetAlias.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\SW\GSSwTextureReaders.h">
+      <Filter>System\Ps2\GS\Renderers\Software</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\SW\GSVertexSW.h">
       <Filter>System\Ps2\GS\Renderers\Software</Filter>
     </ClInclude>
@@ -2800,6 +2806,9 @@
       <Filter>Misc\ImGui</Filter>
     </ClInclude>
     <ClInclude Include="ImGui\FullscreenUI_Internal.h">
+      <Filter>Misc\ImGui</Filter>
+    </ClInclude>
+    <ClInclude Include="ImGui\FullscreenUI_PageDwell.h">
       <Filter>Misc\ImGui</Filter>
     </ClInclude>
     <ClInclude Include="ImGui\FullscreenUIShot.h">
