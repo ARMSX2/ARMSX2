@@ -5734,6 +5734,7 @@ void GSRendererHW::Draw()
 
 					// Invalidate has been moved to after DrawPrims(), because we might kill the current sources' backing.
 					g_gs_device->CopyRect(old_rt->m_texture, rt->m_texture, GSVector4i(0, 0, copy_width, copy_height), 0, old_height);
+					rt->m_alpha_rects.Clear();
 					preserve_rt_color = true;
 				}
 				else
@@ -6645,13 +6646,14 @@ void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
 
 void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds,
 	DATEOptions& date_options, int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-	GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union)
+	GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union, GSAlphaKnownRects::Set& rt_new_alpha_rects)
 {
 	// Calculate alpha range for RT.
 	if (rt)
 	{
 		rt_new_alpha_known = rt->m_alpha_known;
 		rt_new_alpha_via_union = rt->m_alpha_known_via_union;
+		rt_new_alpha_rects = rt->m_alpha_rects;
 		GL_INS("HW: RT alpha was %s before draw", rt->m_rt_alpha_scale ? "scaled" : "NOT scaled");
 
 		blend_alpha_min = rt_new_alpha_min = rt->m_alpha_min;
@@ -6679,8 +6681,14 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// same fact as m_primitive_covers_without_gaps.
 			const bool covers_by_tiling = (m_primitive_covers_without_gaps == NoGapsType::FullCover);
 			const bool covers_by_union = !covers_by_tiling && m_primitive_union_covers_rect;
+			const bool every_pixel_written = !(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing);
 			const bool full_cover = rt->m_valid.rintersect(m_r).eq(rt->m_valid) && (covers_by_tiling || covers_by_union) &&
-				!(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing);
+				every_pixel_written;
+			// The same tests, asked of the draw's own rect wherever it sits: sprites that tile it
+			// from an offset count too.
+			const bool covers_own_rect = (covers_by_tiling || covers_by_union ||
+											 m_primitive_covers_without_gaps == NoGapsType::SpriteNoGaps) &&
+										 every_pixel_written;
 
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
 			// The mask the draw asked for, not the one the shader emulates: the target's recorded alpha
@@ -6703,6 +6711,20 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 				rt_new_alpha_via_union = covers_by_union;
 			rt_new_alpha_known.bits &= static_cast<u8>(alpha_mask);
 			rt_new_alpha_known.value &= rt_new_alpha_known.bits;
+
+			// A channel shuffle has rebuilt m_r into a page-aligned or whole-target rect by now, so
+			// it no longer says which pixels were written.
+			if (m_channel_shuffle)
+			{
+				rt_new_alpha_rects.Clear();
+			}
+			else
+			{
+				rt_new_alpha_rects.AfterWrite(rt->AlphaRectsKey(),
+					{m_r, static_cast<u8>(~fb_mask & alpha_mask), k_src.lo, k_src.hi, covers_own_rect},
+					rt->GetUnscaledRect());
+				rt_new_alpha_rects.KeepBits(static_cast<u8>(alpha_mask));
+			}
 
 			if ((fb_mask & alpha_mask) == 0)
 			{
@@ -6755,6 +6777,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			rt->m_alpha_range = true;
 			rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
 			rt_new_alpha_via_union = false;
+			rt_new_alpha_rects.Clear();
 		}
 
 
@@ -6774,6 +6797,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			rt_new_alpha_min &= 128;
 			rt_new_alpha_known.bits &= 128;
 			rt_new_alpha_known.value &= rt_new_alpha_known.bits;
+			rt_new_alpha_rects.KeepBits(128);
 
 			if (rt_new_alpha_max == rt_new_alpha_min)
 				rt->m_alpha_range = false;
@@ -7580,7 +7604,7 @@ void GSRendererHW::ResolveHeldAlphaMask()
 	}
 }
 
-u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask)
+u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask, GSAlphaKnownRects::ForDraw& known)
 {
 	const u32 fmsk = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].fmsk;
 	const u8 alpha_mask = static_cast<u8>((fmsk & 0xFF000000u) >> 24);
@@ -7623,7 +7647,10 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	// CLUT scan GetAlphaMinMax() does from running on a draw that was never going to use its
 	// answer, which is the whole TargetUnknown population -- every alpha-partially-masked draw
 	// whose target the tracker does not (yet) know, not only the ones that end up substituting.
-	if ((rt->m_alpha_known.bits & masked) != masked)
+	// Where the whole-target pair does not know the bits, the rectangles that contain this draw
+	// may.
+	known = GSAlphaKnownRects::KnownForDraw(rt->m_alpha_known, rt->m_alpha_rects, rt->AlphaRectsKey(), m_r, masked);
+	if ((known.known.bits & masked) != masked)
 		return GSDrawAlphaMask::ExactAlphaDropTargetUnknown;
 
 	// The fragment alpha, with FBA folded in. Read here, so before CorrectATEAlphaMinMax narrows
@@ -7639,7 +7666,7 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	const u8 src_lo = src.lo;
 	const u8 src_hi = src.hi;
 
-	switch (GSDrawAlphaMask::DecideExact(rt->m_alpha_known, masked, src_lo, src_hi))
+	switch (GSDrawAlphaMask::DecideExact(known.known, masked, src_lo, src_hi))
 	{
 		case GSDrawAlphaMask::ExactVerdict::TargetUnknown:
 			// Unreachable from here now that the guard above has already returned on this
@@ -7792,13 +7819,15 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// the same bytes end up in the target, and the block below takes neither the barrier nor
 		// -- on a device with no framebuffer fetch -- the render-target clone the barrier becomes.
 		const int requested_fbmask = fbmask;
-		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask));
+		GSAlphaKnownRects::ForDraw known{};
+		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask), known);
 
-		// Whether this drop's exactness rests on knowledge a sprite-union cover established. Such
-		// a drop is new here, so the barrier it removes is held over the blend selection below;
-		// a drop the target could already answer for is one that has been byte-identity-tested
-		// against the dump corpus and is taken outright, exactly as before.
-		const bool drop_via_union = (exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken) && rt && rt->m_alpha_known_via_union;
+		// Whether this drop's exactness rests on knowledge a sprite-union cover or a rectangle
+		// established. Such a drop is new here, so the barrier it removes is held over the blend
+		// selection below; a drop the target could already answer for is one that has been
+		// byte-identity-tested against the dump corpus and is taken outright, exactly as before.
+		const bool drop_via_union = (exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken) && rt &&
+			(rt->m_alpha_known_via_union || known.from_rects);
 
 		// Where the mask is not the identity but the target still knows every bit it holds back,
 		// the merge's answer on those bits is that known value whatever this draw computed. So the
@@ -7866,7 +7895,7 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 			if (substitute)
 			{
 				m_held_alpha_mask.substitution = GSDrawAlphaMask::SubstitutionFor(
-					static_cast<u8>((static_cast<u32>(requested_fbmask) >> 24) & 0xFF), rt->m_alpha_known.value);
+					static_cast<u8>((static_cast<u32>(requested_fbmask) >> 24) & 0xFF), known.known.value);
 			}
 		}
 
@@ -11456,8 +11485,9 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	int rt_new_alpha_min = 0, rt_new_alpha_max = 255;
 	GSAlphaKnownBits::Known rt_new_alpha_known;
 	bool rt_new_alpha_via_union = false;
+	GSAlphaKnownRects::Set rt_new_alpha_rects;
 	CalculateAlphaRange(rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max,
-		rt_new_alpha_known, rt_new_alpha_via_union);
+		rt_new_alpha_known, rt_new_alpha_via_union, rt_new_alpha_rects);
 
 	if (m_fast_stencil_shadow && rt)
 	{
@@ -11468,6 +11498,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		rt_new_alpha_max = 255;
 		rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
 		rt_new_alpha_via_union = false;
+		rt_new_alpha_rects.Clear();
 	}
 
 	// DATE: selection of the algorithm.
@@ -11593,6 +11624,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		rt->m_alpha_min = rt_new_alpha_min;
 		rt->m_alpha_known = rt_new_alpha_known;
 		rt->m_alpha_known_via_union = rt_new_alpha_via_union;
+		rt->m_alpha_rects = rt_new_alpha_rects;
 		rt->AssertAlphaKnownAgreesWithRange("draw");
 
 	}
@@ -12539,9 +12571,8 @@ bool GSRendererHW::TryTargetClear(GSTextureCache::Target* rt, GSTextureCache::Ta
 			}
 			rt->m_alpha_range = false;
 			// The clear reaches the whole texture, so every alpha bit is known again.
-			rt->m_alpha_known_via_union = false;
-			rt->m_alpha_known = has_alpha ? GSAlphaKnownBits::Known::All(static_cast<u8>(rt->m_alpha_min)) :
-											GSAlphaKnownBits::Known::Nothing();
+			rt->ResetAlphaKnown(has_alpha ? GSAlphaKnownBits::Known::All(static_cast<u8>(rt->m_alpha_min)) :
+											GSAlphaKnownBits::Known::Nothing());
 			rt->AssertAlphaKnownAgreesWithRange("TryTargetClear");
 
 		}

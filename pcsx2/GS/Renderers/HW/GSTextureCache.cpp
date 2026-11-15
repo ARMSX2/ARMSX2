@@ -2520,6 +2520,7 @@ void GSTextureCache::CombineAlignedInsideTargets(Target* target, GSTextureCache:
 							{
 								g_gs_device->StretchRectAutoMask(t->m_texture, source_rect, target->m_texture,
 									target_drect, valid_color, valid_color, valid_color, valid_alpha);
+								target->m_alpha_rects.Clear();
 							}
 							else
 							{
@@ -3175,8 +3176,7 @@ GSTextureCache::Target* GSTextureCache::LookupDrawTargetWalk(GIFRegTEX0 TEX0, co
 				dst->m_alpha_min = dst_match->m_alpha_min;
 				// The range is inherited; the per-bit knowledge is not, because what actually lands
 				// here depends on dirty rects and a possible format conversion.
-				dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
-				dst->m_alpha_known_via_union = false;
+				dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 
 				// Don't bother copying the old target in if the whole thing is dirty.
 				if (dst->m_dirty.empty() || (~dst->m_dirty.GetDirtyChannels() & GSUtil::GetChannelMask(TEX0.PSM)) != 0 ||
@@ -3313,8 +3313,7 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 		dst->m_texture = tex;
 		dst->m_alpha_min = 0;
 		dst->m_alpha_max = 0;
-		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
-		dst->m_alpha_known_via_union = false;
+		dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 	}
 	else if ((used || type == GSTextureCache::DepthStencil) && (std::abs(static_cast<s16>(GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp - GSLocalMemory::m_psm[TEX0.PSM].bpp)) == 16))
 	{
@@ -3557,6 +3556,7 @@ GSTextureCache::Target* GSTextureCache::ProcessTargetAfterLookup(RescaleHelper& 
 			{
 				g_gs_device->InvalidateRenderTarget(dst->m_texture);
 			}
+			dst->m_alpha_rects.Clear();
 		}
 	}
 
@@ -4020,8 +4020,7 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							dst->m_valid_alpha_high = old_dst->m_valid_alpha_high;
 							dst->m_alpha_max = old_dst->m_alpha_max;
 							dst->m_alpha_min = old_dst->m_alpha_min;
-							dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
-							dst->m_alpha_known_via_union = false;
+							dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 							dst->m_rt_alpha_scale = old_dst->m_rt_alpha_scale;
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, copy_rect, 0, 0);
@@ -4108,6 +4107,7 @@ bool GSTextureCache::PreloadTarget(GIFRegTEX0 TEX0, const GSVector2i& size, cons
 							}
 
 							g_gs_device->CopyRect(old_dst->m_texture, dst->m_texture, GSVector4i(0, 0, copy_width, copy_height), dst_offset_scaled_width, dst_offset_scaled_height);
+							dst->m_alpha_rects.Clear();
 						}
 					}
 
@@ -4536,7 +4536,10 @@ void GSTextureCache::Target::ScaleRTAlpha()
 				const GSVector4 sRect = dRect / GSVector4(rtsize.x, rtsize.y).xyxy();
 				g_gs_device->StretchRect(m_texture, sRect, temp_rt, dRect, ShaderConvert::RTA_CORRECTION, Nearest);
 				g_gs_device->Recycle(m_texture);
+				const GSAlphaKnownRects::Key old_key = AlphaRectsKey();
 				m_texture = temp_rt;
+				// The conversion keeps alpha values, over the valid area it copies.
+				m_alpha_rects.Moved(old_key, AlphaRectsKey(), m_valid);
 			}
 		}
 
@@ -4562,7 +4565,10 @@ void GSTextureCache::Target::UnscaleRTAlpha()
 				const GSVector4 sRect = dRect / GSVector4(rtsize.x, rtsize.y).xyxy();
 				g_gs_device->StretchRect(m_texture, sRect, temp_rt, dRect, ShaderConvert::RTA_DECORRECTION, Nearest);
 				g_gs_device->Recycle(m_texture);
+				const GSAlphaKnownRects::Key old_key = AlphaRectsKey();
 				m_texture = temp_rt;
+				// The conversion keeps alpha values, over the valid area it copies.
+				m_alpha_rects.Moved(old_key, AlphaRectsKey(), m_valid);
 			}
 		}
 
@@ -6139,8 +6145,7 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 		dst->m_alpha_max = src->m_alpha_max;
 		dst->m_alpha_min = src->m_alpha_min;
 		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
-		dst->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
-		dst->m_alpha_known_via_union = false;
+		dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 		dst->m_alpha_range |= src->m_alpha_range;
 	}
 
@@ -6319,6 +6324,7 @@ bool GSTextureCache::MoveColourPagesIntoDepthTarget(u32 SBP, u32 SBW, int sx, in
 	const u32 bpp = GSLocalMemory::m_psm[dst->m_TEX0.PSM].bpp;
 	const ShaderConvertSelector shader = GetConvertShader(GSTexture::Format::Color, dst->m_texture->GetFormat(), bpp, bpp, 0xF, BilnIf(upscaled));
 	g_gs_device->DrawMultiStretchRects(&drect, 1, dst->m_texture, shader);
+	dst->m_alpha_rects.Clear();
 
 	// The target now holds what Target::Update would have drawn from local memory after the CPU move.
 	dst->m_valid_rgb = true;
@@ -6655,8 +6661,7 @@ bool GSTextureCache::ShuffleMove(u32 BP, u32 BW, u32 PSM, int sx, int sy, int dx
 		// Because we don't know the new alpha value which came from green, just go full paranoid.
 		tgt->m_alpha_min = 0;
 		tgt->m_alpha_max = 255;
-		tgt->m_alpha_known = GSAlphaKnownBits::Known::Nothing();
-		tgt->m_alpha_known_via_union = false;
+		tgt->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 		tgt->m_alpha_range = true;
 	}
 
@@ -6772,6 +6777,7 @@ void GSTextureCache::CopyPages(Target* src, u32 sbw, u32 src_offset, Target* dst
 
 	// No need to sort here, it's all from the same texture.
 	g_gs_device->DrawMultiStretchRects(rects, num_pages, dst->m_texture, shader);
+	dst->m_alpha_rects.Clear();
 }
 
 GSTextureCache::Target* GSTextureCache::GetExactTarget(u32 BP, u32 BW, int type, u32 end_bp)
@@ -8359,8 +8365,7 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 	// recorded as the range. Without the clear the contents are whatever the pool handed back.
 	if (clear && type == RenderTarget)
 	{
-		t->m_alpha_known = GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min));
-		t->m_alpha_known_via_union = false;
+		t->ResetAlphaKnown(GSAlphaKnownBits::Known::All(static_cast<u8>(t->m_alpha_min)));
 	}
 
 	g_texture_cache->m_target_memory_usage += t->m_texture->GetMemUsage();
@@ -9498,6 +9503,7 @@ void GSTextureCache::Target::Update(bool cannot_scale)
 
 		m_alpha_known = GSAlphaKnownBits::AfterUpload(
 			m_alpha_known, alpha_minmax.first, alpha_minmax.second, full_alpha_upload);
+		m_alpha_rects.AfterUpload(total_rect, alpha_minmax.first, alpha_minmax.second);
 		if (full_alpha_upload)
 			m_alpha_known_via_union = false;
 
@@ -9697,6 +9703,7 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 	const bool clear = (new_size.x > size.x || new_size.y > size.y);
 
 	GSTexture* tex = g_gs_device->CreateCompatible(m_texture, new_size, clear, PreferReusedLabelledTexture());
+	const GSAlphaKnownRects::Key old_alpha_rects_key = AlphaRectsKey();
 	if (!tex)
 	{
 		Console.Error("(ResizeTexture) Failed to allocate %dx%d texture from %dx%d texture", size.x, size.y, new_size.x, new_size.y);
@@ -9704,6 +9711,7 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 	}
 
 	// Only need to copy if it's been written to.
+	const bool copied_in_place = m_texture->GetState() == GSTexture::State::Dirty && !require_new_rect && !tex->IsDepthLike();
 	if (m_texture->GetState() == GSTexture::State::Dirty)
 	{
 		const GSVector4i rc = require_new_rect ? new_rect : GSVector4i::loadh(size.min(new_size));
@@ -9754,8 +9762,16 @@ bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unsca
 	else
 		g_texture_cache->m_target_memory_usage += tex->GetMemUsage();
 
+	const GSVector2i old_unscaled_size = m_unscaled_size;
 	m_texture = tex;
 	m_unscaled_size = new_unscaled_size;
+
+	// A plain copy keeps every pixel where it was, up to the smaller of the two sizes. Anything
+	// else (a stretch to a new rect, a pending clear, no contents) leaves the rectangles nothing.
+	if (copied_in_place)
+		m_alpha_rects.Moved(old_alpha_rects_key, AlphaRectsKey(), GSVector4i::loadh(old_unscaled_size.min(new_unscaled_size)));
+	else
+		m_alpha_rects.Clear();
 
 	// The pixels a larger allocation gained are the zero it was cleared to.
 	if (clear)

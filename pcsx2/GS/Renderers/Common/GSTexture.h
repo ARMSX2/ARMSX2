@@ -118,6 +118,9 @@ protected:
 	// different purpose than texture cache ages, do not attempt to merge
 	u32 m_last_frame_used = 0;
 
+	// Which hand-out of this texture from GSDevice::FetchSurface this is; never repeats.
+	u64 m_lease = 0;
+
 	// TakeDestinationAlphaLoop: the frame being counted, its stencil-one draws so far, and whether the
 	// target has taken the loop.
 	u32 m_destination_alpha_frame = 0;
@@ -286,6 +289,11 @@ public:
 
 	__fi u32 GetLastFrameUsed() const { return m_last_frame_used; }
 	void SetLastFrameUsed(u32 frame) { m_last_frame_used = frame; }
+
+	/// A number that changes every time GSDevice::FetchSurface hands the texture out, whether new or
+	/// from the pool, so a claim about its pixels can be tied to one owner's use of it.
+	__fi u64 GetLease() const { return m_lease; }
+	void SetLease(u64 lease) { m_lease = lease; }
 
 	/// GSDevice::FeatureSupport::destination_alpha_loop: counts a stencil-one destination-alpha draw on
 	/// this target and says whether it reads the target in the pass. That holds once the target has had
