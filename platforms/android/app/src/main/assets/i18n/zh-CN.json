@@ -425,7 +425,7 @@
  "bugreport.consent.metered": "你正在使用按流量计费的网络，此报告约 %1$s，可能会消耗移动数据。",
  "bugreport.consent.prepareFailed": "无法收集日志，因此没有可发送的内容。请关闭后重试。",
  "bugreport.consent.prepareFailedSome": "收集日志时出了问题。已收集的内容已列出，你仍可发送。",
- "bugreport.consent.retention": "报告保留 90 天，仅用于修复问题。你的记忆卡、BIOS 和游戏绝不会被发送。",
+ "bugreport.consent.retention": "报告保留 14 天，仅用于修复问题。你的记忆卡、BIOS 和游戏绝不会被发送。",
  "bugreport.consent.startGame": "如需附带图形转储和即时存档，请启动游戏，并在其暂停菜单中使用“报告问题”。",
  "bugreport.consent.title": "发送此报告？",
  "bugreport.consent.total": "合计：%1$s",

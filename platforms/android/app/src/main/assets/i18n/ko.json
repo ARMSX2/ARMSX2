@@ -425,7 +425,7 @@
  "bugreport.consent.metered": "데이터 사용량 제한 연결을 사용 중이며 이 보고서는 약 %1$s입니다. 모바일 데이터를 사용할 수 있습니다.",
  "bugreport.consent.prepareFailed": "로그를 수집하지 못해 보낼 내용이 없습니다. 닫은 뒤 다시 시도하세요.",
  "bugreport.consent.prepareFailedSome": "로그를 수집하는 중 문제가 발생했습니다. 수집된 항목이 목록에 표시되며, 그대로 전송할 수 있습니다.",
- "bugreport.consent.retention": "보고서는 90일간 보관되며 버그 수정에만 사용됩니다. 메모리 카드, BIOS, 게임은 절대 전송되지 않습니다.",
+ "bugreport.consent.retention": "보고서는 14일간 보관되며 버그 수정에만 사용됩니다. 메모리 카드, BIOS, 게임은 절대 전송되지 않습니다.",
  "bugreport.consent.startGame": "그래픽 덤프와 저장 상태를 포함하려면 게임을 시작한 뒤 일시정지 메뉴에서 '문제 신고'를 사용하세요.",
  "bugreport.consent.title": "이 보고서를 전송할까요?",
  "bugreport.consent.total": "합계: %1$s",

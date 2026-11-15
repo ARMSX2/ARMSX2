@@ -420,7 +420,7 @@
   "bugreport.consent.metered": "Vous êtes sur une connexion limitée et ce rapport fait environ %1$s. Il peut consommer des données mobiles.",
   "bugreport.consent.prepareFailed": "Les journaux n'ont pas pu être collectés, il n'y a donc rien à envoyer. Fermez cette fenêtre et réessayez.",
   "bugreport.consent.prepareFailedSome": "Un problème est survenu pendant la collecte des journaux. Ce qui a été collecté est listé ; vous pouvez quand même l'envoyer.",
-  "bugreport.consent.retention": "Les rapports sont conservés 90 jours et servent uniquement à corriger des bugs. Vos cartes mémoire, votre BIOS et vos jeux ne sont jamais envoyés.",
+  "bugreport.consent.retention": "Les rapports sont conservés 14 jours et servent uniquement à corriger des bugs. Vos cartes mémoire, votre BIOS et vos jeux ne sont jamais envoyés.",
   "bugreport.consent.startGame": "Pour inclure un dump graphique et un état de sauvegarde, lancez le jeu et utilisez Signaler un problème depuis son menu pause.",
   "bugreport.consent.title": "Envoyer ce rapport ?",
   "bugreport.consent.total": "Total : %1$s",

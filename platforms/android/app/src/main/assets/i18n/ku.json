@@ -480,7 +480,7 @@
   "bugreport.consent.metered": "Tu li ser girêdaneke bi sînor î û mezinahiya vê raporê nêzîkî %1$s ye. Dibe ku daneya mobîl bi kar bîne.",
   "bugreport.consent.prepareFailed": "Têketin nehatin berhevkirin, ji ber vê tiştek tune ku bê şandin. Vê bigire û dîsa biceribîne.",
   "bugreport.consent.prepareFailedSome": "Dema têketin dihatin berhevkirin tiştek xelet çû. Ya hatiye berhevkirin li vir tê nîşandan; tu hîn jî dikarî wê bişînî.",
-  "bugreport.consent.retention": "Rapor 90 rojan têne tomarkirin û tenê ji bo rastkirina xeletiyan têne bikaranîn. Kartên bîranînê, BIOS û lîstikên te qet nayên şandin.",
+  "bugreport.consent.retention": "Rapor 14 rojan têne tomarkirin û tenê ji bo rastkirina xeletiyan têne bikaranîn. Kartên bîranînê, BIOS û lîstikên te qet nayên şandin.",
   "bugreport.consent.startGame": "Ji bo tevlîkirina dump a grafîkê û rewşeke tomarkirinê, lîstikê dest pê bike û ji menuya sekinandinê Pirsgirêkê Ragihîne bikar bîne.",
   "bugreport.consent.title": "Ev rapor bê şandin?",
   "bugreport.consent.total": "Giştî: %1$s",

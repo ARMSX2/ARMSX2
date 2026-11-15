@@ -425,7 +425,7 @@
   "bugreport.consent.metered": "Anda memakai koneksi terbatas dan laporan ini sekitar %1$s. Ini bisa memakai data seluler.",
   "bugreport.consent.prepareFailed": "Log tidak bisa dikumpulkan, jadi tidak ada yang dikirim. Tutup ini lalu coba lagi.",
   "bugreport.consent.prepareFailedSome": "Terjadi masalah saat mengumpulkan log. Yang berhasil dikumpulkan tercantum di sini; Anda tetap bisa mengirimnya.",
-  "bugreport.consent.retention": "Laporan disimpan selama 90 hari dan hanya dipakai untuk memperbaiki bug. Memory card, BIOS, dan game Anda tidak pernah dikirim.",
+  "bugreport.consent.retention": "Laporan disimpan selama 14 hari dan hanya dipakai untuk memperbaiki bug. Memory card, BIOS, dan game Anda tidak pernah dikirim.",
   "bugreport.consent.startGame": "Untuk menyertakan dump grafis dan save state, mulai game lalu gunakan Laporkan masalah dari menu jeda.",
   "bugreport.consent.title": "Kirim laporan ini?",
   "bugreport.consent.total": "Total: %1$s",

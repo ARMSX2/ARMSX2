@@ -305,7 +305,7 @@
  "bugreport.consent.metered": "Du nutzt eine getaktete Verbindung, und dieser Bericht ist ca. %1$s groß. Er kann mobile Daten verbrauchen.",
  "bugreport.consent.prepareFailed": "Die Logs konnten nicht gesammelt werden, daher gibt es nichts zu senden. Schließe dies und versuche es erneut.",
  "bugreport.consent.prepareFailedSome": "Beim Sammeln der Logs ist etwas schiefgegangen. Das Gesammelte ist aufgelistet; du kannst es trotzdem senden.",
- "bugreport.consent.retention": "Berichte werden 90 Tage aufbewahrt und nur zur Fehlerbehebung verwendet. Deine Memory Cards, dein BIOS und deine Spiele werden nie gesendet.",
+ "bugreport.consent.retention": "Berichte werden 14 Tage aufbewahrt und nur zur Fehlerbehebung verwendet. Deine Memory Cards, dein BIOS und deine Spiele werden nie gesendet.",
  "bugreport.consent.startGame": "Um einen Grafik-Dump und einen Savestate beizufügen, starte das Spiel und wähle im Pause-Menü Problem melden.",
  "bugreport.consent.title": "Diesen Bericht senden?",
  "bugreport.consent.total": "Gesamt: %1$s",

@@ -425,7 +425,7 @@
  "bugreport.consent.metered": "Sınırlı bir bağlantıdasınız ve bu rapor yaklaşık %1$s. Mobil veri kullanabilir.",
  "bugreport.consent.prepareFailed": "Günlükler toplanamadı, bu yüzden gönderilecek bir şey yok. Bunu kapatıp tekrar deneyin.",
  "bugreport.consent.prepareFailedSome": "Günlükler toplanırken bir şeyler ters gitti. Toplananlar listelendi; yine de gönderebilirsiniz.",
- "bugreport.consent.retention": "Raporlar 90 gün saklanır ve yalnızca hataları düzeltmek için kullanılır. Hafıza kartlarınız, BIOS ve oyunlarınız asla gönderilmez.",
+ "bugreport.consent.retention": "Raporlar 14 gün saklanır ve yalnızca hataları düzeltmek için kullanılır. Hafıza kartlarınız, BIOS ve oyunlarınız asla gönderilmez.",
  "bugreport.consent.startGame": "Grafik dökümü ve kayıt durumu eklemek için oyunu başlatın ve duraklatma menüsünden Sorun bildir seçeneğini kullanın.",
  "bugreport.consent.title": "Bu rapor gönderilsin mi?",
  "bugreport.consent.total": "Toplam: %1$s",

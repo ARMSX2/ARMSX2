@@ -425,7 +425,7 @@
  "bugreport.consent.metered": "Używasz połączenia taryfowego, a ten raport ma około %1$s. Może zużyć dane mobilne.",
  "bugreport.consent.prepareFailed": "Nie udało się zebrać logów, więc nie ma nic do wysłania. Zamknij to okno i spróbuj ponownie.",
  "bugreport.consent.prepareFailedSome": "Coś poszło nie tak podczas zbierania logów. Zebrane dane są wymienione poniżej; nadal możesz je wysłać.",
- "bugreport.consent.retention": "Raporty są przechowywane przez 90 dni i służą wyłącznie do naprawy błędów. Twoje karty pamięci, BIOS i gry nigdy nie są wysyłane.",
+ "bugreport.consent.retention": "Raporty są przechowywane przez 14 dni i służą wyłącznie do naprawy błędów. Twoje karty pamięci, BIOS i gry nigdy nie są wysyłane.",
  "bugreport.consent.startGame": "Aby dołączyć zrzut grafiki i stan zapisu, uruchom grę i użyj opcji Zgłoś problem w jej menu pauzy.",
  "bugreport.consent.title": "Wysłać ten raport?",
  "bugreport.consent.total": "Razem: %1$s",

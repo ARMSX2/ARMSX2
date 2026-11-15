@@ -425,7 +425,7 @@
  "bugreport.consent.metered": "你正在使用計量付費的網路，此回報約 %1$s，可能會耗用行動數據。",
  "bugreport.consent.prepareFailed": "無法收集記錄檔，因此沒有可傳送的內容。請關閉後重試。",
  "bugreport.consent.prepareFailedSome": "收集記錄檔時發生問題。已收集的內容已列出，你仍可傳送。",
- "bugreport.consent.retention": "回報保留 90 天，僅用於修正問題。你的記憶卡、BIOS 和遊戲絕不會被傳送。",
+ "bugreport.consent.retention": "回報保留 14 天，僅用於修正問題。你的記憶卡、BIOS 和遊戲絕不會被傳送。",
  "bugreport.consent.startGame": "若要附上圖形傾印和即時存檔，請啟動遊戲，並在其暫停選單中使用「回報問題」。",
  "bugreport.consent.title": "傳送此回報？",
  "bugreport.consent.total": "合計：%1$s",

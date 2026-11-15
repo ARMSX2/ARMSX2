@@ -2325,7 +2325,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "bugreport.consent.estimate" to "about %1\$s",
     "bugreport.consent.total" to "Total: %1\$s",
     "bugreport.consent.metered" to "You are on a metered connection and this report is about %1\$s. It can use mobile data.",
-    "bugreport.consent.retention" to "Reports are kept for 90 days and are used only to fix bugs. Your memory cards, BIOS and games are never sent.",
+    "bugreport.consent.retention" to "Reports are kept for 14 days and are used only to fix bugs. Your memory cards, BIOS and games are never sent.",
     "bugreport.item.report" to "Report summary (app version, game, device, driver)",
     "bugreport.item.system" to "GPU and driver report (device and driver details)",
     "bugreport.item.emulog" to "Emulator log",

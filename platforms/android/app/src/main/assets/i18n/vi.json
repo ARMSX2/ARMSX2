@@ -425,7 +425,7 @@
   "bugreport.consent.metered": "Bạn đang dùng kết nối có giới hạn và báo cáo này khoảng %1$s. Có thể tốn dữ liệu di động.",
   "bugreport.consent.prepareFailed": "Không thể thu thập log nên không có gì để gửi. Hãy đóng cửa sổ này và thử lại.",
   "bugreport.consent.prepareFailedSome": "Đã xảy ra lỗi khi thu thập log. Những gì đã thu thập được liệt kê bên dưới; bạn vẫn có thể gửi.",
-  "bugreport.consent.retention": "Báo cáo được giữ trong 90 ngày và chỉ dùng để sửa lỗi. Memory card, BIOS và game của bạn không bao giờ được gửi.",
+  "bugreport.consent.retention": "Báo cáo được giữ trong 14 ngày và chỉ dùng để sửa lỗi. Memory card, BIOS và game của bạn không bao giờ được gửi.",
   "bugreport.consent.startGame": "Để kèm theo bản dump đồ họa và trạng thái lưu, hãy bắt đầu game và dùng Báo cáo sự cố từ menu tạm dừng.",
   "bugreport.consent.title": "Gửi báo cáo này?",
   "bugreport.consent.total": "Tổng: %1$s",

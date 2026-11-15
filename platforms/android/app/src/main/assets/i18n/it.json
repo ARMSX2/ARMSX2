@@ -420,7 +420,7 @@
  "bugreport.consent.metered": "Sei su una connessione a consumo e questa segnalazione pesa circa %1$s. Può usare dati mobili.",
  "bugreport.consent.prepareFailed": "Non è stato possibile raccogliere i log, quindi non c'è nulla da inviare. Chiudi e riprova.",
  "bugreport.consent.prepareFailedSome": "Qualcosa è andato storto durante la raccolta dei log. Quanto raccolto è elencato; puoi comunque inviarlo.",
- "bugreport.consent.retention": "Le segnalazioni vengono conservate per 90 giorni e usate solo per correggere bug. Le tue memory card, il BIOS e i giochi non vengono mai inviati.",
+ "bugreport.consent.retention": "Le segnalazioni vengono conservate per 14 giorni e usate solo per correggere bug. Le tue memory card, il BIOS e i giochi non vengono mai inviati.",
  "bugreport.consent.startGame": "Per includere un dump grafico e uno stato di salvataggio, avvia il gioco e usa Segnala un problema dal suo menu di pausa.",
  "bugreport.consent.title": "Inviare questa segnalazione?",
  "bugreport.consent.total": "Totale: %1$s",

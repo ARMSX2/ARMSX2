@@ -1997,7 +1997,7 @@
  "bugreport.consent.metered": "Você está em uma conexão limitada e este relatório tem cerca de %1$s. Ele pode usar dados móveis.",
  "bugreport.consent.prepareFailed": "Não foi possível coletar os logs, então não há nada para enviar. Feche e tente de novo.",
  "bugreport.consent.prepareFailedSome": "Algo deu errado ao coletar os logs. O que foi coletado está listado; você ainda pode enviar.",
- "bugreport.consent.retention": "Os relatórios são mantidos por 90 dias e usados apenas para corrigir bugs. Seus memory cards, BIOS e jogos nunca são enviados.",
+ "bugreport.consent.retention": "Os relatórios são mantidos por 14 dias e usados apenas para corrigir bugs. Seus memory cards, BIOS e jogos nunca são enviados.",
  "bugreport.consent.startGame": "Para incluir um dump gráfico e um estado salvo, inicie o jogo e use Relatar um problema no menu de pausa.",
  "bugreport.consent.title": "Enviar este relatório?",
  "bugreport.consent.total": "Total: %1$s",

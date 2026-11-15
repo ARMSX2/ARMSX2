@@ -420,7 +420,7 @@
  "bugreport.consent.metered": "Estás en una conexión de datos limitada y este informe ocupa unos %1$s. Puede consumir datos móviles.",
  "bugreport.consent.prepareFailed": "No se pudieron recopilar los registros, así que no hay nada que enviar. Cierra esto e inténtalo de nuevo.",
  "bugreport.consent.prepareFailedSome": "Algo salió mal al recopilar los registros. Lo recopilado aparece en la lista; aun así puedes enviarlo.",
- "bugreport.consent.retention": "Los informes se conservan 90 días y se usan solo para corregir errores. Tus memory cards, la BIOS y tus juegos nunca se envían.",
+ "bugreport.consent.retention": "Los informes se conservan 14 días y se usan solo para corregir errores. Tus memory cards, la BIOS y tus juegos nunca se envían.",
  "bugreport.consent.startGame": "Para incluir un volcado gráfico y un estado guardado, inicia el juego y usa Informar de un problema desde su menú de pausa.",
  "bugreport.consent.title": "¿Enviar este informe?",
  "bugreport.consent.total": "Total: %1$s",

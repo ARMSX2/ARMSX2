@@ -425,7 +425,7 @@
   "bugreport.consent.metered": "従量制接続を使用中で、このレポートは約%1$sです。モバイルデータを消費することがあります。",
   "bugreport.consent.prepareFailed": "ログを収集できなかったため、送信するものがありません。閉じてもう一度お試しください。",
   "bugreport.consent.prepareFailedSome": "ログの収集中に問題が発生しました。収集できた内容は一覧に表示されており、そのまま送信できます。",
-  "bugreport.consent.retention": "レポートは90日間保管され、不具合の修正にのみ使用されます。メモリーカード、BIOS、ゲームが送信されることはありません。",
+  "bugreport.consent.retention": "レポートは14日間保管され、不具合の修正にのみ使用されます。メモリーカード、BIOS、ゲームが送信されることはありません。",
   "bugreport.consent.startGame": "グラフィックダンプとセーブステートを含めるには、ゲームを起動し、ポーズメニューの「問題を報告」を使ってください。",
   "bugreport.consent.title": "このレポートを送信しますか？",
   "bugreport.consent.total": "合計：%1$s",
