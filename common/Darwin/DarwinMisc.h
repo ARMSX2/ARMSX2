@@ -107,6 +107,8 @@ struct CPUClass {
     bool IsJITAvailable();
 
     void TryJailbreakJITCheckin();
+    // 1 when a stub on the arena's last page ran, 0 when it faulted, -1 when skipped.
+    int VerifyCodeExecutes(void* rx_ptr, size_t size);
 
     /// Re-checks whether JIT is still usable after initial acquisition.
     /// Combines a CS_DEBUGGED re-probe with a canary write/read to the RW alias.
