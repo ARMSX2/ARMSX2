@@ -40,7 +40,7 @@
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #else
-#include <glob.h>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 #if TARGET_OS_IPHONE
@@ -662,15 +662,40 @@ static const char* JitModeName(DarwinMisc::JitMode mode)
 }
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
-static bool HasTXM()
+// 1 or 0 from the device tree, -1 when it can't be read. A12-A14 on iOS 26 have
+// no TXM. IOKit has no iOS SDK header, so it is resolved by name (ported from ARMSX3).
+static int ReadTXMPresent()
 {
-	glob_t g = {};
-	const int ret = glob("/System/Volumes/Preboot/*/boot/*/usr/standalone/firmware/FUD/Ap,TrustedExecutionMonitor.img4",
-		GLOB_NOSORT, nullptr, &g);
-	const bool found = (ret == 0 && g.gl_pathc > 0);
-	globfree(&g);
-	return found;
+	using FromPathFn = mach_port_t (*)(mach_port_t, const char*);
+	using PropertyFn = CFTypeRef (*)(mach_port_t, CFStringRef, CFAllocatorRef, uint32_t);
+	using ReleaseFn = kern_return_t (*)(mach_port_t);
+
+	void* iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+	if (!iokit)
+		return -1;
+	const auto from_path = reinterpret_cast<FromPathFn>(dlsym(iokit, "IORegistryEntryFromPath"));
+	const auto property = reinterpret_cast<PropertyFn>(dlsym(iokit, "IORegistryEntryCreateCFProperty"));
+	const auto release = reinterpret_cast<ReleaseFn>(dlsym(iokit, "IOObjectRelease"));
+	if (!from_path || !property || !release)
+		return -1;
+
+	const mach_port_t entry = from_path(MACH_PORT_NULL, "IODeviceTree:/chosen/memory-map");
+	if (entry == MACH_PORT_NULL)
+		return -1;
+	const CFTypeRef keys = property(entry, CFSTR("IORegistryEntryPropertyKeys"), kCFAllocatorDefault, 0);
+	release(entry);
+
+	int present = -1;
+	if (keys && CFGetTypeID(keys) == CFArrayGetTypeID())
+	{
+		const CFArrayRef array = static_cast<CFArrayRef>(keys);
+		present = CFArrayContainsValue(array, CFRangeMake(0, CFArrayGetCount(array)), CFSTR("TXM")) ? 1 : 0;
+	}
+	if (keys)
+		CFRelease(keys);
+	return present;
 }
+
 #endif
 
 bool DarwinMisc::IsJITAvailable()
@@ -851,11 +876,15 @@ DarwinMisc::JitMode DarwinMisc::DetectJitMode()
 		std::snprintf(version, sizeof(version), "0");
 
 	const int major = std::atoi(version);
-	const bool has_txm = HasTXM();
-	if (major >= 26)
-		s_jit_mode = JitMode::LuckTXM;
-	else
+	// DolphiniOS's split: before iOS 26 every device flips pages, from 26 the
+	// executable side is never writable, and only TXM needs the debugger to prepare it.
+	const int txm = ReadTXMPresent();
+	if (major < 26)
 		s_jit_mode = JitMode::Legacy;
+	else if (txm == 0)
+		s_jit_mode = JitMode::LuckNoTXM;
+	else
+		s_jit_mode = JitMode::LuckTXM;
 
 	if (const char* force_dual = std::getenv("ARMSX2_FORCE_DUAL_MAP"))
 	{
@@ -863,8 +892,8 @@ DarwinMisc::JitMode DarwinMisc::DetectJitMode()
 			s_jit_mode = JitMode::LuckNoTXM;
 	}
 
-	std::fprintf(stderr, "@@JIT_MODE@@ version=%s major=%d txm_probe=%d mode=%s (%d)\n",
-		version, major, has_txm ? 1 : 0, JitModeName(s_jit_mode), static_cast<int>(s_jit_mode));
+	std::fprintf(stderr, "@@JIT_MODE@@ version=%s major=%d txm=%d mode=%s (%d)\n",
+		version, major, txm, JitModeName(s_jit_mode), static_cast<int>(s_jit_mode));
 	std::fflush(stderr);
 #else
 	s_jit_mode = JitMode::Legacy;
