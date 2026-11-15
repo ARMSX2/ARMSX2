@@ -67,11 +67,11 @@ struct SettingsJITStatusSection: View {
         if stikDebugOpenFailed {
             return .orange
         }
-        if jitAvailable {
-            return .blue
-        }
         if noJITFallbackActive {
             return .orange
+        }
+        if jitAvailable {
+            return .blue
         }
         return .red
     }
@@ -80,11 +80,11 @@ struct SettingsJITStatusSection: View {
         if stikDebugOpenFailed {
             return "StikDebug/StosDebug Did Not Open"
         }
-        if jitAvailable {
-            return "JIT Access Detected"
-        }
         if noJITFallbackActive {
             return "JIT Off"
+        }
+        if jitAvailable {
+            return "JIT Access Detected"
         }
         return "JIT Not Detected"
     }
@@ -93,11 +93,11 @@ struct SettingsJITStatusSection: View {
         if stikDebugOpenFailed {
             return "Open StikDebug/StosDebug manually, then run the selected script and relaunch ARMSX2."
         }
-        if jitAvailable {
-            return "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD. Current script: \(settings.jitScriptProtocol.label)."
-        }
         if noJITFallbackActive {
             return "No-JIT fallback is active. Use StikDebug/StosDebug/\(settings.jitScriptProtocol.label) for dynarec."
+        }
+        if jitAvailable {
+            return "Access is available. Confirm EE:JIT / IOP:JIT / VU:JIT in the in-game OSD. Current script: \(settings.jitScriptProtocol.label)."
         }
         return "Launch with StikDebug/StosDebug using the \(settings.jitScriptProtocol.label) script to enable JIT."
     }
@@ -105,6 +105,9 @@ struct SettingsJITStatusSection: View {
     private var jitStatusBadge: String {
         if stikDebugOpenFailed {
             return "Manual Open"
+        }
+        if noJITFallbackActive {
+            return "JIT Off"
         }
         return jitAvailable ? "Check OSD" : "Needs StikDebug/StosDebug"
     }
