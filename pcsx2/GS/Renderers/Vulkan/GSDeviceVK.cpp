@@ -4394,6 +4394,7 @@ void GSDeviceVK::ResolveFeatureTable()
 	m_features.provoking_vertex_last = m_optional_extensions.vk_ext_provoking_vertex;
 	m_features.vs_expand = !GSConfig.DisableVertexShaderExpand;
 	m_features.sprite_edge_clamp = true;
+	m_features.sprite_ramp = true;
 
 	if (!m_features.texture_barrier)
 		Console.Warning("VK: Texture buffers are disabled. This may break some graphical effects.");
@@ -7861,6 +7862,7 @@ VkShaderModule GSDeviceVK::GetTFXFragmentShader(const GSHWDrawConfig::PSSelector
 	AddMacro(ss, "PS_REGION_RECT", sel.region_rect);
 	AddMacro(ss, "PS_NATIVE_TEXEL_GRID", sel.native_texel_grid);
 	AddMacro(ss, "PS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
+	AddMacro(ss, "PS_SPRITE_RAMP", sel.sprite_ramp);
 	AddMacro(ss, "PS_BLEND_A", sel.blend_a);
 	AddMacro(ss, "PS_BLEND_B", sel.blend_b);
 	AddMacro(ss, "PS_BLEND_C", sel.blend_c);

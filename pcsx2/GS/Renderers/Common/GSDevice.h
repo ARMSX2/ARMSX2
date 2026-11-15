@@ -871,6 +871,12 @@ struct alignas(16) GSHWDrawConfig
 				// last native pixel did. The limit rides in the vertex ST, which an FST sprite does
 				// not otherwise use; see CorrectSpriteCoverageForUpscale.
 				u32 sprite_edge_clamp : 1;
+
+				// A texel-coordinate sprite expanded in the vertex shader lowers U/V by a sixteenth of a
+				// texel past its first column/row on any axis that meets the console's ramp rule
+				// (GSCoordinateWalk.h, GSSpriteRampBias). The vertex shader decides per sprite and leaves
+				// the mark in ST; see GSRendererHW::SetupIA.
+				u32 sprite_ramp : 1;
 			};
 
 			struct
@@ -1605,6 +1611,7 @@ public:
 		bool broken_point_sampler : 1; ///< Issue with AMD cards, see tfx shader for details
 		bool vs_expand            : 1; ///< Supports expanding points/lines/sprites in the vertex shader
 		bool sprite_edge_clamp    : 1; ///< The shaders implement PSSelector::sprite_edge_clamp.
+		bool sprite_ramp          : 1; ///< The shaders implement PSSelector::sprite_ramp.
 		bool primitive_id         : 1; ///< Supports primitive ID for use with prim tracking destination alpha algorithm
 		bool texture_barrier      : 1; ///< Supports sampling rt and hopefully texture barrier
 		bool multidraw_fb_copy    : 1; ///< Replacement for texture barrier.

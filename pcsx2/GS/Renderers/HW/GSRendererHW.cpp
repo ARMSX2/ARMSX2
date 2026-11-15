@@ -6490,6 +6490,13 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					m_conf.topology = GSHWDrawConfig::Topology::Triangle;
 					m_conf.vs.expand = GSHWDrawConfig::VSExpand::Sprite;
 
+					// The console walks a texel-coordinate sprite's U/V a hair low from the second pixel on
+					// (GSCoordinateWalk.h, GSSpriteRampBias). The expanding vertex shader tests each sprite
+					// for the rule and marks where its first column/row ends in ST, which an FST sprite does
+					// not otherwise use; the pixel shader lowers the coordinate past that mark.
+					m_conf.ps.sprite_ramp = features.sprite_ramp && m_conf.vs.tme && m_conf.vs.fst && m_conf.ps.fst &&
+					                        !m_conf.vs.sprite_edge_clamp;
+
 					if (req_vert_backup)
 					{
 						EnsureDrawStaging(m_vertex->next, m_index->tail);

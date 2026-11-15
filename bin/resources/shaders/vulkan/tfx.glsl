@@ -240,6 +240,32 @@ vec2 get_aa1_triangle_expand_dir(ProcessedVertex v0, ProcessedVertex v1, Process
 	return line_expand;
 }
 
+// The console's UV sprite ramp (GSCoordinateWalk.h, GSSpriteRampBias): a texel-coordinate sprite walks
+// U (V) a hair below the exact coordinate from its second pixel on, on an axis where the coordinate
+// ascends by a whole number of sixteenths of a texel per pixel and the sprite's own pixel extent is not a
+// power of two. Where every sample point is on the sixteenth grid (the seed too), that hair reads the same
+// texel and the same 4-bit bilinear weight as a sixteenth, so the pixel shader lowers the coordinate by
+// a sixteenth. Off the grid the hair changes nothing, so the axis is left alone.
+//
+// Returns the value this corner carries in ST: the distance in pixels from halfway between the
+// sprite's first and second sampled pixel, so it interpolates to above zero exactly where the pixel
+// shader lowers the coordinate. -65536 on an axis that does not ramp. Positions and coordinates are the
+// raw 12.4 values; an XYOFFSET with a fractional pixel part would move the first pixel, which this ignores.
+float sprite_ramp_mark(uint pa, uint pb, uint ua, uint ub, uint corner)
+{
+	bool a_first = pa <= pb;
+	int p0 = int(a_first ? pa : pb);
+	int p1 = int(a_first ? pb : pa);
+	int du = int(a_first ? ub : ua) - int(a_first ? ua : ub);
+	int dp = p1 - p0;
+	int first = (p0 + 15) >> 4;
+	int extent = ((p1 + 15) >> 4) - first;
+	int prestep = (first << 4) - p0;
+	bool ramps = dp > 0 && du > 0 && ((du * 16) % dp) == 0 && extent > 0 && (extent & (extent - 1)) != 0 &&
+	             ((prestep * du) % dp) == 0;
+	return ramps ? (float(int(corner) - (first << 4)) / 16.0f - 0.5f) : -65536.0f;
+}
+
 mat2 get_inverse(mat2 mat, float det)
 {
 	return mat2(mat[1][1], -mat[0][1], -mat[1][0], mat[0][0]) * (1 / det);
@@ -376,6 +402,20 @@ void main()
 	vtx.p.y = is_bottom ? lt.p.y : vtx.p.y;
 	vtx.t.y = is_bottom ? lt.t.y : vtx.t.y;
 	vtx.ti.yw = is_bottom ? lt.ti.yw : vtx.ti.yw;
+
+	#if VS_TME && VS_FST && !VS_SPRITE_EDGE_CLAMP
+		// An FST sprite does not use ST, so it carries the ramp marks (sprite_ramp_mark, PS_SPRITE_RAMP).
+		{
+			RawVertex r_lt = vertex_buffer[BaseVertex + vid_lt];
+			RawVertex r_rb = vertex_buffer[BaseVertex + vid_rb];
+			uvec2 p_lt = uvec2(bitfieldExtract(r_lt.XY, 0, 16), bitfieldExtract(r_lt.XY, 16, 16));
+			uvec2 p_rb = uvec2(bitfieldExtract(r_rb.XY, 0, 16), bitfieldExtract(r_rb.XY, 16, 16));
+			uvec2 uv_lt = uvec2(bitfieldExtract(r_lt.UV, 0, 16), bitfieldExtract(r_lt.UV, 16, 16));
+			uvec2 uv_rb = uvec2(bitfieldExtract(r_rb.UV, 0, 16), bitfieldExtract(r_rb.UV, 16, 16));
+			vtx.t.x = sprite_ramp_mark(p_lt.x, p_rb.x, uv_lt.x, uv_rb.x, is_right ? p_lt.x : p_rb.x);
+			vtx.t.y = sprite_ramp_mark(p_lt.y, p_rb.y, uv_lt.y, uv_rb.y, is_bottom ? p_lt.y : p_rb.y);
+		}
+	#endif
 
 #elif VS_EXPAND == VS_EXPAND_TRIANGLE_AA1
 
@@ -1457,6 +1497,16 @@ vec4 ps_color()
 #else
 	vec2 st = vsIn.ti.xy;
 	vec2 st_int = vsIn.ti.zw;
+#endif
+
+#if PS_SPRITE_RAMP
+	// Past the sprite's first column/row on a ramping axis, a sixteenth of a texel low (sprite_ramp_mark).
+	// ST is the TEX0-normalised coordinate (TextureScale = 1/16 / WH.xy), ST_int the raw 12.4 one.
+	{
+		vec2 ramp = vec2(greaterThan(vsIn.t.xy, vec2(0.0f)));
+		st -= ramp / (16.0f * WH.xy);
+		st_int -= ramp;
+	}
 #endif
 
 #if PS_NATIVE_TEXEL_GRID
