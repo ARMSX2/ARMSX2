@@ -23,6 +23,7 @@
 #include <dlfcn.h>
 #include <setjmp.h>
 #include <optional>
+#include <string_view>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <thread>
@@ -41,10 +42,24 @@
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #else
 #include <CoreFoundation/CoreFoundation.h>
+#include <mach-o/dyld.h>
+#include <sys/syscall.h>
+#include <xpc/xpc.h>
 #endif
 
-#if TARGET_OS_IPHONE
-extern "C" int csops(pid_t pid, unsigned int ops, void* useraddr, size_t usersize);
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+static constexpr u32 CS_DEBUGGED_FLAG = 0x10000000u;
+
+// The raw syscall, not libc csops: Dopamine's systemhook interposes csops and
+// answers from a value it cached at its own check-in.
+static bool ReadCsFlags(u32* flags)
+{
+	*flags = 0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+	return syscall(SYS_csops, getpid(), 0, flags, sizeof(*flags)) == 0;
+#pragma clang diagnostic pop
+}
 #endif
 
 // Darwin (OSX) is a bit different from Linux when requesting properties of
@@ -696,7 +711,98 @@ static int ReadTXMPresent()
 	return present;
 }
 
+static xpc_object_t JailbreakServerSend(xpc_object_t message)
+{
+	using PipeCreateFn = xpc_object_t (*)(mach_port_t, uint64_t);
+	using PipeRoutineFn = int (*)(xpc_object_t, xpc_object_t, xpc_object_t*, uint64_t);
+	static const auto pipe_create = reinterpret_cast<PipeCreateFn>(dlsym(RTLD_DEFAULT, "xpc_pipe_create_from_port"));
+	static const auto pipe_routine = reinterpret_cast<PipeRoutineFn>(dlsym(RTLD_DEFAULT, "xpc_pipe_routine_with_flags"));
+	if (!pipe_create || !pipe_routine)
+		return nullptr;
+
+	xpc_object_t pipe = pipe_create(bootstrap_port, 0);
+	if (!pipe)
+		return nullptr;
+	xpc_object_t reply = nullptr;
+	if (pipe_routine(pipe, message, &reply, 0) != 0)
+		reply = nullptr;
+	xpc_release(pipe);
+	return reply;
+}
+
+// Dopamine's launchd jbserver, domain and action numbers from
+// libjailbreak/src/jbserver_domains.h (the same in 2.x and 3.x).
+static xpc_object_t JailbreakServerCall(uint64_t action, const char* key)
+{
+	constexpr uint64_t JBS_DOMAIN_SYSTEMWIDE = 1;
+	xpc_object_t message = xpc_dictionary_create_empty();
+	xpc_dictionary_set_uint64(message, "jb-domain", JBS_DOMAIN_SYSTEMWIDE);
+	xpc_dictionary_set_uint64(message, "action", action);
+	if (key)
+		xpc_dictionary_set_string(message, "key", key);
+	xpc_object_t reply = JailbreakServerSend(message);
+	xpc_release(message);
+	return reply;
+}
 #endif
+
+void DarwinMisc::TryJailbreakJITCheckin()
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+	bool systemhook = false;
+	for (u32 i = 0, count = _dyld_image_count(); i < count && !systemhook; i++)
+	{
+		const char* name = _dyld_get_image_name(i);
+		const size_t len = name ? std::strlen(name) : 0;
+		constexpr std::string_view suffix = "/systemhook.dylib";
+		systemhook = len >= suffix.size() && suffix == std::string_view(name + len - suffix.size());
+	}
+	const bool var_jb = access("/var/jb", F_OK) == 0;
+
+	u32 flags_before = 0;
+	ReadCsFlags(&flags_before);
+	int setting = -1;
+	int fully_debugged = -1;
+	const char* checkin = "skipped";
+
+	// Without systemhook nothing here is Dopamine's, so a stock device never
+	// sends launchd a jailbreak message.
+	if (systemhook)
+	{
+		constexpr uint64_t JBS_SYSTEMWIDE_PROCESS_CHECKIN = 4;
+		constexpr uint64_t JBS_SYSTEMWIDE_JBSETTINGS_GET = 7;
+		if (xpc_object_t reply = JailbreakServerCall(JBS_SYSTEMWIDE_JBSETTINGS_GET, "markAppsAsDebugged"))
+		{
+			if (xpc_object_t value = xpc_dictionary_get_value(reply, "value");
+				value && xpc_get_type(value) == XPC_TYPE_BOOL)
+				setting = xpc_bool_get_value(value) ? 1 : 0;
+			xpc_release(reply);
+		}
+
+		// The check-in is what marks an app debugged; repeat it for a launch
+		// where systemhook's own check-in didn't take.
+		if (!(flags_before & CS_DEBUGGED_FLAG))
+		{
+			checkin = "err";
+			if (xpc_object_t reply = JailbreakServerCall(JBS_SYSTEMWIDE_PROCESS_CHECKIN, nullptr))
+			{
+				checkin = "ok";
+				if (xpc_object_t value = xpc_dictionary_get_value(reply, "fully-debugged");
+					value && xpc_get_type(value) == XPC_TYPE_BOOL)
+					fully_debugged = xpc_bool_get_value(value) ? 1 : 0;
+				xpc_release(reply);
+			}
+		}
+	}
+
+	u32 flags_after = 0;
+	ReadCsFlags(&flags_after);
+	std::fprintf(stderr,
+		"@@JIT_JAILBREAK@@ systemhook=%d var_jb=%d setting=%d checkin=%s fully_debugged=%d cs_flags_before=0x%08x cs_flags_after=0x%08x\n",
+		systemhook ? 1 : 0, var_jb ? 1 : 0, setting, checkin, fully_debugged, flags_before, flags_after);
+	std::fflush(stderr);
+#endif
+}
 
 bool DarwinMisc::IsJITAvailable()
 {
@@ -704,8 +810,8 @@ bool DarwinMisc::IsJITAvailable()
 	return true;
 #elif TARGET_OS_IPHONE
 	u32 cs_flags = 0;
-	const int rv = csops(getpid(), 0, &cs_flags, sizeof(cs_flags));
-	const bool cs_debugged = (rv == 0) && ((cs_flags & 0x10000000u) != 0);
+	const int rv = ReadCsFlags(&cs_flags) ? 0 : -1;
+	const bool cs_debugged = (rv == 0) && ((cs_flags & CS_DEBUGGED_FLAG) != 0);
 	std::fprintf(stderr, "@@JIT_DETECT@@ csops=%d cs_flags=0x%08x CS_DEBUGGED=%d\n",
 		rv, cs_flags, cs_debugged ? 1 : 0);
 	std::fflush(stderr);
@@ -762,8 +868,7 @@ bool DarwinMisc::ValidateJITAlive()
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
 	// Check 1: CS_DEBUGGED still set?
 	u32 cs_flags = 0;
-	const int rv = csops(getpid(), 0, &cs_flags, sizeof(cs_flags));
-	const bool cs_debugged = (rv == 0) && ((cs_flags & 0x10000000u) != 0);
+	const bool cs_debugged = ReadCsFlags(&cs_flags) && ((cs_flags & CS_DEBUGGED_FLAG) != 0);
 	if (!cs_debugged)
 	{
 		std::fprintf(stderr, "@@JIT_KEEPALIVE@@ alive=0 reason=cs_debugged_revoked\n");
