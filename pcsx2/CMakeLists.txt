@@ -705,6 +705,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSFastList.h
 	GS/Renderers/Common/GSHeadlessPresent.h
 	GS/Renderers/Common/GSAlphaBitLogicOp.h
+	GS/Renderers/Common/GSRunSnapshot.h
 	GS/Renderers/Common/GSReplacementAlphaSnap.h
 	GS/Renderers/Common/GSFastStencilShadow.h
 	GS/Renderers/Common/GSStencilCounter.h
