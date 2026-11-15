@@ -1093,6 +1093,7 @@
     <ClInclude Include="GS\Renderers\Common\GSVertex.h" />
     <ClInclude Include="GS\Renderers\HW\GSVertexHW.h" />
     <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h" />
+    <ClInclude Include="GS\Renderers\HW\GSAlphaKnownRects.h" />
     <ClInclude Include="GS\Renderers\HW\GSTargetRebase.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
