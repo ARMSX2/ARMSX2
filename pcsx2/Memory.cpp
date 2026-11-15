@@ -159,6 +159,16 @@ bool SysMemory::AllocateMemoryMap()
 			std::fprintf(stderr, "@@JIT_FALLBACK@@ reason=ios_code_alloc_failed backend=interpreter\n");
 			std::fflush(stderr);
 		}
+		else if (DarwinMisc::VerifyCodeExecutes(s_code_memory, HostMemoryMap::CodeSize) == 0)
+		{
+			// Mapped but not executable: the recompiler would fault on its first block.
+			DarwinMisc::MunmapCodeDualMap(s_code_memory, HostMemoryMap::CodeSize);
+			s_code_memory = nullptr;
+			DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
+			Console.Warning("iOS code memory does not execute; continuing with interpreter providers");
+			std::fprintf(stderr, "@@JIT_FALLBACK@@ reason=exec_selftest_failed backend=interpreter\n");
+			std::fflush(stderr);
+		}
 		else
 		{
 			Console.WriteLn("@@P43_OFFSET@@ g_code_rw_offset=%ld rw_base=%p size=%zu",

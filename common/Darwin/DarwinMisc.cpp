@@ -42,12 +42,14 @@
 #include <IOKit/pwr_mgt/IOPMLib.h>
 #else
 #include <CoreFoundation/CoreFoundation.h>
+#include <libkern/OSCacheControl.h>
 #include <mach-o/dyld.h>
 #include <sys/syscall.h>
 #include <xpc/xpc.h>
 #endif
 
 #if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+static constexpr u32 CS_KILL_FLAG = 0x00000200u;
 static constexpr u32 CS_DEBUGGED_FLAG = 0x10000000u;
 
 // The raw syscall, not libc csops: Dopamine's systemhook interposes csops and
@@ -1355,6 +1357,114 @@ void DarwinMisc::MunmapCodeDualMap(void* rx_ptr, size_t size)
 	s_legacy_code_size = 0;
 	s_legacy_is_writable = true;
 	s_legacy_range_log_done = false;
+#endif
+}
+
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+namespace
+{
+	constexpr int SELFTEST_SIGNALS[3] = {SIGBUS, SIGSEGV, SIGILL};
+	struct sigaction s_selftest_saved[3];
+	sigjmp_buf s_selftest_jmp;
+	pthread_t s_selftest_thread;
+	volatile sig_atomic_t s_selftest_signal = 0;
+
+	void SelfTestFaultHandler(int sig)
+	{
+		if (!pthread_equal(pthread_self(), s_selftest_thread))
+		{
+			// Another thread's fault: put its handler back and let the instruction fault again under it.
+			for (int i = 0; i < 3; i++)
+			{
+				if (SELFTEST_SIGNALS[i] == sig)
+					sigaction(sig, &s_selftest_saved[i], nullptr);
+			}
+			return;
+		}
+		s_selftest_signal = sig;
+		siglongjmp(s_selftest_jmp, 1);
+	}
+} // namespace
+#endif
+
+int DarwinMisc::VerifyCodeExecutes(void* rx_ptr, size_t size)
+{
+#if TARGET_OS_IPHONE && !TARGET_OS_SIMULATOR
+	// With CS_KILL still set, running an unsigned page is a kill no handler can catch.
+	u32 flags = 0;
+	if (!ReadCsFlags(&flags) || !(flags & CS_DEBUGGED_FLAG) || (flags & CS_KILL_FLAG))
+	{
+		std::fprintf(stderr, "@@JIT_SELFTEST@@ result=skipped cs_flags=0x%08x mode=%s\n", flags, JitModeName(GetJitMode()));
+		std::fflush(stderr);
+		return -1;
+	}
+
+	const size_t page = HostSys::GetRuntimePageSize() ? HostSys::GetRuntimePageSize() : static_cast<size_t>(getpagesize());
+	u8* const exec = static_cast<u8*>(rx_ptr) + size - page;
+	u8* const write = exec + g_code_rw_offset;
+	const bool legacy = g_code_rw_offset == 0 && s_legacy_code_base;
+	constexpr u32 stub[2] = {0x52800540u /* mov w0, #42 */, 0xd65f03c0u /* ret */};
+
+	bool ready;
+	if (legacy)
+	{
+		ready = LegacyProtectCodeRange(exec, page, PROT_READ | PROT_WRITE, "selftest_rw");
+		if (ready)
+		{
+			std::memcpy(write, stub, sizeof(stub));
+			ready = LegacyProtectCodeRange(exec, page, PROT_READ | PROT_EXEC, "selftest_rx");
+		}
+	}
+	else
+	{
+		HostSys::BeginCodeWrite();
+		std::memcpy(write, stub, sizeof(stub));
+		HostSys::EndCodeWrite();
+		ready = true;
+	}
+	sys_icache_invalidate(exec, sizeof(stub));
+
+	int value = -1;
+	s_selftest_signal = 0;
+	if (ready)
+	{
+		struct sigaction sa = {};
+		sa.sa_handler = SelfTestFaultHandler;
+		sigemptyset(&sa.sa_mask);
+		for (int i = 0; i < 3; i++)
+			sigaction(SELFTEST_SIGNALS[i], &sa, &s_selftest_saved[i]);
+
+		// Its own thread, because the CPU thread's Mach port would take the fault as a fastmem miss.
+		std::thread worker([&]() {
+			s_selftest_thread = pthread_self();
+			if (sigsetjmp(s_selftest_jmp, 1) == 0)
+				value = reinterpret_cast<int (*)()>(exec)();
+		});
+		worker.join();
+
+		for (int i = 0; i < 3; i++)
+			sigaction(SELFTEST_SIGNALS[i], &s_selftest_saved[i], nullptr);
+	}
+
+	if (legacy)
+	{
+		if (LegacyProtectCodeRange(exec, page, PROT_READ | PROT_WRITE, "selftest_restore"))
+			std::memset(write, 0, sizeof(stub));
+	}
+	else
+	{
+		HostSys::BeginCodeWrite();
+		std::memset(write, 0, sizeof(stub));
+		HostSys::EndCodeWrite();
+	}
+
+	const bool ok = value == 42;
+	std::fprintf(stderr, "@@JIT_SELFTEST@@ result=%s value=%d signal=%d protect=%d mode=%s\n",
+		ok ? "ok" : "fail", value, static_cast<int>(s_selftest_signal), ready ? 1 : 0, JitModeName(GetJitMode()));
+	std::fflush(stderr);
+	return ok ? 1 : 0;
+#else
+	return 1;
 #endif
 }
 
