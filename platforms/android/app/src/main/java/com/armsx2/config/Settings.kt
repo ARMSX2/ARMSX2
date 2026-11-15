@@ -178,6 +178,9 @@ data class CpuSettings(
      *  signal handler). Disabling falls back to the slow VTLB read/write
      *  path on every memory op. */
     val enableFastmem: Boolean = true,
+    /** EmuCore/CPU/ExtraMemory — Extended RAM: 128MB EE and 8MB IOP memory, as on a development
+     *  console. Applied when a game boots or resets, not while it runs. */
+    val extraMemory: Boolean = false,
 
     // ---- macOS/PCSX2 ARM64 backend compatibility flags ----
     // Hidden from UI and forced on. Kept only so older JSON/INI/per-game blobs
@@ -1196,6 +1199,7 @@ data class Settings(
         put("EmuCore/CPU/Recompiler", "EnableVU0", "bool", cpu.recVU0.toString())
         put("EmuCore/CPU/Recompiler", "EnableVU1", "bool", cpu.recVU1.toString())
         put("EmuCore/CPU/Recompiler", "EnableFastmem", "bool", cpu.enableFastmem.toString())
+        put("EmuCore/CPU", "ExtraMemory", "bool", cpu.extraMemory.toString())
         // Force the single macOS/PCSX2 ARM64 backend. VMManager also ignores
         // stale UseMac* values, but writing true cleans old persisted settings.
         put("EmuCore/CPU/Recompiler", "UseMacEE", "bool", "true")
@@ -1340,6 +1344,7 @@ data class Settings(
                 recVU0 = boolAt("EmuCore/CPU/Recompiler/EnableVU0") ?: this.cpu.recVU0,
                 recVU1 = boolAt("EmuCore/CPU/Recompiler/EnableVU1") ?: this.cpu.recVU1,
                 enableFastmem = boolAt("EmuCore/CPU/Recompiler/EnableFastmem") ?: this.cpu.enableFastmem,
+                extraMemory = boolAt("EmuCore/CPU/ExtraMemory") ?: this.cpu.extraMemory,
                 // Legacy/forced-on ARM64 backend flags — always "true" in the INI (mirror fromJson).
                 useMacEE = true,
                 useMacIOP = true,
@@ -2238,6 +2243,7 @@ data class Settings(
         put("recVU0", cpu.recVU0)
         put("recVU1", cpu.recVU1)
         put("enableFastmem", cpu.enableFastmem)
+        put("extraMemory", cpu.extraMemory)
         put("vu1InlineFmacStall", cpu.vu1InlineFmacStall)
         put("vu1CrossBlockPState", cpu.vu1CrossBlockPState)
         put("vu1InlineDrainTestPipes", cpu.vu1InlineDrainTestPipes)
@@ -2426,6 +2432,7 @@ data class Settings(
                     recVU0 = json.optBoolean("recVU0", def.cpu.recVU0),
                     recVU1 = json.optBoolean("recVU1", def.cpu.recVU1),
                     enableFastmem = json.optBoolean("enableFastmem", def.cpu.enableFastmem),
+                    extraMemory = json.optBoolean("extraMemory", def.cpu.extraMemory),
                     useMacEE = true,
                     useMacIOP = true,
                     useMacVU0 = true,
@@ -2896,6 +2903,7 @@ data class Settings(
             if (current.cpu.recVU0              != base.cpu.recVU0)              j.put("recVU0", current.cpu.recVU0)
             if (current.cpu.recVU1              != base.cpu.recVU1)              j.put("recVU1", current.cpu.recVU1)
             if (current.cpu.enableFastmem       != base.cpu.enableFastmem)       j.put("enableFastmem", current.cpu.enableFastmem)
+            if (current.cpu.extraMemory         != base.cpu.extraMemory)         j.put("extraMemory", current.cpu.extraMemory)
             if (current.cpu.vu1InlineFmacStall  != base.cpu.vu1InlineFmacStall)  j.put("vu1InlineFmacStall", current.cpu.vu1InlineFmacStall)
             if (current.cpu.vu1CrossBlockPState != base.cpu.vu1CrossBlockPState) j.put("vu1CrossBlockPState", current.cpu.vu1CrossBlockPState)
             if (current.cpu.vu1InlineDrainTestPipes != base.cpu.vu1InlineDrainTestPipes) j.put("vu1InlineDrainTestPipes", current.cpu.vu1InlineDrainTestPipes)
@@ -3011,6 +3019,7 @@ data class Settings(
                 recVU0 = if (overrides.has("recVU0")) overrides.getBoolean("recVU0") else base.cpu.recVU0,
                 recVU1 = if (overrides.has("recVU1")) overrides.getBoolean("recVU1") else base.cpu.recVU1,
                 enableFastmem = if (overrides.has("enableFastmem")) overrides.getBoolean("enableFastmem") else base.cpu.enableFastmem,
+                extraMemory = if (overrides.has("extraMemory")) overrides.getBoolean("extraMemory") else base.cpu.extraMemory,
                 useMacEE = true,
                 useMacIOP = true,
                 useMacVU0 = true,

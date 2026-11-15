@@ -287,6 +287,8 @@ private val BASE_SEARCH_INDEX: List<SettingsSearchEntry> = listOf(
     SettingsSearchEntry("VU0", false, SettingsCategory.Advanced, listOf("tab.recompiler")),
     SettingsSearchEntry("VU1", false, SettingsCategory.Advanced, listOf("tab.recompiler")),
     SettingsSearchEntry("Fastmem", false, SettingsCategory.Advanced, listOf("tab.recompiler")),
+    SettingsSearchEntry("fixes.section.memory", true, SettingsCategory.Advanced, listOf("fixes.section.memory")),
+    SettingsSearchEntry("fixes.extraMemory.label", true, SettingsCategory.Advanced, listOf("fixes.section.memory")),
     SettingsSearchEntry("fixes.section.pine", true, SettingsCategory.Advanced, listOf("fixes.section.pine")),
     SettingsSearchEntry("fixes.pine.enable", true, SettingsCategory.Advanced, listOf("fixes.section.pine")),
     SettingsSearchEntry("patches.enablePatches.label", true, SettingsCategory.Patches),

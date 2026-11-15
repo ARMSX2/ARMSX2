@@ -881,7 +881,7 @@ std::unique_ptr<ArchiveEntryList> SaveState_DownloadState(Error* error)
 
 	if (!saveme.FreezeInternals(error))
 	{
-		if (!error->IsValid())
+		if (!error || !error->IsValid())
 			Error::SetString(error, "FreezeInternals() failed");
 
 		return nullptr;
@@ -1467,6 +1467,23 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 		return false;
 	}
 
+	// A state saved with the other EE memory size (Extended RAM on or off) is refused here, before
+	// anything is overwritten, so the game that is running carries on. memFreeze refuses it again
+	// from the flag in the internal structures, but by then the VM has to be reset.
+	if (!legacy)
+	{
+		const zip_int64_t ee_index = zip_name_locate(zf.get(), "eeMemory.bin", 0);
+		zip_stat_t zst = {};
+		if (ee_index >= 0 && zip_stat_index(zf.get(), ee_index, 0, &zst) == 0 && (zst.valid & ZIP_STAT_SIZE) &&
+			zst.size != Ps2MemSize::ExposedRam &&
+			(zst.size == Ps2MemSize::MainRam || zst.size == Ps2MemSize::TotalRam))
+		{
+			Error::SetStringFmt(error, "Memory size mismatch, this state was saved with Extended RAM {} (RAM size {}MB).",
+				zst.size == Ps2MemSize::TotalRam ? "on" : "off", zst.size / _1mb);
+			return false;
+		}
+	}
+
 	// Held from before the state starts overwriting anything until after PostLoadPrep has moved the
 	// IOP thread's clocks to the loaded ones.
 	IopThread::VmHold iop_hold;
@@ -1475,7 +1492,8 @@ static bool SaveState_UnzipFromZip(zip_t* zf_raw, const std::string& filename, E
 
 	if (!LoadInternalStructuresState(zf.get(), internal_index, savever, error))
 	{
-		if (!error->IsValid())
+		// The error is optional (VMManager::LoadStateFromSlot's defaults to none).
+		if (!error || !error->IsValid())
 			Error::SetString(error, "Save state corruption in internal structures.");
 
 		VMManager::Reset();
