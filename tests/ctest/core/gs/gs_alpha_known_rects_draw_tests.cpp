@@ -150,3 +150,32 @@ TEST_F(GSAlphaKnownRectsDraw, AlignSpriteXWritesPastTheDrawRect)
 	Sprites({Box{0, 32 * 16, 100 * 16 + 8, 100 * 16}, Px(0, 100, 320, 415)}, 0xA1);
 	EXPECT_TRUE(MaskedDrawReads(Px(320, 200, 400, 300)));
 }
+
+// A local move in PSMCT24 between two 32-bit targets: the texture cache finds both targets by base
+// and width alone and copies all four channels, so the destination's alpha changes although the
+// move's own format has none. What the destination knew about its alpha must go.
+TEST_F(GSAlphaKnownRectsDraw, A24BitMoveOntoA32BitTargetForgetsItsAlpha)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	constexpr u32 kSrcFBP = 0x180;
+	Sprites({Px(0, 0, 640, 448)}, 0xA0);
+
+	Packet p;
+	Environment(p, kSrcFBP, PSMCT32);
+	GIFReg r = {};
+	r.RGBAQ.A = 0xA1;
+	r.RGBAQ.Q = 1.0f;
+	p.Reg(GIF_A_D_REG_RGBAQ, r);
+	p.Vertex(0, 0, 0, 0, 0);
+	p.Vertex(640 * 16, 448 * 16, 0, 0, 0);
+	GIFRegPRIM prim = {};
+	prim.PRIM = GS_SPRITE;
+	p.Send(*m_gs, prim);
+
+	// Before the move the masked draw drops on what the whole target knows.
+	EXPECT_FALSE(MaskedDrawReads(Px(8, 8, 40, 40)));
+
+	ASSERT_TRUE(g_texture_cache->Move(kSrcFBP * 32, 10, PSMCT24, 0, 0, kFBP * 32, 10, PSMCT24, 0, 0, 64, 64));
+	EXPECT_TRUE(MaskedDrawReads(Px(8, 8, 40, 40)));
+}

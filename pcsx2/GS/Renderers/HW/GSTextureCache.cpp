@@ -6136,6 +6136,11 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 	if (GSUtil::GetChannelMask(DPSM) & 0x7)
 		dst->m_valid_rgb |= src->m_valid_rgb;
 
+	// The copies above write every channel of the destination texture whatever DPSM says (a
+	// PSMCT24 move finds 32-bit targets by base and width alone), and a move covers a rectangle,
+	// not the valid rect, so no per-pixel claim about alpha survives it.
+	dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
+
 	if (GSUtil::GetChannelMask(DPSM) & 0x8)
 	{
 		if (DPSM != PSMT4HH)
@@ -6144,8 +6149,6 @@ bool GSTextureCache::Move(u32 SBP, u32 SBW, u32 SPSM, int sx, int sy, u32 DBP, u
 			dst->m_valid_alpha_high |= src->m_valid_alpha_high;
 		dst->m_alpha_max = src->m_alpha_max;
 		dst->m_alpha_min = src->m_alpha_min;
-		// A move covers a rectangle, not the valid rect, so no per-pixel claim survives it.
-		dst->ResetAlphaKnown(GSAlphaKnownBits::Known::Nothing());
 		dst->m_alpha_range |= src->m_alpha_range;
 	}
 
