@@ -1682,3 +1682,33 @@ SLPM-67017:
   speedHacks:
     mvuFlag: 0 # Fixes enemies attacks turning into squares.
     iopThread: 1 # EE thread is the limit; see the block above.
+
+# minimumBlendingLevel: 3 (High) for Beyond Good & Evil. bmdhacks, 2026-11-15. Bug report AX-F97S-94YM.
+#
+# Symptom: the lake and sea render blood red instead of dark blue-green, on every hardware renderer
+# (the software renderer is correct). The texel-coordinate sprite ramp in the Vulkan pixel shader
+# (PS_SPRITE_RAMP) removes about half of it at Basic and Medium and all of it at High and above; at
+# Minimum the water stays red either way. Measured on the report's dump, M2, Vulkan, 1x: pixels more
+# than 4 levels from the software renderer fall from 34.3% to 26.0% at Basic and to 2.5% at High.
+#
+# Cost: none measured. Anbernic RG 55G1 (Adreno 613, Turnip axfl3-002, pinned, 1x), GPU ms per frame
+# Basic against High: the water scene 28.68 / 28.89, a scene of about 140 draws 15.79 / 15.83; one extra
+# render pass and copy a frame in the water scene and none in the other. Upstream already recommended
+# High for this game; this makes it the floor. A player at Full or Maximum keeps that level.
+#
+# gsHWFixes is replaced wholesale, so the upstream keys are restated. The two retail releases are
+# covered; the demos were not measured.
+SLUS-20763:
+  gsHWFixes:
+    minimumBlendingLevel: 3 # Water colour with the sprite ramp; see the block above.
+    textureInsideRT: 1 # Upstream: fixes the shape of shadows.
+    autoFlush: 2 # Upstream: fixes water rendering.
+    halfPixelOffset: 3 # Upstream: fixes bloom misalignment, needs this harsh offset for autoflush.
+    cpuFramebufferConversion: 1 # Upstream: fixes shield rendering.
+SLES-51917:
+  gsHWFixes:
+    minimumBlendingLevel: 3 # Water colour with the sprite ramp; see the block above.
+    textureInsideRT: 1 # Upstream: fixes the shape of shadows.
+    autoFlush: 2 # Upstream: fixes water rendering.
+    halfPixelOffset: 3 # Upstream: fixes bloom misalignment, needs this harsh offset for autoflush.
+    cpuFramebufferConversion: 1 # Upstream: fixes shield rendering.
