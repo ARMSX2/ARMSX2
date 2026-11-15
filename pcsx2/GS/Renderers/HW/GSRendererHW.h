@@ -101,6 +101,8 @@ private:
 	u32 GetConstantDirectWriteMemClearDepth() const;
 	bool IsReallyDithered() const;
 	bool AreAnyPixelsDiscarded() const;
+	/// Whether this draw's sprites, as they stand, write every pixel of m_r (GSAlphaKnownRects).
+	bool SpritesWriteEveryPixelOfDrawRect() const;
 	bool IsDiscardingDstColor();
 	bool IsDiscardingDstRGB();
 	bool IsDiscardingDstAlpha() const;

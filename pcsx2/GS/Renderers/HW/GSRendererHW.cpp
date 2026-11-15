@@ -6681,14 +6681,14 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// same fact as m_primitive_covers_without_gaps.
 			const bool covers_by_tiling = (m_primitive_covers_without_gaps == NoGapsType::FullCover);
 			const bool covers_by_union = !covers_by_tiling && m_primitive_union_covers_rect;
-			const bool every_pixel_written = !(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing);
+			// SCANMSK discards every other row in the shader.
+			const bool every_pixel_written = !(date_options.enabled || !always_passing_alpha || !depth_rejects_nothing ||
+				(m_draw_env->SCANMSK.MSK & 2));
 			const bool full_cover = rt->m_valid.rintersect(m_r).eq(rt->m_valid) && (covers_by_tiling || covers_by_union) &&
 				every_pixel_written;
-			// The same tests, asked of the draw's own rect wherever it sits: sprites that tile it
-			// from an offset count too.
-			const bool covers_own_rect = (covers_by_tiling || covers_by_union ||
-											 m_primitive_covers_without_gaps == NoGapsType::SpriteNoGaps) &&
-										 every_pixel_written;
+			// A rectangle of its own needs proof that every pixel of it was written, whatever the
+			// rounding and the scale: the tiling test above is a heuristic.
+			const bool covers_own_rect = every_pixel_written && SpritesWriteEveryPixelOfDrawRect();
 
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
 			// The mask the draw asked for, not the one the shader emulates: the target's recorded alpha
@@ -6721,7 +6721,8 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			else
 			{
 				rt_new_alpha_rects.AfterWrite(rt->AlphaRectsKey(),
-					{m_r, static_cast<u8>(~fb_mask & alpha_mask), k_src.lo, k_src.hi, covers_own_rect},
+					{m_r, GSAlphaKnownRects::Reach(m_r, rt->GetScale() > 1.0f), static_cast<u8>(~fb_mask & alpha_mask),
+						k_src.lo, k_src.hi, covers_own_rect},
 					rt->GetUnscaledRect());
 				rt_new_alpha_rects.KeepBits(static_cast<u8>(alpha_mask));
 			}
@@ -7649,7 +7650,8 @@ u8 GSRendererHW::DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 
 	// whose target the tracker does not (yet) know, not only the ones that end up substituting.
 	// Where the whole-target pair does not know the bits, the rectangles that contain this draw
 	// may.
-	known = GSAlphaKnownRects::KnownForDraw(rt->m_alpha_known, rt->m_alpha_rects, rt->AlphaRectsKey(), m_r, masked);
+	known = GSAlphaKnownRects::KnownForDraw(rt->m_alpha_known, rt->m_alpha_rects, rt->AlphaRectsKey(),
+		GSAlphaKnownRects::Reach(m_r, rt->GetScale() > 1.0f), masked);
 	if ((known.known.bits & masked) != masked)
 		return GSDrawAlphaMask::ExactAlphaDropTargetUnknown;
 
@@ -12952,6 +12954,30 @@ bool GSRendererHW::OI_BlitFMV(GSTextureCache::Target* _rt, GSTextureCache::Sourc
 
 	// Nothing to see keep going
 	return true;
+}
+
+bool GSRendererHW::SpritesWriteEveryPixelOfDrawRect() const
+{
+	if (m_vt.m_primclass != GS_SPRITE_CLASS)
+		return false;
+
+	const u32 count = m_vertex->next / 2;
+	if (count == 0 || count > GSSpriteCover::MaxSprites)
+		return false;
+
+	const int off_x = static_cast<int>(m_context->XYOFFSET.OFX);
+	const int off_y = static_cast<int>(m_context->XYOFFSET.OFY);
+	const GSVertex* v = &m_vertex->buff[0];
+	GSVector4i sprites[GSSpriteCover::MaxSprites];
+	for (u32 i = 0; i < count; i++)
+	{
+		const int x0 = static_cast<int>(v[i * 2].XYZ.X) - off_x;
+		const int x1 = static_cast<int>(v[i * 2 + 1].XYZ.X) - off_x;
+		const int y0 = static_cast<int>(v[i * 2].XYZ.Y) - off_y;
+		const int y1 = static_cast<int>(v[i * 2 + 1].XYZ.Y) - off_y;
+		sprites[i] = GSVector4i(std::min(x0, x1), std::min(y0, y1), std::max(x0, x1), std::max(y0, y1));
+	}
+	return GSAlphaKnownRects::SpritesWriteEveryPixel(sprites, count, m_r);
 }
 
 bool GSRendererHW::AreAnyPixelsDiscarded() const

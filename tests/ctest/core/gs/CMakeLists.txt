@@ -78,6 +78,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_burst_memo_draw_tests.cpp
 	gs_alpha_known_bits_tests.cpp
 	gs_alpha_known_rects_tests.cpp
+	gs_alpha_known_rects_draw_tests.cpp
 	gs_depth_coverage_tests.cpp
 	gs_draw_alpha_mask_tests.cpp
 	gs_fast_stencil_shadow_tests.cpp

@@ -30,13 +30,13 @@ namespace
 	// A gapless constant-alpha write of every alpha bit.
 	Write Cover(const GSVector4i& r, u8 alpha)
 	{
-		return {r, 0xFF, alpha, alpha, true};
+		return {r, r, 0xFF, alpha, alpha, true};
 	}
 
 	// A write that may leave pixels of its rectangle alone.
 	Write Partial(const GSVector4i& r, u8 written, u8 lo, u8 hi)
 	{
-		return {r, written, lo, hi, false};
+		return {r, r, written, lo, hi, false};
 	}
 
 	Set Cleared()
@@ -106,7 +106,7 @@ TEST(GSAlphaKnownRects, ACoverOfTheWholeRectRewritesIt)
 	EXPECT_EQ(s.Inside(kKey, kFrame), Known::All(0x00));
 
 	// Covering it with a varying alpha but bit 0 held keeps bit 0.
-	s.AfterWrite(kKey, Write{GSVector4i(0, 0, 640, 448), 0xFE, 0x00, 0xFF, true}, kTexture);
+	s.AfterWrite(kKey, Write{GSVector4i(0, 0, 640, 448), GSVector4i(0, 0, 640, 448), 0xFE, 0x00, 0xFF, true}, kTexture);
 	EXPECT_EQ(s.Inside(kKey, kFrame), (Known{0x01, 0x00}));
 }
 
@@ -219,4 +219,60 @@ TEST(GSAlphaKnownRects, FormatKeepsOnlyTheBitsItStores)
 	EXPECT_EQ(s.Inside(kKey, kFrame), (Known{0x80, 0x80}));
 	s.KeepBits(0x00);
 	EXPECT_EQ(s.Size(), 0u);
+}
+
+TEST(GSAlphaKnownRects, AWriteReachingPastItsRectErodesTheNeighbour)
+{
+	Set s;
+	const GSVector4i right(320, 32, 640, 415);
+	s.AfterWrite(kKey, Cover(right, 0x80), kTexture);
+	const GSVector4i left(0, 32, 320, 415);
+	s.AfterWrite(kKey, Write{left, GSAlphaKnownRects::Reach(left, true), 0xFF, 0x81, 0x81, false}, kTexture);
+	EXPECT_EQ(s.Inside(kKey, right), (Known{0xFE, 0x80}));
+
+	Set t;
+	t.AfterWrite(kKey, Cover(right, 0x80), kTexture);
+	t.AfterWrite(kKey, Write{left, GSAlphaKnownRects::Reach(left, false), 0xFF, 0x81, 0x81, false}, kTexture);
+	EXPECT_EQ(t.Inside(kKey, right), Known::All(0x80));
+}
+
+TEST(GSAlphaKnownRects, ReachGrowsOnlyUpscaled)
+{
+	EXPECT_TRUE(GSAlphaKnownRects::Reach(kFrame, false).eq(kFrame));
+	EXPECT_TRUE(GSAlphaKnownRects::Reach(kFrame, true).eq(GSVector4i(-1, 31, 641, 416)));
+}
+
+namespace
+{
+	GSVector4i Fixed(int x0, int y0, int x1, int y1)
+	{
+		return GSVector4i(x0 * 16, y0 * 16, x1 * 16, y1 * 16);
+	}
+} // namespace
+
+TEST(GSAlphaKnownRects, SpritesWriteEveryPixelOnlyOnWholePixelsWithNoHole)
+{
+	using GSAlphaKnownRects::SpritesWriteEveryPixel;
+
+	// One sprite, at an offset.
+	const GSVector4i clear[] = {Fixed(0, 32, 640, 415)};
+	EXPECT_TRUE(SpritesWriteEveryPixel(clear, 1, kFrame));
+
+	// Two coincident sprites, and two that tile.
+	const GSVector4i twice[] = {Fixed(0, 32, 640, 415), Fixed(0, 32, 640, 415)};
+	EXPECT_TRUE(SpritesWriteEveryPixel(twice, 2, kFrame));
+	const GSVector4i halves[] = {Fixed(0, 32, 640, 200), Fixed(0, 200, 640, 415)};
+	EXPECT_TRUE(SpritesWriteEveryPixel(halves, 2, kFrame));
+
+	// The second sprite covers 8 columns of its band.
+	const GSVector4i hole[] = {Fixed(0, 240, 640, 250), Fixed(0, 250, 8, 260)};
+	EXPECT_FALSE(SpritesWriteEveryPixel(hole, 2, GSVector4i(0, 240, 640, 260)));
+
+	// A far edge at 300.25: rounding decides whether row 300 is written.
+	const GSVector4i frac[] = {GSVector4i(0, 32 * 16, 640 * 16, 300 * 16 + 4)};
+	EXPECT_FALSE(SpritesWriteEveryPixel(frac, 1, GSVector4i(0, 32, 640, 301)));
+	EXPECT_FALSE(SpritesWriteEveryPixel(frac, 1, GSVector4i(0, 32, 640, 300)));
+
+	// A rect wider than the sprites.
+	EXPECT_FALSE(SpritesWriteEveryPixel(clear, 1, GSVector4i(0, 32, 641, 415)));
 }

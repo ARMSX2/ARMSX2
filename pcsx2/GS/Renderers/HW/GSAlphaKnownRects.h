@@ -4,6 +4,7 @@
 #pragma once
 
 #include "common/Pcsx2Defs.h"
+#include "GS/GSSpriteCover.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
 
@@ -12,8 +13,8 @@
 /// The pair in GSAlphaKnownBits learns only from a write that covers the target's whole valid
 /// rect. A game that clears an offset or letterboxed area never makes one, and the valid rect
 /// grows and shrinks with lookups and overlap trimming the game does not control. Here a write
-/// that fills its own rectangle without gaps establishes knowledge in that rectangle, wherever it
-/// sits. A later write that misses the rectangle leaves it alone; one that fills all of it
+/// whose sprites are shown to write every pixel of its rectangle establishes knowledge in that
+/// rectangle, wherever it sits. A later write that misses the rectangle leaves it alone; one that fills all of it
 /// rewrites it; one that touches part of it keeps only the bits it agrees on.
 ///
 /// The rectangles describe the pixels of one texture allocation under one target layout (Key).
@@ -40,15 +41,53 @@ namespace GSAlphaKnownRects
 		constexpr bool operator==(const Key& r) const { return texture == r.texture && layout == r.layout; }
 	};
 
-	/// A draw's write to the alpha byte.
+	/// A draw's write to the alpha byte, in the target's unscaled pixels.
 	struct Write
 	{
-		GSVector4i rect; ///< every pixel the draw can write, in the target's unscaled pixels
+		GSVector4i rect; ///< the draw rect; with `covers`, every pixel of it takes the write
+		GSVector4i reach; ///< every pixel the draw can write: `rect`, or more (Reach)
 		u8 written; ///< the alpha bits the mask lets through
 		u8 src_lo; ///< the fragment alpha range
 		u8 src_hi;
-		bool covers; ///< every pixel of `rect` takes the write
+		bool covers;
 	};
+
+	/// The pixels a draw over `r` can touch. Upscaled, a device pixel takes its value from wherever
+	/// its own sample falls, which is not the native pixel's: a triangle edge at 10.2 writes the
+	/// device pixel sampled at 10.5, inside native pixel 10, which the draw rect (rounded from
+	/// 10.2 + 0.9) leaves out. Sprite edge corrections run after the draw rect is taken and move far
+	/// edges by up to half a native pixel. So upscaled, every draw reaches one native pixel further
+	/// on every side.
+	inline GSVector4i Reach(const GSVector4i& r, bool upscaled)
+	{
+		return upscaled ? r + GSVector4i(-1, -1, 1, 1) : r;
+	}
+
+	/// Whether sprites write every pixel of `r` under any rounding rule and at any scale: each edge
+	/// on a whole pixel, and the union covering `r`. Sprites are (x0, y0, x1, y1) in 1/16 pixel, off
+	/// the drawing offset, x0 <= x1 and y0 <= y1.
+	///
+	/// The tiling test (GSState::SpriteDrawWithoutGaps) is not this: it reads the first sprite's
+	/// width and the edges where sprites meet, with a pixel of slack, and passes sets that leave
+	/// holes.
+	inline bool SpritesWriteEveryPixel(const GSVector4i* sprites, u32 count, const GSVector4i& r)
+	{
+		if (count == 0 || count > GSSpriteCover::MaxSprites || r.rempty())
+			return false;
+
+		GSVector4i px[GSSpriteCover::MaxSprites];
+		u32 n = 0;
+		for (u32 i = 0; i < count; i++)
+		{
+			const GSVector4i& s = sprites[i];
+			if (((s.x | s.y | s.z | s.w) & 0xF) != 0)
+				return false;
+			const GSVector4i p = GSVector4i(s.x >> 4, s.y >> 4, s.z >> 4, s.w >> 4).rintersect(r);
+			if (!p.rempty())
+				px[n++] = p;
+		}
+		return GSSpriteCover::UnionCoversRect(px, n, r);
+	}
 
 	/// Two claims about the same pixels, merged: every bit either knows, except bits they disagree
 	/// on, which neither can be trusted for.
@@ -97,14 +136,15 @@ namespace GSAlphaKnownRects
 				return;
 
 			const GSVector4i r = w.rect.rintersect(texture_rect);
-			if (r.rempty())
+			const GSVector4i reach = w.reach.rintersect(texture_rect);
+			if (reach.rempty())
 				return;
 
 			m_clock++;
 			for (u32 i = 0; i < m_count; i++)
 			{
 				Entry& e = m_rects[i];
-				if (!e.rect.rintersects(r))
+				if (!e.rect.rintersects(reach))
 					continue;
 
 				const bool rewrites = w.covers && r.rcontains(e.rect);
@@ -114,7 +154,7 @@ namespace GSAlphaKnownRects
 			}
 			DropEmpty();
 
-			if (!w.covers)
+			if (!w.covers || r.rempty())
 				return;
 
 			// A cover inside a rectangle that survived keeps what that rectangle knows and starts
