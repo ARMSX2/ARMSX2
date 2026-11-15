@@ -152,7 +152,7 @@ private:
 	/// Whether the pipeline for this program is built; if it is not, asks the device's compile queue for it.
 	bool ProgramReady(u8 dss, u32 variant, u32 spec);
 	/// The flushing run's pipeline, built (Append grows a run only while it is).
-	VkPipeline GetPipeline(bool dual);
+	VkPipeline GetPipeline();
 	VkDescriptorSet WriteTextureSet();
 
 	GSDeviceVK* m_dev;
