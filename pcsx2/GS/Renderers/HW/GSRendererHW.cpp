@@ -6494,8 +6494,17 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					// (GSCoordinateWalk.h, GSSpriteRampBias). The expanding vertex shader tests each sprite
 					// for the rule and marks where its first column/row ends in ST, which an FST sprite does
 					// not otherwise use; the pixel shader lowers the coordinate past that mark.
+					//
+					// Two kinds of draw are left alone. A texture or channel shuffle: the renderer has rewritten its
+					// sprites, so the vertex shader would test coordinates the game never sent (MGS3's shadow
+					// shuffle). A filtered draw: on some of them the software renderer's ramp leaves the picture
+					// unchanged where a sixteenth moves the filter weight (God of War II's shadow copy), and the
+					// rule that separates those from the filtered draws it does move is not known yet.
+					// See umbrella devs/bmdhacks/campaigns/sprite-ramp-2026-11-14.
 					m_conf.ps.sprite_ramp = features.sprite_ramp && m_conf.vs.tme && m_conf.vs.fst && m_conf.ps.fst &&
-					                        !m_conf.vs.sprite_edge_clamp;
+					                        !m_conf.vs.sprite_edge_clamp && !m_texture_shuffle && !m_conf.ps.shuffle &&
+					                        !m_channel_shuffle_width && !m_channel_shuffle_rebuilt_quad && !m_conf.ps.channel &&
+					                        !m_conf.sampler.biln && !m_conf.ps.ltf;
 
 					if (req_vert_backup)
 					{
