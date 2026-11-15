@@ -106,6 +106,8 @@ struct CPUClass {
     // [P42] JIT availability detection for real iOS devices
     bool IsJITAvailable();
 
+    void TryJailbreakJITCheckin();
+
     /// Re-checks whether JIT is still usable after initial acquisition.
     /// Combines a CS_DEBUGGED re-probe with a canary write/read to the RW alias.
     /// Returns false if iOS has revoked the JIT grant since boot.

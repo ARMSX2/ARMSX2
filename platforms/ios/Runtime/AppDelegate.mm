@@ -128,6 +128,7 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     fprintf(stderr, "@@BUILD_ID@@ ARMSX2_iOS v%s %s %s %s\n",
         ARMSX2_VERSION_STR, ARMSX2_GIT_HASH, __DATE__, __TIME__);
     ARMSX2ConfigureImGuiFonts("app-launch");
+    DarwinMisc::TryJailbreakJITCheckin();
 
     fflush(stderr);
 
