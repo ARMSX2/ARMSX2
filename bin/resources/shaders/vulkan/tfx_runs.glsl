@@ -11,13 +11,16 @@
 // The arithmetic is tfx.glsl's for the state set the machine accepts: FST 0, a 32-bit colour target, no palette in the
 // shader, the hardware's bilinear (LTF 0), CLAMP or REPEAT (the sampler's), alpha fail KEEP, the texture functions 0-4,
 // and the blend family (Cs - 0) * C + 0 in the shader with the rest in the blend unit (BLEND_MIX). How the classic path
-// chose to blend is one of six ways under the run's one dual-source pipeline (ONE, INV_SRC1_COLOR / ONE, ZERO):
+// chose to blend is one of eight ways under a dual-source pipeline, (ONE, INV_SRC1_COLOR / ONE, ZERO) for ways 0 to 5 and
+// the classic draw's own (SRC1_COLOR, INV_SRC1_COLOR / ONE, ZERO) for 6 and 7:
 //   0  the shader blend, C = As, second output As
 //   1  the shader blend, C = Af (the blend constant, or the second output where the driver ignores the constant)
 //   2  blending elided, every channel written                (second output 1: the target's term is 0)
 //   3  blending elided, alpha written alone                  (colour 0 and second output 0: RGB kept)
 //   4  additive, Cs * As in the shader and the target added in the blend unit (second output 0)
 //   5  additive, Cs * Af likewise
+//   6  the blend unit's Cs * As + Cd * (1 - As) (Minimum blending): Cs written unblended, second output As
+//   7  the same with Af, where the classic draw already sends Af through the second output
 //
 // Specialisation: each per-draw state the run holds one value of arrives as a compile-time constant RUN_C_<state>; only
 // the states that vary inside the run are read from the row.
@@ -240,7 +243,7 @@ void main()
 		C.rgb = (C.rgb * min(Cb, 1.0f)) - (124.0f / 256.0f);
 		C.rgb = clamp(C.rgb, vec3(0.0f), vec3(255.0f));
 	}
-	else if (way >= 4u)
+	else if (way == 4u || way == 5u)
 	{
 		// BLEND_MIX 0: C unclamped, the product truncated (tfx.glsl's trunc((A - B) * C + D))
 		float Cb = (way == 4u) ? alpha_blend.a : (float(fld(s0.z, 24, 8)) / 128.0f);
@@ -258,9 +261,9 @@ void main()
 	gl_FragDepth = floor(gl_FragCoord.z * exp2(32.0f)) * exp2(-32.0f);
 #endif
 #if RUN_DUAL
-	if (way == 0u)
+	if (way == 0u || way == 6u)
 		o_col1 = alpha_blend;
-	else if (way == 1u)
+	else if (way == 1u || way == 7u)
 		o_col1 = vec4(float(fld(s0.z, 24, 8)) / 128.0f);
 	else if (way == 2u)
 		o_col1 = vec4(1.0f);
@@ -271,6 +274,12 @@ void main()
 	}
 	else
 		o_col1 = vec4(0.0f);
+	// A draw the classic path writes unblended (way 2) goes through the blend unit in a blending run, and the blend unit
+	// rounds the output differently from the attachment's own conversion (Mali-G57 and G615: scattered pixels moved by up
+	// to 8 levels, here and wherever such a draw shared a run with a blended one). Rounded half up to the target's 8 bits
+	// as the attachment rounds, the output passes the blend unit unchanged.
+	if (way == 2u)
+		o_col0 = floor(o_col0 * 255.0f + 0.5f) / 255.0f;
 #endif
 }
 

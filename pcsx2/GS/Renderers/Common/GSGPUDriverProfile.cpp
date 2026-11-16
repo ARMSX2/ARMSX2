@@ -474,7 +474,7 @@ static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
-static constexpr std::array<DriverRule, 36> s_driver_rules = {{
+static constexpr std::array<DriverRule, 37> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -657,6 +657,17 @@ static constexpr std::array<DriverRule, 36> s_driver_rules = {{
 	{"vk-turnip-blend-constant-ignored", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBlendConstant), 0},
+	// On Turnip a draw that samples with the hardware's lod (implicit derivatives), merged into one host draw with
+	// draws that sample another way, gets some pixels wrong, and differently from one replay to the next: the run
+	// machine's mixed runs moved Spider-Man 3's lighting on an Adreno 613 at Minimum blending and a few pixels at
+	// Basic, while a run with one kind of sampling was exact and repeatable. Keeping helper invocations alive, taking
+	// the derivatives before any branch, or one sampling call with a lod query did not help; the driver-level cause
+	// is not known. malisx2 and the M2 draw mixed runs exactly, so they keep them.
+	//
+	// Model bounds 0/0: the evidence is the 613 alone, and the 650 runs the same compiler.
+	{"vk-turnip-mixed-sampling-derivatives", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::BrokenMixedSamplingDerivatives), 0},
 	// Turnip below Mesa 26.2 hangs the GPU on A6XX_EARLY_Z_LATE_Z + a D32_SFLOAT_S8_UINT
 	// depth-stencil attachment + a fragment shader that can discard. With a stencil buffer every
 	// depth target is D32S8, and GSDeviceVK::SetupDATE's stencil pre-pass is that draw, so the first

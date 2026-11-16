@@ -5,9 +5,9 @@
 //
 // The run program reproduces a draw's classic program for one state set, so the property that matters is the
 // refusals: every pixel-shader bit outside that set must keep the draw on the classic path, one bit at a time, and
-// every blend the four ways do not reproduce must too. The ways themselves are checked against the run pipeline's one
-// blend equation (ONE, INV_SRC1_COLOR / ONE, ZERO): a way is right when that equation, fed the second output the run
-// program writes for it, gives what the classic pipeline's blend gives.
+// every blend the ways do not reproduce must too. The ways themselves are checked against the run pipeline's blend
+// equation (ONE, INV_SRC1_COLOR / ONE, ZERO, or SRC1_COLOR, INV_SRC1_COLOR for the blend unit's own ways): a way is right
+// when that equation, fed the second output the run program writes for it, gives what the classic pipeline's blend gives.
 //
 // Rides gs_vertex_tests -- the policy is header-only, so it needs no extra linkage.
 
@@ -398,6 +398,131 @@ TEST(GSRunsPolicy, AdditiveWays)
 	// The run equation with the second output 0 is an add.
 	for (float dst : {0.0f, 0.5f, 1.0f})
 		EXPECT_EQ(RunBlend(0.25f, 0.0f, dst), 0.25f + dst);
+}
+
+// At Minimum blending the classic path leaves Cs * As + Cd * (1 - As) wholly to the blend unit: the shader writes Cs
+// and As unblended (no blend fields) under SRC1_COLOR, INV_SRC1_COLOR. Af likewise where the driver ignores the blend
+// constant and the classic draw sends Af through the second output. A run holding these takes the classic equation itself, so the
+// run program writes what the classic program writes.
+static GSHWDrawConfig UnitBlend()
+{
+	GSHWDrawConfig c = Way0();
+	c.ps.blend_a = c.ps.blend_b = c.ps.blend_c = c.ps.blend_d = c.ps.blend_mix = 0;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::SRC1_COLOR, GSDevice::INV_SRC1_COLOR, GSDevice::OP_ADD,
+		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, false, 0);
+	return c;
+}
+
+TEST(GSRunsPolicy, UnitBlendWays)
+{
+	GSHWDrawConfig c = UnitBlend();
+	Draw d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 6u);
+	EXPECT_EQ(Field(d.flags, STATE_WAY), 6u);
+
+	// Af through the blend constant has no way: a run would carry it in the second output, and a blend unit does not
+	// take the constant and the second output to the same number (Mali-G57 and G615 differ by up to 8 levels).
+	c.ps.blend_c = 2;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x30 / 128.0f;
+	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_COLOR, GSDevice::INV_CONST_COLOR, GSDevice::OP_ADD,
+		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, 0x30);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c.ps.no_color1 = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+
+	// Af through the second output.
+	c = UnitBlend();
+	c.ps.blend_c = 2;
+	c.ps.af_in_src1 = 1;
+	c.cb_ps.TA_MaxDepth_Af.w = 0x30 / 128.0f;
+	d = Classify(c, Rgba8(), false);
+	ASSERT_EQ(d.why, Refusal::None);
+	EXPECT_EQ(d.way, 7u);
+	c.cb_ps.TA_MaxDepth_Af.w = 0.3f;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Const);
+
+	// As without the second output, with a colour mask, or with a shader blend left in, has no way.
+	c = UnitBlend();
+	c.ps.no_color1 = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.colormask.wrgba = 0x7;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.ps.blend_mix = 1;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+	c = UnitBlend();
+	c.blend.dst_factor_alpha = GSDevice::CONST_ONE;
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
+}
+
+// A run of the unit ways takes the classic equation (SRC1_COLOR, INV_SRC1_COLOR), under which the elided ways' second
+// outputs still give what they give under (ONE, INV_SRC1_COLOR). The shader-blend ways do not, so one run never holds
+// both kinds.
+TEST(GSRunsPolicy, UnitWaysTakeTheClassicEquation)
+{
+	const auto unit = [](float src, float second, float dst) { return src * second + dst * (1.0f - second); };
+	for (float dst : {0.0f, 0.25f, 1.0f})
+	{
+		for (float src : {0.0f, 0.5f, 1.0f})
+		{
+			EXPECT_EQ(unit(src, 1.0f, dst), RunBlend(src, 1.0f, dst)); // way 2
+			EXPECT_EQ(unit(0.0f, 0.0f, dst), RunBlend(0.0f, 0.0f, dst)); // way 3
+		}
+	}
+	EXPECT_TRUE(UnitEquation(1u << 6));
+	EXPECT_TRUE(UnitEquation((1u << 7) | (1u << 2) | (1u << 3)));
+	EXPECT_FALSE(UnitEquation((1u << 0) | (1u << 2)));
+	EXPECT_TRUE(WaysShareAnEquation((1u << 6) | (1u << 7) | (1u << 2) | (1u << 3)));
+	EXPECT_TRUE(WaysShareAnEquation((1u << 0) | (1u << 1) | (1u << 4) | (1u << 5) | (1u << 2) | (1u << 3)));
+	for (u32 shader : {0u, 1u, 4u, 5u})
+	{
+		for (u32 unit_way : {6u, 7u})
+			EXPECT_FALSE(WaysShareAnEquation((1u << shader) | (1u << unit_way))) << shader << " with " << unit_way;
+	}
+}
+
+// The unit ways write the colour unblended, so an untextured, unfogged one passes its colour through as way 2 does.
+TEST(GSRunsPolicy, UnitWayPassthrough)
+{
+	GSHWDrawConfig c = UnitBlend();
+	c.ps.tfx = 4;
+	EXPECT_TRUE(Passthrough(Classify(c, TextureFacts(), false).flags, true));
+}
+
+// Where the driver needs it (BrokenMixedSamplingDerivatives), a run's textured draws share one sampling call: a draw
+// that would bring a second ends the run, untextured draws join any run. Elsewhere every draw joins.
+TEST(GSRunsPolicy, OneSamplingCallPerRun)
+{
+	GSHWDrawConfig c = Way0();
+	const u32 none = Classify(c, Rgba8(), false).flags;
+	c.ps.manual_lod = 1;
+	const u32 manual = Classify(c, Rgba8(), false).flags;
+	c.ps.automatic_lod = 1;
+	const u32 hardware = Classify(c, Rgba8(), false).flags;
+	c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+	ASSERT_EQ(Field(manual, STATE_LOD), LOD_MANUAL);
+	ASSERT_EQ(Field(hardware, STATE_LOD), LOD_HARDWARE);
+
+	for (u32 f : {none, manual, hardware, untextured})
+		EXPECT_TRUE(LodJoins(true, LOD_ANY, f));
+	EXPECT_TRUE(LodJoins(true, LOD_MANUAL, manual));
+	EXPECT_FALSE(LodJoins(true, LOD_MANUAL, hardware));
+	EXPECT_FALSE(LodJoins(true, LOD_HARDWARE, none));
+	EXPECT_FALSE(LodJoins(true, LOD_NONE, manual));
+	for (u32 lod : {LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+		EXPECT_TRUE(LodJoins(true, lod, untextured));
+
+	// Without the bug, mixed runs stay.
+	for (u32 lod : {LOD_ANY, LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+	{
+		for (u32 f : {none, manual, hardware, untextured})
+			EXPECT_TRUE(LodJoins(false, lod, f));
+	}
 }
 
 // The split rule's device classes come from the reported device name, and a run ends at a dear change only when the

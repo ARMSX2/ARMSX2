@@ -49,13 +49,15 @@ namespace
 	// A slot's pools serve one command buffer's runs. Past this many, the allocations fail for another reason than full
 	// pools, and the machine stops rather than grow without bound.
 	constexpr u32 MAX_SLOT_POOLS = 64;
-	// The pipeline variant: dual-source blending, RTA correction, the depth floor (all three in the program), and a pass
-	// without a depth attachment (the pipeline only).
-	u32 Variant(bool dual, bool rta, bool zfloor, bool nods)
-	{
-		return (dual ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u) | (nods ? 8u : 0u);
-	}
+	// The pipeline variant: dual-source blending (any way but 2 alone), RTA correction, the depth floor (all three in the
+	// program), and, the pipeline only, a pass without a depth attachment and the blend unit's own equation.
 	constexpr u32 VARIANT_NO_DEPTH = 8;
+	constexpr u32 VARIANT_UNIT = 16;
+	u32 Variant(u32 ways, bool rta, bool zfloor, bool nods)
+	{
+		return ((ways & ~(1u << 2)) != 0 ? 1u : 0u) | (rta ? 2u : 0u) | (zfloor ? 4u : 0u) | (nods ? VARIANT_NO_DEPTH : 0u) |
+		       (GSRunsPolicy::UnitEquation(ways) ? VARIANT_UNIT : 0u);
+	}
 	// The vertex selector bits a run's draws may differ in: texture mapping and shading (the run's vertex program does
 	// both always) and the expansion (a sprite is expanded on the CPU).
 	constexpr u32 VS_RUN_FREE = 0x06u | 0x70u;
@@ -181,8 +183,9 @@ bool GSRunsVK::Init()
 
 
 	m_class = &GSRunsPolicy::DeviceClassFor(m_dev->m_device_properties.deviceName);
-	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s)", m_max_textures, m_class->name,
-		m_class->source);
+	m_one_call = m_dev->GetMobileDriverProfile().HasBug(DriverBug::BrokenMixedSamplingDerivatives);
+	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s), %s", m_max_textures,
+		m_class->name, m_class->source, m_one_call ? "one sampling call a run" : "mixed sampling calls");
 	return true;
 }
 
@@ -280,7 +283,9 @@ namespace
 bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
-	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS && !SplitAtDear(config);
+	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS &&
+	       GSRunsPolicy::WaysShareAnEquation(r.ways | (1u << m_draw.way)) && GSRunsPolicy::LodJoins(m_one_call, r.lod, m_draw.flags) &&
+	       !SplitAtDear(config);
 }
 
 bool GSRunsVK::FollowsSame(const GSHWDrawConfig& config, u32 strict) const
@@ -325,7 +330,7 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 {
 	if (config.rt != m_run.rt || config.ds != m_run.ds)
 		return END_TARGET;
-	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict)
+	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict || !GSRunsPolicy::LodJoins(m_one_call, m_run.lod, m_draw.flags))
 		return END_SPLIT;
 	if (SplitAtDear(config))
 		return END_SPLIT;
@@ -398,7 +403,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		states.Note(d.flags);
 		const u32 ways = (open ? m_run.ways : 0u) | (1u << d.way);
 		const bool rta = config.ps.rta_correction;
-		const u32 variant = Variant((ways & ~(1u << 2)) != 0, rta, config.ps.zfloor, dev->m_current_depth_target == nullptr);
+		const u32 variant = Variant(ways, rta, config.ps.zfloor, dev->m_current_depth_target == nullptr);
 		if (ProgramReady(config.depth.key, variant, states.Key()))
 			return true;
 		m_frame_joined++; // it would have joined: counted, so a title does not fall asleep while its programs build
@@ -586,7 +591,7 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		s[1] = slot;
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		s[2] = (config.ps.fog ? (static_cast<u32>(fog.x) | (static_cast<u32>(fog.y) << 8) | (static_cast<u32>(fog.z) << 16)) : 0u) |
-		       ((d.way == 1 || d.way == 5) ? (static_cast<u32>(config.cb_ps.TA_MaxDepth_Af.w * 128.0f) << 24) : 0u);
+		       (GSRunsPolicy::WayReadsAf(d.way) ? (static_cast<u32>(config.cb_ps.TA_MaxDepth_Af.w * 128.0f) << 24) : 0u);
 		std::memcpy(&s[3], &fog.w, 4);
 		std::memcpy(&s[4], &config.cb_ps.LODParams, 16);
 		std::memcpy(row, s, 32);
@@ -609,6 +614,8 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		m_primed.in_run = true;
 		r.idx_count += nidx;
 		r.ways |= 1u << d.way;
+		if (GSRunsPolicy::Textured(d.flags))
+			r.lod = GSRunsPolicy::Field(d.flags, GSRunsPolicy::STATE_LOD);
 		r.states.Note(d.flags); // which states the run holds one value of: those become constants of its program
 		if (config.tex)
 			static_cast<GSTextureVK*>(config.tex)->SetUseFenceCounter(fence);
@@ -623,7 +630,7 @@ u32 GSRunsVK::SpecKey() const
 
 VkShaderModule GSRunsVK::GetFragmentShader(u32 variant, u32 spec)
 {
-	variant &= ~VARIANT_NO_DEPTH; // the pipeline's, not the program's
+	variant &= ~(VARIANT_NO_DEPTH | VARIANT_UNIT); // the pipeline's, not the program's
 	const u64 key = spec | (static_cast<u64>(variant) << 32);
 	{
 		std::unique_lock lock(m_fs_mutex);
@@ -688,8 +695,8 @@ VkPipeline GSRunsVK::CreatePipeline(u8 dss_key, u32 variant, u32 spec)
 		gpb.SetDepthState(false, false, VK_COMPARE_OP_ALWAYS);
 	if (dual)
 	{
-		gpb.SetBlendAttachment(0, true, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, VK_BLEND_OP_ADD,
-			VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, 0xF);
+		gpb.SetBlendAttachment(0, true, (variant & VARIANT_UNIT) ? VK_BLEND_FACTOR_SRC1_COLOR : VK_BLEND_FACTOR_ONE,
+			VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR, VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD, 0xF);
 	}
 	else
 	{
@@ -738,11 +745,11 @@ bool GSRunsVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 	return true;
 }
 
-VkPipeline GSRunsVK::GetPipeline(bool dual)
+VkPipeline GSRunsVK::GetPipeline()
 {
 	const Run& r = m_run;
 	// Append let the run grow only while its program was built.
-	const auto it = m_pipelines.find(PipelineKey(r.dss, Variant(dual, r.rta, r.zfloor, r.nods), SpecKey()));
+	const auto it = m_pipelines.find(PipelineKey(r.dss, Variant(r.ways, r.rta, r.zfloor, r.nods), SpecKey()));
 	if (it == m_pipelines.end())
 		pxFailRel("VK: a run grew past the program built for it");
 	return it->second;
@@ -834,9 +841,7 @@ void GSRunsVK::Flush(Why)
 
 	GSDeviceVK* dev = m_dev;
 	const VkCommandBuffer cmd = dev->GetCurrentCommandBuffer();
-	// Way 2 alone needs no blending; any other way needs the dual-source blend.
-	const bool dual = (r.ways & ~(1u << 2)) != 0;
-	const VkPipeline pipeline = GetPipeline(dual);
+	const VkPipeline pipeline = GetPipeline();
 	const VkDescriptorSet set1 = WriteTextureSet();
 	if (set1 == VK_NULL_HANDLE)
 	{

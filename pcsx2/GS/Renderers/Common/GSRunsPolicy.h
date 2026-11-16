@@ -16,12 +16,18 @@
 /// keeps a row of per-draw state, and the run program (tfx_runs.glsl) does what the draw's classic program would have
 /// done for the state set accepted here and nothing else: no palette, no shader bilinear, no region clamp, a 32-bit
 /// colour target, alpha fail KEEP, the texture functions, fog, an alpha test, and the blend family (Cs - 0) * C + 0
-/// with the rest in the blend unit. How the classic path chose to blend becomes one of four ways under the run's one
-/// dual-source pipeline (ONE, INV_SRC1_COLOR / ONE, ZERO):
+/// with the rest in the blend unit. How the classic path chose to blend becomes one of eight ways under a dual-source
+/// pipeline, (ONE, INV_SRC1_COLOR / ONE, ZERO) for ways 0 to 5 and (SRC1_COLOR, INV_SRC1_COLOR / ONE, ZERO) for 6 and 7:
 ///   0  the shader blend, C = As, second output As
 ///   1  the shader blend, C = Af (the blend constant, or the second output where the driver ignores the constant)
 ///   2  blending elided, every channel written                (second output 1: the target's term is 0)
 ///   3  blending elided, alpha written alone                  (colour 0 and second output 0: RGB kept)
+///   4  additive, Cs * As in the shader, the target added     (second output 0)
+///   5  additive, Cs * Af likewise
+///   6  the blend unit's Cs * As + Cd * (1 - As), as Minimum blending draws it: Cs and As written unblended
+///   7  the same with Af, where the classic draw sends Af through the second output (a driver that ignores the
+///      blend constant). Through the constant it has no way: the blend unit does not take the constant and the second
+///      output to the same number (Mali differs by up to 8 levels).
 ///
 /// Header-only so the tests can pin it without a device.
 namespace GSRunsPolicy
@@ -32,7 +38,7 @@ namespace GSRunsPolicy
 		Road,  ///< the draw needs something besides one plain draw: a barrier, a second pass, DATE, colour clip, a copy
 		Topo,  ///< not an indexed triangle list in ST coordinates
 		PS,    ///< a pixel-shader state outside the run program's set
-		Blend, ///< a blend that none of the four ways reproduces
+		Blend, ///< a blend that none of the ways reproduces
 		Tex,   ///< a texture the run program cannot sample as its classic program does
 		Const, ///< a fog colour or blend constant that does not fit the row's bytes
 	};
@@ -62,12 +68,32 @@ namespace GSRunsPolicy
 	constexpr u32 Field(u32 flags, u32 state) { return (flags >> STATE_SHIFT[state]) & ((1u << STATE_WIDTH[state]) - 1); }
 	constexpr bool Textured(u32 flags) { return Field(flags, STATE_TFX) != 4; }
 
+	/// On a driver with DriverBug::BrokenMixedSamplingDerivatives (Turnip), a run's textured draws all take one of the
+	/// three sampling calls (one lod field): a draw that samples with the hardware's lod in a run beside draws that
+	/// sample another way got some pixels wrong there, and differently from one replay to the next (Spider-Man 3 at
+	/// Minimum blending: its lighting; Basic on a smaller scale). One sampling call for all three, the hardware's lod
+	/// read with a query, or derivatives taken before any branch, did not help. Elsewhere (malisx2, the M2) mixed runs
+	/// are exact and stay. LOD_ANY: the run has no textured draw yet.
+	constexpr u32 LOD_ANY = 0xFF;
+	constexpr bool LodJoins(bool one_call, u32 run_lod, u32 flags)
+	{
+		return !one_call || !Textured(flags) || run_lod == LOD_ANY || run_lod == Field(flags, STATE_LOD);
+	}
+
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a
 	/// discard). Split rule "dear" ends a run where these differ from the run's (measured in probe K1b).
 	constexpr u32 Dear(u32 flags)
 	{
 		return ((Textured(flags) && Field(flags, STATE_LOD) == LOD_HARDWARE) ? 1u : 0u) | ((Field(flags, STATE_ATST) != 0) ? 2u : 0u);
 	}
+
+	/// The ways whose classic draw leaves the whole blend to the blend unit (Minimum blending): Cs * As + Cd * (1 - As)
+	/// or the same with Af, under SRC1_COLOR, INV_SRC1_COLOR. A run holding one takes that equation, not the run's usual
+	/// (ONE, INV_SRC1_COLOR); the elided ways give the same result under either, the shader-blend ways do not.
+	constexpr u32 UNIT_WAYS = (1u << 6) | (1u << 7);
+	constexpr u32 SHADER_WAYS = (1u << 0) | (1u << 1) | (1u << 4) | (1u << 5);
+	constexpr bool UnitEquation(u32 ways) { return (ways & UNIT_WAYS) != 0; }
+	constexpr bool WaysShareAnEquation(u32 ways) { return (ways & UNIT_WAYS) == 0 || (ways & SHADER_WAYS) == 0; }
 
 	/// The states that decide a draw's colour arithmetic.
 	constexpr u32 COLOUR_STATES_MASK = 0xE3Fu; // tfx, tcc, fog, iip, way
@@ -85,7 +111,8 @@ namespace GSRunsPolicy
 		if (Field(flags, STATE_IIP) == 0)
 			return false;
 		const u32 tfx = Field(flags, STATE_TFX);
-		const bool rgb = tfx == 4 && Field(flags, STATE_FOG) == 0 && Field(flags, STATE_WAY) == 2;
+		const u32 way = Field(flags, STATE_WAY);
+		const bool rgb = tfx == 4 && Field(flags, STATE_FOG) == 0 && (way == 2 || way == 6 || way == 7);
 		const bool alpha = !rta_correction && (tfx == 4 || (tfx == 1 && Field(flags, STATE_TCC) == 0));
 		return rgb || alpha;
 	}
@@ -235,8 +262,21 @@ namespace GSRunsPolicy
 			return 4;
 		if (additive && ps.blend_c == 2)
 			return 5;
+		// The whole blend in the blend unit (Minimum blending): no blend in the shader, which writes Cs and the factor.
+		// The run takes the same equation (UnitEquation), so the run program writes what the classic program writes.
+		const bool unit = bs.enable && !bs.constant_enable && bs.op == GSDevice::OP_ADD && bs.src_factor == GSDevice::SRC1_COLOR &&
+		                  bs.dst_factor == GSDevice::INV_SRC1_COLOR && bs.src_factor_alpha == GSDevice::CONST_ONE &&
+		                  bs.dst_factor_alpha == GSDevice::CONST_ZERO && cms == 0xF && ps.blend_a == 0 && ps.blend_b == 0 &&
+		                  ps.blend_d == 0 && ps.blend_mix == 0 && !ps.no_color1;
+		if (unit && ps.blend_c == 0 && !ps.af_in_src1)
+			return 6;
+		if (unit && ps.blend_c == 2 && ps.af_in_src1)
+			return 7;
 		return -1;
 	}
+
+	/// Whether the way's row carries Af.
+	constexpr bool WayReadsAf(u32 way) { return way == 1 || way == 5 || way == 7; }
 
 	/// Whether the draw can join a run, and if so its row's flags and its way. colclip_live: a colour-clip target is in
 	/// progress on the device (the draw then renders to it, not to its target).
@@ -278,7 +318,7 @@ namespace GSRunsPolicy
 		}
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		if ((ps.fog && (!ByteExact(fog.x) || !ByteExact(fog.y) || !ByteExact(fog.z))) ||
-			((way == 1 || way == 5) && !ByteExact(config.cb_ps.TA_MaxDepth_Af.w * 128.0f)))
+			(WayReadsAf(static_cast<u32>(way)) && !ByteExact(config.cb_ps.TA_MaxDepth_Af.w * 128.0f)))
 		{
 			d.why = Refusal::Const;
 			return d;

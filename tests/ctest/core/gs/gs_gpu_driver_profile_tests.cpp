@@ -525,6 +525,22 @@ TEST(GSGpuDriverProfile, NobodyElseIgnoresTheBlendConstant)
 }
 
 // ---------------------------------------------------------------------------------------------
+// Turnip's derivatives beside other draws in one host draw: the run machine keeps one sampling call a run there, and
+// only there. Measured wrong on Turnip with an Adreno 613; malisx2 (G57, G615) and the M2 were exact with mixed runs.
+
+TEST(GSGpuDriverProfile, OnlyTurnipKeepsOneSamplingCallPerRun)
+{
+	const auto mixed_wrong = [](const GpuProfileSelection& sel) { return sel.driver.HasBug(DriverBug::BrokenMixedSamplingDerivatives); };
+	EXPECT_TRUE(mixed_wrong(ResolveAdrenoVK("Adreno (TM) 613", kTurnipDriverId, "turnip", PackVulkanVersion(27, 0, 0))));
+	EXPECT_TRUE(mixed_wrong(ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2))));
+	EXPECT_TRUE(mixed_wrong(ResolveAdrenoVK("Adreno (TM) 740", kTurnipDriverId, "turnip", PackVulkanVersion(26, 2, 99))));
+	EXPECT_FALSE(mixed_wrong(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
+	EXPECT_FALSE(mixed_wrong(ResolveMaliVK("Mali-G57 MC2", PackVulkanVersion(44, 1, 0))));
+	EXPECT_FALSE(mixed_wrong(
+		ResolveAdrenoVK("Adreno (TM) 740", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u)));
+}
+
+// ---------------------------------------------------------------------------------------------
 // The Auto renderer on the MT6897, and the rule that steers it.
 //
 // Auto sent this device to OpenGL for as long as it has existed, and correctly so: its GL driver
