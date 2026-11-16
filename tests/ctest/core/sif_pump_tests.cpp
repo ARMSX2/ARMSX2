@@ -57,6 +57,7 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "Sif.h"
+#include "IopThread/IopThreadVm.h"
 
 #include <gtest/gtest.h>
 
@@ -1229,6 +1230,80 @@ TEST_F(SifPumpIdle, APumpAfterTheTransferFinishedChangesNothingTheMachineCanSee)
 			}
 		}
 	}
+}
+
+// The IOP thread's lag rules watch the SIF RPC packets that pass through these pumps for calls to the memory card server
+// (IopThread::McServerCallInProgress). These run the packets through the real pumps.
+namespace
+{
+	constexpr u32 kMcServerData = 0x50000; // IOP address of the server's data, whose first word is the server's id
+	constexpr u32 kSif1Payload = 0x100020; // BuildSif1: the first packet's payload in EE RAM, after the chain tag and the IOP tag
+	constexpr u32 kSif1IopDst = 0x30000; // BuildSif1: where it lands in IOP RAM
+	constexpr u32 kSif0Payload = 0x20000; // BuildSif0: the first packet's payload in IOP RAM
+	constexpr u32 kSif0EeDst = 0x100000; // BuildSif0: where it lands in EE RAM
+	constexpr u32 kMcClient = 0x0047a900;
+
+	// The EE sends an RPC call to the memory card server over SIF1, as the game's library does (a 64-byte packet).
+	void SendMcCall(u32 rmode, u32 pkt_addr)
+	{
+		const Script s = Make(Chan::Sif1, Start::EeFirst, {16}, Term::Both, "_mccall");
+		ResetMachine(s);
+		Rng rng(s.name);
+		const Built b = BuildSif1(s, rng);
+		const u32 call[16] = {0x40, 0x0008f000, 0x8000000A, 0, 1, pkt_addr, 7, kMcClient, 5, 0x400, 0x00480000, 0x400, rmode, kMcServerData, 0, 0};
+		for (u32 i = 0; i < 16; i++)
+			Store32(eeMem->Main, kSif1Payload + 4 * i, call[i]);
+		Store32(iopMem->Main, kMcServerData, 0x80000400);
+		for (const Call c : b.calls)
+			DoCall(s, c);
+		ASSERT_EQ(0x8000000Au, Load<u32>(iopMem->Main, kSif1IopDst + 8)) << "the call did not reach IOP RAM";
+	}
+
+	// The IOP sends 12 words over SIF0 to kSif0EeDst: `packet`, or whatever the script puts there.
+	void SendFromIop(const u32* packet)
+	{
+		const Script s = Make(Chan::Sif0, Start::IopFirst, {12}, Term::Both, "_mcend");
+		ResetMachine(s);
+		Rng rng(s.name);
+		const Built b = BuildSif0(s, rng);
+		if (packet)
+		{
+			for (u32 i = 0; i < 12; i++)
+				Store32(iopMem->Main, kSif0Payload + 4 * i, packet[i]);
+		}
+		for (const Call c : b.calls)
+			DoCall(s, c);
+	}
+} // namespace
+
+TEST_F(SifPumpIdle, AMemoryCardServerCallIsInProgressFromItsSif1PacketToItsSif0End)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(1, 0x00470000);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	// The server's RPC end packet for the client.
+	const u32 end[12] = {0x30, 0x00470000, 0x80000008, 0, 1, 0x00470000, 7, kMcClient, 0x8000000A, kMcServerData, 0x00480000, 0};
+	SendFromIop(end);
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
+}
+
+// A call made without the no-wait mode gets no RPC end packet: the IOP writes the end straight into the EE's copy of the call packet.
+TEST_F(SifPumpIdle, ACallWithNoEndPacketEndsWhenTheIopWritesItsPacketBack)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(0, kSif0EeDst);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	SendFromIop(nullptr);
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
+}
+
+TEST_F(SifPumpIdle, AStateLoadOrResetForgetsTheMemoryCardCallsInProgress)
+{
+	IopThread::ResyncClocks();
+	SendMcCall(1, 0x00470000);
+	EXPECT_TRUE(IopThread::McServerCallInProgress(1000));
+	IopThread::ResyncClocks(); // what a savestate load and a VM reset call
+	EXPECT_FALSE(IopThread::McServerCallInProgress(1000));
 }
 
 INSTANTIATE_TEST_SUITE_P(Scripts, SifPump, ::testing::ValuesIn(AllScripts()),

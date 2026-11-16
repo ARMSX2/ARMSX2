@@ -8,6 +8,8 @@
 
 #include "IopThread/IopLagRules.h"
 
+#include <array>
+
 using namespace IopThread;
 
 namespace
@@ -303,4 +305,153 @@ TEST(LagRules, TheDefaultStreamBitsAreTheSpuAutoDmaAndNotTheDisc)
 	EXPECT_EQ(At(r, kBase, false, StreamBit::CdvdBusy), kLoose) << "a disc read alone is not a stream: a God of War II state reads the disc all the time";
 	EXPECT_EQ(At(r, kBase + 3072, false, StreamBit::SpuAdmaCore0), static_cast<s64>(c.tight));
 	EXPECT_EQ(At(r, kBase + 6144, false, StreamBit::SpuAdmaCore1 | StreamBit::CdvdBusy), static_cast<s64>(c.tight));
+}
+
+namespace
+{
+	// IOP addresses of two RPC servers' data; the first word of each is the server's id.
+	constexpr u32 kMcServer = 0x000a1230;
+	constexpr u32 kOtherServer = 0x000b4560;
+	u32 ReadIop(u32 addr)
+	{
+		if (addr == kMcServer)
+			return McServerCalls::kServerId;
+		if (addr == kOtherServer)
+			return 0x80000001;
+		return 0;
+	}
+
+	// Where the IOP's SIF0 transfers land in EE RAM: the EE's command buffer (the end packets), and the EE's copy of a call packet.
+	constexpr u32 kEeCmdBuffer = 0x00090000;
+	constexpr u32 kEeCallPacket = 0x00470000;
+
+	// The SIF command packets as they sit in IOP memory: an RPC call from the EE (64 bytes, as the game's library sends it) and the
+	// server's RPC end.
+	std::array<u32, 16> CallPacket(u32 client, u32 server, u32 function, u32 rmode = 1)
+	{
+		return {0x40, 0x0008f000, McServerCalls::kCmdRpcCall, 0, 1, kEeCallPacket, 7, client, function, 0x400, 0x00480000, 0x400, rmode, server, 0, 0};
+	}
+	std::array<u32, 12> EndPacket(u32 client, u32 server)
+	{
+		return {0x30, 0x00470000, McServerCalls::kCmdRpcEnd, 0, 1, 0x00470000, 7, client, McServerCalls::kCmdRpcCall, server, 0x00480000, 0};
+	}
+} // namespace
+
+TEST(LagRules, ACallToTheMemoryCardServerIsInProgressFromItsPacketToItsEnd)
+{
+	McServerCalls calls;
+	EXPECT_FALSE(calls.InProgress(kBase));
+
+	const auto call = CallPacket(0x0047a900, kMcServer, 5);
+	calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	EXPECT_TRUE(calls.InProgress(kBase + 100));
+	EXPECT_TRUE(calls.InProgress(kBase + 4'000'000));
+
+	// The end of another client's call, and data, change nothing.
+	const auto other_end = EndPacket(0x00093600, kOtherServer);
+	calls.OnSif0Transfer(other_end.data(), 12, kEeCmdBuffer);
+	const std::array<u32, 12> data = {0x40, 0, McServerCalls::kCmdRpcCall, 0, 0, 0, 0, 0x0047a900, 0, 0, 0, 0};
+	calls.OnSif0Transfer(data.data(), 12, kEeCmdBuffer);
+	EXPECT_TRUE(calls.InProgress(kBase + 4'000'100));
+
+	const auto end = EndPacket(0x0047a900, kMcServer);
+	calls.OnSif0Transfer(end.data(), 12, kEeCmdBuffer);
+	EXPECT_FALSE(calls.InProgress(kBase + 4'000'200));
+}
+
+TEST(LagRules, ACallToAnotherServerIsNotTracked)
+{
+	McServerCalls calls;
+	const auto call = CallPacket(0x00093600, kOtherServer, 1);
+	calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	EXPECT_FALSE(calls.InProgress(kBase));
+	// Nor is a packet too short to be a call, or one that is not a call.
+	auto bind = CallPacket(0x0047a900, kMcServer, 0);
+	bind[2] = 0x80000009;
+	calls.OnSif1Transfer(bind.data(), 16, ReadIop);
+	const auto mc = CallPacket(0x0047a900, kMcServer, 5);
+	calls.OnSif1Transfer(mc.data(), 12, ReadIop);
+	EXPECT_FALSE(calls.InProgress(kBase));
+}
+
+TEST(LagRules, AMemoryCardCallWhoseEndNeverComesIsForgotten)
+{
+	McServerCalls calls;
+	const auto call = CallPacket(0x0047a900, kMcServer, 5);
+	calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	EXPECT_TRUE(calls.InProgress(kBase));
+	EXPECT_TRUE(calls.InProgress(kBase + McServerCalls::kMaxAge));
+	EXPECT_FALSE(calls.InProgress(kBase + McServerCalls::kMaxAge + 1)) << "the IOP was rebooted under it";
+
+	calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	EXPECT_TRUE(calls.InProgress(kBase));
+	calls.Reset();
+	EXPECT_FALSE(calls.InProgress(kBase)) << "a state load or a VM reset";
+}
+
+// A call made without the no-wait mode gets no RPC end packet: the IOP writes the end straight into the EE's copy of the call packet.
+TEST(LagRules, AMemoryCardCallWithNoEndPacketEndsWhenTheIopWritesItsPacketBack)
+{
+	McServerCalls calls;
+	const auto call = CallPacket(0x0047a900, kMcServer, 2, 0);
+	calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	const std::array<u32, 12> reply = {};
+	calls.OnSif0Transfer(reply.data(), 12, 0x00480000); // the result, to the call's receive buffer
+	EXPECT_TRUE(calls.InProgress(kBase));
+	calls.OnSif0Transfer(reply.data(), 12, kEeCallPacket | 0x20000000); // the end, through the uncached mapping
+	EXPECT_FALSE(calls.InProgress(kBase));
+}
+
+TEST(LagRules, WithEverySlotTakenANewMemoryCardCallPushesOutTheOldest)
+{
+	McServerCalls calls;
+	for (u32 client = 1; client <= 5; client++)
+	{
+		const auto call = CallPacket(client, kMcServer, 5);
+		calls.OnSif1Transfer(call.data(), 16, ReadIop);
+	}
+	EXPECT_TRUE(calls.InProgress(kBase));
+	for (u32 client = 2; client <= 5; client++)
+	{
+		const auto end = EndPacket(client, kMcServer);
+		calls.OnSif0Transfer(end.data(), 12, kEeCmdBuffer);
+	}
+	EXPECT_FALSE(calls.InProgress(kBase)) << "client 1's call was pushed out";
+}
+
+// A game loads its save: open, read, close, each a call to the memory card server that it polls for, with its own work between them.
+// With the default rules the bound is the tight bound while each call is in progress, whatever the EE is doing, and the loose bound
+// between calls and after the last. The calls a game makes twice a second to see whether the card was changed hold it tight only for
+// as long as each takes.
+TEST(LagRules, AMemoryCardCallHoldsTheBoundTightUntilItsEnd)
+{
+	LagRulesConfig c; // the default stream bits
+	c.mask = LagRule::Bit(LagRule::Stream);
+	LagRules r;
+	r.Configure(c);
+	r.Reset();
+	McServerCalls calls;
+	const s64 tight = c.tight;
+	constexpr u64 kFrame = 4915200;
+	constexpr u32 kClient = 0x0047a900;
+
+	// The IOP samples its devices at the end of each slice; the EE's event test reads what it published last.
+	const auto step = [&](u64 cycle) {
+		return At(r, cycle, false, calls.InProgress(cycle) ? StreamBit::McServerCall : 0);
+	};
+
+	u64 t = kBase;
+	for (const u32 function : {2u /* open */, 5u /* read */, 3u /* close */})
+	{
+		EXPECT_EQ(step(t), kLoose) << "the game's own work before call " << function;
+		const auto call = CallPacket(kClient, kMcServer, function);
+		calls.OnSif1Transfer(call.data(), 16, ReadIop);
+		for (u64 in = 3072; in < kFrame; in += 3072)
+			ASSERT_EQ(step(t + in), tight) << "call " << function << ", " << in << " cycles in";
+		const auto end = EndPacket(kClient, kMcServer);
+		calls.OnSif0Transfer(end.data(), 12, kEeCmdBuffer);
+		t += kFrame + kFrame / 2;
+	}
+	EXPECT_EQ(step(t), kLoose);
+	EXPECT_EQ(r.Stats().activations[LagRule::Stream], 3u) << "one stretch per call";
 }

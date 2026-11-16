@@ -386,7 +386,7 @@ namespace IopThread
 	{
 		if (!m_params.sample_streams)
 			return;
-		const u32 now = m_params.sample_streams();
+		const u32 now = m_params.sample_streams(m_iop_pos);
 		if (now != m_streams.load(std::memory_order_relaxed))
 			m_streams.store(now, std::memory_order_relaxed);
 	}

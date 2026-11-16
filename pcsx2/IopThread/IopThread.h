@@ -287,9 +287,10 @@ namespace IopThread
 		/// Optional. Receives the E2IKick bits raised since the last call.
 		std::function<void(u32 kicks)> apply_kicks;
 
-		/// Optional. The IOP's devices as StreamBit bits (SPU2 auto-DMA, a CDVD read), sampled at the end of every slice and
-		/// published to the EE for LagRule::Stream. Empty means no stream is ever running.
-		std::function<u32()> sample_streams;
+		/// Optional. The IOP's devices as StreamBit bits (SPU2 auto-DMA, a CDVD read, a call to the memory card server), sampled at
+		/// the end of every slice with the IOP's position, and published to the EE for LagRule::Stream. Empty means no stream is ever
+		/// running.
+		std::function<u32(u64 iop_pos)> sample_streams;
 
 		// ---- run on the EE thread
 

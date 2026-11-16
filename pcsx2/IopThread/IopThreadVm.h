@@ -261,6 +261,13 @@ namespace IopThread
 	/// went out, so the lag rules hold the bound tight until the reply (LagRule::Window, IdleOutstanding). A load of the mode in Off.
 	void EeNoteSifStart(u32 channel);
 
+	/// The thread that runs the IOP. A SIF1 transfer of `words` words from the EE has landed in IOP memory at `madr`, and the IOP is
+	/// sending one over SIF0 from `madr` to EE address `ee_dest`. They track the calls to the memory card server (StreamBit::McServerCall).
+	void NoteSif1ToIop(u32 madr, u32 words);
+	void NoteSif0FromIop(u32 madr, u32 words, u32 ee_dest);
+	/// The thread that runs the IOP. Whether a call to the memory card server is in progress at IOP position `iop_pos`.
+	bool McServerCallInProgress(u64 iop_pos);
+
 	/// EE thread. The EE read the status of D5 or D6 (CHCR) with STR set: it polls for the end of a SIF transfer, which may be waiting
 	/// for the IOP (LagRule::Poll).
 	void EeNoteSifPoll();

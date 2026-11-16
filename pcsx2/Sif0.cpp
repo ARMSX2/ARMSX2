@@ -120,6 +120,8 @@ static __fi bool ProcessIOPTag()
 {
 	// Process DMA tag at hw_dma9.tadr
 	sif0.iop.data = *(sifData *)iopPhysMem(hw_dma9.tadr);
+	// The EE's side of the tag: its second word is where the data lands in EE memory.
+	const u32 ee_dest = *(u32*)iopPhysMem(hw_dma9.tadr + 12);
 	sif0.iop.data.words = sif0.iop.data.words;
 
 	// send the EE's side of the DMAtag.  The tag is only 64 bits, with the upper 64 bits being the next IOP tag
@@ -135,6 +137,8 @@ static __fi bool ProcessIOPTag()
 	if (sif0words > 0xFFFFF) DevCon.Warning("SIF0 Overrun %x", sif0words);
 	//Maximum transfer amount 1mb-16 also masking out top part which is a "Mode" cache stuff, we don't care :)
 	sif0.iop.counter = sif0words & 0xFFFFF;
+	// The transfer is in IOP memory already: the lag rules look for the end of a call to the memory card server in it.
+	IopThread::NoteSif0FromIop(hw_dma9.madr, sif0.iop.counter, ee_dest);
 
 	// Save the number of words we need to write to make up 1QW from this packet. (See "Junk data writing" in Sif.h)
 	sif0.iop.writeJunk = (sif0.iop.counter & 0x3) ? (4 - sif0.iop.counter & 0x3) : 0;

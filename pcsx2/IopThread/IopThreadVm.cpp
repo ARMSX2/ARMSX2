@@ -192,6 +192,16 @@ namespace IopThread
 			// at a one-frame bound each request then took a frame, the movie drew 6 to 16 fps and its sound buffer was played twice. The
 			// window is not closed by a reply: closed, it was tight for 3 percent of that movie's cycles and changed nothing. Open for
 			// 196,608 cycles it restores the movie (98,304 does not) and is tight for 2.4 percent of God of War II's gameplay.
+			// Stream also counts a call to the memory card server in progress (StreamBit::McServerCall, McServerCalls in IopLagRules.h).
+			// Samurai Warriors 2 loads its save as a series of calls (card information, open, read, close) that it polls for; at a one-frame
+			// bound the EE ran up to a frame ahead of the IOP through the calls before the first read, each end reached it late, and the game
+			// reported the good save damaged. Tight from each call's arrival on the IOP to its end (the server's end packet, or for a call
+			// with no end function the IOP's write-back into the EE's copy of the call packet), the save loads. The bit holds the bound tight
+			// for 4.2 percent of the event tests in that game's title menu, which asks for the card's information every few frames, and 2.5
+			// percent over its boot and load; for none in Burnout 3's gameplay or God of War II's movie (Threaded) or its gameplay (the
+			// Lockstep skew), which make no calls to the server there. Tracking every RPC call instead held the bound tight for about 10
+			// percent of the event tests in Samurai Warriors 2 and in God of War II's movie, nearly all of it streaming and sound servers,
+			// so only the memory card server is tracked.
 			// The other rules in IopLagRules.h are off: idling alone (IdleAny) held the bound tight for 38 to 60 percent of God of War II,
 			// and a CDVD read counted as a stream for 59 percent of it.
 			LagRulesConfig cfg;
@@ -201,10 +211,15 @@ namespace IopThread
 			return cfg;
 		}
 
+		// The calls to the memory card server in progress, from the SIF command packets (NoteSif1ToIop, NoteSif0FromIop). Owned by
+		// whichever thread runs the IOP; ResyncClocks resets it with the IOP held or stopped.
+		McServerCalls s_mc_calls;
+
 		// What the IOP's devices are doing, sampled by the IOP thread at the end of each slice (LagRule::Stream). The SPU2 auto-DMA
-		// control word has the core's bit set while the game streams audio into that core, and the drive is busy while a read or a
-		// seek is running; both are IOP-owned state the IOP thread reads without a lock.
-		u32 SampleDeviceStreams()
+		// control word has the core's bit set while the game streams audio into that core, the drive is busy while a read or a
+		// seek is running, and the memory card server has a call in progress; all are IOP-owned state the IOP thread reads
+		// without a lock.
+		u32 SampleDeviceStreams(u64 iop_pos)
 		{
 			u32 bits = 0;
 			if (Cores[0].AutoDMACtrl & 1)
@@ -213,6 +228,8 @@ namespace IopThread
 				bits |= StreamBit::SpuAdmaCore1;
 			if (cdvd.Reading || cdvd.Action != 0) // 0 is cdvdAction_None (CDVD_internal.h, which defines a variable and cannot be included twice)
 				bits |= StreamBit::CdvdBusy;
+			if (McServerCallInProgress(iop_pos))
+				bits |= StreamBit::McServerCall;
 			return bits;
 		}
 
@@ -423,6 +440,8 @@ namespace IopThread
 
 	void ResyncClocks()
 	{
+		// The calls the SIF packets showed belong to the machine before the load or the reset.
+		s_mc_calls.Reset();
 		if (g_thread.IsRunning())
 			g_thread.Resync(cpuRegs.cycle, IopPosition());
 	}
@@ -711,6 +730,39 @@ namespace IopThread
 		if (s_mode == IopThreadMode::Off || !g_thread.IsRunning())
 			return;
 		g_thread.NoteEeSifStart(cpuRegs.cycle, channel);
+	}
+
+	namespace
+	{
+		// The first words of a SIF transfer in IOP memory, enough for the RPC packets McServerCalls reads.
+		struct SifHead
+		{
+			u32 w[14];
+			u32 count;
+			SifHead(u32 madr, u32 words)
+			{
+				count = std::min<u32>(words, 14);
+				for (u32 i = 0; i < count; i++)
+					w[i] = *reinterpret_cast<const u32*>(iopPhysMem(madr + i * 4));
+			}
+		};
+	} // namespace
+
+	void NoteSif1ToIop(u32 madr, u32 words)
+	{
+		const SifHead head(madr, words);
+		s_mc_calls.OnSif1Transfer(head.w, head.count, [](u32 addr) { return *reinterpret_cast<const u32*>(iopPhysMem(addr & ~3u)); });
+	}
+
+	void NoteSif0FromIop(u32 madr, u32 words, u32 ee_dest)
+	{
+		const SifHead head(madr, words);
+		s_mc_calls.OnSif0Transfer(head.w, head.count, ee_dest);
+	}
+
+	bool McServerCallInProgress(u64 iop_pos)
+	{
+		return s_mc_calls.InProgress(iop_pos);
 	}
 
 	void EeNoteSifPoll()

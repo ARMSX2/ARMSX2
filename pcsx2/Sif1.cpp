@@ -67,6 +67,15 @@ static __fi bool WriteFifoToIOP()
 	sif1.iop.cycles += readSize >> 2;		// fixme: should be >> 4
 	sif1.iop.counter -= readSize;
 
+	// The whole transfer is in IOP memory: the lag rules look for a call to the memory card server in it. Where it started comes
+	// from the tag's length and the address the DMA has reached, both in the savestate, so a state saved part way through a
+	// transfer still finds it.
+	if (sif1.iop.counter <= 0)
+	{
+		const u32 words = sif1words & 0xFFFFC;
+		IopThread::NoteSif1ToIop(hw_dma10.madr - words * 4, words);
+	}
+
 	return true;
 }
 

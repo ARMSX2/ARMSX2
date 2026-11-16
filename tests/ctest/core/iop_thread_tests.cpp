@@ -2997,7 +2997,7 @@ namespace
 		p.rules.mask = LagRule::Bit(LagRule::Stream);
 		p.rules.tight = kTightBound;
 		p.rules.stream_bits = StreamBit::SpuAdmaCore0;
-		p.sample_streams = [&] { return streams.load(); };
+		p.sample_streams = [&](u64) { return streams.load(); };
 		StopOnExit stop_on_exit(*thread);
 		ASSERT_TRUE(thread->Start(p));
 

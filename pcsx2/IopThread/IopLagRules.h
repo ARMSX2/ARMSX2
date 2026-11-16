@@ -35,7 +35,7 @@ namespace IopThread
 		inline constexpr u32 IdleOutstanding = 1;
 		/// The EE is idle, whatever it has sent. Experiment: what idle alone costs a game whose EE is mostly busy.
 		inline constexpr u32 IdleAny = 2;
-		/// A stream is running on the IOP: SPU2 auto-DMA input or a CDVD read (the streams word; StreamBit).
+		/// A stream is running on the IOP: SPU2 auto-DMA input, a CDVD read or a call to the memory card server (the streams word; StreamBit).
 		inline constexpr u32 Stream = 3;
 		/// The first `boot_frames` frames after the VM booted or reset: modules load, the IOP reboots, custom disc drivers handshake.
 		inline constexpr u32 Boot = 4;
@@ -57,7 +57,109 @@ namespace IopThread
 		inline constexpr u32 SpuAdmaCore0 = 1 << 0; // SPU2 core 0 auto-DMA input on
 		inline constexpr u32 SpuAdmaCore1 = 1 << 1; // SPU2 core 1 auto-DMA input on
 		inline constexpr u32 CdvdBusy = 1 << 2; // a disc read or a drive action is running
+		inline constexpr u32 McServerCall = 1 << 3; // a call to the memory card server is in progress (McServerCalls)
 	} // namespace StreamBit
+
+	/// StreamBit::McServerCall: the calls to the IOP's memory card server (the RPC server with id 0x80000400) that the server has not
+	/// finished. A game that loads or saves sends one call per operation (open, read, close, directory, ...) and polls for its end; at a
+	/// large bound each end reached the EE up to a frame late, and a game that times its operations reports a good save as damaged.
+	///
+	/// The IOP side of SIF sees every command packet: the EE's RPC calls land in IOP memory over SIF1, and the server's replies leave
+	/// over SIF0. A call packet names the server it is for by the address of the server's data, whose first word is the server's id. A
+	/// call is in progress from its packet's arrival until the server's RPC end packet for its client leaves, or, for a call made
+	/// without the no-wait mode, until the IOP writes the end straight into the EE's copy of the call packet (a SIF0 transfer to the
+	/// call's packet address). The IOP thread owns it (whichever thread runs the IOP, in Off). A savestate load and a VM reset forget
+	/// the calls (ResyncClocks).
+	class McServerCalls
+	{
+	public:
+		/// The memory card server's RPC id (mcserv and its successors).
+		static constexpr u32 kServerId = 0x80000400;
+		/// A call older than this, in EE cycles of IOP time, is forgotten: two seconds. A call whose end never comes (the IOP was
+		/// rebooted under it) would otherwise hold the bound tight for good.
+		static constexpr u64 kMaxAge = 120 * 4915200ull;
+
+		// SIF command ids (sifcmd).
+		static constexpr u32 kCmdRpcEnd = 0x80000008;
+		static constexpr u32 kCmdRpcCall = 0x8000000A;
+
+		/// A transfer the EE sent over SIF1 landed in IOP memory: `count` words at `words`. `read_iop(addr)` reads an IOP word.
+		template <typename ReadIop>
+		void OnSif1Transfer(const u32* words, u32 count, ReadIop&& read_iop)
+		{
+			// SifRpcCallPkt: the command header {size, dest, cid, opt}, rec_id, pkt_addr, rpc_id, client, rpc_number, send_size,
+			// receive, recv_size, rmode, server. The size in the header's low byte covers at least those.
+			if (count < 14 || words[2] != kCmdRpcCall || (words[0] & 0xff) < 56)
+				return;
+			if (read_iop(words[13]) != kServerId)
+				return;
+			const Call call = {words[7], words[5], kNotSeen};
+			for (u32 i = 0; i < m_count; i++)
+			{
+				if (m_calls[i].client == call.client)
+				{
+					m_calls[i] = call;
+					return;
+				}
+			}
+			// Full: the oldest call goes, its end most likely lost.
+			if (m_count == kSlots)
+			{
+				for (u32 i = 1; i < kSlots; i++)
+					m_calls[i - 1] = m_calls[i];
+				m_count--;
+			}
+			m_calls[m_count++] = call;
+		}
+
+		/// A transfer the IOP sends over SIF0: `count` words at `words` in IOP memory, to EE address `ee_dest`.
+		void OnSif0Transfer(const u32* words, u32 count, u32 ee_dest)
+		{
+			// SifRpcRendPkt: the command header, rec_id, pkt_addr, rpc_id, client, cid, server, buff, cbuff.
+			const bool end_packet = count >= 8 && words[2] == kCmdRpcEnd;
+			for (u32 i = 0; i < m_count;)
+			{
+				const Call& c = m_calls[i];
+				if ((end_packet && c.client == words[7]) || SameEeAddress(c.pkt_addr, ee_dest))
+					m_calls[i] = m_calls[--m_count];
+				else
+					i++;
+			}
+		}
+
+		/// Whether a call is in progress at IOP position `now`. Ages the calls from the first look at each.
+		bool InProgress(u64 now)
+		{
+			for (u32 i = 0; i < m_count;)
+			{
+				Call& c = m_calls[i];
+				if (c.since == kNotSeen)
+					c.since = now;
+				if (now - c.since > kMaxAge)
+					c = m_calls[--m_count];
+				else
+					i++;
+			}
+			return m_count != 0;
+		}
+
+		void Reset() { m_count = 0; }
+
+	private:
+		// EE RAM through any of its mappings (cached, uncached, uncached accelerated).
+		static bool SameEeAddress(u32 a, u32 b) { return ((a ^ b) & 0x0FFFFFFF) == 0; }
+
+		static constexpr u64 kNotSeen = ~0ull;
+		static constexpr u32 kSlots = 4;
+		struct Call
+		{
+			u32 client;
+			u32 pkt_addr; // the EE's copy of the call packet
+			u64 since;
+		};
+		Call m_calls[kSlots] = {};
+		u32 m_count = 0;
+	};
 
 	struct LagRulesConfig
 	{
@@ -79,9 +181,10 @@ namespace IopThread
 		/// LagRule::Mailbox and Poll: window lengths.
 		u32 mailbox_window = 4915200;
 		u32 poll_window = 98304;
-		/// LagRule::Stream: which StreamBit bits count. SPU2 auto-DMA only: with a disc read counted too the rule held the bound tight for 59 percent
-		/// of the EE's cycles in a God of War II state, whose engine reads the disc all the time, and gained nothing for the games that need it.
-		u32 stream_bits = StreamBit::SpuAdmaCore0 | StreamBit::SpuAdmaCore1;
+		/// LagRule::Stream: which StreamBit bits count. SPU2 auto-DMA and memory card server calls, not a disc read: with a disc read counted the rule held the
+		/// bound tight for 59 percent of the EE's cycles in a God of War II state, whose engine reads the disc all the time, and gained nothing for the
+		/// games that need it.
+		u32 stream_bits = StreamBit::SpuAdmaCore0 | StreamBit::SpuAdmaCore1 | StreamBit::McServerCall;
 		/// LagRule::Boot: frames after a boot or reset.
 		u32 boot_frames = 600;
 	};
