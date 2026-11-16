@@ -6506,6 +6506,7 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					                        !m_conf.vs.sprite_edge_clamp && !m_texture_shuffle && !m_conf.ps.shuffle &&
 					                        !m_channel_shuffle_width && !m_channel_shuffle_rebuilt_quad && !m_conf.ps.channel &&
 					                        !m_conf.sampler.biln && !m_conf.ps.ltf;
+					m_conf.vs.sprite_ramp = m_conf.ps.sprite_ramp;
 
 					if (req_vert_backup)
 					{

@@ -107,10 +107,10 @@ TEST(GSRunsPolicy, TheCheapRefusalsAgreeWithClassify)
 	GSHWDrawConfig c = Way0();
 	EXPECT_FALSE(OutsidePS(c.ps));
 	EXPECT_FALSE(OutsideVS(c.vs));
-	for (u32 bit = 0; bit < 8; bit++)
+	for (u32 bit = 0; bit < 9; bit++)
 	{
 		c = Way0();
-		c.vs.key |= static_cast<u8>(1u << bit);
+		c.vs.key |= static_cast<u16>(1u << bit);
 		if (OutsideVS(c.vs))
 			EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Topo) << "bit " << bit;
 	}

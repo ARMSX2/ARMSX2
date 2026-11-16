@@ -7812,6 +7812,7 @@ VkShaderModule GSDeviceVK::GetTFXVertexShader(GSHWDrawConfig::VSSelector sel)
 	AddMacro(ss, "VS_POINT_SIZE", sel.point_size);
 	AddMacro(ss, "VS_EXPAND", static_cast<int>(sel.expand));
 	AddMacro(ss, "VS_SPRITE_EDGE_CLAMP", sel.sprite_edge_clamp);
+	AddMacro(ss, "VS_SPRITE_RAMP", sel.sprite_ramp);
 	ss << m_tfx_source;
 	std::string source = ss.str();
 	source_timer.reset();
@@ -8216,18 +8217,19 @@ bool GSDeviceVK::IsLoadableTFXKey(const PipelineSelector& p)
 {
 	// The bytes after the last member are padding, zero in every selector a draw builds.
 	static constexpr size_t USED_BYTES = sizeof(GSHWDrawConfig::PSSelector) + sizeof(u32) +
-										 sizeof(GSHWDrawConfig::BlendState) + 4 * sizeof(u8);
-	static_assert(USED_BYTES <= sizeof(PipelineSelector));
+										 sizeof(GSHWDrawConfig::BlendState) + sizeof(GSHWDrawConfig::VSSelector) +
+										 sizeof(GSHWDrawConfig::DepthStencilSelector) +
+										 sizeof(GSHWDrawConfig::ColorMaskSelector);
+	static_assert(USED_BYTES < sizeof(PipelineSelector));
 	u8 tail[sizeof(PipelineSelector) - USED_BYTES];
 	std::memcpy(tail, reinterpret_cast<const u8*>(&p) + USED_BYTES, sizeof(tail));
 	if (std::any_of(std::begin(tail), std::end(tail), [](u8 b) { return b != 0; }))
 		return false;
 
 	// The flag word holds topology (2 bits), rt, ds, line_width, feedback_loop_flags (3), raster_order and
-	// stencil_counter (2): eleven bits, and stencil_counter goes to 2.
+	// stencil_counter (2): eleven bits, and stencil_counter goes to 2. The vertex selector uses nine bits.
 	return p.topology <= static_cast<u32>(GSHWDrawConfig::Topology::Triangle) && (p.key >> 11) == 0 &&
-		   p.stencil_counter <= 2 &&
-		   p.pad == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
+		   p.stencil_counter <= 2 && (p.vs.key >> 9) == 0 && p.bs.op <= GSDevice::OP_REV_SUBTRACT &&
 		   p.vs.expand <= GSHWDrawConfig::VSExpand::TriangleAA1 && p.dss._free == 0 &&
 		   p.cms._free == 0 && p.ps.atst <= GSShader::PS_ATST::NOTEQUAL && p.ps.afail <= GSShader::PS_AFAIL::RGB_ONLY_SW_Z &&
 		   p.ps.rov_depth <= GSShader::PS_ROV_DEPTH::READ_ONLY &&

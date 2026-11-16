@@ -403,7 +403,7 @@ void main()
 	vtx.t.y = is_bottom ? lt.t.y : vtx.t.y;
 	vtx.ti.yw = is_bottom ? lt.ti.yw : vtx.ti.yw;
 
-	#if VS_TME && VS_FST && !VS_SPRITE_EDGE_CLAMP
+	#if VS_SPRITE_RAMP
 		// An FST sprite does not use ST, so it carries the ramp marks (sprite_ramp_mark, PS_SPRITE_RAMP).
 		{
 			RawVertex r_lt = vertex_buffer[BaseVertex + vid_lt];

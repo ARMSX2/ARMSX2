@@ -725,11 +725,12 @@ struct alignas(16) GSHWDrawConfig
 				u8 point_size : 1;		///< Set when points need to be expanded without VS expanding.
 				VSExpand expand : 3;
 				u8 sprite_edge_clamp : 1; ///< ST carries each sprite's far-edge sample limit; see PSSelector::sprite_edge_clamp.
+				u8 sprite_ramp : 1; ///< ST carries each sprite's ramp marks; see PSSelector::sprite_ramp.
 			};
-			u8 key;
+			u16 key;
 		};
 		VSSelector(): key(0) {}
-		VSSelector(u8 k): key(k) {}
+		VSSelector(u16 k): key(k) {}
 
 		/// Returns true if the fixed index buffer should be used.
 		__fi bool UseFixedExpandIndexBuffer() const { return (expand == VSExpand::Point || expand == VSExpand::Sprite); }
@@ -737,7 +738,7 @@ struct alignas(16) GSHWDrawConfig
 		/// Return true if the index buffer should be bound as a vertex shader resource.
 		__fi bool UseVSExpandIndexBuffer() const { return (expand == VSExpand::TriangleAA1); }
 	};
-	static_assert(sizeof(VSSelector) == 1, "VSSelector is a single byte");
+	static_assert(sizeof(VSSelector) == 2, "VSSelector is two bytes");
 
 	struct PSSelector
 	{

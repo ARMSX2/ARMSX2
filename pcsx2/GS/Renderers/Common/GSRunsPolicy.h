@@ -195,7 +195,7 @@ namespace GSRunsPolicy
 		vs.sprite_edge_clamp = 1;
 		return vs;
 	}
-	inline const u8 REFUSED_VS = MakeRefusedVS().key;
+	inline const u16 REFUSED_VS = MakeRefusedVS().key;
 	inline bool OutsideVS(const GSHWDrawConfig::VSSelector& vs) { return (vs.key & REFUSED_VS) != 0; }
 
 	inline bool ByteExact(float v) { return v >= 0.0f && v <= 255.0f && v == std::floor(v); }

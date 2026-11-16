@@ -92,7 +92,7 @@ private:
 		const GSTexture* rt = nullptr;
 		const GSTexture* ds = nullptr;
 		u8 dss = 0;
-		u8 vs = 0;
+		u16 vs = 0;
 		u8 rta = 0;
 		u8 zfloor = 0;
 		GSVector4i scissor;
@@ -128,7 +128,8 @@ private:
 		bool in_run = false; ///< that draw joined a run: compare with the run's fixed state, which outlives its flush
 		const GSTexture* rt = nullptr;
 		const GSTexture* ds = nullptr;
-		u8 dss = 0, vs = 0, rta = 0, zfloor = 0;
+		u8 dss = 0, rta = 0, zfloor = 0;
+		u16 vs = 0;
 		u32 strict = 0; ///< never compared: a draw is primed before it is classified
 		GSVector4i scissor;
 		GSHWDrawConfig::VSConstantBuffer cb_vs;

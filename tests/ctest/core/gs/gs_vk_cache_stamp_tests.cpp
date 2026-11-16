@@ -79,6 +79,10 @@ TEST(GSVkCacheStamp, RecordedKeysThatDrawsMakeAreLoadable)
 	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
 	p.stencil_counter = 2;
 	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
+	p.vs.expand = GSHWDrawConfig::VSExpand::Sprite;
+	p.vs.sprite_edge_clamp = 1;
+	p.vs.sprite_ramp = 1;
+	EXPECT_TRUE(GSDeviceVK::IsLoadableTFXKey(p));
 }
 
 TEST(GSVkCacheStamp, RecordedKeysNoDrawMakesAreNot)
@@ -90,6 +94,6 @@ TEST(GSVkCacheStamp, RecordedKeysNoDrawMakesAreNot)
 	q.topology = 3;
 	EXPECT_FALSE(GSDeviceVK::IsLoadableTFXKey(q));
 	GSDeviceVK::PipelineSelector r;
-	r.pad = 1;
+	r.vs.key = 1u << 9;
 	EXPECT_FALSE(GSDeviceVK::IsLoadableTFXKey(r));
 }

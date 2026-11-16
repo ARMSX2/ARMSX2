@@ -135,7 +135,7 @@ public:
 	{
 		PSSelector ps;
 		VSSelector vs;
-		u8 pad[15];
+		u8 pad[14];
 
 		// Compare ONLY the meaningful key fields, matching ProgramSelectorHash above
 		// (which hashes {vs.key, ps.key_hi, ps.key_lo}). BitEqual() memcmp'd all 32 bytes
