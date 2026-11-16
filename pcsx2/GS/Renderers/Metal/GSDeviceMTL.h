@@ -93,7 +93,7 @@ struct PipelineSelectorMTL
 	GSHWDrawConfig::PSSelector ps;
 	PipelineSelectorExtrasMTL extras;
 	GSHWDrawConfig::VSSelector vs;
-	u8 pad[3];
+	u8 pad[2];
 	PipelineSelectorMTL()
 	{
 		memset(this, 0, sizeof(*this));
