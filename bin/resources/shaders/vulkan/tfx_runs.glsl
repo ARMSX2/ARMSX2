@@ -274,6 +274,12 @@ void main()
 	}
 	else
 		o_col1 = vec4(0.0f);
+	// A draw the classic path writes unblended (way 2) goes through the blend unit in a blending run, and the blend unit
+	// rounds the output differently from the attachment's own conversion (Mali-G57 and G615: scattered pixels moved by up
+	// to 8 levels, here and wherever such a draw shared a run with a blended one). Rounded half up to the target's 8 bits
+	// as the attachment rounds, the output passes the blend unit unchanged.
+	if (way == 2u)
+		o_col0 = floor(o_col0 * 255.0f + 0.5f) / 255.0f;
 #endif
 }
 
