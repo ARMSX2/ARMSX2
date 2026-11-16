@@ -355,3 +355,74 @@ TEST_F(TwoClusterFolderCardTest, PartialWriteToAClusterTheFlushCouldNotPlaceKeep
 	expected.replace(FILE_SIZE, sizeof(patch), sizeof(patch), '\x99');
 	EXPECT_EQ(ReadHostFile(SaveDir() / "a.bin"), expected);
 }
+
+// A save directory of six one-cluster files, f0.bin to f5.bin, each filled with its own byte. Its
+// entries fill data clusters 3, 6 and 9, so the last of them lies in a different erase block from
+// the root directory's.
+class SixFileFolderCardTest : public FolderCardTest
+{
+protected:
+	static constexpr int kFiles = 6;
+
+	void SetUp() override
+	{
+		m_card_dir = m_temp.Path() / "Mcd001.ps2";
+		WriteHostFile(m_card_dir / "_pcsx2_superblock", FormattedSuperblock());
+		for (int i = 0; i < kFiles; ++i)
+			WriteHostFile(SaveDir() / FileName(i), std::string(FILE_SIZE, FileByte(i)));
+		m_card.OpenAt(m_card_dir);
+	}
+
+	static std::string FileName(int i) { return "f" + std::to_string(i) + ".bin"; }
+	static char FileByte(int i) { return static_cast<char>(0x20 + i); }
+
+	void ExpectEveryFileOnTheHost()
+	{
+		for (int i = 0; i < kFiles; ++i)
+		{
+			EXPECT_EQ(ReadHostFile(SaveDir() / FileName(i)), std::string(FILE_SIZE, FileByte(i))) << FileName(i);
+			EXPECT_FALSE(fs::exists(SaveDir() / ("_pcsx2_deleted_" + FileName(i)))) << FileName(i);
+		}
+	}
+};
+
+// The console rewrites a block by copying it to backup block 1, writing the block's number into
+// backup block 2, erasing it and writing it again, then erasing backup block 2. A pause flush while
+// the block holding some of a directory's entries reads erased must neither delete those files nor
+// write the erased data into the others.
+TEST_F(SixFileFolderCardTest, PauseFlushDuringABlockRewriteKeepsTheFiles)
+{
+	constexpr u32 pagesPerBlock = FolderMemoryCard::BlockSize / FolderMemoryCard::PageSize;
+	const u32 last = FolderMemoryCard::LastDataCluster;
+	u32 entryCluster = kDirCluster;
+	while (m_card.NextCluster(entryCluster) != last)
+		entryCluster = m_card.NextCluster(entryCluster);
+	const u32 block = m_card.BlockOfDataCluster(entryCluster);
+	ASSERT_NE(block, m_card.BlockOfDataCluster(0));
+	const u32 backup1 = 1023;
+	const u32 backup2 = 1022;
+
+	std::vector<std::vector<u8>> saved(pagesPerBlock, std::vector<u8>(FolderMemoryCard::PageSize));
+	for (u32 i = 0; i < pagesPerBlock; ++i)
+	{
+		m_card.ReadPage(block * pagesPerBlock + i, saved[i].data());
+		m_card.WritePage(backup1 * pagesPerBlock + i, saved[i].data());
+	}
+	u8 marker[FolderMemoryCard::PageSize];
+	std::memset(marker, 0xFF, sizeof(marker));
+	std::memcpy(marker, &block, sizeof(block));
+	m_card.WritePage(backup2 * pagesPerBlock, marker);
+	m_card.EraseBlock(block * FolderMemoryCard::BlockSizeRaw);
+
+	// What the host holds if the app is killed here.
+	m_card.FlushNow();
+	ExpectEveryFileOnTheHost();
+
+	for (u32 i = 0; i < pagesPerBlock; ++i)
+		m_card.WritePage(block * pagesPerBlock + i, saved[i].data());
+	m_card.EraseBlock(backup2 * FolderMemoryCard::BlockSizeRaw);
+	m_card.FlushNow();
+	m_card.Close();
+
+	ExpectEveryFileOnTheHost();
+}
