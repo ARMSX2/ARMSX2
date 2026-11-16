@@ -197,6 +197,10 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
         )
         SettingsDivider()
+        if (editSerial != null) {
+            TriggerStickRemapRow(editSerial)
+            SettingsDivider()
+        }
         // Open the on-screen touch-layout editor straight from here (no need to be
         // in-game). Closes the settings overlay and drops into edit mode over the
         // game/library. With no game running it edits the Global Default layout.
@@ -899,6 +903,17 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             UsbDeviceSection(refreshToken)
         }
     }
+}
+
+@Composable
+internal fun TriggerStickRemapRow(serial: String) {
+    val mappingRevision = ControllerMappings.stickBindTick.value
+    val enabled = remember(serial, mappingRevision) { ControllerMappings.remapTriggersToRightStickForGame(serial) }
+    ToggleRow(
+        str("pad.triggerStickRemap.label"),
+        enabled,
+        description = str("pad.triggerStickRemap.description"),
+    ) { ControllerMappings.setRemapTriggersToRightStick(serial, it) }
 }
 
 /**

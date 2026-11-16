@@ -256,6 +256,20 @@ object ControllerMappings {
         setDpadAsLeftStick(on, serial)
     }
 
+    private const val KEY_TRIGGER_STICK_REMAP = "pad.remapTriggersToRightStick"
+
+    fun remapTriggersToRightStick(): Boolean = runtimeBindings().remapTriggersToRightStick
+
+    fun remapTriggersToRightStickForGame(serial: String): Boolean =
+        MainActivityRuntime.prefs.getBoolean(gameKey(serial, KEY_TRIGGER_STICK_REMAP), false)
+
+    fun setRemapTriggersToRightStick(serial: String, enabled: Boolean) {
+        MainActivityRuntime.prefs.edit { putBoolean(gameKey(serial, KEY_TRIGGER_STICK_REMAP), enabled) }
+        invalidateRuntimeCaches()
+        if (runtimeSerial() == serial) MainActivityRuntime.instance?.onTriggerStickRemapChanged(enabled)
+        stickBindTick.value++
+    }
+
     // ---- Analog stick response shaping (physical sticks → PS2 analog) ----
     // Sensitivity = a linear output scale. Acceleration = an exponential response
     // curve applied to the post-deadzone magnitude (0 = linear; higher = finer
@@ -1242,6 +1256,7 @@ object ControllerMappings {
         val triggerCurves: Array<FloatArray>,
         val hotkeys: List<RuntimeHotkey>,
         val dpadAsLeftStick: Boolean,
+        val remapTriggersToRightStick: Boolean,
     )
 
     @Volatile private var runtimeBindingsCache: RuntimeBindings? = null
@@ -1298,6 +1313,7 @@ object ControllerMappings {
             triggerCurves,
             hotkeys,
             resolveBoolean(KEY_DPAD_AS_LSTICK, false),
+            serial != null && remapTriggersToRightStickForGame(serial),
         )
     }
 
@@ -1336,7 +1352,8 @@ object ControllerMappings {
                     changedKey.startsWith("pad.turbo.") ||
                     changedKey.startsWith("p2.pad.turbo.") ||
                     changedKey == KEY_DPAD_AS_LSTICK ||
-                    (changedKey.startsWith("game.") && changedKey.endsWith(".$KEY_DPAD_AS_LSTICK"))
+                    (changedKey.startsWith("game.") &&
+                        (changedKey.endsWith(".$KEY_DPAD_AS_LSTICK") || changedKey.endsWith(".$KEY_TRIGGER_STICK_REMAP")))
             val hotkeyChanged = SysHotkey.values().any {
                 changedKey == it.prefKey || changedKey == it.prefKey + MOD_SUFFIX
             }
@@ -1412,6 +1429,8 @@ object ControllerMappings {
      */
     fun resetAllControls(serial: String?) {
         val prefs = MainActivityRuntime.prefs
+        val clearActiveTriggerRemap = serial != null && serial == runtimeSerial() &&
+            remapTriggersToRightStickForGame(serial)
         val keys = prefs.all.keys.toList()
         val doomed = if (!serial.isNullOrEmpty()) {
             val prefix = "game.$serial."
@@ -1432,6 +1451,7 @@ object ControllerMappings {
             }
         }
         invalidateRuntimeCaches()
+        if (clearActiveTriggerRemap) MainActivityRuntime.instance?.onTriggerStickRemapChanged(false)
         stickBindTick.value++
         hotkeyBindTick.value++
     }
