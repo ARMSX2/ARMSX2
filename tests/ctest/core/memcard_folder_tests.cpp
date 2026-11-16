@@ -283,3 +283,75 @@ TEST_F(FolderCardTest, FlushWithNothingWrittenSinceTheLastOneDoesNothing)
 
 	EXPECT_FALSE(fs::exists(SaveDir() / "_pcsx2_index"));
 }
+
+// A deleted file's cluster reused by a new file whose entry is not written yet: the data must not
+// go to the deleted file's name, and must reach the new file.
+TEST_F(FolderCardTest, ReusedClusterOfADeletedFileGoesToTheNewFile)
+{
+	MemoryCardFileEntry a = m_card.ReadEntry(kDirEntryCluster, 0);
+	a.entry.data.mode &= ~MemoryCardFileEntry::Mode_Used;
+	m_card.WriteEntry(kDirEntryCluster, 0, a);
+	m_card.SetFat(kFileCluster, FolderMemoryCard::LastDataCluster);
+	m_card.RegularFlush();
+	ASSERT_FALSE(fs::exists(SaveDir() / "a.bin"));
+
+	ASSERT_EQ(m_card.FreeDataCluster(), kFileCluster);
+	m_card.SetFat(kFileCluster, kUsedLast);
+	m_card.FillCluster(kFileCluster, 0xC3);
+	m_card.RegularFlush();
+
+	m_card.WriteEntry(kDirEntryCluster, 1, FileEntry("c.bin", kFileCluster, FILE_SIZE));
+	SetDirLength(4);
+	m_card.RegularFlush();
+	m_card.Close();
+
+	EXPECT_FALSE(fs::exists(SaveDir() / "a.bin"));
+	EXPECT_EQ(ReadHostFile(SaveDir() / "c.bin"), std::string(FILE_SIZE, '\xC3'));
+}
+
+// A FAT chain that loops back on itself: a flush walks no further than the file's length, so it
+// finishes, and the file's data lands where its length puts it.
+TEST_F(FolderCardTest, LoopingFatChainEndsAtTheFileLength)
+{
+	const u32 first = m_card.FreeDataCluster();
+	const u32 second = first + 1;
+	m_card.SetFat(first, second | FolderMemoryCard::DataClusterInUseMask);
+	m_card.SetFat(second, first | FolderMemoryCard::DataClusterInUseMask);
+	m_card.WriteEntry(kDirEntryCluster, 1, FileEntry("b.bin", first, 2 * FILE_SIZE));
+	SetDirLength(4);
+	m_card.FillCluster(first, 0x5A);
+	m_card.FillCluster(second, 0xA5);
+
+	m_card.RegularFlush();
+	m_card.Close();
+
+	EXPECT_EQ(ReadHostFile(SaveDir() / "b.bin"), std::string(FILE_SIZE, '\x5A') + std::string(FILE_SIZE, '\xA5'));
+}
+
+// A save of two clusters.
+class TwoClusterFolderCardTest : public FolderCardTest
+{
+protected:
+	TwoClusterFolderCardTest() { m_file_size = 2 * FILE_SIZE; }
+};
+
+// While a flush cannot place a live file's cluster (here the FAT link to it briefly ends the
+// chain), a write of part of a page there still starts from the file's bytes, not from 0xFF.
+TEST_F(TwoClusterFolderCardTest, PartialWriteToAClusterTheFlushCouldNotPlaceKeepsTheFilesBytes)
+{
+	const u32 second = m_card.NextCluster(kFileCluster);
+	const u32 last = FolderMemoryCard::LastDataCluster;
+	ASSERT_NE(second, last);
+	m_card.SetFat(kFileCluster, kUsedLast);
+	m_card.RegularFlush();
+
+	const u8 patch[16] = {0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99, 0x99};
+	m_card.Save(patch, m_card.DataPage(second, 0) * FolderMemoryCard::PageSizeRaw, sizeof(patch));
+	m_card.SetFat(kFileCluster, second | FolderMemoryCard::DataClusterInUseMask);
+	m_card.RegularFlush();
+	m_card.Close();
+
+	std::string expected(2 * FILE_SIZE, '\x11');
+	expected.replace(FILE_SIZE, sizeof(patch), sizeof(patch), '\x99');
+	EXPECT_EQ(ReadHostFile(SaveDir() / "a.bin"), expected);
+}

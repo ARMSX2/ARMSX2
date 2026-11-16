@@ -169,7 +169,6 @@ struct MemoryCardFileMetadataReference
 
 struct MemoryCardFileHandleStructure
 {
-	MemoryCardFileMetadataReference* fileRef;
 	std::string hostFilePath;
 	std::FILE* fileHandle;
 };
@@ -190,6 +189,9 @@ public:
 
 	// Get an already opened file if possible, or open a new one and remember it
 	std::FILE* ReOpen(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata = false);
+	// Read from a host file by its path, through its handle if it is open; otherwise the file is opened
+	// for this read only. Returns the number of bytes read.
+	size_t ReadAt(const std::string& hostPath, s64 offset, u8* dest, u32 length);
 	// Close all open files that start with the given path, so either a file if a filename is given or all files in a directory and its subdirectories when a directory is given
 	void CloseMatching(const std::string_view path);
 	// Close all open files
@@ -213,8 +215,7 @@ private:
 	// Open a new file and remember it for later
 	std::FILE* Open(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata = false);
 	// Close a file and delete its handle
-	// If entry is given, it also attempts to set the created and modified timestamps of the file according to the entry
-	void CloseFileHandle(std::FILE*& file, const MemoryCardFileEntry* entry = nullptr);
+	void CloseFileHandle(std::FILE*& file);
 
 	void WriteMetadata(const std::string_view folderName, const MemoryCardFileMetadataReference* fileRef);
 };
@@ -273,7 +274,16 @@ protected:
 	// stores directory and file metadata
 	std::map<u32, MemoryCardFileEntryCluster> m_fileEntryDict;
 	// quick-access map of related file entry metadata for each memory card FAT cluster that contains file data
+	// rebuilt from the directory entries on every flush
 	std::map<u32, MemoryCardFileMetadataReference> m_fileMetadataQuickAccess;
+	// the host file and cluster number within it that each data cluster had at the last flush that
+	// placed it; reads use it for a cluster the FAT marks in use that the map does not place
+	struct PreviousClusterOwner
+	{
+		std::string hostPath;
+		u32 consecutiveCluster;
+	};
+	std::map<u32, PreviousClusterOwner> m_previousClusterOwners;
 
 	// holds a copy of modified pages of the memory card before they're flushed to the file system
 	std::map<u32, MemoryCardPage> m_cache;

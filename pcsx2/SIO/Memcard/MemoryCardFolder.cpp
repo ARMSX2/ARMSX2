@@ -131,6 +131,7 @@ void FolderMemoryCard::InitializeInternalData()
 	m_oldDataCache.clear();
 	m_lastAccessedFile.CloseAll();
 	m_fileMetadataQuickAccess.clear();
+	m_previousClusterOwners.clear();
 	m_timeLastWritten = 0;
 	m_writtenSinceFlush = false;
 	m_isEnabled = false;
@@ -234,6 +235,7 @@ void FolderMemoryCard::Close(bool flush)
 	m_oldDataCache.clear();
 	m_lastAccessedFile.CloseAll();
 	m_fileMetadataQuickAccess.clear();
+	m_previousClusterOwners.clear();
 	m_isEnabled = false;
 }
 
@@ -703,26 +705,38 @@ MemoryCardFileMetadataReference* FolderMemoryCard::AddDirEntryToMetadataQuickAcc
 
 MemoryCardFileMetadataReference* FolderMemoryCard::AddFileEntryToMetadataQuickAccess(MemoryCardFileEntry* const entry, MemoryCardFileMetadataReference* const parent)
 {
-	const u32 firstFileCluster = entry->entry.data.cluster;
-	u32 fileCluster = firstFileCluster;
+	const u32 firstFileCluster = entry->entry.data.cluster & NextDataClusterMask;
+	const u32 dataClusters = m_superBlock.data.alloc_end;
 
 	// zero-length files have no file clusters
-	if (fileCluster == 0xFFFFFFFFu)
+	if (entry->entry.data.cluster == MemoryCardFileEntry::EmptyFileCluster || firstFileCluster >= dataClusters)
 	{
 		return nullptr;
 	}
 
-	u32 clusterNumber = 0;
-	do
+	// The chain is followed only through clusters the FAT marks in use, and no further than the
+	// file's length covers: during a save the console can write a file's entry before the FAT links
+	// that complete its chain, or its length after them.
+	const u32 lengthClusters = std::max<u32>(1, (entry->entry.data.length + ClusterSize - 1) / ClusterSize);
+	const u32 maxClusters = std::min(lengthClusters, dataClusters);
+	u32 fileCluster = firstFileCluster;
+	for (u32 clusterNumber = 0; clusterNumber < maxClusters; ++clusterNumber)
 	{
-		MemoryCardFileMetadataReference* ref = &m_fileMetadataQuickAccess[fileCluster & NextDataClusterMask];
+		MemoryCardFileMetadataReference* ref = &m_fileMetadataQuickAccess[fileCluster];
 		ref->parent = parent;
 		ref->entry = entry;
 		ref->consecutiveCluster = clusterNumber;
-		++clusterNumber;
-	} while ((fileCluster = m_fat.data[0][0][fileCluster & NextDataClusterMask]) != (LastDataCluster | DataClusterInUseMask));
 
-	return &m_fileMetadataQuickAccess[firstFileCluster & NextDataClusterMask];
+		const u32 next = m_fat.data[0][0][fileCluster];
+		if ((next & DataClusterInUseMask) == 0 || (next & NextDataClusterMask) == LastDataCluster ||
+			(next & NextDataClusterMask) >= dataClusters)
+		{
+			break;
+		}
+		fileCluster = next & NextDataClusterMask;
+	}
+
+	return &m_fileMetadataQuickAccess[firstFileCluster];
 }
 
 s32 FolderMemoryCard::IsPresent() const
@@ -955,6 +969,19 @@ bool FolderMemoryCard::ReadFromFile(u8* dest, u32 adr, u32 dataLength)
 			return bytesRead > 0;
 		}
 	}
+	else if (auto prev = m_previousClusterOwners.find(fatCluster); prev != m_previousClusterOwners.end())
+	{
+		// In use, but the last flush could not place it in a file (its entry, length or FAT link may be
+		// mid-rewrite). It still holds what it held in the file an earlier flush placed it in, and a
+		// write of part of a page here starts from those bytes. Writes are never placed this way.
+		const u32 fileOffset = prev->second.consecutiveCluster * ClusterSize + (page % 2) * PageSize + offset;
+		const size_t bytesRead = m_lastAccessedFile.ReadAt(prev->second.hostPath, fileOffset, dest, dataLength);
+		if (bytesRead < dataLength)
+		{
+			memset(&dest[bytesRead], 0xFF, dataLength - bytesRead);
+		}
+		return bytesRead > 0;
+	}
 
 	return false;
 }
@@ -1173,7 +1200,21 @@ void FolderMemoryCard::Flush()
 		}
 	}
 
-	// then all directory and file entries
+	// then all directory and file entries. The map from data cluster to file is rebuilt from them, so a
+	// cluster freed by a deleted file and not yet claimed by a new entry maps to no file at all. Where
+	// each file cluster was is remembered for reads, in case this flush cannot place it again.
+	std::map<const MemoryCardFileEntry*, std::string> hostPaths;
+	for (const auto& [cluster, ref] : m_fileMetadataQuickAccess)
+	{
+		if (ref.consecutiveCluster == 0xFFFFFFFFu || !ref.entry->IsUsed() || !ref.entry->IsFile())
+			continue;
+		auto [path, added] = hostPaths.try_emplace(ref.entry, m_folderName);
+		if (added)
+			ref.GetPath(&path->second);
+		m_previousClusterOwners[cluster] = {path->second, ref.consecutiveCluster};
+	}
+	m_fileMetadataQuickAccess.clear();
+	m_lastAccessedFile.ClearMetadataWriteState();
 	FlushFileEntries();
 
 	// Now we have the new file system, compare it to the old one and "delete" any files that were in it before but aren't anymore.
@@ -2058,7 +2099,6 @@ std::FILE* FileAccessHelper::Open(const std::string_view folderName, MemoryCardF
 	fileRef->GetInternalPath(&internalPath);
 	MemoryCardFileHandleStructure handleStruct;
 	handleStruct.fileHandle = file;
-	handleStruct.fileRef = fileRef;
 	handleStruct.hostFilePath = std::move(filename);
 	m_files.emplace(std::move(internalPath), std::move(handleStruct));
 
@@ -2191,9 +2231,6 @@ std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCar
 			}
 		}
 
-		// update the fileRef in the map since it might have been modified or deleted
-		it->second.fileRef = fileRef;
-
 		return it->second.fileHandle;
 	}
 	else
@@ -2202,7 +2239,7 @@ std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCar
 	}
 }
 
-void FileAccessHelper::CloseFileHandle(std::FILE*& file, const MemoryCardFileEntry* entry /* = nullptr */)
+void FileAccessHelper::CloseFileHandle(std::FILE*& file)
 {
 	if (file)
 	{
@@ -2211,13 +2248,31 @@ void FileAccessHelper::CloseFileHandle(std::FILE*& file, const MemoryCardFileEnt
 	}
 }
 
+size_t FileAccessHelper::ReadAt(const std::string& hostPath, s64 offset, u8* dest, u32 length)
+{
+	for (const auto& [internalPath, handle] : m_files)
+	{
+		if (handle.fileHandle && handle.hostFilePath == hostPath)
+		{
+			if (FileSystem::FSeek64(handle.fileHandle, offset, SEEK_SET) != 0)
+				return 0;
+			return std::fread(dest, 1, length, handle.fileHandle);
+		}
+	}
+
+	auto file = FileSystem::OpenManagedCFile(hostPath.c_str(), "rb");
+	if (!file || FileSystem::FSeek64(file.get(), offset, SEEK_SET) != 0)
+		return 0;
+	return std::fread(dest, 1, length, file.get());
+}
+
 void FileAccessHelper::CloseMatching(const std::string_view path)
 {
 	for (auto it = m_files.begin(); it != m_files.end();)
 	{
 		if (it->second.hostFilePath.starts_with(path))
 		{
-			CloseFileHandle(it->second.fileHandle, it->second.fileRef->entry);
+			CloseFileHandle(it->second.fileHandle);
 			it = m_files.erase(it);
 		}
 		else
@@ -2231,7 +2286,7 @@ void FileAccessHelper::CloseAll()
 {
 	for (auto it = m_files.begin(); it != m_files.end(); ++it)
 	{
-		CloseFileHandle(it->second.fileHandle, it->second.fileRef->entry);
+		CloseFileHandle(it->second.fileHandle);
 	}
 	m_files.clear();
 }
