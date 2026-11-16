@@ -361,11 +361,10 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                         },
                     )
                 }
+            }
+            // Keep the switch available after takeover removes the Android input device.
+            if (pads.isNotEmpty() || com.armsx2.input.UsbRumble.takeover) {
                 SettingsDivider()
-                // Taking the pad over on USB is the only way to reach a PlayStation controller's
-                // motors when the platform's own vibrator for it does nothing. It claims the
-                // pad's single HID interface, so input has to come through us too -- which is
-                // why it is a switch and not something done quietly on the user's behalf.
                 ToggleRow(
                     str("pad.usbTakeover.label"),
                     com.armsx2.input.UsbRumble.takeover,

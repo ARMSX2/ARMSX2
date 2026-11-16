@@ -1277,7 +1277,7 @@
  "pad.usb.port": "포트",
  "pad.usb.section": "USB 장치",
  "pad.usb.subtype": "종류",
- "pad.usbTakeover.description": "케이블로 연결한 DualSense 또는 DualShock 4용입니다. Android를 거치지 않고 컨트롤러와 직접 통신하며, 시스템 진동이 동작하지 않는 기기에서 진동 모터를 쓸 수 있는 유일한 방법입니다. 실제 아날로그 트리거도 사용할 수 있습니다. 켜져 있는 동안에는 컨트롤러가 전적으로 이 기능으로 제어되므로 배치가 고정되며 커스텀 지정은 적용되지 않습니다. 끈 후에는 패드를 뽑았다가 다시 연결하세요.",
+ "pad.usbTakeover.description": "DualShock 3를 USB로 연결하면 버튼 압력 감지를 지원하는 PS2 게임에서 정품 DualShock 2와 마찬가지로 버튼을 누르는 세기에 따라 반응합니다. DualShock 4 또는 DualSense를 유선으로 연결한 경우 USB 직접 제어로 아날로그 트리거와 진동을 처리합니다. 이 모드에서는 기본 버튼 배치를 사용합니다. 모드를 끈 뒤에는 컨트롤러를 분리했다가 다시 연결하세요.",
  "pad.usbTakeover.label": "USB 직접 제어 (PlayStation 패드)",
  "patches.action.allOff": "모두 끔",
  "patches.action.allOn": "모두 켬",

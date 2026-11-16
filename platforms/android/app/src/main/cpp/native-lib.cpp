@@ -1830,6 +1830,61 @@ extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_resetKeyStatus(JNIEnv *env, jclass clazz) {
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setDualShock3UsbReport(
+    JNIEnv* env, jclass, jint port, jbyteArray report)
+{
+    constexpr jsize report_size = 49;
+    if (port < 0 || static_cast<u32>(port) >= Pad::NUM_CONTROLLER_PORTS || !report ||
+        env->GetArrayLength(report) != report_size || !VMManager::HasValidVM())
+        return;
+
+    jbyte data[report_size];
+    env->GetByteArrayRegion(report, 0, report_size, data);
+    const auto* bytes = reinterpret_cast<const u8*>(data);
+    if (env->ExceptionCheck() || bytes[0] != 0x01 || bytes[1] == 0xff)
+        return;
+
+    std::lock_guard<std::mutex> lock(s_pad_mutex);
+    PadBase* pad = Pad::GetPad(static_cast<u8>(port));
+    if (!pad || pad->GetType() != Pad::ControllerType::DualShock2)
+        return;
+
+    using Bind = PadDualshock2::Inputs;
+    struct Button {
+        Bind bind;
+        u8 digital_offset;
+        u8 digital_mask;
+        u8 pressure_offset;
+    };
+    // Native DualShock 3 report 0x01, including its report ID at byte zero.
+    static constexpr Button buttons[] = {
+        {Bind::PAD_SELECT,   2, 0x01,  0},
+        {Bind::PAD_L3,       2, 0x02,  0},
+        {Bind::PAD_R3,       2, 0x04,  0},
+        {Bind::PAD_START,    2, 0x08,  0},
+        {Bind::PAD_UP,       2, 0x10, 14},
+        {Bind::PAD_RIGHT,    2, 0x20, 15},
+        {Bind::PAD_DOWN,     2, 0x40, 16},
+        {Bind::PAD_LEFT,     2, 0x80, 17},
+        {Bind::PAD_L2,       3, 0x01, 18},
+        {Bind::PAD_R2,       3, 0x02, 19},
+        {Bind::PAD_L1,       3, 0x04, 20},
+        {Bind::PAD_R1,       3, 0x08, 21},
+        {Bind::PAD_TRIANGLE, 3, 0x10, 22},
+        {Bind::PAD_CIRCLE,   3, 0x20, 23},
+        {Bind::PAD_CROSS,    3, 0x40, 24},
+        {Bind::PAD_SQUARE,   3, 0x80, 25},
+    };
+    for (const Button& button : buttons)
+    {
+        const bool pressed = (bytes[button.digital_offset] & button.digital_mask) != 0;
+        const u8 pressure = button.pressure_offset ? bytes[button.pressure_offset] : (pressed ? 255 : 0);
+        pad->SetRawPressureButton(static_cast<u32>(button.bind), {pressed, pressure});
+    }
+    pad->SetRawAnalogs({bytes[6], bytes[7]}, {bytes[8], bytes[9]});
+}
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setEnableCheats(JNIEnv *env, jclass clazz,

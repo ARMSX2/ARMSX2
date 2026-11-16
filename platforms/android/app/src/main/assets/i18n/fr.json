@@ -1272,7 +1272,7 @@
   "pad.usb.port": "Port",
   "pad.usb.section": "Périphériques USB",
   "pad.usb.subtype": "Variante",
-  "pad.usbTakeover.description": "Pour une DualSense ou une DualShock 4 connectée par câble. Communique directement avec la manette sans passer par Android, seul moyen d'atteindre ses moteurs de vibration sur les appareils où la vibration système ne fait rien. Offre aussi de vraies gâchettes analogiques. Tant que l'option est activée, la manette est entièrement pilotée par ce mode : sa disposition est fixe et vos mappages personnalisés ne s'appliquent pas. Débranchez puis rebranchez la manette après avoir désactivé cette option.",
+  "pad.usbTakeover.description": "Avec une DualShock 3 branchée en USB, les jeux PS2 qui gèrent la sensibilité à la pression réagissent à la force avec laquelle vous appuyez sur les touches, comme avec une DualShock 2 d’origine. Avec une DualShock 4 ou une DualSense branchée par câble, le contrôle USB direct gère les gâchettes analogiques et la vibration. Ce mode utilise la configuration standard des touches. Après l’avoir désactivé, débranchez puis rebranchez la manette.",
   "pad.usbTakeover.label": "Contrôle USB direct (manettes PlayStation)",
   "patches.action.allOff": "Tout désactiver",
   "patches.action.allOn": "Tout activer",

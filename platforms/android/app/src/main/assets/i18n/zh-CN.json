@@ -1279,7 +1279,7 @@
  "pad.usb.port": "端口",
  "pad.usb.section": "USB 设备",
  "pad.usb.subtype": "类型",
- "pad.usbTakeover.description": "适用于通过数据线连接的 DualSense 或 DualShock 4。直接与手柄通信，而不经过 Android 系统：在系统震动功能失效的设备上，这是唯一能驱动其震动马达的方式。还能让你获得真正的模拟扳机。此项开启期间，手柄完全由它接管，因此按键布局是固定的，你的自定义绑定不会生效。关闭此项后，请拔下并重新插上手柄。",
+ "pad.usbTakeover.description": "通过 USB 连接 DualShock 3 后，支持按键压力感应的 PS2 游戏会像使用原装 DualShock 2 时一样，对按键力度作出响应。有线连接 DualShock 4 或 DualSense 时，USB 直接控制负责处理模拟扳机和振动。此模式使用标准按键映射。关闭后，请拔下手柄再重新连接。",
  "pad.usbTakeover.label": "直接 USB 控制（PlayStation 手柄）",
  "patches.action.allOff": "全部关",
  "patches.action.allOn": "全部开",
