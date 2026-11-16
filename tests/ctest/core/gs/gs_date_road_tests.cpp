@@ -106,3 +106,116 @@ TEST_F(GSDateRoad, BarrierOrderedDeclaredLoopKeepsStencil)
 
 	EXPECT_EQ(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::StencilOne);
 }
+
+// --- A mask that holds alpha bit 7 --------------------------------------------------------------
+
+namespace
+{
+	class GSDateHeldBit : public GSDateRoad
+	{
+	protected:
+		/// A device with a stencil buffer and no ordered read: the copy road without texture
+		/// barriers (the Adreno 613), or the barrier road with them (desktop, the M2).
+		void StencilDevice(bool texture_barrier)
+		{
+			GSDevice::FeatureSupport& f = m_device->MutableFeatures();
+			f.texture_barrier = texture_barrier;
+			f.framebuffer_fetch = false;
+			f.framebuffer_fetch_orders_overlap = false;
+			f.feedback_loop_layout = false;
+			f.declared_feedback_loop_orders_overlap = false;
+			f.stencil_buffer = true;
+			f.primitive_id = true;
+		}
+
+		/// A target whose alpha is 0 on the left and 0x80 on the right, so neither held bit is a
+		/// constant, then two overlapping DATE sprites under `fbmsk`.
+		void DrawMaskedDATE(u32 fbmsk, u32 datm)
+		{
+			Sprites(0x00, {GSVector4i(0, 0, 640, 448)}, false);
+			Sprites(0x80, {GSVector4i(320, 0, 640, 448)}, false);
+
+			Packet p;
+			Environment(p, kFBP, PSMCT32);
+
+			GIFReg r = {};
+			r.FRAME.FBP = kFBP;
+			r.FRAME.FBW = 10;
+			r.FRAME.PSM = PSMCT32;
+			r.FRAME.FBMSK = fbmsk;
+			p.Reg(GIF_A_D_REG_FRAME_1, r);
+
+			r.U64 = 0;
+			r.RGBAQ.R = 0x40;
+			r.RGBAQ.G = 0x60;
+			r.RGBAQ.B = 0x20;
+			r.RGBAQ.A = 0x42;
+			r.RGBAQ.Q = 1.0f;
+			p.Reg(GIF_A_D_REG_RGBAQ, r);
+
+			r.U64 = 0;
+			r.TEST.ZTE = 1;
+			r.TEST.ZTST = ZTST_ALWAYS;
+			r.TEST.DATE = 1;
+			r.TEST.DATM = datm;
+			p.Reg(GIF_A_D_REG_TEST_1, r);
+
+			p.Vertex(100 * 16, 100 * 16, 1, 0, 0);
+			p.Vertex(500 * 16, 300 * 16, 1, 0, 0);
+			p.Vertex(200 * 16, 150 * 16, 1, 0, 0);
+			p.Vertex(600 * 16, 350 * 16, 1, 0, 0);
+
+			const u32 before = m_device->m_draws;
+			GIFRegPRIM prim = {};
+			prim.PRIM = GS_SPRITE;
+			p.Send(*m_gs, prim);
+			ASSERT_EQ(m_device->m_draws, before + 1);
+		}
+	};
+} // namespace
+
+// The mask already reads the target and keeps bit 7, so the test rides that read: no stencil
+// setup pass. Both polarities.
+TEST_F(GSDateHeldBit, CopyRoadTestsInTheShader)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	StencilDevice(false);
+
+	DrawMaskedDATE(0x81000000, 0);
+	EXPECT_TRUE(m_device->m_ps.fbmask);
+	EXPECT_TRUE(m_device->m_require_one_barrier);
+	EXPECT_EQ(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::Full);
+	EXPECT_EQ(m_device->m_ps.date, 5u);
+	EXPECT_FALSE(m_device->m_depth.date);
+
+	DrawMaskedDATE(0x81000000, 1);
+	EXPECT_EQ(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::Full);
+	EXPECT_EQ(m_device->m_ps.date, 6u);
+}
+
+TEST_F(GSDateHeldBit, BarrierRoadTestsInTheShader)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	StencilDevice(true);
+
+	DrawMaskedDATE(0x81000000, 1);
+	EXPECT_TRUE(m_device->m_ps.fbmask);
+	EXPECT_EQ(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::Full);
+	EXPECT_EQ(m_device->m_ps.date, 6u);
+}
+
+// A mask that lets the draw write bit 7 keeps the mode it had: the test must see each
+// primitive's write.
+TEST_F(GSDateHeldBit, MaskThatWritesBitSevenKeepsItsMode)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	StencilDevice(false);
+
+	DrawMaskedDATE(0x01000000, 0);
+	EXPECT_TRUE(m_device->m_ps.fbmask);
+	EXPECT_NE(m_device->m_destination_alpha, GSHWDrawConfig::DestinationAlphaMode::Full);
+	EXPECT_LT(m_device->m_ps.date, 5u);
+}

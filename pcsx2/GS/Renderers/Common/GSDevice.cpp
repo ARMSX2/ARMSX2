@@ -899,6 +899,9 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 		}
 	}
 
+	static u64 s_next_lease = 0;
+	t->SetLease(++s_next_lease);
+
 	if (t->IsRenderTarget())
 	{
 		if (clear)

@@ -101,6 +101,8 @@ private:
 	u32 GetConstantDirectWriteMemClearDepth() const;
 	bool IsReallyDithered() const;
 	bool AreAnyPixelsDiscarded() const;
+	/// Whether this draw's sprites, as they stand, write every pixel of m_r (GSAlphaKnownRects).
+	bool SpritesWriteEveryPixelOfDrawRect() const;
 	bool IsDiscardingDstColor();
 	bool IsDiscardingDstRGB();
 	bool IsDiscardingDstAlpha() const;
@@ -238,7 +240,8 @@ private:
 	/// What the exact alpha-mask rules can do with this draw's alpha FBMSK without changing a
 	/// pixel -- clear it outright, have the shader write the target's known bits in its place, or
 	/// nothing -- and where nothing, why. The verdict drives the drop and the substitution below.
-	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask);
+	/// `known` receives what the decision relied on about the target's alpha.
+	u8 DecideExactAlphaMaskDrop(const GSTextureCache::Target* rt, u32 fbmask, GSAlphaKnownRects::ForDraw& known);
 	void ResolveHeldAlphaMask();
 	/// The alpha mask this draw asked for, which is not the one the shader ends up emulating once
 	/// the exact drop has cleared it. See GSDrawAlphaMask.h.
@@ -283,7 +286,8 @@ private:
 
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
 		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union);
+		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
+		GSAlphaKnownRects::Set& rt_new_alpha_rects);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
 		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
