@@ -28,7 +28,8 @@ private struct StoragePaths: Sendable {
     let textureRootURL: URL
     let logsURL: URL
     let stateSafetyBackupsURL: URL
-    let rootLogURLs: [URL]
+    let reportsURL: URL
+    let liveLogURL: URL
 
     @MainActor
     static func current() -> StoragePaths {
@@ -42,10 +43,8 @@ private struct StoragePaths: Sendable {
             textureRootURL: documentsURL.appendingPathComponent("textures", isDirectory: true),
             logsURL: documentsURL.appendingPathComponent("logs", isDirectory: true),
             stateSafetyBackupsURL: documentsURL.appendingPathComponent("memcard-state-backups", isDirectory: true),
-            rootLogURLs: [
-                documentsURL.appendingPathComponent("pcsx2_log.txt", isDirectory: false),
-                documentsURL.appendingPathComponent("emulog.txt", isDirectory: false)
-            ]
+            reportsURL: documentsURL.appendingPathComponent("Reports", isDirectory: true),
+            liveLogURL: documentsURL.appendingPathComponent("pcsx2_log.txt", isDirectory: false)
         )
     }
 }
@@ -102,7 +101,7 @@ private enum StorageClearAction: Identifiable, Sendable {
         case .textureDumps:
             return "This removes generated texture dump folders only. Replacement texture packs are preserved, and texture dumping will be turned off so storage does not refill immediately."
         case .diagnosticLogs:
-            return "This clears pcsx2_log.txt and generated diagnostic logs. It is useful before sending a fresh bug report, but it removes old logs from the app container."
+            return "This removes the logs of past launches and old report zips. The logs of the launch that is running now are kept, and the log keeps recording."
         case .allGenerated:
             return "This removes app cache, temporary files, save-state safety backups, generated texture dumps, and diagnostic logs. Games, BIOS, saves, memory cards, covers, settings, and replacement texture packs are preserved."
         }
@@ -143,10 +142,7 @@ private enum StorageCleaner {
             }
 
             if action.includesDiagnosticLogs {
-                clearContents(of: paths.logsURL, recreate: true, failures: &failures)
-                for logURL in paths.rootLogURLs {
-                    truncateOrRemoveFile(at: logURL, failures: &failures)
-                }
+                failures += SessionStore.clearPast()
             }
 
             let after = awaitableReport(paths: paths)
@@ -160,9 +156,7 @@ private enum StorageCleaner {
             textureDumpBytes: textureDumpDirectories(in: paths.textureRootURL).reduce(Int64(0)) { partial, url in
                 partial + directorySize(url)
             },
-            diagnosticLogBytes: directorySize(paths.logsURL) + paths.rootLogURLs.reduce(Int64(0)) { partial, url in
-                partial + directorySize(url)
-            },
+            diagnosticLogBytes: directorySize(paths.logsURL) + directorySize(paths.reportsURL) + directorySize(paths.liveLogURL),
             stateSafetyBackupBytes: directorySize(paths.stateSafetyBackupsURL)
         )
     }
@@ -235,22 +229,6 @@ private enum StorageCleaner {
             try FileManager.default.removeItem(at: url)
         } catch {
             failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
-        }
-    }
-
-    private static func truncateOrRemoveFile(at url: URL, failures: inout [String]) {
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            return
-        }
-
-        do {
-            let handle = try FileHandle(forWritingTo: url)
-            try handle.truncate(atOffset: 0)
-            try handle.close()
-        } catch {
-            removeItem(at: url, failures: &failures)
         }
     }
 

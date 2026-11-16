@@ -322,6 +322,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		Runtime/HostImpls.mm
 		Runtime/PlaySoundAsync.mm
 		Runtime/SceneDelegate.mm
+		Runtime/SessionDiagnostics.mm
 	)
 	file(GLOB IOS_BRIDGE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Bridge/*.mm)
 	armsx2_require_files(IOS_BRIDGE_SOURCES)

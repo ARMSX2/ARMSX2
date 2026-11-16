@@ -153,6 +153,9 @@ bool ARMSX2ResolveFastBootForISO(const std::string& isoPath);
 // Successful game boot only, on the CPU thread before its first Execute().
 void ARMSX2IOSCompleteGameBoot(const std::string& game, bool loadLastSaveState);
 void ARMSX2ConfigureImGuiFonts(const char* reason);
+void ARMSX2SessionDiagnosticsStart();
+void ARMSX2SessionDiagnosticsGame(const std::string& title, const std::string& elf_override, const std::string& disc_path, const std::string& serial, unsigned int disc_crc, unsigned int current_crc);
+void ARMSX2SessionDiagnosticsStop();
 void ARMSX2ApplyJITScriptProtocol(const char* reason);
 void ARMSX2ApplyIOSMultitapConfig(const char* reason);
 void ARMSX2DisableRetroAchievementsHardcoreForIOS(SettingsInterface* si, const char* reason);

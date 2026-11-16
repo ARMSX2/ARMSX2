@@ -96,6 +96,8 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     if (cachesDirectory.length > 0)
         setenv("XDG_CACHE_HOME", [cachesDirectory UTF8String], 1);
 
+    [SessionLaunch begin];
+
     // --- Unified Logging Redirection ---
     // Force stderr and stdout to pcsx2_log.txt
     std::string logPath = dataRoot + "/pcsx2_log.txt";
@@ -127,6 +129,7 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 #endif
     fprintf(stderr, "@@BUILD_ID@@ ARMSX2_iOS v%s %s %s %s\n",
         ARMSX2_VERSION_STR, ARMSX2_GIT_HASH, __DATE__, __TIME__);
+    ARMSX2SessionDiagnosticsStart();
     ARMSX2ConfigureImGuiFonts("app-launch");
     DarwinMisc::TryJailbreakJITCheckin();
 
