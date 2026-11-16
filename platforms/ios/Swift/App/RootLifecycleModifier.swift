@@ -52,6 +52,7 @@ struct RootLifecycleModifier: ViewModifier {
             }
             menuControllerInput.setMenuActive(menuScreenActive)
             StikDebugLauncher.autoOpenIfNeeded(reason: "app launch")
+            DiagnosticsDevTrigger.runIfRequested()
             ShaderCatalogInstaller.sweepStagedDownloads()
             let textureRoot = TexturePackLibrary.root
             // A pack the app was killed while unpacking can hold 100,000 files.

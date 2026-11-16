@@ -178,15 +178,16 @@ namespace Host
     void EndTextInput() {}
     bool IsFullscreen() { return true; }
     void SetMouseMode(bool, bool) {}
-    void OnGameChanged(const std::string&, const std::string&, const std::string&, const std::string&, unsigned int, unsigned int)
+    void OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path, const std::string& serial, unsigned int disc_crc, unsigned int current_crc)
     {
+        ARMSX2SessionDiagnosticsGame(title, elf_override, disc_path, serial, disc_crc, current_crc);
         ARMSX2_ApplyEffectivePresentFPSCap();
         ARMSX2_PostRuntimeMenuStateChanged();
         // The GameDB's hardware fixes only land once the serial is known, so this is the
         // first point where the effective hack values mean anything.
         ARMSX2_CaptureGraphicsHackState();
     }
-    void OnVMDestroyed() { ARMSX2_ApplyEffectivePresentFPSCap(); }
+    void OnVMDestroyed() { ARMSX2SessionDiagnosticsStop(); ARMSX2_ApplyEffectivePresentFPSCap(); }
     void SetFullscreen(bool) {}
     void BeginTextInput() {}
     bool ConfirmMessage(std::string_view, std::string_view) { return true; }
