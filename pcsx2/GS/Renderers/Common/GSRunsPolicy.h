@@ -68,6 +68,18 @@ namespace GSRunsPolicy
 	constexpr u32 Field(u32 flags, u32 state) { return (flags >> STATE_SHIFT[state]) & ((1u << STATE_WIDTH[state]) - 1); }
 	constexpr bool Textured(u32 flags) { return Field(flags, STATE_TFX) != 4; }
 
+	/// On a driver with DriverBug::BrokenMixedSamplingDerivatives (Turnip), a run's textured draws all take one of the
+	/// three sampling calls (one lod field): a draw that samples with the hardware's lod in a run beside draws that
+	/// sample another way got some pixels wrong there, and differently from one replay to the next (Spider-Man 3 at
+	/// Minimum blending: its lighting; Basic on a smaller scale). One sampling call for all three, the hardware's lod
+	/// read with a query, or derivatives taken before any branch, did not help. Elsewhere (malisx2, the M2) mixed runs
+	/// are exact and stay. LOD_ANY: the run has no textured draw yet.
+	constexpr u32 LOD_ANY = 0xFF;
+	constexpr bool LodJoins(bool one_call, u32 run_lod, u32 flags)
+	{
+		return !one_call || !Textured(flags) || run_lod == LOD_ANY || run_lod == Field(flags, STATE_LOD);
+	}
+
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a
 	/// discard). Split rule "dear" ends a run where these differ from the run's (measured in probe K1b).
 	constexpr u32 Dear(u32 flags)

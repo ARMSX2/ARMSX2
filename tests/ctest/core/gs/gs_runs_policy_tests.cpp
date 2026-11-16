@@ -491,6 +491,40 @@ TEST(GSRunsPolicy, UnitWayPassthrough)
 	EXPECT_TRUE(Passthrough(Classify(c, TextureFacts(), false).flags, true));
 }
 
+// Where the driver needs it (BrokenMixedSamplingDerivatives), a run's textured draws share one sampling call: a draw
+// that would bring a second ends the run, untextured draws join any run. Elsewhere every draw joins.
+TEST(GSRunsPolicy, OneSamplingCallPerRun)
+{
+	GSHWDrawConfig c = Way0();
+	const u32 none = Classify(c, Rgba8(), false).flags;
+	c.ps.manual_lod = 1;
+	const u32 manual = Classify(c, Rgba8(), false).flags;
+	c.ps.automatic_lod = 1;
+	const u32 hardware = Classify(c, Rgba8(), false).flags;
+	c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+	ASSERT_EQ(Field(manual, STATE_LOD), LOD_MANUAL);
+	ASSERT_EQ(Field(hardware, STATE_LOD), LOD_HARDWARE);
+
+	for (u32 f : {none, manual, hardware, untextured})
+		EXPECT_TRUE(LodJoins(true, LOD_ANY, f));
+	EXPECT_TRUE(LodJoins(true, LOD_MANUAL, manual));
+	EXPECT_FALSE(LodJoins(true, LOD_MANUAL, hardware));
+	EXPECT_FALSE(LodJoins(true, LOD_HARDWARE, none));
+	EXPECT_FALSE(LodJoins(true, LOD_NONE, manual));
+	for (u32 lod : {LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+		EXPECT_TRUE(LodJoins(true, lod, untextured));
+
+	// Without the bug, mixed runs stay.
+	for (u32 lod : {LOD_ANY, LOD_NONE, LOD_MANUAL, LOD_HARDWARE})
+	{
+		for (u32 f : {none, manual, hardware, untextured})
+			EXPECT_TRUE(LodJoins(false, lod, f));
+	}
+}
+
 // The split rule's device classes come from the reported device name, and a run ends at a dear change only when the
 // price of carrying the dear state over the run's fill exceeds the price of a host draw.
 TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)

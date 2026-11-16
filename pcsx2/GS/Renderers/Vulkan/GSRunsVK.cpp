@@ -183,8 +183,9 @@ bool GSRunsVK::Init()
 
 
 	m_class = &GSRunsPolicy::DeviceClassFor(m_dev->m_device_properties.deviceName);
-	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s)", m_max_textures, m_class->name,
-		m_class->source);
+	m_one_call = m_dev->GetMobileDriverProfile().HasBug(DriverBug::BrokenMixedSamplingDerivatives);
+	Console.WriteLn("VK: run machine on, up to %u textures a run, split rule of class %s (%s), %s", m_max_textures,
+		m_class->name, m_class->source, m_one_call ? "one sampling call a run" : "mixed sampling calls");
 	return true;
 }
 
@@ -283,7 +284,8 @@ bool GSRunsVK::Matches(const GSHWDrawConfig& config) const
 {
 	const Run& r = m_run;
 	return SameFixed(config, r, GSRunsPolicy::StrictKey(m_draw.flags, r.rta)) && r.ndraws < MAX_DRAWS &&
-	       GSRunsPolicy::WaysShareAnEquation(r.ways | (1u << m_draw.way)) && !SplitAtDear(config);
+	       GSRunsPolicy::WaysShareAnEquation(r.ways | (1u << m_draw.way)) && GSRunsPolicy::LodJoins(m_one_call, r.lod, m_draw.flags) &&
+	       !SplitAtDear(config);
 }
 
 bool GSRunsVK::FollowsSame(const GSHWDrawConfig& config, u32 strict) const
@@ -328,7 +330,7 @@ GSRunsVK::Why GSRunsVK::EndReason(const GSHWDrawConfig& config)
 {
 	if (config.rt != m_run.rt || config.ds != m_run.ds)
 		return END_TARGET;
-	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict)
+	if (GSRunsPolicy::StrictKey(m_draw.flags, m_run.rta) != m_run.strict || !GSRunsPolicy::LodJoins(m_one_call, m_run.lod, m_draw.flags))
 		return END_SPLIT;
 	if (SplitAtDear(config))
 		return END_SPLIT;
@@ -612,6 +614,8 @@ bool GSRunsVK::Append(const GSHWDrawConfig& config, u32 pipeline_feedback_flags,
 		m_primed.in_run = true;
 		r.idx_count += nidx;
 		r.ways |= 1u << d.way;
+		if (GSRunsPolicy::Textured(d.flags))
+			r.lod = GSRunsPolicy::Field(d.flags, GSRunsPolicy::STATE_LOD);
 		r.states.Note(d.flags); // which states the run holds one value of: those become constants of its program
 		if (config.tex)
 			static_cast<GSTextureVK*>(config.tex)->SetUseFenceCounter(fence);

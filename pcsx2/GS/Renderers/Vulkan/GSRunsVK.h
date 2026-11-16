@@ -105,6 +105,7 @@ private:
 		u32 dear = 0;
 		bool nods = false; ///< the pass has no depth attachment
 		u32 strict = 0; ///< GSRunsPolicy::StrictKey of the run's draws
+		u32 lod = GSRunsPolicy::LOD_ANY; ///< the lod field of its textured draws, where they must share one (LodJoins)
 		u64 area_total = 0; ///< the draws' draw-rectangle area in target pixels
 		bool dear_mixed = false; ///< the run holds draws of more than one dear class
 		GSRunsPolicy::StateSet states;
@@ -203,4 +204,5 @@ private:
 	u64 m_pool_fence = 0;
 	bool m_sets_failed = false; ///< the driver refuses the run's texture sets: every draw is drawn classically from here on
 	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
+	bool m_one_call = false; ///< the driver has DriverBug::BrokenMixedSamplingDerivatives (GSRunsPolicy::LodJoins)
 };

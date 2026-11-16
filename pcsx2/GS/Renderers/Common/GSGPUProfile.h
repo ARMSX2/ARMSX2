@@ -131,6 +131,10 @@ enum class DriverBug : u8
 	BrokenBlendConstant,
 	/// The shader compiler crashes on any pipeline that queries an image size (textureSize).
 	BrokenImageQuery,
+	/// A draw that samples with implicit derivatives (the hardware's lod), drawn in one host draw with draws of
+	/// another kind, gets some pixels wrong, differently from one replay to the next. The run machine then keeps
+	/// one sampling call per run (GSRunsPolicy::LodJoins).
+	BrokenMixedSamplingDerivatives,
 	Count,
 };
 
