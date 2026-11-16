@@ -2095,6 +2095,11 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	if (spin_enabled && m_optional_extensions.vk_ext_calibrated_timestamps)
 		resources.submit_timestamp = GetCPUTimestamp();
 
+	// The spin semaphore exists only when the spin runs on a queue of its own. On the graphics
+	// queue, submission order and the barrier at the top of the spin command buffer order the
+	// spin after this work, and there is no semaphore to signal.
+	const bool signal_spin = spin_cycles != 0 && !m_spin_queue_is_graphics_queue;
+
 	uint32_t wait_bits = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSemaphore semas[2];
 	VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -2108,7 +2113,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		submit_info.waitSemaphoreCount = 1;
 		submit_info.pWaitDstStageMask = &wait_bits;
 
-		if (spin_cycles != 0)
+		if (signal_spin)
 		{
 			semas[0] = present_swap_chain->GetRenderingFinishedSemaphore();
 			semas[1] = m_spin_resources[m_current_frame].semaphore;
@@ -2121,7 +2126,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			submit_info.signalSemaphoreCount = 1;
 		}
 	}
-	else if (spin_cycles != 0)
+	else if (signal_spin)
 	{
 		submit_info.signalSemaphoreCount = 1;
 		submit_info.pSignalSemaphores = &m_spin_resources[m_current_frame].semaphore;
