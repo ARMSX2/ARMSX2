@@ -57,7 +57,8 @@ public:
 	{
 		bool vk_ext_provoking_vertex : 1;
 		bool vk_ext_memory_budget : 1;
-		bool vk_ext_calibrated_timestamps : 1;
+		bool vk_calibrated_timestamps : 1;
+		bool vk_calibrated_timestamps_is_khr : 1;
 		bool vk_ext_rasterization_order_attachment_access : 1;
 		bool vk_ext_roaa_depth : 1; ///< ROAA depth sub-feature (rasterizationOrderDepthAttachmentAccess); optional, often absent when color ROAA is present.
 		bool vk_ext_full_screen_exclusive : 1;
@@ -505,7 +506,9 @@ private:
 	bool m_gpu_pipeline_statistics_enabled = false;
 	bool m_gpu_pipeline_statistics_supported = false;
 	bool m_wants_new_timestamp_calibration = false;
-	VkTimeDomainEXT m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_EXT;
+	VkTimeDomainKHR m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_KHR;
+	// vkGetCalibratedTimestampsKHR or vkGetCalibratedTimestampsEXT, whichever extension is enabled.
+	PFN_vkGetCalibratedTimestampsKHR m_get_calibrated_timestamps = nullptr;
 
 	std::array<FrameResources, NUM_COMMAND_BUFFERS> m_frame_resources;
 	u64 m_next_fence_counter = 1;

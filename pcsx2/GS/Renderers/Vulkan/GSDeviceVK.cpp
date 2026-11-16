@@ -12,6 +12,7 @@
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/GSRunsVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
+#include "GS/Renderers/Vulkan/VKCalibratedTimestamps.h"
 #include "GS/Renderers/Vulkan/VKShaderCache.h"
 #include "GS/Renderers/Vulkan/VKSwapChain.h"
 #include "GS/Renderers/Vulkan/VKLibretro.h"
@@ -565,8 +566,12 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 	m_optional_extensions.vk_khr_push_descriptor = SupportsExtension(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_provoking_vertex = SupportsExtension(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, false);
 	m_optional_extensions.vk_ext_memory_budget = SupportsExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, false);
-	m_optional_extensions.vk_ext_calibrated_timestamps =
-		SupportsExtension(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, false);
+	const Vulkan::CalibratedTimestampsName calibrated_timestamps = Vulkan::PickCalibratedTimestampsName(
+		[&SupportsExtension](const char* name) { return SupportsExtension(name, false); });
+	m_optional_extensions.vk_calibrated_timestamps =
+		(calibrated_timestamps != Vulkan::CalibratedTimestampsName::Unsupported);
+	m_optional_extensions.vk_calibrated_timestamps_is_khr =
+		(calibrated_timestamps == Vulkan::CalibratedTimestampsName::KHR);
 	// ROAA is DUAL-NAMED: ARM shipped VK_ARM_rasterization_order_attachment_access (Mali
 	// driver r36p0), and the promoted VK_EXT_ alias only landed at r40p0. The structs/enums
 	// are identical (alias), so accept EITHER — otherwise Mali on r36-r39 blobs (a big chunk
@@ -1126,7 +1131,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		vkGetDeviceQueue(m_device, m_spin_queue_family_index, spin_queue_index, &m_spin_queue);
 
 		m_spin_timestamp_scale = m_device_properties.limits.timestampPeriod;
-		if (m_optional_extensions.vk_ext_calibrated_timestamps)
+		if (m_optional_extensions.vk_calibrated_timestamps)
 		{
 #ifdef _WIN32
 			LARGE_INTEGER Freq;
@@ -1271,29 +1276,40 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		m_optional_extensions.vk_ext_line_rasterization = false;
 	}
 
-	// VK_EXT_calibrated_timestamps checking
-	if (m_optional_extensions.vk_ext_calibrated_timestamps)
+	// Calibrated timestamps: the entry points of whichever name was enabled, the device time domain,
+	// and a host time domain GetCPUTimestamp reads.
+	const bool calibrated_is_khr = m_optional_extensions.vk_calibrated_timestamps_is_khr;
+	const PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR get_time_domains = calibrated_is_khr ?
+		vkGetPhysicalDeviceCalibrateableTimeDomainsKHR : vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
+	m_get_calibrated_timestamps = calibrated_is_khr ? vkGetCalibratedTimestampsKHR : vkGetCalibratedTimestampsEXT;
+	if (m_optional_extensions.vk_calibrated_timestamps && (!get_time_domains || !m_get_calibrated_timestamps))
+	{
+		Console.Warning("VK: VK_%s_calibrated_timestamps is enabled but its entry points did not load.",
+			calibrated_is_khr ? "KHR" : "EXT");
+		m_optional_extensions.vk_calibrated_timestamps = false;
+	}
+	if (m_optional_extensions.vk_calibrated_timestamps)
 	{
 		u32 count = 0;
-		vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(m_physical_device, &count, nullptr);
-		std::unique_ptr<VkTimeDomainEXT[]> time_domains = std::make_unique<VkTimeDomainEXT[]>(count);
-		vkGetPhysicalDeviceCalibrateableTimeDomainsEXT(m_physical_device, &count, time_domains.get());
-		const VkTimeDomainEXT* begin = &time_domains[0];
-		const VkTimeDomainEXT* end = &time_domains[count];
-		if (std::find(begin, end, VK_TIME_DOMAIN_DEVICE_EXT) == end)
-			m_optional_extensions.vk_ext_calibrated_timestamps = false;
-		VkTimeDomainEXT preferred_types[] = {
+		get_time_domains(m_physical_device, &count, nullptr);
+		std::unique_ptr<VkTimeDomainKHR[]> time_domains = std::make_unique<VkTimeDomainKHR[]>(count);
+		get_time_domains(m_physical_device, &count, time_domains.get());
+		const VkTimeDomainKHR* begin = &time_domains[0];
+		const VkTimeDomainKHR* end = &time_domains[count];
+		if (std::find(begin, end, VK_TIME_DOMAIN_DEVICE_KHR) == end)
+			m_optional_extensions.vk_calibrated_timestamps = false;
+		VkTimeDomainKHR preferred_types[] = {
 #ifdef _WIN32
-			VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT,
+			VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR,
 #else
 #ifdef CLOCK_MONOTONIC_RAW
-			VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT,
+			VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR,
 #endif
-			VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT,
+			VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR,
 #endif
 		};
-		m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_EXT;
-		for (VkTimeDomainEXT type : preferred_types)
+		m_calibrated_timestamp_type = VK_TIME_DOMAIN_DEVICE_KHR;
+		for (VkTimeDomainKHR type : preferred_types)
 		{
 			if (std::find(begin, end, type) != end)
 			{
@@ -1301,8 +1317,8 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 				break;
 			}
 		}
-		if (m_calibrated_timestamp_type == VK_TIME_DOMAIN_DEVICE_EXT)
-			m_optional_extensions.vk_ext_calibrated_timestamps = false;
+		if (m_calibrated_timestamp_type == VK_TIME_DOMAIN_DEVICE_KHR)
+			m_optional_extensions.vk_calibrated_timestamps = false;
 	}
 
 	m_optional_extensions.vk_swapchain_maintenance1 &= 
@@ -1315,8 +1331,9 @@ bool GSDeviceVK::ProcessDeviceExtensions()
 		"VK_EXT_provoking_vertex is %s", m_optional_extensions.vk_ext_provoking_vertex ? "supported" : "NOT supported");
 	Console.WriteLn(
 		"VK_EXT_memory_budget is %s", m_optional_extensions.vk_ext_memory_budget ? "supported" : "NOT supported");
-	Console.WriteLn("VK_EXT_calibrated_timestamps is %s",
-		m_optional_extensions.vk_ext_calibrated_timestamps ? "supported" : "NOT supported");
+	Console.WriteLn("VK_%s_calibrated_timestamps is %s",
+		m_optional_extensions.vk_calibrated_timestamps_is_khr ? "KHR" : "EXT",
+		m_optional_extensions.vk_calibrated_timestamps ? "supported" : "NOT supported");
 	Console.WriteLn("VK_EXT_rasterization_order_attachment_access is %s",
 		m_optional_extensions.vk_ext_rasterization_order_attachment_access ? "supported" : "NOT supported");
 	Console.WriteLn("VK_%s_swapchain_maintenance1 is %s",
@@ -1907,12 +1924,12 @@ void GSDeviceVK::ReadGPUTiming(u32 index)
 			}
 			if (resources.spin_id >= 0)
 			{
-				if (m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[1] > 0)
+				if (m_optional_extensions.vk_calibrated_timestamps && timestamps[1] > 0)
 				{
 					const u64 end = timestamps[1] * m_spin_timestamp_scale + m_spin_timestamp_offset;
 					m_spin_manager.DrawCompleted(resources.spin_id, resources.submit_timestamp, end);
 				}
-				else if (!m_optional_extensions.vk_ext_calibrated_timestamps && timestamps[0] > 0)
+				else if (!m_optional_extensions.vk_calibrated_timestamps && timestamps[0] > 0)
 				{
 					const u64 begin = timestamps[0] * m_spin_timestamp_scale;
 					const u64 end = timestamps[1] * m_spin_timestamp_scale;
@@ -2081,7 +2098,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		auto draw = m_spin_manager.DrawSubmitted(m_command_buffer_render_passes);
 		u32 constant_offset =
 			400000 * m_spin_manager.SpinsPerUnitTime(); // 400us, just to be safe since going over gets really bad
-		if (m_optional_extensions.vk_ext_calibrated_timestamps)
+		if (m_optional_extensions.vk_calibrated_timestamps)
 			constant_offset /=
 				2; // Safety factor isn't as important here, going over just hurts this one submission a bit
 		u32 minimum_spin = 200000 * m_spin_manager.SpinsPerUnitTime();
@@ -2102,13 +2119,13 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		if (m_spin_timer)
 			m_spin_timer--;
 		// Calibrate a max of once per frame
-		m_wants_new_timestamp_calibration = m_optional_extensions.vk_ext_calibrated_timestamps;
+		m_wants_new_timestamp_calibration = m_optional_extensions.vk_calibrated_timestamps;
 	}
 
 	if (spin_cycles != 0)
 		WaitForSpinCompletion(m_current_frame);
 
-	if (spin_enabled && m_optional_extensions.vk_ext_calibrated_timestamps)
+	if (spin_enabled && m_optional_extensions.vk_calibrated_timestamps)
 		resources.submit_timestamp = GetCPUTimestamp();
 
 	// The spin semaphore exists only when the spin runs on a queue of its own. On the graphics
@@ -2927,7 +2944,7 @@ void GSDeviceVK::SpinCommandCompleted(u32 index)
 	if (res == VK_SUCCESS)
 	{
 		u64 begin, end;
-		if (m_optional_extensions.vk_ext_calibrated_timestamps)
+		if (m_optional_extensions.vk_calibrated_timestamps)
 		{
 			begin = timestamps[0] * m_spin_timestamp_scale + m_spin_timestamp_offset;
 			end = timestamps[1] * m_spin_timestamp_scale + m_spin_timestamp_offset;
@@ -3017,28 +3034,28 @@ void GSDeviceVK::SubmitSpinCommand(u32 index, u32 cycles)
 
 void GSDeviceVK::CalibrateSpinTimestamp()
 {
-	if (!m_optional_extensions.vk_ext_calibrated_timestamps)
+	if (!m_optional_extensions.vk_calibrated_timestamps)
 		return;
-	VkCalibratedTimestampInfoEXT infos[2] = {
-		{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, VK_TIME_DOMAIN_DEVICE_EXT},
-		{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, nullptr, m_calibrated_timestamp_type},
+	VkCalibratedTimestampInfoKHR infos[2] = {
+		{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, VK_TIME_DOMAIN_DEVICE_KHR},
+		{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, nullptr, m_calibrated_timestamp_type},
 	};
 	u64 timestamps[2];
 	u64 maxDeviation;
 	constexpr u64 MAX_MAX_DEVIATION = 100000; // 100us
 	for (int i = 0; i < 4; i++) // 4 tries to get under MAX_MAX_DEVIATION
 	{
-		const VkResult res = vkGetCalibratedTimestampsEXT(m_device, std::size(infos), infos, timestamps, &maxDeviation);
+		const VkResult res = m_get_calibrated_timestamps(m_device, std::size(infos), infos, timestamps, &maxDeviation);
 		if (res != VK_SUCCESS)
 		{
-			LOG_VULKAN_ERROR(res, "vkGetCalibratedTimestampsEXT failed: ");
+			LOG_VULKAN_ERROR(res, "vkGetCalibratedTimestamps failed: ");
 			return;
 		}
 		if (maxDeviation < MAX_MAX_DEVIATION)
 			break;
 	}
 	if (maxDeviation >= MAX_MAX_DEVIATION)
-		Console.Warning("vkGetCalibratedTimestampsEXT returned high max deviation of %lluus", maxDeviation / 1000);
+		Console.Warning("vkGetCalibratedTimestamps returned high max deviation of %lluus", maxDeviation / 1000);
 	const double gpu_time = timestamps[0] * m_spin_timestamp_scale;
 #ifdef _WIN32
 	const double cpu_time = timestamps[1] * m_queryperfcounter_to_ns;
@@ -3056,7 +3073,7 @@ u64 GSDeviceVK::GetCPUTimestamp()
 	return static_cast<u64>(static_cast<double>(value.QuadPart) * m_queryperfcounter_to_ns);
 #else
 #ifdef CLOCK_MONOTONIC_RAW
-	const bool use_raw = m_calibrated_timestamp_type == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
+	const bool use_raw = m_calibrated_timestamp_type == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR;
 	const clockid_t clock = use_raw ? CLOCK_MONOTONIC_RAW : CLOCK_MONOTONIC;
 #else
 	const clockid_t clock = CLOCK_MONOTONIC;
@@ -8694,7 +8711,7 @@ void GSDeviceVK::ExecuteCommandBufferForReadback()
 		m_spin_timer = 30;
 		m_spin_manager.ReadbackRequested();
 
-		if (!m_optional_extensions.vk_ext_calibrated_timestamps && !m_warned_slow_spin)
+		if (!m_optional_extensions.vk_calibrated_timestamps && !m_warned_slow_spin)
 		{
 			m_warned_slow_spin = true;
 			Host::AddKeyedOSDMessage("GSDeviceVK_NoCalibratedTimestamps",
@@ -10812,7 +10829,7 @@ void GSDeviceVK::CollectDriverReport(GSDriverReport::BackendReport& out) const
 #define OPT(name) w.KeyBool(#name, m_optional_extensions.name)
 	OPT(vk_ext_provoking_vertex);
 	OPT(vk_ext_memory_budget);
-	OPT(vk_ext_calibrated_timestamps);
+	OPT(vk_calibrated_timestamps);
 	OPT(vk_ext_rasterization_order_attachment_access);
 	OPT(vk_ext_roaa_depth);
 	OPT(vk_ext_full_screen_exclusive);

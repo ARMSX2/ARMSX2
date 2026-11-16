@@ -929,6 +929,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/GSTextureVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h
+		GS/Renderers/Vulkan/VKCalibratedTimestamps.h
 		GS/Renderers/Vulkan/VKEntryPoints.h
 		GS/Renderers/Vulkan/VKEntryPoints.inl
 		GS/Renderers/Vulkan/VKLoader.h

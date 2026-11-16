@@ -91,7 +91,8 @@ VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceFeatures2, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceProperties2, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceMemoryProperties2, true)
 
-// VK_EXT_calibrated_timestamps
+// VK_KHR_calibrated_timestamps, VK_EXT_calibrated_timestamps
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceCalibrateableTimeDomainsKHR, false)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceCalibrateableTimeDomainsEXT, false)
 
 #endif // VULKAN_INSTANCE_ENTRY_POINT
@@ -239,7 +240,8 @@ VULKAN_DEVICE_ENTRY_POINT(vkAcquireFullScreenExclusiveModeEXT, false)
 VULKAN_DEVICE_ENTRY_POINT(vkReleaseFullScreenExclusiveModeEXT, false)
 #endif
 
-// VK_EXT_calibrated_timestamps
+// VK_KHR_calibrated_timestamps, VK_EXT_calibrated_timestamps
+VULKAN_DEVICE_ENTRY_POINT(vkGetCalibratedTimestampsKHR, false)
 VULKAN_DEVICE_ENTRY_POINT(vkGetCalibratedTimestampsEXT, false)
 
 // VK_KHR_push_descriptor
