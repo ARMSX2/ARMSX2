@@ -128,6 +128,31 @@ enum SessionStore {
         return formatter.date(from: String(id.prefix(16)))
     }
 
+    // A window runs from one launch to the next, and the newest one has no end.
+    static func sessionID(containing date: Date, documents: URL = .documentsDirectory) -> String? {
+        list(documents: documents)
+            .compactMap { id in startedDate(of: id, documents: documents).map { (id, $0) } }
+            .sorted { $0.1 < $1.1 }
+            .last { $0.1 <= date }?.0
+    }
+
+    // The end of the payload's own window picks the session; a payload with no session is dropped.
+    @discardableResult
+    static func persistPayload(_ json: Data, begin: Date, end: Date, documents: URL = .documentsDirectory) -> Bool {
+        guard let id = sessionID(containing: end, documents: documents), let folder = url(for: id, documents: documents) else {
+            return false
+        }
+        let payloads = folder.appendingPathComponent("metrickit", isDirectory: true)
+        try? FileManager.default.createDirectory(at: payloads, withIntermediateDirectories: true)
+        var counter = 1
+        var target: URL
+        repeat {
+            target = payloads.appendingPathComponent("\(format(begin))_\(format(end))-\(counter).json")
+            counter += 1
+        } while FileManager.default.fileExists(atPath: target.path)
+        return (try? json.write(to: target, options: .atomic)) != nil
+    }
+
     // Reads the whole session log once, off the launch path, for what the folder list should show.
     static func finalize(id: String, documents: URL = .documentsDirectory) {
         guard let folder = url(for: id, documents: documents) else { return }

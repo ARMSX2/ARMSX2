@@ -404,3 +404,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (void)logoutRetroAchievements;
 
 @end
+
+@interface ARMSX2Bridge (Diagnostics)
++ (nonnull NSString *)defaultSettingsINIText;
+
+@end

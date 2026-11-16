@@ -22,5 +22,6 @@ import Foundation
             if let previous { SessionStore.finalize(id: previous, documents: documents) }
             SessionStore.sweepStaleTemporaries(launchedAt: launchedAt, documents: documents)
         }
+        CrashDiagnostics.shared.start()
     }
 }
