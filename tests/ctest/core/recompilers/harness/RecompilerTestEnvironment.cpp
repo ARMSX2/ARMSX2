@@ -298,6 +298,13 @@ void RecompilerTestEnvironment::SetExtraMemory(bool enabled)
 	// Steps 6-11 of Initialize, in the same order, with the map size changed
 	// first: memReset maps ExposedRam, and the recompilers' Reset rebuilds
 	// their LUTs when ExposedRam differs from the size they were built for.
+	//
+	// Write protection comes off before the size changes, as in VMManager.
+	// mmap_ResetBlockTracking unprotects only ExposedRam, so after a shrink a
+	// code page above 32MB would stay read-only. memReset then zeroes all of
+	// eeMem; where ZeroData falls back to memset (macOS) that write faults, and
+	// the fault handler declines an offset past ExposedRam.
+	mmap_ResetBlockTracking();
 	memSetExtraMemMode(enabled);
 	SysMemory::Reset();
 	psxRec.Reset();
