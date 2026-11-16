@@ -639,7 +639,8 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 
 #ifdef _WIN32
 	m_optional_extensions.vk_ext_full_screen_exclusive =
-		enable_surface && SupportsExtension(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, false);
+		m_window_system.type != WindowInfo::Type::Surfaceless &&
+		SupportsExtension(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME, false);
 #endif
 
 	m_optional_extensions.vk_ext_fragment_shader_interlock = SupportsExtension(VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME, false);
