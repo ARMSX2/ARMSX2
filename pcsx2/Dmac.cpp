@@ -264,6 +264,15 @@ static __ri void DmaExec( void (*func)(), u32 mem, u32 value )
 				cpuClearInt( 11 );
 				QueuedDMA._u16 &= ~(1 << 11); //Clear any queued DMA requests for this channel
 			}
+			else if (channel == DMAC_SIF0 || channel == DMAC_SIF1)
+			{
+				// The stop ends the EE side of the transfer, as a pump that finds STR clear would. Left busy, a pump the IOP
+				// starts after the restart, before the EE's own pump, would carry the restarted chain to its end, and the EE's
+				// pump would then open it again and read past it.
+				_sif& sif = (channel == DMAC_SIF0) ? sif0 : sif1;
+				sif.ee.busy = false;
+				sif.ee.end = false;
+			}
 
 			cpuClearInt( channel );
 			QueuedDMA._u16 &= ~(1 << channel); //Clear any queued DMA requests for this channel

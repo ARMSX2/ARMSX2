@@ -57,7 +57,9 @@
 #include "R3000A.h"
 #include "R5900.h"
 #include "Sif.h"
+#include "SifRestartTestSupport.h"
 #include "IopThread/IopThreadVm.h"
+#include "ps2/HwInternal.h"
 
 #include <gtest/gtest.h>
 
@@ -1230,6 +1232,78 @@ TEST_F(SifPumpIdle, APumpAfterTheTransferFinishedChangesNothingTheMachineCanSee)
 			}
 		}
 	}
+}
+
+// The BIOS stops a running SIF channel (CHCR = 0) and starts it again. With the IOP on its own thread, the IOP is run up to
+// the EE's cycle before the EE's pump of the restart, and if it re-arms its DMA on the way, its pump runs first. These make
+// the calls in that order: the EE's start, the stop through the register write, the restart (STR set, the end flag cleared
+// as dmaSIFn does), the IOP's re-arm, and last the EE's own pump. The restart must be served once, and only by what the EE
+// started.
+TEST_F(SifPumpIdle, AStoppedSif1ChainThatIsStartedAgainIsSentOnceAndNoTagAfterItsEndIsRead)
+{
+	using namespace sif1restart;
+	ResetMachine(Script{});
+	BuildPacketA();
+	sif1ch.chcr.set(0x184);
+	dmaSIF1();
+	ASSERT_GT(sif1ch.qwc, 0u) << "the IOP is not armed, so the first pump stops part way through packet A";
+
+	hwWrite32<0x0c>(D6_CHCR, 0);
+	ASSERT_FALSE(sif1ch.chcr.STR);
+
+	FixUpAndQueuePacketB();
+	sif1ch.chcr.set(0x184);
+	sif1.ee.end = false;
+	psxDma10(hw_dma10.madr, hw_dma10.bcr, hw_dma10.chcr);
+	SIF1DmaFromEe();
+
+	ExpectBothPacketsAndNothingElse();
+}
+
+// The same order on SIF0. The EE side is stopped while it waits for its next tag. After the restart the IOP sends two
+// packets; the first ends the EE's chain, so the second must stay in the FIFO for the next start.
+TEST_F(SifPumpIdle, AStoppedSif0ChannelThatIsStartedAgainTakesNoPacketAfterTheEndOfItsChain)
+{
+	constexpr u32 kTags = 0x1000, kData = 0x20000, kEeDst = 0x100000;
+	ResetMachine(Script{});
+	u8* const iop = iopMem->Main;
+	// Three 8-word packets. The first ends the IOP's first chain and leaves the EE side waiting for a tag; the second ends
+	// the EE side; the third ends the IOP's second chain.
+	const u32 ee_id[3] = {TAG_CNT, TAG_END, TAG_END};
+	const u32 iop_end[3] = {0x40000000, 0, 0x40000000};
+	for (u32 p = 0; p < 3; p++)
+	{
+		Store32(iop, kTags + 16 * p + 0, (kData + 0x100 * p) | iop_end[p]);
+		Store32(iop, kTags + 16 * p + 4, 8);
+		Store32(iop, kTags + 16 * p + 8, 2 | (ee_id[p] << 28));
+		Store32(iop, kTags + 16 * p + 12, kEeDst + 0x100 * p);
+		for (u32 i = 0; i < 8; i++)
+			Store32(iop, kData + 0x100 * p + 4 * i, 0xD0000000 | (p << 8) | i);
+	}
+	hw_dma9.bcr = 0;
+	hw_dma9.chcr = 0x01000201;
+
+	sif0ch.chcr.set(0x184);
+	dmaSIF0();
+	hw_dma9.tadr = kTags;
+	psxDma9(hw_dma9.madr, hw_dma9.bcr, hw_dma9.chcr);
+	ASSERT_EQ(0xD0000007u, Load<u32>(eeMem->Main, kEeDst + 28)) << "the first packet arrived";
+	ASSERT_TRUE(sif0.ee.busy) << "the EE side waits for its next tag";
+
+	hwWrite32<0x0c>(D5_CHCR, 0);
+	ASSERT_FALSE(sif0ch.chcr.STR);
+
+	sif0ch.chcr.set(0x184);
+	sif0.ee.end = false;
+	hw_dma9.tadr = kTags + 16;
+	psxDma9(hw_dma9.madr, hw_dma9.bcr, hw_dma9.chcr);
+	SIF0DmaFromEe();
+
+	EXPECT_EQ(0xD0000107u, Load<u32>(eeMem->Main, kEeDst + 0x100 + 28)) << "the second packet arrived";
+	EXPECT_EQ(0u, Load<u32>(eeMem->Main, kEeDst + 0x200)) << "the third packet was taken by a channel its chain had ended";
+	EXPECT_EQ(12, sif0.fifo.size) << "the third packet's tag and words wait in the FIFO";
+	EXPECT_FALSE(sif0.ee.busy);
+	EXPECT_NE(0u, cpuRegs.interrupt & (1u << DMAC_SIF0)) << "the EE's completion is scheduled";
 }
 
 // The IOP thread's lag rules watch the SIF RPC packets that pass through these pumps for calls to the memory card server

@@ -22,6 +22,7 @@
 #include "ps2/HwInternal.h"
 #include "R3000A.h"
 #include "Sif.h"
+#include "SifRestartTestSupport.h"
 #include "R5900.h"
 #include "VMManager.h"
 #include "VUmicro.h"
@@ -399,6 +400,7 @@ namespace
 
 	std::vector<IopCall>* s_calls = nullptr;
 	bool s_pause_in_slice = false;
+	bool s_dma10_in_slice = false; // the next slice re-arms the IOP's DMA 10, as the IOP's SIF1 handler does
 	u64 s_iop_ran = 0; // EE cycles the fake IOP has run, overshoot included
 
 	// Runs the whole budget and a bit more, like the JIT finishing its last block, and gives the
@@ -411,6 +413,11 @@ namespace
 		{
 			s_pause_in_slice = false;
 			IopThread::RequestPause();
+		}
+		if (s_dma10_in_slice)
+		{
+			s_dma10_in_slice = false;
+			psxDma10(hw_dma10.madr, hw_dma10.bcr, hw_dma10.chcr);
 		}
 		const s32 overshoot = (ee_cycles > 0) ? (ee_cycles % 23) : 0;
 		if (ee_cycles > 0)
@@ -490,6 +497,7 @@ namespace
 			VU1.VI[REG_VPU_STAT].UL = m_vpu1;
 			s_calls = nullptr;
 			s_pause_in_slice = false;
+			s_dma10_in_slice = false;
 		}
 
 		// The same starting point every time: a quiet machine with the IOP a little behind.
@@ -1098,6 +1106,49 @@ TEST_F(LockstepMachine, StoppingARunningSifChannelDoesNothingMoreThanItDidWithou
 		EXPECT_EQ(psHu32(DMAC_STAT) & (1u << DMAC_SIF1), 0u) << arm.what;
 		IopThread::StopThread();
 	}
+}
+
+// The BIOS stops SIF1 part way through a transfer the IOP has not re-armed for, and starts it again a few hundred cycles
+// later. The restart's hold runs the skewed IOP up to the EE, and if the IOP re-arms its DMA 10 on the way, its pump runs
+// before the EE's. The restarted chain must go through once, and the EE's pump must not read the tag after its end.
+TEST_F(LockstepMachine, AnIopRearmInTheCatchUpOfASif1RestartDoesNotMakeTheChannelReadPastTheChainsEnd)
+{
+	REQUIRE_ARM64_HOST();
+	using namespace sif1restart;
+	MemoryGuard memory;
+	ASSERT_TRUE(memory.Ok());
+	SettingsGuard guard;
+	SkewGuard skew_guard;
+	AskForLockstep();
+	IopThread::SetLockstepSkew(60000);
+	IopThread::SetLockstepSkewHoldChannels(2);
+	Reset();
+	dmacRegs.ctrl.DMAE = 1;
+	IopThread::ChooseMode();
+	IopThread::SyncThread();
+	ASSERT_TRUE(IopThread::LockstepActive());
+	const CpuEventTestFn test = cpuEventTestFor(IopThreadMode::Lockstep);
+	for (u32 i = 0; i < 40; i++)
+	{
+		cpuRegs.cycle += 3072;
+		test();
+	}
+
+	BuildPacketA();
+	hwWrite32<0x0c>(D6_CHCR, 0x184);
+	ASSERT_GT(sif1ch.qwc, 0u) << "the IOP is not armed, so the first pump stops part way through packet A";
+	cpuRegs.cycle += 3000;
+	hwWrite32<0x0c>(D6_CHCR, 0);
+	ASSERT_FALSE(sif1ch.chcr.STR);
+
+	FixUpAndQueuePacketB();
+	cpuRegs.cycle += 400;
+	s_dma10_in_slice = true;
+	hwWrite32<0x0c>(D6_CHCR, 0x184);
+	EXPECT_FALSE(s_dma10_in_slice) << "the IOP ran in the restart's hold";
+
+	ExpectBothPacketsAndNothingElse();
+	IopThread::StopThread();
 }
 
 TEST_F(LockstepMachine, HoldsDoNothingWithASkewOfZero)

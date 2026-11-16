@@ -37,6 +37,7 @@ add_pcsx2_test(core_test
 	shared_word_tests.cpp
 	audio_stream_tests.cpp
 	IopThreadTestSupport.h
+	SifRestartTestSupport.h
 	StubHostTasks.h
 	sif_pump_tests.cpp
 	sbus_tests.cpp
