@@ -1016,6 +1016,29 @@ namespace QtUtils
 #endif
 	}
 
+	WindowInfo::Type GetWindowSystemType()
+	{
+#if defined(_WIN32)
+		return WindowInfo::Type::Win32;
+#elif defined(__APPLE__)
+		return WindowInfo::Type::MacOS;
+#else
+		const QString platform_name = QGuiApplication::platformName();
+		if (platform_name == QStringLiteral("xcb"))
+			return WindowInfo::Type::X11;
+		if (platform_name == QStringLiteral("wayland"))
+			return WindowInfo::Type::Wayland;
+		return WindowInfo::Type::Surfaceless;
+#endif
+	}
+
+	WindowInfo GetSurfacelessWindowInfo()
+	{
+		WindowInfo wi;
+		wi.pending_type = GetWindowSystemType();
+		return wi;
+	}
+
 #if !defined(_WIN32) && !defined(__APPLE__)
 	u8 GetWaylandScreenRotation(const QScreen* screen)
 	{

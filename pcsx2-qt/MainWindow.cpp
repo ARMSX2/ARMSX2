@@ -2799,7 +2799,7 @@ std::optional<WindowInfo> MainWindow::acquireRenderWindow(bool recreate_window, 
 	if (m_display_created && !recreate_window && fullscreen == is_fullscreen && is_rendering_to_main == render_to_main &&
 		!changing_surfaceless)
 	{
-		return m_display_surface ? m_display_surface->getWindowInfo() : WindowInfo();
+		return m_display_surface ? m_display_surface->getWindowInfo() : QtUtils::GetSurfacelessWindowInfo();
 	}
 
 	// Skip recreating the surface if we're just transitioning between fullscreen and windowed with render-to-main off.
@@ -2862,7 +2862,7 @@ std::optional<WindowInfo> MainWindow::acquireRenderWindow(bool recreate_window, 
 
 	// if we're going to surfaceless, we're done here
 	if (surfaceless)
-		return WindowInfo();
+		return QtUtils::GetSurfacelessWindowInfo();
 
 	// very low-chance race here, if the user starts the fullscreen UI, and immediately closes the window.
 	if (m_is_closing)

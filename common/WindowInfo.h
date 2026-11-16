@@ -29,7 +29,8 @@ struct WindowInfo
 	Type type = Type::Surfaceless;
 
 	/// For a Surfaceless window whose surface is only gone for now (an Android app between
-	/// surfaces), the type the window has when the surface returns. A renderer opened in that state
+	/// surfaces, or the Qt game list shown over a running game), the type the window has when the
+	/// surface returns. A renderer opened in that state
 	/// still sets up support for that window system, so it can present once the surface is back.
 	/// Surfaceless for a run that never displays anything (runners, libretro, tests).
 	Type pending_type = Type::Surfaceless;

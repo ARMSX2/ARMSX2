@@ -116,6 +116,15 @@ namespace QtUtils
 	u8 GetWaylandScreenRotation(const QScreen* screen);
 #endif
 
+	/// The window system Qt shows windows in on this platform, as WindowInfo::type reports it for a
+	/// real window. Surfaceless if it is none the renderers can present to.
+	WindowInfo::Type GetWindowSystemType();
+
+	/// The WindowInfo to hand the GS while there is no render window but one will come back (the
+	/// game list shown over a running game). Surfaceless, with pending_type set to GetWindowSystemType()
+	/// so a GS device opened now still gets support for that window system.
+	WindowInfo GetSurfacelessWindowInfo();
+
 	/// Returns the common window info structure for a Qt Window/Widget.
 	template <class T>
 		requires std::is_base_of_v<QWidget, T> || std::is_base_of_v<QWindow, T>
@@ -124,15 +133,11 @@ namespace QtUtils
 		WindowInfo wi;
 
 		// Windows and Apple are easy here since there's no display connection.
-#if defined(_WIN32)
-		wi.type = WindowInfo::Type::Win32;
-		wi.window_handle = reinterpret_cast<void*>(window->winId());
-#elif defined(__APPLE__)
-		wi.type = WindowInfo::Type::MacOS;
+#if defined(_WIN32) || defined(__APPLE__)
+		wi.type = GetWindowSystemType();
 		wi.window_handle = reinterpret_cast<void*>(window->winId());
 #else
 		QPlatformNativeInterface* pni = QGuiApplication::platformNativeInterface();
-		const QString platform_name = QGuiApplication::platformName();
 
 		QWindow* windowHandle;
 		if constexpr (std::is_base_of_v<QWidget, T>)
@@ -140,7 +145,8 @@ namespace QtUtils
 		else
 			windowHandle = window;
 
-		if (platform_name == QStringLiteral("xcb"))
+		const WindowInfo::Type window_system = GetWindowSystemType();
+		if (window_system == WindowInfo::Type::X11)
 		{
 			// Can't get a handle for an unmapped window in X, it doesn't like it.
 			if (!window->isVisible())
@@ -153,7 +159,7 @@ namespace QtUtils
 			wi.display_connection = pni->nativeResourceForWindow("display", windowHandle);
 			wi.window_handle = reinterpret_cast<void*>(window->winId());
 		}
-		else if (platform_name == QStringLiteral("wayland"))
+		else if (window_system == WindowInfo::Type::Wayland)
 		{
 			wi.type = WindowInfo::Type::Wayland;
 			wi.display_connection = pni->nativeResourceForWindow("display", windowHandle);
@@ -163,7 +169,7 @@ namespace QtUtils
 		}
 		else
 		{
-			Console.WriteLn("Unknown PNI platform '%s'.", platform_name.toUtf8().constData());
+			Console.WriteLn("Unknown PNI platform '%s'.", QGuiApplication::platformName().toUtf8().constData());
 			return std::nullopt;
 		}
 #endif
