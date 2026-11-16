@@ -7,7 +7,7 @@ import os
 enum DiagnosticsDevTrigger {
     private static let started = OSAllocatedUnfairLock(initialState: false)
 
-    // Selector: last (newest past session), now (the running one) or an exact session folder name.
+    // Selector: last (newest past session), now (the running one), verdicts (every ending) or an exact session folder name.
     static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let selector = [env["ARMSX2_BUILD_REPORT"], env["SIMCTL_CHILD_ARMSX2_BUILD_REPORT"]]
@@ -19,6 +19,7 @@ enum DiagnosticsDevTrigger {
     }
 
     private static func report(for selector: String) async -> String {
+        if selector == "verdicts" { return verdicts() }
         do {
             guard let id = resolve(selector) else { throw DiagnosticsError.invalidSession(selector) }
             let zip = try await ReportBuilder.build(sessionID: id)
@@ -27,6 +28,17 @@ enum DiagnosticsDevTrigger {
             let reason = "\(error)".replacingOccurrences(of: "\"", with: "'").replacingOccurrences(of: "\n", with: " ")
             return "@@DIAG_REPORT@@ ok=0 error=\"\(reason)\"\n"
         }
+    }
+
+    // One ending per kept session in a single launch, and no zip.
+    private static func verdicts() -> String {
+        let ids = SessionStore.list()
+        var out = ""
+        for id in ids {
+            let ending = id == SessionStore.currentID ? "running" : EndingParser.verdict(of: id).ending.rawValue
+            out += "@@DIAG_VERDICT@@ session=\(id) ending=\(ending)\n"
+        }
+        return out + "@@DIAG_VERDICT@@ done=1 count=\(ids.count)\n"
     }
 
     // Anything that is not a well-formed id of an existing folder is refused before a file is read.
