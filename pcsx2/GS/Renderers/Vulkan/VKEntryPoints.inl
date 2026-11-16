@@ -3,6 +3,9 @@
 
 // Expands the VULKAN_ENTRY_POINT macro for each function when this file is included.
 // Parameters: Function name, is required
+// For instance and device functions "is required" may be an expression: the window-system entry
+// points are required only when LoadVulkanInstanceFunctions/LoadVulkanDeviceFunctions are asked
+// for window support (wsi, swapchain).
 // VULKAN_MODULE_ENTRY_POINT is for functions in vulkan-1.dll
 // VULKAN_INSTANCE_ENTRY_POINT is for instance-specific functions.
 // VULKAN_DEVICE_ENTRY_POINT is for device-specific functions.
@@ -32,32 +35,32 @@ VULKAN_INSTANCE_ENTRY_POINT(vkCreateDevice, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkEnumerateDeviceExtensionProperties, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkEnumerateDeviceLayerProperties, true)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSparseImageFormatProperties, true)
-VULKAN_INSTANCE_ENTRY_POINT(vkDestroySurfaceKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceSupportKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceCapabilitiesKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceFormatsKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfacePresentModesKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkDestroySurfaceKHR, wsi != WindowInfo::Type::Surfaceless)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceSupportKHR, wsi != WindowInfo::Type::Surfaceless)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceCapabilitiesKHR, wsi != WindowInfo::Type::Surfaceless)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceFormatsKHR, wsi != WindowInfo::Type::Surfaceless)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfacePresentModesKHR, wsi != WindowInfo::Type::Surfaceless)
 
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateWin32SurfaceKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateWin32SurfaceKHR, wsi == WindowInfo::Type::Win32)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceWin32PresentationSupportKHR, false)
 #endif
 
 #if defined(VK_USE_PLATFORM_XLIB_KHR)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateXlibSurfaceKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateXlibSurfaceKHR, wsi == WindowInfo::Type::X11)
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceXlibPresentationSupportKHR, false)
 #endif
 
 #if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateWaylandSurfaceKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateWaylandSurfaceKHR, wsi == WindowInfo::Type::Wayland)
 #endif
 
 #if defined(VK_USE_PLATFORM_METAL_EXT)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateMetalSurfaceEXT, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateMetalSurfaceEXT, wsi == WindowInfo::Type::MacOS)
 #endif
 
 #if defined(VK_USE_PLATFORM_ANDROID_KHR)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateAndroidSurfaceKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateAndroidSurfaceKHR, wsi == WindowInfo::Type::Android)
 #endif
 
 // VK_EXT_debug_utils
@@ -75,13 +78,13 @@ VULKAN_INSTANCE_ENTRY_POINT(vkSubmitDebugUtilsMessageEXT, false)
 
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceSurfaceCapabilities2KHR, false)
 
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceDisplayPropertiesKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceDisplayPlanePropertiesKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayPlaneSupportedDisplaysKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayModePropertiesKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateDisplayModeKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayPlaneCapabilitiesKHR, false)
-VULKAN_INSTANCE_ENTRY_POINT(vkCreateDisplayPlaneSurfaceKHR, false)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceDisplayPropertiesKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceDisplayPlanePropertiesKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayPlaneSupportedDisplaysKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayModePropertiesKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateDisplayModeKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkGetDisplayPlaneCapabilitiesKHR, wsi == WindowInfo::Type::VulkanDirect)
+VULKAN_INSTANCE_ENTRY_POINT(vkCreateDisplayPlaneSurfaceKHR, wsi == WindowInfo::Type::VulkanDirect)
 
 // Vulkan 1.1 functions.
 VULKAN_INSTANCE_ENTRY_POINT(vkGetPhysicalDeviceFeatures2, true)
@@ -215,11 +218,11 @@ VULKAN_DEVICE_ENTRY_POINT(vkCmdBeginRenderPass, true)
 VULKAN_DEVICE_ENTRY_POINT(vkCmdNextSubpass, true)
 VULKAN_DEVICE_ENTRY_POINT(vkCmdEndRenderPass, true)
 VULKAN_DEVICE_ENTRY_POINT(vkCmdExecuteCommands, true)
-VULKAN_DEVICE_ENTRY_POINT(vkCreateSwapchainKHR, false)
-VULKAN_DEVICE_ENTRY_POINT(vkDestroySwapchainKHR, false)
-VULKAN_DEVICE_ENTRY_POINT(vkGetSwapchainImagesKHR, false)
-VULKAN_DEVICE_ENTRY_POINT(vkAcquireNextImageKHR, false)
-VULKAN_DEVICE_ENTRY_POINT(vkQueuePresentKHR, false)
+VULKAN_DEVICE_ENTRY_POINT(vkCreateSwapchainKHR, swapchain)
+VULKAN_DEVICE_ENTRY_POINT(vkDestroySwapchainKHR, swapchain)
+VULKAN_DEVICE_ENTRY_POINT(vkGetSwapchainImagesKHR, swapchain)
+VULKAN_DEVICE_ENTRY_POINT(vkAcquireNextImageKHR, swapchain)
+VULKAN_DEVICE_ENTRY_POINT(vkQueuePresentKHR, swapchain)
 
 // Vulkan 1.1 functions.
 VULKAN_DEVICE_ENTRY_POINT(vkGetBufferMemoryRequirements2, true)

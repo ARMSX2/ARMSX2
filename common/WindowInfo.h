@@ -25,8 +25,18 @@ struct WindowInfo
 		VulkanDirect
 	};
 
-	/// The type of the surface. Surfaceless indicates it will not be displayed on screen at all.
+	/// The type of the surface. Surfaceless indicates there is no surface to display on now.
 	Type type = Type::Surfaceless;
+
+	/// For a Surfaceless window whose surface is only gone for now (an Android app between
+	/// surfaces), the type the window has when the surface returns. A renderer opened in that state
+	/// still sets up support for that window system, so it can present once the surface is back.
+	/// Surfaceless for a run that never displays anything (runners, libretro, tests).
+	Type pending_type = Type::Surfaceless;
+
+	/// The window system this window presents to, now or once its surface returns.
+	/// Surfaceless if it never presents.
+	Type GetPresentType() const { return (type == Type::Surfaceless) ? pending_type : type; }
 
 	/// Connection to the display server. On most platforms except X11/Wayland, this is implicit and null.
 	void* display_connection = nullptr;

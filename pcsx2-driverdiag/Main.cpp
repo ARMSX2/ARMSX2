@@ -157,7 +157,7 @@ namespace
 					instance = VK_NULL_HANDLE;
 					return false;
 				}
-				Vulkan::LoadVulkanInstanceFunctions(instance);
+				Vulkan::LoadVulkanInstanceFunctions(instance, WindowInfo::Type::Surfaceless);
 				return true;
 			});
 		}

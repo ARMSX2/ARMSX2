@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "common/WindowInfo.h"
+
 #include <string>
 
 class Error;
@@ -97,8 +99,11 @@ namespace Vulkan
 {
 	bool IsVulkanLibraryLoaded();
 	bool LoadVulkanLibrary(Error* error);
-	bool LoadVulkanInstanceFunctions(VkInstance instance);
-	bool LoadVulkanDeviceFunctions(VkDevice device);
+	// wsi is the window system the instance was created for, Surfaceless for none: its surface
+	// functions are then required. swapchain says the device enabled VK_KHR_swapchain, which makes
+	// the swap chain functions required.
+	bool LoadVulkanInstanceFunctions(VkInstance instance, WindowInfo::Type wsi);
+	bool LoadVulkanDeviceFunctions(VkDevice device, bool swapchain);
 	void UnloadVulkanLibrary();
 	void ResetVulkanLibraryFunctionPointers();
 

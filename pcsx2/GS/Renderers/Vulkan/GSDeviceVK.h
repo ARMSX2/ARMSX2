@@ -97,6 +97,19 @@ public:
 		bool vk_ext_descriptor_indexing : 1;
 	};
 
+	/// The extensions a window needs: VK_KHR_surface and the platform's surface extension on the
+	/// instance, VK_KHR_swapchain on the device. Decided from the window system the window presents
+	/// to (WindowInfo::GetPresentType), not from whether it has a surface right now, so a device
+	/// opened while the surface is gone can still present when it returns. Empty, with type
+	/// Surfaceless, for a run that never presents and for a window system this build has no Vulkan
+	/// support for.
+	struct WindowSystemExtensions
+	{
+		WindowInfo::Type type = WindowInfo::Type::Surfaceless;
+		std::vector<const char*> instance;
+		std::vector<const char*> device;
+	};
+
 	// Global state accessors
 	__fi VkInstance GetVulkanInstance() const { return m_instance; }
 	__fi VkPhysicalDevice GetPhysicalDevice() const { return m_physical_device; }
@@ -338,7 +351,7 @@ private:
 	using ExtensionList = std::vector<const char*>;
 	static bool SelectInstanceExtensions(ExtensionList* extension_list, const WindowInfo& wi, OptionalExtensions* oe,
 		bool enable_debug_utils);
-	bool SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface);
+	bool SelectDeviceExtensions(ExtensionList* extension_list);
 	bool SelectDeviceFeatures();
 	bool CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer);
 	bool ProcessDeviceExtensions();
@@ -451,6 +464,10 @@ private:
 	VulkanDeviceRules m_device_rules;
 
 	GSStreamRingMemoryDecision m_stream_ring_memory;
+
+	// The window support the instance and device were created with, from the window at creation.
+	// Type Surfaceless if the device cannot present.
+	WindowSystemExtensions m_window_system;
 
 	VkQueue m_graphics_queue = VK_NULL_HANDLE;
 	VkQueue m_present_queue = VK_NULL_HANDLE;
@@ -886,6 +903,9 @@ public:
 
 	/// Returns true if Vulkan is suitable as a default for the devices in the system.
 	static bool IsSuitableDefaultRenderer();
+
+	/// The window support a window needs. See WindowSystemExtensions.
+	static WindowSystemExtensions GetWindowSystemExtensions(const WindowInfo& wi);
 
 	__fi VkRenderPass GetTFXRenderPass(bool rt, bool ds, bool colclip, bool stencil, bool fbl, bool dsp,
 		VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op) const

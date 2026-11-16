@@ -77,6 +77,13 @@ VKSwapChain::~VKSwapChain()
 
 VkSurfaceKHR VKSwapChain::CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi)
 {
+	// Every window type but VK_KHR_display needs a native window, and the platform functions crash on a null one.
+	if (wi->type != WindowInfo::Type::VulkanDirect && !wi->window_handle && !wi->surface_handle)
+	{
+		Console.Error("VK: The window has no native handle, not creating a surface.");
+		return VK_NULL_HANDLE;
+	}
+
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
 	if (wi->type == WindowInfo::Type::Win32)
 	{
@@ -332,12 +339,31 @@ void VKSwapChain::DestroyVulkanSurface(VkInstance instance, WindowInfo* wi, VkSu
 #endif
 }
 
+// Whether the device's present queue can present to the surface. A device opened before its window had a
+// surface picked that queue without one to ask. The validation layers also want this asked before a swap
+// chain is made on a surface.
+static bool PresentQueueSupportsSurface(VkSurfaceKHR surface)
+{
+	const GSDeviceVK* dev = GSDeviceVK::GetInstance();
+	VkBool32 present_supported = VK_FALSE;
+	const VkResult res = vkGetPhysicalDeviceSurfaceSupportKHR(
+		dev->GetPhysicalDevice(), dev->GetPresentQueueFamilyIndex(), surface, &present_supported);
+	if (res != VK_SUCCESS)
+	{
+		LOG_VULKAN_ERROR(res, "vkGetPhysicalDeviceSurfaceSupportKHR failed: ");
+		return false;
+	}
+	if (!present_supported)
+		Console.Error("VK: Queue family %u cannot present to this surface.", dev->GetPresentQueueFamilyIndex());
+	return present_supported;
+}
+
 std::unique_ptr<VKSwapChain> VKSwapChain::Create(const WindowInfo& wi, VkSurfaceKHR surface,
 	VkPresentModeKHR present_mode, std::optional<bool> exclusive_fullscreen_control)
 {
 	std::unique_ptr<VKSwapChain> swap_chain =
 		std::unique_ptr<VKSwapChain>(new VKSwapChain(wi, surface, present_mode, exclusive_fullscreen_control));
-	if (!swap_chain->CreateSwapChain())
+	if (!PresentQueueSupportsSurface(surface) || !swap_chain->CreateSwapChain())
 		return nullptr;
 
 	return swap_chain;
@@ -1234,20 +1260,8 @@ bool VKSwapChain::RecreateSurface(const WindowInfo& new_wi)
 	if (m_surface == VK_NULL_HANDLE)
 		return false;
 
-	// The validation layers get angry at us if we don't call this before creating the swapchain.
-	VkBool32 present_supported = VK_TRUE;
-	VkResult res = vkGetPhysicalDeviceSurfaceSupportKHR(GSDeviceVK::GetInstance()->GetPhysicalDevice(),
-		GSDeviceVK::GetInstance()->GetPresentQueueFamilyIndex(), m_surface, &present_supported);
-	if (res != VK_SUCCESS)
-	{
-		LOG_VULKAN_ERROR(res, "vkGetPhysicalDeviceSurfaceSupportKHR failed: ");
+	if (!PresentQueueSupportsSurface(m_surface))
 		return false;
-	}
-	if (!present_supported)
-	{
-		pxFailRel("Recreated surface does not support presenting.");
-		return false;
-	}
 
 	// Finally re-create the swap chain
 	if (!CreateSwapChain())

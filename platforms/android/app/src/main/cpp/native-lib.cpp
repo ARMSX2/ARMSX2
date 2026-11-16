@@ -3825,9 +3825,12 @@ std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
     // swapchain creation, while a null handle reaches vkCreateAndroidSurfaceKHR
     // and SIGSEGVs inside the loader (RefBase::incStrong on null+4). The next
     // onNativeSurfaceChanged triggers MTGS::UpdateDisplayWindow and we
-    // re-acquire the real surface.
+    // re-acquire the real surface. pending_type says the surface will come
+    // back, so a GS device opened in this window still gets Android window
+    // support and can present on it later.
     if (!s_window) {
         _windowInfo.type = WindowInfo::Type::Surfaceless;
+        _windowInfo.pending_type = WindowInfo::Type::Android;
         return _windowInfo;
     }
 

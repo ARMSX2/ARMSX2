@@ -287,7 +287,7 @@ void Vulkan::UnloadVulkanLibrary()
 	s_vulkan_library.Close();
 }
 
-bool Vulkan::LoadVulkanInstanceFunctions(VkInstance instance)
+bool Vulkan::LoadVulkanInstanceFunctions(VkInstance instance, WindowInfo::Type wsi)
 {
 	bool required_functions_missing = false;
 	auto LoadFunction = [&required_functions_missing, instance](PFN_vkVoidFunction* func_ptr, const char* name, bool is_required) {
@@ -307,7 +307,7 @@ bool Vulkan::LoadVulkanInstanceFunctions(VkInstance instance)
 	return !required_functions_missing;
 }
 
-bool Vulkan::LoadVulkanDeviceFunctions(VkDevice device)
+bool Vulkan::LoadVulkanDeviceFunctions(VkDevice device, bool swapchain)
 {
 	bool required_functions_missing = false;
 	auto LoadFunction = [&required_functions_missing, device](PFN_vkVoidFunction* func_ptr, const char* name, bool is_required) {

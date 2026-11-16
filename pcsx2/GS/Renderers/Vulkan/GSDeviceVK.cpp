@@ -296,47 +296,23 @@ bool GSDeviceVK::SelectInstanceExtensions(ExtensionList* extension_list, const W
 		return false;
 	};
 
-	// Common extensions
-	if (wi.type != WindowInfo::Type::Surfaceless && !SupportsExtension(VK_KHR_SURFACE_EXTENSION_NAME, true))
-		return false;
+	const WindowSystemExtensions wsi = GetWindowSystemExtensions(wi);
+	for (const char* name : wsi.instance)
+	{
+		if (!SupportsExtension(name, true))
+			return false;
+	}
 
-#if defined(VK_USE_PLATFORM_WIN32_KHR)
-	if (wi.type == WindowInfo::Type::Win32 && !SupportsExtension(VK_KHR_WIN32_SURFACE_EXTENSION_NAME, true))
-		return false;
-#endif
-#if defined(VK_USE_PLATFORM_XLIB_KHR)
-	if (wi.type == WindowInfo::Type::X11 && !SupportsExtension(VK_KHR_XLIB_SURFACE_EXTENSION_NAME, true))
-		return false;
-#endif
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
-	if (wi.type == WindowInfo::Type::Wayland && !SupportsExtension(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME, true))
-		return false;
-#endif
-#if defined(VK_USE_PLATFORM_METAL_EXT)
-	if (wi.type == WindowInfo::Type::MacOS && !SupportsExtension(VK_EXT_METAL_SURFACE_EXTENSION_NAME, true))
-		return false;
-#endif
-#if defined(VK_USE_PLATFORM_ANDROID_KHR)
-	if (wi.type == WindowInfo::Type::Android && !SupportsExtension(VK_KHR_ANDROID_SURFACE_EXTENSION_NAME, true))
-		return false;
-#endif
-
-	// VK_KHR_display direct-to-monitor surface (kmsdrm handhelds).
 	// VK_KHR_get_display_properties2 is optional but lets us read HDR / extended
 	// display info on ICDs that support it.
-	if (wi.type == WindowInfo::Type::VulkanDirect)
-	{
-		if (!SupportsExtension(VK_KHR_DISPLAY_EXTENSION_NAME, true))
-			return false;
+	if (wsi.type == WindowInfo::Type::VulkanDirect)
 		SupportsExtension(VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME, false);
-	}
 
 	// VK_EXT_debug_utils
 	if (enable_debug_utils && !SupportsExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME, false))
 		Console.Warning("VK: Debug report requested, but extension is not available.");
 
-	oe->vk_swapchain_maintenance1 = wi.type != WindowInfo::Type::Surfaceless;
-	if (wi.type != WindowInfo::Type::Surfaceless)
+	if (wsi.type != WindowInfo::Type::Surfaceless)
 	{
 		oe->vk_swapchain_maintenance1 = true;
 		// VK_EXT_swapchain_maintenance1 requires VK_EXT_surface_maintenance1.
@@ -352,6 +328,39 @@ bool GSDeviceVK::SelectInstanceExtensions(ExtensionList* extension_list, const W
 	SupportsExtension(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, false);
 
 	return true;
+}
+
+GSDeviceVK::WindowSystemExtensions GSDeviceVK::GetWindowSystemExtensions(const WindowInfo& wi)
+{
+	WindowSystemExtensions exts;
+	const WindowInfo::Type type = wi.GetPresentType();
+	const char* platform_extension;
+	switch (type)
+	{
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+		case WindowInfo::Type::Win32: platform_extension = VK_KHR_WIN32_SURFACE_EXTENSION_NAME; break;
+#endif
+#if defined(VK_USE_PLATFORM_XLIB_KHR)
+		case WindowInfo::Type::X11: platform_extension = VK_KHR_XLIB_SURFACE_EXTENSION_NAME; break;
+#endif
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+		case WindowInfo::Type::Wayland: platform_extension = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME; break;
+#endif
+#if defined(VK_USE_PLATFORM_METAL_EXT)
+		case WindowInfo::Type::MacOS: platform_extension = VK_EXT_METAL_SURFACE_EXTENSION_NAME; break;
+#endif
+#if defined(VK_USE_PLATFORM_ANDROID_KHR)
+		case WindowInfo::Type::Android: platform_extension = VK_KHR_ANDROID_SURFACE_EXTENSION_NAME; break;
+#endif
+		// VK_KHR_display direct-to-monitor surface (kmsdrm handhelds).
+		case WindowInfo::Type::VulkanDirect: platform_extension = VK_KHR_DISPLAY_EXTENSION_NAME; break;
+		default: return exts;
+	}
+
+	exts.type = type;
+	exts.instance = {VK_KHR_SURFACE_EXTENSION_NAME, platform_extension};
+	exts.device = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+	return exts;
 }
 
 GSDeviceVK::GPUList GSDeviceVK::EnumerateGPUs(VkInstance instance)
@@ -477,7 +486,7 @@ GSDeviceVK::GPUList GSDeviceVK::EnumerateGPUs()
 			const VkInstance instance = CreateVulkanInstance(WindowInfo(), &oe, false, false);
 			if (instance != VK_NULL_HANDLE)
 			{
-				if (Vulkan::LoadVulkanInstanceFunctions(instance))
+				if (Vulkan::LoadVulkanInstanceFunctions(instance, WindowInfo::Type::Surfaceless))
 					gpus = EnumerateGPUs(instance);
 
 				vkDestroyInstance(instance, nullptr);
@@ -491,7 +500,7 @@ GSDeviceVK::GPUList GSDeviceVK::EnumerateGPUs()
 	return gpus;
 }
 
-bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enable_surface)
+bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 {
 	u32 extension_count = 0;
 	VkResult res = vkEnumerateDeviceExtensionProperties(m_physical_device, nullptr, &extension_count, nullptr);
@@ -537,8 +546,12 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list, bool enab
 		return false;
 	};
 
-	if (enable_surface && !SupportsExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME, true))
-		return false;
+	// Window support follows the window system, whether or not a surface exists yet.
+	for (const char* name : m_window_system.device)
+	{
+		if (!SupportsExtension(name, true))
+			return false;
+	}
 
 	// Required extensions.
 	for (const char* extension_name : s_required_device_extensions)
@@ -732,6 +745,11 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 			}
 		}
 	}
+	// A device that presents but has no surface yet to ask presents from the graphics queue. On
+	// Android every queue family can present, as the spec requires. VKSwapChain checks the queue
+	// against the surface when one arrives.
+	if (!surface && m_window_system.type != WindowInfo::Type::Surfaceless)
+		m_present_queue_family_index = m_graphics_queue_family_index;
 	for (uint32_t i = 0; i < queue_family_count; i++)
 	{
 		// Pick a queue for spinning
@@ -811,7 +829,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	device_info.pQueueCreateInfos = queue_infos.data();
 
 	ExtensionList enabled_extensions;
-	if (!SelectDeviceExtensions(&enabled_extensions, surface != VK_NULL_HANDLE))
+	if (!SelectDeviceExtensions(&enabled_extensions))
 		return false;
 	m_enabled_device_extensions.assign(enabled_extensions.begin(), enabled_extensions.end());
 
@@ -1064,15 +1082,13 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	ModuleMap::Refresh();
 
 	// With the device created, we can fill the remaining entry points.
-	if (!Vulkan::LoadVulkanDeviceFunctions(m_device))
+	if (!Vulkan::LoadVulkanDeviceFunctions(m_device, !m_window_system.device.empty()))
 		return false;
 
 	// Grab the graphics and present queues.
 	vkGetDeviceQueue(m_device, m_graphics_queue_family_index, 0, &m_graphics_queue);
-	if (surface)
-	{
+	if (m_window_system.type != WindowInfo::Type::Surfaceless)
 		vkGetDeviceQueue(m_device, m_present_queue_family_index, 0, &m_present_queue);
-	}
 	m_spinning_supported = m_spin_queue_family_index != queue_family_count &&
 	                       queue_family_properties[m_graphics_queue_family_index].timestampValidBits > 0 &&
 	                       m_device_properties.limits.timestampPeriod > 0;
@@ -3342,6 +3358,15 @@ bool GSDeviceVK::UpdateWindow()
 	if (m_window_info.type == WindowInfo::Type::Surfaceless)
 		return true;
 
+	// The instance and device were made for one window system; without it the surface functions
+	// are not loaded.
+	if (m_window_info.type != m_window_system.type)
+	{
+		Console.Error("VK: The device was created without support for this window's type (%d), not presenting.",
+			static_cast<int>(m_window_info.type));
+		return false;
+	}
+
 	// make sure previous frames are presented
 	ExecuteCommandBuffer(false);
 	WaitForGPUIdle();
@@ -3958,6 +3983,7 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 
 	if (!AcquireWindow(true))
 		return false;
+	m_window_system = GetWindowSystemExtensions(m_window_info);
 
 	// Libretro context sharing: the VkInstance comes from the frontend's
 	// negotiation interface. Function loading still goes through the wrapped
@@ -3984,7 +4010,7 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 		}
 	}
 
-	if (!Vulkan::LoadVulkanInstanceFunctions(m_instance))
+	if (!Vulkan::LoadVulkanInstanceFunctions(m_instance, m_window_system.type))
 	{
 		ERROR_LOG("Failed to load Vulkan instance functions");
 		return false;
