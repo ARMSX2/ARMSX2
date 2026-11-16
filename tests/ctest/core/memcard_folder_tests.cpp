@@ -269,3 +269,17 @@ TEST_F(FolderCardTest, UnplacedPageIsDroppedOnlyWhenTheCardReadsTheSameBytes)
 	EXPECT_FALSE(m_card.IsPageCached(m_card.DataPage(cluster, 0)));
 	EXPECT_TRUE(m_card.IsPageCached(m_card.DataPage(cluster, 1)));
 }
+
+// A flush with nothing written since the last one does nothing, even with a page still waiting
+// for a place: the directory index it would rewrite is left alone.
+TEST_F(FolderCardTest, FlushWithNothingWrittenSinceTheLastOneDoesNothing)
+{
+	m_card.FillCluster(m_card.FreeDataCluster(), 0x5A);
+	m_card.FlushNow();
+	ASSERT_TRUE(fs::exists(SaveDir() / "_pcsx2_index"));
+	fs::remove(SaveDir() / "_pcsx2_index");
+
+	m_card.FlushNow();
+
+	EXPECT_FALSE(fs::exists(SaveDir() / "_pcsx2_index"));
+}

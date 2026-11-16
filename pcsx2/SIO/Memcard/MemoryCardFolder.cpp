@@ -132,6 +132,7 @@ void FolderMemoryCard::InitializeInternalData()
 	m_lastAccessedFile.CloseAll();
 	m_fileMetadataQuickAccess.clear();
 	m_timeLastWritten = 0;
+	m_writtenSinceFlush = false;
 	m_isEnabled = false;
 	m_framesUntilFlush = 0;
 	m_performFileWrites = true;
@@ -213,6 +214,21 @@ void FolderMemoryCard::Close(bool flush)
 	{
 		Flush();
 	}
+
+	// Pages still cached in clusters the FAT marks in use belong to a file that never got the
+	// directory entry or length to place them. They are lost with the cache.
+	u32 stuckPages = 0;
+	for (const auto& [page, data] : m_cache)
+	{
+		const u32 cluster = page / 2;
+		if (cluster >= m_superBlock.data.alloc_offset && cluster - m_superBlock.data.alloc_offset < m_superBlock.data.alloc_end &&
+			(m_fat.data[0][0][cluster - m_superBlock.data.alloc_offset] & DataClusterInUseMask) != 0)
+		{
+			++stuckPages;
+		}
+	}
+	if (stuckPages > 0)
+		Console.WarningFmt("FolderMcd: Slot {}: {} written page(s) in clusters in use were never placed in a file and are dropped.", m_slot, stuckPages);
 
 	m_cache.clear();
 	m_oldDataCache.clear();
@@ -1061,6 +1077,7 @@ s32 FolderMemoryCard::Save(const u8* src, u32 adr, int size)
 
 		// then just write to the cache
 		memcpy(&cachePage->raw[offset], src, dataLength);
+		m_writtenSinceFlush = true;
 
 		SetTimeLastWrittenToNow();
 	}
@@ -1093,7 +1110,9 @@ void FolderMemoryCard::FlushNow()
 
 void FolderMemoryCard::Flush()
 {
-	if (m_cache.empty())
+	// Pages that are still cached after a flush stay until a write gives them a place, so a flush
+	// with nothing written since the last one has nothing new to do.
+	if (m_cache.empty() || !m_writtenSinceFlush)
 	{
 		return;
 	}
@@ -1169,6 +1188,7 @@ void FolderMemoryCard::Flush()
 	m_lastAccessedFile.FlushAll();
 	m_lastAccessedFile.ClearMetadataWriteState();
 	m_oldDataCache.clear();
+	m_writtenSinceFlush = false;
 
 	Console.WriteLn("FolderMcd: Done! Took %.2f ms.", timeFlushStart.GetTimeMilliseconds());
 
