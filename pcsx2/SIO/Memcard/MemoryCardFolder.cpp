@@ -658,7 +658,7 @@ bool FolderMemoryCard::AddFile(MemoryCardFileEntry* const dirEntry, const std::s
 	}
 	else
 	{
-		Console.WriteLn("FolderMcd: Could not open file: %s", relativeFilePath.c_str());
+		m_lastAccessedFile.ReportFailure(filePath, false);
 		return false;
 	}
 }
@@ -1215,6 +1215,7 @@ void FolderMemoryCard::Flush()
 	}
 	m_fileMetadataQuickAccess.clear();
 	m_lastAccessedFile.ClearMetadataWriteState();
+	m_lastAccessedFile.ForgetFailedOpens();
 	FlushFileEntries();
 
 	// Now we have the new file system, compare it to the old one and "delete" any files that were in it before but aren't anymore.
@@ -1618,6 +1619,7 @@ bool FolderMemoryCard::WriteToFile(const u8* src, u32 adr, u32 dataLength)
 			std::FILE* file = m_lastAccessedFile.ReOpen(m_folderName, &it->second, true);
 			if (file)
 			{
+				bool failed = false;
 				const u32 clusterOffset = (page % 2) * PageSize + offset;
 				const u32 fileSize = entry->entry.data.length;
 				const u32 fileOffsetStart = std::min(clusterNumber * ClusterSize + clusterOffset, fileSize);
@@ -1630,18 +1632,30 @@ bool FolderMemoryCard::WriteToFile(const u8* src, u32 adr, u32 dataLength)
 					FileSystem::FSeek64(file, actualFileSize, SEEK_SET);
 					const u32 diff = fileOffsetStart - actualFileSize;
 					u8 temp = 0xFF;
-					for (u32 i = 0; i < diff; ++i)
+					for (u32 i = 0; i < diff && !failed; ++i)
 					{
-						std::fwrite(&temp, 1, 1, file);
+						failed = std::fwrite(&temp, 1, 1, file) != 1;
 					}
 				}
 
-				if (FileSystem::FTell64(file) == fileOffsetStart || FileSystem::FSeek64(file, fileOffsetStart, SEEK_SET) == 0)
+				if (!failed && (FileSystem::FTell64(file) == fileOffsetStart || FileSystem::FSeek64(file, fileOffsetStart, SEEK_SET) == 0))
 				{
 					if (bytesToWrite > 0)
 					{
-						std::fwrite(src, bytesToWrite, 1, file);
+						failed = std::fwrite(src, bytesToWrite, 1, file) != 1;
 					}
+				}
+				else
+				{
+					failed = true;
+				}
+
+				if (failed)
+				{
+					std::string hostPath(m_folderName);
+					it->second.GetPath(&hostPath);
+					m_lastAccessedFile.ReportFailure(hostPath, true);
+					return false;
 				}
 
 				// Bytes past the file's length are not stored. The length may not be written yet.
@@ -2079,10 +2093,14 @@ FileAccessHelper::~FileAccessHelper()
 	this->CloseAll();
 }
 
-std::FILE* FileAccessHelper::Open(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata /* = false */)
+std::FILE* FileAccessHelper::Open(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool forWriting /* = false */)
 {
 	std::string filename(folderName);
 	fileRef->GetPath(&filename);
+
+	// A failed open is not tried again on every page until the next flush.
+	if (m_failedOpens.count(filename) != 0)
+		return nullptr;
 
 	if (!FileSystem::FileExists(filename.c_str()))
 	{
@@ -2093,21 +2111,65 @@ std::FILE* FileAccessHelper::Open(const std::string_view folderName, MemoryCardF
 		auto createEmptyFile = FileSystem::OpenManagedCFile(filename.c_str(), "wb");
 	}
 
+	// A file the host will not open for writing is still read; writes to it are refused below.
+	bool writable = true;
 	std::FILE* file = FileSystem::OpenCFile(filename.c_str(), "r+b");
+	if (!file)
+	{
+		writable = false;
+		file = FileSystem::OpenCFile(filename.c_str(), "rb");
+	}
+	if (!file)
+	{
+		// Nothing is cached for the file, so it is opened again after the next flush.
+		ReportFailure(filename, false);
+		m_failedOpens.insert(filename);
+		return nullptr;
+	}
 
 	std::string internalPath;
 	fileRef->GetInternalPath(&internalPath);
 	MemoryCardFileHandleStructure handleStruct;
 	handleStruct.fileHandle = file;
-	handleStruct.hostFilePath = std::move(filename);
+	handleStruct.hostFilePath = filename;
+	handleStruct.writable = writable;
 	m_files.emplace(std::move(internalPath), std::move(handleStruct));
 
-	if (writeMetadata)
+	if (forWriting)
 	{
+		if (!writable)
+		{
+			ReportFailure(filename, true);
+			return nullptr;
+		}
 		WriteMetadata(folderName, fileRef);
+		m_lastWrittenFileRef = fileRef;
 	}
 
 	return file;
+}
+
+void FileAccessHelper::ReportFailure(const std::string& hostPath, bool writing)
+{
+	if (!m_reportedFiles.insert(fmt::format("{}{}", writing ? 'w' : 'r', hostPath)).second)
+		return;
+	++m_reportCount;
+
+	const std::string_view fileName = Path::GetFileName(hostPath);
+	if (writing)
+	{
+		Console.ErrorFmt("FolderMcd: Cannot write '{}'. Data saved to it is kept only until the memory card is closed.", hostPath);
+		Host::AddIconOSDMessage("MemoryCardFileWrite", ICON_PF_MEMORY_CARD,
+			fmt::format(TRANSLATE_FS("MemoryCard", "Memory card file '{}' cannot be written. The save will be lost when the game closes."), fileName),
+			Host::OSD_ERROR_DURATION);
+	}
+	else
+	{
+		Console.ErrorFmt("FolderMcd: Cannot read '{}'. The game will not see its contents.", hostPath);
+		Host::AddIconOSDMessage("MemoryCardFileRead", ICON_PF_MEMORY_CARD,
+			fmt::format(TRANSLATE_FS("MemoryCard", "Memory card file '{}' cannot be read. The game may report the save as damaged."), fileName),
+			Host::OSD_ERROR_DURATION);
+	}
 }
 
 void FileAccessHelper::WriteMetadata(const std::string_view folderName, const MemoryCardFileMetadataReference* fileRef)
@@ -2205,7 +2267,7 @@ void FileAccessHelper::WriteIndex(const std::string& baseFolderName, MemoryCardF
 	}
 }
 
-std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata /* = false */)
+std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool forWriting /* = false */)
 {
 	std::string internalPath;
 	fileRef->GetInternalPath(&internalPath);
@@ -2215,8 +2277,13 @@ std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCar
 		// we already have a handle to this file
 
 		// if the caller wants to write metadata and we haven't done this recently, do so and remember that we did
-		if (writeMetadata)
+		if (forWriting)
 		{
+			if (!it->second.writable)
+			{
+				ReportFailure(it->second.hostFilePath, true);
+				return nullptr;
+			}
 			if (m_lastWrittenFileRef != fileRef)
 			{
 				WriteMetadata(folderName, fileRef);
@@ -2235,7 +2302,7 @@ std::FILE* FileAccessHelper::ReOpen(const std::string_view folderName, MemoryCar
 	}
 	else
 	{
-		return this->Open(folderName, fileRef, writeMetadata);
+		return this->Open(folderName, fileRef, forWriting);
 	}
 }
 
@@ -2260,8 +2327,15 @@ size_t FileAccessHelper::ReadAt(const std::string& hostPath, s64 offset, u8* des
 		}
 	}
 
+	if (m_failedOpens.count(hostPath) != 0)
+		return 0;
 	auto file = FileSystem::OpenManagedCFile(hostPath.c_str(), "rb");
-	if (!file || FileSystem::FSeek64(file.get(), offset, SEEK_SET) != 0)
+	if (!file)
+	{
+		m_failedOpens.insert(hostPath);
+		return 0;
+	}
+	if (FileSystem::FSeek64(file.get(), offset, SEEK_SET) != 0)
 		return 0;
 	return std::fread(dest, 1, length, file.get());
 }
@@ -2289,6 +2363,9 @@ void FileAccessHelper::CloseAll()
 		CloseFileHandle(it->second.fileHandle);
 	}
 	m_files.clear();
+	m_reportedFiles.clear();
+	m_reportCount = 0;
+	m_failedOpens.clear();
 }
 
 void FileAccessHelper::FlushAll()

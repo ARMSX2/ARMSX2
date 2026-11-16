@@ -4,6 +4,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -171,6 +172,7 @@ struct MemoryCardFileHandleStructure
 {
 	std::string hostFilePath;
 	std::FILE* fileHandle;
+	bool writable; // false when the host would only open the file for reading
 };
 
 // --------------------------------------------------------------------------------------
@@ -182,13 +184,20 @@ class FileAccessHelper
 private:
 	std::map<std::string, MemoryCardFileHandleStructure> m_files;
 	MemoryCardFileMetadataReference* m_lastWrittenFileRef = nullptr; // we remember this to reduce redundant metadata checks/writes
+	// host files whose read or write failure has been reported, so each is reported once per card session
+	std::set<std::string> m_reportedFiles;
+	size_t m_reportCount = 0;
+	// host files that could not be opened; not tried again until ForgetFailedOpens()
+	std::set<std::string> m_failedOpens;
 
 public:
 	FileAccessHelper();
 	~FileAccessHelper();
 
 	// Get an already opened file if possible, or open a new one and remember it
-	std::FILE* ReOpen(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata = false);
+	// With forWriting, returns null for a file the host only lets us read, and writes the file's metadata.
+	// Returns null when the file cannot be opened; nothing is remembered then.
+	std::FILE* ReOpen(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool forWriting = false);
 	// Read from a host file by its path, through its handle if it is open; otherwise the file is opened
 	// for this read only. Returns the number of bytes read.
 	size_t ReadAt(const std::string& hostPath, s64 offset, u8* dest, u32 length);
@@ -202,6 +211,14 @@ public:
 	// Force metadata to be written on next file access, not sure if this is necessary but it can't hurt.
 	void ClearMetadataWriteState();
 
+	// Logs and shows on screen that a host file cannot be read, or written; once per file and kind
+	// until CloseAll().
+	void ReportFailure(const std::string& hostPath, bool writing);
+	// The number of failures reported since CloseAll().
+	size_t GetReportedFailureCount() const { return m_reportCount; }
+	// Lets files that could not be opened be tried again.
+	void ForgetFailedOpens() { m_failedOpens.clear(); }
+
 	// removes characters from a PS2 file name that would be illegal in a Windows file system
 	// returns true if any changes were made
 	static bool CleanMemcardFilename(char* name);
@@ -213,7 +230,7 @@ private:
 	static bool CleanMemcardFilenameEndDotOrSpace(char* name, size_t length);
 
 	// Open a new file and remember it for later
-	std::FILE* Open(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool writeMetadata = false);
+	std::FILE* Open(const std::string_view folderName, MemoryCardFileMetadataReference* fileRef, bool forWriting = false);
 	// Close a file and delete its handle
 	void CloseFileHandle(std::FILE*& file);
 

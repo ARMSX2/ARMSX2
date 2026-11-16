@@ -153,6 +153,9 @@ namespace
 
 		u32 FreeDataCluster() const { return GetFreeDataCluster(); }
 		u32 NextCluster(u32 cluster) const { return m_fat.data[0][0][cluster] & NextDataClusterMask; }
+		// Closes the host files the card keeps open, so the next access opens them again.
+		void CloseHostFiles() { m_lastAccessedFile.CloseAll(); }
+		size_t ReportedFailures() const { return m_lastAccessedFile.GetReportedFailureCount(); }
 	};
 
 	// A card with one save directory holding one file, a.bin, of 0x11 bytes.
@@ -425,4 +428,77 @@ TEST_F(SixFileFolderCardTest, PauseFlushDuringABlockRewriteKeepsTheFiles)
 	m_card.Close();
 
 	ExpectEveryFileOnTheHost();
+}
+
+// A save file the host lets us read but not write.
+class ReadOnlyFolderCardTest : public FolderCardTest
+{
+protected:
+	void SetUp() override
+	{
+		FolderCardTest::SetUp();
+		m_card.Close();
+		const fs::path file = SaveDir() / "a.bin";
+		fs::permissions(file, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read, fs::perm_options::replace);
+		if (std::FILE* fp = std::fopen(file.string().c_str(), "r+b"))
+		{
+			std::fclose(fp);
+			GTEST_SKIP() << "file permissions are not enforced for this user";
+		}
+		Reopen();
+	}
+};
+
+// Its real contents are what the card reads.
+TEST_F(ReadOnlyFolderCardTest, ReadsItsContents)
+{
+	u8 page[FolderMemoryCard::PageSize];
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 0), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\x11'));
+}
+
+// A write to it is reported once, however often it is tried, and does not reach the host. The
+// page written reads back as written; the page not written still reads the file's bytes.
+TEST_F(ReadOnlyFolderCardTest, WriteIsReportedOnceAndTheRestStillReads)
+{
+	m_card.FillPage(m_card.DataPage(kFileCluster, 0), 0x77);
+	m_card.RegularFlush();
+	m_card.FillPage(m_card.DataPage(kFileCluster, 0), 0x78);
+	m_card.RegularFlush();
+
+	EXPECT_EQ(m_card.ReportedFailures(), 1u);
+	u8 page[FolderMemoryCard::PageSize];
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 0), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\x78'));
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 1), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\x11'));
+	EXPECT_EQ(ReadHostFile(SaveDir() / "a.bin"), std::string(FILE_SIZE, '\x11'));
+}
+
+// A save file that cannot be opened at all is reported once and not tried again on every page; the
+// next flush clears that, so a file that has become readable is read.
+TEST_F(FolderCardTest, FailedOpenIsReportedOnceAndRetriedAfterTheNextFlush)
+{
+	const fs::path file = SaveDir() / "a.bin";
+	m_card.CloseHostFiles();
+	fs::permissions(file, fs::perms::none, fs::perm_options::replace);
+	if (std::FILE* fp = std::fopen(file.string().c_str(), "rb"))
+	{
+		std::fclose(fp);
+		GTEST_SKIP() << "file permissions are not enforced for this user";
+	}
+
+	u8 page[FolderMemoryCard::PageSize];
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 0), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\xFF'));
+
+	fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 1), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\xFF'));
+	EXPECT_EQ(m_card.ReportedFailures(), 1u);
+
+	m_card.FillPage(m_card.DataPage(m_card.FreeDataCluster(), 0), 0x5A);
+	m_card.RegularFlush();
+	m_card.ReadPage(m_card.DataPage(kFileCluster, 1), page);
+	EXPECT_EQ(PageString(page), std::string(sizeof(page), '\x11'));
 }
