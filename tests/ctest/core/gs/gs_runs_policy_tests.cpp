@@ -401,8 +401,8 @@ TEST(GSRunsPolicy, AdditiveWays)
 }
 
 // At Minimum blending the classic path leaves Cs * As + Cd * (1 - As) wholly to the blend unit: the shader writes Cs
-// and As unblended (no blend fields) under SRC1_COLOR, INV_SRC1_COLOR. Af likewise, through the blend constant or, where
-// the driver ignores the constant, the second output. A run holding these takes the classic equation itself, so the
+// and As unblended (no blend fields) under SRC1_COLOR, INV_SRC1_COLOR. Af likewise where the driver ignores the blend
+// constant and the classic draw sends Af through the second output. A run holding these takes the classic equation itself, so the
 // run program writes what the classic program writes.
 static GSHWDrawConfig UnitBlend()
 {
@@ -421,23 +421,15 @@ TEST(GSRunsPolicy, UnitBlendWays)
 	EXPECT_EQ(d.way, 6u);
 	EXPECT_EQ(Field(d.flags, STATE_WAY), 6u);
 
-	// Af through the blend constant.
+	// Af through the blend constant has no way: a run would carry it in the second output, and a blend unit does not
+	// take the constant and the second output to the same number (Mali-G57 and G615 differ by up to 8 levels).
 	c.ps.blend_c = 2;
 	c.cb_ps.TA_MaxDepth_Af.w = 0x30 / 128.0f;
 	c.blend = GSHWDrawConfig::BlendState(true, GSDevice::CONST_COLOR, GSDevice::INV_CONST_COLOR, GSDevice::OP_ADD,
 		GSDevice::CONST_ONE, GSDevice::CONST_ZERO, true, 0x30);
-	d = Classify(c, Rgba8(), false);
-	ASSERT_EQ(d.why, Refusal::None);
-	EXPECT_EQ(d.way, 7u);
-	EXPECT_EQ(RowAf(c, 7), 48.0f);
-	// The classic program writes no second output on this road and reads no Af: the row takes the constant, whatever
-	// the shader's Af holds.
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
 	c.ps.no_color1 = 1;
-	c.cb_ps.TA_MaxDepth_Af.w = 0.3f;
-	d = Classify(c, Rgba8(), false);
-	ASSERT_EQ(d.why, Refusal::None);
-	EXPECT_EQ(d.way, 7u);
-	EXPECT_EQ(RowAf(c, 7), 48.0f);
+	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Blend);
 
 	// Af through the second output.
 	c = UnitBlend();
@@ -447,7 +439,6 @@ TEST(GSRunsPolicy, UnitBlendWays)
 	d = Classify(c, Rgba8(), false);
 	ASSERT_EQ(d.why, Refusal::None);
 	EXPECT_EQ(d.way, 7u);
-	EXPECT_EQ(RowAf(c, 7), 48.0f);
 	c.cb_ps.TA_MaxDepth_Af.w = 0.3f;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Const);
 

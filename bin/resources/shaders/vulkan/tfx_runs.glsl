@@ -20,7 +20,7 @@
 //   4  additive, Cs * As in the shader and the target added in the blend unit (second output 0)
 //   5  additive, Cs * Af likewise
 //   6  the blend unit's Cs * As + Cd * (1 - As) (Minimum blending): Cs written unblended, second output As
-//   7  the same with Af
+//   7  the same with Af, where the classic draw already sends Af through the second output
 //
 // Specialisation: each per-draw state the run holds one value of arrives as a compile-time constant RUN_C_<state>; only
 // the states that vary inside the run are read from the row.

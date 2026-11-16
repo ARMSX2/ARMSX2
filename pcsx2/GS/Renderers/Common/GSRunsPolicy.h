@@ -25,7 +25,9 @@
 ///   4  additive, Cs * As in the shader, the target added     (second output 0)
 ///   5  additive, Cs * Af likewise
 ///   6  the blend unit's Cs * As + Cd * (1 - As), as Minimum blending draws it: Cs and As written unblended
-///   7  the same with Af (the blend constant, or the second output)
+///   7  the same with Af, where the classic draw sends Af through the second output (a driver that ignores the
+///      blend constant). Through the constant it has no way: the blend unit does not take the constant and the second
+///      output to the same number (Mali differs by up to 8 levels).
 ///
 /// Header-only so the tests can pin it without a device.
 namespace GSRunsPolicy
@@ -250,34 +252,19 @@ namespace GSRunsPolicy
 			return 5;
 		// The whole blend in the blend unit (Minimum blending): no blend in the shader, which writes Cs and the factor.
 		// The run takes the same equation (UnitEquation), so the run program writes what the classic program writes.
-		const bool unit = bs.enable && bs.op == GSDevice::OP_ADD && bs.src_factor_alpha == GSDevice::CONST_ONE &&
+		const bool unit = bs.enable && !bs.constant_enable && bs.op == GSDevice::OP_ADD && bs.src_factor == GSDevice::SRC1_COLOR &&
+		                  bs.dst_factor == GSDevice::INV_SRC1_COLOR && bs.src_factor_alpha == GSDevice::CONST_ONE &&
 		                  bs.dst_factor_alpha == GSDevice::CONST_ZERO && cms == 0xF && ps.blend_a == 0 && ps.blend_b == 0 &&
-		                  ps.blend_d == 0 && ps.blend_mix == 0;
-		const bool unit_src1 = unit && !bs.constant_enable && bs.src_factor == GSDevice::SRC1_COLOR &&
-		                       bs.dst_factor == GSDevice::INV_SRC1_COLOR && !ps.no_color1;
-		if (unit_src1 && ps.blend_c == 0 && !ps.af_in_src1)
+		                  ps.blend_d == 0 && ps.blend_mix == 0 && !ps.no_color1;
+		if (unit && ps.blend_c == 0 && !ps.af_in_src1)
 			return 6;
-		if (unit_src1 && ps.blend_c == 2 && ps.af_in_src1)
-			return 7;
-		// The classic program does not read Af on the constant's road, so the shader's Af may be anything; the row takes
-		// the constant (RowAf).
-		if (unit && bs.constant_enable && bs.src_factor == GSDevice::CONST_COLOR && bs.dst_factor == GSDevice::INV_CONST_COLOR &&
-			ps.blend_c == 2 && !ps.af_in_src1)
+		if (unit && ps.blend_c == 2 && ps.af_in_src1)
 			return 7;
 		return -1;
 	}
 
 	/// Whether the way's row carries Af.
 	constexpr bool WayReadsAf(u32 way) { return way == 1 || way == 5 || way == 7; }
-
-	/// The Af byte a way that reads it puts in its row: the blend constant where the classic draw blends by it alone
-	/// (way 7 on the constant's road), else the shader's Af.
-	inline float RowAf(const GSHWDrawConfig& config, u32 way)
-	{
-		if (way == 7 && config.blend.constant_enable)
-			return static_cast<float>(config.blend.constant);
-		return config.cb_ps.TA_MaxDepth_Af.w * 128.0f;
-	}
 
 	/// Whether the draw can join a run, and if so its row's flags and its way. colclip_live: a colour-clip target is in
 	/// progress on the device (the draw then renders to it, not to its target).
@@ -319,7 +306,7 @@ namespace GSRunsPolicy
 		}
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		if ((ps.fog && (!ByteExact(fog.x) || !ByteExact(fog.y) || !ByteExact(fog.z))) ||
-			(WayReadsAf(static_cast<u32>(way)) && !ByteExact(RowAf(config, static_cast<u32>(way)))))
+			(WayReadsAf(static_cast<u32>(way)) && !ByteExact(config.cb_ps.TA_MaxDepth_Af.w * 128.0f)))
 		{
 			d.why = Refusal::Const;
 			return d;
