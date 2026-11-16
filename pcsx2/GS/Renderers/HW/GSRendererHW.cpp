@@ -6501,7 +6501,6 @@ bool GSRendererHW::SetupIA(float target_scale, float sx, float sy, bool req_vert
 					// shuffle). A filtered draw: on some of them the software renderer's ramp leaves the picture
 					// unchanged where a sixteenth moves the filter weight (God of War II's shadow copy), and the
 					// rule that separates those from the filtered draws it does move is not known yet.
-					// See umbrella devs/bmdhacks/campaigns/sprite-ramp-2026-11-14.
 					m_conf.ps.sprite_ramp = features.sprite_ramp && m_conf.vs.tme && m_conf.vs.fst && m_conf.ps.fst &&
 					                        !m_conf.vs.sprite_edge_clamp && !m_texture_shuffle && !m_conf.ps.shuffle &&
 					                        !m_channel_shuffle_width && !m_channel_shuffle_rebuilt_quad && !m_conf.ps.channel &&
