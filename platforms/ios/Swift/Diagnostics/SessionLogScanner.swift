@@ -45,6 +45,18 @@ enum SessionLogScanner {
 
     // Hands over only the lines that carry a marker or the crash handler's abort phrase.
     static func markerLines(of url: URL, _ body: (String) -> Void) throws {
+        try scan(url, keep: { $0.contains(UInt8(ascii: "@")) || $0.contains(UInt8(ascii: "A")) }) { line in
+            if line.contains("@@") || line.contains("Aborting application.") { body(line) }
+        }
+    }
+
+    // Emulog lines carry no marker, so the summary asks for the few it needs by text.
+    static func lines(of url: URL, containing needles: [String], _ body: (String) -> Void) throws {
+        let patterns = needles.map { Data($0.utf8) }
+        try scan(url, keep: { slice in patterns.contains { slice.range(of: $0) != nil } }, body)
+    }
+
+    private static func scan(_ url: URL, keep: (Data.SubSequence) -> Bool, _ body: (String) -> Void) throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var carry = Data()
@@ -57,18 +69,16 @@ enum SessionLogScanner {
                 }
                 carry.append(chunk)
                 guard let cut = carry.lastIndex(of: newline) else { return }
-                emit(carry[carry.startIndex...cut], body)
+                emit(carry[carry.startIndex...cut], keep, body)
                 carry.removeSubrange(carry.startIndex...cut)
             }
         }
-        emit(carry, body)
+        emit(carry, keep, body)
     }
 
-    private static func emit(_ block: Data, _ body: (String) -> Void) {
-        for slice in block.split(separator: newline, omittingEmptySubsequences: true) {
-            guard slice.contains(UInt8(ascii: "@")) || slice.contains(UInt8(ascii: "A")) else { continue }
-            let line = String(decoding: slice, as: UTF8.self)
-            if line.contains("@@") || line.contains("Aborting application.") { body(line) }
+    private static func emit(_ block: Data, _ keep: (Data.SubSequence) -> Bool, _ body: (String) -> Void) {
+        for slice in block.split(separator: newline, omittingEmptySubsequences: true) where keep(slice) {
+            body(String(decoding: slice, as: UTF8.self))
         }
     }
 }

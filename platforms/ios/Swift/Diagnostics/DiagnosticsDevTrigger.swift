@@ -2,27 +2,29 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import Foundation
+import UIKit
 import os
 
 enum DiagnosticsDevTrigger {
     private static let started = OSAllocatedUnfairLock(initialState: false)
 
     // Selector: last (newest past session), now (the running one), verdicts (every ending) or an exact session folder name.
-    static func runIfRequested() {
+    @MainActor static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let selector = [env["ARMSX2_BUILD_REPORT"], env["SIMCTL_CHILD_ARMSX2_BUILD_REPORT"]]
             .compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return }
         guard !started.withLock({ let was = $0; $0 = true; return was }) else { return }
+        let displayMaxFPS = UIScreen.main.maximumFramesPerSecond
         Task.detached(priority: .userInitiated) {
-            FileHandle.standardError.write(Data(await report(for: selector).utf8))
+            FileHandle.standardError.write(Data(await report(for: selector, displayMaxFPS: displayMaxFPS).utf8))
         }
     }
 
-    private static func report(for selector: String) async -> String {
+    private static func report(for selector: String, displayMaxFPS: Int) async -> String {
         if selector == "verdicts" { return verdicts() }
         do {
             guard let id = resolve(selector) else { throw DiagnosticsError.invalidSession(selector) }
-            let zip = try await ReportBuilder.build(sessionID: id)
+            let zip = try await ReportBuilder.build(sessionID: id, displayMaxFPS: displayMaxFPS)
             return "@@DIAG_REPORT@@ ok=1 zip=\(zip.lastPathComponent)\n"
         } catch {
             let reason = "\(error)".replacingOccurrences(of: "\"", with: "'").replacingOccurrences(of: "\n", with: " ")

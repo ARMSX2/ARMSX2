@@ -7,24 +7,44 @@ enum DiagnosticsError: Error, CustomStringConvertible {
     case invalidSession(String)
     case notRegularFile(String)
     case zipFailed(String)
+    case redactionLeak(String)
 
     var description: String {
         switch self {
         case .invalidSession(let id): "invalid session \(id)"
         case .notRegularFile(let name): "\(name) is not a regular file"
         case .zipFailed(let reason): "zip failed: \(reason)"
+        case .redactionLeak(let file): "redaction left private text in \(file)"
         }
     }
 }
 
 enum ReportBuilder {
-    private static let chunk = 4 << 20
+    private static let keptReports = 5
+    private static let gameININame = #"^[A-Z0-9-]+_[0-9A-F]{8}\.ini$"#
 
-    static func build(sessionID: String, documents: URL = .documentsDirectory) async throws -> URL {
+    static func build(sessionID: String, displayMaxFPS: Int, documents: URL = .documentsDirectory) async throws -> URL {
         let files = FileManager.default
         guard let folder = SessionStore.url(for: sessionID, documents: documents),
               files.fileExists(atPath: folder.path) else { throw DiagnosticsError.invalidSession(sessionID) }
+        let running = sessionID == SessionStore.currentID
+        // The INI save state belongs to the main queue and the INI is read straight after.
+        await MainActor.run { ARMSX2Bridge.flushINISettings() }
 
+        // The kill a build can cause ends the running process, so its folder gets SessionStore.buildingMarkerName.
+        var marker: URL?
+        if let current = SessionStore.currentID, let currentFolder = SessionStore.url(for: current, documents: documents),
+           files.fileExists(atPath: currentFolder.path) {
+            let url = currentFolder.appendingPathComponent(SessionStore.buildingMarkerName)
+            files.createFile(atPath: url.path, contents: nil)
+            marker = url
+        }
+        defer { if let marker { try? files.removeItem(at: marker) } }
+        return try stageAndZip(sessionID: sessionID, folder: folder, running: running, displayMaxFPS: displayMaxFPS, documents: documents)
+    }
+
+    private static func stageAndZip(sessionID: String, folder: URL, running: Bool, displayMaxFPS: Int, documents: URL) throws -> URL {
+        let files = FileManager.default
         let name = "ARMSX2-report-\(SessionStore.format(Date()))"
         let staging = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent(name)
         let inner = staging.appendingPathComponent(name, isDirectory: true)
@@ -32,13 +52,52 @@ enum ReportBuilder {
         try? files.removeItem(at: staging)
         try files.createDirectory(at: inner, withIntermediateDirectories: true)
 
-        for (source, stagedName) in allowlist(session: sessionID, folder: folder, documents: documents) {
-            guard let regular = isRegularFile(source) else { continue }
-            guard regular else { throw DiagnosticsError.notRegularFile(source.lastPathComponent) }
-            try copy(source, to: inner.appendingPathComponent(stagedName))
+        let verdict = verdict(of: sessionID, running: running, documents: documents)
+        let global = text(of: documents.appendingPathComponent("PCSX2-iOS.ini"))
+            ?? text(of: documents.appendingPathComponent("ARMSX2-iOS.ini")) ?? ""
+        let gameName: String? = verdict.facts.game.map { "\($0.serial)_\($0.crc.uppercased()).ini" }.flatMap {
+            $0.range(of: gameININame, options: .regularExpression) != nil ? $0 : nil
         }
-        try Data(summary(session: sessionID, folder: folder).utf8).write(to: inner.appendingPathComponent("summary.md"))
+        let gameURL = gameName.map { documents.appendingPathComponent("gamesettings/\($0)") }
+        let defaults = ARMSX2Bridge.defaultSettingsINIText()
+        let game = gameURL.flatMap(text(of:)) ?? ""
+        let layers = SettingsLayers(defaults: defaults, global: global, game: game)
 
+        var counts = EmuLogCounts()
+        let emulog = running ? documents.appendingPathComponent("logs/emulog.txt") : folder.appendingPathComponent("emulog.txt")
+        if ReportStaging.isRegularFile(emulog) == true {
+            try? SessionLogScanner.lines(of: emulog, containing: EmuLogCounts.needles) { counts.add($0) }
+        }
+        let older = SessionStore.list(documents: documents).filter { $0 < sessionID }
+        let earlier = older.map { earlierRun($0, documents: documents) }
+        let pairs = allowlist(session: sessionID, folder: folder, running: running, older: older,
+                              gameINI: gameURL.map { ($0, "gamesettings/\($0.lastPathComponent)") }, documents: documents)
+        let context = ReportRedaction.Context.live(documents: documents)
+            .adding(userNames: ReportStaging.scanLoginNames(in: pairs.filter { $0.2 }.map { $0.0 }))
+        // Names that cannot be matched would ship in clear and blind the tripwire, so stop here.
+        guard context.namesCovered else { throw DiagnosticsError.redactionLeak("<ra-user>") }
+
+        let settings = ReportSettingsDiff.render(defaults: defaults, global: global, game: game, displayMaxFPS: displayMaxFPS)
+        try write(ReportRedaction.redact(settings, context: context), as: "settings.txt", in: inner)
+        let summary = ReportSummary.markdown(sessionID: sessionID, started: started(sessionID, documents), verdict: verdict,
+                                             running: running, device: .current(), layers: layers, counts: counts, earlier: earlier)
+        try write(ReportRedaction.redact(summary, context: context), as: "summary.md", in: inner)
+
+        for (source, stagedName, isLog) in pairs {
+            if isLog {
+                try ReportStaging.stageLog(source: source, as: stagedName, in: inner, context: context)
+            } else {
+                try ReportStaging.stageText(source: source, as: stagedName, in: inner, context: context)
+            }
+        }
+        if let leftover = ReportStaging.tripwireScan(stagingRoot: inner, context: context) {
+            throw DiagnosticsError.redactionLeak(leftover)
+        }
+        return try makeZip(inner, named: name, documents: documents)
+    }
+
+    private static func makeZip(_ inner: URL, named name: String, documents: URL) throws -> URL {
+        let files = FileManager.default
         let reports = documents.appendingPathComponent("Reports", isDirectory: true)
         try files.createDirectory(at: reports, withIntermediateDirectories: true)
         let partial = reports.appendingPathComponent("\(name).zip.partial")
@@ -55,51 +114,70 @@ enum ReportBuilder {
         }
         try? files.removeItem(at: zip)
         try files.moveItem(at: partial, to: zip)
+        // Names are timestamps, so a name sort is a time sort.
+        let zips = ((try? files.contentsOfDirectory(atPath: reports.path)) ?? [])
+            .filter { $0.hasPrefix("ARMSX2-report-") && $0.hasSuffix(".zip") }.sorted()
+        for old in zips.dropLast(keptReports) { try? files.removeItem(at: reports.appendingPathComponent(old)) }
         return zip
     }
 
-    // Built in code and never enumerated, so nothing else in Documents can reach the zip.
-    private static func allowlist(session: String, folder: URL, documents: URL) -> [(URL, String)] {
-        let live = session == SessionStore.currentID
-        return [
-            (live ? documents.appendingPathComponent("pcsx2_log.txt") : folder.appendingPathComponent("pcsx2_log.txt"), "pcsx2_log.txt"),
-            (live ? documents.appendingPathComponent("logs/emulog.txt") : folder.appendingPathComponent("emulog.txt"), "emulog.txt"),
-            (folder.appendingPathComponent("session.json"), "session.json"),
+    // Built in code; the only folders listed are this session's metrickit one, whose names are checked, and the session ids.
+    private static func allowlist(session: String, folder: URL, running: Bool, older: [String], gameINI: (URL, String)?,
+                                  documents: URL) -> [(URL, String, Bool)] {
+        var pairs: [(URL, String, Bool)] = [
+            (logURL("pcsx2_log.txt", session, folder, running, documents), "pcsx2_log.txt", true),
+            (logURL("emulog.txt", session, folder, running, documents), "emulog.txt", true),
+            (folder.appendingPathComponent("session.json"), "session.json", false),
+            (documents.appendingPathComponent("PCSX2-iOS.ini"), "PCSX2-iOS.ini", false),
         ]
-    }
-
-    // nil means absent; a symlink or directory answers false.
-    private static func isRegularFile(_ url: URL) -> Bool? {
-        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else { return nil }
-        return values.isRegularFile == true && values.isSymbolicLink != true
-    }
-
-    // Reads only the size sampled at the start, since the live log keeps growing.
-    private static func copy(_ source: URL, to target: URL) throws {
-        let input = try FileHandle(forReadingFrom: source)
-        defer { try? input.close() }
-        guard FileManager.default.createFile(atPath: target.path, contents: nil) else {
-            throw DiagnosticsError.zipFailed("cannot create \(target.lastPathComponent)")
+        if let gameINI { pairs.append((gameINI.0, gameINI.1, false)) }
+        let payloads = folder.appendingPathComponent("metrickit", isDirectory: true)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: payloads.path)) ?? []).sorted()
+        for name in names where name.range(of: #"^[0-9TZ_-]+-\d+\.json$"#, options: .regularExpression) != nil {
+            pairs.append((payloads.appendingPathComponent(name), "metrickit/\(name)", false))
         }
-        let output = try FileHandle(forWritingTo: target)
-        defer { try? output.close() }
-        var remaining = try input.seekToEnd()
-        try input.seek(toOffset: 0)
-        while remaining > 0 {
-            let finished = try autoreleasepool { () throws -> Bool in
-                guard let piece = try input.read(upToCount: Int(min(UInt64(chunk), remaining))), !piece.isEmpty else { return true }
-                try output.write(contentsOf: piece)
-                remaining -= UInt64(piece.count)
-                return false
+        for id in older {
+            guard let olderFolder = SessionStore.url(for: id, documents: documents) else { continue }
+            let live = id == SessionStore.currentID
+            for log in ["pcsx2_log.txt", "emulog.txt"] {
+                pairs.append((logURL(log, id, olderFolder, live, documents), "older/\(id)-\(log)", true))
             }
-            if finished { break }
         }
+        return pairs
     }
 
-    private static func summary(session: String, folder: URL) -> String {
-        let data = try? Data(contentsOf: folder.appendingPathComponent("session.json"))
-        let object = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-        let started = object?["started"] as? String ?? "unknown"
-        return "# ARMSX2 problem report\n\n- Session: \(session)\n- Started: \(started)\n"
+    // The running session's logs are still the two live files in Documents.
+    private static func logURL(_ log: String, _ id: String, _ folder: URL, _ live: Bool, _ documents: URL) -> URL {
+        guard live else { return folder.appendingPathComponent(log) }
+        return log == "emulog.txt" ? documents.appendingPathComponent("logs/emulog.txt") : documents.appendingPathComponent(log)
+    }
+
+    private static func verdict(of id: String, running: Bool, documents: URL) -> SessionVerdict {
+        running ? EndingParser.verdict(log: documents.appendingPathComponent("pcsx2_log.txt"), buildingMarkerPresent: true)
+            : EndingParser.verdict(of: id, documents: documents)
+    }
+
+    private static func earlierRun(_ id: String, documents: URL) -> EarlierRun {
+        let live = id == SessionStore.currentID
+        let verdict = verdict(of: id, running: live, documents: documents)
+        let title = verdict.facts.game?.title
+        return EarlierRun(id: id, started: started(id, documents), endingText: ReportSummary.endingText(verdict.ending, running: live),
+                          game: title?.isEmpty == false ? title : nil)
+    }
+
+    private static func started(_ id: String, _ documents: URL) -> String {
+        SessionStore.startedDate(of: id, documents: documents).map { $0.formatted(.iso8601) } ?? id
+    }
+
+    // A settings INI is a few KiB; anything that is not a small regular file reads as absent.
+    private static func text(of url: URL) -> String? {
+        guard ReportStaging.isRegularFile(url) == true,
+              ((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0) <= 1 << 20,
+              let data = try? Data(contentsOf: url) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func write(_ text: String, as name: String, in folder: URL) throws {
+        try Data(text.utf8).write(to: folder.appendingPathComponent(name))
     }
 }
