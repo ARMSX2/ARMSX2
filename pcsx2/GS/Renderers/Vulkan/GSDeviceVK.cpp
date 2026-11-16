@@ -1117,15 +1117,15 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		return false;
 
 #if defined(__ANDROID__)
-	// Mali-G615's timestamp queries never resolve, and the present spin that waits on them stalls
-	// for seconds. Other Mali parts keep both. Costs the GPU-time stat and present pacing only.
+	// Mali-G615's timestamp queries never resolve. Costs the GPU-time stat only.
 	if (m_device_rules.broken_timestamp_queries)
 	{
-		Console.WriteLn("Mali-G615: disabling GPU timing + present spinning (r44p1 timestamp-query VK_NOT_READY freeze).");
+		Console.WriteLn("Mali-G615: disabling GPU timing (r44p1 timestamp-query VK_NOT_READY freeze).");
 		m_gpu_timing_supported = false;
-		m_spinning_supported = false;
 	}
 #endif
+	if (m_device_rules.skip_readback_spin)
+		m_spinning_supported = false;
 
 	if (m_spinning_supported)
 	{

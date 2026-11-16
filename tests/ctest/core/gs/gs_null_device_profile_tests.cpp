@@ -260,7 +260,7 @@ TEST(GsNullDeviceProfile, MaliG615Malisx2AgreesWithWhatTheResolverGivesTheRg477v
 	EXPECT_EQ(GpuProfileDetector::DescribeMatchedRules(dev.selection.driver),
 		"vk-arm-proprietary, vk-arm-dynamic-rendering-before-r52");
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(dev.rules),
-		"broken_timestamp_queries, avoid_feedback_loop_layout, exempt_malisx2_push_descriptors");
+		"broken_timestamp_queries, avoid_feedback_loop_layout, exempt_malisx2_push_descriptors, skip_readback_spin");
 	EXPECT_FALSE(dev.rules.avoid_push_descriptors);
 
 	// The road those rules put the device on is the one the profile's bits describe.

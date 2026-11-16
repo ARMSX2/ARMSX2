@@ -119,6 +119,20 @@ TEST(GSVulkanDeviceRules, OnlyTheMaliG615HasBrokenTimestampQueries)
 	EXPECT_FALSE(Rules(renamed).broken_timestamp_queries);
 }
 
+// Spin GPU During Readbacks measured no frame-time or CPU-time change on a Mali-G57 with malisx2,
+// so no Mali part spins, on any driver.
+TEST(GSVulkanDeviceRules, NoMaliSpinsForReadbacks)
+{
+	EXPECT_TRUE(Rules(kMaliG57).skip_readback_spin);
+	EXPECT_TRUE(Rules(kRg477v).skip_readback_spin);
+	EXPECT_TRUE(Rules(kMaliG615R47).skip_readback_spin);
+	EXPECT_TRUE(Rules(kMaliSX2G615).skip_readback_spin);
+	EXPECT_TRUE(Rules(kMaliG610PanVK).skip_readback_spin);
+	EXPECT_FALSE(Rules(kAdreno650Turnip).skip_readback_spin);
+	EXPECT_FALSE(Rules(kAppleM2).skip_readback_spin);
+	EXPECT_FALSE(Rules(kRadv).skip_readback_spin);
+}
+
 TEST(GSVulkanDeviceRules, ImaginationsDriverAvoidsTheFeedbackLoopLayout)
 {
 	// The database's DisableAttachmentFeedbackLoopLayout for vk-powervr-proprietary, made effective.
@@ -314,7 +328,7 @@ TEST(GSVulkanDeviceRules, DescribeNamesTheRulesThatAreTrue)
 {
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(VulkanDeviceRules{}), "none");
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRg477v)),
-		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors");
+		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors, skip_readback_spin");
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kAppleM2)),
 		"self_read_costs_measured, barrier_road_measured");
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kRadv)), "none");
@@ -323,9 +337,9 @@ TEST(GSVulkanDeviceRules, DescribeNamesTheRulesThatAreTrue)
 	Device malisx2 = kMaliSX2G615;
 	malisx2.max_push_descriptors = kEnoughPushDescriptors;
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(malisx2)),
-		"broken_timestamp_queries, avoid_feedback_loop_layout, exempt_malisx2_push_descriptors");
+		"broken_timestamp_queries, avoid_feedback_loop_layout, exempt_malisx2_push_descriptors, skip_readback_spin");
 	EXPECT_EQ(GpuProfileDetector::DescribeDeviceRules(Rules(kMaliSX2G615)),
-		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors");
+		"broken_timestamp_queries, avoid_feedback_loop_layout, avoid_push_descriptors, skip_readback_spin");
 }
 
 // Each flag has its own entry in the name table. A flag added to VulkanDeviceRules without one is
