@@ -474,6 +474,7 @@ protected:
 	void Flush();
 
 	// flush a single page of the cache to the internal data and/or host file system
+	// a page that could not be written stays cached; returns false if the page was not cached
 	bool FlushPage(const u32 page);
 
 	// flush a memory card cluster of the cache to the internal data and/or host file system
@@ -506,7 +507,8 @@ protected:
 	void RemoveUnchangedDataFromCache(const MemoryCardFileEntry* const oldEntry, const MemoryCardFileEntry* const newEntry);
 
 	// write data as Save() normally would, but ignore the cache; used for flushing
-	s32 WriteWithoutCache(const u8* src, u32 adr, int size);
+	// returns false when the data has no place on the host yet, or did not all reach it
+	bool WriteWithoutCache(const u8* src, u32 adr, int size);
 
 	// copies the contents of m_fileEntryDict into the tree structure fileEntryTree
 	void CopyEntryDictIntoTree(std::vector<MemoryCardFileEntryTreeNode>* fileEntryTree, const u32 cluster, const u32 fileCount);

@@ -908,8 +908,9 @@ bool FolderMemoryCard::ReadFromFile(u8* dest, u32 adr, u32 dataLength)
 	const u32 cluster = adr / ClusterSizeRaw;
 	const u32 fatCluster = cluster - m_superBlock.data.alloc_offset;
 
-	// if the cluster is unused according to FAT, just return
-	if ((m_fat.data[0][0][fatCluster] & DataClusterInUseMask) == 0)
+	// outside the data clusters, or unused according to the FAT: no file holds this
+	if (cluster < m_superBlock.data.alloc_offset || fatCluster >= m_superBlock.data.alloc_end ||
+		(m_fat.data[0][0][fatCluster] & DataClusterInUseMask) == 0)
 	{
 		return false;
 	}
@@ -1179,13 +1180,25 @@ void FolderMemoryCard::Flush()
 bool FolderMemoryCard::FlushPage(const u32 page)
 {
 	auto it = m_cache.find(page);
-	if (it != m_cache.end())
+	if (it == m_cache.end())
+		return false;
+
+	// A page that has no place on the host yet stays cached: its cluster may not be marked in use in
+	// the FAT yet, or no file entry may name it or cover it yet, because the console writes a save's
+	// data, FAT and directory entries one page at a time in its own order. A later flush writes it.
+	// It is dropped only when the card already reads back the same bytes without it.
+	if (WriteWithoutCache(&it->second.raw[0], page * PageSizeRaw, PageSize))
 	{
-		WriteWithoutCache(&it->second.raw[0], page * PageSizeRaw, PageSize);
 		m_cache.erase(it);
-		return true;
 	}
-	return false;
+	else
+	{
+		u8 stored[PageSize];
+		ReadDataWithoutCache(stored, page * PageSizeRaw, PageSize);
+		if (std::memcmp(stored, &it->second.raw[0], PageSize) == 0)
+			m_cache.erase(it);
+	}
+	return true;
 }
 
 bool FolderMemoryCard::FlushCluster(const u32 cluster)
@@ -1479,7 +1492,7 @@ void FolderMemoryCard::RemoveUnchangedDataFromCache(const MemoryCardFileEntry* c
 	}
 }
 
-s32 FolderMemoryCard::WriteWithoutCache(const u8* src, u32 adr, int size)
+bool FolderMemoryCard::WriteWithoutCache(const u8* src, u32 adr, int size)
 {
 	//const u32 block = adr / BlockSizeRaw;
 	//const u32 cluster = adr / ClusterSizeRaw;
@@ -1496,6 +1509,7 @@ s32 FolderMemoryCard::WriteWithoutCache(const u8* src, u32 adr, int size)
 		size = toNextPage;
 	}
 
+	bool written = true;
 	if (offset < PageSize)
 	{
 		// is trying to store (part of) an actual data block
@@ -1508,18 +1522,13 @@ s32 FolderMemoryCard::WriteWithoutCache(const u8* src, u32 adr, int size)
 		}
 		else
 		{
-			WriteToFile(src, adr, dataLength);
+			written = WriteToFile(src, adr, dataLength);
 		}
 	}
 
-	if (end > PageSize)
-	{
-		// is trying to store ECC
-		// simply ignore this, is automatically generated when reading
-	}
+	// ECC past the page data is not stored; reads generate it.
 
-	// return 0 on fail, 1 on success?
-	return 1;
+	return written;
 }
 
 bool FolderMemoryCard::WriteToFile(const u8* src, u32 adr, u32 dataLength)
@@ -1529,8 +1538,9 @@ bool FolderMemoryCard::WriteToFile(const u8* src, u32 adr, u32 dataLength)
 	const u32 offset = adr % PageSizeRaw;
 	const u32 fatCluster = cluster - m_superBlock.data.alloc_offset;
 
-	// if the cluster is unused according to FAT, just skip all this, we're not gonna find anything anyway
-	if ((m_fat.data[0][0][fatCluster] & DataClusterInUseMask) == 0)
+	// outside the data clusters, or unused according to the FAT: no file holds this
+	if (cluster < m_superBlock.data.alloc_offset || fatCluster >= m_superBlock.data.alloc_end ||
+		(m_fat.data[0][0][fatCluster] & DataClusterInUseMask) == 0)
 	{
 		return false;
 	}
@@ -1572,6 +1582,9 @@ bool FolderMemoryCard::WriteToFile(const u8* src, u32 adr, u32 dataLength)
 						std::fwrite(src, bytesToWrite, 1, file);
 					}
 				}
+
+				// Bytes past the file's length are not stored. The length may not be written yet.
+				return bytesToWrite == dataLength;
 			}
 			else
 			{

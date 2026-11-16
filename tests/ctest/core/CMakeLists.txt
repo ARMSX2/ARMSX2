@@ -51,6 +51,7 @@ add_pcsx2_test(core_test
 	ee_cycle_rate_controller_tests.cpp
 	ee_cycle_rate_eligibility_tests.cpp
 	ee_cycle_rate_sampler_tests.cpp
+	memcard_folder_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )
