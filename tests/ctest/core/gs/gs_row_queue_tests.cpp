@@ -241,6 +241,29 @@ TEST_F(GSRowQueueTest, ABaseThatReadsTheTargetThroughABarrierEmitsTheTwinsFirst)
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
 }
 
+TEST_F(GSRowQueueTest, ABaseThatMayLeavePixelsUnwrittenHasNoTwin)
+{
+	// The twin may move only where its base wrote depth at every pixel it passed: a discard leaves an older, farther
+	// depth there that a later base could pass with a depth the twin passes too.
+	auto rt = Target();
+	const auto discards = {
+		+[](GSHWDrawConfig& c) { c.destination_alpha = GSHWDrawConfig::DestinationAlphaMode::Stencil; },
+		+[](GSHWDrawConfig& c) { c.ps.date = 1; },
+		+[](GSHWDrawConfig& c) { c.ps.atst = GSShader::PS_ATST::GEQUAL; },
+		+[](GSHWDrawConfig& c) { c.ps.scanmsk = 2; },
+		+[](GSHWDrawConfig& c) { c.ps.aa1 = GSShader::PS_AA1::TRIANGLE_SW_Z; },
+	};
+	for (const auto discard : discards)
+	{
+		Pair p0(rt.get(), 0);
+		discard(p0.base.config);
+		dev->drawn.clear();
+		Draw({&p0.base, &p0.twin});
+		EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
+		dev->FlushBeforeReadback();
+	}
+}
+
 TEST_F(GSRowQueueTest, ABaseThatBlendsInASecondPassEmitsTheTwinsFirst)
 {
 	auto rt = Target();

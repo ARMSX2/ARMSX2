@@ -148,11 +148,15 @@ public:
 	static u64 Emitted() { return s_emitted; }
 	static u64 Moved() { return s_moved; }
 
-	/// The base of a twin pair: plain full-colour writes (blending elided), depth written, the GREATER test, no alpha test.
+	/// The base of a twin pair: plain full-colour writes (blending elided), depth written, the GREATER test, and nothing
+	/// that discards a pixel the depth test passed (alpha test, destination alpha test, scan mask, AA1 edges): the twin
+	/// may move only where its base's depth is at every pixel it passed.
 	static bool CanBeTwinBase(const GSHWDrawConfig& c)
 	{
 		return c.depth.zwe && c.depth.ztst == ZTST_GREATER && GSRunsPolicy::Way(c) == 2 &&
-		       c.alpha_test == GSHWDrawConfig::AlphaTestMode::NONE && !c.alpha_second_pass.enable;
+		       c.alpha_test == GSHWDrawConfig::AlphaTestMode::NONE && !c.alpha_second_pass.enable &&
+		       c.destination_alpha == GSHWDrawConfig::DestinationAlphaMode::Off && !c.ps.date &&
+		       c.ps.atst == GSShader::PS_ATST::NONE && !c.ps.scanmsk && c.ps.aa1 != GSShader::PS_AA1::TRIANGLE_SW_Z;
 	}
 
 	/// The twin drawn over its base: no depth written, a depth test its base's depth passes (GEQUAL), no alpha test.
