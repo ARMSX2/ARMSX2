@@ -357,9 +357,8 @@ object UsbRumble {
                     it.vendorId == VENDOR_SONY && it.productId == DUALSHOCK3
                 } == true
             }
-            // Two identical USB pads cannot be matched reliably by Android's product name.
-            val soleDevice = candidates.singleOrNull()?.takeIf { devices.size - ds3Inputs.size == 1 }
-            val port = PadRouter.reserveDirectUsbSlot(soleDevice, candidates) ?: continue
+            // Direct USB uses connection order. Android descriptors can change when HID is claimed.
+            val port = PadRouter.reserveDirectUsbSlot(candidates) ?: continue
             if (!usb.hasPermission(device)) {
                 PadRouter.releaseDirectUsbSlot(port)
                 val intent = PendingIntent.getBroadcast(

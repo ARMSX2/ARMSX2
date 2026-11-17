@@ -242,16 +242,19 @@ object PadRouter {
     fun directUsbPadCount(): Int = Integer.bitCount(directUsbSlots)
 
     /** USB reservations outlive VM resets because the input devices stay open across games. */
-    fun reserveDirectUsbSlot(device: Pad?, candidates: List<Pad>): Int? {
-        val preferred = device?.let { pinned[it.descriptor] ?: slots.indexOf(it.deviceId) }
+    fun reserveDirectUsbSlot(candidates: List<Pad>): Int? {
+        val connected = connectedPads()
         val available = (0 until activeSlotCount()).filter { port ->
             !hasDirectUsbPad(port) && (syntheticDeviceId == 0 || syntheticPort != port)
         }
-        val port = (if (allToPlayer1) 0.takeIf { it in available } else preferred?.takeIf { it in available }) ?: available.firstOrNull { port ->
+        val port = available.firstOrNull { port ->
             val assigned = slots[port]
-            val pinnedToCandidate = candidates.any { pinned[it.descriptor] == port }
-            (!pinned.containsValue(port) || pinnedToCandidate) &&
-                (assigned == -1 || candidates.any { it.deviceId == assigned })
+            val reservedByOther = connected.any { pad ->
+                pinned[pad.descriptor] == port && candidates.none { it.deviceId == pad.deviceId }
+            }
+            !reservedByOther &&
+                (assigned == -1 || InputDevice.getDevice(assigned) == null ||
+                    candidates.any { it.deviceId == assigned })
         } ?: return null
         directUsbSlots = directUsbSlots or (1 shl port)
         return port
