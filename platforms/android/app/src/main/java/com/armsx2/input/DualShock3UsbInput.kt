@@ -57,7 +57,12 @@ internal class DualShock3UsbInput private constructor(
                         // The interrupt request stays queued while we wake the controller again.
                         wakeController()
                         deadline = SystemClock.elapsedRealtime() + RETRY_REPORT_WAIT_MS
-                        waitForReport(deadline)
+                        try {
+                            waitForReport(deadline)
+                        } catch (_: TimeoutException) {
+                            Log.i(TAG, "DualShock 3 waiting for activation on port ${port + 1}; press PS")
+                            waitForActivation()
+                        }
                     }
                 } else {
                     connection.requestWait()
@@ -111,6 +116,17 @@ internal class DualShock3UsbInput private constructor(
         val remaining = deadline - SystemClock.elapsedRealtime()
         if (remaining <= 0) throw TimeoutException()
         return connection.requestWait(remaining)
+    }
+
+    private fun waitForActivation(): UsbRequest? {
+        while (active) {
+            try {
+                return connection.requestWait(1000)
+            } catch (_: TimeoutException) {
+                // Keep the same interrupt request queued until PS is pressed or USB is closed.
+            }
+        }
+        return null
     }
 
     @Synchronized
