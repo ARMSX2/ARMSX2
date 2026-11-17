@@ -224,20 +224,24 @@ namespace GSDrawRows
 
 	static_assert(CB_WORDS <= 128, "cb_written holds one bit per constant word");
 
-	/// The written words of `src` over `dst`: word i is copied when bit i of `mask` is set.
+	/// The written words of `src` over `dst`: word i is copied when bit i of `mask` is set. Both 16-byte aligned, a
+	/// whole number of vectors; four words at a time, a chunk never straddling the two halves of the mask.
 	inline void CopyWrittenWords(void* dst, const void* src, const u64 mask[2])
 	{
-		u32* d = static_cast<u32*>(dst);
-		const u32* s = static_cast<const u32*>(src);
-		for (u32 half = 0; half < 2; half++)
+		alignas(16) static constexpr u32 lanes[16][4] = {
+			{0, 0, 0, 0}, {~0u, 0, 0, 0}, {0, ~0u, 0, 0}, {~0u, ~0u, 0, 0}, {0, 0, ~0u, 0}, {~0u, 0, ~0u, 0},
+			{0, ~0u, ~0u, 0}, {~0u, ~0u, ~0u, 0}, {0, 0, 0, ~0u}, {~0u, 0, 0, ~0u}, {0, ~0u, 0, ~0u}, {~0u, ~0u, 0, ~0u},
+			{0, 0, ~0u, ~0u}, {~0u, 0, ~0u, ~0u}, {0, ~0u, ~0u, ~0u}, {~0u, ~0u, ~0u, ~0u}};
+		GSVector4i* d = static_cast<GSVector4i*>(dst);
+		const GSVector4i* s = static_cast<const GSVector4i*>(src);
+		for (u32 c = 0; c < CB_WORDS / 4; c++)
 		{
-			u64 m = mask[half];
-			while (m)
-			{
-				const u32 i = half * 64 + static_cast<u32>(std::countr_zero(m));
-				d[i] = s[i];
-				m &= m - 1;
-			}
+			const u32 bit = c * 4;
+			const u32 nib = static_cast<u32>(mask[bit / 64] >> (bit % 64)) & 15u;
+			if (nib == 15u)
+				d[c] = s[c];
+			else if (nib != 0u)
+				d[c] = d[c].blend(s[c], GSVector4i::load<true>(lanes[nib]));
 		}
 	}
 
