@@ -2166,11 +2166,11 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		submit_info.pSignalSemaphores = &m_spin_resources[m_current_frame].semaphore;
 	}
 
-	// The last point at which the CPU's writes into the six stream rings can still be made visible
+	// The last point at which the CPU's writes into the stream rings can still be made visible
 	// to the GPU: nothing recorded into a command buffer executes until it is submitted, so every
 	// draw, copy and descriptor read of a ring in this submission reads memory that is cleaned
 	// here first. On a coherent ring -- every device with a cached coherent type, and every device
-	// on the write-combined road -- each of these six calls returns on a compare.
+	// on the write-combined road -- each of these calls returns on a compare.
 	FlushStreamRingWrites();
 
 	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
@@ -6403,16 +6403,19 @@ bool GSDeviceVK::CreateNullTexture()
 
 void GSDeviceVK::FlushStreamRingWrites()
 {
-	// All six, not just the ones this submission is known to have touched: a ring that was not
+	// Every ring, not just the ones this submission is known to have touched: a ring that was not
 	// written has nothing pending and costs a compare, and deciding per ring which one a
 	// submission read is the kind of bookkeeping that is wrong once and then silently wrong
-	// forever on the one device that needs the clean.
+	// forever on the one device that needs the clean. The six below are the device's own; the run
+	// machine owns two more, which are on the same memory road.
 	m_vertex_stream_buffer.FlushPendingWrites();
 	m_index_stream_buffer.FlushPendingWrites();
 	m_expand_index_stream_buffer.FlushPendingWrites();
 	m_vertex_uniform_stream_buffer.FlushPendingWrites();
 	m_fragment_uniform_stream_buffer.FlushPendingWrites();
 	m_texture_stream_buffer.FlushPendingWrites();
+	if (m_runs)
+		m_runs->FlushRingWrites();
 }
 
 bool GSDeviceVK::CreateBuffers()
