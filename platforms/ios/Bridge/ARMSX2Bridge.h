@@ -407,5 +407,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 @interface ARMSX2Bridge (Diagnostics)
 + (nonnull NSString *)defaultSettingsINIText;
+// Fires once within 3 seconds with a PNG of the last presented frame, or nil.
++ (void)capturePausedFrameWithCompletion:(nonnull void (^)(NSData *_Nullable png))completion;
 
 @end
