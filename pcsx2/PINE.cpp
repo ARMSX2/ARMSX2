@@ -13,10 +13,12 @@
 #include "MTGS.h"
 #include "PerformanceMetrics.h"
 #include "SaveState.h"
+#include "SIO/Pad/PadScript.h"
 #include "PINE.h"
 #include "VMManager.h"
 #include "vtlb.h"
 #include "common/Error.h"
+#include "common/FileSystem.h"
 #include "common/FPControl.h"
 #include "common/MemorySettingsInterface.h"
 #include "common/SettingsInterface.h"
@@ -227,6 +229,14 @@ namespace PINEServer
 		MsgUIScreenshot = 0x16, /**< [u32 path_len][path .png][u32 settle_frames] Draws that many frames, writes the next; needs --headless. */
 		MsgUIOpenPage = 0x17, /**< [u32 name_len][name] Opens a Big Picture page, e.g. "settings:graphics". */
 		MsgUIWaitFrames = 0x18, /**< [u32 frames][u32 timeout_ms] Waits for that many presents (0 ms = 30 s). */
+
+		// Pad input (SIO/Pad/PadScript.h): states take effect at a vsync, counted in emulated frames. Each replies
+		// [u32 size][JSON, NUL-terminated] with "ok" and, when it is false, an "error". A truncated request fails
+		// the command.
+		MsgPadSet = 0x19, /**< [u32 len][text] "<pad> <buttons> [<lx> <ly> <rx> <ry>]" holds a pad, "<pad> release" lets go. */
+		MsgPadScript = 0x1A, /**< [u8 action][u8 source][u32 len][bytes] action 0 stop, 1 start, 2 start at the next savestate load; source 0 text, 1 file path. */
+		MsgPadRecord = 0x1B, /**< [u8 action][u8 pad mask][u32 len][path] action 0 stop, 1 start, 2 start at the next savestate load; mask 0 is every DualShock 2. */
+		MsgPadStatus = 0x1C, /**< The frame count since the last savestate load, the script, the recording and the held pads. */
 
 		MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
 	};
@@ -476,6 +486,64 @@ namespace PINEServer
 			out.push_back(c);
 		}
 		return out;
+	}
+
+	/**
+	 * Appends [u32 size][str, NUL-terminated] to the reply. False if it does not fit.
+	 */
+	static bool AppendStringReply(std::vector<u8>& ret_buffer, u32& ret_cnt, u32 buf_cnt, u32 buf_size, const std::string& str)
+	{
+		const u32 size = static_cast<u32>(str.size()) + 1;
+		if (!SafetyChecks(buf_cnt, 0, ret_cnt, size + 4, buf_size))
+			return false;
+		ToResultVector(ret_buffer, size, ret_cnt);
+		ret_cnt += 4;
+		memcpy(&ret_buffer[ret_cnt], str.c_str(), size);
+		ret_cnt += size;
+		return true;
+	}
+
+	static std::string PadErrorJson(std::string_view error)
+	{
+		return fmt::format("{{\"ok\":false,\"error\":\"{}\"}}", JsonEscape(error));
+	}
+
+	/**
+	 * MsgPadScript after its header: starts or stops a script. Returns the reply.
+	 */
+	static std::string HandlePadScript(u8 action, u8 source, std::string data)
+	{
+		if (action == 0)
+		{
+			PadScript::StopScript();
+			return "{\"ok\":true}";
+		}
+		if (action > 2 || source > 1)
+			return PadErrorJson("bad action or source");
+
+		std::string text;
+		if (source == 1)
+		{
+			std::optional<std::string> contents = FileSystem::ReadFileToString(data.c_str());
+			if (!contents.has_value())
+				return PadErrorJson(fmt::format("cannot read '{}'", data));
+			text = std::move(*contents);
+		}
+		else
+		{
+			text = std::move(data);
+		}
+
+		std::vector<PadScript::Event> events;
+		std::string error;
+		if (!PadScript::ParseScript(text, &events, &error))
+			return PadErrorJson(error);
+
+		const size_t count = events.size();
+		const u32 last_frame = events.empty() ? 0 : events.back().frame;
+		PadScript::StartScript(std::move(events), action == 2);
+		return fmt::format("{{\"ok\":true,\"events\":{},\"last_frame\":{},\"start\":\"{}\"}}", count, last_frame,
+			action == 2 ? "savestate load" : "next vsync");
 	}
 
 	/**
@@ -1251,6 +1319,83 @@ PINEServer::IPCBuffer PINEServer::ParseCommand(std::span<u8> buf, std::vector<u8
 				ret_cnt += 4;
 				memcpy(&ret_buffer[ret_cnt], reply.c_str(), size);
 				ret_cnt += size;
+				break;
+			}
+			case MsgPadSet:
+			{
+				std::string text;
+				if (!ReadLengthPrefixedString(buf, buf_cnt, buf_size, &text)) [[unlikely]]
+					goto error;
+
+				u8 pad = 0;
+				std::optional<PadScript::PadFrame> state;
+				std::string parse_error;
+				std::string reply;
+				if (PadScript::ParsePadCommand(text, &pad, &state, &parse_error))
+				{
+					PadScript::SetPad(pad, state);
+					reply = "{\"ok\":true}";
+				}
+				else
+				{
+					reply = PadErrorJson(parse_error);
+				}
+				if (!AppendStringReply(ret_buffer, ret_cnt, buf_cnt, buf_size, reply)) [[unlikely]]
+					goto error;
+				break;
+			}
+			case MsgPadScript:
+			{
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u8 action = FromSpan<u8>(buf, buf_cnt);
+				const u8 source = FromSpan<u8>(buf, buf_cnt + 1);
+				buf_cnt += 2;
+				std::string data;
+				if (!ReadLengthPrefixedString(buf, buf_cnt, buf_size, &data)) [[unlikely]]
+					goto error;
+
+				const std::string reply = HandlePadScript(action, source, std::move(data));
+				if (!AppendStringReply(ret_buffer, ret_cnt, buf_cnt, buf_size, reply)) [[unlikely]]
+					goto error;
+				break;
+			}
+			case MsgPadRecord:
+			{
+				if (!SafetyChecks(buf_cnt, 2, ret_cnt, 0, buf_size)) [[unlikely]]
+					goto error;
+				const u8 action = FromSpan<u8>(buf, buf_cnt);
+				const u8 mask = FromSpan<u8>(buf, buf_cnt + 1);
+				buf_cnt += 2;
+				std::string path;
+				if (!ReadLengthPrefixedString(buf, buf_cnt, buf_size, &path)) [[unlikely]]
+					goto error;
+
+				std::string reply;
+				if (action == 0)
+				{
+					reply = PadScript::StopRecording();
+				}
+				else if (action > 2 || path.empty())
+				{
+					reply = PadErrorJson("bad action, or no path");
+				}
+				else
+				{
+					std::string record_error;
+					reply = PadScript::StartRecording(path, mask, action == 2, &record_error) ?
+								fmt::format("{{\"ok\":true,\"path\":\"{}\",\"start\":\"{}\"}}", JsonEscape(path),
+									action == 2 ? "savestate load" : "next vsync") :
+								PadErrorJson(record_error);
+				}
+				if (!AppendStringReply(ret_buffer, ret_cnt, buf_cnt, buf_size, reply)) [[unlikely]]
+					goto error;
+				break;
+			}
+			case MsgPadStatus:
+			{
+				if (!AppendStringReply(ret_buffer, ret_cnt, buf_cnt, buf_size, PadScript::StatusJson())) [[unlikely]]
+					goto error;
 				break;
 			}
 			case MsgGSDump:
