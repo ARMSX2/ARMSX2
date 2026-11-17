@@ -45,6 +45,33 @@ function(detect_compiler)
 	endif()
 endfunction()
 
+# Stage the PGO profile under a name made from its contents and return that path in <out_var>.
+#
+# ninja records the text of each compile and link command, not the contents of the file that
+# -fprofile-use= names. A profile replaced at the same path left every object whose source had
+# not changed compiled with the old profile, so the ThinLTO link failed ("ProfileSummary: IDs
+# have conflicting values") or linked a core whose objects came from two profiles. With the
+# profile named by its hash, a changed profile changes every command line and ninja rebuilds
+# every object. configure_file makes the original a configure dependency, so ninja re-runs CMake,
+# and picks up the new name, when the original changes.
+function(stage_pgo_profile profile out_var)
+	if(NOT EXISTS "${profile}")
+		message(FATAL_ERROR "PGO profile ${profile} does not exist (set -DARMSX2_PGO_PROFILE=<merged .profdata>)")
+	endif()
+	file(MD5 "${profile}" profile_md5)
+	set(staged_dir "${CMAKE_BINARY_DIR}/pgo")
+	set(staged "${staged_dir}/profile-${profile_md5}.profdata")
+	configure_file("${profile}" "${staged}" COPYONLY)
+	# Copies of earlier profiles are 10 MB each and no command line names them any more.
+	file(GLOB stale "${staged_dir}/profile-*.profdata")
+	list(REMOVE_ITEM stale "${staged}")
+	if(stale)
+		file(REMOVE ${stale})
+	endif()
+	message(STATUS "PGO profile ${profile} (md5 ${profile_md5}) staged as ${staged}")
+	set(${out_var} "${staged}" PARENT_SCOPE)
+endfunction()
+
 function(get_git_version_info)
 	set(PCSX2_GIT_REV "")
 	set(PCSX2_GIT_TAG "")
