@@ -48,7 +48,11 @@ internal class DualShock3UsbInput private constructor(
                     buffer.get(report)
                     if (report[0] == 1.toByte() && report[1] != (-1).toByte()) {
                         deliver()
-                        firstReport = false
+                        if (firstReport) {
+                            firstReport = false
+                            // A wired DS3 only retains LED settings after it becomes operational.
+                            setPlayerLed()
+                        }
                     }
                 }
             }
@@ -81,6 +85,26 @@ internal class DualShock3UsbInput private constructor(
         delivered = true
     }
 
+    private fun setPlayerLed() {
+        // Sixaxis output report 0x01. Over USB the ID is in wValue, outside the payload.
+        val ledMask = PLAYER_LED_MASKS[port]
+        val output = ByteArray(35)
+        output[0] = 0x01
+        output[1] = 0xff.toByte()
+        output[3] = 0xff.toByte()
+        output[9] = ledMask
+        val steadyLed = byteArrayOf(0xff.toByte(), 0x27, 0x10, 0x00, 0x32)
+        repeat(4) { led -> steadyLed.copyInto(output, 10 + led * steadyLed.size) }
+        val sent = runCatching {
+            connection.controlTransfer(0x21, 0x09, 0x0201, iface.id, output, output.size, 250)
+        }.getOrDefault(-1)
+        if (sent == output.size) {
+            Log.i(TAG, "DualShock 3 player LED set for port ${port + 1}")
+        } else {
+            Log.w(TAG, "DualShock 3 player LED update failed on port ${port + 1} ($sent)")
+        }
+    }
+
     @Synchronized
     fun stop() {
         if (!active) return
@@ -94,6 +118,8 @@ internal class DualShock3UsbInput private constructor(
     companion object {
         private const val TAG = "ARMSX2DualShock3"
         private const val REPORT_SIZE = 49
+        // Same LED combinations as Linux hid-sony for player indices 1 through 8.
+        private val PLAYER_LED_MASKS = byteArrayOf(0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18, 0x1a)
 
         fun open(
             usb: UsbManager,
