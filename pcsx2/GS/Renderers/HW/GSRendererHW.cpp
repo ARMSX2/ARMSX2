@@ -4507,8 +4507,9 @@ void GSRendererHW::Draw()
 	GIFRegTEX0 ZBUF_TEX0;
 	const GSLocalMemory::psm_t& frame_psm = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM];
 
-	// The draw's targets: found, created, moved or resized for this draw. False when the draw is skipped.
-	const auto find_targets = [&]() -> bool {
+	// The draw's targets: found, created, moved or resized for this draw. False when the draw is skipped. Both lambdas
+	// are inlined: out of line, every local they capture would live in memory for the whole of Draw().
+	const auto find_targets = [&]() __forceinline -> bool {
 		// Urban Reign trolls by scissoring a draw to a target at 0x0-0x117F to 378x449 which ends up the size being rounded up to 640x480
 		// causing the buffer to expand to around 0x1400, which makes a later framebuffer at 0x1180 to fail to be created correctly.
 		// We can cheese this by checking if the Z is masked and the resultant colour is going to be black anyway.
@@ -5496,7 +5497,7 @@ void GSRendererHW::Draw()
 	GSTextureCache::Target* old_ds = nullptr;
 
 	// The targets' format, width, channels, size and valid area brought up to this draw.
-	const auto update_targets = [&]() {
+	const auto update_targets = [&]() __forceinline {
 		if (rt)
 		{
 			// Be sure texture shuffle detection is properly propagated
