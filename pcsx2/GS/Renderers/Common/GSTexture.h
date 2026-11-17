@@ -170,6 +170,9 @@ public:
 
 	bool Save(const std::string& fn);
 
+	/// The row queue's mark (GSRowQueue.h): equal to the queue's generation while a queued row samples this texture.
+	u64 m_row_queue_mark = 0;
+
 	__fi int GetWidth() const { return m_size.x; }
 	__fi int GetHeight() const { return m_size.y; }
 	__fi const GSVector2i& GetSize() const { return m_size; }

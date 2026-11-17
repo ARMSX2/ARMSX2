@@ -29,14 +29,7 @@ public:
 	{
 		if (m_rows.empty() || !tex)
 			return false;
-		if (tex == m_rt || tex == m_ds)
-			return true;
-		for (const GSTexture* t : m_sampled)
-		{
-			if (t == tex)
-				return true;
-		}
-		return false;
+		return tex == m_rt || tex == m_ds || tex->m_row_queue_mark == m_generation;
 	}
 
 	/// Whether holding this row back can change anything: only a window of twin pairs is reordered, so the queue takes
@@ -62,7 +55,6 @@ public:
 		{
 			m_rt = config.rt;
 			m_ds = config.ds;
-			m_sampled.clear();
 		}
 		Record& r = m_rows.emplace_back();
 		r.config = config;
@@ -108,7 +100,7 @@ public:
 		m_compiler_rows.clear();
 		m_vertices.clear();
 		m_indices.clear();
-		m_sampled.clear();
+		m_generation++;
 		m_rt = m_ds = nullptr;
 	}
 
@@ -141,14 +133,8 @@ private:
 
 	void Note(GSTexture* t)
 	{
-		if (!t)
-			return;
-		for (const GSTexture* s : m_sampled)
-		{
-			if (s == t)
-				return;
-		}
-		m_sampled.push_back(t);
+		if (t)
+			t->m_row_queue_mark = m_generation;
 	}
 
 	/// The row at `i` (just appended) as the twin sort sees it.
@@ -187,7 +173,7 @@ private:
 	std::vector<u32> m_order;
 	std::vector<GSVertex> m_vertices;
 	std::vector<u16> m_indices;
-	std::vector<GSTexture*> m_sampled;
+	u64 m_generation = 1; ///< raised whenever the queue empties: a texture marked with an older one is not sampled
 	GSTexture* m_rt = nullptr;
 	GSTexture* m_ds = nullptr;
 	static inline u64 s_emitted = 0;
