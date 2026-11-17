@@ -14,6 +14,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     case network
     case memoryCards
     case storage
+    case diagnostics
     case settingsPresets
     case retroAchievements
     case customSkin
@@ -61,6 +62,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
             return "Memory Cards"
         case .storage:
             return "Storage"
+        case .diagnostics:
+            return "Diagnostics"
         case .settingsPresets:
             return "Settings Presets"
         case .retroAchievements:
@@ -114,6 +117,8 @@ enum SettingsPane: String, CaseIterable, Identifiable {
             return "memorychip"
         case .storage:
             return "internaldrive"
+        case .diagnostics:
+            return "stethoscope"
         case .settingsPresets:
             return "slider.horizontal.3"
         case .retroAchievements:

@@ -239,6 +239,11 @@ struct SettingsRootView: View {
                 }
                 .controllerSettingsDestination(.storage, path: $navigationPath)
                 .gameCardTintMenuBackgroundListRow(backgroundActive)
+                NavigationLink(value: SettingsPane.diagnostics) {
+                    Label(settings.localized("Diagnostics"), systemImage: "stethoscope")
+                }
+                .controllerSettingsDestination(.diagnostics, path: $navigationPath)
+                .gameCardTintMenuBackgroundListRow(backgroundActive)
                 NavigationLink(value: SettingsPane.network) {
                     Label(settings.localized("Network"), systemImage: "network")
                 }
@@ -634,6 +639,7 @@ struct SettingsRootView: View {
             "settings.root.localMultiplayer",
             "settings.root.memoryCards",
             "settings.root.storage",
+            "settings.root.diagnostics",
             "settings.root.network",
             "settings.root.settingsPresets",
             "settings.root.retroAchievements",
@@ -720,6 +726,8 @@ struct SettingsRootView: View {
             MemoryCardSettingsView()
         case .storage:
             StorageSettingsView()
+        case .diagnostics:
+            DiagnosticsView()
         case .settingsPresets:
             SettingsPresetsView()
         case .retroAchievements:

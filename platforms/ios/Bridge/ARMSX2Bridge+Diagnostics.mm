@@ -8,7 +8,10 @@
 #include "VMManager.h"
 #include "pcsx2/INISettingsInterface.h"
 #include "pcsx2/MTGS.h"
+#include "common/Console.h"
 #include "common/FileSystem.h"
+#include "common/Path.h"
+#include "pcsx2/DebugTools/Debug.h"
 
 #include <atomic>
 #include <memory>
@@ -35,6 +38,23 @@ void Host::SetDefaultUISettings(SettingsInterface&) {}
     }
     FileSystem::DeleteFilePath(path.c_str());
     return text;
+}
+
++ (void)setVerboseLogging:(BOOL)enabled
+{
+    if (!ARMSX2HasBaseSettings())
+        return;
+    for (NSString* key in @[ @"EnableVerbose", @"EnableEEConsole", @"EnableIOPConsole" ])
+        [self setINIBool:@"Logging" key:key value:enabled];
+    // The CPU thread reads these flags on every console print; UpdateLoggingSettings is private, so this repeats its rules.
+    Host::RunOnCPUThread([enabled]() {
+        const bool sinks = Log::IsFileOutputEnabled() || Log::IsConsoleOutputEnabled();
+        ConsoleLogging.eeConsole.Enabled = sinks && enabled;
+        ConsoleLogging.iopConsole.Enabled = sinks && enabled;
+        // UpdateLoggingSettings ignores a verbose flip while file logging is already on, so the level moves here.
+        if (Log::IsFileOutputEnabled())
+            Log::SetFileOutputLevel((IsDevBuild || enabled) ? LOGLEVEL_DEV : LOGLEVEL_INFO, Path::Combine(EmuFolders::Logs, "emulog.txt"));
+    });
 }
 
 + (void)capturePausedFrameWithCompletion:(nonnull void (^)(NSData *_Nullable png))completion
