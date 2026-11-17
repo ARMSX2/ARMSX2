@@ -24,6 +24,7 @@ struct ReportSheet: View {
     @State private var keyboardField: ReportTextField?
     @State var photoJPEG: Data?
     @State var photoThumb: UIImage?
+    @State var frameThumb: UIImage?
     @State var crashCopies = CrashCopies()
     @State var hasCrashPayload: Bool?
     @State var attachmentLoading = false
@@ -43,7 +44,7 @@ struct ReportSheet: View {
     }
 
     private var controllerTargetOrder: [String] {
-        ["report.done"] + ReportKind.allCases.indices.map { "report.chip.kind.\($0)" } + ["report.field.what"]
+        ["report.done"] + (frameThumb == nil ? [] : ["report.frame-remove"]) + ReportKind.allCases.indices.map { "report.chip.kind.\($0)" } + ["report.field.what"]
             + ReportPlace.allCases.indices.map { "report.chip.place.\($0)" }
             + ["report.field.scene", "report.photo"] + (photoThumb == nil ? [] : ["report.photo.remove"])
             + (hasCrashPayload == false ? ["report.attach-crash"] : []) + ["report.share-zip", "report.copy-summary"]
@@ -52,6 +53,7 @@ struct ReportSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                frameSection
                 Section(settings.localized("What happened")) {
                     ReportChips(
                         options: ReportKind.allCases.map { .init(raw: $0.rawValue, label: settings.localized($0.rawValue)) },
@@ -188,7 +190,7 @@ struct ReportSheet: View {
         let sessionID = request.sessionID
         let displayMaxFPS = UIScreen.main.maximumFramesPerSecond
         let form = form
-        let extras = ReportExtras(form: form, photoJPEG: photoJPEG, pausedFramePNG: request.pausedFramePNG,
+        let extras = ReportExtras(form: form, photoJPEG: photoJPEG, pausedFramePNG: frameThumb == nil ? nil : request.pausedFramePNG,
                                   crashFiles: crashCopies.urls)
         Task {
             defer { working = false }

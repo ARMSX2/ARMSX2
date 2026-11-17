@@ -15,10 +15,15 @@ enum OverlayRoute: Equatable {
 @MainActor
 @Observable
 final class GameplayOverlayModel {
-    var overlayRoute: OverlayRoute = .hidden
+    var overlayRoute: OverlayRoute = .hidden {
+        // The sheet binding's setter never runs for a teardown, so the request goes with the route.
+        didSet { if overlayRoute != .pausedPresenting(.reportProblem) { reportRequest = nil } }
+    }
     // The pause menu child last opened. Its row takes focus when the card returns.
     var pauseMenuChild: QuickMenuDestination?
     var pauseCardFoldMemory: QuickMenuFoldMemory?
+    var reportRequest: ReportSheetRequest?
+    private var reportCapture: Task<Void, Never>?
     var cheatsSession = CheatsPatchesSession()
     var runtimePerGameSettingsEntry: ISOEntry?
     var runtimePerGameSettings: [String: Any]?
@@ -176,6 +181,18 @@ final class GameplayOverlayModel {
                 gameMenuAvailable: gameMenuAvailable,
                 initiallySelectingShaders: true
             )
+        case .reportProblem:
+            guard let id = SessionStore.currentID else { return }
+            MenuAudioPackManager.shared.playEvent(.uiToast)
+            reportRequest = nil
+            overlayRoute = .pausedPresenting(destination)
+            // Captured once per tap; nil opens the sheet without a frame.
+            reportCapture?.cancel()
+            reportCapture = Task { @MainActor in
+                let png = await ARMSX2Bridge.capturePausedFrame()
+                guard !Task.isCancelled, overlayRoute == .pausedPresenting(.reportProblem) else { return }
+                reportRequest = ReportSheetRequest(sessionID: id, pausedFramePNG: png)
+            }
         case .speed, .saveStates, .retroAchievements, .padLayout, .resetROM,
              .changeDisc:
             overlayRoute = .pausedPresenting(destination)
@@ -219,6 +236,20 @@ final class GameplayOverlayModel {
                 if case .pausedPresenting(let active) = overlayRoute, active == child {
                     overlayRoute = .paused
                 }
+            }
+        )
+    }
+
+    /// Same hand-off as childPresentedBinding, but the sheet's content is the request.
+    var reportRequestBinding: Binding<ReportSheetRequest?> {
+        Binding(
+            get: { [self] in
+                overlayRoute == .pausedPresenting(.reportProblem) && !appState.hingePartiallyOpen ? reportRequest : nil
+            },
+            set: { [self] request in
+                guard request == nil, !appState.hingePartiallyOpen else { return }
+                reportRequest = nil
+                if overlayRoute == .pausedPresenting(.reportProblem) { overlayRoute = .paused }
             }
         )
     }

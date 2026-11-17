@@ -2,18 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import Foundation
-import ImageIO
 import UIKit
 import os
 
 enum DiagnosticsDevTrigger {
     private static let started = OSAllocatedUnfairLock(initialState: false)
-    private static let captureStarted = OSAllocatedUnfairLock(initialState: false)
 
     // Selector: last (newest past session), now (the running one), verdicts (every ending) or an exact session folder name.
     @MainActor static func runIfRequested() {
         let env = ProcessInfo.processInfo.environment
-        startCaptureSpike(env)
         guard let selector = [env["ARMSX2_BUILD_REPORT"], env["SIMCTL_CHILD_ARMSX2_BUILD_REPORT"]]
             .compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return }
         guard !started.withLock({ let was = $0; $0 = true; return was }) else { return }
@@ -24,41 +21,6 @@ enum DiagnosticsDevTrigger {
             let out = await report(for: selector, displayMaxFPS: displayMaxFPS, extrasFolder: extrasFolder)
             FileHandle.standardError.write(Data(out.utf8))
         }
-    }
-
-    // Spike: seconds to wait once the VM runs, then pause and capture twice.
-    @MainActor private static func startCaptureSpike(_ env: [String: String]) {
-        guard let raw = [env["ARMSX2_CAPTURE_FRAME"], env["SIMCTL_CHILD_ARMSX2_CAPTURE_FRAME"]]
-            .compactMap({ $0 }).first(where: { !$0.isEmpty }) else { return }
-        guard !captureStarted.withLock({ let was = $0; $0 = true; return was }) else { return }
-        let delay = Int(raw) ?? 8
-        Task { @MainActor in
-            for _ in 0..<240 where !ARMSX2Bridge.isVMRunning() { try? await Task.sleep(for: .milliseconds(500)) }
-            try? await Task.sleep(for: .seconds(delay))
-            note("phase=pause")
-            ARMSX2Bridge.setVMPaused(true)
-            try? await Task.sleep(for: .seconds(1))
-            for n in 1...2 {
-                let start = ContinuousClock.now
-                let png = await ARMSX2Bridge.capturePausedFrame()
-                let ms = Int((ContinuousClock.now - start) / .milliseconds(1))
-                var size = (w: 0, h: 0)
-                if let png, let src = CGImageSourceCreateWithData(png as CFData, nil),
-                   let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
-                    size = (props[kCGImagePropertyPixelWidth] as? Int ?? 0, props[kCGImagePropertyPixelHeight] as? Int ?? 0)
-                }
-                note("n=\(n) ok=\(png == nil ? 0 : 1) w=\(size.w) h=\(size.h) ms=\(ms) bytes=\(png?.count ?? 0)")
-                if n == 1, let png { try? png.write(to: .documentsDirectory.appending(path: "paused-frame-spike.png")) }
-                if n == 1 { try? await Task.sleep(for: .seconds(3)) }
-            }
-            note("phase=resume")
-            ARMSX2Bridge.setVMPaused(false)
-            note("done=1")
-        }
-    }
-
-    private static func note(_ text: String) {
-        FileHandle.standardError.write(Data("@@DIAG_FRAME@@ \(text)\n".utf8))
     }
 
     private static func report(for selector: String, displayMaxFPS: Int, extrasFolder: URL?) async -> String {
