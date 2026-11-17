@@ -6127,8 +6127,7 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	{
 		const GSTextureCache::Target* rt = m_row_run.rt;
 		const auto& list = g_texture_cache->GetDst(GSTextureCache::RenderTarget);
-		const u64 frame = c.FRAME.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.FRAME.PSM) << 48);
-		if (!rt || frame != m_row_run.frame || list.empty() || *list.begin() != rt || rt->m_texture != m_row_run.rt_tex ||
+		if (!rt || c.FRAME.U32[0] != m_row_run.frame || list.empty() || *list.begin() != rt || rt->m_texture != m_row_run.rt_tex ||
 			!rt->m_dirty.empty() || !rt->m_valid_rgb || !channels_valid(rt, c.FRAME.FBMSK) || !m_r.rintersect(rt->m_valid).eq(m_r) ||
 			!m_r.rintersect(rt->m_drawn_since_read).eq(m_r) || (src && src->m_from_target == rt))
 			return false;
@@ -6137,7 +6136,7 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	{
 		const GSTextureCache::Target* ds = m_row_run.ds;
 		const auto& list = g_texture_cache->GetDst(GSTextureCache::DepthStencil);
-		const u64 zbuf = c.ZBUF.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.ZBUF.PSM) << 48);
+		const u64 zbuf = c.ZBUF.U32[0] | (static_cast<u64>(c.FRAME.FBW) << 32);
 		if (!ds || zbuf != m_row_run.zbuf || list.empty() || *list.begin() != ds || ds->m_texture != m_row_run.ds_tex ||
 			!ds->m_dirty.empty() || !channels_valid(ds, c.ZBUF.ZMSK ? 0xFFFFFFFFu : 0u) || !m_r.rintersect(ds->m_valid).eq(m_r) ||
 			!m_r.rintersect(ds->m_drawn_since_read).eq(m_r) ||
@@ -6147,7 +6146,7 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	return !no_rt || !no_ds;
 }
 
-void GSRendererHW::OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds)
+__ri void GSRendererHW::OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds)
 {
 	const HWCachedCtx& c = m_cached_ctx;
 	// Only targets the draw addresses at their base: an offset draw moves vertices and the scissor in the search.
@@ -6157,8 +6156,8 @@ void GSRendererHW::OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target
 	m_row_run.ds = ds;
 	m_row_run.rt_tex = rt ? rt->m_texture : nullptr;
 	m_row_run.ds_tex = ds ? ds->m_texture : nullptr;
-	m_row_run.frame = c.FRAME.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.FRAME.PSM) << 48);
-	m_row_run.zbuf = c.ZBUF.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.ZBUF.PSM) << 48);
+	m_row_run.frame = c.FRAME.U32[0];
+	m_row_run.zbuf = c.ZBUF.U32[0] | (static_cast<u64>(c.FRAME.FBW) << 32);
 	m_row_run.no_rt = no_rt;
 	m_row_run.no_ds = no_ds;
 	m_row_run.open = true;
@@ -6217,7 +6216,7 @@ void GSRendererHW::RowMismatch(const char* what, const char* detail)
 // What a draw does to tracked state after it is drawn: the targets' valid and drawn areas and last draw, the
 // temporary depth buffer's copy-back, the GPU palette's dirty mark, and the texture cache's invalidation of what the
 // draw overwrote. The target's alpha knowledge is written by the derivation, or from a state entry, before this.
-void GSRendererHW::ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e)
+__ri void GSRendererHW::ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e)
 {
 	const GSVector4i real_rect = e.real_rect;
 	const GSVector2i resolution = e.resolution;
@@ -11771,7 +11770,7 @@ void GSRendererHW::ResetStates()
 // Fills the constant buffers while a derivation is recorded; see DrawStateSlow.
 static constexpr u32 DRAW_STATE_CANARY = 0x7FA5A5A5u;
 
-bool GSRendererHW::DrawStateEligible(const DATEOptions& date_options)
+__ri bool GSRendererHW::DrawStateEligible(const DATEOptions& date_options)
 {
 	// Roads that move vertices before the derivation's own stages (the shuffles), or that read state the keys do not
 	// hold (DATE's stencil and chain): these derive in DrawPrims' own order.
@@ -11783,7 +11782,7 @@ bool GSRendererHW::DrawStateEligible(const DATEOptions& date_options)
 	return m_state_caps && !m_channel_shuffle && !m_texture_shuffle && !m_fast_stencil_shadow && !date_options.enabled;
 }
 
-void GSRendererHW::BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds)
+__ri void GSRendererHW::BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds)
 {
 	ResetStates();
 
@@ -12075,17 +12074,6 @@ bool GSRendererHW::DrawState(GSTextureCache::Target* rt, GSTextureCache::Target*
 	const GSVector2i& rt_unscaled_size, DerivedDraw& out)
 {
 	using namespace GSDrawRows;
-	m_draw_entry = StateTable::NONE;
-	if (!DrawStateEligible(date_options)) [[unlikely]]
-	{
-		if (s_stats || s_mode != Mode::On)
-		{
-			stats.draws++;
-			stats.ineligible[!rt ? 0 : (m_channel_shuffle || m_texture_shuffle) ? 1 : date_options.enabled ? 2 : PRIM->AA1 ? 3 : 4]++;
-		}
-		BeginDrawState(rt, ds);
-		return DeriveDrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, nullptr, out);
-	}
 
 	// The vertex passes first. Nothing the derivation decides changes what they do, and the keys read what they
 	// leave (the overlap verdict, the sprite edge clamp).
@@ -12628,7 +12616,23 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 
 	// The state derivation, or its entry.
 	DerivedDraw derived;
-	if (!DrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, derived))
+	m_draw_entry = GSDrawRows::StateTable::NONE;
+	bool derived_ok;
+	if (DrawStateEligible(date_options)) [[likely]]
+	{
+		derived_ok = DrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, derived);
+	}
+	else
+	{
+		if (GSDrawRows::s_stats) [[unlikely]]
+		{
+			GSDrawRows::stats.draws++;
+			GSDrawRows::stats.ineligible[!rt ? 0 : (m_channel_shuffle || m_texture_shuffle) ? 1 : date_options.enabled ? 2 : PRIM->AA1 ? 3 : 4]++;
+		}
+		BeginDrawState(rt, ds);
+		derived_ok = DeriveDrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, nullptr, derived);
+	}
+	if (!derived_ok)
 		return;
 	const bool no_rt = derived.no_rt;
 	const float vs_scale_x = derived.vs_scale_x;

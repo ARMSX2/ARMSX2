@@ -258,8 +258,8 @@ private:
 		GSTextureCache::Target* ds = nullptr;
 		GSTexture* rt_tex = nullptr;
 		GSTexture* ds_tex = nullptr;
-		u64 frame = 0; ///< FRAME's base block, buffer width and format as the draw used them
-		u64 zbuf = 0; ///< ZBUF's base block and format, with FRAME's buffer width
+		u32 frame = 0; ///< FRAME's base block, buffer width and format as the draw used them (its low word)
+		u64 zbuf = 0; ///< ZBUF's base block and format (its low word), with FRAME's buffer width above
 		bool open = false;
 		bool no_rt = false;
 		bool no_ds = false;
