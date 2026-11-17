@@ -4,16 +4,23 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSDevice.h"
-#include "GS/Renderers/Common/GSRunCompiler.h"
+#include "GS/Renderers/Common/GSRunsPolicy.h"
 
+#include <cstring>
 #include <vector>
 
-/// The rows of the open run, held back until something could observe them. GSDevice::DrawRow enqueues; every device
-/// entry point that could see a target or a texture a row uses emits the queue first (GSDevice::FlushDeferredDraws,
-/// the framework the render-pass scheduler introduced), so holding rows back is invisible. At emit the pass compiler
-/// orders them (the twin sort) and the backend draws them in that order.
+/// Twins held back until something could observe them, so that later bases on the same targets are drawn ahead of
+/// them. GSDevice::DrawRow draws every base at once and remembers its twin key; a row that is the twin of the remembered
+/// base, with nothing drawn between them, is held. A later base on the same colour target and depth buffer that reads
+/// neither is drawn ahead of the held twins. Every device entry point that could see a target or a texture a held twin
+/// uses emits the twins first, in arrival order (GSDevice::FlushDeferredDraws, the framework the render-pass scheduler
+/// introduced), and forgets the base.
 ///
-/// One run: every row has the same colour target and depth buffer. A row for another pair emits the queue first.
+/// Exact where the bases test GREATER: a moved twin meets a later base's depth only
+/// where that base passed, strictly nearer than the twin's own depth, so the twin fails there, as the base would have
+/// covered it in the game's order. A twin needs the depth at its pixels to be its base's at its turn, so it must follow
+/// its base with nothing between them: anything that could touch the base's targets flushes, and the flush forgets the
+/// base.
 class GSRowQueue
 {
 public:
@@ -22,88 +29,122 @@ public:
 	static constexpr u32 MAX_INDICES = 768 * 1024;
 
 	__fi u32 Count() const { return static_cast<u32>(m_rows.size()); }
-	__fi bool Empty() const { return m_rows.empty(); }
 
-	/// Whether a queued row draws into, or samples, this texture.
+	/// The held twins, plus one for a remembered base: what the device counts as deferred, so that every entry point
+	/// that could touch the base's targets flushes and forgets it.
+	__fi u32 Pending() const { return Count() + m_base; }
+
+	/// Whether a held twin draws into, or samples, this texture, or it is the remembered base's target.
 	bool References(const GSTexture* tex) const
 	{
-		if (m_rows.empty() || !tex)
+		if (!tex || (m_rows.empty() && !m_base))
 			return false;
 		return tex == m_rt || tex == m_ds || tex->m_row_queue_mark == m_generation;
 	}
 
-	/// Whether holding this row back can change anything: only a window of twin pairs is reordered, so the queue takes
-	/// a row that can be a twin base, or a row after a base that can be its twin. Anything else is drawn at once, after
-	/// the queue: holding it would cost a copy of its configuration and geometry and buy nothing.
-	bool Wants(const GSHWDrawConfig& config) const
+	/// Whether the row is the twin of the remembered base: an allowed twin state, the base's targets, and the same
+	/// primitives, positions, scissor and vertex transform. The depth floor (Adreno) may differ between them: the base
+	/// floors the depth it tests and writes and the twin tests its own unfloored depth, and both orders still agree,
+	/// since a later base that passed holds a floored depth above the earlier base's floor, so above the twin's depth too.
+	bool IsTwin(const GSHWDrawConfig& c) const
 	{
-		if (CanBeTwinBase(config))
-			return true;
-		return !m_rows.empty() && m_compiler_rows.back().role == GSRunCompiler::ROLE_BASE && CanBeTwin(config);
+		if (!m_base || !CanBeTwin(c) || c.rt != m_rt || c.ds != m_ds)
+			return false;
+		const Key& b = m_key;
+		if (c.nverts != b.nverts || c.nindices != b.nindices || c.topology != b.topology || c.vs.key != b.vs_key ||
+			!c.scissor.eq(b.scissor) || std::memcmp(&c.cb_vs.vertex_scale, &b.vertex_scale, sizeof(GSVector2)) != 0 ||
+			std::memcmp(&c.cb_vs.vertex_offset, &b.vertex_offset, sizeof(GSVector2)) != 0 ||
+			c.cb_vs.max_depth != b.max_depth ||
+			std::memcmp(c.indices, m_base_indices.data(), c.nindices * sizeof(u16)) != 0)
+			return false;
+		for (u32 v = 0; v < c.nverts; v++)
+		{
+			if (c.verts[v].XYZ.U64 != m_base_xyz[v])
+				return false;
+		}
+		return true;
 	}
 
-	/// Copies the row (its vertices and indices too: they live in GSState's per-draw buffers). False when the queue must
-	/// be emitted first: another target pair, or full.
-	bool Enqueue(const GSHWDrawConfig& config, GSRowDeviceCache& cache, bool sort_twins)
+	/// Whether a base may be drawn ahead of the held twins: it draws into their targets and reads neither.
+	bool MayGoAhead(const GSHWDrawConfig& c) const
 	{
-		if (!m_rows.empty() && (config.rt != m_rt || config.ds != m_ds))
-			return false;
+		return !m_rows.empty() && c.rt == m_rt && c.ds == m_ds && !ReadsTargets(c);
+	}
+
+	/// A base drawn ahead of the held twins: every one of them is now moved.
+	void NoteAhead() { m_moved = Count(); }
+
+	/// Remembers a base just drawn, for its twin. Copies its positions and indices: they live in GSState's per-draw
+	/// buffers, which the next draw overwrites.
+	void RememberBase(const GSHWDrawConfig& c)
+	{
+		m_base = true;
+		m_rt = c.rt;
+		m_ds = c.ds;
+		m_key.nverts = c.nverts;
+		m_key.nindices = c.nindices;
+		m_key.topology = c.topology;
+		m_key.vs_key = c.vs.key;
+		m_key.scissor = c.scissor;
+		m_key.vertex_scale = c.cb_vs.vertex_scale;
+		m_key.vertex_offset = c.cb_vs.vertex_offset;
+		m_key.max_depth = c.cb_vs.max_depth;
+		m_base_xyz.resize(c.nverts);
+		for (u32 v = 0; v < c.nverts; v++)
+			m_base_xyz[v] = c.verts[v].XYZ.U64;
+		m_base_indices.assign(c.indices, c.indices + c.nindices);
+	}
+
+	/// Holds the twin of the remembered base (its configuration, vertices and indices are copied) and forgets the base.
+	/// False when the queue is full.
+	bool Hold(const GSHWDrawConfig& config, GSRowDeviceCache& cache)
+	{
 		if (m_rows.size() == MAX_ROWS || m_vertices.size() + config.nverts > MAX_VERTICES ||
 			m_indices.size() + config.nindices > MAX_INDICES)
 			return false;
-		if (m_rows.empty())
-		{
-			m_rt = config.rt;
-			m_ds = config.ds;
-		}
-		// Built from the configuration in place: a default-constructed record would zero both constant buffers first
-		// (the RG 476H's back thread spent half of Enqueue on that).
+		// Built from the configuration in place: a default-constructed record would zero both constant buffers first.
 		m_rows.emplace_back(config, &cache, static_cast<u32>(m_vertices.size()), static_cast<u32>(m_indices.size()));
 		m_vertices.insert(m_vertices.end(), config.verts, config.verts + config.nverts);
 		m_indices.insert(m_indices.end(), config.indices, config.indices + config.nindices);
 		Note(config.tex);
 		Note(config.pal);
-
-		GSRunCompiler::Row& c = m_compiler_rows.emplace_back();
-		c.pinned = config.alpha_second_pass.enable;
-		c.role = sort_twins ? Role(m_rows.size() - 1) : GSRunCompiler::ROLE_NONE;
+		m_base = false;
 		return true;
 	}
 
-	/// Draws every row through `draw(config, cache)` in the compiled order and empties the queue.
+	/// Draws every held twin through `draw(config, cache)` in arrival order, empties the queue and forgets the base.
 	template <typename Draw>
-	void Emit(Draw&& draw, bool sort_twins)
+	void Emit(Draw&& draw)
 	{
 		const u32 n = Count();
-		if (n == 0)
-			return;
-		m_order.resize(n);
-		GSRunCompiler::SortTwins(m_compiler_rows.data(), n, m_order.data(), sort_twins);
-		for (u32 k = 0; k < n; k++)
+		for (u32 i = 0; i < n; i++)
 		{
-			const u32 i = m_order[k];
-			s_moved += (i != k);
 			Record& r = m_rows[i];
 			r.config.verts = m_vertices.data() + r.vfirst;
 			r.config.indices = m_indices.data() + r.ifirst;
 			draw(r.config, *r.cache);
 		}
 		s_emitted += n;
+		s_moved += m_moved;
 		Clear();
 	}
 
 	void Clear()
 	{
-		m_rows.clear();
-		m_compiler_rows.clear();
-		m_vertices.clear();
-		m_indices.clear();
-		m_generation++;
+		if (!m_rows.empty())
+		{
+			m_rows.clear();
+			m_vertices.clear();
+			m_indices.clear();
+			m_generation++;
+		}
+		m_moved = 0;
+		m_base = false;
 		m_rt = m_ds = nullptr;
 	}
 
-	/// Rows emitted, and moved by the twin sort, by every queue since the process started (gsrunner reads them after
-	/// the device is gone).
+	/// Twins emitted, and of those drawn after at least one later base, by every queue since the process started
+	/// (gsrunner reads them after the device is gone).
 	static u64 Emitted() { return s_emitted; }
 	static u64 Moved() { return s_moved; }
 
@@ -121,6 +162,18 @@ public:
 		       !c.alpha_second_pass.enable;
 	}
 
+	/// Whether the draw reads its colour target or depth buffer other than through the depth test: a base that does
+	/// would see the targets without the held twins.
+	static bool ReadsTargets(const GSHWDrawConfig& c)
+	{
+		return c.require_one_barrier || c.require_full_barrier || c.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE ||
+		       c.ps.IsFeedbackLoopRT() || c.ps.IsFeedbackLoopDepth() || c.ps.tex_is_fb || c.ps.HasColorROV() ||
+		       c.ps.HasDepthROV() || (c.tex && (c.tex == c.rt || c.tex == c.ds)) ||
+		       c.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+		       c.date_copy != GSAlphaBitLogicOp::NoDateCopy || c.road.clone_rt || c.road.rt_loop || c.road.depth_loop ||
+		       c.road.depth_read;
+	}
+
 private:
 	struct Record
 	{
@@ -130,49 +183,32 @@ private:
 		u32 vfirst, ifirst;
 	};
 
+	/// The remembered base's fields a twin must equal (positions and indices are kept beside it).
+	struct Key
+	{
+		u32 nverts = 0, nindices = 0;
+		GSHWDrawConfig::Topology topology{};
+		u16 vs_key = 0;
+		GSVector4i scissor;
+		GSVector2 vertex_scale, vertex_offset;
+		u32 max_depth = 0;
+	};
+
 	void Note(GSTexture* t)
 	{
 		if (t)
 			t->m_row_queue_mark = m_generation;
 	}
 
-	/// The row at `i` (just appended) as the twin sort sees it.
-	u8 Role(size_t i) const
-	{
-		const GSHWDrawConfig& c = m_rows[i].config;
-		if (i > 0 && m_compiler_rows[i - 1].role == GSRunCompiler::ROLE_BASE && CanBeTwin(c))
-		{
-			const Record& p = m_rows[i - 1];
-			const GSHWDrawConfig& b = p.config;
-			// The twin covers exactly its base's pixels at its base's depth: the same primitives, positions, scissor and
-			// vertex transform. The depth floor (Adreno) may differ between them: the base floors the depth it tests
-			// and writes and the twin tests its own unfloored depth, and both orders still agree, since a later base
-			// that passed holds a floored depth above the earlier base's floor, so above the twin's depth too.
-			if (c.nverts == b.nverts && c.nindices == b.nindices && c.topology == b.topology && c.vs.key == b.vs.key &&
-				c.scissor.eq(b.scissor) &&
-				std::memcmp(&c.cb_vs.vertex_scale, &b.cb_vs.vertex_scale, sizeof(GSVector2)) == 0 &&
-				std::memcmp(&c.cb_vs.vertex_offset, &b.cb_vs.vertex_offset, sizeof(GSVector2)) == 0 &&
-				c.cb_vs.max_depth == b.cb_vs.max_depth &&
-				std::memcmp(m_indices.data() + p.ifirst, m_indices.data() + m_rows[i].ifirst, c.nindices * sizeof(u16)) == 0)
-			{
-				const GSVertex* bv = m_vertices.data() + p.vfirst;
-				const GSVertex* cv = m_vertices.data() + m_rows[i].vfirst;
-				u32 v = 0;
-				while (v < c.nverts && bv[v].XYZ.U64 == cv[v].XYZ.U64)
-					v++;
-				if (v == c.nverts)
-					return GSRunCompiler::ROLE_TWIN;
-			}
-		}
-		return CanBeTwinBase(c) ? GSRunCompiler::ROLE_BASE : GSRunCompiler::ROLE_NONE;
-	}
-
 	std::vector<Record> m_rows;
-	std::vector<GSRunCompiler::Row> m_compiler_rows;
-	std::vector<u32> m_order;
 	std::vector<GSVertex> m_vertices;
 	std::vector<u16> m_indices;
-	u64 m_generation = 1; ///< raised whenever the queue empties: a texture marked with an older one is not sampled
+	Key m_key;
+	std::vector<u64> m_base_xyz;
+	std::vector<u16> m_base_indices;
+	u32 m_moved = 0;    ///< held twins drawn after a later base: the first m_moved
+	bool m_base = false; ///< a base was drawn last and its twin may follow
+	u64 m_generation = 1; ///< raised whenever held twins are emitted: a texture marked with an older one is not sampled
 	GSTexture* m_rt = nullptr;
 	GSTexture* m_ds = nullptr;
 	static inline u64 s_emitted = 0;

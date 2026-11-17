@@ -76,8 +76,8 @@ struct GSMeasurementOverrides
 	/// baseline of the machine's A/Bs and of its picture checks.
 	bool runs_off = false;
 
-	/// -rows-defer off: a state-table draw is drawn when it is written (GSDevice::DrawRow), not held in the row queue.
-	/// The per-draw reference arm of the pass compiler. -rows-sort off: rows are queued but drawn in their order.
+	/// -rows-defer off, and -rows-sort off: a state-table draw is drawn when it is written (GSDevice::DrawRow); no twin
+	/// is held in the row queue. The game-order reference arm of the twin hold.
 	bool rows_immediate = false;
 	bool rows_unsorted = false;
 

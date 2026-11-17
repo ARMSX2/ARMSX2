@@ -1814,8 +1814,8 @@ protected:
 	/// Render passes are coalesced by holding draws here until something needs to observe
 	/// the target. See GSPassScheduler and FlushDeferredDraws().
 	std::unique_ptr<GSPassScheduler> m_pass_scheduler;
-	/// State-table draws held back until something could observe them (GSRowQueue.h). Only where the backend says rows
-	/// may wait (m_rows_defer) and the render-pass scheduler is off.
+	/// Twins held back until something could observe them, and the last base's twin key (GSRowQueue.h). Only where the
+	/// backend says rows may wait (m_rows_defer) and the render-pass scheduler is off.
 	std::unique_ptr<GSRowQueue> m_row_queue;
 	bool m_rows_defer = false;
 	u32 m_deferred_draw_count = 0;
@@ -2284,7 +2284,8 @@ public:
 	/// A draw whose state came from the hardware renderer's state table (GSDrawRow.h), with that entry's device cache.
 	/// A backend may draw it with less work than RenderHW where nothing about the draw needs more; the default draws
 	/// it like any other.
-	/// Rows may be held back (GSRowQueue.h) and drawn when something could observe them, in the pass compiler's order.
+	/// The twin of the base drawn just before it may be held back (GSRowQueue.h) and drawn when something could observe
+	/// it, after later bases on the same targets.
 	void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache);
 
 

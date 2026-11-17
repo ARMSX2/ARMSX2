@@ -3280,7 +3280,7 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	m_runs = GSRunsVK::Create(this);
-	// Rows wait for their run's close (GSRowQueue.h), with or without the run machine to merge them.
+	// Twins wait for later bases (GSRowQueue.h), with or without the run machine to merge them.
 	m_rows_defer = true;
 
 	InitializeState();

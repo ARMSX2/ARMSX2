@@ -1,18 +1,20 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The row queue (GS/Renderers/Common/GSRowQueue.h) through GSDevice::DrawRow on the deviceless None backend: rows the
-// twin sort could move wait until a device entry point could observe them, other rows, a colour-clip row and a row for
-// another target pair do not wait,
-// uploads and clears of what a row uses emit the queue first, and the twin sort draws a window's bases before its
-// twins. The device records the tag each row carries in its first vertex's fog word.
+// The row queue (GS/Renderers/Common/GSRowQueue.h) through GSDevice::DrawRow on the deviceless None backend: a twin that
+// follows its base waits until a device entry point could observe it, and later bases on the same targets are drawn
+// ahead of it; every other row is drawn at once, after the held twins. Uploads, clears and copies of what a held twin
+// or the remembered base uses emit the twins first and forget the base. The device records the tag each row carries in
+// its first vertex's fog word.
 
 #include <gtest/gtest.h>
 
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSRowQueue.h"
 #include "GS/Renderers/Null/GSDeviceNone.h"
 
 #include <cstring>
+#include <initializer_list>
 #include <memory>
 #include <vector>
 
@@ -83,6 +85,19 @@ namespace
 		GSRowDeviceCache cache = {};
 	};
 
+	/// A base (tag 10 + p) and its twin (tag 20 + p), both at depth 100 * (p + 1).
+	struct Pair
+	{
+		Pair(GSTexture* rt, u32 p)
+			: base(rt, 10 + p, 100 * (p + 1))
+			, twin(rt, 20 + p, 100 * (p + 1))
+		{
+			base.Base();
+			twin.Twin();
+		}
+		Row base, twin;
+	};
+
 	class GSRowQueueTest : public ::testing::Test
 	{
 	protected:
@@ -97,58 +112,157 @@ namespace
 			g_gs_device.reset();
 		}
 
+		/// Draws each row in turn.
+		void Draw(std::initializer_list<Row*> rows)
+		{
+			for (Row* r : rows)
+				dev->DrawRow(r->config, r->cache);
+		}
+
 		RowDevice* dev = nullptr;
 	};
 } // namespace
 
-TEST_F(GSRowQueueTest, RowsWaitUntilSomethingCouldSeeThem)
-{
-	auto rt = Target();
-	Row a(rt.get(), 1), b(rt.get(), 2);
-	a.Base();
-	b.Base();
-	dev->DrawRow(a.config, a.cache);
-	dev->DrawRow(b.config, b.cache);
-	EXPECT_TRUE(dev->drawn.empty());
-	dev->FlushBeforeReadback();
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
-}
-
-TEST_F(GSRowQueueTest, GeometryIsCopied)
+TEST_F(GSRowQueueTest, ABaseIsDrawnAtOnce)
 {
 	auto rt = Target();
 	Row a(rt.get(), 1);
 	a.Base();
 	dev->DrawRow(a.config, a.cache);
-	a.verts[0].FOG = 99; // the next draw reuses the caller's buffers
-	dev->FlushBeforeReadback();
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
 }
 
-TEST_F(GSRowQueueTest, AColourClipRowIsDrawnAtOnceAfterTheQueue)
+TEST_F(GSRowQueueTest, TwinsWaitUntilSomethingCouldSeeThem)
 {
 	auto rt = Target();
-	Row a(rt.get(), 1), b(rt.get(), 2);
-	a.Base();
-	b.Base();
-	b.config.colclip_mode = GSHWDrawConfig::ColClipMode::ConvertOnly;
-	dev->DrawRow(a.config, a.cache);
-	dev->DrawRow(b.config, b.cache);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11}));
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 20, 21}));
 }
 
-TEST_F(GSRowQueueTest, AnotherTargetEmitsTheQueueFirst)
+TEST_F(GSRowQueueTest, OnePairThenABaseDrawsTheTwinLast)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200);
+	b.Base();
+	Draw({&p0.base, &p0.twin, &b});
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 20}));
+}
+
+TEST_F(GSRowQueueTest, EmittedAndMovedCountTwins)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	const u64 emitted = GSRowQueue::Emitted();
+	const u64 moved = GSRowQueue::Moved();
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(GSRowQueue::Emitted() - emitted, 2u);
+	EXPECT_EQ(GSRowQueue::Moved() - moved, 1u); // the first twin, drawn after the second base
+}
+
+TEST_F(GSRowQueueTest, WithoutTheSortNoTwinIsHeld)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	g_gs_measurement_overrides.rows_unsorted = true;
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
+	g_gs_measurement_overrides.rows_unsorted = false;
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11, 21}));
+}
+
+TEST_F(GSRowQueueTest, GeometryIsCopied)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Draw({&p0.base, &p0.twin});
+	p0.twin.verts[0].FOG = 99; // the next draw reuses the caller's buffers
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
+}
+
+TEST_F(GSRowQueueTest, TheBasesPositionsAreCopied)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	dev->DrawRow(p0.base.config, p0.base.cache);
+	for (GSVertex& v : p0.base.verts)
+		v.XYZ.Z = 999; // the caller's buffers hold the next draw by the time the twin comes
+	dev->DrawRow(p0.twin.config, p0.twin.cache);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10}));
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
+}
+
+TEST_F(GSRowQueueTest, AColourClipRowIsDrawnAtOnceAfterTheTwins)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200);
+	b.Base();
+	b.config.colclip_mode = GSHWDrawConfig::ColClipMode::ConvertOnly;
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
+TEST_F(GSRowQueueTest, ABaseOnAnotherTargetEmitsTheTwinsFirst)
 {
 	auto rt = Target();
 	auto rt2 = Target();
-	Row a(rt.get(), 1), b(rt2.get(), 2);
-	a.Base();
+	Pair p0(rt.get(), 0);
+	Row b(rt2.get(), 11, 200);
 	b.Base();
-	dev->DrawRow(a.config, a.cache);
-	dev->DrawRow(b.config, b.cache);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
-	dev->FlushBeforeReadback();
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
+TEST_F(GSRowQueueTest, ABaseThatSamplesTheTargetEmitsTheTwinsFirst)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200, rt.get());
+	b.Base();
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
+TEST_F(GSRowQueueTest, ABaseThatReadsTheTargetThroughABarrierEmitsTheTwinsFirst)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200);
+	b.Base();
+	b.config.require_one_barrier = true;
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
+TEST_F(GSRowQueueTest, ADepthClearBetweenABaseAndItsTwinMeansTheTwinIsNotHeld)
+{
+	auto rt = Target();
+	auto ds = std::make_unique<GSTextureNone>(GSTexture::DepthStencil, 64, 64, 1, GSTexture::Format::DepthStencil);
+	Pair p0(rt.get(), 0);
+	p0.base.config.ds = ds.get();
+	p0.twin.config.ds = ds.get();
+	dev->DrawRow(p0.base.config, p0.base.cache);
+	dev->ClearDepth(ds.get(), 0.0f);
+	dev->DrawRow(p0.twin.config, p0.twin.cache);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
+}
+
+TEST_F(GSRowQueueTest, AnOrdinaryDrawBetweenABaseAndItsTwinMeansTheTwinIsNotHeld)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row x(rt.get(), 2);
+	dev->DrawRow(p0.base.config, p0.base.cache);
+	dev->RenderHW(x.config);
+	dev->DrawRow(p0.twin.config, p0.twin.cache);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 0x80000002u, 20}));
 }
 
 TEST_F(GSRowQueueTest, AnUploadIntoASampledTextureEmitsFirst)
@@ -156,63 +270,55 @@ TEST_F(GSRowQueueTest, AnUploadIntoASampledTextureEmitsFirst)
 	auto rt = Target();
 	auto tex = Texture();
 	auto other = Texture();
-	Row a(rt.get(), 1, 0, tex.get());
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0);
+	p0.twin.config.tex = tex.get();
+	Draw({&p0.base, &p0.twin});
 	u32 pixels[16 * 16] = {};
 	other->Update(GSVector4i(0, 0, 16, 16), pixels, 16 * 4);
-	EXPECT_TRUE(dev->drawn.empty());
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10}));
 	tex->Update(GSVector4i(0, 0, 16, 16), pixels, 16 * 4);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
 }
 
 TEST_F(GSRowQueueTest, AClearOfTheTargetEmitsFirst)
 {
 	auto rt = Target();
 	auto other = Target();
-	Row a(rt.get(), 1);
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0);
+	Draw({&p0.base, &p0.twin});
 	dev->ClearRenderTarget(other.get(), 0);
-	EXPECT_TRUE(dev->drawn.empty());
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10}));
 	dev->ClearRenderTarget(rt.get(), 0);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
 }
 
-TEST_F(GSRowQueueTest, ARowTheSortCannotMoveIsDrawnAtOnceAfterTheQueue)
+TEST_F(GSRowQueueTest, ARowThatIsNeitherIsDrawnAtOnceAfterTheTwins)
 {
 	auto rt = Target();
-	Row a(rt.get(), 1), b(rt.get(), 2);
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
-	EXPECT_TRUE(dev->drawn.empty());
-	dev->DrawRow(b.config, b.cache); // tests nothing, writes no depth: neither a base nor a twin
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 2); // tests nothing, writes no depth: neither a base nor a twin
+	Draw({&p0.base, &p0.twin});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10}));
+	dev->DrawRow(b.config, b.cache);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 2}));
 }
 
-TEST_F(GSRowQueueTest, AnOrdinaryDrawEmitsTheQueueFirst)
+TEST_F(GSRowQueueTest, AnOrdinaryDrawEmitsTheTwinsFirst)
 {
 	auto rt = Target();
-	Row a(rt.get(), 1), b(rt.get(), 2);
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 2);
+	Draw({&p0.base, &p0.twin});
 	dev->RenderHW(b.config);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 0x80000002u}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 0x80000002u}));
 }
 
 TEST_F(GSRowQueueTest, ATwinWindowDrawsItsBasesFirst)
 {
 	auto rt = Target();
-	std::vector<std::unique_ptr<Row>> rows;
-	for (u32 p = 0; p < 3; p++)
-	{
-		rows.push_back(std::make_unique<Row>(rt.get(), 10 + p, 100 * (p + 1)));
-		rows.back()->Base();
-		rows.push_back(std::make_unique<Row>(rt.get(), 20 + p, 100 * (p + 1)));
-		rows.back()->Twin();
-	}
-	for (auto& r : rows)
-		dev->DrawRow(r->config, r->cache);
+	Pair p0(rt.get(), 0), p1(rt.get(), 1), p2(rt.get(), 2);
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin, &p2.base, &p2.twin});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 12}));
 	dev->FlushBeforeReadback();
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 12, 20, 21, 22}));
 }
@@ -220,29 +326,18 @@ TEST_F(GSRowQueueTest, ATwinWindowDrawsItsBasesFirst)
 TEST_F(GSRowQueueTest, ATwinMustMatchItsBasePositionForPosition)
 {
 	auto rt = Target();
-	Row b1(rt.get(), 10, 100), t1(rt.get(), 20, 100), b2(rt.get(), 11, 200), t2(rt.get(), 21, 201);
-	b1.Base();
-	t1.Twin();
-	b2.Base();
-	t2.Twin(); // one depth differs: not a twin, so the window is one pair
-	for (Row* r : {&b1, &t1, &b2, &t2})
-		dev->DrawRow(r->config, r->cache);
-	dev->FlushBeforeReadback();
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11, 21}));
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	p1.twin.verts[2].XYZ.Z = 201; // one depth differs: not a twin, so drawn at once after the held twin
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 20, 21}));
 }
 
 TEST_F(GSRowQueueTest, ABlendedBaseIsNotATwinBase)
 {
 	auto rt = Target();
-	Row b1(rt.get(), 10, 100), t1(rt.get(), 20, 100), b2(rt.get(), 11, 200), t2(rt.get(), 21, 200);
-	b1.Base();
-	t1.Twin();
-	b2.Base();
-	t2.Twin();
-	b2.config.blend.enable = true; // the later base no longer covers what the earlier twin added
-	for (Row* r : {&b1, &t1, &b2, &t2})
-		dev->DrawRow(r->config, r->cache);
-	dev->FlushBeforeReadback();
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	p1.base.config.blend.enable = true; // the later base no longer covers what the earlier twin added
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11, 21}));
 }
 
@@ -250,57 +345,49 @@ TEST_F(GSRowQueueTest, ACopyOutOfTheTargetEmitsFirst)
 {
 	auto rt = Target();
 	auto dst = Target();
-	Row a(rt.get(), 1);
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0);
+	Draw({&p0.base, &p0.twin});
 	dev->CopyRect(rt.get(), dst.get(), GSVector4i(0, 0, 16, 16), 0, 0);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
 }
 
 TEST_F(GSRowQueueTest, ADepthClearAndAnInvalidationOfQueuedTexturesEmitFirst)
 {
 	auto rt = Target();
 	auto ds = std::make_unique<GSTextureNone>(GSTexture::DepthStencil, 64, 64, 1, GSTexture::Format::DepthStencil);
-	Row a(rt.get(), 1), b(rt.get(), 2);
-	a.Base();
-	a.config.ds = ds.get();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	p0.base.config.ds = ds.get();
+	p0.twin.config.ds = ds.get();
+	Draw({&p0.base, &p0.twin});
 	dev->ClearDepth(ds.get(), 0.0f);
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
-	b.Base();
-	dev->DrawRow(b.config, b.cache);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
+	Draw({&p1.base, &p1.twin});
 	dev->InvalidateRenderTarget(rt.get());
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11, 21}));
 }
 
 TEST_F(GSRowQueueTest, ARecycledSampledTextureWaitsForTheQueue)
 {
 	auto rt = Target();
 	GSTexture* tex = Texture().release(); // the pool owns it once recycled
-	Row a(rt.get(), 1, 0, tex);
-	a.Base();
-	dev->DrawRow(a.config, a.cache);
+	Pair p0(rt.get(), 0);
+	p0.twin.config.tex = tex;
+	Draw({&p0.base, &p0.twin});
 	dev->Recycle(tex);
-	EXPECT_TRUE(dev->drawn.empty()); // held back rather than flushed for
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10})); // held back rather than flushed for
 	dev->FlushBeforeReadback();
-	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20}));
 }
 
 TEST_F(GSRowQueueTest, ABaseThatFloorsItsDepthStillHasATwin)
 {
 	// Adreno floors a depth-writing base's depth and not its twin's; the pair is still a twin.
 	auto rt = Target();
-	std::vector<std::unique_ptr<Row>> rows;
-	for (u32 p = 0; p < 2; p++)
-	{
-		rows.push_back(std::make_unique<Row>(rt.get(), 10 + p, 100 * (p + 1)));
-		rows.back()->Base();
-		rows.back()->config.ps.zfloor = 1;
-		rows.push_back(std::make_unique<Row>(rt.get(), 20 + p, 100 * (p + 1)));
-		rows.back()->Twin();
-	}
-	for (auto& r : rows)
-		dev->DrawRow(r->config, r->cache);
+	Pair p0(rt.get(), 0), p1(rt.get(), 1);
+	p0.base.config.ps.zfloor = 1;
+	p1.base.config.ps.zfloor = 1;
+	Draw({&p0.base, &p0.twin, &p1.base, &p1.twin});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11}));
 	dev->FlushBeforeReadback();
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 20, 21}));
 }
