@@ -39,6 +39,7 @@
 #include "GS/GSPerfMon.h"
 
 #include <cstring>
+#include <iterator>
 
 void GSRendererHW::MakeCopyRunKey(CopyRunKey& key, const GSDrawingEnvironment& env, const GSDrawingContext& ctx)
 {
@@ -110,12 +111,19 @@ void GSRendererHW::CopyRunArm()
 
 // Whether the copy road's invalidation over `bbox` in the frame may have changed a target, and with it the
 // decision's answer at a texture address it found free.
+//
+// The pages are found from the page grid alone, a range that holds the one GetStartBlockAddress() and
+// GetUnwrappedEndBlockAddress() give: a pixel's block is the base plus its page's offset plus a block within the page,
+// which carries into the next page only when the base is not on a page boundary.
 bool GSRendererHW::FrameMayReachTarget(const GSVector4i& bbox) const
 {
 	const GSOffset& fb = m_context->offset.fb;
-	const u32 start_bp = GSLocalMemory::GetStartBlockAddress(fb.bp(), fb.bw(), fb.psm(), bbox);
-	const u32 end_bp = bbox.rempty() ? start_bp : GSLocalMemory::GetUnwrappedEndBlockAddress(fb.bp(), fb.bw(), fb.psm(), bbox);
-	return GSTextureCache::TargetsMayReach(start_bp, end_bp);
+	const GSVector2i pgs = GSLocalMemory::m_psm[fb.psm()].pgs;
+	const u32 bw = fb.bw();
+	const u32 first = (fb.bp() >> 5) + static_cast<u32>(bbox.top / pgs.y) * bw + static_cast<u32>(bbox.left / pgs.x);
+	const u32 last = bbox.rempty() ? first + 1 :
+		((fb.bp() + 31) >> 5) + static_cast<u32>((bbox.bottom - 1) / pgs.y) * bw + static_cast<u32>((bbox.right - 1) / pgs.x);
+	return GSTextureCache::TargetsMayReach(first << 5, last << 5);
 }
 
 bool GSRendererHW::ContinueCopyRun()
@@ -137,7 +145,10 @@ bool GSRendererHW::PrepareCopyRunCopy(GSVector4i& bbox)
 
 	CopyRunKey key;
 	MakeCopyRunKey(key, *m_draw_env, *context);
-	if (std::memcmp(key.regs, m_copy_run_key.regs, sizeof(key.regs)) != 0 || GSDrawLog::IsActive())
+	u64 differ = 0;
+	for (size_t i = 0; i < std::size(key.regs); i++)
+		differ |= key.regs[i] ^ m_copy_run_key.regs[i];
+	if (differ || GSDrawLog::IsActive())
 		return false;
 
 	// The decision's lookup at the texture, when its address is not the one last found free.
@@ -154,7 +165,6 @@ bool GSRendererHW::PrepareCopyRunCopy(GSVector4i& bbox)
 	m_cached_ctx.TEX0 = context->TEX0;
 	if (!SetDrawRect())
 		return false;
-	CalculatePrimitiveCoversWithoutGaps();
 
 	// The copy road: the held words under what it reads and writes, then the copy, which refuses (having written
 	// nothing) a draw Run() would have given to the rasterizer.

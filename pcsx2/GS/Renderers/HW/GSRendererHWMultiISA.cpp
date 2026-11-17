@@ -810,6 +810,12 @@ bool GSSwPrimRenderFunctions::ContinuePaletteBlocks(GSRenderer& hw, GSSwPrimRend
 	if (!IsPaletteBlockCopy(data, PRIM->FST) || !DrawPaletteBlocks(hw, sw, data))
 		return false;
 
+	// Draw() works out the cover test before the copy road, and GatherIndices() works it out again (without the
+	// union) before it reads the texture, and nothing between reads it; so its own is the one Draw() leaves, except
+	// for a draw the scissor leaves nothing of, which never reaches that.
+	if (sw.palette_blocks.empty())
+		hw.CalculatePrimitiveCoversWithoutGaps();
+
 	if (effects)
 	{
 		g_perfmon.Put(GSPerfMon::SwPaletteBlockCopies, 1);
