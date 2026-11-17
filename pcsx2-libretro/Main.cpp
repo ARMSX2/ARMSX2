@@ -116,6 +116,7 @@ static constexpr u8 kNoPort = 0xFF;
 static unsigned s_multitap = 0; // bit 0: port 1, bit 1: port 2
 static u8 s_lr_pad[Pad::NUM_CONTROLLER_PORTS]; // libretro port -> pad
 static unsigned s_lr_count = 0;
+static std::atomic<u8> s_pad_lr[Pad::NUM_CONTROLLER_PORTS];
 
 static void BuildPadMap()
 {
@@ -137,6 +138,10 @@ static void BuildPadMap()
 	s_lr_count = n;
 	for (unsigned i = n; i < Pad::NUM_CONTROLLER_PORTS; i++)
 		s_lr_pad[i] = kNoPort;
+	for (unsigned i = 0; i < Pad::NUM_CONTROLLER_PORTS; i++)
+		s_pad_lr[i].store(kNoPort, std::memory_order_relaxed);
+	for (unsigned l = 0; l < n; l++)
+		s_pad_lr[s_lr_pad[l]].store(static_cast<u8>(l), std::memory_order_relaxed);
 }
 
 namespace LibretroCore
@@ -398,7 +403,10 @@ void Host::SetMouseLock(bool state)
 
 void Host::SetPadVibration(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
 {
-	if (!rumble_cb)
+	if (!rumble_cb || pad_index >= Pad::NUM_CONTROLLER_PORTS)
+		return;
+	const u8 lr_port = s_pad_lr[pad_index].load(std::memory_order_relaxed);
+	if (lr_port == kNoPort)
 		return;
 
 	// Deduped because the pad re-sends its vibration state on every poll the game
@@ -423,8 +431,8 @@ void Host::SetPadVibration(u32 pad_index, float large_or_single_motor_intensity,
 
 	// STRONG is the large (low-frequency) motor, WEAK the small one - the same
 	// order this function takes them in.
-	rumble_cb(pad_index, RETRO_RUMBLE_STRONG, to_strength(large_or_single_motor_intensity));
-	rumble_cb(pad_index, RETRO_RUMBLE_WEAK, to_strength(small_motor_intensity));
+	rumble_cb(lr_port, RETRO_RUMBLE_STRONG, to_strength(large_or_single_motor_intensity));
+	rumble_cb(lr_port, RETRO_RUMBLE_WEAK, to_strength(small_motor_intensity));
 }
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
