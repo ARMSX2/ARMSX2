@@ -58,6 +58,21 @@ extension View {
 extension ReportSheet {
     var attachmentBusy: Bool { working || attachmentLoading }
 
+    @ViewBuilder var frameSection: some View {
+        if let frameThumb {
+            Section(settings.localized("Paused frame")) {
+                Image(uiImage: frameThumb)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 120)
+                    .accessibilityHidden(true)
+                Button(settings.localized("Remove"), role: .destructive) { self.frameThumb = nil }
+                    .controllerAccessibilityTargetID("report.frame-remove")
+                    .disabled(working)
+            }
+        }
+    }
+
     var photoSection: some View {
         Section(settings.localized("Photo (optional)")) {
             if let photoThumb {
@@ -135,6 +150,8 @@ extension ReportSheet {
                 if mode == .photo { setPhoto { ReportAttachments.photoData(from: url) } } else { attachCrash(url) }
             }
             .task {
+                // The thumbnail decides what ships: a frame that can't be shown is not sent.
+                frameThumb = request.pausedFramePNG.flatMap(ReportAttachments.thumbnail(of:))
                 let id = request.sessionID
                 hasCrashPayload = await Task.detached { CrashFileCheck.sessionHasPayload(id: id) }.value
             }

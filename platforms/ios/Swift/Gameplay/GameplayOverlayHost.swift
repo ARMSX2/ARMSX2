@@ -48,6 +48,10 @@ struct GameplayOverlayHost: View {
                 )
                 .presentationDetents([.medium, .large])
             }
+            .sheet(item: overlay.reportRequestBinding) {
+                ReportSheet(request: $0)
+                    .presentationDetents([.medium, .large])
+            }
             .overlay {
                 runtimeQuickMenuOverlay
             }
@@ -268,7 +272,22 @@ struct GameplayOverlayHost: View {
                 }
                 .accessibilityElement(children: .contain)
                 .accessibilityAction(.escape) { overlay.overlayRoute = .paused }
-            case .speed, .cheats,
+            case .reportProblem where appState.hingePartiallyOpen:
+                if let request = overlay.reportRequest {
+                    GameOverlayContainer(frameMode: .landscapePanel) { _ in
+                        ReportSheet(request: request, onClose: {
+                            overlay.reportRequest = nil
+                            overlay.overlayRoute = .paused
+                        })
+                        .glassSurface(clear: false, cornerRadius: 26)
+                    }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityAction(.escape) {
+                        overlay.reportRequest = nil
+                        overlay.overlayRoute = .paused
+                    }
+                }
+            case .speed, .cheats, .reportProblem,
                  .retroAchievements:
                 // Sheet contents. The route stays so dismissal returns to the pause card.
                 EmptyView()

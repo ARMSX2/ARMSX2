@@ -222,6 +222,7 @@ struct QuickMenuView: View {
         case .padLayout: ControllerTargetID.editPadLayout
         case .resetROM: ControllerTargetID.resetROM
         case .changeDisc: ControllerTargetID.changeDisc
+        case .reportProblem: ControllerTargetID.reportProblem
         }
     }
 
@@ -300,6 +301,8 @@ struct QuickMenuView: View {
             onOpen(.retroAchievements)
         } else if matches("Cheats & Patches") {
             onOpen(.cheats)
+        } else if matches("Report a Problem") {
+            onOpen(.reportProblem)
         } else if matches("Reset ROM") {
             onOpen(.resetROM)
         } else if matches("Clear Current Game Cache") {
@@ -723,6 +726,7 @@ struct QuickMenuView: View {
                 onOpen(.shaders)
             }
         }
+        reportProblemRow
     }
 
     @ViewBuilder private var resetAndExitRows: some View {

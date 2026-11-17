@@ -26,6 +26,7 @@ struct QuickMenuNavigationGraph {
         static let editPadLayout = "quick-menu.edit-pad-layout"
         static let saveStates = "quick-menu.save-states"
         static let shaders = "quick-menu.shaders"
+        static let reportProblem = "quick-menu.report-problem"
         static let changeDisc = "quick-menu.change-disc"
         static let retroAchievements = "quick-menu.retro-achievements"
         static let cheats = "quick-menu.cheats"
@@ -110,6 +111,7 @@ struct QuickMenuNavigationGraph {
             ])
         }
         if shaderChainAvailable { order.append(ControllerTargetID.shaders) }
+        order.append(ControllerTargetID.reportProblem)
         if vmMenuAvailable { order.append(ControllerTargetID.resetROM) }
         if gameMenuAvailable { order.append(ControllerTargetID.clearCache) }
         order.append(contentsOf: [
@@ -176,6 +178,7 @@ struct QuickMenuNavigationGraph {
         let editPad = ControllerTargetID.editPadLayout
         let saveStates = ControllerTargetID.saveStates
         let shaders = ControllerTargetID.shaders
+        let reportProblem = ControllerTargetID.reportProblem
         let changeDisc = ControllerTargetID.changeDisc
         let achievements = ControllerTargetID.retroAchievements
         let cheats = ControllerTargetID.cheats
@@ -197,6 +200,7 @@ struct QuickMenuNavigationGraph {
             contentOrder.append(contentsOf: [achievements, cheats])
         }
         if shaderChainAvailable { contentOrder.append(shaders) }
+        contentOrder.append(reportProblem)
         if vmMenuAvailable { contentOrder.append(resetROM) }
         if gameMenuAvailable { contentOrder.append(clearCache) }
         contentOrder.append(backToMenu)
@@ -239,6 +243,7 @@ struct QuickMenuNavigationGraph {
             rightColumn.append(contentsOf: [achievements, cheats])
         }
         if shaderChainAvailable { rightColumn.append(shaders) }
+        rightColumn.append(reportProblem)
         if vmMenuAvailable { rightColumn.append(resetROM) }
         if gameMenuAvailable { rightColumn.append(clearCache) }
         rightColumn.append(backToMenu)
@@ -275,6 +280,7 @@ struct QuickMenuNavigationGraph {
         appendVerticalLinks(rightColumn)
 
         let available = Set(leftColumn + rightColumn)
+        // Shaders sits in the right column ahead of Report, so everything below it moves down one row.
         let horizontalPairs = [
             (stop, resume),
             (osd, gameController),
@@ -282,10 +288,15 @@ struct QuickMenuNavigationGraph {
             (fullScreen, changeDisc),
             (hideMenu, achievements),
             (speed, cheats),
-            (perGame, resetROM),
-            (controllerSkin, clearCache),
-            (editPad, backToMenu),
-        ]
+        ] + (shaderChainAvailable ? [
+            (perGame, shaders),
+            (controllerSkin, reportProblem),
+            (editPad, resetROM),
+        ] : [
+            (perGame, reportProblem),
+            (controllerSkin, resetROM),
+            (editPad, clearCache),
+        ])
         for (left, right) in horizontalPairs
         where available.contains(left) && available.contains(right) {
             links.append(
@@ -338,6 +349,7 @@ struct QuickMenuNavigationGraph {
         if shaderChainAvailable {
             contentOrder.append(ControllerTargetID.shaders)
         }
+        contentOrder.append(ControllerTargetID.reportProblem)
         if vmMenuAvailable { contentOrder.append(ControllerTargetID.resetROM) }
         if gameMenuAvailable { contentOrder.append(ControllerTargetID.clearCache) }
         contentOrder.append(ControllerTargetID.backToMenu)

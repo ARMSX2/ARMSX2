@@ -13,6 +13,7 @@ enum QuickMenuDestination: Equatable {
     case padLayout
     case resetROM
     case changeDisc
+    case reportProblem
 }
 
 struct QuickMenuFoldMemory: Equatable {
