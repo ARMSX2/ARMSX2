@@ -250,6 +250,54 @@ private:
 	};
 	void ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e);
 
+	/// The targets of the last draw that took the full path. A following draw into the same frame and depth buffer
+	/// whose targets need nothing (a row) skips the target search and the targets' upkeep before the draw.
+	struct RowRun
+	{
+		GSTextureCache::Target* rt = nullptr;
+		GSTextureCache::Target* ds = nullptr;
+		GSTexture* rt_tex = nullptr;
+		GSTexture* ds_tex = nullptr;
+		u64 frame = 0; ///< FRAME's base block, buffer width and format as the draw used them
+		u64 zbuf = 0; ///< ZBUF's base block and format, with FRAME's buffer width
+		bool open = false;
+		bool no_rt = false;
+		bool no_ds = false;
+	};
+	/// What the target search and the targets' upkeep may change, taken before and after them in check mode on a
+	/// draw that would have been a row.
+	struct RowWitness
+	{
+		struct Tgt
+		{
+			u64 tex0;
+			GSVector4i valid, drawn;
+			GSVector2i unscaled_size;
+			const GSTexture* texture;
+			float scale;
+			u32 end_block;
+			u64 last_draw;
+			int alpha_min, alpha_max;
+			bool dirty, fmt32, valid_rgb, valid_alpha_low, valid_alpha_high, rt_alpha_scale, alpha_range, used;
+			bool operator==(const Tgt& o) const;
+		};
+		Tgt rt, ds;
+		GSVector4i r;
+		GSVector4 min_p, max_p;
+		GSVector4i scissor;
+		u32 vertices, indices;
+		u64 frame, zbuf, test, tex0;
+		const void* front_rt;
+		const void* front_ds;
+	};
+	/// Whether this draw continues the open row run. Read before the target search.
+	bool RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds, bool possible_shuffle,
+		bool possible_mem_clear) const;
+	void TakeRowWitness(RowWitness& w) const;
+	/// Check mode: counts and reports the first difference the full path made where a row would have skipped it.
+	void RowMismatch(const char* what);
+	void OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds);
+
 	/// What the state derivation leaves for the rest of DrawPrims.
 	struct DerivedDraw
 	{
@@ -511,6 +559,7 @@ private:
 
 	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
 	GSDrawRows::StateTable m_states;
+	RowRun m_row_run;
 	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
 	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack
 	bool m_row_colclip_written = false; ///< the derivation set colclip_mode and colclip_frame

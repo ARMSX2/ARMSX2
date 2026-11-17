@@ -248,6 +248,12 @@ namespace GSDrawRows
 		u64 prep_mismatches = 0; ///< the frame-mask stage disagreed with what the alpha range was given ahead of it
 		u64 pushed = 0; ///< draws keyed with a half-pixel mode-5 vertex push
 		u64 hpo_keyed = 0; ///< draws keyed with a half-pixel texture-offset answer
+		u64 rows = 0; ///< draws that skipped the target search (or would have, in check mode)
+		u64 row_checked = 0; ///< check mode: rows whose full path was compared
+		u64 row_mismatches = 0; ///< check mode: rows where the full path changed what the row skips
+		u32 reg_states = 0; ///< register states in the table after the last miss
+		u32 entries = 0; ///< entries in the table after the last miss
+		u64 flushes = 0;
 	};
 
 	extern Mode s_mode;
