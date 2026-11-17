@@ -3280,8 +3280,8 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	m_runs = GSRunsVK::Create(this);
-	// Rows wait for their run's close where the run machine can draw them (GSRowQueue.h).
-	m_rows_defer = m_runs != nullptr;
+	// Rows wait for their run's close (GSRowQueue.h), with or without the run machine to merge them.
+	m_rows_defer = true;
 
 	InitializeState();
 #ifdef __ANDROID__
