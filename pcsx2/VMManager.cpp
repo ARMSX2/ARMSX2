@@ -42,6 +42,7 @@
 #include "Recording/InputRecordingControls.h"
 #include "SIO/Memcard/MemoryCardFile.h"
 #include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SIO/Sio0.h"
 #include "SIO/Sio2.h"
@@ -2490,6 +2491,7 @@ void VMManager::Shutdown(bool save_resume_state)
 	// end input recording before clearing state
 	if (g_InputRecording.isActive())
 		g_InputRecording.stop();
+	PadScript::OnShutdown();
 
 	SaveSessionTime(s_disc_serial);
 	s_elf_override = {};
@@ -2748,6 +2750,7 @@ bool VMManager::DoLoadState(const char* filename, Error* error)
 		return false;
 
 	Host::OnSaveStateLoaded(filename, true);
+	PadScript::OnStateLoaded();
 	if (g_InputRecording.isActive())
 	{
 		g_InputRecording.handleLoadingSavestate();
