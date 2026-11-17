@@ -11652,21 +11652,33 @@ bool GSRendererHW::FillStateKeys(GSDrawRows::RegKey& r, GSDrawRows::VarKey& k, c
 	}
 	k.w[0] = f;
 
-	// Values that reach the configuration: the draw's alpha range after the alpha test's correction, the target's
-	// alpha range before and after this draw, and the range the blend sees.
+	// The alpha ranges by class. Read by read (EmulateBlending, DetermineAlphaScaling, IsOpaque, PABE), the derivation
+	// compares a bound only with 0 and 128, and within one range the minimum with the maximum. The draw's range is
+	// read after the alpha test's correction, the blend's and the new maximum as CalculateAlphaRange left them, and of
+	// the target's range only its maximum and whether it is one value. Two reads take a bound's value: the blend's fixed
+	// factor becomes the draw's alpha when ALPHA.C selects As and the draw's range is one value, and the blend range's
+	// when C selects Ad and that range is one value. Those values are keyed as they are.
 	const GSVertexTrace::VertexAlpha& am = GetAlphaMinMax();
-	const auto v9 = [](int v) -> u64 { return static_cast<u64>(static_cast<u32>(v) & 0x1FF); };
-	k.w[1] = v9(am.min) | (v9(am.max) << 9) | (v9(prep.rt_new_alpha_max) << 36) | (v9(prep.blend_alpha_min) << 45) |
-	         (v9(prep.blend_alpha_max) << 54);
+	const auto cls = [](int v) -> u64 { return static_cast<u64>((v > 0) + (v >= 128) + (v > 128)); };
+	const u32 alpha_c = m_context->ALPHA.C;
+	const bool draw_one = am.min == am.max;
+	const bool blend_one = prep.blend_alpha_min == prep.blend_alpha_max;
+	u64 a = cls(am.min) | (cls(am.max) << 2) | b(draw_one, 4) | (cls(prep.blend_alpha_min) << 5) | (cls(prep.blend_alpha_max) << 7) |
+	        b(blend_one, 9) | (cls(prep.rt_new_alpha_max) << 13);
+	if (alpha_c == 0 && draw_one)
+		a |= static_cast<u64>((static_cast<u32>(am.max) & 0x1FF) + 1) << 16;
+	else if (alpha_c == 1 && blend_one)
+		a |= static_cast<u64>((static_cast<u32>(prep.blend_alpha_min) & 0x1FF) + 1) << 26;
 	if (rt)
 	{
-		k.w[1] |= (v9(rt->m_alpha_min) << 18) | (v9(rt->m_alpha_max) << 27);
+		a |= (cls(rt->m_alpha_max) << 10) | b(rt->m_alpha_min == rt->m_alpha_max, 12);
 		k.w[2] = fbits(rtscale) | (fbits(rt->OffsetHack_modxy) << 32);
 	}
 	else
 	{
 		k.w[2] = fbits(rtscale);
 	}
+	k.w[1] = a;
 	k.w[3] = static_cast<u64>(static_cast<u16>(rtsize.x)) | (static_cast<u64>(static_cast<u16>(rtsize.y)) << 16) |
 	         (static_cast<u64>(static_cast<u16>(rt_unscaled_size.x)) << 32) | (static_cast<u64>(static_cast<u16>(rt_unscaled_size.y)) << 48);
 	// The mipmap levels the manual LOD reads; small, so both fit the word's low half with the source's scale above.
