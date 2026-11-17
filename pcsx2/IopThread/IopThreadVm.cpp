@@ -22,6 +22,7 @@
 #include "PerformanceMetrics.h"
 #include "R3000A.h"
 #include "R5900.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SPU2/defs.h"
 #include "Sif.h"
@@ -602,7 +603,7 @@ namespace IopThread
 		[] { psxVBlankEnd(); },
 		[](u32 line) { iopIntcIrq(line); },
 		[](u32 job) {
-			switch (job)
+			switch (job & E2IJob::kJobMask)
 			{
 				case E2IJob::AutoEjectTick:
 					AutoEject::CountDownTicks();
@@ -612,6 +613,9 @@ namespace IopThread
 					break;
 				case E2IJob::VsyncPatchesIop:
 					Patch::ApplyVsyncPatchesIOP();
+					break;
+				case E2IJob::PadInput:
+					PadScript::ApplyLatch(job >> 8);
 					break;
 				default:
 					pxFailRel("unknown E2I job");

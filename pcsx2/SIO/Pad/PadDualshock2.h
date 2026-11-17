@@ -66,6 +66,21 @@ private:
 
 	SharedWord::Relaxed<u32> buttons{0xffffffffu};
 	Analogs analogs;
+
+	// While a script, a client or a recording holds the pad (PadScript.h), the game reads these instead of the
+	// player's input above, which keeps arriving and is read again on release. Written and read where the IOP
+	// runs.
+	struct Held
+	{
+		SharedWord::Relaxed<bool> on{false};
+		SharedWord::Relaxed<u32> buttons{0xffffffffu};
+		std::array<SharedWord::Relaxed<u8>, 16> pressure = {};
+		SharedWord::Relaxed<u8> lx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ly{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> rx{Pad::ANALOG_NEUTRAL_POSITION};
+		SharedWord::Relaxed<u8> ry{Pad::ANALOG_NEUTRAL_POSITION};
+	};
+	Held held;
 	// Analog button can be held without changing its state.
 	// We track here if it is currently held down, to avoid flipping in
 	// and out of analog mode every frame.
@@ -188,6 +203,8 @@ public:
 	u8 GetPressure(u32 index) const override;
 	bool IsAnalogLightEnabled() const override;
 	bool IsAnalogLocked() const override;
+	bool CapturePlayerInput(PadScript::PadFrame* out) const override;
+	void SetHeldInput(const PadScript::PadFrame* state) override;
 
 	bool Freeze(StateWrapper& sw) override;
 

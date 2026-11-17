@@ -113,6 +113,10 @@ namespace IopThread
 		inline constexpr u32 AutoEjectTick = 0; // AutoEject::CountDownTicks()
 		inline constexpr u32 MemcardBusyTick = 1; // MemcardBusy::Decrement()
 		inline constexpr u32 VsyncPatchesIop = 2; // Patch::ApplyVsyncPatchesIOP()
+		inline constexpr u32 PadInput = 3; // PadScript::ApplyLatch(arg >> 8)
+
+		/// The job number is the low byte of the item's arg; a job may use the rest.
+		inline constexpr u32 kJobMask = 0xff;
 	} // namespace E2IJob
 
 	/// What each kind of item does on the IOP. The real table calls the IOP's functions; a test swaps

@@ -3999,34 +3999,58 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2Offered(JNIEnv*, jclass, jboolean
     s_gpu_offers_malisx2.store(offered == JNI_TRUE, std::memory_order_relaxed);
 }
 
-// The "get malisx2" notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan
-// hardware renderer on some other driver (Arm's own or another pack). Posted through the OSD with the
-// unsafe-settings warnings' duration, keyed so a repeat refreshes the one message. The driver is read
-// off the open Vulkan device, not from the selected pack, because a pack that fails to load falls back
-// to Arm's driver silently. So it is only known once the device is open: this runs from OnVMStarted and
-// from the game-change call that follows the game's program starting.
+// How the app names the installed malisx2 pack ("malisx2 0.4.1"), empty when none is installed. Packs
+// are installed and deleted while the app runs, so the app pushes it with the per-game driver pick
+// (applyRendererPrefs) before each boot. Read by the notice below.
+static std::mutex s_installed_malisx2_pack_mutex;
+static std::string s_installed_malisx2_pack;
+
+extern "C"
+JNIEXPORT void JNICALL
+Java_kr_co_iefriends_pcsx2_NativeApp_setMaliSX2InstalledPack(JNIEnv* env, jclass, jstring name) {
+    std::string pack = GetJavaString(env, name);
+    std::lock_guard<std::mutex> lock(s_installed_malisx2_pack_mutex);
+    s_installed_malisx2_pack = std::move(pack);
+}
+
+// The malisx2 notice: a Mali GPU the driver list offers malisx2 for is running the Vulkan hardware
+// renderer on some other driver (Arm's own or another pack). What it says depends on what the user
+// has (GSDriverReport::MaliSX2NoticeFor): a malisx2 pack installed but not selected, no pack
+// installed, or another pack selected. Posted through the OSD with the unsafe-settings warnings'
+// duration, keyed so a repeat refreshes the one message. A toast has no button, so the text says
+// where to switch; the driver list in Settings > Renderer has the switch itself. The driver is read
+// off the open Vulkan device, not from the selected pack, because a pack that fails to load falls
+// back to Arm's driver silently. So it is only known once the device is open: this runs from
+// OnVMStarted and from the game-change call that follows the game's program starting.
 //
-// Not shown when a malisx2 pack is selected: malisx2 needs a recent Mali kernel driver, and on an older
-// one it fails to open and the device ends up on Arm's driver, so the notice would tell the user to
-// download what they already have. The selected pack is the driver request the Vulkan library was
-// loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in applyRendererPrefs
-// before each boot.
+// Not shown when a malisx2 pack is selected: malisx2 needs a recent Mali kernel driver, and on an
+// older one it fails to open and the device ends up on Arm's driver, so the notice would tell the
+// user to get or switch to what they already have. The selected pack is the driver request the
+// Vulkan library was loaded with (Vulkan::GetCustomDriverStatus), which the app sets per game in
+// applyRendererPrefs before each boot.
 static void PostMaliSX2NoticeIfDue() {
+    using namespace GSDriverReport;
     const bool hardware = GSIsHardwareRenderer();
     const bool offered = s_gpu_offers_malisx2.load(std::memory_order_relaxed);
-    const GSDriverReport::ActiveVulkanDriver driver = GSDriverReport::GetActiveVulkanDriver();
+    const ActiveVulkanDriver driver = GetActiveVulkanDriver();
     const Vulkan::CustomDriverStatus pack = Vulkan::GetCustomDriverStatus();
-    const bool malisx2_pack_selected = pack.requested && GSDriverReport::IsMaliSX2Pack(pack.dir, pack.name);
+    const SelectedVulkanPack selected = !pack.requested ? SelectedVulkanPack::System
+        : IsMaliSX2Pack(pack.dir, pack.name) ? SelectedVulkanPack::MaliSX2 : SelectedVulkanPack::Other;
+    std::string installed_pack;
+    {
+        std::lock_guard<std::mutex> lock(s_installed_malisx2_pack_mutex);
+        installed_pack = s_installed_malisx2_pack;
+    }
 
-    if (!GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, malisx2_pack_selected)) {
-        if (GSDriverReport::ShouldWarnMaliSX2(hardware, offered, driver, false))
+    const MaliSX2Notice notice = MaliSX2NoticeFor(hardware, offered, driver, selected, !installed_pack.empty());
+    if (notice == MaliSX2Notice::None) {
+        if (hardware && offered && driver == ActiveVulkanDriver::Other && selected == SelectedVulkanPack::MaliSX2)
             Console.WriteLn("Android: malisx2 pack selected but the Vulkan device is on another driver "
-                            "(pack failed to load?), not posting the get-malisx2 notice.");
+                            "(pack failed to load?), not posting the malisx2 notice.");
         return;
     }
     Host::AddIconOSDMessage("armsx2_mali_driver_notice", ICON_FA_CIRCLE_EXCLAMATION,
-        "Incompatible driver selected. Please download the malisx2 driver",
-        Host::OSD_WARNING_DURATION);
+        MaliSX2NoticeText(notice, installed_pack), Host::OSD_WARNING_DURATION);
 }
 
 void Host::OnGameChanged(const std::string& title, const std::string& elf_override, const std::string& disc_path,

@@ -18,6 +18,7 @@
 #include "PerformanceMetrics.h"
 #include "Patch.h"
 #include "ps2/HwInternal.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SPU2/spu2.h"
 #include "Recording/InputRecording.h"
@@ -529,6 +530,8 @@ static __fi void VSyncStart(u64 sCycle)
 
 	// Poll input after MTGS frame push, just in case it has to stall to catch up.
 	VMManager::Internal::PollInputOnCPUThread();
+	// After the poll, so a recording samples this frame's input.
+	PadScript::OnVsync();
 
 	EECNT_LOG("    ================  EE COUNTER VSYNC START (frame: %d)  ================", g_FrameCount);
 

@@ -10,6 +10,11 @@
 
 #include <array>
 
+namespace PadScript
+{
+	struct PadFrame;
+}
+
 class PadBase
 {
 public:
@@ -63,6 +68,12 @@ public: // Public members
 	virtual u8 GetPressure(u32 index) const = 0;
 	virtual bool IsAnalogLightEnabled() const = 0;
 	virtual bool IsAnalogLocked() const = 0;
+
+	/// The player's own input, whether or not the pad is held. False for a pad type that cannot be held.
+	virtual bool CapturePlayerInput(PadScript::PadFrame* out) const { return false; }
+	/// From now on the game reads `state` instead of the player's input; nullptr gives the player's input back.
+	/// Called where the IOP runs (see PadScript.h). A pad type that cannot be held ignores it.
+	virtual void SetHeldInput(const PadScript::PadFrame* state) {}
 
 	virtual bool Freeze(StateWrapper& sw);
 

@@ -1100,8 +1100,15 @@ open class MainActivityRuntime : ComponentActivity() {
                 com.armsx2.config.ConfigStore.loadGlobal().output.customDriverId,
                 installedDrivers.map { it.id },
             )
-            customDriverId.value = pickedId
-            val picked = installedDrivers.firstOrNull { it.id == pickedId }
+            val (launchDriverSet, launchDriver) =
+                if (ctx != null) com.armsx2.LaunchExtras.resolveDriver(ctx, installedDrivers) else (false to null)
+            val picked = if (launchDriverSet) launchDriver else installedDrivers.firstOrNull { it.id == pickedId }
+            customDriverId.value = picked?.id
+            // The core's malisx2 notice needs to know whether the pack is installed, not only which
+            // driver this boot selected. A pack a launch extra just imported counts as installed.
+            com.armsx2.CustomDriver.pushInstalledMaliSX2(
+                if (picked != null && installedDrivers.none { it.id == picked.id }) installedDrivers + picked else installedDrivers
+            )
             // Turnip options (#719) go into the environment before the device is created.
             com.armsx2.CustomDriver.applyDriverEnv()
             if (ctx != null) {
@@ -1239,6 +1246,8 @@ open class MainActivityRuntime : ComponentActivity() {
          * path that doesn't have a GameInfo (Swap/Boot Disc file picker).
          */
         fun launchGame(uri: String, info: GameInfo? = null, external: Boolean = false) {
+            // A launch from the app itself runs on the settings alone.
+            if (!external) com.armsx2.LaunchExtras.clear()
             if (uri.isBlank()) {
                 println("@@ANDROID_LAUNCH_REJECT@@ reason=blank_uri title=${info?.title ?: ""}")
                 return
@@ -6293,6 +6302,7 @@ open class MainActivityRuntime : ComponentActivity() {
     }
 
     private fun handleExternalLaunchIntent(intent: Intent?) {
+        com.armsx2.LaunchExtras.take(intent)
         val raw = extractLaunchUri(intent) ?: return
         persistReadGrant(intent, raw)
         // Frontends (Cocoon/Daijisho/ES-DE) list the .cue, since that's the canonical disc

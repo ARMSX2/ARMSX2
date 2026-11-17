@@ -201,11 +201,6 @@ GSDeviceVK::GSDeviceVK()
 #endif
 
 	std::memset(&m_pipeline_selector, 0, sizeof(m_pipeline_selector));
-	if (g_gs_measurement_overrides.readback_kick_passes != 0)
-	{
-		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
-		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
-	}
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
@@ -2166,11 +2161,11 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		submit_info.pSignalSemaphores = &m_spin_resources[m_current_frame].semaphore;
 	}
 
-	// The last point at which the CPU's writes into the six stream rings can still be made visible
+	// The last point at which the CPU's writes into the stream rings can still be made visible
 	// to the GPU: nothing recorded into a command buffer executes until it is submitted, so every
 	// draw, copy and descriptor read of a ring in this submission reads memory that is cleaned
 	// here first. On a coherent ring -- every device with a cached coherent type, and every device
-	// on the write-combined road -- each of these six calls returns on a compare.
+	// on the write-combined road -- each of these calls returns on a compare.
 	FlushStreamRingWrites();
 
 	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
@@ -6403,16 +6398,19 @@ bool GSDeviceVK::CreateNullTexture()
 
 void GSDeviceVK::FlushStreamRingWrites()
 {
-	// All six, not just the ones this submission is known to have touched: a ring that was not
+	// Every ring, not just the ones this submission is known to have touched: a ring that was not
 	// written has nothing pending and costs a compare, and deciding per ring which one a
 	// submission read is the kind of bookkeeping that is wrong once and then silently wrong
-	// forever on the one device that needs the clean.
+	// forever on the one device that needs the clean. The six below are the device's own; the run
+	// machine owns two more, which are on the same memory road.
 	m_vertex_stream_buffer.FlushPendingWrites();
 	m_index_stream_buffer.FlushPendingWrites();
 	m_expand_index_stream_buffer.FlushPendingWrites();
 	m_vertex_uniform_stream_buffer.FlushPendingWrites();
 	m_fragment_uniform_stream_buffer.FlushPendingWrites();
 	m_texture_stream_buffer.FlushPendingWrites();
+	if (m_runs)
+		m_runs->FlushRingWrites();
 }
 
 bool GSDeviceVK::CreateBuffers()
@@ -9807,7 +9805,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// boundary. Most passes end at a target switch rather than with no pass open, so without
 	// that boundary many readback frames never kick before their readback at all.
 	//
-	// A kick needs m_readback_kick_passes unsubmitted passes, the open one included. Every submit sleeps
+	// A kick needs READBACK_KICK_PASSES unsubmitted passes, the open one included. Every submit sleeps
 	// in the driver on Android's Adreno drivers, and the governor answers the sleeps by lowering
 	// the GS thread's clock, so kicking at every boundary costs more there than the earlier
 	// start saves.
@@ -9838,7 +9836,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	const bool at_pass_boundary = !InRenderPass() ||
 		(no_pass_state && !(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
 	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
-	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes;
+	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= READBACK_KICK_PASSES;
 	// After the gate refuses an in-pass kick, the next offer waits a few draws: offering at every draw
 	// would ask the driver for two fence states per draw while the GPU is behind.
 	//

@@ -3,6 +3,7 @@
 
 #include "SIO/Pad/PadDualshock2.h"
 #include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SIO/Sio0.h"
 
@@ -277,18 +278,21 @@ std::tuple<u8, u8> PadDualshock2::UsbInput::MergeStick(std::tuple<u8, u8> base, 
 
 u8 PadDualshock2::Poll(u8 commandByte)
 {
-	const u32 base_buttons = this->buttons;
+	const bool held_input = held.on;
+	const u32 base_buttons = held_input ? static_cast<u32>(held.buttons) : static_cast<u32>(this->buttons);
 	u32 buttons = base_buttons;
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	// Keep the report coherent across the bytes of one PS2 poll.
 	if (commandBytesReceived == 3)
 		m_usb_poll_input = GetUsbInput(unifiedSlot);
-	buttons &= ~static_cast<u32>(m_usb_poll_input.pressed);
+	if (!held_input)
+		buttons &= ~static_cast<u32>(m_usb_poll_input.pressed);
 #endif
 	const auto pressure = [&](Inputs input) -> u8 {
-		const u8 base = GetPressure(input);
+		if (held_input)
+			return GetPressure(input);
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-		if (IsAnalogKey(input) && m_usb_poll_input.connected)
+		if (IsAnalogKey(input))
 		{
 			const bool left = input <= PAD_L_LEFT;
 			const auto stick = left ? std::tuple<u8, u8>{analogs.lx, analogs.ly} :
@@ -296,9 +300,9 @@ u8 PadDualshock2::Poll(u8 commandByte)
 			const auto [x, y] = m_usb_poll_input.MergeStick(stick, left ? 0 : 2);
 			return input == PAD_L_RIGHT || input == PAD_R_RIGHT ? x : y;
 		}
-		return m_usb_poll_input.MergePressure(input, base_buttons, base);
+		return m_usb_poll_input.MergePressure(input, base_buttons, rawInputs[input]);
 #else
-		return base;
+		return GetPressure(input);
 #endif
 	};
 	u8 largeMotor = 0x00;
@@ -942,31 +946,33 @@ float PadDualshock2::GetEffectiveInput(u32 index) const
 	if (!IsAnalogKey(index))
 		return GetRawInput(index);
 
+	const auto [lx, ly] = GetRawLeftAnalog();
+	const auto [rx, ry] = GetRawRightAnalog();
 	switch (index)
 	{
 	case Inputs::PAD_L_LEFT:
-		return (analogs.lx < 127) ? -((127 - analogs.lx) / 127.0f) : 0;
+		return (lx < 127) ? -((127 - lx) / 127.0f) : 0;
 
 	case Inputs::PAD_L_RIGHT:
-		return (analogs.lx > 127) ? ((analogs.lx - 127) / 128.0f) : 0;
+		return (lx > 127) ? ((lx - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_L_UP:
-		return (analogs.ly < 127) ? -((127 - analogs.ly) / 127.0f) : 0;
+		return (ly < 127) ? -((127 - ly) / 127.0f) : 0;
 
 	case Inputs::PAD_L_DOWN:
-		return (analogs.ly > 127) ? ((analogs.ly - 127) / 128.0f) : 0;
+		return (ly > 127) ? ((ly - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_R_LEFT:
-		return (analogs.rx < 127) ? -((127 - analogs.rx) / 127.0f) : 0;
+		return (rx < 127) ? -((127 - rx) / 127.0f) : 0;
 
 	case Inputs::PAD_R_RIGHT:
-		return (analogs.rx > 127) ? ((analogs.rx - 127) / 128.0f) : 0;
+		return (rx > 127) ? ((rx - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_R_UP:
-		return (analogs.ry < 127) ? -((127 - analogs.ry) / 127.0f) : 0;
+		return (ry < 127) ? -((127 - ry) / 127.0f) : 0;
 
 	case Inputs::PAD_R_DOWN:
-		return (analogs.ry > 127) ? ((analogs.ry - 127) / 128.0f) : 0;
+		return (ry > 127) ? ((ry - 127) / 128.0f) : 0;
 
 	default:
 		return 0;
@@ -975,6 +981,8 @@ float PadDualshock2::GetEffectiveInput(u32 index) const
 
 u8 PadDualshock2::GetRawInput(u32 index) const
 {
+	if (held.on && index < PadScript::NUM_BUTTONS) [[unlikely]]
+		return held.pressure[index];
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	return GetUsbInput(unifiedSlot).MergePressure(index, buttons, rawInputs[index]);
 #else
@@ -984,6 +992,8 @@ u8 PadDualshock2::GetRawInput(u32 index) const
 
 std::tuple<u8, u8> PadDualshock2::GetRawLeftAnalog() const
 {
+	if (held.on) [[unlikely]]
+		return {held.lx, held.ly};
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	return GetUsbInput(unifiedSlot).MergeStick({analogs.lx, analogs.ly}, 0);
 #else
@@ -993,6 +1003,8 @@ std::tuple<u8, u8> PadDualshock2::GetRawLeftAnalog() const
 
 std::tuple<u8, u8> PadDualshock2::GetRawRightAnalog() const
 {
+	if (held.on) [[unlikely]]
+		return {held.rx, held.ry};
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	return GetUsbInput(unifiedSlot).MergeStick({analogs.rx, analogs.ry}, 2);
 #else
@@ -1002,6 +1014,8 @@ std::tuple<u8, u8> PadDualshock2::GetRawRightAnalog() const
 
 u32 PadDualshock2::GetButtons() const
 {
+	if (held.on) [[unlikely]]
+		return held.buttons;
 #if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
 	return buttons & ~static_cast<u32>(GetUsbInput(unifiedSlot).pressed);
 #else
@@ -1015,19 +1029,74 @@ u8 PadDualshock2::GetPressure(u32 index) const
 	{
 		case Inputs::PAD_R_LEFT:
 		case Inputs::PAD_R_RIGHT:
-			return this->analogs.rx;
+			return std::get<0>(GetRawRightAnalog());
 		case Inputs::PAD_R_DOWN:
 		case Inputs::PAD_R_UP:
-			return this->analogs.ry;
+			return std::get<1>(GetRawRightAnalog());
 		case Inputs::PAD_L_LEFT:
 		case Inputs::PAD_L_RIGHT:
-			return this->analogs.lx;
+			return std::get<0>(GetRawLeftAnalog());
 		case Inputs::PAD_L_DOWN:
 		case Inputs::PAD_L_UP:
-			return this->analogs.ly;
+			return std::get<1>(GetRawLeftAnalog());
 		default:
-			return this->rawInputs[index];
+			return GetRawInput(index);
 	}
+}
+
+bool PadDualshock2::CapturePlayerInput(PadScript::PadFrame* out) const
+{
+	PadScript::PadFrame frame;
+	u32 player_buttons = buttons;
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+	const UsbInput usb_input = GetUsbInput(unifiedSlot);
+	player_buttons &= ~static_cast<u32>(usb_input.pressed);
+#endif
+	for (u32 i = 0; i < PadScript::NUM_BUTTONS; i++)
+	{
+		if (player_buttons & (1u << bitmaskMapping[i]))
+			continue;
+		frame.pressed |= static_cast<u16>(1u << i);
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+		frame.pressure[i] = usb_input.MergePressure(i, buttons, rawInputs[i]);
+#else
+		frame.pressure[i] = rawInputs[i];
+#endif
+	}
+	frame.lx = analogs.lx;
+	frame.ly = analogs.ly;
+	frame.rx = analogs.rx;
+	frame.ry = analogs.ry;
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+	std::tie(frame.lx, frame.ly) = usb_input.MergeStick({frame.lx, frame.ly}, 0);
+	std::tie(frame.rx, frame.ry) = usb_input.MergeStick({frame.rx, frame.ry}, 2);
+#endif
+	*out = frame;
+	return true;
+}
+
+void PadDualshock2::SetHeldInput(const PadScript::PadFrame* state)
+{
+	if (!state)
+	{
+		held.on = false;
+		return;
+	}
+
+	u32 mask = 0xffffffffu;
+	for (u32 i = 0; i < PadScript::NUM_BUTTONS; i++)
+	{
+		const bool pressed = (state->pressed >> i) & 1;
+		if (pressed)
+			mask &= ~(1u << bitmaskMapping[i]);
+		held.pressure[i] = pressed ? state->pressure[i] : 0;
+	}
+	held.buttons = mask;
+	held.lx = state->lx;
+	held.ly = state->ly;
+	held.rx = state->rx;
+	held.ry = state->ry;
+	held.on = true;
 }
 
 bool PadDualshock2::IsAnalogLightEnabled() const

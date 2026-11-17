@@ -1097,8 +1097,11 @@ data class Settings(
         put("Achievements", "NotificationScale", "int", emuCore.achievements.notificationScale.coerceIn(50, 250).toString())
         // VMManager::ReloadPINE compares these against the live server and starts, stops or
         // rebinds it, so a commit is enough — no game restart.
-        put("EmuCore", "EnablePINE", "bool", emuCore.pineEnabled.toString())
-        put("EmuCore", "PINESlot", "int", emuCore.pineSlot.toString())
+        // A launch's extras (LaunchExtras) win for that launch; an exported per-game INI keeps the saved values.
+        val launchPine = if (emitSink == null) com.armsx2.LaunchExtras.pine else null
+        val launchPineSlot = if (emitSink == null) com.armsx2.LaunchExtras.pineSlot else null
+        put("EmuCore", "EnablePINE", "bool", (launchPine ?: emuCore.pineEnabled).toString())
+        put("EmuCore", "PINESlot", "int", (launchPineSlot ?: emuCore.pineSlot).toString())
         put("EmuCore", "EnableGameFixes", "bool", emuCore.enableGameFixes.toString())
         put("EmuCore/Gamefixes", "SoftwareRendererFMVHack", "bool", emuCore.gamefixSoftwareRendererFmv.toString())
         put("EmuCore/Gamefixes", "SkipMPEGHack", "bool", emuCore.gamefixSkipMpeg.toString())

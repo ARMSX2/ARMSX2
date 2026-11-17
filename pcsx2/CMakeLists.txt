@@ -550,6 +550,7 @@ set(pcsx2PADSources
 	SIO/Pad/PadJogcon.cpp
 	SIO/Pad/PadNegcon.cpp
 	SIO/Pad/PadPopn.cpp
+	SIO/Pad/PadScript.cpp
 	SIO/Pad/PadNotConnected.cpp
 )
 set(pcsx2PADHeaders
@@ -560,6 +561,7 @@ set(pcsx2PADHeaders
 	SIO/Pad/PadJogcon.h
 	SIO/Pad/PadNegcon.h
 	SIO/Pad/PadPopn.h
+	SIO/Pad/PadScript.h
 	SIO/Pad/PadNotConnected.h
 	SIO/Pad/PadTypes.h
 )
@@ -725,6 +727,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSelfReadRoadPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
+	GS/Renderers/Common/GSTargetSizePolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
 	GS/Renderers/Common/GSStreamRingGrowth.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h

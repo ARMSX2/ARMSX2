@@ -25,6 +25,16 @@ Examples:
     gsctl.py set EmuCore/GS accurate_blending_unit 3
     gsctl.py loadstate 2
     gsctl.py frameadvance
+    gsctl.py pad set 1 cross+r1 127 0 127 127
+    gsctl.py pad release 1
+    gsctl.py pad script walk.pad --at-load && gsctl.py loadstate 1
+    gsctl.py pad record /sdcard/Android/data/<app>/files/walk.pad --at-load
+    gsctl.py pad status
+    gsctl.py --tcp 28011 stats          # Android, after: adb forward tcp:28011 tcp:28011
+
+Pad scripts: lines of "<frame> <pad> <buttons> [<lx> <ly> <rx> <ry>]", "<frame> <pad>
+release" and "<frame> end", frames counted in vsyncs from the savestate load (or from
+the next vsync without --at-load). The format is described in pcsx2/SIO/Pad/PadScript.h.
 
 Pure stdlib; no build step. Output is JSON on stdout so it composes with jq.
 """
@@ -49,6 +59,12 @@ MSG_GET_SETTING = 0x11
 MSG_SET_SETTING = 0x12
 MSG_FRAME_ADVANCE = 0x13
 MSG_GET_EFFECTIVE_SETTING = 0x15
+MSG_PAD_SET = 0x19
+MSG_PAD_SCRIPT = 0x1A
+MSG_PAD_RECORD = 0x1B
+MSG_PAD_STATUS = 0x1C
+
+PAD_STOP, PAD_START, PAD_START_AT_LOAD = 0, 1, 2
 
 IPC_OK = 0
 STATUS_NAMES = {0: "running", 1: "paused", 2: "shutdown"}
@@ -75,9 +91,10 @@ def lp_string(s):
 
 
 class Pine:
-    def __init__(self, slot=DEFAULT_SLOT, timeout=10.0):
+    def __init__(self, slot=DEFAULT_SLOT, timeout=10.0, tcp=False):
         self.slot = slot
-        if sys.platform == "win32":
+        # Windows and Android listen on loopback TCP; Android is reached with adb forward.
+        if sys.platform == "win32" or tcp:
             self.sock = socket.create_connection(("127.0.0.1", slot), timeout=timeout)
         else:
             path = socket_path(slot)
@@ -178,6 +195,34 @@ class Pine:
     def frame_advance(self):
         self.request(MSG_FRAME_ADVANCE)
 
+    def _json(self, opcode, payload=b""):
+        return json.loads(self._read_string(self.request(opcode, payload)))
+
+    def pad_set(self, command):
+        """'<pad> <buttons> [<lx> <ly> <rx> <ry>]' or '<pad> release'; applies at the next vsync."""
+        return self._json(MSG_PAD_SET, lp_string(command))
+
+    def pad_script(self, text=None, path=None, at_load=False):
+        """Start a script given as text, or as a path the emulator reads itself."""
+        action = PAD_START_AT_LOAD if at_load else PAD_START
+        if path is not None:
+            return self._json(MSG_PAD_SCRIPT, struct.pack("<BB", action, 1) + lp_string(path))
+        return self._json(MSG_PAD_SCRIPT, struct.pack("<BB", action, 0) + lp_string(text))
+
+    def pad_script_stop(self):
+        return self._json(MSG_PAD_SCRIPT, struct.pack("<BB", PAD_STOP, 0) + lp_string(""))
+
+    def pad_record(self, path, at_load=False, pad_mask=0):
+        """Record to `path`, which the emulator opens: on Android, a path the app can write."""
+        action = PAD_START_AT_LOAD if at_load else PAD_START
+        return self._json(MSG_PAD_RECORD, struct.pack("<BB", action, pad_mask) + lp_string(path))
+
+    def pad_record_stop(self):
+        return self._json(MSG_PAD_RECORD, struct.pack("<BB", PAD_STOP, 0) + lp_string(""))
+
+    def pad_status(self):
+        return self._json(MSG_PAD_STATUS)
+
 
 def split_section_key(arg):
     """'EmuCore/GS/Key' or a separate section and key. Sections contain slashes."""
@@ -187,9 +232,38 @@ def split_section_key(arg):
     return section, key
 
 
+def run_pad(pine, args):
+    if args.pad_cmd == "set":
+        return pine.pad_set(" ".join(args.words))
+    if args.pad_cmd == "release":
+        return pine.pad_set("%d release" % args.pad)
+    if args.pad_cmd == "script":
+        if args.remote:
+            return pine.pad_script(path=args.file, at_load=args.at_load)
+        with open(args.file, "r", encoding="utf-8") as f:
+            return pine.pad_script(text=f.read(), at_load=args.at_load)
+    if args.pad_cmd == "stop":
+        return pine.pad_script_stop()
+    if args.pad_cmd == "record":
+        return pine.pad_record(args.path, at_load=args.at_load, pad_mask=args.pads)
+    if args.pad_cmd == "record-stop":
+        return pine.pad_record_stop()
+    if args.pad_cmd == "status":
+        return pine.pad_status()
+    if args.pad_cmd == "wait":
+        while True:
+            status = pine.pad_status()
+            if status["script"]["state"] == "idle":
+                return status
+            time.sleep(args.poll)
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--slot", type=int, default=DEFAULT_SLOT, help="PINE slot (default %d)" % DEFAULT_SLOT)
+    ap.add_argument("--tcp", type=int, metavar="PORT",
+                    help="connect to 127.0.0.1:PORT instead of the Unix socket (Android via adb forward)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("stats", help="dump performance/GS statistics as JSON")
@@ -223,10 +297,33 @@ def main():
     p = sub.add_parser("savestate", help="save to a savestate slot")
     p.add_argument("state_slot", type=int, metavar="slot")
 
+    p = sub.add_parser("pad", help="hold pads, play pad scripts, record the player's input")
+    pad = p.add_subparsers(dest="pad_cmd", required=True)
+    q = pad.add_parser("set", help="hold a pad: <pad> <buttons> [<lx> <ly> <rx> <ry>]")
+    q.add_argument("words", nargs="+")
+    q = pad.add_parser("release", help="give a pad back to the player")
+    q.add_argument("pad", type=int)
+    q = pad.add_parser("script", help="play a pad script")
+    q.add_argument("file", help="a local file, sent as text; with --remote, a path the emulator reads")
+    q.add_argument("--remote", action="store_true", help="FILE is a path on the emulator's side")
+    q.add_argument("--at-load", action="store_true", help="frame 0 is the next savestate load")
+    pad.add_parser("stop", help="stop the script and release the pads it holds")
+    q = pad.add_parser("record", help="record the player's input to a path on the emulator's side")
+    q.add_argument("path")
+    q.add_argument("--at-load", action="store_true", help="frame 0 is the next savestate load")
+    q.add_argument("--pads", type=int, default=0, metavar="MASK",
+                   help="bit 0 is pad 1 (default: every DualShock 2)")
+    pad.add_parser("record-stop", help="end the recording and close the file")
+    pad.add_parser("status", help="frame count, script, recording, held pads")
+    q = pad.add_parser("wait", help="wait until the script has ended")
+    q.add_argument("--poll", type=float, default=0.25, metavar="SECONDS")
+
     args = ap.parse_args()
+    if args.tcp:
+        args.slot = args.tcp
 
     try:
-        with Pine(args.slot) as pine:
+        with Pine(args.slot, tcp=bool(args.tcp)) as pine:
             if args.cmd == "stats":
                 if args.watch:
                     while True:
@@ -277,6 +374,12 @@ def main():
                 pine.load_state(args.state_slot)
             elif args.cmd == "savestate":
                 pine.save_state(args.state_slot)
+            elif args.cmd == "pad":
+                result = run_pad(pine, args)
+                if result is not None:
+                    print(json.dumps(result))
+                    if result.get("ok") is False:
+                        return 1
     except KeyboardInterrupt:
         pass
     except (PineError, OSError) as e:

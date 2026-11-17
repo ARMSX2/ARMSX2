@@ -49,7 +49,8 @@ public:
 	/// Must be called on every ring before the queue submission that reads it, which is the only
 	/// point the GPU can see any of it: command recording does not execute anything, so a draw
 	/// recorded into the command buffer being built reads nothing until that buffer is submitted.
-	/// GSDeviceVK::SubmitCommandBuffer does it for all six, immediately before vkQueueSubmit.
+	/// GSDeviceVK::SubmitCommandBuffer does it for every ring, the run machine's two included, immediately before
+	/// vkQueueSubmit.
 	void FlushPendingWrites();
 
 private:
