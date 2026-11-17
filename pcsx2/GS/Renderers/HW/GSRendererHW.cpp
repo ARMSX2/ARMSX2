@@ -6116,7 +6116,9 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	// what the run wrote, and takes the full path.
 	const HWCachedCtx& c = m_cached_ctx;
 	// Whether the channels a write under `fbmsk` makes valid (Target::UpdateValidChannels) are valid already.
-	const auto channels_valid = [](const GSTextureCache::Target* t, u32 fbmsk) {
+	const auto channels_valid = [](const GSTextureCache::Target* t, u32 fbmsk) __forceinline {
+		if (t->m_valid_rgb && t->m_valid_alpha_low && t->m_valid_alpha_high) [[likely]]
+			return true;
 		const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[t->m_TEX0.PSM];
 		const bool low = (psm.trbpp == 32 && (fbmsk & 0x0F000000) != 0x0F000000) || psm.trbpp == 16;
 		const bool high = (psm.trbpp == 32 && (fbmsk & 0xF0000000) != 0xF0000000) || psm.trbpp == 16;
