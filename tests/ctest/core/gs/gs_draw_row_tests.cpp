@@ -52,6 +52,8 @@ TEST(GSDrawRow, RecordLayouts)
 	EXPECT_EQ(sizeof(RegState), 96u);
 	EXPECT_EQ(CONF_BYTES % 16, 0u);
 	EXPECT_EQ(CB_BYTES % 16, 0u);
+	std::printf("state entry: configuration %u bytes, constant buffers %u bytes, body %zu bytes, head %zu bytes\n",
+		CONF_BYTES, CB_BYTES, sizeof(StateBody), sizeof(StateHead));
 }
 
 TEST(GSDrawRow, SequenceWindowWrapsAt24Bits)

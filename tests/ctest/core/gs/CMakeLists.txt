@@ -98,6 +98,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_blend_constant_policy_tests.cpp
 	gs_runs_policy_tests.cpp
 	gs_draw_row_tests.cpp
+	gs_draw_state_table_draw_tests.cpp
 	gs_run_snapshot_tests.cpp
 	gs_blend_carry_tests.cpp
 	gs_over_one_two_pass_tests.cpp
