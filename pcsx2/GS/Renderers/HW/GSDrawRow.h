@@ -270,16 +270,25 @@ namespace GSDrawRows
 			return FindRegSlow(k);
 		}
 
-		/// The variant of register state `reg` with these facts, or NONE. The variant that matched last, then the list.
+		/// The variant of register state `reg` with these facts, or NONE. The variant that matched last, then the list,
+		/// which keeps the variants in the order they last matched: a variant found is moved to its front, so draws
+		/// that alternate between a few variants find each within the first few.
 		__fi u16 FindVariant(u16 reg, const VarKey& v)
 		{
 			RegState& rs = Reg(reg);
 			if (rs.last_hit != NONE && Head(rs.last_hit).var.Matches(v, Head(rs.last_hit).care)) [[likely]]
 				return rs.last_hit;
-			for (u16 i = rs.first; i != NONE; i = Head(i).next)
+			u16 prev = NONE;
+			for (u16 i = rs.first; i != NONE; prev = i, i = Head(i).next)
 			{
 				if (Head(i).var.Matches(v, Head(i).care))
 				{
+					if (prev != NONE)
+					{
+						Head(prev).next = Head(i).next;
+						Head(i).next = rs.first;
+						rs.first = i;
+					}
 					rs.last_hit = i;
 					return i;
 				}

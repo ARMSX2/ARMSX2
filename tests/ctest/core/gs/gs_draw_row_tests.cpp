@@ -144,6 +144,9 @@ TEST(GSStateTable, VariantsAreFoundByTheirFacts)
 			EXPECT_EQ(table.Head(e).reg, r);
 		}
 	}
+	// A variant found in the list moves to its front.
+	EXPECT_EQ(table.FindVariant(r, vars[5]), ids[5]);
+	EXPECT_EQ(table.Reg(r).first, ids[5]);
 	// One differing bit in any word is a miss.
 	for (u32 word = 0; word < VarKey::WORDS; word++)
 	{
