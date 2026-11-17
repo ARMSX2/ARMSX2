@@ -698,7 +698,6 @@ set(pcsx2GSHeaders
 	GS/MultiISA.h
 	GS/Renderers/Common/GSBlendCarry.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
-	GS/Renderers/Common/GSRunCompiler.h
 	GS/Renderers/Common/GSRunsPolicy.h
 	GS/Renderers/Common/GSRowQueue.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
