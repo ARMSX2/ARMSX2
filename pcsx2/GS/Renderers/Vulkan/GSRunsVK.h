@@ -65,10 +65,6 @@ public:
 	/// At every vsync, outside a render pass (so no run is open): the frame's share of draws that joined runs decides
 	/// whether the next frame may open any (GSRunsPolicy::Dormancy).
 	void EndFrame();
-	/// Cleans the index and table rings' outstanding writes out of the CPU's caches, on a device whose ring memory is
-	/// not coherent. GSDeviceVK::FlushStreamRingWrites calls it before every queue submission, with the device's own
-	/// rings: the GPU reads this machine's rows and indices only once that submission runs.
-	void FlushRingWrites();
 
 private:
 	explicit GSRunsVK(GSDeviceVK* dev);

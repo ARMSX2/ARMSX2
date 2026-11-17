@@ -6399,19 +6399,11 @@ bool GSDeviceVK::CreateNullTexture()
 
 void GSDeviceVK::FlushStreamRingWrites()
 {
-	// Every ring, not just the ones this submission is known to have touched: a ring that was not
-	// written has nothing pending and costs a compare, and deciding per ring which one a
-	// submission read is the kind of bookkeeping that is wrong once and then silently wrong
-	// forever on the one device that needs the clean. The six below are the device's own; the run
-	// machine owns two more, which are on the same memory road.
-	m_vertex_stream_buffer.FlushPendingWrites();
-	m_index_stream_buffer.FlushPendingWrites();
-	m_expand_index_stream_buffer.FlushPendingWrites();
-	m_vertex_uniform_stream_buffer.FlushPendingWrites();
-	m_fragment_uniform_stream_buffer.FlushPendingWrites();
-	m_texture_stream_buffer.FlushPendingWrites();
-	if (m_runs)
-		m_runs->FlushRingWrites();
+	// Every ring that exists, not just the ones this submission is known to have touched: a ring
+	// that was not written has nothing pending and costs a compare. The registry holds every ring
+	// from its creation to its destruction, the run machine's included, which a hand-written list
+	// of the device's six left out.
+	VKStreamBuffer::FlushAllPendingWrites();
 }
 
 bool GSDeviceVK::CreateBuffers()

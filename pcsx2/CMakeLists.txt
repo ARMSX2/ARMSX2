@@ -730,6 +730,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSTargetSizePolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
+	GS/Renderers/Common/GSStreamRingRegistry.h
 	GS/Renderers/Common/GSStreamRingGrowth.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h
 	GS/Renderers/Common/GSTexture.h

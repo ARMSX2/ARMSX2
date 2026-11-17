@@ -881,12 +881,6 @@ void GSRunsVK::Flush(Why)
 	m_flushing = false;
 }
 
-void GSRunsVK::FlushRingWrites()
-{
-	m_index_stream.FlushPendingWrites();
-	m_table_stream.FlushPendingWrites();
-}
-
 void GSRunsVK::EndFrame()
 {
 	m_dormancy.EndFrame(m_frame_draws, m_frame_joined);

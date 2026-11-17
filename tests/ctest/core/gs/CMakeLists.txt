@@ -28,6 +28,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_dynamic_feedback_loop_tests.cpp
 	gs_stream_ring_memory_tests.cpp
 	gs_stream_ring_flush_tests.cpp
+	gs_stream_ring_registry_tests.cpp
 	gs_stream_ring_growth_tests.cpp
 	gs_gpu_driver_profile_tests.cpp
 	gs_driver_report_tests.cpp

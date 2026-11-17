@@ -4,6 +4,7 @@
 #pragma once
 
 #include "GS/Renderers/Common/GSStreamRingFlushRange.h"
+#include "GS/Renderers/Common/GSStreamRingRegistry.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 
 #include "vk_mem_alloc.h"
@@ -49,11 +50,17 @@ public:
 	/// Must be called on every ring before the queue submission that reads it, which is the only
 	/// point the GPU can see any of it: command recording does not execute anything, so a draw
 	/// recorded into the command buffer being built reads nothing until that buffer is submitted.
-	/// GSDeviceVK::SubmitCommandBuffer does it for every ring, the run machine's two included, immediately before
-	/// vkQueueSubmit.
+	/// GSDeviceVK::SubmitCommandBuffer does it through FlushAllPendingWrites, immediately before vkQueueSubmit.
 	void FlushPendingWrites();
 
+	/// FlushPendingWrites on every ring that exists: a ring joins the registry when it is created and leaves it when
+	/// it is destroyed, so none can be left out.
+	static void FlushAllPendingWrites();
+	static const GSStreamRingRegistry<VKStreamBuffer>& Rings() { return Registry(); }
+
 private:
+	static GSStreamRingRegistry<VKStreamBuffer>& Registry();
+
 	struct ClearSpace
 	{
 		/// Index into m_tracked_fences of the fence to wait for.

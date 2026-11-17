@@ -41,6 +41,18 @@ VKStreamBuffer::VKStreamBuffer(VKStreamBuffer&& move)
 	move.m_host_pointer = nullptr;
 	move.m_non_coherent = false;
 	move.m_pending_flush.Reset();
+	Registry().Replace(&move, this);
+}
+
+GSStreamRingRegistry<VKStreamBuffer>& VKStreamBuffer::Registry()
+{
+	static GSStreamRingRegistry<VKStreamBuffer> rings;
+	return rings;
+}
+
+void VKStreamBuffer::FlushAllPendingWrites()
+{
+	Registry().ForEach([](VKStreamBuffer& ring) { ring.FlushPendingWrites(); });
 }
 
 VKStreamBuffer::~VKStreamBuffer()
@@ -66,6 +78,7 @@ VKStreamBuffer& VKStreamBuffer::operator=(VKStreamBuffer&& move)
 	std::swap(m_tracked_fences, move.m_tracked_fences);
 	std::swap(m_non_coherent, move.m_non_coherent);
 	std::swap(m_pending_flush, move.m_pending_flush);
+	Registry().Swap(this, &move);
 
 	return *this;
 }
@@ -170,6 +183,7 @@ bool VKStreamBuffer::Create(VkBufferUsageFlags usage, u32 size, const char* name
 		}
 	}
 
+	Registry().Add(this);
 	return true;
 }
 
@@ -198,6 +212,7 @@ void VKStreamBuffer::Destroy(bool defer)
 	m_host_pointer = nullptr;
 	m_non_coherent = false;
 	m_pending_flush.Reset();
+	Registry().Remove(this);
 }
 
 bool VKStreamBuffer::ReserveMemory(u32 num_bytes, u32 alignment)
