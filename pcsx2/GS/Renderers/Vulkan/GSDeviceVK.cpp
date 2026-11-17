@@ -201,11 +201,6 @@ GSDeviceVK::GSDeviceVK()
 #endif
 
 	std::memset(&m_pipeline_selector, 0, sizeof(m_pipeline_selector));
-	if (g_gs_measurement_overrides.readback_kick_passes != 0)
-	{
-		m_readback_kick_passes = g_gs_measurement_overrides.readback_kick_passes;
-		Console.WriteLn("VK: measurement override: readback kick after %u unsubmitted render passes", m_readback_kick_passes);
-	}
 }
 
 GSDeviceVK::~GSDeviceVK() = default;
@@ -9810,7 +9805,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	// boundary. Most passes end at a target switch rather than with no pass open, so without
 	// that boundary many readback frames never kick before their readback at all.
 	//
-	// A kick needs m_readback_kick_passes unsubmitted passes, the open one included. Every submit sleeps
+	// A kick needs READBACK_KICK_PASSES unsubmitted passes, the open one included. Every submit sleeps
 	// in the driver on Android's Adreno drivers, and the governor answers the sleeps by lowering
 	// the GS thread's clock, so kicking at every boundary costs more there than the earlier
 	// start saves.
@@ -9841,7 +9836,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 	const bool at_pass_boundary = !InRenderPass() ||
 		(no_pass_state && !(config.rt && config.rt == m_current_render_target) && !(config.ds && config.ds == m_current_depth_target));
 	const u32 unsubmitted_passes = m_render_passes_since_submit + (InRenderPass() ? 1u : 0u);
-	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= m_readback_kick_passes;
+	const bool kick_at_boundary = at_pass_boundary && unsubmitted_passes >= READBACK_KICK_PASSES;
 	// After the gate refuses an in-pass kick, the next offer waits a few draws: offering at every draw
 	// would ask the driver for two fence states per draw while the GPU is behind.
 	//
