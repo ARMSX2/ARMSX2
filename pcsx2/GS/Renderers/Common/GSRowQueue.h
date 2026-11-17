@@ -39,6 +39,16 @@ public:
 		return false;
 	}
 
+	/// Whether holding this row back can change anything: only a window of twin pairs is reordered, so the queue takes
+	/// a row that can be a twin base, or a row after a base that can be its twin. Anything else is drawn at once, after
+	/// the queue: holding it would cost a copy of its configuration and geometry and buy nothing.
+	bool Wants(const GSHWDrawConfig& config) const
+	{
+		if (CanBeTwinBase(config))
+			return true;
+		return !m_rows.empty() && m_compiler_rows.back().role == GSRunCompiler::ROLE_BASE && CanBeTwin(config);
+	}
+
 	/// Copies the row (its vertices and indices too: they live in GSState's per-draw buffers). False when the queue must
 	/// be emitted first: another target pair, or full.
 	bool Enqueue(const GSHWDrawConfig& config, GSRowDeviceCache& cache, bool sort_twins)

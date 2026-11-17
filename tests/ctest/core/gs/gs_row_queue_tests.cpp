@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The row queue (GS/Renderers/Common/GSRowQueue.h) through GSDevice::DrawRow on the deviceless None backend: rows wait
-// until a device entry point could observe them, a colour-clip row and a row for another target pair do not wait,
+// The row queue (GS/Renderers/Common/GSRowQueue.h) through GSDevice::DrawRow on the deviceless None backend: rows the
+// twin sort could move wait until a device entry point could observe them, other rows, a colour-clip row and a row for
+// another target pair do not wait,
 // uploads and clears of what a row uses emit the queue first, and the twin sort draws a window's bases before its
 // twins. The device records the tag each row carries in its first vertex's fog word.
 
@@ -104,6 +105,8 @@ TEST_F(GSRowQueueTest, RowsWaitUntilSomethingCouldSeeThem)
 {
 	auto rt = Target();
 	Row a(rt.get(), 1), b(rt.get(), 2);
+	a.Base();
+	b.Base();
 	dev->DrawRow(a.config, a.cache);
 	dev->DrawRow(b.config, b.cache);
 	EXPECT_TRUE(dev->drawn.empty());
@@ -115,6 +118,7 @@ TEST_F(GSRowQueueTest, GeometryIsCopied)
 {
 	auto rt = Target();
 	Row a(rt.get(), 1);
+	a.Base();
 	dev->DrawRow(a.config, a.cache);
 	a.verts[0].FOG = 99; // the next draw reuses the caller's buffers
 	dev->FlushBeforeReadback();
@@ -125,6 +129,8 @@ TEST_F(GSRowQueueTest, AColourClipRowIsDrawnAtOnceAfterTheQueue)
 {
 	auto rt = Target();
 	Row a(rt.get(), 1), b(rt.get(), 2);
+	a.Base();
+	b.Base();
 	b.config.colclip_mode = GSHWDrawConfig::ColClipMode::ConvertOnly;
 	dev->DrawRow(a.config, a.cache);
 	dev->DrawRow(b.config, b.cache);
@@ -136,6 +142,8 @@ TEST_F(GSRowQueueTest, AnotherTargetEmitsTheQueueFirst)
 	auto rt = Target();
 	auto rt2 = Target();
 	Row a(rt.get(), 1), b(rt2.get(), 2);
+	a.Base();
+	b.Base();
 	dev->DrawRow(a.config, a.cache);
 	dev->DrawRow(b.config, b.cache);
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
@@ -149,6 +157,7 @@ TEST_F(GSRowQueueTest, AnUploadIntoASampledTextureEmitsFirst)
 	auto tex = Texture();
 	auto other = Texture();
 	Row a(rt.get(), 1, 0, tex.get());
+	a.Base();
 	dev->DrawRow(a.config, a.cache);
 	u32 pixels[16 * 16] = {};
 	other->Update(GSVector4i(0, 0, 16, 16), pixels, 16 * 4);
@@ -162,6 +171,7 @@ TEST_F(GSRowQueueTest, AClearOfTheTargetEmitsFirst)
 	auto rt = Target();
 	auto other = Target();
 	Row a(rt.get(), 1);
+	a.Base();
 	dev->DrawRow(a.config, a.cache);
 	dev->ClearRenderTarget(other.get(), 0);
 	EXPECT_TRUE(dev->drawn.empty());
@@ -169,10 +179,22 @@ TEST_F(GSRowQueueTest, AClearOfTheTargetEmitsFirst)
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
 }
 
+TEST_F(GSRowQueueTest, ARowTheSortCannotMoveIsDrawnAtOnceAfterTheQueue)
+{
+	auto rt = Target();
+	Row a(rt.get(), 1), b(rt.get(), 2);
+	a.Base();
+	dev->DrawRow(a.config, a.cache);
+	EXPECT_TRUE(dev->drawn.empty());
+	dev->DrawRow(b.config, b.cache); // tests nothing, writes no depth: neither a base nor a twin
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+}
+
 TEST_F(GSRowQueueTest, AnOrdinaryDrawEmitsTheQueueFirst)
 {
 	auto rt = Target();
 	Row a(rt.get(), 1), b(rt.get(), 2);
+	a.Base();
 	dev->DrawRow(a.config, a.cache);
 	dev->RenderHW(b.config);
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 0x80000002u}));

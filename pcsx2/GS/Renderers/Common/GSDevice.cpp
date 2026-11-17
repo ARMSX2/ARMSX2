@@ -1320,7 +1320,8 @@ void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	const bool sort = !g_gs_measurement_overrides.rows_unsorted;
 	if (!m_rows_defer || g_gs_measurement_overrides.rows_immediate || GSConfig.CoalesceRenderPasses || m_flushing ||
 		IsDSInRTActive() || m_colclip_rt || config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify ||
-		config.ps.colclip_hw || config.colclip_native_scale > 1.0f)
+		config.ps.colclip_hw || config.colclip_native_scale > 1.0f || (!g_gs_measurement_overrides.rows_unsorted &&
+		!m_row_queue->Wants(config)))
 	{
 		FlushDeferredDraws();
 		DoDrawRow(config, cache);
