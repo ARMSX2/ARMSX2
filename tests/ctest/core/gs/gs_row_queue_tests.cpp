@@ -285,3 +285,22 @@ TEST_F(GSRowQueueTest, ARecycledSampledTextureWaitsForTheQueue)
 	dev->FlushBeforeReadback();
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
 }
+
+TEST_F(GSRowQueueTest, ABaseThatFloorsItsDepthStillHasATwin)
+{
+	// Adreno floors a depth-writing base's depth and not its twin's; the pair is still a twin.
+	auto rt = Target();
+	std::vector<std::unique_ptr<Row>> rows;
+	for (u32 p = 0; p < 2; p++)
+	{
+		rows.push_back(std::make_unique<Row>(rt.get(), 10 + p, 100 * (p + 1)));
+		rows.back()->Base();
+		rows.back()->config.ps.zfloor = 1;
+		rows.push_back(std::make_unique<Row>(rt.get(), 20 + p, 100 * (p + 1)));
+		rows.back()->Twin();
+	}
+	for (auto& r : rows)
+		dev->DrawRow(r->config, r->cache);
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 11, 20, 21}));
+}

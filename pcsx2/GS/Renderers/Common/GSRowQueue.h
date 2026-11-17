@@ -160,9 +160,11 @@ private:
 			const Record& p = m_rows[i - 1];
 			const GSHWDrawConfig& b = p.config;
 			// The twin covers exactly its base's pixels at its base's depth: the same primitives, positions, scissor and
-			// vertex transform.
+			// vertex transform. The depth floor (Adreno) may differ between them: the base floors the depth it tests
+			// and writes and the twin tests its own unfloored depth, and both orders still agree, since a later base
+			// that passed holds a floored depth above the earlier base's floor, so above the twin's depth too.
 			if (c.nverts == b.nverts && c.nindices == b.nindices && c.topology == b.topology && c.vs.key == b.vs.key &&
-				c.scissor.eq(b.scissor) && c.ps.zfloor == b.ps.zfloor &&
+				c.scissor.eq(b.scissor) &&
 				std::memcmp(&c.cb_vs.vertex_scale, &b.cb_vs.vertex_scale, sizeof(GSVector2)) == 0 &&
 				std::memcmp(&c.cb_vs.vertex_offset, &b.cb_vs.vertex_offset, sizeof(GSVector2)) == 0 &&
 				c.cb_vs.max_depth == b.cb_vs.max_depth &&
