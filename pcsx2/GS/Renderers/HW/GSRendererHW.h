@@ -560,6 +560,7 @@ private:
 	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
 	GSDrawRows::StateTable m_states;
 	RowRun m_row_run;
+	u16 m_draw_entry = GSDrawRows::StateTable::NONE; ///< the entry the draw in hand took its state from, NONE if derived
 	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
 	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack
 	bool m_row_colclip_written = false; ///< the derivation set colclip_mode and colclip_frame

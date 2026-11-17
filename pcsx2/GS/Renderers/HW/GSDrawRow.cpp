@@ -4,6 +4,7 @@
 #include "GS/Renderers/HW/GSDrawRow.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace GSDrawRows
 {
@@ -77,6 +78,7 @@ namespace GSDrawRows
 		{
 			m_heads.push_back(std::make_unique<StateHead[]>(CHUNK));
 			m_bodies.push_back(std::make_unique<StateBody[]>(CHUNK));
+			m_devices.push_back(std::make_unique<GSRowDeviceCache[]>(CHUNK));
 		}
 
 		const u16 i = static_cast<u16>(m_entry_count++);
@@ -85,6 +87,7 @@ namespace GSDrawRows
 		h.var = v;
 		h.reg = reg;
 		h.hits = 0;
+		std::memset(&Device(i), 0, sizeof(GSRowDeviceCache));
 		h.next = rs.first;
 		rs.first = i;
 		rs.last_hit = i;

@@ -213,6 +213,7 @@ namespace GSDrawRows
 		__fi RegState& Reg(u16 i) { return m_regs[i / CHUNK][i % CHUNK]; }
 		__fi StateHead& Head(u16 i) { return m_heads[i / CHUNK][i % CHUNK]; }
 		__fi StateBody& Body(u16 i) { return m_bodies[i / CHUNK][i % CHUNK]; }
+		__fi GSRowDeviceCache& Device(u16 i) { return m_devices[i / CHUNK][i % CHUNK]; }
 
 		u32 RegCount() const { return m_reg_count; }
 		u32 EntryCount() const { return m_entry_count; }
@@ -231,6 +232,7 @@ namespace GSDrawRows
 		std::vector<std::unique_ptr<RegState[]>> m_regs;
 		std::vector<std::unique_ptr<StateHead[]>> m_heads;
 		std::vector<std::unique_ptr<StateBody[]>> m_bodies;
+		std::vector<std::unique_ptr<GSRowDeviceCache[]>> m_devices;
 		std::vector<u16> m_index; ///< open addressing on the register key's hash, NONE when empty
 		u32 m_mask = 0;
 	};
@@ -251,6 +253,9 @@ namespace GSDrawRows
 		u64 rows = 0; ///< draws that skipped the target search (or would have, in check mode)
 		u64 row_checked = 0; ///< check mode: rows whose full path was compared
 		u64 row_mismatches = 0; ///< check mode: rows where the full path changed what the row skips
+		u64 device_rows = 0; ///< draws handed to GSDevice::DrawRow
+		u64 device_rows_plain = 0; ///< of those, drawn by the backend's plain path
+		u64 device_rows_refused[9] = {}; ///< why not: no pass, the draw's roads, targets, target state, textures, feedback bits, kept copy, colour clip, readback window
 		u32 reg_states = 0; ///< register states in the table after the last miss
 		u32 entries = 0; ///< entries in the table after the last miss
 		u64 flushes = 0;

@@ -12000,6 +12000,7 @@ bool GSRendererHW::DrawState(GSTextureCache::Target* rt, GSTextureCache::Target*
 	const GSVector2i& rt_unscaled_size, DerivedDraw& out)
 {
 	using namespace GSDrawRows;
+	m_draw_entry = StateTable::NONE;
 	if (!DrawStateEligible(date_options)) [[unlikely]]
 	{
 		if (s_stats || s_mode != Mode::On)
@@ -12065,6 +12066,7 @@ bool GSRendererHW::DrawState(GSTextureCache::Target* rt, GSTextureCache::Target*
 				const StateBody& body = m_states.Body(ei);
 				if (!(body.flags & StateBody::NOT_ROWABLE)) [[likely]]
 				{
+					m_draw_entry = ei;
 					ApplyDrawState(body, rt, ds, tex, prep, out);
 					return !(body.flags & (StateBody::CANCEL | StateBody::ABORT));
 				}
@@ -12094,6 +12096,7 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 	{
 		stats.hits++;
 		const StateBody& body = m_states.Body(ei);
+		m_draw_entry = ei;
 		ApplyDrawState(body, rt, ds, tex, prep, out);
 		return !(body.flags & (StateBody::CANCEL | StateBody::ABORT));
 	}
@@ -12634,7 +12637,11 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (!m_channel_shuffle_width)
 	{
 		m_draw_color_dispatch_accepted = rt && m_conf.rt == rt->m_texture && m_conf.colormask.wrgba != 0;
-		g_gs_device->RenderHW(m_conf);
+		// A draw whose state came from the table hands the device that entry's cache with it.
+		if (m_draw_entry != GSDrawRows::StateTable::NONE)
+			g_gs_device->DrawRow(m_conf, m_states.Device(m_draw_entry));
+		else
+			g_gs_device->RenderHW(m_conf);
 	}
 	else
 		m_last_rt = rt;

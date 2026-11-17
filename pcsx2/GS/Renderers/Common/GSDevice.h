@@ -697,6 +697,13 @@ struct HWBlend
 	BlendFactor src, dst;
 };
 
+/// What a backend keeps for one entry of the hardware renderer's state table, so that a draw of that state skips work
+/// the backend would repeat. Opaque to the renderer, which zeroes it when the entry is made.
+struct alignas(16) GSRowDeviceCache
+{
+	u8 bytes[48];
+};
+
 struct alignas(16) GSHWDrawConfig
 {
 	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
@@ -2266,6 +2273,11 @@ public:
 	/// GSPassScheduler. Any device entry point that could observe the result flushes
 	/// first, so the deferral is invisible.
 	void RenderHW(GSHWDrawConfig& config);
+
+	/// A draw whose state came from the hardware renderer's state table (GSDrawRow.h), with that entry's device cache.
+	/// A backend may draw it with less work than RenderHW where nothing about the draw needs more; the default draws
+	/// it like any other.
+	virtual void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) { RenderHW(config); }
 
 	/// Emits any draws the render-pass scheduler is holding back, in an order that
 	/// preserves what every deferred draw would have seen had it run immediately.

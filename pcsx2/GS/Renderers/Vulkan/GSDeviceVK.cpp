@@ -9,6 +9,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/HW/GSDrawRow.h"
 #include "GS/Renderers/Vulkan/GSLsfg.h"
 #include "GS/Renderers/Vulkan/GSRunsVK.h"
 #include "GS/Renderers/Vulkan/VKBuilders.h"
@@ -7657,8 +7658,13 @@ bool GSDeviceVK::DoSGSR(GSTexture* sTex, GSTexture* dTex, const std::array<u32, 
 	return true;
 }
 
+// Generation of the TFX pipelines: raised whenever they are destroyed, so that an entry's remembered pipeline from an
+// earlier device or an earlier set of pipelines is never bound. A zeroed cache (generation 0) never matches.
+static u32 s_row_cache_gen = 1;
+
 void GSDeviceVK::DestroyResources()
 {
+	s_row_cache_gen++;
 	// Before anything a worker reads is destroyed.
 	StopPipelinePrecompile();
 	m_compile_queue.Stop();
@@ -10554,6 +10560,200 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 			Recycle(colclip_rt);
 			g_gs_device->SetColorClipTexture(nullptr);
+		}
+	}
+
+	config.colclip_mode = GSHWDrawConfig::ColClipMode::NoModify;
+}
+
+bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt,
+	bool& keep_ds)
+{
+	// Nothing deferred or set up around the draw: no coalescing, no depth-as-colour sequence, no in-pass kick due,
+	// no colour clip target, no kept target copy.
+	constexpr u32 readback_window_frames = 3;
+	const auto refuse = [](u32 why) {
+		if (GSDrawRows::s_stats) [[unlikely]]
+			GSDrawRows::stats.device_rows_refused[why]++;
+		return false;
+	};
+	if (GSConfig.CoalesceRenderPasses || IsDSInRTActive() || !InRenderPass())
+		return refuse(0);
+	if (m_run_snapshot.tex)
+		return refuse(6);
+	if (GetColorClipTexture())
+		return refuse(7);
+	// In a readback-prone frame DoRenderHW may end the pass to submit (its in-pass kick). A draw the open pass keeps
+	// is never at a pass boundary, so only the in-pass offer can fire: the full path takes the draws where it would.
+	if (m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames)
+	{
+		RollKickBudgetFrame();
+		if (m_draws_since_submit >= READBACK_KICK_DRAWS && m_draws_since_submit >= m_next_in_pass_kick_offer &&
+			(m_kick_ns_frame + m_kick_cost_ns) * 4 <= m_readback_block_ns_avg)
+			return refuse(8);
+	}
+	// A plain draw: one pass of one pipeline, nothing read from the targets.
+	if (config.stencil_counter.enable || config.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
+		config.date_copy != GSAlphaBitLogicOp::NoDateCopy || config.require_one_barrier || config.require_full_barrier ||
+		config.blend_multi_pass.enable || config.alpha_second_pass.enable || config.colormask.logic_op != GSAlphaBitLogicOp::Off ||
+		config.ps.HasColorROV() || config.ps.HasDepthROV() || config.ps.colclip_hw || config.colclip_native_scale > 1.0f ||
+		config.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE || config.road.clone_rt || config.road.rt_loop ||
+		config.road.depth_loop || config.road.depth_read || config.raster_order || config.IsFeedbackLoopRT(config.ps) ||
+		config.IsFeedbackLoopDepth(config.ps))
+		return refuse(1);
+	// The open pass's own targets, as DoRenderHW keeps them: a draw without one of the two keeps the pass's.
+	draw_rt = static_cast<GSTextureVK*>(config.rt);
+	draw_ds = static_cast<GSTextureVK*>(config.ds);
+	keep_rt = keep_ds = false;
+	if (!((draw_rt && m_current_render_target == draw_rt) || (draw_ds && m_current_depth_target == draw_ds)))
+		return refuse(2);
+	if (!draw_rt && m_current_render_target && config.tex != m_current_render_target && draw_ds &&
+		m_current_render_target->GetSize() == draw_ds->GetSize())
+	{
+		draw_rt = m_current_render_target;
+		keep_rt = true;
+	}
+	else if (!draw_ds && m_current_depth_target && config.tex != m_current_depth_target && draw_rt &&
+			 m_current_depth_target->GetSize() == draw_rt->GetSize())
+	{
+		draw_ds = m_current_depth_target;
+		keep_ds = true;
+	}
+	if (draw_rt != m_current_render_target || draw_ds != m_current_depth_target ||
+		(draw_rt && draw_rt->GetState() != GSTexture::State::Dirty) || (draw_ds && draw_ds->GetState() != GSTexture::State::Dirty))
+		return refuse(3);
+	// The open pass's feedback bits, kept on the draw where its road carries them (the draw reads nothing itself).
+	// Anything else would end the pass.
+	u32 loop = FeedbackLoopFlag_None;
+	if (config.road.carry_rt && draw_rt)
+		loop |= m_current_framebuffer_feedback_loop & FeedbackLoopFlag_ReadAndWriteRT;
+	if (config.road.carry_depth && draw_ds)
+		loop |= m_current_framebuffer_feedback_loop & (FeedbackLoopFlag_ReadAndWriteDepth | FeedbackLoopFlag_ReadDepth);
+	if (loop != m_current_framebuffer_feedback_loop)
+		return refuse(5);
+	// Textures ready to sample without a clear or a transition, which would end the pass; none bound for ROV.
+	const auto ready = [](const GSTexture* t) {
+		const GSTextureVK* vt = static_cast<const GSTextureVK*>(t);
+		return vt->GetState() == GSTexture::State::Dirty && vt->GetLayout() == GSTextureVK::Layout::ShaderReadOnly;
+	};
+	const auto bound = [this](const GSTextureVK* t) { return t && t != m_null_texture.get(); };
+	if ((config.tex && (config.tex == config.rt || config.tex == config.ds || !ready(config.tex))) || (config.pal && !ready(config.pal)) ||
+		bound(m_tfx_textures[TFX_TEXTURE_RT_ROV]) || bound(m_tfx_textures[TFX_TEXTURE_DEPTH_ROV]))
+		return refuse(4);
+	return true;
+}
+
+void GSDeviceVK::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache_bytes)
+{
+	GSTextureVK* draw_rt;
+	GSTextureVK* draw_ds;
+	bool keep_rt, keep_ds;
+	const bool plain = RowIsPlain(config, draw_rt, draw_ds, keep_rt, keep_ds);
+	if (GSDrawRows::s_stats) [[unlikely]]
+	{
+		GSDrawRows::stats.device_rows++;
+		GSDrawRows::stats.device_rows_plain += plain;
+	}
+	if (!plain)
+	{
+		RenderHW(config);
+		return;
+	}
+
+	// DoRenderHW's plain path, in its order.
+	if (m_runs)
+	{
+		m_runs->Classify(config);
+		if (m_runs->Candidate())
+		{
+			const bool date_copy_valid = m_date_copy.valid;
+			if (date_copy_valid && config.colormask.wa)
+				m_date_copy.valid = false;
+			if (m_runs->Continue(config))
+			{
+				m_draws_since_submit++;
+				return;
+			}
+			m_date_copy.valid = date_copy_valid;
+		}
+	}
+	RollKickBudgetFrame();
+	m_draws_since_submit++;
+	if (m_date_copy.valid && config.colormask.wa)
+		m_date_copy.valid = false;
+
+	const GSVector2i rtsize(config.rt ? config.rt->GetSize() : config.ds->GetSize());
+	SetVSConstantBuffer(config.cb_vs);
+	SetPSConstantBuffer(config.cb_ps);
+	if (config.tex)
+	{
+		PSSetShaderResource(TFX_TEXTURE_TEXTURE, config.tex, true);
+		PSSetSampler(config.sampler);
+	}
+	if (config.pal)
+		PSSetShaderResource(TFX_TEXTURE_PALETTE, config.pal, true);
+	if (config.blend.constant_enable)
+		SetBlendConstants(config.blend.constant);
+	if (config.topology == GSHWDrawConfig::Topology::Line)
+		SetLineWidth(config.line_expand ? config.cb_ps.ScaleFactor.z : 1.0f);
+
+	PipelineSelector& pipe = m_pipeline_selector;
+	UpdateHWPipelineSelector(config, pipe);
+
+	if (!config.tex && ((config.rt && static_cast<GSTextureVK*>(config.rt) == m_tfx_textures[0]) ||
+						   (config.ds && static_cast<GSTextureVK*>(config.ds) == m_tfx_textures[0])))
+	{
+		PSSetShaderResource(0, nullptr, false);
+	}
+	if (keep_rt)
+		pipe.rt = true;
+	if (keep_ds)
+		pipe.ds = true;
+	// The pass's carried feedback bits (RowIsPlain checked they are exactly the pass's).
+	pipe.feedback_loop_flags |= m_current_framebuffer_feedback_loop;
+	if (pipe.IsRTFeedbackLoop())
+		PSSetShaderResource(TFX_TEXTURE_RT, draw_rt, false);
+	else
+		PSSetShaderResource(TFX_TEXTURE_RT, nullptr, false);
+	if (pipe.IsDepthFeedbackLoop())
+		PSSetShaderResource(TFX_TEXTURE_DEPTH, draw_ds, false);
+	else
+		PSSetShaderResource(TFX_TEXTURE_DEPTH, nullptr, false);
+	PSSetROVs(nullptr, nullptr, config.ps.HasColorOutput(), config.ps.HasDepthROVWrite());
+	OMSetRenderTargets(draw_rt, draw_ds, config.scissor, static_cast<FeedbackLoopFlag>(pipe.feedback_loop_flags), rtsize);
+	pxAssert(InRenderPass());
+
+	const bool in_run = m_runs && m_runs->Candidate() && m_runs->Append(config, pipe.feedback_loop_flags, pipe.ps.colclip_hw, m_tfx_sampler);
+	if (!in_run)
+	{
+		UploadHWDrawVerticesAndIndices(config);
+		// The entry's pipeline, remembered with the selector it was looked up for: the selector can still differ
+		// between draws of one entry (the blend carry, the targets kept), and then it is looked up again.
+		RowCache& cache = reinterpret_cast<RowCache&>(cache_bytes);
+		VkPipeline pipeline;
+		if (cache.gen == s_row_cache_gen && cache.sel == pipe)
+		{
+			pipeline = cache.pipeline;
+		}
+		else
+		{
+			pipeline = GetTFXPipeline(pipe);
+			if (pipeline != VK_NULL_HANDLE)
+			{
+				cache.sel = pipe;
+				cache.pipeline = pipeline;
+				cache.gen = s_row_cache_gen;
+			}
+		}
+		if (pipeline != VK_NULL_HANDLE)
+		{
+			SetPipeline(pipeline);
+			if (ApplyTFXState())
+			{
+				DeclareDrawFeedbackLoop(config, pipe);
+				SendHWDraw(config, pipe.IsRTFeedbackLoop() ? draw_rt : nullptr, pipe.IsDepthFeedbackLoop() ? draw_ds : nullptr,
+					false, false);
+			}
 		}
 	}
 

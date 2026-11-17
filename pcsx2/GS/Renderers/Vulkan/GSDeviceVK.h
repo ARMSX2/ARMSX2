@@ -1029,6 +1029,21 @@ public:
 	bool BindDrawPipeline(const PipelineSelector& p);
 
 	void DoRenderHW(GSHWDrawConfig& config) override;
+	/// A draw of a known state (GSDrawRow.h). A plain draw into the open pass's own targets, with nothing pending on
+	/// them or on its textures, takes DoRenderHW's plain path with the entry's pipeline remembered; any other draw
+	/// goes through RenderHW.
+	void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
+	/// What DrawRow keeps in an entry's GSRowDeviceCache: the selector its pipeline was looked up for.
+	struct RowCache
+	{
+		PipelineSelector sel;
+		VkPipeline pipeline;
+		u32 gen; ///< s_row_cache_gen when filled; pipelines of an older generation were destroyed
+		u32 pad;
+	};
+	static_assert(sizeof(RowCache) <= sizeof(GSRowDeviceCache));
+	/// Whether DrawRow's plain path holds for this draw, and the targets it then draws into.
+	bool RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt, bool& keep_ds);
 	void UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe);
 	void UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config);
 	VkImageMemoryBarrier GetColorBufferFeedbackBarrier(GSTextureVK* rt) const;
