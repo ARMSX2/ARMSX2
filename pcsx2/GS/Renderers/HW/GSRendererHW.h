@@ -234,6 +234,22 @@ private:
 
 	void ResetStates();
 
+	/// What Draw() knows about a draw that its after-draw upkeep reads.
+	struct DrawEffect
+	{
+		GSVector4i real_rect; ///< the draw's rectangle in the target, unscaled
+		GSVector2i resolution; ///< the display's, when the target may not grow past twice its height
+		const GSDrawingContext* context;
+		const GSLocalMemory::psm_t* frame_psm; ///< FRAME's format as Draw() took it
+		GSTextureCache::Target* old_rt; ///< a target replaced by double-buffering, to be invalidated
+		GSTextureCache::Target* old_ds;
+		u32 fm, fm_mask, zm; ///< frame mask, the format's mask bits, depth mask
+		bool no_rt, no_ds; ///< Draw()'s verdicts: no colour, no depth written
+		bool can_update_size;
+		bool skip_draw;
+	};
+	void ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e);
+
 	/// What the state derivation leaves for the rest of DrawPrims.
 	struct DerivedDraw
 	{

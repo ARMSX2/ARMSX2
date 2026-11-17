@@ -5963,6 +5963,46 @@ void GSRendererHW::Draw()
 		DrawPrims(rt, ds, src, tmm);
 
 
+	DrawEffect effect;
+	effect.real_rect = real_rect;
+	effect.resolution = resolution;
+	effect.context = context;
+	effect.frame_psm = &frame_psm;
+	effect.old_rt = old_rt;
+	effect.old_ds = old_ds;
+	effect.fm = fm;
+	effect.fm_mask = fm_mask;
+	effect.zm = zm;
+	effect.no_rt = no_rt;
+	effect.no_ds = no_ds;
+	effect.can_update_size = can_update_size;
+	effect.skip_draw = skip_draw;
+	ApplyDrawEffect(rt, ds, effect);
+
+	//
+
+	CleanupDraw(false);
+}
+
+// What a draw does to tracked state after it is drawn: the targets' valid and drawn areas and last draw, the
+// temporary depth buffer's copy-back, the GPU palette's dirty mark, and the texture cache's invalidation of what the
+// draw overwrote. The target's alpha knowledge is written by the derivation, or from a state entry, before this.
+void GSRendererHW::ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e)
+{
+	const GSVector4i real_rect = e.real_rect;
+	const GSVector2i resolution = e.resolution;
+	const GSDrawingContext* const context = e.context;
+	GSTextureCache::Target* const old_rt = e.old_rt;
+	GSTextureCache::Target* const old_ds = e.old_ds;
+	const u32 fm = e.fm;
+	const u32 fm_mask = e.fm_mask;
+	const u32 zm = e.zm;
+	const bool no_rt = e.no_rt;
+	const bool no_ds = e.no_ds;
+	const bool can_update_size = e.can_update_size;
+	const bool skip_draw = e.skip_draw;
+	const GSLocalMemory::psm_t& frame_psm = *e.frame_psm;
+
 	// Temporary source *must* be invalidated before normal, because otherwise it'll be double freed.
 	g_texture_cache->InvalidateTemporarySource();
 
@@ -6141,10 +6181,6 @@ void GSRendererHW::Draw()
 	if (rt)
 		g_texture_cache->Read(rt, real_rect);
 #endif
-
-	//
-
-	CleanupDraw(false);
 }
 
 /// Verifies assumptions we expect to hold about indices
