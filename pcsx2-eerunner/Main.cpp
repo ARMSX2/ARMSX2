@@ -5442,6 +5442,9 @@ static void StressStep(u32 frame)
 // comparison of two runs says which part moved first. The EE cycle is printed as it is.
 static void WriteFrameHashes(std::FILE* out, u32 frame)
 {
+	// With MTVU the VU1 thread may still be running the frame's last program; VU1 memory is read once it is idle.
+	if (THREAD_VU1)
+		vu1Thread.WaitVU();
 	const u64 regs = ee_divtrace::FingerprintCpu();
 	const u64 ee_ram = ee_divtrace::HashMemory();
 	const u64 iop_ram = iopMem ? XXH3_64bits(iopMem->Main, Ps2MemSize::IopRam) : 0;
