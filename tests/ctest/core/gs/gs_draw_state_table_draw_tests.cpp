@@ -217,3 +217,41 @@ TEST_F(GSStateTableDraw, ADrawThatSamplesItsOwnFrameIsNotARow)
 	p.Send(*m_gs, prim);
 	EXPECT_EQ(GSDrawRows::stats.rows, rows_before);
 }
+
+// A draw that writes a channel its target has never held valid makes it valid in the target upkeep a row skips, so it
+// takes the full path (found by the row check on Burnout 3).
+TEST_F(GSStateTableDraw, ADrawThatFirstWritesAChannelIsNotARow)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	GSDrawRows::s_mode = GSDrawRows::Mode::On;
+	GSDrawRows::s_stats = true;
+	GSDrawRows::stats = {};
+
+	const auto draw = [this](u32 fbmsk) {
+		Packet p;
+		Environment(p, kFBP, PSMCT32);
+		Texture(p, kTBP, PSMCT32);
+		GIFReg r = {};
+		r.FRAME.FBP = kFBP;
+		r.FRAME.FBW = 10;
+		r.FRAME.PSM = PSMCT32;
+		r.FRAME.FBMSK = fbmsk;
+		p.Reg(GIF_A_D_REG_FRAME_1, r);
+		p.Vertex(10 * 16, 16 * 16, 0, 0, 0);
+		p.Vertex(26 * 16, 48 * 16, 0, 256, 512);
+		GIFRegPRIM prim = {};
+		prim.PRIM = GS_SPRITE;
+		prim.TME = 1;
+		prim.FST = 1;
+		p.Send(*m_gs, prim);
+	};
+	// Colour only, twice: the second is a row.
+	draw(0xFF000000u);
+	draw(0xFF000000u);
+	const u64 rows = GSDrawRows::stats.rows;
+	EXPECT_GT(rows, 0u);
+	// The first draw to write alpha is not.
+	draw(0u);
+	EXPECT_EQ(GSDrawRows::stats.rows, rows);
+}

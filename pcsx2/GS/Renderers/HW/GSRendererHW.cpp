@@ -5927,10 +5927,10 @@ void GSRendererHW::Draw()
 		GSDrawRows::stats.row_checked++;
 		if (rt != (no_rt ? nullptr : m_row_run.rt) || ds != (no_ds ? nullptr : m_row_run.ds))
 			RowMismatch("targets");
-		else if (!(after.rt == row_witness.rt))
-			RowMismatch("colour target's state");
-		else if (!(after.ds == row_witness.ds))
-			RowMismatch("depth target's state");
+		else if (const char* what = after.rt.Difference(row_witness.rt))
+			RowMismatch("colour target's", what);
+		else if (const char* what_ds = after.ds.Difference(row_witness.ds))
+			RowMismatch("depth target's", what_ds);
 		else if (!after.r.eq(row_witness.r) || after.vertices != row_witness.vertices || after.indices != row_witness.indices ||
 				 !after.scissor.eq(row_witness.scissor) || !(after.min_p == row_witness.min_p).alltrue() || !(after.max_p == row_witness.max_p).alltrue())
 			RowMismatch("draw rectangle or vertices");
@@ -6066,13 +6066,29 @@ void GSRendererHW::Draw()
 	CleanupDraw(false);
 }
 
-bool GSRendererHW::RowWitness::Tgt::operator==(const Tgt& o) const
+const char* GSRendererHW::RowWitness::Tgt::Difference(const Tgt& o) const
 {
-	return tex0 == o.tex0 && valid.eq(o.valid) && drawn.eq(o.drawn) && unscaled_size == o.unscaled_size && texture == o.texture &&
-	       scale == o.scale && end_block == o.end_block && last_draw == o.last_draw && alpha_min == o.alpha_min &&
-	       alpha_max == o.alpha_max && dirty == o.dirty && fmt32 == o.fmt32 && valid_rgb == o.valid_rgb &&
-	       valid_alpha_low == o.valid_alpha_low && valid_alpha_high == o.valid_alpha_high && rt_alpha_scale == o.rt_alpha_scale &&
-	       alpha_range == o.alpha_range && used == o.used;
+	if (tex0 != o.tex0)
+		return "TEX0";
+	if (!valid.eq(o.valid))
+		return "valid area";
+	if (!drawn.eq(o.drawn))
+		return "drawn area";
+	if (unscaled_size != o.unscaled_size || texture != o.texture || scale != o.scale)
+		return "size, texture or scale";
+	if (end_block != o.end_block)
+		return "end block";
+	if (last_draw != o.last_draw || used != o.used)
+		return "last draw or use";
+	if (alpha_min != o.alpha_min || alpha_max != o.alpha_max || alpha_range != o.alpha_range || rt_alpha_scale != o.rt_alpha_scale)
+		return "alpha facts";
+	if (dirty != o.dirty)
+		return "dirty list";
+	if (fmt32 != o.fmt32)
+		return "32-bit flag";
+	if (valid_rgb != o.valid_rgb || valid_alpha_low != o.valid_alpha_low || valid_alpha_high != o.valid_alpha_high)
+		return "valid channels";
+	return nullptr;
 }
 
 bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds,
@@ -6088,13 +6104,21 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	// upload, its texture unchanged, and the draw inside what it already holds. A draw that samples one of them reads
 	// what the run wrote, and takes the full path.
 	const HWCachedCtx& c = m_cached_ctx;
+	// Whether the channels a write under `fbmsk` makes valid (Target::UpdateValidChannels) are valid already.
+	const auto channels_valid = [](const GSTextureCache::Target* t, u32 fbmsk) {
+		const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[t->m_TEX0.PSM];
+		const bool low = (psm.trbpp == 32 && (fbmsk & 0x0F000000) != 0x0F000000) || psm.trbpp == 16;
+		const bool high = (psm.trbpp == 32 && (fbmsk & 0xF0000000) != 0xF0000000) || psm.trbpp == 16;
+		const bool rgb = (psm.trbpp >= 24 && (fbmsk & 0x00FFFFFF) != 0x00FFFFFF) || psm.trbpp == 16;
+		return (!low || t->m_valid_alpha_low) && (!high || t->m_valid_alpha_high) && (!rgb || t->m_valid_rgb);
+	};
 	if (!no_rt)
 	{
 		const GSTextureCache::Target* rt = m_row_run.rt;
 		const auto& list = g_texture_cache->GetDst(GSTextureCache::RenderTarget);
 		const u64 frame = c.FRAME.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.FRAME.PSM) << 48);
 		if (!rt || frame != m_row_run.frame || list.empty() || *list.begin() != rt || rt->m_texture != m_row_run.rt_tex ||
-			!rt->m_dirty.empty() || !rt->m_valid_rgb || !m_r.rintersect(rt->m_valid).eq(m_r) ||
+			!rt->m_dirty.empty() || !rt->m_valid_rgb || !channels_valid(rt, c.FRAME.FBMSK) || !m_r.rintersect(rt->m_valid).eq(m_r) ||
 			!m_r.rintersect(rt->m_drawn_since_read).eq(m_r) || (src && src->m_from_target == rt))
 			return false;
 	}
@@ -6104,7 +6128,8 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 		const auto& list = g_texture_cache->GetDst(GSTextureCache::DepthStencil);
 		const u64 zbuf = c.ZBUF.Block() | (static_cast<u64>(c.FRAME.FBW) << 32) | (static_cast<u64>(c.ZBUF.PSM) << 48);
 		if (!ds || zbuf != m_row_run.zbuf || list.empty() || *list.begin() != ds || ds->m_texture != m_row_run.ds_tex ||
-			!ds->m_dirty.empty() || !m_r.rintersect(ds->m_valid).eq(m_r) || !m_r.rintersect(ds->m_drawn_since_read).eq(m_r) ||
+			!ds->m_dirty.empty() || !channels_valid(ds, c.ZBUF.ZMSK ? 0xFFFFFFFFu : 0u) || !m_r.rintersect(ds->m_valid).eq(m_r) ||
+			!m_r.rintersect(ds->m_drawn_since_read).eq(m_r) ||
 			(src && src->m_from_target == ds))
 			return false;
 	}
@@ -6171,11 +6196,11 @@ void GSRendererHW::TakeRowWitness(RowWitness& w) const
 	w.front_ds = dss.empty() ? nullptr : *dss.begin();
 }
 
-void GSRendererHW::RowMismatch(const char* what)
+void GSRendererHW::RowMismatch(const char* what, const char* detail)
 {
 	GSDrawRows::stats.row_mismatches++;
 	if (GSDrawRows::stats.row_mismatches <= 40)
-		Console.Error("Row check: draw %d: the full path changed the %s", static_cast<int>(s_n), what);
+		Console.Error("Row check: draw %d: the full path changed the %s%s%s", static_cast<int>(s_n), what, detail ? " " : "", detail ? detail : "");
 }
 
 // What a draw does to tracked state after it is drawn: the targets' valid and drawn areas and last draw, the

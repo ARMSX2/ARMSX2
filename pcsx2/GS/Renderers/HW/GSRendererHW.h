@@ -279,7 +279,8 @@ private:
 			u64 last_draw;
 			int alpha_min, alpha_max;
 			bool dirty, fmt32, valid_rgb, valid_alpha_low, valid_alpha_high, rt_alpha_scale, alpha_range, used;
-			bool operator==(const Tgt& o) const;
+			/// The first field that differs, or nullptr.
+			const char* Difference(const Tgt& o) const;
 		};
 		Tgt rt, ds;
 		GSVector4i r;
@@ -295,7 +296,7 @@ private:
 		bool possible_mem_clear) const;
 	void TakeRowWitness(RowWitness& w) const;
 	/// Check mode: counts and reports the first difference the full path made where a row would have skipped it.
-	void RowMismatch(const char* what);
+	void RowMismatch(const char* what, const char* detail = nullptr);
 	void OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds);
 
 	/// What the state derivation leaves for the rest of DrawPrims.
