@@ -11973,7 +11973,8 @@ bool GSRendererHW::FillStateKeys(GSDrawRows::RegKey& r, GSDrawRows::VarKey& k, c
 	return true;
 }
 
-void GSRendererHW::CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok)
+void GSRendererHW::CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok,
+	const u32* prev_cb)
 {
 	using GSDrawRows::StateBody;
 	u16 flags = 0;
@@ -12008,12 +12009,20 @@ void GSRendererHW::CaptureDrawState(GSDrawRows::StateBody& body, const GSTexture
 	GSHWDrawConfig* const conf = reinterpret_cast<GSHWDrawConfig*>(body.conf);
 	conf->rt = conf->ds = conf->tex = conf->pal = nullptr;
 
-	// The constant-buffer words the derivation wrote are the ones that are no longer the canary; the others become
-	// zero, here and in the entry.
+	// The constant-buffer words the derivation wrote are the ones that are no longer the canary. The others become
+	// zero in the entry, and in the configuration get back what the previous draw left (`prev_cb`), as on the
+	// derived path.
 	u32* const cb = reinterpret_cast<u32*>(&m_conf.cb_vs);
+	u32* const entry_cb = reinterpret_cast<u32*>(body.cb);
+	body.cb_written[0] = body.cb_written[1] = 0;
 	for (u32 i = 0; i < GSDrawRows::CB_WORDS; i++)
-		cb[i] = (cb[i] != DRAW_STATE_CANARY) ? cb[i] : 0u;
-	std::memcpy(body.cb, cb, GSDrawRows::CB_BYTES);
+	{
+		const bool written = cb[i] != DRAW_STATE_CANARY;
+		entry_cb[i] = written ? cb[i] : 0u;
+		body.cb_written[i / 64] |= static_cast<u64>(written) << (i % 64);
+		if (!written)
+			cb[i] = prev_cb[i];
+	}
 }
 
 void GSRendererHW::ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
@@ -12021,7 +12030,7 @@ void GSRendererHW::ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCa
 {
 	using GSDrawRows::StateBody;
 	GSDrawRows::CopyBlock<GSDrawRows::CONF_BYTES>(&m_conf, body.conf);
-	GSDrawRows::CopyBlock<GSDrawRows::CB_BYTES>(&m_conf.cb_vs, body.cb);
+	GSDrawRows::CopyWrittenWords(&m_conf.cb_vs, body.cb, body.cb_written);
 	m_conf.rt = rt ? rt->m_texture : nullptr;
 	m_conf.ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
 	if (tex)
@@ -12170,6 +12179,8 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 	// the derivation wrote.
 	BeginDrawState(rt, ds);
 	u32* const cb = reinterpret_cast<u32*>(&m_conf.cb_vs);
+	alignas(16) u32 prev_cb[CB_WORDS];
+	std::memcpy(prev_cb, cb, CB_BYTES);
 	for (u32 i = 0; i < CB_WORDS; i++)
 		cb[i] = DRAW_STATE_CANARY;
 	m_conf.cb_vs.texture_offset = {};
@@ -12186,7 +12197,7 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 	const u64 care = AlphaValueCare(asked);
 
 	alignas(16) StateBody fresh;
-	CaptureDrawState(fresh, rt, ok);
+	CaptureDrawState(fresh, rt, ok, prev_cb);
 
 	if (!keyed || (ei != StateTable::NONE && !rowable))
 	{
@@ -12211,6 +12222,8 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 			what = "optimized blend";
 		else if (body.colclip_mode != fresh.colclip_mode)
 			what = "colclip mode";
+		else if (body.cb_written[0] != fresh.cb_written[0] || body.cb_written[1] != fresh.cb_written[1])
+			what = "constant words written";
 		else
 		{
 			for (u32 i = 0; i < CONF_BYTES && !what; i++)

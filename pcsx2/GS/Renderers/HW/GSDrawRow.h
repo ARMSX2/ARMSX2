@@ -210,15 +210,36 @@ namespace GSDrawRows
 		};
 
 		alignas(16) u8 conf[CONF_BYTES];
-		/// The constant buffers as the derivation left them, with zero in every word it did not write. Those are words
-		/// the selector does not read; on the derived path they keep whatever an earlier draw left.
+		/// The constant buffers as the derivation left them, with zero in every word it did not write.
 		alignas(16) u8 cb[CB_BYTES];
+		/// Which constant words the derivation wrote. A hit writes only those: the others keep what the previous draw
+		/// left, as on the derived path, so a draw hands the device the same bytes either way.
+		u64 cb_written[2];
 		u64 optimized_blend;
 		u32 test; ///< TEST as the derivation left it
 		u16 flags;
 		u8 zmsk; ///< ZBUF.ZMSK as the derivation left it
 		u8 colclip_mode; ///< with COLCLIP_FRAME
 	};
+
+	static_assert(CB_WORDS <= 128, "cb_written holds one bit per constant word");
+
+	/// The written words of `src` over `dst`: word i is copied when bit i of `mask` is set.
+	inline void CopyWrittenWords(void* dst, const void* src, const u64 mask[2])
+	{
+		u32* d = static_cast<u32*>(dst);
+		const u32* s = static_cast<const u32*>(src);
+		for (u32 half = 0; half < 2; half++)
+		{
+			u64 m = mask[half];
+			while (m)
+			{
+				const u32 i = half * 64 + static_cast<u32>(std::countr_zero(m));
+				d[i] = s[i];
+				m &= m - 1;
+			}
+		}
+	}
 
 	/// A variant of a register state: the facts it was derived for, and its place in the variant list. 80 bytes: the
 	/// key and the list link are what a walk reads.

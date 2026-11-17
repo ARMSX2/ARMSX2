@@ -349,7 +349,8 @@ private:
 	bool FillStateKeys(GSDrawRows::RegKey& reg, GSDrawRows::VarKey& var, const GSTextureCache::Target* rt,
 		const GSTextureCache::Target* ds, const GSTextureCache::Source* tex, const DrawPrep& prep, float rtscale,
 		const GSVector2i& rtsize, const GSVector2i& rt_unscaled_size);
-	void CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok);
+	/// prev_cb: the constant buffers as the previous draw left them, which the words this draw does not write keep.
+	void CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok, const u32* prev_cb);
 	void ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
 		GSTextureCache::Source* tex, const DrawPrep& prep, DerivedDraw& out);
 	void CorrectATEAlphaRange();

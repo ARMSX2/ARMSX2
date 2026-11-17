@@ -4,8 +4,8 @@
 // The state table through the renderer on the None backend: a draw that takes a state entry hands the device the
 // configuration the derivation would have handed it. A sequence of draws that repeats register states with varied
 // facts is run three times on fresh renderers: with every draw derived, with the table on, and in check mode, where
-// every hit is derived as well and compared byte for byte. The constant buffers are compared by check mode only: an
-// entry holds zero in the words its derivation did not write, where the derived path keeps an earlier draw's value.
+// every hit is derived as well and compared byte for byte. The constant buffers are compared whole: a hit writes the
+// words its derivation wrote and leaves the others as the previous draw left them, as the derived path does.
 
 #include "gs_hw_draw_harness.h"
 #include "GS/Renderers/HW/GSDrawRow.h"
@@ -172,6 +172,10 @@ TEST_F(GSStateTableDraw, AnEntryHandsTheDeviceWhatTheDerivationWould)
 			EXPECT_EQ(a.destination_alpha, b.destination_alpha) << "draw " << i << " scale " << scale;
 			EXPECT_EQ(a.one_barrier, b.one_barrier) << "draw " << i << " scale " << scale;
 			EXPECT_EQ(a.full_barrier, b.full_barrier) << "draw " << i << " scale " << scale;
+			// Every constant word, those the derivation did not write included: a hit leaves them as the previous
+			// draw did, so the device gets the same bytes.
+			EXPECT_TRUE(SameBytes(&a.cb_ps, &b.cb_ps, sizeof(a.cb_ps))) << "draw " << i << " scale " << scale;
+			EXPECT_TRUE(SameBytes(&a.cb_vs, &b.cb_vs, sizeof(a.cb_vs))) << "draw " << i << " scale " << scale;
 		}
 
 		EXPECT_GT(GSDrawRows::stats.rows, 0u) << "scale " << scale;
