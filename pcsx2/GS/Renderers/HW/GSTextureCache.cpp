@@ -2579,8 +2579,8 @@ void GSTextureCache::RescaleHelper::CalcRescale(const Target* tgt)
 
 void GSTextureCache::RescaleHelper::SetNewSize(const GSVector2i& new_size, float scale)
 {
-	m_new_size = new_size;
-	m_new_scaled_size = ScaleRenderTargetSize(new_size, scale);
+	m_new_size = AlignTargetSize(new_size, scale);
+	m_new_scaled_size = ScaleRenderTargetSize(m_new_size, scale);
 }
 
 void GSTextureCache::CommitTargetRebase(Target* target, GSTexture* texture,
@@ -4610,8 +4610,8 @@ void GSTextureCache::ScaleTargetForDisplay(Target* t, const GIFRegTEX0& dispfb, 
 	if (needed_height <= t->m_unscaled_size.y && needed_width <= t->m_unscaled_size.x)
 		return;
 	// We're expanding, so create a new texture.
-	const int new_height = std::max(t->m_unscaled_size.y, needed_height);
-	const int new_width = std::max(t->m_unscaled_size.x, needed_width);
+	const int new_height = GSAlignTargetSize(std::max(t->m_unscaled_size.y, needed_height), scale);
+	const int new_width = GSAlignTargetSize(std::max(t->m_unscaled_size.x, needed_width), scale);
 	const int scaled_new_height = static_cast<int>(std::ceil(static_cast<float>(new_height) * scale));
 	const int scaled_new_width = static_cast<int>(std::ceil(static_cast<float>(new_width) * scale));
 	GSTexture* new_texture = g_gs_device->CreateCompatible(old_texture, scaled_new_width, scaled_new_height, false);
@@ -4717,7 +4717,8 @@ bool GSTextureCache::CopyRGBFromDepthToColor(Target* dst, Target* depth_src)
 		dst->m_TEX0.TBP0, GSUtil::GetPSMName(dst->m_TEX0.PSM));
 
 	// The depth target might be larger (Driv3r).
-	const GSVector2i new_size = dst->GetUnscaledSize().max(GSVector2i(depth_src->m_valid.z, depth_src->m_valid.w));
+	const GSVector2i new_size = AlignTargetSize(
+		dst->GetUnscaledSize().max(GSVector2i(depth_src->m_valid.z, depth_src->m_valid.w)), dst->GetScale());
 	const GSVector2i new_scaled_size = ScaleRenderTargetSize(new_size, dst->GetScale());
 	const bool needs_new_tex = (new_size != dst->m_unscaled_size);
 	GSTexture* tex = dst->m_texture;
@@ -8354,6 +8355,8 @@ GSTextureCache::Target* GSTextureCache::Target::Create(GIFRegTEX0 TEX0, int w, i
 {
 	pxAssert(type == RenderTarget || type == DepthStencil);
 
+	w = GSAlignTargetSize(w, scale);
+	h = GSAlignTargetSize(h, scale);
 	const int scaled_w = static_cast<int>(std::ceil(static_cast<float>(w) * scale));
 	const int scaled_h = static_cast<int>(std::ceil(static_cast<float>(h) * scale));
 	GSTexture::Usage usage = type == RenderTarget ? GSTexture::FeedbackTarget : g_gs_device->GetDepthStencilUsage();
@@ -9697,7 +9700,7 @@ void GSTextureCache::Target::UpdateValidity(const GSVector4i& rect, bool can_res
 bool GSTextureCache::Target::ResizeTexture(int new_unscaled_width, int new_unscaled_height, bool recycle_old, bool require_new_rect, GSVector4i new_rect, bool keep_old)
 {
 	const GSVector2i size = m_texture->GetSize();
-	const GSVector2i new_unscaled_size = GSVector2i(new_unscaled_width, new_unscaled_height);
+	const GSVector2i new_unscaled_size = AlignTargetSize(GSVector2i(new_unscaled_width, new_unscaled_height), m_scale);
 	const GSVector2i new_size = ScaleRenderTargetSize(new_unscaled_size, m_scale);
 
 	if (size.x == new_size.x && size.y == new_size.y && !require_new_rect)

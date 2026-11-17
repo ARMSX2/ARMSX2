@@ -725,6 +725,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSShaderEnums.h
 	GS/Renderers/Common/GSSelfReadRoadPolicy.h
 	GS/Renderers/Common/GSSnapshotPolicy.h
+	GS/Renderers/Common/GSTargetSizePolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
 	GS/Renderers/Common/GSStreamRingGrowth.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h

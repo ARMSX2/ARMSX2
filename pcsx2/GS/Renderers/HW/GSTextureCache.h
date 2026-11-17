@@ -6,6 +6,7 @@
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/Common/GSFastList.h"
 #include "GS/Renderers/Common/GSDirtyRect.h"
+#include "GS/Renderers/Common/GSTargetSizePolicy.h"
 #include "GS/Renderers/HW/GSAlphaKnownBits.h"
 #include "GS/Renderers/HW/GSAlphaKnownRects.h"
 
@@ -878,6 +879,13 @@ public:
 	/// through it rather than open-coding a multiply that truncates. Also the device size of a
 	/// texture whose native size is `native`, since that is a span starting at 0.
 	static int ScaleNativeToDevice(int native, float scale);
+
+	/// A target's unscaled size rounded up so that its device size is exactly scale times it
+	/// (GSTargetSizePolicy.h). Unchanged at 1x and above.
+	static GSVector2i AlignTargetSize(const GSVector2i& size, float scale)
+	{
+		return GSVector2i(GSAlignTargetSize(size.x, scale), GSAlignTargetSize(size.y, scale));
+	}
 
 	/// The device length of the native span [start, start + length): the difference of its two
 	/// edges' device positions. Not ScaleNativeToDevice(length), which is the length of a span
