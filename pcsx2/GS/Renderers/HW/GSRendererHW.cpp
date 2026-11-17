@@ -6074,8 +6074,12 @@ const char* GSRendererHW::RowWitness::Tgt::Difference(const Tgt& o) const
 		return "valid area";
 	if (!drawn.eq(o.drawn))
 		return "drawn area";
-	if (unscaled_size != o.unscaled_size || texture != o.texture || scale != o.scale)
-		return "size, texture or scale";
+	if (unscaled_size != o.unscaled_size)
+		return "size";
+	if (texture != o.texture)
+		return "texture";
+	if (scale != o.scale)
+		return "scale";
 	if (end_block != o.end_block)
 		return "end block";
 	if (last_draw != o.last_draw || used != o.used)
@@ -6092,13 +6096,20 @@ const char* GSRendererHW::RowWitness::Tgt::Difference(const Tgt& o) const
 }
 
 bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds,
-	bool possible_shuffle, bool possible_mem_clear) const
+	bool possible_shuffle, bool possible_mem_clear)
 {
 	if (!run_open || GSDrawRows::s_mode == GSDrawRows::Mode::Off)
 		return false;
-	// Roads the target search and upkeep treat on their own: shuffles, clears, native scaling, a temporary depth buffer.
+	// Roads the target search and upkeep treat on their own: shuffles, clears, a temporary depth buffer.
 	if (m_channel_shuffle || m_texture_shuffle || possible_shuffle || possible_mem_clear || IsPossibleChannelShuffle() ||
-		GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off || g_texture_cache->GetTemporaryZ())
+		g_texture_cache->GetTemporaryZ())
+		return false;
+	// With native scaling on, the search picks the target's scale per draw. A draw it scales or copies at another
+	// scale, one sampling or drawing into a downscaled target, and a native palette draw are left to it.
+	if (GSConfig.UserHacks_NativeScaling != GSNativeScaling::Off &&
+		(IsScalingDraw(const_cast<GSTextureCache::Source*>(src), m_primitive_covers_without_gaps != NoGapsType::GapsFound) != 0 ||
+			(src && src->m_from_target && (src->m_from_target->m_downscaled || GSConfig.UserHacks_NativePaletteDraw)) ||
+			(!no_rt && m_row_run.rt && m_row_run.rt->m_downscaled) || (!no_ds && m_row_run.ds && m_row_run.ds->m_downscaled)))
 		return false;
 	// Each target the draw uses is the run's, at the front of its list as the last search left it, with nothing to
 	// upload, its texture unchanged, and the draw inside what it already holds. A draw that samples one of them reads

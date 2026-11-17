@@ -293,7 +293,7 @@ private:
 	};
 	/// Whether this draw continues the open row run. Read before the target search.
 	bool RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds, bool possible_shuffle,
-		bool possible_mem_clear) const;
+		bool possible_mem_clear);
 	void TakeRowWitness(RowWitness& w) const;
 	/// Check mode: counts and reports the first difference the full path made where a row would have skipped it.
 	void RowMismatch(const char* what, const char* detail = nullptr);
