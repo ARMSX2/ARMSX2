@@ -36,6 +36,7 @@
 #include "IopThread/IopThreadMode.h"
 #include "IopThread/IopThreadVm.h"
 #include "Patch.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SPU2/spu2.h"
 #include "Sif.h"
@@ -135,6 +136,17 @@ namespace IopBridge
 			Patch::ApplyVsyncPatchesIOP();
 		else
 			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::VsyncPatchesIop);
+	}
+
+	// The pad states a script, a client or a recording holds (PadScript.h), latched at the EE's vsync as
+	// packet `seq`. The IOP's SIO2 code reads the pads, so the change lands at the vsync's cycle in the IOP's
+	// time. Once a frame at most, so the mode is read here.
+	__forceinline_odr void PadInputLatch(u32 seq)
+	{
+		if (IopThread::GetMode() == IopThreadMode::Off) [[likely]]
+			PadScript::ApplyLatch(seq);
+		else
+			IopThread::ApplyOnIop(IopThread::E2IKind::Call, IopThread::E2IJob::PadInput | (seq << 8));
 	}
 
 	// ---- The EE raises an IOP interrupt ------------------------------------------------------

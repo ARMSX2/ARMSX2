@@ -3,6 +3,7 @@
 
 #include "SIO/Pad/PadDualshock2.h"
 #include "SIO/Pad/Pad.h"
+#include "SIO/Pad/PadScript.h"
 #include "SIO/Sio.h"
 #include "SIO/Sio0.h"
 
@@ -854,31 +855,33 @@ float PadDualshock2::GetEffectiveInput(u32 index) const
 	if (!IsAnalogKey(index))
 		return GetRawInput(index);
 
+	const auto [lx, ly] = GetRawLeftAnalog();
+	const auto [rx, ry] = GetRawRightAnalog();
 	switch (index)
 	{
 	case Inputs::PAD_L_LEFT:
-		return (analogs.lx < 127) ? -((127 - analogs.lx) / 127.0f) : 0;
+		return (lx < 127) ? -((127 - lx) / 127.0f) : 0;
 
 	case Inputs::PAD_L_RIGHT:
-		return (analogs.lx > 127) ? ((analogs.lx - 127) / 128.0f) : 0;
+		return (lx > 127) ? ((lx - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_L_UP:
-		return (analogs.ly < 127) ? -((127 - analogs.ly) / 127.0f) : 0;
+		return (ly < 127) ? -((127 - ly) / 127.0f) : 0;
 
 	case Inputs::PAD_L_DOWN:
-		return (analogs.ly > 127) ? ((analogs.ly - 127) / 128.0f) : 0;
+		return (ly > 127) ? ((ly - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_R_LEFT:
-		return (analogs.rx < 127) ? -((127 - analogs.rx) / 127.0f) : 0;
+		return (rx < 127) ? -((127 - rx) / 127.0f) : 0;
 
 	case Inputs::PAD_R_RIGHT:
-		return (analogs.rx > 127) ? ((analogs.rx - 127) / 128.0f) : 0;
+		return (rx > 127) ? ((rx - 127) / 128.0f) : 0;
 
 	case Inputs::PAD_R_UP:
-		return (analogs.ry < 127) ? -((127 - analogs.ry) / 127.0f) : 0;
+		return (ry < 127) ? -((127 - ry) / 127.0f) : 0;
 
 	case Inputs::PAD_R_DOWN:
-		return (analogs.ry > 127) ? ((analogs.ry - 127) / 128.0f) : 0;
+		return (ry > 127) ? ((ry - 127) / 128.0f) : 0;
 
 	default:
 		return 0;
@@ -887,21 +890,29 @@ float PadDualshock2::GetEffectiveInput(u32 index) const
 
 u8 PadDualshock2::GetRawInput(u32 index) const
 {
+	if (held.on && index < PadScript::NUM_BUTTONS) [[unlikely]]
+		return held.pressure[index];
 	return rawInputs[index];
 }
 
 std::tuple<u8, u8> PadDualshock2::GetRawLeftAnalog() const
 {
+	if (held.on) [[unlikely]]
+		return {held.lx, held.ly};
 	return {analogs.lx, analogs.ly};
 }
 
 std::tuple<u8, u8> PadDualshock2::GetRawRightAnalog() const
 {
+	if (held.on) [[unlikely]]
+		return {held.rx, held.ry};
 	return {analogs.rx, analogs.ry};
 }
 
 u32 PadDualshock2::GetButtons() const
 {
+	if (held.on) [[unlikely]]
+		return held.buttons;
 	return buttons;
 }
 
@@ -911,19 +922,62 @@ u8 PadDualshock2::GetPressure(u32 index) const
 	{
 		case Inputs::PAD_R_LEFT:
 		case Inputs::PAD_R_RIGHT:
-			return this->analogs.rx;
+			return std::get<0>(GetRawRightAnalog());
 		case Inputs::PAD_R_DOWN:
 		case Inputs::PAD_R_UP:
-			return this->analogs.ry;
+			return std::get<1>(GetRawRightAnalog());
 		case Inputs::PAD_L_LEFT:
 		case Inputs::PAD_L_RIGHT:
-			return this->analogs.lx;
+			return std::get<0>(GetRawLeftAnalog());
 		case Inputs::PAD_L_DOWN:
 		case Inputs::PAD_L_UP:
-			return this->analogs.ly;
+			return std::get<1>(GetRawLeftAnalog());
 		default:
-			return this->rawInputs[index];
+			return GetRawInput(index);
 	}
+}
+
+bool PadDualshock2::CapturePlayerInput(PadScript::PadFrame* out) const
+{
+	PadScript::PadFrame frame;
+	const u32 player_buttons = buttons;
+	for (u32 i = 0; i < PadScript::NUM_BUTTONS; i++)
+	{
+		if (player_buttons & (1u << bitmaskMapping[i]))
+			continue;
+		frame.pressed |= static_cast<u16>(1u << i);
+		frame.pressure[i] = rawInputs[i];
+	}
+	frame.lx = analogs.lx;
+	frame.ly = analogs.ly;
+	frame.rx = analogs.rx;
+	frame.ry = analogs.ry;
+	*out = frame;
+	return true;
+}
+
+void PadDualshock2::SetHeldInput(const PadScript::PadFrame* state)
+{
+	if (!state)
+	{
+		held.on = false;
+		return;
+	}
+
+	u32 mask = 0xffffffffu;
+	for (u32 i = 0; i < PadScript::NUM_BUTTONS; i++)
+	{
+		const bool pressed = (state->pressed >> i) & 1;
+		if (pressed)
+			mask &= ~(1u << bitmaskMapping[i]);
+		held.pressure[i] = pressed ? state->pressure[i] : 0;
+	}
+	held.buttons = mask;
+	held.lx = state->lx;
+	held.ly = state->ly;
+	held.rx = state->rx;
+	held.ry = state->ry;
+	held.on = true;
 }
 
 bool PadDualshock2::IsAnalogLightEnabled() const

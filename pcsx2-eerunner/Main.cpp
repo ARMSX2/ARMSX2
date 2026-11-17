@@ -79,6 +79,7 @@
 #include "pcsx2/Memory.h"
 #include "pcsx2/R5900.h"
 #include "pcsx2/SIO/Pad/Pad.h"
+#include "pcsx2/SIO/Pad/PadScript.h"
 #include "pcsx2/EECycleRate.h"
 #include "pcsx2/VMManager.h"
 #include "pcsx2/VUmicro.h"
@@ -93,6 +94,11 @@
 #include "pcsx2/Vif_Dma.h"
 
 #include "pcsx2/ee_divtrace.h"
+#ifndef XXH_versionNumber
+#define XXH_STATIC_LINKING_ONLY 1
+#define XXH_INLINE_ALL 1
+#include <xxhash.h>
+#endif
 
 #if defined(ARCH_ARM64)
 #include "pcsx2/arm64/iR5900-arm64.h"
@@ -861,6 +867,13 @@ struct HostAction
 static std::vector<HostAction> s_host_actions;
 static std::vector<std::string> s_host_actions_pending; // delivered at the next vsync
 
+// --pad-script <file> / --pad-record <file>: a pad script played, or the pad input recorded, from the savestate load of
+// a liverun (PadScript.h). --frame-hashes <file>: one line per frame of hashes of the machine's state, for comparing
+// two runs of the same script.
+static std::string s_pad_script_path;
+static std::string s_pad_record_path;
+static std::string s_frame_hashes_path;
+
 // Work posted with Host::RunOnCPUThread. Tasks run outside the lock, so one that posts more cannot deadlock.
 static void DrainCpuThreadTasks()
 {
@@ -1021,7 +1034,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               write <prefix>fNNNNN.png every N frames from frame F. A visual oracle for a\n");
 	std::fprintf(stderr, "               bug whose only symptom is on screen: the PNG series is what a headless run\n");
 	std::fprintf(stderr, "               can be judged on.\n");
-	std::fprintf(stderr, "  --renderer <null|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
+	std::fprintf(stderr, "  --renderer <null|nullhw|vk|ogl|sw>: GS renderer (default null). Use vk on Intel GPUs / boxes where\n");
 	std::fprintf(stderr, "               the auto-check declines Vulkan and the surfaceless GL path fails to open GS.\n");
 	std::fprintf(stderr, "  --statereport: load the savestate, print a field-level decode of every serialized timebase\n");
 	std::fprintf(stderr, "               (EE cycle/COP0 Count pair, rcnt bases, vsync phase, EE<->IOP skew, IOP counters,\n");
@@ -1078,6 +1091,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "               list: Mute, IncreaseVolume, DecreaseVolume, ToggleTurbo, ToggleSlowMotion, SwapMemCards ...) at\n");
 	std::fprintf(stderr, "               frame N, from the CPU thread, as the input manager does for a bound key, with the pause hold of the\n");
 	std::fprintf(stderr, "               frame-by-frame liverun let go, as a running VM has none. Repeatable.\n");
+	std::fprintf(stderr, "  --pad-script <file>: in a --liverun, play this pad script (SIO/Pad/PadScript.h), frame 0 at the savestate load.\n");
+	std::fprintf(stderr, "  --pad-record <file>: in a --liverun, record the pad input as a pad script, frame 0 at the savestate load.\n");
+	std::fprintf(stderr, "  --frame-hashes <file>: in a --liverun, write one line per frame: frame, EE cycle, hashes of the EE registers,\n");
+	std::fprintf(stderr, "               EE RAM and scratchpad, IOP RAM, VU0 and VU1 memory. Two runs from one state compare line by line.\n");
 	std::fprintf(stderr, "  --iop-assert-log: an IOP thread ownership assert (a Devel build's IOP_SIDE_ASSERT/EE_SIDE_ASSERT) logs\n");
 	std::fprintf(stderr, "               the first violation at each site and the run goes on, instead of stopping at the first. The\n");
 	std::fprintf(stderr, "               IOPTHREAD: line at the end of the run says how many there were.\n");
@@ -1488,6 +1505,21 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_host_actions.push_back({at.value(), std::string(StringUtil::StripWhitespace(argv[++i]))});
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--pad-script"))
+			{
+				s_pad_script_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--pad-record"))
+			{
+				s_pad_record_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--frame-hashes"))
+			{
+				s_frame_hashes_path = StringUtil::StripWhitespace(argv[++i]);
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--no-vm-vuaot-flips"))
 			{
 				// A list of 0 and 1 separated by commas. Before the VM boots (and so with no VM running) the
@@ -1648,9 +1680,10 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				else if (r == "vk" || r == "vulkan")       s_renderer = GSRendererType::VK;
 				else if (r == "ogl" || r == "gl" || r == "opengl") s_renderer = GSRendererType::OGL;
 				else if (r == "sw" || r == "software")     s_renderer = GSRendererType::SW;
+				else if (r == "nullhw")                    s_renderer = GSRendererType::NullHW;
 				else
 				{
-					Console.Error("--renderer expects one of: null, vk, ogl, sw");
+					Console.Error("--renderer expects one of: null, nullhw, vk, ogl, sw");
 					return false;
 				}
 				continue;
@@ -5405,11 +5438,64 @@ static void StressStep(u32 frame)
 	}
 }
 
+// The machine's state at the end of a liverun frame, for --frame-hashes. Each part is hashed on its own, so a
+// comparison of two runs says which part moved first. The EE cycle is printed as it is.
+static void WriteFrameHashes(std::FILE* out, u32 frame)
+{
+	// With MTVU the VU1 thread may still be running the frame's last program; VU1 memory is read once it is idle.
+	if (THREAD_VU1)
+		vu1Thread.WaitVU();
+	const u64 regs = ee_divtrace::FingerprintCpu();
+	const u64 ee_ram = ee_divtrace::HashMemory();
+	const u64 iop_ram = iopMem ? XXH3_64bits(iopMem->Main, Ps2MemSize::IopRam) : 0;
+	const u64 vu0 = XXH3_64bits_withSeed(VU0.Mem, VU0_MEMSIZE, XXH3_64bits(VU0.Micro, VU0_PROGSIZE));
+	const u64 vu1 = XXH3_64bits_withSeed(VU1.Mem, VU1_MEMSIZE, XXH3_64bits(VU1.Micro, VU1_PROGSIZE));
+	std::fprintf(out, "%u %llu %016llx %016llx %016llx %016llx %016llx\n", frame,
+		static_cast<unsigned long long>(cpuRegs.cycle), static_cast<unsigned long long>(regs),
+		static_cast<unsigned long long>(ee_ram), static_cast<unsigned long long>(iop_ram),
+		static_cast<unsigned long long>(vu0), static_cast<unsigned long long>(vu1));
+}
+
 static int RunLiveRun()
 {
 	Error error;
 	if (!ValidateEeRateScript())
 		return EXIT_FAILURE;
+
+	if (!s_pad_script_path.empty())
+	{
+		std::optional<std::string> text = FileSystem::ReadFileToString(s_pad_script_path.c_str());
+		std::vector<PadScript::Event> events;
+		std::string parse_error;
+		if (!text.has_value() || !PadScript::ParseScript(*text, &events, &parse_error))
+		{
+			Console.ErrorFmt("liverun: pad script '{}': {}", s_pad_script_path, text.has_value() ? parse_error : "cannot read it");
+			return EXIT_FAILURE;
+		}
+		Console.WriteLn(fmt::format("LIVERUN: pad script '{}', {} events, last at frame {}", s_pad_script_path, events.size(),
+			events.empty() ? 0 : events.back().frame));
+		PadScript::StartScript(std::move(events), true);
+	}
+	if (!s_pad_record_path.empty())
+	{
+		std::string record_error;
+		if (!PadScript::StartRecording(s_pad_record_path, 0, true, &record_error))
+		{
+			Console.ErrorFmt("liverun: {}", record_error);
+			return EXIT_FAILURE;
+		}
+	}
+	std::FILE* frame_hashes = nullptr;
+	if (!s_frame_hashes_path.empty())
+	{
+		frame_hashes = FileSystem::OpenCFile(s_frame_hashes_path.c_str(), "wb", &error);
+		if (!frame_hashes)
+		{
+			Console.ErrorFmt("liverun: --frame-hashes: {}", error.GetDescription());
+			return EXIT_FAILURE;
+		}
+		std::fprintf(frame_hashes, "# frame ee_cycle ee_regs ee_ram iop_ram vu0_mem vu1_mem\n");
+	}
 
 	if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
 	{
@@ -5548,6 +5634,8 @@ static int RunLiveRun()
 		while ((s_churn_every || s_stress) && VMManager::GetState() == VMState::Running)
 			VMManager::Execute();
 		rate.AfterFrame(frame_timer.Elapsed());
+		if (frame_hashes)
+			WriteFrameHashes(frame_hashes, f + 1);
 		if (s_churn_every && ((f + 1) % s_churn_every) == 0)
 			s_churn_pending = true;
 		if (s_stress)
@@ -5667,6 +5755,12 @@ static int RunLiveRun()
 	}
 
 	s_liverun_done.store(true, std::memory_order_relaxed);
+	if (frame_hashes)
+		std::fclose(frame_hashes);
+	if (!s_pad_record_path.empty())
+		Console.WriteLn(fmt::format("LIVERUN: pad recording: {}", PadScript::StopRecording()));
+	if (!s_pad_script_path.empty())
+		Console.WriteLn(fmt::format("LIVERUN: pad script at the end: {}", PadScript::StatusJson()));
 	storm_stop.store(true, std::memory_order_relaxed);
 	if (stormthread.joinable())
 		stormthread.join();
