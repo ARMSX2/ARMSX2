@@ -1116,6 +1116,10 @@ public class NativeApp {
 	 *  Pushed once at startup. The core pairs it with the driver the open Vulkan device is on and
 	 *  posts the "get malisx2" OSD notice at game start when that driver is not malisx2. */
 	public static native void setMaliSX2Offered(boolean offered);
+	/** How the app names the installed malisx2 pack (CustomDriver.maliSX2Label), or "" when none is
+	 *  installed. Pushed with the per-game driver pick before each boot. The core's malisx2 notice
+	 *  says "installed but not selected" instead of "get it" when this is not empty. */
+	public static native void setMaliSX2InstalledPack(String name);
 	/** Affinity Control Mode: 0 off (scheduler decides), 1-6 EE/VU/GS priority orders,
 	 *  7 Performance Cores. Read when the VM boots — set it before runVMThread. */
 	public static native void setAffinityMode(int mode);

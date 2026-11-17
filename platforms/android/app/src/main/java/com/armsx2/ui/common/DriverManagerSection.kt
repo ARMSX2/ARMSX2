@@ -120,6 +120,38 @@ fun DriverManagerSection() {
         val globalDriverId = remember(InGameOverlay.settingsState.value) { com.armsx2.config.ConfigStore.loadGlobal().output.customDriverId }
         val effectiveId = CustomDriver.effectiveId(
             InGameOverlay.settingsState.value.output.customDriverId, globalDriverId, installed.map { it.id })
+        // malisx2 is installed and this GPU is one it drives, but the scope runs another driver. The
+        // OSD notice at game start is a toast with no button and sends the user here, so this is
+        // where the one-tap switch lives.
+        CustomDriver.maliSX2SwitchOffer(gpuModel, installed, effectiveId)?.let { pack ->
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    Modifier.padding(13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        str("backend.driver.maliSx2NotSelected").format(CustomDriver.maliSX2Label(pack)),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedButton(
+                        onClick = { selectDriver(pack.id) },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.controllerFocusable(
+                            "driver.switchMaliSX2",
+                            RoundedCornerShape(12.dp),
+                            onConfirm = { selectDriver(pack.id) },
+                        ),
+                    ) { Text(str("backend.driver.maliSx2Switch")) }
+                }
+            }
+        }
         DriverRow(
             controllerId = "driver.system",
             title = str("backend.driver.systemVulkan"),

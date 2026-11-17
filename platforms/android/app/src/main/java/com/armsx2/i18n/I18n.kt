@@ -584,6 +584,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "backend.driver.gpuUnknown" to "Unknown",
     "backend.driver.recommended" to "Recommended",
     "backend.driver.recommendSystem" to "System driver (built-in)",
+    "backend.driver.maliSx2NotSelected" to "%s is installed but not selected.",
+    "backend.driver.maliSx2Switch" to "Switch to it",
     "backend.driver.hideDownloads" to "Hide downloads",
     "backend.driver.import" to "Import",
     "backend.driver.get" to "Get",

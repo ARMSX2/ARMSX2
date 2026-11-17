@@ -6,14 +6,15 @@
 // Which kind of Vulkan driver the open device is on, kept where the Android host can read it from
 // any thread, and the decision the host makes from it.
 //
-// The Android host warns a Mali user who is on the Vulkan renderer without malisx2, and an Adreno
-// user who is on Qualcomm's own driver. Whether the GPU is one the app offers malisx2 for is the
+// The Android host warns a Mali user who is on the Vulkan renderer without malisx2 (and says whether
+// the pack is installed), and an Adreno user who is on Qualcomm's own driver. Whether the GPU is one the app offers malisx2 for is the
 // app's own list; whether the driver in use IS malisx2 can only be read off the open device (a
 // pack that failed to load falls back to Arm's driver without saying so), and that device lives on
 // the GS thread. The GS thread writes the answer here when the device comes up and takes it back
 // when the device goes away.
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace GSDriverReport
@@ -40,20 +41,54 @@ namespace GSDriverReport
 	/// Safe from any thread.
 	ActiveVulkanDriver GetActiveVulkanDriver();
 
-	/// Whether to tell the user to get malisx2: the hardware renderer is on a Vulkan device whose
-	/// driver is not malisx2, on a GPU the app offers malisx2 for. The software renderer uses a
-	/// Vulkan device only to present the CPU-drawn frame, so its driver does not matter.
-	///
-	/// Not when the user has already selected a malisx2 pack for this boot: the device is then on
-	/// another driver because the pack did not load (malisx2 needs a recent Mali kernel driver; on
-	/// an older one it fails to open and the system loader answers). The selected pack is read off
-	/// the driver request the device was created from (Vulkan::GetCustomDriverStatus), which is the
-	/// per-game choice for the booting game.
-	constexpr bool ShouldWarnMaliSX2(
-		bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver, bool malisx2_pack_selected)
+	/// Which driver the user picked for this boot, read off the driver request the Vulkan library
+	/// was loaded with (Vulkan::GetCustomDriverStatus), which is the per-game choice for the
+	/// booting game.
+	enum class SelectedVulkanPack : uint8_t
 	{
-		return hardware_renderer && gpu_offers_malisx2 && driver == ActiveVulkanDriver::Other && !malisx2_pack_selected;
+		/// No pack: the system Vulkan driver.
+		System,
+		/// A malisx2 pack.
+		MaliSX2,
+		/// Any other pack.
+		Other,
+	};
+
+	/// What to tell a user whose hardware renderer is on a Vulkan driver that is not malisx2, on a
+	/// GPU the app offers malisx2 for. The software renderer uses a Vulkan device only to present
+	/// the CPU-drawn frame, so its driver does not matter.
+	enum class MaliSX2Notice : uint8_t
+	{
+		None,
+		/// The system driver is selected and no malisx2 pack is installed.
+		Get,
+		/// Another pack is selected and no malisx2 pack is installed.
+		OtherPackSelected,
+		/// A malisx2 pack is installed and something else is selected. The notice names the pack
+		/// and says where to switch.
+		InstalledNotSelected,
+	};
+
+	/// Not when the user has selected a malisx2 pack for this boot: the device is then on another
+	/// driver because the pack did not load (malisx2 needs a recent Mali kernel driver; on an older
+	/// one it fails to open and the system loader answers), and telling the user to get or switch
+	/// to what they already selected would be wrong.
+	constexpr MaliSX2Notice MaliSX2NoticeFor(bool hardware_renderer, bool gpu_offers_malisx2, ActiveVulkanDriver driver,
+		SelectedVulkanPack selected, bool malisx2_pack_installed)
+	{
+		if (!hardware_renderer || !gpu_offers_malisx2 || driver != ActiveVulkanDriver::Other ||
+			selected == SelectedVulkanPack::MaliSX2)
+			return MaliSX2Notice::None;
+		if (malisx2_pack_installed)
+			return MaliSX2Notice::InstalledNotSelected;
+		return selected == SelectedVulkanPack::Other ? MaliSX2Notice::OtherPackSelected : MaliSX2Notice::Get;
 	}
+
+	/// The OSD text for a notice, empty for None. `installed_pack` is how the app names the
+	/// installed malisx2 pack ("malisx2 0.4.1"), used only by InstalledNotSelected. A toast has no
+	/// button, so the text says where the app's driver list is; the driver list itself offers the
+	/// switch.
+	std::string MaliSX2NoticeText(MaliSX2Notice notice, std::string_view installed_pack);
 
 	/// Whether to tell the user to get a Turnip driver: the hardware renderer is on Qualcomm's own
 	/// driver. On Adreno the project's target driver is Turnip, and Qualcomm's 8xx generation refuses
