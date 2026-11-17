@@ -163,10 +163,12 @@ public:
 	}
 
 	/// Whether the draw reads its colour target or depth buffer other than through the depth test: a base that does
-	/// would see the targets without the held twins.
+	/// would see the targets without the held twins. A blend in a second pass and a logic op read the colour at the
+	/// draw's own pixels, where an earlier twin drew before the base in the game's order.
 	static bool ReadsTargets(const GSHWDrawConfig& c)
 	{
-		return c.require_one_barrier || c.require_full_barrier || c.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE ||
+		return c.blend_multi_pass.enable || c.colormask.logic_op != GSAlphaBitLogicOp::Off ||
+		       c.require_one_barrier || c.require_full_barrier || c.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE ||
 		       c.ps.IsFeedbackLoopRT() || c.ps.IsFeedbackLoopDepth() || c.ps.tex_is_fb || c.ps.HasColorROV() ||
 		       c.ps.HasDepthROV() || (c.tex && (c.tex == c.rt || c.tex == c.ds)) ||
 		       c.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||

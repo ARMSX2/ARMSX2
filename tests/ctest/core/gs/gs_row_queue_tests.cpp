@@ -241,6 +241,28 @@ TEST_F(GSRowQueueTest, ABaseThatReadsTheTargetThroughABarrierEmitsTheTwinsFirst)
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
 }
 
+TEST_F(GSRowQueueTest, ABaseThatBlendsInASecondPassEmitsTheTwinsFirst)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200);
+	b.Base();
+	b.config.blend_multi_pass.enable = true;
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
+TEST_F(GSRowQueueTest, ABaseWithALogicOpEmitsTheTwinsFirst)
+{
+	auto rt = Target();
+	Pair p0(rt.get(), 0);
+	Row b(rt.get(), 11, 200);
+	b.Base();
+	b.config.colormask.logic_op = GSAlphaBitLogicOp::SetBit;
+	Draw({&p0.base, &p0.twin, &b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11}));
+}
+
 TEST_F(GSRowQueueTest, ADepthClearBetweenABaseAndItsTwinMeansTheTwinIsNotHeld)
 {
 	auto rt = Target();
