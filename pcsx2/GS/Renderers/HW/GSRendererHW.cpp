@@ -140,6 +140,7 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 	SetTCOffset();
 	RefreshBurstMemo();
 	// Every setting the derivation reads is an input of every state entry.
+	g_gs_device->FlushDeferredDraws(); // queued rows name entries by their device cache
 	m_states.Flush();
 	m_row_run.open = false;
 	m_state_caps = -1;
@@ -12261,6 +12262,7 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 		ri = m_states.InsertReg(reg);
 		if (ri == StateTable::NONE)
 		{
+			g_gs_device->FlushDeferredDraws(); // queued rows name entries by their device cache
 			m_states.Flush();
 			ri = m_states.InsertReg(reg);
 		}
@@ -12268,6 +12270,7 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 	ei = m_states.InsertVariant(ri, var, care);
 	if (ei == StateTable::NONE)
 	{
+		g_gs_device->FlushDeferredDraws(); // queued rows name entries by their device cache
 		m_states.Flush();
 		ri = m_states.InsertReg(reg);
 		ei = m_states.InsertVariant(ri, var, care);

@@ -7,6 +7,8 @@
 #endif
 #include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Common/GSPassScheduler.h"
+#include "GS/Renderers/Common/GSRowQueue.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
 #include "GS/GSUtil.h"
@@ -324,6 +326,7 @@ std::unique_ptr<GSDevice> g_gs_device;
 
 GSDevice::GSDevice()
 	: m_pass_scheduler(std::make_unique<GSPassScheduler>())
+	, m_row_queue(std::make_unique<GSRowQueue>())
 {
 #ifdef PCSX2_DEVBUILD
 	s_texture_counts.fill(0);
@@ -578,6 +581,7 @@ void GSDevice::Destroy()
 	// Drop rather than emit: nothing is going to present these, and the targets they name
 	// are about to be destroyed.
 	m_pass_scheduler->Clear();
+	m_row_queue->Clear();
 	m_deferred_draw_count = 0;
 
 	// Nothing references these any more, and PurgePool() below deletes whatever the pool
@@ -1304,7 +1308,34 @@ void GSDevice::RenderHW(GSHWDrawConfig& config)
 
 bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
 {
-	return m_pass_scheduler->References(tex);
+	return m_pass_scheduler->References(tex) || m_row_queue->References(tex);
+}
+
+void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
+{
+	// m_flushing: a row drawn while the queue is emitting. The scheduler holds draws only with coalescing on, and the
+	// two queues would have to be ordered against each other: rows wait only with it off.
+	// Colour clipping is a state machine across draws that lives in the caller's configuration: the backend writes its
+	// mode and update area back into it, and the next draws read them. Such a draw is drawn now.
+	const bool sort = !g_gs_measurement_overrides.rows_unsorted;
+	if (!m_rows_defer || g_gs_measurement_overrides.rows_immediate || GSConfig.CoalesceRenderPasses || m_flushing ||
+		IsDSInRTActive() || m_colclip_rt || config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify ||
+		config.ps.colclip_hw || config.colclip_native_scale > 1.0f)
+	{
+		FlushDeferredDraws();
+		DoDrawRow(config, cache);
+		return;
+	}
+	if (!m_row_queue->Enqueue(config, cache, sort))
+	{
+		FlushDeferredDraws();
+		if (!m_row_queue->Enqueue(config, cache, sort))
+		{
+			DoDrawRow(config, cache);
+			return;
+		}
+	}
+	m_deferred_draw_count = m_pass_scheduler->GetCount() + m_row_queue->Count();
 }
 
 void GSDevice::FlushDeferredDrawsImpl()
@@ -1313,6 +1344,8 @@ void GSDevice::FlushDeferredDrawsImpl()
 
 	m_flushing = true;
 	m_pass_scheduler->Emit(this);
+	m_row_queue->Emit([this](GSHWDrawConfig& config, GSRowDeviceCache& cache) { DoDrawRow(config, cache); },
+		!g_gs_measurement_overrides.rows_unsorted);
 	m_flushing = false;
 
 	m_deferred_draw_count = 0;

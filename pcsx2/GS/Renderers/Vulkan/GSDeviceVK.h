@@ -1032,7 +1032,7 @@ public:
 	/// A draw of a known state (GSDrawRow.h). A plain draw into the open pass's own targets, with nothing pending on
 	/// them or on its textures, takes DoRenderHW's plain path with the entry's pipeline remembered; any other draw
 	/// goes through RenderHW.
-	void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
+	void DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
 	/// What DrawRow keeps in an entry's GSRowDeviceCache: the selector its pipeline was looked up for.
 	struct RowCache
 	{

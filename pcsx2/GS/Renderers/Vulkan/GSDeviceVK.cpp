@@ -3280,6 +3280,8 @@ bool GSDeviceVK::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 		return false;
 
 	m_runs = GSRunsVK::Create(this);
+	// Rows wait for their run's close where the run machine can draw them (GSRowQueue.h).
+	m_rows_defer = m_runs != nullptr;
 
 	InitializeState();
 #ifdef __ANDROID__
@@ -10635,7 +10637,7 @@ bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt,
 	return true;
 }
 
-void GSDeviceVK::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache_bytes)
+void GSDeviceVK::DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache_bytes)
 {
 	GSTextureVK* draw_rt;
 	GSTextureVK* draw_ds;

@@ -1590,6 +1590,7 @@ static inline u32 GetVertexAlignment(GSHWDrawConfig::VSExpand expand)
 }
 
 class GSPassScheduler;
+class GSRowQueue;
 
 class GSDevice : public GSAlignedClass<32>
 {
@@ -1813,6 +1814,10 @@ protected:
 	/// Render passes are coalesced by holding draws here until something needs to observe
 	/// the target. See GSPassScheduler and FlushDeferredDraws().
 	std::unique_ptr<GSPassScheduler> m_pass_scheduler;
+	/// State-table draws held back until something could observe them (GSRowQueue.h). Only where the backend says rows
+	/// may wait (m_rows_defer) and the render-pass scheduler is off.
+	std::unique_ptr<GSRowQueue> m_row_queue;
+	bool m_rows_defer = false;
 	u32 m_deferred_draw_count = 0;
 	bool m_flushing = false;
 
@@ -1917,6 +1922,8 @@ protected:
 	virtual void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) = 0;
 	virtual void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) = 0;
 	virtual void DoRenderHW(GSHWDrawConfig& config) = 0;
+	/// Draws one state-table row now. The default is the ordinary draw.
+	virtual void DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) { DoRenderHW(config); }
 	virtual void DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea);
 	virtual PresentResult DoBeginPresent(bool frame_skip) = 0;
 
@@ -2277,7 +2284,10 @@ public:
 	/// A draw whose state came from the hardware renderer's state table (GSDrawRow.h), with that entry's device cache.
 	/// A backend may draw it with less work than RenderHW where nothing about the draw needs more; the default draws
 	/// it like any other.
-	virtual void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) { RenderHW(config); }
+	/// Rows may be held back (GSRowQueue.h) and drawn when something could observe them, in the pass compiler's order.
+	void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache);
+
+
 
 	/// Emits any draws the render-pass scheduler is holding back, in an order that
 	/// preserves what every deferred draw would have seen had it run immediately.
