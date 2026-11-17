@@ -92,6 +92,59 @@ object CustomDriver {
      *  notice exactly when it is offered the download. */
     fun offersMaliSX2(renderer: String?): Boolean = MALISX2_SOURCE.supports(renderer)
 
+    /** Whether an installed pack is a malisx2 pack, from the directory it was installed in (its id)
+     *  and the library it loads. Same rule as GSDriverReport::IsMaliSX2Pack in the core, which
+     *  decides the same thing for the pack the Vulkan library was loaded with: "malisx2", or the
+     *  driver's old name "libmali" that the ids of already-installed packs still carry. */
+    internal fun isMaliSX2Pack(id: String, libraryName: String): Boolean =
+        listOf(id, libraryName).any {
+            it.contains("malisx2", ignoreCase = true) || it.contains("libmali", ignoreCase = true)
+        }
+
+    private fun versionOf(d: InstalledDriver): List<Int> =
+        Regex("""\d+""").findAll(d.name).map { it.value.toIntOrNull() ?: 0 }.toList()
+
+    private val VERSION_ORDER = Comparator<InstalledDriver> { a, b ->
+        val va = versionOf(a)
+        val vb = versionOf(b)
+        var c = 0
+        for (i in 0 until maxOf(va.size, vb.size)) {
+            c = (va.getOrElse(i) { 0 }).compareTo(vb.getOrElse(i) { 0 })
+            if (c != 0) break
+        }
+        c
+    }
+
+    /** The newest installed malisx2 pack (by the version in its name), or null when there is none. */
+    internal fun installedMaliSX2(installed: List<InstalledDriver>): InstalledDriver? =
+        installed.filter { isMaliSX2Pack(it.id, it.libraryName) }.maxWithOrNull(VERSION_ORDER)
+
+    /** What the notices call a malisx2 pack: its name without the build tag in parentheses, so
+     *  "malisx2 0.4.1 (g1a2b3c)" reads "malisx2 0.4.1". Never empty. */
+    internal fun maliSX2Label(d: InstalledDriver): String =
+        d.name.replace(Regex("""\s*\([^)]*\)\s*$"""), "").ifBlank { d.name }.ifBlank { d.id }
+
+    /** The malisx2 pack the driver list should offer a switch to: the GPU is one the list offers
+     *  malisx2 for, a malisx2 pack is installed, and the driver this scope runs with
+     *  ([effectiveId], the id from [CustomDriver.effectiveId], null for the system driver) is not
+     *  a malisx2 pack. Null when there is nothing to offer. */
+    internal fun maliSX2SwitchOffer(
+        renderer: String?, installed: List<InstalledDriver>, effectiveId: String?,
+    ): InstalledDriver? {
+        if (!offersMaliSX2(renderer)) return null
+        val pack = installedMaliSX2(installed) ?: return null
+        val running = installed.firstOrNull { it.id == effectiveId }
+        return if (running != null && isMaliSX2Pack(running.id, running.libraryName)) null else pack
+    }
+
+    /** Tells the core which malisx2 pack is installed (or none), for the "installed but not selected"
+     *  OSD notice at game start. Called with the per-game driver pick before each boot, since packs
+     *  come and go while the app runs. */
+    fun pushInstalledMaliSX2(installed: List<InstalledDriver>) {
+        val label = installedMaliSX2(installed)?.let(::maliSX2Label).orEmpty()
+        runCatching { NativeApp.setMaliSX2InstalledPack(label) }
+    }
+
     // Our own Turnip: Mesa with the ARMSX2 driver patches, built as adrenotools packs.
     // The emulator recognises these builds by the `(git-axfl<N>-…)` token in
     // driverInfo and takes the barrier-less in-pass read road on Adreno 650 and up

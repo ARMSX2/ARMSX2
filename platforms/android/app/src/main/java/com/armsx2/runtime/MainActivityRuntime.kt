@@ -1102,6 +1102,9 @@ open class MainActivityRuntime : ComponentActivity() {
             )
             customDriverId.value = pickedId
             val picked = installedDrivers.firstOrNull { it.id == pickedId }
+            // The core's malisx2 notice needs to know whether the pack is installed, not only which
+            // driver this boot selected.
+            com.armsx2.CustomDriver.pushInstalledMaliSX2(installedDrivers)
             // Turnip options (#719) go into the environment before the device is created.
             com.armsx2.CustomDriver.applyDriverEnv()
             if (ctx != null) {

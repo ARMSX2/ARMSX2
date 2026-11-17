@@ -373,9 +373,9 @@ TEST(GSDriverReport, ActiveVulkanDriverFollowsTheLatestDevice)
 	ClearActiveVulkanDriver();
 }
 
-// The Android host's "get malisx2" notice. The decision is the four facts it is made from: the
-// renderer, whether the app's driver list offers malisx2 for the GPU, the driver the open Vulkan
-// device is on, and whether the user selected a malisx2 pack for this boot.
+// The Android host's malisx2 notice. The decision is the five facts it is made from: the renderer,
+// whether the app's driver list offers malisx2 for the GPU, the driver the open Vulkan device is on,
+// which driver the user picked for this boot, and whether a malisx2 pack is installed.
 TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWithoutMaliSX2)
 {
 	for (const bool hardware : {false, true})
@@ -383,11 +383,38 @@ TEST(GSDriverReport, MaliSX2NoticeIsOnlyForTheHardwareRendererOnAnOfferedGpuWith
 			for (const ActiveVulkanDriver driver :
 				{ActiveVulkanDriver::None, ActiveVulkanDriver::MaliSX2, ActiveVulkanDriver::QualcommProprietary,
 					ActiveVulkanDriver::Other})
-				for (const bool pack : {false, true})
-					EXPECT_EQ(ShouldWarnMaliSX2(hardware, offered, driver, pack),
-						hardware && offered && driver == ActiveVulkanDriver::Other && !pack)
-						<< "hardware=" << hardware << " offered=" << offered << " driver=" << static_cast<int>(driver)
-						<< " pack=" << pack;
+				for (const SelectedVulkanPack selected :
+					{SelectedVulkanPack::System, SelectedVulkanPack::MaliSX2, SelectedVulkanPack::Other})
+					for (const bool installed : {false, true})
+						EXPECT_EQ(MaliSX2NoticeFor(hardware, offered, driver, selected, installed) != MaliSX2Notice::None,
+							hardware && offered && driver == ActiveVulkanDriver::Other &&
+								selected != SelectedVulkanPack::MaliSX2)
+							<< "hardware=" << hardware << " offered=" << offered << " driver=" << static_cast<int>(driver)
+							<< " selected=" << static_cast<int>(selected) << " installed=" << installed;
+}
+
+// The three things the user can be told, on a Mali that malisx2 supports with the hardware renderer
+// on Arm's own driver.
+TEST(GSDriverReport, MaliSX2NoticeSaysInstalledNotSelectedWhenThePackIsThereButTheSystemDriverIsSelected)
+{
+	// The RG 476H case: malisx2 0.4.1 installed, "System Vulkan driver" selected.
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, ActiveVulkanDriver::Other, SelectedVulkanPack::System, true),
+		MaliSX2Notice::InstalledNotSelected);
+	// Another pack selected with malisx2 installed is the same situation for the user.
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, ActiveVulkanDriver::Other, SelectedVulkanPack::Other, true),
+		MaliSX2Notice::InstalledNotSelected);
+}
+
+TEST(GSDriverReport, MaliSX2NoticeSaysGetWhenNoPackIsInstalled)
+{
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, ActiveVulkanDriver::Other, SelectedVulkanPack::System, false),
+		MaliSX2Notice::Get);
+}
+
+TEST(GSDriverReport, MaliSX2NoticeSaysIncompatibleWhenAnotherPackIsSelectedAndNoMaliSX2IsInstalled)
+{
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, ActiveVulkanDriver::Other, SelectedVulkanPack::Other, false),
+		MaliSX2Notice::OtherPackSelected);
 }
 
 TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
@@ -400,7 +427,9 @@ TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 	for (const auto& [id, info] : drivers)
 	{
 		NoteActiveVulkanDriver(id, info);
-		EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false)) << info;
+		EXPECT_NE(MaliSX2NoticeFor(true, true, GetActiveVulkanDriver(), SelectedVulkanPack::System, false),
+			MaliSX2Notice::None)
+			<< info;
 	}
 	ClearActiveVulkanDriver();
 }
@@ -408,7 +437,7 @@ TEST(GSDriverReport, MaliSX2NoticeFiresForArmsDriverAndForAnyOtherPack)
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnMaliSX2)
 {
 	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r44p1-malisx2.0.2.s0123abcd");
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, GetActiveVulkanDriver(), SelectedVulkanPack::System, true), MaliSX2Notice::None);
 	ClearActiveVulkanDriver();
 }
 
@@ -416,33 +445,73 @@ TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenVulkanIsNotRunning)
 {
 	// OpenGL, or no device yet.
 	ClearActiveVulkanDriver();
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, GetActiveVulkanDriver(), SelectedVulkanPack::System, true), MaliSX2Notice::None);
 	// A value outside the enum is not a Vulkan driver either.
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, static_cast<ActiveVulkanDriver>(200), false));
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, static_cast<ActiveVulkanDriver>(200), SelectedVulkanPack::System, true),
+		MaliSX2Notice::None);
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietUnderTheSoftwareRenderer)
 {
 	// The software renderer can sit on a Vulkan device, but only to present a frame the CPU drew.
-	EXPECT_FALSE(ShouldWarnMaliSX2(false, true, ActiveVulkanDriver::Other, false));
+	EXPECT_EQ(MaliSX2NoticeFor(false, true, ActiveVulkanDriver::Other, SelectedVulkanPack::System, true),
+		MaliSX2Notice::None);
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietOnGpusTheAppDoesNotOfferItFor)
 {
-	// Telling these users to download a driver that is not listed for them would be wrong.
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, false, ActiveVulkanDriver::Other, false));
+	// Telling these users to get a driver that is not listed for them would be wrong, installed or not.
+	EXPECT_EQ(MaliSX2NoticeFor(true, false, ActiveVulkanDriver::Other, SelectedVulkanPack::System, false),
+		MaliSX2Notice::None);
+	EXPECT_EQ(MaliSX2NoticeFor(true, false, ActiveVulkanDriver::Other, SelectedVulkanPack::System, true),
+		MaliSX2Notice::None);
 }
 
 TEST(GSDriverReport, MaliSX2NoticeStaysQuietWhenAMaliSX2PackIsSelectedButDidNotLoad)
 {
 	// malisx2 fails to open on an older Mali kernel driver and Arm's driver answers instead. The
-	// device is on Other, but the user already has the pack, so the notice would be wrong.
+	// device is on Other, but the user already selected the pack, so no notice would be right.
 	NoteActiveVulkanDriver(DriverIdValue::ArmProprietary, "v1.r40p0-01eac0.030c4a3fb15fe65f485fb565f5e1b688");
 	EXPECT_EQ(GetActiveVulkanDriver(), ActiveVulkanDriver::Other);
-	EXPECT_FALSE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), true));
-	// The same device with no malisx2 pack selected (the system driver, or another pack) is warned.
-	EXPECT_TRUE(ShouldWarnMaliSX2(true, true, GetActiveVulkanDriver(), false));
+	EXPECT_EQ(MaliSX2NoticeFor(true, true, GetActiveVulkanDriver(), SelectedVulkanPack::MaliSX2, true), MaliSX2Notice::None);
+	// The same device with no malisx2 pack selected (the system driver, or another pack) is told.
+	EXPECT_NE(MaliSX2NoticeFor(true, true, GetActiveVulkanDriver(), SelectedVulkanPack::System, true), MaliSX2Notice::None);
 	ClearActiveVulkanDriver();
+}
+
+// The OSD text. A toast has no button, so each one says where the app's driver list is, and the
+// installed-but-not-selected one names the pack.
+TEST(GSDriverReport, MaliSX2NoticeTextNamesThePackAndSaysItIsNotSelected)
+{
+	const std::string text = MaliSX2NoticeText(MaliSX2Notice::InstalledNotSelected, "malisx2 0.4.1");
+	EXPECT_NE(text.find("malisx2 0.4.1"), std::string::npos) << text;
+	EXPECT_NE(text.find("installed but not selected"), std::string::npos) << text;
+	EXPECT_NE(text.find("Settings > Renderer"), std::string::npos) << text;
+	// It must not call the driver incompatible: the pack is fine, it is just not selected.
+	EXPECT_EQ(text.find("ncompatible"), std::string::npos) << text;
+	EXPECT_EQ(text.find("download"), std::string::npos) << text;
+}
+
+TEST(GSDriverReport, MaliSX2NoticeTextFallsBackToTheDriverNameWhenThePackHasNone)
+{
+	const std::string text = MaliSX2NoticeText(MaliSX2Notice::InstalledNotSelected, "");
+	EXPECT_EQ(text.rfind("malisx2 is installed but not selected", 0), 0u) << text;
+}
+
+TEST(GSDriverReport, MaliSX2NoticeTextForGetAndForAnIncompatibleSelectionPointsAtTheDriverList)
+{
+	const std::string get = MaliSX2NoticeText(MaliSX2Notice::Get, "");
+	EXPECT_NE(get.find("not installed"), std::string::npos) << get;
+	EXPECT_NE(get.find("Settings > Renderer"), std::string::npos) << get;
+	const std::string other = MaliSX2NoticeText(MaliSX2Notice::OtherPackSelected, "");
+	EXPECT_NE(other.find("Incompatible driver selected"), std::string::npos) << other;
+	EXPECT_NE(other.find("Settings > Renderer"), std::string::npos) << other;
+	EXPECT_NE(get, other);
+}
+
+TEST(GSDriverReport, MaliSX2NoticeTextIsEmptyForNone)
+{
+	EXPECT_TRUE(MaliSX2NoticeText(MaliSX2Notice::None, "malisx2 0.4.1").empty());
 }
 
 // The Android host's "get a Turnip driver" notice: the hardware renderer on Qualcomm's own driver,
