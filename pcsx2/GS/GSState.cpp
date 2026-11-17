@@ -4219,7 +4219,8 @@ void GSState::FlushPrim()
 		// state and installed back over the same live state, so the round-trip
 		// is an identity — skip it and run the tail directly.
 		m_draw_priv = priv;
-		DrawRecordTail(s_n);
+		if (!m_copy_run_armed || !ContinueCopyRun())
+			DrawRecordTail(s_n);
 	}
 
 	// Front side: reset the buffer and rebuild the carry-over window. Inline this
@@ -4342,21 +4343,24 @@ GSBackQueue::DrawPrivRegs GSState::CaptureDrawPrivRegs()
 	return priv;
 }
 
+// Internal frame rate detection, based on sprite blits to the display framebuffer.
+void GSState::NoteDisplaySpriteBlit()
+{
+	const u32 FRAME_FBP = m_context->FRAME.FBP;
+	if ((m_draw_priv.dispfb_fbp[0] == FRAME_FBP && m_draw_priv.display_enabled[0]) ||
+		(m_draw_priv.dispfb_fbp[1] == FRAME_FBP && m_draw_priv.display_enabled[1]))
+	{
+		g_perfmon.AddDisplayFramebufferSpriteBlit();
+	}
+}
+
 // The draw executor's tail: everything from vertex trace to Draw() + perfmon,
 // running against installed (or, on the record-off path, live) state.
 void GSState::DrawRecordTail(u64 draw_serial)
 {
 	GL_REG("FlushPrim ctxt %d", PRIM->CTXT);
 
-	// internal frame rate detection based on sprite blits to the display framebuffer
-	{
-		const u32 FRAME_FBP = m_context->FRAME.FBP;
-		if ((m_draw_priv.dispfb_fbp[0] == FRAME_FBP && m_draw_priv.display_enabled[0]) ||
-			(m_draw_priv.dispfb_fbp[1] == FRAME_FBP && m_draw_priv.display_enabled[1]))
-		{
-			g_perfmon.AddDisplayFramebufferSpriteBlit();
-		}
-	}
+	NoteDisplaySpriteBlit();
 
 	// If the PSM format of Z is invalid, but it is masked (no write) and ZTST is set to ALWAYS pass (no test, just allow)
 	// we can ignore the Z format, since it won't be used in the draw (Star Ocean 3 transitions)

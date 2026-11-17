@@ -665,6 +665,9 @@ public:
 	// code reads this, never m_regs, because under the split the draw runs after MTGS may have
 	// written the next frame's registers.
 	GSBackQueue::DrawPrivRegs m_draw_priv = {};
+	/// Set by a renderer between a copy that arms a run and the first draw that does not continue it, so that the
+	/// draw executor asks ContinueCopyRun() only then.
+	bool m_copy_run_armed = false;
 	GSLocalMemory m_mem;
 	GSDrawingEnvironment m_env = {};
 	GSDrawingEnvironment m_prev_env = {};
@@ -884,6 +887,10 @@ public:
 	/// GSRendererHWBurstMemo.cpp) does so and returns true; the executor then skips the vertex trace, the
 	/// texel rounding and Draw(), and keeps its own bookkeeping.
 	virtual bool SkipMemoizedDraw() { return false; }
+	/// Called by the draw executor in place of its tail while m_copy_run_armed is set: a renderer that
+	/// executes the draw as the next copy of a run of copies (the hardware renderer's copy runs,
+	/// GSRendererHWCopyRuns.cpp) does all the tail would have done and returns true.
+	virtual bool ContinueCopyRun() { return false; }
 	virtual void PurgeTextureCache(bool sources, bool targets, bool hash_cache);
 	virtual void ReadbackTextureCache();
 	/// Writes into local memory what the hardware renderer holds for it apart from its targets (moved depth
@@ -914,6 +921,7 @@ public:
 	void ExecDrawRecord(const GSBackQueue::DrawRecord& rec);
 	GSBackQueue::DrawPrivRegs CaptureDrawPrivRegs();
 	void DrawRecordTail(u64 draw_serial);
+	void NoteDisplaySpriteBlit();
 	void SubmitPcrtcSync();
 	void ExecPcrtcSyncRecord(const GSBackQueue::PcrtcSyncRecord& rec);
 

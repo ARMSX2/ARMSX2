@@ -80,6 +80,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_clut_tests.cpp
 	gs_burst_memo_tests.cpp
 	gs_burst_memo_draw_tests.cpp
+	gs_copy_run_tests.cpp
 	gs_alpha_known_bits_tests.cpp
 	gs_alpha_known_rects_tests.cpp
 	gs_alpha_known_rects_draw_tests.cpp

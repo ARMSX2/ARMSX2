@@ -72,6 +72,7 @@ GSRendererHW::~GSRendererHW()
 
 void GSRendererHW::Destroy()
 {
+	CopyRunDisarm();
 	BurstMemoFlushWaiting();
 	g_texture_cache->RemoveAll(true, true, true);
 	GSRenderer::Destroy();
@@ -79,6 +80,7 @@ void GSRendererHW::Destroy()
 
 void GSRendererHW::PurgeTextureCache(bool sources, bool targets, bool hash_cache)
 {
+	CopyRunDisarm();
 	// Queued draw records reach the TC; retire them before mutating it.
 	DrainBackQueue();
 	BurstMemoFlushWaiting();
@@ -87,6 +89,7 @@ void GSRendererHW::PurgeTextureCache(bool sources, bool targets, bool hash_cache
 
 void GSRendererHW::ReadbackTextureCache()
 {
+	CopyRunDisarm();
 	DrainBackQueue();
 	BurstMemoFlushWaiting();
 	g_texture_cache->ReadbackAll();
@@ -111,6 +114,7 @@ float GSRendererHW::GetUpscaleMultiplier()
 void GSRendererHW::Reset(bool hardware_reset)
 {
 	m_row_run.open = false;
+	CopyRunDisarm();
 	// Read back on CSR Reset, conditional downloading on render swap etc handled elsewhere.
 	if (!hardware_reset)
 		g_texture_cache->ReadbackAll();
@@ -136,6 +140,7 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 	}
 
 	GSRenderer::UpdateSettings(old_config);
+	CopyRunDisarm();
 	m_mipmap = GSConfig.HWMipmap;
 	SetTCOffset();
 	RefreshBurstMemo();
@@ -149,6 +154,7 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
 	m_row_run.open = false;
+	CopyRunDisarm();
 	BurstMemoEndFrame(idle_frame);
 	m_blend_carry.valid = false;
 
@@ -2775,6 +2781,7 @@ void GSRendererHW::HandleManualDeswizzle()
 
 void GSRendererHW::InvalidateVideoMem(const GIFRegBITBLTBUF& BITBLTBUF, const GSVector4i& r)
 {
+	CopyRunDisarm();
 	BurstMemoFlushWaiting();
 	// An EE upload or a CPU move is about to write local memory here: held words under it go in first, so
 	// the write lands over them. After the memo's waiting invalidations: those only touch the texture cache
@@ -2830,6 +2837,8 @@ void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 		return;
 	}
 
+	CopyRunDisarm();
+
 	auto iter = m_draw_transfers.end();
 	bool skip = false;
 	// If the EE write overlaps the readback and was done since the last draw, there's no need to read it back.
@@ -2856,6 +2865,7 @@ void GSRendererHW::InvalidateLocalMem(const GIFRegBITBLTBUF& BITBLTBUF, const GS
 
 void GSRendererHW::Move()
 {
+	CopyRunDisarm();
 	BurstMemoFlushWaiting();
 	if (m_mv && m_mv(*this))
 	{
@@ -3593,6 +3603,8 @@ void GSRendererHW::Draw()
 	// A draw that returns before its targets are known leaves no row run behind it.
 	const bool row_run_open = m_row_run.open;
 	m_row_run.open = false;
+	// A copy that arms a run does so below; any other draw ends it.
+	CopyRunDisarm();
 	static u32 num_skipped_channel_shuffle_draws = 0;
 
 	// We mess with this state as an optimization, so take a copy and use that instead.
@@ -3908,13 +3920,8 @@ void GSRendererHW::Draw()
 	//                                |       0.5,2.25 |        1-1 |    1 |
 	//                                |        0.5,2.5 |        1-2 |    2 |
 	//                                --------------------------------------
-	m_r = GSVector4i((m_vt.m_min.p.upld(m_vt.m_max.p) + GSVector4::cxpr(0.4f)).round<Round_NearestInt>());
-	m_r = m_r.blend8(m_r + GSVector4i::cxpr(0, 0, 1, 1), (m_r.xyxy() == m_r.zwzw()));
-	m_r_no_scissor = m_r;
-	m_r = m_r.rintersect(context->scissor.in);
-
 	// Draw is too small, just skip it.
-	if (m_r.rempty())
+	if (!SetDrawRect())
 	{
 		GL_INS("HW: Draw %lld skipped due to having an empty rect", s_n);
 		return;
@@ -3948,6 +3955,8 @@ void GSRendererHW::Draw()
 		{
 			GL_CACHE("HW: Possible texture decompression, drawn with SwPrimRender() (BP %x BW %u TBP0 %x TBW %u)",
 				m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBMSK, m_cached_ctx.TEX0.TBP0, m_cached_ctx.TEX0.TBW);
+			if (m_sw_prim.last_draw_palette_block_copy)
+				CopyRunArm();
 			return;
 		}
 	}

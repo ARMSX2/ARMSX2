@@ -21,10 +21,13 @@ class CURRENT_ISA::GSRendererHWFunctions
 {
 public:
 	static bool SwPrimRender(GSRendererHW& hw, bool invalidate_tc, bool add_ee_transfer);
+	static bool CopyRunCopy(GSRendererHW& hw, const GSVector4i& bbox, bool effects);
+	static void AfterSwPrimRender(GSRendererHW& hw, const GSVector4i& bbox, bool invalidate_tc, bool add_ee_transfer);
 
 	static void Populate(GSRendererHW& renderer)
 	{
 		renderer.SwPrimRender = SwPrimRender;
+		renderer.CopyRunCopy = CopyRunCopy;
 	}
 };
 
@@ -36,6 +39,7 @@ class CURRENT_ISA::GSSwPrimRenderFunctions
 {
 public:
 	static bool Run(GSRenderer& renderer, GSSwPrimRenderState& sw, const GSVector4i& bbox);
+	static bool ContinuePaletteBlocks(GSRenderer& hw, GSSwPrimRenderState& sw, const GSVector4i& bbox, bool effects);
 
 private:
 	static void PrepareTexture(GSRenderer& hw, GSSwPrimRenderState& sw, GSRasterizerData& data);
@@ -67,12 +71,10 @@ bool CURRENT_ISA::GSSwPrimRenderRun(GSRenderer& renderer, GSSwPrimRenderState& s
 static GSVector4i s_dimx_storage[8];
 static GIFRegDIMX s_last_dimx;
 
-bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, bool add_ee_transfer)
+// What the copy road does after a draw has written local memory: the texture cache invalidation over its box and
+// the EE-to-GS entry.
+void GSRendererHWFunctions::AfterSwPrimRender(GSRendererHW& hw, const GSVector4i& bbox, bool invalidate_tc, bool add_ee_transfer)
 {
-	const GSVector4i bbox = GSSwPrimRenderBBox(hw.m_vt, hw.m_context->scissor.in);
-	if (!GSSwPrimRenderFunctions::Run(hw, hw.m_sw_prim, bbox))
-		return false;
-
 	if (invalidate_tc)
 	{
 		const GSDrawingContext* context = hw.m_context;
@@ -102,7 +104,30 @@ bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, b
 		uq.rect = bbox;
 		hw.m_draw_transfers.push_back(uq);
 	}
+}
 
+bool GSRendererHWFunctions::SwPrimRender(GSRendererHW& hw, bool invalidate_tc, bool add_ee_transfer)
+{
+	const GSVector4i bbox = GSSwPrimRenderBBox(hw.m_vt, hw.m_context->scissor.in);
+	if (!GSSwPrimRenderFunctions::Run(hw, hw.m_sw_prim, bbox))
+		return false;
+
+	AfterSwPrimRender(hw, bbox, invalidate_tc, add_ee_transfer);
+	return true;
+}
+
+// The setup of the last palette block copy Run() took, as it was when the copy was decided: what a copy that
+// continues a copy run reuses (ContinuePaletteBlocks()). One renderer draws at a time, and a run is armed only
+// right after the Run() that left this, and disarmed by any draw that does not continue it.
+static GSRasterizerData s_run_data;
+static const GSSwPrimRenderState* s_run_owner = nullptr;
+
+bool GSRendererHWFunctions::CopyRunCopy(GSRendererHW& hw, const GSVector4i& bbox, bool effects)
+{
+	if (!GSSwPrimRenderFunctions::ContinuePaletteBlocks(hw, hw.m_sw_prim, bbox, effects))
+		return false;
+	if (effects)
+		AfterSwPrimRender(hw, bbox, true, true);
 	return true;
 }
 
@@ -685,10 +710,23 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	// A paletted sprite draw into a 32-bit frame: the palette block copy, read from local memory itself like the
 	// masked copy above, so it too never takes the snapshot. Not mipmapped: the selector's level-of-detail bits are
 	// set only by the snapshot's setup, so a mipmapped draw is the rasterizer's here.
+	bool palette_block_copy = false;
 	if (!copied && prepare_texture && sw.palette_block_copy && gd.sel.fpsm == 0 && gd.sel.tlu && !hw.IsMipMapActive())
 	{
 		copied = IsPaletteBlockCopy(data, PRIM->FST) && DrawPaletteBlocks(hw, sw, data);
 		block_copy = copied;
+		palette_block_copy = copied;
+	}
+
+	// What a copy that continues this one in a copy run reuses. The wrap limits GatherIndices() set are the
+	// continuing copy's own to set; so are the selector's bits that follow from the vertices.
+	if (palette_block_copy)
+	{
+		s_run_data.scissor = data.scissor;
+		s_run_data.primclass = data.primclass;
+		s_run_data.scanmsk_value = data.scanmsk_value;
+		s_run_data.global = gd;
+		s_run_owner = &sw;
 	}
 
 	if (copied)
@@ -709,7 +747,77 @@ bool GSSwPrimRenderFunctions::Run(GSRenderer& hw, GSSwPrimRenderState& sw, const
 	MarkDrawWritten(hw.m_mem, context, bbox, !copied);
 	sw.last_draw_copied = copied;
 	sw.last_draw_block_copy = block_copy;
+	sw.last_draw_palette_block_copy = palette_block_copy;
 
+	return true;
+}
+
+// The next copy of a copy run (GSRendererHWCopyRuns.cpp): the draw is Run()'s palette block copy, decided under
+// the registers of the copy that armed the run except the texture address, the palette offset and the palette
+// load, so Run()'s selector is that copy's except for the bits the vertices set, which are set again here as
+// Run() sets them. The palette is read for this draw's TEX0, the vertices converted, and the copy refused (writing
+// nothing, so that the caller can give the draw to Draw()) wherever Run() would not have taken it. With `effects`
+// false only local memory is written: no page marks and no counts (the copy-run check mode).
+bool GSSwPrimRenderFunctions::ContinuePaletteBlocks(GSRenderer& hw, GSSwPrimRenderState& sw, const GSVector4i& bbox, bool effects)
+{
+	if (s_run_owner != &sw)
+		return false;
+
+	GSVertexTrace& vt = hw.m_vt;
+	const GIFRegPRIM* PRIM = hw.PRIM;
+	const GSDrawingContext* context = hw.m_context;
+	GSRasterizerData& data = s_run_data;
+	GSScanlineGlobalData& gd = data.global;
+
+	sw.vertex_buffer.resize(((hw.m_vertex->next + 1) & ~1));
+	data.vertex = sw.vertex_buffer.data();
+	data.vertex_count = hw.m_vertex->next;
+	data.index = hw.m_index->buff;
+	data.index_count = hw.m_index->tail;
+	data.bbox = bbox;
+
+	// As Run(): a sprite, not mipmapped (the run is armed only where no draw under its registers can be).
+	const u32 q_div = (vt.m_eq.q && vt.m_min.t.z != 1.0f) || !vt.m_eq.q;
+	GSVertexSW::s_cvb[GS_SPRITE_CLASS][1][PRIM->FST][q_div](context, data.vertex, hw.m_vertex->buff, hw.m_vertex->next);
+
+	hw.m_mem.m_clut.Read32(context->TEX0, hw.m_draw_env->TEXA);
+
+	// The selector bits Run() takes from the vertices: the filter, a modulate by 0x80 taken as decal, and notest.
+	gd.sel.ltf = vt.IsLinear();
+	gd.sel.tfx = context->TEX0.TFX;
+	const u32 modulated = gd.sel.tcc ? 0xffff : 0x0fff;
+	if (gd.sel.tfx == TFX_MODULATE && vt.m_eq.rgba == 0xffff && ((vt.m_min.c == GSVector4i(128)).mask() & modulated) == modulated)
+		gd.sel.tfx = TFX_DECAL;
+	gd.sel.notest = 0;
+	if (!gd.sel.ftest && !gd.sel.ztest && bbox.eq(bbox.rintersect(data.scissor)))
+	{
+		gd.sel.notest = 1;
+		const u32 ofx = context->XYOFFSET.OFX;
+		for (int i = 0, j = hw.m_vertex->tail; i < j; i++)
+		{
+#if _M_SSE >= 0x501
+			if ((((hw.m_vertex->buff[i].XYZ.X - ofx) + 15) >> 4) & 7) // aligned to 8
+#else
+			if ((((hw.m_vertex->buff[i].XYZ.X - ofx) + 15) >> 4) & 3) // aligned to 4
+#endif
+			{
+				gd.sel.notest = 0;
+				break;
+			}
+		}
+	}
+
+	if (!IsPaletteBlockCopy(data, PRIM->FST) || !DrawPaletteBlocks(hw, sw, data))
+		return false;
+
+	if (effects)
+	{
+		g_perfmon.Put(GSPerfMon::SwPaletteBlockCopies, 1);
+		MarkDrawWritten(hw.m_mem, context, bbox, false);
+		sw.last_draw_copied = true;
+		sw.last_draw_block_copy = true;
+		sw.last_draw_palette_block_copy = true;
+	}
 	return true;
 }
 

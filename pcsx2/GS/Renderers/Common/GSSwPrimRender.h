@@ -66,6 +66,8 @@ struct GSSwPrimRenderState
 	/// ... and the copy was one of the two block copies (the 32-bit texel copy or the palette block copy), the
 	/// cheapest the road has: the burst memo does not record what they draw (GSRendererHWBurstMemo.cpp).
 	bool last_draw_block_copy = false;
+	/// ... and it was the palette block copy, which a copy run can continue (GSRendererHWCopyRuns.cpp).
+	bool last_draw_palette_block_copy = false;
 };
 
 // The rectangle the scanline core walks and the caller accounts for in guest memory. One

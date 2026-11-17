@@ -222,6 +222,9 @@ private:
 	/// Writes held depth words (GSTextureCache::MaterialiseHeldPages) under what the copy road reads and writes.
 	void MaterialiseHeldUnderCopy();
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
+	/// The palette block copy of a draw that continues a copy run, and what SwPrimRender() does after it; false,
+	/// with nothing written, where Run() would not have taken it. With `effects` false, local memory only.
+	bool (*CopyRunCopy)(GSRendererHW&, const GSVector4i& bbox, bool effects);
 
 	bool SnapSpriteEdgesToPixelGrid();
 
@@ -610,6 +613,27 @@ private:
 	bool m_copy_road_no_targets = false;
 	bool m_copy_road_frame_checked = false;
 
+	// Copy runs (GSRendererHWCopyRuns.cpp): the registers of the palette block copy that armed the run, with the
+	// fields a continuing copy may change cleared, and the texture address the run last found no target at.
+	struct CopyRunKey
+	{
+		u64 regs[19];
+	};
+	CopyRunKey m_copy_run_key = {};
+	u32 m_copy_run_tbp0 = 0;
+	/// Copies that continued a run, for tests.
+	u64 m_copy_run_copies = 0;
+	static void MakeCopyRunKey(CopyRunKey& key, const GSDrawingEnvironment& env, const GSDrawingContext& ctx);
+	void CopyRunArm();
+	bool FrameMayReachTarget(const GSVector4i& bbox) const;
+	/// What ContinueCopyRun() does before the copy: false where the draw goes to the tail instead.
+	bool PrepareCopyRunCopy(GSVector4i& bbox);
+	/// ... and after it.
+	void FinishCopyRunCopy(const GSVector4i& bbox);
+	void CopyRunDisarm() { m_copy_run_armed = false; }
+	/// Draw()'s draw rectangle (m_r, m_r_no_scissor) from the vertex trace; false when it is empty.
+	bool SetDrawRect();
+
 	bool BurstMemoSkip();
 	bool BurstMemoWakes() const;
 	bool BurstMemoBeforeCopy();
@@ -646,6 +670,8 @@ public:
 	/// Re-reads the settings the burst memo depends on, and forgets what it recorded.
 	void RefreshBurstMemo();
 	bool SkipMemoizedDraw() override;
+	bool ContinueCopyRun() override;
+	u64 CopyRunCopies() const { return m_copy_run_copies; }
 
 	GSRendererHW();
 	virtual ~GSRendererHW() override;
