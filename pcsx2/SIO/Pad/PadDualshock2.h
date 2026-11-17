@@ -6,6 +6,9 @@
 #include "SIO/Pad/PadBase.h"
 
 #include <array>
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+#include <mutex>
+#endif
 
 static inline bool IsButtonBitSet(u32 value, size_t bit)
 {
@@ -108,6 +111,23 @@ private:
 		// remainder are analogs and not used here
 	}};
 
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+	struct UsbInput
+	{
+		u16 pressed = 0;
+		std::array<u8, PAD_ANALOG> pressure{};
+		std::array<u8, 4> sticks{};
+		bool connected = false;
+
+		u8 MergePressure(u32 index, u32 base_buttons, u8 base_pressure) const;
+		std::tuple<u8, u8> MergeStick(std::tuple<u8, u8> base, size_t offset) const;
+	};
+	static std::mutex s_usb_input_mutex;
+	static std::array<UsbInput, Pad::NUM_CONTROLLER_PORTS> s_usb_inputs;
+	static UsbInput GetUsbInput(u32 slot);
+	UsbInput m_usb_poll_input;
+#endif
+
 	void ConfigLog();
 
 	u8 Mystery(u8 commandByte);
@@ -125,6 +145,11 @@ private:
 public:
 	PadDualshock2(u8 unifiedSlot, size_t ejectTicks);
 	~PadDualshock2() override;
+
+#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
+	using DualShock3Report = std::array<u8, 49>;
+	static void SetDualShock3UsbInput(u32 slot, const DualShock3Report* report);
+#endif
 
 	static inline bool IsAnalogKey(int index)
 	{

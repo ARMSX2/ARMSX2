@@ -1,7 +1,11 @@
 package com.armsx2.input
 
+import android.hardware.usb.UsbConstants
+import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
+import android.hardware.usb.UsbInterface
+import android.hardware.usb.UsbManager
 import android.hardware.usb.UsbRequest
 import android.util.Log
 import kr.co.iefriends.pcsx2.NativeApp
@@ -11,9 +15,10 @@ import java.util.concurrent.TimeoutException
 /** Reads native 49-byte DualShock 3 reports from the claimed interrupt IN endpoint. */
 internal class DualShock3UsbInput private constructor(
     private val connection: UsbDeviceConnection,
+    private val iface: UsbInterface,
     private val request: UsbRequest,
     endpoint: UsbEndpoint,
-    private val port: Int,
+    val port: Int,
     private val onReaderExit: (DualShock3UsbInput) -> Unit,
 ) {
     private val buffer = ByteBuffer.allocateDirect(maxOf(REPORT_SIZE, endpoint.maxPacketSize))
@@ -80,13 +85,10 @@ internal class DualShock3UsbInput private constructor(
     fun stop() {
         if (!active) return
         active = false
-        request.cancel()
-        if (delivered) {
-            val neutral = ByteArray(REPORT_SIZE)
-            neutral[0] = 1
-            neutral.fill(127, fromIndex = 6, toIndex = 10)
-            NativeApp.setDualShock3UsbReport(port, neutral)
-        }
+        NativeApp.setDualShock3UsbReport(port, null)
+        runCatching { request.cancel() }
+        runCatching { connection.releaseInterface(iface) }
+        connection.close()
     }
 
     companion object {
@@ -94,17 +96,37 @@ internal class DualShock3UsbInput private constructor(
         private const val REPORT_SIZE = 49
 
         fun open(
-            connection: UsbDeviceConnection,
-            endpoint: UsbEndpoint,
+            usb: UsbManager,
+            device: UsbDevice,
             port: Int,
             onReaderExit: (DualShock3UsbInput) -> Unit,
         ): DualShock3UsbInput? {
+            val iface = (0 until device.interfaceCount).asSequence().map(device::getInterface)
+                .firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_HID } ?: return null
+            val endpoint = (0 until iface.endpointCount).asSequence().map(iface::getEndpoint)
+                .firstOrNull {
+                    it.direction == UsbConstants.USB_DIR_IN && it.type == UsbConstants.USB_ENDPOINT_XFER_INT
+                } ?: return null
+            val connection = usb.openDevice(device) ?: return null
             val request = UsbRequest()
-            if (!request.initialize(connection, endpoint)) {
-                request.close()
-                return null
+            var opened = false
+            try {
+                if (!connection.claimInterface(iface, true)) return null
+                // Reading feature report 0xF2 puts a wired DS3 into operational mode.
+                val feature = ByteArray(17)
+                if (connection.controlTransfer(0xa1, 0x01, 0x03f2, iface.id, feature, feature.size, 500) <= 0 ||
+                    !request.initialize(connection, endpoint)
+                ) return null
+                val input = DualShock3UsbInput(connection, iface, request, endpoint, port, onReaderExit)
+                opened = true
+                return input
+            } finally {
+                if (!opened) {
+                    runCatching { request.close() }
+                    runCatching { connection.releaseInterface(iface) }
+                    connection.close()
+                }
             }
-            return DualShock3UsbInput(connection, request, endpoint, port, onReaderExit)
         }
     }
 }

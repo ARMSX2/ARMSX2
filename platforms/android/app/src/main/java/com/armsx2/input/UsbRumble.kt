@@ -43,6 +43,7 @@ object UsbRumble {
     private val DUALSHOCK4 = setOf(0x05C4, 0x09CC, 0x0BA0)
 
     private const val ACTION_PERMISSION = "com.armsx2.action.USB_RUMBLE_PERMISSION"
+    private const val ACTION_DS3_PERMISSION = "com.armsx2.action.USB_DS3_PERMISSION"
 
     /** An open pad we can write reports to. */
     class Pad(
@@ -53,7 +54,6 @@ object UsbRumble {
         private val endpointOut: android.hardware.usb.UsbEndpoint?,
         val endpointIn: android.hardware.usb.UsbEndpoint?,
         val dualsense: Boolean,
-        val dualshock3: Boolean,
         val deviceName: String,
     ) {
         private var lastLarge = -1
@@ -73,7 +73,7 @@ object UsbRumble {
         private var claimed = false
 
         /** False once the pad has refused us, so callers fall back to the input API. */
-        fun usable(): Boolean = !dualshock3 && mode != Mode.DEAD
+        fun usable(): Boolean = mode != Mode.DEAD
 
         /** Take the interface so both input and the motors come through us. */
         fun claim(): Boolean {
@@ -86,7 +86,6 @@ object UsbRumble {
         /** Motor levels, 0..255. Returns true when the pad accepted the report. */
         @Synchronized
         fun rumble(large: Int, small: Int): Boolean {
-            if (dualshock3) return false
             if (large == lastLarge && small == lastSmall) return true
             lastLarge = large
             lastSmall = small
@@ -173,7 +172,9 @@ object UsbRumble {
     }
 
     @Volatile private var pad: Pad? = null
-    private var dualShock3Input: DualShock3UsbInput? = null
+    private val ds3Inputs = linkedMapOf<String, DualShock3UsbInput>()
+    private val ds3Skipped = mutableSetOf<String>()
+    private var ds3PermissionPending: String? = null
     private val main = Handler(Looper.getMainLooper())
     private var receiver: BroadcastReceiver? = null
     private var appContext: Context? = null
@@ -203,12 +204,12 @@ object UsbRumble {
         runCatching {
             com.armsx2.runtime.MainActivityRuntime.prefs.edit().putBoolean(KEY_TAKEOVER, on).apply()
         }
-        val open = pad
         if (on) {
-            if (open != null) engageTakeover(open) else appContext?.let(::refresh)
-        } else if (open?.dualshock3 == true) {
-            closePad()
+            ds3Skipped.clear()
+            pad?.let(::engageTakeover)
+            appContext?.let(::refresh)
         } else {
+            ds3Inputs.keys.toList().forEach(::closeDualShock3)
             UsbPadTakeover.stop()
             Log.i(TAG, "usb pad takeover off — replug the controller to give its input back to Android")
         }
@@ -224,40 +225,14 @@ object UsbRumble {
             Log.i(TAG, "usb pad takeover: ${open.productName} has no interrupt IN endpoint")
             return
         }
-        var port = 0
+        var port = PadRouter.defaultSyntheticPort()
         for (candidate in PadRouter.connectedPads()) {
             if (!namesMatch(candidate.name, open.productName)) continue
-            port = PadRouter.pins()[candidate.descriptor] ?: 0
+            port = PadRouter.pins()[candidate.descriptor] ?: port
             break
         }
-        if (open.dualshock3 && dualShock3Input != null) return
         if (!open.claim()) {
             Log.i(TAG, "usb pad takeover: could not claim ${open.productName}'s interface")
-            if (open.dualshock3) closePad()
-            return
-        }
-        if (open.dualshock3) {
-            // The feature read activates a native wired DS3 after it is opened.
-            val feature = ByteArray(17)
-            val activated = runCatching {
-                open.connection.controlTransfer(
-                    0xa1, 0x01, 0x03f2, open.iface.id, feature, feature.size, 500,
-                ) > 0
-            }.getOrDefault(false)
-            val input = if (activated) runCatching {
-                DualShock3UsbInput.open(open.connection, ep, port) { finished ->
-                    main.post {
-                        if (dualShock3Input === finished) closePad()
-                    }
-                }
-            }.getOrNull() else null
-            if (input == null) {
-                Log.w(TAG, "DualShock 3 USB initialization failed")
-                closePad()
-                return
-            }
-            dualShock3Input = input
-            input.start()
             return
         }
         UsbPadTakeover.start(open.connection, ep, open.dualsense, port)
@@ -302,20 +277,28 @@ object UsbRumble {
                         ACTION_PERMISSION -> {
                             if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) refresh(app)
                         }
+                        ACTION_DS3_PERMISSION -> {
+                            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                            val name = device?.deviceName ?: ds3PermissionPending
+                            if (name == ds3PermissionPending) ds3PermissionPending = null
+                            if (name != null && !intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false))
+                                ds3Skipped.add(name)
+                            refresh(app)
+                        }
                         UsbManager.ACTION_USB_DEVICE_ATTACHED -> refresh(app)
                         UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                             val gone = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                             if (gone == null || gone.deviceName == pad?.deviceName) {
                                 closePad()
-                                Log.i(TAG, "usb pad detached")
-                                refresh(app)
                             }
+                            refresh(app)
                         }
                     }
                 }
             }
             val filter = IntentFilter().apply {
                 addAction(ACTION_PERMISSION)
+                addAction(ACTION_DS3_PERMISSION)
                 addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
                 addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             }
@@ -333,28 +316,90 @@ object UsbRumble {
     }
 
     fun stop() {
-        UsbPadTakeover.stop()
+        ds3Inputs.keys.toList().forEach(::closeDualShock3)
+        ds3Skipped.clear()
+        ds3PermissionPending = null
         closePad()
         receiver?.let { r -> runCatching { appContext?.unregisterReceiver(r) } }
         receiver = null
     }
 
     private fun closePad() {
-        dualShock3Input?.stop()
-        dualShock3Input = null
+        UsbPadTakeover.stop()
         pad?.close()
         pad = null
     }
 
     private fun isPlayStationPad(dev: UsbDevice): Boolean =
-        dev.vendorId == VENDOR_SONY && (
-            dev.productId in DUALSENSE || dev.productId in DUALSHOCK4 ||
-                (takeover && dev.productId == DUALSHOCK3)
-            )
+        dev.vendorId == VENDOR_SONY && (dev.productId in DUALSENSE || dev.productId in DUALSHOCK4)
 
-    /** Open the first PlayStation pad on the bus, requesting permission if we do not have it. */
+    private fun closeDualShock3(name: String) {
+        val input = ds3Inputs.remove(name) ?: return
+        input.stop()
+        PadRouter.releaseDirectUsbSlot(input.port)
+    }
+
+    private fun refreshDualShock3(ctx: Context, usb: UsbManager) {
+        val devices = usb.deviceList.values.filter { it.vendorId == VENDOR_SONY && it.productId == DUALSHOCK3 }
+        val names = devices.mapTo(mutableSetOf()) { it.deviceName }
+        ds3Inputs.keys.filterNot { it in names }.forEach(::closeDualShock3)
+        ds3Skipped.retainAll(names)
+        if (ds3PermissionPending !in names) ds3PermissionPending = null
+        if (!takeover || ds3PermissionPending != null) return
+
+        for (device in devices.sortedBy { it.deviceId }) {
+            val name = device.deviceName
+            if (name in ds3Inputs || name in ds3Skipped) continue
+            val candidates = PadRouter.connectedPads().filter { pad ->
+                android.view.InputDevice.getDevice(pad.deviceId)?.let {
+                    it.vendorId == VENDOR_SONY && it.productId == DUALSHOCK3
+                } == true
+            }
+            // Two identical USB pads cannot be matched reliably by Android's product name.
+            val soleDevice = candidates.singleOrNull()?.takeIf { devices.size - ds3Inputs.size == 1 }
+            val port = PadRouter.reserveDirectUsbSlot(soleDevice, candidates) ?: continue
+            if (!usb.hasPermission(device)) {
+                PadRouter.releaseDirectUsbSlot(port)
+                val intent = PendingIntent.getBroadcast(
+                    ctx, device.deviceId, Intent(ACTION_DS3_PERMISSION).setPackage(ctx.packageName),
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0,
+                )
+                ds3PermissionPending = name
+                if (runCatching { usb.requestPermission(device, intent) }.isSuccess) return
+                ds3PermissionPending = null
+                ds3Skipped.add(name)
+                continue
+            }
+            val input = runCatching {
+                DualShock3UsbInput.open(usb, device, port) { finished ->
+                    main.post {
+                        if (ds3Inputs[name] === finished) {
+                            ds3Skipped.add(name)
+                            closeDualShock3(name)
+                            refresh(ctx)
+                        }
+                    }
+                }
+            }.getOrNull()
+            if (input == null) {
+                PadRouter.releaseDirectUsbSlot(port)
+                ds3Skipped.add(name)
+                Log.w(TAG, "DualShock 3 USB initialization failed for $name")
+                continue
+            }
+            ds3Inputs[name] = input
+            input.start()
+        }
+    }
+
     private fun refresh(ctx: Context) {
         val usb = ctx.getSystemService(Context.USB_SERVICE) as? UsbManager ?: return
+        refreshDualShock3(ctx, usb)
+        if (ds3PermissionPending == null) refreshRumble(ctx, usb)
+    }
+
+    /** Open the first DualSense or DualShock 4 on the bus for the existing rumble path. */
+    private fun refreshRumble(ctx: Context, usb: UsbManager) {
         val device = usb.deviceList.values.firstOrNull { isPlayStationPad(it) }
 
         if (device == null) {
@@ -376,7 +421,6 @@ object UsbRumble {
         }
 
         val dualsense = device.productId in DUALSENSE
-        val dualshock3 = device.productId == DUALSHOCK3
         // The HID interface, which is the one SET_REPORT is addressed to.
         var hid: android.hardware.usb.UsbInterface? = null
         for (i in 0 until device.interfaceCount) {
@@ -402,12 +446,8 @@ object UsbRumble {
             return
         }
 
-        val name = device.productName ?: when {
-            dualsense -> "DualSense"
-            dualshock3 -> "DualShock 3"
-            else -> "DualShock 4"
-        }
-        val opened = Pad("$name (USB)", name, conn, iface, out, inEp, dualsense, dualshock3, device.deviceName)
+        val name = device.productName ?: if (dualsense) "DualSense" else "DualShock 4"
+        val opened = Pad("$name (USB)", name, conn, iface, out, inEp, dualsense, device.deviceName)
         pad = opened
         Log.i(TAG, "usb rumble ready: $name iface=${iface.id} out=${out != null} in=${inEp != null} dualsense=$dualsense")
         if (takeover) engageTakeover(opened)
