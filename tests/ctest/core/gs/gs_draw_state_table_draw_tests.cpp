@@ -174,6 +174,8 @@ TEST_F(GSStateTableDraw, AnEntryHandsTheDeviceWhatTheDerivationWould)
 			EXPECT_EQ(a.full_barrier, b.full_barrier) << "draw " << i << " scale " << scale;
 		}
 
+		EXPECT_GT(GSDrawRows::stats.rows, 0u) << "scale " << scale;
+
 		Restart();
 		GSDrawRows::s_mode = GSDrawRows::Mode::Check;
 		GSDrawRows::stats = {};
@@ -181,5 +183,37 @@ TEST_F(GSStateTableDraw, AnEntryHandsTheDeviceWhatTheDerivationWould)
 		EXPECT_GT(GSDrawRows::stats.hits, 0u) << "scale " << scale;
 		EXPECT_EQ(GSDrawRows::stats.check_mismatches, 0u) << "scale " << scale;
 		EXPECT_EQ(GSDrawRows::stats.prep_mismatches, 0u) << "scale " << scale;
+		EXPECT_GT(GSDrawRows::stats.row_checked, 0u) << "scale " << scale;
+		EXPECT_EQ(GSDrawRows::stats.row_mismatches, 0u) << "scale " << scale;
 	}
+}
+
+// A draw that samples the frame it draws into reads what the run wrote: it takes the full path, and the draw after
+// it opens a new run.
+TEST_F(GSStateTableDraw, ADrawThatSamplesItsOwnFrameIsNotARow)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	BringUp();
+	GSDrawRows::s_mode = GSDrawRows::Mode::On;
+	GSDrawRows::s_stats = true;
+	GSDrawRows::stats = {};
+
+	// Textured, so not a memory clear; the second lands inside what the first made valid, so it is a row.
+	Draw(10, 0x80, false, false, true);
+	Draw(10, 0x80, false, false, true);
+	const u64 rows_before = GSDrawRows::stats.rows;
+	EXPECT_GT(rows_before, 0u);
+
+	// The texture is the frame itself.
+	Packet p;
+	Environment(p, kFBP, PSMCT32);
+	Texture(p, kFBP << 5, PSMCT32);
+	p.Vertex(200 * 16, 16 * 16, 0, 0, 0);
+	p.Vertex(216 * 16, 48 * 16, 0, 256, 512);
+	GIFRegPRIM prim = {};
+	prim.PRIM = GS_SPRITE;
+	prim.TME = 1;
+	prim.FST = 1;
+	p.Send(*m_gs, prim);
+	EXPECT_EQ(GSDrawRows::stats.rows, rows_before);
 }
