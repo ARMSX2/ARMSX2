@@ -56,11 +56,9 @@ public:
 			m_rt = config.rt;
 			m_ds = config.ds;
 		}
-		Record& r = m_rows.emplace_back();
-		r.config = config;
-		r.cache = &cache;
-		r.vfirst = static_cast<u32>(m_vertices.size());
-		r.ifirst = static_cast<u32>(m_indices.size());
+		// Built from the configuration in place: a default-constructed record would zero both constant buffers first
+		// (the RG 476H's back thread spent half of Enqueue on that).
+		m_rows.emplace_back(config, &cache, static_cast<u32>(m_vertices.size()), static_cast<u32>(m_indices.size()));
 		m_vertices.insert(m_vertices.end(), config.verts, config.verts + config.nverts);
 		m_indices.insert(m_indices.end(), config.indices, config.indices + config.nindices);
 		Note(config.tex);
@@ -126,6 +124,7 @@ public:
 private:
 	struct Record
 	{
+		Record(const GSHWDrawConfig& c, GSRowDeviceCache* k, u32 v, u32 i) : config(c), cache(k), vfirst(v), ifirst(i) {}
 		GSHWDrawConfig config; ///< verts and indices point into the queue's arrays from Emit on
 		GSRowDeviceCache* cache;
 		u32 vfirst, ifirst;
