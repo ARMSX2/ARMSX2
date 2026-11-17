@@ -23,10 +23,10 @@ enum ReportBuilder {
     private static let keptReports = 5
     private static let gameININame = #"^[A-Z0-9-]+_[0-9A-F]{8}\.ini$"#
 
-    static func build(sessionID: String, displayMaxFPS: Int, documents: URL = .documentsDirectory) async throws -> URL {
+    static func build(sessionID: String, displayMaxFPS: Int, extras: ReportExtras = ReportExtras(),
+                      documents: URL = .documentsDirectory) async throws -> URL {
         let files = FileManager.default
-        guard let folder = SessionStore.url(for: sessionID, documents: documents),
-              files.fileExists(atPath: folder.path) else { throw DiagnosticsError.invalidSession(sessionID) }
+        let folder = try sessionFolder(sessionID, documents: documents)
         let running = sessionID == SessionStore.currentID
         // The INI save state belongs to the main queue and the INI is read straight after.
         await MainActor.run { ARMSX2Bridge.flushINISettings() }
@@ -40,18 +40,39 @@ enum ReportBuilder {
             marker = url
         }
         defer { if let marker { try? files.removeItem(at: marker) } }
-        return try stageAndZip(sessionID: sessionID, folder: folder, running: running, displayMaxFPS: displayMaxFPS, documents: documents)
+        return try stageAndZip(sessionID: sessionID, folder: folder, running: running, displayMaxFPS: displayMaxFPS,
+                               extras: extras, documents: documents)
     }
 
-    private static func stageAndZip(sessionID: String, folder: URL, running: Bool, displayMaxFPS: Int, documents: URL) throws -> URL {
-        let files = FileManager.default
-        let name = "ARMSX2-report-\(SessionStore.format(Date()))"
-        let staging = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent(name)
-        let inner = staging.appendingPathComponent(name, isDirectory: true)
-        defer { try? files.removeItem(at: staging) }
-        try? files.removeItem(at: staging)
-        try files.createDirectory(at: inner, withIntermediateDirectories: true)
+    // summaryText is what Copy Summary pastes, built by the function that writes summary.md so the two cannot differ.
+    static func summaryText(sessionID: String, displayMaxFPS: Int, form: ReportForm = ReportForm(),
+                            documents: URL = .documentsDirectory) async throws -> String {
+        let folder = try sessionFolder(sessionID, documents: documents)
+        await MainActor.run { ARMSX2Bridge.flushINISettings() }
+        let gathered = try gather(sessionID: sessionID, folder: folder, running: sessionID == SessionStore.currentID,
+                                  displayMaxFPS: displayMaxFPS, documents: documents)
+        let text = summary(gathered, form: form)
+        // The clipboard leaves the app, so it gets the same second check the zip gets.
+        guard ReportRedaction.tripwireHits(in: text, context: gathered.context).isEmpty else {
+            throw DiagnosticsError.redactionLeak("summary")
+        }
+        return text
+    }
 
+    private static func sessionFolder(_ id: String, documents: URL) throws -> URL {
+        guard let folder = SessionStore.url(for: id, documents: documents),
+              FileManager.default.fileExists(atPath: folder.path) else { throw DiagnosticsError.invalidSession(id) }
+        return folder
+    }
+
+    private struct Gathered {
+        let machineSummary: String
+        let settings: String
+        let pairs: [(URL, String, Bool)]
+        let context: ReportRedaction.Context
+    }
+
+    private static func gather(sessionID: String, folder: URL, running: Bool, displayMaxFPS: Int, documents: URL) throws -> Gathered {
         let verdict = verdict(of: sessionID, running: running, documents: documents)
         let global = text(of: documents.appendingPathComponent("PCSX2-iOS.ini"))
             ?? text(of: documents.appendingPathComponent("ARMSX2-iOS.ini")) ?? ""
@@ -77,18 +98,44 @@ enum ReportBuilder {
         // Names that cannot be matched would ship in clear and blind the tripwire, so stop here.
         guard context.namesCovered else { throw DiagnosticsError.redactionLeak("<ra-user>") }
 
-        let settings = ReportSettingsDiff.render(defaults: defaults, global: global, game: game, displayMaxFPS: displayMaxFPS)
-        try write(ReportRedaction.redact(settings, context: context), as: "settings.txt", in: inner)
-        let summary = ReportSummary.markdown(sessionID: sessionID, started: started(sessionID, documents), verdict: verdict,
+        let machine = ReportSummary.markdown(sessionID: sessionID, started: started(sessionID, documents), verdict: verdict,
                                              running: running, device: .current(), layers: layers, counts: counts, earlier: earlier)
-        try write(ReportRedaction.redact(summary, context: context), as: "summary.md", in: inner)
+        let settings = ReportSettingsDiff.render(defaults: defaults, global: global, game: game, displayMaxFPS: displayMaxFPS)
+        return Gathered(machineSummary: machine, settings: settings, pairs: pairs, context: context)
+    }
 
-        for (source, stagedName, isLog) in pairs {
+    private static func summary(_ gathered: Gathered, form: ReportForm) -> String {
+        ReportRedaction.redact(form.markdownBlock() + gathered.machineSummary, context: gathered.context)
+    }
+
+    private static func stageAndZip(sessionID: String, folder: URL, running: Bool, displayMaxFPS: Int, extras: ReportExtras,
+                                    documents: URL) throws -> URL {
+        let files = FileManager.default
+        let name = "ARMSX2-report-\(SessionStore.format(Date()))"
+        let staging = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent(name)
+        let inner = staging.appendingPathComponent(name, isDirectory: true)
+        defer { try? files.removeItem(at: staging) }
+        try? files.removeItem(at: staging)
+        try files.createDirectory(at: inner, withIntermediateDirectories: true)
+
+        let gathered = try gather(sessionID: sessionID, folder: folder, running: running, displayMaxFPS: displayMaxFPS,
+                                  documents: documents)
+        let context = gathered.context
+        try write(ReportRedaction.redact(gathered.settings, context: context), as: "settings.txt", in: inner)
+        try write(summary(gathered, form: extras.form), as: "summary.md", in: inner)
+
+        for (source, stagedName, isLog) in gathered.pairs {
             if isLog {
                 try ReportStaging.stageLog(source: source, as: stagedName, in: inner, context: context)
             } else {
                 try ReportStaging.stageText(source: source, as: stagedName, in: inner, context: context)
             }
+        }
+        if let photo = extras.photoJPEG { try photo.write(to: inner.appendingPathComponent("photo.jpg")) }
+        if let frame = extras.pausedFramePNG { try frame.write(to: inner.appendingPathComponent("paused-frame.png")) }
+        for (index, crash) in extras.crashFiles.filter(CrashFileCheck.isOwnCrashFile).prefix(3).enumerated() {
+            try ReportStaging.stageText(source: crash, as: "crash/attached-\(index + 1).ips", in: inner, context: context,
+                                        limit: 4 << 20)
         }
         if let leftover = ReportStaging.tripwireScan(stagingRoot: inner, context: context) {
             throw DiagnosticsError.redactionLeak(leftover)
@@ -122,6 +169,7 @@ enum ReportBuilder {
     }
 
     // Built in code; the only folders listed are this session's metrickit one, whose names are checked, and the session ids.
+    // photo.jpg, paused-frame.png and crash/attached-N.ips are named in stageAndZip, never from a user path.
     private static func allowlist(session: String, folder: URL, running: Bool, older: [String], gameINI: (URL, String)?,
                                   documents: URL) -> [(URL, String, Bool)] {
         var pairs: [(URL, String, Bool)] = [
@@ -133,7 +181,7 @@ enum ReportBuilder {
         if let gameINI { pairs.append((gameINI.0, gameINI.1, false)) }
         let payloads = folder.appendingPathComponent("metrickit", isDirectory: true)
         let names = ((try? FileManager.default.contentsOfDirectory(atPath: payloads.path)) ?? []).sorted()
-        for name in names where name.range(of: #"^[0-9TZ_-]+-\d+\.json$"#, options: .regularExpression) != nil {
+        for name in names where name.range(of: CrashFileCheck.payloadName, options: .regularExpression) != nil {
             pairs.append((payloads.appendingPathComponent(name), "metrickit/\(name)", false))
         }
         for id in older {
