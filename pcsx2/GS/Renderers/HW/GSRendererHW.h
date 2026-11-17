@@ -6,6 +6,7 @@
 #include "GSTextureCache.h"
 #include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
+#include "GS/Renderers/HW/GSDrawRow.h"
 #include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
@@ -232,6 +233,62 @@ private:
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
 	void ResetStates();
+
+	/// What the state derivation leaves for the rest of DrawPrims.
+	struct DerivedDraw
+	{
+		GSDevice::RecycledTexture tex_copy; ///< a copy of the source the draw samples
+		GSDevice::RecycledTexture temp_ds; ///< a depth buffer for stencil DATE
+		float vs_scale_x = 0.0f;
+		float vs_scale_y = 0.0f;
+		bool no_rt = false;
+	};
+	/// What a draw that may take a state entry computes before the entry is looked up: the alpha range (whose values
+	/// are facts of the entry's key) and the exact alpha-mask verdict, which reads the draw's alpha range before the
+	/// alpha test's correction of it.
+	struct DrawPrep
+	{
+		int blend_alpha_min = 0;
+		int blend_alpha_max = 255;
+		int rt_new_alpha_min = 0;
+		int rt_new_alpha_max = 255;
+		GSAlphaKnownBits::Known rt_new_alpha_known;
+		bool rt_new_alpha_via_union = false;
+		u8 exact_drop = 0;
+		bool alpha_written = false; ///< the frame-mask stage's colormask.wa, as the range was given it
+		u8 zmsk = 0; ///< ZBUF.ZMSK as the range saw it
+		u32 requested_alpha_fbmask = 0; ///< RequestedAlphaFbMask(), as the range was given it
+		GSAlphaKnownRects::ForDraw exact_drop_known{};
+		GSAlphaKnownRects::Set rt_new_alpha_rects;
+	};
+	/// DrawPrims' state derivation: m_conf from the registers, the draw, its target and its source. False when the
+	/// draw is dropped. `prep` is set when DrawState has run the vertex passes, the alpha-test range correction,
+	/// the alpha range and the exact alpha-mask verdict before it.
+	bool DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, const DrawPrep* prep, DerivedDraw& out);
+	/// The state derivation, or the state entry the table holds for the draw. False when the draw is dropped.
+	bool DrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DerivedDraw& out);
+	bool DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DrawPrep& prep, const GSDrawRows::RegKey& reg, const GSDrawRows::VarKey& var,
+		bool keyed, DerivedDraw& out);
+	/// Whether the registers and the device allow a state entry at all.
+	bool DrawStateEligible(const DATEOptions& date_options);
+	/// ResetStates and the bindings: the start of every derivation.
+	void BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	/// Writes everything the derivation reads into the two keys. False when the draw takes a road that acts on what
+	/// it reads (a self-read, a source swap, a vertex rewrite) and always derives.
+	bool FillStateKeys(GSDrawRows::RegKey& reg, GSDrawRows::VarKey& var, const GSTextureCache::Target* rt,
+		const GSTextureCache::Target* ds, const GSTextureCache::Source* tex, const DrawPrep& prep, float rtscale,
+		const GSVector2i& rtsize, const GSVector2i& rt_unscaled_size);
+	void CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok);
+	void ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
+		GSTextureCache::Source* tex, const DrawPrep& prep, DerivedDraw& out);
+	void CorrectATEAlphaRange();
+
 	void HandleFlatShadedVertices();
 	/// Fills in the topology, the indices and the vertex offset for the draw's primitive class.
 	/// Returns false when the draw lights no pixel at all and must not be submitted.
@@ -284,7 +341,10 @@ private:
 	void EmulateAlphaTestSecondPass();
 	void ConfigureDepthFeedback(bool rov_depth = false);
 
+	/// `alpha_written` and `requested_alpha_fbmask` are the frame-mask stage's colormask.wa and
+	/// RequestedAlphaFbMask(), passed in so that a draw that may take a state entry can run this first.
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
+		bool alpha_written, u32 requested_alpha_fbmask,
 		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
 		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
 		GSAlphaKnownRects::Set& rt_new_alpha_rects);
@@ -434,6 +494,12 @@ private:
 	GSVector2i m_lod = {}; // Min & Max level of detail
 
 	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
+	GSDrawRows::StateTable m_states;
+	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
+	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack
+	bool m_row_colclip_written = false; ///< the derivation set colclip_mode and colclip_frame
+	bool m_row_optimized_blend_written = false; ///< the derivation set m_optimized_blend
+	s8 m_state_caps = -1; ///< whether the device and settings allow state entries; -1 until known
 
 	GSHWDrawConfig m_conf = {};
 	HWCachedCtx m_cached_ctx;

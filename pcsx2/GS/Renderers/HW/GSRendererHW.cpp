@@ -138,6 +138,9 @@ void GSRendererHW::UpdateSettings(const Pcsx2Config::GSOptions& old_config)
 	m_mipmap = GSConfig.HWMipmap;
 	SetTCOffset();
 	RefreshBurstMemo();
+	// Every setting the derivation reads is an input of every state entry.
+	m_states.Flush();
+	m_state_caps = -1;
 }
 
 void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
@@ -6661,8 +6664,9 @@ void GSRendererHW::EmulateZbuffer(const GSTextureCache::Target* ds)
 }
 
 void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds,
-	DATEOptions& date_options, int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
-	GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union, GSAlphaKnownRects::Set& rt_new_alpha_rects)
+	DATEOptions& date_options, bool alpha_written, u32 requested_alpha_fbmask, int& blend_alpha_min, int& blend_alpha_max,
+	int& rt_new_alpha_min, int& rt_new_alpha_max, GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
+	GSAlphaKnownRects::Set& rt_new_alpha_rects)
 {
 	// Calculate alpha range for RT.
 	if (rt)
@@ -6709,7 +6713,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 			// On DX FBMask emulation can be missing on lower blend levels, so we'll do whatever the API does.
 			// The mask the draw asked for, not the one the shader emulates: the target's recorded alpha
 			// has to come out the same whether or not the exact drop cleared the byte.
-			const u32 fb_mask = m_conf.colormask.wa ? RequestedAlphaFbMask() : 0xFF;
+			const u32 fb_mask = alpha_written ? requested_alpha_fbmask : 0xFF;
 			const u32 alpha_mask = (GSLocalMemory::m_psm[rt->m_TEX0.PSM].fmsk & 0xFF000000) >> 24;
 
 			// Beside the range, and out of the same two masks: the bits this draw writes take the
@@ -6777,7 +6781,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 					rt->m_alpha_range |= (s_alpha_max & ~fb_mask) != (s_alpha_min & ~fb_mask);
 			}
 		}
-		else if ((m_texture_shuffle && m_conf.colormask.wa))
+		else if ((m_texture_shuffle && alpha_written))
 		{
 			// in shuffles, the alpha top bit values are set according to TEXA
 			const GSVector4i shuffle_rect = GSVector4i(m_vt.m_min.p.x, m_vt.m_min.p.y, m_vt.m_max.p.x, m_vt.m_max.p.y);
@@ -6856,6 +6860,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 				{
 					can_scale_rt_alpha = false;
 
+					m_row_acted |= rt->m_rt_alpha_scale;
 					rt->UnscaleRTAlpha();
 					m_conf.rt = rt->m_texture;
 
@@ -6872,6 +6877,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 					else if (m_cached_ctx.FRAME.FBMSK & 0xFFFC0000)
 					{
 						can_scale_rt_alpha = false;
+						m_row_acted |= rt->m_rt_alpha_scale;
 						rt->UnscaleRTAlpha();
 						m_conf.rt = rt->m_texture;
 
@@ -6885,6 +6891,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 				if (m_conf.ps.tales_of_abyss_hle || (tex && tex->m_from_target && tex->m_from_target == rt && m_conf.ps.channel == ChannelFetch_ALPHA) || partial_fbmask || rt_new_alpha_max > 128)
 				{
 					can_scale_rt_alpha = false;
+					m_row_acted |= rt->m_rt_alpha_scale;
 					rt->UnscaleRTAlpha();
 					m_conf.rt = rt->m_texture;
 
@@ -6900,6 +6907,7 @@ void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCa
 			else
 			{
 				can_scale_rt_alpha = false;
+				m_row_acted |= rt->m_rt_alpha_scale;
 				rt->UnscaleRTAlpha();
 				m_conf.rt = rt->m_texture;
 
@@ -7457,6 +7465,7 @@ void GSRendererHW::DetermineBarriers(GSTextureCache::Target* rt, GSTextureCache:
 
 	if (m_conf.require_full_barrier && features.feedback_loops())
 	{
+		m_row_acted = true; // the draw list is a function of the vertices
 		ComputeDrawlistGetSize(rt->m_scale);
 		m_conf.drawlist = &m_drawlist;
 		m_conf.drawlist_bbox = &m_drawlist_bbox;
@@ -7851,8 +7860,11 @@ void GSRendererHW::EmulateTextureShuffleAndFbmask(GSTextureCache::Target* rt, GS
 		// the same bytes end up in the target, and the block below takes neither the barrier nor
 		// -- on a device with no framebuffer fetch -- the render-target clone the barrier becomes.
 		const int requested_fbmask = fbmask;
+		// A draw that may take a state entry was given its verdict before the alpha-test range correction, as here.
 		GSAlphaKnownRects::ForDraw known{};
-		const u8 exact_drop = DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask), known);
+		const u8 exact_drop = m_draw_prep ? m_draw_prep->exact_drop : DecideExactAlphaMaskDrop(rt, static_cast<u32>(fbmask), known);
+		if (m_draw_prep)
+			known = m_draw_prep->exact_drop_known;
 
 		// Whether this drop's exactness rests on knowledge a sprite-union cover or a rectangle
 		// established. Such a drop is new here, so the barrier it removes is held over the blend
@@ -8384,6 +8396,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	}
 
 	// Save in case needed for ROV setup.
+	m_row_optimized_blend_written = true;
 	m_optimized_blend.A = m_conf.ps.blend_a;
 	m_optimized_blend.B = m_conf.ps.blend_b;
 	m_optimized_blend.C = m_conf.ps.blend_c;
@@ -8611,7 +8624,9 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			// Initial idea was to enable accurate blending for sprite rendering to handle
 			// correctly post-processing effect. Some games (ZoE) use tons of sprites as particles.
 			// In order to keep it fast, let's limit it to smaller draw call.
-			sw_blending |= barriers_supported && m_vt.m_primclass == GS_SPRITE_CLASS && ComputeDrawlistGetSize(rt->m_scale) < 100;
+			// The draw list's size is a function of the vertices, which no state entry holds.
+			sw_blending |= barriers_supported && m_vt.m_primclass == GS_SPRITE_CLASS && (m_row_acted = true) &&
+			               ComputeDrawlistGetSize(rt->m_scale) < 100;
 			// We don't want the cases to be enabled if barriers aren't supported so limit it to no overlap.
 			sw_blending &= (no_prim_overlap || barriers_supported);
 			[[fallthrough]];
@@ -8771,6 +8786,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 
 			if (colclip_texture->GetSize() != rt->m_texture->GetSize())
 			{
+				m_row_acted = true;
 				GL_CACHE("HW: Pre-Blend resolve of colclip due to size change! Address: %x", rt->m_TEX0.TBP0);
 				const GSVector4 colclip_texture_dims = GSVector4(GSVector4i(colclip_texture->GetSize()).xyxy());
 				g_gs_device->StretchRect(
@@ -8829,6 +8845,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 		}
 
 		m_conf.colclip_frame = m_cached_ctx.FRAME;
+		m_row_colclip_written = true;
 	}
 
 	// Per pixel alpha blending
@@ -9019,6 +9036,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 					// alpha double-scaled. Make sure it does; a no-op when it is already scaled.
 					if (!rt->m_rt_alpha_scale)
 					{
+						m_row_acted = true;
 						rt->ScaleRTAlpha();
 						m_conf.rt = rt->m_texture;
 					}
@@ -9101,6 +9119,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 
 			if (!full_cover)
 			{
+				m_row_acted |= !rt->m_rt_alpha_scale;
 				rt->ScaleRTAlpha();
 				m_conf.rt = rt->m_texture;
 			}
@@ -10046,6 +10065,7 @@ __ri void GSRendererHW::EmulateTextureSampler(const GSTextureCache::Target* rt, 
 	}
 	else if (trilinear_auto)
 	{
+		m_row_acted = true;
 		tex->m_texture->GenerateMipmapsIfNeeded();
 		m_conf.ps.automatic_lod = 1;
 	}
@@ -11439,50 +11459,522 @@ void GSRendererHW::ResetStates()
 	m_held_alpha_mask = {};
 }
 
-__ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm)
+// Fills the constant buffers while a derivation is recorded; see DrawStateSlow.
+static constexpr u32 DRAW_STATE_CANARY = 0x7FA5A5A5u;
+
+bool GSRendererHW::DrawStateEligible(const DATEOptions& date_options)
 {
-#ifdef ENABLE_OGL_DEBUG
-	const GSVector4i area_out = GSVector4i(m_vt.m_min.p.upld(m_vt.m_max.p)).rintersect(m_context->scissor.in);
-	const GSVector4i area_in = GSVector4i(m_vt.m_min.t.upld(m_vt.m_max.t));
+	// Roads that move vertices before the derivation's own stages (the shuffles), or that read state the keys do not
+	// hold (DATE's stencil and chain): these derive in DrawPrims' own order.
+	if (m_state_caps < 0) [[unlikely]]
+	{
+		// ROV reads the target's texture mode, which no key holds.
+		m_state_caps = !(GSConfig.HWROV && g_gs_device->Features().rov) && GSDrawRows::s_mode != GSDrawRows::Mode::Off;
+	}
+	return m_state_caps && !m_channel_shuffle && !m_texture_shuffle && !m_fast_stencil_shadow && !date_options.enabled;
+}
 
-	GL_PUSH("HW: GL Draw from (area %d,%d => %d,%d) in (area %d,%d => %d,%d)",
-		area_in.x, area_in.y, area_in.z, area_in.w,
-		area_out.x, area_out.y, area_out.z, area_out.w);
-#endif
-
-	const GSDrawingEnvironment& env = *m_draw_env;
-
-	DATEOptions date_options;
-	date_options.enabled = rt && m_cached_ctx.TEST.DATE && m_cached_ctx.FRAME.PSM != PSMCT24;
-	date_options.primid = false;
-	date_options.barrier = false;
-	date_options.stencil_one = false;
-
+void GSRendererHW::BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds)
+{
 	ResetStates();
 
 	m_conf.cb_vs.texture_offset = {};
-	m_conf.ps.scanmsk = env.SCANMSK.MSK;
+	m_conf.ps.scanmsk = m_draw_env->SCANMSK.MSK;
 	m_conf.rt = rt ? rt->m_texture : nullptr;
 	m_conf.ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
 
 	pxAssert(!ds || !rt || (m_conf.ds->GetSize().x == m_conf.rt->GetSize().x && m_conf.ds->GetSize().y == m_conf.rt->GetSize().y));
+}
+
+bool GSRendererHW::FillStateKeys(GSDrawRows::RegKey& r, GSDrawRows::VarKey& k, const GSTextureCache::Target* rt,
+	const GSTextureCache::Target* ds, const GSTextureCache::Source* tex, const DrawPrep& prep, float rtscale,
+	const GSVector2i& rtsize, const GSVector2i& rt_unscaled_size)
+{
+	// Roads on which the derivation acts on what it reads: the exact alpha-mask drop and its substitution (held over
+	// the blend), a source that is the target or the depth buffer (hazard handling copies it or rewrites the
+	// binding), a downscaled source, the native texels of a generated upscale, the manual deswizzle of a sprite draw,
+	// and the native texel grid's walk of the sprites.
+	if (prep.exact_drop == GSDrawAlphaMask::ExactAlphaDropTaken || GSDrawAlphaMask::IsExactAlphaSubstitute(prep.exact_drop))
+		return false;
+	const u32 primclass = m_vt.m_primclass;
+	const bool sprite = primclass == GS_SPRITE_CLASS;
+	const HWCachedCtx& c = m_cached_ctx;
+	if (tex)
+	{
+		const GSTexture* const conf_ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
+		if ((rt && tex->m_texture == rt->m_texture) || (ds && tex->m_texture == conf_ds) || (m_downscale_source && tex->m_from_target) ||
+			(tex->m_from_hash_cache && tex->m_from_hash_cache->generated) ||
+			(sprite && !tex->m_target && PRIM->FST && !m_vt.IsLinear() && !m_draw_priv.field_render && rtscale > 1.0f))
+			return false;
+		if (tex->m_target && sprite && m_index->tail >= 4 && GSLocalMemory::m_psm[c.TEX0.PSM].bpp >= 16 &&
+			((tex->m_from_target_TEX0.PSM & 0x30) == 0x30 || GSLocalMemory::m_psm[c.TEX0.PSM].pal > 0))
+			return false;
+	}
+
+	const GSDrawingEnvironment& env = *m_draw_env;
+	const auto b = [](bool v, u32 shift) -> u64 { return static_cast<u64>(v) << shift; };
+	const auto fbits = [](float v) -> u64 { return std::bit_cast<u32>(v); };
+
+	// Registers, masked to the fields the derivation reads (no addresses or buffer widths).
+	r.w[0] = m_context->ALPHA.U64;
+	r.w[1] = c.TEST.U32[0] | (static_cast<u64>(c.FRAME.PSM) << 32) | (static_cast<u64>(c.ZBUF.PSM) << 38) |
+	         b(c.ZBUF.ZMSK, 42) | b(c.FRAME.FBP == c.ZBUF.ZBP, 43) | (static_cast<u64>(PRIM->U32[0] & 0x7FF) << 44) |
+	         b(env.PABE.PABE, 55) | b(env.COLCLAMP.CLAMP, 56) | b(env.DTHE.DTHE, 57) | (static_cast<u64>(env.SCANMSK.MSK) << 58) |
+	         b(m_context->FBA.FBA, 60);
+	r.w[2] = c.FRAME.FBMSK | (static_cast<u64>(c.TEXA.U32[0] & 0x80FF) << 32) | (static_cast<u64>(c.TEXA.U32[1] & 0xFF) << 48);
+	r.w[3] = c.TEX0.U64 & ~((0x3FFFull) | (0x3Full << 14) | (0x3FFFull << 37) | (0x7ull << 61)); // not TBP0, TBW, CBP, CLD
+	r.w[4] = c.CLAMP.U64;
+	r.w[5] = m_context->TEX1.U64;
+	r.w[6] = env.DIMX.U64;
+	r.w[7] = (env.FOGCOL.U32[0] & 0xFFFFFF) | (static_cast<u64>(m_context->XYOFFSET.U32[0] & 0xFFFF) << 24) |
+	         (static_cast<u64>(m_context->XYOFFSET.U32[1] & 0xFFFF) << 40) | (static_cast<u64>(m_context->FRAME.PSM) << 56);
+	// IsOpaque() is a function of PRIM, ALPHA, the draw's alpha range and the context's FRAME, all here.
+	r.w[8] = m_context->FRAME.FBMSK;
+	r.w[9] = 0;
+
+	// Facts about the draw and its target.
+	const u32 max_z = 0xFFFFFFFFu >> (GSLocalMemory::m_psm[c.ZBUF.PSM].fmt * 8);
+	u32 colclip = 0;
+	bool next_colclip = false;
+	if (!env.COLCLAMP.CLAMP)
+	{
+		// Asked only of a draw that wraps its colour.
+		const GSTexture* colclip_texture = g_gs_device->GetColorClipTexture();
+		colclip = !colclip_texture ? 0u : ((rt && colclip_texture->GetSize() != rt->m_texture->GetSize()) ? 2u : 1u);
+		next_colclip = NextDrawColClip();
+	}
+	const bool mipmap_draw = m_context->TEX1.MXL > 0 && m_context->TEX1.MMIN >= 2 && m_context->TEX1.MMIN <= 5 && m_vt.m_lod.y > 0;
+	const bool flat = m_vt.m_eq.rgba == 0xFFFF || sprite || primclass == GS_POINT_CLASS || !PRIM->IIP;
+	// IsDepthAlwaysPassing(), with the format's limit already at hand.
+	const bool depth_always_passing = !c.TEST.ZTE || c.TEST.ZTST <= ZTST_ALWAYS ||
+		(c.TEST.ZTST == ZTST_GEQUAL && m_vt.m_eq.z && std::min(m_vertex->buff[sprite ? 1 : 0].XYZ.Z, max_z) == max_z);
+	u64 f = static_cast<u64>(primclass & 7) | b(ds != nullptr, 3) | b(tex != nullptr, 4) | b(m_process_texture, 5) |
+	        b(m_vt.m_eq.z, 6) | b(m_vt.m_eq.rgba == 0xFFFF, 7) | b(m_vt.m_min.c.eq(GSVector4i(128)), 8) | b(m_vt.IsLinear(), 9) |
+	        b(mipmap_draw, 11) | b(static_cast<u32>(GSVector4i(m_vt.m_max.p).z) > max_z, 12) |
+	        b(static_cast<u32>(GSVector4i(m_vt.m_min.p).z) >= (1u << 23), 13) | (static_cast<u64>(m_prim_overlap) << 14) |
+	        b(((m_vt.m_max.c == GSVector4i::zero()).mask() & 0xfff) == 0xfff, 16) | b(m_vt.m_max.c.a == 0, 17) |
+	        b(depth_always_passing, 21) | (static_cast<u64>(colclip) << 24) | b(next_colclip, 26) |
+	        b(flat, 29) | b(m_sprite_edge_clamp, 30) | b(rt != nullptr, 33);
+	if (rt)
+	{
+		const bool full_cover = rt->m_valid.rintersect(m_r).eq(rt->m_valid) && m_primitive_covers_without_gaps == NoGapsType::FullCover;
+		f |= b(full_cover, 20) | b(rt->m_last_draw >= s_n, 22) | b(rt->m_last_draw == s_n, 23) | b(rt->m_rt_alpha_scale, 27) |
+		     b(rt->GetTexture()->GetFormat() == GSTexture::Format::Color, 28) | b(rt->m_32_bits_fmt, 32);
+	}
+
+	// The half-pixel offsets above 1x that read the vertices (DetermineVSConfig, RealignTargetTextureCoordinate,
+	// ApplyNativeWTexOffset), as their answers. A Q-dependent offset is not keyed: the draw always derives.
+	if (GetUpscaleMultiplier() != 1.0f)
+	{
+		const GSHalfPixelOffset hpo = GSConfig.UserHacks_HalfPixelOffset;
+		const GSVertex* const v = m_vertex->buff;
+		if (hpo == GSHalfPixelOffset::NativeWTexOffset)
+		{
+			if (sprite && rtscale > 1.0f && m_process_texture && PRIM->FST)
+			{
+				const u32 push_x = GSDrawRows::NativeSpritePush(v[0].XYZ.X, v[1].XYZ.X, m_context->XYOFFSET.OFX);
+				const u32 push_y = GSDrawRows::NativeSpritePush(v[0].XYZ.Y, v[1].XYZ.Y, m_context->XYOFFSET.OFY);
+				f |= (static_cast<u64>(push_x) << 34) | (static_cast<u64>(push_y) << 39);
+				if ((push_x | push_y) && (GSDrawRows::s_stats || GSDrawRows::s_mode != GSDrawRows::Mode::On)) [[unlikely]]
+					GSDrawRows::stats.pushed++;
+			}
+			if (tex && tex->m_target && tex->m_scale > 1.0f)
+			{
+				const u32 psm = rt ? rt->m_TEX0.PSM : ds->m_TEX0.PSM;
+				const bool can_offset = m_r.width() > GSLocalMemory::m_psm[psm].pgs.x || m_r.height() > GSLocalMemory::m_psm[psm].pgs.y;
+				if (can_offset)
+				{
+					if (PRIM->FST)
+					{
+						const int x1_frac = (v[1].XYZ.X - m_context->XYOFFSET.OFX) & 0xf;
+						const int y1_frac = (v[1].XYZ.Y - m_context->XYOFFSET.OFY) & 0xf;
+						f |= b(true, 44) | b(!(x1_frac & 8), 45) | b(!(y1_frac & 8), 46);
+						if (GSDrawRows::s_stats || GSDrawRows::s_mode != GSDrawRows::Mode::On) [[unlikely]]
+							GSDrawRows::stats.hpo_keyed++;
+					}
+					else if (m_vt.m_eq.q)
+					{
+						return false;
+					}
+				}
+			}
+		}
+		else if ((hpo == GSHalfPixelOffset::Special || hpo == GSHalfPixelOffset::SpecialAggressive) && tex && tex->m_target &&
+				 !m_downscale_source && tex->GetScale() != 1.0f)
+		{
+			if (PRIM->FST)
+			{
+				f |= b(m_vt.IsRealLinear(), 47) | b(v[0].U == 8, 48) | b(v[0].U == 16, 49) | b(m_vt.m_min.p.x == -0.5f, 50);
+				if (GSDrawRows::s_stats || GSDrawRows::s_mode != GSDrawRows::Mode::On) [[unlikely]]
+					GSDrawRows::stats.hpo_keyed++;
+			}
+			else if (m_vt.m_eq.q)
+			{
+				return false;
+			}
+		}
+	}
+	k.w[0] = f;
+
+	// Values that reach the configuration: the draw's alpha range after the alpha test's correction, the target's
+	// alpha range before and after this draw, and the range the blend sees.
+	const GSVertexTrace::VertexAlpha& am = GetAlphaMinMax();
+	const auto v9 = [](int v) -> u64 { return static_cast<u64>(static_cast<u32>(v) & 0x1FF); };
+	k.w[1] = v9(am.min) | (v9(am.max) << 9) | (v9(prep.rt_new_alpha_max) << 36) | (v9(prep.blend_alpha_min) << 45) |
+	         (v9(prep.blend_alpha_max) << 54);
+	if (rt)
+	{
+		k.w[1] |= (v9(rt->m_alpha_min) << 18) | (v9(rt->m_alpha_max) << 27);
+		k.w[2] = fbits(rtscale) | (fbits(rt->OffsetHack_modxy) << 32);
+	}
+	else
+	{
+		k.w[2] = fbits(rtscale);
+	}
+	k.w[3] = static_cast<u64>(static_cast<u16>(rtsize.x)) | (static_cast<u64>(static_cast<u16>(rtsize.y)) << 16) |
+	         (static_cast<u64>(static_cast<u16>(rt_unscaled_size.x)) << 32) | (static_cast<u64>(static_cast<u16>(rt_unscaled_size.y)) << 48);
+	// The mipmap levels the manual LOD reads; small, so both fit the word's low half with the source's scale above.
+	k.w[4] = m_context->TEX1.MXL ? ((static_cast<u64>(static_cast<u16>(m_lod.x))) | (static_cast<u64>(static_cast<u16>(m_lod.y)) << 16)) : 0;
+
+	// The source: what it is, its size and its region.
+	if (tex)
+	{
+		k.w[5] = b(tex->m_target, 32) | b(tex->m_target_direct, 33) | b(tex->m_palette != nullptr, 34) | b(tex->IsFromTarget(), 35) |
+		         b(tex->m_texture->IsDepthLike(), 36) | b(tex->m_from_hash_cache && tex->m_from_hash_cache->is_replacement, 37) |
+		         b(tex->m_from_target && tex->m_target_direct && tex->m_from_target->m_rt_alpha_scale, 38) |
+		         b(tex->m_32_bits_fmt, 39) | (static_cast<u64>(tex->m_TEX0.PSM) << 40) | (static_cast<u64>(tex->m_TEX0.TW) << 46) |
+		         (static_cast<u64>(tex->m_TEX0.TH) << 50);
+		k.w[4] |= fbits(tex->GetScale()) << 32;
+		k.w[6] = tex->GetRegion().bits;
+		k.w[7] = static_cast<u64>(static_cast<u32>(tex->GetUnscaledSize().x)) | (static_cast<u64>(static_cast<u32>(tex->GetUnscaledSize().y)) << 32);
+	}
+	else
+	{
+		k.w[5] = k.w[6] = k.w[7] = 0;
+	}
+	return true;
+}
+
+void GSRendererHW::CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok)
+{
+	using GSDrawRows::StateBody;
+	u16 flags = 0;
+	if (!derived_ok)
+		flags |= (m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::ABORT_DRAW) ? StateBody::ABORT : StateBody::CANCEL;
+	if (m_row_acted)
+		flags |= StateBody::NOT_ROWABLE;
+	if (m_blend_identity)
+		flags |= StateBody::BLEND_IDENTITY;
+	if (rt && rt->m_rt_alpha_scale)
+		flags |= StateBody::RT_ALPHA_SCALE;
+	if (m_conf.vs.sprite_edge_clamp)
+		flags |= StateBody::SPRITE_EDGE_CLAMP_DRAW;
+	body.colclip_mode = 0;
+	if (m_row_colclip_written)
+	{
+		flags |= StateBody::COLCLIP_FRAME;
+		body.colclip_mode = static_cast<u8>(m_conf.colclip_mode);
+	}
+	body.optimized_blend = 0;
+	if (m_row_optimized_blend_written)
+	{
+		flags |= StateBody::OPTIMIZED_BLEND;
+		body.optimized_blend = m_optimized_blend.U64;
+	}
+	body.flags = flags;
+	body.test = m_cached_ctx.TEST.U32[0];
+	body.zmsk = static_cast<u8>(m_cached_ctx.ZBUF.ZMSK);
+
+	// The configuration block without the bindings, which are the draw's own.
+	std::memcpy(body.conf, &m_conf, GSDrawRows::CONF_BYTES);
+	GSHWDrawConfig* const conf = reinterpret_cast<GSHWDrawConfig*>(body.conf);
+	conf->rt = conf->ds = conf->tex = conf->pal = nullptr;
+
+	// The constant-buffer words the derivation wrote are the ones that are no longer the canary; the others become
+	// zero, here and in the entry.
+	u32* const cb = reinterpret_cast<u32*>(&m_conf.cb_vs);
+	for (u32 i = 0; i < GSDrawRows::CB_WORDS; i++)
+		cb[i] = (cb[i] != DRAW_STATE_CANARY) ? cb[i] : 0u;
+	std::memcpy(body.cb, cb, GSDrawRows::CB_BYTES);
+}
+
+void GSRendererHW::ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
+	GSTextureCache::Source* tex, const DrawPrep& prep, DerivedDraw& out)
+{
+	using GSDrawRows::StateBody;
+	GSDrawRows::CopyBlock<GSDrawRows::CONF_BYTES>(&m_conf, body.conf);
+	GSDrawRows::CopyBlock<GSDrawRows::CB_BYTES>(&m_conf.cb_vs, body.cb);
+	m_conf.rt = rt ? rt->m_texture : nullptr;
+	m_conf.ds = ds ? (m_using_temp_z ? g_texture_cache->GetTemporaryZ() : ds->m_texture) : nullptr;
+	if (tex)
+	{
+		m_conf.tex = tex->m_texture;
+		m_conf.pal = tex->m_palette;
+		m_source_is_native_texels = false;
+	}
+	m_exact_alpha_drop_fbmask_a = GSDrawAlphaMask::NothingDropped;
+	m_held_alpha_mask = {};
+
+	const u32 flags = body.flags;
+	m_cached_ctx.TEST.U32[0] = body.test;
+	m_cached_ctx.ZBUF.ZMSK = body.zmsk;
+	if (flags & StateBody::OPTIMIZED_BLEND)
+		m_optimized_blend.U64 = body.optimized_blend;
+	m_blend_identity = (flags & StateBody::BLEND_IDENTITY) != 0;
+	m_date_draw_shares_copy = false;
+	if (flags & StateBody::COLCLIP_FRAME)
+	{
+		m_conf.colclip_mode = static_cast<GSHWDrawConfig::ColClipMode>(body.colclip_mode);
+		m_conf.colclip_frame = m_cached_ctx.FRAME;
+	}
+
+	// What the derivation does outside the configuration: the target's alpha.
+	if (rt)
+	{
+		if (!(flags & StateBody::CANCEL))
+		{
+			rt->m_alpha_max = prep.rt_new_alpha_max;
+			rt->m_alpha_min = prep.rt_new_alpha_min;
+			rt->m_alpha_known = prep.rt_new_alpha_known;
+			rt->m_alpha_known_via_union = prep.rt_new_alpha_via_union;
+			rt->m_alpha_rects = prep.rt_new_alpha_rects;
+			rt->AssertAlphaKnownAgreesWithRange("draw");
+		}
+		rt->m_rt_alpha_scale = (flags & StateBody::RT_ALPHA_SCALE) != 0;
+	}
+	if (flags & StateBody::CANCEL)
+		return;
+	if (flags & StateBody::SPRITE_EDGE_CLAMP_DRAW)
+		g_perfmon.Put(GSPerfMon::SpriteEdgeClampDraws, 1);
+	// ConvertTextureTypeROV has nothing to do: entries are made only where ROV is off, and only ROV leaves a target in
+	// the shader-write form.
+	out.vs_scale_x = m_conf.cb_vs.vertex_scale.x;
+	out.vs_scale_y = m_conf.cb_vs.vertex_scale.y;
+	out.no_rt = !rt || m_conf.colormask.wrgba == 0;
+}
+
+bool GSRendererHW::DrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+	const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+	const GSVector2i& rt_unscaled_size, DerivedDraw& out)
+{
+	using namespace GSDrawRows;
+	if (!DrawStateEligible(date_options)) [[unlikely]]
+	{
+		if (s_stats || s_mode != Mode::On)
+		{
+			stats.draws++;
+			stats.ineligible[!rt ? 0 : (m_channel_shuffle || m_texture_shuffle) ? 1 : date_options.enabled ? 2 : PRIM->AA1 ? 3 : 4]++;
+		}
+		BeginDrawState(rt, ds);
+		return DeriveDrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, nullptr, out);
+	}
+
+	// The vertex passes first. Nothing the derivation decides changes what they do, and the keys read what they
+	// leave (the overlap verdict, the sprite edge clamp).
+	m_channel_shuffle_rebuilt_quad = false;
+	MergeSprite(tex);
+	m_prim_overlap = PrimitiveOverlap(false);
+	m_sprite_edge_clamp = false;
+	CorrectSpriteCoverageForUpscale(rt);
+
+	// An AA1 line writes no depth (the depth and AA1 stages say so in ZMSK, which the alpha range reads through
+	// AllDepthTestsPassOnClearedTarget).
+	if (PRIM->AA1 && m_vt.m_primclass == GS_LINE_CLASS && ((ds && m_cached_ctx.TEST.ZTE) || IsCoverageAlphaSupported()))
+		m_cached_ctx.ZBUF.ZMSK = 1;
+
+	// The exact alpha-mask verdict reads the draw's alpha range before the alpha test corrects it, as it does when
+	// the frame-mask stage asks it.
+	DrawPrep prep;
+	const u32 fmsk = GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].fmsk;
+	const u32 fbmask = m_cached_ctx.FRAME.FBMSK & fmsk;
+	// DecideExactAlphaMaskDrop's first test, so that a draw whose alpha is not partly masked makes no call.
+	const u32 alpha_mask = fmsk >> 24;
+	const u32 masked = fbmask >> 24;
+	prep.exact_drop = (rt && alpha_mask != 0 && masked != 0 && masked != alpha_mask) ?
+	                      DecideExactAlphaMaskDrop(rt, fbmask, prep.exact_drop_known) :
+	                      GSDrawAlphaMask::ExactAlphaDropNotConsidered;
+	CorrectATEAlphaRange();
+
+	// The alpha range, with the frame-mask stage's alpha write and requested mask taken from the registers as its
+	// plain branch computes them (the exact drop leaves both as they are).
+	const GSVector4i fbmask_v = GSVector4i::load(static_cast<int>(fbmask));
+	const int ff_fbmask = fbmask_v.eq8(GSVector4i::load(static_cast<int>(fmsk))).mask();
+	const int zero_fbmask = fbmask_v.eq8(GSVector4i::zero()).mask();
+	const bool alpha_written = !(ff_fbmask & 0x8);
+	const u32 requested = (GSConfig.AccurateBlendingUnit != AccBlendLevel::Minimum && (~ff_fbmask & ~zero_fbmask & 0xF)) ?
+	                          ((fbmask >> 24) & 0xFF) : 0;
+	prep.alpha_written = alpha_written;
+	prep.requested_alpha_fbmask = requested;
+	prep.zmsk = static_cast<u8>(m_cached_ctx.ZBUF.ZMSK);
+	CalculateAlphaRange(rt, ds, date_options, alpha_written, requested, prep.blend_alpha_min, prep.blend_alpha_max,
+		prep.rt_new_alpha_min, prep.rt_new_alpha_max, prep.rt_new_alpha_known, prep.rt_new_alpha_via_union, prep.rt_new_alpha_rects);
+
+	RegKey reg;
+	VarKey var;
+	const bool keyed = FillStateKeys(reg, var, rt, ds, tex, prep, rtscale, rtsize, rt_unscaled_size);
+	if (keyed && s_mode == Mode::On && !s_stats) [[likely]]
+	{
+		const u16 ri = m_states.FindReg(reg);
+		if (ri != StateTable::NONE) [[likely]]
+		{
+			const u16 ei = m_states.FindVariant(ri, var);
+			if (ei != StateTable::NONE) [[likely]]
+			{
+				const StateBody& body = m_states.Body(ei);
+				if (!(body.flags & StateBody::NOT_ROWABLE)) [[likely]]
+				{
+					ApplyDrawState(body, rt, ds, tex, prep, out);
+					return !(body.flags & (StateBody::CANCEL | StateBody::ABORT));
+				}
+			}
+		}
+	}
+	return DrawStateSlow(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, prep, reg, var, keyed, out);
+}
+
+// Everything but the plain hit: a new state, a state that always derives, and the runner's modes.
+bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+	const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+	const GSVector2i& rt_unscaled_size, DrawPrep& prep, const GSDrawRows::RegKey& reg, const GSDrawRows::VarKey& var,
+	bool keyed, DerivedDraw& out)
+{
+	using namespace GSDrawRows;
+	const Mode mode = s_mode;
+	stats.draws++;
+	stats.eligible++;
+
+	u16 ri = keyed ? m_states.FindReg(reg) : StateTable::NONE;
+	u16 ei = (ri != StateTable::NONE) ? m_states.FindVariant(ri, var) : StateTable::NONE;
+	if (ei != StateTable::NONE)
+		m_states.Head(ei).hits++;
+	const bool rowable = ei != StateTable::NONE && !(m_states.Body(ei).flags & StateBody::NOT_ROWABLE);
+	if (rowable && mode == Mode::On)
+	{
+		stats.hits++;
+		const StateBody& body = m_states.Body(ei);
+		ApplyDrawState(body, rt, ds, tex, prep, out);
+		return !(body.flags & (StateBody::CANCEL | StateBody::ABORT));
+	}
+
+	// Derive with the constant buffers set to a canary: the words that are not the canary afterwards are the ones
+	// the derivation wrote.
+	BeginDrawState(rt, ds);
+	u32* const cb = reinterpret_cast<u32*>(&m_conf.cb_vs);
+	for (u32 i = 0; i < CB_WORDS; i++)
+		cb[i] = DRAW_STATE_CANARY;
+	m_conf.cb_vs.texture_offset = {};
+	m_row_acted = false;
+	m_row_colclip_written = false;
+	m_row_optimized_blend_written = false;
+	m_draw_prep = &prep;
+	const bool ok = DeriveDrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, &prep, out);
+	m_draw_prep = nullptr;
+
+	alignas(16) StateBody fresh;
+	CaptureDrawState(fresh, rt, ok);
+
+	if (!keyed || (ei != StateTable::NONE && !rowable))
+	{
+		stats.not_rowable++;
+		return ok;
+	}
+
+	if (ei != StateTable::NONE)
+	{
+		// Check mode: the entry against the derivation run now.
+		stats.hits++;
+		const StateBody& body = m_states.Body(ei);
+		const char* what = nullptr;
+		char buf[64];
+		if (body.flags != fresh.flags)
+			what = "flags";
+		else if (body.test != fresh.test || body.zmsk != fresh.zmsk)
+			what = "TEST or ZMSK";
+		else if ((body.flags & StateBody::OPTIMIZED_BLEND) && body.optimized_blend != fresh.optimized_blend)
+			what = "optimized blend";
+		else if (body.colclip_mode != fresh.colclip_mode)
+			what = "colclip mode";
+		else
+		{
+			for (u32 i = 0; i < CONF_BYTES && !what; i++)
+			{
+				if (body.conf[i] != fresh.conf[i])
+				{
+					std::snprintf(buf, sizeof(buf), "configuration byte %u", i);
+					what = buf;
+				}
+			}
+			for (u32 i = 0; i < CB_BYTES && !what; i += 4)
+			{
+				if (std::memcmp(&body.cb[i], &fresh.cb[i], 4) != 0)
+				{
+					u32 ev, fv;
+					std::memcpy(&ev, &body.cb[i], 4);
+					std::memcpy(&fv, &fresh.cb[i], 4);
+					std::snprintf(buf, sizeof(buf), "constant word %u: entry %08x derived %08x", i / 4, ev, fv);
+					what = buf;
+				}
+			}
+		}
+		if (what)
+		{
+			stats.check_mismatches++;
+			if (stats.check_mismatches <= 40)
+				Console.Error("Draw state check: draw %d: %s", s_n, what);
+		}
+		return ok;
+	}
+
+	stats.misses++;
+	if (ri == StateTable::NONE)
+	{
+		ri = m_states.InsertReg(reg);
+		if (ri == StateTable::NONE)
+		{
+			m_states.Flush();
+			ri = m_states.InsertReg(reg);
+		}
+	}
+	ei = m_states.InsertVariant(ri, var);
+	if (ei == StateTable::NONE)
+	{
+		m_states.Flush();
+		ri = m_states.InsertReg(reg);
+		ei = m_states.InsertVariant(ri, var);
+	}
+	GSDrawRows::CopyBlock<sizeof(StateBody)>(&m_states.Body(ei), &fresh);
+	return ok;
+}
+
+// DrawPrims' state derivation: m_conf from the registers, the draw, its target and its source. False when the draw
+// is dropped. `prep` is set when DrawState has run the vertex passes, the alpha-test range correction, the alpha
+// range and the exact alpha-mask verdict before it.
+bool GSRendererHW::DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+	const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+	const GSVector2i& rt_unscaled_size, const DrawPrep* prep, DerivedDraw& out)
+{
+	const GSDrawingEnvironment& env = *m_draw_env;
 
 	// Z setup has to come before channel shuffle
 	EmulateZbuffer(ds);
 
-	// HLE implementation of the channel selection effect
-	//
-	// Warning it must be done at the begining because it will change the
-	// vertex list (it will interact with PrimitiveOverlap and accurate
-	// blending)
-	m_channel_shuffle_rebuilt_quad = false;
-	if (m_channel_shuffle && tex && tex->m_from_target)
-		EmulateChannelShuffle(tex->m_from_target, false, rt);
+	// The vertex passes, unless DrawState has run them already for a draw that may take a state entry.
+	if (!prep)
+	{
+		// HLE implementation of the channel selection effect
+		//
+		// Warning it must be done at the begining because it will change the
+		// vertex list (it will interact with PrimitiveOverlap and accurate
+		// blending)
+		m_channel_shuffle_rebuilt_quad = false;
+		if (m_channel_shuffle && tex && tex->m_from_target)
+			EmulateChannelShuffle(tex->m_from_target, false, rt);
 
-	// Upscaling hack to avoid various line/grid issues
-	MergeSprite(tex);
+		// Upscaling hack to avoid various line/grid issues
+		MergeSprite(tex);
 
-	m_prim_overlap = PrimitiveOverlap(false);
+		m_prim_overlap = PrimitiveOverlap(false);
+	}
 
 	// Do AA1 setup early so we can mask depth if possible.
 	EmulateAA1((rt ? rt : ds)->GetScale());
@@ -11490,27 +11982,29 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (rt)
 	{
 		EmulateTextureShuffleAndFbmask(rt, tex);
+		// What the alpha range was given ahead of this stage must be what the stage decided.
+		if (prep && (m_conf.colormask.wa != prep->alpha_written || RequestedAlphaFbMask() != prep->requested_alpha_fbmask ||
+						m_cached_ctx.ZBUF.ZMSK != prep->zmsk)) [[unlikely]]
+		{
+			GSDrawRows::stats.prep_mismatches++;
+		}
 		if (m_index->tail == 0)
 		{
 			GL_INS("HW: DrawPrims: Texture shuffle emulation culled all vertices; exiting.");
-			return;
+			return false;
 		}
 	}
 
 	// Last pass that moves a vertex: both rebuilds above have run, so nothing downstream can
 	// discard the correction by reading bounds taken before it.
-	m_sprite_edge_clamp = false;
-	CorrectSpriteCoverageForUpscale(rt);
+	if (!prep)
+	{
+		m_sprite_edge_clamp = false;
+		CorrectSpriteCoverageForUpscale(rt);
+	}
 
 	if (EmulateDATEEarlyFail(date_options, rt))
-		return;
-
-	const int afail_type = m_cached_ctx.TEST.GetAFAIL(m_cached_ctx.FRAME.PSM);
-	if (m_cached_ctx.TEST.ATE && ((afail_type != AFAIL_FB_ONLY && afail_type != AFAIL_RGB_ONLY) || !NeedsBlending() || !IsUsingAsInBlend()))
-	{
-		const int aref = static_cast<int>(m_cached_ctx.TEST.AREF);
-		CorrectATEAlphaMinMax(m_cached_ctx.TEST.ATST, aref);
-	}
+		return false;
 
 	// Determine alpha range before blending.
 	int blend_alpha_min = 0, blend_alpha_max = 255;
@@ -11518,19 +12012,33 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	GSAlphaKnownBits::Known rt_new_alpha_known;
 	bool rt_new_alpha_via_union = false;
 	GSAlphaKnownRects::Set rt_new_alpha_rects;
-	CalculateAlphaRange(rt, ds, date_options, blend_alpha_min, blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max,
-		rt_new_alpha_known, rt_new_alpha_via_union, rt_new_alpha_rects);
-
-	if (m_fast_stencil_shadow && rt)
+	if (prep)
 	{
-		// The counter multiplies whatever each pixel held, and one unsplit draw can step a pixel many
-		// times, so nothing is known about the result. A bound above 128 also makes
-		// DetermineAlphaScaling unscale an alpha-scaled target once, before this draw.
-		rt_new_alpha_min = 0;
-		rt_new_alpha_max = 255;
-		rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
-		rt_new_alpha_via_union = false;
-		rt_new_alpha_rects.Clear();
+		blend_alpha_min = prep->blend_alpha_min;
+		blend_alpha_max = prep->blend_alpha_max;
+		rt_new_alpha_min = prep->rt_new_alpha_min;
+		rt_new_alpha_max = prep->rt_new_alpha_max;
+		rt_new_alpha_known = prep->rt_new_alpha_known;
+		rt_new_alpha_via_union = prep->rt_new_alpha_via_union;
+		rt_new_alpha_rects = prep->rt_new_alpha_rects;
+	}
+	else
+	{
+		CorrectATEAlphaRange();
+		CalculateAlphaRange(rt, ds, date_options, m_conf.colormask.wa, RequestedAlphaFbMask(), blend_alpha_min,
+			blend_alpha_max, rt_new_alpha_min, rt_new_alpha_max, rt_new_alpha_known, rt_new_alpha_via_union, rt_new_alpha_rects);
+
+		if (m_fast_stencil_shadow && rt)
+		{
+			// The counter multiplies whatever each pixel held, and one unsplit draw can step a pixel many
+			// times, so nothing is known about the result. A bound above 128 also makes
+			// DetermineAlphaScaling unscale an alpha-scaled target once, before this draw.
+			rt_new_alpha_min = 0;
+			rt_new_alpha_max = 255;
+			rt_new_alpha_known = GSAlphaKnownBits::Known::Nothing();
+			rt_new_alpha_via_union = false;
+			rt_new_alpha_rects.Clear();
+		}
 	}
 
 	// DATE: selection of the algorithm.
@@ -11554,10 +12062,9 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	bool new_scale_rt_alpha = false;
 	DetermineAlphaScaling(rt, tex, req_src_update, rt_new_alpha_max, can_scale_rt_alpha, new_scale_rt_alpha);
 
-	GSDevice::RecycledTexture tex_copy;
 	if (tex)
 	{
-		EmulateTextureSampler(rt, ds, tex, tmm, tex_copy);
+		EmulateTextureSampler(rt, ds, tex, tmm, out.tex_copy);
 	}
 	else
 	{
@@ -11641,7 +12148,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (no_rt && no_ds)
 	{
 		GL_INS("HW: Late draw cancel DrawPrims().");
-		return;
+		return false;
 	}
 
 	if ((m_conf.ps.tex_is_fb && rt && rt->m_rt_alpha_scale) || (tex && tex->m_from_target && tex->m_target_direct && tex->m_from_target->m_rt_alpha_scale))
@@ -11670,20 +12177,11 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	}
 
 	// DATE backend configuration
-	GSDevice::RecycledTexture temp_ds; // If we're doing stencil DATE and we don't have a depth buffer, we need to allocate a temporary one.
-	EmulateDATEGetConfig(date_options, new_scale_rt_alpha, temp_ds);
-
-	const GSTextureCache::Target* rt_or_ds = rt ? rt : ds;
-	const float rtscale = rt_or_ds->GetScale();
-	const GSVector2i rtsize = rt_or_ds->GetTexture()->GetSize();
-	const GSVector2i rt_unscaled_size = rt_or_ds->GetUnscaledSize();
-
-	const float texscale = tex ? tex->GetScale() : 0.0f;
-	const GSVector2i texsize = tex ? tex->GetTexture()->GetSize() : GSVector2i(0, 0);
+	// If we're doing stencil DATE and we don't have a depth buffer, out.temp_ds is a temporary one.
+	EmulateDATEGetConfig(date_options, new_scale_rt_alpha, out.temp_ds);
 
 	// Vertex shader config
-	float vs_scale_x, vs_scale_y;
-	DetermineVSConfig(rt, rtscale, rtsize, rt_unscaled_size, vs_scale_x, vs_scale_y);
+	DetermineVSConfig(rt, rtscale, rtsize, rt_unscaled_size, out.vs_scale_x, out.vs_scale_y);
 
 	m_conf.ps.iip = !IsFlatShaded();
 
@@ -11724,6 +12222,7 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 		m_conf.tex_hazard == GSHWDrawConfig::TEX_HAZARD_NONE && rt->GetTexture()->GetFormat() == GSTexture::Format::Color)
 	{
 		// The mask must have been the draw's only read of the target.
+		m_row_acted = true; // the split is a function of the vertices
 		GSHWDrawConfig::PSSelector ps = m_conf.ps;
 		ps.fbmask = 0;
 		const GSAlphaBitLogicOp::Runs runs = m_conf.IsFeedbackLoopRT(ps) ? GSAlphaBitLogicOp::Runs() :
@@ -11756,8 +12255,55 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 	if (m_conf.alpha_test == GSHWDrawConfig::AlphaTestMode::ABORT_DRAW)
 	{
 		GL_INS("HW: Aborting draw %s due to alpha test config.", s_n);
-		return;
+		return false;
 	}
+
+	out.no_rt = no_rt;
+	return true;
+}
+
+__fi void GSRendererHW::CorrectATEAlphaRange()
+{
+	const int afail_type = m_cached_ctx.TEST.GetAFAIL(m_cached_ctx.FRAME.PSM);
+	if (m_cached_ctx.TEST.ATE && ((afail_type != AFAIL_FB_ONLY && afail_type != AFAIL_RGB_ONLY) || !NeedsBlending() || !IsUsingAsInBlend()))
+	{
+		const int aref = static_cast<int>(m_cached_ctx.TEST.AREF);
+		CorrectATEAlphaMinMax(m_cached_ctx.TEST.ATST, aref);
+	}
+}
+
+__ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm)
+{
+#ifdef ENABLE_OGL_DEBUG
+	const GSVector4i area_out = GSVector4i(m_vt.m_min.p.upld(m_vt.m_max.p)).rintersect(m_context->scissor.in);
+	const GSVector4i area_in = GSVector4i(m_vt.m_min.t.upld(m_vt.m_max.t));
+
+	GL_PUSH("HW: GL Draw from (area %d,%d => %d,%d) in (area %d,%d => %d,%d)",
+		area_in.x, area_in.y, area_in.z, area_in.w,
+		area_out.x, area_out.y, area_out.z, area_out.w);
+#endif
+
+	DATEOptions date_options;
+	date_options.enabled = rt && m_cached_ctx.TEST.DATE && m_cached_ctx.FRAME.PSM != PSMCT24;
+	date_options.primid = false;
+	date_options.barrier = false;
+	date_options.stencil_one = false;
+
+	const GSTextureCache::Target* rt_or_ds = rt ? rt : ds;
+	const float rtscale = rt_or_ds->GetScale();
+	const GSVector2i rtsize = rt_or_ds->GetTexture()->GetSize();
+	const GSVector2i rt_unscaled_size = rt_or_ds->GetUnscaledSize();
+
+	// The state derivation, or its entry.
+	DerivedDraw derived;
+	if (!DrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, derived))
+		return;
+	const bool no_rt = derived.no_rt;
+	const float vs_scale_x = derived.vs_scale_x;
+	const float vs_scale_y = derived.vs_scale_y;
+
+	const float texscale = tex ? tex->GetScale() : 0.0f;
+	const GSVector2i texsize = tex ? tex->GetTexture()->GetSize() : GSVector2i(0, 0);
 
 	// rs
 	const GSVector4i hacked_scissor = m_channel_shuffle ? GSVector4i::cxpr(0, 0, 1024, 1024) : m_context->scissor.in;
