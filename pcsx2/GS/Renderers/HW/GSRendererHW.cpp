@@ -2643,7 +2643,7 @@ bool GSRendererHW::IsRTWrittenLive(const GIFRegALPHA& ALPHA)
 	         (ALPHA.A != ALPHA.B && // left side is not zero
 	          (ALPHA.C == 1 || // multiply by Ad
 	           (ALPHA.C == 2 && ALPHA.FIX != 0) || // multiply by 0
-	           (ALPHA.C == 0 && GetAlphaMinMax().max != 0)))));
+	           (ALPHA.C == 0 && DrawAlpha().max != 0)))));
 }
 
 bool GSRendererHW::IsDepthAlwaysPassing()
@@ -2688,13 +2688,13 @@ bool GSRendererHW::AllDepthTestsPassOnClearedTarget(const GSTextureCache::Target
 bool GSRendererHW::IsUsingCsInBlend()
 {
 	const GIFRegALPHA ALPHA = m_context->ALPHA;
-	const bool blend_zero = (ALPHA.A == ALPHA.B || (ALPHA.C == 2 && ALPHA.FIX == 0) || (ALPHA.C == 0 && GetAlphaMinMax().max == 0));
+	const bool blend_zero = (ALPHA.A == ALPHA.B || (ALPHA.C == 2 && ALPHA.FIX == 0) || (ALPHA.C == 0 && DrawAlpha().max == 0));
 	return (NeedsBlending() && ((ALPHA.IsUsingCs() && !blend_zero) || m_context->ALPHA.D == 0));
 }
 
 bool GSRendererHW::IsUsingAsInBlend()
 {
-	return (NeedsBlending() && m_context->ALPHA.IsUsingAs() && GetAlphaMinMax().max != 0);
+	return (NeedsBlending() && m_context->ALPHA.IsUsingAs() && DrawAlpha().max != 0);
 }
 bool GSRendererHW::ChannelsSharedTEX0FRAME()
 {
@@ -7071,7 +7071,7 @@ void GSRendererHW::CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCach
 }
 
 void GSRendererHW::DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
-	bool req_src_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha)
+	bool req_src_update, const GSDrawRows::AlphaBound& rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha)
 {
 	if (rt)
 	{
@@ -8489,15 +8489,58 @@ __ri u32 GSRendererHW::EmulateChannelShuffle(GSTextureCache::Target* src, bool t
 	return true;
 }
 
-void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options,
+GSDrawRows::AlphaRange GSRendererHW::DrawAlpha()
+{
+	if (!m_vt.m_alpha.valid)
+		CalcAlphaMinMax(0, INVALID_ALPHA_MINMAX);
+	return {{m_vt.m_alpha.min, GSDrawRows::DRAW_MIN, &m_alpha_asked}, {m_vt.m_alpha.max, GSDrawRows::DRAW_MAX, &m_alpha_asked}};
+}
+
+// GSState::IsOpaque, reading the draw's alpha range through DrawAlpha().
+bool GSRendererHW::IsOpaqueDerived()
+{
+	if (PRIM->AA1)
+		return false;
+	if (!PRIM->ABE)
+		return true;
+	const GSDrawingContext* context = m_context;
+	const u32 fmsk = GSLocalMemory::m_psm[context->FRAME.PSM].fmsk;
+	if ((context->FRAME.FBMSK & fmsk) == (fmsk & 0x00FFFFFF))
+		return true;
+	const GIFRegALPHA& ALPHA = context->ALPHA;
+	if (ALPHA.A != ALPHA.B && ALPHA.C == 0)
+	{
+		// GIFRegALPHA::IsOpaque(amin, amax) with the range's reads recorded.
+		const GSDrawRows::AlphaRange draw = DrawAlpha();
+		return ((ALPHA.A == ALPHA.B || draw.max == 0) && ALPHA.D == 0) ||
+		       (ALPHA.A == 0 && ALPHA.B == ALPHA.D && draw.min == 0x80 && draw.max == 0x80);
+	}
+	int amin = 0, amax = 0xff;
+	if (ALPHA.A != ALPHA.B)
+	{
+		if (ALPHA.C == 1)
+		{
+			if (context->FRAME.PSM == PSMCT24 || context->FRAME.PSM == PSMZ24)
+				amin = amax = 0x80;
+		}
+		else if (ALPHA.C == 2)
+		{
+			amin = amax = ALPHA.FIX;
+		}
+	}
+	return ALPHA.IsOpaque(amin, amax);
+}
+
+void GSRendererHW::EmulateBlending(const GSDrawRows::AlphaRange& rt_alpha, DATEOptions& date_options,
 	GSTextureCache::Target* rt, bool can_scale_rt_alpha, bool& new_rt_alpha_scale)
 {
+	const GSDrawRows::AlphaRange draw = DrawAlpha();
 	const GIFRegALPHA& ALPHA = m_context->ALPHA;
 	{
 		// PABE: Check condition early as an optimization, no blending when As < 128.
 		// For Cs*As + Cd*(1 - As) if As is 128 then blending can be disabled as well.
 		const bool PABE_skip = m_draw_env->PABE.PABE &&
-			((GetAlphaMinMax().max < 128) || (GetAlphaMinMax().max == 128 && ALPHA.A == 0 && ALPHA.B == 1 && ALPHA.C == 0 && ALPHA.D == 1));
+			((draw.max < 128) || (draw.max == 128 && ALPHA.A == 0 && ALPHA.B == 1 && ALPHA.C == 0 && ALPHA.D == 1));
 
 		// No blending or coverage anti-aliasing so early exit
 		if (PABE_skip || !(NeedsBlending() || IsCoverageAlpha()))
@@ -8526,7 +8569,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	static constexpr const char* col[3] = {"Cs", "Cd", "0"};
 	static constexpr const char* alpha[3] = {"As", "Ad", "Af"};
 	GL_INS("HW: EmulateBlending(): (%s - %s) * %s + %s", col[ALPHA.A], col[ALPHA.B], alpha[ALPHA.C], col[ALPHA.D]);
-	GL_INS("HW: Draw AlphaMinMax: %d-%d, RT AlphaMinMax: %d-%d, AFIX: %u", GetAlphaMinMax().min, GetAlphaMinMax().max, rt_alpha_min, rt_alpha_max, AFIX);
+	GL_INS("HW: Draw AlphaMinMax: %d-%d, RT AlphaMinMax: %d-%d, AFIX: %u", m_vt.m_alpha.min, m_vt.m_alpha.max, rt_alpha.min.ForLog(), rt_alpha.max.ForLog(), AFIX);
 #endif
 
 	// If the colour is modulated to zero or we're not using a texture and the color is zero, we can replace any Cs with 0
@@ -8549,9 +8592,9 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	if (m_conf.ps.blend_c == 1)
 	{
 		// When both rt alpha min and max are equal replace Ad with Af, easier to manage.
-		if (rt_alpha_min == rt_alpha_max)
+		if (rt_alpha.OneValue())
 		{
-			AFIX = rt_alpha_min;
+			AFIX = rt_alpha.min.Value();
 			m_conf.ps.blend_c = 2;
 		}
 		// 24 bits doesn't have an alpha channel so use 128 (1.0f) fix factor as equivalent.
@@ -8561,21 +8604,21 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 			m_conf.ps.blend_c = 2;
 		}
 	}
-	else if (m_conf.ps.blend_c == 0 && GetAlphaMinMax().min == GetAlphaMinMax().max)
+	else if (m_conf.ps.blend_c == 0 && draw.OneValue())
 	{
-		AFIX = GetAlphaMinMax().max;
+		AFIX = draw.max.Value();
 		m_conf.ps.blend_c = 2;
 	}
 
 	// Get alpha value
-	const bool alpha_c0_eq_zero = (m_conf.ps.blend_c == 0 && GetAlphaMinMax().max == 0);
-	const bool alpha_c0_eq_one = (m_conf.ps.blend_c == 0 && (GetAlphaMinMax().min == 128) && (GetAlphaMinMax().max == 128));
-	const bool alpha_c0_high_min_one = (m_conf.ps.blend_c == 0 && GetAlphaMinMax().min > 128);
-	const bool alpha_c0_high_max_one = (m_conf.ps.blend_c == 0 && GetAlphaMinMax().max > 128);
-	const bool alpha_c0_eq_less_max_one = (m_conf.ps.blend_c == 0 && GetAlphaMinMax().max <= 128);
-	const bool alpha_c1_high_min_one = (m_conf.ps.blend_c == 1 && rt_alpha_min > 128);
-	const bool alpha_c1_high_max_one = (m_conf.ps.blend_c == 1 && rt_alpha_max > 128);
-	const bool alpha_c1_eq_less_max_one = (m_conf.ps.blend_c == 1 && rt_alpha_max <= 128);
+	const bool alpha_c0_eq_zero = (m_conf.ps.blend_c == 0 && draw.max == 0);
+	const bool alpha_c0_eq_one = (m_conf.ps.blend_c == 0 && (draw.min == 128) && (draw.max == 128));
+	const bool alpha_c0_high_min_one = (m_conf.ps.blend_c == 0 && draw.min > 128);
+	const bool alpha_c0_high_max_one = (m_conf.ps.blend_c == 0 && draw.max > 128);
+	const bool alpha_c0_eq_less_max_one = (m_conf.ps.blend_c == 0 && draw.max <= 128);
+	const bool alpha_c1_high_min_one = (m_conf.ps.blend_c == 1 && rt_alpha.min > 128);
+	const bool alpha_c1_high_max_one = (m_conf.ps.blend_c == 1 && rt_alpha.max > 128);
+	const bool alpha_c1_eq_less_max_one = (m_conf.ps.blend_c == 1 && rt_alpha.max <= 128);
 	bool alpha_c1_high_no_rta_correct = m_conf.ps.blend_c == 1 && !(new_rt_alpha_scale || can_scale_rt_alpha);
 	const bool alpha_c2_eq_zero = (m_conf.ps.blend_c == 2 && AFIX == 0u);
 	const bool alpha_c2_eq_one = (m_conf.ps.blend_c == 2 && AFIX == 128u);
@@ -8691,7 +8734,7 @@ void GSRendererHW::EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptio
 	bool color_dest_blend = !!(blend_flag & BLEND_CD);
 
 	// Per pixel alpha blending.
-	const bool PABE = m_draw_env->PABE.PABE && GetAlphaMinMax().min < 128;
+	const bool PABE = m_draw_env->PABE.PABE && draw.min < 128;
 
 	// HW blend can handle it, no need for sw or hw colclip, Cd*Alpha or Cd*(1 - Alpha) where Alpha <= 128.
 	bool color_dest_blend2 = !PABE && ((m_conf.ps.blend_a == 1 && m_conf.ps.blend_b == 2 && m_conf.ps.blend_d == 2) || (m_conf.ps.blend_a == 2 && m_conf.ps.blend_b == 1 && m_conf.ps.blend_d == 1)) &&
@@ -11846,26 +11889,21 @@ bool GSRendererHW::FillStateKeys(GSDrawRows::RegKey& r, GSDrawRows::VarKey& k, c
 	}
 	k.w[0] = f;
 
-	// The alpha ranges by class. Read by read (EmulateBlending, DetermineAlphaScaling, IsOpaque, PABE), the derivation
-	// compares a bound only with 0 and 128, and within one range the minimum with the maximum. The draw's range is
-	// read after the alpha test's correction, the blend's and the new maximum as CalculateAlphaRange left them, and of
-	// the target's range only its maximum and whether it is one value. Two reads take a bound's value: the blend's fixed
-	// factor becomes the draw's alpha when ALPHA.C selects As and the draw's range is one value, and the blend range's
-	// when C selects Ad and that range is one value. Those values are keyed as they are.
-	const GSVertexTrace::VertexAlpha& am = GetAlphaMinMax();
-	const auto cls = [](int v) -> u64 { return static_cast<u64>((v > 0) + (v >= 128) + (v > 128)); };
-	const u32 alpha_c = m_context->ALPHA.C;
-	const bool draw_one = am.min == am.max;
-	const bool blend_one = prep.blend_alpha_min == prep.blend_alpha_max;
-	u64 a = cls(am.min) | (cls(am.max) << 2) | b(draw_one, 4) | (cls(prep.blend_alpha_min) << 5) | (cls(prep.blend_alpha_max) << 7) |
-	        b(blend_one, 9) | (cls(prep.rt_new_alpha_max) << 13);
-	if (alpha_c == 0 && draw_one)
-		a |= static_cast<u64>((static_cast<u32>(am.max) & 0x1FF) + 1) << 16;
-	else if (alpha_c == 1 && blend_one)
-		a |= static_cast<u64>((static_cast<u32>(prep.blend_alpha_min) & 0x1FF) + 1) << 26;
+	// The alpha ranges by class: each bound's place among 0 and 128, and whether the draw's and the blend's range are
+	// one value. The derivation reads these bounds only through GSDrawRows::AlphaBound, which records any read the
+	// class cannot answer; the entry then also matches on that bound's value, kept in `values`. A read of the draw's
+	// range that bypasses the type is caught by GSState::m_alpha_read_raw (DrawStateSlow). The target's range is read
+	// directly (DetermineAlphaScaling), so it is keyed by value.
+	if (!m_vt.m_alpha.valid)
+		CalcAlphaMinMax(0, INVALID_ALPHA_MINMAX);
+	const GSVertexTrace::VertexAlpha& am = m_vt.m_alpha;
+	using GSDrawRows::AlphaClass;
+	u64 a = AlphaClass(am.min) | (AlphaClass(am.max) << 2) | b(am.min == am.max, 4) | (AlphaClass(prep.blend_alpha_min) << 5) |
+	        (AlphaClass(prep.blend_alpha_max) << 7) | b(prep.blend_alpha_min == prep.blend_alpha_max, 9) |
+	        (AlphaClass(prep.rt_new_alpha_max) << 10);
 	if (rt)
 	{
-		a |= (cls(rt->m_alpha_max) << 10) | b(rt->m_alpha_min == rt->m_alpha_max, 12);
+		a |= (static_cast<u64>(static_cast<u32>(rt->m_alpha_min) & 0x1FF) << 16) | (static_cast<u64>(static_cast<u32>(rt->m_alpha_max) & 0x1FF) << 25);
 		k.w[2] = fbits(rtscale) | (fbits(rt->OffsetHack_modxy) << 32);
 	}
 	else
@@ -11873,6 +11911,7 @@ bool GSRendererHW::FillStateKeys(GSDrawRows::RegKey& r, GSDrawRows::VarKey& k, c
 		k.w[2] = fbits(rtscale);
 	}
 	k.w[1] = a;
+	k.values = GSDrawRows::AlphaValues(am.min, am.max, prep.blend_alpha_min, prep.blend_alpha_max, prep.rt_new_alpha_max);
 	k.w[3] = static_cast<u64>(static_cast<u16>(rtsize.x)) | (static_cast<u64>(static_cast<u16>(rtsize.y)) << 16) |
 	         (static_cast<u64>(static_cast<u16>(rt_unscaled_size.x)) << 32) | (static_cast<u64>(static_cast<u16>(rt_unscaled_size.y)) << 48);
 	// The mipmap levels the manual LOD reads; small, so both fit the word's low half with the source's scale above.
@@ -12112,8 +12151,13 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 	m_row_colclip_written = false;
 	m_row_optimized_blend_written = false;
 	m_draw_prep = &prep;
+	m_alpha_asked = 0;
+	m_alpha_read_raw = false;
 	const bool ok = DeriveDrawState(rt, ds, tex, tmm, date_options, rtscale, rtsize, rt_unscaled_size, &prep, out);
 	m_draw_prep = nullptr;
+	// The alpha values the derivation read: through AlphaBound, or the draw's range read directly.
+	const u32 asked = m_alpha_asked | (m_alpha_read_raw ? ((1u << DRAW_MIN) | (1u << DRAW_MAX)) : 0u);
+	const u64 care = AlphaValueCare(asked);
 
 	alignas(16) StateBody fresh;
 	CaptureDrawState(fresh, rt, ok);
@@ -12131,7 +12175,9 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 		const StateBody& body = m_states.Body(ei);
 		const char* what = nullptr;
 		char buf[64];
-		if (body.flags != fresh.flags)
+		if (m_states.Head(ei).care != care)
+			what = "alpha values read";
+		else if (body.flags != fresh.flags)
 			what = "flags";
 		else if (body.test != fresh.test || body.zmsk != fresh.zmsk)
 			what = "TEST or ZMSK";
@@ -12180,13 +12226,15 @@ bool GSRendererHW::DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Tar
 			ri = m_states.InsertReg(reg);
 		}
 	}
-	ei = m_states.InsertVariant(ri, var);
+	ei = m_states.InsertVariant(ri, var, care);
 	if (ei == StateTable::NONE)
 	{
 		m_states.Flush();
 		ri = m_states.InsertReg(reg);
-		ei = m_states.InsertVariant(ri, var);
+		ei = m_states.InsertVariant(ri, var, care);
 	}
+	stats.entries_raw_alpha += m_alpha_read_raw;
+	stats.entries_value_care += care != 0;
 	GSDrawRows::CopyBlock<sizeof(StateBody)>(&m_states.Body(ei), &fresh);
 	return ok;
 }
@@ -12305,7 +12353,8 @@ bool GSRendererHW::DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::T
 	// because otherwise we'll treat tex-is-fb as a scaled source, when it's not yet.
 	bool can_scale_rt_alpha = false;
 	bool new_scale_rt_alpha = false;
-	DetermineAlphaScaling(rt, tex, req_src_update, rt_new_alpha_max, can_scale_rt_alpha, new_scale_rt_alpha);
+	const GSDrawRows::AlphaBound rt_new_alpha_max_read(rt_new_alpha_max, GSDrawRows::RT_NEW_MAX, &m_alpha_asked);
+	DetermineAlphaScaling(rt, tex, req_src_update, rt_new_alpha_max_read, can_scale_rt_alpha, new_scale_rt_alpha);
 
 	if (tex)
 	{
@@ -12336,9 +12385,11 @@ bool GSRendererHW::DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::T
 	m_conf.ps.fixed_one_a = IsCoverageAlphaFixedOne();
 
 	m_blend_identity = false;
-	if ((!IsOpaque() || m_context->ALPHA.IsBlack()) && rt && ((m_conf.colormask.wrgba & 0x7) || (m_texture_shuffle && !m_texture_shuffle.real_16_bit_source && !m_texture_shuffle.SameGroupShuffle())))
+	if ((!IsOpaqueDerived() || m_context->ALPHA.IsBlack()) && rt && ((m_conf.colormask.wrgba & 0x7) || (m_texture_shuffle && !m_texture_shuffle.real_16_bit_source && !m_texture_shuffle.SameGroupShuffle())))
 	{
-		EmulateBlending(blend_alpha_min, blend_alpha_max, date_options, rt, can_scale_rt_alpha, new_scale_rt_alpha);
+		const GSDrawRows::AlphaRange blend_range{{blend_alpha_min, GSDrawRows::BLEND_MIN, &m_alpha_asked},
+			{blend_alpha_max, GSDrawRows::BLEND_MAX, &m_alpha_asked}};
+		EmulateBlending(blend_range, date_options, rt, can_scale_rt_alpha, new_scale_rt_alpha);
 	}
 	else
 	{

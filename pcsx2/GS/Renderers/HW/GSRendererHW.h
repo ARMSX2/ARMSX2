@@ -372,8 +372,13 @@ private:
 			static_cast<u32>(m_conf.cb_ps.FbMask.a));
 	}
 	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
-	void EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options, GSTextureCache::Target* rt,
+	/// `rt_alpha` is the target's alpha range as the blend sees it (CalculateAlphaRange).
+	void EmulateBlending(const GSDrawRows::AlphaRange& rt_alpha, DATEOptions& date_options, GSTextureCache::Target* rt,
 		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);
+	/// The draw's alpha range for the derivation: every read of it is recorded (GSDrawRows::AlphaBound).
+	GSDrawRows::AlphaRange DrawAlpha();
+	/// IsOpaque() with the draw's alpha range read through DrawAlpha().
+	bool IsOpaqueDerived();
 	void CleanupDraw(bool invalidate_temp_src);
 
 	void EmulateTextureSampler(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
@@ -413,7 +418,7 @@ private:
 		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
 		GSAlphaKnownRects::Set& rt_new_alpha_rects);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
-		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
+		bool req_source_update, const GSDrawRows::AlphaBound& rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
 	bool EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Target* rt);
 	void EmulateDATESelectMethod(DATEOptions& date, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max);
@@ -560,6 +565,7 @@ private:
 	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
 	GSDrawRows::StateTable m_states;
 	RowRun m_row_run;
+	u32 m_alpha_asked = 0; ///< the alpha bounds the derivation in hand read by value (GSDrawRows::AlphaBound)
 	u16 m_draw_entry = GSDrawRows::StateTable::NONE; ///< the entry the draw in hand took its state from, NONE if derived
 	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
 	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack

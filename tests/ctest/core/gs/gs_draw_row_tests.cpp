@@ -48,7 +48,7 @@ TEST(GSDrawRow, RecordLayouts)
 	EXPECT_EQ(offsetof(GSDrawRow, ifirst), 20u);
 	EXPECT_EQ(offsetof(GSDrawRow, nidx), 24u);
 	EXPECT_EQ(offsetof(GSDrawFacts, memo), 56u);
-	EXPECT_EQ(sizeof(StateHead), 80u);
+	EXPECT_EQ(sizeof(StateHead), 96u);
 	EXPECT_EQ(sizeof(RegState), 96u);
 	EXPECT_EQ(CONF_BYTES % 16, 0u);
 	EXPECT_EQ(CB_BYTES % 16, 0u);
@@ -346,4 +346,71 @@ TEST(GSDrawRowHalfPixel, PushedPositionsMatchThePushedOffsetOverAll256Pairs)
 	RecordProperty("worst_ulp", worst_ulp);
 	std::printf("half-pixel push: %u positions, %u pushed, %u one ulp apart, worst %d ulp, worst error %.5f of the bias\n",
 		checked, pushed, off_by_one_ulp, worst_ulp, worst_ratio);
+}
+
+// The alpha bounds: the class answers every comparison with 0 and 128, and any other read is recorded.
+TEST(GSDrawRowAlpha, TheClassAnswersEveryComparisonWithZeroAnd128)
+{
+	for (int a = 0; a <= 256; a++)
+	{
+		for (int b = 0; b <= 256; b++)
+		{
+			if (AlphaClass(a) != AlphaClass(b))
+				continue;
+			for (const int k : {0, 128})
+			{
+				ASSERT_EQ(a == k, b == k) << a << " " << b << " " << k;
+				ASSERT_EQ(a < k, b < k) << a << " " << b << " " << k;
+				ASSERT_EQ(a <= k, b <= k) << a << " " << b << " " << k;
+				ASSERT_EQ(a > k, b > k) << a << " " << b << " " << k;
+				ASSERT_EQ(a >= k, b >= k) << a << " " << b << " " << k;
+			}
+		}
+	}
+}
+
+TEST(GSDrawRowAlpha, ReadsTheClassCannotAnswerAreRecorded)
+{
+	u32 asked = 0;
+	const AlphaBound b(77, BLEND_MAX, &asked);
+	EXPECT_TRUE(b > 0);
+	EXPECT_TRUE(b < 128);
+	EXPECT_FALSE(b == 128);
+	EXPECT_TRUE(b != 0);
+	EXPECT_EQ(asked, 0u);
+	EXPECT_EQ(b.ForLog(), 77);
+	EXPECT_EQ(asked, 0u);
+	EXPECT_TRUE(b > 64);
+	EXPECT_EQ(asked, 1u << BLEND_MAX);
+
+	asked = 0;
+	const AlphaRange r{{40, DRAW_MIN, &asked}, {40, DRAW_MAX, &asked}};
+	EXPECT_TRUE(r.OneValue());
+	EXPECT_EQ(asked, 0u);
+	EXPECT_EQ(r.max.Value(), 40);
+	EXPECT_EQ(asked, 1u << DRAW_MAX);
+	EXPECT_EQ(AlphaValueCare(asked), 0x1FFull << 9);
+}
+
+TEST(GSStateTable, AVariantMatchesOnlyTheValuesItsDerivationRead)
+{
+	StateTable table;
+	std::mt19937_64 rng(23);
+	const u16 r = table.InsertReg(RandomReg(rng));
+	VarKey v = RandomVar(rng);
+	v.values = AlphaValues(64, 64, 10, 200, 128);
+	// Derived without reading a value: any values of the same classes match.
+	const u16 e = table.InsertVariant(r, v, 0);
+	VarKey w = v;
+	w.values = AlphaValues(65, 70, 11, 201, 128);
+	EXPECT_EQ(table.FindVariant(r, w), e);
+	// A variant that read the draw's maximum matches only that maximum.
+	VarKey x = RandomVar(rng);
+	x.values = AlphaValues(64, 64, 10, 200, 128);
+	const u16 f = table.InsertVariant(r, x, AlphaValueCare(1u << DRAW_MAX));
+	VarKey y = x;
+	y.values = AlphaValues(1, 64, 99, 99, 0);
+	EXPECT_EQ(table.FindVariant(r, y), f);
+	y.values = AlphaValues(64, 65, 10, 200, 128);
+	EXPECT_EQ(table.FindVariant(r, y), StateTable::NONE);
 }

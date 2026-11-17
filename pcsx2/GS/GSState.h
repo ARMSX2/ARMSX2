@@ -549,8 +549,12 @@ protected:
 	// following functions need m_vt to be initialized
 
 	GSVertexTrace m_vt;
+	/// Set by every GetAlphaMinMax(). The hardware renderer clears it before a derivation it records, so that a read of
+	/// the draw's alpha range not made through its typed accessor makes the recorded state key the range's values.
+	bool m_alpha_read_raw = false;
 	GSVertexTrace::VertexAlpha& GetAlphaMinMax()
 	{
+		m_alpha_read_raw = true;
 		if (!m_vt.m_alpha.valid)
 			CalcAlphaMinMax(0, INVALID_ALPHA_MINMAX);
 		return m_vt.m_alpha;

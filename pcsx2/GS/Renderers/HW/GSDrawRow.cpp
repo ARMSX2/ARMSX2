@@ -70,7 +70,7 @@ namespace GSDrawRows
 		return i;
 	}
 
-	u16 StateTable::InsertVariant(u16 reg, const VarKey& v)
+	u16 StateTable::InsertVariant(u16 reg, const VarKey& v, u64 care)
 	{
 		if (m_entry_count >= CAPACITY)
 			return NONE;
@@ -85,6 +85,7 @@ namespace GSDrawRows
 		RegState& rs = Reg(reg);
 		StateHead& h = Head(i);
 		h.var = v;
+		h.care = care;
 		h.reg = reg;
 		h.hits = 0;
 		std::memset(&Device(i), 0, sizeof(GSRowDeviceCache));

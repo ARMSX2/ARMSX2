@@ -72,19 +72,104 @@ namespace GSDrawRows
 	///   5  the source's kind and format
 	///   6  the source's region
 	///   7  the source's unscaled size
+	///
+	/// `values` holds the alpha bounds' values (AlphaValues). A variant compares them only where its derivation read a
+	/// value (the variant's care mask); everywhere else the bounds' classes in word 1 decide.
 	struct alignas(16) VarKey
 	{
 		static constexpr u32 WORDS = 8;
 		u64 w[WORDS];
+		u64 values;
 
-		__fi bool operator==(const VarKey& r) const
+		/// Equal facts, and equal alpha values where `care` says the derivation read them.
+		__fi bool Matches(const VarKey& r, u64 care) const
 		{
-			u64 d = 0;
+			u64 d = (values ^ r.values) & care;
 			for (u32 i = 0; i < WORDS; i++)
 				d |= w[i] ^ r.w[i];
 			return d == 0;
 		}
+		__fi bool operator==(const VarKey& r) const { return Matches(r, ~0ull); }
 		__fi bool operator!=(const VarKey& r) const { return !(*this == r); }
+	};
+
+	/// The alpha-range bounds the derivation reads, which the key holds by class (AlphaBound).
+	enum AlphaBoundId : u32
+	{
+		DRAW_MIN, ///< the draw's alpha range after the alpha test's correction
+		DRAW_MAX,
+		BLEND_MIN, ///< the range the blend sees (CalculateAlphaRange)
+		BLEND_MAX,
+		RT_NEW_MAX, ///< the target's maximum after this draw
+		ALPHA_BOUNDS
+	};
+
+	/// A bound's class: its place among 0 and 128, the only constants the derivation compares a bound with.
+	inline constexpr u64 AlphaClass(int v) { return static_cast<u64>((v > 0) + (v >= 128) + (v > 128)); }
+
+	/// The bounds' values in VarKey::values, nine bits each in AlphaBoundId order.
+	inline constexpr u64 AlphaValues(int draw_min, int draw_max, int blend_min, int blend_max, int rt_new_max)
+	{
+		const auto v9 = [](int v) { return static_cast<u64>(static_cast<u32>(v) & 0x1FF); };
+		return v9(draw_min) | (v9(draw_max) << 9) | (v9(blend_min) << 18) | (v9(blend_max) << 27) | (v9(rt_new_max) << 36);
+	}
+
+	/// The mask of VarKey::values for the bounds in `asked` (one bit per AlphaBoundId).
+	inline constexpr u64 AlphaValueCare(u32 asked)
+	{
+		u64 m = 0;
+		for (u32 i = 0; i < ALPHA_BOUNDS; i++)
+		{
+			if (asked & (1u << i))
+				m |= 0x1FFull << (9 * i);
+		}
+		return m;
+	}
+
+	/// A bound of an alpha range as the derivation reads it. The key holds each bound's class and whether each range
+	/// is one value, so a comparison with 0 or 128, and the range's OneValue, need nothing more. Any other read, a
+	/// comparison with another constant or the value itself, marks the bound in `asked`; the entry the derivation makes
+	/// then matches only draws with the same value of that bound. So every read the key cannot answer by class makes the
+	/// key hold the value instead: nothing is left to an inventory of the reads.
+	class AlphaBound
+	{
+	public:
+		AlphaBound(int v, AlphaBoundId id, u32* asked) : m_v(v), m_bit(1u << id), m_asked(asked) {}
+
+		bool operator==(int k) const { return Ask(k), m_v == k; }
+		bool operator!=(int k) const { return Ask(k), m_v != k; }
+		bool operator<(int k) const { return Ask(k), m_v < k; }
+		bool operator<=(int k) const { return Ask(k), m_v <= k; }
+		bool operator>(int k) const { return Ask(k), m_v > k; }
+		bool operator>=(int k) const { return Ask(k), m_v >= k; }
+
+		/// The value, which the entry then keys.
+		int Value() const
+		{
+			*m_asked |= m_bit;
+			return m_v;
+		}
+		/// The value for a log message only: recorded nowhere, so it must not decide anything.
+		int ForLog() const { return m_v; }
+
+	private:
+		friend struct AlphaRange;
+		void Ask(int k) const
+		{
+			if (k != 0 && k != 128)
+				*m_asked |= m_bit;
+		}
+
+		int m_v;
+		u32 m_bit;
+		u32* m_asked;
+	};
+
+	/// The two bounds of one range; whether they are equal is in the key.
+	struct AlphaRange
+	{
+		AlphaBound min, max;
+		bool OneValue() const { return min.m_v == max.m_v; }
 	};
 
 	/// Bytes of GSHWDrawConfig that ResetStates clears: the configuration block an entry holds.
@@ -140,12 +225,12 @@ namespace GSDrawRows
 	struct alignas(16) StateHead
 	{
 		VarKey var;
+		u64 care; ///< which bits of var.values the derivation read (AlphaValueCare)
 		u16 next; ///< next variant of the same register state, NONE at the end
 		u16 reg; ///< the register state it belongs to
 		u32 hits; ///< diagnostic
-		u64 pad;
 	};
-	static_assert(sizeof(StateHead) == 80);
+	static_assert(sizeof(StateHead) == 96);
 
 	/// A register state: its key and its variants.
 	struct alignas(16) RegState
@@ -189,11 +274,11 @@ namespace GSDrawRows
 		__fi u16 FindVariant(u16 reg, const VarKey& v)
 		{
 			RegState& rs = Reg(reg);
-			if (rs.last_hit != NONE && Head(rs.last_hit).var == v) [[likely]]
+			if (rs.last_hit != NONE && Head(rs.last_hit).var.Matches(v, Head(rs.last_hit).care)) [[likely]]
 				return rs.last_hit;
 			for (u16 i = rs.first; i != NONE; i = Head(i).next)
 			{
-				if (Head(i).var == v)
+				if (Head(i).var.Matches(v, Head(i).care))
 				{
 					rs.last_hit = i;
 					return i;
@@ -205,8 +290,9 @@ namespace GSDrawRows
 		/// A register state for `k`, which must not be in the table. NONE when the table is full: the caller
 		/// flushes and asks again.
 		u16 InsertReg(const RegKey& k);
-		/// A variant of `reg` for `v`, which must not be in the table. Its body is uninitialised. NONE when full.
-		u16 InsertVariant(u16 reg, const VarKey& v);
+		/// A variant of `reg` for `v`, matching draws whose alpha values agree under `care`. It must not be in the table.
+		/// Its body is uninitialised. NONE when full.
+		u16 InsertVariant(u16 reg, const VarKey& v, u64 care = ~0ull);
 
 		void Flush();
 
@@ -253,6 +339,8 @@ namespace GSDrawRows
 		u64 rows = 0; ///< draws that skipped the target search (or would have, in check mode)
 		u64 row_checked = 0; ///< check mode: rows whose full path was compared
 		u64 row_mismatches = 0; ///< check mode: rows where the full path changed what the row skips
+		u64 entries_value_care = 0; ///< entries whose derivation read an alpha bound's value
+		u64 entries_raw_alpha = 0; ///< of those, entries whose derivation read the draw's range bypassing AlphaBound
 		u64 device_rows = 0; ///< draws handed to GSDevice::DrawRow
 		u64 device_rows_plain = 0; ///< of those, drawn by the backend's plain path
 		u64 device_rows_refused[9] = {}; ///< why not: no pass, the draw's roads, targets, target state, textures, feedback bits, kept copy, colour clip, readback window
