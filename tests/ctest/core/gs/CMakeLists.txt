@@ -97,6 +97,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_sw_texture_readers_tests.cpp
 	gs_blend_constant_policy_tests.cpp
 	gs_runs_policy_tests.cpp
+	gs_draw_row_tests.cpp
 	gs_run_snapshot_tests.cpp
 	gs_blend_carry_tests.cpp
 	gs_over_one_two_pass_tests.cpp

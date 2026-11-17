@@ -638,6 +638,7 @@ set(pcsx2GSSources
 	GS/Renderers/Null/GSDeviceNone.cpp
 	GS/Renderers/Null/GSRendererNull.cpp
 	GS/Renderers/HW/GSBurstMemo.cpp
+	GS/Renderers/HW/GSDrawRow.cpp
 	GS/Renderers/HW/GSDrawLog.cpp
 	GS/Renderers/HW/GSHwHack.cpp
 	GS/Renderers/HW/GSLineRuns.cpp
@@ -745,6 +746,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineRuns.h
 	GS/Renderers/HW/GSBurstMemo.h
+	GS/Renderers/HW/GSDrawRow.h
 	GS/Renderers/HW/GSDepthFormatMove.h
 	GS/Renderers/HW/GSLineWalk.h
 	GS/Renderers/HW/GSPointPlace.h

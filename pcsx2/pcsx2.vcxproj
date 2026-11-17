@@ -540,6 +540,7 @@
     </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSTextureCache.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSBurstMemo.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSDrawRow.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSTextureCacheSW.cpp" />
     <ClCompile Include="GS\GSUtil.cpp" />
@@ -1098,6 +1099,7 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h" />
+    <ClInclude Include="GS\Renderers\HW\GSDrawRow.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthFormatMove.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
