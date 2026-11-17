@@ -1205,8 +1205,6 @@ static void PrintCommandLineHelp(const char* progname)
 						 "Such a draw then takes RT alpha correction, a full-target conversion each way.\n");
 	std::fprintf(stderr, "  -vertex-ring-kib <n>: Vulkan only. Start the vertex ring at n KiB instead of the shipped "
 						 "size; it still grows on demand to its cap.\n");
-	std::fprintf(stderr, "  -readback-kick-passes <n>: Vulkan only. In a frame near a readback, submit at a render-pass "
-						 "boundary only once n passes are unsubmitted (default 8).\n");
 	std::fprintf(stderr, "  -vertex-ring-no-grow: Vulkan only. The vertex ring keeps its starting size and waits for "
 						 "the GPU when full.\n");
 	std::fprintf(stderr, "  -texture-ring-no-grow: Vulkan only. The texture upload ring keeps its starting size and "
@@ -2068,18 +2066,6 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// Not a setting: a small start is how the ring's growth path is driven on titles whose
 				// frames fit the shipped size.
 				g_gs_measurement_overrides.vertex_ring_start_kib = kib.value();
-				continue;
-			}
-			else if (CHECK_ARG_PARAM("-readback-kick-passes"))
-			{
-				const std::optional<u32> passes = ParseNumericArg<u32>("-readback-kick-passes", argv[++i]);
-				if (!passes.has_value() || passes.value() == 0)
-				{
-					ArgError("-readback-kick-passes: expected a pass count above zero.");
-					return false;
-				}
-				// Not a setting: what a submit costs is a property of the driver, priced per device.
-				g_gs_measurement_overrides.readback_kick_passes = passes.value();
 				continue;
 			}
 			else if (CHECK_ARG("-texture-ring-no-grow"))

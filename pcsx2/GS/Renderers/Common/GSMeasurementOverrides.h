@@ -50,10 +50,6 @@ struct GSMeasurementOverrides
 	/// DriverWorkaround::PreferCachedStreamRingMemory, to price that road on a device without the rule.
 	bool stream_rings_cached = false;
 
-	/// -readback-kick-passes N: in a readback frame, the Vulkan mid-frame kick waits for at least
-	/// N unsubmitted render passes (0 = the shipped spacing). Read once, when the device is created.
-	u32 readback_kick_passes = 0;
-
 	/// -alpha-bit-logic-op: take the alpha-bit logic op (GSAlphaBitLogicOp.h) on any Vulkan device
 	/// with the logicOp feature, not only where a read waits per draw. For checking its pictures
 	/// against the read on a GPU that does not need it.

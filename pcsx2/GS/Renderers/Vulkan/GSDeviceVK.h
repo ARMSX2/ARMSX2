@@ -1225,9 +1225,8 @@ private:
 	bool m_declare_rt_loop_without_read = false;
 	bool DateCopyLive(const GSHWDrawConfig& config);
 	u32 m_readback_frame = ~0u;
-	// The kick's spacing, in unsubmitted render passes (see DoRenderHW). Only gsrunner's
-	// -readback-kick-passes moves it.
-	u32 m_readback_kick_passes = 8;
+	// The kick's spacing, in unsubmitted render passes (see DoRenderHW).
+	static constexpr u32 READBACK_KICK_PASSES = 8;
 	// Draws recorded since the last submit, and how many the kick lets pile up inside one render
 	// pass before it ends the pass to submit them (see DoRenderHW).
 	u32 m_draws_since_submit = 0;
