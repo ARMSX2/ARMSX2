@@ -7,6 +7,7 @@ import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.hardware.usb.UsbRequest
+import android.os.SystemClock
 import android.util.Log
 import kr.co.iefriends.pcsx2.NativeApp
 import java.nio.ByteBuffer
@@ -23,7 +24,7 @@ internal class DualShock3UsbInput private constructor(
 ) {
     private val buffer = ByteBuffer.allocateDirect(maxOf(REPORT_SIZE, endpoint.maxPacketSize))
     private val report = ByteArray(REPORT_SIZE)
-    private var active = true
+    @Volatile private var active = true
     private var delivered = false
 
     fun start() {
@@ -31,19 +32,31 @@ internal class DualShock3UsbInput private constructor(
     }
 
     private fun read() {
+        var rejectedPackets = 0
+        var lastSize = 0
         try {
-            val deadline = android.os.SystemClock.elapsedRealtime() + 5000
+            wakeController()
+            var deadline = SystemClock.elapsedRealtime() + INITIAL_REPORT_WAIT_MS
             var firstReport = true
+            var retried = false
             while (queue()) {
                 val completed = if (firstReport) {
-                    val timeout = deadline - android.os.SystemClock.elapsedRealtime()
-                    if (timeout <= 0) throw TimeoutException()
-                    connection.requestWait(timeout)
+                    try {
+                        waitForReport(deadline)
+                    } catch (error: TimeoutException) {
+                        if (retried || !active) throw error
+                        retried = true
+                        // The interrupt request stays queued while we wake the controller again.
+                        wakeController()
+                        deadline = SystemClock.elapsedRealtime() + RETRY_REPORT_WAIT_MS
+                        waitForReport(deadline)
+                    }
                 } else {
                     connection.requestWait()
                 }
                 if (completed !== request) break
-                if (buffer.position() == REPORT_SIZE) {
+                lastSize = buffer.position()
+                if (lastSize == REPORT_SIZE) {
                     buffer.flip()
                     buffer.get(report)
                     if (report[0] == 1.toByte() && report[1] != (-1).toByte()) {
@@ -53,11 +66,17 @@ internal class DualShock3UsbInput private constructor(
                             // A wired DS3 only retains LED settings after it becomes operational.
                             setPlayerLed()
                         }
+                        continue
                     }
                 }
+                if (firstReport) rejectedPackets++
             }
         } catch (_: TimeoutException) {
-            Log.w(TAG, "DualShock 3 did not send a valid USB report")
+            if (active) Log.w(
+                TAG,
+                "DualShock 3 did not send a valid USB report on port ${port + 1} " +
+                    "(rejected packets: $rejectedPackets, last size: $lastSize)",
+            )
         } catch (error: RuntimeException) {
             Log.w(TAG, "DualShock 3 report reader stopped", error)
         } finally {
@@ -68,6 +87,20 @@ internal class DualShock3UsbInput private constructor(
                 onReaderExit(this)
             }
         }
+    }
+
+    private fun wakeController() {
+        val f2 = ByteArray(17)
+        val f5 = ByteArray(8)
+        val statusF2 = connection.controlTransfer(0xa1, 0x01, 0x03f2, iface.id, f2, f2.size, 500)
+        val statusF5 = connection.controlTransfer(0xa1, 0x01, 0x03f5, iface.id, f5, f5.size, 250)
+        Log.d(TAG, "DualShock 3 USB wake on port ${port + 1} (F2: $statusF2, F5: $statusF5)")
+    }
+
+    private fun waitForReport(deadline: Long): UsbRequest? {
+        val remaining = deadline - SystemClock.elapsedRealtime()
+        if (remaining <= 0) throw TimeoutException()
+        return connection.requestWait(remaining)
     }
 
     @Synchronized
@@ -118,6 +151,8 @@ internal class DualShock3UsbInput private constructor(
     companion object {
         private const val TAG = "ARMSX2DualShock3"
         private const val REPORT_SIZE = 49
+        private const val INITIAL_REPORT_WAIT_MS = 5_000L
+        private const val RETRY_REPORT_WAIT_MS = 10_000L
         // Same LED combinations as Linux hid-sony for player indices 1 through 8.
         private val PLAYER_LED_MASKS = byteArrayOf(0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18, 0x1a)
 
@@ -138,11 +173,7 @@ internal class DualShock3UsbInput private constructor(
             var opened = false
             try {
                 if (!connection.claimInterface(iface, true)) return null
-                // Reading feature report 0xF2 puts a wired DS3 into operational mode.
-                val feature = ByteArray(17)
-                if (connection.controlTransfer(0xa1, 0x01, 0x03f2, iface.id, feature, feature.size, 500) <= 0 ||
-                    !request.initialize(connection, endpoint)
-                ) return null
+                if (!request.initialize(connection, endpoint)) return null
                 val input = DualShock3UsbInput(connection, iface, request, endpoint, port, onReaderExit)
                 opened = true
                 return input
