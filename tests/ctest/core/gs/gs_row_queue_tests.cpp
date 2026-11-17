@@ -245,3 +245,43 @@ TEST_F(GSRowQueueTest, ABlendedBaseIsNotATwinBase)
 	dev->FlushBeforeReadback();
 	EXPECT_EQ(dev->drawn, (std::vector<u32>{10, 20, 11, 21}));
 }
+
+TEST_F(GSRowQueueTest, ACopyOutOfTheTargetEmitsFirst)
+{
+	auto rt = Target();
+	auto dst = Target();
+	Row a(rt.get(), 1);
+	a.Base();
+	dev->DrawRow(a.config, a.cache);
+	dev->CopyRect(rt.get(), dst.get(), GSVector4i(0, 0, 16, 16), 0, 0);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+}
+
+TEST_F(GSRowQueueTest, ADepthClearAndAnInvalidationOfQueuedTexturesEmitFirst)
+{
+	auto rt = Target();
+	auto ds = std::make_unique<GSTextureNone>(GSTexture::DepthStencil, 64, 64, 1, GSTexture::Format::DepthStencil);
+	Row a(rt.get(), 1), b(rt.get(), 2);
+	a.Base();
+	a.config.ds = ds.get();
+	dev->DrawRow(a.config, a.cache);
+	dev->ClearDepth(ds.get(), 0.0f);
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+	b.Base();
+	dev->DrawRow(b.config, b.cache);
+	dev->InvalidateRenderTarget(rt.get());
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1, 2}));
+}
+
+TEST_F(GSRowQueueTest, ARecycledSampledTextureWaitsForTheQueue)
+{
+	auto rt = Target();
+	GSTexture* tex = Texture().release(); // the pool owns it once recycled
+	Row a(rt.get(), 1, 0, tex);
+	a.Base();
+	dev->DrawRow(a.config, a.cache);
+	dev->Recycle(tex);
+	EXPECT_TRUE(dev->drawn.empty()); // held back rather than flushed for
+	dev->FlushBeforeReadback();
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1}));
+}
