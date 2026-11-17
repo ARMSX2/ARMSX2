@@ -140,5 +140,10 @@ struct RootLifecycleModifier: ViewModifier {
             GameLibraryRuntimeResources.releaseForGameplay()
             PatchStore.shared.releasePresentationResources()
         }
+        .modifier(LaunchReportOffer(
+            menuScreenActive: menuScreenActive,
+            showBootSplash: showBootSplash,
+            menuControllerInput: menuControllerInput
+        ))
     }
 }
