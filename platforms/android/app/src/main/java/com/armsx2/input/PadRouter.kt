@@ -1,6 +1,9 @@
 package com.armsx2.input
 
 import android.view.InputDevice
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 /**
  * Auto-assigns physical controllers to PS2 pad slots for local multiplayer.
@@ -79,12 +82,13 @@ object PadRouter {
      * For one person on a handheld that gets docked: its own controls and a Bluetooth pad both
      * drive player 1. Saved pins apply again once this is off.
      */
-    @Volatile var allToPlayer1 = false
-        private set
+    private var allToPlayer1State by mutableStateOf(false)
+    val allToPlayer1: Boolean get() = allToPlayer1State
     private const val KEY_ALL_P1 = "pad_router_all_p1"
 
     fun setAllToPlayer1(on: Boolean) {
-        allToPlayer1 = on
+        if (on && UsbRumble.separateUsbPlayers()) return
+        allToPlayer1State = on
         reset()
         com.armsx2.runtime.MainActivityRuntime.prefs.edit().putBoolean(KEY_ALL_P1, on).apply()
     }
@@ -93,7 +97,7 @@ object PadRouter {
     fun loadPins() {
         pinned.clear()
         rumbleModes.clear()
-        allToPlayer1 = runCatching {
+        allToPlayer1State = runCatching {
             com.armsx2.runtime.MainActivityRuntime.prefs.getBoolean(KEY_ALL_P1, false)
         }.getOrDefault(false)
         runCatching {
@@ -241,10 +245,9 @@ object PadRouter {
     fun reserveDirectUsbSlot(device: Pad?, candidates: List<Pad>): Int? {
         val preferred = device?.let { pinned[it.descriptor] ?: slots.indexOf(it.deviceId) }
         val available = (0 until activeSlotCount()).filter { port ->
-            !hasDirectUsbPad(port) && (syntheticDeviceId == 0 || syntheticPort != port) &&
-                (!allToPlayer1 || port == 0)
+            !hasDirectUsbPad(port) && (syntheticDeviceId == 0 || syntheticPort != port)
         }
-        val port = preferred?.takeIf { it in available } ?: available.firstOrNull { port ->
+        val port = (if (allToPlayer1) 0.takeIf { it in available } else preferred?.takeIf { it in available }) ?: available.firstOrNull { port ->
             val assigned = slots[port]
             val pinnedToCandidate = candidates.any { pinned[it.descriptor] == port }
             (!pinned.containsValue(port) || pinnedToCandidate) &&

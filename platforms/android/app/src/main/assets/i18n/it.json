@@ -1274,6 +1274,7 @@
  "pad.usb.subtype": "Variante",
  "pad.usbTakeover.description": "Con un DualShock 3 collegato via USB, i giochi PS2 che supportano la sensibilità alla pressione rispondono a quanto forte premi i pulsanti, proprio come con un DualShock 2 originale. Con DualShock 4 e DualSense collegati via cavo, il controllo USB diretto gestisce i grilletti analogici e la vibrazione. Quando è attivo, si usa la mappatura standard. Dopo averlo disattivato, scollega e ricollega il controller.",
  "pad.usbTakeover.label": "Controllo USB diretto (controller PlayStation)",
+ "pad.usbTakeover.separatePlayers": "Due controller USB sono pronti. I controller sono ora assegnati a giocatori separati.",
  "patches.action.allOff": "Tutti off",
  "patches.action.allOn": "Tutti on",
  "patches.action.apply": "APPLICA",

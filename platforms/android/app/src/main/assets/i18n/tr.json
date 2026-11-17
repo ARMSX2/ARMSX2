@@ -1279,6 +1279,7 @@
  "pad.usb.subtype": "Varyant",
  "pad.usbTakeover.description": "DualShock 3 USB ile bağlandığında, basınca duyarlı düğmeleri destekleyen PS2 oyunları düğmelere ne kadar sert bastığına orijinal DualShock 2 ile olduğu gibi tepki verir. Kablolu DualShock 4 veya DualSense için doğrudan USB kontrolü analog tetikleri ve titreşimi yönetir. Bu mod standart düğme düzenini kullanır. Modu kapattıktan sonra kumandayı çıkarıp yeniden tak.",
  "pad.usbTakeover.label": "Doğrudan USB kontrolü (PlayStation kumandaları)",
+ "pad.usbTakeover.separatePlayers": "İki USB kumandası hazır. Kumandalar artık farklı oyunculara atanıyor.",
  "patches.action.allOff": "Tümü kapalı",
  "patches.action.allOn": "Tümü açık",
  "patches.action.apply": "UYGULA",

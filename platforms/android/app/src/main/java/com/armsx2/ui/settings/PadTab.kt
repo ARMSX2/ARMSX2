@@ -304,11 +304,13 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             //
             // Or every controller on player 1, for one person who docks the handheld: its own
             // controls and the pad it is docked with then both play, with nothing to assign.
-            val allToPlayer1 = remember(refreshToken.intValue) { com.armsx2.input.PadRouter.allToPlayer1 }
+            val allToPlayer1 = com.armsx2.input.PadRouter.allToPlayer1
             ToggleRow(
                 str("pad.allToPlayer1.label"),
                 allToPlayer1,
-                description = str("pad.allToPlayer1.description"),
+                description = if (com.armsx2.input.UsbRumble.separateUsbPlayers())
+                    str("pad.usbTakeover.separatePlayers")
+                else str("pad.allToPlayer1.description"),
             ) {
                 com.armsx2.input.PadRouter.setAllToPlayer1(it)
                 refreshToken.intValue++

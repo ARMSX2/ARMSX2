@@ -1242,6 +1242,7 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.assign.rumble.device" to "Handheld",
     "pad.assign.rumble.off" to "Off",
     "pad.usbTakeover.label" to "Direct USB control (PlayStation pads)",
+    "pad.usbTakeover.separatePlayers" to "Two USB controllers are ready. Controllers are now assigned to separate players.",
     "pad.usbTakeover.description" to "With a DualShock 3 connected over USB, PS2 games that support button pressure respond to how hard you press, just as they do with an original DualShock 2. With a wired DualShock 4 or DualSense, direct USB control handles analog triggers and rumble. This mode uses the standard button layout. After turning it off, unplug and reconnect the controller.",
     "pad.hapticStrength.description" to "Scales all vibration: controller rumble and on-screen touch haptics alike. Below 100% tames a strong motor; above 100% boosts a weak one.",
     "pad.hapticStrength.label" to "Vibration Strength",

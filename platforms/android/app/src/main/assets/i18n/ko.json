@@ -1279,6 +1279,7 @@
  "pad.usb.subtype": "종류",
  "pad.usbTakeover.description": "DualShock 3를 USB로 연결하면 버튼 압력 감지를 지원하는 PS2 게임에서 정품 DualShock 2와 마찬가지로 버튼을 누르는 세기에 따라 반응합니다. DualShock 4 또는 DualSense를 유선으로 연결한 경우 USB 직접 제어로 아날로그 트리거와 진동을 처리합니다. 이 모드에서는 기본 버튼 배치를 사용합니다. 모드를 끈 뒤에는 컨트롤러를 분리했다가 다시 연결하세요.",
  "pad.usbTakeover.label": "USB 직접 제어 (PlayStation 패드)",
+ "pad.usbTakeover.separatePlayers": "USB 컨트롤러 두 개가 준비되었습니다. 이제 각 컨트롤러가 서로 다른 플레이어에 할당됩니다.",
  "patches.action.allOff": "모두 끔",
  "patches.action.allOn": "모두 켬",
  "patches.action.apply": "적용",

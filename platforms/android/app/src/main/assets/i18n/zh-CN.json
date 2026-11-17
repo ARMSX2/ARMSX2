@@ -1281,6 +1281,7 @@
  "pad.usb.subtype": "类型",
  "pad.usbTakeover.description": "通过 USB 连接 DualShock 3 后，支持按键压力感应的 PS2 游戏会像使用原装 DualShock 2 时一样，对按键力度作出响应。有线连接 DualShock 4 或 DualSense 时，USB 直接控制负责处理模拟扳机和振动。此模式使用标准按键映射。关闭后，请拔下手柄再重新连接。",
  "pad.usbTakeover.label": "直接 USB 控制（PlayStation 手柄）",
+ "pad.usbTakeover.separatePlayers": "两个 USB 手柄已就绪。手柄现已分配给不同玩家。",
  "patches.action.allOff": "全部关",
  "patches.action.allOn": "全部开",
  "patches.action.apply": "应用",

@@ -1182,6 +1182,7 @@
  "pad.usb.subtype": "Variante",
  "pad.usbTakeover.description": "Mit einem per USB angeschlossenen DualShock 3 reagieren PS2-Spiele, die druckempfindliche Tasten unterstützen, darauf, wie fest du die Tasten drückst – genau wie mit einem originalen DualShock 2. Bei einem kabelgebundenen DualShock 4 oder DualSense steuert die direkte USB-Steuerung die analogen Trigger und die Vibration. Dieser Modus verwendet die Standard-Tastenbelegung. Trenne den Controller nach dem Ausschalten und schließe ihn wieder an.",
  "pad.usbTakeover.label": "Direkte USB-Steuerung (PlayStation-Pads)",
+ "pad.usbTakeover.separatePlayers": "Zwei USB-Controller sind bereit. Die Controller sind jetzt verschiedenen Spielern zugewiesen.",
  "patches.action.allOff": "Alle aus",
  "patches.action.allOn": "Alle an",
  "patches.action.apply": "ÜBERNEHMEN",

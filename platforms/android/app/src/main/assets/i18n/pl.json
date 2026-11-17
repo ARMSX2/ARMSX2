@@ -1279,6 +1279,7 @@
  "pad.usb.subtype": "Wariant",
  "pad.usbTakeover.description": "Po podłączeniu DualShock 3 przez USB gry na PS2 obsługujące czułość przycisków na nacisk reagują na siłę naciśnięcia tak samo jak z oryginalnym DualShock 2. W przypadku przewodowego DualShock 4 lub DualSense bezpośrednie sterowanie przez USB obsługuje analogowe spusty i wibracje. Ten tryb używa standardowego przypisania przycisków. Po jego wyłączeniu odłącz i podłącz kontroler ponownie.",
  "pad.usbTakeover.label": "Bezpośrednie sterowanie USB (pady PlayStation)",
+ "pad.usbTakeover.separatePlayers": "Dwa kontrolery USB są gotowe. Kontrolery są teraz przypisane do różnych graczy.",
  "patches.action.allOff": "Wszystko wył.",
  "patches.action.allOn": "Wszystko wł.",
  "patches.action.apply": "ZASTOSUJ",

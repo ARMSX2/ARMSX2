@@ -20,12 +20,20 @@ internal class DualShock3UsbInput private constructor(
     private val request: UsbRequest,
     endpoint: UsbEndpoint,
     val port: Int,
+    private val onReady: (DualShock3UsbInput) -> Unit,
     private val onReaderExit: (DualShock3UsbInput) -> Unit,
 ) {
     private val buffer = ByteBuffer.allocateDirect(maxOf(REPORT_SIZE, endpoint.maxPacketSize))
     private val report = ByteArray(REPORT_SIZE)
     @Volatile private var active = true
     private var delivered = false
+    @Volatile var ready = false
+        private set
+    @Volatile private var publishing = false
+
+    fun enableInput() {
+        publishing = true
+    }
 
     fun start() {
         Thread(::read, "dualshock3-usb").apply { isDaemon = true; start() }
@@ -60,12 +68,14 @@ internal class DualShock3UsbInput private constructor(
                     buffer.flip()
                     buffer.get(report)
                     if (report[0] == 1.toByte() && report[1] != (-1).toByte()) {
-                        deliver()
                         if (firstReport) {
                             firstReport = false
+                            ready = true
+                            onReady(this)
                             // A wired DS3 only retains LED settings after it becomes operational.
                             setPlayerLed()
                         }
+                        if (publishing) deliver()
                         continue
                     }
                 }
@@ -142,6 +152,7 @@ internal class DualShock3UsbInput private constructor(
     fun stop() {
         if (!active) return
         active = false
+        ready = false
         NativeApp.setDualShock3UsbReport(port, null)
         runCatching { request.cancel() }
         runCatching { connection.releaseInterface(iface) }
@@ -160,6 +171,7 @@ internal class DualShock3UsbInput private constructor(
             usb: UsbManager,
             device: UsbDevice,
             port: Int,
+            onReady: (DualShock3UsbInput) -> Unit,
             onReaderExit: (DualShock3UsbInput) -> Unit,
         ): DualShock3UsbInput? {
             val iface = (0 until device.interfaceCount).asSequence().map(device::getInterface)
@@ -174,7 +186,7 @@ internal class DualShock3UsbInput private constructor(
             try {
                 if (!connection.claimInterface(iface, true)) return null
                 if (!request.initialize(connection, endpoint)) return null
-                val input = DualShock3UsbInput(connection, iface, request, endpoint, port, onReaderExit)
+                val input = DualShock3UsbInput(connection, iface, request, endpoint, port, onReady, onReaderExit)
                 opened = true
                 return input
             } finally {

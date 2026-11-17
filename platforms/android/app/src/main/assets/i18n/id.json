@@ -1279,6 +1279,7 @@
   "pad.usb.subtype": "Varian",
   "pad.usbTakeover.description": "Dengan DualShock 3 yang terhubung via USB, gim PS2 yang mendukung sensitivitas tekanan tombol merespons seberapa kuat kamu menekan tombol, seperti saat memakai DualShock 2 asli. Untuk DualShock 4 atau DualSense yang terhubung dengan kabel, kontrol USB langsung menangani trigger analog dan getaran. Mode ini menggunakan pemetaan tombol standar. Setelah menonaktifkannya, cabut lalu sambungkan kembali kontroler.",
   "pad.usbTakeover.label": "Kontrol USB langsung (pad PlayStation)",
+  "pad.usbTakeover.separatePlayers": "Dua kontroler USB siap digunakan. Kontroler kini ditetapkan ke pemain yang berbeda.",
   "patches.action.allOff": "Semua off",
   "patches.action.allOn": "Semua on",
   "patches.action.apply": "TERAPKAN",
