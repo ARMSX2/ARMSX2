@@ -301,9 +301,9 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 		return Join::Classic;
 	}
 	GSDeviceVK* dev = m_dev;
-	const u64 cls = FixedClass(config);
 	Group* g = OpenGroup(side);
 	GSRunsPolicy::Draw d;
+	u64 cls;
 	if (g)
 	{
 		if (!dev->RowFitsRunProgram(config, d))
@@ -312,9 +312,14 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 			m_streaks.Break(side);
 			return Join::Classic;
 		}
-		if (!Fits(*g, config, d))
+		if (Fits(*g, config, d))
+		{
+			cls = g->cls; // the same fixed state as the group's, so its class
+		}
+		else
 		{
 			// A row of the group's own fixed state that cannot join it is a split: the next group opens at once.
+			cls = FixedClass(config);
 			const bool same = g->cls == cls &&
 				SameFixed(config, g->cb_vs, g->rt, g->ds, g->dss, g->vs, g->scissor, g->st_scale, g->rta, g->zfloor);
 			Close(side);
@@ -327,6 +332,7 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 	}
 	else
 	{
+		cls = FixedClass(config);
 		// Rows are counted by their fixed state before they are classified: the run program is asked about a row only
 		// once its class's streak would open a group (most rows of a title with few groups never are).
 		if (!m_streaks.Note(side, cls, m_open_rows))
@@ -348,7 +354,9 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 		const u32 ways = (with ? with->ways : 0u) | (1u << d.way);
 		return ProgramReady(config.depth.key, Variant(ways, config.ps.rta_correction, config.ps.zfloor, nods), states.Key());
 	};
-	if (!ready(g))
+	// A row whose state flags and way the group already holds changes neither its program nor its state set.
+	const bool same_program = g && d.flags == g->last_flags && (g->ways & (1u << d.way));
+	if (!same_program && !ready(g))
 	{
 		if (g)
 			Close(side);
@@ -602,7 +610,11 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 		g->ways |= 1u << d.way;
 		if (GSRunsPolicy::Textured(d.flags))
 			g->lod = GSRunsPolicy::Field(d.flags, GSRunsPolicy::STATE_LOD);
-		g->states.Note(d.flags); // which states the group holds one value of: those become constants of its program
+		if (d.flags != g->last_flags)
+		{
+			g->states.Note(d.flags); // which states the group holds one value of: those become constants of its program
+			g->last_flags = d.flags;
+		}
 		if (config.tex)
 			static_cast<GSTextureVK*>(config.tex)->SetUseFenceCounter(fence);
 		s_rows[side]++;

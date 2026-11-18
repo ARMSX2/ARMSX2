@@ -544,3 +544,24 @@ TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
 	EXPECT_FALSE(SplitAtDear(g57, 7000, 0));
 	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
 }
+
+TEST(GSRunsPolicy, NotingTheSameStatesAgainChangesNoProgram)
+{
+	// The run emitter skips the state set and the program check for a row whose flags equal the last row's in its group;
+	// that is exact only because noting flags already noted changes nothing.
+	const u32 a = 1u | (1u << 3) | (4u << 9);
+	const u32 b = 2u | (1u << 3) | (4u << 9);
+	StateSet once;
+	once.Note(a);
+	once.Note(b);
+	StateSet again = once;
+	again.Note(b);
+	again.Note(b);
+	EXPECT_EQ(again.Key(), once.Key());
+	EXPECT_EQ(again.vary, once.vary);
+	StateSet one;
+	one.Note(a);
+	StateSet same = one;
+	same.Note(a);
+	EXPECT_EQ(same.Key(), one.Key());
+}

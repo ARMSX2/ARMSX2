@@ -146,6 +146,7 @@ private:
 		u64 area_total = 0; ///< its rows' draw-rectangle area in target pixels
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
+		u32 last_flags = ~0u; ///< the state flags of the last row joined: a row with the same ones changes no program
 		std::vector<Texture> textures; ///< one per distinct (view, sampler) pair, in first-use order
 	};
 
