@@ -10779,13 +10779,12 @@ bool GSDeviceVK::RowsJoin(GSHWDrawConfig& config, GSRowDeviceCache&)
 	GSTextureVK* draw_rt;
 	GSTextureVK* draw_ds;
 	bool keep_rt, keep_ds;
-	GSRunsPolicy::Draw d;
-	if (!RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds) || !RowFitsRunProgram(config, d))
+	if (!RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds))
 	{
 		m_emitter->Break(GSRunEmitterVK::BASES);
 		return false;
 	}
-	if (m_emitter->JoinGroup(GSRunEmitterVK::BASES, config, d, RowSampler(config)) != GSRunEmitterVK::Join::Joined)
+	if (m_emitter->JoinGroup(GSRunEmitterVK::BASES, config) != GSRunEmitterVK::Join::Joined)
 		return false;
 	NoteRowDrawn(config);
 	return true;
@@ -10808,23 +10807,15 @@ bool GSDeviceVK::RowsHoldTwin(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 		return false;
 	if (m_emitter->HasRunProgram())
 	{
-		GSRunsPolicy::Draw d;
-		if (RowFitsRunProgram(config, d))
+		switch (m_emitter->JoinGroup(GSRunEmitterVK::TWINS, config))
 		{
-			switch (m_emitter->JoinGroup(GSRunEmitterVK::TWINS, config, d, RowSampler(config)))
-			{
-				case GSRunEmitterVK::Join::Joined:
-					NoteRowDrawn(config);
-					return true;
-				case GSRunEmitterVK::Join::Submitted:
-					return false;
-				case GSRunEmitterVK::Join::Classic:
-					break;
-			}
-		}
-		else
-		{
-			m_emitter->Break(GSRunEmitterVK::TWINS);
+			case GSRunEmitterVK::Join::Joined:
+				NoteRowDrawn(config);
+				return true;
+			case GSRunEmitterVK::Join::Submitted:
+				return false;
+			case GSRunEmitterVK::Join::Classic:
+				break;
 		}
 	}
 	if (!WriteHeldClassic(config, cache, draw_rt, draw_ds, keep_rt, keep_ds))

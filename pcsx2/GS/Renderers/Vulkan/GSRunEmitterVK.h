@@ -82,10 +82,10 @@ public:
 		Classic,   ///< the row is drawn (or held) classically
 		Submitted, ///< a ring was full: the command buffer was submitted, everything pending was recorded first
 	};
-	/// A plain row on `side` whose classification (GSRunsPolicy::Classify) found it able to join a group: joins the side's
-	/// open group or opens one. On the bases' side an open group the row cannot join is recorded; on the twins' side it
-	/// stays held, closed.
-	Join JoinGroup(Side side, const GSHWDrawConfig& config, const GSRunsPolicy::Draw& d, VkSampler sampler);
+	/// A plain row on `side`: joins the side's open group or opens one, if the run program can draw it
+	/// (GSDeviceVK::RowFitsRunProgram, asked only when a group is open or would open). On the bases' side an open group the
+	/// row cannot join is recorded; on the twins' side it stays held, closed.
+	Join JoinGroup(Side side, const GSHWDrawConfig& config);
 	/// A row on `side` that cannot join any group ends the side's streak.
 	void Break(Side side) { m_streaks.Break(side); }
 	/// A draw that is not a row: rows after it are not consecutive with earlier ones.

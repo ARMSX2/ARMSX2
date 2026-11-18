@@ -292,8 +292,7 @@ bool GSRunEmitterVK::Fits(const Group& g, const GSHWDrawConfig& config, const GS
 	       !SplitAtDear(g, config, d);
 }
 
-GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& config, const GSRunsPolicy::Draw& d,
-	VkSampler sampler)
+GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& config)
 {
 	pxAssert(m_run_program && !m_recording);
 	if (m_sets_failed)
@@ -304,18 +303,41 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 	GSDeviceVK* dev = m_dev;
 	const u64 cls = FixedClass(config);
 	Group* g = OpenGroup(side);
-	if (g && !Fits(*g, config, d))
+	GSRunsPolicy::Draw d;
+	if (g)
 	{
-		// A row of the group's own fixed state that cannot join it is a split: the next group opens at once.
-		const bool same = g->cls == cls &&
-			SameFixed(config, g->cb_vs, g->rt, g->ds, g->dss, g->vs, g->scissor, g->st_scale, g->rta, g->zfloor);
-		Close(side);
-		g = nullptr;
-		if (same)
-			m_streaks.Split(side);
+		if (!dev->RowFitsRunProgram(config, d))
+		{
+			Close(side);
+			m_streaks.Break(side);
+			return Join::Classic;
+		}
+		if (!Fits(*g, config, d))
+		{
+			// A row of the group's own fixed state that cannot join it is a split: the next group opens at once.
+			const bool same = g->cls == cls &&
+				SameFixed(config, g->cb_vs, g->rt, g->ds, g->dss, g->vs, g->scissor, g->st_scale, g->rta, g->zfloor);
+			Close(side);
+			g = nullptr;
+			if (same)
+				m_streaks.Split(side);
+		}
+		if (!m_streaks.Note(side, cls, m_open_rows) && !g)
+			return Join::Classic;
 	}
-	if (!m_streaks.Note(side, cls, m_open_rows) && !g)
-		return Join::Classic;
+	else
+	{
+		// Rows are counted by their fixed state before they are classified: the run program is asked about a row only
+		// once its class's streak would open a group (most rows of a title with few groups never are).
+		if (!m_streaks.Note(side, cls, m_open_rows))
+			return Join::Classic;
+		if (!dev->RowFitsRunProgram(config, d))
+		{
+			m_streaks.Break(side);
+			return Join::Classic;
+		}
+	}
+	const VkSampler sampler = dev->RowSampler(config);
 
 	// The group's program with this row in it must be built. If it is not, it is asked for, the group ends, and the row
 	// is drawn classically; the next row of the class opens a group at once if its program is built by then.
