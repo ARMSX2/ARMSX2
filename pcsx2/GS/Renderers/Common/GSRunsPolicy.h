@@ -440,8 +440,17 @@ namespace GSRunsPolicy
 	/// B = max(ceil(cpu_group_ns / cpu_saved_row_ns), ceil(gpu_group_ns / gpu_saved_row_ns)). A saving that is not
 	/// positive while there is an overhead forbids groups (NEVER). A price of zero is not measured and takes no part.
 	constexpr u32 NEVER = 0xFFFFFFFFu;
-	constexpr u32 INTERIM_OPENING_ROWS_STUB = 4;
-	inline u32 BreakEven(float, float, float, float) { return INTERIM_OPENING_ROWS_STUB; }
+	inline u32 BreakEven(float cpu_group_ns, float cpu_saved_row_ns, float gpu_group_ns, float gpu_saved_row_ns)
+	{
+		const auto rows = [](float group, float saved) -> u32 {
+			if (group <= 0.0f)
+				return 1;
+			if (saved <= 0.0f)
+				return NEVER;
+			return std::max(1u, static_cast<u32>(std::ceil(group / saved)));
+		};
+		return std::max(rows(cpu_group_ns, cpu_saved_row_ns), rows(gpu_group_ns, gpu_saved_row_ns));
+	}
 
 	/// The break-even length B in rows (see Streaks), one value for every device class until each class's CPU overhead
 	/// is measured.
@@ -461,13 +470,29 @@ namespace GSRunsPolicy
 		static constexpr u32 TABLE = 1024;
 
 		/// A row of class `cls` on `side` that could join a group: whether a group may be open for it now.
-		bool Note(u32, u64, u32) { return false; }
+		bool Note(u32 side, u64 cls, u32 B)
+		{
+			Side& s = m_side[side];
+			if (s.count == 0 || s.cls != cls)
+			{
+				End(s);
+				s.cls = cls;
+			}
+			const u32 L = s.split ? 1u : (m_last[cls % TABLE] >= B ? std::min(2u, B) : B);
+			s.split = false;
+			s.count++;
+			return s.count >= L;
+		}
 		/// The side's group of its current class ended at a split: the class's next row opens a group at once.
-		void Split(u32) {}
+		void Split(u32 side)
+		{
+			if (m_side[side].count != 0)
+				m_side[side].split = true;
+		}
 		/// A row on `side` that could not join any group: the side's streak ends.
-		void Break(u32) {}
+		void Break(u32 side) { End(m_side[side]); }
 		/// The streak length a class last reached (for tests).
-		u32 Last(u64) const { return 0; }
+		u32 Last(u64 cls) const { return m_last[cls % TABLE]; }
 
 	private:
 		struct Side
@@ -476,6 +501,13 @@ namespace GSRunsPolicy
 			u32 count = 0;
 			bool split = false;
 		};
+		void End(Side& s)
+		{
+			if (s.count != 0)
+				m_last[s.cls % TABLE] = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
+			s.count = 0;
+			s.split = false;
+		}
 		Side m_side[SIDES];
 		u16 m_last[TABLE] = {};
 	};

@@ -1280,6 +1280,8 @@ void GSDevice::StretchRectAutoMask(GSTexture* sTex, GSTexture* dTex, bool red, b
 
 void GSDevice::RenderHW(GSHWDrawConfig& config)
 {
+	if (m_rows_defer)
+		RowsOtherDraw();
 	// m_flushing: we are already inside Emit(), so this is a draw the backend is issuing
 	// on its own behalf. IsDSInRTActive: the caller is mid depth-as-colour sequence and
 	// will tear the temporary target down as soon as we return.
@@ -1314,8 +1316,64 @@ bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
 
 void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 {
-	FlushDeferredDraws();
-	DoDrawRow(config, cache);
+	// m_flushing: a row drawn while pending rows are recorded. The scheduler holds draws only with coalescing on, and
+	// the two would have to be ordered against each other: rows wait only with it off.
+	// Colour clipping is a state machine across draws that lives in the caller's configuration: the backend writes its
+	// mode and update area back into it, and the next draws read them. Such a draw is drawn now.
+	if (!m_rows_defer || GSConfig.CoalesceRenderPasses || m_flushing || IsDSInRTActive() || m_colclip_rt ||
+		config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify || config.ps.colclip_hw ||
+		config.colclip_native_scale > 1.0f)
+	{
+		FlushDeferredDraws();
+		DoDrawRow(config, cache);
+		return;
+	}
+
+	GSRowEmitter& rows = *m_rows;
+
+	// The twin of the base drawn just before it waits for later bases, if the backend can hold it.
+	if (rows.IsTwin(config))
+	{
+		if (rows.Held() < GSRowEmitter::MAX_HELD && RowsHoldTwin(config, cache))
+		{
+			rows.NoteHeld(config);
+			UpdateDeferredCount();
+			return;
+		}
+		FlushDeferredDraws();
+		DoDrawRow(config, cache);
+		UpdateDeferredCount();
+		return;
+	}
+
+	// While twins are held, only a base on their targets that reads neither, and that the backend draws in the open
+	// pass, goes ahead of them. Anything else records what is pending first: the open group, then the twins.
+	const bool base = GSRowEmitter::CanBeTwinBase(config);
+	if (rows.Held() != 0)
+	{
+		if (base && rows.MayGoAhead(config) && RowsMayGoAhead(config))
+			rows.NoteAhead();
+		else
+			FlushDeferredDraws();
+	}
+
+	if (RowsJoin(config, cache))
+	{
+		rows.Mark(config.tex);
+		rows.Mark(config.pal);
+		rows.SetGroupTargets(config.rt, config.ds);
+	}
+	else
+	{
+		RowsRecordOpen();
+		DoDrawRow(config, cache);
+	}
+
+	if (base)
+		rows.RememberBase(config);
+	else
+		rows.ForgetBase();
+	UpdateDeferredCount();
 }
 
 void GSDevice::UpdateDeferredCount()
