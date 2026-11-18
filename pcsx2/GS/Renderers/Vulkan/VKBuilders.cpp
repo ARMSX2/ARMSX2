@@ -344,7 +344,7 @@ void Vulkan::GraphicsPipelineBuilder::SetShaderStage(
 void Vulkan::GraphicsPipelineBuilder::AddVertexBuffer(
 	u32 binding, u32 stride, VkVertexInputRate input_rate /*= VK_VERTEX_INPUT_RATE_VERTEX*/)
 {
-	pxAssert(m_vertex_input_state.vertexAttributeDescriptionCount < MAX_VERTEX_BUFFERS);
+	pxAssert(m_vertex_input_state.vertexBindingDescriptionCount < MAX_VERTEX_BUFFERS);
 
 	VkVertexInputBindingDescription& b = m_vertex_buffers[m_vertex_input_state.vertexBindingDescriptionCount];
 	b.binding = binding;
@@ -358,7 +358,7 @@ void Vulkan::GraphicsPipelineBuilder::AddVertexBuffer(
 
 void Vulkan::GraphicsPipelineBuilder::AddVertexAttribute(u32 location, u32 binding, VkFormat format, u32 offset)
 {
-	pxAssert(m_vertex_input_state.vertexAttributeDescriptionCount < MAX_VERTEX_BUFFERS);
+	pxAssert(m_vertex_input_state.vertexAttributeDescriptionCount < MAX_VERTEX_ATTRIBUTES);
 
 	VkVertexInputAttributeDescription& a = m_vertex_attributes[m_vertex_input_state.vertexAttributeDescriptionCount];
 	a.location = location;
