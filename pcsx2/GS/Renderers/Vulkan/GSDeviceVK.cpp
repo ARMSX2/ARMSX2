@@ -10613,6 +10613,28 @@ bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt,
 	return true;
 }
 
+bool GSDeviceVK::RowIsPlainOnce(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt,
+	bool& keep_ds)
+{
+	// One row asks up to three times (may it go ahead, may it join, draw it now). Nothing between the questions changes
+	// the answer unless the pass ends or the command buffer is submitted.
+	PlainMemo& m = m_plain_memo;
+	const u64 fence = GetCurrentFenceCounter();
+	if (m.row != m_rows_serial || m.config != &config || m.fence != fence || m.pass != m_render_pass_serial || !InRenderPass())
+	{
+		m.plain = RowIsPlain(config, m.rt, m.ds, m.keep_rt, m.keep_ds);
+		m.row = m_rows_serial;
+		m.config = &config;
+		m.fence = fence;
+		m.pass = m_render_pass_serial;
+	}
+	draw_rt = m.rt;
+	draw_ds = m.ds;
+	keep_rt = m.keep_rt;
+	keep_ds = m.keep_ds;
+	return m.plain;
+}
+
 VkPipeline GSDeviceVK::RowPipeline(GSHWDrawConfig& config, GSRowDeviceCache& cache_bytes, PipelineSelector& pipe,
 	bool keep_rt, bool keep_ds)
 {
@@ -10643,7 +10665,7 @@ void GSDeviceVK::DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	GSTextureVK* draw_rt;
 	GSTextureVK* draw_ds;
 	bool keep_rt, keep_ds;
-	const bool plain = RowIsPlain(config, draw_rt, draw_ds, keep_rt, keep_ds);
+	const bool plain = RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds);
 	if (GSDrawRows::s_stats) [[unlikely]]
 	{
 		GSDrawRows::stats.device_rows++;
@@ -10758,7 +10780,7 @@ bool GSDeviceVK::RowsJoin(GSHWDrawConfig& config, GSRowDeviceCache&)
 	GSTextureVK* draw_ds;
 	bool keep_rt, keep_ds;
 	GSRunsPolicy::Draw d;
-	if (!RowIsPlain(config, draw_rt, draw_ds, keep_rt, keep_ds) || !RowFitsRunProgram(config, d))
+	if (!RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds) || !RowFitsRunProgram(config, d))
 	{
 		m_emitter->Break(GSRunEmitterVK::BASES);
 		return false;
@@ -10782,7 +10804,7 @@ bool GSDeviceVK::RowsHoldTwin(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	GSTextureVK* draw_rt;
 	GSTextureVK* draw_ds;
 	bool keep_rt, keep_ds;
-	if (!RowIsPlain(config, draw_rt, draw_ds, keep_rt, keep_ds))
+	if (!RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds))
 		return false;
 	if (m_emitter->HasRunProgram())
 	{
@@ -10816,7 +10838,7 @@ bool GSDeviceVK::RowsMayGoAhead(const GSHWDrawConfig& config)
 	GSTextureVK* draw_rt;
 	GSTextureVK* draw_ds;
 	bool keep_rt, keep_ds;
-	return RowIsPlain(config, draw_rt, draw_ds, keep_rt, keep_ds);
+	return RowIsPlainOnce(config, draw_rt, draw_ds, keep_rt, keep_ds);
 }
 
 void GSDeviceVK::RowsEmit()
@@ -10909,6 +10931,18 @@ bool GSDeviceVK::WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cach
 		std::memcpy(m_index_stream_buffer.GetCurrentHostPointer(), config.indices, isize);
 		m_index_stream_buffer.CommitMemory(isize);
 	}
+	h->index_range = m_cmd_set_index_range && !fixed_expand && config.nindices > 0;
+	if (h->index_range)
+	{
+		u16 lo = config.indices[0], hi = config.indices[0];
+		for (u32 i = 1; i < config.nindices; i++)
+		{
+			lo = std::min(lo, config.indices[i]);
+			hi = std::max(hi, config.indices[i]);
+		}
+		h->index_min = lo;
+		h->index_max = hi;
+	}
 	h->ubo[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
 	std::memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &config.cb_vs, sizeof(config.cb_vs));
 	m_vertex_uniform_stream_buffer.CommitMemory(sizeof(config.cb_vs));
@@ -10985,6 +11019,8 @@ void GSDeviceVK::RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h)
 		vkCmdBindVertexBuffers(cmd, 0, 1, &h.vbuf, &zero);
 	}
 	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+	if (h.index_range)
+		m_cmd_set_index_range(cmd, h.istart, h.icount, h.index_min, h.index_max);
 	vkCmdDrawIndexed(cmd, h.icount, 1, h.istart, h.fixed_expand ? 0 : static_cast<s32>(h.vstart), 0);
 	if (other_vbuf)
 		SetInitialState(cmd);

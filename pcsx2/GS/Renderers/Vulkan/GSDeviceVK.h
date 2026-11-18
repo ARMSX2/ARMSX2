@@ -1045,6 +1045,17 @@ public:
 	void RowsOtherDraw() override;
 	/// Whether the run program can draw this plain row, and its classification.
 	bool RowFitsRunProgram(const GSHWDrawConfig& config, GSRunsPolicy::Draw& d);
+	/// RowIsPlain, asked once a row while the pass and the command buffer stay the same.
+	bool RowIsPlainOnce(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt, bool& keep_ds);
+	struct PlainMemo
+	{
+		u64 row = ~0ull, fence = 0, pass = 0;
+		const GSHWDrawConfig* config = nullptr;
+		GSTextureVK* rt = nullptr;
+		GSTextureVK* ds = nullptr;
+		bool plain = false, keep_rt = false, keep_ds = false;
+	};
+	PlainMemo m_plain_memo;
 	/// A plain row's pipeline selector and pipeline (from the entry's cache when its selector matches).
 	VkPipeline RowPipeline(GSHWDrawConfig& config, GSRowDeviceCache& cache, PipelineSelector& pipe, bool keep_rt, bool keep_ds);
 	/// The sampler a textured row samples with (the last one looked up is kept).

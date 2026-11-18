@@ -1318,6 +1318,7 @@ bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
 
 void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 {
+	m_rows_serial++;
 	// m_flushing: a row drawn while pending rows are recorded. The scheduler holds draws only with coalescing on, and
 	// the two would have to be ordered against each other: rows wait only with it off.
 	// Colour clipping is a state machine across draws that lives in the caller's configuration: the backend writes its

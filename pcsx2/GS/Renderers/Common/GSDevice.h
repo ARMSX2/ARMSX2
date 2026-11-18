@@ -1817,6 +1817,7 @@ protected:
 	/// The order rows are recorded in, and the last base's twin key (GSRowEmitter.h). Only where the backend says rows
 	/// may wait (m_rows_defer) and the render-pass scheduler is off.
 	std::unique_ptr<GSRowEmitter> m_rows;
+	u64 m_rows_serial = 0; ///< raised by every DrawRow: what a backend asks about one row it may keep for that row
 	bool m_rows_defer = false;
 	u32 m_deferred_draw_count = 0;
 	bool m_flushing = false;

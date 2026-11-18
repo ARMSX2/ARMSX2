@@ -587,13 +587,6 @@ GSRunEmitterVK::HeldClassic* GSRunEmitterVK::AddHeldClassic()
 	return &m_classic[m_classic_used++];
 }
 
-void GSRunEmitterVK::RemoveLastHeldClassic()
-{
-	pxAssert(!m_held.empty() && !m_held.back().group);
-	m_held.pop_back();
-	m_classic_used--;
-}
-
 void GSRunEmitterVK::RecordOpen()
 {
 	if (!m_bases.open || m_recording)
@@ -601,7 +594,6 @@ void GSRunEmitterVK::RecordOpen()
 	// The group ended at a recording, not at a row that could not join it: a split.
 	m_streaks.Split(BASES);
 	Record(BASES, m_bases);
-	m_dev->m_rows->SetGroupTargets(nullptr, nullptr);
 	m_dev->UpdateDeferredCount();
 }
 
@@ -738,7 +730,6 @@ bool GSRunEmitterVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 	{
 		// Built here and now, on the GS thread, only while the device has no compile queue.
 		m_pipelines.emplace(key, CreatePipeline(dss, variant, spec));
-		m_compiles++;
 		return true;
 	}
 
@@ -757,7 +748,6 @@ bool GSRunEmitterVK::ProgramReady(u8 dss, u32 variant, u32 spec)
 	if (!queue.IsDone(it->second.ticket))
 		return false;
 	m_pipelines.emplace(key, it->second.result->pipeline);
-	m_compiles++;
 	m_pending.erase(it);
 	return true;
 }
@@ -889,6 +879,8 @@ void GSRunEmitterVK::Record(Side side, Group& g)
 		dev->SetInitialState(cmd);
 	dev->DirtyAfterRawDraws();
 	g.textures.clear();
+	if (side == BASES)
+		dev->m_rows->SetGroupTargets(nullptr, nullptr);
 	s_groups[side]++;
 	m_recording = false;
 }

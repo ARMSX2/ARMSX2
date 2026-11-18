@@ -60,6 +60,8 @@ public:
 		bool blend_constant;
 		u8 blend_constant_color;
 		bool fixed_expand; ///< sprites expanded in the vertex program: the fixed index buffer, the base vertex pushed
+		bool index_range; ///< the driver takes the draw's index range (vkCmdSetIndexRangeMALISX2)
+		u16 index_min, index_max;
 		VkBuffer vbuf;
 		u32 vstart, istart, icount;
 		const GSTexture* pass_rt;
@@ -93,14 +95,11 @@ public:
 		m_streaks.Break(TWINS);
 	}
 
-	/// A held classic draw, written by the device: kept in arrival order with the twins' groups. False when full.
+	/// A held classic draw for the device to write: kept in arrival order with the twins' groups.
 	HeldClassic* AddHeldClassic();
-	/// Drops the held classic draw just added (the device could not write it).
-	void RemoveLastHeldClassic();
 
 	/// Whether anything is pending: the bases' open group or a held twin.
 	bool AnyPending() const { return m_bases.open || !m_held.empty(); }
-	u32 HeldCount() const { return static_cast<u32>(m_held.size()); }
 	/// Records the bases' open group, if there is one.
 	void RecordOpen();
 	/// Records the bases' open group, then every held twin in arrival order.
@@ -217,7 +216,6 @@ private:
 	std::mutex m_fs_mutex; ///< guards m_fs, which compile-queue jobs fill
 	std::unordered_map<u64, VkShaderModule> m_fs;
 	std::unordered_map<u64, VkPipeline> m_pipelines; ///< GS thread only
-	u32 m_compiles = 0;
 
 	// Run programs being built on the device's compile queue, by pipeline key. GS thread only; the job writes only its
 	// result, which the GS thread reads after the queue says the job ran.
