@@ -641,7 +641,7 @@ TEST(GSRunsPolicyStreaks, AnotherClassEndsTheStreak)
 	GSRunsPolicy::Streaks s;
 	EXPECT_EQ(Opened(s, BASES, 1, 3, 4), 0u);
 	EXPECT_FALSE(s.Note(BASES, 2, 4));
-	EXPECT_EQ(s.Last(1), 3u);
+	EXPECT_EQ(s.Last(BASES, 1), 3u);
 	EXPECT_EQ(Opened(s, BASES, 1, 3, 4), 0u); // its last streak (3) did not reach B: B rows again
 }
 
@@ -650,7 +650,7 @@ TEST(GSRunsPolicyStreaks, AClassThatReachedBreakEvenOpensAtItsSecondRow)
 	GSRunsPolicy::Streaks s;
 	EXPECT_EQ(Opened(s, BASES, 1, 5, 4), 2u);
 	s.Break(BASES);
-	EXPECT_EQ(s.Last(1), 5u);
+	EXPECT_EQ(s.Last(BASES, 1), 5u);
 	EXPECT_FALSE(s.Note(BASES, 1, 4));
 	EXPECT_TRUE(s.Note(BASES, 1, 4));
 }
@@ -662,10 +662,10 @@ TEST(GSRunsPolicyStreaks, AClassDrawnClassicallyStillLearns)
 	GSRunsPolicy::Streaks s;
 	EXPECT_EQ(Opened(s, TWINS, 9, 2, 4), 0u);
 	s.Break(TWINS);
-	EXPECT_EQ(s.Last(9), 2u);
+	EXPECT_EQ(s.Last(TWINS, 9), 2u);
 	EXPECT_EQ(Opened(s, TWINS, 9, 4, 4), 1u);
 	s.Break(TWINS);
-	EXPECT_EQ(s.Last(9), 4u);
+	EXPECT_EQ(s.Last(TWINS, 9), 4u);
 	EXPECT_EQ(Opened(s, TWINS, 9, 2, 4), 1u); // priming now
 }
 
@@ -677,6 +677,17 @@ TEST(GSRunsPolicyStreaks, AfterASplitTheNextRowOfTheClassOpensAtOnce)
 	EXPECT_TRUE(s.Note(BASES, 3, 4));
 	s.Split(BASES);
 	EXPECT_FALSE(s.Note(BASES, 4, 4)); // a split does not carry to another class
+}
+
+TEST(GSRunsPolicyStreaks, EachSideRemembersItsOwnStreaks)
+{
+	GSRunsPolicy::Streaks s;
+	EXPECT_EQ(Opened(s, BASES, 6, 5, 4), 2u);
+	s.Break(BASES);
+	EXPECT_EQ(s.Last(BASES, 6), 5u);
+	EXPECT_EQ(s.Last(TWINS, 6), 0u);
+	EXPECT_FALSE(s.Note(TWINS, 6, 4));
+	EXPECT_FALSE(s.Note(TWINS, 6, 4)); // the twins' side has not learnt the class: B rows, not 2
 }
 
 TEST(GSRunsPolicyStreaks, ASplitOnOneSideLeavesTheOther)

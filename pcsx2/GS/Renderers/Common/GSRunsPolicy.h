@@ -383,10 +383,10 @@ namespace GSRunsPolicy
 			Side& s = m_side[side];
 			if (s.count == 0 || s.cls != cls)
 			{
-				End(s);
+				End(side);
 				s.cls = cls;
 			}
-			const u32 L = s.split ? 1u : (m_last[cls % TABLE] >= B ? std::min(2u, B) : B);
+			const u32 L = s.split ? 1u : (m_last[side][cls % TABLE] >= B ? std::min(2u, B) : B);
 			s.split = false;
 			s.count++;
 			return s.count >= L;
@@ -398,9 +398,9 @@ namespace GSRunsPolicy
 				m_side[side].split = true;
 		}
 		/// A row on `side` that could not join any group: the side's streak ends.
-		void Break(u32 side) { End(m_side[side]); }
-		/// The streak length a class last reached (for tests).
-		u32 Last(u64 cls) const { return m_last[cls % TABLE]; }
+		void Break(u32 side) { End(side); }
+		/// The streak length a class last reached on a side (for tests).
+		u32 Last(u32 side, u64 cls) const { return m_last[side][cls % TABLE]; }
 
 	private:
 		struct Side
@@ -409,15 +409,16 @@ namespace GSRunsPolicy
 			u32 count = 0;
 			bool split = false;
 		};
-		void End(Side& s)
+		void End(u32 side)
 		{
+			Side& s = m_side[side];
 			if (s.count != 0)
-				m_last[s.cls % TABLE] = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
+				m_last[side][s.cls % TABLE] = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
 			s.count = 0;
 			s.split = false;
 		}
 		Side m_side[SIDES];
-		u16 m_last[TABLE] = {};
+		u16 m_last[SIDES][TABLE] = {};
 	};
 
 	struct StateSet
