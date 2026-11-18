@@ -779,9 +779,14 @@ layout(set = 1, binding = 3) uniform texture2D PrimMinTexture;
 #endif
 
 #if ZWRITE && !PS_FEEDBACK_LOOP_IS_NEEDED_DEPTH
-// depth_less would allow conservative early-Z, but floor(z*2^32)*2^-32 can exceed z
-// due to float32 rounding, violating the depth_less contract and silently culling geometry.
-out float gl_FragDepth;
+// The depth written is never above gl_FragCoord.z, so the depth test may run before the
+// shader and again after it. The Z floor, floor(z * 2^32) * 2^-32, is exact in float32:
+// both multiplies only change the exponent (z * 2^32 is at most 2^32, and the floored
+// value is 0 or at least 1, so neither product leaves the normal range), and floor
+// returns a representable integer no greater than its argument. The Z clamp is a min().
+// The PS2 depth tests are GEQUAL and GREATER, under which a lower depth never turns a
+// failing fragment into a passing one.
+layout(depth_less) out float gl_FragDepth;
 #endif
 
 #if NEEDS_TEX

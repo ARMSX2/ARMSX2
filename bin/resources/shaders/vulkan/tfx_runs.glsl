@@ -106,6 +106,12 @@ layout(location = 0, index = 1) out vec4 o_col1;
 layout(location = 0) out vec4 o_col0;
 #endif
 
+#if RUN_ZFLOOR
+// The floored depth is never above gl_FragCoord.z (see the declaration in tfx.glsl), so the depth
+// test may run before this shader as well as after it.
+layout(depth_less) out float gl_FragDepth;
+#endif
+
 // s0.x, the draw's flags (GSRunsPolicy.h): 0-2 tfx, 3 tcc, 4 fog, 5 iip, 6-8 alpha test, 9-11 blend way,
 //   12-13 lod (0 none, 1 manual, 2 the hardware's), 14 RTA source correction
 // s0.y: the draw's slot in the run's texture array
