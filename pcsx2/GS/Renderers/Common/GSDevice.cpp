@@ -1376,6 +1376,12 @@ void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	UpdateDeferredCount();
 }
 
+void GSDevice::FlushDeferredRows()
+{
+	if (!m_flushing && (m_rows->Pending() != 0 || RowsOpen()))
+		FlushDeferredDrawsImpl();
+}
+
 void GSDevice::UpdateDeferredCount()
 {
 	m_deferred_draw_count = m_pass_scheduler->GetCount() + m_rows->Pending() + (RowsOpen() ? 1u : 0u);

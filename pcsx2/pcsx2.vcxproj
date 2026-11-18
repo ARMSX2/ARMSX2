@@ -409,7 +409,7 @@
     <ClCompile Include="GS\Renderers\Vulkan\GSDeviceVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="GS\Renderers\Vulkan\GSRunsVK.cpp">
+    <ClCompile Include="GS\Renderers\Vulkan\GSRunEmitterVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Vulkan\GSTextureVK.cpp">
@@ -957,7 +957,7 @@
     <ClInclude Include="GS\Renderers\Vulkan\GSDeviceVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Vulkan\GSRunsVK.h">
+    <ClInclude Include="GS\Renderers\Vulkan\GSRunEmitterVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Vulkan\GSTextureVK.h">

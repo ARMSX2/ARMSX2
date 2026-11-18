@@ -72,7 +72,7 @@ struct GSMeasurementOverrides
 	/// does not on a single binary.
 	bool no_dual_source = false;
 
-	/// -runs off: the Vulkan run machine (GSRunsVK.h) is not created, so every draw takes the classic path. The
+	/// -runs off: the Vulkan run program (GSRunEmitterVK.h) is not brought up, so every row is drawn classically. The
 	/// baseline of the machine's A/Bs and of its picture checks.
 	bool runs_off = false;
 

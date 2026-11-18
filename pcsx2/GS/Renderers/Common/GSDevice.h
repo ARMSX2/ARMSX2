@@ -1941,12 +1941,14 @@ protected:
 	virtual void RowsEmit() {}
 	/// Forgets what the backend holds without recording it (the device is going away).
 	virtual void RowsDrop() {}
-	/// Whether the backend has an open group of the bases' side.
+	/// Whether the backend holds anything not recorded yet: an open group of the bases' side, or held twins.
 	virtual bool RowsOpen() const { return false; }
 	/// A draw that is not a row: rows after it are not consecutive with the rows before it.
 	virtual void RowsOtherDraw() {}
 	/// Recounts what is deferred after the backend opened or recorded a group of its own accord.
 	void UpdateDeferredCount();
+	/// Records the pending rows (GSRowEmitter.h), not what the render-pass scheduler holds: a backend's pass end.
+	void FlushDeferredRows();
 	virtual void DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea);
 	virtual PresentResult DoBeginPresent(bool frame_skip) = 0;
 

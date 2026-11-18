@@ -9,6 +9,7 @@
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
+#include "GS/Renderers/Vulkan/GSRunEmitterVK.h"
 #include "GS/Renderers/Vulkan/GSTextureVK.h"
 #include "GS/Renderers/Vulkan/VKLoader.h"
 #include "GS/Renderers/Vulkan/VKStreamBuffer.h"
@@ -35,17 +36,17 @@
 #include <vector>
 
 class VKSwapChain;
-class GSRunsVK;
 struct GSSelfReadRoadDecision;
 namespace Vulkan
 {
 	class GraphicsPipelineBuilder;
+	class DescriptorSetUpdateBuilder;
 }
 
 class GSDeviceVK final : public GSDevice
 {
-	// The run machine records into this device's command buffers and keeps its state (GSRunsVK.h).
-	friend class GSRunsVK;
+	// The row emitter records into this device's command buffers and marks its cached state dirty (GSRunEmitterVK.h).
+	friend class GSRunEmitterVK;
 
 public:
 	enum : u32
@@ -93,7 +94,7 @@ public:
 		/// remote play's frames go to the video encoder as shared buffers (GSRemotePlay.h).
 		bool vk_android_external_memory_ahb : 1;
 		/// VK_EXT_descriptor_indexing with non-uniform sampled-image indexing, runtime arrays and partially bound
-		/// bindings: the run machine (GSRunsVK) samples each merged draw's own texture from one array. Requested
+		/// bindings: the run program (GSRunEmitterVK) samples each merged row's own texture from one array. Requested
 		/// wherever the driver has all three features.
 		bool vk_ext_descriptor_indexing : 1;
 	};
@@ -1029,10 +1030,40 @@ public:
 	bool BindDrawPipeline(const PipelineSelector& p);
 
 	void DoRenderHW(GSHWDrawConfig& config) override;
-	/// A draw of a known state (GSDrawRow.h). A plain draw into the open pass's own targets, with nothing pending on
-	/// them or on its textures, takes DoRenderHW's plain path with the entry's pipeline remembered; any other draw
-	/// goes through RenderHW.
+	/// A draw of a known state (GSDrawRow.h), drawn now. A plain draw into the open pass's own targets, with nothing
+	/// pending on them or on its textures, takes DoRenderHW's plain path with the entry's pipeline remembered; any other
+	/// draw goes through RenderHW.
 	void DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
+	// The row emitter's backend (GSRunEmitterVK.h).
+	bool RowsJoin(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
+	void RowsRecordOpen() override;
+	bool RowsHoldTwin(GSHWDrawConfig& config, GSRowDeviceCache& cache) override;
+	bool RowsMayGoAhead(const GSHWDrawConfig& config) override;
+	void RowsEmit() override;
+	void RowsDrop() override;
+	bool RowsOpen() const override;
+	void RowsOtherDraw() override;
+	/// Whether the run program can draw this plain row, and its classification.
+	bool RowFitsRunProgram(const GSHWDrawConfig& config, GSRunsPolicy::Draw& d);
+	/// A plain row's pipeline selector and pipeline (from the entry's cache when its selector matches).
+	VkPipeline RowPipeline(GSHWDrawConfig& config, GSRowDeviceCache& cache, PipelineSelector& pipe, bool keep_rt, bool keep_ds);
+	/// The sampler a textured row samples with (the last one looked up is kept).
+	VkSampler RowSampler(const GSHWDrawConfig& config);
+	/// A row taken by the emitter counts as drawn for the in-pass kick and the shared DATE copy.
+	void NoteRowDrawn(const GSHWDrawConfig& config);
+	/// Writes a plain twin as a held classic draw: vertices, indices and constants into the rings now, the pipeline and
+	/// textures into its record. False: not held (and nothing of it is kept).
+	bool WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cache, GSTextureVK* draw_rt, GSTextureVK* draw_ds,
+		bool keep_rt, bool keep_ds);
+	/// Records a held classic draw with raw calls.
+	void RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h);
+	/// After draws recorded with raw calls: the classic path binds all of its state again for its next draw. The
+	/// pipeline it chose (m_current_pipeline) is left alone: a recording from inside ApplyTFXState comes after
+	/// SetPipeline chose it, and the dirty flag makes the apply bind it again.
+	void DirtyAfterRawDraws();
+	/// Adds the writes of every TFX texture slot named in `flags` to `dsub`, for set `ds` (VK_NULL_HANDLE when pushed).
+	void AddTFXTextureWrites(Vulkan::DescriptorSetUpdateBuilder& dsub, VkDescriptorSet ds,
+		const std::array<GSTextureVK*, NUM_TFX_TEXTURES>& textures, VkSampler sampler, u32 flags) const;
 	/// What DrawRow keeps in an entry's GSRowDeviceCache: the selector its pipeline was looked up for.
 	struct RowCache
 	{
@@ -1205,8 +1236,10 @@ private:
 	/// Render passes ended so far; a stencil copy belongs to the pass it was built in.
 	u64 m_render_pass_serial = 0;
 
-	/// The run machine, where the device has its features (GSRunsVK.h); null elsewhere.
-	std::unique_ptr<GSRunsVK> m_runs;
+	/// The row emitter's Vulkan backend (GSRunEmitterVK.h), with the run program where the device has its features.
+	std::unique_ptr<GSRunEmitterVK> m_emitter;
+	u64 m_row_sampler_key = ~0ull;
+	VkSampler m_row_sampler = VK_NULL_HANDLE;
 	/// A run program's source: the shared header with the non-uniform indexing extension, the stage, then defines.
 	std::string RunsShaderSource(bool vertex, const std::string& defines, const std::string& source) const;
 

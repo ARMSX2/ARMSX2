@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team, 2026 ARMSX2 contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The run program (GSRunsVK). A run is a stretch of consecutive draws of one render pass that the classic path would
+// The run program (GSRunEmitterVK). A run is a stretch of consecutive draws of one render pass that the classic path would
 // have drawn under different programs, textures and constants but under one fixed-function state (blend, depth test
 // and write, colour mask). The run is one host draw. Each draw keeps its own row in a table: the vertex carries the
 // draw's row number in the high bytes of its FOG word, the vertex program hands the row to the fragment program as
 // two flat values, and the fragment program does what that draw's classic program (tfx.glsl) does, sampling the draw's
 // own texture through its own sampler from the run's descriptor array.
 //
-// The arithmetic is tfx.glsl's for the state set the machine accepts: FST 0, a 32-bit colour target, no palette in the
+// The arithmetic is tfx.glsl's for the state set the emitter accepts: FST 0, a 32-bit colour target, no palette in the
 // shader, the hardware's bilinear (LTF 0), CLAMP or REPEAT (the sampler's), alpha fail KEEP, the texture functions 0-4,
 // and the blend family (Cs - 0) * C + 0 in the shader with the rest in the blend unit (BLEND_MIX). How the classic path
 // chose to blend is one of eight ways under a dual-source pipeline, (ONE, INV_SRC1_COLOR / ONE, ZERO) for ways 0 to 5 and
