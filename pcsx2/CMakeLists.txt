@@ -700,6 +700,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSRunsPolicy.h
 	GS/Renderers/Common/GSRowEmitter.h
+	GS/Renderers/Common/GSRawBindCache.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
 	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
