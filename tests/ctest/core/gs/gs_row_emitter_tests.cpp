@@ -35,7 +35,11 @@ namespace
 		bool plain = true;      ///< what RowsMayGoAhead says
 		bool hold = true;       ///< whether RowsHoldTwin holds
 
-		RowDevice() { m_rows_defer = true; }
+		RowDevice()
+		{
+			m_rows_defer = true;
+			m_max_texture_size = 8192; // what Create would set: surfaces from the pool keep their size
+		}
 
 		void DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache&) override { drawn.push_back(config.verts[0].FOG); }
 		void DoRenderHW(GSHWDrawConfig& config) override { drawn.push_back(0x80000000u | config.verts[0].FOG); }
@@ -71,6 +75,7 @@ namespace
 			held.clear();
 		}
 		bool RowsOpen() const override { return !group.empty(); }
+		size_t Parked() const { return m_deferred_recycle.size(); }
 	};
 
 	std::unique_ptr<GSTexture> Target()
@@ -692,4 +697,21 @@ TEST(GSRunsPolicyStreaks, BreakEvenPricesCPUAndGPUApart)
 	EXPECT_EQ(GSRunsPolicy::BreakEven(0.0f, 0.0f, 1000.0f, -100.0f), GSRunsPolicy::NEVER);
 	EXPECT_EQ(GSRunsPolicy::BreakEven(0.0f, 0.0f, 0.0f, 0.0f), 1u);
 	EXPECT_EQ(GSRunsPolicy::INTERIM_OPENING_ROWS, 4u);
+}
+
+TEST_F(GSRowEmitterTest, ATextureParkedForAGroupComesBackOnceTheGroupIsRecorded)
+{
+	// The group is recorded before a row that cannot join it, which leaves nothing deferred; the texture it sampled was
+	// parked when the cache recycled it, and asking for a surface of its shape must return it to the pool first.
+	auto rt = Target();
+	GSTexture* tex = Texture().release(); // the pool owns it once recycled
+	Row a(rt.get(), 1 | GROUP, 0, tex), b(rt.get(), 2);
+	Draw({&a});
+	dev->Recycle(tex);
+	EXPECT_EQ(dev->Parked(), 1u);
+	Draw({&b});
+	EXPECT_EQ(dev->drawn, (std::vector<u32>{1 | GROUP, 2}));
+	GSTexture* again = dev->CreateTexture(16, 16, 1, GSTexture::Format::Color, true);
+	EXPECT_EQ(dev->Parked(), 0u);
+	dev->Recycle(again);
 }
