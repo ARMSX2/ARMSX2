@@ -836,7 +836,9 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 			if (held->GetUsage() == usage && held->GetFormat() == format && held->GetSize() == size &&
 				held->GetMipmapLevels() == levels)
 			{
-				FlushDeferredDraws();
+				// Not FlushDeferredDraws: a backend that recorded its rows of its own accord leaves the count at zero
+				// with textures still parked here.
+				FlushDeferredDrawsImpl();
 				break;
 			}
 		}
