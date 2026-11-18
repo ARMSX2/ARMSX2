@@ -366,11 +366,13 @@ namespace GSRunsPolicy
 
 	/// Per side of the emitter (bases, held twins), the streak of consecutive rows of one fixed-state class that could
 	/// share a run-program group. A group opens at the streak's L-th row; the rows before it stay classic and nothing is
-	/// rewritten. L is 1 for a row of the class whose group just ended at a split (lod, dear, the texture cap, the table
-	/// window, a ring, or a recording), so the next group opens at once; else 2 if the class's last streak reached B
-	/// (priming), else B. A class drawn classically still learns: what is remembered is the last streak's length, not
-	/// the last group's. Classes are keyed by a hash of their fixed state: a collision only changes when a group opens,
-	/// never which rows share one.
+	/// rewritten. Each class's next streak is predicted from its own last two, as the longer of them: streaks repeat
+	/// per class (Sly 3's long ones stay long and its short ones alternate 2 and 4; Call of Duty 3's stay at 2 or 3), so a
+	/// class predicted to reach the break-even length B groups the whole streak, L = 1, and any other class opens only if
+	/// its streak reaches B after all, L = B. L is also 1 for a row of the class whose group just ended at a split (lod,
+	/// dear, the texture cap, the table window, a ring, or a recording). A class drawn classically still learns: what is
+	/// remembered is each streak's length, not each group's. Classes are keyed by a hash of their fixed state: a
+	/// collision only changes when a group opens, never which rows share one.
 	class Streaks
 	{
 	public:
@@ -386,7 +388,8 @@ namespace GSRunsPolicy
 				End(side);
 				s.cls = cls;
 			}
-			const u32 L = s.split ? 1u : (m_last[side][cls % TABLE] >= B ? std::min(2u, B) : B);
+			const Recent& last = m_last[side][cls % TABLE];
+			const u32 L = (s.split || std::max(last.a, last.b) >= B) ? 1u : B;
 			s.split = false;
 			s.count++;
 			return s.count >= L;
@@ -400,7 +403,7 @@ namespace GSRunsPolicy
 		/// A row on `side` that could not join any group: the side's streak ends.
 		void Break(u32 side) { End(side); }
 		/// The streak length a class last reached on a side (for tests).
-		u32 Last(u32 side, u64 cls) const { return m_last[side][cls % TABLE]; }
+		u32 Last(u32 side, u64 cls) const { return m_last[side][cls % TABLE].a; }
 
 	private:
 		struct Side
@@ -413,12 +416,21 @@ namespace GSRunsPolicy
 		{
 			Side& s = m_side[side];
 			if (s.count != 0)
-				m_last[side][s.cls % TABLE] = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
+			{
+				Recent& last = m_last[side][s.cls % TABLE];
+				last.b = last.a;
+				last.a = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
+			}
 			s.count = 0;
 			s.split = false;
 		}
+		struct Recent
+		{
+			u16 a = 0; ///< the last streak's length
+			u16 b = 0; ///< the one before
+		};
 		Side m_side[SIDES];
-		u16 m_last[SIDES][TABLE] = {};
+		Recent m_last[SIDES][TABLE] = {};
 	};
 
 	struct StateSet
