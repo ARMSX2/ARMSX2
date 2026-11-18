@@ -7,7 +7,7 @@
 #endif
 #include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Common/GSPassScheduler.h"
-#include "GS/Renderers/Common/GSRowQueue.h"
+#include "GS/Renderers/Common/GSRowEmitter.h"
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
@@ -326,7 +326,7 @@ std::unique_ptr<GSDevice> g_gs_device;
 
 GSDevice::GSDevice()
 	: m_pass_scheduler(std::make_unique<GSPassScheduler>())
-	, m_row_queue(std::make_unique<GSRowQueue>())
+	, m_rows(std::make_unique<GSRowEmitter>())
 {
 #ifdef PCSX2_DEVBUILD
 	s_texture_counts.fill(0);
@@ -581,7 +581,8 @@ void GSDevice::Destroy()
 	// Drop rather than emit: nothing is going to present these, and the targets they name
 	// are about to be destroyed.
 	m_pass_scheduler->Clear();
-	m_row_queue->Clear();
+	RowsDrop();
+	m_rows->Clear();
 	m_deferred_draw_count = 0;
 
 	// Nothing references these any more, and PurgePool() below deletes whatever the pool
@@ -1308,62 +1309,18 @@ void GSDevice::RenderHW(GSHWDrawConfig& config)
 
 bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
 {
-	return m_pass_scheduler->References(tex) || m_row_queue->References(tex);
+	return m_pass_scheduler->References(tex) || m_rows->References(tex);
 }
 
 void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 {
-	// m_flushing: a row drawn while the queue is emitting. The scheduler holds draws only with coalescing on, and the
-	// two queues would have to be ordered against each other: twins wait only with it off.
-	// Colour clipping is a state machine across draws that lives in the caller's configuration: the backend writes its
-	// mode and update area back into it, and the next draws read them. Such a draw is drawn now.
-	if (!m_rows_defer || g_gs_measurement_overrides.rows_immediate || g_gs_measurement_overrides.rows_unsorted ||
-		GSConfig.CoalesceRenderPasses || m_flushing || IsDSInRTActive() || m_colclip_rt ||
-		config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify || config.ps.colclip_hw ||
-		config.colclip_native_scale > 1.0f)
-	{
-		FlushDeferredDraws();
-		DoDrawRow(config, cache);
-		return;
-	}
+	FlushDeferredDraws();
+	DoDrawRow(config, cache);
+}
 
-	// The twin of the base drawn just before it waits for later bases. When the queue is full the held twins are
-	// emitted and it follows them, still after its base.
-	if (m_row_queue->IsTwin(config))
-	{
-		if (m_row_queue->Hold(config, cache))
-		{
-			m_deferred_draw_count = m_pass_scheduler->GetCount() + m_row_queue->Pending();
-			return;
-		}
-		FlushDeferredDraws();
-		DoDrawRow(config, cache);
-		return;
-	}
-
-	if (!GSRowQueue::CanBeTwinBase(config))
-	{
-		FlushDeferredDraws();
-		DoDrawRow(config, cache);
-		return;
-	}
-
-	// A base is drawn now. On the held twins' targets, reading neither, it goes ahead of them: the flush is suppressed
-	// for its draw, so the backend's own entry points inside it do not emit them.
-	if (m_row_queue->MayGoAhead(config))
-	{
-		m_row_queue->NoteAhead();
-		m_flushing = true;
-		DoDrawRow(config, cache);
-		m_flushing = false;
-	}
-	else
-	{
-		FlushDeferredDraws();
-		DoDrawRow(config, cache);
-	}
-	m_row_queue->RememberBase(config);
-	m_deferred_draw_count = m_pass_scheduler->GetCount() + m_row_queue->Pending();
+void GSDevice::UpdateDeferredCount()
+{
+	m_deferred_draw_count = m_pass_scheduler->GetCount() + m_rows->Pending() + (RowsOpen() ? 1u : 0u);
 }
 
 void GSDevice::FlushDeferredDrawsImpl()
@@ -1372,7 +1329,8 @@ void GSDevice::FlushDeferredDrawsImpl()
 
 	m_flushing = true;
 	m_pass_scheduler->Emit(this);
-	m_row_queue->Emit([this](GSHWDrawConfig& config, GSRowDeviceCache& cache) { DoDrawRow(config, cache); });
+	RowsEmit();
+	m_rows->Clear();
 	m_flushing = false;
 
 	m_deferred_draw_count = 0;

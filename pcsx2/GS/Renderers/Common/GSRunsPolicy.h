@@ -434,6 +434,52 @@ namespace GSRunsPolicy
 	};
 
 	/// Which states a run holds one value of: those become constants of its program.
+	/// The rows a group must reach before it pays for itself (B): the fixed overhead of one run-program group over what
+	/// each row in it saves, on the CPU thread that binds (its texture set, binds, and the classic path binding all of
+	/// its state again afterwards) and on the GPU (the run program's own cost, which is per group), each priced apart:
+	/// B = max(ceil(cpu_group_ns / cpu_saved_row_ns), ceil(gpu_group_ns / gpu_saved_row_ns)). A saving that is not
+	/// positive while there is an overhead forbids groups (NEVER). A price of zero is not measured and takes no part.
+	constexpr u32 NEVER = 0xFFFFFFFFu;
+	constexpr u32 INTERIM_OPENING_ROWS_STUB = 4;
+	inline u32 BreakEven(float, float, float, float) { return INTERIM_OPENING_ROWS_STUB; }
+
+	/// The break-even length B in rows (see Streaks), one value for every device class until each class's CPU overhead
+	/// is measured.
+	constexpr u32 INTERIM_OPENING_ROWS = 4;
+
+	/// Per side of the emitter (bases, held twins), the streak of consecutive rows of one fixed-state class that could
+	/// share a run-program group. A group opens at the streak's L-th row; the rows before it stay classic and nothing is
+	/// rewritten. L is 1 for a row of the class whose group just ended at a split (lod, dear, the texture cap, the table
+	/// window, a ring, or a recording), so the next group opens at once; else 2 if the class's last streak reached B
+	/// (priming), else B. A class drawn classically still learns: what is remembered is the last streak's length, not
+	/// the last group's. Classes are keyed by a hash of their fixed state: a collision only changes when a group opens,
+	/// never which rows share one.
+	class Streaks
+	{
+	public:
+		static constexpr u32 SIDES = 2;
+		static constexpr u32 TABLE = 1024;
+
+		/// A row of class `cls` on `side` that could join a group: whether a group may be open for it now.
+		bool Note(u32, u64, u32) { return false; }
+		/// The side's group of its current class ended at a split: the class's next row opens a group at once.
+		void Split(u32) {}
+		/// A row on `side` that could not join any group: the side's streak ends.
+		void Break(u32) {}
+		/// The streak length a class last reached (for tests).
+		u32 Last(u64) const { return 0; }
+
+	private:
+		struct Side
+		{
+			u64 cls = 0;
+			u32 count = 0;
+			bool split = false;
+		};
+		Side m_side[SIDES];
+		u16 m_last[TABLE] = {};
+	};
+
 	struct StateSet
 	{
 		u32 seen = 0;

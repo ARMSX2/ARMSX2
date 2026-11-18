@@ -699,7 +699,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSBlendCarry.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSRunsPolicy.h
-	GS/Renderers/Common/GSRowQueue.h
+	GS/Renderers/Common/GSRowEmitter.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
 	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h

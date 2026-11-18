@@ -9,37 +9,45 @@
 #include <cstring>
 #include <vector>
 
-/// Twins held back until something could observe them, so that later bases on the same targets are drawn ahead of
-/// them. GSDevice::DrawRow draws every base at once and remembers its twin key; a row that is the twin of the remembered
-/// base, with nothing drawn between them, is held. A later base on the same colour target and depth buffer that reads
-/// neither is drawn ahead of the held twins. Every device entry point that could see a target or a texture a held twin
-/// uses emits the twins first, in arrival order (GSDevice::FlushDeferredDraws, the framework the render-pass scheduler
-/// introduced), and forgets the base.
+/// The order rows are recorded in. Recording order is draw order, and only twins are held: GSDevice::DrawRow records
+/// every row as it arrives (a backend may leave it in its open group of the bases' side, recorded before anything else),
+/// and remembers a twin base's key; a row that is the twin of the remembered base, with nothing drawn between them, is
+/// held by the backend. A later base on the same colour target and depth buffer that reads neither, and that the backend
+/// can draw without changing the pass, is recorded ahead of the held twins. Every device entry point that could see a
+/// target or a texture a held twin uses records what is pending first: the bases' open group, then the held twins in
+/// arrival order (GSDevice::FlushDeferredDraws), and forgets the base.
 ///
 /// Exact where the bases test GREATER: a moved twin meets a later base's depth only
 /// where that base passed, strictly nearer than the twin's own depth, so the twin fails there, as the base would have
 /// covered it in the game's order. A twin needs the depth at its pixels to be its base's at its turn, so it must follow
 /// its base with nothing between them: anything that could touch the base's targets flushes, and the flush forgets the
 /// base.
-class GSRowQueue
+///
+/// This class holds the rules and the bookkeeping the device entry points need (what is pending, which textures it
+/// uses); the backend holds the rows' data and records them.
+class GSRowEmitter
 {
 public:
-	static constexpr u32 MAX_ROWS = 8184;
-	static constexpr u32 MAX_VERTICES = 256 * 1024;
-	static constexpr u32 MAX_INDICES = 768 * 1024;
+	/// Rows held at once at most; the backend refuses to hold more.
+	static constexpr u32 MAX_HELD = 8184;
 
-	__fi u32 Count() const { return static_cast<u32>(m_rows.size()); }
+	/// Held twins.
+	__fi u32 Held() const { return m_held; }
 
 	/// The held twins, plus one for a remembered base: what the device counts as deferred, so that every entry point
 	/// that could touch the base's targets flushes and forgets it.
-	__fi u32 Pending() const { return Count() + m_base; }
+	__fi u32 Pending() const { return m_held + m_base; }
 
-	/// Whether a held twin draws into, or samples, this texture, or it is the remembered base's target.
+	/// Whether a pending row draws into, or samples, this texture, or it is the remembered base's target.
 	bool References(const GSTexture* tex) const
 	{
-		if (!tex || (m_rows.empty() && !m_base))
+		if (!tex)
 			return false;
-		return tex == m_rt || tex == m_ds || tex->m_row_queue_mark == m_generation;
+		if ((m_held != 0 || m_base) && (tex == m_rt || tex == m_ds))
+			return true;
+		if (m_group_rt && (tex == m_group_rt || tex == m_group_ds))
+			return true;
+		return m_marked && tex->m_row_mark == m_generation;
 	}
 
 	/// Whether the row is the twin of the remembered base: an allowed twin state, the base's targets, and the same
@@ -65,14 +73,15 @@ public:
 		return true;
 	}
 
-	/// Whether a base may be drawn ahead of the held twins: it draws into their targets and reads neither.
+	/// Whether a base may be recorded ahead of the held twins: it draws into their targets and reads neither. The
+	/// backend must also be able to draw it without changing the pass (GSDevice::RowsMayGoAhead).
 	bool MayGoAhead(const GSHWDrawConfig& c) const
 	{
-		return !m_rows.empty() && c.rt == m_rt && c.ds == m_ds && !ReadsTargets(c);
+		return m_held != 0 && c.rt == m_rt && c.ds == m_ds && !ReadsTargets(c);
 	}
 
-	/// A base drawn ahead of the held twins: every one of them is now moved.
-	void NoteAhead() { m_moved = Count(); }
+	/// A base recorded ahead of the held twins: every one of them is now moved.
+	void NoteAhead() { m_moved = m_held; }
 
 	/// Remembers a base just drawn, for its twin. Copies its positions and indices: they live in GSState's per-draw
 	/// buffers, which the next draw overwrites.
@@ -95,56 +104,60 @@ public:
 		m_base_indices.assign(c.indices, c.indices + c.nindices);
 	}
 
-	/// Holds the twin of the remembered base (its configuration, vertices and indices are copied) and forgets the base.
-	/// False when the queue is full.
-	bool Hold(const GSHWDrawConfig& config, GSRowDeviceCache& cache)
+	/// The row drawn was not a base: a twin may no longer follow.
+	void ForgetBase()
 	{
-		if (m_rows.size() == MAX_ROWS || m_vertices.size() + config.nverts > MAX_VERTICES ||
-			m_indices.size() + config.nindices > MAX_INDICES)
-			return false;
-		// Built from the configuration in place: a default-constructed record would zero both constant buffers first.
-		m_rows.emplace_back(config, &cache, static_cast<u32>(m_vertices.size()), static_cast<u32>(m_indices.size()));
-		m_vertices.insert(m_vertices.end(), config.verts, config.verts + config.nverts);
-		m_indices.insert(m_indices.end(), config.indices, config.indices + config.nindices);
-		Note(config.tex);
-		Note(config.pal);
 		m_base = false;
-		return true;
+		if (m_held == 0)
+			m_rt = m_ds = nullptr;
 	}
 
-	/// Draws every held twin through `draw(config, cache)` in arrival order, empties the queue and forgets the base.
-	template <typename Draw>
-	void Emit(Draw&& draw)
+	/// The backend holds the twin of the remembered base: its textures are marked and the base is forgotten. The held
+	/// twins keep the base's targets.
+	void NoteHeld(const GSHWDrawConfig& c)
 	{
-		const u32 n = Count();
-		for (u32 i = 0; i < n; i++)
-		{
-			Record& r = m_rows[i];
-			r.config.verts = m_vertices.data() + r.vfirst;
-			r.config.indices = m_indices.data() + r.ifirst;
-			draw(r.config, *r.cache);
-		}
-		s_emitted += n;
-		s_moved += m_moved;
-		Clear();
+		m_held++;
+		Mark(c.tex);
+		Mark(c.pal);
+		m_base = false;
 	}
 
+	/// A texture a pending row samples that is not a held twin's: a row of a group the backend has not recorded yet.
+	__fi void Mark(GSTexture* t)
+	{
+		if (t)
+		{
+			t->m_row_mark = m_generation;
+			m_marked = true;
+		}
+	}
+
+	/// The colour target and depth buffer of the backend's open group on the bases' side (nullptr: none open).
+	void SetGroupTargets(const GSTexture* rt, const GSTexture* ds)
+	{
+		m_group_rt = rt;
+		m_group_ds = ds;
+	}
+
+	/// Everything pending was recorded or dropped: the held twins are counted, the base and the marks forgotten.
 	void Clear()
 	{
-		if (!m_rows.empty())
-		{
-			m_rows.clear();
-			m_vertices.clear();
-			m_indices.clear();
-			m_generation++;
-		}
+		s_emitted += m_held;
+		s_moved += m_moved;
+		m_held = 0;
 		m_moved = 0;
 		m_base = false;
+		if (m_marked)
+		{
+			m_generation++;
+			m_marked = false;
+		}
 		m_rt = m_ds = nullptr;
+		m_group_rt = m_group_ds = nullptr;
 	}
 
-	/// Twins emitted, and of those drawn after at least one later base, by every queue since the process started
-	/// (gsrunner reads them after the device is gone).
+	/// Twins held and later recorded, and of those recorded after at least one later base, by every emitter since the
+	/// process started.
 	static u64 Emitted() { return s_emitted; }
 	static u64 Moved() { return s_moved; }
 
@@ -181,14 +194,6 @@ public:
 	}
 
 private:
-	struct Record
-	{
-		Record(const GSHWDrawConfig& c, GSRowDeviceCache* k, u32 v, u32 i) : config(c), cache(k), vfirst(v), ifirst(i) {}
-		GSHWDrawConfig config; ///< verts and indices point into the queue's arrays from Emit on
-		GSRowDeviceCache* cache;
-		u32 vfirst, ifirst;
-	};
-
 	/// The remembered base's fields a twin must equal (positions and indices are kept beside it).
 	struct Key
 	{
@@ -200,23 +205,18 @@ private:
 		u32 max_depth = 0;
 	};
 
-	void Note(GSTexture* t)
-	{
-		if (t)
-			t->m_row_queue_mark = m_generation;
-	}
-
-	std::vector<Record> m_rows;
-	std::vector<GSVertex> m_vertices;
-	std::vector<u16> m_indices;
 	Key m_key;
 	std::vector<u64> m_base_xyz;
 	std::vector<u16> m_base_indices;
-	u32 m_moved = 0;    ///< held twins drawn after a later base: the first m_moved
+	u32 m_held = 0;
+	u32 m_moved = 0;     ///< held twins recorded after a later base: the first m_moved
 	bool m_base = false; ///< a base was drawn last and its twin may follow
-	u64 m_generation = 1; ///< raised whenever held twins are emitted: a texture marked with an older one is not sampled
-	GSTexture* m_rt = nullptr;
-	GSTexture* m_ds = nullptr;
+	bool m_marked = false; ///< a texture carries the current generation
+	u64 m_generation = 1; ///< raised whenever marked rows are recorded: a texture marked with an older one is not sampled
+	const GSTexture* m_rt = nullptr;
+	const GSTexture* m_ds = nullptr;
+	const GSTexture* m_group_rt = nullptr;
+	const GSTexture* m_group_ds = nullptr;
 	static inline u64 s_emitted = 0;
 	static inline u64 s_moved = 0;
 };
