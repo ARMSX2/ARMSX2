@@ -320,19 +320,21 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 	// The group's program with this row in it must be built. If it is not, it is asked for, the group ends, and the row
 	// is drawn classically; the next row of the class opens a group at once if its program is built by then.
 	const bool nods = dev->m_current_depth_target == nullptr;
-	{
-		GSRunsPolicy::StateSet states = g ? g->states : GSRunsPolicy::StateSet();
+	const auto ready = [&](const Group* with) {
+		GSRunsPolicy::StateSet states = with ? with->states : GSRunsPolicy::StateSet();
 		states.Note(d.flags);
-		const u32 ways = (g ? g->ways : 0u) | (1u << d.way);
-		const u32 variant = Variant(ways, config.ps.rta_correction, config.ps.zfloor, nods);
-		if (!ProgramReady(config.depth.key, variant, states.Key()))
-		{
-			if (g)
-				Close(side);
-			m_streaks.Split(side);
-			return Join::Classic;
-		}
+		const u32 ways = (with ? with->ways : 0u) | (1u << d.way);
+		return ProgramReady(config.depth.key, Variant(ways, config.ps.rta_correction, config.ps.zfloor, nods), states.Key());
+	};
+	if (!ready(g))
+	{
+		if (g)
+			Close(side);
+		m_streaks.Split(side);
+		return Join::Classic;
 	}
+	// A group that ends below (ring, texture cap) is replaced by one holding this row alone, whose program is another.
+	bool alone_ready = g == nullptr;
 
 	Rings& rings = m_rings[side];
 	if (rings.set0 == VK_NULL_HANDLE)
@@ -381,6 +383,15 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 			pxFailRel("VK: the run emitter could not place a row");
 		if (!g)
 		{
+			if (!alone_ready)
+			{
+				if (!ready(nullptr))
+				{
+					m_streaks.Split(side);
+					return Join::Classic;
+				}
+				alone_ready = true;
+			}
 			if (!rings.table.ReserveMemory(RUN_WINDOW, align))
 				return submit("runs table ring");
 			Group* ng;
