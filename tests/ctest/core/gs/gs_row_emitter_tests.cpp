@@ -645,14 +645,15 @@ TEST(GSRunsPolicyStreaks, AnotherClassEndsTheStreak)
 	EXPECT_EQ(Opened(s, BASES, 1, 3, 4), 0u); // its last streak (3) did not reach B: B rows again
 }
 
-TEST(GSRunsPolicyStreaks, AClassThatReachedBreakEvenOpensAtItsSecondRow)
+TEST(GSRunsPolicyStreaks, AClassPredictedToReachBreakEvenOpensAtItsFirstRow)
 {
+	// A class's next streak is predicted from its own last two: a class whose streaks reach B groups the whole of the
+	// next one, its first row included.
 	GSRunsPolicy::Streaks s;
 	EXPECT_EQ(Opened(s, BASES, 1, 5, 4), 2u);
 	s.Break(BASES);
 	EXPECT_EQ(s.Last(BASES, 1), 5u);
-	EXPECT_FALSE(s.Note(BASES, 1, 4));
-	EXPECT_TRUE(s.Note(BASES, 1, 4));
+	EXPECT_EQ(Opened(s, BASES, 1, 5, 4), 5u);
 }
 
 TEST(GSRunsPolicyStreaks, AClassDrawnClassicallyStillLearns)
@@ -666,7 +667,44 @@ TEST(GSRunsPolicyStreaks, AClassDrawnClassicallyStillLearns)
 	EXPECT_EQ(Opened(s, TWINS, 9, 4, 4), 1u);
 	s.Break(TWINS);
 	EXPECT_EQ(s.Last(TWINS, 9), 4u);
-	EXPECT_EQ(Opened(s, TWINS, 9, 2, 4), 1u); // priming now
+	EXPECT_EQ(Opened(s, TWINS, 9, 2, 4), 2u); // predicted from the 4: the whole streak
+}
+
+TEST(GSRunsPolicyStreaks, AnAlternatingClassIsPredictedByItsLongerStreak)
+{
+	// Sly 3's classes alternate streaks of 2 and 4 (M2, one loop: 4,585 streaks of 4 after a 2, 5,573 of 2 after a 4):
+	// once both are seen, every streak of the class is grouped from its first row.
+	GSRunsPolicy::Streaks s;
+	for (u32 n : {2u, 4u})
+	{
+		Opened(s, BASES, 3, n, 4);
+		s.Break(BASES);
+	}
+	EXPECT_EQ(Opened(s, BASES, 3, 2, 4), 2u);
+	s.Break(BASES);
+	EXPECT_EQ(Opened(s, BASES, 3, 4, 4), 4u);
+}
+
+TEST(GSRunsPolicyStreaks, AClassOfShortStreaksNeverOpens)
+{
+	// Call of Duty 3's classes repeat streaks of 2 and 3 (43,541 streaks of 2 after a 2, 9,301 of 3 after a 3), which
+	// a group does not pay for on the Adreno 613 (about 1 ms a frame when they open at B = 1 or 2).
+	GSRunsPolicy::Streaks s;
+	u32 open = 0;
+	for (u32 i = 0; i < 20; i++)
+	{
+		open += Opened(s, BASES, 5, 2 + (i & 1), 4);
+		s.Break(BASES);
+	}
+	EXPECT_EQ(open, 0u);
+}
+
+TEST(GSRunsPolicyStreaks, AnUnpredictedLongStreakStillOpensAtBreakEven)
+{
+	GSRunsPolicy::Streaks s;
+	EXPECT_EQ(Opened(s, BASES, 8, 2, 4), 0u);
+	s.Break(BASES);
+	EXPECT_EQ(Opened(s, BASES, 8, 10, 4), 7u);
 }
 
 TEST(GSRunsPolicyStreaks, AfterASplitTheNextRowOfTheClassOpensAtOnce)
