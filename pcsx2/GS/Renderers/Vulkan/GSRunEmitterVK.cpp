@@ -634,6 +634,7 @@ void GSRunEmitterVK::RecordAll()
 {
 	if (m_recording)
 		return;
+	m_dev->m_raw_binds.Reset();
 	if (m_bases.open)
 	{
 		m_streaks.Split(BASES);
@@ -911,6 +912,7 @@ void GSRunEmitterVK::Record(Side side, Group& g)
 	if (other_vbuf)
 		dev->SetInitialState(cmd);
 	dev->DirtyAfterRawDraws();
+	dev->m_raw_binds.Reset(); // a held twin after the group binds everything again
 	g.textures.clear();
 	if (side == BASES)
 		dev->m_rows->SetGroupTargets(nullptr, nullptr);

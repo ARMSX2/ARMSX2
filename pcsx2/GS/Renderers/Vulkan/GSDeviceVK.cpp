@@ -10872,20 +10872,31 @@ bool GSDeviceVK::WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cach
 
 	// Everything is reserved before anything is written: a ring that cannot take the draw is a submit, which records
 	// everything pending first, and the twin is then drawn now by the caller.
+	// A twin whose constants or textures equal the last held twin's in this command buffer shares them: its record
+	// names the same offsets and set, so recording it binds nothing new (GSRawBindCache.h).
 	const u32 ubo_align = static_cast<u32>(m_device_properties.limits.minUniformBufferOffsetAlignment);
 	const u32 vsize = config.nverts * sizeof(GSVertex);
 	const u32 isize = fixed_expand ? 0u : config.nindices * sizeof(u16);
+	HeldShare& hs = m_held_share;
+	const u64 fence = GetCurrentFenceCounter();
+	const bool same_cb = hs.fence == fence && std::memcmp(&hs.vs, &config.cb_vs, sizeof(config.cb_vs)) == 0 &&
+	                     std::memcmp(&hs.ps, &config.cb_ps, sizeof(config.cb_ps)) == 0;
 	if (!m_vertex_stream_buffer.ReserveMemory(vsize, sizeof(GSVertex) * GetVertexAlignment(config.vs.expand)) ||
 		(isize && !m_index_stream_buffer.ReserveMemory(isize, sizeof(u16))) ||
-		!m_vertex_uniform_stream_buffer.ReserveMemory(sizeof(config.cb_vs), ubo_align) ||
-		!m_fragment_uniform_stream_buffer.ReserveMemory(sizeof(config.cb_ps), ubo_align))
+		(!same_cb && (!m_vertex_uniform_stream_buffer.ReserveMemory(sizeof(config.cb_vs), ubo_align) ||
+						 !m_fragment_uniform_stream_buffer.ReserveMemory(sizeof(config.cb_ps), ubo_align))))
 	{
 		ExecuteCommandBufferAndRestartRenderPass(false, "a held twin's rings");
 		return false;
 	}
 	VkDescriptorSet set1 = VK_NULL_HANDLE;
 	VkSampler sampler = config.tex ? RowSampler(config) : VK_NULL_HANDLE;
-	if (!m_use_push_descriptors)
+	if (!m_use_push_descriptors && hs.fence == fence && hs.set1 != VK_NULL_HANDLE && hs.tex == config.tex &&
+		hs.pal == config.pal && hs.sampler == sampler)
+	{
+		set1 = hs.set1;
+	}
+	else if (!m_use_push_descriptors)
 	{
 		set1 = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
 		if (set1 == VK_NULL_HANDLE)
@@ -10934,12 +10945,34 @@ bool GSDeviceVK::WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cach
 		h->index_min = lo;
 		h->index_max = hi;
 	}
-	h->ubo[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
-	std::memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &config.cb_vs, sizeof(config.cb_vs));
-	m_vertex_uniform_stream_buffer.CommitMemory(sizeof(config.cb_vs));
-	h->ubo[1] = m_fragment_uniform_stream_buffer.GetCurrentOffset();
-	std::memcpy(m_fragment_uniform_stream_buffer.GetCurrentHostPointer(), &config.cb_ps, sizeof(config.cb_ps));
-	m_fragment_uniform_stream_buffer.CommitMemory(sizeof(config.cb_ps));
+	if (same_cb)
+	{
+		h->ubo[0] = hs.ubo[0];
+		h->ubo[1] = hs.ubo[1];
+	}
+	else
+	{
+		h->ubo[0] = m_vertex_uniform_stream_buffer.GetCurrentOffset();
+		std::memcpy(m_vertex_uniform_stream_buffer.GetCurrentHostPointer(), &config.cb_vs, sizeof(config.cb_vs));
+		m_vertex_uniform_stream_buffer.CommitMemory(sizeof(config.cb_vs));
+		h->ubo[1] = m_fragment_uniform_stream_buffer.GetCurrentOffset();
+		std::memcpy(m_fragment_uniform_stream_buffer.GetCurrentHostPointer(), &config.cb_ps, sizeof(config.cb_ps));
+		m_fragment_uniform_stream_buffer.CommitMemory(sizeof(config.cb_ps));
+		if (hs.fence != fence)
+			hs.set1 = VK_NULL_HANDLE;
+		hs.fence = fence;
+		hs.vs = config.cb_vs;
+		hs.ps = config.cb_ps;
+		hs.ubo[0] = h->ubo[0];
+		hs.ubo[1] = h->ubo[1];
+	}
+	if (set1 != VK_NULL_HANDLE && set1 != hs.set1 && hs.fence == fence)
+	{
+		hs.set1 = set1;
+		hs.tex = config.tex;
+		hs.pal = config.pal;
+		hs.sampler = sampler;
+	}
 	h->tex = static_cast<GSTextureVK*>(config.tex);
 	h->sampler = sampler ? sampler : m_point_sampler;
 	h->pal = static_cast<GSTextureVK*>(config.pal);
@@ -10951,7 +10984,6 @@ bool GSDeviceVK::WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cach
 	h->blend_constant_color = config.blend.constant;
 	h->pass_rt = m_current_render_target;
 	h->pass_ds = m_current_depth_target;
-	const u64 fence = GetCurrentFenceCounter();
 	if (h->tex)
 		h->tex->SetUseFenceCounter(fence);
 	if (h->pal)
@@ -10966,11 +10998,34 @@ void GSDeviceVK::RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h)
 					m_current_framebuffer_feedback_loop == FeedbackLoopFlag_None,
 		"A held draw is recorded outside the pass it was decided in");
 	const VkCommandBuffer cmd = GetCurrentCommandBuffer();
-	g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, h.pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_UBO, 1,
-		&h.ubo_set, NUM_TFX_DYNAMIC_OFFSETS, h.ubo);
-	if (m_use_push_descriptors)
+	// Held twins are recorded back to back: bind only what differs from the twin before (GSRawBindCache.h).
+	GSRawBindCache::State st;
+	st.pipeline = reinterpret_cast<uptr>(h.pipeline);
+	st.constants_set = reinterpret_cast<uptr>(h.ubo_set);
+	st.constants[0] = h.ubo[0];
+	st.constants[1] = h.ubo[1];
+	st.textures[0] = reinterpret_cast<uptr>(h.tex);
+	st.textures[1] = reinterpret_cast<uptr>(h.sampler);
+	st.textures[2] = reinterpret_cast<uptr>(h.pal);
+	st.textures[3] = reinterpret_cast<uptr>(h.set1);
+	st.viewport[0] = static_cast<s32>(h.viewport.width);
+	st.viewport[1] = static_cast<s32>(h.viewport.height);
+	std::memcpy(st.scissor, &h.scissor, sizeof(st.scissor));
+	st.blend = h.blend_constant ? (0x100u | h.blend_constant_color) : 0u;
+	const VkBuffer ibuf = h.fixed_expand ? m_expand_index_buffer : m_index_stream_buffer.GetBuffer();
+	st.index_buffer = reinterpret_cast<uptr>(ibuf);
+	const u32 need = m_raw_binds.Needed(st);
+	if (need & GSRawBindCache::PIPELINE)
+	{
+		g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, h.pipeline);
+	}
+	if (need & GSRawBindCache::CONSTANTS)
+	{
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_UBO, 1,
+			&h.ubo_set, NUM_TFX_DYNAMIC_OFFSETS, h.ubo);
+	}
+	if ((need & GSRawBindCache::TEXTURES) && m_use_push_descriptors)
 	{
 		std::array<GSTextureVK*, NUM_TFX_TEXTURES> textures;
 		textures.fill(m_null_texture.get());
@@ -10982,7 +11037,7 @@ void GSDeviceVK::RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h)
 		AddTFXTextureWrites(dsub, VK_NULL_HANDLE, textures, h.sampler, DIRTY_FLAG_TFX_TEXTURES);
 		dsub.PushUpdate(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES);
 	}
-	else
+	else if (need & GSRawBindCache::TEXTURES)
 	{
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES,
 			1, &h.set1, 0, nullptr);
@@ -10994,15 +11049,20 @@ void GSDeviceVK::RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h)
 		pc.base_index = 0;
 		vkCmdPushConstants(cmd, m_tfx_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 	}
-	vkCmdSetViewport(cmd, 0, 1, &h.viewport);
-	const VkRect2D scissor = {{h.scissor.x, h.scissor.y}, {static_cast<u32>(h.scissor.width()), static_cast<u32>(h.scissor.height())}};
-	vkCmdSetScissor(cmd, 0, 1, &scissor);
-	if (h.blend_constant)
+	if (need & GSRawBindCache::VIEWPORT)
+		vkCmdSetViewport(cmd, 0, 1, &h.viewport);
+	if (need & GSRawBindCache::SCISSOR)
+	{
+		const VkRect2D scissor = {{h.scissor.x, h.scissor.y}, {static_cast<u32>(h.scissor.width()), static_cast<u32>(h.scissor.height())}};
+		vkCmdSetScissor(cmd, 0, 1, &scissor);
+	}
+	if (need & GSRawBindCache::BLEND)
 	{
 		const GSVector4 col(static_cast<float>(h.blend_constant_color) / 128.0f);
 		vkCmdSetBlendConstants(cmd, col.v);
 	}
-	vkCmdBindIndexBuffer(cmd, h.fixed_expand ? m_expand_index_buffer : m_index_stream_buffer.GetBuffer(), 0, VK_INDEX_TYPE_UINT16);
+	if (need & GSRawBindCache::INDEX)
+		vkCmdBindIndexBuffer(cmd, ibuf, 0, VK_INDEX_TYPE_UINT16);
 	const bool other_vbuf = h.vbuf != m_vertex_stream_buffer.GetBuffer();
 	if (other_vbuf)
 	{

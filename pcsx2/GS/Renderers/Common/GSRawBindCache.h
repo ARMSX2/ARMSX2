@@ -46,7 +46,44 @@ public:
 
 	/// The bindings the draw needs, and remembers them as what is bound. A blend constant the draw does not use is never
 	/// bound, and does not count as bound for the next draw.
-	u32 Needed(const State&) { return ALL; }
+	u32 Needed(const State& s)
+	{
+		u32 need = ALL;
+		if (m_valid)
+		{
+			need = 0;
+			if (s.pipeline != m_last.pipeline)
+				need |= PIPELINE;
+			if (s.constants_set != m_last.constants_set || s.constants[0] != m_last.constants[0] ||
+				s.constants[1] != m_last.constants[1])
+				need |= CONSTANTS;
+			if (std::memcmp(s.textures, m_last.textures, sizeof(s.textures)) != 0)
+				need |= TEXTURES;
+			if (s.viewport[0] != m_last.viewport[0] || s.viewport[1] != m_last.viewport[1])
+				need |= VIEWPORT;
+			if (std::memcmp(s.scissor, m_last.scissor, sizeof(s.scissor)) != 0)
+				need |= SCISSOR;
+			if ((s.blend & 0x100) && s.blend != m_last.blend)
+				need |= BLEND;
+			if (s.index_buffer != m_last.index_buffer)
+				need |= INDEX;
+			if (s.vertex_buffer != m_last.vertex_buffer)
+				need |= VERTEX;
+		}
+		if (!(s.blend & 0x100))
+		{
+			need &= ~BLEND;
+			const u32 kept = m_valid ? m_last.blend : 0;
+			m_last = s;
+			m_last.blend = kept;
+		}
+		else
+		{
+			m_last = s;
+		}
+		m_valid = true;
+		return need;
+	}
 
 private:
 	State m_last;

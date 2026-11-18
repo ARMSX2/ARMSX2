@@ -7,6 +7,7 @@
 #include "GS/GSCacheFile.h"
 #include "GS/GSCompileQueue.h"
 #include "GS/Renderers/Common/GSDevice.h"
+#include "GS/Renderers/Common/GSRawBindCache.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Vulkan/GSRunEmitterVK.h"
@@ -1056,6 +1057,21 @@ public:
 		bool plain = false, keep_rt = false, keep_ds = false;
 	};
 	PlainMemo m_plain_memo;
+	/// What the held twins recorded so far in this batch have bound (GSRunEmitterVK::RecordAll resets it).
+	GSRawBindCache m_raw_binds;
+	/// The last held twin's constants and texture set, which the next one in the same command buffer may share.
+	struct HeldShare
+	{
+		u64 fence = ~0ull;
+		GSHWDrawConfig::VSConstantBuffer vs;
+		GSHWDrawConfig::PSConstantBuffer ps;
+		u32 ubo[2] = {};
+		VkDescriptorSet set1 = VK_NULL_HANDLE;
+		const GSTexture* tex = nullptr;
+		const GSTexture* pal = nullptr;
+		VkSampler sampler = VK_NULL_HANDLE;
+	};
+	HeldShare m_held_share;
 	/// A plain row's pipeline selector and pipeline (from the entry's cache when its selector matches).
 	VkPipeline RowPipeline(GSHWDrawConfig& config, GSRowDeviceCache& cache, PipelineSelector& pipe, bool keep_rt, bool keep_ds);
 	/// The sampler a textured row samples with (the last one looked up is kept).
