@@ -9128,6 +9128,10 @@ void GSDeviceVK::SetUtilityPushConstants(const void* data, u32 size)
 
 void GSDeviceVK::UnbindTexture(GSTextureVK* tex)
 {
+	// The groups waiting for the driver's run entry keep the textures they sample, and the ordinary
+	// calls read those objects when the groups are recorded.
+	if (!m_run_groups.empty() || m_run_group_open)
+		FlushRun();
 	for (u32 i = 0; i < NUM_TFX_TEXTURES; i++)
 	{
 		if (m_tfx_textures[i] == tex)
