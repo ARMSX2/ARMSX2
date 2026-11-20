@@ -23,14 +23,12 @@
 ///   2. one of that register state's variants (VarKey): the facts about the draw, the target and the source, and the
 ///      run context (target scale and size). The variant that matched last is tried first.
 ///
-/// A row is one game draw continuing a run of draws into one target. GSDrawRow and GSDrawFacts are the records the
-/// row writer and the vertex writer exchange; see the comments on each.
-///
 /// Header-only apart from the table's slow paths, so the tests can pin it without a device.
 namespace GSDrawRows
 {
-	/// gsrunner scaffolding. Off: every draw derives. On: a draw whose state is in the table takes the entry. Check:
-	/// every such draw derives as well and the two are compared byte for byte.
+	/// How draws use the table. The renderer runs On; the tests also run Off and Check against it. Off: every draw
+	/// derives. On: a draw whose state is in the table takes the entry. Check: every such draw derives as well and the
+	/// two are compared byte for byte.
 	enum class Mode : u8
 	{
 		Off,
@@ -357,7 +355,7 @@ namespace GSDrawRows
 		u32 m_mask = 0;
 	};
 
-	/// The table's counters, for gsrunner.
+	/// The table's counters, read by the tests. Most are counted only while s_stats is set.
 	struct Stats
 	{
 		u64 draws = 0; ///< DrawPrims calls that reached the derivation
@@ -398,78 +396,5 @@ namespace GSDrawRows
 		const int frac0 = (p0 - offset) & 0xf;
 		const int frac1 = (p1 - offset) & 0xf;
 		return GSSpriteEdgeSnap::NativeSpritePushApplies(frac0, frac1, p0 <= p1) ? static_cast<u32>(16 - frac1) : 0u;
-	}
-
-	/// The 32-byte record of one game draw that continues a run. CPU memory only.
-	struct alignas(16) GSDrawRow
-	{
-		enum : u8
-		{
-			TWIN = 1u << 0,
-			FULL_COVER = 1u << 1,
-			SPRITE = 1u << 2,
-			OPENER = 1u << 3,
-			DERIVED = 1u << 4, ///< written by a derive-only draw
-		};
-		static constexpr u8 TEX_NONE = 0xFF;
-		static constexpr u8 TEX_SELF = 0xFE;
-
-		u16 state; ///< index of the state entry
-		u8 tex; ///< index in the run's texture list, or TEX_NONE, TEX_SELF
-		u8 flags;
-		u8 a_min; ///< lowest alpha the draw's fragments can write
-		u8 a_max; ///< highest
-		u8 lod; ///< low 3 bits lowest mip level, next 3 highest; 0 when the entry has no mipmapping
-		u8 zero;
-		u16 box[4]; ///< x0, y0, x1, y1 in native target pixels, after the scissor
-		u32 vfirst; ///< first vertex in the vertex stream
-		u32 ifirst; ///< first index in the run's index staging
-		u32 nidx; ///< index count
-		u32 seq; ///< the draw's sequence number, which its vertices carry in their fog word
-	};
-	static_assert(sizeof(GSDrawRow) == 32);
-	static_assert(offsetof(GSDrawRow, box) == 8 && offsetof(GSDrawRow, vfirst) == 16 && offsetof(GSDrawRow, seq) == 28);
-
-	/// What a draw's vertices are, filled where they are written. Lives only until the row is written.
-	struct alignas(16) GSDrawFacts
-	{
-		enum : u16
-		{
-			RGB_ZERO = 1u << 0,
-			ALPHA_ZERO = 1u << 1,
-			COLOUR_128 = 1u << 2,
-			QUADS = 1u << 3,
-			NO_GAPS = 1u << 4,
-			Z_OVER = 1u << 5,
-			X1_FRAC_HIGH = 1u << 6, ///< bit 3 of vertex 1's X sub-pixel position
-			Y1_FRAC_HIGH = 1u << 7,
-			U0_IS_8 = 1u << 8,
-			U0_IS_16 = 1u << 9,
-			MIN_X_HALF = 1u << 10, ///< the lowest x is -0.5
-		};
-
-		u32 seq; ///< sequence number in draw order, never reused within SEQ_WRAP draws
-		u32 vfirst, nverts; ///< where the vertices are in the stream, after sprite expansion
-		u32 nidx;
-		u16 box[4]; ///< bounds in native target pixels, before the half-pixel push
-		u16 uv[4], uv_rounded[4]; ///< texture-coordinate range before and after texel rounding
-		u8 a_min, a_max; ///< vertex alpha range
-		u8 prim_class, eq; ///< primitive class; which components are equal over the draw
-		u16 bits;
-		u8 bake_x, bake_y; ///< sixteenths added to every X and Y by the half-pixel push (0 to 16)
-		float q0; ///< Q of vertex 0, meaningful when Q is equal over the draw
-		u64 memo; ///< the burst memo's signature; opaque here
-	};
-	static_assert(sizeof(GSDrawFacts) == 64);
-
-	/// Sequence numbers wrap here: the fog word holds the low byte of fog and 24 bits of sequence.
-	inline constexpr u32 SEQ_WRAP = 1u << 24;
-	/// Most rows one run holds: the shader table is indexed by seq - first seq.
-	inline constexpr u32 MAX_RUN_ROWS = 8184;
-
-	/// Whether `seq` still fits the run that started at `first`, across the 24-bit wrap.
-	inline bool SeqInRun(u32 first, u32 seq)
-	{
-		return ((seq - first) & (SEQ_WRAP - 1)) < MAX_RUN_ROWS;
 	}
 } // namespace GSDrawRows

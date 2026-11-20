@@ -1,9 +1,8 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// Pins the rows and the state table (GS/Renderers/HW/GSDrawRow.h): the record layouts, the two-level table's
-// lookups, growth and flush, the sequence-number window, and the half-pixel mode-5 push written into positions
-// against the vertex offset it replaces.
+// Pins the state table (GS/Renderers/HW/GSDrawRow.h): its record layouts, the two-level table's lookups, growth and
+// flush, and the half-pixel mode-5 push written into positions against the vertex offset it replaces.
 
 #include "GS/Renderers/HW/GSDrawRow.h"
 
@@ -35,38 +34,14 @@ namespace
 	}
 } // namespace
 
-TEST(GSDrawRow, RecordLayouts)
+TEST(GSStateTable, RecordLayouts)
 {
-	EXPECT_EQ(sizeof(GSDrawRow), 32u);
-	EXPECT_EQ(sizeof(GSDrawFacts), 64u);
-	EXPECT_EQ(offsetof(GSDrawRow, state), 0u);
-	EXPECT_EQ(offsetof(GSDrawRow, tex), 2u);
-	EXPECT_EQ(offsetof(GSDrawRow, flags), 3u);
-	EXPECT_EQ(offsetof(GSDrawRow, a_min), 4u);
-	EXPECT_EQ(offsetof(GSDrawRow, lod), 6u);
-	EXPECT_EQ(offsetof(GSDrawRow, box), 8u);
-	EXPECT_EQ(offsetof(GSDrawRow, ifirst), 20u);
-	EXPECT_EQ(offsetof(GSDrawRow, nidx), 24u);
-	EXPECT_EQ(offsetof(GSDrawFacts, memo), 56u);
 	EXPECT_EQ(sizeof(StateHead), 96u);
 	EXPECT_EQ(sizeof(RegState), 96u);
 	EXPECT_EQ(CONF_BYTES % 16, 0u);
 	EXPECT_EQ(CB_BYTES % 16, 0u);
 	std::printf("state entry: configuration %u bytes, constant buffers %u bytes, body %zu bytes, head %zu bytes\n",
 		CONF_BYTES, CB_BYTES, sizeof(StateBody), sizeof(StateHead));
-}
-
-TEST(GSDrawRow, SequenceWindowWrapsAt24Bits)
-{
-	EXPECT_TRUE(SeqInRun(100, 100));
-	EXPECT_TRUE(SeqInRun(100, 100 + MAX_RUN_ROWS - 1));
-	EXPECT_FALSE(SeqInRun(100, 100 + MAX_RUN_ROWS));
-	// A run that starts just before the wrap continues across it.
-	const u32 first = SEQ_WRAP - 10;
-	EXPECT_TRUE(SeqInRun(first, (first + 20) & (SEQ_WRAP - 1)));
-	EXPECT_FALSE(SeqInRun(first, (first + MAX_RUN_ROWS + 5) & (SEQ_WRAP - 1)));
-	// A sequence number before the run's first is far outside it.
-	EXPECT_FALSE(SeqInRun(100, 99));
 }
 
 TEST(GSStateTable, RegisterStatesFindOnlyTheirOwnKey)
