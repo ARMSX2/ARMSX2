@@ -361,12 +361,15 @@ namespace GSRunsPolicy
 	}
 
 	/// The key of a row's streak class (Streaks): a hash of the fixed state one group holds one value of. vs_fixed: the
-	/// vertex selector without the bits a group's rows may differ in. rt_size, ds_size: the targets' sizes.
+	/// vertex selector without the bits a group's rows may differ in. rt_size, ds_size: the targets' sizes, which stand
+	/// for the targets: their host addresses differ from one run to the next, and the class decides which rows open
+	/// groups, so it must be the same for the same draws on every run. Targets of one size share classes; a collision
+	/// only changes when a group opens.
 	inline u64 StreakClass(const GSHWDrawConfig& config, u16 vs_fixed, GSVector2i rt_size, GSVector2i ds_size)
 	{
 		u64 w[9];
-		w[0] = reinterpret_cast<uptr>(config.rt);
-		w[1] = reinterpret_cast<uptr>(config.ds);
+		w[0] = static_cast<u64>(static_cast<u32>(rt_size.x)) | (static_cast<u64>(static_cast<u32>(rt_size.y)) << 32);
+		w[1] = static_cast<u64>(static_cast<u32>(ds_size.x)) | (static_cast<u64>(static_cast<u32>(ds_size.y)) << 32);
 		w[2] = static_cast<u64>(config.depth.key) | (static_cast<u64>(vs_fixed) << 8) |
 		       (static_cast<u64>(config.ps.rta_correction) << 24) | (static_cast<u64>(config.ps.zfloor) << 25) |
 		       (static_cast<u64>(config.cb_vs.max_depth) << 32);
