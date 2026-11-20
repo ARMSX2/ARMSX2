@@ -115,6 +115,8 @@ public:
 		}
 	}
 	void Reset();
+	/// Returns the GPU palette textures to the device, for a device that is about to be destroyed.
+	void ReleaseGPUTextures();
 	bool InvalidateRange(u32 start_block, u32 end_block, bool is_draw = false);
 	u8 IsInvalid();
 	void ClearDrawInvalidity();

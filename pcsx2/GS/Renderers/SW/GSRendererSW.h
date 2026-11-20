@@ -105,6 +105,7 @@ public:
 	__fi static GSRendererSW* GetInstance() { return static_cast<GSRendererSW*>(g_gs_renderer.get()); }
 
 	void Destroy() override;
+	void ReleaseDeviceObjects() override;
 };
 
 MULTI_ISA_UNSHARED_END

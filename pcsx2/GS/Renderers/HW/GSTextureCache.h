@@ -992,6 +992,9 @@ public:
 	/// Drops every queued asynchronous download (mode change, target flush, reset).
 	void DiscardPendingDownloads();
 	void RemoveAll(bool sources, bool targets, bool hash_cache);
+	/// Drops what RemoveAll() keeps from the device: the held words, unwritten, and the shared readback
+	/// buffers. For a device that is about to be destroyed.
+	void ReleaseKeptDeviceObjects();
 
 	/// Says the renderer has just been reset: the targets are gone and local memory may have been
 	/// replaced under them (savestate or GS-dump load), so until a display finds a target to

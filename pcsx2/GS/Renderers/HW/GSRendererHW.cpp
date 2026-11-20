@@ -78,6 +78,15 @@ void GSRendererHW::Destroy()
 	GSRenderer::Destroy();
 }
 
+void GSRendererHW::ReleaseDeviceObjects()
+{
+	PurgeTextureCache(true, true, true);
+	g_texture_cache->ReleaseKeptDeviceObjects();
+	// Only compared against a target's texture, but a texture of the new device can take its address.
+	m_date_chain_rt = nullptr;
+	GSRenderer::ReleaseDeviceObjects();
+}
+
 void GSRendererHW::PurgeTextureCache(bool sources, bool targets, bool hash_cache)
 {
 	CopyRunDisarm();

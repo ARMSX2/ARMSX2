@@ -683,6 +683,7 @@ public:
 	__fi HWCachedCtx* GetCachedCtx() { return &m_cached_ctx; }
 	__fi u32 GetLastChannelShuffleFBP() { return m_last_channel_shuffle_fbp; }
 	void Destroy() override;
+	void ReleaseDeviceObjects() override;
 
 	void UpdateRenderFixes() override;
 	bool DrawClearsScanMask() const override;

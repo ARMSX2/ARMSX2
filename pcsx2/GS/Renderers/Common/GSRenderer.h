@@ -80,8 +80,9 @@ public:
 
 	virtual void Destroy();
 
-	/// Hands the device back what this renderer holds from it, for a device that is destroyed and
-	/// replaced under a renderer that stays (GSreopen after a device loss).
+	/// Hands the device back everything this renderer holds from it, for a device that is destroyed
+	/// and replaced under a renderer that stays (GSreopen after a device loss). Anything kept would be
+	/// used later with the new device, which does not own it.
 	virtual void ReleaseDeviceObjects();
 
 	/// The field-shift detector, for tests.

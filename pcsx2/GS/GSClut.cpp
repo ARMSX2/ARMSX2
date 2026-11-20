@@ -120,6 +120,17 @@ void GSClut::Reset()
 	m_read_serial++;
 }
 
+void GSClut::ReleaseGPUTextures()
+{
+	g_gs_device->Recycle(m_gpu_clut4);
+	g_gs_device->Recycle(m_gpu_clut8);
+	m_gpu_clut4 = nullptr;
+	m_gpu_clut8 = nullptr;
+	m_current_gpu_clut = nullptr;
+	m_last_gpu_clut = nullptr;
+	m_gpu_clut_dirty = true;
+}
+
 bool GSClut::InvalidateRange(u32 start_block, u32 end_block, bool is_draw)
 {
 	if (m_write.dirty & 2)
