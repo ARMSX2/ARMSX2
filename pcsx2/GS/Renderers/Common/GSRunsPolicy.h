@@ -110,7 +110,9 @@ namespace GSRunsPolicy
 	inline Placement PlaceRow(bool eligible, bool in_set, u32 set_size, u64 area, u32 sampler_textures = SAMPLER_TEXTURES,
 		u64 fetch_area = FETCH_AREA)
 	{
-		return Placement::Sampler;
+		if (in_set || set_size < sampler_textures)
+			return Placement::Sampler;
+		return (eligible && area < fetch_area) ? Placement::Fetch : Placement::Close;
 	}
 
 	/// The sampling bits of a textured row whose texture has `levels` mip levels, if it can fetch; 0 where it must keep
@@ -119,7 +121,13 @@ namespace GSRunsPolicy
 	/// with more levels keeps the sampler, which picks and blends them.
 	inline u32 FetchBits(u32 flags, GSHWDrawConfig::SamplerSelector ss, int levels)
 	{
-		return 0;
+		if (!Textured(flags) || levels != 1)
+			return 0;
+		const bool linear = ss.IsMagFilterLinear();
+		if (Field(flags, STATE_LOD) != LOD_NONE && ss.IsMinFilterLinear() != linear)
+			return 0;
+		return ROW_FETCH | (ss.tau ? ROW_FETCH_REPEAT_U : 0u) | (ss.tav ? ROW_FETCH_REPEAT_V : 0u) |
+		       (linear ? ROW_FETCH_LINEAR : 0u);
 	}
 
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a

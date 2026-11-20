@@ -474,7 +474,7 @@ static bool IsExemptForMaliSX2(const DriverRule& rule, const MobileDriverContext
 // Sources and upstream revisions are mirrored in docs/gpu-driver-database.json. A known bug is
 // not automatically an active workaround: expensive fallbacks stay off until they have a bounded,
 // tested condition.
-static constexpr std::array<DriverRule, 37> s_driver_rules = {{
+static constexpr std::array<DriverRule, 38> s_driver_rules = {{
 	{"gl-arm-buffer-stream", MobileGpuApi::OpenGL, RuntimeGpuProfile::Mali,
 		MobileGpuDriver::ArmProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenBufferStreaming) | Bug(DriverBug::BrokenUnsynchronizedMapping) |
@@ -668,6 +668,15 @@ static constexpr std::array<DriverRule, 37> s_driver_rules = {{
 	{"vk-turnip-mixed-sampling-derivatives", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenMixedSamplingDerivatives), 0},
+	// On the Adreno 650 under Turnip the GPU stalls when a run draw samples many textures through the filtered sampler;
+	// fetching avoids the sampler. The same run draws with every sample a texelFetch did not stall, and a group that
+	// sampled at most four textures through the sampler did not either. So a run group samples at most four textures
+	// through the sampler, and past them a small row whose texture has one level is filtered by hand from texelFetch
+	// while a large one starts the next group (GSRunsPolicy::PlaceRow). The 613 and the 722 under Turnip ran the same
+	// draws without stalling, so the rule is the 650's alone.
+	{"vk-turnip-a650-filtered-run-sampling-stall", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
+		MobileGpuDriver::MesaTurnip, MobileGpuArchitecture::Unknown, 650, 650, 0, {}, {}, 0, 0, false,
+		Bug(DriverBug::StallsOnFilteredRunSampling), 0},
 	// Turnip below Mesa 26.2 hangs the GPU on A6XX_EARLY_Z_LATE_Z + a D32_SFLOAT_S8_UINT
 	// depth-stencil attachment + a fragment shader that can discard. With a stencil buffer every
 	// depth target is D32S8, and GSDeviceVK::SetupDATE's stencil pre-pass is that draw, so the first

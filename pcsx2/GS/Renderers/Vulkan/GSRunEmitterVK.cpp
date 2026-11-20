@@ -47,6 +47,7 @@ namespace
 	// median run holds 1 texture and the 99th percentile 79 (Spider-Man 3); an array of 32 cuts 2% of runs and adds 2
 	// host draws to the worst frame, and its pool of 256 sets is the 8,192 descriptors the variable sets had.
 	constexpr u32 MAX_TEXTURES = 32;
+	static_assert(MAX_TEXTURES <= 64, "Group::sampler_slots holds one bit a slot");
 	constexpr u32 POOL_SETS = 256;
 	// A slot's pools serve one command buffer's groups. Past this many, the allocations fail for another reason than
 	// full pools, and the run program stops rather than grow without bound.
@@ -206,9 +207,11 @@ bool GSRunEmitterVK::Init()
 
 	m_class = &GSRunsPolicy::DeviceClassFor(m_dev->m_device_properties.deviceName);
 	m_one_call = m_dev->GetMobileDriverProfile().HasBug(DriverBug::BrokenMixedSamplingDerivatives);
-	Console.WriteLn("VK: run program on, up to %u textures a group, groups open at %u rows, split rule of class %s (%s), %s",
+	m_fetch = m_dev->GetMobileDriverProfile().HasBug(DriverBug::StallsOnFilteredRunSampling);
+	Console.WriteLn("VK: run program on, up to %u textures a group, groups open at %u rows, split rule of class %s (%s), %s%s",
 		m_max_textures, m_open_rows, m_class->name, m_class->source,
-		m_one_call ? "one sampling call a group" : "mixed sampling calls");
+		m_one_call ? "one sampling call a group" : "mixed sampling calls",
+		m_fetch ? ", a group's sampler bounded, small rows past it fetched" : "");
 	return true;
 }
 
@@ -488,30 +491,54 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 
 		// The row's texture: its slot in the group's array.
 		u32 slot = 0;
+		u32 fetch_bits = 0;
 		if (config.ps.tfx != 4)
 		{
 			const GSTextureVK* tex = static_cast<const GSTextureVK*>(config.tex);
 			const Texture t = {tex->GetView(), sampler, tex->GetVkLayout()};
 			const auto same = [&t](const Texture& o) { return o.view == t.view && o.sampler == t.sampler; };
+			bool known = true;
 			if (g->last_slot < g->textures.size() && same(g->textures[g->last_slot]))
 				slot = g->last_slot;
 			else
 			{
 				const auto it = std::find_if(g->textures.begin(), g->textures.end(), same);
-				if (it != g->textures.end())
-					slot = static_cast<u32>(it - g->textures.begin());
-				else if (g->textures.size() == m_max_textures)
+				slot = static_cast<u32>(it - g->textures.begin());
+				known = it != g->textures.end();
+				if (!known && g->textures.size() == m_max_textures)
 				{
 					Close(side);
 					g = nullptr;
 					continue;
 				}
-				else
+			}
+			if (m_fetch)
+			{
+				// At most SAMPLER_TEXTURES of the group's textures through the sampler; past them a small row fetches and a
+				// large one, or one that cannot fetch, opens the next group (GSRunsPolicy::PlaceRow).
+				const u32 bits = GSRunsPolicy::FetchBits(d.flags, config.sampler, config.tex->GetMipmapLevels());
+				const bool in_set = (g->sampler_slots >> slot) & 1;
+				switch (GSRunsPolicy::PlaceRow(bits != 0, in_set, g->sampler_count, DrawArea(config)))
 				{
-					slot = static_cast<u32>(g->textures.size());
-					g->textures.push_back(t);
+					case GSRunsPolicy::Placement::Sampler:
+						if (!in_set)
+						{
+							g->sampler_slots |= u64{1} << slot;
+							g->sampler_count++;
+						}
+						break;
+					case GSRunsPolicy::Placement::Fetch:
+						fetch_bits = bits;
+						g->fetched++;
+						break;
+					case GSRunsPolicy::Placement::Close:
+						Close(side);
+						g = nullptr;
+						continue;
 				}
 			}
+			if (!known)
+				g->textures.push_back(t);
 			g->last_slot = slot;
 		}
 
@@ -568,7 +595,7 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 
 		u32 s[8];
 		s[0] = d.flags;
-		s[1] = slot;
+		s[1] = slot | fetch_bits;
 		const GSVector4 fog = config.cb_ps.FogColor_AREF;
 		s[2] = (config.ps.fog ? (static_cast<u32>(fog.x) | (static_cast<u32>(fog.y) << 8) | (static_cast<u32>(fog.z) << 16)) : 0u) |
 		       (GSRunsPolicy::WayReadsAf(d.way) ? (static_cast<u32>(config.cb_ps.TA_MaxDepth_Af.w * 128.0f) << 24) : 0u);
@@ -680,6 +707,8 @@ VkShaderModule GSRunEmitterVK::GetFragmentShader(u32 variant, u32 spec)
 	defines += "#define RUN_DUAL " + std::to_string(variant & 1) + "\n";
 	defines += "#define RUN_RTA_CORRECTION " + std::to_string((variant >> 1) & 1) + "\n";
 	defines += "#define RUN_ZFLOOR " + std::to_string((variant >> 2) & 1) + "\n";
+	if (m_fetch)
+		defines += "#define RUN_FETCH 1\n";
 	for (u32 i = 0; i < GSRunsPolicy::NUM_STATES; i++)
 	{
 		const u32 v = (spec >> (4 * i)) & 0xF;

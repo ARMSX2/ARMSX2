@@ -146,6 +146,9 @@ private:
 		u64 area_total = 0; ///< its rows' draw-rectangle area in target pixels
 		GSRunsPolicy::StateSet states;
 		u32 last_slot = 0;
+		u64 sampler_slots = 0; ///< where the run program fetches: the slots it samples through the sampler (PlaceRow)
+		u32 sampler_count = 0;
+		u32 fetched = 0; ///< rows of the group that fetch
 		u32 last_flags = ~0u; ///< the state flags of the last row joined: a row with the same ones changes no program
 		std::vector<Texture> textures; ///< one per distinct (view, sampler) pair, in first-use order
 	};
@@ -235,4 +238,5 @@ private:
 	bool m_sets_failed = false; ///< the driver refuses the groups' texture sets: no group forms from here on
 	const GSRunsPolicy::DeviceClass* m_class = &GSRunsPolicy::DEVICE_CLASS_DEFAULT;
 	bool m_one_call = false; ///< the driver has DriverBug::BrokenMixedSamplingDerivatives (GSRunsPolicy::LodJoins)
+	bool m_fetch = false; ///< the driver has DriverBug::StallsOnFilteredRunSampling (GSRunsPolicy::FetchBits)
 };
