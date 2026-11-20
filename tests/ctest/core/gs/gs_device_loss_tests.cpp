@@ -72,6 +72,7 @@ namespace
 		std::unordered_set<const GSTexture*> m_made;
 		u32 m_downloads_made = 0;
 		u32 m_stretches = 0;
+		u32 m_clut_updates = 0;
 		u32 m_foreign_uses = 0;
 
 	protected:
@@ -91,6 +92,15 @@ namespace
 			Use(sTex);
 			Use(dTex);
 			CaptureDevice::DoStretchRect(sTex, sRect, dTex, dRect, shader, filter);
+		}
+
+		void DoUpdateCLUTTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, GSTexture* dTex,
+			u32 dOffset, u32 dSize) override
+		{
+			m_clut_updates++;
+			Use(sTex);
+			Use(dTex);
+			CaptureDevice::DoUpdateCLUTTexture(sTex, sScale, offsetX, offsetY, dTex, dOffset, dSize);
 		}
 	};
 
@@ -201,5 +211,44 @@ TEST_F(DeviceLoss, ATextureCacheReadUsesOnlyTheNewDevicesReadbackBuffers)
 	DrawFrame();
 	g_gs_renderer->ReadbackTextureCache();
 
+	EXPECT_EQ(Device()->m_foreign_uses, 0u) << "the new device was handed the old device's objects";
+}
+
+// With GPU target CLUTs on, the CLUT converts a palette held in a render target into a palette texture
+// of its own, one for 4-bit and one for 8-bit indices, kept between reads. After the swap a read must
+// neither draw into nor bind a palette texture of the old device.
+TEST_F(DeviceLoss, AGPUPaletteReadUsesOnlyTheNewDevicesPaletteTextures)
+{
+	GSConfig.UpscaleMultiplier = 1.0f;
+	GSConfig.UserHacks_GPUTargetCLUTMode = GSGPUTargetCLUTMode::Enabled;
+	BringUp();
+
+	GSClut& clut = m_gs->m_mem.m_clut;
+	// Reads the palette at block 0 and returns the palette texture the next draw would bind.
+	const auto read = [&clut](u32 psm) {
+		GIFRegTEX0 t = {};
+		t.PSM = psm;
+		t.CBP = 0;
+		t.CPSM = PSMCT32;
+		clut.Read32(t, GIFRegTEXA{});
+		return clut.GetGPUTexture();
+	};
+
+	// The palette is the colour target at block 0. Reading it as 4-bit then 8-bit makes both palette
+	// textures; each read changes the palette size, so each one converts.
+	DrawFrame();
+	ASSERT_NE(read(PSMT4), nullptr) << "the palette did not take the GPU road";
+	ASSERT_NE(read(PSMT8), nullptr) << "the palette did not take the GPU road";
+	ASSERT_EQ(Device()->m_clut_updates, 2u);
+
+	LoseDevice();
+
+	DrawFrame();
+	const GSTexture* const clut4 = read(PSMT4);
+	const GSTexture* const clut8 = read(PSMT8);
+
+	EXPECT_TRUE(clut4 && Device()->m_made.count(clut4)) << "the 4-bit read bound a texture the new device did not make";
+	EXPECT_TRUE(clut8 && Device()->m_made.count(clut8)) << "the 8-bit read bound a texture the new device did not make";
+	EXPECT_EQ(Device()->m_clut_updates, 2u) << "a read after the swap did not convert the palette";
 	EXPECT_EQ(Device()->m_foreign_uses, 0u) << "the new device was handed the old device's objects";
 }
