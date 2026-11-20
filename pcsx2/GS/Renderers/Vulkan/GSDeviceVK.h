@@ -246,7 +246,14 @@ public:
 
 	// These command buffers are allocated per-frame. They are valid until the command buffer
 	// is submitted, after that you should call these functions again.
-	__fi VkCommandBuffer GetCurrentCommandBuffer() const { return m_current_command_buffer; }
+	// Records the draws waiting for the driver's run entry first, so that whatever the caller records next lands
+	// after them.
+	__fi VkCommandBuffer GetCurrentCommandBuffer()
+	{
+		if (!m_run_groups.empty() || m_run_group_open)
+			FlushRun();
+		return m_current_command_buffer;
+	}
 	__fi VKStreamBuffer& GetTextureUploadBuffer() { return m_texture_stream_buffer; }
 	VkCommandBuffer GetCurrentInitCommandBuffer();
 
@@ -1232,6 +1239,69 @@ private:
 	using PFN_vkCmdSetIndexRangeMALISX2 = void(VKAPI_PTR*)(
 		VkCommandBuffer commandBuffer, uint32_t firstIndex, uint32_t indexCount, uint32_t minIndex, uint32_t maxIndex);
 	PFN_vkCmdSetIndexRangeMALISX2 m_cmd_set_index_range = nullptr;
+
+	// armsx2-turnip's run entry: a run of TFX draws recorded in one call, defined as the ordinary binds and the
+	// indexed draw for each group in order. The layouts must match the driver's tu_run, tu_run_group,
+	// tu_run_state and tu_run_texture. Null on every other driver. Draws wait in m_run_groups from ApplyTFXState
+	// to the next use of the command buffer (GetCurrentCommandBuffer), and go to the driver in one call there.
+	struct DrawRunState
+	{
+		VkPipeline pipeline;
+		u32 tex_mask;
+		u32 reserved;
+	};
+	struct DrawRunTexture
+	{
+		VkImageView view;
+		VkSampler sampler;
+	};
+	struct DrawRunGroup
+	{
+		u32 state;
+		u32 tex_first;
+		u32 first_index;
+		u32 index_count;
+		s32 vertex_offset;
+		u32 dyn_offset[2];
+		float blend_constant;
+		VkRect2D scissor;
+	};
+	struct DrawRun
+	{
+		u32 size;
+		u32 abi;
+		u32 group_count;
+		u32 reserved;
+		VkPipelineLayout layout;
+		VkDescriptorSet set0;
+		const DrawRunState* states;
+		const DrawRunGroup* groups;
+		const DrawRunTexture* textures;
+	};
+	static constexpr u32 DRAW_RUN_ABI = 1;
+	static constexpr u32 DRAW_RUN_MAX_GROUPS = 1024;
+	using PFN_vkCmdDrawRunARMSX2 = void(VKAPI_PTR*)(VkCommandBuffer commandBuffer, const DrawRun* run);
+	PFN_vkCmdDrawRunARMSX2 m_cmd_draw_run = nullptr;
+
+	std::vector<DrawRunState> m_run_states;
+	std::vector<DrawRunGroup> m_run_groups;
+	std::vector<DrawRunTexture> m_run_textures;
+	// The next ApplyTFXState's draw may join the run, and the set-1 bindings its pipeline's shaders read. Both
+	// follow from the pipeline selector; set by NoteRunPipeline, consumed by ApplyTFXState.
+	bool m_run_want = false;
+	u32 m_run_want_mask = 0;
+	// ApplyTFXState took the state of a draw for the run; DrawIndexedPrimitive completes the group. The flags
+	// are what that state owes the ordinary calls if the group is given up before its draw.
+	bool m_run_group_open = false;
+	u32 m_run_open_mask = 0;
+	u32 m_run_open_flags = 0;
+	// The entry left set 1 unknown and nothing has pushed it since: a draw that follows without its own
+	// ApplyTFXState (the second part of a split draw) pushes it first.
+	bool m_run_set1_unknown = false;
+
+	void NoteRunPipeline(const PipelineSelector& p);
+	void FlushRun();
+	void EmitTFXState(u32 flags, VkCommandBuffer cmdbuf);
 
 	// The smallest and largest index in m_index, when m_index_range_valid: the same range malisx2's
 	// read-back finds, taken from the indices while they are still in cached memory.

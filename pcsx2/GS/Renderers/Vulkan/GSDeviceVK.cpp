@@ -1891,7 +1891,7 @@ void GSDeviceVK::EndGPUTiming(u32 index)
 
 	if (wants_timestamp && resources.timestamp_query_state == QueryState::Querying)
 	{
-		vkCmdWriteTimestamp(m_current_command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
+		vkCmdWriteTimestamp(GetCurrentCommandBuffer(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, m_timestamp_query_pool,
 			m_current_frame * 2 + 1);
 		resources.timestamp_query_state = QueryState::Ready;
 	}
@@ -2052,6 +2052,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	// Every submit ends the pass first, and every pass end records the rows pending: their ring data belongs to this
 	// command buffer.
 	pxAssertMsg(!m_emitter || !m_emitter->AnyPending(), "Rows are pending at a submit");
+	FlushRun();
 	m_render_passes_since_submit = 0;
 	m_draws_since_submit = 0;
 	m_next_in_pass_kick_offer = 0;
@@ -2076,7 +2077,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 	{
 		// Didn't end query in DoBeginPresent() so end it here.
 		resources.pipeline_statistics_query = QueryState::Ready;
-		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
+		vkCmdEndQuery(GetCurrentCommandBuffer(), m_pipeline_statistics_query_pool, m_current_frame);
 	}
 
 	res = vkEndCommandBuffer(resources.command_buffers[1]);
@@ -3685,7 +3686,7 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 	if (resources.pipeline_statistics_query == QueryState::Querying)
 	{
 		resources.pipeline_statistics_query = QueryState::Ready;
-		vkCmdEndQuery(m_current_command_buffer, m_pipeline_statistics_query_pool, m_current_frame);
+		vkCmdEndQuery(GetCurrentCommandBuffer(), m_pipeline_statistics_query_pool, m_current_frame);
 	}
 
 	// Before anything below records a use of the swap chain: this may rebuild it.
@@ -4159,6 +4160,9 @@ bool GSDeviceVK::CheckFeatures()
 	if (IsDeviceMaliSX2())
 		Console.WriteLn("VK: malisx2 index ranges from the application: %s", m_cmd_set_index_range ? "yes" : "no");
 	m_index_range_valid = false;
+
+	m_cmd_draw_run = reinterpret_cast<PFN_vkCmdDrawRunARMSX2>(vkGetDeviceProcAddr(m_device, "vkCmdDrawRunARMSX2"));
+	Console.WriteLn("VK: driver run entry (vkCmdDrawRunARMSX2): %s", m_cmd_draw_run ? "yes" : "no");
 
 	const GSSelfReadRoadDecision road = ResolveSelfReadRoad();
 	ResolveFeatureTable();
@@ -4891,7 +4895,45 @@ void GSDeviceVK::DrawIndexedPrimitive(int offset, int count)
 {
 	pxAssert(offset + count <= (int)m_index.count);
 	g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+	if (m_run_group_open)
+	{
+		// The state ApplyTFXState took for the run, and this draw: one group.
+		m_run_group_open = false;
+		const u32 mask = m_run_open_mask;
+		u32 state = static_cast<u32>(m_run_states.size());
+		for (u32 i = state, seen = 0; i > 0 && seen < 8; i--, seen++)
+		{
+			if (m_run_states[i - 1].pipeline == m_current_pipeline && m_run_states[i - 1].tex_mask == mask)
+			{
+				state = i - 1;
+				break;
+			}
+		}
+		if (state == m_run_states.size())
+			m_run_states.push_back({m_current_pipeline, mask, 0});
+
+		DrawRunGroup& g = m_run_groups.emplace_back();
+		g.state = state;
+		g.tex_first = static_cast<u32>(m_run_textures.size());
+		for (u32 bits = mask; bits != 0; bits &= bits - 1)
+		{
+			const u32 b = static_cast<u32>(std::countr_zero(bits));
+			m_run_textures.push_back({m_tfx_textures[b]->GetView(), b == TFX_TEXTURE_TEXTURE ? m_tfx_sampler : VK_NULL_HANDLE});
+		}
+		g.first_index = m_index.start + offset;
+		g.index_count = static_cast<u32>(count);
+		g.vertex_offset = static_cast<s32>(m_vertex.start);
+		g.dyn_offset[0] = m_tfx_dynamic_offsets[0];
+		g.dyn_offset[1] = m_tfx_dynamic_offsets[1];
+		g.blend_constant = static_cast<float>(m_blend_constant_color) / 128.0f;
+		g.scissor = {{m_scissor.x, m_scissor.y}, {static_cast<u32>(m_scissor.width()), static_cast<u32>(m_scissor.height())}};
+		if (m_run_groups.size() >= DRAW_RUN_MAX_GROUPS)
+			FlushRun();
+		return;
+	}
 	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+	if (m_run_set1_unknown && m_current_pipeline_layout == PipelineLayout::TFX) [[unlikely]]
+		EmitTFXState(DIRTY_FLAG_TFX_TEXTURES, cmdbuf);
 	// Only a draw of all of m_index: a part of it could use fewer vertices than the whole range, and
 	// is left to the driver's read-back as before. The index buffer is bound by now (ApplyTFXState /
 	// ApplyUtilityState), which is what the driver matches the range to.
@@ -8472,11 +8514,67 @@ bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
 		return false;
 
 	SetPipeline(pipeline);
+	NoteRunPipeline(p);
 
 	if (!ApplyTFXState())
 		return false;
 
 	return true;
+}
+
+// Whether the next TFX draw can join the driver's run, from its pipeline selector: no vertex expansion (those
+// draws take push constants), no storage-image slots, and the sampled slots the fragment shader declares
+// (tfx.glsl: Texture and Palette under NEEDS_TEX, RtSampler and DepthSampler under the feedback conditions,
+// PrimMinTexture under PS_DATE).
+void GSDeviceVK::NoteRunPipeline(const PipelineSelector& p)
+{
+	m_run_want = m_cmd_draw_run && m_use_push_descriptors && !UseInputAttachmentDescriptors() &&
+	             p.vs.expand == GSHWDrawConfig::VSExpand::None && !p.ps.HasColorROV() && !p.ps.HasDepthROV();
+	if (!m_run_want)
+		return;
+	u32 mask = 0;
+	if (p.ps.tfx != 4)
+		mask |= (1u << TFX_TEXTURE_TEXTURE) | (1u << TFX_TEXTURE_PALETTE);
+	if (p.ps.IsFeedbackLoopRT() || p.IsRTFeedbackLoop())
+		mask |= (1u << TFX_TEXTURE_RT);
+	if (p.ps.date > 0)
+		mask |= (1u << TFX_TEXTURE_PRIMID);
+	if (p.ps.IsFeedbackLoopDepth() || p.IsTestingAndSamplingDepth())
+		mask |= (1u << TFX_TEXTURE_DEPTH);
+	m_run_want_mask = mask;
+}
+
+// Records the waiting groups through the driver's run entry. A group whose draw has not come yet (something
+// used the command buffer between ApplyTFXState and the draw) gives its state to the ordinary calls instead.
+void GSDeviceVK::FlushRun()
+{
+	const VkCommandBuffer cmdbuf = m_current_command_buffer;
+	if (!m_run_groups.empty())
+	{
+		DrawRun run;
+		run.size = sizeof(run);
+		run.abi = DRAW_RUN_ABI;
+		run.group_count = static_cast<u32>(m_run_groups.size());
+		run.reserved = 0;
+		run.layout = m_tfx_pipeline_layout;
+		run.set0 = m_tfx_ubo_descriptor_set;
+		run.states = m_run_states.data();
+		run.groups = m_run_groups.data();
+		run.textures = m_run_textures.data();
+		m_cmd_draw_run(cmdbuf, &run);
+		m_run_states.clear();
+		m_run_groups.clear();
+		m_run_textures.clear();
+		// The entry leaves the last group's pipeline, scissor, blend constants and set 0 bound, which is what this
+		// device's cached state already says; set 1 is not known.
+		m_dirty_flags |= DIRTY_FLAG_TFX_TEXTURES;
+		m_run_set1_unknown = true;
+	}
+	if (m_run_group_open)
+	{
+		m_run_group_open = false;
+		EmitTFXState(m_run_open_flags | DIRTY_FLAG_TFX_TEXTURES, cmdbuf);
+	}
 }
 
 void GSDeviceVK::InitializeState()
@@ -8727,6 +8825,7 @@ void GSDeviceVK::ExecuteCommandBufferForReadback()
 
 void GSDeviceVK::InvalidateCachedState()
 {
+	FlushRun();
 	m_dirty_flags = ALL_DIRTY_STATE;
 	for (u32 i = 0; i < NUM_TFX_TEXTURES; i++)
 		m_tfx_textures[i] = m_null_texture.get();
@@ -9198,10 +9297,11 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 {
 	if (m_emitter)
 		m_emitter->RecordOpen();
-	if (m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0)
+	// A draw for the driver's run carries its whole state in its group, so it is taken even with nothing dirty.
+	const bool run = std::exchange(m_run_want, false) && m_current_line_width == 1.0f;
+	if (!run && m_current_pipeline_layout == PipelineLayout::TFX && m_dirty_flags == 0)
 		return true;
 
-	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
 	u32 flags = m_dirty_flags;
 	m_dirty_flags &= ~(DIRTY_TFX_STATE | DIRTY_CONSTANT_BUFFER_STATE | DIRTY_FLAG_TFX_UBO);
 
@@ -9248,7 +9348,6 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		flags |= DIRTY_FLAG_TFX_UBO;
 	}
 
-	Vulkan::DescriptorSetUpdateBuilder dsub;
 	if (m_current_pipeline_layout != PipelineLayout::TFX)
 	{
 		m_current_pipeline_layout = PipelineLayout::TFX;
@@ -9265,6 +9364,53 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		}
 	}
 
+	if (run)
+	{
+		// The index buffer, viewport and line width still go through their own calls (which first record the groups
+		// before this one); everything else is the group's, completed by the draw. Push constants are for vertex
+		// expansion, which a run's pipeline never uses: they stay owed to the next ordinary draw.
+		const u32 ordinary = flags & (DIRTY_FLAG_INDEX_BUFFER | DIRTY_FLAG_VIEWPORT | DIRTY_FLAG_LINE_WIDTH);
+		m_dirty_flags &= ~ordinary;
+		if (ordinary)
+			ApplyBaseState(ordinary, GetCurrentCommandBuffer());
+		m_dirty_flags |= flags & DIRTY_FLAG_VS_PUSH_CONSTANTS;
+		if (flags & DIRTY_FLAG_PIPELINE)
+			g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
+		m_run_open_flags = flags & ~(ordinary | DIRTY_FLAG_VS_PUSH_CONSTANTS);
+		m_run_open_mask = m_run_want_mask;
+		m_run_group_open = true;
+		return true;
+	}
+
+	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
+	if ((flags & DIRTY_FLAG_TFX_TEXTURES) && !m_use_push_descriptors)
+	{
+		const VkDescriptorSet ds = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
+		if (ds == VK_NULL_HANDLE) [[unlikely]]
+		{
+			if (already_execed)
+			{
+				Console.Error("VK: Failed to allocate TFX texture descriptor set");
+				return false;
+			}
+
+			// Frame descriptor pool exhausted — flush to reset it, then restart
+			// the render pass and re-apply all state on the fresh command buffer.
+			ExecuteCommandBufferAndRestartRenderPass(false, "Out of TFX texture descriptors");
+			return ApplyTFXState(true);
+		}
+		m_tfx_texture_descriptor_set = ds;
+	}
+
+	EmitTFXState(flags, cmdbuf);
+	return true;
+}
+
+// The ordinary Vulkan calls for the TFX state named by `flags`. Without push descriptors the caller has put a
+// fresh texture set in m_tfx_texture_descriptor_set when a texture flag is set.
+void GSDeviceVK::EmitTFXState(u32 flags, VkCommandBuffer cmdbuf)
+{
+	Vulkan::DescriptorSetUpdateBuilder dsub;
 	if (flags & DIRTY_FLAG_TFX_UBO)
 	{
 		// Still need to bind the UBO descriptor set.
@@ -9277,6 +9423,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 
 	if (flags & DIRTY_FLAG_TFX_TEXTURES)
 	{
+		m_run_set1_unknown = false;
 		VkDescriptorSet ds = VK_NULL_HANDLE;
 		// Non-push path allocates a fresh (empty) descriptor set, so every binding the
 		// shader may read must be written — not just the dirty ones (push descriptors
@@ -9286,20 +9433,7 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 		if (!m_use_push_descriptors)
 		{
 			flags |= DIRTY_FLAG_TFX_TEXTURES;
-			ds = AllocateDescriptorSetFromFramePool(m_tfx_texture_ds_layout);
-			if (ds == VK_NULL_HANDLE) [[unlikely]]
-			{
-				if (already_execed)
-				{
-					Console.Error("VK: Failed to allocate TFX texture descriptor set");
-					return false;
-				}
-
-				// Frame descriptor pool exhausted — flush to reset it, then restart
-				// the render pass and re-apply all state on the fresh command buffer.
-				ExecuteCommandBufferAndRestartRenderPass(false, "Out of TFX texture descriptors");
-				return ApplyTFXState(true);
-			}
+			ds = m_tfx_texture_descriptor_set;
 		}
 
 		AddTFXTextureWrites(dsub, ds, m_tfx_textures, m_tfx_sampler, flags);
@@ -9317,7 +9451,6 @@ bool GSDeviceVK::ApplyTFXState(bool already_execed)
 	}
 
 	ApplyBaseState(flags, cmdbuf);
-	return true;
 }
 
 bool GSDeviceVK::ApplyUtilityState(bool already_execed)
@@ -10093,7 +10226,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 
 				// If depth is cleared, we need to commit it, because we're only going to draw to the active part of the FB.
 				if (draw_ds && draw_ds->GetState() == GSTexture::State::Cleared && !config.drawarea.eq(GSVector4i::loadh(rtsize)))
-					draw_ds->CommitClear(m_current_command_buffer);
+					draw_ds->CommitClear(GetCurrentCommandBuffer());
 			}
 			else if (draw_rt->GetState() == GSTexture::State::Dirty)
 			{
@@ -10383,7 +10516,7 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 			0u, 1u};
 		if (m_emitter)
 			m_emitter->RecordOpen();
-		vkCmdClearAttachments(m_current_command_buffer, 1, &ca, 1, &rc);
+		vkCmdClearAttachments(GetCurrentCommandBuffer(), 1, &ca, 1, &rc);
 	}
 
 	// rt -> colclip hw blit if enabled
@@ -10747,6 +10880,7 @@ void GSDeviceVK::DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	if (pipeline != VK_NULL_HANDLE)
 	{
 		SetPipeline(pipeline);
+		NoteRunPipeline(pipe);
 		if (ApplyTFXState())
 		{
 			DeclareDrawFeedbackLoop(config, pipe);
