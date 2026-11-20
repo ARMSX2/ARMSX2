@@ -135,6 +135,19 @@ TEST(CatalogResponseCache, AnEntryFromTheFutureIsNotFresh)
 	const std::time_t t0 = 1'700'000'000;
 	SetFileTime(cache.PathFor("c.json"), t0);
 	EXPECT_FALSE(cache.IsFresh("c.json", std::chrono::hours(24), t0 - 100));
+	EXPECT_FALSE(cache.IsFresh("c.json", std::chrono::hours(24), t0 - 2));
+}
+
+// The kernel can stamp a file from the fine clock while time() reads the coarse one, which lags
+// by under a tick. Across a second boundary a file written just now is stamped one second ahead.
+TEST(CatalogResponseCache, AnEntryOneSecondAheadIsFresh)
+{
+	ScopedTempDir dir;
+	const ResponseCache cache(dir.Dir());
+	ASSERT_TRUE(cache.Store("c.json", "{}"));
+	const std::time_t t0 = 1'700'000'000;
+	SetFileTime(cache.PathFor("c.json"), t0);
+	EXPECT_TRUE(cache.IsFresh("c.json", std::chrono::minutes(5), t0 - 1));
 }
 
 TEST(CatalogResponseCache, DefaultNowIsTheRealClock)

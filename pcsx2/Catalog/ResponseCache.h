@@ -43,8 +43,9 @@ namespace Catalog
 		std::optional<std::time_t> FetchedAt(std::string_view name) const;
 
 		/// True if the entry exists and was fetched less than `max_age` before `now`. An entry
-		/// stamped in the future (clock set back, e.g. a handheld without a battery-backed
-		/// clock) counts as not fresh, so it is refetched rather than trusted for years.
+		/// stamped more than a second in the future (clock set back, e.g. a handheld without a
+		/// battery-backed clock) counts as not fresh, so it is refetched rather than trusted for
+		/// years. One second ahead is the file clock being finer than time(), and counts as fresh.
 		bool IsFresh(std::string_view name, std::chrono::seconds max_age, std::time_t now = std::time(nullptr)) const;
 
 		/// Atomically replaces the entry; its fetch time becomes now.

@@ -61,8 +61,13 @@ namespace Catalog
 	bool ResponseCache::IsFresh(std::string_view name, std::chrono::seconds max_age, std::time_t now) const
 	{
 		const std::optional<std::time_t> fetched_at = FetchedAt(name);
-		if (!fetched_at.has_value() || now < *fetched_at)
+		if (!fetched_at.has_value())
 			return false;
+		// The file can be stamped from the kernel's fine clock while `now` came from time(), which
+		// reads the coarse one. Across a second boundary that puts a file written just now one second
+		// ahead. Any further ahead and the clock has been set back.
+		if (*fetched_at > now)
+			return *fetched_at - now <= 1;
 		return std::chrono::seconds(now - *fetched_at) < max_age;
 	}
 
