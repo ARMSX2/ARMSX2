@@ -44,6 +44,16 @@ public:
 	/// The batch starts: the next draw binds everything.
 	void Reset() { m_valid = false; }
 
+	/// What is bound for TEXTURES or BLEND is no longer known (another recording replaced it): the next draw that
+	/// uses it binds it.
+	void Forget(u32 what)
+	{
+		if (what & TEXTURES)
+			std::memset(m_last.textures, 0xFF, sizeof(m_last.textures));
+		if (what & BLEND)
+			m_last.blend = 0;
+	}
+
 	/// The bindings the draw needs, and remembers them as what is bound. A blend constant the draw does not use is never
 	/// bound, and does not count as bound for the next draw.
 	u32 Needed(const State& s)

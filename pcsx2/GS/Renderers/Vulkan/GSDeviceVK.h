@@ -1283,6 +1283,7 @@ private:
 	using PFN_vkCmdDrawRunARMSX2 = void(VKAPI_PTR*)(VkCommandBuffer commandBuffer, const DrawRun* run);
 	PFN_vkCmdDrawRunARMSX2 m_cmd_draw_run = nullptr;
 
+	VkDescriptorSet m_run_set0 = VK_NULL_HANDLE; ///< the constants set of the waiting groups
 	std::vector<DrawRunState> m_run_states;
 	std::vector<DrawRunGroup> m_run_groups;
 	std::vector<DrawRunTexture> m_run_textures;
@@ -1299,7 +1300,14 @@ private:
 	// ApplyTFXState (the second part of a split draw) pushes it first.
 	bool m_run_set1_unknown = false;
 
+	/// Whether a draw of this pipeline can be a group of the driver's run, and the set-1 bindings its shaders read.
+	bool RunGroupFits(const PipelineSelector& p, u32& mask) const;
 	void NoteRunPipeline(const PipelineSelector& p);
+	/// Appends one group to the waiting run, drawn from the bound index and vertex buffers. `textures` is indexed by
+	/// binding; only the bindings in `mask` are read. A group with another constants set starts a run of its own.
+	void AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* const* textures, VkSampler sampler,
+		VkDescriptorSet set0, const u32* dyn_offsets, u32 first_index, u32 index_count, s32 vertex_offset,
+		u8 blend_constant, const GSVector4i& scissor);
 	void FlushRun();
 	void EmitTFXState(u32 flags, VkCommandBuffer cmdbuf);
 

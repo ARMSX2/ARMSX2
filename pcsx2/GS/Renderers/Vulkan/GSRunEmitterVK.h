@@ -60,6 +60,8 @@ public:
 		bool blend_constant;
 		u8 blend_constant_color;
 		bool fixed_expand; ///< sprites expanded in the vertex program: the fixed index buffer, the base vertex pushed
+		bool run; ///< it may be a group of the driver's run entry
+		u32 run_mask; ///< the set-1 bindings its shaders read, where it may
 		bool index_range; ///< the driver takes the draw's index range (vkCmdSetIndexRangeMALISX2)
 		u16 index_min, index_max;
 		VkBuffer vbuf;

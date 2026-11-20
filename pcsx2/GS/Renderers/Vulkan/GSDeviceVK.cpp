@@ -4899,36 +4899,9 @@ void GSDeviceVK::DrawIndexedPrimitive(int offset, int count)
 	{
 		// The state ApplyTFXState took for the run, and this draw: one group.
 		m_run_group_open = false;
-		const u32 mask = m_run_open_mask;
-		u32 state = static_cast<u32>(m_run_states.size());
-		for (u32 i = state, seen = 0; i > 0 && seen < 8; i--, seen++)
-		{
-			if (m_run_states[i - 1].pipeline == m_current_pipeline && m_run_states[i - 1].tex_mask == mask)
-			{
-				state = i - 1;
-				break;
-			}
-		}
-		if (state == m_run_states.size())
-			m_run_states.push_back({m_current_pipeline, mask, 0});
-
-		DrawRunGroup& g = m_run_groups.emplace_back();
-		g.state = state;
-		g.tex_first = static_cast<u32>(m_run_textures.size());
-		for (u32 bits = mask; bits != 0; bits &= bits - 1)
-		{
-			const u32 b = static_cast<u32>(std::countr_zero(bits));
-			m_run_textures.push_back({m_tfx_textures[b]->GetView(), b == TFX_TEXTURE_TEXTURE ? m_tfx_sampler : VK_NULL_HANDLE});
-		}
-		g.first_index = m_index.start + offset;
-		g.index_count = static_cast<u32>(count);
-		g.vertex_offset = static_cast<s32>(m_vertex.start);
-		g.dyn_offset[0] = m_tfx_dynamic_offsets[0];
-		g.dyn_offset[1] = m_tfx_dynamic_offsets[1];
-		g.blend_constant = static_cast<float>(m_blend_constant_color) / 128.0f;
-		g.scissor = {{m_scissor.x, m_scissor.y}, {static_cast<u32>(m_scissor.width()), static_cast<u32>(m_scissor.height())}};
-		if (m_run_groups.size() >= DRAW_RUN_MAX_GROUPS)
-			FlushRun();
+		AppendRunGroup(m_current_pipeline, m_run_open_mask, m_tfx_textures.data(), m_tfx_sampler, m_tfx_ubo_descriptor_set,
+			m_tfx_dynamic_offsets.data(), m_index.start + offset, static_cast<u32>(count), static_cast<s32>(m_vertex.start),
+			m_blend_constant_color, m_scissor);
 		return;
 	}
 	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
@@ -8526,13 +8499,12 @@ bool GSDeviceVK::BindDrawPipeline(const PipelineSelector& p)
 // draws take push constants), no storage-image slots, and the sampled slots the fragment shader declares
 // (tfx.glsl: Texture and Palette under NEEDS_TEX, RtSampler and DepthSampler under the feedback conditions,
 // PrimMinTexture under PS_DATE).
-void GSDeviceVK::NoteRunPipeline(const PipelineSelector& p)
+bool GSDeviceVK::RunGroupFits(const PipelineSelector& p, u32& mask) const
 {
-	m_run_want = m_cmd_draw_run && m_use_push_descriptors && !UseInputAttachmentDescriptors() &&
-	             p.vs.expand == GSHWDrawConfig::VSExpand::None && !p.ps.HasColorROV() && !p.ps.HasDepthROV();
-	if (!m_run_want)
-		return;
-	u32 mask = 0;
+	if (!m_cmd_draw_run || !m_use_push_descriptors || UseInputAttachmentDescriptors() ||
+		p.vs.expand != GSHWDrawConfig::VSExpand::None || p.ps.HasColorROV() || p.ps.HasDepthROV())
+		return false;
+	mask = 0;
 	if (p.ps.tfx != 4)
 		mask |= (1u << TFX_TEXTURE_TEXTURE) | (1u << TFX_TEXTURE_PALETTE);
 	if (p.ps.IsFeedbackLoopRT() || p.IsRTFeedbackLoop())
@@ -8541,7 +8513,50 @@ void GSDeviceVK::NoteRunPipeline(const PipelineSelector& p)
 		mask |= (1u << TFX_TEXTURE_PRIMID);
 	if (p.ps.IsFeedbackLoopDepth() || p.IsTestingAndSamplingDepth())
 		mask |= (1u << TFX_TEXTURE_DEPTH);
-	m_run_want_mask = mask;
+	return true;
+}
+
+void GSDeviceVK::NoteRunPipeline(const PipelineSelector& p)
+{
+	m_run_want = RunGroupFits(p, m_run_want_mask);
+}
+
+void GSDeviceVK::AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* const* textures, VkSampler sampler,
+	VkDescriptorSet set0, const u32* dyn_offsets, u32 first_index, u32 index_count, s32 vertex_offset, u8 blend_constant,
+	const GSVector4i& scissor)
+{
+	if (!m_run_groups.empty() && set0 != m_run_set0)
+		FlushRun();
+	m_run_set0 = set0;
+	u32 state = static_cast<u32>(m_run_states.size());
+	for (u32 i = state, seen = 0; i > 0 && seen < 8; i--, seen++)
+	{
+		if (m_run_states[i - 1].pipeline == pipeline && m_run_states[i - 1].tex_mask == mask)
+		{
+			state = i - 1;
+			break;
+		}
+	}
+	if (state == m_run_states.size())
+		m_run_states.push_back({pipeline, mask, 0});
+
+	DrawRunGroup& g = m_run_groups.emplace_back();
+	g.state = state;
+	g.tex_first = static_cast<u32>(m_run_textures.size());
+	for (u32 bits = mask; bits != 0; bits &= bits - 1)
+	{
+		const u32 b = static_cast<u32>(std::countr_zero(bits));
+		m_run_textures.push_back({textures[b]->GetView(), b == TFX_TEXTURE_TEXTURE ? sampler : VK_NULL_HANDLE});
+	}
+	g.first_index = first_index;
+	g.index_count = index_count;
+	g.vertex_offset = vertex_offset;
+	g.dyn_offset[0] = dyn_offsets[0];
+	g.dyn_offset[1] = dyn_offsets[1];
+	g.blend_constant = static_cast<float>(blend_constant) / 128.0f;
+	g.scissor = {{scissor.x, scissor.y}, {static_cast<u32>(scissor.width()), static_cast<u32>(scissor.height())}};
+	if (m_run_groups.size() >= DRAW_RUN_MAX_GROUPS)
+		FlushRun();
 }
 
 // Records the waiting groups through the driver's run entry. A group whose draw has not come yet (something
@@ -8557,7 +8572,7 @@ void GSDeviceVK::FlushRun()
 		run.group_count = static_cast<u32>(m_run_groups.size());
 		run.reserved = 0;
 		run.layout = m_tfx_pipeline_layout;
-		run.set0 = m_tfx_ubo_descriptor_set;
+		run.set0 = m_run_set0;
 		run.states = m_run_states.data();
 		run.groups = m_run_groups.data();
 		run.textures = m_run_textures.data();
@@ -8566,9 +8581,10 @@ void GSDeviceVK::FlushRun()
 		m_run_groups.clear();
 		m_run_textures.clear();
 		// The entry leaves the last group's pipeline, scissor, blend constants and set 0 bound, which is what this
-		// device's cached state already says; set 1 is not known.
+		// device's cached state and the held twins' bind record already say; set 1 is not known.
 		m_dirty_flags |= DIRTY_FLAG_TFX_TEXTURES;
 		m_run_set1_unknown = true;
+		m_raw_binds.Forget(GSRawBindCache::TEXTURES);
 	}
 	if (m_run_group_open)
 	{
@@ -11082,6 +11098,7 @@ bool GSDeviceVK::WriteHeldClassic(GSHWDrawConfig& config, GSRowDeviceCache& cach
 	GSVector4i::storent(m_vertex_stream_buffer.GetCurrentHostPointer(), config.verts, vsize);
 	m_vertex_stream_buffer.CommitMemory(vsize);
 	h->fixed_expand = fixed_expand;
+	h->run = !fixed_expand && RunGroupFits(pipe, h->run_mask);
 	h->icount = config.nindices;
 	if (fixed_expand)
 	{
@@ -11174,6 +11191,36 @@ void GSDeviceVK::RecordHeldClassic(const GSRunEmitterVK::HeldClassic& h)
 	st.blend = h.blend_constant ? (0x100u | h.blend_constant_color) : 0u;
 	const VkBuffer ibuf = h.fixed_expand ? m_expand_index_buffer : m_index_stream_buffer.GetBuffer();
 	st.index_buffer = reinterpret_cast<uptr>(ibuf);
+	if (h.run && !h.index_range && h.vbuf == m_vertex_stream_buffer.GetBuffer() && m_current_line_width == 1.0f)
+	{
+		// A group of the driver's run. The viewport and the index buffer are not a group's: their own calls record
+		// the groups before it first.
+		const u32 need = m_raw_binds.Needed(st);
+		if (need & (GSRawBindCache::VIEWPORT | GSRawBindCache::INDEX))
+		{
+			const VkCommandBuffer cmd = GetCurrentCommandBuffer();
+			if (need & GSRawBindCache::VIEWPORT)
+				vkCmdSetViewport(cmd, 0, 1, &h.viewport);
+			if (need & GSRawBindCache::INDEX)
+				vkCmdBindIndexBuffer(cmd, ibuf, 0, VK_INDEX_TYPE_UINT16);
+		}
+		if (need & GSRawBindCache::PIPELINE)
+			g_perfmon.Put(GSPerfMon::PipelineSwitches, 1);
+		g_perfmon.Put(GSPerfMon::DrawCalls, 1);
+		std::array<GSTextureVK*, NUM_TFX_TEXTURES> textures;
+		textures.fill(m_null_texture.get());
+		if (h.tex)
+			textures[TFX_TEXTURE_TEXTURE] = h.tex;
+		if (h.pal)
+			textures[TFX_TEXTURE_PALETTE] = h.pal;
+		AppendRunGroup(h.pipeline, h.run_mask, textures.data(), h.sampler, h.ubo_set, h.ubo, h.istart,
+			h.icount, static_cast<s32>(h.vstart), h.blend_constant ? h.blend_constant_color : 0, h.scissor);
+		// A group always sets the blend constant: one the draw does not use is not what the record says is bound.
+		if (!h.blend_constant)
+			m_raw_binds.Forget(GSRawBindCache::BLEND);
+		DirtyAfterRawDraws();
+		return;
+	}
 	const u32 need = m_raw_binds.Needed(st);
 	if (need & GSRawBindCache::PIPELINE)
 	{
