@@ -1087,16 +1087,15 @@ void Pcsx2SDL::CPUThreadMain(VMBootParameters initial_params, bool start_in_fsui
 					continue;
 				}
 
-				// Nothing pending. If no FSUI session is running, exit cleanly
-				// — the user's game finished and there is no UI to show next,
-				// so the frontend's job is done.
-				if (!start_in_fsui)
+				// The game has ended and there is no game list to return to, so exit. A paused VM is not ended:
+				// the pause menu is up, and the poll below lets the gamepad drive it and resume.
+				if (state == VMState::Shutdown && !start_in_fsui)
 				{
 					s_shutdown_requested.store(true, std::memory_order_release);
 					break;
 				}
 
-				// FSUI idle: pump input so the gamepad can drive the menus.
+				// Paused or in the game list: pump input so the gamepad can drive the menus.
 				// Qt does this from a background QTimer; here it has to run
 				// inline. Do it *outside* s_cpu_queue_lock — FSUI menu
 				// callbacks can call Host::RunOnCPUThread, which takes the
