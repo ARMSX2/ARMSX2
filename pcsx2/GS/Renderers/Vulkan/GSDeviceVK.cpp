@@ -8591,7 +8591,8 @@ void GSDeviceVK::ExecuteCommandBuffer(bool wait_for_completion, const char* reas
 
 void GSDeviceVK::ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completion, const char* reason)
 {
-	Console.Warning("VK: Executing command buffer due to '%s'", reason);
+	if (reason)
+		Console.Warning("VK: Executing command buffer due to '%s'", reason);
 
 	const VkRenderPass render_pass = m_current_render_pass;
 	const GSVector4i render_pass_area = m_current_render_pass_area;
@@ -9845,10 +9846,20 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 		const u32 next_buffer = (m_current_frame + 1) % NUM_COMMAND_BUFFERS;
 		if (m_frame_resources[next_buffer].fence_counter <= m_completed_fence_counter)
 		{
-			// Submitting does not close an open pass, and this one ends at this draw anyway.
 			const u64 kick_start = GetCPUTicks();
-			EndRenderPass();
-			ExecuteCommandBuffer(WaitType::None);
+			if (at_pass_boundary)
+			{
+				// Submitting does not close an open pass, and this one ends at this draw anyway.
+				EndRenderPass();
+				ExecuteCommandBuffer(WaitType::None);
+			}
+			else
+			{
+				// The draw continues the open pass, so the pass is begun again on the same targets after the submit: the
+				// draws after this one find the pass they would have found without the kick. The kick is decided from
+				// measured times, and the row emitter's decisions read the pass (RowIsPlain), so it must not change it.
+				ExecuteCommandBufferAndRestartRenderPass(false, nullptr);
+			}
 			NoteKick(GetCPUTicks() - kick_start);
 		}
 		else if (kick_in_pass)

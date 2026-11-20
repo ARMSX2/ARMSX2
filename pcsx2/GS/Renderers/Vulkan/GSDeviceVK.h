@@ -1131,6 +1131,8 @@ public:
 	/// Ends any render pass, executes the command buffer, and invalidates cached state.
 	void ExecuteCommandBuffer(bool wait_for_completion);
 	void ExecuteCommandBuffer(bool wait_for_completion, const char* reason, ...);
+	/// Executes the command buffer and begins the open render pass again on the same targets. reason: logged, unless
+	/// nullptr.
 	void ExecuteCommandBufferAndRestartRenderPass(bool wait_for_completion, const char* reason);
 	void ExecuteCommandBufferAndRestartPresent(bool wait_for_completion, const char* reason, ...);
 	void ExecuteCommandBufferForReadback();
