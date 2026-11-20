@@ -502,7 +502,7 @@ bool GSreopen(bool recreate_device, bool recreate_renderer, GSRendererType new_r
 	if (recreate_device && !recreate_renderer)
 	{
 		// Keeping the renderer around, this probably means we lost the device, so toss everything.
-		g_gs_renderer->PurgeTextureCache(true, true, true);
+		g_gs_renderer->ReleaseDeviceObjects();
 		g_gs_device->ClearCurrent();
 		g_gs_device->PurgePool();
 	}

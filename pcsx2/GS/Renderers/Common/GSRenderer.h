@@ -80,6 +80,13 @@ public:
 
 	virtual void Destroy();
 
+	/// Hands the device back what this renderer holds from it, for a device that is destroyed and
+	/// replaced under a renderer that stays (GSreopen after a device loss).
+	virtual void ReleaseDeviceObjects();
+
+	/// The field-shift detector, for tests.
+	GSFieldShiftDetector& GetFieldShiftDetector() { return m_field_shift; }
+
 	virtual void UpdateRenderFixes();
 
 	virtual void VSync(u32 field, bool registers_written, bool idle_frame);

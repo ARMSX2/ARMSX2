@@ -123,6 +123,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_cull_grid_native_target_tests.cpp
 	gs_point_safe_features_tests.cpp
 	gs_field_shift_detector_tests.cpp
+	gs_device_loss_tests.cpp
 	gs_channel_shuffle_cover_tests.cpp
 	gs_sw_palette_block_copy_tests.cpp
 	gs_target_dirty_tests.cpp

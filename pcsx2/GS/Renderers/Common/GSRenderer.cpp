@@ -144,6 +144,11 @@ void GSRenderer::Destroy()
 	m_field_shift.Reset();
 }
 
+void GSRenderer::ReleaseDeviceObjects()
+{
+	PurgeTextureCache(true, true, true);
+}
+
 void GSRenderer::UpdateRenderFixes()
 {
 }
