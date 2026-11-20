@@ -8719,8 +8719,10 @@ void GSDeviceVK::OnStreamRingReplaced(const VKStreamBuffer& ring)
 	pxAssert(&ring == &m_vertex_stream_buffer);
 
 	// Draws already recorded keep the old buffer, which retires with this command buffer. Later
-	// draws, in this command buffer and every one after it, bind the new one.
-	SetInitialState(m_current_command_buffer);
+	// draws, in this command buffer and every one after it, bind the new one. The groups waiting for
+	// the driver's run entry draw from the vertex buffer bound when they are recorded, and their
+	// vertex offsets are in the old buffer, so they are recorded first, with the old buffer bound.
+	SetInitialState(GetCurrentCommandBuffer());
 
 	if (m_features.vs_expand)
 	{
