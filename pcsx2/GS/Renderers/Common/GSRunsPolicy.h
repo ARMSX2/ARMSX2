@@ -360,6 +360,31 @@ namespace GSRunsPolicy
 		return std::max(rows(cpu_group_ns, cpu_saved_row_ns), rows(gpu_group_ns, gpu_saved_row_ns));
 	}
 
+	/// The key of a row's streak class (Streaks): a hash of the fixed state one group holds one value of. vs_fixed: the
+	/// vertex selector without the bits a group's rows may differ in. rt_size, ds_size: the targets' sizes.
+	inline u64 StreakClass(const GSHWDrawConfig& config, u16 vs_fixed, GSVector2i rt_size, GSVector2i ds_size)
+	{
+		u64 w[9];
+		w[0] = reinterpret_cast<uptr>(config.rt);
+		w[1] = reinterpret_cast<uptr>(config.ds);
+		w[2] = static_cast<u64>(config.depth.key) | (static_cast<u64>(vs_fixed) << 8) |
+		       (static_cast<u64>(config.ps.rta_correction) << 24) | (static_cast<u64>(config.ps.zfloor) << 25) |
+		       (static_cast<u64>(config.cb_vs.max_depth) << 32);
+		std::memcpy(&w[3], &config.scissor, 16);
+		std::memcpy(&w[5], &config.cb_vs.vertex_scale, 8);
+		std::memcpy(&w[6], &config.cb_vs.vertex_offset, 8);
+		std::memcpy(&w[7], &config.cb_vs.texture_offset, 8);
+		std::memcpy(&w[8], &config.cb_ps.STScale, 8);
+		u64 h = 0x9E3779B97F4A7C15ull;
+		for (u64 v : w)
+		{
+			h ^= v;
+			h *= 0xBF58476D1CE4E5B9ull;
+			h ^= h >> 31;
+		}
+		return h;
+	}
+
 	/// The break-even length B in rows (see Streaks), one value for every device class until each class's CPU overhead
 	/// is measured.
 	constexpr u32 INTERIM_OPENING_ROWS = 4;

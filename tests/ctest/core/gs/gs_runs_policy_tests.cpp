@@ -565,3 +565,27 @@ TEST(GSRunsPolicy, NotingTheSameStatesAgainChangesNoProgram)
 	same.Note(a);
 	EXPECT_EQ(same.Key(), one.Key());
 }
+
+// A row's streak class is a property of the emulated draw, not of where the host allocated its targets: two replays of
+// one dump must open the same groups. The targets enter by their sizes.
+TEST(GSRunsPolicy, StreakClassesDoNotDependOnTargetAddresses)
+{
+	static int other_rt, other_ds;
+	const GSHWDrawConfig a = Way0();
+	GSHWDrawConfig b = a;
+	b.rt = reinterpret_cast<GSTexture*>(&other_rt);
+	b.ds = reinterpret_cast<GSTexture*>(&other_ds);
+	const GSVector2i rt(640, 448), ds(640, 448), small(320, 224);
+	EXPECT_EQ(StreakClass(a, 0, rt, ds), StreakClass(b, 0, rt, ds));
+	GSHWDrawConfig a_no_ds = a, b_no_ds = b;
+	a_no_ds.ds = b_no_ds.ds = nullptr;
+	EXPECT_EQ(StreakClass(a_no_ds, 0, rt, GSVector2i(0, 0)), StreakClass(b_no_ds, 0, rt, GSVector2i(0, 0)));
+
+	// What the class does hold: the targets' sizes and the rest of the fixed state.
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, small, ds));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, rt, small));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 1, rt, ds));
+	GSHWDrawConfig scissor = a;
+	scissor.scissor = GSVector4i(0, 0, 64, 64);
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(scissor, 0, rt, ds));
+}

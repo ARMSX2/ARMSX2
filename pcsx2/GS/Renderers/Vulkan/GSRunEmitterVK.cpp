@@ -84,28 +84,11 @@ namespace
 		       config.ps.zfloor == zfloor;
 	}
 
-	/// The streak's key: a hash of the same fixed state. A collision only changes when a group opens.
+	/// The streak's key (GSRunsPolicy::StreakClass).
 	u64 FixedClass(const GSHWDrawConfig& config)
 	{
-		u64 w[9];
-		w[0] = reinterpret_cast<uptr>(config.rt);
-		w[1] = reinterpret_cast<uptr>(config.ds);
-		w[2] = static_cast<u64>(config.depth.key) | (static_cast<u64>(config.vs.key & ~VS_RUN_FREE) << 8) |
-		       (static_cast<u64>(config.ps.rta_correction) << 24) | (static_cast<u64>(config.ps.zfloor) << 25) |
-		       (static_cast<u64>(config.cb_vs.max_depth) << 32);
-		std::memcpy(&w[3], &config.scissor, 16);
-		std::memcpy(&w[5], &config.cb_vs.vertex_scale, 8);
-		std::memcpy(&w[6], &config.cb_vs.vertex_offset, 8);
-		std::memcpy(&w[7], &config.cb_vs.texture_offset, 8);
-		std::memcpy(&w[8], &config.cb_ps.STScale, 8);
-		u64 h = 0x9E3779B97F4A7C15ull;
-		for (u64 v : w)
-		{
-			h ^= v;
-			h *= 0xBF58476D1CE4E5B9ull;
-			h ^= h >> 31;
-		}
-		return h;
+		return GSRunsPolicy::StreakClass(config, static_cast<u16>(config.vs.key & ~VS_RUN_FREE),
+			config.rt ? config.rt->GetSize() : GSVector2i(0, 0), config.ds ? config.ds->GetSize() : GSVector2i(0, 0));
 	}
 } // namespace
 
