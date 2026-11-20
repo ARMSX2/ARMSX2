@@ -109,9 +109,6 @@ public:
 	/// Forgets everything pending without recording it.
 	void Drop();
 
-	/// Rows that joined groups, groups recorded, and held classic draws recorded, per side, since the process started.
-	static u64 s_rows[2], s_groups[2], s_held_classic;
-
 private:
 	struct Texture
 	{

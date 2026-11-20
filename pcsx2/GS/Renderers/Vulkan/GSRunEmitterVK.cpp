@@ -15,10 +15,6 @@
 #include <algorithm>
 #include <cstring>
 
-u64 GSRunEmitterVK::s_rows[2] = {};
-u64 GSRunEmitterVK::s_groups[2] = {};
-u64 GSRunEmitterVK::s_held_classic = 0;
-
 // A group's window in its side's table ring: a header (the group's vertex and texture constants), then one 32-byte row
 // per row. The window is reserved whole when the group opens, so the descriptor range bound for it always lies inside
 // the ring, and the group's rows are committed one by one behind the header.
@@ -627,7 +623,6 @@ GSRunEmitterVK::Join GSRunEmitterVK::JoinGroup(Side side, const GSHWDrawConfig& 
 		}
 		if (config.tex)
 			static_cast<GSTextureVK*>(config.tex)->SetUseFenceCounter(fence);
-		s_rows[side]++;
 		return Join::Joined;
 	}
 }
@@ -671,7 +666,6 @@ void GSRunEmitterVK::RecordAll()
 			m_recording = true;
 			m_dev->RecordHeldClassic(m_classic[h.index]);
 			m_recording = false;
-			s_held_classic++;
 		}
 	}
 	// The last twins' group ended at a recording, not at a row that could not join it: a split.
@@ -940,6 +934,5 @@ void GSRunEmitterVK::Record(Side side, Group& g)
 	g.textures.clear();
 	if (side == BASES)
 		dev->m_rows->SetGroupTargets(nullptr, nullptr);
-	s_groups[side]++;
 	m_recording = false;
 }
