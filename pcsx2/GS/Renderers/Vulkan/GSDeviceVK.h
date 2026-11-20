@@ -1280,6 +1280,10 @@ private:
 	};
 	static constexpr u32 DRAW_RUN_ABI = 1;
 	static constexpr u32 DRAW_RUN_MAX_GROUPS = 1024;
+	// A run of fewer groups takes the ordinary calls: the entry's call, its catch-up of the state set since the last
+	// draw and the state it marks for sending again when it returns cost more than one or two groups save (measured
+	// on the Adreno 613).
+	static constexpr u32 DRAW_RUN_MIN_GROUPS = 3;
 	using PFN_vkCmdDrawRunARMSX2 = void(VKAPI_PTR*)(VkCommandBuffer commandBuffer, const DrawRun* run);
 	PFN_vkCmdDrawRunARMSX2 m_cmd_draw_run = nullptr;
 
@@ -1287,6 +1291,8 @@ private:
 	std::vector<DrawRunState> m_run_states;
 	std::vector<DrawRunGroup> m_run_groups;
 	std::vector<DrawRunTexture> m_run_textures;
+	std::vector<GSTextureVK*> m_run_texture_objs; ///< parallel to m_run_textures
+	std::vector<u32> m_run_group_flags; ///< per group, the ordinary state it owes; ~0u for one the ordinary calls cannot take
 	// The next ApplyTFXState's draw may join the run, and the set-1 bindings its pipeline's shaders read. Both
 	// follow from the pipeline selector; set by NoteRunPipeline, consumed by ApplyTFXState.
 	bool m_run_want = false;
@@ -1307,7 +1313,8 @@ private:
 	/// binding; only the bindings in `mask` are read. A group with another constants set starts a run of its own.
 	void AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* const* textures, VkSampler sampler,
 		VkDescriptorSet set0, const u32* dyn_offsets, u32 first_index, u32 index_count, s32 vertex_offset,
-		u8 blend_constant, const GSVector4i& scissor);
+		u8 blend_constant, const GSVector4i& scissor, u32 ordinary_flags);
+	void EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf);
 	void FlushRun();
 	void EmitTFXState(u32 flags, VkCommandBuffer cmdbuf);
 
