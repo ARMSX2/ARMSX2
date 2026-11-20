@@ -8504,6 +8504,10 @@ bool GSDeviceVK::RunGroupFits(const PipelineSelector& p, u32& mask) const
 	if (!m_cmd_draw_run || !m_use_push_descriptors || UseInputAttachmentDescriptors() ||
 		p.vs.expand != GSHWDrawConfig::VSExpand::None || p.ps.HasColorROV() || p.ps.HasDepthROV())
 		return false;
+	// A draw that declares its feedback loop after its pipeline bind (DeclareDrawFeedbackLoop) records that call
+	// between its state and its draw, which would give the group back to the ordinary calls after it was built.
+	if (m_declare_loop_per_draw && (p.IsRTFeedbackLoop() || p.IsTestingAndSamplingDepth()))
+		return false;
 	mask = 0;
 	if (p.ps.tfx != 4)
 		mask |= (1u << TFX_TEXTURE_TEXTURE) | (1u << TFX_TEXTURE_PALETTE);
