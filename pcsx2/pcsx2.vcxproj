@@ -444,6 +444,7 @@
     <ClCompile Include="SIO\Pad\PadNegcon.cpp" />
     <ClCompile Include="SIO\Pad\PadNotConnected.cpp" />
     <ClCompile Include="SIO\Pad\PadPopn.cpp" />
+    <ClCompile Include="SIO\Pad\PadScript.cpp" />
     <ClCompile Include="SIO\Sio.cpp" />
     <ClCompile Include="SIO\Sio0.cpp" />
     <ClCompile Include="SIO\Sio2.cpp" />
@@ -996,6 +997,7 @@
     <ClInclude Include="SIO\Pad\PadNegcon.h" />
     <ClInclude Include="SIO\Pad\PadNotConnected.h" />
     <ClInclude Include="SIO\Pad\PadPopn.h" />
+    <ClInclude Include="SIO\Pad\PadScript.h" />
     <ClInclude Include="SIO\Pad\PadTypes.h" />
     <ClInclude Include="SIO\Sio.h" />
     <ClInclude Include="SIO\Sio0.h" />
@@ -1142,6 +1144,9 @@
     <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRawBindCache.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRowEmitter.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingRegistry.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />
     <ClInclude Include="GS\GSBackQueue.h" />

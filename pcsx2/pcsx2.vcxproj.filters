@@ -1668,6 +1668,9 @@
     <ClCompile Include="SIO\Pad\PadPopn.cpp">
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClCompile>
+    <ClCompile Include="SIO\Pad\PadScript.cpp">
+      <Filter>System\Ps2\Iop\SIO\PAD</Filter>
+    </ClCompile>
     <ClCompile Include="DebugTools\SymbolGuardian.cpp">
       <Filter>System\Ps2\Debug</Filter>
     </ClCompile>
@@ -2880,6 +2883,9 @@
     <ClInclude Include="SIO\Pad\PadPopn.h">
       <Filter>System\Ps2\Iop\SIO\PAD</Filter>
     </ClInclude>
+    <ClInclude Include="SIO\Pad\PadScript.h">
+      <Filter>System\Ps2\Iop\SIO\PAD</Filter>
+    </ClInclude>
     <ClInclude Include="SupportURLs.h" />
     <ClInclude Include="DebugTools\SymbolGuardian.h">
       <Filter>System\Ps2\Debug</Filter>
@@ -3102,6 +3108,15 @@
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSRawBindCache.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSRowEmitter.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingRegistry.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
     <ClInclude Include="GS\Renderers\HW\GSAlphaKnownBits.h">
