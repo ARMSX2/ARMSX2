@@ -80,6 +80,8 @@ void GSRendererHW::Destroy()
 
 void GSRendererHW::ReleaseDeviceObjects()
 {
+	// The row run names the targets and textures the purge below destroys.
+	m_row_run.open = false;
 	PurgeTextureCache(true, true, true);
 	g_texture_cache->ReleaseKeptDeviceObjects();
 	// Only compared against a target's texture, but a texture of the new device can take its address.
