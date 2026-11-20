@@ -80,6 +80,48 @@ namespace GSRunsPolicy
 		return !one_call || !Textured(flags) || run_lod == LOD_ANY || run_lod == Field(flags, STATE_LOD);
 	}
 
+	/// The row's slot word (tfx_runs.glsl s0.y): the texture's slot in the low bits, and above it, where the run program
+	/// fetches (DriverBug::StallsOnFilteredRunSampling), how the row samples: by hand from texelFetch, and with which of
+	/// its sampler's address modes and filter. A row without ROW_FETCH samples through its sampler.
+	constexpr u32 ROW_SLOT_MASK = 0xFFFFu;
+	constexpr u32 ROW_FETCH = 1u << 16;
+	constexpr u32 ROW_FETCH_REPEAT_U = 1u << 17;
+	constexpr u32 ROW_FETCH_REPEAT_V = 1u << 18;
+	constexpr u32 ROW_FETCH_LINEAR = 1u << 19;
+
+	/// Where the run program fetches (DriverBug::StallsOnFilteredRunSampling): the GPU stalls when a run draw samples many
+	/// textures through the filtered sampler, and a group that sampled at most four that way did not stall. So a group
+	/// samples at most SAMPLER_TEXTURES distinct textures through the sampler. Past that a row either fetches, which costs
+	/// GPU time for every pixel it covers, or closes the group, which costs a host draw: a row smaller than FETCH_AREA
+	/// target pixels fetches, a larger one closes the group.
+	constexpr u32 SAMPLER_TEXTURES = 4;
+	constexpr u64 FETCH_AREA = 1024;
+
+	/// How a textured row is placed in its group, on a device where the run program fetches.
+	enum class Placement : u8
+	{
+		Sampler, ///< through the sampler; its texture is in the group's sampler set or joins it
+		Fetch,   ///< filtered by hand from texelFetch
+		Close,   ///< the group closes and the row opens the next one
+	};
+
+	/// eligible: the row could fetch (FetchBits). in_set: its texture is already sampled through the sampler in the group.
+	/// set_size: textures the group samples through the sampler. area: the row's area in target pixels.
+	inline Placement PlaceRow(bool eligible, bool in_set, u32 set_size, u64 area, u32 sampler_textures = SAMPLER_TEXTURES,
+		u64 fetch_area = FETCH_AREA)
+	{
+		return Placement::Sampler;
+	}
+
+	/// The sampling bits of a textured row whose texture has `levels` mip levels, if it can fetch; 0 where it must keep
+	/// its sampler. A row can fetch when the sampler would read level 0 with one filter whatever the level of detail: the
+	/// texture has one level, and the lod is fixed at 0 (the sampler magnifies) or both filters are the same. A texture
+	/// with more levels keeps the sampler, which picks and blends them.
+	inline u32 FetchBits(u32 flags, GSHWDrawConfig::SamplerSelector ss, int levels)
+	{
+		return 0;
+	}
+
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a
 	/// discard). Split rule "dear" ends a run where these differ from the run's (measured in probe K1b).
 	constexpr u32 Dear(u32 flags)

@@ -566,6 +566,101 @@ TEST(GSRunsPolicy, NotingTheSameStatesAgainChangesNoProgram)
 	EXPECT_EQ(same.Key(), one.Key());
 }
 
+// Where the run program fetches (DriverBug::StallsOnFilteredRunSampling), a textured row whose texture has one level can
+// be filtered by hand from texelFetch, with its sampler's address modes and filter in the bits above its slot. Every
+// other row must keep the sampler: a texture with more levels, and a row whose filter depends on the level of detail
+// (minification and magnification differ, and the lod is not fixed at 0).
+namespace
+{
+	GSHWDrawConfig::SamplerSelector Sampler(bool repeat_u, bool repeat_v, bool bilinear, GS_MIN_FILTER min, bool lodclamp)
+	{
+		GSHWDrawConfig::SamplerSelector ss;
+		ss.tau = repeat_u;
+		ss.tav = repeat_v;
+		ss.biln = bilinear;
+		ss.triln = static_cast<u8>(min);
+		ss.lodclamp = lodclamp;
+		return ss;
+	}
+
+	u32 RowFlags(bool manual_lod, bool automatic_lod)
+	{
+		GSHWDrawConfig c = Way0();
+		c.ps.manual_lod = manual_lod;
+		c.ps.automatic_lod = automatic_lod;
+		return Classify(c, Rgba8(), false).flags;
+	}
+} // namespace
+
+TEST(GSRunsPolicy, SingleLevelRowsFetch)
+{
+	const u32 none = RowFlags(false, false);
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+
+	// The sampler's address modes and magnification filter, above the slot.
+	EXPECT_EQ(FetchBits(none, Sampler(true, false, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, true, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Nearest, true), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(true, true, false, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V);
+
+	// At lod 0 the sampler magnifies, so a minification filter that differs does not matter.
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+		ROW_FETCH | ROW_FETCH_LINEAR);
+
+	// A lod that can move off 0, on one level: still level 0, and the filter is the same either way.
+	for (const u32 flags : {RowFlags(true, false), RowFlags(false, true)})
+	{
+		ASSERT_NE(Field(flags, STATE_LOD), LOD_NONE);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false), 1),
+			ROW_FETCH | ROW_FETCH_LINEAR);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+			ROW_FETCH);
+		EXPECT_EQ(FetchBits(flags, Sampler(true, true, true, GS_MIN_FILTER::Linear, true), 1),
+			ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	}
+}
+
+TEST(GSRunsPolicy, RowsThatKeepTheSampler)
+{
+	const u32 none = RowFlags(false, false);
+	const u32 manual = RowFlags(true, false);
+	const u32 hardware = RowFlags(false, true);
+	const GSHWDrawConfig::SamplerSelector trilinear = Sampler(true, true, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false);
+
+	// A texture with more than one level, whatever the lod: the sampler picks and blends the levels.
+	for (const u32 flags : {none, manual, hardware})
+	{
+		for (const int levels : {2, 7})
+			EXPECT_EQ(FetchBits(flags, trilinear, levels), 0u) << flags << " " << levels;
+	}
+
+	// One level, but the lod chooses between a nearest and a linear filter.
+	for (const u32 flags : {manual, hardware})
+	{
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), 0u);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Linear, false), 1), 0u);
+	}
+
+	// An untextured row samples nothing.
+	GSHWDrawConfig c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	EXPECT_EQ(FetchBits(untextured, trilinear, 1), 0u);
+}
+
+// The sampling bits sit above every slot a row can name.
+TEST(GSRunsPolicy, FetchBitsLeaveTheSlot)
+{
+	const u32 all = ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR;
+	EXPECT_EQ(all & ROW_SLOT_MASK, 0u);
+	EXPECT_GE(ROW_SLOT_MASK, 1023u);
+	EXPECT_EQ(FetchBits(RowFlags(false, false), Sampler(true, true, true, GS_MIN_FILTER::Nearest, true), 1), all);
+}
+
 // A row's streak class is a property of the emulated draw, not of where the host allocated its targets: two replays of
 // one dump must open the same groups. The targets enter by their sizes.
 TEST(GSRunsPolicy, StreakClassesDoNotDependOnTargetAddresses)
@@ -588,4 +683,36 @@ TEST(GSRunsPolicy, StreakClassesDoNotDependOnTargetAddresses)
 	GSHWDrawConfig scissor = a;
 	scissor.scissor = GSVector4i(0, 0, 64, 64);
 	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(scissor, 0, rt, ds));
+}
+
+// Where the run program fetches, a group samples at most SAMPLER_TEXTURES distinct textures through the sampler. A row
+// whose texture is in that set, or that finds room in it, uses the sampler. Past that, a small row that can fetch
+// fetches, and a large row, or one that cannot fetch, closes the group and opens the next.
+TEST(GSRunsPolicy, RowsArePlacedByTheSamplerBoundAndTheirArea)
+{
+	EXPECT_EQ(SAMPLER_TEXTURES, 4u);
+	EXPECT_EQ(FETCH_AREA, 1024u);
+	const u64 small = FETCH_AREA - 1, large = FETCH_AREA;
+	for (const bool eligible : {false, true})
+	{
+		for (const u64 area : {u64{0}, small, large, u64{1} << 30})
+		{
+			// Room in the set, or the texture already in it: the sampler.
+			for (u32 n = 0; n < SAMPLER_TEXTURES; n++)
+				EXPECT_EQ(PlaceRow(eligible, false, n, area), Placement::Sampler);
+			EXPECT_EQ(PlaceRow(eligible, true, SAMPLER_TEXTURES, area), Placement::Sampler);
+		}
+	}
+	// The set full and the texture new.
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, 0), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, small), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, large), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, large), Placement::Close);
+
+	// The bounds are the caller's to move: area 0 makes every row large (a cap of K textures, no fetch); a huge area
+	// fetches every eligible row past the K-th texture.
+	EXPECT_EQ(PlaceRow(true, false, 2, 16, 2, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(true, false, 2, u64{1} << 40, 2, ~u64{0}), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, 1, 0, 2, 0), Placement::Sampler);
 }
