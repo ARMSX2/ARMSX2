@@ -95,6 +95,7 @@ add_pcsx2_test(gs_vertex_tests
 	gs_pass_scheduler_tests.cpp
 	gs_row_emitter_tests.cpp
 	gs_raw_bind_cache_tests.cpp
+	gs_short_run_textures_tests.cpp
 	gs_null_device_profile_tests.cpp
 	gs_sw_target_alias_tests.cpp
 	gs_sw_texture_dirty_tests.cpp

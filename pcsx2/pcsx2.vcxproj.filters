@@ -3113,6 +3113,9 @@
     <ClInclude Include="GS\Renderers\Common\GSRawBindCache.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>
+    <ClInclude Include="GS\Renderers\Common\GSShortRunTextures.h">
+      <Filter>System\Ps2\GS</Filter>
+    </ClInclude>
     <ClInclude Include="GS\Renderers\Common\GSRowEmitter.h">
       <Filter>System\Ps2\GS</Filter>
     </ClInclude>

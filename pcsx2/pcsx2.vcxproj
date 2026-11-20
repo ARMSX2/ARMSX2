@@ -1145,6 +1145,7 @@
     <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
     <ClInclude Include="GS\Renderers\Common\GSRawBindCache.h" />
+    <ClInclude Include="GS\Renderers\Common\GSShortRunTextures.h" />
     <ClInclude Include="GS\Renderers\Common\GSRowEmitter.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingRegistry.h" />
     <ClInclude Include="GS\GSXXH.h" />

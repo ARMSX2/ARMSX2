@@ -8,6 +8,7 @@
 #include "GS/GSCompileQueue.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/Common/GSRawBindCache.h"
+#include "GS/Renderers/Common/GSShortRunTextures.h"
 #include "GS/Renderers/Common/GSStreamRingMemoryPolicy.h"
 #include "GS/GSVector.h"
 #include "GS/Renderers/Vulkan/GSRunEmitterVK.h"
@@ -1314,7 +1315,7 @@ private:
 	void AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* const* textures, VkSampler sampler,
 		VkDescriptorSet set0, const u32* dyn_offsets, u32 first_index, u32 index_count, s32 vertex_offset,
 		u8 blend_constant, const GSVector4i& scissor, u32 ordinary_flags);
-	void EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf);
+	void EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf, GSShortRunTextures& textures_owed);
 	void FlushRun();
 	void EmitTFXState(u32 flags, VkCommandBuffer cmdbuf);
 

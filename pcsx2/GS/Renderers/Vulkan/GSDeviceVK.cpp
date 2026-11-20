@@ -8565,8 +8565,9 @@ void GSDeviceVK::AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* cons
 		FlushRun();
 }
 
-// One group written by ApplyTFXState, through the ordinary calls it owed when its state was taken.
-void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf)
+// One group written by ApplyTFXState, through the ordinary calls it owed when its state was taken. It pushes the
+// texture bindings `textures` gives it (GSShortRunTextures.h).
+void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf, GSShortRunTextures& textures_owed)
 {
 	const DrawRunGroup& g = m_run_groups[i];
 	const DrawRunState& s = m_run_states[g.state];
@@ -8576,7 +8577,10 @@ void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf)
 		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, 0, 1, &m_run_set0,
 			NUM_TFX_DYNAMIC_OFFSETS, g.dyn_offset);
 	}
-	if (flags & DIRTY_FLAG_TFX_TEXTURES)
+	// The binding bits of tex_mask are the texture flag bits.
+	static_assert(DIRTY_FLAG_TFX_TEXTURE_0 == 1u);
+	const u32 push = textures_owed.Push(flags & DIRTY_FLAG_TFX_TEXTURES, s.tex_mask);
+	if (push)
 	{
 		std::array<GSTextureVK*, NUM_TFX_TEXTURES> textures;
 		textures.fill(m_null_texture.get());
@@ -8590,7 +8594,7 @@ void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf)
 				sampler = m_run_textures[k].sampler;
 		}
 		Vulkan::DescriptorSetUpdateBuilder dsub;
-		AddTFXTextureWrites(dsub, VK_NULL_HANDLE, textures, sampler, flags);
+		AddTFXTextureWrites(dsub, VK_NULL_HANDLE, textures, sampler, push);
 		dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES);
 	}
 	if (flags & DIRTY_FLAG_PIPELINE)
@@ -8613,14 +8617,16 @@ void GSDeviceVK::FlushRun()
 	if (!m_run_groups.empty() && m_run_groups.size() < DRAW_RUN_MIN_GROUPS &&
 		std::find(m_run_group_flags.begin(), m_run_group_flags.end(), ~0u) == m_run_group_flags.end())
 	{
+		GSShortRunTextures owed;
 		for (u32 i = 0; i < m_run_groups.size(); i++)
-			EmitRunGroupOrdinary(i, cmdbuf);
+			EmitRunGroupOrdinary(i, cmdbuf, owed);
 		m_run_states.clear();
 		m_run_groups.clear();
 		m_run_textures.clear();
 		m_run_texture_objs.clear();
 		m_run_group_flags.clear();
 		m_raw_binds.Forget(GSRawBindCache::TEXTURES);
+		m_dirty_flags |= owed.owed;
 	}
 	if (!m_run_groups.empty())
 	{
