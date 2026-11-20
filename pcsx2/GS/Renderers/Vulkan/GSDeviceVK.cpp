@@ -10539,9 +10539,9 @@ void GSDeviceVK::DoRenderHW(GSHWDrawConfig& config)
 bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt,
 	bool& keep_ds)
 {
-	// Nothing deferred or set up around the draw: no coalescing, no depth-as-colour sequence, no in-pass kick due,
-	// no colour clip target, no kept target copy.
-	constexpr u32 readback_window_frames = 3;
+	// Nothing deferred or set up around the draw: no coalescing, no depth-as-colour sequence, no colour clip target, no
+	// kept target copy. Whether the in-pass kick is due is asked apart (RowKickDue): it depends on measured times, and
+	// what the row emitter decides from this answer must not.
 	const auto refuse = [](u32 why) {
 		if (GSDrawRows::s_stats) [[unlikely]]
 			GSDrawRows::stats.device_rows_refused[why]++;
@@ -10553,15 +10553,6 @@ bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt,
 		return refuse(6);
 	if (GetColorClipTexture())
 		return refuse(7);
-	// In a readback-prone frame DoRenderHW may end the pass to submit (its in-pass kick). A draw the open pass keeps
-	// is never at a pass boundary, so only the in-pass offer can fire: the full path takes the draws where it would.
-	if (m_readback_frame != ~0u && (m_frame - m_readback_frame) <= readback_window_frames)
-	{
-		RollKickBudgetFrame();
-		if (m_draws_since_submit >= READBACK_KICK_DRAWS && m_draws_since_submit >= m_next_in_pass_kick_offer &&
-			(m_kick_ns_frame + m_kick_cost_ns) * 4 <= m_readback_block_ns_avg)
-			return refuse(8);
-	}
 	// A plain draw: one pass of one pipeline, nothing read from the targets.
 	if (config.stencil_counter.enable || config.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off ||
 		config.date_copy != GSAlphaBitLogicOp::NoDateCopy || config.require_one_barrier || config.require_full_barrier ||
@@ -10611,6 +10602,21 @@ bool GSDeviceVK::RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt,
 		bound(m_tfx_textures[TFX_TEXTURE_RT_ROV]) || bound(m_tfx_textures[TFX_TEXTURE_DEPTH_ROV]))
 		return refuse(4);
 	return true;
+}
+
+bool GSDeviceVK::RowKickDue()
+{
+	// In a readback-prone frame DoRenderHW may end the pass to submit (its in-pass kick). A draw the open pass keeps
+	// is never at a pass boundary, so only the in-pass offer can fire: the full path takes the draws where it would.
+	constexpr u32 readback_window_frames = 3;
+	if (m_readback_frame == ~0u || (m_frame - m_readback_frame) > readback_window_frames)
+		return false;
+	RollKickBudgetFrame();
+	const bool due = m_draws_since_submit >= READBACK_KICK_DRAWS && m_draws_since_submit >= m_next_in_pass_kick_offer &&
+	                 (m_kick_ns_frame + m_kick_cost_ns) * 4 <= m_readback_block_ns_avg;
+	if (due && GSDrawRows::s_stats) [[unlikely]]
+		GSDrawRows::stats.device_rows_refused[8]++;
+	return due;
 }
 
 bool GSDeviceVK::RowIsPlainOnce(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt,
@@ -10674,6 +10680,15 @@ void GSDeviceVK::DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
 	if (!plain)
 	{
 		RenderHW(config);
+		return;
+	}
+	// The in-pass kick, where it is due and nothing the emitter holds would be split by it: the full path takes the
+	// row to kick there. Its own draw as a row; the streaks are left as they are, since whether a kick is due depends
+	// on measured times and no grouping may (rows deferred by the emitter skip the kick, as the run machine's runs
+	// did, and leave it to a later row).
+	if ((!m_emitter || !m_emitter->AnyPending()) && RowKickDue())
+	{
+		DoRenderHW(config);
 		return;
 	}
 

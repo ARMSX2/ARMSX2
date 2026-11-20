@@ -1102,6 +1102,8 @@ public:
 	static_assert(sizeof(RowCache) <= sizeof(GSRowDeviceCache));
 	/// Whether DrawRow's plain path holds for this draw, and the targets it then draws into.
 	bool RowIsPlain(const GSHWDrawConfig& config, GSTextureVK*& draw_rt, GSTextureVK*& draw_ds, bool& keep_rt, bool& keep_ds);
+	/// Whether DoRenderHW's in-pass kick is due for a draw now (it depends on measured times).
+	bool RowKickDue();
 	void UpdateHWPipelineSelector(GSHWDrawConfig& config, PipelineSelector& pipe);
 	void UploadHWDrawVerticesAndIndices(GSHWDrawConfig& config);
 	VkImageMemoryBarrier GetColorBufferFeedbackBarrier(GSTextureVK* rt) const;
