@@ -738,7 +738,7 @@ TEST(GSRunsPolicyStreaks, ASplitOnOneSideLeavesTheOther)
 
 TEST(GSRunsPolicyStreaks, BreakEvenPricesCPUAndGPUApart)
 {
-	// The Adreno 650 (P4): opening a run-program group costs about 1.0 us of GPU, and each row in it saves about 1.1 us,
+	// The Adreno 650: opening a run-program group costs about 1.0 us of GPU, and each row in it saves about 1.1 us,
 	// so on the GPU's account a group pays from its first row.
 	EXPECT_EQ(GSRunsPolicy::BreakEven(0.0f, 0.0f, 1000.0f, 1100.0f), 1u);
 	EXPECT_EQ(GSRunsPolicy::BreakEven(3000.0f, 1000.0f, 1000.0f, 1100.0f), 3u);

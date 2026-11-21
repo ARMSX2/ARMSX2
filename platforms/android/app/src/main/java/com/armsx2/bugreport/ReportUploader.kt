@@ -10,7 +10,7 @@ import java.io.File
  * acknowledged is in that file: the create response, and for each file the parts it took. After
  * every part the file is rewritten, so a kill at any point costs at most the part in flight.
  *
- * The rules (DESIGN.md, "Client upload rules"):
+ * The rules:
  *  - a part that fails is retried up to five times, after 2, 4, 8, 16 and 32 seconds; after that the
  *    report waits for the next launch or for Retry ([Outcome.WaitingRetry]);
  *  - a failure that may pass is one the server did not refuse: no connection, a 5xx, 408, 429, a 403

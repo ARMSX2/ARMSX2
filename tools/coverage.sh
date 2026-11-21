@@ -18,8 +18,8 @@
 
 set -euo pipefail
 
-# pwd -P, not pwd: /home/bmd/dev and /home/bmd/ARMSX2 are symlinks into the real
-# tree, and configuring through a symlinked source dir breaks Qt AUTOMOC. Always
+# pwd -P, not pwd: the tree may be reached through a symlink, and configuring
+# through a symlinked source dir breaks Qt AUTOMOC. Always
 # resolve to the physical path before handing anything to cmake.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SRC_DIR="$(dirname "${SCRIPT_DIR}")"
@@ -60,7 +60,7 @@ if [[ ${do_build} -eq 1 ]]; then
 	if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
 		echo "==> configuring ${BUILD_DIR}"
 		# cd first: --preset takes the source dir from the working directory and
-		# ignores -S, so invoking this from the /home/bmd/ARMSX2 symlink would bake
+		# ignores -S, so invoking this through a symlink to the tree would bake
 		# the symlinked path into CMAKE_HOME_DIRECTORY (and into every coverage
 		# mapping), which also trips the Qt AUTOMOC symlink bug.
 		(cd "${SRC_DIR}" && cmake --preset clang-coverage)

@@ -30,7 +30,7 @@
 // host instruction decide.
 //
 // The oracle throughout is the VU0 interpreter via EeRecTestHarness's
-// JIT-vs-interpreter diff, which CLAUDE.md records as a zero-known-bug baseline.
+// JIT-vs-interpreter diff, which has no known bugs.
 // Absolute expectations are asserted as well wherever the architectural answer
 // is unambiguous, so a test failure says which side moved.
 

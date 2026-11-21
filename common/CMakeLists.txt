@@ -189,7 +189,7 @@ elseif(APPLE)
 elseif(ANDROID)
 	# Android reuses the Linux host layer plus a JNI-backed HTTP downloader
 	# (relocated from the former android core fork). Source wiring only:
-	# validate against a real NDK build. See REFACTOR_STATUS.md.
+	# validate against a real NDK build.
 	target_sources(common PRIVATE
 		Linux/LnxHostSys.cpp
 		Linux/LnxThreads.cpp

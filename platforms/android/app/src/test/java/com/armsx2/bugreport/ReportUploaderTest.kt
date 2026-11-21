@@ -13,7 +13,7 @@ import java.io.File
 import java.io.RandomAccessFile
 
 /**
- * The upload rules from DESIGN.md, run against a fake server: parts in order and resumable, five
+ * The upload rules ([ReportUploader]), run against a fake server: parts in order and resumable, five
  * retries with backoff, files given up on for good, the token running out.
  */
 class ReportUploaderTest {

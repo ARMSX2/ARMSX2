@@ -1,4 +1,4 @@
-// Generated from hardware-oracle/captures/gs-stq-extremes (round 1, SCPH-30001): one row per
+// Generated from console captures (SCPH-30001): one row per
 // uniform NEAREST/REPEAT cell our renderer read wrong before the extreme-STQ rule. sprite, TW, TH,
 // S, T, Q (GIF words), then the texel the console sampled (u, v, after the REPEAT mask).
 {0, 6, 4, 0x3d100000u, 0x4c6e6b28u, 0x3f800000u, 0, 15}, // g3 v=1e+09 VB_N4R p1

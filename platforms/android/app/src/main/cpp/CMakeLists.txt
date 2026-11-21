@@ -3,8 +3,7 @@
 # This is a THIN entry point: it builds the single shared PCSX2 core that lives
 # at the repository root (../../../../../../{common,pcsx2,3rdparty}) and layers
 # the Android JNI shared library (emucore) plus Android-only dependencies
-# (adrenotools) on top. The core is NO LONGER vendored under this directory --
-# see REFACTOR_STATUS.md for the migration details.
+# (adrenotools) on top. The core is NO LONGER vendored under this directory.
 #
 # NOTE: This wiring is structurally correct but has NOT been compiled against a
 # real Android NDK yet. Expect to iterate on include paths / 3rdparty sourcing

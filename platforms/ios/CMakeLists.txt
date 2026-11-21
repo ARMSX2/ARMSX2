@@ -90,7 +90,7 @@ set(TOP_CMAKE_WAS_SOURCED TRUE)
 
 # Absolute path to the repository root (single source of truth for the core).
 # The PCSX2 core / common / 3rdparty are NO LONGER vendored under this iOS app;
-# they are built from the repo root. See REFACTOR_STATUS.md.
+# they are built from the repo root.
 get_filename_component(ARMSX2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 
 # The iOS-aware modules vendored beside this entry point come first so they win

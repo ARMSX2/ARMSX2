@@ -1,8 +1,7 @@
 # Oracle suite for the GS vertex front-end kernels (GS/GSVertexKick.h): the
 # legacy parse and accept/cull kernels are pinned against independent scalar
-# models over directed edges + randomized sweeps. GV-campaign optimized kernels
-# must pass the same suite bit-for-bit. See
-# scratchpad/mq65-gs-2026-07-18/GIFPACKED-VERTEX-DESIGN.md for the campaign.
+# models over directed edges + randomized sweeps. Optimized kernels must pass
+# the same suite bit-for-bit.
 #
 # The *_policy_tests.cpp, road and profile test files ride this target rather
 # than adding one: what they test is header-only, so they need no extra linkage.

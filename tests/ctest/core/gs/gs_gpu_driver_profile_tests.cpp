@@ -1412,7 +1412,7 @@ TEST(GSGpuDriverProfile, TheNumbersBesideTheAdreno722GetNoA7xxRule)
 // Under the old name parse the stock driver read the marketing name as model 12, an unknown
 // architecture, and so missed every row bounded by a model range. The part must take exactly the
 // rows, bugs, workarounds and road bits an "Adreno (TM) 613" takes, on each driver. Device strings
-// from umbrella devs/bmdhacks/campaigns/rg55g1-2026-10-23 (stock vkjson, Turnip probe); the Turnip
+// read off the device on 2026-10-23 (the stock driver's vkjson, and Turnip); the Turnip
 // driverVersion was not recorded and is Mesa 27.0.0's packing.
 namespace
 {

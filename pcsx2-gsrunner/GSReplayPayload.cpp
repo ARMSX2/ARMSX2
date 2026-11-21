@@ -432,7 +432,7 @@ namespace GSReplayPayload
 
 		// ⚠️ The size check above is necessary and not sufficient: it constrains the
 		// total, and two wrong splits of that total add up just as well as the right
-		// one. This session shipped exactly that mistake -- eight bytes late from
+		// one. An earlier version made exactly that mistake -- eight bytes late from
 		// treating two 32-bit vertex latches as registers -- and the size still
 		// matched. So check a field whose legal values are known. `write` is a bool;
 		// anything but 0 or 1 means the offsets are wrong, whatever the total says.

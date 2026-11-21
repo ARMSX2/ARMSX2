@@ -3693,9 +3693,8 @@ static bool memory_protect_recompiled_code(u32 startpc, u32 size)
 			armAsm->Mov(a64::w0, inpage_ptr);
 			armAsm->Mov(a64::w1, inpage_sz / 4);
 
-			// FX-03a fast compare (mirrors the AetherSX2 leak's hoisted-base
-			// wide-compare shape, module 1030, which strides 8 bytes; we take
-			// it to 16): snapshot the source words into the constant pool,
+			// FX-03a fast compare (a hoisted-base wide compare, 16 bytes a
+			// step): snapshot the source words into the constant pool,
 			// hoist both base addresses once, then Ldp 16-byte pairs through
 			// a single Cmp/Ccmp flag chain with ONE exit branch. ~1.3
 			// insns/word vs ~8 for the per-word fallback below. Post-index

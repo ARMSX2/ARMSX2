@@ -1229,8 +1229,8 @@ NM00057:
     alignSprite: 1 # Fixes vertical lines.
 
 # Baldur's Gate: Dark Alliance (NTSC-U) — keep textures resident in the game's own
-# VRAM texture cache. bmdhacks, 2026-10-14; found by the BGDA texture-upload study
-# (ARMSX2 umbrella, devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md).
+# VRAM texture cache. bmdhacks, 2026-10-14; found by a study of the game's texture uploads,
+# which were the bottleneck on the RG 476H.
 #
 # The game sweeps out every texture whose stamp is older than its render-frame
 # counter, but the function that queues an already-resident texture (0x1350a8)
@@ -1257,8 +1257,7 @@ SLUS-20035:
         patch=1,EE,00135180,word,8f82a44c
 
 # Baldur's Gate: Dark Alliance II (NTSC-U) — the same VRAM texture-cache stamp fix as
-# Dark Alliance above. bmdhacks, 2026-10-14; ARMSX2 umbrella,
-# devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md (BGDA II section).
+# Dark Alliance above. bmdhacks, 2026-10-14.
 #
 # Same engine, same bug: the code that queues an already-resident texture (0x1f7638)
 # refreshes its stamp from the game-time counter (gp-0x654c, 0x3601a4), while the
@@ -1279,8 +1278,7 @@ SLUS-20675:
         patch=1,EE,001f7640,word,8f829ab8
 
 # Baldur's Gate: Dark Alliance (PAL, En/Fr/De/Es/It) — the same VRAM texture-cache stamp
-# fix as the NTSC-U entry above (SLUS-20035). bmdhacks, 2026-10-14; ARMSX2 umbrella,
-# devs/bmdhacks/campaigns/g57-bgda-slowdown/PATCH-STUDY.md (the NTSC-U analysis this follows).
+# fix as the NTSC-U entry above (SLUS-20035), whose analysis this follows. bmdhacks, 2026-10-14.
 #
 # Same code, found in the PAL boot ELF (SLES_506.72) by instruction pattern, not by address.
 # The three functions are the NTSC-U ones word for word except for gp offsets, data addresses
@@ -1305,7 +1303,7 @@ SLUS-20675:
 # singly along polygon and character edges. At the other two points the unpatched boots differ from
 # each other too (hundreds of px, at most 2 levels) and the patched arm by 200-4500 px, at
 # most 23 levels, so no clean figure there. Not looked at on the owner's flips.
-# Verified: boot from the PAL disc on the M2 (probe build from g57-slowdown 694e23d0a3, EE
+# Verified: boot from the PAL disc on the M2 (a probe build, EE
 # JIT, MTVU off, isolated data path) found the entry for SLES-50672 / 4A9D8E01 and read
 # 8f82a4cc at 0x135250 with it, 8f82a4c8 without. Not run: device timing, a console, other
 # levels. patches only: upstream's gsHWFixes for this serial stay in force.
@@ -1318,8 +1316,7 @@ SLES-50672:
         patch=1,EE,00135250,word,8f82a4cc
 
 # GS multi-threading (backThread) recommended for the titles whose frame is limited by the GS
-# thread. bmdhacks (draw-storm ARCH step 1, Claude session), 2026-10-19; ARMSX2 umbrella,
-# devs/bmdhacks/campaigns/draw-storm/ARCH/STEP1-RESULT.md.
+# thread. bmdhacks, 2026-10-19.
 #
 # What the fix does: backThread: 1 turns the GS back thread on for the game, only where the host
 # has at least four performance-tier cores and a slower tier beside them
@@ -1339,7 +1336,7 @@ SLES-50672:
 # The hint is withheld when the IOP thread will run (VMManager::Internal::CanSplitGS asks for a fifth performance core): with it on, the split was slower
 # than one GS thread on the SD865 and RG 476H in Spider-Man 3 (+4 to +5 percent), and Sly 3 gained only 1 to 4 percent.
 # At 2x on the SD865 Spider-Man 3 is GPU-limited (34.8 ms either way) and Sly 3 gains 7.5 percent.
-# Verified: draw-storm x1-placement build, armsx2-turnip axfl2-002 on the SD865, malisx2 0.1.5 on
+# Verified: a development build, armsx2-turnip axfl2-002 on the SD865, malisx2 0.1.5 on
 # the RG 476H and RG 477V. Serials: every retail release of each title that the database lists;
 # the measured ones are the NTSC-U discs (SLUS-21552, SCUS-97464, SCUS-97353).
 #
@@ -1474,8 +1471,7 @@ SCES-52456:
 # three titles are untouched. Shadow of the Colossus and God of War have no upstream speedHacks.
 
 # nativeCounterDraws for Shadow of the Colossus: draw its shadow volumes at native resolution when upscaling.
-# bmdhacks, 2026-10-22. Investigation, the corpus scan and flip pages: devs/bmdhacks/campaigns/sotc-slow-2026-10-22
-# in the umbrella.
+# bmdhacks, 2026-10-22.
 #
 # Symptom: the game counts its shadow volumes in a separate buffer, adding 1 or 255 per triangle with colour
 # clamping off so 255 wraps to -1. Climbing a colossus, the volumes cover the screen about 47 times. To keep the
@@ -1497,8 +1493,7 @@ SCES-52456:
 
 # OPHFlagHack for Shadow of the Colossus: holds the game at a steady 30 fps instead of flipping between 30 and 60.
 # bmdhacks, 2026-10-22. Source: NetherSX2 v2.2n-4248's GameIndex.yaml sets it on all eight releases below
-# ("Improves performance"); upstream PCSX2 never has. Investigation and measurements:
-# devs/bmdhacks/campaigns/sotc-fps-2026-10-22 in the umbrella.
+# ("Improves performance"); upstream PCSX2 never has.
 #
 # Symptom: the game has no fixed frame rate. It runs at 60 whenever a frame's EE work fits in one field and at
 # 30 otherwise, and in many scenes it sits on that line. On the Retroid Pocket Duo it then jumps to 60, cannot
