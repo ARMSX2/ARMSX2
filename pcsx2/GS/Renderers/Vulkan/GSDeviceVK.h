@@ -588,7 +588,7 @@ public:
 			{
 				u32 topology : 2;
 				u32 rt : 1;
-				u32 ds : 1;
+				u32 ds : 2; // DepthSlot
 				u32 line_width : 1;
 				u32 feedback_loop_flags : 3;
 				u32 raster_order : 1;
@@ -692,11 +692,12 @@ private:
 	std::unordered_map<u32, VkSampler> m_samplers;
 
 	std::vector<VkPipeline> m_convert;
+	std::vector<VkPipeline> m_convert_s8; // depth-output converts into depth with stencil, under stencil_on_request
 	std::array<VkPipeline, static_cast<int>(PresentShader::Count)> m_present{};
 	std::array<VkPipeline, 2> m_merge{};
 	std::array<VkPipeline, NUM_INTERLACE_SHADERS> m_interlace{};
-	VkPipeline m_colclip_setup_pipelines[2][2] = {}; // [depth][feedback_loop]
-	VkPipeline m_colclip_finish_pipelines[2][2] = {}; // [depth][feedback_loop]
+	VkPipeline m_colclip_setup_pipelines[3][2] = {}; // [depth slot][feedback_loop]
+	VkPipeline m_colclip_finish_pipelines[3][2] = {}; // [depth slot][feedback_loop]
 
 	// The stencil counter's resolve (DrawStencilCounter): reads a copy of the target and the stencil
 	// aspect, so it has its own two-texture layout. One pipeline per RGB write mask, made on first use.
@@ -716,6 +717,14 @@ private:
 	VkPipeline GetConvertPipeline(ShaderConvert shader) const
 	{
 		return m_convert[ShaderConvertSelector(shader).Index()];
+	}
+
+	/// The convert pipeline for drawing into dTex: depth with stencil takes its own render pass.
+	VkPipeline GetConvertPipelineFor(ShaderConvertSelector shader, const GSTextureVK* dTex) const
+	{
+		if (shader.DepthOutput() && !shader.DATMConvertShader() && DepthSlot(dTex) == 2)
+			return m_convert_s8[shader.Index()];
+		return m_convert[shader.Index()];
 	}
 
 	/// Guards m_tfx_vertex_shaders and m_tfx_fragment_shaders, which precompile workers fill too.
@@ -772,10 +781,14 @@ private:
 	VkRenderPass m_utility_depth_render_pass_load = VK_NULL_HANDLE;
 	VkRenderPass m_utility_depth_render_pass_clear = VK_NULL_HANDLE;
 	VkRenderPass m_utility_depth_render_pass_discard = VK_NULL_HANDLE;
+	VkRenderPass m_utility_depth_s8_render_pass_load = VK_NULL_HANDLE; // depth with stencil, under stencil_on_request
+	VkRenderPass m_utility_depth_s8_render_pass_clear = VK_NULL_HANDLE;
+	VkRenderPass m_utility_depth_s8_render_pass_discard = VK_NULL_HANDLE;
+	u32 m_depth_stencil_gifts = 0; // GiveDepthStencil calls this session
 	VkRenderPass m_date_setup_render_pass = VK_NULL_HANDLE;
 	VkRenderPass m_swap_chain_render_pass = VK_NULL_HANDLE;
 
-	VkRenderPass m_tfx_render_pass[2][2][2][3][2][2][3][3] = {}; // [rt][ds][colclip][date][fbl][dsp][rt_op][ds_op]
+	VkRenderPass m_tfx_render_pass[2][3][2][3][2][2][3][3] = {}; // [rt][depth slot][colclip][date][fbl][dsp][rt_op][ds_op]
 
 	VkDescriptorSetLayout m_cas_ds_layout = VK_NULL_HANDLE;
 	VkPipelineLayout m_cas_pipeline_layout = VK_NULL_HANDLE;
@@ -920,10 +933,18 @@ public:
 	/// The window support a window needs. See WindowSystemExtensions.
 	static WindowSystemExtensions GetWindowSystemExtensions(const WindowInfo& wi);
 
-	__fi VkRenderPass GetTFXRenderPass(bool rt, bool ds, bool colclip, bool stencil, bool fbl, bool dsp,
+	/// ds is a depth slot (DepthSlot): 0 none, 1 depth, 2 depth with stencil where stencil_on_request splits them.
+	__fi VkRenderPass GetTFXRenderPass(bool rt, u32 ds, bool colclip, bool stencil, bool fbl, bool dsp,
 		VkAttachmentLoadOp rt_op, VkAttachmentLoadOp ds_op) const
 	{
 		return m_tfx_render_pass[rt][ds][colclip][stencil][fbl][dsp][rt_op][ds_op];
+	}
+
+	/// The render-pass and pipeline slot for a depth buffer. Only stencil_on_request makes slot 2, so
+	/// everywhere else pipelines and passes are keyed as before.
+	__fi u32 DepthSlot(const GSTexture* ds) const
+	{
+		return ds ? ((m_features.stencil_on_request && static_cast<const GSTextureVK*>(ds)->HasStencilAspect()) ? 2 : 1) : 0;
 	}
 	__fi VkSampler GetPointSampler() const { return m_point_sampler; }
 	__fi VkSampler GetLinearSampler() const { return m_linear_sampler; }
@@ -937,6 +958,7 @@ public:
 
 	RenderAPI GetRenderAPI() const override;
 	bool HasSurface() const override;
+	void GiveDepthStencil(GSTexture* ds) override;
 
 	bool Create(GSVSyncMode vsync_mode, bool allow_present_throttle) override;
 	void Destroy() override;
@@ -1327,6 +1349,13 @@ private:
 	VkFramebuffer m_current_framebuffer = VK_NULL_HANDLE;
 	VkRenderPass m_current_render_pass = VK_NULL_HANDLE;
 	GSVector4i m_current_render_pass_area = GSVector4i::zero();
+
+	// TFX passes are opened over their draws instead of the whole target where the driver pays for render-pass area.
+	bool m_narrow_render_area = false;
+	u32 m_render_area_growths = 0;
+	VkExtent2D m_render_area_granularity = {};
+	GSVector4i AlignRenderArea(VkRenderPass rp, const GSVector4i& area, const GSVector2i& size);
+	bool IsDevicePanVKBifrost() const;
 
 	// Mid-frame submission for readback-prone frames: when a game synchronously reads
 	// GS memory back (local->host TRXDIR), the readback fence-waits on everything
