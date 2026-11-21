@@ -1,93 +1,27 @@
-// Set SDL_MAIN_HANDLED to prevent SDL from redefining main()
-#define SDL_MAIN_HANDLED
+// RuntimeSettings.mm — repair, migrate and sanitize helpers for the base settings
+// SPDX-License-Identifier: GPL-3.0+
 
+#import <UIKit/UIKit.h>
 
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_main.h>
-#include <SDL3/SDL_metal.h>
-#import <GameController/GameController.h>
-
-// SwiftUI integration — Xcode names the generated header after the Swift module.
-#import <MetalKit/MetalKit.h>
-#import "ARMSX2iOS-Swift.h"
-#import <SwiftUI/SwiftUI.h>
-
-// ... other includes ...
-#include <unistd.h>
 #include <algorithm>
-#include <cstdlib>
-#include <cstring>
-#include <string>
-#include <iostream>
-#include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 
-#include "common/ProgressCallback.h"
-#include "common/Error.h"
-#include "pcsx2/Input/InputManager.h"
-#include "pcsx2/SIO/Pad/Pad.h"
-#include "pcsx2/SIO/Pad/PadDualshock2.h"
-#include "pcsx2/Counters.h" // g_FrameCount
-#include "pcsx2/PerformanceMetrics.h"
-#include "pcsx2/R5900.h"
-#include "pcsx2/Achievements.h"
-#include "pcsx2/CDVD/CDVDdiscReader.h"
 #include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
-#include "pcsx2/VMManager.h"
-#include "pcsx2/GameList.h"
-#include "pcsx2/ImGui/ImGuiManager.h"
-#include "pcsx2/Config.h"
-#include "pcsx2/CDVD/CDVD.h"
-#include "pcsx2/CDVD/CDVDcommon.h"
-#include "pcsx2/ps2/BiosTools.h"
-#include "pcsx2/SIO/Memcard/MemoryCardFile.h"
-
-#include "pcsx2/DEV9/pcap_io.h"
-#include "pcsx2/DEV9/net.h"
-
-#include "pcsx2/Host.h"
-#include "pcsx2/Host/AudioStreamTypes.h"
-#include "pcsx2/INISettingsInterface.h"
-
-#include "common/WindowInfo.h"
-#include "common/HTTPDownloader.h"
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <atomic>
-#include <cmath>
-#include <deque>
-#include <memory>
-#include <optional>
-#include <span>
-#include <vector>
-#include <sys/stat.h> // For mkdir
-
-struct rc_client_event_t;
-struct rc_client_t;
-
-// iOS specific headers
-#import <UIKit/UIKit.h>
-#import <GameController/GameController.h>
-#import <CoreHaptics/CoreHaptics.h>
-#import <AVFoundation/AVFoundation.h>
-#include <mach/mach.h>
-#include <mach-o/dyld.h>
 #include "common/Darwin/DarwinMisc.h"
 
+#include "pcsx2/Achievements.h"
+#include "pcsx2/Config.h"          // EmuConfig, GSConfig
+#include "pcsx2/GameList.h"
+#include "pcsx2/Host.h"
+#include "pcsx2/SIO/Memcard/MemoryCardFile.h"
+#include "pcsx2/VMManager.h"
+
 #include "IOSRuntime.h"
-#import "ARMSX2GameView.h"
-
-// Game render view — frame-based layout, portrait=50% / landscape=full safe area
-// Game render view with CAMetalLayer as backing layer (like MTKView)
-// Game render view — backing layer (CAMetalLayer), manual landscape toggle
-#include "pcsx2/MTGS.h"
-#include "pcsx2/GS/GS.h"
-
-#pragma mark - Init helpers
-static std::vector<u8> s_imguiStandardFontData;
 
 bool ARMSX2ShouldEnableMTVUByDefault(u32* physical_cores)
 {
@@ -245,91 +179,6 @@ bool ARMSX2RepairIOSARM64JITSettings(SettingsInterface* si, const char* reason)
     return changed;
 }
 
-void ARMSX2ConfigureImGuiFonts(const char* reason)
-{
-    const std::string fontPath =
-        EmuFolders::GetOverridableResourcePath("fonts" FS_OSPATH_SEPARATOR_STR "Roboto-Regular.ttf");
-    std::optional<std::vector<u8>> fontData = FileSystem::ReadBinaryFile(fontPath.c_str());
-    if (!fontData.has_value()) {
-        std::fprintf(stderr, "@@IMGUI_FONT@@ ok=0 reason=%s path=\"%s\"\n", reason, fontPath.c_str());
-        std::fflush(stderr);
-        ImGuiManager::SetFonts({});
-        return;
-    }
-
-    s_imguiStandardFontData = std::move(fontData.value());
-    std::vector<ImGuiManager::FontInfo> fonts;
-    fonts.push_back({
-        std::span<const u8>(s_imguiStandardFontData.data(), s_imguiStandardFontData.size()),
-        std::span<const u32>(),
-        nullptr,
-        false,
-    });
-    ImGuiManager::SetFonts(std::move(fonts));
-}
-
-#pragma mark - ARMSX2GameView
-@implementation ARMSX2GameView
-+ (Class)layerClass { return [CAMetalLayer class]; }
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
-    if (self)
-        [self armsx2ApplyNativeContentScale];
-    return self;
-}
-- (void)didMoveToWindow {
-    [super didMoveToWindow];
-    [self armsx2ApplyNativeContentScale];
-    [self setNeedsLayout];
-}
-- (CGFloat)armsx2NativeContentScale {
-    UIScreen* screen = self.window.screen ?: UIScreen.mainScreen;
-    CGFloat scale = screen.nativeScale > 0.0 ? screen.nativeScale : screen.scale;
-    return scale > 0.0 ? scale : 1.0;
-}
-- (void)armsx2ApplyNativeContentScale {
-    const CGFloat scale = [self armsx2NativeContentScale];
-    self.contentScaleFactor = scale;
-    self.layer.contentsScale = scale;
-    ((CAMetalLayer*)self.layer).contentsScale = scale;
-}
-- (void)layoutSubviews {
-    [super layoutSubviews];
-    [self armsx2ApplyNativeContentScale];
-    if (self.bounds.size.width <= 0.0 || self.bounds.size.height <= 0.0)
-        return;
-
-    CGFloat scale = self.contentScaleFactor;
-    CAMetalLayer *mtl = (CAMetalLayer *)self.layer;
-    mtl.drawableSize = CGSizeMake(self.bounds.size.width * scale,
-                                   self.bounds.size.height * scale);
-    int w = std::max(1, (int)(self.bounds.size.width * scale + 0.5));
-    int h = std::max(1, (int)(self.bounds.size.height * scale + 0.5));
-    float s = (float)scale;
-
-    // Keep corner-anchored OSD out of the notch, the Dynamic Island and the home indicator. UIKit
-    // already knows where those are; a flat constant was both too much on a device with square
-    // corners and nowhere near enough on one with a cut-out.
-    const UIEdgeInsets safe = self.safeAreaInsets;
-    ImGuiManager::SetOSDSafeAreaInsets((float)(safe.left * scale), (float)(safe.top * scale),
-                                       (float)(safe.right * scale), (float)(safe.bottom * scale));
-
-    // -layoutSubviews is UIKit, i.e. the main thread, and it fires on every rotation and resize
-    // with the VM running. The MTGS ring is single-producer and belongs to the CPU thread, so hop
-    // there first (Host::RunOnGSThread chains RunOnCPUThread -> MTGS::RunOnGSThread). The insets
-    // go direct because that hop drops anything queued while the GS thread is closed, which is
-    // every layout pass before a game boots — the OSD then drew unindented until the first rotate.
-    Host::RunOnGSThread([w, h, s]() {
-        GSResizeDisplayWindow(w, h, s);
-    });
-}
-@end
-
-#pragma mark - Statics & device stats
-ARMSX2GameView* g_gameRenderView = nil;  // non-static: accessed from the bridge
-INISettingsInterface* s_settings_interface = nullptr;
-INISettingsInterface* s_secrets_settings_interface = nullptr;
-
 bool ARMSX2GetConfiguredFastBoot()
 {
     if (!s_settings_interface)
@@ -340,10 +189,9 @@ bool ARMSX2GetConfiguredFastBoot()
         Host::GetBaseBoolSettingValue("EmuCore", "EnableFastBoot", false));
 }
 
-// Resolves fast boot for an ISO that is about to boot. A per-game override
-// (EmuCore/EnableFastBoot in the game's settings INI) takes precedence;
-// otherwise the configured global value is used. Global settings are never
-// mutated, so a per-game override cannot leak into the global configuration.
+// Resolves fast boot for an ISO that is about to boot. A per-game EmuCore/EnableFastBoot in the
+// game's settings INI takes precedence, otherwise the configured global value is used. Global
+// settings are never mutated, so a per-game override cannot leak into the global configuration.
 bool ARMSX2ResolveFastBootForISO(const std::string& isoPath)
 {
     const bool globalFastBoot = ARMSX2GetConfiguredFastBoot();
@@ -436,50 +284,6 @@ void ARMSX2ApplyJITScriptProtocol(const char* reason)
     std::fprintf(stderr, "@@JIT_PROTOCOL_SELECTED@@ reason=%s ios_major=%d protocol=%s\n",
         reason ? reason : "unknown", ARMSX2GetIOSMajorVersion(), jitProtocol.c_str());
     std::fflush(stderr);
-}
-
-bool ARMSX2IOSRuntimeTelemetryEnabled()
-{
-    static std::atomic<int> s_enabled{-1};
-    int enabled = s_enabled.load(std::memory_order_acquire);
-    if (enabled >= 0)
-        return enabled == 1;
-
-    const char* value = std::getenv("iPSX2_IOS_PERF_TELEMETRY");
-    if (!value || !value[0])
-        value = std::getenv("SIMCTL_CHILD_iPSX2_IOS_PERF_TELEMETRY");
-
-    enabled = (value && std::strcmp(value, "1") == 0) ? 1 : 0;
-    int expected = -1;
-    if (!s_enabled.compare_exchange_strong(expected, enabled, std::memory_order_acq_rel))
-        enabled = expected;
-    return enabled == 1;
-}
-
-double ARMSX2IOSGetAppRAMGB()
-{
-    task_vm_info_data_t vm_info = {};
-    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
-    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&vm_info), &count) != KERN_SUCCESS)
-        return 0.0;
-
-    return static_cast<double>(vm_info.phys_footprint) / (1024.0 * 1024.0 * 1024.0);
-}
-
-const char* ARMSX2IOSHeatStateName(NSProcessInfoThermalState state)
-{
-    switch (state) {
-    case NSProcessInfoThermalStateNominal:
-        return "OK";
-    case NSProcessInfoThermalStateFair:
-        return "Warm";
-    case NSProcessInfoThermalStateSerious:
-        return "Hot";
-    case NSProcessInfoThermalStateCritical:
-        return "Critical";
-    default:
-        return "Unknown";
-    }
 }
 
 void ARMSX2DisableRetroAchievementsHardcoreForIOS(SettingsInterface* si, const char* reason)
@@ -688,107 +492,6 @@ void ARMSX2IOSLogMemoryCardConfig(const char* reason)
     std::fflush(stderr);
 }
 
-struct ARMSX2IOSDeviceStatsCache
-{
-    bool show = true;
-    int severity = 0;
-    std::string line;
-    std::chrono::steady_clock::time_point last_update;
-};
-
-static std::mutex s_device_stats_mutex;
-static ARMSX2IOSDeviceStatsCache s_device_stats_cache;
-
-static const ARMSX2IOSDeviceStatsCache& ARMSX2IOSRefreshDeviceStatsCacheLocked()
-{
-    const auto now = std::chrono::steady_clock::now();
-    if (!s_device_stats_cache.line.empty() &&
-        (now - s_device_stats_cache.last_update) < std::chrono::seconds(1))
-    {
-        return s_device_stats_cache;
-    }
-
-    // Mirror the rule the Swift side loads with, so a fresh install with the key still absent agrees
-    // with the preset instead of showing stats at Off.
-    s_device_stats_cache.show = s_settings_interface ?
-        Host::GetBaseBoolSettingValue("ARMSX2iOS/UI", "OsdShowDeviceStats",
-            Host::GetBaseIntSettingValue("ARMSX2iOS/UI", "OsdPreset", 0) != 0) : false;
-
-    @autoreleasepool {
-        UIDevice* device = [UIDevice currentDevice];
-        const float battery = [device batteryLevel];
-        const int battery_percent = (battery >= 0.0f) ? static_cast<int>(std::round(battery * 100.0f)) : -1;
-        const NSProcessInfoThermalState thermal_state = [[NSProcessInfo processInfo] thermalState];
-        const double app_ram_gb = ARMSX2IOSGetAppRAMGB();
-        const bool low_power = [[NSProcessInfo processInfo] isLowPowerModeEnabled];
-
-        if (thermal_state >= NSProcessInfoThermalStateSerious || (battery >= 0.0f && battery <= 0.15f))
-            s_device_stats_cache.severity = 2;
-        else if (thermal_state == NSProcessInfoThermalStateFair || (battery >= 0.0f && battery <= 0.30f))
-            s_device_stats_cache.severity = 1;
-        else
-            s_device_stats_cache.severity = 0;
-
-        char buffer[192];
-        if (battery_percent >= 0) {
-            std::snprintf(buffer, sizeof(buffer), "Battery: %d%% | Heat: %s | RAM: %.1f GB%s",
-                battery_percent, ARMSX2IOSHeatStateName(thermal_state), app_ram_gb, low_power ? " | Low Power" : "");
-        } else {
-            std::snprintf(buffer, sizeof(buffer), "Battery: -- | Heat: %s | RAM: %.1f GB%s",
-                ARMSX2IOSHeatStateName(thermal_state), app_ram_gb, low_power ? " | Low Power" : "");
-        }
-
-        s_device_stats_cache.line = buffer;
-    }
-
-    s_device_stats_cache.last_update = now;
-    return s_device_stats_cache;
-}
-
-extern "C" bool ARMSX2_iOSShouldShowDeviceStatsOverlay()
-{
-    std::lock_guard<std::mutex> lock(s_device_stats_mutex);
-    return ARMSX2IOSRefreshDeviceStatsCacheLocked().show;
-}
-
-extern "C" int ARMSX2_iOSGetDeviceStatsOverlaySeverity()
-{
-    std::lock_guard<std::mutex> lock(s_device_stats_mutex);
-    return ARMSX2IOSRefreshDeviceStatsCacheLocked().severity;
-}
-
-extern "C" const char* ARMSX2_iOSGetDeviceStatsOverlayLine()
-{
-    // Handing back a pointer into the cached string leaves the caller reading it after the lock has
-    // gone, and another thread refreshing the cache can reallocate it underneath them. Copy into
-    // storage the calling thread owns instead.
-    static thread_local std::string copy;
-    {
-        std::lock_guard<std::mutex> lock(s_device_stats_mutex);
-        copy = ARMSX2IOSRefreshDeviceStatsCacheLocked().line;
-    }
-    return copy.c_str();
-}
-
-// Structured device stats for the SwiftUI VoiceOver HUD mirror. Reads the same
-// cache as ARMSX2_iOSGetDeviceStatsOverlayLine but exposes individual fields.
-// TODO: FPS - the overlay FPS lives in the PerformanceOverlay path with no
-// thread-safe getter surfaced here yet; omitted for now.
-extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outThermalState,
-                                          double* outRamGB, bool* outLowPower)
-{
-    std::lock_guard<std::mutex> lock(s_device_stats_mutex);
-    const auto& stats = ARMSX2IOSRefreshDeviceStatsCacheLocked();
-    if (outBatteryPercent) {
-        UIDevice* device = [UIDevice currentDevice];
-        const float battery = [device batteryLevel];
-        *outBatteryPercent = (battery >= 0.0f) ? static_cast<int>(std::round(battery * 100.0f)) : -1;
-    }
-    if (outThermalState) *outThermalState = stats.severity;
-    if (outRamGB) *outRamGB = ARMSX2IOSGetAppRAMGB();
-    if (outLowPower) *outLowPower = [[NSProcessInfo processInfo] isLowPowerModeEnabled];
-}
-
 float ARMSX2SanitizedNominalScalar(float scalar)
 {
     if (!std::isfinite(scalar))
@@ -819,13 +522,9 @@ void ARMSX2SetIOSOsdFlags(bool show_fps, bool show_vps, bool show_speed, bool sh
     bool show_settings, bool show_inputs, bool show_frame_times, bool show_version,
     bool show_hardware_info)
 {
-    // EmuConfig only. GSConfig belongs to the GS thread, and this runs on whichever
-    // thread the caller happens to be on -- the UIKit one at scene connect. These are
-    // bitfields sharing a word, so writing one from here is a read-modify-write against
-    // whatever the GS thread is doing to its neighbours.
-    //
-    // Nothing is lost by dropping the second write: ImGuiOverlays copies all of these out
-    // of EmuConfig.GS into GSConfig every frame, on the GS thread, right before it draws.
+    // EmuConfig only: GSConfig belongs to the GS thread, its bitfields share a word, and this
+    // runs on the caller's thread (UIKit at scene connect), so a write there races the GS thread.
+    // Nothing is lost: ImGuiOverlays copies EmuConfig.GS into GSConfig every frame before it draws.
     EmuConfig.GS.OsdShowFPS = show_fps;
     EmuConfig.GS.OsdShowVPS = show_vps;
     EmuConfig.GS.OsdShowSpeed = show_speed;
@@ -886,159 +585,8 @@ void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
     int position = Host::GetBaseIntSettingValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(OsdOverlayPos::TopRight));
     if (position == static_cast<int>(OsdOverlayPos::TopCenter))
         position = static_cast<int>(OsdOverlayPos::TopRight);
-    // Not mirrored per frame the way the flags above are, so this one really does have to
-    // be pushed. Not from here though: this function has no thread hop and one of its
-    // callers is the UIKit thread, where MTGS::RunOnGSThread asserts. The call site that
-    // needs it is the only one running after the GS opens, and it pushes there.
+    // Not mirrored per frame like the flags above, so it has to be pushed, but not from here: this
+    // has no thread hop and one caller is the UIKit thread, where MTGS::RunOnGSThread asserts. The
+    // only call site that runs after the GS opens pushes it there.
     EmuConfig.GS.OsdPerformancePos = static_cast<OsdOverlayPos>(position);
-}
-
-
-#pragma mark - VM thread & CPU task queue
-// Touch pad state
-bool g_touchPadState[64] = {};
-
-// Persistent VM thread lifecycle
-std::atomic<bool> s_vmThreadActive{false};   // true while VM is executing
-std::atomic<unsigned int> s_vmHeartbeatGeneration{0};
-std::atomic<bool> s_requestVMStop{false};     // signal VM to stop from UI (extern for ARMSX2Bridge)
-std::atomic<bool> s_requestVMBoot{false};     // signal VM thread to boot
-std::mutex s_vmMutex;
-std::condition_variable s_vmCV;
-bool s_vmThreadCreated = false;               // guarded by s_vmMutex
-
-std::thread::id s_cpuThreadId;
-std::atomic<unsigned long long> s_cpuTaskNextId{1};
-std::mutex s_cpuTaskMutex;
-std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
-
-void ARMSX2DrainCPUThreadTasks()
-{
-    for (;;) {
-        std::shared_ptr<CPUThreadTask> task;
-        {
-            std::lock_guard<std::mutex> lock(s_cpuTaskMutex);
-            if (s_cpuTasks.empty())
-                break;
-
-            task = std::move(s_cpuTasks.front());
-            s_cpuTasks.pop_front();
-        }
-
-        bool runs = false;
-        {
-            std::lock_guard<std::mutex> lock(task->mutex);
-            runs = task->function && !task->cancelled;
-            task->started = runs;
-        }
-        if (runs)
-            task->function();
-
-        {
-            std::lock_guard<std::mutex> lock(task->mutex);
-            task->complete = true;
-        }
-        task->cv.notify_all();
-    }
-}
-
-// A task left over from a VM that ended must not run in the next one.
-void ARMSX2DiscardCPUThreadTasks()
-{
-    std::deque<std::shared_ptr<CPUThreadTask>> tasks;
-    {
-        std::lock_guard<std::mutex> lock(s_cpuTaskMutex);
-        tasks.swap(s_cpuTasks);
-    }
-    for (const auto& task : tasks) {
-        {
-            std::lock_guard<std::mutex> lock(task->mutex);
-            task->cancelled = true;
-            task->complete = true;
-        }
-        task->cv.notify_all();
-    }
-}
-
-extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void)
-{
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRuntimeMenuStateChanged" object:nil];
-    });
-}
-
-extern "C" void ARMSX2_PostEmulationOnlyStartupReady(void)
-{
-    dispatch_async(dispatch_get_main_queue(), ^{
-        if (VMManager::IsEmulationOnlyMode())
-            return;
-        [[NSNotificationCenter defaultCenter]
-            postNotificationName:@"ARMSX2iOSEmulationOnlyStartupReady"
-            object:nil];
-    });
-}
-
-// Gamepad button mapping — 16 PS2 buttons → SDL_GamepadButton
-std::atomic<bool> s_captureMode{false};
-std::atomic<int>  s_capturedButton{-1};
-
-// Default mapping: PS2 index → SDL_GamepadButton
-int s_buttonMap[16] = {
-    SDL_GAMEPAD_BUTTON_DPAD_UP,        // 0  PAD_UP
-    SDL_GAMEPAD_BUTTON_DPAD_DOWN,      // 1  PAD_DOWN
-    SDL_GAMEPAD_BUTTON_DPAD_LEFT,      // 2  PAD_LEFT
-    SDL_GAMEPAD_BUTTON_DPAD_RIGHT,     // 3  PAD_RIGHT
-    SDL_GAMEPAD_BUTTON_SOUTH,          // 4  PAD_CROSS
-    SDL_GAMEPAD_BUTTON_EAST,           // 5  PAD_CIRCLE
-    SDL_GAMEPAD_BUTTON_WEST,           // 6  PAD_SQUARE
-    SDL_GAMEPAD_BUTTON_NORTH,          // 7  PAD_TRIANGLE
-    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,  // 8  PAD_L1
-    SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, // 9  PAD_R1
-    -1,                                // 10 PAD_L2 (analog trigger)
-    -1,                                // 11 PAD_R2 (analog trigger)
-    SDL_GAMEPAD_BUTTON_START,          // 12 PAD_START
-    SDL_GAMEPAD_BUTTON_BACK,           // 13 PAD_SELECT
-    SDL_GAMEPAD_BUTTON_LEFT_STICK,     // 14 PAD_L3
-    SDL_GAMEPAD_BUTTON_RIGHT_STICK,    // 15 PAD_R3
-};
-const int s_defaultMap[16] = {
-    SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
-    SDL_GAMEPAD_BUTTON_DPAD_LEFT, SDL_GAMEPAD_BUTTON_DPAD_RIGHT,
-    SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST,
-    SDL_GAMEPAD_BUTTON_WEST, SDL_GAMEPAD_BUTTON_NORTH,
-    SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,
-    -1, -1,
-    SDL_GAMEPAD_BUTTON_START, SDL_GAMEPAD_BUTTON_BACK,
-    SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK,
-};
-
-#pragma mark - View controllers & render-view glue
-// View controller references for background color switching.
-// __unsafe_unretained (not __weak): this TU is built under manual reference
-// counting (no ARC), where __weak is illegal. The menu/root controllers are
-// owned by UIKit/SwiftUI and outlive these unretained references.
-UIViewController* __unsafe_unretained s_menuVC = nil;
-UIViewController* __unsafe_unretained s_rootVC = nil;
-UIViewController* __unsafe_unretained s_sdlRootVC = nil;
-
-static void ARMSX2EnsureGameRenderViewOnMain(const char* reason) {
-    if (g_gameRenderView)
-        return;
-
-    g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
-    g_gameRenderView.backgroundColor = [UIColor blackColor];
-    g_gameRenderView.clipsToBounds = YES;
-    [g_gameRenderView setNeedsLayout];
-    Console.WriteLn("[Layout] Game render view prepared for SwiftUI (reason=%s)",
-        reason ? reason : "unknown");
-}
-
-extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason) {
-    if ([NSThread isMainThread]) {
-        ARMSX2EnsureGameRenderViewOnMain(reason);
-    } else {
-        dispatch_sync(dispatch_get_main_queue(), ^{
-            ARMSX2EnsureGameRenderViewOnMain(reason);
-        });
-    }
 }

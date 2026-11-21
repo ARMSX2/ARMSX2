@@ -316,7 +316,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	endif()
 
 	set(IOS_RUNTIME_SOURCES
-		Runtime/ios_main.mm
+		Runtime/IOSRuntime.mm
+		Runtime/ARMSX2GameView.mm
+		Runtime/DeviceStats.mm
+		Runtime/RuntimeSettings.mm
 		Runtime/AppDelegate.mm
 		Runtime/GamepadInput.mm
 		Runtime/GamepadRefresh.mm
