@@ -4530,7 +4530,7 @@ void GSRendererHW::Draw()
 
 	// The draw's targets: found, created, moved or resized for this draw. False when the draw is skipped. Both lambdas
 	// are inlined: out of line, every local they capture would live in memory for the whole of Draw().
-	const auto find_targets = [&]() __forceinline -> bool {
+	const auto find_targets = [&]() __attribute__((always_inline)) -> bool {
 		// Urban Reign trolls by scissoring a draw to a target at 0x0-0x117F to 378x449 which ends up the size being rounded up to 640x480
 		// causing the buffer to expand to around 0x1400, which makes a later framebuffer at 0x1180 to fail to be created correctly.
 		// We can cheese this by checking if the Z is masked and the resultant colour is going to be black anyway.
@@ -5518,7 +5518,7 @@ void GSRendererHW::Draw()
 	GSTextureCache::Target* old_ds = nullptr;
 
 	// The targets' format, width, channels, size and valid area brought up to this draw.
-	const auto update_targets = [&]() __forceinline {
+	const auto update_targets = [&]() __attribute__((always_inline)) {
 		if (rt)
 		{
 			// Be sure texture shuffle detection is properly propagated
@@ -6137,7 +6137,7 @@ bool GSRendererHW::RowContinues(bool run_open, const GSTextureCache::Source* src
 	// what the run wrote, and takes the full path.
 	const HWCachedCtx& c = m_cached_ctx;
 	// Whether the channels a write under `fbmsk` makes valid (Target::UpdateValidChannels) are valid already.
-	const auto channels_valid = [](const GSTextureCache::Target* t, u32 fbmsk) __forceinline {
+	const auto channels_valid = [](const GSTextureCache::Target* t, u32 fbmsk) __attribute__((always_inline)) {
 		if (t->m_valid_rgb && t->m_valid_alpha_low && t->m_valid_alpha_high) [[likely]]
 			return true;
 		const GSLocalMemory::psm_t& psm = GSLocalMemory::m_psm[t->m_TEX0.PSM];
