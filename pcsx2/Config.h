@@ -1140,6 +1140,18 @@ struct Pcsx2Config
 		// until the user opts in.
 		u16 LsfgTargetRate = 0;
 
+		// ZeroFG frame generation (GS/Renderers/Vulkan/GSZeroFG.h), on its own Vulkan device; inert in
+		// a build without it. Switched off in game, the GS device takes the window back; switched on,
+		// ZeroFG takes it again, and a device that came up without ZeroFG is reopened with it.
+		bool ZeroFGEnabled = false;
+		// The ZeroFG mode (1.2: one engine, RZ+): 1 = ZeroFG, 7 = ZeroGS, the same engine plus what only
+		// the GS gives (the content break and the HUD layer). The 1.1 modes still saved map on: 0 to 1, 6
+		// to 7. Switches in game: ZeroFG lets go of the window and takes it again with the engine rebuilt.
+		u8 ZeroFGMode = 1;
+		// MFG: the frames on screen per game frame, 2, 3 or 4, capped by what the display refresh holds.
+		// Switches in game without a reconnect (the presenter reads it as frames come in).
+		u8 ZeroFGMultiplier = 2;
+
 		u8 CAS_Sharpness = 50;
 		// 0..100, shared by the upscalers. FSR1 maps it to AMD's "stops" scale and SGSR to its
 		// own 0..2 edge sharpness, two percent per percent, so both reach their full range off

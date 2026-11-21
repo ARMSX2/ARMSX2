@@ -24,6 +24,8 @@ int hook_gsl_memory_alloc_pure_64(uint64_t size, uint32_t flags, void *memDesc);
 
 int hook_gsl_memory_free_pure(void *memDesc);
 
+int hook_ioctl(int fd, int request, void *arg);
+
 #ifdef __cplusplus
 }
 #endif

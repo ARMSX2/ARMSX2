@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "priv.h"
 
 /**
@@ -29,6 +30,17 @@ extern "C" {
  * @param userMappingHandle A pointer to a void* which will be set to the mapping handle if ADRENOTOOLS_DRIVER_GPU_MAPPING_IMPORT is set in `featureFlags`
  */
 void *adrenotools_open_libvulkan(int dlopenMode, int featureFlags, const char *tmpLibDir, const char *hookLibDir, const char *customDriverDir, const char *customDriverName, const char *fileRedirectDir, void **userMappingHandle);
+
+/**
+ * @brief Sets the KGSL priority of the draw contexts the driver creates from now on (a vkCreateDevice creates one per queue). Only used if ADRENOTOOLS_DRIVER_CONTEXT_PRIORITY was set in `featureFlags`
+ * @param priority 1 (highest) to 15 (lowest); 0 leaves the driver's own (KGSL's default is 8). KGSL runs the contexts of a higher level first and preempts lower ones for them
+ */
+void adrenotools_set_context_priority(uint32_t priority);
+
+/**
+ * @return How many draw contexts were created with a priority set through adrenotools_set_context_priority
+ */
+uint32_t adrenotools_context_priority_raised();
 
 /**
  * @brief Imports the given CPU mapped memory range into the GSL allocator. This should then be followed by a call to vkAllocateMemory with a matching size which will return a VkDeviceMemory view over the input region

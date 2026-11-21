@@ -58,7 +58,7 @@ target_link_libraries(hook_impl PRIVATE linkernsbypass log)
 set_target_properties(hook_impl PROPERTIES CXX_VISIBILITY_PRESET hidden)
 
 # ---- main_hook, file_redirect_hook, gsl_alloc_hook (shared, dlopen'd by driver) ----
-foreach(_hook main_hook file_redirect_hook gsl_alloc_hook)
+foreach(_hook main_hook file_redirect_hook gsl_alloc_hook kgsl_priority_hook)
     add_library(${_hook} SHARED src/hook/${_hook}.c)
     target_compile_options(${_hook} PRIVATE -Wall -Wextra)
     target_link_options(${_hook} PRIVATE "-Wl,-z,global")

@@ -864,6 +864,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/GSDeviceVK.cpp
 		GS/Renderers/Vulkan/GSLsfg.cpp
 		GS/Renderers/Vulkan/GSRunEmitterVK.cpp
+		GS/Renderers/Vulkan/GSZeroFG.cpp
 		GS/Renderers/Vulkan/GSTextureVK.cpp
 		GS/Renderers/Vulkan/vk_mem_alloc.cpp
 		GS/Renderers/Vulkan/VKBuilders.cpp
@@ -936,6 +937,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/GSDeviceVK.h
 		GS/Renderers/Vulkan/GSLsfg.h
 		GS/Renderers/Vulkan/GSRunEmitterVK.h
+		GS/Renderers/Vulkan/GSZeroFG.h
 		GS/Renderers/Vulkan/GSTextureVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h

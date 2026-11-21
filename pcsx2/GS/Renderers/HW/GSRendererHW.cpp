@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/HW/GSRendererHW.h"
+#include <unordered_map>
+#include <unordered_set>
 #include "GS/Renderers/HW/GSHwHack.h"
 #include "GS/Renderers/HW/GSDepthCoverage.h"
 #include "GS/Renderers/HW/GSDrawLog.h"
@@ -25,6 +27,8 @@
 #include "common/Console.h"
 #include "common/BitUtils.h"
 #include "common/StringUtil.h"
+#include "GS/Renderers/Vulkan/GSZeroFG.h"
+#include <atomic>
 #include <bit>
 #include <limits>
 
@@ -70,10 +74,13 @@ GSRendererHW::~GSRendererHW()
 	g_texture_cache.reset();
 }
 
+static void ZeroFGHudShutdown();
+
 void GSRendererHW::Destroy()
 {
 	CopyRunDisarm();
 	BurstMemoFlushWaiting();
+	ZeroFGHudShutdown();  // the HUD layer's side targets are the device's: they go before it
 	g_texture_cache->RemoveAll(true, true, true);
 	GSRenderer::Destroy();
 }
@@ -133,6 +140,7 @@ void GSRendererHW::Reset(bool hardware_reset)
 		g_texture_cache->DropAllHeld(); // local memory is about to be replaced
 
 	m_blend_carry.valid = false;
+	ZeroFGHudShutdown();
 	g_texture_cache->RemoveAll(true, true, true);
 	g_texture_cache->NoteColdStart();
 	GSHwHack::ResetState();
@@ -225,6 +233,440 @@ void GSRendererHW::VSync(u32 field, bool registers_written, bool idle_frame)
 	GSRenderer::VSync(field, registers_written, idle_frame);
 }
 
+// ---- ZeroGS: the GS HUD layer ---------------------------------------------------------------------------------------------------------------------------
+// In ZeroGS (mode 6) every draw the HUD rule accepts (the same draw one or two frames back, one Z over the draw, not a render-target read, at most a
+// quarter of its target, on a target that reached the display the frame before) is drawn a second time with the game's own shader and blend into two
+// side targets, one cleared to black (P) and one to white (W). Every GS blend is out = a * Cs + b * Cd + c, so P is what the HUD adds and W - P how
+// much of what lies under it still shows: the frame without the HUD is (frame - P) / (W - P). The game's copies of a target with a side pair are
+// repeated on the pairs, so the pair follows the HUD to the displayed target, whose pair goes to ZeroFG with the frame (ZeroFGMergeHudPlanes).
+namespace
+{
+struct ZeroFGHudState
+{
+	u64 frame = 0;
+	std::unordered_set<u64> ids[3];          // [0] this frame's draws, [1] the frame before, [2] the one before that
+	std::unordered_set<u32> chain;           // the targets that reached the display the frame before (block bases)
+	std::vector<std::pair<u32, u32>> edges;  // this frame's screen-wide copies: destination, source
+	std::unordered_map<u64, std::pair<float, float>> cover;  // smaller copies (destination << 32 | source): area summed, target area
+	struct Pair
+	{
+		GSTexture* p = nullptr;
+		GSTexture* w = nullptr;
+		bool live = false;  // holds this target's HUD until the game paints the whole target over (the next frame's clear or scene)
+		bool used = false;  // copied on since its last HUD draw: the next HUD draw starts the target's next picture
+		u64 used_frame = 0;
+		u64 used_draw = 0;  // the draw that last copied it on, and where to: a copy in strips may straddle the frame's turn
+		u32 used_dst = ~0u;
+	};
+	std::unordered_map<u32, Pair> pairs;     // per target
+	u64 ident = 0;                           // the identity of the draw under way (ZeroFGOnDraw)
+	u64 anchor = 0;                          // and its anchor: texture and screen centre (pulsing and flipbook HUD sprites)
+};
+ZeroFGHudState g_hud;
+
+void ZeroFGHudClear(ZeroFGHudState::Pair& pr)
+{
+	g_gs_device->ClearRenderTarget(pr.p, 0u);
+	g_gs_device->ClearRenderTarget(pr.w, 0xffffffffu);
+}
+
+void ZeroFGHudRelease()
+{
+	for (auto& [bp, pr] : g_hud.pairs)
+	{
+		if (pr.p)
+			g_gs_device->Recycle(pr.p);
+		if (pr.w)
+			g_gs_device->Recycle(pr.w);
+	}
+	g_hud = ZeroFGHudState();
+}
+
+// A new frame reached the display (its target's base disp): the next frame's rule state. The copies that tiled a target whole count as
+// screen-wide copies, the display chain is what leads to disp, and the draw identities move one frame back.
+void ZeroFGHudTurn(u32 disp)
+{
+	for (const auto& [key, cv] : g_hud.cover)
+		if (cv.first >= 0.9f * cv.second)
+			g_hud.edges.emplace_back(static_cast<u32>(key >> 32), static_cast<u32>(key));
+	g_hud.cover.clear();
+	std::unordered_set<u32> chain{disp};
+	for (int pass = 0; pass < 4; ++pass)
+		for (const auto& [dst, src] : g_hud.edges)
+			if (chain.count(dst))
+				chain.insert(src);
+	g_hud.chain = std::move(chain);
+	g_hud.edges.clear();
+	g_hud.ids[2] = std::move(g_hud.ids[1]);
+	g_hud.ids[1] = std::move(g_hud.ids[0]);
+	g_hud.ids[0].clear();
+	++g_hud.frame;
+}
+} // namespace
+
+// ---- ZeroFG content-break signal -------------------------------------------------------------------------------------------------------------------------
+// The draws of every game frame are counted by texture shape (256 buckets). A new scene or screen (a cut, a menu, a fade through black) shares few
+// textures with the frame before it; continuous motion shares nearly all (measured on three games: draw-weighted overlap >= 0.9 in continuous play, 0.08
+// to 0.35 on the transitions). At a busy vsync the frame on display is the one drawn in the group BEFORE the one being counted, so its overlap is
+// computed between the two groups before the current one, and the break is announced to the capture of this very vsync.
+namespace
+{
+struct ZeroFGCutState
+{
+	std::atomic<uint16_t> cur[256];
+	uint16_t prev[256] = {};
+	uint16_t prevprev[256] = {};
+	int have = 0; // how many of prev and prevprev hold a frame
+	// A hash of everything the draws of a frame carry (the state of each draw and every vertex it sends: position, colour, texture coordinates, fog) and
+	// the number of transfers (uploads into GS memory) the frame needed. Two consecutive frames with the same hash and no transfer are the same picture.
+	static constexpr u64 kSeed = 1469598103934665603ull;
+	std::atomic<u64> cur_hash{kSeed};
+	u64 prev_hash = 0, prevprev_hash = 0;
+	u64 last_transfer_n = 0, prev_transfers = 0;
+	u32 static_run = 0;
+	u64 pairs = 0, cut_pairs = 0, static_pairs = 0; // pairs seen while the presenter takes frames, and how many carried a break
+	ZeroFGCutState()
+	{
+		for (auto& c : cur)
+			c.store(0, std::memory_order_relaxed);
+	}
+};
+ZeroFGCutState g_zcut;
+constexpr float kZeroFGBreakOverlap = 0.5f;
+} // namespace
+
+// The GS hints (this content break and the static picture) belong to ZeroGS only (7; a 1.1 ZeroGS saved as 6 too): ZeroFG stays
+// the engine every host gets, with nothing from the GS, so a hint that misfires in some game never touches it.
+static bool ZeroFGGSHints()
+{
+	return GSConfig.ZeroFGEnabled && GSConfig.ZeroFGMode >= 6;
+}
+
+// ZeroGS also carries the HUD layer (1.2: RZ+ with the layer at every phase of x2, x3 and x4): the HUD rule and its side pass run,
+// and the displayed frame's side pair goes to ZeroFG with the frame (ZeroFGMergeHudPlanes). RZ+'s own HUD hold and cut test stay on.
+static bool ZeroFGHudProduction()
+{
+	return ZeroFGGSHints();
+}
+
+// ZeroGS: the side pair of the target each circuit shows (P, W), set by GetOutput for ZeroFGMergeHudPlanes; null without a live one.
+static GSTexture* s_zerofg_display_planes[2][2] = {};
+
+// GetOutput's target for [circuit]: the pair it shows, then, once per new displayed frame, the HUD rule's turn. Away from ZeroGS the
+// side targets go back to the device.
+static void ZeroFGHudDisplay(int circuit, GSTextureCache::Target* rt)
+{
+	GSTexture** const planes = s_zerofg_display_planes[circuit];
+	planes[0] = planes[1] = nullptr;
+	if (!ZeroFGHudProduction())
+	{
+		if (!g_hud.pairs.empty())
+			ZeroFGHudRelease();
+		return;
+	}
+	const u32 disp = static_cast<u32>(rt->m_TEX0.TBP0);
+	const auto it = g_hud.pairs.find(disp);
+	if (it != g_hud.pairs.end() && it->second.live && it->second.p && it->second.w)
+	{
+		planes[0] = it->second.p;
+		planes[1] = it->second.w;
+	}
+	static u64 s_last_draw = ~0ull;
+	if (rt->m_last_draw != s_last_draw)
+	{
+		s_last_draw = rt->m_last_draw;
+		ZeroFGHudTurn(disp);
+	}
+}
+
+// The renderer goes (or the game resets): the side targets back to the device, no displayed pair left.
+static void ZeroFGHudShutdown()
+{
+	ZeroFGHudRelease();
+	for (GSTexture** planes : s_zerofg_display_planes)
+		planes[0] = planes[1] = nullptr;
+}
+
+void ZeroFGCutOnVsync(bool idle_frame, u64 transfer_n)
+{
+	if (!ZeroFGGSHints())
+		return;
+	ZeroFGCutState& c = g_zcut;
+	const u64 transfers = transfer_n - c.last_transfer_n;
+	c.last_transfer_n = transfer_n;
+	if (idle_frame)
+		return;
+	bool brk = false;
+	bool is_static = false;
+	if (c.have >= 2 && c.prev_hash == c.prevprev_hash && c.prev_transfers == 0)
+	{
+		is_static = true;
+		// The displayed frame is draw for draw the frame before it and needed no upload: no motion, nothing to generate.
+		if (c.static_run++ == 0)
+			DevCon.WriteLn("ZeroFG static picture: no synthetic until it moves");
+		brk = true;
+	}
+	else
+	{
+		c.static_run = 0;
+	}
+	if (!brk && c.have >= 2)
+	{
+		u32 inter = 0, sum_a = 0, sum_b = 0;
+		for (int i = 0; i < 256; ++i)
+		{
+			inter += std::min(c.prev[i], c.prevprev[i]);
+			sum_a += c.prev[i];
+			sum_b += c.prevprev[i];
+		}
+		const u32 denom = std::max(sum_a, sum_b);
+		if (denom != 0 && sum_a != 0 && sum_b != 0 && static_cast<float>(inter) / static_cast<float>(denom) < kZeroFGBreakOverlap)
+		{
+			DevCon.WriteLn("ZeroFG content break: overlap %.2f (%u against %u draws)", static_cast<double>(inter) / denom, sum_a, sum_b);
+			brk = true;
+		}
+	}
+	if (brk)
+		GSZeroFG::NoteContentBreak();
+	if (GSZeroFG::WantsFrames())
+	{
+		++c.pairs;
+		if (brk)
+			++(is_static ? c.static_pairs : c.cut_pairs);
+		if (c.pairs % 600 == 0)
+			DevCon.WriteLn("ZeroFG hint totals: %llu pairs, %llu cut, %llu static (%.2f %% skipped)", static_cast<unsigned long long>(c.pairs),
+				static_cast<unsigned long long>(c.cut_pairs), static_cast<unsigned long long>(c.static_pairs), 100.0 * static_cast<double>(c.cut_pairs + c.static_pairs) / static_cast<double>(c.pairs));
+	}
+	c.prevprev_hash = c.prev_hash;
+	c.prev_hash = c.cur_hash.exchange(ZeroFGCutState::kSeed, std::memory_order_relaxed);
+	c.prev_transfers = transfers;
+	std::memcpy(c.prevprev, c.prev, sizeof(c.prev));
+	for (int i = 0; i < 256; ++i)
+		c.prev[i] = c.cur[i].exchange(0, std::memory_order_relaxed);
+	c.have = std::min(c.have + 1, 2);
+}
+
+// Every draw, before it is done: in the GS modes the content break's counts and the frame's hash; in ZeroGS the HUD identity of a flat draw.
+void GSRendererHW::ZeroFGOnDraw()
+{
+	if (!ZeroFGGSHints())
+		return;
+	{
+		// The texture's shape (format, width, height), not its address: Spider-Man 3 streams its textures through a ring of VRAM slots, so by
+		// address no frame shared anything with the one before and every frame was a break. Same 42 breaks on God of War's cut capture.
+		const u32 tex = m_draw_env->PRIM.TME ? 1u + static_cast<u32>(m_cached_ctx.TEX0.PSM) + (static_cast<u32>(m_cached_ctx.TEX0.TW) << 6) +
+												   (static_cast<u32>(m_cached_ctx.TEX0.TH) << 10) : 0u;
+		g_zcut.cur[(tex * 2654435761u) >> 24].fetch_add(1, std::memory_order_relaxed);
+		// The hash of the frame: the state of the draw, then every vertex it sends (a draw is the same only if its vertices are).
+		u64 h = g_zcut.cur_hash.load(std::memory_order_relaxed);
+		auto mix = [&h](u64 v) { h = (h ^ v) * 1099511628211ull; };
+		const unsigned nverts = static_cast<unsigned>(m_vertex->next);
+		mix(static_cast<u64>(m_vt.m_primclass) | (static_cast<u64>(nverts) << 8) | (static_cast<u64>(m_draw_env->PRIM.TME) << 40) | (static_cast<u64>(m_draw_env->PRIM.ABE) << 41));
+		mix(static_cast<u64>(m_cached_ctx.TEX0.TBP0) | (static_cast<u64>(m_cached_ctx.TEX0.TW) << 20) | (static_cast<u64>(m_cached_ctx.TEX0.TH) << 24) | (static_cast<u64>(m_cached_ctx.TEX0.PSM) << 28));
+		mix(static_cast<u64>(m_cached_ctx.FRAME.Block()) | (static_cast<u64>(m_cached_ctx.ZBUF.Block()) << 20) | (static_cast<u64>(m_cached_ctx.TEST.ZTST) << 40) |
+			(static_cast<u64>(m_cached_ctx.TEST.ZTE) << 42) | (static_cast<u64>(m_cached_ctx.ZBUF.ZMSK) << 43) | (static_cast<u64>(m_cached_ctx.FRAME.FBMSK) << 8));
+		mix(static_cast<u64>(m_context->ALPHA.A) | (static_cast<u64>(m_context->ALPHA.B) << 2) | (static_cast<u64>(m_context->ALPHA.C) << 4) | (static_cast<u64>(m_context->ALPHA.D) << 6) |
+			(static_cast<u64>(m_context->ALPHA.FIX) << 8));
+		const u64* words = reinterpret_cast<const u64*>(m_vertex->buff);
+		const size_t count = (static_cast<size_t>(nverts) * sizeof(GSVertex)) / sizeof(u64);
+		for (size_t i = 0; i < count; ++i)
+			mix(words[i]);
+		g_zcut.cur_hash.store(h, std::memory_order_relaxed);
+	}
+	// Only a draw that can be HUD needs its identity: one Z over the draw (the side pass's rule; a draw that is not flat is never one).
+	if (!ZeroFGHudProduction() || m_vt.m_min.p.z != m_vt.m_max.p.z)
+		return;
+	// The HUD identity of the draw (the same draw in the next frame = a screen-locked layer): the texture, the primitive, its Z and every vertex's
+	// screen position; NOT its texture coordinates (Katamari's clock, meter and prince are flipbooks: same place, new coordinates every frame),
+	// its colour or the blend (a HUD that fades keeps its identity).
+	u64 ident = 1469598103934665603ull;
+	{
+		auto mix = [](u64& h, u64 v) { h = (h ^ v) * 1099511628211ull; };
+		const u64 state = static_cast<u64>(m_vt.m_primclass) | (static_cast<u64>(m_vertex->next) << 8) | (static_cast<u64>(m_index->tail) << 32) |
+			(static_cast<u64>(m_draw_env->PRIM.TME) << 60) | (static_cast<u64>(m_draw_env->PRIM.FST) << 61);
+		// Not the texture's address: Spider-Man 3 uploads its HUD textures into a ring of VRAM slots, a new one every frame.
+		const u64 tex = (static_cast<u64>(m_cached_ctx.TEX0.TBW) << 14) | (static_cast<u64>(m_cached_ctx.TEX0.PSM) << 20) |
+			(static_cast<u64>(m_cached_ctx.TEX0.TW) << 26) | (static_cast<u64>(m_cached_ctx.TEX0.TH) << 30) | (static_cast<u64>(m_cached_ctx.FRAME.Block()) << 34);
+		mix(ident, state);
+		mix(ident, tex);
+		// The draw's Z too: a HUD keeps its Z frame to frame, a world sprite moving in depth does not.
+		mix(ident, static_cast<u64>(static_cast<u32>(m_vt.m_min.p.z)) | (static_cast<u64>(static_cast<u32>(m_vt.m_max.p.z)) << 32));
+		const int ofx = static_cast<int>(m_context->XYOFFSET.OFX), ofy = static_cast<int>(m_context->XYOFFSET.OFY);
+		for (u32 i = 0; i < m_vertex->next; ++i)
+		{
+			const GSVertex& v = m_vertex->buff[i];
+			const int x = static_cast<int>(v.XYZ.X) - ofx, y = static_cast<int>(v.XYZ.Y) - ofy;
+			mix(ident, static_cast<u64>(static_cast<u32>(x)) | (static_cast<u64>(static_cast<u32>(y)) << 32));
+		}
+	}
+	// The anchor: the same texture centred on the same spot of the screen (4 px cells), whatever the vertices: a HUD sprite that pulses in
+	// size or plays a flipbook keeps it (God of War's orb glow, FF12's map marker). A 3D object with that property stays out by its varying Z.
+	{
+		u64 anchor = 0x9e3779b97f4a7c15ull;
+		auto mix = [](u64& h, u64 v) { h = (h ^ v) * 1099511628211ull; };
+		const int cx = static_cast<int>((m_vt.m_min.p.x + m_vt.m_max.p.x) * 0.5f / 4.0f + 0.5f);
+		const int cy = static_cast<int>((m_vt.m_min.p.y + m_vt.m_max.p.y) * 0.5f / 4.0f + 0.5f);
+		// The anchor keeps the texture's address (without it, SoulCalibur II's floor dust matched other dust in the same cell) and the draw's Z.
+		mix(anchor, static_cast<u64>(m_cached_ctx.TEX0.TBP0) | (static_cast<u64>(m_cached_ctx.TEX0.PSM) << 20) | (static_cast<u64>(m_vt.m_primclass) << 28) |
+			(static_cast<u64>(m_cached_ctx.FRAME.Block()) << 32));
+		mix(anchor, static_cast<u64>(static_cast<u32>(m_vt.m_min.p.z)));
+		mix(anchor, static_cast<u64>(static_cast<u32>(cx)) | (static_cast<u64>(static_cast<u32>(cy)) << 32));
+		g_hud.anchor = anchor;
+		g_hud.ids[0].insert(anchor);
+	}
+	g_hud.ident = ident;
+	g_hud.ids[0].insert(ident);
+}
+
+// ZeroGS's side passes (see ZeroFGHudState): after the game's draw went to its target, the same draw again into the target's side pair when
+// the HUD rule accepts it, or the game's copy of a target that has a pair, read from that pair.
+void GSRendererHW::ZeroFGHudSidePass(GSTextureCache::Target* rt, GSTextureCache::Source* tex)
+{
+	if (!ZeroFGHudProduction() || !rt || !rt->m_texture || m_conf.rt != rt->m_texture)
+		return;
+	const u32 fbp = m_cached_ctx.FRAME.Block();
+	const float bw = m_vt.m_max.p.x - m_vt.m_min.p.x, bh = m_vt.m_max.p.y - m_vt.m_min.p.y;
+	const float tw = static_cast<float>(rt->GetUnscaledWidth()), th = static_cast<float>(rt->GetUnscaledHeight());
+	const bool reads_target = tex && (tex->m_target || tex->m_from_target);
+	const u32 src_bp = tex && tex->m_from_target ? static_cast<u32>(tex->m_from_target->m_TEX0.TBP0) : ~0u;
+	const auto src_it = src_bp != ~0u ? g_hud.pairs.find(src_bp) : g_hud.pairs.end();
+	const bool src_pair = src_it != g_hud.pairs.end();
+	const bool src_live = src_pair && src_it->second.live;
+	// A pair already copied on in an earlier frame and given no HUD since holds a picture that is gone; but the next strip of the same copy
+	// (same destination, a few draws on) is the same copy even when the frame turned between two strips (Devil May Cry 3).
+	const bool src_fresh = src_pair && (!src_it->second.used || src_it->second.used_frame == g_hud.frame ||
+										   (src_it->second.used_dst == fbp && static_cast<u64>(s_n) - src_it->second.used_draw <= 4));
+	const GSVector2i tex_size = m_conf.tex ? m_conf.tex->GetSize() : GSVector2i(0, 0);
+	const GSVector2i pair_size = src_pair && src_it->second.p ? src_it->second.p->GetSize() : GSVector2i(0, 0);
+	const bool wide = bw >= 0.9f * tw;
+	if (src_bp != ~0u && wide)
+		g_hud.edges.emplace_back(fbp, src_bp);
+	else if (src_bp != ~0u && src_bp != fbp)
+	{
+		// A copy in tiles (SoulCalibur II copies its frame to the display in 64x8 sprites): summed over the frame, it is a screen-wide copy.
+		auto& cv = g_hud.cover[(static_cast<u64>(fbp) << 32) | src_bp];
+		cv.first += bw * bh;
+		cv.second = tw * th;
+	}
+	// A pass over the whole target that reads the target itself, in its own colour format (God of War draws its frame onto itself before
+	// the display copy): the pair follows it, reading a copy of itself. Other formats (16-bit and channel tricks) still end the pair.
+	if (src_bp == fbp && wide && bh >= 0.9f * th && src_live && m_cached_ctx.TEX0.PSM == m_cached_ctx.FRAME.PSM &&
+		(m_cached_ctx.FRAME.FBMSK & 0x00ffffffu) == 0 && GSLocalMemory::m_psm[m_cached_ctx.FRAME.PSM].bpp == 32)
+	{
+		ZeroFGHudState::Pair& pr = src_it->second;
+		if (m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off || m_conf.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify ||
+			m_conf.ps.HasColorROV() || m_conf.ps.HasDepthROV() || m_conf.rt->GetFormat() != GSTexture::Format::Color ||
+			(!m_conf.ps.tex_is_fb && (!m_conf.tex || m_conf.tex->GetSize() != pr.p->GetSize())))
+		{
+			pr.live = false;
+			return;
+		}
+		GSHWDrawConfig c = m_conf;
+		c.ds = nullptr;
+		c.depth = GSHWDrawConfig::DepthStencilSelector::NoDepth();
+		c.alpha_second_pass.depth = c.depth;
+		c.tex_hazard = GSHWDrawConfig::TEX_HAZARD_NONE;
+		for (GSTexture* t : {pr.p, pr.w})
+		{
+			GSTexture* tmp = nullptr;
+			c.rt = t;
+			if (!m_conf.ps.tex_is_fb)
+			{
+				tmp = g_gs_device->CreateTexture(t->GetWidth(), t->GetHeight(), 1, t->GetFormat(), true);
+				if (!tmp)
+				{
+					pr.live = false;
+					return;
+				}
+				g_gs_device->CopyRect(t, tmp, t->GetRect(), 0, 0);
+				c.tex = tmp;
+			}
+			g_gs_device->RenderHW(c);
+			if (tmp)
+				g_gs_device->Recycle(tmp);
+		}
+		return;
+	}
+	GSTexture* src_p = nullptr;
+	GSTexture* src_w = nullptr;
+	// Any copy from a target with a live, fresh pair of the texture's size (a tile of a tiled copy, a part of the HUD target): the pair
+	// follows the game's own move of those pixels.
+	if (src_bp != ~0u && src_bp != fbp && src_live && tex_size == pair_size && src_fresh)
+	{
+		src_p = src_it->second.p;
+		src_w = src_it->second.w;
+		src_it->second.used = true;
+		src_it->second.used_frame = g_hud.frame;
+		src_it->second.used_draw = static_cast<u64>(s_n);
+		src_it->second.used_dst = fbp;
+	}
+	const bool copy = src_p != nullptr;
+	const bool hud = !reads_target && g_hud.chain.count(fbp) != 0 && m_vt.m_min.p.z == m_vt.m_max.p.z && bw * bh <= 0.25f * tw * th &&
+					 (g_hud.ids[1].count(g_hud.ident) != 0 || g_hud.ids[2].count(g_hud.ident) != 0 || g_hud.ids[1].count(g_hud.anchor) != 0 ||
+						 g_hud.ids[2].count(g_hud.anchor) != 0);
+	if (!hud && !copy)
+	{
+		const auto it = g_hud.pairs.find(fbp);
+		if (it == g_hud.pairs.end() || !it->second.live)
+			return;
+		// A draw that writes no colour (alpha only: Devil May Cry 3's post chain writes the display's alpha after the copy) leaves the HUD.
+		if ((m_cached_ctx.FRAME.FBMSK & 0x00ffffffu) == 0x00ffffffu)
+			return;
+		// An opaque draw over the whole target starts its next picture: the pair is done. So does a screen-wide copy from a target with no
+		// fresh HUD: the target now shows a picture without one. Any other world draw over a live pair is one the pair does not follow.
+		if (wide && bh >= 0.9f * th && (!m_draw_env->PRIM.ABE || src_bp != ~0u))
+			it->second.live = false;
+		return;
+	}
+	ZeroFGHudReplay(src_p, src_w);
+}
+
+// The side pass proper for a draw the HUD rule accepted, or a copy of a target with a fresh pair (src_p / src_w).
+void GSRendererHW::ZeroFGHudReplay(GSTexture* src_p, GSTexture* src_w)
+{
+	const bool copy = src_p != nullptr;
+	const u32 fbp = m_cached_ctx.FRAME.Block();
+	// Only draws the side pair can replay: a draw that blends in its shader (a barrier, reading the target it writes) replays fine, since it
+	// then reads the side target it writes; one whose texture is the target itself, that tests destination alpha or resolves a wider colour
+	// is not repeated (doubt = world).
+	if (m_conf.tex_hazard != GSHWDrawConfig::TEX_HAZARD_NONE ||
+		m_conf.destination_alpha != GSHWDrawConfig::DestinationAlphaMode::Off || m_conf.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify ||
+		m_conf.ps.HasColorROV() || m_conf.ps.HasDepthROV() || m_conf.rt->GetFormat() != GSTexture::Format::Color)
+		return;
+	ZeroFGHudState::Pair& pr = g_hud.pairs[fbp];
+	const GSVector2i size = m_conf.rt->GetSize();
+	if (!pr.p || pr.p->GetSize() != size)
+	{
+		if (pr.p)
+			g_gs_device->Recycle(pr.p);
+		if (pr.w)
+			g_gs_device->Recycle(pr.w);
+		pr.p = g_gs_device->CreateRenderTarget(size.x, size.y, GSTexture::Format::Color, false, false);
+		pr.w = g_gs_device->CreateRenderTarget(size.x, size.y, GSTexture::Format::Color, false, false);
+		pr.live = false;
+	}
+	if (!pr.p || !pr.w)
+		return;
+	if (!pr.live || pr.used)
+	{
+		pr.used = false;
+		ZeroFGHudClear(pr);
+		pr.live = true;
+	}
+	GSHWDrawConfig c = m_conf;
+	c.ds = nullptr;
+	c.depth = GSHWDrawConfig::DepthStencilSelector::NoDepth();
+	c.alpha_second_pass.depth = c.depth;
+	c.rt = pr.p;
+	if (copy)
+		c.tex = src_p;
+	g_gs_device->RenderHW(c);
+	c.rt = pr.w;
+	if (copy)
+		c.tex = src_w;
+	g_gs_device->RenderHW(c);
+}
+
 GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 {
 	BurstMemoFlushWaiting();
@@ -267,9 +709,50 @@ GSTexture* GSRendererHW::GetOutput(int i, float& scale, int& y_offset)
 		{
 			t->Save(GetDrawDumpPath("%05lld_f%05lld_fr%d_%05x_%s.bmp", s_n, g_perfmon.GetFrame(), i, static_cast<int>(TEX0.TBP0), GSUtil::GetPSMName(TEX0.PSM)));
 		}
+
+		ZeroFGHudDisplay(index, rt);
+	}
+	else
+	{
+		s_zerofg_display_planes[index][0] = s_zerofg_display_planes[index][1] = nullptr;
 	}
 
 	return t;
+}
+
+// ZeroGS: the displayed frame's HUD planes through the merge's geometry, into GSDevice's planes (GetZeroFGPlane), which the Vulkan present
+// hands to ZeroFG with the frame. One circuit on screen only: two circuits blend, and nothing says how a HUD on one shows through the
+// other. The merge's background is no HUD (P black, W white). Its blend of the circuit with the background and the deinterlacer's mixing
+// of lines are not repeated: where the planes then do not explain the frame, the engine's guard leaves the pixel to the world.
+void GSRendererHW::ZeroFGMergeHudPlanes(GSTexture* const* tex, const GSVector4* src, const GSVector4* dst, const GSVector2i& fs, float y_shift, bool post)
+{
+	g_gs_device->InvalidateZeroFGPlanes();
+	// No planes for a frame a filter recoloured, for two circuits (or none), without a live side pair on the displayed target, or with a
+	// pair of another size than the target.
+	if (!ZeroFGHudProduction() || post || fs.x <= 0 || fs.y <= 0)
+		return;
+	int circuit = -1;
+	for (int i = 0; i < 2; i++)
+	{
+		if (!tex[i])
+			continue;
+		if (circuit >= 0)
+			return;
+		circuit = i;
+	}
+	if (circuit < 0)
+		return;
+	GSTexture* const p = s_zerofg_display_planes[circuit][0];
+	GSTexture* const w = s_zerofg_display_planes[circuit][1];
+	if (!p || !w || p->GetSize() != tex[circuit]->GetSize() || w->GetSize() != p->GetSize())
+		return;
+	if (!g_gs_device->BeginZeroFGPlanes(fs))
+		return;
+	const GSVector4 d = dst[circuit] + GSVector4(0.0f, y_shift, 0.0f, y_shift);
+	const Filter filter = BilnIf(GSConfig.PCRTCOffsets);
+	g_gs_device->StretchRect(p, src[circuit], g_gs_device->GetZeroFGPlaneTarget(0), d, ShaderConvert::COPY, filter);
+	g_gs_device->StretchRect(w, src[circuit], g_gs_device->GetZeroFGPlaneTarget(1), d, ShaderConvert::COPY, filter);
+	g_gs_device->EndZeroFGPlanes();
 }
 
 GSTexture* GSRendererHW::GetFeedbackOutput(float& scale)
@@ -3626,6 +4109,8 @@ void GSRendererHW::Draw()
 	m_cached_ctx.TEST = context->TEST;
 	m_cached_ctx.FRAME = context->FRAME;
 	m_cached_ctx.ZBUF = context->ZBUF;
+
+	ZeroFGOnDraw();
 
 	if (IsBadFrame())
 	{
@@ -12771,6 +13256,8 @@ __ri void GSRendererHW::DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Ta
 			g_gs_device->DrawRow(m_conf, m_states.Device(m_draw_entry));
 		else
 			g_gs_device->RenderHW(m_conf);
+		g_gs_device->RenderHW(m_conf);
+		ZeroFGHudSidePass(rt, tex);
 	}
 	else
 		m_last_rt = rt;

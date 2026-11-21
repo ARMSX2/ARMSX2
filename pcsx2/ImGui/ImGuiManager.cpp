@@ -465,6 +465,9 @@ void ImGuiManager::SetStyle()
 	style.ScrollbarRounding = 5.0f;
 
 	style.ScaleAllSizes(s_global_scale);
+	// A scale under 1 (a small window, or the transient one while Android rotates the activity to landscape) truncates the 1 px minimum
+	// window size to 0, which ImGui's new-frame check asserts on in debug builds.
+	style.WindowMinSize = ImVec2(std::max(style.WindowMinSize.x, 1.0f), std::max(style.WindowMinSize.y, 1.0f));
 }
 
 void ImGuiManager::SetKeyMap()
