@@ -2307,6 +2307,19 @@ void FullscreenUI::DrawInterfaceSettingsPage()
 	DrawToggleSetting(bsi, FSUI_ICONSTR(ICON_FA_CIRCLE_INFO, "Use Save State Selector"),
 		FSUI_CSTR("Show a save state selector UI when switching slots instead of showing a notification bubble."),
 		"EmuCore", "UseSavestateSelector", true);
+	static constexpr const char* s_clock_format_names[] = {
+		FSUI_NSTR("System Default"),
+		FSUI_NSTR("12-Hour"),
+		FSUI_NSTR("24-Hour"),
+	};
+	static constexpr const char* s_clock_format_values[] = {
+		"system",
+		"12h",
+		"24h",
+	};
+	DrawStringListSetting(bsi, FSUI_ICONSTR(ICON_FA_CLOCK, "Clock Format"),
+		FSUI_CSTR("Selects how the clock in the menus shows the time. System Default uses the time format of your system's language."),
+		"UI", "MenuClockFormat", "system", s_clock_format_names, s_clock_format_values, std::size(s_clock_format_names), true);
 
 	MenuHeading(FSUI_CSTR("Background"));
 

@@ -71,6 +71,30 @@ TinyString FullscreenUI::TimeToPrintableString(time_t t)
 	return ret;
 }
 
+// The menu clocks follow UI/MenuClockFormat: "12h" and "24h" give hours, minutes and seconds, anything else
+// (the default, "system") keeps the locale's own time format.
+static std::string FormatMenuClock(const std::tm& tm)
+{
+	const std::string mode = Host::GetBaseStringSettingValue("UI", "MenuClockFormat", "system");
+	const char* format = (mode == "12h") ? "%I:%M:%S %p" : (mode == "24h") ? "%H:%M:%S" : nullptr;
+#ifdef _WIN32
+	if (!format)
+	{
+		wchar_t buf[256];
+		if (std::wcsftime(buf, std::size(buf), L"%X", &tm) == 0)
+			return {};
+		return StringUtil::WideStringToUTF8String(buf);
+	}
+#else
+	if (!format)
+		format = "%X";
+#endif
+	char buf[256];
+	if (std::strftime(buf, std::size(buf), format, &tm) == 0)
+		return {};
+	return buf;
+}
+
 void FullscreenUI::GetStandardSelectionFooterText(SmallStringBase& dest, bool back_instead_of_cancel)
 {
 	if (IsGamepadInputSource())
@@ -1350,15 +1374,7 @@ void FullscreenUI::DrawLandingTemplate(ImVec2* menu_pos, ImVec2* menu_size)
 			localtime_r(&utc_time_t, &tm_local);
 #endif
 
-#ifdef _WIN32
-			wchar_t buf[256];
-			std::wcsftime(buf, std::size(buf), L"%X", &tm_local);
-			heading_str.assign(StringUtil::WideStringToUTF8String(buf));
-#else
-			char buf[256];
-			std::strftime(buf, std::size(buf), "%X", &tm_local);
-			heading_str.assign(buf);
-#endif
+			heading_str.assign(FormatMenuClock(tm_local));
 
 			const ImVec2 time_size = heading_font.first->CalcTextSizeA(heading_font.second, FLT_MAX, 0.0f, heading_str.c_str());
 			time_pos = ImVec2(heading_size.x - LayoutScale(LAYOUT_MENU_BUTTON_X_PADDING) - time_size.x,
@@ -1672,7 +1688,6 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 
 	// current time / play time
 	{
-		char buf[256];
 		struct tm ltime;
 		const std::time_t ctime(std::time(nullptr));
 #ifdef _MSC_VER
@@ -1680,11 +1695,11 @@ void FullscreenUI::DrawPauseMenu(MainWindowType type)
 #else
 		localtime_r(&ctime, &ltime);
 #endif
-		std::strftime(buf, sizeof(buf), "%X", &ltime);
+		const std::string time_str(FormatMenuClock(ltime));
 
-		const ImVec2 time_size(g_large_font.first->CalcTextSizeA(g_large_font.second, std::numeric_limits<float>::max(), -1.0f, buf));
+		const ImVec2 time_size(g_large_font.first->CalcTextSizeA(g_large_font.second, std::numeric_limits<float>::max(), -1.0f, time_str.c_str()));
 		const ImVec2 time_pos(display_size.x - LayoutScale(10.0f) - time_size.x, LayoutScale(10.0f));
-		DrawShadowedText(dl, g_large_font, time_pos, text_color, buf);
+		DrawShadowedText(dl, g_large_font, time_pos, text_color, time_str.c_str());
 
 		if (!s_current_disc_serial.empty())
 		{
