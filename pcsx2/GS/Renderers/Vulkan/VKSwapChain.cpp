@@ -551,11 +551,26 @@ static VkSurfaceTransformFlagBitsKHR SurfaceTransformFromRotation(DisplayRotatio
 	}
 }
 
+// A VK_KHR_display surface that does not turn for the panel. Mesa's report the mode as the panel scans
+// it, with the identity transform only. (malisx2's framebuffer surfaces do turn: they report the panel's
+// turn as currentTransform and the mode turned, like Android.)
+static bool IsUnturnedDisplaySurface(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
+{
+	return (wi.type == WindowInfo::Type::VulkanDirect && caps.currentTransform == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR);
+}
+
 // The rotation the surface wants pre-rotated: its currentTransform, or where the window system does
 // not report one through Vulkan (Wayland), the one the frontend read from the window system, if the
 // surface accepts it as a preTransform. None when the user turned pre-rotation off.
+//
+// An unturned display surface is the exception. The frontend's rotation is how the panel is mounted
+// (the DRM panel orientation). With no compositor to leave the turn to, the present always makes it,
+// and the images keep the mode's size (see CreateSwapChain).
 static DisplayRotation WantedSurfaceRotation(const VkSurfaceCapabilitiesKHR& caps, const WindowInfo& wi)
 {
+	if (IsUnturnedDisplaySurface(caps, wi))
+		return static_cast<DisplayRotation>(wi.surface_rotation % 4u);
+
 	if (GSConfig.DisableSwapChainPreRotation)
 		return DisplayRotation::Rot0;
 
@@ -838,7 +853,14 @@ bool VKSwapChain::CreateSwapChain()
 	m_pre_rotation = DisplayRotation::Rot0;
 	VkSurfaceTransformFlagBitsKHR transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 	VkExtent2D image_size = size;
-	if (m_surface_rotation != DisplayRotation::Rot0)
+	if (m_surface_rotation != DisplayRotation::Rot0 && IsUnturnedDisplaySurface(surface_capabilities, m_window_info))
+	{
+		// VK_KHR_display on a turned panel (WantedSurfaceRotation): `size` is the mode, already the
+		// panel's own orientation. The images take it, the transform stays identity, and the window
+		// takes the size turned, below.
+		m_pre_rotation = m_surface_rotation;
+	}
+	else if (m_surface_rotation != DisplayRotation::Rot0)
 	{
 		const VkExtent2D rotated = RotationSwapsAxes(m_surface_rotation) ? VkExtent2D{size.height, size.width} : size;
 		if (rotated.width >= surface_capabilities.minImageExtent.width &&

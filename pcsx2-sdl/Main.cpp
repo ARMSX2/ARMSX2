@@ -24,6 +24,7 @@
 // Audio + input come from SDL3 via the existing SDLAudioStream / SDLInputSource
 // modules in the core (already linked, already non-Qt).
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -36,11 +37,20 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include <SDL3/SDL.h>
+
+#ifdef __linux__
+#include <drm/drm.h>
+#include <drm/drm_mode.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 #include "fmt/format.h"
 
@@ -379,6 +389,105 @@ void Pcsx2SDL::InstallSignalHandler()
 	std::signal(SIGHUP, &HandleSignal);
 }
 
+#ifdef __linux__
+// The turn a connected connector's "panel orientation" property asks for, in WindowInfo::surface_rotation's
+// units (clockwise quarter turns of the picture). 0 when the property is absent or "Normal". nullopt when the
+// connector is not connected.
+static std::optional<u8> ReadConnectorPanelRotation(int fd, u32 connector_id)
+{
+	// A non-zero mode count keeps the kernel from probing the connector again.
+	drm_mode_modeinfo mode = {};
+	drm_mode_get_connector conn = {};
+	conn.connector_id = connector_id;
+	conn.modes_ptr = reinterpret_cast<uintptr_t>(&mode);
+	conn.count_modes = 1;
+	constexpr u32 DRM_MODE_CONNECTED = 1;
+	if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) != 0 || conn.connection != DRM_MODE_CONNECTED)
+		return std::nullopt;
+
+	drm_mode_obj_get_properties props = {};
+	props.obj_id = connector_id;
+	props.obj_type = DRM_MODE_OBJECT_CONNECTOR;
+	if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+		return 0;
+	std::vector<u32> ids(props.count_props);
+	std::vector<u64> values(props.count_props);
+	props.props_ptr = reinterpret_cast<uintptr_t>(ids.data());
+	props.prop_values_ptr = reinterpret_cast<uintptr_t>(values.data());
+	if (ioctl(fd, DRM_IOCTL_MODE_OBJ_GETPROPERTIES, &props) != 0)
+		return 0;
+
+	for (size_t i = 0; i < std::min<size_t>(ids.size(), props.count_props); i++)
+	{
+		drm_mode_get_property prop = {};
+		prop.prop_id = ids[i];
+		if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &prop) != 0 || std::strcmp(prop.name, "panel orientation") != 0)
+			continue;
+
+		std::vector<drm_mode_property_enum> enums(prop.count_enum_blobs);
+		prop.enum_blob_ptr = reinterpret_cast<uintptr_t>(enums.data());
+		prop.count_values = 0;
+		if (ioctl(fd, DRM_IOCTL_MODE_GETPROPERTY, &prop) != 0)
+			return 0;
+
+		// The names are the interface (drm_connector.c). "Left Side Up": the panel's left edge is at the top of
+		// the case, so the picture turns a quarter counter-clockwise on it.
+		for (size_t e = 0; e < std::min<size_t>(enums.size(), prop.count_enum_blobs); e++)
+		{
+			if (enums[e].value != values[i])
+				continue;
+			const std::string_view name(enums[e].name);
+			Console.WriteLnFmt("DRM: connector {} panel orientation is \"{}\".", connector_id, name);
+			if (name == "Right Side Up")
+				return 1;
+			if (name == "Upside Down")
+				return 2;
+			if (name == "Left Side Up")
+				return 3;
+			return 0;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+// How the display panel is mounted, read from the first connected DRM connector: the display Mesa's
+// VK_KHR_display lists first, which is the one the renderer picks. The kernel takes the orientation from
+// the device tree or its quirk table. A handheld with a portrait panel in a landscape case, such as the
+// Retroid Pocket Flip 2, reports one; with nothing to turn the picture for us on bare KMS, the renderer
+// pre-rotates it.
+static u8 ReadDRMPanelRotation()
+{
+	for (int card = 0; card < 16; card++)
+	{
+		const std::string path = fmt::format("/dev/dri/card{}", card);
+		const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+		if (fd < 0)
+			continue;
+
+		std::optional<u8> rotation;
+		drm_mode_card_res res = {};
+		if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0 && res.count_connectors > 0)
+		{
+			std::vector<u32> connectors(res.count_connectors);
+			res = {};
+			res.connector_id_ptr = reinterpret_cast<uintptr_t>(connectors.data());
+			res.count_connectors = static_cast<u32>(connectors.size());
+			if (ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES, &res) == 0)
+			{
+				for (size_t i = 0; i < std::min<size_t>(connectors.size(), res.count_connectors) && !rotation; i++)
+					rotation = ReadConnectorPanelRotation(fd, connectors[i]);
+			}
+		}
+		close(fd);
+
+		if (rotation.has_value())
+			return rotation.value();
+	}
+	return 0;
+}
+#endif
+
 #if defined(WAYLAND_API)
 // True when a Wayland compositor is present. On a bare kmsdrm handheld there is
 // no WAYLAND_DISPLAY and VK_KHR_display (VulkanDirect) is the correct path, so
@@ -497,6 +606,9 @@ std::optional<WindowInfo> Pcsx2SDL::BuildWindowInfo()
 	wi.display_connection = nullptr;
 	wi.window_handle = nullptr;
 	wi.surface_handle = nullptr;
+#ifdef __linux__
+	wi.surface_rotation = ReadDRMPanelRotation();
+#endif
 	return wi;
 }
 

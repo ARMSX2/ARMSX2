@@ -62,7 +62,8 @@ struct WindowInfo
 
 	/// Rotation the window system applies to show this window, in quarter turns counted the way
 	/// Vulkan's currentTransform counts them (1 = ROTATE_90). Filled in where the graphics API does
-	/// not report it (Wayland), so the renderer can pre-rotate. 0 if none or unknown.
+	/// not report it, so the renderer can pre-rotate: on Wayland the compositor's rotation, on
+	/// VulkanDirect the DRM panel orientation. 0 if none or unknown.
 	u8 surface_rotation = 0;
 
 	/// Returns the host's refresh rate for the given window, if available.
