@@ -1467,6 +1467,9 @@ private fun ControlsPane(state: EmulationMenuUiState, viewModel: EmulationMenuVi
         onChange = { haptic = it; com.armsx2.input.ControllerMappings.setHapticIntensity(it) },
     )
     MenuSwitchRow(str("pad.multitap.label"), state.multitapEnabled, onCheckedChange = viewModel::setMultitap)
+    MainActivityRuntime.currentGame.value?.settingsKey?.let { serial ->
+        com.armsx2.ui.settings.TriggerStickRemapRow(serial)
+    }
     MenuSwitchRow(str("network.emulateUsbKeyboard"), state.settings.system.usbKeyboard, field = "usbKeyboard") {
         viewModel.updateSettings { current -> current.copy(system = current.system.copy(usbKeyboard = it)) }
     }

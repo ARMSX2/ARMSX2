@@ -1120,6 +1120,8 @@ private val BASE_EN: Map<String, String> = mapOf(
     "pad.controller.notBound" to "Controller: not bound",
     "pad.dpadAsLeftStick.description" to "Make the physical D-pad drive the left analog stick (full deflection) so it works in games that only read the analog stick. The D-pad stops sending digital presses while this is on.",
     "pad.dpadAsLeftStick.label" to "D-pad acts as Left Stick",
+    "pad.triggerStickRemap.label" to "Remap L2/R2 to Right Analog Stick",
+    "pad.triggerStickRemap.description" to "For this game, physical R2 moves the right stick up and L2 moves it down. Equal pulls cancel each other.",
     "pad.editTouchLayout" to "Edit On-Screen Touch Layout",
     "pad.controllerMapping" to "Controller mapping",
     "perf.frameLimit.label" to "Frame limit",

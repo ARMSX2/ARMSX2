@@ -61,6 +61,9 @@ import com.armsx2.i18n.str
 import com.armsx2.input.ControllerMappings
 import com.armsx2.input.HotkeyHoldState
 import com.armsx2.input.SoftKeyboard
+import com.armsx2.input.TriggerStickRemap
+import com.armsx2.input.TriggerStickRemap.Companion.RIGHT_STICK_DOWN
+import com.armsx2.input.TriggerStickRemap.Companion.RIGHT_STICK_UP
 import com.armsx2.runtime.MainActivityRuntime.Companion.internalBiosDir
 import com.armsx2.runtime.MainActivityRuntime.Companion.romsDirs
 import com.armsx2.ui.Colors
@@ -683,7 +686,12 @@ open class MainActivityRuntime : ComponentActivity() {
             // otherwise stay in the set and be re-emitted into the NEXT session.
             com.armsx2.ui.touch.TouchControls.clearHeldPressureKeys()
             com.armsx2.BatteryWatcher.resetForNewSession()
-            instance?.runOnUiThread { instance?.applyEmulationOrientation() }
+            instance?.let { activity ->
+                activity.runOnUiThread {
+                    activity.clearRemappedTriggers()
+                    activity.applyEmulationOrientation()
+                }
+            }
         }
 
         // ---- Auto Progressive Scan -------------------------------------------------------
@@ -1503,6 +1511,7 @@ open class MainActivityRuntime : ComponentActivity() {
             // toggled off must not silently start the next one with gyro dead.
             fastForwardToggleActive = false
             instance?.fastForwardHold?.clear()
+            instance?.let { activity -> activity.runOnUiThread { activity.clearRemappedTriggers() } }
             slowDownToggleActive = false
             gyroActive.value = true
             val nativeActive = runCatching { NativeApp.hasActiveVM() }.getOrDefault(false)
@@ -2637,12 +2646,14 @@ open class MainActivityRuntime : ComponentActivity() {
                 analogKeyHeld[port][p_keycode] = pad_force / 32767f
             // Track for the LIVE pressure modifier (see TouchControls.notePressureKeyState).
             com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, true)
-            NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
+            if (isRemappedRightStickAxis(p_keycode, port)) flushTriggerStickAxis(port)
+            else NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
             if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port].remove(p_keycode)
             com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, false)
-            NativeApp.setPadButtonForPort(port, p_keycode, 0, false)
+            if (isRemappedRightStickAxis(p_keycode, port)) flushTriggerStickAxis(port)
+            else NativeApp.setPadButtonForPort(port, p_keycode, 0, false)
         }
     }
 
@@ -3550,11 +3561,13 @@ open class MainActivityRuntime : ComponentActivity() {
         // a menu holding the controller, where the gameplay path below stands down. Otherwise a release
         // during a save or load pause, or while the pause menu is open, is dropped and the button stays
         // held in the game until pressed again. Only the pad hears it; the event goes on below unchanged.
-        if (event.action == KeyEvent.ACTION_UP &&
-            (eState.value != EmuState.RUNNING || controllerDrivesFrontend()) &&
-            padHeldKey(event) in padHeldKeys
-        ) {
-            dispatchGameplayKey(event, releaseOnly = true)
+        if (event.action == KeyEvent.ACTION_UP) {
+            if (kc == KeyEvent.KEYCODE_BUTTON_L2 || kc == KeyEvent.KEYCODE_BUTTON_R2) {
+                releaseRemappedTriggerKey(event.deviceId, left = kc == KeyEvent.KEYCODE_BUTTON_L2)
+            }
+            if (controllerDrivesFrontend() && padHeldKey(event) in padHeldKeys) {
+                dispatchGameplayKey(event, releaseOnly = true)
+            }
         }
         // Controller-input diagnostic (ARMSX2_JOYCON): dump the device once + this key.
         logControllerDeviceOnce(event.deviceId)
@@ -4181,13 +4194,15 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         val physicalCode = event.keyCode
         if (physicalCode == KeyEvent.KEYCODE_UNKNOWN) return false
-        if (type == KeyEventType.KeyDown) padHeldKeys.add(padHeldKey(event)) else padHeldKeys.remove(padHeldKey(event))
+        val heldKey = padHeldKey(event)
+        val wasHeld = type == KeyEventType.KeyUp && padHeldKeys.remove(heldKey)
 
         // Local co-op routing and macro precedence exactly match the old Compose
         // onKeyEvent path; only the dispatch layer has changed.
         val port = com.armsx2.input.PadRouter.portForDevice(event.deviceId)
         val fromController = !isVolumeKey(physicalCode)
         com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(physicalCode)?.let { macro ->
+            if (type == KeyEventType.KeyDown) padHeldKeys.add(heldKey)
             com.armsx2.ui.touch.TouchControls.fireMacro(
                 macro, "pad$port", type == KeyEventType.KeyDown,
             ) { code, pressed ->
@@ -4203,6 +4218,24 @@ open class MainActivityRuntime : ComponentActivity() {
             return true
         }
 
+        val isTrigger = physicalCode == KeyEvent.KEYCODE_BUTTON_L2 || physicalCode == KeyEvent.KEYCODE_BUTTON_R2
+        if (isTrigger && ControllerMappings.remapTriggersToRightStick()) {
+            val left = physicalCode == KeyEvent.KEYCODE_BUTTON_L2
+            // A controller with a trigger axis can also send a duplicate key edge.
+            if (!deviceHasTriggerAxis(event.deviceId, left, remap = true)) {
+                if (type == KeyEventType.KeyDown) {
+                    updateRemappedTriggers(event.deviceId, port, if (left) 1f else null, if (left) null else 1f)
+                }
+                if (fromController) com.armsx2.ui.touch.TouchControls.onControllerInputDetected(port)
+                if (ControllerMappings.isHotkeyKeyOrModifier(physicalCode)) {
+                    if (type == KeyEventType.KeyDown) gameplayHotkeyKeysDown.add(physicalCode)
+                    else gameplayHotkeyKeysDown.remove(physicalCode)
+                }
+            }
+            // A release can belong to an ordinary button press sent before the setting was enabled.
+            if (!wasHeld) return true
+        }
+        if (type == KeyEventType.KeyDown) padHeldKeys.add(heldKey)
         val target = ControllerMappings.targetForPhysical(physicalCode, port) ?: return false
         // Pads that report a trigger BOTH ways (Odin 2 Portal and friends) synthesise a
         // KEYCODE_BUTTON_L2/R2 key event partway through the pull. In analog-pressure mode that
@@ -4212,7 +4245,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // nothing would drive L2/R2 at all), and never when turbo or tap-to-hold is flagged on
         // that target, since those act on key edges the axis path doesn't produce. The event is
         // still consumed so it can't fall through to the frontend. See sendTrigger.
-        if (physicalCode == KeyEvent.KEYCODE_BUTTON_L2 || physicalCode == KeyEvent.KEYCODE_BUTTON_R2) {
+        if (isTrigger) {
             val left = physicalCode == KeyEvent.KEYCODE_BUTTON_L2
             if (ControllerMappings.isTriggerPressure(left, port) &&
                 !ControllerMappings.isTurboTarget(target, port) &&
@@ -4785,6 +4818,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // feed the row. Pure observation — nothing is consumed, and the flag is only set while
         // those rows are on screen.
         if (ControllerMappings.triggerMonitorActive) noteTriggerLive(ev)
+        releaseRemappedTriggerAxes(ev)
         // While (re)binding a pad button or a hotkey, the physical D-pad on many
         // handhelds (AYN Odin 3, RP6, etc.) arrives HERE as a HAT *axis*, never as
         // a key in dispatchKeyEvent — so the capture (which only listens for key
@@ -4837,7 +4871,7 @@ open class MainActivityRuntime : ComponentActivity() {
             val rsAxes = rightStickAxes(ev.deviceId)
             dispatchStick(ev, ControllerMappings.rightStickMode(port),
                 rsAxes.first, rsAxes.second,
-                aXPos = 121, aXNeg = 123, aYPos = 122, aYNeg = 120, // R right/left, down/up
+                aXPos = 121, aXNeg = 123, aYPos = RIGHT_STICK_DOWN, aYNeg = RIGHT_STICK_UP,
                 leftStick = false, port = port)
             // Fire any ARMSX2 hotkey bound (Hotkeys tab) to a stick DIRECTION — lets an
             // unused stick trigger Quick Save/Load etc. The stick still drives the pad.
@@ -4852,8 +4886,12 @@ open class MainActivityRuntime : ComponentActivity() {
             // Analog triggers (L2/R2). Xbox / DualShock / most modern pads report these as
             // 0..1 motion-axis values, not KEYCODE_BUTTON_L2/R2 key events, so the direct key
             // path never sees them. Which axes that means per device is triggerAxes' job.
-            sendTrigger(ev, left = true, port = port)
-            sendTrigger(ev, left = false, port = port)
+            val remap = ControllerMappings.remapTriggersToRightStick()
+            val leftTrigger = sendTrigger(ev, left = true, port = port, remap = remap)
+            val rightTrigger = sendTrigger(ev, left = false, port = port, remap = remap)
+            if (remap) {
+                triggerStickRemap.update(ev.deviceId, port, leftTrigger, rightTrigger)?.let(::flushTriggerStickAxis)
+            }
             // Physical STICK DIRECTIONS bound to a PS2 control via the "(send)"
             // rows — e.g. R-Stick Down bound to send Square. The analog "(send)"
             // targets contribute to the merge layer like every other writer. A bound
@@ -4927,7 +4965,21 @@ open class MainActivityRuntime : ComponentActivity() {
     // was reported. InputDevice.getDevice() is a binder call and motion events arrive far too
     // often to query per event, hence the cache.
     private val rightStickAxisCache = HashMap<Int, Pair<Int, Int>>()
-    private fun rightStickAxes(deviceId: Int): Pair<Int, Int> = rightStickAxisCache.getOrPut(deviceId) {
+    private fun rightStickAxes(deviceId: Int): Pair<Int, Int> {
+        val axes = rightStickAxisCache.getOrPut(deviceId) { resolveRightStickAxes(deviceId) }
+        if (ControllerMappings.remapTriggersToRightStick()) {
+            val (x, y) = axes
+            // On pads that expose a trigger as Z or RZ, that channel cannot also drive the stick.
+            val xIsTrigger = x == MotionEvent.AXIS_Z && triggerAxes(deviceId, left = true).third == x
+            val yIsTrigger = y == MotionEvent.AXIS_RZ && triggerAxes(deviceId, left = false).third == y
+            if (xIsTrigger || yIsTrigger) {
+                return (if (xIsTrigger) MotionEvent.AXIS_RX else x) to (if (yIsTrigger) MotionEvent.AXIS_RY else y)
+            }
+        }
+        return axes
+    }
+
+    private fun resolveRightStickAxes(deviceId: Int): Pair<Int, Int> {
         val dev = runCatching { InputDevice.getDevice(deviceId) }.getOrNull()
         fun has(axis: Int) = dev?.getMotionRange(axis) != null
         val hasRxRy = has(MotionEvent.AXIS_RX) || has(MotionEvent.AXIS_RY)
@@ -4936,7 +4988,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // this never reclassifies a standard pad's stick.
         val rz = dev?.getMotionRange(MotionEvent.AXIS_RZ)
         val rzIsTrigger = rz != null && rz.min >= 0f
-        when {
+        return when {
             // Joy-Cons expose RX/RY for the right stick; prefer it even if Z/RZ also exist.
             dev?.vendorId == 0x057E && hasRxRy -> MotionEvent.AXIS_RX to MotionEvent.AXIS_RY
             // RZ is really a trigger — the right stick can't live on it; use RX/RY when present.
@@ -4973,9 +5025,9 @@ open class MainActivityRuntime : ComponentActivity() {
      *  trigger axis on that side**, which is not the same as one resting at zero: a Switch Pro
      *  Controller sends L2/R2 as key events only, and reading its absent axes as 0.0 once wrote
      *  "released" every motion event, cancelling a held R2 whenever the stick moved. */
-    private fun triggerTravel(ev: MotionEvent, left: Boolean): Float {
+    private fun triggerTravel(ev: MotionEvent, left: Boolean, remap: Boolean = false): Float {
         val (a, b, c) = triggerAxes(ev.deviceId, left)
-        if (!deviceHasTriggerAxis(ev.deviceId, left))
+        if (!deviceHasTriggerAxis(ev.deviceId, left, remap))
             return -1f
         return maxOf(
             maxOf(ev.getAxisValue(a), ev.getAxisValue(b)),
@@ -5002,11 +5054,9 @@ open class MainActivityRuntime : ComponentActivity() {
             triggerTravel(ev, left = false) > TRIGGER_DIGITAL_THRESHOLD
     }
 
-    /** Deadzone off the bottom, re-normalized, then the user's response curve. One helper so
-     *  the Pad tab's live readout and the value the PS2 actually receives can never disagree —
-     *  the readout exists precisely to show what the game gets. */
+    /** Normalize trigger travel and apply the user's curve for ordinary trigger bindings. */
     private fun shapeTrigger(raw: Float, left: Boolean, port: Int): Float {
-        val out = if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
+        val out = normalizeTriggerTravel(raw)
         // The curve belongs to analog-pressure mode; with the option off this is exactly the
         // plain re-normalized travel the frontend has always sent.
         if (out <= 0f || !ControllerMappings.isTriggerPressure(left, port)) return out
@@ -5014,8 +5064,11 @@ open class MainActivityRuntime : ComponentActivity() {
         return if (exp == 1f) out else out.toDouble().pow(exp.toDouble()).toFloat()
     }
 
-    /** Publish both triggers' current travel for the Pad tab's pressure rows: the same
-     *  post-deadzone percentage [sendTrigger] would hand the PS2, or -1 when the pad has no
+    private fun normalizeTriggerTravel(raw: Float): Float =
+        if (raw <= TRIGGER_DEAD) 0f else (raw - TRIGGER_DEAD) / (1f - TRIGGER_DEAD)
+
+    /** Publish both triggers' current travel for the Pad tab's pressure rows: the shaped
+     *  percentage used by ordinary trigger bindings, or -1 when the pad has no
      *  analog axis on that side. Only writes on a CHANGE, so a pad idling its axes doesn't
      *  recompose the settings list every motion sample. */
     private fun noteTriggerLive(ev: MotionEvent) {
@@ -5040,7 +5093,8 @@ open class MainActivityRuntime : ComponentActivity() {
     /** True when this pad reports the [left]/right trigger as an ANALOG AXIS at all. False for
      *  pads whose L2/R2 are key events only (a Switch Pro Controller), where the key path is the
      *  one and only signal and must keep driving the pad. */
-    private fun deviceHasTriggerAxis(deviceId: Int, left: Boolean): Boolean {
+    private fun deviceHasTriggerAxis(deviceId: Int, left: Boolean, remap: Boolean = false): Boolean {
+        if (remap && com.armsx2.input.UsbPadTakeover.isSyntheticPad(deviceId)) return true
         val (a, b, c) = triggerAxes(deviceId, left)
         return deviceHasAxis(deviceId, a) || deviceHasAxis(deviceId, b) ||
             (c >= 0 && deviceHasAxis(deviceId, c))
@@ -5601,6 +5655,9 @@ open class MainActivityRuntime : ComponentActivity() {
     private val analogAccum = HashMap<Int, Float>()
     private val analogPrevSent = Array(8) { HashMap<Int, Float>() } // per unified pad slot (multitap)
     val analogKeyHeld = Array(8) { HashMap<Int, Float>() } // written by sendKeyAction; per unified pad slot
+    private val triggerStickRemap = TriggerStickRemap()
+    private val rightStickMotionUp = FloatArray(8)
+    private val rightStickMotionDown = FloatArray(8)
 
     // ---- Gyro <-> physical-stick ADDITIVE combine (P1 / port 0) -----------
     // The aim/steer gyro drives a PS2 analog stick; so does the physical stick.
@@ -5628,7 +5685,14 @@ open class MainActivityRuntime : ComponentActivity() {
      *  (so stale codes release exactly once). */
     private fun flushAnalogAxes(port: Int) {
         val prev = analogPrevSent[port]
+        rightStickMotionUp[port] = analogAccum[RIGHT_STICK_UP] ?: 0f
+        rightStickMotionDown[port] = analogAccum[RIGHT_STICK_DOWN] ?: 0f
         for ((code, held) in analogKeyHeld[port]) accumAnalog(code, held)
+        if (ControllerMappings.remapTriggersToRightStick()) {
+            withTriggerStickOutput(port) { code, magnitude ->
+                if (magnitude * 32767 >= 1f) analogAccum[code] = magnitude else analogAccum.remove(code)
+            }
+        }
         // Release pass: codes we sent before but that have no contribution now.
         for (code in prev.keys) {
             if (!analogAccum.containsKey(code)) {
@@ -5642,6 +5706,78 @@ open class MainActivityRuntime : ComponentActivity() {
         prev.clear()
         prev.putAll(analogAccum)
         analogAccum.clear()
+    }
+
+    private fun isRemappedRightStickAxis(code: Int, port: Int): Boolean =
+        (code == RIGHT_STICK_UP || code == RIGHT_STICK_DOWN) &&
+            port in analogPrevSent.indices && ControllerMappings.remapTriggersToRightStick()
+
+    private inline fun withTriggerStickOutput(port: Int, emit: (Int, Float) -> Unit) {
+        val held = analogKeyHeld[port]
+        triggerStickRemap.emitVertical(
+            port,
+            stickUp = maxOf(rightStickMotionUp[port], held[RIGHT_STICK_UP] ?: 0f),
+            stickDown = maxOf(rightStickMotionDown[port], held[RIGHT_STICK_DOWN] ?: 0f),
+            emit = emit,
+        )
+    }
+
+    /** Re-emit just right-stick Y on key edges, leaving the last motion sample on other axes. */
+    private fun flushTriggerStickAxis(port: Int) {
+        val prev = analogPrevSent[port]
+        withTriggerStickOutput(port) { code, magnitude ->
+            val force = (magnitude * 32767).toInt()
+            if (force == 0) {
+                if (prev.remove(code) != null) NativeApp.setPadButtonForPort(port, code, 0, false)
+            } else if (prev.put(code, magnitude) != magnitude) {
+                NativeApp.setPadButtonForPort(port, code, force, true)
+            }
+        }
+    }
+
+    private fun updateRemappedTriggers(deviceId: Int, port: Int, left: Float?, right: Float?) {
+        triggerStickRemap.update(deviceId, port, left, right)?.let(::flushTriggerStickAxis)
+        flushTriggerStickAxis(port)
+    }
+
+    private fun releaseRemappedTriggerKey(deviceId: Int, left: Boolean) {
+        val port = triggerStickRemap.portForDevice(deviceId) ?: return
+        if (deviceHasTriggerAxis(deviceId, left, remap = true)) return
+        updateRemappedTriggers(deviceId, port, if (left) 0f else null, if (left) null else 0f)
+    }
+
+    private fun releaseRemappedTriggerAxes(event: MotionEvent) {
+        val port = triggerStickRemap.portForDevice(event.deviceId) ?: return
+        if (!controllerDrivesFrontend()) return
+        if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) &&
+            !event.isFromSource(InputDevice.SOURCE_GAMEPAD)) return
+        val left = triggerTravel(event, left = true, remap = true)
+        val right = triggerTravel(event, left = false, remap = true)
+        if (left in 0f..TRIGGER_DEAD || right in 0f..TRIGGER_DEAD) {
+            updateRemappedTriggers(event.deviceId, port,
+                if (left in 0f..TRIGGER_DEAD) 0f else null, if (right in 0f..TRIGGER_DEAD) 0f else null)
+        }
+    }
+
+    internal fun releaseRemappedTriggerDevice(deviceId: Int) {
+        triggerStickRemap.remove(deviceId)?.let(::flushTriggerStickAxis)
+    }
+
+    private fun clearRemappedTriggers() {
+        triggerStickRemap.clear().forEach(::flushTriggerStickAxis)
+    }
+
+    internal fun onTriggerStickRemapChanged(enabled: Boolean) {
+        clearRemappedTriggers()
+        if (!enabled) return
+        // A trigger that used to drive a normal pad target may still be held when the setting flips.
+        triggerPadTargets.forEachIndexed { port, targets ->
+            targets.values.forEach { target ->
+                analogPrevSent[port].remove(target)
+                NativeApp.setPadButtonForPort(port, target, 0, false)
+            }
+            targets.clear()
+        }
     }
 
     /** RADIAL analog-stick shaping: deadzone/curve/sensitivity applied to the
@@ -6061,10 +6197,11 @@ open class MainActivityRuntime : ComponentActivity() {
     private val triggerHotkeyOwner = HashMap<Int, Boolean>()
     private val triggerPadTargets = Array(8) { HashMap<Int, Int>() }
 
-    private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int) {
+    /** In remap mode, return the pressure for the paired right-stick update. */
+    private fun sendTrigger(event: MotionEvent, left: Boolean, port: Int, remap: Boolean): Float? {
         // -1 = no trigger axis on this side; its L2/R2 is a key event, key path owns it.
-        val raw = triggerTravel(event, left)
-        if (raw < 0f) return
+        val raw = triggerTravel(event, left, remap)
+        if (raw < 0f) return null
         val code = triggerKeyCode(left)
         val held = triggerHotkeyHeld[port]
         // Hysteresis: a held trigger stays held until it falls well below the press threshold.
@@ -6121,15 +6258,18 @@ open class MainActivityRuntime : ComponentActivity() {
                 if (target in 110..123) accumAnalog(target, 0f)
                 else NativeApp.setPadButtonForPort(port, target, 0, false)
             }
-            return
+            return 0f
         }
-        if (com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code) != null) return
+        if (com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(code) != null) return 0f
+
+        // Use the same linear scale on both sides so equal physical pulls cancel.
+        if (remap) return normalizeTriggerTravel(raw)
 
         // Honor the L2/R2 binding: triggers arrive as motion axes, never through the
         // keycode binding path, so clearing/remapping them in the Pad tab was ignored.
         // Resolve the physical trigger keycode to its mapped PS2 target — null = cleared,
         // so the trigger is disabled; otherwise drive the resolved (possibly remapped) code.
-        val target = ControllerMappings.targetForPhysical(code, port) ?: return
+        val target = ControllerMappings.targetForPhysical(code, port) ?: return null
         // Deadzone off the bottom, re-normalized (so pressure ramps from zero instead of
         // flicking on/off at a hard threshold — the jitter non-Xbox pads showed), then the
         // user's response curve. Same helper the live readout uses.
@@ -6148,6 +6288,7 @@ open class MainActivityRuntime : ComponentActivity() {
         }
         if (out > 0f) triggerPadTargets[port][code] = target
         else triggerPadTargets[port].remove(code)
+        return null
     }
 
     /** Set in onPause when the screen goes off (a real sleep), consumed in onResume so the sleep
@@ -6169,12 +6310,14 @@ open class MainActivityRuntime : ComponentActivity() {
             com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
         }
         override fun onInputDeviceRemoved(deviceId: Int) {
+            releaseRemappedTriggerDevice(deviceId)
             com.armsx2.input.PadRouter.forgetDevice(deviceId)
             com.armsx2.ui.touch.TouchControls.refreshGamepadConnected()
         }
     }
 
     override fun onPause() {
+        clearRemappedTriggers()
         // Take the second-display panel down with the app. A Presentation is not torn down by the
         // activity stopping, so it otherwise stayed on the external screen while the user was off
         // doing something else (reported).

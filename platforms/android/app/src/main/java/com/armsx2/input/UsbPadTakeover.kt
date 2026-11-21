@@ -79,6 +79,7 @@ object UsbPadTakeover {
     private val main = Handler(Looper.getMainLooper())
 
     fun active(): Boolean = running
+    internal fun isSyntheticPad(deviceId: Int): Boolean = running && deviceId == SYNTHETIC_DEVICE_ID
 
     /** Start reading [connection] and delivering its input as Android events. */
     fun start(
@@ -138,10 +139,14 @@ object UsbPadTakeover {
     }
 
     fun stop() {
+        val wasRunning = running
         running = false
         reader?.interrupt()
         reader = null
         PadRouter.clearSyntheticPad()
+        if (wasRunning) main.post {
+            com.armsx2.runtime.MainActivityRuntime.instance?.releaseRemappedTriggerDevice(SYNTHETIC_DEVICE_ID)
+        }
     }
 
     private class Report(val buttons: Int, val axes: IntArray)
