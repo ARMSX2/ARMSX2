@@ -46,7 +46,7 @@ static BASEBLOCK* recRAM = nullptr;
 static BASEBLOCK* recROM = nullptr;
 static BASEBLOCK* recROM1 = nullptr;
 static BASEBLOCK* recROM2 = nullptr;
-static Arm64BaseBlocks recBlocks;
+static Arm64IopBaseBlocks recBlocks;
 static u8* recPtr = nullptr;
 static u8* recPtrEnd = nullptr;
 // Where blocks start: the dispatchers and stubs recResetIOP generates come

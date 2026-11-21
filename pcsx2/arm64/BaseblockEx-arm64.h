@@ -65,9 +65,65 @@
 
 #include "common/HostSys.h"
 #include "arm64/AsmHelpers.h" // armPatchCodeWord (self-scoped W^X code patching)
-#include "x86/BaseblockEx.h"  // BASEBLOCK, BASEBLOCKEX, BaseBlockArray, recLUT_SetPage
+#include "arm64/BlockPageIndex-arm64.h"
 
-class Arm64BaseBlocks
+// The IOP keeps its flat index and integer positions for its clear walk.
+class Arm64FlatBlockIndex
+{
+public:
+	using Position = int;
+	static constexpr Position Invalid() { return -1; }
+
+	Position AtOrBefore(u32 pc) const
+	{
+		int lo = 0;
+		int hi = static_cast<int>(m_blocks.size());
+		while (lo < hi)
+		{
+			const int mid = lo + (hi - lo) / 2;
+			if (m_blocks[mid].startpc <= pc)
+				lo = mid + 1;
+			else
+				hi = mid;
+		}
+		return lo - 1;
+	}
+
+	Position Next(Position pos) const
+	{
+		return pos + 1 < static_cast<int>(m_blocks.size()) ? pos + 1 : Invalid();
+	}
+
+	BASEBLOCKEX* Get(Position pos) const
+	{
+		return pos >= 0 && pos < static_cast<int>(m_blocks.size()) ? &m_blocks[pos] : nullptr;
+	}
+
+	const BASEBLOCKEX* FindExact(u32 pc) const
+	{
+		const BASEBLOCKEX* const block = Get(AtOrBefore(pc));
+		return block && block->startpc == pc ? block : nullptr;
+	}
+
+	BASEBLOCKEX* UpdateOrInsert(u32 pc, uptr fnptr)
+	{
+		BASEBLOCKEX* block = Get(AtOrBefore(pc));
+		if (!block || block->startpc != pc)
+			return m_blocks.insert(pc, fnptr);
+		block->fnptr = fnptr;
+		return block;
+	}
+
+	void Erase(Position first, Position last) { m_blocks.erase(first, last + 1); }
+	void Reset() { m_blocks.clear(); }
+	u32 size() const { return m_blocks.size(); }
+
+private:
+	BaseBlockArray m_blocks{0x4000};
+};
+
+template <typename BlockIndex>
+class Arm64BaseBlocksImpl
 {
 protected:
 	// A registered branch site, tagged with the block that emitted it so
@@ -86,7 +142,7 @@ protected:
 
 	using linkmap_t = std::multimap<u32, LinkSite>;
 
-	BaseBlockArray blocks;
+	BlockIndex blocks;
 	linkmap_t links;
 	uptr jitcompile = 0;
 	uptr dispatcher = 0;
@@ -180,8 +236,8 @@ protected:
 		if (ls.owner_fnptr == 0)
 			return true; // untracked registration (direct unit tests)
 
-		const BASEBLOCKEX* owner = Get(ls.owner_startpc);
-		return owner && owner->startpc == ls.owner_startpc && owner->fnptr == ls.owner_fnptr;
+		const BASEBLOCKEX* const owner = blocks.FindExact(ls.owner_startpc);
+		return owner && owner->fnptr == ls.owner_fnptr;
 	}
 
 	// Coalesce the just-patched sites into as few cache-maintenance ranges as
@@ -213,10 +269,7 @@ protected:
 	}
 
 public:
-	Arm64BaseBlocks()
-		: blocks(0x4000)
-	{
-	}
+	using Position = typename BlockIndex::Position;
 
 	void SetJITCompile(const void* recompiler_)
 	{
@@ -238,9 +291,8 @@ public:
 		pxAssertRel((reinterpret_cast<uptr>(patch_site) & kLinkSiteCallBit) == 0,
 			"Link patch site must be 4-byte aligned");
 
-		BASEBLOCKEX* target = Get(pc);
-		const uptr target_addr = (target && target->startpc == pc)
-			? target->fnptr : StaleDispatchTarget();
+		const BASEBLOCKEX* const target = blocks.FindExact(pc);
+		const uptr target_addr = target ? target->fnptr : StaleDispatchTarget();
 		// No flush: the site is in the block being emitted right now, and
 		// armEndBlock() range-flushes that buffer. See PatchWord.
 		PatchWord(reinterpret_cast<uptr>(patch_site),
@@ -260,25 +312,15 @@ public:
 	//
 	// A startpc can be recompiled while its BASEBLOCKEX is still in the array
 	// (recClear resets BLOCK->fnptr across a straddled extent but deliberately
-	// spares the in-progress block's entry). BaseBlockArray::insert() has no
-	// dedup, so that case must reuse the existing entry — and it must retarget
-	// it at the new code, otherwise fnptr keeps pointing at the superseded
-	// compile and every consumer of it is wrong: x86size is computed from a
-	// dead base, Remove() writes its redirect stub over dead code instead of
-	// the live entry, and Link() sends new callers into stale code.
+	// spares the in-progress block's entry). Reuse the entry and retarget it
+	// so links and later invalidations use the current code address.
 	BASEBLOCKEX* New(u32 startpc, uptr fnptr)
 	{
 		// Published for Link() to stamp onto the sites this block emits.
 		emitting_startpc = startpc;
 		emitting_fnptr = fnptr;
 
-		const int idx = Index(startpc);
-		BASEBLOCKEX* block = (idx >= 0 && blocks[idx].startpc == startpc)
-			? &blocks[idx] : nullptr;
-		if (block)
-			block->fnptr = fnptr;
-		else
-			block = blocks.insert(startpc, fnptr);
+		BASEBLOCKEX* const block = blocks.UpdateOrInsert(startpc, fnptr);
 
 		// Repoint the links waiting on this PC at the new code, dropping any
 		// left behind by a block that has since been removed or recompiled.
@@ -309,56 +351,27 @@ public:
 		return block;
 	}
 
-	int LastIndex(u32 startpc) const
+	Position AtOrBefore(u32 startpc) const
 	{
-		if (blocks.size() == 0)
-			return -1;
-
-		int imin = 0, imax = (int)blocks.size() - 1, imid;
-
-		while (imin != imax)
-		{
-			imid = (imin + imax + 1) >> 1;
-
-			if (blocks[imid].startpc > startpc)
-				imax = imid - 1;
-			else
-				imin = imid;
-		}
-
-		if (IsDevBuild)
-		{
-			if (imin != 0)
-				pxAssert(blocks[imin].startpc <= startpc);
-			if (imin < (int)blocks.size() - 1)
-				pxAssert(blocks[imin + 1].startpc > startpc);
-		}
-
-		return imin;
+		return blocks.AtOrBefore(startpc);
 	}
 
-	__fi int Index(u32 startpc) const
+	__fi Position Index(u32 pc) const
 	{
-		int idx = LastIndex(startpc);
-
-		if ((idx == -1) || (startpc < blocks[idx].startpc) ||
-			((blocks[idx].size) && (startpc >= blocks[idx].startpc + blocks[idx].size * 4)))
-			return -1;
-		else
-			return idx;
+		const Position pos = AtOrBefore(pc);
+		const BASEBLOCKEX* const block = blocks.Get(pos);
+		if (!block || (block->size && pc >= block->startpc + block->size * 4))
+			return BlockIndex::Invalid();
+		return pos;
 	}
 
-	__fi BASEBLOCKEX* operator[](int idx)
-	{
-		if (idx < 0 || idx >= (int)blocks.size())
-			return 0;
-
-		return &blocks[idx];
-	}
+	Position Next(Position pos) const { return blocks.Next(pos); }
+	Position Previous(Position pos) const { return blocks.Previous(pos); }
+	BASEBLOCKEX* operator[](Position pos) { return blocks.Get(pos); }
 
 	__fi BASEBLOCKEX* Get(u32 startpc)
 	{
-		return (*this)[Index(startpc)];
+		return blocks.Get(Index(startpc));
 	}
 
 	// Signal-safe: writes a redirect stub at each removed block's entry
@@ -366,9 +379,8 @@ public:
 	// stale-dispatch policy note in the file header — the diverting site's
 	// tail already stored the correct pc, so DispatcherReg routes it to the
 	// current code; JITCompile here would re-enter recRecompile on a
-	// removed-and-recompiled block), then erases from the flat sorted
-	// array. Does NOT touch the link map — mutating an STL container here
-	// is not signal-safe. The entries this strands are reaped by the next
+	// removed-and-recompiled block), then erases from the affected pages.
+	// This leaves the link map alone. The entries this strands are reaped by the next
 	// New() for their destination PC, which sees the owner is gone; until
 	// then the redirect stub keeps any site still pointing at this block
 	// correct.
@@ -376,55 +388,47 @@ public:
 	// SL-1: a resident self-loop's back-edge is an internal B to the loop-top
 	// (past the entry redirect), so it gets its own atomic repoint — to the
 	// block's cold spill stub, which writes back the pinned set, publishes pc,
-	// and exits via DispatcherEvent. Flat-array field reads + PatchAtomic
-	// only, so the signal-safety contract holds.
-	__fi void Remove(int first, int last)
+	// and exits via DispatcherEvent. Page storage stays allocated.
+	__fi void Remove(Position first, Position last)
 	{
-		pxAssert(first <= last);
-
-		if (jitcompile)
+		pxAssert(blocks.Get(first) && blocks.Get(last) &&
+			blocks.Get(first)->startpc <= blocks.Get(last)->startpc);
+		for (Position pos = first; pos != BlockIndex::Invalid(); pos = Next(pos))
 		{
-			for (int i = first; i <= last; ++i)
-			{
-				const uptr site = blocks[i].fnptr;
-				PatchAtomic(site, EncodeB(site, StaleDispatchTarget()));
-
-				if (blocks[i].backedge_site)
-					PatchAtomic(blocks[i].backedge_site,
-						EncodeB(blocks[i].backedge_site, blocks[i].backedge_stub));
-			}
+			Invalidate(pos);
+			if (pos == last)
+				break;
 		}
 
-		blocks.erase(first, last + 1);
+		blocks.Erase(first, last);
 	}
 
 	// Stamp the redirect stub over one block's entry (and repoint its resident
-	// back-edge) without erasing it from the array. Same protocol as Remove():
+	// back-edge) while retaining its metadata. Same protocol as Remove():
 	// the next dispatch of this startpc goes through JITCompile once the caller
 	// resets the LUT entry, and any link site still branching into the old code
 	// lands on the stub and re-dispatches. New() reuses the entry and retargets
 	// fnptr when it recompiles a startpc whose BASEBLOCKEX is still present,
 	// which is also the state recClear leaves the in-progress block in.
 	//
-	// Exists because erase() is a memmove of the array tail, O(live blocks) per
-	// removed block, which goes quadratic when a cycle-rate transition
+	// Keeping the metadata avoids compaction when a cycle-rate transition
 	// invalidates thousands of blocks at once.
-	__fi void Invalidate(int idx)
+	__fi void Invalidate(Position pos)
 	{
 		if (!jitcompile)
 			return;
 
-		const uptr site = blocks[idx].fnptr;
+		const BASEBLOCKEX& block = *blocks.Get(pos);
+		const uptr site = block.fnptr;
 		PatchAtomic(site, EncodeB(site, StaleDispatchTarget()));
 
-		if (blocks[idx].backedge_site)
-			PatchAtomic(blocks[idx].backedge_site,
-				EncodeB(blocks[idx].backedge_site, blocks[idx].backedge_stub));
+		if (block.backedge_site)
+			PatchAtomic(block.backedge_site, EncodeB(block.backedge_site, block.backedge_stub));
 	}
 
 	__fi void Reset()
 	{
-		blocks.clear();
+		blocks.Reset();
 		links.clear();
 		emitting_startpc = 0;
 		emitting_fnptr = 0;
@@ -435,17 +439,15 @@ public:
 	__fi u32 size() const { return blocks.size(); }
 
 	// The block whose code holds host address `pc`, or null. A walk of the
-	// whole array, for the crash post-mortem (RecCrashReport-arm64.h): reads
-	// only, no locks, no allocation. The array belongs to the thread that
-	// compiles into it, and the post-mortem only looks here for a fault on
-	// that thread in this recompiler's code, so the array is not changing.
+	// whole index, for the crash post-mortem (RecCrashReport-arm64.h).
+	// The compile thread owns the index and calls this from its fault
+	// handler while executing generated code.
 	const BASEBLOCKEX* FindByHostPc(uptr pc) const
 	{
-		for (u32 i = 0; i < blocks.size(); i++)
+		for (Position pos = Next(BlockIndex::Invalid()); const BASEBLOCKEX* block = blocks.Get(pos); pos = Next(pos))
 		{
-			const BASEBLOCKEX& b = blocks[i];
-			if (pc - b.fnptr < b.x86size)
-				return &b;
+			if (pc - block->fnptr < block->x86size)
+				return block;
 		}
 		return nullptr;
 	}
@@ -460,14 +462,11 @@ public:
 	// block count.
 	bool IsLinked(u32 src_pc, u32 dst_pc) const
 	{
-		const int idx = LastIndex(src_pc);
-		if (idx < 0)
+		const BASEBLOCKEX* const block = blocks.Get(Index(src_pc));
+		if (!block || src_pc >= block->startpc + block->size * 4)
 			return false;
-		const BASEBLOCKEX& b = blocks[idx];
-		if (src_pc < b.startpc || src_pc >= b.startpc + b.size * 4)
-			return false;
-		const uptr lo = b.fnptr;
-		const uptr hi = b.fnptr + b.x86size;
+		const uptr lo = block->fnptr;
+		const uptr hi = block->fnptr + block->x86size;
 		const auto range = links.equal_range(dst_pc);
 		for (auto it = range.first; it != range.second; ++it)
 		{
@@ -490,3 +489,6 @@ public:
 	size_t TotalLinkCount() const { return links.size(); }
 #endif
 };
+
+using Arm64BaseBlocks = Arm64BaseBlocksImpl<Arm64BlockPageIndex>;
+using Arm64IopBaseBlocks = Arm64BaseBlocksImpl<Arm64FlatBlockIndex>;

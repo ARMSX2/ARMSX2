@@ -3510,8 +3510,8 @@ static void recClear(u32 addr, u32 size)
 	}
 #endif
 
-	int blockidx = recBlocks.LastIndex(end - 4);
-	if (blockidx == -1)
+	auto position = recBlocks.AtOrBefore(end - 4);
+	if (!position)
 		return;
 
 	// No write scope here: the only code writes below are Remove()'s entry
@@ -3539,10 +3539,10 @@ static void recClear(u32 addr, u32 size)
 	u32 upperextent = 0;
 	u32 ceiling = static_cast<u32>(-1);
 
-	if (BASEBLOCKEX* peb_above = recBlocks[blockidx + 1])
+	if (const BASEBLOCKEX* peb_above = recBlocks[recBlocks.Next(position)])
 		ceiling = peb_above->startpc;
 
-	int toRemoveLast = blockidx;
+	auto toRemoveLast = position;
 
 	// Walk down through blocks overlapping [addr, end). For each, reset
 	// BLOCK->fnptr at the block's actual start (the straddle-from-below
@@ -3554,7 +3554,7 @@ static void recClear(u32 addr, u32 size)
 	// compiled, and yanking it mid-emit corrupts the in-progress block.
 	// Splitting the Remove range around it preserves it. Mirrors x86
 	// recClear (pcsx2/x86/ix86-32/iR5900.cpp:786).
-	while (BASEBLOCKEX* pexblock = recBlocks[blockidx])
+	while (const BASEBLOCKEX* pexblock = recBlocks[position])
 	{
 		const u32 blockstart = pexblock->startpc;
 		const u32 blockend = blockstart + pexblock->size * 4;
@@ -3562,9 +3562,10 @@ static void recClear(u32 addr, u32 size)
 
 		if (pblock == s_pCurBlock)
 		{
-			if (toRemoveLast != blockidx)
-				recBlocks.Remove(blockidx + 1, toRemoveLast);
-			toRemoveLast = --blockidx;
+			if (toRemoveLast != position)
+				recBlocks.Remove(recBlocks.Next(position), toRemoveLast);
+			position = recBlocks.Previous(position);
+			toRemoveLast = position;
 			continue;
 		}
 
@@ -3579,9 +3580,10 @@ static void recClear(u32 addr, u32 size)
 			if (blockstart + s_maxBlockBytes <= addr)
 				break;
 
-			if (toRemoveLast != blockidx)
-				recBlocks.Remove(blockidx + 1, toRemoveLast);
-			toRemoveLast = --blockidx;
+			if (toRemoveLast != position)
+				recBlocks.Remove(recBlocks.Next(position), toRemoveLast);
+			position = recBlocks.Previous(position);
+			toRemoveLast = position;
 			continue;
 		}
 
@@ -3589,11 +3591,11 @@ static void recClear(u32 addr, u32 size)
 		upperextent = std::max(upperextent, blockend);
 		pblock->SetFnptr((uptr)JITCompile);
 
-		--blockidx;
+		position = recBlocks.Previous(position);
 	}
 
-	if (toRemoveLast != blockidx)
-		recBlocks.Remove(blockidx + 1, toRemoveLast);
+	if (toRemoveLast != position)
+		recBlocks.Remove(recBlocks.Next(position), toRemoveLast);
 
 	upperextent = std::min(upperextent, ceiling);
 
@@ -3610,7 +3612,10 @@ static void recClear(u32 addr, u32 size)
 	// walk already covers rather than O(live blocks) on every clear.
 	{
 		const u32 floor = (addr > s_maxBlockBytes) ? (addr - s_maxBlockBytes) : 0;
-		for (int i = std::max(0, recBlocks.LastIndex(floor)); BASEBLOCKEX* peb = recBlocks[i]; i++)
+		auto pos = recBlocks.AtOrBefore(floor);
+		if (!pos)
+			pos = recBlocks.Next({});
+		for (; const BASEBLOCKEX* peb = recBlocks[pos]; pos = recBlocks.Next(pos))
 		{
 			if (peb->startpc >= end)
 				break;
@@ -4244,7 +4249,7 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	// LUT entry so the next dispatch recompiles at the new rate, and stamp the
 	// redirect stub over the entry so a link site still branching straight into
 	// the old code re-dispatches instead. This is what recClear does, minus the
-	// array erase, which is O(live blocks) per block.
+	// metadata erase.
 	//
 	// After the write scopes, not inside them: Arm64BaseBlocks::Remove-style
 	// patching opens its own scope per site, and nesting one inside an open
@@ -4252,15 +4257,13 @@ bool recEeRepatchCycleCharges(s8 new_selector)
 	u32 invalidated = 0;
 	for (const u32 startpc : s_eeDoomedBlocks)
 	{
-		const int idx = recBlocks.Index(startpc);
-		if (idx < 0)
-			continue;
-		const BASEBLOCKEX* b = recBlocks[idx];
+		const auto pos = recBlocks.Index(startpc);
+		const BASEBLOCKEX* b = recBlocks[pos];
 		if (!b || b->startpc != startpc)
 			continue; // the record is stale; its block is already gone
 
 		GETBLOCK(startpc)->SetFnptr((uptr)JITCompile);
-		recBlocks.Invalidate(idx);
+		recBlocks.Invalidate(pos);
 		invalidated++;
 	}
 
@@ -5377,9 +5380,8 @@ StartRecomp:
 	// (OverlapWalkIgnoresUnmodifiedNeighbors pins the no-false-positive side).
 	if (HWADDR(pc) <= Ps2MemSize::ExposedRam)
 	{
-		BASEBLOCKEX* oldBlock;
-		int i = recBlocks.LastIndex(HWADDR(pc) - 4);
-		while ((oldBlock = recBlocks[i--]))
+		auto pos = recBlocks.AtOrBefore(HWADDR(pc) - 4);
+		for (; const BASEBLOCKEX* oldBlock = recBlocks[pos]; pos = recBlocks.Previous(pos))
 		{
 			if (oldBlock == s_pCurBlockEx)
 				continue;

@@ -29,6 +29,106 @@ intptr_t DecodeImm26Bytes(u32 insn)
 }
 } // namespace
 
+TEST(Arm64BaseBlocksLink, IndexFindsCrossPagePredecessorsAfterErasingPages)
+{
+	alignas(64) u32 code[64] = {};
+	Arm64BaseBlocks bb;
+	bb.SetJITCompile(&code[0]);
+
+	bb.New(0x3010, reinterpret_cast<uptr>(&code[20]))->size = 1;
+	bb.New(0x300c, reinterpret_cast<uptr>(&code[16]))->size = 1;
+	bb.New(0x2000, reinterpret_cast<uptr>(&code[12]))->size = 1;
+	bb.New(0x0ff8, reinterpret_cast<uptr>(&code[4]))->size = 4;
+	bb.New(0x1008, reinterpret_cast<uptr>(&code[8]))->size = 1;
+
+	const auto straddler = bb.Index(0x1004);
+	ASSERT_TRUE(straddler);
+	EXPECT_EQ(bb[straddler]->startpc, 0x0ff8u);
+
+	const auto first = bb.Next(straddler);
+	const auto last = bb.Index(0x300c);
+	ASSERT_TRUE(first);
+	ASSERT_TRUE(last);
+	bb.Remove(first, last);
+	EXPECT_EQ(bb.size(), 2u);
+
+	for (const int entry : {8, 12, 16})
+	{
+		EXPECT_EQ(OpcodeBits(code[entry]), kOpcB);
+		EXPECT_EQ(DecodeImm26Bytes(code[entry]), -entry * 4);
+	}
+	EXPECT_EQ(code[4], 0u);
+	EXPECT_EQ(code[20], 0u);
+	EXPECT_EQ(bb.AtOrBefore(0x300c), straddler);
+	EXPECT_FALSE(bb.AtOrBefore(0x0ff4));
+
+	const auto survivor = bb.Next(straddler);
+	ASSERT_TRUE(survivor);
+	EXPECT_EQ(bb[survivor]->startpc, 0x3010u);
+	EXPECT_EQ(bb.Previous(survivor), straddler);
+	EXPECT_FALSE(bb.Next(survivor));
+
+	bb.New(0x2000, reinterpret_cast<uptr>(&code[24]))->size = 1;
+	EXPECT_EQ(bb[bb.Next(straddler)]->fnptr, reinterpret_cast<uptr>(&code[24]));
+	EXPECT_EQ(bb.size(), 3u);
+
+	// Cache a hit and a miss before inserting a page that shifts later positions.
+	ASSERT_TRUE(bb.Get(0x3010));
+	EXPECT_FALSE(bb.Get(0x4000));
+	bb.New(0x4000, reinterpret_cast<uptr>(&code[28]))->size = 1;
+	bb.New(0x1800, reinterpret_cast<uptr>(&code[32]))->size = 1;
+	EXPECT_EQ(bb.Get(0x3010)->fnptr, reinterpret_cast<uptr>(&code[20]));
+	EXPECT_EQ(bb.Get(0x4000)->fnptr, reinterpret_cast<uptr>(&code[28]));
+
+	bb.Reset();
+	EXPECT_FALSE(bb.AtOrBefore(0x3010));
+	EXPECT_EQ(bb.size(), 0u);
+}
+
+TEST(Arm64BaseBlocksLink, IndexSkipsRetiredPagesAndReusesTheirStorage)
+{
+	Arm64BlockPageIndex index;
+	constexpr u32 kPageSize = 0x1000;
+	constexpr u32 kLastPc = 0x400 * kPageSize;
+	for (u32 pc = 0; pc <= kLastPc; pc += kPageSize)
+		index.UpdateOrInsert(pc, pc + 1);
+
+	index.Erase(index.AtOrBefore(kPageSize), index.AtOrBefore(kLastPc - kPageSize));
+	const auto first = index.Next({});
+	const auto last = index.Next(first);
+	ASSERT_TRUE(first);
+	ASSERT_TRUE(last);
+	EXPECT_EQ(index.size(), 2u);
+	EXPECT_EQ(index.Get(last)->startpc, kLastPc);
+	EXPECT_EQ(index.AtOrBefore(kLastPc - 4), first);
+	EXPECT_EQ(index.Previous(last), first);
+
+	// Revive an existing directory entry, then insert a new entry before
+	// another live page. The latter shifts the surviving directory positions.
+	constexpr u32 kRevivedPc = kLastPc / 2;
+	index.UpdateOrInsert(kRevivedPc, 1);
+	index.UpdateOrInsert(kLastPc + kPageSize * 2, 2);
+	index.UpdateOrInsert(kLastPc + kPageSize, 3);
+	const auto revived = index.Next(first);
+	ASSERT_TRUE(revived);
+	EXPECT_EQ(index.Get(revived)->startpc, kRevivedPc);
+	EXPECT_EQ(index.AtOrBefore(kLastPc - 4), revived);
+	const auto new_last = index.AtOrBefore(kLastPc + kPageSize * 2);
+	ASSERT_TRUE(new_last);
+	const auto before_new_last = index.Previous(new_last);
+	ASSERT_TRUE(before_new_last);
+	EXPECT_EQ(index.Get(before_new_last)->startpc, kLastPc + kPageSize);
+	EXPECT_FALSE(index.Next(new_last));
+
+	index.Erase(first, new_last);
+	EXPECT_FALSE(index.Next({}));
+	EXPECT_FALSE(index.AtOrBefore(kLastPc));
+	index.Reset();
+	index.UpdateOrInsert(kLastPc, 4);
+	EXPECT_EQ(index.AtOrBefore(kLastPc), index.Next({}));
+	EXPECT_EQ(index.size(), 1u);
+}
+
 TEST(Arm64BaseBlocksLink, BlFormSurvivesLinkAndRepatch)
 {
 	alignas(64) static u32 code[64];
@@ -82,8 +182,8 @@ TEST(Arm64BaseBlocksLink, RemoveRedirectStubIsPlainBAndRelinkKeepsBl)
 	// Remove() writes the redirect stub at the DEAD BLOCK'S ENTRY — that is
 	// always a plain B (it is a jump into JITCompile, not a call site). The
 	// BL at the call site is untouched by Remove().
-	const int idx = bb.Index(kPc);
-	ASSERT_GE(idx, 0);
+	const auto idx = bb.Index(kPc);
+	ASSERT_TRUE(idx);
 	bb.Remove(idx, idx);
 	EXPECT_EQ(OpcodeBits(*block_entry), kOpcB);
 	EXPECT_EQ(DecodeImm26Bytes(*block_entry),
@@ -139,8 +239,7 @@ TEST(Arm64BaseBlocksLink, NewRebindsAnExistingBlockToItsNewCode)
 	// must retarget the entry, not leave it aimed at the superseded compile.
 	bb.New(kPc, reinterpret_cast<uptr>(second));
 	EXPECT_EQ(bb.Get(kPc)->fnptr, reinterpret_cast<uptr>(second));
-	// And it must not have produced a duplicate array entry for the same pc.
-	EXPECT_EQ(bb.Index(kPc), 0);
+	EXPECT_EQ(bb.size(), 1u);
 	// Callers follow the block to its new code instead of branching into the
 	// dead first compile.
 	EXPECT_EQ(DecodeImm26Bytes(*site),
@@ -192,8 +291,8 @@ TEST(Arm64BaseBlocksLink, RemovedOwnerEntriesPruned)
 	CompileAndLink(bb, kOwner, &code[16], kDest, site);
 	ASSERT_EQ(bb.LinkCount(kDest), 1u);
 
-	const int idx = bb.Index(kOwner);
-	ASSERT_GE(idx, 0);
+	const auto idx = bb.Index(kOwner);
+	ASSERT_TRUE(idx);
 	bb.Remove(idx, idx);
 
 	const u32 stale_word = *site;
@@ -268,8 +367,8 @@ TEST(Arm64BaseBlocksLink, RemoveStampsRedirectToDispatcherNotRecompiler)
 	bb.Link(kPc, site);
 	bb.New(kPc, reinterpret_cast<uptr>(entry1));
 
-	const int idx = bb.Index(kPc);
-	ASSERT_GE(idx, 0);
+	const auto idx = bb.Index(kPc);
+	ASSERT_TRUE(idx);
 	bb.Remove(idx, idx);
 
 	// The dead entry's redirect must target the dispatcher: a stale caller
@@ -335,8 +434,8 @@ TEST(Arm64BaseBlocksLink, NoDispatcherRegisteredKeepsJITCompileFallback)
 		reinterpret_cast<intptr_t>(&code[0]) - reinterpret_cast<intptr_t>(site));
 
 	bb.New(kPc, reinterpret_cast<uptr>(entry));
-	const int idx = bb.Index(kPc);
-	ASSERT_GE(idx, 0);
+	const auto idx = bb.Index(kPc);
+	ASSERT_TRUE(idx);
 	bb.Remove(idx, idx);
 	EXPECT_EQ(DecodeImm26Bytes(*entry),
 		reinterpret_cast<intptr_t>(&code[0]) - reinterpret_cast<intptr_t>(entry));
