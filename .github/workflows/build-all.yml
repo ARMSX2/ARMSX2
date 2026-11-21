@@ -66,16 +66,25 @@ jobs:
           - pageVariant: "4k"
             pageSize: "4096"
             cacheLineSize: "64"
+            armv8Baseline: false
           - pageVariant: "16k"
             pageSize: "16384"
             cacheLineSize: "128"
+            armv8Baseline: false
+          # The two above require ARMv8.1 (LSE atomics). Cortex-A53-class handhelds and SBCs
+          # are ARMv8.0 and SIGILL on them, so they get a 4K build at the ARMv8.0 baseline.
+          - pageVariant: "4k"
+            pageSize: "4096"
+            cacheLineSize: "64"
+            armv8Baseline: true
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
-      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages${{ matrix.armv8Baseline && ', ARMv8.0' || '' }})"
+      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}${{ matrix.armv8Baseline && '-armv8.0' || '' }}-appimage"
       compiler: clang
       cmakeflags: "-DHOST_PAGE_SIZE=${{ matrix.pageSize }} -DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
       buildAppImage: true
+      armv8Baseline: ${{ matrix.armv8Baseline }}
 
   # ---- libretro core (linux arm64) ---------------------------------------
   pc-linux-arm64-libretro:

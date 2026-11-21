@@ -27,6 +27,14 @@ on:
         required: false
         type: boolean
         default: false
+      # Target ARMv8.0 instead of the ARMv8.1 default (cmake/BuildParameters.cmake), for cores
+      # without LSE atomics (Cortex-A53-class handhelds and SBCs). Atomics become outline calls
+      # that pick LSE at runtime where the core has it, and the binary is checked afterwards for
+      # LSE instructions anywhere else.
+      armv8Baseline:
+        required: false
+        type: boolean
+        default: false
       patchesUrl:
         required: false
         type: string
@@ -100,8 +108,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .ccache
-          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
-          restore-keys: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }} ccache
+          # The ARMv8.0 build compiles every file with different flags, so it gets its own cache
+          # rather than evicting the default builds' objects from the shared 100M one.
+          key: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }}${{ inputs.armv8Baseline && ' armv8.0' || '' }} ccache ${{ steps.ccache_cache_timestamp.outputs.timestamp }}
+          restore-keys: ${{ inputs.os }} ${{ inputs.platform }} ${{ inputs.compiler }} ${{ inputs.cmakeBuildType }}${{ inputs.armv8Baseline && ' armv8.0' || '' }} ccache
 
       # A stable build keeps away from the shared ccache in both directions. Saving it would hand
       # the RetroAchievements client identity to any pull request, forks included, since they can
@@ -157,6 +167,13 @@ jobs:
         env:
           ADDITIONAL_CMAKE_ARGS: ${{ inputs.cmakeflags }}
         run: |
+          # Through CFLAGS/CXXFLAGS, which seed CMAKE_C/CXX_FLAGS: BuildParameters.cmake adds its
+          # -march=armv8.1-a only when CMAKE_CXX_FLAGS has no -march, and -moutline-atomics has
+          # to be its own token, which the word-split cmakeflags input can't carry in a -D value.
+          if [ "${{ inputs.armv8Baseline }}" = "true" ]; then
+            export CFLAGS="-march=armv8-a -moutline-atomics"
+            export CXXFLAGS="-march=armv8-a -moutline-atomics"
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ inputs.cmakeBuildType }}" \
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=${{ case(inputs.cmakeBuildType == 'Debug', 'OFF', 'ON') }} \
@@ -182,6 +199,10 @@ jobs:
           ninja
           # Save the Cache
           ccache -s
+
+      - name: Verify no inline LSE atomics
+        if: inputs.armv8Baseline == true
+        run: bash .github/workflows/scripts/linux/check-no-lse.sh build/bin/armsx2-qt llvm-objdump-17
 
       # The client doesn't report a refused agent, so check the identity reached the binary.
       - name: Verify the client identity reached the binary
