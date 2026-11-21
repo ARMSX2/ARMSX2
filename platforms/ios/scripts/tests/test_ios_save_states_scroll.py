@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+NAVIGATION = swift("ControllerAccessibilityNavigationSession+Scrolling.swift")
 PANEL = swift("SaveStatesPanel.swift")
 GRAPH = swift("SaveStateGraph.swift")
 

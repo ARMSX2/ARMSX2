@@ -6,7 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 BROWSER = swift("SkinBrowserView.swift")
-NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+NAVIGATION = swift("ControllerAccessibilityNavigationSession+Commands.swift")
 
 
 class SkinBrowserController(unittest.TestCase):

@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-CAN = swift("ControllerAccessibilityNavigation.swift")
+CAN = swift("ControllerAccessibilityNavigationModifier.swift")
 
 
 class OneChainInEveryState(unittest.TestCase):

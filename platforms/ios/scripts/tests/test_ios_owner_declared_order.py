@@ -5,7 +5,8 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+NAVIGATION = swift("ControllerAccessibilityNavigationModifier.swift")
+TARGET_ORDER = swift("ControllerAccessibilityTargetOrderModifier.swift")
 
 
 class OwnerDeclaredOrder(unittest.TestCase):
@@ -22,7 +23,7 @@ class OwnerDeclaredOrder(unittest.TestCase):
         self.assertIn("session.ownerDeclaresOrder = declaredTargetOrder != nil", modifier)
 
     def test_pages_yield_to_it(self):
-        page = block(self.source, "private struct ControllerAccessibilityTargetOrderModifier")
+        page = block(without_comments(read(TARGET_ORDER)), "private struct ControllerAccessibilityTargetOrderModifier")
         self.assertEqual(page.count("session?.ownerDeclaresOrder != true"), 2)
 
 
