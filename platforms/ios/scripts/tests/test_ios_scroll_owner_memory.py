@@ -6,6 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+SCROLLING = swift("ControllerAccessibilityNavigationSession+Scrolling.swift")
 
 
 class ScrollOwnerMemory(unittest.TestCase):
@@ -14,8 +15,8 @@ class ScrollOwnerMemory(unittest.TestCase):
     cell, and a row under the title is outside the marker, so reveal found no scroll view."""
 
     def test_the_owner_is_remembered_by_key(self):
-        source = without_comments(read(NAVIGATION))
-        lookup = block(source, "private func enclosingScrollView(for view: UIView)")
+        source = without_comments(read(SCROLLING))
+        lookup = block(source, "func enclosingScrollView(for view: UIView)")
         self.assertIn("scrollOwners[key] = WeakView(owner)", lookup)
         self.assertIn("scrollOwners[key]?.value as? UIScrollView", lookup)
         self.assertIn("owner.window === window", lookup)

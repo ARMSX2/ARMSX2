@@ -5,7 +5,8 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-NAVIGATION = swift("ControllerAccessibilityNavigation.swift")
+REGISTRATION = swift("ControllerAccessibilityNavigationSession+Registration.swift")
+COMMANDS = swift("ControllerAccessibilityNavigationSession+Commands.swift")
 
 
 class PreferredFocusKey(unittest.TestCase):
@@ -14,10 +15,10 @@ class PreferredFocusKey(unittest.TestCase):
     again, so nothing matched and focus fell to the first row."""
 
     def test_the_preferred_label_is_turned_back_into_an_id(self):
-        source = without_comments(read(NAVIGATION))
-        entry = block(source, "func focusContent(preferLast: Bool)")
+        source = without_comments(read(REGISTRATION))
+        entry = block(without_comments(read(COMMANDS)), "func focusContent(preferLast: Bool)")
         self.assertIn(".map(Self.navigationID)", entry)
-        helper = block(source, "private static func navigationID(")
+        helper = block(source, "static func navigationID(")
         self.assertIn("explicitKey(\"\")", helper)
         self.assertIn("dropFirst(prefix.count)", helper)
 
