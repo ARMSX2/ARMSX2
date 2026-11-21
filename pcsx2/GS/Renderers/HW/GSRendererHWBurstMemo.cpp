@@ -83,7 +83,11 @@ bool GSRendererHW::SkipMemoizedDraw()
 		m_burst_memo.resting = false;
 	}
 	if (BurstMemoSkip())
+	{
+		// The skip leaves the members a copy leaves, but not by way of Draw(): a copy run does not continue across it.
+		CopyRunDisarm();
 		return true;
+	}
 	// The draw runs, and reads the texture cache.
 	BurstMemoFlushWaiting();
 	return false;

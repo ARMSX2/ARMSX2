@@ -386,6 +386,14 @@ void GSTextureCache::RemoveAll(bool sources, bool targets, bool hash_cache)
 	}
 }
 
+void GSTextureCache::ReleaseKeptDeviceObjects()
+{
+	DropAllHeld();
+	m_color_download_texture.reset();
+	m_uint16_download_texture.reset();
+	m_uint32_download_texture.reset();
+}
+
 bool GSTextureCache::FullRectDirty(Target* target, u32 rgba_mask)
 {
 	GSDirtyRect single;

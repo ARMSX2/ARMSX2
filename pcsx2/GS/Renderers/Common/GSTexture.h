@@ -170,6 +170,9 @@ public:
 
 	bool Save(const std::string& fn);
 
+	/// The row emitter's mark (GSRowEmitter.h): equal to its generation while a pending row samples this texture.
+	u64 m_row_mark = 0;
+
 	__fi int GetWidth() const { return m_size.x; }
 	__fi int GetHeight() const { return m_size.y; }
 	__fi const GSVector2i& GetSize() const { return m_size; }

@@ -159,7 +159,7 @@ TEST(GSRunsPolicy, AnythingBesidesOnePlainDrawRefuses)
 	c = Way0();
 	c.rt = nullptr;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::Road);
-	// A draw without a depth buffer is drawn in the pass's (GSRunsVK decides with or without its attachment).
+	// A draw without a depth buffer is drawn in the pass's (the emitter decides with or without its attachment).
 	c = Way0();
 	c.ds = nullptr;
 	EXPECT_EQ(Classify(c, Rgba8(), false).why, Refusal::None);
@@ -545,103 +545,174 @@ TEST(GSRunsPolicy, DeviceClassesAndTheSplitRule)
 	EXPECT_TRUE(SplitAtDear(g57, 8000, 0));
 }
 
+TEST(GSRunsPolicy, NotingTheSameStatesAgainChangesNoProgram)
+{
+	// The run emitter skips the state set and the program check for a row whose flags equal the last row's in its group;
+	// that is exact only because noting flags already noted changes nothing.
+	const u32 a = 1u | (1u << 3) | (4u << 9);
+	const u32 b = 2u | (1u << 3) | (4u << 9);
+	StateSet once;
+	once.Note(a);
+	once.Note(b);
+	StateSet again = once;
+	again.Note(b);
+	again.Note(b);
+	EXPECT_EQ(again.Key(), once.Key());
+	EXPECT_EQ(again.vary, once.vary);
+	StateSet one;
+	one.Note(a);
+	StateSet same = one;
+	same.Note(a);
+	EXPECT_EQ(same.Key(), one.Key());
+}
+
+// Where the run program fetches (DriverBug::StallsOnFilteredRunSampling), a textured row whose texture has one level can
+// be filtered by hand from texelFetch, with its sampler's address modes and filter in the bits above its slot. Every
+// other row must keep the sampler: a texture with more levels, and a row whose filter depends on the level of detail
+// (minification and magnification differ, and the lod is not fixed at 0).
 namespace
 {
-	/// Feeds the policy frames of a fixed share (joined per thousand) of a fixed draw count; returns how many of them
-	/// could open runs.
-	u32 Frames(Dormancy& d, u32 frames, u32 draws, u32 joined_permille)
+	GSHWDrawConfig::SamplerSelector Sampler(bool repeat_u, bool repeat_v, bool bilinear, GS_MIN_FILTER min, bool lodclamp)
 	{
-		u32 open = 0;
-		for (u32 i = 0; i < frames; i++)
-		{
-			const bool opens = d.OpensRuns();
-			open += opens ? 1 : 0;
-			// A dormant frame forms no runs, so the machine sees no draws.
-			d.EndFrame(opens ? draws : 0, opens ? draws * joined_permille / 1000 : 0);
-		}
-		return open;
+		GSHWDrawConfig::SamplerSelector ss;
+		ss.tau = repeat_u;
+		ss.tav = repeat_v;
+		ss.biln = bilinear;
+		ss.triln = static_cast<u8>(min);
+		ss.lodclamp = lodclamp;
+		return ss;
+	}
+
+	u32 RowFlags(bool manual_lod, bool automatic_lod)
+	{
+		GSHWDrawConfig c = Way0();
+		c.ps.manual_lod = manual_lod;
+		c.ps.automatic_lod = automatic_lod;
+		return Classify(c, Rgba8(), false).flags;
 	}
 } // namespace
 
-// The machine starts awake, and a title whose draws mostly join runs keeps it awake (Spider-Man 3: about 98%).
-TEST(GSRunsPolicy, DormancyStaysAwakeWhereRunsForm)
+TEST(GSRunsPolicy, SingleLevelRowsFetch)
 {
-	Dormancy d;
-	EXPECT_TRUE(d.OpensRuns());
-	EXPECT_EQ(Frames(d, 1000, 4000, 980), 1000u);
-	// A stretch where runs form less, but above the line it sleeps under, does not put it to sleep.
-	EXPECT_EQ(Frames(d, 1000, 4000, Dormancy::SLEEP_PERMILLE), 1000u);
+	const u32 none = RowFlags(false, false);
+	ASSERT_EQ(Field(none, STATE_LOD), LOD_NONE);
+
+	// The sampler's address modes and magnification filter, above the slot.
+	EXPECT_EQ(FetchBits(none, Sampler(true, false, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, true, true, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Nearest, true), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(true, true, false, GS_MIN_FILTER::Nearest, true), 1),
+		ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V);
+
+	// At lod 0 the sampler magnifies, so a minification filter that differs does not matter.
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), ROW_FETCH);
+	EXPECT_EQ(FetchBits(none, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+		ROW_FETCH | ROW_FETCH_LINEAR);
+
+	// A lod that can move off 0, on one level: still level 0, and the filter is the same either way.
+	for (const u32 flags : {RowFlags(true, false), RowFlags(false, true)})
+	{
+		ASSERT_NE(Field(flags, STATE_LOD), LOD_NONE);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false), 1),
+			ROW_FETCH | ROW_FETCH_LINEAR);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Nearest_Mipmap_Nearest, false), 1),
+			ROW_FETCH);
+		EXPECT_EQ(FetchBits(flags, Sampler(true, true, true, GS_MIN_FILTER::Linear, true), 1),
+			ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR);
+	}
 }
 
-// A title whose runs hardly form (Sly 3: under half a percent; Tekken, Call of Duty 3: almost none) sleeps after one
-// window, and then opens runs only on one sample frame in every SAMPLE_PERIOD + 1.
-TEST(GSRunsPolicy, DormancySleepsWhereRunsDoNotForm)
+TEST(GSRunsPolicy, RowsThatKeepTheSampler)
 {
-	Dormancy d;
-	EXPECT_EQ(Frames(d, Dormancy::WINDOW, 2000, 5), Dormancy::WINDOW);
-	EXPECT_FALSE(d.OpensRuns());
-	const u32 cycles = 10;
-	EXPECT_EQ(Frames(d, cycles * (Dormancy::SAMPLE_PERIOD + 1), 2000, 5), cycles);
+	const u32 none = RowFlags(false, false);
+	const u32 manual = RowFlags(true, false);
+	const u32 hardware = RowFlags(false, true);
+	const GSHWDrawConfig::SamplerSelector trilinear = Sampler(true, true, true, GS_MIN_FILTER::Linear_Mipmap_Linear, false);
 
-	Dormancy none;
-	Frames(none, Dormancy::WINDOW, 2000, 0);
-	EXPECT_FALSE(none.OpensRuns());
+	// A texture with more than one level, whatever the lod: the sampler picks and blends the levels.
+	for (const u32 flags : {none, manual, hardware})
+	{
+		for (const int levels : {2, 7})
+			EXPECT_EQ(FetchBits(flags, trilinear, levels), 0u) << flags << " " << levels;
+	}
+
+	// One level, but the lod chooses between a nearest and a linear filter.
+	for (const u32 flags : {manual, hardware})
+	{
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, false, GS_MIN_FILTER::Linear_Mipmap_Nearest, false), 1), 0u);
+		EXPECT_EQ(FetchBits(flags, Sampler(false, false, true, GS_MIN_FILTER::Nearest_Mipmap_Linear, false), 1), 0u);
+	}
+
+	// An untextured row samples nothing.
+	GSHWDrawConfig c = Way0();
+	c.ps.tfx = 4;
+	const u32 untextured = Classify(c, TextureFacts(), false).flags;
+	EXPECT_EQ(FetchBits(untextured, trilinear, 1), 0u);
 }
 
-// Asleep, a sample frame at or over the wake line wakes the machine, which then stays awake.
-TEST(GSRunsPolicy, DormancyWakesWhenASampleFormsRuns)
+// The sampling bits sit above every slot a row can name.
+TEST(GSRunsPolicy, FetchBitsLeaveTheSlot)
 {
-	Dormancy d;
-	Frames(d, Dormancy::WINDOW, 2000, 0);
-	ASSERT_FALSE(d.OpensRuns());
-	EXPECT_EQ(Frames(d, Dormancy::SAMPLE_PERIOD, 2000, 980), 0u);
-	EXPECT_TRUE(d.OpensRuns()); // the sample frame
-	EXPECT_EQ(Frames(d, 1000, 2000, 980), 1000u);
+	const u32 all = ROW_FETCH | ROW_FETCH_REPEAT_U | ROW_FETCH_REPEAT_V | ROW_FETCH_LINEAR;
+	EXPECT_EQ(all & ROW_SLOT_MASK, 0u);
+	EXPECT_GE(ROW_SLOT_MASK, 1023u);
+	EXPECT_EQ(FetchBits(RowFlags(false, false), Sampler(true, true, true, GS_MIN_FILTER::Nearest, true), 1), all);
 }
 
-// Hysteresis: a title between the two lines stays in whichever state it is in, so it cannot flap.
-TEST(GSRunsPolicy, DormancyHysteresis)
+// A row's streak class is a property of the emulated draw, not of where the host allocated its targets: two replays of
+// one dump must open the same groups. The targets enter by their sizes.
+TEST(GSRunsPolicy, StreakClassesDoNotDependOnTargetAddresses)
 {
-	static_assert(Dormancy::SLEEP_PERMILLE < Dormancy::WAKE_PERMILLE);
-	const u32 between = (Dormancy::SLEEP_PERMILLE + Dormancy::WAKE_PERMILLE) / 2;
+	static int other_rt, other_ds;
+	const GSHWDrawConfig a = Way0();
+	GSHWDrawConfig b = a;
+	b.rt = reinterpret_cast<GSTexture*>(&other_rt);
+	b.ds = reinterpret_cast<GSTexture*>(&other_ds);
+	const GSVector2i rt(640, 448), ds(640, 448), small(320, 224);
+	EXPECT_EQ(StreakClass(a, 0, rt, ds), StreakClass(b, 0, rt, ds));
+	GSHWDrawConfig a_no_ds = a, b_no_ds = b;
+	a_no_ds.ds = b_no_ds.ds = nullptr;
+	EXPECT_EQ(StreakClass(a_no_ds, 0, rt, GSVector2i(0, 0)), StreakClass(b_no_ds, 0, rt, GSVector2i(0, 0)));
 
-	Dormancy awake;
-	EXPECT_EQ(Frames(awake, 2000, 3000, between), 2000u);
-
-	Dormancy asleep;
-	Frames(asleep, Dormancy::WINDOW, 3000, 0);
-	ASSERT_FALSE(asleep.OpensRuns());
-	const u32 cycles = 10;
-	EXPECT_EQ(Frames(asleep, cycles * (Dormancy::SAMPLE_PERIOD + 1), 3000, between), cycles);
-
-	// Just under the sleep line sleeps; at it, stays awake.
-	Dormancy under;
-	Frames(under, Dormancy::WINDOW, 1000, Dormancy::SLEEP_PERMILLE - 1);
-	EXPECT_FALSE(under.OpensRuns());
-	Dormancy at;
-	Frames(at, Dormancy::WINDOW, 1000, Dormancy::SLEEP_PERMILLE);
-	EXPECT_TRUE(at.OpensRuns());
+	// What the class does hold: the targets' sizes and the rest of the fixed state.
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, small, ds));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 0, rt, small));
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(a, 1, rt, ds));
+	GSHWDrawConfig scissor = a;
+	scissor.scissor = GSVector4i(0, 0, 64, 64);
+	EXPECT_NE(StreakClass(a, 0, rt, ds), StreakClass(scissor, 0, rt, ds));
 }
 
-// The share is of draws over the whole window, not an average of frames; frames without draws (a loading screen, a
-// repeated vsync) decide nothing, awake or sampling.
-TEST(GSRunsPolicy, DormancyWeighsDrawsAndIgnoresEmptyFrames)
+// Where the run program fetches, a group samples at most SAMPLER_TEXTURES distinct textures through the sampler. A row
+// whose texture is in that set, or that finds room in it, uses the sampler. Past that, a small row that can fetch
+// fetches, and a large row, or one that cannot fetch, closes the group and opens the next.
+TEST(GSRunsPolicy, RowsArePlacedByTheSamplerBoundAndTheirArea)
 {
-	Dormancy d;
-	// Seven frames of 10 draws that all join, one of 10,000 that none join: 70 of 10,070, under the sleep line.
-	for (u32 i = 0; i < Dormancy::WINDOW - 1; i++)
-		d.EndFrame(10, 10);
-	for (u32 i = 0; i < 100; i++)
-		d.EndFrame(0, 0);
-	EXPECT_TRUE(d.OpensRuns());
-	d.EndFrame(10000, 0);
-	EXPECT_FALSE(d.OpensRuns());
+	EXPECT_EQ(SAMPLER_TEXTURES, 4u);
+	EXPECT_EQ(FETCH_AREA, 1024u);
+	const u64 small = FETCH_AREA - 1, large = FETCH_AREA;
+	for (const bool eligible : {false, true})
+	{
+		for (const u64 area : {u64{0}, small, large, u64{1} << 30})
+		{
+			// Room in the set, or the texture already in it: the sampler.
+			for (u32 n = 0; n < SAMPLER_TEXTURES; n++)
+				EXPECT_EQ(PlaceRow(eligible, false, n, area), Placement::Sampler);
+			EXPECT_EQ(PlaceRow(eligible, true, SAMPLER_TEXTURES, area), Placement::Sampler);
+		}
+	}
+	// The set full and the texture new.
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, 0), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, small), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, SAMPLER_TEXTURES, large), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(false, false, SAMPLER_TEXTURES, large), Placement::Close);
 
-	Frames(d, Dormancy::SAMPLE_PERIOD, 10000, 0);
-	ASSERT_TRUE(d.OpensRuns());
-	for (u32 i = 0; i < 100; i++)
-		d.EndFrame(0, 0);
-	EXPECT_TRUE(d.OpensRuns()); // still the sample frame
-	d.EndFrame(10000, 0);
-	EXPECT_FALSE(d.OpensRuns());
+	// The bounds are the caller's to move: area 0 makes every row large (a cap of K textures, no fetch); a huge area
+	// fetches every eligible row past the K-th texture.
+	EXPECT_EQ(PlaceRow(true, false, 2, 16, 2, 0), Placement::Close);
+	EXPECT_EQ(PlaceRow(true, false, 2, u64{1} << 40, 2, ~u64{0}), Placement::Fetch);
+	EXPECT_EQ(PlaceRow(true, false, 1, 0, 2, 0), Placement::Sampler);
 }

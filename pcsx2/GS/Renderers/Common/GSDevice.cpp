@@ -7,6 +7,8 @@
 #endif
 #include "GS/Renderers/Common/GSHeadlessPresent.h"
 #include "GS/Renderers/Common/GSPassScheduler.h"
+#include "GS/Renderers/Common/GSRowEmitter.h"
+#include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/GSGL.h"
 #include "GS/GS.h"
 #include "GS/GSUtil.h"
@@ -324,6 +326,7 @@ std::unique_ptr<GSDevice> g_gs_device;
 
 GSDevice::GSDevice()
 	: m_pass_scheduler(std::make_unique<GSPassScheduler>())
+	, m_rows(std::make_unique<GSRowEmitter>())
 {
 #ifdef PCSX2_DEVBUILD
 	s_texture_counts.fill(0);
@@ -578,6 +581,8 @@ void GSDevice::Destroy()
 	// Drop rather than emit: nothing is going to present these, and the targets they name
 	// are about to be destroyed.
 	m_pass_scheduler->Clear();
+	RowsDrop();
+	m_rows->Clear();
 	m_deferred_draw_count = 0;
 
 	// Nothing references these any more, and PurgePool() below deletes whatever the pool
@@ -831,7 +836,9 @@ GSTexture* GSDevice::FetchSurface(GSTexture::Usage usage, int width, int height,
 			if (held->GetUsage() == usage && held->GetFormat() == format && held->GetSize() == size &&
 				held->GetMipmapLevels() == levels)
 			{
-				FlushDeferredDraws();
+				// Not FlushDeferredDraws: a backend that recorded its rows of its own accord leaves the count at zero
+				// with textures still parked here.
+				FlushDeferredDrawsImpl();
 				break;
 			}
 		}
@@ -1275,6 +1282,8 @@ void GSDevice::StretchRectAutoMask(GSTexture* sTex, GSTexture* dTex, bool red, b
 
 void GSDevice::RenderHW(GSHWDrawConfig& config)
 {
+	if (m_rows_defer)
+		RowsOtherDraw();
 	// m_flushing: we are already inside Emit(), so this is a draw the backend is issuing
 	// on its own behalf. IsDSInRTActive: the caller is mid depth-as-colour sequence and
 	// will tear the temporary target down as soon as we return.
@@ -1304,7 +1313,81 @@ void GSDevice::RenderHW(GSHWDrawConfig& config)
 
 bool GSDevice::DeferredDrawsReference(const GSTexture* tex) const
 {
-	return m_pass_scheduler->References(tex);
+	return m_pass_scheduler->References(tex) || m_rows->References(tex);
+}
+
+void GSDevice::DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache)
+{
+	m_rows_serial++;
+	// m_flushing: a row drawn while pending rows are recorded. The scheduler holds draws only with coalescing on, and
+	// the two would have to be ordered against each other: rows wait only with it off.
+	// Colour clipping is a state machine across draws that lives in the caller's configuration: the backend writes its
+	// mode and update area back into it, and the next draws read them. Such a draw is drawn now.
+	if (!m_rows_defer || GSConfig.CoalesceRenderPasses || m_flushing || IsDSInRTActive() || m_colclip_rt ||
+		config.colclip_mode != GSHWDrawConfig::ColClipMode::NoModify || config.ps.colclip_hw ||
+		config.colclip_native_scale > 1.0f)
+	{
+		FlushDeferredDraws();
+		DoDrawRow(config, cache);
+		return;
+	}
+
+	GSRowEmitter& rows = *m_rows;
+
+	// The twin of the base drawn just before it waits for later bases, if the backend can hold it.
+	if (rows.IsTwin(config))
+	{
+		if (rows.Held() < GSRowEmitter::MAX_HELD && RowsHoldTwin(config, cache))
+		{
+			rows.NoteHeld(config);
+			UpdateDeferredCount();
+			return;
+		}
+		FlushDeferredDraws();
+		DoDrawRow(config, cache);
+		UpdateDeferredCount();
+		return;
+	}
+
+	// While twins are held, only a base on their targets that reads neither, and that the backend draws in the open
+	// pass, goes ahead of them. Anything else records what is pending first: the open group, then the twins.
+	const bool base = GSRowEmitter::CanBeTwinBase(config);
+	if (rows.Held() != 0)
+	{
+		if (base && rows.MayGoAhead(config) && RowsMayGoAhead(config))
+			rows.NoteAhead();
+		else
+			FlushDeferredDraws();
+	}
+
+	if (RowsJoin(config, cache))
+	{
+		rows.Mark(config.tex);
+		rows.Mark(config.pal);
+		rows.SetGroupTargets(config.rt, config.ds);
+	}
+	else
+	{
+		RowsRecordOpen();
+		DoDrawRow(config, cache);
+	}
+
+	if (base)
+		rows.RememberBase(config);
+	else
+		rows.ForgetBase();
+	UpdateDeferredCount();
+}
+
+void GSDevice::FlushDeferredRows()
+{
+	if (!m_flushing && (m_rows->Pending() != 0 || RowsOpen()))
+		FlushDeferredDrawsImpl();
+}
+
+void GSDevice::UpdateDeferredCount()
+{
+	m_deferred_draw_count = m_pass_scheduler->GetCount() + m_rows->Pending() + (RowsOpen() ? 1u : 0u);
 }
 
 void GSDevice::FlushDeferredDrawsImpl()
@@ -1313,6 +1396,8 @@ void GSDevice::FlushDeferredDrawsImpl()
 
 	m_flushing = true;
 	m_pass_scheduler->Emit(this);
+	RowsEmit();
+	m_rows->Clear();
 	m_flushing = false;
 
 	m_deferred_draw_count = 0;

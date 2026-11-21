@@ -638,11 +638,13 @@ set(pcsx2GSSources
 	GS/Renderers/Null/GSDeviceNone.cpp
 	GS/Renderers/Null/GSRendererNull.cpp
 	GS/Renderers/HW/GSBurstMemo.cpp
+	GS/Renderers/HW/GSDrawRow.cpp
 	GS/Renderers/HW/GSDrawLog.cpp
 	GS/Renderers/HW/GSHwHack.cpp
 	GS/Renderers/HW/GSLineRuns.cpp
 	GS/Renderers/HW/GSRendererHW.cpp
 	GS/Renderers/HW/GSRendererHWBurstMemo.cpp
+	GS/Renderers/HW/GSRendererHWCopyRuns.cpp
 	GS/Renderers/HW/GSTextureCache.cpp
 	GS/Renderers/HW/GSTextureReplacementLoaders.cpp
 	GS/Renderers/HW/GSTextureReplacements.cpp
@@ -698,6 +700,9 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSBlendCarry.h
 	GS/Renderers/Common/GSBlendConstantPolicy.h
 	GS/Renderers/Common/GSRunsPolicy.h
+	GS/Renderers/Common/GSRowEmitter.h
+	GS/Renderers/Common/GSRawBindCache.h
+	GS/Renderers/Common/GSShortRunTextures.h
 	GS/Renderers/Common/GSBackThreadPolicy.h
 	GS/Renderers/Common/GSCopyRoadBlendingPolicy.h
 	GS/Renderers/Common/GSDynamicFeedbackLoopPolicy.h
@@ -729,6 +734,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/Common/GSSnapshotPolicy.h
 	GS/Renderers/Common/GSTargetSizePolicy.h
 	GS/Renderers/Common/GSStreamRingFlushRange.h
+	GS/Renderers/Common/GSStreamRingRegistry.h
 	GS/Renderers/Common/GSStreamRingGrowth.h
 	GS/Renderers/Common/GSStreamRingMemoryPolicy.h
 	GS/Renderers/Common/GSTexture.h
@@ -745,6 +751,7 @@ set(pcsx2GSHeaders
 	GS/Renderers/HW/GSHwHack.h
 	GS/Renderers/HW/GSLineRuns.h
 	GS/Renderers/HW/GSBurstMemo.h
+	GS/Renderers/HW/GSDrawRow.h
 	GS/Renderers/HW/GSDepthFormatMove.h
 	GS/Renderers/HW/GSLineWalk.h
 	GS/Renderers/HW/GSPointPlace.h
@@ -856,7 +863,7 @@ if(USE_VULKAN)
 	list(APPEND pcsx2GSSources
 		GS/Renderers/Vulkan/GSDeviceVK.cpp
 		GS/Renderers/Vulkan/GSLsfg.cpp
-		GS/Renderers/Vulkan/GSRunsVK.cpp
+		GS/Renderers/Vulkan/GSRunEmitterVK.cpp
 		GS/Renderers/Vulkan/GSTextureVK.cpp
 		GS/Renderers/Vulkan/vk_mem_alloc.cpp
 		GS/Renderers/Vulkan/VKBuilders.cpp
@@ -928,7 +935,7 @@ if(USE_VULKAN)
 	list(APPEND pcsx2GSHeaders
 		GS/Renderers/Vulkan/GSDeviceVK.h
 		GS/Renderers/Vulkan/GSLsfg.h
-		GS/Renderers/Vulkan/GSRunsVK.h
+		GS/Renderers/Vulkan/GSRunEmitterVK.h
 		GS/Renderers/Vulkan/GSTextureVK.h
 		GS/Renderers/Vulkan/VKLibretro.h
 		GS/Renderers/Vulkan/VKBuilders.h

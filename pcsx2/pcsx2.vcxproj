@@ -409,7 +409,7 @@
     <ClCompile Include="GS\Renderers\Vulkan\GSDeviceVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
-    <ClCompile Include="GS\Renderers\Vulkan\GSRunsVK.cpp">
+    <ClCompile Include="GS\Renderers\Vulkan\GSRunEmitterVK.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="GS\Renderers\Vulkan\GSTextureVK.cpp">
@@ -444,6 +444,7 @@
     <ClCompile Include="SIO\Pad\PadNegcon.cpp" />
     <ClCompile Include="SIO\Pad\PadNotConnected.cpp" />
     <ClCompile Include="SIO\Pad\PadPopn.cpp" />
+    <ClCompile Include="SIO\Pad\PadScript.cpp" />
     <ClCompile Include="SIO\Sio.cpp" />
     <ClCompile Include="SIO\Sio0.cpp" />
     <ClCompile Include="SIO\Sio2.cpp" />
@@ -524,6 +525,7 @@
     <ClCompile Include="GS\Renderers\HW\GSLineRuns.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHW.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWBurstMemo.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSRendererHWCopyRuns.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSRendererHWMultiISA.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSRendererNull.cpp" />
     <ClCompile Include="GS\Renderers\Null\GSDeviceNone.cpp" />
@@ -540,6 +542,7 @@
     </ClCompile>
     <ClCompile Include="GS\Renderers\HW\GSTextureCache.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSBurstMemo.cpp" />
+    <ClCompile Include="GS\Renderers\HW\GSDrawRow.cpp" />
     <ClCompile Include="GS\Renderers\HW\GSDrawLog.cpp" />
     <ClCompile Include="GS\Renderers\SW\GSTextureCacheSW.cpp" />
     <ClCompile Include="GS\GSUtil.cpp" />
@@ -956,7 +959,7 @@
     <ClInclude Include="GS\Renderers\Vulkan\GSDeviceVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
-    <ClInclude Include="GS\Renderers\Vulkan\GSRunsVK.h">
+    <ClInclude Include="GS\Renderers\Vulkan\GSRunEmitterVK.h">
       <ExcludedFromBuild Condition="'$(Platform)'=='ARM64'">true</ExcludedFromBuild>
     </ClInclude>
     <ClInclude Include="GS\Renderers\Vulkan\GSTextureVK.h">
@@ -994,6 +997,7 @@
     <ClInclude Include="SIO\Pad\PadNegcon.h" />
     <ClInclude Include="SIO\Pad\PadNotConnected.h" />
     <ClInclude Include="SIO\Pad\PadPopn.h" />
+    <ClInclude Include="SIO\Pad\PadScript.h" />
     <ClInclude Include="SIO\Pad\PadTypes.h" />
     <ClInclude Include="SIO\Sio.h" />
     <ClInclude Include="SIO\Sio0.h" />
@@ -1098,6 +1102,7 @@
     <ClInclude Include="GS\Renderers\HW\GSDepthCoverage.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawAlphaMask.h" />
     <ClInclude Include="GS\Renderers\HW\GSBurstMemo.h" />
+    <ClInclude Include="GS\Renderers\HW\GSDrawRow.h" />
     <ClInclude Include="GS\Renderers\HW\GSDepthFormatMove.h" />
     <ClInclude Include="GS\Renderers\HW\GSDrawLog.h" />
     <ClInclude Include="GS\Renderers\HW\GSLineRuns.h" />
@@ -1139,6 +1144,10 @@
     <ClInclude Include="GS\DriverReport\GSDriverReportSystem.h" />
     <ClInclude Include="GS\DriverReport\GSDriverReportVulkan.h" />
     <ClInclude Include="GS\Renderers\Common\GSStreamRingMemoryPolicy.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRawBindCache.h" />
+    <ClInclude Include="GS\Renderers\Common\GSShortRunTextures.h" />
+    <ClInclude Include="GS\Renderers\Common\GSRowEmitter.h" />
+    <ClInclude Include="GS\Renderers\Common\GSStreamRingRegistry.h" />
     <ClInclude Include="GS\GSXXH.h" />
     <ClInclude Include="GS\MultiISA.h" />
     <ClInclude Include="GS\GSBackQueue.h" />

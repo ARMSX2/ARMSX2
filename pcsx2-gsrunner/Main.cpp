@@ -1319,7 +1319,7 @@ static void PrintCommandLineHelp(const char* progname)
 						 "-- only when it is stated changes, and that is byte-identical. Measurement instrument only: "
 						 "on Turnip the create flag puts the driver's serialising primitive mode on every pipeline in "
 						 "a latched pass and costs up to 2.8x (wrc3@1x, SD865: 51.8 ms against 18.5). Vulkan only.\n");
-	std::fprintf(stderr, "  -runs <on|off>: The Vulkan run machine (GSRunsVK.h), on by default where the device has its "
+	std::fprintf(stderr, "  -runs <on|off>: The Vulkan run program (GSRunEmitterVK.h), on by default where the device has its "
 						 "features. off draws every draw on the classic path: the baseline of the machine's A/Bs and "
 						 "picture checks. Development switch, not a setting.\n");
 	std::fprintf(stderr, "  -no-provoking-vertex: Run as a device without VK_EXT_provoking_vertex, the way Qualcomm's "

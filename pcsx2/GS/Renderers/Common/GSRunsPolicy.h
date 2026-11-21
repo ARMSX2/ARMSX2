@@ -10,7 +10,7 @@
 #include <cmath>
 #include <cstring>
 
-/// Which draws the run machine (GS/Renderers/Vulkan/GSRunsVK.h) may merge, and what a merged draw's row says.
+/// Which rows the run emitter (GS/Renderers/Vulkan/GSRunEmitterVK.h) may merge, and what a merged row's table entry says.
 ///
 /// A run is a stretch of consecutive draws of one render pass drawn as one host draw under one pipeline. Each draw
 /// keeps a row of per-draw state, and the run program (tfx_runs.glsl) does what the draw's classic program would have
@@ -78,6 +78,56 @@ namespace GSRunsPolicy
 	constexpr bool LodJoins(bool one_call, u32 run_lod, u32 flags)
 	{
 		return !one_call || !Textured(flags) || run_lod == LOD_ANY || run_lod == Field(flags, STATE_LOD);
+	}
+
+	/// The row's slot word (tfx_runs.glsl s0.y): the texture's slot in the low bits, and above it, where the run program
+	/// fetches (DriverBug::StallsOnFilteredRunSampling), how the row samples: by hand from texelFetch, and with which of
+	/// its sampler's address modes and filter. A row without ROW_FETCH samples through its sampler.
+	constexpr u32 ROW_SLOT_MASK = 0xFFFFu;
+	constexpr u32 ROW_FETCH = 1u << 16;
+	constexpr u32 ROW_FETCH_REPEAT_U = 1u << 17;
+	constexpr u32 ROW_FETCH_REPEAT_V = 1u << 18;
+	constexpr u32 ROW_FETCH_LINEAR = 1u << 19;
+
+	/// Where the run program fetches (DriverBug::StallsOnFilteredRunSampling): the GPU stalls when a run draw samples many
+	/// textures through the filtered sampler, and a group that sampled at most four that way did not stall. So a group
+	/// samples at most SAMPLER_TEXTURES distinct textures through the sampler. Past that a row either fetches, which costs
+	/// GPU time for every pixel it covers, or closes the group, which costs a host draw: a row smaller than FETCH_AREA
+	/// target pixels fetches, a larger one closes the group.
+	constexpr u32 SAMPLER_TEXTURES = 4;
+	constexpr u64 FETCH_AREA = 1024;
+
+	/// How a textured row is placed in its group, on a device where the run program fetches.
+	enum class Placement : u8
+	{
+		Sampler, ///< through the sampler; its texture is in the group's sampler set or joins it
+		Fetch,   ///< filtered by hand from texelFetch
+		Close,   ///< the group closes and the row opens the next one
+	};
+
+	/// eligible: the row could fetch (FetchBits). in_set: its texture is already sampled through the sampler in the group.
+	/// set_size: textures the group samples through the sampler. area: the row's area in target pixels.
+	inline Placement PlaceRow(bool eligible, bool in_set, u32 set_size, u64 area, u32 sampler_textures = SAMPLER_TEXTURES,
+		u64 fetch_area = FETCH_AREA)
+	{
+		if (in_set || set_size < sampler_textures)
+			return Placement::Sampler;
+		return (eligible && area < fetch_area) ? Placement::Fetch : Placement::Close;
+	}
+
+	/// The sampling bits of a textured row whose texture has `levels` mip levels, if it can fetch; 0 where it must keep
+	/// its sampler. A row can fetch when the sampler would read level 0 with one filter whatever the level of detail: the
+	/// texture has one level, and the lod is fixed at 0 (the sampler magnifies) or both filters are the same. A texture
+	/// with more levels keeps the sampler, which picks and blends them.
+	inline u32 FetchBits(u32 flags, GSHWDrawConfig::SamplerSelector ss, int levels)
+	{
+		if (!Textured(flags) || levels != 1)
+			return 0;
+		const bool linear = ss.IsMagFilterLinear();
+		if (Field(flags, STATE_LOD) != LOD_NONE && ss.IsMinFilterLinear() != linear)
+			return 0;
+		return ROW_FETCH | (ss.tau ? ROW_FETCH_REPEAT_U : 0u) | (ss.tav ? ROW_FETCH_REPEAT_V : 0u) |
+		       (linear ? ROW_FETCH_LINEAR : 0u);
 	}
 
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a
@@ -294,7 +344,7 @@ namespace GSRunsPolicy
 			d.why = Refusal::Road;
 			return d;
 		}
-		// Triangles, or sprites the classic path expands in its vertex program (GSRunsVK expands them on the CPU).
+		// Triangles, or sprites the classic path expands in its vertex program (the emitter expands them on the CPU).
 		const bool triangles = config.vs.expand == GSHWDrawConfig::VSExpand::None && config.indices_per_prim == 3;
 		const bool sprites = config.vs.expand == GSHWDrawConfig::VSExpand::Sprite && config.indices_per_prim == 6;
 		if (config.topology != GSHWDrawConfig::Topology::Triangle || !(triangles || sprites) || config.vs.point_size || config.vs.fst ||
@@ -342,98 +392,125 @@ namespace GSRunsPolicy
 		return d;
 	}
 
-	/// Whether the run machine opens runs, decided from what the last frames' draws did. A title whose draws seldom form
-	/// runs gains nothing from the machine and still pays for the few runs it forms: each one's sets, binds and draw, then
-	/// the classic path binding all of its state again. On Turnip that is more command-stream bytes a frame, and Sly 3
-	/// (under half a percent of its draws merged) crossed the driver's 4 MiB stream line with them. So while the share of
-	/// draws that joined a run of two or more, over the last WINDOW frames the machine was awake, is under SLEEP_PERMILLE,
-	/// the machine is dormant: it opens no runs, and every draw takes the classic path, the same calls as with the machine
-	/// switched off. Every SAMPLE_PERIOD dormant frames it lets one frame form runs and wakes if that frame's share reaches
-	/// WAKE_PERMILLE, a higher line than the one it went to sleep under, so a title near either line does not flap.
-	class Dormancy
+	/// The rows a group must reach before it pays for itself (B): the fixed overhead of one run-program group over what
+	/// each row in it saves, on the CPU thread that binds (its texture set, binds, and the classic path binding all of
+	/// its state again afterwards) and on the GPU (the run program's own cost, which is per group), each priced apart:
+	/// B = max(ceil(cpu_group_ns / cpu_saved_row_ns), ceil(gpu_group_ns / gpu_saved_row_ns)). A saving that is not
+	/// positive while there is an overhead forbids groups (NEVER). A price of zero is not measured and takes no part.
+	constexpr u32 NEVER = 0xFFFFFFFFu;
+	inline u32 BreakEven(float cpu_group_ns, float cpu_saved_row_ns, float gpu_group_ns, float gpu_saved_row_ns)
+	{
+		const auto rows = [](float group, float saved) -> u32 {
+			if (group <= 0.0f)
+				return 1;
+			if (saved <= 0.0f)
+				return NEVER;
+			return std::max(1u, static_cast<u32>(std::ceil(group / saved)));
+		};
+		return std::max(rows(cpu_group_ns, cpu_saved_row_ns), rows(gpu_group_ns, gpu_saved_row_ns));
+	}
+
+	/// The key of a row's streak class (Streaks): a hash of the fixed state one group holds one value of. vs_fixed: the
+	/// vertex selector without the bits a group's rows may differ in. rt_size, ds_size: the targets' sizes, which stand
+	/// for the targets: their host addresses differ from one run to the next, and the class decides which rows open
+	/// groups, so it must be the same for the same draws on every run. Targets of one size share classes; a collision
+	/// only changes when a group opens.
+	inline u64 StreakClass(const GSHWDrawConfig& config, u16 vs_fixed, GSVector2i rt_size, GSVector2i ds_size)
+	{
+		u64 w[9];
+		w[0] = static_cast<u64>(static_cast<u32>(rt_size.x)) | (static_cast<u64>(static_cast<u32>(rt_size.y)) << 32);
+		w[1] = static_cast<u64>(static_cast<u32>(ds_size.x)) | (static_cast<u64>(static_cast<u32>(ds_size.y)) << 32);
+		w[2] = static_cast<u64>(config.depth.key) | (static_cast<u64>(vs_fixed) << 8) |
+		       (static_cast<u64>(config.ps.rta_correction) << 24) | (static_cast<u64>(config.ps.zfloor) << 25) |
+		       (static_cast<u64>(config.cb_vs.max_depth) << 32);
+		std::memcpy(&w[3], &config.scissor, 16);
+		std::memcpy(&w[5], &config.cb_vs.vertex_scale, 8);
+		std::memcpy(&w[6], &config.cb_vs.vertex_offset, 8);
+		std::memcpy(&w[7], &config.cb_vs.texture_offset, 8);
+		std::memcpy(&w[8], &config.cb_ps.STScale, 8);
+		u64 h = 0x9E3779B97F4A7C15ull;
+		for (u64 v : w)
+		{
+			h ^= v;
+			h *= 0xBF58476D1CE4E5B9ull;
+			h ^= h >> 31;
+		}
+		return h;
+	}
+
+	/// The break-even length B in rows (see Streaks), one value for every device class until each class's CPU overhead
+	/// is measured.
+	constexpr u32 INTERIM_OPENING_ROWS = 4;
+
+	/// Per side of the emitter (bases, held twins), the streak of consecutive rows of one fixed-state class that could
+	/// share a run-program group. A group opens at the streak's L-th row; the rows before it stay classic and nothing is
+	/// rewritten. Each class's next streak is predicted from its own last two, as the longer of them: streaks repeat
+	/// per class (Sly 3's long ones stay long and its short ones alternate 2 and 4; Call of Duty 3's stay at 2 or 3), so a
+	/// class predicted to reach the break-even length B groups the whole streak, L = 1, and any other class opens only if
+	/// its streak reaches B after all, L = B. L is also 1 for a row of the class whose group just ended at a split (lod,
+	/// dear, the texture cap, the table window, a ring, or a recording). A class drawn classically still learns: what is
+	/// remembered is each streak's length, not each group's. Classes are keyed by a hash of their fixed state: a
+	/// collision only changes when a group opens, never which rows share one.
+	class Streaks
 	{
 	public:
-		static constexpr u32 WINDOW = 8;           ///< awake frames with draws that the share is taken over
-		static constexpr u32 SLEEP_PERMILLE = 30;  ///< 3%: under this over the window, go dormant
-		static constexpr u32 WAKE_PERMILLE = 150;  ///< 15%: a sample frame at or over this wakes the machine
-		static constexpr u32 SAMPLE_PERIOD = 120;  ///< dormant frames before the next sample frame (two seconds at 60)
+		static constexpr u32 SIDES = 2;
+		static constexpr u32 TABLE = 1024;
 
-		/// Whether draws of the frame in hand may join runs.
-		bool OpensRuns() const { return m_state != State::Dormant; }
-
-		/// At the end of each frame. draws: the draws the machine saw while it could open runs; joined: those of them that
-		/// joined a run of two or more, or waited for their run's program to be built. A frame without draws decides
-		/// nothing.
-		void EndFrame(u32 draws, u32 joined)
+		/// A row of class `cls` on `side` that could join a group: whether a group may be open for it now.
+		bool Note(u32 side, u64 cls, u32 B)
 		{
-			switch (m_state)
+			Side& s = m_side[side];
+			if (s.count == 0 || s.cls != cls)
 			{
-				case State::Awake:
-				{
-					if (draws == 0)
-						return;
-					m_draws[m_next] = draws;
-					m_joined[m_next] = joined;
-					m_next = (m_next + 1) % WINDOW;
-					m_filled = std::min(m_filled + 1, WINDOW);
-					if (m_filled < WINDOW)
-						return;
-					u64 d = 0, j = 0;
-					for (u32 i = 0; i < WINDOW; i++)
-					{
-						d += m_draws[i];
-						j += m_joined[i];
-					}
-					if (j * 1000 < d * SLEEP_PERMILLE)
-						Sleep();
-					return;
-				}
-				case State::Dormant:
-					if (++m_dormant_frames >= SAMPLE_PERIOD)
-						m_state = State::Sampling;
-					return;
-				case State::Sampling:
-					if (draws == 0)
-						return;
-					if (static_cast<u64>(joined) * 1000 >= static_cast<u64>(draws) * WAKE_PERMILLE)
-					{
-						// The sample is the new window's first frame.
-						m_state = State::Awake;
-						m_filled = 0;
-						m_next = 0;
-						EndFrame(draws, joined);
-					}
-					else
-					{
-						Sleep();
-					}
-					return;
+				End(side);
+				s.cls = cls;
 			}
+			const Recent& last = m_last[side][cls % TABLE];
+			const u32 L = (s.split || std::max(last.a, last.b) >= B) ? 1u : B;
+			s.split = false;
+			s.count++;
+			return s.count >= L;
 		}
+		/// The side's group of its current class ended at a split: the class's next row opens a group at once.
+		void Split(u32 side)
+		{
+			if (m_side[side].count != 0)
+				m_side[side].split = true;
+		}
+		/// A row on `side` that could not join any group: the side's streak ends.
+		void Break(u32 side) { End(side); }
+		/// The streak length a class last reached on a side (for tests).
+		u32 Last(u32 side, u64 cls) const { return m_last[side][cls % TABLE].a; }
 
 	private:
-		enum class State : u8
+		struct Side
 		{
-			Awake,
-			Dormant,
-			Sampling, ///< one frame that may form runs, after SAMPLE_PERIOD dormant frames
+			u64 cls = 0;
+			u32 count = 0;
+			bool split = false;
 		};
-
-		void Sleep()
+		void End(u32 side)
 		{
-			m_state = State::Dormant;
-			m_dormant_frames = 0;
+			Side& s = m_side[side];
+			if (s.count != 0)
+			{
+				Recent& last = m_last[side][s.cls % TABLE];
+				last.b = last.a;
+				last.a = static_cast<u16>(std::min<u32>(s.count, 0xFFFFu));
+			}
+			s.count = 0;
+			s.split = false;
 		}
-
-		State m_state = State::Awake;
-		u32 m_draws[WINDOW] = {};
-		u32 m_joined[WINDOW] = {};
-		u32 m_next = 0;
-		u32 m_filled = 0;
-		u32 m_dormant_frames = 0;
+		struct Recent
+		{
+			u16 a = 0; ///< the last streak's length
+			u16 b = 0; ///< the one before
+		};
+		Side m_side[SIDES];
+		Recent m_last[SIDES][TABLE] = {};
 	};
 
-	/// Which states a run holds one value of: those become constants of its program.
 	struct StateSet
 	{
 		u32 seen = 0;

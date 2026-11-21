@@ -132,9 +132,13 @@ enum class DriverBug : u8
 	/// The shader compiler crashes on any pipeline that queries an image size (textureSize).
 	BrokenImageQuery,
 	/// A draw that samples with implicit derivatives (the hardware's lod), drawn in one host draw with draws of
-	/// another kind, gets some pixels wrong, differently from one replay to the next. The run machine then keeps
-	/// one sampling call per run (GSRunsPolicy::LodJoins).
+	/// another kind, gets some pixels wrong, differently from one replay to the next. The run emitter then keeps
+	/// one sampling call per group (GSRunsPolicy::LodJoins).
 	BrokenMixedSamplingDerivatives,
+	/// The GPU stalls when a run draw samples many textures through the filtered sampler. The run program filters
+	/// single-level textures by hand from texelFetch there, past a bound on the textures a group samples through the
+	/// sampler (GSRunsPolicy::PlaceRow).
+	StallsOnFilteredRunSampling,
 	Count,
 };
 

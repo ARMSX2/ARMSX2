@@ -158,6 +158,14 @@ namespace PageFaultHandler
 	// a process about to die, so it must be async-signal-safe.
 	using UnhandledFaultReporter = void (*)(int signal, void* siginfo, void* ucontext);
 	void SetUnhandledFaultReporter(UnhandledFaultReporter reporter);
+
+#if defined(__linux__)
+	// On Linux and Android, Install() also takes SIGSYS: a syscall that a seccomp filter traps
+	// (Android 8 and 9 trap every syscall their app filter does not list) returns -ENOSYS to its
+	// caller instead of killing the process. This returns the number of a syscall refused that way
+	// that it has not returned before, or -1 when there is none.
+	int TakeRefusedSyscall();
+#endif
 } // namespace PageFaultHandler
 
 class SharedMemoryMappingArea

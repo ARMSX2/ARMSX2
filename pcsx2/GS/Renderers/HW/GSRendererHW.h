@@ -6,6 +6,7 @@
 #include "GSTextureCache.h"
 #include "GS/Renderers/HW/GSBurstMemo.h"
 #include "GS/Renderers/HW/GSDrawAlphaMask.h"
+#include "GS/Renderers/HW/GSDrawRow.h"
 #include "GS/Renderers/Common/GSBlendCarry.h"
 #include "GS/Renderers/Common/GSFunctionMap.h"
 #include "GS/Renderers/Common/GSNativeTexelGridPolicy.h"
@@ -221,6 +222,9 @@ private:
 	/// Writes held depth words (GSTextureCache::MaterialiseHeldPages) under what the copy road reads and writes.
 	void MaterialiseHeldUnderCopy();
 	bool (*SwPrimRender)(GSRendererHW&, bool invalidate_tc, bool add_ee_transfer);
+	/// The palette block copy of a draw that continues a copy run, and what SwPrimRender() does after it; false,
+	/// with nothing written, where Run() would not have taken it. With `effects` false, local memory only.
+	bool (*CopyRunCopy)(GSRendererHW&, const GSVector4i& bbox, bool effects);
 
 	bool SnapSpriteEdgesToPixelGrid();
 
@@ -232,6 +236,128 @@ private:
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
 	void ResetStates();
+
+	/// What Draw() knows about a draw that its after-draw upkeep reads.
+	struct DrawEffect
+	{
+		GSVector4i real_rect; ///< the draw's rectangle in the target, unscaled
+		GSVector2i resolution; ///< the display's, when the target may not grow past twice its height
+		const GSDrawingContext* context;
+		const GSLocalMemory::psm_t* frame_psm; ///< FRAME's format as Draw() took it
+		GSTextureCache::Target* old_rt; ///< a target replaced by double-buffering, to be invalidated
+		GSTextureCache::Target* old_ds;
+		u32 fm, fm_mask, zm; ///< frame mask, the format's mask bits, depth mask
+		bool no_rt, no_ds; ///< Draw()'s verdicts: no colour, no depth written
+		bool can_update_size;
+		bool skip_draw;
+	};
+	void ApplyDrawEffect(GSTextureCache::Target* rt, GSTextureCache::Target* ds, const DrawEffect& e);
+
+	/// The targets of the last draw that took the full path. A following draw into the same frame and depth buffer
+	/// whose targets need nothing (a row) skips the target search and the targets' upkeep before the draw.
+	struct RowRun
+	{
+		GSTextureCache::Target* rt = nullptr;
+		GSTextureCache::Target* ds = nullptr;
+		GSTexture* rt_tex = nullptr;
+		GSTexture* ds_tex = nullptr;
+		u32 frame = 0; ///< FRAME's base block, buffer width and format as the draw used them (its low word)
+		u64 zbuf = 0; ///< ZBUF's base block and format (its low word), with FRAME's buffer width above
+		bool open = false;
+		bool no_rt = false;
+		bool no_ds = false;
+	};
+	/// What the target search and the targets' upkeep may change, taken before and after them in check mode on a
+	/// draw that would have been a row.
+	struct RowWitness
+	{
+		struct Tgt
+		{
+			u64 tex0;
+			GSVector4i valid, drawn;
+			GSVector2i unscaled_size;
+			const GSTexture* texture;
+			float scale;
+			u32 end_block;
+			u64 last_draw;
+			int alpha_min, alpha_max;
+			bool dirty, fmt32, valid_rgb, valid_alpha_low, valid_alpha_high, rt_alpha_scale, alpha_range, used;
+			/// The first field that differs, or nullptr.
+			const char* Difference(const Tgt& o) const;
+		};
+		Tgt rt, ds;
+		GSVector4i r;
+		GSVector4 min_p, max_p;
+		GSVector4i scissor;
+		u32 vertices, indices;
+		u64 frame, zbuf, test, tex0;
+		const void* front_rt;
+		const void* front_ds;
+	};
+	/// Whether this draw continues the open row run. Read before the target search.
+	bool RowContinues(bool run_open, const GSTextureCache::Source* src, bool no_rt, bool no_ds, bool possible_shuffle,
+		bool possible_mem_clear);
+	void TakeRowWitness(RowWitness& w) const;
+	/// Check mode: counts and reports the first difference the full path made where a row would have skipped it.
+	void RowMismatch(const char* what, const char* detail = nullptr);
+	void OpenRowRun(GSTextureCache::Target* rt, GSTextureCache::Target* ds, bool no_rt, bool no_ds);
+
+	/// What the state derivation leaves for the rest of DrawPrims.
+	struct DerivedDraw
+	{
+		GSDevice::RecycledTexture tex_copy; ///< a copy of the source the draw samples
+		GSDevice::RecycledTexture temp_ds; ///< a depth buffer for stencil DATE
+		float vs_scale_x = 0.0f;
+		float vs_scale_y = 0.0f;
+		bool no_rt = false;
+	};
+	/// What a draw that may take a state entry computes before the entry is looked up: the alpha range (whose values
+	/// are facts of the entry's key) and the exact alpha-mask verdict, which reads the draw's alpha range before the
+	/// alpha test's correction of it.
+	struct DrawPrep
+	{
+		int blend_alpha_min = 0;
+		int blend_alpha_max = 255;
+		int rt_new_alpha_min = 0;
+		int rt_new_alpha_max = 255;
+		GSAlphaKnownBits::Known rt_new_alpha_known;
+		bool rt_new_alpha_via_union = false;
+		u8 exact_drop = 0;
+		bool alpha_written = false; ///< the frame-mask stage's colormask.wa, as the range was given it
+		u8 zmsk = 0; ///< ZBUF.ZMSK as the range saw it
+		u32 requested_alpha_fbmask = 0; ///< RequestedAlphaFbMask(), as the range was given it
+		GSAlphaKnownRects::ForDraw exact_drop_known{};
+		GSAlphaKnownRects::Set rt_new_alpha_rects;
+	};
+	/// DrawPrims' state derivation: m_conf from the registers, the draw, its target and its source. False when the
+	/// draw is dropped. `prep` is set when DrawState has run the vertex passes, the alpha-test range correction,
+	/// the alpha range and the exact alpha-mask verdict before it.
+	bool DeriveDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, const DrawPrep* prep, DerivedDraw& out);
+	/// The state derivation, or the state entry the table holds for the draw. False when the draw is dropped.
+	bool DrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DerivedDraw& out);
+	bool DrawStateSlow(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex,
+		const TextureMinMaxResult& tmm, DATEOptions& date_options, float rtscale, const GSVector2i& rtsize,
+		const GSVector2i& rt_unscaled_size, DrawPrep& prep, const GSDrawRows::RegKey& reg, const GSDrawRows::VarKey& var,
+		bool keyed, DerivedDraw& out);
+	/// Whether the registers and the device allow a state entry at all.
+	bool DrawStateEligible(const DATEOptions& date_options);
+	/// ResetStates and the bindings: the start of every derivation.
+	void BeginDrawState(GSTextureCache::Target* rt, GSTextureCache::Target* ds);
+	/// Writes everything the derivation reads into the two keys. False when the draw takes a road that acts on what
+	/// it reads (a self-read, a source swap, a vertex rewrite) and always derives.
+	bool FillStateKeys(GSDrawRows::RegKey& reg, GSDrawRows::VarKey& var, const GSTextureCache::Target* rt,
+		const GSTextureCache::Target* ds, const GSTextureCache::Source* tex, const DrawPrep& prep, float rtscale,
+		const GSVector2i& rtsize, const GSVector2i& rt_unscaled_size);
+	/// prev_cb: the constant buffers as the previous draw left them, which the words this draw does not write keep.
+	void CaptureDrawState(GSDrawRows::StateBody& body, const GSTextureCache::Target* rt, bool derived_ok, const u32* prev_cb);
+	void ApplyDrawState(const GSDrawRows::StateBody& body, GSTextureCache::Target* rt, GSTextureCache::Target* ds,
+		GSTextureCache::Source* tex, const DrawPrep& prep, DerivedDraw& out);
+	void CorrectATEAlphaRange();
+
 	void HandleFlatShadedVertices();
 	/// Fills in the topology, the indices and the vertex offset for the draw's primitive class.
 	/// Returns false when the draw lights no pixel at all and must not be submitted.
@@ -251,8 +377,13 @@ private:
 			static_cast<u32>(m_conf.cb_ps.FbMask.a));
 	}
 	u32 EmulateChannelShuffle(GSTextureCache::Target* src, bool test_only, GSTextureCache::Target* rt = nullptr);
-	void EmulateBlending(int rt_alpha_min, int rt_alpha_max, DATEOptions& date_options, GSTextureCache::Target* rt,
+	/// `rt_alpha` is the target's alpha range as the blend sees it (CalculateAlphaRange).
+	void EmulateBlending(const GSDrawRows::AlphaRange& rt_alpha, DATEOptions& date_options, GSTextureCache::Target* rt,
 		bool can_scale_rt_alpha, bool& new_rt_alpha_scale);
+	/// The draw's alpha range for the derivation: every read of it is recorded (GSDrawRows::AlphaBound).
+	GSDrawRows::AlphaRange DrawAlpha();
+	/// IsOpaque() with the draw's alpha range read through DrawAlpha().
+	bool IsOpaqueDerived();
 	void CleanupDraw(bool invalidate_temp_src);
 
 	void EmulateTextureSampler(const GSTextureCache::Target* rt, const GSTextureCache::Target* ds,
@@ -284,12 +415,15 @@ private:
 	void EmulateAlphaTestSecondPass();
 	void ConfigureDepthFeedback(bool rov_depth = false);
 
+	/// `alpha_written` and `requested_alpha_fbmask` are the frame-mask stage's colormask.wa and
+	/// RequestedAlphaFbMask(), passed in so that a draw that may take a state entry can run this first.
 	void CalculateAlphaRange(GSTextureCache::Target* rt, GSTextureCache::Target* ds, DATEOptions& date_options,
+		bool alpha_written, u32 requested_alpha_fbmask,
 		int& blend_alpha_min, int& blend_alpha_max, int& rt_new_alpha_min, int& rt_new_alpha_max,
 		GSAlphaKnownBits::Known& rt_new_alpha_known, bool& rt_new_alpha_via_union,
 		GSAlphaKnownRects::Set& rt_new_alpha_rects);
 	void DetermineAlphaScaling(GSTextureCache::Target* rt, GSTextureCache::Source* tex,
-		bool req_source_update, int rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
+		bool req_source_update, const GSDrawRows::AlphaBound& rt_new_alpha_max, bool& can_scale_rt_alpha, bool& new_scale_rt_alpha);
 
 	bool EmulateDATEEarlyFail(DATEOptions& date, GSTextureCache::Target* rt);
 	void EmulateDATESelectMethod(DATEOptions& date, GSTextureCache::Target* rt, int& blend_alpha_min, int& blend_alpha_max);
@@ -434,6 +568,15 @@ private:
 	GSVector2i m_lod = {}; // Min & Max level of detail
 
 	GIFRegALPHA m_optimized_blend = {}; // Save for ROV setup
+	GSDrawRows::StateTable m_states;
+	RowRun m_row_run;
+	u32 m_alpha_asked = 0; ///< the alpha bounds the derivation in hand read by value (GSDrawRows::AlphaBound)
+	u16 m_draw_entry = GSDrawRows::StateTable::NONE; ///< the entry the draw in hand took its state from, NONE if derived
+	const DrawPrep* m_draw_prep = nullptr; ///< set while a draw that may take a state entry derives
+	bool m_row_acted = false; ///< the derivation acted on a texture or the vertices, or read a fact the keys lack
+	bool m_row_colclip_written = false; ///< the derivation set colclip_mode and colclip_frame
+	bool m_row_optimized_blend_written = false; ///< the derivation set m_optimized_blend
+	s8 m_state_caps = -1; ///< whether the device and settings allow state entries; -1 until known
 
 	GSHWDrawConfig m_conf = {};
 	HWCachedCtx m_cached_ctx;
@@ -469,6 +612,27 @@ private:
 	/// it looked there, at the frame. Only such a verdict can be reused by a skipped draw.
 	bool m_copy_road_no_targets = false;
 	bool m_copy_road_frame_checked = false;
+
+	// Copy runs (GSRendererHWCopyRuns.cpp): the registers of the palette block copy that armed the run, with the
+	// fields a continuing copy may change cleared, and the texture address the run last found no target at.
+	struct CopyRunKey
+	{
+		u64 regs[19];
+	};
+	CopyRunKey m_copy_run_key = {};
+	u32 m_copy_run_tbp0 = 0;
+	/// Copies that continued a run, for tests.
+	u64 m_copy_run_copies = 0;
+	static void MakeCopyRunKey(CopyRunKey& key, const GSDrawingEnvironment& env, const GSDrawingContext& ctx);
+	void CopyRunArm();
+	bool FrameMayReachTarget(const GSVector4i& bbox) const;
+	/// What ContinueCopyRun() does before the copy: false where the draw goes to the tail instead.
+	bool PrepareCopyRunCopy(GSVector4i& bbox);
+	/// ... and after it.
+	void FinishCopyRunCopy(const GSVector4i& bbox);
+	void CopyRunDisarm() { m_copy_run_armed = false; }
+	/// Draw()'s draw rectangle (m_r, m_r_no_scissor) from the vertex trace; false when it is empty.
+	bool SetDrawRect();
 
 	bool BurstMemoSkip();
 	bool BurstMemoWakes() const;
@@ -506,6 +670,8 @@ public:
 	/// Re-reads the settings the burst memo depends on, and forgets what it recorded.
 	void RefreshBurstMemo();
 	bool SkipMemoizedDraw() override;
+	bool ContinueCopyRun() override;
+	u64 CopyRunCopies() const { return m_copy_run_copies; }
 
 	GSRendererHW();
 	virtual ~GSRendererHW() override;
@@ -517,6 +683,7 @@ public:
 	__fi HWCachedCtx* GetCachedCtx() { return &m_cached_ctx; }
 	__fi u32 GetLastChannelShuffleFBP() { return m_last_channel_shuffle_fbp; }
 	void Destroy() override;
+	void ReleaseDeviceObjects() override;
 
 	void UpdateRenderFixes() override;
 	bool DrawClearsScanMask() const override;

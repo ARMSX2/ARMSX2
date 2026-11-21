@@ -86,6 +86,18 @@ void GSRendererSW::Destroy()
 	m_output = nullptr;
 }
 
+void GSRendererSW::ReleaseDeviceObjects()
+{
+	// The output textures are sized again on the next frame.
+	for (GSTexture*& tex : m_texture)
+	{
+		delete tex;
+		tex = nullptr;
+	}
+
+	GSRenderer::ReleaseDeviceObjects();
+}
+
 void GSRendererSW::VSync(u32 field, bool registers_written, bool idle_frame)
 {
 	Sync(0); // IncAge might delete a cached texture in use

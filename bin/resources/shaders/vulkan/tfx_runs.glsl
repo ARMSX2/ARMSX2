@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team, 2026 ARMSX2 contributors
 // SPDX-License-Identifier: GPL-3.0+
 
-// The run program (GSRunsVK). A run is a stretch of consecutive draws of one render pass that the classic path would
+// The run program (GSRunEmitterVK). A run is a stretch of consecutive draws of one render pass that the classic path would
 // have drawn under different programs, textures and constants but under one fixed-function state (blend, depth test
 // and write, colour mask). The run is one host draw. Each draw keeps its own row in a table: the vertex carries the
 // draw's row number in the high bytes of its FOG word, the vertex program hands the row to the fragment program as
 // two flat values, and the fragment program does what that draw's classic program (tfx.glsl) does, sampling the draw's
 // own texture through its own sampler from the run's descriptor array.
 //
-// The arithmetic is tfx.glsl's for the state set the machine accepts: FST 0, a 32-bit colour target, no palette in the
+// The arithmetic is tfx.glsl's for the state set the emitter accepts: FST 0, a 32-bit colour target, no palette in the
 // shader, the hardware's bilinear (LTF 0), CLAMP or REPEAT (the sampler's), alpha fail KEEP, the texture functions 0-4,
 // and the blend family (Cs - 0) * C + 0 in the shader with the rest in the blend unit (BLEND_MIX). How the classic path
 // chose to blend is one of eight ways under a dual-source pipeline, (ONE, INV_SRC1_COLOR / ONE, ZERO) for ways 0 to 5 and
@@ -114,7 +114,8 @@ layout(depth_less) out float gl_FragDepth;
 
 // s0.x, the draw's flags (GSRunsPolicy.h): 0-2 tfx, 3 tcc, 4 fog, 5 iip, 6-8 alpha test, 9-11 blend way,
 //   12-13 lod (0 none, 1 manual, 2 the hardware's), 14 RTA source correction
-// s0.y: the draw's slot in the run's texture array
+// s0.y: the draw's slot in the run's texture array in bits 0-15; where the program fetches (RUN_FETCH), bit 16 says the
+//   row is filtered by hand, and 17 repeat in u, 18 repeat in v, 19 bilinear give its sampler (GSRunsPolicy::FetchBits)
 // s0.z: fog colour in bytes 0-2, Af * 128 in byte 3
 // s0.w: AREF (float bits)
 // s1: the manual lod's K, L, bias, max lod (LODParams)
@@ -164,6 +165,68 @@ uint fld(uint v, int s, int n)
 #define S_RTASRC fld(f, 14, 1)
 #endif
 
+#ifdef RUN_FETCH
+// The GPU stalls when a run draw samples many textures through the filtered sampler (the Adreno 650 under Turnip);
+// fetching avoids the sampler. A small row past its group's bound on sampled textures (GSRunsPolicy::PlaceRow), whose
+// texture has one level, is filtered here from texelFetch on level 0, with the sampler's address modes and filter. The filter is the Adreno 650's
+// as far as it was measured (one level off on about 2% of channel samples):
+//   RUN_FILTER_FRAC_BITS  bits of the position below a texel that the filter keeps; the weights have as many (1 to 11)
+//   RUN_FILTER_POS_ROUND  added to the position, in those steps, before the rest is dropped (0.5 rounds to the nearest
+//                         step, 0 truncates)
+// The position is uv * size - 0.5, the multiply and the subtract each rounded to single precision, uv first wrapped
+// into [0, 1) on an axis that repeats. The four 8-bit texels times their integer weights are summed exactly, and the
+// sum, taken to 16 fraction bits, is returned as 16-bit unorm (times 257, truncated).
+#define RUN_FILTER_FRAC_BITS 8
+#define RUN_FILTER_POS_ROUND 0.0f
+
+#define RUN_FETCH_ROW 0x10000u
+#define RUN_FETCH_REPEAT_U 0x20000u
+#define RUN_FETCH_REPEAT_V 0x40000u
+#define RUN_FETCH_LINEAR 0x80000u
+
+// The sampler's address mode on an integer texel coordinate, per axis.
+ivec2 run_wrap(ivec2 i, ivec2 size, bvec2 repeat)
+{
+	ivec2 r = i - size * ivec2(floor(vec2(i) / vec2(size)));
+	r += ivec2(lessThan(r, ivec2(0))) * size; // the division's rounding can leave r one size out either way
+	r -= ivec2(greaterThanEqual(r, size)) * size;
+	const ivec2 c = clamp(i, ivec2(0), size - 1);
+	return ivec2(repeat.x ? r.x : c.x, repeat.y ? r.y : c.y);
+}
+
+// The row's sampler on level 0 of texture ti, by hand. bits: the row's slot word.
+vec4 run_filter(uint ti, uint bits, vec2 uv)
+{
+	const ivec2 size = textureSize(RunTextures[nonuniformEXT(ti)], 0);
+	const bvec2 repeat = bvec2((bits & RUN_FETCH_REPEAT_U) != 0u, (bits & RUN_FETCH_REPEAT_V) != 0u);
+	const vec2 u = vec2(repeat.x ? uv.x - floor(uv.x) : uv.x, repeat.y ? uv.y - floor(uv.y) : uv.y);
+	precise const vec2 t = u * vec2(size);
+	const int one = 1 << RUN_FILTER_FRAC_BITS;
+	if ((bits & RUN_FETCH_LINEAR) == 0u)
+	{
+		// Nearest: the texel under the position.
+		const ivec2 q = ivec2(floor(t * float(one) + RUN_FILTER_POS_ROUND));
+		return texelFetch(RunTextures[nonuniformEXT(ti)], run_wrap(q >> RUN_FILTER_FRAC_BITS, size, repeat), 0);
+	}
+	// Bilinear: the four texels around the position half a texel back, weighted by its fraction.
+	precise const vec2 p = t - 0.5f;
+	const ivec2 q = ivec2(floor(p * float(one) + RUN_FILTER_POS_ROUND));
+	const ivec2 b = q >> RUN_FILTER_FRAC_BITS;
+	const ivec2 w = q & (one - 1);
+	const ivec2 v = one - w;
+	const ivec2 i0 = run_wrap(b, size, repeat);
+	const ivec2 i1 = run_wrap(b + 1, size, repeat);
+	const ivec4 t00 = ivec4(round(texelFetch(RunTextures[nonuniformEXT(ti)], i0, 0) * 255.0f));
+	const ivec4 t10 = ivec4(round(texelFetch(RunTextures[nonuniformEXT(ti)], ivec2(i1.x, i0.y), 0) * 255.0f));
+	const ivec4 t01 = ivec4(round(texelFetch(RunTextures[nonuniformEXT(ti)], ivec2(i0.x, i1.y), 0) * 255.0f));
+	const ivec4 t11 = ivec4(round(texelFetch(RunTextures[nonuniformEXT(ti)], i1, 0) * 255.0f));
+	const ivec4 sum = (t00 * v.x + t10 * w.x) * v.y + (t01 * v.x + t11 * w.x) * w.y;
+	const int shift = 2 * RUN_FILTER_FRAC_BITS;
+	const uvec4 s16 = (shift <= 16) ? (uvec4(sum) << uint(16 - shift)) : (uvec4(sum) >> uint(shift - 16));
+	return vec4((s16 * 257u) >> 16) / 65535.0f;
+}
+#endif
+
 void main()
 {
 	uvec4 s0 = vsIn.s0;
@@ -184,6 +247,11 @@ void main()
 		// The same three calls tfx.glsl's sample_c makes, on the draw's own texture and sampler. The row's values are
 		// the same across a quad (a quad never spans two primitives), so the hardware lod's implicit derivatives are
 		// the classic draw's even where the call sits under a branch on them.
+#ifdef RUN_FETCH
+		if ((ti & RUN_FETCH_ROW) != 0u)
+			c = run_filter(ti & 0xFFFFu, ti, uv);
+		else
+#endif
 		if (lod_mode == 2u)
 			c = texture(RunTextures[nonuniformEXT(ti)], uv);
 		else if (lod_mode == 1u)

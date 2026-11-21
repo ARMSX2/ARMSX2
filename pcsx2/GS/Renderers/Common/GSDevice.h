@@ -697,6 +697,13 @@ struct HWBlend
 	BlendFactor src, dst;
 };
 
+/// What a backend keeps for one entry of the hardware renderer's state table, so that a draw of that state skips work
+/// the backend would repeat. Opaque to the renderer, which zeroes it when the entry is made.
+struct alignas(16) GSRowDeviceCache
+{
+	u8 bytes[48];
+};
+
 struct alignas(16) GSHWDrawConfig
 {
 	// TFX pipeline key layout: begin. cmake/GSKeyLayoutId.cmake hashes what lies between these markers to name
@@ -1583,6 +1590,7 @@ static inline u32 GetVertexAlignment(GSHWDrawConfig::VSExpand expand)
 }
 
 class GSPassScheduler;
+class GSRowEmitter;
 
 class GSDevice : public GSAlignedClass<32>
 {
@@ -1806,6 +1814,11 @@ protected:
 	/// Render passes are coalesced by holding draws here until something needs to observe
 	/// the target. See GSPassScheduler and FlushDeferredDraws().
 	std::unique_ptr<GSPassScheduler> m_pass_scheduler;
+	/// The order rows are recorded in, and the last base's twin key (GSRowEmitter.h). Only where the backend says rows
+	/// may wait (m_rows_defer) and the render-pass scheduler is off.
+	std::unique_ptr<GSRowEmitter> m_rows;
+	u64 m_rows_serial = 0; ///< raised by every DrawRow: what a backend asks about one row it may keep for that row
+	bool m_rows_defer = false;
 	u32 m_deferred_draw_count = 0;
 	bool m_flushing = false;
 
@@ -1910,6 +1923,33 @@ protected:
 	virtual void DoConvertToIndexedTexture(GSTexture* sTex, float sScale, u32 offsetX, u32 offsetY, u32 SBW, u32 SPSM, GSTexture* dTex, u32 DBW, u32 DPSM) = 0;
 	virtual void DoFilteredDownsampleTexture(GSTexture* sTex, GSTexture* dTex, u32 downsample_factor, const GSVector2i& clamp_min, const GSVector4& dRect) = 0;
 	virtual void DoRenderHW(GSHWDrawConfig& config) = 0;
+	/// Draws one state-table row on the bases' side: now, or into the backend's open group, which is recorded before
+	/// anything else is (GSRowEmitter.h). The default is the ordinary draw.
+	virtual void DoDrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache) { DoRenderHW(config); }
+
+	// The row emitter's backend (GSRowEmitter.h). Only where m_rows_defer.
+	/// Takes a row into the backend's open group of the bases' side, or opens one with it (recording an open group it
+	/// cannot join first). False: the row is drawn now, after the open group (RowsRecordOpen, then DoDrawRow).
+	virtual bool RowsJoin(GSHWDrawConfig& config, GSRowDeviceCache& cache) { return false; }
+	/// Records the backend's open group of the bases' side, if there is one.
+	virtual void RowsRecordOpen() {}
+	/// Holds the twin of the remembered base: writes what it needs to record it later, after later bases. False: not
+	/// held, and the twin is drawn now.
+	virtual bool RowsHoldTwin(GSHWDrawConfig& config, GSRowDeviceCache& cache) { return false; }
+	/// Whether a base may be recorded ahead of the held twins without changing the pass it is drawn in.
+	virtual bool RowsMayGoAhead(const GSHWDrawConfig& config) { return true; }
+	/// Records what the backend holds: its open group of the bases' side, then the held twins in arrival order.
+	virtual void RowsEmit() {}
+	/// Forgets what the backend holds without recording it (the device is going away).
+	virtual void RowsDrop() {}
+	/// Whether the backend holds anything not recorded yet: an open group of the bases' side, or held twins.
+	virtual bool RowsOpen() const { return false; }
+	/// A draw that is not a row: rows after it are not consecutive with the rows before it.
+	virtual void RowsOtherDraw() {}
+	/// Recounts what is deferred after the backend opened or recorded a group of its own accord.
+	void UpdateDeferredCount();
+	/// Records the pending rows (GSRowEmitter.h), not what the render-pass scheduler holds: a backend's pass end.
+	void FlushDeferredRows();
 	virtual void DoBeginDSAsRT(GSTexture* ds, const GSVector4i& drawarea);
 	virtual PresentResult DoBeginPresent(bool frame_skip) = 0;
 
@@ -2266,6 +2306,15 @@ public:
 	/// GSPassScheduler. Any device entry point that could observe the result flushes
 	/// first, so the deferral is invisible.
 	void RenderHW(GSHWDrawConfig& config);
+
+	/// A draw whose state came from the hardware renderer's state table (GSDrawRow.h), with that entry's device cache.
+	/// A backend may draw it with less work than RenderHW where nothing about the draw needs more; the default draws
+	/// it like any other.
+	/// The twin of the base drawn just before it may be held back (GSRowEmitter.h) and recorded when something could
+	/// observe it, after later bases on the same targets.
+	void DrawRow(GSHWDrawConfig& config, GSRowDeviceCache& cache);
+
+
 
 	/// Emits any draws the render-pass scheduler is holding back, in an order that
 	/// preserves what every deferred draw would have seen had it run immediately.

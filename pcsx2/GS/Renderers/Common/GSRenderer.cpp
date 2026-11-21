@@ -144,6 +144,16 @@ void GSRenderer::Destroy()
 	m_field_shift.Reset();
 }
 
+void GSRenderer::ReleaseDeviceObjects()
+{
+	// The field-shift detector keeps its probe target between rounds, and the CLUT keeps its GPU
+	// palette textures between draws.
+	m_field_shift.Reset();
+	m_mem.m_clut.ReleaseGPUTextures();
+	if (m_mem_target != this)
+		m_mem_target->m_mem.m_clut.ReleaseGPUTextures();
+}
+
 void GSRenderer::UpdateRenderFixes()
 {
 }
