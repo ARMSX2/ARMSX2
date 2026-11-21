@@ -11,10 +11,14 @@
 #include "Memory.h"
 #include "vtlb.h"
 
+#include "common/HostSys.h"
+
 #include <gtest/gtest.h>
 
 using namespace recompiler_tests;
 using namespace mips;
+
+extern bool recEeBlockHostInfo(u32 pc_query, uptr* fnptr, u32* host_size, uptr* lut_fnptr);
 
 namespace {
 constexpr u32 kScratch = RecompilerTestEnvironment::kScratchAddr;
@@ -1209,6 +1213,98 @@ TEST(EeRecLoadStore, Lwc1FaultPathLandsInResidentSlot)
 	for (u32 a = RecompilerTestEnvironment::kProgramPc; a < RecompilerTestEnvironment::kProgramPc + 0x20; a += 4)
 		faulted |= vtlb_IsFaultingPC(a);
 	EXPECT_TRUE(faulted) << "MMIO LWC1 did not take the fastmem-fault/backpatch path";
+}
+
+// ===========================================================================
+//  Misaligned accesses at the top of the 4 GB fastmem window.
+//
+//  The fastmem access is [base, wN, UXTW], so a 4- or 8-byte access at guest
+//  0xFFFFFFF9..0xFFFFFFFF starts inside the window and runs past its end.
+//  Some hosts report the fault inside the window; others report it at the
+//  first byte of the next page, base + 4 GB. Either way the access must be
+//  backpatched to the slow path like any other fastmem fault, not abort the
+//  process.
+//
+//  Guest page 0xFFFFF000 is unmapped, so the slow path is vtlb_Miss: it logs,
+//  a load returns 0, a store is dropped. The interpreter raises an address
+//  error for the misalignment instead, which cancels the instruction: a load
+//  leaves rt unchanged. That differs from the JIT for any misaligned load to
+//  an unmapped page, so the load test checks the JIT alone.
+// ===========================================================================
+
+namespace {
+// The backpatch records the faulting site's guest PC; scan the program for it.
+bool ProgramHasFaultingPC()
+{
+	bool faulted = false;
+	for (u32 a = RecompilerTestEnvironment::kProgramPc; a < RecompilerTestEnvironment::kProgramPc + 0x20; a += 4)
+		faulted |= vtlb_IsFaultingPC(a);
+	return faulted;
+}
+} // namespace
+
+TEST(EeRecLoadStore, LwStraddlingTopOfFastmemWindowTakesSlowPath)
+{
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a1, 0xFFFFFFFFFFFFFFFDull); // -3: the word runs 1 byte past the window
+	h.SetGpr64(reg::v0, 0xDEADBEEFCAFEBABEull);
+	vtlb_ClearLoadStoreInfo();
+	h.LoadProgram({
+		LW(reg::v0, 0, reg::a1),
+		ADDIU(reg::v1, reg::zero, 1),
+	});
+	h.RunJitNoDiff();
+	EXPECT_EQ(h.GetGpr64Jit(reg::v0), 0ull);
+	EXPECT_EQ(h.GetGpr64Jit(reg::v1), 1ull);
+	EXPECT_TRUE(ProgramHasFaultingPC()) << "LW at 0xFFFFFFFD did not take the fastmem-fault/backpatch path";
+}
+
+TEST(EeRecLoadStore, SdStraddlingTopOfFastmemWindowTakesSlowPath)
+{
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a0, 0); // runtime base, so the fastmem path is emitted
+	h.SetGpr64(reg::a1, 0x1122334455667788ull);
+	vtlb_ClearLoadStoreInfo();
+	h.LoadProgram({
+		ee::SD(reg::a1, -1, reg::a0), // 0xFFFFFFFF: the doubleword runs 7 bytes past the window
+		ADDIU(reg::v1, reg::zero, 1),
+	});
+	h.Run();
+	h.ExpectGpr64(reg::v1, 1ull);
+	EXPECT_TRUE(ProgramHasFaultingPC()) << "SD at 0xFFFFFFFF did not take the fastmem-fault/backpatch path";
+}
+
+// Whether a host reports the in-window address or base + 4 GB is the CPU's
+// choice, so the two tests above may never see base + 4 GB here. Hand the
+// fault handler that address directly, for the load of a compiled fastmem LW.
+TEST(EeRecLoadStore, FaultAtEndOfFastmemWindowIsBackpatched)
+{
+	EeRecTestHarness h;
+	h.SetGpr64(reg::a1, kScratch); // mapped, so the compiled load does not fault
+	vtlb_ClearLoadStoreInfo();
+	h.LoadProgram({LW(reg::v0, 0, reg::a1)});
+	h.RunJitNoDiff();
+	ASSERT_FALSE(ProgramHasFaultingPC());
+
+	uptr fnptr = 0, lut_fnptr = 0;
+	u32 host_size = 0;
+	ASSERT_TRUE(recEeBlockHostInfo(RecompilerTestEnvironment::kProgramPc, &fnptr, &host_size, &lut_fnptr));
+
+	// The fastmem load: ldr w<t>, [x19, w<m>, uxtw], x19 being the fastmem base.
+	const u32* code = reinterpret_cast<const u32*>(fnptr);
+	void* load_site = nullptr;
+	for (u32 i = 0; i < host_size / 4 && !load_site; i++)
+	{
+		if ((code[i] & 0xFFE0FFE0u) == 0xB8A04A60u)
+			load_site = const_cast<u32*>(&code[i]);
+	}
+	ASSERT_NE(load_site, nullptr) << "no fastmem load in the compiled block";
+
+	void* const window_end = reinterpret_cast<void*>(vtlb_private::vtlbdata.fastmem_base + 0x100000000ULL);
+	EXPECT_EQ(PageFaultHandler::HandlePageFault(load_site, window_end, false),
+		PageFaultHandler::HandlerResult::ContinueExecution);
+	EXPECT_TRUE(ProgramHasFaultingPC()) << "the fault at base + 4 GB was not backpatched";
+	vtlb_ClearLoadStoreInfo();
 }
 
 // ===========================================================================
