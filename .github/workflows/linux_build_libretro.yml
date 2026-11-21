@@ -139,6 +139,13 @@ jobs:
           ninja pcsx2-libretro
           ccache -s
 
+      # Before packaging strips the symbols the check tells the outline-atomics helpers apart by.
+      - name: Verify no inline LSE atomics
+        run: |
+          SO=$(find build -name 'armsx2_libretro.so' | head -1)
+          test -n "$SO" || { echo "armsx2_libretro.so not found"; exit 1; }
+          bash .github/workflows/scripts/linux/check-no-lse.sh "$SO" llvm-objdump-17
+
       - name: Package libretro Core Tarball
         env:
           NAME: ${{ steps.artifact-metadata.outputs.artifact-name }}
