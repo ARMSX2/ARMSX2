@@ -85,6 +85,13 @@ struct LoadstoreBackpatchInfo
 };
 
 static constexpr size_t FASTMEM_AREA_SIZE = 0x100000000ULL;
+// Inaccessible space reserved directly after the window. A misaligned access at
+// guest 0xFFFFFFF9..0xFFFFFFFF starts inside the window and runs up to 7 bytes
+// past its end; the fault lands here, where HandlePageFault recognises it,
+// rather than in whatever the host mapped next. 64 KB is a whole number of host
+// pages at 4K, 16K and 64K.
+static constexpr size_t FASTMEM_GUARD_SIZE = 0x10000;
+static_assert(FASTMEM_GUARD_SIZE % __pagesize == 0);
 static constexpr u32 FASTMEM_PAGE_COUNT = FASTMEM_AREA_SIZE / VTLB_PAGE_SIZE;
 static constexpr u32 NO_FASTMEM_MAPPING = 0xFFFFFFFFu;
 
@@ -1161,11 +1168,16 @@ void vtlb_AddLoadStoreInfo(uptr code_address, u32 code_size, u32 guest_pc, u32 g
 	s_fastmem_backpatch_info.emplace(code_address, info);
 }
 
+static bool vtlb_IsFastmemGuardAddress(uptr host_addr)
+{
+	const uptr offset = host_addr - (uptr)vtlbdata.fastmem_base;
+	return offset >= FASTMEM_AREA_SIZE && offset < FASTMEM_AREA_SIZE + FASTMEM_GUARD_SIZE;
+}
+
 bool vtlb_BackpatchLoadStore(uptr code_address, uptr fault_address)
 {
-	uptr fastmem_start = (uptr)vtlbdata.fastmem_base;
-	uptr fastmem_end = fastmem_start + 0xFFFFFFFFu;
-	if (fault_address < fastmem_start || fault_address > fastmem_end)
+	const uptr offset = fault_address - (uptr)vtlbdata.fastmem_base;
+	if (offset >= FASTMEM_AREA_SIZE + FASTMEM_GUARD_SIZE)
 		return false;
 
 	auto iter = s_fastmem_backpatch_info.find(code_address);
@@ -1173,7 +1185,10 @@ bool vtlb_BackpatchLoadStore(uptr code_address, uptr fault_address)
 		return false;
 
 	const LoadstoreBackpatchInfo& info = iter->second;
-	const u32 guest_addr = static_cast<u32>(fault_address - fastmem_start);
+	// For a fault in the guard this is not the address the access started at.
+	// The thunk takes the address from info.address_register at run time and
+	// uses this value only for logging.
+	const u32 guest_addr = static_cast<u32>(offset);
 	vtlb_DynBackpatchLoadStore(code_address, info.code_size, info.guest_pc, guest_addr,
 		info.gpr_bitmask, info.fpr_bitmask, info.address_register, info.data_register,
 		info.size_in_bits, info.is_signed, info.is_load, info.is_fpr);
@@ -1398,7 +1413,7 @@ bool vtlb_Core_Alloc()
 	}
 	else
 	{
-		s_fastmem_area = SharedMemoryMappingArea::Create(FASTMEM_AREA_SIZE);
+		s_fastmem_area = SharedMemoryMappingArea::Create(FASTMEM_AREA_SIZE + FASTMEM_GUARD_SIZE);
 		if (!s_fastmem_area)
 		{
 			// 4 GB virtual reservation can fail on devices with limited VA space
@@ -1641,6 +1656,16 @@ PageFaultHandler::HandlerResult PageFaultHandler::HandlePageFault(void* exceptio
 					   HandlerResult::ContinueExecution :
 					   HandlerResult::ExecuteNextHandler;
 		}
+	}
+	else if (CHECK_FASTMEM && vtlb_IsFastmemGuardAddress(reinterpret_cast<uptr>(fault_address)))
+	{
+		// A misaligned access that starts in the last bytes of the window and
+		// runs into the guard. The guard holds no guest page, so there is no
+		// code page to unprotect: backpatch the access to the slow path.
+		return vtlb_BackpatchLoadStore(reinterpret_cast<uptr>(exception_pc),
+				   reinterpret_cast<uptr>(fault_address)) ?
+				   HandlerResult::ContinueExecution :
+				   HandlerResult::ExecuteNextHandler;
 	}
 	else
 	{
