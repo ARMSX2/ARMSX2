@@ -434,4 +434,3 @@ public:
 	size_t TotalLinkCount() const { return links.size(); }
 #endif
 };
-
