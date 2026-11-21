@@ -189,15 +189,6 @@ static void ARMSX2StartJITKeepalive()
 }
 
 - (void)startVMThreadRequestingBoot:(BOOL)requestBoot {
-#if TARGET_OS_SIMULATOR
-    // Test-only simulator hook for exercising the physical-device no-JIT
-    // provider path. It is unavailable in device builds.
-    if (const char* forceNoJIT = std::getenv("ARMSX2_FORCE_NO_JIT");
-        forceNoJIT && std::atoi(forceNoJIT) != 0)
-    {
-        DarwinMisc::iPSX2_FORCE_EE_INTERP = 1;
-    }
-#endif
     ARMSX2ApplyJITScriptProtocol("start-vm-thread");
     bool requestedJIT = !DarwinMisc::iPSX2_FORCE_EE_INTERP;
     {
@@ -275,7 +266,6 @@ static void ARMSX2StartJITKeepalive()
     std::fflush(stderr);
 
     std::thread vmThread([]() {
-        // === ONE-TIME INIT (runs once per app lifetime) ===
         s_cpuThreadId = std::this_thread::get_id();
         ARMSX2ConfigureImGuiFonts("vm-thread");
         if (!DarwinMisc::iPSX2_FORCE_EE_INTERP)
@@ -339,7 +329,6 @@ static void ARMSX2StartJITKeepalive()
         }
         ARMSX2StartJITKeepalive(); // JIT acquired — start idle-period validation
 
-        // === PERSISTENT BOOT LOOP ===
         bool auto_boot_first = (getenv("ARMSX2_AUTO_BOOT") && atoi(getenv("ARMSX2_AUTO_BOOT")) == 1)
                             || (getenv("ARMSX2_BOOT_ELF") != nullptr);
         while (true) {
@@ -382,8 +371,6 @@ static void ARMSX2StartJITKeepalive()
             s_vmThreadActive.store(true, std::memory_order_release);
             ARMSX2StopJITKeepalive();
             DarwinMisc::WaitForJITValidation();
-            const unsigned int heartbeat_generation =
-                s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
 
             VMBootParameters boot_params;
             const bool loadLastSaveState = s_loadLastSaveStateOnBoot.exchange(false);
@@ -469,7 +456,6 @@ static void ARMSX2StartJITKeepalive()
                 Console.Error("CRITICAL: BIOS verification failed inside VM thread.");
                 Host::ReportErrorAsync("BIOS Error", "Validation failed.");
                 s_vmThreadActive.store(false);
-                s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
                 });
@@ -545,35 +531,6 @@ static void ARMSX2StartJITKeepalive()
                     MTGS::ApplySettings();
                 VMManager::SetState(VMState::Running);
 
-                if (ARMSX2IOSRuntimeTelemetryEnabled()) {
-                    std::thread([heartbeat_generation]() {
-                        for (int sec = 1; sec <= 180; sec++) {
-                            std::this_thread::sleep_for(std::chrono::seconds(1));
-                            if (!s_vmThreadActive.load(std::memory_order_relaxed) ||
-                                s_vmHeartbeatGeneration.load(std::memory_order_acquire) != heartbeat_generation)
-                                break;
-                            if (sec != 1 && (sec % 5) != 0)
-                                continue;
-                            std::fprintf(stderr,
-                                "@@VM_HEARTBEAT@@ sec=%d state=%d frame=%u pm_frame=%llu fps=%.2f internal_fps=%.2f speed=%.2f cpu=%.2f vu=%.2f gs=%.2f gpu=%.2f ee_pc=0x%08x ee_cycle=%lld ee_next=%lld\n",
-                                sec,
-                                static_cast<int>(VMManager::GetState()),
-                                ::g_FrameCount,
-                                static_cast<unsigned long long>(PerformanceMetrics::GetFrameNumber()),
-                                PerformanceMetrics::GetFPS(),
-                                PerformanceMetrics::GetInternalFPS(),
-                                PerformanceMetrics::GetSpeed(),
-                                PerformanceMetrics::GetCPUThreadUsage(),
-                                PerformanceMetrics::GetVUThreadUsage(),
-                                PerformanceMetrics::GetGSThreadUsage(),
-                                PerformanceMetrics::GetGPUUsage(),
-                                cpuRegs.pc,
-                                static_cast<long long>(cpuRegs.cycle),
-                                static_cast<long long>(cpuRegs.nextEventCycle));
-                        }
-                    }).detach();
-                }
-
                 while (true) {
                     Host::PumpMessagesOnCPUThread();
 
@@ -601,7 +558,6 @@ static void ARMSX2StartJITKeepalive()
             s_vmThreadActive.store(false);
             ARMSX2DiscardCPUThreadTasks();
             ARMSX2StartJITKeepalive(); // VM stopped — JIT idle, restart monitoring
-            s_vmHeartbeatGeneration.fetch_add(1, std::memory_order_acq_rel);
             s_requestVMStop.store(false);
             Console.WriteLn("[VM] VM Thread: shutdown complete, posting notification");
             dispatch_async(dispatch_get_main_queue(), ^{

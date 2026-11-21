@@ -120,24 +120,6 @@ ARMSX2GameView* g_gameRenderView = nil;  // non-static: accessed from the bridge
 INISettingsInterface* s_settings_interface = nullptr;
 INISettingsInterface* s_secrets_settings_interface = nullptr;
 
-bool ARMSX2IOSRuntimeTelemetryEnabled()
-{
-    static std::atomic<int> s_enabled{-1};
-    int enabled = s_enabled.load(std::memory_order_acquire);
-    if (enabled >= 0)
-        return enabled == 1;
-
-    const char* value = std::getenv("iPSX2_IOS_PERF_TELEMETRY");
-    if (!value || !value[0])
-        value = std::getenv("SIMCTL_CHILD_iPSX2_IOS_PERF_TELEMETRY");
-
-    enabled = (value && std::strcmp(value, "1") == 0) ? 1 : 0;
-    int expected = -1;
-    if (!s_enabled.compare_exchange_strong(expected, enabled, std::memory_order_acq_rel))
-        enabled = expected;
-    return enabled == 1;
-}
-
 
 #pragma mark - VM thread & CPU task queue
 // Touch pad state
@@ -145,7 +127,6 @@ bool g_touchPadState[64] = {};
 
 // Persistent VM thread lifecycle
 std::atomic<bool> s_vmThreadActive{false};   // true while VM is executing
-std::atomic<unsigned int> s_vmHeartbeatGeneration{0};
 std::atomic<bool> s_requestVMStop{false};     // signal VM to stop from UI (extern for ARMSX2Bridge)
 std::atomic<bool> s_requestVMBoot{false};     // signal VM thread to boot
 std::mutex s_vmMutex;
