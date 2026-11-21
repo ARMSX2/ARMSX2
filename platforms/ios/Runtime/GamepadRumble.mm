@@ -125,7 +125,6 @@ static void ARMSX2StopRumbleChannelOnMain(u32 channel)
         [s_nativeHapticPlayer[channel] stopAtTime:CHHapticTimeImmediate error:&error];
         if (error)
             Console.WriteLn("[ARMSX2 iOS Gamepad] Device rumble stop failed: %s", error.localizedDescription.UTF8String ?: "unknown");
-        [s_nativeHapticPlayer[channel] release];
         s_nativeHapticPlayer[channel] = nil;
     }
 
@@ -144,7 +143,6 @@ void ARMSX2ResetNativeGamepadRumbleOnMain()
     ARMSX2StopNativeGamepadRumbleOnMain();
     if (s_nativeHapticEngine) {
         [s_nativeHapticEngine stopWithCompletionHandler:nil];
-        [s_nativeHapticEngine release];
         s_nativeHapticEngine = nil;
     }
     s_nativeHapticEngineRunning = false;
@@ -194,8 +192,6 @@ static bool ARMSX2EnsureNativeRumbleEngineOnMain()
     }
 
     if (!s_nativeHapticEngine) {
-        // alloc/init, so the static owns it outright and releases on teardown. The
-        // controller path next door uses a factory method and has to retain instead.
         NSError* create_error = nil;
         s_nativeHapticEngine = [[CHHapticEngine alloc] initAndReturnError:&create_error];
         if (!s_nativeHapticEngine) {
@@ -261,30 +257,30 @@ static bool ARMSX2EnsureRumbleChannelOnMain(u32 channel)
 
     NSError* error = nil;
     NSArray<CHHapticEventParameter*>* params = @[
-        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f] autorelease],
-        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
-                                                       value:ARMSX2_RUMBLE_CHANNEL_SHARPNESS[channel]] autorelease]
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f],
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
+                                                      value:ARMSX2_RUMBLE_CHANNEL_SHARPNESS[channel]]
     ];
-    CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-                                                          parameters:params
-                                                        relativeTime:0.0
-                                                             duration:1.0] autorelease];
+    CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+                                                         parameters:params
+                                                       relativeTime:0.0
+                                                            duration:1.0];
     // A looping event has a full 1.0 base because IntensityControl multiplies it.
     // Its initial control value must be zero, however, or starting the player emits
     // a full-power click before the requested envelope reaches Core Haptics.
-    CHHapticDynamicParameter* silentStart = [[[CHHapticDynamicParameter alloc]
+    CHHapticDynamicParameter* silentStart = [[CHHapticDynamicParameter alloc]
         initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
                       value:0.0f
-               relativeTime:0.0] autorelease];
-    CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event]
-                                                                  parameters:@[silentStart]
-                                                                       error:&error] autorelease];
+               relativeTime:0.0];
+    CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event]
+                                                                 parameters:@[silentStart]
+                                                                      error:&error];
     if (!pattern) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pattern failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         return false;
     }
 
-    s_nativeHapticPlayer[channel] = [[s_nativeHapticEngine createAdvancedPlayerWithPattern:pattern error:&error] retain];
+    s_nativeHapticPlayer[channel] = [s_nativeHapticEngine createAdvancedPlayerWithPattern:pattern error:&error];
     if (!s_nativeHapticPlayer[channel]) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic player failed: %s", error.localizedDescription.UTF8String ?: "unknown");
         return false;
@@ -294,7 +290,6 @@ static bool ARMSX2EnsureRumbleChannelOnMain(u32 channel)
     s_nativeHapticPlayer[channel].loopEnd = 1.0;
     if (![s_nativeHapticPlayer[channel] startAtTime:CHHapticTimeImmediate error:&error]) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic player start failed: %s", error.localizedDescription.UTF8String ?: "unknown");
-        [s_nativeHapticPlayer[channel] release];
         s_nativeHapticPlayer[channel] = nil;
         return false;
     }
@@ -387,17 +382,17 @@ static bool ARMSX2SetRumbleChannelOnMain(u32 channel, float level, float release
     const double duration = hold_duration + fade_duration;
     NSError* error = nil;
     NSMutableArray<CHHapticParameterCurveControlPoint*>* controlPoints = [NSMutableArray arrayWithObject:
-        [[[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:0.0 value:current] autorelease]];
+        [[CHHapticParameterCurveControlPoint alloc] initWithRelativeTime:0.0 value:current]];
     if (hold_duration > 0.0005) {
-        [controlPoints addObject:[[[CHHapticParameterCurveControlPoint alloc]
-            initWithRelativeTime:hold_duration value:current] autorelease]];
+        [controlPoints addObject:[[CHHapticParameterCurveControlPoint alloc]
+            initWithRelativeTime:hold_duration value:current]];
     }
-    [controlPoints addObject:[[[CHHapticParameterCurveControlPoint alloc]
-        initWithRelativeTime:duration value:target] autorelease]];
-    CHHapticParameterCurve* curve = [[[CHHapticParameterCurve alloc]
+    [controlPoints addObject:[[CHHapticParameterCurveControlPoint alloc]
+        initWithRelativeTime:duration value:target]];
+    CHHapticParameterCurve* curve = [[CHHapticParameterCurve alloc]
         initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
               controlPoints:controlPoints
-               relativeTime:0.0] autorelease];
+               relativeTime:0.0];
 
     if (![s_nativeHapticPlayer[channel] scheduleParameterCurve:curve atTime:CHHapticTimeImmediate error:&error]) {
         Console.WriteLn("[ARMSX2 iOS Gamepad] Device haptic curve failed: %s", error.localizedDescription.UTF8String ?: "unknown");
@@ -439,15 +434,15 @@ static void ARMSX2PlayRumbleTransientOnMain(float large, float small)
     const float intensity = std::clamp(combined, 0.08f, 0.82f);
     NSError* error = nil;
     NSArray<CHHapticEventParameter*>* params = @[
-        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity
-                                                       value:intensity] autorelease],
-        [[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
-                                                       value:sharpness] autorelease]
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity
+                                                      value:intensity],
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
+                                                      value:sharpness]
     ];
-    CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient
-                                                          parameters:params
-                                                        relativeTime:0.0] autorelease];
-    CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
+    CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticTransient
+                                                         parameters:params
+                                                       relativeTime:0.0];
+    CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
     if (!pattern)
         return;
 

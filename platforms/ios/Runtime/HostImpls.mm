@@ -508,11 +508,7 @@ public:
             configuration.URLCache = nil;
             configuration.HTTPShouldSetCookies = NO;
             NSURLSession* session = [NSURLSession sessionWithConfiguration:configuration];
-#if __has_feature(objc_arc)
             m_session = (__bridge_retained void*)session;
-#else
-            m_session = (void*)[session retain];
-#endif
         }
     }
 
@@ -520,16 +516,9 @@ public:
     {
         if (m_session)
         {
-#if __has_feature(objc_arc)
             NSURLSession* session = (__bridge_transfer NSURLSession*)m_session;
-#else
-            NSURLSession* session = (NSURLSession*)m_session;
-#endif
             m_session = nullptr;
             [session invalidateAndCancel];
-#if !__has_feature(objc_arc)
-            [session release];
-#endif
         }
     }
 
@@ -543,13 +532,6 @@ protected:
         u32 completed_content_length = 0;
         std::string completed_content_type;
         Request::Data completed_data;
-
-#if !__has_feature(objc_arc)
-        ~IOSRequest()
-        {
-            [task release];
-        }
-#endif
     };
 
     Request* InternalCreateRequest() override
@@ -610,11 +592,7 @@ protected:
             }
 
             NSString* debug_url = url.host ?: @"";
-#if __has_feature(objc_arc)
             NSURLSession* session = (__bridge NSURLSession*)m_session;
-#else
-            NSURLSession* session = (NSURLSession*)m_session;
-#endif
             if (!session || ![session respondsToSelector:@selector(dataTaskWithRequest:completionHandler:)])
             {
                 request->status_code = HTTP_STATUS_ERROR;
@@ -674,11 +652,7 @@ protected:
                     }
                 }];
 
-#if __has_feature(objc_arc)
             native_request->task = task;
-#else
-            native_request->task = [task retain];
-#endif
             [native_request->task resume];
         }
 
@@ -699,9 +673,6 @@ protected:
         // NSURLSession can still deliver a completion after cancellation. Keep the tiny
         // request object alive in that rare timeout/cancel path to avoid a use-after-free.
         [native_request->task cancel];
-#if !__has_feature(objc_arc)
-        [native_request->task release];
-#endif
         native_request->task = nil;
     }
 

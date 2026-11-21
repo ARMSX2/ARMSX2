@@ -45,7 +45,6 @@ void ARMSX2StopNativeGamepadRumblePulseOnMain(u32 slot)
 				exception.name.UTF8String ?: "unknown",
 				exception.reason.UTF8String ?: "unknown");
 		}
-		[s_nativePulseHapticEngine[slot] release];
 		s_nativePulseHapticEngine[slot] = nil;
 	}
 }
@@ -200,18 +199,15 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(
 
 	const float intensity = std::clamp(raw_intensity, 0.10f, 0.55f);
 	const float sharpness = std::clamp(0.25f + (small * 0.45f), 0.20f, 0.65f);
-	// All four of these were leaking. This file is MRC and a rumbling game comes
-	// through here on every change of value, so it was a steady drip for as long
-	// as a controller was connected.
 	NSArray<CHHapticEventParameter*>* params = @[
-		[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity] autorelease],
-		[[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness] autorelease]
+		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
+		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
 	];
-	CHHapticEvent* event = [[[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-	                                                      parameters:params
-	                                                    relativeTime:0.0
-	                                                         duration:duration_seconds] autorelease];
-	CHHapticPattern* pattern = [[[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error] autorelease];
+	CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+	                                                     parameters:params
+	                                                   relativeTime:0.0
+	                                                        duration:duration_seconds];
+	CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
 	if (!pattern) {
 		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse pattern failed slot=%u: %s",
 			slot + 1, error.localizedDescription.UTF8String ?: "unknown");
@@ -227,11 +223,7 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(
 		return false;
 	}
 
-	// createEngineWithLocality: hands back an autoreleased engine and this file is MRC,
-	// so without the retain the pool drains it at the end of this run loop turn and the
-	// delayed stop below messages freed memory.
-	[s_nativePulseHapticEngine[slot] release];
-	s_nativePulseHapticEngine[slot] = [engine retain];
+	s_nativePulseHapticEngine[slot] = engine;
 	const u32 stop_generation = s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed) + 1;
 	const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
 	if (log_index < 16) {
@@ -259,7 +251,6 @@ static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(
 					exception.name.UTF8String ?: "unknown",
 					exception.reason.UTF8String ?: "unknown");
 			}
-			[s_nativePulseHapticEngine[slot] release];
 			s_nativePulseHapticEngine[slot] = nil;
 		}
 	});
