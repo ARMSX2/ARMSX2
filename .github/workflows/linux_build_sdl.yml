@@ -135,6 +135,11 @@ jobs:
           ninja pcsx2-sdl pcsx2-gsrunner
           ccache -s
 
+      # The kmsdrm handhelds include ARMv8.0 cores without LSE (Cortex-A53), where an inline LSE
+      # atomic is SIGILL; see cmake/BuildParameters.cmake.
+      - name: Verify no inline LSE atomics
+        run: bash .github/workflows/scripts/linux/check-no-lse.sh build/bin/armsx2-sdl llvm-objdump-17
+
       - name: Package SDL Handheld Tarball
         env:
           NAME: ${{ steps.artifact-metadata.outputs.artifact-name }}

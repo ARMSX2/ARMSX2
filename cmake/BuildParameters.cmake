@@ -154,17 +154,22 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		# this; newer ones happen to take the feature set from -mcpu instead.
 		add_compile_options("-march=armv8.4-a+crypto" "-mcpu=apple-m1")
 	elseif(NOT MSVC)
-		# Require atomic rmw instructions (LSE, ARMv8.1+). This is the upstream
-		# default and targets the broad arm64 ecosystem. MSVC (and clang-cl)
-		# reject -march; their arm64 baseline already includes what we need.
-		# In-order ARMv8.0 cores without LSE (e.g. Cortex-A53 handhelds, RK3562)
-		# must build with -march=armv8-a (+ -moutline-atomics) in CMAKE_CXX_FLAGS
-		# — LSE atomics fault on them. Only apply the v8.1 default when the user
-		# hasn't chosen an -march: add_compile_options lands AFTER CMAKE_CXX_FLAGS
+		# Target the ARMv8.0 baseline so one binary runs on every arm64 core,
+		# including in-order ones without LSE (Cortex-A53 handhelds, RK3562, H700),
+		# where an inline LSE atomic is SIGILL. -moutline-atomics routes atomic
+		# read-modify-writes through the __aarch64_* helpers, which check
+		# HWCAP_ATOMICS once at startup and use LSE on cores that have it, so
+		# ARMv8.1+ hardware keeps LSE under contention. Plain atomic loads and
+		# stores stay inline. The recompilers already emit ARMv8.0 only
+		# (arm64/AsmHelpers.h), and GSBlockId picks CRC32/AES from the HWCAPs.
+		# MSVC (and clang-cl) reject -march; their arm64 baseline already
+		# includes what we need.
+		# Only apply this when the user hasn't chosen an -march (e.g. a build
+		# tuned for one device): add_compile_options lands AFTER CMAKE_CXX_FLAGS
 		# on the compile line, so unconditionally adding it here silently
-		# overrides any user -march (proven by a casal SIGILL on a real A53 device).
+		# overrides any user -march.
 		if(NOT CMAKE_CXX_FLAGS MATCHES "-march=")
-			add_compile_options("-march=armv8.1-a")
+			add_compile_options("-march=armv8-a" "-moutline-atomics")
 		endif()
 	endif()
 

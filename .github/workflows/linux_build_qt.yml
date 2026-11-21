@@ -183,6 +183,11 @@ jobs:
           # Save the Cache
           ccache -s
 
+      # One binary covers ARMv8.0 cores without LSE too (cmake/BuildParameters.cmake), so no
+      # LSE instruction may sit outside the runtime-dispatched outline-atomics helpers.
+      - name: Verify no inline LSE atomics
+        run: bash .github/workflows/scripts/linux/check-no-lse.sh build/bin/armsx2-qt llvm-objdump-17
+
       # The client doesn't report a refused agent, so check the identity reached the binary.
       - name: Verify the client identity reached the binary
         if: inputs.stableBuild == true
