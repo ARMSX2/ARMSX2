@@ -7,7 +7,7 @@
 #   * Android  -> the four tiered APKs, built by the same recipe as hand releases
 #                 (tools/build-release-targets.sh: dual page-size cores, PGO, rotation
 #                 signing). One matrix job per tier, since each builds the core twice.
-#   * Linux    -> the 4K and 16K page-size Qt AppImages, as in the nightly, on the
+#   * Linux    -> the 4K, 16K and 4K ARMv8.0 (no LSE) Qt AppImages, as in the nightly, on the
 #                 stable updater channel.
 #
 # The tag is created BEFORE anything builds: the AppImage reads its version from the tag
@@ -239,16 +239,24 @@ jobs:
           - pageVariant: "4k"
             pageSize: "4096"
             cacheLineSize: "64"
+            armv8Baseline: false
           - pageVariant: "16k"
             pageSize: "16384"
             cacheLineSize: "128"
+            armv8Baseline: false
+          # ARMv8.0 (no LSE) for Cortex-A53-class handhelds and SBCs; see build-all.yml.
+          - pageVariant: "4k"
+            pageSize: "4096"
+            cacheLineSize: "64"
+            armv8Baseline: true
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
-      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages${{ matrix.armv8Baseline && ', ARMv8.0' || '' }})"
+      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}${{ matrix.armv8Baseline && '-armv8.0' || '' }}-appimage"
       compiler: clang
       cmakeflags: "-DHOST_PAGE_SIZE=${{ matrix.pageSize }} -DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
       buildAppImage: true
+      armv8Baseline: ${{ matrix.armv8Baseline }}
       fetchTags: true
       stableBuild: true
     secrets:
@@ -291,8 +299,10 @@ jobs:
               grab "ARMSX2-${VN}-${apk}.apk" "ARMSX2-${VN}-${apk}.apk"
             done
           fi
-          grab '*-4k-*.AppImage'  "ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage"
-          grab '*-16k-*.AppImage' "ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"
+          # Anchored on -appimage: a bare *-4k-* also matches the -4k-armv8.0- AppImage.
+          grab '*-arm64-4k-appimage-*.AppImage'         "ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage"
+          grab '*-arm64-16k-appimage-*.AppImage'        "ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"
+          grab '*-arm64-4k-armv8.0-appimage-*.AppImage' "ARMSX2-${VN}-Linux-arm64-4K-pages-ARMv8.0.AppImage"
           (cd out && sha256sum *)
 
       # UPLOAD THE LEGACY APK FIRST. Updaters up to 2.6.6.6 take the release's first .apk
@@ -310,7 +320,8 @@ jobs:
               "out/ARMSX2-${VN}-a13-armv8.2-sdk33.apk" \
               "out/ARMSX2-${VN}-a15-armv8.2-sdk35.apk" \
               "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
-              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage" \
+              "out/ARMSX2-${VN}-Linux-arm64-4K-pages-ARMv8.0.AppImage"; do
               gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY"
             done
           else
@@ -318,7 +329,8 @@ jobs:
             # leave every .apk asset, and the order they were uploaded in, alone.
             for f in \
               "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
-              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage" \
+              "out/ARMSX2-${VN}-Linux-arm64-4K-pages-ARMv8.0.AppImage"; do
               gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY" --clobber
             done
           fi

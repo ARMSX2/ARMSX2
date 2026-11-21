@@ -131,6 +131,7 @@ jobs:
             echo
             echo "- macOS arm64: macOS-arm64.tar.xz"
             echo "- Linux arm64: Linux-arm64-4K-pages.AppImage on most distros, or the 16K one on Asahi Linux and other Apple Silicon kernels (run getconf PAGESIZE if unsure)"
+            echo "- Linux arm64 on ARMv8.0 CPUs (Cortex-A53/A72/A73, no atomics in /proc/cpuinfo): Linux-arm64-4K-pages-ARMv8.0.AppImage"
             echo "- Windows arm64: Windows-arm64.zip"
             echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst, a 4K-page build"
             echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst, a 4K-page build (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
@@ -183,16 +184,24 @@ jobs:
           - pageVariant: "4k"
             pageSize: "4096"
             cacheLineSize: "64"
+            armv8Baseline: false
           - pageVariant: "16k"
             pageSize: "16384"
             cacheLineSize: "128"
+            armv8Baseline: false
+          # ARMv8.0 (no LSE) for Cortex-A53-class handhelds and SBCs; see build-all.yml.
+          - pageVariant: "4k"
+            pageSize: "4096"
+            cacheLineSize: "64"
+            armv8Baseline: true
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
-      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages${{ matrix.armv8Baseline && ', ARMv8.0' || '' }})"
+      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}${{ matrix.armv8Baseline && '-armv8.0' || '' }}-appimage"
       compiler: clang
       cmakeflags: "-DHOST_PAGE_SIZE=${{ matrix.pageSize }} -DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
       buildAppImage: true
+      armv8Baseline: ${{ matrix.armv8Baseline }}
       fetchTags: true
 
   pc-windows-arm64:
@@ -461,8 +470,10 @@ jobs:
           }
 
           grab 'dl/*-macos-*/*'  '*.tar.xz'   'macOS-arm64.tar.xz'
-          grab 'dl/*-4k-*/*'     '*.AppImage' 'Linux-arm64-4K-pages.AppImage'
-          grab 'dl/*-16k-*/*'    '*.AppImage' 'Linux-arm64-16K-pages.AppImage'
+          # Anchored on -appimage: a bare *-4k-* also matches the -4k-armv8.0- artifact.
+          grab 'dl/*-arm64-4k-appimage-*/*'         '*.AppImage' 'Linux-arm64-4K-pages.AppImage'
+          grab 'dl/*-arm64-16k-appimage-*/*'        '*.AppImage' 'Linux-arm64-16K-pages.AppImage'
+          grab 'dl/*-arm64-4k-armv8.0-appimage-*/*' '*.AppImage' 'Linux-arm64-4K-pages-ARMv8.0.AppImage'
           grab 'dl/*-libretro-*/*' '*.tar.zst' 'Linux-arm64-libretro-core.tar.zst'
           grab 'dl/*-sdl-*/*'    '*.tar.zst'  'Linux-arm64-SDL-handheld.tar.zst'
           grab 'dl/*-android-*/*' '*.apk'     'Android-arm64.apk'
