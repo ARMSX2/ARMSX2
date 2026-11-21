@@ -54,7 +54,6 @@ extern ARMSX2GameView* g_gameRenderView;
 // VM thread / boot coordination
 // ---------------------------------------------------------------------------
 extern std::atomic<bool> s_vmThreadActive;          // true while VM is executing
-extern std::atomic<unsigned int> s_vmHeartbeatGeneration;
 extern std::atomic<bool> s_requestVMBoot;           // signal VM thread to boot
 extern std::atomic<bool> s_requestVMStop;           // signal VM to stop from UI
 extern std::mutex s_vmMutex;
@@ -93,8 +92,6 @@ extern "C" void ARMSX2_iOSCopyDeviceStats(int* outBatteryPercent, int* outTherma
 extern "C" void ARMSX2_PrepareGameRenderViewForCurrentRenderer(const char* reason);
 extern "C" void ARMSX2_iOSTestGamepadRumble(void);
 extern "C" bool ARMSX2_IsIdleVMPrewarmResolved(void);
-// Runtime telemetry gate (env-gated, cached).
-bool ARMSX2IOSRuntimeTelemetryEnabled();
 
 // ---------------------------------------------------------------------------
 // View-controller refs, unretained because UIKit and SwiftUI own the controllers
