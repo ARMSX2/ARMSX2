@@ -318,7 +318,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 	set(IOS_RUNTIME_SOURCES
 		Runtime/ios_main.mm
 		Runtime/AppDelegate.mm
-		Runtime/GamepadHaptics.mm
+		Runtime/GamepadInput.mm
+		Runtime/GamepadRefresh.mm
+		Runtime/GamepadRumblePulse.mm
+		Runtime/GamepadRumble.mm
 		Runtime/HostImpls.mm
 		Runtime/PlaySoundAsync.mm
 		Runtime/SceneDelegate.mm

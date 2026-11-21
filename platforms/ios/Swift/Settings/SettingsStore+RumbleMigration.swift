@@ -5,7 +5,7 @@ import Foundation
 
 extension SettingsStore {
     /// Slider value that reproduces the old full strength, and the factor for rescaling onto the
-    /// new curve. GamepadHaptics.mm keeps its own copy.
+    /// new curve. GamepadRumble.mm keeps its own copy.
     private static let phoneRumbleBaselineSetting: Float = 0.25
 
     /// PhoneRumbleStrength kept its key but changed meaning: 0.25 is now what 1.0 used to be, so
