@@ -439,9 +439,10 @@ public:
 	__fi u32 size() const { return blocks.size(); }
 
 	// The block whose code holds host address `pc`, or null. A walk of the
-	// whole index, for the crash post-mortem (RecCrashReport-arm64.h).
-	// The compile thread owns the index and calls this from its fault
-	// handler while executing generated code.
+	// whole index, for the crash post-mortem (RecCrashReport-arm64.h): reads
+	// only, no locks, no allocation (Next() and Get() do not touch the page
+	// cache). The compile thread owns the index and calls this from its fault
+	// handler while executing generated code, so the index is not changing.
 	const BASEBLOCKEX* FindByHostPc(uptr pc) const
 	{
 		for (Position pos = Next(BlockIndex::Invalid()); const BASEBLOCKEX* block = blocks.Get(pos); pos = Next(pos))
