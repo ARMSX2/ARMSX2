@@ -2692,7 +2692,7 @@ TEST(GsKickKernel, TagFinishedByTheMidRecordResumeIsNotDispatched)
 {
 	u32 seed = 9900;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
-		&kUvTriple41, &kNopTripleXYZ2};
+		&kUvTriple41, &kNopTripleXYZ2, &kPairRGBAQF, &kPairRGBAQFNop2};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
@@ -2738,7 +2738,7 @@ TEST(GsKickKernel, LayoutsMatchThroughTransfer)
 	u32 seed = 9700;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kNopTriple52, &kPairSTQ, &kPairUV, &kPairUVF,
 		&kPairRGBAQ, &kPairRGBAQNop, &kUvTriple, &kUvTriple40, &kUvTriple41, &kNopTripleXYZ2,
-		&kNopTripleXYZ2Lead};
+		&kNopTripleXYZ2Lead, &kPairRGBAQF, &kPairRGBAQFNop, &kPairRGBAQFNop2};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
@@ -2765,7 +2765,8 @@ TEST(GsKickKernel, RepeatedPairThroughTransferMatchesTheReplay)
 	const LayoutCase repeated_stq = {"4:2,5,2,5", {2, 5, 2, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairSTQXYZ2};
 	const LayoutCase repeated_uv = {"4:3,5,3,5", {3, 5, 3, 5}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZ2};
 	const LayoutCase repeated_uvf = {"4:3,4,3,4", {3, 4, 3, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairUVXYZF2};
-	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv, &repeated_uvf})
+	const LayoutCase repeated_rgbaqf = {"4:1,4,1,4", {1, 4, 1, 4}, {2, 0, 0, 1}, GSVertexKernels::PackedLayout::PairRGBAQXYZF2};
+	for (const LayoutCase* lc : {&repeated_stq, &repeated_uv, &repeated_uvf, &repeated_rgbaqf})
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
 		{
@@ -2795,7 +2796,7 @@ TEST(GsKickKernel, LayoutsMatchThroughTransferWithDrawBuffering)
 {
 	u32 seed = 9900;
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairRGBAQ,
-		&kPairRGBAQNop, &kUvTriple, &kUvTriple41, &kNopTripleXYZ2};
+		&kPairRGBAQNop, &kUvTriple, &kUvTriple41, &kNopTripleXYZ2, &kPairRGBAQF, &kPairRGBAQFNop};
 	for (const LayoutCase* lc : cases)
 	{
 		for (u32 prim : {GS_TRIANGLESTRIP, GS_SPRITE})
@@ -3100,7 +3101,7 @@ TEST(GsKickKernel, RingPoisonGuardIsNotVacuous)
 TEST(GsKickKernel, LayoutDrawStartFlushesAtTheSameVertex)
 {
 	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
-		&kNopTripleXYZ2};
+		&kNopTripleXYZ2, &kPairRGBAQF};
 	u32 flushed_runs = 0;
 	for (const LayoutCase* lc : cases)
 	{
