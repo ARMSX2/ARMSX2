@@ -3933,6 +3933,12 @@ void VMManager::Internal::VSyncOnCPUThread()
 	PollDiscordPresence();
 
 	AutoTune::OnVSync();
+
+#if defined(__linux__)
+	// A syscall the system's seccomp filter refused returned ENOSYS to its caller (see PageFaultHandler::Install).
+	for (int nr; (nr = PageFaultHandler::TakeRefusedSyscall()) >= 0;)
+		Console.Warning("Host: seccomp refused syscall %d; it returned ENOSYS.", nr);
+#endif
 }
 
 void VMManager::Internal::PollInputOnCPUThread()

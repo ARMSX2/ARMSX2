@@ -9,6 +9,7 @@
 #include "common/HostSys.h"
 
 #include <atomic>
+#include <bit>
 #include <cstdio>
 #include <csignal>
 #include <cerrno>
@@ -552,6 +553,86 @@ void PageFaultHandler::SetUnhandledFaultReporter(UnhandledFaultReporter reporter
 	s_unhandled_fault_reporter.store(reporter, std::memory_order_release);
 }
 
+#if defined(__linux__)
+
+// bionic defines it, glibc does not.
+#ifndef SYS_SECCOMP
+#define SYS_SECCOMP 1
+#endif
+
+namespace PageFaultHandler
+{
+	static struct sigaction s_previous_sigsys = {};
+
+	// The syscalls a seccomp filter refused, one bit per number, and the ones TakeRefusedSyscall
+	// has returned. Numbers past the end are not recorded; no ABI we build has any.
+	static constexpr u32 kSyscallWords = 16;
+	static std::atomic<u64> s_refused_syscalls[kSyscallWords] = {};
+	static std::atomic<u64> s_taken_syscalls[kSyscallWords] = {};
+
+	// With SECCOMP_RET_TRAP the kernel skips the syscall and raises SIGSYS on the calling thread,
+	// with the pc already past the svc. Writing -ENOSYS to the return register and returning makes
+	// the call fail as it would on a kernel without it, so the caller's own fallback runs. A SIGSYS
+	// that is not a seccomp trap goes to the action that was installed before ours.
+	static void SeccompTrapHandler(int sig, siginfo_t* info, void* ctx)
+	{
+		if (info->si_code != SYS_SECCOMP)
+		{
+			const struct sigaction& prev = s_previous_sigsys;
+			if (prev.sa_flags & SA_SIGINFO)
+			{
+				prev.sa_sigaction(sig, info, ctx);
+			}
+			else if (prev.sa_handler == SIG_DFL)
+			{
+				// SIGSYS is blocked in here, so the signal sent again arrives, with the default
+				// action, when this returns.
+				struct sigaction dfl = {};
+				sigemptyset(&dfl.sa_mask);
+				dfl.sa_handler = SIG_DFL;
+				sigaction(SIGSYS, &dfl, nullptr);
+				raise(SIGSYS);
+			}
+			else if (prev.sa_handler != SIG_IGN)
+			{
+				prev.sa_handler(sig);
+			}
+			return;
+		}
+
+		const u32 nr = static_cast<u32>(info->si_syscall);
+		if (nr < kSyscallWords * 64)
+			s_refused_syscalls[nr / 64].fetch_or(u64{1} << (nr % 64), std::memory_order_relaxed);
+
+		ucontext_t* const uc = static_cast<ucontext_t*>(ctx);
+#if defined(__aarch64__)
+		uc->uc_mcontext.regs[0] = static_cast<u64>(-ENOSYS);
+#elif defined(__x86_64__)
+		uc->uc_mcontext.gregs[REG_RAX] = -ENOSYS;
+#else
+#error "Set the syscall return register for this architecture."
+#endif
+	}
+} // namespace PageFaultHandler
+
+int PageFaultHandler::TakeRefusedSyscall()
+{
+	for (u32 i = 0; i < kSyscallWords; i++)
+	{
+		u64 fresh = s_refused_syscalls[i].load(std::memory_order_relaxed) & ~s_taken_syscalls[i].load(std::memory_order_relaxed);
+		while (fresh != 0)
+		{
+			const u64 bit = fresh & (~fresh + 1);
+			if ((s_taken_syscalls[i].fetch_or(bit, std::memory_order_relaxed) & bit) == 0)
+				return static_cast<int>(i * 64 + std::countr_zero(bit));
+			fresh &= ~bit;
+		}
+	}
+	return -1;
+}
+
+#endif // __linux__
+
 bool PageFaultHandler::Install(Error* error)
 {
 	std::unique_lock lock(s_exception_handler_mutex);
@@ -597,6 +678,22 @@ bool PageFaultHandler::Install(Error* error)
 		return false;
 	}
 	CrashHandler::RecordReplacedHandler(SIGILL, replaced);
+#endif
+
+#if defined(__linux__)
+	// The crash handler does not take SIGSYS, so what this replaces is the system's: on Android,
+	// debuggerd's handler.
+	struct sigaction sys = {};
+	sigemptyset(&sys.sa_mask);
+	sys.sa_flags = SA_SIGINFO;
+	sys.sa_sigaction = SeccompTrapHandler;
+	if (sigaction(SIGSYS, &sys, &replaced) != 0)
+	{
+		Error::SetErrno(error, "sigaction() for SIGSYS failed: ", errno);
+		return false;
+	}
+	if (!(replaced.sa_flags & SA_SIGINFO) || replaced.sa_sigaction != SeccompTrapHandler)
+		s_previous_sigsys = replaced;
 #endif
 
 	s_installed = true;

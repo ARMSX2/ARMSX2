@@ -5,7 +5,8 @@
 // and 9 answers every syscall it does not list: the kernel skips the call and raises SIGSYS
 // (SECCOMP_RET_TRAP). With the signal handlers the emulator installs at startup
 // (PageFaultHandler::Install), the thread has to start and fall back to the fence instead of the
-// process dying. The filter is installed in a death-test child, so it never reaches the test binary.
+// process dying, and the refused syscall is recorded for the log. The filter is installed in a
+// death-test child, so it never reaches the test binary.
 
 #include <gtest/gtest.h>
 
@@ -14,6 +15,7 @@
 
 #if defined(__linux__) && (defined(__aarch64__) || defined(__x86_64__))
 
+#include <csignal>
 #include <cstddef>
 #include <cstdlib>
 #include <iterator>
@@ -56,6 +58,7 @@ namespace
 		kNoFilter = 3,
 		kNotStarted = 4,
 		kUsedMembarrier = 5,
+		kNotRecorded = 6,
 	};
 
 	int StartTheIopThreadWithMembarrierTrapped()
@@ -79,7 +82,17 @@ namespace
 			return kNotStarted;
 		const bool used_membarrier = thread.GetStats().sleep_barrier_membarrier != 0;
 		thread.Stop();
-		return used_membarrier ? kUsedMembarrier : kPassed;
+		if (used_membarrier)
+			return kUsedMembarrier;
+		if (PageFaultHandler::TakeRefusedSyscall() != __NR_membarrier || PageFaultHandler::TakeRefusedSyscall() != -1)
+			return kNotRecorded;
+		return kPassed;
+	}
+
+	constexpr int kPreviousHandlerRan = 7;
+	void PreviousSigsysHandler(int)
+	{
+		std::_Exit(kPreviousHandlerRan);
 	}
 } // namespace
 
@@ -88,6 +101,28 @@ TEST(IopThreadSeccomp, AMembarrierTheFilterTrapsFallsBackToTheFence)
 	// A fresh process: in a forked copy of this one, an earlier test may already have registered membarrier.
 	GTEST_FLAG_SET(death_test_style, "threadsafe");
 	EXPECT_EXIT(std::_Exit(StartTheIopThreadWithMembarrierTrapped()), ::testing::ExitedWithCode(kPassed), "");
+}
+
+// A SIGSYS that is not a seccomp trap (here one sent with raise) goes to the action installed before ours.
+TEST(IopThreadSeccomp, ASigsysThatIsNotATrapGoesToThePreviousAction)
+{
+	GTEST_FLAG_SET(death_test_style, "threadsafe");
+	EXPECT_EXIT(
+		{
+			std::signal(SIGSYS, PreviousSigsysHandler);
+			PageFaultHandler::Install();
+			std::raise(SIGSYS);
+			std::_Exit(0);
+		},
+		::testing::ExitedWithCode(kPreviousHandlerRan), "");
+	EXPECT_EXIT(
+		{
+			std::signal(SIGSYS, SIG_DFL);
+			PageFaultHandler::Install();
+			std::raise(SIGSYS);
+			std::_Exit(0);
+		},
+		::testing::KilledBySignal(SIGSYS), "");
 }
 
 #endif
