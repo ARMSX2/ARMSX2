@@ -2910,16 +2910,16 @@ void GSState::StoreLatchedQ(const GIFPackedReg* RESTRICT stq)
 	GSVector4::store(&m_q, GSVector4::cast(q));
 }
 
-// The layouts stage 3c added: the NOP-padded {ST, RGBAQ, XYZF2} triple, and the
-// three two-register layouts. One handler covers all four, because everything
-// that differs between them is inside the parse and the parse is a template
-// parameter.
+// Every packed layout SetTag names except the two contiguous {ST, RGBAQ, XYZ}
+// triples, which keep their own handlers. One handler covers them all, because
+// everything that differs between them is inside the parse and the parse is a
+// template parameter.
 //
-// Instantiated only for the three prim types the kernel carries. Every other
-// prim leaves a null in the handler table and Transfer replays the tag's
-// descriptors one qword at a time, which is exact by construction and is what
-// keeps four layouts from costing eight prims' worth of kernel, staged loop and
-// per-vertex batch each.
+// Instantiated only for the (prim, layout) pairs LayoutHandlerExists lists.
+// Every other pair leaves a null in the handler table and Transfer replays the
+// tag's descriptors one qword at a time, which is exact by construction and is
+// what keeps each layout from costing eight prims' worth of kernel, staged loop
+// and per-vertex batch.
 template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
 void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size)
 {
