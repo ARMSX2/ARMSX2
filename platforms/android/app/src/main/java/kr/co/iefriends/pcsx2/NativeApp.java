@@ -208,15 +208,6 @@ public class NativeApp {
 	 *  A caller that wants to move the file must wait until this is false. */
 	public static native boolean isEmulogOpen();
 
-	/**
-	 * Live GS-only reconfigure for a running VM. Reloads the whole EmuCore/GS
-	 * section from the base settings layer and pushes it to the GS thread via
-	 * MTGS::ApplySettings WITHOUT the heavier VMManager::ApplySettings (no
-	 * CPU/JIT rebuild). Call after pushing EmuCore/GS keys via setSetting() so
-	 * renderer / hardware-fix / upscaling-fix changes apply mid-game. No-op
-	 * when the GS is closed — the keys still take effect on next launch.
-	 */
-	public static native boolean applyGSSettingsLive();
 	public static native int reloadPatches();
 	public static native boolean reloadTextureReplacements();
 
@@ -1068,10 +1059,6 @@ public class NativeApp {
 	 *  display swap, so emulation keeps running at 100% speed while the
 	 *  on-screen FPS is limited. Applies live. */
 	public static native void setFpsCap(int fps);
-	/** Per-region emulated PS2 vsync rate (NTSC / PAL Hz), applied live without a
-	 *  restart — recomputes the vsync pacer + target speed. Parks the VM briefly
-	 *  (keeps audio alive), so call it off the UI thread (via LiveGsApplyQueue). */
-	public static native void applyFramerateLive(float ntsc, float pal);
 	/** Frame skip: present 1 frame, skip the next N (0 = off). Display-only
 	 *  throttle; applies live. */
 	public static native void setFrameSkip(int skip);

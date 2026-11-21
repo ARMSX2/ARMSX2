@@ -27,8 +27,8 @@ import com.armsx2.ui.InGameOverlay
  * core quality/display settings.
  *
  * Every row writes into [Settings] via [InGameOverlay.saveSettings]; on a
- * running VM that reconfigures the GS live (Settings.applyGsLive → native
- * applyGSSettingsLive) so changes show without a restart. Note PCSX2 masks
+ * running VM that applies the settings live (Settings.applyTo → native
+ * commitSettings) so changes show without a restart. Note PCSX2 masks
  * upscaling hacks at native (1x) resolution and masks every UserHacks_* key
  * unless at least one fix is enabled — both are intentional parity behaviours.
  */

@@ -2438,108 +2438,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
     });
 }
 
-// Generic live GS reconfigure. Reloads the whole EmuCore/GS section from the
-// base settings layer into EmuConfig.GS, re-applies the user-hack masks the
-// core applies on load, then pushes the change to the GS thread — WITHOUT the
-// full VMManager::ApplySettings() CPU/JIT rebuild that commitSettings() does
-// (that heavy path is what caused ANRs when settings were scrubbed live). This
-// lets every renderer / hardware-fix / upscaling-fix setting apply mid-game,
-// the same way the desktop pause menu's GS settings do. The UI writes the
-// changed keys via setSetting() first, then calls this.
-extern "C"
-JNIEXPORT jboolean JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_applyGSSettingsLive(JNIEnv *env, jclass clazz) {
-    // CRITICAL (Android stability): reloading the WHOLE EmuCore/GS section pulls
-    // the device-identity fields (Renderer/Adapter/…) from the base layer too —
-    // e.g. base "Auto" vs the already-resolved OpenGL the VM is running on. Any
-    // mismatch makes GSUpdateConfig take the full device teardown/recreate path
-    // (GSreopen(true,true), gated by GSOptions::RestartOptionsAreEqual), which is
-    // the one GS operation that crashes mid-game here. The narrow live setters
-    // (renderTvShader, …) are safe precisely because they never touch these.
-    // So snapshot the live device fields, reload, then restore them — only the
-    // safe in-place render / hardware-fix / upscaling-fix options end up changing.
-    //
-    // All of this runs on the CPU thread: EmuConfig is its state, LoadSave() rewrites the whole
-    // GS struct (std::string Adapter included) rather than poking one field, and the reconfigure
-    // it feeds pushes to the single-producer MTGS ring. The previous version mutated here on the
-    // UI thread and only parked the VM around the MTGS push at the end, leaving the reload itself
-    // unsynchronised against the EE.
-    return ApplyLiveGSSettings("ui_render_live", [&]() {
-        const auto saved_renderer        = EmuConfig.GS.Renderer;
-        const auto saved_adapter         = EmuConfig.GS.Adapter;
-        const auto saved_debug_device    = EmuConfig.GS.UseDebugDevice;
-        const auto saved_blit_swap       = EmuConfig.GS.UseBlitSwapChain;
-        const auto saved_no_shader_cache = EmuConfig.GS.DisableShaderCache;
-        const auto saved_no_fb_fetch     = EmuConfig.GS.DisableFramebufferFetch;
-        const auto saved_mali_fbfetch    = EmuConfig.GS.ForceMaliFramebufferFetch;
-        const auto saved_no_vs_expand    = EmuConfig.GS.DisableVertexShaderExpand;
-        const auto saved_tex_barriers    = EmuConfig.GS.OverrideTextureBarriers;
-        const auto saved_depth_feedback  = EmuConfig.GS.DepthFeedbackMode;
-        const auto saved_back_thread     = EmuConfig.GS.BackThread;
-        const auto saved_hwaa1           = EmuConfig.GS.HWAA1;
-        const auto saved_exclusive_fs    = EmuConfig.GS.ExclusiveFullscreenControl;
-        const auto saved_sw_threads      = EmuConfig.GS.SWExtraThreads;
-        const auto saved_sw_threads_h    = EmuConfig.GS.SWExtraThreadsHeight;
-
-        {
-            auto lock = Host::GetSettingsLock();
-            SettingsInterface* si = Host::GetSettingsInterface();
-            if (!si)
-                return false;
-            SettingsLoadWrapper slw(*si);
-            EmuConfig.GS.LoadSave(slw);
-
-            // Mirror VMManager::LoadCoreSettings: the reload above took the mask from
-            // whichever layer answered first, so re-derive the per-game claims or
-            // MaskUserHacks() below strips a hack the player set for this game.
-            if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-                EmuConfig.GS.UserHackOverrides |= ComputePerGameOverrides(*game_layer).gs_hacks;
-        }
-
-        // Restore everything RestartOptionsAreEqual() compares (+ the SW-thread quick-
-        // reopen pair) so a live apply can NEVER trigger a device/renderer recreate.
-        EmuConfig.GS.Renderer                   = saved_renderer;
-        EmuConfig.GS.Adapter                    = saved_adapter;
-        EmuConfig.GS.UseDebugDevice             = saved_debug_device;
-        EmuConfig.GS.UseBlitSwapChain           = saved_blit_swap;
-        EmuConfig.GS.DisableShaderCache         = saved_no_shader_cache;
-        EmuConfig.GS.DisableFramebufferFetch    = saved_no_fb_fetch;
-        EmuConfig.GS.ForceMaliFramebufferFetch  = saved_mali_fbfetch;
-        EmuConfig.GS.DisableVertexShaderExpand  = saved_no_vs_expand;
-        EmuConfig.GS.OverrideTextureBarriers    = saved_tex_barriers;
-        EmuConfig.GS.DepthFeedbackMode          = saved_depth_feedback;
-        EmuConfig.GS.BackThread                 = saved_back_thread;
-        EmuConfig.GS.HWAA1                       = saved_hwaa1;
-        EmuConfig.GS.ExclusiveFullscreenControl = saved_exclusive_fs;
-        EmuConfig.GS.SWExtraThreads             = saved_sw_threads;
-        EmuConfig.GS.SWExtraThreadsHeight       = saved_sw_threads_h;
-
-        // Mirror VMManager::LoadCoreSettings: strip user/upscaling hacks when their
-        // master toggles are off so stale keys can't leak through into the renderer.
-        EmuConfig.GS.MaskUserHacks();
-        EmuConfig.GS.MaskUpscalingHacks();
-
-        // Re-apply the active game's GameDB GS hardware fixes. LoadSave above only
-        // restored the user/base layer; per-game fixes (e.g. True Crime's
-        // textureInsideRT) apply on TOP of it in VMManager::ApplyGameFixes. Without
-        // this, a live GS settings change would wipe them and the game would break
-        // until the next launch. Mirrors ApplyGameFixes' GS portion.
-        if (const GameDatabaseSchema::GameEntry* game = GameDatabase::findGame(VMManager::GetDiscSerial()))
-        {
-            PerGameOverrides overrides;
-            {
-                auto lock = Host::GetSettingsLock();
-                if (const SettingsInterface* game_layer = Host::Internal::GetGameSettingsLayer())
-                    overrides = ComputePerGameOverrides(*game_layer);
-            }
-
-            game->applyGSHardwareFixes(EmuConfig.GS, overrides);
-            EmuConfig.GS.MaskUpscalingHacks();
-        }
-        return true;
-    }) ? JNI_TRUE : JNI_FALSE;
-}
-
 extern "C"
 JNIEXPORT jint JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadPatches(JNIEnv *env, jclass clazz) {
@@ -2585,35 +2483,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadTextureReplacements(JNIEnv *env, jcla
         g_gs_renderer->PurgeTextureCache(true, false, true);
     });
     return JNI_TRUE;
-}
-
-extern "C"
-JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_applyFramerateLive(JNIEnv *env, jclass clazz,
-                                                        jfloat p_ntsc, jfloat p_pal) {
-    // Per-region NTSC/PAL emulated vsync rate, applied LIVE (no restart) so the
-    // Frame Rate sliders behave like NetherSX2. The pacer caches the rate in
-    // vSyncInfo, so a plain EmuConfig write does nothing until UpdateVSyncRate
-    // recomputes it — mirroring VMManager::CheckForGSConfigChanges' framerate
-    // branch (UpdateVSyncRate + UpdateTargetSpeed).
-    //
-    // CRITICAL: UpdateVSyncRate rewrites the EE-thread hsync/vsync counters and
-    // calls cpuRcntSet(), so it MUST run with the CPU/MTGS/MTVU threads parked —
-    // a raw JNI-thread call would race the emulation loop. ScopedVMPause(false)
-    // parks them but keeps the audio stream alive (avoids the low-latency-stream
-    // reclaim that muted audio on longer parks). Invoked off the UI thread via
-    // LiveGsApplyQueue, which also coalesces rapid slider drags.
-    if (!VMManager::HasValidVM())
-        return;
-    ScopedVMPause vm_pause(false);
-    if (!vm_pause.parked())
-        return;
-    EmuConfig.GS.FramerateNTSC = static_cast<float>(p_ntsc);
-    EmuConfig.GS.FrameratePAL = static_cast<float>(p_pal);
-    UpdateVSyncRate(true);
-    VMManager::UpdateTargetSpeed();
-    Console.WriteLnFmt("@@ANDROID_FRAMERATE@@ ntsc={} pal={}",
-        EmuConfig.GS.FramerateNTSC, EmuConfig.GS.FrameratePAL);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -5936,8 +5805,8 @@ int Host::LocaleSensitiveCompare(std::string_view lhs, std::string_view rhs)
 // are `bool : 1` bit-fields (Config.h GSOptions BITFIELD32) sharing storage with the GS
 // device-restart flags — DisableFramebufferFetch, ForceMaliFramebufferFetch, UseBlitSwapChain,
 // DisableShaderCache. A bit-field assignment is a read-modify-write of that whole storage unit, so a UI-thread OSD toggle racing the CPU thread
-// can write back a stale copy of its neighbours. Lose applyGSSettingsLive's restore of one of
-// those and RestartOptionsAreEqual() goes false, which takes GSUpdateConfig down the full device
+// can write back a stale copy of its neighbours. Flip one of those and RestartOptionsAreEqual()
+// goes false, which takes GSUpdateConfig down the full device
 // teardown path — the one GS operation that crashes mid-game here. An OSD toggle is emphatically
 // not worth that, hence the hop.
 static void applyOsdSetting(std::function<void()> mutate)
