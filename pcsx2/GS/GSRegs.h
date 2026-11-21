@@ -78,7 +78,10 @@ enum GIF_REG_COMPLEX
 	GIF_REG_RGBAQXYZ2 = 0x05,
 	GIF_REG_UVRGBAQXYZF2 = 0x06,
 	GIF_REG_UVXYZF2 = 0x07,
-	GIF_REG_COMPLEX_COUNT = 0x08,
+	GIF_REG_NOPSTQRGBAXYZ2 = 0x08,
+	GIF_REG_RGBAQXYZF2 = 0x09,
+	GIF_REG_SINGLEXYZ2 = 0x0A,
+	GIF_REG_COMPLEX_COUNT = 0x0B,
 };
 
 enum GIF_A_D_REG
@@ -1172,6 +1175,12 @@ struct alignas(32) GIFPath
 		TYPE_UVRGBAQXYZF2,
 		// {UV, XYZF2}: Call of Duty 3's sprite stream. ST, colour and Q carried, as {UV, XYZ2}.
 		TYPE_UVXYZF2,
+		// {ST, RGBAQ, XYZ2} with NOPs between, used for triangle strips.
+		TYPE_NOPSTQRGBAXYZ2,
+		// {RGBAQ, XYZF2}, contiguous or NOP-padded: ST and the latched Q are carried.
+		TYPE_RGBAQXYZF2,
+		// {XYZ2} alone: every other field of the vertex is carried.
+		TYPE_SINGLEXYZ2,
 	};
 
 	static_assert(TYPE_STQRGBAXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_STQRGBAXYZF2);
@@ -1182,6 +1191,9 @@ struct alignas(32) GIFPath
 	static_assert(TYPE_RGBAQXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_RGBAQXYZ2);
 	static_assert(TYPE_UVRGBAQXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_UVRGBAQXYZF2);
 	static_assert(TYPE_UVXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_UVXYZF2);
+	static_assert(TYPE_NOPSTQRGBAXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_NOPSTQRGBAXYZ2);
+	static_assert(TYPE_RGBAQXYZF2 - TYPE_STQRGBAXYZF2 == GIF_REG_RGBAQXYZF2);
+	static_assert(TYPE_SINGLEXYZ2 - TYPE_STQRGBAXYZF2 == GIF_REG_SINGLEXYZ2);
 
 	__forceinline void SetTag(const void* mem)
 	{
@@ -1228,6 +1240,13 @@ struct alignas(32) GIFPath
 				switch (nreg)
 				{
 					case 1:
+						// Positions alone: each vertex takes the rest from what the
+						// last write latched, as the per-qword path leaves it in m_v.
+						if (regs.U32[0] == 0x00000005)
+						{
+							type = TYPE_SINGLEXYZ2;
+							layout = {1, 0, 0, 0};
+						}
 						break;
 					case 2:
 						// {STQ, XYZ2}, {UV, XYZ2} and {RGBAQ, XYZ2}. A layout
@@ -1243,6 +1262,8 @@ struct alignas(32) GIFPath
 							type = TYPE_RGBAQXYZ2;
 						else if (regs.U32[0] == 0x00000403)
 							type = TYPE_UVXYZF2;
+						else if (regs.U32[0] == 0x00000401)
+							type = TYPE_RGBAQXYZF2;
 						if (type != TYPE_UNKNOWN)
 							layout = {2, 0, 0, 1};
 						break;
@@ -1277,6 +1298,8 @@ struct alignas(32) GIFPath
 							type = TYPE_RGBAQXYZ2;
 						else if (regs.U32[0] == 0x04030403)
 							type = TYPE_UVXYZF2;
+						else if (regs.U32[0] == 0x04010401)
+							type = TYPE_RGBAQXYZF2;
 						if (type != TYPE_UNKNOWN)
 						{
 							nreg = 2;
