@@ -971,18 +971,11 @@ object ControllerMappings {
     }
 
     // ---- Analog-trigger pressure (L2/R2, per player) ----------------------
-    // The PS2's L2/R2 are PRESSURE-sensitive (0-255) and the axis path has always sent a
-    // proportional value, so on most pads analog triggers already work. What breaks them is a
-    // pad that reports a trigger BOTH ways: the axis ramps 0..1 while the driver ALSO
-    // synthesises a KEYCODE_BUTTON_L2/R2 key event partway through the pull, and that key event
-    // writes a FULL press over the axis value — a half-pulled trigger snaps to 100% (Odin 2 Portal).
+    // The PS2's L2/R2 are PRESSURE-sensitive (0-255) and the axis path sends the proportional
+    // travel. On a pad that reports a trigger both as an axis and as a key, the key is dropped
+    // whatever this option says (MainActivityRuntime.dispatchGameplayKey, TriggerAxisKeys).
     //
-    // OFF (the DEFAULT) is byte-for-byte today's behaviour: proportional value sent, key event
-    // untouched, no curve. Pads that never had the collision are therefore completely
-    // unaffected by this setting existing — the opt-in convention the rest of this file follows.
-    // ON makes the trigger AXIS the sole owner of that button's pad state: the digital key event
-    // is dropped (only on pads that actually have an axis to fall back on) and the response
-    // curve below applies.
+    // ON applies the response curve below to that travel. OFF (the default) sends it linear.
     //
     // Keyed by the PHYSICAL side, not the PS2 target: it describes how this pad reports its
     // trigger, which does not change when the row is remapped. The L2 row is the left trigger,

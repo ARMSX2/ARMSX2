@@ -508,11 +508,10 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                         )
                     }
                     // Analog pressure — L2/R2 only, because they are the only PS2 buttons a
-                    // handheld's analog triggers map onto. OFF (the default) is exactly the
-                    // behaviour this frontend has always had, so pads that never had the problem
-                    // are untouched. ON makes the trigger AXIS the sole owner of the button:
-                    // a pad that reports its trigger BOTH as an axis and as a key event no longer
-                    // lets the key event slam a half-pull to full — see sendTrigger.
+                    // handheld's analog triggers map onto. ON shows and applies the response
+                    // curve below. The trigger's travel reaches the game either way; a pad that
+                    // also reports the trigger as a key has that key dropped in both modes
+                    // (MainActivityRuntime.dispatchGameplayKey).
                     if (ControllerMappings.isTriggerAction(action)) {
                         val pressure = remember(action.id, editPlayer.intValue, refreshToken.intValue) {
                             mutableStateOf(
@@ -533,7 +532,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                "\u21b3 Analog pressure (use travel, not the button press)",
+                                "\u21b3 Analog pressure (response curve)",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 14.sp,
                                 modifier = Modifier.weight(1f),
@@ -543,12 +542,9 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
                             // that pad reports no analog axis on this side, i.e. its triggers are
                             // digital and the toggle cannot help.
                             //
-                            // Muted while the option is OFF: in that mode the digital key event
-                            // is deliberately left alone, so on a pad that reports a trigger both
-                            // ways the game gets a full press once that key fires regardless of
-                            // what this reads. Accented when ON, where it IS what the PS2
-                            // receives. It stays visible either way because "does this pad have
-                            // an analog trigger at all" is how you decide whether to switch it on.
+                            // Accented while the option is ON, muted while OFF. It stays visible
+                            // either way because "does this pad have an analog trigger at all" is
+                            // how you decide whether to switch it on.
                             //
                             // The accent tracks whether the OPTION is live, not whether the
                             // trigger is moving, so a resting 0% reads as accented the moment it
