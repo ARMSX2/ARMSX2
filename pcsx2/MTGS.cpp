@@ -296,7 +296,7 @@ static bool s_read_fifo_served = false;
 namespace
 {
 	/// Whether spinning for the other side of a GS-to-EE read is paying, learnt from what it has
-	/// been doing. A spin is bounded: WorkSema spins up to SPIN_TIME_NS (50 us) in WFE, which the
+	/// been doing. A spin is bounded: WorkSema spins up to GetSpinTimeNs() (50 us, none on shared cores) in WFE, which the
 	/// architecture timer's event stream ends at most ~100 us later, and then sleeps. One that ran
 	/// out (the answer was a long GPU wait, or both threads share a core so the other could not run)
 	/// counts against spinning, an answer inside the window for it; while the count is negative the
@@ -317,7 +317,7 @@ namespace
 		void Record(u64 waited_ticks)
 		{
 			const u64 waited_ns = waited_ticks * 1000000000ull / GetTickFrequency();
-			m_score = (waited_ns <= SPIN_TIME_NS) ? std::min(m_score + 1, 8) : std::max(m_score - 2, -8);
+			m_score = (waited_ns <= GetSpinTimeNs()) ? std::min(m_score + 1, 8) : std::max(m_score - 2, -8);
 		}
 
 	private:

@@ -1572,7 +1572,7 @@ namespace
 			{
 				ScopedHold hold(*thread, HoldKind::Lifecycle);
 				// Budget arrives while the IOP is held; its publish wake is dropped. Stay long enough
-				// (the semaphore spins for SPIN_TIME_NS first) that the IOP is asleep in its hold.
+				// (the semaphore spins for GetSpinTimeNs() first) that the IOP is asleep in its hold.
 				Publish(ee_cycle + 100);
 				std::this_thread::sleep_for(150us);
 			}

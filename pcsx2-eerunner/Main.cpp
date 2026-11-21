@@ -5308,7 +5308,7 @@ static void ReportThreadPerfCounters()
 #ifdef __linux__
 // The voluntary and involuntary context switches of the thread named `comm` (/proc/self/task/<tid>/status). A voluntary
 // switch means the thread slept in the kernel: for the IOP thread that counts real sleeps (its parks are mostly spins,
-// WorkSema spins for SPIN_TIME_NS before it sleeps); for the CPU thread, which must never sleep on the emulation path,
+// WorkSema spins for GetSpinTimeNs() before it sleeps); for the CPU thread, which must never sleep on the emulation path,
 // it shows that it did not.
 static bool ReadContextSwitches(const char* comm, u64* voluntary, u64* involuntary)
 {

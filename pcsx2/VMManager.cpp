@@ -3200,11 +3200,13 @@ void VMManager::Internal::Throttle(bool vsync_start)
 		lateness = EECycleRateLateness::Late;
 	EECycleRateSampler::OnSegmentThrottled(segment_ticks, static_cast<u64>(s_limiter_ticks_per_frame), !vsync_start, lateness);
 
-	// If frame ran too long...
-	if (sDeltaTime >= s_limiter_ticks_per_frame)
+	// A frame running behind keeps the time it lost, so the light frames after a heavy one run without waiting and a
+	// game below full speed keeps all the speed it has. Only lag beyond a few frames is forgiven, so a hitch cannot
+	// buy a long burst of fast frames.
+	static constexpr s64 MAX_KEPT_LAG_FRAMES = 4;
+	if (sDeltaTime >= MAX_KEPT_LAG_FRAMES * s_limiter_ticks_per_frame)
 	{
-		// ... Fudge the next frame start over a bit. Prevents fast forward zoomies.
-		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame) * s_limiter_ticks_per_frame;
+		s_limiter_frame_start += (sDeltaTime / s_limiter_ticks_per_frame - (MAX_KEPT_LAG_FRAMES - 1)) * s_limiter_ticks_per_frame;
 		return;
 	}
 
@@ -3212,20 +3214,29 @@ void VMManager::Internal::Throttle(bool vsync_start)
 	// host-defined, so this has to divide by GetTickFrequency() rather than scale by a constant.
 	const s32 msec = static_cast<s32>((sDeltaTime * -1000) / static_cast<s64>(GetTickFrequency()));
 
-	// If any integer value of milliseconds exists, sleep it off.
-	// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
-	// further testing suggests instead that this was utter bullshit.
-	if (msec > 1)
+	// With spin waits off the emulation threads share too few processors, and the GS and VU1 threads need the one this
+	// would spin on, so sleep all the way to the deadline.
+	if (GetSpinTimeNs() == 0)
 	{
-		Threading::Sleep(msec - 1);
+		Threading::SleepUntil(uExpectedEnd);
 	}
+	else
+	{
+		// If any integer value of milliseconds exists, sleep it off.
+		// Prior comments suggested that 1-2 ms sleeps were inaccurate on some OSes;
+		// further testing suggests instead that this was utter bullshit.
+		if (msec > 1)
+		{
+			Threading::Sleep(msec - 1);
+		}
 
-	// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,
-	// spin the thread without sleeping until we finally reach our expected end time. Hint the
-	// spin with the calibrated pause bursts (pause on x86, isb on AArch64) instead of hammering
-	// the counter bare - the hint keeps the co-resident cores' throughput and cuts power.
-	while (GetCPUTicks() < uExpectedEnd)
-		ShortSpin();
+		// Conversion to milliseconds loses some precision; after sleeping off whole milliseconds,
+		// spin the thread without sleeping until we finally reach our expected end time. Hint the
+		// spin with the calibrated pause bursts (pause on x86, isb on AArch64) instead of hammering
+		// the counter bare - the hint keeps the co-resident cores' throughput and cuts power.
+		while (GetCPUTicks() < uExpectedEnd)
+			ShortSpin();
+	}
 
 	if (!vsync_start)
 	{

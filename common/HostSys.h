@@ -224,8 +224,10 @@ extern u32 ShortSpin();
 /// as around ShortSpin(). Splitting the wait across two locations parks on a
 /// store to neither — `word` must carry it alone.
 extern u32 ShortSpinOn(const std::atomic<s32>& word, s32 expected);
-/// Number of ns to spin for before sleeping a thread
-extern const u32 SPIN_TIME_NS;
+/// Number of ns a wait spins for before it sleeps the thread
+extern u32 GetSpinTimeNs();
+/// Lets waits spin (the default) or has them sleep at once. WAIT_SPIN_MICROSECONDS, when set, fixes the time instead.
+extern void SetSpinWaitsEnabled(bool enabled);
 /// Like C abort() but adds the given message to the crashlog
 [[noreturn]] void AbortWithMessage(const char* msg);
 
