@@ -1303,9 +1303,6 @@ private:
 	bool m_run_group_open = false;
 	u32 m_run_open_mask = 0;
 	u32 m_run_open_flags = 0;
-	// The entry left set 1 unknown and nothing has pushed it since: a draw that follows without its own
-	// ApplyTFXState (the second part of a split draw) pushes it first.
-	bool m_run_set1_unknown = false;
 
 	/// Whether a draw of this pipeline can be a group of the driver's run, and the set-1 bindings its shaders read.
 	bool RunGroupFits(const PipelineSelector& p, u32& mask) const;

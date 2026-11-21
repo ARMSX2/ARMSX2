@@ -4905,8 +4905,6 @@ void GSDeviceVK::DrawIndexedPrimitive(int offset, int count)
 		return;
 	}
 	const VkCommandBuffer cmdbuf = GetCurrentCommandBuffer();
-	if (m_run_set1_unknown && m_current_pipeline_layout == PipelineLayout::TFX) [[unlikely]]
-		EmitTFXState(DIRTY_FLAG_TFX_TEXTURES, cmdbuf);
 	// Only a draw of all of m_index: a part of it could use fewer vertices than the whole range, and
 	// is left to the driver's read-back as before. The index buffer is bound by now (ApplyTFXState /
 	// ApplyUtilityState), which is what the driver matches the range to.
@@ -8566,7 +8564,7 @@ void GSDeviceVK::AppendRunGroup(VkPipeline pipeline, u32 mask, GSTextureVK* cons
 }
 
 // One group written by ApplyTFXState, through the ordinary calls it owed when its state was taken. It pushes the
-// texture bindings `textures` gives it (GSShortRunTextures.h).
+// texture bindings `textures_owed` gives it (GSShortRunTextures.h).
 void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf, GSShortRunTextures& textures_owed)
 {
 	const DrawRunGroup& g = m_run_groups[i];
@@ -8577,18 +8575,16 @@ void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf, GSShortRunT
 		vkCmdBindDescriptorSets(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, 0, 1, &m_run_set0,
 			NUM_TFX_DYNAMIC_OFFSETS, g.dyn_offset);
 	}
-	// The binding bits of tex_mask are the texture flag bits.
-	static_assert(DIRTY_FLAG_TFX_TEXTURE_0 == 1u);
 	const u32 push = textures_owed.Push(flags & DIRTY_FLAG_TFX_TEXTURES, s.tex_mask);
 	if (push)
 	{
-		std::array<GSTextureVK*, NUM_TFX_TEXTURES> textures;
-		textures.fill(m_null_texture.get());
-		VkSampler sampler = m_point_sampler;
-		u32 k = g.tex_first;
-		for (u32 bits = s.tex_mask; bits != 0; bits &= bits - 1, k++)
+		// Only the pushed bindings are read; the group's textures are in binding order, one for each bit of tex_mask.
+		std::array<GSTextureVK*, NUM_TFX_TEXTURES> textures{};
+		VkSampler sampler = VK_NULL_HANDLE;
+		for (u32 bits = push; bits != 0; bits &= bits - 1)
 		{
 			const u32 b = static_cast<u32>(std::countr_zero(bits));
+			const u32 k = g.tex_first + static_cast<u32>(std::popcount(s.tex_mask & ((1u << b) - 1)));
 			textures[b] = m_run_texture_objs[k];
 			if (b == TFX_TEXTURE_TEXTURE)
 				sampler = m_run_textures[k].sampler;
@@ -8609,53 +8605,74 @@ void GSDeviceVK::EmitRunGroupOrdinary(u32 i, VkCommandBuffer cmdbuf, GSShortRunT
 	vkCmdDrawIndexed(cmdbuf, g.index_count, 1, g.first_index, g.vertex_offset, 0);
 }
 
-// Records the waiting groups through the driver's run entry. A group whose draw has not come yet (something
-// used the command buffer between ApplyTFXState and the draw) gives its state to the ordinary calls instead.
+// The binding numbers and texture flags GSShortRunTextures and its tests use are these.
+static_assert(GSShortRunTextures::TEXTURE == GSDeviceVK::TFX_TEXTURE_TEXTURE &&
+			  GSShortRunTextures::PALETTE == GSDeviceVK::TFX_TEXTURE_PALETTE &&
+			  GSShortRunTextures::RT == GSDeviceVK::TFX_TEXTURE_RT &&
+			  GSShortRunTextures::PRIMID == GSDeviceVK::TFX_TEXTURE_PRIMID &&
+			  GSShortRunTextures::DEPTH == GSDeviceVK::TFX_TEXTURE_DEPTH &&
+			  GSShortRunTextures::RT_ROV == GSDeviceVK::TFX_TEXTURE_RT_ROV &&
+			  GSShortRunTextures::DEPTH_ROV == GSDeviceVK::TFX_TEXTURE_DEPTH_ROV &&
+			  GSShortRunTextures::BINDINGS == GSDeviceVK::NUM_TFX_TEXTURES);
+
+// Records the waiting groups: a run of one or two groups with the ordinary calls, a longer one through the driver's
+// run entry. A group whose draw has not come yet (something used the command buffer between ApplyTFXState and the
+// draw) gives its state to the ordinary calls instead.
+//
+// This usually runs inside the next draw's ApplyTFXState, after that draw has read its flags. So when it returns, set 1
+// holds m_tfx_textures and m_tfx_sampler for every binding whose flag is clear, without the next draw's help: what the
+// groups left unknown is pushed here (GSShortRunTextures.h).
 void GSDeviceVK::FlushRun()
 {
+	static_assert(DIRTY_FLAG_TFX_TEXTURE_0 == 1u && DIRTY_FLAG_TFX_TEXTURES == GSShortRunTextures::ALL);
 	const VkCommandBuffer cmdbuf = m_current_command_buffer;
-	if (!m_run_groups.empty() && m_run_groups.size() < DRAW_RUN_MIN_GROUPS &&
-		std::find(m_run_group_flags.begin(), m_run_group_flags.end(), ~0u) == m_run_group_flags.end())
-	{
-		GSShortRunTextures owed;
-		for (u32 i = 0; i < m_run_groups.size(); i++)
-			EmitRunGroupOrdinary(i, cmdbuf, owed);
-		m_run_states.clear();
-		m_run_groups.clear();
-		m_run_textures.clear();
-		m_run_texture_objs.clear();
-		m_run_group_flags.clear();
-		m_raw_binds.Forget(GSRawBindCache::TEXTURES);
-		m_dirty_flags |= owed.owed;
-	}
+	u32 pushed = 0;
 	if (!m_run_groups.empty())
 	{
-		DrawRun run;
-		run.size = sizeof(run);
-		run.abi = DRAW_RUN_ABI;
-		run.group_count = static_cast<u32>(m_run_groups.size());
-		run.reserved = 0;
-		run.layout = m_tfx_pipeline_layout;
-		run.set0 = m_run_set0;
-		run.states = m_run_states.data();
-		run.groups = m_run_groups.data();
-		run.textures = m_run_textures.data();
-		m_cmd_draw_run(cmdbuf, &run);
+		// Only a push-descriptor device takes groups (RunGroupFits).
+		pxAssert(m_use_push_descriptors);
+		if (m_run_groups.size() < DRAW_RUN_MIN_GROUPS &&
+			std::find(m_run_group_flags.begin(), m_run_group_flags.end(), ~0u) == m_run_group_flags.end())
+		{
+			GSShortRunTextures owed;
+			for (u32 i = 0; i < m_run_groups.size(); i++)
+				EmitRunGroupOrdinary(i, cmdbuf, owed);
+			pushed = owed.Finish();
+		}
+		else
+		{
+			DrawRun run;
+			run.size = sizeof(run);
+			run.abi = DRAW_RUN_ABI;
+			run.group_count = static_cast<u32>(m_run_groups.size());
+			run.reserved = 0;
+			run.layout = m_tfx_pipeline_layout;
+			run.set0 = m_run_set0;
+			run.states = m_run_states.data();
+			run.groups = m_run_groups.data();
+			run.textures = m_run_textures.data();
+			m_cmd_draw_run(cmdbuf, &run);
+			// The entry leaves the last group's pipeline, scissor, blend constants and set 0 bound, which is what this
+			// device's cached state and the held twins' bind record already say. Set 1 is unknown.
+			pushed = GSShortRunTextures::AfterEntry();
+		}
 		m_run_states.clear();
 		m_run_groups.clear();
 		m_run_textures.clear();
 		m_run_texture_objs.clear();
 		m_run_group_flags.clear();
-		// The entry leaves the last group's pipeline, scissor, blend constants and set 0 bound, which is what this
-		// device's cached state and the held twins' bind record already say; set 1 is not known.
-		m_dirty_flags |= DIRTY_FLAG_TFX_TEXTURES;
-		m_run_set1_unknown = true;
 		m_raw_binds.Forget(GSRawBindCache::TEXTURES);
+		if (pushed)
+		{
+			Vulkan::DescriptorSetUpdateBuilder dsub;
+			AddTFXTextureWrites(dsub, VK_NULL_HANDLE, m_tfx_textures, m_tfx_sampler, pushed);
+			dsub.PushUpdate(cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_tfx_pipeline_layout, TFX_DESCRIPTOR_SET_TEXTURES);
+		}
 	}
 	if (m_run_group_open)
 	{
 		m_run_group_open = false;
-		EmitTFXState(m_run_open_flags | DIRTY_FLAG_TFX_TEXTURES, cmdbuf);
+		EmitTFXState(m_run_open_flags & ~pushed, cmdbuf);
 	}
 }
 
@@ -9511,7 +9528,6 @@ void GSDeviceVK::EmitTFXState(u32 flags, VkCommandBuffer cmdbuf)
 
 	if (flags & DIRTY_FLAG_TFX_TEXTURES)
 	{
-		m_run_set1_unknown = false;
 		VkDescriptorSet ds = VK_NULL_HANDLE;
 		// Non-push path allocates a fresh (empty) descriptor set, so every binding the
 		// shader may read must be written — not just the dirty ones (push descriptors
