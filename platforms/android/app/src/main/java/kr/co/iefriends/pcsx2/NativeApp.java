@@ -189,6 +189,11 @@ public class NativeApp {
 	 * is running — settings still take effect on the next runVMThread
 	 * because they were pushed to the persistent base settings layer.
 	 *
+	 * With a VM running this queues the apply on the emulator's CPU thread and
+	 * returns without waiting for it: a renderer-init setting can hold that thread
+	 * for seconds. Native calls made after it that also go through the CPU thread
+	 * (live GS pokes, OSD flags, pause and resume) run after the apply.
+	 *
 	 * Some settings need a VM restart (recompiler enables, EE cycle rate);
 	 * the UI layer should flag those.
 	 */
@@ -557,7 +562,8 @@ public class NativeApp {
 	/** Drop anything staged by {@link #gameIniBeginStage(String)}. */
 	public static native void gameIniClearStage();
 	/** Re-read the running game's INI into the core's game layer after rewriting it, so the
-	 *  commit that follows applies what the file says now. Applies nothing itself. */
+	 *  commit that follows applies what the file says now. Applies nothing itself. Queued on the
+	 *  CPU thread like {@link #commitSettings()}, ahead of that commit. */
 	public static native void reloadGameSettingsLayer();
 
 	/** What auto-tune changed for a game, one readable line each, then the steps it tried without

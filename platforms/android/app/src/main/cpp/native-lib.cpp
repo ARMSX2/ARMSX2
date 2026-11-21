@@ -1847,8 +1847,11 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setAspectRatio(JNIEnv *env, jclass clazz,
         return;
 
     Host::SetBaseStringSettingValue("EmuCore/GS", "AspectRatio", name);
-    EmuConfig.GS.AspectRatio = static_cast<AspectRatioType>(ratio);
-    EmuConfig.CurrentAspectRatio = static_cast<AspectRatioType>(ratio);
+    // EmuConfig is the CPU thread's, and a commit queued before this may be reloading it there.
+    Host::RunOnCPUThread([ratio]() {
+        EmuConfig.GS.AspectRatio = static_cast<AspectRatioType>(ratio);
+        EmuConfig.CurrentAspectRatio = static_cast<AspectRatioType>(ratio);
+    });
 }
 
 // FMV Aspect Ratio override — applied only while an FMV/MPEG is playing (Counters.cpp
@@ -1867,7 +1870,10 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setFmvAspectRatio(JNIEnv *env, jclass clazz
         return;
 
     Host::SetBaseStringSettingValue("EmuCore/GS", "FMVAspectRatioSwitch", name);
-    EmuConfig.GS.FMVAspectRatioSwitch = static_cast<FMVAspectRatioSwitchType>(ratio);
+    // On the CPU thread, as in setAspectRatio.
+    Host::RunOnCPUThread([ratio]() {
+        EmuConfig.GS.FMVAspectRatioSwitch = static_cast<FMVAspectRatioSwitchType>(ratio);
+    });
 }
 
 extern "C"
@@ -2328,18 +2334,17 @@ static void LogAndroidGSSettings(const char* reason)
 // which, besides being weaker than owning the thread, only ever covered the ApplySettings call
 // and not the EmuConfig.GS mutation the callers did first (that reload rewrites the struct
 // wholesale, std::string Adapter included, so a concurrent reader could see it mid-flight).
-static bool ApplyLiveGSSettings(const char* reason, std::function<bool()> mutate)
+//
+// Queued, not waited for, for the reason given at commitSettings: the CPU thread can be held for
+// seconds behind a GS device rebuild, and the callers are the UI thread.
+static void ApplyLiveGSSettings(const char* reason, std::function<void()> mutate)
 {
-    bool ok = false;
-    Host::RunOnCPUThread([&ok, reason, &mutate]() {
-        ok = !mutate || mutate();
-        if (!ok)
-            return;
+    Host::RunOnCPUThread([reason, mutate = std::move(mutate)]() {
+        mutate();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
         LogAndroidGSSettings(reason);
-    }, /*block=*/true);
-    return ok;
+    });
 }
 
 // Generic setting writer — mirror of pcsx2-qt's settings save path.
@@ -2389,50 +2394,48 @@ Java_kr_co_iefriends_pcsx2_NativeApp_setSetting(JNIEnv *env, jclass clazz,
     }
 }
 
-// Push queued setSetting writes into the running VM. Idempotent — safe
-// to call multiple times. Logs the resolved EmuCore.Speedhacks state
-// for plumbing-verification (one-line check from logcat).
+// Push queued setSetting writes into the running VM and save them. Idempotent — safe to call
+// multiple times.
+//
+// ApplySettings mutates state the EE/MTVU/MTGS pipeline reads concurrently (JIT cache flushes, GS
+// reconfig), so it runs on the CPU thread, as upstream does: the queue drains from
+// PollInputOnCPUThread() at the vsync boundary, which is the re-entry point
+// CheckForCPUConfigChanges() is written for, and from the run loop while paused.
+//
+// This returns once the work is queued, without waiting for it. The callers are the UI thread, and
+// the apply can hold the CPU thread for as long as the GS thread takes to rebuild its device: a
+// renderer-init setting (Use Blit Swap Chain, Disable Shader Cache, ...) reopens the GS device, and
+// with a hardware download mode that reads GS memory from the EE thread (Unsynchronized,
+// Asynchronous) MTGS::ApplySettings waits for that reopen, seconds with the shader cache off. A
+// caller waiting for it would freeze the in-game menu as long. The CPU thread runs its tasks in order, so whatever the caller queues after this (OSD
+// flags, live GS pokes, the resume when the menu closes) runs after the apply. With no CPU thread
+// (before a boot) the work runs here, before this returns.
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_commitSettings(JNIEnv *env, jclass clazz) {
-    // ApplySettings mutates state the EE/MTVU/MTGS pipeline reads concurrently (JIT cache
-    // flushes, GS reconfig), so it must not race a RUNNING VM. This used to be enforced by
-    // parking the VM (ScopedVMPause) and then mutating from the UI thread anyway. Marshalling
-    // onto the CPU thread is strictly stronger and is what upstream does: the queue drains from
-    // PollInputOnCPUThread() at the vsync boundary, which is exactly the re-entry point
-    // CheckForCPUConfigChanges() is written for ("we're still executing the cpu when this
-    // function is called"), and it defers the recompiler swap to the next Execute() itself.
-    //
-    // The park is therefore not just redundant here, it is unusable: ScopedVMPause waits for
-    // s_execute_exit, which the run loop only sets AFTER Execute() returns, so a park attempted
-    // from inside a CPU-thread task would spin its full 3 s watchdog and then report failure.
-    //
-    // Blocking so the settings-applied ordering the UI relies on (commit, then read back state)
-    // is preserved, and so the log line below reports post-apply values as it always has.
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ApplySettings();
         if (MTGS::IsOpen())
             MTGS::ApplySettings();
-    }, /*block=*/true);
-    SaveBaseSettingsIfDirty();
-    LogAndroidGSSettings("commit");
+        SaveBaseSettingsIfDirty();
+        LogAndroidGSSettings("commit");
 
-    // Plumbing roundtrip verifier — once the UI starts pushing real
-    // settings, watch logcat for these to confirm the write landed.
-    // Unary `+` promotes each bit-field to a plain int, since C++ doesn't
-    // allow forwarding references (T&&) to bind to bit-fields.
-    Console.WriteLnFmt(
-        "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
-        "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
-        +EmuConfig.Speedhacks.vuThread,
-        +EmuConfig.Speedhacks.EECycleRate,
-        +EmuConfig.Speedhacks.EECycleSkip,
-        +EmuConfig.Speedhacks.vu1Instant,
-        +EmuConfig.Speedhacks.fastCDVD,
-        +EmuConfig.Speedhacks.vuFlagHack,
-        +EmuConfig.Speedhacks.iopThread,
-        EmuConfig.Speedhacks.iopThreadLag);
+        // Plumbing roundtrip verifier: the post-apply values, one line in logcat.
+        // Unary `+` promotes each bit-field to a plain int, since C++ doesn't
+        // allow forwarding references (T&&) to bind to bit-fields.
+        Console.WriteLnFmt(
+            "Settings commit: vuThread={} EECycleRate={} EECycleSkip={} "
+            "vu1Instant={} fastCDVD={} vuFlagHack={} iopThread={} iopThreadLag={}",
+            +EmuConfig.Speedhacks.vuThread,
+            +EmuConfig.Speedhacks.EECycleRate,
+            +EmuConfig.Speedhacks.EECycleSkip,
+            +EmuConfig.Speedhacks.vu1Instant,
+            +EmuConfig.Speedhacks.fastCDVD,
+            +EmuConfig.Speedhacks.vuFlagHack,
+            +EmuConfig.Speedhacks.iopThread,
+            EmuConfig.Speedhacks.iopThreadLag);
+    });
 }
 
 // Generic live GS reconfigure. Reloads the whole EmuCore/GS section from the
@@ -3532,7 +3535,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderUpscalemultiplier(JNIEnv *env, jclass
     Host::SetBaseFloatSettingValue("EmuCore/GS", "upscale_multiplier", p_value);
     ApplyLiveGSSettings("upscale", [p_value]() {
         EmuConfig.GS.UpscaleMultiplier = p_value;
-        return true;
     });
 }
 
@@ -3544,7 +3546,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderMipmap(JNIEnv *env, jclass clazz,
     Host::SetBaseBoolSettingValue("EmuCore/GS", "hw_mipmap", enabled);
     ApplyLiveGSSettings("hw_mipmap", [enabled]() {
         EmuConfig.GS.HWMipmap = enabled;
-        return true;
     });
 }
 
@@ -3557,7 +3558,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderHalfpixeloffset(JNIEnv *env, jclass c
     Host::SetBaseIntSettingValue("EmuCore/GS", "UserHacks_HalfPixelOffset", value);
     ApplyLiveGSSettings("half_pixel_offset", [value]() {
         EmuConfig.GS.UserHacks_HalfPixelOffset = static_cast<GSHalfPixelOffset>(value);
-        return true;
     });
 }
 
@@ -3569,7 +3569,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderTvShader(JNIEnv *env, jclass clazz,
     Host::SetBaseIntSettingValue("EmuCore/GS", "TVShader", value);
     ApplyLiveGSSettings("tv_shader", [value]() {
         EmuConfig.GS.TVShader = static_cast<u8>(value);
-        return true;
     });
 }
 
@@ -3599,7 +3598,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderShadeBoost(JNIEnv *env, jclass clazz,
         EmuConfig.GS.ShadeBoost_Contrast = static_cast<u8>(contrast);
         EmuConfig.GS.ShadeBoost_Saturation = static_cast<u8>(saturation);
         EmuConfig.GS.ShadeBoost_Gamma = static_cast<u8>(gamma);
-        return true;
     });
 }
 
@@ -3612,7 +3610,6 @@ Java_kr_co_iefriends_pcsx2_NativeApp_renderPreloading(JNIEnv *env, jclass clazz,
     Host::SetBaseIntSettingValue("EmuCore/GS", "texture_preloading", value);
     ApplyLiveGSSettings("texture_preloading", [value]() {
         EmuConfig.GS.TexturePreloading = static_cast<TexturePreloadingLevel>(value);
-        return true;
     });
 }
 
@@ -6793,7 +6790,8 @@ Java_kr_co_iefriends_pcsx2_NativeApp_gameIniClaim(JNIEnv* env, jclass, jstring p
 // Re-read the running game's per-game file into the game layer, after the app rewrote it. The
 // layer is otherwise only read at boot, so the commit that follows would still apply what the
 // file said then -- values, and which database entries the player had taken back. Applies
-// nothing itself; the caller's commit does.
+// nothing itself; the caller's commit does. Queued, not waited for (see commitSettings): the
+// commit the caller queues next runs after it.
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     if (!VMManager::HasValidVM())
@@ -6802,7 +6800,7 @@ Java_kr_co_iefriends_pcsx2_NativeApp_reloadGameSettingsLayer(JNIEnv*, jclass) {
     Host::RunOnCPUThread([]() {
         if (VMManager::HasValidVM())
             VMManager::ReloadGameSettingsLayer();
-    }, /*block=*/true);
+    });
 }
 
 // What the game database sets for [serial], one line per setting a per-game key can claim:
