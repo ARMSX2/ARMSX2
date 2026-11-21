@@ -162,7 +162,7 @@ jobs:
   # ---- iOS .app ----------------------------------------------------------
   ios:
     name: iOS (arm64, unsigned device IPA)
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
         with:

@@ -332,7 +332,7 @@ jobs:
     needs: gate
     if: ${{ needs.gate.outputs.proceed == 'true' }}
     continue-on-error: true
-    runs-on: macos-26
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
       - name: Select Xcode
