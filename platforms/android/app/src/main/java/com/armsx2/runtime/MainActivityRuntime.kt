@@ -958,7 +958,7 @@ open class MainActivityRuntime : ComponentActivity() {
          *  to Player 1 still get it, so moving one of them to Player 2 later has a port to go to. */
         private fun connectedPadCount(): Int {
             val (pads, sawJoyCon) = connectedGamepads()
-            return pads.size + (if (sawJoyCon) 1 else 0)
+            return pads.size + (if (sawJoyCon) 1 else 0) + com.armsx2.input.PadRouter.directUsbPadCount()
         }
 
         /**
@@ -1166,6 +1166,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
                 // A pad pinned to Player 2 needs port 2 even on its own.
                 val twoPads = connectedPadCount() >= 2 || touchIsP2 ||
+                    com.armsx2.input.PadRouter.hasDirectUsbPad(1) ||
                     com.armsx2.input.PadRouter.player2Pinned(connectedGamepads().first)
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
@@ -2796,9 +2797,6 @@ open class MainActivityRuntime : ComponentActivity() {
         // any rumble or unlock sound can fire (both default to 1.0 = as authored until set here).
         ControllerMappings.syncHapticIntensity()
         ControllerMappings.syncRumbleFallback()
-        // Direct USB rumble for a PlayStation pad. Asks for USB permission only when one is
-        // actually attached, so nobody sees a prompt for a controller they do not own.
-        com.armsx2.input.UsbRumble.start(this)
         com.armsx2.input.UsbRumble.loadTakeover()
         // Player-slot pins, so a controller the user assigned by hand is on its slot
         // before the first button press rather than after it.
@@ -2807,6 +2805,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // Seed the pad-router's multitap gate before any in-game input is dispatched, so
         // slot routing (2 vs 8 slots) is correct from the first controller event.
         com.armsx2.input.PadRouter.multitapEnabled = ControllerMappings.multitapEnabled()
+        com.armsx2.input.UsbRumble.start(this)
         // #394: watch for controller unplug / re-enumeration so a departed pad frees its slot (see
         // inputDeviceListener). Registered until onDestroy so a sleep/wake remove is caught even
         // while the activity is paused.
