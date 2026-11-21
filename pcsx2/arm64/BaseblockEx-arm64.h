@@ -67,63 +67,7 @@
 #include "arm64/AsmHelpers.h" // armPatchCodeWord (self-scoped W^X code patching)
 #include "arm64/BlockPageIndex-arm64.h"
 
-// The IOP keeps its flat index and integer positions for its clear walk.
-class Arm64FlatBlockIndex
-{
-public:
-	using Position = int;
-	static constexpr Position Invalid() { return -1; }
-
-	Position AtOrBefore(u32 pc) const
-	{
-		int lo = 0;
-		int hi = static_cast<int>(m_blocks.size());
-		while (lo < hi)
-		{
-			const int mid = lo + (hi - lo) / 2;
-			if (m_blocks[mid].startpc <= pc)
-				lo = mid + 1;
-			else
-				hi = mid;
-		}
-		return lo - 1;
-	}
-
-	Position Next(Position pos) const
-	{
-		return pos + 1 < static_cast<int>(m_blocks.size()) ? pos + 1 : Invalid();
-	}
-
-	BASEBLOCKEX* Get(Position pos) const
-	{
-		return pos >= 0 && pos < static_cast<int>(m_blocks.size()) ? &m_blocks[pos] : nullptr;
-	}
-
-	const BASEBLOCKEX* FindExact(u32 pc) const
-	{
-		const BASEBLOCKEX* const block = Get(AtOrBefore(pc));
-		return block && block->startpc == pc ? block : nullptr;
-	}
-
-	BASEBLOCKEX* UpdateOrInsert(u32 pc, uptr fnptr)
-	{
-		BASEBLOCKEX* block = Get(AtOrBefore(pc));
-		if (!block || block->startpc != pc)
-			return m_blocks.insert(pc, fnptr);
-		block->fnptr = fnptr;
-		return block;
-	}
-
-	void Erase(Position first, Position last) { m_blocks.erase(first, last + 1); }
-	void Reset() { m_blocks.clear(); }
-	u32 size() const { return m_blocks.size(); }
-
-private:
-	BaseBlockArray m_blocks{0x4000};
-};
-
-template <typename BlockIndex>
-class Arm64BaseBlocksImpl
+class Arm64BaseBlocks
 {
 protected:
 	// A registered branch site, tagged with the block that emitted it so
@@ -142,7 +86,7 @@ protected:
 
 	using linkmap_t = std::multimap<u32, LinkSite>;
 
-	BlockIndex blocks;
+	Arm64BlockPageIndex blocks;
 	linkmap_t links;
 	uptr jitcompile = 0;
 	uptr dispatcher = 0;
@@ -269,7 +213,7 @@ protected:
 	}
 
 public:
-	using Position = typename BlockIndex::Position;
+	using Position = Arm64BlockPageIndex::Position;
 
 	void SetJITCompile(const void* recompiler_)
 	{
@@ -361,7 +305,7 @@ public:
 		const Position pos = AtOrBefore(pc);
 		const BASEBLOCKEX* const block = blocks.Get(pos);
 		if (!block || (block->size && pc >= block->startpc + block->size * 4))
-			return BlockIndex::Invalid();
+			return Arm64BlockPageIndex::Invalid();
 		return pos;
 	}
 
@@ -393,7 +337,7 @@ public:
 	{
 		pxAssert(blocks.Get(first) && blocks.Get(last) &&
 			blocks.Get(first)->startpc <= blocks.Get(last)->startpc);
-		for (Position pos = first; pos != BlockIndex::Invalid(); pos = Next(pos))
+		for (Position pos = first; pos != Arm64BlockPageIndex::Invalid(); pos = Next(pos))
 		{
 			Invalidate(pos);
 			if (pos == last)
@@ -445,7 +389,7 @@ public:
 	// handler while executing generated code, so the index is not changing.
 	const BASEBLOCKEX* FindByHostPc(uptr pc) const
 	{
-		for (Position pos = Next(BlockIndex::Invalid()); const BASEBLOCKEX* block = blocks.Get(pos); pos = Next(pos))
+		for (Position pos = Next(Arm64BlockPageIndex::Invalid()); const BASEBLOCKEX* block = blocks.Get(pos); pos = Next(pos))
 		{
 			if (pc - block->fnptr < block->x86size)
 				return block;
@@ -491,5 +435,3 @@ public:
 #endif
 };
 
-using Arm64BaseBlocks = Arm64BaseBlocksImpl<Arm64BlockPageIndex>;
-using Arm64IopBaseBlocks = Arm64BaseBlocksImpl<Arm64FlatBlockIndex>;

@@ -604,3 +604,56 @@ TEST(IopSmc, ClearScansPastNonOverlappingNeighborToStraddlerBelow)
 		"the downward walk in psxRecClearMem stopped at the short block B";
 	EXPECT_EQ(h.GetGprInterp(reg::v1), 0x22u);
 }
+
+TEST(IopSmc, ClearFindsStraddlerOnThePreviousGuestPage)
+{
+	// The same geometry as ClearScansPastNonOverlappingNeighborToStraddlerBelow,
+	// moved so that A starts on one 4 KiB guest page and B, H and the written
+	// word sit on the next. recBlocks keeps one bucket of blocks per guest
+	// page, so the downward walk has to step from B back across the page
+	// boundary to reach A.
+	JitTestHarness h;
+	constexpr u32 kS = kProgramPc + 0x1000 - 0x10; // A's entry, 0x10 below the page boundary
+	constexpr u32 kU = kS + 0x10;                  // B's entry, first word of the next page
+	constexpr u32 kH = kS + 0x20;                  // H's entry
+	constexpr u32 kP = kS + 0x30;                  // the word we overwrite
+	static_assert((kS >> 12) + 1 == (kU >> 12) && (kU & 0xFFF) == 0);
+
+	h.LoadProgramAt(kS, {
+		ADDIU(reg::v0, reg::zero, 1),   // S+0x00  A entry
+		NOP, NOP, NOP,
+		ADDIU(reg::a0, reg::zero, 4),   // S+0x10  B entry
+		NOP, NOP, NOP,
+		ADDIU(reg::a1, reg::zero, 8),   // S+0x20  H entry
+		NOP, NOP, NOP,
+		ADDIU(reg::v1, reg::zero, 0x11),// S+0x30  overwritten below
+		NOP, NOP, NOP,
+		JR(reg::ra),                    // S+0x40
+		NOP,                            // S+0x44  delay slot; A ends at S+0x48
+	}, /*append_jr_ra_term=*/false);
+
+	h.SetPc(kS);
+	h.Run();
+	ASSERT_EQ(h.GetGprInterp(reg::v0), 1u);
+	ASSERT_EQ(h.GetGprInterp(reg::v1), 0x11u);
+
+	h.SetPc(kH);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	ASSERT_EQ(h.GetGprInterp(reg::a1), 8u);
+
+	h.SetPc(kU);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	ASSERT_EQ(h.GetGprInterp(reg::a0), 4u);
+
+	iopMemWrite32(kP, ADDIU(reg::v1, reg::zero, 0x22));
+
+	h.SetGpr(reg::v1, 0xDEAD);
+	h.SetPc(kS);
+	h.SetRa(kParkingPc);
+	h.RunResume();
+	EXPECT_EQ(h.GetGprJit(reg::v1), 0x22u) << "block A executed stale code — "
+		"the downward walk in psxRecClearMem did not cross back to the previous page";
+	EXPECT_EQ(h.GetGprInterp(reg::v1), 0x22u);
+}
