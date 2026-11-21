@@ -42,6 +42,8 @@ static bool s_loggedSDLGamepadRumbleForceStop = false;
 static std::atomic<u32> s_loggedPadRumbleCommandCount{0};
 static std::atomic<u32> s_loggedIgnoredPadRumbleCount{0};
 static bool s_loggedMultitapRestartNeeded = false;
+// Cached, since the core reaches the multitap read while it holds the settings lock.
+static std::atomic<int> s_iosMultitapMode{0};
 static constexpr u32 ARMSX2_GAMEPAD_RUMBLE_DURATION_MS = 220;
 static constexpr double ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS = 0.30;
 static constexpr u32 ARMSX2_GAMEPAD_RUMBLE_TEST_DURATION_MS = 1000;
@@ -569,7 +571,7 @@ static ARMSX2IOSMultitapMode ARMSX2GetIOSMultitapMode()
     if (!s_settings_interface)
         return ARMSX2IOSMultitapMode::Auto;
 
-    const int value = s_settings_interface->GetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
+    const int value = s_iosMultitapMode.load(std::memory_order_relaxed);
     switch (value)
     {
         case 1:
@@ -644,9 +646,9 @@ static void ARMSX2EnsureIOSPadType(u32 unified_slot)
         return;
 
     const std::string section = Pad::GetConfigSection(unified_slot);
-    const std::string type = s_settings_interface->GetStringValue(section.c_str(), "Type", "");
+    const std::string type = Host::GetBaseStringSettingValue(section.c_str(), "Type", "");
     if (type.empty() || type == "None" || type == "NotConnected")
-        s_settings_interface->SetStringValue(section.c_str(), "Type", "DualShock2");
+        Host::SetBaseStringSettingValue(section.c_str(), "Type", "DualShock2");
 }
 
 static u32 ARMSX2DetectedSDLGamepadCount()
@@ -664,13 +666,14 @@ void ARMSX2ApplyIOSMultitapConfig(const char* reason)
     if (!s_settings_interface)
         return;
 
+    s_iosMultitapMode.store(Host::GetBaseIntSettingValue("ARMSX2iOS/Gamepad", "MultitapMode", 0), std::memory_order_relaxed);
     const ARMSX2IOSMultitapMode mode = ARMSX2GetIOSMultitapMode();
     const u32 detected = ARMSX2DetectedSDLGamepadCount();
     const bool port1 = ARMSX2IOSMultitapUsesPort1(mode, detected);
     const bool port2 = ARMSX2IOSMultitapUsesPort2(mode);
 
-    s_settings_interface->SetBoolValue("Pad", "MultitapPort1", port1);
-    s_settings_interface->SetBoolValue("Pad", "MultitapPort2", port2);
+    Host::SetBaseBoolSettingValue("Pad", "MultitapPort1", port1);
+    Host::SetBaseBoolSettingValue("Pad", "MultitapPort2", port2);
     EmuConfig.Pad.MultitapPort0_Enabled = port1;
     EmuConfig.Pad.MultitapPort1_Enabled = port2;
     s_loggedMultitapRestartNeeded = false;
@@ -688,7 +691,7 @@ void ARMSX2ApplyIOSMultitapConfig(const char* reason)
         ARMSX2EnsureIOSPadType(unified_slot);
     }
 
-    s_settings_interface->Save();
+    Host::CommitBaseSettingChanges();
     Console.WriteLn("[ARMSX2 iOS Gamepad] Multitap mode=%s detected=%u port1=%d port2=%d reason=%s",
         ARMSX2IOSMultitapModeName(mode), detected, port1 ? 1 : 0, port2 ? 1 : 0, reason ? reason : "unknown");
 }
@@ -714,7 +717,7 @@ static float ARMSX2RumbleSmallIntensity(u32 packed)
 static float ARMSX2GameRumbleStrength()
 {
     const float strength = s_settings_interface
-        ? s_settings_interface->GetFloatValue(
+        ? Host::GetBaseFloatSettingValue(
               "ARMSX2iOS/UI", "GameRumbleStrength", ARMSX2_GAME_RUMBLE_DEFAULT_STRENGTH)
         : ARMSX2_GAME_RUMBLE_DEFAULT_STRENGTH;
     return std::clamp(strength, 0.0f, 2.0f);
@@ -1227,11 +1230,11 @@ static void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
     // rather than the 0x7000 ceiling the controller motors are held to. Read every
     // time so dragging the slider is felt on the next rumble instead of next launch.
     const float strength_setting = s_settings_interface
-        ? s_settings_interface->GetFloatValue(
+        ? Host::GetBaseFloatSettingValue(
               "ARMSX2iOS/UI", "PhoneRumbleStrength", ARMSX2_PHONE_RUMBLE_BASELINE_SETTING)
         : ARMSX2_PHONE_RUMBLE_BASELINE_SETTING;
     const bool increase_duration = s_settings_interface
-        ? s_settings_interface->GetBoolValue(
+        ? Host::GetBaseBoolSettingValue(
               "ARMSX2iOS/UI", "IncreaseRumbleDurationAndInterpolation", true)
         : true;
     const float strength = ARMSX2PhoneRumbleGain(strength_setting);
@@ -1669,7 +1672,7 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         // iPad or an older phone with no taptic engine.
         if (!ARMSX2FindNativeHapticController()) {
             if (ARMSX2DeviceSupportsHaptics()) {
-                const u32 native_packed_device = native_packed;
+                const u32 native_packed_device = Host::GetBaseBoolSettingValue("ARMSX2iOS/UI", "HapticFeedback", true) ? native_packed : 0;
                 s_nativeHapticSourceGamepad.store(static_cast<int>(gamepad_index), std::memory_order_relaxed);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     ARMSX2ApplyNativeGamepadRumbleOnMain(native_packed_device);

@@ -138,41 +138,48 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             s_buttonMap[i] = val;
         }
     }
-    ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
-    ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
+    {
+        auto lock = Host::GetSettingsLock(); // not recursive: no Host accessor in this scope
+        ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
+        ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
+    }
     ARMSX2MigratePerGameDeinterlaceBlend(s_settings_interface);
     // One-time migration for existing INI (runs once, then conditions are false)
-    if (!s_settings_interface->ContainsValue("SPU2/Output", "Backend")) {
-        s_settings_interface->SetStringValue("SPU2/Output", "Backend", "SDL");
+    if (!Host::ContainsBaseSettingValue("SPU2/Output", "Backend")) {
+        Host::SetBaseStringSettingValue("SPU2/Output", "Backend", "SDL");
     }
-    if (!s_settings_interface->ContainsValue("EmuCore/CPU", "ExtraMemory")) {
-        s_settings_interface->SetBoolValue("EmuCore/CPU", "ExtraMemory", false);
+    if (!Host::ContainsBaseSettingValue("EmuCore/CPU", "ExtraMemory")) {
+        Host::SetBaseBoolSettingValue("EmuCore/CPU", "ExtraMemory", false);
     }
-    if (!s_settings_interface->ContainsValue("EmuCore/CPU/Recompiler", "EnableFastmem")) {
-        s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
+    if (!Host::ContainsBaseSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem")) {
+        Host::SetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
     }
-    if (!s_settings_interface->ContainsValue("Achievements", "Enabled")) {
-        s_settings_interface->SetBoolValue("Achievements", "Enabled", false);
+    if (!Host::ContainsBaseSettingValue("Achievements", "Enabled")) {
+        Host::SetBaseBoolSettingValue("Achievements", "Enabled", false);
     }
-    if (!s_settings_interface->ContainsValue("Achievements", "ChallengeMode")) {
-        s_settings_interface->SetBoolValue("Achievements", "ChallengeMode", false);
+    if (!Host::ContainsBaseSettingValue("Achievements", "ChallengeMode")) {
+        Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
     }
     if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
+        auto lock = Host::GetSettingsLock();
         ARMSX2DisableRetroAchievementsHardcoreForIOS(s_settings_interface, "scene-connect");
     }
-    if (!s_settings_interface->ContainsValue("ARMSX2iOS/Gamepad", "MultitapMode")) {
-        s_settings_interface->SetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
+    if (!Host::ContainsBaseSettingValue("ARMSX2iOS/Gamepad", "MultitapMode")) {
+        Host::SetBaseIntSettingValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
     }
-    ARMSX2IOSSanitizeFolderSettings(s_settings_interface, dataRoot, "scene-connect");
-    ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "scene-connect");
+    {
+        auto lock = Host::GetSettingsLock();
+        ARMSX2IOSSanitizeFolderSettings(s_settings_interface, dataRoot, "scene-connect");
+        ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "scene-connect");
+    }
     ARMSX2SanitizeFrameLimiterConfig("scene-connect");
     ARMSX2ApplyIOSMultitapConfig("scene-connect");
-    s_settings_interface->Save();
+    Host::CommitBaseSettingChanges();
     [self checkAndConfigureBIOS];
 
     // GS Renderer: Metal fixed on iOS.
     EmuConfig.GS.Renderer = GSRendererType::Metal;
-    s_settings_interface->Save();
+    Host::CommitBaseSettingChanges();
 
     VMManager::Internal::LoadStartupSettings();
     if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
@@ -180,8 +187,11 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     ARMSX2SanitizeFrameLimiterConfig("after-startup-settings");
     ARMSX2ApplyIOSOsdPresetFromConfig("after-startup-settings");
-    ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
-    s_settings_interface->Save();
+    {
+        auto lock = Host::GetSettingsLock();
+        ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
+    }
+    Host::CommitBaseSettingChanges();
     VMManager::ApplySettings();
     ARMSX2_PostRetroAchievementsStateChanged();
     
@@ -268,7 +278,7 @@ static std::atomic<bool> s_loadLastSaveStateOnBoot{false};
                                                   usingBlock:^(NSNotification * _Nonnull note) {
         std::string bootISO;
         if (s_settings_interface)
-            bootISO = s_settings_interface->GetStringValue("GameISO", "BootISO", "");
+            bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
         const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
         std::fprintf(stderr, "@@BOOT_NOTIFY@@ received=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
             (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
@@ -695,7 +705,7 @@ static void ARMSX2StartJITKeepalive()
             // reload. Restore this allocation-time input when recreating a JIT
             // backend after an interpreter-only session.
             EmuConfig.Cpu.Recompiler.EnableFastmem =
-                s_settings_interface->GetBoolValue(
+                Host::GetBaseBoolSettingValue(
                     "EmuCore/CPU/Recompiler", "EnableFastmem",
                     EmuConfig.Cpu.Recompiler.EnableFastmem);
         }
@@ -812,9 +822,9 @@ static void ARMSX2StartJITKeepalive()
             {
                 std::string isoDir = EmuFolders::DataRoot + "/iso";
                 std::string defaultISO = "";
-                std::string isoFilename = s_settings_interface->GetStringValue("GameISO", "BootISO", defaultISO.c_str());
-                s_settings_interface->SetStringValue("GameISO", "BootISO", isoFilename.c_str());
-                s_settings_interface->Save();
+                std::string isoFilename = Host::GetBaseStringSettingValue("GameISO", "BootISO", defaultISO.c_str());
+                Host::SetBaseStringSettingValue("GameISO", "BootISO", isoFilename.c_str());
+                Host::CommitBaseSettingChanges();
                 std::string isoPath = (!isoFilename.empty() && isoFilename.front() == '/') ? isoFilename : (isoDir + "/" + isoFilename);
                 // Fallback: check Documents/ root if not found in iso/.
                 if (!isoFilename.empty() && isoFilename.front() != '/' && !FileSystem::FileExists(isoPath.c_str())) {
@@ -897,16 +907,19 @@ static void ARMSX2StartJITKeepalive()
             }
 
             ARMSX2SanitizeFrameLimiterConfig("pre-vm-initialize");
-            ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "pre-vm-initialize");
-            ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "pre-vm-initialize");
-            ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "pre-vm-initialize");
-            ARMSX2IOSSanitizeFolderSettings(s_settings_interface, EmuFolders::DataRoot, "pre-vm-initialize");
+            {
+                auto lock = Host::GetSettingsLock();
+                ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "pre-vm-initialize");
+                ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "pre-vm-initialize");
+                ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "pre-vm-initialize");
+                ARMSX2IOSSanitizeFolderSettings(s_settings_interface, EmuFolders::DataRoot, "pre-vm-initialize");
+            }
             VMManager::Internal::LoadStartupSettings();
             ARMSX2ApplyIOSOsdPresetFromConfig("pre-vm-initialize");
             EmuConfig.Speedhacks.vuThread =
-                s_settings_interface->GetBoolValue("EmuCore/Speedhacks", "vuThread", EmuConfig.Speedhacks.vuThread);
+                Host::GetBaseBoolSettingValue("EmuCore/Speedhacks", "vuThread", EmuConfig.Speedhacks.vuThread);
             EmuConfig.Cpu.Recompiler.EnableFastmem =
-                s_settings_interface->GetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", EmuConfig.Cpu.Recompiler.EnableFastmem);
+                Host::GetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem", EmuConfig.Cpu.Recompiler.EnableFastmem);
             if (DarwinMisc::iPSX2_FORCE_EE_INTERP)
             {
                 // Per-game settings are loaded after the JIT gate. Keep the
@@ -925,8 +938,8 @@ static void ARMSX2StartJITKeepalive()
             // and SIGSEGV on the first memory access.
             if (vtlb_FastmemAreaUnavailable() && EmuConfig.Cpu.Recompiler.EnableFastmem)
                 EmuConfig.Cpu.Recompiler.EnableFastmem = false;
-            const int configuredCoreType = s_settings_interface->GetIntValue("EmuCore/CPU", "CoreType", 2);
-            const bool configuredUseArm64 = s_settings_interface->GetBoolValue("EmuCore/CPU", "UseArm64Dynarec", configuredCoreType == 2);
+            const int configuredCoreType = Host::GetBaseIntSettingValue("EmuCore/CPU", "CoreType", 2);
+            const bool configuredUseArm64 = Host::GetBaseBoolSettingValue("EmuCore/CPU", "UseArm64Dynarec", configuredCoreType == 2);
             std::fprintf(stderr,
                 "@@CPU_CONFIG@@ core=%d use_arm64=%d ee=%d iop=%d vu0=%d vu1=%d fastmem=%d mtvu=%d forced_interp=%d\n",
                 configuredCoreType, configuredUseArm64 ? 1 : 0,
