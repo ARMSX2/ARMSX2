@@ -5,7 +5,7 @@ import unittest
 from ios_source import RUNTIME_DIR, block, read, swift, without_comments
 
 
-ROUTER = swift("MenuControllerInputRouter.swift")
+ROUTER = swift("ControllerMacroAction.swift")
 GAMEPAD = RUNTIME_DIR / "GamepadHaptics.mm"
 
 

@@ -2,10 +2,10 @@
 
 import unittest
 
-from ios_source import block, read, swift, without_comments
+from ios_source import SWIFT, block, read, swift, without_comments
 
 
-ROUTER = swift("MenuControllerInputRouter.swift")
+ROUTERS = sorted(SWIFT.rglob("MenuControllerInputRouter*.swift"))
 SETTINGS = swift("SettingsRootView.swift")
 
 
@@ -14,7 +14,7 @@ class SettingsFocusPerLaunch(unittest.TestCase):
     had used last time, because every Settings page saved its focused row in UserDefaults."""
 
     def test_the_router_keeps_focus_in_memory(self):
-        router = without_comments(read(ROUTER))
+        router = "\n".join(without_comments(read(path)) for path in ROUTERS)
         self.assertNotIn("ARMSX2iOSControllerFocus.", router)
         for name in ("func rememberNavigationFocusKey", "func rememberedNavigationFocusKey"):
             with self.subTest(function=name):
