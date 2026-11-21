@@ -1082,7 +1082,7 @@ static struct retro_core_option_v2_definition kOptionDefinitions[] = {
 		"Loads .pnach cheat files from <system>/pcsx2/cheats for the running game.",
 		nullptr, "system",
 		{{"disabled", nullptr}, {"enabled", nullptr}, {nullptr, nullptr}}, "disabled"},
-	{"armsx2_multitap", "Multitap", "Multitap",
+	{"armsx2_multitap", "Multitap (restart)", "Multitap (restart)",
 		"Connects a Multitap to a controller port. Ports are ordered 1A, 1B-1D, 2A, 2B-2D.",
 		nullptr, "input",
 		{{"disabled", nullptr}, {"port1", "Port 1"}, {"port2", "Port 2"}, {"both", "Ports 1 and 2"},
@@ -1126,7 +1126,7 @@ static struct retro_variable kCoreVariables[] = {
 	{"armsx2_bios", "BIOS (restart); auto"},
 	{"armsx2_fast_boot", "Fast boot; enabled|disabled"},
 	{"armsx2_cheats", "Enable cheats; disabled|enabled"},
-	{"armsx2_multitap", "Multitap; disabled|port1|port2|both"},
+	{"armsx2_multitap", "Multitap (restart); disabled|port1|port2|both"},
 	{nullptr, nullptr},
 };
 
@@ -1407,21 +1407,23 @@ static void ApplyCoreOptions(bool startup)
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 			s_base_settings->SetBoolValue("EmuCore", "EnableCheats", !std::strcmp(var.value, "enabled"));
 
+		// A multitap change rebuilds the pads on the CPU thread while
+		// retro_run writes to them, so it is only honoured at startup.
 		var = {"armsx2_multitap", nullptr};
-		unsigned multitap = 0;
-		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+		if (startup)
 		{
-			if (!std::strcmp(var.value, "port1"))
-				multitap = 1;
-			else if (!std::strcmp(var.value, "port2"))
-				multitap = 2;
-			else if (!std::strcmp(var.value, "both"))
-				multitap = 3;
-		}
-		s_base_settings->SetBoolValue("Pad", "MultitapPort1", (multitap & 1) != 0);
-		s_base_settings->SetBoolValue("Pad", "MultitapPort2", (multitap & 2) != 0);
-		if (startup || multitap != s_multitap)
-		{
+			unsigned multitap = 0;
+			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			{
+				if (!std::strcmp(var.value, "port1"))
+					multitap = 1;
+				else if (!std::strcmp(var.value, "port2"))
+					multitap = 2;
+				else if (!std::strcmp(var.value, "both"))
+					multitap = 3;
+			}
+			s_base_settings->SetBoolValue("Pad", "MultitapPort1", (multitap & 1) != 0);
+			s_base_settings->SetBoolValue("Pad", "MultitapPort2", (multitap & 2) != 0);
 			s_multitap = multitap;
 			BuildPadMap();
 			log_cb(RETRO_LOG_INFO, "[PAD] multitap %s: %u libretro ports\n",
