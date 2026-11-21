@@ -97,11 +97,7 @@ extern "C" bool ARMSX2_IsIdleVMPrewarmResolved(void);
 bool ARMSX2IOSRuntimeTelemetryEnabled();
 
 // ---------------------------------------------------------------------------
-// View-controller refs
-// __unsafe_unretained (not __weak): this translation unit is built under manual
-// reference counting (no ARC), where __weak is illegal. The menu/root
-// controllers are owned by UIKit/SwiftUI; the unretained refs here are kept
-// valid for the lifetime of those owning objects.
+// View-controller refs, unretained because UIKit and SwiftUI own the controllers
 // ---------------------------------------------------------------------------
 extern UIViewController* __unsafe_unretained s_menuVC;
 extern UIViewController* __unsafe_unretained s_rootVC;

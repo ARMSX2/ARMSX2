@@ -32,9 +32,8 @@ class AirPlayTests(unittest.TestCase):
                 )
                 self.assertIn(f"@implementation {delegate}", implementations[delegate])
         cmake = (IOS_ROOT / "CMakeLists.txt").read_text()
-        self.assertIn("Runtime/SceneDelegate.mm", cmake)
-        # Info.plist names this class and nothing links to it, so only this list keeps it in the app.
-        self.assertIn("Runtime/ARMSX2ExternalDisplaySceneDelegate.mm", cmake)
+        # Info.plist names the external display delegate and nothing links to it, so only this glob keeps it in the app.
+        self.assertIn("file(GLOB IOS_RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Runtime/*.mm)", cmake)
 
         game_screen = swift("GameScreenView.swift").read_text()
         metal_view = swift("MetalGameView.swift").read_text()
@@ -50,7 +49,7 @@ class AirPlayTests(unittest.TestCase):
         self.assertIn("sessionRole:connectingSceneSession.role", app_delegate)
 
         self.assertIn(
-            "self.window = [[[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene] autorelease];",
+            "self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];",
             implementations["ARMSX2ExternalDisplaySceneDelegate"].split(
                 "@implementation ARMSX2ExternalDisplaySceneDelegate", 1
             )[1],

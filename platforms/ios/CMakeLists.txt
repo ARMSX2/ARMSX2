@@ -315,28 +315,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		set(ARMSX2_APP_IPHONEOS_DEPLOYMENT_TARGET "${ARMSX2_IOS_DEPLOYMENT_TARGET}")
 	endif()
 
-	set(IOS_RUNTIME_SOURCES
-		Runtime/IOSRuntime.mm
-		Runtime/ARMSX2GameView.mm
-		Runtime/DeviceStats.mm
-		Runtime/RuntimeSettings.mm
-		Runtime/AppDelegate.mm
-		Runtime/GamepadInput.mm
-		Runtime/GamepadRefresh.mm
-		Runtime/GamepadRumblePulse.mm
-		Runtime/GamepadRumble.mm
-		Runtime/HostImpls.mm
-		Runtime/PlaySoundAsync.mm
-		Runtime/SceneDelegate.mm
-		Runtime/SceneDelegate+VMThread.mm
-		Runtime/ARMSX2ExternalDisplaySceneDelegate.mm
-		Runtime/SessionDiagnostics.mm
-	)
+	file(GLOB IOS_RUNTIME_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Runtime/*.mm)
+	armsx2_require_files(IOS_RUNTIME_SOURCES)
 	file(GLOB IOS_BRIDGE_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/Bridge/*.mm)
 	armsx2_require_files(IOS_BRIDGE_SOURCES)
-	# Only the bridge. The files in IOS_RUNTIME_SOURCES still release by hand, and
-	# test_ios_airplay.py pins one of those lines out of SceneDelegate.mm.
-	set_source_files_properties(${IOS_BRIDGE_SOURCES} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+	set_source_files_properties(${IOS_RUNTIME_SOURCES} ${IOS_BRIDGE_SOURCES} PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 	add_executable(ARMSX2iOS ${IOS_RUNTIME_SOURCES} ${IOS_BRIDGE_SOURCES} ${SWIFT_SOURCES})
 	set_target_properties(ARMSX2iOS PROPERTIES
 		MACOSX_BUNDLE TRUE

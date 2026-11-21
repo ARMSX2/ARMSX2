@@ -258,9 +258,9 @@ const int s_defaultMap[16] = {
 };
 
 #pragma mark - View controllers & render-view glue
-// View controller references for background color switching. __unsafe_unretained (not __weak):
-// this TU is built under manual reference counting (no ARC), where __weak is illegal. The
-// menu/root controllers are owned by UIKit/SwiftUI and outlive these unretained references.
+// View controller references for background color switching. They stay
+// __unsafe_unretained because UIKit and SwiftUI own the controllers, which
+// outlive these references.
 UIViewController* __unsafe_unretained s_menuVC = nil;
 UIViewController* __unsafe_unretained s_rootVC = nil;
 UIViewController* __unsafe_unretained s_sdlRootVC = nil;

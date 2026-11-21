@@ -27,11 +27,11 @@ static dispatch_queue_t ARMSX2AchievementSoundQueue() {
 
 @implementation ARMSX2AchievementSoundDelegate
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer*)player successfully:(BOOL)flag {
-    self.player = nil;
     // The active-delegate set is mutated exclusively from this serial queue, so add
     // and remove hop on via dispatch_async instead of taking a lock.
     dispatch_async(ARMSX2AchievementSoundQueue(), ^{
-        [ARMSX2ActiveAchievementSoundDelegates() removeObject:player.delegate];
+        self.player = nil;
+        [ARMSX2ActiveAchievementSoundDelegates() removeObject:self];
     });
 }
 @end
