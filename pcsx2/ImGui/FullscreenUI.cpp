@@ -92,7 +92,11 @@ static std::string FormatMenuClock(const std::tm& tm)
 	char buf[256];
 	if (std::strftime(buf, std::size(buf), format, &tm) == 0)
 		return {};
-	return buf;
+	std::string ret(buf);
+	// Locales such as de_DE have no AM/PM text, so %p is empty and leaves a trailing space.
+	if (mode == "12h" && ret.back() == ' ')
+		ret += (tm.tm_hour < 12) ? "AM" : "PM";
+	return ret;
 }
 
 void FullscreenUI::GetStandardSelectionFooterText(SmallStringBase& dest, bool back_instead_of_cancel)
