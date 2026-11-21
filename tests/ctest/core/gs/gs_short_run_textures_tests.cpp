@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 // Which texture bindings each group of a short run pushes when it is recorded with the ordinary calls, and what the
-// flush pushes after the waiting groups (GSShortRunTextures.h). GSDeviceVK.h asserts that the binding numbers and the
+// flush pushes after the waiting groups (GSShortRunTextures.h). GSDeviceVK.cpp asserts that the binding numbers and the
 // flag mask used here are its own.
 
 #include <gtest/gtest.h>
@@ -37,6 +37,11 @@ namespace
 		std::array<int, GSShortRunTextures::BINDINGS> current{};
 		std::array<int, GSShortRunTextures::BINDINGS> gpu{};
 		std::vector<Waiting> waiting;
+		// A draw whose state was taken for the run but whose draw has not come (something used the command buffer in
+		// between): the flags it took, and the bindings the flush pushed for it.
+		bool open = false;
+		u32 open_flags = 0;
+		u32 open_pushed = 0;
 
 		Device() { gpu.fill(UNKNOWN); }
 
@@ -54,11 +59,32 @@ namespace
 			dirty = 0;
 		}
 
-		/// FlushRun.
+		/// A draw that would join the run takes its state; its draw has not come yet.
+		void Open()
+		{
+			open = true;
+			open_flags = dirty;
+			dirty = 0;
+		}
+
+		/// FlushRun. An open group is given to the ordinary calls after the waiting groups, with the flags it took less
+		/// what the flush pushed.
 		void Flush()
 		{
-			if (waiting.empty())
-				return;
+			u32 restore = 0;
+			if (!waiting.empty())
+				restore = RecordWaiting();
+			if (open)
+			{
+				open = false;
+				open_pushed = open_flags & ~restore;
+				for (u32 bits = open_pushed; bits != 0; bits &= bits - 1)
+					gpu[std::countr_zero(bits)] = current[std::countr_zero(bits)];
+			}
+		}
+
+		u32 RecordWaiting()
+		{
 			u32 restore;
 			if (waiting.size() >= MIN_GROUPS)
 			{
@@ -78,6 +104,18 @@ namespace
 			for (u32 bits = restore; bits != 0; bits &= bits - 1)
 				gpu[std::countr_zero(bits)] = current[std::countr_zero(bits)];
 			waiting.clear();
+			return restore;
+		}
+
+		/// True when every binding in `reads` holds its current texture.
+		bool Holds(u32 reads) const
+		{
+			for (u32 bits = reads; bits != 0; bits &= bits - 1)
+			{
+				if (gpu[std::countr_zero(bits)] != current[std::countr_zero(bits)])
+					return false;
+			}
+			return true;
 		}
 
 		/// A draw that does not join the run (vertex expansion, say). It reads its flags first; using the command buffer
@@ -90,12 +128,7 @@ namespace
 			Flush();
 			for (u32 bits = flags; bits != 0; bits &= bits - 1)
 				gpu[std::countr_zero(bits)] = current[std::countr_zero(bits)];
-			for (u32 bits = reads; bits != 0; bits &= bits - 1)
-			{
-				if (gpu[std::countr_zero(bits)] != current[std::countr_zero(bits)])
-					return false;
-			}
-			return true;
+			return Holds(reads);
 		}
 	};
 } // namespace
@@ -174,4 +207,50 @@ TEST(GSShortRunTextures, AGroupAfterAnEntryRunSamplesItsTexture)
 	d.Flush();
 	EXPECT_EQ(d.gpu[GSShortRunTextures::TEXTURE], 3);
 	EXPECT_EQ(d.gpu[GSShortRunTextures::PALETTE], 5);
+}
+
+// A run through the entry is waiting when the next draw, with a new texture, takes its state; then something uses the
+// command buffer before its draw. The flush pushes every binding after the entry, so the open group pushes nothing more,
+// and its draw samples the new texture.
+TEST(GSShortRunTextures, AnOpenGroupAfterAnEntryRunTakesWhatTheFlushPushed)
+{
+	Device d;
+	d.Set(GSShortRunTextures::TEXTURE, 3);
+	for (u32 i = 0; i < MIN_GROUPS; i++)
+		d.Join(TEX);
+	d.Set(GSShortRunTextures::TEXTURE, 6);
+	d.Open();
+	d.Flush();
+	EXPECT_EQ(d.open_pushed, 0u);
+	EXPECT_TRUE(d.Holds(TEX | PAL));
+}
+
+// The same after a short run of one untextured group: the flush pushes what the group left owed, the open group pushes
+// only the palette it took that the flush did not.
+TEST(GSShortRunTextures, AnOpenGroupAfterAShortRunPushesOnlyWhatTheFlushDidNot)
+{
+	Device d;
+	d.Set(GSShortRunTextures::TEXTURE, 3);
+	d.Set(GSShortRunTextures::PALETTE, 4);
+	EXPECT_TRUE(d.OrdinaryDraw(TEX | PAL));
+	d.Set(GSShortRunTextures::RT, 7);
+	d.Join(0);
+	d.Set(GSShortRunTextures::PALETTE, 5);
+	d.Open();
+	d.Flush();
+	EXPECT_EQ(d.open_pushed, PAL);
+	EXPECT_TRUE(d.Holds(TEX | PAL | RT));
+}
+
+// With nothing waiting, the open group pushes what it took.
+TEST(GSShortRunTextures, AnOpenGroupAloneTakesTheOrdinaryCalls)
+{
+	Device d;
+	d.Set(GSShortRunTextures::TEXTURE, 3);
+	EXPECT_TRUE(d.OrdinaryDraw(TEX));
+	d.Set(GSShortRunTextures::PALETTE, 5);
+	d.Open();
+	d.Flush();
+	EXPECT_EQ(d.open_pushed, PAL);
+	EXPECT_TRUE(d.Holds(TEX | PAL));
 }
