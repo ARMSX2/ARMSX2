@@ -2462,6 +2462,8 @@ TEST(GsKickKernel, LayoutsPickUpAnEnvironmentMovingUnderTheRun)
 			s, prim, kPairRGBAQ, v, {5000}, true, false, true);
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZF2>(
 			s, prim, kNopTriple52, v, {5000}, true, false, true);
+		RunAndCompareLayout<GSVertexKernels::PackedLayout::NopTripleXYZ2>(
+			s, prim, kNopTripleXYZ2Lead, v, {5000}, true, false, true);
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::UvTripleXYZF2>(
 			s, prim, kUvTriple40, v, {5000}, true, false, true);
 		RunAndCompareLayout<GSVertexKernels::PackedLayout::PairRGBAQXYZF2>(
@@ -3097,7 +3099,8 @@ TEST(GsKickKernel, RingPoisonGuardIsNotVacuous)
 // every tag, and with every vertex ADC.
 TEST(GsKickKernel, LayoutDrawStartFlushesAtTheSameVertex)
 {
-	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple};
+	const LayoutCase* cases[] = {&kNopTriple40, &kNopTriple41, &kPairSTQ, &kPairUV, &kPairUVF, &kPairRGBAQ, &kUvTriple,
+		&kNopTripleXYZ2};
 	u32 flushed_runs = 0;
 	for (const LayoutCase* lc : cases)
 	{
