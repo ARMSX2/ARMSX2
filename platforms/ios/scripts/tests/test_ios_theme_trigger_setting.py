@@ -6,7 +6,7 @@ from ios_source import block, read, swift, without_comments
 
 
 SETTINGS = swift("UIFrameRateSettings.swift")
-ROUTER = swift("MenuControllerInputRouter.swift")
+ROUTER = swift("MenuControllerInputRouter+Shortcuts.swift")
 APPEARANCE = swift("AppearanceSettingsView.swift")
 INTERFACE = swift("AppearanceInterfaceSections.swift")
 
@@ -19,7 +19,7 @@ class ThemeTriggerSetting(unittest.TestCase):
         self.assertIn("changesThemeWithTriggers = defaults.object(forKey: Keys.themeTriggers) as? Bool ?? false", source)
 
     def test_the_triggers_check_it(self):
-        trigger = block(without_comments(read(ROUTER)), "private func updateThemePresetButton(")
+        trigger = block(without_comments(read(ROUTER)), "func updateThemePresetButton(")
         self.assertIn("UIFrameRateSettings.shared.changesThemeWithTriggers", trigger)
 
     def test_appearance_offers_it_to_the_pad(self):

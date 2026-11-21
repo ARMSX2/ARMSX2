@@ -5,7 +5,7 @@ import unittest
 from ios_source import read, swift
 
 
-ROUTER = swift("MenuControllerInputRouter.swift")
+ROUTER = swift("MenuControllerInputRouter+GamepadInput.swift")
 
 
 class SquareTriangle(unittest.TestCase):
