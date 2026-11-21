@@ -1329,6 +1329,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  -no-dual-source: Run as a device without dualSrcBlend, the way Arm's stock Mali driver "
 						 "does. GSRendererHW blends every SRC1 equation in the shader rather than through the second "
 						 "fragment output, so a device that has dual-source blending runs the fallback. Vulkan only.\n");
+	std::fprintf(stderr, "  -panvk-bifrost: Run as Mesa's PanVK on a Bifrost Mali: render passes opened over their draws, "
+						 "depth without stencil until a draw needs it, DATE without depth reading the target. For "
+						 "checking that driver's paths on another device. Vulkan only.\n");
 	std::fprintf(stderr, "  -accblend <0-5>: Force accurate blending unit (0=Minimum, 1=Basic, 2=Medium, 3=High, 4=Full, 5=Maximum). "
 						 "Overrides the game/global default; use to exercise the SW-blend / fb-fetch (ROV) path headlessly.\n");
 	std::fprintf(stderr, "  --: Signals that no more arguments will follow and the remaining\n"
@@ -2042,6 +2045,13 @@ bool GSRunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				// fallback on a device that has the feature, for an A/B on one binary.
 				g_gs_measurement_overrides.no_dual_source = true;
 				Console.WriteLn("Forcing dual-source blending off (Vulkan, as a device without dualSrcBlend)");
+				continue;
+			}
+			else if (CHECK_ARG("-panvk-bifrost"))
+			{
+				// Not a setting: the driver decides. This puts PanVK-on-Bifrost's paths on another device.
+				g_gs_measurement_overrides.panvk_bifrost = true;
+				Console.WriteLn("Forcing the PanVK Bifrost paths on (Vulkan)");
 				continue;
 			}
 			else if (CHECK_ARG_PARAM("-runs"))

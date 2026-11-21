@@ -1607,6 +1607,8 @@ bool GSDeviceVK::IsDeviceNamed(const char* name) const
 
 bool GSDeviceVK::IsDevicePanVKBifrost() const
 {
+	if (g_gs_measurement_overrides.panvk_bifrost)
+		return true;
 	if (m_device_driver_properties.driverID != VK_DRIVER_ID_MESA_PANVK)
 		return false;
 	static constexpr const char* bifrost[] = {"Mali-G31", "Mali-G51", "Mali-G52", "Mali-G71", "Mali-G72", "Mali-G76"};
@@ -4480,7 +4482,8 @@ void GSDeviceVK::ResolveFeatureTable()
 	m_features.sub_texel_precision_bits = static_cast<u8>(std::min<u32>(m_device_properties.limits.subTexelPrecisionBits, 16));
 
 	// geometryShader is needed because gl_PrimitiveID is part of the Geometry SPIR-V Execution Model.
-	m_features.primitive_id = m_device_features.geometryShader;
+	// Bifrost has no geometry shaders, so gsrunner -panvk-bifrost takes primitive-ID DATE away too.
+	m_features.primitive_id = m_device_features.geometryShader && !g_gs_measurement_overrides.panvk_bifrost;
 
 	m_features.prefer_new_textures = true;
 #if defined(__ANDROID__)
@@ -4546,8 +4549,9 @@ void GSDeviceVK::ResolveFeatureTable()
 
 	m_features.native_counter_draws = true;
 
-	// Use D32F depth instead of D32S8 when we have framebuffer fetch.
-	m_features.stencil_buffer &= !m_features.framebuffer_fetch;
+	// Use D32F depth instead of D32S8 when we have framebuffer fetch. PanVK on Bifrost has none, so gsrunner
+	// -panvk-bifrost keeps the stencil buffer where the device has D32S8.
+	m_features.stencil_buffer &= !m_features.framebuffer_fetch || g_gs_measurement_overrides.panvk_bifrost;
 
 	// Turnip before Mesa 26.2 hangs on EARLY_Z_LATE_Z with a D32S8 attachment and a discarding shader,
 	// which is SetupDATE's stencil pre-pass (rule vk-turnip-d32s8-early-z-late-z-hang). Without a stencil
