@@ -335,9 +335,9 @@ bool ARMSX2GetConfiguredFastBoot()
     if (!s_settings_interface)
         return false;
 
-    return s_settings_interface->GetBoolValue(
+    return Host::GetBaseBoolSettingValue(
         "GameISO", "FastBoot",
-        s_settings_interface->GetBoolValue("EmuCore", "EnableFastBoot", false));
+        Host::GetBaseBoolSettingValue("EmuCore", "EnableFastBoot", false));
 }
 
 // Resolves fast boot for an ISO that is about to boot. A per-game override
@@ -421,9 +421,9 @@ std::string ARMSX2ResolveJITScriptProtocol()
     if (s_settings_interface)
     {
         jitProtocol = ARMSX2NormalizeJITScriptProtocol(
-            s_settings_interface->GetStringValue("ARMSX2iOS/JIT", "ScriptProtocol", ARMSX2DefaultJITScriptProtocol()));
+            Host::GetBaseStringSettingValue("ARMSX2iOS/JIT", "ScriptProtocol", ARMSX2DefaultJITScriptProtocol()));
         if (jitProtocol != "legacy" && jitProtocol != "universal")
-            jitProtocol = s_settings_interface->GetBoolValue(
+            jitProtocol = Host::GetBaseBoolSettingValue(
                 "ARMSX2iOS/JIT", "UseUniversalJITScript", ARMSX2GetIOSMajorVersion() >= 26) ? "universal" : "legacy";
     }
     return jitProtocol;
@@ -711,8 +711,8 @@ static const ARMSX2IOSDeviceStatsCache& ARMSX2IOSRefreshDeviceStatsCacheLocked()
     // Mirror the rule the Swift side loads with, so a fresh install with the key still absent agrees
     // with the preset instead of showing stats at Off.
     s_device_stats_cache.show = s_settings_interface ?
-        s_settings_interface->GetBoolValue("ARMSX2iOS/UI", "OsdShowDeviceStats",
-            s_settings_interface->GetIntValue("ARMSX2iOS/UI", "OsdPreset", 0) != 0) : false;
+        Host::GetBaseBoolSettingValue("ARMSX2iOS/UI", "OsdShowDeviceStats",
+            Host::GetBaseIntSettingValue("ARMSX2iOS/UI", "OsdPreset", 0) != 0) : false;
 
     @autoreleasepool {
         UIDevice* device = [UIDevice currentDevice];
@@ -802,13 +802,13 @@ void ARMSX2SanitizeFrameLimiterConfig(const char* reason)
     if (!s_settings_interface)
         return;
 
-    const float raw = s_settings_interface->GetFloatValue("Framerate", "NominalScalar", 1.0f);
+    const float raw = Host::GetBaseFloatSettingValue("Framerate", "NominalScalar", 1.0f);
     const float sanitized = ARMSX2SanitizedNominalScalar(raw);
     if (std::fabs(raw - sanitized) > 0.001f) {
         Console.Warning("@@FRAMELIMIT@@ clamping unsupported NominalScalar %.3f -> %.3f reason=%s",
             raw, sanitized, reason ? reason : "unknown");
-        s_settings_interface->SetFloatValue("Framerate", "NominalScalar", sanitized);
-        s_settings_interface->Save();
+        Host::SetBaseFloatSettingValue("Framerate", "NominalScalar", sanitized);
+        Host::CommitBaseSettingChanges();
     }
 
     EmuConfig.EmulationSpeed.NominalScalar = sanitized;
@@ -847,20 +847,20 @@ void ARMSX2WriteIOSOsdFlagsToSettings()
     if (!s_settings_interface)
         return;
 
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowFPS", EmuConfig.GS.OsdShowFPS);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowVPS", EmuConfig.GS.OsdShowVPS);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowSpeed", EmuConfig.GS.OsdShowSpeed);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowCPU", EmuConfig.GS.OsdShowCPU);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowGPU", EmuConfig.GS.OsdShowGPU);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowResolution", EmuConfig.GS.OsdShowResolution);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowGSStats", EmuConfig.GS.OsdShowGSStats);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowIndicators", EmuConfig.GS.OsdShowIndicators);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowSettings", EmuConfig.GS.OsdShowSettings);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowInputs", EmuConfig.GS.OsdShowInputs);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowFrameTimes", EmuConfig.GS.OsdShowFrameTimes);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowVersion", EmuConfig.GS.OsdShowVersion);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowHardwareInfo", EmuConfig.GS.OsdShowHardwareInfo);
-    s_settings_interface->SetBoolValue("EmuCore/GS", "OsdShowInputRec", false);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowFPS", EmuConfig.GS.OsdShowFPS);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVPS", EmuConfig.GS.OsdShowVPS);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSpeed", EmuConfig.GS.OsdShowSpeed);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowCPU", EmuConfig.GS.OsdShowCPU);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowGPU", EmuConfig.GS.OsdShowGPU);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowResolution", EmuConfig.GS.OsdShowResolution);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowGSStats", EmuConfig.GS.OsdShowGSStats);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowIndicators", EmuConfig.GS.OsdShowIndicators);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSettings", EmuConfig.GS.OsdShowSettings);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputs", EmuConfig.GS.OsdShowInputs);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowFrameTimes", EmuConfig.GS.OsdShowFrameTimes);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVersion", EmuConfig.GS.OsdShowVersion);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowHardwareInfo", EmuConfig.GS.OsdShowHardwareInfo);
+    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputRec", false);
 }
 
 void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
@@ -869,21 +869,21 @@ void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
         return;
 
     ARMSX2SetIOSOsdFlags(
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowFPS", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowVPS", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowSpeed", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowCPU", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowGPU", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowResolution", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowGSStats", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowIndicators", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowSettings", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowInputs", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowFrameTimes", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowVersion", false),
-        s_settings_interface->GetBoolValue("EmuCore/GS", "OsdShowHardwareInfo", false));
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowFPS", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowVPS", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowSpeed", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowCPU", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowGPU", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowResolution", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowGSStats", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowIndicators", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowSettings", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputs", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowFrameTimes", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowVersion", false),
+        Host::GetBaseBoolSettingValue("EmuCore/GS", "OsdShowHardwareInfo", false));
 
-    int position = s_settings_interface->GetIntValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(OsdOverlayPos::TopRight));
+    int position = Host::GetBaseIntSettingValue("EmuCore/GS", "OsdPerformancePos", static_cast<int>(OsdOverlayPos::TopRight));
     if (position == static_cast<int>(OsdOverlayPos::TopCenter))
         position = static_cast<int>(OsdOverlayPos::TopRight);
     // Not mirrored per frame the way the flags above are, so this one really does have to
