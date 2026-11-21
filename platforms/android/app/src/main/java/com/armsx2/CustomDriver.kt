@@ -5,6 +5,9 @@ import com.armsx2.runtime.MainActivityRuntime
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.armsx2.config.ConfigStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kr.co.iefriends.pcsx2.HttpClient
 import kr.co.iefriends.pcsx2.NativeApp
 import org.json.JSONArray
@@ -216,6 +219,30 @@ object CustomDriver {
         val src = setupSource(renderer) ?: return null
         return fetchSource(src, "ARMSX2/" + runCatching { NativeApp.getBuildVersion() }.getOrNull().orEmpty().ifEmpty { "dev" })
             .firstOrNull()
+    }
+
+    /** Whether the installed pack [id] came from the source labelled [sourceLabel] (a
+     *  [RemoteDriver.source]). False for K11MCH1, whose ids carry no prefix, and for local imports. */
+    internal fun isFromSource(id: String, sourceLabel: String): Boolean {
+        val prefix = DRIVER_SOURCES.firstOrNull { it.label == sourceLabel }?.idPrefix
+        return !prefix.isNullOrEmpty() && id.startsWith("$prefix-")
+    }
+
+    /** Installs [pack], unless it is installed already, and makes it the global driver. It takes
+     *  effect when a game next starts. Null when the download or the extraction failed. */
+    suspend fun installAsGlobal(context: Context, pack: RemoteDriver): InstalledDriver? {
+        val installed = withContext(Dispatchers.IO) {
+            val pick = listInstalled(context).firstOrNull { it.id == pack.id } ?: download(context, pack)
+            if (pick != null) {
+                runCatching {
+                    val global = ConfigStore.loadGlobal()
+                    ConfigStore.saveGlobal(global.copy(output = global.output.copy(customDriverId = pick.id)))
+                }
+            }
+            pick
+        } ?: return null
+        MainActivityRuntime.customDriverId.value = installed.id
+        return installed
     }
 
     private val DRIVER_SOURCES = listOf(

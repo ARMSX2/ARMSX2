@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (ar); report bad strings to fix.",
+ "driverOffer.body.update": "يتوفر إصدار أحدث من برنامج تشغيل الرسوميات الخاص بـ ARMSX2 لوحدة GPU لديك.",
+ "driverOffer.current": "المستخدم حاليًا: %s",
+ "driverOffer.notNow": "ليس الآن",
+ "driverOffer.title.switch": "برنامج تشغيل GPU من ARMSX2",
+ "driverOffer.title.update": "إصدار أحدث من برنامج تشغيل GPU متاح",
  "tab.app": "التطبيق",
  "tab.performance": "الأداء",
  "tab.renderer": "Renderer",

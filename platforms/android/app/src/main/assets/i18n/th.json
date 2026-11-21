@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (th); report bad strings to fix.",
+ "driverOffer.body.update": "มีไดรเวอร์กราฟิกของ ARMSX2 รุ่นใหม่กว่าสำหรับ GPU ของคุณ",
+ "driverOffer.current": "ที่ใช้อยู่ตอนนี้: %s",
+ "driverOffer.notNow": "ไว้ทีหลัง",
+ "driverOffer.title.switch": "ไดรเวอร์ GPU ของ ARMSX2",
+ "driverOffer.title.update": "มีไดรเวอร์ GPU เวอร์ชันใหม่กว่าแล้ว",
  "tab.app": "แอป",
  "tab.performance": "ประสิทธิภาพ",
  "tab.renderer": "Renderer",

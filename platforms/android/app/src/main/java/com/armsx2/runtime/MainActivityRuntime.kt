@@ -3007,6 +3007,22 @@ open class MainActivityRuntime : ComponentActivity() {
                 launchPendingExternalGameIfReady()
             }
 
+            // The driver offer after an app update, looked for once the library is up: not during
+            // setup (its own driver page asks), and not on a launch straight into a game.
+            androidx.compose.runtime.LaunchedEffect(
+                setupComplete.value,
+                setupEditorVisible.value,
+                nativeReady.value,
+                eState.value,
+                pendingExternalLaunch.value,
+            ) {
+                if (setupComplete.value && !setupEditorVisible.value && nativeReady.value &&
+                    eState.value == EmuState.STOPPED && pendingExternalLaunch.value == null
+                ) {
+                    com.armsx2.DriverUpdateOffer.lookOnce(applicationContext)
+                }
+            }
+
             // Setup wizard runs once. After it persists prefs and flips
             // setupComplete the main emulator UI takes over. Re-entering
             // setup requires clearing app data (or wiping the prefs key).

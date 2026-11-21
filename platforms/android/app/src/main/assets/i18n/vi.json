@@ -1,5 +1,10 @@
 {
   "_note": "Machine-translated (vi); report bad strings to fix.",
+  "driverOffer.body.update": "Đã có bản phát hành mới hơn của trình điều khiển đồ họa ARMSX2 cho GPU của bạn.",
+  "driverOffer.current": "Đang dùng: %s",
+  "driverOffer.notNow": "Để sau",
+  "driverOffer.title.switch": "Trình điều khiển GPU của ARMSX2",
+  "driverOffer.title.update": "Đã có trình điều khiển GPU mới hơn",
   "tab.app": "Ứng dụng",
   "tab.performance": "Hiệu năng",
   "tab.renderer": "Renderer",

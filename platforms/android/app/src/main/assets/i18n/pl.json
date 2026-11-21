@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (pl); report bad strings to fix.",
+ "driverOffer.body.update": "Dostępna jest nowsza wersja sterownika graficznego ARMSX2 dla Twojego GPU.",
+ "driverOffer.current": "Obecnie używany: %s",
+ "driverOffer.notNow": "Nie teraz",
+ "driverOffer.title.switch": "Sterownik GPU od ARMSX2",
+ "driverOffer.title.update": "Dostępny jest nowszy sterownik GPU",
  "tab.app": "Aplikacja",
  "tab.performance": "Wydajność",
  "tab.renderer": "Renderer",

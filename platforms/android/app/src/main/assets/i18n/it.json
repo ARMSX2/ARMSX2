@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (it); report bad strings to fix.",
+ "driverOffer.body.update": "È disponibile una versione più recente del driver grafico di ARMSX2 per la tua GPU.",
+ "driverOffer.current": "In uso ora: %s",
+ "driverOffer.notNow": "Non ora",
+ "driverOffer.title.switch": "Il driver GPU di ARMSX2",
+ "driverOffer.title.update": "È disponibile un driver GPU più recente",
  "tab.app": "App",
  "tab.performance": "Prestazioni",
  "tab.renderer": "Renderer",

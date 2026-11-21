@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (zh-TW); report bad strings to fix.",
+ "driverOffer.body.update": "你的 GPU 有更新版本的 ARMSX2 圖形驅動程式。",
+ "driverOffer.current": "目前使用：%s",
+ "driverOffer.notNow": "以後再說",
+ "driverOffer.title.switch": "ARMSX2 的 GPU 驅動程式",
+ "driverOffer.title.update": "有更新的 GPU 驅動程式",
  "tab.app": "應用程式",
  "tab.performance": "效能",
  "tab.renderer": "渲染器",
