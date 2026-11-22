@@ -2048,9 +2048,9 @@ final class SettingsStore {
     // ── Init from INI ──
     private init() {
         Self.initializeAutomaticJITAppearanceState()
-        // Assignments in init skip didSet, so loading the INI writes nothing back. Moved
-        // into a helper they would fire, and every non-suppressible setting would rewrite
-        // itself each launch.
+        // An assignment here skips didSet only while a stored property without a default
+        // is still unset, so the last load must be one of those. In a helper every load
+        // would fire didSet, and each non-suppressible setting would rewrite itself.
         suppressINIWrites = true
         defer {
             suppressINIWrites = false
@@ -2552,10 +2552,10 @@ final class SettingsStore {
         backgroundFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundFitMode") ?? "") ?? .fill
         backgroundLandscapeFitMode = BackgroundFitMode(rawValue: UserDefaults.standard.string(forKey: "ARMSX2iOSBackgroundLandscapeFitMode") ?? "") ?? .fill
         backgroundVideoMuted = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundVideoMuted") as? Bool ?? true
-        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
         backgroundEnabledInBIOS = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInBIOS") as? Bool ?? true
         backgroundEnabledInHelp = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInHelp") as? Bool ?? true
         backgroundEnabledInSettings = UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundEnabledInSettings") as? Bool ?? true
+        backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
         _aspectRatioConfig.write(aspectRatio)
