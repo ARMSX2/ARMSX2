@@ -3699,6 +3699,45 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 	// device's swap chain on it if device B was presenting there. ZeroFG switched on (again, or a new
 	// presenter after a failure): offer the window. The presenter owns the output and wants the
 	// window: drop the swap chain (the window stays, device B presents on the same surface).
+	// The swap chain back on the window after ZeroFG left it: on the surface device B presented on,
+	// else (that surface was lost: device B's handback after VK_ERROR_SURFACE_LOST_KHR) on a new
+	// surface of the window. Until one works the window shows nothing, so a failure is retried every
+	// quarter second rather than once: the game ran on behind a frozen picture (Klonoa 2).
+	static bool s_zerofg_rebuild_pending = false;
+	static Common::Timer::Value s_zerofg_rebuild_next = 0;
+	const auto rebuild_after_zerofg = [this]() {
+		ExecuteCommandBuffer(false);
+		WaitForGPUIdle();
+		for (u32 attempt = 0; attempt < 2 && !m_swap_chain; attempt++)
+		{
+			VkSurfaceKHR surface = attempt == 0 ? std::exchange(s_zerofg_kept_surface, VK_NULL_HANDLE) : VK_NULL_HANDLE;
+			if (surface == VK_NULL_HANDLE)
+				surface = VKSwapChain::CreateVulkanSurface(m_instance, m_physical_device, &m_window_info);
+			if (surface == VK_NULL_HANDLE)
+				continue;
+			VkPresentModeKHR present_mode;
+			if (!VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode))
+			{
+				VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, surface);
+				continue;
+			}
+			// Create() owns the surface, and destroys it on failure.
+			m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
+				Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl));
+		}
+		if (m_swap_chain)
+		{
+			m_window_info = m_swap_chain->GetWindowInfo();
+			if (s_zerofg_rebuild_pending)
+				Console.WriteLn("VK: the swap chain is back on the window after ZeroFG left it.");
+			s_zerofg_rebuild_pending = false;
+			return;
+		}
+		if (!s_zerofg_rebuild_pending)
+			Console.Error("VK: ZeroFG left the window, but the swap chain could not be rebuilt; retrying");
+		s_zerofg_rebuild_pending = true;
+		s_zerofg_rebuild_next = Common::Timer::GetCurrentValue() + Common::Timer::ConvertMillisecondsToValue(250.0);
+	};
 	const bool zerofg_failed = GSZeroFG::ReconnectRequested();
 	if (zerofg_failed || (GSZeroFG::Connected() && (!GSConfig.ZeroFGEnabled || GSZeroFG::ModeChanged())))
 	{
@@ -3707,26 +3746,13 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 		else
 			GSZeroFG::DisconnectSurface();
 		if (!m_swap_chain && m_window_info.type != WindowInfo::Type::Surfaceless)
-		{
-			ExecuteCommandBuffer(false);
-			WaitForGPUIdle();
-			VkSurfaceKHR surface = std::exchange(s_zerofg_kept_surface, VK_NULL_HANDLE);
-			if (surface == VK_NULL_HANDLE)
-				surface = VKSwapChain::CreateVulkanSurface(m_instance, m_physical_device, &m_window_info);
-			VkPresentModeKHR present_mode;
-			if (surface == VK_NULL_HANDLE || !VKSwapChain::SelectPresentMode(surface, &m_vsync_mode, &present_mode) ||
-				!(m_swap_chain = VKSwapChain::Create(m_window_info, surface, present_mode,
-					  Pcsx2Config::GSOptions::TriStateToOptionalBoolean(GSConfig.ExclusiveFullscreenControl))))
-			{
-				Console.Error("VK: ZeroFG left the window, but the swap chain could not be rebuilt");
-				if (surface != VK_NULL_HANDLE)
-					VKSwapChain::DestroyVulkanSurface(m_instance, &m_window_info, surface);
-			}
-			else
-			{
-				m_window_info = m_swap_chain->GetWindowInfo();
-			}
-		}
+			rebuild_after_zerofg();
+	}
+	else if (s_zerofg_rebuild_pending && !m_swap_chain && m_window_info.type != WindowInfo::Type::Surfaceless &&
+			 !GSZeroFG::Connected())
+	{
+		if (Common::Timer::GetCurrentValue() >= s_zerofg_rebuild_next)
+			rebuild_after_zerofg();
 	}
 	else if (m_swap_chain && GSConfig.ZeroFGEnabled && GSZeroFG::CanConnect())
 	{
