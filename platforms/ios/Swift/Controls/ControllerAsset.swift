@@ -4,7 +4,7 @@
 import SwiftUI
 import UIKit
 
-private final class ControllerAssetImageCache: @unchecked Sendable {
+private final class ControllerAssetImageCache {
     let images = NSCache<NSString, UIImage>()
 }
 
