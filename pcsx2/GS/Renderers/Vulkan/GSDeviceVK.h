@@ -88,6 +88,9 @@ public:
 		/// only while GSConfig.LsfgFp16 is on, so nobody else's device changes.
 		bool vk_khr_shader_float16_int8 : 1;
 		bool vk_ext_device_fault : 1;
+		/// VK_GOOGLE_display_timing: which presents the display really showed, for the overlay's
+		/// "Display" rate (VKSwapChain::PollDisplayed). Nothing paces by it.
+		bool vk_google_display_timing : 1;
 		/// VK_EXT_image_compression_control: an image can be created without framebuffer
 		/// compression. Requested on Adreno only; used by the Adreno 613's destination-alpha loop to
 		/// leave uncompressed the targets that loop reads (GSTextureVK::MakeUncompressed).

@@ -152,9 +152,10 @@ static std::string ZeroFGStatusText()
 #endif
 }
 
-/// "Vulkan N/s", the presents that really went to the display, for the frame generation lines:
-/// the same count for LSFG and ZeroFG, so the two compare on one measure. Empty without Vulkan.
-static std::string VulkanPresentText()
+/// "Display N/s", the presents the display showed (by Vulkan's display timing, not the presents the
+/// driver accepted), for the frame generation lines: the same count for LSFG and ZeroFG, so the two
+/// compare on what reaches the panel. Empty without Vulkan.
+static std::string DisplayRateText()
 {
 #ifdef ENABLE_VULKAN
 	return GSVulkanPresents::RateText();
@@ -345,9 +346,9 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// frame for the bit above, and caching it would leave the line on screen for up to a refresh
 	// after frame generation was switched off.
 	// Built every frame while a frame generation line shows, so its half-second windows keep time.
-	const std::string vulkan = (lsfg_line || zerofg_line) ? VulkanPresentText() : std::string();
-	s_lsfg_line.assign(lsfg_line && !vulkan.empty() ? fmt::format("{} | {}", lsfg_status, vulkan) : lsfg_status);
-	s_zerofg_line.assign(zerofg_line ? (vulkan.empty() ? zerofg_status : fmt::format("{} | {}", zerofg_status, vulkan)) : std::string());
+	const std::string display = (lsfg_line || zerofg_line) ? DisplayRateText() : std::string();
+	s_lsfg_line.assign(lsfg_line && !display.empty() ? fmt::format("{} | {}", lsfg_status, display) : lsfg_status);
+	s_zerofg_line.assign(zerofg_line ? (display.empty() ? zerofg_status : fmt::format("{} | {}", zerofg_status, display)) : std::string());
 
 	const float shadow_offset = std::ceil(scale);
 

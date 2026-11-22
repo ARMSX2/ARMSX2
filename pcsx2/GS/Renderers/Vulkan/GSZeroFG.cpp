@@ -3403,11 +3403,11 @@ namespace GSZeroFG
 
 namespace GSZeroFG
 {
-	u64 PresenterPresentCount()
+	u64 PresenterDisplayedCount()
 	{
 #if defined(ARMSX2_HAS_ZEROFG) && ZEROFG_WITH_HOST_KIT
-		// Device B's presenter ticks it on every vkQueuePresentKHR it makes that is accepted.
-		return xe::GetHostPresentSubmissionCount();
+		// Device B's egress ticks it for each present its display timing says the panel showed.
+		return xe::GetHostPresentDisplayedCount();
 #else
 		return 0;
 #endif

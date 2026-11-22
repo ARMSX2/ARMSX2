@@ -491,16 +491,62 @@ bool VKSwapChain::IsPresentStatsEnabled()
 	return s_stats_enabled.load(std::memory_order_relaxed);
 }
 
-static std::atomic<u64> s_host_presents{0};
+static std::atomic<bool> s_display_timing{false};
+static std::atomic<u64> s_host_displayed{0};
+static u32 s_present_id = 0;      // GS thread
+static u64 s_last_scanout_ns = 0; // GS thread
 
-void VKSwapChain::NoteHostPresent()
+void VKSwapChain::SetDisplayTimingEnabled(bool enabled)
 {
-	s_host_presents.fetch_add(1, std::memory_order_relaxed);
+	s_display_timing.store(enabled && vkGetPastPresentationTimingGOOGLE, std::memory_order_relaxed);
 }
 
-u64 VKSwapChain::GetHostPresentCount()
+bool VKSwapChain::IsDisplayTimingEnabled()
 {
-	return s_host_presents.load(std::memory_order_relaxed);
+	return s_display_timing.load(std::memory_order_relaxed);
+}
+
+const void* VKSwapChain::ChainPresentTiming(VkPresentTimesInfoGOOGLE* times, VkPresentTimeGOOGLE* time, const void* next)
+{
+	if (!IsDisplayTimingEnabled())
+		return next;
+	// No desired time: the present goes as it always did, the id only names it in the timings.
+	*time = {++s_present_id, 0};
+	*times = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, next, 1, time};
+	return times;
+}
+
+void VKSwapChain::PollDisplayed()
+{
+	if (!IsDisplayTimingEnabled() || m_swap_chain == VK_NULL_HANDLE)
+		return;
+	const VkDevice device = GSDeviceVK::GetInstance()->GetDevice();
+	// Each timing comes back once; Android keeps a few per swap chain, so this runs every real present.
+	for (u32 round = 0; round < 4; round++)
+	{
+		std::array<VkPastPresentationTimingGOOGLE, 16> timings;
+		u32 count = static_cast<u32>(timings.size());
+		const VkResult res = vkGetPastPresentationTimingGOOGLE(device, m_swap_chain, &count, timings.data());
+		if (res != VK_SUCCESS && res != VK_INCOMPLETE)
+			return;
+		for (u32 i = 0; i < count; i++)
+		{
+			// A real scanout, and a refresh of its own: one the display showed.
+			const u64 scanout = timings[i].actualPresentTime;
+			if (scanout && scanout != UINT64_MAX && scanout != s_last_scanout_ns)
+			{
+				s_last_scanout_ns = scanout;
+				s_host_displayed.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+		if (res != VK_INCOMPLETE)
+			return;
+	}
+}
+
+u64 VKSwapChain::GetHostDisplayedCount()
+{
+	return s_host_displayed.load(std::memory_order_relaxed);
 }
 
 void VKSwapChain::NoteAcquire(double ms, VkResult res)

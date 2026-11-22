@@ -468,7 +468,9 @@ if(ARMSX2_ENABLE_ZEROFG)
 		include(FetchContent)
 		FetchContent_Declare(zerofg
 			GIT_REPOSITORY https://github.com/hy300leosquizz-ctrl/ZeroFG.git
-			GIT_TAG v1.2g)
+			# v1.2g + the host kit's displayed-present counter (branch host/display-count), for the
+			# overlay's "Display" rate; to become a tag.
+			GIT_TAG ebec698ae1ce93be7772ad3464997b20e9f7a73f)
 		FetchContent_MakeAvailable(zerofg)
 		set(_zerofg_root "${zerofg_SOURCE_DIR}")
 	endif()

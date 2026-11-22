@@ -624,6 +624,10 @@ bool GSDeviceVK::SelectDeviceExtensions(ExtensionList* extension_list)
 	// vkGetDeviceFaultInfoEXT and the fault's addresses and reasons go to the log,
 	// so the next occurrence arrives with its own diagnosis instead of a rate.
 	m_optional_extensions.vk_ext_device_fault = SupportsExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, false);
+	// VK_GOOGLE_display_timing: the overlay's "Display" rate counts the presents the display showed,
+	// not the ones the driver accepted (two in one refresh: the compositor shows only the newer).
+	m_optional_extensions.vk_google_display_timing =
+		SupportsExtension(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME, false);
 	// VK_EXT_image_compression_control: on Turnip a draw that reads its own colour target in a
 	// declared feedback loop on the Adreno 613 reads stale data while the target is UBWC-compressed,
 	// so the destination-alpha loop recreates each target it reads without compression
@@ -1138,6 +1142,7 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	// With the device created, we can fill the remaining entry points.
 	if (!Vulkan::LoadVulkanDeviceFunctions(m_device, !m_window_system.device.empty()))
 		return false;
+	VKSwapChain::SetDisplayTimingEnabled(m_optional_extensions.vk_google_display_timing);
 
 	// Grab the graphics and present queues.
 	vkGetDeviceQueue(m_device, m_graphics_queue_family_index, 0, &m_graphics_queue);
@@ -2257,7 +2262,10 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			return;
 		}
 
-		const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
+		VkPresentTimesInfoGOOGLE present_times;
+		VkPresentTimeGOOGLE present_time;
+		const VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			VKSwapChain::ChainPresentTiming(&present_times, &present_time), 1,
 			present_swap_chain->GetRenderingFinishedSemaphorePtr(), 1, present_swap_chain->GetSwapChainPtr(),
 			present_swap_chain->GetCurrentImageIndexPtr(), nullptr};
 
@@ -2273,7 +2281,7 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 			VKSwapChain::NotePresent(present_elapsed_ms, res);
 		}
 		if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR)
-			VKSwapChain::NoteHostPresent();
+			present_swap_chain->PollDisplayed();
 		if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 		{
 			// VK_ERROR_OUT_OF_DATE_KHR is not fatal, just means we need to recreate our swap chain.
@@ -12330,16 +12338,20 @@ void GSDeviceVK::RemotePlayRelease(bool device_idle)
 
 namespace GSVulkanPresents
 {
-	/// The overlay's "Vulkan N/s": every accepted vkQueuePresentKHR the app makes, the GS device's
-	/// own and LSFG's (VKSwapChain::NoteHostPresent) plus ZeroFG's device B presenter, over
-	/// half-second windows, so LSFG and ZeroFG are measured the same way. GS thread.
+	/// The overlay's "Display N/s": the presents the display showed (VK_GOOGLE_display_timing), the
+	/// GS device's own and LSFG's (VKSwapChain::PollDisplayed) plus ZeroFG's device B presenter's,
+	/// over half-second windows, so LSFG and ZeroFG are measured the same way, by the panel. "n/a"
+	/// where neither device has the timing. GS thread.
 	std::string RateText()
 	{
 		static u64 last_ns = 0;
 		static u64 last_count = 0;
 		static float rate = 0.0f;
+		const u64 zerofg = GSZeroFG::PresenterDisplayedCount();
+		if (!VKSwapChain::IsDisplayTimingEnabled() && !zerofg)
+			return "Display n/a";
 		const u64 now = static_cast<u64>(Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue()));
-		const u64 count = VKSwapChain::GetHostPresentCount() + GSZeroFG::PresenterPresentCount();
+		const u64 count = VKSwapChain::GetHostDisplayedCount() + zerofg;
 		if (!last_ns || now - last_ns > 5'000'000'000ull)
 		{
 			last_ns = now;
@@ -12352,6 +12364,6 @@ namespace GSVulkanPresents
 			last_ns = now;
 			last_count = count;
 		}
-		return fmt::format("Vulkan {:.0f}/s", rate);
+		return fmt::format("Display {:.0f}/s", rate);
 	}
 } // namespace GSVulkanPresents

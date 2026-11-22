@@ -1331,9 +1331,14 @@ namespace GSLsfg
 		//    they display first. Presents issued on one queue are processed in call order, which
 		//    is what puts them on screen in that order without a semaphore between them.
 		u32 presented_generated = 0;
+		// Each present carries its display-timing id, so the overlay's "Display" rate counts the ones the
+		// panel showed (VKSwapChain::PollDisplayed, after the real one).
+		VkPresentTimesInfoGOOGLE present_times;
+		VkPresentTimeGOOGLE present_time;
 		for (size_t i = 0; i < acquired; i++)
 		{
-			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1, &slot.done_sems[i], 1,
+			const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+				VKSwapChain::ChainPresentTiming(&present_times, &present_time), 1, &slot.done_sems[i], 1,
 				swap_chain->GetSwapChainPtr(), &acquired_index[i], nullptr};
 			// ★ VK_SUBOPTIMAL_KHR IS A SUCCESS CODE — the frame WAS presented. Treating it as
 			// failure broke nothing visible and made the overlay lie: the generated frame reached
@@ -1343,17 +1348,17 @@ namespace GSLsfg
 			const VkResult pres = vkQueuePresentKHR(present_queue, &present);
 			if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
 				break;
-			VKSwapChain::NoteHostPresent();
 			presented_generated++;
 		}
 
 		// 5. The real frame goes out last, after whatever generated frames made it.
-		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
+		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			VKSwapChain::ChainPresentTiming(&present_times, &present_time), 1,
 			&slot.done_sems[acquired], 1, swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
 		const VkResult real_pres = vkQueuePresentKHR(present_queue, &present);
 		if (real_pres == VK_SUCCESS || real_pres == VK_SUBOPTIMAL_KHR)
-			VKSwapChain::NoteHostPresent();
+			swap_chain->PollDisplayed();
 		NoteFramesDisplayed(1, presented_generated);
 		return true;
 	}

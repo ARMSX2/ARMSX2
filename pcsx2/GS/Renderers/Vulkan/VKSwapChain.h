@@ -46,11 +46,19 @@ public:
 	static void NoteAcquire(double ms, VkResult res);
 	static void NotePresent(double ms, VkResult res);
 
-	// Always on, unlike the stats above: one tick per vkQueuePresentKHR the GS device accepted
-	// (VK_SUCCESS or VK_SUBOPTIMAL_KHR), its own present and LSFG's generated and real ones. The
-	// overlay's "Vulkan" rate adds ZeroFG's device B presents to it (GSDeviceVK.cpp).
-	static void NoteHostPresent();
-	static u64 GetHostPresentCount();
+	// What the display showed (VK_GOOGLE_display_timing, while the GS device has it), not what the
+	// driver accepted: two presents in one refresh are both accepted, and the compositor shows only
+	// the newer. Every GS present, its own and LSFG's generated and real ones, carries a present id
+	// (ChainPresentTiming); PollDisplayed, after each real present, counts the ones a scanout of
+	// their own came back for. The overlay's "Display" rate adds ZeroFG's device B count to it
+	// (GSDeviceVK.cpp). GS thread.
+	static void SetDisplayTimingEnabled(bool enabled);
+	static bool IsDisplayTimingEnabled();
+	/// [next] with the present's timing chained in front of it, or [next] alone without the extension.
+	/// [times] and [time] must live until the vkQueuePresentKHR they go to.
+	static const void* ChainPresentTiming(VkPresentTimesInfoGOOGLE* times, VkPresentTimeGOOGLE* time, const void* next = nullptr);
+	void PollDisplayed();
+	static u64 GetHostDisplayedCount();
 
 	// Creates a vulkan-renderable surface for the specified window handle.
 	static VkSurfaceKHR CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi);
