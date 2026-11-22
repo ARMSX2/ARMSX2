@@ -699,6 +699,10 @@ public class NativeApp {
 	}
 
 	private static void rumblePlayer(int pad, int largeMotor, int smallMotor) {
+		float low = Math.max(0f, Math.min(1f, largeMotor / 255f));   // low-frequency / large
+		float high = Math.max(0f, Math.min(1f, smallMotor / 255f));  // high-frequency / small
+		// A DualShock 3 under the USB takeover has no Android input device, so it is found by port.
+		if (com.armsx2.input.UsbRumble.INSTANCE.rumbleDualShock3(pad, usbMotorLevel(low), usbMotorLevel(high))) return;
 		int devId = com.armsx2.input.PadRouter.INSTANCE.deviceIdForPort(pad);
 		// Nothing has claimed this slot yet: deal out the pads nobody has spoken for, rather
 		// than guessing. "The pad you last touched" names the SAME controller for every port,
@@ -713,8 +717,6 @@ public class NativeApp {
 		// A player with no controller and no touch controls has nothing to buzz.
 		final int touchPad = com.armsx2.ui.touch.TouchControls.playerPort;
 		if (devId < 0 && pad != touchPad) return;
-		float low = Math.max(0f, Math.min(1f, largeMotor / 255f));   // low-frequency / large
-		float high = Math.max(0f, Math.min(1f, smallMotor / 255f));  // high-frequency / small
 		vibratePlayer(pad, devId, low, high, RUMBLE_MS, pad == touchPad);
 	}
 
@@ -817,12 +819,7 @@ public class NativeApp {
 				// controller, the motors the input API offers for it are fiction; this is the
 				// hardware itself, and it carries BOTH motors independently.
 				com.armsx2.input.UsbRumble.Pad usb = com.armsx2.input.UsbRumble.INSTANCE.padFor(dev);
-				if (usb != null) {
-					float scale = (Float.isFinite(sHapticScale) && sHapticScale >= 0f) ? sHapticScale : 1f;
-					int l = Math.round(Math.min(1f, low * scale) * 255f);
-					int h = Math.round(Math.min(1f, high * scale) * 255f);
-					if (usb.rumble(Math.max(0, l), Math.max(0, h))) return false;
-				}
+				if (usb != null && usb.rumble(usbMotorLevel(low), usbMotorLevel(high))) return false;
 				drove = driveMotors(motorsOf(dev), low, high, combined, ms);
 			}
 
@@ -898,6 +895,12 @@ public class NativeApp {
 	 *  "Vibration Strength" slider tames or boosts all of it. Set from Kotlin
 	 *  (ControllerMappings.setHapticIntensity) live and at app start. */
 	public static volatile float sHapticScale = 1.0f;
+
+	/** A motor level 0..1 scaled by [sHapticScale], as the 0..255 a pad driven over USB takes. */
+	private static int usbMotorLevel(float level) {
+		float scale = (Float.isFinite(sHapticScale) && sHapticScale >= 0f) ? sHapticScale : 1f;
+		return Math.max(0, Math.round(Math.min(1f, level * scale) * 255f));
+	}
 
 	/** Opt back in to buzzing THIS device when an external controller exposes no motor.
 	 *  Default false, which is the #433 behaviour: a phone in a pocket must not buzz for a
@@ -1018,6 +1021,9 @@ public class NativeApp {
 	 *  for it (new VibratorManager + legacy API). Lets the Pad tab tell the user whether
 	 *  a missing rumble is a routing issue or the pad just isn't drivable by Android. */
 	public static String rumbleStatusForPort(int port) {
+		if (com.armsx2.input.UsbRumble.INSTANCE.drivesDualShock3(port)) {
+			return "Player " + (port + 1) + ": DualShock 3 (USB). Rumble OK (driven directly over USB, 2 motors)";
+		}
 		int devId = com.armsx2.input.PadRouter.INSTANCE.deviceIdForPort(port);
 		boolean mapped = devId >= 0;
 		if (devId < 0) devId = com.armsx2.input.PadRouter.INSTANCE.fallbackDeviceIdForPort(port);

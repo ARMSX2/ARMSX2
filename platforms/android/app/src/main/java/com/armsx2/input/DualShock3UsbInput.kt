@@ -26,7 +26,12 @@ internal class DualShock3UsbInput private constructor(
     private val report = ByteArray(REPORT_SIZE)
     @Volatile private var active = true
     private var delivered = false
-    private var ledPort = -1
+    // Motor levels the game asked for (setRumble), and what the last output report carried.
+    @Volatile private var rumbleLarge = 0
+    @Volatile private var rumbleSmall = 0
+    private var sentPlayer = -1
+    private var sentLarge = 0
+    private var sentSmall = 0
     private val input = UsbPadInput(port)
     @Volatile var ready = false
         private set
@@ -79,8 +84,9 @@ internal class DualShock3UsbInput private constructor(
                             ready = true
                             onReady(this)
                         }
-                        // Update after activation, and when the user changes All controllers play as P1.
-                        setPlayerLed()
+                        // Player LED after activation and when All controllers play as P1 changes,
+                        // motors when the game changes them.
+                        updateOutput()
                         if (publishing) deliver()
                         continue
                     }
@@ -145,34 +151,51 @@ internal class DualShock3UsbInput private constructor(
         delivered = true
     }
 
-    private fun setPlayerLed() {
-        // Sixaxis output report 0x01. Over USB the ID is in wValue, outside the payload.
-        val player = if (PadRouter.allToPlayer1) 0 else port
-        if (ledPort == player) return
-        ledPort = player
-        val ledMask = PLAYER_LED_MASKS[player]
-        val output = ByteArray(35)
-        output[0] = 0x01
-        output[1] = 0xff.toByte()
-        output[3] = 0xff.toByte()
-        output[9] = ledMask
-        val steadyLed = byteArrayOf(0xff.toByte(), 0x27, 0x10, 0x00, 0x32)
-        repeat(4) { led -> steadyLed.copyInto(output, 10 + led * steadyLed.size) }
-        val sent = runCatching {
-            connection.controlTransfer(0x21, 0x09, 0x0201, iface.id, output, output.size, 250)
-        }.getOrDefault(-1)
-        if (sent == output.size) {
+    /** The player this pad plays as, which is the one whose rumble it gets. */
+    fun playerPort(): Int = if (PadRouter.allToPlayer1) 0 else port
+
+    /** Motor levels 0..255 from the game, on any thread. The reader thread sends them with the
+     *  next input report, which a DualShock 3 on USB sends continuously; the caller never waits
+     *  on USB. The small motor is on or off. */
+    fun setRumble(large: Int, small: Int) {
+        rumbleLarge = large.coerceIn(0, 255)
+        rumbleSmall = if (small > 0) 1 else 0
+    }
+
+    /** Sends output report 0x01 when the player LED or a motor level differs from the last one
+     *  sent, so the control pipe carries one report per change and none while nothing changes. */
+    @Synchronized
+    private fun updateOutput() {
+        if (!active) return
+        val player = playerPort()
+        val large = rumbleLarge
+        val small = rumbleSmall
+        if (player == sentPlayer && large == sentLarge && small == sentSmall) return
+        val ledChanged = player != sentPlayer
+        sentPlayer = player
+        sentLarge = large
+        sentSmall = small
+        val sent = sendOutput(outputReport(PLAYER_LED_MASKS[player], large, small))
+        if (sent < 0) {
+            Log.w(TAG, "DualShock 3 output report failed on port ${port + 1} ($sent)")
+        } else if (ledChanged) {
             Log.i(TAG, "DualShock 3 player LED set for port ${player + 1}")
-        } else {
-            Log.w(TAG, "DualShock 3 player LED update failed on port ${port + 1} ($sent)")
         }
     }
+
+    // Over USB the report ID is in wValue, outside the payload.
+    private fun sendOutput(output: ByteArray): Int = runCatching {
+        connection.controlTransfer(0x21, 0x09, 0x0201, iface.id, output, output.size, 250)
+    }.getOrDefault(-1)
 
     @Synchronized
     fun stop() {
         if (!active) return
         active = false
         ready = false
+        // The motor durations are 0xff (no time limit), so stop them before letting go.
+        if (sentPlayer >= 0 && (sentLarge != 0 || sentSmall != 0))
+            sendOutput(outputReport(PLAYER_LED_MASKS[sentPlayer], 0, 0))
         input.close()
         runCatching { request.cancel() }
         runCatching { connection.releaseInterface(iface) }
@@ -186,6 +209,25 @@ internal class DualShock3UsbInput private constructor(
         private const val RETRY_REPORT_WAIT_MS = 10_000L
         // Same LED combinations as Linux hid-sony for player indices 1 through 8.
         private val PLAYER_LED_MASKS = byteArrayOf(0x02, 0x04, 0x08, 0x10, 0x12, 0x14, 0x18, 0x1a)
+
+        /**
+         * Sixaxis output report 0x01 payload. Byte 1 is the small (right) motor's duration and
+         * byte 2 turns it on or off; byte 3 is the large (left) motor's duration and byte 4 its
+         * force 0..255. Byte 9 is the LED mask, then the timing of LEDs 4 to 1, five bytes each,
+         * all set to steady on.
+         */
+        internal fun outputReport(ledMask: Byte, large: Int, small: Int): ByteArray {
+            val output = ByteArray(35)
+            output[0] = 0x01
+            output[1] = 0xff.toByte()
+            output[2] = if (small > 0) 1 else 0
+            output[3] = 0xff.toByte()
+            output[4] = large.coerceIn(0, 255).toByte()
+            output[9] = ledMask
+            val steadyLed = byteArrayOf(0xff.toByte(), 0x27, 0x10, 0x00, 0x32)
+            repeat(4) { led -> steadyLed.copyInto(output, 10 + led * steadyLed.size) }
+            return output
+        }
 
         fun open(
             usb: UsbManager,

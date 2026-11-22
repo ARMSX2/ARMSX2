@@ -173,6 +173,9 @@ object UsbRumble {
 
     @Volatile private var pad: Pad? = null
     private val ds3Inputs = linkedMapOf<String, DualShock3UsbInput>()
+    // ds3Inputs' values for rumble, which arrives on the IOP thread. Replaced on the main thread
+    // whenever ds3Inputs changes, never modified in place.
+    @Volatile private var ds3Rumble: List<DualShock3UsbInput> = emptyList()
     private val ds3Skipped = mutableSetOf<String>()
     private var ds3PermissionPending: String? = null
     private val main = Handler(Looper.getMainLooper())
@@ -237,6 +240,25 @@ object UsbRumble {
         }
         UsbPadTakeover.start(open.connection, ep, open.dualsense, port)
     }
+
+    /**
+     * Rumble for every DualShock 3 the takeover drives as [port], motor levels 0..255. A taken-over
+     * pad has no Android input device for NativeApp to look up, so it is found by port. Returns
+     * true when one of them owns the port and no other controller plays as it; under "All
+     * controllers play as Player 1" the other pads on player 1 still get the rumble.
+     */
+    fun rumbleDualShock3(port: Int, large: Int, small: Int): Boolean {
+        var found = false
+        for (input in ds3Rumble) {
+            if (input.playerPort() != port) continue
+            input.setRumble(large, small)
+            found = true
+        }
+        return found && !PadRouter.allToPlayer1
+    }
+
+    /** True when a DualShock 3 the takeover drives plays as [port]. */
+    fun drivesDualShock3(port: Int): Boolean = ds3Rumble.any { it.playerPort() == port }
 
     /** True when a PlayStation pad is open and can actually be driven. */
     fun available(): Boolean = pad?.usable() == true
@@ -335,6 +357,7 @@ object UsbRumble {
 
     private fun closeDualShock3(name: String) {
         val input = ds3Inputs.remove(name) ?: return
+        ds3Rumble = ds3Inputs.values.toList()
         input.stop()
         PadRouter.releaseDirectUsbSlot(input.port)
     }
@@ -394,6 +417,7 @@ object UsbRumble {
                 continue
             }
             ds3Inputs[name] = input
+            ds3Rumble = ds3Inputs.values.toList()
             input.start()
         }
     }
