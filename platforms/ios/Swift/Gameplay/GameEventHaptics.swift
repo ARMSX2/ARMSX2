@@ -39,7 +39,7 @@ final class GameEventHaptics {
 
     /// Game rumble from the bridge when no rumble-capable controller is connected.
     func trigger(large: UInt16, small: UInt16) {
-        guard SettingsStore.shared.hapticFeedback else { return }
+        guard SettingsStore.shared.controller.hapticFeedback else { return }
         guard large > 0 || small > 0 else { return }
         let now = Date()
         // Throttle to ~20 Hz so sustained rumble does not peg the haptic engine.
@@ -57,17 +57,17 @@ final class GameEventHaptics {
     }
 
     func dynamicActionAim() {
-        guard SettingsStore.shared.hapticFeedback else { return }
+        guard SettingsStore.shared.controller.hapticFeedback else { return }
         light.impactOccurred(intensity: 0.55)
     }
 
     func dynamicActionShot() {
-        guard SettingsStore.shared.hapticFeedback else { return }
+        guard SettingsStore.shared.controller.hapticFeedback else { return }
         medium.impactOccurred(intensity: 0.75)
     }
 
     func dynamicActionRapidFire() {
-        guard SettingsStore.shared.hapticFeedback else { return }
+        guard SettingsStore.shared.controller.hapticFeedback else { return }
         medium.impactOccurred(intensity: 0.9)
     }
 

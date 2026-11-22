@@ -3,7 +3,7 @@ import Foundation
 
 // Controller macro behavior is separate from persisted storage
 // declarations so future macro edits avoid recompiling the main settings file.
-extension SettingsStore {
+extension SettingsStore.Controller {
     func controllerMacroBinding(for action: ControllerMacroAction) -> ControllerMacroBinding {
         switch action {
         case .quickMenu: controllerMacroQuickMenu
@@ -58,7 +58,7 @@ extension SettingsStore {
     }
 }
 
-extension SettingsStore {
+extension SettingsStore.Controller {
     static let _padOpacityConfig = Setting<Float>(
         section: "ARMSX2iOS/UI", key: "PadOpacity", default: 0.6,
         suppressible: false,

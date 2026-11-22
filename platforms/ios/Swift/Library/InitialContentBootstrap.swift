@@ -423,7 +423,7 @@ final class InitialContentBootstrap {
 
         if let defaultDescriptor {
             skinLibrary.selectSkin(id: defaultDescriptor.id)
-            SettingsStore.shared.virtualPadSkin = defaultDescriptor.virtualPadSkin
+            SettingsStore.shared.controller.virtualPadSkin = defaultDescriptor.virtualPadSkin
             layoutPresets.globalPresetID = defaultDescriptor.linkedLayoutPresetID
             result.selectedDefaultName = defaultDescriptor.displayName
         }

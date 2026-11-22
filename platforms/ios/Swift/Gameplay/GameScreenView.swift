@@ -113,7 +113,7 @@ struct GameScreenView: View {
                             fold: fold,
                             refitting: appState.hingePresent && effectiveVirtualPadVisible
                                 ? effectivePadLayoutSnapshot ?? PadLayoutStore.shared.snapshot() : nil,
-                            analogStickScale: settings.analogStickScale
+                            analogStickScale: settings.controller.analogStickScale
                         )
                         PhoneGameSurface()
                             .frame(height: gameHeight)
@@ -257,7 +257,7 @@ struct GameScreenView: View {
             guard request != nil,
                   overlay.overlayRoute == .hidden,
                   !shortcuts.operationActive else { return }
-            if settings.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
+            if settings.controller.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
             controllerInput?.setMenuActive(true)
             controllerInput?.playFeedback(.tabTransition)
             refreshRuntimeMenuState()
@@ -291,7 +291,7 @@ struct GameScreenView: View {
         .onChange(of: settings.appearance.hideGameplayStatusBar) { _, _ in
             updateGameplayStatusBar(forFullscreen: fullScreen)
         }
-        .onChange(of: settings.hideMenuButton) { _, isHidden in
+        .onChange(of: settings.controller.hideMenuButton) { _, isHidden in
             if menuButtonHidden != isHidden {
                 menuButtonHidden = isHidden
             }
@@ -354,7 +354,7 @@ struct GameScreenView: View {
         Button {
             controllerInput?.setMenuActive(true)
             MenuAudioPackManager.shared.playEvent(.tabTransition)
-            if settings.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
+            if settings.controller.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
             refreshRuntimeMenuState()
             overlay.overlayRoute = .paused
         } label: {
@@ -464,7 +464,7 @@ struct GameScreenView: View {
         } else {
             // BIOS and serial-less ELF sessions have no per-game key, so keep the Global Default.
             skinLibrary.selectSkin(id: skin.id)
-            settings.virtualPadSkin = skin.virtualPadSkin
+            settings.controller.virtualPadSkin = skin.virtualPadSkin
         }
 
         // UIKit controls cache their artwork and hit masks, so rebuild the pad now.
@@ -499,9 +499,9 @@ struct GameScreenView: View {
     }
 
     private func applyInitialFullscreenPreference() {
-        menuButtonHidden = settings.hideMenuButton
+        menuButtonHidden = settings.controller.hideMenuButton
         // Reconciled on every game entry, so a changed setting applies on the next boot.
-        let desired = settings.autoFullscreen
+        let desired = settings.controller.autoFullscreen
         if fullScreen != desired {
             fullScreen = desired
         }
@@ -599,7 +599,7 @@ struct GameScreenView: View {
                     undo: saveStateUndo,
                     settings: settings,
                     hint: externalControllerConnected
-                        ? ControllerHintLine(parts: [.init(settings.controllerMacroUndoSaveState, settings.localized("Undo"))])
+                        ? ControllerHintLine(parts: [.init(settings.controller.controllerMacroUndoSaveState, settings.localized("Undo"))])
                         : nil,
                     onUndo: shortcuts.undoSaveStateAction
                 )
@@ -632,7 +632,7 @@ struct GameScreenView: View {
             return session.emulationOnlyPresentation.showsVirtualControls
         }
         return session.userVirtualPadVisible &&
-            (!settings.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected) &&
+            (!settings.controller.autoHideVirtualPadWhenControllerConnected || !externalControllerConnected) &&
             overlay.overlayRoute != .pausedPresenting(.padLayout)
     }
 
@@ -690,6 +690,6 @@ struct GameScreenView: View {
     }
 
     private var virtualPadHiddenByController: Bool {
-        session.userVirtualPadVisible && settings.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
+        session.userVirtualPadVisible && settings.controller.autoHideVirtualPadWhenControllerConnected && externalControllerConnected
     }
 }

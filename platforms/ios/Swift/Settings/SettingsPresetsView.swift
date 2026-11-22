@@ -389,7 +389,7 @@ struct SettingsPresetsView: View {
 
         do {
             let selectedSkinID = skinLibrary.selectedSkinID
-            let selectedVirtualPadSkin = settings.virtualPadSkin
+            let selectedVirtualPadSkin = settings.controller.virtualPadSkin
             let data = try Data(contentsOf: url)
             let outcome = try SettingsPresetFile.importData(
                 data,
@@ -409,7 +409,7 @@ struct SettingsPresetsView: View {
             }
             if preservesVirtualPadSkin {
                 skinLibrary.selectSkin(id: selectedSkinID)
-                settings.virtualPadSkin = selectedVirtualPadSkin
+                settings.controller.virtualPadSkin = selectedVirtualPadSkin
             }
             let builtInSuffix = builtInNames.isEmpty
                 ? ""

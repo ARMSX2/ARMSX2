@@ -118,7 +118,7 @@ extension MenuControllerInputRouter {
     /// Over a menu, the Undo macro undoes a save-state action instead of what its last button does.
     /// Any binding works, so it can sit on one side of the pad.
     private func completesUndoChord(_ gamepad: GCExtendedGamepad) -> Bool {
-        let held = SettingsStore.shared.controllerMacroUndoSaveState.isPressed(on: gamepad)
+        let held = SettingsStore.shared.controller.controllerMacroUndoSaveState.isPressed(on: gamepad)
         defer { undoChordHeld = held }
         guard held, !undoChordHeld, saveStateUndoPending, frontmostManualNavigationCapture == nil else { return false }
         saveStateUndoRequest &+= 1

@@ -14,7 +14,7 @@ struct PadTab: View {
     let hasGameSettingsIdentity: Bool
 
     @State private var inversionDrafts: [String: Int] = [:]
-    private let inversionKeys = SettingsStore.stickInversionKeys
+    private let inversionKeys = SettingsStore.Controller.stickInversionKeys
     private let inversionSection = "ARMSX2iOS/UI"
 
     var body: some View {
@@ -239,14 +239,14 @@ struct PadTab: View {
     private func setInversionOverride(_ key: String, _ value: Bool) {
         ARMSX2Bridge.setPerGameINIBool(inversionSection, key: key, value: value, forISO: targetISO)
         if savesToRunningGame {
-            SettingsStore.shared.reloadStickInversionOverrides()
+            SettingsStore.shared.controller.reloadStickInversionOverrides()
         }
     }
 
     private func clearInversionOverride(_ key: String) {
         ARMSX2Bridge.deletePerGameINIValue(inversionSection, key: key, forISO: targetISO)
         if savesToRunningGame {
-            SettingsStore.shared.reloadStickInversionOverrides()
+            SettingsStore.shared.controller.reloadStickInversionOverrides()
         }
     }
 

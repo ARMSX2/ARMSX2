@@ -118,9 +118,9 @@ struct GamepadSettingsView: View {
     private var activeControllerTargetOrder: [String] {
         Self.controllerTargetOrder(
             leftInstantDeadzoneEnabled:
-                settings.gameControllerLeftInstantDeadzoneEnabled,
+                settings.controller.gameControllerLeftInstantDeadzoneEnabled,
             rightInstantDeadzoneEnabled:
-                settings.gameControllerRightInstantDeadzoneEnabled
+                settings.controller.gameControllerRightInstantDeadzoneEnabled
         )
     }
 
@@ -145,7 +145,7 @@ struct GamepadSettingsView: View {
             Section {
                 NumberRow(
                     .gameControllerDeadZone,
-                    value: $settings.gameControllerDeadZone,
+                    value: Bindable(settings.controller).gameControllerDeadZone,
                     settings: settings
                 )
                 .controllerAccessibilityTargetID("settings.game-controller.dead-zone")
@@ -153,12 +153,12 @@ struct GamepadSettingsView: View {
                 gamepadToggle(
                     "Left Thumbstick Instant Deadzone",
                     id: "settings.game-controller.left-instant-deadzone",
-                    isOn: $settings.gameControllerLeftInstantDeadzoneEnabled
+                    isOn: Bindable(settings.controller).gameControllerLeftInstantDeadzoneEnabled
                 )
-                if settings.gameControllerLeftInstantDeadzoneEnabled {
+                if settings.controller.gameControllerLeftInstantDeadzoneEnabled {
                     NumberRow(
                         .gameControllerLeftNegativeDeadzone,
-                        value: $settings.gameControllerLeftNegativeDeadzone,
+                        value: Bindable(settings.controller).gameControllerLeftNegativeDeadzone,
                         settings: settings
                     )
                     .controllerAccessibilityTargetID("settings.game-controller.left-negative-deadzone")
@@ -167,12 +167,12 @@ struct GamepadSettingsView: View {
                 gamepadToggle(
                     "Right Thumbstick Instant Deadzone",
                     id: "settings.game-controller.right-instant-deadzone",
-                    isOn: $settings.gameControllerRightInstantDeadzoneEnabled
+                    isOn: Bindable(settings.controller).gameControllerRightInstantDeadzoneEnabled
                 )
-                if settings.gameControllerRightInstantDeadzoneEnabled {
+                if settings.controller.gameControllerRightInstantDeadzoneEnabled {
                     NumberRow(
                         .gameControllerRightNegativeDeadzone,
-                        value: $settings.gameControllerRightNegativeDeadzone,
+                        value: Bindable(settings.controller).gameControllerRightNegativeDeadzone,
                         settings: settings
                     )
                     .controllerAccessibilityTargetID("settings.game-controller.right-negative-deadzone")
@@ -186,7 +186,7 @@ struct GamepadSettingsView: View {
             Section {
                 NumberRow(
                     .gameRumbleStrength,
-                    value: $settings.gameRumbleStrength,
+                    value: Bindable(settings.controller).gameRumbleStrength,
                     settings: settings
                 )
                 .controllerAccessibilityTargetID(
@@ -244,7 +244,7 @@ struct GamepadSettingsView: View {
                         HStack {
                             Text(settings.localized("Local Multiplayer"))
                             Spacer()
-                            Text(settings.localized(multitapModeTitle(settings.controllerMultitapMode)))
+                            Text(settings.localized(multitapModeTitle(settings.controller.controllerMultitapMode)))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -270,22 +270,22 @@ struct GamepadSettingsView: View {
                 gamepadToggle(
                     "Invert Left Horizontal",
                     id: "settings.game-controller.invert-left-horizontal",
-                    isOn: $settings.invertLeftStickX
+                    isOn: Bindable(settings.controller).invertLeftStickX
                 )
                 gamepadToggle(
                     "Invert Left Vertical",
                     id: "settings.game-controller.invert-left-vertical",
-                    isOn: $settings.invertLeftStickY
+                    isOn: Bindable(settings.controller).invertLeftStickY
                 )
                 gamepadToggle(
                     "Invert Right Horizontal",
                     id: "settings.game-controller.invert-right-horizontal",
-                    isOn: $settings.invertRightStickX
+                    isOn: Bindable(settings.controller).invertRightStickX
                 )
                 gamepadToggle(
                     "Invert Right Vertical (Camera)",
                     id: "settings.game-controller.invert-right-vertical",
-                    isOn: $settings.invertRightStickY
+                    isOn: Bindable(settings.controller).invertRightStickY
                 )
             } header: {
                 Text(settings.localized("Stick Inversion"))
@@ -309,8 +309,8 @@ struct GamepadSettingsView: View {
     /// installs remain full-strength, while the UI correctly calls it 100%.
     private var uiRumbleStrengthDisplayBinding: Binding<Float> {
         Binding(
-            get: { settings.uiRumbleStrength * 2 },
-            set: { settings.uiRumbleStrength = min(max($0 / 2, 0), 1) }
+            get: { settings.controller.uiRumbleStrength * 2 },
+            set: { settings.controller.uiRumbleStrength = min(max($0 / 2, 0), 1) }
         )
     }
 
@@ -569,7 +569,7 @@ struct ControllerMacrosSettingsView: View {
                     HStack {
                         Text(settings.localized("Current Shortcut"))
                         Spacer()
-                        Text(settings.controllerMacroBinding(for: action).title)
+                        Text(settings.controller.controllerMacroBinding(for: action).title)
                             .foregroundStyle(.secondary)
                     }
                 } header: {
@@ -587,7 +587,7 @@ struct ControllerMacrosSettingsView: View {
                     completionMessage: settings.localized("Defaults Restored"),
                     controllerTargetID: "controller.macros.reset"
                 ) {
-                    settings.resetControllerMacros()
+                    settings.controller.resetControllerMacros()
                 }
                 .uiCriticalForegroundStyle()
             }
@@ -603,11 +603,11 @@ struct ControllerMacrosSettingsView: View {
     ) -> Binding<ControllerMacroButton> {
         Binding(
             get: {
-                let binding = settings.controllerMacroBinding(for: action)
+                let binding = settings.controller.controllerMacroBinding(for: action)
                 return first ? binding.first : binding.second
             },
             set: { selected in
-                let current = settings.controllerMacroBinding(for: action)
+                let current = settings.controller.controllerMacroBinding(for: action)
                 let updated: ControllerMacroBinding
                 if first {
                     updated = ControllerMacroBinding(
@@ -624,7 +624,7 @@ struct ControllerMacrosSettingsView: View {
                         second: selected
                     )
                 }
-                settings.setControllerMacroBinding(updated, for: action)
+                settings.controller.setControllerMacroBinding(updated, for: action)
             }
         )
     }
@@ -640,7 +640,7 @@ struct LocalMultiplayerSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker(settings.localized("Multitap Mode"), selection: $settings.controllerMultitapMode) {
+                Picker(settings.localized("Multitap Mode"), selection: Bindable(settings.controller).controllerMultitapMode) {
                     ForEach(multitapModes, id: \.id) { mode in
                         Text(settings.localized(mode.title)).tag(mode.id)
                     }
@@ -648,7 +648,7 @@ struct LocalMultiplayerSettingsView: View {
                 .controllerAccessibilityOptionsPickerTarget(
                     id: "settings.local-multiplayer.multitap-mode",
                     label: settings.localized("Multitap Mode"),
-                    selection: $settings.controllerMultitapMode,
+                    selection: Bindable(settings.controller).controllerMultitapMode,
                     options: multitapModes.map {
                         (id: $0.id, title: settings.localized($0.title))
                     }
@@ -657,7 +657,7 @@ struct LocalMultiplayerSettingsView: View {
                 HStack {
                     Text(settings.localized("Current Mode"))
                     Spacer()
-                    Text(settings.localized(multitapModeTitle(settings.controllerMultitapMode)))
+                    Text(settings.localized(multitapModeTitle(settings.controller.controllerMultitapMode)))
                         .foregroundStyle(.secondary)
                 }
             } header: {

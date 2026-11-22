@@ -348,17 +348,17 @@ struct SaveStatesPanel: View {
 
     private var undoHint: ControllerHintLine? {
         controllerInput?.hasConnectedController == true
-            ? ControllerHintLine(parts: [.init(settings.controllerMacroUndoSaveState, settings.localized("Undo"))])
+            ? ControllerHintLine(parts: [.init(settings.controller.controllerMacroUndoSaveState, settings.localized("Undo"))])
             : nil
     }
 
     /// The live macro bindings, shown only to controller players.
     private var quickSaveLine: ControllerHintLine? {
         guard controllerInput?.hasConnectedController == true else { return nil }
-        let save = ControllerHintLine.Part(settings.controllerMacroSaveGameState, settings.localized("Save"))
+        let save = ControllerHintLine.Part(settings.controller.controllerMacroSaveGameState, settings.localized("Save"))
         // Hardcore's banner already says loading is off.
         if hardcore { return ControllerHintLine(parts: [save]) }
-        return ControllerHintLine(parts: [save, .init(settings.controllerMacroLoadGameState, settings.localized("Load"))])
+        return ControllerHintLine(parts: [save, .init(settings.controller.controllerMacroLoadGameState, settings.localized("Load"))])
     }
 
     private var targetRows: [[SaveStateGraph.Target]] {

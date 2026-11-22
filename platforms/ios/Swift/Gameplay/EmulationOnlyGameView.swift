@@ -96,7 +96,7 @@ struct EmulationOnlyGameView: View {
                             fold: fold,
                             refitting: appState.hingePresent
                                 ? session.emulationOnlyPresentation.padLayoutSnapshot ?? PadLayoutStore.shared.snapshot() : nil,
-                            analogStickScale: settings.analogStickScale
+                            analogStickScale: settings.controller.analogStickScale
                         )
                         accessibleMetalSurface
                             .frame(height: gameHeight)

@@ -42,6 +42,7 @@ STORE_FILES = [
     "SettingsStore+UI.swift",
     "SettingsStore.swift",
     "SettingsStoreAppearance.swift",
+    "SettingsStoreController.swift",
 ]
 
 # Store methods an init may call after its closing load, when every assignment goes
