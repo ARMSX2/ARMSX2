@@ -6,7 +6,7 @@
 # page stays tidy (stable vX.Y.Z releases are never touched).
 #
 # Platform coverage mirrors build-all.yml's guardrail:
-#   * PC arm64 Qt GUI  -> macOS / Linux (4K+16K) / Windows   (blocking for release)
+#   * PC arm64 Qt GUI  -> macOS / Linux / Windows             (blocking for release)
 #   * libretro core     -> RetroArch, linux arm64             (non-blocking, attach-if-present)
 #   * SDL kmsdrm        -> bare-display handhelds, linux arm64 (non-blocking, attach-if-present)
 #   * Android APK       -> sideloadable, debug-key-signed     (non-blocking, attach-if-present)
@@ -130,10 +130,10 @@ jobs:
             echo 'from different nights stay distinguishable after you have downloaded them.'
             echo
             echo "- macOS arm64: macOS-arm64.tar.xz"
-            echo "- Linux arm64: Linux-arm64-4K-pages.AppImage on most distros, or the 16K one on Asahi Linux and other Apple Silicon kernels (run getconf PAGESIZE if unsure)"
+            echo "- Linux arm64: Linux-arm64.AppImage, for 4K, 16K and 64K page kernels alike"
             echo "- Windows arm64: Windows-arm64.zip"
-            echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst, a 4K-page build"
-            echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst, a 4K-page build (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
+            echo "- RetroArch on Linux arm64: Linux-arm64-libretro-core.tar.zst"
+            echo "- Bare-display kmsdrm handhelds: Linux-arm64-SDL-handheld.tar.zst (Rocknix and Batocera run compositors, so use the Qt AppImage there instead)"
             echo "- Android: Android-arm64.apk (installs as ARMSX2 Nightly, alongside the stable app)"
             echo "- iOS: iOS-arm64.ipa, unsigned, sideload it (installs as ARMSX2 Nightly, alongside the stable app)"
             echo
@@ -176,22 +176,13 @@ jobs:
     name: PC · Linux arm64 (Qt)
     needs: gate
     if: ${{ needs.gate.outputs.proceed == 'true' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pageVariant: "4k"
-            pageSize: "4096"
-            cacheLineSize: "64"
-          - pageVariant: "16k"
-            pageSize: "16384"
-            cacheLineSize: "128"
+    # One AppImage for every Linux arm64 kernel: the page size is read at startup.
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
-      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      jobName: "Linux arm64"
+      artifactPrefixName: "armsx2-linux-arm64-appimage"
       compiler: clang
-      cmakeflags: "-DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
+      cmakeflags: ""
       buildAppImage: true
       fetchTags: true
 
@@ -461,8 +452,7 @@ jobs:
           }
 
           grab 'dl/*-macos-*/*'  '*.tar.xz'   'macOS-arm64.tar.xz'
-          grab 'dl/*-4k-*/*'     '*.AppImage' 'Linux-arm64-4K-pages.AppImage'
-          grab 'dl/*-16k-*/*'    '*.AppImage' 'Linux-arm64-16K-pages.AppImage'
+          grab 'dl/*-linux-arm64-appimage-*/*' '*.AppImage' 'Linux-arm64.AppImage'
           grab 'dl/*-libretro-*/*' '*.tar.zst' 'Linux-arm64-libretro-core.tar.zst'
           grab 'dl/*-sdl-*/*'    '*.tar.zst'  'Linux-arm64-SDL-handheld.tar.zst'
           grab 'dl/*-android-*/*' '*.apk'     'Android-arm64.apk'

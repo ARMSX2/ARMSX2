@@ -7,8 +7,8 @@
 #   * Android  -> the four tiered APKs, built by the same recipe as hand releases
 #                 (tools/build-release-targets.sh: dual page-size cores, PGO, rotation
 #                 signing). One matrix job per tier, since each builds the core twice.
-#   * Linux    -> the 4K and 16K page-size Qt AppImages, as in the nightly, on the
-#                 stable updater channel.
+#   * Linux    -> the Qt AppImage, as in the nightly, on the stable updater
+#                 channel.
 #
 # The tag is created BEFORE anything builds: the AppImage reads its version from the tag
 # on HEAD, and without it a release build reports itself as "<previous>-N-g<sha>".
@@ -232,22 +232,13 @@ jobs:
   pc-linux-arm64:
     name: PC · Linux arm64 (Qt)
     needs: prepare
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pageVariant: "4k"
-            pageSize: "4096"
-            cacheLineSize: "64"
-          - pageVariant: "16k"
-            pageSize: "16384"
-            cacheLineSize: "128"
+    # One AppImage for every Linux arm64 kernel: the page size is read at startup.
     uses: ./.github/workflows/linux_build_qt.yml
     with:
-      jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
-      artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
+      jobName: "Linux arm64"
+      artifactPrefixName: "armsx2-linux-arm64-appimage"
       compiler: clang
-      cmakeflags: "-DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
+      cmakeflags: ""
       buildAppImage: true
       fetchTags: true
       stableBuild: true
@@ -291,8 +282,7 @@ jobs:
               grab "ARMSX2-${VN}-${apk}.apk" "ARMSX2-${VN}-${apk}.apk"
             done
           fi
-          grab '*-4k-*.AppImage'  "ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage"
-          grab '*-16k-*.AppImage' "ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"
+          grab '*-linux-arm64-appimage-*.AppImage' "ARMSX2-${VN}-Linux-arm64.AppImage"
           (cd out && sha256sum *)
 
       # UPLOAD THE LEGACY APK FIRST. Updaters up to 2.6.6.6 take the release's first .apk
@@ -309,16 +299,13 @@ jobs:
               "out/ARMSX2-${VN}-a11-armv8.2-sdk30.apk" \
               "out/ARMSX2-${VN}-a13-armv8.2-sdk33.apk" \
               "out/ARMSX2-${VN}-a15-armv8.2-sdk35.apk" \
-              "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
-              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+              "out/ARMSX2-${VN}-Linux-arm64.AppImage"; do
               gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY"
             done
           else
             # Linux only: the APKs are uploaded by hand, so replace just the AppImages and
             # leave every .apk asset, and the order they were uploaded in, alone.
-            for f in \
-              "out/ARMSX2-${VN}-Linux-arm64-4K-pages.AppImage" \
-              "out/ARMSX2-${VN}-Linux-arm64-16K-pages.AppImage"; do
+            for f in "out/ARMSX2-${VN}-Linux-arm64.AppImage"; do
               gh release upload "$VN" "$f" -R "$GITHUB_REPOSITORY" --clobber
             done
           fi
