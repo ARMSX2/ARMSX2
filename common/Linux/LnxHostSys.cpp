@@ -47,6 +47,28 @@ static int memfd_create_wrapper(const char* name, unsigned int flags)
 #include "cpuinfo.h"
 #endif
 
+#ifdef PCSX2_RUNTIME_PAGE_SIZE
+#include <cstdlib>
+
+namespace
+{
+	unsigned int DetectHostPageSize()
+	{
+		const long size = sysconf(_SC_PAGESIZE);
+		if (size != 0x1000 && size != 0x4000 && size != 0x10000)
+		{
+			std::fprintf(stderr, "Unsupported host page size: %ld\n", size);
+			std::abort();
+		}
+		return static_cast<unsigned int>(size);
+	}
+} // namespace
+
+const unsigned int __pagesize = DetectHostPageSize();
+const unsigned int __pagemask = __pagesize - 1;
+const unsigned int __pageshift = std::bit_width(__pagemask);
+#endif
+
 static __ri uint LinuxProt(const PageProtectionMode& mode)
 {
 	u32 lnxmode = 0;

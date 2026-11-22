@@ -173,11 +173,9 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		endif()
 	endif()
 
-	# If we're running on Linux, we need to detect the page/cache line size.
-	# It could be a virtual machine with 4K pages, or 16K with Asahi.
+	# Linux ARM64 detects the kernel's page size at runtime.
 	if(LINUX)
-		detect_page_size()
-		list(APPEND PCSX2_DEFS OVERRIDE_HOST_PAGE_SIZE=${HOST_PAGE_SIZE})
+		add_link_options("LINKER:-z,max-page-size=65536")
 		detect_cache_line_size()
 		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=${HOST_CACHE_LINE_SIZE})
 	endif()

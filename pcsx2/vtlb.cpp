@@ -90,7 +90,11 @@ static constexpr size_t FASTMEM_AREA_SIZE = 0x100000000ULL;
 // rather than in whatever the host mapped next. 64 KB is a whole number of host
 // pages at 4K, 16K and 64K.
 static constexpr size_t FASTMEM_GUARD_SIZE = 0x10000;
+#ifdef PCSX2_RUNTIME_PAGE_SIZE
+static_assert(FASTMEM_GUARD_SIZE % 0x10000 == 0);
+#else
 static_assert(FASTMEM_GUARD_SIZE % __pagesize == 0);
+#endif
 static constexpr u32 FASTMEM_PAGE_COUNT = FASTMEM_AREA_SIZE / VTLB_PAGE_SIZE;
 static constexpr u32 NO_FASTMEM_MAPPING = 0xFFFFFFFFu;
 
@@ -845,14 +849,14 @@ __fi u32 vtlb_V2P(u32 vaddr)
 	return paddr;
 }
 
-static constexpr bool vtlb_MismatchedHostPageSize()
+static bool vtlb_MismatchedHostPageSize()
 {
 	return (__pagesize != VTLB_PAGE_SIZE);
 }
 
 static bool vtlb_IsHostAligned(u32 paddr)
 {
-	if constexpr (!vtlb_MismatchedHostPageSize())
+	if (!vtlb_MismatchedHostPageSize())
 		return true;
 
 	return ((paddr & __pagemask) == 0);
@@ -860,7 +864,7 @@ static bool vtlb_IsHostAligned(u32 paddr)
 
 static u32 vtlb_HostPage(u32 page)
 {
-	if constexpr (!vtlb_MismatchedHostPageSize())
+	if (!vtlb_MismatchedHostPageSize())
 		return page;
 
 	return page >> (__pageshift - VTLB_PAGE_BITS);
@@ -868,7 +872,7 @@ static u32 vtlb_HostPage(u32 page)
 
 static u32 vtlb_HostAlignOffset(u32 offset)
 {
-	if constexpr (!vtlb_MismatchedHostPageSize())
+	if (!vtlb_MismatchedHostPageSize())
 		return offset;
 
 	return offset & ~__pagemask;
@@ -876,15 +880,15 @@ static u32 vtlb_HostAlignOffset(u32 offset)
 
 static bool vtlb_IsHostCoalesced(u32 page)
 {
-	if constexpr (__pagesize == VTLB_PAGE_SIZE)
+	if (__pagesize == VTLB_PAGE_SIZE)
 	{
 		return true;
 	}
 	else
 	{
-		static constexpr u32 shift = __pageshift - VTLB_PAGE_BITS;
-		static constexpr u32 count = (1u << shift);
-		static constexpr u32 mask = count - 1;
+		const u32 shift = __pageshift - VTLB_PAGE_BITS;
+		const u32 count = (1u << shift);
+		const u32 mask = count - 1;
 
 		const u32 base = page & ~mask;
 		const u32 base_offset = s_fastmem_virtual_mapping[base];
@@ -1533,7 +1537,13 @@ struct vtlb_PageProtectionInfo
 	vtlb_ProtectionMode Mode;
 };
 
+// Reserve enough tracking entries for the smallest supported host page size.
+// Indexing and protection still use the detected host granularity.
+#ifdef PCSX2_RUNTIME_PAGE_SIZE
+alignas(16) static vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::TotalRam / VTLB_PAGE_SIZE];
+#else
 alignas(16) static vtlb_PageProtectionInfo m_PageProtectInfo[Ps2MemSize::TotalRam >> __pageshift];
+#endif
 
 
 // returns:

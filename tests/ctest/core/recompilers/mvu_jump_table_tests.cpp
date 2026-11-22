@@ -14,6 +14,7 @@
 #include "arm64/microVU_JumpTable-arm64.h"
 
 #include <cstring>
+#include <algorithm>
 #include <set>
 #include <vector>
 
@@ -67,7 +68,7 @@ TEST(MvuJumpTable, ANewTableIsZerosAndNothingResident)
 TEST(MvuJumpTable, OnlyTheWrittenPageBecomesResident)
 {
 	void* const t = mVUJumpTable::Alloc();
-	Mark(t, __pagesize + 8);
+	Mark(t, std::min<size_t>(__pagesize, mVUJumpTable::kBytes / 2) + 8);
 #if defined(__linux__)
 	EXPECT_EQ(ResidentPages(t), 1u);
 #endif
