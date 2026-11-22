@@ -77,3 +77,22 @@ extension SettingsStore {
         return values
     }
 }
+
+extension SettingsStore {
+    /// Why an upscaling hack isn't doing what the row says. Mirrors the enum in
+    /// ARMSX2Bridge+Settings.mm; the values cross as ints.
+    enum GraphicsHackReason: Int {
+        case applied = 0
+        case needsManualHacks
+        case needsUpscaling
+        case fromGameDatabase
+        case noGame
+        case perGame
+    }
+
+    struct GraphicsHackStatus {
+        var effective: Int
+        var reason: GraphicsHackReason
+        var pinned: Bool
+    }
+}

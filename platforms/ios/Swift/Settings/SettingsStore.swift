@@ -4,250 +4,10 @@
 import Foundation
 import SwiftUI
 
-/// [P51] OSD preset levels
-enum OsdPreset: Int, CaseIterable {
-    case off = 0
-    case simple = 1    // FPS + speed + CPU usage + device stats
-    case detail = 2    // All except frame times graph
-    case full = 3      // Everything
-    case custom = 4    // User-defined toggle set (not derived from a preset table)
-
-    var label: String {
-        switch self {
-        case .off: return "OFF"
-        case .simple: return "Simple"
-        case .detail: return "Detail"
-        case .full: return "Full"
-        case .custom: return "Custom"
-        }
-    }
-}
-
-/// Frame Pacing presets. Mirrors the OsdPreset shape so the consolidated
-/// Settings panel and the per-game tab can drive a single picker that fans
-/// out to the underlying EmuCore/GS + SPU2/Output + Framerate keys.
-enum FramePacingPreset: Int, CaseIterable, Identifiable {
-    case optimal = 0       // ARMSX2-tuned default for fresh installs
-    case smooth = 1        // larger queues / buffers for visual stability
-    case lowLatency = 2    // tight queues + low audio latency for input feel
-    case batterySaver = 3  // 45 fps cap + larger audio buffer
-    case custom = 4        // user-tweaked; not derived from the table
-
-    var id: Int { rawValue }
-
-    var label: String {
-        switch self {
-        case .optimal: return "Optimal"
-        case .smooth: return "Smooth"
-        case .lowLatency: return "Low Latency"
-        case .batterySaver: return "Battery Saver"
-        case .custom: return "Custom"
-        }
-    }
-}
-
-enum JITScriptProtocol: String, CaseIterable, Identifiable {
-    case universal
-    case legacy
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .universal:
-            return "Universal"
-        case .legacy:
-            return "Legacy"
-        }
-    }
-
-    var subtitle: String {
-        switch self {
-        case .universal:
-            return "Uses brk #0xf00d prepare + detach."
-        case .legacy:
-            return "Uses the iOS 17/18 scriptless/legacy JIT path."
-        }
-    }
-
-    static var defaultValue: JITScriptProtocol {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 26 ? .universal : .legacy
-    }
-
-    static func normalized(_ rawValue: String) -> JITScriptProtocol {
-        switch rawValue.lowercased() {
-        case "legacy", "utm-dolphin", "utm_dolphin":
-            return .legacy
-        default:
-            return .universal
-        }
-    }
-}
-
-/// A manual per-fix toggle under EmuCore/Gamefixes. The `key` is the exact PCSX2
-/// config key; `label` is the localized user-facing name.
-struct GameFixOption: Identifiable, Hashable {
-    let key: String
-    let label: String
-    var id: String { key }
-}
-
-/// Which analog stick an axis-inversion setting applies to.
-enum StickSide: String, CaseIterable, Identifiable {
-    case left, right
-    var id: String { rawValue }
-}
-
-/// Every numeric setting a screen can show, described once next to the ranges below. A
-/// call site names the setting and hands over its binding, so there is nothing left for
-/// it to spell differently.
-///
-/// Stops sit where the useful values are rather than spread evenly, and every list holds
-/// the default so the reset arrow lands on one. Typing reaches anything in between.
-@MainActor
-extension NumberSetting {
-    static let targetFPS = NumberSetting(
-        "FPS Target",
-        in: Double(SettingsStore.minTargetFPS)...Double(SettingsStore.maxTargetFPS),
-        format: .framesPerSecond.compactDecimals(3),
-        detents: [15, 23.976, 29.94, 30, 45, 59.97, 60, 90, 120],
-        default: Double(SettingsStore.defaultTargetFPS))
-
-    static let fastForwardSpeed = NumberSetting(
-        "Fast Forward Speed",
-        in: Double(SettingsStore.minFastForwardScalar)...Double(SettingsStore.maxFastForwardScalar),
-        format: .unitPercent, detents: [1.25, 1.5, 2, 3, 5, 10],
-        default: Double(SettingsStore.defaultFastForwardScalar))
-
-    /// A stepper: fifteen contiguous values, and people come here wanting an exact one rather than
-    /// somewhere in the region of one.
-    static let vsyncQueueSize = NumberSetting(
-        "Queue Size", in: SettingsStore.vsyncQueueRange, style: .stepper, default: 8)
-
-    static let audioBufferMs = NumberSetting(
-        "Buffer Size", in: SettingsStore.audioBufferMsRange, format: .milliseconds,
-        detents: [10, 20, 30, 50, 75, 100, 150, 200], default: 50)
-
-    static let audioOutputLatencyMs = NumberSetting(
-        "Output Latency", in: SettingsStore.audioOutputLatencyMsRange, format: .milliseconds,
-        detents: [5, 10, 15, 20, 30, 50, 100, 200], default: 20)
-
-    static let emulatorVolume = NumberSetting(
-        "Emulator Volume", in: SettingsStore.emulatorVolumeRange, format: .percent,
-        detents: [0, 25, 50, 75, 100, 125, 150],
-        default: SettingsStore.defaultEmulatorVolumePercent,
-        hint: "Adjusts emulator game audio without changing iOS system volume or other apps.")
-
-    static let fastForwardVolume = NumberSetting(
-        "Fast-Forward Volume", in: SettingsStore.fastForwardVolumeRange, format: .percent,
-        detents: [0, 25, 50, 75, 100, 150, 200], default: 100)
-
-    /// Stored as a percentage. Driving it from a 0-to-1 slider truncated it on every drag tick.
-    static let casSharpness = NumberSetting(
-        "CAS Sharpness", in: SettingsStore.casSharpnessRange, format: .percent,
-        detents: [0, 25, 50, 75, 100], default: 50)
-
-    static let shadeBoostBrightness = shadeBoost("Brightness")
-    static let shadeBoostContrast = shadeBoost("Contrast")
-    static let shadeBoostSaturation = shadeBoost("Saturation")
-    static let shadeBoostGamma = shadeBoost("Gamma")
-
-    /// Four settings that differ only in name. Both screens that show them put them under a Shade
-    /// Boost header, which is what lets the names stay this short.
-    private static func shadeBoost(_ title: String) -> NumberSetting {
-        NumberSetting(title, in: SettingsStore.shadeBoostRange, format: .percent,
-                      detents: [1, 25, 50, 75, 100], default: 50)
-    }
-
-    static let emulationOnlyModeTimer = NumberSetting(
-        "Emulation-Only Mode Timer", in: SettingsStore.emulationOnlyModeDelayRange,
-        format: .seconds.decimals(0), detents: [0, 2, 5, 10, 15],
-        default: SettingsStore.defaultEmulationOnlyModeDelaySeconds)
-
-    /// Tenths rather than quarters like its neighbours: this is the one control you set by eye
-    /// against your own wallpaper, and a quarter of the way is a huge jump in how dark the thing is.
-    static let backgroundDim = NumberSetting(
-        "Background Dim", in: 0...1, format: .unitPercent,
-        detents: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
-        default: 0, icon: "circle.lefthalf.filled")
-
-    static let padOpacity = NumberSetting(
-        "Opacity", in: 0.1...1, format: .unitPercent,
-        detents: [0.1, 0.25, 0.4, 0.6, 0.8, 1], default: 0.6)
-
-    static let analogStickSize = NumberSetting(
-        "Analog Stick Size", in: 0.8...1.6, format: .unitPercent,
-        detents: [0.8, 0.9, 1, 1.2, 1.4, 1.6], default: 1)
-
-    static let phoneRumbleStrength = NumberSetting(
-        "Phone Rumble Strength", in: 0...1, format: .unitPercent,
-        detents: [0, 0.25, 0.5, 0.75, 1], default: 0.25)
-
-    static let gameRumbleStrength = NumberSetting(
-        "Game Rumble Strength", in: 0...2, format: .unitPercent,
-        step: 0.01, default: 1,
-        hint: "100% preserves the original game rumble. 200% applies 2x strength.")
-
-    static let gameControllerDeadZone = NumberSetting(
-        "Dead Zone", in: 0...0.25, format: .unitPercent,
-        step: 0.01, default: 0.15,
-        hint: "Ignores stick movement inside this range.")
-
-    static let gameControllerLeftNegativeDeadzone = NumberSetting(
-        "Left Negative Deadzone", in: -0.25...0, format: .unitPercent,
-        step: 0.01, default: -0.08,
-        hint: "Sets the left stick's minimum output after it leaves the dead zone.")
-
-    static let gameControllerRightNegativeDeadzone = NumberSetting(
-        "Right Negative Deadzone", in: -0.25...0, format: .unitPercent,
-        step: 0.01, default: -0.08,
-        hint: "Sets the right stick's minimum output after it leaves the dead zone.")
-
-    static let uiRumbleStrength = NumberSetting(
-        "UI Rumble Strength", in: 0...2, format: .unitPercent,
-        step: 0.01, default: 1,
-        hint: "100% preserves the original UI rumble. 200% applies up to 2x gain.")
-
-    // Typed fields, not sliders: these get copied verbatim off a compatibility list, so reaching
-    // an exact number matters and dragging towards one does not.
-    static let textureOffsetX = NumberSetting(
-        "Texture Offset X", in: SettingsStore.textureOffsetRange, style: .field)
-    static let textureOffsetY = NumberSetting(
-        "Texture Offset Y", in: SettingsStore.textureOffsetRange, style: .field)
-    static let skipDrawStart = NumberSetting(
-        "Skipdraw Start", in: SettingsStore.skipDrawRange, style: .field)
-    static let skipDrawEnd = NumberSetting(
-        "Skipdraw End", in: SettingsStore.skipDrawRange, style: .field)
-    static let cpuSpriteRenderBw = NumberSetting(
-        "CPU Sprite Render BW", in: SettingsStore.cpuSpriteRenderBwRange, style: .field)
-}
-
 @MainActor
 @Observable
 final class SettingsStore {
     static let shared = SettingsStore()
-    static let minTargetFPS: Float = 15.0
-    static let maxTargetFPS: Float = 120.0
-    static let defaultTargetFPS: Float = 60.0
-    static let minFastForwardScalar: Float = 1.25
-    static let maxFastForwardScalar: Float = 10.0
-    static let defaultFastForwardScalar: Float = 2.0
-    static let defaultEmulatorVolumePercent = 100
-    static let textureOffsetRange = -4096...4096
-    static let skipDrawRange = 0...5000
-    static let eeCycleRateRange = -3...3
-    // Named so the stepper, the per-game panel and the global codec all agree.
-    static let vsyncQueueRange = 2...16
-    static let audioBufferMsRange = 10...200
-    static let audioOutputLatencyMsRange = 5...200
-    static let fastForwardVolumeRange = 0...200
-    static let emulatorVolumeRange = 0...150
-    static let shadeBoostRange = 1...100
-    static let casSharpnessRange = 0...100
-    static let cpuSpriteRenderBwRange = 0...10
-    static let defaultOsdPerformancePosition = 3
-    static let emulationOnlyModeDelayRange = 0...15
-    static let defaultEmulationOnlyModeDelaySeconds = 5
 
     /// Manual EmuCore/Gamefixes toggles — see SettingsStore+GameFixes.swift.
 
@@ -301,7 +61,6 @@ final class SettingsStore {
     var autoSaveEnabled = true {
         didSet { commit(_autoSaveEnabledConfig, autoSaveEnabled) }
     }
-    static let autoSaveIntervals = [5, 10, 15, 30]
     let _autoSaveIntervalConfig = Setting<Int>(
         section: "ARMSX2iOS/SaveStates", key: "AutoSaveIntervalMinutes", default: 10,
         codec: .int(in: 5...30))
@@ -618,10 +377,6 @@ final class SettingsStore {
     // own INI key.
     var gameFixes: [String: Bool] = [:]
 
-    var isMetalFXAvailable: Bool {
-        ARMSX2Bridge.isMetalFXSupported()
-    }
-
     // Boot-only on purpose: a live switch is a restart option, so applying it
     // would send GSUpdateConfig down GSreopen and tear the Metal device down
     // under the running game. The picker says "Requires restart".
@@ -919,23 +674,6 @@ final class SettingsStore {
         suppressible: false,
         codec: .int)
     var upscaler: Int = 0 { didSet { commit(_upscalerConfig, upscaler) } }
-
-    /// Why an upscaling hack isn't doing what the row says. Mirrors the enum in
-    /// ARMSX2Bridge+Settings.mm; the values cross as ints.
-    enum GraphicsHackReason: Int {
-        case applied = 0
-        case needsManualHacks
-        case needsUpscaling
-        case fromGameDatabase
-        case noGame
-        case perGame
-    }
-
-    struct GraphicsHackStatus {
-        var effective: Int
-        var reason: GraphicsHackReason
-        var pinned: Bool
-    }
 
     /// What the running game really has, keyed by INI key. The INI is what the player
     /// asked for; between the two sit the two mask passes and the GameDB, and only the
@@ -2034,12 +1772,6 @@ final class SettingsStore {
         didSet {
             UserDefaults.standard.set(backgroundEnabledInSettings, forKey: "ARMSX2iOSBackgroundEnabledInSettings")
         }
-    }
-
-    var hasCustomBackground: Bool {
-        dynamicBackgroundsEnabled
-            || backgroundPrimaryAsset != nil
-            || backgroundLandscapeAsset != nil
     }
 
     // aspectRatioName / aspectRatioValue — see SettingsStore+Graphics.swift.

@@ -325,3 +325,11 @@ extension SettingsStore {
         isAutoMarkingFramePacingCustom = false
     }
 }
+
+extension SettingsStore {
+    var hasCustomBackground: Bool {
+        dynamicBackgroundsEnabled
+            || backgroundPrimaryAsset != nil
+            || backgroundLandscapeAsset != nil
+    }
+}
