@@ -3702,7 +3702,7 @@ GSDevice::PresentResult GSDeviceVK::DoBeginPresent(bool frame_skip)
 	// The swap chain back on the window after ZeroFG left it: on the surface device B presented on,
 	// else (that surface was lost: device B's handback after VK_ERROR_SURFACE_LOST_KHR) on a new
 	// surface of the window. Until one works the window shows nothing, so a failure is retried every
-	// quarter second rather than once: the game ran on behind a frozen picture (Klonoa 2).
+	// quarter second rather than once: a single failed try left the window without a swap chain.
 	static bool s_zerofg_rebuild_pending = false;
 	static Common::Timer::Value s_zerofg_rebuild_next = 0;
 	const auto rebuild_after_zerofg = [this]() {
