@@ -1774,8 +1774,9 @@ static void applyPadButton(u32 port, jint p_key, jint p_range, jboolean p_keyPre
         default: _key = PadDualshock2::Inputs::PAD_CROSS ; break;
     }
 
-    // Analog axis inputs (keycodes 110-123) carry a 0-32767 magnitude in p_range.
-    // Digital buttons always use 1.0/0.0.
+    // A press carries its magnitude in p_range, 1 to 32767 for 1/32767 to 1.0: a stick deflection
+    // for the analog codes 110-123, a button's pressure otherwise. p_range 0 is a full press (1.0).
+    // A release is 0.0 whatever p_range holds.
     const float state = p_keyPressed
         ? ((p_range > 0) ? (p_range / 32767.0f) : 1.0f)
         : 0.0f;
