@@ -283,17 +283,17 @@ extension SettingsStore {
         autoOpenStikDebug = false
         jitScriptProtocol = JITScriptProtocol.defaultValue
 
-        dev9HddEnabled = false
-        dev9HddFile = "DEV9hdd.raw"
-        dev9EthernetEnabled = false
-        dev9EthDevice = "Auto"
-        dev9InterceptDHCP = false
-        dev9EthLogDHCP = false
-        dev9EthLogDNS = false
-        dev9DNS1Mode = "Auto"
-        dev9DNS1 = "0.0.0.0"
-        dev9DNS2Mode = "Auto"
-        dev9DNS2 = "0.0.0.0"
+        network.dev9HddEnabled = false
+        network.dev9HddFile = "DEV9hdd.raw"
+        network.dev9EthernetEnabled = false
+        network.dev9EthDevice = "Auto"
+        network.dev9InterceptDHCP = false
+        network.dev9EthLogDHCP = false
+        network.dev9EthLogDNS = false
+        network.dev9DNS1Mode = "Auto"
+        network.dev9DNS1 = "0.0.0.0"
+        network.dev9DNS2Mode = "Auto"
+        network.dev9DNS2 = "0.0.0.0"
 
         resetAppearanceDefaults()
 
