@@ -140,12 +140,17 @@ extension SettingsStore {
 
     func applyFrameLimiterSettings() {
         guard !suppressINIWrites else { return }
+        writeFrameLimiterSettings()
+        // The shortcut's cached speed would otherwise override this write on its next press.
+        GameSession.shared.runtimeShortcutSpeedPercent = nil
+    }
+
+    // Init's defer calls this half, so GameSession.shared never starts inside swift_once.
+    func writeFrameLimiterSettings() {
         let scalar = Self.normalSpeedScalar(frameLimiterEnabled: frameLimiterEnabled)
         ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: targetFPS)
         ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: scalar)
         ARMSX2Bridge.setPresentFPSCap(frameLimiterEnabled ? targetFPS : 0.0)
-        // The shortcut's cached speed would otherwise override this write on its next press.
-        GameSession.shared.runtimeShortcutSpeedPercent = nil
     }
 
     /// Frame targets control presentation cadence rather than VM speed. The

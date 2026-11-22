@@ -491,7 +491,7 @@ final class SettingsStore {
         defer {
             suppressINIWrites = false
             controller.synchronizeControllerMacroGameplayInput()
-            applyFrameLimiterSettings()
+            writeFrameLimiterSettings()
         }
 
         // Runs before any stored property is read, and writes the INI directly because
