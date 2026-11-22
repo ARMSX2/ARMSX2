@@ -109,13 +109,14 @@ enum VirtualPadButtonOffset {
     }
 }
 
+@MainActor
 @Observable
-final class PadLayoutStore: @unchecked Sendable {
+final class PadLayoutStore {
     static let shared = PadLayoutStore()
 
-    static let actionButtonIDs = ["cross", "circle", "square", "triangle"]
-    static let perButtonIDs = ["triangle", "circle", "square", "cross", "up", "down", "left", "right"]
-    static let groupIDs = ["dpad", "action", "l1", "l2", "r1", "r2", "lstick", "rstick", "select", "start"]
+    nonisolated static let actionButtonIDs = ["cross", "circle", "square", "triangle"]
+    nonisolated static let perButtonIDs = ["triangle", "circle", "square", "cross", "up", "down", "left", "right"]
+    nonisolated static let groupIDs = ["dpad", "action", "l1", "l2", "r1", "r2", "lstick", "rstick", "select", "start"]
 
     var portrait: [String: PadGroupPosition] = [:]
     var landscape: [String: PadGroupPosition] = [:]
@@ -132,7 +133,7 @@ final class PadLayoutStore: @unchecked Sendable {
 
     // Portrait: relative to controller area (0.0-1.0)
     // U002: action x adjusted from 0.88/0.92 to 0.85/0.88 to prevent ○ button clipping
-    static let defaultPortrait: [String: PadGroupPosition] = [
+    nonisolated static let defaultPortrait: [String: PadGroupPosition] = [
         "l2":     PadGroupPosition(x: 0.16, y: 0.06, scale: 1.0),
         "l1":     PadGroupPosition(x: 0.16, y: 0.14, scale: 1.0),
         "r2":     PadGroupPosition(x: 0.84, y: 0.06, scale: 1.0),
@@ -147,7 +148,7 @@ final class PadLayoutStore: @unchecked Sendable {
 
     // Landscape: relative to full screen — positions kept well inside safe area
     // to avoid clipping on notch/Dynamic Island devices
-    static let defaultLandscape: [String: PadGroupPosition] = [
+    nonisolated static let defaultLandscape: [String: PadGroupPosition] = [
         "dpad":   PadGroupPosition(x: 0.14, y: 0.72, scale: 1.0),
         "action": PadGroupPosition(x: 0.84, y: 0.72, scale: 1.0),
         "l2":     PadGroupPosition(x: 0.14, y: 0.22, scale: 1.0),
@@ -282,7 +283,7 @@ final class PadLayoutStore: @unchecked Sendable {
         )
     }
 
-    static func groupID(for perButtonID: String) -> String {
+    nonisolated static func groupID(for perButtonID: String) -> String {
         if ["triangle", "circle", "square", "cross"].contains(perButtonID) { return "action" }
         if ["up", "down", "left", "right"].contains(perButtonID) { return "dpad" }
         return perButtonID
