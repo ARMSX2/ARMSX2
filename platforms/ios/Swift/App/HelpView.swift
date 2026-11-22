@@ -117,7 +117,7 @@ struct HelpView: View {
     }
 
     private var backgroundConfigured: Bool {
-        settings.hasCustomBackground && settings.backgroundEnabledInSettings
+        settings.hasCustomBackground && settings.appearance.backgroundEnabledInSettings
     }
 
     private var backgroundActive: Bool {

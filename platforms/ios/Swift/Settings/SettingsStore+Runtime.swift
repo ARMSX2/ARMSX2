@@ -32,61 +32,17 @@ extension SettingsStore {
         return min(max(scale, 0.8), 1.6)
     }
 
-    static func clampedBackgroundDim(_ value: Double) -> Double {
-        guard value.isFinite else { return 0.0 }
-        return min(max(value, 0.0), 1.0)
-    }
-
-    static func loadBackgroundAsset(forKey key: String) -> BackgroundAsset? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(BackgroundAsset.self, from: data)
-    }
-
-    static func loadSavedPaletteColor(
-        forKey key: String
-    ) -> SavedPaletteColor? {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
-            return nil
-        }
-        return try? JSONDecoder().decode(SavedPaletteColor.self, from: data)
-    }
-
-    static func persistOptionalThemePalette(
-        _ palette: ThemePalette?,
-        forKey key: String
-    ) {
-        if let palette {
-            UserDefaults.standard.set(palette.rawValue, forKey: key)
-        } else {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
-    }
-
-    static func persistSavedPaletteColor(
-        _ color: SavedPaletteColor?,
-        forKey key: String
-    ) {
-        guard let color else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        UserDefaults.standard.set(
-            try? JSONEncoder().encode(color),
-            forKey: key
-        )
-    }
-
     /// Removes background assets whose files no longer exist. Returns `true`
     /// when at least one stale asset was cleared so callers can surface a notice.
     @discardableResult
     func sanitizeBackgroundAssets() -> Bool {
         var removed = false
-        if let primary = backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
-            backgroundPrimaryAsset = nil
+        if let primary = appearance.backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
+            appearance.backgroundPrimaryAsset = nil
             removed = true
         }
-        if let landscape = backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
-            backgroundLandscapeAsset = nil
+        if let landscape = appearance.backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
+            appearance.backgroundLandscapeAsset = nil
             removed = true
         }
         return removed
@@ -184,12 +140,17 @@ extension SettingsStore {
 
     func applyFrameLimiterSettings() {
         guard !suppressINIWrites else { return }
+        writeFrameLimiterSettings()
+        // The shortcut's cached speed would otherwise override this write on its next press.
+        GameSession.shared.runtimeShortcutSpeedPercent = nil
+    }
+
+    // Init's defer calls this half, so GameSession.shared never starts inside swift_once.
+    func writeFrameLimiterSettings() {
         let scalar = Self.normalSpeedScalar(frameLimiterEnabled: frameLimiterEnabled)
         ARMSX2Bridge.setINIFloat("ARMSX2iOS/FramePacing", key: "TargetFPS", value: targetFPS)
         ARMSX2Bridge.setINIFloat("Framerate", key: "NominalScalar", value: scalar)
         ARMSX2Bridge.setPresentFPSCap(frameLimiterEnabled ? targetFPS : 0.0)
-        // The shortcut's cached speed would otherwise override this write on its next press.
-        GameSession.shared.runtimeShortcutSpeedPercent = nil
     }
 
     /// Frame targets control presentation cadence rather than VM speed. The
@@ -324,4 +285,98 @@ extension SettingsStore {
         }
         isAutoMarkingFramePacingCustom = false
     }
+}
+
+extension SettingsStore {
+    var hasCustomBackground: Bool {
+        appearance.dynamicBackgroundsEnabled
+            || appearance.backgroundPrimaryAsset != nil
+            || appearance.backgroundLandscapeAsset != nil
+    }
+}
+
+extension SettingsStore {
+    // Adaptive Resolution — opt-in frame-time-driven dynamic internal
+    // resolution, off by default. The didSet writes the INI key and starts or
+    // stops the controller so its lifecycle tracks the user's toggle.
+    static let _adaptiveResolutionEnabledConfig = Setting<Bool>(
+        section: "ARMSX2iOS/FramePacing", key: "DynamicResolution", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
+        section: "ARMSX2iOS/UI", key: "LastActiveOsdPreset", default: .simple,
+        suppressible: false,
+        codec: .rawInt)
+    static let _osdPerformancePositionConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "OsdPerformancePos",
+        default: SettingsStore.defaultOsdPerformancePosition,
+        suppressible: false,
+        codec: .int)
+    /// Suppresses transient on-screen messages (shader compilation, save state,
+    /// settings-applied). Critical SwiftUI alerts are unaffected. Backed by the
+    /// core's OsdMessagesPos (1 = TopLeft default, 0 = None).
+    static let _osdShowMessagesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdMessagesPos", default: true,
+        suppressible: false,
+        codec: .boolAsInt)
+    static let _osdShowFPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFPS", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowVPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVPS", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowSpeedConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSpeed", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowCPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowCPU", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowGPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGPU", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowResolutionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowResolution", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowGSStatsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGSStats", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowIndicatorsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowIndicators", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowSettingsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSettings", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowInputsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowInputs", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowFrameTimesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFrameTimes", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowVersionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVersion", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowHardwareInfoConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowHardwareInfo", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowTextureReplacementsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowDeviceStatsConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
+        suppressible: false,
+        codec: .bool)
 }

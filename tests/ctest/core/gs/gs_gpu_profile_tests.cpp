@@ -205,10 +205,9 @@ TEST(GSGpuProfileAdreno, ANameWithoutAModelIsAnUnknownAdreno)
 	ExpectTuning(p.tuning, 96, 8, 6, false);
 }
 
-// The Anbernic RG 55G1's GPU, read off the device on 2026-10-23 (umbrella
-// devs/bmdhacks/campaigns/rg55g1-2026-10-23). Qualcomm's stock driver names it with a marketing
-// name, "Adreno (TM) A12", and Turnip on the same device names it "Turnip Adreno (TM) 613". Both
-// report Vulkan deviceID 0x06010300: the chip id of the 613 (core 6, major 1, minor 3), the same id
+// The Anbernic RG 55G1's GPU, read off the device on 2026-10-23. Qualcomm's stock driver names it
+// with a marketing name, "Adreno (TM) A12", and Turnip on the same device names it "Turnip Adreno
+// (TM) 613". Both report Vulkan deviceID 0x06010300: the chip id of the 613 (core 6, major 1, minor 3), the same id
 // Mesa's device table derives for the 613. Strings below are the device's own, except the Turnip
 // driverVersion, which was not recorded and is Mesa 27.0.0's packing.
 namespace

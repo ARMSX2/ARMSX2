@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (tr); report bad strings to fix.",
+ "driverOffer.body.update": "GPU'nuz için ARMSX2 grafik sürücüsünün daha yeni bir sürümü var.",
+ "driverOffer.current": "Şu anda kullanılan: %s",
+ "driverOffer.notNow": "Şimdi değil",
+ "driverOffer.title.switch": "ARMSX2'nin GPU sürücüsü",
+ "driverOffer.title.update": "Daha yeni bir GPU sürücüsü çıktı",
  "tab.app": "Uygulama",
  "tab.performance": "Performans",
  "tab.renderer": "Renderer",

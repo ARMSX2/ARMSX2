@@ -15,6 +15,7 @@
 
 #include "GS/GSUtil.h"
 #include "GS/Renderers/Common/GSGPUProfile.h"
+#include "GS/Renderers/Common/GSRunsPolicy.h"
 
 #include <gtest/gtest.h>
 
@@ -558,6 +559,33 @@ TEST(GSGpuDriverProfile, OnlyTurnipOnTheAdreno650FetchesInRuns)
 		ResolveAdrenoVK("Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u)));
 	EXPECT_FALSE(fetches(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0))));
 	EXPECT_FALSE(fetches(ResolveMaliVK("Mali-G57 MC2", PackVulkanVersion(44, 1, 0))));
+}
+
+// ---------------------------------------------------------------------------------------------
+// On Qualcomm's driver the draws after a run draw sample the wrong texture where their textures are pushed, so the
+// run program is off there. Measured on 512.800.73 (Adreno 722); the reports span Adreno 610 to 840 and 512.615 to
+// 512.842, so the rule takes every version and part. Turnip on the same Duo draws the same command stream right and
+// keeps the run program, as does every other driver.
+
+TEST(GSGpuDriverProfile, OnlyQualcommsDriverDrawsWithoutTheRunProgram)
+{
+	const auto runs = [](const GpuProfileSelection& sel) { return GSRunsPolicy::DriverDrawsRuns(sel.driver); };
+	// The Duo's stock driver as its emulog reports it (raw 0x80320049), and both ends of the reports' range.
+	EXPECT_FALSE(runs(ResolveAdrenoVK("Adreno (TM) 722", kQualcommProprietaryDriverId, "Qualcomm", 0x80320049u)));
+	EXPECT_FALSE(runs(ResolveAdrenoVK("Adreno (TM) 610", kQualcommProprietaryDriverId, "Qualcomm",
+		PackVulkanVersion(512, 615, 0))));
+	EXPECT_FALSE(runs(ResolveAdrenoVK("Adreno (TM) 840", kQualcommProprietaryDriverId, "Qualcomm",
+		PackVulkanVersion(512, 842, 0))));
+	EXPECT_FALSE(runs(ResolveAdrenoVK("Adreno (TM) 650", kQualcommProprietaryDriverId, "Qualcomm", 0x801EA000u)));
+
+	// Turnip as our packs report it (26.99.99), on the same 722 and the other Adreno parts.
+	EXPECT_TRUE(runs(ResolveAdrenoVK("Turnip Adreno (TM) 722", kTurnipDriverId, "turnip", PackVulkanVersion(26, 99, 99))));
+	EXPECT_TRUE(runs(ResolveAdrenoVK("Adreno (TM) 650", kTurnipDriverId, "turnip", PackVulkanVersion(26, 99, 99))));
+	EXPECT_TRUE(runs(ResolveAdrenoVK("Adreno (TM) 613", kTurnipDriverId, "turnip", PackVulkanVersion(26, 1, 2))));
+	EXPECT_TRUE(runs(ResolveAdrenoVK("Adreno (TM) 740", kTurnipDriverId, "turnip", PackVulkanVersion(27, 0, 0))));
+	EXPECT_TRUE(runs(ResolveMaliVK("Mali-G615 MC6", PackVulkanVersion(44, 1, 0), kMt6897AndroidHints, kMaliSX2DriverInfo)));
+	EXPECT_TRUE(runs(ResolveMaliVK("Mali-G57 MC2", PackVulkanVersion(44, 1, 0))));
+	EXPECT_TRUE(runs(ResolveMaliVK("Mali-G610", PackVulkanVersion(38, 1, 0))));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1412,7 +1440,7 @@ TEST(GSGpuDriverProfile, TheNumbersBesideTheAdreno722GetNoA7xxRule)
 // Under the old name parse the stock driver read the marketing name as model 12, an unknown
 // architecture, and so missed every row bounded by a model range. The part must take exactly the
 // rows, bugs, workarounds and road bits an "Adreno (TM) 613" takes, on each driver. Device strings
-// from umbrella devs/bmdhacks/campaigns/rg55g1-2026-10-23 (stock vkjson, Turnip probe); the Turnip
+// read off the device on 2026-10-23 (the stock driver's vkjson, and Turnip); the Turnip
 // driverVersion was not recorded and is Mesa 27.0.0's packing.
 namespace
 {

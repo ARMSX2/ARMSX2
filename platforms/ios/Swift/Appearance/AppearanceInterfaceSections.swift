@@ -9,7 +9,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
 
     var body: some View {
         Section {
-            Toggle(isOn: manualBinding(for: \.clearLiquidGlassUI)) {
+            Toggle(isOn: manualBinding(for: \.appearance.clearLiquidGlassUI)) {
                 Label(settings.localized("Clear Liquid Glass UI"), systemImage: "rectangle.on.rectangle")
             }
             .appearanceControllerListRow(
@@ -17,7 +17,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             )
             Toggle(
                 isOn: manualBinding(
-                    for: \.clearLiquidGlassUISubSettings
+                    for: \.appearance.clearLiquidGlassUISubSettings
                 )
             ) {
                 Label(
@@ -29,7 +29,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
                 "settings.appearance.clear-liquid-glass-sub-settings"
             )
             Toggle(
-                isOn: manualBinding(for: \.clearLiquidGlassUIQuickMenu)
+                isOn: manualBinding(for: \.appearance.clearLiquidGlassUIQuickMenu)
             ) {
                 Label(settings.localized("Clear Liquid Glass UI Quick Menu"), systemImage: "pause.rectangle")
             }
@@ -38,7 +38,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             )
             Toggle(
                 isOn: manualBinding(
-                    for: \.clearLiquidGlassUIPerGameSettingsLibrary
+                    for: \.appearance.clearLiquidGlassUIPerGameSettingsLibrary
                 )
             ) {
                 Label(
@@ -51,7 +51,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             )
             Toggle(
                 isOn: manualBinding(
-                    for: \.clearLiquidGlassUIPerGameSettingsEmulation
+                    for: \.appearance.clearLiquidGlassUIPerGameSettingsEmulation
                 )
             ) {
                 Label(
@@ -64,7 +64,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             )
             Toggle(
                 isOn: manualBinding(
-                    for: \.gameCardZoomAnimationEnabled
+                    for: \.appearance.gameCardZoomAnimationEnabled
                 )
             ) {
                 Label(settings.localized("Game-Card Zoom Animation"), systemImage: "rectangle.inset.filled.and.person.filled")
@@ -74,7 +74,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             )
             Toggle(
                 isOn: manualBinding(
-                    for: \.favoriteGlowingEffectEnabled
+                    for: \.appearance.favoriteGlowingEffectEnabled
                 )
             ) {
                 Label(
@@ -85,7 +85,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             .appearanceControllerListRow(
                 "settings.appearance.favorite-glowing-effect"
             )
-            Toggle(isOn: $settings.gameMenuCoverColoursEnabled) {
+            Toggle(isOn: Bindable(settings.appearance).gameMenuCoverColoursEnabled) {
                 Label(
                     settings.localized("Cover Colours in Game Menus"),
                     systemImage: "paintpalette"
@@ -94,7 +94,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             .appearanceControllerListRow(
                 "settings.appearance.game-menu-cover-colours"
             )
-            Toggle(isOn: manualBinding(for: \.hideIntroStatusBar)) {
+            Toggle(isOn: manualBinding(for: \.appearance.hideIntroStatusBar)) {
                 Label(
                     settings.localized("Hide Status Bar During Intro"),
                     systemImage: "rectangle.topthird.inset.filled"
@@ -103,7 +103,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             .appearanceControllerListRow(
                 "settings.appearance.hide-intro-status-bar"
             )
-            Toggle(isOn: manualBinding(for: \.hideMenuStatusBar)) {
+            Toggle(isOn: manualBinding(for: \.appearance.hideMenuStatusBar)) {
                 Label(
                     settings.localized("Hide Status Bar in Menus"),
                     systemImage: "rectangle.topthird.inset.filled"
@@ -112,7 +112,7 @@ struct AppearanceInterfaceSections: View, AppearanceSettingsEditing {
             .appearanceControllerListRow(
                 "settings.appearance.hide-menu-status-bar"
             )
-            Toggle(isOn: manualBinding(for: \.hideGameplayStatusBar)) {
+            Toggle(isOn: manualBinding(for: \.appearance.hideGameplayStatusBar)) {
                 Label(
                     settings.localized("Hide Status Bar During Gameplay"),
                     systemImage: "rectangle.topthird.inset.filled"

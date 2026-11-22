@@ -1135,7 +1135,7 @@ data class Settings(
         put("EmuCore/CPU", "VU0.Roundmode", "int", emuCore.vu0RoundMode.coerceIn(0, 3).toString())
         put("EmuCore/CPU", "VU1.Roundmode", "int", emuCore.vu1RoundMode.coerceIn(0, 3).toString())
         // Display + GS renderer + hardware/upscaling-fix keys are all written
-        // together in writeGsToNative() below (shared with applyGsLive()).
+        // together in writeGsToNative() below.
         // DEV9. Networking/HDD are initialized with the VM, so changes
         // made from the in-game overlay are persisted for the next boot.
         put("DEV9/Eth", "EthEnable", "bool", network.dev9EthEnable.toString())
@@ -1772,8 +1772,7 @@ data class Settings(
 
     /** Writes every EmuCore/GS key (display + renderer + hardware/upscaling
      *  fixes) into the native BASE settings layer. Pure persistence — no live
-     *  pokes, no commit. Shared by [applyTo] (cold start / restart) and
-     *  [applyGsLive] (running VM). Keep the key list in sync with
+     *  pokes, no commit. Called by [applyTo]. Keep the key list in sync with
      *  Pcsx2Config::GSOptions::LoadSave. */
     private fun writeGsToNative() {
         val aspectRatioName = when (output.aspectRatio.coerceIn(0, 8)) {
@@ -1991,100 +1990,6 @@ data class Settings(
             hwFixes.disableDepthEmulation || hwFixes.disablePartialInvalidation || hwFixes.disableSafeFeatures ||
             hwFixes.disableRenderFixes || hwFixes.preloadFrameData || hwFixes.estimateTextureRegion || hwFixes.drawBuffering ||
             hwFixes.skipDrawStart != 0 || hwFixes.skipDrawEnd != 0
-
-    /** Live GS-only apply for a running VM: persist all EmuCore/GS keys, then
-     *  reconfigure the GS thread without the heavy CPU/JIT rebuild commitSettings()
-     *  does. Lets renderer / hardware-fix / upscaling-fix changes apply instantly
-     *  mid-game. */
-    fun applyGsLive(): Boolean {
-        writeGsToNative()
-        return NativeApp.applyGSSettingsLive()
-    }
-
-    /** True when any field a live GS reconfigure ([applyGsLive]) can pick up
-     *  differs from [other]. Lets the in-game delta path skip the GS thread
-     *  park when only non-GS settings (audio, frame limit, …) changed.
-     *  Excludes display aspect (its own live setter) and gpuProfile (device-init
-     *  only — needs a renderer restart). */
-    // NOTE: FramerateNTSC/PAL are intentionally NOT here — the generic GS live
-    // reconfigure (applyGSSettingsLive) doesn't recompute the vsync target. They
-    // get their OWN live path instead: applySafeLiveDelta routes a framerate change
-    // to LiveGsApplyQueue.applyFramerate → NativeApp.applyFramerateLive, which parks
-    // the VM and recomputes vsync. Keeping them out of here avoids a redundant
-    // (and park-free, thus ineffective) GS reconfigure for a framerate-only edit.
-    fun gsDiffersFrom(other: Settings): Boolean =
-        output.deinterlaceMode != other.output.deinterlaceMode ||
-            graphics.textureFiltering != other.graphics.textureFiltering ||
-            graphics.displayBilinear != other.graphics.displayBilinear ||
-            graphics.texturePreloading != other.graphics.texturePreloading ||
-            graphics.hardwareDownloadMode != other.graphics.hardwareDownloadMode ||
-            graphics.tvShader != other.graphics.tvShader ||
-            graphics.shadeBoost != other.graphics.shadeBoost ||
-            graphics.shadeBoostBrightness != other.graphics.shadeBoostBrightness ||
-            graphics.shadeBoostContrast != other.graphics.shadeBoostContrast ||
-            graphics.shadeBoostSaturation != other.graphics.shadeBoostSaturation ||
-            graphics.shadeBoostGamma != other.graphics.shadeBoostGamma ||
-            graphics.fxaa != other.graphics.fxaa ||
-            graphics.lsfgEnabled != other.graphics.lsfgEnabled ||
-            graphics.lsfgMultiplier != other.graphics.lsfgMultiplier ||
-            graphics.lsfgDllPath != other.graphics.lsfgDllPath ||
-            graphics.lsfgPerformance != other.graphics.lsfgPerformance ||
-            graphics.lsfgFp16 != other.graphics.lsfgFp16 ||
-            graphics.lsfgFlowScale != other.graphics.lsfgFlowScale ||
-            graphics.lsfgTargetRate != other.graphics.lsfgTargetRate ||
-            graphics.zeroFgEnabled != other.graphics.zeroFgEnabled ||
-            graphics.zeroFgMode != other.graphics.zeroFgMode ||
-            graphics.zeroFgMultiplier != other.graphics.zeroFgMultiplier ||
-            osd.osdPosition != other.osd.osdPosition ||
-            graphics.casMode != other.graphics.casMode ||
-            graphics.casSharpness != other.graphics.casSharpness ||
-            graphics.upscaler != other.graphics.upscaler ||
-            graphics.fsrSharpness != other.graphics.fsrSharpness ||
-            graphics.sgsrSharpness != other.graphics.sgsrSharpness ||
-            graphics.accurateBlendingUnit != other.graphics.accurateBlendingUnit ||
-            graphics.hwMipmap != other.graphics.hwMipmap ||
-            hwFixes.triFilter != other.hwFixes.triFilter ||
-            hwFixes.maxAnisotropy != other.hwFixes.maxAnisotropy ||
-            hwFixes.manualUserHacks != other.hwFixes.manualUserHacks ||
-            hwFixes.autoFlush != other.hwFixes.autoFlush ||
-            hwFixes.halfPixelOffset != other.hwFixes.halfPixelOffset ||
-            hwFixes.limit24BitDepth != other.hwFixes.limit24BitDepth ||
-            hwFixes.textureInsideRt != other.hwFixes.textureInsideRt ||
-            hwFixes.nativeScaling != other.hwFixes.nativeScaling ||
-            hwFixes.roundSprite != other.hwFixes.roundSprite ||
-            hwFixes.bilinearUpscale != other.hwFixes.bilinearUpscale ||
-            hwFixes.gpuTargetClut != other.hwFixes.gpuTargetClut ||
-            hwFixes.cpuSpriteRenderBw != other.hwFixes.cpuSpriteRenderBw ||
-            hwFixes.cpuSpriteRenderLevel != other.hwFixes.cpuSpriteRenderLevel ||
-            hwFixes.cpuClutRender != other.hwFixes.cpuClutRender ||
-            hwFixes.alignSprite != other.hwFixes.alignSprite ||
-            hwFixes.mergeSprite != other.hwFixes.mergeSprite ||
-            hwFixes.forceEvenSpritePosition != other.hwFixes.forceEvenSpritePosition ||
-            hwFixes.unscaledPaletteDraw != other.hwFixes.unscaledPaletteDraw ||
-            hwFixes.textureOffsetX != other.hwFixes.textureOffsetX ||
-            hwFixes.textureOffsetY != other.hwFixes.textureOffsetY ||
-            hwFixes.gpuPaletteConversion != other.hwFixes.gpuPaletteConversion ||
-            hwFixes.cpuFramebufferConversion != other.hwFixes.cpuFramebufferConversion ||
-            hwFixes.readTargetsWhenClosing != other.hwFixes.readTargetsWhenClosing ||
-            hwFixes.disableDepthEmulation != other.hwFixes.disableDepthEmulation ||
-            hwFixes.disablePartialInvalidation != other.hwFixes.disablePartialInvalidation ||
-            hwFixes.disableSafeFeatures != other.hwFixes.disableSafeFeatures ||
-            hwFixes.disableRenderFixes != other.hwFixes.disableRenderFixes ||
-            hwFixes.preloadFrameData != other.hwFixes.preloadFrameData ||
-            hwFixes.estimateTextureRegion != other.hwFixes.estimateTextureRegion ||
-            display.hwAccurateAlphaTest != other.display.hwAccurateAlphaTest ||
-            hwFixes.drawBuffering != other.hwFixes.drawBuffering ||
-            // Texture-replacement toggles: without these here the in-game "Load Texture
-            // Packs" switch only wrote the base layer (setSetting) and never fired the
-            // live GS reconfigure, so a just-imported pack didn't appear until the next
-            // game boot. Including them routes through applyGSSettingsLive → GSUpdateConfig
-            // → GSTextureReplacements reload/purge, so the pack loads immediately.
-            graphics.loadTextureReplacements != other.graphics.loadTextureReplacements ||
-            graphics.loadTextureReplacementsAsync != other.graphics.loadTextureReplacementsAsync ||
-            graphics.precacheTextureReplacements != other.graphics.precacheTextureReplacements ||
-            graphics.textureUpscale != other.graphics.textureUpscale ||
-            graphics.dumpReplaceableTextures != other.graphics.dumpReplaceableTextures ||
-            graphics.osdShowTextureReplacements != other.graphics.osdShowTextureReplacements
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("eeCycleRate", cpu.eeCycleRate)

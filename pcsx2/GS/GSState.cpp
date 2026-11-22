@@ -548,7 +548,11 @@ void GSState::SetPrimHandlers()
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVRGBAQXYZF2 - 2][P] = \
 		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::UvTripleXYZF2, auto_flush>(); \
 	m_fpGIFPackedRegHandlerLayout[GIF_REG_UVXYZF2 - 2][P] = \
-		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>();
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairUVXYZF2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_NOPSTQRGBAXYZ2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::NopTripleXYZ2, auto_flush>(); \
+	m_fpGIFPackedRegHandlerLayout[GIF_REG_RGBAQXYZF2 - 2][P] = \
+		LayoutHandlerOrNull<P, GSVertexKernels::PackedLayout::PairRGBAQXYZF2, auto_flush>();
 
 	SetHandlerXYZ(GS_POINTLIST, true);
 	SetHandlerXYZ(GS_LINELIST, non_sprite_af);
@@ -2103,23 +2107,31 @@ __noinline bool GIFClassifyPaddedLayout(const GSVector4i& regs, u32 nreg, u32& t
 
 	// {ST, RGBAQ, XYZF2} with NOPs between: most of outrun-b's and mgs3's traffic.
 	// {UV, RGBAQ, XYZF2} with NOPs between is the same triple addressed by UV.
+	// {ST, RGBAQ, XYZ2} with NOPs between (2,f,1,5), used for triangle strips.
 	if (n == 3)
 	{
-		if (desc[1] != GIF_REG_RGBA || desc[2] != GIF_REG_XYZF2)
+		if (desc[1] != GIF_REG_RGBA)
 			return false;
-		if (desc[0] == GIF_REG_STQ)
+		if (desc[0] == GIF_REG_STQ && desc[2] == GIF_REG_XYZF2)
 			type = GIFPath::TYPE_NOPSTQRGBAXYZF2;
-		else if (desc[0] == GIF_REG_UV)
+		else if (desc[0] == GIF_REG_UV && desc[2] == GIF_REG_XYZF2)
 			type = GIFPath::TYPE_UVRGBAQXYZF2;
+		else if (desc[0] == GIF_REG_STQ && desc[2] == GIF_REG_XYZ2)
+			type = GIFPath::TYPE_NOPSTQRGBAXYZ2;
 		else
 			return false;
 		layout = {nreg, pos[0], pos[1], pos[2]};
 		return true;
 	}
 
-	// The two-register layouts, NOP-padded. XYZF2 twins are deliberately not
-	// recognised: no corpus title carries one, and every recognised type costs an
-	// instantiation of the kernel, the staged loop and the per-vertex batch.
+	// The two-register layouts, NOP-padded. Of the XYZF2 twins only {RGBAQ, XYZF2} is
+	// recognised here; it shares the contiguous form's handler.
+	if (n == 2 && desc[0] == GIF_REG_RGBA && desc[1] == GIF_REG_XYZF2)
+	{
+		type = GIFPath::TYPE_RGBAQXYZF2;
+		layout = {nreg, pos[0], 0, pos[1]};
+		return true;
+	}
 	if (n == 2 && desc[1] == GIF_REG_XYZ2)
 	{
 		switch (desc[0])
@@ -2898,16 +2910,16 @@ void GSState::StoreLatchedQ(const GIFPackedReg* RESTRICT stq)
 	GSVector4::store(&m_q, GSVector4::cast(q));
 }
 
-// The layouts stage 3c added: the NOP-padded {ST, RGBAQ, XYZF2} triple, and the
-// three two-register layouts. One handler covers all four, because everything
-// that differs between them is inside the parse and the parse is a template
-// parameter.
+// Every packed layout SetTag names except the two contiguous {ST, RGBAQ, XYZ}
+// triples, which keep their own handlers. One handler covers them all, because
+// everything that differs between them is inside the parse and the parse is a
+// template parameter.
 //
-// Instantiated only for the three prim types the kernel carries. Every other
-// prim leaves a null in the handler table and Transfer replays the tag's
-// descriptors one qword at a time, which is exact by construction and is what
-// keeps four layouts from costing eight prims' worth of kernel, staged loop and
-// per-vertex batch each.
+// Instantiated only for the (prim, layout) pairs LayoutHandlerExists lists.
+// Every other pair leaves a null in the handler table and Transfer replays the
+// tag's descriptors one qword at a time, which is exact by construction and is
+// what keeps each layout from costing eight prims' worth of kernel, staged loop
+// and per-vertex batch.
 template <u32 prim, GSVertexKernels::PackedLayout layout, bool auto_flush>
 void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size)
 {
@@ -2951,7 +2963,8 @@ void GSState::GIFPackedRegHandlerLayout(const GIFPackedReg* RESTRICT r, u32 size
 	{
 		constexpr u32 reg_a = GSVertexKernels::LayoutHasUV(layout) ?
 								  GIF_REG_UV :
-								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2) ? GIF_REG_RGBA :
+								  ((layout == GSVertexKernels::PackedLayout::PairRGBAQXYZ2 ||
+									  layout == GSVertexKernels::PackedLayout::PairRGBAQXYZF2) ? GIF_REG_RGBA :
 																							  GIF_REG_STQ);
 		constexpr u32 reg_xyz = GSVertexKernels::LayoutIsXYZF2(layout) ? GIF_REG_XYZF2 : GIF_REG_XYZ2;
 		const u32 off_a = m_packed_layout.off_a;

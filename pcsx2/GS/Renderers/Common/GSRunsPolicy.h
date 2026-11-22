@@ -32,6 +32,13 @@
 /// Header-only so the tests can pin it without a device.
 namespace GSRunsPolicy
 {
+	/// Whether the driver may draw the run program at all. Not where the draws after a run draw lose the textures they
+	/// push (DriverBug::BrokenPushDescriptorsAfterRunDraw): there every row is drawn classically.
+	constexpr bool DriverDrawsRuns(const MobileDriverProfile& driver)
+	{
+		return !driver.HasBug(DriverBug::BrokenPushDescriptorsAfterRunDraw);
+	}
+
 	enum class Refusal : u8
 	{
 		None,
@@ -131,7 +138,7 @@ namespace GSRunsPolicy
 	}
 
 	/// The states that cost a run program most when the run carries them: the hardware's lod and an alpha test (a
-	/// discard). Split rule "dear" ends a run where these differ from the run's (measured in probe K1b).
+	/// discard). Split rule "dear" ends a run where these differ from the run's (measured on the Adreno 650, below).
 	constexpr u32 Dear(u32 flags)
 	{
 		return ((Textured(flags) && Field(flags, STATE_LOD) == LOD_HARDWARE) ? 1u : 0u) | ((Field(flags, STATE_ATST) != 0) ? 2u : 0u);
@@ -190,15 +197,15 @@ namespace GSRunsPolicy
 	};
 
 	// Adreno 650, Turnip (Retroid Flip 2, 2x): a host draw from the no-fill arm (4.65 ms classic floor against 0.54 ms for
-	// 171 host draws, 4,496 fewer), 0.9 us; the dear program from probe K1b (Spider-Man 3 heavy's storm pass 4.83 ms
+	// 171 host draws, 4,496 fewer), 0.9 us; the dear program from a heavy Spider-Man 3 scene (storm pass 4.83 ms
 	// without the dear split against 4.08 with it, 151 more host draws, over 23.5 M pixels of draw rectangles), 38 ps.
-	// Mali-G615 (2x) and G57 (1x), malisx2: the Mali probe's storm passes (results/mali), the same fit.
+	// Mali-G615 (2x) and G57 (1x), malisx2: the same fit over storm passes measured on each GPU.
 	inline constexpr DeviceClass DEVICE_CLASSES[] = {
-		{"Adreno 650", "650", 900.0f, 38.0f, "measured, Flip 2 (m1, probe K1b)"},
+		{"Adreno 650", "650", 900.0f, 38.0f, "measured, Retroid Flip 2"},
 		{"Adreno 613", "613", 900.0f, 38.0f, "the 650's, not measured"},
 		{"Adreno 740", "740", 900.0f, 38.0f, "the 650's, not measured"},
-		{"Mali-G615", "G615", 200.0f, 76.0f, "measured, Mali probe (merge-spec 3.57 ms against split 1.81)"},
-		{"Mali-G57", "G57", 2300.0f, 300.0f, "measured, Mali probe at 1x (spec 5.64 ms against split 4.20)"},
+		{"Mali-G615", "G615", 200.0f, 76.0f, "measured, merged 3.57 ms against split 1.81"},
+		{"Mali-G57", "G57", 2300.0f, 300.0f, "measured at 1x, merged 5.64 ms against split 4.20"},
 	};
 	inline constexpr DeviceClass DEVICE_CLASS_DEFAULT = {"other", "", 900.0f, 38.0f, "the 650's, not measured"};
 

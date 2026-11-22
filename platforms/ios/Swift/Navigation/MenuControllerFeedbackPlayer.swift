@@ -63,7 +63,7 @@ final class MenuControllerFeedbackPlayer {
     }
 
     func playHaptics(_ feedback: MenuControllerFeedback) {
-        guard SettingsStore.shared.hapticFeedback, uiRumbleGain > 0,
+        guard SettingsStore.shared.controller.hapticFeedback, uiRumbleGain > 0,
               shouldEmitHaptic(feedback) else { return }
         refreshControllerPatternsForCurrentStrength()
         playDeviceFeedback(feedback)
@@ -114,7 +114,7 @@ final class MenuControllerFeedbackPlayer {
     }
 
     private var uiRumbleGain: Float {
-        min(max(SettingsStore.shared.uiRumbleStrength, 0), 1) * 2
+        min(max(SettingsStore.shared.controller.uiRumbleStrength, 0), 1) * 2
     }
 
     private func refreshControllerPatternsForCurrentStrength() {

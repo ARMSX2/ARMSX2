@@ -39,6 +39,28 @@ def store_text():
     return "\n".join(read(p) for p in files)
 
 
+# Each store's main file, with the text that opens its class and its init.
+STORE_INITS = {
+    "SettingsStore.swift": ("final class SettingsStore {", "private init()"),
+    "SettingsStoreAppearance.swift": ("final class Appearance {", "        init() {"),
+    "SettingsStoreController.swift": ("final class Controller {", "        init() {"),
+    "SettingsStoreNetwork.swift": ("final class Network {", "        init() {"),
+}
+
+
+def store_inits():
+    """(file name, text, class body, init body) for every store in STORE_INITS."""
+    found = []
+    for name, (class_needle, init_needle) in STORE_INITS.items():
+        text = read(swift(name))
+        for needle in (class_needle, init_needle):
+            count = text.count(needle)
+            if count != 1:
+                raise AssertionError("%s: expected %r once, found %d" % (name, needle, count))
+        found.append((name, text, block(text, class_needle), block(text, init_needle)))
+    return found
+
+
 def bridge_text():
     """Every ARMSX2Bridge*.mm, so a split bridge still reads as one."""
     files = sorted(BRIDGE_DIR.glob("ARMSX2Bridge*.mm"))

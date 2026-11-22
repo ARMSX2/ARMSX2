@@ -61,11 +61,11 @@ private struct ControllerNavigationMovingOrbOverlay: View {
                     controllerInput: controllerInput,
                     inset: displayedTarget.inset,
                     orbScale: displayedTarget.orbScale,
-                    showsOrbs: settings.focusOrbsEnabled,
+                    showsOrbs: settings.appearance.focusOrbsEnabled,
                     showsNeonOutline: true
                 )
                 .opacity(isVisible ? 1 : 0)
-            } else if settings.focusOrbsEnabled, let displayedTarget {
+            } else if settings.appearance.focusOrbsEnabled, let displayedTarget {
                 ControllerNavigationAnimatedOrbField(
                     targetID: displayedTarget.id,
                     targetFrame: displayedTarget.frame,

@@ -41,10 +41,10 @@ struct GameplayControllerShortcutHelpOverlay: View {
 
     private var spokenHints: String {
         [
-            "Press \(settings.controllerMacroQuickMenu.title) to open the Quick Menu.",
-            "Press \(settings.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
-            "Press \(settings.controllerMacroSaveGameState.title) to save a game state.",
-            "Press \(settings.controllerMacroLoadGameState.title) to load a game state.",
+            "Press \(settings.controller.controllerMacroQuickMenu.title) to open the Quick Menu.",
+            "Press \(settings.controller.controllerMacroIncreaseSpeed.title) to increase emulation speed.",
+            "Press \(settings.controller.controllerMacroSaveGameState.title) to save a game state.",
+            "Press \(settings.controller.controllerMacroLoadGameState.title) to load a game state.",
         ].joined(separator: " ")
     }
 
@@ -53,19 +53,19 @@ struct GameplayControllerShortcutHelpOverlay: View {
             shortcutTile(
                 title: settings.localized("Menu")
             ) {
-                macroBadge(settings.controllerMacroQuickMenu)
+                macroBadge(settings.controller.controllerMacroQuickMenu)
             }
 
             shortcutTile(
                 title: settings.localized("Speed")
             ) {
-                macroBadge(settings.controllerMacroIncreaseSpeed)
+                macroBadge(settings.controller.controllerMacroIncreaseSpeed)
             }
 
             shortcutTile(
                 title: settings.localized("State")
             ) {
-                macroBadge(settings.controllerMacroSaveGameState)
+                macroBadge(settings.controller.controllerMacroSaveGameState)
             }
         }
         .padding(4)
@@ -116,11 +116,11 @@ struct GameplayControllerShortcutHelpOverlay: View {
     }
 
     private var themedAccentColor: Color {
-        settings.controllerBottomTabBarColor
+        settings.appearance.controllerBottomTabBarColor
     }
 
     private var themedSecondaryTextColor: Color {
-        settings.controllerBottomTabBarUnselectedColor
+        settings.appearance.controllerBottomTabBarUnselectedColor
     }
 
     private func macroBadge(_ binding: ControllerMacroBinding) -> some View {

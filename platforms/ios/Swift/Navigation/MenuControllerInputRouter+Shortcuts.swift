@@ -129,13 +129,13 @@ extension MenuControllerInputRouter {
         let settings = SettingsStore.shared
         var active = Set<ControllerMacroAction>()
         for action in ControllerMacroAction.allCases
-        where settings.controllerMacroBinding(for: action).isPressed(on: gamepad) {
+        where settings.controller.controllerMacroBinding(for: action).isPressed(on: gamepad) {
             active.insert(action)
         }
 
         let previous = emulationMacroLatches[profileID, default: []]
         for action in active.subtracting(previous) {
-            let binding = settings.controllerMacroBinding(for: action)
+            let binding = settings.controller.controllerMacroBinding(for: action)
             ARMSX2Bridge.consumeControllerMacroInput(mask: binding.gameplayInputMask)
             publishControllerMacro(action)
             if action.repeatsWhileHeld {
@@ -181,7 +181,7 @@ extension MenuControllerInputRouter {
             while !Task.isCancelled,
                   !self.isMenuActive,
                   ARMSX2Bridge.isVMRunning(),
-                  SettingsStore.shared.controllerMacroBinding(for: action)
+                  SettingsStore.shared.controller.controllerMacroBinding(for: action)
                     .isPressed(on: gamepad),
                   self.emulationMacroLatches[profileID]?.contains(action) == true {
                 self.publishControllerMacro(action)

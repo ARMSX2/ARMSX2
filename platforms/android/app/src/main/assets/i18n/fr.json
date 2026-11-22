@@ -1,5 +1,10 @@
 {
   "_note": "Machine-translated (fr); report bad strings to fix.",
+  "driverOffer.body.update": "Une version plus récente du pilote graphique d'ARMSX2 est disponible pour votre GPU.",
+  "driverOffer.current": "Utilisé actuellement : %s",
+  "driverOffer.notNow": "Plus tard",
+  "driverOffer.title.switch": "Le pilote GPU d'ARMSX2",
+  "driverOffer.title.update": "Un pilote GPU plus récent est disponible",
   "tab.app": "Appli",
   "tab.performance": "Performance",
   "tab.renderer": "Renderer",

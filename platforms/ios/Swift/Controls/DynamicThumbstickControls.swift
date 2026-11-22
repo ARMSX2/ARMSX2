@@ -173,7 +173,7 @@ struct DynamicThumbstickView: View {
                     withAnimation(.spring(response: 0.20, dampingFraction: 0.78)) {
                         isActive = true
                     }
-                    if hapticsEnabled && SettingsStore.shared.hapticFeedback {
+                    if hapticsEnabled && SettingsStore.shared.controller.hapticFeedback {
                         GameEventHaptics.shared.light.impactOccurred(intensity: 0.72)
                         GameEventHaptics.shared.medium.prepare()
                     }
@@ -225,7 +225,7 @@ struct DynamicThumbstickView: View {
         isOverextended = overextended
         if overextended {
             maximumPullPulseToken &+= 1
-            if hapticsEnabled && SettingsStore.shared.hapticFeedback {
+            if hapticsEnabled && SettingsStore.shared.controller.hapticFeedback {
                 GameEventHaptics.shared.medium.impactOccurred(intensity: 1)
                 GameEventHaptics.shared.medium.prepare()
             }
@@ -395,7 +395,7 @@ struct VirtualPadCameraSwipeView: View {
                     onBegan()
                     if convertsToDynamicJoystick &&
                         hapticsEnabled &&
-                        SettingsStore.shared.hapticFeedback {
+                        SettingsStore.shared.controller.hapticFeedback {
                         GameEventHaptics.shared.medium.prepare()
                     }
                 }
@@ -486,7 +486,7 @@ struct VirtualPadCameraSwipeView: View {
         isOverextended = overextended
         if overextended {
             maximumPullPulseToken &+= 1
-            if hapticsEnabled && SettingsStore.shared.hapticFeedback {
+            if hapticsEnabled && SettingsStore.shared.controller.hapticFeedback {
                 GameEventHaptics.shared.medium.impactOccurred(intensity: 1)
                 GameEventHaptics.shared.medium.prepare()
             }

@@ -131,14 +131,17 @@ namespace
 		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZF2), LAYOUT_ROW(pass, PackedLayout::PairSTQXYZ2), \
 		LAYOUT_ROW(pass, PackedLayout::PairUVXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZ2), \
 		LAYOUT_ROW(pass, PackedLayout::UvTripleXYZF2), LAYOUT_ROW(pass, PackedLayout::PairUVXYZF2), \
+		LAYOUT_ROW(pass, PackedLayout::NopTripleXYZ2), LAYOUT_ROW(pass, PackedLayout::PairRGBAQXYZF2), \
 	}
 
-	// [layout][triangle][clamp]
-	constexpr PassFn kNewPass[8][2][2] = PASS_TABLE(NewPass);
-	constexpr PassFn kOldPass[8][2][2] = PASS_TABLE(OldPass);
+	constexpr u32 kLayouts = 10;
 
-	constexpr const char* kLayoutNames[8] = {"TripleXYZF2", "TripleXYZ2", "NopTripleXYZF2", "PairSTQXYZ2",
-		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2"};
+	// [layout][triangle][clamp]
+	constexpr PassFn kNewPass[kLayouts][2][2] = PASS_TABLE(NewPass);
+	constexpr PassFn kOldPass[kLayouts][2][2] = PASS_TABLE(OldPass);
+
+	constexpr const char* kLayoutNames[kLayouts] = {"TripleXYZF2", "TripleXYZ2", "NopTripleXYZF2", "PairSTQXYZ2",
+		"PairUVXYZ2", "PairRGBAQXYZ2", "UvTripleXYZF2", "PairUVXYZF2", "NopTripleXYZ2", "PairRGBAQXYZF2"};
 
 	// std::mt19937 with a 32-bit result, which is what it produces.
 	struct Rng
@@ -363,7 +366,7 @@ namespace
 	template <typename F>
 	void ForEverySetup(F&& f)
 	{
-		for (u32 layout = 0; layout < 8; layout++)
+		for (u32 layout = 0; layout < kLayouts; layout++)
 		{
 			for (u32 triangle = 0; triangle < 2; triangle++)
 			{
@@ -450,7 +453,7 @@ TEST(GsKickConvert, MatchesOnRandomJobs)
 	});
 
 	// The comparison is not of two passes that both did nothing.
-	EXPECT_EQ(cases, 8u * 2 * 3 * 8 * 2 * 40);
+	EXPECT_EQ(cases, kLayouts * 2 * 3 * 8 * 2 * 40);
 	EXPECT_GT(bounds_moved, cases / 4);
 	EXPECT_GT(nan_recorded, cases / 50);
 }
@@ -465,7 +468,7 @@ TEST(GsKickConvert, MatchesAtEveryCountAgainstUnreadablePages)
 	ASSERT_TRUE(pages.ok());
 	Rng rng(0x5EED0002u);
 
-	for (u32 layout = 0; layout < 8; layout++)
+	for (u32 layout = 0; layout < kLayouts; layout++)
 	{
 		for (u32 triangle = 0; triangle < 2; triangle++)
 		{
@@ -502,7 +505,7 @@ TEST(GsKickConvert, MatchesAtEveryStretchBoundary)
 	constexpr u32 n = 7;
 	constexpr u32 slot = 40;
 
-	for (u32 layout = 0; layout < 8; layout++)
+	for (u32 layout = 0; layout < kLayouts; layout++)
 	{
 		for (u32 shade = 0; shade < 8; shade++)
 		{
@@ -530,16 +533,16 @@ TEST(GsKickConvert, MatchesAtEveryStretchBoundary)
 }
 
 // The Q fix-ups by their definition, not only by the oracle: a Q of +0 becomes
-// FLT_MIN on the three layouts that read Q from the record, a NaN Q becomes
-// FLT_MAX on the NOP-padded one alone, every other Q passes, and under
+// FLT_MIN on the four layouts that read Q from the record, a NaN Q becomes
+// FLT_MAX on the NOP-padded ones alone, every other Q passes, and under
 // keep_gif_q every Q passes.
 TEST(GsKickConvert, QFixUpsAreTheDefinition)
 {
 	RecordPages pages;
 	ASSERT_TRUE(pages.ok());
 	Rng rng(0x5EED0004u);
-	const u32 triples[3] = {static_cast<u32>(PackedLayout::TripleXYZF2), static_cast<u32>(PackedLayout::TripleXYZ2),
-		static_cast<u32>(PackedLayout::NopTripleXYZF2)};
+	const u32 triples[4] = {static_cast<u32>(PackedLayout::TripleXYZF2), static_cast<u32>(PackedLayout::TripleXYZ2),
+		static_cast<u32>(PackedLayout::NopTripleXYZF2), static_cast<u32>(PackedLayout::NopTripleXYZ2)};
 	u32 zeros = 0, nans = 0;
 
 	for (const u32 layout : triples)
@@ -550,8 +553,9 @@ TEST(GsKickConvert, QFixUpsAreTheDefinition)
 			{
 				const PassSetup su = {layout, triangle != 0, GSLimit24BitDepth::Disabled, 5, keep != 0};
 				const Invariants inv = MakeInvariants(su, rng);
-				const u32 stride = (layout == static_cast<u32>(PackedLayout::NopTripleXYZF2)) ? inv.off.stride : 3;
-				const u32 off_a = (stride == 3 && layout != static_cast<u32>(PackedLayout::NopTripleXYZF2)) ? 0 : inv.off.off_a;
+				const bool padded = !GSVertexKernels::LayoutIsContiguousTriple(static_cast<PackedLayout>(layout));
+				const u32 stride = padded ? inv.off.stride : 3;
+				const u32 off_a = padded ? inv.off.off_a : 0;
 				const u32 count = static_cast<u32>(std::size(kSpecialFloats));
 				GIFPackedReg* const rin = pages.Place(count * stride * sizeof(GIFPackedReg), true);
 				FillRecords(rin, count * stride, rng);
@@ -576,7 +580,7 @@ TEST(GsKickConvert, QFixUpsAreTheDefinition)
 						want = 0x00800000u;
 						zeros++;
 					}
-					if (!keep && is_nan && layout == static_cast<u32>(PackedLayout::NopTripleXYZF2))
+					if (!keep && is_nan && padded)
 					{
 						want = 0x7F7FFFFFu;
 						nans++;
@@ -591,8 +595,8 @@ TEST(GsKickConvert, QFixUpsAreTheDefinition)
 			}
 		}
 	}
-	EXPECT_EQ(zeros, 3u * 2);
-	EXPECT_EQ(nans, 6u * 2);
+	EXPECT_EQ(zeros, 4u * 2);
+	EXPECT_EQ(nans, 6u * 2 * 2);
 }
 
 // A record's own UV keeps fourteen bits a half whatever else the descriptor
@@ -603,7 +607,7 @@ TEST(GsKickConvert, RecordUVIsMaskedAndTheRestIsCarried)
 	ASSERT_TRUE(pages.ok());
 	Rng rng(0x5EED0005u);
 
-	for (u32 layout = 0; layout < 8; layout++)
+	for (u32 layout = 0; layout < kLayouts; layout++)
 	{
 		const PackedLayout l = static_cast<PackedLayout>(layout);
 		const PassSetup su = {layout, false, GSLimit24BitDepth::Disabled, 3, false};

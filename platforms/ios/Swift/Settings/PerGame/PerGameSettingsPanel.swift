@@ -257,7 +257,7 @@ struct PerGameSettingsPanel: View {
         .onChange(of: livePreviewDismissRequest) { _, _ in
             livePreview.dismissRequested()
         }
-        .onChange(of: settings.temporalSaveStateToLivePreviewChanges) {
+        .onChange(of: settings.appearance.temporalSaveStateToLivePreviewChanges) {
             _, enabled in
             livePreview.temporalPreviewSettingChanged(enabled)
         }

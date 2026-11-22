@@ -74,6 +74,7 @@ CPUINFO_INTERNAL bool cpuinfo_linux_detect_thread_siblings(
 	uint32_t processor,
 	cpuinfo_siblings_callback callback,
 	void* context);
+CPUINFO_INTERNAL bool cpuinfo_linux_has_unknown_cluster_id(uint32_t processor);
 CPUINFO_INTERNAL bool cpuinfo_linux_detect_cluster_cpus(
 	uint32_t max_processors_count,
 	uint32_t processor,

@@ -200,12 +200,15 @@ namespace GSVertexKernels
 		PairRGBAQXYZ2,  // {RGBAQ, XYZ2}: ST carried, Q from the latch
 		UvTripleXYZF2,  // {UV, RGBAQ, XYZF2}, contiguous or NOP-padded: ST carried, Q from the latch
 		PairUVXYZF2,    // {UV, XYZF2}: ST, colour and Q carried, fog from the record
+		NopTripleXYZ2,  // {ST, RGBAQ, XYZ2} with NOP descriptors between them
+		PairRGBAQXYZF2, // {RGBAQ, XYZF2}: ST carried, Q from the latch
 	};
 
 	constexpr bool LayoutIsXYZF2(PackedLayout l)
 	{
 		return l == PackedLayout::TripleXYZF2 || l == PackedLayout::NopTripleXYZF2 ||
-			   l == PackedLayout::UvTripleXYZF2 || l == PackedLayout::PairUVXYZF2;
+			   l == PackedLayout::UvTripleXYZF2 || l == PackedLayout::PairUVXYZF2 ||
+			   l == PackedLayout::PairRGBAQXYZF2;
 	}
 	constexpr bool LayoutIsContiguousTriple(PackedLayout l)
 	{
@@ -214,7 +217,7 @@ namespace GSVertexKernels
 	// The {ST, RGBAQ, XYZ} triples: every field of m[0] comes from the record.
 	constexpr bool LayoutIsTriple(PackedLayout l)
 	{
-		return LayoutIsContiguousTriple(l) || l == PackedLayout::NopTripleXYZF2;
+		return LayoutIsContiguousTriple(l) || l == PackedLayout::NopTripleXYZF2 || l == PackedLayout::NopTripleXYZ2;
 	}
 	// Whether the record carries an RGBAQ descriptor beside its first one.
 	constexpr bool LayoutHasSeparateRgba(PackedLayout l)
@@ -230,7 +233,8 @@ namespace GSVertexKernels
 	// ST unchanged -- what GIFPackedRegHandlerRGBA leaves in m_v.
 	constexpr bool LayoutTakesColourOverCarry(PackedLayout l)
 	{
-		return l == PackedLayout::PairRGBAQXYZ2 || l == PackedLayout::UvTripleXYZF2;
+		return l == PackedLayout::PairRGBAQXYZ2 || l == PackedLayout::UvTripleXYZF2 ||
+			   l == PackedLayout::PairRGBAQXYZF2;
 	}
 	// Whether the record carries an ST descriptor, and therefore whether the tag
 	// moves the latched Q that the next RGBAQ write will read.
@@ -270,7 +274,7 @@ namespace GSVertexKernels
 	__forceinline_odr u32 LayoutOffColour(const GIFPackedLayout& o)
 	{
 		static_assert(LayoutTakesColourOverCarry(L));
-		if constexpr (L == PackedLayout::PairRGBAQXYZ2)
+		if constexpr (L == PackedLayout::PairRGBAQXYZ2 || L == PackedLayout::PairRGBAQXYZF2)
 			return o.off_a;
 		else
 			return o.off_rgba;
@@ -343,7 +347,8 @@ namespace GSVertexKernels
 
 			if constexpr (LayoutIsTriple(L))
 			{
-				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branch above");
+				static_assert(L == PackedLayout::NopTripleXYZF2 || L == PackedLayout::NopTripleXYZ2,
+					"the contiguous triples took the branch above");
 
 				const GSVector4i st = GSVector4i::loadl(&rv[off_a].U64[0]);
 				GSVector4i q = GSVector4i::loadl(&rv[off_a].U64[1]);
@@ -419,7 +424,8 @@ namespace GSVertexKernels
 			// m[0].
 			if constexpr (LayoutIsTriple(L))
 			{
-				static_assert(L == PackedLayout::NopTripleXYZF2, "the contiguous triples took the branches above");
+				static_assert(L == PackedLayout::NopTripleXYZF2 || L == PackedLayout::NopTripleXYZ2,
+					"the contiguous triples took the branches above");
 
 				const uint8x16x2_t st_rgba = {vld1q_u8(reinterpret_cast<const u8*>(rv + off_a)),
 					vld1q_u8(reinterpret_cast<const u8*>(rv + LayoutOffRgba<L>(off)))};

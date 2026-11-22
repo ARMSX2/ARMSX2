@@ -116,7 +116,7 @@ final class AutomaticCustomSkinManager {
     }
 
     func enqueueMatches(for games: [CoverGameInfo]) {
-        guard SettingsStore.shared.automaticDownloadCustomSkin else { return }
+        guard SettingsStore.shared.controller.automaticDownloadCustomSkin else { return }
         for game in games {
             let serial = PadLayoutGameIdentity.normalizedSerial(
                 game.metadata["serial"]
@@ -131,7 +131,7 @@ final class AutomaticCustomSkinManager {
     func availableProposals(
         forSerial rawSerial: String?
     ) -> [AutomaticCustomSkinProposal] {
-        guard SettingsStore.shared.automaticDownloadCustomSkin else { return [] }
+        guard SettingsStore.shared.controller.automaticDownloadCustomSkin else { return [] }
         let serial = PadLayoutGameIdentity.normalizedSerial(rawSerial)
         guard !serial.isEmpty, !suppressedSerials.contains(serial) else {
             return []

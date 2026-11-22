@@ -16,7 +16,7 @@
 // only thing that pins every combination the macro can generate.
 //
 // The oracle is the VU0 interpreter via EeRecTestHarness's JIT-vs-interpreter
-// diff, which CLAUDE.md records as a zero-known-bug baseline.
+// diff, which has no known bugs.
 
 #include "harness/EeRecTestHarness.h"
 

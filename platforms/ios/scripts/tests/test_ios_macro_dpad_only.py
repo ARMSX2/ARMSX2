@@ -6,7 +6,7 @@ from ios_source import RUNTIME_DIR, block, read, swift, without_comments
 
 
 ROUTER = swift("ControllerMacroAction.swift")
-GAMEPAD = RUNTIME_DIR / "GamepadHaptics.mm"
+GAMEPADS = sorted(RUNTIME_DIR.glob("Gamepad*.mm"))
 
 
 class MacrosReadOnlyTheDPad(unittest.TestCase):
@@ -22,7 +22,7 @@ class MacrosReadOnlyTheDPad(unittest.TestCase):
                 self.assertNotIn(axis, press)
 
     def test_the_gameplay_gate_reads_the_dpad(self):
-        source = read(GAMEPAD)
+        source = "\n".join(read(path) for path in GAMEPADS)
         self.assertIn("ARMSX2ResolveControllerMacroGameplayMask(u32 gamepad_index, u32 raw_mask)", source)
         self.assertNotIn("macro_direction_threshold", source)
 

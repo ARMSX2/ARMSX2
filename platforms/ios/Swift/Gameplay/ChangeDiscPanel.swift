@@ -77,7 +77,7 @@ struct ChangeDiscPanel: View {
                 )
             }
         }
-        .environment(\.controllerTextAppearance, settings.controllerQuickMenuTextAppearance)
+        .environment(\.controllerTextAppearance, settings.appearance.controllerQuickMenuTextAppearance)
         .preferredColorScheme(.dark)
         .quickMenuLiquidGlassConfiguration()
     }
@@ -191,7 +191,7 @@ struct ChangeDiscPanel: View {
                     OverlaySectionCard {
                         Text(settings.localized("No disc images found"))
                             .foregroundStyle(
-                                settings.controllerQuickMenuTextAppearance.secondaryColor
+                                settings.appearance.controllerQuickMenuTextAppearance.secondaryColor
                                     ?? OverlayTheme.textSecondary
                             )
                             .frame(minHeight: 44)

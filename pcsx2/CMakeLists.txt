@@ -1533,7 +1533,6 @@ set(pcsx2arm64Headers
 # Mobile (arm64) platform sources, relocated from the former android/iOS core
 # forks (refresh-experimental / iOS-refresh). Source wiring only: real NDK /
 # Xcode builds are required to validate include paths and link deps.
-# See REFACTOR_STATUS.md.
 # tvOS is the same platform as far as this build is concerned: no libpcap, no
 # OpenGL, Metal for the GS, and the same Apple embedded rules about what a
 # process may map and load. The buildbot's templates already pass -DIOS=ON for

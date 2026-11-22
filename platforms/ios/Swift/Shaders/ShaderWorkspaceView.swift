@@ -191,9 +191,9 @@ struct ShaderWorkspaceView: View, ShaderWorkspaceTargetIDs {
                 }
             }
             .foregroundStyle(
-                settings.controllerTextAppearance.contentColor ?? .white
+                settings.appearance.controllerTextAppearance.contentColor ?? .white
             )
-            .tint(settings.controllerNavigationAccentColor)
+            .tint(settings.appearance.controllerNavigationAccentColor)
             .scrollContentBackground(.hidden)
             .background {
                 ControllerRightStickScrollTarget(
@@ -530,7 +530,7 @@ struct ShaderWorkspaceView: View, ShaderWorkspaceTargetIDs {
         if showsExtra {
             result.append("shader-workspace.show-filenames")
             result.append("per-game.general.live-preview")
-            if settings.temporalSaveStateToLivePreviewChanges {
+            if settings.appearance.temporalSaveStateToLivePreviewChanges {
                 result += [
                     "per-game.general.live-preview-circle-exit",
                     "per-game.general.before-changes-preview-duration",

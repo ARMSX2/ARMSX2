@@ -229,7 +229,7 @@ object GlobalConfirm {
 }
 
 @Composable
-private fun ConfirmButton(
+internal fun ConfirmButton(
     label: String,
     id: String,
     onClick: () -> Unit,

@@ -221,6 +221,12 @@ object WindowImpl {
                 // here, but drawn by PadModalHost above — this call renders nothing itself.
                 com.armsx2.ui.common.GlobalConfirm.Host()
 
+                // The driver offer after an app update. Held back while a game runs, so a game
+                // started from a frontend mid-lookup is not covered by it; it shows on return.
+                if (MainActivityRuntime.eState.value == EmuState.STOPPED) {
+                    com.armsx2.ui.common.DriverUpdateOverlay()
+                }
+
                 // The "Report a problem" flow and My reports. Authored here, drawn by PadModalHost.
                 com.armsx2.ui.bugreport.BugReportFlowHost()
             }

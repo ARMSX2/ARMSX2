@@ -155,7 +155,7 @@ struct PSBtn: View {
 
         on = pressed
         EmulatorBridge.shared.setPadButton(btn, pressed: pressed)
-        if pressed && SettingsStore.shared.hapticFeedback {
+        if pressed && SettingsStore.shared.controller.hapticFeedback {
             GameEventHaptics.shared.medium.impactOccurred()
         }
     }
@@ -319,7 +319,7 @@ struct PadBtn: View {
 
         on = pressed
         EmulatorBridge.shared.setPadButton(btn, pressed: pressed)
-        if pressed && SettingsStore.shared.hapticFeedback {
+        if pressed && SettingsStore.shared.controller.hapticFeedback {
             GameEventHaptics.shared.medium.impactOccurred()
         }
     }
@@ -453,7 +453,7 @@ struct StickView: View {
                     // Tap (no significant drag) → L3/R3 press
                     let btn: ARMSX2PadButton = isLeft ? .L3 : .R3
                     EmulatorBridge.shared.setPadButton(btn, pressed: true)
-                    if SettingsStore.shared.hapticFeedback {
+                    if SettingsStore.shared.controller.hapticFeedback {
                         GameEventHaptics.shared.light.impactOccurred()
                     }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {

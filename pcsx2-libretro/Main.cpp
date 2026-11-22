@@ -111,6 +111,39 @@ static retro_input_state_t input_state_cb;
 static retro_log_printf_t log_cb;
 static retro_set_rumble_state_t rumble_cb;
 
+// Libretro ports in pcee2's order: 1A, 1B-1D (tap in port 1), 2A, 2B-2D (tap in port 2).
+static constexpr u8 kNoPort = 0xFF;
+static unsigned s_multitap = 0; // bit 0: port 1, bit 1: port 2
+static u8 s_lr_pad[Pad::NUM_CONTROLLER_PORTS]; // libretro port -> pad
+static unsigned s_lr_count = 0;
+static std::atomic<u8> s_pad_lr[Pad::NUM_CONTROLLER_PORTS];
+
+static void BuildPadMap()
+{
+	unsigned n = 0;
+	s_lr_pad[n++] = 0; // 1A
+	if (s_multitap & 1)
+	{
+		s_lr_pad[n++] = 2; // 1B
+		s_lr_pad[n++] = 3; // 1C
+		s_lr_pad[n++] = 4; // 1D
+	}
+	s_lr_pad[n++] = 1; // 2A
+	if (s_multitap & 2)
+	{
+		s_lr_pad[n++] = 5; // 2B
+		s_lr_pad[n++] = 6; // 2C
+		s_lr_pad[n++] = 7; // 2D
+	}
+	s_lr_count = n;
+	for (unsigned i = n; i < Pad::NUM_CONTROLLER_PORTS; i++)
+		s_lr_pad[i] = kNoPort;
+	for (unsigned i = 0; i < Pad::NUM_CONTROLLER_PORTS; i++)
+		s_pad_lr[i].store(kNoPort, std::memory_order_relaxed);
+	for (unsigned l = 0; l < n; l++)
+		s_pad_lr[s_lr_pad[l]].store(static_cast<u8>(l), std::memory_order_relaxed);
+}
+
 namespace LibretroCore
 {
 	static bool InitializeConfig();
@@ -242,6 +275,9 @@ bool LibretroCore::InitializeConfig()
 		// Audio goes out through retro_run pulling the stream ring; the Null
 		// backend keeps SPU2 mixing into the ring with no device thread.
 		s_base_settings->SetStringValue("SPU2/Output", "Backend", "Null");
+		// Pad::LoadConfig keeps tap slots disconnected while the tap is off.
+		for (u32 i = 0; i < Pad::NUM_CONTROLLER_PORTS; i++)
+			s_base_settings->SetStringValue(Pad::GetConfigSection(i).c_str(), "Type", "DualShock2");
 	}
 
 	Error save_error;
@@ -367,7 +403,10 @@ void Host::SetMouseLock(bool state)
 
 void Host::SetPadVibration(u32 pad_index, float large_or_single_motor_intensity, float small_motor_intensity)
 {
-	if (!rumble_cb)
+	if (!rumble_cb || pad_index >= Pad::NUM_CONTROLLER_PORTS)
+		return;
+	const u8 lr_port = s_pad_lr[pad_index].load(std::memory_order_relaxed);
+	if (lr_port == kNoPort)
 		return;
 
 	// Deduped because the pad re-sends its vibration state on every poll the game
@@ -392,8 +431,8 @@ void Host::SetPadVibration(u32 pad_index, float large_or_single_motor_intensity,
 
 	// STRONG is the large (low-frequency) motor, WEAK the small one - the same
 	// order this function takes them in.
-	rumble_cb(pad_index, RETRO_RUMBLE_STRONG, to_strength(large_or_single_motor_intensity));
-	rumble_cb(pad_index, RETRO_RUMBLE_WEAK, to_strength(small_motor_intensity));
+	rumble_cb(lr_port, RETRO_RUMBLE_STRONG, to_strength(large_or_single_motor_intensity));
+	rumble_cb(lr_port, RETRO_RUMBLE_WEAK, to_strength(small_motor_intensity));
 }
 
 std::optional<WindowInfo> Host::AcquireRenderWindow(bool recreate_window)
@@ -919,6 +958,7 @@ static struct retro_core_option_v2_category kOptionCategories[] = {
 	{"video", "Video", "Rendering, scaling and display options."},
 	{"performance", "Performance", "Speed hacks trading accuracy for framerate."},
 	{"system", "System", "Boot behaviour."},
+	{"input", "Input", "Controller ports and the Multitap."},
 	{nullptr, nullptr, nullptr},
 };
 
@@ -1042,6 +1082,11 @@ static struct retro_core_option_v2_definition kOptionDefinitions[] = {
 		"Loads .pnach cheat files from <system>/pcsx2/cheats for the running game.",
 		nullptr, "system",
 		{{"disabled", nullptr}, {"enabled", nullptr}, {nullptr, nullptr}}, "disabled"},
+	{"armsx2_multitap", "Multitap (restart)", "Multitap (restart)",
+		"Connects a Multitap to a controller port. Ports are ordered 1A, 1B-1D, 2A, 2B-2D.",
+		nullptr, "input",
+		{{"disabled", nullptr}, {"port1", "Port 1"}, {"port2", "Port 2"}, {"both", "Ports 1 and 2"},
+			{nullptr, nullptr}}, "disabled"},
 	{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, {{nullptr, nullptr}}, nullptr},
 };
 
@@ -1081,6 +1126,7 @@ static struct retro_variable kCoreVariables[] = {
 	{"armsx2_bios", "BIOS (restart); auto"},
 	{"armsx2_fast_boot", "Fast boot; enabled|disabled"},
 	{"armsx2_cheats", "Enable cheats; disabled|enabled"},
+	{"armsx2_multitap", "Multitap (restart); disabled|port1|port2|both"},
 	{nullptr, nullptr},
 };
 
@@ -1360,6 +1406,30 @@ static void ApplyCoreOptions(bool startup)
 		var = {"armsx2_cheats", nullptr};
 		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
 			s_base_settings->SetBoolValue("EmuCore", "EnableCheats", !std::strcmp(var.value, "enabled"));
+
+		// A multitap change rebuilds the pads on the CPU thread while
+		// retro_run writes to them, so it is only honoured at startup.
+		var = {"armsx2_multitap", nullptr};
+		if (startup)
+		{
+			unsigned multitap = 0;
+			if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			{
+				if (!std::strcmp(var.value, "port1"))
+					multitap = 1;
+				else if (!std::strcmp(var.value, "port2"))
+					multitap = 2;
+				else if (!std::strcmp(var.value, "both"))
+					multitap = 3;
+			}
+			s_base_settings->SetBoolValue("Pad", "MultitapPort1", (multitap & 1) != 0);
+			s_base_settings->SetBoolValue("Pad", "MultitapPort2", (multitap & 2) != 0);
+			s_multitap = multitap;
+			BuildPadMap();
+			log_cb(RETRO_LOG_INFO, "[PAD] multitap %s: %u libretro ports\n",
+				multitap == 0 ? "off" : multitap == 1 ? "in port 1" : multitap == 2 ? "in port 2" : "in ports 1 and 2",
+				s_lr_count);
+		}
 	}
 
 	if (startup)
@@ -2134,12 +2204,15 @@ RETRO_API void retro_run(void)
 	if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &options_updated) && options_updated)
 		ApplyCoreOptions(false);
 
-	// M3 input: forward the libretro joypad straight into the DualShock2
+	// M3 input: forward the libretro joypads straight into the DualShock2
 	// bind slots (bypasses InputManager entirely).
 	if (VMManager::HasValidVM())
 	{
-		if (PadBase* pad = Pad::GetPad(0))
+		for (unsigned port = 0; port < s_lr_count; port++)
 		{
+			PadBase* pad = Pad::GetPad(s_lr_pad[port]);
+			if (!pad || pad->GetType() != Pad::ControllerType::DualShock2)
+				continue;
 			static constexpr struct
 			{
 				unsigned retro;
@@ -2163,17 +2236,17 @@ RETRO_API void retro_run(void)
 				{RETRO_DEVICE_ID_JOYPAD_R3, PadDualshock2::Inputs::PAD_R3},
 			};
 			for (const auto& m : bmap)
-				pad->Set(m.ds2, input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, m.retro) ? 1.0f : 0.0f);
+				pad->Set(m.ds2, input_state_cb(port, RETRO_DEVICE_JOYPAD, 0, m.retro) ? 1.0f : 0.0f);
 
 			// Analog sticks: split each axis into the two directional slots.
 			const auto axis = [](s16 v, bool positive) {
 				const float f = std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f);
 				return positive ? std::max(f, 0.0f) : std::max(-f, 0.0f);
 			};
-			const s16 lx = input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
-			const s16 ly = input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
-			const s16 rx = input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
-			const s16 ry = input_state_cb(0, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
+			const s16 lx = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_X);
+			const s16 ly = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_LEFT, RETRO_DEVICE_ID_ANALOG_Y);
+			const s16 rx = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_X);
+			const s16 ry = input_state_cb(port, RETRO_DEVICE_ANALOG, RETRO_DEVICE_INDEX_ANALOG_RIGHT, RETRO_DEVICE_ID_ANALOG_Y);
 			pad->Set(PadDualshock2::Inputs::PAD_L_RIGHT, axis(lx, true));
 			pad->Set(PadDualshock2::Inputs::PAD_L_LEFT, axis(lx, false));
 			pad->Set(PadDualshock2::Inputs::PAD_L_DOWN, axis(ly, true));

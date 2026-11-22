@@ -123,14 +123,14 @@ struct GameplayOverlayHost: View {
                     onStop: {
                         MenuAudioPackManager.shared
                             .playStoppingGameOnMainInterface()
-                        if settings.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
+                        if settings.controller.hapticFeedback { GameEventHaptics.shared.medium.impactOccurred() }
                         overlay.overlayRoute = .hidden
                         // Leave now, so nobody watches gameplay through the card while NVRAM flushes.
                         session.returnToMenu()
                         session.stopGame()
                     },
                     onResume: {
-                        if settings.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
+                        if settings.controller.hapticFeedback { GameEventHaptics.shared.light.impactOccurred() }
                         overlay.resumeGameplayAfterControllerRelease(controllerInput: controllerInput)
                     }
                 )
@@ -181,7 +181,7 @@ struct GameplayOverlayHost: View {
                         PerGameLivePreviewExitOverlay(
                             controllerInput: controllerInput,
                             stopsWithCircle:
-                                settings.perGameLivePreviewStopsWithCircle
+                                settings.appearance.perGameLivePreviewStopsWithCircle
                         ) {
                             overlay.runtimePerGameLivePreviewDismissRequest &+= 1
                         }

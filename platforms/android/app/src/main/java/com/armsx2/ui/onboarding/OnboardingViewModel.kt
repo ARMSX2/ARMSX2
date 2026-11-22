@@ -147,14 +147,7 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
         state.value = state.value.copy(driverStage = DriverStage.Installing, busy = true)
         val context = getApplication<Application>()
         viewModelScope.launch {
-            val installed = withContext(Dispatchers.IO) { CustomDriver.download(context, pack) }
-            if (installed != null) {
-                runCatching {
-                    val global = ConfigStore.loadGlobal()
-                    ConfigStore.saveGlobal(global.copy(output = global.output.copy(customDriverId = installed.id)))
-                }
-                MainActivityRuntime.customDriverId.value = installed.id
-            }
+            val installed = CustomDriver.installAsGlobal(context, pack)
             state.value = state.value.copy(
                 driverStage = if (installed != null) DriverStage.Installed else DriverStage.Failed,
                 driverInstalledName = installed?.name,
@@ -399,6 +392,8 @@ class OnboardingViewModel(application: Application) : AndroidViewModel(applicati
             val global = ConfigStore.loadGlobal()
             ConfigStore.saveGlobal(global.copy(emuCore = global.emuCore.copy(autoTune = state.value.autoTune)))
         }
+        // The driver page was this version's driver offer, so the library does not make it again.
+        com.armsx2.DriverUpdateOffer.settle()
         val previousRoot = MainActivityRuntime.currentInitDataRoot()
         MainActivityRuntime.finishSetup()
         // No folder chosen means app-private storage, which is what the pin holds in that case;

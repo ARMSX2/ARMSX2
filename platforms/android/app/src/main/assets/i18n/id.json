@@ -1,5 +1,10 @@
 {
   "_note": "Machine-translated (id); report bad strings to fix.",
+  "driverOffer.body.update": "Ada rilis yang lebih baru dari driver grafis ARMSX2 untuk GPU Anda.",
+  "driverOffer.current": "Digunakan sekarang: %s",
+  "driverOffer.notNow": "Nanti saja",
+  "driverOffer.title.switch": "Driver GPU milik ARMSX2",
+  "driverOffer.title.update": "Driver GPU yang lebih baru telah tersedia",
   "tab.app": "Aplikasi",
   "tab.performance": "Performa",
   "tab.renderer": "Renderer",

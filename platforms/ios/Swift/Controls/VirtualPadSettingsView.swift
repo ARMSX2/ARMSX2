@@ -73,33 +73,33 @@ struct VirtualPadSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                NumberRow(.padOpacity, value: $settings.padOpacity, settings: settings)
+                NumberRow(.padOpacity, value: Bindable(settings.controller).padOpacity, settings: settings)
                     .controllerAccessibilityTargetID(settings.localized(NumberSetting.padOpacity.title))
             }
 
             Section(settings.localized("Gameplay")) {
-                controllerToggle(settings.localized("Hide Virtual Pad When Controller Is Connected"), isOn: $settings.autoHideVirtualPadWhenControllerConnected)
+                controllerToggle(settings.localized("Hide Virtual Pad When Controller Is Connected"), isOn: Bindable(settings.controller).autoHideVirtualPadWhenControllerConnected)
                 Text(settings.localized("Automatically hides the on-screen controls while an external controller is connected."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                controllerToggle(settings.localized("Auto Full Screen"), isOn: $settings.autoFullscreen)
-                controllerToggle(settings.localized("Hide Menu Button"), isOn: $settings.hideMenuButton)
+                controllerToggle(settings.localized("Auto Full Screen"), isOn: Bindable(settings.controller).autoFullscreen)
+                controllerToggle(settings.localized("Hide Menu Button"), isOn: Bindable(settings.controller).hideMenuButton)
                 Text(settings.localized("Hides the in-game menu button. Tap the game area to show it for a few seconds."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                controllerToggle(settings.localized("D-pad Diagonals"), isOn: $settings.dpadDiagonalsEnabled)
+                controllerToggle(settings.localized("D-pad Diagonals"), isOn: Bindable(settings.controller).dpadDiagonalsEnabled)
                 Text(settings.localized("Allows one-finger diagonal and quarter-circle motions on the virtual D-pad."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                controllerToggle(settings.localized("Face Button Combo Zones"), isOn: $settings.faceComboZonesEnabled)
+                controllerToggle(settings.localized("Face Button Combo Zones"), isOn: Bindable(settings.controller).faceComboZonesEnabled)
                 Text(settings.localized("Press between face buttons to trigger both buttons at once."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                NumberRow(.analogStickSize, value: $settings.analogStickScale, settings: settings)
+                NumberRow(.analogStickSize, value: Bindable(settings.controller).analogStickScale, settings: settings)
                     .controllerAccessibilityTargetID(settings.localized(NumberSetting.analogStickSize.title))
 
                 Text(settings.localized("Double-tap empty gameplay space to show the menu button again."))
@@ -108,10 +108,10 @@ struct VirtualPadSettingsView: View {
             }
 
             Section {
-                controllerToggle(settings.localized("Invert Left Horizontal"), isOn: $settings.invertLeftStickX)
-                controllerToggle(settings.localized("Invert Left Vertical"), isOn: $settings.invertLeftStickY)
-                controllerToggle(settings.localized("Invert Right Horizontal"), isOn: $settings.invertRightStickX)
-                controllerToggle(settings.localized("Invert Right Vertical (Camera)"), isOn: $settings.invertRightStickY)
+                controllerToggle(settings.localized("Invert Left Horizontal"), isOn: Bindable(settings.controller).invertLeftStickX)
+                controllerToggle(settings.localized("Invert Left Vertical"), isOn: Bindable(settings.controller).invertLeftStickY)
+                controllerToggle(settings.localized("Invert Right Horizontal"), isOn: Bindable(settings.controller).invertRightStickX)
+                controllerToggle(settings.localized("Invert Right Vertical (Camera)"), isOn: Bindable(settings.controller).invertRightStickY)
             } header: {
                 Text(settings.localized("Stick Inversion"))
             } footer: {
@@ -128,9 +128,9 @@ struct VirtualPadSettingsView: View {
             )
 
             Section(settings.localized("Feedback")) {
-                controllerToggle(settings.localized("Haptic Feedback"), isOn: $settings.hapticFeedback)
+                controllerToggle(settings.localized("Haptic Feedback"), isOn: Bindable(settings.controller).hapticFeedback)
 
-                NumberRow(.phoneRumbleStrength, value: $settings.phoneRumbleStrength,
+                NumberRow(.phoneRumbleStrength, value: Bindable(settings.controller).phoneRumbleStrength,
                           settings: settings)
                     .controllerAccessibilityTargetID(settings.localized(NumberSetting.phoneRumbleStrength.title))
                 Text(settings.localized("Controls the iPhone Taptic Engine when no controller is connected. 25% preserves the original Core Haptics intensity; 100% applies up to 3x gain, and 0% disables phone rumble. Has no effect on a controller's own motors."))
@@ -139,7 +139,7 @@ struct VirtualPadSettingsView: View {
 
                 controllerToggle(
                     settings.localized("Increase Duration of Rumble and Interpolation"),
-                    isOn: $settings.increaseRumbleDurationAndInterpolation)
+                    isOn: Bindable(settings.controller).increaseRumbleDurationAndInterpolation)
             }
 
             VirtualPadLayoutSection(
@@ -549,7 +549,7 @@ struct VirtualPadSettingsView: View {
     }
 
     private func syncSettingsSkinFromLibrarySelection() {
-        settings.virtualPadSkin = skinLibrary.selectedDescriptor.virtualPadSkin
+        settings.controller.virtualPadSkin = skinLibrary.selectedDescriptor.virtualPadSkin
     }
 
     private func importLayouts(_ urls: [URL]) -> String {

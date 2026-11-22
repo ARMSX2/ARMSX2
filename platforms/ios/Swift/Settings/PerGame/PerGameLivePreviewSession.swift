@@ -115,7 +115,7 @@ final class PerGameLivePreviewSession {
     @MainActor
     func beginLivePreviewSessionIfNeeded() {
         guard draft.savesToRunningGame,
-              settings.temporalSaveStateToLivePreviewChanges,
+              settings.appearance.temporalSaveStateToLivePreviewChanges,
               livePreviewToken == nil,
               livePreviewInitialization == nil,
               !livePreviewSessionIsFinishing else { return }
@@ -134,7 +134,7 @@ final class PerGameLivePreviewSession {
             // a save-state capture that was still in flight.
             guard !livePreviewSessionIsFinishing else { return }
             livePreviewInitialization = nil
-            guard settings.temporalSaveStateToLivePreviewChanges else {
+            guard settings.appearance.temporalSaveStateToLivePreviewChanges else {
                 if let token {
                     _ = await ARMSX2Bridge.finishPerGameLivePreview(token: token)
                 }
@@ -157,7 +157,7 @@ final class PerGameLivePreviewSession {
     @MainActor
     private func scheduleLivePreview(for fingerprint: Int) {
         guard draft.savesToRunningGame,
-              settings.temporalSaveStateToLivePreviewChanges,
+              settings.appearance.temporalSaveStateToLivePreviewChanges,
               !livePreviewSessionIsFinishing else { return }
 
         let previewIsIdle = livePreviewTask == nil
@@ -192,13 +192,13 @@ final class PerGameLivePreviewSession {
         defer {
             livePreviewTask = nil
             if livePreviewPendingFingerprint != nil,
-               settings.temporalSaveStateToLivePreviewChanges,
+               settings.appearance.temporalSaveStateToLivePreviewChanges,
                !livePreviewSessionIsFinishing {
                 startLivePreviewTaskIfNeeded()
             }
         }
         guard let token = livePreviewToken else { return }
-        let beforeDuration = max(0, settings.perGameBeforeChangesPreviewDuration)
+        let beforeDuration = max(0, settings.appearance.perGameBeforeChangesPreviewDuration)
 
         do {
             try Task.checkCancellation()

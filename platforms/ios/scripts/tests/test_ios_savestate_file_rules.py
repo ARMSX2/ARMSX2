@@ -6,8 +6,8 @@ from ios_source import RUNTIME_DIR, block, bridge_text, read, without_comments
 
 
 HOST = RUNTIME_DIR / "HostImpls.mm"
-MAIN = RUNTIME_DIR / "ios_main.mm"
-SCENE = RUNTIME_DIR / "SceneDelegate.mm"
+MAIN = RUNTIME_DIR / "IOSRuntime.mm"
+SCENE = RUNTIME_DIR / "SceneDelegate+VMThread.mm"
 
 
 class SaveStateFileRules(unittest.TestCase):

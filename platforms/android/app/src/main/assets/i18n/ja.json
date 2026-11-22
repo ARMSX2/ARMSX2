@@ -1,5 +1,10 @@
 {
   "_note": "Machine-translated (ja); report bad strings to fix.",
+  "driverOffer.body.update": "お使いのGPU向けに、ARMSX2グラフィックドライバの新しいリリースがあります。",
+  "driverOffer.current": "現在使用中: %s",
+  "driverOffer.notNow": "後で",
+  "driverOffer.title.switch": "ARMSX2のGPUドライバ",
+  "driverOffer.title.update": "新しいGPUドライバが公開されています",
   "tab.app": "アプリ",
   "tab.performance": "パフォーマンス",
   "tab.renderer": "Renderer",

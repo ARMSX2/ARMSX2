@@ -92,14 +92,6 @@ class TextureUpscaleSettingTest {
     }
 
     @Test
-    fun changingItTriggersALiveGsReconfigure() {
-        assertTrue(withMode(1).gsDiffersFrom(Settings()))
-        // 2x to 4x is a different job scale, so it reconfigures too.
-        assertTrue(withMode(2).gsDiffersFrom(withMode(1)))
-        assertFalse(Settings().gsDiffersFrom(Settings()))
-    }
-
-    @Test
     fun graphicsTabResetCoversIt() {
         assertTrue("textureUpscale" in SETTINGS_CATEGORY_FIELDS.getValue(SettingsCategory.Graphics))
         assertTrue(withMode(1).toJson().has("textureUpscale"))

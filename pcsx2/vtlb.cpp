@@ -41,7 +41,6 @@
 
 #include <algorithm>
 #include <bit>
-#include <cstdlib>
 #include <map>
 #include <unordered_map>
 
@@ -1431,16 +1430,11 @@ bool vtlb_Core_Alloc()
 		}
 	}
 
-	// Force-disable fastmem if explicitly requested via env var or INI.
 	if (s_fastmem_area)
 	{
-		const char* env = std::getenv("iPSX2_FORCE_NO_FASTMEM");
-		const bool env_force = env && std::atoi(env) == 1;
-		const bool ini_disabled = !EmuConfig.Cpu.Recompiler.EnableFastmem;
-		if (env_force || ini_disabled)
+		if (!EmuConfig.Cpu.Recompiler.EnableFastmem)
 		{
-			Console.Warning("Fastmem disabled (env=%d ini=%d); releasing fastmem area",
-				(int)env_force, (int)ini_disabled);
+			Console.Warning("Fastmem disabled: turned off in settings; releasing fastmem area");
 			s_fastmem_area.reset();
 			vtlbdata.fastmem_base = 0;
 			EmuConfig.Cpu.Recompiler.EnableFastmem = false;

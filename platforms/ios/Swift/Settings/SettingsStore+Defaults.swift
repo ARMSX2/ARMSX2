@@ -32,10 +32,10 @@ extension SettingsStore {
         autoSaveOnLowBattery = true
         undoSeconds = 5
         automaticLoadLastGame = false
-        temporalSaveStateToLivePreviewChanges = true
-        perGameLivePreviewDuration = 2
-        perGameBeforeChangesPreviewDuration = 0
-        perGameLivePreviewStopsWithCircle = true
+        appearance.temporalSaveStateToLivePreviewChanges = true
+        appearance.perGameLivePreviewDuration = 2
+        appearance.perGameBeforeChangesPreviewDuration = 0
+        appearance.perGameLivePreviewStopsWithCircle = true
         fastmem = true
         emulationOnlyModeEnabled = false
         emulationOnlyDisablePatches = true
@@ -187,40 +187,40 @@ extension SettingsStore {
         let gallery = ThemeGalleryStore.shared
         gallery.clearActiveSavedTheme()
 
-        backgroundPrimaryAsset = nil
-        backgroundLandscapeAsset = nil
-        backgroundFitMode = .fill
-        backgroundLandscapeFitMode = .fill
-        backgroundVideoMuted = true
-        backgroundDim = 0
-        backgroundEnabledInBIOS = true
-        backgroundEnabledInHelp = true
-        backgroundEnabledInSettings = true
+        appearance.backgroundPrimaryAsset = nil
+        appearance.backgroundLandscapeAsset = nil
+        appearance.backgroundFitMode = .fill
+        appearance.backgroundLandscapeFitMode = .fill
+        appearance.backgroundVideoMuted = true
+        appearance.backgroundDim = 0
+        appearance.backgroundEnabledInBIOS = true
+        appearance.backgroundEnabledInHelp = true
+        appearance.backgroundEnabledInSettings = true
 
-        clearLiquidGlassUI = true
-        clearLiquidGlassUISubSettings = true
-        clearLiquidGlassUIQuickMenu = false
-        clearLiquidGlassUIPerGameSettingsLibrary = false
-        clearLiquidGlassUIPerGameSettingsEmulation = false
-        gameCardZoomAnimationEnabled = true
-        favoriteGlowingEffectEnabled = false
-        gameMenuCoverColoursEnabled = true
-        hideGameplayStatusBar = true
-        hideIntroStatusBar = true
-        hideMenuStatusBar = false
-        controllerNavigationDepthEffectEnabled = true
-        focusOrbsEnabled = false
+        appearance.clearLiquidGlassUI = true
+        appearance.clearLiquidGlassUISubSettings = true
+        appearance.clearLiquidGlassUIQuickMenu = false
+        appearance.clearLiquidGlassUIPerGameSettingsLibrary = false
+        appearance.clearLiquidGlassUIPerGameSettingsEmulation = false
+        appearance.gameCardZoomAnimationEnabled = true
+        appearance.favoriteGlowingEffectEnabled = false
+        appearance.gameMenuCoverColoursEnabled = true
+        appearance.hideGameplayStatusBar = true
+        appearance.hideIntroStatusBar = true
+        appearance.hideMenuStatusBar = false
+        appearance.controllerNavigationDepthEffectEnabled = true
+        appearance.focusOrbsEnabled = false
 
         // Apply the canonical preset rather than duplicating its palette and
         // dynamic-background defaults here. This keeps Reset synchronized as
         // the stock theme evolves.
-        applyControllerUIThemePreset(
+        appearance.applyControllerUIThemePreset(
             .defaultTheme,
             preservingCustomTheme: false
         )
-        controllerNavigationFocusAnimation = .easeInOut
-        controllerCustomThemeBase = .defaultTheme
-        controllerUIThemePreset = .defaultTheme
+        appearance.controllerNavigationFocusAnimation = .easeInOut
+        appearance.controllerCustomThemeBase = .defaultTheme
+        appearance.controllerUIThemePreset = .defaultTheme
     }
 
     /// Restores application configuration without deleting imported content,
@@ -255,45 +255,45 @@ extension SettingsStore {
         osdShowTextureReplacements = false
         snapshotCustomOsd()
 
-        padOpacity = 0.6
-        phoneRumbleStrength = 0.25
-        increaseRumbleDurationAndInterpolation = true
-        hapticFeedback = true
-        gameRumbleStrength = 1
-        uiRumbleStrength = 0.5
-        dpadDiagonalsEnabled = true
-        faceComboZonesEnabled = true
-        automaticDownloadCustomSkin = false
-        autoHideVirtualPadWhenControllerConnected = true
-        autoFullscreen = true
-        hideMenuButton = false
-        analogStickScale = 1.0
-        gameControllerDeadZone = 0.15
-        gameControllerLeftInstantDeadzoneEnabled = false
-        gameControllerLeftNegativeDeadzone = -0.08
-        gameControllerRightInstantDeadzoneEnabled = false
-        gameControllerRightNegativeDeadzone = -0.08
-        invertLeftStickX = false
-        invertLeftStickY = false
-        invertRightStickX = false
-        invertRightStickY = false
+        controller.padOpacity = 0.6
+        controller.phoneRumbleStrength = 0.25
+        controller.increaseRumbleDurationAndInterpolation = true
+        controller.hapticFeedback = true
+        controller.gameRumbleStrength = 1
+        controller.uiRumbleStrength = 0.5
+        controller.dpadDiagonalsEnabled = true
+        controller.faceComboZonesEnabled = true
+        controller.automaticDownloadCustomSkin = false
+        controller.autoHideVirtualPadWhenControllerConnected = true
+        controller.autoFullscreen = true
+        controller.hideMenuButton = false
+        controller.analogStickScale = 1.0
+        controller.gameControllerDeadZone = 0.15
+        controller.gameControllerLeftInstantDeadzoneEnabled = false
+        controller.gameControllerLeftNegativeDeadzone = -0.08
+        controller.gameControllerRightInstantDeadzoneEnabled = false
+        controller.gameControllerRightNegativeDeadzone = -0.08
+        controller.invertLeftStickX = false
+        controller.invertLeftStickY = false
+        controller.invertRightStickX = false
+        controller.invertRightStickY = false
         appLanguage = .system
-        controllerMultitapMode = 0
-        resetControllerMacros()
+        controller.controllerMultitapMode = 0
+        controller.resetControllerMacros()
         autoOpenStikDebug = false
         jitScriptProtocol = JITScriptProtocol.defaultValue
 
-        dev9HddEnabled = false
-        dev9HddFile = "DEV9hdd.raw"
-        dev9EthernetEnabled = false
-        dev9EthDevice = "Auto"
-        dev9InterceptDHCP = false
-        dev9EthLogDHCP = false
-        dev9EthLogDNS = false
-        dev9DNS1Mode = "Auto"
-        dev9DNS1 = "0.0.0.0"
-        dev9DNS2Mode = "Auto"
-        dev9DNS2 = "0.0.0.0"
+        network.dev9HddEnabled = false
+        network.dev9HddFile = "DEV9hdd.raw"
+        network.dev9EthernetEnabled = false
+        network.dev9EthDevice = "Auto"
+        network.dev9InterceptDHCP = false
+        network.dev9EthLogDHCP = false
+        network.dev9EthLogDNS = false
+        network.dev9DNS1Mode = "Auto"
+        network.dev9DNS1 = "0.0.0.0"
+        network.dev9DNS2Mode = "Auto"
+        network.dev9DNS2 = "0.0.0.0"
 
         resetAppearanceDefaults()
 

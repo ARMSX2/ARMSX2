@@ -5,7 +5,7 @@ import unittest
 from ios_source import block, read, swift, without_comments
 
 
-STORE = swift("SettingsStore.swift")
+STORE = swift("SettingsStoreAppearance.swift")
 COORDINATOR = swift("GameLibraryControllerCoordinator.swift")
 APPEARANCE = swift("AppearanceSettingsView.swift")
 INTERFACE = swift("AppearanceInterfaceSections.swift")
@@ -17,16 +17,16 @@ class GameMenuCoverColours(unittest.TestCase):
 
     def test_it_is_on_unless_saved_off(self):
         source = without_comments(read(STORE))
-        self.assertIn('forKey: "ARMSX2iOSGameMenuCoverColoursEnabled"\n        ) as? Bool ?? true', source)
+        self.assertIn('forKey: "ARMSX2iOSGameMenuCoverColoursEnabled"\n            ) as? Bool ?? true', source)
 
     def test_the_game_menu_preview_checks_it(self):
         update = block(without_comments(read(COORDINATOR)), "func updateGameCoverThemePreview(")
-        self.assertIn("? settings.gameMenuCoverColoursEnabled", update)
-        self.assertIn(": settings.favoriteGlowingEffectEnabled", update)
+        self.assertIn("? settings.appearance.gameMenuCoverColoursEnabled", update)
+        self.assertIn(": settings.appearance.favoriteGlowingEffectEnabled", update)
 
     def test_appearance_offers_it_to_the_pad(self):
         source = without_comments(read(APPEARANCE) + read(INTERFACE))
-        self.assertIn("isOn: $settings.gameMenuCoverColoursEnabled", source)
+        self.assertIn("isOn: Bindable(settings.appearance).gameMenuCoverColoursEnabled", source)
         self.assertEqual(source.count('"settings.appearance.game-menu-cover-colours"'), 2)
 
 

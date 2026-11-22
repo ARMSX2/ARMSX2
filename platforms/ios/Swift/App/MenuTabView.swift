@@ -79,8 +79,8 @@ struct MenuTabView: View {
         )
     }
 
-    private var biosBackgroundActive: Bool { settings.hasCustomBackground && settings.backgroundEnabledInBIOS }
-    private var settingsBackgroundActive: Bool { settings.hasCustomBackground && settings.backgroundEnabledInSettings }
+    private var biosBackgroundActive: Bool { settings.hasCustomBackground && settings.appearance.backgroundEnabledInBIOS }
+    private var settingsBackgroundActive: Bool { settings.hasCustomBackground && settings.appearance.backgroundEnabledInSettings }
 
     private var hideGamesScreenTitle: Bool {
         let isLandscape = menuViewportSize.width > menuViewportSize.height
@@ -559,7 +559,7 @@ struct MenuTabView: View {
         .onChange(of: settings.hasCustomBackground) { _, hasBackground in
             backgroundHost.setMenuBackgroundAvailable(hasBackground)
         }
-        .onChange(of: settings.dynamicBackgroundsEnabled) { _, _ in
+        .onChange(of: settings.appearance.dynamicBackgroundsEnabled) { _, _ in
             backgroundHost.setMenuBackgroundAvailable(settings.hasCustomBackground)
         }
         .onChange(of: selectedTabShowsBackground) { _, showsBackground in

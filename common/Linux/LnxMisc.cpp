@@ -535,7 +535,8 @@ const char* HostSys::GetMissingBuildCpuFeature()
 #endif
 
 #if defined(__aarch64__) && !defined(__ANDROID__)
-// Builds for more than ARMv8.0 die with SIGILL on older cores, often before main. Check the HWCAPs
+// The default build targets ARMv8.0 (cmake/BuildParameters.cmake), but a custom -march for more
+// than that dies with SIGILL on older cores, often before main. Check the HWCAPs
 // before the other static constructors run and say what's missing. Android checks from the app
 // instead (NativeApp.missingCpuFeature), where it can show the player a message.
 __attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
@@ -545,7 +546,7 @@ __attribute__((constructor(101))) static void CheckBuildFeaturesAgainstCPU()
 		return;
 
 	static constexpr char before[] = "ARMSX2: this build uses ";
-	static constexpr char after[] = ", which this CPU does not have. Use a build for ARMv8.0 (-march=armv8-a -moutline-atomics).\n";
+	static constexpr char after[] = ", which this CPU does not have. Use an official build, or rebuild without a custom -march.\n";
 	[[maybe_unused]] ssize_t r = write(STDERR_FILENO, before, sizeof(before) - 1);
 	r = write(STDERR_FILENO, missing, __builtin_strlen(missing));
 	r = write(STDERR_FILENO, after, sizeof(after) - 1);

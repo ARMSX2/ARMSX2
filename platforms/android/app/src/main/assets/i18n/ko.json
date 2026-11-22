@@ -1,5 +1,10 @@
 {
  "_note": "Machine-translated (ko); report bad strings to fix.",
+ "driverOffer.body.update": "사용 중인 GPU용 ARMSX2 그래픽 드라이버의 새 릴리스가 있습니다.",
+ "driverOffer.current": "현재 사용 중: %s",
+ "driverOffer.notNow": "나중에",
+ "driverOffer.title.switch": "ARMSX2의 GPU 드라이버",
+ "driverOffer.title.update": "새 GPU 드라이버가 나왔습니다",
  "tab.app": "앱",
  "tab.performance": "성능",
  "tab.renderer": "렌더러",

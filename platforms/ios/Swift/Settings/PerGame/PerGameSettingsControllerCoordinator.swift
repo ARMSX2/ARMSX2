@@ -241,7 +241,7 @@ final class PerGameSettingsControllerCoordinator {
                 order.append("per-game.general.reset-all")
             }
             order.append("per-game.general.live-preview")
-            if settings.temporalSaveStateToLivePreviewChanges {
+            if settings.appearance.temporalSaveStateToLivePreviewChanges {
                 order.append("per-game.general.live-preview-circle-exit")
                 order.append("per-game.general.before-changes-preview-duration")
             }
@@ -392,9 +392,9 @@ final class PerGameSettingsControllerCoordinator {
         case .gameController:
             return GamepadSettingsView.controllerTargetOrder(
                 leftInstantDeadzoneEnabled:
-                    settings.gameControllerLeftInstantDeadzoneEnabled,
+                    settings.controller.gameControllerLeftInstantDeadzoneEnabled,
                 rightInstantDeadzoneEnabled:
-                    settings.gameControllerRightInstantDeadzoneEnabled
+                    settings.controller.gameControllerRightInstantDeadzoneEnabled
             )
 
         case .pad:
@@ -415,7 +415,7 @@ final class PerGameSettingsControllerCoordinator {
                 ]
             }
             if draft.hasGameSettingsIdentity {
-                order += SettingsStore.stickInversionKeys.map {
+                order += SettingsStore.Controller.stickInversionKeys.map {
                     "per-game.pad.inversion.\($0)"
                 }
             }

@@ -153,14 +153,14 @@ struct GameLibraryAutomaticSkinCover: View {
     let kind: GameLibraryControllerAlertKind
 
     var body: some View {
-        let usesDefaultText = settings.controllerUIThemePreset == .defaultTheme
+        let usesDefaultText = settings.appearance.controllerUIThemePreset == .defaultTheme
         ControllerNavigationAlert(
             title: controller.controllerAlertTitle(for: kind),
-            titleColour: usesDefaultText ? .white : settings.controllerContextMenuColor,
-            contentColour: usesDefaultText ? .white : settings.controllerContextMenuColor,
-            secondaryContentColour: usesDefaultText ? .white : settings.controllerContextMenuSecondaryColor,
+            titleColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuColor,
+            contentColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuColor,
+            secondaryContentColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuSecondaryColor,
             detailValueColour: usesDefaultText
-                ? settings.controllerNavigationAccentColor
+                ? settings.appearance.controllerNavigationAccentColor
                 : nil,
             previewImageURL:
                 controller.controllerAlertPreviewImageURL(for: kind),

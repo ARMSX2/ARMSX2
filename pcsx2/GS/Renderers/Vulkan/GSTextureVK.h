@@ -54,6 +54,7 @@ public:
 	bool IsShaderWriteMode() const override { return GetLayout() == Layout::ReadWriteImage; }
 
 	__fi VkFormat GetVkFormat() const { return m_vk_format; }
+	__fi bool HasStencilAspect() const { return m_vk_format == VK_FORMAT_D32_SFLOAT_S8_UINT; }
 
 	VkImageLayout GetVkLayout() const;
 
@@ -96,6 +97,10 @@ public:
 	bool MakeUncompressed();
 	__fi bool IsUncompressed() const { return m_uncompressed; }
 
+	/// Swaps images with another depth texture that differs only in a stencil aspect; the format and
+	/// usage go with the image (stencil_on_request).
+	bool SwapStencilImage(GSTextureVK* other);
+
 	// Call when the texture is bound to the pipeline, or read from in a copy.
 	__fi void SetUseFenceCounter(u64 counter) { m_use_fence_counter = counter; }
 
@@ -106,6 +111,7 @@ private:
 	static bool AllocateImage(Usage usage, Format format, VkFormat vk_format, int width, int height, int levels,
 		bool uncompressed, VkImage* out_image, VmaAllocation* out_allocation, VkImageView* out_view);
 	void DestroyFramebuffers(bool defer);
+	void SwapImages(GSTextureVK* other);
 
 	VkCommandBuffer GetCommandBufferForUpdate();
 	void CopyTextureDataForUpload(void* dst, const void* src, u32 pitch, u32 upload_pitch, u32 height) const;

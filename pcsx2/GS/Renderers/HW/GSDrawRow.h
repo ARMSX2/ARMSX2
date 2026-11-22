@@ -375,7 +375,7 @@ namespace GSDrawRows
 		u64 entries_raw_alpha = 0; ///< of those, entries whose derivation read the draw's range bypassing AlphaBound
 		u64 device_rows = 0; ///< draws handed to GSDevice::DrawRow
 		u64 device_rows_plain = 0; ///< of those, drawn by the backend's plain path
-		u64 device_rows_refused[9] = {}; ///< why not: no pass, the draw's roads, targets, target state, textures, feedback bits, kept copy, colour clip, readback window
+		u64 device_rows_refused[10] = {}; ///< why not: no pass, the draw's roads, targets, target state, textures, feedback bits, kept copy, colour clip, readback window, outside a narrowed pass
 		u32 reg_states = 0; ///< register states in the table after the last miss
 		u32 entries = 0; ///< entries in the table after the last miss
 		u64 flushes = 0;

@@ -87,6 +87,7 @@
 // --statereport decode targets
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/Counters.h"
+#include "pcsx2/GameDatabase.h"
 #include "pcsx2/Gif_Unit.h"
 #include "pcsx2/IopCounters.h"
 #include "pcsx2/MTVU.h"
@@ -181,6 +182,9 @@ static MemorySettingsInterface s_settings_interface;
 // Parsed command-line state, read by the CPU thread.
 static RunMode s_mode = RunMode::None;
 static std::string s_iso_path;
+static bool s_no_disc = false;            // --nodisc: boot the BIOS with the tray empty, then load the savestate
+static std::string s_gamedb_serial;       // --gamedb <serial>[:<crc>]: run the --nodisc boot under this game's GameDB entry
+static uint32_t s_gamedb_crc = 0;
 static std::string s_savestate_path;
 static uint32_t s_frames = 300;
 static bool s_no_console = false;
@@ -1060,6 +1064,11 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
+	std::fprintf(stderr, "  --nodisc: no disc in the tray; the game runs from the savestate's RAM until it reads the\n");
+	std::fprintf(stderr, "               disc. Without --gamedb the GameDB fixes do not apply. Not with --iso.\n");
+	std::fprintf(stderr, "  --gamedb <serial>[:<crc hex>]: with --nodisc, run under this game's serial and disc CRC, so its\n");
+	std::fprintf(stderr, "               GameDB fixes, game settings file and patches apply as they do with the disc\n");
+	std::fprintf(stderr, "               (e.g. SLUS-21050:BEBF8793; the serial and crc of a problem report's game).\n");
 	std::fprintf(stderr, "  --perf-jitdump: Emit a Linux perf jitdump (under EmuFolders::Cache) so `perf inject --jit`\n");
 	std::fprintf(stderr, "               resolves EE_/VU0_/VU1_/IOP_/VIF_ JIT block symbols. Profiling only; with --liverun it\n");
 	std::fprintf(stderr, "               also honors an explicit --renderer null. Requires a USE_PERF_JITDUMP build.\n");
@@ -1072,8 +1081,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --twin-label <name>: label stamped into the .twin header (e.g. armsx2-master / jit-transplant).\n");
 	std::fprintf(stderr, "  --twin-ram-at <frame>: also dump raw EE RAM+scratch at that frame (interp + jit passes) to\n");
 	std::fprintf(stderr, "               <prefix>.f<N>.{interp,jit}.bin, for offline page/region diffing across builds.\n");
-	std::fprintf(stderr, "  --dump-config <path>: boot far enough for GameDB to apply, write the EFFECTIVE EmuConfig INI,\n");
-	std::fprintf(stderr, "               and exit. Diff the two trees' dumps FIRST - config drift is the cheapest bug class.\n");
+	std::fprintf(stderr, "  --dump-config <path>: write the EFFECTIVE EmuConfig INI and exit. With --savestate the state is\n");
+	std::fprintf(stderr, "               loaded first, so the dump holds the GameDB fixes the game runs under. Diff the two\n");
+	std::fprintf(stderr, "               trees' dumps FIRST - config drift is the cheapest bug class.\n");
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
@@ -1688,6 +1698,42 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				continue;
 			}
+			else if (CHECK_ARG("--nodisc"))
+			{
+				s_no_disc = true;
+				continue;
+			}
+			else if (CHECK_ARG_PARAM("--gamedb"))
+			{
+				std::string_view spec = StringUtil::StripWhitespace(std::string_view(argv[++i]));
+				std::string_view crc_text;
+				const size_t colon = spec.find(':');
+				if (colon != std::string_view::npos)
+				{
+					crc_text = spec.substr(colon + 1);
+					spec = spec.substr(0, colon);
+				}
+				if (spec.empty())
+				{
+					Console.Error("--gamedb expects <serial>[:<crc hex>], e.g. SLUS-21050:BEBF8793.");
+					return false;
+				}
+				s_gamedb_serial = StringUtil::toUpper(spec);
+				s_gamedb_crc = 0;
+				if (!crc_text.empty())
+				{
+					if (crc_text.starts_with("0x") || crc_text.starts_with("0X"))
+						crc_text.remove_prefix(2);
+					const std::optional<uint32_t> crc = StringUtil::FromChars<uint32_t>(crc_text, 16);
+					if (!crc.has_value())
+					{
+						Console.Error("--gamedb: the CRC after ':' must be hexadecimal, e.g. SLUS-21050:BEBF8793.");
+						return false;
+					}
+					s_gamedb_crc = crc.value();
+				}
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--iso"))
 			{
 				s_iso_path = StringUtil::StripWhitespace(argv[++i]);
@@ -1813,9 +1859,9 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 	if (s_savestate_path.empty())
 	{
-		// --dump-config only needs the disc mounted: GameDB keys off the serial,
-		// which is known right after Initialize. --mkstate can cold-boot the
-		// disc to CREATE the first state. Every other mode replays state.
+		// --dump-config can run without a state (it then dumps the boot-time config).
+		// --mkstate can cold-boot the disc to CREATE the first state. Every other mode
+		// replays state.
 		if (s_mode != RunMode::DumpConfig && s_mode != RunMode::MkState)
 		{
 			Console.Error("No savestate provided (use --savestate <file>).");
@@ -1863,6 +1909,31 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 	}
 
+	if (!s_gamedb_serial.empty() && !s_no_disc)
+	{
+		Console.Error("--gamedb needs --nodisc: with a disc, the disc names the game.");
+		return false;
+	}
+	if (s_no_disc)
+	{
+		if (!s_iso_path.empty())
+		{
+			Console.Error("--nodisc and --iso contradict each other: pass one.");
+			return false;
+		}
+		// The savestate's RAM holds the running game; it renders until its next disc read.
+		// GameDB fixes are keyed to the game's serial, which only a disc or --gamedb gives.
+		if (!s_gamedb_serial.empty() && !GameDatabase::findGame(s_gamedb_serial))
+		{
+			// A typo here would otherwise run silently without the fixes it was passed to get.
+			Console.ErrorFmt("--gamedb: serial '{}' is not in GameDB.", s_gamedb_serial);
+			return false;
+		}
+		params.source_type = CDVD_SourceType::NoDisc;
+		params.no_disc_serial = s_gamedb_serial;
+		params.no_disc_crc = s_gamedb_crc;
+		return true;
+	}
 	if (s_iso_path.empty())
 	{
 		Console.Error("No ISO provided (use --iso <file>); the savestate needs its disc mounted.");
@@ -4224,10 +4295,21 @@ static int RunMkState()
 // serialize the EFFECTIVE EmuConfig to an INI. The twindiff driver diffs the
 // two trees' dumps FIRST — config/GameDB drift (True Crime: guard-bit emulation
 // default-off at the time + three divergent GameIndex copies) explains a broken
-// game far more cheaply than any trace. Savestate optional: config keys off the disc
-// serial, known right after Initialize.
+// game far more cheaply than any trace. Savestate optional. GameDB fixes apply
+// only once the game's ELF is running (VMManager::HasBootedELF), so pass
+// --savestate to dump the config the game runs under; without one the dump
+// holds the boot-time config.
 static int RunDumpConfig()
 {
+	if (!s_savestate_path.empty())
+	{
+		Error error;
+		if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
+		{
+			Console.ErrorFmt("dump-config: load failed: {}", error.GetDescription());
+			return EXIT_FAILURE;
+		}
+	}
 	INISettingsInterface ini(s_dumpcfg_path);
 	{
 		SettingsSaveWrapper wrap(ini);

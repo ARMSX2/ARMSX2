@@ -315,7 +315,7 @@ private struct SkinManifestButtonView: View {
         guard on != pressed else { return }
         on = pressed
         EmulatorBridge.shared.setPadButton(button, pressed: pressed)
-        if pressed, SettingsStore.shared.hapticFeedback {
+        if pressed, SettingsStore.shared.controller.hapticFeedback {
             GameEventHaptics.shared.medium.impactOccurred()
         }
     }

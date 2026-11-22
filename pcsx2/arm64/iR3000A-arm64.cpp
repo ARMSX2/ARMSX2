@@ -1376,8 +1376,8 @@ static __fi u32 psxRecClearMem(u32 pc)
 	// from iopJITCompile; mid-block words still hold the trampoline, so a
 	// fnptr-based early-exit would leak mid-block writes through to stale
 	// compiled code.
-	int blockidx = recBlocks.Index(HWADDR(pc));
-	if (blockidx == -1)
+	auto blockidx = recBlocks.Index(HWADDR(pc));
+	if (!blockidx)
 		return 4;
 
 	u32 lowerextent = pc, upperextent = pc + 4;
@@ -1386,8 +1386,8 @@ static __fi u32 psxRecClearMem(u32 pc)
 	// bodies reach into it. `scanidx` is the cursor; `blockidx` only follows it
 	// down onto blocks we actually absorb, so a skipped survivor never becomes
 	// the start of the removal range below.
-	int scanidx = blockidx - 1;
-	while (BASEBLOCKEX* pexblock = recBlocks[scanidx])
+	auto scanidx = recBlocks.Previous(blockidx);
+	while (const BASEBLOCKEX* pexblock = recBlocks[scanidx])
 	{
 		if (pexblock->startpc + pexblock->size * 4 <= HWADDR(lowerextent))
 		{
@@ -1400,16 +1400,19 @@ static __fi u32 psxRecClearMem(u32 pc)
 			if (pexblock->startpc + s_maxBlockBytes <= HWADDR(lowerextent))
 				break;
 
-			scanidx--;
+			scanidx = recBlocks.Previous(scanidx);
 			continue;
 		}
 
 		lowerextent = std::min(lowerextent, pexblock->startpc);
 		blockidx = scanidx;
-		scanidx--;
+		scanidx = recBlocks.Previous(scanidx);
 	}
 
-	while (BASEBLOCKEX* pexblock = recBlocks[blockidx])
+	// Every block from blockidx up to the first one at or above the merged
+	// range goes, in one Remove.
+	Arm64BaseBlocks::Position toRemoveLast{};
+	for (auto pos = blockidx; const BASEBLOCKEX* pexblock = recBlocks[pos]; pos = recBlocks.Next(pos))
 	{
 		if (pexblock->startpc >= HWADDR(upperextent))
 			break;
@@ -1417,8 +1420,10 @@ static __fi u32 psxRecClearMem(u32 pc)
 		lowerextent = std::min(lowerextent, pexblock->startpc);
 		upperextent = std::max(upperextent, pexblock->startpc + pexblock->size * 4);
 		iopCovAdjust(pexblock->startpc, pexblock->size * 4, -1);
-		recBlocks.Remove(blockidx, blockidx);
+		toRemoveLast = pos;
 	}
+	if (toRemoveLast)
+		recBlocks.Remove(blockidx, toRemoveLast);
 
 	// Clear all blocks in the range
 	for (u32 addr = lowerextent; addr < upperextent; addr += 4)

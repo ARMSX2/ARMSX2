@@ -28,7 +28,6 @@
 // (FlushWrite / Move / ...) and consumed by GSState::Exec*Record on the back
 // thread. With GS multi-threading off the seam functions call the Exec*Record
 // bodies directly and no record is built.
-// Seam classification: scratchpad/gv7-2026-07/SEAM-AUDIT.md.
 
 namespace GSBackQueue
 {

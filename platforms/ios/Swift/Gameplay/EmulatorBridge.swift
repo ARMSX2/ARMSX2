@@ -102,7 +102,7 @@ final class EmulatorBridge: @unchecked Sendable {
             enabled: dynamicSettings.leftInstantDeadzoneEnabled,
             configuredDeadzone: dynamicSettings.leftNegativeDeadzone
         )
-        let inv = SettingsStore.shared.stickInversion(for: .left)
+        let inv = SettingsStore.shared.controller.stickInversion(for: .left)
         ARMSX2Bridge.setLeftStickX(inv.x ? -output.x : output.x, y: inv.y ? -output.y : output.y)
     }
 
@@ -143,7 +143,7 @@ final class EmulatorBridge: @unchecked Sendable {
             enabled: dynamicSettings.rightInstantDeadzoneEnabled,
             configuredDeadzone: dynamicSettings.rightNegativeDeadzone
         )
-        let inv = SettingsStore.shared.stickInversion(for: .right)
+        let inv = SettingsStore.shared.controller.stickInversion(for: .right)
         ARMSX2Bridge.setRightStickX(inv.x ? -output.x : output.x, y: inv.y ? -output.y : output.y)
     }
 

@@ -154,7 +154,7 @@ struct AppearanceThemeSnapshot: Codable {
     var controllerRoleCustomColors: [String: SavedPaletteColor]
     var gameLibraryViewOptions: GameLibraryViewOptionsSnapshot?
 
-    @MainActor init(settings: SettingsStore) {
+    @MainActor init(settings: SettingsStore.Appearance) {
         controllerUIThemePreset = settings.controllerUIThemePreset
         controllerFocusBoxStyle = settings.controllerFocusBoxStyle
         controllerNavigationFocusAnimation = settings.controllerNavigationFocusAnimation
@@ -206,7 +206,7 @@ struct AppearanceThemeSnapshot: Codable {
         gameLibraryViewOptions = GameLibraryViewOptionsSnapshot()
     }
 
-    @MainActor func restore(to settings: SettingsStore) {
+    @MainActor func restore(to settings: SettingsStore.Appearance) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
@@ -267,7 +267,7 @@ struct AppearanceThemeSnapshot: Codable {
     /// imported document from changing card dimensions, tab-bar geometry,
     /// glass preferences, focus animation, or any other user-owned setting.
     @MainActor func restoreColoursAndDynamicBackground(
-        to settings: SettingsStore
+        to settings: SettingsStore.Appearance
     ) {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -414,7 +414,7 @@ final class ThemeGalleryStore {
     }
 
     func currentSelection(
-        for settings: SettingsStore
+        for settings: SettingsStore.Appearance
     ) -> AppearanceThemeSelection {
         if let activeSavedThemeID,
            themes.contains(where: { $0.id == activeSavedThemeID }) {
@@ -436,7 +436,7 @@ final class ThemeGalleryStore {
 
     func apply(
         _ selection: AppearanceThemeSelection,
-        to settings: SettingsStore,
+        to settings: SettingsStore.Appearance,
         preservingCustomTheme: Bool = true
     ) {
         if preservingCustomTheme {
@@ -489,7 +489,7 @@ final class ThemeGalleryStore {
     @discardableResult
     func applyBundledPreset(
         _ preset: ControllerUIThemePreset,
-        to settings: SettingsStore
+        to settings: SettingsStore.Appearance
     ) -> Bool {
         let resourceName: String
         switch preset {
@@ -536,7 +536,7 @@ final class ThemeGalleryStore {
         return true
     }
 
-    func preserveCustomTheme(_ settings: SettingsStore) {
+    func preserveCustomTheme(_ settings: SettingsStore.Appearance) {
         guard settings.controllerUIThemePreset == .custom,
               activeSavedThemeID == nil else { return }
         preserveCustomSnapshot(AppearanceThemeSnapshot(settings: settings))
@@ -559,13 +559,13 @@ final class ThemeGalleryStore {
         }
     }
 
-    func restoreCustomTheme(_ settings: SettingsStore) {
+    func restoreCustomTheme(_ settings: SettingsStore.Appearance) {
         clearActiveSavedTheme()
         if let customDraft { customDraft.restore(to: settings) }
         settings.beginCustomThemeEditing()
     }
 
-    func hasUnsavedCustomTheme(_ settings: SettingsStore) -> Bool {
+    func hasUnsavedCustomTheme(_ settings: SettingsStore.Appearance) -> Bool {
         guard settings.controllerUIThemePreset == .custom else { return false }
         let current = AppearanceThemeSnapshot(settings: settings)
         guard let currentData = encodedSnapshot(current) else { return true }
@@ -575,7 +575,7 @@ final class ThemeGalleryStore {
     }
 
     @discardableResult
-    func save(name: String, settings: SettingsStore) -> Bool {
+    func save(name: String, settings: SettingsStore.Appearance) -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         settings.beginCustomThemeEditing()
@@ -626,7 +626,7 @@ final class ThemeGalleryStore {
 
     /// Creates a shareable JSON file containing every value represented by
     /// `AppearanceThemeSnapshot`, including dynamic-background configuration.
-    func exportCurrentTheme(from settings: SettingsStore) throws -> URL {
+    func exportCurrentTheme(from settings: SettingsStore.Appearance) throws -> URL {
         let selection = currentSelection(for: settings)
         let name = title(for: selection)
         let document = AppearanceThemeTransferDocument(
@@ -651,7 +651,7 @@ final class ThemeGalleryStore {
     @discardableResult
     func importTheme(
         from url: URL,
-        applyingTo settings: SettingsStore
+        applyingTo settings: SettingsStore.Appearance
     ) throws -> SavedAppearanceTheme {
         let grantedAccess = url.startAccessingSecurityScopedResource()
         defer {
@@ -708,7 +708,7 @@ final class ThemeGalleryStore {
     }
 }
 
-extension SettingsStore {
+extension SettingsStore.Appearance {
     var controllerEffectiveThemePreset: ControllerUIThemePreset {
         controllerUIThemePreset == .custom ? controllerCustomThemeBase : controllerUIThemePreset
     }

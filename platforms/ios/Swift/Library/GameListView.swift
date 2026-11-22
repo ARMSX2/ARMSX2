@@ -48,9 +48,9 @@ struct GameListView: View {
     @State private var controller = GameLibraryControllerCoordinator()
     // SettingsStore owns background configuration; the shared container renders it.
     private var hasCustomBackground: Bool {
-        settings.dynamicBackgroundsEnabled
-            || settings.backgroundPrimaryAsset != nil
-            || settings.backgroundLandscapeAsset != nil
+        settings.appearance.dynamicBackgroundsEnabled
+            || settings.appearance.backgroundPrimaryAsset != nil
+            || settings.appearance.backgroundLandscapeAsset != nil
     }
 
     private var hideGamesScreenTitle: Bool {
@@ -106,9 +106,9 @@ struct GameListView: View {
     }
 
     private var cardStyle: GameLibraryCardStyle {
-        let paletteColors = settings.controllerFocusBoxCustomColor.map {
+        let paletteColors = settings.appearance.controllerFocusBoxCustomColor.map {
             [$0.color]
-        } ?? settings.controllerFocusBoxPalette.colors
+        } ?? settings.appearance.controllerFocusBoxPalette.colors
         let primaryGlow = paletteColors.first ?? accentColour
         return GameLibraryCardStyle(
             resolvedGameCardScale: controller.resolvedGameCardScale,
@@ -138,8 +138,8 @@ struct GameListView: View {
             regionLabel: settings.localized("Region"),
             addToFavoritesLabel: settings.localized("Add to favorites"),
             removeFromFavoritesLabel: settings.localized("Remove from favorites"),
-            cardFocusedColor: settings.controllerCardFocusedColor,
-            favoriteGlowEnabled: settings.favoriteGlowingEffectEnabled,
+            cardFocusedColor: settings.appearance.controllerCardFocusedColor,
+            favoriteGlowEnabled: settings.appearance.favoriteGlowingEffectEnabled,
             glowPrimaryColor: primaryGlow,
             glowSecondaryColor: paletteColors.dropFirst().first ?? primaryGlow
         )
@@ -275,10 +275,10 @@ struct GameListView: View {
                 if controller.controllerMoreMenuPresented {
                     ControllerNavigationAlert(
                         title: settings.localized("More"),
-                        titleColour: settings.controllerContextMenuColor,
-                        contentColour: settings.controllerContextMenuColor,
+                        titleColour: settings.appearance.controllerContextMenuColor,
+                        contentColour: settings.appearance.controllerContextMenuColor,
                         secondaryContentColour:
-                            settings.controllerContextMenuSecondaryColor,
+                            settings.appearance.controllerContextMenuSecondaryColor,
                         usesClearGlass: false,
                         showsActionButtonBackgrounds: true,
                         dimsBackground: false,

@@ -16,7 +16,7 @@ extension AppearanceSettingsEditing {
             set: { value in
                 // Keep the preset's readable colours when making a custom
                 // variant, instead of switching to unrelated fallbacks.
-                settings.beginCustomThemeEditing()
+                settings.appearance.beginCustomThemeEditing()
                 settings[keyPath: keyPath] = value
             }
         )
@@ -26,23 +26,23 @@ extension AppearanceSettingsEditing {
         let settings = SettingsStore.shared
         switch id {
         case "tab-titles-colour":
-            return settings.controllerTabTitleColor
+            return settings.appearance.controllerTabTitleColor
         case "tab-subtitles-colour":
-            return settings.controllerTabSubtitleColor
+            return settings.appearance.controllerTabSubtitleColor
         case "bottom-tab-bar-colour":
-            return settings.controllerBottomTabBarColor
+            return settings.appearance.controllerBottomTabBarColor
         case "bottom-tab-bar-unselected-colour":
-            return settings.controllerBottomTabBarUnselectedColor
+            return settings.appearance.controllerBottomTabBarUnselectedColor
         case "card-titles-colour":
-            return settings.controllerCardTitleColor
+            return settings.appearance.controllerCardTitleColor
         case "context-menu-colour":
-            return settings.controllerContextMenuColor
+            return settings.appearance.controllerContextMenuColor
         case "import-actions-colour":
-            return settings.controllerImportActionColor
+            return settings.appearance.controllerImportActionColor
         case "toolbar-icons-colour":
-            return settings.controllerToolbarColor
+            return settings.appearance.controllerToolbarColor
         default:
-            return settings.controllerTextAppearance.contentColor ?? .primary
+            return settings.appearance.controllerTextAppearance.contentColor ?? .primary
         }
     }
 }

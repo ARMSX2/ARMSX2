@@ -201,7 +201,7 @@ struct QuickMenuView: View {
         }
         .environment(
             \.controllerTextAppearance,
-            settings.controllerQuickMenuTextAppearance
+            settings.appearance.controllerQuickMenuTextAppearance
         )
         // Overlay readability profiles assume the dark Liquid Glass variant;
         // keeping the scheme local avoids changing the game or library.
@@ -278,9 +278,9 @@ struct QuickMenuView: View {
         } else if matches("Full Screen") {
             fullScreen.toggle()
         } else if matches("Hide Menu Button") {
-            let hidden = !settings.hideMenuButton
+            let hidden = !settings.controller.hideMenuButton
             menuButtonHidden = hidden
-            settings.hideMenuButton = hidden
+            settings.controller.hideMenuButton = hidden
         } else if matches("Speed / Fast Forward") {
             onOpen(.speed)
         } else if matches("Per-Game Settings") {
@@ -596,7 +596,7 @@ struct QuickMenuView: View {
             Text(settings.localized("Hidden while controller is connected"))
                 .font(.caption)
                 .foregroundStyle(
-                    settings.controllerQuickMenuTextAppearance.secondaryColor
+                    settings.appearance.controllerQuickMenuTextAppearance.secondaryColor
                         ?? OverlayTheme.textSecondary
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -617,10 +617,10 @@ struct QuickMenuView: View {
             label: settings.localized("Hide Menu Button"),
             systemImage: "eye.slash",
             isOn: Binding(
-                get: { settings.hideMenuButton },
+                get: { settings.controller.hideMenuButton },
                 set: { newValue in
                     menuButtonHidden = newValue
-                    settings.hideMenuButton = newValue
+                    settings.controller.hideMenuButton = newValue
                 }
             )
         )

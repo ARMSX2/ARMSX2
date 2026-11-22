@@ -228,7 +228,7 @@ extension GameLibraryControllerCoordinator {
         respectingLaunchAnimationSetting: Bool = true
     ) -> GameplayLaunchTransition? {
         guard !respectingLaunchAnimationSetting
-            || settings.gameCardZoomAnimationEnabled else {
+            || settings.appearance.gameCardZoomAnimationEnabled else {
             return nil
         }
 
@@ -528,7 +528,7 @@ extension GameLibraryControllerCoordinator {
         withTransaction(reorderTransaction) {
             updatedValue = library.toggleFavorite(game)
         }
-        if settings.favoriteGlowingEffectEnabled {
+        if settings.appearance.favoriteGlowingEffectEnabled {
             favoriteAnimationValues[game.id, default: 0] += 1
         }
         if controllerInput != nil {
