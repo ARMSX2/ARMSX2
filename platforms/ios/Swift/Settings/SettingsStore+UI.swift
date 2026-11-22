@@ -17,3 +17,10 @@ extension SettingsStore {
         appLanguage.numberLocale
     }
 }
+
+extension SettingsStore {
+    static let _appLanguageConfig = Setting<AppLanguage>(
+        section: "ARMSX2iOS/UI", key: "AppLanguage", default: .system,
+        suppressible: false,
+        codec: .rawString)
+}

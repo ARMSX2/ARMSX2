@@ -333,3 +333,89 @@ extension SettingsStore {
             || backgroundLandscapeAsset != nil
     }
 }
+
+extension SettingsStore {
+    // Adaptive Resolution — opt-in frame-time-driven dynamic internal
+    // resolution, off by default. The didSet writes the INI key and starts or
+    // stops the controller so its lifecycle tracks the user's toggle.
+    static let _adaptiveResolutionEnabledConfig = Setting<Bool>(
+        section: "ARMSX2iOS/FramePacing", key: "DynamicResolution", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
+        section: "ARMSX2iOS/UI", key: "LastActiveOsdPreset", default: .simple,
+        suppressible: false,
+        codec: .rawInt)
+    static let _osdPerformancePositionConfig = Setting<Int>(
+        section: "EmuCore/GS", key: "OsdPerformancePos",
+        default: SettingsStore.defaultOsdPerformancePosition,
+        suppressible: false,
+        codec: .int)
+    /// Suppresses transient on-screen messages (shader compilation, save state,
+    /// settings-applied). Critical SwiftUI alerts are unaffected. Backed by the
+    /// core's OsdMessagesPos (1 = TopLeft default, 0 = None).
+    static let _osdShowMessagesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdMessagesPos", default: true,
+        suppressible: false,
+        codec: .boolAsInt)
+    static let _osdShowFPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFPS", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowVPSConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVPS", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowSpeedConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSpeed", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowCPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowCPU", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowGPUConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGPU", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowResolutionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowResolution", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowGSStatsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowGSStats", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowIndicatorsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowIndicators", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowSettingsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowSettings", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowInputsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowInputs", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowFrameTimesConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowFrameTimes", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowVersionConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowVersion", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowHardwareInfoConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowHardwareInfo", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowTextureReplacementsConfig = Setting<Bool>(
+        section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
+        suppressible: false,
+        codec: .bool)
+    static let _osdShowDeviceStatsConfig = Setting<Bool>(
+        section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
+        suppressible: false,
+        codec: .bool)
+}

@@ -29,10 +29,10 @@ class ShaderPresetPathTests(unittest.TestCase):
 
     def test_the_selection_is_a_setting_backed_token(self):
         self.assertRegex(
-            self.store, r'key:\s*"ShaderChainPresetRef"',
+            self.store_all, r'key:\s*"ShaderChainPresetRef"',
             "SettingsStore does not declare a Setting for ShaderChainPresetRef")
         self.assertRegex(
-            self.store, r'section:\s*"EmuCore/GS",\s*key:\s*"ShaderChainPresetRef"',
+            self.store_all, r'section:\s*"EmuCore/GS",\s*key:\s*"ShaderChainPresetRef"',
             "ShaderChainPresetRef is not in EmuCore/GS beside ShaderChainPreset")
 
     def test_nothing_persists_a_container_path_as_the_selection(self):
@@ -48,7 +48,7 @@ class ShaderPresetPathTests(unittest.TestCase):
                     f"{source} instead of ShaderPresetLibrary.token(for:)")
 
     def test_the_token_setting_is_only_ever_committed_with_its_own_property(self):
-        commits = re.findall(r"commit\(_shaderChainPresetRefConfig,\s*([^)]+)\)", self.store_all)
+        commits = re.findall(r"commit\((?:Self\.)?_shaderChainPresetRefConfig,\s*([^)]+)\)", self.store_all)
         self.assertTrue(commits, "the token setting is never committed, so it never persists")
         for value in commits:
             self.assertEqual(
