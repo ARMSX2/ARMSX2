@@ -12,22 +12,22 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
         Section {
             BackgroundAssetRow(
                 title: settings.localized("Primary Background"),
-                asset: settings.backgroundPrimaryAsset,
+                asset: settings.appearance.backgroundPrimaryAsset,
                 glyph: "rectangle.portrait",
                 caption: settings.localized("Shown in portrait and anywhere no landscape background is set.")
             ) { showPrimaryPicker = true }
-            .modifier(BackgroundSourcePicker(isPresented: $showPrimaryPicker, role: .primary, existingAsset: { settings.backgroundPrimaryAsset }) { updatePrimary($0) })
+            .modifier(BackgroundSourcePicker(isPresented: $showPrimaryPicker, role: .primary, existingAsset: { settings.appearance.backgroundPrimaryAsset }) { updatePrimary($0) })
             .appearanceControllerListRow(
                 "settings.appearance.primary-background"
             )
 
             BackgroundAssetRow(
                 title: settings.localized("Landscape Background"),
-                asset: settings.backgroundLandscapeAsset,
+                asset: settings.appearance.backgroundLandscapeAsset,
                 glyph: "rectangle",
                 caption: settings.localized("Optional. Used only when the device is held in landscape.")
             ) { showLandscapePicker = true }
-            .modifier(BackgroundSourcePicker(isPresented: $showLandscapePicker, role: .landscape, existingAsset: { settings.backgroundLandscapeAsset }) { updateLandscape($0) })
+            .modifier(BackgroundSourcePicker(isPresented: $showLandscapePicker, role: .landscape, existingAsset: { settings.appearance.backgroundLandscapeAsset }) { updateLandscape($0) })
             .appearanceControllerListRow(
                 "settings.appearance.landscape-background"
             )
@@ -38,7 +38,7 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
         }
 
         Section {
-            Picker(selection: manualBinding(for: \.backgroundFitMode)) {
+            Picker(selection: manualBinding(for: \.appearance.backgroundFitMode)) {
                 ForEach(BackgroundFitMode.allCases) { mode in
                     Text(label(for: mode)).tag(mode)
                 }
@@ -49,12 +49,12 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
             .controllerAccessibilityOptionsPickerTarget(
                 id: nil,
                 label: settings.localized("Portrait Fit Mode"),
-                selection: manualBinding(for: \.backgroundFitMode),
+                selection: manualBinding(for: \.appearance.backgroundFitMode),
                 options: BackgroundFitMode.allCases.map {
                     (id: $0, title: label(for: $0))
                 }
             )
-            .onChange(of: settings.backgroundFitMode) { _, _ in
+            .onChange(of: settings.appearance.backgroundFitMode) { _, _ in
                 UISelectionFeedbackGenerator().selectionChanged()
             }
             .appearanceControllerListRow(
@@ -66,7 +66,7 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
 
             Picker(
                 selection: manualBinding(
-                    for: \.backgroundLandscapeFitMode
+                    for: \.appearance.backgroundLandscapeFitMode
                 )
             ) {
                 ForEach(BackgroundFitMode.allCases) { mode in
@@ -80,13 +80,13 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
                 id: nil,
                 label: settings.localized("Landscape Fit Mode"),
                 selection: manualBinding(
-                    for: \.backgroundLandscapeFitMode
+                    for: \.appearance.backgroundLandscapeFitMode
                 ),
                 options: BackgroundFitMode.allCases.map {
                     (id: $0, title: label(for: $0))
                 }
             )
-            .onChange(of: settings.backgroundLandscapeFitMode) { _, _ in
+            .onChange(of: settings.appearance.backgroundLandscapeFitMode) { _, _ in
                 UISelectionFeedbackGenerator().selectionChanged()
             }
             .appearanceControllerListRow(
@@ -102,8 +102,8 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
         }
 
         Section {
-            Toggle(isOn: manualBinding(for: \.backgroundVideoMuted)) {
-                Label(settings.localized("Mute Video"), systemImage: settings.backgroundVideoMuted ? "speaker.slash" : "speaker.wave.2")
+            Toggle(isOn: manualBinding(for: \.appearance.backgroundVideoMuted)) {
+                Label(settings.localized("Mute Video"), systemImage: settings.appearance.backgroundVideoMuted ? "speaker.slash" : "speaker.wave.2")
             }
             .appearanceControllerListRow(
                 "settings.appearance.mute-video"
@@ -111,7 +111,7 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
 
             NumberRow(
                 .backgroundDim,
-                value: manualBinding(for: \.backgroundDim),
+                value: manualBinding(for: \.appearance.backgroundDim),
                 settings: settings
             )
                 .appearanceControllerListRow(
@@ -120,14 +120,14 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
         }
 
         Section {
-            Toggle(isOn: manualBinding(for: \.backgroundEnabledInBIOS)) {
+            Toggle(isOn: manualBinding(for: \.appearance.backgroundEnabledInBIOS)) {
                 Label(settings.localized("BIOS"), systemImage: "cpu")
             }
             .appearanceControllerListRow(
                 "settings.appearance.show-in-bios"
             )
             Toggle(
-                isOn: manualBinding(for: \.backgroundEnabledInSettings)
+                isOn: manualBinding(for: \.appearance.backgroundEnabledInSettings)
             ) {
                 Label(settings.localized("Settings"), systemImage: "gearshape")
             }
@@ -143,7 +143,7 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
 
     @ViewBuilder
     private var portraitFitModeHint: some View {
-        switch settings.backgroundFitMode {
+        switch settings.appearance.backgroundFitMode {
         case .fill:
             HintRow(icon: "arrow.up.left.and.arrow.down.right", text: settings.localized("Fill — covers the whole screen, cropping edges if needed."))
         case .fit:
@@ -155,7 +155,7 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
 
     @ViewBuilder
     private var landscapeFitModeHint: some View {
-        switch settings.backgroundLandscapeFitMode {
+        switch settings.appearance.backgroundLandscapeFitMode {
         case .fill:
             HintRow(icon: "arrow.up.left.and.arrow.down.right", text: settings.localized("Fill — covers the whole screen, cropping edges if needed."))
         case .fit:
@@ -174,17 +174,17 @@ struct AppearanceBackgroundSections: View, AppearanceSettingsEditing {
     }
 
     private func updatePrimary(_ asset: BackgroundAsset?) {
-        settings.beginCustomThemeEditing()
-        if asset == nil { BackgroundStorage.remove(settings.backgroundPrimaryAsset) }
-        if asset != nil { settings.dynamicBackgroundsEnabled = false }
-        settings.backgroundPrimaryAsset = asset
+        settings.appearance.beginCustomThemeEditing()
+        if asset == nil { BackgroundStorage.remove(settings.appearance.backgroundPrimaryAsset) }
+        if asset != nil { settings.appearance.dynamicBackgroundsEnabled = false }
+        settings.appearance.backgroundPrimaryAsset = asset
     }
 
     private func updateLandscape(_ asset: BackgroundAsset?) {
-        settings.beginCustomThemeEditing()
-        if asset == nil { BackgroundStorage.remove(settings.backgroundLandscapeAsset) }
-        if asset != nil { settings.dynamicBackgroundsEnabled = false }
-        settings.backgroundLandscapeAsset = asset
+        settings.appearance.beginCustomThemeEditing()
+        if asset == nil { BackgroundStorage.remove(settings.appearance.backgroundLandscapeAsset) }
+        if asset != nil { settings.appearance.dynamicBackgroundsEnabled = false }
+        settings.appearance.backgroundLandscapeAsset = asset
     }
 }
 

@@ -37,7 +37,7 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
     @State private var settings = SettingsStore.shared
     @State private var frameRates = UIFrameRateSettings.shared
     @State private var themeGallery = ThemeGalleryStore.shared
-    @State private var dynamicPreferences = SettingsStore.shared.dynamicAppearancePreferences
+    @State private var dynamicPreferences = SettingsStore.shared.appearance.dynamicAppearancePreferences
     @State private var paletteTarget: ThemePaletteTarget = .shared
     @State private var presentedEditor: PresentedEditor?
     @State private var presentedControllerColour: PresentedControllerColour?
@@ -282,9 +282,9 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
         // Form's menu-button pressed style resolves against the light scheme
         // after a Picker dismisses; keep the semantic theme colours.
         .foregroundStyle(
-            settings.controllerTextAppearance.contentColor ?? .white
+            settings.appearance.controllerTextAppearance.contentColor ?? .white
         )
-        .tint(settings.controllerNavigationAccentColor)
+        .tint(settings.appearance.controllerNavigationAccentColor)
         .controllerAccessibilityTargetOrder(Self.controllerTargetOrder)
         // On the Form itself, which reliably reaches its private UIKit list. The
         // pushed-page spacer already clears the tab bar.
@@ -329,7 +329,7 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
                 title: "Save Custom Theme", initialText: "",
                 startsInNormalKeyboard: true,
                 onCommit: { name in
-                    themeSaveError = !ThemeGalleryStore.shared.save(name: name, settings: settings)
+                    themeSaveError = !ThemeGalleryStore.shared.save(name: name, settings: settings.appearance)
                     showsThemeNameKeyboard = false
                 },
                 onCancel: { showsThemeNameKeyboard = false }
@@ -375,13 +375,13 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
             .presentationDetents([.medium])
         }
         .onAppear {
-            dynamicPreferences = settings.dynamicAppearancePreferences
+            dynamicPreferences = settings.appearance.dynamicAppearancePreferences
         }
-        .onChange(of: settings.dynamicAppearancePreferences) { _, preferences in
+        .onChange(of: settings.appearance.dynamicAppearancePreferences) { _, preferences in
             if presentedEditor == nil { dynamicPreferences = preferences }
         }
         .onDisappear {
-            ThemeGalleryStore.shared.preserveCustomTheme(settings)
+            ThemeGalleryStore.shared.preserveCustomTheme(settings.appearance)
         }
     }
 
@@ -392,7 +392,7 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
     private func shareCurrentTheme() {
         do {
             themeShareItem = ShareSheetItem(
-                url: try themeGallery.exportCurrentTheme(from: settings)
+                url: try themeGallery.exportCurrentTheme(from: settings.appearance)
             )
         } catch {
             themeTransferMessage = error.localizedDescription
@@ -407,9 +407,9 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
             do {
                 let imported = try themeGallery.importTheme(
                     from: url,
-                    applyingTo: settings
+                    applyingTo: settings.appearance
                 )
-                dynamicPreferences = settings.dynamicAppearancePreferences
+                dynamicPreferences = settings.appearance.dynamicAppearancePreferences
                 themeTransferMessage = "Imported theme preset: \(imported.name)"
                 showsThemeTransferResult = true
             } catch {
@@ -425,14 +425,14 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
 
     private var themeSelectionBinding: Binding<AppearanceThemeSelection> {
         Binding(
-            get: { themeGallery.currentSelection(for: settings) },
+            get: { themeGallery.currentSelection(for: settings.appearance) },
             set: { selection in
                 var transaction = Transaction()
                 transaction.animation = nil
                 withTransaction(transaction) {
                     // Publish a preset's colours and renderer settings in one nonanimated transaction.
-                    themeGallery.apply(selection, to: settings)
-                    dynamicPreferences = settings.dynamicAppearancePreferences
+                    themeGallery.apply(selection, to: settings.appearance)
+                    dynamicPreferences = settings.appearance.dynamicAppearancePreferences
                 }
             }
         )
@@ -472,25 +472,25 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
     ) -> Color {
         switch target {
         case .accent:
-            return settings.controllerNavigationCustomAccentColor?.color
-                ?? settings.controllerNavigationAccentPalette.semanticAccentColor
+            return settings.appearance.controllerNavigationCustomAccentColor?.color
+                ?? settings.appearance.controllerNavigationAccentPalette.semanticAccentColor
         case .focusBox:
-            return settings.controllerFocusBoxCustomColor?.color
-                ?? settings.controllerFocusBoxPalette.semanticAccentColor
+            return settings.appearance.controllerFocusBoxCustomColor?.color
+                ?? settings.appearance.controllerFocusBoxPalette.semanticAccentColor
         case .text:
-            return settings.controllerTextAppearance.normalColor
+            return settings.appearance.controllerTextAppearance.normalColor
                 ?? .primary
         case .focusedText:
-            return settings.controllerTextAppearance.focusedColor
+            return settings.appearance.controllerTextAppearance.focusedColor
         case .textShadow:
-            return settings.controllerTextShadowCustomColor?.color
-                ?? settings.controllerTextShadowPalette
+            return settings.appearance.controllerTextShadowCustomColor?.color
+                ?? settings.appearance.controllerTextShadowPalette
                     .semanticInterfaceShadowColor
         case .focusedTextShadow:
-            return settings.controllerFocusedTextShadowCustomColor?.color
-                ?? settings.controllerFocusedTextShadowPalette.semanticInterfaceShadowColor
+            return settings.appearance.controllerFocusedTextShadowCustomColor?.color
+                ?? settings.appearance.controllerFocusedTextShadowPalette.semanticInterfaceShadowColor
         default:
-            return settings.customRoleColor(target.rawValue) ?? rolePreviewColor(for: target.rawValue)
+            return settings.appearance.customRoleColor(target.rawValue) ?? rolePreviewColor(for: target.rawValue)
         }
     }
 
@@ -499,19 +499,19 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
     ) -> Bool {
         switch target {
         case .accent:
-            return settings.controllerNavigationCustomAccentColor != nil
+            return settings.appearance.controllerNavigationCustomAccentColor != nil
         case .focusBox:
-            return settings.controllerFocusBoxCustomColor != nil
+            return settings.appearance.controllerFocusBoxCustomColor != nil
         case .text:
-            return settings.controllerTextCustomColor != nil
+            return settings.appearance.controllerTextCustomColor != nil
         case .focusedText:
-            return settings.controllerFocusedTextCustomColor != nil
+            return settings.appearance.controllerFocusedTextCustomColor != nil
         case .textShadow:
-            return settings.controllerTextShadowCustomColor != nil
+            return settings.appearance.controllerTextShadowCustomColor != nil
         case .focusedTextShadow:
-            return settings.controllerFocusedTextShadowCustomColor != nil
+            return settings.appearance.controllerFocusedTextShadowCustomColor != nil
         default:
-            return settings.controllerRoleCustomColors[target.rawValue] != nil
+            return settings.appearance.controllerRoleCustomColors[target.rawValue] != nil
         }
     }
 
@@ -522,44 +522,44 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
         guard let savedColour = SavedPaletteColor(color: colour) else {
             return
         }
-        settings.beginCustomThemeEditing()
+        settings.appearance.beginCustomThemeEditing()
         switch target {
         case .accent:
-            settings.controllerNavigationCustomAccentColor = savedColour
+            settings.appearance.controllerNavigationCustomAccentColor = savedColour
         case .focusBox:
-            settings.controllerFocusBoxCustomColor = savedColour
+            settings.appearance.controllerFocusBoxCustomColor = savedColour
         case .text:
-            settings.controllerTextCustomColor = savedColour
+            settings.appearance.controllerTextCustomColor = savedColour
         case .focusedText:
-            settings.controllerFocusedTextCustomColor = savedColour
+            settings.appearance.controllerFocusedTextCustomColor = savedColour
         case .textShadow:
-            settings.controllerTextShadowCustomColor = savedColour
+            settings.appearance.controllerTextShadowCustomColor = savedColour
         case .focusedTextShadow:
-            settings.controllerFocusedTextShadowCustomColor = savedColour
+            settings.appearance.controllerFocusedTextShadowCustomColor = savedColour
         default:
-            settings.controllerRoleCustomColors[target.rawValue] = savedColour
+            settings.appearance.controllerRoleCustomColors[target.rawValue] = savedColour
         }
     }
 
     private func removeControllerCustomColour(
         for target: PresentedControllerColour
     ) {
-        settings.beginCustomThemeEditing()
+        settings.appearance.beginCustomThemeEditing()
         switch target {
         case .accent:
-            settings.controllerNavigationCustomAccentColor = nil
+            settings.appearance.controllerNavigationCustomAccentColor = nil
         case .focusBox:
-            settings.controllerFocusBoxCustomColor = nil
+            settings.appearance.controllerFocusBoxCustomColor = nil
         case .text:
-            settings.controllerTextCustomColor = nil
+            settings.appearance.controllerTextCustomColor = nil
         case .focusedText:
-            settings.controllerFocusedTextCustomColor = nil
+            settings.appearance.controllerFocusedTextCustomColor = nil
         case .textShadow:
-            settings.controllerTextShadowCustomColor = nil
+            settings.appearance.controllerTextShadowCustomColor = nil
         case .focusedTextShadow:
-            settings.controllerFocusedTextShadowCustomColor = nil
+            settings.appearance.controllerFocusedTextShadowCustomColor = nil
         default:
-            settings.controllerRoleCustomColors[target.rawValue] = nil
+            settings.appearance.controllerRoleCustomColors[target.rawValue] = nil
         }
     }
 
@@ -580,19 +580,19 @@ struct AppearanceSettingsView: View, AppearanceSettingsEditing {
     }
 
     private func saveDynamicAppearance() {
-        settings.beginCustomThemeEditing()
-        settings.dynamicAppearancePreferences = dynamicPreferences
+        settings.appearance.beginCustomThemeEditing()
+        settings.appearance.dynamicAppearancePreferences = dynamicPreferences
     }
 
     private func resetAppearance() {
         settings.resetAppearanceDefaults()
-        settings.markAppearanceUserModified()
-        dynamicPreferences = settings.dynamicAppearancePreferences
+        settings.appearance.markAppearanceUserModified()
+        dynamicPreferences = settings.appearance.dynamicAppearancePreferences
     }
 
     private func paletteEditorDidDismiss() {
         isShowingBackgroundOnly = false
-        dynamicPreferences = settings.dynamicAppearancePreferences
+        dynamicPreferences = settings.appearance.dynamicAppearancePreferences
     }
 }
 private struct ControllerCustomColourEditor: View {

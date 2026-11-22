@@ -13,7 +13,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "Accent Colour", id: "accent-colour",
                 selection: accentPaletteBinding, options: paletteOptions,
-                custom: .accent, preview: settings.controllerNavigationAccentColor
+                custom: .accent, preview: settings.appearance.controllerNavigationAccentColor
             )
         }
 
@@ -21,26 +21,26 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "Text Colour", id: "text-colour",
                 selection: textPaletteBinding, options: optionalPaletteOptions,
-                custom: .text, preview: settings.controllerTextAppearance.normalColor ?? .primary
+                custom: .text, preview: settings.appearance.controllerTextAppearance.normalColor ?? .primary
             )
 
             colourPicker(
                 "Secondary Text Colour", id: "secondary-text-colour",
                 selection: secondaryTextPaletteBinding, options: optionalPaletteOptions,
-                custom: .secondary, preview: settings.controllerTextAppearance.secondaryColor ?? .secondary
+                custom: .secondary, preview: settings.appearance.controllerTextAppearance.secondaryColor ?? .secondary
             )
 
             colourPicker(
                 "Critical Text Colour", id: "critical-text-colour",
-                selection: manualBinding(for: \.controllerCriticalTextPalette), options: paletteOptions,
-                custom: .critical, preview: settings.controllerCriticalTextColor
+                selection: manualBinding(for: \.appearance.controllerCriticalTextPalette), options: paletteOptions,
+                custom: .critical, preview: settings.appearance.controllerCriticalTextColor
             )
 
             optionalRolePalettePicker(
                 "Tab Titles Colours",
                 id: "tab-titles-colour",
                 selection: manualBinding(
-                    for: \.controllerTabTitlePalette
+                    for: \.appearance.controllerTabTitlePalette
                 )
             )
 
@@ -48,7 +48,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Tab Sub Titles Colour",
                 id: "tab-subtitles-colour",
                 selection: manualBinding(
-                    for: \.controllerTabSubtitlePalette
+                    for: \.appearance.controllerTabSubtitlePalette
                 )
             )
 
@@ -56,7 +56,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Bottom Tab Bar Colour",
                 id: "bottom-tab-bar-colour",
                 selection: manualBinding(
-                    for: \.controllerBottomTabBarPalette
+                    for: \.appearance.controllerBottomTabBarPalette
                 )
             )
 
@@ -64,7 +64,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Bottom Tab Bar Unselected Colour",
                 id: "bottom-tab-bar-unselected-colour",
                 selection: manualBinding(
-                    for: \.controllerBottomTabBarUnselectedPalette
+                    for: \.appearance.controllerBottomTabBarUnselectedPalette
                 )
             )
 
@@ -72,7 +72,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Game & BIOS Card Titles Colour",
                 id: "card-titles-colour",
                 selection: manualBinding(
-                    for: \.controllerCardTitlePalette
+                    for: \.appearance.controllerCardTitlePalette
                 )
             )
 
@@ -80,7 +80,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Context Menu Colour",
                 id: "context-menu-colour",
                 selection: manualBinding(
-                    for: \.controllerContextMenuPalette
+                    for: \.appearance.controllerContextMenuPalette
                 )
             )
 
@@ -88,7 +88,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Import Actions Colour",
                 id: "import-actions-colour",
                 selection: manualBinding(
-                    for: \.controllerImportActionPalette
+                    for: \.appearance.controllerImportActionPalette
                 )
             )
 
@@ -96,14 +96,14 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 "Toolbar Icons Colour",
                 id: "toolbar-icons-colour",
                 selection: manualBinding(
-                    for: \.controllerToolbarPalette
+                    for: \.appearance.controllerToolbarPalette
                 )
             )
 
             NumberRow(
                 settings.localized("Text Shadow Strength"),
                 value: manualBinding(
-                    for: \.controllerTextShadowStrength
+                    for: \.appearance.controllerTextShadowStrength
                 ),
                 in: 0...1,
                 format: .unitPercent,
@@ -119,7 +119,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "Text Shadow Colour", id: "text-shadow-colour",
                 selection: textShadowPaletteBinding, options: paletteOptions,
-                custom: .textShadow, preview: settings.controllerTextAppearance.normalShadowColor
+                custom: .textShadow, preview: settings.appearance.controllerTextAppearance.normalShadowColor
             )
         } header: {
             Label(
@@ -134,13 +134,13 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "Text Focus Colour", id: "focused-text-colour",
                 selection: focusedTextPaletteBinding, options: paletteOptions,
-                custom: .focusedText, preview: settings.controllerTextAppearance.focusedColor
+                custom: .focusedText, preview: settings.appearance.controllerTextAppearance.focusedColor
             )
 
             NumberRow(
                 settings.localized("Focused Text Shadow Strength"),
                 value: manualBinding(
-                    for: \.controllerFocusedTextShadowStrength
+                    for: \.appearance.controllerFocusedTextShadowStrength
                 ),
                 in: 0...1,
                 format: .unitPercent,
@@ -156,12 +156,12 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "Focused Text Shadow Colour", id: "focused-text-shadow-colour",
                 selection: focusedTextShadowPaletteBinding, options: paletteOptions,
-                custom: .focusedTextShadow, preview: settings.controllerTextAppearance.focusedShadowColor
+                custom: .focusedTextShadow, preview: settings.appearance.controllerTextAppearance.focusedShadowColor
             )
 
             Toggle(
                 isOn: manualBinding(
-                    for: \.controllerNavigationDepthEffectEnabled
+                    for: \.appearance.controllerNavigationDepthEffectEnabled
                 )
             ) {
                 Label(
@@ -176,7 +176,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             )
 
             Picker(
-                selection: manualBinding(for: \.controllerFocusBoxStyle)
+                selection: manualBinding(for: \.appearance.controllerFocusBoxStyle)
             ) {
                 ForEach(ControllerFocusBoxStyle.allCases) { style in
                     Text(settings.localized(style.title)).tag(style)
@@ -191,7 +191,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             .controllerAccessibilityOptionsPickerTarget(
                 id: nil,
                 label: settings.localized("UI Focus Box"),
-                selection: manualBinding(for: \.controllerFocusBoxStyle),
+                selection: manualBinding(for: \.appearance.controllerFocusBoxStyle),
                 options: ControllerFocusBoxStyle.allCases.map {
                     (id: $0, title: settings.localized($0.title))
                 }
@@ -202,7 +202,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
 
             Picker(
                 selection: manualBinding(
-                    for: \.controllerNavigationFocusAnimation
+                    for: \.appearance.controllerNavigationFocusAnimation
                 )
             ) {
                 ForEach(ControllerNavigationFocusTravelStyle.allCases) { animation in
@@ -219,7 +219,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
                 id: nil,
                 label: settings.localized("Navigation Focus Animation"),
                 selection: manualBinding(
-                    for: \.controllerNavigationFocusAnimation
+                    for: \.appearance.controllerNavigationFocusAnimation
                 ),
                 options: ControllerNavigationFocusTravelStyle.allCases.map {
                     (id: $0, title: settings.localized($0.title))
@@ -230,7 +230,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             )
 
             NavigationFocusAnimationPreview(
-                animation: settings.controllerNavigationFocusAnimation
+                animation: settings.appearance.controllerNavigationFocusAnimation
             )
             .appearanceControllerListRow(
                 "settings.appearance.navigation-focus-animation-preview"
@@ -239,12 +239,12 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             colourPicker(
                 "UI Focus Box Colours", id: "focus-box-colours",
                 selection: focusBoxPaletteBinding, options: paletteOptions,
-                custom: .focusBox, preview: settings.controllerFocusBoxCustomColor?.color ?? settings.controllerFocusBoxPalette.semanticAccentColor
+                custom: .focusBox, preview: settings.appearance.controllerFocusBoxCustomColor?.color ?? settings.appearance.controllerFocusBoxPalette.semanticAccentColor
             )
             NumberRow(
                 settings.localized("Animation Speed"),
                 value: manualBinding(
-                    for: \.controllerFocusBoxAnimationSpeed
+                    for: \.appearance.controllerFocusBoxAnimationSpeed
                 ),
                 in: 0.25...2,
                 format: .multiplier,
@@ -256,11 +256,11 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
             .appearanceControllerListRow(
                 "settings.appearance.focus-box-animation-speed"
             )
-            .disabled(!settings.controllerFocusBoxStyle.isAnimated)
+            .disabled(!settings.appearance.controllerFocusBoxStyle.isAnimated)
 
             NumberRow(
                 settings.localized("Glow Intensity"),
-                value: manualBinding(for: \.controllerFocusBoxGlowIntensity),
+                value: manualBinding(for: \.appearance.controllerFocusBoxGlowIntensity),
                 in: 0...2,
                 format: .unitPercent,
                 step: 0.05,
@@ -298,7 +298,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
 
         Section {
             Toggle(
-                isOn: manualBinding(for: \.focusOrbsEnabled)
+                isOn: manualBinding(for: \.appearance.focusOrbsEnabled)
             ) {
                 Label(
                     settings.localized("Focus Orbs"),
@@ -311,10 +311,10 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
 
             colourPicker(
                 "Orbs Colours", id: "focus-orb-colours",
-                selection: manualBinding(for: \.controllerOrbPalette), options: paletteOptions,
-                custom: .orbs, preview: settings.controllerOrbColors.first ?? .blue
+                selection: manualBinding(for: \.appearance.controllerOrbPalette), options: paletteOptions,
+                custom: .orbs, preview: settings.appearance.controllerOrbColors.first ?? .blue
             )
-            .disabled(!settings.focusOrbsEnabled)
+            .disabled(!settings.appearance.focusOrbsEnabled)
         } header: {
             Label(
                 settings.localized("Orbs"),
@@ -327,66 +327,66 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
 
     private var accentPaletteBinding: Binding<ThemePalette> {
         Binding(
-            get: { settings.controllerNavigationAccentPalette },
+            get: { settings.appearance.controllerNavigationAccentPalette },
             set: { palette in
-                settings.beginCustomThemeEditing()
-                settings.controllerNavigationCustomAccentColor = nil
-                settings.controllerNavigationAccentPalette = palette
+                settings.appearance.beginCustomThemeEditing()
+                settings.appearance.controllerNavigationCustomAccentColor = nil
+                settings.appearance.controllerNavigationAccentPalette = palette
             }
         )
     }
 
     private var focusBoxPaletteBinding: Binding<ThemePalette> {
         Binding(
-            get: { settings.controllerFocusBoxPalette },
+            get: { settings.appearance.controllerFocusBoxPalette },
             set: { palette in
-                settings.beginCustomThemeEditing()
-                settings.controllerFocusBoxCustomColor = nil
-                settings.controllerFocusBoxPalette = palette
+                settings.appearance.beginCustomThemeEditing()
+                settings.appearance.controllerFocusBoxCustomColor = nil
+                settings.appearance.controllerFocusBoxPalette = palette
             }
         )
     }
 
     private var textPaletteBinding: Binding<ThemePalette?> {
         Binding(
-            get: { settings.controllerTextPalette },
+            get: { settings.appearance.controllerTextPalette },
             set: { palette in
-                settings.beginCustomThemeEditing()
-                settings.controllerTextCustomColor = nil
-                settings.controllerTextPalette = palette
+                settings.appearance.beginCustomThemeEditing()
+                settings.appearance.controllerTextCustomColor = nil
+                settings.appearance.controllerTextPalette = palette
             }
         )
     }
 
     private var focusedTextPaletteBinding: Binding<ThemePalette> {
         paletteBinding(
-            palette: \.controllerFocusedTextPalette,
-            custom: \.controllerFocusedTextCustomColor
+            palette: \.appearance.controllerFocusedTextPalette,
+            custom: \.appearance.controllerFocusedTextCustomColor
         )
     }
 
     private var secondaryTextPaletteBinding: Binding<ThemePalette?> {
         Binding(
-            get: { settings.controllerSecondaryTextPalette },
+            get: { settings.appearance.controllerSecondaryTextPalette },
             set: { palette in
-                settings.beginCustomThemeEditing()
-                settings.controllerRoleCustomColors["secondary-text-colour"] = nil
-                settings.controllerSecondaryTextPalette = palette
+                settings.appearance.beginCustomThemeEditing()
+                settings.appearance.controllerRoleCustomColors["secondary-text-colour"] = nil
+                settings.appearance.controllerSecondaryTextPalette = palette
             }
         )
     }
 
     private var textShadowPaletteBinding: Binding<ThemePalette> {
         paletteBinding(
-            palette: \.controllerTextShadowPalette,
-            custom: \.controllerTextShadowCustomColor
+            palette: \.appearance.controllerTextShadowPalette,
+            custom: \.appearance.controllerTextShadowCustomColor
         )
     }
 
     private var focusedTextShadowPaletteBinding: Binding<ThemePalette> {
         paletteBinding(
-            palette: \.controllerFocusedTextShadowPalette,
-            custom: \.controllerFocusedTextShadowCustomColor
+            palette: \.appearance.controllerFocusedTextShadowPalette,
+            custom: \.appearance.controllerFocusedTextShadowCustomColor
         )
     }
 
@@ -430,8 +430,8 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
         let binding = Binding<Value>(
             get: { selection.wrappedValue },
             set: { value in
-                settings.beginCustomThemeEditing()
-                settings.controllerRoleCustomColors[id] = nil
+                settings.appearance.beginCustomThemeEditing()
+                settings.appearance.controllerRoleCustomColors[id] = nil
                 selection.wrappedValue = value
             }
         )
@@ -455,7 +455,7 @@ struct AppearanceColourSections: View, AppearanceSettingsEditing {
         Binding(
             get: { settings[keyPath: palette] },
             set: { value in
-                settings.beginCustomThemeEditing()
+                settings.appearance.beginCustomThemeEditing()
                 settings[keyPath: custom] = nil
                 settings[keyPath: palette] = value
             }
@@ -497,7 +497,7 @@ private struct NavigationFocusAnimationPreview: View {
                     ControllerNavigationAnimatedOrbField(
                         targetID: isAtDestination ? "preview.b" : "preview.a",
                         targetFrame: frame,
-                        primaryColor: settings.controllerNavigationAccentColor,
+                        primaryColor: settings.appearance.controllerNavigationAccentColor,
                         style: .plain,
                         controllerInput: nil,
                         showsOrbs: false,

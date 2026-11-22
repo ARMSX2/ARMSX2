@@ -62,14 +62,14 @@ struct EmulationOnlyGameView: View {
                 .accessibilityLabel(Text("Game display"))
                 .accessibilityAddTraits(.isImage)
                 .persistentSystemOverlays(
-                    settings.hideGameplayStatusBar ? .hidden : .automatic
+                    settings.appearance.hideGameplayStatusBar ? .hidden : .automatic
                 )
                 .onAppear(perform: preparePresentation)
                 .onDisappear(perform: releasePresentation)
         } else {
             retainedGameplayView
                 .persistentSystemOverlays(
-                    settings.hideGameplayStatusBar ? .hidden : .automatic
+                    settings.appearance.hideGameplayStatusBar ? .hidden : .automatic
                 )
                 .onAppear(perform: preparePresentation)
                 .onDisappear(perform: releasePresentation)
@@ -160,7 +160,7 @@ struct EmulationOnlyGameView: View {
     }
 
     private func preparePresentation() {
-        appState.hideStatusBar = settings.hideGameplayStatusBar
+        appState.hideStatusBar = settings.appearance.hideGameplayStatusBar
         appState.hideHomeIndicator = true
         UIApplication.shared.isIdleTimerDisabled = true
 
@@ -168,7 +168,7 @@ struct EmulationOnlyGameView: View {
         // Reassert the retained presentation state after that teardown completes.
         DispatchQueue.main.async {
             guard session.isEmulationOnlyMode else { return }
-            appState.hideStatusBar = settings.hideGameplayStatusBar
+            appState.hideStatusBar = settings.appearance.hideGameplayStatusBar
             appState.hideHomeIndicator = true
             UIApplication.shared.isIdleTimerDisabled = true
         }
@@ -176,7 +176,7 @@ struct EmulationOnlyGameView: View {
 
     private func releasePresentation() {
         if case .menu = appState.currentScreen {
-            appState.hideStatusBar = settings.hideMenuStatusBar
+            appState.hideStatusBar = settings.appearance.hideMenuStatusBar
             appState.hideHomeIndicator = false
         }
         UIApplication.shared.isIdleTimerDisabled = false

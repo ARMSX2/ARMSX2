@@ -24,7 +24,7 @@ private struct QuickMenuLiquidGlassConfigurationModifier: ViewModifier {
     func body(content: Content) -> some View {
         content.environment(
             \.clearLiquidGlassUIEnabled,
-            settings.clearLiquidGlassUIQuickMenu
+            settings.appearance.clearLiquidGlassUIQuickMenu
         )
     }
 }

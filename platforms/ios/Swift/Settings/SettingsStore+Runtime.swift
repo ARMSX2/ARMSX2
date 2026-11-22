@@ -32,61 +32,17 @@ extension SettingsStore {
         return min(max(scale, 0.8), 1.6)
     }
 
-    static func clampedBackgroundDim(_ value: Double) -> Double {
-        guard value.isFinite else { return 0.0 }
-        return min(max(value, 0.0), 1.0)
-    }
-
-    static func loadBackgroundAsset(forKey key: String) -> BackgroundAsset? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(BackgroundAsset.self, from: data)
-    }
-
-    static func loadSavedPaletteColor(
-        forKey key: String
-    ) -> SavedPaletteColor? {
-        guard let data = UserDefaults.standard.data(forKey: key) else {
-            return nil
-        }
-        return try? JSONDecoder().decode(SavedPaletteColor.self, from: data)
-    }
-
-    static func persistOptionalThemePalette(
-        _ palette: ThemePalette?,
-        forKey key: String
-    ) {
-        if let palette {
-            UserDefaults.standard.set(palette.rawValue, forKey: key)
-        } else {
-            UserDefaults.standard.removeObject(forKey: key)
-        }
-    }
-
-    static func persistSavedPaletteColor(
-        _ color: SavedPaletteColor?,
-        forKey key: String
-    ) {
-        guard let color else {
-            UserDefaults.standard.removeObject(forKey: key)
-            return
-        }
-        UserDefaults.standard.set(
-            try? JSONEncoder().encode(color),
-            forKey: key
-        )
-    }
-
     /// Removes background assets whose files no longer exist. Returns `true`
     /// when at least one stale asset was cleared so callers can surface a notice.
     @discardableResult
     func sanitizeBackgroundAssets() -> Bool {
         var removed = false
-        if let primary = backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
-            backgroundPrimaryAsset = nil
+        if let primary = appearance.backgroundPrimaryAsset, !BackgroundStorage.exists(primary) {
+            appearance.backgroundPrimaryAsset = nil
             removed = true
         }
-        if let landscape = backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
-            backgroundLandscapeAsset = nil
+        if let landscape = appearance.backgroundLandscapeAsset, !BackgroundStorage.exists(landscape) {
+            appearance.backgroundLandscapeAsset = nil
             removed = true
         }
         return removed
@@ -328,9 +284,9 @@ extension SettingsStore {
 
 extension SettingsStore {
     var hasCustomBackground: Bool {
-        dynamicBackgroundsEnabled
-            || backgroundPrimaryAsset != nil
-            || backgroundLandscapeAsset != nil
+        appearance.dynamicBackgroundsEnabled
+            || appearance.backgroundPrimaryAsset != nil
+            || appearance.backgroundLandscapeAsset != nil
     }
 }
 

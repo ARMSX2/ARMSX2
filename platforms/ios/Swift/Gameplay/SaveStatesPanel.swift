@@ -225,7 +225,7 @@ struct SaveStatesPanel: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
             Task { await refresh() }
         }
-        .environment(\.controllerTextAppearance, settings.controllerQuickMenuTextAppearance)
+        .environment(\.controllerTextAppearance, settings.appearance.controllerQuickMenuTextAppearance)
         .preferredColorScheme(.dark)
         .quickMenuLiquidGlassConfiguration()
     }

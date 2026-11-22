@@ -21,10 +21,11 @@ class NoJITThemeRespectsTheUpgrader(unittest.TestCase):
 
     def test_the_toggle_marks_ownership(self):
         dynamic = without_comments(read(DYNAMIC))
-        self.assertNotIn("$settings.dynamicBackgroundsEnabled", dynamic,
-                         "Use Dynamic Background binds straight to the setting again")
+        for direct in ("$settings.dynamicBackgroundsEnabled",
+                       "Bindable(settings.appearance).dynamicBackgroundsEnabled"):
+            self.assertNotIn(direct, dynamic, "Use Dynamic Background binds straight to the setting again")
         toggle = dynamic[dynamic.index("Toggle(isOn: Binding("):]
-        self.assertRegex(toggle[:400], r"beginCustomThemeEditing\(\)\s+settings\.dynamicBackgroundsEnabled",
+        self.assertRegex(toggle[:400], r"beginCustomThemeEditing\(\)\s+settings\.appearance\.dynamicBackgroundsEnabled",
                          "the toggle does not mark the appearance before it changes")
 
 

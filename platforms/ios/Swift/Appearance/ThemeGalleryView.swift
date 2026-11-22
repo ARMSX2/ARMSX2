@@ -18,7 +18,7 @@ struct ThemeGalleryView: View {
     @State private var settings = SettingsStore.shared
     @State private var gallery = ThemeGalleryStore.shared
     @State private var page: Page = .themes
-    @State private var preferences = SettingsStore.shared.dynamicAppearancePreferences
+    @State private var preferences = SettingsStore.shared.appearance.dynamicAppearancePreferences
     @State private var paletteTarget: ThemePaletteTarget = .shared
     @State private var original: AppearanceThemeSnapshot?
     @State private var originalSelection: AppearanceThemeSelection?
@@ -86,7 +86,7 @@ struct ThemeGalleryView: View {
                     Spacer()
                     Text(previewTitle)
                         .font(.headline)
-                        .foregroundStyle(settings.controllerTextAppearance.focusedColor)
+                        .foregroundStyle(settings.appearance.controllerTextAppearance.focusedColor)
                         .padding(.horizontal, 22)
                         .padding(.vertical, 12)
                         .glassSurface(clear: true, forceClear: true, cornerRadius: 30)
@@ -101,11 +101,11 @@ struct ThemeGalleryView: View {
         .presentationDragIndicator(isPreviewing ? .hidden : .visible)
         .onAppear {
             guard original == nil else { return }
-            originalSelection = gallery.currentSelection(for: settings)
-            gallery.preserveCustomTheme(settings)
-            original = AppearanceThemeSnapshot(settings: settings)
+            originalSelection = gallery.currentSelection(for: settings.appearance)
+            gallery.preserveCustomTheme(settings.appearance)
+            original = AppearanceThemeSnapshot(settings: settings.appearance)
             customPreviewSnapshot = gallery.customDraft
-            preferences = settings.dynamicAppearancePreferences
+            preferences = settings.appearance.dynamicAppearancePreferences
         }
         .onChange(of: page) { _, page in
             endPreview()
@@ -114,10 +114,10 @@ struct ThemeGalleryView: View {
         }
         .onChange(of: preferences) { _, updated in
             // A preset synchronizes the binding too; only a user edit differs.
-            guard updated != settings.dynamicAppearancePreferences else { return }
+            guard updated != settings.appearance.dynamicAppearancePreferences else { return }
             rememberUndo()
-            settings.beginCustomThemeEditing()
-            settings.dynamicAppearancePreferences = updated
+            settings.appearance.beginCustomThemeEditing()
+            settings.appearance.dynamicAppearancePreferences = updated
             preview(page.rawValue)
         }
         .onChange(of: livePreview) { _, enabled in
@@ -137,7 +137,7 @@ struct ThemeGalleryView: View {
                 title: "Save Custom Theme", initialText: "",
                 startsInNormalKeyboard: true,
                 onCommit: { name in
-                    saveError = !gallery.save(name: name, settings: settings)
+                    saveError = !gallery.save(name: name, settings: settings.appearance)
                     showsNameKeyboard = false
                     if !saveError { page = .saved }
                 },
@@ -219,7 +219,7 @@ struct ThemeGalleryView: View {
                         themeTile(
                             preset.title,
                             colors: preset.configuration?.accentPalette.colors ?? [.gray, .white],
-                            selected: settings.controllerUIThemePreset == preset
+                            selected: settings.appearance.controllerUIThemePreset == preset
                         )
                     }
                     .buttonStyle(.plain)
@@ -304,24 +304,24 @@ struct ThemeGalleryView: View {
                 selection: $preferences.dynamicBackground,
                 options: DynamicBackgroundStyle.allCases.map { (id: $0, title: $0.title) }
             )
-            Picker("Focus Box", selection: designBinding(\.controllerFocusBoxStyle, title: "Focus Box")) {
+            Picker("Focus Box", selection: designBinding(\.appearance.controllerFocusBoxStyle, title: "Focus Box")) {
                 ForEach(ControllerFocusBoxStyle.allCases) { Text($0.title).tag($0) }
             }
             .controllerAccessibilityOptionsPickerTarget(
                 id: "gallery.focus", label: "Focus Box",
-                selection: designBinding(\.controllerFocusBoxStyle, title: "Focus Box"),
+                selection: designBinding(\.appearance.controllerFocusBoxStyle, title: "Focus Box"),
                 options: ControllerFocusBoxStyle.allCases.map { (id: $0, title: $0.title) }
             )
-            Picker("Navigation Focus Animation", selection: designBinding(\.controllerNavigationFocusAnimation, title: "Navigation Focus Animation")) {
+            Picker("Navigation Focus Animation", selection: designBinding(\.appearance.controllerNavigationFocusAnimation, title: "Navigation Focus Animation")) {
                 ForEach(ControllerNavigationFocusTravelStyle.allCases) { Text($0.title).tag($0) }
             }
             .controllerAccessibilityOptionsPickerTarget(
                 id: "gallery.animation", label: "Navigation Focus Animation",
-                selection: designBinding(\.controllerNavigationFocusAnimation, title: "Navigation Focus Animation"),
+                selection: designBinding(\.appearance.controllerNavigationFocusAnimation, title: "Navigation Focus Animation"),
                 options: ControllerNavigationFocusTravelStyle.allCases.map { (id: $0, title: $0.title) }
             )
-            Toggle("Orbs", isOn: designBinding(\.focusOrbsEnabled, title: "Orbs"))
-            Toggle("Clear Liquid Glass UI", isOn: designBinding(\.clearLiquidGlassUI, title: "Clear Liquid Glass UI"))
+            Toggle("Orbs", isOn: designBinding(\.appearance.focusOrbsEnabled, title: "Orbs"))
+            Toggle("Clear Liquid Glass UI", isOn: designBinding(\.appearance.clearLiquidGlassUI, title: "Clear Liquid Glass UI"))
         }
         .pickerStyle(.menu)
     }
@@ -348,7 +348,7 @@ struct ThemeGalleryView: View {
             get: { settings[keyPath: keyPath] },
             set: { value in
                 rememberUndo()
-                settings.beginCustomThemeEditing()
+                settings.appearance.beginCustomThemeEditing()
                 settings[keyPath: keyPath] = value
                 preview(title)
             }
@@ -356,15 +356,15 @@ struct ThemeGalleryView: View {
     }
 
     private func rememberUndo() {
-        undoHistory.append(AppearanceThemeSnapshot(settings: settings))
+        undoHistory.append(AppearanceThemeSnapshot(settings: settings.appearance))
         if undoHistory.count > 12 { undoHistory.removeFirst() }
     }
 
     private func undo() {
         guard let previous = undoHistory.popLast() else { return }
         gallery.clearActiveSavedTheme()
-        previous.restore(to: settings)
-        preferences = settings.dynamicAppearancePreferences
+        previous.restore(to: settings.appearance)
+        preferences = settings.appearance.dynamicAppearancePreferences
         preview("Previous Theme")
     }
 
@@ -375,45 +375,45 @@ struct ThemeGalleryView: View {
 
     private func apply() {
         didApply = true
-        settings.markAppearanceUserModified()
+        settings.appearance.markAppearanceUserModified()
         if let customPreviewSnapshot { gallery.preserveCustomSnapshot(customPreviewSnapshot) }
-        gallery.preserveCustomTheme(settings)
+        gallery.preserveCustomTheme(settings.appearance)
         endPreview()
         dismiss()
     }
 
     private func selectSavedTheme(_ theme: SavedAppearanceTheme) {
         rememberUndo()
-        if settings.controllerUIThemePreset == .custom {
-            customPreviewSnapshot = AppearanceThemeSnapshot(settings: settings)
+        if settings.appearance.controllerUIThemePreset == .custom {
+            customPreviewSnapshot = AppearanceThemeSnapshot(settings: settings.appearance)
         }
         gallery.apply(
             .saved(theme.id),
-            to: settings,
+            to: settings.appearance,
             preservingCustomTheme: false
         )
-        preferences = settings.dynamicAppearancePreferences
+        preferences = settings.appearance.dynamicAppearancePreferences
         preview(theme.name)
     }
 
     private func selectPreset(_ preset: ControllerUIThemePreset) {
         rememberUndo()
-        if settings.controllerUIThemePreset == .custom {
-            customPreviewSnapshot = AppearanceThemeSnapshot(settings: settings)
+        if settings.appearance.controllerUIThemePreset == .custom {
+            customPreviewSnapshot = AppearanceThemeSnapshot(settings: settings.appearance)
         }
         // Preview changes stay local until Apply, including the
         // custom variant, so Cancel never overwrites the persisted draft.
         if preset == .custom, let customPreviewSnapshot {
             gallery.clearActiveSavedTheme()
-            customPreviewSnapshot.restore(to: settings)
+            customPreviewSnapshot.restore(to: settings.appearance)
         } else {
             gallery.apply(
                 .preset(preset),
-                to: settings,
+                to: settings.appearance,
                 preservingCustomTheme: false
             )
         }
-        preferences = settings.dynamicAppearancePreferences
+        preferences = settings.appearance.dynamicAppearancePreferences
         preview(preset.title)
     }
 
@@ -450,7 +450,7 @@ struct ThemeGalleryView: View {
     }
 
     private func restoreOriginalTheme() {
-        original?.restore(to: settings)
+        original?.restore(to: settings.appearance)
         switch originalSelection {
         case .some(.saved(let id)):
             gallery.setActiveSavedTheme(id)

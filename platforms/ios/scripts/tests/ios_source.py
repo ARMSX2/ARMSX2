@@ -42,6 +42,7 @@ def store_text():
 # Each store's main file, with the text that opens its class and its init.
 STORE_INITS = {
     "SettingsStore.swift": ("final class SettingsStore {", "private init()"),
+    "SettingsStoreAppearance.swift": ("final class Appearance {", "        init() {"),
 }
 
 

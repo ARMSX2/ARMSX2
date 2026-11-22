@@ -51,7 +51,7 @@ extension ControllerAccessibilityNavigationSession {
         guard !UIAccessibility.isReduceMotionEnabled,
               let view = targets[key]?.view.value,
               let targetFrame = presentationFrameForView(view) else { return false }
-        let style = SettingsStore.shared.controllerNavigationFocusAnimation
+        let style = SettingsStore.shared.appearance.controllerNavigationFocusAnimation
         let baseDuration = scrollView == nil ? style.duration
             : scrollAnimationDuration * style.duration
                 / ControllerNavigationFocusTravelStyle.easeOutBack.duration

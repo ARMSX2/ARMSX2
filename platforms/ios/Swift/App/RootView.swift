@@ -254,7 +254,7 @@ struct RootView: View {
                 ZStack {
                     Color.black.ignoresSafeArea()
                     ProgressView(settings.localized("Starting Last Game…"))
-                        .tint(settings.controllerNavigationAccentColor)
+                        .tint(settings.appearance.controllerNavigationAccentColor)
                 }
                 .zIndex(100)
             }
@@ -266,7 +266,7 @@ struct RootView: View {
         }
         .environment(\.locale, settings.appLanguage == .system ? .autoupdatingCurrent : Locale(identifier: settings.appLanguage.bcp47Code))
         .environment(\.layoutDirection, settings.localizedLayoutDirection)
-        .environment(\.clearLiquidGlassUIEnabled, settings.clearLiquidGlassUI)
+        .environment(\.clearLiquidGlassUIEnabled, settings.appearance.clearLiquidGlassUI)
         .environment(\.menuControllerInputRouter, menuControllerInput)
 #if !targetEnvironment(macCatalyst)
         .background {
@@ -308,8 +308,8 @@ struct RootView: View {
 #endif
         .statusBarHidden(
             showBootSplash
-                ? settings.hideIntroStatusBar
-                : (menuScreenActive && settings.hideMenuStatusBar)
+                ? settings.appearance.hideIntroStatusBar
+                : (menuScreenActive && settings.appearance.hideMenuStatusBar)
         )
     }
 
@@ -376,7 +376,7 @@ struct RootView: View {
             guard !Task.isCancelled,
                   !showBootSplash,
                   appState.currentScreen == .menu else { return }
-            appState.hideStatusBar = settings.hideMenuStatusBar
+            appState.hideStatusBar = settings.appearance.hideMenuStatusBar
         }
         scheduleGameplayControllerHelpIfReady()
 
@@ -451,7 +451,7 @@ struct RootView: View {
             return
         }
         if !showBootSplash {
-            appState.hideStatusBar = settings.hideMenuStatusBar
+            appState.hideStatusBar = settings.appearance.hideMenuStatusBar
         }
         gameplayHelpBanner.clear()
         updateRootAlertNavigationCapture(
@@ -782,6 +782,6 @@ struct RootView: View {
 
     private func presentNoJITWarningEffects() {
         MenuAudioPackManager.shared.playEvent(.noJIT)
-        settings.applyAutomaticNoJITAppearanceIfEligible()
+        settings.appearance.applyAutomaticNoJITAppearanceIfEligible()
     }
 }

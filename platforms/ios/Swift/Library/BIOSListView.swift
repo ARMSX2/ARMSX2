@@ -108,7 +108,7 @@ struct BIOSListView: View {
     @Environment(\.uiCardSubtitleColour) private var secondaryTextColour
 
     private var backgroundConfigured: Bool {
-        settings.hasCustomBackground && settings.backgroundEnabledInBIOS
+        settings.hasCustomBackground && settings.appearance.backgroundEnabledInBIOS
     }
 
     private var backgroundActive: Bool {
@@ -346,7 +346,7 @@ struct BIOSListView: View {
                 .prefersVerticalBar()
                 }
             }
-            .tint(settings.controllerToolbarColor)
+            .tint(settings.appearance.controllerToolbarColor)
             .sheet(isPresented: $showBIOSImporter) {
                 ImportDocumentPicker(
                     allowedContentTypes: FileImportHandler.biosContentTypes,

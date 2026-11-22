@@ -201,7 +201,7 @@ struct QuickMenuView: View {
         }
         .environment(
             \.controllerTextAppearance,
-            settings.controllerQuickMenuTextAppearance
+            settings.appearance.controllerQuickMenuTextAppearance
         )
         // Overlay readability profiles assume the dark Liquid Glass variant;
         // keeping the scheme local avoids changing the game or library.
@@ -596,7 +596,7 @@ struct QuickMenuView: View {
             Text(settings.localized("Hidden while controller is connected"))
                 .font(.caption)
                 .foregroundStyle(
-                    settings.controllerQuickMenuTextAppearance.secondaryColor
+                    settings.appearance.controllerQuickMenuTextAppearance.secondaryColor
                         ?? OverlayTheme.textSecondary
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
