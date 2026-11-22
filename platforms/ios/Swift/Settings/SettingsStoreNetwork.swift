@@ -46,6 +46,7 @@ extension SettingsStore {
         var dev9DNS1: String = "0.0.0.0" { didSet { commit(Self._dev9DNS1Config, dev9DNS1) } }
         var dev9DNS2Mode: String = "Auto" { didSet { commit(Self._dev9DNS2ModeConfig, dev9DNS2Mode) } }
         var dev9DNS2: String = "0.0.0.0" { didSet { commit(Self._dev9DNS2Config, dev9DNS2) } }
+        var dev9Hosts: [DEV9Host] = []
 
         init() {
             suppressINIWrites = true
@@ -60,6 +61,7 @@ extension SettingsStore {
             dev9DNS1 = Self._dev9DNS1Config.load()
             dev9DNS2Mode = Self._dev9DNS2ModeConfig.load()
             dev9DNS2 = Self._dev9DNS2Config.load()
+            dev9Hosts = Self.loadDEV9Hosts()
             dev9EthDevice = ARMSX2Bridge.getINIString("DEV9/Eth", key: "EthDevice", defaultValue: "Auto")
         }
 
