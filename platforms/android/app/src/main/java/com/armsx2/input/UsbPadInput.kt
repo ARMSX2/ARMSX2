@@ -155,8 +155,11 @@ internal class UsbPadInput(port: Int) {
         }
 
         // Round up when converting to the existing JNI range: truncation on both sides would
-        // otherwise turn a DS3 pressure byte into the byte below it.
-        fun pressureRange(pressure: Int): Int = (pressure.coerceIn(0, 255) * 32767 + 254) / 255
+        // otherwise turn a DS3 pressure byte into the byte below it. Never 0, which applyPadButton
+        // reads as a full press: a held button whose pressure byte is still 0 is sent as 1, which
+        // the pad stores as pressed with pressure 0.
+        fun pressureRange(pressure: Int): Int =
+            maxOf(1, (pressure.coerceIn(0, 255) * 32767 + 254) / 255)
 
         private fun centred(v: Int) = ((v - 128) / 127f).coerceIn(-1f, 1f)
     }

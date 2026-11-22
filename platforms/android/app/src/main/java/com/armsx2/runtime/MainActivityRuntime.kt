@@ -2639,7 +2639,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 analogKeyHeld[port][p_keycode] = pad_force / 32767f
             // Track for the LIVE pressure modifier (see TouchControls.notePressureKeyState).
             com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, true)
-            NativeApp.setPadButtonForPort(port, p_keycode, pad_force, pressure == null || pressure > 0)
+            NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
             if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port].remove(p_keycode)

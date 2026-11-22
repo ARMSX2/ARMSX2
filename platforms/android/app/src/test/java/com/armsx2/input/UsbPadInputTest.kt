@@ -45,4 +45,13 @@ class UsbPadInputTest {
             assertEquals(value, (range / 32767f * 255f).toInt())
         }
     }
+
+    @Test fun heldButtonWithZeroPressureIsSentAsLightestPress() {
+        // applyPadButton reads a pressed button with force 0 as a full press. PadDualshock2::Set
+        // sets the digital bit for any value above 0 and truncates value * 255 to the pressure
+        // byte, so force 1 arrives as pressed with pressure 0.
+        val force = UsbPadInput.pressureRange(0)
+        assertTrue(force > 0)
+        assertEquals(0, (force / 32767f * 255f).toInt())
+    }
 }
