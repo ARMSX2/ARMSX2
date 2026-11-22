@@ -199,6 +199,25 @@ const MeasuredOp kHiLoSaMoves[] = {
 	{"MTSAH", ee::MTSAH(reg::a3, 1),   1 * 8},
 };
 
+// The loads, every width, into t0 (f3 and vf3 for LWC1 and LQC2), from the
+// harness's scratch memory through t1.
+const MeasuredOp kLoads[] = {
+	{"LB",   LB(reg::t0, 0, reg::t1),        1 * 8},
+	{"LBU",  LBU(reg::t0, 0, reg::t1),       1 * 8},
+	{"LH",   LH(reg::t0, 0, reg::t1),        1 * 8},
+	{"LHU",  LHU(reg::t0, 0, reg::t1),       1 * 8},
+	{"LW",   LW(reg::t0, 0, reg::t1),        1 * 8},
+	{"LWU",  ee::LWU(reg::t0, 0, reg::t1),   1 * 8},
+	{"LWL",  LWL(reg::t0, 3, reg::t1),       1 * 8},
+	{"LWR",  LWR(reg::t0, 0, reg::t1),       1 * 8},
+	{"LD",   ee::LD(reg::t0, 0, reg::t1),    1 * 8},
+	{"LDL",  ee::LDL(reg::t0, 7, reg::t1),   1 * 8},
+	{"LDR",  ee::LDR(reg::t0, 0, reg::t1),   1 * 8},
+	{"LQ",   ee::LQ(reg::t0, 0, reg::t1),    1 * 8},
+	{"LWC1", ee::LWC1(3, 0, reg::t1),        1 * 8},
+	{"LQC2", ee::LQC2(3, reg::t1, 0),        1 * 8},
+};
+
 // COP0 reads (two registers whose value both engines agree on), DI and TLBP.
 const MeasuredOp kCop0[] = {
 	{"MFC0", MFC0(reg::t0, 15), 1 * 8}, // PRId
@@ -280,6 +299,7 @@ void RunBlock(const Block& b, u64* jit, u64* interp)
 		h.SetGpr64(reg::a2, 0x0000000500000007ull);
 		h.SetGpr(reg::a3, 0x00012345u);
 		h.SetGpr(reg::t2, 0x00000007u);
+		h.SetGpr(reg::t1, RecompilerTestEnvironment::kScratchAddr);
 		h.SetFprBits(1, 0x40800000u); // 4.0
 		h.SetFprBits(2, 0x40800000u); // 4.0
 		h.LoadProgram(b.words);
@@ -349,6 +369,14 @@ TEST(EeRecMeasuredCharge, IntegerAluOpsChargeOneCycle)
 TEST(EeRecMeasuredCharge, HiLoAndSaMovesChargeOneCycle)
 {
 	ExpectMeasuredCharges(kHiLoSaMoves);
+}
+
+// The console issues a load of any width once per cycle. A load whose value
+// the next instruction uses costs 2 (3 for LWC1 or LQC2 then an FPU or VU0
+// use); the charge is the issue cost, since the model has no latency.
+TEST(EeRecMeasuredCharge, LoadsChargeOneCycle)
+{
+	ExpectMeasuredCharges(kLoads);
 }
 
 // The console reads any COP0 register in 1 cycle (eight tried), and DI costs

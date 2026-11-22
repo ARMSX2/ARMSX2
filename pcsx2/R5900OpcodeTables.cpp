@@ -193,7 +193,14 @@ namespace R5900
 			static const int FPU_Acc = 1*8;
 
 			static const int Store = 14;
-			static const int Load = 14;
+
+			// Loads, every width (LB..LQ, LWL..LDR, LWC1, LQC2): 1 cycle,
+			// measured on an SCPH-30001: independent loads issue one per
+			// cycle. A load whose value the next instruction uses costs 2,
+			// and LWC1 or LQC2 then an FPU or VU0 use of it 3. The charge is
+			// the issue cost, since the model has no latency. The table
+			// charged 1.75.
+			static const int Load = 1*8;
 		}
 
 		using namespace Cycles;
