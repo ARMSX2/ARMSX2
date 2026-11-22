@@ -183,6 +183,13 @@ const MeasuredOp kIntegerAlu[] = {
 	{"SLL",    NOP,                                   1 * 8}, // NOP
 };
 
+// The conditional moves (rs = a3, rt = t2, rd = t0; t2 is not zero, so MOVN
+// moves and MOVZ does not).
+const MeasuredOp kCondMoves[] = {
+	{"MOVZ", ee::MOVZ(reg::t0, reg::a3, reg::t2), 1 * 8},
+	{"MOVN", ee::MOVN(reg::t0, reg::a3, reg::t2), 1 * 8},
+};
+
 // The HI/LO and SA moves (rs = a3, rd = t0).
 const MeasuredOp kHiLoSaMoves[] = {
 	{"MFHI",  MFHI(reg::t0),           1 * 8},
@@ -377,6 +384,14 @@ TEST(EeRecMeasuredCharge, FpuAccumulatorWritesChargeOneCycle)
 TEST(EeRecMeasuredCharge, IntegerAluOpsChargeOneCycle)
 {
 	ExpectMeasuredCharges(kIntegerAlu);
+}
+
+// The console issues MOVZ and MOVN on the integer pipelines like an ALU op:
+// two independent ones together (0.5 each), a use of the result right after
+// one waits for it (2). Alone, with nothing waiting on it, one takes a cycle.
+TEST(EeRecMeasuredCharge, ConditionalMovesChargeOneCycle)
+{
+	ExpectMeasuredCharges(kCondMoves);
 }
 
 // The console moves to and from HI, LO (either pipeline's) and SA at one per

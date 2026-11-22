@@ -120,10 +120,9 @@ namespace R5900
 		namespace Cycles
 		{
 			// What still takes Default (COP2, CACHE, PREF, SYNC, SYSCALL, BREAK,
-			// J, JAL, JR, JALR, MOVZ, MOVN) has no one cost on an SCPH-30001
-			// that a per-op charge could carry: COP2 is every VU0 macro op and
-			// transfer, PREF 2, SYNC.L 1 and SYNC.P 5, a jump and its delay
-			// slot 2, MOVZ and MOVN 2 to a use and 0.5 apart.
+			// J, JAL, JR, JALR) has no one cost on an SCPH-30001 that a per-op
+			// charge could carry: COP2 is every VU0 macro op and transfer,
+			// PREF 2, SYNC.L 1 and SYNC.P 5, a jump and its delay slot 2.
 			static const int Default = 9;
 			static const int Branch = 11;
 			static const int CopDefault = 7;
@@ -135,6 +134,13 @@ namespace R5900
 			// charge is the chain's cost, since the model has no pairing.
 			// The table charged 1.125.
 			static const int Alu = 1*8;
+
+			// MOVZ and MOVN, measured on an SCPH-30001: two independent ones
+			// issue together (0.5 each), and a use of the result right after
+			// one costs 2. The charge is one issued alone with nothing waiting
+			// on it, an integer pipeline's cycle, since the model has neither
+			// pairing nor latency. The table charged 1.125.
+			static const int CondMove = 1*8;
 
 			// MFHI, MFLO, MTHI, MTLO, their pipeline-1 forms (MFHI1..MTLO1),
 			// MFSA, MTSA, MTSAB, MTSAH: 1 cycle, measured on an SCPH-30001,
@@ -322,8 +328,8 @@ namespace R5900
 		MakeOpcode( SLLV, Alu, 0 );
 		MakeOpcode( SRLV, Alu, 0 );
 		MakeOpcode( SRAV, Alu, 0 );
-		MakeOpcode( MOVZ, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
-		MakeOpcode( MOVN, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
+		MakeOpcode( MOVZ, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
+		MakeOpcode( MOVN, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
 		MakeOpcode( DSLLV, Alu, 0 );
 		MakeOpcode( DSRLV, Alu, 0 );
 		MakeOpcode( DSRAV, Alu, 0 );
