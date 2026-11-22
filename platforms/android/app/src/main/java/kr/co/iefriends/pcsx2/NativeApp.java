@@ -626,7 +626,6 @@ public class NativeApp {
 	/** Local co-op: like setPadButton but routes to PS2 controller port 0 (Player 1)
 	 *  or 1 (Player 2). The plain setPadButton above stays port-0 for touch controls. */
 	public static native void setPadButtonForPort(int port, int index, int range, boolean iskeypressed);
-	public static native void setDualShock3UsbReport(int port, byte[] report);
 	/** Local co-op: hot-plug a 2nd DualShock2 into PS2 port 2 when a second physical
 	 *  controller joins. Idempotent; briefly parks the VM to rebuild the pad list. */
 	public static native void enablePad2();

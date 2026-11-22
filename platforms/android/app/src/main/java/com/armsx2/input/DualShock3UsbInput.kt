@@ -9,7 +9,6 @@ import android.hardware.usb.UsbManager
 import android.hardware.usb.UsbRequest
 import android.os.SystemClock
 import android.util.Log
-import kr.co.iefriends.pcsx2.NativeApp
 import java.nio.ByteBuffer
 import java.util.concurrent.TimeoutException
 
@@ -27,6 +26,8 @@ internal class DualShock3UsbInput private constructor(
     private val report = ByteArray(REPORT_SIZE)
     @Volatile private var active = true
     private var delivered = false
+    private var ledPort = -1
+    private val input = UsbPadInput(port)
     @Volatile var ready = false
         private set
     @Volatile private var publishing = false
@@ -77,9 +78,9 @@ internal class DualShock3UsbInput private constructor(
                             firstReport = false
                             ready = true
                             onReady(this)
-                            // A wired DS3 only retains LED settings after it becomes operational.
-                            setPlayerLed()
                         }
+                        // Update after activation, and when the user changes All controllers play as P1.
+                        setPlayerLed()
                         if (publishing) deliver()
                         continue
                     }
@@ -139,14 +140,17 @@ internal class DualShock3UsbInput private constructor(
     @Synchronized
     private fun deliver() {
         if (!active) return
-        if (!delivered) Log.i(TAG, "DualShock 3 native report received on port ${port + 1}")
-        NativeApp.setDualShock3UsbReport(port, report)
+        if (!delivered) Log.i(TAG, "DualShock 3 input received on port ${port + 1}")
+        input.submit(UsbPadInput.decodeDualShock3(report))
         delivered = true
     }
 
     private fun setPlayerLed() {
         // Sixaxis output report 0x01. Over USB the ID is in wValue, outside the payload.
-        val ledMask = PLAYER_LED_MASKS[port]
+        val player = if (PadRouter.allToPlayer1) 0 else port
+        if (ledPort == player) return
+        ledPort = player
+        val ledMask = PLAYER_LED_MASKS[player]
         val output = ByteArray(35)
         output[0] = 0x01
         output[1] = 0xff.toByte()
@@ -158,7 +162,7 @@ internal class DualShock3UsbInput private constructor(
             connection.controlTransfer(0x21, 0x09, 0x0201, iface.id, output, output.size, 250)
         }.getOrDefault(-1)
         if (sent == output.size) {
-            Log.i(TAG, "DualShock 3 player LED set for port ${port + 1}")
+            Log.i(TAG, "DualShock 3 player LED set for port ${player + 1}")
         } else {
             Log.w(TAG, "DualShock 3 player LED update failed on port ${port + 1} ($sent)")
         }
@@ -169,7 +173,7 @@ internal class DualShock3UsbInput private constructor(
         if (!active) return
         active = false
         ready = false
-        NativeApp.setDualShock3UsbReport(port, null)
+        input.close()
         runCatching { request.cancel() }
         runCatching { connection.releaseInterface(iface) }
         connection.close()

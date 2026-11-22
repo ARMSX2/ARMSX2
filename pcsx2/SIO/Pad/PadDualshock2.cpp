@@ -211,100 +211,9 @@ u8 PadDualshock2::ButtonQuery(u8 commandByte)
 	}
 }
 
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-std::mutex PadDualshock2::s_usb_input_mutex;
-std::array<PadDualshock2::UsbInput, Pad::NUM_CONTROLLER_PORTS> PadDualshock2::s_usb_inputs;
-
-void PadDualshock2::SetDualShock3UsbInput(u32 slot, const DualShock3Report* report)
-{
-	if (slot >= s_usb_inputs.size())
-		return;
-
-	UsbInput state;
-	if (report)
-	{
-		// Report 0x01 stores the first eight button bits in byte 2 and the next
-		// eight in byte 3. Pressure bytes 14–25 follow the twelve analog buttons.
-		static constexpr std::array<Inputs, 16> button_map = {
-			PAD_SELECT, PAD_L3, PAD_R3, PAD_START, PAD_UP, PAD_RIGHT, PAD_DOWN, PAD_LEFT,
-			PAD_L2, PAD_R2, PAD_L1, PAD_R1, PAD_TRIANGLE, PAD_CIRCLE, PAD_CROSS, PAD_SQUARE,
-		};
-		const u16 digital = (*report)[2] | (static_cast<u16>((*report)[3]) << 8);
-		for (size_t bit = 0; bit < button_map.size(); bit++)
-		{
-			if ((digital & (1u << bit)) == 0)
-				continue;
-			const Inputs input = button_map[bit];
-			state.pressed |= 1u << bitmaskMapping[input];
-			state.pressure[input] = bit < 4 ? 255 : (*report)[bit + 10];
-		}
-		std::copy_n(report->begin() + 6, state.sticks.size(), state.sticks.begin());
-		state.connected = true;
-	}
-	std::lock_guard lock(s_usb_input_mutex);
-	s_usb_inputs[slot] = state;
-}
-
-PadDualshock2::UsbInput PadDualshock2::GetUsbInput(u32 slot)
-{
-	std::lock_guard lock(s_usb_input_mutex);
-	return s_usb_inputs[slot];
-}
-
-u8 PadDualshock2::UsbInput::MergePressure(u32 index, u32 base_buttons, u8 base_pressure) const
-{
-	if (!connected || index >= pressure.size())
-		return base_pressure;
-	const u32 mask = 1u << bitmaskMapping[index];
-	if ((pressed & mask) == 0)
-		return base_pressure;
-	return (base_buttons & mask) ? pressure[index] : std::max(base_pressure, pressure[index]);
-}
-
-std::tuple<u8, u8> PadDualshock2::UsbInput::MergeStick(std::tuple<u8, u8> base, size_t offset) const
-{
-	if (!connected)
-		return base;
-	const auto distance_squared = [](int x, int y) {
-		const int centre = Pad::ANALOG_NEUTRAL_POSITION;
-		return (x - centre) * (x - centre) + (y - centre) * (y - centre);
-	};
-	const auto [base_x, base_y] = base;
-	const u8 x = sticks[offset];
-	const u8 y = sticks[offset + 1];
-	return distance_squared(x, y) > distance_squared(base_x, base_y) ? std::make_tuple(x, y) : base;
-}
-#endif
-
 u8 PadDualshock2::Poll(u8 commandByte)
 {
-	const bool held_input = held.on;
-	const u32 base_buttons = held_input ? static_cast<u32>(held.buttons) : static_cast<u32>(this->buttons);
-	u32 buttons = base_buttons;
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	// Keep the report coherent across the bytes of one PS2 poll.
-	if (commandBytesReceived == 3)
-		m_usb_poll_input = GetUsbInput(unifiedSlot);
-	if (!held_input)
-		buttons &= ~static_cast<u32>(m_usb_poll_input.pressed);
-#endif
-	const auto pressure = [&](Inputs input) -> u8 {
-		if (held_input)
-			return GetPressure(input);
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-		if (IsAnalogKey(input))
-		{
-			const bool left = input <= PAD_L_LEFT;
-			const auto stick = left ? std::tuple<u8, u8>{analogs.lx, analogs.ly} :
-				std::tuple<u8, u8>{analogs.rx, analogs.ry};
-			const auto [x, y] = m_usb_poll_input.MergeStick(stick, left ? 0 : 2);
-			return input == PAD_L_RIGHT || input == PAD_R_RIGHT ? x : y;
-		}
-		return m_usb_poll_input.MergePressure(input, base_buttons, rawInputs[input]);
-#else
-		return GetPressure(input);
-#endif
-	};
+	const u32 buttons = GetButtons();
 	u8 largeMotor = 0x00;
 	u8 smallMotor = 0x00;
 
@@ -360,40 +269,40 @@ u8 PadDualshock2::Poll(u8 commandByte)
 
 			return buttons & 0xff;
 		case 5:
-			return pressure(Inputs::PAD_R_RIGHT);
+			return GetPressure(Inputs::PAD_R_RIGHT);
 		case 6:
-			return pressure(Inputs::PAD_R_UP);
+			return GetPressure(Inputs::PAD_R_UP);
 		case 7:
-			return pressure(Inputs::PAD_L_RIGHT);
+			return GetPressure(Inputs::PAD_L_RIGHT);
 		case 8:
 			// PS1 mode: If the controller reaches this byte, it is in analog mode and has irrefutably reached the last byte.
 			// There's simply nothing to check, we know it's done and time to stop acknowledgements.
 			g_Sio0.SetAcknowledge(false);
-			return pressure(Inputs::PAD_L_UP);
+			return GetPressure(Inputs::PAD_L_UP);
 		case 9:
-			return IsButtonBitSet(buttons, 13) ? pressure(Inputs::PAD_RIGHT) : 0;
+			return IsButtonBitSet(buttons, 13) ? GetPressure(Inputs::PAD_RIGHT) : 0;
 		case 10:
-			return IsButtonBitSet(buttons, 15) ? pressure(Inputs::PAD_LEFT) : 0;
+			return IsButtonBitSet(buttons, 15) ? GetPressure(Inputs::PAD_LEFT) : 0;
 		case 11:
-			return IsButtonBitSet(buttons, 12) ? pressure(Inputs::PAD_UP) : 0;
+			return IsButtonBitSet(buttons, 12) ? GetPressure(Inputs::PAD_UP) : 0;
 		case 12:
-			return IsButtonBitSet(buttons, 14) ? pressure(Inputs::PAD_DOWN) : 0;
+			return IsButtonBitSet(buttons, 14) ? GetPressure(Inputs::PAD_DOWN) : 0;
 		case 13:
-			return IsButtonBitSet(buttons, 4) ? pressure(Inputs::PAD_TRIANGLE) : 0;
+			return IsButtonBitSet(buttons, 4) ? GetPressure(Inputs::PAD_TRIANGLE) : 0;
 		case 14:
-			return IsButtonBitSet(buttons, 5) ? pressure(Inputs::PAD_CIRCLE) : 0;
+			return IsButtonBitSet(buttons, 5) ? GetPressure(Inputs::PAD_CIRCLE) : 0;
 		case 15:
-			return IsButtonBitSet(buttons, 6) ? pressure(Inputs::PAD_CROSS) : 0;
+			return IsButtonBitSet(buttons, 6) ? GetPressure(Inputs::PAD_CROSS) : 0;
 		case 16:
-			return IsButtonBitSet(buttons, 7) ? pressure(Inputs::PAD_SQUARE) : 0;
+			return IsButtonBitSet(buttons, 7) ? GetPressure(Inputs::PAD_SQUARE) : 0;
 		case 17:
-			return IsButtonBitSet(buttons, 2) ? pressure(Inputs::PAD_L1) : 0;
+			return IsButtonBitSet(buttons, 2) ? GetPressure(Inputs::PAD_L1) : 0;
 		case 18:
-			return IsButtonBitSet(buttons, 3) ? pressure(Inputs::PAD_R1) : 0;
+			return IsButtonBitSet(buttons, 3) ? GetPressure(Inputs::PAD_R1) : 0;
 		case 19:
-			return IsButtonBitSet(buttons, 0) ? pressure(Inputs::PAD_L2) : 0;
+			return IsButtonBitSet(buttons, 0) ? GetPressure(Inputs::PAD_L2) : 0;
 		case 20:
-			return IsButtonBitSet(buttons, 1) ? pressure(Inputs::PAD_R2) : 0;
+			return IsButtonBitSet(buttons, 1) ? GetPressure(Inputs::PAD_R2) : 0;
 	}
 	
 	Console.Warning("%s(%02X) Did not reach a valid return path! Returning zero as a failsafe!", __FUNCTION__, commandByte);
@@ -983,44 +892,28 @@ u8 PadDualshock2::GetRawInput(u32 index) const
 {
 	if (held.on && index < PadScript::NUM_BUTTONS) [[unlikely]]
 		return held.pressure[index];
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	return GetUsbInput(unifiedSlot).MergePressure(index, buttons, rawInputs[index]);
-#else
 	return rawInputs[index];
-#endif
 }
 
 std::tuple<u8, u8> PadDualshock2::GetRawLeftAnalog() const
 {
 	if (held.on) [[unlikely]]
 		return {held.lx, held.ly};
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	return GetUsbInput(unifiedSlot).MergeStick({analogs.lx, analogs.ly}, 0);
-#else
 	return {analogs.lx, analogs.ly};
-#endif
 }
 
 std::tuple<u8, u8> PadDualshock2::GetRawRightAnalog() const
 {
 	if (held.on) [[unlikely]]
 		return {held.rx, held.ry};
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	return GetUsbInput(unifiedSlot).MergeStick({analogs.rx, analogs.ry}, 2);
-#else
 	return {analogs.rx, analogs.ry};
-#endif
 }
 
 u32 PadDualshock2::GetButtons() const
 {
 	if (held.on) [[unlikely]]
 		return held.buttons;
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	return buttons & ~static_cast<u32>(GetUsbInput(unifiedSlot).pressed);
-#else
 	return buttons;
-#endif
 }
 
 u8 PadDualshock2::GetPressure(u32 index) const
@@ -1047,30 +940,18 @@ u8 PadDualshock2::GetPressure(u32 index) const
 bool PadDualshock2::CapturePlayerInput(PadScript::PadFrame* out) const
 {
 	PadScript::PadFrame frame;
-	u32 player_buttons = buttons;
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	const UsbInput usb_input = GetUsbInput(unifiedSlot);
-	player_buttons &= ~static_cast<u32>(usb_input.pressed);
-#endif
+	const u32 player_buttons = buttons;
 	for (u32 i = 0; i < PadScript::NUM_BUTTONS; i++)
 	{
 		if (player_buttons & (1u << bitmaskMapping[i]))
 			continue;
 		frame.pressed |= static_cast<u16>(1u << i);
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-		frame.pressure[i] = usb_input.MergePressure(i, buttons, rawInputs[i]);
-#else
 		frame.pressure[i] = rawInputs[i];
-#endif
 	}
 	frame.lx = analogs.lx;
 	frame.ly = analogs.ly;
 	frame.rx = analogs.rx;
 	frame.ry = analogs.ry;
-#if defined(__ANDROID__) && !defined(ENABLE_LIBRETRO)
-	std::tie(frame.lx, frame.ly) = usb_input.MergeStick({frame.lx, frame.ly}, 0);
-	std::tie(frame.rx, frame.ry) = usb_input.MergeStick({frame.rx, frame.ry}, 2);
-#endif
 	*out = frame;
 	return true;
 }

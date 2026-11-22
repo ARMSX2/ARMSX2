@@ -308,9 +308,7 @@ fun PadTab(@Suppress("UNUSED_PARAMETER") state: MutableState<Settings>) {
             ToggleRow(
                 str("pad.allToPlayer1.label"),
                 allToPlayer1,
-                description = if (com.armsx2.input.UsbRumble.separateUsbPlayers())
-                    str("pad.usbTakeover.separatePlayers")
-                else str("pad.allToPlayer1.description"),
+                description = str("pad.allToPlayer1.description"),
             ) {
                 com.armsx2.input.PadRouter.setAllToPlayer1(it)
                 refreshToken.intValue++

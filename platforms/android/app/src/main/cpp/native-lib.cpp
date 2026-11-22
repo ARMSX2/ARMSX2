@@ -1830,27 +1830,6 @@ extern "C" JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_resetKeyStatus(JNIEnv *env, jclass clazz) {
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_kr_co_iefriends_pcsx2_NativeApp_setDualShock3UsbReport(
-    JNIEnv* env, jclass, jint port, jbyteArray report)
-{
-    if (port < 0 || static_cast<u32>(port) >= Pad::NUM_CONTROLLER_PORTS)
-        return;
-    if (!report)
-    {
-        PadDualshock2::SetDualShock3UsbInput(port, nullptr);
-        return;
-    }
-
-    PadDualshock2::DualShock3Report bytes;
-    if (env->GetArrayLength(report) != static_cast<jsize>(bytes.size()))
-        return;
-    env->GetByteArrayRegion(report, 0, static_cast<jsize>(bytes.size()), reinterpret_cast<jbyte*>(bytes.data()));
-    if (env->ExceptionCheck() || bytes[0] != 0x01 || bytes[1] == 0xff)
-        return;
-    PadDualshock2::SetDualShock3UsbInput(port, &bytes);
-}
-
 extern "C"
 JNIEXPORT void JNICALL
 Java_kr_co_iefriends_pcsx2_NativeApp_setEnableCheats(JNIEnv *env, jclass clazz,

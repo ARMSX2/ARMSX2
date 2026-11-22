@@ -339,7 +339,6 @@ object UsbRumble {
         PadRouter.releaseDirectUsbSlot(input.port)
     }
 
-    fun separateUsbPlayers(): Boolean = ds3Inputs.values.count { it.ready } >= 2
 
     private fun refreshDualShock3(ctx: Context, usb: UsbManager) {
         val devices = usb.deviceList.values.filter { it.vendorId == VENDOR_SONY && it.productId == DUALSHOCK3 }
@@ -375,13 +374,6 @@ object UsbRumble {
                 DualShock3UsbInput.open(usb, device, port, onReady = { ready ->
                     main.post {
                         if (ds3Inputs[name] === ready && ready.ready) {
-                            if (separateUsbPlayers() && PadRouter.allToPlayer1) {
-                                PadRouter.setAllToPlayer1(false)
-                                android.widget.Toast.makeText(
-                                    ctx, com.armsx2.i18n.I18n.get("pad.usbTakeover.separatePlayers"),
-                                    android.widget.Toast.LENGTH_LONG,
-                                ).show()
-                            }
                             ready.enableInput()
                         }
                     }
