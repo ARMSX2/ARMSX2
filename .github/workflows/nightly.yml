@@ -191,7 +191,7 @@ jobs:
       jobName: "Linux arm64 (${{ matrix.pageVariant }} pages)"
       artifactPrefixName: "armsx2-linux-arm64-${{ matrix.pageVariant }}-appimage"
       compiler: clang
-      cmakeflags: "-DHOST_PAGE_SIZE=${{ matrix.pageSize }} -DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
+      cmakeflags: "-DHOST_CACHE_LINE_SIZE=${{ matrix.cacheLineSize }}"
       buildAppImage: true
       fetchTags: true
 

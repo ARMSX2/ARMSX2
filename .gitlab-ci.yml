@@ -24,13 +24,6 @@
     # CMake puts the finished core in bin/ inside the build tree; the
     # ci-templates pick it up from $BUILD_DIR/$EXTRA_PATH/.
     EXTRA_PATH: bin
-    # On the page size below: it is HOST_PAGE_SIZE, not OVERRIDE_HOST_PAGE_SIZE.
-    # The latter is a compile define the build computes for itself, so passing
-    # it here would only set a cache variable nothing reads. HOST_PAGE_SIZE is
-    # the one detect_page_size() caches into, and a preset cache entry wins, so
-    # this pins the core to 4K pages instead of inheriting whatever the runner
-    # happens to have. Android is neither - it takes
-    # ARMSX2_ANDROID_HOST_PAGE_SIZE, set in .core-defs-android below.
     CORE_ARGS: >-
       -DCMAKE_C_COMPILER=clang
       -DCMAKE_CXX_COMPILER=clang++
@@ -49,7 +42,6 @@
       -DX11_API=OFF
       -DWAYLAND_API=OFF
       -DDISABLE_ADVANCE_SIMD=TRUE
-      -DHOST_PAGE_SIZE=4096
       -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
 
 .core-defs-linux:
