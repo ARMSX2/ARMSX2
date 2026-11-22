@@ -50,22 +50,22 @@ struct PerGameLivePreviewSection: View {
 
     private var previewEnabled: Binding<Bool> {
         Binding(
-            get: { settings.temporalSaveStateToLivePreviewChanges },
-            set: { settings.temporalSaveStateToLivePreviewChanges = $0 }
+            get: { settings.appearance.temporalSaveStateToLivePreviewChanges },
+            set: { settings.appearance.temporalSaveStateToLivePreviewChanges = $0 }
         )
     }
 
     private var beforeDuration: Binding<Double> {
         Binding(
-            get: { settings.perGameBeforeChangesPreviewDuration },
-            set: { settings.perGameBeforeChangesPreviewDuration = $0 }
+            get: { settings.appearance.perGameBeforeChangesPreviewDuration },
+            set: { settings.appearance.perGameBeforeChangesPreviewDuration = $0 }
         )
     }
 
     private var stopsWithCircle: Binding<Bool> {
         Binding(
-            get: { settings.perGameLivePreviewStopsWithCircle },
-            set: { settings.perGameLivePreviewStopsWithCircle = $0 }
+            get: { settings.appearance.perGameLivePreviewStopsWithCircle },
+            set: { settings.appearance.perGameLivePreviewStopsWithCircle = $0 }
         )
     }
 
@@ -81,7 +81,7 @@ struct PerGameLivePreviewSection: View {
                 isOn: previewEnabled
             )
 
-            if settings.temporalSaveStateToLivePreviewChanges {
+            if settings.appearance.temporalSaveStateToLivePreviewChanges {
                 Toggle(
                     settings.localized("Press Circle to Stop Live Preview"),
                     isOn: stopsWithCircle
@@ -97,7 +97,7 @@ struct PerGameLivePreviewSection: View {
                 durationRow(
                     title: "Original View Duration",
                     value: beforeDuration,
-                    range: SettingsStore.perGameBeforeChangesPreviewDurationRange,
+                    range: SettingsStore.Appearance.perGameBeforeChangesPreviewDurationRange,
                     id: "per-game.general.before-changes-preview-duration"
                 )
             }

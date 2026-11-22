@@ -267,8 +267,8 @@ final class GameLibraryControllerCoordinator {
         // a switch. With it off, a focus change must not scan the library or
         // schedule palette work.
         guard includesNonFavoriteGame
-                ? settings.gameMenuCoverColoursEnabled
-                : settings.favoriteGlowingEffectEnabled else {
+                ? settings.appearance.gameMenuCoverColoursEnabled
+                : settings.appearance.favoriteGlowingEffectEnabled else {
             GameCoverThemePreviewStore.shared.clear()
             return
         }

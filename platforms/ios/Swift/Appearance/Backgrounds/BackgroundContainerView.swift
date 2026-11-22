@@ -18,16 +18,16 @@ struct BackgroundContainerView: View {
     @State private var inactiveReleaseTask: Task<Void, Never>?
 
     private var activeAsset: BackgroundAsset? {
-        if size.width > size.height, let landscape = settings.backgroundLandscapeAsset { return landscape }
-        return settings.backgroundPrimaryAsset
+        if size.width > size.height, let landscape = settings.appearance.backgroundLandscapeAsset { return landscape }
+        return settings.appearance.backgroundPrimaryAsset
     }
 
     private var effectiveFitMode: BackgroundFitMode {
-        size.width > size.height ? settings.backgroundLandscapeFitMode : settings.backgroundFitMode
+        size.width > size.height ? settings.appearance.backgroundLandscapeFitMode : settings.appearance.backgroundFitMode
     }
 
     private var effectiveDim: Double {
-        let dim = settings.backgroundDim
+        let dim = settings.appearance.backgroundDim
         if reduceTransparency || colorSchemeContrast == .increased { return max(dim, 0.55) }
         return dim
     }
@@ -36,9 +36,9 @@ struct BackgroundContainerView: View {
     /// untouched, so leaving a favorite card restores the exact prior theme.
     private var effectiveDynamicAppearancePreferences: DynamicAppearancePreferences {
         guard let preview = gameCoverThemePreview.preview else {
-            return settings.dynamicAppearancePreferences
+            return settings.appearance.dynamicAppearancePreferences
         }
-        var preferences = settings.dynamicAppearancePreferences
+        var preferences = settings.appearance.dynamicAppearancePreferences
         preferences.sharedCustomColor = preview.backgroundPalette
         preferences.sharedMultiColor.isEnabled = false
         preferences.ribbonCustomColor = preview.accentPalette
@@ -49,7 +49,7 @@ struct BackgroundContainerView: View {
     var body: some View {
         ZStack {
             if isRenderingEnabled && isPresentationActive {
-                if settings.dynamicBackgroundsEnabled {
+                if settings.appearance.dynamicBackgroundsEnabled {
                     DynamicBackgroundRendererView(
                         preferences: effectiveDynamicAppearancePreferences,
                         allowsMainMenuThermalFallback: true
@@ -121,7 +121,7 @@ struct BackgroundContainerView: View {
     }
 
     private func video(_ url: URL) -> some View {
-        VideoBackgroundView(url: url, muted: settings.backgroundVideoMuted, fitMode: effectiveFitMode)
+        VideoBackgroundView(url: url, muted: settings.appearance.backgroundVideoMuted, fitMode: effectiveFitMode)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
     }

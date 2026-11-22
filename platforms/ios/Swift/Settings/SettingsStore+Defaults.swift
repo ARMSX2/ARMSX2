@@ -32,10 +32,10 @@ extension SettingsStore {
         autoSaveOnLowBattery = true
         undoSeconds = 5
         automaticLoadLastGame = false
-        temporalSaveStateToLivePreviewChanges = true
-        perGameLivePreviewDuration = 2
-        perGameBeforeChangesPreviewDuration = 0
-        perGameLivePreviewStopsWithCircle = true
+        appearance.temporalSaveStateToLivePreviewChanges = true
+        appearance.perGameLivePreviewDuration = 2
+        appearance.perGameBeforeChangesPreviewDuration = 0
+        appearance.perGameLivePreviewStopsWithCircle = true
         fastmem = true
         emulationOnlyModeEnabled = false
         emulationOnlyDisablePatches = true
@@ -187,40 +187,40 @@ extension SettingsStore {
         let gallery = ThemeGalleryStore.shared
         gallery.clearActiveSavedTheme()
 
-        backgroundPrimaryAsset = nil
-        backgroundLandscapeAsset = nil
-        backgroundFitMode = .fill
-        backgroundLandscapeFitMode = .fill
-        backgroundVideoMuted = true
-        backgroundDim = 0
-        backgroundEnabledInBIOS = true
-        backgroundEnabledInHelp = true
-        backgroundEnabledInSettings = true
+        appearance.backgroundPrimaryAsset = nil
+        appearance.backgroundLandscapeAsset = nil
+        appearance.backgroundFitMode = .fill
+        appearance.backgroundLandscapeFitMode = .fill
+        appearance.backgroundVideoMuted = true
+        appearance.backgroundDim = 0
+        appearance.backgroundEnabledInBIOS = true
+        appearance.backgroundEnabledInHelp = true
+        appearance.backgroundEnabledInSettings = true
 
-        clearLiquidGlassUI = true
-        clearLiquidGlassUISubSettings = true
-        clearLiquidGlassUIQuickMenu = false
-        clearLiquidGlassUIPerGameSettingsLibrary = false
-        clearLiquidGlassUIPerGameSettingsEmulation = false
-        gameCardZoomAnimationEnabled = true
-        favoriteGlowingEffectEnabled = false
-        gameMenuCoverColoursEnabled = true
-        hideGameplayStatusBar = true
-        hideIntroStatusBar = true
-        hideMenuStatusBar = false
-        controllerNavigationDepthEffectEnabled = true
-        focusOrbsEnabled = false
+        appearance.clearLiquidGlassUI = true
+        appearance.clearLiquidGlassUISubSettings = true
+        appearance.clearLiquidGlassUIQuickMenu = false
+        appearance.clearLiquidGlassUIPerGameSettingsLibrary = false
+        appearance.clearLiquidGlassUIPerGameSettingsEmulation = false
+        appearance.gameCardZoomAnimationEnabled = true
+        appearance.favoriteGlowingEffectEnabled = false
+        appearance.gameMenuCoverColoursEnabled = true
+        appearance.hideGameplayStatusBar = true
+        appearance.hideIntroStatusBar = true
+        appearance.hideMenuStatusBar = false
+        appearance.controllerNavigationDepthEffectEnabled = true
+        appearance.focusOrbsEnabled = false
 
         // Apply the canonical preset rather than duplicating its palette and
         // dynamic-background defaults here. This keeps Reset synchronized as
         // the stock theme evolves.
-        applyControllerUIThemePreset(
+        appearance.applyControllerUIThemePreset(
             .defaultTheme,
             preservingCustomTheme: false
         )
-        controllerNavigationFocusAnimation = .easeInOut
-        controllerCustomThemeBase = .defaultTheme
-        controllerUIThemePreset = .defaultTheme
+        appearance.controllerNavigationFocusAnimation = .easeInOut
+        appearance.controllerCustomThemeBase = .defaultTheme
+        appearance.controllerUIThemePreset = .defaultTheme
     }
 
     /// Restores application configuration without deleting imported content,

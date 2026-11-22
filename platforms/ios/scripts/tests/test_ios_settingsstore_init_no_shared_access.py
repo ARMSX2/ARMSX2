@@ -41,6 +41,7 @@ STORE_FILES = [
     "SettingsStore+Speedhacks.swift",
     "SettingsStore+UI.swift",
     "SettingsStore.swift",
+    "SettingsStoreAppearance.swift",
 ]
 
 # Store methods an init may call after its closing load, when every assignment goes

@@ -181,7 +181,7 @@ struct GameplayOverlayHost: View {
                         PerGameLivePreviewExitOverlay(
                             controllerInput: controllerInput,
                             stopsWithCircle:
-                                settings.perGameLivePreviewStopsWithCircle
+                                settings.appearance.perGameLivePreviewStopsWithCircle
                         ) {
                             overlay.runtimePerGameLivePreviewDismissRequest &+= 1
                         }

@@ -56,7 +56,7 @@ struct RuntimeControllerSkinPicker: View {
     @ViewBuilder
     private var runtimeControllerSkinPicker: some View {
         if let proposal = selectedRuntimeControllerSkinProposal {
-            let usesDefaultText = settings.controllerUIThemePreset == .defaultTheme
+            let usesDefaultText = settings.appearance.controllerUIThemePreset == .defaultTheme
             let targetOrder = [
                 "alert.detail.skin",
                 "alert.detail.setCustomLayout",
@@ -66,11 +66,11 @@ struct RuntimeControllerSkinPicker: View {
 
             ControllerNavigationAlert(
                 title: settings.localized("Set New Per-Game Custom Skin?"),
-                titleColour: usesDefaultText ? .white : settings.controllerContextMenuColor,
-                contentColour: usesDefaultText ? .white : settings.controllerContextMenuColor,
-                secondaryContentColour: usesDefaultText ? .white : settings.controllerContextMenuSecondaryColor,
+                titleColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuColor,
+                contentColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuColor,
+                secondaryContentColour: usesDefaultText ? .white : settings.appearance.controllerContextMenuSecondaryColor,
                 detailValueColour: usesDefaultText
-                    ? settings.controllerNavigationAccentColor
+                    ? settings.appearance.controllerNavigationAccentColor
                     : nil,
                 previewImageURL: AutomaticCustomSkinManager.shared
                     .previewURL(for: proposal),

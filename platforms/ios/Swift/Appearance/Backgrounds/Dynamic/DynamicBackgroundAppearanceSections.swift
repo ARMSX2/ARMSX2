@@ -15,15 +15,15 @@ struct DynamicBackgroundAppearanceSections: View {
             // Like the other appearance controls, this marks the choice as the player's,
             // so the automatic no-JIT theme leaves it alone.
             Toggle(isOn: Binding(
-                get: { settings.dynamicBackgroundsEnabled },
+                get: { settings.appearance.dynamicBackgroundsEnabled },
                 set: { enabled in
-                    settings.beginCustomThemeEditing()
-                    settings.dynamicBackgroundsEnabled = enabled
+                    settings.appearance.beginCustomThemeEditing()
+                    settings.appearance.dynamicBackgroundsEnabled = enabled
                 }
             )) {
                 Label(
                     settings.localized("Use Dynamic Background"),
-                    systemImage: settings.dynamicBackgroundsEnabled ? "waveform.path" : "waveform.path.badge.minus"
+                    systemImage: settings.appearance.dynamicBackgroundsEnabled ? "waveform.path" : "waveform.path.badge.minus"
                 )
             }
             .appearanceControllerListRow(
@@ -282,7 +282,7 @@ struct DynamicBackgroundAppearanceSections: View {
 
     private func selectStyle(_ style: DynamicBackgroundStyle) {
         guard style != preferences.dynamicBackground else { return }
-        settings.beginCustomThemeEditing()
+        settings.appearance.beginCustomThemeEditing()
 
         if style == .playStation3XMBByMart,
            !preferences.hasSelectedPlayStation3XMBByMart {
@@ -293,7 +293,7 @@ struct DynamicBackgroundAppearanceSections: View {
         }
 
         preferences.dynamicBackground = style
-        settings.dynamicAppearancePreferences = preferences
+        settings.appearance.dynamicAppearancePreferences = preferences
         UISelectionFeedbackGenerator().selectionChanged()
     }
 

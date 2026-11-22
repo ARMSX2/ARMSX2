@@ -21,15 +21,15 @@ struct RootLifecycleModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
         .onAppear {
-            settings.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
+            settings.appearance.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
                 jitAvailable: ARMSX2Bridge.isJITAvailable()
             )
             // The app is hosted by a custom UIKit controller whose status-bar
             // answer comes from AppState, so mirror the active presentation's
             // preference as soon as the root hierarchy appears.
             appState.hideStatusBar = showBootSplash
-                ? settings.hideIntroStatusBar
-                : (menuScreenActive && settings.hideMenuStatusBar)
+                ? settings.appearance.hideIntroStatusBar
+                : (menuScreenActive && settings.appearance.hideMenuStatusBar)
             MenuAudioPackManager.shared.setAutomaticGameStartupActive(
                 session.automaticGameStartupPending
             )
@@ -68,11 +68,11 @@ struct RootLifecycleModifier: ViewModifier {
             MenuAudioPackManager.shared.setMainInterfaceActive(mainAudioInterfaceActive)
             MenuAudioPackManager.shared.setAutomaticGameStartupActive(pending)
         }
-        .onChange(of: settings.hideIntroStatusBar) { _, hideStatusBar in
+        .onChange(of: settings.appearance.hideIntroStatusBar) { _, hideStatusBar in
             guard showBootSplash else { return }
             appState.hideStatusBar = hideStatusBar
         }
-        .onChange(of: settings.hideMenuStatusBar) { _, hideStatusBar in
+        .onChange(of: settings.appearance.hideMenuStatusBar) { _, hideStatusBar in
             guard !showBootSplash, menuScreenActive else { return }
             appState.hideStatusBar = hideStatusBar
         }
@@ -101,7 +101,7 @@ struct RootLifecycleModifier: ViewModifier {
         ) { _ in
             MenuAudioPackManager.shared.setApplicationActive(true)
             menuControllerInput.applicationDidBecomeActive()
-            settings.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
+            settings.appearance.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
                 jitAvailable: ARMSX2Bridge.isJITAvailable()
             )
             session.resumeAutomaticGameAfterJITIfReady()
@@ -111,7 +111,7 @@ struct RootLifecycleModifier: ViewModifier {
                 for: Notification.Name("ARMSX2iOSIdleVMPrewarmResolved")
             )
         ) { _ in
-            settings.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
+            settings.appearance.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
                 jitAvailable: ARMSX2Bridge.isJITAvailable()
             )
         }

@@ -99,13 +99,13 @@ private struct ControllerAccessibilityFocusOverlay: View {
                     ControllerNavigationAnimatedOrbField(
                         targetID: session.focusedElementID ?? "focused-element",
                         targetFrame: frame,
-                        primaryColor: settings.controllerNavigationAccentColor,
+                        primaryColor: settings.appearance.controllerNavigationAccentColor,
                         style: style,
                         controllerInput: controllerInput,
                         interactionOverride: session.latestOrbInteraction,
                         inset: 2,
                         orbScale: 0.72,
-                        showsOrbs: settings.focusOrbsEnabled,
+                        showsOrbs: settings.appearance.focusOrbsEnabled,
                         showsNeonOutline: true,
                         tracksTargetFrameDirectly:
                             session.isScrollPresentationActive,
@@ -151,13 +151,13 @@ private struct ControllerAccessibilityWindowFocusOverlay: View {
                 ControllerNavigationAnimatedOrbField(
                     targetID: session.focusedElementID ?? "focused-toolbar-element",
                     targetFrame: frame,
-                    primaryColor: settings.controllerNavigationAccentColor,
+                    primaryColor: settings.appearance.controllerNavigationAccentColor,
                     style: style,
                     controllerInput: controllerInput,
                     interactionOverride: session.latestOrbInteraction,
                     inset: 2,
                     orbScale: 0.72,
-                    showsOrbs: settings.focusOrbsEnabled,
+                    showsOrbs: settings.appearance.focusOrbsEnabled,
                     showsNeonOutline: true,
                     tracksTargetFrameDirectly:
                         session.isScrollPresentationActive

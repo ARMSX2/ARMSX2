@@ -93,7 +93,7 @@ struct SettingsRootView: View {
     }
 
     private var backgroundConfigured: Bool {
-        settings.hasCustomBackground && settings.backgroundEnabledInSettings
+        settings.hasCustomBackground && settings.appearance.backgroundEnabledInSettings
     }
 
     private var backgroundActive: Bool {
@@ -685,12 +685,12 @@ struct SettingsRootView: View {
                     // previously remained opaque because this destination was
                     // explicitly excluded from the shared row installer.
                     isClear: pane == .shaders
-                        || settings.clearLiquidGlassUISubSettings
+                        || settings.appearance.clearLiquidGlassUISubSettings
                 )
             )
             .environment(
                 \.clearLiquidGlassUIEnabled,
-                pane == .shaders || settings.clearLiquidGlassUISubSettings
+                pane == .shaders || settings.appearance.clearLiquidGlassUISubSettings
             )
     }
 

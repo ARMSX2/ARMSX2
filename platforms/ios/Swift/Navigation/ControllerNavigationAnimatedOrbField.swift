@@ -67,11 +67,11 @@ struct ControllerNavigationAnimatedOrbField: View {
     @State private var reactionPrograms: [ControllerNavigationOrbReactionProgram] = []
 
     private var resolvedFocusTravelStyle: ControllerNavigationFocusTravelStyle {
-        focusTravelStyle ?? settings.controllerNavigationFocusAnimation
+        focusTravelStyle ?? settings.appearance.controllerNavigationFocusAnimation
     }
 
     private var neonArtworkIsAnimated: Bool {
-        animatesNeonArtwork && settings.controllerFocusBoxStyle.isAnimated
+        animatesNeonArtwork && settings.appearance.controllerFocusBoxStyle.isAnimated
     }
 
     private var neonUpdateInterval: TimeInterval {
@@ -151,13 +151,13 @@ struct ControllerNavigationAnimatedOrbField: View {
             let artworkTime = floor(time * artworkFramesPerSecond)
                 / artworkFramesPerSecond
             ControllerFocusBoxArtwork(
-                style: settings.controllerFocusBoxStyle,
-                palette: settings.controllerFocusBoxPalette,
+                style: settings.appearance.controllerFocusBoxStyle,
+                palette: settings.appearance.controllerFocusBoxPalette,
                 customColors: gameCoverThemePreview.preview.map {
                     $0.backgroundPalette.gradientColors
-                } ?? settings.controllerFocusBoxCustomColor.map { [$0.color] },
-                animationSpeed: settings.controllerFocusBoxAnimationSpeed,
-                glowIntensity: settings.controllerFocusBoxGlowIntensity,
+                } ?? settings.appearance.controllerFocusBoxCustomColor.map { [$0.color] },
+                animationSpeed: settings.appearance.controllerFocusBoxAnimationSpeed,
+                glowIntensity: settings.appearance.controllerFocusBoxGlowIntensity,
                 cornerRadius: controllerFocusCornerRadius(
                     size: frame.size,
                     baseline: neonCornerRadius,
@@ -189,7 +189,7 @@ struct ControllerNavigationAnimatedOrbField: View {
                 ControllerNavigationOrbField(
                     primaryColor: primaryColor,
                     accentColor: accentColor,
-                    paletteColors: settings.controllerOrbColors,
+                    paletteColors: settings.appearance.controllerOrbColors,
                     pressedColor: pressedPalette?.primaryColor,
                     style: style,
                     inset: inset,

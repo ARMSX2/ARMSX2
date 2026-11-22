@@ -288,7 +288,7 @@ struct GameScreenView: View {
             guard previous != nil, current == nil else { return }
             applyFullscreenState(fullScreen)
         }
-        .onChange(of: settings.hideGameplayStatusBar) { _, _ in
+        .onChange(of: settings.appearance.hideGameplayStatusBar) { _, _ in
             updateGameplayStatusBar(forFullscreen: fullScreen)
         }
         .onChange(of: settings.hideMenuButton) { _, isHidden in
@@ -481,7 +481,7 @@ struct GameScreenView: View {
     private func leaveGameplaySystemChromeMode() {
         if case .menu = appState.currentScreen {
             appState.hideHomeIndicator = false
-            appState.hideStatusBar = settings.hideMenuStatusBar
+            appState.hideStatusBar = settings.appearance.hideMenuStatusBar
         } else {
             appState.hideHomeIndicator = previousHideHomeIndicator
             appState.hideStatusBar = previousHideStatusBar
@@ -517,7 +517,7 @@ struct GameScreenView: View {
     }
 
     private func updateGameplayStatusBar(forFullscreen isFullscreen: Bool) {
-        let shouldHide = settings.hideGameplayStatusBar
+        let shouldHide = settings.appearance.hideGameplayStatusBar
             && isFullscreen
             && session.gameplayLaunchTransition == nil
         if appState.hideStatusBar != shouldHide {

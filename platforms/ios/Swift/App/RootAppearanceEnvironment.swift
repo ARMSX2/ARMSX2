@@ -10,17 +10,17 @@ struct RootAppearanceEnvironment: ViewModifier {
 
     private var coverPreviewAccentColor: Color {
         gameCoverThemePreview.preview?.accentColor
-            ?? settings.controllerNavigationAccentColor
+            ?? settings.appearance.controllerNavigationAccentColor
     }
 
     private var coverPreviewPrimaryTextColor: Color {
         gameCoverThemePreview.preview?.primaryTextColor
-            ?? (settings.controllerTextAppearance.contentColor ?? .primary)
+            ?? (settings.appearance.controllerTextAppearance.contentColor ?? .primary)
     }
 
     private var coverPreviewSecondaryTextColor: Color {
         gameCoverThemePreview.preview?.secondaryTextColor
-            ?? settings.controllerTextAppearance.unselectedColor
+            ?? settings.appearance.controllerTextAppearance.unselectedColor
     }
 
     /// The cover analyzer may choose dark text for a bright dynamic background, but every
@@ -28,21 +28,21 @@ struct RootAppearanceEnvironment: ViewModifier {
     /// using the cover-derived accent for its focus and symbols.
     private var coverPreviewContextMenuPrimaryTextColor: Color {
         gameCoverThemePreview.preview == nil
-            ? settings.controllerContextMenuColor
+            ? settings.appearance.controllerContextMenuColor
             : .white
     }
 
     private var coverPreviewContextMenuSecondaryTextColor: Color {
         gameCoverThemePreview.preview == nil
-            ? settings.controllerContextMenuSecondaryColor
+            ? settings.appearance.controllerContextMenuSecondaryColor
             : Color(red: 0.86, green: 0.91, blue: 0.96)
     }
 
     private var coverPreviewTextAppearance: ControllerTextAppearance {
         guard let preview = gameCoverThemePreview.preview else {
-            return settings.controllerTextAppearance
+            return settings.appearance.controllerTextAppearance
         }
-        var appearance = settings.controllerTextAppearance
+        var appearance = settings.appearance.controllerTextAppearance
         appearance.normalColor = preview.primaryTextColor
         appearance.secondaryColor = preview.secondaryTextColor
         appearance.titleColor = preview.primaryTextColor
@@ -56,7 +56,7 @@ struct RootAppearanceEnvironment: ViewModifier {
         content
             .uiSecondaryForegroundStyle(
                 gameCoverThemePreview.preview == nil
-                    ? settings.controllerTextAppearance.contentColor
+                    ? settings.appearance.controllerTextAppearance.contentColor
                     : coverPreviewPrimaryTextColor
             )
             .tint(coverPreviewAccentColor)
@@ -75,7 +75,7 @@ struct RootAppearanceEnvironment: ViewModifier {
             .environment(
                 \.uiTitleTextColour,
                 gameCoverThemePreview.preview?.primaryTextColor
-                    ?? settings.controllerTextAppearance.titleColor
+                    ?? settings.appearance.controllerTextAppearance.titleColor
             )
             .environment(
                 \.uiContentTextColour,
@@ -84,12 +84,12 @@ struct RootAppearanceEnvironment: ViewModifier {
             .environment(
                 \.uiTabTitleColour,
                 gameCoverThemePreview.preview?.primaryTextColor
-                    ?? settings.controllerTabTitleColor
+                    ?? settings.appearance.controllerTabTitleColor
             )
             .environment(
                 \.uiTabSubtitleColour,
                 gameCoverThemePreview.preview?.secondaryTextColor
-                    ?? settings.controllerTabSubtitleColor
+                    ?? settings.appearance.controllerTabSubtitleColor
             )
             .environment(
                 \.uiBottomTabBarColour,
@@ -98,17 +98,17 @@ struct RootAppearanceEnvironment: ViewModifier {
             .environment(
                 \.uiBottomTabBarUnselectedColour,
                 gameCoverThemePreview.preview?.secondaryTextColor
-                    ?? settings.controllerBottomTabBarUnselectedColor
+                    ?? settings.appearance.controllerBottomTabBarUnselectedColor
             )
             .environment(
                 \.uiCardTitleColour,
                 gameCoverThemePreview.preview?.primaryTextColor
-                    ?? settings.controllerCardTitleColor
+                    ?? settings.appearance.controllerCardTitleColor
             )
             .environment(
                 \.uiCardSubtitleColour,
                 gameCoverThemePreview.preview?.secondaryTextColor
-                    ?? settings.controllerCardSubtitleColor
+                    ?? settings.appearance.controllerCardSubtitleColor
             )
             .environment(
                 \.uiContextMenuColour,
@@ -132,7 +132,7 @@ struct RootAppearanceEnvironment: ViewModifier {
             )
             .environment(
                 \.uiCriticalTextColour,
-                settings.controllerCriticalTextColor
+                settings.appearance.controllerCriticalTextColor
             )
             .environment(
                 \.uiFrameRateConfiguration,
@@ -140,7 +140,7 @@ struct RootAppearanceEnvironment: ViewModifier {
             )
             .environment(
                 \.controllerNavigationDepthEffectEnabled,
-                settings.controllerNavigationDepthEffectEnabled
+                settings.appearance.controllerNavigationDepthEffectEnabled
             )
             // Master uses white label copy with blue/action-coloured symbols.
             // Install that split once so Settings, Per-Game Settings, Quick

@@ -116,11 +116,11 @@ struct GameplayControllerShortcutHelpOverlay: View {
     }
 
     private var themedAccentColor: Color {
-        settings.controllerBottomTabBarColor
+        settings.appearance.controllerBottomTabBarColor
     }
 
     private var themedSecondaryTextColor: Color {
-        settings.controllerBottomTabBarUnselectedColor
+        settings.appearance.controllerBottomTabBarUnselectedColor
     }
 
     private func macroBadge(_ binding: ControllerMacroBinding) -> some View {

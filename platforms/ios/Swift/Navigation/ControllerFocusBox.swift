@@ -51,16 +51,16 @@ struct ControllerFocusBox: View {
                 domain: .controllerEffects,
                 paused: reduceMotion
                     || !animatesArtwork
-                    || !settings.controllerFocusBoxStyle.isAnimated
+                    || !settings.appearance.controllerFocusBoxStyle.isAnimated
             ) { timeline in
                 ControllerFocusBoxArtwork(
-                    style: settings.controllerFocusBoxStyle,
-                    palette: settings.controllerFocusBoxPalette,
+                    style: settings.appearance.controllerFocusBoxStyle,
+                    palette: settings.appearance.controllerFocusBoxPalette,
                     customColors: gameCoverThemePreview.preview.map {
                         $0.backgroundPalette.gradientColors
-                    } ?? settings.controllerFocusBoxCustomColor.map { [$0.color] },
-                    animationSpeed: settings.controllerFocusBoxAnimationSpeed,
-                    glowIntensity: settings.controllerFocusBoxGlowIntensity,
+                    } ?? settings.appearance.controllerFocusBoxCustomColor.map { [$0.color] },
+                    animationSpeed: settings.appearance.controllerFocusBoxAnimationSpeed,
+                    glowIntensity: settings.appearance.controllerFocusBoxGlowIntensity,
                     cornerRadius: controllerFocusCornerRadius(
                         size: proxy.size,
                         baseline: cornerRadius,
@@ -93,12 +93,12 @@ struct ControllerBottomNavigationFocusGlow: View {
         GeometryReader { proxy in
             let paletteColors = gameCoverThemePreview.preview.map {
                 $0.backgroundPalette.gradientColors
-            } ?? settings.controllerFocusBoxCustomColor.map { [$0.color] }
-                ?? settings.controllerFocusBoxPalette.colors
+            } ?? settings.appearance.controllerFocusBoxCustomColor.map { [$0.color] }
+                ?? settings.appearance.controllerFocusBoxPalette.colors
             let primary = paletteColors.first ?? .blue
             let secondary = paletteColors.dropFirst().first ?? primary
             let intensity = min(
-                max(settings.controllerFocusBoxGlowIntensity, 0),
+                max(settings.appearance.controllerFocusBoxGlowIntensity, 0),
                 2
             )
             let shape = RoundedRectangle(

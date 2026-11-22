@@ -50,9 +50,9 @@ struct MenuThemePresetShortcutOverlay: View {
 
     private var focusAnimation: Animation? {
         guard !reduceMotion,
-              settings.controllerNavigationFocusAnimation != .immediate else { return nil }
+              settings.appearance.controllerNavigationFocusAnimation != .immediate else { return nil }
         return Animation(ThemePresetFocusAnimation(
-            style: settings.controllerNavigationFocusAnimation
+            style: settings.appearance.controllerNavigationFocusAnimation
         ))
     }
 
@@ -99,7 +99,7 @@ struct MenuThemePresetShortcutOverlay: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 12)
                 .glassSurface(
-                    tint: settings.controllerNavigationAccentColor.opacity(0.18),
+                    tint: settings.appearance.controllerNavigationAccentColor.opacity(0.18),
                     clear: true,
                     forceClear: true,
                     materializeTransition: true,
@@ -122,7 +122,7 @@ struct MenuThemePresetShortcutOverlay: View {
         .onChange(of: controllerInput.latestThemePresetRequest) { _, request in
             guard let request, isEnabled, controllerInput.canChangeMainMenuTheme else { return }
             let selections = themeGallery.orderedSelections
-            let current = themeGallery.currentSelection(for: settings)
+            let current = themeGallery.currentSelection(for: settings.appearance)
             guard !selections.isEmpty,
                   let index = selections.firstIndex(of: current) else { return }
             let count = selections.count
@@ -134,7 +134,7 @@ struct MenuThemePresetShortcutOverlay: View {
                 selection: selection,
                 title: title,
                 step: request.step,
-                canSaveCustomTheme: themeGallery.hasUnsavedCustomTheme(settings)
+                canSaveCustomTheme: themeGallery.hasUnsavedCustomTheme(settings.appearance)
             )
             if skipsThemeShortcutConfirmation {
                 apply(pending)
@@ -255,7 +255,7 @@ struct MenuThemePresetShortcutOverlay: View {
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            themeGallery.apply(change.selection, to: settings)
+            themeGallery.apply(change.selection, to: settings.appearance)
         }
         presentation = Presentation(
             sequence: change.sequence,
@@ -292,7 +292,7 @@ struct MenuThemePresetShortcutOverlay: View {
             showsThemeNameKeyboard = false
             return
         }
-        guard ThemeGalleryStore.shared.save(name: name, settings: settings) else {
+        guard ThemeGalleryStore.shared.save(name: name, settings: settings.appearance) else {
             themeSaveError = true
             return
         }
