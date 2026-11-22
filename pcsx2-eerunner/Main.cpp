@@ -1075,8 +1075,9 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --twin-label <name>: label stamped into the .twin header (e.g. armsx2-master / jit-transplant).\n");
 	std::fprintf(stderr, "  --twin-ram-at <frame>: also dump raw EE RAM+scratch at that frame (interp + jit passes) to\n");
 	std::fprintf(stderr, "               <prefix>.f<N>.{interp,jit}.bin, for offline page/region diffing across builds.\n");
-	std::fprintf(stderr, "  --dump-config <path>: boot far enough for GameDB to apply, write the EFFECTIVE EmuConfig INI,\n");
-	std::fprintf(stderr, "               and exit. Diff the two trees' dumps FIRST - config drift is the cheapest bug class.\n");
+	std::fprintf(stderr, "  --dump-config <path>: write the EFFECTIVE EmuConfig INI and exit. With --savestate the state is\n");
+	std::fprintf(stderr, "               loaded first, so the dump holds the GameDB fixes the game runs under. Diff the two\n");
+	std::fprintf(stderr, "               trees' dumps FIRST - config drift is the cheapest bug class.\n");
 	std::fprintf(stderr, "  --mkstate <out.p2s>: run --frames under the production JIT (from --savestate if given, else a\n");
 	std::fprintf(stderr, "               cold disc boot) and write a savestate. Bootstrap twindiff states on the WORKING\n");
 	std::fprintf(stderr, "               binary, positioned BEFORE the corrupting computation (e.g. before a level load).\n");
@@ -1821,9 +1822,9 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 
 	if (s_savestate_path.empty())
 	{
-		// --dump-config only needs the disc mounted: GameDB keys off the serial,
-		// which is known right after Initialize. --mkstate can cold-boot the
-		// disc to CREATE the first state. Every other mode replays state.
+		// --dump-config can run without a state (it then dumps the boot-time config).
+		// --mkstate can cold-boot the disc to CREATE the first state. Every other mode
+		// replays state.
 		if (s_mode != RunMode::DumpConfig && s_mode != RunMode::MkState)
 		{
 			Console.Error("No savestate provided (use --savestate <file>).");
@@ -4239,10 +4240,21 @@ static int RunMkState()
 // serialize the EFFECTIVE EmuConfig to an INI. The twindiff driver diffs the
 // two trees' dumps FIRST — config/GameDB drift (True Crime: guard-bit emulation
 // default-off at the time + three divergent GameIndex copies) explains a broken
-// game far more cheaply than any trace. Savestate optional: config keys off the disc
-// serial, known right after Initialize.
+// game far more cheaply than any trace. Savestate optional. GameDB fixes apply
+// only once the game's ELF is running (VMManager::HasBootedELF), so pass
+// --savestate to dump the config the game runs under; without one the dump
+// holds the boot-time config.
 static int RunDumpConfig()
 {
+	if (!s_savestate_path.empty())
+	{
+		Error error;
+		if (!VMManager::LoadState(s_savestate_path.c_str(), &error))
+		{
+			Console.ErrorFmt("dump-config: load failed: {}", error.GetDescription());
+			return EXIT_FAILURE;
+		}
+	}
 	INISettingsInterface ini(s_dumpcfg_path);
 	{
 		SettingsSaveWrapper wrap(ini);
