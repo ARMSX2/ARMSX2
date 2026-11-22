@@ -3,17 +3,12 @@
 
 import Foundation
 
-/// Bumps `upscale_multiplier` in 0.25 steps based on the core's frame-time
-/// history. Polls roughly every 500 ms and changes no more often than that.
-///
-/// Floor is 1.0 (native PS2). The ceiling is the UpscaleMultiplier the user
-/// had set when adaptive was enabled; it only rises if the user raises
-/// UpscaleMultiplier manually, never on its own. Hysteresis over the last
-/// ~60 samples: above 22 ms drops a step, below 14 ms raises one.
-///
-/// Writes go through ARMSX2Bridge.setINIFloat (clamped, applied on the GS
-/// thread). A per-game INI value overrides the global toggle for the running
-/// game.
+/// Bumps `upscale_multiplier` in 0.25 steps from the core's frame-time history,
+/// polled roughly every 500 ms and changed no more often. Floor 1.0 (native PS2);
+/// the ceiling is the UpscaleMultiplier set when adaptive was enabled, raised
+/// only by the user. Over the last ~60 samples, above 22 ms drops a step and
+/// below 14 ms raises one. Writes go through SettingsStore.upscaleMultiplier
+/// (clamped, applied on the GS thread); a per-game INI value overrides the toggle.
 @MainActor
 @Observable
 final class FrameTimeDynamicResolutionController {
@@ -204,12 +199,10 @@ final class FrameTimeDynamicResolutionController {
         }
     }
 
-    /// Writes the new multiplier through the bridge and mirrors it into
-    /// SettingsStore so the Graphics tab and Q-Menu track the change live.
-    /// The SettingsStore didSet re-writes the same INI key (idempotent) and
-    /// requests a debounced graphics-apply, which coalesces the GS reload.
+    /// Sets the new multiplier on SettingsStore, so the Graphics tab and Q-Menu
+    /// track the change live. Its didSet writes the INI key and requests a
+    /// debounced graphics-apply, which coalesces the GS reload.
     private func commitChange(newValue: Float, now: Date) {
-        ARMSX2Bridge.setINIFloat("EmuCore/GS", key: "upscale_multiplier", value: newValue)
         SettingsStore.shared.upscaleMultiplier = newValue
         lastWrittenValue = newValue
         lastObservedMultiplier = newValue
