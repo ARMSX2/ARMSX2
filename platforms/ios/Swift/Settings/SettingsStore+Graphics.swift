@@ -48,3 +48,9 @@ extension SettingsStore {
         }
     }
 }
+
+extension SettingsStore {
+    var isMetalFXAvailable: Bool {
+        ARMSX2Bridge.isMetalFXSupported()
+    }
+}
