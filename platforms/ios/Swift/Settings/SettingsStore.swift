@@ -30,18 +30,9 @@ final class SettingsStore {
             ARMSX2Bridge.setINIBool("EmuCore/CPU", key: "UseArm64Dynarec", value: eeCoreType == 2)
         }
     }
-    let _iopRecompilerConfig = Setting<Bool>(
-        section: "EmuCore/CPU/Recompiler", key: "EnableIOP", default: true,
-        codec: .bool)
-    var iopRecompiler: Bool = true { didSet { commit(_iopRecompilerConfig, iopRecompiler) } }
-    let _vu0RecompilerConfig = Setting<Bool>(
-        section: "EmuCore/CPU/Recompiler", key: "EnableVU0", default: true,
-        codec: .bool)
-    var vu0Recompiler: Bool = true { didSet { commit(_vu0RecompilerConfig, vu0Recompiler) } }
-    let _vu1RecompilerConfig = Setting<Bool>(
-        section: "EmuCore/CPU/Recompiler", key: "EnableVU1", default: true,
-        codec: .bool)
-    var vu1Recompiler: Bool = true { didSet { commit(_vu1RecompilerConfig, vu1Recompiler) } }
+    var iopRecompiler: Bool = true { didSet { commit(Self._iopRecompilerConfig, iopRecompiler) } }
+    var vu0Recompiler: Bool = true { didSet { commit(Self._vu0RecompilerConfig, vu0Recompiler) } }
+    var vu1Recompiler: Bool = true { didSet { commit(Self._vu1RecompilerConfig, vu1Recompiler) } }
     // writes GameISO/FastBoot + EmuCore/EnableFastBoot
     var fastBoot: Bool {
         didSet {
@@ -50,43 +41,26 @@ final class SettingsStore {
             ARMSX2Bridge.setINIBool("EmuCore", key: "EnableFastBoot", value: fastBoot)
         }
     }
-    let _automaticLoadLastSaveStateConfig = Setting<Bool>(
-        section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastSaveState", default: false,
-        codec: .bool)
     var automaticLoadLastSaveState = false {
-        didSet { commit(_automaticLoadLastSaveStateConfig, automaticLoadLastSaveState) }
+        didSet { commit(Self._automaticLoadLastSaveStateConfig, automaticLoadLastSaveState) }
     }
-    let _autoSaveEnabledConfig = Setting<Bool>(
-        section: "ARMSX2iOS/SaveStates", key: "AutoSave", default: true, codec: .bool)
     var autoSaveEnabled = true {
-        didSet { commit(_autoSaveEnabledConfig, autoSaveEnabled) }
+        didSet { commit(Self._autoSaveEnabledConfig, autoSaveEnabled) }
     }
-    let _autoSaveIntervalConfig = Setting<Int>(
-        section: "ARMSX2iOS/SaveStates", key: "AutoSaveIntervalMinutes", default: 10,
-        codec: .int(in: 5...30))
     var autoSaveIntervalMinutes = 10 {
-        didSet { commit(_autoSaveIntervalConfig, autoSaveIntervalMinutes) }
+        didSet { commit(Self._autoSaveIntervalConfig, autoSaveIntervalMinutes) }
     }
-    let _autoSaveOnLeaveConfig = Setting<Bool>(
-        section: "ARMSX2iOS/SaveStates", key: "AutoSaveOnLeave", default: true, codec: .bool)
     var autoSaveOnLeave = true {
-        didSet { commit(_autoSaveOnLeaveConfig, autoSaveOnLeave) }
+        didSet { commit(Self._autoSaveOnLeaveConfig, autoSaveOnLeave) }
     }
-    let _autoSaveOnLowBatteryConfig = Setting<Bool>(
-        section: "ARMSX2iOS/SaveStates", key: "AutoSaveOnLowBattery", default: true, codec: .bool)
     var autoSaveOnLowBattery = true {
-        didSet { commit(_autoSaveOnLowBatteryConfig, autoSaveOnLowBattery) }
+        didSet { commit(Self._autoSaveOnLowBatteryConfig, autoSaveOnLowBattery) }
     }
-    let _undoSecondsConfig = Setting<Int>(
-        section: "ARMSX2iOS/SaveStates", key: "UndoSeconds", default: 5, codec: .int(in: 1...10))
     var undoSeconds = 5 {
-        didSet { commit(_undoSecondsConfig, undoSeconds) }
+        didSet { commit(Self._undoSecondsConfig, undoSeconds) }
     }
-    let _automaticLoadLastGameConfig = Setting<Bool>(
-        section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", default: false,
-        codec: .bool)
     var automaticLoadLastGame = false {
-        didSet { commit(_automaticLoadLastGameConfig, automaticLoadLastGame) }
+        didSet { commit(Self._automaticLoadLastGameConfig, automaticLoadLastGame) }
     }
     // writes ManualFastmem + EnableFastmem
     var fastmem: Bool {
@@ -96,94 +70,49 @@ final class SettingsStore {
             ARMSX2Bridge.setINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", value: fastmem)
         }
     }
-    let _emulationOnlyModeConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyMode", default: false,
-        codec: .bool)
-    var emulationOnlyModeEnabled: Bool = false { didSet { commit(_emulationOnlyModeConfig, emulationOnlyModeEnabled) } }
-    let _emulationOnlyDisablePatchesConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisablePatches", default: true,
-        codec: .bool)
+    var emulationOnlyModeEnabled: Bool = false { didSet { commit(Self._emulationOnlyModeConfig, emulationOnlyModeEnabled) } }
     var emulationOnlyDisablePatches: Bool = true {
-        didSet { commit(_emulationOnlyDisablePatchesConfig, emulationOnlyDisablePatches) }
+        didSet { commit(Self._emulationOnlyDisablePatchesConfig, emulationOnlyDisablePatches) }
     }
     // Discord presence is always released by Emulation-Only Mode.
     let emulationOnlyDisableDiscordPresence = true
-    let _emulationOnlyDisablePINEConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisablePINE", default: true,
-        codec: .bool)
     var emulationOnlyDisablePINE: Bool = true {
-        didSet { commit(_emulationOnlyDisablePINEConfig, emulationOnlyDisablePINE) }
+        didSet { commit(Self._emulationOnlyDisablePINEConfig, emulationOnlyDisablePINE) }
     }
-    let _emulationOnlyDisableRetroAchievementsConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableRetroAchievements", default: true,
-        codec: .bool)
     var emulationOnlyDisableRetroAchievements: Bool = true {
-        didSet { commit(_emulationOnlyDisableRetroAchievementsConfig, emulationOnlyDisableRetroAchievements) }
+        didSet { commit(Self._emulationOnlyDisableRetroAchievementsConfig, emulationOnlyDisableRetroAchievements) }
     }
-    let _emulationOnlyDisableInputRecordingConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableInputRecording", default: true,
-        codec: .bool)
     var emulationOnlyDisableInputRecording: Bool = true {
-        didSet { commit(_emulationOnlyDisableInputRecordingConfig, emulationOnlyDisableInputRecording) }
+        didSet { commit(Self._emulationOnlyDisableInputRecordingConfig, emulationOnlyDisableInputRecording) }
     }
-    let _emulationOnlyDisableOSDConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableOSD", default: true,
-        codec: .bool)
     var emulationOnlyDisableOSD: Bool = true {
-        didSet { commit(_emulationOnlyDisableOSDConfig, emulationOnlyDisableOSD) }
+        didSet { commit(Self._emulationOnlyDisableOSDConfig, emulationOnlyDisableOSD) }
     }
-    let _emulationOnlyDisableFramePacingConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableFramePacing", default: true,
-        codec: .bool)
     var emulationOnlyDisableFramePacing: Bool = true {
-        didSet { commit(_emulationOnlyDisableFramePacingConfig, emulationOnlyDisableFramePacing) }
+        didSet { commit(Self._emulationOnlyDisableFramePacingConfig, emulationOnlyDisableFramePacing) }
     }
-    let _emulationOnlyDisableVirtualControlsConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableVirtualControls", default: true,
-        codec: .bool)
     var emulationOnlyDisableVirtualControls: Bool = true {
-        didSet { commit(_emulationOnlyDisableVirtualControlsConfig, emulationOnlyDisableVirtualControls) }
+        didSet { commit(Self._emulationOnlyDisableVirtualControlsConfig, emulationOnlyDisableVirtualControls) }
     }
-    let _emulationOnlyDisableQuickMenuConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyDisableQuickMenu", default: true,
-        codec: .bool)
     var emulationOnlyDisableQuickMenu: Bool = true {
-        didSet { commit(_emulationOnlyDisableQuickMenuConfig, emulationOnlyDisableQuickMenu) }
+        didSet { commit(Self._emulationOnlyDisableQuickMenuConfig, emulationOnlyDisableQuickMenu) }
     }
-    let _emulationOnlyClearNetworkCacheConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyClearNetworkCache", default: true,
-        codec: .bool)
     var emulationOnlyClearNetworkCache: Bool = true {
-        didSet { commit(_emulationOnlyClearNetworkCacheConfig, emulationOnlyClearNetworkCache) }
+        didSet { commit(Self._emulationOnlyClearNetworkCacheConfig, emulationOnlyClearNetworkCache) }
     }
-    let _emulationOnlyModeDelayConfig = Setting<Int>(
-        section: "ARMSX2iOS/UI", key: "EmulationOnlyModeDelaySeconds",
-        default: SettingsStore.defaultEmulationOnlyModeDelaySeconds,
-        codec: .int(in: SettingsStore.emulationOnlyModeDelayRange))
     var emulationOnlyModeDelaySeconds = SettingsStore.defaultEmulationOnlyModeDelaySeconds { didSet {
         let clamped = Self.clamped(emulationOnlyModeDelaySeconds, to: Self.emulationOnlyModeDelayRange)
         guard emulationOnlyModeDelaySeconds == clamped else {
             emulationOnlyModeDelaySeconds = clamped
             return
         }
-        commit(_emulationOnlyModeDelayConfig, emulationOnlyModeDelaySeconds)
+        commit(Self._emulationOnlyModeDelayConfig, emulationOnlyModeDelaySeconds)
     }}
 
     // ── CPU Rounding & Clamping ──
-    // Clamp modes are one 0-3 level here, unpacked to the three (EE) or six (VU0+VU1)
-    // boolean keys the recompiler reads. Changes take effect on next boot.
-    let _eeFpuRoundModeConfig = Setting<Int>(
-        section: "EmuCore/CPU", key: "FPU.Roundmode", default: 3,
-        codec: .roundMode)
-    var eeFpuRoundMode: Int = 3 { didSet { commit(_eeFpuRoundModeConfig, eeFpuRoundMode) } }
-    let _vu0RoundModeConfig = Setting<Int>(
-        section: "EmuCore/CPU", key: "VU0.Roundmode", default: 3,
-        codec: .roundMode)
-    var vu0RoundMode: Int = 3 { didSet { commit(_vu0RoundModeConfig, vu0RoundMode) } }
-    let _vu1RoundModeConfig = Setting<Int>(
-        section: "EmuCore/CPU", key: "VU1.Roundmode", default: 3,
-        codec: .roundMode)
-    var vu1RoundMode: Int = 3 { didSet { commit(_vu1RoundModeConfig, vu1RoundMode) } }
+    var eeFpuRoundMode: Int = 3 { didSet { commit(Self._eeFpuRoundModeConfig, eeFpuRoundMode) } }
+    var vu0RoundMode: Int = 3 { didSet { commit(Self._vu0RoundModeConfig, vu0RoundMode) } }
+    var vu1RoundMode: Int = 3 { didSet { commit(Self._vu1RoundModeConfig, vu1RoundMode) } }
     var eeClampMode: Int {
         didSet {
             guard !suppressINIWrites else { return }
@@ -243,32 +172,17 @@ final class SettingsStore {
     }
 
     // ── Audio Output (SPU2/Output) ── applied live by the SPU2 stream.
-    let _audioTimeStretchConfig = Setting<Bool>(
-        section: "SPU2/Output", key: "SyncMode", default: true,
-        codec: .timeStretch)
-    var audioTimeStretch: Bool = true { didSet { commit(_audioTimeStretchConfig, audioTimeStretch) } }
-    let _audioBufferMsConfig = Setting<Int>(
-        section: "SPU2/Output", key: "BufferMS", default: 50,
-        codec: .int(in: SettingsStore.audioBufferMsRange))
+    var audioTimeStretch: Bool = true { didSet { commit(Self._audioTimeStretchConfig, audioTimeStretch) } }
     var audioBufferMs: Int = 50 { didSet {
-        commit(_audioBufferMsConfig, audioBufferMs)
+        commit(Self._audioBufferMsConfig, audioBufferMs)
         if audioBufferMs != oldValue { markFramePacingCustom() }
     }}
-    let _audioOutputLatencyMsConfig = Setting<Int>(
-        section: "SPU2/Output", key: "OutputLatencyMS", default: 20,
-        codec: .int(in: SettingsStore.audioOutputLatencyMsRange))
     var audioOutputLatencyMs: Int = 20 { didSet {
-        commit(_audioOutputLatencyMsConfig, audioOutputLatencyMs)
+        commit(Self._audioOutputLatencyMsConfig, audioOutputLatencyMs)
         if audioOutputLatencyMs != oldValue { markFramePacingCustom() }
     }}
-    let _audioFastForwardVolumeConfig = Setting<Int>(
-        section: "SPU2/Output", key: "FastForwardVolume", default: 100,
-        codec: .int(in: SettingsStore.fastForwardVolumeRange))
-    var audioFastForwardVolume: Int = 100 { didSet { commit(_audioFastForwardVolumeConfig, audioFastForwardVolume) } }
-    let _audioSwapChannelsConfig = Setting<Bool>(
-        section: "SPU2/Output", key: "SwapChannels", default: false,
-        codec: .bool)
-    var audioSwapChannels: Bool = false { didSet { commit(_audioSwapChannelsConfig, audioSwapChannels) } }
+    var audioFastForwardVolume: Int = 100 { didSet { commit(Self._audioFastForwardVolumeConfig, audioFastForwardVolume) } }
+    var audioSwapChannels: Bool = false { didSet { commit(Self._audioSwapChannelsConfig, audioSwapChannels) } }
     var ntscFramerate: Float {
         didSet {
             guard !suppressINIWrites else { return }
@@ -277,26 +191,14 @@ final class SettingsStore {
             requestGraphicsApplyGuarded()
         }
     }
-    let _palFramerateConfig = Setting<Float>(
-        section: "EmuCore/GS", key: "FrameratePAL", default: 50.0,
-        codec: .float)
-    var palFramerate: Float = 50.0 { didSet { commit(_palFramerateConfig, palFramerate) } }
+    var palFramerate: Float = 50.0 { didSet { commit(Self._palFramerateConfig, palFramerate) } }
 
     // ── Boot ──
-    let _fastCDVDConfig = Setting<Bool>(
-        section: "EmuCore/Speedhacks", key: "fastCDVD", default: false,
-        codec: .bool)
-    var fastCDVD: Bool = false { didSet { commit(_fastCDVDConfig, fastCDVD) } }
+    var fastCDVD: Bool = false { didSet { commit(Self._fastCDVDConfig, fastCDVD) } }
 
     // ── Advanced Speedhacks ──
-    let _eeCycleRateConfig = Setting<Int>(
-        section: "EmuCore/Speedhacks", key: "EECycleRate", default: 0,
-        codec: .int)
-    var eeCycleRate: Int = 0 { didSet { commit(_eeCycleRateConfig, eeCycleRate) } }
-    let _vu1InstantConfig = Setting<Bool>(
-        section: "EmuCore/Speedhacks", key: "vu1Instant", default: true,
-        codec: .bool)
-    var vu1Instant: Bool = true { didSet { commit(_vu1InstantConfig, vu1Instant) } }
+    var eeCycleRate: Int = 0 { didSet { commit(Self._eeCycleRateConfig, eeCycleRate) } }
+    var vu1Instant: Bool = true { didSet { commit(Self._vu1InstantConfig, vu1Instant) } }
     // writes ManualMTVU + ManualMTVUVersion + vuThread
     var mtvu: Bool {
         didSet {
@@ -306,70 +208,24 @@ final class SettingsStore {
             ARMSX2Bridge.setINIBool("EmuCore/Speedhacks", key: "vuThread", value: mtvu)
         }
     }
-    let _waitLoopConfig = Setting<Bool>(
-        section: "EmuCore/Speedhacks", key: "WaitLoop", default: true,
-        codec: .bool)
-    var waitLoop: Bool = true { didSet { commit(_waitLoopConfig, waitLoop) } }
-    let _intcStatConfig = Setting<Bool>(
-        section: "EmuCore/Speedhacks", key: "IntcStat", default: true,
-        codec: .bool)
-    var intcStat: Bool = true { didSet { commit(_intcStatConfig, intcStat) } }
-    let _eeCycleSkipConfig = Setting<Int>(
-        section: "EmuCore/Speedhacks", key: "EECycleSkip", default: 0,
-        codec: .cycleSkip)
-    var eeCycleSkip: Int = 0 { didSet { commit(_eeCycleSkipConfig, eeCycleSkip) } }
-    let _vuFlagHackConfig = Setting<Bool>(
-        section: "EmuCore/Speedhacks", key: "vuFlagHack", default: true,
-        codec: .bool)
-    var vuFlagHack: Bool = true { didSet { commit(_vuFlagHackConfig, vuFlagHack) } }
-    let _enableCheatsConfig = Setting<Bool>(
-        section: "EmuCore", key: "EnableCheats", default: false,
-        suppressible: false,
-        codec: .bool)
-    var enableCheats: Bool = false { didSet { commit(_enableCheatsConfig, enableCheats) } }
-    let _enablePatchesConfig = Setting<Bool>(
-        section: "EmuCore", key: "EnablePatches", default: true,
-        suppressible: false,
-        codec: .bool)
-    var enablePatches: Bool = true { didSet { commit(_enablePatchesConfig, enablePatches) } }
-    let _enableGameFixesConfig = Setting<Bool>(
-        section: "EmuCore", key: "EnableGameFixes", default: true,
-        suppressible: false,
-        codec: .bool)
-    var enableGameFixes: Bool = true { didSet { commit(_enableGameFixesConfig, enableGameFixes) } }
-    let _enableGameDBHardwareFixesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "UserHacks", default: true,
-        suppressible: false,
-        codec: .inverted)
+    var waitLoop: Bool = true { didSet { commit(Self._waitLoopConfig, waitLoop) } }
+    var intcStat: Bool = true { didSet { commit(Self._intcStatConfig, intcStat) } }
+    var eeCycleSkip: Int = 0 { didSet { commit(Self._eeCycleSkipConfig, eeCycleSkip) } }
+    var vuFlagHack: Bool = true { didSet { commit(Self._vuFlagHackConfig, vuFlagHack) } }
+    var enableCheats: Bool = false { didSet { commit(Self._enableCheatsConfig, enableCheats) } }
+    var enablePatches: Bool = true { didSet { commit(Self._enablePatchesConfig, enablePatches) } }
+    var enableGameFixes: Bool = true { didSet { commit(Self._enableGameFixesConfig, enableGameFixes) } }
     var enableGameDBHardwareFixes: Bool = true {
-        didSet { commit(_enableGameDBHardwareFixesConfig, enableGameDBHardwareFixes) }
+        didSet { commit(Self._enableGameDBHardwareFixesConfig, enableGameDBHardwareFixes) }
     }
-    let _enableWidescreenPatchesConfig = Setting<Bool>(
-        section: "EmuCore", key: "EnableWideScreenPatches", default: false,
-        suppressible: false,
-        codec: .bool)
     var enableWidescreenPatches: Bool = false {
-        didSet { commit(_enableWidescreenPatchesConfig, enableWidescreenPatches) }
+        didSet { commit(Self._enableWidescreenPatchesConfig, enableWidescreenPatches) }
     }
-    let _enableNoInterlacingPatchesConfig = Setting<Bool>(
-        section: "EmuCore", key: "EnableNoInterlacingPatches", default: false,
-        suppressible: false,
-        codec: .bool)
     var enableNoInterlacingPatches: Bool = false {
-        didSet { commit(_enableNoInterlacingPatchesConfig, enableNoInterlacingPatches) }
+        didSet { commit(Self._enableNoInterlacingPatchesConfig, enableNoInterlacingPatches) }
     }
-    let _hostFilesystemConfig = Setting<Bool>(
-        section: "EmuCore", key: "HostFs", default: false,
-        suppressible: false,
-        codec: .bool)
-    var hostFilesystem: Bool = false { didSet { commit(_hostFilesystemConfig, hostFilesystem) } }
-    // Automatic performance tuning: when a game keeps missing frames, the core tries performance
-    // settings one at a time and keeps the ones that help, saved in that game's own settings.
-    let _autoTuneConfig = Setting<Bool>(
-        section: "EmuCore", key: "AutoTune", default: false,
-        suppressible: false,
-        codec: .bool)
-    var autoTune: Bool = false { didSet { commit(_autoTuneConfig, autoTune) } }
+    var hostFilesystem: Bool = false { didSet { commit(Self._hostFilesystemConfig, hostFilesystem) } }
+    var autoTune: Bool = false { didSet { commit(Self._autoTuneConfig, autoTune) } }
 
     // ── Manual Game Fixes (EmuCore/Gamefixes/<key>) ──
     // Dictionary-backed because the 17 fixes are homogeneous toggles. Effective only
@@ -377,130 +233,36 @@ final class SettingsStore {
     // own INI key.
     var gameFixes: [String: Bool] = [:]
 
-    // Boot-only on purpose: a live switch is a restart option, so applying it
-    // would send GSUpdateConfig down GSreopen and tear the Metal device down
-    // under the running game. The picker says "Requires restart".
-    let _rendererConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "Renderer", default: 17,
-        suppressible: false,
-        bootOnly: true,
-        codec: .int)
-    var renderer: Int = 17 { didSet { commit(_rendererConfig, renderer) } }
-    let _upscaleMultiplierConfig = Setting<Float>(
-        section: "EmuCore/GS", key: "upscale_multiplier", default: 1.0,
-        suppressible: false,
-        codec: .float)
-    var upscaleMultiplier: Float = 1.0 { didSet { commit(_upscaleMultiplierConfig, upscaleMultiplier) } }
-    let _vsyncQueueSizeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "VsyncQueueSize", default: 8,
-        suppressible: false,
-        codec: .int(in: SettingsStore.vsyncQueueRange))
+    var renderer: Int = 17 { didSet { commit(Self._rendererConfig, renderer) } }
+    var upscaleMultiplier: Float = 1.0 { didSet { commit(Self._upscaleMultiplierConfig, upscaleMultiplier) } }
     var vsyncQueueSize: Int = 8 { didSet {
-        commit(_vsyncQueueSizeConfig, vsyncQueueSize)
+        commit(Self._vsyncQueueSizeConfig, vsyncQueueSize)
         if vsyncQueueSize != oldValue { markFramePacingCustom() }
     }}
-    let _textureFilteringConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "filter", default: 2,
-        suppressible: false,
-        codec: .int)
-    var textureFiltering: Int = 2 { didSet { commit(_textureFilteringConfig, textureFiltering) } }
-    // Boot-only for the same reason as the renderer above: the core counts this in
-    // RestartOptionsAreEqual, so applying it live goes down GSreopen and tears the
-    // Metal device down under the running game. The picker says "Requires restart".
-    let _backThreadModeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "GSBackThreadMode", default: 0,
-        suppressible: false,
-        bootOnly: true,
-        codec: .int)
-    var backThreadMode: Int = 0 { didSet { commit(_backThreadModeConfig, backThreadMode) } }
-    let _hardwareMipmappingConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "hw_mipmap", default: true,
-        suppressible: false,
-        codec: .bool)
-    var hardwareMipmapping: Bool = true { didSet { commit(_hardwareMipmappingConfig, hardwareMipmapping) } }
-    let _fxaaConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "fxaa", default: false,
-        suppressible: false,
-        codec: .bool)
-    var fxaa: Bool = false { didSet { commit(_fxaaConfig, fxaa) } }
-    let _casModeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "CASMode", default: 0,
-        suppressible: false,
-        codec: .int)
-    var casMode: Int = 0 { didSet { commit(_casModeConfig, casMode) } }
-    let _casSharpnessConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "CASSharpness", default: 50,
-        suppressible: false,
-        codec: .int(in: SettingsStore.casSharpnessRange))
-    var casSharpness: Int = 50 { didSet { commit(_casSharpnessConfig, casSharpness) } }
-    let _shaderChainEnabledConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "ShaderChainEnabled", default: false,
-        suppressible: false,
-        codec: .bool)
+    var textureFiltering: Int = 2 { didSet { commit(Self._textureFilteringConfig, textureFiltering) } }
+    var backThreadMode: Int = 0 { didSet { commit(Self._backThreadModeConfig, backThreadMode) } }
+    var hardwareMipmapping: Bool = true { didSet { commit(Self._hardwareMipmappingConfig, hardwareMipmapping) } }
+    var fxaa: Bool = false { didSet { commit(Self._fxaaConfig, fxaa) } }
+    var casMode: Int = 0 { didSet { commit(Self._casModeConfig, casMode) } }
+    var casSharpness: Int = 50 { didSet { commit(Self._casSharpnessConfig, casSharpness) } }
     var shaderChainEnabled: Bool = false { didSet {
-        commit(_shaderChainEnabledConfig, shaderChainEnabled)
+        commit(Self._shaderChainEnabledConfig, shaderChainEnabled)
         ARMSX2Bridge.retryShaderChain()
     }}
-    // Stored as a ShaderPresetLibrary token, since the container path changes on every install;
-    // applyShaderChainSelection writes the absolute ShaderChainPreset that core reads.
-    let _shaderChainPresetRefConfig = Setting<String>(
-        section: "EmuCore/GS", key: "ShaderChainPresetRef", default: "",
-        suppressible: false,
-        codec: .string)
     var shaderChainPresetRef: String = "" { didSet {
-        commit(_shaderChainPresetRefConfig, shaderChainPresetRef)
+        commit(Self._shaderChainPresetRefConfig, shaderChainPresetRef)
         applyShaderChainSelection()
     }}
-    let _interlaceModeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "deinterlace_mode", default: 0,
-        suppressible: false,
-        codec: .int)
-    var interlaceMode: Int = 0 { didSet { commit(_interlaceModeConfig, interlaceMode) } }
-    let _aspectRatioConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "AspectRatio", default: 1,
-        suppressible: false,
-        codec: .aspectRatio)
-    var aspectRatio: Int = 1 { didSet { commit(_aspectRatioConfig, aspectRatio) } }
-    let _blendingAccuracyConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "accurate_blending_unit", default: 1,
-        suppressible: false,
-        codec: .int)
-    var blendingAccuracy: Int = 1 { didSet { commit(_blendingAccuracyConfig, blendingAccuracy) } }
-    let _ditheringConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "dithering_ps2", default: 2,
-        suppressible: false,
-        codec: .int)
-    var dithering: Int = 2 { didSet { commit(_ditheringConfig, dithering) } }
-    let _trilinearFilteringConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "TriFilter", default: -1,
-        suppressible: false,
-        codec: .int)
-    var trilinearFiltering: Int = -1 { didSet { commit(_trilinearFilteringConfig, trilinearFiltering) } }
-    let _halfPixelOffsetConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_HalfPixelOffset", default: 0,
-        suppressible: false,
-        codec: .int)
-    var halfPixelOffset: Int = 0 { didSet { commit(_halfPixelOffsetConfig, halfPixelOffset) } }
-    let _roundSpriteConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_round_sprite_offset", default: 0,
-        suppressible: false,
-        codec: .int)
-    var roundSprite: Int = 0 { didSet { commit(_roundSpriteConfig, roundSprite) } }
-    let _alignSpriteConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "UserHacks_align_sprite_X", default: false,
-        suppressible: false,
-        codec: .bool)
-    var alignSprite: Bool = false { didSet { commit(_alignSpriteConfig, alignSprite) } }
-    let _mergeSpriteConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "UserHacks_merge_pp_sprite", default: false,
-        suppressible: false,
-        codec: .bool)
-    var mergeSprite: Bool = false { didSet { commit(_mergeSpriteConfig, mergeSprite) } }
-    let _wildArmsOffsetConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "UserHacks_ForceEvenSpritePosition", default: false,
-        suppressible: false,
-        codec: .bool)
-    var wildArmsOffset: Bool = false { didSet { commit(_wildArmsOffsetConfig, wildArmsOffset) } }
+    var interlaceMode: Int = 0 { didSet { commit(Self._interlaceModeConfig, interlaceMode) } }
+    var aspectRatio: Int = 1 { didSet { commit(Self._aspectRatioConfig, aspectRatio) } }
+    var blendingAccuracy: Int = 1 { didSet { commit(Self._blendingAccuracyConfig, blendingAccuracy) } }
+    var dithering: Int = 2 { didSet { commit(Self._ditheringConfig, dithering) } }
+    var trilinearFiltering: Int = -1 { didSet { commit(Self._trilinearFilteringConfig, trilinearFiltering) } }
+    var halfPixelOffset: Int = 0 { didSet { commit(Self._halfPixelOffsetConfig, halfPixelOffset) } }
+    var roundSprite: Int = 0 { didSet { commit(Self._roundSpriteConfig, roundSprite) } }
+    var alignSprite: Bool = false { didSet { commit(Self._alignSpriteConfig, alignSprite) } }
+    var mergeSprite: Bool = false { didSet { commit(Self._mergeSpriteConfig, mergeSprite) } }
+    var wildArmsOffset: Bool = false { didSet { commit(Self._wildArmsOffsetConfig, wildArmsOffset) } }
     var textureOffsetX: Int {
         didSet {
             let normalized = Self.clampedTextureOffset(textureOffsetX)
@@ -545,135 +307,42 @@ final class SettingsStore {
             requestGraphicsApplyGuarded()
         }
     }
-    let _loadTextureReplacementsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "LoadTextureReplacements", default: false,
-        suppressible: false,
-        codec: .bool)
     var loadTextureReplacements: Bool = false {
-        didSet { commit(_loadTextureReplacementsConfig, loadTextureReplacements) }
+        didSet { commit(Self._loadTextureReplacementsConfig, loadTextureReplacements) }
     }
-    let _loadTextureReplacementsAsyncConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "LoadTextureReplacementsAsync", default: true,
-        suppressible: false,
-        codec: .bool)
     var loadTextureReplacementsAsync: Bool = true {
-        didSet { commit(_loadTextureReplacementsAsyncConfig, loadTextureReplacementsAsync) }
+        didSet { commit(Self._loadTextureReplacementsAsyncConfig, loadTextureReplacementsAsync) }
     }
-    let _precacheTextureReplacementsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "PrecacheTextureReplacements", default: false,
-        suppressible: false,
-        codec: .bool)
     var precacheTextureReplacements: Bool = false {
-        didSet { commit(_precacheTextureReplacementsConfig, precacheTextureReplacements) }
+        didSet { commit(Self._precacheTextureReplacementsConfig, precacheTextureReplacements) }
     }
-    let _texturePreloadingConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "texture_preloading", default: 2,
-        suppressible: false,
-        codec: .int)
-    var texturePreloading: Int = 2 { didSet { commit(_texturePreloadingConfig, texturePreloading) } }
-    let _dumpReplaceableTexturesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "DumpReplaceableTextures", default: false,
-        suppressible: false,
-        codec: .bool)
+    var texturePreloading: Int = 2 { didSet { commit(Self._texturePreloadingConfig, texturePreloading) } }
     var dumpReplaceableTextures: Bool = false {
-        didSet { commit(_dumpReplaceableTexturesConfig, dumpReplaceableTextures) }
+        didSet { commit(Self._dumpReplaceableTexturesConfig, dumpReplaceableTextures) }
     }
-    let _dumpReplaceableMipmapsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "DumpReplaceableMipmaps", default: false,
-        suppressible: false,
-        codec: .bool)
     var dumpReplaceableMipmaps: Bool = false {
-        didSet { commit(_dumpReplaceableMipmapsConfig, dumpReplaceableMipmaps) }
+        didSet { commit(Self._dumpReplaceableMipmapsConfig, dumpReplaceableMipmaps) }
     }
-    let _dumpTexturesWithFMVActiveConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "DumpTexturesWithFMVActive", default: false,
-        suppressible: false,
-        codec: .bool)
     var dumpTexturesWithFMVActive: Bool = false {
-        didSet { commit(_dumpTexturesWithFMVActiveConfig, dumpTexturesWithFMVActive) }
+        didSet { commit(Self._dumpTexturesWithFMVActiveConfig, dumpTexturesWithFMVActive) }
     }
-    let _dumpDirectTexturesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "DumpDirectTextures", default: true,
-        suppressible: false,
-        codec: .bool)
-    var dumpDirectTextures: Bool = true { didSet { commit(_dumpDirectTexturesConfig, dumpDirectTextures) } }
-    let _dumpPaletteTexturesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "DumpPaletteTextures", default: true,
-        suppressible: false,
-        codec: .bool)
-    var dumpPaletteTextures: Bool = true { didSet { commit(_dumpPaletteTexturesConfig, dumpPaletteTextures) } }
+    var dumpDirectTextures: Bool = true { didSet { commit(Self._dumpDirectTexturesConfig, dumpDirectTextures) } }
+    var dumpPaletteTextures: Bool = true { didSet { commit(Self._dumpPaletteTexturesConfig, dumpPaletteTextures) } }
 
     // ── GS Hardware Fixes (EmuCore/GS) ──
-    // Compatibility-oriented hardware-renderer fixes. AAT (HWAccurateAlphaTest) and
-    // Texture Inside RT close the GameDB advisory gap added in 2.3.2. Applied live by
-    // the GS thread (no VM restart); some may require GameDB Graphics Fixes off.
-    let _hwAccurateAlphaTestConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "HWAccurateAlphaTest", default: false,
-        suppressible: false,
-        codec: .bool)
-    var hwAccurateAlphaTest: Bool = false { didSet { commit(_hwAccurateAlphaTestConfig, hwAccurateAlphaTest) } }
-    let _textureInsideRtConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_TextureInsideRt", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var textureInsideRt: Int = 0 { didSet { commit(_textureInsideRtConfig, textureInsideRt) } }
-    let _limit24BitDepthConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_Limit24BitDepth", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var limit24BitDepth: Int = 0 { didSet { commit(_limit24BitDepthConfig, limit24BitDepth) } }
-    let _nativeScalingConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_native_scaling", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...4))
-    var nativeScaling: Int = 0 { didSet { commit(_nativeScalingConfig, nativeScaling) } }
-    let _cpuClutRenderConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_CPUCLUTRender", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var cpuClutRender: Int = 0 { didSet { commit(_cpuClutRenderConfig, cpuClutRender) } }
-    let _cpuSpriteRenderBwConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderBW", default: 0,
-        suppressible: false,
-        codec: .int(in: SettingsStore.cpuSpriteRenderBwRange))
-    var cpuSpriteRenderBw: Int = 0 { didSet { commit(_cpuSpriteRenderBwConfig, cpuSpriteRenderBw) } }
-    let _cpuSpriteRenderLevelConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_CPUSpriteRenderLevel", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var cpuSpriteRenderLevel: Int = 0 { didSet { commit(_cpuSpriteRenderLevelConfig, cpuSpriteRenderLevel) } }
-    let _gpuTargetClutConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_GPUTargetCLUTMode", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var gpuTargetClut: Int = 0 { didSet { commit(_gpuTargetClutConfig, gpuTargetClut) } }
-    let _bilinearUpscaleHackConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "UserHacks_BilinearHack", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...2))
-    var bilinearUpscaleHack: Int = 0 { didSet { commit(_bilinearUpscaleHackConfig, bilinearUpscaleHack) } }
-    let _maxAnisotropyConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "MaxAnisotropy", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...16))
-    var maxAnisotropy: Int = 0 { didSet { commit(_maxAnisotropyConfig, maxAnisotropy) } }
-    let _hardwareDownloadModeConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "HWDownloadMode", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...4))
-    var hardwareDownloadMode: Int = 0 { didSet { commit(_hardwareDownloadModeConfig, hardwareDownloadMode) } }
-    let _tvShaderConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "TVShader", default: 0,
-        suppressible: false,
-        codec: .int(in: 0...7))
-    var tvShader: Int = 0 { didSet { commit(_tvShaderConfig, tvShader) } }
-    // MetalFX Spatial upscaler (0 = Off / bilinear, 1 = MetalFX Spatial).
-    // Hidden in the UI when isMetalFXAvailable is false; default is Off.
-    let _upscalerConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "Upscaler", default: 0,
-        suppressible: false,
-        codec: .int)
-    var upscaler: Int = 0 { didSet { commit(_upscalerConfig, upscaler) } }
+    var hwAccurateAlphaTest: Bool = false { didSet { commit(Self._hwAccurateAlphaTestConfig, hwAccurateAlphaTest) } }
+    var textureInsideRt: Int = 0 { didSet { commit(Self._textureInsideRtConfig, textureInsideRt) } }
+    var limit24BitDepth: Int = 0 { didSet { commit(Self._limit24BitDepthConfig, limit24BitDepth) } }
+    var nativeScaling: Int = 0 { didSet { commit(Self._nativeScalingConfig, nativeScaling) } }
+    var cpuClutRender: Int = 0 { didSet { commit(Self._cpuClutRenderConfig, cpuClutRender) } }
+    var cpuSpriteRenderBw: Int = 0 { didSet { commit(Self._cpuSpriteRenderBwConfig, cpuSpriteRenderBw) } }
+    var cpuSpriteRenderLevel: Int = 0 { didSet { commit(Self._cpuSpriteRenderLevelConfig, cpuSpriteRenderLevel) } }
+    var gpuTargetClut: Int = 0 { didSet { commit(Self._gpuTargetClutConfig, gpuTargetClut) } }
+    var bilinearUpscaleHack: Int = 0 { didSet { commit(Self._bilinearUpscaleHackConfig, bilinearUpscaleHack) } }
+    var maxAnisotropy: Int = 0 { didSet { commit(Self._maxAnisotropyConfig, maxAnisotropy) } }
+    var hardwareDownloadMode: Int = 0 { didSet { commit(Self._hardwareDownloadModeConfig, hardwareDownloadMode) } }
+    var tvShader: Int = 0 { didSet { commit(Self._tvShaderConfig, tvShader) } }
+    var upscaler: Int = 0 { didSet { commit(Self._upscalerConfig, upscaler) } }
 
     /// What the running game really has, keyed by INI key. The INI is what the player
     /// asked for; between the two sit the two mask passes and the GameDB, and only the
@@ -683,73 +352,25 @@ final class SettingsStore {
     var gsBoolHacks: [String: Bool] = [:]
 
     // ── Screen / PCRTC (EmuCore/GS) ── display-output options, applied live.
-    let _pcrtcOffsetsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "pcrtc_offsets", default: false,
-        suppressible: false,
-        codec: .bool)
-    var pcrtcOffsets: Bool = false { didSet { commit(_pcrtcOffsetsConfig, pcrtcOffsets) } }
-    let _pcrtcOverscanConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "pcrtc_overscan", default: false,
-        suppressible: false,
-        codec: .bool)
-    var pcrtcOverscan: Bool = false { didSet { commit(_pcrtcOverscanConfig, pcrtcOverscan) } }
-    let _pcrtcAntiBlurConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "pcrtc_antiblur", default: true,
-        suppressible: false,
-        codec: .bool)
-    var pcrtcAntiBlur: Bool = true { didSet { commit(_pcrtcAntiBlurConfig, pcrtcAntiBlur) } }
-    let _disableInterlaceOffsetConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "disable_interlace_offset", default: false,
-        suppressible: false,
-        codec: .bool)
+    var pcrtcOffsets: Bool = false { didSet { commit(Self._pcrtcOffsetsConfig, pcrtcOffsets) } }
+    var pcrtcOverscan: Bool = false { didSet { commit(Self._pcrtcOverscanConfig, pcrtcOverscan) } }
+    var pcrtcAntiBlur: Bool = true { didSet { commit(Self._pcrtcAntiBlurConfig, pcrtcAntiBlur) } }
     var disableInterlaceOffset: Bool = false {
-        didSet { commit(_disableInterlaceOffsetConfig, disableInterlaceOffset) }
+        didSet { commit(Self._disableInterlaceOffsetConfig, disableInterlaceOffset) }
     }
-    let _skipDuplicateFramesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "SkipDuplicateFrames", default: true,
-        suppressible: false,
-        codec: .bool)
-    var skipDuplicateFrames: Bool = true { didSet { commit(_skipDuplicateFramesConfig, skipDuplicateFrames) } }
-    let _syncToHostRefreshConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "SyncToHostRefreshRate", default: false,
-        suppressible: false,
-        codec: .bool)
+    var skipDuplicateFrames: Bool = true { didSet { commit(Self._skipDuplicateFramesConfig, skipDuplicateFrames) } }
     var syncToHostRefresh: Bool = false { didSet {
-        commit(_syncToHostRefreshConfig, syncToHostRefresh)
+        commit(Self._syncToHostRefreshConfig, syncToHostRefresh)
         if syncToHostRefresh != oldValue { markFramePacingCustom() }
     }}
-    let _integerScalingConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "IntegerScaling", default: false,
-        suppressible: false,
-        codec: .bool)
-    var integerScaling: Bool = false { didSet { commit(_integerScalingConfig, integerScaling) } }
+    var integerScaling: Bool = false { didSet { commit(Self._integerScalingConfig, integerScaling) } }
 
     // ── Shade Boost (EmuCore/GS) ── post-process color adjustment, applied live.
-    let _shadeBoostConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "ShadeBoost", default: false,
-        suppressible: false,
-        codec: .bool)
-    var shadeBoost: Bool = false { didSet { commit(_shadeBoostConfig, shadeBoost) } }
-    let _shadeBoostBrightnessConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "ShadeBoost_Brightness", default: 50,
-        suppressible: false,
-        codec: .int(in: SettingsStore.shadeBoostRange))
-    var shadeBoostBrightness: Int = 50 { didSet { commit(_shadeBoostBrightnessConfig, shadeBoostBrightness) } }
-    let _shadeBoostContrastConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "ShadeBoost_Contrast", default: 50,
-        suppressible: false,
-        codec: .int(in: SettingsStore.shadeBoostRange))
-    var shadeBoostContrast: Int = 50 { didSet { commit(_shadeBoostContrastConfig, shadeBoostContrast) } }
-    let _shadeBoostSaturationConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "ShadeBoost_Saturation", default: 50,
-        suppressible: false,
-        codec: .int(in: SettingsStore.shadeBoostRange))
-    var shadeBoostSaturation: Int = 50 { didSet { commit(_shadeBoostSaturationConfig, shadeBoostSaturation) } }
-    let _shadeBoostGammaConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "ShadeBoost_Gamma", default: 50,
-        suppressible: false,
-        codec: .int(in: SettingsStore.shadeBoostRange))
-    var shadeBoostGamma: Int = 50 { didSet { commit(_shadeBoostGammaConfig, shadeBoostGamma) } }
+    var shadeBoost: Bool = false { didSet { commit(Self._shadeBoostConfig, shadeBoost) } }
+    var shadeBoostBrightness: Int = 50 { didSet { commit(Self._shadeBoostBrightnessConfig, shadeBoostBrightness) } }
+    var shadeBoostContrast: Int = 50 { didSet { commit(Self._shadeBoostContrastConfig, shadeBoostContrast) } }
+    var shadeBoostSaturation: Int = 50 { didSet { commit(Self._shadeBoostSaturationConfig, shadeBoostSaturation) } }
+    var shadeBoostGamma: Int = 50 { didSet { commit(Self._shadeBoostGammaConfig, shadeBoostGamma) } }
 
     // ── OSD Overlay ──
     var osdPreset: OsdPreset {
@@ -792,188 +413,85 @@ final class SettingsStore {
             }
         }
     }
-    // Adaptive Resolution — opt-in frame-time-driven dynamic internal
-    // resolution, off by default. The didSet writes the INI key and starts or
-    // stops the controller so its lifecycle tracks the user's toggle.
-    let _adaptiveResolutionEnabledConfig = Setting<Bool>(
-        section: "ARMSX2iOS/FramePacing", key: "DynamicResolution", default: false,
-        suppressible: false,
-        codec: .bool)
     var adaptiveResolutionEnabled: Bool = false { didSet {
-        commit(_adaptiveResolutionEnabledConfig, adaptiveResolutionEnabled)
+        commit(Self._adaptiveResolutionEnabledConfig, adaptiveResolutionEnabled)
         // Not while the INI is loading: setEnabled reads SettingsStore.shared, and we are inside
         // that very initializer. init starts the controller itself once it has finished.
         guard !suppressINIWrites else { return }
         FrameTimeDynamicResolutionController.shared.setEnabled(adaptiveResolutionEnabled)
     }}
-    let _lastActiveOsdPresetConfig = Setting<OsdPreset>(
-        section: "ARMSX2iOS/UI", key: "LastActiveOsdPreset", default: .simple,
-        suppressible: false,
-        codec: .rawInt)
-    var lastActiveOsdPreset: OsdPreset = .simple { didSet { commit(_lastActiveOsdPresetConfig, lastActiveOsdPreset) } }
-    let _osdPerformancePositionConfig = Setting<Int>(
-        section: "EmuCore/GS", key: "OsdPerformancePos",
-        default: SettingsStore.defaultOsdPerformancePosition,
-        suppressible: false,
-        codec: .int)
+    var lastActiveOsdPreset: OsdPreset = .simple { didSet { commit(Self._lastActiveOsdPresetConfig, lastActiveOsdPreset) } }
     var osdPerformancePosition = SettingsStore.defaultOsdPerformancePosition {
-        didSet { commit(_osdPerformancePositionConfig, osdPerformancePosition) }
+        didSet { commit(Self._osdPerformancePositionConfig, osdPerformancePosition) }
     }
-    /// Suppresses transient on-screen messages (shader compilation, save state,
-    /// settings-applied). Critical SwiftUI alerts are unaffected. Backed by the
-    /// core's OsdMessagesPos (1 = TopLeft default, 0 = None).
-    let _osdShowMessagesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdMessagesPos", default: true,
-        suppressible: false,
-        codec: .boolAsInt)
-    var osdShowMessages: Bool = true { didSet { commit(_osdShowMessagesConfig, osdShowMessages) } }
-    let _osdShowFPSConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowFPS", default: false,
-        suppressible: false,
-        codec: .bool)
+    var osdShowMessages: Bool = true { didSet { commit(Self._osdShowMessagesConfig, osdShowMessages) } }
     var osdShowFPS: Bool = false { didSet {
-        commit(_osdShowFPSConfig, osdShowFPS)
+        commit(Self._osdShowFPSConfig, osdShowFPS)
         markOsdCustom()
     }}
-    let _osdShowVPSConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowVPS", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowVPS: Bool = false { didSet {
-        commit(_osdShowVPSConfig, osdShowVPS)
+        commit(Self._osdShowVPSConfig, osdShowVPS)
         markOsdCustom()
     }}
-    let _osdShowSpeedConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowSpeed", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowSpeed: Bool = false { didSet {
-        commit(_osdShowSpeedConfig, osdShowSpeed)
+        commit(Self._osdShowSpeedConfig, osdShowSpeed)
         markOsdCustom()
     }}
-    let _osdShowCPUConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowCPU", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowCPU: Bool = false { didSet {
-        commit(_osdShowCPUConfig, osdShowCPU)
+        commit(Self._osdShowCPUConfig, osdShowCPU)
         markOsdCustom()
     }}
-    let _osdShowGPUConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowGPU", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowGPU: Bool = false { didSet {
-        commit(_osdShowGPUConfig, osdShowGPU)
+        commit(Self._osdShowGPUConfig, osdShowGPU)
         markOsdCustom()
     }}
-    let _osdShowResolutionConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowResolution", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowResolution: Bool = false { didSet {
-        commit(_osdShowResolutionConfig, osdShowResolution)
+        commit(Self._osdShowResolutionConfig, osdShowResolution)
         markOsdCustom()
     }}
-    let _osdShowGSStatsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowGSStats", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowGSStats: Bool = false { didSet {
-        commit(_osdShowGSStatsConfig, osdShowGSStats)
+        commit(Self._osdShowGSStatsConfig, osdShowGSStats)
         markOsdCustom()
     }}
-    let _osdShowIndicatorsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowIndicators", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowIndicators: Bool = false { didSet {
-        commit(_osdShowIndicatorsConfig, osdShowIndicators)
+        commit(Self._osdShowIndicatorsConfig, osdShowIndicators)
         markOsdCustom()
     }}
-    let _osdShowSettingsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowSettings", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowSettings: Bool = false { didSet {
-        commit(_osdShowSettingsConfig, osdShowSettings)
+        commit(Self._osdShowSettingsConfig, osdShowSettings)
         markOsdCustom()
     }}
-    let _osdShowInputsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowInputs", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowInputs: Bool = false { didSet {
-        commit(_osdShowInputsConfig, osdShowInputs)
+        commit(Self._osdShowInputsConfig, osdShowInputs)
         markOsdCustom()
     }}
-    let _osdShowFrameTimesConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowFrameTimes", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowFrameTimes: Bool = false { didSet {
-        commit(_osdShowFrameTimesConfig, osdShowFrameTimes)
+        commit(Self._osdShowFrameTimesConfig, osdShowFrameTimes)
         markOsdCustom()
     }}
-    let _osdShowVersionConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowVersion", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowVersion: Bool = false { didSet {
-        commit(_osdShowVersionConfig, osdShowVersion)
+        commit(Self._osdShowVersionConfig, osdShowVersion)
         markOsdCustom()
     }}
-    let _osdShowHardwareInfoConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowHardwareInfo", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowHardwareInfo: Bool = false { didSet {
-        commit(_osdShowHardwareInfoConfig, osdShowHardwareInfo)
+        commit(Self._osdShowHardwareInfoConfig, osdShowHardwareInfo)
         markOsdCustom()
     }}
-    let _osdShowTextureReplacementsConfig = Setting<Bool>(
-        section: "EmuCore/GS", key: "OsdShowTextureReplacements", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowTextureReplacements: Bool = false {
-        didSet { commit(_osdShowTextureReplacementsConfig, osdShowTextureReplacements) }
+        didSet { commit(Self._osdShowTextureReplacementsConfig, osdShowTextureReplacements) }
     }
-    let _osdShowDeviceStatsConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
-        suppressible: false,
-        codec: .bool)
     var osdShowDeviceStats: Bool = false { didSet {
-        commit(_osdShowDeviceStatsConfig, osdShowDeviceStats)
+        commit(Self._osdShowDeviceStatsConfig, osdShowDeviceStats)
         markOsdCustom()
     }}
 
     // ── Gamepad / UI ──
-    let _padOpacityConfig = Setting<Float>(
-        section: "ARMSX2iOS/UI", key: "PadOpacity", default: 0.6,
-        suppressible: false,
-        codec: .float)
-    var padOpacity: Float = 0.6 { didSet { commit(_padOpacityConfig, padOpacity) } }
-    let _phoneRumbleStrengthConfig = Setting<Float>(
-        section: "ARMSX2iOS/UI", key: "PhoneRumbleStrength", default: 0.25,
-        suppressible: false,
-        codec: .float)
-    var phoneRumbleStrength: Float = 0.25 { didSet { commit(_phoneRumbleStrengthConfig, phoneRumbleStrength) } }
-    let _increaseRumbleDurationAndInterpolationConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "IncreaseRumbleDurationAndInterpolation", default: true,
-        suppressible: false,
-        codec: .bool)
+    var padOpacity: Float = 0.6 { didSet { commit(Self._padOpacityConfig, padOpacity) } }
+    var phoneRumbleStrength: Float = 0.25 { didSet { commit(Self._phoneRumbleStrengthConfig, phoneRumbleStrength) } }
     var increaseRumbleDurationAndInterpolation: Bool = true {
-        didSet { commit(_increaseRumbleDurationAndInterpolationConfig, increaseRumbleDurationAndInterpolation) }
+        didSet { commit(Self._increaseRumbleDurationAndInterpolationConfig, increaseRumbleDurationAndInterpolation) }
     }
-    let _hapticFeedbackConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "HapticFeedback", default: true,
-        suppressible: false,
-        codec: .bool)
-    var hapticFeedback: Bool = true { didSet { commit(_hapticFeedbackConfig, hapticFeedback) } }
-    let _gameRumbleStrengthConfig = Setting<Float>(
-        section: "ARMSX2iOS/UI", key: "GameRumbleStrength", default: 1,
-        suppressible: false,
-        codec: .float)
+    var hapticFeedback: Bool = true { didSet { commit(Self._hapticFeedbackConfig, hapticFeedback) } }
     var gameRumbleStrength: Float = 1 {
         didSet {
             let clamped = min(max(gameRumbleStrength, 0), 2)
@@ -981,13 +499,9 @@ final class SettingsStore {
                 gameRumbleStrength = clamped
                 return
             }
-            commit(_gameRumbleStrengthConfig, gameRumbleStrength)
+            commit(Self._gameRumbleStrengthConfig, gameRumbleStrength)
         }
     }
-    let _uiRumbleStrengthConfig = Setting<Float>(
-        section: "ARMSX2iOS/UI", key: "UIRumbleStrength", default: 0.5,
-        suppressible: false,
-        codec: .float)
     var uiRumbleStrength: Float = 0.5 {
         didSet {
             let clamped = min(max(uiRumbleStrength, 0), 1)
@@ -995,44 +509,20 @@ final class SettingsStore {
                 uiRumbleStrength = clamped
                 return
             }
-            commit(_uiRumbleStrengthConfig, uiRumbleStrength)
+            commit(Self._uiRumbleStrengthConfig, uiRumbleStrength)
         }
     }
-    let _dpadDiagonalsEnabledConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "DpadDiagonalsEnabled", default: true,
-        suppressible: false,
-        codec: .bool)
-    var dpadDiagonalsEnabled: Bool = true { didSet { commit(_dpadDiagonalsEnabledConfig, dpadDiagonalsEnabled) } }
-    let _faceComboZonesEnabledConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "FaceComboZonesEnabled", default: true,
-        suppressible: false,
-        codec: .bool)
-    var faceComboZonesEnabled: Bool = true { didSet { commit(_faceComboZonesEnabledConfig, faceComboZonesEnabled) } }
-    let _virtualPadSkinConfig = Setting<VirtualPadSkin>(
-        section: "ARMSX2iOS/UI", key: "VirtualPadSkin", default: .armsx2Refresh,
-        suppressible: false,
-        codec: .rawInt)
-    var virtualPadSkin: VirtualPadSkin = .armsx2Refresh { didSet { commit(_virtualPadSkinConfig, virtualPadSkin) } }
-    let _automaticDownloadCustomSkinConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "AutomaticDownloadCustomSkin", default: false,
-        codec: .bool)
+    var dpadDiagonalsEnabled: Bool = true { didSet { commit(Self._dpadDiagonalsEnabledConfig, dpadDiagonalsEnabled) } }
+    var faceComboZonesEnabled: Bool = true { didSet { commit(Self._faceComboZonesEnabledConfig, faceComboZonesEnabled) } }
+    var virtualPadSkin: VirtualPadSkin = .armsx2Refresh { didSet { commit(Self._virtualPadSkinConfig, virtualPadSkin) } }
     var automaticDownloadCustomSkin: Bool = false {
-        didSet { commit(_automaticDownloadCustomSkinConfig, automaticDownloadCustomSkin) }
+        didSet { commit(Self._automaticDownloadCustomSkinConfig, automaticDownloadCustomSkin) }
     }
-    let _autoHideVirtualPadWhenControllerConnectedConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "AutoHideVirtualPadWhenControllerConnected", default: true,
-        codec: .bool)
     var autoHideVirtualPadWhenControllerConnected: Bool = true {
-        didSet { commit(_autoHideVirtualPadWhenControllerConnectedConfig, autoHideVirtualPadWhenControllerConnected) }
+        didSet { commit(Self._autoHideVirtualPadWhenControllerConnectedConfig, autoHideVirtualPadWhenControllerConnected) }
     }
-    let _autoFullscreenConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "AutoFullscreen", default: true,
-        codec: .bool)
-    var autoFullscreen: Bool = true { didSet { commit(_autoFullscreenConfig, autoFullscreen) } }
-    let _hideMenuButtonConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "HideMenuButton", default: false,
-        codec: .bool)
-    var hideMenuButton: Bool = false { didSet { commit(_hideMenuButtonConfig, hideMenuButton) } }
+    var autoFullscreen: Bool = true { didSet { commit(Self._autoFullscreenConfig, autoFullscreen) } }
+    var hideMenuButton: Bool = false { didSet { commit(Self._hideMenuButtonConfig, hideMenuButton) } }
     // clamps to 0.8...1.6
     var analogStickScale: Float {
         didSet {
@@ -1045,9 +535,6 @@ final class SettingsStore {
             ARMSX2Bridge.setINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", value: analogStickScale)
         }
     }
-    let _gameControllerDeadZoneConfig = Setting<Float>(
-        section: "ARMSX2iOS/Gamepad", key: "StickDeadZone", default: 0.15,
-        codec: .float)
     var gameControllerDeadZone: Float = 0.15 {
         didSet {
             let clamped = min(max(gameControllerDeadZone, 0), 0.25)
@@ -1055,18 +542,12 @@ final class SettingsStore {
                 gameControllerDeadZone = clamped
                 return
             }
-            commit(_gameControllerDeadZoneConfig, gameControllerDeadZone)
+            commit(Self._gameControllerDeadZoneConfig, gameControllerDeadZone)
         }
     }
-    let _gameControllerLeftInstantDeadzoneConfig = Setting<Bool>(
-        section: "ARMSX2iOS/Gamepad", key: "LeftInstantDeadzoneEnabled", default: false,
-        codec: .bool)
     var gameControllerLeftInstantDeadzoneEnabled: Bool = false {
-        didSet { commit(_gameControllerLeftInstantDeadzoneConfig, gameControllerLeftInstantDeadzoneEnabled) }
+        didSet { commit(Self._gameControllerLeftInstantDeadzoneConfig, gameControllerLeftInstantDeadzoneEnabled) }
     }
-    let _gameControllerLeftNegativeDeadzoneConfig = Setting<Float>(
-        section: "ARMSX2iOS/Gamepad", key: "LeftNegativeDeadzone", default: -0.08,
-        codec: .float)
     var gameControllerLeftNegativeDeadzone: Float = -0.08 {
         didSet {
             let clamped = min(max(gameControllerLeftNegativeDeadzone, -0.25), 0)
@@ -1074,18 +555,12 @@ final class SettingsStore {
                 gameControllerLeftNegativeDeadzone = clamped
                 return
             }
-            commit(_gameControllerLeftNegativeDeadzoneConfig, gameControllerLeftNegativeDeadzone)
+            commit(Self._gameControllerLeftNegativeDeadzoneConfig, gameControllerLeftNegativeDeadzone)
         }
     }
-    let _gameControllerRightInstantDeadzoneConfig = Setting<Bool>(
-        section: "ARMSX2iOS/Gamepad", key: "RightInstantDeadzoneEnabled", default: false,
-        codec: .bool)
     var gameControllerRightInstantDeadzoneEnabled: Bool = false {
-        didSet { commit(_gameControllerRightInstantDeadzoneConfig, gameControllerRightInstantDeadzoneEnabled) }
+        didSet { commit(Self._gameControllerRightInstantDeadzoneConfig, gameControllerRightInstantDeadzoneEnabled) }
     }
-    let _gameControllerRightNegativeDeadzoneConfig = Setting<Float>(
-        section: "ARMSX2iOS/Gamepad", key: "RightNegativeDeadzone", default: -0.08,
-        codec: .float)
     var gameControllerRightNegativeDeadzone: Float = -0.08 {
         didSet {
             let clamped = min(max(gameControllerRightNegativeDeadzone, -0.25), 0)
@@ -1093,26 +568,14 @@ final class SettingsStore {
                 gameControllerRightNegativeDeadzone = clamped
                 return
             }
-            commit(_gameControllerRightNegativeDeadzoneConfig, gameControllerRightNegativeDeadzone)
+            commit(Self._gameControllerRightNegativeDeadzoneConfig, gameControllerRightNegativeDeadzone)
         }
     }
     private static let stickInversionSection = "ARMSX2iOS/UI"
-    let _invertLeftStickXConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "InvertLeftStickX", default: false,
-        codec: .bool)
-    var invertLeftStickX: Bool = false { didSet { commit(_invertLeftStickXConfig, invertLeftStickX) } }
-    let _invertLeftStickYConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "InvertLeftStickY", default: false,
-        codec: .bool)
-    var invertLeftStickY: Bool = false { didSet { commit(_invertLeftStickYConfig, invertLeftStickY) } }
-    let _invertRightStickXConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "InvertRightStickX", default: false,
-        codec: .bool)
-    var invertRightStickX: Bool = false { didSet { commit(_invertRightStickXConfig, invertRightStickX) } }
-    let _invertRightStickYConfig = Setting<Bool>(
-        section: "ARMSX2iOS/UI", key: "InvertRightStickY", default: false,
-        codec: .bool)
-    var invertRightStickY: Bool = false { didSet { commit(_invertRightStickYConfig, invertRightStickY) } }
+    var invertLeftStickX: Bool = false { didSet { commit(Self._invertLeftStickXConfig, invertLeftStickX) } }
+    var invertLeftStickY: Bool = false { didSet { commit(Self._invertLeftStickYConfig, invertLeftStickY) } }
+    var invertRightStickX: Bool = false { didSet { commit(Self._invertRightStickXConfig, invertRightStickX) } }
+    var invertRightStickY: Bool = false { didSet { commit(Self._invertRightStickYConfig, invertRightStickY) } }
 
     static let stickInversionKeys = ["InvertLeftStickX", "InvertLeftStickY", "InvertRightStickX", "InvertRightStickY"]
     /// Per-game overrides for the game the cache was built from. Only the overridden keys
@@ -1152,90 +615,36 @@ final class SettingsStore {
         }
         return overrides
     }
-    let _appLanguageConfig = Setting<AppLanguage>(
-        section: "ARMSX2iOS/UI", key: "AppLanguage", default: .system,
-        suppressible: false,
-        codec: .rawString)
-    var appLanguage: AppLanguage = .system { didSet { commit(_appLanguageConfig, appLanguage) } }
-    let _controllerMultitapModeConfig = Setting<Int>(
-        section: "ARMSX2iOS/Gamepad", key: "MultitapMode", default: 0,
-        suppressible: false,
-        codec: .int)
-    var controllerMultitapMode: Int = 0 { didSet { commit(_controllerMultitapModeConfig, controllerMultitapMode) } }
-    let _controllerMacroQuickMenuConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroQuickMenu",
-        default: ControllerMacroAction.quickMenu.defaultBinding,
-        suppressible: false, codec: .rawString)
-    let _controllerMacroQuickMenuSelectPauseMigration = Setting<Bool>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroQuickMenuSelectPauseMigrated",
-        default: false, suppressible: false, codec: .bool)
-    let _controllerMacroStartDefaultsMigration = Setting<Bool>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroStartDefaultsMigrated",
-        default: false, suppressible: false, codec: .bool)
+    var appLanguage: AppLanguage = .system { didSet { commit(Self._appLanguageConfig, appLanguage) } }
+    var controllerMultitapMode: Int = 0 { didSet { commit(Self._controllerMultitapModeConfig, controllerMultitapMode) } }
     var controllerMacroQuickMenu = ControllerMacroAction.quickMenu.defaultBinding {
-        didSet { commit(_controllerMacroQuickMenuConfig, controllerMacroQuickMenu) }
+        didSet { commit(Self._controllerMacroQuickMenuConfig, controllerMacroQuickMenu) }
     }
-    let _controllerMacroSaveGameStateConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroSaveGameState",
-        default: ControllerMacroAction.saveGameState.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroSaveGameState = ControllerMacroAction.saveGameState.defaultBinding {
-        didSet { commit(_controllerMacroSaveGameStateConfig, controllerMacroSaveGameState) }
+        didSet { commit(Self._controllerMacroSaveGameStateConfig, controllerMacroSaveGameState) }
     }
-    let _controllerMacroLoadGameStateConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroLoadGameState",
-        default: ControllerMacroAction.loadGameState.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroLoadGameState = ControllerMacroAction.loadGameState.defaultBinding {
-        didSet { commit(_controllerMacroLoadGameStateConfig, controllerMacroLoadGameState) }
+        didSet { commit(Self._controllerMacroLoadGameStateConfig, controllerMacroLoadGameState) }
     }
-    let _controllerMacroIncreaseSpeedConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroIncreaseSpeed",
-        default: ControllerMacroAction.increaseSpeed.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroIncreaseSpeed = ControllerMacroAction.increaseSpeed.defaultBinding {
-        didSet { commit(_controllerMacroIncreaseSpeedConfig, controllerMacroIncreaseSpeed) }
+        didSet { commit(Self._controllerMacroIncreaseSpeedConfig, controllerMacroIncreaseSpeed) }
     }
-    let _controllerMacroDecreaseSpeedConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroDecreaseSpeed",
-        default: ControllerMacroAction.decreaseSpeed.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroDecreaseSpeed = ControllerMacroAction.decreaseSpeed.defaultBinding {
-        didSet { commit(_controllerMacroDecreaseSpeedConfig, controllerMacroDecreaseSpeed) }
+        didSet { commit(Self._controllerMacroDecreaseSpeedConfig, controllerMacroDecreaseSpeed) }
     }
-    let _controllerMacroEnableFastForwardConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroEnableFastForward",
-        default: ControllerMacroAction.enableFastForward.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroEnableFastForward = ControllerMacroAction.enableFastForward.defaultBinding {
-        didSet { commit(_controllerMacroEnableFastForwardConfig, controllerMacroEnableFastForward) }
+        didSet { commit(Self._controllerMacroEnableFastForwardConfig, controllerMacroEnableFastForward) }
     }
-    let _controllerMacroDisableFastForwardConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroDisableFastForward",
-        default: ControllerMacroAction.disableFastForward.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroDisableFastForward = ControllerMacroAction.disableFastForward.defaultBinding {
-        didSet { commit(_controllerMacroDisableFastForwardConfig, controllerMacroDisableFastForward) }
+        didSet { commit(Self._controllerMacroDisableFastForwardConfig, controllerMacroDisableFastForward) }
     }
-    let _controllerMacroUndoSaveStateConfig = Setting<ControllerMacroBinding>(
-        section: "ARMSX2iOS/Gamepad", key: "MacroUndoSaveState",
-        default: ControllerMacroAction.undoSaveState.defaultBinding,
-        suppressible: false, codec: .rawString)
     var controllerMacroUndoSaveState = ControllerMacroAction.undoSaveState.defaultBinding {
-        didSet { commit(_controllerMacroUndoSaveStateConfig, controllerMacroUndoSaveState) }
+        didSet { commit(Self._controllerMacroUndoSaveStateConfig, controllerMacroUndoSaveState) }
     }
 
-    let _autoOpenStikDebugConfig = Setting<Bool>(
-        section: "ARMSX2iOS/JIT", key: "AutoOpenStikDebug", default: false,
-        codec: .bool)
-    var autoOpenStikDebug: Bool = false { didSet { commit(_autoOpenStikDebugConfig, autoOpenStikDebug) } }
-    let _jitScriptProtocolConfig = Setting<JITScriptProtocol>(
-        section: "ARMSX2iOS/JIT", key: "ScriptProtocol",
-        // Which one is right depends on the iOS version, so ask rather than assume.
-        default: JITScriptProtocol.defaultValue,
-        codec: .rawString)
+    var autoOpenStikDebug: Bool = false { didSet { commit(Self._autoOpenStikDebugConfig, autoOpenStikDebug) } }
     var jitScriptProtocol = JITScriptProtocol.defaultValue {
-        didSet { commit(_jitScriptProtocolConfig, jitScriptProtocol) }
+        didSet { commit(Self._jitScriptProtocolConfig, jitScriptProtocol) }
     }
 
     // DEV9 / Network
@@ -1252,10 +661,7 @@ final class SettingsStore {
             }
         }
     }
-    let _dev9HddFileConfig = Setting<String>(
-        section: "DEV9/Hdd", key: "HddFile", default: "DEV9hdd.raw",
-        codec: .string)
-    var dev9HddFile: String = "DEV9hdd.raw" { didSet { commit(_dev9HddFileConfig, dev9HddFile) } }
+    var dev9HddFile: String = "DEV9hdd.raw" { didSet { commit(Self._dev9HddFileConfig, dev9HddFile) } }
     // writes EthEnable + EthApi + EthDevice
     var dev9EthernetEnabled: Bool {
         didSet {
@@ -1275,34 +681,13 @@ final class SettingsStore {
             ARMSX2Bridge.setINIString("DEV9/Eth", key: "EthDevice", value: dev9EthDevice.isEmpty ? "Auto" : dev9EthDevice)
         }
     }
-    let _dev9InterceptDHCPConfig = Setting<Bool>(
-        section: "DEV9/Eth", key: "InterceptDHCP", default: false,
-        codec: .bool)
-    var dev9InterceptDHCP: Bool = false { didSet { commit(_dev9InterceptDHCPConfig, dev9InterceptDHCP) } }
-    let _dev9EthLogDHCPConfig = Setting<Bool>(
-        section: "DEV9/Eth", key: "EthLogDHCP", default: false,
-        codec: .bool)
-    var dev9EthLogDHCP: Bool = false { didSet { commit(_dev9EthLogDHCPConfig, dev9EthLogDHCP) } }
-    let _dev9EthLogDNSConfig = Setting<Bool>(
-        section: "DEV9/Eth", key: "EthLogDNS", default: false,
-        codec: .bool)
-    var dev9EthLogDNS: Bool = false { didSet { commit(_dev9EthLogDNSConfig, dev9EthLogDNS) } }
-    let _dev9DNS1ModeConfig = Setting<String>(
-        section: "DEV9/Eth", key: "ModeDNS1", default: "Auto",
-        codec: .string)
-    var dev9DNS1Mode: String = "Auto" { didSet { commit(_dev9DNS1ModeConfig, dev9DNS1Mode) } }
-    let _dev9DNS1Config = Setting<String>(
-        section: "DEV9/Eth", key: "DNS1", default: "0.0.0.0",
-        codec: .string)
-    var dev9DNS1: String = "0.0.0.0" { didSet { commit(_dev9DNS1Config, dev9DNS1) } }
-    let _dev9DNS2ModeConfig = Setting<String>(
-        section: "DEV9/Eth", key: "ModeDNS2", default: "Auto",
-        codec: .string)
-    var dev9DNS2Mode: String = "Auto" { didSet { commit(_dev9DNS2ModeConfig, dev9DNS2Mode) } }
-    let _dev9DNS2Config = Setting<String>(
-        section: "DEV9/Eth", key: "DNS2", default: "0.0.0.0",
-        codec: .string)
-    var dev9DNS2: String = "0.0.0.0" { didSet { commit(_dev9DNS2Config, dev9DNS2) } }
+    var dev9InterceptDHCP: Bool = false { didSet { commit(Self._dev9InterceptDHCPConfig, dev9InterceptDHCP) } }
+    var dev9EthLogDHCP: Bool = false { didSet { commit(Self._dev9EthLogDHCPConfig, dev9EthLogDHCP) } }
+    var dev9EthLogDNS: Bool = false { didSet { commit(Self._dev9EthLogDNSConfig, dev9EthLogDNS) } }
+    var dev9DNS1Mode: String = "Auto" { didSet { commit(Self._dev9DNS1ModeConfig, dev9DNS1Mode) } }
+    var dev9DNS1: String = "0.0.0.0" { didSet { commit(Self._dev9DNS1Config, dev9DNS1) } }
+    var dev9DNS2Mode: String = "Auto" { didSet { commit(Self._dev9DNS2ModeConfig, dev9DNS2Mode) } }
+    var dev9DNS2: String = "0.0.0.0" { didSet { commit(Self._dev9DNS2Config, dev9DNS2) } }
 
     // ── Library Background ──
     var dynamicBackgroundsEnabled: Bool = true {
@@ -1801,33 +1186,33 @@ final class SettingsStore {
 
         // CPU
         eeCoreType = Int(ARMSX2Bridge.getINIInt("EmuCore/CPU", key: "CoreType", defaultValue: 2))
-        iopRecompiler = _iopRecompilerConfig.load()
-        vu0Recompiler = _vu0RecompilerConfig.load()
-        vu1Recompiler = _vu1RecompilerConfig.load()
+        iopRecompiler = Self._iopRecompilerConfig.load()
+        vu0Recompiler = Self._vu0RecompilerConfig.load()
+        vu1Recompiler = Self._vu1RecompilerConfig.load()
         fastBoot = Self.loadedFastBoot()
-        automaticLoadLastSaveState = _automaticLoadLastSaveStateConfig.load()
-        autoSaveEnabled = _autoSaveEnabledConfig.load()
-        autoSaveIntervalMinutes = _autoSaveIntervalConfig.load()
-        autoSaveOnLeave = _autoSaveOnLeaveConfig.load()
-        autoSaveOnLowBattery = _autoSaveOnLowBatteryConfig.load()
-        undoSeconds = _undoSecondsConfig.load()
-        automaticLoadLastGame = _automaticLoadLastGameConfig.load()
+        automaticLoadLastSaveState = Self._automaticLoadLastSaveStateConfig.load()
+        autoSaveEnabled = Self._autoSaveEnabledConfig.load()
+        autoSaveIntervalMinutes = Self._autoSaveIntervalConfig.load()
+        autoSaveOnLeave = Self._autoSaveOnLeaveConfig.load()
+        autoSaveOnLowBattery = Self._autoSaveOnLowBatteryConfig.load()
+        undoSeconds = Self._undoSecondsConfig.load()
+        automaticLoadLastGame = Self._automaticLoadLastGameConfig.load()
         fastmem = ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "EnableFastmem", defaultValue: true)
-        emulationOnlyModeEnabled = _emulationOnlyModeConfig.load()
-        emulationOnlyDisablePatches = _emulationOnlyDisablePatchesConfig.load()
-        emulationOnlyDisablePINE = _emulationOnlyDisablePINEConfig.load()
-        emulationOnlyDisableRetroAchievements = _emulationOnlyDisableRetroAchievementsConfig.load()
-        emulationOnlyDisableInputRecording = _emulationOnlyDisableInputRecordingConfig.load()
-        emulationOnlyDisableOSD = _emulationOnlyDisableOSDConfig.load()
-        emulationOnlyDisableFramePacing = _emulationOnlyDisableFramePacingConfig.load()
-        emulationOnlyDisableVirtualControls = _emulationOnlyDisableVirtualControlsConfig.load()
-        emulationOnlyDisableQuickMenu = _emulationOnlyDisableQuickMenuConfig.load()
-        emulationOnlyClearNetworkCache = _emulationOnlyClearNetworkCacheConfig.load()
-        emulationOnlyModeDelaySeconds = _emulationOnlyModeDelayConfig.load()
+        emulationOnlyModeEnabled = Self._emulationOnlyModeConfig.load()
+        emulationOnlyDisablePatches = Self._emulationOnlyDisablePatchesConfig.load()
+        emulationOnlyDisablePINE = Self._emulationOnlyDisablePINEConfig.load()
+        emulationOnlyDisableRetroAchievements = Self._emulationOnlyDisableRetroAchievementsConfig.load()
+        emulationOnlyDisableInputRecording = Self._emulationOnlyDisableInputRecordingConfig.load()
+        emulationOnlyDisableOSD = Self._emulationOnlyDisableOSDConfig.load()
+        emulationOnlyDisableFramePacing = Self._emulationOnlyDisableFramePacingConfig.load()
+        emulationOnlyDisableVirtualControls = Self._emulationOnlyDisableVirtualControlsConfig.load()
+        emulationOnlyDisableQuickMenu = Self._emulationOnlyDisableQuickMenuConfig.load()
+        emulationOnlyClearNetworkCache = Self._emulationOnlyClearNetworkCacheConfig.load()
+        emulationOnlyModeDelaySeconds = Self._emulationOnlyModeDelayConfig.load()
         // CPU rounding & clamping
-        eeFpuRoundMode = _eeFpuRoundModeConfig.load()
-        vu0RoundMode = _vu0RoundModeConfig.load()
-        vu1RoundMode = _vu1RoundModeConfig.load()
+        eeFpuRoundMode = Self._eeFpuRoundModeConfig.load()
+        vu0RoundMode = Self._vu0RoundModeConfig.load()
+        vu1RoundMode = Self._vu1RoundModeConfig.load()
         eeClampMode = Self.eeClampModeFromBools(
             ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuOverflow", defaultValue: true),
             ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "fpuExtraOverflow", defaultValue: false),
@@ -1838,67 +1223,67 @@ final class SettingsStore {
             ARMSX2Bridge.getINIBool("EmuCore/CPU/Recompiler", key: "vu0SignOverflow", defaultValue: false))
         let loadedNTSCFramerate = ARMSX2Bridge.getINIFloat("EmuCore/GS", key: "FramerateNTSC", defaultValue: 59.94)
         ntscFramerate = loadedNTSCFramerate
-        palFramerate = _palFramerateConfig.load()
+        palFramerate = Self._palFramerateConfig.load()
         let nominalScalar = ARMSX2Bridge.getINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0)
         frameLimiterEnabled = Self.frameLimiterEnabled(fromNominalScalar: nominalScalar)
         targetFPS = Self.loadedTargetFPS(fromNominalScalar: nominalScalar, baseFramerate: loadedNTSCFramerate)
         Self.sanitizeNominalScalarIfNeeded(nominalScalar)
         fastForwardScalar = Self.clampedSpeedScalar(ARMSX2Bridge.getINIFloat("Framerate", key: "TurboScalar", defaultValue: Self.defaultFastForwardScalar))
         emulatorVolumePercent = Self.clampedEmulatorVolumePercent(Int(ARMSX2Bridge.emulatorVolumePercent()))
-        audioTimeStretch = _audioTimeStretchConfig.load()
-        audioBufferMs = _audioBufferMsConfig.load()
-        audioOutputLatencyMs = _audioOutputLatencyMsConfig.load()
-        audioFastForwardVolume = _audioFastForwardVolumeConfig.load()
-        audioSwapChannels = _audioSwapChannelsConfig.load()
+        audioTimeStretch = Self._audioTimeStretchConfig.load()
+        audioBufferMs = Self._audioBufferMsConfig.load()
+        audioOutputLatencyMs = Self._audioOutputLatencyMsConfig.load()
+        audioFastForwardVolume = Self._audioFastForwardVolumeConfig.load()
+        audioSwapChannels = Self._audioSwapChannelsConfig.load()
         // Boot
-        fastCDVD = _fastCDVDConfig.load()
+        fastCDVD = Self._fastCDVDConfig.load()
         // Advanced Speedhacks
-        eeCycleRate = _eeCycleRateConfig.load()
-        vu1Instant = _vu1InstantConfig.load()
+        eeCycleRate = Self._eeCycleRateConfig.load()
+        vu1Instant = Self._vu1InstantConfig.load()
         mtvu = ARMSX2Bridge.getINIBool("EmuCore/Speedhacks", key: "vuThread", defaultValue: true)
-        waitLoop = _waitLoopConfig.load()
-        intcStat = _intcStatConfig.load()
-        eeCycleSkip = _eeCycleSkipConfig.load()
-        vuFlagHack = _vuFlagHackConfig.load()
-        enableCheats = _enableCheatsConfig.load()
-        enablePatches = _enablePatchesConfig.load()
-        enableGameFixes = _enableGameFixesConfig.load()
-        enableGameDBHardwareFixes = _enableGameDBHardwareFixesConfig.load()
-        enableWidescreenPatches = _enableWidescreenPatchesConfig.load()
-        enableNoInterlacingPatches = _enableNoInterlacingPatchesConfig.load()
-        hostFilesystem = _hostFilesystemConfig.load()
-        autoTune = _autoTuneConfig.load()
+        waitLoop = Self._waitLoopConfig.load()
+        intcStat = Self._intcStatConfig.load()
+        eeCycleSkip = Self._eeCycleSkipConfig.load()
+        vuFlagHack = Self._vuFlagHackConfig.load()
+        enableCheats = Self._enableCheatsConfig.load()
+        enablePatches = Self._enablePatchesConfig.load()
+        enableGameFixes = Self._enableGameFixesConfig.load()
+        enableGameDBHardwareFixes = Self._enableGameDBHardwareFixesConfig.load()
+        enableWidescreenPatches = Self._enableWidescreenPatchesConfig.load()
+        enableNoInterlacingPatches = Self._enableNoInterlacingPatchesConfig.load()
+        hostFilesystem = Self._hostFilesystemConfig.load()
+        autoTune = Self._autoTuneConfig.load()
         gameFixes = Self.loadGameFixes()
         // Graphics
         // Not load(): the INI can name a desktop renderer, so we correct it on disk too.
 #if targetEnvironment(macCatalyst)
         renderer = 17
-        _rendererConfig.write(17)
+        Self._rendererConfig.write(17)
 #else
         let initialRenderer = Self.supportedIOSRenderer(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "Renderer", defaultValue: 17)))
         renderer = initialRenderer
-        _rendererConfig.write(initialRenderer)
+        Self._rendererConfig.write(initialRenderer)
 #endif
-        upscaleMultiplier = _upscaleMultiplierConfig.load()
-        vsyncQueueSize = _vsyncQueueSizeConfig.load()
-        textureFiltering = _textureFilteringConfig.load()
-        backThreadMode = _backThreadModeConfig.load()
-        hardwareMipmapping = _hardwareMipmappingConfig.load()
-        fxaa = _fxaaConfig.load()
-        casMode = _casModeConfig.load()
-        casSharpness = _casSharpnessConfig.load()
-        shaderChainEnabled = _shaderChainEnabledConfig.load()
-        shaderChainPresetRef = _shaderChainPresetRefConfig.load()
-        interlaceMode = _interlaceModeConfig.load()
-        aspectRatio = _aspectRatioConfig.load()
-        blendingAccuracy = _blendingAccuracyConfig.load()
-        dithering = _ditheringConfig.load()
-        trilinearFiltering = _trilinearFilteringConfig.load()
-        halfPixelOffset = _halfPixelOffsetConfig.load()
-        roundSprite = _roundSpriteConfig.load()
-        alignSprite = _alignSpriteConfig.load()
-        mergeSprite = _mergeSpriteConfig.load()
-        wildArmsOffset = _wildArmsOffsetConfig.load()
+        upscaleMultiplier = Self._upscaleMultiplierConfig.load()
+        vsyncQueueSize = Self._vsyncQueueSizeConfig.load()
+        textureFiltering = Self._textureFilteringConfig.load()
+        backThreadMode = Self._backThreadModeConfig.load()
+        hardwareMipmapping = Self._hardwareMipmappingConfig.load()
+        fxaa = Self._fxaaConfig.load()
+        casMode = Self._casModeConfig.load()
+        casSharpness = Self._casSharpnessConfig.load()
+        shaderChainEnabled = Self._shaderChainEnabledConfig.load()
+        shaderChainPresetRef = Self._shaderChainPresetRefConfig.load()
+        interlaceMode = Self._interlaceModeConfig.load()
+        aspectRatio = Self._aspectRatioConfig.load()
+        blendingAccuracy = Self._blendingAccuracyConfig.load()
+        dithering = Self._ditheringConfig.load()
+        trilinearFiltering = Self._trilinearFilteringConfig.load()
+        halfPixelOffset = Self._halfPixelOffsetConfig.load()
+        roundSprite = Self._roundSpriteConfig.load()
+        alignSprite = Self._alignSpriteConfig.load()
+        mergeSprite = Self._mergeSpriteConfig.load()
+        wildArmsOffset = Self._wildArmsOffsetConfig.load()
         textureOffsetX = Self.clampedTextureOffset(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_TCOffsetX", defaultValue: 0)))
         textureOffsetY = Self.clampedTextureOffset(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_TCOffsetY", defaultValue: 0)))
         let loadedSkipDrawStart = Self.clampedSkipDraw(Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_Start", defaultValue: 0)))
@@ -1907,44 +1292,44 @@ final class SettingsStore {
             start: loadedSkipDrawStart,
             end: Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "UserHacks_SkipDraw_End", defaultValue: 0))
         )
-        loadTextureReplacements = _loadTextureReplacementsConfig.load()
-        loadTextureReplacementsAsync = _loadTextureReplacementsAsyncConfig.load()
-        precacheTextureReplacements = _precacheTextureReplacementsConfig.load()
-        texturePreloading = _texturePreloadingConfig.load()
-        dumpReplaceableTextures = _dumpReplaceableTexturesConfig.load()
-        dumpReplaceableMipmaps = _dumpReplaceableMipmapsConfig.load()
-        dumpTexturesWithFMVActive = _dumpTexturesWithFMVActiveConfig.load()
-        dumpDirectTextures = _dumpDirectTexturesConfig.load()
-        dumpPaletteTextures = _dumpPaletteTexturesConfig.load()
+        loadTextureReplacements = Self._loadTextureReplacementsConfig.load()
+        loadTextureReplacementsAsync = Self._loadTextureReplacementsAsyncConfig.load()
+        precacheTextureReplacements = Self._precacheTextureReplacementsConfig.load()
+        texturePreloading = Self._texturePreloadingConfig.load()
+        dumpReplaceableTextures = Self._dumpReplaceableTexturesConfig.load()
+        dumpReplaceableMipmaps = Self._dumpReplaceableMipmapsConfig.load()
+        dumpTexturesWithFMVActive = Self._dumpTexturesWithFMVActiveConfig.load()
+        dumpDirectTextures = Self._dumpDirectTexturesConfig.load()
+        dumpPaletteTextures = Self._dumpPaletteTexturesConfig.load()
         // GS Hardware Fixes
-        hwAccurateAlphaTest = _hwAccurateAlphaTestConfig.load()
-        textureInsideRt = _textureInsideRtConfig.load()
-        limit24BitDepth = _limit24BitDepthConfig.load()
-        nativeScaling = _nativeScalingConfig.load()
-        cpuClutRender = _cpuClutRenderConfig.load()
-        cpuSpriteRenderBw = _cpuSpriteRenderBwConfig.load()
-        cpuSpriteRenderLevel = _cpuSpriteRenderLevelConfig.load()
-        gpuTargetClut = _gpuTargetClutConfig.load()
-        bilinearUpscaleHack = _bilinearUpscaleHackConfig.load()
-        maxAnisotropy = _maxAnisotropyConfig.load()
-        hardwareDownloadMode = _hardwareDownloadModeConfig.load()
-        tvShader = _tvShaderConfig.load()
-        upscaler = _upscalerConfig.load()
+        hwAccurateAlphaTest = Self._hwAccurateAlphaTestConfig.load()
+        textureInsideRt = Self._textureInsideRtConfig.load()
+        limit24BitDepth = Self._limit24BitDepthConfig.load()
+        nativeScaling = Self._nativeScalingConfig.load()
+        cpuClutRender = Self._cpuClutRenderConfig.load()
+        cpuSpriteRenderBw = Self._cpuSpriteRenderBwConfig.load()
+        cpuSpriteRenderLevel = Self._cpuSpriteRenderLevelConfig.load()
+        gpuTargetClut = Self._gpuTargetClutConfig.load()
+        bilinearUpscaleHack = Self._bilinearUpscaleHackConfig.load()
+        maxAnisotropy = Self._maxAnisotropyConfig.load()
+        hardwareDownloadMode = Self._hardwareDownloadModeConfig.load()
+        tvShader = Self._tvShaderConfig.load()
+        upscaler = Self._upscalerConfig.load()
         gsBoolHacks = Self.loadGSBoolHacks()
         // Screen / PCRTC
-        pcrtcOffsets = _pcrtcOffsetsConfig.load()
-        pcrtcOverscan = _pcrtcOverscanConfig.load()
-        pcrtcAntiBlur = _pcrtcAntiBlurConfig.load()
-        disableInterlaceOffset = _disableInterlaceOffsetConfig.load()
-        skipDuplicateFrames = _skipDuplicateFramesConfig.load()
-        syncToHostRefresh = _syncToHostRefreshConfig.load()
-        integerScaling = _integerScalingConfig.load()
+        pcrtcOffsets = Self._pcrtcOffsetsConfig.load()
+        pcrtcOverscan = Self._pcrtcOverscanConfig.load()
+        pcrtcAntiBlur = Self._pcrtcAntiBlurConfig.load()
+        disableInterlaceOffset = Self._disableInterlaceOffsetConfig.load()
+        skipDuplicateFrames = Self._skipDuplicateFramesConfig.load()
+        syncToHostRefresh = Self._syncToHostRefreshConfig.load()
+        integerScaling = Self._integerScalingConfig.load()
         // Shade Boost
-        shadeBoost = _shadeBoostConfig.load()
-        shadeBoostBrightness = _shadeBoostBrightnessConfig.load()
-        shadeBoostContrast = _shadeBoostContrastConfig.load()
-        shadeBoostSaturation = _shadeBoostSaturationConfig.load()
-        shadeBoostGamma = _shadeBoostGammaConfig.load()
+        shadeBoost = Self._shadeBoostConfig.load()
+        shadeBoostBrightness = Self._shadeBoostBrightnessConfig.load()
+        shadeBoostContrast = Self._shadeBoostContrastConfig.load()
+        shadeBoostSaturation = Self._shadeBoostSaturationConfig.load()
+        shadeBoostGamma = Self._shadeBoostGammaConfig.load()
         // OSD
         let loadedOsdPreset = OsdPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/UI", key: "OsdPreset", defaultValue: 0))) ?? .off
         osdPreset = loadedOsdPreset
@@ -1959,95 +1344,95 @@ final class SettingsStore {
         osdPerformancePosition = Self.normalizedOsdPerformancePosition(
             Int(ARMSX2Bridge.getINIInt("EmuCore/GS", key: "OsdPerformancePos", defaultValue: Int32(Self.defaultOsdPerformancePosition)))
         )
-        osdShowMessages = _osdShowMessagesConfig.load()
-        osdShowFPS = _osdShowFPSConfig.load()
-        osdShowVPS = _osdShowVPSConfig.load()
-        osdShowSpeed = _osdShowSpeedConfig.load()
-        osdShowCPU = _osdShowCPUConfig.load()
-        osdShowGPU = _osdShowGPUConfig.load()
-        osdShowResolution = _osdShowResolutionConfig.load()
-        osdShowGSStats = _osdShowGSStatsConfig.load()
-        osdShowIndicators = _osdShowIndicatorsConfig.load()
-        osdShowSettings = _osdShowSettingsConfig.load()
-        osdShowInputs = _osdShowInputsConfig.load()
-        osdShowFrameTimes = _osdShowFrameTimesConfig.load()
-        osdShowVersion = _osdShowVersionConfig.load()
-        osdShowHardwareInfo = _osdShowHardwareInfoConfig.load()
-        osdShowTextureReplacements = _osdShowTextureReplacementsConfig.load()
+        osdShowMessages = Self._osdShowMessagesConfig.load()
+        osdShowFPS = Self._osdShowFPSConfig.load()
+        osdShowVPS = Self._osdShowVPSConfig.load()
+        osdShowSpeed = Self._osdShowSpeedConfig.load()
+        osdShowCPU = Self._osdShowCPUConfig.load()
+        osdShowGPU = Self._osdShowGPUConfig.load()
+        osdShowResolution = Self._osdShowResolutionConfig.load()
+        osdShowGSStats = Self._osdShowGSStatsConfig.load()
+        osdShowIndicators = Self._osdShowIndicatorsConfig.load()
+        osdShowSettings = Self._osdShowSettingsConfig.load()
+        osdShowInputs = Self._osdShowInputsConfig.load()
+        osdShowFrameTimes = Self._osdShowFrameTimesConfig.load()
+        osdShowVersion = Self._osdShowVersionConfig.load()
+        osdShowHardwareInfo = Self._osdShowHardwareInfoConfig.load()
+        osdShowTextureReplacements = Self._osdShowTextureReplacementsConfig.load()
         // Fresh installs follow the OSD preset rather than the descriptor default.
-        osdShowDeviceStats = _osdShowDeviceStatsConfig.load(default: loadedOsdPreset != .off)
+        osdShowDeviceStats = Self._osdShowDeviceStatsConfig.load(default: loadedOsdPreset != .off)
         // UI
-        padOpacity = _padOpacityConfig.load()
-        hapticFeedback = _hapticFeedbackConfig.load()
-        gameRumbleStrength = _gameRumbleStrengthConfig.load()
-        uiRumbleStrength = _uiRumbleStrengthConfig.load()
-        phoneRumbleStrength = _phoneRumbleStrengthConfig.load()
-        increaseRumbleDurationAndInterpolation = _increaseRumbleDurationAndInterpolationConfig.load()
-        dpadDiagonalsEnabled = _dpadDiagonalsEnabledConfig.load()
-        faceComboZonesEnabled = _faceComboZonesEnabledConfig.load()
-        virtualPadSkin = _virtualPadSkinConfig.load()
-        automaticDownloadCustomSkin = _automaticDownloadCustomSkinConfig.load()
-        autoHideVirtualPadWhenControllerConnected = _autoHideVirtualPadWhenControllerConnectedConfig.load()
-        autoFullscreen = _autoFullscreenConfig.load()
-        hideMenuButton = _hideMenuButtonConfig.load()
+        padOpacity = Self._padOpacityConfig.load()
+        hapticFeedback = Self._hapticFeedbackConfig.load()
+        gameRumbleStrength = Self._gameRumbleStrengthConfig.load()
+        uiRumbleStrength = Self._uiRumbleStrengthConfig.load()
+        phoneRumbleStrength = Self._phoneRumbleStrengthConfig.load()
+        increaseRumbleDurationAndInterpolation = Self._increaseRumbleDurationAndInterpolationConfig.load()
+        dpadDiagonalsEnabled = Self._dpadDiagonalsEnabledConfig.load()
+        faceComboZonesEnabled = Self._faceComboZonesEnabledConfig.load()
+        virtualPadSkin = Self._virtualPadSkinConfig.load()
+        automaticDownloadCustomSkin = Self._automaticDownloadCustomSkinConfig.load()
+        autoHideVirtualPadWhenControllerConnected = Self._autoHideVirtualPadWhenControllerConnectedConfig.load()
+        autoFullscreen = Self._autoFullscreenConfig.load()
+        hideMenuButton = Self._hideMenuButtonConfig.load()
         analogStickScale = Self.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
-        gameControllerDeadZone = _gameControllerDeadZoneConfig.load()
-        gameControllerLeftInstantDeadzoneEnabled = _gameControllerLeftInstantDeadzoneConfig.load()
-        gameControllerLeftNegativeDeadzone = _gameControllerLeftNegativeDeadzoneConfig.load()
-        gameControllerRightInstantDeadzoneEnabled = _gameControllerRightInstantDeadzoneConfig.load()
-        gameControllerRightNegativeDeadzone = _gameControllerRightNegativeDeadzoneConfig.load()
-        invertLeftStickX = _invertLeftStickXConfig.load()
-        invertLeftStickY = _invertLeftStickYConfig.load()
-        invertRightStickX = _invertRightStickXConfig.load()
-        invertRightStickY = _invertRightStickYConfig.load()
-        appLanguage = _appLanguageConfig.load()
-        controllerMultitapMode = _controllerMultitapModeConfig.load()
-        if !_controllerMacroQuickMenuSelectPauseMigration.load() {
-            if _controllerMacroQuickMenuConfig.load() == ControllerMacroBinding(first: .l3, second: .r3) {
-                _controllerMacroQuickMenuConfig.write(ControllerMacroAction.quickMenu.defaultBinding)
+        gameControllerDeadZone = Self._gameControllerDeadZoneConfig.load()
+        gameControllerLeftInstantDeadzoneEnabled = Self._gameControllerLeftInstantDeadzoneConfig.load()
+        gameControllerLeftNegativeDeadzone = Self._gameControllerLeftNegativeDeadzoneConfig.load()
+        gameControllerRightInstantDeadzoneEnabled = Self._gameControllerRightInstantDeadzoneConfig.load()
+        gameControllerRightNegativeDeadzone = Self._gameControllerRightNegativeDeadzoneConfig.load()
+        invertLeftStickX = Self._invertLeftStickXConfig.load()
+        invertLeftStickY = Self._invertLeftStickYConfig.load()
+        invertRightStickX = Self._invertRightStickXConfig.load()
+        invertRightStickY = Self._invertRightStickYConfig.load()
+        appLanguage = Self._appLanguageConfig.load()
+        controllerMultitapMode = Self._controllerMultitapModeConfig.load()
+        if !Self._controllerMacroQuickMenuSelectPauseMigration.load() {
+            if Self._controllerMacroQuickMenuConfig.load() == ControllerMacroBinding(first: .l3, second: .r3) {
+                Self._controllerMacroQuickMenuConfig.write(ControllerMacroAction.quickMenu.defaultBinding)
             }
-            _controllerMacroQuickMenuSelectPauseMigration.write(true)
+            Self._controllerMacroQuickMenuSelectPauseMigration.write(true)
         }
-        if !_controllerMacroStartDefaultsMigration.load() {
+        if !Self._controllerMacroStartDefaultsMigration.load() {
             let previousStartDefaults: [(Setting<ControllerMacroBinding>, ControllerMacroBinding, ControllerMacroAction)] = [
-                (_controllerMacroSaveGameStateConfig, ControllerMacroBinding(first: .r3, second: .circle), .saveGameState),
-                (_controllerMacroLoadGameStateConfig, ControllerMacroBinding(first: .r3, second: .triangle), .loadGameState),
-                (_controllerMacroIncreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadRight), .increaseSpeed),
-                (_controllerMacroDecreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadLeft), .decreaseSpeed),
-                (_controllerMacroEnableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadUp), .enableFastForward),
-                (_controllerMacroDisableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadDown), .disableFastForward),
+                (Self._controllerMacroSaveGameStateConfig, ControllerMacroBinding(first: .r3, second: .circle), .saveGameState),
+                (Self._controllerMacroLoadGameStateConfig, ControllerMacroBinding(first: .r3, second: .triangle), .loadGameState),
+                (Self._controllerMacroIncreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadRight), .increaseSpeed),
+                (Self._controllerMacroDecreaseSpeedConfig, ControllerMacroBinding(first: .l3, second: .dpadLeft), .decreaseSpeed),
+                (Self._controllerMacroEnableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadUp), .enableFastForward),
+                (Self._controllerMacroDisableFastForwardConfig, ControllerMacroBinding(first: .l3, second: .dpadDown), .disableFastForward),
             ]
             for (setting, previousDefault, action) in previousStartDefaults where setting.load() == previousDefault {
                 setting.write(action.defaultBinding)
             }
-            _controllerMacroStartDefaultsMigration.write(true)
+            Self._controllerMacroStartDefaultsMigration.write(true)
         }
-        controllerMacroQuickMenu = _controllerMacroQuickMenuConfig.load()
-        controllerMacroSaveGameState = _controllerMacroSaveGameStateConfig.load()
-        controllerMacroLoadGameState = _controllerMacroLoadGameStateConfig.load()
-        controllerMacroIncreaseSpeed = _controllerMacroIncreaseSpeedConfig.load()
-        controllerMacroDecreaseSpeed = _controllerMacroDecreaseSpeedConfig.load()
-        controllerMacroEnableFastForward = _controllerMacroEnableFastForwardConfig.load()
-        controllerMacroDisableFastForward = _controllerMacroDisableFastForwardConfig.load()
-        controllerMacroUndoSaveState = _controllerMacroUndoSaveStateConfig.load()
-        autoOpenStikDebug = _autoOpenStikDebugConfig.load()
+        controllerMacroQuickMenu = Self._controllerMacroQuickMenuConfig.load()
+        controllerMacroSaveGameState = Self._controllerMacroSaveGameStateConfig.load()
+        controllerMacroLoadGameState = Self._controllerMacroLoadGameStateConfig.load()
+        controllerMacroIncreaseSpeed = Self._controllerMacroIncreaseSpeedConfig.load()
+        controllerMacroDecreaseSpeed = Self._controllerMacroDecreaseSpeedConfig.load()
+        controllerMacroEnableFastForward = Self._controllerMacroEnableFastForwardConfig.load()
+        controllerMacroDisableFastForward = Self._controllerMacroDisableFastForwardConfig.load()
+        controllerMacroUndoSaveState = Self._controllerMacroUndoSaveStateConfig.load()
+        autoOpenStikDebug = Self._autoOpenStikDebugConfig.load()
         // Not load(): older builds wrote names this enum no longer spells that way.
         jitScriptProtocol = Self.loadedJITScriptProtocol()
         // The migration above already wrote the post-migration INI values;
         // these reads pick them up.
         framePacingPreset = FramePacingPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/FramePacing", key: "Preset", defaultValue: Int32(FramePacingPreset.optimal.rawValue)))) ?? .optimal
-        adaptiveResolutionEnabled = _adaptiveResolutionEnabledConfig.load()
+        adaptiveResolutionEnabled = Self._adaptiveResolutionEnabledConfig.load()
         dev9HddEnabled = ARMSX2Bridge.getINIBool("DEV9/Hdd", key: "HddEnable", defaultValue: false)
-        dev9HddFile = _dev9HddFileConfig.load()
+        dev9HddFile = Self._dev9HddFileConfig.load()
         dev9EthernetEnabled = ARMSX2Bridge.getINIBool("DEV9/Eth", key: "EthEnable", defaultValue: false)
         dev9EthDevice = ARMSX2Bridge.getINIString("DEV9/Eth", key: "EthDevice", defaultValue: "Auto")
-        dev9InterceptDHCP = _dev9InterceptDHCPConfig.load()
-        dev9EthLogDHCP = _dev9EthLogDHCPConfig.load()
-        dev9EthLogDNS = _dev9EthLogDNSConfig.load()
-        dev9DNS1Mode = _dev9DNS1ModeConfig.load()
-        dev9DNS1 = _dev9DNS1Config.load()
-        dev9DNS2Mode = _dev9DNS2ModeConfig.load()
-        dev9DNS2 = _dev9DNS2Config.load()
+        dev9InterceptDHCP = Self._dev9InterceptDHCPConfig.load()
+        dev9EthLogDHCP = Self._dev9EthLogDHCPConfig.load()
+        dev9EthLogDNS = Self._dev9EthLogDNSConfig.load()
+        dev9DNS1Mode = Self._dev9DNS1ModeConfig.load()
+        dev9DNS1 = Self._dev9DNS1Config.load()
+        dev9DNS2Mode = Self._dev9DNS2ModeConfig.load()
+        dev9DNS2 = Self._dev9DNS2Config.load()
         BackgroundStorage.migrateLegacyBackgroundsIfNeeded()
         dynamicBackgroundsEnabled = UserDefaults.standard.object(
             forKey: "ARMSX2iOSDynamicBackgroundsEnabled"
@@ -2290,7 +1675,7 @@ final class SettingsStore {
         backgroundDim = Self.clampedBackgroundDim(UserDefaults.standard.object(forKey: "ARMSX2iOSBackgroundDim") as? Double ?? 0.0)
         normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(virtualPadSkin)
-        _aspectRatioConfig.write(aspectRatio)
+        Self._aspectRatioConfig.write(aspectRatio)
         // The saved per-item flags are the source of truth, so applying the preset here
         // would rewrite every one of them. Seed the Custom snapshot once instead, or
         // cycling to Custom shows an empty overlay.

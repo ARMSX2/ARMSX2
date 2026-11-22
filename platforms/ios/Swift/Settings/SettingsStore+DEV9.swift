@@ -29,3 +29,30 @@ extension SettingsStore {
         }
     }
 }
+
+extension SettingsStore {
+    static let _dev9HddFileConfig = Setting<String>(
+        section: "DEV9/Hdd", key: "HddFile", default: "DEV9hdd.raw",
+        codec: .string)
+    static let _dev9InterceptDHCPConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "InterceptDHCP", default: false,
+        codec: .bool)
+    static let _dev9EthLogDHCPConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "EthLogDHCP", default: false,
+        codec: .bool)
+    static let _dev9EthLogDNSConfig = Setting<Bool>(
+        section: "DEV9/Eth", key: "EthLogDNS", default: false,
+        codec: .bool)
+    static let _dev9DNS1ModeConfig = Setting<String>(
+        section: "DEV9/Eth", key: "ModeDNS1", default: "Auto",
+        codec: .string)
+    static let _dev9DNS1Config = Setting<String>(
+        section: "DEV9/Eth", key: "DNS1", default: "0.0.0.0",
+        codec: .string)
+    static let _dev9DNS2ModeConfig = Setting<String>(
+        section: "DEV9/Eth", key: "ModeDNS2", default: "Auto",
+        codec: .string)
+    static let _dev9DNS2Config = Setting<String>(
+        section: "DEV9/Eth", key: "DNS2", default: "0.0.0.0",
+        codec: .string)
+}
