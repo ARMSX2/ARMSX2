@@ -17,12 +17,13 @@ these defaults with `-Parmsx2.versionName=...` and `-Parmsx2.versionCode=...`.
 
 ## Android APK builds
 
-Release/test APKs should be built with the universal page-size builder:
+A plain gradle build makes an APK for both 4K-page and 16K-page devices. The
+core reads the host page size when it loads, and its ELF segments are 16K
+aligned:
 
 ```bash
-./tools/build-universal-page-apk.sh ~/Downloads/ARMSX2-Refresh-UniversalPage.apk
+./gradlew :app:assembleGithubDebug
 ```
 
-The script compiles both 4K and 16K ARM64 emucore variants, packages them into
-one APK, signs it, and verifies 16K zip alignment. This keeps one distributable
-APK working correctly on both older 4K-page devices and newer 16K-page devices.
+Releases are built with `tools/build-release-apk.sh` (sideload, through
+`tools/build-release-targets.sh`) and `tools/build-play-aab.sh` (Play).

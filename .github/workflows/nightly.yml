@@ -266,17 +266,14 @@ jobs:
       - name: Install Rust Android target
         run: rustup target add aarch64-linux-android
 
-      # Dual-core (4k + 16k page size) + PGO nightly. A stock `assembleRelease`
-      # ships ONLY the 4k core and cannot load its native core on 16k-page
-      # devices (Android 15+ handhelds). This compiles the core at both page
-      # sizes and merges both .so's into one APK, with PGO=optimize so the
-      # nightly matches release performance. See tools/ci-nightly-dualcore.sh.
-      - name: Build dual-core (4k + 16k) + PGO APK
+      # PGO nightly: PGO=optimize so the nightly matches release performance,
+      # then rotation signing. See tools/ci-nightly.sh.
+      - name: Build PGO APK
         env:
           FLAVOR: Github
           # Separate package + label so nightly installs BESIDE stable com.armsx2 instead of
           # replacing it. This is also what keeps the nightly's in-app updater on the nightly
-          # channel: the app is built with -Parmsx2.channel=nightly (see ci-nightly-dualcore.sh).
+          # channel: the app is built with -Parmsx2.channel=nightly (see ci-nightly.sh).
           APK_ID: com.armsx2.nightly
           # Version identity comes from the gate job, which has full history + tags. Do NOT
           # recompute here: this job checks out one commit with no tags, and the old inline
@@ -306,14 +303,13 @@ jobs:
             export ROTATION_RELEASE_KS="$RUNNER_TEMP/release.jks"
             export ROTATION_LINEAGE="$RUNNER_TEMP/lineage.bin"
           fi
-          bash tools/ci-nightly-dualcore.sh
+          bash tools/ci-nightly.sh
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: armsx2-android-arm64
-          # ONLY the merged dual-core APK — not the intermediate single-core bases —
-          # so the publish job attaches exactly one APK to the release.
+          # ONLY the signed APK, so the publish job attaches exactly one APK to the release.
           path: platforms/android/app/build/outputs/apk/nightly/*.apk
           if-no-files-found: warn
 

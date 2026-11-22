@@ -1,16 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
-# ci-nightly-dualcore.sh — GitHub Actions dual-core (4k + 16k) + PGO nightly.
+# ci-nightly.sh — GitHub Actions PGO nightly APK.
 # ----------------------------------------------------------------------------
-# A stock `./gradlew :app:assembleRelease` produces ONE core at the default
-# host page size (emucore_4k @ 0x1000). That APK cannot load its native core on
-# 16k-page devices (Android 15+ handhelds), so half the fleet is broken.
-#
-# PCSX2 fastmem bakes the host page size in at compile time, so a universal APK
-# needs the core compiled TWICE (0x1000 and 0x4000) and both .so's merged into
-# one APK — exactly what tools/build-release-apk.sh does for hand-built
-# releases. This is the CI-portable (Linux, no macOS assumptions) version of
-# that recipe, plus PGO=optimize so the nightly matches release performance.
+# The CI-portable (Linux, no macOS assumptions) version of
+# tools/build-release-apk.sh: one gradle build with PGO=optimize so the nightly
+# matches release performance, then rotation signing. The one core reads the
+# host page size when it loads, so the APK runs on 4K and 16K page kernels.
 #
 # Runs from platforms/android (the gradle root); the nightly workflow sets
 # working-directory accordingly.
@@ -66,49 +61,34 @@ else
 	echo "WARNING: PGO profile not found at $PROF — building PGO=none (slower core)." >&2
 fi
 
-WORK="$ROOT_DIR/app/build/nightly-dualcore"; rm -rf "$WORK"
-mkdir -p "$WORK/lib-stage/lib/arm64-v8a" "$(dirname "$OUT")"
+WORK="$ROOT_DIR/app/build/nightly"; rm -rf "$WORK"
+mkdir -p "$WORK" "$(dirname "$OUT")"
 BUILT="$ROOT_DIR/app/build/outputs/apk/${flavor_lc}/release/app-${flavor_lc}-release.apk"
+CORE="lib/arm64-v8a/libemucore.so"
 
 fsize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }   # Linux || macOS
 
-build_core() { # pagesize libname
-	local ps="$1" ln="$2"
-	echo "=== core $ln (page=$ps, flavor=$FLAVOR, id=$APK_ID) ==="
-	rm -f "$BUILT"
-	"$GRADLE" -p "$ROOT_DIR" ":app:assemble${FLAVOR}Release" \
-		-Parmsx2.hostPageSize="$ps" \
-		-Parmsx2.nativeLibName="$ln" \
-		"${PGO_ARGS[@]}" \
-		-Parmsx2.versionCode="$VC" \
-		-Parmsx2.versionName="$VN" \
-		-Parmsx2.applicationId="$APK_ID" \
-		-Parmsx2.channel=nightly \
-		-Parmsx2.appLabel="$APP_LABEL" \
-		--stacktrace
-	[[ -f "$BUILT" ]] || { echo "FATAL: gradle produced no APK for $ln ($BUILT)" >&2; exit 1; }
-	unzip -l "$BUILT" "lib/arm64-v8a/lib${ln}.so" >/dev/null \
-		|| { echo "FATAL: lib${ln}.so missing from $BUILT" >&2; exit 1; }
-	cp -f "$BUILT" "$WORK/base-${ln}.apk"
-	unzip -p "$BUILT" "lib/arm64-v8a/lib${ln}.so" > "$WORK/lib-stage/lib/arm64-v8a/lib${ln}.so"
-}
+echo "=== flavor=$FLAVOR, id=$APK_ID ==="
+rm -f "$BUILT"
+"$GRADLE" -p "$ROOT_DIR" ":app:assemble${FLAVOR}Release" \
+	"${PGO_ARGS[@]}" \
+	-Parmsx2.versionCode="$VC" \
+	-Parmsx2.versionName="$VN" \
+	-Parmsx2.applicationId="$APK_ID" \
+	-Parmsx2.channel=nightly \
+	-Parmsx2.appLabel="$APP_LABEL" \
+	--stacktrace
+[[ -f "$BUILT" ]] || { echo "FATAL: gradle produced no APK ($BUILT)" >&2; exit 1; }
+unzip -p "$BUILT" "$CORE" > "$WORK/libemucore.so" \
+	|| { echo "FATAL: $CORE missing from $BUILT" >&2; exit 1; }
+sz="$(fsize "$WORK/libemucore.so")"
+echo "  libemucore.so = $(( sz / 1024 / 1024 )) MB"
+[[ "$sz" -gt 10000000 ]] || { echo "FATAL: libemucore.so too small ($sz bytes)" >&2; exit 1; }
 
-build_core 0x1000 emucore_4k
-build_core 0x4000 emucore_16k
-
-for so in emucore_4k emucore_16k; do
-	sz="$(fsize "$WORK/lib-stage/lib/arm64-v8a/lib${so}.so")"
-	echo "  lib${so}.so = $(( sz / 1024 / 1024 )) MB"
-	[[ "$sz" -gt 10000000 ]] || { echo "FATAL: lib${so}.so too small ($sz bytes)" >&2; exit 1; }
-done
-
-# --- merge: 4k APK as base, drop old signatures + both cores, re-add them compressed ---
-# (not stored: Android extracts every library at install anyway, see build-release-apk.sh)
-UNS="$WORK/universal-unsigned.apk"; ALN="$WORK/universal-aligned.apk"
-cp -f "$WORK/base-emucore_4k.apk" "$UNS"
+# --- drop gradle's signature; the lineage signing below replaces it ---
+UNS="$WORK/unsigned.apk"; ALN="$WORK/aligned.apk"
+cp -f "$BUILT" "$UNS"
 zip -qd "$UNS" "META-INF/*" >/dev/null 2>&1 || true
-zip -qd "$UNS" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so" >/dev/null 2>&1 || true
-( cd "$WORK/lib-stage" && zip -qr -9 "$UNS" lib )
 "$ZIPALIGN" -f -P 16 4 "$UNS" "$ALN"
 
 # --- sign ---------------------------------------------------------------------
@@ -150,8 +130,8 @@ else
 fi
 
 echo; echo "================= VERIFY ================="
-echo "-- both cores present --"
-unzip -l "$OUT" | grep -E "libemucore_(4k|16k)\.so" || { echo "FATAL: cores missing" >&2; exit 1; }
+echo "-- core present --"
+unzip -l "$OUT" "$CORE" || { echo "FATAL: core missing" >&2; exit 1; }
 echo "-- 16k alignment --"; "$ZIPALIGN" -c -P 16 4 "$OUT" && echo "  align OK"
 echo "-- signature --"; "$APKSIGNER" verify "$OUT" && echo "  sig OK"
 # The whole point of APK_ID is a side-by-side install; if the -P property ever fails to reach AGP
@@ -163,4 +143,4 @@ echo "$badging" | grep -E "package: name|versionCode|versionName" | head -2
 echo "$badging" | grep -q "package: name='${APK_ID}'" \
 	|| { echo "FATAL: APK package is not ${APK_ID} — applicationId property did not take" >&2; exit 1; }
 echo; echo "OUTPUT: $OUT"
-echo "NIGHTLY-DUALCORE-DONE"
+echo "NIGHTLY-DONE"

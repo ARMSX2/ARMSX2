@@ -7,10 +7,8 @@ plugins {
     alias(libs.plugins.compose.compiler)
 }
 
-val armsx2NativeLibName = providers.gradleProperty("armsx2.nativeLibName").orElse("emucore_4k")
 val armsx2Pgo = providers.gradleProperty("armsx2.pgo").orElse("none") // none | generate | optimize
 val armsx2PgoProfile = providers.gradleProperty("armsx2.pgoProfile").orElse("") // abs path to merged .profdata (optimize)
-val armsx2HostPageSize = providers.gradleProperty("armsx2.hostPageSize").orElse("0x1000")
 // --- build target (baseline vs v8.2) -------------------------------------------------------
 // Two artifacts ship per release. The defaults here ARE the baseline build, so an unqualified
 // gradle invocation keeps producing exactly what it always did; the v8.2 target sets all three.
@@ -43,7 +41,7 @@ val armsx2RecTestHooks = providers.gradleProperty("armsx2.recTestHooks").orElse(
 val armsx2ApplicationId = providers.gradleProperty("armsx2.applicationId").orElse("com.armsx2")
 // Distribution channel, baked into BuildConfig so the app knows which release stream it belongs to
 // without guessing from the version string. "nightly" builds ship a distinct applicationId and
-// label (see ci-nightly-dualcore.sh) so they install alongside the stable app instead of replacing
+// label (see ci-nightly.sh) so they install alongside the stable app instead of replacing
 // it; the updater reads CHANNEL to decide whether to follow nightly or stable releases.
 val armsx2Channel = providers.gradleProperty("armsx2.channel").orElse("stable")
 // The commit this APK is built from, baked into BuildConfig.GIT_COMMIT so a problem report can name
@@ -226,8 +224,6 @@ android {
                     //   <unset>  -> normal release, LTO ON (unchanged).
                     val pgo = armsx2Pgo.get()
                     arguments += if (pgo == "generate") "-DLTO_PCSX2_CORE=OFF" else "-DLTO_PCSX2_CORE=ON"
-                    arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
-                    arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
                     val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" } +
                         armsx2MarchExtra.get().let { if (it.isBlank()) "" else " $it" }
                     arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"
@@ -262,8 +258,6 @@ android {
                     // alone. Absent = Discord compiles out.
                     armsx2DiscordSdkDir?.let { arguments += "-DDISCORD_SDK_DIR=$it" }
                     arguments += "-DCMAKE_BUILD_TYPE=Debug"
-                    arguments += "-DARMSX2_EMUCORE_LIBRARY_NAME=${armsx2NativeLibName.get()}"
-                    arguments += "-DARMSX2_ANDROID_HOST_PAGE_SIZE=${armsx2HostPageSize.get()}"
                     val march = armsx2March.get().let { if (it.isBlank()) "" else " -march=$it" } +
                         armsx2MarchExtra.get().let { if (it.isBlank()) "" else " $it" }
                     arguments += "-DCMAKE_C_FLAGS=-O3 -g$march"

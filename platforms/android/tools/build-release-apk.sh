@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# ARMSX2 sideload RELEASE APK (com.armsx2) — dual-core (4k + 16k page size),
-# PGO=optimize, ROTATION-signed. This is the real distribution recipe; the
-# sibling build-universal-page-apk.sh is only a debug/no-PGO smoke-test builder.
+# ARMSX2 sideload RELEASE APK (com.armsx2) — PGO=optimize, ROTATION-signed.
+# This is the real distribution recipe. One core serves 4K and 16K page kernels.
 #
 # WHY ROTATION SIGNING IS MANDATORY: every published com.armsx2 sideload APK is
 # signed with a v3 signing-lineage rotation (old debug key for API<=32, new
@@ -70,55 +69,37 @@ for f in "${REQUIRED_FILES[@]}"; do
 	[[ -e "$f" ]] || { echo "FATAL missing: $f" >&2; exit 1; }
 done
 
-WORK="$ROOT_DIR/app/build/rel-${VN}"; rm -rf "$WORK"; mkdir -p "$WORK/lib-stage/lib/arm64-v8a"
+WORK="$ROOT_DIR/app/build/rel-${VN}"; rm -rf "$WORK"; mkdir -p "$WORK"
 BUILT="$ROOT_DIR/app/build/outputs/apk/github/release/app-github-release.apk"
+CORE="lib/arm64-v8a/libemucore.so"
 
-build_core() { # pagesize libname outapk
-	local ps="$1" ln="$2" outapk="$3"
-	# Print the mode actually used, not a guess: this said "pgo=optimize" unconditionally
-	# even under PGO_MODE=generate, which is a lie in the one log you check when a profile
-	# collection turns up empty.
-	echo "=== building core $ln (page=$ps, pgo=${PGO_MODE:-optimize}) ==="
-	rm -f "$BUILT"
-	# GRADLE_EXTRA_ARGS carries the per-target properties (minSdk / ndkVersion / march)
-	# from build-release-targets.sh. Deliberately UNQUOTED: it is a list of -P flags, and
-	# quoting would hand gradle one argument containing spaces. Empty when unset, which is
-	# every direct invocation of this script.
-	# shellcheck disable=SC2086
-	"$GRADLE" -p "$ROOT_DIR" :app:assembleGithubRelease \
-		${GRADLE_EXTRA_ARGS:-} \
-		-Parmsx2.hostPageSize="$ps" \
-		-Parmsx2.nativeLibName="$ln" \
-		-Parmsx2.pgo="${PGO_MODE:-optimize}" \
-		-Parmsx2.pgoProfile="$PROF" \
-		-Parmsx2.versionCode="$VC" \
-		-Parmsx2.versionName="$VN" \
-		-Parmsx2.recTestHooks="${REC_TEST_HOOKS:-false}"
-	[[ -f "$BUILT" ]] || { echo "FATAL gradle produced no APK for $ln" >&2; exit 1; }
-	unzip -l "$BUILT" "lib/arm64-v8a/lib${ln}.so" >/dev/null || { echo "FATAL $ln .so missing" >&2; exit 1; }
-	cp -f "$BUILT" "$outapk"
-}
+# Print the mode actually used, not a guess: this said "pgo=optimize" unconditionally
+# even under PGO_MODE=generate, which is a lie in the one log you check when a profile
+# collection turns up empty.
+echo "=== building (pgo=${PGO_MODE:-optimize}) ==="
+rm -f "$BUILT"
+# GRADLE_EXTRA_ARGS carries the per-target properties (minSdk / ndkVersion / march)
+# from build-release-targets.sh. Deliberately UNQUOTED: it is a list of -P flags, and
+# quoting would hand gradle one argument containing spaces. Empty when unset, which is
+# every direct invocation of this script.
+# shellcheck disable=SC2086
+"$GRADLE" -p "$ROOT_DIR" :app:assembleGithubRelease \
+	${GRADLE_EXTRA_ARGS:-} \
+	-Parmsx2.pgo="${PGO_MODE:-optimize}" \
+	-Parmsx2.pgoProfile="$PROF" \
+	-Parmsx2.versionCode="$VC" \
+	-Parmsx2.versionName="$VN" \
+	-Parmsx2.recTestHooks="${REC_TEST_HOOKS:-false}"
+[[ -f "$BUILT" ]] || { echo "FATAL gradle produced no APK" >&2; exit 1; }
+unzip -p "$BUILT" "$CORE" > "$WORK/libemucore.so" || { echo "FATAL $CORE missing" >&2; exit 1; }
+sz=$(wc -c < "$WORK/libemucore.so")   # portable: release.yml runs this on Linux
+echo "  libemucore.so = $((sz/1024/1024)) MB"
+[[ "$sz" -gt 10000000 ]] || { echo "FATAL libemucore.so too small ($sz)" >&2; exit 1; }
 
-build_core 0x1000 emucore_4k  "$WORK/base-4k.apk"
-[[ -n "${ONLY_4K:-}" ]] || build_core 0x4000 emucore_16k "$WORK/base-16k.apk"
-
-unzip -p "$WORK/base-4k.apk"  lib/arm64-v8a/libemucore_4k.so  > "$WORK/lib-stage/lib/arm64-v8a/libemucore_4k.so"
-[[ -n "${ONLY_4K:-}" ]] || unzip -p "$WORK/base-16k.apk" lib/arm64-v8a/libemucore_16k.so > "$WORK/lib-stage/lib/arm64-v8a/libemucore_16k.so"
-for so in libemucore_4k $([[ -z "${ONLY_4K:-}" ]] && echo libemucore_16k); do
-	sz=$(wc -c < "$WORK/lib-stage/lib/arm64-v8a/$so.so")   # portable: release.yml runs this on Linux
-	echo "  $so.so = $((sz/1024/1024)) MB"
-	[[ "$sz" -gt 10000000 ]] || { echo "FATAL $so too small ($sz)" >&2; exit 1; }
-done
-
-# merge: 4k release apk as base, drop old signatures + both cores, re-add both cores compressed.
-# Not stored: the app installs with extractNativeLibs (useLegacyPackaging, which adrenotools' hooks
-# need), so Android copies every library out of the APK at install and loads that copy. Stored, the
-# two cores only made the APK about 31 MB bigger and sat on the device twice.
-UNSIGNED="$WORK/universal-unsigned.apk"; ALIGNED="$WORK/universal-aligned.apk"
-cp -f "$WORK/base-4k.apk" "$UNSIGNED"
+# Drop gradle's signature; the lineage signing below replaces it.
+UNSIGNED="$WORK/unsigned.apk"; ALIGNED="$WORK/aligned.apk"
+cp -f "$BUILT" "$UNSIGNED"
 zip -qd "$UNSIGNED" "META-INF/*" >/dev/null 2>&1 || true
-zip -qd "$UNSIGNED" "lib/arm64-v8a/libemucore_4k.so" "lib/arm64-v8a/libemucore_16k.so" >/dev/null 2>&1 || true
-( cd "$WORK/lib-stage" && zip -qr -9 "$UNSIGNED" lib )
 "$ZIPALIGN" -f -P 16 4 "$UNSIGNED" "$ALIGNED"
 
 # ROTATION SIGN: old debug key (API<=32) --next-signer--> new release key (API33+) + lineage.
@@ -131,8 +112,8 @@ rm -f "$OUTPUT_APK"
 	--in "$ALIGNED" --out "$OUTPUT_APK"
 
 echo; echo "================= VERIFY ================="
-echo "-- both cores present --"
-unzip -l "$OUTPUT_APK" | grep -E "libemucore_(4k|16k)\.so" || { echo "FATAL cores missing" >&2; exit 1; }
+echo "-- core present --"
+unzip -l "$OUTPUT_APK" "$CORE" || { echo "FATAL core missing" >&2; exit 1; }
 echo "-- Discord Social SDK --"
 # ★ The SDK is resolved from $DISCORD_SDK_DIR at configure time and gated only on
 # include/discordpp.h existing, so with the variable unset the build simply omits Discord --

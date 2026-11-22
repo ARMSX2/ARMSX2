@@ -322,9 +322,7 @@ else()
 	message(STATUS "Discord Social SDK not supplied (DISCORD_SDK_DIR unset) — presence/friends compiled out")
 endif()
 
-set(ARMSX2_EMUCORE_LIBRARY_NAME "emucore_4k" CACHE STRING "Android emucore shared library target/output name")
-
-add_library(${ARMSX2_EMUCORE_LIBRARY_NAME} SHARED
+add_library(emucore SHARED
 	native-lib.cpp
 	remote_play.cpp
 	remote_play_upnp.cpp
@@ -346,11 +344,11 @@ if(NOT ARMSX2_ANDROID_MIN_API MATCHES "^[0-9]+$")
 	message(FATAL_ERROR "Cannot tell the minimum Android API (ANDROID_PLATFORM_LEVEL='${ANDROID_PLATFORM_LEVEL}'), so cannot choose the TLS model for the core")
 endif()
 if(ARMSX2_ANDROID_MIN_API LESS 29)
-	target_link_options(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE "-Wl,-plugin-opt=-emulated-tls")
+	target_link_options(emucore PRIVATE "-Wl,-plugin-opt=-emulated-tls")
 	# Fail the build rather than ship a core that cannot start on its own minimum Android version.
 	if(CMAKE_READELF)
-		add_custom_command(TARGET ${ARMSX2_EMUCORE_LIBRARY_NAME} POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DLIB=$<TARGET_FILE:${ARMSX2_EMUCORE_LIBRARY_NAME}>
+		add_custom_command(TARGET emucore POST_BUILD
+			COMMAND ${CMAKE_COMMAND} -DREADELF=${CMAKE_READELF} -DLIB=$<TARGET_FILE:emucore>
 				-DMIN_API=${ARMSX2_ANDROID_MIN_API} -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CheckNoElfTls.cmake
 			VERBATIM)
 	endif()
@@ -364,13 +362,13 @@ endif()
 # feature shippable at all, and the linker is where that separation is actually enforced:
 #
 #   libarmsx2_discord.so  -> discord_partner_sdk   (loaded ONLY in the :discord process)
-#   libemucore_*.so       -> no Discord anything
+#   libemucore.so         -> no Discord anything
 #
 # discord_bridge.cpp includes no PCSX2 header, so this target needs none of PCSX2's include paths.
 # If it ever fails to build for want of one, that is the signal that something GPL crept in — fix
 # the include, do not add the path.
 #
-# Verify after any build:  llvm-readelf -d libemucore_4k.so | grep -i discord   (must be empty)
+# Verify after any build:  llvm-readelf -d libemucore.so | grep -i discord   (must be empty)
 if(ARMSX2_HAVE_DISCORD)
 	add_library(armsx2_discord SHARED discord_bridge.cpp)
 	target_link_libraries(armsx2_discord PRIVATE discord_partner_sdk log)
@@ -378,7 +376,7 @@ if(ARMSX2_HAVE_DISCORD)
 	set_target_properties(armsx2_discord PROPERTIES OUTPUT_NAME "armsx2_discord")
 endif()
 
-target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
+target_link_libraries(emucore PRIVATE
 	PCSX2
 	PCSX2_FLAGS
 	common
@@ -404,10 +402,10 @@ target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 # libflurry.so is loaded by System.loadLibrary from Kotlin and never linked, so nothing else in
 # this build would make it. A missing .so stays invisible until someone switches the background
 # on and the view throws UnsatisfiedLinkError.
-add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} flurry)
-add_dependencies(${ARMSX2_EMUCORE_LIBRARY_NAME} savers)
+add_dependencies(emucore flurry)
+add_dependencies(emucore savers)
 
-target_include_directories(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
+target_include_directories(emucore PRIVATE
 	"${ARMSX2_ROOT}"
 	"${ARMSX2_ROOT}/pcsx2"
 	# IconsFontAwesome.h, for the Discord bridge's OSD notification. Core sources include it bare
@@ -433,7 +431,7 @@ target_include_directories(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE
 if(ARMSX2_HAVE_LIBRASHADER)
 	target_link_libraries(PCSX2_FLAGS INTERFACE librashader)
 	target_compile_definitions(PCSX2_FLAGS INTERFACE ARMSX2_HAS_LIBRASHADER=1)
-	target_link_libraries(${ARMSX2_EMUCORE_LIBRARY_NAME} PRIVATE librashader)
+	target_link_libraries(emucore PRIVATE librashader)
 endif()
 
 # Same PCSX2_FLAGS reasoning as librashader directly above, and for the same reason: the

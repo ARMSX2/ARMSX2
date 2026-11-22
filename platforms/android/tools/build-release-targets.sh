@@ -2,8 +2,7 @@
 # ARMSX2 multi-target release driver.
 #
 # Builds the sideload APK for one or all four CPU/OS targets by delegating to
-# build-release-apk.sh, which still owns the whole recipe (dual page-size cores, PGO,
-# rotation signing). This script's only job is the target matrix and the file NAMING,
+# build-release-apk.sh, which still owns the whole recipe (PGO, rotation signing). This script's only job is the target matrix and the file NAMING,
 # because the in-app updater picks its download by filename:
 #
 #   ARMSX2-<VN>-legacy-armv8.0-sdk26.apk   Android 8+,  armv8-a + outline atomics

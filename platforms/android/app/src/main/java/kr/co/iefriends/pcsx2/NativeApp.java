@@ -10,8 +10,6 @@ import android.os.Looper;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
-import android.system.Os;
-import android.system.OsConstants;
 import android.view.InputDevice;
 import android.view.Surface;
 
@@ -23,32 +21,19 @@ import java.io.File;
 import java.lang.ref.WeakReference;
 
 public class NativeApp {
+	// One core for every kernel page size: the core reads the page size when it loads.
 	static {
-		String libraryName = selectNativeLibraryName();
 		try {
-			System.loadLibrary(libraryName);
+			System.loadLibrary("emucore");
 			hasNoNativeBinary = false;
-			System.out.println("PCSX2_LOAD " + libraryName + " pageSize=" + getRuntimePageSize());
+			System.out.println("PCSX2_LOAD emucore");
 		} catch (UnsatisfiedLinkError e) {
 			hasNoNativeBinary = true;
-			System.err.println("PCSX2_LOAD_FAILED " + libraryName + ": " + e.getMessage());
+			System.err.println("PCSX2_LOAD_FAILED emucore: " + e.getMessage());
 		}
 	}
 
 	public static boolean hasNoNativeBinary;
-
-	private static long getRuntimePageSize() {
-		try {
-			long pageSize = Os.sysconf(OsConstants._SC_PAGESIZE);
-			return pageSize > 0 ? pageSize : 4096;
-		} catch (Throwable ignored) {
-			return 4096;
-		}
-	}
-
-	private static String selectNativeLibraryName() {
-		return getRuntimePageSize() >= 16384 ? "emucore_16k" : "emucore_4k";
-	}
 
 
 	protected static WeakReference<Context> mContext;
