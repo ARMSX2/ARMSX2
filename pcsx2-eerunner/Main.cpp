@@ -181,6 +181,7 @@ static MemorySettingsInterface s_settings_interface;
 // Parsed command-line state, read by the CPU thread.
 static RunMode s_mode = RunMode::None;
 static std::string s_iso_path;
+static bool s_no_disc = false;            // --nodisc: boot the BIOS with the tray empty, then load the savestate
 static std::string s_savestate_path;
 static uint32_t s_frames = 300;
 static bool s_no_console = false;
@@ -1060,6 +1061,8 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --savestate <file>: Savestate to load after Initialize (required).\n");
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
+	std::fprintf(stderr, "  --nodisc: no disc in the tray; the game runs from the savestate's RAM until it reads the\n");
+	std::fprintf(stderr, "               disc. GameDB fixes do not apply: pass them with --set.\n");
 	std::fprintf(stderr, "  --perf-jitdump: Emit a Linux perf jitdump (under EmuFolders::Cache) so `perf inject --jit`\n");
 	std::fprintf(stderr, "               resolves EE_/VU0_/VU1_/IOP_/VIF_ JIT block symbols. Profiling only; with --liverun it\n");
 	std::fprintf(stderr, "               also honors an explicit --renderer null. Requires a USE_PERF_JITDUMP build.\n");
@@ -1688,6 +1691,11 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				continue;
 			}
+			else if (CHECK_ARG("--nodisc"))
+			{
+				s_no_disc = true;
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--iso"))
 			{
 				s_iso_path = StringUtil::StripWhitespace(argv[++i]);
@@ -1863,6 +1871,13 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 	}
 
+	if (s_no_disc)
+	{
+		// The savestate's RAM holds the running game; it renders until its next disc read.
+		// GameDB fixes are keyed to the disc and will not apply: pass them with --set.
+		params.source_type = CDVD_SourceType::NoDisc;
+		return true;
+	}
 	if (s_iso_path.empty())
 	{
 		Console.Error("No ISO provided (use --iso <file>); the savestate needs its disc mounted.");
