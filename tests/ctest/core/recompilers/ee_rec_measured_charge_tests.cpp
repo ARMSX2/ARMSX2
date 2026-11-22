@@ -218,6 +218,22 @@ const MeasuredOp kLoads[] = {
 	{"LQC2", ee::LQC2(3, reg::t1, 0),        1 * 8},
 };
 
+// The stores, every width, of a3 (f1 and vf3 for SWC1 and SQC2), to the
+// harness's scratch memory through t1.
+const MeasuredOp kStores[] = {
+	{"SB",   SB(reg::a3, 0, reg::t1),        1 * 8},
+	{"SH",   SH(reg::a3, 0, reg::t1),        1 * 8},
+	{"SW",   SW(reg::a3, 0, reg::t1),        1 * 8},
+	{"SWL",  SWL(reg::a3, 3, reg::t1),       1 * 8},
+	{"SWR",  SWR(reg::a3, 0, reg::t1),       1 * 8},
+	{"SD",   ee::SD(reg::a3, 0, reg::t1),    1 * 8},
+	{"SDL",  ee::SDL(reg::a3, 7, reg::t1),   1 * 8},
+	{"SDR",  ee::SDR(reg::a3, 0, reg::t1),   1 * 8},
+	{"SQ",   ee::SQ(reg::a3, 0, reg::t1),    1 * 8},
+	{"SWC1", ee::SWC1(1, 0, reg::t1),        1 * 8},
+	{"SQC2", ee::SQC2(3, reg::t1, 0),        1 * 8},
+};
+
 // COP0 reads (two registers whose value both engines agree on), DI and TLBP.
 const MeasuredOp kCop0[] = {
 	{"MFC0", MFC0(reg::t0, 15), 1 * 8}, // PRId
@@ -377,6 +393,13 @@ TEST(EeRecMeasuredCharge, HiLoAndSaMovesChargeOneCycle)
 TEST(EeRecMeasuredCharge, LoadsChargeOneCycle)
 {
 	ExpectMeasuredCharges(kLoads);
+}
+
+// The console issues a store of any width once per cycle. A store then a load
+// of the same address costs 3 per pair, which no per-op charge can carry.
+TEST(EeRecMeasuredCharge, StoresChargeOneCycle)
+{
+	ExpectMeasuredCharges(kStores);
 }
 
 // The console reads any COP0 register in 1 cycle (eight tried), and DI costs

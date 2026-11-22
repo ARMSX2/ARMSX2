@@ -192,7 +192,11 @@ namespace R5900
 			// MADDA.S and MSUBA.S as multiplies (4) and ADDA.S, SUBA.S 0.875.
 			static const int FPU_Acc = 1*8;
 
-			static const int Store = 14;
+			// Stores, every width (SB..SQ, SWL..SDR, SWC1, SQC2): 1 cycle,
+			// measured on an SCPH-30001, one per cycle back to back. A store
+			// then a load of the same address costs 3 per pair, and a store of
+			// an FPU or VU0 result just issued 6. The table charged 1.75.
+			static const int Store = 1*8;
 
 			// Loads, every width (LB..LQ, LWL..LDR, LWC1, LQC2): 1 cycle,
 			// measured on an SCPH-30001: independent loads issue one per
