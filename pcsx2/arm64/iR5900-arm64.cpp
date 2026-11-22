@@ -3160,16 +3160,12 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 		armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.branch));
 	}
 
-	// NOP gets cycle counted but no codegen (matching x86 behavior)
-	if (cpuRegs.code == 0)
+	// Every instruction is charged its table entry, NOP (SLL $0, $0, 0)
+	// included, as the interpreter charges it. NOP emits no code.
+	const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
+	s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	if (cpuRegs.code != 0)
 	{
-		s_nBlockCycles += 9 * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
-	}
-	else
-	{
-		const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
-		s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
-
 		// Guard: branch/jump in a delay slot would cause infinite
 		// compile-time recursion. Use interpreter for the instruction.
 		const bool isBranchInDelaySlot = delayslot && (opcode.flags & IS_BRANCH);
