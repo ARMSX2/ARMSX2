@@ -57,7 +57,7 @@ AFTER_CLOSE = {
 # The defer runs once the closing load is done, so these see a whole store.
 DEFER_CALLS = {
     "synchronizeControllerMacroGameplayInput": "runs in the defer, after the closing load",
-    "applyFrameLimiterSettings": "runs in the defer, after the closing load",
+    "writeFrameLimiterSettings": "runs in the defer, after the closing load",
 }
 
 DECL = re.compile(
@@ -137,7 +137,7 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
         return block(self.frame_pacing, "func migrateFramePacingOptimalDefaultV1(")
 
     def _walk_transitive_callees(self, init_body, depth=2):
-        """Every `Self.foo()`, `X.shared.foo()` and sub-store `foo()` reachable from init, to `depth`.
+        """Every `Self.foo()`, bare `foo()`, `X.shared.foo()` and sub-store `foo()` reachable from init, to `depth`.
 
         A callee with no Swift body in the store files or the two singletons is skipped.
         """
@@ -158,6 +158,7 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
             (re.compile(r"\b(controller|network|appearance)\s*\.\s*([a-zA-Z_]\w*)\s*\("),
              lambda m: m.group(1)),
         ]
+        funcs = self._store_funcs()
         seen = set()
         results = []
 
@@ -175,16 +176,19 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
         def walk(body, current):
             if current > depth:
                 return
-            for pattern, owner_of in callers:
-                for m in pattern.finditer(body):
-                    owner, callee = owner_of(m), m.group(m.lastindex)
-                    if (owner, callee) in seen:
-                        continue
-                    seen.add((owner, callee))
-                    label, callee_body = find_callee_body(callee)
-                    if callee_body:
-                        results.append((label or owner, "%s.%s" % (owner, callee), callee_body))
-                        walk(callee_body, current + 1)
+            calls = [(owner_of(m), m.group(m.lastindex))
+                     for pattern, owner_of in callers for m in pattern.finditer(body)]
+            # A bare call to a store method runs on the store being built.
+            calls += [("Self", m.group("name")) for m in BARE_CALL.finditer(body)
+                      if m.group("name") in funcs]
+            for owner, callee in calls:
+                if (owner, callee) in seen:
+                    continue
+                seen.add((owner, callee))
+                label, callee_body = find_callee_body(callee)
+                if callee_body:
+                    results.append((label or owner, "%s.%s" % (owner, callee), callee_body))
+                    walk(callee_body, current + 1)
 
         walk(init_body, 1)
         return results
