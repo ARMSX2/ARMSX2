@@ -607,13 +607,17 @@ static constexpr std::array<DriverRule, 38> s_driver_rules = {{
 		MobileGpuDriver::Unknown, MobileGpuArchitecture::Unknown, 57, 57, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenRoaaDestinationRead), 0, false, nullptr, nullptr,
 		Malisx2Exemption::WithRoaaColorAccess},
+	// BrokenPushDescriptorsAfterRunDraw: after a run-program draw, later draws that push their textures sample the wrong
+	// texture (NFS Underground 2's background drawn as its glyph sheet). Binding allocated sets instead, or the run
+	// program off, draws right; Turnip on the same Adreno 722 draws the same command stream right. Measured on
+	// 512.800.73; the reports span Adreno 610 to 840 and 512.615 to 512.842, so no version or model bound.
 	{"vk-qualcomm-proprietary", MobileGpuApi::Vulkan, RuntimeGpuProfile::Adreno,
 		MobileGpuDriver::QualcommProprietary, MobileGpuArchitecture::Unknown, 0, 0, 0, {}, {}, 0, 0, false,
 		Bug(DriverBug::BrokenPrimitiveRestart) | Bug(DriverBug::BrokenProvokingVertex) |
 			Bug(DriverBug::BrokenSubpassFeedback) |
 			Bug(DriverBug::BrokenAttachmentFeedbackLoopLayout) |
 			Bug(DriverBug::BrokenReversedDepthRange) | Bug(DriverBug::SlowCachedReadbackMemory) |
-			Bug(DriverBug::SlowOptimalImageToBufferCopy),
+			Bug(DriverBug::SlowOptimalImageToBufferCopy) | Bug(DriverBug::BrokenPushDescriptorsAfterRunDraw),
 		Workaround(DriverWorkaround::DisableProvokingVertex) |
 			Workaround(DriverWorkaround::PreferCoherentReadback) |
 			Workaround(DriverWorkaround::UseRenderTargetCopyForFeedback)},

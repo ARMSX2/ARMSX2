@@ -32,6 +32,13 @@
 /// Header-only so the tests can pin it without a device.
 namespace GSRunsPolicy
 {
+	/// Whether the driver may draw the run program at all. Not where the draws after a run draw lose the textures they
+	/// push (DriverBug::BrokenPushDescriptorsAfterRunDraw): there every row is drawn classically.
+	constexpr bool DriverDrawsRuns(const MobileDriverProfile& driver)
+	{
+		return !driver.HasBug(DriverBug::BrokenPushDescriptorsAfterRunDraw);
+	}
+
 	enum class Refusal : u8
 	{
 		None,

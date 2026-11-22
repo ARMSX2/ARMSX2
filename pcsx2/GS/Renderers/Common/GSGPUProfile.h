@@ -139,6 +139,9 @@ enum class DriverBug : u8
 	/// single-level textures by hand from texelFetch there, past a bound on the textures a group samples through the
 	/// sampler (GSRunsPolicy::PlaceRow).
 	StallsOnFilteredRunSampling,
+	/// After a run-program draw, draws whose textures are bound with push descriptors sample the wrong texture (a
+	/// full-screen background drawn as a glyph sheet). The run program stays off (GSRunsPolicy::DriverDrawsRuns).
+	BrokenPushDescriptorsAfterRunDraw,
 	Count,
 };
 

@@ -101,7 +101,13 @@ GSRunEmitterVK::GSRunEmitterVK(GSDeviceVK* dev)
 		Console.WriteLn("VK: run program off (-runs off)");
 		return;
 	}
-	// Device capability decides, not the vendor: the per-row textures need non-uniform indexing into a runtime array,
+	if (!GSRunsPolicy::DriverDrawsRuns(dev->GetMobileDriverProfile()))
+	{
+		Console.WriteLn("VK: run program off: the driver has %s (draws after a run draw sample the wrong textures)",
+			GpuProfileDetector::BugToString(DriverBug::BrokenPushDescriptorsAfterRunDraw));
+		return;
+	}
+	// Otherwise device capability decides, not the vendor: the per-row textures need non-uniform indexing into a runtime array,
 	// and the groups' blend ways need the second fragment output.
 	if (!dev->m_optional_extensions.vk_ext_descriptor_indexing || !dev->m_features.dual_source_blend)
 	{
