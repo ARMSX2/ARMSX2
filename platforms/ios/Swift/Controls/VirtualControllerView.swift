@@ -33,7 +33,7 @@ struct VirtualControllerView: View {
     }
 
     private var analogStickScale: CGFloat {
-        CGFloat(SettingsStore.clampedAnalogStickScale(settings.analogStickScale))
+        CGFloat(SettingsStore.clampedAnalogStickScale(settings.controller.analogStickScale))
     }
 
     private var effectiveSkinDescriptor: VPadSkinDescriptor {
@@ -84,7 +84,7 @@ struct VirtualControllerView: View {
                             landscapeLayout(w: geo.size.width, h: geo.size.height)
                         }
                     }
-                    .environment(\.padOpacity, Double(settings.padOpacity))
+                    .environment(\.padOpacity, Double(settings.controller.padOpacity))
                     .environment(\.padSkin, skin)
                     .environment(\.padSkinDescriptor, descriptor)
                     .environment(\.padUsesFullSkin, usesFullSkin)
@@ -96,7 +96,7 @@ struct VirtualControllerView: View {
                             portraitLayout(w: geo.size.width, h: geo.size.height)
                         }
                     }
-                    .environment(\.padOpacity, Double(settings.padOpacity))
+                    .environment(\.padOpacity, Double(settings.controller.padOpacity))
                     .environment(\.padSkin, skin)
                     .environment(\.padSkinDescriptor, descriptor)
                     .environment(\.padUsesFullSkin, usesFullSkin)
@@ -526,7 +526,7 @@ struct VirtualControllerView: View {
             dynamicInputZones(w: w, h: h)
 
             if isVisible("dpad") {
-                if settings.dpadDiagonalsEnabled {
+                if settings.controller.dpadDiagonalsEnabled {
                     placedCompositeDPad(landscape: true, areaW: w, areaH: h)
                 } else {
                     let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: true)
@@ -539,7 +539,7 @@ struct VirtualControllerView: View {
 
             // Action buttons: composite combo surface when enabled (and all four face
             // buttons are visible); otherwise individual buttons with per-button visibility.
-            if settings.faceComboZonesEnabled,
+            if settings.controller.faceComboZonesEnabled,
                isVisible("triangle") && isVisible("cross") && isVisible("square") && isVisible("circle") {
                 placedCompositeFaceButtons(landscape: true, areaW: w, areaH: h)
             } else {
@@ -626,7 +626,7 @@ struct VirtualControllerView: View {
                 }
 
                 if isVisible("dpad") {
-                    if settings.dpadDiagonalsEnabled {
+                    if settings.controller.dpadDiagonalsEnabled {
                         placedCompositeDPad(landscape: false, areaW: cW, areaH: cH)
                     } else {
                         let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: false)
@@ -639,7 +639,7 @@ struct VirtualControllerView: View {
 
                 // Action buttons: composite combo surface when enabled (and all four face
                 // buttons are visible); otherwise individual buttons with per-button visibility.
-                if settings.faceComboZonesEnabled,
+                if settings.controller.faceComboZonesEnabled,
                    isVisible("triangle") && isVisible("cross") && isVisible("square") && isVisible("circle") {
                     placedCompositeFaceButtons(landscape: false, areaW: cW, areaH: cH)
                 } else {

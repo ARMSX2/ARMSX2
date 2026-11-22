@@ -278,9 +278,9 @@ struct QuickMenuView: View {
         } else if matches("Full Screen") {
             fullScreen.toggle()
         } else if matches("Hide Menu Button") {
-            let hidden = !settings.hideMenuButton
+            let hidden = !settings.controller.hideMenuButton
             menuButtonHidden = hidden
-            settings.hideMenuButton = hidden
+            settings.controller.hideMenuButton = hidden
         } else if matches("Speed / Fast Forward") {
             onOpen(.speed)
         } else if matches("Per-Game Settings") {
@@ -617,10 +617,10 @@ struct QuickMenuView: View {
             label: settings.localized("Hide Menu Button"),
             systemImage: "eye.slash",
             isOn: Binding(
-                get: { settings.hideMenuButton },
+                get: { settings.controller.hideMenuButton },
                 set: { newValue in
                     menuButtonHidden = newValue
-                    settings.hideMenuButton = newValue
+                    settings.controller.hideMenuButton = newValue
                 }
             )
         )

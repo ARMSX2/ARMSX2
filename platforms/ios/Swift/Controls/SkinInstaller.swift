@@ -141,6 +141,6 @@ final class SkinInstaller: ObservableObject {
     /// SettingsStore's mirror in step — and a stale .custom there points the pad
     /// at the old ControllerSkins/Custom folder instead of the stock art.
     private func syncSelectedSkin() {
-        SettingsStore.shared.virtualPadSkin = VPadSkinLibraryStore.shared.selectedDescriptor.virtualPadSkin
+        SettingsStore.shared.controller.virtualPadSkin = VPadSkinLibraryStore.shared.selectedDescriptor.virtualPadSkin
     }
 }

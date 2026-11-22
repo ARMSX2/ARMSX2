@@ -63,7 +63,7 @@ enum SettingsPresetFile {
         QueueSize=\(settings.vsyncQueueSize)
 
         [VirtualPad]
-        ButtonSkin=\(settings.virtualPadSkin.rawValue)
+        ButtonSkin=\(settings.controller.virtualPadSkin.rawValue)
         """
         return Data(text.utf8)
     }
@@ -193,7 +193,7 @@ private struct ParsedSettings {
         if let queueSize { settings.vsyncQueueSize = queueSize }
         if let buttonSkin {
             skinLibrary.selectSkin(id: buttonSkin.descriptorID)
-            settings.virtualPadSkin = buttonSkin
+            settings.controller.virtualPadSkin = buttonSkin
         }
     }
 }

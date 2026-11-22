@@ -164,7 +164,7 @@ final class GameplayShortcutCoordinator {
             feedback.presentRetroAchievementsToast(
                 title: settings.localized("No Quick Save yet"),
                 message: settings.localized("Create one by pressing")
-                    + " \(settings.controllerMacroSaveGameState.title).",
+                    + " \(settings.controller.controllerMacroSaveGameState.title).",
                 badgePath: "",
                 duration: nil
             )

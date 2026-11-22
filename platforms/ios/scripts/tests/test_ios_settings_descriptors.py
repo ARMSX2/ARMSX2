@@ -1,10 +1,7 @@
 import re
 import unittest
 
-from ios_source import block, store_text, swift
-
-
-STORE = swift("SettingsStore.swift")
+from ios_source import block, store_inits, store_text, swift
 
 DESCRIPTOR = re.compile(r"let _(\w+)Config = Setting<([^>]+)>\(")
 COMMIT = re.compile(r"commit\((?:Self\.)?_(\w+)Config, (\w+)\)")
@@ -50,7 +47,8 @@ def call_at(lines, first):
 class SettingsDescriptorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.source = STORE.read_text(encoding="utf-8")
+        stores = store_inits()
+        cls.source = "\n".join(text for _, text, _, _ in stores)
         cls.lines = store_text().split("\n")
         # Every Setting in the store: name -> (section, key, default).
         cls.descriptors = {}
@@ -67,7 +65,7 @@ class SettingsDescriptorTests(unittest.TestCase):
         # The property each descriptor belongs to, read off its commit call.
         owner = {m.group(1): m.group(2) for m in COMMIT.finditer(store_text())}
         cls.property_of = {name: owner.get(name, name) for name in cls.descriptors}
-        cls.init_body = block(cls.source, "private init()")
+        cls.init_body = "\n".join(init for _, _, _, init in stores)
         # The whole store, extensions included, so a read that moved into a
         # helper file cannot slip past the checks below.
         cls.store_source = store_text()
@@ -164,7 +162,7 @@ class SettingsDescriptorTests(unittest.TestCase):
         by_property = {self.property_of[n]: (n, d) for n, (_, _, d) in self.descriptors.items()}
         for func in RESET_FUNCS:
             for line in block(self.store_source, f"func {func}").split("\n"):
-                match = re.match(r"^\s*(\w+) = (.+?)(?:\s*//.*)?$", line)
+                match = re.match(r"^\s*(?:controller\.|network\.)?(\w+) = (.+?)(?:\s*//.*)?$", line)
                 if not match or match.group(1) not in by_property:
                     continue
                 name, default = by_property[match.group(1)]

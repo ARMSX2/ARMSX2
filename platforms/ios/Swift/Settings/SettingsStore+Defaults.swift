@@ -255,31 +255,31 @@ extension SettingsStore {
         osdShowTextureReplacements = false
         snapshotCustomOsd()
 
-        padOpacity = 0.6
-        phoneRumbleStrength = 0.25
-        increaseRumbleDurationAndInterpolation = true
-        hapticFeedback = true
-        gameRumbleStrength = 1
-        uiRumbleStrength = 0.5
-        dpadDiagonalsEnabled = true
-        faceComboZonesEnabled = true
-        automaticDownloadCustomSkin = false
-        autoHideVirtualPadWhenControllerConnected = true
-        autoFullscreen = true
-        hideMenuButton = false
-        analogStickScale = 1.0
-        gameControllerDeadZone = 0.15
-        gameControllerLeftInstantDeadzoneEnabled = false
-        gameControllerLeftNegativeDeadzone = -0.08
-        gameControllerRightInstantDeadzoneEnabled = false
-        gameControllerRightNegativeDeadzone = -0.08
-        invertLeftStickX = false
-        invertLeftStickY = false
-        invertRightStickX = false
-        invertRightStickY = false
+        controller.padOpacity = 0.6
+        controller.phoneRumbleStrength = 0.25
+        controller.increaseRumbleDurationAndInterpolation = true
+        controller.hapticFeedback = true
+        controller.gameRumbleStrength = 1
+        controller.uiRumbleStrength = 0.5
+        controller.dpadDiagonalsEnabled = true
+        controller.faceComboZonesEnabled = true
+        controller.automaticDownloadCustomSkin = false
+        controller.autoHideVirtualPadWhenControllerConnected = true
+        controller.autoFullscreen = true
+        controller.hideMenuButton = false
+        controller.analogStickScale = 1.0
+        controller.gameControllerDeadZone = 0.15
+        controller.gameControllerLeftInstantDeadzoneEnabled = false
+        controller.gameControllerLeftNegativeDeadzone = -0.08
+        controller.gameControllerRightInstantDeadzoneEnabled = false
+        controller.gameControllerRightNegativeDeadzone = -0.08
+        controller.invertLeftStickX = false
+        controller.invertLeftStickY = false
+        controller.invertRightStickX = false
+        controller.invertRightStickY = false
         appLanguage = .system
-        controllerMultitapMode = 0
-        resetControllerMacros()
+        controller.controllerMultitapMode = 0
+        controller.resetControllerMacros()
         autoOpenStikDebug = false
         jitScriptProtocol = JITScriptProtocol.defaultValue
 

@@ -71,7 +71,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         guard settingsMatch else { return false }
         guard self == .defaultPreset else { return true }
         return skinLibrary.selectedSkinID == VirtualPadSkin.armsx2Refresh.descriptorID &&
-            settings.virtualPadSkin == .armsx2Refresh
+            settings.controller.virtualPadSkin == .armsx2Refresh
     }
 
     @MainActor
@@ -82,7 +82,7 @@ enum BuiltInSettingsPreset: String, CaseIterable, Identifiable {
         if self == .defaultPreset {
             settings.resetAllDefaults()
             skinLibrary.selectSkin(id: VirtualPadSkin.armsx2Refresh.descriptorID)
-            settings.virtualPadSkin = .armsx2Refresh
+            settings.controller.virtualPadSkin = .armsx2Refresh
             ARMSX2Bridge.flushINISettings()
             return
         }

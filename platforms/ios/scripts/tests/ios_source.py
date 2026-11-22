@@ -43,6 +43,7 @@ def store_text():
 STORE_INITS = {
     "SettingsStore.swift": ("final class SettingsStore {", "private init()"),
     "SettingsStoreAppearance.swift": ("final class Appearance {", "        init() {"),
+    "SettingsStoreController.swift": ("final class Controller {", "        init() {"),
 }
 
 

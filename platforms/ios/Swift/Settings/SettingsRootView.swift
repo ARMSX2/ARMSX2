@@ -581,9 +581,9 @@ struct SettingsRootView: View {
         if pane == .gameController {
             return GamepadSettingsView.controllerTargetOrder(
                 leftInstantDeadzoneEnabled:
-                    settings.gameControllerLeftInstantDeadzoneEnabled,
+                    settings.controller.gameControllerLeftInstantDeadzoneEnabled,
                 rightInstantDeadzoneEnabled:
-                    settings.gameControllerRightInstantDeadzoneEnabled
+                    settings.controller.gameControllerRightInstantDeadzoneEnabled
             )
         }
         if pane == .controllerMacros {

@@ -19,11 +19,11 @@ extension PerGameSettingsDraft {
     }
 
     func clearStickInversionOverrides() {
-        for key in SettingsStore.stickInversionKeys {
+        for key in SettingsStore.Controller.stickInversionKeys {
             Self.clearPerGameValue("ARMSX2iOS/UI", key, useCurrent: savesToRunningGame, iso: game.bootName)
         }
         if savesToRunningGame {
-            settings.reloadStickInversionOverrides()
+            settings.controller.reloadStickInversionOverrides()
         }
     }
 
