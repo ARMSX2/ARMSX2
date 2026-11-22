@@ -119,6 +119,11 @@ namespace R5900
 
 		namespace Cycles
 		{
+			// What still takes Default (COP2, CACHE, PREF, SYNC, SYSCALL, BREAK,
+			// J, JAL, JR, JALR, MOVZ, MOVN) has no one cost on an SCPH-30001
+			// that a per-op charge could carry: COP2 is every VU0 macro op and
+			// transfer, PREF 2, SYNC.L 1 and SYNC.P 5, a jump and its delay
+			// slot 2, MOVZ and MOVN 2 to a use and 0.5 apart.
 			static const int Default = 9;
 			static const int Branch = 11;
 			static const int CopDefault = 7;
@@ -130,6 +135,12 @@ namespace R5900
 			// charge is the chain's cost, since the model has no pairing.
 			// The table charged 1.125.
 			static const int Alu = 1*8;
+
+			// MFHI, MFLO, MTHI, MTLO, their pipeline-1 forms (MFHI1..MTLO1),
+			// MFSA, MTSA, MTSAB, MTSAH: 1 cycle, measured on an SCPH-30001,
+			// back to back with nothing reading the result. A move to LO or SA
+			// then a read of it costs 3 per pair. The table charged 1.125.
+			static const int HiLoMove = 1*8;
 
 			static const int Mult = 2*8;
 
@@ -312,18 +323,18 @@ namespace R5900
 		MakeOpcode( DSRL32, Alu, 0 );
 		MakeOpcode( DSRA32, Alu, 0 );
 
-		MakeOpcode( MFHI, Default, 0 );
-		MakeOpcode( MTHI, Default, 0 );
-		MakeOpcode( MFLO, Default, 0 );
-		MakeOpcode( MTLO, Default, 0 );
-		MakeOpcode( MFSA, Default, 0 );
-		MakeOpcode( MTSA, Default, 0 );
-		MakeOpcode( MTSAB, Default, 0 );
-		MakeOpcode( MTSAH, Default, 0 );
-		MakeOpcode( MFHI1, Default, 0 );
-		MakeOpcode( MTHI1, Default, 0 );
-		MakeOpcode( MFLO1, Default, 0 );
-		MakeOpcode( MTLO1, Default, 0 );
+		MakeOpcode( MFHI, HiLoMove, 0 );
+		MakeOpcode( MTHI, HiLoMove, 0 );
+		MakeOpcode( MFLO, HiLoMove, 0 );
+		MakeOpcode( MTLO, HiLoMove, 0 );
+		MakeOpcode( MFSA, HiLoMove, 0 );
+		MakeOpcode( MTSA, HiLoMove, 0 );
+		MakeOpcode( MTSAB, HiLoMove, 0 );
+		MakeOpcode( MTSAH, HiLoMove, 0 );
+		MakeOpcode( MFHI1, HiLoMove, 0 );
+		MakeOpcode( MTHI1, HiLoMove, 0 );
+		MakeOpcode( MFLO1, HiLoMove, 0 );
+		MakeOpcode( MTLO1, HiLoMove, 0 );
 
 		// Loads!
 

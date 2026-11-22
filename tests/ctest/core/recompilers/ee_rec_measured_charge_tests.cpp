@@ -183,6 +183,22 @@ const MeasuredOp kIntegerAlu[] = {
 	{"SLL",    NOP,                                   1 * 8}, // NOP
 };
 
+// The HI/LO and SA moves (rs = a3, rd = t0).
+const MeasuredOp kHiLoSaMoves[] = {
+	{"MFHI",  MFHI(reg::t0),           1 * 8},
+	{"MFLO",  MFLO(reg::t0),           1 * 8},
+	{"MTHI",  MTHI(reg::a3),           1 * 8},
+	{"MTLO",  MTLO(reg::a3),           1 * 8},
+	{"MFHI1", ee::MFHI1(reg::t0),      1 * 8},
+	{"MFLO1", ee::MFLO1(reg::t0),      1 * 8},
+	{"MTHI1", ee::MTHI1(reg::a3),      1 * 8},
+	{"MTLO1", ee::MTLO1(reg::a3),      1 * 8},
+	{"MFSA",  ee::MFSA(reg::t0),       1 * 8},
+	{"MTSA",  ee::MTSA(reg::a3),       1 * 8},
+	{"MTSAB", ee::MTSAB(reg::a3, 1),   1 * 8},
+	{"MTSAH", ee::MTSAH(reg::a3, 1),   1 * 8},
+};
+
 // COP0 reads (two registers whose value both engines agree on), DI and TLBP.
 const MeasuredOp kCop0[] = {
 	{"MFC0", MFC0(reg::t0, 15), 1 * 8}, // PRId
@@ -325,6 +341,14 @@ TEST(EeRecMeasuredCharge, FpuAccumulatorWritesChargeOneCycle)
 TEST(EeRecMeasuredCharge, IntegerAluOpsChargeOneCycle)
 {
 	ExpectMeasuredCharges(kIntegerAlu);
+}
+
+// The console moves to and from HI, LO (either pipeline's) and SA at one per
+// cycle, back to back. A move to LO then a read of it costs 3 per pair, which
+// no per-op charge can carry.
+TEST(EeRecMeasuredCharge, HiLoAndSaMovesChargeOneCycle)
+{
+	ExpectMeasuredCharges(kHiLoSaMoves);
 }
 
 // The console reads any COP0 register in 1 cycle (eight tried), and DI costs
