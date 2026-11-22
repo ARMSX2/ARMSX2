@@ -3627,10 +3627,11 @@ void VMManager::LogCPUCapabilities()
 	Console.WriteLn();
 
 #ifdef ARCH_ARM64
+	// Padding to a larger line than the CPU's only costs a few bytes. Padding to a
+	// smaller one lets two threads' data share a line, which is worth a warning.
 	const size_t runtime_cache_line_size = HostSys::GetRuntimeCacheLineSize();
-	if (__cachelinesize != runtime_cache_line_size)
+	if (__cachelinesize < runtime_cache_line_size)
 	{
-		// Not fatal, but does have performance implications.
 		WARNING_LOG(
 			"Cache line size mismatch. This build was compiled with {} byte lines, but the system has {} byte lines.",
 			__cachelinesize, runtime_cache_line_size);

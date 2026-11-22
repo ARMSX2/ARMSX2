@@ -41,8 +41,8 @@ namespace IopThread
 
 	// The alignment that keeps one side's hot words off the other side's cache line.
 	//
-	// __cachelinesize is not enough on its own: the Linux ARM64 build takes it from the kernel,
-	// which reports 64 on the M2, while the M2 keeps its caches coherent in 128-byte units. Two
+	// __cachelinesize is not enough on its own on every platform: a build that takes it from the
+	// kernel gets 64 on the M2, while the M2 keeps its caches coherent in 128-byte units. Two
 	// words 64 bytes apart would still share a line there. Taking the larger of the two costs a few
 	// bytes of padding on a 64-byte machine and nothing else.
 	inline constexpr size_t kChannelLineSize = __cachelinesize > 128 ? __cachelinesize : 128;

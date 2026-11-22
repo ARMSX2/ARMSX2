@@ -173,11 +173,13 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		endif()
 	endif()
 
-	# Linux ARM64 detects the kernel's page size at runtime.
+	# Linux ARM64 detects the kernel's page size at runtime, so one binary runs on
+	# 4K, 16K and 64K kernels. The cache line size only pads structures that two
+	# threads write (alignas), and 128 also keeps them apart on 64-byte cores, so
+	# it is fixed rather than taken from the build machine, as on Windows below.
 	if(LINUX)
 		add_link_options("LINKER:-z,max-page-size=65536")
-		detect_cache_line_size()
-		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=${HOST_CACHE_LINE_SIZE})
+		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=128)
 	endif()
 
 	# Android is neither LINUX nor WIN32 to CMake, so without this branch it
