@@ -182,20 +182,12 @@ elseif("${CMAKE_SYSTEM_PROCESSOR}" STREQUAL "arm64" OR "${CMAKE_SYSTEM_PROCESSOR
 		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=128)
 	endif()
 
-	# Android is neither LINUX nor WIN32 to CMake, so without this branch it
-	# falls through to the ARM64 default in Pcsx2Defs.h — 16K pages — while
-	# every current Android device runs a 4K kernel. The ARM64 memory manager
-	# needs its compile-time page size to match the kernel's at runtime, and a
-	# mismatch is a hard failure on the device, not a build warning. Detection
-	# is not an option here (cross-compile), so it is a knob, defaulted to 4K
-	# and named the same as in the APK's own copy of this file.
+	# Android is neither LINUX nor WIN32 to CMake. Like Linux, it reads the host
+	# page size at load time (Pcsx2Defs.h), so one core runs on 4K and 16K
+	# kernels. The segments are aligned to 16K so the library loads on a 16K
+	# kernel at all.
 	if(ANDROID)
-		set(ARMSX2_ANDROID_HOST_PAGE_SIZE "0x1000" CACHE STRING "Compile-time Android host page size for the PCSX2 core")
-		list(APPEND PCSX2_DEFS OVERRIDE_HOST_PAGE_SIZE=${ARMSX2_ANDROID_HOST_PAGE_SIZE})
 		list(APPEND PCSX2_DEFS OVERRIDE_HOST_CACHE_LINE_SIZE=64)
-		# 16K-page compatibility for the ELF itself: a 4K-internal-page build
-		# still has to load on a 16K kernel, which requires the segments be
-		# aligned to 16K. Independent of the page size above.
 		add_link_options(
 			"LINKER:-z,max-page-size=16384"
 			"LINKER:-z,common-page-size=16384"

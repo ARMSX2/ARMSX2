@@ -31,9 +31,10 @@ static constexpr bool IsDebugBuild = false;
 	#error Unsupported Platform
 #endif
 
-// Linux ARM64 kernels use 4, 16, or 64 KB pages. Initialize these once when
-// the executable or shared library is loaded, before memory mappings or JITs.
-#if defined(__linux__) && !defined(__ANDROID__) && defined(ARCH_ARM64)
+// Linux ARM64 kernels use 4, 16, or 64 KB pages, and Android devices ship
+// both 4 and 16 KB kernels. Initialize these once when the executable or
+// shared library is loaded, before memory mappings or JITs.
+#if defined(__linux__) && defined(ARCH_ARM64)
 	#define PCSX2_RUNTIME_PAGE_SIZE
 	extern const unsigned int __pagesize;
 	extern const unsigned int __pagemask;
