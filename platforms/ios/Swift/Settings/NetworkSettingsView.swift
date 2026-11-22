@@ -29,19 +29,19 @@ struct NetworkSettingsView: View {
     var body: some View {
         Form {
             Section(settings.localized("PS2 HDD")) {
-                Toggle(settings.localized("Enable DEV9 Virtual HDD"), isOn: $settings.dev9HddEnabled)
+                Toggle(settings.localized("Enable DEV9 Virtual HDD"), isOn: Bindable(settings.network).dev9HddEnabled)
                     .controllerAccessibilityTargetID("settings.network.hdd-enabled")
 
                 HStack {
                     Text(settings.localized("Image"))
                     Spacer()
-                    Text(settings.dev9HddFile.isEmpty ? "DEV9hdd.raw" : settings.dev9HddFile)
+                    Text(settings.network.dev9HddFile.isEmpty ? "DEV9hdd.raw" : settings.network.dev9HddFile)
                         .foregroundStyle(.secondary)
                         .font(.caption)
                 }
 
                 Button(settings.localized("Use Default HDD Image")) {
-                    settings.dev9HddFile = "DEV9hdd.raw"
+                    settings.network.dev9HddFile = "DEV9hdd.raw"
                 }
                 .controllerAccessibilityTargetID("settings.network.default-hdd")
 
@@ -51,7 +51,7 @@ struct NetworkSettingsView: View {
             }
 
             Section(settings.localized("Online / Ethernet")) {
-                Toggle(settings.localized("Enable DEV9 Ethernet"), isOn: $settings.dev9EthernetEnabled)
+                Toggle(settings.localized("Enable DEV9 Ethernet"), isOn: Bindable(settings.network).dev9EthernetEnabled)
                     .controllerAccessibilityTargetID("settings.network.ethernet-enabled")
 
                 Group {
@@ -62,7 +62,7 @@ struct NetworkSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Picker(settings.localized("Adapter"), selection: $settings.dev9EthDevice) {
+                    Picker(settings.localized("Adapter"), selection: Bindable(settings.network).dev9EthDevice) {
                         ForEach(networkAdapters, id: \.self) { adapter in
                             Text(adapter).tag(adapter)
                         }
@@ -70,15 +70,15 @@ struct NetworkSettingsView: View {
                     .controllerAccessibilityOptionsPickerTarget(
                         id: "settings.network.adapter",
                         label: settings.localized("Adapter"),
-                        selection: $settings.dev9EthDevice,
+                        selection: Bindable(settings.network).dev9EthDevice,
                         options: networkAdapters.map {
                             (id: $0, title: $0)
                         }
                     )
 
-                    Toggle(settings.localized("Log DHCP"), isOn: $settings.dev9EthLogDHCP)
+                    Toggle(settings.localized("Log DHCP"), isOn: Bindable(settings.network).dev9EthLogDHCP)
                         .controllerAccessibilityTargetID("settings.network.log-dhcp")
-                    Toggle(settings.localized("Log DNS"), isOn: $settings.dev9EthLogDNS)
+                    Toggle(settings.localized("Log DNS"), isOn: Bindable(settings.network).dev9EthLogDNS)
                         .controllerAccessibilityTargetID("settings.network.log-dns")
                 }
                 // Ethernet options may be prepared before the adapter is
@@ -91,8 +91,8 @@ struct NetworkSettingsView: View {
             }
 
             Section(settings.localized("DNS")) {
-                dnsRow("DNS1", id: "settings.network.dns1", mode: $settings.dev9DNS1Mode, address: $settings.dev9DNS1)
-                dnsRow("DNS2", id: "settings.network.dns2", mode: $settings.dev9DNS2Mode, address: $settings.dev9DNS2)
+                dnsRow("DNS1", id: "settings.network.dns1", mode: Bindable(settings.network).dev9DNS1Mode, address: Bindable(settings.network).dev9DNS1)
+                dnsRow("DNS2", id: "settings.network.dns2", mode: Bindable(settings.network).dev9DNS2Mode, address: Bindable(settings.network).dev9DNS2)
             }
 
             Section(settings.localized("Internal DNS")) {
@@ -210,9 +210,9 @@ struct NetworkSettingsView: View {
     private func loadNetworkAdaptersIfNeeded() {
         guard networkAdapters.isEmpty else { return }
         var loaded = ARMSX2Bridge.dev9NetworkAdapters()
-        if !settings.dev9EthDevice.isEmpty,
-           !loaded.contains(settings.dev9EthDevice) {
-            loaded.insert(settings.dev9EthDevice, at: 0)
+        if !settings.network.dev9EthDevice.isEmpty,
+           !loaded.contains(settings.network.dev9EthDevice) {
+            loaded.insert(settings.network.dev9EthDevice, at: 0)
         }
         networkAdapters = loaded
     }

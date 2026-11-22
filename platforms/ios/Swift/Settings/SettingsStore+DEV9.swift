@@ -3,7 +3,7 @@
 
 import Foundation
 
-extension SettingsStore {
+extension SettingsStore.Network {
     /// Keeps the multi-gigabyte DEV9 HDD image, but not the rest of inis, out of iCloud backup.
     /// Resolved as the core's GetHDDPath does, and run at launch as well as on enable, since
     /// players copy the image in themselves and the core never creates it on iOS.
@@ -30,7 +30,7 @@ extension SettingsStore {
     }
 }
 
-extension SettingsStore {
+extension SettingsStore.Network {
     static let _dev9HddFileConfig = Setting<String>(
         section: "DEV9/Hdd", key: "HddFile", default: "DEV9hdd.raw",
         codec: .string)

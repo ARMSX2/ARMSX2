@@ -43,6 +43,7 @@ STORE_FILES = [
     "SettingsStore.swift",
     "SettingsStoreAppearance.swift",
     "SettingsStoreController.swift",
+    "SettingsStoreNetwork.swift",
 ]
 
 # Store methods an init may call after its closing load, when every assignment goes
@@ -63,8 +64,10 @@ DECL = re.compile(
     r"^(?P<indent> *)(?:@\w+\s+|(?:private|fileprivate|internal|public)(?:\(set\))?\s+"
     r"|(?:lazy|weak|unowned|nonisolated)\s+)*(?P<kind>let|var)\s+(?P<name>[A-Za-z_]\w*)(?P<rest>.*)$")
 ASSIGN = re.compile(
-    r"(?m)^[ \t]*(?:self[ \t]*\.[ \t]*)?(?P<name>[A-Za-z_]\w*)(?:[ \t]*\.[ \t]*\w+)*"
+    r"(?m)^[ \t]*(?:self[ \t]*\.[ \t]*)?(?P<name>[A-Za-z_]\w*)(?P<chain>(?:[ \t]*\.[ \t]*\w+)*)"
     r"[ \t]*(?:[-+*/%|&^]|<<|>>)?=(?!=)")
+EXTENSION = re.compile(r"(?m)^[ \t]*(?:@\w+\s+)*(?:(?:private|fileprivate|internal|public)\s+)?"
+                       r"extension\s+SettingsStore\b")
 LOCAL = re.compile(r"\b(?:let|var)\s+(?P<name>[A-Za-z_]\w*)")
 LOCAL_TUPLE = re.compile(r"\b(?:let|var|for)\s*\((?P<names>[\w\s,]+)\)")
 FUNC = re.compile(r"(?m)^\s*(?:@\w+\s+)*(?:(?:private|fileprivate|internal|public|static|"
@@ -115,6 +118,15 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
                 self.store_files[name] = path.read_text(encoding="utf-8")
         self.settings_store = self.store_files["SettingsStore.swift"]
         self.frame_pacing = self.store_files["SettingsStore+FramePacing.swift"]
+        # Store extensions that live outside the glob still hold store methods an init can call.
+        self.outside_extensions = {}
+        for path in SWIFT.rglob("*.swift"):
+            if path.name in STORE_FILES:
+                continue
+            src = path.read_text(encoding="utf-8")
+            blocks = [block(src[m.start():], "extension") for m in EXTENSION.finditer(src)]
+            if blocks:
+                self.outside_extensions[path.name] = "\n".join(blocks)
         self.ftdrc = self.FTDRC.read_text(encoding="utf-8")
         self.vpad_skin_lib = self.VPAD_SKIN_LIB.read_text(encoding="utf-8")
 
@@ -130,12 +142,15 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
         A callee with no Swift body in the store files or the two singletons is skipped.
         """
         owner_files = [(name[:-len(".swift")], src) for name, src in self.store_files.items()]
+        owner_files += [(name[:-len(".swift")], src) for name, src in self.outside_extensions.items()]
         owner_files += [
             ("FrameTimeDynamicResolutionController", self.ftdrc),
             ("VPadSkinLibraryStore", self.vpad_skin_lib),
         ]
         callers = [
             (re.compile(r"\bSelf\s*\.\s*([a-zA-Z_]\w*)\s*\("), lambda m: "Self"),
+            # A sub-store has to spell a parent static out; the lowercase start skips nested types.
+            (re.compile(r"\bSettingsStore\s*\.\s*([a-z_]\w*)\s*\("), lambda m: "SettingsStore"),
             (re.compile(r"\b([A-Z]\w*)\s*\.\s*shared\s*\.\s*([a-zA-Z_]\w*)\s*\("),
              lambda m: "%s.shared" % m.group(1)),
             (re.compile(r"\b(?:Self\s*\.\s*)?(Appearance|Controller|Network)\s*\.\s*([a-zA-Z_]\w*)\s*\("),
@@ -239,11 +254,13 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
         return body, "\n".join(deferred)
 
     def _store_funcs(self):
-        return {m.group("name") for src in self.store_files.values() for m in FUNC.finditer(src)}
+        sources = list(self.store_files.values()) + list(self.outside_extensions.values())
+        return {m.group("name") for src in sources for m in FUNC.finditer(src)}
 
     def _stored_assignments(self, body, stored):
         return [m for m in ASSIGN.finditer(body)
-                if m.group("name") in stored and m.group("name") != "suppressINIWrites"]
+                if m.group("name") in stored and not m.group("chain").strip()
+                and m.group("name") != "suppressINIWrites"]
 
     def test_store_files_are_pinned(self):
         """The glob has to find exactly the pinned files, each once."""
@@ -397,6 +414,10 @@ class TestIosSettingsStoreInitNoSharedAccess(unittest.TestCase):
                 for m in assignments:
                     target = m.group("name")
                     if target in stored:
+                        self.assertFalse(
+                            m.group("chain").strip(),
+                            "%s init writes `%s%s`, which goes through that property's setter"
+                            % (name, target, m.group("chain").replace(" ", "")))
                         continue
                     earlier = {n for pos, n in declared if pos < m.start()}
                     self.assertIn(
