@@ -277,8 +277,9 @@ private struct PadLayoutPresetLibrary: Codable {
     }
 }
 
+@MainActor
 @Observable
-final class PadLayoutPresetStore: @unchecked Sendable {
+final class PadLayoutPresetStore {
     static let shared = PadLayoutPresetStore()
     static let schemaVersion = 2
 

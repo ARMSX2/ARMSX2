@@ -4,7 +4,7 @@
 import Foundation
 
 extension VPadSkinLibraryStore {
-    static func canonicalSkinFileName(forImportPath path: String) -> String? {
+    nonisolated static func canonicalSkinFileName(forImportPath path: String) -> String? {
         let url = URL(fileURLWithPath: path)
         let exact = url.lastPathComponent.lowercased()
         let expected = Set([

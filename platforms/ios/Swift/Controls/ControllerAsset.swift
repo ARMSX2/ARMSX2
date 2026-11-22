@@ -8,6 +8,7 @@ private final class ControllerAssetImageCache: @unchecked Sendable {
     let images = NSCache<NSString, UIImage>()
 }
 
+@MainActor
 enum ControllerAsset {
     private static let imageCache = ControllerAssetImageCache()
     private static let edgeToEdgePortraitAspectRatio: CGFloat = 1.55

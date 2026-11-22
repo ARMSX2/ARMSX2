@@ -106,7 +106,7 @@ enum VirtualPadSkin: Int, CaseIterable, Identifiable {
         }
     }
 
-    static func customSkinDirectory(create: Bool = false) -> URL? {
+    @MainActor static func customSkinDirectory(create: Bool = false) -> URL? {
         if let selectedDirectory = VPadSkinLibraryStore.shared.selectedImportedAssetsDirectory() {
             if create {
                 try? FileManager.default.createDirectory(at: selectedDirectory, withIntermediateDirectories: true)

@@ -85,7 +85,7 @@ struct SkinManifestRuntimeLayout {
     /// Returns nil for any non-v2 descriptor or parse failure (legacy fallback).
     /// Pure: device/screen-class detection is done by the caller so this stays
     /// free of UIKit singletons.
-    static func make(
+    @MainActor static func make(
         for descriptor: VPadSkinDescriptor,
         isLandscape: Bool,
         device: SkinDevice,
