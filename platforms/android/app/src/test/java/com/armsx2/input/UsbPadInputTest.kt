@@ -2,6 +2,7 @@ package com.armsx2.input
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,6 +45,24 @@ class UsbPadInputTest {
             assertTrue(range in 0..32767)
             assertEquals(value, (range / 32767f * 255f).toInt())
         }
+    }
+
+    @Test fun unchangedReportIsRecognisedSoTheReaderDropsIt() {
+        val bytes = neutral().apply { this[3] = 0x40; this[24] = 90 }   // cross at pressure 90
+        val first = UsbPadInput.decodeDualShock3(bytes)
+        assertTrue(UsbPadInput.decodeDualShock3(bytes.copyOf()).sameAs(first))
+        assertFalse(first.sameAs(null))
+        // Each of buttons, a stick and pressure alone counts as a change.
+        assertFalse(UsbPadInput.decodeDualShock3(bytes.copyOf().apply { this[3] = 0x60 }).sameAs(first))
+        assertFalse(UsbPadInput.decodeDualShock3(bytes.copyOf().apply { this[6] = 0 }).sameAs(first))
+        assertFalse(UsbPadInput.decodeDualShock3(bytes.copyOf().apply { this[24] = 91 }).sameAs(first))
+        // Sensor bytes past the pressure block are not part of the report.
+        assertTrue(UsbPadInput.decodeDualShock3(bytes.copyOf().apply { this[41] = 7 }).sameAs(first))
+        // DualShock 4 and DualSense reports carry no pressure.
+        val ds4 = UsbPadInput.Report(1, intArrayOf(128, 128, 128, 128, 0, 0))
+        assertTrue(UsbPadInput.Report(1, intArrayOf(128, 128, 128, 128, 0, 0)).sameAs(ds4))
+        assertFalse(UsbPadInput.Report(1, intArrayOf(128, 128, 128, 128, 0, 40)).sameAs(ds4))
+        assertFalse(first.sameAs(ds4))
     }
 
     @Test fun heldButtonWithZeroPressureIsSentAsLightestPress() {

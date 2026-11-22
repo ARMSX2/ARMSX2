@@ -14,9 +14,17 @@ import com.armsx2.runtime.MainActivityRuntime
  */
 internal class UsbPadInput(port: Int) {
     private val deviceId = nextDeviceId--
-    class Report(val buttons: Int, val axes: IntArray, val pressure: IntArray? = null)
+    class Report(val buttons: Int, val axes: IntArray, val pressure: IntArray? = null) {
+        /** True when [other] has the same buttons, axes and pressure. */
+        fun sameAs(other: Report?): Boolean = other != null && buttons == other.buttons &&
+            axes.contentEquals(other.axes) && pressure.contentEquals(other.pressure)
+    }
 
     @Volatile private var active = true
+    // The last report posted to the main thread. Compared on the reader thread, so a pad that
+    // keeps sending the same report costs no main-thread work. release() clears it, so the
+    // next report re-sends whatever is still held.
+    @Volatile private var posted: Report? = null
     private var previous: Report? = null
     private var current: Report? = null
 
@@ -25,7 +33,10 @@ internal class UsbPadInput(port: Int) {
         PadRouter.setSyntheticPad(deviceId, port)
     }
 
+    /** Called on the pad's reader thread for every decoded report. */
     fun submit(report: Report) {
+        if (!active || report.sameAs(posted)) return
+        posted = report
         main.post {
             if (!active) return@post
             val activity = MainActivityRuntime.instance ?: return@post
@@ -73,6 +84,7 @@ internal class UsbPadInput(port: Int) {
         }
         current = null
         previous = null
+        posted = null
     }
 
     private fun sendKey(activity: MainActivityRuntime, keyCode: Int, down: Boolean) {
