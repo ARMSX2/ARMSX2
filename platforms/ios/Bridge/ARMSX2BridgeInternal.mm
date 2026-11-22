@@ -112,8 +112,6 @@ std::string ARMSX2HeldPath(const std::string& path)
     return path + ".held";
 }
 
-static NSString* const ARMSX2ExternalGameDirectoriesDefaultsKey = @"ARMSX2iOSExternalGameDirectories";
-
 static BOOL ARMSX2IsPathInsideDirectory(NSString* path, NSString* directory)
 {
 	if (path.length == 0 || directory.length == 0)
@@ -179,7 +177,7 @@ static void ARMSX2RememberExternalGameAccess(NSURL* url)
 
 NSArray<NSDictionary*>* ARMSX2ExternalGameDirectoryRecords()
 {
-	id rawRecords = [[NSUserDefaults standardUserDefaults] objectForKey:ARMSX2ExternalGameDirectoriesDefaultsKey];
+	id rawRecords = [[NSUserDefaults standardUserDefaults] objectForKey:ARMSX2iOSExternalGameDirectories];
 	if (![rawRecords isKindOfClass:NSArray.class]) {
 		if (rawRecords)
 			NSLog(@"[ARMSX2Bridge] External game folder records ignored unexpectedClass=%@", [rawRecords class]);

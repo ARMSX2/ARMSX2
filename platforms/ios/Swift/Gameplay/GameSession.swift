@@ -61,7 +61,6 @@ private enum EmulationOnlyNativeReleaseFlag {
 @Observable
 final class GameSession {
     static let shared = GameSession()
-    nonisolated static let emulationOnlyStartupReadyNotification = Notification.Name("ARMSX2iOSEmulationOnlyStartupReady")
 
     var runningGameName: String? = nil
     private(set) var vmShutdownPending = false
@@ -123,7 +122,7 @@ final class GameSession {
             "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", defaultValue: false
         )
         shutdownObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ARMSX2iOSVMDidShutdown"),
+            forName: .ARMSX2iOSVMDidShutdown,
             object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated {
             self?.reset()
@@ -145,7 +144,7 @@ final class GameSession {
 
         // Synchronize SwiftUI state when the native auto-boot path starts a VM.
         autoBootObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ARMSX2iOSAutoBootDidStart"),
+            forName: .ARMSX2iOSAutoBootDidStart,
             object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated {
             self?.isEmulationOnlyMode = false
@@ -159,7 +158,7 @@ final class GameSession {
         } }
 
         emulationOnlyStartupReadyObserver = NotificationCenter.default.addObserver(
-            forName: Self.emulationOnlyStartupReadyNotification,
+            forName: .ARMSX2iOSEmulationOnlyStartupReady,
             object: nil, queue: .main
         ) { [weak self] _ in MainActor.assumeIsolated {
             self?.emulationOnlyStartupReady = true
@@ -364,7 +363,7 @@ final class GameSession {
         restoreMenuSystemChrome()
         currentScreen = .menu
         // Notify the UIKit host to restore the menu presentation.
-        NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSReturnToMenu"), object: nil)
+        NotificationCenter.default.post(name: .ARMSX2iOSReturnToMenu, object: nil)
     }
 
     func returnToGame() {
@@ -372,7 +371,7 @@ final class GameSession {
             cancelGameplayLaunchTransition()
             releaseMenuBackgroundResourcesForGameplay()
             // Make the hosting surface transparent before revealing Metal output.
-            NotificationCenter.default.post(name: NSNotification.Name("ARMSX2iOSEnterGameScreen"), object: nil)
+            NotificationCenter.default.post(name: .ARMSX2iOSEnterGameScreen, object: nil)
             currentScreen = .playing
             ARMSX2Bridge.setVMPaused(false)
         }

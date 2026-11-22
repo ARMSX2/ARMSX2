@@ -533,7 +533,7 @@ struct EmulatorSettingsView: View {
         .onAppear {
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievementsStateChanged)) { _ in
             hardcoreBlocksCheats = PatchStore.hardcoreBlocksPnachContent()
         }
     }

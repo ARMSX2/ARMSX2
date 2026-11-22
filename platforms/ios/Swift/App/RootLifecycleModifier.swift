@@ -108,7 +108,7 @@ struct RootLifecycleModifier: ViewModifier {
         }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: Notification.Name("ARMSX2iOSIdleVMPrewarmResolved")
+                for: .ARMSX2iOSIdleVMPrewarmResolved
             )
         ) { _ in
             settings.appearance.restoreDefaultAppearanceAfterAutomaticNoJITIfNeeded(
@@ -117,7 +117,7 @@ struct RootLifecycleModifier: ViewModifier {
         }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: Notification.Name("ARMSX2iOSVMDidShutdown")
+                for: .ARMSX2iOSVMDidShutdown
             )
         ) { _ in
             MenuAudioPackManager.shared.emulationAudioDidStop()

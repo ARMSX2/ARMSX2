@@ -281,7 +281,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2GraphicsHackStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2GraphicsHackStateChanged object:nil];
     });
 }
 

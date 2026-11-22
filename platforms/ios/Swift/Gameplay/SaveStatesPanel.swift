@@ -219,10 +219,10 @@ struct SaveStatesPanel: View {
             )
         }
         .task { await refresh() }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2iOSRuntimeMenuStateChanged"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2iOSRuntimeMenuStateChanged)) { _ in
             Task { await refresh() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievementsStateChanged)) { _ in
             Task { await refresh() }
         }
         .environment(\.controllerTextAppearance, settings.appearance.controllerQuickMenuTextAppearance)

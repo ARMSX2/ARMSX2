@@ -31,6 +31,7 @@
 
 #include "IconsFontAwesome.h"
 #include "IOSRuntime.h"
+#import "ARMSX2BridgeKeys.h"
 #import "SceneDelegateInternal.h"
 
 // JIT keepalive: every 12 seconds while the VM is idle, DarwinMisc::ValidateJITAlive()
@@ -67,7 +68,7 @@ static void ARMSX2ResolveIdleVMPrewarm()
 
     dispatch_async(dispatch_get_main_queue(), ^{
         [[NSNotificationCenter defaultCenter]
-            postNotificationName:@"ARMSX2iOSIdleVMPrewarmResolved" object:nil];
+            postNotificationName:ARMSX2iOSIdleVMPrewarmResolved object:nil];
     });
 }
 
@@ -297,7 +298,7 @@ static void ARMSX2StartJITKeepalive()
                         "JIT memory setup took too long. This is a known issue with the Universal TXM "
                         "protocol on iOS 26. Try Settings → Emulator → JIT Script → Legacy, or relaunch "
                         "via StikDebug.");
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSReturnToMenu" object:nil];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSReturnToMenu object:nil];
                 });
                 ARMSX2ResolveIdleVMPrewarm();
                 std::lock_guard<std::mutex> lk(s_vmMutex);
@@ -457,7 +458,7 @@ static void ARMSX2StartJITKeepalive()
                 Host::ReportErrorAsync("BIOS Error", "Validation failed.");
                 s_vmThreadActive.store(false);
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSVMDidShutdown object:nil];
                 });
                 continue; // back to wait loop
             }
@@ -561,7 +562,7 @@ static void ARMSX2StartJITKeepalive()
             s_requestVMStop.store(false);
             Console.WriteLn("[VM] VM Thread: shutdown complete, posting notification");
             dispatch_async(dispatch_get_main_queue(), ^{
-                [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSVMDidShutdown" object:nil];
+                [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSVMDidShutdown object:nil];
             });
         } // end while(true) boot loop
     });

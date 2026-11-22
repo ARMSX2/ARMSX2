@@ -620,7 +620,7 @@ struct GameListView: View {
             NotificationCenter.default.publisher(for: InitialContentBootstrap.didChangeNotification)
         ) { _ in library.handleInitialContentDidChange() }
         .onReceive(
-            NotificationCenter.default.publisher(for: NSNotification.Name("ARMSX2iOSReturnToMenu"))
+            NotificationCenter.default.publisher(for: .ARMSX2iOSReturnToMenu)
         ) { _ in
             pushControllerContext()
             controller.handleReturnToMenu()

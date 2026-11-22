@@ -80,7 +80,7 @@ struct SpeedControlPanel: View {
             .onAppear {
                 refreshRuntimeState()
             }
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievementsStateChanged)) { _ in
                 refreshRuntimeState()
             }
         }

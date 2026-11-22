@@ -324,7 +324,7 @@ struct VirtualPadSettingsView: View {
         .onAppear(perform: refreshHardcoreAutomaticFireRestriction)
         .onReceive(
             NotificationCenter.default.publisher(
-                for: Notification.Name("ARMSX2RetroAchievementsStateChanged")
+                for: .ARMSX2RetroAchievementsStateChanged
             )
         ) { _ in
             refreshHardcoreAutomaticFireRestriction()

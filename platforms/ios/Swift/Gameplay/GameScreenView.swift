@@ -6,9 +6,6 @@ import UIKit
 import GameController
 import Observation
 
-private let runtimeMenuStateChangedNotification = Notification.Name("ARMSX2iOSRuntimeMenuStateChanged")
-let retroAchievementsToastNotification = Notification.Name("ARMSX2RetroAchievementsNotification")
-
 private struct GameScreenSizePreferenceKey: PreferenceKey {
     static let defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
@@ -309,12 +306,12 @@ struct GameScreenView: View {
                 enterEmulationOnlyModeIfReady()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: runtimeMenuStateChangedNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2iOSRuntimeMenuStateChanged)) { _ in
             refreshRuntimeMenuState()
         }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: AppState.emulationOnlyResourcesReleasedNotification
+                for: .ARMSX2iOSEmulationOnlyResourcesReleased
             )
         ) { _ in
             finishEmulationOnlyActivation()
@@ -329,7 +326,7 @@ struct GameScreenView: View {
         .onReceive(NotificationCenter.default.publisher(for: gameplaySurfaceTapNotification)) { _ in
             revealMenuButtonBriefly()
         }
-        .onReceive(NotificationCenter.default.publisher(for: retroAchievementsToastNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievements)) { _ in
             feedback.consumePendingRetroAchievementsToast()
         }
         .persistentSystemOverlays(.hidden)

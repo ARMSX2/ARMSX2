@@ -3,8 +3,6 @@
 
 import SwiftUI
 
-private let retroAchievementsNotification = Notification.Name("ARMSX2RetroAchievementsStateChanged")
-
 struct RetroAchievementsSettingsView: View {
     @State private var settings = SettingsStore.shared
     @Environment(\.menuControllerInputRouter) private var controllerInput
@@ -249,7 +247,7 @@ struct RetroAchievementsSettingsView: View {
         .navigationTitle(settings.localized("RetroAchievements"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: refresh)
-        .onReceive(NotificationCenter.default.publisher(for: retroAchievementsNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievementsStateChanged)) { _ in
             refresh()
         }
         .sheet(isPresented: $showingLogin) {

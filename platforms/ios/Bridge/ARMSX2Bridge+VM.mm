@@ -145,7 +145,7 @@
         VMManager::ReleaseNonEssentialRuntimeResources(static_cast<u32>(releaseFlags));
         dispatch_async(dispatch_get_main_queue(), ^{
             [[NSNotificationCenter defaultCenter]
-                postNotificationName:@"ARMSX2iOSEmulationOnlyResourcesReleased"
+                postNotificationName:ARMSX2iOSEmulationOnlyResourcesReleased
                 object:nil];
         });
     }, false);
@@ -388,7 +388,7 @@ extern "C" void ARMSX2_ApplyEffectivePresentFPSCap(void)
 		(!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
 		EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
 	std::fflush(stderr);
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot"
+    [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSRequestVMBoot
         object:nil userInfo:@{@"loadLastSaveState": @(loadLastSaveState)}];
 }
 

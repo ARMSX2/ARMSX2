@@ -271,7 +271,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     // Listen for VM boot request from SwiftUI
     // queue:nil = synchronous delivery, so background colors are set BEFORE
     // SwiftUI re-renders the game overlay (avoids gray flash)
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ARMSX2iOSRequestVMBoot"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSRequestVMBoot
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
@@ -298,21 +298,21 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     // SwiftUI RootView handles menu background via Color(systemGroupedBackground).ignoresSafeArea().
     // rootVC stays black after first boot — eliminates white flash during VM restart.
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ARMSX2iOSVMDidShutdown"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSVMDidShutdown
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
         // No rootVC background change — SwiftUI handles menu bg
     }];
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ARMSX2iOSReturnToMenu"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSReturnToMenu
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
         // No rootVC background change — SwiftUI handles menu bg
     }];
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:@"ARMSX2iOSEnterGameScreen"
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSEnterGameScreen
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
@@ -324,15 +324,15 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     if (getenv("ARMSX2_AUTO_BOOT") && atoi(getenv("ARMSX2_AUTO_BOOT")) == 1) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             Console.WriteLn("[AutoBoot] @@AUTO_BOOT@@ posting ARMSX2iOSRequestVMBoot + AutoBootDidStart");
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot" object:nil];
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSAutoBootDidStart" object:nil];
+            [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSRequestVMBoot object:nil];
+            [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSAutoBootDidStart object:nil];
         });
     }
 #endif // DEBUG || TARGET_OS_SIMULATOR — AUTO_BOOT
     // ps2autotests: auto-boot VM when ELF env var is set (always enabled)
     if (getenv("ARMSX2_BOOT_ELF")) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRequestVMBoot" object:nil];
+            [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSRequestVMBoot object:nil];
         });
     }
 

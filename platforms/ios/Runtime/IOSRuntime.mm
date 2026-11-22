@@ -81,6 +81,7 @@ struct rc_client_t;
 #include "common/Darwin/DarwinMisc.h"
 
 #include "IOSRuntime.h"
+#import "ARMSX2BridgeKeys.h"
 #import "ARMSX2GameView.h"
 
 // Game render view — frame-based layout, portrait=50% / landscape=full safe area
@@ -189,7 +190,7 @@ void ARMSX2DiscardCPUThreadTasks()
 extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2iOSRuntimeMenuStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2iOSRuntimeMenuStateChanged object:nil];
     });
 }
 
@@ -199,7 +200,7 @@ extern "C" void ARMSX2_PostEmulationOnlyStartupReady(void)
         if (VMManager::IsEmulationOnlyMode())
             return;
         [[NSNotificationCenter defaultCenter]
-            postNotificationName:@"ARMSX2iOSEmulationOnlyStartupReady"
+            postNotificationName:ARMSX2iOSEmulationOnlyStartupReady
             object:nil];
     });
 }

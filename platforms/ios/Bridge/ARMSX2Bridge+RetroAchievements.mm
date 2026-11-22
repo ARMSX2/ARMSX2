@@ -13,7 +13,7 @@
 extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void)
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2RetroAchievementsStateChanged" object:nil];
+        [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2RetroAchievementsStateChanged object:nil];
     });
 }
 
@@ -43,7 +43,7 @@ extern "C" void ARMSX2_PostRetroAchievementsNotification(const char* title, cons
         toast.duration = durationNumber != nil ? durationNumber.doubleValue : 0.0;
         s_pendingRetroAchievementsNotification = toast;
 
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"ARMSX2RetroAchievementsNotification"
+        [[NSNotificationCenter defaultCenter] postNotificationName:ARMSX2RetroAchievementsNotification
                                                            object:nil];
     });
 }
