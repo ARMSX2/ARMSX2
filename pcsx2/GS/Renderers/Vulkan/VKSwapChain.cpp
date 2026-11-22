@@ -491,6 +491,18 @@ bool VKSwapChain::IsPresentStatsEnabled()
 	return s_stats_enabled.load(std::memory_order_relaxed);
 }
 
+static std::atomic<u64> s_host_presents{0};
+
+void VKSwapChain::NoteHostPresent()
+{
+	s_host_presents.fetch_add(1, std::memory_order_relaxed);
+}
+
+u64 VKSwapChain::GetHostPresentCount()
+{
+	return s_host_presents.load(std::memory_order_relaxed);
+}
+
 void VKSwapChain::NoteAcquire(double ms, VkResult res)
 {
 	if (!s_stats_enabled.load(std::memory_order_relaxed))

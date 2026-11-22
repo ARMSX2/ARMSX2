@@ -163,4 +163,8 @@ namespace GSZeroFG
 	/// presents (Real and generated frames per second, over half-second windows), "starting" until
 	/// it takes the window, "off" after it failed; empty while switched off. GS thread.
 	std::string GetOverlayText();
+
+	/// vkQueuePresentKHR calls device B's presenter made that were accepted (0 without the
+	/// presenter); the overlay's "Vulkan" rate adds them to the GS device's own. Any thread.
+	u64 PresenterPresentCount();
 } // namespace GSZeroFG

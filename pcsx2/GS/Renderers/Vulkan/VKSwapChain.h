@@ -46,6 +46,12 @@ public:
 	static void NoteAcquire(double ms, VkResult res);
 	static void NotePresent(double ms, VkResult res);
 
+	// Always on, unlike the stats above: one tick per vkQueuePresentKHR the GS device accepted
+	// (VK_SUCCESS or VK_SUBOPTIMAL_KHR), its own present and LSFG's generated and real ones. The
+	// overlay's "Vulkan" rate adds ZeroFG's device B presents to it (GSDeviceVK.cpp).
+	static void NoteHostPresent();
+	static u64 GetHostPresentCount();
+
 	// Creates a vulkan-renderable surface for the specified window handle.
 	static VkSurfaceKHR CreateVulkanSurface(VkInstance instance, VkPhysicalDevice physical_device, WindowInfo* wi);
 

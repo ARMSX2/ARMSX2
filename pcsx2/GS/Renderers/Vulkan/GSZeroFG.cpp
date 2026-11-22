@@ -3400,3 +3400,16 @@ namespace GSZeroFG
 } // namespace GSZeroFG
 
 #endif
+
+namespace GSZeroFG
+{
+	u64 PresenterPresentCount()
+	{
+#if defined(ARMSX2_HAS_ZEROFG) && ZEROFG_WITH_HOST_KIT
+		// Device B's presenter ticks it on every vkQueuePresentKHR it makes that is accepted.
+		return xe::GetHostPresentSubmissionCount();
+#else
+		return 0;
+#endif
+	}
+} // namespace GSZeroFG

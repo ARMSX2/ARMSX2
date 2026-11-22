@@ -135,6 +135,11 @@ namespace GSZeroFG
 {
 	std::string GetOverlayText();
 }
+// And the app's accepted vkQueuePresentKHR calls per second (GSDeviceVK.cpp).
+namespace GSVulkanPresents
+{
+	std::string RateText();
+}
 #endif
 
 /// ZeroFG's line, or empty while it is off: see GSZeroFG::GetOverlayText.
@@ -142,6 +147,17 @@ static std::string ZeroFGStatusText()
 {
 #ifdef ENABLE_VULKAN
 	return GSZeroFG::GetOverlayText();
+#else
+	return {};
+#endif
+}
+
+/// "Vulkan N/s", the presents that really went to the display, for the frame generation lines:
+/// the same count for LSFG and ZeroFG, so the two compare on one measure. Empty without Vulkan.
+static std::string VulkanPresentText()
+{
+#ifdef ENABLE_VULKAN
+	return GSVulkanPresents::RateText();
 #else
 	return {};
 #endif
@@ -328,8 +344,10 @@ __ri void ImGuiManager::DrawPerformanceOverlay(float& position_y, float scale, f
 	// Not cached behind the 100ms refresh like the lines below it. It is already built once per
 	// frame for the bit above, and caching it would leave the line on screen for up to a refresh
 	// after frame generation was switched off.
-	s_lsfg_line.assign(lsfg_status);
-	s_zerofg_line.assign(zerofg_line ? zerofg_status : std::string());
+	// Built every frame while a frame generation line shows, so its half-second windows keep time.
+	const std::string vulkan = (lsfg_line || zerofg_line) ? VulkanPresentText() : std::string();
+	s_lsfg_line.assign(lsfg_line && !vulkan.empty() ? fmt::format("{} | {}", lsfg_status, vulkan) : lsfg_status);
+	s_zerofg_line.assign(zerofg_line ? (vulkan.empty() ? zerofg_status : fmt::format("{} | {}", zerofg_status, vulkan)) : std::string());
 
 	const float shadow_offset = std::ceil(scale);
 

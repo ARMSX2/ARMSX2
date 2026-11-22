@@ -2272,6 +2272,8 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 				Common::Timer::ConvertValueToMilliseconds(Common::Timer::GetCurrentValue() - t_present_start);
 			VKSwapChain::NotePresent(present_elapsed_ms, res);
 		}
+		if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR)
+			VKSwapChain::NoteHostPresent();
 		if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR)
 		{
 			// VK_ERROR_OUT_OF_DATE_KHR is not fatal, just means we need to recreate our swap chain.
@@ -12325,3 +12327,31 @@ void GSDeviceVK::RemotePlayRelease(bool device_idle)
 }
 
 #endif // __ANDROID__
+
+namespace GSVulkanPresents
+{
+	/// The overlay's "Vulkan N/s": every accepted vkQueuePresentKHR the app makes, the GS device's
+	/// own and LSFG's (VKSwapChain::NoteHostPresent) plus ZeroFG's device B presenter, over
+	/// half-second windows, so LSFG and ZeroFG are measured the same way. GS thread.
+	std::string RateText()
+	{
+		static u64 last_ns = 0;
+		static u64 last_count = 0;
+		static float rate = 0.0f;
+		const u64 now = static_cast<u64>(Common::Timer::ConvertValueToNanoseconds(Common::Timer::GetCurrentValue()));
+		const u64 count = VKSwapChain::GetHostPresentCount() + GSZeroFG::PresenterPresentCount();
+		if (!last_ns || now - last_ns > 5'000'000'000ull)
+		{
+			last_ns = now;
+			last_count = count;
+			rate = 0.0f;
+		}
+		else if (now - last_ns >= 500'000'000ull)
+		{
+			rate = static_cast<float>(count - last_count) * 1e9f / static_cast<float>(now - last_ns);
+			last_ns = now;
+			last_count = count;
+		}
+		return fmt::format("Vulkan {:.0f}/s", rate);
+	}
+} // namespace GSVulkanPresents

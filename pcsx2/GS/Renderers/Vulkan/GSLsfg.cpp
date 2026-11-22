@@ -1343,6 +1343,7 @@ namespace GSLsfg
 			const VkResult pres = vkQueuePresentKHR(present_queue, &present);
 			if (pres != VK_SUCCESS && pres != VK_SUBOPTIMAL_KHR)
 				break;
+			VKSwapChain::NoteHostPresent();
 			presented_generated++;
 		}
 
@@ -1350,7 +1351,9 @@ namespace GSLsfg
 		const VkPresentInfoKHR present = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, nullptr, 1,
 			&slot.done_sems[acquired], 1, swap_chain->GetSwapChainPtr(), &real_index, nullptr};
 		swap_chain->ResetImageAcquireResult();
-		vkQueuePresentKHR(present_queue, &present);
+		const VkResult real_pres = vkQueuePresentKHR(present_queue, &present);
+		if (real_pres == VK_SUCCESS || real_pres == VK_SUBOPTIMAL_KHR)
+			VKSwapChain::NoteHostPresent();
 		NoteFramesDisplayed(1, presented_generated);
 		return true;
 	}
