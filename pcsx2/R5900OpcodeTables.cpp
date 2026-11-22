@@ -123,6 +123,14 @@ namespace R5900
 			static const int Branch = 11;
 			static const int CopDefault = 7;
 
+			// The integer ALU ops, shifts, LUI, SLT and NOP: 1 cycle, measured
+			// on an SCPH-30001 for every one, the 64-bit forms included. A
+			// chain through one register costs 1 per op; independent ones cost
+			// 0.5, two issuing together on the two integer pipelines. The
+			// charge is the chain's cost, since the model has no pairing.
+			// The table charged 1.125.
+			static const int Alu = 1*8;
+
 			static const int Mult = 2*8;
 
 			// DIV, DIVU, DIV1 and DIVU1: 37 cycles, measured on an SCPH-30001.
@@ -261,48 +269,48 @@ namespace R5900
 		MakeOpcode( DIV1, Div, 0 );
 		MakeOpcode( DIVU1, Div, 0 );
 
-		MakeOpcode( ADDI,   Default, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( ADDIU,  Default, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( DADDI,  Default, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADDIU, Default, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADD,   Default, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DADDU,  Default, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DSUB,   Default, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( DSUBU,  Default, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( ADD,    Default, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( ADDU,   Default, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( SUB,    Default, IS_ALU|ALUTYPE_SUB );
-		MakeOpcode( SUBU,   Default, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( ADDI,   Alu, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( ADDIU,  Alu, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( DADDI,  Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADDIU, Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADD,   Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DADDU,  Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DSUB,   Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( DSUBU,  Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( ADD,    Alu, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( ADDU,   Alu, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( SUB,    Alu, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( SUBU,   Alu, IS_ALU|ALUTYPE_SUB );
 
-		MakeOpcode( ANDI, Default, 0 );
-		MakeOpcode( ORI, Default, 0 );
-		MakeOpcode( XORI, Default, 0 );
-		MakeOpcode( AND, Default, 0 );
-		MakeOpcode( OR, Default, 0 );
-		MakeOpcode( XOR, Default, 0 );
-		MakeOpcode( NOR, Default, 0 );
-		MakeOpcode( SLTI, Default, 0 );
-		MakeOpcode( SLTIU, Default, 0 );
-		MakeOpcode( SLT, Default, 0 );
-		MakeOpcode( SLTU, Default, 0 );
-		MakeOpcode( LUI, Default, 0 );
-		MakeOpcode( SLL, Default, 0 );
-		MakeOpcode( SRL, Default, 0 );
-		MakeOpcode( SRA, Default, 0 );
-		MakeOpcode( SLLV, Default, 0 );
-		MakeOpcode( SRLV, Default, 0 );
-		MakeOpcode( SRAV, Default, 0 );
+		MakeOpcode( ANDI, Alu, 0 );
+		MakeOpcode( ORI, Alu, 0 );
+		MakeOpcode( XORI, Alu, 0 );
+		MakeOpcode( AND, Alu, 0 );
+		MakeOpcode( OR, Alu, 0 );
+		MakeOpcode( XOR, Alu, 0 );
+		MakeOpcode( NOR, Alu, 0 );
+		MakeOpcode( SLTI, Alu, 0 );
+		MakeOpcode( SLTIU, Alu, 0 );
+		MakeOpcode( SLT, Alu, 0 );
+		MakeOpcode( SLTU, Alu, 0 );
+		MakeOpcode( LUI, Alu, 0 );
+		MakeOpcode( SLL, Alu, 0 );
+		MakeOpcode( SRL, Alu, 0 );
+		MakeOpcode( SRA, Alu, 0 );
+		MakeOpcode( SLLV, Alu, 0 );
+		MakeOpcode( SRLV, Alu, 0 );
+		MakeOpcode( SRAV, Alu, 0 );
 		MakeOpcode( MOVZ, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
 		MakeOpcode( MOVN, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
-		MakeOpcode( DSLLV, Default, 0 );
-		MakeOpcode( DSRLV, Default, 0 );
-		MakeOpcode( DSRAV, Default, 0 );
-		MakeOpcode( DSLL, Default, 0 );
-		MakeOpcode( DSRL, Default, 0 );
-		MakeOpcode( DSRA, Default, 0 );
-		MakeOpcode( DSLL32, Default, 0 );
-		MakeOpcode( DSRL32, Default, 0 );
-		MakeOpcode( DSRA32, Default, 0 );
+		MakeOpcode( DSLLV, Alu, 0 );
+		MakeOpcode( DSRLV, Alu, 0 );
+		MakeOpcode( DSRAV, Alu, 0 );
+		MakeOpcode( DSLL, Alu, 0 );
+		MakeOpcode( DSRL, Alu, 0 );
+		MakeOpcode( DSRA, Alu, 0 );
+		MakeOpcode( DSLL32, Alu, 0 );
+		MakeOpcode( DSRL32, Alu, 0 );
+		MakeOpcode( DSRA32, Alu, 0 );
 
 		MakeOpcode( MFHI, Default, 0 );
 		MakeOpcode( MTHI, Default, 0 );

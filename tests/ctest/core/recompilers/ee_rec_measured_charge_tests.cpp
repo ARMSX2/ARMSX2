@@ -8,11 +8,13 @@
 // Every guest instruction is charged a fixed amount from the opcode table
 // (R5900OpcodeTables.cpp, in eighths of a cycle): the interpreter adds it per
 // instruction, the recompiler sums it per block. A charge can only stand for
-// one number per instruction, so the families pinned here are the ones whose
-// console cost is the same whether or not the next instruction needs the
-// result: their latency equals their issue interval. The comments in the table
-// say what was measured. A change to one of these numbers is a timing change
-// for every game that uses the instruction, not a test update.
+// one number per instruction. For most families pinned here the console cost
+// is the same whether or not the next instruction needs the result: their
+// latency equals their issue interval. The integer ALU ops are the exception:
+// two independent ones issue together, and the charge is the cost of one that
+// waits for the one before it. The comments in the table say what was
+// measured. A change to one of these numbers is a timing change for every game
+// that uses the instruction, not a test update.
 
 #include "harness/EeRecTestHarness.h"
 
@@ -34,6 +36,7 @@ namespace {
 constexpr u32 kConfigDie = 1u << 18;
 
 u32 NopEighths() { return R5900::GetInstruction(NOP).cycles; }
+u32 SyncEighths() { return R5900::GetInstruction(ee::SYNC).cycles; }
 u32 TailEighths() { return R5900::GetInstruction(JR(reg::ra)).cycles + NopEighths(); }
 
 struct MeasuredOp
@@ -135,6 +138,51 @@ const MeasuredOp kFpuAccumulator[] = {
 	{"MSUBA_S", ee::COP1(0x10, 2, 1, 0, 0x1F), 1 * 8},
 };
 
+// The integer ALU ops, shifts and NOP. rs = a3, rt = t2, rd = t0; immediate
+// shifts by 1.
+const MeasuredOp kIntegerAlu[] = {
+	{"ADD",    ADD(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"ADDU",   ADDU(reg::t0, reg::a3, reg::t2),       1 * 8},
+	{"SUB",    SUB(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"SUBU",   SUBU(reg::t0, reg::a3, reg::t2),       1 * 8},
+	{"DADD",   ee::DADD(reg::t0, reg::a3, reg::t2),   1 * 8},
+	{"DADDU",  ee::DADDU(reg::t0, reg::a3, reg::t2),  1 * 8},
+	{"DSUB",   ee::DSUB(reg::t0, reg::a3, reg::t2),   1 * 8},
+	{"DSUBU",  ee::DSUBU(reg::t0, reg::a3, reg::t2),  1 * 8},
+	{"ADDI",   ADDI(reg::t0, reg::a3, 3),             1 * 8},
+	{"ADDIU",  ADDIU(reg::t0, reg::a3, 3),            1 * 8},
+	{"DADDI",  ee::DADDI(reg::t0, reg::a3, 3),        1 * 8},
+	{"DADDIU", ee::DADDIU(reg::t0, reg::a3, 3),       1 * 8},
+	{"AND",    AND(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"OR",     OR(reg::t0, reg::a3, reg::t2),         1 * 8},
+	{"XOR",    XOR(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"NOR",    NOR(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"ANDI",   ANDI(reg::t0, reg::a3, 0x0ff0),        1 * 8},
+	{"ORI",    ORI(reg::t0, reg::a3, 0x0ff0),         1 * 8},
+	{"XORI",   XORI(reg::t0, reg::a3, 0x0ff0),        1 * 8},
+	{"SLT",    SLT(reg::t0, reg::a3, reg::t2),        1 * 8},
+	{"SLTU",   SLTU(reg::t0, reg::a3, reg::t2),       1 * 8},
+	{"SLTI",   SLTI(reg::t0, reg::a3, 3),             1 * 8},
+	{"SLTIU",  SLTIU(reg::t0, reg::a3, 3),            1 * 8},
+	{"LUI",    LUI(reg::t0, 0x1234),                  1 * 8},
+	{"SLL",    SLL(reg::t0, reg::t2, 1),              1 * 8},
+	{"SRL",    SRL(reg::t0, reg::t2, 1),              1 * 8},
+	{"SRA",    SRA(reg::t0, reg::t2, 1),              1 * 8},
+	{"SLLV",   SLLV(reg::t0, reg::t2, reg::a3),       1 * 8},
+	{"SRLV",   SRLV(reg::t0, reg::t2, reg::a3),       1 * 8},
+	{"SRAV",   SRAV(reg::t0, reg::t2, reg::a3),       1 * 8},
+	{"DSLL",   ee::DSLL(reg::t0, reg::t2, 1),         1 * 8},
+	{"DSRL",   ee::DSRL(reg::t0, reg::t2, 1),         1 * 8},
+	{"DSRA",   ee::DSRA(reg::t0, reg::t2, 1),         1 * 8},
+	{"DSLL32", ee::DSLL32(reg::t0, reg::t2, 1),       1 * 8},
+	{"DSRL32", ee::DSRL32(reg::t0, reg::t2, 1),       1 * 8},
+	{"DSRA32", ee::DSRA32(reg::t0, reg::t2, 1),       1 * 8},
+	{"DSLLV",  ee::DSLLV(reg::t0, reg::t2, reg::a3),  1 * 8},
+	{"DSRLV",  ee::DSRLV(reg::t0, reg::t2, reg::a3),  1 * 8},
+	{"DSRAV",  ee::DSRAV(reg::t0, reg::t2, reg::a3),  1 * 8},
+	{"SLL",    NOP,                                   1 * 8}, // NOP
+};
+
 // COP0 reads (two registers whose value both engines agree on), DI and TLBP.
 const MeasuredOp kCop0[] = {
 	{"MFC0", MFC0(reg::t0, 15), 1 * 8}, // PRId
@@ -168,9 +216,12 @@ struct ScopedWaitLoopOff
 	~ScopedWaitLoopOff() { EmuConfig.Speedhacks.WaitLoop = prev; }
 };
 
-// `copies` of the op, then NOPs until the raw charge (with the harness's JR +
-// NOP tail) is a multiple of 32, so the interpreter's carried sub-cycle
+// `copies` of the op, then padding until the raw charge (with the harness's
+// JR + NOP tail) is a multiple of 32, so the interpreter's carried sub-cycle
 // remainder cannot move its charge and both engines can be held to one number.
+// The padding is NOPs, and SYNCs where NOPs alone cannot reach a multiple of
+// 32 (a NOP charged a whole number of cycles cannot fix the JR's fraction).
+// Neither does anything in either engine.
 struct Block
 {
 	std::vector<u32> words;
@@ -180,15 +231,22 @@ struct Block
 Block MakeBlock(const MeasuredOp& op, int copies)
 {
 	Block b;
-	u32 raw = copies * op.eighths + TailEighths();
+	b.raw = copies * op.eighths + TailEighths();
 	for (int i = 0; i < copies; i++)
 		b.words.push_back(op.code);
-	while (raw % 32 != 0)
+	for (u32 syncs = 0; syncs < 32; syncs++)
 	{
-		b.words.push_back(NOP);
-		raw += NopEighths();
+		for (u32 nops = 0; nops < 32; nops++)
+		{
+			if ((b.raw + syncs * SyncEighths() + nops * NopEighths()) % 32 != 0)
+				continue;
+			b.words.insert(b.words.end(), syncs, ee::SYNC);
+			b.words.insert(b.words.end(), nops, NOP);
+			b.raw += syncs * SyncEighths() + nops * NopEighths();
+			return b;
+		}
 	}
-	b.raw = raw;
+	ADD_FAILURE() << op.name << ": no padding of NOPs and SYNCs makes the block a multiple of 32";
 	return b;
 }
 
@@ -204,6 +262,8 @@ void RunBlock(const Block& b, u64* jit, u64* interp)
 		h.SetCp0(16, kConfigDie);
 		h.SetGpr64(reg::a1, 0x0001000200030004ull);
 		h.SetGpr64(reg::a2, 0x0000000500000007ull);
+		h.SetGpr(reg::a3, 0x00012345u);
+		h.SetGpr(reg::t2, 0x00000007u);
 		h.SetFprBits(1, 0x40800000u); // 4.0
 		h.SetFprBits(2, 0x40800000u); // 4.0
 		h.LoadProgram(b.words);
@@ -257,6 +317,14 @@ TEST(EeRecMeasuredCharge, ParallelHiLoReadsChargeOneCycle)
 TEST(EeRecMeasuredCharge, FpuAccumulatorWritesChargeOneCycle)
 {
 	ExpectMeasuredCharges(kFpuAccumulator);
+}
+
+// The console runs a chain of these, each reading the one before, at one per
+// cycle, and independent ones at two per cycle. The charge is the chain's
+// cost: the model has no pairing.
+TEST(EeRecMeasuredCharge, IntegerAluOpsChargeOneCycle)
+{
+	ExpectMeasuredCharges(kIntegerAlu);
 }
 
 // The console reads any COP0 register in 1 cycle (eight tried), and DI costs
