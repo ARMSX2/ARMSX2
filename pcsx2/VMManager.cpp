@@ -233,6 +233,8 @@ static std::string s_elf_path;
 static std::pair<u32, u32> s_elf_text_range;
 static bool s_elf_executed = false;
 static std::string s_elf_override;
+static std::string s_no_disc_serial;
+static u32 s_no_disc_crc;
 static std::string s_game_settings_override;
 
 // Namco System 246/256 arcade boards (PCSX2x6, see common/ARCADE.h): what the running arcade game's .acgame
@@ -1474,6 +1476,16 @@ void VMManager::UpdateDiscDetails(bool booting)
 			s_disc_crc = 0; // set below
 			s_cur_region = "NTSC";
 		}
+		else if (!s_no_disc_serial.empty())
+		{
+			// No disc, but the caller names the game (VMBootParameters::no_disc_serial).
+			s_disc_serial = s_no_disc_serial;
+			s_disc_elf = {};
+			s_disc_version = {};
+			s_disc_crc = s_no_disc_crc;
+			s_cur_region = (BiosZone == "Europe") ? "PAL" : "NTSC";
+			serial_is_valid = true;
+		}
 		else
 		{
 			s_disc_serial = BiosSerial;
@@ -1623,6 +1635,15 @@ void VMManager::UpdateELFInfo(std::string elf_path)
 	{
 		if (!elf_path.empty())
 			Console.Error(fmt::format("Failed to read ELF being loaded: {}: {}", elf_path, error.GetDescription()));
+
+		// A savestate loaded with no disc (VMBootParameters::no_disc_serial) names an ELF that cannot be
+		// read, but vmFreeze() has already restored its CRC. Keep the path and the CRC so the game counts
+		// as booted and its GameDB fixes and patches apply.
+		if (!elf_path.empty() && !s_no_disc_serial.empty())
+		{
+			s_elf_path = std::move(elf_path);
+			return;
+		}
 
 		s_elf_path = {};
 		s_elf_text_range = {};
@@ -2087,6 +2108,8 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 			GSDumpReplayer::Shutdown();
 
 		s_elf_override = {};
+		s_no_disc_serial = {};
+		s_no_disc_crc = 0;
 		s_game_settings_override = {};
 		ClearELFInfo();
 		ClearDiscDetails();
@@ -2106,6 +2129,8 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	std::string state_to_load;
 
 	s_elf_override = boot_params.elf_override;
+	s_no_disc_serial = boot_params.no_disc_serial;
+	s_no_disc_crc = boot_params.no_disc_crc;
 	if (!boot_params.save_state.empty())
 		state_to_load = boot_params.save_state;
 
@@ -2495,6 +2520,8 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	SaveSessionTime(s_disc_serial);
 	s_elf_override = {};
+	s_no_disc_serial = {};
+	s_no_disc_crc = 0;
 	s_game_settings_override = {};
 	ClearELFInfo();
 	CDVDsys_ClearFiles();

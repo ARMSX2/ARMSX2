@@ -47,6 +47,13 @@ struct VMBootParameters
 	std::optional<s32> state_index;
 	std::optional<CDVD_SourceType> source_type;
 
+	/// For a boot with the tray empty (source_type NoDisc) that loads a savestate of a game whose disc is
+	/// not at hand: the serial and disc CRC to run the game under. GameDB fixes, the game's settings file
+	/// and the patches all key off them, as they would off the disc. The savestate supplies the ELF CRC.
+	/// An empty serial leaves the BIOS's own, which is what a boot with no disc normally runs under.
+	std::string no_disc_serial;
+	u32 no_disc_crc = 0;
+
 	std::optional<bool> fast_boot;
 	std::optional<bool> fullscreen;
 	std::optional<bool> start_turbo;

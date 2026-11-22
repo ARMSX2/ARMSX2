@@ -87,6 +87,7 @@
 // --statereport decode targets
 #include "pcsx2/CDVD/CDVD.h"
 #include "pcsx2/Counters.h"
+#include "pcsx2/GameDatabase.h"
 #include "pcsx2/Gif_Unit.h"
 #include "pcsx2/IopCounters.h"
 #include "pcsx2/MTVU.h"
@@ -182,6 +183,8 @@ static MemorySettingsInterface s_settings_interface;
 static RunMode s_mode = RunMode::None;
 static std::string s_iso_path;
 static bool s_no_disc = false;            // --nodisc: boot the BIOS with the tray empty, then load the savestate
+static std::string s_gamedb_serial;       // --gamedb <serial>[:<crc>]: run the --nodisc boot under this game's GameDB entry
+static uint32_t s_gamedb_crc = 0;
 static std::string s_savestate_path;
 static uint32_t s_frames = 300;
 static bool s_no_console = false;
@@ -1062,7 +1065,10 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --frames N: Number of frames to run (default 300).\n");
 	std::fprintf(stderr, "  --iso <file>: Game ISO/disc to mount (required so the savestate has its disc).\n");
 	std::fprintf(stderr, "  --nodisc: no disc in the tray; the game runs from the savestate's RAM until it reads the\n");
-	std::fprintf(stderr, "               disc. GameDB fixes do not apply: pass them with --set.\n");
+	std::fprintf(stderr, "               disc. Without --gamedb the GameDB fixes do not apply. Not with --iso.\n");
+	std::fprintf(stderr, "  --gamedb <serial>[:<crc hex>]: with --nodisc, run under this game's serial and disc CRC, so its\n");
+	std::fprintf(stderr, "               GameDB fixes, game settings file and patches apply as they do with the disc\n");
+	std::fprintf(stderr, "               (e.g. SLUS-21050:BEBF8793; the serial and crc of a problem report's game).\n");
 	std::fprintf(stderr, "  --perf-jitdump: Emit a Linux perf jitdump (under EmuFolders::Cache) so `perf inject --jit`\n");
 	std::fprintf(stderr, "               resolves EE_/VU0_/VU1_/IOP_/VIF_ JIT block symbols. Profiling only; with --liverun it\n");
 	std::fprintf(stderr, "               also honors an explicit --renderer null. Requires a USE_PERF_JITDUMP build.\n");
@@ -1697,6 +1703,37 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				s_no_disc = true;
 				continue;
 			}
+			else if (CHECK_ARG_PARAM("--gamedb"))
+			{
+				std::string_view spec = StringUtil::StripWhitespace(std::string_view(argv[++i]));
+				std::string_view crc_text;
+				const size_t colon = spec.find(':');
+				if (colon != std::string_view::npos)
+				{
+					crc_text = spec.substr(colon + 1);
+					spec = spec.substr(0, colon);
+				}
+				if (spec.empty())
+				{
+					Console.Error("--gamedb expects <serial>[:<crc hex>], e.g. SLUS-21050:BEBF8793.");
+					return false;
+				}
+				s_gamedb_serial = StringUtil::toUpper(spec);
+				s_gamedb_crc = 0;
+				if (!crc_text.empty())
+				{
+					if (crc_text.starts_with("0x") || crc_text.starts_with("0X"))
+						crc_text.remove_prefix(2);
+					const std::optional<uint32_t> crc = StringUtil::FromChars<uint32_t>(crc_text, 16);
+					if (!crc.has_value())
+					{
+						Console.Error("--gamedb: the CRC after ':' must be hexadecimal, e.g. SLUS-21050:BEBF8793.");
+						return false;
+					}
+					s_gamedb_crc = crc.value();
+				}
+				continue;
+			}
 			else if (CHECK_ARG_PARAM("--iso"))
 			{
 				s_iso_path = StringUtil::StripWhitespace(argv[++i]);
@@ -1872,11 +1909,29 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 		}
 	}
 
+	if (!s_gamedb_serial.empty() && !s_no_disc)
+	{
+		Console.Error("--gamedb needs --nodisc: with a disc, the disc names the game.");
+		return false;
+	}
 	if (s_no_disc)
 	{
+		if (!s_iso_path.empty())
+		{
+			Console.Error("--nodisc and --iso contradict each other: pass one.");
+			return false;
+		}
 		// The savestate's RAM holds the running game; it renders until its next disc read.
-		// GameDB fixes are keyed to the disc and will not apply: pass them with --set.
+		// GameDB fixes are keyed to the game's serial, which only a disc or --gamedb gives.
+		if (!s_gamedb_serial.empty() && !GameDatabase::findGame(s_gamedb_serial))
+		{
+			// A typo here would otherwise run silently without the fixes it was passed to get.
+			Console.ErrorFmt("--gamedb: serial '{}' is not in GameDB.", s_gamedb_serial);
+			return false;
+		}
 		params.source_type = CDVD_SourceType::NoDisc;
+		params.no_disc_serial = s_gamedb_serial;
+		params.no_disc_crc = s_gamedb_crc;
 		return true;
 	}
 	if (s_iso_path.empty())
