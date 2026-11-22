@@ -1282,7 +1282,7 @@
  "pad.usb.port": "Port",
  "pad.usb.section": "Urządzenia USB",
  "pad.usb.subtype": "Wariant",
- "pad.usbTakeover.description": "Dla DualSense lub DualShock 4 podłączonego kablem. Komunikuje się z kontrolerem bezpośrednio zamiast przez Androida, co jest jedynym sposobem na dostęp do jego silniczków wibracji na urządzeniach, na których wibracje systemowe nic nie robią. Daje też prawdziwe analogowe spusty. Gdy opcja jest włączona, kontroler jest obsługiwany wyłącznie w ten sposób, więc jego układ jest stały, a własne przypisania nie działają. Po wyłączeniu tej opcji odłącz i ponownie podłącz pad.",
+ "pad.usbTakeover.description": "Po podłączeniu DualShock 3 przez USB gry na PS2 obsługujące czułość przycisków na nacisk reagują na siłę naciśnięcia tak samo jak z oryginalnym DualShock 2. W przypadku przewodowego DualShock 4 lub DualSense bezpośrednie sterowanie przez USB obsługuje analogowe spusty i wibracje. Po jego wyłączeniu odłącz i podłącz kontroler ponownie.",
  "pad.usbTakeover.label": "Bezpośrednie sterowanie USB (pady PlayStation)",
  "patches.action.allOff": "Wszystko wył.",
  "patches.action.allOn": "Wszystko wł.",

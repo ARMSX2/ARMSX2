@@ -1282,7 +1282,7 @@
   "pad.usb.port": "Cổng",
   "pad.usb.section": "Thiết bị USB",
   "pad.usb.subtype": "Biến thể",
-  "pad.usbTakeover.description": "Dành cho DualSense hoặc DualShock 4 kết nối bằng cáp. Giao tiếp trực tiếp với tay cầm thay vì qua Android, đây là cách duy nhất để dùng motor rung trên các thiết bị mà rung của hệ thống không hoạt động. Đồng thời cho bạn cò analog thực sự. Khi bật, tay cầm được điều khiển hoàn toàn qua cơ chế này, nên bố cục cố định và các gán nút tùy chỉnh của bạn không được áp dụng. Rút ra và cắm lại tay cầm sau khi tắt mục này.",
+  "pad.usbTakeover.description": "Khi kết nối DualShock 3 qua USB, các trò chơi PS2 hỗ trợ nút nhạy lực sẽ phản hồi theo lực nhấn nút, giống như khi dùng DualShock 2 nguyên bản. Với DualShock 4 hoặc DualSense kết nối bằng cáp, chế độ điều khiển USB trực tiếp xử lý cò analog và rung. Sau khi tắt, hãy rút tay cầm rồi cắm lại.",
   "pad.usbTakeover.label": "Điều khiển USB trực tiếp (tay cầm PlayStation)",
   "patches.action.allOff": "Tắt hết",
   "patches.action.allOn": "Bật hết",

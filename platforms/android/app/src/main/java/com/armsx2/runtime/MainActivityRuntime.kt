@@ -958,7 +958,7 @@ open class MainActivityRuntime : ComponentActivity() {
          *  to Player 1 still get it, so moving one of them to Player 2 later has a port to go to. */
         private fun connectedPadCount(): Int {
             val (pads, sawJoyCon) = connectedGamepads()
-            return pads.size + (if (sawJoyCon) 1 else 0)
+            return pads.size + (if (sawJoyCon) 1 else 0) + com.armsx2.input.PadRouter.directUsbPadCount()
         }
 
         /**
@@ -1166,6 +1166,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 val touchIsP2 = com.armsx2.ui.touch.TouchControls.touchPlayer.intValue == 1
                 // A pad pinned to Player 2 needs port 2 even on its own.
                 val twoPads = connectedPadCount() >= 2 || touchIsP2 ||
+                    com.armsx2.input.PadRouter.hasDirectUsbPad(1) ||
                     com.armsx2.input.PadRouter.player2Pinned(connectedGamepads().first)
                 NativeApp.setSetting("Pad2", "Type", "string", if (twoPads) "DualShock2" else "None")
                 if (twoPads) {
@@ -2601,7 +2602,7 @@ open class MainActivityRuntime : ComponentActivity() {
         }
     }
 
-    fun sendKeyAction(p_action: KeyEventType, p_keycode_in: Int, port: Int = 0, fromController: Boolean = true) {
+    fun sendKeyAction(p_action: KeyEventType, p_keycode_in: Int, port: Int = 0, fromController: Boolean = true, pressure: Int? = null) {
         // Any physical gamepad key event implies the user is on a
         // controller — latch the on-screen touch controls hidden until a
         // screen press flips them back on. Idempotent. Not for the phone's own volume keys
@@ -2630,6 +2631,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 // buttons while the modifier is held; 0 (full press) otherwise.
                 pad_force = com.armsx2.ui.touch.TouchControls.pressureRangeFor(p_keycode)
             }
+            if (pressure != null) pad_force = com.armsx2.input.UsbPadInput.pressureRange(pressure)
             // KEYS bound to an analog stick code (d-pad-as-left-stick, or a button
             // bound to a "(send)" stick row): register the held deflection with the
             // merge layer so a stick MOTION event can't release it mid-hold.
@@ -2637,7 +2639,7 @@ open class MainActivityRuntime : ComponentActivity() {
                 analogKeyHeld[port][p_keycode] = pad_force / 32767f
             // Track for the LIVE pressure modifier (see TouchControls.notePressureKeyState).
             com.armsx2.ui.touch.TouchControls.notePressureKeyState(port, p_keycode, true)
-            NativeApp.setPadButtonForPort(port, p_keycode, pad_force, true)
+            NativeApp.setPadButtonForPort(port, p_keycode, pad_force, pressure == null || pressure > 0)
         } else if (p_action == KeyEventType.KeyUp || p_action == KeyEventType.Unknown) {
             if (p_keycode in 110..123 && port in analogKeyHeld.indices)
                 analogKeyHeld[port].remove(p_keycode)
@@ -2796,9 +2798,6 @@ open class MainActivityRuntime : ComponentActivity() {
         // any rumble or unlock sound can fire (both default to 1.0 = as authored until set here).
         ControllerMappings.syncHapticIntensity()
         ControllerMappings.syncRumbleFallback()
-        // Direct USB rumble for a PlayStation pad. Asks for USB permission only when one is
-        // actually attached, so nobody sees a prompt for a controller they do not own.
-        com.armsx2.input.UsbRumble.start(this)
         com.armsx2.input.UsbRumble.loadTakeover()
         // Player-slot pins, so a controller the user assigned by hand is on its slot
         // before the first button press rather than after it.
@@ -2807,6 +2806,7 @@ open class MainActivityRuntime : ComponentActivity() {
         // Seed the pad-router's multitap gate before any in-game input is dispatched, so
         // slot routing (2 vs 8 slots) is correct from the first controller event.
         com.armsx2.input.PadRouter.multitapEnabled = ControllerMappings.multitapEnabled()
+        com.armsx2.input.UsbRumble.start(this)
         // #394: watch for controller unplug / re-enumeration so a departed pad frees its slot (see
         // inputDeviceListener). Registered until onDestroy so a sleep/wake remove is caught even
         // while the activity is paused.
@@ -4185,9 +4185,35 @@ open class MainActivityRuntime : ComponentActivity() {
     private fun padHeldKey(event: KeyEvent): Long =
         (event.deviceId.toLong() shl 32) or (event.keyCode.toLong() and 0xffffffffL)
 
-    /** Route one gameplay key edge directly from Activity dispatch to the native pad. [releaseOnly]: a
-     *  release of a key whose press reached the pad, sent while the game is paused or a menu has the
-     *  controller (see dispatchKeyEvent). */
+    private val usbPressureTargets = HashMap<Long, Pair<Int, Int>>()
+
+    /** Continuous pressure has no key edge: never re-fire a hotkey, macro or menu action. */
+    fun updateUsbButtonPressure(deviceId: Int, keyCode: Int) {
+        if (eState.value != EmuState.RUNNING || controllerDrivesFrontend()) return
+        val key = (deviceId.toLong() shl 32) or (keyCode.toLong() and 0xffffffffL)
+        val (port, target) = usbPressureTargets[key] ?: return
+        if (com.armsx2.input.PadRouter.portForDevice(deviceId) != port ||
+            ControllerMappings.targetForPhysical(keyCode, port) != target ||
+            ControllerMappings.isTurboTarget(target, port) || ControllerMappings.isLatchTarget(target, port) ||
+            com.armsx2.ui.touch.TouchControls.macroForPhysicalCode(keyCode) != null
+        ) return
+        val pressure = com.armsx2.input.UsbPadInput.pressureFor(deviceId, keyCode) ?: return
+        sendKeyAction(KeyEventType.KeyDown, target, port, pressure = pressure)
+    }
+
+    /** Also release motion if the pad is unplugged while the pause menu owns normal dispatch. */
+    fun releaseUsbPadInput(deviceId: Int) {
+        val port = com.armsx2.input.PadRouter.portForDevice(deviceId)
+        usbPressureTargets.keys.removeAll { (it shr 32).toInt() == deviceId }
+        analogPrevSent[port].keys.toList().forEach { NativeApp.setPadButtonForPort(port, it, 0, false) }
+        analogPrevSent[port].clear()
+        dpadOwnHeld[port].forEach { NativeApp.setPadButtonForPort(port, it, 0, false) }
+        dpadOwnHeld[port].clear()
+        triggerPadTargets[port].values.forEach { NativeApp.setPadButtonForPort(port, it, 0, false) }
+        triggerPadTargets[port].clear()
+    }
+
+    /** Route key edges through mappings and macros, including releases while a menu is open. */
     private fun dispatchGameplayKey(event: KeyEvent, releaseOnly: Boolean = false): Boolean {
         if (!releaseOnly && (eState.value != EmuState.RUNNING || controllerDrivesFrontend())) return false
         val type = when (event.action) {
@@ -4196,6 +4222,8 @@ open class MainActivityRuntime : ComponentActivity() {
             else -> return false
         }
         val physicalCode = event.keyCode
+        val usbKey = padHeldKey(event)
+        usbPressureTargets.remove(usbKey)
         if (physicalCode == KeyEvent.KEYCODE_UNKNOWN) return false
         if (type == KeyEventType.KeyDown) padHeldKeys.add(padHeldKey(event)) else padHeldKeys.remove(padHeldKey(event))
 
@@ -4248,7 +4276,11 @@ open class MainActivityRuntime : ComponentActivity() {
         if (ControllerMappings.isTurboTarget(target, port)) {
             handleTurbo(physicalCode, edge, target, port)
         } else {
-            sendKeyAction(edge, target, port, fromController)
+            val pressure = if (!ControllerMappings.isLatchTarget(target, port))
+                com.armsx2.input.UsbPadInput.pressureFor(event.deviceId, physicalCode) else null
+            if (pressure != null && type == KeyEventType.KeyDown)
+                usbPressureTargets[usbKey] = port to target
+            sendKeyAction(edge, target, port, fromController, pressure)
         }
         if (ControllerMappings.isHotkeyKeyOrModifier(physicalCode)) {
             if (type == KeyEventType.KeyDown) gameplayHotkeyKeysDown.add(physicalCode)
@@ -6047,6 +6079,7 @@ open class MainActivityRuntime : ComponentActivity() {
      *  binder call and motion events arrive far too often to query per event, hence the cache. */
     private val axisPresenceCache = HashMap<Long, Boolean>()
     private fun deviceHasAxis(deviceId: Int, axis: Int): Boolean {
+        com.armsx2.input.UsbPadInput.hasAxis(deviceId, axis)?.let { return it }
         if (axis < 0) return false
         return axisPresenceCache.getOrPut((deviceId.toLong() shl 32) or (axis.toLong() and 0xffffffffL)) {
             runCatching { InputDevice.getDevice(deviceId)?.getMotionRange(axis) }.getOrNull() != null

@@ -1282,7 +1282,7 @@
  "pad.usb.port": "Port",
  "pad.usb.section": "USB Cihazları",
  "pad.usb.subtype": "Varyant",
- "pad.usbTakeover.description": "Kabloyla bağlı bir DualSense veya DualShock 4 için. Android üzerinden geçmek yerine kumandayla doğrudan iletişim kurar; sistem titreşiminin hiçbir şey yapmadığı cihazlarda titreşim motorlarına ulaşmanın tek yolu budur. Ayrıca gerçek analog tetikler sağlar. Bu açıkken kumanda tamamen bu yolla sürülür, bu yüzden düzeni sabittir ve özel atamalarınız uygulanmaz. Bunu kapattıktan sonra kumandayı çıkarıp yeniden takın.",
+ "pad.usbTakeover.description": "DualShock 3 USB ile bağlandığında, basınca duyarlı düğmeleri destekleyen PS2 oyunları düğmelere ne kadar sert bastığına orijinal DualShock 2 ile olduğu gibi tepki verir. Kablolu DualShock 4 veya DualSense için doğrudan USB kontrolü analog tetikleri ve titreşimi yönetir. Modu kapattıktan sonra kumandayı çıkarıp yeniden tak.",
  "pad.usbTakeover.label": "Doğrudan USB kontrolü (PlayStation kumandaları)",
  "patches.action.allOff": "Tümü kapalı",
  "patches.action.allOn": "Tümü açık",
