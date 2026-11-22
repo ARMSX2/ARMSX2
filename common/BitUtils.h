@@ -65,9 +65,15 @@ namespace Common
 	}
 
 	template <typename T>
+#ifdef PCSX2_RUNTIME_PAGE_SIZE
+	static inline T PageAlign(T size)
+#else
 	static constexpr T PageAlign(T size)
+#endif
 	{
+#ifndef PCSX2_RUNTIME_PAGE_SIZE
 		static_assert(std::has_single_bit(__pagesize), "Page size is a power of 2");
+#endif
 		return Common::AlignUpPow2(size, __pagesize);
 	}
 

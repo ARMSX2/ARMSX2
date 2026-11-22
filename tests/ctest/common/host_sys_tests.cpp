@@ -5,10 +5,12 @@
 // around it are untouched, and on Linux the whole pages in it go back to the host.
 
 #include "common/HostSys.h"
+#include "common/BitUtils.h"
 
 #include <gtest/gtest.h>
 
 #include <cstring>
+#include <csignal>
 #include <memory>
 #include <vector>
 
@@ -17,8 +19,8 @@
 #include <unistd.h>
 #endif
 
-// HostSys's signal handler passes faults to the emulator's handler, which lives in the core, not in common.
-// Nothing here faults; it is defined only so that common_test links.
+// Satisfy HostSys's reference to the emulator's fault handler, which lives in the core.
+// The protection test faults in a child process without installing this handler.
 PageFaultHandler::HandlerResult PageFaultHandler::HandlePageFault(void*, void*, bool)
 {
 	return HandlerResult::ExecuteNextHandler;
@@ -53,6 +55,38 @@ namespace
 	}
 #endif
 } // namespace
+
+#if defined(__linux__)
+TEST(HostSysPageSize, MatchesKernelAndAlignsAcrossBoundaries)
+{
+	const unsigned int page = static_cast<unsigned int>(sysconf(_SC_PAGESIZE));
+	EXPECT_EQ(__pagesize, page);
+	EXPECT_EQ(__pagemask, page - 1);
+	EXPECT_EQ(1u << __pageshift, page);
+	EXPECT_EQ(Common::PageAlign(page - 1), page);
+	EXPECT_EQ(Common::PageAlign(page), page);
+	EXPECT_EQ(Common::PageAlign(page + 1), 2 * page);
+}
+
+TEST(HostSysPageSize, ProtectsOneKernelPageWithoutChangingItsNeighbours)
+{
+	const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+	u8* const p = static_cast<u8*>(mmap(nullptr, 3 * page, PROT_READ | PROT_WRITE,
+		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+	ASSERT_NE(p, MAP_FAILED);
+	std::memset(p, 0x5A, 3 * page);
+	HostSys::MemProtect(p + page, __pagesize, PageAccess_ReadOnly());
+	EXPECT_EXIT({ *static_cast<volatile u8*>(p + page) = 0; _exit(0); }, ::testing::KilledBySignal(SIGSEGV), "");
+	p[page - 1] = 0xA1;
+	p[2 * page] = 0xA2;
+	EXPECT_EQ(p[page], 0x5A);
+	HostSys::MemProtect(p + page, __pagesize, PageAccess_ReadWrite());
+	p[page] = 0xA3;
+	EXPECT_EQ(p[page - 1], 0xA1);
+	EXPECT_EQ(p[2 * page], 0xA2);
+	EXPECT_EQ(munmap(p, 3 * page), 0);
+}
+#endif
 
 TEST(HostSysDiscardMemory, ZeroesTheRangeAndNothingAroundIt)
 {
