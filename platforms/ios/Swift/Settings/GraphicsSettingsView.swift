@@ -549,7 +549,7 @@ struct GraphicsSettingsView: View {
         .onAppear { settings.refreshGraphicsHackStatus() }
         // The core re-snapshots after every apply and on a game change, since that is
         // when the masks and the database have finished arguing.
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2GraphicsHackStateChanged"))) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .ARMSX2GraphicsHackStateChanged)) { _ in
             settings.refreshGraphicsHackStatus()
         }
         .controllerPrompt(

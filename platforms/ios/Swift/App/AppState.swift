@@ -10,7 +10,6 @@ final class AppState {
     static let shared = AppState()
     nonisolated static let systemChromeNeedsUpdateNotification = Notification.Name("ARMSX2iOSSystemChromeNeedsUpdate")
     static let releaseMenuBackgroundResourcesNotification = Notification.Name("ARMSX2iOSReleaseMenuBackgroundResources")
-    static let emulationOnlyResourcesReleasedNotification = Notification.Name("ARMSX2iOSEmulationOnlyResourcesReleased")
 
     enum Screen {
         case menu

@@ -3,6 +3,7 @@
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import "ARMSX2BridgeKeys.h"
 
 typedef NS_ENUM(NSInteger, ARMSX2PadButton) {
     ARMSX2PadButtonUp = 0,

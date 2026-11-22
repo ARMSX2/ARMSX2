@@ -15,8 +15,6 @@ final class ExternalGameLibrary: @unchecked Sendable {
     static let shared = ExternalGameLibrary()
     static let didChangeNotification = Notification.Name("ARMSX2iOSExternalGameLibraryDidChange")
 
-    static let defaultsKey = "ARMSX2iOSExternalGameDirectories"
-
     private(set) var directories: [ExternalGameDirectory] = []
     private static let gameExtensions = Set(["iso", "chd", "img", "bin", "cue", "mdf", "cso", "zso", "gz", "elf"])
 
@@ -25,7 +23,7 @@ final class ExternalGameLibrary: @unchecked Sendable {
     }
 
     func reload() {
-        let records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
+        let records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
         directories = records.compactMap { record in
             guard let id = record["id"] as? String,
                   let displayName = record["displayName"] as? String,
@@ -67,7 +65,7 @@ final class ExternalGameLibrary: @unchecked Sendable {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
-            var records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
+            var records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
             let path = standardizedURL.path
             let displayName = standardizedURL.lastPathComponent.isEmpty ? path : standardizedURL.lastPathComponent
             let record: [String: Any] = [
@@ -85,7 +83,7 @@ final class ExternalGameLibrary: @unchecked Sendable {
                 return URL(fileURLWithPath: existingPath).standardizedFileURL.path == path
             }
             records.append(record)
-            UserDefaults.standard.set(records, forKey: Self.defaultsKey)
+            UserDefaults.standard.set(records, forKey: ARMSX2iOSExternalGameDirectories)
             reload()
             NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
 
@@ -102,9 +100,9 @@ final class ExternalGameLibrary: @unchecked Sendable {
     }
 
     func removeDirectory(id: String) {
-        var records = UserDefaults.standard.array(forKey: Self.defaultsKey) as? [[String: Any]] ?? []
+        var records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
         records.removeAll { ($0["id"] as? String) == id }
-        UserDefaults.standard.set(records, forKey: Self.defaultsKey)
+        UserDefaults.standard.set(records, forKey: ARMSX2iOSExternalGameDirectories)
         reload()
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }

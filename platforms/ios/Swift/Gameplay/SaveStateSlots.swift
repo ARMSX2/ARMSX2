@@ -316,7 +316,7 @@ final class SaveStateUndoModel {
         item = nil
         let done: @Sendable (Bool) -> Void = { ok in
             Task { @MainActor in
-                NotificationCenter.default.post(name: Notification.Name("ARMSX2iOSRuntimeMenuStateChanged"), object: nil)
+                NotificationCenter.default.post(name: .ARMSX2iOSRuntimeMenuStateChanged, object: nil)
                 completion(ok)
             }
         }

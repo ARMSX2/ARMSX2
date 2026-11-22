@@ -81,10 +81,10 @@ struct RetroAchievementsGamePanel: View {
                 }
             }
             .onAppear(perform: refresh)
-            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("ARMSX2RetroAchievementsStateChanged"))) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievementsStateChanged)) { _ in
                 refresh()
             }
-            .onReceive(NotificationCenter.default.publisher(for: retroAchievementsToastNotification)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .ARMSX2RetroAchievements)) { _ in
                 refresh()
             }
         }

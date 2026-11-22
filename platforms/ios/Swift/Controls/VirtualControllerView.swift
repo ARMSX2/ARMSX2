@@ -147,7 +147,7 @@ struct VirtualControllerView: View {
         }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: Notification.Name("ARMSX2RetroAchievementsStateChanged")
+                for: .ARMSX2RetroAchievementsStateChanged
             )
         ) { _ in
             activeTouchActionSession.refreshHardcoreAutomaticFireRestriction()

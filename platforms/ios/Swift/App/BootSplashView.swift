@@ -7,9 +7,6 @@ import UIKit
 
 struct BootSplashView: View {
     private static let hardTimeout: UInt64 = 6_000_000_000
-    private static let idleVMPrewarmResolved = Notification.Name(
-        "ARMSX2iOSIdleVMPrewarmResolved"
-    )
     nonisolated static let stopPlaybackForAudioHandoff = Notification.Name(
         "ARMSX2iOSBootSplashStopPlaybackForAudioHandoff"
     )
@@ -42,7 +39,7 @@ struct BootSplashView: View {
         }
         .onReceive(
             NotificationCenter.default.publisher(
-                for: Self.idleVMPrewarmResolved
+                for: .ARMSX2iOSIdleVMPrewarmResolved
             )
         ) { _ in
             playbackReady = true
