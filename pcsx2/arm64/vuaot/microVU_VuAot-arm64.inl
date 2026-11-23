@@ -1413,8 +1413,8 @@ static bool vuAotBuildBody(microVU& mVU, microProgram& prog, mVUChunkHead& head,
 	}
 	mVU.chunkStore->tieredBodies++;
 	mVU.chunkStore->tieredCodeBytes += body->codeBytes;
-	DevCon.WriteLn(Color_StrongBlue, "vu-aot: %s of the routine at 0x%04x after %u runs: %u regions, %u bytes%s",
-		j.retier ? "re-tier" : "tier-up", j.pc, head.runs[0] + head.runs[1], j.regions, body->codeBytes,
+	DevCon.WriteLn(Color_StrongBlue, "vu-aot: %s of the routine at 0x%04x after %u runs and %u jumps: %u regions, %u bytes%s",
+		j.retier ? "re-tier" : "tier-up", j.pc, head.runs[0] + head.runs[1], head.jumpRuns, j.regions, body->codeBytes,
 		body->droppedSticky ? ", sticky STATUS byte dropped" : "");
 	head.tiered.push_back(std::move(body));
 	head.serial++;
