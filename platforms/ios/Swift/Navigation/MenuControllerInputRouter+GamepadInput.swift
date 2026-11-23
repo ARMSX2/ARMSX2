@@ -424,6 +424,16 @@ extension MenuControllerInputRouter {
         updateDirection(command, profileID: Self.keyboardProfileID)
     }
 
+    /// The root alert's ringed button takes Return and space the way it takes a
+    /// controller's confirm button; nothing else does, so text fields keep both keys.
+    func handleKeyboardActivate() -> Bool {
+        guard isMenuActive,
+              frontmostManualNavigationCapture?.key == MenuControllerNavigationCaptureOwner.rootAlert
+        else { return false }
+        emit(.activate)
+        return true
+    }
+
     private func cancelRepeat(profileID: ObjectIdentifier) {
         repeatTasks.removeValue(forKey: profileID)?.cancel()
     }
