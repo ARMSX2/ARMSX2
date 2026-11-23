@@ -1499,26 +1499,6 @@ __fi static void mVUemitModelCall(microVU& mVU, int stub)
 	armEmitCall(mVU.modelStubs[stub]);
 }
 
-// Test only: VU1 code compiled for one micro-memory address is entered for
-// another. While the shift is nonzero, every lookup by address (the dispatch
-// and the JR/JALR slow path) searches the programs at "address - shift", so a
-// copy of a program placed `shift` bytes higher runs the code compiled for the
-// original. Emitted code and guest state keep the real addresses.
-#ifdef PCSX2_RECOMPILER_TESTS
-namespace mvu_test_hooks
-{
-	inline u32 g_vu1LookupShift = 0;
-}
-#endif
-__fi static u32 mVUlookupPC(u32 vuIndex, u32 pc)
-{
-#ifdef PCSX2_RECOMPILER_TESTS
-	if (vuIndex && mvu_test_hooks::g_vu1LookupShift)
-		return (pc - mvu_test_hooks::g_vu1LookupShift) & 0x3ff8;
-#endif
-	return pc;
-}
-
 // ARM64 helper .inl files + shared analysis/tables
 //------------------------------------------------------------------
 #include "microVU_Clamp-arm64.inl"

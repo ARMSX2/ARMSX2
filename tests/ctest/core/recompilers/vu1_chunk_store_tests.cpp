@@ -307,34 +307,41 @@ void SeedIbit(VuTestHarness& h)
 constexpr u32 kHome = 0x0400;
 constexpr u32 kCopy = 0x2000;
 
+// Where a copy of `pairs` ends on the last pair of micro memory.
+inline u32 TopOf(const std::vector<VuOp>& pairs) { return kMicroBytes - static_cast<u32>(pairs.size()) * 8; }
+
 } // namespace
 
 // The call/loop routine moved and uploaded next to other code: branch
 // targets, BAL and JALR link values, the JR and JALR exits and the TPC the E
 // bit leaves. The pairs the compiler never read differ between the two images
-// as well.
+// as well. In the middle of micro memory and ending on its last pair.
 TEST(Vu1ChunkStore, RoutineUploadedAtAnotherAddressIsServedWithoutACompile)
 {
-	const VuSnapshot interp = InterpOf(2, kCopy, CallLoopProgram(0x45), kCopy);
-	ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 15u);
-	ASSERT_EQ(interp.regs.VI[vi::vi12].UL & 0xFFFFu, 0xCCu);
+	for (const u32 copy : {kCopy, TopOf(CallLoopProgram())})
+	{
+		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
+		const VuSnapshot interp = InterpOf(2, copy, CallLoopProgram(0x45), copy);
+		ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 15u);
+		ASSERT_EQ(interp.regs.VI[vi::vi12].UL & 0xFFFFu, 0xCCu);
 
-	Jit jit(1, kHome, CallLoopProgram(), kHome);
-	const mVUChunkStore::Stats before = mVUChunkStore::GetStats();
-	EXPECT_EQ(jit.RunUpload(2, kCopy, CallLoopProgram(0x45), kCopy), 0u) << "the copy was compiled";
-	const mVUChunkStore::Stats after = mVUChunkStore::GetStats();
-	EXPECT_GT(after.hits, before.hits);
-	EXPECT_EQ(after.episodes - before.episodes, after.hits - before.hits) << "every compile asked for was served";
-	EXPECT_EQ(after.entries, before.entries) << "serving a chunk adds no entry";
-	EXPECT_EQ(after.fed, before.fed);
-	EXPECT_EQ(jit.h.GetViJit(vi::vi5), PairIndex(kCopy, 2));
-	EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kCopy, 20));
-	EXPECT_EQ(jit.h.GetViJit(REG_TPC), PairIndex(kCopy, 14));
-	ExpectJitMatches(jit.h, interp);
+		Jit jit(1, kHome, CallLoopProgram(), kHome);
+		const mVUChunkStore::Stats before = mVUChunkStore::GetStats();
+		EXPECT_EQ(jit.RunUpload(2, copy, CallLoopProgram(0x45), copy), 0u) << "the copy was compiled";
+		const mVUChunkStore::Stats after = mVUChunkStore::GetStats();
+		EXPECT_GT(after.hits, before.hits);
+		EXPECT_EQ(after.episodes - before.episodes, after.hits - before.hits) << "every compile asked for was served";
+		EXPECT_EQ(after.entries, before.entries) << "serving a chunk adds no entry";
+		EXPECT_EQ(after.fed, before.fed);
+		EXPECT_EQ(jit.h.GetViJit(vi::vi5), PairIndex(copy, 2));
+		EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(copy, 20));
+		EXPECT_EQ(jit.h.GetViJit(REG_TPC), PairIndex(copy, 14));
+		ExpectJitMatches(jit.h, interp);
 
-	// And again from the jump caches the first run filled.
-	EXPECT_EQ(jit.RunAt(kCopy), 0u);
-	ExpectJitMatches(jit.h, interp);
+		// And again from the jump caches the first run filled.
+		EXPECT_EQ(jit.RunAt(copy), 0u);
+		ExpectJitMatches(jit.h, interp);
+	}
 }
 
 // A served copy's JR and JALR blocks record the targets they reach in jump
@@ -459,24 +466,27 @@ TEST(Vu1ChunkStore, ExitTpcOfAServedCopy)
 }
 
 // A branch in another branch's delay slot: the addresses the block stores for
-// the continuation.
+// the continuation, in the middle of micro memory and at its end.
 TEST(Vu1ChunkStore, BranchInDelaySlotOfAServedCopy)
 {
 	for (const Shape& s : kDelaySlotShapes)
 	{
-		for (const u32 seed : {0u, 1u, 2u, 3u})
+		const std::vector<VuOp> prog = DelaySlotProgram(s);
+		for (const u32 copy : {kCopy, TopOf(prog)})
 		{
-			SCOPED_TRACE(::testing::Message() << s.name << " seed " << seed);
-			const std::vector<VuOp> prog = DelaySlotProgram(s);
-			const Seed regs = [seed](VuTestHarness& h) {
-				h.SetVi(vi::vi1, seed & 1);
-				h.SetVi(vi::vi2, seed >> 1);
-			};
-			const VuSnapshot interp = InterpOf(2, kCopy, prog, kCopy, regs);
+			for (const u32 seed : {0u, 1u, 2u, 3u})
+			{
+				SCOPED_TRACE(::testing::Message() << s.name << " seed " << seed << " copy at 0x" << std::hex << copy);
+				const Seed regs = [seed](VuTestHarness& h) {
+					h.SetVi(vi::vi1, seed & 1);
+					h.SetVi(vi::vi2, seed >> 1);
+				};
+				const VuSnapshot interp = InterpOf(2, copy, prog, copy, regs);
 
-			Jit jit(1, kHome, prog, kHome, regs);
-			EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u) << "the copy was compiled";
-			ExpectJitMatches(jit.h, interp);
+				Jit jit(1, kHome, prog, kHome, regs);
+				EXPECT_EQ(jit.RunUpload(2, copy, prog, copy), 0u) << "the copy was compiled";
+				ExpectJitMatches(jit.h, interp);
+			}
 		}
 	}
 }
@@ -700,23 +710,27 @@ TEST(Vu1ChunkStore, MissingBranchTargetIsCompiledInstead)
 
 // A cycle budget that runs out inside a served copy: the break parks the
 // copy's own loop block, and re-entering until the end gives the interpreter's
-// result.
+// result, in the middle of micro memory and at its end.
 TEST(Vu1ChunkStore, BudgetBreakAndResumeInAServedCopy)
 {
 	const std::vector<VuOp> prog = LoopProgram(200);
-	const VuSnapshot interp = InterpOf(2, kCopy, prog, kCopy);
-	ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 1000u);
+	for (const u32 copy : {kCopy, TopOf(prog)})
+	{
+		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
+		const VuSnapshot interp = InterpOf(2, copy, prog, copy);
+		ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 1000u);
 
-	Jit jit(1, kHome, prog, kHome);
-	jit.h.SetCycleBudget(40);
-	EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u) << "the copy was compiled";
-	ASSERT_FALSE(jit.h.HasTerminated());
-	EXPECT_EQ(jit.h.GetViJit(REG_TPC), PairIndex(kCopy, 1)) << "the break parks the loop block of the copy";
-	const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-	jit.h.ContinueJit(40, 400);
-	ASSERT_TRUE(jit.h.HasTerminated());
-	EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
-	ExpectJitMatches(jit.h, interp);
+		Jit jit(1, kHome, prog, kHome);
+		jit.h.SetCycleBudget(40);
+		EXPECT_EQ(jit.RunUpload(2, copy, prog, copy), 0u) << "the copy was compiled";
+		ASSERT_FALSE(jit.h.HasTerminated());
+		EXPECT_EQ(jit.h.GetViJit(REG_TPC), PairIndex(copy, 1)) << "the break parks the loop block of the copy";
+		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
+		jit.h.ContinueJit(40, 400);
+		ASSERT_TRUE(jit.h.HasTerminated());
+		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
+		ExpectJitMatches(jit.h, interp);
+	}
 }
 
 // A copy whose last pair is the last pair of micro memory is served. One pair

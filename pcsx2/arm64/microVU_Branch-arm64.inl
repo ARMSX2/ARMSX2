@@ -630,7 +630,6 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		return v;
 	}
 
-	startPC = mVUlookupPC(vuIndex, startPC);
 	mVU.regs().start_pc = startPC;
 	if (doJumpCaching)
 	{

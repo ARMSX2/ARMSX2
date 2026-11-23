@@ -25,11 +25,6 @@
 #include <cstring>
 #include <vector>
 
-namespace mvu_test_hooks
-{
-	void SetVu1LookupShift(u32 shift_bytes);
-} // namespace mvu_test_hooks
-
 namespace recompiler_tests {
 
 using namespace vu;
@@ -158,41 +153,6 @@ void WriteDelaySlotProgram(u32 base, const Shape& s)
 	WriteLandingField(base + 14 * 8, 16);
 }
 
-// A subroutine call and return through BAL, JALR and JR, a counted loop, a
-// forward B and the end. Every address it uses comes from a link value, so the
-// same words run anywhere.
-std::vector<VuOp> CallLoopProgram()
-{
-	return {
-		LowerOnly(VBAL_L(vi::vi5, +13)),                 // 0: to 14, vi5 = 2
-		Nop(),                                           // 1
-		LoadViImm(vi::vi1, 3),                           // 2: JR returns here
-		LowerOnly(VIADDIU_L(vi::vi2, vi::vi2, 5)),       // 3: loop head
-		LowerOnly(VIADDI_L(vi::vi1, vi::vi1, -1)),       // 4
-		Nop(),                                           // 5
-		Nop(),                                           // 6
-		LowerOnly(VIBNE_L(vi::vi1, vi::vi0, -5)),        // 7: back to 3
-		Nop(),                                           // 8
-		LowerOnly(VB_L(+2)),                             // 9: to 12
-		LoadViImm(vi::vi3, 0x33),                        // 10: delay slot
-		LoadViImm(vi::vi4, 0x44),                        // 11: skipped
-		EBit(LoadViImm(vi::vi6, 0x66)),                  // 12
-		Nop(),                                           // 13
-		LoadViImm(vi::vi11, 0xBB),                       // 14: subroutine
-		LowerOnly(VIADDIU_L(vi::vi9, vi::vi5, 19)),      // 15: vi9 = pair 21
-		Nop(),                                           // 16
-		Nop(),                                           // 17
-		LowerOnly(VJALR_L(vi::vi8, vi::vi9)),            // 18: to 21, vi8 = 20
-		Nop(),                                           // 19
-		LoadViImm(vi::vi10, 0xAA),                       // 20: skipped
-		LoadViImm(vi::vi12, 0xCC),                       // 21
-		Nop(),                                           // 22
-		Nop(),                                           // 23
-		LowerOnly(VJR_L(vi::vi5)),                       // 24: to 2
-		Nop(),                                           // 25
-	};
-}
-
 // A loop that calls a subroutine on every pass. The JR that returns starts a
 // second compile at pair 4, and that compile's pass back through pair 1 calls
 // the subroutine the first compile emitted: a branch from one chunk into
@@ -222,38 +182,6 @@ void WriteProgram(u32 base, const std::vector<VuOp>& pairs)
 		WritePair(base + static_cast<u32>(n) * 8, pairs[n]);
 	WriteLandingField(base + static_cast<u32>(pairs.size()) * 8, 16);
 }
-
-struct ScopedLookupShift
-{
-	explicit ScopedLookupShift(u32 shift) { mvu_test_hooks::SetVu1LookupShift(shift); }
-	~ScopedLookupShift() { mvu_test_hooks::SetVu1LookupShift(0); }
-};
-
-// The integer registers and TPC of the last JIT run against a saved interpreter
-// run, whole, as ExpectJitMatchesInterp compares them.
-void ExpectJitMatches(const VuTestHarness& h, const VuSnapshot& interp)
-{
-	for (u32 r = 0; r < 16; r++)
-		EXPECT_EQ(h.GetViJit(r), interp.regs.VI[r].UL) << "vi" << r;
-	EXPECT_EQ(h.GetViJit(REG_TPC), interp.regs.VI[REG_TPC].UL) << "TPC";
-}
-
-// The interpreter's result for the program `setup` leaves at `copy`, from a
-// harness of its own so the run leaves nothing behind in the registers.
-template <typename Setup>
-VuSnapshot InterpAt(u32 copy, Setup&& setup)
-{
-	VuTestHarness h(1);
-	setup(h);
-	h.SetStartPc(copy);
-	h.RunInterpOnly();
-	return h.InterpSnapshot();
-}
-
-// Where the relocation tests compile a program, and where its copies go: the
-// middle of micro memory and two places that run across the wrap.
-constexpr u32 kCompiledAt = 0x0400;
-constexpr u32 kCopiesAt[] = {0x2000, 0x3FE0, 0x3FF8};
 
 } // namespace
 
@@ -617,185 +545,6 @@ TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
 	}
 	mVUPersist::SetRecordingEnabled(false);
 	RecompilerTestEnvironment::ResetVuBlockCache(1);
-}
-
-// The tests below compile a program at one address, then run that compiled
-// code for a copy of the program somewhere else (SetVu1LookupShift), against
-// the interpreter running the copy. Nothing may be compiled for the copy. Any
-// micro-memory address the code holds as a constant is the original's, and
-// shows up as a wrong link value, TPC, branch continuation or immediate.
-
-TEST(Vu1MicroAddress, CodeCompiledAtOneAddressRunsAtAnother)
-{
-	for (const u32 copy : kCopiesAt)
-	{
-		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
-		const auto setup = [copy](VuTestHarness& h) {
-			h.LoadProgram({EBitNopPair()});
-			WriteProgram(kCompiledAt, CallLoopProgram());
-			WriteProgram(copy, CallLoopProgram());
-		};
-		const VuSnapshot interp = InterpAt(copy, setup);
-		ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 15u);
-		ASSERT_EQ(interp.regs.VI[vi::vi12].UL & 0xFFFFu, 0xCCu);
-
-		VuTestHarness h(1);
-		setup(h);
-		h.SetStartPc(kCompiledAt);
-		h.RunNoDiff();
-		ExpectJitMatchesInterp(h);
-		h.RunJitPreserveBlockCache();
-		h.RunJitPreserveBlockCache();
-		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-
-		ScopedLookupShift shift(copy - kCompiledAt);
-		h.SetStartPc(copy);
-		h.RunJitPreserveBlockCache();
-		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled) << "the copy must run the code compiled for the original";
-		EXPECT_EQ(h.GetViJit(vi::vi5), LinkValue(copy, 0));
-		EXPECT_EQ(h.GetViJit(vi::vi8), LinkValue(copy, 18));
-		EXPECT_EQ(h.GetViJit(REG_TPC), PairIndex(copy, 14));
-		ExpectJitMatches(h, interp);
-	}
-}
-
-TEST(Vu1MicroAddress, RelocatedCodeBreaksOnBudgetAndResumes)
-{
-	for (const u32 copy : kCopiesAt)
-	{
-		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
-		std::vector<VuOp> prog = LoopAndBranchProgram();
-		prog[0] = LoadViImm(vi::vi1, 200);
-
-		const auto setup = [copy, &prog](VuTestHarness& h) {
-			h.LoadProgram({EBitNopPair()});
-			WriteProgram(kCompiledAt, prog);
-			WriteProgram(copy, prog);
-		};
-		const VuSnapshot interp = InterpAt(copy, setup);
-		ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 1000u);
-
-		VuTestHarness h(1);
-		setup(h);
-		h.SetStartPc(kCompiledAt);
-		h.RunNoDiff();
-		h.RunJitPreserveBlockCache();
-		h.SetCycleBudget(40);
-		h.RunJitPreserveBlockCache();
-		h.ContinueJit(40, 400);
-		ASSERT_TRUE(h.HasTerminated());
-		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-
-		ScopedLookupShift shift(copy - kCompiledAt);
-		h.SetStartPc(copy);
-		h.RunJitPreserveBlockCache();
-		ASSERT_FALSE(h.HasTerminated());
-		EXPECT_EQ(h.GetViJit(REG_TPC), PairIndex(copy, 1)) << "the break parks the loop block of the copy";
-		h.ContinueJit(40, 400);
-		ASSERT_TRUE(h.HasTerminated());
-		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
-		ExpectJitMatches(h, interp);
-	}
-}
-
-TEST(Vu1MicroAddress, RelocatedCodeBranchInDelaySlot)
-{
-	for (const u32 copy : {0x2000u, 0x3FB0u})
-	{
-		for (const Shape& s : kDelaySlotShapes)
-		{
-			// A seeded absolute target cannot follow the copy.
-			if (s.targetInVi9)
-				continue;
-			for (const u32 seed : {0u, 1u, 2u, 3u})
-			{
-				SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy << " " << s.name << " seed " << seed);
-				const auto setup = [copy, seed, &s](VuTestHarness& h) {
-					h.LoadProgram({EBitNopPair()});
-					WriteDelaySlotProgram(kCompiledAt, s);
-					WriteDelaySlotProgram(copy, s);
-					h.SetVi(vi::vi1, seed & 1);
-					h.SetVi(vi::vi2, seed >> 1);
-				};
-				const VuSnapshot interp = InterpAt(copy, setup);
-
-				VuTestHarness h(1);
-				setup(h);
-				h.SetStartPc(kCompiledAt);
-				h.RunNoDiff();
-				h.RunJitPreserveBlockCache();
-				const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-
-				ScopedLookupShift shift(copy - kCompiledAt);
-				h.SetStartPc(copy);
-				h.RunJitPreserveBlockCache();
-				EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
-				ExpectJitMatches(h, interp);
-			}
-		}
-	}
-}
-
-// Under IbitHack the copy carries different immediates from the original: the
-// relocated code has to read the copy's.
-//
-// The code reads them at a distance from its root with no wrap, so it is
-// placed only where they are all in micro memory: the second copy's last read
-// is in the last pair, and the rest of the program runs on across the top. A
-// copy whose reads would run across the top is not served by the chunk store
-// (Vu1ChunkStore.IbitHackCopyAcrossTheTopReadsItsOwnImmediates).
-TEST(Vu1MicroAddress, RelocatedCodeReadsIbitHackImmediatesOfTheCopy)
-{
-	ScopedIbitHack hack(true);
-	const auto program = [](u32 f, u32 a, u32 b, s32 c, s32 d, u32 e, s16 lw, s16 sw) {
-		return std::vector<VuOp>{
-			IBit(VuOp{VLitI(f), VNOP_U()}),                                  // 0: I = f
-			IBit(VuOp{VLitZero(), VMULi_U(mask::xyzw, vf::vf2, vf::vf1)}),   // 1: vf2 = vf1 * I
-			LowerOnly(VIADDIU_L(vi::vi1, vi::vi0, a)),                       // 2
-			LowerOnly(VIADDIU_L(vi::vi2, vi::vi1, b)),                       // 3
-			LowerOnly(VIADDI_L(vi::vi3, vi::vi0, c)),                        // 4
-			LowerOnly(VIADDI_L(vi::vi4, vi::vi2, d)),                        // 5
-			LowerOnly(VISUBIU_L(vi::vi5, vi::vi2, e)),                       // 6
-			LowerOnly(VILW_L(mask::x, vi::vi6, vi::vi0, lw)),                // 7
-			LowerOnly(VISW_L(mask::x, vi::vi2, vi::vi0, sw)),                // 8
-			EBitNopPair(),                                                   // 9
-			Nop(),                                                           // 10
-		};
-	};
-	for (const u32 copy : {0x2000u, 0x3FB8u})
-	{
-		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
-		const auto setup = [copy, &program](VuTestHarness& h) {
-			h.SetVfBits(vf::vf1, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u);
-			h.WriteMemU128(0x30, 0x1234, 0, 0, 0);
-			h.WriteMemU128(0x50, 0x4321, 0, 0, 0);
-			h.TrackMemWindow(0x40, 16);
-			h.TrackMemWindow(0x60, 16);
-			h.LoadProgram({EBitNopPair()});
-			WriteProgram(kCompiledAt, program(0x40400000u, 0x123, 0x456, -7, 5, 0x21, 3, 4));
-			WriteProgram(copy, program(0x40A00000u, 0x321, 0x111, 9, -3, 0x12, 5, 6));
-		};
-		const VuSnapshot interp = InterpAt(copy, setup);
-		ASSERT_EQ(interp.regs.VF[vf::vf2].i.x, 0x40A00000u);
-		ASSERT_EQ(interp.regs.VI[vi::vi6].UL & 0xFFFFu, 0x4321u);
-		ASSERT_EQ(interp.regs.VI[vi::vi2].UL & 0xFFFFu, 0x432u);
-
-		VuTestHarness h(1);
-		setup(h);
-		h.SetStartPc(kCompiledAt);
-		h.RunNoDiff();
-		ASSERT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x40400000u);
-		h.RunJitPreserveBlockCache();
-		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-
-		ScopedLookupShift shift(copy - kCompiledAt);
-		h.SetStartPc(copy);
-		h.RunJitPreserveBlockCache();
-		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
-		EXPECT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x40A00000u);
-		EXPECT_EQ(h.GetMemU32Jit(0x60), 0x432u) << "ISW of vi2 at the copy's offset";
-		ExpectJitMatches(h, interp);
-	}
 }
 
 } // namespace recompiler_tests
