@@ -96,15 +96,15 @@ struct NetworkSettingsView: View {
             }
 
             Section(settings.localized("Internal DNS")) {
-                ForEach($hosts) { $host in
+                ForEach(hosts) { host in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            TextField(settings.localized("Hostname"), text: $host.url)
+                            TextField(settings.localized("Hostname"), text: hostBinding(host).url)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
-                            Toggle("", isOn: $host.enabled).labelsHidden()
+                            Toggle("", isOn: hostBinding(host).enabled).labelsHidden()
                         }
-                        TextField("0.0.0.0", text: $host.address)
+                        TextField("0.0.0.0", text: hostBinding(host).address)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .keyboardType(.numbersAndPunctuation)
@@ -186,6 +186,17 @@ struct NetworkSettingsView: View {
         )
         ipRow(label + " " + settings.localized("Address"), address)
             .disabled(mode.wrappedValue != "Manual")
+    }
+
+    private func hostBinding(_ host: DEV9Host) -> Binding<DEV9Host> {
+        Binding(
+            get: { hosts.first { $0.id == host.id } ?? host },
+            set: { newValue in
+                if let index = hosts.firstIndex(where: { $0.id == host.id }) {
+                    hosts[index] = newValue
+                }
+            }
+        )
     }
 
     private func loadHosts() {
