@@ -470,8 +470,8 @@ static void ARMSX2StartJITKeepalive()
                 ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "pre-vm-initialize");
                 ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "pre-vm-initialize");
                 ARMSX2IOSSanitizeFolderSettings(s_settings_interface, EmuFolders::DataRoot, "pre-vm-initialize");
+                VMManager::Internal::LoadStartupSettings();
             }
-            VMManager::Internal::LoadStartupSettings();
             ARMSX2ApplyIOSOsdPresetFromConfig("pre-vm-initialize");
             EmuConfig.Speedhacks.vuThread =
                 Host::GetBaseBoolSettingValue("EmuCore/Speedhacks", "vuThread", EmuConfig.Speedhacks.vuThread);
