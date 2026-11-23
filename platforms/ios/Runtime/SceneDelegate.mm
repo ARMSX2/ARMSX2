@@ -120,7 +120,6 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             s_settings_interface->SetBoolValue("Achievements", "Enabled", false);
             s_settings_interface->SetBoolValue("Achievements", "ChallengeMode", false);
 
-            // iOS controller defaults.
             s_settings_interface->SetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
 
             s_settings_interface->Save();
@@ -176,7 +175,6 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     Host::CommitBaseSettingChanges();
     [self checkAndConfigureBIOS];
 
-    // GS Renderer: Metal fixed on iOS.
     EmuConfig.GS.Renderer = GSRendererType::Metal;
     Host::CommitBaseSettingChanges();
 
@@ -222,19 +220,15 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         [self syncRootViewToWindow];
         [self.window makeKeyAndVisible];
 
-        // ProMotion (120 Hz) unlock is just CADisableMinimumFrameDurationOnPhone
-        // in Info.plist. Don't pin preferredFrameRateRange via
-        // -[UIUpdateLink initWithWindowScene:]; that selector doesn't exist and
-        // crashes on cold launch.
+        // ProMotion only needs CADisableMinimumFrameDurationOnPhone in Info.plist. Pinning
+        // preferredFrameRateRange via -[UIUpdateLink initWithWindowScene:] crashes: no such selector.
 
-// Create game render view — SwiftUI MetalGameView (UIViewRepresentable) manages placement
         g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
         g_gameRenderView.backgroundColor = [UIColor blackColor];
         g_gameRenderView.clipsToBounds = YES;
         // Do NOT addSubview here — SwiftUI's MetalGameView handles view hierarchy
     }
     
-    // --- [UI] Startup Logic: Show menu first, boot on user action ---
     {
         UIViewController *rootVC = self.window.rootViewController;
         if (rootVC) {
@@ -268,7 +262,6 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 }
     }
 
-    // Listen for VM boot request from SwiftUI
     // queue:nil = synchronous delivery, so background colors are set BEFORE
     // SwiftUI re-renders the game overlay (avoids gray flash)
     [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSRequestVMBoot
@@ -294,22 +287,18 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 #endif
     }];
 
-    // ARMSX2iOSVMDidShutdown / ARMSX2iOSReturnToMenu: no rootVC background change needed.
-    // SwiftUI RootView handles menu background via Color(systemGroupedBackground).ignoresSafeArea().
-    // rootVC stays black after first boot — eliminates white flash during VM restart.
+    // RootView paints the menu background; rootVC stays black so a VM restart has no white flash.
 
     [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSVMDidShutdown
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
-        // No rootVC background change — SwiftUI handles menu bg
     }];
 
     [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSReturnToMenu
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification * _Nonnull note) {
-        // No rootVC background change — SwiftUI handles menu bg
     }];
 
     [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSEnterGameScreen
@@ -481,10 +470,8 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 }
 
 - (void)sceneDidEnterBackground:(UIScene *)scene {
-// Save NVM + memory cards when app goes to background.
-    // Without this, BIOS settings (language/date) are lost on every restart
-    // because cdvdSaveNVRAM() is only called at VM shutdown, which never
-    // happens when iOS terminates the app via SIGTERM.
+    // cdvdSaveNVRAM otherwise only runs at VM shutdown, which never comes when iOS kills the
+    // app, so BIOS settings (language, date) would be lost on every restart.
     if (s_vmThreadActive.load(std::memory_order_relaxed) && !BiosPath.empty()) {
         cdvdSaveNVRAM();
         Console.WriteLn("[NVM] NVM saved on sceneDidEnterBackground");
