@@ -68,6 +68,16 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 
 	if (isEbit)
 	{
+		// The cursor is on the pair after the T/D bit, or on a branch target.
+		// That pair's IR slot is either outside this block, holding whatever an
+		// earlier compile left, or one this block has still to emit. The end
+		// reads it cleared, as mVUendProgram does, so the pending divide and
+		// kick come only from mVUincCycles below, and the slot is put back
+		// after, so the 100-cycle advance does not mark it.
+		microOp savedInfo;
+		std::memcpy(&savedInfo, &mVUinfo, sizeof(savedInfo));
+		std::memset(&mVUinfo, 0, sizeof(mVUinfo));
+
 		mVUincCycles(mVU, 100);
 		mVUcycles -= 100;
 		qInst = mVU.q;
@@ -95,6 +105,8 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 			armEmitCall((void*)mVU0clearlpStateJIT);
 		else
 			armEmitCall((void*)mVU1clearlpStateJIT);
+
+		std::memcpy(&mVUinfo, &savedInfo, sizeof(savedInfo));
 	}
 
 	// Save P/Q regs from qmmPQ. qmmPQ layout: [0]=Q, [1]=pending_q, [2]=P,
@@ -625,22 +637,6 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 // normBranch — Unconditional branch (B/BAL)
 //------------------------------------------------------------------
 
-// A D/T-bit end at the branch target, so the end records the target as TPC.
-// mVUDTendProgram reads the pending divide and kick from the IR slot under the
-// cursor, and the target's slot is not this compile's: it holds whatever an
-// earlier compile at that address left. Clear it for the end, as
-// mVUendProgram does, and put it back after, in case the target is inside
-// this block.
-static void mVUDTendProgramAtTarget(mV, microFlagCycles& mFC)
-{
-	iPC = branchAddr(mVU) / 4;
-	microOp saved;
-	std::memcpy(&saved, &mVUinfo, sizeof(saved));
-	std::memset(&mVUinfo, 0, sizeof(mVUinfo));
-	mVUDTendProgram(mVU, &mFC, 1);
-	std::memcpy(&mVUinfo, &saved, sizeof(saved));
-}
-
 void normBranch(mV, microFlagCycles& mFC)
 {
 	if (mVUup.dBit && doDBitHandling)
@@ -666,7 +662,8 @@ void normBranch(mV, microFlagCycles& mFC)
 			armAsm->Orr(a64::w9, a64::w9, VUFLAG_INTCINTERRUPT);
 			armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, flags)));
 		}
-		mVUDTendProgramAtTarget(mVU, mFC);
+		iPC = branchAddr(mVU) / 4;
+		mVUDTendProgram(mVU, &mFC, 1);
 
 		armAsm->Bind(&noDBit);
 		iPC = tempPC;
@@ -694,7 +691,8 @@ void normBranch(mV, microFlagCycles& mFC)
 			armAsm->Orr(a64::w9, a64::w9, VUFLAG_INTCINTERRUPT);
 			armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, flags)));
 		}
-		mVUDTendProgramAtTarget(mVU, mFC);
+		iPC = branchAddr(mVU) / 4;
+		mVUDTendProgram(mVU, &mFC, 1);
 
 		armAsm->Bind(&noTBit);
 		iPC = tempPC;
