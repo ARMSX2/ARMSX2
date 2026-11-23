@@ -127,10 +127,8 @@ struct ControllerGameContextMenu: View {
                 .centredInLeadingPaneOnFold()
             }
         }
-        // The retained library is shortened by the persistent tab bar. Expand
-        // this modal surface into the window safe area before centering so a
-        // compact landscape menu is centered on screen instead of the lower
-        // center of the library viewport.
+        // The tab bar shortens the library, so expand into the safe area first or
+        // a compact landscape menu centres on the library instead of the screen.
         .ignoresSafeArea(.container, edges: .all)
         .zIndex(10_000)
         .preferredColorScheme(.dark)
@@ -274,9 +272,7 @@ struct ControllerGameContextMenu: View {
         _ item: GameLibraryControllerMenuItem,
         isCompact: Bool
     ) -> some View {
-        // The router remains available to touch-only menus, and its default
-        // navigation mode is enabled even before a controller connects. Only
-        // publish visual focus when a real controller owns input.
+        // Navigation is on before a controller connects; only a real one shows focus.
         let isSelected = controllerInput?.hasConnectedController == true
             && controllerInput?.isControllerNavigationEnabled == true
             && item.action == selectedAction
