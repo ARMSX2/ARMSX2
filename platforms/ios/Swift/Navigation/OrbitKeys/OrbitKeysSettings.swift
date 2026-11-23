@@ -179,7 +179,7 @@ private struct OrbitKeysSettingsControls: View {
 
   private func settingBinding<Value>(
     _ keyPath: KeyPath<OrbitKeysModel, Value>,
-    set: @escaping (Value) -> Void
+    set: @escaping @MainActor (Value) -> Void
   ) -> Binding<Value> {
     Binding(
       get: { model[keyPath: keyPath] },
