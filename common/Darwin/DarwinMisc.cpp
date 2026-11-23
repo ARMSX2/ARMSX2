@@ -192,7 +192,7 @@ bool Common::InhibitScreensaver(bool inhibit)
 }
 
 #if TARGET_OS_IPHONE
-// iOS has no mouse cursor — stub these out.
+// The iOS and tvOS SDKs have no CGEvent tap or CGWarpMouseCursorPosition; Catalyst shares the stubs.
 void Common::SetMousePosition(int x, int y) {}
 bool Common::AttachMousePositionCb(std::function<void(int, int)> cb) { return false; }
 void Common::DetachMousePositionCb() {}
@@ -259,7 +259,7 @@ void Common::DetachMousePositionCb()
 	mouseRunLoopSource = nullptr;
 	mouseEventTap = nullptr;
 }
-#endif // !TARGET_OS_IPHONE
+#endif // TARGET_OS_IPHONE
 
 void Threading::Sleep(int ms)
 {
