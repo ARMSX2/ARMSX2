@@ -118,9 +118,7 @@ final class GameSession {
     private init() {
         // Read only persisted boot policy here, never SettingsStore.shared:
         // singleton initialization can itself reach AppState.
-        automaticGameStartupPending = ARMSX2Bridge.getINIBool(
-            "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", defaultValue: false
-        )
+        automaticGameStartupPending = SettingsStore._automaticLoadLastGameConfig.load()
         shutdownObserver = NotificationCenter.default.addObserver(
             forName: .ARMSX2iOSVMDidShutdown,
             object: nil, queue: .main
@@ -206,12 +204,8 @@ final class GameSession {
             return
         }
         // Older versions kept only BootISO; it stands in until a game boot records LastGame.
-        let legacyGame = ARMSX2Bridge.getINIString(
-            "GameISO", key: "BootISO", defaultValue: ""
-        )
-        let game = ARMSX2Bridge.getINIString(
-            "ARMSX2iOS/Boot", key: "LastGame", defaultValue: legacyGame
-        )
+        let legacyGame = SettingsStore._bootISOConfig.load()
+        let game = SettingsStore._lastGameConfig.load(default: legacyGame)
         guard !game.isEmpty, ARMSX2Bridge.canResolveISO(game) else {
             automaticGameStartupPending = false
             if !game.isEmpty {
@@ -339,7 +333,7 @@ final class GameSession {
         Task { @MainActor in
             StikDebugLauncher.autoOpenIfNeeded(reason: "BIOS boot")
         }
-        ARMSX2Bridge.setINIString("GameISO", key: "BootISO", value: "")
+        SettingsStore._bootISOConfig.write("")
         ARMSX2Bridge.prepareGameRenderViewForCurrentRenderer()
         runningGameName = "BIOS"
         emulationSessionID = UUID()
@@ -687,7 +681,7 @@ final class GameSession {
             return gameName
         }
 
-        let bootISO = ARMSX2Bridge.getINIString("GameISO", key: "BootISO", defaultValue: "")
+        let bootISO = SettingsStore._bootISOConfig.load()
         if let gameName = normalizedRuntimeGameName(bootISO) {
             return gameName
         }

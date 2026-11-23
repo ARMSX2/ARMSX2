@@ -379,4 +379,7 @@ extension SettingsStore {
         section: "ARMSX2iOS/UI", key: "OsdShowDeviceStats", default: false,
         suppressible: false,
         codec: .bool)
+    static let _verboseLoggingConfig = Setting<Bool>(
+        section: "Logging", key: "EnableVerbose", default: false,
+        codec: .bool)
 }

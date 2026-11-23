@@ -69,11 +69,7 @@ final class GameplayShortcutCoordinator {
             return nextPercent
         }
 
-        let storedPercent = Int((ARMSX2Bridge.getINIFloat(
-            "Framerate",
-            key: "NominalScalar",
-            defaultValue: 1.0
-        ) * 100).rounded())
+        let storedPercent = Int((SettingsStore.storedNominalScalar * 100).rounded())
         let currentPercent = session.runtimeShortcutSpeedPercent ?? storedPercent
         let minimumPercent = ARMSX2Bridge.isRetroAchievementsHardcoreActive()
             ? 100

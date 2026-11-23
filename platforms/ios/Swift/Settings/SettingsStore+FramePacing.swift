@@ -15,6 +15,9 @@ extension SettingsStore {
         let frameLimiterEnabled: Bool
     }
 
+    // Read live: the store and the runtime speed paths both write NominalScalar.
+    static var storedNominalScalar: Float { ARMSX2Bridge.getINIFloat("Framerate", key: "NominalScalar", defaultValue: 1.0) }
+
     static let framePacingPresetTable: [FramePacingPreset: FramePacingPresetValues] = [
         .optimal:      .init(vsyncQueueSize: 4, audioOutputLatencyMs: 15, audioBufferMs:  50, targetFPS: 60, syncToHostRefresh: false, frameLimiterEnabled: true),
         .smooth:       .init(vsyncQueueSize: 8, audioOutputLatencyMs: 20, audioBufferMs:  75, targetFPS: 60, syncToHostRefresh: false, frameLimiterEnabled: true),
