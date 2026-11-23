@@ -27,22 +27,42 @@ enum MenuAudioPackImportError: LocalizedError, Sendable {
 @MainActor
 @Observable
 final class MenuAudioPackManager {
-    enum Sound: String, CaseIterable, Sendable {
+    enum Sound: CaseIterable, Sendable {
         case startup
         case background
-        case pauseMusic = "pause_music"
+        case pauseMusic
         case navigation
         case select
-        case switchToggleOn = "switch_toggle_on"
-        case switchToggleOff = "switch_toggle_off"
+        case switchToggleOn
+        case switchToggleOff
         case `return`
-        case stoppingGame = "stopping_game"
-        case contextMenu = "context_menu"
-        case achievementToast = "achievement_toast"
-        case uiToast = "ui_toast"
-        case tabTransition = "tab_transition"
-        case launchGame = "launch_game"
-        case noJIT = "no_jit"
+        case stoppingGame
+        case contextMenu
+        case achievementToast
+        case uiToast
+        case tabTransition
+        case launchGame
+        case noJIT
+
+        var name: ARMSX2UISound {
+            switch self {
+            case .startup: .startup
+            case .background: .background
+            case .pauseMusic: .pauseMusic
+            case .navigation: .navigation
+            case .select: .select
+            case .switchToggleOn: .switchToggleOn
+            case .switchToggleOff: .switchToggleOff
+            case .return: .return
+            case .stoppingGame: .stoppingGame
+            case .contextMenu: .contextMenu
+            case .achievementToast: .achievementToast
+            case .uiToast: .uiToast
+            case .tabTransition: .tabTransition
+            case .launchGame: .launchGame
+            case .noJIT: .noJit
+            }
+        }
     }
 
     enum Event: Hashable, Sendable {
@@ -228,7 +248,7 @@ final class MenuAudioPackManager {
         } catch {
             NSLog(
                 "[ARMSX2 UI Audio] %@ preview failed: %@",
-                sound.rawValue,
+                sound.name.rawValue,
                 error.localizedDescription
             )
         }
@@ -697,7 +717,7 @@ final class MenuAudioPackManager {
             } catch {
                 NSLog(
                     "[ARMSX2 UI Audio] %@ could not be preloaded: %@",
-                    sound.rawValue,
+                    sound.name.rawValue,
                     error.localizedDescription
                 )
             }

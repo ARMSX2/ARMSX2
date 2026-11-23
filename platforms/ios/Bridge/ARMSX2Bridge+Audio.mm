@@ -42,13 +42,21 @@ static NSArray<NSString*>* ARMSX2RequiredAudioPackRoles()
     static NSArray<NSString*>* roles;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        roles = [[NSArray alloc] initWithObjects:@"background", @"navigation", @"select",
-                                                  @"switch_toggle_on",
-                                                  @"switch_toggle_off", @"return",
-                                                  @"stopping_game", @"context_menu",
-                                                  @"achievement_toast", @"ui_toast",
-                                                  @"tab_transition", @"launch_game",
-                                                  @"no_jit", nil];
+        roles = @[
+            ARMSX2UISoundBackground,
+            ARMSX2UISoundNavigation,
+            ARMSX2UISoundSelect,
+            ARMSX2UISoundSwitchToggleOn,
+            ARMSX2UISoundSwitchToggleOff,
+            ARMSX2UISoundReturn,
+            ARMSX2UISoundStoppingGame,
+            ARMSX2UISoundContextMenu,
+            ARMSX2UISoundAchievementToast,
+            ARMSX2UISoundUiToast,
+            ARMSX2UISoundTabTransition,
+            ARMSX2UISoundLaunchGame,
+            ARMSX2UISoundNoJit,
+        ];
     });
     return roles;
 }
@@ -59,13 +67,22 @@ static NSArray<NSString*>* ARMSX2SupportedAudioPackRoles()
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         // startup is intentionally optional and is used only when a custom pack provides it.
-        roles = [[NSArray alloc] initWithObjects:@"startup", @"background", @"navigation",
-                                                  @"select", @"switch_toggle_on",
-                                                  @"switch_toggle_off", @"return",
-                                                  @"stopping_game", @"context_menu",
-                                                  @"achievement_toast", @"ui_toast",
-                                                  @"tab_transition", @"launch_game",
-                                                  @"no_jit", nil];
+        roles = @[
+            ARMSX2UISoundStartup,
+            ARMSX2UISoundBackground,
+            ARMSX2UISoundNavigation,
+            ARMSX2UISoundSelect,
+            ARMSX2UISoundSwitchToggleOn,
+            ARMSX2UISoundSwitchToggleOff,
+            ARMSX2UISoundReturn,
+            ARMSX2UISoundStoppingGame,
+            ARMSX2UISoundContextMenu,
+            ARMSX2UISoundAchievementToast,
+            ARMSX2UISoundUiToast,
+            ARMSX2UISoundTabTransition,
+            ARMSX2UISoundLaunchGame,
+            ARMSX2UISoundNoJit,
+        ];
     });
     return roles;
 }
