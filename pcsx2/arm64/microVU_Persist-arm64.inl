@@ -1142,7 +1142,8 @@ namespace mVUPersist
 	//    (DiskBlock::jumpCacheAndExtent).
 	// 5: the program's kept-bit words (microProgram::keptBits) follow the
 	//    ranges, counted by keptCount where the header had an unused flags word.
-	static constexpr u32 kImageVersion = 5;
+	// 6: the kept-bit words lie inside the ranges, sorted by address.
+	static constexpr u32 kImageVersion = 6;
 
 	struct ImageHeader
 	{
@@ -1487,9 +1488,12 @@ namespace mVUPersist
 			return nullptr;
 		}
 		std::vector<DiskKeptBits> keptBits(hdr.keptCount);
-		for (DiskKeptBits& w : keptBits)
+		for (size_t i = 0; i < keptBits.size(); i++)
 		{
-			if (!ReadPod(p, end, w) || w.addr % 4 != 0 || w.addr >= mVU.microMemSize)
+			DiskKeptBits& w = keptBits[i];
+			// Sorted by address: mVUcmpProg searches the list.
+			if (!ReadPod(p, end, w) || w.addr % 4 != 0 || w.addr >= mVU.microMemSize ||
+				(i && w.addr <= keptBits[i - 1].addr))
 			{
 				s_stats[vu].hydrationRejects++;
 				return nullptr;
@@ -1647,15 +1651,12 @@ namespace mVUPersist
 					mVU.regs().Micro + r.start, static_cast<size_t>(r.end - r.start));
 			}
 		}
-		// And the words compared through a mask, from the same verified image.
+		// And the words of those ranges compared through a mask.
 		if (!keptBits.empty())
 		{
 			prog->keptBits = new std::vector<microKeptBits>();
 			for (const DiskKeptBits& w : keptBits)
-			{
 				prog->keptBits->push_back(microKeptBits{w.addr, w.kept});
-				std::memcpy(&prog->data[w.addr / 4], mVU.regs().Micro + w.addr, sizeof(u32));
-			}
 		}
 
 		// Copy each chunk to the current cursor (16-aligned, as recorded).

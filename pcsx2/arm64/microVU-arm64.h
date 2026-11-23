@@ -531,11 +531,11 @@ struct microProgram
 	u64 vuAotBornAt;
 	u64 vuAotBornCycle;
 
-	// Words left out of `ranges` because part of them is read at run time (the
-	// lower-op immediates under the IbitHack gamefix). The rest of each word is
-	// compiled in, so mVUcmpProg compares the bits in `kept` against `data`, and
-	// mVUclear treats a write to the word like a write to a range. Null for a
-	// program with none.
+	// Words of `ranges` that are partly read at run time (the lower-op
+	// immediates under the IbitHack gamefix), sorted by address. The rest of
+	// each word is compiled in: when a range's bytes differ from `data`,
+	// mVUcmpProg compares that range again with only the bits in `kept` of these
+	// words. Null for a program with none.
 	std::vector<microKeptBits>* keptBits;
 };
 

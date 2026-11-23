@@ -199,4 +199,47 @@ TEST(MvuIbitHack, RewrittenLowerRegisterFieldIsNotIgnored)
 		<< "the block compiled for vi2 ran after the word was rewritten to read vi3";
 }
 
+// Hack ON: a kept-bit word in the middle of a range. Immediate rewrites keep
+// the block, a register-field rewrite after them still reaches the program,
+// and so does a rewrite of an ordinary word in the same range.
+TEST(MvuIbitHack, KeptWordInsideARangeComparesItsCompiledBits)
+{
+	ScopedIbitHack hack(true);
+
+	const auto rewriteLower = [](u32 pair, u32 word) {
+		std::memcpy(vuRegs[1].Micro + pair * 8, &word, sizeof(word));
+		CpuMicroVU1.Clear(pair * 8, sizeof(word));
+	};
+
+	VuTestHarness h(1);
+	h.SetVi(vi::vi2, 0x10);
+	h.SetVi(vi::vi3, 0x20);
+	h.LoadProgram({
+		VuOp{VIOR_L(vi::vi0, vi::vi0, vi::vi0), VNOP_U()},
+		VuOp{VIADDIU_L(vi::vi1, vi::vi2, 5), VNOP_U()},
+		EBit(VuOp{VIOR_L(vi::vi0, vi::vi0, vi::vi0), VNOP_U()}),
+	});
+	const u64 warm = WarmUp(h);
+	ASSERT_EQ(h.GetViJit(vi::vi1), 0x15u);
+
+	rewriteLower(1, VIADDIU_L(vi::vi1, vi::vi2, 7));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), warm) << "only the immediate changed";
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x17u);
+
+	rewriteLower(1, VIADDIU_L(vi::vi1, vi::vi2, 9));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), warm) << "only the immediate changed";
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x19u);
+
+	rewriteLower(1, VIADDIU_L(vi::vi1, vi::vi3, 9));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x29u)
+		<< "the block compiled for vi2 ran after the word was rewritten to read vi3";
+
+	rewriteLower(0, VIOR_L(vi::vi5, vi::vi2, vi::vi0));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(h.GetViJit(vi::vi5), 0x10u) << "the rewrite of pair 0 did not reach the program";
+}
+
 } // namespace recompiler_tests

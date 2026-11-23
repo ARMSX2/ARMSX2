@@ -54,8 +54,10 @@ inline VuOp LowerOnly(u32 lower)
 
 // Serialized-image header offsets (pinned by mVUPersist::ImageHeader v3;
 // the corruption tests poke these fields directly).
+constexpr size_t kOffKeptCount = 12;
 constexpr size_t kOffHashLo = 16;
 constexpr size_t kOffImageBase = 32;
+constexpr size_t kOffRangeCount = 60;
 constexpr size_t kOffChunkCount = 68;
 constexpr size_t kHeaderSize = 88;
 
@@ -389,6 +391,49 @@ TEST_F(MvuPersistRoundTrip, IbitHackKeptBitsSurviveHydration)
 	h.RunJitPreserveBlockCache();
 	EXPECT_EQ(h.GetViJit(vi::vi1), 0x25u)
 		<< "the hydrated program ran its vi2 block after the word was rewritten to read vi3";
+}
+
+// Kept-bit words stay inside the program's ranges, so IbitHack does not cut a
+// range at each one: the program has as many ranges as without the gamefix,
+// and every micro-memory write and every compare after one walks that many.
+TEST_F(MvuPersistRoundTrip, IbitHackKeptWordsDoNotSplitTheRanges)
+{
+	const bool savedHack = EmuConfig.Gamefixes.IbitHack;
+	// A lower op that is not one of the kept-bit ops, and no I bit anywhere:
+	// an I-bit literal word does leave the ranges under the gamefix.
+	const VuOp filler{VIOR_L(vi::vi0, vi::vi0, vi::vi0), VNOP_U()};
+	u32 rangeCount[2] = {};
+	u32 keptCount[2] = {};
+	for (int hack = 0; hack < 2; hack++)
+	{
+		SCOPED_TRACE(hack);
+		EmuConfig.Gamefixes.IbitHack = hack != 0;
+		VuTestHarness h(0);
+		h.SetVi(vi::vi2, 0x10);
+		h.LoadProgram({
+			LowerOnly(VIADDIU_L(vi::vi1, vi::vi2, 5)),
+			filler,
+			LowerOnly(VIADDIU_L(vi::vi3, vi::vi1, 1)),
+			filler,
+			LowerOnly(VIADDIU_L(vi::vi4, vi::vi3, 1)),
+			EBit(filler),
+		});
+		// The delay slot LoadProgram appends carries an I bit.
+		std::memcpy(vuRegs[0].Micro + 6 * 8, &filler.lower, sizeof(u32));
+		std::memcpy(vuRegs[0].Micro + 6 * 8 + 4, &filler.upper, sizeof(u32));
+		RunAndKeepProgram(h);
+		EXPECT_EQ(h.GetViJit(vi::vi4), 0x17u);
+
+		std::vector<u8> image;
+		ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(0, image));
+		std::memcpy(&keptCount[hack], image.data() + kOffKeptCount, sizeof(u32));
+		std::memcpy(&rangeCount[hack], image.data() + kOffRangeCount, sizeof(u32));
+	}
+	EmuConfig.Gamefixes.IbitHack = savedHack;
+
+	EXPECT_EQ(keptCount[0], 0u);
+	EXPECT_EQ(keptCount[1], 3u);
+	EXPECT_EQ(rangeCount[1], rangeCount[0]) << "each kept-bit word split a range";
 }
 
 } // namespace recompiler_tests

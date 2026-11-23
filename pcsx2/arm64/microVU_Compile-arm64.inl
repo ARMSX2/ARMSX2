@@ -119,8 +119,8 @@ static u32 mVUibitHackKeptBits(u32 code)
 	}
 }
 
-// Records a word that mVUsetupRange left out of the ranges and copies it into
-// the program's compare image.
+// Records a word of the program's ranges that mVUcmpProg compares through
+// `kept`, in the program's list sorted by address.
 static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept)
 {
 	if (doWholeProgCompare)
@@ -128,10 +128,10 @@ static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept)
 	std::vector<microKeptBits>*& words = mVUcurProg.keptBits;
 	if (!words)
 		words = new std::vector<microKeptBits>();
-	const auto same = [addr](const microKeptBits& w) { return w.addr == addr; };
-	if (std::none_of(words->begin(), words->end(), same))
-		words->push_back({addr, kept});
-	std::memcpy(&mVUcurProg.data[addr / 4], mVU.regs().Micro + addr, sizeof(u32));
+	const auto it = std::lower_bound(words->begin(), words->end(), addr,
+		[](const microKeptBits& w, u32 a) { return w.addr < a; });
+	if (it == words->end() || it->addr != addr)
+		words->insert(it, {addr, kept});
 }
 
 //------------------------------------------------------------------
@@ -1390,17 +1390,10 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 			if (EmuConfig.Gamefixes.IbitHack)
 			{
 				// The immediates of IADDI/IADDIU/ISUBIU/ILW/ISW/LQ/SQ are read
-				// from micro memory at run time under IbitHack, so the word
-				// leaves the range and only its other bits are compared.
+				// from micro memory at run time under IbitHack, so only the
+				// word's other bits are compared. The word stays in the range.
 				if (const u32 kept = mVUibitHackKeptBits(mVU.code))
-				{
-					incPC(1);
-					mVUsetupRange(mVU, xPC, false);
 					mVUaddKeptBits(mVU, xPC, kept);
-					if (branch < 2)
-						mVUsetupRange(mVU, xPC + 4, true);
-					incPC(-1);
-				}
 			}
 			mVUopL(mVU, 0);
 			incPC(1);

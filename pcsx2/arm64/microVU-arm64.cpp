@@ -79,14 +79,6 @@ static __fi bool mVUProgRangesOverlap(const microProgram* prog, u32 addr, u32 si
 		if (r.start < hi && r.end > lo)
 			return true;
 	}
-	if (prog->keptBits)
-	{
-		for (const microKeptBits& w : *prog->keptBits)
-		{
-			if (w.addr < addr + size && w.addr + 4 > addr)
-				return true;
-		}
-	}
 	return false;
 }
 
@@ -1637,6 +1629,36 @@ u64 mVUrangesHash(microVU& mVU, microProgram& prog)
 	return hash.v64;
 }
 
+// A range whose bytes differ from the compare image can still match when the
+// difference is only in the run-time bits of its kept-bit words. Compares the
+// range again in pieces, each kept-bit word through its mask, and on a match
+// takes the live bytes into the image, so the next compare of the range is one
+// memcmp again.
+static bool mVUcmpKeptRange(microVU& mVU, microProgram& prog, const microRange& range)
+{
+	const u8* const live = mVU.regs().Micro;
+	u8* const image = reinterpret_cast<u8*>(prog.data);
+	const u32 start = static_cast<u32>(range.start);
+	const u32 end = static_cast<u32>(range.end);
+	const std::vector<microKeptBits>& words = *prog.keptBits;
+	u32 pos = start;
+	for (auto it = std::lower_bound(words.begin(), words.end(), start,
+			 [](const microKeptBits& w, u32 a) { return w.addr < a; });
+		 it != words.end() && it->addr + 4 <= end; ++it)
+	{
+		u32 a, b;
+		std::memcpy(&a, live + it->addr, sizeof(a));
+		std::memcpy(&b, image + it->addr, sizeof(b));
+		if (memcmp(image + pos, live + pos, it->addr - pos) || ((a ^ b) & it->kept))
+			return false;
+		pos = it->addr + 4;
+	}
+	if (memcmp(image + pos, live + pos, end - pos))
+		return false;
+	std::memcpy(image + start, live + start, end - start);
+	return true;
+}
+
 __fi bool mVUcmpProg(microVU& mVU, microProgram& prog)
 {
 	if (doWholeProgCompare)
@@ -1654,18 +1676,9 @@ __fi bool mVUcmpProg(microVU& mVU, microProgram& prog)
 #endif
 			auto cmpOffset = [&](void* x) { return (u8*)x + range.start; };
 
-			if (memcmp(cmpOffset(prog.data), cmpOffset(mVU.regs().Micro), (range.end - range.start)))
+			if (memcmp(cmpOffset(prog.data), cmpOffset(mVU.regs().Micro), (range.end - range.start)) &&
+				(!prog.keptBits || !mVUcmpKeptRange(mVU, prog, range)))
 				return false;
-		}
-		if (prog.keptBits)
-		{
-			for (const microKeptBits& w : *prog.keptBits)
-			{
-				u32 live;
-				std::memcpy(&live, mVU.regs().Micro + w.addr, sizeof(live));
-				if ((live ^ prog.data[w.addr / 4]) & w.kept)
-					return false;
-			}
 		}
 	}
 	mVU.prog.cleared = 0;
@@ -1819,21 +1832,10 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 _mVUt __fi void* mVUlookupProg(u32 startPC, uptr pState)
 {
 	microVU& mVU = mVUx;
-	const u32 slot = mVU.regs().start_pc / 8;
-	microProgramQuick& quick = mVU.prog.quick[slot];
+	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
 
 	if (!quick.prog)
-	{
-		// A write to a word with kept bits drops the quick slot, as any write
-		// to the program does, though a game that rewrites only the immediate
-		// leaves the program valid. The program it dropped is still at the
-		// front of this start PC's list: take it back here when it compares
-		// equal, rather than through the full search.
-		microProgramList* list = mVU.prog.prog[slot];
-		if (list->empty() || !list->front()->keptBits || !mVUcmpProg(mVU, *list->front()))
-			return nullptr;
-		mVUquickInstall(mVU, slot, list->front());
-	}
+		return nullptr;
 
 	microBlockManager* block = quick.prog->block[startPC / 8];
 	if (!block)
