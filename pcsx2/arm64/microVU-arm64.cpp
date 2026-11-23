@@ -1264,6 +1264,8 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// Every placement goes with the programs freed below, and the chunk
 	// store's entries with the code cache.
 	mVU.placeSlotsUsed = 0;
+	if (mVU.index)
+		mVUchunkStoreDumpStats(mVU, "reset");
 	mVUchunkStoreClear(mVU);
 	if (!mVU.index)
 		mVU0ParkedSpin = 0;

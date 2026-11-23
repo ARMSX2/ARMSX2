@@ -95,9 +95,10 @@ namespace mVUChunkStore
 		u64 packLoadedCodeBytes = 0;
 		u64 packLoadNs = 0;
 		u64 packRejected = 0;
-		// The first placement of a tiered body in this process: how many
-		// outermost compiles had been asked for by then, and how many of them
-		// the JIT compiled. 0 when none was placed.
+		// The first placement of a tiered body since the store was last
+		// emptied (a reset): which outermost compile asked for since then it
+		// served (1: the first), and how many before it the JIT compiled. 0
+		// when none has been placed since.
 		u64 firstTieredEpisode = 0;
 		u64 firstTieredCompiles = 0;
 	};

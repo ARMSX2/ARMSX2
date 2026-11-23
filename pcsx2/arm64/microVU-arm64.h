@@ -874,6 +874,9 @@ struct mVUChunkStoreData
 	// The disk pack (microVU_ChunkPack-arm64.inl): the root hashes whose
 	// records have been asked for since the store was last emptied.
 	std::unordered_set<u64> packAsked;
+	// Stats::episodes and Stats::hits when the store was last emptied.
+	u64 episodesAtClear = 0;
+	u64 hitsAtClear = 0;
 	std::vector<u8> scratchRecord;
 	std::vector<std::vector<u8>> scratchRecords;
 };

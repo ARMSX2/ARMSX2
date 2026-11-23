@@ -73,6 +73,9 @@ static void mVUchunkStoreClear(microVU& mVU)
 		store->heads.clear();
 		store->index.clear();
 		store->packAsked.clear();
+		store->episodesAtClear = s_mVUchunkStats.episodes;
+		store->hitsAtClear = s_mVUchunkStats.hits;
+		s_mVUchunkStats.firstTieredEpisode = s_mVUchunkStats.firstTieredCompiles = 0;
 		store->built.reset();
 		store->codeBytes = 0;
 		store->plainBodies = 0;
@@ -385,10 +388,13 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 	{
 		mVUvuAotOnBodyPlaced(mVU, b.droppedSticky);
 		mVUChunkStore::Stats& st = s_mVUchunkStats;
-		if (!st.tieredPlaced++)
+		st.tieredPlaced++;
+		if (!st.firstTieredEpisode)
 		{
-			st.firstTieredEpisode = st.episodes;
-			st.firstTieredCompiles = st.episodes - st.hits;
+			// (this lookup is counted in episodes and not yet in hits)
+			const mVUChunkStoreData& store = *mVU.chunkStore;
+			st.firstTieredEpisode = st.episodes - store.episodesAtClear;
+			st.firstTieredCompiles = st.firstTieredEpisode - 1 - (st.hits - store.hitsAtClear);
 		}
 	}
 	if (b.statusImm)
