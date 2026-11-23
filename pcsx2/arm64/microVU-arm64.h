@@ -175,7 +175,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 71;
+static constexpr u32 kMvuCompilerAbiVersion = 72;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -683,6 +683,7 @@ struct mVUChunkEpisode
 		microBlock* block;
 		u8* stub;
 		u32 startPC;
+		u8* body; // where the stub ends: links inside the chunk enter here
 	};
 	// First slot of the placement the compile itself runs as.
 	u32 slotBase;
@@ -740,7 +741,8 @@ struct mVUChunkBody
 	{
 		s32 pairOff;
 		u32 slot;
-		u8* stub; // the entry stub in the chunk's code; the body follows it
+		u8* stub; // the entry stub in the chunk's code
+		u8* body; // the code after the stub
 		microJumpCache* jumpCache; // ends in a JR or JALR: the code's table, which every placement's block uses
 		microRegInfo pState;
 		microRegInfo pStateEnd;
@@ -894,6 +896,11 @@ struct microVU
 	// are the index of the placement's first slot in placeSlots. Each entry
 	// stub writes this word. See mVUemitRootStub.
 	u32 place;
+	// VU1 under the IbitHack gamefix: the micro memory of the placement now
+	// running, from its root (Micro + root * 8). The code reads its run-time
+	// immediates at a distance from it. Each entry stub writes it after
+	// `place`.
+	u8* placeMicro;
 
 	// Resume-aware dispatch (VE-07). A cycle-budget break re-enters the very
 	// block that broke (mVUtestCycles saves that block's own pState/TPC), so

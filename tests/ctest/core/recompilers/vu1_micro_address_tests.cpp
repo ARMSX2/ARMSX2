@@ -553,6 +553,70 @@ TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
 	RecompilerTestEnvironment::ResetVuBlockCache(1);
 }
 
+// Under the IbitHack gamefix the entry stubs also store the placement's micro
+// memory, which the reads are taken from. A program loaded back in from a
+// saved image reads its immediates from micro memory as it is, a word
+// rewritten after the load included.
+TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
+{
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	ScopedIbitHack hack(true);
+	const u32 base = 0x0200;
+	mVUPersist::SetRecordingEnabled(true);
+	{
+		VuTestHarness h(1);
+		h.SetVfBits(vf::vf1, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u);
+		h.WriteMemU128(0x30, 0x1234, 0, 0, 0);
+		h.WriteMemU128(0x50, 0x4321, 0, 0, 0);
+		h.TrackMemWindow(0x40, 16);
+		Place(h, base, {
+			IBit(VuOp{VLitI(0x40400000u), VNOP_U()}),                        // 0: I = 3.0
+			IBit(VuOp{VLitZero(), VMULi_U(mask::xyzw, vf::vf2, vf::vf1)}),   // 1: vf2 = vf1 * I
+			LowerOnly(VIADDIU_L(vi::vi1, vi::vi0, 0x123)),                   // 2
+			LowerOnly(VILW_L(mask::x, vi::vi6, vi::vi0, 3)),                 // 3: vi6 = mem[0x30].x
+			LowerOnly(VISW_L(mask::x, vi::vi1, vi::vi0, 4)),                 // 4: mem[0x40].x = vi1
+			EBitNopPair(),                                                   // 5
+			Nop(),                                                           // 6
+		});
+		h.Run();
+		ASSERT_EQ(h.GetViJit(vi::vi1), 0x123u);
+		h.RunJitPreserveBlockCache();
+		std::vector<u8> image;
+		ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, image));
+
+		// Something else at the front of the code cache, so the image lands
+		// somewhere new.
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		std::vector<u8> saved(vuRegs[1].Micro + 0x1000, vuRegs[1].Micro + 0x1018);
+		WritePair(0x1000, LoadViImm(vi::vi3, 1));
+		WritePair(0x1008, EBitNopPair());
+		WritePair(0x1010, Nop());
+		h.SetStartPc(0x1000);
+		h.RunJitPreserveBlockCache();
+		h.SetStartPc(base);
+		std::memcpy(vuRegs[1].Micro + 0x1000, saved.data(), saved.size());
+		CpuMicroVU1.Clear(0, kMicroBytes);
+
+		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
+		ASSERT_TRUE(mVUPersist::TestHydrate(1, image.data(), image.size()));
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled) << "the reloaded program compiled something";
+		EXPECT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x40400000u);
+		EXPECT_EQ(h.GetViJit(vi::vi1), 0x123u);
+		EXPECT_EQ(h.GetViJit(vi::vi6), 0x1234u);
+
+		// The ILW's offset, rewritten in place: the reloaded block reads it.
+		const u32 ilw = VILW_L(mask::x, vi::vi6, vi::vi0, 5);
+		std::memcpy(vuRegs[1].Micro + base + 3 * 8, &ilw, 4);
+		CpuMicroVU1.Clear(base + 3 * 8, 4);
+		h.RunJitPreserveBlockCache();
+		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled);
+		EXPECT_EQ(h.GetViJit(vi::vi6), 0x4321u) << "ILW of mem[0x50]";
+	}
+	mVUPersist::SetRecordingEnabled(false);
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+}
+
 // The tests below compile a program at one address, then run that compiled
 // code for a copy of the program somewhere else (SetVu1LookupShift), against
 // the interpreter running the copy. Nothing may be compiled for the copy. Any
@@ -672,6 +736,12 @@ TEST(Vu1MicroAddress, RelocatedCodeBranchInDelaySlot)
 
 // Under IbitHack the copy carries different immediates from the original: the
 // relocated code has to read the copy's.
+//
+// The code reads them at a distance from its root with no wrap, so it is
+// placed only where they are all in micro memory: the second copy's last read
+// is in the last pair, and the rest of the program runs on across the top. A
+// copy whose reads would run across the top is not served by the chunk store
+// (Vu1ChunkStore.IbitHackCopyAcrossTheTopReadsItsOwnImmediates).
 TEST(Vu1MicroAddress, RelocatedCodeReadsIbitHackImmediatesOfTheCopy)
 {
 	ScopedIbitHack hack(true);
@@ -690,7 +760,7 @@ TEST(Vu1MicroAddress, RelocatedCodeReadsIbitHackImmediatesOfTheCopy)
 			Nop(),                                                           // 10
 		};
 	};
-	for (const u32 copy : kCopiesAt)
+	for (const u32 copy : {0x2000u, 0x3FB8u})
 	{
 		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << copy);
 		const auto setup = [copy, &program](VuTestHarness& h) {

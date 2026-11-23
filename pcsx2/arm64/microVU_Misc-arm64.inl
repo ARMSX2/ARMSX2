@@ -535,9 +535,18 @@ static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.
 // PC (the M-bit check, the spin loop detector).
 __fi static bool mVUrootRelative(mV) { return isVU1; }
 
-// Bytes of the entry stub in front of a VU1 block's body.
+// Bytes of the part of a VU1 block's entry stub that stores mVU.place.
 static constexpr u32 mVUrootStubBytes = 12;
+// Bytes the stub goes on with under the IbitHack gamefix, to store
+// mVU.placeMicro.
+static constexpr u32 mVUplaceMicroStubBytes = 16;
 static constexpr u32 mVUplaceRootBits = 11;
+
+// Bytes of an entry stub as the compiler emits them now.
+__fi static u32 mVUplaceStubBytes()
+{
+	return mVUrootStubBytes + (EmuConfig.Gamefixes.IbitHack ? mVUplaceMicroStubBytes : 0);
+}
 
 // The value a placement's entry stubs store in mVU.place.
 __fi static u32 mVUplaceWord(u32 rootPC, u32 slotBase)
@@ -546,14 +555,24 @@ __fi static u32 mVUplaceWord(u32 rootPC, u32 slotBase)
 	return ((rootPC / 8) & 0x7ff) | (slotBase << mVUplaceRootBits);
 }
 
-// An entry stub: three instructions that store `word` in mVU.place. w9 is
-// free at a block entry: mVUtestCycles loads it first thing.
+// An entry stub: three instructions that store `word` in mVU.place. Under
+// the IbitHack gamefix four more store the placement's micro memory in
+// mVU.placeMicro, for the run-time immediate reads (mVUemitLoadCurI). w9 is
+// free at a block entry: mVUtestCycles loads it first thing. So is x17, the
+// address scratch.
 static void mVUemitPlaceStub(mV, u32 word)
 {
-	vixl::ExactAssemblyScope scope(armAsm, mVUrootStubBytes);
+	vixl::ExactAssemblyScope scope(armAsm, mVUplaceStubBytes());
 	armAsm->movz(a64::w9, word & 0xffff);
 	armAsm->movk(a64::w9, word >> 16, 16);
 	armAsm->str(a64::w9, mVUfieldMem(mVU, &mVU.place));
+	if (EmuConfig.Gamefixes.IbitHack)
+	{
+		armAsm->ubfiz(a64::x9, a64::x9, 3, mVUplaceRootBits);
+		armAsm->ldr(RSCRATCHADDR, mVUstateMem(offsetof(VURegs, Micro)));
+		armAsm->add(a64::x9, RSCRATCHADDR, a64::Operand(a64::x9));
+		armAsm->str(a64::x9, mVUfieldMem(mVU, &mVU.placeMicro));
+	}
 }
 
 // The entry stub of a block being compiled: every way into the block from
@@ -681,6 +700,13 @@ static u32 mVUibitHackKeptBits(u32 code)
 // IbitHack gamefix). `runtimeBits` are the bits of it the caller goes on to
 // use: the compiled code does not depend on them. Clobbers RSCRATCHADDR, as
 // armLoadPtr does.
+//
+// VU1 reads the word at its distance from mVU.placeMicro, the placement's
+// root in micro memory, with no wrap. The distance is the word's own address
+// less the root's, signed, so at the compile's own root every read is in micro
+// memory, a chunk that runs across the top included. The chunk store places
+// the code at another root only where every word the chunk read, these among
+// them, is in micro memory there (mVUchunkBodyMatches).
 static void mVUemitLoadCurI(mV, const a64::Register& dst, u32 runtimeBits)
 {
 	if (!mVUrootRelative(mVU))
@@ -690,10 +716,17 @@ static void mVUemitLoadCurI(mV, const a64::Register& dst, u32 runtimeBits)
 	}
 	if (mVU.chunk.recording)
 		mVU.chunk.runtimeBits.push_back({iPC, runtimeBits});
-	mVUemitRootPlus(mVU, dst, xPC);
-	armAsm->Ubfiz(dst.X(), dst.X(), 3, 11);
-	armMoveAddressToReg(RSCRATCHADDR, mVU.regs().Micro + (iPC & 1) * 4);
-	armAsm->Ldr(dst.W(), a64::MemOperand(RSCRATCHADDR, dst.X()));
+	const s32 off = (static_cast<s32>(xPC) - static_cast<s32>(mVU.compileRoot)) + (iPC & 1) * 4;
+	armAsm->Ldr(dst.X(), mVUfieldMem(mVU, &mVU.placeMicro));
+	if (off >= -256)
+	{
+		armAsm->Ldr(dst.W(), a64::MemOperand(dst.X(), off));
+	}
+	else
+	{
+		armAsm->Mov(RSCRATCHADDR, off);
+		armAsm->Ldr(dst.W(), a64::MemOperand(dst.X(), RSCRATCHADDR));
+	}
 }
 
 // The body of the block of the chunk being compiled whose entry is
@@ -703,7 +736,7 @@ static u8* mVUchunkBody(mV, const void* hostEntry)
 	for (const mVUChunkEpisode::Block& cb : mVU.chunk.blocks)
 	{
 		if (cb.stub == hostEntry && cb.block->hostEntry == hostEntry)
-			return cb.stub + mVUrootStubBytes;
+			return cb.body;
 	}
 	return nullptr;
 }

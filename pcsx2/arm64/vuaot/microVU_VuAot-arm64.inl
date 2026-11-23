@@ -1222,7 +1222,7 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	{
 		pxAssertRel(n->hasEntry, "vu-aot: a region node without an entry");
 		n->real = vuAotRegisterNode(mVU, n->pc, n->pState, base + n->entryOff, (n == j.root) ? rootReal : nullptr);
-		mVU.chunk.blocks.push_back({n->real, base + n->entryOff, n->pc});
+		mVU.chunk.blocks.push_back({n->real, base + n->entryOff, n->pc, base + n->entryOff + mVUrootStubBytes});
 	}
 	// The job numbered its slots from 0; the chunk's next free one is where they start.
 	const u32 firstSlot = static_cast<u32>(mVU.chunk.slots.size());

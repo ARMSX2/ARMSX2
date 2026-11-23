@@ -304,7 +304,7 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 		targets.push_back(target);
 	}
 
-	const size_t stubBytes = b.blocks.size() * (mVUrootStubBytes + 4);
+	const size_t stubBytes = b.blocks.size() * (mVUrootStubBytes + mVUplaceMicroStubBytes + 4);
 	const u8* const cacheEnd = mVU.prog.x86end + (mVUcacheSafeZone * _1mb) / 2;
 	if (mVU.placeSlotsUsed >= mVUplaceSlotResetAt || b.slotCount > mVUplaceSlotCapacity - mVU.placeSlotsUsed ||
 		armGetCurrentCodePointer() + stubBytes + 4096 > cacheEnd)
@@ -324,7 +324,7 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 	{
 		u8* const stub = armGetCurrentCodePointer();
 		mVUemitPlaceStub(mVU, word);
-		armEmitJmp(blk.stub + mVUrootStubBytes);
+		armEmitJmp(blk.body);
 
 		blockCreate(rootPair + blk.pairOff);
 		microBlockManager* const mgr = mVUblocks[rootPair + blk.pairOff];
@@ -588,6 +588,10 @@ static void mVUchunkEnd(microVU& mVU)
 		hi = std::max(hi, last);
 	};
 	span(b.reads.front().off, b.reads.back().off);
+	// The code reads these words at a distance from its root with no wrap
+	// (mVUemitLoadCurI): they bound where it can be placed.
+	for (const mVUChunkEpisode::RuntimeBits& rb : ep.runtimeBits)
+		span(static_cast<s32>(rb.word) - rootWord, static_cast<s32>(rb.word) - rootWord);
 
 	// The blocks, in the order they were registered, each with its slot, and
 	// the links out of the chunk.
@@ -620,6 +624,7 @@ static void mVUchunkEnd(microVU& mVU)
 		blk.pairOff = static_cast<s32>(cb->startPC / 8) - rootPair;
 		blk.slot = n;
 		blk.stub = cb->stub;
+		blk.body = cb->body;
 		blk.jumpCache = cb->block->jumpCache;
 		blk.pState = cb->block->pState;
 		blk.pStateEnd = cb->block->pStateEnd;

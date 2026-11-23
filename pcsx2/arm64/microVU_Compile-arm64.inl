@@ -1576,7 +1576,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	{
 		mVUemitRootStub(mVU);
 		if (compiledBlock->hostEntry == thisPtr)
-			mVU.chunk.blocks.push_back({compiledBlock, thisPtr, startPC});
+			mVU.chunk.blocks.push_back({compiledBlock, thisPtr, startPC, armGetCurrentCodePointer()});
 		else
 			mVU.chunk.unstorable = true; // the block keeps an entry that is not this code
 		blockSlot = mVUchunkAddSlot(mVU, compiledBlock, nullptr, 0, nullptr);

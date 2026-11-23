@@ -449,6 +449,7 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	mVU.index        =  vuIndex;
 	mVU.cop2         =  0;
 	mVU.place        =  0;
+	mVU.placeMicro   =  nullptr;
 	mVU.vuAotBails[0] = mVU.vuAotBails[1] = 0;
 	mVU.compileRoot  =  0;
 	mVU.compileDepth =  0;
