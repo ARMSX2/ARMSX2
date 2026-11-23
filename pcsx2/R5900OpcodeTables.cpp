@@ -119,10 +119,10 @@ namespace R5900
 
 		namespace Cycles
 		{
-			// What still takes Default (COP2, CACHE, PREF, SYNC, SYSCALL, BREAK,
+			// What still takes Default (COP2, CACHE, PREF, SYNC.L, SYSCALL, BREAK,
 			// J, JAL, JR, JALR) has no one cost on an SCPH-30001 that a per-op
 			// charge could carry: COP2 is every VU0 macro op and transfer,
-			// PREF 2, SYNC.L 1 and SYNC.P 5, a jump and its delay slot 2.
+			// PREF 2, SYNC.L 1, a jump and its delay slot 2.
 			static const int Default = 9;
 			static const int Branch = 11;
 			static const int CopDefault = 7;
@@ -244,6 +244,12 @@ namespace R5900
 		MakeOpcode( SYSCALL, Default, IS_BRANCH|BRANCHTYPE_SYSCALL );
 		MakeOpcode( BREAK, Default, 0 );
 		MakeOpcode( SYNC, Default, 0 );
+
+		// SYNC.P (SYNC with stype bit 4 set; Class_SPECIAL picks it): 5 cycles
+		// on an SCPH-30001, alone or after a COP0 write (an MTC0 of Status then
+		// SYNC.P costs 6 per pair). The kernel runs four on every syscall and
+		// three on every interrupt. The table charged 1.125, SYNC.L's entry.
+		static const OPCODE SYNC_P = {"SYNC.P", 5*8, SYNC.flags, NULL, SYNC.interpret, SYNC.recompile, SYNC.disasm};
 
 		// Branch/Jump Opcodes
 
@@ -758,7 +764,12 @@ namespace R5900
 	{
 		using namespace OpcodeTables;
 
-		const OPCODE& Class_SPECIAL(u32 op) { return tbl_Special[op & 0x3F]; }
+		const OPCODE& Class_SPECIAL(u32 op)
+		{
+			if ((op & 0x43F) == 0x40F)
+				return SYNC_P;
+			return tbl_Special[op & 0x3F];
+		}
 		const OPCODE& Class_REGIMM(u32 op)  { return tbl_RegImm[(op >> 16) & 0x1F]; }
 
 		const OPCODE& Class_MMI(u32 op)  { return tbl_MMI[op & 0x3F]; }

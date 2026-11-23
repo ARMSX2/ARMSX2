@@ -249,6 +249,11 @@ const MeasuredOp kCop0[] = {
 	{"TLBP", (0x10u << 26) | (0x10u << 21) | 0x08u, 3 * 8},
 };
 
+// SYNC.P: SYNC with stype bit 4 set. SYNC.L (stype 0) keeps the old charge.
+const MeasuredOp kSyncP[] = {
+	{"SYNC.P", ee::SYNC | (0x10u << 6), 5 * 8},
+};
+
 struct ScopedCycleRate
 {
 	s8 prev;
@@ -422,4 +427,11 @@ TEST(EeRecMeasuredCharge, StoresChargeOneCycle)
 TEST(EeRecMeasuredCharge, Cop0ReadsDiAndTlbpChargeAsMeasured)
 {
 	ExpectMeasuredCharges(kCop0);
+}
+
+// The console takes 5 cycles for SYNC.P, alone or after a COP0 write (an MTC0
+// of Status then SYNC.P costs 6 per pair). SYNC.L takes 1 and keeps its entry.
+TEST(EeRecMeasuredCharge, SyncPChargesFiveCycles)
+{
+	ExpectMeasuredCharges(kSyncP);
 }
