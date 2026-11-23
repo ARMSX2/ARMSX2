@@ -574,6 +574,11 @@ static void mVUcloseCodeCache(microVU& mVU)
 	}
 
 	mVU.prog.x86ptr = codeStart + codeSize;
+	// The dispatcher exit resets the recompiler once the programs and their
+	// blocks hold mVUprogBytesResetAt, or the placement slots reach
+	// mVUplaceSlotResetAt, as it does when the code cache fills.
+	const bool over = mVU.progBytes >= mVUprogBytesResetAt || mVU.placeSlotsUsed >= mVUplaceSlotResetAt;
+	mVU.prog.x86exitAt = over ? nullptr : mVU.prog.x86end;
 }
 
 //------------------------------------------------------------------

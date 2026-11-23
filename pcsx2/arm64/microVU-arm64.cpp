@@ -701,8 +701,8 @@ static void mVUdispatcherAB(mV)
 	// inline (mVUcompileFailedFlagBackup).
 
 	// mVUcleanUp logic inlined in this exit stub. The C++ helper (mVUcleanUpVU0/1)
-	// is only called on the rare bounds-violation path (program cache exhausted →
-	// reset). Cycle accounting and the EE-cycle-skip math (the common cost)
+	// is only called on the rare bounds-violation path (program cache exhausted,
+	// or the programs' memory or the placement slots at their bound → reset). Cycle accounting and the EE-cycle-skip math (the common cost)
 	// are emitted inline so dispatch costs no `bl` on the hot path.
 	//
 	// 1) Cycle accounting (always — both the normal and the reset path; see
@@ -751,14 +751,16 @@ static void mVUdispatcherAB(mV)
 	// are three consecutive 8-byte fields in microProgManager.
 	static_assert(offsetof(microProgManager, x86start) == offsetof(microProgManager, x86ptr) + 8,
 		"inline bounds check expects x86ptr/x86start/x86end adjacent");
-	static_assert(offsetof(microProgManager, x86end)   == offsetof(microProgManager, x86ptr) + 16,
-		"inline bounds check expects x86ptr/x86start/x86end adjacent");
+	static_assert(offsetof(microProgManager, x86exitAt) == offsetof(microProgManager, x86ptr) + 24,
+		"inline bounds check expects x86ptr/x86start/x86end/x86exitAt adjacent");
 	armAsm->Ldr(a64::x8, reinterpret_cast<u64>(&mVU.prog.x86ptr)); // literal-pool load
 	armAsm->Ldr(a64::x9,  a64::MemOperand(a64::x8));            // x86ptr
 	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 8));         // x86start
 	armAsm->Cmp(a64::x9, a64::x10);
 	armAsm->B(&cleanUpResetTail, a64::lt);
-	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 16));        // x86end
+	// x86end, or null when the programs' memory or the placement slots are
+	// at their bound (microProgManager::x86exitAt).
+	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 24));        // x86exitAt
 	armAsm->Cmp(a64::x9, a64::x10);
 	armAsm->B(&cleanUpResetTail, a64::ge);
 
@@ -1281,6 +1283,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// Note: armAsm is null between blocks, so use armGetAsmPtr() directly
 	mVU.prog.x86start = armGetAsmPtr();
 	mVU.prog.x86ptr   = mVU.prog.x86start;
+	mVU.prog.x86exitAt = mVU.prog.x86end;
 
 	// Build the persistent MacroAssembler over the post-dispatcher region
 	// of the code cache. From here on, mVUopenCodeCache binds armAsm to
@@ -1515,8 +1518,11 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 {
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{
+		if (prog->block[i])
+			mVU.progBytes -= prog->block[i]->getBlockCount() * mVUblockBytes;
 		safe_delete(prog->block[i]);
 	}
+	mVU.progBytes -= sizeof(microProgram);
 	safe_delete(prog->ranges);
 	safe_delete(prog->keptBits);
 	mVUPersist::OnProgramDeleted(*prog);
@@ -1531,6 +1537,7 @@ __ri microProgram* mVUcreateProg(microVU& mVU, int startPC, const XXH128_hash_t&
 
 	microProgram* prog = (microProgram*)_aligned_malloc(sizeof(microProgram), 64);
 	memset(prog, 0, sizeof(microProgram));
+	mVU.progBytes += sizeof(microProgram);
 	prog->idx = mVU.prog.total++;
 	prog->ranges = new std::deque<microRange>();
 	prog->startPC = startPC;
@@ -1960,6 +1967,14 @@ _mVUt void mVUcleanUp()
 		Console.WriteLn(Color_Orange, "microVU%d: Placement slot limit reached.", mVU.index);
 		mVUreset(mVU, false);
 	}
+	else if (mVU.progBytes >= mVUprogBytesResetAt)
+	{
+		Console.WriteLn(vuIndex ? Color_Orange : Color_Magenta, "microVU%d: Program memory limit reached (%d programs).",
+			mVU.index, mVU.prog.total);
+		mVUreset(mVU, false);
+	}
+	else
+		mVU.prog.x86exitAt = mVU.prog.x86end;
 
 	if (!vuIndex || !THREAD_VU1)
 	{
@@ -2297,9 +2312,19 @@ namespace mvu_test_hooks
 		b.pState.xgkickcycles = key;
 		return b;
 	}
+	// (the blocks are added through microVU0, which counts them in progBytes)
+	static void BlockListUncount(microBlockManager* m) { microVU0.progBytes -= m->getBlockCount() * mVUblockBytes; }
 	void* BlockListCreate() { return new microBlockManager(); }
-	void BlockListDestroy(void* bm) { delete static_cast<microBlockManager*>(bm); }
-	void BlockListReset(void* bm) { static_cast<microBlockManager*>(bm)->reset(); }
+	void BlockListDestroy(void* bm)
+	{
+		BlockListUncount(static_cast<microBlockManager*>(bm));
+		delete static_cast<microBlockManager*>(bm);
+	}
+	void BlockListReset(void* bm)
+	{
+		BlockListUncount(static_cast<microBlockManager*>(bm));
+		static_cast<microBlockManager*>(bm)->reset();
+	}
 	const void* BlockListAdd(void* bm, u32 key)
 	{
 		microBlock b = BlockListProbeBlock(key);
@@ -2484,6 +2509,18 @@ namespace mvu_test_hooks
 	// resume), counted in every test build.
 	static std::atomic<u64> g_vu1Stops{0};
 	u64 GetVu1Stops() { return g_vu1Stops.load(std::memory_order_relaxed); }
+
+	ProgramMemory GetProgramMemory(u32 vu)
+	{
+		const microVU& mVU = vu ? microVU1 : microVU0;
+		ProgramMemory m;
+		m.bytes = mVU.progBytes;
+		m.programs = mVU.mvuContentMap.size() + mVU.mvuOrphanedProgs.size();
+		m.resetAt = mVUprogBytesResetAt;
+		m.programBytes = sizeof(microProgram);
+		m.blockBytes = mVUblockBytes;
+		return m;
+	}
 
 	// Enter VU1 code for addresses `shift_bytes` above the ones it was compiled
 	// for (see mVUlookupPC). 0 turns it off.

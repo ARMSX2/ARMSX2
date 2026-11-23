@@ -580,6 +580,11 @@ struct microProgManager
 	u8*                x86ptr;   // Code cache write cursor (name kept for compat)
 	u8*                x86start; // Start of rec-cache
 	u8*                x86end;   // Reset threshold — mVUcacheSafeZone MB below the physical rec-region end
+	// What the dispatcher exit compares x86ptr against: x86end, or null once
+	// the programs' memory or the placement slots have reached their bound
+	// (set by mVUcloseCodeCache). Either way the exit calls mVUcleanUp, which
+	// resets.
+	u8*                x86exitAt;
 	microRegInfo       lpState;
 	// One bit per quick[] slot that holds a program: bit (i % 64) of word
 	// (i / 64) is set iff quick[i].prog != NULL. mVUclear runs on every
@@ -865,6 +870,16 @@ struct mVUChunkStoreData
 static constexpr u32 mVUplaceSlotCapacity = 3u << 20;
 static constexpr u32 mVUplaceSlotResetAt = 1u << 20;
 
+// The heap memory a VU's programs and blocks hold (microVU::progBytes) at
+// which the next dispatcher exit resets the recompiler. A program built from
+// chunk store placements costs a few KiB of code, so the code cache no longer
+// bounds how many programs there are; this does. 96 MiB is about 3,000
+// programs of 32 KiB with their blocks.
+static constexpr u64 mVUprogBytesResetAt = 96ull << 20;
+// What one block costs in progBytes: its link in the block list and its
+// entry in the quick lookup.
+static constexpr u64 mVUblockBytes = sizeof(microBlockLink) + sizeof(microBlockLinkRef);
+
 struct microVU
 {
 	alignas(16) u32 statFlag[4];
@@ -1046,6 +1061,10 @@ struct microVU
 	// Slots are not freed one by one; mVUreset starts again from zero.
 	std::unique_ptr<u64[]> placeSlotStore;
 	u32 placeSlotsUsed;
+	// Bytes of the programs (sizeof(microProgram) each) and blocks
+	// (mVUblockBytes each) this VU holds now. mVUcleanUp resets the
+	// recompiler when it reaches mVUprogBytesResetAt.
+	u64 progBytes;
 	// VU1: the chunk store.
 	std::unique_ptr<mVUChunkStoreData> chunkStore;
 	// Every jump table this VU's code uses (microBlock::jumpCache). Code and
@@ -1169,6 +1188,7 @@ private:
 
 public:
 	inline int getFullListCount() const { return fListI; }
+	inline int getBlockCount() const { return qListI + fListI; }
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test probe (mvu_block_list_tests): the number of links a walk from the
 	// head of the full-compare list reaches, and whether fBlockEnd is the
@@ -1247,6 +1267,7 @@ public:
 			microBlockLink*& blockList = fullCmp ? fBlockList : qBlockList;
 			microBlockLink*& blockEnd  = fullCmp ? fBlockEnd  : qBlockEnd;
 			microBlockLink*  newBlock  = (microBlockLink*)_aligned_malloc(sizeof(microBlockLink), 32);
+			mVU.progBytes += mVUblockBytes;
 			newBlock->block.jumpCache  = nullptr;
 			newBlock->next             = nullptr;
 

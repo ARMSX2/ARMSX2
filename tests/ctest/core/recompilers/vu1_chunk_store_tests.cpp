@@ -24,6 +24,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -739,6 +740,54 @@ TEST(Vu1ChunkStore, CopyNearTheTopOfMicroMemory)
 	EXPECT_GT(after.missBounds, before.missBounds);
 	EXPECT_GT(after.feedWrapped, before.feedWrapped) << "a chunk that ran across the end was kept";
 	ExpectJitMatches(jit.h, interpOver);
+}
+
+// A program the store serves costs a few KiB of code, so the code cache does
+// not bound how many there are. Their memory does: once the programs and
+// blocks reach the bound, the dispatcher exit resets the recompiler, and the
+// reset frees every one of them.
+TEST(Vu1ChunkStore, ProgramMemoryOfServedProgramsIsBounded)
+{
+	// Every program and block counted is uncounted when it is freed: a reset
+	// leaves nothing, whatever the tests before this one did.
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
+	ASSERT_EQ(mvu_test_hooks::GetProgramMemory(1).bytes, 0u);
+
+	const std::vector<VuOp> routines[2] = {LoopProgram(3), CallLoopProgram()};
+	Jit jit(1, kHome, routines[0], kHome);
+	jit.RunUpload(2, kHome + 0x800, routines[1], kHome + 0x800);
+
+	const mvu_test_hooks::ProgramMemory m0 = mvu_test_hooks::GetProgramMemory(1);
+	ASSERT_GT(m0.programs, 0u);
+	ASSERT_GE(m0.bytes, m0.programs * m0.programBytes);
+	u64 peak = m0.bytes, served = 0, compiled = 0;
+	u32 seed = 3;
+	bool reset = false;
+	mvu_test_hooks::ProgramMemory last = m0;
+	for (u32 base = 0x100; !reset && base + 26 * 8 <= kMicroBytes; base += 8)
+	{
+		for (const std::vector<VuOp>& routine : routines)
+		{
+			const u64 compiles = jit.RunUpload(seed++, base, routine, base);
+			const mvu_test_hooks::ProgramMemory m = mvu_test_hooks::GetProgramMemory(1);
+			ASSERT_LT(m.bytes, m.resetAt) << "a dispatch ended with the programs over the bound";
+			if (m.bytes < last.bytes)
+			{
+				reset = true;
+				// Freed with the reset: what is left is the program the run
+				// after it made.
+				EXPECT_LE(m.programs, 1u);
+				EXPECT_LT(m.bytes, 2 * m.programBytes);
+				break;
+			}
+			(compiles ? compiled : served)++;
+			peak = std::max(peak, m.bytes);
+			last = m;
+		}
+	}
+	ASSERT_TRUE(reset) << "no reset after " << served + compiled << " programs, " << peak << " bytes";
+	EXPECT_GT(served, 10 * compiled) << "the programs were not made from placements";
+	EXPECT_GE(peak + m0.programBytes + 64 * m0.blockBytes, m0.resetAt) << "the reset came before the bound";
 }
 
 // The VU AOT tier builds a routine's regions in one compile of its own, which

@@ -1408,6 +1408,8 @@ static bool vuAotBuildBody(microVU& mVU, microProgram& prog, mVUChunkHead& head,
 	// The scratch tables go: shared code names no block object.
 	for (u32 i = 0; i < mProgSize / 2; i++)
 	{
+		if (prog.block[i])
+			mVU.progBytes -= prog.block[i]->getBlockCount() * mVUblockBytes;
 		delete prog.block[i];
 		prog.block[i] = graph[i];
 	}

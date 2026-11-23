@@ -248,6 +248,14 @@ namespace mvu_test_hooks
 	void GetVu1InstructionCount(u64& instructions, u64& dispatches);
 	// VU1 dispatches that ended on a cycle-budget break, all runs of a test build.
 	u64 GetVu1Stops();
+	// The heap memory a VU's programs and blocks hold (microVU::progBytes), the
+	// programs alive, the amount at which the recompiler resets, and what one
+	// program and one block count for.
+	struct ProgramMemory
+	{
+		u64 bytes = 0, programs = 0, resetAt = 0, programBytes = 0, blockBytes = 0;
+	};
+	ProgramMemory GetProgramMemory(u32 vu);
 	// The jump tables the blocks of VU1's programs use (a table shared by several blocks counts once), and
 	// how many bytes of them the host has resident (0 where it cannot say).
 	struct JumpTableUsage
