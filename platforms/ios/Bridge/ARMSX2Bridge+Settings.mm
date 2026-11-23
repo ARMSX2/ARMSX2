@@ -354,7 +354,7 @@ extern "C" void ARMSX2_CaptureGraphicsHackState(void)
 
 + (void)clearINISection:(nonnull NSString *)section {
     if (!ARMSX2HasBaseSettings()) return;
-    ARMSX2EditBaseSettings([&](SettingsInterface& si) { si.ClearSection(section.UTF8String); });
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) { si.RemoveSection(section.UTF8String); });
     ARMSX2ScheduleINISave();
 }
 
