@@ -3,14 +3,10 @@
 
 import SwiftUI
 
-/// Native in-game pause menu: a clear Liquid Glass "command deck" presented by the host as a
-/// bounded card over a controlled dim of the paused gameplay. The host pauses the VM while this
-/// card is shown. Toggles are bound directly; everything else is routed back to the host through
-/// closures so existing panels, child-screen routing, and confirmation flows remain unchanged.
-///
-/// Layout adapts to the card's geometry (read via a GeometryReader, since the host frames this
-/// view to the bounded card size): two columns when the card is comfortably wide, one column
-/// otherwise. Resume is pinned inside the panel footer so it never detaches or hides rows.
+/// The in-game pause menu, a Liquid Glass card the host shows over the dimmed, paused game.
+/// Toggles are bound directly; everything else goes back to the host through closures, so its
+/// panels, child screens and confirmations stay its own. Two columns when the card is wide
+/// enough, one otherwise, with Resume pinned in the panel footer so it never hides rows.
 struct QuickMenuView: View {
     @State private var showStopConfirmation = false
     @State private var stopConfirmationAnchor: StopConfirmationAnchor?
@@ -70,9 +66,7 @@ struct QuickMenuView: View {
         // The host (GameOverlayContainer) frames this view to the bounded card size; read that
         // size here to decide whether the geometry comfortably supports two columns.
         GeometryReader { geo in
-            // Keep the navigation graph aligned with the view tree selected by
-            // `overlayBody`. In particular, iPad uses the portrait-style body
-            // even when its measured card is wider than it is tall.
+            // The controller map follows `overlayBody`; iPad keeps the portrait body on a wide card.
             let usesLandscapeMap = variant == .phoneLandscape
             let large = variant == .ipadTwoColumn
             let spread = foldSplit?.vertical == true
