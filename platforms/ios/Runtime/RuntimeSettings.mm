@@ -541,27 +541,6 @@ void ARMSX2SetIOSOsdFlags(bool show_fps, bool show_vps, bool show_speed, bool sh
     EmuConfig.GS.OsdShowInputRec = false;
 }
 
-void ARMSX2WriteIOSOsdFlagsToSettings()
-{
-    if (!s_settings_interface)
-        return;
-
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowFPS", EmuConfig.GS.OsdShowFPS);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVPS", EmuConfig.GS.OsdShowVPS);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSpeed", EmuConfig.GS.OsdShowSpeed);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowCPU", EmuConfig.GS.OsdShowCPU);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowGPU", EmuConfig.GS.OsdShowGPU);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowResolution", EmuConfig.GS.OsdShowResolution);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowGSStats", EmuConfig.GS.OsdShowGSStats);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowIndicators", EmuConfig.GS.OsdShowIndicators);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowSettings", EmuConfig.GS.OsdShowSettings);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputs", EmuConfig.GS.OsdShowInputs);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowFrameTimes", EmuConfig.GS.OsdShowFrameTimes);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowVersion", EmuConfig.GS.OsdShowVersion);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowHardwareInfo", EmuConfig.GS.OsdShowHardwareInfo);
-    Host::SetBaseBoolSettingValue("EmuCore/GS", "OsdShowInputRec", false);
-}
-
 void ARMSX2ApplyIOSOsdPresetFromConfig(const char* reason)
 {
     if (!s_settings_interface)
