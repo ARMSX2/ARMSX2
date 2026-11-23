@@ -479,6 +479,7 @@ final class SettingsStore {
     }
 
     let network: Network
+    let dynamicThumbsticks: DynamicThumbsticks
 
     let appearance: Appearance
 
@@ -680,6 +681,7 @@ final class SettingsStore {
         framePacingPreset = FramePacingPreset(rawValue: Int(ARMSX2Bridge.getINIInt("ARMSX2iOS/FramePacing", key: "Preset", defaultValue: Int32(FramePacingPreset.optimal.rawValue)))) ?? .optimal
         adaptiveResolutionEnabled = Self._adaptiveResolutionEnabledConfig.load()
         network = Network()
+        dynamicThumbsticks = DynamicThumbsticks()
         appearance = Appearance()
         network.normalizeDEV9Settings()
         VPadSkinLibraryStore.shared.adoptLegacySelection(controller.virtualPadSkin)

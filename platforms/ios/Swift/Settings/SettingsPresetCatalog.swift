@@ -199,7 +199,7 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
     }
 
     @MainActor
-    func isActive(settings: DynamicThumbstickSettings = .shared) -> Bool {
+    func isActive(settings: SettingsStore.DynamicThumbsticks = SettingsStore.shared.dynamicThumbsticks) -> Bool {
         func matches(_ lhs: Double, _ rhs: Double) -> Bool {
             abs(lhs - rhs) < 0.0001
         }
@@ -284,7 +284,7 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
     }
 
     @MainActor
-    func apply(settings: DynamicThumbstickSettings = .shared) {
+    func apply(settings: SettingsStore.DynamicThumbsticks = SettingsStore.shared.dynamicThumbsticks) {
         switch self {
         case .defaultPreset:
             settings.setLegacyThumbsticks(true)

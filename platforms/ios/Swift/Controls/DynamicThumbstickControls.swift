@@ -582,7 +582,7 @@ final class SwipeCameraInputDriver: NSObject {
             return
         }
 
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let sensitivity = settings.effectiveSwipeSensitivity(isAiming: isAiming)
         let degreesPerSecondX = Double(delta.width) * sensitivity.horizontal / deltaTime
         let degreesPerSecondY = Double(delta.height) * sensitivity.vertical / deltaTime
@@ -638,7 +638,7 @@ final class VirtualPadGyroscopeController {
 
     private func consume(x: Double, y: Double) {
         let raw = Self.screenRate(x: x, y: y, orientation: interfaceOrientation)
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let retained = min(max(settings.gyroSmoothing, 0), 0.95)
         let blend = CGFloat(1 - retained)
         filteredRate = DynamicThumbstickVector(
