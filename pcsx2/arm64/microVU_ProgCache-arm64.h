@@ -96,8 +96,8 @@ namespace mVUProgCache
 	// before returning.
 	microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash);
 
-	// vu-aot sidecars (VU1): a second record per program in the same pack, read and written for the
-	// vu-aot live tier (vuaot/VuAotPersist.h has the format).
+	// Sidecars (VU1): a second record per program in the same pack, opaque bytes to the cache. Nothing
+	// in the emulator queues one.
 	//
 	// Whether the cache is up for this VU (sidecars can be read and written).
 	bool SidecarsEnabled(u32 vu_index);

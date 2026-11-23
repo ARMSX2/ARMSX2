@@ -133,8 +133,7 @@ namespace mVUPersist
 	u64 ImageShape(const u8* data, size_t size);
 
 	// The running build's identity, as a 128-bit hash: the GNU build-id note of the module that holds
-	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file. The
-	// vu-aot sidecars are keyed on it, so a new build ignores the sidecars of the previous one.
+	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file.
 	void GetBuildId(u64& lo, u64& hi);
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test only: report this id instead (a file "from another build").
