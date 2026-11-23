@@ -110,9 +110,6 @@ namespace vuaot
 			u64 regionMerged = 0;     // ... of them, aliases sharing another node's body (variant merging)
 			u64 regionExits = 0;
 			u64 regionBytes = 0;
-			u64 bodyBlocks = 0;       // blocks offered to the body tier (compiled around the regions)
-			u64 bodiesLowered = 0;
-			u64 bodyBytes = 0;
 			u64 bailCompiles = 0;     // regions' blocks microVU compiled at run time (budget shortfalls)
 			u64 bailsEntry = 0;       // budget bails taken by regions at an entry from microVU
 			u64 bailsLoopHead = 0;    // ... and at a loop head

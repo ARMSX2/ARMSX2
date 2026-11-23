@@ -1412,7 +1412,7 @@ extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
 //   - mVUvuAotAfterSearch: the slow path's chance to tier a routine up, and
 //     to move the copy it entered onto a tiered body.
 //   - mVUvuAotAfterJump: the same for a JR/JALR the jump cache did not know.
-//   - mVUvuAotLiveHooks: the compile hooks, handed out while the tier builds
+//   - mVUvuAotLiveHooks: the region hook, handed out while the tier builds
 //     a routine's regions (mVUvuAotBuilding) and at no other time.
 extern void  mVUvuAotSyncConfig(microVU& mVU);
 extern bool  mVUvuAotEnabled();
@@ -1423,8 +1423,7 @@ extern bool  mVUvuAotPending();
 extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
 extern void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
 extern void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result);
-extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser,
-	vuaot::VuAotBodyHook& body, void*& bodyUser);
+extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser);
 extern bool  mVUvuAotBuilding(microVU& mVU);
 // The run count at which a routine's head first takes the slow path.
 extern u32   mVUvuAotTierUpRuns();

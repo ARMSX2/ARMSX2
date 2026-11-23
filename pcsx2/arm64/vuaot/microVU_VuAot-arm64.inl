@@ -209,7 +209,6 @@ namespace
 		u64 jumpMisses = 0;
 		// Nesting of mVUcompile for VU1.
 		int compileDepth = 0;
-		std::unique_ptr<vuaot::BodyTier> body;
 		vuaot::live::Stats stats;
 
 		// Deterministic mode (tests, pcsx2-eerunner --vuaot-sync): every job is
@@ -630,12 +629,6 @@ namespace vuaot::live
 	Stats GetStats()
 	{
 		Stats s = s_vuaot.stats;
-		if (s_vuaot.body)
-		{
-			s.bodyBlocks = s_vuaot.body->Blocks();
-			s.bodiesLowered = s_vuaot.body->Lowered();
-			s.bodyBytes = s_vuaot.body->BodyBytes();
-		}
 		s.jumpMisses = s_vuaot.jumpMisses;
 		s.bailsEntry = microVU1.vuAotBails[0];
 		s.bailsLoopHead = microVU1.vuAotBails[1];
@@ -661,7 +654,7 @@ namespace vuaot::live
 		std::snprintf(buf, sizeof(buf),
 			"vu-aot live tier: tierups=%llu retiers=%llu retierchecks=%llu tiered_bodies=%llu tiered_body_bytes=%llu "
 			"placed=%llu reaimed=%llu targets=%llu jumpmisses=%llu slow_dispatches=%llu "
-			"roots=%llu regions=%llu rnodes=%llu rmerged=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
+			"roots=%llu regions=%llu rnodes=%llu rmerged=%llu rexits=%llu rbytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
 			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_kept=%llu "
 			"sticky_trips=%llu sticky_trip_resets=%llu sticky_tripped=%d sticky_remembered=%llu",
@@ -670,8 +663,8 @@ namespace vuaot::live
 			(unsigned long long)s.tieredReAimed, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
 			(unsigned long long)s.slowDispatches,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
-			(unsigned long long)s.regionMerged, (unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
-			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
+			(unsigned long long)s.regionMerged, (unsigned long long)s.regionExits, (unsigned long long)s.regionBytes,
+			(unsigned long long)s.bailCompiles,
 			(unsigned long long)s.jumpTierUps, (unsigned long long)s.jumpCounted, (unsigned long long)s.crossProgTargets,
 			(unsigned long long)s.bailsEntry, (unsigned long long)s.bailsLoopHead, (unsigned long long)s.statusReaders,
 			(unsigned long long)s.stickyReaders, (unsigned long long)s.stickyDivReaders, (unsigned long long)s.stickyDropped,
@@ -711,12 +704,6 @@ namespace vuaot::live
 			std::snprintf(buf, sizeof(buf), "\n  region declined: %s = %u", d.first.c_str(), d.second);
 			out += buf;
 		}
-		if (s_vuaot.body)
-			for (const auto& d : s_vuaot.body->Declined())
-			{
-				std::snprintf(buf, sizeof(buf), "\n  body declined: %s = %u", d.first.c_str(), d.second);
-				out += buf;
-			}
 		return out;
 	}
 } // namespace vuaot::live
@@ -1804,8 +1791,6 @@ void mVUvuAotCompileEnd(microVU& mVU)
 			(s_vuAotSessionTiered ? s_vuaot.stats.compileInsTiered : s_vuaot.stats.compileInsPlain) += d;
 		}
 #endif
-		if (s_vuaot.body)
-			s_vuaot.body->ResetAnalyzer();
 	}
 }
 
@@ -1826,22 +1811,12 @@ static bool vuAotLiveRegionHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuE
 	return true;
 }
 
-static bool vuAotLiveBodyHook(const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void*)
-{
-	if (!s_vuaot.body)
-		s_vuaot.body = std::make_unique<vuaot::BodyTier>(1, microVU1.regs().Micro);
-	return s_vuaot.body->TryLower(b, env, nullptr);
-}
-
-void mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser,
-	vuaot::VuAotBodyHook& body, void*& bodyUser)
+void mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser)
 {
 	if (mVU.index != 1 || !s_vuaot.enabled || !s_vuaot.building)
 		return;
 	region = &vuAotLiveRegionHook;
 	regionUser = nullptr;
-	body = &vuAotLiveBodyHook;
-	bodyUser = nullptr;
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS

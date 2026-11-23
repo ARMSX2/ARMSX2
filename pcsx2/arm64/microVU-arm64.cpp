@@ -6,7 +6,6 @@
 #include "vuaot/VuAotBackground.h"
 #include "vuaot/VuAotLive.h"
 #include "vuaot/VuAotRegion.h"
-#include "vuaot/VuAotTier.h"
 
 #include "microVU-arm64.h"
 #include "arm64/RecCrashReport-arm64.h"

@@ -1536,16 +1536,16 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUregs.vi15v = 0;
 	mVUsetFlags(mVU, mFC);
 	mVUoptimizePipeState(mVU);
-	// vu-aot: a test installs its hooks through the vuaot:: globals; otherwise
-	// the live tier hands out its own while it builds a routine's tiered body
-	// (VU1 only). With neither, nothing below runs and microVU compiles the
-	// block unchanged.
+	// vu-aot: a test or a runner installs its hooks through the vuaot::
+	// globals; otherwise the live tier hands out its region hook while it
+	// builds a routine's tiered body (VU1 only). With neither, nothing below
+	// runs and microVU compiles the block unchanged.
 	vuaot::VuAotRegionHook vuAotRegionHook = vuaot::g_vuAotRegionHook;
 	void* vuAotRegionUser = vuaot::g_vuAotRegionHookUser;
 	vuaot::VuAotBodyHook vuAotBodyHook = vuaot::g_vuAotBodyHook;
 	void* vuAotBodyUser = vuaot::g_vuAotBodyHookUser;
 	if (!vuAotRegionHook && !vuAotBodyHook)
-		mVUvuAotLiveHooks(mVU, vuAotRegionHook, vuAotRegionUser, vuAotBodyHook, vuAotBodyUser);
+		mVUvuAotLiveHooks(mVU, vuAotRegionHook, vuAotRegionUser);
 	vuaot::MvuBlockTrace vuAotTrace;
 	// A region's bail target is microVU's own code for the block.
 	const bool vuAotShadow = vuaot::g_vuAotShadowCompile;

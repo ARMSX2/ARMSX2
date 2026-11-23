@@ -271,7 +271,6 @@ TEST(VuAotLive, OffIsInert)
 	const vuaot::live::Stats after = vuaot::live::GetStats();
 	EXPECT_EQ(after.tierUps, before.tierUps);
 	EXPECT_EQ(after.rootsCompiled, before.rootsCompiled);
-	EXPECT_EQ(after.bodyBlocks, before.bodyBlocks);
 }
 
 // A counted loop under a small cycle budget, so the tier-up falls in the
