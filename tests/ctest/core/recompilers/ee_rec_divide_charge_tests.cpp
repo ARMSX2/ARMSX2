@@ -43,6 +43,7 @@ constexpr u32 kConfigDie = 1u << 18;
 // What the table charges the padding NOP, and the JR $ra + NOP the harness
 // appends to every program.
 u32 NopEighths() { return R5900::GetInstruction(NOP).cycles; }
+u32 SyncEighths() { return R5900::GetInstruction(ee::SYNC).cycles; }
 u32 TailEighths() { return R5900::GetInstruction(JR(reg::ra)).cycles + NopEighths(); }
 
 struct DivideOp
@@ -84,11 +85,13 @@ struct ScopedCycleRate
 	}
 };
 
-// The test block: `copies` of the divide, then NOPs so the block's raw charge
-// (with the harness's JR + NOP tail) is a multiple of 32. That makes the
+// The test block: `copies` of the divide, then padding so the block's raw
+// charge (with the harness's JR + NOP tail) is a multiple of 32. That makes the
 // interpreter's charge independent of the sub-cycle remainder it carries over
 // from earlier runs at every selector from 0 up (the scaler drops at most 5
-// low bits there), so both engines can be held to the same exact number.
+// low bits there), so both engines can be held to the same exact number. The
+// padding is NOPs, and SYNCs where NOPs alone cannot reach a multiple of 32 (a
+// NOP charged a whole number of cycles cannot fix the JR's fraction).
 struct Block
 {
 	std::vector<u32> words;
@@ -98,15 +101,22 @@ struct Block
 Block MakeBlock(const DivideOp& op, int copies)
 {
 	Block b;
-	u32 raw = copies * op.eighths + TailEighths();
+	b.raw = copies * op.eighths + TailEighths();
 	for (int i = 0; i < copies; i++)
 		b.words.push_back(op.code);
-	while (raw % 32 != 0)
+	for (u32 syncs = 0; syncs < 32; syncs++)
 	{
-		b.words.push_back(NOP);
-		raw += NopEighths();
+		for (u32 nops = 0; nops < 32; nops++)
+		{
+			if ((b.raw + syncs * SyncEighths() + nops * NopEighths()) % 32 != 0)
+				continue;
+			b.words.insert(b.words.end(), syncs, ee::SYNC);
+			b.words.insert(b.words.end(), nops, NOP);
+			b.raw += syncs * SyncEighths() + nops * NopEighths();
+			return b;
+		}
 	}
-	b.raw = raw;
+	ADD_FAILURE() << op.name << ": no padding of NOPs and SYNCs makes the block a multiple of 32";
 	return b;
 }
 

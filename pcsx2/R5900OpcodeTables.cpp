@@ -119,9 +119,34 @@ namespace R5900
 
 		namespace Cycles
 		{
+			// What still takes Default (COP2, CACHE, PREF, SYNC, SYSCALL, BREAK,
+			// J, JAL, JR, JALR) has no one cost on an SCPH-30001 that a per-op
+			// charge could carry: COP2 is every VU0 macro op and transfer,
+			// PREF 2, SYNC.L 1 and SYNC.P 5, a jump and its delay slot 2.
 			static const int Default = 9;
 			static const int Branch = 11;
 			static const int CopDefault = 7;
+
+			// The integer ALU ops, shifts, LUI, SLT and NOP: 1 cycle, measured
+			// on an SCPH-30001 for every one, the 64-bit forms included. A
+			// chain through one register costs 1 per op; independent ones cost
+			// 0.5, two issuing together on the two integer pipelines. The
+			// charge is the chain's cost, since the model has no pairing.
+			// The table charged 1.125.
+			static const int Alu = 1*8;
+
+			// MOVZ and MOVN, measured on an SCPH-30001: two independent ones
+			// issue together (0.5 each), and a use of the result right after
+			// one costs 2. The charge is one issued alone with nothing waiting
+			// on it, an integer pipeline's cycle, since the model has neither
+			// pairing nor latency. The table charged 1.125.
+			static const int CondMove = 1*8;
+
+			// MFHI, MFLO, MTHI, MTLO, their pipeline-1 forms (MFHI1..MTLO1),
+			// MFSA, MTSA, MTSAB, MTSAH: 1 cycle, measured on an SCPH-30001,
+			// back to back with nothing reading the result. A move to LO or SA
+			// then a read of it costs 3 per pair. The table charged 1.125.
+			static const int HiLoMove = 1*8;
 
 			static const int Mult = 2*8;
 
@@ -173,8 +198,19 @@ namespace R5900
 			// MADDA.S and MSUBA.S as multiplies (4) and ADDA.S, SUBA.S 0.875.
 			static const int FPU_Acc = 1*8;
 
-			static const int Store = 14;
-			static const int Load = 14;
+			// Stores, every width (SB..SQ, SWL..SDR, SWC1, SQC2): 1 cycle,
+			// measured on an SCPH-30001, one per cycle back to back. A store
+			// then a load of the same address costs 3 per pair, and a store of
+			// an FPU or VU0 result just issued 6. The table charged 1.75.
+			static const int Store = 1*8;
+
+			// Loads, every width (LB..LQ, LWL..LDR, LWC1, LQC2): 1 cycle,
+			// measured on an SCPH-30001: independent loads issue one per
+			// cycle. A load whose value the next instruction uses costs 2,
+			// and LWC1 or LQC2 then an FPU or VU0 use of it 3. The charge is
+			// the issue cost, since the model has no latency. The table
+			// charged 1.75.
+			static const int Load = 1*8;
 		}
 
 		using namespace Cycles;
@@ -261,61 +297,61 @@ namespace R5900
 		MakeOpcode( DIV1, Div, 0 );
 		MakeOpcode( DIVU1, Div, 0 );
 
-		MakeOpcode( ADDI,   Default, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( ADDIU,  Default, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( DADDI,  Default, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADDIU, Default, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADD,   Default, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DADDU,  Default, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DSUB,   Default, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( DSUBU,  Default, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( ADD,    Default, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( ADDU,   Default, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( SUB,    Default, IS_ALU|ALUTYPE_SUB );
-		MakeOpcode( SUBU,   Default, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( ADDI,   Alu, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( ADDIU,  Alu, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( DADDI,  Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADDIU, Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADD,   Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DADDU,  Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DSUB,   Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( DSUBU,  Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( ADD,    Alu, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( ADDU,   Alu, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( SUB,    Alu, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( SUBU,   Alu, IS_ALU|ALUTYPE_SUB );
 
-		MakeOpcode( ANDI, Default, 0 );
-		MakeOpcode( ORI, Default, 0 );
-		MakeOpcode( XORI, Default, 0 );
-		MakeOpcode( AND, Default, 0 );
-		MakeOpcode( OR, Default, 0 );
-		MakeOpcode( XOR, Default, 0 );
-		MakeOpcode( NOR, Default, 0 );
-		MakeOpcode( SLTI, Default, 0 );
-		MakeOpcode( SLTIU, Default, 0 );
-		MakeOpcode( SLT, Default, 0 );
-		MakeOpcode( SLTU, Default, 0 );
-		MakeOpcode( LUI, Default, 0 );
-		MakeOpcode( SLL, Default, 0 );
-		MakeOpcode( SRL, Default, 0 );
-		MakeOpcode( SRA, Default, 0 );
-		MakeOpcode( SLLV, Default, 0 );
-		MakeOpcode( SRLV, Default, 0 );
-		MakeOpcode( SRAV, Default, 0 );
-		MakeOpcode( MOVZ, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
-		MakeOpcode( MOVN, Default, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
-		MakeOpcode( DSLLV, Default, 0 );
-		MakeOpcode( DSRLV, Default, 0 );
-		MakeOpcode( DSRAV, Default, 0 );
-		MakeOpcode( DSLL, Default, 0 );
-		MakeOpcode( DSRL, Default, 0 );
-		MakeOpcode( DSRA, Default, 0 );
-		MakeOpcode( DSLL32, Default, 0 );
-		MakeOpcode( DSRL32, Default, 0 );
-		MakeOpcode( DSRA32, Default, 0 );
+		MakeOpcode( ANDI, Alu, 0 );
+		MakeOpcode( ORI, Alu, 0 );
+		MakeOpcode( XORI, Alu, 0 );
+		MakeOpcode( AND, Alu, 0 );
+		MakeOpcode( OR, Alu, 0 );
+		MakeOpcode( XOR, Alu, 0 );
+		MakeOpcode( NOR, Alu, 0 );
+		MakeOpcode( SLTI, Alu, 0 );
+		MakeOpcode( SLTIU, Alu, 0 );
+		MakeOpcode( SLT, Alu, 0 );
+		MakeOpcode( SLTU, Alu, 0 );
+		MakeOpcode( LUI, Alu, 0 );
+		MakeOpcode( SLL, Alu, 0 );
+		MakeOpcode( SRL, Alu, 0 );
+		MakeOpcode( SRA, Alu, 0 );
+		MakeOpcode( SLLV, Alu, 0 );
+		MakeOpcode( SRLV, Alu, 0 );
+		MakeOpcode( SRAV, Alu, 0 );
+		MakeOpcode( MOVZ, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
+		MakeOpcode( MOVN, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
+		MakeOpcode( DSLLV, Alu, 0 );
+		MakeOpcode( DSRLV, Alu, 0 );
+		MakeOpcode( DSRAV, Alu, 0 );
+		MakeOpcode( DSLL, Alu, 0 );
+		MakeOpcode( DSRL, Alu, 0 );
+		MakeOpcode( DSRA, Alu, 0 );
+		MakeOpcode( DSLL32, Alu, 0 );
+		MakeOpcode( DSRL32, Alu, 0 );
+		MakeOpcode( DSRA32, Alu, 0 );
 
-		MakeOpcode( MFHI, Default, 0 );
-		MakeOpcode( MTHI, Default, 0 );
-		MakeOpcode( MFLO, Default, 0 );
-		MakeOpcode( MTLO, Default, 0 );
-		MakeOpcode( MFSA, Default, 0 );
-		MakeOpcode( MTSA, Default, 0 );
-		MakeOpcode( MTSAB, Default, 0 );
-		MakeOpcode( MTSAH, Default, 0 );
-		MakeOpcode( MFHI1, Default, 0 );
-		MakeOpcode( MTHI1, Default, 0 );
-		MakeOpcode( MFLO1, Default, 0 );
-		MakeOpcode( MTLO1, Default, 0 );
+		MakeOpcode( MFHI, HiLoMove, 0 );
+		MakeOpcode( MTHI, HiLoMove, 0 );
+		MakeOpcode( MFLO, HiLoMove, 0 );
+		MakeOpcode( MTLO, HiLoMove, 0 );
+		MakeOpcode( MFSA, HiLoMove, 0 );
+		MakeOpcode( MTSA, HiLoMove, 0 );
+		MakeOpcode( MTSAB, HiLoMove, 0 );
+		MakeOpcode( MTSAH, HiLoMove, 0 );
+		MakeOpcode( MFHI1, HiLoMove, 0 );
+		MakeOpcode( MTHI1, HiLoMove, 0 );
+		MakeOpcode( MFLO1, HiLoMove, 0 );
+		MakeOpcode( MTLO1, HiLoMove, 0 );
 
 		// Loads!
 

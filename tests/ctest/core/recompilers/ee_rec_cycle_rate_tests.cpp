@@ -772,7 +772,7 @@ TEST(EeRecCycleRate, TransitionPatchesTheEeAndResetsOnlyVu0)
 // Counts the charge sites that would stop fitting the one instruction they were
 // emitted in if the governor moved the selector, and the blocks holding one.
 //
-// An ordinary block is nowhere near the boundary: 32 ADDIUs cost 9 raw units
+// An ordinary block is nowhere near the boundary: 32 ADDIUs cost 8 raw units
 // each, so the charge is double digits at every selector in the window and the
 // same ADD encoding covers all of them.
 TEST(EeRecCycleRate, AnOrdinaryBlockKeepsItsChargeEncodingAcrossTheWindow)
