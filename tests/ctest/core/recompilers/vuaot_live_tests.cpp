@@ -17,6 +17,7 @@
 #include "Config.h"
 #include "VU.h"
 #include "VUmicro.h"
+#include "arm64/microVU_ChunkStore-arm64.h"
 #include "arm64/microVU_Persist-arm64.h"
 #include "arm64/microVU_ProgCache-arm64.h"
 #include "arm64/vuaot/VuAotBackground.h"
@@ -1397,26 +1398,6 @@ std::vector<VuOp> TwoEntryLoop(u32 n)
 	return p;
 }
 
-// A saved image without its lists of compiled ranges and kept-bit words: what the recorder's log made
-// (the block records and the chunks of code). The ranges and kept-bit words are the program's own, read
-// when the image is written, and grow with every block compiled, a tiered program's included; they say
-// which parts of micro memory the program answers for and hold no code. (Layout: mVUPersist::ImageHeader,
-// 88 bytes with the kept-bit count at 12 and the range count at 60, then 8 bytes per range, then 8 bytes
-// per kept-bit word.)
-std::vector<u8> LoggedPart(const std::vector<u8>& image)
-{
-	constexpr size_t kHeader = 88, kKeptCountAt = 12, kRangeCountAt = 60;
-	if (image.size() < kHeader)
-		return {};
-	u32 ranges = 0, kept = 0;
-	std::memcpy(&ranges, image.data() + kRangeCountAt, sizeof(ranges));
-	std::memcpy(&kept, image.data() + kKeptCountAt, sizeof(kept));
-	const size_t skip = kHeader + (size_t(ranges) + kept) * 8;
-	if (image.size() < skip)
-		return {};
-	return std::vector<u8>(image.begin() + skip, image.end());
-}
-
 // What the process boundary does, in one process: the cache's in-memory state is dropped and the disk read again.
 void NewProcess()
 {
@@ -1477,46 +1458,11 @@ protected:
 };
 } // namespace
 
-// The tier does not change what a program has saved: the image after the tier-up equals the one before it. A tiered body's
-// build runs in block tables that are thrown away, and the recorder keeps none of it. (Mutation: let the recorder keep the
-// build's episode, and the regions end up in the image.)
-TEST_F(VuAotCache, TierUpDoesNotChangeWhatIsSaved)
-{
-	for (bool sync : {true, false})
-		for (bool fh : {true, false})
-		{
-			NewProcess();
-			LiveScope on(true, 4, fh, vuaot::live::kJumpTierUpRuns, sync);
-			const std::vector<VuOp> prog = TwoEntryLoop(20);
-			VuTestHarness h(1);
-			Prepare(h, prog, SetupLoop, 0);
-			h.RunNoDiff();
-			ASSERT_TRUE(mVUProgCache::GetStats(1).initialized && mVUProgCache::GetStats(1).enabled)
-				<< "EnableVUAot on, EnableVUProgramCache off: the cache is up";
-			h.RunJitPreserveBlockCache(); // the compile, untiered
-			std::vector<u8> before, afterTier;
-			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, before)) << "the recorder did not log the program";
-			ASSERT_GT(before.size(), 88u);
-			const u64 tierUps0 = vuaot::live::GetStats().tierUps;
-			for (int i = 0; i < 14; i++)
-				h.RunJitPreserveBlockCache();
-			if (!sync)
-			{
-				vuaot::live::WaitWorkerIdle();
-				for (int i = 0; i < 4; i++)
-					h.RunJitPreserveBlockCache();
-			}
-			EXPECT_GT(vuaot::live::GetStats().tierUps, tierUps0) << "sync " << sync << ": the program tiered up";
-			ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, afterTier));
-			ASSERT_FALSE(LoggedPart(before).empty());
-			EXPECT_EQ(before, afterTier) << "sync " << sync << " flagHack " << fh << ": the tier-up changed the saved image";
-		}
-}
-
-// A cache filled in one session is loaded in the next: the program is hydrated (no microVU compile), tiers
-// up as any program does, and every run equals microVU's. `fill`: who filled it. The tier on (the cache is
-// on because of it), or the tier off with the cache's own setting on: the images are the same either way.
-TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
+// A cache filled in one session is loaded in the next: the chunk store's bodies come back from the pack (no
+// microVU compile) and every run equals microVU's. `fill`: who filled it. The tier on (the cache is on
+// because of it): the tiered bodies come back too, and the routine runs them with no new build. Or the
+// tier off with the cache's own setting on: the routine tiers up as any does.
+TEST_F(VuAotCache, LoadedBodiesRunTieredAndStayExact)
 {
 	struct Prog
 	{
@@ -1557,8 +1503,8 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 						EXPECT_EQ(Diff(ref2, Take(h)), "") << where << ": session one, the second entry";
 						h.SetStartPc(0);
 					}
-					RecompilerTestEnvironment::ResetVuBlockCache(1); // (the save)
-					EXPECT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u) << where << ": no payload was written";
+					EXPECT_GE(mVUProgCache::GetStats(1).bodiesStored, 1u) << where << ": no body was stored";
+					RecompilerTestEnvironment::ResetVuBlockCache(1);
 				}
 				EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 
@@ -1568,12 +1514,13 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 				VuTestHarness h(1);
 				Prepare(h, pr.ops, pr.setup, 0);
 				const u64 compiles0 = mVUPersist::GetBlockCompileCount(1);
-				h.RunNoDiff(); // (the JIT pass loads the program)
+				const mVUChunkStore::Stats store0 = mVUChunkStore::GetStats();
+				h.RunNoDiff(); // (the JIT pass loads the routine's bodies)
 				ASSERT_TRUE(mVUProgCache::GetStats(1).enabled) << where;
 				mVUProgCache::TestWaitForPreload(1);
-				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first run of the loaded program";
-				EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << where << ": the program was not loaded from the cache";
-				EXPECT_EQ(mVUProgCache::GetStats(1).payloadRejects, 0u) << where;
+				EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": the first run of the loaded routine";
+				EXPECT_GE(mVUChunkStore::GetStats().packLoaded, store0.packLoaded + 1) << where << ": no body was loaded from the cache";
+				EXPECT_EQ(mVUChunkStore::GetStats().packRejected, store0.packRejected) << where;
 				EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << where << ": the load compiled blocks";
 				const vuaot::live::Stats before = vuaot::live::GetStats();
 				for (int i = 0; i < 14; i++)
@@ -1592,9 +1539,16 @@ TEST_F(VuAotCache, LoadedProgramsTierUpAndStayExact)
 						EXPECT_EQ(Diff(ref, Take(h)), "") << where << ": session two, the first entry again, run " << i;
 					}
 				const vuaot::live::Stats after = vuaot::live::GetStats();
-				EXPECT_GT(after.tierUps, before.tierUps) << where << ": the loaded program did not tier up";
-				EXPECT_GT(after.regions, before.regions) << where << ": no region for the loaded program";
-				EXPECT_GE(mVUPersist::GetStats(1).programsHydrated, 1u) << where;
+				const mVUChunkStore::Stats store1 = mVUChunkStore::GetStats();
+				if (fillWithTier)
+				{
+					EXPECT_GT(store1.tieredPlaced, store0.tieredPlaced) << where << ": the loaded tiered body was not placed";
+				}
+				else
+				{
+					EXPECT_GT(after.tierUps, before.tierUps) << where << ": the loaded routine did not tier up";
+					EXPECT_GT(after.regions, before.regions) << where << ": no region for the loaded routine";
+				}
 			}
 }
 
@@ -1609,10 +1563,10 @@ std::vector<VuOp> StickyReaderLoop(u32 n)
 }
 } // namespace
 
-// A program whose image reads the sticky bits of STATUS is loaded from the cache: no microVU compile
-// notices the reader, so the scan of the image at program creation does (it runs before the cache is
-// asked). The tier then keeps the sticky bits, and every run equals microVU's, byte for byte.
-// (Mutation: the scan out of the way, and the tripwire stays armed.)
+// A routine that reads the sticky bits of STATUS comes back from the cache: no microVU compile notices
+// the reader. The scan of the image at program creation does, and so does the placement of the loaded
+// body, which reports the status readers its code holds. The tier then keeps the sticky bits, and every
+// run equals microVU's, byte for byte. (Mutation: the scan out of the way; the placement still trips.)
 TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 {
 	for (int mutation : {0, 1})
@@ -1630,8 +1584,8 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 				h.RunNoDiff();
 				ASSERT_TRUE(mVUProgCache::GetStats(1).enabled);
 				h.RunJitPreserveBlockCache();
+				ASSERT_GE(mVUProgCache::GetStats(1).bodiesStored, 1u);
 				RecompilerTestEnvironment::ResetVuBlockCache(1);
-				ASSERT_GE(mVUProgCache::GetStats(1).payloadWrites, 1u);
 			}
 			EmuConfig.Cpu.Recompiler.EnableVUProgramCache = false;
 			NewProcess();
@@ -1641,12 +1595,14 @@ TEST_F(VuAotCache, LoadedStickyReaderTripsTheWire)
 			VuTestHarness h(1);
 			Prepare(h, StickyReaderLoop(10), SetupSticky, 0);
 			const u64 compiles0 = mVUPersist::GetBlockCompileCount(1);
+			const u64 loaded0 = mVUChunkStore::GetStats().packLoaded;
 			h.RunNoDiff();
-			EXPECT_GE(mVUProgCache::GetStats(1).payloadHits, 1u) << "the program was not loaded from the cache";
+			EXPECT_GT(mVUChunkStore::GetStats().packLoaded, loaded0) << "the routine was not loaded from the cache";
 			EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiles0) << "the load compiled blocks";
 			if (mutation)
 			{
-				EXPECT_FALSE(vuaot::live::StickyTripped()) << "with the scan out of the way, nothing else sees a loaded reader (the compile hook has no compile to see)";
+				ASSERT_TRUE(vuaot::live::StickyTripped()) << "with the scan out of the way, the placement of the loaded body did not report its reader";
+				EXPECT_EQ(vuaot::live::StickyTripCause(), vuaot::live::TripCause::Compile);
 				continue;
 			}
 			ASSERT_TRUE(vuaot::live::StickyTripped()) << "flagHack " << fh << ": the load of a sticky reader did not set the tripwire off";

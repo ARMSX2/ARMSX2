@@ -581,9 +581,7 @@ static void mVUemitPlaceStub(mV, u32 word)
 // chunk skip it.
 static void mVUemitRootStub(mV)
 {
-	u8* const at = armGetCurrentCodePointer();
 	mVUemitPlaceStub(mVU, mVUplaceWord(mVU.compileRoot, mVU.chunk.slotBase));
-	mVUPersist::OnPlaceStub(mVU, at);
 }
 
 // Gives the chunk being compiled its next slot and fills it for the placement

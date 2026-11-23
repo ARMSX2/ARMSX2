@@ -79,9 +79,10 @@ namespace mVUProgCache
 	// drops the table. Called from mVUclose.
 	void Close(microVU& mVU);
 
-	// Stores every live program whose block graph grew since it was last
+	// VU0: stores every live program whose block graph grew since it was last
 	// stored (or was never stored). Called from mVUreset (pre-program-free)
-	// and mVUclose. RAM only: the writer puts it on disk.
+	// and mVUclose. RAM only: the writer puts it on disk. VU1 programs have no
+	// image: what VU1 keeps is the chunk store's bodies, below.
 	void SaveAllPrograms(microVU& mVU);
 
 	// Stores one program's serialized block graph in the table, unless the

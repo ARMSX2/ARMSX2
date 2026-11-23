@@ -35,7 +35,6 @@ namespace mVUPersist
 		kFormAdrp,       // ADRP page21; the page offset rides in the next ADD/ORR
 		kFormRel26,      // B / BL imm26
 		kFormRel19,      // B.cond / CBZ / CBNZ imm19
-		kFormPlaceStub,  // movz w9 + movk w9: bits 11-31 of the value are a slot index
 		kFormCount,
 	};
 
@@ -46,7 +45,6 @@ namespace mVUPersist
 		kTargetStub,            // per-VU dispatcher stub, id = index
 		kTargetImage,           // image base + offset (code, data, bss of the emulator module)
 		kTargetData,            // data arena base + offset
-		kTargetPlacement,       // first slot of the chunk's placement number `index`
 		kTargetBody,            // the start of the VU1 chunk store body the code is in + offset
 		kTargetCount,
 	};
@@ -73,25 +71,13 @@ namespace mVUPersist
 
 	static u32 FixupSpanInsns(const PersistFixup& f)
 	{
-		if (f.form == kFormPlaceStub)
-			return 2;
 		return (f.form == kFormMovRun) ? f.width : 1;
 	}
-
-	// What one placement slot holds: log.blocks[blockIndex]'s microBlock
-	// object, or (isEntry) that block's code entry.
-	struct PersistSlot
-	{
-		u32 isEntry;
-		u32 blockIndex;
-	};
 
 	struct PersistChunk
 	{
 		std::vector<u8> code;
 		std::vector<PersistFixup> fixups;
-		// The slots of each outermost compile in the chunk, in compile order.
-		std::vector<std::vector<PersistSlot>> placements;
 		const u8* liveBase = nullptr; // where this chunk runs in this process; not serialized
 	};
 
@@ -748,17 +734,16 @@ namespace mVUPersist
 		MvuPersistLog* log = nullptr;
 		std::vector<PersistFixup> fixups;
 		std::vector<EpisodeBlock> episodeBlocks;
-		std::vector<std::vector<PersistSlot>> placements;
 		bool active = false;
+		// VU0: the program's log cannot describe the episode. VU1, which keeps
+		// no program log: a copy of the open body could not be patched to run
+		// in another process (reset when a body opens).
 		bool failed = false;
 		const char* failReason = nullptr;
 		// VU1: the chunk store body being compiled starts here (null between
-		// outermost compiles), the first fixup recorded since, and whether a
-		// copy of the body alone could not be patched.
+		// outermost compiles), and the first fixup recorded since.
 		u8* bodyStart = nullptr;
 		size_t bodyFirstFixup = 0;
-		bool bodyFailed = false;
-		const char* bodyFailReason = nullptr;
 
 		void Begin(microVU& m, u8* base)
 		{
@@ -766,42 +751,22 @@ namespace mVUPersist
 			mvu = &m;
 			chunkBase = base;
 			bodyStart = nullptr;
-			bodyFailed = false;
-			bodyFailReason = nullptr;
 			prog = nullptr;
 			log = nullptr;
 			fixups.clear();
 			episodeBlocks.clear();
-			placements.clear();
 			active = true;
 			failed = false;
 			failReason = nullptr;
 		}
 
-		// The program's log cannot describe the episode.
-		void FailLog(const char* reason)
+		void Fail(const char* reason)
 		{
 			if (!failed)
 			{
 				failed = true;
 				failReason = reason;
 			}
-		}
-
-		// A copy of the open body could not be patched.
-		void FailBody(const char* reason)
-		{
-			if (bodyStart && !bodyFailed)
-			{
-				bodyFailed = true;
-				bodyFailReason = reason;
-			}
-		}
-
-		void Fail(const char* reason)
-		{
-			FailLog(reason);
-			FailBody(reason);
 		}
 
 		bool InBody(const void* addr) const
@@ -858,8 +823,6 @@ namespace mVUPersist
 			AddressClass c;
 			if (EpisodeBlockHolding(addr) >= 0)
 			{
-				// (a body is shared by every placement: it can name no block)
-				FailBody("block object pointer");
 				// Heap: the whole address moves, low bits included, so no ADRP.
 				// The run is as wide as this pointer needs (two halfwords for a
 				// non-PIE brk heap below 4GB, three for a PIE heap or a thread's
@@ -918,7 +881,6 @@ namespace mVUPersist
 				f.target = kTargetBody;
 				f.offset = static_cast<const u8*>(addr) - bodyStart;
 				fixups.push_back(f);
-				FailLog("code address in a chunk store body");
 				return;
 			}
 			if (bodyStart && ResolveStub(*mvu, addr, stub_id))
@@ -926,7 +888,6 @@ namespace mVUPersist
 				f.target = kTargetStub;
 				f.index = stub_id;
 				fixups.push_back(f);
-				FailLog("stub address in a chunk store body");
 				return;
 			}
 			Fail("move target lost between classify and emit");
@@ -954,8 +915,9 @@ namespace mVUPersist
 				return; // relative distance preserved on relocation
 			if (InChunk(target))
 			{
-				// (inside the episode but before the body: another compile's code)
-				FailBody("branch to code before the body");
+				// (VU1: inside the episode but before the body, another compile's code)
+				if (bodyStart)
+					Fail("branch to code before the body");
 				return;
 			}
 
@@ -980,7 +942,6 @@ namespace mVUPersist
 					f.target = kTargetBlockEntry;
 					f.index = it->second;
 					fixups.push_back(f);
-					FailBody("direct branch to another chunk's block");
 					return;
 				}
 			}
@@ -998,60 +959,6 @@ namespace mVUPersist
 			                    : "direct branch outside the slab, image and data arena");
 		}
 
-		void OnPlaceStub(u8* at)
-		{
-			PersistFixup f = {};
-			f.codeOffset = OffsetOf(at);
-			f.form = kFormPlaceStub;
-			f.target = kTargetPlacement;
-			f.index = static_cast<u32>(placements.size());
-			fixups.push_back(f);
-		}
-
-		void OnChunkEnd(const mVUChunkSlot* slots, size_t count)
-		{
-			if (failed)
-				return;
-			std::vector<PersistSlot> recs;
-			recs.reserve(count);
-			for (size_t i = 0; i < count; i++)
-			{
-				if (slots[i].kind != mVUslotBlock && slots[i].kind != mVUslotLink)
-				{
-					FailLog("placement slot the image does not describe");
-					return;
-				}
-				const microBlock* const blk = slots[i].target ? slots[i].target : slots[i].block;
-				PersistSlot rec = {};
-				rec.isEntry = slots[i].target ? 1 : 0;
-				bool found = false;
-				for (size_t e = 0; e < episodeBlocks.size() && !found; e++)
-				{
-					if (episodeBlocks[e].live == blk)
-					{
-						rec.blockIndex = ProvisionalIndex(e);
-						found = true;
-					}
-				}
-				if (!found && log)
-				{
-					const auto it = log->blockByEntry.find(blk->hostEntry);
-					if (it != log->blockByEntry.end() && log->blocks[it->second].live == blk)
-					{
-						rec.blockIndex = it->second;
-						found = true;
-					}
-				}
-				if (!found)
-				{
-					FailLog("placement slot names an unrecorded block");
-					return;
-				}
-				recs.push_back(rec);
-			}
-			placements.push_back(std::move(recs));
-		}
-
 		// --- episode lifecycle ---
 
 		void RegisterBlock(microBlock* block, u8* entry, u32 startPC_bytes)
@@ -1062,14 +969,10 @@ namespace mVUPersist
 			microProgram* cur = mvu->prog.cur;
 			if (!cur)
 				return;
-			// What the VU AOT tier builds is registered in block tables that
-			// are thrown away, and its region code is copied in from a buffer
-			// the recorder did not see. Nothing of it is persisted.
-			if (mVUvuAotBuilding(*mvu))
-			{
-				FailLog("vu-aot build");
+			// VU1 keeps no program log: its code is kept body by body, by the
+			// chunk store.
+			if (mvu->index)
 				return;
-			}
 			if (!prog)
 			{
 				prog = cur;
@@ -1082,7 +985,7 @@ namespace mVUPersist
 				// mVUsearchProg switched programs mid-episode (JR/JALR slow
 				// path). Splitting the chunk at the switch is possible but
 				// not worth it — drop the episode.
-				FailLog("program switch mid-episode");
+				Fail("program switch mid-episode");
 				return;
 			}
 
@@ -1093,6 +996,9 @@ namespace mVUPersist
 		{
 			pxAssert(active);
 			active = false;
+			// (VU1 has no program log: its bodies took their fixups as they closed)
+			if (mvu->index)
+				return;
 
 			const u32 vu = mvu->index & 1;
 			if (episodeBlocks.empty() && fixups.empty())
@@ -1138,20 +1044,9 @@ namespace mVUPersist
 				s_stats[vu].blocksRecorded++;
 			}
 
-			// Every entry stub belongs to a compile whose slots were reported.
-			for (const PersistFixup& f : fixups)
-			{
-				if (f.target == kTargetPlacement && f.index >= placements.size())
-				{
-					s_stats[vu].chunksDropped++;
-					return;
-				}
-			}
-
 			PersistChunk chunk;
 			chunk.code.assign(chunkBase, chunkEnd);
 			chunk.fixups = std::move(fixups);
-			chunk.placements = std::move(placements);
 			chunk.liveBase = chunkBase;
 			s_stats[vu].fixupsRecorded += chunk.fixups.size();
 			log->chunks.push_back(std::move(chunk));
@@ -1255,27 +1150,6 @@ namespace mVUPersist
 		prog.persist = nullptr;
 	}
 
-	void OnPlaceStub(microVU& mVU, u8* at)
-	{
-		Recorder& r = s_recorder[mVU.index & 1];
-		if (r.active && armAddressRecorder == &r)
-			r.OnPlaceStub(at);
-	}
-
-	void OnChunkEnd(microVU& mVU, const mVUChunkSlot* slots, size_t count)
-	{
-		Recorder& r = s_recorder[mVU.index & 1];
-		if (r.active && armAddressRecorder == &r)
-			r.OnChunkEnd(slots, count);
-	}
-
-	void DropEpisode(microVU& mVU, const char* reason)
-	{
-		Recorder& r = s_recorder[mVU.index & 1];
-		if (r.active && armAddressRecorder == &r)
-			r.FailLog(reason);
-	}
-
 	void BeginBody(microVU& mVU, u8* start)
 	{
 		Recorder& r = s_recorder[mVU.index & 1];
@@ -1283,8 +1157,8 @@ namespace mVUPersist
 			return;
 		r.bodyStart = start;
 		r.bodyFirstFixup = r.fixups.size();
-		r.bodyFailed = false;
-		r.bodyFailReason = nullptr;
+		r.failed = false;
+		r.failReason = nullptr;
 	}
 
 	bool EndBody(microVU& mVU, u8* end, std::vector<PersistFixup>& out)
@@ -1294,9 +1168,9 @@ namespace mVUPersist
 		if (!r.active || armAddressRecorder != &r || !r.bodyStart)
 			return false;
 		u8* const start = std::exchange(r.bodyStart, nullptr);
-		if (r.bodyFailed)
+		if (r.failed)
 		{
-			DevCon.WriteLn("mVUPersist: VU%u body not packable (%s)", mVU.index & 1, r.bodyFailReason);
+			DevCon.WriteLn("mVUPersist: VU%u body not packable (%s)", mVU.index & 1, r.failReason);
 			return false;
 		}
 		const u32 lo = r.OffsetOf(start);
@@ -1305,10 +1179,6 @@ namespace mVUPersist
 		{
 			PersistFixup f = r.fixups[i];
 			if (f.codeOffset < lo || f.codeOffset >= hi)
-				continue;
-			// (the body's own entry stubs are not entered in a copy: every
-			// placement of a copy has stubs of its own)
-			if (f.form == kFormPlaceStub)
 				continue;
 			f.codeOffset -= lo;
 			out.push_back(f);
@@ -1354,7 +1224,9 @@ namespace mVUPersist
 	//    ranges, counted by keptCount where the header had an unused flags word.
 	// 6: the kept-bit words lie inside the ranges, sorted by address.
 	// 7: the placement slots of each chunk follow the last chunk.
-	static constexpr u32 kImageVersion = 7;
+	// 8: no placement slots: VU1 has no program images (its code is kept by the
+	//    chunk store, body by body).
+	static constexpr u32 kImageVersion = 8;
 
 	struct ImageHeader
 	{
@@ -1476,19 +1348,6 @@ namespace mVUPersist
 			for (const PersistFixup& f : chunk.fixups)
 				AppendPod(out, f);
 			out.insert(out.end(), chunk.code.begin(), chunk.code.end());
-		}
-
-		// After the chunks, for each chunk: the number of placements, then
-		// each placement's slot count and slots.
-		for (const PersistChunk& chunk : log->chunks)
-		{
-			AppendPod(out, static_cast<u32>(chunk.placements.size()));
-			for (const std::vector<PersistSlot>& slots : chunk.placements)
-			{
-				AppendPod(out, static_cast<u32>(slots.size()));
-				for (const PersistSlot& s : slots)
-					AppendPod(out, s);
-			}
 		}
 
 		// Stamp the checksum into the already-appended header (computed with
@@ -1617,23 +1476,6 @@ namespace mVUPersist
 					*insn = (*insn & ~(0x7FFFFu << 5)) | ((static_cast<u32>(disp) & 0x7FFFFu) << 5);
 				return PatchResult::Ok;
 			}
-			case kFormPlaceStub:
-			{
-				// movz w9, #lo16; movk w9, #hi16, lsl 16. The word they build
-				// keeps its low 11 bits (the root); `value` is the slot index.
-				if ((insn[0] & 0xFFE0001Fu) != 0x52800009u || (insn[1] & 0xFFE0001Fu) != 0x72A00009u)
-					return PatchResult::BadEncoding;
-				if (value >= (1u << 21))
-					return PatchResult::OutOfRange;
-				if (write)
-				{
-					const u32 root = (insn[0] >> 5) & 0x7FFu;
-					const u32 word = root | (static_cast<u32>(value) << 11);
-					insn[0] = 0x52800009u | ((word & 0xFFFFu) << 5);
-					insn[1] = 0x72A00009u | ((word >> 16) << 5);
-				}
-				return PatchResult::Ok;
-			}
 			default:
 				return PatchResult::BadEncoding;
 		}
@@ -1751,7 +1593,6 @@ namespace mVUPersist
 			const u8* code;
 			u32 codeSize;
 			std::vector<PersistFixup> fixups;
-			std::vector<std::vector<PersistSlot>> placements;
 		};
 		std::vector<ParsedChunk> chunks(hdr.chunkCount);
 		size_t total_code = 0;
@@ -1771,28 +1612,6 @@ namespace mVUPersist
 			p += ch.codeSize;
 			total_code += ch.codeSize + 16;
 		}
-		size_t total_slots = 0;
-		for (ParsedChunk& c : chunks)
-		{
-			u32 placementCount;
-			if (!ReadPod(p, end, placementCount) || placementCount > static_cast<size_t>(end - p))
-				return nullptr;
-			c.placements.resize(placementCount);
-			for (std::vector<PersistSlot>& slots : c.placements)
-			{
-				u32 slotCount;
-				if (!ReadPod(p, end, slotCount) || slotCount > static_cast<size_t>(end - p) / sizeof(PersistSlot))
-					return nullptr;
-				slots.resize(slotCount);
-				for (PersistSlot& s : slots)
-				{
-					if (!ReadPod(p, end, s) || s.blockIndex >= blocks.size())
-						return nullptr;
-				}
-				total_slots += slotCount;
-			}
-		}
-
 		// Structural validation before any side effects.
 		for (const DiskBlock& b : blocks)
 		{
@@ -1806,9 +1625,8 @@ namespace mVUPersist
 			{
 				if (f.form >= kFormCount || f.target >= kTargetCount)
 					return nullptr;
-				if ((f.form == kFormPlaceStub) != (f.target == kTargetPlacement) || f.target == kTargetBody)
-					return nullptr;
-				if (f.target == kTargetPlacement && f.index >= c.placements.size())
+				// (a body target is the chunk store's: a program image has none)
+				if (f.target == kTargetBody)
 					return nullptr;
 				if (f.form == kFormMovRun && (f.width < 1 || f.width > 4))
 					return nullptr;
@@ -1831,9 +1649,7 @@ namespace mVUPersist
 		// refusing it.
 		const ptrdiff_t cache_free = mVU.prog.x86end - mVU.prog.x86ptr;
 		if (cache_free < 0 ||
-			total_code + (mVUcacheSafeZone * _1mb) > static_cast<size_t>(cache_free) ||
-			(total_slots && (!mVU.placeSlots || mVU.placeSlotsUsed >= mVUplaceSlotResetAt ||
-								total_slots > mVUplaceSlotCapacity - mVU.placeSlotsUsed)))
+			total_code + (mVUcacheSafeZone * _1mb) > static_cast<size_t>(cache_free))
 		{
 			s_stats[vu].hydrationRejects++;
 			return nullptr;
@@ -1971,23 +1787,6 @@ namespace mVUPersist
 			final_block[i] = installed;
 		}
 
-		// Give every recorded compile its slots.
-		std::vector<std::vector<u32>> slot_base(chunks.size());
-		for (size_t i = 0; i < chunks.size(); i++)
-		{
-			for (const std::vector<PersistSlot>& slots : chunks[i].placements)
-			{
-				const u32 base = mVU.placeSlotsUsed;
-				mVU.placeSlotsUsed += static_cast<u32>(slots.size());
-				for (size_t n = 0; n < slots.size(); n++)
-				{
-					microBlock* const blk = final_block[slots[n].blockIndex];
-					mVU.placeSlots[base + n] = reinterpret_cast<u64>(slots[n].isEntry ? blk->hostEntry : static_cast<void*>(blk));
-				}
-				slot_base[i].push_back(base);
-			}
-		}
-
 		// Patch fixups directly in the slab (still inside the BeginCodeWrite
 		// window; mVUcloseCodeCache flushes the icache over the whole span).
 		// Nothing can run these blocks yet: the program is reachable only
@@ -2006,8 +1805,6 @@ namespace mVUPersist
 					value = reinterpret_cast<u64>(final_block[f.index]) + static_cast<u64>(f.offset);
 				else if (f.target == kTargetBlockEntry)
 					value = reinterpret_cast<u64>(final_block[f.index]->hostEntry);
-				else if (f.target == kTargetPlacement)
-					value = slot_base[i][f.index];
 				else
 					resolve(f, value);
 
@@ -2041,7 +1838,6 @@ namespace mVUPersist
 			PersistChunk pc;
 			pc.code.assign(chunks[i].code, chunks[i].code + chunks[i].codeSize);
 			pc.fixups = chunks[i].fixups;
-			pc.placements = chunks[i].placements;
 			pc.liveBase = chunk_base[i];
 			log->chunks.push_back(std::move(pc));
 		}
@@ -2262,6 +2058,8 @@ namespace mVUPersist
 	bool TestComputeEmitDigest(u32 vu_index, u64& out_digest)
 	{
 		out_digest = 0;
+		if (vu_index & 1)
+			return mVUchunkTestEmitDigest(out_digest);
 		std::vector<u8> image;
 		if (!TestSerializeNewestProgram(vu_index, image))
 			return false;
@@ -2322,7 +2120,7 @@ namespace mVUPersist
 			AppendPod(canon, ch);
 			// Image and data-arena offsets are left out: they move with any
 			// change anywhere in the binary, not with the emitter's shape.
-			std::vector<u8> rel19_site, stub_site;
+			std::vector<u8> rel19_site;
 			for (u32 f = 0; f < ch.fixupCount; f++)
 			{
 				PersistFixup fx;
@@ -2342,13 +2140,6 @@ namespace mVUPersist
 					if (fx.codeOffset / 4 < rel19_site.size())
 						rel19_site[fx.codeOffset / 4] = 1;
 				}
-				if (fx.form == kFormPlaceStub)
-				{
-					if (stub_site.size() < ch.codeSize / 4)
-						stub_site.resize(ch.codeSize / 4, 0);
-					if (fx.codeOffset / 4 + 1 < stub_site.size())
-						stub_site[fx.codeOffset / 4] = stub_site[fx.codeOffset / 4 + 1] = 1;
-				}
 			}
 			if (static_cast<size_t>(end - p) < ch.codeSize || (ch.codeSize & 3))
 				return false;
@@ -2361,40 +2152,10 @@ namespace mVUPersist
 				// on what was compiled between the chunks.
 				if (off / 4 < rel19_site.size() && rel19_site[off / 4])
 					c &= ~(0x7FFFFu << 5);
-				// An entry stub: the slot index it carries depends on what was
-				// compiled before it.
-				if (off / 4 < stub_site.size() && stub_site[off / 4])
-					c &= ~(0xFFFFu << 5);
 				AppendPod(canon, c);
 			}
 			p += ch.codeSize;
 		}
-		// The placement slots of the chunks that have any (VU1's).
-		for (u32 i = 0; i < hdr.chunkCount; i++)
-		{
-			u32 placementCount;
-			if (!ReadPod(p, end, placementCount))
-				return false;
-			if (!placementCount)
-				continue;
-			AppendPod(canon, i);
-			AppendPod(canon, placementCount);
-			for (u32 n = 0; n < placementCount; n++)
-			{
-				u32 slotCount;
-				if (!ReadPod(p, end, slotCount))
-					return false;
-				AppendPod(canon, slotCount);
-				for (u32 s = 0; s < slotCount; s++)
-				{
-					PersistSlot slot;
-					if (!ReadPod(p, end, slot))
-						return false;
-					AppendPod(canon, slot);
-				}
-			}
-		}
-
 		out_digest = XXH3_64bits(canon.data(), canon.size());
 		return true;
 	}

@@ -12,6 +12,7 @@
 // a target, a link value or a TPC that is not wrapped the way the VU wraps it
 // shows up against the interpreter.
 
+#include "harness/ChunkPackScope.h"
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
 
@@ -426,15 +427,17 @@ TEST(Vu1MicroAddress, IbitHackImmediatesReadAtTheirOwnAddress)
 }
 
 // A branch into another chunk and a budget break both go through the
-// placement's slots. Here they run as compiled, then from a saved image of the
-// program loaded back in at another place in the code cache, where the slots
-// and the stubs that name them are new.
+// placement's slots. Here they run as compiled, then, after a reset, from the
+// chunk store's bodies made again from the pack at another place in the code
+// cache, where the slots and the stubs that name them are new.
 TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
 {
 	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
 	const u32 base = 0x0200;
 	mVUPersist::SetRecordingEnabled(true);
 	{
+		ChunkPackScope pack;
+		ASSERT_TRUE(pack.Up());
 		VuTestHarness h(1);
 		Place(h, base, CallInLoopProgram(40));
 		h.Run();
@@ -452,11 +455,8 @@ TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
 		ASSERT_TRUE(h.HasTerminated());
 		ExpectJitMatchesInterp(h);
 
-		std::vector<u8> image;
-		ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, image));
-
-		// Something else at the front of the code cache, so the image lands
-		// somewhere new and gets slots of its own.
+		// Something else at the front of the code cache, so the bodies land
+		// somewhere new and their placements get slots of their own.
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 		WritePair(0x1000, LoadViImm(vi::vi3, 1));
 		WritePair(0x1008, EBitNopPair());
@@ -464,14 +464,12 @@ TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
 		h.SetStartPc(0x1000);
 		h.RunJitPreserveBlockCache();
 		h.SetStartPc(base);
-		// The image is of micro memory as it was.
+		// Micro memory as it was.
 		for (u32 n = 0; n < 3; n++)
 			WritePair(0x1000 + n * 8, VuOp{0, 0});
 		CpuMicroVU1.Clear(0, kMicroBytes);
 
 		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-		ASSERT_TRUE(mVUPersist::TestHydrate(1, image.data(), image.size()));
-		EXPECT_TRUE(mVUPersist::TestVerifyHydratedCode(1, image.data(), image.size()));
 		h.RunJitPreserveBlockCache();
 		ASSERT_FALSE(h.HasTerminated());
 		h.ContinueJit(40, 400);
@@ -484,9 +482,9 @@ TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
 }
 
 // Under the IbitHack gamefix the entry stubs also store the placement's micro
-// memory, which the reads are taken from. A program loaded back in from a
-// saved image reads its immediates from micro memory as it is, a word
-// rewritten after the load included.
+// memory, which the reads are taken from. Code made again from the pack after
+// a reset reads its immediates from micro memory as it is, a word rewritten
+// after the load included.
 TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
 {
 	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
@@ -494,6 +492,8 @@ TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
 	const u32 base = 0x0200;
 	mVUPersist::SetRecordingEnabled(true);
 	{
+		ChunkPackScope pack;
+		ASSERT_TRUE(pack.Up());
 		VuTestHarness h(1);
 		h.SetVfBits(vf::vf1, 0x3f800000u, 0x3f800000u, 0x3f800000u, 0x3f800000u);
 		h.WriteMemU128(0x30, 0x1234, 0, 0, 0);
@@ -511,10 +511,7 @@ TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
 		h.Run();
 		ASSERT_EQ(h.GetViJit(vi::vi1), 0x123u);
 		h.RunJitPreserveBlockCache();
-		std::vector<u8> image;
-		ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, image));
-
-		// Something else at the front of the code cache, so the image lands
+		// Something else at the front of the code cache, so the bodies land
 		// somewhere new.
 		RecompilerTestEnvironment::ResetVuBlockCache(1);
 		std::vector<u8> saved(vuRegs[1].Micro + 0x1000, vuRegs[1].Micro + 0x1018);
@@ -528,7 +525,6 @@ TEST(Vu1MicroAddress, IbitHackImmediatesSurviveReload)
 		CpuMicroVU1.Clear(0, kMicroBytes);
 
 		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
-		ASSERT_TRUE(mVUPersist::TestHydrate(1, image.data(), image.size()));
 		h.RunJitPreserveBlockCache();
 		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled) << "the reloaded program compiled something";
 		EXPECT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x40400000u);

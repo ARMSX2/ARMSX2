@@ -1351,7 +1351,6 @@ struct mVUchunkScope
 	{
 		if (--mVU.compileDepth == 0 && mVUrootRelative(mVU))
 		{
-			mVUPersist::OnChunkEnd(mVU, mVU.chunk.slots.data(), mVU.chunk.slots.size());
 			mVUchunkEnd(mVU);
 		}
 	}

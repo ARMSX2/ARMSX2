@@ -491,7 +491,9 @@ constexpr AbiPin kPins[] = {
 	// gamefix a VU1 entry stub also stores the placement's micro memory there, and a run-time immediate
 	// is one load from it at the word's distance from the root. The VU1 probes and the EFU probes move
 	// with the field offsets.
-	{72, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0x850ad53a9577beab, 0x15c7e07ec93fdeb, 0xeccba16c4cd3d53a, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0xab366127d7636be3, 0x2f435453fe8c378c, 0x29ea889a0b972b0f, 0x5f90d501dd5f1e05, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0x2aa4f2d7c7c8eeb6, 0x7a5f14e491b0ebc0}},
+	// The six VU1 pins were taken again, with no emitter change, when VU1 stopped having program images:
+	// a VU1 digest is now of the chunk store's bodies (their blocks, links, fixups and code).
+	{72, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0x850ad53a9577beab, 0x15c7e07ec93fdeb, 0xb6e2a1874a9e64b2, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0xaaacd5e3e5bbaad1, 0xf923f0ba34558e5d, 0x3c0b694a18d98d09, 0xe0a32b87d8c7c11a, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0x2edbf3072ab32dea, 0x7a5f14e491b0ebc0}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,

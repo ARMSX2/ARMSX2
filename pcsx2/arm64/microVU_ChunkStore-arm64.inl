@@ -15,6 +15,7 @@ static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept);
 static bool mVUchunkPackOn(microVU& mVU);
 static void mVUchunkPackSave(microVU& mVU, const microRegInfo& rootState, u64 rootHash, mVUChunkBody& b);
 static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& state);
+static bool mVUchunkTestEmitDigest(u64& out);
 
 static mVUChunkStore::Stats s_mVUchunkStats;
 
@@ -314,9 +315,6 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 		miss = std::max<int>(miss, mVUchunkMissNoRoom);
 		return nullptr;
 	}
-
-	// The stubs name code the program cache's recorder has no record of.
-	mVUPersist::DropEpisode(mVU, "chunk store placement");
 
 	const u32 slotBase = mVU.placeSlotsUsed;
 	mVU.placeSlotsUsed += b.slotCount;

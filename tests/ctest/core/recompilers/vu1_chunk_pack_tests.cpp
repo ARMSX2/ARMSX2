@@ -423,8 +423,10 @@ TEST_F(Vu1ChunkPack, AResetBringsBodiesBackFromRam)
 	const Result compiled = Take(first.h);
 	EXPECT_TRUE(PackFile().empty()) << "nothing is on disk until the writer's pass";
 
+	const StoreStats a = mVUChunkStore::GetStats();
 	OneRun again(1, kHome, routine, kHome);
 	EXPECT_EQ(again.compiles, 0u);
+	EXPECT_GT(mVUChunkStore::GetStats().packLoaded - a.packLoaded, 0u) << "the bodies did not come from the pack's table";
 	ExpectMatchesInterp(again.h, "after the reset");
 	const std::string d = Diff(compiled, Take(again.h), true);
 	EXPECT_TRUE(d.empty()) << d;
@@ -506,6 +508,43 @@ TEST_F(Vu1ChunkPack, ATieredBodyComesBackAndRunsItsRegionsFromTheFirstDispatch)
 			std::filesystem::remove_all(Path::Combine(root_, "vu_jit"), ec);
 		}
 	}
+}
+
+// The same after a reset inside one session (a savestate load): the tiered
+// body comes back from the pack's table in RAM, and the first dispatch after
+// the reset runs it.
+TEST_F(Vu1ChunkPack, AResetBringsATieredBodyBackFromRam)
+{
+	const std::vector<VuOp> routine = LoopRoutine(10);
+	Result mvu;
+	{
+		TierScope off(false, true);
+		OneRun run(1, kHome, routine, kHome);
+		mvu = Take(run.h);
+	}
+	TierScope on(true, true);
+	OpenPack();
+	const vuaot::live::Stats t0 = vuaot::live::GetStats();
+	{
+		OneRun run(1, kHome, routine, kHome);
+		for (u32 i = 0; i < kTierRuns + 2; i++)
+			run.Again();
+	}
+	const vuaot::live::Stats t1 = vuaot::live::GetStats();
+	ASSERT_EQ(t1.tierUps - t0.tierUps, 1u);
+
+	const StoreStats a = mVUChunkStore::GetStats();
+	OneRun run(1, kHome, routine, kHome); // (resets first)
+	const StoreStats b = mVUChunkStore::GetStats();
+	const vuaot::live::Stats t2 = vuaot::live::GetStats();
+	EXPECT_EQ(run.compiles, 0u);
+	EXPECT_EQ((t2.tierUps + t2.retiers) - (t1.tierUps + t1.retiers), 0u) << "the region was built again after the reset";
+	EXPECT_GE(b.tieredHits - a.tieredHits, 1u) << "the copy was not placed on the tiered body";
+	EXPECT_EQ(b.tieredReAimed - a.tieredReAimed, 0u) << "the copy ran microVU's code first";
+	EXPECT_EQ(mVUProgCache::GetStats(1).packsLoaded, 0u) << "a reset read the file";
+	ExpectMatchesInterp(run.h, "tiered, after a reset");
+	const std::string d = Diff(mvu, Take(run.h), false);
+	EXPECT_TRUE(d.empty()) << d;
 }
 
 // With the tier off, a pack that holds tiered bodies gives none of them out.

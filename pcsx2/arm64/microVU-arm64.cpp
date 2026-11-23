@@ -1788,12 +1788,13 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		}
 
 		// Full in-process miss (per-PC deque + contentMap) — this PC needs a
-		// program. Try hydrating the block graph from the on-disk cache
-		// before compiling from scratch.
+		// program. VU0 tries hydrating the block graph from the on-disk cache
+		// before compiling from scratch. A VU1 program has no image: the
+		// chunk store brings its code back routine by routine as it compiles.
 		mVUProgCache::ObserveDispatchHash(mVU, liveHash, startPC);
 		if constexpr (vuIndex == 1)
 			mVUvuAotOnNewProgram(mVU);
-		if (microProgram* hydrated = mVUProgCache::TryLoadProgram(mVU, liveHash))
+		if (microProgram* hydrated = (vuIndex == 0) ? mVUProgCache::TryLoadProgram(mVU, liveHash) : nullptr)
 		{
 			// Same install sequence as the contentMap-hit path above —
 			// HydrateProgram registered the program in the contentMap, so

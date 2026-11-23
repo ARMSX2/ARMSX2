@@ -12,31 +12,32 @@
 struct microVU;
 struct microProgram;
 struct microBlock;
-struct mVUChunkSlot;
 struct MvuPersistLog;
 
 // Persisted-JIT VU program cache — relocation recorder + block-graph
 // serializer.
 //
-// While recording is enabled, every mVU code-cache emission episode (the
-// contiguous region emitted between mVUopenCodeCache and mVUcloseCodeCache)
-// is captured as a "chunk" on the owning microProgram's persist log: the raw
-// code bytes, the blocks whose entry points live inside it, and a fixup for
-// every instruction that carries a host address pointing outside the chunk.
-// A fixup names an encoding form and a target:
+// While recording is enabled, every instruction the VU JIT emits that carries
+// a host address is noted as a fixup, which names an encoding form and a
+// target:
 //
 //   forms    MOVZ+MOVK run (1 to 4 instructions), ADRP, B/BL imm26,
-//            B.cond/CBZ/CBNZ imm19, a VU1 block's entry stub.
+//            B.cond/CBZ/CBNZ imm19.
 //   targets  one of the program's own microBlock objects (heap), another
 //            block's code entry, a per-VU dispatcher stub, an offset into the
-//            emulator's module image, an offset into the data arena, the
-//            first placement slot of a chunk, an offset into the VU1 chunk
-//            store body the code is part of.
+//            emulator's module image, an offset into the data arena, an
+//            offset into the VU1 chunk store body the code is part of.
 //
-// VU1 code reaches its own block objects and the blocks outside its chunk
-// through placement slots (microVU::placeSlots). The chunk records what each
-// slot of a compile holds; hydration gives each such compile new slots, fills
-// them and writes their index into the entry stubs.
+// VU0: every code-cache emission episode (the contiguous region emitted
+// between mVUopenCodeCache and mVUcloseCodeCache) is captured as a "chunk" on
+// the owning microProgram's persist log: the raw code bytes, the blocks whose
+// entry points live inside it, and the fixups. A program's log serializes to
+// an image, and an image hydrates back into a program.
+//
+// VU1 has no program log and no image. Its code is kept by the chunk store,
+// one body per outermost compile; the recorder hands each body its fixups
+// (BeginBody, EndBody) and the store writes the body as a record of the pack
+// (microVU_ChunkPack-arm64.inl).
 //
 // Hydration resolves every target against the running process, so a payload
 // works wherever ASLR put the image, heap, code slab and data arena. It
@@ -117,13 +118,6 @@ namespace mVUPersist
 	void OnBlockCompiled(microVU& mVU, microBlock* block, u8* entry, u32 startPC_bytes);
 	// mVUdeleteProg: free the program's persist log, if any.
 	void OnProgramDeleted(microProgram& prog);
-	// A VU1 block's entry stub was emitted at `at`, for the outermost compile
-	// now running.
-	void OnPlaceStub(microVU& mVU, u8* at);
-	// The outermost compile of a VU1 chunk returned: the slots it filled.
-	void OnChunkEnd(microVU& mVU, const mVUChunkSlot* slots, size_t count);
-	// The open episode emitted code the recorder cannot describe.
-	void DropEpisode(microVU& mVU, const char* reason);
 
 	// --- VU1 chunk store bodies ---
 	//

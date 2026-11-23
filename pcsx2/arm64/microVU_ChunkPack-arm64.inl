@@ -403,8 +403,6 @@ namespace mVUChunkPack
 		const u8* const cacheEnd = mVU.prog.x86end + (mVUcacheSafeZone * _1mb) / 2;
 		if (armGetCurrentCodePointer() + h.codeBytes + 4096 > cacheEnd)
 			return nullptr;
-		// (code the program cache's recorder has no record of)
-		mVUPersist::DropEpisode(mVU, "chunk store body from the pack");
 		while (armAsm->GetCursorOffset() & 15)
 			armAsm->Nop();
 		u8* const base = armGetCurrentCodePointer();
@@ -561,6 +559,80 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		}
 	}
 	st.packLoadNs += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+
+// The shape of the code the store's plain bodies hold, for the test that pins
+// the emitter against the compiler ABI version: every body's blocks, links,
+// fixups and code, with the operands that differ between two correct runs
+// masked (mVUPersist::CanonicalizeInsn, and the slot numbers in the entry
+// stubs). False when the store holds no body, or one whose host addresses
+// were not recorded.
+static bool mVUchunkTestEmitDigest(u64& out)
+{
+	using mVUChunkPack::Put;
+	out = 0;
+	const mVUChunkStoreData* const store = microVU1.chunkStore.get();
+	if (!store)
+		return false;
+	std::vector<u8> canon;
+	u32 bodies = 0;
+	for (const auto& head : store->heads)
+	{
+		for (const auto& body : head->plain)
+		{
+			const mVUChunkBody& b = *body;
+			if (!b.packable || b.inPack || (b.codeBytes & 3))
+				return false;
+			bodies++;
+			Put(canon, static_cast<u32>(b.blocks.size()));
+			Put(canon, static_cast<u32>(b.links.size()));
+			Put(canon, b.slotCount);
+			Put(canon, b.codeBytes);
+			Put(canon, static_cast<u32>(b.fixups.size()));
+			std::vector<u8> masked(b.codeBytes / 4, 0);
+			for (const mVUChunkBody::Block& blk : b.blocks)
+			{
+				const u32 stubOff = static_cast<u32>(blk.stub - b.code);
+				Put(canon, blk.pairOff);
+				Put(canon, blk.slot);
+				Put(canon, stubOff);
+				Put(canon, static_cast<u32>(blk.body - b.code));
+				Put(canon, static_cast<u32>(blk.jumpCache ? 1 : 0));
+				// (movz, movk: the place word, whose slot bits depend on what was compiled before)
+				masked[stubOff / 4] = masked[stubOff / 4 + 1] = 1;
+			}
+			for (const mVUChunkBody::Link& l : b.links)
+			{
+				Put(canon, l.pairOff);
+				Put(canon, l.slot);
+			}
+			for (const mVUPersist::PersistFixup& f : b.fixups)
+			{
+				Put(canon, f.codeOffset);
+				Put(canon, f.form);
+				Put(canon, f.target);
+				Put(canon, f.width);
+				Put(canon, f.index);
+				if (f.form == mVUPersist::kFormRel19)
+					masked[f.codeOffset / 4] = 2;
+			}
+			for (u32 off = 0; off < b.codeBytes; off += 4)
+			{
+				u32 insn;
+				std::memcpy(&insn, b.code + off, 4);
+				u32 c = mVUPersist::CanonicalizeInsn(insn);
+				if (masked[off / 4] == 1)
+					c &= ~(0xFFFFu << 5);
+				else if (masked[off / 4] == 2)
+					c &= ~(0x7FFFFu << 5);
+				Put(canon, c);
+			}
+		}
+	}
+	if (!bodies)
+		return false;
+	out = XXH3_64bits(canon.data(), canon.size());
+	return true;
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
