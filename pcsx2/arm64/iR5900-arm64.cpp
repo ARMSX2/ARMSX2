@@ -5419,11 +5419,19 @@ StartRecomp:
 	{
 		// Branch taken — flush and dispatch. recBranchCall already accumulated
 		// any pre-call cycles into RECCYCLE and re-derived it after the C
-		// call, so any further scaleblockcycles_clear() result is the
-		// post-call remainder.
+		// call, so what is left is the sub-cycle remainder. The scaler floors
+		// a charge at 1, which here would charge the block a cycle the
+		// interpreter does not, so a remainder under a cycle is not charged.
 		iFlushCall(FLUSH_EVERYTHING);
 
-		emitCycleUpdateAndEventCheck();
+		if (s_nBlockCycles < 8)
+		{
+			s_nBlockCycles = 0;
+			armAsm->Cmp(RECCYCLE, 0);
+			emitDispatcherCondBranch(a64::ge, DispatcherEvent, s_condVeneerEvent);
+		}
+		else
+			emitCycleUpdateAndEventCheck();
 
 		armEmitJmp(DispatcherReg);
 	}
