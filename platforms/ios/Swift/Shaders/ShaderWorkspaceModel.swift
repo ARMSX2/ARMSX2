@@ -67,13 +67,13 @@ final class ShaderWorkspaceModel {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                expandedPassIDs.remove(pass.id)
+                _ = expandedPassIDs.remove(pass.id)
             }
         } else {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                expandedPassIDs.insert(pass.id)
+                _ = expandedPassIDs.insert(pass.id)
             }
             if let layer = passLibrary.layers.first(where: {
                 $0.passes.contains(where: { $0.id == pass.id })
@@ -95,7 +95,7 @@ final class ShaderWorkspaceModel {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
-                expandedLayerIDs.insert(layer.id)
+                _ = expandedLayerIDs.insert(layer.id)
             }
             requestScroll(to: layer.id)
         }
