@@ -1526,21 +1526,24 @@ std::vector<VuOp> TwoEntryLoop(u32 n)
 	return p;
 }
 
-// A saved image without its list of compiled ranges: what the recorder's log made (the block records and
-// the chunks of code). The ranges are the program's own, read when the image is written, and grow with
-// every block compiled, a tiered program's included; they say which parts of micro memory the program
-// answers for and hold no code. (Layout: mVUPersist::ImageHeader, 88 bytes with the range count at 60,
-// then 8 bytes per range.)
+// A saved image without its lists of compiled ranges and kept-bit words: what the recorder's log made
+// (the block records and the chunks of code). The ranges and kept-bit words are the program's own, read
+// when the image is written, and grow with every block compiled, a tiered program's included; they say
+// which parts of micro memory the program answers for and hold no code. (Layout: mVUPersist::ImageHeader,
+// 88 bytes with the kept-bit count at 12 and the range count at 60, then 8 bytes per range, then 8 bytes
+// per kept-bit word.)
 std::vector<u8> LoggedPart(const std::vector<u8>& image)
 {
-	constexpr size_t kHeader = 88, kRangeCountAt = 60;
+	constexpr size_t kHeader = 88, kKeptCountAt = 12, kRangeCountAt = 60;
 	if (image.size() < kHeader)
 		return {};
-	u32 ranges = 0;
+	u32 ranges = 0, kept = 0;
 	std::memcpy(&ranges, image.data() + kRangeCountAt, sizeof(ranges));
-	if (image.size() < kHeader + size_t(ranges) * 8)
+	std::memcpy(&kept, image.data() + kKeptCountAt, sizeof(kept));
+	const size_t skip = kHeader + (size_t(ranges) + kept) * 8;
+	if (image.size() < skip)
 		return {};
-	return std::vector<u8>(image.begin() + kHeader + size_t(ranges) * 8, image.end());
+	return std::vector<u8>(image.begin() + skip, image.end());
 }
 
 // What the process boundary does, in one process: the cache's in-memory state is dropped and the disk read again.

@@ -346,6 +346,11 @@ static __fi void _vifCode_MPG(int idx, u32 addr, const u32* data, int size)
 		memcpy(VUx.Micro + addr, data, vuMemSize - addr);
 		size -= (vuMemSize - addr) / 4;
 		data += (vuMemSize - addr) / 4;
+		// The rest wraps to address 0 and replaces code there too.
+		if (!idx)
+			CpuVU0->Clear(0, size * 4);
+		else
+			CpuVU1->Clear(0, size * 4);
 		memcpy(VUx.Micro, data, size * 4);
 
 		vifX.tag.addr = size * 4;

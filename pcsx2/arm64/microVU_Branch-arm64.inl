@@ -68,6 +68,16 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 
 	if (isEbit)
 	{
+		// The cursor is on the pair after the T/D bit, or on a branch target.
+		// That pair's IR slot is either outside this block, holding whatever an
+		// earlier compile left, or one this block has still to emit. The end
+		// reads it cleared, as mVUendProgram does, so the pending divide and
+		// kick come only from mVUincCycles below, and the slot is put back
+		// after, so the 100-cycle advance does not mark it.
+		microOp savedInfo;
+		std::memcpy(&savedInfo, &mVUinfo, sizeof(savedInfo));
+		std::memset(&mVUinfo, 0, sizeof(mVUinfo));
+
 		mVUincCycles(mVU, 100);
 		mVUcycles -= 100;
 		qInst = mVU.q;
@@ -95,6 +105,8 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 			armEmitCall((void*)mVU0clearlpStateJIT);
 		else
 			armEmitCall((void*)mVU1clearlpStateJIT);
+
+		std::memcpy(&mVUinfo, &savedInfo, sizeof(savedInfo));
 	}
 
 	// Save P/Q regs from qmmPQ. qmmPQ layout: [0]=Q, [1]=pending_q, [2]=P,

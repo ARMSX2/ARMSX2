@@ -67,7 +67,7 @@
 // mVUProgCache::GetCompilerAbiVersion()), with a clear message.
 namespace pcsx2_test
 {
-	static constexpr u32 kMvuCompilerAbiVersionMirror = 65;
+	static constexpr u32 kMvuCompilerAbiVersionMirror = 67;
 }
 
 namespace

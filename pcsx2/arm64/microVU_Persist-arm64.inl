@@ -1140,14 +1140,17 @@ namespace mVUPersist
 	//    that made it.
 	// 4: a block's jump-cache flag shares its word with the block's extent
 	//    (DiskBlock::jumpCacheAndExtent).
-	static constexpr u32 kImageVersion = 4;
+	// 5: the program's kept-bit words (microProgram::keptBits) follow the
+	//    ranges, counted by keptCount where the header had an unused flags word.
+	// 6: the kept-bit words lie inside the ranges, sorted by address.
+	static constexpr u32 kImageVersion = 6;
 
 	struct ImageHeader
 	{
 		u32 magic;
 		u32 version;
 		u32 vuIndex;
-		u32 flags;
+		u32 keptCount;
 		u64 hashLo;
 		u64 hashHi;
 		// The recording process's region bases. Informational only: every
@@ -1172,6 +1175,12 @@ namespace mVUPersist
 	{
 		s32 start;
 		s32 end;
+	};
+
+	struct DiskKeptBits
+	{
+		u32 addr;
+		u32 kept;
 	};
 
 	struct DiskBlock
@@ -1221,6 +1230,7 @@ namespace mVUPersist
 		hdr.buildTag = BuildTag();
 		hdr.progStartPC = static_cast<u32>(prog.startPC) * 8u;
 		hdr.rangeCount = prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0;
+		hdr.keptCount = prog.keptBits ? static_cast<u32>(prog.keptBits->size()) : 0;
 		hdr.blockCount = static_cast<u32>(log->blocks.size());
 		hdr.chunkCount = static_cast<u32>(log->chunks.size());
 		AppendPod(out, hdr);
@@ -1229,6 +1239,11 @@ namespace mVUPersist
 		{
 			for (const microRange& mr : *prog.ranges)
 				AppendPod(out, DiskRange{mr.start, mr.end});
+		}
+		if (prog.keptBits)
+		{
+			for (const microKeptBits& w : *prog.keptBits)
+				AppendPod(out, DiskKeptBits{w.addr, w.kept});
 		}
 
 		for (const PersistBlockRec& rec : log->blocks)
@@ -1260,9 +1275,9 @@ namespace mVUPersist
 		return true;
 	}
 
-	static u64 ShapeOf(u32 ranges, u32 blocks, u32 chunks)
+	static u64 ShapeOf(u32 ranges, u32 kept, u32 blocks, u32 chunks)
 	{
-		const u32 words[3] = {ranges, blocks, chunks};
+		const u32 words[4] = {ranges, kept, blocks, chunks};
 		return XXH3_64bits(words, sizeof(words)) | 1u; // (never 0, which means "none")
 	}
 
@@ -1271,7 +1286,8 @@ namespace mVUPersist
 		const MvuPersistLog* log = prog.persist;
 		if (!log || log->blocks.empty() || !prog.contentHashValid)
 			return 0;
-		return ShapeOf(prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0, static_cast<u32>(log->blocks.size()),
+		return ShapeOf(prog.ranges ? static_cast<u32>(prog.ranges->size()) : 0,
+			prog.keptBits ? static_cast<u32>(prog.keptBits->size()) : 0, static_cast<u32>(log->blocks.size()),
 			static_cast<u32>(log->chunks.size()));
 	}
 
@@ -1283,7 +1299,7 @@ namespace mVUPersist
 		std::memcpy(&hdr, data, sizeof(hdr));
 		if (hdr.magic != kImageMagic || hdr.version != kImageVersion)
 			return 0;
-		return ShapeOf(hdr.rangeCount, hdr.blockCount, hdr.chunkCount);
+		return ShapeOf(hdr.rangeCount, hdr.keptCount, hdr.blockCount, hdr.chunkCount);
 	}
 
 	// Checksum of a serialized image as SerializeProgram computed it.
@@ -1466,6 +1482,24 @@ namespace mVUPersist
 			if (!ReadPod(p, end, r))
 				return nullptr;
 
+		if (hdr.keptCount > mVU.microMemSize / 4)
+		{
+			s_stats[vu].hydrationRejects++;
+			return nullptr;
+		}
+		std::vector<DiskKeptBits> keptBits(hdr.keptCount);
+		for (size_t i = 0; i < keptBits.size(); i++)
+		{
+			DiskKeptBits& w = keptBits[i];
+			// Sorted by address: mVUcmpProg searches the list.
+			if (!ReadPod(p, end, w) || w.addr % 4 != 0 || w.addr >= mVU.microMemSize ||
+				(i && w.addr <= keptBits[i - 1].addr))
+			{
+				s_stats[vu].hydrationRejects++;
+				return nullptr;
+			}
+		}
+
 		std::vector<DiskBlock> blocks(hdr.blockCount);
 		for (DiskBlock& b : blocks)
 			if (!ReadPod(p, end, b))
@@ -1616,6 +1650,13 @@ namespace mVUPersist
 				std::memcpy(reinterpret_cast<u8*>(prog->data) + r.start,
 					mVU.regs().Micro + r.start, static_cast<size_t>(r.end - r.start));
 			}
+		}
+		// And the words of those ranges compared through a mask.
+		if (!keptBits.empty())
+		{
+			prog->keptBits = new std::vector<microKeptBits>();
+			for (const DiskKeptBits& w : keptBits)
+				prog->keptBits->push_back(microKeptBits{w.addr, w.kept});
 		}
 
 		// Copy each chunk to the current cursor (16-aligned, as recorded).
@@ -1784,6 +1825,9 @@ namespace mVUPersist
 		if (static_cast<size_t>(end - p) < static_cast<size_t>(hdr.rangeCount) * sizeof(DiskRange))
 			return false;
 		p += static_cast<size_t>(hdr.rangeCount) * sizeof(DiskRange);
+		if (static_cast<size_t>(end - p) < static_cast<size_t>(hdr.keptCount) * sizeof(DiskKeptBits))
+			return false;
+		p += static_cast<size_t>(hdr.keptCount) * sizeof(DiskKeptBits);
 		if (static_cast<size_t>(end - p) < static_cast<size_t>(hdr.blockCount) * sizeof(DiskBlock))
 			return false;
 		p += static_cast<size_t>(hdr.blockCount) * sizeof(DiskBlock);
@@ -1857,6 +1901,7 @@ namespace mVUPersist
 		if (!ReadPod(cp, end, hdr))
 			return false;
 		size_t pos = sizeof(ImageHeader) + static_cast<size_t>(hdr.rangeCount) * sizeof(DiskRange) +
+		             static_cast<size_t>(hdr.keptCount) * sizeof(DiskKeptBits) +
 		             static_cast<size_t>(hdr.blockCount) * sizeof(DiskBlock);
 		for (u32 c = 0; c < hdr.chunkCount; c++)
 		{
@@ -1938,14 +1983,18 @@ namespace mVUPersist
 		if (!ReadPod(p, end, hdr))
 			return false;
 
-		// Canonical buffer: structure counts + ranges + block geometry +
-		// fixup records (sans address payloads) + canonicalized code.
-		// Header hashes/bases and microRegInfo bytes are excluded — the
-		// former are per-run, the latter may carry padding.
+		// Canonical buffer: structure counts + ranges + kept-bit words + block
+		// geometry + fixup records (sans address payloads) + canonicalized
+		// code. Header hashes/bases and microRegInfo bytes are excluded — the
+		// former are per-run, the latter may carry padding. The kept-bit count
+		// goes in only when there are kept-bit words, so the digests of
+		// programs without any (every pinned probe) do not depend on it.
 		std::vector<u8> canon;
 		AppendPod(canon, hdr.vuIndex);
 		AppendPod(canon, hdr.progStartPC);
 		AppendPod(canon, hdr.rangeCount);
+		if (hdr.keptCount)
+			AppendPod(canon, hdr.keptCount);
 		AppendPod(canon, hdr.blockCount);
 		AppendPod(canon, hdr.chunkCount);
 
@@ -1955,6 +2004,13 @@ namespace mVUPersist
 			if (!ReadPod(p, end, r))
 				return false;
 			AppendPod(canon, r);
+		}
+		for (u32 i = 0; i < hdr.keptCount; i++)
+		{
+			DiskKeptBits w;
+			if (!ReadPod(p, end, w))
+				return false;
+			AppendPod(canon, w);
 		}
 		for (u32 i = 0; i < hdr.blockCount; i++)
 		{

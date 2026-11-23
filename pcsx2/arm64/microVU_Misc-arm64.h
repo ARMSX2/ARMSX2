@@ -492,7 +492,7 @@ typedef Fntype_mVUrecInst* Fnptr_mVUrecInst;
 #define xPC          ((iPC / 2) * 8)
 #define curI         ((u32*)mVU.regs().Micro)[iPC]
 #define setCode()    { mVU.code = curI; }
-#define bSaveAddr    (((xPC + 16) & (mVU.microMemSize-8)) / 8)
+#define bSaveAddr    ((xPC + 16) / 8) // the BAL/JALR link: not wrapped at the top of micro memory
 #define shufflePQ    (((mVU.p) ? 0xb0 : 0xe0) | ((mVU.q) ? 0x01 : 0x04))
 #define Rmem         &mVU.regs().VI[REG_R].UL
 #define aWrap(x, m)  ((x > m) ? 0 : x)

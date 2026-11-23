@@ -174,7 +174,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 65;
+static constexpr u32 kMvuCompilerAbiVersion = 67;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -468,6 +468,14 @@ struct microRange
 	s32 end;
 };
 
+// One micro-memory word compared through a mask: `addr` in bytes, `kept` the
+// bits the compiled code depends on.
+struct microKeptBits
+{
+	u32 addr;
+	u32 kept;
+};
+
 #define mProgSize (0x4000 / 4)
 static_assert(sizeof(microJumpCache) * (mProgSize / 2) == mVUJumpTable::kBytes, "mVUJumpTable::kBytes follows the jump cache");
 struct microProgram
@@ -522,6 +530,13 @@ struct microProgram
 	// its first region).
 	u64 vuAotBornAt;
 	u64 vuAotBornCycle;
+
+	// Words of `ranges` that are partly read at run time (the lower-op
+	// immediates under the IbitHack gamefix), sorted by address. The rest of
+	// each word is compiled in: when a range's bytes differ from `data`,
+	// mVUcmpProg compares that range again with only the bits in `kept` of these
+	// words. Null for a program with none.
+	std::vector<microKeptBits>* keptBits;
 };
 
 typedef std::deque<microProgram*> microProgramList;

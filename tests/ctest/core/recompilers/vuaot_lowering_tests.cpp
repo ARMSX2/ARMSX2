@@ -632,6 +632,23 @@ TEST(VuAotLowering, JumpTargetSurvivesEarlyWriteback)
 	}
 }
 
+// BAL in pair 0x7FE links 0x800: the link is not wrapped at the top of micro
+// memory (a console capture). The BAL carries the E bit so the program ends
+// after its delay slot, pair 0x7FF.
+TEST(VuAotLowering, BalAtTheTopLinksPastIt)
+{
+	constexpr u32 kPair = 0x7FE;
+	std::vector<VuOp> p(kPair, U(VNOP_U()));
+	p.push_back(EBit(L(VBAL_L(vi::vi5, +1))));
+	for (bool fh : {true, false})
+	{
+		const Outcome o = RunBoth(p, fh, [](VuTestHarness& h) { h.SetStartPc(kPair * 8); });
+		EXPECT_TRUE(o.diffs.empty()) << "flagHack=" << fh << "\n" << Join(o.diffs);
+		EXPECT_EQ(o.lowered, o.blocks) << o.declined;
+		EXPECT_GT(o.blocks, 0u);
+	}
+}
+
 // Long straight blocks over every VF register: enough live values that the
 // allocator spills and reloads, with every broadcast form, partial writes,
 // moves and flag readers in between.

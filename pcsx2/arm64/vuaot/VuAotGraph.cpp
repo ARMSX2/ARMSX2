@@ -236,7 +236,7 @@ namespace vuaot
 						jumpVal[id] = s[l.is];
 					if (o.lOp.isNOP)
 						continue;
-					const u32 link = ((p.pc + 16) & MemMask()) / 8;
+					const u32 link = (p.pc + 16) / 8; // not wrapped at the top of micro memory
 					switch (l.op)
 					{
 						case LOp::IADDI:

@@ -693,14 +693,17 @@ namespace vuaot
 		}
 	}
 
-	// setBranchA (microVU_Lower-arm64.inl): runs in every pass.
+	// setBranchA (microVU_Lower-arm64.inl): runs in every pass. A block's first
+	// instruction takes the delay-slot answer from the entry state, as there.
 	void PipeAnalyzer::setBranchA(int pass, int x, int x_)
 	{
-		bool isBranchDelaySlot = false;
-		incPC(-2);
-		if (info().lOp.branch)
-			isBranchDelaySlot = true;
-		incPC(2);
+		bool isBranchDelaySlot = isEvilBlock();
+		if (iPC_ != startPC_)
+		{
+			incPC(-2);
+			isBranchDelaySlot = info().lOp.branch != 0;
+			incPC(2);
+		}
 
 		const bool optimized = (Imm11() == 1 && !x_ && !isBranchDelaySlot);
 		if (pass == 0)

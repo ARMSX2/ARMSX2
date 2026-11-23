@@ -100,6 +100,40 @@ void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC)
 		mVUcacheProg(mVU, *mVU.prog.cur);
 }
 
+// Under IbitHack, the bits of lower word `code` the compiled code depends on
+// when the op reads its immediate from micro memory at run time; 0 for any
+// other op. The run-time immediates: LQ/SQ/ILW/ISW imm11 (bits 0-10),
+// IADDIU/ISUBIU imm15 (bits 0-10 and 21-24), IADDI imm5 (bits 6-10).
+static u32 mVUibitHackKeptBits(u32 code)
+{
+	switch (code >> 25)
+	{
+		case 0x00: case 0x01: case 0x04: case 0x05: // LQ, SQ, ILW, ISW
+			return ~0x000007FFu;
+		case 0x08: case 0x09:                       // IADDIU, ISUBIU
+			return ~0x01E007FFu;
+		case 0x40:                                  // IADDI
+			return ((code & 0x3F) == 0x32) ? ~0x000007C0u : 0;
+		default:
+			return 0;
+	}
+}
+
+// Records a word of the program's ranges that mVUcmpProg compares through
+// `kept`, in the program's list sorted by address.
+static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept)
+{
+	if (doWholeProgCompare)
+		return;
+	std::vector<microKeptBits>*& words = mVUcurProg.keptBits;
+	if (!words)
+		words = new std::vector<microKeptBits>();
+	const auto it = std::lower_bound(words->begin(), words->end(), addr,
+		[](const microKeptBits& w, u32 a) { return w.addr < a; });
+	if (it == words->end() || it->addr != addr)
+		words->insert(it, {addr, kept});
+}
+
 //------------------------------------------------------------------
 // Pipeline State Helpers (platform-independent)
 //------------------------------------------------------------------
@@ -1355,19 +1389,11 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 			incPC(-1);
 			if (EmuConfig.Gamefixes.IbitHack)
 			{
-				// Ignore IADDI/IADDIU/ISUBU/ILW/ISW/LQ/SQ on the lower slot when
-				// IbitHack is active. Matches x86 microVU_Compile.inl:751-765.
-				const u32 upper = (mVU.code >> 25);
-				if (upper == 0x1 || upper == 0x0 || upper == 0x4 || upper == 0x5
-					|| upper == 0x8 || upper == 0x9
-					|| (upper == 0x40 && (mVU.code & 0x3F) == 0x32))
-				{
-					incPC(1);
-					mVUsetupRange(mVU, xPC, false);
-					if (branch < 2)
-						mVUsetupRange(mVU, xPC + 2, true);
-					incPC(-1);
-				}
+				// The immediates of IADDI/IADDIU/ISUBIU/ILW/ISW/LQ/SQ are read
+				// from micro memory at run time under IbitHack, so only the
+				// word's other bits are compared. The word stays in the range.
+				if (const u32 kept = mVUibitHackKeptBits(mVU.code))
+					mVUaddKeptBits(mVU, xPC, kept);
 			}
 			mVUopL(mVU, 0);
 			incPC(1);

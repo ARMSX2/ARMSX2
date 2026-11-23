@@ -334,7 +334,8 @@ void InterpVU1::Execute(u32 cycles)
 		}
 #endif
 	}
-	VU1.VI[REG_TPC].UL >>= 3;
+	// TPC wraps: a stop after the last pair leaves pair 0, not 0x800.
+	VU1.VI[REG_TPC].UL = (VU1.VI[REG_TPC].UL & VU1_PROGMASK) >> 3;
 	VU1.nextBlockCycles = (VU1.cycle - cpuRegs.cycle) + 1;
 
 #ifdef PCSX2_RECOMPILER_TESTS

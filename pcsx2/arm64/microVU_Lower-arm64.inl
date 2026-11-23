@@ -2311,12 +2311,18 @@ mVUop(mVU_XGKICK)
 // Mirrors x86/microVU_Lower.inl setBranchA.
 void setBranchA(mP, int x, int _x_)
 {
-	bool isBranchDelaySlot = false;
-
-	incPC(-2);
-	if (mVUlow.branch)
-		isBranchDelaySlot = true;
-	incPC(2);
+	// Inside a block, the previous pair's record says whether this branch sits
+	// in a delay slot. A block's first instruction has no previous pair in the
+	// block, and that slot's record is whatever an earlier compile left there,
+	// so the entry state answers instead: only an evil block (blockType 2)
+	// starts in a delay slot. Same rule as mVUbranchCheck.
+	bool isBranchDelaySlot = isEvilBlock;
+	if (iPC != mVUstartPC)
+	{
+		incPC(-2);
+		isBranchDelaySlot = mVUlow.branch != 0;
+		incPC(2);
+	}
 
 	pass1
 	{
@@ -2372,6 +2378,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 		{
 			mVUldrField(mVU, gprT2, &mVU.evilBranch); // Branch Not Taken
 			armAsm->Add(gprT2.W(), gprT2.W(), 8); // We have already executed 1 instruction from the original branch
+			armAsm->And(gprT2.W(), gprT2.W(), mVU.microMemSize - 8); // micro memory wraps
 			mVUstrField(mVU, gprT2, &mVU.evilevilBranch);
 		}
 		armAsm->Bind(&cJMP);
@@ -2386,6 +2393,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 		{
 			mVUldrField(mVU, gprT2, &mVU.badBranch); // Branch Not Taken
 			armAsm->Add(gprT2.W(), gprT2.W(), 8); // We have already executed 1 instruction from the original branch
+			armAsm->And(gprT2.W(), gprT2.W(), mVU.microMemSize - 8); // micro memory wraps
 			mVUstrField(mVU, gprT2, &mVU.evilBranch);
 		}
 		armAsm->Bind(&cJMP);

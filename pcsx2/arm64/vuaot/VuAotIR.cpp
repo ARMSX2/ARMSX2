@@ -551,8 +551,7 @@ namespace vuaot::ir
 			const LowerInst& l = p.lower;
 			const u16 sub = static_cast<u16>(l.op);
 			word_ = l.word;
-			const u32 memMask = (o_.vuIndex ? 0x4000u : 0x1000u) - 8;
-			const u32 link = ((p.pc + 16) & memMask) / 8;
+			const u32 link = (p.pc + 16) / 8; // not wrapped at the top of micro memory
 			switch (l.op)
 			{
 				case LOp::LQ:
