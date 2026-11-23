@@ -26,7 +26,7 @@ final class GameplayOverlayModel {
     private var reportCapture: Task<Void, Never>?
     var cheatsSession = CheatsPatchesSession()
     var runtimePerGameSettingsEntry: ISOEntry?
-    var runtimePerGameSettings: [String: Any]?
+    var runtimePerGameSettings: [ARMSX2PerGameKey: Any]?
     var runtimePerGameStartsInGameController = false
     var runtimePerGameStartsInShaders = false
     var runtimePerGameLivePreviewPresentation:
@@ -284,14 +284,14 @@ final class GameplayOverlayModel {
             return
         }
 
-        let serial = (info["serial"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let serial = (info[.serial] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         runtimePerGameSettingsEntry = ISOEntry(
             name: gameName,
             fileURL: nil,
             bootPath: nil,
             coverURL: nil,
             coverSignature: nil,
-            metadata: ["serial": serial, "crc": (info["crc"] as? String) ?? ""].filter { !$0.value.isEmpty },
+            metadata: ["serial": serial, "crc": (info[.crc] as? String) ?? ""].filter { !$0.value.isEmpty },
             size: 0,
             isFavorite: false
         )

@@ -201,7 +201,7 @@ final class PatchStore {
         isoName = iso
         if let launchContext { self.launchContext = launchContext }
 
-        let info: [String: Any]
+        let info: [ARMSX2PerGameKey: Any]
         switch self.launchContext {
         case .library:
             info = ARMSX2Bridge.gameSettings(forISO: iso)
@@ -219,13 +219,13 @@ final class PatchStore {
             info = runtimeInfo
         }
 
-        let crcString = (info["crc"] as? String) ?? ""
+        let crcString = (info[.crc] as? String) ?? ""
         currentCRC = Self.formattedCRC(crcString)
-        currentSerial = PadLayoutGameIdentity.normalizedSerial(info["serial"] as? String)
+        currentSerial = PadLayoutGameIdentity.normalizedSerial(info[.serial] as? String)
         let metadataTitle = self.launchContext == .library
             ? ARMSX2Bridge.gameMetadata(forISO: iso)["title"]
             : nil
-        currentTitle = ((info["title"] as? String) ?? metadataTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        currentTitle = (metadataTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if currentTitle.isEmpty { currentTitle = iso }
         hasGameIdentity = !currentCRC.isEmpty
         identityState = hasGameIdentity
@@ -695,8 +695,8 @@ final class PatchStore {
             return "\(currentSerial.uppercased())|\(currentCRC)"
         }
         let info = ARMSX2Bridge.gameSettings(forISO: iso)
-        let serial = ((info["serial"] as? String) ?? "").uppercased()
-        let crc = PadLayoutGameIdentity.normalizedCRC((info["crc"] as? String))
+        let serial = ((info[.serial] as? String) ?? "").uppercased()
+        let crc = PadLayoutGameIdentity.normalizedCRC((info[.crc] as? String))
         return "\(serial)|\(crc)"
     }
 

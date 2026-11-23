@@ -64,7 +64,7 @@ struct PerGameSettingsPanel: View {
 
     init(
         game: ISOEntry,
-        preloadedSettings: [String: Any]? = nil,
+        preloadedSettings: [ARMSX2PerGameKey: Any]? = nil,
         savesToRunningGame: Bool = false,
         initiallySelectsGameController: Bool = false,
         initiallySelectsShaders: Bool = false,

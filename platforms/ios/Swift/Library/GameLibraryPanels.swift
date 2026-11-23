@@ -9,7 +9,7 @@ import SwiftUI
 /// right-stick scrolling while per-game controls are active.
 struct LibraryPerGameSettingsOverlay: View {
     let game: ISOEntry
-    let preloadedSettings: [String: Any]?
+    let preloadedSettings: [ARMSX2PerGameKey: Any]?
     let initiallySelectsShaders: Bool
     let controllerInput: MenuControllerInputRouter?
     let onDone: () -> Void

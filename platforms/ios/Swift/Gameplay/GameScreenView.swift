@@ -677,12 +677,12 @@ struct GameScreenView: View {
     }
 
     private func runtimePadLayoutIdentity(
-        from info: [String: Any]?
+        from info: [ARMSX2PerGameKey: Any]?
     ) -> PadLayoutGameIdentity? {
         guard let info else { return nil }
         return PadLayoutGameIdentity(
-            serial: info["serial"] as? String,
-            crc: info["crc"] as? String
+            serial: info[.serial] as? String,
+            crc: info[.crc] as? String
         )
     }
 

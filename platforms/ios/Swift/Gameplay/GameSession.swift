@@ -298,8 +298,8 @@ final class GameSession {
         // Launches that know only the ISO name get the pad identity before GameScreenView mounts.
         let padSettings = ARMSX2Bridge.gameSettings(forISO: isoName)
         prepareGameplayPadSelection(
-            forSerial: gameplayPadSerial ?? (padSettings["serial"] as? String),
-            crc: (padSettings["crc"] as? String)
+            forSerial: gameplayPadSerial ?? (padSettings[.serial] as? String),
+            crc: (padSettings[.crc] as? String)
         )
         if launchTransition == nil {
             releaseMenuBackgroundResourcesForGameplay()

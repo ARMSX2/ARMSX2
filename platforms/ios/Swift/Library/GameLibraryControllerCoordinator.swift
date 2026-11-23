@@ -32,7 +32,7 @@ final class GameLibraryControllerCoordinator {
     var gameSettingsTarget: ISOEntry?
     var gameSettingsStartsInShaders = false
     var preparedGameSettingsID: String?
-    var preparedGameSettings: [String: Any]?
+    var preparedGameSettings: [ARMSX2PerGameKey: Any]?
     var renameTarget: ISOEntry?
     var discLinkTarget: ISOEntry?
     var cheatsManagerTarget: ISOEntry?

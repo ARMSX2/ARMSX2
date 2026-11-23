@@ -207,16 +207,16 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 
 @interface ARMSX2Bridge (GameSettings)
 
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
-                                                            crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
-+ (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame;
++ (nonnull NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForISO:(nullable NSString *)isoName NS_SWIFT_NAME(gameSettings(forISO:));
++ (nonnull NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                                  crc:(nullable NSString *)crc NS_SWIFT_NAME(gameSettings(forSerial:crc:));
++ (nullable NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForCurrentGame;
 
 @end
 
 @interface ARMSX2Bridge (GameSettingsSave)
 
-+ (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
++ (void)setGameSettings:(nonnull NSDictionary<ARMSX2PerGameKey, id> *)settings forISO:(nullable NSString *)isoName NS_SWIFT_NAME(setGameSettings(_:forISO:));
 
 @end
 
