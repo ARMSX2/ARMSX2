@@ -10,6 +10,13 @@
 // slots are numbered from 0, and the entry stubs inside the code are not
 // entered in a copy, because every placement has stubs of its own.
 //
+// The VU AOT tier's state for a routine goes with its bodies: a tiered body
+// carries the jump targets its regions hold, the tier's "no region" answer is
+// a record with a read set and no code, and a routine the tier has stopped
+// looking for new targets in has a small record that says so. Run counts are
+// not kept: a copy that fits a tiered body is placed on it at its first
+// lookup, and one that fits none asks for its regions at its first run.
+//
 // Written when the store gains a body (mVUchunkPackSave, on the thread that
 // runs VU1; the cache's writer thread puts it on disk). Read back per routine:
 // the first lookup of a root after a reset asks the pack for that root's
@@ -28,6 +35,14 @@ namespace mVUChunkPack
 	// Bounds a record is held to before anything is allocated for it.
 	static constexpr u32 kMaxCodeBytes = 8u << 20;
 	static constexpr u32 kMaxSlots = 1u << 18;
+
+	// The routine's head is settled (mVUChunkHead::settled).
+	static constexpr u32 kSettledMagic = 0x54455356u; // 'VSET'
+	struct SettledRecord
+	{
+		u32 magic;
+		u8 rootState[sizeof(microRegInfo)];
+	};
 
 #pragma pack(push, 1)
 	struct Header
@@ -492,7 +507,7 @@ static void mVUchunkPackSave(microVU& mVU, const microRegInfo& rootState, u64 ro
 	std::vector<u8>& bytes = mVU.chunkStore->scratchRecord;
 	mVUChunkPack::Serialize(rootState, b, bytes);
 	b.fixups = {};
-	if (!mVUProgCache::StoreBody(1, rootHash, bytes.data(), bytes.size()))
+	if (!mVUProgCache::StoreBody(1, rootHash, bytes.data(), bytes.size(), b.tiered))
 		return;
 	b.inPack = true;
 	st.packSaved++;
@@ -518,8 +533,19 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 	mVUChunkStore::Stats& st = s_mVUchunkStats;
 	const auto t0 = std::chrono::steady_clock::now();
 	const bool tierOn = mVUvuAotEnabled();
+	bool sawTiered = false, settled = false;
 	for (const std::vector<u8>& rec : records)
 	{
+		if (rec.size() == sizeof(mVUChunkPack::SettledRecord))
+		{
+			mVUChunkPack::SettledRecord sr;
+			std::memcpy(&sr, rec.data(), sizeof(sr));
+			if (sr.magic == mVUChunkPack::kSettledMagic)
+			{
+				settled = settled || std::memcmp(sr.rootState, &state, sizeof(microRegInfo)) == 0;
+				continue;
+			}
+		}
 		mVUChunkPack::Parsed p;
 		bool reject = !mVUChunkPack::Parse(mVU, rec.data(), rec.size(), p);
 		// (another routine under the same hash)
@@ -528,6 +554,7 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		const bool tiered = !reject && (p.h.flags & mVUChunkPack::kFlagTiered);
 		if (tiered && !tierOn)
 			continue;
+		sawTiered = sawTiered || (tiered && !(p.h.flags & mVUChunkPack::kFlagDeclined));
 		std::unique_ptr<mVUChunkBody> body;
 		if (!reject)
 			body = mVUChunkPack::Materialize(mVU, p, reject);
@@ -558,7 +585,28 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 			head->plain.push_back(std::move(body));
 		}
 	}
+	if (tierOn && (sawTiered || settled))
+	{
+		mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, state, true);
+		head->settled = head->settled || settled;
+		if (sawTiered)
+		{
+			head->tieredInPack = true;
+			head->next[0] = std::min(head->next[0], head->runs[0] + 1);
+		}
+	}
 	st.packLoadNs += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count());
+}
+
+// The tier has stopped looking for new jump targets in the routine.
+static void mVUchunkPackSaveSettled(microVU& mVU, const microRegInfo& rootState, u64 rootHash)
+{
+	if (!mVUchunkPackOn(mVU))
+		return;
+	mVUChunkPack::SettledRecord sr = {};
+	sr.magic = mVUChunkPack::kSettledMagic;
+	std::memcpy(sr.rootState, &rootState, sizeof(microRegInfo));
+	mVUProgCache::StoreBody(1, rootHash, reinterpret_cast<const u8*>(&sr), sizeof(sr), true);
 }
 
 // The shape of the code the store's plain bodies hold, for the test that pins

@@ -849,6 +849,10 @@ struct mVUChunkHead
 	// to be entered, and runs[0] + runs[1] when it arrived.
 	std::shared_ptr<void> job;
 	u32 runsAtJob = 0;
+	// The disk pack holds a tiered body of the routine from an earlier
+	// session: a copy that none of them fits asks for its regions at its first
+	// counted run, not after the usual number.
+	bool tieredInPack = false;
 };
 
 // Emptied by every reset (mVUchunkStoreClear). The options sentinel changes

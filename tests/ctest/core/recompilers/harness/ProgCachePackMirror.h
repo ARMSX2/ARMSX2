@@ -24,7 +24,7 @@
 namespace progcache_pack
 {
 	constexpr u8 kProgram = 1;
-	constexpr u8 kSidecar = 2;
+	constexpr u8 kBody = 2;
 	constexpr size_t kHeaderBytes = 64;
 	constexpr u32 kRecordMagic = 0x43455256u; // 'VREC'
 
@@ -33,7 +33,8 @@ namespace progcache_pack
 	{
 		u32 magic;
 		u8 kind;
-		u8 reserved[3];
+		u8 tier;
+		u8 reserved[2];
 		u32 length;
 		u32 reserved2;
 		XXH128_hash_t hash;
@@ -45,6 +46,7 @@ namespace progcache_pack
 	struct Record
 	{
 		u8 kind;
+		bool tier;
 		XXH128_hash_t hash;
 		std::vector<u8> bytes;
 	};
@@ -78,7 +80,7 @@ namespace progcache_pack
 			if (h.magic != kRecordMagic || h.length > b->size() - off - sizeof(h))
 				break;
 			const u8* data = b->data() + off + sizeof(h);
-			out.push_back({h.kind, h.hash, std::vector<u8>(data, data + h.length)});
+			out.push_back({h.kind, h.tier != 0, h.hash, std::vector<u8>(data, data + h.length)});
 			off += sizeof(h) + h.length;
 		}
 		return out;
@@ -107,64 +109,5 @@ namespace progcache_pack
 			return false;
 		const bool ok = std::fwrite(&h, sizeof(h), 1, fp) == 1 && (bytes.empty() || std::fwrite(bytes.data(), bytes.size(), 1, fp) == 1);
 		return std::fclose(fp) == 0 && ok;
-	}
-
-	// A sidecar as a test names it: "<pack>#<hash hex>", the pack and the program it belongs to.
-	inline std::string SidecarRef(const std::string& pack, const XXH128_hash_t& hash)
-	{
-		char hex[40];
-		std::snprintf(hex, sizeof(hex), "#%016llx%016llx", static_cast<unsigned long long>(hash.high64),
-			static_cast<unsigned long long>(hash.low64));
-		return pack + hex;
-	}
-
-	inline bool ParseRef(const std::string& ref, std::string& pack, XXH128_hash_t& hash)
-	{
-		const size_t at = ref.rfind('#');
-		if (at == std::string::npos || ref.size() - at != 33)
-			return false;
-		pack = ref.substr(0, at);
-		hash.high64 = std::strtoull(ref.substr(at + 1, 16).c_str(), nullptr, 16);
-		hash.low64 = std::strtoull(ref.substr(at + 17, 16).c_str(), nullptr, 16);
-		return true;
-	}
-
-	// Every program with a sidecar in the packs under `dir`, one ref each.
-	inline std::vector<std::string> FindSidecars(const std::string& dir)
-	{
-		std::vector<std::string> out;
-		for (const std::string& pack : FindPacks(dir))
-			for (const Record& r : ReadRecords(pack))
-			{
-				const std::string ref = SidecarRef(pack, r.hash);
-				if (r.kind == kSidecar && std::find(out.begin(), out.end(), ref) == out.end())
-					out.push_back(ref);
-			}
-		return out;
-	}
-
-	// The newest sidecar a ref names.
-	inline std::optional<std::vector<u8>> ReadSidecar(const std::string& ref)
-	{
-		std::string pack;
-		XXH128_hash_t hash;
-		if (!ParseRef(ref, pack, hash))
-			return std::nullopt;
-		std::optional<std::vector<u8>> out;
-		for (Record& r : ReadRecords(pack))
-			if (r.kind == kSidecar && r.hash.low64 == hash.low64 && r.hash.high64 == hash.high64)
-				out = std::move(r.bytes);
-		return out;
-	}
-
-	// Replaces the sidecar a ref names, as the next session sees it.
-	inline bool WriteSidecar(const std::string& ref, const void* data, size_t size)
-	{
-		std::string pack;
-		XXH128_hash_t hash;
-		if (!ParseRef(ref, pack, hash))
-			return false;
-		const u8* p = static_cast<const u8*>(data);
-		return AppendRecord(pack, kSidecar, hash, std::vector<u8>(p, p + size));
 	}
 } // namespace progcache_pack

@@ -18,29 +18,29 @@
 struct microVU;
 struct microProgram;
 
-// The persisted-JIT VU program cache, held in RAM for the whole session.
+// The persisted-JIT VU cache, held in RAM for the whole session.
 //
 // One pack file per game, VU and options sentinel:
 //   $EmuFolders::Cache/vu_jit/packs/<title>/vu{0,1}-<sentinel hex>.pack
 // A pack is a header (format, compiler ABI, VU, sentinel, arch, build, page size, layout) and then an
-// append-only log of records, each a program's serialized block graph (the
-// mVUPersist image) or its vu-aot sidecar, keyed by the program's content hash
-// and checksummed. The last record of a kind for a hash wins; a record cut
-// short ends the log.
+// append-only log of checksummed records. A VU0 record is a program's serialized block graph (the
+// mVUPersist image), keyed by the program's content hash; the last record for a hash wins. A VU1 record
+// is a body of the chunk store (microVU_ChunkPack-arm64.inl), kept under the hash of its routine's root.
+// A record cut short ends the log.
 //
 // When a pack opens (the first VU reset of a session, or a reset after the
 // title or the sentinel changed) a background thread reads the whole file in
 // one pass into an in-memory table, and the table is the cache from then on:
-// loading a program reads RAM and never the disk, and a program comes back
-// from RAM as often as resets throw it away. Saves update the table; a
+// a lookup reads RAM and never the disk, and what a reset throws away comes
+// back from RAM as often as it does. Stores update the table; a
 // background writer appends what changed every 30 seconds, and once more,
 // within a deadline, when the cache closes. The emulation and VU threads never
 // touch the disk. A lookup made while the pack is still being read waits for
 // the read, up to a few seconds per pack, then counts as a miss.
 //
-// Recompiled code is relocatable: the image records a fixup for every host
-// address in it, patched against the running process at hydration
-// (mVUPersist::HydrateProgram); any rejection falls back to a normal compile.
+// Recompiled code is relocatable: a record holds a fixup for every host
+// address in its code, patched against the running process when the code is
+// loaded; any rejection falls back to a normal compile.
 namespace mVUProgCache
 {
 	// Bumped together with kMvuCompilerAbiVersion when the on-disk layout
@@ -50,7 +50,7 @@ namespace mVUProgCache
 	//    records) in place of a directory per VU and sentinel holding an
 	//    INDEX, a .vuprog per program and a .vuaot per sidecar.
 	// 6: the header names the build, the host page size and a layout stamp; a VU1 pack holds the chunk
-	//    store's bodies, one record each.
+	//    store's bodies, one record each, and no program images; no sidecar records.
 	static constexpr u32 kProgCacheFormatVersion = 6;
 
 	// The game whose pack the next Init or Rekey opens: its serial and CRC (both empty for none).
@@ -99,21 +99,6 @@ namespace mVUProgCache
 	// before returning.
 	microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash);
 
-	// Sidecars (VU1): a second record per program in the same pack, opaque bytes to the cache. Nothing
-	// in the emulator queues one.
-	//
-	// Whether the cache is up for this VU (sidecars can be read and written).
-	bool SidecarsEnabled(u32 vu_index);
-	// The sidecar for `hash`, from the table. A request still queued for it is built first, so the answer
-	// is always the newest. False when there is none.
-	bool ReadSidecar(u32 vu_index, const XXH128_hash_t& hash, std::vector<u8>& out);
-	// Queues a sidecar: `build` runs on the writer thread at its next flush (or on the reader's thread, if
-	// ReadSidecar asks first) and returns the bytes to store, or nothing to keep what is stored. A newer
-	// request for a hash replaces an older one still queued. The caller's thread never touches the disk.
-	void QueueSidecar(u32 vu_index, const XXH128_hash_t& hash, std::function<std::vector<u8>()> build);
-	// Builds every queued sidecar and writes everything that changed to disk now, and waits for it.
-	void FlushSidecars(u32 vu_index);
-
 	// What ClearVuAot removed: records dropped from packs (or, with the whole cache, files deleted) and
 	// the bytes they held on disk.
 	struct ClearResult
@@ -122,16 +107,16 @@ namespace mVUProgCache
 		u64 bytes = 0;
 	};
 
-	// Removes the vu-aot cache, for both VUs: every sidecar record, from the open tables, the queue and
-	// every pack on disk; with `wholeCache` every pack, and the directories of the older layouts. The
-	// tripwire's memory (`vu_jit/vuaot_tripped.txt`) is kept: it is a safety record, a few bytes. A
-	// sidecar still queued is dropped, not written. With `wholeCache` the cache in memory is closed as
+	// Removes what the VU AOT tier keeps in the cache: every body record stored with `tier`, from the
+	// open tables and every pack on disk; with `wholeCache` every pack, and the directories of the older
+	// layouts. The tripwire's memory (`vu_jit/vuaot_tripped.txt`) is kept: it is a safety record, a few
+	// bytes. With `wholeCache` the cache in memory is closed as
 	// well, so the next Init starts a fresh one. Safe when the directories do not exist. CPU thread, with
 	// the VU recompilers idle (a settings change has just reset them). Logs one line when it removed anything.
 	ClearResult ClearVuAot(bool wholeCache);
 
 	// What a change of the EnableVUAot setting owes the disk cache: nothing, unless it went from on to
-	// off. Then the sidecars go, and the whole cache with them when nothing else keeps it
+	// off. Then the tier's records go, and the whole cache with them when nothing else keeps it
 	// (`programCacheStillOn` is EnableVUProgramCache after the change).
 	ClearResult OnVuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn);
 
@@ -140,21 +125,14 @@ namespace mVUProgCache
 	//
 	// Whether the cache is up for this VU.
 	bool BodiesEnabled(u32 vu_index);
-	// Stores a body's record in the table (RAM; the writer puts it on disk). False when the cache is off
-	// or the table is full.
-	bool StoreBody(u32 vu_index, u64 rootHash, const u8* data, size_t size);
+	// Stores a body's record in the table (RAM; the writer puts it on disk). `tier`: it belongs to the VU
+	// AOT tier (ClearVuAot). False when the cache is off or the table is full.
+	bool StoreBody(u32 vu_index, u64 rootHash, const u8* data, size_t size, bool tier);
 	// Appends the records kept under `rootHash`, oldest first. Waits for the pack's read as a program
 	// lookup does.
 	void FetchBodies(u32 vu_index, u64 rootHash, std::vector<std::vector<u8>>& out);
 	// A record FetchBodies returned cannot be used: takes it out of the table.
 	void DropBody(u32 vu_index, u64 rootHash, const u8* data, size_t size);
-
-	// Dispatch-time probe used by mVUsearchProg on the in-process-miss
-	// path: whether the table holds an image for the program the dispatcher
-	// is about to make. Called once per program-switch, off the per-dispatch
-	// fast path.
-	void ObserveDispatchHash(microVU& mVU, const XXH128_hash_t& contentHash,
-	                          u32 startPC_bytes);
 
 	// DevCon summary of the counters below.
 	void DumpStats(const microVU& mVU, const char* tag);
@@ -195,8 +173,14 @@ namespace mVUProgCache
 	void TestWaitForPreload(u32 vu_index);
 	// Test-only: the path of the open pack ("" when none).
 	std::string TestPackPath(u32 vu_index);
-	// Test-only: the open table holds the program image (or, with `sidecar`, the sidecar) of `hash`.
-	bool TestHasEntry(u32 vu_index, const XXH128_hash_t& hash, bool sidecar);
+	// Test-only: the open table holds a record under `hash`.
+	bool TestHasEntry(u32 vu_index, const XXH128_hash_t& hash);
+	// Test-only: has the writer put everything that changed on disk now, and waits for it.
+	void TestFlush(u32 vu_index);
+	// Test-only: a record of this VU's kind under `hash`, any bytes, replacing the one there (the tests of
+	// the pack itself need no microVU behind their records); and the record under `hash`, counted as a use.
+	void TestStoreRecord(u32 vu_index, const XXH128_hash_t& hash, const u8* data, size_t size);
+	bool TestReadRecord(u32 vu_index, const XXH128_hash_t& hash, std::vector<u8>& out);
 	// Test-only: the RAM cap for the next pack read of this VU (0: the default). ResetForTest puts the default back.
 	void TestSetRamCap(u32 vu_index, size_t bytes);
 	// Test-only: while held, the pack read has read the file but does not put it in the table. Set before
@@ -223,10 +207,8 @@ namespace mVUProgCache
 		u64  wouldBeHits        = 0; // TryLoadProgram lookups the table knew
 		u64  misses             = 0; // ...and ones it did not
 		u64  payloadHits        = 0; // hydrations served
-		u64  payloadMissing     = 0; // known hash, no image (only a sidecar, or a refused image)
+		u64  payloadMissing     = 0; // known hash, no image (a refused one)
 		u64  payloadRejects     = 0; // image read but hydration refused
-		u64  dispatchProbes     = 0;
-		u64  dispatchIndexAvail = 0; // subset where the table had an image
 		u64  packsLoaded        = 0; // pack files read
 		u64  loadedRecords      = 0; // records they held
 		u64  loadedBytes        = 0; // bytes read
@@ -235,13 +217,9 @@ namespace mVUProgCache
 		u64  missesDuringLoad   = 0; // lookups that gave up waiting
 		u64  ramCapHit          = 0; // 1 when a read of a pack past the cap left its oldest records out
 		u64  evicted            = 0; // entries the writer dropped to bring the pack back under the cap
-		u64  storesRefused      = 0; // images and sidecars not stored: the table held twice the cap
+		u64  storesRefused      = 0; // records not stored: the table held twice the cap
 		u64  tornTails          = 0; // packs whose log ended in a broken record (cut off on the next write)
 		u64  otherFormat        = 0; // packs of another format (replaced on the next write)
-		u64  sidecarReads       = 0; // ReadSidecar calls that found one
-		u64  sidecarWrites      = 0; // sidecars stored (built)
-		u64  sidecarWriteBytes  = 0;
-		u64  sidecarSkips       = 0; // requests whose build returned nothing
 		u64  bodiesStored       = 0; // chunk store bodies stored (new ones)
 		u64  bodiesServed       = 0; // ...handed to the store
 		u64  bodiesDropped      = 0; // ...the store refused

@@ -128,7 +128,17 @@ protected:
 
 	std::string jit() const { return Path::Combine(root_, "vu_jit"); }
 	size_t Programs() const { return CountRecords(jit(), progcache_pack::kProgram); }
-	size_t Sidecars() const { return CountRecords(jit(), progcache_pack::kSidecar); }
+	// The chunk store's records in VU1's pack that belong to the VU AOT tier, and the ones that do not.
+	size_t TierRecords() const { return CountBodies(true); }
+	size_t PlainBodies() const { return CountBodies(false); }
+	size_t CountBodies(bool tier) const
+	{
+		size_t n = 0;
+		for (const std::string& pack : progcache_pack::FindPacks(jit()))
+			for (const progcache_pack::Record& r : progcache_pack::ReadRecords(pack))
+				n += r.kind == progcache_pack::kBody && r.tier == tier;
+		return n;
+	}
 
 	std::string root_;
 	std::string prev_cache_;
@@ -225,7 +235,7 @@ TEST_F(MvuProgCacheDisk, ANewSessionReadsThePackOnceAndKeepsItInRam)
 
 	InitDiskCache();
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
-	mVUProgCache::FlushSidecars(0);
+	mVUProgCache::TestFlush(0);
 	ASSERT_EQ(Programs(), 1u);
 
 	NewSession();
@@ -262,7 +272,7 @@ TEST_F(MvuProgCacheDisk, RecordingDisabledStoresNothing)
 	auto cstats = mVUProgCache::GetStats(0);
 	EXPECT_GE(cstats.savesAttempted, 1u);
 	EXPECT_EQ(cstats.payloadWrites, 0u);
-	mVUProgCache::FlushSidecars(0);
+	mVUProgCache::TestFlush(0);
 	EXPECT_EQ(Programs(), 0u);
 
 	EXPECT_GT(RunAgain(h), 0u);
@@ -427,7 +437,7 @@ TEST_F(MvuProgCacheDisk, APackOfAnotherBuildIsNotReadAndIsReplaced)
 
 	InitDiskCache();
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
-	mVUProgCache::FlushSidecars(0);
+	mVUProgCache::TestFlush(0);
 	ASSERT_EQ(mVUProgCache::GetStats(0).payloadWrites, 1u);
 
 	mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
@@ -471,36 +481,31 @@ TEST_F(MvuProgCacheDisk, ATitleChangeMovesToThatTitlesPack)
 	mVUProgCache::TestWaitForPreload(0);
 	EXPECT_EQ(RunAgain(h), 0u) << "the first title's program did not come back";
 
-	mVUProgCache::FlushSidecars(0);
+	mVUProgCache::TestFlush(0);
 	EXPECT_EQ(CountRecords(std::string(Path::GetDirectory(first)), progcache_pack::kProgram), 1u);
 	EXPECT_EQ(CountRecords(std::string(Path::GetDirectory(second)), progcache_pack::kProgram), 1u);
 	mVUProgCache::SetTitle("", 0);
 }
 
 //------------------------------------------------------------------
-// Sidecars and the writer.
+// The writer.
 //------------------------------------------------------------------
+
+namespace
+{
+// A record of made-up bytes under a made-up hash, in VU0's pack beside the programs: the writer does not
+// look inside a record.
+void PutRecord(u64 n, u8 fill, size_t size)
+{
+	const std::vector<u8> bytes(size, fill);
+	mVUProgCache::TestStoreRecord(0, HashOf(n), bytes.data(), bytes.size());
+}
+} // namespace
 
 class MvuProgCacheWriter : public MvuProgCacheDisk
 {
 protected:
 	static constexpr u32 kPrograms = 4;
-
-	// The sidecars are read for the vu-aot tier only. Turning it on changes the options sentinel (the reset
-	// rebuilds it), so it goes on before the cache is first written.
-	void SetUp() override
-	{
-		MvuProgCacheDisk::SetUp();
-		saved_aot_ = EmuConfig.Cpu.Recompiler.EnableVUAot;
-		EmuConfig.Cpu.Recompiler.EnableVUAot = true;
-		RecompilerTestEnvironment::ResetVuBlockCache(0);
-	}
-
-	void TearDown() override
-	{
-		EmuConfig.Cpu.Recompiler.EnableVUAot = saved_aot_;
-		MvuProgCacheDisk::TearDown();
-	}
 
 	// Four programs, each run and saved on its own.
 	void SaveVariants()
@@ -517,43 +522,16 @@ protected:
 		ASSERT_EQ(mVUProgCache::GetStats(0).payloadWrites, kPrograms);
 	}
 
-	bool saved_aot_ = false;
 	std::unique_ptr<VuTestHarness> h_;
 };
 
-TEST_F(MvuProgCacheWriter, AQueuedSidecarIsWhatTheNextReadGetsBeforeAnyWrite)
-{
-	// A reset queues each program's plan, and the program can come back before the writer runs: the read
-	// builds the queued request itself, so it never sees an older copy.
-	InitDiskCache();
-	mVUProgCache::QueueSidecar(0, HashOf(1), [] { return std::vector<u8>(128, 0x11); });
-	mVUProgCache::FlushSidecars(0);
-	NewSession();
-
-	mVUProgCache::QueueSidecar(0, HashOf(1), [] { return std::vector<u8>(128, 0x22); });
-	std::vector<u8> out;
-	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, HashOf(1), out));
-	EXPECT_EQ(out, std::vector<u8>(128, 0x22)) << "the read answered the older copy";
-
-	// A build that returns nothing keeps what is stored.
-	mVUProgCache::QueueSidecar(0, HashOf(1), [] { return std::vector<u8>(); });
-	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, HashOf(1), out));
-	EXPECT_EQ(out, std::vector<u8>(128, 0x22));
-	EXPECT_EQ(mVUProgCache::GetStats(0).sidecarSkips, 1u);
-
-	mVUProgCache::FlushSidecars(0);
-	NewSession();
-	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, HashOf(1), out));
-	EXPECT_EQ(out, std::vector<u8>(128, 0x22));
-}
-
 TEST_F(MvuProgCacheWriter, WhatTheSessionStoredWinsOverTheFilesOlderCopy)
 {
-	// The read puts the file in the table a moment after it starts; a sidecar queued in between is newer
+	// The read puts the file in the table a moment after it starts; a record stored in between is newer
 	// and stays.
 	InitDiskCache();
-	mVUProgCache::QueueSidecar(0, HashOf(2), [] { return std::vector<u8>(64, 0x01); });
-	mVUProgCache::FlushSidecars(0);
+	PutRecord(2, 0x01, 64);
+	mVUProgCache::TestFlush(0);
 
 	mVUProgCache::ResetForTest(0);
 	mVUProgCache::TestHoldLoad(0, true);
@@ -561,12 +539,12 @@ TEST_F(MvuProgCacheWriter, WhatTheSessionStoredWinsOverTheFilesOlderCopy)
 	for (int i = 0; i < 2000 && !mVUProgCache::TestLoadIsHeld(0); i++)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	ASSERT_TRUE(mVUProgCache::TestLoadIsHeld(0));
-	mVUProgCache::QueueSidecar(0, HashOf(2), [] { return std::vector<u8>(64, 0x02); });
+	PutRecord(2, 0x02, 64);
 	mVUProgCache::TestHoldLoad(0, false);
 	mVUProgCache::TestWaitForPreload(0);
 
 	std::vector<u8> out;
-	ASSERT_TRUE(mVUProgCache::ReadSidecar(0, HashOf(2), out));
+	ASSERT_TRUE(mVUProgCache::TestReadRecord(0, HashOf(2), out));
 	EXPECT_EQ(out, std::vector<u8>(64, 0x02)) << "the file's older copy replaced the session's";
 }
 
@@ -576,7 +554,7 @@ TEST_F(MvuProgCacheWriter, CloseWritesWithinItsDeadlineAndTheNextSessionReadsWha
 	// leaves the rest, and returns. The next session reads an intact log.
 	SaveVariants();
 	for (u64 n = 1; n <= 6; n++)
-		mVUProgCache::QueueSidecar(0, HashOf(n), [n] { return std::vector<u8>(256, static_cast<u8>(n)); });
+		PutRecord(n, static_cast<u8>(n), 256);
 	mVUProgCache::TestSetWriteDelayMs(0, 150);
 	mVUProgCache::TestSetCloseDeadlineMs(0, 400);
 	const auto t0 = std::chrono::steady_clock::now();
@@ -598,24 +576,24 @@ TEST_F(MvuProgCacheWriter, CloseWritesWithinItsDeadlineAndTheNextSessionReadsWha
 
 TEST_F(MvuProgCacheWriter, NothingReachesTheDiskBetweenFlushes)
 {
-	// Saves and sidecars stay in RAM until the writer's pass (every 30 s in production): a run of resets
-	// and queued plans touches no file.
+	// What is stored stays in RAM until the writer's pass (every 30 s in production): a run of resets
+	// touches no file.
 	SaveVariants();
 	for (u64 n = 1; n <= 4; n++)
-		mVUProgCache::QueueSidecar(0, HashOf(n), [n] { return std::vector<u8>(64, static_cast<u8>(n)); });
+		PutRecord(n, static_cast<u8>(n), 64);
 	EXPECT_FALSE(FileSystem::FileExists(mVUProgCache::TestPackPath(0).c_str()));
 	EXPECT_EQ(mVUProgCache::GetStats(0).recordsWritten, 0u);
-	mVUProgCache::FlushSidecars(0);
-	EXPECT_EQ(Programs(), kPrograms);
-	EXPECT_EQ(Sidecars(), 4u);
+	mVUProgCache::TestFlush(0);
+	EXPECT_EQ(Programs(), kPrograms + 4u);
 	// A flush with nothing new writes nothing.
 	const u64 written = mVUProgCache::GetStats(0).recordsWritten;
-	mVUProgCache::FlushSidecars(0);
+	mVUProgCache::TestFlush(0);
 	EXPECT_EQ(mVUProgCache::GetStats(0).recordsWritten, written);
 }
 
 //------------------------------------------------------------------
-// Clearing the vu-aot cache when the setting goes from on to off.
+// Clearing what the VU AOT tier keeps in the cache when its setting goes
+// from on to off: the chunk store's tiered bodies in VU1's pack.
 //------------------------------------------------------------------
 
 class MvuAotCacheClear : public MvuProgCacheWriter
@@ -627,55 +605,83 @@ protected:
 		MvuProgCacheWriter::TearDown();
 	}
 
-	// VU0: four programs and four sidecars. VU1: a pack of its own with two sidecars. The tripwire's memory.
+	static std::vector<u8> Bytes(u64 n) { return std::vector<u8>(256, static_cast<u8>(n)); }
+	static bool Put(u64 n, bool tier)
+	{
+		const std::vector<u8> b = Bytes(n);
+		return mVUProgCache::StoreBody(1, n, b.data(), b.size(), tier);
+	}
+	// A body's key in the table: its root hash, and the hash of its bytes.
+	static XXH128_hash_t KeyOf(u64 n)
+	{
+		const std::vector<u8> b = Bytes(n);
+		XXH128_hash_t key;
+		key.low64 = n;
+		key.high64 = XXH3_64bits(b.data(), b.size());
+		return key;
+	}
+	void NewVu1Session()
+	{
+		mVUProgCache::ResetForTest(1);
+		mVUProgCache::TestReinitFromLiveSentinel(1);
+		mVUProgCache::TestWaitForPreload(1);
+	}
+
+	// VU0: four programs. VU1: two of the tier's records and one that is not the tier's. The tripwire's memory.
 	void Populate()
 	{
 		SaveVariants();
-		for (u64 n = 1; n <= kPrograms; n++)
-			mVUProgCache::QueueSidecar(0, HashOf(n), [n]() { return std::vector<u8>(512, static_cast<u8>(n)); });
-		mVUProgCache::FlushSidecars(0);
+		mVUProgCache::TestFlush(0);
 
 		mVUProgCache::ResetForTest(1);
 		mVUProgCache::TestReinitFromLiveSentinel(1);
 		ASSERT_TRUE(mVUProgCache::GetStats(1).enabled);
-		for (u64 n : {11, 12})
-			mVUProgCache::QueueSidecar(1, HashOf(n), [n]() { return std::vector<u8>(256, static_cast<u8>(n)); });
-		mVUProgCache::FlushSidecars(1);
+		ASSERT_TRUE(Put(11, true));
+		ASSERT_TRUE(Put(12, true));
+		ASSERT_TRUE(Put(13, false));
+		mVUProgCache::TestFlush(1);
 
 		tripped_ = Path::Combine(jit(), "vuaot_tripped.txt");
 		ASSERT_TRUE(FileSystem::WriteStringToFile(tripped_.c_str(), "SCUS-97481 2F123FD8\n"));
 
-		NewSession(); // the next session: the sidecars sit in RAM
-		ASSERT_TRUE(mVUProgCache::TestHasEntry(0, HashOf(1), true));
-		ASSERT_EQ(Sidecars(), kPrograms + 2u);
+		NewSession(); // the next session: the records sit in RAM
+		NewVu1Session();
+		ASSERT_TRUE(mVUProgCache::TestHasEntry(1, KeyOf(11)));
+		ASSERT_EQ(TierRecords(), 2u);
+		ASSERT_EQ(PlainBodies(), 1u);
 		ASSERT_EQ(Programs(), kPrograms);
 	}
 
 	std::string tripped_;
 };
 
-TEST_F(MvuAotCacheClear, OnToOffDeletesTheSidecarsAndKeepsWhatAnotherSettingStillWants)
+TEST_F(MvuAotCacheClear, OnToOffDeletesTheTiersRecordsAndKeepsWhatAnotherSettingStillWants)
 {
 	Populate();
 
-	// EnableVUProgramCache stays on: the programs stay, in RAM and on disk.
+	// EnableVUProgramCache stays on: the programs and microVU's own bodies stay, in RAM and on disk.
 	const auto r = mVUProgCache::OnVuAotSettingChanged(true, false, true);
-	EXPECT_EQ(r.files, kPrograms + 2u) << "sidecar records dropped";
-	EXPECT_GT(r.bytes, (kPrograms + 2u) * 256u);
-	EXPECT_EQ(Sidecars(), 0u) << "VU0 and VU1";
+	EXPECT_EQ(r.files, 2u) << "the tier's records dropped";
+	EXPECT_GT(r.bytes, 2u * 256u);
+	EXPECT_EQ(TierRecords(), 0u);
+	EXPECT_EQ(PlainBodies(), 1u);
 	EXPECT_EQ(Programs(), kPrograms);
 	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str())) << "the tripwire's memory stays";
 	EXPECT_FALSE(mVUPersist::IsProcessDisabled());
 
-	// What the table held is gone too, and the cache still works: a new sidecar is written.
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(0, HashOf(1), true));
-	EXPECT_TRUE(mVUProgCache::GetStats(0).initialized);
-	mVUProgCache::QueueSidecar(0, HashOf(1), []() { return std::vector<u8>(64, 1); });
-	mVUProgCache::FlushSidecars(0);
-	EXPECT_EQ(Sidecars(), 1u);
-	NewSession();
-	EXPECT_EQ(mVUProgCache::GetStats(0).loadedRecords, kPrograms + 1u);
-	EXPECT_EQ(mVUProgCache::GetStats(0).tornTails, 0u);
+	// What the table held is gone too, and the cache still works: a new record is written.
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, KeyOf(11)));
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, KeyOf(13)));
+	std::vector<std::vector<u8>> found;
+	mVUProgCache::FetchBodies(1, 11, found);
+	EXPECT_TRUE(found.empty());
+	EXPECT_TRUE(mVUProgCache::GetStats(1).initialized);
+	ASSERT_TRUE(Put(14, true));
+	mVUProgCache::TestFlush(1);
+	EXPECT_EQ(TierRecords(), 1u);
+	NewVu1Session();
+	EXPECT_EQ(mVUProgCache::GetStats(1).loadedRecords, 2u);
+	EXPECT_EQ(mVUProgCache::GetStats(1).tornTails, 0u);
 }
 
 TEST_F(MvuAotCacheClear, OnToOffWithNothingElseUsingTheCacheDeletesTheWholeCache)
@@ -703,10 +709,10 @@ TEST_F(MvuAotCacheClear, EveryOtherChangeClearsNothing)
 		const auto off_off = mVUProgCache::OnVuAotSettingChanged(false, false, programCache);
 		EXPECT_EQ(before_off_on.files + on_on.files + off_off.files, 0u);
 	}
-	EXPECT_EQ(Sidecars(), kPrograms + 2u);
+	EXPECT_EQ(TierRecords(), 2u);
 	EXPECT_EQ(Programs(), kPrograms);
 	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str()));
-	EXPECT_TRUE(mVUProgCache::TestHasEntry(0, HashOf(1), true)) << "the table is untouched";
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, KeyOf(11))) << "the table is untouched";
 }
 
 // Settings applied with no VM running (VMManager::CheckForConfigChanges in the Shutdown state) compare the
@@ -720,7 +726,7 @@ TEST_F(MvuAotCacheClear, LeavingAGameWithItsOwnSettingOnAndTheGlobalOneOffClears
 	// ...the game runs and ends; a failed boot, or any later apply, sees the global setting off again
 	vuAotNoVmSettingsApplied(false, false);
 	vuAotNoVmSettingsApplied(false, false);
-	EXPECT_EQ(Sidecars(), kPrograms + 2u);
+	EXPECT_EQ(TierRecords(), 2u);
 	EXPECT_EQ(Programs(), kPrograms);
 	EXPECT_TRUE(FileSystem::FileExists(tripped_.c_str()));
 }
@@ -730,18 +736,19 @@ TEST_F(MvuAotCacheClear, TheGlobalSettingTurnedOffWithNoVmClearsOnceAndOnlyThen)
 	Populate();
 	vuAotNoteGlobalSetting(true);
 	vuAotNoVmSettingsApplied(true, true); // an unrelated setting applied
-	EXPECT_EQ(Sidecars(), kPrograms + 2u);
+	EXPECT_EQ(TierRecords(), 2u);
 
-	vuAotNoVmSettingsApplied(false, true); // on to off, the program cache setting on: sidecars only
-	EXPECT_EQ(Sidecars(), 0u);
+	vuAotNoVmSettingsApplied(false, true); // on to off, the program cache setting on: the tier's records only
+	EXPECT_EQ(TierRecords(), 0u);
+	EXPECT_EQ(PlainBodies(), 1u);
 	EXPECT_EQ(Programs(), kPrograms);
 
 	// Off to off clears nothing (new records stay), and so does off to on.
-	mVUProgCache::QueueSidecar(0, HashOf(1), []() { return std::vector<u8>(64, 1); });
-	mVUProgCache::FlushSidecars(0);
+	ASSERT_TRUE(Put(14, true));
+	mVUProgCache::TestFlush(1);
 	vuAotNoVmSettingsApplied(false, true);
 	vuAotNoVmSettingsApplied(true, true);
-	EXPECT_EQ(Sidecars(), 1u);
+	EXPECT_EQ(TierRecords(), 1u);
 	vuAotNoteGlobalSetting(false);
 }
 
@@ -752,7 +759,7 @@ TEST_F(MvuAotCacheClear, TheGlobalValueNotedAsAGameEndsIsNotAChangeMadeWithNoVm)
 	// the global setting is turned off while a game runs (the game's own settings keep it on), and the VM ends
 	vuAotNoteGlobalSetting(false);
 	vuAotNoVmSettingsApplied(false, false);
-	EXPECT_EQ(Sidecars(), kPrograms + 2u);
+	EXPECT_EQ(TierRecords(), 2u);
 }
 
 TEST_F(MvuAotCacheClear, ANonexistentCacheDirectoryIsFine)
@@ -770,17 +777,19 @@ TEST_F(MvuAotCacheClear, ANonexistentCacheDirectoryIsFine)
 	EmuFolders::Cache = saved;
 }
 
-TEST_F(MvuAotCacheClear, ASidecarStillQueuedIsNotWrittenAfterTheClear)
+TEST_F(MvuAotCacheClear, ATierRecordNotYetWrittenIsNotWrittenAfterTheClear)
 {
 	InitDiskCache();
+	mVUProgCache::ResetForTest(1);
+	mVUProgCache::TestReinitFromLiveSentinel(1);
 	for (u64 n = 1; n <= 12; n++)
-		mVUProgCache::QueueSidecar(0, HashOf(n), [n]() { return std::vector<u8>(64, static_cast<u8>(n)); });
+		ASSERT_TRUE(Put(n, true));
 	mVUProgCache::ClearVuAot(false);
-	EXPECT_EQ(mVUProgCache::GetStats(0).sidecarWrites, 0u) << "the queue was built";
-	mVUProgCache::FlushSidecars(0);
-	EXPECT_EQ(Sidecars(), 0u) << "the writer put a record back after the clear";
-	std::vector<u8> out;
-	EXPECT_FALSE(mVUProgCache::ReadSidecar(0, HashOf(1), out));
+	mVUProgCache::TestFlush(1);
+	EXPECT_EQ(TierRecords(), 0u) << "the writer put a record back after the clear";
+	std::vector<std::vector<u8>> found;
+	mVUProgCache::FetchBodies(1, 1, found);
+	EXPECT_TRUE(found.empty());
 }
 
 } // namespace recompiler_tests

@@ -15,6 +15,7 @@ static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept);
 static bool mVUchunkPackOn(microVU& mVU);
 static void mVUchunkPackSave(microVU& mVU, const microRegInfo& rootState, u64 rootHash, mVUChunkBody& b);
 static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& state);
+static void mVUchunkPackSaveSettled(microVU& mVU, const microRegInfo& rootState, u64 rootHash);
 static bool mVUchunkTestEmitDigest(u64& out);
 
 static mVUChunkStore::Stats s_mVUchunkStats;

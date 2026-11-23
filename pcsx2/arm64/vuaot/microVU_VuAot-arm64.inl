@@ -1628,7 +1628,23 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 		const bool canAsk = !head.outstanding && head.attempts < kMaxGenAttempts && head.tiered.size() < kMaxBodiesPerHead;
 		if (canAsk && tierNow)
 		{
-			if (vuAotRequest(mVU, prog, head, startPC, key, false, viaJump, vuAotHarvestTargets(prog)))
+			std::map<u32, std::vector<u32>> targets = vuAotHarvestTargets(prog);
+			// A routine tiered in an earlier session, at its first run in this
+			// one: the jump caches are empty, so its regions are asked for with
+			// the targets its newest body from the pack holds. An edge to a
+			// target is taken only when the jump goes there, so a target this
+			// copy never reaches costs a compare.
+			if (targets.empty() && head.tieredInPack)
+			{
+				for (size_t n = head.tiered.size(); n-- > 0 && targets.empty();)
+					if (!head.tiered[n]->declined)
+						for (const auto& jt : head.tiered[n]->targets)
+							for (u32 to : jt.second)
+								targets[(jt.first + startPC) & 0x3ff8].push_back((to + startPC) & 0x3ff8);
+				for (auto& jt : targets)
+					std::sort(jt.second.begin(), jt.second.end());
+			}
+			if (vuAotRequest(mVU, prog, head, startPC, key, false, viaJump, std::move(targets)))
 			{
 				build();
 				place();
@@ -1680,7 +1696,10 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 	if (!fresh)
 	{
 		if (++head.emptyChecks >= vuaot::live::kSettleChecks)
+		{
 			head.settled = true;
+			mVUchunkPackSaveSettled(mVU, key, mVUchunkRootHash(mVU, startPC, &key));
+		}
 		return result;
 	}
 	head.emptyChecks = 0;

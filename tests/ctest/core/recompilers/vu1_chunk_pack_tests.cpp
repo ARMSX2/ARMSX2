@@ -56,7 +56,7 @@ constexpr u32 kMicroBytes = 0x4000;
 constexpr u32 kLowerNop = 0x8000033Cu;
 constexpr u32 kHome = 0x0400;
 constexpr u32 kTierRuns = 6;
-constexpr u8 kRecordBody = 3;
+constexpr u8 kRecordBody = progcache_pack::kBody;
 // Set by APackFromAnotherProcessRunsHere for the child it spawns: the cache
 // root the child writes its pack under.
 constexpr char kChildEnv[] = "VU1_CHUNK_PACK_CHILD_ROOT";
@@ -547,6 +547,87 @@ TEST_F(Vu1ChunkPack, AResetBringsATieredBodyBackFromRam)
 	EXPECT_TRUE(d.empty()) << d;
 }
 
+// A routine tiered in one session, met in the next with other code inside
+// it: no body in the pack fits, so microVU compiles it. The pack still says
+// the routine was worth regions, so they are asked for at its first run, with
+// the tier-up count out of reach.
+TEST_F(Vu1ChunkPack, ARoutineTieredBeforeAsksForItsRegionsAtTheFirstRun)
+{
+	std::vector<VuOp> changed = LoopRoutine(10);
+	changed[1] = LoadViImm(vi::vi2, 0x20); // (not the root pair)
+	Result mvu;
+	{
+		TierScope off(false, true);
+		OneRun run(2, 0x2000, changed, 0x2000);
+		mvu = Take(run.h);
+	}
+	TierScope on(true, true);
+	OpenPack();
+	{
+		const vuaot::live::Stats t0 = vuaot::live::GetStats();
+		OneRun run(1, kHome, LoopRoutine(10), kHome);
+		for (u32 i = 0; i < kTierRuns + 2; i++)
+			run.Again();
+		ASSERT_EQ(vuaot::live::GetStats().tierUps - t0.tierUps, 1u);
+	}
+	EndSession();
+	BeginSession();
+	vuaot::live::SetTierUpRuns(1000000);
+
+	const vuaot::live::Stats t1 = vuaot::live::GetStats();
+	OneRun run(2, 0x2000, changed, 0x2000);
+	EXPECT_GT(run.compiles, 0u) << "a body for other code was used";
+	for (u32 i = 0; i < 3; i++)
+	{
+		run.Again();
+		const std::string d = Diff(mvu, Take(run.h), false);
+		EXPECT_TRUE(d.empty()) << "run " << i << ": " << d;
+	}
+	const vuaot::live::Stats t2 = vuaot::live::GetStats();
+	EXPECT_EQ(t2.tierUps - t1.tierUps, 1u) << "the routine did not tier up at its first runs";
+	EXPECT_GE(mVUChunkStore::GetStats().tieredReAimed, 1u);
+	ExpectMatchesInterp(run.h, "tiered at the first run");
+}
+
+// A routine the tier builds no region for. The answer is in the pack, and the
+// next session does not ask the worker again, however often the routine runs.
+TEST_F(Vu1ChunkPack, ADeclinedRoutineIsNotAskedForAgain)
+{
+	// One straight block to the end: nothing for a region.
+	const std::vector<VuOp> routine = {
+		LoadViImm(vi::vi1, 7),
+		P(VIADDIU_L(vi::vi2, vi::vi2, 5), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)),
+		Nop(),
+		EBit(LoadViImm(vi::vi6, 0x66)),
+		Nop(),
+	};
+	TierScope on(true, true);
+	OpenPack();
+	{
+		const vuaot::live::Stats t0 = vuaot::live::GetStats();
+		OneRun run(1, kHome, routine, kHome);
+		for (u32 i = 0; i < kTierRuns + 2; i++)
+			run.Again();
+		const vuaot::live::Stats t1 = vuaot::live::GetStats();
+		ASSERT_EQ(t1.jobs - t0.jobs, 1u);
+		ASSERT_EQ(t1.jobsDeclined - t0.jobsDeclined, 1u) << "the builder was expected to decline this routine";
+	}
+	EndSession();
+	BeginSession();
+
+	for (u32 root : {kHome, 0x2000u})
+	{
+		const vuaot::live::Stats t1 = vuaot::live::GetStats();
+		OneRun run(3, root, routine, root);
+		for (u32 i = 0; i < 3 * kTierRuns; i++)
+			run.Again();
+		const vuaot::live::Stats t2 = vuaot::live::GetStats();
+		EXPECT_EQ(t2.jobs - t1.jobs, 0u) << "the declined routine was asked for again at 0x" << std::hex << root;
+		EXPECT_EQ(run.compiles, 0u);
+		ExpectMatchesInterp(run.h, "declined");
+	}
+}
+
 // With the tier off, a pack that holds tiered bodies gives none of them out.
 TEST_F(Vu1ChunkPack, TieredBodiesAreNotUsedWithTheTierOff)
 {
@@ -791,7 +872,7 @@ TEST_F(Vu1ChunkPack, ARecordThatDoesNotAddUpIsRefused)
 		std::filesystem::remove(path, ec);
 		// A pack that holds only the bad record, under the routine's root hash.
 		BeginSession();
-		ASSERT_TRUE(mVUProgCache::StoreBody(1, r.hash.low64, bad.data(), bad.size()));
+		ASSERT_TRUE(mVUProgCache::StoreBody(1, r.hash.low64, bad.data(), bad.size(), false));
 		EndSession();
 		BeginSession();
 		const StoreStats a = mVUChunkStore::GetStats();

@@ -6,7 +6,8 @@
 //
 // A pack is one file per title, VU and options sentinel,
 // vu_jit/packs/<title>/vu{0,1}-<sentinel hex>.pack: a 64-byte header
-// (format, compiler ABI, VU, sentinel, arch), then an append-only log of
+// (format, compiler ABI, VU, sentinel, arch, build, page size, layout
+// stamp), then an append-only log of
 // checksummed records. Nothing is written until there is something to
 // write, and nothing a session writes touches another pack.
 //
@@ -17,8 +18,9 @@
 //   2. Another sentinel, or another title, opens a pack of its own and
 //      leaves the first one intact (two games with different GameDB VU
 //      settings, played in turn, keep a cache each).
-//   3. A pack whose header differs (magic, format, compiler ABI, VU, arch)
-//      loads nothing and is started again at the next write.
+//   3. A pack whose header differs (magic, format, compiler ABI, VU, arch,
+//      build, page size, layout stamp) loads nothing and is started again at
+//      the next write.
 //   4. A log that ends in a broken record keeps every record before it,
 //      and the next write cuts the broken one off first.
 //   4c-4f. The RAM cap bounds the pack in RAM and on disk: a read keeps the
@@ -28,8 +30,10 @@
 //   5. The older layouts, writes cut short, and packs unused for 60 days
 //      are deleted; recent packs and the tripwire's memory stay.
 //
-// Records here are vu-aot sidecars under made-up hashes: they need no
-// microVU behind them. mvu_progcache_disk_tests.cpp covers programs.
+// Records here are VU1 pack records (the kind the chunk store's bodies are
+// kept as) with made-up bytes under made-up hashes: they need no microVU
+// behind them. mvu_progcache_disk_tests.cpp covers VU0's programs and
+// vu1_chunk_pack_tests.cpp the chunk store's bodies.
 //
 // References:
 //   pcsx2/arm64/microVU_ProgCache-arm64.inl  PackHeader, RecordHeader, LoadPack, WritePack, DeleteLeftovers
@@ -92,7 +96,8 @@ namespace
 	{
 		u32           magic;
 		u8            kind;
-		u8            reserved[3];
+		u8            tier;
+		u8            reserved[2];
 		u32           length;
 		u32           reserved2;
 		XXH128_hash_t hash;
@@ -103,7 +108,7 @@ namespace
 	static_assert(sizeof(RecordHeaderMirror) == 40, "RecordHeader mirror drifted");
 
 	constexpr u32 kPackMagicMirror = 0x4B415056u; // 'VPAK'
-	constexpr u8 kRecordSidecar = 2;
+	constexpr u8 kRecordBody = 2;
 
 	XXH128_hash_t Hash(u64 lo, u64 hi)
 	{
@@ -153,16 +158,17 @@ namespace
 		std::string m_prev_cache;
 	};
 
-	// Stores a sidecar of `size` bytes, all `fill`, under `hash`.
-	void PutSidecar(u32 vu, const XXH128_hash_t& hash, u8 fill, size_t size = 64)
+	// Stores a record of `size` bytes, all `fill`, under `hash`.
+	void PutRecord(u32 vu, const XXH128_hash_t& hash, u8 fill, size_t size = 64)
 	{
-		mVUProgCache::QueueSidecar(vu, hash, [fill, size]() { return std::vector<u8>(size, fill); });
+		const std::vector<u8> bytes(size, fill);
+		mVUProgCache::TestStoreRecord(vu, hash, bytes.data(), bytes.size());
 	}
 
 	bool ReadBack(u32 vu, const XXH128_hash_t& hash, u8 fill)
 	{
 		std::vector<u8> out;
-		if (!mVUProgCache::ReadSidecar(vu, hash, out) || out.empty())
+		if (!mVUProgCache::TestReadRecord(vu, hash, out) || out.empty())
 			return false;
 		return out[0] == fill;
 	}
@@ -218,13 +224,13 @@ TEST(ProgCachePack, nothing_is_written_until_there_is_something_to_write)
 	EXPECT_EQ(mVUProgCache::TestPackPath(1), path);
 	EXPECT_FALSE(FileSystem::FileExists(path.c_str())) << "an empty cache wrote a file";
 
-	PutSidecar(1, Hash(1, 2), 0x11);
+	PutRecord(1, Hash(1, 2), 0x11);
 	EXPECT_FALSE(FileSystem::FileExists(path.c_str())) << "storing is RAM only";
-	mVUProgCache::FlushSidecars(1);
+	mVUProgCache::TestFlush(1);
 	PackHeaderMirror hdr{};
 	const std::vector<Rec> recs = Records(path, &hdr);
 	ASSERT_EQ(recs.size(), 1u);
-	EXPECT_EQ(recs[0].kind, kRecordSidecar);
+	EXPECT_EQ(recs[0].kind, kRecordBody);
 	EXPECT_EQ(hdr.magic, kPackMagicMirror);
 	EXPECT_EQ(hdr.formatVersion, mVUProgCache::kProgCacheFormatVersion);
 	EXPECT_EQ(hdr.compilerAbiVersion, pcsx2_test::kMvuCompilerAbiVersionMirror);
@@ -257,19 +263,19 @@ TEST(ProgCachePack, optionsSentinel_change_keeps_each_cache)
 	const XXH128_hash_t prog = Hash(0x0A0A0A0Aull, 0x0B0B0B0Bull);
 
 	mVUProgCache::InitWithSentinel(1, s_a);
-	PutSidecar(1, prog, 0x2A);
+	PutRecord(1, prog, 0x2A);
 	mVUProgCache::ResetForTest(1); // (writes it)
 
 	mVUProgCache::InitWithSentinel(1, s_b);
 	mVUProgCache::TestWaitForPreload(1);
 	EXPECT_EQ(mVUProgCache::GetStats(1).entries, 0u) << "s_b's cache starts empty";
-	PutSidecar(1, Hash(7, 7), 0x07);
+	PutRecord(1, Hash(7, 7), 0x07);
 	mVUProgCache::ResetForTest(1);
 
 	mVUProgCache::InitWithSentinel(1, s_a);
 	mVUProgCache::TestWaitForPreload(1);
 	EXPECT_TRUE(ReadBack(1, prog, 0x2A)) << "s_a's cache must survive a session under s_b";
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(7, 7), true));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(7, 7)));
 	EXPECT_EQ(Records(tmp.pack("_", 1, s_a)).size(), 1u);
 	EXPECT_EQ(Records(tmp.pack("_", 1, s_b)).size(), 1u);
 }
@@ -283,14 +289,14 @@ TEST(ProgCachePack, each_title_has_its_own_pack)
 	mVUProgCache::SetTitle("SLUS-21065", 0xA1B2C3D4u);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	EXPECT_EQ(mVUProgCache::TestPackPath(1), tmp.pack("SLUS-21065_A1B2C3D4", 1, sentinel));
-	PutSidecar(1, prog, 0x31);
+	PutRecord(1, prog, 0x31);
 	mVUProgCache::ResetForTest(1);
 
 	mVUProgCache::SetTitle("SCES 50/01", 0x1u); // (characters a file name cannot hold become '_')
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	EXPECT_EQ(mVUProgCache::TestPackPath(1), tmp.pack("SCES_50_01_00000001", 1, sentinel));
 	mVUProgCache::TestWaitForPreload(1);
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, prog, true)) << "another game's records";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, prog)) << "another game's records";
 	mVUProgCache::ResetForTest(1);
 
 	mVUProgCache::SetTitle("SLUS-21065", 0xA1B2C3D4u);
@@ -322,7 +328,7 @@ TEST(ProgCachePack, a_pack_of_another_format_is_replaced)
 		TempCacheRoot tmp;
 		const XXH128_hash_t sentinel = Hash(0x7777ull, 0x8888ull);
 		mVUProgCache::InitWithSentinel(1, sentinel);
-		PutSidecar(1, Hash(1, 1), 0x01);
+		PutRecord(1, Hash(1, 1), 0x01);
 		mVUProgCache::ResetForTest(1);
 
 		const std::string path = tmp.pack("_", 1, sentinel);
@@ -339,10 +345,10 @@ TEST(ProgCachePack, a_pack_of_another_format_is_replaced)
 		auto stats = mVUProgCache::GetStats(1);
 		EXPECT_EQ(stats.otherFormat, 1u) << poison.what;
 		EXPECT_EQ(stats.entries, 0u) << poison.what;
-		EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(1, 1), true)) << poison.what;
+		EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(1, 1))) << poison.what;
 
-		PutSidecar(1, Hash(2, 2), 0x02);
-		mVUProgCache::FlushSidecars(1);
+		PutRecord(1, Hash(2, 2), 0x02);
+		mVUProgCache::TestFlush(1);
 		PackHeaderMirror now{};
 		const std::vector<Rec> recs = Records(path, &now);
 		EXPECT_EQ(recs.size(), 1u) << poison.what << ": the old records went with the old format";
@@ -359,10 +365,10 @@ TEST(ProgCachePack, a_broken_record_ends_the_log_and_is_cut_off)
 	TempCacheRoot tmp;
 	const XXH128_hash_t sentinel = Hash(0xC0FFEEull, 0xBBull);
 	mVUProgCache::InitWithSentinel(1, sentinel);
-	PutSidecar(1, Hash(1, 1), 0x01);
-	PutSidecar(1, Hash(2, 2), 0x02);
-	mVUProgCache::FlushSidecars(1);
-	PutSidecar(1, Hash(3, 3), 0x03, 200);
+	PutRecord(1, Hash(1, 1), 0x01);
+	PutRecord(1, Hash(2, 2), 0x02);
+	mVUProgCache::TestFlush(1);
+	PutRecord(1, Hash(3, 3), 0x03, 200);
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	ASSERT_EQ(Records(path).size(), 3u);
@@ -380,9 +386,9 @@ TEST(ProgCachePack, a_broken_record_ends_the_log_and_is_cut_off)
 	EXPECT_EQ(stats.loadedRecords, 2u);
 	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 0x01));
 	EXPECT_TRUE(ReadBack(1, Hash(2, 2), 0x02));
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(3, 3), true));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(3, 3)));
 
-	PutSidecar(1, Hash(4, 4), 0x04);
+	PutRecord(1, Hash(4, 4), 0x04);
 	mVUProgCache::ResetForTest(1);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::TestWaitForPreload(1);
@@ -402,8 +408,8 @@ TEST(ProgCachePack, the_newest_record_wins_and_a_mostly_dead_pack_is_rewritten)
 	const size_t big = 300u << 10;
 	for (u8 round = 1; round <= 6; round++)
 	{
-		PutSidecar(1, prog, round, big);
-		mVUProgCache::FlushSidecars(1);
+		PutRecord(1, prog, round, big);
+		mVUProgCache::TestFlush(1);
 	}
 	EXPECT_GE(mVUProgCache::GetStats(1).rewrites, 1u) << "1.5 MiB of file for 300 KiB of records";
 	const s64 size = FileSystem::GetPathFileSize(tmp.pack("_", 1, sentinel).c_str());
@@ -425,8 +431,8 @@ TEST(ProgCachePack, a_pack_past_the_ram_cap_keeps_its_newest_records)
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	for (u64 n = 1; n <= 8; n++)
 	{
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
-		mVUProgCache::FlushSidecars(1); // (one pass each: the file holds them in order)
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+		mVUProgCache::TestFlush(1); // (one pass each: the file holds them in order)
 	}
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
@@ -450,7 +456,7 @@ TEST(ProgCachePack, a_pack_past_the_ram_cap_keeps_its_newest_records)
 	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
 	EXPECT_TRUE(ReadBack(1, Hash(6, 6), 6));
 	EXPECT_TRUE(ReadBack(1, Hash(8, 8), 8));
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(5, 5), true)) << "an older record was read";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(5, 5))) << "an older record was read";
 }
 
 // 4c'. A rewrite that fails (a full card, here a folder that takes no new file) is not tried again for the
@@ -461,7 +467,7 @@ TEST(ProgCachePack, a_failed_rewrite_is_not_retried_every_pass)
 	const XXH128_hash_t sentinel = Hash(0xC9ull, 0xFEull);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	for (u64 n = 1; n <= 4; n++)
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	const std::string dir(Path::GetDirectory(path));
@@ -479,8 +485,8 @@ TEST(ProgCachePack, a_failed_rewrite_is_not_retried_every_pass)
 	EXPECT_EQ(mVUProgCache::GetStats(1).writeFailures, 1u) << "the rewrite was not tried";
 	for (u64 n = 10; n < 13; n++)
 	{
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n));
-		mVUProgCache::FlushSidecars(1);
+		PutRecord(1, Hash(n, n), static_cast<u8>(n));
+		mVUProgCache::TestFlush(1);
 	}
 	const auto stats = mVUProgCache::GetStats(1);
 	EXPECT_EQ(stats.writeFailures, 1u) << "the rewrite was tried again";
@@ -501,22 +507,22 @@ TEST(ProgCachePack, the_writer_keeps_the_pack_under_the_cap_and_drops_what_was_u
 	mVUProgCache::TestWaitForPreload(1);
 	for (u64 n = 1; n <= 6; n++)
 	{
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n), size);
-		mVUProgCache::FlushSidecars(1);
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), size);
+		mVUProgCache::TestFlush(1);
 	}
 	EXPECT_EQ(mVUProgCache::GetStats(1).evicted, 0u) << "240 KiB is under the cap";
 	ASSERT_TRUE(ReadBack(1, Hash(1, 1), 1)); // the oldest entry, used again
 
-	PutSidecar(1, Hash(7, 7), 7, size);
-	mVUProgCache::FlushSidecars(1);
+	PutRecord(1, Hash(7, 7), 7, size);
+	mVUProgCache::TestFlush(1);
 	auto stats = mVUProgCache::GetStats(1);
 	EXPECT_GT(stats.evicted, 0u);
 	EXPECT_LE(stats.ramBytes, cap);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
-	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(7, 7), true)) << "the newest entry was dropped";
-	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(1, 1), true)) << "the entry read last was dropped";
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2), true)) << "the entry used longest ago was kept";
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(7, 7))) << "the newest entry was dropped";
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(1, 1))) << "the entry read last was dropped";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2))) << "the entry used longest ago was kept";
 
 	// The file holds them in the order of their last use, so the next session ranks them the same way.
 	mVUProgCache::ResetForTest(1);
@@ -530,7 +536,7 @@ TEST(ProgCachePack, the_writer_keeps_the_pack_under_the_cap_and_drops_what_was_u
 	mVUProgCache::TestWaitForPreload(1);
 	EXPECT_TRUE(ReadBack(1, Hash(7, 7), 7));
 	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 1));
-	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2), true));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2)));
 }
 
 // 4e. Between the writer's passes a session never holds more than twice the cap: what would go past it is
@@ -542,10 +548,9 @@ TEST(ProgCachePack, a_session_never_holds_more_than_twice_the_cap)
 	mVUProgCache::TestSetRamCap(1, cap);
 	mVUProgCache::InitWithSentinel(1, Hash(0xCCull, 0xFEull));
 	mVUProgCache::TestWaitForPreload(1);
-	// (a read builds the queued sidecar and stores it then, with no writer pass in between)
 	for (u64 n = 1; n <= 8; n++)
 	{
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n), size);
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), size);
 		ReadBack(1, Hash(n, n), static_cast<u8>(n));
 	}
 	const auto stats = mVUProgCache::GetStats(1);
@@ -561,16 +566,19 @@ TEST(ProgCachePack, the_tables_bytes_are_a_few_large_blocks_not_one_per_record)
 	TempCacheRoot tmp;
 	const XXH128_hash_t sentinel = Hash(0xCDull, 0xFEull);
 	constexpr u64 kRecords = 1000;
+	// (24 MiB of records: over VU1's own cap)
+	mVUProgCache::TestSetRamCap(1, 64u << 20);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::TestWaitForPreload(1);
 	for (u64 n = 1; n <= kRecords; n++)
-		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 24u << 10);
-	mVUProgCache::FlushSidecars(1);
+		PutRecord(1, Hash(n, n), static_cast<u8>(n), 24u << 10);
+	mVUProgCache::TestFlush(1);
 	auto stats = mVUProgCache::GetStats(1);
 	ASSERT_EQ(stats.entries, kRecords);
 	EXPECT_LE(stats.ramBlocks, 16u) << "what the session stored";
 
 	mVUProgCache::ResetForTest(1);
+	mVUProgCache::TestSetRamCap(1, 64u << 20);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::TestWaitForPreload(1);
 	stats = mVUProgCache::GetStats(1);
@@ -624,7 +632,7 @@ TEST(ProgCachePack, opening_a_pack_marks_its_use)
 	TempCacheRoot tmp;
 	const XXH128_hash_t sentinel = Hash(3, 4);
 	mVUProgCache::InitWithSentinel(1, sentinel);
-	PutSidecar(1, Hash(1, 1), 1);
+	PutRecord(1, Hash(1, 1), 1);
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	SetAgeDays(path, 59);
@@ -644,7 +652,7 @@ TEST(ProgCachePack, the_pack_being_opened_is_not_deleted)
 	TempCacheRoot tmp;
 	const XXH128_hash_t sentinel = Hash(8, 9);
 	mVUProgCache::InitWithSentinel(1, sentinel);
-	PutSidecar(1, Hash(1, 1), 0x5A);
+	PutRecord(1, Hash(1, 1), 0x5A);
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	SetAgeDays(path, 90);
@@ -653,7 +661,7 @@ TEST(ProgCachePack, the_pack_being_opened_is_not_deleted)
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	for (int i = 0; i < 2000 && !mVUProgCache::TestLoadIsHeld(1); i++)
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-	PutSidecar(1, Hash(2, 2), 0x5B);
+	PutRecord(1, Hash(2, 2), 0x5B);
 	std::this_thread::sleep_for(std::chrono::milliseconds(50)); // (the writer's leftover pass runs first)
 	mVUProgCache::TestHoldLoad(1, false);
 	mVUProgCache::TestWaitForPreload(1);
