@@ -187,7 +187,7 @@ namespace
     {
         std::string out;
         for (const char c : serial)
-            out += (isalnum(static_cast<unsigned char>(c)) && c < 0x80) || c == '.' || c == '_' || c == '-' ? c : '_';
+            out += (isalnum(static_cast<unsigned char>(c)) && static_cast<unsigned char>(c) < 0x80) || c == '.' || c == '_' || c == '-' ? c : '_';
         return out.empty() ? "-" : out;
     }
 
