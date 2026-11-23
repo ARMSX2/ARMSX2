@@ -305,9 +305,7 @@ struct DynamicParticleOverlay: View {
       canvasSize: CGSize,
       logoSize: CGSize
     ) -> CGRect {
-      // Reflect the leading edge inside the exact travel rectangle. The logo's
-      // trailing/bottom bounds consequently touch the opposite inset at the
-      // same frame, matching a DVD screensaver collision.
+      // Reflecting the leading edge makes both edges hit their insets on one frame, like a DVD logo.
       let inset: CGFloat = 3
       let horizontalTravel = max(0, canvasSize.width - logoSize.width - inset * 2)
       let verticalTravel = max(0, canvasSize.height - logoSize.height - inset * 2)
