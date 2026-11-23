@@ -8,7 +8,7 @@ extension PatchStore {
 
     func downloadFromDatabase(forISO iso: String, asCheat: Bool) async {
         let requestGeneration = presentationGeneration
-        let crc = iso == isoName ? currentCRC : Self.formattedCRC(ARMSX2Bridge.gameSettings(forISO: iso)["crc"] as? String)
+        let crc = iso == isoName ? currentCRC : Self.formattedCRC(ARMSX2Bridge.gameSettings(forISO: iso)[.crc] as? String)
         guard !crc.isEmpty else {
             applyFeedback(identityState.guidance ?? "Database matching is unavailable for this game.", kind: .information)
             return
@@ -22,7 +22,7 @@ extension PatchStore {
             return
         }
 
-        let serial = iso == isoName ? currentSerial : PadLayoutGameIdentity.normalizedSerial(ARMSX2Bridge.gameSettings(forISO: iso)["serial"] as? String)
+        let serial = iso == isoName ? currentSerial : PadLayoutGameIdentity.normalizedSerial(ARMSX2Bridge.gameSettings(forISO: iso)[.serial] as? String)
         let title = iso == isoName ? currentTitle : (ARMSX2Bridge.gameMetadata(forISO: iso)["title"] ?? iso)
 
         isDownloading = true

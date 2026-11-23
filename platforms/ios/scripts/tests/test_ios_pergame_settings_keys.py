@@ -1,15 +1,16 @@
-"""The per-game settings dictionary is matched by string key, not by type.
+"""The per-game settings dictionary is typed on the Swift side only.
 
-PerGameSettingsDraft.writeCurrentSettings builds it and
-ARMSX2WriteGameSettingsForIdentity reads it back one key at a time. A misspelled key still compiles and still
-runs, and the value falls back to whatever that key's default is, so nothing
-reports it. These tests compare the key sets instead.
+PerGameSettingsDraft.writeCurrentSettings builds it as [ARMSX2PerGameKey: Any],
+and ARMSX2WriteGameSettingsForIdentity reads it back one constant at a time.
+The ObjC compiler does not check which constant a read names, so a wrong one
+still runs and the value falls back to that key's default. These tests
+compare the key sets instead.
 """
 
 import re
 import unittest
 
-from ios_source import block, bridge_text, read, swift
+from ios_source import BRIDGE_DIR, block, bridge_text, read, swift
 
 
 SAVE = swift("PerGameSettingsDraft+Save.swift")
@@ -17,27 +18,37 @@ SAVE = swift("PerGameSettingsDraft+Save.swift")
 WRITER = "static void ARMSX2WriteGameSettingsForIdentity"
 BUILDER = "static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult"
 OVERRIDES = "static void ARMSX2ApplyPerGameSettingsOverrides"
-SWIFT_DICT = "let settingsDict: [String: Any] = ["
+SWIFT_DICT = "let settingsDict: [ARMSX2PerGameKey: Any] = ["
+
+
+def raw_values():
+    """Each ARMSX2PerGameKey constant name mapped to its string."""
+    return dict(re.findall(r'ARMSX2PerGameKey const (ARMSX2PerGameKey\w+) = @"([^"]+)";',
+                           read(BRIDGE_DIR / "ARMSX2BridgeKeys.mm")))
 
 
 def setter_keys():
     """Keys ARMSX2WriteGameSettingsForIdentity reads out of the dictionary."""
-    return set(re.findall(r's\[@"([A-Za-z]+)"\]', block(bridge_text(), WRITER)))
+    values = raw_values()
+    return {values[name] for name in re.findall(r's\[(ARMSX2PerGameKey\w+)\]', block(bridge_text(), WRITER))}
 
 
 def getter_keys():
     """Keys gameSettingsForISO puts into the dictionary it returns."""
     source = bridge_text()
     body = block(source, BUILDER) + block(source, OVERRIDES)
-    return (set(re.findall(r'@"([A-Za-z]+)"\s*:', body))
-            | set(re.findall(r'result\[@"([A-Za-z]+)"\]', body)))
+    names = (re.findall(r'(ARMSX2PerGameKey\w+)\s*:', body)
+             + re.findall(r'result\[(ARMSX2PerGameKey\w+)\]', body))
+    values = raw_values()
+    return {values[name] for name in names}
 
 
 def swift_keys():
     """Keys PerGameSettingsDraft.writeCurrentSettings puts into the dictionary it sends."""
     source = read(SAVE)
     start = source.index(SWIFT_DICT)
-    return set(re.findall(r'"([A-Za-z]+)"\s*:', source[start:source.index("\n        ]", start)]))
+    # each member's Swift name is its raw value
+    return set(re.findall(r'\.([A-Za-z0-9]+)\s*:', source[start:source.index("\n        ]", start)]))
 
 
 class PerGameSettingsKeys(unittest.TestCase):

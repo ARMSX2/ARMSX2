@@ -58,39 +58,39 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
                                                 u32 crc,
                                                 NSDictionary<NSString*, id>* s)
 {
-    BOOL enabled = [s[@"enabled"] boolValue];
-    float upscaleMultiplier = s[@"upscaleMultiplier"] ? [s[@"upscaleMultiplier"] floatValue] : ARMSX2UseGlobalFloatSentinel;
-    NSString* aspectRatio = [s[@"aspectRatio"] isKindOfClass:NSString.class] ? s[@"aspectRatio"] : @"";
-    int textureFiltering = s[@"textureFiltering"] ? [s[@"textureFiltering"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int hardwareMipmapping = s[@"hardwareMipmapping"] ? [s[@"hardwareMipmapping"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int blendingAccuracy = s[@"blendingAccuracy"] ? [s[@"blendingAccuracy"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int interlaceMode = s[@"interlaceMode"] ? [s[@"interlaceMode"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int trilinearFiltering = s[@"trilinearFiltering"] ? [s[@"trilinearFiltering"] intValue] : ARMSX2TriFilterUseGlobalSentinel;
-    int halfPixelOffset = s[@"halfPixelOffset"] ? [s[@"halfPixelOffset"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int roundSprite = s[@"roundSprite"] ? [s[@"roundSprite"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int alignSprite = s[@"alignSprite"] ? [s[@"alignSprite"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int mergeSprite = s[@"mergeSprite"] ? [s[@"mergeSprite"] intValue] : ARMSX2UseGlobalIntSentinel;
-    int wildArmsOffset = s[@"wildArmsOffset"] ? [s[@"wildArmsOffset"] intValue] : ARMSX2UseGlobalIntSentinel;
-    BOOL textureOffsetXOverride = [s[@"hasTextureOffsetXOverride"] boolValue];
-    int textureOffsetX = [s[@"textureOffsetX"] intValue];
-    BOOL textureOffsetYOverride = [s[@"hasTextureOffsetYOverride"] boolValue];
-    int textureOffsetY = [s[@"textureOffsetY"] intValue];
-    BOOL skipDrawStartOverride = [s[@"hasSkipDrawStartOverride"] boolValue];
-    int skipDrawStart = [s[@"skipDrawStart"] intValue];
-    BOOL skipDrawEndOverride = [s[@"hasSkipDrawEndOverride"] boolValue];
-    int skipDrawEnd = [s[@"skipDrawEnd"] intValue];
-    BOOL volumeOverride = [s[@"hasVolumeOverride"] boolValue];
-    int volumePercent = s[@"volumePercent"] ? [s[@"volumePercent"] intValue] : ARMSX2DefaultAudioVolumePercent;
-    int eeCoreType = s[@"eeCoreType"] ? [s[@"eeCoreType"] intValue] : 2;
-    BOOL mtvu = s[@"mtvu"] ? [s[@"mtvu"] boolValue] : YES;
-    BOOL eeCycleRateOverride = [s[@"hasEECycleRateOverride"] boolValue];
-    int eeCycleRate = [s[@"eeCycleRate"] intValue];
-    BOOL fastBootOverride = [s[@"hasFastBootOverride"] boolValue];
-    BOOL fastBoot = [s[@"fastBoot"] boolValue];
-    BOOL enableCheats = [s[@"enableCheats"] boolValue];
-    BOOL enablePatches = s[@"enablePatches"] ? [s[@"enablePatches"] boolValue] : YES;
-    BOOL enableGameFixes = s[@"enableGameFixes"] ? [s[@"enableGameFixes"] boolValue] : YES;
-    BOOL enableGameDBHardwareFixes = s[@"enableGameDBHardwareFixes"] ? [s[@"enableGameDBHardwareFixes"] boolValue] : YES;
+    BOOL enabled = [s[ARMSX2PerGameKeyEnabled] boolValue];
+    float upscaleMultiplier = s[ARMSX2PerGameKeyUpscaleMultiplier] ? [s[ARMSX2PerGameKeyUpscaleMultiplier] floatValue] : ARMSX2UseGlobalFloatSentinel;
+    NSString* aspectRatio = [s[ARMSX2PerGameKeyAspectRatio] isKindOfClass:NSString.class] ? s[ARMSX2PerGameKeyAspectRatio] : @"";
+    int textureFiltering = s[ARMSX2PerGameKeyTextureFiltering] ? [s[ARMSX2PerGameKeyTextureFiltering] intValue] : ARMSX2UseGlobalIntSentinel;
+    int hardwareMipmapping = s[ARMSX2PerGameKeyHardwareMipmapping] ? [s[ARMSX2PerGameKeyHardwareMipmapping] intValue] : ARMSX2UseGlobalIntSentinel;
+    int blendingAccuracy = s[ARMSX2PerGameKeyBlendingAccuracy] ? [s[ARMSX2PerGameKeyBlendingAccuracy] intValue] : ARMSX2UseGlobalIntSentinel;
+    int interlaceMode = s[ARMSX2PerGameKeyInterlaceMode] ? [s[ARMSX2PerGameKeyInterlaceMode] intValue] : ARMSX2UseGlobalIntSentinel;
+    int trilinearFiltering = s[ARMSX2PerGameKeyTrilinearFiltering] ? [s[ARMSX2PerGameKeyTrilinearFiltering] intValue] : ARMSX2TriFilterUseGlobalSentinel;
+    int halfPixelOffset = s[ARMSX2PerGameKeyHalfPixelOffset] ? [s[ARMSX2PerGameKeyHalfPixelOffset] intValue] : ARMSX2UseGlobalIntSentinel;
+    int roundSprite = s[ARMSX2PerGameKeyRoundSprite] ? [s[ARMSX2PerGameKeyRoundSprite] intValue] : ARMSX2UseGlobalIntSentinel;
+    int alignSprite = s[ARMSX2PerGameKeyAlignSprite] ? [s[ARMSX2PerGameKeyAlignSprite] intValue] : ARMSX2UseGlobalIntSentinel;
+    int mergeSprite = s[ARMSX2PerGameKeyMergeSprite] ? [s[ARMSX2PerGameKeyMergeSprite] intValue] : ARMSX2UseGlobalIntSentinel;
+    int wildArmsOffset = s[ARMSX2PerGameKeyWildArmsOffset] ? [s[ARMSX2PerGameKeyWildArmsOffset] intValue] : ARMSX2UseGlobalIntSentinel;
+    BOOL textureOffsetXOverride = [s[ARMSX2PerGameKeyHasTextureOffsetXOverride] boolValue];
+    int textureOffsetX = [s[ARMSX2PerGameKeyTextureOffsetX] intValue];
+    BOOL textureOffsetYOverride = [s[ARMSX2PerGameKeyHasTextureOffsetYOverride] boolValue];
+    int textureOffsetY = [s[ARMSX2PerGameKeyTextureOffsetY] intValue];
+    BOOL skipDrawStartOverride = [s[ARMSX2PerGameKeyHasSkipDrawStartOverride] boolValue];
+    int skipDrawStart = [s[ARMSX2PerGameKeySkipDrawStart] intValue];
+    BOOL skipDrawEndOverride = [s[ARMSX2PerGameKeyHasSkipDrawEndOverride] boolValue];
+    int skipDrawEnd = [s[ARMSX2PerGameKeySkipDrawEnd] intValue];
+    BOOL volumeOverride = [s[ARMSX2PerGameKeyHasVolumeOverride] boolValue];
+    int volumePercent = s[ARMSX2PerGameKeyVolumePercent] ? [s[ARMSX2PerGameKeyVolumePercent] intValue] : ARMSX2DefaultAudioVolumePercent;
+    int eeCoreType = s[ARMSX2PerGameKeyEeCoreType] ? [s[ARMSX2PerGameKeyEeCoreType] intValue] : 2;
+    BOOL mtvu = s[ARMSX2PerGameKeyMtvu] ? [s[ARMSX2PerGameKeyMtvu] boolValue] : YES;
+    BOOL eeCycleRateOverride = [s[ARMSX2PerGameKeyHasEECycleRateOverride] boolValue];
+    int eeCycleRate = [s[ARMSX2PerGameKeyEeCycleRate] intValue];
+    BOOL fastBootOverride = [s[ARMSX2PerGameKeyHasFastBootOverride] boolValue];
+    BOOL fastBoot = [s[ARMSX2PerGameKeyFastBoot] boolValue];
+    BOOL enableCheats = [s[ARMSX2PerGameKeyEnableCheats] boolValue];
+    BOOL enablePatches = s[ARMSX2PerGameKeyEnablePatches] ? [s[ARMSX2PerGameKeyEnablePatches] boolValue] : YES;
+    BOOL enableGameFixes = s[ARMSX2PerGameKeyEnableGameFixes] ? [s[ARMSX2PerGameKeyEnableGameFixes] boolValue] : YES;
+    BOOL enableGameDBHardwareFixes = s[ARMSX2PerGameKeyEnableGameDBHardwareFixes] ? [s[ARMSX2PerGameKeyEnableGameDBHardwareFixes] boolValue] : YES;
 
     FileSystem::CreateDirectoryPath(EmuFolders::GameSettings.c_str(), false);
     if (enableCheats && (ARMSX2RetroAchievementsHardcoreActive() || EmuConfig.Achievements.HardcoreMode)) {
@@ -299,7 +299,7 @@ static void ARMSX2WriteGameSettingsForIdentity(const std::string& serial,
 
 @implementation ARMSX2Bridge (GameSettingsSave)
 
-+ (void)setGameSettings:(nonnull NSDictionary<NSString *, id> *)settings forISO:(nullable NSString *)isoName {
++ (void)setGameSettings:(nonnull NSDictionary<ARMSX2PerGameKey, id> *)settings forISO:(nullable NSString *)isoName {
     std::string serial;
     u32 crc = 0;
     if (!ARMSX2PerGameIdentityForISO(isoName, &serial, &crc)) {

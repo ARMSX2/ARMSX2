@@ -22,8 +22,8 @@ final class PerGameSettingsDraft {
     private struct PerGameINISnapshot {
         let values: [String: Any]
 
-        init?(_ info: [String: Any]) {
-            guard let values = info["perGameINI"] as? [String: Any] else {
+        init?(_ info: [ARMSX2PerGameKey: Any]) {
+            guard let values = info[.perGameINI] as? [String: Any] else {
                 return nil
             }
             self.values = values
@@ -148,7 +148,7 @@ final class PerGameSettingsDraft {
 
     init(
         game: ISOEntry,
-        preloadedSettings: [String: Any]?,
+        preloadedSettings: [ARMSX2PerGameKey: Any]?,
         savesToRunningGame: Bool,
         initiallySelectsGameController: Bool,
         initiallySelectsShaders: Bool
@@ -160,41 +160,41 @@ final class PerGameSettingsDraft {
         let iniSnapshot = PerGameINISnapshot(info)
         enabled = initiallySelectsGameController
                 || initiallySelectsShaders
-                || Self.boolValue(info["enabled"], defaultValue: false)
-        let inheritedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info["globalVolumePercent"], defaultValue: SettingsStore.defaultEmulatorVolumePercent))
-        let loadedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info["volumePercent"], defaultValue: inheritedVolume))
+                || Self.boolValue(info[.enabled], defaultValue: false)
+        let inheritedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info[.globalVolumePercent], defaultValue: SettingsStore.defaultEmulatorVolumePercent))
+        let loadedVolume = SettingsStore.clampedEmulatorVolumePercent(Self.intValue(info[.volumePercent], defaultValue: inheritedVolume))
         globalVolumePercent = inheritedVolume
-        volumeOverride = Self.boolValue(info["hasVolumeOverride"], defaultValue: false)
+        volumeOverride = Self.boolValue(info[.hasVolumeOverride], defaultValue: false)
         volumePercent = loadedVolume
         padLayoutIdentity = PadLayoutGameIdentity(
-            serial: (info["serial"] as? String) ?? game.metadata["serial"],
-            crc: (info["crc"] as? String) ?? game.metadata["crc"]
+            serial: (info[.serial] as? String) ?? game.metadata["serial"],
+            crc: (info[.crc] as? String) ?? game.metadata["crc"]
         )
-        hasGameSettingsIdentity = !PadLayoutGameIdentity.normalizedCRC((info["crc"] as? String) ?? game.metadata["crc"]).isEmpty
+        hasGameSettingsIdentity = !PadLayoutGameIdentity.normalizedCRC((info[.crc] as? String) ?? game.metadata["crc"]).isEmpty
         // Sentinel unless the file actually carries the key, so opening and saving the panel
         // cannot invent an override.
-        upscaleMultiplier = Self.boolValue(info["hasUpscaleMultiplierOverride"], defaultValue: false) ? Self.floatValue(info["upscaleMultiplier"], defaultValue: 1.0) : Self.upscaleUseGlobalSentinel
-        aspectRatio = Self.boolValue(info["hasAspectRatioOverride"], defaultValue: false) ? Self.normalizedAspect(info["aspectRatio"] as? String) : Self.aspectUseGlobalSentinel
-        textureFiltering = Self.boolValue(info["hasTextureFilteringOverride"], defaultValue: false) ? Self.intValue(info["textureFiltering"], defaultValue: 2) : Self.useGlobalSentinel
-        hardwareMipmapping = Self.boolValue(info["hasHardwareMipmappingOverride"], defaultValue: false) ? (Self.boolValue(info["hardwareMipmapping"], defaultValue: true) ? 1 : 0) : Self.useGlobalSentinel
-        blendingAccuracy = Self.boolValue(info["hasBlendingAccuracyOverride"], defaultValue: false) ? Self.intValue(info["blendingAccuracy"], defaultValue: 1) : Self.useGlobalSentinel
-        interlaceMode = Self.boolValue(info["hasInterlaceModeOverride"], defaultValue: false) ? Self.intValue(info["interlaceMode"], defaultValue: 0) : Self.useGlobalSentinel
-        trilinearFiltering = Self.boolValue(info["hasTrilinearFilteringOverride"], defaultValue: false) ? Self.intValue(info["trilinearFiltering"], defaultValue: -1) : Self.trilinearUseGlobalSentinel
-        halfPixelOffset = Self.boolValue(info["hasHalfPixelOffsetOverride"], defaultValue: false) ? Self.intValue(info["halfPixelOffset"], defaultValue: 0) : Self.useGlobalSentinel
-        roundSprite = Self.boolValue(info["hasRoundSpriteOverride"], defaultValue: false) ? Self.intValue(info["roundSprite"], defaultValue: 0) : Self.useGlobalSentinel
-        alignSprite = Self.boolValue(info["hasAlignSpriteOverride"], defaultValue: false) ? (Self.boolValue(info["alignSprite"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
-        mergeSprite = Self.boolValue(info["hasMergeSpriteOverride"], defaultValue: false) ? (Self.boolValue(info["mergeSprite"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
-        wildArmsOffset = Self.boolValue(info["hasWildArmsOffsetOverride"], defaultValue: false) ? (Self.boolValue(info["wildArmsOffset"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
-        textureOffsetXOverride = Self.boolValue(info["hasTextureOffsetXOverride"], defaultValue: false)
-        textureOffsetX = SettingsStore.clampedTextureOffset(Self.intValue(info["textureOffsetX"], defaultValue: 0))
-        textureOffsetYOverride = Self.boolValue(info["hasTextureOffsetYOverride"], defaultValue: false)
-        textureOffsetY = SettingsStore.clampedTextureOffset(Self.intValue(info["textureOffsetY"], defaultValue: 0))
-        let hasSkipDrawStartOverride = Self.boolValue(info["hasSkipDrawStartOverride"], defaultValue: false)
-        let hasSkipDrawEndOverride = Self.boolValue(info["hasSkipDrawEndOverride"], defaultValue: false)
-        let initialSkipDrawStart = SettingsStore.clampedSkipDraw(Self.intValue(info["skipDrawStart"], defaultValue: 0))
+        upscaleMultiplier = Self.boolValue(info[.hasUpscaleMultiplierOverride], defaultValue: false) ? Self.floatValue(info[.upscaleMultiplier], defaultValue: 1.0) : Self.upscaleUseGlobalSentinel
+        aspectRatio = Self.boolValue(info[.hasAspectRatioOverride], defaultValue: false) ? Self.normalizedAspect(info[.aspectRatio] as? String) : Self.aspectUseGlobalSentinel
+        textureFiltering = Self.boolValue(info[.hasTextureFilteringOverride], defaultValue: false) ? Self.intValue(info[.textureFiltering], defaultValue: 2) : Self.useGlobalSentinel
+        hardwareMipmapping = Self.boolValue(info[.hasHardwareMipmappingOverride], defaultValue: false) ? (Self.boolValue(info[.hardwareMipmapping], defaultValue: true) ? 1 : 0) : Self.useGlobalSentinel
+        blendingAccuracy = Self.boolValue(info[.hasBlendingAccuracyOverride], defaultValue: false) ? Self.intValue(info[.blendingAccuracy], defaultValue: 1) : Self.useGlobalSentinel
+        interlaceMode = Self.boolValue(info[.hasInterlaceModeOverride], defaultValue: false) ? Self.intValue(info[.interlaceMode], defaultValue: 0) : Self.useGlobalSentinel
+        trilinearFiltering = Self.boolValue(info[.hasTrilinearFilteringOverride], defaultValue: false) ? Self.intValue(info[.trilinearFiltering], defaultValue: -1) : Self.trilinearUseGlobalSentinel
+        halfPixelOffset = Self.boolValue(info[.hasHalfPixelOffsetOverride], defaultValue: false) ? Self.intValue(info[.halfPixelOffset], defaultValue: 0) : Self.useGlobalSentinel
+        roundSprite = Self.boolValue(info[.hasRoundSpriteOverride], defaultValue: false) ? Self.intValue(info[.roundSprite], defaultValue: 0) : Self.useGlobalSentinel
+        alignSprite = Self.boolValue(info[.hasAlignSpriteOverride], defaultValue: false) ? (Self.boolValue(info[.alignSprite], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
+        mergeSprite = Self.boolValue(info[.hasMergeSpriteOverride], defaultValue: false) ? (Self.boolValue(info[.mergeSprite], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
+        wildArmsOffset = Self.boolValue(info[.hasWildArmsOffsetOverride], defaultValue: false) ? (Self.boolValue(info[.wildArmsOffset], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
+        textureOffsetXOverride = Self.boolValue(info[.hasTextureOffsetXOverride], defaultValue: false)
+        textureOffsetX = SettingsStore.clampedTextureOffset(Self.intValue(info[.textureOffsetX], defaultValue: 0))
+        textureOffsetYOverride = Self.boolValue(info[.hasTextureOffsetYOverride], defaultValue: false)
+        textureOffsetY = SettingsStore.clampedTextureOffset(Self.intValue(info[.textureOffsetY], defaultValue: 0))
+        let hasSkipDrawStartOverride = Self.boolValue(info[.hasSkipDrawStartOverride], defaultValue: false)
+        let hasSkipDrawEndOverride = Self.boolValue(info[.hasSkipDrawEndOverride], defaultValue: false)
+        let initialSkipDrawStart = SettingsStore.clampedSkipDraw(Self.intValue(info[.skipDrawStart], defaultValue: 0))
         let initialSkipDrawEnd = SettingsStore.normalizedSkipDrawEnd(
             start: initialSkipDrawStart,
-            end: Self.intValue(info["skipDrawEnd"], defaultValue: 0),
+            end: Self.intValue(info[.skipDrawEnd], defaultValue: 0),
             startOverride: hasSkipDrawStartOverride,
             endOverride: hasSkipDrawEndOverride
         )
@@ -202,24 +202,24 @@ final class PerGameSettingsDraft {
         skipDrawStart = initialSkipDrawStart
         skipDrawEndOverride = hasSkipDrawEndOverride
         skipDrawEnd = initialSkipDrawEnd
-        eeCoreType = Self.intValue(info["eeCoreType"], defaultValue: 2)
-        mtvu = Self.boolValue(info["mtvu"], defaultValue: true)
-        let inheritedEECycleRate = SettingsStore.clampedEECycleRate(Self.intValue(info["globalEECycleRate"], defaultValue: 0))
+        eeCoreType = Self.intValue(info[.eeCoreType], defaultValue: 2)
+        mtvu = Self.boolValue(info[.mtvu], defaultValue: true)
+        let inheritedEECycleRate = SettingsStore.clampedEECycleRate(Self.intValue(info[.globalEECycleRate], defaultValue: 0))
         globalEECycleRate = inheritedEECycleRate
-        eeCycleRate = Self.boolValue(info["hasEECycleRateOverride"], defaultValue: false) ? SettingsStore.clampedEECycleRate(Self.intValue(info["eeCycleRate"], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel
+        eeCycleRate = Self.boolValue(info[.hasEECycleRateOverride], defaultValue: false) ? SettingsStore.clampedEECycleRate(Self.intValue(info[.eeCycleRate], defaultValue: inheritedEECycleRate)) : Self.eeCycleRateUseGlobalSentinel
         let inheritedEECycleSkip = SettingsStore.clamped(Int(ARMSX2Bridge.getINIInt("EmuCore/Speedhacks", key: "EECycleSkip", defaultValue: 0)), to: 0...3)
         globalEECycleSkip = inheritedEECycleSkip
-        let inheritedFastBoot = Self.boolValue(info["globalFastBoot"], defaultValue: false)
+        let inheritedFastBoot = Self.boolValue(info[.globalFastBoot], defaultValue: false)
         globalFastBoot = inheritedFastBoot
-        fastBoot = Self.boolValue(info["hasFastBootOverride"], defaultValue: false) ? (Self.boolValue(info["fastBoot"], defaultValue: inheritedFastBoot) ? Self.fastBootOn : Self.fastBootOff) : Self.fastBootUseGlobalSentinel
-        enableCheats = Self.boolValue(info["enableCheats"], defaultValue: false)
-        enablePatches = Self.boolValue(info["enablePatches"], defaultValue: true)
-        enableGameFixes = Self.boolValue(info["enableGameFixes"], defaultValue: true)
-        enableGameDBHardwareFixes = Self.boolValue(info["enableGameDBHardwareFixes"], defaultValue: true)
+        fastBoot = Self.boolValue(info[.hasFastBootOverride], defaultValue: false) ? (Self.boolValue(info[.fastBoot], defaultValue: inheritedFastBoot) ? Self.fastBootOn : Self.fastBootOff) : Self.fastBootUseGlobalSentinel
+        enableCheats = Self.boolValue(info[.enableCheats], defaultValue: false)
+        enablePatches = Self.boolValue(info[.enablePatches], defaultValue: true)
+        enableGameFixes = Self.boolValue(info[.enableGameFixes], defaultValue: true)
+        enableGameDBHardwareFixes = Self.boolValue(info[.enableGameDBHardwareFixes], defaultValue: true)
 
         // The bridge preloads the compatibility overrides in one INI read instead of one parse per key.
         var loadedFixes: [String: Int] = [:]
-        let preloadedFixes = info["perGameFixes"] as? [String: Any] ?? [:]
+        let preloadedFixes = info[.perGameFixes] as? [String: Any] ?? [:]
         for option in SettingsStore.gameFixOptions {
             if let value = preloadedFixes[option.key] {
                 loadedFixes[option.key] = Self.intValue(value, defaultValue: 0)
@@ -228,42 +228,42 @@ final class PerGameSettingsDraft {
             }
         }
         perGameFixes = loadedFixes
-        let hasPerGameAAT = Self.boolValue(info["hasPerGameAAT"], defaultValue: false)
-        perGameAAT = hasPerGameAAT ? Self.intValue(info["perGameAAT"], defaultValue: 0) : -1
-        let hasPerGameTextureInsideRt = Self.boolValue(info["hasPerGameTextureInsideRt"], defaultValue: false)
-        perGameTextureInsideRt = hasPerGameTextureInsideRt ? Self.intValue(info["perGameTextureInsideRt"], defaultValue: 0) : -1
-        perGameDisableDepth = Self.boolValue(info["hasPerGameDisableDepth"], defaultValue: false) ? (Self.boolValue(info["perGameDisableDepth"], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
-        let hasPerGameRenderer = Self.boolValue(info["hasPerGameRenderer"], defaultValue: false)
-        perGameRenderer = hasPerGameRenderer ? Self.intValue(info["perGameRenderer"], defaultValue: 17) : -1
-        let hasPerGameFXAA = Self.boolValue(info["hasPerGameFXAA"], defaultValue: false)
-        perGameFXAA = hasPerGameFXAA ? Self.intValue(info["perGameFXAA"], defaultValue: 0) : -1
-        let hasPerGameUpscaler = Self.boolValue(info["hasPerGameUpscaler"], defaultValue: false)
-        perGameUpscaler = hasPerGameUpscaler ? Self.intValue(info["perGameUpscaler"], defaultValue: 0) : -1
-        let hasPerGameShadeBoost = Self.boolValue(info["hasPerGameShadeBoost"], defaultValue: false)
-        perGameShadeBoost = hasPerGameShadeBoost ? Self.intValue(info["perGameShadeBoost"], defaultValue: 0) : -1
-        let hasPerGameTVShader = Self.boolValue(info["hasPerGameTVShader"], defaultValue: false)
-        perGameTVShader = hasPerGameTVShader ? Self.intValue(info["perGameTVShader"], defaultValue: 0) : -1
-        let hasPerGameCASMode = Self.boolValue(info["hasPerGameCASMode"], defaultValue: false)
-        perGameCASMode = hasPerGameCASMode ? Self.intValue(info["perGameCASMode"], defaultValue: 0) : -1
-        let hasPerGameMaxAnisotropy = Self.boolValue(info["hasPerGameMaxAnisotropy"], defaultValue: false)
-        perGameMaxAnisotropy = hasPerGameMaxAnisotropy ? Self.intValue(info["perGameMaxAnisotropy"], defaultValue: 0) : -1
-        let hasPerGameCASSharpness = Self.boolValue(info["hasPerGameCASSharpness"], defaultValue: false)
-        perGameCASSharpness = hasPerGameCASSharpness ? SettingsStore.clamped(Self.intValue(info["perGameCASSharpness"], defaultValue: 50), to: SettingsStore.casSharpnessRange) : -1
-        let hasPerGamePCRTCOffsets = Self.boolValue(info["hasPerGamePCRTCOffsets"], defaultValue: false)
-        perGamePCRTCOffsets = hasPerGamePCRTCOffsets ? Self.intValue(info["perGamePCRTCOffsets"], defaultValue: 0) : -1
-        let hasPerGameIntegerScaling = Self.boolValue(info["hasPerGameIntegerScaling"], defaultValue: false)
-        perGameIntegerScaling = hasPerGameIntegerScaling ? Self.intValue(info["perGameIntegerScaling"], defaultValue: 0) : -1
-        let hasPerGameSkipDupFrames = Self.boolValue(info["hasPerGameSkipDupFrames"], defaultValue: false)
-        perGameSkipDupFrames = hasPerGameSkipDupFrames ? Self.intValue(info["perGameSkipDupFrames"], defaultValue: 1) : -1
+        let hasPerGameAAT = Self.boolValue(info[.hasPerGameAAT], defaultValue: false)
+        perGameAAT = hasPerGameAAT ? Self.intValue(info[.perGameAAT], defaultValue: 0) : -1
+        let hasPerGameTextureInsideRt = Self.boolValue(info[.hasPerGameTextureInsideRt], defaultValue: false)
+        perGameTextureInsideRt = hasPerGameTextureInsideRt ? Self.intValue(info[.perGameTextureInsideRt], defaultValue: 0) : -1
+        perGameDisableDepth = Self.boolValue(info[.hasPerGameDisableDepth], defaultValue: false) ? (Self.boolValue(info[.perGameDisableDepth], defaultValue: false) ? 1 : 0) : Self.useGlobalSentinel
+        let hasPerGameRenderer = Self.boolValue(info[.hasPerGameRenderer], defaultValue: false)
+        perGameRenderer = hasPerGameRenderer ? Self.intValue(info[.perGameRenderer], defaultValue: 17) : -1
+        let hasPerGameFXAA = Self.boolValue(info[.hasPerGameFXAA], defaultValue: false)
+        perGameFXAA = hasPerGameFXAA ? Self.intValue(info[.perGameFXAA], defaultValue: 0) : -1
+        let hasPerGameUpscaler = Self.boolValue(info[.hasPerGameUpscaler], defaultValue: false)
+        perGameUpscaler = hasPerGameUpscaler ? Self.intValue(info[.perGameUpscaler], defaultValue: 0) : -1
+        let hasPerGameShadeBoost = Self.boolValue(info[.hasPerGameShadeBoost], defaultValue: false)
+        perGameShadeBoost = hasPerGameShadeBoost ? Self.intValue(info[.perGameShadeBoost], defaultValue: 0) : -1
+        let hasPerGameTVShader = Self.boolValue(info[.hasPerGameTVShader], defaultValue: false)
+        perGameTVShader = hasPerGameTVShader ? Self.intValue(info[.perGameTVShader], defaultValue: 0) : -1
+        let hasPerGameCASMode = Self.boolValue(info[.hasPerGameCASMode], defaultValue: false)
+        perGameCASMode = hasPerGameCASMode ? Self.intValue(info[.perGameCASMode], defaultValue: 0) : -1
+        let hasPerGameMaxAnisotropy = Self.boolValue(info[.hasPerGameMaxAnisotropy], defaultValue: false)
+        perGameMaxAnisotropy = hasPerGameMaxAnisotropy ? Self.intValue(info[.perGameMaxAnisotropy], defaultValue: 0) : -1
+        let hasPerGameCASSharpness = Self.boolValue(info[.hasPerGameCASSharpness], defaultValue: false)
+        perGameCASSharpness = hasPerGameCASSharpness ? SettingsStore.clamped(Self.intValue(info[.perGameCASSharpness], defaultValue: 50), to: SettingsStore.casSharpnessRange) : -1
+        let hasPerGamePCRTCOffsets = Self.boolValue(info[.hasPerGamePCRTCOffsets], defaultValue: false)
+        perGamePCRTCOffsets = hasPerGamePCRTCOffsets ? Self.intValue(info[.perGamePCRTCOffsets], defaultValue: 0) : -1
+        let hasPerGameIntegerScaling = Self.boolValue(info[.hasPerGameIntegerScaling], defaultValue: false)
+        perGameIntegerScaling = hasPerGameIntegerScaling ? Self.intValue(info[.perGameIntegerScaling], defaultValue: 0) : -1
+        let hasPerGameSkipDupFrames = Self.boolValue(info[.hasPerGameSkipDupFrames], defaultValue: false)
+        perGameSkipDupFrames = hasPerGameSkipDupFrames ? Self.intValue(info[.perGameSkipDupFrames], defaultValue: 1) : -1
 
-        let hasPerGamePCRTCOverscan = Self.boolValue(info["hasPerGamePCRTCOverscan"], defaultValue: false)
-        perGamePCRTCOverscan = hasPerGamePCRTCOverscan ? Self.intValue(info["perGamePCRTCOverscan"], defaultValue: 0) : -1
+        let hasPerGamePCRTCOverscan = Self.boolValue(info[.hasPerGamePCRTCOverscan], defaultValue: false)
+        perGamePCRTCOverscan = hasPerGamePCRTCOverscan ? Self.intValue(info[.perGamePCRTCOverscan], defaultValue: 0) : -1
 
-        let hasPerGamePCRTCAntiBlur = Self.boolValue(info["hasPerGamePCRTCAntiBlur"], defaultValue: false)
-        perGamePCRTCAntiBlur = hasPerGamePCRTCAntiBlur ? Self.intValue(info["perGamePCRTCAntiBlur"], defaultValue: 1) : -1
+        let hasPerGamePCRTCAntiBlur = Self.boolValue(info[.hasPerGamePCRTCAntiBlur], defaultValue: false)
+        perGamePCRTCAntiBlur = hasPerGamePCRTCAntiBlur ? Self.intValue(info[.perGamePCRTCAntiBlur], defaultValue: 1) : -1
 
-        let hasPerGameDisableInterlaceOffset = Self.boolValue(info["hasPerGameDisableInterlaceOffset"], defaultValue: false)
-        perGameDisableInterlaceOffset = hasPerGameDisableInterlaceOffset ? Self.intValue(info["perGameDisableInterlaceOffset"], defaultValue: 0) : -1
+        let hasPerGameDisableInterlaceOffset = Self.boolValue(info[.hasPerGameDisableInterlaceOffset], defaultValue: false)
+        perGameDisableInterlaceOffset = hasPerGameDisableInterlaceOffset ? Self.intValue(info[.perGameDisableInterlaceOffset], defaultValue: 0) : -1
         let perGameISO = game.bootName
         let useCurrent = savesToRunningGame
         eeCycleSkip = Self.loadedPerGameInt("EmuCore/Speedhacks", "EECycleSkip", globalDefault: Int32(inheritedEECycleSkip), useCurrent: useCurrent, iso: perGameISO, snapshot: iniSnapshot)

@@ -367,8 +367,8 @@ final class AutomaticCustomSkinManager {
         var identity = PadLayoutGameIdentity(serial: serial, crc: crc)
         if identity == nil {
             let gameSettings = ARMSX2Bridge.gameSettings(forISO: isoName)
-            serial = (gameSettings["serial"] as? String) ?? serial
-            crc = (gameSettings["crc"] as? String) ?? crc
+            serial = (gameSettings[.serial] as? String) ?? serial
+            crc = (gameSettings[.crc] as? String) ?? crc
             identity = PadLayoutGameIdentity(serial: serial, crc: crc)
         }
         // The master toggle is part of the core per-game INI. Layout and skin

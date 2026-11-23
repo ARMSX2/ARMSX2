@@ -71,61 +71,61 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
             ARMSX2DefaultAudioVolumePercent);
     });
     return [@{
-        @"enabled": @NO,
-        @"path": @"",
-        @"serial": @"",
-        @"crc": @"",
+        ARMSX2PerGameKeyEnabled: @NO,
+        ARMSX2PerGameKeyPath: @"",
+        ARMSX2PerGameKeySerial: @"",
+        ARMSX2PerGameKeyCrc: @"",
         // has*Override so an untouched setting writes nothing.
-        @"upscaleMultiplier": @(globalUpscale),
-        @"hasUpscaleMultiplierOverride": @NO,
-        @"aspectRatio": ARMSX2NSStringFromStdString(globalAspect),
-        @"hasAspectRatioOverride": @NO,
-        @"textureFiltering": @(globalTextureFiltering),
-        @"hasTextureFilteringOverride": @NO,
-        @"hardwareMipmapping": @(globalHardwareMipmapping),
-        @"hasHardwareMipmappingOverride": @NO,
-        @"blendingAccuracy": @(globalBlendingAccuracy),
-        @"hasBlendingAccuracyOverride": @NO,
-        @"interlaceMode": @(globalInterlaceMode),
-        @"hasInterlaceModeOverride": @NO,
-        @"trilinearFiltering": @(globalTrilinearFiltering),
-        @"hasTrilinearFilteringOverride": @NO,
-        @"halfPixelOffset": @(globalHalfPixelOffset),
-        @"hasHalfPixelOffsetOverride": @NO,
-        @"roundSprite": @(globalRoundSprite),
-        @"hasRoundSpriteOverride": @NO,
-        @"alignSprite": @(globalAlignSprite),
-        @"hasAlignSpriteOverride": @NO,
-        @"mergeSprite": @(globalMergeSprite),
-        @"hasMergeSpriteOverride": @NO,
-        @"wildArmsOffset": @(globalWildArmsOffset),
-        @"hasWildArmsOffsetOverride": @NO,
-        @"textureOffsetX": @(ARMSX2ClampInt(globalTextureOffsetX, -4096, 4096)),
-        @"hasTextureOffsetXOverride": @NO,
-        @"textureOffsetY": @(ARMSX2ClampInt(globalTextureOffsetY, -4096, 4096)),
-        @"hasTextureOffsetYOverride": @NO,
-        @"skipDrawStart": @(ARMSX2ClampInt(globalSkipDrawStart, 0, 5000)),
-        @"hasSkipDrawStartOverride": @NO,
-        @"skipDrawEnd": @(ARMSX2ClampInt(globalSkipDrawEnd, 0, 5000)),
-        @"hasSkipDrawEndOverride": @NO,
-        @"enableCheats": @(globalEnableCheats),
-        @"enablePatches": @(globalEnablePatches),
-        @"enableGameFixes": @(globalEnableGameFixes),
-        @"enableGameDBHardwareFixes": @(globalEnableGameDBHardwareFixes),
-        @"eeCoreType": @(globalEECoreType),
-        @"mtvu": @(globalMTVU),
-        @"globalEECycleRate": @(globalEECycleRate),
-        @"eeCycleRate": @(globalEECycleRate),
-        @"hasEECycleRateOverride": @NO,
-        @"globalFastBoot": @(globalFastBoot),
-        @"fastBoot": @(globalFastBoot),
-        @"hasFastBootOverride": @NO,
-        @"globalVolumePercent": @(globalVolumePercent),
-        @"volumePercent": @(globalVolumePercent),
-        @"hasVolumeOverride": @NO,
+        ARMSX2PerGameKeyUpscaleMultiplier: @(globalUpscale),
+        ARMSX2PerGameKeyHasUpscaleMultiplierOverride: @NO,
+        ARMSX2PerGameKeyAspectRatio: ARMSX2NSStringFromStdString(globalAspect),
+        ARMSX2PerGameKeyHasAspectRatioOverride: @NO,
+        ARMSX2PerGameKeyTextureFiltering: @(globalTextureFiltering),
+        ARMSX2PerGameKeyHasTextureFilteringOverride: @NO,
+        ARMSX2PerGameKeyHardwareMipmapping: @(globalHardwareMipmapping),
+        ARMSX2PerGameKeyHasHardwareMipmappingOverride: @NO,
+        ARMSX2PerGameKeyBlendingAccuracy: @(globalBlendingAccuracy),
+        ARMSX2PerGameKeyHasBlendingAccuracyOverride: @NO,
+        ARMSX2PerGameKeyInterlaceMode: @(globalInterlaceMode),
+        ARMSX2PerGameKeyHasInterlaceModeOverride: @NO,
+        ARMSX2PerGameKeyTrilinearFiltering: @(globalTrilinearFiltering),
+        ARMSX2PerGameKeyHasTrilinearFilteringOverride: @NO,
+        ARMSX2PerGameKeyHalfPixelOffset: @(globalHalfPixelOffset),
+        ARMSX2PerGameKeyHasHalfPixelOffsetOverride: @NO,
+        ARMSX2PerGameKeyRoundSprite: @(globalRoundSprite),
+        ARMSX2PerGameKeyHasRoundSpriteOverride: @NO,
+        ARMSX2PerGameKeyAlignSprite: @(globalAlignSprite),
+        ARMSX2PerGameKeyHasAlignSpriteOverride: @NO,
+        ARMSX2PerGameKeyMergeSprite: @(globalMergeSprite),
+        ARMSX2PerGameKeyHasMergeSpriteOverride: @NO,
+        ARMSX2PerGameKeyWildArmsOffset: @(globalWildArmsOffset),
+        ARMSX2PerGameKeyHasWildArmsOffsetOverride: @NO,
+        ARMSX2PerGameKeyTextureOffsetX: @(ARMSX2ClampInt(globalTextureOffsetX, -4096, 4096)),
+        ARMSX2PerGameKeyHasTextureOffsetXOverride: @NO,
+        ARMSX2PerGameKeyTextureOffsetY: @(ARMSX2ClampInt(globalTextureOffsetY, -4096, 4096)),
+        ARMSX2PerGameKeyHasTextureOffsetYOverride: @NO,
+        ARMSX2PerGameKeySkipDrawStart: @(ARMSX2ClampInt(globalSkipDrawStart, 0, 5000)),
+        ARMSX2PerGameKeyHasSkipDrawStartOverride: @NO,
+        ARMSX2PerGameKeySkipDrawEnd: @(ARMSX2ClampInt(globalSkipDrawEnd, 0, 5000)),
+        ARMSX2PerGameKeyHasSkipDrawEndOverride: @NO,
+        ARMSX2PerGameKeyEnableCheats: @(globalEnableCheats),
+        ARMSX2PerGameKeyEnablePatches: @(globalEnablePatches),
+        ARMSX2PerGameKeyEnableGameFixes: @(globalEnableGameFixes),
+        ARMSX2PerGameKeyEnableGameDBHardwareFixes: @(globalEnableGameDBHardwareFixes),
+        ARMSX2PerGameKeyEeCoreType: @(globalEECoreType),
+        ARMSX2PerGameKeyMtvu: @(globalMTVU),
+        ARMSX2PerGameKeyGlobalEECycleRate: @(globalEECycleRate),
+        ARMSX2PerGameKeyEeCycleRate: @(globalEECycleRate),
+        ARMSX2PerGameKeyHasEECycleRateOverride: @NO,
+        ARMSX2PerGameKeyGlobalFastBoot: @(globalFastBoot),
+        ARMSX2PerGameKeyFastBoot: @(globalFastBoot),
+        ARMSX2PerGameKeyHasFastBootOverride: @NO,
+        ARMSX2PerGameKeyGlobalVolumePercent: @(globalVolumePercent),
+        ARMSX2PerGameKeyVolumePercent: @(globalVolumePercent),
+        ARMSX2PerGameKeyHasVolumeOverride: @NO,
         // An empty snapshot is still authoritative: no identity/INI was
         // available, so Swift must not retry the same disc probe per row.
-        @"perGameINI": @{},
+        ARMSX2PerGameKeyPerGameINI: @{},
     } mutableCopy];
 }
 
@@ -135,14 +135,14 @@ static NSMutableDictionary<NSString*, id>* ARMSX2BuildGlobalGameSettingsResult()
 static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, id>* result, const std::string& serial, u32 crc)
 {
     const std::string settingsPath = VMManager::GetGameSettingsPath(serial, crc);
-    result[@"path"] = ARMSX2NSStringFromStdString(settingsPath);
-    result[@"serial"] = ARMSX2NSStringFromStdString(serial);
-    result[@"crc"] = [NSString stringWithFormat:@"%08X", crc];
+    result[ARMSX2PerGameKeyPath] = ARMSX2NSStringFromStdString(settingsPath);
+    result[ARMSX2PerGameKeySerial] = ARMSX2NSStringFromStdString(serial);
+    result[ARMSX2PerGameKeyCrc] = [NSString stringWithFormat:@"%08X", crc];
 
     // Publish one typed snapshot from the already-open INI, so every row shares the same game
     // identity and each caller does a single file read.
     NSMutableDictionary<NSString*, id>* prefetchedINI = [NSMutableDictionary dictionary];
-    result[@"perGameINI"] = prefetchedINI;
+    result[ARMSX2PerGameKeyPerGameINI] = prefetchedINI;
 
     INISettingsInterface si(settingsPath);
     if (!si.Load())
@@ -283,59 +283,59 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
         si.ContainsValue("ARMSX2iOS/UI", "InvertRightStickX") ||
         si.ContainsValue("ARMSX2iOS/UI", "InvertRightStickY");
 
-    result[@"enabled"] = @(hasKnownOverride);
+    result[ARMSX2PerGameKeyEnabled] = @(hasKnownOverride);
     // StandardVolume only. Falling back to FastForwardVolume made the main slider show an
     // override nobody set.
     const bool hasVolumeOverride = si.ContainsValue("SPU2/Output", "StandardVolume");
-    const int inheritedVolumePercent = [result[@"volumePercent"] intValue];
+    const int inheritedVolumePercent = [result[ARMSX2PerGameKeyVolumePercent] intValue];
     const int volumePercent = hasVolumeOverride ?
         si.GetIntValue("SPU2/Output", "StandardVolume", inheritedVolumePercent) :
         inheritedVolumePercent;
-    result[@"hasVolumeOverride"] = @(hasVolumeOverride);
-    result[@"volumePercent"] = @(ARMSX2ClampInt(volumePercent, 0, ARMSX2DefaultAudioVolumePercent));
-    NSString* currentAspect = [result[@"aspectRatio"] isKindOfClass:NSString.class] ? result[@"aspectRatio"] : @"Auto 4:3/3:2";
-    result[@"hasUpscaleMultiplierOverride"] = @(si.ContainsValue("EmuCore/GS", "upscale_multiplier"));
-    result[@"upscaleMultiplier"] = @(si.GetFloatValue("EmuCore/GS", "upscale_multiplier", [result[@"upscaleMultiplier"] floatValue]));
-    result[@"hasAspectRatioOverride"] = @(si.ContainsValue("EmuCore/GS", "AspectRatio"));
-    result[@"aspectRatio"] = ARMSX2NSStringFromStdString(si.GetStringValue("EmuCore/GS", "AspectRatio", currentAspect.UTF8String));
-    result[@"hasTextureFilteringOverride"] = @(si.ContainsValue("EmuCore/GS", "filter"));
-    result[@"textureFiltering"] = @(si.GetIntValue("EmuCore/GS", "filter", [result[@"textureFiltering"] intValue]));
-    result[@"hasHardwareMipmappingOverride"] = @(si.ContainsValue("EmuCore/GS", "hw_mipmap"));
-    result[@"hardwareMipmapping"] = @(si.GetBoolValue("EmuCore/GS", "hw_mipmap", [result[@"hardwareMipmapping"] boolValue]));
-    result[@"hasBlendingAccuracyOverride"] = @(si.ContainsValue("EmuCore/GS", "accurate_blending_unit"));
-    result[@"blendingAccuracy"] = @(si.GetIntValue("EmuCore/GS", "accurate_blending_unit", [result[@"blendingAccuracy"] intValue]));
-    result[@"hasInterlaceModeOverride"] = @(si.ContainsValue("EmuCore/GS", "deinterlace_mode"));
-    result[@"interlaceMode"] = @(si.GetIntValue("EmuCore/GS", "deinterlace_mode", [result[@"interlaceMode"] intValue]));
-    result[@"hasTrilinearFilteringOverride"] = @(si.ContainsValue("EmuCore/GS", "TriFilter"));
-    result[@"trilinearFiltering"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "TriFilter", [result[@"trilinearFiltering"] intValue]), -1, 2));
-    result[@"hasHalfPixelOffsetOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_HalfPixelOffset"));
-    result[@"halfPixelOffset"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_HalfPixelOffset", [result[@"halfPixelOffset"] intValue]), 0, 5));
-    result[@"hasRoundSpriteOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_round_sprite_offset"));
-    result[@"roundSprite"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", [result[@"roundSprite"] intValue]), 0, 2));
-    result[@"hasAlignSpriteOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_align_sprite_X"));
-    result[@"alignSprite"] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", [result[@"alignSprite"] boolValue]));
-    result[@"hasMergeSpriteOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_merge_pp_sprite"));
-    result[@"mergeSprite"] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", [result[@"mergeSprite"] boolValue]));
-    result[@"hasWildArmsOffsetOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition"));
-    result[@"wildArmsOffset"] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", [result[@"wildArmsOffset"] boolValue]));
-    result[@"hasTextureOffsetXOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetX"));
-    result[@"textureOffsetX"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetX", [result[@"textureOffsetX"] intValue]), -4096, 4096));
-    result[@"hasTextureOffsetYOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetY"));
-    result[@"textureOffsetY"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetY", [result[@"textureOffsetY"] intValue]), -4096, 4096));
-    result[@"hasSkipDrawStartOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_SkipDraw_Start"));
-    result[@"skipDrawStart"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", [result[@"skipDrawStart"] intValue]), 0, 5000));
-    result[@"hasSkipDrawEndOverride"] = @(si.ContainsValue("EmuCore/GS", "UserHacks_SkipDraw_End"));
-    result[@"skipDrawEnd"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_End", [result[@"skipDrawEnd"] intValue]), 0, 5000));
-    result[@"enableCheats"] = @(si.GetBoolValue("EmuCore", "EnableCheats", [result[@"enableCheats"] boolValue]));
-    result[@"enablePatches"] = @(si.GetBoolValue("EmuCore", "EnablePatches", [result[@"enablePatches"] boolValue]));
-    result[@"enableGameFixes"] = @(si.GetBoolValue("EmuCore", "EnableGameFixes", [result[@"enableGameFixes"] boolValue]));
-    result[@"enableGameDBHardwareFixes"] = @(!si.GetBoolValue("EmuCore/GS", "UserHacks", ![result[@"enableGameDBHardwareFixes"] boolValue]));
-    result[@"eeCoreType"] = @(si.GetIntValue("EmuCore/CPU", "CoreType", [result[@"eeCoreType"] intValue]));
-    result[@"mtvu"] = @(si.GetBoolValue("EmuCore/Speedhacks", "vuThread", [result[@"mtvu"] boolValue]));
-    result[@"hasEECycleRateOverride"] = @(si.ContainsValue("EmuCore/Speedhacks", "EECycleRate"));
-    result[@"eeCycleRate"] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/Speedhacks", "EECycleRate", [result[@"eeCycleRate"] intValue]), -3, 3));
-    result[@"hasFastBootOverride"] = @(si.ContainsValue("EmuCore", "EnableFastBoot"));
-    result[@"fastBoot"] = @(si.GetBoolValue("EmuCore", "EnableFastBoot", [result[@"fastBoot"] boolValue]));
+    result[ARMSX2PerGameKeyHasVolumeOverride] = @(hasVolumeOverride);
+    result[ARMSX2PerGameKeyVolumePercent] = @(ARMSX2ClampInt(volumePercent, 0, ARMSX2DefaultAudioVolumePercent));
+    NSString* currentAspect = [result[ARMSX2PerGameKeyAspectRatio] isKindOfClass:NSString.class] ? result[ARMSX2PerGameKeyAspectRatio] : @"Auto 4:3/3:2";
+    result[ARMSX2PerGameKeyHasUpscaleMultiplierOverride] = @(si.ContainsValue("EmuCore/GS", "upscale_multiplier"));
+    result[ARMSX2PerGameKeyUpscaleMultiplier] = @(si.GetFloatValue("EmuCore/GS", "upscale_multiplier", [result[ARMSX2PerGameKeyUpscaleMultiplier] floatValue]));
+    result[ARMSX2PerGameKeyHasAspectRatioOverride] = @(si.ContainsValue("EmuCore/GS", "AspectRatio"));
+    result[ARMSX2PerGameKeyAspectRatio] = ARMSX2NSStringFromStdString(si.GetStringValue("EmuCore/GS", "AspectRatio", currentAspect.UTF8String));
+    result[ARMSX2PerGameKeyHasTextureFilteringOverride] = @(si.ContainsValue("EmuCore/GS", "filter"));
+    result[ARMSX2PerGameKeyTextureFiltering] = @(si.GetIntValue("EmuCore/GS", "filter", [result[ARMSX2PerGameKeyTextureFiltering] intValue]));
+    result[ARMSX2PerGameKeyHasHardwareMipmappingOverride] = @(si.ContainsValue("EmuCore/GS", "hw_mipmap"));
+    result[ARMSX2PerGameKeyHardwareMipmapping] = @(si.GetBoolValue("EmuCore/GS", "hw_mipmap", [result[ARMSX2PerGameKeyHardwareMipmapping] boolValue]));
+    result[ARMSX2PerGameKeyHasBlendingAccuracyOverride] = @(si.ContainsValue("EmuCore/GS", "accurate_blending_unit"));
+    result[ARMSX2PerGameKeyBlendingAccuracy] = @(si.GetIntValue("EmuCore/GS", "accurate_blending_unit", [result[ARMSX2PerGameKeyBlendingAccuracy] intValue]));
+    result[ARMSX2PerGameKeyHasInterlaceModeOverride] = @(si.ContainsValue("EmuCore/GS", "deinterlace_mode"));
+    result[ARMSX2PerGameKeyInterlaceMode] = @(si.GetIntValue("EmuCore/GS", "deinterlace_mode", [result[ARMSX2PerGameKeyInterlaceMode] intValue]));
+    result[ARMSX2PerGameKeyHasTrilinearFilteringOverride] = @(si.ContainsValue("EmuCore/GS", "TriFilter"));
+    result[ARMSX2PerGameKeyTrilinearFiltering] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "TriFilter", [result[ARMSX2PerGameKeyTrilinearFiltering] intValue]), -1, 2));
+    result[ARMSX2PerGameKeyHasHalfPixelOffsetOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_HalfPixelOffset"));
+    result[ARMSX2PerGameKeyHalfPixelOffset] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_HalfPixelOffset", [result[ARMSX2PerGameKeyHalfPixelOffset] intValue]), 0, 5));
+    result[ARMSX2PerGameKeyHasRoundSpriteOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_round_sprite_offset"));
+    result[ARMSX2PerGameKeyRoundSprite] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_round_sprite_offset", [result[ARMSX2PerGameKeyRoundSprite] intValue]), 0, 2));
+    result[ARMSX2PerGameKeyHasAlignSpriteOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_align_sprite_X"));
+    result[ARMSX2PerGameKeyAlignSprite] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_align_sprite_X", [result[ARMSX2PerGameKeyAlignSprite] boolValue]));
+    result[ARMSX2PerGameKeyHasMergeSpriteOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_merge_pp_sprite"));
+    result[ARMSX2PerGameKeyMergeSprite] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_merge_pp_sprite", [result[ARMSX2PerGameKeyMergeSprite] boolValue]));
+    result[ARMSX2PerGameKeyHasWildArmsOffsetOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition"));
+    result[ARMSX2PerGameKeyWildArmsOffset] = @(si.GetBoolValue("EmuCore/GS", "UserHacks_ForceEvenSpritePosition", [result[ARMSX2PerGameKeyWildArmsOffset] boolValue]));
+    result[ARMSX2PerGameKeyHasTextureOffsetXOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetX"));
+    result[ARMSX2PerGameKeyTextureOffsetX] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetX", [result[ARMSX2PerGameKeyTextureOffsetX] intValue]), -4096, 4096));
+    result[ARMSX2PerGameKeyHasTextureOffsetYOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_TCOffsetY"));
+    result[ARMSX2PerGameKeyTextureOffsetY] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_TCOffsetY", [result[ARMSX2PerGameKeyTextureOffsetY] intValue]), -4096, 4096));
+    result[ARMSX2PerGameKeyHasSkipDrawStartOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_SkipDraw_Start"));
+    result[ARMSX2PerGameKeySkipDrawStart] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_Start", [result[ARMSX2PerGameKeySkipDrawStart] intValue]), 0, 5000));
+    result[ARMSX2PerGameKeyHasSkipDrawEndOverride] = @(si.ContainsValue("EmuCore/GS", "UserHacks_SkipDraw_End"));
+    result[ARMSX2PerGameKeySkipDrawEnd] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/GS", "UserHacks_SkipDraw_End", [result[ARMSX2PerGameKeySkipDrawEnd] intValue]), 0, 5000));
+    result[ARMSX2PerGameKeyEnableCheats] = @(si.GetBoolValue("EmuCore", "EnableCheats", [result[ARMSX2PerGameKeyEnableCheats] boolValue]));
+    result[ARMSX2PerGameKeyEnablePatches] = @(si.GetBoolValue("EmuCore", "EnablePatches", [result[ARMSX2PerGameKeyEnablePatches] boolValue]));
+    result[ARMSX2PerGameKeyEnableGameFixes] = @(si.GetBoolValue("EmuCore", "EnableGameFixes", [result[ARMSX2PerGameKeyEnableGameFixes] boolValue]));
+    result[ARMSX2PerGameKeyEnableGameDBHardwareFixes] = @(!si.GetBoolValue("EmuCore/GS", "UserHacks", ![result[ARMSX2PerGameKeyEnableGameDBHardwareFixes] boolValue]));
+    result[ARMSX2PerGameKeyEeCoreType] = @(si.GetIntValue("EmuCore/CPU", "CoreType", [result[ARMSX2PerGameKeyEeCoreType] intValue]));
+    result[ARMSX2PerGameKeyMtvu] = @(si.GetBoolValue("EmuCore/Speedhacks", "vuThread", [result[ARMSX2PerGameKeyMtvu] boolValue]));
+    result[ARMSX2PerGameKeyHasEECycleRateOverride] = @(si.ContainsValue("EmuCore/Speedhacks", "EECycleRate"));
+    result[ARMSX2PerGameKeyEeCycleRate] = @(ARMSX2ClampInt(si.GetIntValue("EmuCore/Speedhacks", "EECycleRate", [result[ARMSX2PerGameKeyEeCycleRate] intValue]), -3, 3));
+    result[ARMSX2PerGameKeyHasFastBootOverride] = @(si.ContainsValue("EmuCore", "EnableFastBoot"));
+    result[ARMSX2PerGameKeyFastBoot] = @(si.GetBoolValue("EmuCore", "EnableFastBoot", [result[ARMSX2PerGameKeyFastBoot] boolValue]));
 
     // Per-game compatibility overrides, read from the INI already loaded here so the
     // panel opens without re-parsing it per key. Only present overrides are included;
@@ -356,84 +356,84 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
                     @(si.GetBoolValue("EmuCore/Gamefixes", gameFixKey, false) ? 1 : 0);
             }
         }
-        result[@"perGameFixes"] = perGameFixes;
+        result[ARMSX2PerGameKeyPerGameFixes] = perGameFixes;
 
         const bool hasPerGameAAT = si.ContainsValue("EmuCore/GS", "HWAccurateAlphaTest");
-        result[@"hasPerGameAAT"] = @(hasPerGameAAT);
-        result[@"perGameAAT"] = @((hasPerGameAAT && si.GetBoolValue("EmuCore/GS", "HWAccurateAlphaTest", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameAAT] = @(hasPerGameAAT);
+        result[ARMSX2PerGameKeyPerGameAAT] = @((hasPerGameAAT && si.GetBoolValue("EmuCore/GS", "HWAccurateAlphaTest", false)) ? 1 : 0);
 
         const bool hasPerGameTextureInsideRt = si.ContainsValue("EmuCore/GS", "UserHacks_TextureInsideRt");
-        result[@"hasPerGameTextureInsideRt"] = @(hasPerGameTextureInsideRt);
-        result[@"perGameTextureInsideRt"] =
+        result[ARMSX2PerGameKeyHasPerGameTextureInsideRt] = @(hasPerGameTextureInsideRt);
+        result[ARMSX2PerGameKeyPerGameTextureInsideRt] =
             @(hasPerGameTextureInsideRt ? si.GetIntValue("EmuCore/GS", "UserHacks_TextureInsideRt", 0) : 0);
 
         const bool hasPerGameDisableDepth = si.ContainsValue("EmuCore/GS", "UserHacks_DisableDepthSupport");
-        result[@"hasPerGameDisableDepth"] = @(hasPerGameDisableDepth);
-        result[@"perGameDisableDepth"] =
+        result[ARMSX2PerGameKeyHasPerGameDisableDepth] = @(hasPerGameDisableDepth);
+        result[ARMSX2PerGameKeyPerGameDisableDepth] =
             @(hasPerGameDisableDepth ? si.GetBoolValue("EmuCore/GS", "UserHacks_DisableDepthSupport", false) : NO);
 
         const bool hasPerGameRenderer = si.ContainsValue("EmuCore/GS", "Renderer");
-        result[@"hasPerGameRenderer"] = @(hasPerGameRenderer);
-        result[@"perGameRenderer"] = @(hasPerGameRenderer ? si.GetIntValue("EmuCore/GS", "Renderer", 17) : 17);
+        result[ARMSX2PerGameKeyHasPerGameRenderer] = @(hasPerGameRenderer);
+        result[ARMSX2PerGameKeyPerGameRenderer] = @(hasPerGameRenderer ? si.GetIntValue("EmuCore/GS", "Renderer", 17) : 17);
 
         const bool hasPerGameFXAA = si.ContainsValue("EmuCore/GS", "fxaa");
-        result[@"hasPerGameFXAA"] = @(hasPerGameFXAA);
-        result[@"perGameFXAA"] = @((hasPerGameFXAA && si.GetBoolValue("EmuCore/GS", "fxaa", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameFXAA] = @(hasPerGameFXAA);
+        result[ARMSX2PerGameKeyPerGameFXAA] = @((hasPerGameFXAA && si.GetBoolValue("EmuCore/GS", "fxaa", false)) ? 1 : 0);
 
         const bool hasPerGameShadeBoost = si.ContainsValue("EmuCore/GS", "ShadeBoost");
-        result[@"hasPerGameShadeBoost"] = @(hasPerGameShadeBoost);
-        result[@"perGameShadeBoost"] = @((hasPerGameShadeBoost && si.GetBoolValue("EmuCore/GS", "ShadeBoost", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameShadeBoost] = @(hasPerGameShadeBoost);
+        result[ARMSX2PerGameKeyPerGameShadeBoost] = @((hasPerGameShadeBoost && si.GetBoolValue("EmuCore/GS", "ShadeBoost", false)) ? 1 : 0);
 
         const bool hasPerGameTVShader = si.ContainsValue("EmuCore/GS", "TVShader");
-        result[@"hasPerGameTVShader"] = @(hasPerGameTVShader);
-        result[@"perGameTVShader"] = @(hasPerGameTVShader ? si.GetIntValue("EmuCore/GS", "TVShader", 0) : 0);
+        result[ARMSX2PerGameKeyHasPerGameTVShader] = @(hasPerGameTVShader);
+        result[ARMSX2PerGameKeyPerGameTVShader] = @(hasPerGameTVShader ? si.GetIntValue("EmuCore/GS", "TVShader", 0) : 0);
 
         const bool hasPerGameCASMode = si.ContainsValue("EmuCore/GS", "CASMode");
-        result[@"hasPerGameCASMode"] = @(hasPerGameCASMode);
-        result[@"perGameCASMode"] = @(hasPerGameCASMode ? si.GetIntValue("EmuCore/GS", "CASMode", 0) : 0);
+        result[ARMSX2PerGameKeyHasPerGameCASMode] = @(hasPerGameCASMode);
+        result[ARMSX2PerGameKeyPerGameCASMode] = @(hasPerGameCASMode ? si.GetIntValue("EmuCore/GS", "CASMode", 0) : 0);
 
         // MetalFX Spatial upscaler (Off = 0, MetalFXSpatial = 1).
         const bool hasPerGameUpscaler = si.ContainsValue("EmuCore/GS", "Upscaler");
-        result[@"hasPerGameUpscaler"] = @(hasPerGameUpscaler);
-        result[@"perGameUpscaler"] = @(hasPerGameUpscaler ? si.GetIntValue("EmuCore/GS", "Upscaler", 0) : 0);
+        result[ARMSX2PerGameKeyHasPerGameUpscaler] = @(hasPerGameUpscaler);
+        result[ARMSX2PerGameKeyPerGameUpscaler] = @(hasPerGameUpscaler ? si.GetIntValue("EmuCore/GS", "Upscaler", 0) : 0);
 
         const bool hasPerGameMaxAnisotropy = si.ContainsValue("EmuCore/GS", "MaxAnisotropy");
-        result[@"hasPerGameMaxAnisotropy"] = @(hasPerGameMaxAnisotropy);
-        result[@"perGameMaxAnisotropy"] = @(hasPerGameMaxAnisotropy ? si.GetIntValue("EmuCore/GS", "MaxAnisotropy", 0) : 0);
+        result[ARMSX2PerGameKeyHasPerGameMaxAnisotropy] = @(hasPerGameMaxAnisotropy);
+        result[ARMSX2PerGameKeyPerGameMaxAnisotropy] = @(hasPerGameMaxAnisotropy ? si.GetIntValue("EmuCore/GS", "MaxAnisotropy", 0) : 0);
 
         const bool hasPerGameCASSharpness = si.ContainsValue("EmuCore/GS", "CASSharpness");
-        result[@"hasPerGameCASSharpness"] = @(hasPerGameCASSharpness);
-        result[@"perGameCASSharpness"] = @(hasPerGameCASSharpness ? si.GetIntValue("EmuCore/GS", "CASSharpness", 50) : 50);
+        result[ARMSX2PerGameKeyHasPerGameCASSharpness] = @(hasPerGameCASSharpness);
+        result[ARMSX2PerGameKeyPerGameCASSharpness] = @(hasPerGameCASSharpness ? si.GetIntValue("EmuCore/GS", "CASSharpness", 50) : 50);
 
         const bool hasPerGamePCRTCOffsets = si.ContainsValue("EmuCore/GS", "pcrtc_offsets");
-        result[@"hasPerGamePCRTCOffsets"] = @(hasPerGamePCRTCOffsets);
-        result[@"perGamePCRTCOffsets"] = @((hasPerGamePCRTCOffsets && si.GetBoolValue("EmuCore/GS", "pcrtc_offsets", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGamePCRTCOffsets] = @(hasPerGamePCRTCOffsets);
+        result[ARMSX2PerGameKeyPerGamePCRTCOffsets] = @((hasPerGamePCRTCOffsets && si.GetBoolValue("EmuCore/GS", "pcrtc_offsets", false)) ? 1 : 0);
 
         const bool hasPerGameIntegerScaling = si.ContainsValue("EmuCore/GS", "IntegerScaling");
-        result[@"hasPerGameIntegerScaling"] = @(hasPerGameIntegerScaling);
-        result[@"perGameIntegerScaling"] = @((hasPerGameIntegerScaling && si.GetBoolValue("EmuCore/GS", "IntegerScaling", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameIntegerScaling] = @(hasPerGameIntegerScaling);
+        result[ARMSX2PerGameKeyPerGameIntegerScaling] = @((hasPerGameIntegerScaling && si.GetBoolValue("EmuCore/GS", "IntegerScaling", false)) ? 1 : 0);
 
         const bool hasPerGameSkipDupFrames = si.ContainsValue("EmuCore/GS", "SkipDuplicateFrames");
-        result[@"hasPerGameSkipDupFrames"] = @(hasPerGameSkipDupFrames);
-        result[@"perGameSkipDupFrames"] = @((hasPerGameSkipDupFrames && si.GetBoolValue("EmuCore/GS", "SkipDuplicateFrames", true)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameSkipDupFrames] = @(hasPerGameSkipDupFrames);
+        result[ARMSX2PerGameKeyPerGameSkipDupFrames] = @((hasPerGameSkipDupFrames && si.GetBoolValue("EmuCore/GS", "SkipDuplicateFrames", true)) ? 1 : 0);
 
         const bool hasPerGamePCRTCOverscan = si.ContainsValue("EmuCore/GS", "pcrtc_overscan");
-        result[@"hasPerGamePCRTCOverscan"] = @(hasPerGamePCRTCOverscan);
-        result[@"perGamePCRTCOverscan"] = @((hasPerGamePCRTCOverscan && si.GetBoolValue("EmuCore/GS", "pcrtc_overscan", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGamePCRTCOverscan] = @(hasPerGamePCRTCOverscan);
+        result[ARMSX2PerGameKeyPerGamePCRTCOverscan] = @((hasPerGamePCRTCOverscan && si.GetBoolValue("EmuCore/GS", "pcrtc_overscan", false)) ? 1 : 0);
 
         const bool hasPerGamePCRTCAntiBlur = si.ContainsValue("EmuCore/GS", "pcrtc_antiblur");
-        result[@"hasPerGamePCRTCAntiBlur"] = @(hasPerGamePCRTCAntiBlur);
-        result[@"perGamePCRTCAntiBlur"] = @((hasPerGamePCRTCAntiBlur && si.GetBoolValue("EmuCore/GS", "pcrtc_antiblur", true)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGamePCRTCAntiBlur] = @(hasPerGamePCRTCAntiBlur);
+        result[ARMSX2PerGameKeyPerGamePCRTCAntiBlur] = @((hasPerGamePCRTCAntiBlur && si.GetBoolValue("EmuCore/GS", "pcrtc_antiblur", true)) ? 1 : 0);
 
         const bool hasPerGameDisableInterlaceOffset = si.ContainsValue("EmuCore/GS", "disable_interlace_offset");
-        result[@"hasPerGameDisableInterlaceOffset"] = @(hasPerGameDisableInterlaceOffset);
-        result[@"perGameDisableInterlaceOffset"] = @((hasPerGameDisableInterlaceOffset && si.GetBoolValue("EmuCore/GS", "disable_interlace_offset", false)) ? 1 : 0);
+        result[ARMSX2PerGameKeyHasPerGameDisableInterlaceOffset] = @(hasPerGameDisableInterlaceOffset);
+        result[ARMSX2PerGameKeyPerGameDisableInterlaceOffset] = @((hasPerGameDisableInterlaceOffset && si.GetBoolValue("EmuCore/GS", "disable_interlace_offset", false)) ? 1 : 0);
     }
 }
 
 @implementation ARMSX2Bridge (GameSettings)
 
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForISO:(nullable NSString *)isoName {
++ (nonnull NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForISO:(nullable NSString *)isoName {
     NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
 
     std::string serial;
@@ -449,8 +449,8 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
 
 // The library already identified every game while building its card model. Reuse that
 // serial/CRC rather than probing the disc image again when SwiftUI presents settings.
-+ (nonnull NSDictionary<NSString *, id> *)gameSettingsForSerial:(nullable NSString *)serial
-                                                            crc:(nullable NSString *)crcString {
++ (nonnull NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForSerial:(nullable NSString *)serial
+                                                                  crc:(nullable NSString *)crcString {
     NSMutableDictionary<NSString*, id>* result = ARMSX2BuildGlobalGameSettingsResult();
     if (crcString.length == 0)
         return result;
@@ -467,7 +467,7 @@ static void ARMSX2ApplyPerGameSettingsOverrides(NSMutableDictionary<NSString*, i
     return result;
 }
 
-+ (nullable NSDictionary<NSString *, id> *)gameSettingsForCurrentGame {
++ (nullable NSDictionary<ARMSX2PerGameKey, id> *)gameSettingsForCurrentGame {
     if (!VMManager::HasValidVM())
         return nil;
     return [self gameSettingsForISO:nil];
