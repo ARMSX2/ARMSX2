@@ -107,7 +107,7 @@ static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
 
 @implementation ARMSX2Bridge (RetroAchievements)
 
-+ (nonnull NSDictionary<NSString *, id> *)retroAchievementsState {
++ (nonnull NSDictionary<ARMSX2RAStateKey, id> *)retroAchievementsState {
     if (!ARMSX2RetroAchievementsHardcoreAvailable && EmuConfig.Achievements.HardcoreMode)
         ARMSX2ForceRetroAchievementsHardcoreOff();
 
@@ -198,59 +198,59 @@ static void ARMSX2UpdateAchievementsSettings(void (^mutate)())
     }
 
     return @{
-        @"supported": @(ARMSX2RetroAchievementsAvailable),
-        @"hardcoreSupported": @(ARMSX2RetroAchievementsHardcoreAvailable),
-        @"unavailableMessage": ARMSX2RetroAchievementsUnavailableMessage(),
-        @"enabled": @(EmuConfig.Achievements.Enabled),
-        @"active": @(active),
-        @"loggedIn": @(loggedIn),
-        @"savedLogin": @(savedLogin),
-        @"loginPending": @(loginPending),
-        @"username": ARMSX2NSStringFromStdString(username),
-        @"displayName": ARMSX2NSStringFromStdString(displayName.empty() ? username : displayName),
-        @"avatarPath": ARMSX2NSStringFromStdString(avatarPath),
-        @"points": @(points),
-        @"softcorePoints": @(softcorePoints),
-        @"unreadMessages": @(unreadMessages),
-        @"hardcorePreference": @(EmuConfig.Achievements.HardcoreMode),
-        @"hardcoreActive": @(hardcoreActive),
-        @"notifications": @(EmuConfig.Achievements.Notifications),
-        @"leaderboardNotifications": @(EmuConfig.Achievements.LeaderboardNotifications),
-        @"overlays": @(EmuConfig.Achievements.Overlays),
-        @"hasActiveGame": @(hasGame),
-        @"gameTitle": ARMSX2NSStringFromStdString(gameTitle),
-        @"richPresence": ARMSX2NSStringFromStdString(richPresence),
-        @"gameIconPath": ARMSX2NSStringFromStdString(gameIconPath),
-        @"gameIconURL": ARMSX2NSStringFromStdString(gameIconURL),
-        @"unlockedAchievements": @(unlockedAchievements),
-        @"totalAchievements": @(totalAchievements),
-        @"unlockedPoints": @(unlockedPoints),
-        @"totalPoints": @(totalPoints),
-        @"gameId": @(gameId),
-        @"hasAchievements": @(hasAchievements),
-        @"hasLeaderboards": @(hasLeaderboards),
-        @"hasRichPresence": @(hasRichPresence),
+        ARMSX2RAStateKeySupported: @(ARMSX2RetroAchievementsAvailable),
+        ARMSX2RAStateKeyHardcoreSupported: @(ARMSX2RetroAchievementsHardcoreAvailable),
+        ARMSX2RAStateKeyUnavailableMessage: ARMSX2RetroAchievementsUnavailableMessage(),
+        ARMSX2RAStateKeyEnabled: @(EmuConfig.Achievements.Enabled),
+        ARMSX2RAStateKeyActive: @(active),
+        ARMSX2RAStateKeyLoggedIn: @(loggedIn),
+        ARMSX2RAStateKeySavedLogin: @(savedLogin),
+        ARMSX2RAStateKeyLoginPending: @(loginPending),
+        ARMSX2RAStateKeyUsername: ARMSX2NSStringFromStdString(username),
+        ARMSX2RAStateKeyDisplayName: ARMSX2NSStringFromStdString(displayName.empty() ? username : displayName),
+        ARMSX2RAStateKeyAvatarPath: ARMSX2NSStringFromStdString(avatarPath),
+        ARMSX2RAStateKeyPoints: @(points),
+        ARMSX2RAStateKeySoftcorePoints: @(softcorePoints),
+        ARMSX2RAStateKeyUnreadMessages: @(unreadMessages),
+        ARMSX2RAStateKeyHardcorePreference: @(EmuConfig.Achievements.HardcoreMode),
+        ARMSX2RAStateKeyHardcoreActive: @(hardcoreActive),
+        ARMSX2RAStateKeyNotifications: @(EmuConfig.Achievements.Notifications),
+        ARMSX2RAStateKeyLeaderboardNotifications: @(EmuConfig.Achievements.LeaderboardNotifications),
+        ARMSX2RAStateKeyOverlays: @(EmuConfig.Achievements.Overlays),
+        ARMSX2RAStateKeyHasActiveGame: @(hasGame),
+        ARMSX2RAStateKeyGameTitle: ARMSX2NSStringFromStdString(gameTitle),
+        ARMSX2RAStateKeyRichPresence: ARMSX2NSStringFromStdString(richPresence),
+        ARMSX2RAStateKeyGameIconPath: ARMSX2NSStringFromStdString(gameIconPath),
+        ARMSX2RAStateKeyGameIconURL: ARMSX2NSStringFromStdString(gameIconURL),
+        ARMSX2RAStateKeyUnlockedAchievements: @(unlockedAchievements),
+        ARMSX2RAStateKeyTotalAchievements: @(totalAchievements),
+        ARMSX2RAStateKeyUnlockedPoints: @(unlockedPoints),
+        ARMSX2RAStateKeyTotalPoints: @(totalPoints),
+        ARMSX2RAStateKeyGameId: @(gameId),
+        ARMSX2RAStateKeyHasAchievements: @(hasAchievements),
+        ARMSX2RAStateKeyHasLeaderboards: @(hasLeaderboards),
+        ARMSX2RAStateKeyHasRichPresence: @(hasRichPresence),
     };
 }
 
-+ (nonnull NSArray<NSDictionary<NSString *, id> *> *)retroAchievementsForCurrentGame {
++ (nonnull NSArray<NSDictionary<ARMSX2RAStateKey, id> *> *)retroAchievementsForCurrentGame {
     std::vector<Achievements::AchievementInfo> achievements;
     if (!Achievements::GetCurrentAchievementList(&achievements))
         return @[];
 
-    NSMutableArray<NSDictionary<NSString *, id> *> *result = [NSMutableArray arrayWithCapacity:achievements.size()];
+    NSMutableArray<NSDictionary<ARMSX2RAStateKey, id> *> *result = [NSMutableArray arrayWithCapacity:achievements.size()];
     for (const Achievements::AchievementInfo& achievement : achievements) {
         [result addObject:@{
-            @"id": @(achievement.id),
-            @"title": ARMSX2NSStringFromStdString(achievement.title),
-            @"description": ARMSX2NSStringFromStdString(achievement.description),
-            @"badgePath": ARMSX2NSStringFromStdString(achievement.badge_path),
-            @"measuredProgress": ARMSX2NSStringFromStdString(achievement.measured_progress),
-            @"points": @(achievement.points),
-            @"state": @(achievement.state),
-            @"category": @(achievement.category),
-            @"bucket": @(achievement.bucket),
-            @"measuredPercent": @(achievement.measured_percent),
+            ARMSX2RAStateKeyId: @(achievement.id),
+            ARMSX2RAStateKeyTitle: ARMSX2NSStringFromStdString(achievement.title),
+            ARMSX2RAStateKeyDescription: ARMSX2NSStringFromStdString(achievement.description),
+            ARMSX2RAStateKeyBadgePath: ARMSX2NSStringFromStdString(achievement.badge_path),
+            ARMSX2RAStateKeyMeasuredProgress: ARMSX2NSStringFromStdString(achievement.measured_progress),
+            ARMSX2RAStateKeyPoints: @(achievement.points),
+            ARMSX2RAStateKeyState: @(achievement.state),
+            ARMSX2RAStateKeyCategory: @(achievement.category),
+            ARMSX2RAStateKeyBucket: @(achievement.bucket),
+            ARMSX2RAStateKeyMeasuredPercent: @(achievement.measured_percent),
         }];
     }
 
