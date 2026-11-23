@@ -54,9 +54,7 @@ enum DynamicThumbstickMath {
         let safeDeadZone = min(max(deadZone, 0), 0.95)
         let cappedDistance = min(rawDistance, maximumRadius)
         let normalizedDistance = cappedDistance / maximumRadius
-        // Input saturation and deadzone progression can use different radii.
-        // This preserves the larger movement area while letting the left stick
-        // reach its configured deadzone at the visible Maximum Radius.
+        // The deadzone ramps over its own radius, so it is reached at the visible Maximum Radius.
         let progressRadius = max(deadZoneProgressRadius ?? maximumRadius, 1)
         let deadZoneProgress = min(rawDistance / progressRadius, 1)
         let progressRadiusScale = min(progressRadius / maximumRadius, 1)
