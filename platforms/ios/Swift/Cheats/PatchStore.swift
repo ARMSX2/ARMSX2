@@ -345,7 +345,7 @@ final class PatchStore {
         setEnableList(names, forISO: isoName, isCheat: entry.isCheat)
 
         if entry.isCheat {
-            ARMSX2Bridge.setINIBool("EmuCore", key: "EnableCheats", value: true)
+            SettingsStore.shared.enableCheats = true
         }
         ARMSX2Bridge.reloadPatches()
         loadInstalled(forISO: isoName, launchContext: launchContext)
@@ -389,7 +389,7 @@ final class PatchStore {
         setEnableList(mergedPatch, forISO: isoName, isCheat: false)
         setEnableList(mergedCheat, forISO: isoName, isCheat: true)
         if !mergedCheat.isEmpty {
-            ARMSX2Bridge.setINIBool("EmuCore", key: "EnableCheats", value: true)
+            SettingsStore.shared.enableCheats = true
         }
         ARMSX2Bridge.reloadPatches()
         loadInstalled(forISO: isoName, launchContext: launchContext)
@@ -548,7 +548,7 @@ final class PatchStore {
         }
         setEnableList(merged, forISO: iso, isCheat: asCheat)
         if asCheat {
-            ARMSX2Bridge.setINIBool("EmuCore", key: "EnableCheats", value: true)
+            SettingsStore.shared.enableCheats = true
         }
         ARMSX2Bridge.reloadPatches()
         return .success
