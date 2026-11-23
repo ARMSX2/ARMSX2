@@ -512,7 +512,10 @@ namespace R5900
 		MakeOpcode0( TLBWI, CopDefault, 0 );
 		MakeOpcode0( TLBWR, CopDefault, 0 );
 		MakeOpcode0( TLBP, 3*8, 0 ); // 3 cycles on an SCPH-30001; was 0.875
-		MakeOpcode0( ERET, CopDefault, IS_BRANCH|BRANCHTYPE_ERET );
+		// ERET: 6 cycles on an SCPH-30001. In place of a JR and its delay slot
+		// it costs 3 more, and 5 more than a taken branch. The table charged
+		// 0.875.
+		MakeOpcode0( ERET, 6*8, IS_BRANCH|BRANCHTYPE_ERET );
 		MakeOpcode0( EI, CopDefault, 0 );
 		MakeOpcode0( DI, 1*8, 0 );   // 1 cycle on an SCPH-30001; was 0.875
 
