@@ -1857,7 +1857,7 @@ namespace mVUPersist
 			// mVUcompileJIT dereferences jumpCache unguarded (it was allocated
 			// at compile time by normJumpCompile) — restore it eagerly.
 			if ((b.jumpCacheAndExtent & kDiskJumpCacheBit) && !installed->jumpCache)
-				installed->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
+				installed->jumpCache = mVUnewJumpTable(mVU);
 			final_block[i] = installed;
 		}
 

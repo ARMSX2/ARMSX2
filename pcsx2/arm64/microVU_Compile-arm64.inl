@@ -1160,7 +1160,7 @@ static void vuAotEmitJumpTail(u32 vu, void* block, const u8* endKey)
 	microBlock* blk = static_cast<microBlock*>(block);
 	std::memcpy(&blk->pStateEnd, endKey, sizeof(microRegInfo));
 	if (!blk->jumpCache)
-		blk->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
+		blk->jumpCache = mVUnewJumpTable(mVU);
 
 	mVUldrField(mVU, RWARG1, &mVU.branch);
 	// The node's block of the placement now running, from its slot.

@@ -37,11 +37,11 @@ std::vector<u32> mVUChunkStore::TestJumpTargets(u32 blockPC)
 	if (!mgr)
 		return out;
 	mgr->forEachBlock([&](microBlock& b) {
-		if (!b.jumpCache)
+		if (!b.jumpTargets)
 			return;
-		for (u32 t = 0; t < mProgSize / 2; t++)
-			if (b.jumpCache[t].prog == prog && b.jumpCache[t].hostEntry)
-				out.push_back(t * 8);
+		for (const microJumpTarget& t : *b.jumpTargets)
+			if (t.prog == prog)
+				out.push_back(t.pc);
 	});
 	std::sort(out.begin(), out.end());
 	return out;
@@ -357,8 +357,10 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 			if (b.tiered)
 				placed->tierState = mVUtierCovered;
 		}
-		if (blk.jumps && !placed->jumpCache)
-			placed->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
+		// (the table of the code this copy runs: an entry does not depend on
+		// where the copy is placed)
+		if (blk.jumpCache && !placed->jumpCache)
+			placed->jumpCache = blk.jumpCache;
 		mVU.placeSlots[slotBase + blk.slot] = reinterpret_cast<u64>(placed);
 		if (!rootEntry)
 			rootEntry = stub;
@@ -618,7 +620,7 @@ static void mVUchunkEnd(microVU& mVU)
 		blk.pairOff = static_cast<s32>(cb->startPC / 8) - rootPair;
 		blk.slot = n;
 		blk.stub = cb->stub;
-		blk.jumps = cb->block->jumpCache != nullptr;
+		blk.jumpCache = cb->block->jumpCache;
 		blk.pState = cb->block->pState;
 		blk.pStateEnd = cb->block->pStateEnd;
 		b.blocks.push_back(blk);

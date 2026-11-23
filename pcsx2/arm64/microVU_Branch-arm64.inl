@@ -401,7 +401,7 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	mVUsetupBranch(mVU, mFC);
 
 	if (!mVUpBlock->jumpCache)
-		mVUpBlock->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
+		mVUpBlock->jumpCache = mVUnewJumpTable(mVU);
 
 	if (isEvilJump)
 	{
@@ -413,8 +413,8 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 		mVUldrField(mVU, RWARG1, &mVU.branch);
 
 	// VU1: the jumping block of the placement now running, from its slot. Its
-	// jump cache holds that placement's targets; its end state is the same
-	// for every placement.
+	// jump table and its end state are the code's, the same for every
+	// placement; the slow path notes the target in the block itself.
 	if (mVUrootRelative(mVU))
 	{
 		mVUemitLoadSlot(mVU, RXARG2, a64::x8, mVUchunkBlockSlot(mVU, mVUpBlock));
@@ -580,6 +580,22 @@ static void mVUcloseCodeCache(microVU& mVU)
 // mVUcompileJIT — Called by JR/JALR at runtime
 //------------------------------------------------------------------
 
+// Notes in `blk`'s own record (microBlock::jumpTargets) that its JR or JALR
+// reached `pc`, which resolved to `prog`. A later miss on the same target
+// replaces the program, as it replaces the jump table's entry.
+static void mVUnoteJumpTarget(microBlock& blk, u32 pc, microProgram* prog)
+{
+	if (!blk.jumpTargets)
+		blk.jumpTargets = new std::vector<microJumpTarget>();
+	std::vector<microJumpTarget>& v = *blk.jumpTargets;
+	const auto at = std::lower_bound(v.begin(), v.end(), pc,
+		[](const microJumpTarget& t, u32 x) { return t.pc < x; });
+	if (at != v.end() && at->pc == pc)
+		at->prog = prog;
+	else
+		v.insert(at, microJumpTarget{prog, pc});
+}
+
 _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 {
 	microVU& mVU = mVUx;
@@ -634,6 +650,10 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		jc.prog = mVU.prog.quick[startPC / 8].prog;
 		jc.x86ptrStart = v;
 		jc.hostEntry = v;
+		// The table is shared by every copy of the code; `pBlock` is the
+		// copy that jumped (loaded from its placement's slot).
+		if constexpr (vuIndex == 1)
+			mVUnoteJumpTarget(*pBlock, startPC, jc.prog);
 		return v;
 	}
 	else

@@ -1336,6 +1336,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	for (microProgram*& prog : mVU.mvuOrphanedProgs)
 		mVUdeleteProg(mVU, prog);
 	mVU.mvuOrphanedProgs.clear();
+	mVUfreeJumpTables(mVU);
 
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{
@@ -1383,6 +1384,7 @@ void mVUclose(microVU& mVU)
 	for (microProgram*& prog : mVU.mvuOrphanedProgs)
 		mVUdeleteProg(mVU, prog);
 	mVU.mvuOrphanedProgs.clear();
+	mVUfreeJumpTables(mVU);
 
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{

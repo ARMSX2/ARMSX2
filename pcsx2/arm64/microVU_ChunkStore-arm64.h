@@ -81,7 +81,7 @@ namespace mVUChunkStore
 
 #ifdef PCSX2_RECOMPILER_TESTS
 	// The JR/JALR targets (byte addresses, ascending) the blocks at `blockPC`
-	// of the program VU1 ran last have in their own jump caches.
+	// of the program VU1 ran last recorded as their own (microBlock::jumpTargets).
 	std::vector<u32> TestJumpTargets(u32 blockPC);
 #endif
 } // namespace mVUChunkStore

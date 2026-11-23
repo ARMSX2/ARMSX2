@@ -371,6 +371,55 @@ TEST(Vu1ChunkStore, SecondCopyInTheSameProgramIsServed)
 	ExpectJitMatches(jit.h, interp);
 }
 
+// Two copies of a routine in one program run the same code. The JR and JALR
+// blocks of each copy record the targets that copy reached, and not those of
+// the other copy.
+TEST(Vu1ChunkStore, CopiesInOneProgramRecordTheirOwnJumpTargets)
+{
+	std::vector<VuOp> both = CallLoopProgram();
+	both.resize((kCopy - kHome) / 8, Nop());
+	const std::vector<VuOp> copy = CallLoopProgram();
+	both.insert(both.end(), copy.begin(), copy.end());
+	const VuSnapshot interp = InterpOf(1, kHome, both, kCopy);
+
+	Jit jit(1, kHome, both, kHome);
+	EXPECT_EQ(jit.RunAt(kCopy), 0u) << "the copy was compiled";
+	ExpectJitMatches(jit.h, interp);
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kHome + 14 * 8), std::vector<u32>{kHome + 21 * 8});
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kHome + 21 * 8), std::vector<u32>{kHome + 2 * 8});
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kCopy + 14 * 8), std::vector<u32>{kCopy + 21 * 8});
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kCopy + 21 * 8), std::vector<u32>{kCopy + 2 * 8});
+
+	// Again, from the jump caches the first runs filled.
+	EXPECT_EQ(jit.RunAt(kHome), 0u);
+	EXPECT_EQ(jit.RunAt(kCopy), 0u);
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kHome + 14 * 8), std::vector<u32>{kHome + 21 * 8});
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kCopy + 14 * 8), std::vector<u32>{kCopy + 21 * 8});
+}
+
+// Copies of a routine run the code compiled once and use its jump tables: a
+// placed copy adds no table, in another program or at another address.
+TEST(Vu1ChunkStore, PlacedCopiesAddNoJumpTable)
+{
+	const u32 bases[] = {kCopy, 0x1000, 0x3000};
+	std::vector<VuSnapshot> interp;
+	for (u32 n = 0; n < 3; n++)
+		interp.push_back(InterpOf(2 + n, bases[n], CallLoopProgram(0x45), bases[n]));
+
+	Jit jit(1, kHome, CallLoopProgram(), kHome);
+	const u64 compiled = mvu_test_hooks::GetJumpTableUsage().liveTables;
+	ASSERT_GE(compiled, 2u) << "the JALR block and the JR block each have a table";
+	for (u32 n = 0; n < 3; n++)
+	{
+		SCOPED_TRACE(::testing::Message() << "copy at 0x" << std::hex << bases[n]);
+		EXPECT_EQ(jit.RunUpload(2 + n, bases[n], CallLoopProgram(0x45), bases[n]), 0u) << "the copy was compiled";
+		ExpectJitMatches(jit.h, interp[n]);
+		EXPECT_EQ(mVUChunkStore::TestJumpTargets(bases[n] + 14 * 8), std::vector<u32>{bases[n] + 21 * 8});
+		EXPECT_EQ(mVUChunkStore::TestJumpTargets(bases[n] + 21 * 8), std::vector<u32>{bases[n] + 2 * 8});
+	}
+	EXPECT_EQ(mvu_test_hooks::GetJumpTableUsage().liveTables, compiled) << "a placed copy has jump tables of its own";
+}
+
 // The E bit and the T bit on branches and on a plain pair: the TPC an exit
 // stores is the copy's.
 TEST(Vu1ChunkStore, ExitTpcOfAServedCopy)

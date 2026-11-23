@@ -269,6 +269,14 @@ struct microJumpCache
 	void* hostEntry;
 };
 
+// A JR/JALR target one block reached, and the program the target resolved to
+// (microBlock::jumpTargets).
+struct microJumpTarget
+{
+	microProgram* prog;
+	u32 pc;
+};
+
 // mVUdetectSpinLoop's answer for a block, memoized in microBlock::spinState.
 // Asked for the first time by mVUspinBounce, on the block a cycle-budget
 // break parked. A block's encoding cannot change under it — a micro-memory
@@ -287,6 +295,12 @@ struct alignas(16) microBlock
 	microRegInfo    pStateEnd;
 	u8*             x86ptrStart; // Code entry point (name kept for struct compatibility)
 	void*           hostEntry;   // see microJumpCache::hostEntry
+	// The jump table of the code this block runs, if it ends in a JR or JALR.
+	// It belongs to the code, not to the block: every copy of a VU1 chunk
+	// placed at another root uses the table of the code it was compiled as.
+	// An entry depends only on the absolute target, the program at the
+	// target and pStateEnd, which every copy shares. microVU frees its tables
+	// when it resets (microVU::jumpTables).
 	microJumpCache* jumpCache;
 	u8              spinState;   // microBlockSpin
 	u8              spinExitOnEq;
@@ -301,6 +315,12 @@ struct alignas(16) microBlock
 	void*           tierHead;
 	u32             tierSerial;
 	u32             tierState;
+	// VU1, the targets this block's JR or JALR reached when the jump table
+	// missed, by pc (null until the first). The table is shared by every copy
+	// of the code, so this is where a copy's own targets are kept, for the VU
+	// AOT tier's harvest. A copy that hits an entry another copy of the same
+	// program wrote for the same target does not record it.
+	std::vector<microJumpTarget>* jumpTargets;
 };
 
 // microBlock::tierState.
@@ -311,7 +331,7 @@ enum mVUtierState : u32
 	mVUtierCovered,   // the block is a node of another routine's tiered body, placed here
 	mVUtierBody,      // + the id of the tiered body of its own routine that the copy runs
 };
-static_assert(sizeof(microBlock) == 240, "the spin memo and the extent ride microBlock's padding");
+static_assert(sizeof(microBlock) == 256, "microBlock grew");
 
 // How much code a block's compile produced, packed into one word so it fits
 // microBlock's padding: bits 0-19 the host bytes from x86ptrStart to where the
@@ -721,7 +741,7 @@ struct mVUChunkBody
 		s32 pairOff;
 		u32 slot;
 		u8* stub; // the entry stub in the chunk's code; the body follows it
-		bool jumps; // ends in a JR or JALR: each placement's block has a jump cache
+		microJumpCache* jumpCache; // ends in a JR or JALR: the code's table, which every placement's block uses
 		microRegInfo pState;
 		microRegInfo pStateEnd;
 	};
@@ -1021,6 +1041,10 @@ struct microVU
 	u32 placeSlotsUsed;
 	// VU1: the chunk store.
 	std::unique_ptr<mVUChunkStoreData> chunkStore;
+	// Every jump table this VU's code uses (microBlock::jumpCache). Code and
+	// block objects that name a table go when the code cache resets, so the
+	// tables go there too (mVUreset, mVUclose), and nowhere else.
+	std::vector<void*> jumpTables;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -1050,6 +1074,24 @@ struct microVU
 		return (vminvq_u32(vandq_u32(a23, a45)) == 0) ? 1 : 0;
 	}
 };
+
+// A new, empty jump table for a block of code `mVU` is compiling or loading.
+// microVU owns it until its next reset.
+__fi static microJumpCache* mVUnewJumpTable(microVU& mVU)
+{
+	void* const table = mVUJumpTable::Alloc();
+	mVU.jumpTables.push_back(table);
+	return static_cast<microJumpCache*>(table);
+}
+
+// Hands back every jump table `mVU` holds. Only once nothing can run the
+// code or use the block objects that name them.
+__fi static void mVUfreeJumpTables(microVU& mVU)
+{
+	for (void* table : mVU.jumpTables)
+		mVUJumpTable::Free(table);
+	mVU.jumpTables.clear();
+}
 
 // The micro-memory word at `idx`, noted as read by the compile in progress.
 __fi static u32* mVUreadWord(microVU& mVU, u32 idx)
@@ -1164,17 +1206,18 @@ public:
 	~microBlockManager() { reset(); }
 	void reset()
 	{
+		// (jump tables are microVU's: see microBlock::jumpCache)
 		for (microBlockLink* linkI = qBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			mVUJumpTable::Free(linkI->block.jumpCache);
+			delete linkI->block.jumpTargets;
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
 		for (microBlockLink* linkI = fBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			mVUJumpTable::Free(linkI->block.jumpCache);
+			delete linkI->block.jumpTargets;
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
@@ -1220,6 +1263,8 @@ public:
 			newBlock->block.tierHead = nullptr;
 			newBlock->block.tierSerial = 0;
 			newBlock->block.tierState = 0;
+			// ... and its jump targets from its own jumps.
+			newBlock->block.jumpTargets = nullptr;
 			thisBlock = &newBlock->block;
 
 			quickLookup.push_back({&newBlock->block, pBlock->pState.quick64[0]});

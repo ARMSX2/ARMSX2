@@ -34,6 +34,7 @@
 #include <map>
 #include <memory>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__linux__)
@@ -971,10 +972,10 @@ void VuAotJob::Run()
 	s_vuaot.workerIns.fetch_add(workerIns, std::memory_order_relaxed);
 }
 
-// The JR/JALR targets microVU recorded for a program: every jumping block's
-// jump cache holds one entry per target it has reached (the entry's program is
-// the one the target resolved to, ours when the target is our own code). By
-// the jumping block's start PC (bytes), ascending.
+// The JR/JALR targets microVU recorded for a program: every jumping block
+// keeps the targets it reached when the jump table missed (the program each
+// resolved to is ours when the target is our own code). By the jumping
+// block's start PC (bytes), ascending.
 static std::map<u32, std::vector<u32>> vuAotHarvestTargets(microProgram& prog)
 {
 	std::map<u32, std::vector<u32>> out;
@@ -985,24 +986,23 @@ static std::map<u32, std::vector<u32>> vuAotHarvestTargets(microProgram& prog)
 		if (!m)
 			continue;
 		m->forEachBlock([&](microBlock& b) {
-			if (!b.jumpCache)
+			if (!b.jumpTargets)
 				return;
 			std::vector<u32>* v = nullptr;
-			for (u32 t = 0; t < mProgSize / 2; t++)
+			for (const microJumpTarget& t : *b.jumpTargets)
 			{
-				if (b.jumpCache[t].prog != &prog)
+				if (t.prog != &prog)
 				{
 					// (A target that resolved to another program is not ours to
 					// compile: its code would enter this program's ranges and make it
 					// match only while that code is loaded, and a direct edge would skip
 					// the jump cache's check that the live program is still that one.)
-					if (b.jumpCache[t].prog)
-						s_vuaot.stats.crossProgTargets++;
+					s_vuaot.stats.crossProgTargets++;
 					continue;
 				}
 				if (!v)
 					v = &out[i * 8];
-				const u32 pc = t * 8;
+				const u32 pc = t.pc;
 				const auto at = std::lower_bound(v->begin(), v->end(), pc);
 				if (at != v->end() && *at == pc)
 					continue;
@@ -1638,7 +1638,7 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 		const s32 pairOff = static_cast<s32>(jt.first / 8) - static_cast<s32>(startPC / 8);
 		bool ours = false;
 		for (const mVUChunkBody::Block& b : running->blocks)
-			ours = ours || (b.jumps && b.pairOff == pairOff);
+			ours = ours || (b.jumpCache && b.pairOff == pairOff);
 		if (!ours)
 			continue;
 		const auto have = running->targets.find(off);
@@ -1744,8 +1744,9 @@ void mVUvuAotOnClose(microVU& mVU)
 		Console.WriteLn(Color_StrongBlue, "%s", vuaot::live::FormatStats().c_str());
 #ifdef PCSX2_RECOMPILER_TESTS
 	const mvu_test_hooks::JumpTableUsage jt = mvu_test_hooks::GetJumpTableUsage();
-	Console.WriteLn("@JUMPTABLES@ live=%llu live_written_kb=%llu", (unsigned long long)jt.liveTables,
-		(unsigned long long)(jt.liveWritten >> 10));
+	Console.WriteLn("@JUMPTABLES@ live=%llu live_written_kb=%llu held=%llu held_written_kb=%llu",
+		(unsigned long long)jt.liveTables, (unsigned long long)(jt.liveWritten >> 10),
+		(unsigned long long)jt.heldTables, (unsigned long long)(jt.heldWritten >> 10));
 #endif
 	s_vuaot.worker.reset();
 }
@@ -1867,13 +1868,15 @@ namespace mvu_test_hooks
 	JumpTableUsage GetJumpTableUsage()
 	{
 		JumpTableUsage u;
+		// (a table several blocks share counts once)
+		std::unordered_set<const microJumpCache*> seen;
 		const auto visit = [&](microProgram* prog) {
 			if (!prog)
 				return;
 			for (u32 i = 0; i < mProgSize / 2; i++)
 				if (microBlockManager* m = prog->block[i])
 					m->forEachBlock([&](microBlock& b) {
-						if (b.jumpCache)
+						if (b.jumpCache && seen.insert(b.jumpCache).second)
 						{
 							u.liveTables++;
 							u.liveResident += JumpTableResidentBytes(b.jumpCache);
@@ -1885,6 +1888,11 @@ namespace mvu_test_hooks
 			visit(e.second);
 		for (microProgram* p : microVU1.mvuOrphanedProgs)
 			visit(p);
+		for (const void* table : microVU1.jumpTables)
+		{
+			u.heldTables++;
+			u.heldWritten += JumpTableWrittenBytes(static_cast<const microJumpCache*>(table));
+		}
 		return u;
 	}
 } // namespace mvu_test_hooks
