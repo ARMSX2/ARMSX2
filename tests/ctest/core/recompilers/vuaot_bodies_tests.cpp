@@ -652,6 +652,101 @@ TEST(VuAotBodies, CompilingDispatchCountsOnTheRootsHead)
 	}
 }
 
+// A copy of a routine that the routine's body does not fit asks for a job.
+// While it is out, the game goes back to the first image, whose copy runs the
+// body. The job is dropped after kTierUpRuns runs of any copy, the ones on a
+// body included, so it does not hold the routine's next request for good.
+TEST(VuAotBodies, JobNoCopyFitsIsDroppedWhileTheCopiesRunABody)
+{
+	const std::vector<VuOp> routine = LoopRoutine(10);
+	std::vector<VuOp> other = routine;
+	other[8] = EBit(LoadViImm(vi::vi6, 0x67)); // the same first pair: the same routine's head
+	const VuSnapshot interp = InterpOf(1, kHome, routine, kHome);
+
+	TierScope on(true, true);
+	Jit jit(1, kHome, routine, kHome);
+	for (u32 i = 0; i < kTierRuns + 2; i++)
+		jit.RunAt(kHome);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
+	ASSERT_EQ(s0.tieredBodies, 1u);
+
+	vuaot::live::SetSynchronous(false);
+	vuaot::live::HoldWorker(true);
+	Upload(2, kCopy, other);
+	for (u32 i = 0; i < kTierRuns + 2; i++)
+		jit.RunAt(kCopy);
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	ASSERT_EQ(s1.jobs - s0.jobs, 1u) << "the copy the body does not fit did not ask for regions";
+
+	Upload(1, kHome, routine);
+	vuaot::live::HoldWorker(false);
+	vuaot::live::WaitWorkerIdle();
+	for (u32 i = 0; i < 3 * kTierRuns; i++)
+	{
+		jit.RunAt(kHome);
+		ExpectMatchesInterp(jit.h, interp, "home");
+	}
+	const vuaot::live::Stats s2 = vuaot::live::GetStats();
+	EXPECT_EQ(s2.built, s1.built);
+	EXPECT_EQ(s2.discardMemory - s1.discardMemory, 1u) << "the job was held while only copies on the body ran";
+}
+
+// Two routines around one subroutine call: CallRoutine with two trip counts,
+// whose first pairs differ. The return point after the BAL is a routine of
+// its own, entered through the JALR's slow path, and is the same in both.
+// In the first routine's body it is a node; in the second it runs microVU's
+// code.
+namespace
+{
+struct CallPair
+{
+	const std::vector<VuOp> first = CallRoutine(9);
+	const std::vector<VuOp> second = CallRoutine(7);
+	TierScope on;
+	Jit jit;
+	explicit CallPair(bool sync) : on(true, true, sync), jit(1, kHome, first, kHome) {}
+	// A write over the routine empties its quick slots, so the JALR's first
+	// return of each run takes the slow path.
+	void RunAt(u32 base)
+	{
+		CpuMicroVU1.Clear(base, 0x100);
+		jit.RunAt(base);
+	}
+};
+} // namespace
+
+// The return point's job is dropped when the first routine's body is placed
+// over it. Its next request through the jump path comes only after another
+// kJumpTierUpRuns jump entries, not at the next one.
+TEST(VuAotBodies, JumpPathAsksAgainOnlyAfterMoreJumpEntries)
+{
+	constexpr u32 kJumpRuns = 4;
+	CallPair c(/*sync=*/false);
+	vuaot::live::SetJumpTierUpRuns(kJumpRuns);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
+	vuaot::live::HoldWorker(true);
+	for (u32 i = 0; i < kTierRuns + 4; i++)
+		c.RunAt(kHome);
+	ASSERT_EQ(vuaot::live::GetStats().jobs - s0.jobs, 2u) << "the routine and the return point each ask for regions";
+	vuaot::live::HoldWorker(false);
+	vuaot::live::WaitWorkerIdle();
+	for (u32 i = 0; i < 2; i++)
+		c.RunAt(kHome);
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	ASSERT_EQ(s1.discardCovered - s0.discardCovered, 1u) << "the return point's job was not dropped under the body";
+
+	vuaot::live::SetTierUpRuns(1000000);
+	Upload(2, kCopy, c.second);
+	std::vector<u64> jobs;
+	for (u32 i = 0; i < kJumpRuns + 1; i++)
+	{
+		c.RunAt(kCopy);
+		jobs.push_back(vuaot::live::GetStats().jobs - s1.jobs);
+	}
+	EXPECT_EQ(jobs[0], 0u) << "the jump path asked again at its next entry";
+	EXPECT_EQ(jobs.back(), 1u) << "the jump path did not ask again";
+}
+
 } // namespace recompiler_tests
 
 #endif

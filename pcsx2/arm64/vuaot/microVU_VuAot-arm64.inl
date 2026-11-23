@@ -370,6 +370,8 @@ const char* vuaot::live::TripCauseName(TripCause c)
 
 #ifdef PCSX2_RECOMPILER_TESTS
 static bool vuAotMutated(int m) { return (s_trip.mutation.load(std::memory_order_relaxed) >> m) & 1; }
+// vuaot::live::TripAtNextDroppedBodyPlacement.
+static std::atomic<bool> s_vuAotTripAtPlacement{false};
 #else
 // (shipped builds: the tripwire's mutation checks fold away)
 static constexpr bool vuAotMutated(int) { return false; }
@@ -434,6 +436,10 @@ void mVUvuAotOnBodyPlaced(microVU&, bool droppedSticky)
 {
 	if (!droppedSticky)
 		return;
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (s_vuAotTripAtPlacement.exchange(false))
+		vuAotTrip(vuaot::live::TripCause::Forced);
+#endif
 	s_trip.dropLive.store(true);
 	// A trip from another thread (VU0 reading VU1's STATUS) between the check
 	// that allowed this body and the store above saw nothing to rebuild.
@@ -518,6 +524,7 @@ namespace vuaot::live
 	}
 #ifdef PCSX2_RECOMPILER_TESTS
 	void TripStickyForTest() { vuAotTrip(TripCause::Forced); }
+	void TripAtNextDroppedBodyPlacement() { s_vuAotTripAtPlacement.store(true); }
 	void SetTripwireMutation(int mask) { s_trip.mutation.store(mask, std::memory_order_relaxed); }
 #endif
 } // namespace vuaot::live

@@ -212,6 +212,10 @@ namespace vuaot
 		void SetWorkerDelayUs(u32 us);
 		// The tripwire, as a test or a runner flag sets it off.
 		void TripStickyForTest();
+		// ... at the next placement of a body that dropped the sticky byte, after the
+		// check that allowed it and before the note that one is live: the moment a
+		// trip from another thread can land.
+		void TripAtNextDroppedBodyPlacement();
 #endif
 		// Test only: break parts of the tripwire on purpose, to show the tests notice. A mask of
 		// TripMask(TripMutation), 0 = none. (Declared in every build so the tier's checks compile; in a

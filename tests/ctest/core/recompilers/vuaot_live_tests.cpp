@@ -1215,6 +1215,47 @@ TEST(VuAotLive, TripwireJobImageHoldingAReaderKeepsTheStickyByte)
 	}
 }
 
+// A trip from another thread (VU0 reading VU1's STATUS) can land after the check that allows a
+// body that dropped the sticky byte and before the note that such a body is live, so the trip
+// sees nothing to rebuild. The placement looks at the tripwire again after the note: VU1 resets
+// at its next run, and every run after the placement equals microVU's, the sticky bits included.
+TEST(VuAotLive, TripwireTripDuringAPlacementRebuildsExact)
+{
+	for (bool fh : {true, false})
+	{
+		Result ref;
+		{
+			LiveScope off(false, 4, fh);
+			VuTestHarness h(1);
+			Prepare(h, StickyLoop(10), SetupSticky, 0);
+			h.RunNoDiff();
+			ref = Take(h);
+		}
+		LiveScope on(true, 4, fh);
+		VuTestHarness h(1);
+		Prepare(h, StickyLoop(10), SetupSticky, 0);
+		h.RunNoDiff();
+		const vuaot::live::Stats s0 = vuaot::live::GetStats();
+		vuaot::live::TripAtNextDroppedBodyPlacement();
+		std::string problems;
+		bool placed = false;
+		for (int i = 0; i < 12; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			if (placed)
+				if (const std::string d = Diff(ref, Take(h)); !d.empty())
+					problems += "after the placement, run " + std::to_string(i) + ": " + d;
+			placed = placed || vuaot::live::GetStats().tieredPlaced != s0.tieredPlaced;
+		}
+		const vuaot::live::Stats s1 = vuaot::live::GetStats();
+		ASSERT_TRUE(placed) << "flagHack=" << fh;
+		ASSERT_GE(s1.stickyDropped - s0.stickyDropped, 1u) << "the body did not drop the sticky byte, flagHack=" << fh;
+		EXPECT_TRUE(vuaot::live::StickyTripped()) << "flagHack=" << fh;
+		EXPECT_EQ(s1.stickyTripResets - s0.stickyTripResets, 1u) << "flagHack=" << fh;
+		EXPECT_EQ(problems, "") << "flagHack=" << fh;
+	}
+}
+
 // A savestate load or a settings change (VU1's reset) does not re-arm the tripwire; a VM reset
 // or boot does, and the regions drop the byte again.
 TEST(VuAotLive, TripwireStaysSetThroughResetsUntilTheVmIsReset)
