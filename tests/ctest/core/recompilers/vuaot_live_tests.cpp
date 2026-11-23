@@ -1170,6 +1170,51 @@ TEST(VuAotLive, TripwireJobMadeBeforeItIsNotPublished)
 	}
 }
 
+// A sticky reader uploaded outside the ranges of the program that runs makes no new program, so
+// the scan of a new program's image does not see it. The job made for the program's tier-up
+// scans the micro image it is made from: the tripwire goes off there, the job keeps the sticky
+// byte, and every run equals microVU's, the sticky bits included.
+TEST(VuAotLive, TripwireJobImageHoldingAReaderKeepsTheStickyByte)
+{
+	for (bool fh : {true, false})
+	{
+		Result ref;
+		{
+			LiveScope off(false, 4, fh);
+			VuTestHarness h(1);
+			Prepare(h, StickyLoop(10), SetupSticky, 0);
+			h.RunNoDiff();
+			ref = Take(h);
+		}
+		LiveScope on(true, 4, fh);
+		VuTestHarness h(1);
+		Prepare(h, StickyLoop(10), SetupSticky, 0);
+		h.RunNoDiff();
+		const vuaot::live::Stats s0 = vuaot::live::GetStats();
+		std::string problems;
+		for (int i = 0; i < 2; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			if (const std::string d = Diff(ref, Take(h)); !d.empty())
+				problems += "before the upload, run " + std::to_string(i) + ": " + d;
+		}
+		// (not run: no program is made over it)
+		WriteReaderImage(kReaderAt, 0xfc0);
+		for (int i = 0; i < 8; i++)
+		{
+			h.RunJitPreserveBlockCache();
+			if (const std::string d = Diff(ref, Take(h)); !d.empty())
+				problems += "after the upload, run " + std::to_string(i) + ": " + d;
+		}
+		const vuaot::live::Stats s1 = vuaot::live::GetStats();
+		EXPECT_EQ(problems, "") << "flagHack=" << fh;
+		EXPECT_EQ(s1.tierUps - s0.tierUps, 1u) << "flagHack=" << fh;
+		EXPECT_TRUE(vuaot::live::StickyTripped()) << "flagHack=" << fh;
+		EXPECT_EQ(vuaot::live::StickyTripCause(), TripCause::ProgramImage) << "flagHack=" << fh;
+		EXPECT_EQ(s1.stickyDropped - s0.stickyDropped, 0u) << "a region dropped the sticky byte, flagHack=" << fh;
+	}
+}
+
 // A savestate load or a settings change (VU1's reset) does not re-arm the tripwire; a VM reset
 // or boot does, and the regions drop the byte again.
 TEST(VuAotLive, TripwireStaysSetThroughResetsUntilTheVmIsReset)

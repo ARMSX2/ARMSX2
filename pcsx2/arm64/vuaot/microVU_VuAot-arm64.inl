@@ -1034,6 +1034,13 @@ static std::shared_ptr<VuAotJob> vuAotMakeJob(microVU& mVU, mVUChunkHead* head, 
 	j->flagHack = CHECK_VU_FLAGHACK;
 	j->cacheLo = mVU.cache;
 	j->cacheHi = mVU.prog.x86end + (mVUcacheSafeZone * _1mb);
+	// A reader of the sticky bits anywhere in the image the regions are built
+	// from sets the tripwire off. One uploaded outside the ranges of the
+	// program that runs made no new program, so mVUvuAotOnNewProgram has not
+	// seen it.
+	if (!s_trip.tripped.load(std::memory_order_relaxed) && !vuAotMutated(vuaot::live::kTripMutProgramImage) &&
+		vuaot::RegionTier::MicroReadsSticky(j->micro.get(), 1))
+		vuAotTrip(vuaot::live::TripCause::ProgramImage);
 	// Regions drop the sticky byte of STATUS only while no sticky reader is known.
 	j->opts.dropSticky = !s_trip.tripped.load(std::memory_order_acquire) || vuAotMutated(vuaot::live::kTripMutJobOption);
 	return j;

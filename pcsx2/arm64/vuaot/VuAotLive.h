@@ -77,7 +77,7 @@ namespace vuaot
 		enum class TripCause : u8
 		{
 			None,
-			ProgramImage, // a program was created (or loaded from the disk cache) over a micro image with a sticky reader
+			ProgramImage, // a program was created (or loaded from the disk cache), or a tier-up job made, over a micro image with a sticky reader
 			Compile,      // microVU compiled an FSAND/FSEQ/FSOR that selects a sticky bit
 			OutsideRead,  // VU0 (micro or macro mode) touched VU1's STATUS register through its window onto VU1's registers
 			Forced,       // a test or a runner flag set it off
@@ -219,7 +219,7 @@ namespace vuaot
 		enum TripMutation : int
 		{
 			kTripMutNone = 0,
-			kTripMutProgramImage = 1,  // no scan when a program is created
+			kTripMutProgramImage = 1,  // no scan of the micro image when a program is created or a job is made
 			kTripMutCompile = 2,       // no hook on a compiled sticky reader
 			kTripMutOutside = 3,       // VU0 touching VU1's STATUS is not noticed
 			kTripMutPublish = 4,       // a job made with the drop is built into a body after the trip
