@@ -72,6 +72,7 @@ extern std::deque<std::shared_ptr<CPUThreadTask>> s_cpuTasks;
 void ARMSX2DrainCPUThreadTasks();
 // Marks every queued task done without running it.
 void ARMSX2DiscardCPUThreadTasks();
+void ARMSX2SetHapticFeedbackEnabled(bool enabled);
 
 extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 // Posts a RetroAchievements toast to the SwiftUI layer. `duration` is the on-screen

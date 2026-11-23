@@ -97,6 +97,7 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 // Device haptic fallback for game rumble when no rumble-capable controller is connected.
 + (void)triggerDeviceHapticLarge:(NSUInteger)large small:(NSUInteger)small;
 + (void)testControllerRumble;
++ (void)setRuntimeHapticFeedback:(BOOL)enabled;
 
 // Gamepad button mapping
 + (void)startButtonCapture;

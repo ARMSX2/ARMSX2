@@ -16,7 +16,12 @@ extension SettingsStore {
         var increaseRumbleDurationAndInterpolation: Bool = true {
             didSet { commit(Self._increaseRumbleDurationAndInterpolationConfig, increaseRumbleDurationAndInterpolation) }
         }
-        var hapticFeedback: Bool = true { didSet { commit(Self._hapticFeedbackConfig, hapticFeedback) } }
+        var hapticFeedback: Bool = true {
+            didSet {
+                commit(Self._hapticFeedbackConfig, hapticFeedback)
+                ARMSX2Bridge.setRuntimeHapticFeedback(hapticFeedback)
+            }
+        }
         var gameRumbleStrength: Float = 1 {
             didSet {
                 let clamped = min(max(gameRumbleStrength, 0), 2)
@@ -220,6 +225,7 @@ extension SettingsStore {
             controllerMacroDisableFastForward = Self._controllerMacroDisableFastForwardConfig.load()
             controllerMacroUndoSaveState = Self._controllerMacroUndoSaveStateConfig.load()
             analogStickScale = SettingsStore.clampedAnalogStickScale(ARMSX2Bridge.getINIFloat("ARMSX2iOS/UI", key: "AnalogStickScale", defaultValue: 1.0))
+            ARMSX2Bridge.setRuntimeHapticFeedback(hapticFeedback)
         }
 
         private func commit<T>(_ setting: Setting<T>, _ value: T) {
