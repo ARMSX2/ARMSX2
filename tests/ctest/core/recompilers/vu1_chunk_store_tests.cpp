@@ -742,6 +742,41 @@ TEST(Vu1ChunkStore, CopyNearTheTopOfMicroMemory)
 	ExpectJitMatches(jit.h, interpOver);
 }
 
+// Variants of a routine that differ in an immediate compiled in share a root
+// and are told apart by their read sets, one plain body each. A root keeps
+// its 16 used last: a new variant past that replaces the one used least
+// recently, and a variant that was served stays.
+TEST(Vu1ChunkStore, PlainBodiesOfARootAreBoundedAndTheLeastRecentlyUsedGoes)
+{
+	const auto variant = [](u32 k) {
+		std::vector<VuOp> v = LoopProgram(3);
+		v[10] = LoadViImm(vi::vi5, 0x100 + k);
+		return v;
+	};
+	u32 seed = 2;
+	Jit jit(1, kHome, variant(0), kHome);
+	const mVUChunkStore::Stats s0 = mVUChunkStore::GetStats();
+	for (u32 k = 1; k < 16; k++)
+		ASSERT_GT(jit.RunUpload(seed++, kHome, variant(k), kHome), 0u) << "variant " << k << " was served";
+	const mVUChunkStore::Stats s1 = mVUChunkStore::GetStats();
+	ASSERT_EQ(s1.entries - s0.entries, 15u);
+	EXPECT_EQ(s1.feedEvicted, s0.feedEvicted);
+
+	// Variant 0 served at another address is used last now; variant 1 is the
+	// least recently used, and the 17th variant replaces it.
+	EXPECT_EQ(jit.RunUpload(seed++, kCopy, variant(0), kCopy), 0u);
+	EXPECT_GT(jit.RunUpload(seed++, kHome, variant(16), kHome), 0u);
+	const mVUChunkStore::Stats s2 = mVUChunkStore::GetStats();
+	EXPECT_EQ(s2.entries, s1.entries) << "the root holds more than 16 plain bodies";
+	EXPECT_EQ(s2.feedEvicted - s1.feedEvicted, 1u);
+
+	EXPECT_GT(jit.RunUpload(seed++, kCopy + 0x400, variant(1), kCopy + 0x400), 0u) << "the least recently used variant was kept";
+	EXPECT_EQ(jit.RunUpload(seed++, kCopy + 0x800, variant(0), kCopy + 0x800), 0u) << "the variant used last was dropped";
+	EXPECT_EQ(jit.RunUpload(seed++, kCopy + 0xC00, variant(16), kCopy + 0xC00), 0u);
+	EXPECT_EQ(mVUChunkStore::GetStats().entries, s1.entries);
+	ExpectJitMatches(jit.h, InterpOf(seed - 1, kCopy + 0xC00, variant(16), kCopy + 0xC00));
+}
+
 // A program the store serves costs a few KiB of code, so the code cache does
 // not bound how many there are. Their memory does: once the programs and
 // blocks reach the bound, the dispatcher exit resets the recompiler, and the

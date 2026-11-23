@@ -29,7 +29,8 @@
 // microVU::placeSlots). Nothing is compiled. An entry is not used where one of
 // its blocks already exists, where a block it branches to does not exist yet,
 // or where it would not fit inside micro memory. Otherwise the JIT compiles,
-// and what it compiled becomes an entry.
+// and what it compiled becomes an entry. One root pair and entry state keeps
+// its 16 entries used last.
 //
 // An entry also holds the VU AOT tier's bodies for the routine: its regions
 // and the blocks microVU compiled around them, recorded from one build and
@@ -58,6 +59,7 @@ namespace mVUChunkStore
 		u64 feedRepeats = 0;     // already held
 		u64 feedWrapped = 0;     // not kept: ran across the end of micro memory
 		u64 feedOther = 0;       // not kept: VU AOT's, or code no slot describes
+		u64 feedEvicted = 0;     // plain bodies dropped to make room for a new one (mVUchunkMaxPlainPerHead)
 		// Host code the JIT emitted for VU1, the entries' code the installs
 		// reused, and the stubs the installs emitted.
 		u64 codeBytesCompiled = 0;

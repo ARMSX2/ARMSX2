@@ -14,6 +14,12 @@ static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept);
 
 static mVUChunkStore::Stats s_mVUchunkStats;
 
+// Plain bodies one head keeps: routines that begin alike and go on
+// differently, or that differ in an immediate compiled in, each need their
+// own. A lookup tries them in order and a hit moves to the back, so the
+// front is the one used least recently, and the one a new body replaces.
+static constexpr size_t mVUchunkMaxPlainPerHead = 16;
+
 mVUChunkStore::Stats mVUChunkStore::GetStats()
 {
 	mVUChunkStore::Stats s = s_mVUchunkStats;
@@ -77,7 +83,7 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 	Console.WriteLn(Color_StrongGreen,
 		"mVUChunkStore[%u] %s: episodes=%llu hits=%llu compiles=%llu skipped=%llu "
 		"miss(noEntry/bounds/readSet/blockExists/linkTarget/noRoom)=%llu/%llu/%llu/%llu/%llu/%llu "
-		"feed(added/repeats/wrapped/other)=%llu/%llu/%llu/%llu entries=%llu "
+		"feed(added/repeats/wrapped/other/evicted)=%llu/%llu/%llu/%llu/%llu entries=%llu "
 		"codeKiB(compiled/installed/stubs/entries)=%llu/%llu/%llu/%llu cacheUsedKiB=%llu slots=%u "
 		"tiered(bodies/codeKiB/placed/reaimed)=%llu/%llu/%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.episodes, (unsigned long long)s.hits,
@@ -85,7 +91,7 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.missNoEntry, (unsigned long long)s.missBounds, (unsigned long long)s.missReadSet,
 		(unsigned long long)s.missBlockExists, (unsigned long long)s.missLinkTarget, (unsigned long long)s.missNoRoom,
 		(unsigned long long)s.fed, (unsigned long long)s.feedRepeats, (unsigned long long)s.feedWrapped,
-		(unsigned long long)s.feedOther, (unsigned long long)s.entries,
+		(unsigned long long)s.feedOther, (unsigned long long)s.feedEvicted, (unsigned long long)s.entries,
 		(unsigned long long)(s.codeBytesCompiled / 1024), (unsigned long long)(s.codeBytesInstalled / 1024),
 		(unsigned long long)(s.stubBytes / 1024), (unsigned long long)(s.entryCodeBytes / 1024),
 		(unsigned long long)((mVU.prog.x86ptr - mVU.prog.x86start) / 1024), mVU.placeSlotsUsed,
@@ -494,13 +500,15 @@ static void* mVUchunkLookup(microVU& mVU, u32 rootPC, uptr pState)
 				return rootEntry;
 			}
 		}
-		for (auto& body : head->plain)
+		for (size_t n = 0; n < head->plain.size(); n++)
 		{
-			if (!mVUchunkBodyMatches(mVU, *body, rootPC, miss))
+			mVUChunkBody& body = *head->plain[n];
+			if (!mVUchunkBodyMatches(mVU, body, rootPC, miss))
 				continue;
-			if (void* const rootEntry = mVUchunkInstall(mVU, *body, rootPC, miss))
+			if (void* const rootEntry = mVUchunkInstall(mVU, body, rootPC, miss))
 			{
 				mVUchunkMarkRoot(rootBlock(), head, (tiered && tiered->declined) ? mVUtierDeclined : mVUtierNone);
+				std::rotate(head->plain.begin() + n, head->plain.begin() + n + 1, head->plain.end());
 				st.hits++;
 				return rootEntry;
 			}
@@ -698,6 +706,15 @@ static void mVUchunkEnd(microVU& mVU)
 			st.feedRepeats++;
 			return;
 		}
+	}
+	if (head->plain.size() >= mVUchunkMaxPlainPerHead)
+	{
+		// (its code stays where it is until the next reset: the blocks placed
+		// from it still run it)
+		store.plainBodies--;
+		store.codeBytes -= head->plain.front()->codeBytes;
+		head->plain.erase(head->plain.begin());
+		st.feedEvicted++;
 	}
 	head->plain.push_back(std::move(body));
 	store.plainBodies++;
