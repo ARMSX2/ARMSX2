@@ -69,7 +69,9 @@ struct PackHeader
 	u32           vuIndex;
 	XXH128_hash_t optionsSentinel;
 	char          archTag[16];        // "arm64-jit"
-	u8            reserved[16];
+	u64           buildTag;           // the build that wrote it (mVUPersist::GetBuildId, folded)
+	u32           pageSize;           // the host's page size
+	u32           layoutStamp;        // LayoutStamp()
 };
 static_assert(sizeof(PackHeader) == 64, "PackHeader layout drift");
 
@@ -90,6 +92,7 @@ enum RecordKind : u8
 {
 	kRecordProgram = 1, // an mVUPersist image
 	kRecordSidecar = 2, // a vu-aot sidecar
+	kRecordBody = 3,    // a body of the VU1 chunk store (microVU_ChunkPack-arm64.inl)
 };
 
 // How often the writer looks for something to write.
@@ -171,7 +174,8 @@ struct Arena
 
 struct Entry
 {
-	Blob  program;               // the mVUPersist image
+	Blob  program;               // the mVUPersist image, or the chunk store body (`kind`)
+	u8    kind = kRecordProgram; // what `program` is: kRecordProgram or kRecordBody
 	Blob  sidecar;               // the vu-aot sidecar
 	u64   shape = 0;             // mVUPersist::ImageShape(program)
 	u64   use = 0;               // when it was last stored or served (Pack::useClock): the writer keeps the latest
@@ -189,6 +193,9 @@ struct Pack
 	std::string title;
 	XXH128_hash_t sentinel = {};
 	Table table;
+	// The chunk store's bodies in the table: a routine's root hash (the low half of a body's key) -> the
+	// high half of the key of each of its bodies. An entry may outlive its body (compaction, a drop).
+	std::unordered_multimap<u64, u64> byRoot;
 	// Sidecars queued and not built yet, and the ones being built (by the writer or a reader).
 	std::unordered_map<XXH128_hash_t, std::function<std::vector<u8>()>, MvuContentHashHash, MvuContentHashEq> builders;
 	std::unordered_set<XXH128_hash_t, MvuContentHashHash, MvuContentHashEq> building;
@@ -294,9 +301,26 @@ static std::string PackPath(const std::string& title, u32 vu, const XXH128_hash_
 	return Path::Combine(Path::Combine(Path::Combine(RootDir(), kPacksDirName), title), name);
 }
 
+// What the code in a pack assumes about the process besides the build: the sizes of the data arena and of
+// the structures it indexes, and how many slots and model stubs there are. The build id fixes all of them
+// where there is one; where there is none (the fallback is this file's compile time) this still moves
+// when they do.
+static u32 LayoutStamp()
+{
+	const u64 parts[] = {HostMemoryMap::MainSize, HostMemoryMap::CodeSize, sizeof(microVU), sizeof(microBlock), sizeof(VURegs),
+		mVUplaceSlotCapacity, static_cast<u64>(mVUModelStubCount)};
+	return static_cast<u32>(XXH3_64bits(parts, sizeof(parts)));
+}
+
 static PackHeader MakeHeader(u32 vu, const XXH128_hash_t& sentinel)
 {
 	PackHeader h = {};
+	// A record's image fixups are offsets into the build that wrote it.
+	u64 buildLo, buildHi;
+	mVUPersist::GetBuildId(buildLo, buildHi);
+	h.buildTag = buildLo ^ buildHi;
+	h.pageSize = static_cast<u32>(__pagesize);
+	h.layoutStamp = LayoutStamp();
 	h.magic = kPackMagic;
 	h.formatVersion = kProgCacheFormatVersion;
 	h.compilerAbiVersion = kMvuCompilerAbiVersion;
@@ -439,6 +463,7 @@ static void DeleteLeftovers(State& s)
 struct LoadedRecord
 {
 	Blob program, sidecar;
+	u8 kind = kRecordProgram; // of `program`
 	u32 programRecord = 0, sidecarRecord = 0;
 	u64 order = 0; // the place in the file of the newer of the two
 };
@@ -513,7 +538,7 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 			}
 			RecordHeader h;
 			if (fileSize - off < sizeof(h) || std::fread(&h, sizeof(h), 1, fp.get()) != 1 || h.magic != kRecordMagic ||
-				(h.kind != kRecordProgram && h.kind != kRecordSidecar) || h.length > fileSize - off - sizeof(h))
+				(h.kind != kRecordProgram && h.kind != kRecordSidecar && h.kind != kRecordBody) || h.length > fileSize - off - sizeof(h))
 			{
 				torn = true;
 				break;
@@ -527,8 +552,10 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 			}
 			const u32 recordSize = static_cast<u32>(sizeof(h) + h.length);
 			LoadedRecord& r = recs[h.hash];
-			Blob& slot = (h.kind == kRecordProgram) ? r.program : r.sidecar;
-			u32& slotSize = (h.kind == kRecordProgram) ? r.programRecord : r.sidecarRecord;
+			Blob& slot = (h.kind != kRecordSidecar) ? r.program : r.sidecar;
+			u32& slotSize = (h.kind != kRecordSidecar) ? r.programRecord : r.sidecarRecord;
+			if (h.kind != kRecordSidecar)
+				r.kind = h.kind;
 			live -= slotSize;
 			slot = std::move(data);
 			slotSize = recordSize;
@@ -563,8 +590,11 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 		if (r.program && !e.program)
 		{
 			e.program = std::move(r.program);
-			e.shape = mVUPersist::ImageShape(e.program.data, e.program.size);
+			e.kind = r.kind;
+			e.shape = r.kind == kRecordProgram ? mVUPersist::ImageShape(e.program.data, e.program.size) : 0;
 			e.programRecord = r.programRecord;
+			if (r.kind == kRecordBody)
+				p->byRoot.emplace(kv.first.low64, kv.first.high64);
 			took = true;
 		}
 		// (a sidecar queued this session is newer than the file's)
@@ -748,6 +778,13 @@ static void Compact(State& s, std::unique_lock<std::mutex>& lock, Pack& p, size_
 			e.sidecar = fresh.Copy(e.sidecar.data, e.sidecar.size);
 	}
 	p.arena = std::move(fresh);
+	if (evicted)
+	{
+		p.byRoot.clear();
+		for (const auto& kv : p.table)
+			if (kv.second.kind == kRecordBody && kv.second.program)
+				p.byRoot.emplace(kv.first.low64, kv.first.high64);
+	}
 	s.st.evicted += evicted;
 	if (evicted)
 		Console.WriteLn("mVUProgCache[%u]: %s reached the RAM cap; dropped the %" PRIu64 " entries used longest ago",
@@ -783,7 +820,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 	{
 		Entry& e = kv.second;
 		if (e.program && (rewrite || e.programDirty))
-			order.push_back({e.use, {kv.first, kRecordProgram, e.program, e.programDirty}});
+			order.push_back({e.use, {kv.first, static_cast<RecordKind>(e.kind), e.program, e.programDirty}});
 		if (e.sidecar && (rewrite || e.sidecarDirty))
 			order.push_back({e.use, {kv.first, kRecordSidecar, e.sidecar, e.sidecarDirty}});
 		e.programDirty = e.sidecarDirty = false;
@@ -896,7 +933,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 		if (it == p.table.end())
 			continue;
 		Entry& e = it->second;
-		const bool program = w.kind == kRecordProgram;
+		const bool program = w.kind != kRecordSidecar;
 		const Blob& now = program ? e.program : e.sidecar;
 		u32& record = program ? e.programRecord : e.sidecarRecord;
 		if (i < written && ok)
@@ -1065,6 +1102,8 @@ static void CloseImpl(State& s, Clock::time_point deadline)
 	}
 	StopWriter(s, deadline);
 	std::lock_guard<std::mutex> lock(s.mu);
+	if (s.pack)
+		s.st.fileBytes = s.pack->fileBytes;
 	s.pack.reset();
 	s.retiring.clear();
 	s.initialized = false;
@@ -1437,7 +1476,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 			return nullptr;
 		WaitForLoad(s, lock, *p);
 		auto it = p->table.find(contentHash);
-		if (it == p->table.end())
+		if (it == p->table.end() || it->second.kind != kRecordProgram)
 		{
 			s.st.misses++;
 			return nullptr;
@@ -1487,6 +1526,94 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 	return prog;
 }
 
+bool BodiesEnabled(u32 vu_index)
+{
+	const State& s = g_state[vu_index & 1];
+	return s.initialized && s.enabled;
+}
+
+// A body's key: the routine's root hash, and a hash of the record.
+static XXH128_hash_t BodyKey(u64 rootHash, const u8* data, size_t size)
+{
+	XXH128_hash_t key;
+	key.low64 = rootHash;
+	key.high64 = XXH3_64bits(data, size);
+	return key;
+}
+
+bool StoreBody(u32 vu_index, u64 rootHash, const u8* data, size_t size)
+{
+	State& s = g_state[vu_index & 1];
+	std::lock_guard<std::mutex> lock(s.mu);
+	if (!s.initialized || !s.enabled || !s.pack)
+		return false;
+	Pack& p = *s.pack;
+	const XXH128_hash_t key = BodyKey(rootHash, data, size);
+	if (auto it = p.table.find(key); it != p.table.end() && it->second.program)
+	{
+		it->second.use = ++p.useClock;
+		return true;
+	}
+	if (!MayStore(s, p, size))
+		return false;
+	Entry& e = p.table[key];
+	e.program = p.arena.Copy(data, size);
+	e.kind = kRecordBody;
+	e.use = ++p.useClock;
+	e.programDirty = true;
+	p.byRoot.emplace(key.low64, key.high64);
+	s.st.bodiesStored++;
+	return true;
+}
+
+void FetchBodies(u32 vu_index, u64 rootHash, std::vector<std::vector<u8>>& out)
+{
+	State& s = g_state[vu_index & 1];
+	std::unique_lock<std::mutex> lock(s.mu);
+	if (!s.initialized || !s.enabled || !s.pack)
+		return;
+	const std::shared_ptr<Pack> p = s.pack;
+	WaitForLoad(s, lock, *p);
+	std::vector<std::pair<u64, Entry*>> found;
+	const auto range = p->byRoot.equal_range(rootHash);
+	for (auto it = range.first; it != range.second; ++it)
+	{
+		XXH128_hash_t key;
+		key.low64 = rootHash;
+		key.high64 = it->second;
+		const auto e = p->table.find(key);
+		if (e != p->table.end() && e->second.kind == kRecordBody && e->second.program)
+			found.push_back({e->second.use, &e->second});
+	}
+	// Oldest first: a routine's later bodies are filed after its earlier ones.
+	std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+	for (auto& f : found)
+	{
+		const Blob& b = f.second->program;
+		out.emplace_back(b.data, b.data + b.size);
+		s.st.bodiesServed++;
+	}
+	// (after the sort, so the order among them is kept for the next session)
+	for (auto& f : found)
+		f.second->use = ++p->useClock;
+}
+
+void DropBody(u32 vu_index, u64 rootHash, const u8* data, size_t size)
+{
+	State& s = g_state[vu_index & 1];
+	std::lock_guard<std::mutex> lock(s.mu);
+	if (!s.initialized || !s.enabled || !s.pack)
+		return;
+	Pack& p = *s.pack;
+	const auto it = p.table.find(BodyKey(rootHash, data, size));
+	if (it == p.table.end() || it->second.kind != kRecordBody)
+		return;
+	// (its record in the file is superseded: a rewrite leaves it out)
+	p.liveBytes -= std::min<u64>(it->second.programRecord, p.liveBytes);
+	p.table.erase(it);
+	s.st.bodiesDropped++;
+}
+
 void ObserveDispatchHash(microVU& mVU, const XXH128_hash_t& contentHash,
                           u32 startPC_bytes)
 {
@@ -1514,6 +1641,7 @@ Stats GetStats(u32 vu_index)
 	out.entries = s.pack ? s.pack->table.size() : 0;
 	out.ramBytes = s.pack ? s.pack->arena.used : 0;
 	out.ramBlocks = s.pack ? s.pack->arena.blocks.size() : 0;
+	out.fileBytes = s.pack ? s.pack->fileBytes : s.st.fileBytes;
 	return out;
 }
 
@@ -1651,6 +1779,7 @@ void DumpStats(const microVU& mVU, const char* tag)
 		"programs(saves/stored/hits/known/misses/missing/rejects)=%llu/%llu/%llu/%llu/%llu/%llu/%llu "
 		"dispatch(probes/avail)=%llu/%llu "
 		"sidecars(reads/stored/storedKiB/skips)=%llu/%llu/%llu/%llu "
+		"bodies(stored/served/dropped)=%llu/%llu/%llu fileKiB=%llu "
 		"written(flushes/records/KiB/rewrites/failures)=%llu/%llu/%llu/%llu/%llu "
 		"close(deadlineHit/dropped)=%llu/%llu leftovers(files/KiB)=%llu/%llu cap(evicted/refused)=%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.entries, static_cast<double>(s.ramBytes) / (1024.0 * 1024.0),
@@ -1663,6 +1792,8 @@ void DumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.dispatchProbes, (unsigned long long)s.dispatchIndexAvail,
 		(unsigned long long)s.sidecarReads, (unsigned long long)s.sidecarWrites,
 		(unsigned long long)(s.sidecarWriteBytes / 1024), (unsigned long long)s.sidecarSkips,
+		(unsigned long long)s.bodiesStored, (unsigned long long)s.bodiesServed, (unsigned long long)s.bodiesDropped,
+		(unsigned long long)(s.fileBytes / 1024),
 		(unsigned long long)s.flushes, (unsigned long long)s.recordsWritten, (unsigned long long)(s.bytesWritten / 1024),
 		(unsigned long long)s.rewrites, (unsigned long long)s.writeFailures,
 		(unsigned long long)s.closeDeadlineHit, (unsigned long long)s.recordsDropped,

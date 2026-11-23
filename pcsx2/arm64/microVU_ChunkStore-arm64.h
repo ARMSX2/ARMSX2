@@ -36,7 +36,12 @@
 // and the blocks microVU compiled around them, recorded from one build and
 // placed the same way, in preference to the plain body
 // (vuaot/microVU_VuAot-arm64.inl). The store is not asked while that build
-// runs. It lives in RAM and is emptied by every recompiler reset.
+// runs.
+//
+// The store is emptied by every recompiler reset. With the VU program cache
+// on, each body is also a record of the cache's pack on disk, and the first
+// lookup of a routine after a reset, in this session or a later one, makes
+// its bodies again from the records (microVU_ChunkPack-arm64.inl).
 namespace mVUChunkStore
 {
 	struct Stats
@@ -79,10 +84,29 @@ namespace mVUChunkStore
 		u64 tieredHits = 0;
 		u64 tieredPlaced = 0;
 		u64 tieredReAimed = 0;
+		// The disk pack. Bodies written to it and their record bytes; bodies not
+		// written because a copy could not be patched to run in another
+		// process; bodies made from its records, their code, and the time
+		// making them took; records refused.
+		u64 packSaved = 0;
+		u64 packSavedBytes = 0;
+		u64 packUnpackable = 0;
+		u64 packLoaded = 0;
+		u64 packLoadedCodeBytes = 0;
+		u64 packLoadNs = 0;
+		u64 packRejected = 0;
+		// The first placement of a tiered body in this process: how many
+		// outermost compiles had been asked for by then, and how many of them
+		// the JIT compiled. 0 when none was placed.
+		u64 firstTieredEpisode = 0;
+		u64 firstTieredCompiles = 0;
 	};
 	Stats GetStats();
 
 #ifdef PCSX2_RECOMPILER_TESTS
+	// Whether `data` passes the checks a pack record has to pass before a body
+	// is made of it.
+	bool TestParseRecord(const u8* data, size_t size);
 	// The JR/JALR targets (byte addresses, ascending) the blocks at `blockPC`
 	// of the program VU1 ran last recorded as their own (microBlock::jumpTargets).
 	std::vector<u32> TestJumpTargets(u32 blockPC);

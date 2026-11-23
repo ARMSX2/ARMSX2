@@ -444,6 +444,23 @@ void mVUvuAotOnBodyPlaced(microVU&, bool droppedSticky)
 		s_trip.rebuildDue.store(true, std::memory_order_release);
 }
 
+void mVUvuAotOnBodyLoaded(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUChunkBody> body)
+{
+	if (head.tiered.size() >= kMaxBodiesPerHead)
+		return;
+	body->id = head.nextBodyId++;
+	if (!body->declined)
+	{
+		mVU.chunkStore->tieredBodies++;
+		mVU.chunkStore->tieredCodeBytes += body->codeBytes;
+		s_vuaot.stats.bodiesLoaded++;
+		// (its copies look for new jump targets as those of a body built here do)
+		head.next[1] = head.runs[1] + vuaot::live::kRetierCheckMask + 1;
+	}
+	head.tiered.push_back(std::move(body));
+	head.serial++;
+}
+
 // The copy already runs region code from that block on: a job that finished
 // for the routine and is waiting for a copy is not built on top of it. A copy
 // that is not taken in may ask again, as after any job that came to nothing.
@@ -1169,12 +1186,16 @@ static void vuAotPatchBranch(u8* at, const void* to, std::map<const void*, const
 {
 	u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(at));
 	if (vuaot::bg::PatchRel26(insn, at, to))
+	{
+		mVUPersist::NoteBranch(microVU1, at, to);
 		return;
+	}
 	auto it = veneers.find(to);
 	if (it == veneers.end())
 	{
 		const u8* v = armGetCurrentCodePointer();
-		armAsm->Mov(a64::x16, reinterpret_cast<uintptr_t>(to));
+		// (through the address helper, so the chunk store's recorder sees it)
+		armMoveAddressToReg(a64::x16, to);
 		armAsm->Br(a64::x16);
 		it = veneers.emplace(to, v).first;
 		s_vuaot.stats.veneers++;
@@ -1234,7 +1255,12 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 	{
 		u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(base + f.offset));
 		if (f.kind == vuaot::bg::Fixup::IntraAbs)
+		{
 			pxAssertRel(vuaot::bg::PatchAbsMov(insn, reinterpret_cast<u64>(base + f.value)), "vu-aot: an address in a region is not where its fixup says");
+			mVUPersist::NoteMovRun(mVU, base + f.offset, 4, base + f.value);
+		}
+		else if (f.kind == vuaot::bg::Fixup::OutsideAbs)
+			mVUPersist::NoteMovRun(mVU, base + f.offset, f.id, reinterpret_cast<const void*>(f.value));
 		else if (f.kind == vuaot::bg::Fixup::PlaceStub)
 			pxAssertRel(vuaot::bg::PatchPlaceStub(insn, placeWord), "vu-aot: a region entry stub is not where its fixup says");
 		else if (f.kind == vuaot::bg::Fixup::SlotMovz)
@@ -1277,8 +1303,11 @@ static void vuAotPlace(microVU& mVU, VuAotJob& j, microBlock* rootReal)
 		}
 	for (const vuaot::bg::Fixup& f : j.fixups)
 		if (f.kind == vuaot::bg::Fixup::SiteAbs)
+		{
 			pxAssertRel(vuaot::bg::PatchAbsMov(reinterpret_cast<u32*>(armGetWritableCodePtr(base + f.offset)), reinterpret_cast<u64>(target[f.id])),
 				"vu-aot: an address in a region is not where its fixup says");
+			mVUPersist::NoteMovRun(mVU, base + f.offset, 4, target[f.id]);
+		}
 
 	// The branches to placeholders and to the outside world (through a veneer
 	// placed after the code when out of reach).
@@ -1349,7 +1378,10 @@ static void vuAotCollectFinished()
 		if (j->wrapped)
 			head.attempts++;
 		else
+		{
 			head.tiered.push_back(std::move(mark));
+			mVUchunkPackSave(microVU1, j->key, mVUchunkRootHashOf(was[rootWord], was[rootWord + 1], &j->key), *head.tiered.back());
+		}
 	}
 }
 
@@ -1436,6 +1468,7 @@ static bool vuAotBuildBody(microVU& mVU, microProgram& prog, mVUChunkHead& head,
 		j.retier ? "re-tier" : "tier-up", j.pc, head.runs[0] + head.runs[1], head.jumpRuns, j.regions, body->codeBytes,
 		body->droppedSticky ? ", sticky STATUS byte dropped" : "");
 	head.tiered.push_back(std::move(body));
+	mVUchunkPackSave(mVU, j.key, mVUchunkRootHash(mVU, j.pc, &j.key), *head.tiered.back());
 	head.serial++;
 	if (j.retier)
 		head.retiers++;

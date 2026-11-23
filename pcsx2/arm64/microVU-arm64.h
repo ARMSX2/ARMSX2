@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <arm_neon.h>
 #include <cstring>
@@ -801,6 +802,14 @@ struct mVUChunkBody
 	// block's distance from the root in bytes -> the targets' distances,
 	// ascending.
 	std::map<u32, std::vector<u32>> targets;
+
+	// For the disk pack (microVU_ChunkPack-arm64.inl). Where the code starts;
+	// every host address in it, when `packable`: a copy loaded in another
+	// process can be patched to run there. `inPack`: the pack holds it.
+	u8* code = nullptr;
+	std::vector<mVUPersist::PersistFixup> fixups;
+	bool packable = false;
+	bool inPack = false;
 };
 
 // One routine: a root block (its entry state and its first pair) and the
@@ -858,6 +867,11 @@ struct mVUChunkStoreData
 	std::unique_ptr<mVUChunkBody> built;
 	// The root block of the copy being moved onto a tiered body (mVUchunkReAimCopy).
 	microBlock* placingRoot = nullptr;
+	// The disk pack (microVU_ChunkPack-arm64.inl): the root hashes whose
+	// records have been asked for since the store was last emptied.
+	std::unordered_set<u64> packAsked;
+	std::vector<u8> scratchRecord;
+	std::vector<std::vector<u8>> scratchRecords;
 };
 
 // Slots the array holds, and the count at which the next dispatcher exit
@@ -1432,6 +1446,9 @@ extern void  mVUvuAotOnBodyPlaced(microVU& mVU, bool droppedSticky);
 // A copy's block that is the root of `head`'s routine became a node of
 // another routine's tiered body.
 extern void  mVUvuAotOnRootCovered(mVUChunkHead& head);
+// A tiered body, or the tier's "no region" mark, came back from the disk pack
+// for `head`'s routine: files it as the tier files one it built.
+extern void  mVUvuAotOnBodyLoaded(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUChunkBody> body);
 extern void  mVUvuAotOnJumpMiss(microVU& mVU);
 extern void  mVUvuAotOnBail();
 extern void  mVUvuAotOnClose(microVU& mVU);

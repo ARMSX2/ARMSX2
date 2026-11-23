@@ -414,11 +414,11 @@ TEST_F(MvuProgCacheDisk, AProgramThatGrewIsStoredAgainAndOneThatDidNotIsNot)
 	EXPECT_EQ(mVUProgCache::GetStats(0).payloadWrites, 2u) << "the grown program was not stored again";
 }
 
-TEST_F(MvuProgCacheDisk, AnImageOfAnotherBuildIsRefusedAndReplaced)
+TEST_F(MvuProgCacheDisk, APackOfAnotherBuildIsNotReadAndIsReplaced)
 {
-	// An image's fixups are offsets into the module of the build that recorded it. Another build refuses
-	// it, compiles the program as new, and its next save replaces the image. The build after that loads
-	// the replacement.
+	// An image's fixups are offsets into the module of the build that recorded it, and the pack's header
+	// names that build. Another build does not read the pack, compiles the program as new, and its next
+	// write starts the file again. The session after that loads the replacement.
 	VuTestHarness h(0);
 	SeedAndLoad(h);
 	h.Run();
@@ -429,18 +429,18 @@ TEST_F(MvuProgCacheDisk, AnImageOfAnotherBuildIsRefusedAndReplaced)
 	RecompilerTestEnvironment::ResetVuBlockCache(0);
 	mVUProgCache::FlushSidecars(0);
 	ASSERT_EQ(mVUProgCache::GetStats(0).payloadWrites, 1u);
-	NewSession();
 
 	mVUPersist::TestOverrideBuildId(true, 0x1234, 0x5678);
+	NewSession();
+	EXPECT_EQ(mVUProgCache::GetStats(0).otherFormat, 1u) << "the other build's pack was read";
 	EXPECT_GT(RunAgain(h), 0u) << "the other build's image was used";
-	auto cstats = mVUProgCache::GetStats(0);
-	EXPECT_GE(cstats.payloadRejects, 1u);
-	EXPECT_EQ(cstats.payloadHits, 0u);
+	EXPECT_EQ(mVUProgCache::GetStats(0).payloadHits, 0u);
 	EXPECT_TRUE(DiffVu(fresh_jit, h.JitSnapshot(), VuDiffMode::Strict).empty());
 
 	RecompilerTestEnvironment::ResetVuBlockCache(0); // saves
-	EXPECT_EQ(mVUProgCache::GetStats(0).payloadWrites, 1u) << "the refused image was not replaced";
+	EXPECT_EQ(mVUProgCache::GetStats(0).payloadWrites, 1u) << "the program was not stored for the new build";
 	NewSession();
+	EXPECT_EQ(mVUProgCache::GetStats(0).otherFormat, 0u) << "the pack was not replaced";
 	EXPECT_EQ(RunAgain(h), 0u) << "the build that saved the replacement could not load it";
 	EXPECT_GE(mVUProgCache::GetStats(0).payloadHits, 1u);
 	mVUPersist::TestOverrideBuildId(false, 0, 0);

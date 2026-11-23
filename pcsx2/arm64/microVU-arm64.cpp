@@ -2875,6 +2875,12 @@ MVU_MACRO_EMIT_ADAPTER(RXOR,  false)
 #include "microVU_Persist-arm64.inl"
 
 //------------------------------------------------------------------
+// The VU1 chunk store's records in the pack: needs the fixup forms and the
+// patcher above.
+//------------------------------------------------------------------
+#include "microVU_ChunkPack-arm64.inl"
+
+//------------------------------------------------------------------
 // vu-aot live tier — tier-up policy and the glue between microVU's
 // program/block manager and vu-aot's regions. Same single-TU inclusion
 // pattern (it needs microVU's program and block types, mVUblockFetch and the

@@ -141,6 +141,7 @@ namespace vuaot
 			u64 jobsDone = 0;
 			u64 jobsDeclined = 0;     // the region builder declined the root
 			u64 built = 0;            // jobs that became a tiered body
+			u64 bodiesLoaded = 0;     // tiered bodies made from the disk pack's records
 			// Finished jobs thrown away: made before a reset (stale), for a routine no copy of
 			// which was entered again (memory), for a root that another routine's body took in
 			// as a node meanwhile (covered), made with the sticky

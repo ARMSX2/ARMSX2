@@ -84,7 +84,9 @@ namespace
 		u32           vuIndex;
 		XXH128_hash_t optionsSentinel;
 		char          archTag[16];
-		u8            reserved[16];
+		u64           buildTag;
+		u32           pageSize;
+		u32           layoutStamp;
 	};
 	struct RecordHeaderMirror
 	{
@@ -311,6 +313,9 @@ TEST(ProgCachePack, a_pack_of_another_format_is_replaced)
 		{"compilerAbiVersion", [](PackHeaderMirror& h) { h.compilerAbiVersion ^= 0x100u; }},
 		{"vuIndex", [](PackHeaderMirror& h) { h.vuIndex = 0; }},
 		{"archTag", [](PackHeaderMirror& h) { std::strncpy(h.archTag, "x86-64", sizeof(h.archTag)); }},
+		{"buildTag", [](PackHeaderMirror& h) { h.buildTag ^= 1u; }},
+		{"pageSize", [](PackHeaderMirror& h) { h.pageSize = h.pageSize == 4096 ? 16384 : 4096; }},
+		{"layoutStamp", [](PackHeaderMirror& h) { h.layoutStamp ^= 0x10u; }},
 	};
 	for (const Poison& poison : poisons)
 	{

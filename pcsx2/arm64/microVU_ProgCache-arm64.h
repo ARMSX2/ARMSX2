@@ -22,7 +22,7 @@ struct microProgram;
 //
 // One pack file per game, VU and options sentinel:
 //   $EmuFolders::Cache/vu_jit/packs/<title>/vu{0,1}-<sentinel hex>.pack
-// A pack is a header (format, compiler ABI, VU, sentinel, arch) and then an
+// A pack is a header (format, compiler ABI, VU, sentinel, arch, build, page size, layout) and then an
 // append-only log of records, each a program's serialized block graph (the
 // mVUPersist image) or its vu-aot sidecar, keyed by the program's content hash
 // and checksummed. The last record of a kind for a hash wins; a record cut
@@ -49,7 +49,9 @@ namespace mVUProgCache
 	// 5: one pack per game, VU and sentinel (a log of program and sidecar
 	//    records) in place of a directory per VU and sentinel holding an
 	//    INDEX, a .vuprog per program and a .vuaot per sidecar.
-	static constexpr u32 kProgCacheFormatVersion = 5;
+	// 6: the header names the build, the host page size and a layout stamp; a VU1 pack holds the chunk
+	//    store's bodies, one record each.
+	static constexpr u32 kProgCacheFormatVersion = 6;
 
 	// The game whose pack the next Init or Rekey opens: its serial and CRC (both empty for none).
 	// Called with the disc details, before the VM boot's VU reset.
@@ -131,6 +133,20 @@ namespace mVUProgCache
 	// off. Then the sidecars go, and the whole cache with them when nothing else keeps it
 	// (`programCacheStillOn` is EnableVUProgramCache after the change).
 	ClearResult OnVuAotSettingChanged(bool wasOn, bool isOn, bool programCacheStillOn);
+
+	// The VU1 chunk store's bodies (microVU_ChunkPack-arm64.inl): one record each, kept under the hash of
+	// the routine's root, so the records of a routine are found by the hash a store lookup already has.
+	//
+	// Whether the cache is up for this VU.
+	bool BodiesEnabled(u32 vu_index);
+	// Stores a body's record in the table (RAM; the writer puts it on disk). False when the cache is off
+	// or the table is full.
+	bool StoreBody(u32 vu_index, u64 rootHash, const u8* data, size_t size);
+	// Appends the records kept under `rootHash`, oldest first. Waits for the pack's read as a program
+	// lookup does.
+	void FetchBodies(u32 vu_index, u64 rootHash, std::vector<std::vector<u8>>& out);
+	// A record FetchBodies returned cannot be used: takes it out of the table.
+	void DropBody(u32 vu_index, u64 rootHash, const u8* data, size_t size);
 
 	// Dispatch-time probe used by mVUsearchProg on the in-process-miss
 	// path: whether the table holds an image for the program the dispatcher
@@ -225,6 +241,10 @@ namespace mVUProgCache
 		u64  sidecarWrites      = 0; // sidecars stored (built)
 		u64  sidecarWriteBytes  = 0;
 		u64  sidecarSkips       = 0; // requests whose build returned nothing
+		u64  bodiesStored       = 0; // chunk store bodies stored (new ones)
+		u64  bodiesServed       = 0; // ...handed to the store
+		u64  bodiesDropped      = 0; // ...the store refused
+		u64  fileBytes          = 0; // the open pack's size on disk (after Close: the last one's)
 		u64  flushes            = 0; // writer passes that wrote something
 		u64  recordsWritten     = 0;
 		u64  bytesWritten       = 0;

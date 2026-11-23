@@ -30,7 +30,8 @@ struct MvuPersistLog;
 //   targets  one of the program's own microBlock objects (heap), another
 //            block's code entry, a per-VU dispatcher stub, an offset into the
 //            emulator's module image, an offset into the data arena, the
-//            first placement slot of a chunk.
+//            first placement slot of a chunk, an offset into the VU1 chunk
+//            store body the code is part of.
 //
 // VU1 code reaches its own block objects and the blocks outside its chunk
 // through placement slots (microVU::placeSlots). The chunk records what each
@@ -51,6 +52,21 @@ struct MvuPersistLog;
 // itself dropped).
 namespace mVUPersist
 {
+	// One instruction (or run) that carries a host address, and what the
+	// address is: see the forms and targets in microVU_Persist-arm64.inl.
+	struct PersistFixup
+	{
+		u32 codeOffset; // offset of the first patched insn from the start of the code it belongs to
+		u8 form;
+		u8 target;
+		u8 width; // kFormMovRun: instruction count (1..4)
+		u8 _pad0;
+		u32 index; // block index (block targets) or stub id
+		u32 _pad1;
+		s64 offset; // byte offset from the target's base (block object, image, data arena, body)
+	};
+	static_assert(sizeof(PersistFixup) == 24);
+
 	// Master gate for emit-time recording. Default off. In production,
 	// VMManager syncs it from the EmuCore/CPU/Recompiler EnableVUProgramCache
 	// or EnableVUAot config bool (see SyncRecordingFromConfig); tests and
@@ -108,6 +124,25 @@ namespace mVUPersist
 	void OnChunkEnd(microVU& mVU, const mVUChunkSlot* slots, size_t count);
 	// The open episode emitted code the recorder cannot describe.
 	void DropEpisode(microVU& mVU, const char* reason);
+
+	// --- VU1 chunk store bodies ---
+	//
+	// A body is the code one outermost VU1 compile emits. Between BeginBody and
+	// EndBody the recorder also judges every address by whether a copy of the
+	// body alone, loaded in another process, could be patched to hold it.
+
+	// An outermost VU1 compile starts emitting at `start`.
+	void BeginBody(microVU& mVU, u8* start);
+	// It returned, with the cursor at `end`. Fills `out` with the body's
+	// fixups, offsets from `start`, and returns true. False when recording is
+	// off or the body holds an address a copy could not be patched for (a
+	// heap pointer, a branch to code before the body).
+	bool EndBody(microVU& mVU, u8* end, std::vector<PersistFixup>& out);
+	// Code copied into the open body (VU AOT's regions) carries `addr` in a
+	// MOVZ/MOVK run of `width` instructions at `at`, or branches to `target`
+	// with the B or BL at `at`.
+	void NoteMovRun(microVU& mVU, u8* at, u32 width, const void* addr);
+	void NoteBranch(microVU& mVU, u8* at, const void* target);
 
 	// --- Serialization / hydration ---
 

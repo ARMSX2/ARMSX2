@@ -11,6 +11,10 @@
 
 void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC);
 static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept);
+// The disk pack (microVU_ChunkPack-arm64.inl).
+static bool mVUchunkPackOn(microVU& mVU);
+static void mVUchunkPackSave(microVU& mVU, const microRegInfo& rootState, u64 rootHash, mVUChunkBody& b);
+static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& state);
 
 static mVUChunkStore::Stats s_mVUchunkStats;
 
@@ -66,6 +70,7 @@ static void mVUchunkStoreClear(microVU& mVU)
 	{
 		store->heads.clear();
 		store->index.clear();
+		store->packAsked.clear();
 		store->built.reset();
 		store->codeBytes = 0;
 		store->plainBodies = 0;
@@ -84,7 +89,9 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		"miss(noEntry/bounds/readSet/blockExists/linkTarget/noRoom)=%llu/%llu/%llu/%llu/%llu/%llu "
 		"feed(added/repeats/wrapped/other/evicted)=%llu/%llu/%llu/%llu/%llu entries=%llu "
 		"codeKiB(compiled/installed/stubs/entries)=%llu/%llu/%llu/%llu cacheUsedKiB=%llu slots=%u "
-		"tiered(bodies/codeKiB/placed/reaimed)=%llu/%llu/%llu/%llu",
+		"tiered(bodies/codeKiB/placed/reaimed)=%llu/%llu/%llu/%llu "
+		"pack(saved/savedKiB/unpackable/loaded/loadedCodeKiB/loadMs/rejected)=%llu/%llu/%llu/%llu/%llu/%.2f/%llu "
+		"firstTiered(episode/compilesBefore)=%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.episodes, (unsigned long long)s.hits,
 		(unsigned long long)(s.episodes - s.hits), (unsigned long long)s.skipped,
 		(unsigned long long)s.missNoEntry, (unsigned long long)s.missBounds, (unsigned long long)s.missReadSet,
@@ -95,7 +102,10 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)(s.stubBytes / 1024), (unsigned long long)(s.entryCodeBytes / 1024),
 		(unsigned long long)((mVU.prog.x86ptr - mVU.prog.x86start) / 1024), mVU.placeSlotsUsed,
 		(unsigned long long)s.tieredBodies, (unsigned long long)(s.tieredCodeBytes / 1024),
-		(unsigned long long)s.tieredPlaced, (unsigned long long)s.tieredReAimed);
+		(unsigned long long)s.tieredPlaced, (unsigned long long)s.tieredReAimed,
+		(unsigned long long)s.packSaved, (unsigned long long)(s.packSavedBytes / 1024), (unsigned long long)s.packUnpackable,
+		(unsigned long long)s.packLoaded, (unsigned long long)(s.packLoadedCodeBytes / 1024), static_cast<double>(s.packLoadNs) / 1e6,
+		(unsigned long long)s.packRejected, (unsigned long long)s.firstTieredEpisode, (unsigned long long)s.firstTieredCompiles);
 }
 
 // The bits of a lower instruction word the compiler reads at compile time.
@@ -121,9 +131,8 @@ static u32 mVUchunkRootLowerMask(u32 lower, u32 upper)
 // The index key: the root's entry state and the root pair. The root pair is
 // the one pair every compile from this root reads; the rest of the read set is
 // compared word by word.
-static u64 mVUchunkRootHash(microVU& mVU, u32 rootPC, const microRegInfo* state)
+static u64 mVUchunkRootHashOf(u32 lower, u32 upper, const microRegInfo* state)
 {
-	const u32* mem = reinterpret_cast<const u32*>(mVU.regs().Micro) + rootPC / 4;
 	struct
 	{
 		u8 state[sizeof(microRegInfo)];
@@ -131,9 +140,15 @@ static u64 mVUchunkRootHash(microVU& mVU, u32 rootPC, const microRegInfo* state)
 		u32 upper;
 	} key;
 	std::memcpy(key.state, state, sizeof(microRegInfo));
-	key.lower = mem[0] & mVUchunkRootLowerMask(mem[0], mem[1]);
-	key.upper = mem[1];
+	key.lower = lower & mVUchunkRootLowerMask(lower, upper);
+	key.upper = upper;
 	return XXH3_64bits(&key, sizeof(key));
+}
+
+static u64 mVUchunkRootHash(microVU& mVU, u32 rootPC, const microRegInfo* state)
+{
+	const u32* mem = reinterpret_cast<const u32*>(mVU.regs().Micro) + rootPC / 4;
+	return mVUchunkRootHashOf(mem[0], mem[1], state);
 }
 
 static bool mVUchunkStateEqual(const microRegInfo& a, const microRegInfo& b)
@@ -153,6 +168,7 @@ static void mVUchunkBegin(microVU& mVU)
 	ep.statusImm = 0;
 	ep.codeStart = armGetCurrentCodePointer();
 	ep.recording = true;
+	mVUPersist::BeginBody(mVU, ep.codeStart);
 
 	// A test's compile hooks emit code of their own, and a test that watches or
 	// instruments every compile has to see one. A compile for the block a
@@ -369,7 +385,12 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 	if (b.tiered)
 	{
 		mVUvuAotOnBodyPlaced(mVU, b.droppedSticky);
-		s_mVUchunkStats.tieredPlaced++;
+		mVUChunkStore::Stats& st = s_mVUchunkStats;
+		if (!st.tieredPlaced++)
+		{
+			st.firstTieredEpisode = st.episodes;
+			st.firstTieredCompiles = st.episodes - st.hits;
+		}
 	}
 	if (b.statusImm)
 		mVUvuAotOnStatusReader(mVU, b.statusImm);
@@ -457,6 +478,19 @@ static void* mVUchunkLookup(microVU& mVU, u32 rootPC, uptr pState)
 	const s32 rootPair = static_cast<s32>(rootPC / 8);
 	const auto rootBlock = [&]() { return mVUblocks[rootPair]->search(mVU, const_cast<microRegInfo*>(&state)); };
 
+	// The routine's bodies from an earlier session, the first time it is
+	// looked up. Their code goes in at the cursor, so what this compile emits
+	// starts after it.
+	if (mVUchunkPackOn(mVU))
+	{
+		mVUchunkPackFetch(mVU, rootPC, state);
+		if (ep.codeStart != armGetCurrentCodePointer())
+		{
+			ep.codeStart = armGetCurrentCodePointer();
+			mVUPersist::BeginBody(mVU, ep.codeStart);
+		}
+	}
+
 	int miss = mVUchunkMissNoEntry;
 	if (mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, state, false))
 	{
@@ -507,6 +541,8 @@ static void* mVUchunkLookup(microVU& mVU, u32 rootPC, uptr pState)
 static void mVUchunkEnd(microVU& mVU)
 {
 	mVUChunkEpisode& ep = mVU.chunk;
+	std::vector<mVUPersist::PersistFixup> fixups;
+	const bool packable = mVUPersist::EndBody(mVU, armGetCurrentCodePointer(), fixups);
 	if (!ep.recording)
 		return;
 	ep.recording = false;
@@ -643,6 +679,9 @@ static void mVUchunkEnd(microVU& mVU)
 	b.slotCount = static_cast<u32>(ep.slots.size());
 	b.codeBytes = codeBytes;
 	b.statusImm = ep.statusImm;
+	b.code = ep.codeStart;
+	b.fixups = std::move(fixups);
+	b.packable = packable;
 
 	// A build episode's body goes to the tier, which files it under its head.
 	if (ep.tiered)
@@ -694,4 +733,5 @@ static void mVUchunkEnd(microVU& mVU)
 	store.plainBodies++;
 	store.codeBytes += codeBytes;
 	st.fed++;
+	mVUchunkPackSave(mVU, rootState, mVUchunkRootHash(mVU, rootPC, &rootState), *head->plain.back());
 }

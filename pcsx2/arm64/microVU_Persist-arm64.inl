@@ -47,6 +47,7 @@ namespace mVUPersist
 		kTargetImage,           // image base + offset (code, data, bss of the emulator module)
 		kTargetData,            // data arena base + offset
 		kTargetPlacement,       // first slot of the chunk's placement number `index`
+		kTargetBody,            // the start of the VU1 chunk store body the code is in + offset
 		kTargetCount,
 	};
 
@@ -69,19 +70,6 @@ namespace mVUPersist
 		kStubExitFunctEBit = kStubModelBase + mVUModelStubCount,
 		kStubCount,
 	};
-
-	struct PersistFixup
-	{
-		u32 codeOffset; // chunk-relative offset of the first patched insn
-		u8 form;
-		u8 target;
-		u8 width; // kFormMovRun: instruction count (1..4)
-		u8 _pad0;
-		u32 index; // block index (block targets) or stub id
-		u32 _pad1;
-		s64 offset; // byte offset from the target's base (block object, image, data arena)
-	};
-	static_assert(sizeof(PersistFixup) == 24);
 
 	static u32 FixupSpanInsns(const PersistFixup& f)
 	{
@@ -764,12 +752,22 @@ namespace mVUPersist
 		bool active = false;
 		bool failed = false;
 		const char* failReason = nullptr;
+		// VU1: the chunk store body being compiled starts here (null between
+		// outermost compiles), the first fixup recorded since, and whether a
+		// copy of the body alone could not be patched.
+		u8* bodyStart = nullptr;
+		size_t bodyFirstFixup = 0;
+		bool bodyFailed = false;
+		const char* bodyFailReason = nullptr;
 
 		void Begin(microVU& m, u8* base)
 		{
 			pxAssert(!active);
 			mvu = &m;
 			chunkBase = base;
+			bodyStart = nullptr;
+			bodyFailed = false;
+			bodyFailReason = nullptr;
 			prog = nullptr;
 			log = nullptr;
 			fixups.clear();
@@ -780,13 +778,36 @@ namespace mVUPersist
 			failReason = nullptr;
 		}
 
-		void Fail(const char* reason)
+		// The program's log cannot describe the episode.
+		void FailLog(const char* reason)
 		{
 			if (!failed)
 			{
 				failed = true;
 				failReason = reason;
 			}
+		}
+
+		// A copy of the open body could not be patched.
+		void FailBody(const char* reason)
+		{
+			if (bodyStart && !bodyFailed)
+			{
+				bodyFailed = true;
+				bodyFailReason = reason;
+			}
+		}
+
+		void Fail(const char* reason)
+		{
+			FailLog(reason);
+			FailBody(reason);
+		}
+
+		bool InBody(const void* addr) const
+		{
+			const u8* a = static_cast<const u8*>(addr);
+			return bodyStart && a >= bodyStart && a < armGetCurrentCodePointer();
 		}
 
 		bool InSlab(const void* addr) const
@@ -837,6 +858,8 @@ namespace mVUPersist
 			AddressClass c;
 			if (EpisodeBlockHolding(addr) >= 0)
 			{
+				// (a body is shared by every placement: it can name no block)
+				FailBody("block object pointer");
 				// Heap: the whole address moves, low bits included, so no ADRP.
 				// The run is as wide as this pointer needs (two halfwords for a
 				// non-PIE brk heap below 4GB, three for a PIE heap or a thread's
@@ -887,6 +910,25 @@ namespace mVUPersist
 				fixups.push_back(f);
 				return;
 			}
+			// Region code holds addresses of its own code and of dispatcher
+			// stubs. A program image has no such fixup.
+			u8 stub_id = 0;
+			if (InBody(addr))
+			{
+				f.target = kTargetBody;
+				f.offset = static_cast<const u8*>(addr) - bodyStart;
+				fixups.push_back(f);
+				FailLog("code address in a chunk store body");
+				return;
+			}
+			if (bodyStart && ResolveStub(*mvu, addr, stub_id))
+			{
+				f.target = kTargetStub;
+				f.index = stub_id;
+				fixups.push_back(f);
+				FailLog("stub address in a chunk store body");
+				return;
+			}
 			Fail("move target lost between classify and emit");
 		}
 
@@ -908,8 +950,14 @@ namespace mVUPersist
 
 		void OnBranch(u8* at, const void* target, BranchForm form) override
 		{
-			if (InChunk(target))
+			if (InBody(target))
 				return; // relative distance preserved on relocation
+			if (InChunk(target))
+			{
+				// (inside the episode but before the body: another compile's code)
+				FailBody("branch to code before the body");
+				return;
+			}
 
 			PersistFixup f = {};
 			f.codeOffset = OffsetOf(at);
@@ -932,6 +980,7 @@ namespace mVUPersist
 					f.target = kTargetBlockEntry;
 					f.index = it->second;
 					fixups.push_back(f);
+					FailBody("direct branch to another chunk's block");
 					return;
 				}
 			}
@@ -969,7 +1018,7 @@ namespace mVUPersist
 			{
 				if (slots[i].kind != mVUslotBlock && slots[i].kind != mVUslotLink)
 				{
-					Fail("placement slot the image does not describe");
+					FailLog("placement slot the image does not describe");
 					return;
 				}
 				const microBlock* const blk = slots[i].target ? slots[i].target : slots[i].block;
@@ -995,7 +1044,7 @@ namespace mVUPersist
 				}
 				if (!found)
 				{
-					Fail("placement slot names an unrecorded block");
+					FailLog("placement slot names an unrecorded block");
 					return;
 				}
 				recs.push_back(rec);
@@ -1018,7 +1067,7 @@ namespace mVUPersist
 			// the recorder did not see. Nothing of it is persisted.
 			if (mVUvuAotBuilding(*mvu))
 			{
-				Fail("vu-aot build");
+				FailLog("vu-aot build");
 				return;
 			}
 			if (!prog)
@@ -1033,7 +1082,7 @@ namespace mVUPersist
 				// mVUsearchProg switched programs mid-episode (JR/JALR slow
 				// path). Splitting the chunk at the switch is possible but
 				// not worth it — drop the episode.
-				Fail("program switch mid-episode");
+				FailLog("program switch mid-episode");
 				return;
 			}
 
@@ -1224,7 +1273,68 @@ namespace mVUPersist
 	{
 		Recorder& r = s_recorder[mVU.index & 1];
 		if (r.active && armAddressRecorder == &r)
-			r.Fail(reason);
+			r.FailLog(reason);
+	}
+
+	void BeginBody(microVU& mVU, u8* start)
+	{
+		Recorder& r = s_recorder[mVU.index & 1];
+		if (!r.active || armAddressRecorder != &r)
+			return;
+		r.bodyStart = start;
+		r.bodyFirstFixup = r.fixups.size();
+		r.bodyFailed = false;
+		r.bodyFailReason = nullptr;
+	}
+
+	bool EndBody(microVU& mVU, u8* end, std::vector<PersistFixup>& out)
+	{
+		out.clear();
+		Recorder& r = s_recorder[mVU.index & 1];
+		if (!r.active || armAddressRecorder != &r || !r.bodyStart)
+			return false;
+		u8* const start = std::exchange(r.bodyStart, nullptr);
+		if (r.bodyFailed)
+		{
+			DevCon.WriteLn("mVUPersist: VU%u body not packable (%s)", mVU.index & 1, r.bodyFailReason);
+			return false;
+		}
+		const u32 lo = r.OffsetOf(start);
+		const u32 hi = r.OffsetOf(end);
+		for (size_t i = r.bodyFirstFixup; i < r.fixups.size(); i++)
+		{
+			PersistFixup f = r.fixups[i];
+			if (f.codeOffset < lo || f.codeOffset >= hi)
+				continue;
+			// (the body's own entry stubs are not entered in a copy: every
+			// placement of a copy has stubs of its own)
+			if (f.form == kFormPlaceStub)
+				continue;
+			f.codeOffset -= lo;
+			out.push_back(f);
+		}
+		std::sort(out.begin(), out.end(), [](const PersistFixup& a, const PersistFixup& b) { return a.codeOffset < b.codeOffset; });
+		return true;
+	}
+
+	void NoteMovRun(microVU& mVU, u8* at, u32 width, const void* addr)
+	{
+		Recorder& r = s_recorder[mVU.index & 1];
+		if (!r.active || armAddressRecorder != &r)
+			return;
+		u8 stub_id = 0;
+		if (r.EpisodeBlockHolding(addr) < 0 &&
+			(RegionOf(addr) != kTargetCount || r.InBody(addr) || ResolveStub(mVU, addr, stub_id)))
+			r.OnMovRun(at, width, addr);
+		else
+			r.Fail("address in copied code that is in no region");
+	}
+
+	void NoteBranch(microVU& mVU, u8* at, const void* target)
+	{
+		Recorder& r = s_recorder[mVU.index & 1];
+		if (r.active && armAddressRecorder == &r)
+			r.OnBranch(at, target, ArmAddressRecorder::BranchForm::Rel26);
 	}
 
 	//------------------------------------------------------------------
@@ -1696,7 +1806,7 @@ namespace mVUPersist
 			{
 				if (f.form >= kFormCount || f.target >= kTargetCount)
 					return nullptr;
-				if ((f.form == kFormPlaceStub) != (f.target == kTargetPlacement))
+				if ((f.form == kFormPlaceStub) != (f.target == kTargetPlacement) || f.target == kTargetBody)
 					return nullptr;
 				if (f.target == kTargetPlacement && f.index >= c.placements.size())
 					return nullptr;
