@@ -36,6 +36,7 @@ STORE_FILES = [
     "SettingsStore+GraphicsRuntime.swift",
     "SettingsStore+GraphicsState.swift",
     "SettingsStore+Ranges.swift",
+    "SettingsStore+RetroAchievements.swift",
     "SettingsStore+RumbleMigration.swift",
     "SettingsStore+Runtime.swift",
     "SettingsStore+Speedhacks.swift",

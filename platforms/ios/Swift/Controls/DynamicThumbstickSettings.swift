@@ -476,12 +476,8 @@ final class DynamicThumbstickSettings {
         let active = (state[.hardcoreActive] as? NSNumber)?.boolValue ?? false
         let preference = (state[.hardcorePreference] as? NSNumber)?.boolValue ?? false
         let achievementsEnabled = (state[.enabled] as? NSNumber)?.boolValue ??
-            ARMSX2Bridge.getINIBool("Achievements", key: "Enabled", defaultValue: false)
-        let persistedPreference = ARMSX2Bridge.getINIBool(
-            "Achievements",
-            key: "ChallengeMode",
-            defaultValue: false
-        )
+            SettingsStore._achievementsEnabledConfig.load()
+        let persistedPreference = SettingsStore._achievementsChallengeModeConfig.load()
         return active || ARMSX2Bridge.isRetroAchievementsHardcoreActive() ||
             (achievementsEnabled && (preference || persistedPreference))
     }
