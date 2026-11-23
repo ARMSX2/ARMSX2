@@ -10,8 +10,9 @@ struct ExternalGameDirectory: Identifiable, Hashable {
     let isDirectory: Bool
 }
 
+@MainActor
 @Observable
-final class ExternalGameLibrary: @unchecked Sendable {
+final class ExternalGameLibrary {
     static let shared = ExternalGameLibrary()
     static let didChangeNotification = Notification.Name("ARMSX2iOSExternalGameLibraryDidChange")
 
