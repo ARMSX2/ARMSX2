@@ -136,7 +136,7 @@ struct BackgroundContainerView: View {
     }
 
     private func generateVideoPoster(from url: URL) async {
-        let asset = AVAsset(url: url)
+        let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         do {
