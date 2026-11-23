@@ -87,6 +87,69 @@ const R5900::OPCODE& R5900::GetInstruction(u32 op)
 	return *opcode;
 }
 
+// A register jump (JR, JALR) whose register was written by the instruction
+// right before it, as a GPR load (LB..LQ, LWL..LDR) or an MFC0, costs 3 cycles
+// more than the table on an SCPH-30001: measured for LW, LD and LQ before JR,
+// LW before JALR, LD before JR RA and MFC0 before JR. With one instruction or
+// more between them, or with the register written by an ALU op right before,
+// the table's charge holds to within a cycle. A use of a load's result by
+// anything else costs no more than the table: the cycle it waits is the one
+// the model never takes off for pairing.
+//
+// Both engines decide it from the three words in memory, so they agree: the
+// word before the jump must not sit in a branch's delay slot, since the
+// instruction that ran before the jump is then not that word (a branch-likely
+// that was not taken nullified it).
+static constexpr u32 kJumpAfterLoadEighths = 3 * 8;
+
+static bool WritesGprAsLoadOrMfc0(u32 code, u32 reg)
+{
+	const u32 op = code >> 26;
+	const u32 rt = (code >> 16) & 31;
+	if (rt != reg)
+		return false;
+	switch (op)
+	{
+		case 0x1a: case 0x1b: // LDL, LDR
+		case 0x1e: // LQ
+		case 0x20: case 0x21: case 0x22: case 0x23: // LB, LH, LWL, LW
+		case 0x24: case 0x25: case 0x26: case 0x27: // LBU, LHU, LWR, LWU
+		case 0x37: // LD
+			return true;
+		case 0x10: // COP0: MFC0 is rs = 0
+			return ((code >> 21) & 31) == 0;
+		default:
+			return false;
+	}
+}
+
+u32 R5900::JumpAfterLoadEighths(u32 code, u32 prev, u32 prev2, u32 issue_mult)
+{
+	if ((code >> 26) != 0 || ((code & 0x3f) | 1) != 0x09) // SPECIAL JR (8) or JALR (9)
+		return 0;
+	const u32 rs = (code >> 21) & 31;
+	if (rs == 0 || !WritesGprAsLoadOrMfc0(prev, rs))
+		return 0;
+	const OPCODE& before = GetInstruction(prev2);
+	if (before.flags & IS_BRANCH)
+	{
+		const u32 type = before.flags & BRANCHTYPE_MASK;
+		if (type != BRANCHTYPE_SYSCALL && type != BRANCHTYPE_ERET)
+			return 0;
+	}
+	return kJumpAfterLoadEighths * issue_mult;
+}
+
+u32 R5900::JumpAfterLoadCharge(u32 pc, u32 code)
+{
+	// The two words before must be in the jump's own page, so reading them
+	// cannot fault.
+	if ((pc & 0xfff) < 8 || (code >> 26) != 0 || ((code & 0x3f) | 1) != 0x09)
+		return 0;
+	return JumpAfterLoadEighths(code, memRead32(pc - 4), memRead32(pc - 8),
+		2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+}
+
 const char * const R5900::bios[256]=
 {
 //0x00
