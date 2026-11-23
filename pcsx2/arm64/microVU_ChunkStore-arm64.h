@@ -83,5 +83,7 @@ namespace mVUChunkStore
 	// The JR/JALR targets (byte addresses, ascending) the blocks at `blockPC`
 	// of the program VU1 ran last recorded as their own (microBlock::jumpTargets).
 	std::vector<u32> TestJumpTargets(u32 blockPC);
+	// The routines (heads) the store holds.
+	size_t TestHeadCount();
 #endif
 } // namespace mVUChunkStore

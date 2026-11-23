@@ -1904,9 +1904,18 @@ _mVUt void* mVUexecute(u32 startPC, u32 cycles)
 	if (!result)
 	{
 		mVUopenCodeCache(mVU);
-		result = mVUsearchProg<vuIndex>(maskedPC, pState);
 		if constexpr (vuIndex == 1)
-			result = mVUvuAotAfterSearch(mVU, maskedPC, pState, result);
+		{
+			// The entry state this dispatch searched with. A compile in the
+			// search copies the entry state of every block it compiles into
+			// lpState, so lpState no longer holds it afterwards.
+			alignas(16) microRegInfo key;
+			std::memcpy(&key, &mVU.prog.lpState, sizeof(key));
+			result = mVUsearchProg<vuIndex>(maskedPC, pState);
+			result = mVUvuAotAfterSearch(mVU, maskedPC, (uptr)&key, result);
+		}
+		else
+			result = mVUsearchProg<vuIndex>(maskedPC, pState);
 		mVUcloseCodeCache(mVU);
 	}
 

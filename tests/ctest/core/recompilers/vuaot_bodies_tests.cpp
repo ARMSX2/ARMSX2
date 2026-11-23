@@ -611,6 +611,47 @@ TEST(VuAotBodies, CopiesShareHeatAndAnExistingCopyIsReAimed)
 	EXPECT_EQ(c2.bodies, 1u);
 }
 
+// The dispatch that compiles a routine counts on the routine's own head. The
+// compile's branch targets are compiled with entry states of their own, and
+// copy each into lpState: the slow path counts with the state the dispatch
+// searched with, not the one the last of them left.
+TEST(VuAotBodies, CompilingDispatchCountsOnTheRootsHead)
+{
+	for (const bool loop : {false, true})
+	{
+		SCOPED_TRACE(loop ? "loop" : "forward branch");
+		// An FMAC still in flight at the branch: the target's entry state
+		// differs from the root's in VF's pipeline counts.
+		const std::vector<VuOp> forward = {
+			P(VIADDIU_L(vi::vi2, vi::vi2, 1), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)), // 0
+			L(VB_L(+2)),                                                                      // 1: to 4
+			Nop(),                                                                            // 2
+			LoadViImm(vi::vi4, 0x44),                                                         // 3: skipped
+			EBit(LoadViImm(vi::vi6, 0x66)),                                                   // 4
+			Nop(),                                                                            // 5
+		};
+		const std::vector<VuOp> routine = loop ? LoopRoutine(3) : forward;
+		const VuSnapshot interp = InterpOf(1, kHome, routine, kHome);
+
+		TierScope on(true, true);
+		vuaot::live::SetTierUpRuns(1);
+		Jit jit(1, kHome, routine, kHome);
+		// (the harness's own runs have tiered the routine: start again from nothing)
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		const vuaot::live::Stats s0 = vuaot::live::GetStats();
+		jit.RunAt(kHome);
+		ExpectMatchesInterp(jit.h, interp, "first run");
+		const vuaot::live::Stats s1 = vuaot::live::GetStats();
+		EXPECT_EQ(mVUChunkStore::TestHeadCount(), 1u) << "the compiling dispatch made a head of its own";
+		EXPECT_EQ(s1.jobs - s0.jobs, 1u) << "the compiling dispatch was not counted";
+		EXPECT_EQ(s1.tierUps - s0.tierUps, s1.jobs - s0.jobs - (s1.jobsDeclined - s0.jobsDeclined))
+			<< "a job was made for a state the routine was not entered with";
+		jit.RunAt(kHome);
+		ExpectMatchesInterp(jit.h, interp, "second run");
+		EXPECT_EQ(mVUChunkStore::TestHeadCount(), 1u);
+	}
+}
+
 } // namespace recompiler_tests
 
 #endif

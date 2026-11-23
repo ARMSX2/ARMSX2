@@ -46,6 +46,12 @@ std::vector<u32> mVUChunkStore::TestJumpTargets(u32 blockPC)
 	std::sort(out.begin(), out.end());
 	return out;
 }
+
+size_t mVUChunkStore::TestHeadCount()
+{
+	const mVUChunkStoreData* store = microVU1.chunkStore.get();
+	return store ? store->heads.size() : 0;
+}
 #endif
 
 static void mVUchunkStoreClear(microVU& mVU)
