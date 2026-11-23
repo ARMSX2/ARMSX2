@@ -1611,12 +1611,13 @@ if(ARMSX2_IOS)
 		# iOS has no libpcap, so pcap_io.cpp is excluded above; reuse the (platform-
 		# agnostic) Android stub to supply the PCAPAdapter definitions DEV9 references.
 		Android/AndroidPcapStubs.cpp)
-	# MacOSStubs.cpp excludes itself on the embedded platforms (it is
-	# !TARGET_OS_IPHONE throughout), so what those need instead is here: the
+	# MacOSStubs.cpp holds the CocoaTools stubs every iOS and tvOS build
+	# compiles. A core also needs what AppleEmbeddedStubs.cpp adds: the
 	# optical drive CDVDdiscReader names, the sound CocoaTools would have
-	# played, and the downloader there is no libcurl for. Only for a core: the
-	# iOS app answers for all of it in its own IOS/HostImpls.mm, and two
-	# definitions of each is a duplicate symbol at link.
+	# played, and the downloader there is no libcurl for. The iOS app answers
+	# for all of it in platforms/ios/Runtime (HostImpls.mm and
+	# PlaySoundAsync.mm), and two definitions of each is a duplicate
+	# symbol at link.
 	if(ENABLE_LIBRETRO)
 		list(APPEND pcsx2Sources
 			Apple/AppleEmbeddedStubs.cpp)
