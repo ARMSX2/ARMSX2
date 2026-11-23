@@ -593,12 +593,14 @@ void JR()
 		if (add == 0x33ad48 || add == 0x35060c)
 			GoemonPreloadTlb();
 	}
+	cpuBlockCycles += R5900::JumpAfterLoadCharge(cpuRegs.pc - 4, cpuRegs.code);
 	doBranch(cpuRegs.GPR.r[_Rs_].UL[0]);
 }
 
 void JALR()
 {
 	const u32 temp = cpuRegs.GPR.r[_Rs_].UL[0];
+	cpuBlockCycles += R5900::JumpAfterLoadCharge(cpuRegs.pc - 4, cpuRegs.code);
 
 	if (_Rd_)  _SetLink(_Rd_);
 

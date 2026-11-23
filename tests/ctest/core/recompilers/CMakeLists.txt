@@ -87,6 +87,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_pinned_gpr_tests.cpp
 	ee_rec_syscall_seam_tests.cpp
 	ee_rec_exception_charge_tests.cpp
+	ee_rec_jump_load_charge_tests.cpp
 	ee_rec_event_stub_tests.cpp
 	ee_rec_extended_ram_tests.cpp
 	ee_rec_fast_forward_mark_tests.cpp
