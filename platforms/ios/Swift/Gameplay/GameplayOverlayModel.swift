@@ -291,7 +291,7 @@ final class GameplayOverlayModel {
             bootPath: nil,
             coverURL: nil,
             coverSignature: nil,
-            metadata: ["serial": serial, "crc": (info[.crc] as? String) ?? ""].filter { !$0.value.isEmpty },
+            metadata: [.serial: serial, .crc: (info[.crc] as? String) ?? ""].filter { !$0.value.isEmpty },
             size: 0,
             isFavorite: false
         )

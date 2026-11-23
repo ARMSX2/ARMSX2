@@ -36,7 +36,7 @@ extension GameLibraryControllerCoordinator {
         let transition = makeGameplayLaunchTransition(for: game)
         let automaticSkinOptions = allowsAutomaticSkinPrompt
             ? AutomaticCustomSkinManager.shared.availableProposals(
-                forSerial: game.metadata["serial"]
+                forSerial: game.metadata[.serial]
             )
             : []
         if !automaticSkinOptions.isEmpty {
@@ -58,8 +58,8 @@ extension GameLibraryControllerCoordinator {
         transition: GameplayLaunchTransition?,
         preferredPadSerial: String? = nil
     ) {
-        let padSerial = preferredPadSerial ?? game.metadata["serial"]
-        let padCRC = game.metadata["crc"]
+        let padSerial = preferredPadSerial ?? game.metadata[.serial]
+        let padCRC = game.metadata[.crc]
         if session.runningGameName != nil {
             pendingGameName = game.bootName
             pendingGameplayLaunchTransition = transition
@@ -89,8 +89,8 @@ extension GameLibraryControllerCoordinator {
         if apply, pending.proposal.isCatalogListing {
             // Only the library picker lists skins that are not installed yet.
             let identity = PadLayoutGameIdentity(
-                serial: pending.game.metadata["serial"],
-                crc: pending.game.metadata["crc"]
+                serial: pending.game.metadata[.serial],
+                crc: pending.game.metadata[.crc]
             )
             let skinAtPick = identity.flatMap { PadLayoutPresetStore.shared.skinID(for: $0) }
             catalogSkinInstallTask = Task { @MainActor in
@@ -157,7 +157,7 @@ extension GameLibraryControllerCoordinator {
     }
 
     func presentPerGameCustomSkin(for game: ISOEntry) {
-        let serial = game.metadata["serial"]
+        let serial = game.metadata[.serial]
         let proposals = AutomaticCustomSkinManager.shared
             .installedProposals(forSerial: serial)
         guard !proposals.isEmpty else {

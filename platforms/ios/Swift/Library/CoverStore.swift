@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 struct CoverGameInfo: Sendable {
     let name: String
     let fileURL: URL?
-    let metadata: [String: String]
+    let metadata: [ARMSX2GameLibraryKey: String]
     let hasCover: Bool
 }
 
@@ -100,7 +100,7 @@ final class CoverStore {
         return dir
     }
 
-    func coverURL(forGameName gameName: String, gamePath: URL?, metadata: [String: String]) -> URL? {
+    func coverURL(forGameName gameName: String, gamePath: URL?, metadata: [ARMSX2GameLibraryKey: String]) -> URL? {
         let candidates = coverBaseCandidates(forGameName: gameName, metadata: metadata)
         for dir in coverSearchDirectories(gamePath: gamePath) {
             if let url = findCover(in: dir, matching: candidates) {
@@ -137,7 +137,7 @@ final class CoverStore {
     func coverURL(
         forGameName gameName: String,
         gamePath: URL?,
-        metadata: [String: String],
+        metadata: [ARMSX2GameLibraryKey: String],
         using index: CoverLibraryLookupIndex
     ) -> URL? {
         let candidates = coverBaseCandidates(
@@ -354,13 +354,13 @@ final class CoverStore {
         URL(fileURLWithPath: gameName).deletingPathExtension().lastPathComponent
     }
 
-    func buildCoverCandidateURLs(forGameName gameName: String, metadata: [String: String], template: String? = nil) -> [URL] {
+    func buildCoverCandidateURLs(forGameName gameName: String, metadata: [ARMSX2GameLibraryKey: String], template: String? = nil) -> [URL] {
         let template = (template ?? coverURLTemplate).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !template.isEmpty else { return [] }
 
         let fileBase = displayName(forGameName: gameName)
-        let title = metadata["title"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let serial = metadata["serial"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = metadata[.title]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let serial = metadata[.serial]?.trimmingCharacters(in: .whitespacesAndNewlines)
         var rawURLs: [String] = []
 
         if template.contains("${serial}") {
@@ -451,16 +451,16 @@ final class CoverStore {
         return nil
     }
 
-    private func coverBaseCandidates(forGameName gameName: String, metadata: [String: String]) -> [String] {
+    private func coverBaseCandidates(forGameName gameName: String, metadata: [ARMSX2GameLibraryKey: String]) -> [String] {
         let fileName = URL(fileURLWithPath: gameName).lastPathComponent
         let stem = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
         let nestedStem = nestedDiscStem(from: stem)
         var raw: [String] = [stem, fileName]
 
-        if let serial = metadata["serial"], !serial.isEmpty {
+        if let serial = metadata[.serial], !serial.isEmpty {
             raw.append(serial)
         }
-        if let title = metadata["title"], !title.isEmpty {
+        if let title = metadata[.title], !title.isEmpty {
             raw.append(title)
         }
         if let nestedStem, nestedStem != stem {
@@ -490,7 +490,7 @@ final class CoverStore {
         return result
     }
 
-    private func downloadCover(from remoteURL: URL, forGameName gameName: String, metadata: [String: String]) async -> Bool {
+    private func downloadCover(from remoteURL: URL, forGameName gameName: String, metadata: [ARMSX2GameLibraryKey: String]) async -> Bool {
         do {
             var request = URLRequest(url: remoteURL)
             request.timeoutInterval = 8
@@ -522,14 +522,14 @@ final class CoverStore {
         }
     }
 
-    private func preferredDownloadedCoverBaseName(forGameName gameName: String, metadata: [String: String]) -> String {
-        if let serial = metadata["serial"], !serial.isEmpty {
+    private func preferredDownloadedCoverBaseName(forGameName gameName: String, metadata: [ARMSX2GameLibraryKey: String]) -> String {
+        if let serial = metadata[.serial], !serial.isEmpty {
             let sanitized = sanitizedCoverComponent(serial)
             if !sanitized.isEmpty {
                 return sanitized
             }
         }
-        if let title = metadata["title"], !title.isEmpty {
+        if let title = metadata[.title], !title.isEmpty {
             let sanitized = sanitizedCoverComponent(title)
             if !sanitized.isEmpty {
                 return sanitized

@@ -23,7 +23,7 @@ extension PatchStore {
         }
 
         let serial = iso == isoName ? currentSerial : PadLayoutGameIdentity.normalizedSerial(ARMSX2Bridge.gameSettings(forISO: iso)[.serial] as? String)
-        let title = iso == isoName ? currentTitle : (ARMSX2Bridge.gameMetadata(forISO: iso)["title"] ?? iso)
+        let title = iso == isoName ? currentTitle : (ARMSX2Bridge.gameMetadata(forISO: iso)[.title] ?? iso)
 
         isDownloading = true
         defer {

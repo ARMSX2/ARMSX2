@@ -720,12 +720,12 @@ final class GameSession {
 
         for gameName in ARMSX2Bridge.availableISOs() {
             let metadata = ARMSX2Bridge.gameMetadata(forISO: gameName)
-            let serial = normalizedRuntimeIdentity(metadata["serial"])
+            let serial = normalizedRuntimeIdentity(metadata[.serial])
             if !serial.isEmpty && serial == identity {
                 return gameName
             }
 
-            if let crc = metadata["crc"]?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            if let crc = metadata[.crc]?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
                !crc.isEmpty,
                (identity == crc || identity == "CRC-\(crc)") {
                 return gameName

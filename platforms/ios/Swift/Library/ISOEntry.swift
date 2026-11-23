@@ -42,7 +42,7 @@ struct ISOEntry: Identifiable, Equatable, Sendable {
 	let bootPath: String?
 	let coverURL: URL?
 	let coverSignature: String?
-	let metadata: [String: String]
+	let metadata: [ARMSX2GameLibraryKey: String]
 	let size: UInt64
 	var isFavorite: Bool
     var isExternal: Bool = false
@@ -58,7 +58,7 @@ struct ISOEntry: Identifiable, Equatable, Sendable {
         bootPath: String?,
         coverURL: URL?,
         coverSignature: String?,
-        metadata: [String: String],
+        metadata: [ARMSX2GameLibraryKey: String],
         size: UInt64,
         isFavorite: Bool,
         isExternal: Bool = false,
@@ -96,7 +96,7 @@ struct ISOEntry: Identifiable, Equatable, Sendable {
             )
         }
 
-        let region = metadata["region"]?
+        let region = metadata[.region]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let flag = RegionFlag.emoji(for: region)
         regionFlag = flag.isEmpty ? nil : flag

@@ -132,11 +132,11 @@ struct GameInfoPanel: View {
                         Text(regionDisplay)
                     }
                     LabeledContent(settings.localized("Serial")) {
-                        Text(metadataValue("serial"))
+                        Text(metadataValue(.serial))
                             .textSelection(.enabled)
                     }
                     LabeledContent(settings.localized("CRC")) {
-                        Text(metadataValue("crc"))
+                        Text(metadataValue(.crc))
                             .textSelection(.enabled)
                     }
                     LabeledContent(settings.localized("Format")) {
@@ -169,12 +169,12 @@ struct GameInfoPanel: View {
     }
 
     private var regionDisplay: String {
-        let region = metadataValue("region")
+        let region = metadataValue(.region)
         let flag = RegionFlag.emoji(for: region)
         return flag.isEmpty ? region : "\(flag) \(region)"
     }
 
-    private func metadataValue(_ key: String) -> String {
+    private func metadataValue(_ key: ARMSX2GameLibraryKey) -> String {
         let value = game.metadata[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? settings.localized("Unknown") : value
     }

@@ -167,10 +167,10 @@ final class PerGameSettingsDraft {
         volumeOverride = Self.boolValue(info[.hasVolumeOverride], defaultValue: false)
         volumePercent = loadedVolume
         padLayoutIdentity = PadLayoutGameIdentity(
-            serial: (info[.serial] as? String) ?? game.metadata["serial"],
-            crc: (info[.crc] as? String) ?? game.metadata["crc"]
+            serial: (info[.serial] as? String) ?? game.metadata[.serial],
+            crc: (info[.crc] as? String) ?? game.metadata[.crc]
         )
-        hasGameSettingsIdentity = !PadLayoutGameIdentity.normalizedCRC((info[.crc] as? String) ?? game.metadata["crc"]).isEmpty
+        hasGameSettingsIdentity = !PadLayoutGameIdentity.normalizedCRC((info[.crc] as? String) ?? game.metadata[.crc]).isEmpty
         // Sentinel unless the file actually carries the key, so opening and saving the panel
         // cannot invent an override.
         upscaleMultiplier = Self.boolValue(info[.hasUpscaleMultiplierOverride], defaultValue: false) ? Self.floatValue(info[.upscaleMultiplier], defaultValue: 1.0) : Self.upscaleUseGlobalSentinel
@@ -425,7 +425,7 @@ final class PerGameSettingsDraft {
 
     var displayName: String {
         let name = ((game.name as NSString).deletingPathExtension as String).trimmingCharacters(in: .whitespacesAndNewlines)
-        let serial = game.metadata["serial"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let serial = game.metadata[.serial]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if name.isEmpty {
             return serial.isEmpty ? settings.localized("Current Game") : serial
