@@ -147,8 +147,6 @@ struct VuAotJob final : vuaot::bg::Job
 
 	std::unique_ptr<u8[]> micro; // micro memory when the job was made (kept: the build compares against it)
 	std::map<u32, std::vector<u32>> jumpTargets;
-	bool haveTrace = false;
-	vuaot::MvuBlockTrace trace; // microVU's first pass of the root (the offline runner's hook)
 	vuaot::MvuEmitEnv env;      // microVU's values; the worker swaps in its own callbacks
 	bool flagHack = false;      // block search follows it (microBlockManager::search)
 	const u8* cacheLo = nullptr; // microVU's code cache, where the region lands
@@ -867,13 +865,10 @@ void VuAotJob::Run()
 	opts.To(tier);
 	tier.jumpTargets = jumpTargets;
 
+	// No microVU compile to take the root's first pass from, so use the port's
+	// own; the build compares it against microVU's when microVU compiles the root.
 	vuaot::MvuBlockTrace b;
-	if (haveTrace)
-		b = std::move(trace);
-	else
 	{
-		// No microVU compile to take the root's first pass from, so use the port's
-		// own; the build compares it against microVU's when microVU compiles the root.
 		vuaot::PipeConfig cfg;
 		cfg.vuIndex = 1;
 		cfg.flagHack = env.flagHack;
@@ -1895,7 +1890,8 @@ namespace vuaot::live
 	// pcsx2-vurunner --vuaot-region-bg: the region hook through the worker. A job is
 	// made for the block microVU is compiling, run on the worker and waited for, and
 	// its code copied in where microVU is compiling. The regions are the live tier's:
-	// built on an empty graph, their nodes taking over the blocks that are there.
+	// built on an empty graph from the port's own first pass of the root, which has
+	// to agree with microVU's, their nodes taking over the blocks that are there.
 	bool RegionHookViaWorker(const MvuBlockTrace& b, const MvuEmitEnv& env, void* user)
 	{
 		microVU& mVU = microVU1;
@@ -1903,8 +1899,6 @@ namespace vuaot::live
 			return false;
 		const RegionTier& tmpl = *static_cast<const RegionTier*>(user);
 		auto j = vuAotMakeJob(mVU, nullptr, b.startPC, b.entryState);
-		j->haveTrace = true;
-		j->trace = b;
 		j->env = env;
 		j->opts.From(tmpl);
 		// (the runner has no tripwire: a reader of the sticky bits anywhere in the image keeps them)
@@ -1918,6 +1912,11 @@ namespace vuaot::live
 		vuAotCollect(*j);
 		if (!j->accepted)
 			return false;
+		if (!CompareBlockTraces(b, j->rootTrace).empty())
+		{
+			s_vuaot.stats.regionDeclined["timing port disagrees"]++;
+			return false;
+		}
 		vuAotPlace(mVU, *j, static_cast<microBlock*>(env.rootBlock));
 		return true;
 	}
