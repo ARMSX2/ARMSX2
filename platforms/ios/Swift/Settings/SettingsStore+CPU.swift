@@ -58,6 +58,12 @@ extension SettingsStore {
     static let _automaticLoadLastGameConfig = Setting<Bool>(
         section: "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", default: false,
         codec: .bool)
+    static let _bootISOConfig = Setting<String>(
+        section: "GameISO", key: "BootISO", default: "",
+        codec: .string)
+    static let _lastGameConfig = Setting<String>(
+        section: "ARMSX2iOS/Boot", key: "LastGame", default: "",
+        codec: .string)
     static let _emulationOnlyModeConfig = Setting<Bool>(
         section: "ARMSX2iOS/UI", key: "EmulationOnlyMode", default: false,
         codec: .bool)

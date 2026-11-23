@@ -53,7 +53,7 @@ struct DiagnosticsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $reportRequest) { ReportSheet(request: $0) }
         .task { await loadRows() }
-        .onAppear { verbose = ARMSX2Bridge.getINIBool("Logging", key: "EnableVerbose", defaultValue: false) }
+        .onAppear { verbose = SettingsStore._verboseLoggingConfig.load() }
     }
 
     private var verboseBinding: Binding<Bool> {

@@ -47,9 +47,7 @@ final class AppState {
     @ObservationIgnored private var systemChromeNotificationsEnabled = false
 
     private init() {
-        let automaticGameStartup = ARMSX2Bridge.getINIBool(
-            "ARMSX2iOS/Boot", key: "AutomaticLoadLastGame", defaultValue: false
-        )
+        let automaticGameStartup = SettingsStore._automaticLoadLastGameConfig.load()
         // Seed the intro status bar before UIKit first asks for it, not in onAppear.
         // Automatic game startup skips the intro and leaves the bar to GameScreenView.
         if !automaticGameStartup {
