@@ -195,7 +195,6 @@ struct NumberRow: View {
         self.style = style
         self.hint = hint
         self.settings = settings
-        // An explicit accessory wins; `default:` is sugar for the common one.
         self.accessory = accessory ?? defaultValue.map { fallback in
             NumberRowAccessory(
                 systemImage: "arrow.counterclockwise",
@@ -267,9 +266,7 @@ struct NumberRow: View {
         }
     }
 
-    /// Whatever goes under the header. A stepper used to swallow the readout as its own label and
-    /// build its own row, which put the one stepper in the app ninety points left of the column its
-    /// neighbours share, and quietly dropped the reset button and the hint with it.
+    /// Whatever goes under the header, the stepper too, so it keeps the column, reset and hint.
     @ViewBuilder
     private var control: some View {
         if style == .stepper {
