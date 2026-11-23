@@ -3,10 +3,8 @@
 
 // Stubs for what iOS and tvOS do not have, for the libretro core - the iOS app
 // has its own set in platforms/ios, so pcsx2/CMakeLists.txt builds this one
-// only for a core. MacOSStubs.cpp next to it is the macOS equivalent and
-// excludes itself on the embedded platforms; this is the other half, and it is
-// a much shorter list because most of what macOS has to stub out for a UI-less
-// build is present here anyway.
+// only for a core. MacOSStubs.cpp next to it holds the CocoaTools stubs every
+// iOS and tvOS build compiles; this file adds the few a core also needs.
 //
 // Everything below is something the platform genuinely does not have, rather
 // than something this build leaves out: there is no optical drive to read a
