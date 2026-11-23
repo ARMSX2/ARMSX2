@@ -176,10 +176,9 @@ private final class LoopingVideoView: UIView {
         guard UIApplication.shared.applicationState != .background, !ProcessInfo.processInfo.isLowPowerModeEnabled else { return }
         inactiveFrameView?.removeFromSuperview()
         inactiveFrameView = nil
-        // When this view remains mounted, AVQueuePlayer retains its current
-        // item time while paused. Do not restart it after a temporary pause
-        // such as Low Power Mode. A full inactive-scene teardown is handled by
-        // BackgroundContainerView and intentionally creates a new session.
+        // A paused AVQueuePlayer keeps its item time while this view stays mounted,
+        // so a temporary pause such as Low Power Mode resumes instead of restarting.
+        // A full inactive-scene teardown in BackgroundContainerView starts anew.
         player?.play()
     }
 
@@ -245,12 +244,9 @@ private final class LoopingVideoView: UIView {
         }
     }
 
-    // Every other notification here is a UIKit lifecycle one and arrives on the main
-    // thread. This one does not: Foundation posts the power-state change from whatever
-    // queue it likes, and the body below touches UIKit and the player. The class is a
-    // UIView so it is main-actor isolated, which under Swift 6 means the @objc entry
-    // point checks the executor and traps before the body even runs. So take the hit
-    // off the main thread and hop, the way the seek handler above already does.
+    // Unlike the UIKit notifications here, Foundation posts the power-state change
+    // from any queue, and under Swift 6 a main-actor @objc entry traps off main. So
+    // take it nonisolated and hop, the way the seek handler above already does.
     @objc private nonisolated func adaptToPowerState() {
         Task { @MainActor [weak self] in
             self?.applyPowerState()
