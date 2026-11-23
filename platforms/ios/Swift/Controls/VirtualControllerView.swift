@@ -204,9 +204,8 @@ struct VirtualControllerView: View {
             .position(x: p.x * areaW, y: p.y * areaH)
     }
 
-    // Composite 8-way D-pad used when D-pad diagonals are enabled. Derives the
-    // capture circle and center deadzone from the four cardinal button positions
-    // so it follows custom layouts, per-orientation sizing, and hit scaling.
+    // 8-way D-pad for diagonals. Its capture circle and deadzone come from the four
+    // cardinal buttons, so it follows custom layouts, per-orientation sizing and hit scaling.
     private func placedCompositeDPad(landscape: Bool, areaW: CGFloat, areaH: CGFloat) -> some View {
         let entries: [(id: String, button: ARMSX2PadButton, label: String)] = [
             ("up", .up, "▲"), ("down", .down, "▼"), ("left", .left, "◀"), ("right", .right, "▶")
@@ -537,8 +536,7 @@ struct VirtualControllerView: View {
                 }
             }
 
-            // Action buttons: composite combo surface when enabled (and all four face
-            // buttons are visible); otherwise individual buttons with per-button visibility.
+            // The combo surface needs all four face buttons visible; otherwise each button stands alone.
             if settings.controller.faceComboZonesEnabled,
                isVisible("triangle") && isVisible("cross") && isVisible("square") && isVisible("circle") {
                 placedCompositeFaceButtons(landscape: true, areaW: w, areaH: h)
@@ -637,8 +635,7 @@ struct VirtualControllerView: View {
                     }
                 }
 
-                // Action buttons: composite combo surface when enabled (and all four face
-                // buttons are visible); otherwise individual buttons with per-button visibility.
+                // The combo surface needs all four face buttons visible; otherwise each button stands alone.
                 if settings.controller.faceComboZonesEnabled,
                    isVisible("triangle") && isVisible("cross") && isVisible("square") && isVisible("circle") {
                     placedCompositeFaceButtons(landscape: false, areaW: cW, areaH: cH)
