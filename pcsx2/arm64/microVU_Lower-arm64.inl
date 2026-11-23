@@ -2378,6 +2378,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 		{
 			mVUldrField(mVU, gprT2, &mVU.evilBranch); // Branch Not Taken
 			armAsm->Add(gprT2.W(), gprT2.W(), 8); // We have already executed 1 instruction from the original branch
+			armAsm->And(gprT2.W(), gprT2.W(), mVU.microMemSize - 8); // micro memory wraps
 			mVUstrField(mVU, gprT2, &mVU.evilevilBranch);
 		}
 		armAsm->Bind(&cJMP);
@@ -2392,6 +2393,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 		{
 			mVUldrField(mVU, gprT2, &mVU.badBranch); // Branch Not Taken
 			armAsm->Add(gprT2.W(), gprT2.W(), 8); // We have already executed 1 instruction from the original branch
+			armAsm->And(gprT2.W(), gprT2.W(), mVU.microMemSize - 8); // micro memory wraps
 			mVUstrField(mVU, gprT2, &mVU.evilBranch);
 		}
 		armAsm->Bind(&cJMP);

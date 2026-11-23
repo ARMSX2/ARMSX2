@@ -187,6 +187,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_model_stub_tests.cpp
 	model_call_contract_tests.cpp
 	mvu_ibit_hack_tests.cpp
+	mvu_branch_wrap_tests.cpp
 	mvu_compile_history_tests.cpp
 	mvu_flag_lookahead_range_tests.cpp
 	vu0_macro_zero_sign_console_tests.cpp
