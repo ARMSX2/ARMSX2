@@ -427,10 +427,8 @@ struct PadLayoutEditView: View {
         // Only create or update a layout preset when the layout geometry actually
         // changed. Skin-only preview/reset must not force "Save as New Layout".
         guard editorIsModified else {
-            // The editor temporarily applies a preset to the shared working
-            // layout. Always restore that working copy on exit; gameplay reads
-            // the saved preset directly. Leaking this temporary copy used to
-            // make a preset appear to work only after opening the editor once.
+            // The editor applies a preset to the shared working layout, and
+            // gameplay reads the saved preset, so the working copy is always restored.
             finishPresetEditRestoringOriginal()
             return
         }
@@ -490,8 +488,7 @@ struct PadLayoutEditView: View {
 
     private func finishPresetEditRestoringOriginal() {
         if let originalSnapshot {
-            // Roll back the temporary layout working copy while keeping any skin
-            // change made inside the editor (skin reset/selection is skin-only).
+            // Roll back the layout working copy but keep a skin change made in the editor.
             let currentSkin = settings.controller.virtualPadSkin
             let currentSkinID = skinLibrary.selectedSkinID
             restore(snapshot: originalSnapshot)
