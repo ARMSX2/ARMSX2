@@ -260,7 +260,7 @@ final class VirtualPadTouchActionController {
     }
 
     func interactionBegan() {
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let now = CACurrentMediaTime()
         touchActive = true
         enteredAimThisInteraction = false
@@ -298,13 +298,13 @@ final class VirtualPadTouchActionController {
 
     func interactionActivity() {
         guard touchActive else { return }
-        if DynamicThumbstickSettings.shared.extendFireWhileDragging && rapidFireEngaged {
+        if SettingsStore.shared.dynamicThumbsticks.extendFireWhileDragging && rapidFireEngaged {
             fireReleaseTask?.cancel()
         }
     }
 
     func interactionTapped() {
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         let now = CACurrentMediaTime()
         lastInteractionTapTime = now
 
@@ -345,7 +345,7 @@ final class VirtualPadTouchActionController {
         touchActive = false
         scheduleAimRelease()
         guard rapidFireEngaged else { return }
-        if DynamicThumbstickSettings.shared.releaseFireWhenTouchEnds {
+        if SettingsStore.shared.dynamicThumbsticks.releaseFireWhenTouchEnds {
             stopRapidFire()
         } else {
             scheduleFireRelease()
@@ -378,7 +378,7 @@ final class VirtualPadTouchActionController {
     private func scheduleAimRelease() {
         guard aimEngaged else { return }
         aimReleaseTask?.cancel()
-        let delay = max(DynamicThumbstickSettings.shared.aimReleaseDelay, 0)
+        let delay = max(SettingsStore.shared.dynamicThumbsticks.aimReleaseDelay, 0)
         aimReleaseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self, !self.touchActive else { return }
@@ -389,7 +389,7 @@ final class VirtualPadTouchActionController {
 
     private func scheduleFireRelease() {
         fireReleaseTask?.cancel()
-        let delay = max(DynamicThumbstickSettings.shared.fireReleaseDelay, 0)
+        let delay = max(SettingsStore.shared.dynamicThumbsticks.fireReleaseDelay, 0)
         fireReleaseTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self, !self.touchActive else { return }
@@ -434,7 +434,7 @@ final class VirtualPadTouchActionController {
     }
 
     private func startRapidFire() {
-        let settings = DynamicThumbstickSettings.shared
+        let settings = SettingsStore.shared.dynamicThumbsticks
         guard !rapidFireEngaged,
               !automaticFireIsBlocked,
               aimEngaged || settings.actionsOnNonAimMode else {
@@ -453,7 +453,7 @@ final class VirtualPadTouchActionController {
                     self.resetFireTapSequence()
                     break
                 }
-                let interval = max(DynamicThumbstickSettings.shared.automaticFireInterval, 0.06)
+                let interval = max(SettingsStore.shared.dynamicThumbsticks.automaticFireInterval, 0.06)
                 self.setHoldFirePressed(true)
                 self.crosshairState.triggerShot()
                 try? await Task.sleep(for: .seconds(min(interval * 0.45, 0.05)))
@@ -478,7 +478,7 @@ final class VirtualPadTouchActionController {
         Self.setActionButton(
             pressed: pressed,
             activeButton: &activeAimButton,
-            selectedButton: DynamicThumbstickSettings.shared.aimButton(for: side),
+            selectedButton: SettingsStore.shared.dynamicThumbsticks.aimButton(for: side),
             source: "\(sourcePrefix).aim"
         )
         if pressed {
@@ -490,7 +490,7 @@ final class VirtualPadTouchActionController {
         Self.setActionButton(
             pressed: pressed,
             activeButton: &activeTapFireButton,
-            selectedButton: DynamicThumbstickSettings.shared.fireButton(for: side),
+            selectedButton: SettingsStore.shared.dynamicThumbsticks.fireButton(for: side),
             source: "\(sourcePrefix).tapFire"
         )
     }
@@ -500,7 +500,7 @@ final class VirtualPadTouchActionController {
             Self.setActionButton(
                 pressed: false,
                 activeButton: &activeHoldFireButton,
-                selectedButton: DynamicThumbstickSettings.shared.holdFireButton(for: side),
+                selectedButton: SettingsStore.shared.dynamicThumbsticks.holdFireButton(for: side),
                 source: "\(sourcePrefix).holdFire"
             )
             return
@@ -508,7 +508,7 @@ final class VirtualPadTouchActionController {
         Self.setActionButton(
             pressed: pressed,
             activeButton: &activeHoldFireButton,
-            selectedButton: DynamicThumbstickSettings.shared.holdFireButton(for: side),
+            selectedButton: SettingsStore.shared.dynamicThumbsticks.holdFireButton(for: side),
             source: "\(sourcePrefix).holdFire"
         )
     }
@@ -560,7 +560,7 @@ final class VirtualPadTouchActionSession {
     }
 
     func refreshHardcoreAutomaticFireRestriction() {
-        let blocked = DynamicThumbstickSettings.automaticFireBlockedByHardcore()
+        let blocked = SettingsStore.DynamicThumbsticks.automaticFireBlockedByHardcore()
         left.updateHardcoreAutomaticFireRestriction(blocked)
         right.updateHardcoreAutomaticFireRestriction(blocked)
     }

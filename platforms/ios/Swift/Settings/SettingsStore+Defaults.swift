@@ -297,7 +297,7 @@ extension SettingsStore {
 
         resetAppearanceDefaults()
 
-        DynamicThumbstickSettings.shared.restoreDefaults()
+        dynamicThumbsticks.restoreDefaults()
         let padLayout = PadLayoutStore.shared
         padLayout.resetAll()
         padLayout.resetControlVisibility()

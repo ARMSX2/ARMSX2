@@ -4,7 +4,7 @@
 import SwiftUI
 
 struct DynamicAimCrosshairOverlay: View {
-    let settings: DynamicThumbstickSettings
+    let settings: SettingsStore.DynamicThumbsticks
     let leftRuntime: DynamicCrosshairRuntimeState
     let rightRuntime: DynamicCrosshairRuntimeState
 
