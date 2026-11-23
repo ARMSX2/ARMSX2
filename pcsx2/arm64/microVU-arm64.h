@@ -808,7 +808,7 @@ struct mVUChunkHead
 	bool settled = false;
 	u32 nextBodyId = 0;
 	// A finished job (VuAotJob) waiting for a copy of the routine it compiled
-	// to be entered, and runs[0] when it arrived.
+	// to be entered, and runs[0] + runs[1] when it arrived.
 	std::shared_ptr<void> job;
 	u32 runsAtJob = 0;
 };
@@ -830,6 +830,8 @@ struct mVUChunkStoreData
 	std::vector<microBlock*> scratchTargets;
 	// The tiered body the last build episode produced, until the tier takes it.
 	std::unique_ptr<mVUChunkBody> built;
+	// The root block of the copy being moved onto a tiered body (mVUchunkReAimCopy).
+	microBlock* placingRoot = nullptr;
 };
 
 // Slots the array holds, and the count at which the next dispatcher exit
@@ -1356,6 +1358,9 @@ extern u32   mVUvuAotTierUpRuns();
 extern bool  mVUvuAotBodyAllowed(bool droppedSticky);
 // A tiered body was placed for a copy of its routine.
 extern void  mVUvuAotOnBodyPlaced(microVU& mVU, bool droppedSticky);
+// A copy's block that is the root of `head`'s routine became a node of
+// another routine's tiered body.
+extern void  mVUvuAotOnRootCovered(mVUChunkHead& head);
 extern void  mVUvuAotOnJumpMiss(microVU& mVU);
 extern void  mVUvuAotOnBail();
 extern void  mVUvuAotOnClose(microVU& mVU);

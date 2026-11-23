@@ -324,11 +324,11 @@ static void vuAotRememberTitle()
 // byte from now on; any placed without it are rebuilt), but neither counted as one nor remembered again.
 static void vuAotTripRemembered()
 {
-	if (s_trip.tripped.exchange(true, std::memory_order_acq_rel))
+	if (s_trip.tripped.exchange(true))
 		return;
 	s_trip.cause.store(static_cast<u32>(vuaot::live::TripCause::Remembered), std::memory_order_relaxed);
 	s_trip.tripsBy[static_cast<u32>(vuaot::live::TripCause::Remembered)].fetch_add(1, std::memory_order_relaxed);
-	if (s_trip.dropLive.load(std::memory_order_acquire))
+	if (s_trip.dropLive.load())
 		s_trip.rebuildDue.store(true, std::memory_order_release);
 	Console.WriteLn(Color_StrongBlue, "vu-aot: sticky STATUS tripwire set: this title set it off in an earlier session.");
 }
@@ -380,12 +380,12 @@ static void vuAotTrip(vuaot::live::TripCause why)
 {
 	// (with the tier off there are no regions, and the offline runners' region tiers have no
 	// session to trip)
-	if (!s_vuaot.enabled || s_trip.tripped.exchange(true, std::memory_order_acq_rel))
+	if (!s_vuaot.enabled || s_trip.tripped.exchange(true))
 		return;
 	s_trip.cause.store(static_cast<u32>(why), std::memory_order_relaxed);
 	s_trip.trips.fetch_add(1, std::memory_order_relaxed);
 	s_trip.tripsBy[static_cast<u32>(why)].fetch_add(1, std::memory_order_relaxed);
-	const bool rebuild = s_trip.dropLive.load(std::memory_order_acquire) && !vuAotMutated(vuaot::live::kTripMutNoRebuild);
+	const bool rebuild = s_trip.dropLive.load() && !vuAotMutated(vuaot::live::kTripMutNoRebuild);
 	if (rebuild)
 		s_trip.rebuildDue.store(true, std::memory_order_release);
 	Console.WriteLn(Color_StrongBlue, "vu-aot: sticky STATUS tripwire: %s. Regions keep the sticky byte of STATUS from now on%s.",
@@ -431,8 +431,26 @@ bool mVUvuAotBodyAllowed(bool droppedSticky)
 
 void mVUvuAotOnBodyPlaced(microVU&, bool droppedSticky)
 {
-	if (droppedSticky)
-		s_trip.dropLive.store(true, std::memory_order_release);
+	if (!droppedSticky)
+		return;
+	s_trip.dropLive.store(true);
+	// A trip from another thread (VU0 reading VU1's STATUS) between the check
+	// that allowed this body and the store above saw nothing to rebuild.
+	if (s_trip.tripped.load() && !vuAotMutated(vuaot::live::kTripMutNoRebuild))
+		s_trip.rebuildDue.store(true, std::memory_order_release);
+}
+
+// The copy already runs region code from that block on: a job that finished
+// for the routine is not built on top of it. Another copy that is not taken in
+// asks again.
+void mVUvuAotOnRootCovered(mVUChunkHead& head)
+{
+	if (!head.job)
+		return;
+	head.job.reset();
+	head.outstanding = false;
+	head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
+	s_vuaot.stats.discardCovered++;
 }
 
 
@@ -633,7 +651,7 @@ namespace vuaot::live
 		char buf[1536];
 		std::snprintf(buf, sizeof(buf),
 			"vu-aot live tier: tierups=%llu retiers=%llu retierchecks=%llu tiered_bodies=%llu tiered_body_bytes=%llu "
-			"placed=%llu reaimed=%llu targets=%llu jumpmisses=%llu "
+			"placed=%llu reaimed=%llu targets=%llu jumpmisses=%llu slow_dispatches=%llu "
 			"roots=%llu regions=%llu rnodes=%llu rmerged=%llu rexits=%llu rbytes=%llu bodyblocks=%llu bodies=%llu bodybytes=%llu bails=%llu "
 			"jrtierups=%llu jrcounted=%llu xprogtargets=%llu bails_entry=%llu bails_loophead=%llu "
 			"status_readers=%llu sticky_readers=%llu sticky_div_readers=%llu sticky_dropped=%llu sticky_kept=%llu "
@@ -641,6 +659,7 @@ namespace vuaot::live
 			(unsigned long long)s.tierUps, (unsigned long long)s.retiers, (unsigned long long)s.retierChecks,
 			(unsigned long long)s.tieredBodies, (unsigned long long)s.tieredBodyBytes, (unsigned long long)s.tieredPlaced,
 			(unsigned long long)s.tieredReAimed, (unsigned long long)s.targetsRecorded, (unsigned long long)s.jumpMisses,
+			(unsigned long long)s.slowDispatches,
 			(unsigned long long)s.rootsCompiled, (unsigned long long)s.regions, (unsigned long long)s.regionNodes,
 			(unsigned long long)s.regionMerged, (unsigned long long)s.regionExits, (unsigned long long)s.regionBytes, (unsigned long long)s.bodyBlocks,
 			(unsigned long long)s.bodiesLowered, (unsigned long long)s.bodyBytes, (unsigned long long)s.bailCompiles,
@@ -662,11 +681,11 @@ namespace vuaot::live
 		}
 		std::snprintf(buf, sizeof(buf),
 			"\n  background: sync=%d jobs=%llu dropped=%llu done=%llu built=%llu "
-			"declined=%llu discarded: stale=%llu memory=%llu sticky=%llu space=%llu trace=%llu unstorable=%llu | "
+			"declined=%llu discarded: stale=%llu memory=%llu covered=%llu sticky=%llu space=%llu trace=%llu unstorable=%llu | "
 			"lag(dispatches) avg=%.1f max=%llu | worker_ins=%llu build_ins=%llu veneers=%llu",
 			s_vuaot.synchronous ? 1 : 0, (unsigned long long)s.jobs, (unsigned long long)s.jobsDropped, (unsigned long long)s.jobsDone,
 			(unsigned long long)s.built, (unsigned long long)s.jobsDeclined,
-			(unsigned long long)s.discardStale, (unsigned long long)s.discardMemory,
+			(unsigned long long)s.discardStale, (unsigned long long)s.discardMemory, (unsigned long long)s.discardCovered,
 			(unsigned long long)s.discardSticky, (unsigned long long)s.discardSpace, (unsigned long long)s.discardTrace,
 			(unsigned long long)s.discardUnstorable,
 			s.built ? static_cast<double>(s.lagSum) / s.built : 0.0, (unsigned long long)s.lagMax,
@@ -1308,8 +1327,9 @@ static void vuAotCollectFinished()
 		if (j->accepted)
 		{
 			// (if no copy of its routine takes it within another kTierUpRuns runs, it goes)
-			head.runsAtJob = head.runs[0];
+			head.runsAtJob = head.runs[0] + head.runs[1];
 			head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
+			head.next[1] = std::min(head.next[1], head.runs[1] + s_vuaot.tierUpRuns);
 			head.job = std::move(j);
 			continue;
 		}
@@ -1439,9 +1459,10 @@ static microBlock* vuAotBlockOf(microVU& mVU, microProgram& prog, u32 startPC, c
 }
 
 // mVUlookupProg_VU1 plus the run counter. The entry is counted on the head of
-// the routine its block is the root of. A count that reaches the head's next
-// threshold, a head that has changed since this copy was last checked against
-// it, and a finished job all return null: the dispatcher then takes the full
+// the routine its block is the root of: on runs[0] for a copy on microVU's
+// code, on runs[1] for one on a body of its routine. A count that reaches the
+// head's next threshold, a head that has changed since this copy was last
+// checked against it, and a finished job all return null: the dispatcher then takes the full
 // path (mVUexecuteVU1), which ends in mVUvuAotAfterSearch.
 void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 {
@@ -1478,12 +1499,18 @@ void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles)
 		s_vuaot.pendingCounted = false;
 		return nullptr;
 	}
-	const u32 k = pBlock->tierState != mVUtierNone;
-	if (++head->runs[k] >= head->next[k])
+	// (a copy the tier declined, or one taken into another routine's body, has
+	// nothing to count towards)
+	const u32 state = pBlock->tierState;
+	if (state == mVUtierNone || state >= mVUtierBody)
 	{
-		s_vuaot.pending = true;
-		s_vuaot.pendingCounted = true;
-		return nullptr;
+		const u32 k = state != mVUtierNone;
+		if (++head->runs[k] >= head->next[k])
+		{
+			s_vuaot.pending = true;
+			s_vuaot.pendingCounted = true;
+			return nullptr;
+		}
 	}
 	return pBlock->hostEntry;
 }
@@ -1531,14 +1558,17 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 		if (!head.job)
 			return;
 		const std::shared_ptr<VuAotJob> j = std::static_pointer_cast<VuAotJob>(head.job);
-		if (std::memcmp(&j->key, &key, sizeof(key)) == 0 && vuAotJobFits(mVU, *j, startPC))
+		// (a body of another routine may have been placed here while the worker ran)
+		if (blk.tierState == mVUtierCovered)
+			mVUvuAotOnRootCovered(head);
+		else if (std::memcmp(&j->key, &key, sizeof(key)) == 0 && vuAotJobFits(mVU, *j, startPC))
 		{
 			head.job.reset();
 			head.outstanding = false;
 			vuAotRebase(*j, startPC);
 			vuAotBuildBody(mVU, prog, head, *j);
 		}
-		else if (head.runs[0] - head.runsAtJob >= s_vuaot.tierUpRuns)
+		else if (head.runs[0] + head.runs[1] - head.runsAtJob >= s_vuaot.tierUpRuns)
 		{
 			// No copy of the routine the job compiled has been entered since.
 			head.job.reset();
@@ -1637,6 +1667,7 @@ void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result)
 	// The counting lookup already counted a dispatch that asked for this.
 	const bool counted = s_vuaot.pending && s_vuaot.pendingCounted;
 	s_vuaot.pending = false;
+	s_vuaot.stats.slowDispatches++;
 	vuAotCollectFinished();
 	microProgram* const prog = mVU.prog.cur;
 	if (!prog || !result)
@@ -1650,7 +1681,12 @@ void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result)
 	if (!head)
 		head = mVUchunkFindHead(mVU, startPC, key, true);
 	if (!counted)
-		head->runs[blk->tierHead == head && blk->tierState != mVUtierNone]++;
+	{
+		if (blk->tierHead != head || blk->tierState == mVUtierNone)
+			head->runs[0]++;
+		else if (blk->tierState >= mVUtierBody)
+			head->runs[1]++;
+	}
 	return vuAotConsider(mVU, *prog, *blk, *head, startPC, key, result, head->runs[0] >= head->next[0], false);
 }
 
@@ -1677,7 +1713,7 @@ void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 		head = mVUchunkFindHead(mVU, startPC, key, true);
 	const u32 jumps = ++head->jumpRuns;
 	s_vuaot.stats.jumpCounted++;
-	if (blk->tierHead == head && blk->tierState != mVUtierNone)
+	if (blk->tierHead == head && blk->tierState >= mVUtierBody)
 		head->runs[1]++;
 	// Only when jumps dominate the routine's entries (16 to 1 over dispatches).
 	const bool tierNow = jumps >= s_vuaot.jumpTierUpRuns && static_cast<u64>(head->runs[0]) * 16 <= jumps;

@@ -334,7 +334,11 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 			mVUchunkReAim(placed, stub);
 			// (the root's state is its caller's to set)
 			if (placed->tierState == mVUtierNone)
+			{
 				placed->tierState = mVUtierCovered;
+				if (placed->tierHead && placed != mVU.chunkStore->placingRoot)
+					mVUvuAotOnRootCovered(*static_cast<mVUChunkHead*>(placed->tierHead));
+			}
 			// (a block that ends in a JR or JALR keeps its end state: microVU's
 			// code for it, which a bail runs, reads it too)
 			if (!placed->jumpCache)
@@ -374,13 +378,13 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 		mVUaddKeptBits(mVU, rootPC + k.off, k.kept);
 	mVU.chunk.recording = wasRecording;
 
-	if (b.statusImm)
-		mVUvuAotOnStatusReader(mVU, b.statusImm);
 	if (b.tiered)
 	{
 		mVUvuAotOnBodyPlaced(mVU, b.droppedSticky);
 		s_mVUchunkStats.tieredPlaced++;
 	}
+	if (b.statusImm)
+		mVUvuAotOnStatusReader(mVU, b.statusImm);
 
 	s_mVUchunkStats.codeBytesInstalled += b.codeBytes;
 	s_mVUchunkStats.stubBytes += stubBytes;
@@ -433,7 +437,9 @@ static void* mVUchunkReAimCopy(microVU& mVU, mVUChunkHead& head, microBlock* roo
 		return nullptr;
 	}
 	int miss = 0;
+	mVU.chunkStore->placingRoot = root;
 	void* const entry = mVUchunkInstall(mVU, *b, rootPC, miss);
+	mVU.chunkStore->placingRoot = nullptr;
 	if (!entry)
 	{
 		mVUchunkMarkRoot(root, &head, root->tierState);

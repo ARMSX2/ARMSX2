@@ -103,6 +103,7 @@ namespace vuaot
 			u64 tieredReAimed = 0;
 			u64 targetsRecorded = 0;  // jump targets handed to regions
 			u64 jumpMisses = 0;       // JR/JALR the jump cache did not know (VU1)
+			u64 slowDispatches = 0;   // VU1 dispatches that took the full search while the tier is on
 			u64 rootsCompiled = 0;    // roots offered to the region tier
 			u64 regions = 0;
 			u64 regionNodes = 0;
@@ -144,11 +145,13 @@ namespace vuaot
 			u64 jobsDeclined = 0;     // the region builder declined the root
 			u64 built = 0;            // jobs that became a tiered body
 			// Finished jobs thrown away: made before a reset (stale), for a routine no copy of
-			// which was entered again (memory), made with the sticky
+			// which was entered again (memory), for a root that another routine's body took in
+			// as a node meanwhile (covered), made with the sticky
 			// byte dropped before the tripwire went off (sticky), with no room left in the code
 			// cache (space), whose root microVU analysed differently when it compiled it (trace),
 			// or whose compile the chunk store could not keep (unstorable).
-			u64 discardStale = 0, discardMemory = 0, discardSticky = 0, discardSpace = 0, discardTrace = 0, discardUnstorable = 0;
+			u64 discardStale = 0, discardMemory = 0, discardCovered = 0, discardSticky = 0, discardSpace = 0, discardTrace = 0,
+				discardUnstorable = 0;
 			// VU1 dispatches between a job's request and its build.
 			u64 lagSum = 0, lagMax = 0;
 			// pcsx2-eerunner --count-vu1-ins only: user-mode instructions the worker

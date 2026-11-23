@@ -235,6 +235,7 @@ struct TierScope
 	~TierScope()
 	{
 		vuaot::live::HoldWorker(false);
+		vuaot::live::SetJumpTierUpRuns(vuaot::live::kJumpTierUpRuns);
 		vuaot::live::SetTripwireMutation(0);
 		vuaot::live::ResetStickyTripwire();
 		EmuConfig.Cpu.Recompiler.EnableVUAot = savedOpt;
@@ -489,6 +490,83 @@ TEST(VuAotBodies, JobFinishedAfterTheRoutineMovedIsBuiltAtTheNewAddress)
 		EXPECT_GE(s1.targetsRecorded - s0.targetsRecorded, 1u) << "the test wants a region with recorded jump targets";
 		EXPECT_EQ(s1.tieredReAimed - s0.tieredReAimed, 1u) << "the copy was not moved onto the body";
 	}
+}
+
+// A JR/JALR target the jump cache keeps missing is a routine of its own and
+// asks for its regions. When the routine that jumps to it is built first, its
+// body holds the target as a node and takes over the target's block: the
+// target's own job is not built on top of it.
+TEST(VuAotBodies, RootTakenInByAnotherRoutinesBodyIsNotBuiltAgain)
+{
+	const std::vector<VuOp> routine = CallRoutine(9);
+	const VuSnapshot interp = InterpOf(1, kHome, routine, kHome);
+
+	TierScope on(true, true, /*sync=*/false);
+	vuaot::live::SetJumpTierUpRuns(4);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
+	Jit jit(1, kHome, routine, kHome);
+	vuaot::live::HoldWorker(true);
+	// A write over the routine empties its quick slots, so the JALR's first
+	// return of each run misses the jump cache.
+	const auto run = [&]() {
+		CpuMicroVU1.Clear(kHome, 0x100);
+		jit.RunAt(kHome);
+		ExpectMatchesInterp(jit.h, interp, "home");
+	};
+	for (u32 i = 0; i < kTierRuns + 4; i++)
+		run();
+	ASSERT_EQ(vuaot::live::GetStats().jobs - s0.jobs, 2u) << "the routine and the return point each ask for regions";
+
+	vuaot::live::HoldWorker(false);
+	vuaot::live::WaitWorkerIdle();
+	for (u32 i = 0; i < 4; i++)
+		run();
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	EXPECT_EQ(s1.built - s0.built, 1u);
+	EXPECT_EQ(s1.discardCovered - s0.discardCovered, 1u) << "the return point's job was built over the body that holds it";
+	EXPECT_EQ(s1.tieredBodies, 1u);
+}
+
+// Two routines that begin with the same pair share a head. One has a loop and
+// is tiered; the tier declines the other (a single block). Runs of the
+// declined one are not the tiered one's: however many there are, they stay on
+// the dispatcher's quick path.
+TEST(VuAotBodies, DeclinedRoutineSharingAHeadStaysOnTheQuickPath)
+{
+	const std::vector<VuOp> looping = LoopRoutine(10);
+	// The same first pair, then straight to the end.
+	const std::vector<VuOp> straight = {
+		looping[0],
+		P(VIADDIU_L(vi::vi2, vi::vi2, 1), VMUL_U(mask::xyzw, vf::vf3, vf::vf3, vf::vf4)),
+		EBit(LoadViImm(vi::vi6, 0x66)),
+		Nop(),
+	};
+	const VuSnapshot interp = InterpOf(2, kHome, straight, kHome);
+
+	TierScope on(true, true);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
+	Jit jit(1, kHome, looping, kHome);
+	for (u32 i = 0; i < kTierRuns + 2; i++)
+		jit.RunAt(kHome);
+	ASSERT_EQ(vuaot::live::GetStats().tierUps - s0.tierUps, 1u);
+
+	Upload(2, kHome, straight);
+	for (u32 i = 0; i < kTierRuns + 2; i++)
+		jit.RunAt(kHome);
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	ASSERT_EQ(s1.jobsDeclined - s0.jobsDeclined, 1u) << "the straight routine was not declined";
+	ASSERT_EQ(s1.tierUps - s0.tierUps, 1u);
+
+	// Past the tiered routine's next look for new jump targets (every 1024 runs).
+	for (u32 i = 0; i < vuaot::live::kRetierCheckMask + 64; i++)
+		jit.RunAt(kHome);
+	const vuaot::live::Stats s2 = vuaot::live::GetStats();
+	for (u32 i = 0; i < 50; i++)
+		jit.RunAt(kHome);
+	ExpectMatchesInterp(jit.h, interp, "straight");
+	const vuaot::live::Stats s3 = vuaot::live::GetStats();
+	EXPECT_EQ(s3.slowDispatches - s2.slowDispatches, 0u) << "a declined routine's dispatches take the full search";
+	EXPECT_EQ(s3.jobs, s1.jobs);
 }
 
 // Heat is counted on the routine, not on the copy: runs at two addresses add
