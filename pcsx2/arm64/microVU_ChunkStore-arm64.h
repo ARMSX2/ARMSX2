@@ -42,7 +42,8 @@ namespace mVUChunkStore
 	struct Stats
 	{
 		// Outermost VU1 compiles asked for, and how many of them were not
-		// looked up (VU AOT's hooks are live, or a test hook is installed).
+		// looked up: the build of a tiered body, the compile of the block a
+		// region bails to, or any compile while a test hook is installed.
 		u64 episodes = 0;
 		u64 skipped = 0;
 		// Served by an install.
