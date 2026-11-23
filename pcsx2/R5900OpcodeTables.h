@@ -433,14 +433,6 @@ namespace R5900
 	// Returns the current real instruction, as per the current cpuRegs settings.
 	const OPCODE& GetCurrentInstruction();
 	const OPCODE& GetInstruction(u32 op);
-
-	// Extra eighths of a cycle for a JR or JALR whose register the word before
-	// it (`prev`) wrote as a GPR load or an MFC0, when that word is not in the
-	// delay slot of `prev2`. issue_mult is 2 - Config.DIE, as for every charge.
-	u32 JumpAfterLoadEighths(u32 code, u32 prev, u32 prev2, u32 issue_mult);
-	// The same for the instruction `code` at `pc`, reading the two words before
-	// it from guest memory; 0 when they are not in pc's page.
-	u32 JumpAfterLoadCharge(u32 pc, u32 code);
 	namespace OpcodeTables
 	{
 		using ::R5900::OPCODE;

@@ -3161,12 +3161,9 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	}
 
 	// Every instruction is charged its table entry, NOP (SLL $0, $0, 0)
-	// included, as the interpreter charges it. NOP emits no code. A register
-	// jump right after the load of its register pays the stall the interpreter
-	// charges in JR and JALR.
+	// included, as the interpreter charges it. NOP emits no code.
 	const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
 	s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
-	s_nBlockCycles += R5900::JumpAfterLoadCharge(delayslot ? pc : pc - 4, cpuRegs.code);
 	if (cpuRegs.code != 0)
 	{
 		// Guard: branch/jump in a delay slot would cause infinite
