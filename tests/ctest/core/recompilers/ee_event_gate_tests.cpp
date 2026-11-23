@@ -418,7 +418,10 @@ struct Taken
 	u32 epc;
 	u32 sled;
 	u32 cause;
+	u32 counted; // $t1 - $t0: two reads of COP0 Count, where a program makes them
 };
+
+constexpr u32 kIntVector = 0x80000200;
 
 enum class Engine { Jit, Interp };
 
@@ -432,11 +435,22 @@ public:
 
 	std::function<void()> pend = [] {};
 
+	// Words for the interrupt vector; empty keeps the environment's `jr ra; nop`.
+	std::vector<u32> int_handler;
+
+	// Config.DIE (dual issue on, as the BIOS sets it): without it both engines
+	// charge every instruction twice.
+	bool dual_issue = false;
+
 	Taken Run(Engine e, u64* event_tests = nullptr)
 	{
 		QuietMachine machine;
 		EeRecTestHarness h;
 		h.LoadProgram(m_prog);
+		for (size_t i = 0; i < int_handler.size(); i++)
+			h.WriteU32(kIntVector + static_cast<u32>(i * 4), int_handler[i]);
+		if (dual_issue)
+			h.SetCp0(16, 1u << 18);
 		h.SetCp0(kCp0Status, m_status);
 		h.SetCp0(kCp0Epc, m_epc);
 		h.SetCp0(kCp0Cause, 0);
@@ -456,8 +470,16 @@ public:
 #endif
 		const bool jit = e == Engine::Jit;
 		const u32 status = jit ? h.GetCp0Jit(kCp0Status) : h.GetCp0Interp(kCp0Status);
+		const u32 counted = jit ? h.GetGprJit(reg::t1) - h.GetGprJit(reg::t0) : h.GetGprInterp(reg::t1) - h.GetGprInterp(reg::t0);
+		if (!int_handler.empty())
+		{
+			h.WriteU32(kIntVector + 0, JR(reg::ra));
+			h.WriteU32(kIntVector + 4, NOP);
+			for (size_t i = 2; i < int_handler.size(); i++)
+				h.WriteU32(kIntVector + static_cast<u32>(i * 4), NOP);
+		}
 		return Taken{(status & kStatusEXL) != 0, jit ? h.GetCp0Jit(kCp0Epc) : h.GetCp0Interp(kCp0Epc),
-			jit ? h.GetGprJit(reg::v1) : h.GetGprInterp(reg::v1), jit ? h.GetCp0Jit(kCp0Cause) : h.GetCp0Interp(kCp0Cause)};
+			jit ? h.GetGprJit(reg::v1) : h.GetGprInterp(reg::v1), jit ? h.GetCp0Jit(kCp0Cause) : h.GetCp0Interp(kCp0Cause), counted};
 	}
 
 private:
@@ -595,6 +617,53 @@ TEST(EeEventGateDelivery, EretAfterAStatusWriteInItsBlockTakesThePendingInterrup
 	EXPECT_TRUE(interp.exl);
 	EXPECT_EQ(interp.epc, kParkPc);
 	EXPECT_EQ(interp.sled, 0x400u + kSled);
+}
+
+// An interrupt round trip: the INTC interrupt the MTC0 lets through is taken,
+// a handler at the interrupt vector clears the cause and returns with ERET, and
+// the program goes on. COP0 Count is read before the MTC0 and after a later
+// branch. Against the same run with nothing pending, the interrupt costs the
+// handler's instructions (10 cycles: four ALU and store ops, ERET 6) and the
+// exception entry (9, measured on an SCPH-30001), in both engines.
+TEST(EeEventGateDelivery, InterruptRoundTripChargesTheHandlerAndTheEntry)
+{
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	constexpr u32 kHandlerCycles = 10;
+	constexpr u32 kEntryCycles = 9;
+	std::vector<u32> p = {BEQ(reg::zero, reg::zero, 1), NOP, MFC0(reg::t0, 9), MTC0(reg::t2, kCp0Status)};
+	Append(p, Sled());
+	p.push_back(BEQ(reg::zero, reg::zero, 1));
+	p.push_back(NOP);
+	Append(p, Sled());
+	p.push_back(BEQ(reg::zero, reg::zero, 1));
+	p.push_back(NOP);
+	p.push_back(MFC0(reg::t1, 9));
+	const std::vector<u32> handler = {
+		LUI(reg::k0, 0x1000),
+		ORI(reg::k0, reg::k0, 0xF000), // INTC_STAT
+		ADDIU(reg::k1, reg::zero, static_cast<s16>(kIntcVblankS)),
+		SW(reg::k1, 0, reg::k0), // write 1 to clear the cause
+		ERET,
+	};
+	Delivery taken(p, 0, 0);
+	taken.int_handler = handler;
+	taken.dual_issue = true;
+	taken.pend = [] { cpuRegs.GPR.n.t2.UD[0] = kStatusAllEnabled; PendIntc(kIntcVblankS); };
+	Delivery quiet(p, 0, 0);
+	quiet.int_handler = handler;
+	quiet.dual_issue = true;
+	quiet.pend = [] { cpuRegs.GPR.n.t2.UD[0] = kStatusAllEnabled; };
+	for (Engine e : {Engine::Jit, Engine::Interp})
+	{
+		SCOPED_TRACE(e == Engine::Jit ? "jit" : "interp");
+		const Taken a = taken.Run(e);
+		const Taken b = quiet.Run(e);
+		EXPECT_FALSE(a.exl);
+		EXPECT_EQ(a.sled, static_cast<u32>(2 * kSled));
+		EXPECT_EQ(a.cause & 0x7Cu, 0u); // the last exception was the interrupt
+		EXPECT_EQ(b.sled, static_cast<u32>(2 * kSled));
+		EXPECT_EQ(a.counted - b.counted, kHandlerCycles + kEntryCycles);
+	}
 }
 
 TEST(EeEventGateDelivery, Mtc0StatusThatLeavesTheCauseBlockedTakesNothing)
