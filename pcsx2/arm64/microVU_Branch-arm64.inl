@@ -412,7 +412,16 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	else
 		mVUldrField(mVU, RWARG1, &mVU.branch);
 
-	if (doJumpCaching)
+	// VU1: the jumping block of the placement now running, from its slot. Its
+	// jump cache holds that placement's targets; its end state is the same
+	// for every placement.
+	if (mVUrootRelative(mVU))
+	{
+		mVUemitLoadSlot(mVU, RXARG2, a64::x8, mVUchunkBlockSlot(mVU, mVUpBlock));
+		if (!doJumpCaching)
+			armAsm->Add(RXARG2, RXARG2, offsetof(microBlock, pStateEnd));
+	}
+	else if (doJumpCaching)
 		armMoveAddressToReg(RXARG2, mVUpBlock);
 	else
 		armMoveAddressToReg(RXARG2, &mVUpBlock->pStateEnd);
@@ -425,9 +434,8 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	// prog.quick[startPC/8].prog and jc.hostEntry != null. A fresh (zeroed)
 	// entry falls to the null-hostEntry check, and a program clear changes
 	// quick.prog so the compare misses — same invalidation the C path
-	// relies on. The jumpCache base is loaded at runtime through mVUpBlock
-	// (already materialized in RXARG2) rather than baked, so persisted
-	// payloads never embed the heap pointer.
+	// relies on. The jumpCache base is loaded at runtime through the block
+	// in RXARG2.
 	if (doJumpCaching && !doJumpAsSameProgram && !isEvilJump && !(mVUup.eBit))
 	{
 		a64::Label slowPath;

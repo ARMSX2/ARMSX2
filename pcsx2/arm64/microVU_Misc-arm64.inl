@@ -529,9 +529,7 @@ static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.
 // The code holds no pointer to a block object of the program it was compiled
 // in, and no branch to a block outside its chunk, either: those come from the
 // placement's slots (mVU.placeSlots), numbered by the chunk and found through
-// the high bits of mVU.place. One exception: the JR/JALR tail keeps a pointer
-// to the block it was compiled as, for that block's end state and jump cache,
-// which are the same for every placement.
+// the high bits of mVU.place.
 
 // VU0 keeps its addresses as constants: its compiler decides on the absolute
 // PC (the M-bit check, the spin loop detector).
@@ -585,6 +583,18 @@ static u32 mVUchunkAddSlot(mV, microBlock* block, microBlock* target, u32 target
 	mVU.placeSlots[mVU.chunk.slotBase + n] = reinterpret_cast<u64>(target ? target->hostEntry : static_cast<void*>(block));
 	mVU.placeSlotsUsed = mVU.chunk.slotBase + n + 1;
 	return n;
+}
+
+// The slot the chunk being compiled gave `block`, one of its own blocks.
+static u32 mVUchunkBlockSlot(mV, const microBlock* block)
+{
+	for (size_t n = mVU.chunk.slots.size(); n-- > 0;)
+	{
+		if (mVU.chunk.slots[n].block == block)
+			return static_cast<u32>(n);
+	}
+	pxFailRel("microVU: a block of the chunk has no slot");
+	return 0;
 }
 
 // dst = slot `n` of the placement now running. Leaves the flags alone.

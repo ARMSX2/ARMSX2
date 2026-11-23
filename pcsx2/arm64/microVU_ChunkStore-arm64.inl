@@ -25,6 +25,27 @@ mVUChunkStore::Stats mVUChunkStore::GetStats()
 	return s;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+std::vector<u32> mVUChunkStore::TestJumpTargets(u32 blockPC)
+{
+	std::vector<u32> out;
+	microVU& mVU = microVU1;
+	microProgram* const prog = mVU.prog.cur;
+	microBlockManager* const mgr = prog ? prog->block[(blockPC & 0x3ff8) / 8] : nullptr;
+	if (!mgr)
+		return out;
+	mgr->forEachBlock([&](microBlock& b) {
+		if (!b.jumpCache)
+			return;
+		for (u32 t = 0; t < mProgSize / 2; t++)
+			if (b.jumpCache[t].prog == prog && b.jumpCache[t].hostEntry)
+				out.push_back(t * 8);
+	});
+	std::sort(out.begin(), out.end());
+	return out;
+}
+#endif
+
 static void mVUchunkStoreClear(microVU& mVU)
 {
 	if (mVUChunkStoreData* store = mVU.chunkStore.get())
@@ -214,6 +235,8 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkEntry& entry, u32 rootPC, int
 		blockCreate(rootPair + blk.pairOff);
 		microBlock* const placed = mVUblocks[rootPair + blk.pairOff]->add(mVU, &fresh);
 		pxAssertRel(placed->hostEntry == stub, "microVU: a placement's block was already registered");
+		if (blk.jumps && !placed->jumpCache)
+			placed->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 		mVU.placeSlots[slotBase + blk.slot] = reinterpret_cast<u64>(placed);
 		if (!rootEntry)
 			rootEntry = stub;
@@ -406,6 +429,7 @@ static void mVUchunkEnd(microVU& mVU)
 		blk.pairOff = static_cast<s32>(cb->startPC / 8) - rootPair;
 		blk.slot = n;
 		blk.stub = cb->stub;
+		blk.jumps = cb->block->jumpCache != nullptr;
 		blk.pState = cb->block->pState;
 		blk.pStateEnd = cb->block->pStateEnd;
 		b.blocks.push_back(blk);

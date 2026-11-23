@@ -5,6 +5,8 @@
 
 #include "common/Pcsx2Defs.h"
 
+#include <vector>
+
 // The VU1 chunk store: compiled VU1 code kept by what the compiler read to
 // produce it, so a routine a game uploads again, at the same address or at
 // another, runs the code compiled the first time.
@@ -63,4 +65,10 @@ namespace mVUChunkStore
 		u64 entryCodeBytes = 0;
 	};
 	Stats GetStats();
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	// The JR/JALR targets (byte addresses, ascending) the blocks at `blockPC`
+	// of the program VU1 ran last have in their own jump caches.
+	std::vector<u32> TestJumpTargets(u32 blockPC);
+#endif
 } // namespace mVUChunkStore

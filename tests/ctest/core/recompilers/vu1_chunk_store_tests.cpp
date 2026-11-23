@@ -336,6 +336,25 @@ TEST(Vu1ChunkStore, RoutineUploadedAtAnotherAddressIsServedWithoutACompile)
 	ExpectJitMatches(jit.h, interp);
 }
 
+// A served copy's JR and JALR blocks record the targets they reach in jump
+// caches of their own, where the VU AOT tier looks for them, not in those of
+// the blocks the code was compiled as.
+TEST(Vu1ChunkStore, ServedCopyRecordsItsJumpTargetsInItsOwnBlocks)
+{
+	const VuSnapshot interp = InterpOf(2, kCopy, CallLoopProgram(0x45), kCopy);
+	Jit jit(1, kHome, CallLoopProgram(), kHome);
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kHome + 14 * 8), std::vector<u32>{kHome + 21 * 8});
+
+	EXPECT_EQ(jit.RunUpload(2, kCopy, CallLoopProgram(0x45), kCopy), 0u) << "the copy was compiled";
+	ExpectJitMatches(jit.h, interp);
+	// The JALR in the block at pair 14 goes to pair 21; the JR in the block
+	// at pair 21 returns to pair 2.
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kCopy + 14 * 8), std::vector<u32>{kCopy + 21 * 8});
+	EXPECT_EQ(mVUChunkStore::TestJumpTargets(kCopy + 21 * 8), std::vector<u32>{kCopy + 2 * 8});
+	EXPECT_EQ(jit.RunAt(kCopy), 0u);
+	ExpectJitMatches(jit.h, interp);
+}
+
 // The same image holding the routine twice is one program: the second copy is
 // installed next to the first.
 TEST(Vu1ChunkStore, SecondCopyInTheSameProgramIsServed)

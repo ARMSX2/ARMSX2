@@ -175,7 +175,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 69;
+static constexpr u32 kMvuCompilerAbiVersion = 70;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -709,6 +709,7 @@ struct mVUChunkBody
 		s32 pairOff;
 		u32 slot;
 		u8* stub; // the entry stub in the chunk's code; the body follows it
+		bool jumps; // ends in a JR or JALR: each placement's block has a jump cache
 		microRegInfo pState;
 		microRegInfo pStateEnd;
 	};
