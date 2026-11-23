@@ -21,6 +21,10 @@
 //      loads nothing and is started again at the next write.
 //   4. A log that ends in a broken record keeps every record before it,
 //      and the next write cuts the broken one off first.
+//   4c-4f. The RAM cap bounds the pack in RAM and on disk: a read keeps the
+//      newest records that fit, the writer drops what was used longest ago
+//      to get back under it, and the table's bytes are a few large blocks,
+//      not one per record.
 //   5. The older layouts, writes cut short, and packs unused for 60 days
 //      are deleted; recent packs and the tripwire's memory stay.
 //
@@ -44,6 +48,7 @@
 #include <thread>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "Config.h"
@@ -405,29 +410,168 @@ TEST(ProgCachePack, the_newest_record_wins_and_a_mostly_dead_pack_is_rewritten)
 	EXPECT_TRUE(ReadBack(1, prog, 6));
 }
 
-// 4c. Past the RAM cap, a read keeps what fits and leaves the rest on disk: the pack is never rewritten
-//     from a table that does not hold all of it.
-TEST(ProgCachePack, past_the_ram_cap_the_pack_is_kept_whole_on_disk)
+// 4c. Of a pack past the RAM cap (one an older build let grow without bound) the read keeps the newest
+//     records that fit, which are at the end of the log, and the writer's next pass rewrites the file from
+//     them, under the cap.
+TEST(ProgCachePack, a_pack_past_the_ram_cap_keeps_its_newest_records)
 {
 	TempCacheRoot tmp;
 	const XXH128_hash_t sentinel = Hash(0xCAull, 0xFEull);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	for (u64 n = 1; n <= 8; n++)
+	{
 		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+		mVUProgCache::FlushSidecars(1); // (one pass each: the file holds them in order)
+	}
 	mVUProgCache::ResetForTest(1);
 	const std::string path = tmp.pack("_", 1, sentinel);
 	ASSERT_EQ(Records(path).size(), 8u);
 
+	const size_t cap = 200u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1); // (the read, then a writer pass)
+	auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.ramCapHit, 1u);
+	EXPECT_LE(stats.loadedBytes, cap) << "the read went past the cap";
+	EXPECT_LE(stats.ramBytes, cap);
+	EXPECT_EQ(stats.loadedRecords, 3u);
+	EXPECT_EQ(stats.evicted, 0u) << "the pass dropped records the read had just kept";
+	EXPECT_EQ(stats.rewrites, 1u);
+	const std::vector<Rec> recs = Records(path);
+	ASSERT_EQ(recs.size(), 3u) << "the pass did not rewrite the file from what the read kept";
+	EXPECT_EQ(recs[0].hash.low64, 6u);
+	EXPECT_EQ(recs[2].hash.low64, 8u);
+	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
+	EXPECT_TRUE(ReadBack(1, Hash(6, 6), 6));
+	EXPECT_TRUE(ReadBack(1, Hash(8, 8), 8));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(5, 5), true)) << "an older record was read";
+}
+
+// 4c'. A rewrite that fails (a full card, here a folder that takes no new file) is not tried again for the
+//      rest of the session: the writer appends instead of writing the whole pack every pass.
+TEST(ProgCachePack, a_failed_rewrite_is_not_retried_every_pass)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xC9ull, 0xFEull);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	for (u64 n = 1; n <= 4; n++)
+		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 64u << 10);
+	mVUProgCache::ResetForTest(1);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	const std::string dir(Path::GetDirectory(path));
+	ASSERT_EQ(Records(path).size(), 4u);
+
+	ASSERT_EQ(::chmod(dir.c_str(), 0555), 0);
+	if (::access(dir.c_str(), W_OK) == 0) // (root writes anyway)
+	{
+		::chmod(dir.c_str(), 0755);
+		GTEST_SKIP() << "the folder stays writable";
+	}
 	mVUProgCache::TestSetRamCap(1, 200u << 10);
 	mVUProgCache::InitWithSentinel(1, sentinel);
 	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_EQ(mVUProgCache::GetStats(1).writeFailures, 1u) << "the rewrite was not tried";
+	for (u64 n = 10; n < 13; n++)
+	{
+		PutSidecar(1, Hash(n, n), static_cast<u8>(n));
+		mVUProgCache::FlushSidecars(1);
+	}
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_EQ(stats.writeFailures, 1u) << "the rewrite was tried again";
+	EXPECT_EQ(stats.rewrites, 0u);
+	EXPECT_EQ(Records(path).size(), 7u) << "the passes after it did not append";
+	ASSERT_EQ(::chmod(dir.c_str(), 0755), 0);
+}
+
+// 4d. A session that stores past the cap is brought back under it at the writer's next pass: the entries
+//     used longest ago go, from RAM and from the file, and the ones stored or read last stay.
+TEST(ProgCachePack, the_writer_keeps_the_pack_under_the_cap_and_drops_what_was_used_longest_ago)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xCBull, 0xFEull);
+	const size_t cap = 256u << 10, size = 40u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	for (u64 n = 1; n <= 6; n++)
+	{
+		PutSidecar(1, Hash(n, n), static_cast<u8>(n), size);
+		mVUProgCache::FlushSidecars(1);
+	}
+	EXPECT_EQ(mVUProgCache::GetStats(1).evicted, 0u) << "240 KiB is under the cap";
+	ASSERT_TRUE(ReadBack(1, Hash(1, 1), 1)); // the oldest entry, used again
+
+	PutSidecar(1, Hash(7, 7), 7, size);
+	mVUProgCache::FlushSidecars(1);
 	auto stats = mVUProgCache::GetStats(1);
-	EXPECT_EQ(stats.ramCapHit, 1u);
-	EXPECT_LE(stats.ramBytes, 200u << 10);
-	EXPECT_LT(stats.entries, 8u);
-	PutSidecar(1, Hash(20, 20), 0x20);
+	EXPECT_GT(stats.evicted, 0u);
+	EXPECT_LE(stats.ramBytes, cap);
+	const std::string path = tmp.pack("_", 1, sentinel);
+	EXPECT_LE(FileSystem::GetPathFileSize(path.c_str()), static_cast<s64>(cap));
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(7, 7), true)) << "the newest entry was dropped";
+	EXPECT_TRUE(mVUProgCache::TestHasEntry(1, Hash(1, 1), true)) << "the entry read last was dropped";
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2), true)) << "the entry used longest ago was kept";
+
+	// The file holds them in the order of their last use, so the next session ranks them the same way.
 	mVUProgCache::ResetForTest(1);
-	EXPECT_EQ(Records(path).size(), 9u) << "records the table did not hold were lost";
+	const std::vector<Rec> recs = Records(path);
+	ASSERT_EQ(recs.size(), 3u);
+	EXPECT_EQ(recs[0].hash.low64, 6u);
+	EXPECT_EQ(recs[1].hash.low64, 1u);
+	EXPECT_EQ(recs[2].hash.low64, 7u);
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	EXPECT_TRUE(ReadBack(1, Hash(7, 7), 7));
+	EXPECT_TRUE(ReadBack(1, Hash(1, 1), 1));
+	EXPECT_FALSE(mVUProgCache::TestHasEntry(1, Hash(2, 2), true));
+}
+
+// 4e. Between the writer's passes a session never holds more than twice the cap: what would go past it is
+//     not stored.
+TEST(ProgCachePack, a_session_never_holds_more_than_twice_the_cap)
+{
+	TempCacheRoot tmp;
+	const size_t cap = 128u << 10, size = 40u << 10;
+	mVUProgCache::TestSetRamCap(1, cap);
+	mVUProgCache::InitWithSentinel(1, Hash(0xCCull, 0xFEull));
+	mVUProgCache::TestWaitForPreload(1);
+	// (a read builds the queued sidecar and stores it then, with no writer pass in between)
+	for (u64 n = 1; n <= 8; n++)
+	{
+		PutSidecar(1, Hash(n, n), static_cast<u8>(n), size);
+		ReadBack(1, Hash(n, n), static_cast<u8>(n));
+	}
+	const auto stats = mVUProgCache::GetStats(1);
+	EXPECT_LE(stats.ramBytes, 2 * cap);
+	EXPECT_GT(stats.storesRefused, 0u);
+}
+
+// 4f. The table's bytes sit in a few large blocks, never a heap block per record. Android's allocator gives
+//     every block above a few KiB mappings of its own, and a process may hold about 65,000 mappings: a
+//     pack of 30,000 records read into a block each took the process down at every boot.
+TEST(ProgCachePack, the_tables_bytes_are_a_few_large_blocks_not_one_per_record)
+{
+	TempCacheRoot tmp;
+	const XXH128_hash_t sentinel = Hash(0xCDull, 0xFEull);
+	constexpr u64 kRecords = 1000;
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	for (u64 n = 1; n <= kRecords; n++)
+		PutSidecar(1, Hash(n, n), static_cast<u8>(n), 24u << 10);
+	mVUProgCache::FlushSidecars(1);
+	auto stats = mVUProgCache::GetStats(1);
+	ASSERT_EQ(stats.entries, kRecords);
+	EXPECT_LE(stats.ramBlocks, 16u) << "what the session stored";
+
+	mVUProgCache::ResetForTest(1);
+	mVUProgCache::InitWithSentinel(1, sentinel);
+	mVUProgCache::TestWaitForPreload(1);
+	stats = mVUProgCache::GetStats(1);
+	ASSERT_EQ(stats.loadedRecords, kRecords);
+	EXPECT_LE(stats.ramBlocks, 16u) << "what the read loaded";
+	EXPECT_TRUE(ReadBack(1, Hash(kRecords, kRecords), static_cast<u8>(kRecords)));
 }
 
 // 5. Leftovers: the layouts before packs (vu0/, vu1/ and the vu{0,1}.stale.* they set aside), a write cut

@@ -199,7 +199,8 @@ namespace mVUProgCache
 		bool initialized        = false;
 		bool enabled            = false;
 		u64  entries            = 0; // hashes in the open table
-		u64  ramBytes           = 0; // image and sidecar bytes the open table holds
+		u64  ramBytes           = 0; // bytes the open table's blocks hold (superseded copies included)
+		u64  ramBlocks          = 0; // heap blocks they are in
 		u64  savesAttempted     = 0; // SaveProgram calls
 		u64  payloadWrites      = 0; // ...that stored an image (new, or grown)
 		u64  wouldBeHits        = 0; // TryLoadProgram lookups the table knew
@@ -215,7 +216,9 @@ namespace mVUProgCache
 		u64  loadNs             = 0; // time the reads took
 		u64  loadWaitNs         = 0; // time lookups waited for a read
 		u64  missesDuringLoad   = 0; // lookups that gave up waiting
-		u64  ramCapHit          = 0; // 1 when a read stopped putting records in RAM at the cap
+		u64  ramCapHit          = 0; // 1 when a read of a pack past the cap left its oldest records out
+		u64  evicted            = 0; // entries the writer dropped to bring the pack back under the cap
+		u64  storesRefused      = 0; // images and sidecars not stored: the table held twice the cap
 		u64  tornTails          = 0; // packs whose log ended in a broken record (cut off on the next write)
 		u64  otherFormat        = 0; // packs of another format (replaced on the next write)
 		u64  sidecarReads       = 0; // ReadSidecar calls that found one

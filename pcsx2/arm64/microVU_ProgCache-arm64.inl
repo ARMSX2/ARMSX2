@@ -102,15 +102,79 @@ static constexpr auto kLoadWaitBudget = std::chrono::seconds(3);
 static constexpr u64 kRewriteMinBytes = 1u << 20;
 // Packs not opened for this long are deleted. The cost of a wrong guess is one cold session of that game.
 static constexpr int kMaxUnusedDays = 60;
+// The size of the blocks the table's bytes are kept in (a record larger than this gets a block of its own).
+static constexpr size_t kBlockBytes = 4u << 20;
+// The RAM cap, which is also the largest a pack file gets: a sixteenth of the machine, between 64 and
+// 256 MiB. Games that keep data next to their microcode in VU memory store tens of thousands of programs
+// a session (one per whole-memory image), and nearly none of them comes back.
+static constexpr size_t kRamCapMin = 64u << 20;
+static constexpr size_t kRamCapMax = 256u << 20;
 
-using Bytes = std::shared_ptr<const std::vector<u8>>;
 using Clock = std::chrono::steady_clock;
+
+// The table's bytes are held in a few large blocks, never in a heap block per record. Android's allocator
+// gives every block above a few KiB mappings of its own, and a process may hold about 65,000 mappings
+// (vm.max_map_count): a pack of 30,000 records read into a block each took the process down at every boot.
+struct Block
+{
+	std::unique_ptr<u8[]> bytes;
+	size_t size = 0;
+};
+
+// A record's bytes, inside a Block that it keeps alive.
+struct Blob
+{
+	std::shared_ptr<const Block> block;
+	const u8* data = nullptr;
+	u32 size = 0;
+
+	explicit operator bool() const { return data != nullptr; }
+	bool operator==(const Blob& o) const { return data == o.data && size == o.size; }
+};
+
+// Where a pack's bytes go: appended to the last block, or to a new one when they do not fit. Nothing is
+// freed until the arena is replaced as a whole (the writer's compaction); superseded bytes count until then.
+struct Arena
+{
+	std::vector<std::shared_ptr<Block>> blocks;
+	size_t used = 0; // bytes handed out
+	size_t tailFree = 0;
+
+	// Room for `size` bytes, for the caller to fill through `out`.
+	Blob Take(size_t size, u8** out)
+	{
+		if (blocks.empty() || size > tailFree)
+		{
+			auto b = std::make_shared<Block>();
+			b->size = std::max(size, kBlockBytes);
+			b->bytes.reset(new u8[b->size]);
+			blocks.push_back(b);
+			tailFree = b->size;
+		}
+		const std::shared_ptr<Block>& b = blocks.back();
+		u8* p = b->bytes.get() + (b->size - tailFree);
+		tailFree -= size;
+		used += size;
+		*out = p;
+		return Blob{b, p, static_cast<u32>(size)};
+	}
+
+	Blob Copy(const u8* data, size_t size)
+	{
+		u8* p;
+		Blob blob = Take(size, &p);
+		if (size)
+			std::memcpy(p, data, size);
+		return blob;
+	}
+};
 
 struct Entry
 {
-	Bytes program;               // the mVUPersist image
-	Bytes sidecar;               // the vu-aot sidecar
+	Blob  program;               // the mVUPersist image
+	Blob  sidecar;               // the vu-aot sidecar
 	u64   shape = 0;             // mVUPersist::ImageShape(program)
+	u64   use = 0;               // when it was last stored or served (Pack::useClock): the writer keeps the latest
 	bool  programDirty = false;  // not on disk yet
 	bool  sidecarDirty = false;
 	u32   programRecord = 0;     // the size of its record on disk (for the superseded-bytes count)
@@ -128,13 +192,17 @@ struct Pack
 	// Sidecars queued and not built yet, and the ones being built (by the writer or a reader).
 	std::unordered_map<XXH128_hash_t, std::function<std::vector<u8>()>, MvuContentHashHash, MvuContentHashEq> builders;
 	std::unordered_set<XXH128_hash_t, MvuContentHashHash, MvuContentHashEq> building;
-	bool loaded = false;      // the read is over (the file's records are in the table, or as many as fit)
-	bool partial = false;     // some records of the file are not in the table: never rewrite it whole
+	bool loaded = false;      // the read is over (the file's records are in the table, up to the cap)
+	bool partial = false;     // the read was stopped: the file holds records the table does not, so it is never rewritten whole
 	bool discardFile = false; // the file is of another format: start it again at the next write
 	s64 truncateTo = -1;      // the log ends in a broken record at this offset: cut it there before appending
+	bool rewriteFailed = false; // a rewrite failed (a full card): only appends from now on, or it would retry every pass
 	u64 fileBytes = 0;
 	u64 liveBytes = 0;        // ...of which records not superseded
-	u64 ramBytes = 0;
+	Arena arena;              // the table's bytes
+	// Entry::use. A session's stores and hits start above every record the read numbers (by its place in the
+	// file), so they rank as more recent than anything read.
+	u64 useClock = u64(1) << 40;
 	Clock::duration waitLeft = kLoadWaitBudget;
 };
 
@@ -245,30 +313,29 @@ static u64 RecordChecksum(RecordHeader h, const u8* data, size_t size)
 	return XXH3_64bits_withSeed(data, size, XXH3_64bits(&h, sizeof(h)));
 }
 
-static void AppendRecord(std::vector<u8>& out, RecordKind kind, const XXH128_hash_t& hash, const std::vector<u8>& data)
+static void AppendRecord(std::vector<u8>& out, RecordKind kind, const XXH128_hash_t& hash, const Blob& data)
 {
 	RecordHeader h = {};
 	h.magic = kRecordMagic;
 	h.kind = kind;
-	h.length = static_cast<u32>(data.size());
+	h.length = data.size;
 	h.hash = hash;
-	h.checksum = RecordChecksum(h, data.data(), data.size());
+	h.checksum = RecordChecksum(h, data.data, data.size);
 	const u8* p = reinterpret_cast<const u8*>(&h);
 	out.insert(out.end(), p, p + sizeof(h));
-	out.insert(out.end(), data.begin(), data.end());
+	out.insert(out.end(), data.data, data.data + data.size);
 }
 
-static u32 RecordSize(const Bytes& b)
+static u32 RecordSize(const Blob& b)
 {
-	return b ? static_cast<u32>(sizeof(RecordHeader) + b->size()) : 0;
+	return b ? static_cast<u32>(sizeof(RecordHeader) + b.size) : 0;
 }
 
 static size_t RamCap(const State& s)
 {
 	if (s.ramCap)
 		return s.ramCap;
-	// A sixteenth of the machine, at least 64 MiB: 128 MiB on a 2 GB device, next to a VU1 code cache of 64 MiB.
-	return std::max<size_t>(GetPhysicalMemory() / 16, 64u << 20);
+	return std::clamp<size_t>(static_cast<size_t>(GetPhysicalMemory() / 16), kRamCapMin, kRamCapMax);
 }
 
 // Deletes, once per process, what no pack will read again: the older layouts' directories, writes cut
@@ -371,20 +438,53 @@ static void DeleteLeftovers(State& s)
 // One record of a pack being read.
 struct LoadedRecord
 {
-	Bytes program, sidecar;
+	Blob program, sidecar;
 	u32 programRecord = 0, sidecarRecord = 0;
+	u64 order = 0; // the place in the file of the newer of the two
 };
 
-// The read: the whole file in one sequential pass (through a large stdio buffer, a record at a time, so the
-// file is never held twice), then its newest record of each kind for each hash into the table, where nothing
-// this session stored already sits there (that is newer). On the loader thread.
+// Where to start reading a pack past the cap: the first record from which the rest of the file fits in it.
+// The newest records are at the end. Walks the record headers only.
+static u64 FirstRecordToKeep(const std::string& path, u64 fileSize, size_t cap)
+{
+	// (a small buffer of its own: a header read then costs a few KiB of the card, not the record around it)
+	auto file = FileSystem::OpenManagedCFile(path.c_str(), "rb");
+	if (!file)
+		return sizeof(PackHeader);
+	std::FILE* fp = file.get();
+	std::setvbuf(fp, nullptr, _IOFBF, 4096);
+	std::vector<u64> starts;
+	u64 off = sizeof(PackHeader);
+	RecordHeader h;
+	while (fileSize - off >= sizeof(h) && FileSystem::FSeek64(fp, static_cast<s64>(off), SEEK_SET) == 0 &&
+		   std::fread(&h, sizeof(h), 1, fp) == 1 && h.magic == kRecordMagic && h.length <= fileSize - off - sizeof(h))
+	{
+		starts.push_back(off);
+		off += sizeof(h) + h.length;
+	}
+	// (`off` is where the readable log ends)
+	const auto first = std::find_if(starts.begin(), starts.end(), [&](u64 start) { return off - start + sizeof(PackHeader) <= cap; });
+	return first != starts.end() ? *first : off;
+}
+
+// The read: the file in one sequential pass (through a large stdio buffer, a record at a time, straight into
+// the read's own arena), then its newest record of each kind for each hash into the table, where nothing
+// this session stored already sits there (that is newer). Of a file past the RAM cap (older builds let packs
+// grow without bound) only the newest records that fit in the cap are read; the writer's next pass rewrites
+// the file from them. On the loader thread.
 static void LoadPack(State& s, std::shared_ptr<Pack> p)
 {
 	const Clock::time_point t0 = Clock::now();
+	size_t cap;
+	{
+		std::lock_guard<std::mutex> lock(s.mu);
+		cap = RamCap(s);
+	}
 	std::unordered_map<XXH128_hash_t, LoadedRecord, MvuContentHashHash, MvuContentHashEq> recs;
-	u64 live = 0, records = 0, fileSize = 0;
-	bool otherFormat = false, stopped = false;
-	s64 brokenAt = -1;
+	Arena arena;
+	u64 live = 0, records = 0, fileSize = 0, off = 0, start = sizeof(PackHeader);
+	bool otherFormat = false, stopped = false, torn = false, capHit = false;
+	s64 cutAt = -1;
 	if (auto fp = FileSystem::OpenManagedCFile(p->path.c_str(), "rb"))
 	{
 		const s64 size = FileSystem::FSize64(fp.get());
@@ -394,8 +494,16 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 		PackHeader have;
 		if (fileSize && (std::fread(&have, sizeof(have), 1, fp.get()) != 1 || std::memcmp(&have, &want, sizeof(want)) != 0))
 			otherFormat = true;
-		u64 off = sizeof(PackHeader);
-		while (fileSize && !otherFormat && off < fileSize)
+		off = sizeof(PackHeader);
+		if (fileSize > cap && !otherFormat)
+		{
+			start = FirstRecordToKeep(p->path, fileSize, cap);
+			capHit = start > sizeof(PackHeader);
+			off = start;
+			if (FileSystem::FSeek64(fp.get(), static_cast<s64>(off), SEEK_SET) != 0)
+				torn = true;
+		}
+		while (fileSize && !otherFormat && !torn && off < fileSize)
 		{
 			// (a read cut short leaves the rest alone: its end would look like a broken record, and the file be cut there)
 			if (s.loaderStop.load(std::memory_order_relaxed))
@@ -407,27 +515,29 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 			if (fileSize - off < sizeof(h) || std::fread(&h, sizeof(h), 1, fp.get()) != 1 || h.magic != kRecordMagic ||
 				(h.kind != kRecordProgram && h.kind != kRecordSidecar) || h.length > fileSize - off - sizeof(h))
 			{
-				brokenAt = static_cast<s64>(off);
+				torn = true;
 				break;
 			}
-			auto data = std::make_shared<std::vector<u8>>(h.length);
-			if ((h.length && std::fread(data->data(), h.length, 1, fp.get()) != 1) ||
-				RecordChecksum(h, data->data(), data->size()) != h.checksum)
+			u8* bytes;
+			Blob data = arena.Take(h.length, &bytes);
+			if ((h.length && std::fread(bytes, h.length, 1, fp.get()) != 1) || RecordChecksum(h, bytes, h.length) != h.checksum)
 			{
-				brokenAt = static_cast<s64>(off);
+				torn = true;
 				break;
 			}
 			const u32 recordSize = static_cast<u32>(sizeof(h) + h.length);
 			LoadedRecord& r = recs[h.hash];
-			Bytes& slot = (h.kind == kRecordProgram) ? r.program : r.sidecar;
+			Blob& slot = (h.kind == kRecordProgram) ? r.program : r.sidecar;
 			u32& slotSize = (h.kind == kRecordProgram) ? r.programRecord : r.sidecarRecord;
 			live -= slotSize;
 			slot = std::move(data);
 			slotSize = recordSize;
 			live += recordSize;
-			records++;
+			r.order = ++records;
 			off += recordSize;
 		}
+		if (torn)
+			cutAt = static_cast<s64>(off);
 	}
 
 	while (s.loadHold.load(std::memory_order_acquire) && !s.loaderStop.load(std::memory_order_relaxed))
@@ -445,56 +555,50 @@ static void LoadPack(State& s, std::shared_ptr<Pack> p)
 	}
 
 	std::lock_guard<std::mutex> lock(s.mu);
-	const size_t cap = RamCap(s);
-	bool capHit = false;
 	for (auto& kv : recs)
 	{
 		Entry& e = p->table[kv.first];
 		LoadedRecord& r = kv.second;
+		bool took = false;
 		if (r.program && !e.program)
 		{
-			if (p->ramBytes + r.program->size() > cap)
-				capHit = true;
-			else
-			{
-				e.program = std::move(r.program);
-				e.shape = mVUPersist::ImageShape(e.program->data(), e.program->size());
-				e.programRecord = r.programRecord;
-				p->ramBytes += e.program->size();
-			}
+			e.program = std::move(r.program);
+			e.shape = mVUPersist::ImageShape(e.program.data, e.program.size);
+			e.programRecord = r.programRecord;
+			took = true;
 		}
 		// (a sidecar queued this session is newer than the file's)
 		if (r.sidecar && !e.sidecar && !p->builders.count(kv.first) && !p->building.count(kv.first))
 		{
-			if (p->ramBytes + r.sidecar->size() > cap)
-				capHit = true;
-			else
-			{
-				e.sidecar = std::move(r.sidecar);
-				e.sidecarRecord = r.sidecarRecord;
-				p->ramBytes += e.sidecar->size();
-			}
+			e.sidecar = std::move(r.sidecar);
+			e.sidecarRecord = r.sidecarRecord;
+			took = true;
 		}
+		if (took)
+			e.use = std::max(e.use, r.order);
 		if (!e.program && !e.sidecar)
 			p->table.erase(kv.first);
 	}
-	p->fileBytes = brokenAt >= 0 ? static_cast<u64>(brokenAt) : fileSize;
+	// (the read's blocks go ahead of the session's, whose last block stays the one stores append to)
+	p->arena.blocks.insert(p->arena.blocks.begin(), arena.blocks.begin(), arena.blocks.end());
+	p->arena.used += arena.used;
+	p->fileBytes = cutAt >= 0 ? static_cast<u64>(cutAt) : fileSize;
 	p->liveBytes = live;
 	p->discardFile = otherFormat;
-	p->truncateTo = brokenAt;
-	p->partial = capHit || stopped;
+	p->truncateTo = cutAt;
+	p->partial = stopped;
 	p->loaded = true;
 	s.st.packsLoaded += fileSize ? 1 : 0;
 	s.st.loadedRecords += records;
-	s.st.loadedBytes += fileSize;
+	s.st.loadedBytes += fileSize && off > start ? off - start : 0;
 	s.st.loadNs += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
 	s.st.ramCapHit |= capHit ? 1 : 0;
-	s.st.tornTails += brokenAt >= 0 ? 1 : 0;
+	s.st.tornTails += torn ? 1 : 0;
 	s.st.otherFormat += otherFormat ? 1 : 0;
 	s.cv.notify_all();
 	if (capHit)
-		Console.Warning("mVUProgCache[%u]: %s holds more than the RAM cap (%zu MiB); the rest compiles again", s.vu,
-			p->path.c_str(), cap >> 20);
+		Console.Warning("mVUProgCache[%u]: %s is larger than the RAM cap (%zu MiB); only its newest records were read",
+			s.vu, p->path.c_str(), cap >> 20);
 }
 
 // Waits for the open pack's read, from the budget the pack has left for it. False when it gave up.
@@ -513,15 +617,25 @@ static bool WaitForLoad(State& s, std::unique_lock<std::mutex>& lock, Pack& p)
 	return p.loaded;
 }
 
-static void StoreSidecar(State& s, Pack& p, const XXH128_hash_t& hash, std::vector<u8>&& bytes)
+// Whether `size` more bytes may go in the table. The writer brings it back under the cap at its next pass;
+// until then it may grow to twice the cap, and no further (nor when it cannot rewrite the pack at all).
+static bool MayStore(State& s, const Pack& p, size_t size)
 {
+	if (p.arena.used + size <= 2 * RamCap(s))
+		return true;
+	s.st.storesRefused++;
+	return false;
+}
+
+static void StoreSidecar(State& s, Pack& p, const XXH128_hash_t& hash, const std::vector<u8>& bytes)
+{
+	if (!MayStore(s, p, bytes.size()))
+		return;
 	Entry& e = p.table[hash];
-	if (e.sidecar)
-		p.ramBytes -= e.sidecar->size();
 	s.st.sidecarWrites++;
 	s.st.sidecarWriteBytes += bytes.size();
-	p.ramBytes += bytes.size();
-	e.sidecar = std::make_shared<const std::vector<u8>>(std::move(bytes));
+	e.sidecar = p.arena.Copy(bytes.data(), bytes.size());
+	e.use = ++p.useClock;
 	e.sidecarDirty = true;
 }
 
@@ -539,7 +653,7 @@ static void BuildOne(State& s, std::unique_lock<std::mutex>& lock, Pack& p, cons
 	if (bytes.empty())
 		s.st.sidecarSkips++;
 	else if (!p.builders.count(hash)) // (a newer request queued meanwhile wins)
-		StoreSidecar(s, p, hash, std::move(bytes));
+		StoreSidecar(s, p, hash, bytes);
 	s.cv.notify_all();
 }
 
@@ -562,8 +676,83 @@ struct Pending
 {
 	XXH128_hash_t hash;
 	RecordKind kind;
-	Bytes bytes;
+	Blob bytes;
+	bool dirty; // not in the file before this pass (a rewrite also writes what is)
 };
+
+// Copies the table into a new arena, which drops the superseded bytes, and with them, past `budget` (in
+// bytes of file: records with their headers), the entries stored or served longest ago. The copy is made with the lock released (it can be a hundred MiB,
+// and the VU thread looks programs up under the lock); what changed meanwhile is taken as it now is. The
+// old blocks go when the last record taken from them is let go. Lock held on entry and exit.
+static void Compact(State& s, std::unique_lock<std::mutex>& lock, Pack& p, size_t budget)
+{
+	struct Item
+	{
+		XXH128_hash_t hash;
+		u64 use;
+		Blob program, sidecar;       // as they were when the copy started
+		Blob newProgram, newSidecar; // their copies
+		bool keep;
+	};
+	std::vector<Item> items;
+	items.reserve(p.table.size());
+	for (const auto& kv : p.table)
+		items.push_back({kv.first, kv.second.use, kv.second.program, kv.second.sidecar, {}, {}, false});
+	lock.unlock();
+
+	std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.use > b.use; });
+	Arena fresh;
+	size_t kept = 0;
+	for (Item& it : items)
+	{
+		const size_t need = RecordSize(it.program) + RecordSize(it.sidecar);
+		if (kept + need > budget)
+			continue;
+		kept += need;
+		it.keep = true;
+		if (it.program)
+			it.newProgram = fresh.Copy(it.program.data, it.program.size);
+		if (it.sidecar)
+			it.newSidecar = fresh.Copy(it.sidecar.data, it.sidecar.size);
+	}
+
+	lock.lock();
+	u64 evicted = 0;
+	for (const Item& it : items)
+	{
+		auto found = p.table.find(it.hash);
+		if (found == p.table.end())
+			continue;
+		Entry& e = found->second;
+		if (!(e.program == it.program && e.sidecar == it.sidecar))
+			continue; // (stored or cleared during the copy: newer, taken as it is below)
+		if (!it.keep)
+		{
+			p.table.erase(found);
+			evicted++;
+			continue;
+		}
+		e.program = it.newProgram;
+		e.sidecar = it.newSidecar;
+	}
+	// What the copy did not take (changed meanwhile, or stored under a hash it had not seen) moves now.
+	const auto inFresh = [&](const Blob& b) {
+		return std::find(fresh.blocks.begin(), fresh.blocks.end(), b.block) != fresh.blocks.end();
+	};
+	for (auto& kv : p.table)
+	{
+		Entry& e = kv.second;
+		if (e.program && !inFresh(e.program))
+			e.program = fresh.Copy(e.program.data, e.program.size);
+		if (e.sidecar && !inFresh(e.sidecar))
+			e.sidecar = fresh.Copy(e.sidecar.data, e.sidecar.size);
+	}
+	p.arena = std::move(fresh);
+	s.st.evicted += evicted;
+	if (evicted)
+		Console.WriteLn("mVUProgCache[%u]: %s reached the RAM cap; dropped the %" PRIu64 " entries used longest ago",
+			s.vu, p.path.c_str(), evicted);
+}
 
 // Puts the pack's changes on disk: appended, or the whole file rewritten when most of it is superseded.
 // Lock held on entry and exit; the disk is touched with it released.
@@ -574,19 +763,38 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 	// only known then). The read always ends, and Close stops it before the last pass.
 	s.cv.wait(lock, [&] { return p.loaded; });
 
-	// A rewrite (compaction) is all or nothing, and only between closes: the deadline cuts appends only.
-	const bool rewrite = !p.partial && !p.discardFile && deadline == Clock::time_point::max() &&
-		p.fileBytes >= kRewriteMinBytes && p.fileBytes > 2 * (p.liveBytes + sizeof(PackHeader));
-	std::vector<Pending> todo;
+	// A rewrite (compaction) is all or nothing, and only between closes: the deadline cuts appends only. It
+	// comes when most of the file is superseded records, or when the table or the file is past the RAM cap;
+	// a table past the cap keeps half of it, so the next one is a while off; a file past it with a table
+	// under it (read from an older build's pack) keeps all that fits. A pack whose read was stopped is never
+	// rewritten (what the table lacks is the newest end of the file); past the cap it is compacted in RAM
+	// only, and appended to.
+	const size_t cap = RamCap(s);
+	const bool tableOverCap = p.arena.used > cap;
+	const bool overCap = tableOverCap || p.fileBytes > cap;
+	const bool rewrite = !p.partial && !p.discardFile && !p.rewriteFailed && deadline == Clock::time_point::max() &&
+		(overCap || (p.fileBytes >= kRewriteMinBytes && p.fileBytes > 2 * (p.liveBytes + sizeof(PackHeader))));
+	if (rewrite)
+		Compact(s, lock, p, tableOverCap ? cap / 2 : overCap ? cap - sizeof(PackHeader) : SIZE_MAX);
+	else if (tableOverCap && deadline == Clock::time_point::max())
+		Compact(s, lock, p, cap / 2);
+	std::vector<std::pair<u64, Pending>> order;
 	for (auto& kv : p.table)
 	{
 		Entry& e = kv.second;
 		if (e.program && (rewrite || e.programDirty))
-			todo.push_back({kv.first, kRecordProgram, e.program});
+			order.push_back({e.use, {kv.first, kRecordProgram, e.program, e.programDirty}});
 		if (e.sidecar && (rewrite || e.sidecarDirty))
-			todo.push_back({kv.first, kRecordSidecar, e.sidecar});
+			order.push_back({e.use, {kv.first, kRecordSidecar, e.sidecar, e.sidecarDirty}});
 		e.programDirty = e.sidecarDirty = false;
 	}
+	// In the order of their last use, oldest first: a later read numbers records by their place in the file,
+	// and one past the cap keeps the end of it.
+	std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+	std::vector<Pending> todo;
+	todo.reserve(order.size());
+	for (auto& o : order)
+		todo.push_back(std::move(o.second));
 	if (todo.empty() && p.truncateTo < 0 && !p.discardFile)
 		return;
 	const std::string path = p.path;
@@ -638,7 +846,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 			if (const u32 ms = s.writeDelayMs.load(std::memory_order_relaxed))
 				std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 			buf.clear();
-			AppendRecord(buf, todo[written].kind, todo[written].hash, *todo[written].bytes);
+			AppendRecord(buf, todo[written].kind, todo[written].hash, todo[written].bytes);
 			ok = WriteAll(fp.get(), buf.data(), buf.size());
 			bytes += buf.size();
 		}
@@ -656,8 +864,10 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 		std::error_code ec;
 		fs::remove(Utf8Path(target), ec);
 	}
+	const bool rewriteFailed = !ok && rewrite;
 
 	lock.lock();
+	p.rewriteFailed |= rewriteFailed;
 	if (!ok)
 	{
 		if (s.st.writeFailures++ == 0)
@@ -687,7 +897,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 			continue;
 		Entry& e = it->second;
 		const bool program = w.kind == kRecordProgram;
-		const Bytes& now = program ? e.program : e.sidecar;
+		const Blob& now = program ? e.program : e.sidecar;
 		u32& record = program ? e.programRecord : e.sidecarRecord;
 		if (i < written && ok)
 		{
@@ -700,7 +910,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 			}
 			record = RecordSize(w.bytes);
 		}
-		else if (now == w.bytes)
+		else if (now == w.bytes && w.dirty)
 			(program ? e.programDirty : e.sidecarDirty) = true;
 	}
 	if (deadlineHit)
@@ -968,7 +1178,9 @@ bool ReadSidecar(u32 vu_index, const XXH128_hash_t& hash, std::vector<u8>& out)
 	auto it = p->table.find(hash);
 	if (it == p->table.end() || !it->second.sidecar)
 		return false;
-	out.assign(it->second.sidecar->begin(), it->second.sidecar->end());
+	const Blob& sidecar = it->second.sidecar;
+	out.assign(sidecar.data, sidecar.data + sidecar.size);
+	it->second.use = ++p->useClock;
 	s.st.sidecarReads++;
 	return true;
 }
@@ -1022,15 +1234,11 @@ ClearResult ClearVuAot(bool wholeCache)
 				for (auto it = p->table.begin(); it != p->table.end();)
 				{
 					Entry& e = it->second;
-					if (e.sidecar)
-						p->ramBytes -= e.sidecar->size();
-					e.sidecar.reset();
+					e.sidecar = {};
 					e.sidecarDirty = false;
 					if (wholeCache)
 					{
-						if (e.program)
-							p->ramBytes -= e.program->size();
-						e.program.reset();
+						e.program = {};
 						e.programDirty = false;
 					}
 					it = e.program ? std::next(it) : p->table.erase(it);
@@ -1188,12 +1396,12 @@ void SaveProgram(microVU& mVU, const microProgram& prog)
 		return;
 
 	std::lock_guard<std::mutex> lock(s.mu);
+	if (!MayStore(s, *p, image.size()))
+		return;
 	Entry& e = p->table[prog.contentHash];
-	if (e.program)
-		p->ramBytes -= e.program->size();
-	p->ramBytes += image.size();
-	e.program = std::make_shared<const std::vector<u8>>(std::move(image));
+	e.program = p->arena.Copy(image.data(), image.size());
 	e.shape = shape;
+	e.use = ++p->useClock;
 	e.programDirty = true;
 	s.st.payloadWrites++;
 }
@@ -1221,7 +1429,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 		return nullptr;
 	}
 	std::shared_ptr<Pack> p;
-	Bytes image;
+	Blob image;
 	{
 		std::unique_lock<std::mutex> lock(s.mu);
 		p = s.pack;
@@ -1252,7 +1460,7 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 	const bool was_open = (armAsm != nullptr);
 	if (was_open)
 		mVUcloseCodeCache(mVU);
-	microProgram* prog = mVUPersist::HydrateProgram(mVU, image->data(), image->size());
+	microProgram* prog = mVUPersist::HydrateProgram(mVU, image.data, image.size);
 	if (was_open)
 		mVUopenCodeCache(mVU);
 
@@ -1264,15 +1472,18 @@ microProgram* TryLoadProgram(microVU& mVU, const XXH128_hash_t& contentHash)
 		// image is dropped, so the next save stores the recompiled one.
 		s.st.payloadRejects++;
 		auto it = p->table.find(contentHash);
-		if (it != p->table.end() && it->second.program == image)
+		// (by content: a compaction during the hydration moves the bytes, not what they are)
+		const Blob& now = it != p->table.end() ? it->second.program : Blob{};
+		if (now && now.size == image.size && std::memcmp(now.data, image.data, image.size) == 0)
 		{
-			p->ramBytes -= image->size();
-			it->second.program.reset();
+			it->second.program = {};
 			it->second.shape = 0;
 		}
 		return nullptr;
 	}
 	s.st.payloadHits++;
+	if (auto it = p->table.find(contentHash); it != p->table.end())
+		it->second.use = ++p->useClock;
 	return prog;
 }
 
@@ -1301,7 +1512,8 @@ Stats GetStats(u32 vu_index)
 	out.initialized = s.initialized;
 	out.enabled = s.initialized && s.enabled;
 	out.entries = s.pack ? s.pack->table.size() : 0;
-	out.ramBytes = s.pack ? s.pack->ramBytes : 0;
+	out.ramBytes = s.pack ? s.pack->arena.used : 0;
+	out.ramBlocks = s.pack ? s.pack->arena.blocks.size() : 0;
 	return out;
 }
 
@@ -1398,7 +1610,7 @@ bool TestHasEntry(u32 vu_index, const XXH128_hash_t& hash, bool sidecar)
 	if (!s.pack)
 		return false;
 	auto it = s.pack->table.find(hash);
-	return it != s.pack->table.end() && (sidecar ? it->second.sidecar : it->second.program) != nullptr;
+	return it != s.pack->table.end() && static_cast<bool>(sidecar ? it->second.sidecar : it->second.program);
 }
 
 void TestSetRamCap(u32 vu_index, size_t bytes)
@@ -1440,7 +1652,7 @@ void DumpStats(const microVU& mVU, const char* tag)
 		"dispatch(probes/avail)=%llu/%llu "
 		"sidecars(reads/stored/storedKiB/skips)=%llu/%llu/%llu/%llu "
 		"written(flushes/records/KiB/rewrites/failures)=%llu/%llu/%llu/%llu/%llu "
-		"close(deadlineHit/dropped)=%llu/%llu leftovers(files/KiB)=%llu/%llu",
+		"close(deadlineHit/dropped)=%llu/%llu leftovers(files/KiB)=%llu/%llu cap(evicted/refused)=%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.entries, static_cast<double>(s.ramBytes) / (1024.0 * 1024.0),
 		(unsigned long long)s.packsLoaded, (unsigned long long)s.loadedRecords, static_cast<double>(s.loadNs) / 1e6,
 		static_cast<double>(s.loadWaitNs) / 1e6, (unsigned long long)s.missesDuringLoad, (unsigned long long)s.ramCapHit,
@@ -1454,6 +1666,7 @@ void DumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.flushes, (unsigned long long)s.recordsWritten, (unsigned long long)(s.bytesWritten / 1024),
 		(unsigned long long)s.rewrites, (unsigned long long)s.writeFailures,
 		(unsigned long long)s.closeDeadlineHit, (unsigned long long)s.recordsDropped,
-		(unsigned long long)s.leftoverFiles, (unsigned long long)(s.leftoverBytes / 1024));
+		(unsigned long long)s.leftoverFiles, (unsigned long long)(s.leftoverBytes / 1024),
+		(unsigned long long)s.evicted, (unsigned long long)s.storesRefused);
 }
 }
