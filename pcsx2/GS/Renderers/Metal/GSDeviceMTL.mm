@@ -2887,6 +2887,7 @@ void GSDeviceMTL::DoRenderHW(GSHWDrawConfig& config)
 			MREInitHWDraw(config, allocation);
 			SendHWDraw(config, m_current_render.encoder, index_buffer, index_buffer_offset, false, false);
 			config.ps.date = 3;
+			config.alpha_second_pass.ps.date = 3;
 			break;
 		}
 		case GSHWDrawConfig::DestinationAlphaMode::StencilOne:
