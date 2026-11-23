@@ -339,7 +339,7 @@ struct RetroAchievementsSettingsView: View {
         if bool(.hardcoreActive) {
             hardcoreEnabled = bool(.hardcorePreference)
         } else {
-            hardcoreEnabled = ARMSX2Bridge.getINIBool("Achievements", key: "ChallengeMode", defaultValue: false)
+            hardcoreEnabled = SettingsStore._achievementsChallengeModeConfig.load()
         }
         notificationsEnabled = bool(.notifications, fallback: true)
         leaderboardNotificationsEnabled = bool(.leaderboardNotifications, fallback: true)

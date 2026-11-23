@@ -17,6 +17,15 @@ HAND_LOADED = {
     "jitScriptProtocol": "JITScriptProtocol.normalized maps names older builds wrote",
 }
 
+# Read live with load() where the screens need them, never cached in init(): the
+# runtime and the RA bridge write these keys, so a stored copy would go stale.
+LIVE_READS = {
+    "achievementsEnabled": "the runtime and the RA bridge write Achievements/Enabled, "
+                           "so a value cached in init would go stale",
+    "achievementsChallengeMode": "the runtime and the RA bridge write Achievements/ChallengeMode, "
+                                 "so a value cached in init would go stale",
+}
+
 # Migrations run from init() before any property is loaded, and want the value as
 # it is on disk right now, sentinel defaults and all. They have to read by hand.
 MIGRATION_READS = {
@@ -82,12 +91,19 @@ class SettingsDescriptorTests(unittest.TestCase):
                 assigned = re.findall(rf"^\s*{re.escape(prop)} = (.+)$", self.init_body, re.M)
                 self.assertFalse(any(".load(" in rhs for rhs in assigned),
                                  f"{prop} loads through its descriptor now; drop the exemption")
+        for name in LIVE_READS:
+            with self.subTest(live=name):
+                self.assertIn(name, self.descriptors, f"{name} is no longer a descriptor")
+                self.assertNotRegex(self.init_body, rf"(?m)^\s*{re.escape(name)} = ",
+                                    f"init assigns {name}, so it is cached; drop the exemption")
         self.assertEqual(sorted(MIGRATION_READS - self.by_hand), [],
                          "these are exempted but nothing reads them by hand any more")
 
     def test_every_descriptor_is_loaded_in_init(self):
         """A setting init() never loads keeps its declared default instead of the INI value."""
         for name, prop in self.property_of.items():
+            if name in LIVE_READS:
+                continue
             with self.subTest(setting=prop):
                 assigned = re.findall(rf"^\s*{re.escape(prop)} = (.+)$", self.init_body, re.M)
                 self.assertTrue(assigned, f"{prop} is never assigned in init()")
@@ -132,6 +148,8 @@ class SettingsDescriptorTests(unittest.TestCase):
     def test_every_descriptor_backed_setter_goes_through_commit(self):
         """Anything writing the INI its own way skips suppression and the graphics apply."""
         for name, prop in self.property_of.items():
+            if name in LIVE_READS:
+                continue
             with self.subTest(setting=prop):
                 declared = next((l for l in self.source.split("\n")
                                  if re.match(rf"^\s*var {re.escape(prop)}\b", l)), None)
@@ -143,6 +161,8 @@ class SettingsDescriptorTests(unittest.TestCase):
     def test_the_property_starts_on_its_descriptor_default(self):
         """Swift will not let the initializer say _xConfig.defaultValue, so check it here."""
         for name, (_, _, default) in self.descriptors.items():
+            if name in LIVE_READS:
+                continue
             prop = self.property_of[name]
             # The declaration wraps onto a second line when the name is long.
             declaration = re.search(rf"^\s*var {re.escape(prop)}(?::[^=]+)? = (.+?) \{{\s*didSet",
@@ -159,7 +179,8 @@ class SettingsDescriptorTests(unittest.TestCase):
 
     def test_resets_agree_with_the_descriptor_defaults(self):
         """Reset functions assign literals, so each is compared with its descriptor default."""
-        by_property = {self.property_of[n]: (n, d) for n, (_, _, d) in self.descriptors.items()}
+        by_property = {self.property_of[n]: (n, d) for n, (_, _, d) in self.descriptors.items()
+                       if n not in LIVE_READS}
         for func in RESET_FUNCS:
             for line in block(self.store_source, f"func {func}").split("\n"):
                 match = re.match(r"^\s*(?:controller\.|network\.)?(\w+) = (.+?)(?:\s*//.*)?$", line)
