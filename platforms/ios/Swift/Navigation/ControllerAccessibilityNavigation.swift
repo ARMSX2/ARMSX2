@@ -569,10 +569,8 @@ final class ControllerAccessibilityNavigationSession {
         }
         let beganScroll = scrolls && reveal(key)
         if !beganScroll {
-            // An offscreen semantic seek starts display-link tracking before
-            // its lazy row mounts. Mount reconciliation reaches this branch
-            // while ScrollViewReader is still animating. Preserve that tracker
-            // instead of publishing the row's first, edge-clipped frame.
+            // An offscreen seek tracks the display link before its lazy row mounts,
+            // so keep that tracker rather than publish the row's edge-clipped frame.
             if isScrollPresentationActive && scrollPresentationKey == key {
                 sampleScrollPresentation(
                     for: key,
