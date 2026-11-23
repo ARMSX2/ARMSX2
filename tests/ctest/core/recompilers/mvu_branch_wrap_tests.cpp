@@ -95,6 +95,42 @@ TEST(MvuBranchWrap, BalAndJalrAtTheTopLinkPastIt)
 	}
 }
 
+// The TPC an E or T stop leaves is wrapped, as a console capture reads it:
+// 0 after an E bit on 0x7FE (delay slot 0x7FF) and after a T bit on 0x7FF, 1
+// after an E bit on 0x7FF (delay slot fetched from pair 0).
+TEST(MvuBranchWrap, StopAtTheTopLeavesTpcWrapped)
+{
+	struct Case
+	{
+		const char* name;
+		u32 pair;
+		VuOp op;
+		u32 tpc;
+	};
+	const Case cases[] = {
+		{"E bit on 0x7FE", kLastPair - 1, EBitNopPair(), 0},
+		{"E bit on 0x7FF", kLastPair, EBitNopPair(), 1},
+		{"T bit on 0x7FF", kLastPair, TBit(NopPair()), 0},
+	};
+	const u32 savedFbrst = vuRegs[0].VI[REG_FBRST].UL;
+	for (const Case& c : cases)
+	{
+		SCOPED_TRACE(c.name);
+		VuTestHarness h(1);
+		h.LoadProgram({
+			LowerOnly(VIADDIU_L(vi::vi3, vi::vi0, 0x33)), // pair 0
+			EBitNopPair(),                                // pair 1
+		});
+		WritePair(c.pair, c.op);
+		h.SetStartPc(c.pair * 8);
+		vuRegs[0].VI[REG_FBRST].UL = 0x800u; // T-stop for VU1
+		h.Run();
+		vuRegs[0].VI[REG_FBRST].UL = savedFbrst;
+		EXPECT_EQ(h.GetViInterp(REG_TPC), c.tpc);
+		EXPECT_EQ(h.GetViJit(REG_TPC), c.tpc);
+	}
+}
+
 // BAL or JALR in B's delay slot (both to pair 0) links the pair after B's
 // target, and the link does not wrap: a console capture reads 0x800 for both.
 TEST(MvuBranchWrap, BalInDelaySlotLinksPastTheTop)
