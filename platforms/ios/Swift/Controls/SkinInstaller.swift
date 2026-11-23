@@ -98,8 +98,7 @@ final class SkinInstaller: ObservableObject {
         try FileManager.default.moveItem(at: tempURL, to: zipFile)
         defer { try? FileManager.default.removeItem(at: zipFile) }
 
-        // This bounds what gets imported. The largest catalog archive is only a
-        // few megabytes, leaving headroom for future controller artwork.
+        // Bounds the import; the largest catalog archive is a few megabytes.
         let size = ((try? FileManager.default.attributesOfItem(
             atPath: zipFile.path
         ))?[.size] as? NSNumber)?.int64Value ?? 0
