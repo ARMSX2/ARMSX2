@@ -77,7 +77,7 @@ struct BackgroundSourcePicker: ViewModifier {
                 showLoadError = true
                 return
             }
-            let ext = await item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
+            let ext = item.supportedContentTypes.first?.preferredFilenameExtension ?? "jpg"
             let replacing = currentAsset
             let asset = try await Task.detached(priority: .userInitiated) {
                 try BackgroundStorage.importData(data, fileExtension: ext, replacing: replacing)
