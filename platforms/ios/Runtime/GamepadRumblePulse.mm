@@ -29,6 +29,13 @@ static CHHapticEngine* s_nativePulseHapticEngine[ARMSX2_MAX_IOS_GAMEPADS] = {};
 static std::atomic<u32> s_nativePulseHapticStopGeneration[ARMSX2_MAX_IOS_GAMEPADS];
 static std::atomic<u32> s_loggedNativePulseHapticEvents{0};
 static std::atomic<u32> s_loggedJoyConRumbleSkipped{0};
+// Cached, since the rumble pulse runs on the CPU thread and must not take the settings lock.
+static std::atomic<bool> s_hapticFeedbackEnabled{true};
+
+void ARMSX2SetHapticFeedbackEnabled(bool enabled)
+{
+	s_hapticFeedbackEnabled.store(enabled, std::memory_order_relaxed);
+}
 
 void ARMSX2StopNativeGamepadRumblePulseOnMain(u32 slot)
 {
@@ -395,7 +402,7 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         // tap covers an iPad or a phone with no taptic engine.
         if (!ARMSX2FindNativeHapticController()) {
             if (ARMSX2DeviceSupportsHaptics()) {
-                const u32 native_packed_device = Host::GetBaseBoolSettingValue("ARMSX2iOS/UI", "HapticFeedback", true) ? native_packed : 0;
+                const u32 native_packed_device = s_hapticFeedbackEnabled.load(std::memory_order_relaxed) ? native_packed : 0;
                 s_nativeHapticSourceGamepad.store(static_cast<int>(gamepad_index), std::memory_order_relaxed);
                 dispatch_async(dispatch_get_main_queue(), ^{
                     ARMSX2ApplyNativeGamepadRumbleOnMain(native_packed_device);

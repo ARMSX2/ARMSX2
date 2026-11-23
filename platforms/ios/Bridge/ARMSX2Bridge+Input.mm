@@ -107,6 +107,10 @@
     ARMSX2_iOSTestGamepadRumble();
 }
 
++ (void)setRuntimeHapticFeedback:(BOOL)enabled {
+    ARMSX2SetHapticFeedbackEnabled(enabled);
+}
+
 // Gamepad button mapping
 + (void)startButtonCapture {
     s_capturedButton.store(-1);
