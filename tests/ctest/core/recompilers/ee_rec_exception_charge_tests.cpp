@@ -37,6 +37,12 @@ u32 Eighths(u32 code) { return R5900::GetInstruction(code).cycles; }
 // delay slot costs 3 cycles more, and 5 more than a taken branch.
 constexpr u32 kEretEighths = 6 * 8;
 
+// What taking an exception costs beyond the instructions it runs, measured on
+// an SCPH-30001: a BREAK into a five-instruction handler that returns with
+// ERET costs 33 cycles there, 9 more than the table charges for the BREAK, the
+// kernel's ten-instruction vector and the handler.
+constexpr u64 kEntryCycles = 9;
+
 // The measured charges this file pins, the table's for everything else.
 u32 Measured(u32 code) { return code == ERET ? kEretEighths : Eighths(code); }
 
@@ -76,6 +82,33 @@ void ExpectCharged(const EeRecTestHarness& h, u64 cycles)
 	EXPECT_EQ(h.GetGprJit(reg::t1) - h.GetGprJit(reg::t0), cycles) << "jit";
 	EXPECT_EQ(h.GetGprInterp(reg::t1) - h.GetGprInterp(reg::t0), cycles) << "interp";
 }
+
+constexpr u32 kVector = 0x80000180;
+
+// Installs a guest kernel handler at the common exception vector and puts the
+// environment's `jr ra; nop` stub back afterwards.
+class KernelHandler
+{
+public:
+	KernelHandler(EeRecTestHarness& h, const std::vector<u32>& words)
+		: h_(h)
+		, size_(words.size())
+	{
+		for (size_t i = 0; i < words.size(); i++)
+			h_.WriteU32(kVector + static_cast<u32>(i * 4), words[i]);
+	}
+	~KernelHandler()
+	{
+		h_.WriteU32(kVector + 0, JR(reg::ra));
+		h_.WriteU32(kVector + 4, NOP);
+		for (size_t i = 2; i < size_; i++)
+			h_.WriteU32(kVector + static_cast<u32>(i * 4), NOP);
+	}
+
+private:
+	EeRecTestHarness& h_;
+	size_t size_;
+};
 
 struct ScopedClean
 {
@@ -153,4 +186,47 @@ TEST(EeRecExceptionCharge, EretChargesSixCycles)
 		if (pass == 1)
 			ExpectCharged(h, charged);
 	}
+}
+
+// SYSCALL or BREAK in a block of its own, a handler at the common vector that
+// steps EPC past it, as the BIOS does, and returns with ERET, then a settling
+// block. Both engines charge the instructions plus the entry.
+void ExpectRoundTrip(u32 op)
+{
+	const ScopedClean clean;
+	for (int pass = 0; pass < 2; pass++)
+	{
+		u64 charged = kEntryCycles;
+		std::vector<u32> prog = Whole({ADDIU(reg::v1, reg::zero, 0x2F), op}, Eighths(kReadCount0), &charged, Measured);
+		prog.insert(prog.begin(), kReadCount0);
+		const u32 ret_pc = kProgPc + 4 * static_cast<u32>(prog.size());
+		const std::vector<u32> settle = Settle(&charged);
+		prog.insert(prog.end(), settle.begin(), settle.end());
+		const std::vector<u32> handler = Whole({
+			MFC0(reg::k0, kCp0Epc),
+			ADDIU(reg::k0, reg::k0, 4),
+			MTC0(reg::k0, kCp0Epc),
+			ERET,
+		}, 0, &charged, Measured);
+
+		EeRecTestHarness h;
+		h.SetCp0(kCp0Status, kStatusCu0);
+		h.SetCp0(kCp0Config, kConfigDie);
+		KernelHandler kernel(h, handler);
+		h.LoadProgram(prog);
+		h.Run();
+		h.ExpectGpr64(reg::k0, ret_pc); // the handler ran and returned past the op
+		if (pass == 1)
+			ExpectCharged(h, charged);
+	}
+}
+
+TEST(EeRecExceptionCharge, SyscallRoundTripChargesTheEntry)
+{
+	ExpectRoundTrip(SYSCALL_());
+}
+
+TEST(EeRecExceptionCharge, BreakRoundTripChargesTheEntry)
+{
+	ExpectRoundTrip(BREAK);
 }
