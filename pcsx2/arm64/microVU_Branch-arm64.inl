@@ -155,7 +155,7 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 	}
 
 	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-	armAsm->Mov(a64::w9, xPC);
+	mVUemitPC(mVU, a64::w9, xPC);
 	armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 
 	if (isEbit)
@@ -281,7 +281,7 @@ void mVUendProgram(mV, microFlagCycles* mFC, int isEbit)
 
 	// Save TPC
 	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-	armAsm->Mov(a64::w9, xPC);
+	mVUemitPC(mVU, a64::w9, xPC);
 	armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 
 	if (isEbit && isEbit != 3)
@@ -381,9 +381,14 @@ void normBranchCompile(microVU& mVU, u32 branchPC)
 	blockCreate(branchPC / 8);
 	pBlock = mVUblocks[branchPC / 8]->search(mVU, (microRegInfo*)&mVUregs);
 	if (pBlock)
-		armEmitJmp(pBlock->hostEntry);
+	{
+		armEmitJmp(mVUlinkEntry(mVU, pBlock->hostEntry));
+	}
 	else
+	{
+		mVU.compileFallsThrough = true;
 		mVUcompile(mVU, branchPC, (uptr)&mVUregs);
+	}
 }
 
 //------------------------------------------------------------------
@@ -596,6 +601,7 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		return v;
 	}
 
+	startPC = mVUlookupPC(vuIndex, startPC);
 	mVU.regs().start_pc = startPC;
 	if (doJumpCaching)
 	{
@@ -710,7 +716,7 @@ void normBranch(mV, microFlagCycles& mFC)
 		mVUendProgram(mVU, &mFC, 3);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 		iPC = tempPC;
@@ -786,7 +792,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			// Not taken: set TPC to PC after the delay slot
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			if (mVU.index && THREAD_VU1)
 				armEmitCall((void*)mVUTBit);
@@ -795,7 +801,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		if (mVU.index && THREAD_VU1)
 			armEmitCall((void*)mVUTBit);
@@ -836,14 +842,14 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->B(&dJMP, cond);
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVU.exitFunct);
 		armAsm->Bind(&dJMP);
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVU.exitFunct);
 
@@ -869,14 +875,14 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->B(&mJMP, cond);
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&mJMP);
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 
@@ -904,7 +910,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			// Not taken: set TPC to next instruction
 			incPC(1);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&taken);
@@ -913,7 +919,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		// Taken: set TPC to branch target
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 		return;
@@ -950,7 +956,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 	{
 		// Not-taken block exists: emit conditional jump to it
 		a64::Condition invCond = a64::InvertCondition(cond);
-		armEmitCondBranch(invCond, bBlock->hostEntry);
+		armEmitCondBranch(invCond, mVUlinkEntry(mVU, bBlock->hostEntry));
 		incPC(-3);
 		normBranchCompile(mVU, branchAddr(mVU));
 	}
@@ -965,6 +971,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		memcpy(&regBackup, &mVUregs, sizeof(microRegInfo));
 
 		incPC2(1);
+		mVU.compileFallsThrough = true;
 		mVUcompile(mVU, xPC, (uptr)&mVUregs);
 
 		iPC = bPC;
@@ -973,7 +980,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->Bind(&takenLabel);
 		if (jumpAddr)
 		{
-			armEmitJmp(jumpAddr);
+			armEmitJmp(mVUlinkEntry(mVU, jumpAddr));
 		}
 		else
 		{

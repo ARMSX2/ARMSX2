@@ -174,7 +174,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 67;
+static constexpr u32 kMvuCompilerAbiVersion = 68;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -656,6 +656,11 @@ struct microVU
 	u32 q;
 	u32 totalCycles;
 	s32 cycles;
+	// VU1: the root of the chunk now running, as a pair index (address / 8).
+	// A chunk is the blocks one outermost mVUcompile emits. Its code holds
+	// every micro-memory address as a distance from this root, and each
+	// block's entry stub writes the root here. See mVUemitRootStub.
+	u32 rootPair;
 
 	// Resume-aware dispatch (VE-07). A cycle-budget break re-enters the very
 	// block that broke (mVUtestCycles saves that block's own pState/TPC), so
@@ -778,6 +783,21 @@ struct microVU
 	// flags computed, not the pipeline pinned, so pinning it buys nothing here and
 	// costs a reorder at every edge that reaches a program end.
 	bool needFlagFinalize;
+
+	// Compile-time only: the chunk being compiled. compileRoot is the address
+	// the outermost mVUcompile started at; chunkBlocks lists the blocks it has
+	// registered so far, with the entry stub each one got.
+	struct ChunkBlock
+	{
+		microBlock* block;
+		u8* stub;
+	};
+	u32 compileRoot;
+	u32 compileDepth;
+	// Set by a caller whose code runs straight into the block mVUcompile is
+	// about to emit; read and cleared by that mVUcompile.
+	bool compileFallsThrough;
+	std::vector<ChunkBlock> chunkBlocks;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -1159,6 +1179,26 @@ __fi static void mVUemitModelCall(microVU& mVU, int stub)
 	pxAssert(stub >= 0 && stub < mVUModelStubCount);
 	pxAssert(mVU.modelStubs[stub]); // generated with the dispatchers, at every reset
 	armEmitCall(mVU.modelStubs[stub]);
+}
+
+// Test only: VU1 code compiled for one micro-memory address is entered for
+// another. While the shift is nonzero, every lookup by address (the dispatch
+// and the JR/JALR slow path) searches the programs at "address - shift", so a
+// copy of a program placed `shift` bytes higher runs the code compiled for the
+// original. Emitted code and guest state keep the real addresses.
+#ifdef PCSX2_RECOMPILER_TESTS
+namespace mvu_test_hooks
+{
+	inline u32 g_vu1LookupShift = 0;
+}
+#endif
+__fi static u32 mVUlookupPC(u32 vuIndex, u32 pc)
+{
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (vuIndex && mvu_test_hooks::g_vu1LookupShift)
+		return (pc - mvu_test_hooks::g_vu1LookupShift) & 0x3ff8;
+#endif
+	return pc;
 }
 
 // ARM64 helper .inl files + shared analysis/tables

@@ -449,6 +449,11 @@ void mVUinit(microVU& mVU, uint vuIndex)
 
 	mVU.index        =  vuIndex;
 	mVU.cop2         =  0;
+	mVU.rootPair     =  0;
+	mVU.compileRoot  =  0;
+	mVU.compileDepth =  0;
+	mVU.compileFallsThrough = false;
+	mVU.chunkBlocks.clear();
 	mVU.vuMemSize    = (mVU.index ? 0x4000 : 0x1000);
 	mVU.microMemSize = (mVU.index ? 0x4000 : 0x1000);
 	mVU.progSize     = (mVU.index ? 0x4000 : 0x1000) / 4;
@@ -1877,8 +1882,12 @@ _mVUt void* mVUexecute(u32 startPC, u32 cycles)
 		mVU.regs());
 #endif
 
-	const u32 maskedPC = startPC & vuLimit;
+	const u32 maskedPC = mVUlookupPC(vuIndex, startPC & vuLimit);
 	const uptr pState = (uptr)&mVU.prog.lpState;
+#ifdef PCSX2_RECOMPILER_TESTS
+	if (vuIndex && mvu_test_hooks::g_vu1LookupShift)
+		mVU.regs().start_pc = maskedPC;
+#endif
 
 	// A VU1 dispatch the vu-aot tier asked to look at (it returned null from its
 	// counting lookup) goes to the full search without a second lookup that
@@ -1989,8 +1998,10 @@ void* mVUlookupProg_VU1(u32 startPC, u32 cycles)
 {
 	microVU1.cycles      = cycles;
 	microVU1.totalCycles = cycles;
-	const u32 maskedPC = startPC & 0x3ff8;
+	const u32 maskedPC = mVUlookupPC(1, startPC & 0x3ff8);
 #ifdef PCSX2_RECOMPILER_TESTS
+	if (mvu_test_hooks::g_vu1LookupShift)
+		microVU1.regs().start_pc = maskedPC;
 	vu_capture::MaybeCapture(1, maskedPC, cycles,
 		microVU1.regs().Micro, microVU1.microMemSize,
 		microVU1.regs().Mem, microVU1.microMemSize,
@@ -2451,6 +2462,48 @@ namespace mvu_test_hooks
 	// resume), counted in every test build.
 	static std::atomic<u64> g_vu1Stops{0};
 	u64 GetVu1Stops() { return g_vu1Stops.load(std::memory_order_relaxed); }
+
+	// Enter VU1 code for addresses `shift_bytes` above the ones it was compiled
+	// for (see mVUlookupPC). 0 turns it off.
+	//
+	// The entry stub of every VU1 block is rewritten to the root the copy has,
+	// which is what entering the code for another placement means.
+	void SetVu1LookupShift(u32 shift_bytes)
+	{
+		microVU& mVU = microVU1;
+		shift_bytes &= 0x3ff8;
+		const u32 delta = (shift_bytes - g_vu1LookupShift) / 8;
+		g_vu1LookupShift = shift_bytes;
+		mVU.resumeEntry = nullptr;
+		if (!delta || !mVU.prog.x86start)
+			return;
+
+		constexpr u32 kMovzW9 = 0x52800009u; // movz w9, #imm16
+		constexpr u32 kStrW9X24 = 0xB9000309u; // str w9, [x24, #imm12 * 4]
+		HostSys::BeginCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));
+		const auto patch = [&](microBlock& b) {
+			if (!b.hostEntry || b.hostEntry != b.x86ptrStart)
+				return;
+			u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(static_cast<u8*>(b.hostEntry)));
+			if ((insn[0] & 0xFFE0001Fu) != kMovzW9 || (insn[1] & 0xFFC003FFu) != kStrW9X24)
+				return;
+			const u32 root = (((insn[0] >> 5) & 0xFFFFu) + delta) & 0x7ff;
+			insn[0] = kMovzW9 | (root << 5);
+			HostSys::FlushInstructionCache(b.hostEntry, mVUrootStubBytes);
+		};
+		const auto patchProgram = [&](microProgram* prog) {
+			for (microBlockManager* bm : prog->block)
+			{
+				if (bm)
+					bm->forEachInSearchOrder(patch);
+			}
+		};
+		for (const auto& entry : mVU.mvuContentMap)
+			patchProgram(entry.second);
+		for (microProgram* prog : mVU.mvuOrphanedProgs)
+			patchProgram(prog);
+		HostSys::EndCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));
+	}
 } // namespace mvu_test_hooks
 #endif
 

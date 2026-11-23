@@ -509,3 +509,103 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_,
 	out = {gprOutQ, 0};
 	return true;
 }
+
+//------------------------------------------------------------------
+// Micro VU - micro-memory addresses in VU1 code
+//------------------------------------------------------------------
+
+// VU1 code holds no micro-memory address of its own. A branch target, a link
+// value, the TPC an exit stores and the address of an immediate read at run
+// time are each the chunk's root (mVU.rootPair, written by the entry stub of
+// the block that was entered) plus the distance the compiler knows, wrapped
+// the way the VU wraps: pair indices to 11 bits, byte addresses to 16 KiB.
+// The same code is therefore right for a copy of the program anywhere in
+// micro memory, given that copy's root.
+//
+// This holds while no VU address reaches the code any other way. Constant
+// propagation would bake vi15 and a JR target in.
+static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.rootPair");
+
+// VU0 keeps its addresses as constants: its compiler decides on the absolute
+// PC (the M-bit check, the spin loop detector).
+__fi static bool mVUrootRelative(mV) { return isVU1; }
+
+// Bytes of the entry stub in front of a VU1 block's body.
+static constexpr u32 mVUrootStubBytes = 8;
+
+// The entry stub: every way into a block from outside its chunk (the
+// dispatcher, the jump cache, a link from another chunk, a resume) lands here
+// and gets the root set. Links inside the chunk skip it. w9 is free at a block
+// entry: mVUtestCycles loads it first thing.
+static void mVUemitRootStub(mV)
+{
+	vixl::ExactAssemblyScope scope(armAsm, mVUrootStubBytes);
+	armAsm->movz(a64::w9, (mVU.compileRoot / 8) & 0x7ff);
+	armAsm->str(a64::w9, mVUfieldMem(mVU, &mVU.rootPair));
+}
+
+// dst = root + (pc / 8 - compile root), not yet wrapped.
+__fi static void mVUemitRootPlus(mV, const a64::Register& dst, u32 pc)
+{
+	const u32 dist = ((pc - mVU.compileRoot) / 8) & 0x7ff;
+	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.rootPair));
+	if (dist)
+		armAsm->Add(dst.W(), dst.W(), dist);
+}
+
+// dst = the micro-memory byte address `pc`.
+static void mVUemitPC(mV, const a64::Register& dst, u32 pc)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armAsm->Mov(dst.W(), pc);
+		return;
+	}
+	mVUemitRootPlus(mVU, dst, pc);
+	armAsm->Ubfiz(dst.W(), dst.W(), 3, 11);
+}
+
+// dst = the link value of the BAL or JALR at `pc`: its own pair index plus 2.
+// The pair wraps at the top of micro memory and the sum does not, so a link
+// from the last two pairs is 0x800 or 0x801, as the console writes it.
+static void mVUemitLinkValue(mV, const a64::Register& dst, u32 pc)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armAsm->Mov(dst.W(), pc / 8 + 2);
+		return;
+	}
+	mVUemitRootPlus(mVU, dst, pc);
+	armAsm->And(dst.W(), dst.W(), 0x7ff);
+	armAsm->Add(dst.W(), dst.W(), 2);
+}
+
+// dst = the word at iPC, read from micro memory when the block runs (the
+// IbitHack gamefix). Clobbers RSCRATCHADDR, as armLoadPtr does.
+static void mVUemitLoadCurI(mV, const a64::Register& dst)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armLoadPtr(dst.W(), &curI);
+		return;
+	}
+	mVUemitRootPlus(mVU, dst, xPC);
+	armAsm->Ubfiz(dst.X(), dst.X(), 3, 11);
+	armMoveAddressToReg(RSCRATCHADDR, mVU.regs().Micro + (iPC & 1) * 4);
+	armAsm->Ldr(dst.W(), a64::MemOperand(RSCRATCHADDR, dst.X()));
+}
+
+// Where a direct branch to a block lands. A block of the chunk being compiled
+// is entered at its body: the root is already the one its stub would write.
+// Any other block is entered at its stub.
+static void* mVUlinkEntry(mV, void* hostEntry)
+{
+	if (!mVUrootRelative(mVU))
+		return hostEntry;
+	for (const microVU::ChunkBlock& cb : mVU.chunkBlocks)
+	{
+		if (cb.stub == hostEntry && cb.block->hostEntry == hostEntry)
+			return cb.stub + mVUrootStubBytes;
+	}
+	return hostEntry;
+}
