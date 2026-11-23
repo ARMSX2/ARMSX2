@@ -478,8 +478,9 @@ TEST(Vu1MicroAddress, IbitHackImmediatesReadAtTheirOwnAddress)
 			LowerOnly(VISUBIU_L(vi::vi5, vi::vi2, 0x21)),                    // 6
 			LowerOnly(VILW_L(mask::x, vi::vi6, vi::vi0, 3)),                 // 7: vi6 = mem[0x30].x
 			LowerOnly(VISW_L(mask::x, vi::vi2, vi::vi0, 4)),                 // 8: mem[0x40].x = vi2
-			EBitNopPair(),                                                   // 9
-			Nop(),                                                           // 10
+			LowerOnly(VILW_L(mask::x, vi::vi7, vi::vi1, -0x120)),            // 9: vi7 = mem[0x30].x
+			EBitNopPair(),                                                   // 10
+			Nop(),                                                           // 11
 		});
 		h.Run();
 		EXPECT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x40400000u);
@@ -490,6 +491,7 @@ TEST(Vu1MicroAddress, IbitHackImmediatesReadAtTheirOwnAddress)
 		EXPECT_EQ(h.GetViJit(vi::vi4), 0x57Eu);
 		EXPECT_EQ(h.GetViJit(vi::vi5), 0x558u);
 		EXPECT_EQ(h.GetViJit(vi::vi6), 0x1234u);
+		EXPECT_EQ(h.GetViJit(vi::vi7), 0x1234u) << "a negative offset";
 		EXPECT_EQ(h.GetMemU32Jit(0x40), 0x579u);
 		ExpectJitMatchesInterp(h);
 	}

@@ -1695,11 +1695,9 @@ static void mVUaddrFromVI(mV, int vi)
 	}
 	else
 	{
-		// IbitHack: reconstruct signed Imm11 from the live opcode word at
-		// runtime via sbfx+bfxil.
+		// IbitHack: the signed Imm11 of the live opcode word, bits 10:0.
 		mVUemitLoadCurI(mVU, RWSCRATCH, 0x000007FFu);
-		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-		armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
+		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 0, 11);
 		armAsm->Add(gprT1.W(), base.W(), gprT2.W());
 		base = gprT1;
 	}
