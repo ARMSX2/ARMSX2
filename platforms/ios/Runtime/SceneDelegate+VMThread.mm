@@ -381,8 +381,6 @@ static void ARMSX2StartJITKeepalive()
                 std::string isoDir = EmuFolders::DataRoot + "/iso";
                 std::string defaultISO = "";
                 std::string isoFilename = Host::GetBaseStringSettingValue("GameISO", "BootISO", defaultISO.c_str());
-                Host::SetBaseStringSettingValue("GameISO", "BootISO", isoFilename.c_str());
-                Host::CommitBaseSettingChanges();
                 std::string isoPath = (!isoFilename.empty() && isoFilename.front() == '/') ? isoFilename : (isoDir + "/" + isoFilename);
                 // Fallback: check Documents/ root if not found in iso/.
                 if (!isoFilename.empty() && isoFilename.front() != '/' && !FileSystem::FileExists(isoPath.c_str())) {

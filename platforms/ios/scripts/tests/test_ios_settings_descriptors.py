@@ -24,7 +24,7 @@ LIVE_READS = {
                            "so a value cached in init would go stale",
     "achievementsChallengeMode": "the runtime and the RA bridge write Achievements/ChallengeMode, "
                                  "so a value cached in init would go stale",
-    "bootISO": "the runtime and the VM bridge write GameISO/BootISO at boot",
+    "bootISO": "the boot and change-disc bridges write GameISO/BootISO",
     "lastGame": "the save-state bridge writes ARMSX2iOS/Boot/LastGame",
     "verboseLogging": "ARMSX2Bridge.setVerboseLogging writes Logging/EnableVerbose with two other "
                       "keys and a CPU-thread hop; the store only reads it",
