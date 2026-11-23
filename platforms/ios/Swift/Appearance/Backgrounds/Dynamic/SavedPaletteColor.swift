@@ -143,9 +143,7 @@ struct SavedPaletteColor: Codable, Hashable, Identifiable {
   private static func hexValue(for color: Color) -> String? {
     let uiColor = UIColor(color)
 
-    // The picker returns Display P3, which getRed reports in extended sRGB, so a saturated
-    // colour can land outside 0...1 and print as bad hex. Convert to sRGB before formatting;
-    // the clamp covers whatever the gamut still cannot express.
+    // getRed reports the picker's Display P3 outside 0...1, which prints as bad hex: go via sRGB.
     var red: CGFloat = 0
     var green: CGFloat = 0
     var blue: CGFloat = 0
