@@ -540,6 +540,75 @@ TEST(Vu1ChunkStore, ServedCopyKeepsItsKeptBitWords)
 	ExpectJitMatches(jit.h, interp);
 }
 
+// Under the gamefix, a copy whose last pair is the last pair of micro memory is
+// served and reads its own immediates. A copy whose reads run across the end
+// is not served: it is compiled where it is, and its reads past the end come
+// from the bottom of micro memory.
+TEST(Vu1ChunkStore, IbitHackCopyAcrossTheTopReadsItsOwnImmediates)
+{
+	ScopedIbitHack hack(true);
+	const std::vector<VuOp> home = IbitProgram(0x40400000u, 0x123, 0x456, -7, 5, 0x21, 3, 4);
+	const std::vector<VuOp> copy = IbitProgram(0x40A00000u, 0x321, 0x111, 9, -3, 0x12, 5, 6);
+	const u32 top = kMicroBytes - static_cast<u32>(copy.size()) * 8;
+	// Pairs 6 to 10 of this one (the ISUBIU, ILW and ISW among them) sit at
+	// the bottom of micro memory.
+	const u32 across = kMicroBytes - 6 * 8;
+	const VuSnapshot interpTop = InterpOf(2, top, copy, top, SeedIbit);
+	const VuSnapshot interpAcross = InterpOf(3, across, copy, across, SeedIbit);
+	ASSERT_EQ(interpAcross.regs.VI[vi::vi5].UL & 0xFFFFu, 0x432u - 0x12u);
+	ASSERT_EQ(interpAcross.regs.VI[vi::vi6].UL & 0xFFFFu, 0x4321u);
+
+	Jit jit(1, kHome, home, kHome, SeedIbit);
+	EXPECT_EQ(jit.RunUpload(2, top, copy, top), 0u) << "the copy at the top was compiled";
+	EXPECT_EQ(jit.h.GetVfBitsJit(vf::vf2, 'x'), 0x40A00000u);
+	EXPECT_EQ(jit.h.GetMemU32Jit(0x60), 0x432u) << "ISW of vi2 at the copy's offset";
+	ExpectJitMatches(jit.h, interpTop);
+
+	const mVUChunkStore::Stats before = mVUChunkStore::GetStats();
+	EXPECT_GT(jit.RunUpload(3, across, copy, across), 0u) << "a copy whose reads run across the end was served";
+	const mVUChunkStore::Stats after = mVUChunkStore::GetStats();
+	EXPECT_EQ(after.hits, before.hits);
+	EXPECT_GT(after.missBounds, before.missBounds);
+	EXPECT_EQ(jit.h.GetVfBitsJit(vf::vf2, 'x'), 0x40A00000u);
+	EXPECT_EQ(jit.h.GetMemU32Jit(0x60), 0x432u);
+	ExpectJitMatches(jit.h, interpAcross);
+}
+
+// Entered at pair 4, which branches back to pair 0: the compile that starts
+// at pair 4 also emits the block at pair 0, whose reads sit below the chunk's
+// root.
+std::vector<VuOp> ReadBelowTheRootProgram(u32 a, s16 lw)
+{
+	return {
+		LowerOnly(VIADDIU_L(vi::vi1, vi::vi0, a)),           // 0
+		LowerOnly(VILW_L(mask::x, vi::vi6, vi::vi0, lw)),    // 1
+		EBitNopPair(),                                       // 2
+		Nop(),                                               // 3
+		LowerOnly(VIADDIU_L(vi::vi2, vi::vi0, 0x55)),        // 4: entry
+		LowerOnly(VB_L(-6)),                                 // 5: to 0
+		Nop(),                                               // 6
+	};
+}
+
+TEST(Vu1ChunkStore, IbitHackReadBelowTheRootOfAServedCopy)
+{
+	ScopedIbitHack hack(true);
+	const std::vector<VuOp> home = ReadBelowTheRootProgram(0x123, 3);
+	const std::vector<VuOp> copy = ReadBelowTheRootProgram(0x321, 5);
+	const u32 entry = 4 * 8;
+	const VuSnapshot interp = InterpOf(2, kCopy, copy, kCopy + entry, SeedIbit);
+	ASSERT_EQ(interp.regs.VI[vi::vi1].UL & 0xFFFFu, 0x321u);
+	ASSERT_EQ(interp.regs.VI[vi::vi6].UL & 0xFFFFu, 0x4321u);
+
+	Jit jit(1, kHome, home, kHome + entry, SeedIbit);
+	ASSERT_EQ(jit.h.GetViJit(vi::vi1), 0x123u);
+	ASSERT_EQ(jit.h.GetViJit(vi::vi6), 0x1234u);
+	EXPECT_EQ(jit.RunUpload(2, kCopy, copy, kCopy + entry), 0u) << "the copy was compiled";
+	EXPECT_EQ(jit.h.GetViJit(vi::vi1), 0x321u);
+	EXPECT_EQ(jit.h.GetViJit(vi::vi6), 0x4321u);
+	ExpectJitMatches(jit.h, interp);
+}
+
 // Without the gamefix an immediate is compiled in: a copy with another one is
 // other code.
 TEST(Vu1ChunkStore, ImmediateCompiledInIsPartOfTheKey)
