@@ -441,18 +441,19 @@ void mVUvuAotOnBodyPlaced(microVU&, bool droppedSticky)
 }
 
 // The copy already runs region code from that block on: a job that finished
-// for the routine is not built on top of it. Another copy that is not taken in
-// asks again.
+// for the routine and is waiting for a copy is not built on top of it. A copy
+// that is not taken in may ask again, as after any job that came to nothing.
 void mVUvuAotOnRootCovered(mVUChunkHead& head)
 {
 	if (!head.job)
 		return;
 	head.job.reset();
 	head.outstanding = false;
+	head.attempts++;
 	head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
+	head.nextJump = head.jumpRuns + s_vuaot.jumpTierUpRuns;
 	s_vuaot.stats.discardCovered++;
 }
-
 
 // VU1's run entry. The tripwire has gone off and regions without the sticky byte exist: a reset
 // throws away every program and region, and the next compiles are exact. Not while a program is
@@ -1527,6 +1528,8 @@ static bool vuAotRequest(microVU& mVU, microProgram& prog, mVUChunkHead& head, u
 	for (const auto& jt : j->jumpTargets)
 		s_vuaot.stats.targetsRecorded += jt.second.size();
 	head.missesSeen = s_vuaot.jumpMisses;
+	// (the jump path asks again only after as many more jump entries)
+	head.nextJump = head.jumpRuns + s_vuaot.jumpTierUpRuns;
 	if (!vuAotSubmit(j))
 	{
 		head.attempts++;
@@ -1558,10 +1561,10 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 		if (!head.job)
 			return;
 		const std::shared_ptr<VuAotJob> j = std::static_pointer_cast<VuAotJob>(head.job);
-		// (a body of another routine may have been placed here while the worker ran)
+		// (a copy taken into another routine's body leaves the job for one that is not)
 		if (blk.tierState == mVUtierCovered)
-			mVUvuAotOnRootCovered(head);
-		else if (std::memcmp(&j->key, &key, sizeof(key)) == 0 && vuAotJobFits(mVU, *j, startPC))
+			return;
+		if (std::memcmp(&j->key, &key, sizeof(key)) == 0 && vuAotJobFits(mVU, *j, startPC))
 		{
 			head.job.reset();
 			head.outstanding = false;
@@ -1575,6 +1578,7 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 			head.outstanding = false;
 			head.attempts++;
 			head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
+			head.nextJump = head.jumpRuns + s_vuaot.jumpTierUpRuns;
 			s_vuaot.stats.discardMemory++;
 		}
 	};
@@ -1716,7 +1720,7 @@ void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result)
 	if (blk->tierHead == head && blk->tierState >= mVUtierBody)
 		head->runs[1]++;
 	// Only when jumps dominate the routine's entries (16 to 1 over dispatches).
-	const bool tierNow = jumps >= s_vuaot.jumpTierUpRuns && static_cast<u64>(head->runs[0]) * 16 <= jumps;
+	const bool tierNow = jumps >= std::max(head->nextJump, s_vuaot.jumpTierUpRuns) && static_cast<u64>(head->runs[0]) * 16 <= jumps;
 	return vuAotConsider(mVU, *prog, *blk, *head, startPC, key, result, tierNow, true);
 }
 

@@ -796,6 +796,8 @@ struct mVUChunkHead
 	u32 runs[2] = {};
 	u32 next[2] = {};
 	u32 jumpRuns = 0;
+	// The jump count at which the JR/JALR slow path may ask for a job again.
+	u32 nextJump = 0;
 	// A job is queued, running, or finished and not built yet.
 	bool outstanding = false;
 	// Jobs dropped, discarded or not placed.
