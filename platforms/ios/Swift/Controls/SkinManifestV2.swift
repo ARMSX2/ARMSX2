@@ -1,23 +1,14 @@
-// SkinManifestV2.swift — Advanced skin manifest v2 model and validator
+// SkinManifestV2.swift — Advanced skin manifest v2 model
 // SPDX-License-Identifier: GPL-3.0+
-//
-// Foundational data model for the ARMSX2 advanced skin-maker system. The schema
-// and validator live here; import/storage, UI, and runtime rendering consume
-// these types elsewhere. The normalized conversions and representation selector
-// below are used by the runtime renderer. Existing skins and layouts are unchanged.
 
 import Foundation
 import CoreGraphics
 
 // MARK: - Top-level manifest
 
-/// Codable mirror of the ARMSX2 skin manifest v2 JSON.
-///
-/// Every field is optional so a structurally-valid-but-semantically-empty
-/// document still decodes; ``SkinManifestValidator`` enforces the required
-/// fields and reports friendly, JSON-path-located errors. The `representations`
-/// map is decoded as raw keyed dictionaries so unknown device or screen-class
-/// keys can be reported by the validator instead of being silently dropped.
+/// Codable mirror of the skin manifest v2 JSON. Every field is optional so
+/// ``SkinManifestValidator``, not the decoder, reports missing fields by JSON
+/// path, and `representations` stays raw so unknown keys reach it too.
 struct SkinManifestV2: Codable, Equatable {
     var formatVersion: Int?
     var name: String?
@@ -30,15 +21,10 @@ struct SkinManifestV2: Codable, Equatable {
     var debug: Bool?
     var representations: [String: [String: SkinOrientationSet]]?
 
-    /// Format versions this model understands. Other versions are rejected by
-    /// the validator with a clear message rather than misinterpreted.
     static let supportedFormatVersions: Set<Int> = [2]
 
-    /// Canonical PS2 game-type identifier.
     static let ps2GameTypeIdentifier = "com.armsx2.game.ps2"
 
-    /// Decode a manifest from raw JSON. A throw here means the bytes are not
-    /// valid JSON for the v2 shape; semantic problems are left to the validator.
     static func decode(from data: Data) throws -> SkinManifestV2 {
         try JSONDecoder().decode(SkinManifestV2.self, from: data)
     }
@@ -52,7 +38,6 @@ struct SkinOrientationSet: Codable, Equatable {
     var landscape: SkinOrientationRepresentation?
 }
 
-/// Per-orientation layout data.
 struct SkinOrientationRepresentation: Codable, Equatable {
     /// Point-based coordinate space that every frame is measured against.
     var mappingSize: SkinSize?
@@ -60,18 +45,14 @@ struct SkinOrientationRepresentation: Codable, Equatable {
     var assets: SkinAssets?
     /// Whether this orientation supports the opacity/translucency feature.
     var translucent: Bool?
-    /// Reserved: parsed but ignored in manifest v2.0. Screen-frame/bezel
-    /// placement is intentionally not supported in this version.
+    /// Reserved: parsed but ignored in manifest v2.0.
     var screen: SkinFrame?
-    /// Positioned controls overlaid on the background.
     var controls: [SkinControl]?
-    /// Default touch-target inflation applied to every control in this
-    /// orientation unless a control overrides it.
+    /// Touch-target inflation for every control that does not set its own.
     var extendedEdges: SkinExtendedEdges?
 }
 
-/// Background assets for one orientation. Either a single scalable asset
-/// (typically a vector PDF) or three raster sizes.
+/// One scalable asset (typically a vector PDF) or three raster sizes.
 struct SkinAssets: Codable, Equatable {
     var resizable: String?
     var small: String?
@@ -89,7 +70,6 @@ struct SkinAssets: Codable, Equatable {
     }
 }
 
-/// A point-space rectangle.
 struct SkinFrame: Codable, Equatable {
     var x: Double?
     var y: Double?
@@ -97,14 +77,12 @@ struct SkinFrame: Codable, Equatable {
     var height: Double?
 }
 
-/// A point-space size.
 struct SkinSize: Codable, Equatable {
     var width: Double?
     var height: Double?
 }
 
-/// Per-direction touch-target inflation. These expand where a control can be
-/// touched without changing its visual frame.
+/// Grows where a control can be touched without changing its visual frame.
 struct SkinExtendedEdges: Codable, Equatable {
     var top: Double?
     var bottom: Double?
@@ -128,41 +106,32 @@ struct SkinAnimation: Codable, Equatable {
 
 // MARK: - Control
 
-/// A single positioned control within an orientation.
 struct SkinControl: Codable, Equatable {
     /// Stable, representation-unique identifier.
     var id: String?
-    /// Control style. Parsed loosely through ``resolvedKind``.
     var kind: String?
     var frame: SkinFrame?
     var extendedEdges: SkinExtendedEdges?
     var asset: SkinControlAsset?
-    /// Optional per-direction normal/pressed art for D-pad controls.
     var directionAssets: SkinDirectionAssets?
-    /// Polymorphic inputs value (string, array, or {up,down,left,right} map).
     var inputs: SkinInputs?
     /// Optional L3/R3 click input for thumbstick controls.
     var clickInput: String?
-    /// Moving-knob art for thumbstick controls.
     var thumbstick: SkinThumbstick?
     /// Render order; higher draws above lower.
     var zIndex: Double?
-    /// Visibility mode. Parsed loosely through ``resolvedVisibility``.
     var visibility: String?
-    /// Reserved: parsed, inert in manifest v2.0.
+    /// haptic, sound and animation are reserved: parsed, inert in manifest v2.0.
     var haptic: String?
-    /// Reserved: parsed, inert in manifest v2.0.
     var sound: String?
-    /// Reserved: parsed, inert in manifest v2.0.
     var animation: SkinAnimation?
-    /// Future function-button action. Defined but never executed in this phase.
+    /// Reserved function-button action, never executed yet.
     var action: String?
 
     var resolvedKind: SkinControlKind { SkinControlKind.from(kind ?? "") }
     var resolvedVisibility: SkinVisibility { SkinVisibility.from(visibility ?? "") }
 }
 
-/// Per-state art for a control.
 struct SkinControlAsset: Codable, Equatable {
     var normal: String?
     var pressed: String?
@@ -180,7 +149,6 @@ struct SkinControlAsset: Codable, Equatable {
     }
 }
 
-/// Optional per-direction normal/pressed art for a single D-pad direction.
 struct SkinDirectionalAsset: Codable, Equatable {
     var normal: String?
     var pressed: String?
@@ -194,24 +162,21 @@ struct SkinDirectionalAsset: Codable, Equatable {
     }
 }
 
-/// Optional per-direction art for a D-pad control. Any direction may be omitted;
-/// omitted directions fall back to the whole-D-pad art.
+/// Per-direction D-pad art; an omitted direction falls back to the whole-D-pad art.
 struct SkinDirectionAssets: Codable, Equatable {
     var up: SkinDirectionalAsset?
     var down: SkinDirectionalAsset?
     var left: SkinDirectionalAsset?
     var right: SkinDirectionalAsset?
 
-    /// Every non-empty normal/pressed path across all four directions.
     var referencedPaths: [String] {
         [up, down, left, right].flatMap { $0?.referencedPaths ?? [] }
     }
 }
 
-/// Polymorphic `inputs` value. Button controls use a list of input IDs,
-/// composite D-pad/thumbstick controls use a map of slot to input ID, and some
-/// control styles use a single string. Decoding never throws: an unrecognized
-/// shape decodes to ``unknown`` so the validator can report it.
+/// Buttons use a list of input IDs, composite D-pad and thumbstick controls a
+/// map of slot to input ID, and some styles a single string. An unrecognized
+/// shape decodes to ``unknown`` for the validator to report.
 enum SkinInputs: Codable, Equatable {
     case list([String])
     case map([String: String])
@@ -241,7 +206,6 @@ enum SkinInputs: Codable, Equatable {
         }
     }
 
-    /// Every input ID referenced by this value, regardless of shape.
     var referencedInputIDs: [String] {
         switch self {
         case .list(let array):     return array
@@ -254,7 +218,6 @@ enum SkinInputs: Codable, Equatable {
 
 // MARK: - Enums
 
-/// Control style, parsed leniently from the raw `kind` string.
 enum SkinControlKind: Equatable {
     case button
     case dpad
@@ -275,7 +238,6 @@ enum SkinControlKind: Equatable {
     }
 }
 
-/// Visibility mode, parsed leniently from the raw `visibility` string.
 enum SkinVisibility: Equatable {
     case always
     case hidden
@@ -292,7 +254,6 @@ enum SkinVisibility: Equatable {
     }
 }
 
-/// Device class, used by the validator and the selection helper.
 enum SkinDevice: Equatable {
     case iphone
     case ipad
@@ -307,7 +268,6 @@ enum SkinDevice: Equatable {
     }
 }
 
-/// Screen class, used by the validator and the selection helper.
 enum SkinScreenClass: Equatable {
     case standard
     case edgeToEdge
@@ -324,7 +284,6 @@ enum SkinScreenClass: Equatable {
     }
 }
 
-/// Orientation, used by the validator and the selection helper.
 enum SkinOrientation: Equatable {
     case portrait
     case landscape
@@ -333,27 +292,19 @@ enum SkinOrientation: Equatable {
 /// Every PS2 input identifier a manifest control may reference.
 enum SkinInputID {
     static let known: Set<String> = [
-        // D-pad
         "up", "down", "left", "right",
-        // Face buttons (Sony layout)
         "cross", "circle", "square", "triangle",
-        // Shoulders and clicks
         "l1", "l2", "l3", "r1", "r2", "r3",
-        // System
         "start", "select",
-        // Left analog
         "leftAnalogUp", "leftAnalogDown", "leftAnalogLeft", "leftAnalogRight",
-        // Right analog
         "rightAnalogUp", "rightAnalogDown", "rightAnalogLeft", "rightAnalogRight"
     ]
 
     static func isKnown(_ id: String) -> Bool { known.contains(id) }
 }
 
-/// Function-button actions reserved for a future phase. These are defined so
-/// the validator can accept them, but they are never executed here. Deliberately
-/// excludes `screenshot` (no safe bridge action yet) and renderer/resolution
-/// actions. Buttons carry a single action only.
+/// Function-button actions the validator accepts but nothing runs yet. Leaves out
+/// `screenshot` (no safe bridge action yet) and renderer actions; one per button.
 enum SkinAction: String, Equatable, CaseIterable {
     case quickSave
     case quickLoad
@@ -381,9 +332,7 @@ enum SkinAction: String, Equatable, CaseIterable {
 // MARK: - Path-safety helper
 
 enum SkinAssetPath {
-    /// True when `path` is a safe relative reference for a bundled asset:
-    /// non-empty, not absolute, no drive/scheme, no parent-directory traversal,
-    /// and no control characters.
+    /// True when `path` is a safe relative reference to a bundled asset.
     static func isSafeRelative(_ path: String) -> Bool {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -421,9 +370,7 @@ struct NormalizedInsets: Equatable {
 }
 
 extension SkinFrame {
-    /// Converts this point-space frame to normalized fractions relative to
-    /// `mappingSize`. Returns nil when the mapping size is not a positive point
-    /// space or any component is missing/non-finite. Used by the runtime renderer.
+    /// Nil when the mapping size is not positive or a component is missing or non-finite.
     func normalized(against mappingSize: SkinSize) -> NormalizedFrame? {
         guard let mappingWidth = mappingSize.width,
               let mappingHeight = mappingSize.height,
@@ -441,9 +388,7 @@ extension SkinFrame {
 }
 
 extension SkinExtendedEdges {
-    /// Converts these point-space insets to normalized fractions relative to
-    /// `mappingSize`. Returns nil when the mapping size is invalid. Missing
-    /// edges are treated as zero. Used by the runtime renderer.
+    /// Missing edges count as zero; nil when the mapping size is not positive.
     func normalizedInsets(against mappingSize: SkinSize) -> NormalizedInsets? {
         guard let mappingWidth = mappingSize.width,
               let mappingHeight = mappingSize.height,
@@ -464,7 +409,6 @@ extension SkinExtendedEdges {
 
 // MARK: - Representation selection
 
-/// Query used to select the best matching representation.
 struct SkinManifestQuery: Equatable {
     var device: SkinDevice
     var screenClass: SkinScreenClass
@@ -482,15 +426,12 @@ struct SkinManifestQuery: Equatable {
 }
 
 extension SkinManifestV2 {
-    /// A representation selected by ``bestRepresentation(for:)``.
     struct ResolvedRepresentation: Equatable {
         let representation: SkinOrientationRepresentation
     }
 
-    /// Selects the best representation for a query, following a
-    /// device/screen-class/orientation fallback chain and finally any available
-    /// representation. Used by the runtime renderer to pick the best layout for
-    /// the current device, screen class, and orientation.
+    /// Falls back by device, then screen class, then orientation, and finally
+    /// takes any representation at all.
     func bestRepresentation(for query: SkinManifestQuery) -> ResolvedRepresentation? {
         let available = representations ?? [:]
         for device in Self.orderedRawDevices(preferred: query.device) {
