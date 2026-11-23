@@ -406,13 +406,10 @@ final class PadLayoutPresetStore {
         validPresetID(gameAssignments[identity.id]?.layoutPresetID)
     }
 
-    /// Catalog skins are matched by disc serial, while PCSX2's runtime settings
-    /// identity also includes a CRC. Keep the accepted automatic assignment at
-    /// serial scope so a different executable/disc CRC cannot silently fall
-    /// back to Global Default. Accepting another skin is an explicit choice, so
-    /// it also replaces stale exact-CRC skin assignments for the same game.
-    /// Existing exact layout choices are preserved unless a valid catalog
-    /// layout was selected alongside the skin.
+    /// Catalog skins match by disc serial but the runtime identity adds a CRC,
+    /// so the assignment stays at serial scope and another CRC never falls back
+    /// to Global Default. Accepting a skin replaces stale exact-CRC skin picks;
+    /// exact layout picks stay unless a valid catalog layout came with it.
     func setAutomaticAssignment(
         skinID: String,
         layoutPresetID: String?,
