@@ -65,7 +65,6 @@ static void mVUchunkStoreClear(microVU& mVU)
 	if (mVUChunkStoreData* store = mVU.chunkStore.get())
 	{
 		store->heads.clear();
-		store->retired.clear();
 		store->index.clear();
 		store->built.reset();
 		store->codeBytes = 0;
@@ -97,30 +96,6 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)((mVU.prog.x86ptr - mVU.prog.x86start) / 1024), mVU.placeSlotsUsed,
 		(unsigned long long)s.tieredBodies, (unsigned long long)(s.tieredCodeBytes / 1024),
 		(unsigned long long)s.tieredPlaced, (unsigned long long)s.tieredReAimed);
-}
-
-// The entries were compiled under one set of options; an entry made under
-// another set is other code.
-static void mVUchunkStoreSyncOptions(microVU& mVU)
-{
-	mVUChunkStoreData& store = *mVU.chunkStore;
-	if (store.options.low64 == mVU.optionsSentinel.low64 && store.options.high64 == mVU.optionsSentinel.high64)
-		return;
-	// The programs that ran the old bodies may still be there, with blocks
-	// that point at these heads: the heads stay, with nothing in them.
-	std::vector<std::unique_ptr<mVUChunkHead>> old = std::move(store.heads);
-	std::vector<std::unique_ptr<mVUChunkHead>> retired = std::move(store.retired);
-	mVUchunkStoreClear(mVU);
-	for (auto& head : old)
-	{
-		head->plain.clear();
-		head->tiered.clear();
-		head->job.reset();
-		head->next[0] = head->next[1] = ~0u;
-		retired.push_back(std::move(head));
-	}
-	store.retired = std::move(retired);
-	store.options = mVU.optionsSentinel;
 }
 
 // The bits of a lower instruction word the compiler reads at compile time.
@@ -196,7 +171,6 @@ static void mVUchunkBegin(microVU& mVU)
 // The routine whose root block is at `rootPC` with the entry state `state`.
 static mVUChunkHead* mVUchunkFindHead(microVU& mVU, u32 rootPC, const microRegInfo& state, bool create)
 {
-	mVUchunkStoreSyncOptions(mVU);
 	mVUChunkStoreData& store = *mVU.chunkStore;
 	const u64 hash = mVUchunkRootHash(mVU, rootPC, &state);
 	const auto range = store.index.equal_range(hash);

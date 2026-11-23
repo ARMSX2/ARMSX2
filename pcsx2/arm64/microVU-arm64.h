@@ -842,20 +842,17 @@ struct mVUChunkHead
 	u32 runsAtJob = 0;
 };
 
+// Emptied by every reset (mVUchunkStoreClear). The options sentinel changes
+// only at a reset, so every body was compiled under the options in force.
 struct mVUChunkStoreData
 {
 	std::vector<std::unique_ptr<mVUChunkHead>> heads;
 	// mVUchunkRootHash -> index into heads.
 	std::unordered_multimap<u64, u32> index;
-	// The options sentinel the bodies were compiled under.
-	XXH128_hash_t options = {};
 	u64 codeBytes = 0;
 	u64 plainBodies = 0;
 	u64 tieredBodies = 0;
 	u64 tieredCodeBytes = 0;
-	// Heads of an earlier set of options, emptied: blocks of live programs
-	// can still point at them.
-	std::vector<std::unique_ptr<mVUChunkHead>> retired;
 	std::vector<microBlock*> scratchTargets;
 	// The tiered body the last build episode produced, until the tier takes it.
 	std::unique_ptr<mVUChunkBody> built;
