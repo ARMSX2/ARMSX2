@@ -75,7 +75,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     static bool s_initialized = false;
     if (!s_initialized) {
         SDL_SetMainReady();
-        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD) < 0) {
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD)) {
             NSLog(@"SDL_Init failed: %s", SDL_GetError());
             return;
         }
