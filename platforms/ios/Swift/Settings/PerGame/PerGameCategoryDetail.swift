@@ -140,7 +140,7 @@ struct PerGameCategoryDetail: View {
             perGameLoadTextureReplacementsAsync: $draft.perGameLoadTextureReplacementsAsync,
             perGamePrecacheTextureReplacements: $draft.perGamePrecacheTextureReplacements,
             controllerTargets: $controller.textureControllerTargets,
-            serial: game.metadata["serial"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            serial: game.metadata[.serial]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
             settings: settings
         )
     }

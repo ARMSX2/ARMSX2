@@ -25,12 +25,12 @@ final class ExternalGameLibrary: @unchecked Sendable {
     func reload() {
         let records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
         directories = records.compactMap { record in
-            guard let id = record["id"] as? String,
-                  let displayName = record["displayName"] as? String,
-                  let path = record["path"] as? String else {
+            guard let id = record[ARMSX2GameLibraryKey.id.rawValue] as? String,
+                  let displayName = record[ARMSX2GameLibraryKey.displayName.rawValue] as? String,
+                  let path = record[ARMSX2GameLibraryKey.path.rawValue] as? String else {
                 return nil
             }
-            let isDirectory = (record["isDirectory"] as? Bool) ?? ((record["kind"] as? String) != "file")
+            let isDirectory = (record[ARMSX2GameLibraryKey.isDirectory.rawValue] as? Bool) ?? ((record[ARMSX2GameLibraryKey.kind.rawValue] as? String) != "file")
             return ExternalGameDirectory(id: id, displayName: displayName, path: path, isDirectory: isDirectory)
         }
     }
@@ -69,17 +69,17 @@ final class ExternalGameLibrary: @unchecked Sendable {
             let path = standardizedURL.path
             let displayName = standardizedURL.lastPathComponent.isEmpty ? path : standardizedURL.lastPathComponent
             let record: [String: Any] = [
-                "id": UUID().uuidString,
-                "displayName": displayName,
-                "path": path,
-                "bookmarkData": bookmarkData,
-                "isDirectory": isDirectory,
-                "kind": isDirectory ? "folder" : "file",
-                "scanDisabled": scanDisabled,
+                ARMSX2GameLibraryKey.id.rawValue: UUID().uuidString,
+                ARMSX2GameLibraryKey.displayName.rawValue: displayName,
+                ARMSX2GameLibraryKey.path.rawValue: path,
+                ARMSX2GameLibraryKey.bookmarkData.rawValue: bookmarkData,
+                ARMSX2GameLibraryKey.isDirectory.rawValue: isDirectory,
+                ARMSX2GameLibraryKey.kind.rawValue: isDirectory ? "folder" : "file",
+                ARMSX2GameLibraryKey.scanDisabled.rawValue: scanDisabled,
             ]
 
             records.removeAll { existing in
-                guard let existingPath = existing["path"] as? String else { return false }
+                guard let existingPath = existing[ARMSX2GameLibraryKey.path.rawValue] as? String else { return false }
                 return URL(fileURLWithPath: existingPath).standardizedFileURL.path == path
             }
             records.append(record)
@@ -101,7 +101,7 @@ final class ExternalGameLibrary: @unchecked Sendable {
 
     func removeDirectory(id: String) {
         var records = UserDefaults.standard.array(forKey: ARMSX2iOSExternalGameDirectories) as? [[String: Any]] ?? []
-        records.removeAll { ($0["id"] as? String) == id }
+        records.removeAll { ($0[ARMSX2GameLibraryKey.id.rawValue] as? String) == id }
         UserDefaults.standard.set(records, forKey: ARMSX2iOSExternalGameDirectories)
         reload()
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)

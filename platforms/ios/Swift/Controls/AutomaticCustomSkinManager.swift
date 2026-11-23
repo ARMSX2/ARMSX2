@@ -119,7 +119,7 @@ final class AutomaticCustomSkinManager {
         guard SettingsStore.shared.controller.automaticDownloadCustomSkin else { return }
         for game in games {
             let serial = PadLayoutGameIdentity.normalizedSerial(
-                game.metadata["serial"]
+                game.metadata[.serial]
             )
             if !serial.isEmpty, !suppressedSerials.contains(serial) {
                 queuedSerials.insert(serial)
@@ -343,7 +343,7 @@ final class AutomaticCustomSkinManager {
     func apply(
         _ proposal: AutomaticCustomSkinProposal,
         toISO isoName: String,
-        metadata: [String: String],
+        metadata: [ARMSX2GameLibraryKey: String],
         setCustomLayout: Bool,
         doNotShowAgain: Bool
     ) -> Bool {
@@ -362,8 +362,8 @@ final class AutomaticCustomSkinManager {
         acceptedAssignments[proposal.serial] = acceptedProposal
         storeAutomaticAssignment(acceptedProposal)
 
-        var serial = metadata["serial"]
-        var crc = metadata["crc"]
+        var serial = metadata[.serial]
+        var crc = metadata[.crc]
         var identity = PadLayoutGameIdentity(serial: serial, crc: crc)
         if identity == nil {
             let gameSettings = ARMSX2Bridge.gameSettings(forISO: isoName)

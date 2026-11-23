@@ -11,7 +11,7 @@ extension PerGameSettingsDraft {
         if !enabled {
             return settings.localized("Per-game overrides cleared.")
         }
-        let serial = game.metadata["serial"] ?? game.name
+        let serial = game.metadata[.serial] ?? game.name
         let suffix = savesToRunningGame
             ? settings.localized("Saved — changes apply now. Renderer and recompiler settings need a reset.")
             : settings.localized("Reset or relaunch the game to apply.")

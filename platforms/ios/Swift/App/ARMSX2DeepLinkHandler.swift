@@ -125,15 +125,15 @@ enum ARMSX2DeepLinkHandler {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             .map { game in
                 let metadata = ARMSX2Bridge.gameMetadata(forISO: game.bootName)
-                let title = metadata["title"] ?? metadata["fileTitle"] ?? URL(fileURLWithPath: game.name).deletingPathExtension().lastPathComponent
+                let title = metadata[.title] ?? metadata[.fileTitle] ?? URL(fileURLWithPath: game.name).deletingPathExtension().lastPathComponent
                 let fileURL = URL(fileURLWithPath: game.path)
 
                 return [
                     "title": title,
                     "fileName": game.name,
-                    "serial": metadata["serial"] ?? "",
-                    "region": metadata["region"] ?? "",
-                    "crc": metadata["crc"] ?? "",
+                    "serial": metadata[.serial] ?? "",
+                    "region": metadata[.region] ?? "",
+                    "crc": metadata[.crc] ?? "",
                     "fileSize": fileSize(at: fileURL),
                     "fileType": fileURL.pathExtension.uppercased(),
                     "launchURL": launchURL(forISO: game.name)
@@ -154,11 +154,11 @@ enum ARMSX2DeepLinkHandler {
         var seen = Set<String>()
         return ARMSX2Bridge.availableISOEntries().compactMap { entry in
             // First entry per name wins: the iso folder, then Documents, then external folders.
-            guard let name = entry["name"] as? String, let path = entry["path"] as? String,
+            guard let name = entry[.name] as? String, let path = entry[.path] as? String,
                   seen.insert(name).inserted else {
                 return nil
             }
-            let external = (entry["external"] as? NSNumber)?.boolValue == true
+            let external = (entry[.external] as? NSNumber)?.boolValue == true
             return (name: name, bootName: external ? path : name, path: path)
         }
     }

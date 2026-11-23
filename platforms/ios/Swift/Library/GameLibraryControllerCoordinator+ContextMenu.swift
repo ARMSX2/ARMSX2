@@ -196,9 +196,9 @@ extension GameLibraryControllerCoordinator {
         guard preparedGameSettingsID != game.id
                 || preparedGameSettings == nil else { return }
 
-        if let crc = game.metadata["crc"], !crc.isEmpty {
+        if let crc = game.metadata[.crc], !crc.isEmpty {
             preparedGameSettings = ARMSX2Bridge.gameSettings(
-                forSerial: game.metadata["serial"],
+                forSerial: game.metadata[.serial],
                 crc: crc
             )
         } else {

@@ -223,7 +223,7 @@ final class PatchStore {
         currentCRC = Self.formattedCRC(crcString)
         currentSerial = PadLayoutGameIdentity.normalizedSerial(info[.serial] as? String)
         let metadataTitle = self.launchContext == .library
-            ? ARMSX2Bridge.gameMetadata(forISO: iso)["title"]
+            ? ARMSX2Bridge.gameMetadata(forISO: iso)[.title]
             : nil
         currentTitle = (metadataTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if currentTitle.isEmpty { currentTitle = iso }

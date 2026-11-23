@@ -160,8 +160,8 @@ struct PerGameIdentitySection: View {
                     Text(displayName)
                         .font(.headline)
                         .lineLimit(2)
-                    if let serial = game.metadata["serial"], !serial.isEmpty {
-                        Text("\(serial)  ·  CRC \(PadLayoutGameIdentity.normalizedCRC(game.metadata["crc"] ?? ""))")
+                    if let serial = game.metadata[.serial], !serial.isEmpty {
+                        Text("\(serial)  ·  CRC \(PadLayoutGameIdentity.normalizedCRC(game.metadata[.crc] ?? ""))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)

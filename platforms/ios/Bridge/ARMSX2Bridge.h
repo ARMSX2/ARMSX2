@@ -62,8 +62,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 + (nonnull NSString *)isoDirectory;
 + (nonnull NSString *)documentsDirectory;
 + (nonnull NSArray<NSString *> *)availableISOs;
-+ (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries;
-+ (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
++ (nonnull NSArray<NSDictionary<ARMSX2GameLibraryKey, id> *> *)availableISOEntries;
++ (nonnull NSDictionary<ARMSX2GameLibraryKey, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName;
 + (nullable NSString *)linkedDiscPathForELF:(nonnull NSString *)elfName NS_SWIFT_NAME(linkedDiscPath(forELF:));
 + (void)setLinkedDiscPath:(nullable NSString *)discPath forELF:(nonnull NSString *)elfName NS_SWIFT_NAME(setLinkedDiscPath(_:forELF:));
 + (nonnull NSString *)clearCacheForISO:(nonnull NSString *)isoName NS_SWIFT_NAME(clearCache(forISO:));

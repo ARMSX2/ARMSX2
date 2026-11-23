@@ -259,10 +259,10 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 	return isos;
 }
 
-+ (nonnull NSArray<NSDictionary<NSString *, id> *> *)availableISOEntries {
++ (nonnull NSArray<NSDictionary<ARMSX2GameLibraryKey, id> *> *)availableISOEntries {
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSMutableSet<NSString*>* seenPaths = [NSMutableSet set];
-	NSMutableArray<NSDictionary<NSString*, id>*>* entries = [NSMutableArray array];
+	NSMutableArray<NSDictionary<ARMSX2GameLibraryKey, id>*>* entries = [NSMutableArray array];
 
 	void (^addPathWithName)(NSString*, NSString*, BOOL, NSString*, BOOL) = ^(NSString* path, NSString* displayName, BOOL external, NSString* source, BOOL forceGameFile) {
 		if (path.length == 0 || (!forceGameFile && !ARMSX2IsSupportedGameImageAtPath(path)))
@@ -276,10 +276,10 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 
 		[seenPaths addObject:key];
 		[entries addObject:@{
-			@"name": entryName ?: @"",
-			@"path": normalizedPath,
-			@"external": @(external),
-			@"source": source ?: (external ? @"External" : @"On My iPhone"),
+			ARMSX2GameLibraryKeyName: entryName ?: @"",
+			ARMSX2GameLibraryKeyPath: normalizedPath,
+			ARMSX2GameLibraryKeyExternal: @(external),
+			ARMSX2GameLibraryKeySource: source ?: (external ? @"External" : @"On My iPhone"),
 		}];
 	};
 
@@ -315,7 +315,7 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 		BOOL alreadyActive = ARMSX2ExternalGameAccessAlreadyActive(directoryURL.path);
 		BOOL startedAccess = alreadyActive ? NO : [directoryURL startAccessingSecurityScopedResource];
 
-		NSString* source = [record[@"displayName"] isKindOfClass:NSString.class] ? record[@"displayName"] : directoryURL.lastPathComponent;
+		NSString* source = [record[ARMSX2GameLibraryKeyDisplayName] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyDisplayName] : directoryURL.lastPathComponent;
 		if (!isDirectory) {
 			addPathWithName(directoryURL.path, source, YES, source, YES);
 			if (startedAccess)
@@ -351,7 +351,7 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 	return entries;
 }
 
-+ (nonnull NSDictionary<NSString *, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName {
++ (nonnull NSDictionary<ARMSX2GameLibraryKey, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName {
 	if (isoName.length == 0)
 		return @{};
 
@@ -359,8 +359,8 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 	NSString *path = ARMSX2ResolveISOPath(isoName);
 	NSString *fileName = path.length > 0 ? path.lastPathComponent : isoName.lastPathComponent;
 
-	NSMutableDictionary<NSString *, NSString *> *metadata = [NSMutableDictionary dictionary];
-	metadata[@"fileTitle"] = fileName.stringByDeletingPathExtension ?: fileName;
+	NSMutableDictionary<ARMSX2GameLibraryKey, NSString *> *metadata = [NSMutableDictionary dictionary];
+	metadata[ARMSX2GameLibraryKeyFileTitle] = fileName.stringByDeletingPathExtension ?: fileName;
 
 	if (![fm fileExistsAtPath:path]) {
 		return metadata;
@@ -379,13 +379,13 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
         }
 
         if (title.length > 0)
-            metadata[@"title"] = title;
+            metadata[ARMSX2GameLibraryKeyTitle] = title;
         if (serial.length > 0)
-            metadata[@"serial"] = serial;
+            metadata[ARMSX2GameLibraryKeySerial] = serial;
         if (region.length > 0)
-            metadata[@"region"] = region;
+            metadata[ARMSX2GameLibraryKeyRegion] = region;
         if (entry.crc != 0)
-            metadata[@"crc"] = [NSString stringWithFormat:@"%08X", entry.crc];
+            metadata[ARMSX2GameLibraryKeyCrc] = [NSString stringWithFormat:@"%08X", entry.crc];
     } else {
         NSLog(@"[ARMSX2 iOS Covers] metadata unavailable %@", isoName);
     }

@@ -106,8 +106,9 @@ final class GameLibrarySnapshot {
 		lastLibraryRefresh = Date()
 	}
 
-	func storeMetadata(_ metadata: [String: String], modificationDate: Date?, size: UInt64, for id: String) {
-		metadataCache[id] = CachedGameMetadata(metadata: metadata, modificationDate: modificationDate, size: size)
+	func storeMetadata(_ metadata: [ARMSX2GameLibraryKey: String], modificationDate: Date?, size: UInt64, for id: String) {
+		let stored = Dictionary(uniqueKeysWithValues: metadata.map { ($0.key.rawValue, $0.value) })
+		metadataCache[id] = CachedGameMetadata(metadata: stored, modificationDate: modificationDate, size: size)
 		metadataCacheDirty = true
 	}
 
@@ -154,7 +155,7 @@ struct GameLibraryScannedRecord: Sendable {
     let size: UInt64
     let modificationDate: Date?
     let favorite: Bool
-    let metadata: [String: String]
+    let metadata: [ARMSX2GameLibraryKey: String]
     let shouldStoreMetadata: Bool
 
     var id: String { path }
@@ -164,7 +165,7 @@ enum GameLibraryBackgroundScanner {
     static func scan(
         forceMetadataRefresh: Bool,
         allowFullMetadata: Bool,
-        existingMetadata: [String: [String: String]],
+        existingMetadata: [String: [ARMSX2GameLibraryKey: String]],
         cachedMetadata: [String: GameLibrarySnapshot.CachedGameMetadata]
     ) -> [GameLibraryScannedRecord] {
         let fileManager = FileManager.default
@@ -174,20 +175,20 @@ enum GameLibraryBackgroundScanner {
 
         for rawEntry in rawEntries {
             if Task.isCancelled { break }
-            guard let name = rawEntry["name"] as? String,
-                  let path = rawEntry["path"] as? String else {
+            guard let name = rawEntry[.name] as? String,
+                  let path = rawEntry[.path] as? String else {
                 continue
             }
-            let external = (rawEntry["external"] as? NSNumber)?.boolValue
-                ?? (rawEntry["external"] as? Bool ?? false)
-            let source = rawEntry["source"] as? String
+            let external = (rawEntry[.external] as? NSNumber)?.boolValue
+                ?? (rawEntry[.external] as? Bool ?? false)
+            let source = rawEntry[.source] as? String
             let bootName = external ? path : name
             let attributes = try? fileManager.attributesOfItem(atPath: path)
             let size = attributes?[.size] as? UInt64 ?? 0
             let modificationDate = attributes?[.modificationDate] as? Date
             let entryID = path
 
-            let metadata: [String: String]
+            let metadata: [ARMSX2GameLibraryKey: String]
             let shouldStoreMetadata: Bool
             if forceMetadataRefresh && allowFullMetadata {
                 metadata = ARMSX2Bridge.gameMetadata(forISO: bootName)
@@ -204,7 +205,7 @@ enum GameLibraryBackgroundScanner {
                     metadata = cached
                 } else {
                     metadata = [
-                        "fileTitle": (name as NSString).deletingPathExtension
+                        .fileTitle: (name as NSString).deletingPathExtension
                     ]
                 }
                 shouldStoreMetadata = false
@@ -245,22 +246,23 @@ enum GameLibraryBackgroundScanner {
         modificationDate: Date?,
         size: UInt64,
         requiresSettingsIdentity: Bool
-    ) -> [String: String]? {
+    ) -> [ARMSX2GameLibraryKey: String]? {
         guard let cached else { return nil }
         // Older cache entries could hold only fileTitle, which made Per-Game Settings
         // reopen the full image for the CRC on every presentation. Refresh them
         // once in the detached library scan instead.
         if requiresSettingsIdentity,
-           PadLayoutGameIdentity.normalizedCRC(cached.metadata["crc"]).isEmpty {
+           PadLayoutGameIdentity.normalizedCRC(cached.metadata[ARMSX2GameLibraryKey.crc.rawValue]).isEmpty {
             return nil
         }
+        let metadata = Dictionary(uniqueKeysWithValues: cached.metadata.map { (ARMSX2GameLibraryKey(rawValue: $0.key), $0.value) })
         if let modificationDate,
            let cachedDate = cached.modificationDate,
            modificationDate == cachedDate {
-            return cached.metadata
+            return metadata
         }
         if modificationDate == nil, cached.size > 0, cached.size == size {
-            return cached.metadata
+            return metadata
         }
         return nil
     }
