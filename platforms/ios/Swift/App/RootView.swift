@@ -147,11 +147,9 @@ struct RootView: View {
 
     private var baseContent: some View {
         ZStack {
-            // Menu backdrop, and only that. It used to live inside the menu branch of a
-            // switch; once this became a ZStack it started painting over gameplay too,
-            // where it is near white in light mode and shows in the strip of top safe
-            // area the portrait game view leaves clear for the Dynamic Island. Same
-            // condition as the layer below so the two cannot drift apart.
+            // Menu backdrop only: over gameplay it shows near white in the top safe area
+            // portrait leaves for the Dynamic Island. Same condition as the layer below so
+            // the two cannot drift apart.
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
                 .opacity(
@@ -329,10 +327,8 @@ struct RootView: View {
             rootControllerAlertSelection = 0
             updateRootAlertNavigationCapture(isPresented: kind != nil)
             guard let kind, kind != previous else { return }
-            // Presentation sound belongs to the modal transition, not to a
-            // hidden row underneath it. File/import handlers already emit the
-            // toast sound in most paths; the audio coalescer makes this safe for
-            // the remaining direct BIOS-disclaimer path.
+            // The sound belongs to the modal transition, not a hidden row under it.
+            // Import handlers often play the toast too; the audio coalescer drops repeats.
             switch kind {
             case .fileImport, .bios, .restartVM, .libraryExport:
                 MenuAudioPackManager.shared.playEvent(.uiToast)
