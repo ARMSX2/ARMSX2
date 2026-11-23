@@ -64,6 +64,37 @@ TEST(MvuBranchWrap, NotTakenBranchInDelaySlotContinuesAtPairZero)
 	EXPECT_EQ(h.GetViJit(vi::vi4), 0u);
 }
 
+// BAL and JALR in the last two pairs link their own pair + 2 without a wrap,
+// as a console capture reads it: 0x800 from pair 0x7FE, 0x801 from 0x7FF. Both
+// jump into pairs 0-2, and from 0x7FF the delay slot is fetched from pair 0.
+TEST(MvuBranchWrap, BalAndJalrAtTheTopLinkPastIt)
+{
+	for (const bool jalr : {false, true})
+	{
+		for (const u32 pair : {kLastPair - 1, kLastPair})
+		{
+			SCOPED_TRACE(testing::Message() << (jalr ? "JALR" : "BAL") << " in pair 0x" << std::hex << pair);
+			VuTestHarness h(1);
+			const u32 target = pair - (kLastPair - 1); // pair 0 from 0x7FE, pair 1 from 0x7FF
+			h.SetVi(vi::vi6, target);
+			h.LoadProgram({
+				LowerOnly(VIADDIU_L(vi::vi3, vi::vi0, 0x33)), // pair 0
+				LowerOnly(VIADDIU_L(vi::vi4, vi::vi0, 0x44)), // pair 1
+				EBitNopPair(),                                // pair 2
+			});
+			WritePair(pair, LowerOnly(jalr ? VJALR_L(vi::vi5, vi::vi6) : VBAL_L(vi::vi5, +1)));
+			if (pair == kLastPair - 1)
+				WritePair(kLastPair, LowerOnly(VIADDIU_L(vi::vi2, vi::vi0, 0x22))); // delay slot
+			h.SetStartPc(pair * 8);
+			h.Run();
+			EXPECT_EQ(h.GetViJit(vi::vi3), 0x33u);
+			EXPECT_EQ(h.GetViJit(vi::vi4), 0x44u);
+			EXPECT_EQ(h.GetViInterp(vi::vi5), pair + 2);
+			EXPECT_EQ(h.GetViJit(vi::vi5), pair + 2);
+		}
+	}
+}
+
 // BAL or JALR in B's delay slot (both to pair 0) links the pair after B's
 // target, and the link does not wrap: a console capture reads 0x800 for both.
 TEST(MvuBranchWrap, BalInDelaySlotLinksPastTheTop)
