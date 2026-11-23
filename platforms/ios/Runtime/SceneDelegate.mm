@@ -83,113 +83,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     ARMSX2InstallNativeGamepadDpadObserversOnMain();
     
-    std::string dataRoot = [[ARMSX2Bridge documentsDirectory] UTF8String];
-    
-    EmuFolders::DataRoot = dataRoot;
-    EmuFolders::Bios = dataRoot + "/bios";
-
-    if (!s_settings_interface) {
-        std::string iniPath = dataRoot + "/PCSX2-iOS.ini";
-        s_settings_interface = new INISettingsInterface(iniPath);
-        if (!static_cast<INISettingsInterface*>(s_settings_interface)->Load()) {
-            Console.WriteLn("Creating new config at %s", iniPath.c_str());
-            
-            // [iPSX2] Standard Defaults: JIT Enabled (if supported), EE/IOP/VU Recompilers ON
-            s_settings_interface->SetIntValue("EmuCore/CPU", "CoreType", 2); // ARM64 JIT in the Swift UI model
-            s_settings_interface->SetBoolValue("EmuCore/CPU", "UseArm64Dynarec", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU", "EnableSparseMemory", true);
-            s_settings_interface->SetBoolValue("EmuCore/CPU", "ExtraMemory", false);
-
-            s_settings_interface->SetStringValue("SPU2/Output", "Backend", "SDL");
-
-            s_settings_interface->SetIntValue("EmuCore/GS", "VsyncQueueSize", 8);
-
-            // Normal console-speed frame limiter. Do not save reduced nominal
-            // speed here; that is not a safe FPS cap for iOS.
-            s_settings_interface->SetFloatValue("Framerate", "NominalScalar", 1.0f);
-            s_settings_interface->SetBoolValue("GameISO", "FastBoot", false);
-            s_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", false);
-
-            s_settings_interface->SetBoolValue("EmuCore/Speedhacks", "vuThread", ARMSX2ShouldEnableMTVUByDefault(nullptr));
-
-            s_settings_interface->SetBoolValue("Achievements", "Enabled", false);
-            s_settings_interface->SetBoolValue("Achievements", "ChallengeMode", false);
-
-            s_settings_interface->SetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
-
-            s_settings_interface->Save();
-        }
-        Host::Internal::SetBaseSettingsLayer(s_settings_interface);
-        std::string secretsPath = dataRoot + "/PCSX2-iOS-secrets.ini";
-        s_secrets_settings_interface = new INISettingsInterface(secretsPath);
-        s_secrets_settings_interface->Load();
-        Host::Internal::SetSecretsSettingsLayer(s_secrets_settings_interface);
-	// Load gamepad button mapping from INI
-        for (int i = 0; i < 16; i++) {
-            char key[32]; snprintf(key, sizeof(key), "Button%d", i);
-            int val = s_settings_interface->GetIntValue("ARMSX2iOS/GamepadMapping", key, s_defaultMap[i]);
-            s_buttonMap[i] = val;
-        }
-    }
-    {
-        auto lock = Host::GetSettingsLock(); // not recursive: no Host accessor in this scope
-        ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
-        ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
-    }
-    ARMSX2MigratePerGameDeinterlaceBlend(s_settings_interface);
-    // One-time migration for existing INI (runs once, then conditions are false)
-    if (!Host::ContainsBaseSettingValue("SPU2/Output", "Backend")) {
-        Host::SetBaseStringSettingValue("SPU2/Output", "Backend", "SDL");
-    }
-    if (!Host::ContainsBaseSettingValue("EmuCore/CPU", "ExtraMemory")) {
-        Host::SetBaseBoolSettingValue("EmuCore/CPU", "ExtraMemory", false);
-    }
-    if (!Host::ContainsBaseSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem")) {
-        Host::SetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
-    }
-    if (!Host::ContainsBaseSettingValue("Achievements", "Enabled")) {
-        Host::SetBaseBoolSettingValue("Achievements", "Enabled", false);
-    }
-    if (!Host::ContainsBaseSettingValue("Achievements", "ChallengeMode")) {
-        Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
-    }
-    if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
-        auto lock = Host::GetSettingsLock();
-        ARMSX2DisableRetroAchievementsHardcoreForIOS(s_settings_interface, "scene-connect");
-    }
-    if (!Host::ContainsBaseSettingValue("ARMSX2iOS/Gamepad", "MultitapMode")) {
-        Host::SetBaseIntSettingValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
-    }
-    {
-        auto lock = Host::GetSettingsLock();
-        ARMSX2IOSSanitizeFolderSettings(s_settings_interface, dataRoot, "scene-connect");
-        ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "scene-connect");
-    }
-    ARMSX2SanitizeFrameLimiterConfig("scene-connect");
-    ARMSX2ApplyIOSMultitapConfig("scene-connect");
-    Host::CommitBaseSettingChanges();
-    [self checkAndConfigureBIOS];
-
-    EmuConfig.GS.Renderer = GSRendererType::Metal;
-    Host::CommitBaseSettingChanges();
-
-    VMManager::Internal::LoadStartupSettings();
-    if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
-        EmuConfig.Achievements.HardcoreMode = false;
-    }
-    ARMSX2SanitizeFrameLimiterConfig("after-startup-settings");
-    ARMSX2ApplyIOSOsdPresetFromConfig("after-startup-settings");
-    {
-        auto lock = Host::GetSettingsLock();
-        ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
-    }
-    Host::CommitBaseSettingChanges();
-    Host::RunOnCPUThread([]() { VMManager::ApplySettings(); }, false);
+    [self loadSettingsOnce];
     ARMSX2_PostRetroAchievementsStateChanged();
     
     Host::g_sdl_window = SDL_CreateWindow("PCSX2 iOS", 1280, 720, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
@@ -334,6 +228,121 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
             }
         });
     }
+}
+
+- (void)loadSettingsOnce {
+    // Process-wide state that every boot reloads on the VM thread; a reconnect must not rewrite it.
+    static bool s_loaded = false;
+    if (s_loaded) return;
+    s_loaded = true;
+
+    std::string dataRoot = [[ARMSX2Bridge documentsDirectory] UTF8String];
+    
+    EmuFolders::DataRoot = dataRoot;
+    EmuFolders::Bios = dataRoot + "/bios";
+
+    if (!s_settings_interface) {
+        std::string iniPath = dataRoot + "/PCSX2-iOS.ini";
+        s_settings_interface = new INISettingsInterface(iniPath);
+        if (!static_cast<INISettingsInterface*>(s_settings_interface)->Load()) {
+            Console.WriteLn("Creating new config at %s", iniPath.c_str());
+            
+            // [iPSX2] Standard Defaults: JIT Enabled (if supported), EE/IOP/VU Recompilers ON
+            s_settings_interface->SetIntValue("EmuCore/CPU", "CoreType", 2); // ARM64 JIT in the Swift UI model
+            s_settings_interface->SetBoolValue("EmuCore/CPU", "UseArm64Dynarec", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableEE", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableIOP", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU0", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableVU1", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU", "EnableSparseMemory", true);
+            s_settings_interface->SetBoolValue("EmuCore/CPU", "ExtraMemory", false);
+
+            s_settings_interface->SetStringValue("SPU2/Output", "Backend", "SDL");
+
+            s_settings_interface->SetIntValue("EmuCore/GS", "VsyncQueueSize", 8);
+
+            // Normal console-speed frame limiter. Do not save reduced nominal
+            // speed here; that is not a safe FPS cap for iOS.
+            s_settings_interface->SetFloatValue("Framerate", "NominalScalar", 1.0f);
+            s_settings_interface->SetBoolValue("GameISO", "FastBoot", false);
+            s_settings_interface->SetBoolValue("EmuCore", "EnableFastBoot", false);
+
+            s_settings_interface->SetBoolValue("EmuCore/Speedhacks", "vuThread", ARMSX2ShouldEnableMTVUByDefault(nullptr));
+
+            s_settings_interface->SetBoolValue("Achievements", "Enabled", false);
+            s_settings_interface->SetBoolValue("Achievements", "ChallengeMode", false);
+
+            s_settings_interface->SetIntValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
+
+            s_settings_interface->Save();
+        }
+        Host::Internal::SetBaseSettingsLayer(s_settings_interface);
+        std::string secretsPath = dataRoot + "/PCSX2-iOS-secrets.ini";
+        s_secrets_settings_interface = new INISettingsInterface(secretsPath);
+        s_secrets_settings_interface->Load();
+        Host::Internal::SetSecretsSettingsLayer(s_secrets_settings_interface);
+	// Load gamepad button mapping from INI
+        for (int i = 0; i < 16; i++) {
+            char key[32]; snprintf(key, sizeof(key), "Button%d", i);
+            int val = s_settings_interface->GetIntValue("ARMSX2iOS/GamepadMapping", key, s_defaultMap[i]);
+            s_buttonMap[i] = val;
+        }
+    }
+    {
+        auto lock = Host::GetSettingsLock(); // not recursive: no Host accessor in this scope
+        ARMSX2RepairIOSARM64JITSettings(s_settings_interface, "scene-connect");
+        ARMSX2MigrateJITScriptProtocolForIOS(s_settings_interface, "scene-connect");
+    }
+    ARMSX2MigratePerGameDeinterlaceBlend(s_settings_interface);
+    // One-time migration for existing INI (runs once, then conditions are false)
+    if (!Host::ContainsBaseSettingValue("SPU2/Output", "Backend")) {
+        Host::SetBaseStringSettingValue("SPU2/Output", "Backend", "SDL");
+    }
+    if (!Host::ContainsBaseSettingValue("EmuCore/CPU", "ExtraMemory")) {
+        Host::SetBaseBoolSettingValue("EmuCore/CPU", "ExtraMemory", false);
+    }
+    if (!Host::ContainsBaseSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem")) {
+        Host::SetBaseBoolSettingValue("EmuCore/CPU/Recompiler", "EnableFastmem", true);
+    }
+    if (!Host::ContainsBaseSettingValue("Achievements", "Enabled")) {
+        Host::SetBaseBoolSettingValue("Achievements", "Enabled", false);
+    }
+    if (!Host::ContainsBaseSettingValue("Achievements", "ChallengeMode")) {
+        Host::SetBaseBoolSettingValue("Achievements", "ChallengeMode", false);
+    }
+    if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
+        auto lock = Host::GetSettingsLock();
+        ARMSX2DisableRetroAchievementsHardcoreForIOS(s_settings_interface, "scene-connect");
+    }
+    if (!Host::ContainsBaseSettingValue("ARMSX2iOS/Gamepad", "MultitapMode")) {
+        Host::SetBaseIntSettingValue("ARMSX2iOS/Gamepad", "MultitapMode", 0);
+    }
+    {
+        auto lock = Host::GetSettingsLock();
+        ARMSX2IOSSanitizeFolderSettings(s_settings_interface, dataRoot, "scene-connect");
+        ARMSX2EnsureIOSSpeedhackDefaults(s_settings_interface, "scene-connect");
+    }
+    ARMSX2SanitizeFrameLimiterConfig("scene-connect");
+    ARMSX2ApplyIOSMultitapConfig("scene-connect");
+    Host::CommitBaseSettingChanges();
+    [self checkAndConfigureBIOS];
+
+    EmuConfig.GS.Renderer = GSRendererType::Metal;
+    Host::CommitBaseSettingChanges();
+
+    VMManager::Internal::LoadStartupSettings();
+    if (!ARMSX2IOSRetroAchievementsHardcoreAvailable) {
+        EmuConfig.Achievements.HardcoreMode = false;
+    }
+    ARMSX2SanitizeFrameLimiterConfig("after-startup-settings");
+    ARMSX2ApplyIOSOsdPresetFromConfig("after-startup-settings");
+    {
+        auto lock = Host::GetSettingsLock();
+        ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
+    }
+    Host::CommitBaseSettingChanges();
+    Host::RunOnCPUThread([]() { VMManager::ApplySettings(); }, false);
 }
 
 #pragma mark - Deep-link handling
