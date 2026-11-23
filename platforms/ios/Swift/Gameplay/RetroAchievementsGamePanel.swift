@@ -16,19 +16,19 @@ private struct RetroAchievementEntry: Identifiable, Equatable {
     let bucket: Int
     let measuredPercent: Double
 
-    init?(dictionary: [String: Any]) {
-        guard let idNumber = dictionary["id"] as? NSNumber else { return nil }
+    init?(dictionary: [ARMSX2RAStateKey: Any]) {
+        guard let idNumber = dictionary[.id] as? NSNumber else { return nil }
         id = idNumber.intValue
-        title = dictionary["title"] as? String ?? ""
-        description = dictionary["description"] as? String ?? ""
-        let rawBadgePath = (dictionary["badgePath"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        title = dictionary[.title] as? String ?? ""
+        description = dictionary[.description] as? String ?? ""
+        let rawBadgePath = (dictionary[.badgePath] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         badgePath = rawBadgePath.isEmpty ? nil : rawBadgePath
-        measuredProgress = dictionary["measuredProgress"] as? String ?? ""
-        points = (dictionary["points"] as? NSNumber)?.intValue ?? 0
-        state = (dictionary["state"] as? NSNumber)?.intValue ?? 0
-        category = (dictionary["category"] as? NSNumber)?.intValue ?? 0
-        bucket = (dictionary["bucket"] as? NSNumber)?.intValue ?? 0
-        measuredPercent = (dictionary["measuredPercent"] as? NSNumber)?.doubleValue ?? 0
+        measuredProgress = dictionary[.measuredProgress] as? String ?? ""
+        points = (dictionary[.points] as? NSNumber)?.intValue ?? 0
+        state = (dictionary[.state] as? NSNumber)?.intValue ?? 0
+        category = (dictionary[.category] as? NSNumber)?.intValue ?? 0
+        bucket = (dictionary[.bucket] as? NSNumber)?.intValue ?? 0
+        measuredPercent = (dictionary[.measuredPercent] as? NSNumber)?.doubleValue ?? 0
     }
 
     var isUnlocked: Bool { state == 2 }
@@ -44,7 +44,7 @@ struct RetroAchievementsGamePanel: View {
     var onClose: (() -> Void)? = nil
 
     @State private var entries: [RetroAchievementEntry] = []
-    @State private var state: [String: Any] = [:]
+    @State private var state: [ARMSX2RAStateKey: Any] = [:]
 
     var body: some View {
         NavigationStack {
@@ -155,7 +155,7 @@ struct RetroAchievementsGamePanel: View {
 
     @ViewBuilder
     private var gameBadge: some View {
-        if let path = state["gameIconPath"] as? String,
+        if let path = state[.gameIconPath] as? String,
            !path.isEmpty,
            let image = UIImage(contentsOfFile: path) {
             Image(uiImage: image)
@@ -173,28 +173,28 @@ struct RetroAchievementsGamePanel: View {
     }
 
     private var gameTitle: String {
-        let title = state["gameTitle"] as? String ?? ""
+        let title = state[.gameTitle] as? String ?? ""
         return title.isEmpty ? settings.localized("Current Game") : title
     }
 
     private var richPresence: String {
-        state["richPresence"] as? String ?? ""
+        state[.richPresence] as? String ?? ""
     }
 
     private var unlockedCount: Int {
-        (state["unlockedAchievements"] as? NSNumber)?.intValue ?? entries.filter(\.isUnlocked).count
+        (state[.unlockedAchievements] as? NSNumber)?.intValue ?? entries.filter(\.isUnlocked).count
     }
 
     private var totalCount: Int {
-        (state["totalAchievements"] as? NSNumber)?.intValue ?? entries.filter { !$0.isUnofficial }.count
+        (state[.totalAchievements] as? NSNumber)?.intValue ?? entries.filter { !$0.isUnofficial }.count
     }
 
     private var unlockedPoints: Int {
-        (state["unlockedPoints"] as? NSNumber)?.intValue ?? entries.filter(\.isUnlocked).reduce(0) { $0 + $1.points }
+        (state[.unlockedPoints] as? NSNumber)?.intValue ?? entries.filter(\.isUnlocked).reduce(0) { $0 + $1.points }
     }
 
     private var totalPoints: Int {
-        (state["totalPoints"] as? NSNumber)?.intValue ?? entries.filter { !$0.isUnofficial }.reduce(0) { $0 + $1.points }
+        (state[.totalPoints] as? NSNumber)?.intValue ?? entries.filter { !$0.isUnofficial }.reduce(0) { $0 + $1.points }
     }
 
     private var progressFraction: Double {
@@ -207,10 +207,10 @@ struct RetroAchievementsGamePanel: View {
     }
 
     private var emptyTitle: String {
-        if (state["loggedIn"] as? NSNumber)?.boolValue == false {
+        if (state[.loggedIn] as? NSNumber)?.boolValue == false {
             return settings.localized("RetroAchievements is not logged in.")
         }
-        if (state["hasActiveGame"] as? NSNumber)?.boolValue == false {
+        if (state[.hasActiveGame] as? NSNumber)?.boolValue == false {
             return settings.localized("No RetroAchievements game is active.")
         }
         return settings.localized("No achievements found for this game.")

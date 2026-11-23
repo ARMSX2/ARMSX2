@@ -157,7 +157,7 @@ final class PatchStore {
     /// carry on applying no matter what this screen says about them.
     static func hardcoreBlocksPnachContent() -> Bool {
         let state = ARMSX2Bridge.retroAchievementsState()
-        let active = (state["hardcoreActive"] as? NSNumber)?.boolValue ?? false
+        let active = (state[.hardcoreActive] as? NSNumber)?.boolValue ?? false
         return active || ARMSX2Bridge.isRetroAchievementsHardcoreActive()
     }
 
@@ -167,7 +167,7 @@ final class PatchStore {
     static func hardcorePendingRestart() -> Bool {
         guard !hardcoreBlocksPnachContent() else { return false }
         let state = ARMSX2Bridge.retroAchievementsState()
-        return (state["hardcorePreference"] as? NSNumber)?.boolValue ?? false
+        return (state[.hardcorePreference] as? NSNumber)?.boolValue ?? false
     }
 
     /// Presentation patches that stay legal under Hardcore: widescreen and 60fps from a

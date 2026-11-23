@@ -473,9 +473,9 @@ final class DynamicThumbstickSettings {
 
     static func automaticFireBlockedByHardcore() -> Bool {
         let state = ARMSX2Bridge.retroAchievementsState()
-        let active = (state["hardcoreActive"] as? NSNumber)?.boolValue ?? false
-        let preference = (state["hardcorePreference"] as? NSNumber)?.boolValue ?? false
-        let achievementsEnabled = (state["enabled"] as? NSNumber)?.boolValue ??
+        let active = (state[.hardcoreActive] as? NSNumber)?.boolValue ?? false
+        let preference = (state[.hardcorePreference] as? NSNumber)?.boolValue ?? false
+        let achievementsEnabled = (state[.enabled] as? NSNumber)?.boolValue ??
             ARMSX2Bridge.getINIBool("Achievements", key: "Enabled", defaultValue: false)
         let persistedPreference = ARMSX2Bridge.getINIBool(
             "Achievements",

@@ -6,7 +6,7 @@ import SwiftUI
 struct RetroAchievementsSettingsView: View {
     @State private var settings = SettingsStore.shared
     @Environment(\.menuControllerInputRouter) private var controllerInput
-    @State private var state: [String: Any] = [:]
+    @State private var state: [ARMSX2RAStateKey: Any] = [:]
     @State private var achievementsEnabled = false
     @State private var hardcoreEnabled = false
     @State private var notificationsEnabled = true
@@ -26,7 +26,7 @@ struct RetroAchievementsSettingsView: View {
         if achievementsSupported {
             if hasStoredAccount {
                 ids.append("settings.achievements.logout")
-                if !bool("loggedIn") && achievementsEnabled && !loggingIn {
+                if !bool(.loggedIn) && achievementsEnabled && !loggingIn {
                     ids.append("settings.achievements.login-again")
                 }
             } else if achievementsEnabled && !loggingIn {
@@ -49,12 +49,12 @@ struct RetroAchievementsSettingsView: View {
     private func applyHardcoreChange(_ enabled: Bool) {
         hardcoreEnabled = enabled
         ARMSX2Bridge.setRetroAchievementsHardcore(enabled)
-        if enabled && bool("hasActiveGame") && !bool("hardcoreActive") {
+        if enabled && bool(.hasActiveGame) && !bool(.hardcoreActive) {
             showMessage(
                 title: "Hardcore Mode",
                 body: settings.localized("Hardcore mode will apply after a full reset of the current game.")
             )
-        } else if enabled && !bool("hasActiveGame") {
+        } else if enabled && !bool(.hasActiveGame) {
             showMessage(
                 title: "Hardcore Mode",
                 body: settings.localized("Hardcore mode is ready and will apply when you boot a game.")
@@ -83,7 +83,7 @@ struct RetroAchievementsSettingsView: View {
                 ))
                 .controllerAccessibilityTargetID("settings.achievements.enabled")
 
-                statusRow("Client", value: bool("active") ? "Active" : "Inactive")
+                statusRow("Client", value: bool(.active) ? "Active" : "Inactive")
                 statusRow("Account", value: accountSummary, localizeValue: !hasStoredAccount)
             } header: {
                 Text(settings.localized("RetroAchievements"))
@@ -97,12 +97,12 @@ struct RetroAchievementsSettingsView: View {
                 Section(settings.localized("Account")) {
                     if hasStoredAccount {
                         statusRow("User", value: displayName, localizeValue: false)
-                        if bool("loggedIn") {
+                        if bool(.loggedIn) {
                             statusRow("Points", value: hardcoreSupported ?
-                                "\(int("points")) hard / \(int("softcorePoints")) soft" :
-                                "\(int("softcorePoints"))", localizeValue: false)
-                            if int("unreadMessages") > 0 {
-                                statusRow("Messages", value: "\(int("unreadMessages")) \(settings.localized("unread"))", localizeValue: false)
+                                "\(int(.points)) hard / \(int(.softcorePoints)) soft" :
+                                "\(int(.softcorePoints))", localizeValue: false)
+                            if int(.unreadMessages) > 0 {
+                                statusRow("Messages", value: "\(int(.unreadMessages)) \(settings.localized("unread"))", localizeValue: false)
                             }
                         } else {
                             // Stored account but not logged in (token expired or session dead).
@@ -118,7 +118,7 @@ struct RetroAchievementsSettingsView: View {
                         }
                         .controllerAccessibilityTargetID("settings.achievements.logout")
 
-                        if !bool("loggedIn") {
+                        if !bool(.loggedIn) {
                             Button(action: openLogin) {
                                 Text(settings.localized(loggingIn ? "Logging In..." : "Log In Again"))
                             }
@@ -200,25 +200,25 @@ struct RetroAchievementsSettingsView: View {
                 }
 
                 Section(settings.localized("Current Game")) {
-                    if bool("hasActiveGame") {
-                        statusRow("Title", value: string("gameTitle", fallback: settings.localized("Unknown Game")), localizeValue: false)
-                        statusRow("Game ID", value: "\(int("gameId"))", localizeValue: false)
+                    if bool(.hasActiveGame) {
+                        statusRow("Title", value: string(.gameTitle, fallback: settings.localized("Unknown Game")), localizeValue: false)
+                        statusRow("Game ID", value: "\(int(.gameId))", localizeValue: false)
 
-                        if int("totalAchievements") > 0 {
-                            statusRow("Achievements", value: "\(int("unlockedAchievements")) / \(int("totalAchievements"))", localizeValue: false)
-                            statusRow("Points", value: "\(int("unlockedPoints")) / \(int("totalPoints"))", localizeValue: false)
-                        } else if bool("hasAchievements") {
+                        if int(.totalAchievements) > 0 {
+                            statusRow("Achievements", value: "\(int(.unlockedAchievements)) / \(int(.totalAchievements))", localizeValue: false)
+                            statusRow("Points", value: "\(int(.unlockedPoints)) / \(int(.totalPoints))", localizeValue: false)
+                        } else if bool(.hasAchievements) {
                             statusRow("Achievements", value: "Loaded")
                         } else {
                             statusRow("Achievements", value: "None found")
                         }
 
-                        if bool("hasLeaderboards") {
+                        if bool(.hasLeaderboards) {
                             statusRow("Leaderboards", value: "Available")
                         }
 
-                        if bool("hasRichPresence") {
-                            statusRow("Rich Presence", value: string("richPresence", fallback: settings.localized("Active")), localizeValue: false)
+                        if bool(.hasRichPresence) {
+                            statusRow("Rich Presence", value: string(.richPresence, fallback: settings.localized("Active")), localizeValue: false)
                         }
                     } else {
                         Text(settings.localized("Boot a game while RetroAchievements is enabled to see game progress here."))
@@ -277,39 +277,39 @@ struct RetroAchievementsSettingsView: View {
     }
 
     private var accountSummary: String {
-        if bool("loggedIn") {
+        if bool(.loggedIn) {
             return displayName
         }
-        if bool("savedLogin") {
+        if bool(.savedLogin) {
             return displayName
         }
         return achievementsEnabled ? "Not logged in" : "Disabled"
     }
 
     private var displayName: String {
-        string("displayName", fallback: string("username", fallback: "Logged in"))
+        string(.displayName, fallback: string(.username, fallback: "Logged in"))
     }
 
     private var achievementsSupported: Bool {
-        bool("supported", fallback: true)
+        bool(.supported, fallback: true)
     }
 
     private var hardcoreSupported: Bool {
-        bool("hardcoreSupported", fallback: true)
+        bool(.hardcoreSupported, fallback: true)
     }
 
     private var hasStoredAccount: Bool {
-        bool("loggedIn") || bool("savedLogin")
+        bool(.loggedIn) || bool(.savedLogin)
     }
 
     private var unavailableMessage: String {
-        string("unavailableMessage", fallback: "RetroAchievements is temporarily unavailable in this build.")
+        string(.unavailableMessage, fallback: "RetroAchievements is temporarily unavailable in this build.")
     }
 
     private var hardcoreStatus: String {
         guard achievementsEnabled else { return "Disabled" }
-        if hardcoreEnabled && !bool("hasActiveGame") { return "Ready" }
-        if bool("hardcoreActive") { return "Active" }
+        if hardcoreEnabled && !bool(.hasActiveGame) { return "Ready" }
+        if bool(.hardcoreActive) { return "Active" }
         if hardcoreEnabled { return "Pending Reset" }
         return "Off"
     }
@@ -330,20 +330,20 @@ struct RetroAchievementsSettingsView: View {
         // rebuilding the sheet and dismissing the keyboard on each keystroke.
         guard !showingLogin else { return }
         state = ARMSX2Bridge.retroAchievementsState()
-        achievementsEnabled = bool("enabled")
+        achievementsEnabled = bool(.enabled)
         // The in-memory EmuConfig.Achievements.HardcoreMode (exposed via
         // "hardcorePreference") can lag the persisted INI when no game has
         // booted yet, so the home-screen toggle showed stale state. Fall back
         // to the persisted Achievements/ChallengeMode INI value in that case so
         // the toggle reflects what was last saved.
-        if bool("hardcoreActive") {
-            hardcoreEnabled = bool("hardcorePreference")
+        if bool(.hardcoreActive) {
+            hardcoreEnabled = bool(.hardcorePreference)
         } else {
             hardcoreEnabled = ARMSX2Bridge.getINIBool("Achievements", key: "ChallengeMode", defaultValue: false)
         }
-        notificationsEnabled = bool("notifications", fallback: true)
-        leaderboardNotificationsEnabled = bool("leaderboardNotifications", fallback: true)
-        overlaysEnabled = bool("overlays", fallback: true)
+        notificationsEnabled = bool(.notifications, fallback: true)
+        leaderboardNotificationsEnabled = bool(.leaderboardNotifications, fallback: true)
+        overlaysEnabled = bool(.overlays, fallback: true)
     }
 
     private func refreshSoon() {
@@ -353,7 +353,7 @@ struct RetroAchievementsSettingsView: View {
     }
 
     private func openLogin() {
-        username = string("username")
+        username = string(.username)
         password = ""
         // Each sign-in starts at a field, not on the Log In it last ended on.
         let field = username.isEmpty ? "achievements.login.username" : "achievements.login.password"
@@ -389,11 +389,11 @@ struct RetroAchievementsSettingsView: View {
         showingMessage = true
     }
 
-    private func bool(_ key: String, fallback: Bool = false) -> Bool {
+    private func bool(_ key: ARMSX2RAStateKey, fallback: Bool = false) -> Bool {
         state[key] as? Bool ?? fallback
     }
 
-    private func int(_ key: String, fallback: Int = 0) -> Int {
+    private func int(_ key: ARMSX2RAStateKey, fallback: Int = 0) -> Int {
         if let value = state[key] as? Int {
             return value
         }
@@ -403,7 +403,7 @@ struct RetroAchievementsSettingsView: View {
         return fallback
     }
 
-    private func string(_ key: String, fallback: String = "") -> String {
+    private func string(_ key: ARMSX2RAStateKey, fallback: String = "") -> String {
         guard let value = state[key] as? String, !value.isEmpty else {
             return fallback
         }

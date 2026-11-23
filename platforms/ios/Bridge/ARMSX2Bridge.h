@@ -392,8 +392,8 @@ typedef void (^ARMSX2RetroAchievementsCompletion)(BOOL success, NSString * _Nonn
 @interface ARMSX2Bridge (RetroAchievements)
 
 // RetroAchievements
-+ (nonnull NSDictionary<NSString *, id> *)retroAchievementsState;
-+ (nonnull NSArray<NSDictionary<NSString *, id> *> *)retroAchievementsForCurrentGame;
++ (nonnull NSDictionary<ARMSX2RAStateKey, id> *)retroAchievementsState;
++ (nonnull NSArray<NSDictionary<ARMSX2RAStateKey, id> *> *)retroAchievementsForCurrentGame;
 + (nullable ARMSX2RetroAchievementsToastInfo *)consumePendingRetroAchievementsNotification;
 + (BOOL)isRetroAchievementsHardcoreActive;
 + (void)setRetroAchievementsEnabled:(BOOL)enabled;
