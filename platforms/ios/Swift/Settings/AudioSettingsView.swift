@@ -223,7 +223,7 @@ struct AudioSettingsView: View {
             )
 
             if audioPack.customUIAudioEnabled {
-                ForEach(MenuAudioPackManager.Sound.allCases, id: \.rawValue) { sound in
+                ForEach(MenuAudioPackManager.Sound.allCases, id: \.self) { sound in
                     customSoundRow(sound)
                 }
             }
@@ -263,7 +263,7 @@ struct AudioSettingsView: View {
             HStack(alignment: .center, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(settings.localized(sound.displayName))
-                    Text(sound.rawValue)
+                    Text(sound.name.rawValue)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -379,7 +379,7 @@ struct AudioSettingsView: View {
     }
 
     private static func soundTarget(_ sound: MenuAudioPackManager.Sound, _ action: String) -> String {
-        "settings.audio.\(sound.rawValue).\(action)"
+        "settings.audio.\(sound.name.rawValue).\(action)"
     }
 
     /// Includes lazy rows before they mount, with distinct IDs for every

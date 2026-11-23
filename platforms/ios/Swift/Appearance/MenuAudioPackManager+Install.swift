@@ -40,7 +40,7 @@ extension MenuAudioPackManager {
             subdirectory: "ui_audio/default"
         ),
         .pauseMusic: BundledResource(
-            name: "pause_music",
+            name: ARMSX2UISound.pauseMusic.rawValue,
             pathExtension: "mp3",
             subdirectory: "ui_audio/default"
         ),
@@ -195,7 +195,7 @@ extension MenuAudioPackManager {
     }
 
     static func soundVolumeDefaultsKey(for sound: Sound) -> String {
-        soundVolumeDefaultsKeyPrefix + sound.rawValue
+        soundVolumeDefaultsKeyPrefix + sound.name.rawValue
     }
 
     nonisolated static func resolveBundledSoundURLs() -> [Sound: URL] {
@@ -233,7 +233,7 @@ extension MenuAudioPackManager {
         for sound in Sound.allCases {
             for pathExtension in ["mp3", "wav"] {
                 let candidate = directory
-                    .appendingPathComponent(sound.rawValue, isDirectory: false)
+                    .appendingPathComponent(sound.name.rawValue, isDirectory: false)
                     .appendingPathExtension(pathExtension)
                 if manager.fileExists(atPath: candidate.path) {
                     result[sound] = candidate
@@ -380,7 +380,7 @@ extension MenuAudioPackManager {
         }
 
         let destinationURL = customDirectoryURL
-            .appendingPathComponent(sound.rawValue)
+            .appendingPathComponent(sound.name.rawValue)
             .appendingPathExtension(pathExtension)
         if manager.fileExists(atPath: destinationURL.path) {
             _ = try manager.replaceItemAt(destinationURL, withItemAt: stagingURL)
@@ -390,7 +390,7 @@ extension MenuAudioPackManager {
 
         for alternateExtension in ["mp3", "wav"] where alternateExtension != pathExtension {
             let alternateURL = customDirectoryURL
-                .appendingPathComponent(sound.rawValue)
+                .appendingPathComponent(sound.name.rawValue)
                 .appendingPathExtension(alternateExtension)
             if manager.fileExists(atPath: alternateURL.path) {
                 try manager.removeItem(at: alternateURL)
@@ -402,7 +402,7 @@ extension MenuAudioPackManager {
         let manager = FileManager.default
         for pathExtension in ["mp3", "wav"] {
             let url = customDirectoryURL
-                .appendingPathComponent(sound.rawValue)
+                .appendingPathComponent(sound.name.rawValue)
                 .appendingPathExtension(pathExtension)
             if manager.fileExists(atPath: url.path) {
                 try manager.removeItem(at: url)
