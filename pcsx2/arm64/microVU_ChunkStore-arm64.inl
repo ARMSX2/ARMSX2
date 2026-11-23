@@ -19,8 +19,10 @@ mVUChunkStore::Stats mVUChunkStore::GetStats()
 	mVUChunkStore::Stats s = s_mVUchunkStats;
 	if (const mVUChunkStoreData* store = microVU1.chunkStore.get())
 	{
-		s.entries = store->entries.size();
+		s.entries = store->plainBodies;
 		s.entryCodeBytes = store->codeBytes;
+		s.tieredBodies = store->tieredBodies;
+		s.tieredCodeBytes = store->tieredCodeBytes;
 	}
 	return s;
 }
@@ -50,9 +52,14 @@ static void mVUchunkStoreClear(microVU& mVU)
 {
 	if (mVUChunkStoreData* store = mVU.chunkStore.get())
 	{
-		store->entries.clear();
+		store->heads.clear();
+		store->retired.clear();
 		store->index.clear();
+		store->built.reset();
 		store->codeBytes = 0;
+		store->plainBodies = 0;
+		store->tieredBodies = 0;
+		store->tieredCodeBytes = 0;
 	}
 }
 
@@ -65,7 +72,8 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		"mVUChunkStore[%u] %s: episodes=%llu hits=%llu compiles=%llu skipped=%llu "
 		"miss(noEntry/bounds/readSet/blockExists/linkTarget/noRoom)=%llu/%llu/%llu/%llu/%llu/%llu "
 		"feed(added/repeats/wrapped/other)=%llu/%llu/%llu/%llu entries=%llu "
-		"codeKiB(compiled/installed/stubs/entries)=%llu/%llu/%llu/%llu cacheUsedKiB=%llu slots=%u",
+		"codeKiB(compiled/installed/stubs/entries)=%llu/%llu/%llu/%llu cacheUsedKiB=%llu slots=%u "
+		"tiered(bodies/codeKiB/placed/reaimed)=%llu/%llu/%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.episodes, (unsigned long long)s.hits,
 		(unsigned long long)(s.episodes - s.hits), (unsigned long long)s.skipped,
 		(unsigned long long)s.missNoEntry, (unsigned long long)s.missBounds, (unsigned long long)s.missReadSet,
@@ -74,7 +82,9 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.feedOther, (unsigned long long)s.entries,
 		(unsigned long long)(s.codeBytesCompiled / 1024), (unsigned long long)(s.codeBytesInstalled / 1024),
 		(unsigned long long)(s.stubBytes / 1024), (unsigned long long)(s.entryCodeBytes / 1024),
-		(unsigned long long)((mVU.prog.x86ptr - mVU.prog.x86start) / 1024), mVU.placeSlotsUsed);
+		(unsigned long long)((mVU.prog.x86ptr - mVU.prog.x86start) / 1024), mVU.placeSlotsUsed,
+		(unsigned long long)s.tieredBodies, (unsigned long long)(s.tieredCodeBytes / 1024),
+		(unsigned long long)s.tieredPlaced, (unsigned long long)s.tieredReAimed);
 }
 
 // The entries were compiled under one set of options; an entry made under
@@ -84,7 +94,20 @@ static void mVUchunkStoreSyncOptions(microVU& mVU)
 	mVUChunkStoreData& store = *mVU.chunkStore;
 	if (store.options.low64 == mVU.optionsSentinel.low64 && store.options.high64 == mVU.optionsSentinel.high64)
 		return;
+	// The programs that ran the old bodies may still be there, with blocks
+	// that point at these heads: the heads stay, with nothing in them.
+	std::vector<std::unique_ptr<mVUChunkHead>> old = std::move(store.heads);
+	std::vector<std::unique_ptr<mVUChunkHead>> retired = std::move(store.retired);
 	mVUchunkStoreClear(mVU);
+	for (auto& head : old)
+	{
+		head->plain.clear();
+		head->tiered.clear();
+		head->job.reset();
+		head->next[0] = head->next[1] = ~0u;
+		retired.push_back(std::move(head));
+	}
+	store.retired = std::move(retired);
 	store.options = mVU.optionsSentinel;
 }
 
@@ -144,25 +167,57 @@ static void mVUchunkBegin(microVU& mVU)
 	ep.codeStart = armGetCurrentCodePointer();
 	ep.recording = true;
 
-	// The VU AOT tier compiles a program it has taken over through its hooks,
-	// and the code a hook emits is its own. A compile for the block a region
-	// bails to runs with the block already registered. A test that watches or
-	// instruments every compile has to see one.
-	vuaot::VuAotRegionHook region = vuaot::g_vuAotRegionHook;
-	vuaot::VuAotBodyHook body = vuaot::g_vuAotBodyHook;
-	void* user = nullptr;
-	if (!region && !body)
-		mVUvuAotLiveHooks(mVU, region, user, body, user);
-	bool hooked = region || body || vuaot::g_vuAotShadowCompile;
+	// A test's compile hooks emit code of their own, and a test that watches or
+	// instruments every compile has to see one. A compile for the block a
+	// region bails to runs with the block already registered. While the VU
+	// AOT tier builds a routine's regions, what is compiled is the tiered
+	// body itself.
+	bool hooked = vuaot::g_vuAotRegionHook || vuaot::g_vuAotBodyHook || vuaot::g_vuAotShadowCompile;
 #ifdef PCSX2_RECOMPILER_TESTS
 	hooked = hooked || vuaot::g_mvuBlockHook || mvu_divtrace::g_enabled.load(std::memory_order_relaxed);
 #endif
-	ep.lookup = !hooked;
-	ep.unstorable = hooked || mVU.prog.cur->vuaot != nullptr;
+	ep.tiered = !hooked && mVUvuAotBuilding(mVU);
+	ep.lookup = !hooked && !ep.tiered;
+	ep.unstorable = hooked;
 }
 
-// Installs `entry` as a placement rooted at `rootPC` in the program being
-// compiled. Returns the root block's entry, or null and how far it got.
+// The routine whose root block is at `rootPC` with the entry state `state`.
+static mVUChunkHead* mVUchunkFindHead(microVU& mVU, u32 rootPC, const microRegInfo& state, bool create)
+{
+	mVUchunkStoreSyncOptions(mVU);
+	mVUChunkStoreData& store = *mVU.chunkStore;
+	const u64 hash = mVUchunkRootHash(mVU, rootPC, &state);
+	const auto range = store.index.equal_range(hash);
+	for (auto it = range.first; it != range.second; ++it)
+	{
+		mVUChunkHead& head = *store.heads[it->second];
+		if (mVUchunkStateEqual(head.rootState, state))
+			return &head;
+	}
+	if (!create)
+		return nullptr;
+	auto head = std::make_unique<mVUChunkHead>();
+	head->rootState = state;
+	head->next[0] = mVUvuAotTierUpRuns();
+	head->next[1] = ~0u;
+	store.index.emplace(hash, static_cast<u32>(store.heads.size()));
+	store.heads.push_back(std::move(head));
+	return store.heads.back().get();
+}
+
+// The tier's view of `block`, the root of a copy of `head`'s routine: it has
+// been checked against the head's tiered bodies as they are now, and runs
+// `state` (microBlock::tierState).
+__fi static void mVUchunkMarkRoot(microBlock* block, mVUChunkHead* head, u32 state)
+{
+	if (!block)
+		return;
+	block->tierHead = head;
+	block->tierSerial = head->serial;
+	block->tierState = state;
+}
+
+// How far a lookup that fell through to the JIT got.
 enum mVUchunkMiss : int
 {
 	mVUchunkMissNoEntry,
@@ -173,21 +228,66 @@ enum mVUchunkMiss : int
 	mVUchunkMissNoRoom,
 };
 
-static void* mVUchunkInstall(microVU& mVU, mVUChunkEntry& entry, u32 rootPC, int& miss)
+// Whether `b` is the code for micro memory as it is at `rootPC`.
+static bool mVUchunkBodyMatches(microVU& mVU, const mVUChunkBody& b, u32 rootPC, int& miss)
 {
-	mVUChunkBody& b = entry.plain;
+	const u32* const mem = reinterpret_cast<const u32*>(mVU.regs().Micro);
+	const s32 rootWord = static_cast<s32>(rootPC / 4);
+	const s32 words = static_cast<s32>(mVU.microMemSize / 4);
+	if (rootWord + b.lo < 0 || rootWord + b.hi >= words)
+	{
+		miss = std::max<int>(miss, mVUchunkMissBounds);
+		return false;
+	}
+	for (const mVUChunkBody::Word& w : b.reads)
+	{
+		if ((mem[rootWord + w.off] ^ w.value) & w.mask)
+		{
+			miss = std::max<int>(miss, mVUchunkMissReadSet);
+			return false;
+		}
+	}
+	return true;
+}
+
+// Points every reference to `block`'s code at `stub`: the first instruction
+// of its old entry becomes a branch there, so the quick slots, jump caches
+// and links that hold the old entry need no change.
+static void mVUchunkReAim(microBlock* block, u8* stub)
+{
+	if (u8* const old = static_cast<u8*>(block->hostEntry))
+	{
+		u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(old));
+		*insn = 0x14000000u | (static_cast<u32>((stub - old) / 4) & 0x03FFFFFFu);
+		HostSys::FlushInstructionCache(old, 4);
+	}
+	block->x86ptrStart = stub;
+	block->hostEntry = stub;
+	block->extent = 0;
+}
+
+// Installs `b` as a placement rooted at `rootPC` in the program being
+// compiled. Returns the root block's entry, or null and how far it got.
+//
+// A plain body is installed only where none of its blocks exists yet. A
+// tiered body takes over the blocks that exist: each gets a new entry stub,
+// and its old entry is pointed at it.
+static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& miss)
+{
 	const s32 rootPair = static_cast<s32>(rootPC / 8);
 
-	// An install never replaces a block's entry and never compiles: every
-	// block of the chunk has to be new here, and every block it branches to
-	// has to be here already.
-	for (mVUChunkBody::Block& blk : b.blocks)
+	// An install never compiles: every block the chunk branches to has to be
+	// here already.
+	if (!b.tiered)
 	{
-		microBlockManager* const mgr = mVUblocks[rootPair + blk.pairOff];
-		if (mgr && mgr->search(mVU, &blk.pState))
+		for (mVUChunkBody::Block& blk : b.blocks)
 		{
-			miss = std::max<int>(miss, mVUchunkMissBlockExists);
-			return nullptr;
+			microBlockManager* const mgr = mVUblocks[rootPair + blk.pairOff];
+			if (mgr && mgr->search(mVU, &blk.pState))
+			{
+				miss = std::max<int>(miss, mVUchunkMissBlockExists);
+				return nullptr;
+			}
 		}
 	}
 	std::vector<microBlock*>& targets = mVU.chunkStore->scratchTargets;
@@ -226,15 +326,33 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkEntry& entry, u32 rootPC, int
 		mVUemitPlaceStub(mVU, word);
 		armEmitJmp(blk.stub + mVUrootStubBytes);
 
-		alignas(16) microBlock fresh;
-		std::memset(&fresh, 0, sizeof(fresh));
-		fresh.pState = blk.pState;
-		fresh.pStateEnd = blk.pStateEnd;
-		fresh.x86ptrStart = stub;
-		fresh.hostEntry = stub;
 		blockCreate(rootPair + blk.pairOff);
-		microBlock* const placed = mVUblocks[rootPair + blk.pairOff]->add(mVU, &fresh);
-		pxAssertRel(placed->hostEntry == stub, "microVU: a placement's block was already registered");
+		microBlockManager* const mgr = mVUblocks[rootPair + blk.pairOff];
+		microBlock* placed = b.tiered ? mgr->search(mVU, &blk.pState) : nullptr;
+		if (placed)
+		{
+			mVUchunkReAim(placed, stub);
+			// (the root's state is its caller's to set)
+			if (placed->tierState == mVUtierNone)
+				placed->tierState = mVUtierCovered;
+			// (a block that ends in a JR or JALR keeps its end state: microVU's
+			// code for it, which a bail runs, reads it too)
+			if (!placed->jumpCache)
+				placed->pStateEnd = blk.pStateEnd;
+		}
+		else
+		{
+			alignas(16) microBlock fresh;
+			std::memset(&fresh, 0, sizeof(fresh));
+			fresh.pState = blk.pState;
+			fresh.pStateEnd = blk.pStateEnd;
+			fresh.x86ptrStart = stub;
+			fresh.hostEntry = stub;
+			placed = mgr->add(mVU, &fresh);
+			pxAssertRel(placed->hostEntry == stub, "microVU: a placement's block was already registered");
+			if (b.tiered)
+				placed->tierState = mVUtierCovered;
+		}
 		if (blk.jumps && !placed->jumpCache)
 			placed->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 		mVU.placeSlots[slotBase + blk.slot] = reinterpret_cast<u64>(placed);
@@ -243,21 +361,88 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkEntry& entry, u32 rootPC, int
 	}
 	for (size_t i = 0; i < b.links.size(); i++)
 		mVU.placeSlots[slotBase + b.links[i].slot] = reinterpret_cast<u64>(targets[i]->hostEntry);
+	for (const mVUChunkBody::DataSlot& d : b.dataSlots)
+		mVU.placeSlots[slotBase + d.slot] = d.kind == mVUslotProgram ? reinterpret_cast<u64>(mVU.prog.cur) : 0;
 
 	// The ranges the compile added, in its order. mVUsetupRange copies each
 	// from micro memory into the program as it closes.
+	const bool wasRecording = std::exchange(mVU.chunk.recording, false);
 	for (const mVUChunkBody::Range& r : b.ranges)
 		mVUsetupRange(mVU, static_cast<s32>(rootPC) + r.off, r.isStart);
 	// And the words of those ranges the program compares through a mask.
 	for (const mVUChunkBody::KeptBits& k : b.keptBits)
 		mVUaddKeptBits(mVU, rootPC + k.off, k.kept);
+	mVU.chunk.recording = wasRecording;
 
 	if (b.statusImm)
 		mVUvuAotOnStatusReader(mVU, b.statusImm);
+	if (b.tiered)
+	{
+		mVUvuAotOnBodyPlaced(mVU, b.droppedSticky);
+		s_mVUchunkStats.tieredPlaced++;
+	}
 
 	s_mVUchunkStats.codeBytesInstalled += b.codeBytes;
 	s_mVUchunkStats.stubBytes += stubBytes;
 	return rootEntry;
+}
+
+// The newest tiered body of `head` that is the code for micro memory at
+// `rootPC` and may be placed now, or null. A body the tier declined counts
+// only when no other matches.
+static mVUChunkBody* mVUchunkTieredFor(microVU& mVU, mVUChunkHead& head, u32 rootPC)
+{
+	mVUChunkBody* declined = nullptr;
+	for (size_t n = head.tiered.size(); n-- > 0;)
+	{
+		mVUChunkBody& b = *head.tiered[n];
+		int miss = 0;
+		if (!mVUchunkBodyMatches(mVU, b, rootPC, miss))
+			continue;
+		if (b.declined)
+		{
+			if (!declined)
+				declined = &b;
+			continue;
+		}
+		if (mVUvuAotBodyAllowed(b.droppedSticky))
+			return &b;
+	}
+	return declined;
+}
+
+// Moves the copy of `head`'s routine whose root block is `root` (at `rootPC`,
+// in the program being compiled) onto the newest tiered body that matches it.
+// Returns the root's new entry, or null when the copy stays as it is.
+static void* mVUchunkReAimCopy(microVU& mVU, mVUChunkHead& head, microBlock* root, u32 rootPC)
+{
+	mVUChunkBody* const b = mVUchunkTieredFor(mVU, head, rootPC);
+	if (!b)
+	{
+		mVUchunkMarkRoot(root, &head, root->tierState == mVUtierCovered ? mVUtierCovered : mVUtierNone);
+		return nullptr;
+	}
+	if (b->declined)
+	{
+		mVUchunkMarkRoot(root, &head, root->tierState == mVUtierCovered ? mVUtierCovered : mVUtierDeclined);
+		return nullptr;
+	}
+	if (root->tierState == mVUtierBody + b->id)
+	{
+		mVUchunkMarkRoot(root, &head, mVUtierBody + b->id);
+		return nullptr;
+	}
+	int miss = 0;
+	void* const entry = mVUchunkInstall(mVU, *b, rootPC, miss);
+	if (!entry)
+	{
+		mVUchunkMarkRoot(root, &head, root->tierState);
+		return nullptr;
+	}
+	pxAssertRel(root->hostEntry == entry, "microVU: a tiered body's root is not the copy's root block");
+	mVUchunkMarkRoot(root, &head, mVUtierBody + b->id);
+	s_mVUchunkStats.tieredReAimed++;
+	return entry;
 }
 
 // An outermost VU1 compile was asked for `rootPC` with the entry state at
@@ -270,48 +455,41 @@ static void* mVUchunkLookup(microVU& mVU, u32 rootPC, uptr pState)
 	if (!ep.lookup)
 	{
 		st.skipped++;
+		if (ep.tiered)
+			st.tieredBuilds++;
 		return nullptr;
 	}
-	mVUchunkStoreSyncOptions(mVU);
-	mVUChunkStoreData& store = *mVU.chunkStore;
 	const microRegInfo& state = *reinterpret_cast<const microRegInfo*>(pState);
-	const u32* const mem = reinterpret_cast<const u32*>(mVU.regs().Micro);
-	const s32 rootWord = static_cast<s32>(rootPC / 4);
-	const s32 words = static_cast<s32>(mVU.microMemSize / 4);
+	const s32 rootPair = static_cast<s32>(rootPC / 8);
+	const auto rootBlock = [&]() { return mVUblocks[rootPair]->search(mVU, const_cast<microRegInfo*>(&state)); };
 
 	int miss = mVUchunkMissNoEntry;
-	const auto range = store.index.equal_range(mVUchunkRootHash(mVU, rootPC, &state));
-	for (auto it = range.first; it != range.second; ++it)
+	if (mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, state, false))
 	{
-		mVUChunkEntry& entry = *store.entries[it->second];
-		if (!mVUchunkStateEqual(entry.rootState, state))
-			continue;
-		const mVUChunkBody& b = entry.plain;
-		if (rootWord + b.lo < 0 || rootWord + b.hi >= words)
-		{
-			miss = std::max<int>(miss, mVUchunkMissBounds);
-			continue;
-		}
-		bool same = true;
-		for (const mVUChunkBody::Word& w : b.reads)
-		{
-			if ((mem[rootWord + w.off] ^ w.value) & w.mask)
-			{
-				same = false;
-				break;
-			}
-		}
-		if (!same)
-		{
-			miss = std::max<int>(miss, mVUchunkMissReadSet);
-			continue;
-		}
 		// The replayed ranges are not this compile's.
 		ep.recording = false;
-		if (void* const rootEntry = mVUchunkInstall(mVU, entry, rootPC, miss))
+		// A tiered body first.
+		mVUChunkBody* const tiered = mVUchunkTieredFor(mVU, *head, rootPC);
+		if (tiered && !tiered->declined)
 		{
-			st.hits++;
-			return rootEntry;
+			if (void* const rootEntry = mVUchunkInstall(mVU, *tiered, rootPC, miss))
+			{
+				mVUchunkMarkRoot(rootBlock(), head, mVUtierBody + tiered->id);
+				st.hits++;
+				st.tieredHits++;
+				return rootEntry;
+			}
+		}
+		for (auto& body : head->plain)
+		{
+			if (!mVUchunkBodyMatches(mVU, *body, rootPC, miss))
+				continue;
+			if (void* const rootEntry = mVUchunkInstall(mVU, *body, rootPC, miss))
+			{
+				mVUchunkMarkRoot(rootBlock(), head, (tiered && tiered->declined) ? mVUtierDeclined : mVUtierNone);
+				st.hits++;
+				return rootEntry;
+			}
 		}
 		ep.recording = true;
 	}
@@ -358,9 +536,9 @@ static void mVUchunkEnd(microVU& mVU)
 	const s32 rootPair = static_cast<s32>(rootPC / 8);
 	const u32 words = mVU.microMemSize / 4;
 
-	auto entry = std::make_unique<mVUChunkEntry>();
-	mVUChunkBody& b = entry->plain;
-	entry->rootState = ep.blocks[0].block->pState;
+	auto body = std::make_unique<mVUChunkBody>();
+	mVUChunkBody& b = *body;
+	const microRegInfo rootState = ep.blocks[0].block->pState;
 
 	// The read set: every word the compile read, with the bits it left to
 	// run time masked out. The root pair is in it with at least the bits the
@@ -408,6 +586,11 @@ static void mVUchunkEnd(microVU& mVU)
 	for (u32 n = 0; n < ep.slots.size(); n++)
 	{
 		const mVUChunkSlot& slot = ep.slots[n];
+		if (slot.kind == mVUslotZero || slot.kind == mVUslotProgram)
+		{
+			b.dataSlots.push_back({n, slot.kind});
+			continue;
+		}
 		if (slot.target)
 		{
 			mVUChunkBody::Link link;
@@ -460,16 +643,30 @@ static void mVUchunkEnd(microVU& mVU)
 	b.codeBytes = codeBytes;
 	b.statusImm = ep.statusImm;
 
-	mVUchunkStoreSyncOptions(mVU);
-	mVUChunkStoreData& store = *mVU.chunkStore;
-	const u64 hash = mVUchunkRootHash(mVU, rootPC, &entry->rootState);
-	const auto range = store.index.equal_range(hash);
-	for (auto it = range.first; it != range.second; ++it)
+	// A build episode's body goes to the tier, which files it under its head.
+	if (ep.tiered)
 	{
-		const mVUChunkEntry& have = *store.entries[it->second];
-		const mVUChunkBody& h = have.plain;
-		if (!mVUchunkStateEqual(have.rootState, entry->rootState) || h.reads.size() != b.reads.size() ||
-			h.blocks.size() != b.blocks.size() || h.links.size() != b.links.size())
+		if (!b.links.empty())
+		{
+			st.feedOther++;
+			return;
+		}
+		b.tiered = true;
+		mVU.chunkStore->built = std::move(body);
+		return;
+	}
+
+	mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, rootState, true);
+	mVUChunkStoreData& store = *mVU.chunkStore;
+	// (the lookup that came before this compile placed no tiered body for it)
+	{
+		const mVUChunkBody* const tiered = mVUchunkTieredFor(mVU, *head, rootPC);
+		mVUchunkMarkRoot(ep.blocks[0].block, head, (tiered && tiered->declined) ? mVUtierDeclined : mVUtierNone);
+	}
+	for (const auto& have : head->plain)
+	{
+		const mVUChunkBody& h = *have;
+		if (h.reads.size() != b.reads.size() || h.blocks.size() != b.blocks.size() || h.links.size() != b.links.size())
 			continue;
 		bool same = std::equal(h.reads.begin(), h.reads.end(), b.reads.begin(),
 			[](const mVUChunkBody::Word& x, const mVUChunkBody::Word& y) { return x.off == y.off && x.value == y.value && x.mask == y.mask; });
@@ -483,8 +680,8 @@ static void mVUchunkEnd(microVU& mVU)
 			return;
 		}
 	}
-	store.index.emplace(hash, static_cast<u32>(store.entries.size()));
-	store.entries.push_back(std::move(entry));
+	head->plain.push_back(std::move(body));
+	store.plainBodies++;
 	store.codeBytes += codeBytes;
 	st.fed++;
 }

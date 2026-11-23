@@ -154,6 +154,7 @@ namespace vuaot
 			Home,     // incoming value, still in its memory home
 			PQ,       // incoming Q/P lane of q28
 			Const,    // Const / IConst immediate
+			Link,     // a BAL/JALR link value: the placement's root plus a distance
 			VF0,      // the VF0 constant (0,0,0,1), from VURegs.VF[0]
 			MemBase,  // x19 + the VU1 memory offset
 			Global,   // a vector constant in mVUglob (loaded off x25)
@@ -169,6 +170,7 @@ namespace vuaot
 				case Op::Const:
 					return in.type == Type::Vec ? Cls::V : Cls::G;
 				case Op::IConst:
+				case Op::Link:
 				case Op::ClipBits:
 				case Op::MacFlags:
 				case Op::StatusUpd:
@@ -369,7 +371,7 @@ namespace vuaot
 				if (best < 2 || best == 4)
 					return 0;
 				const Op op = I(major).op;
-				if (op == Op::LiveIn || op == Op::Const || op == Op::IConst)
+				if (op == Op::LiveIn || op == Op::Const || op == Op::IConst || op == Op::Link)
 					return 0;
 				return major;
 			}
@@ -992,6 +994,19 @@ namespace vuaot
 					}
 					else
 						armAsm->Mov(W(r), k);
+					break;
+				}
+				case Remat::Link:
+				{
+					// ((root + distance) & 0x7FF) + 2: the root is the low 11 bits of mVU.place.
+					const a64::Register w = cls_[c] == Cls::V ? a64::w16 : W(r);
+					armAsm->Ldr(w, a64::MemOperand(a64::x24, env_.offPlace));
+					if (in.imm)
+						armAsm->Add(w, w, in.imm);
+					armAsm->And(w, w, 0x7ff);
+					armAsm->Add(w, w, 2);
+					if (cls_[c] == Cls::V)
+						armAsm->Fmov(S(r), a64::w16);
 					break;
 				}
 				case Remat::VF0:
@@ -3989,6 +4004,7 @@ namespace vuaot
 			{
 				case Op::Const:
 				case Op::IConst:
+				case Op::Link:
 				case Op::LiveIn:
 					break;
 				case Op::Fmac: Fmac(id); break;
@@ -4456,6 +4472,8 @@ namespace vuaot
 					remat_[v] = Remat::VF0;
 				else if (in.op == Op::Const || in.op == Op::IConst)
 					remat_[v] = Remat::Const;
+				else if (in.op == Op::Link)
+					remat_[v] = Remat::Link;
 			}
 			canon_[memBase_] = memBase_;
 			cls_[memBase_] = Cls::G;
@@ -4953,7 +4971,7 @@ namespace vuaot
 				if (v >= var::Count)
 					break;
 				const ValueId a = lv.args[v];
-				if (!a || I(a).op == Op::LiveIn || I(a).op == Op::Const || I(a).op == Op::IConst)
+				if (!a || I(a).op == Op::LiveIn || I(a).op == Op::Const || I(a).op == Op::IConst || I(a).op == Op::Link)
 					continue;
 				const ValueId c = C(a);
 				if (IsStatus(v) || (GHomeable(v) && hm_->home[v].kind == HomeKind::GReg))

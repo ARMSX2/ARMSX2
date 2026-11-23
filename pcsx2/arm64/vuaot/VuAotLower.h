@@ -65,6 +65,8 @@ namespace vuaot
 		// microVU's micro mode keeps VURegs::Mem in x29 (gprVUMem) for the
 		// whole dispatch: memory operations address off it.
 		bool vuMemPinned = false;
+		// mVU.place, from x24: the root a Link value is measured from is its low 11 bits.
+		s32 offPlace = 0;
 		// Region mode: the sticky half of STATUS is the OR of every FMAC's zero
 		// and sign lanes since the last reset, but only the instances somebody
 		// reads (a reader, a bail or exit to microVU, a program end) are ever

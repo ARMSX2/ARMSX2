@@ -574,6 +574,7 @@ static u32 mVUchunkAddSlot(mV, microBlock* block, microBlock* target, u32 target
 	const u32 n = static_cast<u32>(mVU.chunk.slots.size());
 	pxAssertRel(mVU.chunk.slotBase + n < mVUplaceSlotCapacity, "microVU: out of placement slots");
 	mVUChunkSlot slot = {};
+	slot.kind = target ? mVUslotLink : mVUslotBlock;
 	slot.block = block;
 	slot.target = target;
 	slot.targetPC = targetPC;
@@ -585,12 +586,26 @@ static u32 mVUchunkAddSlot(mV, microBlock* block, microBlock* target, u32 target
 	return n;
 }
 
+// Gives the chunk being compiled a slot that holds no block: 0 for the code
+// to fill when it runs, or the program of the placement.
+static u32 mVUchunkAddDataSlot(mV, mVUChunkSlotKind kind)
+{
+	const u32 n = static_cast<u32>(mVU.chunk.slots.size());
+	pxAssertRel(mVU.chunk.slotBase + n < mVUplaceSlotCapacity, "microVU: out of placement slots");
+	mVUChunkSlot slot = {};
+	slot.kind = kind;
+	mVU.chunk.slots.push_back(slot);
+	mVU.placeSlots[mVU.chunk.slotBase + n] = kind == mVUslotProgram ? reinterpret_cast<u64>(mVU.prog.cur) : 0;
+	mVU.placeSlotsUsed = mVU.chunk.slotBase + n + 1;
+	return n;
+}
+
 // The slot the chunk being compiled gave `block`, one of its own blocks.
 static u32 mVUchunkBlockSlot(mV, const microBlock* block)
 {
 	for (size_t n = mVU.chunk.slots.size(); n-- > 0;)
 	{
-		if (mVU.chunk.slots[n].block == block)
+		if (mVU.chunk.slots[n].kind == mVUslotBlock && mVU.chunk.slots[n].block == block)
 			return static_cast<u32>(n);
 	}
 	pxFailRel("microVU: a block of the chunk has no slot");

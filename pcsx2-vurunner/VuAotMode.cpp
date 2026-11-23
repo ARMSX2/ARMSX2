@@ -316,9 +316,17 @@ namespace
 		bool trace = false;
 		bool traceOnly = false; // reference arm: trace, never lower
 		u32 blocks = 0;
+		// --vuaot-region: regions may drop the sticky byte of STATUS. The runner has no tripwire, so
+		// they do only while the micro image has no reader of it.
+		bool dropSticky = true;
+		u32 vu = 1;
+		const u8* micro = nullptr;
 
 		BodyCtx(u32 vu, const u8* micro, const VuAotModeOptions& o)
 			: tier(std::make_unique<vuaot::BodyTier>(vu, micro))
+			, dropSticky(o.dropSticky)
+			, vu(vu)
+			, micro(micro)
 		{
 			tier->only = o.lowerOnly;
 			tier->limit = o.lowerLimit;
@@ -360,6 +368,7 @@ namespace
 	bool OnRegion(const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user)
 	{
 		BodyCtx& c = *static_cast<BodyCtx*>(user);
+		c.region->dropSticky = c.dropSticky && !vuaot::RegionTier::MicroReadsSticky(c.micro, c.vu);
 		return c.region->OnCompile(b, env, nullptr);
 	}
 
@@ -704,14 +713,15 @@ int RunVuAotRun(const std::vector<vu_capture::CaptureRecord>& records,
 			bailsEntry = bgAfter.bailsEntry - bgBefore.bailsEntry;
 			bailsLoop = bgAfter.bailsLoopHead - bgBefore.bailsLoopHead;
 			stickyDropped = static_cast<u32>(bgAfter.stickyDropped - bgBefore.stickyDropped);
-			stickyImages = static_cast<u32>(bgAfter.stickyImages - bgBefore.stickyImages);
+			stickyImages = static_cast<u32>(bgAfter.stickyKept - bgBefore.stickyKept);
 			statusReaders = static_cast<u32>(bgAfter.statusReaders - bgBefore.statusReaders);
 			stickyReaders = static_cast<u32>(bgAfter.stickyReaders - bgBefore.stickyReaders);
 			stickyDivReaders = static_cast<u32>(bgAfter.stickyDivReaders - bgBefore.stickyDivReaders);
 		}
 		else if (ctx.region)
 		{
-			ctx.region->BailCounts(bailsEntry, bailsLoop);
+			bailsEntry = bgAfter.bailsEntry - bgBefore.bailsEntry;
+			bailsLoop = bgAfter.bailsLoopHead - bgBefore.bailsLoopHead;
 			stickyDropped = ctx.region->StickyDropped();
 			stickyImages = ctx.region->StickyReaderImages();
 			statusReaders = ctx.region->StatusReaders();

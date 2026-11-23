@@ -8,7 +8,7 @@
 // code buffer it emits into.
 //
 // The worker runs jobs (VuAotJob, in microVU_VuAot-arm64.inl) that hold copies
-// of everything they read. The VU1 thread publishes a job's result by copying
+// of everything they read. The VU1 thread places a job's result by copying
 // its code into microVU's code cache and patching the places the buffer could
 // not know (the fixups below).
 //
@@ -40,10 +40,10 @@ namespace vuaot::bg
 			// its offset from the buffer's start.
 			IntraAbs,
 			// B or BL whose target is a placeholder (`id`, see CodeSink); the
-			// publisher decides what it stands for.
+			// copy decides what it stands for.
 			Site26,
 			// movz+movk*3 holding a placeholder (`id`): an address only the
-			// publisher knows.
+			// copy knows.
 			SiteAbs,
 			// B or BL to an absolute address outside the buffer (`value`): a C
 			// helper close enough to the buffer for armEmitCall's short form.
@@ -53,9 +53,12 @@ namespace vuaot::bg
 			// buffer (`value`): a C helper, a global, VU state, a graph block.
 			// The copy leaves it alone; a saved region re-bases it at install.
 			OutsideAbs,
-			// An 8-byte data word holding `value` (the region builder's bail
-			// records: the program, a node's handle). The copy leaves it alone.
-			Data64,
+			// A node's entry stub (movz, movk, str): the copy writes the
+			// chunk's place word into the first two.
+			PlaceStub,
+			// movz whose low 16 bits are a slot number counted from the job's
+			// first slot: the copy adds the number of the chunk slot that became.
+			SlotMovz,
 		};
 		u32 offset;
 		Kind kind;
@@ -92,8 +95,8 @@ namespace vuaot::bg
 		// The placeholder id of `p`, or -1.
 		s32 PlaceholderId(const void* p) const;
 		bool InCode(const void* p) const;
-		// A data word the emission wrote at `at` (inside the buffer) holds `value`.
-		void NoteData64(const u8* at, u64 value);
+		// Notes a PlaceStub or SlotMovz fixup at `at` (inside the buffer).
+		void Note(Fixup::Kind kind, const u8* at);
 
 		std::vector<Fixup> fixups;
 		// Set when an emission took a shape the copy cannot relocate.
@@ -109,6 +112,10 @@ namespace vuaot::bg
 	// Patch helpers (instruction words already in memory). False when the
 	// word is not the expected shape or the displacement does not fit.
 	bool PatchAbsMov(u32* insn, u64 value);
+	// A movz/movk pair on one W register takes `word`.
+	bool PatchPlaceStub(u32* insn, u32 word);
+	// A movz's 16-bit immediate grows by `add`.
+	bool PatchSlotMovz(u32* insn, u32 add);
 	bool PatchRel26(u32* insn, const u8* at, const void* target);
 
 	struct Job

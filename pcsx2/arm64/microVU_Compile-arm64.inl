@@ -1163,7 +1163,14 @@ static void vuAotEmitJumpTail(u32 vu, void* block, const u8* endKey)
 		blk->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
 
 	mVUldrField(mVU, RWARG1, &mVU.branch);
-	if (doJumpCaching)
+	// The node's block of the placement now running, from its slot.
+	if (mVUrootRelative(mVU))
+	{
+		mVUemitLoadSlot(mVU, RXARG2, a64::x8, mVUchunkBlockSlot(mVU, blk));
+		if (!doJumpCaching)
+			armAsm->Add(RXARG2, RXARG2, offsetof(microBlock, pStateEnd));
+	}
+	else if (doJumpCaching)
 		armMoveAddressToReg(RXARG2, blk);
 	else
 		armMoveAddressToReg(RXARG2, &blk->pStateEnd);
@@ -1202,24 +1209,32 @@ static void vuAotEmitJumpTail(u32 vu, void* block, const u8* endKey)
 	armAsm->Br(a64::x0);
 }
 
-// microVU's own code for a block a vu-aot region holds. The block manager
-// keeps the region's entry; mVUcompile finds that block and compiles into it
-// without replacing the entry. The record's slot caches the code for the next
-// bail.
-static void* vuAotBailTarget(u32 vu, u8* rec)
+// A region node's two placement slots: its block object, then microVU's own
+// code for the block (0 until a bail compiles it).
+static u32 vuAotAddNodeSlots(u32 vu, void* block)
 {
 	microVU& mVU = mVUbyIndex(vu);
-	void** slot = reinterpret_cast<void**>(rec + 16);
-	if (*slot)
-		return *slot;
-	u32 pc;
-	std::memcpy(&pc, rec, sizeof(pc));
-	microBlock* blk;
-	std::memcpy(&blk, rec + 8, sizeof(blk));
-	s32 progWord;
-	std::memcpy(&progWord, rec + 4, sizeof(progWord));
-	microProgram* prog;
-	std::memcpy(&prog, rec + progWord, sizeof(prog));
+	const u32 n = mVUchunkAddSlot(mVU, static_cast<microBlock*>(block), nullptr, 0, nullptr);
+	mVUchunkAddDataSlot(mVU, mVUslotZero);
+	return n;
+}
+
+static u32 vuAotAddProgramSlot(u32 vu)
+{
+	return mVUchunkAddDataSlot(mVUbyIndex(vu), mVUslotProgram);
+}
+
+// microVU's own code for a block a vu-aot region holds, in the copy of the
+// routine that is running. The block manager keeps the region's entry;
+// mVUcompile finds that block and compiles into it without replacing the
+// entry. The node's second slot caches the code for the next bail.
+static void* vuAotBailTarget(u32 vu, u64* pair, u32 pairOff, void* program)
+{
+	microVU& mVU = mVUbyIndex(vu);
+	if (pair[1])
+		return reinterpret_cast<void*>(pair[1]);
+	microBlock* const blk = reinterpret_cast<microBlock*>(pair[0]);
+	const u32 pc = (((mVU.place & 0x7ff) + pairOff) & 0x7ff) * 8;
 	mVUvuAotOnBail();
 	alignas(16) microRegInfo k;
 	std::memcpy(&k, &blk->pState, sizeof(k));
@@ -1228,12 +1243,12 @@ static void* vuAotBailTarget(u32 vu, u8* rec)
 	// updating it), and mVUcompile files the block, its range and its
 	// successors under mVU.prog.cur.
 	microProgram* const savedCur = mVU.prog.cur;
-	mVU.prog.cur = prog;
+	mVU.prog.cur = static_cast<microProgram*>(program);
 	mVUopenCodeCache(mVU);
 	vuaot::g_vuAotShadowCompile = true;
 	void* v = mVUcompile(mVU, pc & (mVU.microMemSize - 8), reinterpret_cast<uptr>(&k));
 	vuaot::g_vuAotShadowCompile = false;
-	*reinterpret_cast<void**>(armGetWritableCodePtr(reinterpret_cast<u8*>(slot))) = v;
+	pair[1] = reinterpret_cast<u64>(v);
 	mVUcloseCodeCache(mVU);
 	mVU.prog.cur = savedCur;
 	return v;
@@ -1266,8 +1281,13 @@ static vuaot::MvuEmitEnv mVUbuildEmitEnv(microVU& mVU)
 	e.offCycles = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.cycles) - base);
 	e.cycleBreak = mVU.cycleBreak;
 	e.rootBlock = mVUpBlock;
-	e.program = mVU.prog.cur;
-	e.offProgBails = static_cast<s32>(offsetof(microProgram, vuAotBails));
+	e.rootPC = mVU.compileRoot;
+	e.offPlace = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.place) - base);
+	e.offPlaceSlots = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.placeSlots) - base);
+	e.offBails = static_cast<s32>(reinterpret_cast<const u8*>(&mVU.vuAotBails[0]) - base);
+	e.placeWord = mVUplaceWord(mVU.compileRoot, mVU.chunk.slotBase);
+	e.addNodeSlots = &vuAotAddNodeSlots;
+	e.addProgramSlot = &vuAotAddProgramSlot;
 	e.searchBlock = &vuAotSearchBlock;
 	e.addBlock = &vuAotAddBlock;
 	e.setBlockEntry = &vuAotSetBlockEntry;
@@ -1517,9 +1537,9 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	mVUsetFlags(mVU, mFC);
 	mVUoptimizePipeState(mVU);
 	// vu-aot: a test installs its hooks through the vuaot:: globals; otherwise
-	// the live tier hands out its own, for a program it has tiered up (VU1
-	// only). With neither, nothing below runs and microVU compiles the block
-	// unchanged.
+	// the live tier hands out its own while it builds a routine's tiered body
+	// (VU1 only). With neither, nothing below runs and microVU compiles the
+	// block unchanged.
 	vuaot::VuAotRegionHook vuAotRegionHook = vuaot::g_vuAotRegionHook;
 	void* vuAotRegionUser = vuaot::g_vuAotRegionHookUser;
 	vuaot::VuAotBodyHook vuAotBodyHook = vuaot::g_vuAotBodyHook;
@@ -1545,9 +1565,10 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	// place; microVU then emits nothing for it.
 	if (vuAotRegionHook && !vuAotShadow && vuAotRegionHook(vuAotTrace, mVUbuildEmitEnv(mVU), vuAotRegionUser))
 	{
-		// The region's code starts at thisPtr and takes no root.
+		// The region's code starts at thisPtr with the root node's entry stub.
+		// Code that runs straight into the block is already in the placement.
 		if (body.IsLinked())
-			armAsm->BindToOffset(&body, thisPtr - armAsmPtr);
+			armAsm->BindToOffset(&body, thisPtr + mVUrootStubBytes - armAsmPtr);
 		return thisPtr; // the region's code is vu-aot's: extent stays 0
 	}
 	u32 blockSlot = 0;

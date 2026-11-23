@@ -815,7 +815,12 @@ struct RegionScope
 		, body(vu, vuRegs[vu].Micro)
 	{
 		vuaot::g_vuAotRegionHook = [](const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user) {
-			return static_cast<RegionScope*>(user)->region.OnCompile(b, env, nullptr);
+			// A region drops the sticky byte of STATUS unless one of its own nodes reads it. The
+			// live tier's tripwire covers a reader anywhere else; here there is none, so a reader
+			// anywhere in the image keeps the byte.
+			vuaot::RegionTier& region = static_cast<RegionScope*>(user)->region;
+			region.dropSticky = !vuaot::RegionTier::MicroReadsSticky(vuRegs[b.vuIndex].Micro, b.vuIndex);
+			return region.OnCompile(b, env, nullptr);
 		};
 		vuaot::g_vuAotRegionHookUser = this;
 		vuaot::g_vuAotBodyHook = [](const vuaot::MvuBlockTrace& b, const vuaot::MvuEmitEnv& env, void* user) {

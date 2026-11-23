@@ -9,8 +9,8 @@
 // has to serve it without compiling anything, and the run has to equal the
 // interpreter's run of the second image. The tests of what must not be served
 // (a compile-time word that differs, a missing branch target, a place where
-// the code does not fit, a program the VU AOT tier compiles for) check that
-// the JIT compiled instead and that the result is still the interpreter's.
+// the code does not fit) check that the JIT compiled instead and that the
+// result is still the interpreter's.
 
 #include "harness/VuTestHarness.h"
 #include "harness/RecompilerTestEnvironment.h"
@@ -623,9 +623,10 @@ TEST(Vu1ChunkStore, CopyNearTheTopOfMicroMemory)
 	ExpectJitMatches(jit.h, interpOver);
 }
 
-// A program the VU AOT tier has taken over is compiled through the tier's
-// hooks: the store is not asked, even for code it holds.
-TEST(Vu1ChunkStore, ProgramTieredByVuAotIsNotLookedUp)
+// The VU AOT tier builds a routine's regions in one compile of its own, which
+// the store is not asked about; what that compile emits is kept as the
+// routine's tiered body.
+TEST(Vu1ChunkStore, TieredBodyBuildIsNotLookedUp)
 {
 	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
 	const bool savedOpt = EmuConfig.Cpu.Recompiler.EnableVUAot;
@@ -644,13 +645,14 @@ TEST(Vu1ChunkStore, ProgramTieredByVuAotIsNotLookedUp)
 		const mVUChunkStore::Stats s0 = mVUChunkStore::GetStats();
 		const vuaot::live::Stats t0 = vuaot::live::GetStats();
 
-		// Not tiered yet: served.
+		// Not tiered yet: the copy is served the plain body.
 		EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u);
 		const mVUChunkStore::Stats s1 = mVUChunkStore::GetStats();
 		EXPECT_GT(s1.hits, s0.hits);
+		EXPECT_EQ(s1.skipped, s0.skipped);
 		ExpectJitMatches(jit.h, interp);
 
-		// Run it until the tier takes the program and compiles it its own way.
+		// Run it until the tier builds the routine's regions.
 		for (int i = 0; i < 12; i++)
 		{
 			jit.RunAt(kCopy);
@@ -658,9 +660,11 @@ TEST(Vu1ChunkStore, ProgramTieredByVuAotIsNotLookedUp)
 		}
 		const mVUChunkStore::Stats s2 = mVUChunkStore::GetStats();
 		const vuaot::live::Stats t2 = vuaot::live::GetStats();
-		EXPECT_GE(t2.tierUps, t0.tierUps + 1) << "the program was not tiered up";
-		EXPECT_GT(s2.skipped, s1.skipped) << "the tiered program's compiles went to the store";
-		EXPECT_EQ(s2.hits, s1.hits) << "a tiered program was served from the store";
+		EXPECT_EQ(t2.tierUps, t0.tierUps + 1) << "the routine was not tiered up";
+		EXPECT_EQ(s2.tieredBuilds, s1.tieredBuilds + 1);
+		EXPECT_EQ(s2.skipped, s1.skipped + 1) << "only the build goes round the store";
+		EXPECT_EQ(s2.tieredBodies, 1u);
+		EXPECT_EQ(s2.entries, s1.entries) << "the build added a plain body";
 	}
 	EmuConfig.Cpu.Recompiler.EnableVUAot = savedOpt;
 	EmuConfig.Speedhacks.vuFlagHack = savedFlagHack;

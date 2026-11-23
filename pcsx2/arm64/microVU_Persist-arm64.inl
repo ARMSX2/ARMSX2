@@ -967,6 +967,11 @@ namespace mVUPersist
 			recs.reserve(count);
 			for (size_t i = 0; i < count; i++)
 			{
+				if (slots[i].kind != mVUslotBlock && slots[i].kind != mVUslotLink)
+				{
+					Fail("placement slot the image does not describe");
+					return;
+				}
 				const microBlock* const blk = slots[i].target ? slots[i].target : slots[i].block;
 				PersistSlot rec = {};
 				rec.isEntry = slots[i].target ? 1 : 0;
@@ -1008,14 +1013,12 @@ namespace mVUPersist
 			microProgram* cur = mvu->prog.cur;
 			if (!cur)
 				return;
-			// A program the vu-aot live tier has taken over compiles through
-			// vu-aot's regions, whose code bakes raw block pointers the fixup
-			// recorder does not see (bail records). Nothing of it is persisted:
-			// the log keeps the microVU graph recorded before the tier-up,
-			// which is a valid image of its own.
-			if (cur->vuaot)
+			// What the VU AOT tier builds is registered in block tables that
+			// are thrown away, and its region code is copied in from a buffer
+			// the recorder did not see. Nothing of it is persisted.
+			if (mVUvuAotBuilding(*mvu))
 			{
-				Fail("vu-aot program");
+				Fail("vu-aot build");
 				return;
 			}
 			if (!prog)

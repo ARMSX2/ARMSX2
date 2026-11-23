@@ -63,6 +63,8 @@ namespace vuaot
 		bo.clampIImmediate = env.clampOverflow && !env.clampSign;
 		bo.clampExtra = env.clampExtra;
 		bo.clampSign = env.clampSign;
+		bo.rootRelative = true;
+		bo.rootPair = env.rootPC / 8;
 		const ir::Function fn = ir::BuildNodeLocal(br, bo);
 		LowerEnv le;
 		le.vuIndex = env.vuIndex;
@@ -82,6 +84,7 @@ namespace vuaot
 		le.softwareFlush = env.softwareFlush;
 		le.schedule = schedule;
 		le.vuMemPinned = env.vuMemPinned;
+		le.offPlace = env.offPlace;
 		const u8* codeStart = armGetCurrentCodePointer();
 		std::vector<std::pair<const u8*, ir::ValueId>> marks;
 		if (dump)

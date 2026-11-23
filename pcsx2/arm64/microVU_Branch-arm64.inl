@@ -619,13 +619,13 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 			return jc.hostEntry;
 
 		// A jump the cache did not know: the vu-aot tier counts these to see
-		// when a tiered program has met a target its regions do not hold.
+		// when a tiered routine has met a target its regions do not hold.
 		if constexpr (vuIndex == 1)
 			mVUvuAotOnJumpMiss(mVU);
 
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, (uptr)&pBlock->pStateEnd);
-		// A program microVU only ever reaches through a JR/JALR (an overlay the
+		// A routine microVU only ever reaches through a JR/JALR (an overlay the
 		// dispatcher never enters) is counted, and tiered up, here.
 		if constexpr (vuIndex == 1)
 			v = mVUvuAotAfterJump(mVU, startPC, (uptr)&pBlock->pStateEnd, v);

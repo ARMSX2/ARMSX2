@@ -5,7 +5,6 @@
 // macros, so they come first.
 #include "vuaot/VuAotBackground.h"
 #include "vuaot/VuAotLive.h"
-#include "vuaot/VuAotPersist.h"
 #include "vuaot/VuAotRegion.h"
 #include "vuaot/VuAotTier.h"
 
@@ -450,6 +449,7 @@ void mVUinit(microVU& mVU, uint vuIndex)
 	mVU.index        =  vuIndex;
 	mVU.cop2         =  0;
 	mVU.place        =  0;
+	mVU.vuAotBails[0] = mVU.vuAotBails[1] = 0;
 	mVU.compileRoot  =  0;
 	mVU.compileDepth =  0;
 	mVU.compileFallsThrough = false;
@@ -1307,7 +1307,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// them: the next load of each comes from RAM, and the cache's writer
 	// puts them on disk for later sessions. SaveAllPrograms stores only
 	// programs that grew since they were stored, so calling it on every
-	// reset is cheap. The vu-aot tier queues its programs' plans first.
+	// reset is cheap.
 	// Then, if the title or the sentinel changed, the cache moves to that
 	// pack: these programs belong to the old one.
 	//
@@ -1317,7 +1317,6 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// files finds nothing using them.
 	if (EmuConfig.Cpu.Recompiler.UseVUProgramCache())
 	{
-		mVUvuAotSaveAll(mVU);
 		mVUProgCache::SaveAllPrograms(mVU);
 		mVUProgCache::Rekey(mVU);
 	}
@@ -1365,9 +1364,7 @@ void mVUclose(microVU& mVU)
 
 	// Final checkpoint of live programs to the cache before we let
 	// the contentMap go. Mirrors the mVUreset path; harmless if nothing
-	// new has been added since the last reset. The vu-aot tier's plans go to the
-	// cache's writer first; Close writes them before it returns.
-	mVUvuAotSaveAll(mVU);
+	// new has been added since the last reset.
 	mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
 	mVUvuAotOnClose(mVU);
@@ -1520,7 +1517,6 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 	safe_delete(prog->ranges);
 	safe_delete(prog->keptBits);
 	mVUPersist::OnProgramDeleted(*prog);
-	mVUvuAotOnProgramDeleted(*prog);
 	safe_aligned_free(prog);
 }
 
@@ -1797,10 +1793,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cleared = 0;
 			mVU.prog.isSame  = 1;
 			mVU.prog.cur     = hydrated;
-			// The vu-aot tier reads the program's saved plan, if it has one, before anything can
-			// reach the program: no quick slot or jump cache names it yet.
-			if constexpr (vuIndex == 1)
-				mVUvuAotOnProgramReady(mVU, *hydrated);
 			mVUquickInstall(mVU, slot, hydrated);
 			quick.block      = hydrated->block[startPC / 8];
 			if (quick.block == nullptr)
@@ -1817,8 +1809,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cleared = 0;
 		mVU.prog.isSame  = 1;
 		mVU.prog.cur     = mVUcreateProg(mVU, mVU.regs().start_pc/8, liveHash);
-		if constexpr (vuIndex == 1)
-			mVUvuAotOnProgramReady(mVU, *mVU.prog.cur);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
 		mVUquickInstall(mVU, slot, mVU.prog.cur);

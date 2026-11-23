@@ -31,8 +31,11 @@
 // or where it would not fit inside micro memory. Otherwise the JIT compiles,
 // and what it compiled becomes an entry.
 //
-// The store is skipped for a program the VU AOT tier compiles for. It lives in
-// RAM and is emptied by every recompiler reset.
+// An entry also holds the VU AOT tier's bodies for the routine: its regions
+// and the blocks microVU compiled around them, recorded from one build and
+// placed the same way, in preference to the plain body
+// (vuaot/microVU_VuAot-arm64.inl). The store is not asked while that build
+// runs. It lives in RAM and is emptied by every recompiler reset.
 namespace mVUChunkStore
 {
 	struct Stats
@@ -60,9 +63,19 @@ namespace mVUChunkStore
 		u64 codeBytesCompiled = 0;
 		u64 codeBytesInstalled = 0;
 		u64 stubBytes = 0;
-		// Entries held now, and the bytes of code they describe.
+		// Plain bodies held now, and the bytes of code they describe.
 		u64 entries = 0;
 		u64 entryCodeBytes = 0;
+		// VU AOT tiered bodies: build episodes run (each is one outermost
+		// compile, counted in `skipped`), bodies held and their code, lookups
+		// served by one, placements of one (lookups and re-aims), and copies
+		// that were on microVU's code and were moved onto one.
+		u64 tieredBuilds = 0;
+		u64 tieredBodies = 0;
+		u64 tieredCodeBytes = 0;
+		u64 tieredHits = 0;
+		u64 tieredPlaced = 0;
+		u64 tieredReAimed = 0;
 	};
 	Stats GetStats();
 

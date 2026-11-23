@@ -181,6 +181,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_second_boot_tests.cpp
 	vuaot_frontend_tests.cpp
 	vuaot_live_tests.cpp
+	vuaot_bodies_tests.cpp
 	vuaot_lowering_tests.cpp
 	vuaot_persist_tests.cpp
 	mvu_ebit_condbranch_status_tests.cpp
