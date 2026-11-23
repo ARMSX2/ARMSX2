@@ -15,9 +15,8 @@ extension EnvironmentValues {
     }
 }
 
-/// Keeps every app-owned overlay on the exact same Regular/Clear glass choice
-/// as the Quick Menu. Geometry and interaction remain local to each surface;
-/// only the material style comes from the shared persisted preference.
+/// Puts every app-owned overlay on the Quick Menu's Regular or Clear glass. Only the material
+/// is shared; geometry and interaction stay with each surface.
 private struct QuickMenuLiquidGlassConfigurationModifier: ViewModifier {
     @State private var settings = SettingsStore.shared
 
@@ -34,9 +33,7 @@ extension View {
         modifier(QuickMenuLiquidGlassConfigurationModifier())
     }
 
-    /// Temporarily selects the lightweight live-wallpaper renderer while a
-    /// dense foreground editor is mounted, without changing the persisted
-    /// Original Full Quality preference.
+    /// The lightweight renderer while a dense editor is mounted, leaving the saved quality alone.
     func lightweightLiveWallpaperWhilePresented() -> some View {
         modifier(LightweightLiveWallpaperPresentationModifier())
     }
@@ -165,10 +162,8 @@ private struct DynamicBackgroundStyleLayer: Identifiable {
     var opacity: Double
 }
 
-/// Crossfades every live-wallpaper engine without blending their geometry.
-/// Keeping each renderer independent prevents ribbons, towers, particles,
-/// face buttons, and other unrelated scenes from sliding between coordinate
-/// systems while a Theme Preset changes.
+/// Crossfades every live-wallpaper engine without blending their geometry, so unrelated scenes
+/// never slide between coordinate systems while a Theme Preset changes.
 private struct DynamicBackgroundStyleCrossfadeView: View {
     let style: DynamicBackgroundStyle
     let theme: DynamicBackgroundTheme
@@ -215,9 +210,8 @@ private struct DynamicBackgroundStyleCrossfadeView: View {
                         allowsMainMenuThermalFallback:
                             allowsMainMenuThermalFallback
                     )
-                    // Removing the outgoing renderer must never change the
-                    // incoming camera's proposed viewport. Crystal therefore
-                    // keeps one fixed projection throughout the entire fade.
+                    // Removing the outgoing renderer must not move the incoming
+                    // camera's viewport, so Crystal keeps one projection all fade.
                     .frame(
                         width: geometry.size.width,
                         height: geometry.size.height
@@ -335,10 +329,8 @@ private struct DynamicBackgroundStyleCrossfadeView: View {
 
 }
 
-/// Applies the same frame-rate and render-resolution configuration to every
-/// place that presents a dynamic background, including the full-screen editor
-/// preview. Keeping this wrapper shared prevents previews from silently using
-/// the environment defaults instead of the user's selected resolution.
+/// Every dynamic background, editor preview included, goes through here so none of them falls
+/// back to the environment's frame rate and resolution instead of the user's.
 struct ResolutionAwareDynamicBackgroundContentView: View {
     let style: DynamicBackgroundStyle
     let theme: DynamicBackgroundTheme
@@ -354,9 +346,8 @@ struct ResolutionAwareDynamicBackgroundContentView: View {
         )
         DynamicBackgroundContentView(style: style, theme: theme)
             .environment(\.uiFrameRateConfiguration, configuration)
-            // Canvas and Metal surfaces can retain their previous backing
-            // allocation when only an environment value changes. A resolution
-            // identity recreates them without changing full-screen geometry.
+            // Canvas and Metal keep their old backing when only an environment
+            // value changes; a resolution identity recreates them.
             .id(
                 "\(style.id)-\(configuration.dynamicWallpaperResolution.rawValue)"
                     + "-face:\(configuration.dynamicFaceButtonResolution.rawValue)"
@@ -638,9 +629,8 @@ private struct DynamicBackgroundGlassSurfaceModifier: ViewModifier {
     private func surface(_ content: Content, in shape: some Shape) -> some View {
         let usesClearGlass = clear && (forceClear || clearLiquidGlassUIEnabled)
         if !isEnabled {
-            // Glass is a compositor effect, not layout. Far-offscreen lazy
-            // content can keep its exact measured card geometry without
-            // retaining a live backdrop sampler.
+            // Glass is a compositor effect, not layout, so offscreen lazy content
+            // keeps its card geometry without a live backdrop sampler.
             content
         } else if #available(iOS 26.0, *) {
             let glass = usesClearGlass
