@@ -1195,7 +1195,7 @@ mVUop(mVU_FMOR)
 
 mVUop(mVU_FSAND)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSAND: Checking I/D/IS/DS Flags");
@@ -1220,7 +1220,7 @@ mVUop(mVU_FSAND)
 
 mVUop(mVU_FSOR)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		const a64::Register& reg = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
@@ -1239,7 +1239,7 @@ mVUop(mVU_FSOR)
 
 mVUop(mVU_FSEQ)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSEQ: Checking I/D/IS/DS Flags");
@@ -1355,7 +1355,7 @@ mVUop(mVU_IADDI)
 				// runtime. _Imm5_ takes bit 10 of curI as sign and bits 9:6 as
 				// magnitude (matching the _Imm5_ macro), so emit the
 				// sbfx+and+bfxil idiom.
-				mVUemitLoadCurI(mVU, gprT1);
+				mVUemitLoadCurI(mVU, gprT1, 0x000007C0u);
 				armAsm->Sbfx(regT.W(), gprT1.W(), 10, 1);
 				armAsm->And(regT.W(), regT.W(), 0xfff0);
 				armAsm->Bfxil(regT.W(), gprT1.W(), 6, 4);
@@ -1379,7 +1379,7 @@ mVUop(mVU_IADDI)
 			}
 			else
 			{
-				mVUemitLoadCurI(mVU, gprT1);
+				mVUemitLoadCurI(mVU, gprT1, 0x000007C0u);
 				armAsm->Sbfx(gprT2.W(), gprT1.W(), 10, 1);
 				armAsm->And(gprT2.W(), gprT2.W(), 0xfff0);
 				armAsm->Bfxil(gprT2.W(), gprT1.W(), 6, 4);
@@ -1414,7 +1414,7 @@ mVUop(mVU_IADDIU)
 				// the JIT must reconstruct Imm15 from the live opcode word.
 				// Imm15 = ((curI >> 21) & 0xf) << 11 | (curI & 0x7ff), expressed
 				// via ubfx+and+bfxil.
-				mVUemitLoadCurI(mVU, gprT1);
+				mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 				armAsm->Ubfx(regT.W(), gprT1.W(), 10, 22);
 				armAsm->And(regT.W(), regT.W(), 0x7800);
 				armAsm->Bfxil(regT.W(), gprT1.W(), 0, 11);
@@ -1431,7 +1431,7 @@ mVUop(mVU_IADDIU)
 			}
 			else
 			{
-				mVUemitLoadCurI(mVU, gprT1);
+				mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 				armAsm->Ubfx(gprT2.W(), gprT1.W(), 10, 22);
 				armAsm->And(gprT2.W(), gprT2.W(), 0x7800);
 				armAsm->Bfxil(gprT2.W(), gprT1.W(), 0, 11);
@@ -1513,7 +1513,7 @@ mVUop(mVU_ISUBIU)
 		}
 		else
 		{
-			mVUemitLoadCurI(mVU, gprT1);
+			mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 			armAsm->Ubfx(gprT2.W(), gprT1.W(), 10, 22);
 			armAsm->And(gprT2.W(), gprT2.W(), 0x7800);
 			armAsm->Bfxil(gprT2.W(), gprT1.W(), 0, 11);
@@ -1697,7 +1697,7 @@ static void mVUaddrFromVI(mV, int vi)
 	{
 		// IbitHack: reconstruct signed Imm11 from the live opcode word at
 		// runtime via sbfx+bfxil.
-		mVUemitLoadCurI(mVU, RWSCRATCH);
+		mVUemitLoadCurI(mVU, RWSCRATCH, 0x000007FFu);
 		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
 		armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
 		armAsm->Add(gprT1.W(), base.W(), gprT2.W());

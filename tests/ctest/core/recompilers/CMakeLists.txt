@@ -192,6 +192,7 @@ add_pcsx2_test(recompiler_tests
 	mvu_compile_history_tests.cpp
 	mvu_flag_lookahead_range_tests.cpp
 	vu1_micro_address_tests.cpp
+	vu1_chunk_store_tests.cpp
 	vu0_macro_zero_sign_console_tests.cpp
 	# Conformance against real-hardware captures rather than against the other
 	# engine: each case is scored on interp and JIT separately, so a mistake the

@@ -459,6 +459,9 @@ void mVUinit(microVU& mVU, uint vuIndex)
 		mVU.placeSlotStore.reset(new u64[mVUplaceSlotCapacity]);
 	mVU.placeSlots     = mVU.placeSlotStore.get();
 	mVU.placeSlotsUsed = 0;
+	if (vuIndex && !mVU.chunkStore)
+		mVU.chunkStore = std::make_unique<mVUChunkStoreData>();
+	mVUchunkStoreClear(mVU);
 	mVU.vuMemSize    = (mVU.index ? 0x4000 : 0x1000);
 	mVU.microMemSize = (mVU.index ? 0x4000 : 0x1000);
 	mVU.progSize     = (mVU.index ? 0x4000 : 0x1000) / 4;
@@ -1256,8 +1259,10 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
 	mVU.resumeBlock = nullptr;
-	// Every placement goes with the programs freed below.
+	// Every placement goes with the programs freed below, and the chunk
+	// store's entries with the code cache.
 	mVU.placeSlotsUsed = 0;
+	mVUchunkStoreClear(mVU);
 	if (!mVU.index)
 		mVU0ParkedSpin = 0;
 	mVU.branchCondCarryGpr = -1;
@@ -1366,6 +1371,9 @@ void mVUclose(microVU& mVU)
 	mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
 	mVUvuAotOnClose(mVU);
+	if (mVU.index)
+		mVUchunkStoreDumpStats(mVU, "close");
+	mVUchunkStoreClear(mVU);
 
 	// Same ownership rule as mVUreset: free via contentMap (plus the
 	// drift-evicted orphans), then drop the per-PC deque shells.

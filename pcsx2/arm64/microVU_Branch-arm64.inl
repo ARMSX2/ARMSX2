@@ -948,6 +948,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 	// Try to find cached block for not-taken path
 	microBlock* bBlock;
 	incPC2(1);
+	mVUchunkNoteFallThrough(mVU, xPC);
 	blockCreate(iPC / 2);
 	bBlock = mVUblocks[iPC / 2]->search(mVU, (microRegInfo*)&mVUregs);
 	incPC2(-1);

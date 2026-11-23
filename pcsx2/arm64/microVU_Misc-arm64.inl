@@ -633,15 +633,38 @@ static void mVUemitLinkValue(mV, const a64::Register& dst, u32 pc)
 	armAsm->Add(dst.W(), dst.W(), 2);
 }
 
+// Under IbitHack, the bits of lower word `code` the compiled code depends on
+// when the op reads its immediate from micro memory at run time; 0 for any
+// other op. The run-time immediates: LQ/SQ/ILW/ISW imm11 (bits 0-10),
+// IADDIU/ISUBIU imm15 (bits 0-10 and 21-24), IADDI imm5 (bits 6-10).
+static u32 mVUibitHackKeptBits(u32 code)
+{
+	switch (code >> 25)
+	{
+		case 0x00: case 0x01: case 0x04: case 0x05: // LQ, SQ, ILW, ISW
+			return ~0x000007FFu;
+		case 0x08: case 0x09:                       // IADDIU, ISUBIU
+			return ~0x01E007FFu;
+		case 0x40:                                  // IADDI
+			return ((code & 0x3F) == 0x32) ? ~0x000007C0u : 0;
+		default:
+			return 0;
+	}
+}
+
 // dst = the word at iPC, read from micro memory when the block runs (the
-// IbitHack gamefix). Clobbers RSCRATCHADDR, as armLoadPtr does.
-static void mVUemitLoadCurI(mV, const a64::Register& dst)
+// IbitHack gamefix). `runtimeBits` are the bits of it the caller goes on to
+// use: the compiled code does not depend on them. Clobbers RSCRATCHADDR, as
+// armLoadPtr does.
+static void mVUemitLoadCurI(mV, const a64::Register& dst, u32 runtimeBits)
 {
 	if (!mVUrootRelative(mVU))
 	{
-		armLoadPtr(dst.W(), &curI);
+		armLoadPtr(dst.W(), &rawI);
 		return;
 	}
+	if (mVU.chunk.recording)
+		mVU.chunk.runtimeBits.push_back({iPC, runtimeBits});
 	mVUemitRootPlus(mVU, dst, xPC);
 	armAsm->Ubfiz(dst.X(), dst.X(), 3, 11);
 	armMoveAddressToReg(RSCRATCHADDR, mVU.regs().Micro + (iPC & 1) * 4);
@@ -696,6 +719,7 @@ static void mVUemitLink(mV, microBlock* target, void* hostEntry, u32 pc, microRe
 	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
 	if (slot < 0)
 	{
+		mVU.chunk.unstorable = true;
 		armEmitJmp(hostEntry);
 		return;
 	}
@@ -716,6 +740,7 @@ static void mVUemitCondLink(mV, a64::Condition cond, microBlock* target, u32 pc,
 	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
 	if (slot < 0)
 	{
+		mVU.chunk.unstorable = true;
 		armEmitCondBranch(cond, hostEntry);
 		return;
 	}
@@ -724,4 +749,19 @@ static void mVUemitCondLink(mV, a64::Condition cond, microBlock* target, u32 pc,
 	mVUemitLoadSlot(mVU, a64::x9, a64::x10, static_cast<u32>(slot));
 	armAsm->Br(a64::x9);
 	armAsm->Bind(&skip);
+}
+
+// The compile is about to go on at `pc`, the pair after the one it just did.
+// Pair 0 can only follow the last pair of micro memory.
+__fi static void mVUchunkNoteFallThrough(mV, u32 pc)
+{
+	if (pc == 0)
+		mVU.chunk.wrapped = true;
+}
+
+// An FSAND, FSEQ or FSOR is being compiled.
+__fi static void mVUnoteStatusReader(mV, u32 imm12)
+{
+	mVU.chunk.statusImm |= imm12;
+	mVUvuAotOnStatusReader(mVU, imm12);
 }

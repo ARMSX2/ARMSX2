@@ -29,6 +29,7 @@
 #include "VuEfuModel.h"
 #include "VuMulBand.h"
 #include "microVU_Persist-arm64.h"
+#include "microVU_ChunkStore-arm64.h"
 #include "microVU_JumpTable-arm64.h"
 #include "vuaot/VuAotMvuTrace.h"
 
@@ -658,6 +659,105 @@ struct mVUChunkEpisode
 	u32 slotBase;
 	std::vector<Block> blocks;
 	std::vector<mVUChunkSlot> slots;
+
+	// What the chunk store needs to know about the compile.
+	//
+	// One byte per micro-memory word: set when the compiler decoded the word
+	// or tested it (mVUreadWord, mVUmarkRead). A word iPC only passed over is
+	// not marked.
+	u8 readMark[mProgSize];
+	// Bits of a word the emitted code reads from micro memory when it runs.
+	struct RuntimeBits
+	{
+		u32 word;
+		u32 bits;
+	};
+	std::vector<RuntimeBits> runtimeBits;
+	// The mVUsetupRange calls, in order.
+	struct Range
+	{
+		s32 pc;
+		bool isStart;
+	};
+	std::vector<Range> ranges;
+	// The mVUaddKeptBits calls, in order.
+	std::vector<microKeptBits> keptBits;
+	// An outermost compile is running and is noting the above.
+	bool recording;
+	// The store may be asked before compiling.
+	bool lookup;
+	// The compile emitted, or will emit, code the store cannot describe.
+	bool unstorable;
+	// The compile ran on past the last pair of micro memory to pair 0.
+	bool wrapped;
+	// The immediates of the FSAND, FSEQ and FSOR it compiled, OR'd.
+	u32 statusImm;
+	u8* codeStart;
+};
+
+// A compiled chunk as the store keeps it. Offsets are from the root.
+struct mVUChunkBody
+{
+	struct Word
+	{
+		s32 off; // in words
+		u32 value;
+		u32 mask;
+	};
+	struct Block
+	{
+		s32 pairOff;
+		u32 slot;
+		u8* stub; // the entry stub in the chunk's code; the body follows it
+		microRegInfo pState;
+		microRegInfo pStateEnd;
+	};
+	struct Link
+	{
+		s32 pairOff;
+		u32 slot;
+		microRegInfo key;
+	};
+	struct Range
+	{
+		s32 off; // in bytes
+		bool isStart;
+	};
+	// A word of the ranges compared through a mask (microProgram::keptBits).
+	struct KeptBits
+	{
+		s32 off; // in bytes
+		u32 kept;
+	};
+	std::vector<Word> reads;
+	std::vector<Block> blocks;
+	std::vector<Link> links;
+	std::vector<Range> ranges;
+	std::vector<KeptBits> keptBits;
+	// The lowest and highest word it reads, compiles, branches to or ranges over.
+	s32 lo;
+	s32 hi;
+	u32 slotCount;
+	u32 codeBytes;
+	u32 statusImm;
+};
+
+// One store entry: a root entry state and the code compiled from it.
+struct mVUChunkEntry
+{
+	microRegInfo rootState;
+	mVUChunkBody plain;
+};
+
+struct mVUChunkStoreData
+{
+	std::vector<std::unique_ptr<mVUChunkEntry>> entries;
+	// mVUchunkRootHash -> index into entries.
+	std::unordered_multimap<u64, u32> index;
+	// The options sentinel the entries were compiled under.
+	XXH128_hash_t options = {};
+	u64 codeBytes = 0;
+	std::vector<microBlock*> scratchTargets;
 };
 
 // Slots the array holds, and the count at which the next dispatcher exit
@@ -840,6 +940,8 @@ struct microVU
 	// Slots are not freed one by one; mVUreset starts again from zero.
 	std::unique_ptr<u64[]> placeSlotStore;
 	u32 placeSlotsUsed;
+	// VU1: the chunk store.
+	std::unique_ptr<mVUChunkStoreData> chunkStore;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 
@@ -869,6 +971,19 @@ struct microVU
 		return (vminvq_u32(vandq_u32(a23, a45)) == 0) ? 1 : 0;
 	}
 };
+
+// The micro-memory word at `idx`, noted as read by the compile in progress.
+__fi static u32* mVUreadWord(microVU& mVU, u32 idx)
+{
+	mVU.chunk.readMark[idx] = 1;
+	return &reinterpret_cast<u32*>(mVU.regs().Micro)[idx];
+}
+
+// Notes the word at iPC as read: mVU.code is about to be decoded.
+__fi static void mVUmarkRead(microVU& mVU)
+{
+	mVU.chunk.readMark[mVU.prog.IRinfo.curPC] = 1;
+}
 
 // MemOperand for one of the hot microVU scalars (the code..cycles block
 // right after the flag arrays), addressed off the gprMVUFlag (x24) pin the
@@ -1259,4 +1374,5 @@ static void mVU_XGKICK_SYNC(mV, bool);
 #include "microVU_Lower-arm64.inl"
 #include "x86/microVU_Tables.inl"
 #include "microVU_Branch-arm64.inl"
+#include "microVU_ChunkStore-arm64.inl"
 #include "microVU_Compile-arm64.inl"

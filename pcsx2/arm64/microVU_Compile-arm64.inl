@@ -41,6 +41,8 @@ void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC)
 	}
 
 	const s32 cur_pc = (!isStartPC && mVUrange.start > pc && pc == 0) ? mVU.microMemSize : pc;
+	if (mVU.chunk.recording)
+		mVU.chunk.ranges.push_back({cur_pc, isStartPC});
 
 	if (isStartPC)
 	{
@@ -100,31 +102,14 @@ void mVUsetupRange(microVU& mVU, s32 pc, bool isStartPC)
 		mVUcacheProg(mVU, *mVU.prog.cur);
 }
 
-// Under IbitHack, the bits of lower word `code` the compiled code depends on
-// when the op reads its immediate from micro memory at run time; 0 for any
-// other op. The run-time immediates: LQ/SQ/ILW/ISW imm11 (bits 0-10),
-// IADDIU/ISUBIU imm15 (bits 0-10 and 21-24), IADDI imm5 (bits 6-10).
-static u32 mVUibitHackKeptBits(u32 code)
-{
-	switch (code >> 25)
-	{
-		case 0x00: case 0x01: case 0x04: case 0x05: // LQ, SQ, ILW, ISW
-			return ~0x000007FFu;
-		case 0x08: case 0x09:                       // IADDIU, ISUBIU
-			return ~0x01E007FFu;
-		case 0x40:                                  // IADDI
-			return ((code & 0x3F) == 0x32) ? ~0x000007C0u : 0;
-		default:
-			return 0;
-	}
-}
-
 // Records a word of the program's ranges that mVUcmpProg compares through
 // `kept`, in the program's list sorted by address.
 static void mVUaddKeptBits(microVU& mVU, u32 addr, u32 kept)
 {
 	if (doWholeProgCompare)
 		return;
+	if (mVU.chunk.recording)
+		mVU.chunk.keptBits.push_back({addr, kept});
 	std::vector<microKeptBits>*& words = mVUcurProg.keptBits;
 	if (!words)
 		words = new std::vector<microKeptBits>();
@@ -334,10 +319,16 @@ void _mVUflagPass(mV, u32 startPC, u32 sCount, u32 found, std::vector<u32>& v)
 	int aBranchAddr = 0;
 	iPC = startPC / 4;
 	mVUbranch = 0;
+	u32 lastPC = iPC;
 	for (int branch = 0; sCount < 4; sCount += found)
 	{
 		mVUregs.needExactMatch &= 7;
 		incPC(1);
+		// Going on to the next pair went round the end of micro memory.
+		if (iPC < lastPC)
+			mVU.chunk.wrapped = true;
+		lastPC = iPC;
+		mVUmarkRead(mVU);
 		mVUopU(mVU, 3);
 		found |= (mVUregs.needExactMatch & 8) >> 3;
 		mVUregs.needExactMatch &= 7;
@@ -356,6 +347,7 @@ void _mVUflagPass(mV, u32 startPC, u32 sCount, u32 found, std::vector<u32>& v)
 		if (!(curI & _Ibit_))
 		{
 			incPC(-1);
+			mVUmarkRead(mVU);
 			mVUopL(mVU, 3);
 			incPC(1);
 		}
@@ -418,6 +410,7 @@ void mVUsetFlagInfo(mV)
 		mVUregs.needExactMatch = 0;
 
 		incPC(4); // Branch Not Taken
+		mVUchunkNoteFallThrough(mVU, xPC);
 		mVUflagPass(mVU, xPC);
 		incPC(-3);
 
@@ -767,7 +760,7 @@ void doIbit(mV)
 			// compiled for the old one. Read the constant from micro memory at
 			// run time instead of baking it in. Left unclamped, like x86 — the
 			// operand clamp at the use site covers it.
-			mVUemitLoadCurI(mVU, gprT1);
+			mVUemitLoadCurI(mVU, gprT1, 0xFFFFFFFFu);
 			armAsm->Str(gprT1, mVUstateMem(offsetof(VURegs, VI) + REG_I * sizeof(REG_VI)));
 		}
 		else
@@ -1330,12 +1323,17 @@ struct mVUchunkScope
 			mVU.chunk.blocks.clear();
 			mVU.chunk.slots.clear();
 			mVU.chunk.slotBase = mVU.placeSlotsUsed;
+			if (mVUrootRelative(mVU))
+				mVUchunkBegin(mVU);
 		}
 	}
 	~mVUchunkScope()
 	{
 		if (--mVU.compileDepth == 0 && mVUrootRelative(mVU))
+		{
 			mVUPersist::OnChunkEnd(mVU, mVU.chunk.slots.data(), mVU.chunk.slots.size());
+			mVUchunkEnd(mVU);
+		}
 	}
 };
 
@@ -1349,6 +1347,13 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 	// The caller's code runs straight into this block: it is already in the
 	// chunk, so it goes around the entry stub.
 	const bool fallsThrough = std::exchange(mVU.compileFallsThrough, false);
+	// VU1: a chunk compiled before from the same words is installed here
+	// instead of compiled again.
+	if (mVU.compileDepth == 1 && mVUrootRelative(mVU))
+	{
+		if (void* const placed = mVUchunkLookup(mVU, startPC, pState))
+			return placed;
+	}
 	a64::Label body;
 	if (fallsThrough && mVUrootRelative(mVU))
 		armAsm->B(&body);
@@ -1372,6 +1377,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		incPC(1);
 		startLoop(mVU);
 		mVUincCycles(mVU, 1);
+		mVUmarkRead(mVU);
 		mVUopU(mVU, 0); // Upper analysis
 		mVUcheckBadOp(mVU);
 
@@ -1433,6 +1439,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 				if (const u32 kept = mVUibitHackKeptBits(mVU.code))
 					mVUaddKeptBits(mVU, xPC, kept);
 			}
+			mVUmarkRead(mVU);
 			mVUopL(mVU, 0);
 			incPC(1);
 		}
@@ -1502,6 +1509,8 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		incPC(1);
 	}
 	const u32 guestPairs = mVUcount;
+	if (startPC + guestPairs * 8 > mVU.microMemSize)
+		mVU.chunk.wrapped = true;
 
 	mVUregs.vi15 = 0;
 	mVUregs.vi15v = 0;
@@ -1547,6 +1556,8 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		mVUemitRootStub(mVU);
 		if (compiledBlock->hostEntry == thisPtr)
 			mVU.chunk.blocks.push_back({compiledBlock, thisPtr, startPC});
+		else
+			mVU.chunk.unstorable = true; // the block keeps an entry that is not this code
 		blockSlot = mVUchunkAddSlot(mVU, compiledBlock, nullptr, 0, nullptr);
 		armAsm->Bind(&body);
 	}
