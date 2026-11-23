@@ -85,7 +85,7 @@ void Host::SetDefaultUISettings(SettingsInterface&) {}
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)raw);
             CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-            CGImageRef image = CGImageCreate(width, height, 8, 32, width * 4, space, kCGImageAlphaNoneSkipLast | kCGBitmapByteOrderDefault,
+            CGImageRef image = CGImageCreate(width, height, 8, 32, width * 4, space, static_cast<CGBitmapInfo>(kCGImageAlphaNoneSkipLast),
                 provider, nullptr, false, kCGRenderingIntentDefault);
             NSMutableData* png = [NSMutableData data];
             bool ok = false;
