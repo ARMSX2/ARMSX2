@@ -71,17 +71,13 @@ struct Regs
 	u32 tpc;
 };
 
-// The integer registers and TPC of the last JIT run against the interpreter's.
-// `links` is a bit per integer register that holds a link value: those and
-// TPC are compared as pair indices.
-void ExpectJitMatches(const VuTestHarness& h, const VuSnapshot& interp, u32 links = 0)
+// The integer registers and TPC of the last JIT run against the interpreter's,
+// whole: both leave a link value unwrapped and TPC wrapped, as the console does.
+void ExpectJitMatches(const VuTestHarness& h, const VuSnapshot& interp)
 {
 	for (u32 r = 0; r < 16; r++)
-	{
-		const u32 mask = ((links >> r) & 1) ? 0x7FFu : 0xFFFFu;
-		EXPECT_EQ(h.GetViJit(r) & mask, interp.regs.VI[r].UL & mask) << "vi" << r;
-	}
-	EXPECT_EQ(h.GetViJit(REG_TPC) & 0x7FFu, interp.regs.VI[REG_TPC].UL & 0x7FFu) << "TPC";
+		EXPECT_EQ(h.GetViJit(r) & 0xFFFFu, interp.regs.VI[r].UL & 0xFFFFu) << "vi" << r;
+	EXPECT_EQ(h.GetViJit(REG_TPC), interp.regs.VI[REG_TPC].UL) << "TPC";
 }
 
 using Seed = std::function<void(VuTestHarness&)>;
@@ -183,7 +179,6 @@ std::vector<VuOp> CallLoopProgram(u32 unread = 0x44)
 		Nop(),                                           // 25
 	};
 }
-constexpr u32 kCallLoopLinks = (1u << vi::vi5) | (1u << vi::vi8) | (1u << vi::vi9);
 
 // A counted loop, a forward B over one pair, then the end.
 std::vector<VuOp> LoopProgram(u32 passes)
@@ -228,7 +223,6 @@ std::vector<VuOp> CallInLoopProgram(u32 passes)
 		Nop(),                                           // 12
 	};
 }
-constexpr u32 kCallInLoopLinks = (1u << vi::vi5) | (1u << vi::vi8);
 
 // Two entry points: pair 0 is a routine, pair 12 runs a few pairs and
 // branches to it.
@@ -335,11 +329,11 @@ TEST(Vu1ChunkStore, RoutineUploadedAtAnotherAddressIsServedWithoutACompile)
 	EXPECT_EQ(jit.h.GetViJit(vi::vi5), PairIndex(kCopy, 2));
 	EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kCopy, 20));
 	EXPECT_EQ(jit.h.GetViJit(REG_TPC), PairIndex(kCopy, 14));
-	ExpectJitMatches(jit.h, interp, kCallLoopLinks);
+	ExpectJitMatches(jit.h, interp);
 
 	// And again from the jump caches the first run filled.
 	EXPECT_EQ(jit.RunAt(kCopy), 0u);
-	ExpectJitMatches(jit.h, interp, kCallLoopLinks);
+	ExpectJitMatches(jit.h, interp);
 }
 
 // The same image holding the routine twice is one program: the second copy is
@@ -355,7 +349,7 @@ TEST(Vu1ChunkStore, SecondCopyInTheSameProgramIsServed)
 	Jit jit(1, kHome, both, kHome);
 	EXPECT_EQ(jit.RunAt(kCopy), 0u) << "the copy was compiled";
 	EXPECT_EQ(jit.h.GetViJit(vi::vi5), PairIndex(kCopy, 2));
-	ExpectJitMatches(jit.h, interp, kCallLoopLinks);
+	ExpectJitMatches(jit.h, interp);
 }
 
 // The E bit and the T bit on branches and on a plain pair: the TPC an exit
@@ -389,7 +383,7 @@ TEST(Vu1ChunkStore, ExitTpcOfAServedCopy)
 
 			Jit jit(1, kHome, prog, kHome, regs);
 			EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u) << "the copy was compiled";
-			EXPECT_EQ(jit.h.GetViJit(REG_TPC), interp.regs.VI[REG_TPC].UL & 0x7FFu);
+			EXPECT_EQ(jit.h.GetViJit(REG_TPC), interp.regs.VI[REG_TPC].UL);
 			ExpectJitMatches(jit.h, interp);
 		}
 	}
@@ -413,7 +407,7 @@ TEST(Vu1ChunkStore, BranchInDelaySlotOfAServedCopy)
 
 			Jit jit(1, kHome, prog, kHome, regs);
 			EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u) << "the copy was compiled";
-			ExpectJitMatches(jit.h, interp, (1u << vi::vi5) | (1u << vi::vi6));
+			ExpectJitMatches(jit.h, interp);
 		}
 	}
 }
@@ -509,7 +503,7 @@ TEST(Vu1ChunkStore, CrossChunkBranchResolvedPerPlacement)
 		EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kHome, 13));
 		EXPECT_EQ(jit.RunUpload(2, kCopy, prog, kCopy), 0u) << "the copy was compiled";
 		EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kCopy, 13)) << "the branch out of the chunk reached another copy's subroutine";
-		ExpectJitMatches(jit.h, interp, kCallInLoopLinks);
+		ExpectJitMatches(jit.h, interp);
 	}
 	{
 		SCOPED_TRACE("same program");
@@ -521,7 +515,7 @@ TEST(Vu1ChunkStore, CrossChunkBranchResolvedPerPlacement)
 		Jit jit(1, kHome, both, kHome);
 		EXPECT_EQ(jit.RunAt(kCopy), 0u) << "the copy was compiled";
 		EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kCopy, 13));
-		ExpectJitMatches(jit.h, interp, kCallInLoopLinks);
+		ExpectJitMatches(jit.h, interp);
 		// The original still runs as itself.
 		EXPECT_EQ(jit.RunAt(kHome), 0u);
 		EXPECT_EQ(jit.h.GetViJit(vi::vi8), PairIndex(kHome, 13));
