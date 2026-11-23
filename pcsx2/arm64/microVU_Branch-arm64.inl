@@ -382,7 +382,7 @@ void normBranchCompile(microVU& mVU, u32 branchPC)
 	pBlock = mVUblocks[branchPC / 8]->search(mVU, (microRegInfo*)&mVUregs);
 	if (pBlock)
 	{
-		armEmitJmp(mVUlinkEntry(mVU, pBlock->hostEntry));
+		mVUemitLink(mVU, pBlock, pBlock->hostEntry, branchPC, &mVUregs);
 	}
 	else
 	{
@@ -956,7 +956,10 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 	{
 		// Not-taken block exists: emit conditional jump to it
 		a64::Condition invCond = a64::InvertCondition(cond);
-		armEmitCondBranch(invCond, mVUlinkEntry(mVU, bBlock->hostEntry));
+		incPC2(1);
+		const u32 notTakenPC = xPC;
+		incPC2(-1);
+		mVUemitCondLink(mVU, invCond, bBlock, notTakenPC, &mVUregs);
 		incPC(-3);
 		normBranchCompile(mVU, branchAddr(mVU));
 	}
@@ -976,11 +979,12 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 
 		iPC = bPC;
 		incPC(-3);
-		void* jumpAddr = mVUblockFetch(mVU, branchAddr(mVU), (uptr)&regBackup);
+		const u32 takenPC = branchAddr(mVU);
+		void* jumpAddr = mVUblockFetch(mVU, takenPC, (uptr)&regBackup);
 		armAsm->Bind(&takenLabel);
 		if (jumpAddr)
 		{
-			armEmitJmp(mVUlinkEntry(mVU, jumpAddr));
+			mVUemitLink(mVU, nullptr, jumpAddr, takenPC, &regBackup);
 		}
 		else
 		{

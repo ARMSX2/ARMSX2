@@ -449,11 +449,16 @@ void mVUinit(microVU& mVU, uint vuIndex)
 
 	mVU.index        =  vuIndex;
 	mVU.cop2         =  0;
-	mVU.rootPair     =  0;
+	mVU.place        =  0;
 	mVU.compileRoot  =  0;
 	mVU.compileDepth =  0;
 	mVU.compileFallsThrough = false;
-	mVU.chunkBlocks.clear();
+	mVU.chunk = {};
+	// Untouched pages of the slot array cost nothing.
+	if (vuIndex && !mVU.placeSlotStore)
+		mVU.placeSlotStore.reset(new u64[mVUplaceSlotCapacity]);
+	mVU.placeSlots     = mVU.placeSlotStore.get();
+	mVU.placeSlotsUsed = 0;
 	mVU.vuMemSize    = (mVU.index ? 0x4000 : 0x1000);
 	mVU.microMemSize = (mVU.index ? 0x4000 : 0x1000);
 	mVU.progSize     = (mVU.index ? 0x4000 : 0x1000) / 4;
@@ -1251,6 +1256,8 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
 	mVU.resumeBlock = nullptr;
+	// Every placement goes with the programs freed below.
+	mVU.placeSlotsUsed = 0;
 	if (!mVU.index)
 		mVU0ParkedSpin = 0;
 	mVU.branchCondCarryGpr = -1;
@@ -1938,6 +1945,11 @@ _mVUt void mVUcleanUp()
 		Console.WriteLn(vuIndex ? Color_Orange : Color_Magenta, "microVU%d: Program cache limit reached.", mVU.index);
 		mVUreset(mVU, false);
 	}
+	else if (mVU.placeSlotsUsed >= mVUplaceSlotResetAt)
+	{
+		Console.WriteLn(Color_Orange, "microVU%d: Placement slot limit reached.", mVU.index);
+		mVUreset(mVU, false);
+	}
 
 	if (!vuIndex || !THREAD_VU1)
 	{
@@ -2479,16 +2491,19 @@ namespace mvu_test_hooks
 			return;
 
 		constexpr u32 kMovzW9 = 0x52800009u; // movz w9, #imm16
+		constexpr u32 kMovkW9 = 0x72A00009u; // movk w9, #imm16, lsl 16
 		constexpr u32 kStrW9X24 = 0xB9000309u; // str w9, [x24, #imm12 * 4]
 		HostSys::BeginCodeWriteRange(mVU.prog.x86start, mVUcodeCacheWriteSpan(mVU));
 		const auto patch = [&](microBlock& b) {
 			if (!b.hostEntry || b.hostEntry != b.x86ptrStart)
 				return;
 			u32* const insn = reinterpret_cast<u32*>(armGetWritableCodePtr(static_cast<u8*>(b.hostEntry)));
-			if ((insn[0] & 0xFFE0001Fu) != kMovzW9 || (insn[1] & 0xFFC003FFu) != kStrW9X24)
+			if ((insn[0] & 0xFFE0001Fu) != kMovzW9 || (insn[1] & 0xFFE0001Fu) != kMovkW9 || (insn[2] & 0xFFC003FFu) != kStrW9X24)
 				return;
-			const u32 root = (((insn[0] >> 5) & 0xFFFFu) + delta) & 0x7ff;
-			insn[0] = kMovzW9 | (root << 5);
+			// The root is the low 11 bits of the word the stub stores.
+			const u32 low = (insn[0] >> 5) & 0xFFFFu;
+			const u32 root = (low + delta) & 0x7ff;
+			insn[0] = kMovzW9 | (((low & ~0x7ffu) | root) << 5);
 			HostSys::FlushInstructionCache(b.hostEntry, mVUrootStubBytes);
 		};
 		const auto patchProgram = [&](microProgram* prog) {

@@ -12,6 +12,7 @@
 struct microVU;
 struct microProgram;
 struct microBlock;
+struct mVUChunkSlot;
 struct MvuPersistLog;
 
 // Persisted-JIT VU program cache — relocation recorder + block-graph
@@ -25,10 +26,16 @@ struct MvuPersistLog;
 // A fixup names an encoding form and a target:
 //
 //   forms    MOVZ+MOVK run (1 to 4 instructions), ADRP, B/BL imm26,
-//            B.cond/CBZ/CBNZ imm19.
+//            B.cond/CBZ/CBNZ imm19, a VU1 block's entry stub.
 //   targets  one of the program's own microBlock objects (heap), another
 //            block's code entry, a per-VU dispatcher stub, an offset into the
-//            emulator's module image, an offset into the data arena.
+//            emulator's module image, an offset into the data arena, the
+//            first placement slot of a chunk.
+//
+// VU1 code reaches its own block objects and the blocks outside its chunk
+// through placement slots (microVU::placeSlots). The chunk records what each
+// slot of a compile holds; hydration gives each such compile new slots, fills
+// them and writes their index into the entry stubs.
 //
 // Hydration resolves every target against the running process, so a payload
 // works wherever ASLR put the image, heap, code slab and data arena. It
@@ -94,6 +101,13 @@ namespace mVUPersist
 	void OnBlockCompiled(microVU& mVU, microBlock* block, u8* entry, u32 startPC_bytes);
 	// mVUdeleteProg: free the program's persist log, if any.
 	void OnProgramDeleted(microProgram& prog);
+	// A VU1 block's entry stub was emitted at `at`, for the outermost compile
+	// now running.
+	void OnPlaceStub(microVU& mVU, u8* at);
+	// The outermost compile of a VU1 chunk returned: the slots it filled.
+	void OnChunkEnd(microVU& mVU, const mVUChunkSlot* slots, size_t count);
+	// The open episode emitted code the recorder cannot describe.
+	void DropEpisode(microVU& mVU, const char* reason);
 
 	// --- Serialization / hydration ---
 

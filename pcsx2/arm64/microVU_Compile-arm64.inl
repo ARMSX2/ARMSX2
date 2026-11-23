@@ -534,7 +534,9 @@ static void mVUemitSpinFF(mV, const mVUSpinLoop& spin)
 // Saving the pipeline state on the early exit is required so that a
 // cycle-timeout block has one; without it, the block manager would see stale
 // pState on re-entry and create a new variant.
-static void mVUtestCycles(mV, microFlagCycles& mFC)
+//
+// `blockSlot` is the placement slot that holds this block (VU1).
+static void mVUtestCycles(mV, microFlagCycles& mFC, u32 blockSlot)
 {
 	iPC = mVUstartPC;
 
@@ -582,7 +584,12 @@ static void mVUtestCycles(mV, microFlagCycles& mFC)
 		armAsm->Mov(a64::w9, mVUcycles);
 		armAsm->Str(a64::w9, mVUstateMem(offsetof(VURegs, nextBlockCycles)));
 	}
-	armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
+	// The block the break parks is the running placement's own: its entry
+	// stub is what a resume has to go through.
+	if (mVUrootRelative(mVU))
+		mVUemitLoadSlot(mVU, a64::x0, a64::x9, blockSlot);
+	else
+		armMoveAddressToReg(a64::x0, &mVUpBlock->pState);
 	mVUallocMFLAGa(mVU, gprT1, getLastFlagInst(mVUpBlock->pState, mFC.xMac, 1, 0));
 	mVUallocCFLAGa(mVU, gprT2, getLastFlagInst(mVUpBlock->pState, mFC.xClip, 2, 0));
 	armAsm->Mov(gprT3, getFlagReg(getLastFlagInst(mVUpBlock->pState, mFC.xStatus, 0, 0)));
@@ -1309,7 +1316,8 @@ static void mVUrecordExtent(microBlock* block, u8* thisPtr, u32 guestPairs)
 }
 
 // One mVUcompile on the stack. The outermost one opens a chunk: its start
-// address is the root every block compiled inside it measures from.
+// address is the root every block compiled inside it measures from, and its
+// slots are the next free ones.
 struct mVUchunkScope
 {
 	microVU& mVU;
@@ -1319,10 +1327,16 @@ struct mVUchunkScope
 		if (mVU.compileDepth++ == 0)
 		{
 			mVU.compileRoot = startPC;
-			mVU.chunkBlocks.clear();
+			mVU.chunk.blocks.clear();
+			mVU.chunk.slots.clear();
+			mVU.chunk.slotBase = mVU.placeSlotsUsed;
 		}
 	}
-	~mVUchunkScope() { mVU.compileDepth--; }
+	~mVUchunkScope()
+	{
+		if (--mVU.compileDepth == 0 && mVUrootRelative(mVU))
+			mVUPersist::OnChunkEnd(mVU, mVU.chunk.slots.data(), mVU.chunk.slots.size());
+	}
 };
 
 void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
@@ -1527,11 +1541,13 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 			armAsm->BindToOffset(&body, thisPtr - armAsmPtr);
 		return thisPtr; // the region's code is vu-aot's: extent stays 0
 	}
+	u32 blockSlot = 0;
 	if (mVUrootRelative(mVU))
 	{
 		mVUemitRootStub(mVU);
 		if (compiledBlock->hostEntry == thisPtr)
-			mVU.chunkBlocks.push_back({compiledBlock, thisPtr});
+			mVU.chunk.blocks.push_back({compiledBlock, thisPtr, startPC});
+		blockSlot = mVUchunkAddSlot(mVU, compiledBlock, nullptr, 0, nullptr);
 		armAsm->Bind(&body);
 	}
 	{
@@ -1539,7 +1555,7 @@ void* mVUcompile(microVU& mVU, u32 startPC, uptr pState)
 		if (spin.found)
 			mVUemitSpinFF(mVU, spin);
 	}
-	mVUtestCycles(mVU, mFC);
+	mVUtestCycles(mVU, mFC, blockSlot);
 
 	// === Second Pass (Codegen) ===
 	iPC = mVUstartPC;

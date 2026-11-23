@@ -516,39 +516,92 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_,
 
 // VU1 code holds no micro-memory address of its own. A branch target, a link
 // value, the TPC an exit stores and the address of an immediate read at run
-// time are each the chunk's root (mVU.rootPair, written by the entry stub of
-// the block that was entered) plus the distance the compiler knows, wrapped
-// the way the VU wraps: pair indices to 11 bits, byte addresses to 16 KiB.
-// The same code is therefore right for a copy of the program anywhere in
-// micro memory, given that copy's root.
+// time are each the placement's root (the low bits of mVU.place, written by
+// the entry stub of the block that was entered) plus the distance the compiler
+// knows, wrapped the way the VU wraps: pair indices to 11 bits, byte addresses
+// to 16 KiB. The same code is therefore right for a copy of the program
+// anywhere in micro memory, given that copy's root.
 //
 // This holds while no VU address reaches the code any other way. Constant
 // propagation would bake vi15 and a JR target in.
-static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.rootPair");
+static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.place");
+
+// The code holds no pointer to a block object of the program it was compiled
+// in, and no branch to a block outside its chunk, either: those come from the
+// placement's slots (mVU.placeSlots), numbered by the chunk and found through
+// the high bits of mVU.place. One exception: the JR/JALR tail keeps a pointer
+// to the block it was compiled as, for that block's end state and jump cache,
+// which are the same for every placement.
 
 // VU0 keeps its addresses as constants: its compiler decides on the absolute
 // PC (the M-bit check, the spin loop detector).
 __fi static bool mVUrootRelative(mV) { return isVU1; }
 
 // Bytes of the entry stub in front of a VU1 block's body.
-static constexpr u32 mVUrootStubBytes = 8;
+static constexpr u32 mVUrootStubBytes = 12;
+static constexpr u32 mVUplaceRootBits = 11;
 
-// The entry stub: every way into a block from outside its chunk (the
-// dispatcher, the jump cache, a link from another chunk, a resume) lands here
-// and gets the root set. Links inside the chunk skip it. w9 is free at a block
-// entry: mVUtestCycles loads it first thing.
-static void mVUemitRootStub(mV)
+// The value a placement's entry stubs store in mVU.place.
+__fi static u32 mVUplaceWord(u32 rootPC, u32 slotBase)
+{
+	pxAssert(slotBase < (1u << (32 - mVUplaceRootBits)));
+	return ((rootPC / 8) & 0x7ff) | (slotBase << mVUplaceRootBits);
+}
+
+// An entry stub: three instructions that store `word` in mVU.place. w9 is
+// free at a block entry: mVUtestCycles loads it first thing.
+static void mVUemitPlaceStub(mV, u32 word)
 {
 	vixl::ExactAssemblyScope scope(armAsm, mVUrootStubBytes);
-	armAsm->movz(a64::w9, (mVU.compileRoot / 8) & 0x7ff);
-	armAsm->str(a64::w9, mVUfieldMem(mVU, &mVU.rootPair));
+	armAsm->movz(a64::w9, word & 0xffff);
+	armAsm->movk(a64::w9, word >> 16, 16);
+	armAsm->str(a64::w9, mVUfieldMem(mVU, &mVU.place));
+}
+
+// The entry stub of a block being compiled: every way into the block from
+// outside its chunk (the dispatcher, the jump cache, a link from another
+// chunk, a resume) lands here and gets the placement set. Links inside the
+// chunk skip it.
+static void mVUemitRootStub(mV)
+{
+	u8* const at = armGetCurrentCodePointer();
+	mVUemitPlaceStub(mVU, mVUplaceWord(mVU.compileRoot, mVU.chunk.slotBase));
+	mVUPersist::OnPlaceStub(mVU, at);
+}
+
+// Gives the chunk being compiled its next slot and fills it for the placement
+// the compile runs as. Returns the slot's number within the chunk.
+static u32 mVUchunkAddSlot(mV, microBlock* block, microBlock* target, u32 targetPC, const microRegInfo* key)
+{
+	const u32 n = static_cast<u32>(mVU.chunk.slots.size());
+	pxAssertRel(mVU.chunk.slotBase + n < mVUplaceSlotCapacity, "microVU: out of placement slots");
+	mVUChunkSlot slot = {};
+	slot.block = block;
+	slot.target = target;
+	slot.targetPC = targetPC;
+	if (key)
+		std::memcpy(&slot.key, key, sizeof(microRegInfo));
+	mVU.chunk.slots.push_back(slot);
+	mVU.placeSlots[mVU.chunk.slotBase + n] = reinterpret_cast<u64>(target ? target->hostEntry : static_cast<void*>(block));
+	mVU.placeSlotsUsed = mVU.chunk.slotBase + n + 1;
+	return n;
+}
+
+// dst = slot `n` of the placement now running. Leaves the flags alone.
+static void mVUemitLoadSlot(mV, const a64::Register& dst, const a64::Register& tmp, u32 n)
+{
+	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.place));
+	armAsm->Ldr(tmp.X(), mVUfieldMem(mVU, &mVU.placeSlots));
+	armAsm->Lsr(dst.W(), dst.W(), mVUplaceRootBits);
+	armAsm->Add(tmp.X(), tmp.X(), a64::Operand(dst.X(), a64::LSL, 3));
+	armAsm->Ldr(dst.X(), a64::MemOperand(tmp.X(), static_cast<s64>(n) * 8));
 }
 
 // dst = root + (pc / 8 - compile root), not yet wrapped.
 __fi static void mVUemitRootPlus(mV, const a64::Register& dst, u32 pc)
 {
 	const u32 dist = ((pc - mVU.compileRoot) / 8) & 0x7ff;
-	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.rootPair));
+	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.place));
 	if (dist)
 		armAsm->Add(dst.W(), dst.W(), dist);
 }
@@ -595,17 +648,80 @@ static void mVUemitLoadCurI(mV, const a64::Register& dst)
 	armAsm->Ldr(dst.W(), a64::MemOperand(RSCRATCHADDR, dst.X()));
 }
 
-// Where a direct branch to a block lands. A block of the chunk being compiled
-// is entered at its body: the root is already the one its stub would write.
-// Any other block is entered at its stub.
-static void* mVUlinkEntry(mV, void* hostEntry)
+// The body of the block of the chunk being compiled whose entry is
+// `hostEntry`, or null if that entry is not a block of this chunk.
+static u8* mVUchunkBody(mV, const void* hostEntry)
 {
-	if (!mVUrootRelative(mVU))
-		return hostEntry;
-	for (const microVU::ChunkBlock& cb : mVU.chunkBlocks)
+	for (const mVUChunkEpisode::Block& cb : mVU.chunk.blocks)
 	{
 		if (cb.stub == hostEntry && cb.block->hostEntry == hostEntry)
 			return cb.stub + mVUrootStubBytes;
 	}
-	return hostEntry;
+	return nullptr;
+}
+
+// The slot of the link from the chunk being compiled to the block outside it
+// that a search at `pc` with `key` finds and whose entry is `hostEntry`.
+// -1 if no such block is registered: the entry is then code only this compile
+// knows about.
+static int mVUchunkLinkSlot(mV, microBlock* target, const void* hostEntry, u32 pc, microRegInfo* key)
+{
+	if (!target && mVUblocks[pc / 8])
+		target = mVUblocks[pc / 8]->search(mVU, key);
+	if (!target || target->hostEntry != hostEntry)
+		return -1;
+	return static_cast<int>(mVUchunkAddSlot(mVU, nullptr, target, pc, key));
+}
+
+// Branches to the block at `pc` whose entry is `hostEntry`; a search there
+// with `key` found it (`target`, or null to have it searched for again).
+//
+// A block of the chunk being compiled is entered at its body by a direct
+// branch: the placement is already the one its stub would write. A block
+// outside the chunk is a different block for every placement of this code, so
+// the branch goes through the placement's slot for it and lands on that
+// block's stub.
+static void mVUemitLink(mV, microBlock* target, void* hostEntry, u32 pc, microRegInfo* key)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armEmitJmp(hostEntry);
+		return;
+	}
+	if (const u8* body = mVUchunkBody(mVU, hostEntry))
+	{
+		armEmitJmp(body);
+		return;
+	}
+	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
+	if (slot < 0)
+	{
+		armEmitJmp(hostEntry);
+		return;
+	}
+	mVUemitLoadSlot(mVU, a64::x9, a64::x10, static_cast<u32>(slot));
+	armAsm->Br(a64::x9);
+}
+
+// mVUemitLink taken on `cond`.
+static void mVUemitCondLink(mV, a64::Condition cond, microBlock* target, u32 pc, microRegInfo* key)
+{
+	void* const hostEntry = target->hostEntry;
+	const u8* body = mVUrootRelative(mVU) ? mVUchunkBody(mVU, hostEntry) : static_cast<const u8*>(hostEntry);
+	if (body)
+	{
+		armEmitCondBranch(cond, body);
+		return;
+	}
+	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
+	if (slot < 0)
+	{
+		armEmitCondBranch(cond, hostEntry);
+		return;
+	}
+	a64::Label skip;
+	armAsm->B(&skip, a64::InvertCondition(cond));
+	mVUemitLoadSlot(mVU, a64::x9, a64::x10, static_cast<u32>(slot));
+	armAsm->Br(a64::x9);
+	armAsm->Bind(&skip);
 }

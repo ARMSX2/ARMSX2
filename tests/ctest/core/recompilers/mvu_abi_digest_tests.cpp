@@ -475,6 +475,12 @@ constexpr AbiPin kPins[] = {
 	// stores the chunk's root, and a branch target, link value, exit TPC or IbitHack immediate address
 	// is the root plus a distance. The VU0 probes keep abi 67's digests.
 	{68, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0x850ad53a9577beab, 0x15c7e07ec93fdeb, 0x830bc7a04f47600b, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0xe2a226425690ab9b, 0xb2dde04f860ee627, 0x1e56b4641de039df, 0x9d7351b261f12580, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0x1c57725dc7fbd89c, 0x7a5f14e491b0ebc0}},
+	// abi 69: VU1 code reaches what differs between placements of a chunk through placement slots.
+	// A block's entry stub is three instructions and also stores the index of the chunk's first slot;
+	// the cycle-budget break loads its block object from a slot, and a branch to a block outside the
+	// chunk loads the target from a slot. The image carries each chunk's slots. The VU0 probes keep
+	// abi 68's digests.
+	{69, {0xa48aa35478a78bdc, 0xd2cd8a66fb118db3, 0x3eb36a9cd84f76c7, 0x9cdcaa9d4fbe4aed, 0x850ad53a9577beab, 0x15c7e07ec93fdeb, 0xf04314998672dd2b, 0x2f39a76f7c0463d, 0xd6505b9f58da0e3d, 0xb167cadfd82d572a, 0xcff9c1f9cf303b6f, 0x20c6e112f962a426, 0x85ca05f33a95303a, 0x4fb1bf9c5361c248, 0xfcd572c1c3cd38fb, 0x48a8cdab505c6ae3, 0xedffdff9a30bb42f, 0xf59cb443f58b184d, 0xcb8c664df26786f8, 0x1f709f1bb93e5fcf, 0xe03d34d038f6e0a9, 0x4a888cdf933e9c1a, 0xc3d6512831b59ba7, 0x3a4c8b9888d132b1, 0xb391e1e028a4ecbd, 0x424df76350b0cc50, 0x1936a7685537bb5f, 0x7a5f14e491b0ebc0}},
 };
 
 u64 CompileAndDigest(std::initializer_list<vu::VuOp> pairs,
@@ -1204,9 +1210,9 @@ TEST(MvuAbiDigest, Vu0WindowHookOnlyWhileVuAotIsWanted)
 	const u32 abi = mVUProgCache::GetCompilerAbiVersion();
 	EXPECT_EQ(off, findPin(abi)) << std::hex << "setting off: 0x" << off << ", abi " << std::dec << abi << " pinned 0x" << std::hex << findPin(abi);
 	// Re-pin it with the table when an emitter change moves it.
-	constexpr u64 kHookOnDigestAbi68 = 0x76323634adf8810a;
-	EXPECT_EQ(abi, 68u) << "the hook-on pin is for abi 68: re-pin kHookOnDigestAbi68";
-	EXPECT_EQ(on, kHookOnDigestAbi68) << std::hex << "setting on: 0x" << on << ", pinned 0x" << kHookOnDigestAbi68;
+	constexpr u64 kHookOnDigestAbi69 = 0x76323634adf8810a;
+	EXPECT_EQ(abi, 69u) << "the hook-on pin is for abi 69: re-pin kHookOnDigestAbi69";
+	EXPECT_EQ(on, kHookOnDigestAbi69) << std::hex << "setting on: 0x" << on << ", pinned 0x" << kHookOnDigestAbi69;
 }
 
 } // namespace recompiler_tests

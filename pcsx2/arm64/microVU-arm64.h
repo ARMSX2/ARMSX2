@@ -174,7 +174,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 68;
+static constexpr u32 kMvuCompilerAbiVersion = 69;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -632,6 +632,41 @@ enum : int
 
 EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex);
 
+// One slot of a placement. The chunk's code numbers its slots from 0.
+struct mVUChunkSlot
+{
+	// A block of the chunk: the slot holds this block object. Null for a link.
+	microBlock* block;
+	// A link: the slot holds the entry of this block, which is outside the
+	// chunk and was found at `targetPC` with the state `key`.
+	microBlock* target;
+	u32 targetPC;
+	microRegInfo key;
+};
+
+// Compile-time state of the chunk an outermost mVUcompile is emitting (VU1).
+struct mVUChunkEpisode
+{
+	// A block the chunk registered, with the entry stub it got.
+	struct Block
+	{
+		microBlock* block;
+		u8* stub;
+		u32 startPC;
+	};
+	// First slot of the placement the compile itself runs as.
+	u32 slotBase;
+	std::vector<Block> blocks;
+	std::vector<mVUChunkSlot> slots;
+};
+
+// Slots the array holds, and the count at which the next dispatcher exit
+// resets the recompiler, as it does when the code cache fills. A placement
+// has to start below 2^21 (the width of its field in microVU::place); the
+// threshold leaves room under that for what one dispatch can add.
+static constexpr u32 mVUplaceSlotCapacity = 3u << 20;
+static constexpr u32 mVUplaceSlotResetAt = 1u << 20;
+
 struct microVU
 {
 	alignas(16) u32 statFlag[4];
@@ -656,11 +691,13 @@ struct microVU
 	u32 q;
 	u32 totalCycles;
 	s32 cycles;
-	// VU1: the root of the chunk now running, as a pair index (address / 8).
-	// A chunk is the blocks one outermost mVUcompile emits. Its code holds
-	// every micro-memory address as a distance from this root, and each
-	// block's entry stub writes the root here. See mVUemitRootStub.
-	u32 rootPair;
+	// VU1: the placement now running. A chunk is the blocks one outermost
+	// mVUcompile emits; a placement is that code entered for one address.
+	// Bits 0-10 are the placement's root as a pair index (address / 8): the
+	// code holds every micro-memory address as a distance from it. Bits 11-31
+	// are the index of the placement's first slot in placeSlots. Each entry
+	// stub writes this word. See mVUemitRootStub.
+	u32 place;
 
 	// Resume-aware dispatch (VE-07). A cycle-budget break re-enters the very
 	// block that broke (mVUtestCycles saves that block's own pState/TPC), so
@@ -676,6 +713,12 @@ struct microVU
 	// dispatch can reach its spin memo without a lookup. Valid exactly while
 	// resumeEntry is.
 	microBlock* resumeBlock;
+
+	// VU1: what the code of a chunk needs that differs between placements,
+	// one 8-byte slot each: the block object a cycle-budget break parks, and
+	// the entry of each block outside the chunk that the chunk branches to.
+	// The code loads slot (place >> 11) + n. Kept in the pin window.
+	u64* placeSlots;
 
 	u32 index;
 	u32 cop2;
@@ -785,19 +828,18 @@ struct microVU
 	bool needFlagFinalize;
 
 	// Compile-time only: the chunk being compiled. compileRoot is the address
-	// the outermost mVUcompile started at; chunkBlocks lists the blocks it has
-	// registered so far, with the entry stub each one got.
-	struct ChunkBlock
-	{
-		microBlock* block;
-		u8* stub;
-	};
+	// the outermost mVUcompile started at.
 	u32 compileRoot;
 	u32 compileDepth;
 	// Set by a caller whose code runs straight into the block mVUcompile is
 	// about to emit; read and cleared by that mVUcompile.
 	bool compileFallsThrough;
-	std::vector<ChunkBlock> chunkBlocks;
+	mVUChunkEpisode chunk;
+
+	// VU1: the storage behind placeSlots and how many slots are handed out.
+	// Slots are not freed one by one; mVUreset starts again from zero.
+	std::unique_ptr<u64[]> placeSlotStore;
+	u32 placeSlotsUsed;
 
 	VURegs& regs() const { return ::vuRegs[index]; }
 

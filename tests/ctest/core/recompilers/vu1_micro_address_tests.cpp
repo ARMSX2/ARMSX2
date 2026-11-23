@@ -13,6 +13,7 @@
 // shows up against the interpreter.
 
 #include "harness/VuTestHarness.h"
+#include "harness/RecompilerTestEnvironment.h"
 
 #include "VU.h"
 #include "VUmicro.h"
@@ -189,6 +190,29 @@ std::vector<VuOp> CallLoopProgram()
 		Nop(),                                           // 23
 		LowerOnly(VJR_L(vi::vi5)),                       // 24: to 2
 		Nop(),                                           // 25
+	};
+}
+
+// A loop that calls a subroutine on every pass. The JR that returns starts a
+// second compile at pair 4, and that compile's pass back through pair 1 calls
+// the subroutine the first compile emitted: a branch from one chunk into
+// another, taken `passes` times.
+std::vector<VuOp> CallInLoopProgram(u32 passes)
+{
+	return {
+		LoadViImm(vi::vi1, passes),                      // 0
+		LowerOnly(VIADDIU_L(vi::vi2, vi::vi2, 5)),       // 1: loop head
+		LowerOnly(VBAL_L(vi::vi5, +7)),                  // 2: to 10, vi5 = 4
+		Nop(),                                           // 3
+		LowerOnly(VIADDI_L(vi::vi1, vi::vi1, -1)),       // 4: JR returns here
+		LowerOnly(VIBNE_L(vi::vi1, vi::vi0, -5)),        // 5: back to 1
+		Nop(),                                           // 6
+		EBit(LoadViImm(vi::vi6, 0x66)),                  // 7
+		Nop(),                                           // 8
+		Nop(),                                           // 9
+		LowerOnly(VIADDIU_L(vi::vi11, vi::vi11, 3)),     // 10: subroutine
+		LowerOnly(VJR_L(vi::vi5)),                       // 11: to 4
+		Nop(),                                           // 12
 	};
 }
 
@@ -469,6 +493,64 @@ TEST(Vu1MicroAddress, IbitHackImmediatesReadAtTheirOwnAddress)
 		EXPECT_EQ(h.GetMemU32Jit(0x40), 0x579u);
 		ExpectJitMatchesInterp(h);
 	}
+}
+
+// A branch into another chunk and a budget break both go through the
+// placement's slots. Here they run as compiled, then from a saved image of the
+// program loaded back in at another place in the code cache, where the slots
+// and the stubs that name them are new.
+TEST(Vu1MicroAddress, CrossChunkBranchAndBudgetBreakSurviveReload)
+{
+	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
+	const u32 base = 0x0200;
+	mVUPersist::SetRecordingEnabled(true);
+	{
+		VuTestHarness h(1);
+		Place(h, base, CallInLoopProgram(40));
+		h.Run();
+		// (The branch reads vi1 as it was before the pair in front of it.)
+		ASSERT_EQ(h.GetViJit(vi::vi2), 205u);
+		ASSERT_EQ(h.GetViJit(vi::vi11), 123u);
+		ExpectJitMatchesInterp(h);
+
+		// Fresh compile that stays in the cache, then a run cut by its budget.
+		h.RunJitPreserveBlockCache();
+		h.SetCycleBudget(40);
+		h.RunJitPreserveBlockCache();
+		ASSERT_FALSE(h.HasTerminated());
+		h.ContinueJit(40, 400);
+		ASSERT_TRUE(h.HasTerminated());
+		ExpectJitMatchesInterp(h);
+
+		std::vector<u8> image;
+		ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(1, image));
+
+		// Something else at the front of the code cache, so the image lands
+		// somewhere new and gets slots of its own.
+		RecompilerTestEnvironment::ResetVuBlockCache(1);
+		WritePair(0x1000, LoadViImm(vi::vi3, 1));
+		WritePair(0x1008, EBitNopPair());
+		WritePair(0x1010, Nop());
+		h.SetStartPc(0x1000);
+		h.RunJitPreserveBlockCache();
+		h.SetStartPc(base);
+		// The image is of micro memory as it was.
+		for (u32 n = 0; n < 3; n++)
+			WritePair(0x1000 + n * 8, VuOp{0, 0});
+		CpuMicroVU1.Clear(0, kMicroBytes);
+
+		const u64 compiled = mVUPersist::GetBlockCompileCount(1);
+		ASSERT_TRUE(mVUPersist::TestHydrate(1, image.data(), image.size()));
+		EXPECT_TRUE(mVUPersist::TestVerifyHydratedCode(1, image.data(), image.size()));
+		h.RunJitPreserveBlockCache();
+		ASSERT_FALSE(h.HasTerminated());
+		h.ContinueJit(40, 400);
+		ASSERT_TRUE(h.HasTerminated());
+		EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), compiled) << "the reloaded program compiled something";
+		ExpectJitMatchesInterp(h);
+	}
+	mVUPersist::SetRecordingEnabled(false);
+	RecompilerTestEnvironment::ResetVuBlockCache(1);
 }
 
 // The tests below compile a program at one address, then run that compiled
