@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 import SwiftUI
+import Combine
 
 struct AccessibilityHUDMirror: View {
     @State private var battery: Int = -1
