@@ -28,6 +28,7 @@
 
 #include "VU.h"
 #include "VUmicro.h"
+#include "Config.h"
 #include "arm64/microVU_Persist-arm64.h"
 
 #include <gtest/gtest.h>
@@ -336,6 +337,58 @@ TEST_F(MvuPersistRoundTrip, NoLogWhenRecordingDisabled)
 	std::vector<u8> image;
 	EXPECT_FALSE(mVUPersist::TestSerializeNewestProgram(0, image))
 		<< "programs compiled with recording off must have no persist log";
+}
+
+// Under IbitHack a lower op's immediate is read from micro memory at run time
+// and only the rest of the word is compared (microProgram::keptBits). The image
+// carries those words, so a hydrated program still reuses its block across an
+// immediate rewrite and still drops it on a rewrite of the register field.
+TEST_F(MvuPersistRoundTrip, IbitHackKeptBitsSurviveHydration)
+{
+	struct ScopedIbitHack
+	{
+		bool prev = EmuConfig.Gamefixes.IbitHack;
+		ScopedIbitHack() { EmuConfig.Gamefixes.IbitHack = true; }
+		~ScopedIbitHack() { EmuConfig.Gamefixes.IbitHack = prev; }
+	} hack;
+
+	const auto rewriteWord0 = [](u32 word) {
+		std::memcpy(vuRegs[0].Micro, &word, sizeof(word));
+		CpuMicroVU0.Clear(0, sizeof(word));
+	};
+
+	VuTestHarness h(0);
+	h.SetVi(vi::vi2, 0x10);
+	h.SetVi(vi::vi3, 0x20);
+	const auto pairs = {
+		LowerOnly(VIADDIU_L(vi::vi1, vi::vi2, 5)),
+		EBitNopPair(),
+	};
+	h.LoadProgram(pairs);
+	RunAndKeepProgram(h);
+	ASSERT_EQ(h.GetViJit(vi::vi1), 0x15u);
+
+	std::vector<u8> image;
+	ASSERT_TRUE(mVUPersist::TestSerializeNewestProgram(0, image));
+
+	RecompilerTestEnvironment::ResetVuBlockCache(0);
+	h.LoadProgram(pairs);
+	CpuMicroVU0.Clear(0, VU0_PROGSIZE);
+	const u64 compiles = mVUPersist::GetBlockCompileCount(0);
+	ASSERT_TRUE(mVUPersist::TestHydrate(0, image.data(), image.size()));
+	h.RunJitPreserveBlockCache();
+	ASSERT_EQ(mVUPersist::GetBlockCompileCount(0), compiles) << "the hydrated program did not run";
+	ASSERT_EQ(h.GetViJit(vi::vi1), 0x15u);
+
+	rewriteWord0(VIADDIU_L(vi::vi1, vi::vi2, 7));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(0), compiles) << "an immediate rewrite keeps the block";
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x17u);
+
+	rewriteWord0(VIADDIU_L(vi::vi1, vi::vi3, 5));
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x25u)
+		<< "the hydrated program ran its vi2 block after the word was rewritten to read vi3";
 }
 
 } // namespace recompiler_tests

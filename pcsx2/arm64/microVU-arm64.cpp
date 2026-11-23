@@ -79,6 +79,14 @@ static __fi bool mVUProgRangesOverlap(const microProgram* prog, u32 addr, u32 si
 		if (r.start < hi && r.end > lo)
 			return true;
 	}
+	if (prog->keptBits)
+	{
+		for (const microKeptBits& w : *prog->keptBits)
+		{
+			if (w.addr < addr + size && w.addr + 4 > addr)
+				return true;
+		}
+	}
 	return false;
 }
 
@@ -1498,6 +1506,7 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 		safe_delete(prog->block[i]);
 	}
 	safe_delete(prog->ranges);
+	safe_delete(prog->keptBits);
 	mVUPersist::OnProgramDeleted(*prog);
 	mVUvuAotOnProgramDeleted(*prog);
 	safe_aligned_free(prog);
@@ -1647,6 +1656,16 @@ __fi bool mVUcmpProg(microVU& mVU, microProgram& prog)
 
 			if (memcmp(cmpOffset(prog.data), cmpOffset(mVU.regs().Micro), (range.end - range.start)))
 				return false;
+		}
+		if (prog.keptBits)
+		{
+			for (const microKeptBits& w : *prog.keptBits)
+			{
+				u32 live;
+				std::memcpy(&live, mVU.regs().Micro + w.addr, sizeof(live));
+				if ((live ^ prog.data[w.addr / 4]) & w.kept)
+					return false;
+			}
 		}
 	}
 	mVU.prog.cleared = 0;
@@ -1800,10 +1819,21 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 _mVUt __fi void* mVUlookupProg(u32 startPC, uptr pState)
 {
 	microVU& mVU = mVUx;
-	microProgramQuick& quick = mVU.prog.quick[mVU.regs().start_pc / 8];
+	const u32 slot = mVU.regs().start_pc / 8;
+	microProgramQuick& quick = mVU.prog.quick[slot];
 
 	if (!quick.prog)
-		return nullptr;
+	{
+		// A write to a word with kept bits drops the quick slot, as any write
+		// to the program does, though a game that rewrites only the immediate
+		// leaves the program valid. The program it dropped is still at the
+		// front of this start PC's list: take it back here when it compares
+		// equal, rather than through the full search.
+		microProgramList* list = mVU.prog.prog[slot];
+		if (list->empty() || !list->front()->keptBits || !mVUcmpProg(mVU, *list->front()))
+			return nullptr;
+		mVUquickInstall(mVU, slot, list->front());
+	}
 
 	microBlockManager* block = quick.prog->block[startPC / 8];
 	if (!block)

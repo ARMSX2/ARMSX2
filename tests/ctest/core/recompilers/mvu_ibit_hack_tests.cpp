@@ -73,6 +73,37 @@ void RewriteImmediate(int vu_index, u32 bits)
 	CpuMicroVU1.Clear(kImmAddr, sizeof(bits));
 }
 
+// A lower op with an immediate (here IADDIU) under the hack: the immediate is
+// read from micro memory at run time, the rest of the word is compiled in.
+// `word` goes in pair 0; vi2 and vi3 are the two possible sources.
+void LoadImmediateOp(VuTestHarness& h, u32 word)
+{
+	h.SetVi(vi::vi2, 0x10);
+	h.SetVi(vi::vi3, 0x20);
+	h.LoadProgram({
+		VuOp{word, VNOP_U()},
+		EBitNopPair(),
+	});
+}
+
+void RewriteWord0(u32 word)
+{
+	std::memcpy(vuRegs[1].Micro + VuTestHarness::kProgramPc, &word, sizeof(word));
+	CpuMicroVU1.Clear(VuTestHarness::kProgramPc, sizeof(word));
+}
+
+// Run(), then JIT re-runs until the block stops compiling. Returns the
+// compile count at that point.
+u64 WarmUp(VuTestHarness& h)
+{
+	h.Run();
+	h.RunJitPreserveBlockCache();
+	const u64 warm = mVUPersist::GetBlockCompileCount(1);
+	h.RunJitPreserveBlockCache();
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), warm) << "block never went warm";
+	return warm;
+}
+
 } // namespace
 
 // Hack ON: the rewritten immediate must reach the reused block.
@@ -129,6 +160,43 @@ TEST(MvuIbitHack, RewrittenImmediateForcesRecompileWithoutTheHack)
 	EXPECT_GT(mVUPersist::GetBlockCompileCount(1), warm)
 		<< "without the hack the word is compared, so it must force a recompile";
 	EXPECT_EQ(h.GetVfBitsJit(vf::vf2, 'x'), 0x41200000u);
+}
+
+// Hack ON: a rewrite of a lower op's immediate keeps the block, which reads
+// the new immediate.
+TEST(MvuIbitHack, RewrittenLowerImmediateReachesTheReusedBlock)
+{
+	ScopedIbitHack hack(true);
+
+	VuTestHarness h(1);
+	LoadImmediateOp(h, VIADDIU_L(vi::vi1, vi::vi2, 5));
+	const u64 warm = WarmUp(h);
+	ASSERT_EQ(h.GetViJit(vi::vi1), 0x15u);
+
+	RewriteWord0(VIADDIU_L(vi::vi1, vi::vi2, 7));
+	h.RunJitPreserveBlockCache();
+
+	EXPECT_EQ(mVUPersist::GetBlockCompileCount(1), warm)
+		<< "only the immediate changed, so the block should have been reused";
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x17u);
+}
+
+// Hack ON: the hack leaves the immediate out of the compare, not the rest of
+// the word. A rewrite of the source register field must reach the program.
+TEST(MvuIbitHack, RewrittenLowerRegisterFieldIsNotIgnored)
+{
+	ScopedIbitHack hack(true);
+
+	VuTestHarness h(1);
+	LoadImmediateOp(h, VIADDIU_L(vi::vi1, vi::vi2, 5));
+	WarmUp(h);
+	ASSERT_EQ(h.GetViJit(vi::vi1), 0x15u);
+
+	RewriteWord0(VIADDIU_L(vi::vi1, vi::vi3, 5));
+	h.RunJitPreserveBlockCache();
+
+	EXPECT_EQ(h.GetViJit(vi::vi1), 0x25u)
+		<< "the block compiled for vi2 ran after the word was rewritten to read vi3";
 }
 
 } // namespace recompiler_tests

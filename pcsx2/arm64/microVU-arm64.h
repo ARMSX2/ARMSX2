@@ -468,6 +468,14 @@ struct microRange
 	s32 end;
 };
 
+// One micro-memory word compared through a mask: `addr` in bytes, `kept` the
+// bits the compiled code depends on.
+struct microKeptBits
+{
+	u32 addr;
+	u32 kept;
+};
+
 #define mProgSize (0x4000 / 4)
 static_assert(sizeof(microJumpCache) * (mProgSize / 2) == mVUJumpTable::kBytes, "mVUJumpTable::kBytes follows the jump cache");
 struct microProgram
@@ -522,6 +530,13 @@ struct microProgram
 	// its first region).
 	u64 vuAotBornAt;
 	u64 vuAotBornCycle;
+
+	// Words left out of `ranges` because part of them is read at run time (the
+	// lower-op immediates under the IbitHack gamefix). The rest of each word is
+	// compiled in, so mVUcmpProg compares the bits in `kept` against `data`, and
+	// mVUclear treats a write to the word like a write to a range. Null for a
+	// program with none.
+	std::vector<microKeptBits>* keptBits;
 };
 
 typedef std::deque<microProgram*> microProgramList;
