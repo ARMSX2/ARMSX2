@@ -117,9 +117,12 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         // ProMotion only needs CADisableMinimumFrameDurationOnPhone in Info.plist. Pinning
         // preferredFrameRateRange via -[UIUpdateLink initWithWindowScene:] crashes: no such selector.
 
-        g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
-        g_gameRenderView.backgroundColor = [UIColor blackColor];
-        g_gameRenderView.clipsToBounds = YES;
+        // A reconnect keeps the view a running GS renders into; the new menu embeds it again.
+        if (!g_gameRenderView) {
+            g_gameRenderView = [[ARMSX2GameView alloc] initWithFrame:CGRectZero];
+            g_gameRenderView.backgroundColor = [UIColor blackColor];
+            g_gameRenderView.clipsToBounds = YES;
+        }
         // Do NOT addSubview here — SwiftUI's MetalGameView handles view hierarchy
     }
     
