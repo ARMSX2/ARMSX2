@@ -16,6 +16,18 @@ struct VirtualPadLayoutSection: View {
 
     var body: some View {
         Section(settings.localized("Layout")) {
+            if let notice = unreadableFileNotice {
+                Label {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(OverlayTheme.warm)
+                }
+            }
+
             controllerPicker(settings.localized("Default VPad Layout"), selection: Binding<String?>(
                 get: { layoutPresets.globalPresetID },
                 set: { layoutPresets.globalPresetID = $0 }
@@ -89,5 +101,15 @@ struct VirtualPadLayoutSection: View {
                 }
             }
         }
+    }
+
+    private var unreadableFileNotice: String? {
+        if let name = layoutPresets.setAsideName {
+            return String(format: settings.localized("Your layouts file couldn't be read. It was kept as %@, and layouts start fresh."), name)
+        }
+        if layoutPresets.readOnly {
+            return settings.localized("Your layouts file couldn't be read. Saved layouts can't be changed until the app restarts.")
+        }
+        return nil
     }
 }

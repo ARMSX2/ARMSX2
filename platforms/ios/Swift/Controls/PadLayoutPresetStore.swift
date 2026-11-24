@@ -4,141 +4,6 @@
 import Foundation
 import SwiftUI
 
-struct PadLayoutSnapshot: Codable, Equatable {
-    var portrait: [String: PadGroupPosition]
-    var landscape: [String: PadGroupPosition]
-    var perButtonPortrait: [String: PadGroupPosition]
-    var perButtonLandscape: [String: PadGroupPosition]
-    var controlVisibility: [String: Bool]
-
-    func position(for id: String, landscape isLandscape: Bool) -> PadGroupPosition {
-        let dict = isLandscape ? landscape : portrait
-        let defaults = isLandscape ? PadLayoutStore.defaultLandscape : PadLayoutStore.defaultPortrait
-        return dict[id] ?? defaults[id] ?? PadGroupPosition(x: 0.5, y: 0.5, scale: 1.0)
-    }
-
-    func perButtonPosition(for id: String, landscape isLandscape: Bool, areaW: CGFloat, areaH: CGFloat) -> PadGroupPosition {
-        let dict = isLandscape ? perButtonLandscape : perButtonPortrait
-        if let pos = dict[id] {
-            return pos
-        }
-
-        let groupID = PadLayoutStore.groupID(for: id)
-        let groupPos = position(for: groupID, landscape: isLandscape)
-        let offset = VirtualPadButtonOffset.offset(for: id, isLandscape: isLandscape)
-        let scaledOffsetX = offset.width * groupPos.scaleX
-        let scaledOffsetY = offset.height * groupPos.scaleY
-        return PadGroupPosition(
-            x: groupPos.x + scaledOffsetX / areaW,
-            y: groupPos.y + scaledOffsetY / areaH,
-            scaleX: groupPos.scaleX,
-            scaleY: groupPos.scaleY,
-            hitScaleX: groupPos.hitScaleX,
-            hitScaleY: groupPos.hitScaleY
-        )
-    }
-
-    func isControlVisible(_ id: String) -> Bool {
-        if let explicit = controlVisibility[id] {
-            return explicit
-        }
-        let group = PadLayoutStore.groupID(for: id)
-        return controlVisibility[group] ?? true
-    }
-
-    func controlGeometries(size: CGSize, landscape isLandscape: Bool, analogStickScale: CGFloat) -> [PadEditorControlGeometry] {
-        func geometry(_ id: String, _ p: PadGroupPosition) -> PadEditorControlGeometry {
-            let isStick = id == "lstick" || id == "rstick"
-            return PadEditorControlGeometry(
-                id: id,
-                center: CGPoint(x: p.x * size.width, y: p.y * size.height),
-                baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
-                hitScaleX: isStick ? p.scaleX : p.hitScaleX,
-                hitScaleY: isStick ? p.scaleY : p.hitScaleY
-            )
-        }
-        let buttons = PadLayoutStore.perButtonIDs.filter(isControlVisible).map {
-            geometry($0, perButtonPosition(for: $0, landscape: isLandscape, areaW: size.width, areaH: size.height))
-        }
-        let groups = PadLayoutStore.groupIDs.filter { $0 != "action" && $0 != "dpad" && isControlVisible($0) }.map {
-            geometry($0, position(for: $0, landscape: isLandscape))
-        }
-        return buttons + groups
-    }
-
-    func portraitEnvelope(analogStickScale: CGFloat) -> (top: CGFloat, height: CGFloat) {
-        let reference = CGSize(width: PadPortraitFit.referenceDeckWidth, height: PadPortraitFit.referenceDeckHeight)
-        let geometries = controlGeometries(size: reference, landscape: false, analogStickScale: analogStickScale)
-        // Touch areas count only up to the deck edges, where the fitted layout clips them.
-        guard let top = geometries.map({ max($0.hitFrame.minY, 0) }).min() else { return (0, 0) }
-        // StickView draws its 18 pt badge right under the stick.
-        let bottom = geometries.map {
-            min($0.hitFrame.maxY, PadPortraitFit.referenceDeckHeight) + ($0.id.hasSuffix("stick") ? 18 : 0)
-        }.max() ?? top
-        return (top, bottom - top)
-    }
-
-    func fittedToPortraitDeck(_ fit: PadPortraitFit, size: CGSize, analogStickScale: CGFloat) -> PadLayoutSnapshot {
-        var fitted = self
-        fitted.portrait = Dictionary(uniqueKeysWithValues: PadLayoutStore.groupIDs.map { ($0, fit.fitted(position(for: $0, landscape: false), of: $0)) })
-        fitted.perButtonPortrait = Dictionary(uniqueKeysWithValues: perButtonPortrait.map { ($0.key, fit.fitted($0.value, of: $0.key)) })
-
-        for g in fitted.controlGeometries(size: size, landscape: false, analogStickScale: analogStickScale) where !g.id.hasSuffix("stick") {
-            let frame = g.hitFrame
-            guard frame.minX < 0 || frame.minY < 0 || frame.maxX > size.width || frame.maxY > size.height else { continue }
-            let isPerButton = PadLayoutStore.perButtonIDs.contains(g.id)
-            var p = isPerButton
-                ? fitted.perButtonPosition(for: g.id, landscape: false, areaW: size.width, areaH: size.height)
-                : fitted.position(for: g.id, landscape: false)
-            let roomX = max(0, min(g.center.x, size.width - g.center.x)) * 2
-            let roomY = max(0, min(g.center.y, size.height - g.center.y)) * 2
-            p.hitScaleX = min(p.hitScaleX, roomX / max(g.baseSize.width, PadLayoutMetrics.minimumTouchLength))
-            p.hitScaleY = min(p.hitScaleY, roomY / max(g.baseSize.height, PadLayoutMetrics.minimumTouchLength))
-            if isPerButton {
-                fitted.perButtonPortrait[g.id] = p
-            } else {
-                fitted.portrait[g.id] = p
-            }
-        }
-        return fitted
-    }
-}
-
-/// Places the reference portrait deck's layout in a shorter deck: x stays, sizes and rows scale by `scale`.
-struct PadPortraitFit {
-    // The iPhone 18 Pro portrait deck the built-in layout was drawn on.
-    static let referenceDeckWidth: CGFloat = 402
-    static let referenceDeckHeight: CGFloat = 510.5
-    // The smallest pad scale before the game gives up height on a short deck.
-    static let outerMinimumScale: CGFloat = 0.70
-    static let topGap: CGFloat = 4
-    static let minimumHitScale: CGFloat = 44 / PadLayoutMetrics.minimumTouchLength
-
-    let scale: CGFloat
-    let envelopeTop: CGFloat
-    let deckHeight: CGFloat
-
-    init?(envelope: (top: CGFloat, height: CGFloat), deck: CGSize, barBase: CGFloat) {
-        guard envelope.height > 0, deck.width > 0, deck.height > 0 else { return nil }
-        scale = max(min(1, (deck.height - Self.topGap - barBase) / envelope.height), PadLayoutMetrics.minControlScale)
-        envelopeTop = envelope.top
-        deckHeight = deck.height
-    }
-
-    func fitted(_ p: PadGroupPosition, of id: String) -> PadGroupPosition {
-        // Opposite D-pad arrows sit closer than about 44 pt, so their touch areas shrink with the pad.
-        let minimumHit = PadLayoutStore.groupID(for: id) == "dpad" ? 0 : Self.minimumHitScale
-        return PadGroupPosition(
-            x: p.x,
-            y: (Self.topGap + (p.y * Self.referenceDeckHeight - envelopeTop) * scale) / deckHeight,
-            scaleX: p.scaleX * scale,
-            scaleY: p.scaleY * scale,
-            hitScaleX: max(p.hitScaleX * scale, min(p.hitScaleX, minimumHit)),
-            hitScaleY: max(p.hitScaleY * scale, min(p.hitScaleY, minimumHit))
-        )
-    }
-}
-
 enum PadLayoutPresetSource: String, Codable, Equatable {
     case user
     case builtIn
@@ -153,6 +18,42 @@ struct PadLayoutPreset: Codable, Equatable, Identifiable {
     var source: PadLayoutPresetSource
     var linkedSkinID: String?
     var snapshot: PadLayoutSnapshot
+    var classSnapshots: [String: PadLayoutSnapshot]? = nil
+
+    /// The Duo falls back to the phone copy, then every class to the shared base.
+    func snapshot(for deviceClass: PadDeviceClass) -> PadLayoutSnapshot {
+        classSnapshots?[deviceClass.rawValue]
+            ?? (deviceClass == .duo ? classSnapshots?[PadDeviceClass.phone.rawValue] : nil)
+            ?? snapshot
+    }
+}
+
+extension PadLayoutPreset {
+    private struct LossySnapshot: Decodable {
+        let value: PadLayoutSnapshot?
+        init(from decoder: Decoder) throws { value = try? PadLayoutSnapshot(from: decoder) }
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        displayName = try c.decode(String.self, forKey: .displayName)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        updatedAt = try c.decode(Date.self, forKey: .updatedAt)
+        source = try c.decode(PadLayoutPresetSource.self, forKey: .source)
+        linkedSkinID = try c.decodeIfPresent(String.self, forKey: .linkedSkinID)
+        snapshot = try c.decode(PadLayoutSnapshot.self, forKey: .snapshot)
+        let copies = try? c.decodeIfPresent([String: LossySnapshot].self, forKey: .classSnapshots)
+        classSnapshots = PadDeviceClass.classCopies(copies?.compactMapValues(\.value))
+    }
+}
+
+extension PadDeviceClass {
+    /// Drops copies for classes this build does not know.
+    static func classCopies(_ copies: [String: PadLayoutSnapshot]?) -> [String: PadLayoutSnapshot]? {
+        let known = copies?.filter { PadDeviceClass(rawValue: $0.key) != nil } ?? [:]
+        return known.isEmpty ? nil : known
+    }
 }
 
 struct PadLayoutEditorContext: Equatable {
@@ -179,6 +80,22 @@ struct PadLayoutEditorContext: Equatable {
         initialSnapshot: nil,
         skinDescriptor: nil
     )
+
+    /// Edits the game's own preset, or the global one when there is no game.
+    @MainActor
+    static func forGame(
+        _ identity: PadLayoutGameIdentity?,
+        fallbackSerial: String? = nil,
+        store: PadLayoutPresetStore,
+        skinDescriptor: VPadSkinDescriptor?
+    ) -> PadLayoutEditorContext {
+        PadLayoutEditorContext(
+            presetID: identity.flatMap { store.presetID(for: $0) } ?? (identity == nil ? store.globalPresetID : nil),
+            gameIdentity: identity,
+            initialSnapshot: store.effectiveSnapshot(for: identity, fallbackSerial: fallbackSerial),
+            skinDescriptor: skinDescriptor
+        )
+    }
 }
 
 struct PadLayoutGameIdentity: Codable, Equatable, Hashable, Identifiable {
@@ -281,7 +198,7 @@ private struct PadLayoutPresetLibrary: Codable {
 @Observable
 final class PadLayoutPresetStore {
     static let shared = PadLayoutPresetStore()
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     private let libraryURL: URL
     private(set) var presets: [PadLayoutPreset] = []
@@ -293,6 +210,10 @@ final class PadLayoutPresetStore {
         }
     }
     private var gameAssignments: [String: VPadGameAssignment] = [:]
+    private(set) var setAsideName: String?
+    // Set when an unreadable file could not be moved aside, so nothing writes over it.
+    private(set) var readOnly = false
+    @ObservationIgnored private var writeError: Error?
 
     init(
         libraryURL: URL? = nil,
@@ -304,16 +225,26 @@ final class PadLayoutPresetStore {
         switch loadResult {
         case .loaded(let library):
             presets = library.presets
-            globalPresetID = validPresetID(library.globalPresetID)
+            // @Observable runs didSet in init, so the setter would rewrite the file before the assignments load.
+            _globalPresetID = validPresetID(library.globalPresetID)
             gameAssignments = sanitizedAssignments(library.gameAssignments)
         case .missing:
             if migrateFromCurrentLayout {
                 migrateCurrentLayout(currentLayout)
             }
         case .corrupt:
-            presets = []
-            globalPresetID = nil
-            gameAssignments = [:]
+            let aside = self.libraryURL.deletingPathExtension()
+                .appendingPathExtension("unreadable-\(Int(Date().timeIntervalSince1970)).json")
+            do {
+                try FileManager.default.moveItem(at: self.libraryURL, to: aside)
+                setAsideName = aside.lastPathComponent
+                if migrateFromCurrentLayout {
+                    migrateCurrentLayout(currentLayout)
+                }
+            } catch {
+                readOnly = true
+                NSLog("[ARMSX2 iOS VPad] Layouts file unreadable and not moved aside, saving is off: %@", error.localizedDescription)
+            }
         }
     }
 
@@ -322,7 +253,8 @@ final class PadLayoutPresetStore {
         named name: String,
         snapshot: PadLayoutSnapshot,
         source: PadLayoutPresetSource = .user,
-        linkedSkinID: String? = nil
+        linkedSkinID: String? = nil,
+        classSnapshots: [String: PadLayoutSnapshot]? = nil
     ) -> PadLayoutPreset {
         let now = Date()
         let preset = PadLayoutPreset(
@@ -332,7 +264,8 @@ final class PadLayoutPresetStore {
             updatedAt: now,
             source: source,
             linkedSkinID: linkedSkinID,
-            snapshot: snapshot
+            snapshot: snapshot,
+            classSnapshots: classSnapshots
         )
         presets.append(preset)
         persist()
@@ -344,15 +277,23 @@ final class PadLayoutPresetStore {
         let imported = try PadLayoutImportExport.decodeImport(from: data, fallbackName: fallbackName)
         return createPreset(
             named: uniqueDisplayName(imported.displayName ?? "Imported Layout"),
-            snapshot: imported.snapshot
+            snapshot: imported.snapshot,
+            classSnapshots: imported.classSnapshots
         )
     }
 
-    func updatePreset(id: String, snapshot: PadLayoutSnapshot) throws {
+    /// With a class, saves that class's own copy and leaves the shared base and the other classes alone.
+    func updatePreset(id: String, snapshot: PadLayoutSnapshot, for deviceClass: PadDeviceClass? = nil) throws {
         guard let index = presets.firstIndex(where: { $0.id == id }) else {
             throw PadLayoutPresetStoreError.missingPreset
         }
-        presets[index].snapshot = snapshot
+        if let deviceClass {
+            var copies = presets[index].classSnapshots ?? [:]
+            copies[deviceClass.rawValue] = snapshot
+            presets[index].classSnapshots = copies
+        } else {
+            presets[index].snapshot = snapshot
+        }
         presets[index].updatedAt = Date()
         persist()
     }
@@ -375,7 +316,8 @@ final class PadLayoutPresetStore {
             named: name ?? "\(original.displayName) Copy",
             snapshot: original.snapshot,
             source: .user,
-            linkedSkinID: original.linkedSkinID
+            linkedSkinID: original.linkedSkinID,
+            classSnapshots: original.classSnapshots
         )
     }
 
@@ -587,7 +529,7 @@ final class PadLayoutPresetStore {
         effectivePreset(
             for: identity,
             fallbackSerial: fallbackSerial
-        )?.snapshot
+        )?.snapshot(for: .current)
     }
 
     func effectiveSkinDescriptor(
@@ -611,6 +553,7 @@ final class PadLayoutPresetStore {
     }
 
     func save() throws {
+        guard !readOnly else { throw PadLayoutPresetStoreError.readOnly }
         let library = PadLayoutPresetLibrary(
             schemaVersion: Self.schemaVersion,
             presets: presets,
@@ -625,6 +568,14 @@ final class PadLayoutPresetStore {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(library).write(to: libraryURL, options: .atomic)
+    }
+
+    /// Throws when the last write in `body` failed; each write stores the whole library, earlier changes included.
+    func reportingWriteFailure<T>(_ body: () throws -> T) throws -> T {
+        writeError = nil
+        let result = try body()
+        if let writeError { throw writeError }
+        return result
     }
 
     private enum LoadResult {
@@ -717,9 +668,12 @@ final class PadLayoutPresetStore {
     }
 
     private func persist() {
+        guard !readOnly else { return }
         do {
             try save()
+            writeError = nil
         } catch {
+            writeError = error
             NSLog("[ARMSX2 iOS VPad] Failed to save layout presets: %@", error.localizedDescription)
         }
     }
@@ -734,6 +688,7 @@ final class PadLayoutPresetStore {
 
 enum PadLayoutPresetStoreError: Error {
     case missingPreset
+    case readOnly
 }
 
 private extension String {

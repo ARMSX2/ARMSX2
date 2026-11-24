@@ -6,17 +6,19 @@ import SwiftUI
 struct PadLayoutImportResult {
     var displayName: String?
     var snapshot: PadLayoutSnapshot
+    var classSnapshots: [String: PadLayoutSnapshot]?
 }
 
 enum PadLayoutImportExport {
     static let schemaVersion = 1
 
     static func exportData(for preset: PadLayoutPreset) throws -> Data {
-        try exportData(displayName: preset.displayName, snapshot: preset.snapshot)
+        try exportData(displayName: preset.displayName, snapshot: preset.snapshot, classSnapshots: preset.classSnapshots)
     }
 
-    static func exportData(displayName: String, snapshot: PadLayoutSnapshot) throws -> Data {
-        let payload = PadLayoutExportPayload(displayName: displayName, snapshot: snapshot)
+    static func exportData(displayName: String, snapshot: PadLayoutSnapshot, classSnapshots: [String: PadLayoutSnapshot]? = nil) throws -> Data {
+        var payload = PadLayoutExportPayload(displayName: displayName, snapshot: snapshot)
+        payload.classSnapshots = classSnapshots
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(payload)
@@ -30,7 +32,8 @@ enum PadLayoutImportExport {
                 payload.displayName ?? payload.name,
                 fallback: sourceName(from: fallbackName)
             ),
-            snapshot: clampedSnapshot(payload.snapshot)
+            snapshot: clampedSnapshot(payload.snapshot),
+            classSnapshots: PadDeviceClass.classCopies(payload.classSnapshots)?.mapValues(clampedSnapshot)
         )
     }
 
@@ -44,25 +47,27 @@ enum PadLayoutImportExport {
     }
 
     static func clampedSnapshot(_ snapshot: PadLayoutSnapshot) -> PadLayoutSnapshot {
-        PadLayoutSnapshot(
-            portrait: clampPositions(snapshot.portrait),
-            landscape: clampPositions(snapshot.landscape),
-            perButtonPortrait: clampPositions(snapshot.perButtonPortrait),
-            perButtonLandscape: clampPositions(snapshot.perButtonLandscape),
-            controlVisibility: snapshot.controlVisibility
-        )
+        var s = snapshot
+        s.portrait = clampPositions(snapshot.portrait)
+        s.landscape = clampPositions(snapshot.landscape)
+        s.perButtonPortrait = clampPositions(snapshot.perButtonPortrait)
+        s.perButtonLandscape = clampPositions(snapshot.perButtonLandscape)
+        s.book = snapshot.book.map(clampPositions)
+        s.perButtonBook = snapshot.perButtonBook.map(clampPositions)
+        return s
     }
 
     private static func clampPositions(_ positions: [String: PadGroupPosition]) -> [String: PadGroupPosition] {
         positions.mapValues { position in
-            PadGroupPosition(
-                x: clampedUnit(position.x),
-                y: clampedUnit(position.y),
-                scaleX: PadLayoutMetrics.clampedScale(position.scaleX),
-                scaleY: PadLayoutMetrics.clampedScale(position.scaleY),
-                hitScaleX: PadLayoutMetrics.clampedScale(position.hitScaleX),
-                hitScaleY: PadLayoutMetrics.clampedScale(position.hitScaleY)
-            )
+            var p = position
+            p.x = clampedUnit(position.x)
+            p.y = clampedUnit(position.y)
+            p.scaleX = PadLayoutMetrics.clampedScale(position.scaleX)
+            p.scaleY = PadLayoutMetrics.clampedScale(position.scaleY)
+            p.hitScaleX = PadLayoutMetrics.clampedScale(position.hitScaleX)
+            p.hitScaleY = PadLayoutMetrics.clampedScale(position.hitScaleY)
+            p.opacity = PadLayoutMetrics.clampedOpacity(position.opacity)
+            return p
         }
     }
 
@@ -110,6 +115,9 @@ private struct PadLayoutExportPayload: Codable {
     var perButtonPortrait: [String: PadGroupPosition]
     var perButtonLandscape: [String: PadGroupPosition]
     var controlVisibility: [String: Bool]
+    var book: [String: PadGroupPosition]?
+    var perButtonBook: [String: PadGroupPosition]?
+    var classSnapshots: [String: PadLayoutSnapshot]?
 
     var snapshot: PadLayoutSnapshot {
         PadLayoutSnapshot(
@@ -117,7 +125,9 @@ private struct PadLayoutExportPayload: Codable {
             landscape: landscape,
             perButtonPortrait: perButtonPortrait,
             perButtonLandscape: perButtonLandscape,
-            controlVisibility: controlVisibility
+            controlVisibility: controlVisibility,
+            book: book,
+            perButtonBook: perButtonBook
         )
     }
 
@@ -130,5 +140,7 @@ private struct PadLayoutExportPayload: Codable {
         self.perButtonPortrait = snapshot.perButtonPortrait
         self.perButtonLandscape = snapshot.perButtonLandscape
         self.controlVisibility = snapshot.controlVisibility
+        self.book = snapshot.book
+        self.perButtonBook = snapshot.perButtonBook
     }
 }

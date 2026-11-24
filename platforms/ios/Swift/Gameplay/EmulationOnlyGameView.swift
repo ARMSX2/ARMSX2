@@ -120,7 +120,12 @@ struct EmulationOnlyGameView: View {
                     ZStack {
                         accessibleMetalSurface
                         if session.emulationOnlyPresentation.showsVirtualControls {
-                            retainedVirtualControls(isLandscape: true, screen: screen)
+                            retainedVirtualControls(
+                                isLandscape: true,
+                                screen: screen,
+                                fittedSnapshot: appState.hingePresent && usesLargeLayout(windowSize: screen)
+                                    ? (session.emulationOnlyPresentation.padLayoutSnapshot ?? PadLayoutStore.shared.snapshot()).inBook() : nil
+                            )
                                 .padding(padInsets)
                         }
                         dynamicCrosshairOverlay

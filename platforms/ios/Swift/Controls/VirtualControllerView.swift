@@ -202,6 +202,7 @@ struct VirtualControllerView: View {
         let p = perButton ? perButtonPos(id, landscape: landscape, w: areaW, h: areaH) : pos(id, landscape: landscape)
         PadBtn(label: label, w: w, h: h, btn: btn, visibleScaleX: p.scaleX, visibleScaleY: p.scaleY, hitScaleX: p.hitScaleX, hitScaleY: p.hitScaleY)
             .position(x: p.x * areaW, y: p.y * areaH)
+            .opacity(p.opacity)
     }
 
     // 8-way D-pad for diagonals. Its capture circle and deadzone come from the four
@@ -226,7 +227,8 @@ struct VirtualControllerView: View {
                 visibleScaleX: p.scaleX,
                 visibleScaleY: p.scaleY,
                 hitScaleX: p.hitScaleX,
-                hitScaleY: p.hitScaleY
+                hitScaleY: p.hitScaleY,
+                opacity: p.opacity
             ))
         }
 
@@ -274,7 +276,8 @@ struct VirtualControllerView: View {
                 visibleScaleX: p.scaleX,
                 visibleScaleY: p.scaleY,
                 hitScaleX: p.hitScaleX,
-                hitScaleY: p.hitScaleY
+                hitScaleY: p.hitScaleY,
+                opacity: p.opacity
             ))
         }
 
@@ -310,6 +313,7 @@ struct VirtualControllerView: View {
         let p = perButtonPos(id, landscape: landscape, w: areaW, h: areaH)
         PSBtn(sym: sym, clr: clr, sz: sz, btn: btn, visibleScaleX: p.scaleX, visibleScaleY: p.scaleY, hitScaleX: p.hitScaleX, hitScaleY: p.hitScaleY)
             .position(x: p.x * areaW, y: p.y * areaH)
+            .opacity(p.opacity)
     }
 
     @ViewBuilder
@@ -331,6 +335,7 @@ struct VirtualControllerView: View {
                 badgeScale: fitScale ?? 1
             )
             .position(center)
+            .opacity(p.opacity)
             .id(inputSessionGeneration)
         }
     }

@@ -3,30 +3,6 @@
 
 import SwiftUI
 
-func padEditorBaseSize(for id: String, isLandscape: Bool, analogStickScale: CGFloat) -> CGSize {
-    switch id {
-    case "up", "down", "left", "right":
-        let width = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: isLandscape)
-        return CGSize(width: width, height: width)
-    case "triangle", "circle", "square", "cross":
-        let size = VirtualPadButtonOffset.actionButtonSize
-        return CGSize(width: size, height: size)
-    case "l1", "r1":
-        return isLandscape ? CGSize(width: 120, height: 32) : CGSize(width: 100, height: 30)
-    case "l2", "r2":
-        return isLandscape ? CGSize(width: 130, height: 44) : CGSize(width: 110, height: 40)
-    case "lstick", "rstick":
-        let size = 68 * min(max(analogStickScale, 0.8), 1.6)
-        return CGSize(width: size, height: size)
-    case "select":
-        return CGSize(width: isLandscape ? 40 : 42, height: 22)
-    case "start":
-        return CGSize(width: 48, height: 22)
-    default:
-        return CGSize(width: 60, height: 40)
-    }
-}
-
 // MARK: - Draggable group widget
 struct DraggableGroup: View {
     let id: String
@@ -391,18 +367,6 @@ struct DraggableButton: View {
         default:
             EmptyView()
         }
-    }
-}
-
-extension PadPortraitFit {
-    /// The deck a per-button position is derived in, so a stored edit fits back to its drop point.
-    func referenceArea(deckWidth: CGFloat) -> CGSize {
-        CGSize(width: deckWidth / scale, height: Self.referenceDeckHeight)
-    }
-
-    /// The stored y of a control dropped at `y` in the fitted deck.
-    func storedY(_ y: CGFloat) -> CGFloat {
-        (((y * deckHeight - Self.topGap) / scale + envelopeTop) / Self.referenceDeckHeight).clamped(0, 1)
     }
 }
 

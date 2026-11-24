@@ -14,6 +14,7 @@ struct CompositeDPadFaceInfo {
     let visibleScaleY: CGFloat
     let hitScaleX: CGFloat
     let hitScaleY: CGFloat
+    var opacity: CGFloat = 1
 }
 
 // Resolves a composite D-pad touch against each arrow's actual hitbox. A touch in
@@ -288,6 +289,7 @@ struct CompositeDPadView: View {
                 )
                 .allowsHitTesting(false)
                 .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+                .opacity(face.opacity)
                 .position(x: face.center.x, y: face.center.y)
             }
         }
@@ -332,6 +334,7 @@ struct CompositeFaceButtonInfo {
     let visibleScaleY: CGFloat
     let hitScaleX: CGFloat
     let hitScaleY: CGFloat
+    var opacity: CGFloat = 1
 }
 
 // Render-only visual for an action (face) button; the cluster owns all press/release.
@@ -565,6 +568,7 @@ struct CompositeFaceView: View {
                 )
                 .allowsHitTesting(false)
                 .opacity(padUsesFullSkin ? 1.0 : padOpacity)
+                .opacity(face.opacity)
                 .position(x: face.center.x, y: face.center.y)
             }
         }
