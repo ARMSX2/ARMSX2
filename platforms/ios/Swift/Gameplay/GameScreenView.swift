@@ -82,7 +82,8 @@ struct GameScreenView: View {
                         if effectiveVirtualPadVisible {
                             VirtualControllerView(
                                 isLandscape: true,
-                                layoutSnapshot: effectivePadLayoutSnapshot,
+                                layoutSnapshot: appState.hingePresent && usesLargeLayout(windowSize: screen)
+                                    ? (effectivePadLayoutSnapshot ?? PadLayoutStore.shared.snapshot()).inBook() : effectivePadLayoutSnapshot,
                                 skinDescriptor: effectivePadSkinDescriptor,
                                 touchActionSession: touchActionSession,
                                 largeLayout: usesLargeLayout(windowSize: screen)
@@ -659,19 +660,10 @@ struct GameScreenView: View {
     }
 
     private var runtimePadLayoutEditorContext: PadLayoutEditorContext {
-        let effectiveIdentity = overlay.runtimePadLayoutIdentity
-            ?? session.gameplayPadIdentity
-        let preset = layoutPresets.effectivePreset(
-            for: effectiveIdentity,
-            fallbackSerial: session.gameplayPadSerial
-        )
-        let editablePresetID = effectiveIdentity.flatMap {
-            layoutPresets.presetID(for: $0)
-        } ?? (effectiveIdentity == nil ? layoutPresets.globalPresetID : nil)
-        return PadLayoutEditorContext(
-            presetID: editablePresetID,
-            gameIdentity: effectiveIdentity,
-            initialSnapshot: preset?.snapshot,
+        PadLayoutEditorContext.forGame(
+            overlay.runtimePadLayoutIdentity ?? session.gameplayPadIdentity,
+            fallbackSerial: session.gameplayPadSerial,
+            store: layoutPresets,
             skinDescriptor: effectivePadSkinDescriptor
         )
     }

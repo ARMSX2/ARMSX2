@@ -726,12 +726,9 @@ struct PerGameSettingsPanel: View {
     }
 
     private var perGamePadLayoutEditorContext: PadLayoutEditorContext {
-        let preset = layoutPresets.effectivePreset(for: draft.padLayoutIdentity)
-        let editablePresetID = draft.padLayoutIdentity.flatMap { layoutPresets.presetID(for: $0) }
-        return PadLayoutEditorContext(
-            presetID: editablePresetID,
-            gameIdentity: draft.padLayoutIdentity,
-            initialSnapshot: preset?.snapshot,
+        PadLayoutEditorContext.forGame(
+            draft.padLayoutIdentity,
+            store: layoutPresets,
             skinDescriptor: layoutPresets.effectiveSkinDescriptor(for: draft.padLayoutIdentity, using: skinLibrary)
         )
     }

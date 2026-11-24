@@ -13,31 +13,6 @@ private struct PadLayoutEditorUndoSnapshot {
     let skinID: String
 }
 
-struct PadEditorControlGeometry {
-    let id: String
-    let center: CGPoint
-    let baseSize: CGSize
-    let hitScaleX: CGFloat
-    let hitScaleY: CGFloat
-
-    var hitSize: CGSize {
-        if isStick(id) {
-            return CGSize(
-                width: PadLayoutMetrics.visibleLength(baseLength: baseSize.width, visibleScale: hitScaleX),
-                height: PadLayoutMetrics.visibleLength(baseLength: baseSize.height, visibleScale: hitScaleY)
-            )
-        }
-        return CGSize(
-            width: PadLayoutMetrics.touchLength(baseLength: baseSize.width, hitScale: hitScaleX),
-            height: PadLayoutMetrics.touchLength(baseLength: baseSize.height, hitScale: hitScaleY)
-        )
-    }
-
-    var hitFrame: CGRect {
-        CGRect(x: center.x - hitSize.width / 2, y: center.y - hitSize.height / 2, width: hitSize.width, height: hitSize.height)
-    }
-}
-
 private enum PadLayoutNameAction: Identifiable {
     case saveNew
     case duplicate
@@ -714,8 +689,3 @@ struct PadLayoutEditView: View {
         originalSnapshot = nil
     }
 }
-
-func isStick(_ id: String) -> Bool {
-    id == "lstick" || id == "rstick"
-}
-
