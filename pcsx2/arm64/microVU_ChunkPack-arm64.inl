@@ -15,7 +15,9 @@
 // a record with a read set and no code, and a routine the tier has stopped
 // looking for new targets in has a small record that says so. Run counts are
 // not kept: a copy that fits a tiered body is placed on it at its first
-// lookup, and one that fits none asks for its regions at its first run.
+// lookup. A copy that fits one that cannot be used now (it leaves the sticky
+// byte of STATUS out and a reader of it is known, or its code was refused)
+// asks for its regions at its first run: the routine was worth them before.
 //
 // Written when the store gains a body (mVUchunkPackSave, on the thread that
 // runs VU1; the cache's writer thread puts it on disk). Read back per routine:
@@ -477,6 +479,19 @@ namespace mVUChunkPack
 		return body;
 	}
 
+	// Whether the record's read set is micro memory as it is at `rootPC`.
+	static bool ReadsFit(microVU& mVU, const Parsed& p, u32 rootPC)
+	{
+		const u32* const mem = reinterpret_cast<const u32*>(mVU.regs().Micro);
+		const s32 rootWord = static_cast<s32>(rootPC / 4);
+		if (rootWord + p.h.lo < 0 || rootWord + p.h.hi >= static_cast<s32>(mVU.microMemSize / 4))
+			return false;
+		for (u32 i = 0; i < p.h.readCount; i++)
+			if ((mem[rootWord + p.reads[i].off] ^ p.reads[i].value) & p.reads[i].mask)
+				return false;
+		return true;
+	}
+
 	static bool SameReads(const mVUChunkBody& a, const mVUChunkBody& b)
 	{
 		return a.reads.size() == b.reads.size() &&
@@ -581,7 +596,7 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 			mVUProgCache::DropBody(1, rootHash, rec.data(), rec.size());
 			continue;
 		}
-		sawTiered = sawTiered || (tiered && !(p.h.flags & mVUChunkPack::kFlagDeclined));
+		sawTiered = sawTiered || (tiered && !(p.h.flags & mVUChunkPack::kFlagDeclined) && mVUChunkPack::ReadsFit(mVU, p, rootPC));
 		std::unique_ptr<mVUChunkBody> body;
 		if (!reject)
 			body = mVUChunkPack::Materialize(mVU, p, reject);
@@ -599,7 +614,10 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		}
 		mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, state, true);
 		std::vector<std::unique_ptr<mVUChunkBody>>& list = tiered ? head->tiered : head->plain;
-		if (std::any_of(list.begin(), list.end(), [&](const auto& have) { return mVUChunkPack::SameReads(*have, *body); }))
+		// (a routine can have one tiered body with the sticky byte and one without, over the same words)
+		if (std::any_of(list.begin(), list.end(), [&](const auto& have) {
+				return have->droppedSticky == body->droppedSticky && have->declined == body->declined && mVUChunkPack::SameReads(*have, *body);
+			}))
 			continue;
 		st.packLoaded++;
 		st.packLoadedCodeBytes += body->codeBytes;
@@ -612,7 +630,10 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 	{
 		mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, state, true);
 		head->settled = head->settled || settled;
-		if (sawTiered)
+		// A tiered body of this very code was in the pack. If none of the
+		// head's can be placed for it now, the copy asks at its first run.
+		const mVUChunkBody* const usable = sawTiered ? mVUchunkTieredFor(mVU, *head, rootPC) : nullptr;
+		if (sawTiered && (!usable || usable->declined))
 		{
 			head->tieredInPack = true;
 			head->next[0] = std::min(head->next[0], head->runs[0] + 1);

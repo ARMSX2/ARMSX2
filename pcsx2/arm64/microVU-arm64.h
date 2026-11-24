@@ -849,9 +849,9 @@ struct mVUChunkHead
 	// to be entered, and runs[0] + runs[1] when it arrived.
 	std::shared_ptr<void> job;
 	u32 runsAtJob = 0;
-	// The disk pack holds a tiered body of the routine from an earlier
-	// session: a copy that none of them fits asks for its regions at its first
-	// counted run, not after the usual number.
+	// The disk pack held a tiered body for a copy of the routine that could
+	// not be placed (microVU_ChunkPack-arm64.inl): the copy asks for its
+	// regions at its first counted run, not after the usual number.
 	bool tieredInPack = false;
 };
 

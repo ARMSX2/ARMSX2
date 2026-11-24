@@ -547,20 +547,60 @@ TEST_F(Vu1ChunkPack, AResetBringsATieredBodyBackFromRam)
 	EXPECT_TRUE(d.empty()) << d;
 }
 
-// A routine tiered in one session, met in the next with other code inside
-// it: no body in the pack fits, so microVU compiles it. The pack still says
-// the routine was worth regions, so they are asked for at its first run, with
-// the tier-up count out of reach.
-TEST_F(Vu1ChunkPack, ARoutineTieredBeforeAsksForItsRegionsAtTheFirstRun)
+// A routine tiered in one session with the sticky byte of STATUS left out of
+// its regions. In the next session a reader of that byte is known before the
+// routine runs, so the body in the pack may not be placed. The pack still
+// says this code was worth regions: they are asked for at the routine's first
+// run, with the tier-up count out of reach, and built with the sticky byte.
+TEST_F(Vu1ChunkPack, ARoutineWhoseTieredBodyCannotBePlacedAsksAtTheFirstRun)
 {
-	std::vector<VuOp> changed = LoopRoutine(10);
-	changed[1] = LoadViImm(vi::vi2, 0x20); // (not the root pair)
+	const std::vector<VuOp> routine = LoopRoutine(10);
 	Result mvu;
 	{
 		TierScope off(false, true);
-		OneRun run(2, 0x2000, changed, 0x2000);
+		OneRun run(2, 0x2000, routine, 0x2000);
 		mvu = Take(run.h);
 	}
+	TierScope on(true, true);
+	OpenPack();
+	{
+		const vuaot::live::Stats t0 = vuaot::live::GetStats();
+		OneRun run(1, kHome, routine, kHome);
+		for (u32 i = 0; i < kTierRuns + 2; i++)
+			run.Again();
+		const vuaot::live::Stats t1 = vuaot::live::GetStats();
+		ASSERT_EQ(t1.tierUps - t0.tierUps, 1u);
+		ASSERT_GE(t1.stickyDropped - t0.stickyDropped, 1u) << "the region was expected to drop the sticky byte";
+	}
+	EndSession();
+	BeginSession();
+	vuaot::live::SetTierUpRuns(1000000);
+	vuaot::live::TripStickyForTest();
+
+	const vuaot::live::Stats t1 = vuaot::live::GetStats();
+	const StoreStats a = mVUChunkStore::GetStats();
+	OneRun run(2, 0x2000, routine, 0x2000);
+	EXPECT_GT(mVUChunkStore::GetStats().packLoaded - a.packLoaded, 0u);
+	EXPECT_EQ(mVUChunkStore::GetStats().tieredHits - a.tieredHits, 0u) << "a body without the sticky byte was placed after the trip";
+	for (u32 i = 0; i < 3; i++)
+	{
+		run.Again();
+		const std::string d = Diff(mvu, Take(run.h), true);
+		EXPECT_TRUE(d.empty()) << "run " << i << ": " << d;
+	}
+	const vuaot::live::Stats t2 = vuaot::live::GetStats();
+	EXPECT_EQ(t2.tierUps - t1.tierUps, 1u) << "one build at the first run, and the body it made is what the reset after it brings back";
+	EXPECT_EQ(t2.stickyDropped, t1.stickyDropped) << "the new regions dropped the sticky byte";
+	ExpectMatchesInterp(run.h, "tiered at the first run");
+}
+
+// A copy of a tiered routine with other code inside it fits no body in the
+// pack. Nothing says that code is worth regions: it counts its runs like any
+// routine met for the first time.
+TEST_F(Vu1ChunkPack, ACopyNoBodyFitsCountsItsRunsAsUsual)
+{
+	std::vector<VuOp> changed = LoopRoutine(10);
+	changed[1] = LoadViImm(vi::vi2, 0x20); // (not the root pair)
 	TierScope on(true, true);
 	OpenPack();
 	{
@@ -573,20 +613,13 @@ TEST_F(Vu1ChunkPack, ARoutineTieredBeforeAsksForItsRegionsAtTheFirstRun)
 	EndSession();
 	BeginSession();
 	vuaot::live::SetTierUpRuns(1000000);
-
 	const vuaot::live::Stats t1 = vuaot::live::GetStats();
 	OneRun run(2, 0x2000, changed, 0x2000);
 	EXPECT_GT(run.compiles, 0u) << "a body for other code was used";
 	for (u32 i = 0; i < 3; i++)
-	{
 		run.Again();
-		const std::string d = Diff(mvu, Take(run.h), false);
-		EXPECT_TRUE(d.empty()) << "run " << i << ": " << d;
-	}
-	const vuaot::live::Stats t2 = vuaot::live::GetStats();
-	EXPECT_EQ(t2.tierUps - t1.tierUps, 1u) << "the routine did not tier up at its first runs";
-	EXPECT_GE(mVUChunkStore::GetStats().tieredReAimed, 1u);
-	ExpectMatchesInterp(run.h, "tiered at the first run");
+	EXPECT_EQ(vuaot::live::GetStats().jobs - t1.jobs, 0u) << "regions were asked for with no run count behind them";
+	ExpectMatchesInterp(run.h, "changed routine");
 }
 
 // A routine the tier builds no region for. The answer is in the pack, and the

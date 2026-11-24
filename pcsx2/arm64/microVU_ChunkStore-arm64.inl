@@ -411,10 +411,12 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 		st.tieredPlaced++;
 		if (!st.firstTieredEpisode)
 		{
-			// (this lookup is counted in episodes and not yet in hits)
+			// (placed by a lookup, which is counted in episodes and not yet in
+			// hits, or for a copy that was on microVU's code)
 			const mVUChunkStoreData& store = *mVU.chunkStore;
-			st.firstTieredEpisode = st.episodes - store.episodesAtClear;
-			st.firstTieredCompiles = st.firstTieredEpisode - 1 - (st.hits - store.hitsAtClear);
+			const u64 episodes = st.episodes - store.episodesAtClear, hits = st.hits - store.hitsAtClear;
+			st.firstTieredEpisode = std::max<u64>(episodes, 1);
+			st.firstTieredCompiles = episodes - hits - (store.placingRoot || episodes == hits ? 0 : 1);
 		}
 	}
 	if (b.statusImm)

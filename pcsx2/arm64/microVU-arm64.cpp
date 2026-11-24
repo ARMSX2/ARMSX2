@@ -1322,7 +1322,9 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// files finds nothing using them.
 	if (EmuConfig.Cpu.Recompiler.UseVUProgramCache())
 	{
-		mVUProgCache::SaveAllPrograms(mVU);
+		// (VU1 has no program images: the chunk store wrote its bodies as it gained them)
+		if (!mVU.index)
+			mVUProgCache::SaveAllPrograms(mVU);
 		mVUProgCache::Rekey(mVU);
 	}
 	else
@@ -1371,7 +1373,8 @@ void mVUclose(microVU& mVU)
 	// Final checkpoint of live programs to the cache before we let
 	// the contentMap go. Mirrors the mVUreset path; harmless if nothing
 	// new has been added since the last reset.
-	mVUProgCache::SaveAllPrograms(mVU);
+	if (!mVU.index)
+		mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
 	mVUvuAotOnClose(mVU);
 	if (mVU.index)

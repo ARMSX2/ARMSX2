@@ -1629,9 +1629,10 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 		if (canAsk && tierNow)
 		{
 			std::map<u32, std::vector<u32>> targets = vuAotHarvestTargets(prog);
-			// A routine tiered in an earlier session, at its first run in this
-			// one: the jump caches are empty, so its regions are asked for with
-			// the targets its newest body from the pack holds. An edge to a
+			// A routine tiered in an earlier session whose body cannot be
+			// placed, at its first run in this one: the jump caches are empty,
+			// so its regions are asked for with the targets its newest body
+			// from the pack holds. An edge to a
 			// target is taken only when the jump goes there, so a target this
 			// copy never reaches costs a compare.
 			if (targets.empty() && head.tieredInPack)
