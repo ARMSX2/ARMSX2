@@ -26,11 +26,11 @@ struct GameListView: View {
     }
 
     @State private var appState = AppState.shared
-	@State private var settings = SettingsStore.shared
-	@State private var logoStore = ARMSX2LogoStore.shared
-	@State private var fileImporter = FileImportHandler.shared
-	@State private var coverStore = CoverStore.shared
-	@State private var externalLibrary = ExternalGameLibrary.shared
+    @State private var settings = SettingsStore.shared
+    @State private var logoStore = ARMSX2LogoStore.shared
+    @State private var fileImporter = FileImportHandler.shared
+    @State private var coverStore = CoverStore.shared
+    @State private var externalLibrary = ExternalGameLibrary.shared
     @Environment(\.menuTabIsActive) private var menuTabIsActive
     // controllerInput is nil under touch; this shared one only arbitrates the L2/R2 backdrop gesture.
     @Environment(\.menuControllerInputRouter)
@@ -400,11 +400,11 @@ struct GameListView: View {
             } message: {
                 Text("Use ${serial}, ${title}, or ${filetitle}. Default: \(CoverStore.defaultCoverURLTemplate)")
             }
-				.sheet(isPresented: $controller.showGameImporter) {
-					ImportDocumentPicker(
-						allowedContentTypes: [.item, .data, .content],
-						allowsMultipleSelection: true
-	                ) { result in
+                .sheet(isPresented: $controller.showGameImporter) {
+                    ImportDocumentPicker(
+                        allowedContentTypes: [.item, .data, .content],
+                        allowsMultipleSelection: true
+                    ) { result in
                     controller.showGameImporter = false
                     switch result {
                     case .success(let urls):
@@ -413,12 +413,12 @@ struct GameListView: View {
                         if !FileImportHandler.isUserCancelledPickerError(error) {
                             fileImporter.presentImportResult(FileImportHandler.failedGamePickerMessage(errorDescription: error.localizedDescription))
                         }
-					}
-				}
-			}
-			.sheet(isPresented: $controller.showCoverImporter) {
-				ImportDocumentPicker(
-					allowedContentTypes: CoverStore.coverContentTypes,
+                    }
+                }
+            }
+            .sheet(isPresented: $controller.showCoverImporter) {
+                ImportDocumentPicker(
+                    allowedContentTypes: CoverStore.coverContentTypes,
                     allowsMultipleSelection: controller.pendingCoverGameName == nil
                 ) { result in
                     controller.showCoverImporter = false
@@ -586,7 +586,7 @@ struct GameListView: View {
                 .presentationBackground(.clear)
                 .appStatusBarHidden()
             }
-			}
+            }
         let contextObservers = presentation
         .onChange(of: controllerInput.map(ObjectIdentifier.init), initial: true) { pushControllerContext() }
         .onChange(of: menuTabIsActive, initial: true) { pushControllerContext() }

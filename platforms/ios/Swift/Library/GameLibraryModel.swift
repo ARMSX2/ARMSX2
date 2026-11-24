@@ -240,26 +240,26 @@ final class GameLibraryModel {
         }
     }
 
-	func restoreCachedGamesIfNeeded() {
-		guard games.isEmpty else { return }
-		let cachedGames = GameLibrarySnapshot.shared.entries
-		if !cachedGames.isEmpty {
-			games = cachedGames
-		}
-	}
+    func restoreCachedGamesIfNeeded() {
+        guard games.isEmpty else { return }
+        let cachedGames = GameLibrarySnapshot.shared.entries
+        if !cachedGames.isEmpty {
+            games = cachedGames
+        }
+    }
 
-	private func retainedCover(from entry: ISOEntry?) -> (url: URL, signature: String?)? {
-		guard let url = entry?.coverURL else { return nil }
-		guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-		return (url, entry?.coverSignature)
-	}
+    private func retainedCover(from entry: ISOEntry?) -> (url: URL, signature: String?)? {
+        guard let url = entry?.coverURL else { return nil }
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return (url, entry?.coverSignature)
+    }
 
     func downloadMissingCovers() {
         let targets = games.map(\.coverInfo)
         coverWorkTask?.cancel()
         coverWorkTask = Task { @MainActor in
             _ = await coverStore.downloadMissingCovers(for: targets)
-			guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
             loadGames()
         }
     }
@@ -269,58 +269,58 @@ final class GameLibraryModel {
         coverWorkTask?.cancel()
         coverWorkTask = Task { @MainActor in
             _ = await coverStore.downloadMissingCovers(for: [game.coverInfo])
-			guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
             loadGames()
         }
     }
 
-	private func autoDownloadCovers(for importedGames: [FileImportHandler.ImportedGame]) {
-		guard !importedGames.isEmpty else { return }
+    private func autoDownloadCovers(for importedGames: [FileImportHandler.ImportedGame]) {
+        guard !importedGames.isEmpty else { return }
 
-		let targets = importedGames.map { game in
-			let metadata = ARMSX2Bridge.gameMetadata(forISO: game.name)
-			let existingCover = coverStore.coverURL(forGameName: game.name, gamePath: game.fileURL, metadata: metadata)
-			return CoverGameInfo(name: game.name, fileURL: game.fileURL, metadata: metadata, hasCover: existingCover != nil)
-		}
-		AutomaticCustomSkinManager.shared.enqueueMatches(for: targets)
+        let targets = importedGames.map { game in
+            let metadata = ARMSX2Bridge.gameMetadata(forISO: game.name)
+            let existingCover = coverStore.coverURL(forGameName: game.name, gamePath: game.fileURL, metadata: metadata)
+            return CoverGameInfo(name: game.name, fileURL: game.fileURL, metadata: metadata, hasCover: existingCover != nil)
+        }
+        AutomaticCustomSkinManager.shared.enqueueMatches(for: targets)
 
-		coverWorkTask?.cancel()
-		coverWorkTask = Task { @MainActor in
-			let summary = await coverStore.downloadMissingCovers(for: targets, showResult: false)
-			guard !Task.isCancelled else { return }
-			if summary.downloaded > 0 {
-				loadGames()
-			}
-		}
-	}
+        coverWorkTask?.cancel()
+        coverWorkTask = Task { @MainActor in
+            let summary = await coverStore.downloadMissingCovers(for: targets, showResult: false)
+            guard !Task.isCancelled else { return }
+            if summary.downloaded > 0 {
+                loadGames()
+            }
+        }
+    }
 
-	private func autoDownloadExternalCoversIfNeeded() {
-		guard session.runningGameName == nil else { return }
+    private func autoDownloadExternalCoversIfNeeded() {
+        guard session.runningGameName == nil else { return }
 
-		let targets = games.filter { game in
-			game.isExternal &&
-			game.coverURL == nil &&
-			!externalCoverAutoDownloadAttemptedIDs.contains(game.id)
-		}
-		guard !targets.isEmpty else { return }
+        let targets = games.filter { game in
+            game.isExternal &&
+            game.coverURL == nil &&
+            !externalCoverAutoDownloadAttemptedIDs.contains(game.id)
+        }
+        guard !targets.isEmpty else { return }
 
-		for game in targets {
-			externalCoverAutoDownloadAttemptedIDs.insert(game.id)
-		}
+        for game in targets {
+            externalCoverAutoDownloadAttemptedIDs.insert(game.id)
+        }
 
-		let coverTargets = targets.map(\.coverInfo)
-		AutomaticCustomSkinManager.shared.enqueueMatches(for: coverTargets)
-		coverWorkTask?.cancel()
-		coverWorkTask = Task { @MainActor in
-			let summary = await coverStore.downloadMissingCovers(for: coverTargets, showResult: false)
-			guard !Task.isCancelled else { return }
-			if summary.downloaded > 0 {
-				loadGames()
-			}
-		}
-	}
+        let coverTargets = targets.map(\.coverInfo)
+        AutomaticCustomSkinManager.shared.enqueueMatches(for: coverTargets)
+        coverWorkTask?.cancel()
+        coverWorkTask = Task { @MainActor in
+            let summary = await coverStore.downloadMissingCovers(for: coverTargets, showResult: false)
+            guard !Task.isCancelled else { return }
+            if summary.downloaded > 0 {
+                loadGames()
+            }
+        }
+    }
 
-	func isRunning(_ game: ISOEntry) -> Bool {
+    func isRunning(_ game: ISOEntry) -> Bool {
         let runningIdentifiers = gameLibraryActivity.runningIdentifiers(
             for: session.runningGameName
         )
@@ -329,13 +329,13 @@ final class GameLibraryModel {
         )
     }
 
-	@discardableResult
-	func toggleFavorite(_ game: ISOEntry) -> Bool {
-		let key = game.bootName
-		let current = games.first(where: { $0.id == game.id })?.isFavorite
+    @discardableResult
+    func toggleFavorite(_ game: ISOEntry) -> Bool {
+        let key = game.bootName
+        let current = games.first(where: { $0.id == game.id })?.isFavorite
             ?? ARMSX2Bridge.isFavorite(key)
         let updatedValue = !current
-		ARMSX2Bridge.setFavorite(key, favorite: updatedValue)
+        ARMSX2Bridge.setFavorite(key, favorite: updatedValue)
         if let index = games.firstIndex(where: { $0.id == game.id }) {
             games[index].isFavorite = updatedValue
             games.sort { lhs, rhs in
@@ -346,29 +346,29 @@ final class GameLibraryModel {
             }
         }
         GameLibrarySnapshot.shared.update(games)
-		return updatedValue
-	}
+        return updatedValue
+    }
 
-	func clearGameCache(_ game: ISOEntry) -> (title: String, message: String?) {
-		("Clear Game Cache", ARMSX2Bridge.clearCache(forISO: game.bootName))
-	}
+    func clearGameCache(_ game: ISOEntry) -> (title: String, message: String?) {
+        ("Clear Game Cache", ARMSX2Bridge.clearCache(forISO: game.bootName))
+    }
 
-	func deleteGameData(_ game: ISOEntry) -> (title: String, message: String?) {
-		("Delete Game Data", ARMSX2Bridge.deleteGameData(forISO: game.bootName))
-	}
+    func deleteGameData(_ game: ISOEntry) -> (title: String, message: String?) {
+        ("Delete Game Data", ARMSX2Bridge.deleteGameData(forISO: game.bootName))
+    }
 
-	func deleteGame(_ game: ISOEntry, deleteData: Bool) -> (title: String, message: String?) {
-		if isRunning(game) {
-			return ("Delete Game", settings.localized("Stop this game before deleting it."))
-		}
-
-		let success = ARMSX2Bridge.deleteISO(game.bootName, deleteGameData: deleteData)
-		if success {
-			coverStore.removeManagedCovers(forGameNamed: game.name)
-			loadGames()
+    func deleteGame(_ game: ISOEntry, deleteData: Bool) -> (title: String, message: String?) {
+        if isRunning(game) {
+            return ("Delete Game", settings.localized("Stop this game before deleting it."))
         }
-		return ("Delete Game", success ? settings.localized("Game deleted.") : settings.localized("Could not delete this game file."))
-	}
+
+        let success = ARMSX2Bridge.deleteISO(game.bootName, deleteGameData: deleteData)
+        if success {
+            coverStore.removeManagedCovers(forGameNamed: game.name)
+            loadGames()
+        }
+        return ("Delete Game", success ? settings.localized("Game deleted.") : settings.localized("Could not delete this game file."))
+    }
 
     func importGames(_ urls: [URL], allowReplacingExistingFiles: Bool) -> [FileImportHandler.ImportedGame] {
         let importedGames = fileImporter.importURLs(
@@ -392,14 +392,14 @@ final class GameLibraryModel {
     }
 
     /// Gameplay needs the memory: the list and the scan state go while a game runs.
-	func releaseLibraryResourcesForGameplay() {
-		coverWorkTask?.cancel()
-		coverWorkTask = nil
+    func releaseLibraryResourcesForGameplay() {
+        coverWorkTask?.cancel()
+        coverWorkTask = nil
         gameLibraryActivity.isScrolling = false
         gameLibraryActivity.cancelScheduledReload()
         gameLibraryActivity.cancelLoad()
-		games.removeAll(keepingCapacity: false)
-		externalCoverAutoDownloadAttemptedIDs.removeAll(keepingCapacity: false)
-		GameLibraryRuntimeResources.releaseForGameplay()
-	}
+        games.removeAll(keepingCapacity: false)
+        externalCoverAutoDownloadAttemptedIDs.removeAll(keepingCapacity: false)
+        GameLibraryRuntimeResources.releaseForGameplay()
+    }
 }

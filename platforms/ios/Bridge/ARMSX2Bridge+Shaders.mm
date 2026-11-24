@@ -8,10 +8,10 @@
 // returns NO without referencing MTLFXSpatialScalerDescriptor.
 #import <Metal/Metal.h>
 #if !TARGET_OS_SIMULATOR
-	#import <MetalFX/MetalFX.h>
-	#define ARMSX2_HAS_METALFX 1
+    #import <MetalFX/MetalFX.h>
+    #define ARMSX2_HAS_METALFX 1
 #else
-	#define ARMSX2_HAS_METALFX 0
+    #define ARMSX2_HAS_METALFX 0
 #endif
 
 // Only the runtime-independent preset API is used here, so no LIBRA_RUNTIME_* define is needed.
@@ -266,16 +266,16 @@ static void ARMSX2RollBackShaderPack(NSArray<NSURL*>* files, NSArray<NSURL*>* di
 // simulator (compiled out) and on any GPU that fails the capability probe.
 + (BOOL)isMetalFXSupported {
 #if ARMSX2_HAS_METALFX
-	if (@available(iOS 16.0, *)) {
-		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-		if (!device)
-			return NO;
-		return [MTLFXSpatialScalerDescriptor supportsDevice:device];
-	}
-	return NO;
+    if (@available(iOS 16.0, *)) {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        if (!device)
+            return NO;
+        return [MTLFXSpatialScalerDescriptor supportsDevice:device];
+    }
+    return NO;
 #else
-	// iOS Simulator build: MetalFX framework absent at compile time.
-	return NO;
+    // iOS Simulator build: MetalFX framework absent at compile time.
+    return NO;
  #endif
  }
 

@@ -37,28 +37,28 @@ final class ExternalGameLibrary {
     }
 
     @discardableResult
-	    func addLocation(_ url: URL) -> String {
-	        let accessing = url.startAccessingSecurityScopedResource()
-	        defer {
-	            if accessing {
-	                url.stopAccessingSecurityScopedResource()
-	            }
-	        }
+        func addLocation(_ url: URL) -> String {
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
 
-	        let standardizedURL = url.standardizedFileURL
-	        let resourceValues = try? standardizedURL.resourceValues(forKeys: [.isDirectoryKey])
-	        let isGameFile = Self.isSupportedGameFileURL(standardizedURL)
-	        let isDirectory = resourceValues?.isDirectory ?? !isGameFile
-	        let cloudProvider = Self.isLikelyCloudProvider(standardizedURL)
-	        let scanDisabled = isDirectory && cloudProvider
-	        guard isDirectory || isGameFile else {
-	            NSLog("[ARMSX2 iOS External Games] rejected unsupported location path=%@", standardizedURL.path)
-	            return "External location could not be added. Select a folder or a supported PS2 image."
-	        }
-	        if cloudProvider {
-	            NSLog("[ARMSX2 iOS External Games] rejected cloud provider direct access path=%@", standardizedURL.path)
-	            return "Google Drive cannot be used as direct external storage.\n\nCloud files are not guaranteed to be downloaded as stable, seekable files. Use Import Games to copy the ISO into ARMSX2 first."
-	        }
+            let standardizedURL = url.standardizedFileURL
+            let resourceValues = try? standardizedURL.resourceValues(forKeys: [.isDirectoryKey])
+            let isGameFile = Self.isSupportedGameFileURL(standardizedURL)
+            let isDirectory = resourceValues?.isDirectory ?? !isGameFile
+            let cloudProvider = Self.isLikelyCloudProvider(standardizedURL)
+            let scanDisabled = isDirectory && cloudProvider
+            guard isDirectory || isGameFile else {
+                NSLog("[ARMSX2 iOS External Games] rejected unsupported location path=%@", standardizedURL.path)
+                return "External location could not be added. Select a folder or a supported PS2 image."
+            }
+            if cloudProvider {
+                NSLog("[ARMSX2 iOS External Games] rejected cloud provider direct access path=%@", standardizedURL.path)
+                return "Google Drive cannot be used as direct external storage.\n\nCloud files are not guaranteed to be downloaded as stable, seekable files. Use Import Games to copy the ISO into ARMSX2 first."
+            }
 
         do {
             let bookmarkData = try standardizedURL.bookmarkData(
@@ -108,30 +108,30 @@ final class ExternalGameLibrary {
         NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
     }
 
-	    static func isSupportedGameFileURL(_ url: URL) -> Bool {
-	        if hasSupportedGameExtension(url.path) || hasSupportedGameExtension(url.lastPathComponent) {
-	            return true
-	        }
+        static func isSupportedGameFileURL(_ url: URL) -> Bool {
+            if hasSupportedGameExtension(url.path) || hasSupportedGameExtension(url.lastPathComponent) {
+                return true
+            }
 
-	        let values = try? url.resourceValues(forKeys: [.nameKey, .localizedNameKey])
-	        if let name = values?.name, hasSupportedGameExtension(name) {
-	            return true
-	        }
-	        if let localizedName = values?.localizedName, hasSupportedGameExtension(localizedName) {
-	            return true
-	        }
+            let values = try? url.resourceValues(forKeys: [.nameKey, .localizedNameKey])
+            if let name = values?.name, hasSupportedGameExtension(name) {
+                return true
+            }
+            if let localizedName = values?.localizedName, hasSupportedGameExtension(localizedName) {
+                return true
+            }
 
-	        return false
-	    }
+            return false
+        }
 
-	    private static func hasSupportedGameExtension(_ name: String) -> Bool {
-	        let ext = (name as NSString).pathExtension.lowercased()
-	        return gameExtensions.contains(ext)
-	    }
+        private static func hasSupportedGameExtension(_ name: String) -> Bool {
+            let ext = (name as NSString).pathExtension.lowercased()
+            return gameExtensions.contains(ext)
+        }
 
-	    private static func isLikelyCloudProvider(_ url: URL) -> Bool {
-	        let path = url.path.lowercased()
-	        let name = url.lastPathComponent.lowercased()
-	        return path.contains("google") || name.contains("google")
-	    }
+        private static func isLikelyCloudProvider(_ url: URL) -> Bool {
+            let path = url.path.lowercased()
+            let name = url.lastPathComponent.lowercased()
+            return path.contains("google") || name.contains("google")
+        }
 }

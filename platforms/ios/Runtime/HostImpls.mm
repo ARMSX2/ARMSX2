@@ -108,8 +108,8 @@ namespace Host
         vprintf(fmt, args);
         va_end(args);
     }
-    void LoadSettings(SettingsInterface&, std::unique_lock<std::mutex>&) {} 
-    void RequestResetSettings(bool) {} 
+    void LoadSettings(SettingsInterface&, std::unique_lock<std::mutex>&) {}
+    void RequestResetSettings(bool) {}
     const char* GetTranslatedStringImpl(const char* key) { return key; }
     u32 GetDisplayRefreshRate() { return 60; }
     std::optional<WindowInfo> AcquireRenderWindow(bool) {
@@ -117,16 +117,16 @@ namespace Host
             Console.Error("Host::AcquireRenderWindow: g_sdl_window is NULL");
             return std::nullopt;
         }
-        
+
         __block WindowInfo wi = {};
         wi.type = WindowInfo::Type::MacOS;
-        
+
         // SDL calls that interact with UIKit must run on the main thread
         dispatch_sync(dispatch_get_main_queue(), ^{
             // SDL3 properties for UIKit
             SDL_PropertiesID props = SDL_GetWindowProperties(g_sdl_window);
             UIWindow* window = (__bridge UIWindow*)SDL_GetPointerProperty(props, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
-            
+
             if (window) {
                 // Use dedicated game render view if available (sized for portrait).
                 if (g_gameRenderView) {
@@ -152,7 +152,7 @@ namespace Host
             wi.surface_width = static_cast<u32>(std::max<CGFloat>(1.0, renderView.bounds.size.width * scale));
             wi.surface_height = static_cast<u32>(std::max<CGFloat>(1.0, renderView.bounds.size.height * scale));
             wi.surface_scale = static_cast<float>(scale);
-            
+
             SDL_DisplayID display = SDL_GetDisplayForWindow(g_sdl_window);
             const SDL_DisplayMode* mode = SDL_GetCurrentDisplayMode(display);
             if (mode)
@@ -666,7 +666,7 @@ namespace CocoaTools {
     // macOS-only). Return types aren't mangled, so a mismatch still links and
     // callers read garbage off the stack.
     std::optional<std::string> GetBundlePath() { return std::string([[NSBundle mainBundle].bundlePath UTF8String]); }
-    
+
     bool CreateMetalLayer(WindowInfo* wi) {
         if (!Host::g_sdl_window) return false;
 

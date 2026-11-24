@@ -78,7 +78,7 @@ extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void);
 // Posts a RetroAchievements toast to the SwiftUI layer. `duration` is the on-screen
 // time in seconds (<= 0 falls back to the SwiftUI default). Safe to call from any thread.
 extern "C" void ARMSX2_PostRetroAchievementsNotification(const char* title, const char* message,
-	const char* badgePath, float duration);
+    const char* badgePath, float duration);
 extern "C" void ARMSX2_PostRuntimeMenuStateChanged(void);
 // Recomputes the active presentation cap from the layered global/per-game
 // settings. Call on the CPU thread after a game-settings layer changes.

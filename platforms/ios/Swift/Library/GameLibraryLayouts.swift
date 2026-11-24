@@ -504,13 +504,13 @@ struct GameLibraryEmptyState: View {
                 orbScale: 0.9,
                 priority: 10
             )
-			Label(controller.settings.localized("External Games are in Settings > Storage"), systemImage: "externaldrive")
-				.font(.caption)
-				.foregroundStyle(.secondary)
-			Text("\(controller.settings.localized("Supported Formats")): ISO, CHD, BIN, CSO, ZSO, GZ, ELF")
-				.font(.caption)
-				.foregroundStyle(.secondary)
-				.multilineTextAlignment(.center)
+            Label(controller.settings.localized("External Games are in Settings > Storage"), systemImage: "externaldrive")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("\(controller.settings.localized("Supported Formats")): ISO, CHD, BIN, CSO, ZSO, GZ, ELF")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
         }
         .padding()
         .frame(maxWidth: .infinity, minHeight: 240)

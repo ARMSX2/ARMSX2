@@ -44,9 +44,9 @@ private struct VideoBackgroundPlayer: UIViewRepresentable {
     func makeUIView(context: Context) -> LoopingVideoView { LoopingVideoView() }
     func updateUIView(_ uiView: LoopingVideoView, context: Context) { uiView.configure(url: url, muted: muted, fitMode: fitMode) }
 
-	static func dismantleUIView(_ uiView: LoopingVideoView, coordinator: ()) {
-		MainActor.assumeIsolated { uiView.teardown() }
-	}
+    static func dismantleUIView(_ uiView: LoopingVideoView, coordinator: ()) {
+        MainActor.assumeIsolated { uiView.teardown() }
+    }
 }
 
 private final class LoopingVideoView: UIView {
@@ -61,7 +61,7 @@ private final class LoopingVideoView: UIView {
 
     deinit {
         MainActor.assumeIsolated {
-			teardown()
+            teardown()
         }
     }
 
@@ -82,7 +82,7 @@ private final class LoopingVideoView: UIView {
         // Recreate playback when the resolved source changes, including
         // orientation-specific assets.
         if player != nil, currentURL != url {
-			teardown()
+            teardown()
         }
 
         if player != nil {
@@ -146,7 +146,7 @@ private final class LoopingVideoView: UIView {
         }
     }
 
-	func teardown(preservePlaybackPosition: Bool = true) {
+    func teardown(preservePlaybackPosition: Bool = true) {
         if preservePlaybackPosition,
            let currentURL,
            let player {
@@ -164,7 +164,7 @@ private final class LoopingVideoView: UIView {
         player = nil
         playerLooper = nil
         playerLayer = nil
-		currentURL = nil
+        currentURL = nil
     }
 
     @objc private func pause() {

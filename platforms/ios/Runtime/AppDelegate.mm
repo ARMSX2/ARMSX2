@@ -80,11 +80,11 @@ static void SetupIOSDirectories(const std::string& dataRoot)
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     // Override point for customization after application launch.
     [UIDevice currentDevice].batteryMonitoringEnabled = YES;
-    
+
     // --- Setup PCSX2 Environment (Moved from SceneDelegate) ---
     NSString *documentsDirectory = [ARMSX2Bridge documentsDirectory];
     NSString *resourcePath = [[NSBundle mainBundle] resourcePath];
-    
+
     std::string dataRoot = [documentsDirectory UTF8String];
     SetupIOSDirectories(dataRoot);
     EmuFolders::AppRoot = [resourcePath UTF8String];
@@ -101,25 +101,25 @@ static void SetupIOSDirectories(const std::string& dataRoot)
     // --- Unified Logging Redirection ---
     // Force stderr and stdout to pcsx2_log.txt
     std::string logPath = dataRoot + "/pcsx2_log.txt";
-    
+
     // Redirect stderr to file
     if (freopen(logPath.c_str(), "w", stderr) == NULL) { // "w" clears old logs
         printf("Reopen stderr failed\n");
     }
-    
+
     // Redirect stdout to stderr
     if (dup2(fileno(stderr), fileno(stdout)) == -1) {
         fprintf(stderr, "Redirection of stdout failed\n");
     }
-    
+
     // Disable buffering
     setvbuf(stderr, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
-    
+
     // [iPSX2] Register File Descriptor for Signal Handler
     // We use the raw file descriptor of stderr (which is now our log file)
     DarwinMisc::SetCrashLogFD(fileno(stderr));
-    
+
     // Log Proof Tag
     fprintf(stderr, "@@LOG_SINK@@ unified=1 path=%s pid=%d\n", logPath.c_str(), getpid());
     NSString* bundleID = [[NSBundle mainBundle] bundleIdentifier];

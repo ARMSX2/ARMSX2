@@ -509,8 +509,8 @@ static float ARMSX2PromoteWeakPhoneRumble(float level, float setting, ARMSX2Phon
 
 void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
 {
-	if (s_nativeAppliedGamepadRumbleValid && packed == s_nativeAppliedGamepadRumble)
-		return;
+    if (s_nativeAppliedGamepadRumbleValid && packed == s_nativeAppliedGamepadRumble)
+        return;
 
     // Straight off the packed value, so the phone gets the whole 0..1 motor range
     // rather than the 0x7000 ceiling the controller motors are held to. Read every
@@ -575,5 +575,5 @@ void ARMSX2ApplyNativeGamepadRumbleOnMain(u32 packed)
     if (large_ok && small_ok) {
         s_nativeAppliedGamepadRumble = packed;
         s_nativeAppliedGamepadRumbleValid = true;
-	}
+    }
 }
