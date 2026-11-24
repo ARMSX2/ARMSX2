@@ -198,6 +198,7 @@ final class MenuControllerInputRouter {
     @ObservationIgnored var registeredExtendedProfiles = Set<ObjectIdentifier>()
     @ObservationIgnored var registeredMicroProfiles = Set<ObjectIdentifier>()
     @ObservationIgnored var heldDirections: [ObjectIdentifier: MenuControllerCommand] = [:]
+    @ObservationIgnored var keyboardArrowOrder: [MenuControllerCommand] = []
     @ObservationIgnored var directionalHoldStartTimes: [
         ObjectIdentifier: TimeInterval
     ] = [:]

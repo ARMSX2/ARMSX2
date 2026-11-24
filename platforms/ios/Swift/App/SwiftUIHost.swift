@@ -151,6 +151,7 @@ final class ControllerEventDeliveryCoordinator {
     private weak var router: MenuControllerInputRouter?
     private(set) var rightStickScrolling = false
     private var menuActive = false
+    private var heldArrows: Set<MenuControllerCommand> = []
 
     private init() {}
 
@@ -163,13 +164,19 @@ final class ControllerEventDeliveryCoordinator {
     /// Keyboard arrows are bridged here, for Simulator and hardware keyboards.
     func handleMenuPressesEvent(_ presses: Set<UIPress>) -> Bool {
         guard menuActive else { return false }
-        if let keyboardPress = presses.first(where: {
-            $0.key?.keyCode.menuControllerCommand != nil
-        }) {
-            if keyboardPress.phase == .began,
-               let command = keyboardPress.key?.keyCode.menuControllerCommand {
-                router?.handleKeyboardDirectionalPress(command)
+        let keyboardPresses = presses.compactMap { press in
+            press.key?.keyCode.menuControllerCommand.map { (press.phase, $0) }
+        }
+        if !keyboardPresses.isEmpty {
+            // ARMSX2Application.sendEvent consumes the key-up, so the release is taken here.
+            for (phase, command) in keyboardPresses {
+                switch phase {
+                case .began: heldArrows.insert(command)
+                case .ended, .cancelled: heldArrows.remove(command)
+                default: break
+                }
             }
+            router?.handleKeyboardArrows(heldArrows)
             return true
         }
 
@@ -187,7 +194,10 @@ final class ControllerEventDeliveryCoordinator {
 
     func setMenuActive(_ active: Bool) {
         menuActive = active
-        if !active { rightStickScrolling = false }
+        if !active {
+            rightStickScrolling = false
+            heldArrows.removeAll()
+        }
     }
 
     func setRightStickScrolling(_ active: Bool) {

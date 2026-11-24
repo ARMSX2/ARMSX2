@@ -59,6 +59,7 @@ extension MenuControllerInputRouter {
             }
         }
         let liveProfiles = liveExtendedProfiles.union(liveMicroProfiles)
+            .union([Self.keyboardProfileID])
         let disconnectedSamplingProfiles = directionSamplingTasks.keys.filter {
             !liveProfiles.contains($0)
         }
@@ -409,12 +410,18 @@ extension MenuControllerInputRouter {
         }
     }
 
-    /// Keyboard arrows arrive through UIKit instead of a GCController profile.
-    /// Route them into the same graph while custom navigation owns the menu;
-    /// controller-originated UIKit duplicates are consumed by the event host.
-    func handleKeyboardDirectionalPress(_ command: MenuControllerCommand) {
-        guard isMenuActive, command.isSpatialDirection else { return }
-        emit(command)
+    private static let keyboardProfileID = ObjectIdentifier(ControllerEventDeliveryCoordinator.self)
+
+    /// Keyboard arrows arrive through UIKit instead of a GCController profile. The newest
+    /// arrow still held moves, holds and repeats like a D-pad under its own profile key;
+    /// controller duplicates are consumed by the event host.
+    func handleKeyboardArrows(_ held: Set<MenuControllerCommand>) {
+        let pressed = held.subtracting(keyboardArrowOrder)
+        keyboardArrowOrder.removeAll { !held.contains($0) }
+        keyboardArrowOrder.append(contentsOf: pressed)
+        let command = keyboardArrowOrder.last
+        guard command == nil || isMenuActive else { return }
+        updateDirection(command, profileID: Self.keyboardProfileID)
     }
 
     private func cancelRepeat(profileID: ObjectIdentifier) {
