@@ -68,7 +68,6 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_cycle_rate_tests.cpp
 	ee_rec_delay_slot_bracket_tests.cpp
 	ee_rec_divide_charge_tests.cpp
-	ee_rec_measured_charge_tests.cpp
 	ee_rec_fpu_tests.cpp
 	ee_rec_fpu_divunit_rounding_tests.cpp
 	ee_rec_fpu_full_mode_tests.cpp
@@ -88,6 +87,7 @@ add_pcsx2_test(recompiler_tests
 	ee_rec_syscall_seam_tests.cpp
 	ee_rec_exception_charge_tests.cpp
 	ee_issue_model_tests.cpp
+	ee_rec_issue_charge_tests.cpp
 	ee_rec_event_stub_tests.cpp
 	ee_rec_extended_ram_tests.cpp
 	ee_rec_fast_forward_mark_tests.cpp

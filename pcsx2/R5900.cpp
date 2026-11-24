@@ -117,6 +117,9 @@ __ri void cpuException(u32 code, u32 bd)
 	bool errLevel2, checkStatus;
 	u32 offset = 0;
 
+	// The interpreter's path ends here; the handler starts a new one.
+	intIssuePathBreak();
+
     cpuRegs.branch = 0;		// Tells the interpreter that an exception occurred during a branch.
 	cpuRegs.CP0.n.Cause = code & 0xffff;
 

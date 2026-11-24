@@ -32,6 +32,8 @@
 
 #include "harness/EeRecTestHarness.h"
 
+#include "R5900IssueModel.h"
+
 #include "COP0.h"
 #include "Config.h"
 #include "Counters.h"
@@ -623,12 +625,11 @@ TEST(EeEventGateDelivery, EretAfterAStatusWriteInItsBlockTakesThePendingInterrup
 // a handler at the interrupt vector clears the cause and returns with ERET, and
 // the program goes on. COP0 Count is read before the MTC0 and after a later
 // branch. Against the same run with nothing pending, the interrupt costs the
-// handler's instructions (10 cycles: four ALU and store ops, ERET 6) and the
-// exception entry (9, measured on an SCPH-30001), in both engines.
+// handler's path (what the issue model charges four ALU and store ops and
+// ERET) and the exception entry (9, measured on an SCPH-30001), in both engines.
 TEST(EeEventGateDelivery, InterruptRoundTripChargesTheHandlerAndTheEntry)
 {
 	ASSERT_TRUE(RecompilerTestEnvironment::IsReady());
-	constexpr u32 kHandlerCycles = 10;
 	constexpr u32 kEntryCycles = 9;
 	std::vector<u32> p = {BEQ(reg::zero, reg::zero, 1), NOP, MFC0(reg::t0, 9), MTC0(reg::t2, kCp0Status)};
 	Append(p, Sled());
@@ -645,6 +646,9 @@ TEST(EeEventGateDelivery, InterruptRoundTripChargesTheHandlerAndTheEntry)
 		SW(reg::k1, 0, reg::k0), // write 1 to clear the cause
 		ERET,
 	};
+	const u32 kHandlerCycles = R5900::Issue::PathCycles(0x80000200, handler.data(), static_cast<u32>(handler.size()),
+		R5900::Issue::Exit::None);
+	EXPECT_EQ(kHandlerCycles, 9u); // LUI; ORI with ADDIU; SW; ERET 6
 	Delivery taken(p, 0, 0);
 	taken.int_handler = handler;
 	taken.dual_issue = true;

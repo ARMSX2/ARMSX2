@@ -12,7 +12,8 @@
 // The unit of charge is a path: the instructions from where control arrives
 // (a branch target, the instruction after a delay slot, an exception vector,
 // the return of an ERET, the first word of a 4 KB page) up to and including
-// the next branch's delay slot (SYSCALL, BREAK and ERET also end a path). The
+// the next branch's delay slot. SYSCALL, BREAK, the traps, ERET and EI also end
+// a path: the recompiler ends its block at each of them. The
 // model keeps a ready time for each register, the class of the instructions
 // that issued in the current cycle, and when each unpipelined unit is free.
 // A path costs the cycles it took to issue, plus a constant for how it left:
@@ -74,8 +75,9 @@ namespace R5900::Issue
 
 	// Whole cycles one instruction adds to the path, including its load
 	// charge. Starts a new path first (charging the old one's tail) when the
-	// old one ended at a not-taken branch's delay slot, or when `pc` is the
-	// first word of a page and is not a delay slot.
+	// old one ended at a not-taken branch's delay slot or at an instruction
+	// that ends a path, or when `pc` is the first word of a page and is not a
+	// delay slot.
 	u32 Step(State& s, u32 pc, u32 code, u32 load_hundredths = kLoadChargeHundredths);
 
 	// Whole cycles to charge where the path leaves: what an unpipelined unit
@@ -93,7 +95,8 @@ namespace R5900::Issue
 	// Taken for a conditional branch or J/JAL, RegisterJump for JR/JALR.
 	Exit TakenExit(const State& s);
 
-	// True when the instruction ends a path by itself: SYSCALL, BREAK, ERET.
+	// True when the instruction ends a path by itself: SYSCALL, BREAK, the
+	// traps, ERET, EI.
 	bool EndsPath(u32 code);
 
 	// True when `code` has a delay slot (branches and jumps).

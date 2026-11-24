@@ -595,9 +595,17 @@ namespace R5900::Issue
 	bool EndsPath(u32 code)
 	{
 		const u32 op = code >> 26;
-		if (op == 0 && (Fn(code) == 0x0C || Fn(code) == 0x0D))
-			return true; // SYSCALL, BREAK
-		return op == 0x10 && Rs(code) == 16 && Fn(code) == 0x18; // ERET
+		if (op == 0)
+		{
+			const u32 fn = Fn(code);
+			return fn == 0x0C || fn == 0x0D || (fn >= 0x30 && fn <= 0x34) || fn == 0x36; // SYSCALL BREAK traps
+		}
+		if (op == 1)
+		{
+			const u32 rt = Rt(code);
+			return (rt >= 0x08 && rt <= 0x0C) || rt == 0x0E; // traps with an immediate
+		}
+		return op == 0x10 && Rs(code) == 16 && (Fn(code) == 0x18 || Fn(code) == 0x38); // ERET, EI
 	}
 
 	bool IsBranch(u32 code)
@@ -630,6 +638,8 @@ namespace R5900::Issue
 			s.branch_code = code;
 		}
 		s.steps++;
+		if (EndsPath(code))
+			s.complete = true;
 
 		u32 load_charge = 0;
 		if (inf.is_load)

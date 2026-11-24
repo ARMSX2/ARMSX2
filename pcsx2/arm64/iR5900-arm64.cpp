@@ -31,6 +31,7 @@
 #include "arm64/RecCrashReport-arm64.h"
 #include "arm64/RecErrorReport-arm64.h"
 #include "R5900OpcodeTables.h"
+#include "R5900IssueModel.h"
 #include "Common.h"
 #include "VMManager.h"
 #include "Patch.h"
@@ -67,6 +68,96 @@ int g_branch;
 u32 target;
 u32 s_nBlockCycles;
 bool s_nBlockInterlocked;
+
+// The issue model's state for the path being compiled (R5900IssueModel.h).
+// Each instruction adds what it costs the path to s_nBlockCycles as it is
+// compiled; each exit adds its constant. The interpreter runs the same model as
+// it executes, so the two charge a path the same.
+static R5900::Issue::State s_eeIssue;
+// The current flow's exit has been charged: SetBranchImm and its kin are
+// reached from one another, and charge it once.
+static bool s_eeIssueExitCharged = false;
+
+// Eighths of a cycle per model cycle: one cycle, two with dual issue off.
+static u32 recEeIssueEighths()
+{
+	return 8 * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+}
+
+// The flow leaving toward `target` charges its path's exit: taken, not taken,
+// a branch-likely not taken, or a register jump, from the branch the path
+// holds.
+static void recEeIssueChargeExit(u32 target)
+{
+	if (s_eeIssueExitCharged)
+		return;
+	s_eeIssueExitCharged = true;
+	s_nBlockCycles += R5900::Issue::EndCost(s_eeIssue, R5900::Issue::ExitFor(s_eeIssue, target)) * recEeIssueEighths();
+}
+
+// The block ends at `next_pc` without a branch: a page edge, an existing block
+// or a loop head at next_pc, a forced event test. The next block starts a new
+// path at next_pc, as a branch to it would. Entered by falling through from
+// here, the path really goes on, so this block charges the difference: the
+// rest of the path (to its next delay slot, page edge or instruction that ends
+// a path) costed as a continuation of this one, less what the blocks after it
+// charge for it from a fresh start. The interpreter runs the path as one and
+// charges the same. (A page edge ends the path in both engines; then the
+// difference is only what a divide still running is owed.)
+static void recEeIssueChargeCut(u32 next_pc)
+{
+	using namespace R5900::Issue;
+	if (s_eeIssueExitCharged)
+		return;
+	s_eeIssueExitCharged = true;
+	if (s_eeIssue.steps == 0)
+		return;
+	if (s_eeIssue.complete)
+	{
+		// The path ended at a not-taken branch's delay slot.
+		s_nBlockCycles += EndCost(s_eeIssue, ExitFor(s_eeIssue, next_pc)) * recEeIssueEighths();
+		return;
+	}
+	State carried = s_eeIssue;
+	State fresh;
+	Reset(fresh);
+	s32 diff = 0;
+	for (u32 p = next_pc, n = 0; n < 1024; p += 4, n++)
+	{
+		// A page edge ends the path in both engines. (A delay slot across it is
+		// not followed: the next page may not be mapped at compile time.)
+		if (carried.complete || (p & 0xFFF) == 0)
+			break;
+		const u32 code = memRead32(p);
+		diff += static_cast<s32>(Step(carried, p, code)) - static_cast<s32>(Step(fresh, p, code));
+		if (EndsPath(code))
+			break;
+	}
+	diff += static_cast<s32>(EndCost(carried, ExitFor(carried, 0))) - static_cast<s32>(EndCost(fresh, ExitFor(fresh, 0)));
+	const s32 eighths = diff * static_cast<s32>(recEeIssueEighths());
+	// A continuation can be one cycle cheaper than a fresh start (its first
+	// instruction joins the last cycle here). Never below zero.
+	if (eighths < 0 && static_cast<u32>(-eighths) > s_nBlockCycles)
+		s_nBlockCycles = 0;
+	else
+		s_nBlockCycles = static_cast<u32>(static_cast<s32>(s_nBlockCycles) + eighths);
+}
+
+// The instruction just compiled by recBranchCall ends the block and the path:
+// SYSCALL, BREAK, a trap, ERET or EI (R5900::Issue::EndsPath), or a branch run
+// by the interpreter, whose delay slot it runs too.
+static void recEeIssueChargeCall()
+{
+	if (s_eeIssueExitCharged)
+		return;
+	s_eeIssueExitCharged = true;
+	s_nBlockCycles += R5900::Issue::EndCost(s_eeIssue, R5900::Issue::Exit::None) * recEeIssueEighths();
+}
+
+void recEeIssueForkRestored()
+{
+	s_eeIssueExitCharged = false;
+}
 
 bool g_recompilingDelaySlot = false;
 bool g_cpuFlushedPC = false;
@@ -839,6 +930,7 @@ void recBranchCall(void (*func)())
 	// before the C call — the interpreter's intEventTest reads
 	// cpuRegs.cycle. Re-derive after, so the g_branch=2 exit code that
 	// follows can keep using RECCYCLE.
+	recEeIssueChargeCall();
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles > 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
@@ -873,6 +965,7 @@ void recBranchCallNoGprWrite(void (*func)(), u32 gpr_reads)
 	iFlushCall(FLUSH_INTERPRETER | FLUSH_KEEP_PINS);
 	pc = saved_pc;
 
+	recEeIssueChargeCall();
 	u32 cycles = scaleblockcycles_clear(EeChargeForm::AddImm12);
 	if (cycles > 0)
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
@@ -1695,6 +1788,7 @@ static void emitCycleUpdateAndEventCheck()
 
 void SetBranchReg(EEBranchRegMode mode, u32 call_return_pc, int wbreg, u32 jump_pc, u32 jump_rs)
 {
+	recEeIssueChargeExit(0);
 	const Cop2VfCacheScope vfCacheScope; // fork tail: preserve compile-time cache state
 	g_branch = 1;
 
@@ -2006,6 +2100,7 @@ static void emitNoteFastForward(u8 kind)
 
 void SetBranchImm(u32 imm)
 {
+	recEeIssueChargeExit(imm);
 	if (s_loopResident && !s_loopBackedgeEmitted && imm == s_loopTopPc)
 	{
 		SetBranchBackedge();
@@ -2068,6 +2163,7 @@ void SetBranchImm(u32 imm)
 // return PC. See the call-ret ring comment block above SetBranchReg.
 void SetBranchImmCall(u32 imm, u32 return_pc)
 {
+	recEeIssueChargeExit(imm);
 	// A WaitLoop-FF-shaped block wants the fast-forward path, and a
 	// self-spinning JAL never returns anyway — keep the plain tail.
 	if (EmuConfig.Speedhacks.WaitLoop && s_nBlockFF && imm == s_branchTo)
@@ -2134,9 +2230,13 @@ struct BranchCompileState
 	EEINST* instInfo;
 	Cop2VfCacheState vfCache;
 	bool clampConstsValid; // SL-13: q25/q26 broadcast validity at the fork point
+	R5900::Issue::State issue;
+	bool issueExitCharged;
 
 	void capture()
 	{
+		issue = s_eeIssue;
+		issueExitCharged = s_eeIssueExitCharged;
 		vfCache = cop2VfCacheGetState();
 		clampConstsValid = cop2ClampConstsValid();
 		blockCycles = s_nBlockCycles;
@@ -2150,6 +2250,8 @@ struct BranchCompileState
 
 	void restore() const
 	{
+		s_eeIssue = issue;
+		s_eeIssueExitCharged = issueExitCharged;
 		cop2VfCacheSetState(vfCache);
 		cop2ClampConstsSetValid(clampConstsValid);
 		s_nBlockCycles = blockCycles;
@@ -2301,6 +2403,7 @@ static void recEmitSideExitIslands()
 // WaitLoop FF), which never apply to a continuation side exit in practice.
 static void recEmitSideExitTail(u32 imm)
 {
+	recEeIssueChargeExit(imm);
 	if ((s_loopResident && !s_loopBackedgeEmitted && imm == s_loopTopPc) ||
 		(EmuConfig.Speedhacks.WaitLoop && s_nBlockFF && imm == s_branchTo))
 	{
@@ -3160,10 +3263,12 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 		armAsm->Str(RWSCRATCH, armCpuRegMem(&cpuRegs.branch));
 	}
 
-	// Every instruction is charged its table entry, NOP (SLL $0, $0, 0)
-	// included, as the interpreter charges it. NOP emits no code.
+	// Every instruction is charged what it adds to its path under the issue
+	// model, NOP (SLL $0, $0, 0) included, as the interpreter charges it. NOP
+	// emits no code.
 	const R5900::OPCODE& opcode = R5900::GetCurrentInstruction();
-	s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	s_nBlockCycles += R5900::Issue::Step(s_eeIssue, delayslot ? pc : pc - 4, cpuRegs.code) * recEeIssueEighths();
+	s_eeIssueExitCharged = false;
 	if (cpuRegs.code != 0)
 	{
 		// Guard: branch/jump in a delay slot would cause infinite
@@ -4771,6 +4876,8 @@ static void recRecompile(const u32 startpc)
 
 	s_pCurBlock->SetFnptr(block_fnptr);
 	s_nBlockCycles = 0;
+	R5900::Issue::Reset(s_eeIssue);
+	s_eeIssueExitCharged = false;
 	s_nBlockInterlocked = false;
 	s_eeBlockHasFormChange = false; // per-block, so the block counter counts blocks
 
@@ -5422,6 +5529,9 @@ StartRecomp:
 		// call, so what is left is the sub-cycle remainder. The scaler floors
 		// a charge at 1, which here would charge the block a cycle the
 		// interpreter does not, so a remainder under a cycle is not charged.
+		// A block ended by a forced event test (an EE timer read) charges its
+		// cut here; one ended by an interpreter call charged it there.
+		recEeIssueChargeCut(pc);
 		iFlushCall(FLUSH_EVERYTHING);
 
 		if (s_nBlockCycles < 8)
@@ -5456,6 +5566,7 @@ StartRecomp:
 				Console.Error("EE ARM64: Block end mismatch! startpc=0x%08X pc=0x%08X s_nEndBlock=0x%08X", startpc, pc, s_nEndBlock);
 			pxAssert(pc == s_nEndBlock);
 
+			recEeIssueChargeCut(pc);
 			const int numinsts = (pc - startpc) / 4;
 			if (numinsts > 6)
 			{
