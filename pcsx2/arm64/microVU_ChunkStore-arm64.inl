@@ -561,15 +561,19 @@ static void* mVUchunkLookup(microVU& mVU, u32 rootPC, uptr pState)
 }
 
 // An outermost VU1 compile returned: what it emitted becomes an entry, unless
-// the store holds it already or cannot describe it.
+// the store holds it already or cannot describe it. A lookup that installed a
+// body emitted only the copy of that body, which is not judged for the pack.
 static void mVUchunkEnd(microVU& mVU)
 {
 	mVUChunkEpisode& ep = mVU.chunk;
+	if (!ep.recording)
+	{
+		mVUPersist::DropBody(mVU);
+		return;
+	}
+	ep.recording = false;
 	std::vector<mVUPersist::PersistFixup> fixups;
 	const bool packable = mVUPersist::EndBody(mVU, armGetCurrentCodePointer(), fixups);
-	if (!ep.recording)
-		return;
-	ep.recording = false;
 
 	mVUChunkStore::Stats& st = s_mVUchunkStats;
 	const u32 codeBytes = static_cast<u32>(armGetCurrentCodePointer() - ep.codeStart);

@@ -1169,10 +1169,7 @@ namespace mVUPersist
 			return false;
 		u8* const start = std::exchange(r.bodyStart, nullptr);
 		if (r.failed)
-		{
-			DevCon.WriteLn("mVUPersist: VU%u body not packable (%s)", mVU.index & 1, r.failReason);
 			return false;
-		}
 		const u32 lo = r.OffsetOf(start);
 		const u32 hi = r.OffsetOf(end);
 		for (size_t i = r.bodyFirstFixup; i < r.fixups.size(); i++)
@@ -1185,6 +1182,13 @@ namespace mVUPersist
 		}
 		std::sort(out.begin(), out.end(), [](const PersistFixup& a, const PersistFixup& b) { return a.codeOffset < b.codeOffset; });
 		return true;
+	}
+
+	void DropBody(microVU& mVU)
+	{
+		Recorder& r = s_recorder[mVU.index & 1];
+		if (r.active && armAddressRecorder == &r)
+			r.bodyStart = nullptr;
 	}
 
 	void NoteMovRun(microVU& mVU, u8* at, u32 width, const void* addr)

@@ -26,14 +26,17 @@
 #include "arm64/microVU_ProgCache-arm64.h"
 #include "arm64/vuaot/VuAotLive.h"
 
+#include "common/Console.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -431,6 +434,59 @@ TEST_F(Vu1ChunkPack, AResetBringsBodiesBackFromRam)
 	const std::string d = Diff(compiled, Take(again.h), true);
 	EXPECT_TRUE(d.empty()) << d;
 	EXPECT_EQ(mVUProgCache::GetStats(1).packsLoaded, 0u);
+}
+
+namespace
+{
+// What the log said while a LogCapture was alive, development lines included.
+std::vector<std::string> g_logLines;
+
+void CaptureLog(LOGLEVEL, ConsoleColors, std::string_view message) { g_logLines.emplace_back(message); }
+
+struct LogCapture
+{
+	LogCapture()
+	{
+		g_logLines.clear();
+		Log::SetHostOutputLevel(LOGLEVEL_DEV, &CaptureLog);
+	}
+	~LogCapture() { Log::SetHostOutputLevel(LOGLEVEL_NONE, nullptr); }
+
+	static size_t Count(std::string_view needle)
+	{
+		return static_cast<size_t>(std::count_if(g_logLines.begin(), g_logLines.end(),
+			[&](const std::string& l) { return l.find(needle) != std::string::npos; }));
+	}
+};
+} // namespace
+
+// A copy served from the store installs a body compiled before: it is no
+// body of its own, so it is not judged for the pack. It writes no log line
+// and counts no refusal.
+TEST_F(Vu1ChunkPack, AnInstalledCopyIsNotJudgedForThePack)
+{
+	const std::vector<VuOp> routine = CallLoopRoutine();
+	OpenPack();
+	OneRun run(1, kHome, routine, kHome);
+	ASSERT_GT(run.compiles, 0u);
+
+	const StoreStats a = mVUChunkStore::GetStats();
+	const u64 compiled = mVUPersist::GetBlockCompileCount(1);
+	{
+		LogCapture log;
+		for (const u32 root : {0x2000u, 0x1238u, 0x3038u})
+		{
+			Upload(2 + root, root, routine);
+			run.h.SetStartPc(root);
+			run.Again();
+		}
+		EXPECT_EQ(LogCapture::Count("mVUPersist: VU1"), 0u) << "an install was judged as a body";
+	}
+	const StoreStats b = mVUChunkStore::GetStats();
+	ASSERT_EQ(mVUPersist::GetBlockCompileCount(1), compiled) << "a copy was compiled, not installed";
+	ASSERT_GT(b.hits - a.hits, 0u);
+	EXPECT_EQ(b.packUnpackable - a.packUnpackable, 0u);
+	EXPECT_EQ(b.packSaved - a.packSaved, 0u) << "an install was written to the pack";
 }
 
 // A routine the VU AOT tier built regions for. In the next session every copy

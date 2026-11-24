@@ -132,6 +132,9 @@ namespace mVUPersist
 	// off or the body holds an address a copy could not be patched for (a
 	// heap pointer, a branch to code before the body).
 	bool EndBody(microVU& mVU, u8* end, std::vector<PersistFixup>& out);
+	// It returned without a body of its own (it installed one compiled
+	// before): closes the body with nothing judged.
+	void DropBody(microVU& mVU);
 	// Code copied into the open body (VU AOT's regions) carries `addr` in a
 	// MOVZ/MOVK run of `width` instructions at `at`, or branches to `target`
 	// with the B or BL at `at`.
