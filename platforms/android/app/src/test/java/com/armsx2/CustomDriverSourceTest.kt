@@ -77,15 +77,18 @@ class CustomDriverSourceTest {
             assertFalse(r.toString(), CustomDriver.offersMaliSX2(r))
     }
 
-    // Adreno 6xx and 7xx, as GL_RENDERER spells them. 8xx is out: Turnip's a8xx support is young.
-    private val adreno6xxAnd7xx = listOf(
+    // Adreno 6xx and 7xx, and the 8xx parts our Turnip's device table lists (810, 829, 830, 840), as GL_RENDERER spells them.
+    private val adrenoTurnipTarget = listOf(
         "Adreno (TM) 610", "Adreno (TM) 650", "Adreno (TM) 662", "Adreno (TM) 690",
         "Adreno (TM) 702", "Adreno (TM) 730", "Adreno (TM) 740", "Adreno (TM) 750", "adreno (tm) 740",
+        "Adreno (TM) 810", "Adreno (TM) 829", "Adreno (TM) 830", "Adreno (TM) 840", "adreno (tm) 830",
         // The Anbernic RG 55G1's Adreno 613, as Qualcomm's GL driver names it.
         "Adreno (TM) A12", "adreno (tm) a12",
     )
     private val notAdrenoTurnipTarget = listOf(
-        null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 540", "Adreno (TM) 830", "Adreno (TM) 840",
+        null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 540",
+        // 8xx numbers the device table has no row for, and numbers beside the listed ones.
+        "Adreno (TM) 812", "Adreno (TM) 825", "Adreno (TM) 845", "Adreno (TM) 850", "Adreno (TM) 900", "Adreno (TM) 8300",
         "Adreno (TM) 6500", "Mali-G715", "PowerVR B-Series BXM-8-256", "Xclipse 940",
         // Marketing names not identified on a device, and a bare 12 that is not one.
         "Adreno (TM) A32", "Adreno (TM) A11", "Adreno (TM) 12",
@@ -100,21 +103,21 @@ class CustomDriverSourceTest {
     }
 
     @Test
-    fun turnipTargetIsAdreno6xxAnd7xx() {
-        for (r in adreno6xxAnd7xx)
-            assertTrue(r, CustomDriver.isAdreno6xxOr7xx(r))
+    fun turnipTargetIsAdreno6xx7xxAndTheListed8xx() {
+        for (r in adrenoTurnipTarget)
+            assertTrue(r, CustomDriver.isArmsx2TurnipPart(r))
         for (r in notAdrenoTurnipTarget)
-            assertFalse(r.toString(), CustomDriver.isAdreno6xxOr7xx(r))
+            assertFalse(r.toString(), CustomDriver.isArmsx2TurnipPart(r))
     }
 
     @Test
     fun setupOffersOurDriverForTheGpuAndNothingElse() {
         for (r in valhallV9 + valhallV10 + valhallV11 + bifrostV7)
             assertEquals(r, "ARMSX2 · MaliSX2", CustomDriver.setupOfferLabel(r))
-        for (r in adreno6xxAnd7xx)
+        for (r in adrenoTurnipTarget)
             assertEquals(r, "ARMSX2 · turnip", CustomDriver.setupOfferLabel(r))
         val nothingOffered = listOf(
-            null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 840", "Adreno (TM) 6500",
+            null, "", "Adreno", "Adreno (TM) 506", "Adreno (TM) 825", "Adreno (TM) 850", "Adreno (TM) 900", "Adreno (TM) 6500",
             "Mali-G72 MP3", "Mali-G720 MC7", "PowerVR B-Series BXM-8-256", "Xclipse 940",
         )
         for (r in nothingOffered)

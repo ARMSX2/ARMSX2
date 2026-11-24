@@ -661,7 +661,7 @@ private fun PerformancePage(state: OnboardingUiState, onAutoTune: (Boolean) -> U
     }
 }
 
-/** Offers the ARMSX2 GPU driver built for this device (malisx2 on Mali, our Turnip on Adreno 6xx and 7xx).
+/** Offers the ARMSX2 GPU driver built for this device (malisx2 on Mali, our Turnip on Adreno 6xx, 7xx and the 810, 829, 830 and 840).
  *  Skipping costs nothing: the same download is in the GPU driver settings. */
 @Composable
 private fun DriverPage(state: OnboardingUiState, onInstall: () -> Unit, onRetry: () -> Unit) {

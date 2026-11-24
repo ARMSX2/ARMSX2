@@ -154,7 +154,7 @@ object CustomDriver {
     // (6xx only) under one of them (GSGPUDriverProfile.cpp). One release per pack, so the
     // release name is the row title.
     // Listed on Adreno only: it is a Qualcomm driver and loads on nothing else. The first-run
-    // setup offers it on Adreno 6xx and 7xx only ([setupSource]).
+    // setup offers it on Adreno 6xx, 7xx and the listed 8xx parts only ([setupSource]).
     private val ARMSX2_TURNIP_SOURCE = DriverSource(
         "ARMSX2 · turnip",
         "https://api.github.com/repos/bmdhacks/armsx2-turnip/releases",
@@ -179,13 +179,14 @@ object CustomDriver {
         return renderer.replaceRange(number.range.first - 1, number.range.last + 1, model.toString())
     }
 
-    /** Adreno 6xx and 7xx, the parts the armsx2-turnip releases say they are built for. Not 8xx:
-     *  Turnip's a8xx support is young and the driver list recommends a Qualcomm pack there.
+    /** Adreno 6xx and 7xx, and the 8xx parts our Turnip's device table lists: 810, 829, 830 and 840.
+     *  On any other 8xx number (825, 845, 850) the pack finds no device it knows and Vulkan has no
+     *  GPU, so those parts are not offered it. Of the listed 8xx parts only the 830 has been run.
      *  GL_RENDERER reads like "Adreno (TM) 740", or a marketing name ([withAdrenoModelNumber]). */
-    private val ADRENO_6XX_7XX = Regex("""Adreno\D*([67]\d\d)(?!\d)""", RegexOption.IGNORE_CASE)
-    internal fun isAdreno6xxOr7xx(renderer: String?): Boolean {
+    private val ADRENO_ARMSX2_TURNIP = Regex("""Adreno\D*([67]\d\d|8(?:10|29|30|40))(?!\d)""", RegexOption.IGNORE_CASE)
+    internal fun isArmsx2TurnipPart(renderer: String?): Boolean {
         val r = withAdrenoModelNumber(renderer) ?: return false
-        return ADRENO_6XX_7XX.containsMatchIn(r)
+        return ADRENO_ARMSX2_TURNIP.containsMatchIn(r)
     }
 
     /** Any Adreno, whatever its model: the Turnip and Adreno Tools packs drive Qualcomm's driver,
@@ -203,7 +204,7 @@ object CustomDriver {
      *  our drivers is built for it (the system driver stays). The two predicates never overlap. */
     private fun setupSource(renderer: String?): DriverSource? = when {
         MALISX2_SOURCE.supports(renderer) -> MALISX2_SOURCE
-        isAdreno6xxOr7xx(renderer) -> ARMSX2_TURNIP_SOURCE
+        isArmsx2TurnipPart(renderer) -> ARMSX2_TURNIP_SOURCE
         else -> null
     }
 

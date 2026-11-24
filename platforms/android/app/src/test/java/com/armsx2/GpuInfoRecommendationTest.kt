@@ -1,21 +1,24 @@
 package com.armsx2
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class GpuInfoRecommendationTest {
-    // The driver settings page recommends our Turnip on every Adreno 6xx and 7xx, the range the first-run
-    // setup offers it on (CustomDriver.isAdreno6xxOr7xx), so a player is told the same thing in both places.
+    // The driver settings page recommends our Turnip on every Adreno 6xx and 7xx and on the 8xx parts its device table
+    // lists (810, 829, 830, 840), the range the first-run setup offers it on (CustomDriver.isArmsx2TurnipPart), so a
+    // player is told the same thing in both places.
     @Test
-    fun ourTurnipIsRecommendedOnAdreno6xxAnd7xx() {
+    fun ourTurnipIsRecommendedOnAdreno6xx7xxAndTheListed8xx() {
         for (r in listOf(
             "Adreno (TM) 610", "Adreno (TM) 618", "Adreno (TM) 650", "Adreno (TM) 660", "Adreno (TM) 690",
             "Adreno (TM) 702", "Adreno (TM) 730", "Adreno (TM) 740", "Adreno (TM) 750",
+            "Adreno (TM) 810", "Adreno (TM) 829", "Adreno (TM) 830", "Adreno (TM) 840",
         )) {
             assertEquals(r, "ARMSX2 Turnip", GpuInfo.recommendation(r)?.sourceLabel)
-            assertTrue(r, CustomDriver.isAdreno6xxOr7xx(r))
+            assertTrue(r, CustomDriver.isArmsx2TurnipPart(r))
         }
     }
 
@@ -31,10 +34,18 @@ class GpuInfoRecommendationTest {
         assertEquals("KIMCHI", GpuInfo.recommendation("Adreno (TM) A32")?.sourceLabel)
     }
 
+    // Every number from 800 up that our Turnip has no table row for keeps the StevenMXZ recommendation it had:
+    // the 8xx parts the table lacks (on those our pack finds no device), and the 9xx and four-digit numbers the
+    // same rule always caught.
     @Test
-    fun adreno8xxIsRecommendedStevenMXZsGen8Turnip() {
-        for (r in listOf("Adreno (TM) 825", "Adreno (TM) 830", "Adreno (TM) 840"))
+    fun otherNumbersFrom800UpStayOnStevenMXZsGen8Turnip() {
+        for (r in listOf(
+            "Adreno (TM) 812", "Adreno (TM) 825", "Adreno (TM) 845", "Adreno (TM) 850",
+            "Adreno (TM) 900", "Adreno (TM) 8300", "Adreno (TM) 6500",
+        )) {
             assertEquals(r, "StevenMXZ · Adreno-Tools", GpuInfo.recommendation(r)?.sourceLabel)
+            assertFalse(r, CustomDriver.isArmsx2TurnipPart(r))
+        }
     }
 
     @Test
