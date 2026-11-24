@@ -447,6 +447,8 @@
  "backend.driver.installed": "نصب شده است",
  "backend.driver.installing": "در حال نصب…",
  "backend.driver.loadingList": "در حال بارگیری لیست راننده…",
+ "backend.driver.maliSx2NotSelected": "%s نصب شده است اما انتخاب نشده است.",
+ "backend.driver.maliSx2Switch": "به آن تغییر دهید",
  "backend.driver.systemVulkan": "درایور سیستم Vulkan",
  "backend.driver.use": "استفاده کنید",
  "backend.glDriver.description": "نحوه اجرای رندر OpenGL را انتخاب کنید. ANGLE با یک درایور همراه، OpenGL ES را به Vulkan ترجمه می‌کند که در GPUهای غیر Adreno (Mali / Xclipse / PowerVR) با درایور OpenGL ضعیف یا پرایراد کمک می‌کند. برای اعمال، بازی را مجدداً راه‌اندازی کنید.",

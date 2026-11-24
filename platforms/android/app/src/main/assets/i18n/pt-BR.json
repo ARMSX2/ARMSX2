@@ -116,6 +116,8 @@
  "backend.driver.installed": "Instalado",
  "backend.driver.installing": "Instalando…",
  "backend.driver.loadingList": "Carregando lista de drivers…",
+ "backend.driver.maliSx2NotSelected": "%s está instalado, mas não está selecionado.",
+ "backend.driver.maliSx2Switch": "Mudar para ele",
  "backend.driver.systemVulkan": "Driver Vulkan do sistema",
  "backend.driver.use": "Usar",
  "backend.gpuDriver.description": "Substitui o driver Vulkan do sistema pelo Mesa Turnip ou outro driver Adreno. Recomendado para aparelhos Adreno-6XX com drivers OEM desatualizados.",

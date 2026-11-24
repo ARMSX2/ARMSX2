@@ -387,6 +387,8 @@
   "backend.driver.installedOk": "インストール完了",
   "backend.driver.installing": "インストール中…",
   "backend.driver.loadingList": "ドライバ一覧を読み込み中…",
+  "backend.driver.maliSx2NotSelected": "%sはインストール済みですが、選択されていません。",
+  "backend.driver.maliSx2Switch": "これに切り替え",
   "backend.driver.none": "ドライバが見つかりません",
   "backend.driver.recommendSystem": "システムドライバ（内蔵）",
   "backend.driver.recommended": "推奨",

@@ -442,6 +442,8 @@
   "backend.driver.installedOk": "Sazkirî",
   "backend.driver.installing": "Sazkirin…",
   "backend.driver.loadingList": "Lîsteya ajokaran tê barkirin…",
+  "backend.driver.maliSx2NotSelected": "%s sazkirî ye, lê nehatiye hilbijartin.",
+  "backend.driver.maliSx2Switch": "Derbasî vê bibe",
   "backend.driver.none": "Ti ajokar nehat dîtin",
   "backend.driver.recommendSystem": "Ajokera pergalê (hundurîn)",
   "backend.driver.recommended": "Pêşniyarkirî",

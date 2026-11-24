@@ -387,6 +387,8 @@
  "backend.driver.installedOk": "تم التثبيت",
  "backend.driver.installing": "جارٍ التثبيت…",
  "backend.driver.loadingList": "جارٍ تحميل قائمة التعريفات…",
+ "backend.driver.maliSx2NotSelected": "%s مثبّت لكن لم يتم اختياره.",
+ "backend.driver.maliSx2Switch": "التبديل إليه",
  "backend.driver.none": "لم يُعثر على تعريفات",
  "backend.driver.recommendSystem": "تعريف النظام (المدمج)",
  "backend.driver.recommended": "موصى به",

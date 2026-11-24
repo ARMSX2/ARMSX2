@@ -387,6 +387,8 @@
  "backend.driver.installedOk": "已安装",
  "backend.driver.installing": "安装中…",
  "backend.driver.loadingList": "加载驱动列表…",
+ "backend.driver.maliSx2NotSelected": "%s 已安装，但未选择。",
+ "backend.driver.maliSx2Switch": "切换到此驱动",
  "backend.driver.none": "未找到驱动",
  "backend.driver.recommendSystem": "系统驱动（内置）",
  "backend.driver.recommended": "推荐",

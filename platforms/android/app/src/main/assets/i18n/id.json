@@ -387,6 +387,8 @@
   "backend.driver.installedOk": "Terpasang",
   "backend.driver.installing": "Memasang…",
   "backend.driver.loadingList": "Memuat daftar driver…",
+  "backend.driver.maliSx2NotSelected": "%s sudah terpasang, tetapi belum dipilih.",
+  "backend.driver.maliSx2Switch": "Beralih ke driver ini",
   "backend.driver.none": "Tidak ada driver ditemukan",
   "backend.driver.recommendSystem": "Driver sistem (bawaan)",
   "backend.driver.recommended": "Direkomendasikan",

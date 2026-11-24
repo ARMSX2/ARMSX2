@@ -387,6 +387,8 @@
  "backend.driver.installedOk": "ติดตั้งแล้ว",
  "backend.driver.installing": "กำลังติดตั้ง…",
  "backend.driver.loadingList": "กำลังโหลดรายการไดรเวอร์…",
+ "backend.driver.maliSx2NotSelected": "%s ติดตั้งแล้ว แต่ยังไม่ได้เลือก",
+ "backend.driver.maliSx2Switch": "เปลี่ยนไปใช้ไดรเวอร์นี้",
  "backend.driver.none": "ไม่พบไดรเวอร์",
  "backend.driver.recommendSystem": "ไดรเวอร์ระบบ (ในตัว)",
  "backend.driver.recommended": "แนะนำ",

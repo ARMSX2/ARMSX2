@@ -442,6 +442,8 @@
   "backend.driver.installedOk": "Встановлено",
   "backend.driver.installing": "Встановлення…",
   "backend.driver.loadingList": "Завантаження списку драйверів…",
+  "backend.driver.maliSx2NotSelected": "%s встановлено, але не вибрано.",
+  "backend.driver.maliSx2Switch": "Переключитися на нього",
   "backend.driver.none": "Драйвери не знайдено",
   "backend.driver.recommendSystem": "Системний драйвер (вбудований)",
   "backend.driver.recommended": "Рекомендовано",

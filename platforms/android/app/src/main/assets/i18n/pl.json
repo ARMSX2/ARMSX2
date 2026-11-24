@@ -387,6 +387,8 @@
  "backend.driver.installedOk": "Zainstalowano",
  "backend.driver.installing": "Instalowanie…",
  "backend.driver.loadingList": "Ładowanie listy sterowników…",
+ "backend.driver.maliSx2NotSelected": "%s jest zainstalowany, ale nie jest wybrany.",
+ "backend.driver.maliSx2Switch": "Przełącz na niego",
  "backend.driver.none": "Nie znaleziono sterowników",
  "backend.driver.recommendSystem": "Sterownik systemowy (wbudowany)",
  "backend.driver.recommended": "Zalecany",

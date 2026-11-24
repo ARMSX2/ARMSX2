@@ -387,6 +387,8 @@
  "backend.driver.installedOk": "Yüklendi",
  "backend.driver.installing": "Yükleniyor…",
  "backend.driver.loadingList": "Sürücü listesi yükleniyor…",
+ "backend.driver.maliSx2NotSelected": "%s yüklü ama seçili değil.",
+ "backend.driver.maliSx2Switch": "Buna Geç",
  "backend.driver.none": "Sürücü bulunamadı",
  "backend.driver.recommendSystem": "Sistem sürücüsü (yerleşik)",
  "backend.driver.recommended": "Önerilen",

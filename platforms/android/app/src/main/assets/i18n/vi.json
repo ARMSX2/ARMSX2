@@ -387,6 +387,8 @@
   "backend.driver.installedOk": "Đã cài",
   "backend.driver.installing": "Đang cài…",
   "backend.driver.loadingList": "Đang tải danh sách driver…",
+  "backend.driver.maliSx2NotSelected": "%s đã được cài nhưng chưa được chọn.",
+  "backend.driver.maliSx2Switch": "Chuyển sang driver này",
   "backend.driver.none": "Không tìm thấy driver nào",
   "backend.driver.recommendSystem": "Driver hệ thống (tích hợp sẵn)",
   "backend.driver.recommended": "Khuyến nghị",

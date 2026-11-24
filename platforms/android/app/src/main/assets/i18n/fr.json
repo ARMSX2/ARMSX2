@@ -382,6 +382,8 @@
   "backend.driver.installedOk": "Installé",
   "backend.driver.installing": "Installation…",
   "backend.driver.loadingList": "Chargement de la liste des pilotes…",
+  "backend.driver.maliSx2NotSelected": "%s est installé, mais pas sélectionné.",
+  "backend.driver.maliSx2Switch": "Passer à celui-ci",
   "backend.driver.none": "Aucun pilote trouvé",
   "backend.driver.recommendSystem": "Pilote système (intégré)",
   "backend.driver.recommended": "Recommandé",
