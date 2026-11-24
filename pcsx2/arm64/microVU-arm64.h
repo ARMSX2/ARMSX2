@@ -892,9 +892,13 @@ static constexpr u32 mVUplaceSlotResetAt = 1u << 20;
 // The heap memory a VU's programs and blocks hold (microVU::progBytes) at
 // which the next dispatcher exit resets the recompiler. A program built from
 // chunk store placements costs a few KiB of code, so the code cache no longer
-// bounds how many programs there are; this does. 96 MiB is about 3,000
-// programs of 32 KiB with their blocks.
-static constexpr u64 mVUprogBytesResetAt = 96ull << 20;
+// bounds how many programs there are; this does. A program is 32 KiB and a
+// block 288 bytes; OutRun 2006's programs average about 21 blocks, 38 KiB in
+// all, so 192 MiB is about 5,200 of them. Compiling every program, the 56 MiB
+// code cache filled at 3,830 to 3,900 of them, holding about 144 MiB of
+// programs and 56 MiB of code: the bound keeps more programs in no more
+// memory.
+static constexpr u64 mVUprogBytesResetAt = 192ull << 20;
 // What one block costs in progBytes: its link in the block list and its
 // entry in the quick lookup.
 static constexpr u64 mVUblockBytes = sizeof(microBlockLink) + sizeof(microBlockLinkRef);

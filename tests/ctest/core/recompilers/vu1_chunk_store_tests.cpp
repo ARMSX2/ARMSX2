@@ -809,29 +809,41 @@ TEST(Vu1ChunkStore, ProgramMemoryOfServedProgramsIsBounded)
 	const mvu_test_hooks::ProgramMemory m0 = mvu_test_hooks::GetProgramMemory(1);
 	ASSERT_GT(m0.programs, 0u);
 	ASSERT_GE(m0.bytes, m0.programs * m0.programBytes);
+	// The bound holds at least as many programs as the code cache did when
+	// every program was compiled: OutRun 2006 filled it at about 3,900
+	// programs of 21 blocks on average.
+	EXPECT_GE(m0.resetAt, 3900 * (m0.programBytes + 21 * m0.blockBytes));
 	u64 peak = m0.bytes, served = 0, compiled = 0;
 	u32 seed = 3;
 	bool reset = false;
 	mvu_test_hooks::ProgramMemory last = m0;
-	for (u32 base = 0x100; !reset && base + 26 * 8 <= kMicroBytes; base += 8)
+	// The routines move through micro memory, a new program at every place.
+	// A pass after the first uploads the loop with another count: it is
+	// compiled at its first place and served at the others.
+	for (u32 pass = 0; !reset && pass < 4; pass++)
 	{
-		for (const std::vector<VuOp>& routine : routines)
+		const std::vector<std::vector<VuOp>> uploads = pass ? std::vector<std::vector<VuOp>>{LoopProgram(3 + pass)}
+		                                                    : std::vector<std::vector<VuOp>>{routines[0], routines[1]};
+		for (u32 base = 0x100; !reset && base + 26 * 8 <= kMicroBytes; base += 8)
 		{
-			const u64 compiles = jit.RunUpload(seed++, base, routine, base);
-			const mvu_test_hooks::ProgramMemory m = mvu_test_hooks::GetProgramMemory(1);
-			ASSERT_LT(m.bytes, m.resetAt) << "a dispatch ended with the programs over the bound";
-			if (m.bytes < last.bytes)
+			for (const std::vector<VuOp>& routine : uploads)
 			{
-				reset = true;
-				// Freed with the reset: what is left is the program the run
-				// after it made.
-				EXPECT_LE(m.programs, 1u);
-				EXPECT_LT(m.bytes, 2 * m.programBytes);
-				break;
+				const u64 compiles = jit.RunUpload(seed++, base, routine, base);
+				const mvu_test_hooks::ProgramMemory m = mvu_test_hooks::GetProgramMemory(1);
+				ASSERT_LT(m.bytes, m.resetAt) << "a dispatch ended with the programs over the bound";
+				if (m.bytes < last.bytes)
+				{
+					reset = true;
+					// Freed with the reset: what is left is the program the
+					// run after it made.
+					EXPECT_LE(m.programs, 1u);
+					EXPECT_LT(m.bytes, 2 * m.programBytes);
+					break;
+				}
+				(compiles ? compiled : served)++;
+				peak = std::max(peak, m.bytes);
+				last = m;
 			}
-			(compiles ? compiled : served)++;
-			peak = std::max(peak, m.bytes);
-			last = m;
 		}
 	}
 	ASSERT_TRUE(reset) << "no reset after " << served + compiled << " programs, " << peak << " bytes";
