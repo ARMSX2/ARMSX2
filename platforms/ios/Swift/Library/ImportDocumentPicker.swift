@@ -8,23 +8,17 @@ import UIKit
 struct ImportDocumentPicker: UIViewControllerRepresentable {
 	let allowedContentTypes: [UTType]
 	let allowsMultipleSelection: Bool
-	let legacyDocumentTypes: [String]?
-	let legacyDocumentMode: UIDocumentPickerMode
 	let asCopy: Bool
 	let onComplete: (Result<[URL], Error>) -> Void
 
 	init(
 		allowedContentTypes: [UTType] = [],
 		allowsMultipleSelection: Bool,
-		legacyDocumentTypes: [String]? = nil,
-		legacyDocumentMode: UIDocumentPickerMode = .import,
 		asCopy: Bool = true,
 		onComplete: @escaping (Result<[URL], Error>) -> Void
 	) {
 		self.allowedContentTypes = allowedContentTypes
 		self.allowsMultipleSelection = allowsMultipleSelection
-		self.legacyDocumentTypes = legacyDocumentTypes
-		self.legacyDocumentMode = legacyDocumentMode
 		self.asCopy = asCopy
 		self.onComplete = onComplete
 	}
@@ -34,12 +28,7 @@ struct ImportDocumentPicker: UIViewControllerRepresentable {
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-		let picker: UIDocumentPickerViewController
-		if let legacyDocumentTypes {
-			picker = UIDocumentPickerViewController(documentTypes: legacyDocumentTypes, in: legacyDocumentMode)
-		} else {
-			picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: asCopy)
-		}
+		let picker = UIDocumentPickerViewController(forOpeningContentTypes: allowedContentTypes, asCopy: asCopy)
         picker.allowsMultipleSelection = allowsMultipleSelection
         picker.delegate = context.coordinator
         return picker

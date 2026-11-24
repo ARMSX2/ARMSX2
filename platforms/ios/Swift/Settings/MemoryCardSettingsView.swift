@@ -193,14 +193,8 @@ struct MemoryCardSettingsView: View {
         }
         .sheet(isPresented: $showZipImportPicker) {
             ImportDocumentPicker(
-                allowedContentTypes: [
-                    UTType(filenameExtension: "zip") ?? .data,
-                    .archive,
-                    .data
-                ],
+                allowedContentTypes: [.zip, UTType("com.pkware.zip-archive"), .archive].compactMap { $0 },
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.zip-archive", "com.pkware.zip-archive", "public.archive"],
-                legacyDocumentMode: .import,
                 asCopy: true
             ) { result in
                 showZipImportPicker = false

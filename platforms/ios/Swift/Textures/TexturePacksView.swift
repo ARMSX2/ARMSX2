@@ -94,9 +94,9 @@ struct TexturePacksView<Options: View>: View {
         }
         .sheet(isPresented: $showPicker) {
             ImportDocumentPicker(
+                allowedContentTypes: [.zip, .data],
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.zip-archive", "public.data"],
-                legacyDocumentMode: .open
+                asCopy: false
             ) { result in
                 showPicker = false
                 switch result {

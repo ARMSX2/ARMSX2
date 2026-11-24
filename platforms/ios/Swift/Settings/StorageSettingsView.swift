@@ -289,14 +289,6 @@ struct StorageSettingsView: View {
             + (isWorking ? [] : cleanupActions)
     }
 
-    private var externalGameFileContentTypes: [UTType] {
-        var types: [UTType] = [.item, .data, .content]
-        for type in FileImportHandler.gameContentTypes where !types.contains(type) {
-            types.append(type)
-        }
-        return types
-    }
-
     var body: some View {
         ZStack {
             Form {
@@ -477,10 +469,8 @@ struct StorageSettingsView: View {
         }
         .sheet(isPresented: $showExternalGameFilePicker) {
             ImportDocumentPicker(
-                allowedContentTypes: externalGameFileContentTypes,
+                allowedContentTypes: [.item, .data, .content],
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.item", "public.data", "public.content"],
-                legacyDocumentMode: .open,
                 asCopy: false
             ) { result in
                 showExternalGameFilePicker = false
@@ -500,10 +490,8 @@ struct StorageSettingsView: View {
         }
         .sheet(isPresented: $showExternalFolderPicker) {
             ImportDocumentPicker(
-                allowedContentTypes: [.folder],
+                allowedContentTypes: [.folder, .directory],
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.folder", "public.directory"],
-                legacyDocumentMode: .open,
                 asCopy: false
             ) { result in
                 showExternalFolderPicker = false
