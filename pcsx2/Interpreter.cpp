@@ -3,6 +3,7 @@
 
 #include "Common.h"
 #include "R5900OpcodeTables.h"
+#include "R5900IssueModel.h"
 #include "VMManager.h"
 #include "Elfheader.h"
 #include "Cache.h"
@@ -22,6 +23,39 @@ extern int vu0branch, vu1branch;
 
 static int branch2 = 0;
 static u32 cpuBlockCycles = 0;		// 3 bit fixed point version of cycle count
+
+// The issue model's state for the path being executed. Every instruction is
+// charged what it adds to the path (R5900::Issue::Step) as it runs; where the
+// path leaves, its exit is charged and the state starts over.
+static R5900::Issue::State s_issue;
+
+// Eighths of a cycle per model cycle: one cycle, two with dual issue off
+// (Config.DIE clear), as every charge has been.
+static __fi u32 intIssueEighths()
+{
+	return 8 * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+}
+
+static __fi void intIssueStep(u32 pc, u32 code)
+{
+	cpuBlockCycles += R5900::Issue::Step(s_issue, pc, code) * intIssueEighths();
+}
+
+static void intIssueEndPath(R5900::Issue::Exit exit)
+{
+	cpuBlockCycles += R5900::Issue::EndCost(s_issue, exit) * intIssueEighths();
+	R5900::Issue::Reset(s_issue);
+}
+
+void intIssueLikelyNotTaken()
+{
+	intIssueEndPath(R5900::Issue::Exit::LikelyNotTaken);
+}
+
+void intIssuePathBreak()
+{
+	intIssueEndPath(R5900::Issue::Exit::None);
+}
 static std::string disOut;
 static bool intExitExecution = false;
 static fastjmp_buf intJmpBuf;
@@ -66,6 +100,10 @@ void intUpdateCPUCycles()
 	// Ensure block cycle count is never less than 1.
 	cpuRegs.cycle += (scale_cycles < 1) ? 1 : scale_cycles;
 
+#ifdef PCSX2_RECOMPILER_TESTS
+	const u32 raw_before = cpuBlockCycles;
+#endif
+
 	if (cyclerate > 1)
 	{
 		cpuBlockCycles &= (0x1 << (cyclerate + 2)) - 1;
@@ -74,6 +112,18 @@ void intUpdateCPUCycles()
 	{
 		cpuBlockCycles &= 0x7;
 	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test hook: every charge scaled by (1024 + extra) / 1024, the fraction
+	// carried from one charge to the next, as the recompiler's hook does.
+	if (const u32 extra = R5900::Issue::g_testExtraPer1024)
+	{
+		static u64 s_acc = 0;
+		s_acc += static_cast<u64>(raw_before - cpuBlockCycles) * extra;
+		cpuRegs.cycle += s_acc >> 13;
+		s_acc &= 0x1FFF;
+	}
+#endif
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -249,7 +299,7 @@ static void execI()
 #endif
 
 
-	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	intIssueStep(pc, cpuRegs.code);
 
 	opcode.interpret();
 
@@ -274,7 +324,7 @@ static bool execCachedI(u32 pc, u32 code, const OPCODE& opcode)
 
 	cpuRegs.pc = pc + 4;
 	cpuRegs.code = code;
-	cpuBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	intIssueStep(pc, code);
 	opcode.interpret();
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -295,6 +345,10 @@ static __fi void _doBranch_shared(u32 tar)
 
 	if( cpuRegs.branch != 0 )
 	{
+		// The path ends after its delay slot. (An exception in the slot ended
+		// it already, in cpuException.)
+		intIssueEndPath(R5900::Issue::ExitFor(s_issue, tar));
+
 		if (Cpu == &intCpu)
 		{
 			if (intLastBranchTo == tar && EmuConfig.Speedhacks.WaitLoop)
@@ -484,6 +538,7 @@ void BEQL()    // Branch if Rs == Rt
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -497,6 +552,7 @@ void BNEL()     // Branch if Rs != Rt
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -510,6 +566,7 @@ void BLEZL()    // Branch if Rs <= 0
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -523,6 +580,7 @@ void BGTZL()     // Branch if Rs >  0
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -536,6 +594,7 @@ void BLTZL()     // Branch if Rs <  0
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -549,6 +608,7 @@ void BGEZL()     // Branch if Rs >= 0
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -563,6 +623,7 @@ void BLTZALL()   // Branch if Rs <  0 and link
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -577,6 +638,7 @@ void BGEZALL()   // Branch if Rs >= 0 and link
 	else
 	{
 		cpuRegs.pc +=4;
+		intIssueLikelyNotTaken();
 		intEventTest();
 	}
 }
@@ -619,6 +681,7 @@ static void intReserve()
 
 static void intReset()
 {
+	R5900::Issue::Reset(s_issue);
 	cpuRegs.branch = 0;
 	branch2 = 0;
 	NoJITImprovements::ResetEEBlockCache();

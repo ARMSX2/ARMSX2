@@ -381,6 +381,12 @@ void intSetBranch();
 // parts of the Recs (namely COP0's branch codes and stuff).
 void intDoBranch(u32 target);
 
+// The interpreter's issue-model path (R5900IssueModel.h) ends: charge its exit
+// and start a new one. A branch-likely not taken leaves before its delay slot;
+// an exception or ERET leaves without a branch.
+void intIssueLikelyNotTaken();
+void intIssuePathBreak();
+
 // Interpret a single instruction at cpuRegs.pc (recompiler per-opcode fallback).
 // See the implementation in Interpreter.cpp for the contract.
 

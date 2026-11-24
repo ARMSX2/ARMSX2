@@ -653,6 +653,10 @@ extern u32 pc;             // recompiler pc
 extern int g_branch;       // set for branch
 extern u32 target;         // branch target
 extern u32 s_nBlockCycles; // cycles of current block recompiling
+// A branch emitter that restored s_nBlockCycles to its fork point by hand (a
+// swapped delay slot has no LoadBranchState) lets the second arm charge its
+// own exit.
+void recEeIssueForkRestored();
 extern bool s_nBlockInterlocked; // Current block has VU0 interlocking
 
 //////////////////////////////////////////////////////////////////////////////////////////

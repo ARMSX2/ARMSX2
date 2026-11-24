@@ -3,24 +3,26 @@
 
 // What the EE charges for its divide instructions, in both engines.
 //
-// Every guest instruction is charged a fixed amount from the opcode table
-// (R5900OpcodeTables.cpp, in eighths of a cycle). The interpreter adds it per
-// instruction and the recompiler sums it per block and bakes the scaled sum
-// into the block tail, so a divide's charge reaches cpuRegs.cycle through two
-// different paths. This file pins the charge per divide opcode as both engines
-// apply it: at every EE cycle-rate selector, with dual issue on and off, and
-// for the FPU divides at every FPU clamp mode (the recompiler has two FPU
-// emitters, iFPU and iFPUd, and the charge must not depend on which one runs).
+// Every guest instruction is charged what it adds to its path under the issue
+// model (R5900IssueModel.h). A divide occupies its unit for the time the
+// console takes, and a path that ends with the unit still busy is charged until
+// it is free. The interpreter adds the charge per instruction and the
+// recompiler sums it per block and bakes the scaled sum into the block tail,
+// so a divide's charge reaches cpuRegs.cycle through two different paths. This
+// file pins the charge per divide opcode as both engines apply it: at every EE
+// cycle-rate selector, with dual issue on and off, and for the FPU divides at
+// every FPU clamp mode (the recompiler has two FPU emitters, iFPU and iFPUd,
+// and the charge must not depend on which one runs).
 //
-// Where a divide's charge comes from a console measurement, the comments in
-// R5900OpcodeTables.cpp say which. A change to one of these numbers is a timing
-// change for every game that divides, not a test update.
+// A change to one of these numbers is a timing change for every game that
+// divides, not a test update.
 
 #include "harness/EeRecTestHarness.h"
 
 #include "Config.h"
 #include "EECycleRate.h"
 #include "R5900.h"
+#include "R5900IssueModel.h"
 #include "R5900OpcodeTables.h"
 
 #include <gtest/gtest.h>
@@ -40,33 +42,38 @@ namespace {
 // both engines charge every instruction twice. The harness zeroes Config.
 constexpr u32 kConfigDie = 1u << 18;
 
-// What the table charges the padding NOP, and the JR $ra + NOP the harness
-// appends to every program.
-u32 NopEighths() { return R5900::GetInstruction(NOP).cycles; }
-u32 SyncEighths() { return R5900::GetInstruction(ee::SYNC).cycles; }
-u32 TailEighths() { return R5900::GetInstruction(JR(reg::ra)).cycles + NopEighths(); }
-
 struct DivideOp
 {
 	const char* name;
 	u32 code;
-	u32 eighths; // the table charge
+	u32 cycles; // how long the divide holds its unit
 	bool fpu;
 };
 
-// The charge per divide opcode, in eighths of a cycle.
+// The time per divide opcode, in cycles.
 const DivideOp kOps[] = {
-	{"DIV",     DIV(reg::a0, reg::a1),         37 * 8, false},
-	{"DIVU",    DIVU(reg::a0, reg::a1),        37 * 8, false},
-	{"DIV1",    ee::DIV1(reg::a0, reg::a1),    37 * 8, false},
-	{"DIVU1",   ee::DIVU1(reg::a0, reg::a1),   37 * 8, false},
-	{"DIV_S",   ee::DIV_S(3, 1, 2),            7 * 8,  true},
-	{"SQRT_S",  ee::SQRT_S(3, 2),              7 * 8,  true},
-	{"RSQRT_S", ee::RSQRT_S(3, 1, 2),          13 * 8, true},
-	{"PDIVW",   ee::PDIVW(reg::a0, reg::a1),   37 * 8, false},
-	{"PDIVUW",  ee::PDIVUW(reg::a0, reg::a1),  37 * 8, false},
-	{"PDIVBW",  ee::PDIVBW(reg::a0, reg::a1),  37 * 8, false},
+	{"DIV",     DIV(reg::a0, reg::a1),         37, false},
+	{"DIVU",    DIVU(reg::a0, reg::a1),        37, false},
+	{"DIV1",    ee::DIV1(reg::a0, reg::a1),    37, false},
+	{"DIVU1",   ee::DIVU1(reg::a0, reg::a1),   37, false},
+	{"DIV_S",   ee::DIV_S(3, 1, 2),            7,  true},
+	{"SQRT_S",  ee::SQRT_S(3, 2),              7,  true},
+	{"RSQRT_S", ee::RSQRT_S(3, 1, 2),          13, true},
+	{"PDIVW",   ee::PDIVW(reg::a0, reg::a1),   37, false},
+	{"PDIVUW",  ee::PDIVUW(reg::a0, reg::a1),  37, false},
+	{"PDIVBW",  ee::PDIVBW(reg::a0, reg::a1),  37, false},
 };
+
+// The model's cost, in eighths with dual issue on, of `words` plus the JR $ra
+// and NOP the harness appends to every program: one path that leaves by the JR.
+u32 ModelEighths(const std::vector<u32>& words)
+{
+	std::vector<u32> w = words;
+	w.push_back(JR(reg::ra));
+	w.push_back(NOP);
+	return 8 * R5900::Issue::PathCycles(RecompilerTestEnvironment::kProgramPc, w.data(), static_cast<u32>(w.size()),
+		R5900::Issue::Exit::RegisterJump);
+}
 
 // Sets the configured selector (and with it the effective one) for a scope.
 struct ScopedCycleRate
@@ -85,13 +92,12 @@ struct ScopedCycleRate
 	}
 };
 
-// The test block: `copies` of the divide, then padding so the block's raw
+// The test block: SYNCs, then `copies` of the divide, so the block's raw
 // charge (with the harness's JR + NOP tail) is a multiple of 32. That makes the
 // interpreter's charge independent of the sub-cycle remainder it carries over
 // from earlier runs at every selector from 0 up (the scaler drops at most 5
-// low bits there), so both engines can be held to the same exact number. The
-// padding is NOPs, and SYNCs where NOPs alone cannot reach a multiple of 32 (a
-// NOP charged a whole number of cycles cannot fix the JR's fraction).
+// low bits there), so both engines can be held to the same exact number. A
+// SYNC issues alone and adds one cycle in front of the divides.
 struct Block
 {
 	std::vector<u32> words;
@@ -100,24 +106,18 @@ struct Block
 
 Block MakeBlock(const DivideOp& op, int copies)
 {
-	Block b;
-	b.raw = copies * op.eighths + TailEighths();
-	for (int i = 0; i < copies; i++)
-		b.words.push_back(op.code);
-	for (u32 syncs = 0; syncs < 32; syncs++)
+	for (u32 syncs = 0; syncs < 8; syncs++)
 	{
-		for (u32 nops = 0; nops < 32; nops++)
-		{
-			if ((b.raw + syncs * SyncEighths() + nops * NopEighths()) % 32 != 0)
-				continue;
-			b.words.insert(b.words.end(), syncs, ee::SYNC);
-			b.words.insert(b.words.end(), nops, NOP);
-			b.raw += syncs * SyncEighths() + nops * NopEighths();
+		Block b;
+		b.words.assign(syncs, ee::SYNC);
+		for (int i = 0; i < copies; i++)
+			b.words.push_back(op.code);
+		b.raw = ModelEighths(b.words);
+		if (b.raw % 32 == 0)
 			return b;
-		}
 	}
-	ADD_FAILURE() << op.name << ": no padding of NOPs and SYNCs makes the block a multiple of 32";
-	return b;
+	ADD_FAILURE() << op.name << ": no count of SYNCs makes the block a multiple of 32";
+	return {};
 }
 
 // The FPU clamp modes, numbered as the GameDB's eeClampMode.
@@ -189,20 +189,19 @@ Charged RunBlock(const Block& b, bool die, Fpu fpu = Fpu::Default)
 
 } // namespace
 
-// The table holds the measured charge for every divide.
-TEST(EeRecDivideCharge, TableChargesEachDivideAsMeasured)
+// A divide alone costs its unit's time.
+TEST(EeRecDivideCharge, ModelChargesEachDivideAsMeasured)
 {
 	for (const DivideOp& op : kOps)
 	{
-		const R5900::OPCODE& entry = R5900::GetInstruction(op.code);
-		EXPECT_STREQ(entry.Name, op.name);
-		EXPECT_EQ(static_cast<u32>(entry.cycles), op.eighths) << op.name;
+		EXPECT_STREQ(R5900::GetInstruction(op.code).Name, op.name);
+		EXPECT_EQ(R5900::Issue::PathCycles(0, &op.code, 1, R5900::Issue::Exit::None), op.cycles) << op.name;
 	}
 }
 
-// Both engines charge exactly the table for one and for two of each divide,
+// Both engines charge exactly the model for one and for two of each divide,
 // at the default selector with dual issue on (what a game runs).
-TEST(EeRecDivideCharge, BothEnginesChargeTheTable)
+TEST(EeRecDivideCharge, BothEnginesChargeTheModel)
 {
 	ScopedCycleRate rate(0);
 	for (const DivideOp& op : kOps)
@@ -217,8 +216,8 @@ TEST(EeRecDivideCharge, BothEnginesChargeTheTable)
 	}
 }
 
-// Two divides cost exactly one divide more than one divide: the charge is per
-// instruction, with nothing shared between back-to-back divides.
+// Two divides cost exactly one divide more than one divide: the second waits
+// for the unit, with nothing shared between back-to-back divides.
 TEST(EeRecDivideCharge, EachExtraDivideAddsItsWholeCharge)
 {
 	ScopedCycleRate rate(0);
@@ -229,13 +228,13 @@ TEST(EeRecDivideCharge, EachExtraDivideAddsItsWholeCharge)
 		// every divide charge is a whole number of cycles.
 		const Block b2 = MakeBlock(op, 2);
 		Block b1 = b2;
-		b1.words.erase(b1.words.begin());
-		b1.raw -= op.eighths;
-		ASSERT_EQ(b1.raw % 8, 0u) << op.name;
+		b1.words.pop_back();
+		b1.raw = ModelEighths(b1.words);
+		ASSERT_EQ(b2.raw - b1.raw, 8 * op.cycles) << op.name;
 		const Charged c1 = RunBlock(b1, true);
 		const Charged c2 = RunBlock(b2, true);
-		EXPECT_EQ(c2.jit - c1.jit, op.eighths / 8) << op.name << " (jit)";
-		EXPECT_EQ(c2.interp - c1.interp, op.eighths / 8) << op.name << " (interp)";
+		EXPECT_EQ(c2.jit - c1.jit, op.cycles) << op.name << " (jit)";
+		EXPECT_EQ(c2.interp - c1.interp, op.cycles) << op.name << " (interp)";
 	}
 }
 
@@ -255,7 +254,7 @@ TEST(EeRecDivideCharge, SingleIssueDoublesTheCharge)
 // The cycle-rate selectors scale a block that holds a divide like any other
 // block: the recompiler's charge is the production scaler applied to the raw
 // sum, and the interpreter agrees. ee_rec_cycle_rate_tests.cpp pins the scaler
-// itself; this pins that the divide's table charge is what it scales.
+// itself; this pins that the divide's model charge is what it scales.
 //
 // Below selector 0 the interpreter's charge also depends on the sub-cycle
 // remainder it carries from earlier blocks (up to 7 eighths, which the scaler
@@ -288,7 +287,7 @@ TEST(EeRecDivideCharge, EveryCycleRateSelectorScalesTheDivideCharge)
 }
 
 // The FPU divides are charged the same at every FPU clamp mode. The charge is
-// taken from the table before the per-opcode emitter runs, so neither the
+// taken from the model before the per-opcode emitter runs, so neither the
 // clamp mode nor the choice between iFPU and iFPUd (modes 3 and 4) can move it.
 TEST(EeRecDivideCharge, FpuDivideChargeIsTheSameAtEveryClampMode)
 {

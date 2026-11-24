@@ -316,7 +316,7 @@ bool checkDivideByZero(u32& xReg, u32 yDivisorReg, u32 zDividendReg, u32 cFlagsT
 #define BC1L(cond)                              \
    if ( ( _ContVal_ & FPUflagC ) cond 0 ) {   \
       intDoBranch( _BranchTarget_ );            \
-   } else cpuRegs.pc += 4;
+   } else { cpuRegs.pc += 4; intIssueLikelyNotTaken(); }
 
 namespace R5900 {
 namespace Interpreter {

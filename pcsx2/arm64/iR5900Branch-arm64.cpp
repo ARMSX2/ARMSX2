@@ -320,6 +320,7 @@ static void recBEQ_process(int process)
 
 	recBindBranchLabel();
 	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{
@@ -383,6 +384,7 @@ static void recBNE_process(int process)
 
 	recBindBranchLabel();
 	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{
@@ -541,6 +543,7 @@ static void recBranchSingle(a64::Condition skip_cond)
 
 	recBindBranchLabel();
 	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{
@@ -668,6 +671,7 @@ static void recBranchLink(bool ltz)
 
 	recBindBranchLabel();
 	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{

@@ -53,6 +53,7 @@ void BC2FL()
 	else
 	{
 		cpuRegs.pc += 4;
+		intIssueLikelyNotTaken();
 	}
 }
 void BC2TL()
@@ -65,5 +66,6 @@ void BC2TL()
 	else
 	{
 		cpuRegs.pc += 4;
+		intIssueLikelyNotTaken();
 	}
 }

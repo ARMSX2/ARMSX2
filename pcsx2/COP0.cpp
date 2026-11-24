@@ -614,7 +614,10 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 		if (CPCOND0() == 0)
 			intDoBranch(_BranchTarget_);
 		else
+		{
 			cpuRegs.pc += 4;
+			intIssueLikelyNotTaken();
+		}
 	}
 
 	void BC0TL()
@@ -622,7 +625,10 @@ cpuRegs.PERF.n.pccr, cpuRegs.PERF.n.pcr0, cpuRegs.PERF.n.pcr1, _Imm_ & 0x3F);*/
 		if (CPCOND0() == 1)
 			intDoBranch(_BranchTarget_);
 		else
+		{
 			cpuRegs.pc += 4;
+			intIssueLikelyNotTaken();
+		}
 	}
 
 	void ERET()

@@ -3,16 +3,16 @@
 
 // What the EE charges for leaving an exception (ERET) and for taking one.
 //
-// Each test runs blocks whose charge is a whole number of cycles (padded with
-// SYNCs), so the interpreter's carried sub-cycle remainder cannot move the
-// total and both engines can be held to one number.
+// Every charge is a whole number of cycles (the issue model's), so both
+// engines can be held to one number: the model's cost of the paths run, plus
+// the entry for each exception taken.
 
 #include "harness/EeRecTestHarness.h"
 
 #include "Config.h"
 #include "EECycleRate.h"
 #include "R5900.h"
-#include "R5900OpcodeTables.h"
+#include "R5900IssueModel.h"
 
 #include <gtest/gtest.h>
 
@@ -24,6 +24,8 @@ using namespace mips::ee;
 
 namespace {
 
+using R5900::Issue::Exit;
+
 constexpr u32 kProgPc = RecompilerTestEnvironment::kProgramPc;
 constexpr u32 kCp0Status = 12;
 constexpr u32 kCp0Epc = 14;
@@ -31,35 +33,20 @@ constexpr u32 kStatusCu0 = 1u << 28; // kernel mode, EXL and ERL clear
 constexpr u32 kCp0Config = 16;
 constexpr u32 kConfigDie = 1u << 18; // dual issue on, as the BIOS sets it
 
-u32 Eighths(u32 code) { return R5900::GetInstruction(code).cycles; }
-
 // ERET's charge, measured on an SCPH-30001: ERET in place of a JR and its
 // delay slot costs 3 cycles more, and 5 more than a taken branch.
-constexpr u32 kEretEighths = 6 * 8;
+constexpr u32 kEretCycles = 6;
 
 // What taking an exception costs beyond the instructions it runs, measured on
 // an SCPH-30001: a BREAK into a five-instruction handler that returns with
-// ERET costs 33 cycles there, 9 more than the table charges for the BREAK, the
+// ERET costs 33 cycles there, 9 more than the table charged for the BREAK, the
 // kernel's ten-instruction vector and the handler.
 constexpr u64 kEntryCycles = 9;
 
-// The measured charges this file pins, the table's for everything else.
-u32 Measured(u32 code) { return code == ERET ? kEretEighths : Eighths(code); }
-
-// Prepends SYNCs (no-ops in both engines) until the block's charge, plus
-// `extra_eighths` for what the harness appends, is a whole number of cycles.
-// Adds that charge, in cycles, to *cycles.
-std::vector<u32> Whole(std::vector<u32> words, u32 extra_eighths, u64* cycles, u32 (*eighths)(u32) = Eighths)
+// The model's cost of `words` run as one path from `pc`, leaving by `exit`.
+u64 PathCost(u32 pc, const std::vector<u32>& words, Exit exit)
 {
-	u32 raw = extra_eighths;
-	for (u32 w : words)
-		raw += eighths(w);
-	u32 syncs = 0;
-	while ((raw + syncs * Eighths(ee::SYNC)) % 8 != 0)
-		syncs++;
-	words.insert(words.begin(), syncs, ee::SYNC);
-	*cycles += (raw + syncs * Eighths(ee::SYNC)) / 8;
-	return words;
+	return R5900::Issue::PathCycles(pc, words.data(), static_cast<u32>(words.size()), exit);
 }
 
 // COP0 Count into t0 at the start, into t1 at the start of a later block. The
@@ -70,11 +57,14 @@ constexpr u32 kCp0Count = 9;
 constexpr u32 kReadCount0 = MFC0(reg::t0, kCp0Count);
 constexpr u32 kReadCount1 = MFC0(reg::t1, kCp0Count);
 
-std::vector<u32> Settle(u64* cycles)
+// The settling block's path (its branch is taken) and the read after it.
+const std::vector<u32> kSettle = {BEQ(reg::zero, reg::zero, 1), NOP};
+
+void AppendSettle(std::vector<u32>& prog, u64* cycles)
 {
-	std::vector<u32> b = Whole({BEQ(reg::zero, reg::zero, 1), NOP}, 0, cycles);
-	b.push_back(kReadCount1);
-	return b;
+	*cycles += PathCost(kProgPc + 4 * static_cast<u32>(prog.size()), kSettle, Exit::Taken);
+	prog.insert(prog.end(), kSettle.begin(), kSettle.end());
+	prog.push_back(kReadCount1);
 }
 
 void ExpectCharged(const EeRecTestHarness& h, u64 cycles)
@@ -134,22 +124,21 @@ struct ScopedClean
 
 // ERET with EXL clear returns to EPC, as in a user-mode return: set EPC to the
 // next block and take it. COP0 Count is read before and after, so the
-// difference is what the blocks between were charged: the table's charge, in
-// both engines. (The harness's own cycle delta of a JIT run that crosses blocks
-// includes the parking lot's wait for the next event test.)
-std::vector<u32> EretProgram(u64* charged, u32* ret_pc, u32 (*eighths)(u32) = Eighths)
+// difference is what the blocks between were charged. (The harness's own cycle
+// delta of a JIT run that crosses blocks includes the parking lot's wait for
+// the next event test.) ERET ends its path.
+std::vector<u32> EretProgram(u64* charged, u32* ret_pc)
 {
-	std::vector<u32> prog = Whole({LUI(reg::k0, 0), ORI(reg::k0, reg::k0, 0), MTC0(reg::k0, kCp0Epc), ERET}, Eighths(kReadCount0), charged, eighths);
-	prog.insert(prog.begin(), kReadCount0);
+	std::vector<u32> prog = {kReadCount0, LUI(reg::k0, 0), ORI(reg::k0, reg::k0, 0), MTC0(reg::k0, kCp0Epc), ERET};
 	*ret_pc = kProgPc + 4 * static_cast<u32>(prog.size());
-	prog[prog.size() - 4] = LUI(reg::k0, static_cast<u16>(*ret_pc >> 16));
-	prog[prog.size() - 3] = ORI(reg::k0, reg::k0, static_cast<u16>(*ret_pc & 0xFFFF));
-	const std::vector<u32> settle = Settle(charged);
-	prog.insert(prog.end(), settle.begin(), settle.end());
+	prog[1] = LUI(reg::k0, static_cast<u16>(*ret_pc >> 16));
+	prog[2] = ORI(reg::k0, reg::k0, static_cast<u16>(*ret_pc & 0xFFFF));
+	*charged += PathCost(kProgPc, prog, Exit::None);
+	AppendSettle(prog, charged);
 	return prog;
 }
 
-TEST(EeRecExceptionCharge, BlockEndingInEretChargesTheTableInBothEngines)
+TEST(EeRecExceptionCharge, BlockEndingInEretChargesTheModelInBothEngines)
 {
 	const ScopedClean clean;
 	for (int pass = 0; pass < 2; pass++)
@@ -163,8 +152,7 @@ TEST(EeRecExceptionCharge, BlockEndingInEretChargesTheTableInBothEngines)
 		h.LoadProgram(prog);
 		h.Run();
 		EXPECT_EQ(h.GetCp0Jit(kCp0Epc), ret_pc);
-		if (pass == 1)
-			ExpectCharged(h, charged);
+		ExpectCharged(h, charged);
 	}
 }
 
@@ -172,42 +160,42 @@ TEST(EeRecExceptionCharge, BlockEndingInEretChargesTheTableInBothEngines)
 TEST(EeRecExceptionCharge, EretChargesSixCycles)
 {
 	const ScopedClean clean;
-	EXPECT_EQ(static_cast<u32>(R5900::GetInstruction(ERET).cycles), kEretEighths);
-	for (int pass = 0; pass < 2; pass++)
-	{
-		u64 charged = 0;
-		u32 ret_pc = 0;
-		const std::vector<u32> prog = EretProgram(&charged, &ret_pc, Measured);
-		EeRecTestHarness h;
-		h.SetCp0(kCp0Status, kStatusCu0);
-		h.SetCp0(kCp0Config, kConfigDie);
-		h.LoadProgram(prog);
-		h.Run();
-		if (pass == 1)
-			ExpectCharged(h, charged);
-	}
+	EXPECT_EQ(PathCost(kProgPc, {ERET}, Exit::None), kEretCycles);
+	// ERET in place of an ADDIU in the same program: 5 more.
+	u64 with_eret = 0, with_addiu = 0;
+	u32 ret_pc = 0;
+	std::vector<u32> prog = EretProgram(&with_eret, &ret_pc);
+	std::vector<u32> alt = {prog[0], prog[1], prog[2], prog[3], ADDIU(reg::v1, reg::zero, 1)};
+	with_addiu = PathCost(kProgPc, alt, Exit::None);
+	EXPECT_EQ(PathCost(kProgPc, {prog[0], prog[1], prog[2], prog[3], ERET}, Exit::None), with_addiu + kEretCycles - 1);
+	EeRecTestHarness h;
+	h.SetCp0(kCp0Status, kStatusCu0);
+	h.SetCp0(kCp0Config, kConfigDie);
+	h.LoadProgram(prog);
+	h.Run();
+	ExpectCharged(h, with_eret);
 }
 
 // SYSCALL or BREAK in a block of its own, a handler at the common vector that
 // steps EPC past it, as the BIOS does, and returns with ERET, then a settling
-// block. Both engines charge the instructions plus the entry.
+// block. Both engines charge the paths plus the entry.
 void ExpectRoundTrip(u32 op)
 {
 	const ScopedClean clean;
 	for (int pass = 0; pass < 2; pass++)
 	{
 		u64 charged = kEntryCycles;
-		std::vector<u32> prog = Whole({ADDIU(reg::v1, reg::zero, 0x2F), op}, Eighths(kReadCount0), &charged, Measured);
-		prog.insert(prog.begin(), kReadCount0);
+		std::vector<u32> prog = {kReadCount0, ADDIU(reg::v1, reg::zero, 0x2F), op};
+		charged += PathCost(kProgPc, prog, Exit::None);
 		const u32 ret_pc = kProgPc + 4 * static_cast<u32>(prog.size());
-		const std::vector<u32> settle = Settle(&charged);
-		prog.insert(prog.end(), settle.begin(), settle.end());
-		const std::vector<u32> handler = Whole({
+		AppendSettle(prog, &charged);
+		const std::vector<u32> handler = {
 			MFC0(reg::k0, kCp0Epc),
 			ADDIU(reg::k0, reg::k0, 4),
 			MTC0(reg::k0, kCp0Epc),
 			ERET,
-		}, 0, &charged, Measured);
+		};
+		charged += PathCost(kVector, handler, Exit::None);
 
 		EeRecTestHarness h;
 		h.SetCp0(kCp0Status, kStatusCu0);
@@ -216,8 +204,7 @@ void ExpectRoundTrip(u32 op)
 		h.LoadProgram(prog);
 		h.Run();
 		h.ExpectGpr64(reg::k0, ret_pc); // the handler ran and returned past the op
-		if (pass == 1)
-			ExpectCharged(h, charged);
+		ExpectCharged(h, charged);
 	}
 }
 

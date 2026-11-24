@@ -13,10 +13,9 @@ namespace R5900
 		// Generates an entry for the given opcode name.
 		// Assumes the default function naming schemes for interpreter and recompiler  functions.
 #if defined(_M_X86) || defined(ARCH_ARM64) // ARM64 EE recompiler is supported
-	#	define MakeOpcode( name, cycles, flags ) \
+	#	define MakeOpcode( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::name, \
@@ -24,10 +23,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-#	define MakeOpcodeM( name, cycles, flags ) \
+#	define MakeOpcodeM( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::MMI::name, \
@@ -35,10 +33,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-#	define MakeOpcode0( name, cycles, flags ) \
+#	define MakeOpcode0( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::COP0::name, \
@@ -46,10 +43,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-	#	define MakeOpcode1( name, cycles, flags ) \
+	#	define MakeOpcode1( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::COP1::name, \
@@ -57,10 +53,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 #else
-	#	define MakeOpcode( name, cycles, flags ) \
+	#	define MakeOpcode( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::name, \
@@ -68,10 +63,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-#	define MakeOpcodeM( name, cycles, flags ) \
+#	define MakeOpcodeM( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::MMI::name, \
@@ -79,10 +73,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-#	define MakeOpcode0( name, cycles, flags ) \
+#	define MakeOpcode0( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::COP0::name, \
@@ -90,10 +83,9 @@ namespace R5900
 			::R5900::OpcodeDisasm::name \
 		}
 
-	#	define MakeOpcode1( name, cycles, flags ) \
+	#	define MakeOpcode1( name, flags ) \
 		static const OPCODE name = { \
 			#name, \
-			cycles, \
 			flags, \
 			NULL, \
 			::R5900::Interpreter::OpcodeImpl::COP1::name, \
@@ -106,119 +98,16 @@ namespace R5900
 		static const OPCODE name = { \
 			#name, \
 			0, \
-			0, \
 			R5900::Opcodes::Class_##name, \
 			NULL, \
 			NULL, \
 			NULL \
 		}
 
-		// We're working on new hopefully better cycle ratios, but they're still a WIP.
-		// And yes this whole thing is an ugly hack.  I'll clean it up once we have
-		// a better idea how exactly the cycle ratios will work best.
-
-		namespace Cycles
-		{
-			// What still takes Default (COP2, CACHE, PREF, SYNC.L, SYSCALL, BREAK,
-			// J, JAL, JR, JALR) has no one cost on an SCPH-30001 that a per-op
-			// charge could carry: COP2 is every VU0 macro op and transfer,
-			// PREF 2, SYNC.L 1, a jump and its delay slot 2.
-			static const int Default = 9;
-			static const int Branch = 11;
-			static const int CopDefault = 7;
-
-			// The integer ALU ops, shifts, LUI, SLT and NOP: 1 cycle, measured
-			// on an SCPH-30001 for every one, the 64-bit forms included. A
-			// chain through one register costs 1 per op; independent ones cost
-			// 0.5, two issuing together on the two integer pipelines. The
-			// charge is the chain's cost, since the model has no pairing.
-			// The table charged 1.125.
-			static const int Alu = 1*8;
-
-			// MOVZ and MOVN, measured on an SCPH-30001: two independent ones
-			// issue together (0.5 each), and a use of the result right after
-			// one costs 2. The charge is one issued alone with nothing waiting
-			// on it, an integer pipeline's cycle, since the model has neither
-			// pairing nor latency. The table charged 1.125.
-			static const int CondMove = 1*8;
-
-			// MFHI, MFLO, MTHI, MTLO, their pipeline-1 forms (MFHI1..MTLO1),
-			// MFSA, MTSA, MTSAB, MTSAH: 1 cycle, measured on an SCPH-30001,
-			// back to back with nothing reading the result. A move to LO or SA
-			// then a read of it costs 3 per pair. The table charged 1.125.
-			static const int HiLoMove = 1*8;
-
-			static const int Mult = 2*8;
-
-			// DIV, DIVU, DIV1 and DIVU1: 37 cycles, measured on an SCPH-30001.
-			// A loop of DIV then MFLO costs 37 cycles per pair, and DIV, DIV1,
-			// MFLO, MFLO1 costs 37 per group: each pipeline has its own
-			// divider, the two run at once, and the divider runs on while
-			// other instructions issue until MFLO or MFHI waits for it.
-			// DIVU and DIVU1 take the same 37, and so does every operand
-			// tried: divide by zero, INT_MIN / -1, signs, a quotient of zero
-			// or one. A divide issued while the same pipeline's divider is
-			// busy waits for it.
-			//
-			// The whole 37 is charged at issue. Charging the wait at the first
-			// read of LO or HI instead would be closer when independent work
-			// sits between the divide and the read, or when DIV1 issues while
-			// DIV is still running. In game code it makes almost no difference:
-			// the read follows within a few instructions, and on the
-			// instruction mix of ten games the two ways of charging differ by
-			// under 0.06% of a frame's cycles. It would also need state carried
-			// from block to block, because a third of those divides have a
-			// branch (the divide-by-zero check) before the read.
-			static const int Div = 37*8;
-			static const int MMI_Mult = 3*8;
-
-			// PDIVW, PDIVUW and PDIVBW: 37 cycles, measured on an SCPH-30001,
-			// the same as DIV. A PDIVW then PMFLO costs 37 per pair, as does
-			// a PDIVW repeated with nothing reading it, on every operand
-			// tried (zero divisor, overflow, signs, quotient zero), and
-			// PDIVBW's four quotients take no longer than PDIVW's two. They
-			// use both pipelines' dividers: a DIV issued after a PDIVW waits
-			// for it (74 cycles for the pair).
-			static const int MMI_Div = 37*8;
-
-			// The MMI ALU, shift, pack, compare and move ops: 1 cycle, measured
-			// on an SCPH-30001 for every op charged as MMI_Default. A chain of
-			// them through one register costs 1 per op and independent ones
-			// cost 1 per op too: two never issue together, nor beside an
-			// integer ALU op (only beside a load or store). The table charged
-			// 1.75.
-			static const int MMI_Default = 1*8;
-
-			static const int FPU_Mult = 4*8;
-
-			// The FPU ops that write the accumulator (ADDA.S, SUBA.S, MULA.S,
-			// MADDA.S, MSUBA.S): 1 cycle, measured on an SCPH-30001. A chain
-			// through ACC costs 1 per op, independent ones 1 per op, and MULA.S
-			// then a MADD.S reading ACC 2 per pair. The table charged MULA.S,
-			// MADDA.S and MSUBA.S as multiplies (4) and ADDA.S, SUBA.S 0.875.
-			static const int FPU_Acc = 1*8;
-
-			// Stores, every width (SB..SQ, SWL..SDR, SWC1, SQC2): 1 cycle,
-			// measured on an SCPH-30001, one per cycle back to back. A store
-			// then a load of the same address costs 3 per pair, and a store of
-			// an FPU or VU0 result just issued 6. The table charged 1.75.
-			static const int Store = 1*8;
-
-			// Loads, every width (LB..LQ, LWL..LDR, LWC1, LQC2): 1 cycle,
-			// measured on an SCPH-30001: independent loads issue one per
-			// cycle. A load whose value the next instruction uses costs 2,
-			// and LWC1 or LQC2 then an FPU or VU0 use of it 3. The charge is
-			// the issue cost, since the model has no latency. The table
-			// charged 1.75.
-			static const int Load = 1*8;
-		}
-
-		using namespace Cycles;
-
-		MakeOpcode( Unknown, Default, 0 );
-		MakeOpcode( MMI_Unknown, Default, 0 );
-		MakeOpcode( COP0_Unknown, Default, 0 );
-		MakeOpcode( COP1_Unknown, Default, 0 );
+		MakeOpcode( Unknown, 0 );
+		MakeOpcode( MMI_Unknown, 0 );
+		MakeOpcode( COP0_Unknown, 0 );
+		MakeOpcode( COP1_Unknown, 0 );
 
 		// Class Subset Opcodes
 		// (not really opcodes, but rather entire subsets of other opcode classes)
@@ -237,260 +126,250 @@ namespace R5900
 
 		// Misc Junk
 
-		MakeOpcode( COP2, Default, 0 );
+		MakeOpcode( COP2, 0 );
 
-		MakeOpcode( CACHE, Default, 0 );
-		MakeOpcode( PREF, Default, 0 );
-		MakeOpcode( SYSCALL, Default, IS_BRANCH|BRANCHTYPE_SYSCALL );
-		MakeOpcode( BREAK, Default, 0 );
-		MakeOpcode( SYNC, Default, 0 );
-
-		// SYNC.P (SYNC with stype bit 4 set; Class_SPECIAL picks it): 5 cycles
-		// on an SCPH-30001, alone or after a COP0 write (an MTC0 of Status then
-		// SYNC.P costs 6 per pair). The kernel runs four on every syscall and
-		// three on every interrupt. The table charged 1.125, SYNC.L's entry.
-		static const OPCODE SYNC_P = {"SYNC.P", 5*8, SYNC.flags, NULL, SYNC.interpret, SYNC.recompile, SYNC.disasm};
+		MakeOpcode( CACHE, 0 );
+		MakeOpcode( PREF, 0 );
+		MakeOpcode( SYSCALL, IS_BRANCH|BRANCHTYPE_SYSCALL );
+		MakeOpcode( BREAK, 0 );
+		MakeOpcode( SYNC, 0 );
 
 		// Branch/Jump Opcodes
 
-		MakeOpcode( J ,   Default, IS_BRANCH|BRANCHTYPE_JUMP );
-		MakeOpcode( JAL,  Default, IS_BRANCH|BRANCHTYPE_JUMP|IS_LINKED );
-		MakeOpcode( JR,   Default, IS_BRANCH|BRANCHTYPE_REGISTER );
-		MakeOpcode( JALR, Default, IS_BRANCH|BRANCHTYPE_REGISTER|IS_LINKED );
+		MakeOpcode( J , IS_BRANCH|BRANCHTYPE_JUMP );
+		MakeOpcode( JAL, IS_BRANCH|BRANCHTYPE_JUMP|IS_LINKED );
+		MakeOpcode( JR, IS_BRANCH|BRANCHTYPE_REGISTER );
+		MakeOpcode( JALR, IS_BRANCH|BRANCHTYPE_REGISTER|IS_LINKED );
 
-		MakeOpcode( BEQ,     Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_EQ );
-		MakeOpcode( BNE,     Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_NE );
-		MakeOpcode( BLEZ,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LEZ );
-		MakeOpcode( BGTZ,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GTZ );
-		MakeOpcode( BEQL,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_EQ|IS_LIKELY );
-		MakeOpcode( BNEL,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_NE|IS_LIKELY );
-		MakeOpcode( BLEZL,   Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LEZ|IS_LIKELY );
-		MakeOpcode( BGTZL,   Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GTZ|IS_LIKELY );
-		MakeOpcode( BLTZ,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ );
-		MakeOpcode( BGEZ,    Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ );
-		MakeOpcode( BLTZL,   Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LIKELY );
-		MakeOpcode( BGEZL,   Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LIKELY );
-		MakeOpcode( BLTZAL,  Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LINKED );
-		MakeOpcode( BGEZAL,  Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LINKED );
-		MakeOpcode( BLTZALL, Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LINKED|IS_LIKELY );
-		MakeOpcode( BGEZALL, Branch, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LINKED|IS_LIKELY );
+		MakeOpcode( BEQ, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_EQ );
+		MakeOpcode( BNE, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_NE );
+		MakeOpcode( BLEZ, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LEZ );
+		MakeOpcode( BGTZ, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GTZ );
+		MakeOpcode( BEQL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_EQ|IS_LIKELY );
+		MakeOpcode( BNEL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_NE|IS_LIKELY );
+		MakeOpcode( BLEZL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LEZ|IS_LIKELY );
+		MakeOpcode( BGTZL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GTZ|IS_LIKELY );
+		MakeOpcode( BLTZ, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ );
+		MakeOpcode( BGEZ, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ );
+		MakeOpcode( BLTZL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LIKELY );
+		MakeOpcode( BGEZL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LIKELY );
+		MakeOpcode( BLTZAL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LINKED );
+		MakeOpcode( BGEZAL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LINKED );
+		MakeOpcode( BLTZALL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_LTZ|IS_LINKED|IS_LIKELY );
+		MakeOpcode( BGEZALL, IS_BRANCH|BRANCHTYPE_BRANCH|CONDTYPE_GEZ|IS_LINKED|IS_LIKELY );
 
-		MakeOpcode( TGEI, Branch, 0 );
-		MakeOpcode( TGEIU, Branch, 0 );
-		MakeOpcode( TLTI, Branch, 0 );
-		MakeOpcode( TLTIU, Branch, 0 );
-		MakeOpcode( TEQI, Branch, 0 );
-		MakeOpcode( TNEI, Branch, 0 );
-		MakeOpcode( TGE, Branch, 0 );
-		MakeOpcode( TGEU, Branch, 0 );
-		MakeOpcode( TLT, Branch, 0 );
-		MakeOpcode( TLTU, Branch, 0 );
-		MakeOpcode( TEQ, Branch, 0 );
-		MakeOpcode( TNE, Branch, 0 );
+		MakeOpcode( TGEI, 0 );
+		MakeOpcode( TGEIU, 0 );
+		MakeOpcode( TLTI, 0 );
+		MakeOpcode( TLTIU, 0 );
+		MakeOpcode( TEQI, 0 );
+		MakeOpcode( TNEI, 0 );
+		MakeOpcode( TGE, 0 );
+		MakeOpcode( TGEU, 0 );
+		MakeOpcode( TLT, 0 );
+		MakeOpcode( TLTU, 0 );
+		MakeOpcode( TEQ, 0 );
+		MakeOpcode( TNE, 0 );
 
 		// Arithmetic
 
-		MakeOpcode( MULT, Mult, 0 );
-		MakeOpcode( MULTU, Mult, 0 );
-		MakeOpcode( MULT1, Mult, 0 );
-		MakeOpcode( MULTU1, Mult, 0 );
-		MakeOpcode( MADD, Mult, 0 );
-		MakeOpcode( MADDU, Mult, 0 );
-		MakeOpcode( MADD1, Mult, 0 );
-		MakeOpcode( MADDU1, Mult, 0 );
-		MakeOpcode( DIV, Div, 0 );
-		MakeOpcode( DIVU, Div, 0 );
-		MakeOpcode( DIV1, Div, 0 );
-		MakeOpcode( DIVU1, Div, 0 );
+		MakeOpcode( MULT, 0 );
+		MakeOpcode( MULTU, 0 );
+		MakeOpcode( MULT1, 0 );
+		MakeOpcode( MULTU1, 0 );
+		MakeOpcode( MADD, 0 );
+		MakeOpcode( MADDU, 0 );
+		MakeOpcode( MADD1, 0 );
+		MakeOpcode( MADDU1, 0 );
+		MakeOpcode( DIV, 0 );
+		MakeOpcode( DIVU, 0 );
+		MakeOpcode( DIV1, 0 );
+		MakeOpcode( DIVU1, 0 );
 
-		MakeOpcode( ADDI,   Alu, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( ADDIU,  Alu, IS_ALU|ALUTYPE_ADDI );
-		MakeOpcode( DADDI,  Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADDIU, Alu, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
-		MakeOpcode( DADD,   Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DADDU,  Alu, IS_ALU|ALUTYPE_ADD|IS_64BIT );
-		MakeOpcode( DSUB,   Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( DSUBU,  Alu, IS_ALU|ALUTYPE_SUB|IS_64BIT );
-		MakeOpcode( ADD,    Alu, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( ADDU,   Alu, IS_ALU|ALUTYPE_ADD );
-		MakeOpcode( SUB,    Alu, IS_ALU|ALUTYPE_SUB );
-		MakeOpcode( SUBU,   Alu, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( ADDI, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( ADDIU, IS_ALU|ALUTYPE_ADDI );
+		MakeOpcode( DADDI, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADDIU, IS_ALU|ALUTYPE_ADDI|IS_64BIT );
+		MakeOpcode( DADD, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DADDU, IS_ALU|ALUTYPE_ADD|IS_64BIT );
+		MakeOpcode( DSUB, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( DSUBU, IS_ALU|ALUTYPE_SUB|IS_64BIT );
+		MakeOpcode( ADD, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( ADDU, IS_ALU|ALUTYPE_ADD );
+		MakeOpcode( SUB, IS_ALU|ALUTYPE_SUB );
+		MakeOpcode( SUBU, IS_ALU|ALUTYPE_SUB );
 
-		MakeOpcode( ANDI, Alu, 0 );
-		MakeOpcode( ORI, Alu, 0 );
-		MakeOpcode( XORI, Alu, 0 );
-		MakeOpcode( AND, Alu, 0 );
-		MakeOpcode( OR, Alu, 0 );
-		MakeOpcode( XOR, Alu, 0 );
-		MakeOpcode( NOR, Alu, 0 );
-		MakeOpcode( SLTI, Alu, 0 );
-		MakeOpcode( SLTIU, Alu, 0 );
-		MakeOpcode( SLT, Alu, 0 );
-		MakeOpcode( SLTU, Alu, 0 );
-		MakeOpcode( LUI, Alu, 0 );
-		MakeOpcode( SLL, Alu, 0 );
-		MakeOpcode( SRL, Alu, 0 );
-		MakeOpcode( SRA, Alu, 0 );
-		MakeOpcode( SLLV, Alu, 0 );
-		MakeOpcode( SRLV, Alu, 0 );
-		MakeOpcode( SRAV, Alu, 0 );
-		MakeOpcode( MOVZ, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
-		MakeOpcode( MOVN, CondMove, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
-		MakeOpcode( DSLLV, Alu, 0 );
-		MakeOpcode( DSRLV, Alu, 0 );
-		MakeOpcode( DSRAV, Alu, 0 );
-		MakeOpcode( DSLL, Alu, 0 );
-		MakeOpcode( DSRL, Alu, 0 );
-		MakeOpcode( DSRA, Alu, 0 );
-		MakeOpcode( DSLL32, Alu, 0 );
-		MakeOpcode( DSRL32, Alu, 0 );
-		MakeOpcode( DSRA32, Alu, 0 );
+		MakeOpcode( ANDI, 0 );
+		MakeOpcode( ORI, 0 );
+		MakeOpcode( XORI, 0 );
+		MakeOpcode( AND, 0 );
+		MakeOpcode( OR, 0 );
+		MakeOpcode( XOR, 0 );
+		MakeOpcode( NOR, 0 );
+		MakeOpcode( SLTI, 0 );
+		MakeOpcode( SLTIU, 0 );
+		MakeOpcode( SLT, 0 );
+		MakeOpcode( SLTU, 0 );
+		MakeOpcode( LUI, 0 );
+		MakeOpcode( SLL, 0 );
+		MakeOpcode( SRL, 0 );
+		MakeOpcode( SRA, 0 );
+		MakeOpcode( SLLV, 0 );
+		MakeOpcode( SRLV, 0 );
+		MakeOpcode( SRAV, 0 );
+		MakeOpcode( MOVZ, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_EQ );
+		MakeOpcode( MOVN, IS_ALU|ALUTYPE_CONDMOVE|CONDTYPE_NE );
+		MakeOpcode( DSLLV, 0 );
+		MakeOpcode( DSRLV, 0 );
+		MakeOpcode( DSRAV, 0 );
+		MakeOpcode( DSLL, 0 );
+		MakeOpcode( DSRL, 0 );
+		MakeOpcode( DSRA, 0 );
+		MakeOpcode( DSLL32, 0 );
+		MakeOpcode( DSRL32, 0 );
+		MakeOpcode( DSRA32, 0 );
 
-		MakeOpcode( MFHI, HiLoMove, 0 );
-		MakeOpcode( MTHI, HiLoMove, 0 );
-		MakeOpcode( MFLO, HiLoMove, 0 );
-		MakeOpcode( MTLO, HiLoMove, 0 );
-		MakeOpcode( MFSA, HiLoMove, 0 );
-		MakeOpcode( MTSA, HiLoMove, 0 );
-		MakeOpcode( MTSAB, HiLoMove, 0 );
-		MakeOpcode( MTSAH, HiLoMove, 0 );
-		MakeOpcode( MFHI1, HiLoMove, 0 );
-		MakeOpcode( MTHI1, HiLoMove, 0 );
-		MakeOpcode( MFLO1, HiLoMove, 0 );
-		MakeOpcode( MTLO1, HiLoMove, 0 );
+		MakeOpcode( MFHI, 0 );
+		MakeOpcode( MTHI, 0 );
+		MakeOpcode( MFLO, 0 );
+		MakeOpcode( MTLO, 0 );
+		MakeOpcode( MFSA, 0 );
+		MakeOpcode( MTSA, 0 );
+		MakeOpcode( MTSAB, 0 );
+		MakeOpcode( MTSAH, 0 );
+		MakeOpcode( MFHI1, 0 );
+		MakeOpcode( MTHI1, 0 );
+		MakeOpcode( MFLO1, 0 );
+		MakeOpcode( MTLO1, 0 );
 
 		// Loads!
 
-		MakeOpcode( LDL,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD|IS_LEFT );
-		MakeOpcode( LDR,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD|IS_RIGHT );
-		MakeOpcode( LQ,   Load, IS_MEMORY|IS_LOAD|MEMTYPE_QWORD );
-		MakeOpcode( LB,   Load, IS_MEMORY|IS_LOAD|MEMTYPE_BYTE );
-		MakeOpcode( LH,   Load, IS_MEMORY|IS_LOAD|MEMTYPE_HALF );
-		MakeOpcode( LWL,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_WORD|IS_LEFT );
-		MakeOpcode( LW,   Load, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
-		MakeOpcode( LBU,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_BYTE );
-		MakeOpcode( LHU,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_HALF );
-		MakeOpcode( LWR,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_WORD|IS_RIGHT );
-		MakeOpcode( LWU,  Load, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
-		MakeOpcode( LWC1, Load, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
-		MakeOpcode( LQC2, Load, IS_MEMORY|IS_LOAD|MEMTYPE_QWORD );
-		MakeOpcode( LD,   Load, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD );
+		MakeOpcode( LDL, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD|IS_LEFT );
+		MakeOpcode( LDR, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD|IS_RIGHT );
+		MakeOpcode( LQ, IS_MEMORY|IS_LOAD|MEMTYPE_QWORD );
+		MakeOpcode( LB, IS_MEMORY|IS_LOAD|MEMTYPE_BYTE );
+		MakeOpcode( LH, IS_MEMORY|IS_LOAD|MEMTYPE_HALF );
+		MakeOpcode( LWL, IS_MEMORY|IS_LOAD|MEMTYPE_WORD|IS_LEFT );
+		MakeOpcode( LW, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
+		MakeOpcode( LBU, IS_MEMORY|IS_LOAD|MEMTYPE_BYTE );
+		MakeOpcode( LHU, IS_MEMORY|IS_LOAD|MEMTYPE_HALF );
+		MakeOpcode( LWR, IS_MEMORY|IS_LOAD|MEMTYPE_WORD|IS_RIGHT );
+		MakeOpcode( LWU, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
+		MakeOpcode( LWC1, IS_MEMORY|IS_LOAD|MEMTYPE_WORD );
+		MakeOpcode( LQC2, IS_MEMORY|IS_LOAD|MEMTYPE_QWORD );
+		MakeOpcode( LD, IS_MEMORY|IS_LOAD|MEMTYPE_DWORD );
 
 		// Stores!
 
-		MakeOpcode( SQ,   Store, IS_MEMORY|IS_STORE|MEMTYPE_QWORD );
-		MakeOpcode( SB,   Store, IS_MEMORY|IS_STORE|MEMTYPE_BYTE );
-		MakeOpcode( SH,   Store, IS_MEMORY|IS_STORE|MEMTYPE_HALF );
-		MakeOpcode( SWL,  Store, IS_MEMORY|IS_STORE|MEMTYPE_WORD|IS_LEFT );
-		MakeOpcode( SW,   Store, IS_MEMORY|IS_STORE|MEMTYPE_WORD );
-		MakeOpcode( SDL,  Store, IS_MEMORY|IS_STORE|MEMTYPE_DWORD|IS_LEFT );
-		MakeOpcode( SDR,  Store, IS_MEMORY|IS_STORE|MEMTYPE_DWORD|IS_RIGHT );
-		MakeOpcode( SWR,  Store, IS_MEMORY|IS_STORE|MEMTYPE_WORD|IS_RIGHT );
-		MakeOpcode( SWC1, Store, IS_MEMORY|IS_STORE|MEMTYPE_WORD );
-		MakeOpcode( SQC2, Store, IS_MEMORY|IS_STORE|MEMTYPE_QWORD );
-		MakeOpcode( SD,   Store, IS_MEMORY|IS_STORE|MEMTYPE_DWORD );
+		MakeOpcode( SQ, IS_MEMORY|IS_STORE|MEMTYPE_QWORD );
+		MakeOpcode( SB, IS_MEMORY|IS_STORE|MEMTYPE_BYTE );
+		MakeOpcode( SH, IS_MEMORY|IS_STORE|MEMTYPE_HALF );
+		MakeOpcode( SWL, IS_MEMORY|IS_STORE|MEMTYPE_WORD|IS_LEFT );
+		MakeOpcode( SW, IS_MEMORY|IS_STORE|MEMTYPE_WORD );
+		MakeOpcode( SDL, IS_MEMORY|IS_STORE|MEMTYPE_DWORD|IS_LEFT );
+		MakeOpcode( SDR, IS_MEMORY|IS_STORE|MEMTYPE_DWORD|IS_RIGHT );
+		MakeOpcode( SWR, IS_MEMORY|IS_STORE|MEMTYPE_WORD|IS_RIGHT );
+		MakeOpcode( SWC1, IS_MEMORY|IS_STORE|MEMTYPE_WORD );
+		MakeOpcode( SQC2, IS_MEMORY|IS_STORE|MEMTYPE_QWORD );
+		MakeOpcode( SD, IS_MEMORY|IS_STORE|MEMTYPE_DWORD );
 
 
 		// Multimedia Instructions!
 
-		MakeOpcodeM( PLZCW, MMI_Default, 0 );
-		MakeOpcodeM( PMFHL, MMI_Default, 0 );
-		MakeOpcodeM( PMTHL, MMI_Default, 0 );
-		MakeOpcodeM( PSLLH, MMI_Default, 0 );
-		MakeOpcodeM( PSRLH, MMI_Default, 0 );
-		MakeOpcodeM( PSRAH, MMI_Default, 0 );
-		MakeOpcodeM( PSLLW, MMI_Default, 0 );
-		MakeOpcodeM( PSRLW, MMI_Default, 0 );
-		MakeOpcodeM( PSRAW, MMI_Default, 0 );
+		MakeOpcodeM( PLZCW, 0 );
+		MakeOpcodeM( PMFHL, 0 );
+		MakeOpcodeM( PMTHL, 0 );
+		MakeOpcodeM( PSLLH, 0 );
+		MakeOpcodeM( PSRLH, 0 );
+		MakeOpcodeM( PSRAH, 0 );
+		MakeOpcodeM( PSLLW, 0 );
+		MakeOpcodeM( PSRLW, 0 );
+		MakeOpcodeM( PSRAW, 0 );
 
-		MakeOpcodeM( PADDW, MMI_Default, 0 );
-		MakeOpcodeM( PADDH, MMI_Default, 0 );
-		MakeOpcodeM( PADDB, MMI_Default, 0 );
-		MakeOpcodeM( PADDSW, MMI_Default, 0 );
-		MakeOpcodeM( PADDSH, MMI_Default, 0 );
-		MakeOpcodeM( PADDSB, MMI_Default, 0 );
-		MakeOpcodeM( PADDUW, MMI_Default, 0 );
-		MakeOpcodeM( PADDUH, MMI_Default, 0 );
-		MakeOpcodeM( PADDUB, MMI_Default, 0 );
-		MakeOpcodeM( PSUBW, MMI_Default, 0 );
-		MakeOpcodeM( PSUBH, MMI_Default, 0 );
-		MakeOpcodeM( PSUBB, MMI_Default, 0 );
-		MakeOpcodeM( PSUBSW, MMI_Default, 0 );
-		MakeOpcodeM( PSUBSH, MMI_Default, 0 );
-		MakeOpcodeM( PSUBSB, MMI_Default, 0 );
-		MakeOpcodeM( PSUBUW, MMI_Default, 0 );
-		MakeOpcodeM( PSUBUH, MMI_Default, 0 );
-		MakeOpcodeM( PSUBUB, MMI_Default, 0 );
+		MakeOpcodeM( PADDW, 0 );
+		MakeOpcodeM( PADDH, 0 );
+		MakeOpcodeM( PADDB, 0 );
+		MakeOpcodeM( PADDSW, 0 );
+		MakeOpcodeM( PADDSH, 0 );
+		MakeOpcodeM( PADDSB, 0 );
+		MakeOpcodeM( PADDUW, 0 );
+		MakeOpcodeM( PADDUH, 0 );
+		MakeOpcodeM( PADDUB, 0 );
+		MakeOpcodeM( PSUBW, 0 );
+		MakeOpcodeM( PSUBH, 0 );
+		MakeOpcodeM( PSUBB, 0 );
+		MakeOpcodeM( PSUBSW, 0 );
+		MakeOpcodeM( PSUBSH, 0 );
+		MakeOpcodeM( PSUBSB, 0 );
+		MakeOpcodeM( PSUBUW, 0 );
+		MakeOpcodeM( PSUBUH, 0 );
+		MakeOpcodeM( PSUBUB, 0 );
 
-		MakeOpcodeM( PCGTW, MMI_Default, 0 );
-		MakeOpcodeM( PMAXW, MMI_Default, 0 );
-		MakeOpcodeM( PMAXH, MMI_Default, 0 );
-		MakeOpcodeM( PCGTH, MMI_Default, 0 );
-		MakeOpcodeM( PCGTB, MMI_Default, 0 );
-		MakeOpcodeM( PEXTLW, MMI_Default, 0 );
-		MakeOpcodeM( PEXTLH, MMI_Default, 0 );
-		MakeOpcodeM( PEXTLB, MMI_Default, 0 );
-		MakeOpcodeM( PEXT5, MMI_Default, 0 );
-		MakeOpcodeM( PPACW, MMI_Default, 0 );
-		MakeOpcodeM( PPACH, MMI_Default, 0 );
-		MakeOpcodeM( PPACB, MMI_Default, 0 );
-		MakeOpcodeM( PPAC5, MMI_Default, 0 );
+		MakeOpcodeM( PCGTW, 0 );
+		MakeOpcodeM( PMAXW, 0 );
+		MakeOpcodeM( PMAXH, 0 );
+		MakeOpcodeM( PCGTH, 0 );
+		MakeOpcodeM( PCGTB, 0 );
+		MakeOpcodeM( PEXTLW, 0 );
+		MakeOpcodeM( PEXTLH, 0 );
+		MakeOpcodeM( PEXTLB, 0 );
+		MakeOpcodeM( PEXT5, 0 );
+		MakeOpcodeM( PPACW, 0 );
+		MakeOpcodeM( PPACH, 0 );
+		MakeOpcodeM( PPACB, 0 );
+		MakeOpcodeM( PPAC5, 0 );
 
-		MakeOpcodeM( PABSW, MMI_Default, 0 );
-		MakeOpcodeM( PABSH, MMI_Default, 0 );
-		MakeOpcodeM( PCEQW, MMI_Default, 0 );
-		MakeOpcodeM( PMINW, MMI_Default, 0 );
-		MakeOpcodeM( PMINH, MMI_Default, 0 );
-		MakeOpcodeM( PADSBH, MMI_Default, 0 );
-		MakeOpcodeM( PCEQH, MMI_Default, 0 );
-		MakeOpcodeM( PCEQB, MMI_Default, 0 );
-		MakeOpcodeM( PEXTUW, MMI_Default, 0 );
-		MakeOpcodeM( PEXTUH, MMI_Default, 0 );
-		MakeOpcodeM( PEXTUB, MMI_Default, 0 );
-		MakeOpcodeM( PSLLVW, MMI_Default, 0 );
-		MakeOpcodeM( PSRLVW, MMI_Default, 0 );
+		MakeOpcodeM( PABSW, 0 );
+		MakeOpcodeM( PABSH, 0 );
+		MakeOpcodeM( PCEQW, 0 );
+		MakeOpcodeM( PMINW, 0 );
+		MakeOpcodeM( PMINH, 0 );
+		MakeOpcodeM( PADSBH, 0 );
+		MakeOpcodeM( PCEQH, 0 );
+		MakeOpcodeM( PCEQB, 0 );
+		MakeOpcodeM( PEXTUW, 0 );
+		MakeOpcodeM( PEXTUH, 0 );
+		MakeOpcodeM( PEXTUB, 0 );
+		MakeOpcodeM( PSLLVW, 0 );
+		MakeOpcodeM( PSRLVW, 0 );
 
-		MakeOpcodeM( QFSRV, MMI_Default, 0 );
+		MakeOpcodeM( QFSRV, 0 );
 
-		MakeOpcodeM( PMADDH, MMI_Mult, 0 );
-		MakeOpcodeM( PHMADH, MMI_Mult, 0 );
-		MakeOpcodeM( PMSUBH, MMI_Mult, 0 );
-		MakeOpcodeM( PHMSBH, MMI_Mult, 0 );
-		MakeOpcodeM( PMULTH, MMI_Mult, 0 );
-		MakeOpcodeM( PMADDW, MMI_Mult, 0 );
-		MakeOpcodeM( PMSUBW, MMI_Mult, 0 );
-		// PMFHI, PMFLO: 1 cycle on an SCPH-30001, like any MMI move; after a
-		// parallel multiply the read waits, and PMULTH then PMFLO costs 4,
-		// which the multiply's 3 plus this 1 already charges. (They were
-		// charged as multiplies, 3.)
-		MakeOpcodeM( PMFHI, MMI_Default, 0 );
-		MakeOpcodeM( PMFLO, MMI_Default, 0 );
-		MakeOpcodeM( PMULTW, MMI_Mult, 0 );
-		MakeOpcodeM( PMADDUW, MMI_Mult, 0 );
-		MakeOpcodeM( PMULTUW, MMI_Mult, 0 );
-		MakeOpcodeM( PDIVUW, MMI_Div, 0 );
-		MakeOpcodeM( PDIVW, MMI_Div, 0 );
-		MakeOpcodeM( PDIVBW, MMI_Div, 0 );
+		MakeOpcodeM( PMADDH, 0 );
+		MakeOpcodeM( PHMADH, 0 );
+		MakeOpcodeM( PMSUBH, 0 );
+		MakeOpcodeM( PHMSBH, 0 );
+		MakeOpcodeM( PMULTH, 0 );
+		MakeOpcodeM( PMADDW, 0 );
+		MakeOpcodeM( PMSUBW, 0 );
+		MakeOpcodeM( PMFHI, 0 );
+		MakeOpcodeM( PMFLO, 0 );
+		MakeOpcodeM( PMULTW, 0 );
+		MakeOpcodeM( PMADDUW, 0 );
+		MakeOpcodeM( PMULTUW, 0 );
+		MakeOpcodeM( PDIVUW, 0 );
+		MakeOpcodeM( PDIVW, 0 );
+		MakeOpcodeM( PDIVBW, 0 );
 
-		MakeOpcodeM( PINTH, MMI_Default, 0 );
-		MakeOpcodeM( PCPYLD, MMI_Default, 0 );
-		MakeOpcodeM( PAND, MMI_Default, 0 );
-		MakeOpcodeM( PXOR, MMI_Default, 0 );
-		MakeOpcodeM( PEXEH, MMI_Default, 0 );
-		MakeOpcodeM( PREVH, MMI_Default, 0 );
-		MakeOpcodeM( PEXEW, MMI_Default, 0 );
-		MakeOpcodeM( PROT3W, MMI_Default, 0 );
+		MakeOpcodeM( PINTH, 0 );
+		MakeOpcodeM( PCPYLD, 0 );
+		MakeOpcodeM( PAND, 0 );
+		MakeOpcodeM( PXOR, 0 );
+		MakeOpcodeM( PEXEH, 0 );
+		MakeOpcodeM( PREVH, 0 );
+		MakeOpcodeM( PEXEW, 0 );
+		MakeOpcodeM( PROT3W, 0 );
 
-		MakeOpcodeM( PSRAVW, MMI_Default, 0 );
-		MakeOpcodeM( PMTHI, MMI_Default, 0 );
-		MakeOpcodeM( PMTLO, MMI_Default, 0 );
-		MakeOpcodeM( PINTEH, MMI_Default, 0 );
-		MakeOpcodeM( PCPYUD, MMI_Default, 0 );
-		MakeOpcodeM( POR, MMI_Default, 0 );
-		MakeOpcodeM( PNOR, MMI_Default, 0 );
-		MakeOpcodeM( PEXCH, MMI_Default, 0 );
-		MakeOpcodeM( PCPYH, MMI_Default, 0 );
-		MakeOpcodeM( PEXCW, MMI_Default, 0 );
+		MakeOpcodeM( PSRAVW, 0 );
+		MakeOpcodeM( PMTHI, 0 );
+		MakeOpcodeM( PMTLO, 0 );
+		MakeOpcodeM( PINTEH, 0 );
+		MakeOpcodeM( PCPYUD, 0 );
+		MakeOpcodeM( POR, 0 );
+		MakeOpcodeM( PNOR, 0 );
+		MakeOpcodeM( PEXCH, 0 );
+		MakeOpcodeM( PCPYH, 0 );
+		MakeOpcodeM( PEXCW, 0 );
 
 		//////////////////////////////////////////////////////////
 		// COP0 Instructions
@@ -498,26 +377,21 @@ namespace R5900
 		MakeOpcodeClass( COP0_C0 );
 		MakeOpcodeClass( COP0_BC0 );
 
-		// MFC0: 1 cycle on an SCPH-30001, for every register tried (Count,
-		// Status, Cause, EPC, PRId, Config, BadVAddr, Compare). It was 0.875.
-		MakeOpcode0( MFC0, 1*8, 0 );
-		MakeOpcode0( MTC0, CopDefault, 0 );
+		MakeOpcode0( MFC0, 0 );
+		MakeOpcode0( MTC0, 0 );
 
-		MakeOpcode0(BC0F, Branch, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_EQ);
-		MakeOpcode0(BC0T, Branch, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_NE);
-		MakeOpcode0(BC0FL, Branch, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_EQ | IS_LIKELY);
-		MakeOpcode0(BC0TL, Branch, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_NE | IS_LIKELY);
+		MakeOpcode0(BC0F, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_EQ);
+		MakeOpcode0(BC0T, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_NE);
+		MakeOpcode0(BC0FL, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_EQ | IS_LIKELY);
+		MakeOpcode0(BC0TL, IS_BRANCH | BRANCHTYPE_BC0 | CONDTYPE_NE | IS_LIKELY);
 
-		MakeOpcode0( TLBR, CopDefault, 0 );
-		MakeOpcode0( TLBWI, CopDefault, 0 );
-		MakeOpcode0( TLBWR, CopDefault, 0 );
-		MakeOpcode0( TLBP, 3*8, 0 ); // 3 cycles on an SCPH-30001; was 0.875
-		// ERET: 6 cycles on an SCPH-30001. In place of a JR and its delay slot
-		// it costs 3 more, and 5 more than a taken branch. The table charged
-		// 0.875.
-		MakeOpcode0( ERET, 6*8, IS_BRANCH|BRANCHTYPE_ERET );
-		MakeOpcode0( EI, CopDefault, 0 );
-		MakeOpcode0( DI, 1*8, 0 );   // 1 cycle on an SCPH-30001; was 0.875
+		MakeOpcode0( TLBR, 0 );
+		MakeOpcode0( TLBWI, 0 );
+		MakeOpcode0( TLBWR, 0 );
+		MakeOpcode0( TLBP, 0 );
+		MakeOpcode0( ERET, IS_BRANCH|BRANCHTYPE_ERET );
+		MakeOpcode0( EI, 0 );
+		MakeOpcode0( DI, 0 );
 
 		//////////////////////////////////////////////////////////
 		// COP1 Instructions!
@@ -526,75 +400,44 @@ namespace R5900
 		MakeOpcodeClass( COP1_S );
 		MakeOpcodeClass( COP1_W );		// contains CVT_S instruction *only*
 
-		MakeOpcode1( MFC1, CopDefault, 0 );
-		MakeOpcode1( CFC1, CopDefault, 0 );
-		MakeOpcode1( MTC1, CopDefault, 0 );
-		MakeOpcode1( CTC1, CopDefault, 0 );
+		MakeOpcode1( MFC1, 0 );
+		MakeOpcode1( CFC1, 0 );
+		MakeOpcode1( MTC1, 0 );
+		MakeOpcode1( CTC1, 0 );
 
-		MakeOpcode1( BC1F,  Branch, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_EQ );
-		MakeOpcode1( BC1T,  Branch, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_NE );
-		MakeOpcode1( BC1FL, Branch, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_EQ|IS_LIKELY );
-		MakeOpcode1( BC1TL, Branch, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_NE|IS_LIKELY );
+		MakeOpcode1( BC1F, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_EQ );
+		MakeOpcode1( BC1T, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_NE );
+		MakeOpcode1( BC1FL, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_EQ|IS_LIKELY );
+		MakeOpcode1( BC1TL, IS_BRANCH|BRANCHTYPE_BC1|CONDTYPE_NE|IS_LIKELY );
 
-		MakeOpcode1( ADD_S, CopDefault, 0 );
-		MakeOpcode1( ADDA_S, FPU_Acc, 0 );
-		MakeOpcode1( SUB_S, CopDefault, 0 );
-		MakeOpcode1( SUBA_S, FPU_Acc, 0 );
+		MakeOpcode1( ADD_S, 0 );
+		MakeOpcode1( ADDA_S, 0 );
+		MakeOpcode1( SUB_S, 0 );
+		MakeOpcode1( SUBA_S, 0 );
 
-		MakeOpcode1( ABS_S, CopDefault, 0 );
-		MakeOpcode1( MOV_S, CopDefault, 0 );
-		MakeOpcode1( NEG_S, CopDefault, 0 );
-		MakeOpcode1( MAX_S, CopDefault, 0 );
-		MakeOpcode1( MIN_S, CopDefault, 0 );
+		MakeOpcode1( ABS_S, 0 );
+		MakeOpcode1( MOV_S, 0 );
+		MakeOpcode1( NEG_S, 0 );
+		MakeOpcode1( MAX_S, 0 );
+		MakeOpcode1( MIN_S, 0 );
 
-		// The FPU's real timings, measured on silicon rather than inferred.
-		// Method: COP0 Count around loops of k copies of one instruction, k in
-		// {1,2,4,8}, so the loop overhead falls out as the intercept and the
-		// per-instruction cost is the slope.  Taken on an SCPH-90000 (FCR0
-		// 0x2E40) over four runs; three produce byte-identical tables.
-		//
-		//     MUL.S     latency 4, issue interval 1   (pipelined)
-		//     DIV.S     7, and latency == issue interval
-		//     SQRT.S    7, identical to DIV.S
-		//     RSQRT.S   13
-		//
-		// DIV.S and SQRT.S are ONE shared, non-pipelined unit.  Equal latency
-		// alone would not say that -- what does is the mix: interleaved
-		// div.s/sqrt.s costs the SUM (14 per pair), while div.s/add.s and
-		// div.s/mul.s cost the divide ALONE (7 per pair), because the FMAC runs
-		// concurrently and hides inside the divide entirely.  RSQRT.S at
-		// 7 + 7 - 1 is two passes through that unit, which agrees with its value
-		// identity (rsqrt == sqrt then divide, see FPU.cpp's RSQRT_S).  The
-		// latency is identical on every operand class tried -- exact and
-		// non-terminating quotients, denormals, zero, divide by zero, overflow
-		// to the EE maximum -- so there is no early termination anywhere.
-		//
-		// An SCPH-30001 gives the same 7 for dependent DIV.S and SQRT.S chains
-		// (and 4 for MUL.S), so DIV.S and SQRT.S are charged 7; they used to
-		// be 6.  The charge is the whole latency at issue, which overcharges
-		// an FPU add or multiply that runs inside the divide by its own small
-		// charge.  (FPU_Mult's 4 does match the measured multiply latency.)
-		// RSQRT.S is charged the 13 above; it used to be 8.  The SCPH-30001
-		// gives 13 as well, on every operand class tried, and its mixes
-		// add up the same way (DIV.S with SQRT.S 14 per pair, with
-		// RSQRT.S 20).
-		MakeOpcode1( MUL_S, FPU_Mult, 0 );
-		MakeOpcode1( DIV_S, 7*8, 0 );
-		MakeOpcode1( SQRT_S, 7*8, 0 );
-		MakeOpcode1( RSQRT_S, 13*8, 0 );
-		MakeOpcode1( MULA_S, FPU_Acc, 0 );
-		MakeOpcode1( MADD_S, FPU_Mult, 0 );
-		MakeOpcode1( MSUB_S, FPU_Mult, 0 );
-		MakeOpcode1( MADDA_S, FPU_Acc, 0 );
-		MakeOpcode1( MSUBA_S, FPU_Acc, 0 );
+		MakeOpcode1( MUL_S, 0 );
+		MakeOpcode1( DIV_S, 0 );
+		MakeOpcode1( SQRT_S, 0 );
+		MakeOpcode1( RSQRT_S, 0 );
+		MakeOpcode1( MULA_S, 0 );
+		MakeOpcode1( MADD_S, 0 );
+		MakeOpcode1( MSUB_S, 0 );
+		MakeOpcode1( MADDA_S, 0 );
+		MakeOpcode1( MSUBA_S, 0 );
 
-		MakeOpcode1( C_F, CopDefault, 0 );
-		MakeOpcode1( C_EQ, CopDefault, 0 );
-		MakeOpcode1( C_LT, CopDefault, 0 );
-		MakeOpcode1( C_LE, CopDefault, 0 );
+		MakeOpcode1( C_F, 0 );
+		MakeOpcode1( C_EQ, 0 );
+		MakeOpcode1( C_LT, 0 );
+		MakeOpcode1( C_LE, 0 );
 
-		MakeOpcode1( CVT_S, CopDefault, 0 );
-		MakeOpcode1( CVT_W, CopDefault, 0 );
+		MakeOpcode1( CVT_S, 0 );
+		MakeOpcode1( CVT_W, 0 );
 	}
 
 	namespace OpcodeTables
@@ -767,12 +610,7 @@ namespace R5900
 	{
 		using namespace OpcodeTables;
 
-		const OPCODE& Class_SPECIAL(u32 op)
-		{
-			if ((op & 0x43F) == 0x40F)
-				return SYNC_P;
-			return tbl_Special[op & 0x3F];
-		}
+		const OPCODE& Class_SPECIAL(u32 op) { return tbl_Special[op & 0x3F]; }
 		const OPCODE& Class_REGIMM(u32 op)  { return tbl_RegImm[(op >> 16) & 0x1F]; }
 
 		const OPCODE& Class_MMI(u32 op)  { return tbl_MMI[op & 0x3F]; }

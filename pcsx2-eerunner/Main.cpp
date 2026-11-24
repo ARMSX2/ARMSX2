@@ -66,6 +66,7 @@
 #include "pcsx2/Achievements.h"
 #include "pcsx2/DebugTools/Debug.h"
 #include "pcsx2/GS/GS.h"
+#include "pcsx2/R5900IssueModel.h"
 #include "pcsx2/MTGS.h"
 #include "pcsx2/Host.h"
 #include "pcsx2/INISettingsInterface.h"
@@ -1011,6 +1012,7 @@ static void PrintCommandLineHelp(const char* progname)
 	std::fprintf(stderr, "  --localize / --repro: aliases of --stepdiff (the old jittery frame-boundary funnel was removed).\n");
 	std::fprintf(stderr, "  --selfcheck: Characterize run-to-run determinism (interp only). Expected to flag benign ~10-cycle\n");
 	std::fprintf(stderr, "               pause-point sampling jitter; use it to understand the noise floor, not as a gate.\n");
+	std::fprintf(stderr, "  --ee-charge-extra-per1024 <n>: scale every EE charge by (1024 + n) / 1024 (test hook builds)\n");
 	std::fprintf(stderr, "  --rec-fallback <groups>: comma-separated EE opcode groups to force through the INTERPRETER\n");
 	std::fprintf(stderr, "               instead of native codegen, with everything else still JIT. Bisects \"the EE JIT\n");
 	std::fprintf(stderr, "               miscomputes something\" down to one emitter family without a rebuild per hypothesis:\n");
@@ -1657,6 +1659,16 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 				}
 				s_iop_stats_every = v.value();
 				continue;
+			}
+			else if (CHECK_ARG_PARAM("--ee-charge-extra-per1024"))
+			{
+#ifdef PCSX2_RECOMPILER_TESTS
+				R5900::Issue::g_testExtraPer1024 = static_cast<u32>(std::strtoul(argv[++i], nullptr, 10));
+				continue;
+#else
+				Console.Error("--ee-charge-extra-per1024 needs a build with the recompiler test hooks.");
+				return false;
+#endif
 			}
 			else if (CHECK_ARG_PARAM("--rec-fallback"))
 			{
