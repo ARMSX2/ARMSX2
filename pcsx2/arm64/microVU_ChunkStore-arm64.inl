@@ -95,7 +95,7 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		"feed(added/repeats/wrapped/other/evicted)=%llu/%llu/%llu/%llu/%llu entries=%llu "
 		"codeKiB(compiled/installed/stubs/entries)=%llu/%llu/%llu/%llu cacheUsedKiB=%llu slots=%u "
 		"tiered(bodies/codeKiB/placed/reaimed)=%llu/%llu/%llu/%llu "
-		"pack(saved/savedKiB/unpackable/loaded/loadedCodeKiB/loadMs/rejected)=%llu/%llu/%llu/%llu/%llu/%.2f/%llu "
+		"pack(saved/savedKiB/unpackable/loaded/loadedCodeKiB/loadMs/rejected/dropped)=%llu/%llu/%llu/%llu/%llu/%.2f/%llu/%llu "
 		"firstTiered(episode/compilesBefore)=%llu/%llu",
 		mVU.index, tag, (unsigned long long)s.episodes, (unsigned long long)s.hits,
 		(unsigned long long)(s.episodes - s.hits), (unsigned long long)s.skipped,
@@ -110,7 +110,7 @@ static void mVUchunkStoreDumpStats(const microVU& mVU, const char* tag)
 		(unsigned long long)s.tieredPlaced, (unsigned long long)s.tieredReAimed,
 		(unsigned long long)s.packSaved, (unsigned long long)(s.packSavedBytes / 1024), (unsigned long long)s.packUnpackable,
 		(unsigned long long)s.packLoaded, (unsigned long long)(s.packLoadedCodeBytes / 1024), static_cast<double>(s.packLoadNs) / 1e6,
-		(unsigned long long)s.packRejected, (unsigned long long)s.firstTieredEpisode, (unsigned long long)s.firstTieredCompiles);
+		(unsigned long long)s.packRejected, (unsigned long long)s.packDropped, (unsigned long long)s.firstTieredEpisode, (unsigned long long)s.firstTieredCompiles);
 }
 
 // The bits of a lower instruction word the compiler reads at compile time.
@@ -222,6 +222,26 @@ __fi static void mVUchunkMarkRoot(microBlock* block, mVUChunkHead* head, u32 sta
 	block->tierHead = head;
 	block->tierSerial = head->serial;
 	block->tierState = state;
+}
+
+// Files `body` as a plain body of `head`: the one way a head gains one,
+// whether the JIT compiled it or the disk pack held it.
+static mVUChunkBody& mVUchunkAddPlain(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUChunkBody> body)
+{
+	mVUChunkStoreData& store = *mVU.chunkStore;
+	if (head.plain.size() >= mVUchunkMaxPlainPerHead)
+	{
+		// (its code stays where it is until the next reset: the blocks placed
+		// from it still run it)
+		store.plainBodies--;
+		store.codeBytes -= head.plain.front()->codeBytes;
+		head.plain.erase(head.plain.begin());
+		s_mVUchunkStats.feedEvicted++;
+	}
+	store.plainBodies++;
+	store.codeBytes += body->codeBytes;
+	head.plain.push_back(std::move(body));
+	return *head.plain.back();
 }
 
 // How far a lookup that fell through to the JIT got.
@@ -702,7 +722,6 @@ static void mVUchunkEnd(microVU& mVU)
 	}
 
 	mVUChunkHead* const head = mVUchunkFindHead(mVU, rootPC, rootState, true);
-	mVUChunkStoreData& store = *mVU.chunkStore;
 	// (the lookup that came before this compile placed no tiered body for it)
 	{
 		const mVUChunkBody* const tiered = mVUchunkTieredFor(mVU, *head, rootPC);
@@ -725,18 +744,7 @@ static void mVUchunkEnd(microVU& mVU)
 			return;
 		}
 	}
-	if (head->plain.size() >= mVUchunkMaxPlainPerHead)
-	{
-		// (its code stays where it is until the next reset: the blocks placed
-		// from it still run it)
-		store.plainBodies--;
-		store.codeBytes -= head->plain.front()->codeBytes;
-		head->plain.erase(head->plain.begin());
-		st.feedEvicted++;
-	}
-	head->plain.push_back(std::move(body));
-	store.plainBodies++;
-	store.codeBytes += codeBytes;
+	mVUChunkBody& kept = mVUchunkAddPlain(mVU, *head, std::move(body));
 	st.fed++;
-	mVUchunkPackSave(mVU, rootState, mVUchunkRootHash(mVU, rootPC, &rootState), *head->plain.back());
+	mVUchunkPackSave(mVU, rootState, mVUchunkRootHash(mVU, rootPC, &rootState), kept);
 }

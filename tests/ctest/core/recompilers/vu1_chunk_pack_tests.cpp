@@ -628,6 +628,46 @@ TEST_F(Vu1ChunkPack, ADeclinedRoutineIsNotAskedForAgain)
 	}
 }
 
+// A routine whose code after the root pair differs from upload to upload has
+// a body per variant. A reset, in this session or a later one, makes bodies
+// of the 16 used last and takes the older records out of the pack.
+TEST_F(Vu1ChunkPack, ARoutineBringsBackAtMostSixteenPlainBodies)
+{
+	const auto variant = [](u32 k) {
+		std::vector<VuOp> r = LoopRoutine(4);
+		r[1] = LoadViImm(vi::vi2, 0x10 + k); // (not the root pair)
+		return r;
+	};
+	constexpr u32 kVariants = 20;
+	OpenPack();
+	for (u32 k = 0; k < kVariants; k++)
+	{
+		OneRun run(1, kHome, variant(k), kHome);
+		EXPECT_GT(run.compiles, 0u) << k;
+	}
+	EndSession();
+	// (each run's reset kept 16 and its compile added one)
+	ASSERT_EQ(Bodies().size(), 17u);
+	BeginSession();
+
+	const StoreStats a = mVUChunkStore::GetStats();
+	{
+		OneRun run(1, kHome, variant(kVariants - 1), kHome);
+		EXPECT_EQ(run.compiles, 0u) << "the variant stored last";
+		ExpectMatchesInterp(run.h, "newest variant");
+	}
+	const StoreStats b = mVUChunkStore::GetStats();
+	EXPECT_EQ(b.packLoaded - a.packLoaded, 16u);
+	EXPECT_EQ(b.packDropped - a.packDropped, 1u);
+	{
+		OneRun run(1, kHome, variant(0), kHome);
+		EXPECT_GT(run.compiles, 0u) << "the variant stored first was kept";
+		ExpectMatchesInterp(run.h, "oldest variant");
+	}
+	EndSession();
+	EXPECT_EQ(Bodies().size(), 17u) << "the 16 kept and the one compiled again";
+}
+
 // With the tier off, a pack that holds tiered bodies gives none of them out.
 TEST_F(Vu1ChunkPack, TieredBodiesAreNotUsedWithTheTierOff)
 {

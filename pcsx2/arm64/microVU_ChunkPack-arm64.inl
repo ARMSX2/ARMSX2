@@ -534,6 +534,26 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 	const auto t0 = std::chrono::steady_clock::now();
 	const bool tierOn = mVUvuAotEnabled();
 	bool sawTiered = false, settled = false;
+	// (the records come oldest first: this many plain ones are passed over)
+	size_t plainToSkip = 0;
+	{
+		size_t plain = 0;
+		for (const std::vector<u8>& rec : records)
+		{
+			mVUChunkPack::Header h;
+			if (rec.size() >= sizeof(h))
+			{
+				std::memcpy(&h, rec.data(), sizeof(h));
+				plain += h.magic == mVUChunkPack::kRecordMagic && !(h.flags & mVUChunkPack::kFlagTiered) &&
+						 std::memcmp(h.rootState, &state, sizeof(microRegInfo)) == 0;
+			}
+		}
+		// A routine with an immediate compiled in that a game rewrites between
+		// uploads gets a record per value; without a bound a later session
+		// would make a body of every one of them here. Past what a head keeps,
+		// the records leave the pack.
+		plainToSkip = plain > mVUchunkMaxPlainPerHead ? plain - mVUchunkMaxPlainPerHead : 0;
+	}
 	for (const std::vector<u8>& rec : records)
 	{
 		if (rec.size() == sizeof(mVUChunkPack::SettledRecord))
@@ -554,6 +574,13 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		const bool tiered = !reject && (p.h.flags & mVUChunkPack::kFlagTiered);
 		if (tiered && !tierOn)
 			continue;
+		if (!reject && !tiered && plainToSkip)
+		{
+			plainToSkip--;
+			st.packDropped++;
+			mVUProgCache::DropBody(1, rootHash, rec.data(), rec.size());
+			continue;
+		}
 		sawTiered = sawTiered || (tiered && !(p.h.flags & mVUChunkPack::kFlagDeclined));
 		std::unique_ptr<mVUChunkBody> body;
 		if (!reject)
@@ -579,11 +606,7 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		if (tiered)
 			mVUvuAotOnBodyLoaded(mVU, *head, std::move(body));
 		else
-		{
-			store.plainBodies++;
-			store.codeBytes += body->codeBytes;
-			head->plain.push_back(std::move(body));
-		}
+			mVUchunkAddPlain(mVU, *head, std::move(body));
 	}
 	if (tierOn && (sawTiered || settled))
 	{

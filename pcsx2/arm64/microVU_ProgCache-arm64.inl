@@ -200,6 +200,7 @@ struct Pack
 	bool partial = false;     // the read was stopped: the file holds records the table does not, so it is never rewritten whole
 	bool discardFile = false; // the file is of another format: start it again at the next write
 	s64 truncateTo = -1;      // the log ends in a broken record at this offset: cut it there before appending
+	bool dropped = false;     // a record was taken out of the table (DropBody): the next pass rewrites the file without it
 	bool rewriteFailed = false; // a rewrite failed (a full card): only appends from now on, or it would retry every pass
 	u64 fileBytes = 0;
 	u64 liveBytes = 0;        // ...of which records not superseded
@@ -757,7 +758,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 	const bool tableOverCap = p.arena.used > cap;
 	const bool overCap = tableOverCap || p.fileBytes > cap;
 	const bool rewrite = !p.partial && !p.discardFile && !p.rewriteFailed && deadline == Clock::time_point::max() &&
-		(overCap || (p.fileBytes >= kRewriteMinBytes && p.fileBytes > 2 * (p.liveBytes + sizeof(PackHeader))));
+		(overCap || (p.dropped && p.fileBytes) || (p.fileBytes >= kRewriteMinBytes && p.fileBytes > 2 * (p.liveBytes + sizeof(PackHeader))));
 	if (rewrite)
 		Compact(s, lock, p, tableOverCap ? cap / 2 : overCap ? cap - sizeof(PackHeader) : SIZE_MAX);
 	else if (tableOverCap && deadline == Clock::time_point::max())
@@ -863,6 +864,7 @@ static void WritePack(State& s, std::unique_lock<std::mutex>& lock, Pack& p, Clo
 		p.discardFile = false;
 		if (rewrite)
 		{
+			p.dropped = false;
 			s.st.rewrites++;
 			p.fileBytes = bytes;
 			p.liveBytes = bytes - sizeof(PackHeader);
@@ -1539,7 +1541,8 @@ void DropBody(u32 vu_index, u64 rootHash, const u8* data, size_t size)
 	const auto it = p.table.find(BodyKey(rootHash, data, size));
 	if (it == p.table.end() || it->second.kind != kRecordBody)
 		return;
-	// (its record in the file is superseded: a rewrite leaves it out)
+	// (its record in the file would come back at the next read: the writer's next pass rewrites the file)
+	p.dropped = p.dropped || it->second.programRecord != 0;
 	p.liveBytes -= std::min<u64>(it->second.programRecord, p.liveBytes);
 	p.table.erase(it);
 	s.st.bodiesDropped++;
