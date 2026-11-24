@@ -155,7 +155,7 @@ void mVUDTendProgram(mV, microFlagCycles* mFC, int isEbit)
 	}
 
 	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-	armAsm->Mov(a64::w9, xPC);
+	mVUemitPC(mVU, a64::w9, xPC);
 	armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 
 	if (isEbit)
@@ -281,7 +281,7 @@ void mVUendProgram(mV, microFlagCycles* mFC, int isEbit)
 
 	// Save TPC
 	armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-	armAsm->Mov(a64::w9, xPC);
+	mVUemitPC(mVU, a64::w9, xPC);
 	armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 
 	if (isEbit && isEbit != 3)
@@ -381,9 +381,14 @@ void normBranchCompile(microVU& mVU, u32 branchPC)
 	blockCreate(branchPC / 8);
 	pBlock = mVUblocks[branchPC / 8]->search(mVU, (microRegInfo*)&mVUregs);
 	if (pBlock)
-		armEmitJmp(pBlock->hostEntry);
+	{
+		mVUemitLink(mVU, pBlock, pBlock->hostEntry, branchPC, &mVUregs);
+	}
 	else
+	{
+		mVU.compileFallsThrough = true;
 		mVUcompile(mVU, branchPC, (uptr)&mVUregs);
+	}
 }
 
 //------------------------------------------------------------------
@@ -396,7 +401,7 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	mVUsetupBranch(mVU, mFC);
 
 	if (!mVUpBlock->jumpCache)
-		mVUpBlock->jumpCache = static_cast<microJumpCache*>(mVUJumpTable::Alloc());
+		mVUpBlock->jumpCache = mVUnewJumpTable(mVU);
 
 	if (isEvilJump)
 	{
@@ -407,7 +412,16 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	else
 		mVUldrField(mVU, RWARG1, &mVU.branch);
 
-	if (doJumpCaching)
+	// VU1: the jumping block of the placement now running, from its slot. Its
+	// jump table and its end state are the code's, the same for every
+	// placement; the slow path notes the target in the block itself.
+	if (mVUrootRelative(mVU))
+	{
+		mVUemitLoadSlot(mVU, RXARG2, a64::x8, mVUchunkBlockSlot(mVU, mVUpBlock));
+		if (!doJumpCaching)
+			armAsm->Add(RXARG2, RXARG2, offsetof(microBlock, pStateEnd));
+	}
+	else if (doJumpCaching)
 		armMoveAddressToReg(RXARG2, mVUpBlock);
 	else
 		armMoveAddressToReg(RXARG2, &mVUpBlock->pStateEnd);
@@ -420,9 +434,8 @@ void normJumpCompile(mV, microFlagCycles& mFC, bool isEvilJump)
 	// prog.quick[startPC/8].prog and jc.hostEntry != null. A fresh (zeroed)
 	// entry falls to the null-hostEntry check, and a program clear changes
 	// quick.prog so the compare misses — same invalidation the C path
-	// relies on. The jumpCache base is loaded at runtime through mVUpBlock
-	// (already materialized in RXARG2) rather than baked, so persisted
-	// payloads never embed the heap pointer.
+	// relies on. The jumpCache base is loaded at runtime through the block
+	// in RXARG2.
 	if (doJumpCaching && !doJumpAsSameProgram && !isEvilJump && !(mVUup.eBit))
 	{
 		a64::Label slowPath;
@@ -561,11 +574,32 @@ static void mVUcloseCodeCache(microVU& mVU)
 	}
 
 	mVU.prog.x86ptr = codeStart + codeSize;
+	// The dispatcher exit resets the recompiler once the programs and their
+	// blocks hold mVUprogBytesResetAt, or the placement slots reach
+	// mVUplaceSlotResetAt, as it does when the code cache fills.
+	const bool over = mVU.progBytes >= mVUprogBytesResetAt || mVU.placeSlotsUsed >= mVUplaceSlotResetAt;
+	mVU.prog.x86exitAt = over ? nullptr : mVU.prog.x86end;
 }
 
 //------------------------------------------------------------------
 // mVUcompileJIT — Called by JR/JALR at runtime
 //------------------------------------------------------------------
+
+// Notes in `blk`'s own record (microBlock::jumpTargets) that its JR or JALR
+// reached `pc`, which resolved to `prog`. A later miss on the same target
+// replaces the program, as it replaces the jump table's entry.
+static void mVUnoteJumpTarget(microBlock& blk, u32 pc, microProgram* prog)
+{
+	if (!blk.jumpTargets)
+		blk.jumpTargets = new std::vector<microJumpTarget>();
+	std::vector<microJumpTarget>& v = *blk.jumpTargets;
+	const auto at = std::lower_bound(v.begin(), v.end(), pc,
+		[](const microJumpTarget& t, u32 x) { return t.pc < x; });
+	if (at != v.end() && at->pc == pc)
+		at->prog = prog;
+	else
+		v.insert(at, microJumpTarget{prog, pc});
+}
 
 _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 {
@@ -605,13 +639,13 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 			return jc.hostEntry;
 
 		// A jump the cache did not know: the vu-aot tier counts these to see
-		// when a tiered program has met a target its regions do not hold.
+		// when a tiered routine has met a target its regions do not hold.
 		if constexpr (vuIndex == 1)
 			mVUvuAotOnJumpMiss(mVU);
 
 		mVUopenCodeCache(mVU);
 		void* v = mVUsearchProg<vuIndex>(startPC, (uptr)&pBlock->pStateEnd);
-		// A program microVU only ever reaches through a JR/JALR (an overlay the
+		// A routine microVU only ever reaches through a JR/JALR (an overlay the
 		// dispatcher never enters) is counted, and tiered up, here.
 		if constexpr (vuIndex == 1)
 			v = mVUvuAotAfterJump(mVU, startPC, (uptr)&pBlock->pStateEnd, v);
@@ -620,6 +654,10 @@ _mVUt void* mVUcompileJIT(u32 startPC, uptr ptr)
 		jc.prog = mVU.prog.quick[startPC / 8].prog;
 		jc.x86ptrStart = v;
 		jc.hostEntry = v;
+		// The table is shared by every copy of the code; `pBlock` is the
+		// copy that jumped (loaded from its placement's slot).
+		if constexpr (vuIndex == 1)
+			mVUnoteJumpTarget(*pBlock, startPC, jc.prog);
 		return v;
 	}
 	else
@@ -710,7 +748,7 @@ void normBranch(mV, microFlagCycles& mFC)
 		mVUendProgram(mVU, &mFC, 3);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 		iPC = tempPC;
@@ -786,7 +824,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			// Not taken: set TPC to PC after the delay slot
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			if (mVU.index && THREAD_VU1)
 				armEmitCall((void*)mVUTBit);
@@ -795,7 +833,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		if (mVU.index && THREAD_VU1)
 			armEmitCall((void*)mVUTBit);
@@ -836,14 +874,14 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->B(&dJMP, cond);
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVU.exitFunct);
 		armAsm->Bind(&dJMP);
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVU.exitFunct);
 
@@ -869,14 +907,14 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		armAsm->B(&mJMP, cond);
 			incPC(4);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&mJMP);
 		incPC(-4);
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 
@@ -904,7 +942,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 			// Not taken: set TPC to next instruction
 			incPC(1);
 			armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-			armAsm->Mov(a64::w9, xPC);
+			mVUemitPC(mVU, a64::w9, xPC);
 			armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 			armEmitJmp(mVUexitEBit(mVU));
 		armAsm->Bind(&taken);
@@ -913,7 +951,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		// Taken: set TPC to branch target
 		iPC = branchAddr(mVU) / 4;
 		armAsm->Add(a64::x8, gprVUState, offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI));
-		armAsm->Mov(a64::w9, xPC);
+		mVUemitPC(mVU, a64::w9, xPC);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		armEmitJmp(mVUexitEBit(mVU));
 		return;
@@ -942,6 +980,7 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 	// Try to find cached block for not-taken path
 	microBlock* bBlock;
 	incPC2(1);
+	mVUchunkNoteFallThrough(mVU, xPC);
 	blockCreate(iPC / 2);
 	bBlock = mVUblocks[iPC / 2]->search(mVU, (microRegInfo*)&mVUregs);
 	incPC2(-1);
@@ -950,7 +989,10 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 	{
 		// Not-taken block exists: emit conditional jump to it
 		a64::Condition invCond = a64::InvertCondition(cond);
-		armEmitCondBranch(invCond, bBlock->hostEntry);
+		incPC2(1);
+		const u32 notTakenPC = xPC;
+		incPC2(-1);
+		mVUemitCondLink(mVU, invCond, bBlock, notTakenPC, &mVUregs);
 		incPC(-3);
 		normBranchCompile(mVU, branchAddr(mVU));
 	}
@@ -965,15 +1007,17 @@ void condBranch(mV, microFlagCycles& mFC, a64::Condition cond)
 		memcpy(&regBackup, &mVUregs, sizeof(microRegInfo));
 
 		incPC2(1);
+		mVU.compileFallsThrough = true;
 		mVUcompile(mVU, xPC, (uptr)&mVUregs);
 
 		iPC = bPC;
 		incPC(-3);
-		void* jumpAddr = mVUblockFetch(mVU, branchAddr(mVU), (uptr)&regBackup);
+		const u32 takenPC = branchAddr(mVU);
+		void* jumpAddr = mVUblockFetch(mVU, takenPC, (uptr)&regBackup);
 		armAsm->Bind(&takenLabel);
 		if (jumpAddr)
 		{
-			armEmitJmp(jumpAddr);
+			mVUemitLink(mVU, nullptr, jumpAddr, takenPC, &regBackup);
 		}
 		else
 		{

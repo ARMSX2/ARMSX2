@@ -5,9 +5,7 @@
 // macros, so they come first.
 #include "vuaot/VuAotBackground.h"
 #include "vuaot/VuAotLive.h"
-#include "vuaot/VuAotPersist.h"
 #include "vuaot/VuAotRegion.h"
-#include "vuaot/VuAotTier.h"
 
 #include "microVU-arm64.h"
 #include "arm64/RecCrashReport-arm64.h"
@@ -449,6 +447,21 @@ void mVUinit(microVU& mVU, uint vuIndex)
 
 	mVU.index        =  vuIndex;
 	mVU.cop2         =  0;
+	mVU.place        =  0;
+	mVU.placeMicro   =  nullptr;
+	mVU.vuAotBails[0] = mVU.vuAotBails[1] = 0;
+	mVU.compileRoot  =  0;
+	mVU.compileDepth =  0;
+	mVU.compileFallsThrough = false;
+	mVU.chunk = {};
+	// Untouched pages of the slot array cost nothing.
+	if (vuIndex && !mVU.placeSlotStore)
+		mVU.placeSlotStore.reset(new u64[mVUplaceSlotCapacity]);
+	mVU.placeSlots     = mVU.placeSlotStore.get();
+	mVU.placeSlotsUsed = 0;
+	if (vuIndex && !mVU.chunkStore)
+		mVU.chunkStore = std::make_unique<mVUChunkStoreData>();
+	mVUchunkStoreClear(mVU);
 	mVU.vuMemSize    = (mVU.index ? 0x4000 : 0x1000);
 	mVU.microMemSize = (mVU.index ? 0x4000 : 0x1000);
 	mVU.progSize     = (mVU.index ? 0x4000 : 0x1000) / 4;
@@ -687,8 +700,8 @@ static void mVUdispatcherAB(mV)
 	// inline (mVUcompileFailedFlagBackup).
 
 	// mVUcleanUp logic inlined in this exit stub. The C++ helper (mVUcleanUpVU0/1)
-	// is only called on the rare bounds-violation path (program cache exhausted →
-	// reset). Cycle accounting and the EE-cycle-skip math (the common cost)
+	// is only called on the rare bounds-violation path (program cache exhausted,
+	// or the programs' memory or the placement slots at their bound → reset). Cycle accounting and the EE-cycle-skip math (the common cost)
 	// are emitted inline so dispatch costs no `bl` on the hot path.
 	//
 	// 1) Cycle accounting (always — both the normal and the reset path; see
@@ -737,14 +750,16 @@ static void mVUdispatcherAB(mV)
 	// are three consecutive 8-byte fields in microProgManager.
 	static_assert(offsetof(microProgManager, x86start) == offsetof(microProgManager, x86ptr) + 8,
 		"inline bounds check expects x86ptr/x86start/x86end adjacent");
-	static_assert(offsetof(microProgManager, x86end)   == offsetof(microProgManager, x86ptr) + 16,
-		"inline bounds check expects x86ptr/x86start/x86end adjacent");
+	static_assert(offsetof(microProgManager, x86exitAt) == offsetof(microProgManager, x86ptr) + 24,
+		"inline bounds check expects x86ptr/x86start/x86end/x86exitAt adjacent");
 	armAsm->Ldr(a64::x8, reinterpret_cast<u64>(&mVU.prog.x86ptr)); // literal-pool load
 	armAsm->Ldr(a64::x9,  a64::MemOperand(a64::x8));            // x86ptr
 	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 8));         // x86start
 	armAsm->Cmp(a64::x9, a64::x10);
 	armAsm->B(&cleanUpResetTail, a64::lt);
-	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 16));        // x86end
+	// x86end, or null when the programs' memory or the placement slots are
+	// at their bound (microProgManager::x86exitAt).
+	armAsm->Ldr(a64::x10, a64::MemOperand(a64::x8, 24));        // x86exitAt
 	armAsm->Cmp(a64::x9, a64::x10);
 	armAsm->B(&cleanUpResetTail, a64::ge);
 
@@ -1246,6 +1261,12 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// tail) AFTER the exiting block armed it — this null must win (VE-07).
 	mVU.resumeEntry = nullptr;
 	mVU.resumeBlock = nullptr;
+	// Every placement goes with the programs freed below, and the chunk
+	// store's entries with the code cache.
+	mVU.placeSlotsUsed = 0;
+	if (mVU.index)
+		mVUchunkStoreDumpStats(mVU, "reset");
+	mVUchunkStoreClear(mVU);
 	if (!mVU.index)
 		mVU0ParkedSpin = 0;
 	mVU.branchCondCarryGpr = -1;
@@ -1263,6 +1284,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// Note: armAsm is null between blocks, so use armGetAsmPtr() directly
 	mVU.prog.x86start = armGetAsmPtr();
 	mVU.prog.x86ptr   = mVU.prog.x86start;
+	mVU.prog.x86exitAt = mVU.prog.x86end;
 
 	// Build the persistent MacroAssembler over the post-dispatcher region
 	// of the code cache. From here on, mVUopenCodeCache binds armAsm to
@@ -1290,7 +1312,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// them: the next load of each comes from RAM, and the cache's writer
 	// puts them on disk for later sessions. SaveAllPrograms stores only
 	// programs that grew since they were stored, so calling it on every
-	// reset is cheap. The vu-aot tier queues its programs' plans first.
+	// reset is cheap.
 	// Then, if the title or the sentinel changed, the cache moves to that
 	// pack: these programs belong to the old one.
 	//
@@ -1300,8 +1322,9 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	// files finds nothing using them.
 	if (EmuConfig.Cpu.Recompiler.UseVUProgramCache())
 	{
-		mVUvuAotSaveAll(mVU);
-		mVUProgCache::SaveAllPrograms(mVU);
+		// (VU1 has no program images: the chunk store wrote its bodies as it gained them)
+		if (!mVU.index)
+			mVUProgCache::SaveAllPrograms(mVU);
 		mVUProgCache::Rekey(mVU);
 	}
 	else
@@ -1320,6 +1343,7 @@ void mVUreset(microVU& mVU, bool resetReserve, bool vu1Idle)
 	for (microProgram*& prog : mVU.mvuOrphanedProgs)
 		mVUdeleteProg(mVU, prog);
 	mVU.mvuOrphanedProgs.clear();
+	mVUfreeJumpTables(mVU);
 
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{
@@ -1348,12 +1372,14 @@ void mVUclose(microVU& mVU)
 
 	// Final checkpoint of live programs to the cache before we let
 	// the contentMap go. Mirrors the mVUreset path; harmless if nothing
-	// new has been added since the last reset. The vu-aot tier's plans go to the
-	// cache's writer first; Close writes them before it returns.
-	mVUvuAotSaveAll(mVU);
-	mVUProgCache::SaveAllPrograms(mVU);
+	// new has been added since the last reset.
+	if (!mVU.index)
+		mVUProgCache::SaveAllPrograms(mVU);
 	mVUProgCache::Close(mVU);
 	mVUvuAotOnClose(mVU);
+	if (mVU.index)
+		mVUchunkStoreDumpStats(mVU, "close");
+	mVUchunkStoreClear(mVU);
 
 	// Same ownership rule as mVUreset: free via contentMap (plus the
 	// drift-evicted orphans), then drop the per-PC deque shells.
@@ -1366,6 +1392,7 @@ void mVUclose(microVU& mVU)
 	for (microProgram*& prog : mVU.mvuOrphanedProgs)
 		mVUdeleteProg(mVU, prog);
 	mVU.mvuOrphanedProgs.clear();
+	mVUfreeJumpTables(mVU);
 
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{
@@ -1495,12 +1522,14 @@ __ri void mVUdeleteProg(microVU& mVU, microProgram*& prog)
 {
 	for (u32 i = 0; i < (mVU.progSize / 2); i++)
 	{
+		if (prog->block[i])
+			mVU.progBytes -= prog->block[i]->getBlockCount() * mVUblockBytes;
 		safe_delete(prog->block[i]);
 	}
+	mVU.progBytes -= sizeof(microProgram);
 	safe_delete(prog->ranges);
 	safe_delete(prog->keptBits);
 	mVUPersist::OnProgramDeleted(*prog);
-	mVUvuAotOnProgramDeleted(*prog);
 	safe_aligned_free(prog);
 }
 
@@ -1512,6 +1541,7 @@ __ri microProgram* mVUcreateProg(microVU& mVU, int startPC, const XXH128_hash_t&
 
 	microProgram* prog = (microProgram*)_aligned_malloc(sizeof(microProgram), 64);
 	memset(prog, 0, sizeof(microProgram));
+	mVU.progBytes += sizeof(microProgram);
 	prog->idx = mVU.prog.total++;
 	prog->ranges = new std::deque<microRange>();
 	prog->startPC = startPC;
@@ -1763,12 +1793,12 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		}
 
 		// Full in-process miss (per-PC deque + contentMap) — this PC needs a
-		// program. Try hydrating the block graph from the on-disk cache
-		// before compiling from scratch.
-		mVUProgCache::ObserveDispatchHash(mVU, liveHash, startPC);
+		// program. VU0 tries hydrating the block graph from the on-disk cache
+		// before compiling from scratch. A VU1 program has no image: the
+		// chunk store brings its code back routine by routine as it compiles.
 		if constexpr (vuIndex == 1)
 			mVUvuAotOnNewProgram(mVU);
-		if (microProgram* hydrated = mVUProgCache::TryLoadProgram(mVU, liveHash))
+		if (microProgram* hydrated = (vuIndex == 0) ? mVUProgCache::TryLoadProgram(mVU, liveHash) : nullptr)
 		{
 			// Same install sequence as the contentMap-hit path above —
 			// HydrateProgram registered the program in the contentMap, so
@@ -1777,10 +1807,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 			mVU.prog.cleared = 0;
 			mVU.prog.isSame  = 1;
 			mVU.prog.cur     = hydrated;
-			// The vu-aot tier reads the program's saved plan, if it has one, before anything can
-			// reach the program: no quick slot or jump cache names it yet.
-			if constexpr (vuIndex == 1)
-				mVUvuAotOnProgramReady(mVU, *hydrated);
 			mVUquickInstall(mVU, slot, hydrated);
 			quick.block      = hydrated->block[startPC / 8];
 			if (quick.block == nullptr)
@@ -1797,8 +1823,6 @@ _mVUt __fi void* mVUsearchProg(u32 startPC, uptr pState)
 		mVU.prog.cleared = 0;
 		mVU.prog.isSame  = 1;
 		mVU.prog.cur     = mVUcreateProg(mVU, mVU.regs().start_pc/8, liveHash);
-		if constexpr (vuIndex == 1)
-			mVUvuAotOnProgramReady(mVU, *mVU.prog.cur);
 		void* entryPoint = mVUblockFetch(mVU,  startPC, pState);
 		quick.block      = mVU.prog.cur->block[startPC/8];
 		mVUquickInstall(mVU, slot, mVU.prog.cur);
@@ -1887,9 +1911,18 @@ _mVUt void* mVUexecute(u32 startPC, u32 cycles)
 	if (!result)
 	{
 		mVUopenCodeCache(mVU);
-		result = mVUsearchProg<vuIndex>(maskedPC, pState);
 		if constexpr (vuIndex == 1)
-			result = mVUvuAotAfterSearch(mVU, maskedPC, pState, result);
+		{
+			// The entry state this dispatch searched with. A compile in the
+			// search copies the entry state of every block it compiles into
+			// lpState, so lpState no longer holds it afterwards.
+			alignas(16) microRegInfo key;
+			std::memcpy(&key, &mVU.prog.lpState, sizeof(key));
+			result = mVUsearchProg<vuIndex>(maskedPC, pState);
+			result = mVUvuAotAfterSearch(mVU, maskedPC, (uptr)&key, result);
+		}
+		else
+			result = mVUsearchProg<vuIndex>(maskedPC, pState);
 		mVUcloseCodeCache(mVU);
 	}
 
@@ -1929,6 +1962,19 @@ _mVUt void mVUcleanUp()
 		Console.WriteLn(vuIndex ? Color_Orange : Color_Magenta, "microVU%d: Program cache limit reached.", mVU.index);
 		mVUreset(mVU, false);
 	}
+	else if (mVU.placeSlotsUsed >= mVUplaceSlotResetAt)
+	{
+		Console.WriteLn(Color_Orange, "microVU%d: Placement slot limit reached.", mVU.index);
+		mVUreset(mVU, false);
+	}
+	else if (mVU.progBytes >= mVUprogBytesResetAt)
+	{
+		Console.WriteLn(vuIndex ? Color_Orange : Color_Magenta, "microVU%d: Program memory limit reached (%d programs).",
+			mVU.index, mVU.prog.total);
+		mVUreset(mVU, false);
+	}
+	else
+		mVU.prog.x86exitAt = mVU.prog.x86end;
 
 	if (!vuIndex || !THREAD_VU1)
 	{
@@ -2264,9 +2310,19 @@ namespace mvu_test_hooks
 		b.pState.xgkickcycles = key;
 		return b;
 	}
+	// (the blocks are added through microVU0, which counts them in progBytes)
+	static void BlockListUncount(microBlockManager* m) { microVU0.progBytes -= m->getBlockCount() * mVUblockBytes; }
 	void* BlockListCreate() { return new microBlockManager(); }
-	void BlockListDestroy(void* bm) { delete static_cast<microBlockManager*>(bm); }
-	void BlockListReset(void* bm) { static_cast<microBlockManager*>(bm)->reset(); }
+	void BlockListDestroy(void* bm)
+	{
+		BlockListUncount(static_cast<microBlockManager*>(bm));
+		delete static_cast<microBlockManager*>(bm);
+	}
+	void BlockListReset(void* bm)
+	{
+		BlockListUncount(static_cast<microBlockManager*>(bm));
+		static_cast<microBlockManager*>(bm)->reset();
+	}
 	const void* BlockListAdd(void* bm, u32 key)
 	{
 		microBlock b = BlockListProbeBlock(key);
@@ -2451,6 +2507,18 @@ namespace mvu_test_hooks
 	// resume), counted in every test build.
 	static std::atomic<u64> g_vu1Stops{0};
 	u64 GetVu1Stops() { return g_vu1Stops.load(std::memory_order_relaxed); }
+
+	ProgramMemory GetProgramMemory(u32 vu)
+	{
+		const microVU& mVU = vu ? microVU1 : microVU0;
+		ProgramMemory m;
+		m.bytes = mVU.progBytes;
+		m.programs = mVU.mvuContentMap.size() + mVU.mvuOrphanedProgs.size();
+		m.resetAt = mVUprogBytesResetAt;
+		m.programBytes = sizeof(microProgram);
+		m.blockBytes = mVUblockBytes;
+		return m;
+	}
 } // namespace mvu_test_hooks
 #endif
 
@@ -2810,6 +2878,12 @@ MVU_MACRO_EMIT_ADAPTER(RXOR,  false)
 // and the TU-local mVUopenCodeCache / mVUcloseCodeCache).
 //------------------------------------------------------------------
 #include "microVU_Persist-arm64.inl"
+
+//------------------------------------------------------------------
+// The VU1 chunk store's records in the pack: needs the fixup forms and the
+// patcher above.
+//------------------------------------------------------------------
+#include "microVU_ChunkPack-arm64.inl"
 
 //------------------------------------------------------------------
 // vu-aot live tier — tier-up policy and the glue between microVU's

@@ -17,18 +17,27 @@ struct MvuPersistLog;
 // Persisted-JIT VU program cache — relocation recorder + block-graph
 // serializer.
 //
-// While recording is enabled, every mVU code-cache emission episode (the
-// contiguous region emitted between mVUopenCodeCache and mVUcloseCodeCache)
-// is captured as a "chunk" on the owning microProgram's persist log: the raw
-// code bytes, the blocks whose entry points live inside it, and a fixup for
-// every instruction that carries a host address pointing outside the chunk.
-// A fixup names an encoding form and a target:
+// While recording is enabled, every instruction the VU JIT emits that carries
+// a host address is noted as a fixup, which names an encoding form and a
+// target:
 //
 //   forms    MOVZ+MOVK run (1 to 4 instructions), ADRP, B/BL imm26,
 //            B.cond/CBZ/CBNZ imm19.
 //   targets  one of the program's own microBlock objects (heap), another
 //            block's code entry, a per-VU dispatcher stub, an offset into the
-//            emulator's module image, an offset into the data arena.
+//            emulator's module image, an offset into the data arena, an
+//            offset into the VU1 chunk store body the code is part of.
+//
+// VU0: every code-cache emission episode (the contiguous region emitted
+// between mVUopenCodeCache and mVUcloseCodeCache) is captured as a "chunk" on
+// the owning microProgram's persist log: the raw code bytes, the blocks whose
+// entry points live inside it, and the fixups. A program's log serializes to
+// an image, and an image hydrates back into a program.
+//
+// VU1 has no program log and no image. Its code is kept by the chunk store,
+// one body per outermost compile; the recorder hands each body its fixups
+// (BeginBody, EndBody) and the store writes the body as a record of the pack
+// (microVU_ChunkPack-arm64.inl).
 //
 // Hydration resolves every target against the running process, so a payload
 // works wherever ASLR put the image, heap, code slab and data arena. It
@@ -44,6 +53,21 @@ struct MvuPersistLog;
 // itself dropped).
 namespace mVUPersist
 {
+	// One instruction (or run) that carries a host address, and what the
+	// address is: see the forms and targets in microVU_Persist-arm64.inl.
+	struct PersistFixup
+	{
+		u32 codeOffset; // offset of the first patched insn from the start of the code it belongs to
+		u8 form;
+		u8 target;
+		u8 width; // kFormMovRun: instruction count (1..4)
+		u8 _pad0;
+		u32 index; // block index (block targets) or stub id
+		u32 _pad1;
+		s64 offset; // byte offset from the target's base (block object, image, data arena, body)
+	};
+	static_assert(sizeof(PersistFixup) == 24);
+
 	// Master gate for emit-time recording. Default off. In production,
 	// VMManager syncs it from the EmuCore/CPU/Recompiler EnableVUProgramCache
 	// or EnableVUAot config bool (see SyncRecordingFromConfig); tests and
@@ -95,6 +119,28 @@ namespace mVUPersist
 	// mVUdeleteProg: free the program's persist log, if any.
 	void OnProgramDeleted(microProgram& prog);
 
+	// --- VU1 chunk store bodies ---
+	//
+	// A body is the code one outermost VU1 compile emits. Between BeginBody and
+	// EndBody the recorder also judges every address by whether a copy of the
+	// body alone, loaded in another process, could be patched to hold it.
+
+	// An outermost VU1 compile starts emitting at `start`.
+	void BeginBody(microVU& mVU, u8* start);
+	// It returned, with the cursor at `end`. Fills `out` with the body's
+	// fixups, offsets from `start`, and returns true. False when recording is
+	// off or the body holds an address a copy could not be patched for (a
+	// heap pointer, a branch to code before the body).
+	bool EndBody(microVU& mVU, u8* end, std::vector<PersistFixup>& out);
+	// It returned without a body of its own (it installed one compiled
+	// before): closes the body with nothing judged.
+	void DropBody(microVU& mVU);
+	// Code copied into the open body (VU AOT's regions) carries `addr` in a
+	// MOVZ/MOVK run of `width` instructions at `at`, or branches to `target`
+	// with the B or BL at `at`.
+	void NoteMovRun(microVU& mVU, u8* at, u32 width, const void* addr);
+	void NoteBranch(microVU& mVU, u8* at, const void* target);
+
 	// --- Serialization / hydration ---
 
 	// Serialize a program's recorded block graph into `out`. Returns false
@@ -119,8 +165,7 @@ namespace mVUPersist
 	u64 ImageShape(const u8* data, size_t size);
 
 	// The running build's identity, as a 128-bit hash: the GNU build-id note of the module that holds
-	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file. The
-	// vu-aot sidecars are keyed on it, so a new build ignores the sidecars of the previous one.
+	// the JIT (Linux, Android), its LC_UUID (Apple), else the compile date and time of this file.
 	void GetBuildId(u64& lo, u64& hi);
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test only: report this id instead (a file "from another build").

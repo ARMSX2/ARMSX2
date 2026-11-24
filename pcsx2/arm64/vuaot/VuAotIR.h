@@ -218,6 +218,8 @@ namespace vuaot::ir
 		RGet,        // RGET/RNEXT vector result: args r
 		AccClamp,    // clamp modes 2/3: MADD clamps microVU's cached ACC in place; mask = lanes clamped; args acc[4]
 		IConst,      // link address of BAL/JALR: imm
+		Link,        // the same, as it is where code is shared between copies of a routine: imm = the branch's
+		             // distance from the chunk's root in pairs; the value is ((root + imm) & 0x7FF) + 2
 		Kick,        // XGKICK transfer: args mem, addr -> Mem
 		// control
 		Cond,        // IBxx condition: sub = LOp; args a[, b]
@@ -330,6 +332,10 @@ namespace vuaot::ir
 		// (bits 18 and up), taken from the last instance that wrote them; the updates
 		// in between are dead unless read. A sticky-only update adds nothing.
 		bool dropSticky = false;
+		// VU1 code shared between copies of a routine: a BAL/JALR link value is a Link, measured
+		// from this root (a pair index). Off: an IConst.
+		bool rootRelative = false;
+		u32 rootPair = 0;
 	};
 
 	// One microVU block alone, for per-block lowering: incoming state comes from

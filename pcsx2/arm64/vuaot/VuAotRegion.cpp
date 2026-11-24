@@ -25,12 +25,10 @@ namespace vuaot
 	{
 		constexpr int kCMax = 25, kCMin = 26;
 		constexpr int kCyclesReg = 28;
-		// A bail record: PC (u32), the signed distance from the record to the
-		// region's one microProgram word (s32), the block's microBlock (its
-		// pipeline state), then the address of microVU's own code for the block
-		// once compiled.
-		constexpr s32 kBailSlot = 16;
-		constexpr u32 kBailRecordSize = 24;
+		// A node has two slots of the placement: its microBlock (the pipeline
+		// state a bail compiles from, the jump cache of its JR/JALR), then the
+		// address of microVU's own code for the block once a bail has compiled it.
+		constexpr s32 kBailSlot = 8;
 		constexpr int kMemBaseReg = 27;
 		constexpr int kVHomeRegs[] = {31, 30, 29, 27, 24, 23, 22, 21, 20, 19, 18, 17, 16, 15};
 		constexpr int kGHomeRegs[] = {26, 15, 14, 13, 12, 11};
@@ -171,7 +169,8 @@ namespace vuaot
 			// block (bail).
 			bool checkpoint = false;
 			u32 need = 1;                  // budget that guarantees no microVU test fails before the next test
-			a64::Label bail, rec;
+			a64::Label bail, entryBail;
+			u32 slot = 0; // the first of the node's two placement slots
 			// Variant merging (RegionTier::merge): the node whose body this one runs (itself
 			// unless `alias`). An alias keeps its identity (block, key, entry stub, bail record)
 			// and nothing else: the region's analyses and its code see only its representative.
@@ -210,6 +209,8 @@ namespace vuaot
 			bo.clampExtra = env_.clampExtra;
 			bo.clampSign = env_.clampSign;
 			bo.dropSticky = le_.dropSticky;
+			bo.rootRelative = true;
+			bo.rootPair = env_.rootPC / 8;
 			bo.remapAtLeave = true;
 			bo.regionEnds = true;
 			return bo;
@@ -1420,20 +1421,45 @@ namespace vuaot
 		const s32 cyclesOff = env_.offCycles;
 		a64::Label bailEntry, bailCompile, entryBail, bailGo;
 		std::vector<a64::Label> loadAll(maps_.size()), exitAll(maps_.size());
+		// The placement's slots: two per node, in node order (the root's first),
+		// then the program.
+		for (auto& np : nodes_)
+			np->slot = env_.addNodeSlots(env_.vuIndex, np->blk);
+		const u32 programSlot = env_.addProgramSlot(env_.vuIndex);
+		// w1 = the node's first slot number, and above it the node's distance
+		// from the root in pairs: what the bail needs to find the node's block
+		// and its address in the copy that is running.
+		const auto bailWord = [&](const Node& n) {
+			const u8* const at = armGetCurrentCodePointer();
+			{
+				vixl::ExactAssemblyScope scope(armAsm, 8);
+				armAsm->movz(a64::w1, n.slot);
+				armAsm->movk(a64::w1, ((n.pc - env_.rootPC) / 8) & 0x7ff, 16);
+			}
+			if (env_.noteSlotMovz)
+				env_.noteSlotMovz(at);
+		};
 		// Entries from microVU (the root's is where microVU is compiling): the
-		// budget test, then the node's head address in x8 and the shared home
-		// loader.
-		// An alias's entry is its own (its bail record names its own block) and runs its
+		// placement's entry stub, the budget test, then the node's head address
+		// in x8 and the shared home loader.
+		// An alias's entry is its own (its bail goes to its own block) and runs its
 		// representative's body.
 		for (size_t i = 0; i < nodes_.size(); i++)
 		{
 			Node& n = *nodes_[i];
 			Node& r = *nodes_[n.rep];
 			n.entry = armGetCurrentCodePointer();
-			armAsm->Adr(a64::x1, &n.rec);
+			{
+				vixl::ExactAssemblyScope scope(armAsm, 12);
+				armAsm->movz(a64::w9, env_.placeWord & 0xffff);
+				armAsm->movk(a64::w9, env_.placeWord >> 16, 16);
+				armAsm->str(a64::w9, a64::MemOperand(a64::x24, env_.offPlace));
+			}
+			if (env_.notePlaceStub)
+				env_.notePlaceStub(static_cast<const u8*>(n.entry));
 			armAsm->Ldr(W(8), a64::MemOperand(a64::x24, cyclesOff));
 			armAsm->Cmp(W(8), r.need);
-			armAsm->B(&entryBail, a64::lt);
+			armAsm->B(&n.entryBail, a64::lt);
 			if (acc_)
 			{
 				// microVU hands over every STATUS instance whole: the chain starts
@@ -1530,20 +1556,23 @@ namespace vuaot
 			if (!n.checkpoint || n.alias)
 				continue;
 			armAsm->Bind(&n.bail);
-			armAsm->Adr(a64::x1, &n.rec);
+			bailWord(n);
 			armAsm->Adr(a64::x8, &bailEntry);
 			armAsm->B(&exitAll[n.map]);
 		}
-		// Shared: the record in x1, state in microVU's locations. A bail is counted in the
-		// program (data on the heap: the code cache is not written from generated code):
-		// [0] a budget test at an entry from microVU, [1] one at a loop head.
+		for (auto& np : nodes_)
+		{
+			armAsm->Bind(&np->entryBail);
+			bailWord(*np);
+			armAsm->B(&entryBail);
+		}
+		// Shared: the node's bail word in w1, state in microVU's locations. A bail is
+		// counted in microVU: [0] a budget test at an entry from microVU, [1] one at a
+		// loop head.
 		const auto countBail = [&](int which) {
-			armAsm->Ldrsw(a64::x9, a64::MemOperand(a64::x1, 4)); // distance to the program word
-			armAsm->Add(a64::x9, a64::x1, a64::x9);
-			armAsm->Ldr(a64::x9, a64::MemOperand(a64::x9));
-			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 8 * which));
+			armAsm->Ldr(a64::x10, a64::MemOperand(a64::x24, env_.offBails + 8 * which));
 			armAsm->Add(a64::x10, a64::x10, 1);
-			armAsm->Str(a64::x10, a64::MemOperand(a64::x9, env_.offProgBails + 8 * which));
+			armAsm->Str(a64::x10, a64::MemOperand(a64::x24, env_.offBails + 8 * which));
 		};
 		armAsm->Bind(&entryBail);
 		countBail(0);
@@ -1551,6 +1580,15 @@ namespace vuaot
 		armAsm->Bind(&bailEntry);
 		countBail(1);
 		armAsm->Bind(&bailGo);
+		// x10 = the running placement's slots, x1 = the node's pair of them, w2 = the
+		// node's distance from the root.
+		armAsm->Ldr(a64::w9, a64::MemOperand(a64::x24, env_.offPlace));
+		armAsm->Ldr(a64::x10, a64::MemOperand(a64::x24, env_.offPlaceSlots));
+		armAsm->Lsr(a64::w9, a64::w9, 11);
+		armAsm->Add(a64::x10, a64::x10, a64::Operand(a64::x9, a64::LSL, 3));
+		armAsm->Lsr(a64::w2, a64::w1, 16);
+		armAsm->And(a64::w1, a64::w1, 0xffff);
+		armAsm->Add(a64::x1, a64::x10, a64::Operand(a64::x1, a64::LSL, 3));
 		armAsm->Ldr(a64::x0, a64::MemOperand(a64::x1, kBailSlot));
 		armAsm->Cbz(a64::x0, &bailCompile);
 		armAsm->Br(a64::x0);
@@ -1584,10 +1622,21 @@ namespace vuaot
 			EmitClampHomes(maps_[m], le_);
 			armAsm->Br(a64::x8);
 		}
-		// Shared: compile microVU's code for a bailed block (record in x1)
-		// and enter it, qmmPQ and the clamp bounds kept across the call.
+		// Shared: compile microVU's code for a bailed block (its slots in x1, its
+		// distance from the root in w2, the placement's slots in x10) and enter it,
+		// qmmPQ and the clamp bounds kept across the call.
 		armAsm->Bind(&bailCompile);
 		armAsm->Str(a64::q28, a64::MemOperand(a64::x24, env_.offNeonBackup + 28 * 16));
+		{
+			const u8* const at = armGetCurrentCodePointer();
+			{
+				vixl::ExactAssemblyScope scope(armAsm, 4);
+				armAsm->movz(a64::w3, programSlot);
+			}
+			if (env_.noteSlotMovz)
+				env_.noteSlotMovz(at);
+			armAsm->Ldr(a64::x3, a64::MemOperand(a64::x10, a64::x3, a64::LSL, 3));
+		}
 		armAsm->Mov(a64::w0, env_.vuIndex);
 		armEmitCall(reinterpret_cast<const void*>(env_.bailTarget));
 		armAsm->Ldr(a64::q28, a64::MemOperand(a64::x24, env_.offNeonBackup + 28 * 16));
@@ -1608,31 +1657,6 @@ namespace vuaot
 				continue;
 			armAsm->Bind(&e->jump);
 			armAsm->B(&e->far);
-		}
-		// Bail records (data): the region's program word, then one record per node.
-		const u8* programWord = nullptr;
-		{
-			vixl::ExactAssemblyScope scope(armAsm, 8);
-			programWord = armGetCurrentCodePointer();
-			armAsm->dc64(reinterpret_cast<u64>(env_.program));
-		}
-		if (env_.noteDataWord)
-			env_.noteDataWord(programWord, reinterpret_cast<u64>(env_.program));
-		for (auto& np : nodes_)
-		{
-			Node& n = *np;
-			armAsm->Bind(&n.rec);
-			const u8* record;
-			{
-				vixl::ExactAssemblyScope scope(armAsm, kBailRecordSize);
-				record = armGetCurrentCodePointer();
-				armAsm->dc32(n.pc);
-				armAsm->dc32(static_cast<u32>(static_cast<s32>(programWord - record)));
-				armAsm->dc64(reinterpret_cast<u64>(n.blk));
-				armAsm->dc64(0); // (the bail slot: microVU's code for the block, written at run time)
-			}
-			if (env_.noteDataWord)
-				env_.noteDataWord(record + 8, reinterpret_cast<u64>(n.blk));
 		}
 		regionEnd = armGetCurrentCodePointer();
 	}
@@ -1676,7 +1700,11 @@ namespace vuaot
 		armAsm->Mov(a64::w11, W(20 + e.fS));
 		armEmitCall(env_.endFlagsB);
 		armAsm->Add(a64::x8, a64::x19, static_cast<s32>(offsetof(VURegs, VI) + REG_TPC * sizeof(REG_VI)));
-		armAsm->Mov(a64::w9, e.tpc);
+		// TPC: the placement's root plus the end's distance from it, wrapped as the VU wraps it.
+		armAsm->Ldr(a64::w9, a64::MemOperand(a64::x24, env_.offPlace));
+		if (const u32 dist = ((e.tpc - env_.rootPC) / 8) & 0x7ff)
+			armAsm->Add(a64::w9, a64::w9, dist);
+		armAsm->Ubfiz(a64::w9, a64::w9, 3, 11);
 		armAsm->Str(a64::w9, a64::MemOperand(a64::x8));
 		if (!env_.threadVU1)
 		{
@@ -1695,10 +1723,17 @@ namespace vuaot
 		Node& n = *nodes_[idx];
 		// normJumpCompile's probe records every jump's target in start_pc.
 		if (!n.jumps.empty())
+		{
 			armAsm->Str(W(8), a64::MemOperand(a64::x19, static_cast<s32>(offsetof(VURegs, start_pc))));
+			// w16 = how many pairs the target is behind the placement's root, mod 2048:
+			// a recorded target is that distance in every copy of the routine.
+			armAsm->Ldr(a64::w16, a64::MemOperand(a64::x24, env_.offPlace));
+			armAsm->Sub(a64::w16, a64::w16, a64::Operand(W(8), a64::LSR, 3));
+			armAsm->And(a64::w16, a64::w16, 0x7ff);
+		}
 		for (const auto& j : n.jumps)
 		{
-			armAsm->Cmp(W(8), j.first);
+			armAsm->Cmp(a64::w16, ((env_.rootPC - j.first) / 8) & 0x7ff);
 			armAsm->B(Target(idx, j.second), a64::eq);
 		}
 		armAsm->Str(W(8), a64::MemOperand(a64::x24, env_.offBranch));
@@ -1742,15 +1777,7 @@ namespace vuaot
 		if (nodes_.size() == 1 && !selfLink)
 			return t_.Decline("single block, no loop", why);
 
-		PlanChecks();
-		// (after PlanChecks: loop heads stay alone in their classes)
-		if (t_.merge)
-			MergeVariants();
-		for (auto& np : nodes_)
-			if (!np->alias)
-				ScanUseDef(*np);
-		ComputeHandoffMasks();
-		t_.NoteProgram(env_.program, env_.offProgBails);
+		u32 ownSticky = 0;
 		for (const auto& np : nodes_)
 			for (const InstPair& ip : np->br.insts)
 			{
@@ -1759,11 +1786,38 @@ namespace vuaot
 				{
 					t_.statusReaders_++;
 					if (ip.lower.imm12 & 0xFC0)
-						t_.stickyReaders_++;
+						ownSticky++;
 					if (ip.lower.imm12 & 0xC00) // (the sticky I / D bits, the divides')
 						t_.stickyDivReaders_++;
 				}
 			}
+		t_.stickyReaders_ += ownSticky;
+		// The sticky byte is dropped only while none of the region's own nodes reads it.
+		// (The nodes were built with the drop; the ones of a region that reads it are
+		// built again without.)
+		if (le_.dropSticky && ownSticky)
+		{
+			le_.dropSticky = false;
+			le_.dropStickyMutation = 0;
+			t_.stickyReaderImages_++;
+			for (auto& np : nodes_)
+			{
+				np->fn = ir::BuildNodeLocal(np->br, BuildOpts());
+				if (!NodeLowering::Lowerable(np->fn, le_))
+					return t_.Decline("node not lowerable with the sticky byte", why);
+			}
+		}
+		else if (le_.dropSticky)
+			t_.stickyDropped_++;
+
+		PlanChecks();
+		// (after PlanChecks: loop heads stay alone in their classes)
+		if (t_.merge)
+			MergeVariants();
+		for (auto& np : nodes_)
+			if (!np->alias)
+				ScanUseDef(*np);
+		ComputeHandoffMasks();
 		acc_ = t_.stickyAcc && !le_.dropSticky && WantsAcc();
 		for (int pass = 0; pass < 2; pass++)
 		{
@@ -1916,27 +1970,6 @@ namespace vuaot
 		return false;
 	}
 
-	void RegionTier::NoteProgram(const void* program, s32 off)
-	{
-		if (!program)
-			return;
-		for (const auto& p : progs_)
-			if (p.first == program)
-				return;
-		progs_.push_back({program, off});
-	}
-
-	void RegionTier::BailCounts(u64& entry, u64& loopHead) const
-	{
-		entry = loopHead = 0;
-		for (const auto& p : progs_)
-		{
-			const u64* c = reinterpret_cast<const u64*>(static_cast<const u8*>(p.first) + p.second);
-			entry += c[0];
-			loopHead += c[1];
-		}
-	}
-
 	bool RegionTier::Decline(const std::string& why, std::string* out)
 	{
 		declined_[why]++;
@@ -1972,7 +2005,7 @@ namespace vuaot
 			return Decline("clamp mode 4", why);
 		if (env.xgkickHack || env.ibitHack || env.overflowHack || env.addSubHack || env.vuSyncHack)
 			return Decline("gamefix", why);
-		if (!env.searchBlock || !env.bailTarget || !env.emitJumpTail)
+		if (!env.searchBlock || !env.bailTarget || !env.emitJumpTail || !env.addNodeSlots || !env.addProgramSlot)
 			return Decline("no region support in microVU", why);
 		if (maxRegions >= 0 && static_cast<s32>(regions_) >= maxRegions)
 			return Decline("bisect", why);
@@ -1993,23 +2026,14 @@ namespace vuaot
 		le.softwareFlush = env.softwareFlush;
 		le.schedule = schedule;
 		le.vuMemPinned = env.vuMemPinned;
-		if (dropSticky)
-		{
-			// (counted whatever the flag hack is)
-			const bool readsSticky = ImageReadsSticky();
-			if (readsSticky)
-				stickyReaderImages_++;
-			else
-			{
-				// Applies with the flag hack on or off. With it off microVU's sticky bits are
-				// exact, so the final STATUS of a program loses them here. The live tier's
-				// tripwire (microVU_VuAot-arm64.inl) turns `dropSticky` off for the rest of the
-				// session when a reader of those bits turns up.
-				le.dropSticky = true;
-				le.dropStickyMutation = dropStickyMutation;
-				stickyDropped_++;
-			}
-		}
+		le.offPlace = env.offPlace;
+		// Applies with the flag hack on or off. With it off microVU's sticky bits are
+		// exact, so the final STATUS of a program loses them here. A region whose own
+		// nodes read them keeps them (RegionBuilder::Run). For a reader anywhere else,
+		// the live tier's tripwire (microVU_VuAot-arm64.inl) turns `dropSticky` off for
+		// the rest of the session.
+		le.dropSticky = dropSticky;
+		le.dropStickyMutation = dropSticky ? dropStickyMutation : 0;
 		RegionBuilder rb(*this, env, le);
 		return rb.Run(br, why);
 	}

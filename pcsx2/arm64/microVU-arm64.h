@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <arm_neon.h>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include "VuEfuModel.h"
 #include "VuMulBand.h"
 #include "microVU_Persist-arm64.h"
+#include "microVU_ChunkStore-arm64.h"
 #include "microVU_JumpTable-arm64.h"
 #include "vuaot/VuAotMvuTrace.h"
 
@@ -174,7 +176,7 @@
 //       carrying the block pointer and the resume PC, instead of the block
 //       pointer, a call and mVUendProgram(0) inline in every block.
 //  39+ — not recorded here; `git log -L` on the constant below lists every bump.
-static constexpr u32 kMvuCompilerAbiVersion = 67;
+static constexpr u32 kMvuCompilerAbiVersion = 72;
 
 // Hash/equality functors for XXH128_hash_t — let std::unordered_map<XXH128_hash_t, …>
 // work without a wrapping struct. low64 already carries the well-mixed half of
@@ -253,7 +255,6 @@ static_assert(sizeof(microRegInfo) == 96, "microRegInfo was not 96 bytes");
 
 struct microProgram;
 struct MvuPersistLog;
-struct VuAotProgramState;
 struct microJumpCache
 {
 	microJumpCache() : prog(NULL), x86ptrStart(NULL), hostEntry(NULL) {}
@@ -267,6 +268,14 @@ struct microJumpCache
 	// block-linking paths BR through hostEntry; x86ptrStart stays a
 	// debugging/perf-attribution hint.
 	void* hostEntry;
+};
+
+// A JR/JALR target one block reached, and the program the target resolved to
+// (microBlock::jumpTargets).
+struct microJumpTarget
+{
+	microProgram* prog;
+	u32 pc;
 };
 
 // mVUdetectSpinLoop's answer for a block, memoized in microBlock::spinState.
@@ -287,14 +296,43 @@ struct alignas(16) microBlock
 	microRegInfo    pStateEnd;
 	u8*             x86ptrStart; // Code entry point (name kept for struct compatibility)
 	void*           hostEntry;   // see microJumpCache::hostEntry
+	// The jump table of the code this block runs, if it ends in a JR or JALR.
+	// It belongs to the code, not to the block: every copy of a VU1 chunk
+	// placed at another root uses the table of the code it was compiled as.
+	// An entry depends only on the absolute target, the program at the
+	// target and pStateEnd, which every copy shares. microVU frees its tables
+	// when it resets (microVU::jumpTables).
 	microJumpCache* jumpCache;
 	u8              spinState;   // microBlockSpin
 	u8              spinExitOnEq;
 	u8              spinViA;
 	u8              spinViB;
 	u32             extent;      // mVUBlockExtent: host and guest length, for the crash post-mortem
+	// VU1, the VU AOT tier's view of a block a dispatch or a JR/JALR slow path
+	// has entered (null until then): the routine it is the root of
+	// (mVUChunkHead), the head's serial when this copy was last checked
+	// against the head's tiered bodies, and what the check found
+	// (mVUtierState).
+	void*           tierHead;
+	u32             tierSerial;
+	u32             tierState;
+	// VU1, the targets this block's JR or JALR reached when the jump table
+	// missed, by pc (null until the first). The table is shared by every copy
+	// of the code, so this is where a copy's own targets are kept, for the VU
+	// AOT tier's harvest. A copy that hits an entry another copy of the same
+	// program wrote for the same target does not record it.
+	std::vector<microJumpTarget>* jumpTargets;
 };
-static_assert(sizeof(microBlock) == 224, "the spin memo and the extent ride microBlock's tail padding");
+
+// microBlock::tierState.
+enum mVUtierState : u32
+{
+	mVUtierNone = 0,  // the copy runs microVU's code: its runs count towards a tier-up
+	mVUtierDeclined,  // the tier built no region for this routine: nothing to ask for
+	mVUtierCovered,   // the block is a node of another routine's tiered body, placed here
+	mVUtierBody,      // + the id of the tiered body of its own routine that the copy runs
+};
+static_assert(sizeof(microBlock) == 256, "microBlock grew");
 
 // How much code a block's compile produced, packed into one word so it fits
 // microBlock's padding: bits 0-19 the host bytes from x86ptrStart to where the
@@ -514,23 +552,6 @@ struct microProgram
 	// memset-constructed in mVUcreateProg, so a raw pointer is the right shape.)
 	MvuPersistLog* persist;
 
-	// vu-aot live tier (microVU_VuAot-arm64.inl). `vuAotRuns` counts the
-	// dispatches of this program while the tier is on, `vuAotJumpRuns` the
-	// JR/JALR slow-path entries (the jump cache missed) that resolved to it;
-	// `vuaot` is the tier's state for it, null until the program is tiered up
-	// (so non-null means tiered). All stay zero with EnableVUAot off.
-	u32 vuAotRuns;
-	u32 vuAotJumpRuns;
-	VuAotProgramState* vuaot;
-	// Times a vu-aot region of this program took the budget bail: [0] at an entry from
-	// microVU, [1] at a loop head (written by the region's own bail code, which reaches
-	// the program through the bail record).
-	u64 vuAotBails[2];
-	// VU1 dispatches and VU1 cycles when the program was created or loaded (how long it waited for
-	// its first region).
-	u64 vuAotBornAt;
-	u64 vuAotBornCycle;
-
 	// Words of `ranges` that are partly read at run time (the lower-op
 	// immediates under the IbitHack gamefix), sorted by address. The rest of
 	// each word is compiled in: when a range's bytes differ from `data`,
@@ -560,6 +581,11 @@ struct microProgManager
 	u8*                x86ptr;   // Code cache write cursor (name kept for compat)
 	u8*                x86start; // Start of rec-cache
 	u8*                x86end;   // Reset threshold — mVUcacheSafeZone MB below the physical rec-region end
+	// What the dispatcher exit compares x86ptr against: x86end, or null once
+	// the programs' memory or the placement slots have reached their bound
+	// (set by mVUcloseCodeCache). Either way the exit calls mVUcleanUp, which
+	// resets.
+	u8*                x86exitAt;
 	microRegInfo       lpState;
 	// One bit per quick[] slot that holds a program: bit (i % 64) of word
 	// (i / 64) is set iff quick[i].prog != NULL. mVUclear runs on every
@@ -632,6 +658,251 @@ enum : int
 
 EeFpuModelCallee mVUModelStubTarget(int stub, int vuIndex);
 
+// What a slot of a placement holds.
+enum mVUChunkSlotKind : u8
+{
+	mVUslotBlock,   // the block object of a block of the chunk
+	mVUslotLink,    // the entry of a block outside the chunk
+	mVUslotZero,    // 0; the code that runs fills it (a region's bail target)
+	mVUslotProgram, // the microProgram the placement belongs to
+};
+
+// One slot of a placement. The chunk's code numbers its slots from 0.
+struct mVUChunkSlot
+{
+	u8 kind;
+	// A block of the chunk: the slot holds this block object. Null otherwise.
+	microBlock* block;
+	// A link: the slot holds the entry of this block, which is outside the
+	// chunk and was found at `targetPC` with the state `key`.
+	microBlock* target;
+	u32 targetPC;
+	microRegInfo key;
+};
+
+// Compile-time state of the chunk an outermost mVUcompile is emitting (VU1).
+struct mVUChunkEpisode
+{
+	// A block the chunk registered, with the entry stub it got.
+	struct Block
+	{
+		microBlock* block;
+		u8* stub;
+		u32 startPC;
+		u8* body; // where the stub ends: links inside the chunk enter here
+	};
+	// First slot of the placement the compile itself runs as.
+	u32 slotBase;
+	std::vector<Block> blocks;
+	std::vector<mVUChunkSlot> slots;
+
+	// What the chunk store needs to know about the compile.
+	//
+	// One byte per micro-memory word: set when the compiler decoded the word
+	// or tested it (mVUreadWord, mVUmarkRead). A word iPC only passed over is
+	// not marked.
+	u8 readMark[mProgSize];
+	// Bits of a word the emitted code reads from micro memory when it runs.
+	struct RuntimeBits
+	{
+		u32 word;
+		u32 bits;
+	};
+	std::vector<RuntimeBits> runtimeBits;
+	// The mVUsetupRange calls, in order.
+	struct Range
+	{
+		s32 pc;
+		bool isStart;
+	};
+	std::vector<Range> ranges;
+	// The mVUaddKeptBits calls, in order.
+	std::vector<microKeptBits> keptBits;
+	// An outermost compile is running and is noting the above.
+	bool recording;
+	// The store may be asked before compiling.
+	bool lookup;
+	// The compile emitted, or will emit, code the store cannot describe.
+	bool unstorable;
+	// The VU AOT tier is building a routine's regions: what the compile emits
+	// becomes a tiered body.
+	bool tiered;
+	// The compile ran on past the last pair of micro memory to pair 0.
+	bool wrapped;
+	// The immediates of the FSAND, FSEQ and FSOR it compiled, OR'd.
+	u32 statusImm;
+	u8* codeStart;
+};
+
+// A compiled chunk as the store keeps it. Offsets are from the root.
+struct mVUChunkBody
+{
+	struct Word
+	{
+		s32 off; // in words
+		u32 value;
+		u32 mask;
+	};
+	struct Block
+	{
+		s32 pairOff;
+		u32 slot;
+		u8* stub; // the entry stub in the chunk's code
+		u8* body; // the code after the stub
+		microJumpCache* jumpCache; // ends in a JR or JALR: the code's table, which every placement's block uses
+		microRegInfo pState;
+		microRegInfo pStateEnd;
+	};
+	struct Link
+	{
+		s32 pairOff;
+		u32 slot;
+		microRegInfo key;
+	};
+	struct Range
+	{
+		s32 off; // in bytes
+		bool isStart;
+	};
+	// A word of the ranges compared through a mask (microProgram::keptBits).
+	struct KeptBits
+	{
+		s32 off; // in bytes
+		u32 kept;
+	};
+	struct DataSlot
+	{
+		u32 slot;
+		u8 kind; // mVUslotZero or mVUslotProgram
+	};
+	std::vector<Word> reads;
+	std::vector<Block> blocks;
+	std::vector<Link> links;
+	std::vector<DataSlot> dataSlots;
+	std::vector<Range> ranges;
+	std::vector<KeptBits> keptBits;
+	// The lowest and highest word it reads, compiles, branches to or ranges over.
+	s32 lo;
+	s32 hi;
+	u32 slotCount;
+	u32 codeBytes;
+	u32 statusImm;
+
+	// A tiered body: the VU AOT tier's regions for the routine and the blocks
+	// microVU compiled around them. `id` numbers the head's tiered bodies.
+	bool tiered = false;
+	u32 id = 0;
+	// The tier built no region from this root over these words: nothing to
+	// place, and no reason to ask again.
+	bool declined = false;
+	// Its regions leave the sticky byte of STATUS out: placed only while no
+	// reader of it is known.
+	bool droppedSticky = false;
+	// The JR/JALR targets its regions take as direct edges: the jumping
+	// block's distance from the root in bytes -> the targets' distances,
+	// ascending.
+	std::map<u32, std::vector<u32>> targets;
+
+	// For the disk pack (microVU_ChunkPack-arm64.inl). Where the code starts;
+	// every host address in it, when `packable`: a copy loaded in another
+	// process can be patched to run there. `inPack`: the pack holds it.
+	u8* code = nullptr;
+	std::vector<mVUPersist::PersistFixup> fixups;
+	bool packable = false;
+	bool inPack = false;
+};
+
+// One routine: a root block (its entry state and its first pair) and the
+// bodies compiled from it. A body carries its own read set, so routines that
+// begin alike and go on differently share a head.
+struct mVUChunkHead
+{
+	microRegInfo rootState;
+	std::vector<std::unique_ptr<mVUChunkBody>> plain;
+	// Newest last. A copy of the routine runs the newest one that matches it.
+	std::vector<std::unique_ptr<mVUChunkBody>> tiered;
+
+	// The VU AOT tier's count of the routine's runs, over every copy
+	// (microVU_VuAot-arm64.inl). `serial` moves when a tiered body or a
+	// finished job arrives: a copy whose block holds another serial takes the
+	// slow path once to be checked against it. runs[0] counts entries of
+	// copies on microVU's code, runs[1] of copies on a tiered body; a count
+	// reaching next[] sends that entry to the slow path.
+	u32 serial = 1;
+	u32 runs[2] = {};
+	u32 next[2] = {};
+	u32 jumpRuns = 0;
+	// The jump count at which the JR/JALR slow path may ask for a job again.
+	u32 nextJump = 0;
+	// A job is queued or running.
+	bool outstanding = false;
+	// Jobs dropped, discarded or not placed.
+	u32 attempts = 0;
+	// Tiered bodies built after the first, for jump targets it did not hold.
+	u32 retiers = 0;
+	u32 runsAtTier = 0;
+	u64 missesSeen = 0;
+	u32 emptyChecks = 0;
+	bool settled = false;
+	u32 nextBodyId = 0;
+	// Finished jobs (VuAotJob), oldest first, each waiting for a copy of the
+	// variant of the routine it compiled to be entered. Routines that begin
+	// alike and go on differently share the head, and a game can run them in
+	// turn many times a frame.
+	std::vector<std::shared_ptr<void>> jobs;
+	// The disk pack held a tiered body for a copy of the routine that could
+	// not be placed (microVU_ChunkPack-arm64.inl): the copy asks for its
+	// regions at its first counted run, not after the usual number.
+	bool tieredInPack = false;
+};
+
+// Emptied by every reset (mVUchunkStoreClear). The options sentinel changes
+// only at a reset, so every body was compiled under the options in force.
+struct mVUChunkStoreData
+{
+	std::vector<std::unique_ptr<mVUChunkHead>> heads;
+	// mVUchunkRootHash -> index into heads.
+	std::unordered_multimap<u64, u32> index;
+	u64 codeBytes = 0;
+	u64 plainBodies = 0;
+	u64 tieredBodies = 0;
+	u64 tieredCodeBytes = 0;
+	std::vector<microBlock*> scratchTargets;
+	// The tiered body the last build episode produced, until the tier takes it.
+	std::unique_ptr<mVUChunkBody> built;
+	// The root block of the copy being moved onto a tiered body (mVUchunkReAimCopy).
+	microBlock* placingRoot = nullptr;
+	// The disk pack (microVU_ChunkPack-arm64.inl): the root hashes whose
+	// records have been asked for since the store was last emptied.
+	std::unordered_set<u64> packAsked;
+	// Stats::episodes and Stats::hits when the store was last emptied.
+	u64 episodesAtClear = 0;
+	u64 hitsAtClear = 0;
+	std::vector<u8> scratchRecord;
+	std::vector<std::vector<u8>> scratchRecords;
+};
+
+// Slots the array holds, and the count at which the next dispatcher exit
+// resets the recompiler, as it does when the code cache fills. A placement
+// has to start below 2^21 (the width of its field in microVU::place); the
+// threshold leaves room under that for what one dispatch can add.
+static constexpr u32 mVUplaceSlotCapacity = 3u << 20;
+static constexpr u32 mVUplaceSlotResetAt = 1u << 20;
+
+// The heap memory a VU's programs and blocks hold (microVU::progBytes) at
+// which the next dispatcher exit resets the recompiler. A program built from
+// chunk store placements costs a few KiB of code, so the code cache no longer
+// bounds how many programs there are; this does. A program is 32 KiB and a
+// block 288 bytes; OutRun 2006's programs average about 21 blocks, 38 KiB in
+// all, so 192 MiB is about 5,200 of them. Compiling every program, the 56 MiB
+// code cache filled at 3,830 to 3,900 of them, holding about 144 MiB of
+// programs and 56 MiB of code: the bound keeps more programs in no more
+// memory.
+static constexpr u64 mVUprogBytesResetAt = 192ull << 20;
+// What one block costs in progBytes: its link in the block list and its
+// entry in the quick lookup.
+static constexpr u64 mVUblockBytes = sizeof(microBlockLink) + sizeof(microBlockLinkRef);
+
 struct microVU
 {
 	alignas(16) u32 statFlag[4];
@@ -656,6 +927,18 @@ struct microVU
 	u32 q;
 	u32 totalCycles;
 	s32 cycles;
+	// VU1: the placement now running. A chunk is the blocks one outermost
+	// mVUcompile emits; a placement is that code entered for one address.
+	// Bits 0-10 are the placement's root as a pair index (address / 8): the
+	// code holds every micro-memory address as a distance from it. Bits 11-31
+	// are the index of the placement's first slot in placeSlots. Each entry
+	// stub writes this word. See mVUemitRootStub.
+	u32 place;
+	// VU1 under the IbitHack gamefix: the micro memory of the placement now
+	// running, from its root (Micro + root * 8). The code reads its run-time
+	// immediates at a distance from it. Each entry stub writes it after
+	// `place`.
+	u8* placeMicro;
 
 	// Resume-aware dispatch (VE-07). A cycle-budget break re-enters the very
 	// block that broke (mVUtestCycles saves that block's own pState/TPC), so
@@ -671,6 +954,15 @@ struct microVU
 	// dispatch can reach its spin memo without a lookup. Valid exactly while
 	// resumeEntry is.
 	microBlock* resumeBlock;
+
+	// VU1: what the code of a chunk needs that differs between placements,
+	// one 8-byte slot each: the block object a cycle-budget break parks, and
+	// the entry of each block outside the chunk that the chunk branches to.
+	// The code loads slot (place >> 11) + n. Kept in the pin window.
+	u64* placeSlots;
+	// VU1: budget bails VU AOT regions have taken, counted by their own code:
+	// [0] at an entry from microVU, [1] at a loop head.
+	u64 vuAotBails[2];
 
 	u32 index;
 	u32 cop2;
@@ -779,6 +1071,30 @@ struct microVU
 	// costs a reorder at every edge that reaches a program end.
 	bool needFlagFinalize;
 
+	// Compile-time only: the chunk being compiled. compileRoot is the address
+	// the outermost mVUcompile started at.
+	u32 compileRoot;
+	u32 compileDepth;
+	// Set by a caller whose code runs straight into the block mVUcompile is
+	// about to emit; read and cleared by that mVUcompile.
+	bool compileFallsThrough;
+	mVUChunkEpisode chunk;
+
+	// VU1: the storage behind placeSlots and how many slots are handed out.
+	// Slots are not freed one by one; mVUreset starts again from zero.
+	std::unique_ptr<u64[]> placeSlotStore;
+	u32 placeSlotsUsed;
+	// Bytes of the programs (sizeof(microProgram) each) and blocks
+	// (mVUblockBytes each) this VU holds now. mVUcleanUp resets the
+	// recompiler when it reaches mVUprogBytesResetAt.
+	u64 progBytes;
+	// VU1: the chunk store.
+	std::unique_ptr<mVUChunkStoreData> chunkStore;
+	// Every jump table this VU's code uses (microBlock::jumpCache). Code and
+	// block objects that name a table go when the code cache resets, so the
+	// tables go there too (mVUreset, mVUclose), and nowhere else.
+	std::vector<void*> jumpTables;
+
 	VURegs& regs() const { return ::vuRegs[index]; }
 
 	__fi REG_VI& getVI(uint reg) const { return regs().VI[reg]; }
@@ -807,6 +1123,37 @@ struct microVU
 		return (vminvq_u32(vandq_u32(a23, a45)) == 0) ? 1 : 0;
 	}
 };
+
+// A new, empty jump table for a block of code `mVU` is compiling or loading.
+// microVU owns it until its next reset.
+__fi static microJumpCache* mVUnewJumpTable(microVU& mVU)
+{
+	void* const table = mVUJumpTable::Alloc();
+	mVU.jumpTables.push_back(table);
+	return static_cast<microJumpCache*>(table);
+}
+
+// Hands back every jump table `mVU` holds. Only once nothing can run the
+// code or use the block objects that name them.
+__fi static void mVUfreeJumpTables(microVU& mVU)
+{
+	for (void* table : mVU.jumpTables)
+		mVUJumpTable::Free(table);
+	mVU.jumpTables.clear();
+}
+
+// The micro-memory word at `idx`, noted as read by the compile in progress.
+__fi static u32* mVUreadWord(microVU& mVU, u32 idx)
+{
+	mVU.chunk.readMark[idx] = 1;
+	return &reinterpret_cast<u32*>(mVU.regs().Micro)[idx];
+}
+
+// Notes the word at iPC as read: mVU.code is about to be decoded.
+__fi static void mVUmarkRead(microVU& mVU)
+{
+	mVU.chunk.readMark[mVU.prog.IRinfo.curPC] = 1;
+}
 
 // MemOperand for one of the hot microVU scalars (the code..cycles block
 // right after the flag arrays), addressed off the gprMVUFlag (x24) pin the
@@ -864,6 +1211,7 @@ private:
 
 public:
 	inline int getFullListCount() const { return fListI; }
+	inline int getBlockCount() const { return qListI + fListI; }
 #ifdef PCSX2_RECOMPILER_TESTS
 	// Test probe (mvu_block_list_tests): the number of links a walk from the
 	// head of the full-compare list reaches, and whether fBlockEnd is the
@@ -908,17 +1256,18 @@ public:
 	~microBlockManager() { reset(); }
 	void reset()
 	{
+		// (jump tables are microVU's: see microBlock::jumpCache)
 		for (microBlockLink* linkI = qBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			mVUJumpTable::Free(linkI->block.jumpCache);
+			delete linkI->block.jumpTargets;
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
 		for (microBlockLink* linkI = fBlockList; linkI != nullptr;)
 		{
 			microBlockLink* freeI = linkI;
-			mVUJumpTable::Free(linkI->block.jumpCache);
+			delete linkI->block.jumpTargets;
 			linkI = linkI->next;
 			_aligned_free(freeI);
 		}
@@ -941,6 +1290,7 @@ public:
 			microBlockLink*& blockList = fullCmp ? fBlockList : qBlockList;
 			microBlockLink*& blockEnd  = fullCmp ? fBlockEnd  : qBlockEnd;
 			microBlockLink*  newBlock  = (microBlockLink*)_aligned_malloc(sizeof(microBlockLink), 32);
+			mVU.progBytes += mVUblockBytes;
 			newBlock->block.jumpCache  = nullptr;
 			newBlock->next             = nullptr;
 
@@ -959,6 +1309,13 @@ public:
 			// whatever the caller's microBlock was holding: the allocation
 			// can be a freed block's, and the IR copy carries no answer.
 			newBlock->block.spinState = mVUspinUnknown;
+			// ... and its place in the VU AOT tier's count from the slow path
+			// that first enters it.
+			newBlock->block.tierHead = nullptr;
+			newBlock->block.tierSerial = 0;
+			newBlock->block.tierState = 0;
+			// ... and its jump targets from its own jumps.
+			newBlock->block.jumpTargets = nullptr;
 			thisBlock = &newBlock->block;
 
 			quickLookup.push_back({&newBlock->block, pBlock->pState.quick64[0]});
@@ -1075,9 +1432,11 @@ extern void* mVUlookupProg_VU1(u32 startPC, u32 cycles);
 //     Called at init and at every reset, before the dispatchers are emitted.
 //   - mVUlookupProgTier_VU1: mVUlookupProg_VU1 plus the run counter; the
 //     dispatcher calls it instead when the tier is on.
-//   - mVUvuAotAfterSearch: the slow path's chance to tier a program up.
+//   - mVUvuAotAfterSearch: the slow path's chance to tier a routine up, and
+//     to move the copy it entered onto a tiered body.
 //   - mVUvuAotAfterJump: the same for a JR/JALR the jump cache did not know.
-//   - mVUvuAotLiveHooks: the compile hooks for a tiered-up program.
+//   - mVUvuAotLiveHooks: the region hook, handed out while the tier builds
+//     a routine's regions (mVUvuAotBuilding) and at no other time.
 extern void  mVUvuAotSyncConfig(microVU& mVU);
 extern bool  mVUvuAotEnabled();
 // Whether microVU0 emits the sticky tripwire's hook on VU1's STATUS quadword of its register window
@@ -1087,16 +1446,18 @@ extern bool  mVUvuAotPending();
 extern void* mVUlookupProgTier_VU1(u32 startPC, u32 cycles);
 extern void* mVUvuAotAfterSearch(microVU& mVU, u32 startPC, uptr pState, void* result);
 extern void* mVUvuAotAfterJump(microVU& mVU, u32 startPC, uptr pState, void* result);
-extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser,
-	vuaot::VuAotBodyHook& body, void*& bodyUser);
-extern void  mVUvuAotOnProgramDeleted(microProgram& prog);
-// A program was just created, or loaded from the disk cache, for the image in micro memory (from
-// mVUsearchProg, before it is installed in a quick slot): with the program cache on, the tier reads
-// its saved plan and sends the jobs it describes to the worker.
-extern void  mVUvuAotOnProgramReady(microVU& mVU, microProgram& prog);
-// Before a reset or close frees the programs: every program whose plan changed since its sidecar was
-// written goes to the program cache's writer.
-extern void  mVUvuAotSaveAll(microVU& mVU);
+extern void  mVUvuAotLiveHooks(microVU& mVU, vuaot::VuAotRegionHook& region, void*& regionUser);
+extern bool  mVUvuAotBuilding(microVU& mVU);
+// The run count at which a routine's head first takes the slow path.
+extern u32   mVUvuAotTierUpRuns();
+// Whether a tiered body may be placed now: one that leaves the sticky byte of
+// STATUS out only while the tripwire is armed.
+extern bool  mVUvuAotBodyAllowed(bool droppedSticky);
+// A tiered body was placed for a copy of its routine.
+extern void  mVUvuAotOnBodyPlaced(microVU& mVU, bool droppedSticky);
+// A tiered body, or the tier's "no region" mark, came back from the disk pack
+// for `head`'s routine: files it as the tier files one it built.
+extern void  mVUvuAotOnBodyLoaded(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUChunkBody> body);
 extern void  mVUvuAotOnJumpMiss(microVU& mVU);
 extern void  mVUvuAotOnBail();
 extern void  mVUvuAotOnClose(microVU& mVU);
@@ -1177,4 +1538,5 @@ static void mVU_XGKICK_SYNC(mV, bool);
 #include "microVU_Lower-arm64.inl"
 #include "x86/microVU_Tables.inl"
 #include "microVU_Branch-arm64.inl"
+#include "microVU_ChunkStore-arm64.inl"
 #include "microVU_Compile-arm64.inl"

@@ -551,7 +551,14 @@ namespace vuaot::ir
 			const LowerInst& l = p.lower;
 			const u16 sub = static_cast<u16>(l.op);
 			word_ = l.word;
-			const u32 link = (p.pc + 16) / 8; // not wrapped at the top of micro memory
+			// The console does not wrap a link value: the last two pairs of VU1's micro memory
+			// link 0x800 and 0x801.
+			const u32 link = (p.pc + 16) / 8;
+			const auto linkValue = [&]() {
+				if (o_.rootRelative)
+					return Emit(Op::Link, Type::Int, {}, sub, 0, static_cast<s32>((p.pc / 8 - o_.rootPair) & 0x7ff));
+				return Emit(Op::IConst, Type::Int, {}, sub, 0, static_cast<s32>(link));
+			};
 			switch (l.op)
 			{
 				case LOp::LQ:
@@ -650,14 +657,14 @@ namespace vuaot::ir
 				case LOp::B:
 					break;
 				case LOp::BAL:
-					WriteVI(o, l.it, Emit(Op::IConst, Type::Int, {}, sub, 0, static_cast<s32>(link)));
+					WriteVI(o, l.it, linkValue());
 					break;
 				case LOp::JR:
 					jumpVal = ReadVI(l.is);
 					break;
 				case LOp::JALR:
 					jumpVal = ReadVI(l.is);
-					WriteVI(o, l.it, Emit(Op::IConst, Type::Int, {}, sub, 0, static_cast<s32>(link)));
+					WriteVI(o, l.it, linkValue());
 					break;
 				case LOp::IBEQ:
 				case LOp::IBNE:
@@ -1540,7 +1547,7 @@ namespace vuaot::ir
 	static const char* const kOpNames[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 		"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 		"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-		"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+		"r.get", "accclamp", "iconst", "link", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
 	const char* OpName(Op op) { return kOpNames[static_cast<int>(op)]; }
 
 	std::string Dump(const Function& f, const ProgramGraph& g)
@@ -1548,7 +1555,7 @@ namespace vuaot::ir
 		static const char* const kOp[] = {"none", "livein", "phi", "const", "fmac", "opmula", "opmsub", "fmac2", "clipbits",
 			"macflags", "status.upd", "status.div", "status.set", "clip.upd", "clip.set", "flagread", "ialu", "incvi", "mtir",
 			"xtop", "loadq", "loadi", "storeq", "storei", "move", "mr32", "mfir", "mfp", "div", "divflags", "efu", "r.upd",
-			"r.get", "accclamp", "iconst", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
+			"r.get", "accclamp", "iconst", "link", "kick", "cond", "yield-check", "exit-if", "exit", "leave"};
 		static_assert(sizeof(kOp) / sizeof(kOp[0]) == static_cast<size_t>(Op::Leave) + 1, "kOp out of step with Op");
 		static const char* const kMask[16] = {"", "w", "z", "zw", "y", "yw", "yz", "yzw", "x", "xw", "xz", "xzw", "xy", "xyw", "xyz", "xyzw"};
 		std::string s;

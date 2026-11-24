@@ -71,8 +71,8 @@ namespace vuaot
 		u32 AccAccumulated() const { return accAccumulated_; }
 		// Regions with candidates where the accumulators would cost more than they save.
 		u32 AccUnprofitable() const { return accUnprofitable_; }
-		// Compiles that dropped the sticky byte (dropSticky), and those that could not
-		// because the micro memory has a sticky reader.
+		// Regions that dropped the sticky byte (dropSticky), and those that kept it
+		// because one of their own nodes reads it.
 		u32 StickyDropped() const { return stickyDropped_; }
 		u32 StickyReaderImages() const { return stickyReaderImages_; }
 		// Status readers (FSAND/FSEQ/FSOR) in the regions' code, and those whose mask
@@ -81,10 +81,6 @@ namespace vuaot
 		u32 StickyReaders() const { return stickyReaders_; }
 		// ... of which read the sticky I / D bits (STATUS bits 10-11), the ones a divide sets.
 		u32 StickyDivReaders() const { return stickyDivReaders_; }
-		// Budget bails the regions' code has taken, summed over the programs it saw: at an
-		// entry from microVU, and at a loop head (read from the programs; only valid while
-		// they are alive).
-		void BailCounts(u64& entry, u64& loopHead) const;
 		// Hand-off points (a link into a loop head, whose bail runs microVU's block) and the
 		// ring instances (of twelve) they leave out, summed.
 		u32 HandoffEdges() const { return handoffEdges_; }
@@ -115,9 +111,10 @@ namespace vuaot
 		// only the instances microVU's code for the block can still see are
 		// handed over exactly. Off: all twelve.
 		bool handoffLiveness = true;
-		// With no instruction in the micro memory reading a sticky STATUS bit (FSAND/FSEQ/FSOR
-		// with a mask that selects bits 6-11), whatever the flag hack, STATUS updates drop the
-		// sticky byte (BuildOptions::dropSticky) and a divide's flags drop the sticky I / D bits.
+		// A region none of whose nodes reads a sticky STATUS bit (FSAND/FSEQ/FSOR with a mask
+		// that selects bits 6-11) drops the sticky byte from its STATUS updates, whatever the
+		// flag hack (BuildOptions::dropSticky), and a divide's flags drop the sticky I / D bits.
+		// A caller that knows of a reader outside the region turns this off.
 		// The STATUS a program leaves can then differ from microVU's in bits 6-7 (the sticky zero
 		// and sign bits) and 10-11 (the sticky invalid and divide-by-zero bits). The live tier
 		// switches this off for the rest of the session when a program does read them (the
@@ -176,15 +173,10 @@ namespace vuaot
 		u32 handoffEdges_ = 0, handoffRingsDead_ = 0;
 		u32 statusReaders_ = 0, stickyReaders_ = 0, stickyDivReaders_ = 0;
 		u32 stickyDropped_ = 0, stickyReaderImages_ = 0;
-		std::vector<std::pair<const void*, s32>> progs_;
-		void NoteProgram(const void* program, s32 off);
-		bool ImageReadsSticky() const { return MicroReadsSticky(micro_, vu_); }
 
 	public:
-		// Whether a micro image (VU `vu`'s, 4 or 16 KB) has a sticky STATUS reader: the scan
-		// that decides dropSticky. The live tier's background compile runs it on the job's
-		// copy of micro memory, and again on live micro memory when it publishes a region
-		// that dropped the sticky byte.
+		// Whether a micro image (VU `vu`'s, 4 or 16 KB) has a sticky STATUS reader. The live
+		// tier runs it on the image a program is created from.
 		static bool MicroReadsSticky(const u8* micro, u32 vu);
 
 	private:

@@ -1195,7 +1195,7 @@ mVUop(mVU_FMOR)
 
 mVUop(mVU_FSAND)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSAND: Checking I/D/IS/DS Flags");
@@ -1220,7 +1220,7 @@ mVUop(mVU_FSAND)
 
 mVUop(mVU_FSOR)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		const a64::Register& reg = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
@@ -1239,7 +1239,7 @@ mVUop(mVU_FSOR)
 
 mVUop(mVU_FSEQ)
 {
-	pass1 { mVUanalyzeSflag(mVU, _It_); mVUvuAotOnStatusReader(mVU, _Imm12_); }
+	pass1 { mVUanalyzeSflag(mVU, _It_); mVUnoteStatusReader(mVU, _Imm12_); }
 	pass2
 	{
 		if (_Imm12_ & 0x0c30) DevCon.WriteLn(Color_Green, "mVU_FSEQ: Checking I/D/IS/DS Flags");
@@ -1355,7 +1355,7 @@ mVUop(mVU_IADDI)
 				// runtime. _Imm5_ takes bit 10 of curI as sign and bits 9:6 as
 				// magnitude (matching the _Imm5_ macro), so emit the
 				// sbfx+and+bfxil idiom.
-				armLoadPtr(gprT1, &curI);
+				mVUemitLoadCurI(mVU, gprT1, 0x000007C0u);
 				armAsm->Sbfx(regT.W(), gprT1.W(), 10, 1);
 				armAsm->And(regT.W(), regT.W(), 0xfff0);
 				armAsm->Bfxil(regT.W(), gprT1.W(), 6, 4);
@@ -1379,7 +1379,7 @@ mVUop(mVU_IADDI)
 			}
 			else
 			{
-				armLoadPtr(gprT1, &curI);
+				mVUemitLoadCurI(mVU, gprT1, 0x000007C0u);
 				armAsm->Sbfx(gprT2.W(), gprT1.W(), 10, 1);
 				armAsm->And(gprT2.W(), gprT2.W(), 0xfff0);
 				armAsm->Bfxil(gprT2.W(), gprT1.W(), 6, 4);
@@ -1414,7 +1414,7 @@ mVUop(mVU_IADDIU)
 				// the JIT must reconstruct Imm15 from the live opcode word.
 				// Imm15 = ((curI >> 21) & 0xf) << 11 | (curI & 0x7ff), expressed
 				// via ubfx+and+bfxil.
-				armLoadPtr(gprT1, &curI);
+				mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 				armAsm->Ubfx(regT.W(), gprT1.W(), 10, 22);
 				armAsm->And(regT.W(), regT.W(), 0x7800);
 				armAsm->Bfxil(regT.W(), gprT1.W(), 0, 11);
@@ -1431,7 +1431,7 @@ mVUop(mVU_IADDIU)
 			}
 			else
 			{
-				armLoadPtr(gprT1, &curI);
+				mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 				armAsm->Ubfx(gprT2.W(), gprT1.W(), 10, 22);
 				armAsm->And(gprT2.W(), gprT2.W(), 0x7800);
 				armAsm->Bfxil(gprT2.W(), gprT1.W(), 0, 11);
@@ -1513,7 +1513,7 @@ mVUop(mVU_ISUBIU)
 		}
 		else
 		{
-			armLoadPtr(gprT1, &curI);
+			mVUemitLoadCurI(mVU, gprT1, 0x01E007FFu);
 			armAsm->Ubfx(gprT2.W(), gprT1.W(), 10, 22);
 			armAsm->And(gprT2.W(), gprT2.W(), 0x7800);
 			armAsm->Bfxil(gprT2.W(), gprT1.W(), 0, 11);
@@ -1695,11 +1695,9 @@ static void mVUaddrFromVI(mV, int vi)
 	}
 	else
 	{
-		// IbitHack: reconstruct signed Imm11 from the live opcode word at
-		// runtime via sbfx+bfxil.
-		armLoadPtr(RWSCRATCH, &curI);
-		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 10, 1);
-		armAsm->Bfxil(gprT2.W(), RWSCRATCH, 0, 10);
+		// IbitHack: the signed Imm11 of the live opcode word, bits 10:0.
+		mVUemitLoadCurI(mVU, RWSCRATCH, 0x000007FFu);
+		armAsm->Sbfx(gprT2.W(), RWSCRATCH, 0, 11);
 		armAsm->Add(gprT1.W(), base.W(), gprT2.W());
 		base = gprT1;
 	}
@@ -2353,7 +2351,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 	if (mVUlow.badBranch)
 	{
 		mVUstrField(mVU, gprT1, &mVU.branch);
-		armAsm->Mov(gprT2.W(), branchAddr(mVU));
+		mVUemitPC(mVU, gprT2, branchAddr(mVU));
 		mVUstrField(mVU, gprT2, &mVU.badBranch);
 
 		armAsm->Cmp(gprT1.W(), 0);
@@ -2361,7 +2359,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 		armAsm->B(&cJMP, JMPcc);
 		{
 			incPC(4); // Branch Not Taken Addr
-			armAsm->Mov(gprT2.W(), xPC);
+			mVUemitPC(mVU, gprT2, xPC);
 			mVUstrField(mVU, gprT2, &mVU.badBranch);
 			incPC(-4);
 		}
@@ -2370,7 +2368,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 	}
 	if (isEvilBlock)
 	{
-		armAsm->Mov(gprT2.W(), branchAddr(mVU));
+		mVUemitPC(mVU, gprT2, branchAddr(mVU));
 		mVUstrField(mVU, gprT2, &mVU.evilevilBranch);
 		armAsm->Cmp(gprT1.W(), 0);
 		a64::Label cJMP;
@@ -2385,7 +2383,7 @@ void condEvilBranch(mV, a64::Condition JMPcc)
 	}
 	else
 	{
-		armAsm->Mov(gprT2.W(), branchAddr(mVU));
+		mVUemitPC(mVU, gprT2, branchAddr(mVU));
 		mVUstrField(mVU, gprT2, &mVU.evilBranch);
 		armAsm->Cmp(gprT1.W(), 0);
 		a64::Label cJMP;
@@ -2410,9 +2408,9 @@ mVUop(mVU_B)
 	pass1 { mVUanalyzeNormBranch(mVU, 0, false); }
 	pass2
 	{
-		if (mVUlow.badBranch)  { armAsm->Mov(gprT1.W(), branchAddr(mVU)); mVUstrField(mVU, gprT1, &mVU.badBranch); }
+		if (mVUlow.badBranch)  { mVUemitPC(mVU, gprT1, branchAddr(mVU)); mVUstrField(mVU, gprT1, &mVU.badBranch); }
 		if (mVUlow.evilBranch) {
-			armAsm->Mov(gprT1.W(), branchAddr(mVU));
+			mVUemitPC(mVU, gprT1, branchAddr(mVU));
 			if (isEvilBlock) mVUstrField(mVU, gprT1, &mVU.evilevilBranch);
 			else             mVUstrField(mVU, gprT1, &mVU.evilBranch);
 		}
@@ -2430,7 +2428,7 @@ mVUop(mVU_BAL)
 		if (!mVUlow.evilBranch)
 		{
 			const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-			armAsm->Mov(regT.W(), bSaveAddr);
+			mVUemitLinkValue(mVU, regT, xPC);
 			mVU.regAlloc->clearNeeded(regT);
 		}
 		else
@@ -2450,9 +2448,9 @@ mVUop(mVU_BAL)
 			mVU.regAlloc->clearNeeded(regT);
 		}
 
-		if (mVUlow.badBranch)  { armAsm->Mov(gprT1.W(), branchAddr(mVU)); mVUstrField(mVU, gprT1, &mVU.badBranch); }
+		if (mVUlow.badBranch)  { mVUemitPC(mVU, gprT1, branchAddr(mVU)); mVUstrField(mVU, gprT1, &mVU.badBranch); }
 		if (mVUlow.evilBranch) {
-			armAsm->Mov(gprT1.W(), branchAddr(mVU));
+			mVUemitPC(mVU, gprT1, branchAddr(mVU));
 			if (isEvilBlock) mVUstrField(mVU, gprT1, &mVU.evilevilBranch);
 			else             mVUstrField(mVU, gprT1, &mVU.evilBranch);
 		}
@@ -2737,7 +2735,7 @@ mVUop(mVU_JALR)
 		if (!mVUlow.evilBranch)
 		{
 			const a64::Register& regT = mVU.regAlloc->allocGPR(-1, _It_, mVUlow.backupVI);
-			armAsm->Mov(regT.W(), bSaveAddr);
+			mVUemitLinkValue(mVU, regT, xPC);
 			mVU.regAlloc->clearNeeded(regT);
 		}
 		if (mVUlow.evilBranch)

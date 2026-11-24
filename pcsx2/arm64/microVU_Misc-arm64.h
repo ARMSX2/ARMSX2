@@ -490,8 +490,11 @@ typedef Fntype_mVUrecInst* Fnptr_mVUrecInst;
 #define isBadOrEvil  (mVUlow.badBranch || mVUlow.evilBranch)
 #define isConditional (mVUlow.branch > 2 && mVUlow.branch < 9)
 #define xPC          ((iPC / 2) * 8)
-#define curI         ((u32*)mVU.regs().Micro)[iPC]
-#define setCode()    { mVU.code = curI; }
+// The micro-memory word at iPC. curI is a read the compiler acts on, and is
+// noted as one (mVUreadWord); rawI only fetches the word, as moving iPC does.
+#define curI         (*mVUreadWord(mVU, iPC))
+#define rawI         ((u32*)mVU.regs().Micro)[iPC]
+#define setCode()    { mVU.code = rawI; }
 #define bSaveAddr    ((xPC + 16) / 8) // the BAL/JALR link: not wrapped at the top of micro memory
 #define shufflePQ    (((mVU.p) ? 0xb0 : 0xe0) | ((mVU.q) ? 0x01 : 0x04))
 #define Rmem         &mVU.regs().VI[REG_R].UL
@@ -507,7 +510,7 @@ typedef Fntype_mVUrecInst* Fnptr_mVUrecInst;
 			mVUblocks[addr] = new microBlockManager(); \
 	}
 
-#define incPC(x)  { iPC = ((iPC + (x)) & mVU.progMemMask); mVU.code = curI; }
+#define incPC(x)  { iPC = ((iPC + (x)) & mVU.progMemMask); mVU.code = rawI; }
 #define incPC2(x) { iPC = ((iPC + (x)) & mVU.progMemMask); }
 
 // Flag Info

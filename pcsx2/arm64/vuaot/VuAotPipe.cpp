@@ -21,6 +21,9 @@ namespace vuaot
 		constexpr u32 kTbit = 1u << 27;
 		constexpr u32 kIbit = 1u << 31;
 		constexpr bool doConstProp = false;
+		// Region code is shared between copies of a routine at different addresses: a
+		// propagated constant would bake a link value and a JR target in.
+		static_assert(!doConstProp, "vu-aot regions take their micro-memory addresses from the placement's root");
 		constexpr bool doDBitHandling = false;
 		constexpr bool noFlagOpts = false;
 

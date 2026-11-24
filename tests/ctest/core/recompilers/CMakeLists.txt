@@ -181,8 +181,8 @@ add_pcsx2_test(recompiler_tests
 	mvu_second_boot_tests.cpp
 	vuaot_frontend_tests.cpp
 	vuaot_live_tests.cpp
+	vuaot_bodies_tests.cpp
 	vuaot_lowering_tests.cpp
-	vuaot_persist_tests.cpp
 	mvu_ebit_condbranch_status_tests.cpp
 	mvu_options_sentinel_tests.cpp
 	mvu_model_stub_tests.cpp
@@ -191,6 +191,9 @@ add_pcsx2_test(recompiler_tests
 	mvu_branch_wrap_tests.cpp
 	mvu_compile_history_tests.cpp
 	mvu_flag_lookahead_range_tests.cpp
+	vu1_micro_address_tests.cpp
+	vu1_chunk_store_tests.cpp
+	vu1_chunk_pack_tests.cpp
 	vu0_macro_zero_sign_console_tests.cpp
 	# Conformance against real-hardware captures rather than against the other
 	# engine: each case is scored on interp and JIT separately, so a mistake the

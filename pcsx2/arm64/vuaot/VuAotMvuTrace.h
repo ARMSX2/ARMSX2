@@ -116,24 +116,43 @@ namespace vuaot
 		// for `block`, whose end state is `endKey`; the target is in mVU.branch.
 		void (*emitJumpTail)(u32 vu, void* block, const u8* endKey) = nullptr;
 		// microVU's own code for a block a region holds, for a run that is short of
-		// the region's budget test. `rec` is the region's bail record: PC at 0, at 4
-		// the signed distance from the record to a word holding the block's
-		// microProgram, the block's microBlock at 8, the code address at 16 (written
-		// once compiled). Called from generated code.
-		void* (*bailTarget)(u32 vu, u8* rec) = nullptr;
+		// the region's budget test. `pair` is the node's two placement slots: the
+		// block's microBlock, then the code address (written here once compiled).
+		// `pairOff` is the block's distance from the placement's root in pairs, and
+		// `program` the microProgram the placement belongs to. Called from generated
+		// code.
+		void* (*bailTarget)(u32 vu, u64* pair, u32 pairOff, void* program) = nullptr;
 		// x29 holds VURegs::Mem in micro mode (gprVUMem).
 		bool vuMemPinned = false;
-		// The microProgram being compiled (mVU.prog.cur). A region's bail
-		// record keeps it: the bail runs when the region does, and
-		// mVU.prog.cur is only microVU's idea of the current program (a jump
-		// cache hit enters another program's code without updating it).
-		void* program = nullptr;
-		// offsetof(microProgram, vuAotBails): the region's bail code counts into it.
-		s32 offProgBails = 0;
-		// Told of every 8-byte data word a region writes that holds an address (the
-		// program word and each bail record's block pointer), so a saved region can
-		// re-point them. Null outside the background worker.
-		void (*noteDataWord)(const u8* at, u64 value) = nullptr;
+
+		// VU1 code holds no micro-memory address and no pointer to a block or a
+		// program: the same code runs for every copy of a routine. An address is
+		// the placement's root (the low 11 bits of mVU.place, a pair index) plus a
+		// distance from `rootPC`, the root of the chunk being compiled. What
+		// differs between placements comes from the placement's slots:
+		// mVU.placeSlots[(mVU.place >> 11) + n].
+		u32 rootPC = 0;
+		s32 offPlace = 0;      // mVU.place, from x24
+		s32 offPlaceSlots = 0; // mVU.placeSlots
+		s32 offBails = 0;      // mVU.vuAotBails[2]: budget bails at an entry, at a loop head
+		// The word an entry stub of the chunk stores in mVU.place. A region opens
+		// each node's entry with the stub.
+		u32 placeWord = 0;
+		// Gives a region node two slots of the chunk: its block object, then the
+		// address of microVU's code for the block (0 until a bail compiles it).
+		// Returns the first one's number.
+		u32 (*addNodeSlots)(u32 vu, void* block) = nullptr;
+		// A slot holding the microProgram of the placement. A region's bail runs
+		// when the region does, and mVU.prog.cur is only microVU's idea of the
+		// current program (a jump cache hit enters another program's code without
+		// updating it).
+		u32 (*addProgramSlot)(u32 vu) = nullptr;
+		// The background worker emits into a buffer and cannot know the chunk's
+		// place word or its first free slot: it is told where each entry stub is,
+		// and where each `movz` holding a slot number in its low 16 bits is, and
+		// the copy patches them. Null when the region is emitted in place.
+		void (*notePlaceStub)(const u8* at) = nullptr;
+		void (*noteSlotMovz)(const u8* at) = nullptr;
 	};
 
 #ifdef PCSX2_RECOMPILER_TESTS
@@ -145,10 +164,10 @@ namespace vuaot
 #endif
 
 	// The compile hooks. Tests install them through the globals below;
-	// the live tier (VuAotLive.h) hands microVU its own for a program it has
-	// tiered up, so every build carries the call sites. A hook is only ever
-	// consulted for VU1 blocks it asked for: with none set, microVU compiles
-	// as it always has.
+	// the live tier (VuAotLive.h) hands microVU its own while it builds a
+	// routine's tiered body, so every build carries the call sites. A hook is
+	// only ever consulted for VU1 blocks it asked for: with none set, microVU
+	// compiles as it always has.
 
 	// Called by microVU at the start of every block's second pass when set.
 	// Returning true means the hook emitted the whole block body at armAsm's

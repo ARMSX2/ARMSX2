@@ -103,10 +103,10 @@ namespace vuaot::bg
 		return b >= base_ && b < base_ + kCapacity - kPlaceholderZone;
 	}
 
-	void CodeSink::NoteData64(const u8* at, u64 value)
+	void CodeSink::Note(Fixup::Kind kind, const u8* at)
 	{
 		pxAssert(InCode(at));
-		fixups.push_back({static_cast<u32>(at - base_), Fixup::Data64, 0, value});
+		fixups.push_back({static_cast<u32>(at - base_), kind, 0, 0});
 	}
 
 	void CodeSink::Begin()
@@ -153,6 +153,27 @@ namespace vuaot::bg
 		}
 		for (int i = 0; i < 4; i++)
 			insn[i] = (insn[i] & ~(0xFFFFu << 5)) | (static_cast<u32>((value >> (16 * i)) & 0xFFFFu) << 5);
+		return true;
+	}
+
+	bool PatchPlaceStub(u32* insn, u32 word)
+	{
+		// movz wN, #imm16 ; movk wN, #imm16, lsl 16
+		if ((insn[0] & 0xFFE00000u) != 0x52800000u || (insn[1] & 0xFFE00000u) != 0x72A00000u || ((insn[0] ^ insn[1]) & 31))
+			return false;
+		insn[0] = (insn[0] & ~(0xFFFFu << 5)) | ((word & 0xFFFFu) << 5);
+		insn[1] = (insn[1] & ~(0xFFFFu << 5)) | ((word >> 16) << 5);
+		return true;
+	}
+
+	bool PatchSlotMovz(u32* insn, u32 add)
+	{
+		if ((*insn & 0xFFE00000u) != 0x52800000u)
+			return false;
+		const u32 n = ((*insn >> 5) & 0xFFFFu) + add;
+		if (n > 0xFFFFu)
+			return false;
+		*insn = (*insn & ~(0xFFFFu << 5)) | (n << 5);
 		return true;
 	}
 

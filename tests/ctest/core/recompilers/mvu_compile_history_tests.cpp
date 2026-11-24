@@ -29,6 +29,9 @@ namespace {
 
 inline VuOp LowerOnly(u32 lower) { return VuOp{lower, VNOP_U()}; }
 
+// The FBRST bit that makes a T bit stop VU `vu`.
+constexpr u32 TStopBit(u32 vu) { return vu ? 0x800u : 0x8u; }
+
 // Compiles a program whose pair 1 is a branch, so the IR slot of pair 1 holds
 // a branch record afterwards; or, with `branch` false, the same program with a
 // NOP there.
@@ -96,56 +99,65 @@ TEST(MvuCompileHistory, BranchNopFoldDoesNotDependOnThePreviousSlot)
 // not fill; an earlier program's DIV left one marked due there.
 TEST(MvuCompileHistory, TBitBranchEndDoesNotReadTheTargetSlot)
 {
-	VuTestHarness h(0);
-	const u32 savedFbrst = vuRegs[0].VI[REG_FBRST].UL;
-
-	for (u32 target = 2; target <= 5; target++)
+	// VU1 code is position independent (its addresses come from the root its
+	// blocks store), VU0's is not: the end has to hold in both forms.
+	for (const u32 vu : {0u, 1u})
 	{
-		SCOPED_TRACE(target);
+		SCOPED_TRACE(::testing::Message() << "VU" << vu);
+		VuTestHarness h(vu);
+		const u32 savedFbrst = vuRegs[0].VI[REG_FBRST].UL;
 
-		// DIV 1/0 at pair 0: Q is due a few pairs later, so the compile marks a
-		// pair in the loop's range with the divide flag, and mVU.divFlag holds
-		// D. Only the compile matters here (the engines' zero-divisor Q differs
-		// at this clamp mode), so the run is not diffed.
-		h.SetStartPc(0);
-		h.LoadProgram({
-			LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0)), // pair 0: Q = vf0.w / vf0.x
-			NopPair(), NopPair(), NopPair(), NopPair(), NopPair(),
-			EBitNopPair(),
-		});
-		h.RunNoDiff();
-
-		// B with the T bit to `target`; T stops the program there. No divide
-		// runs, so the status flags stay as seeded.
-		std::vector<VuOp> p;
-		p.push_back(TBit(LowerOnly(VB_L(static_cast<s16>(target - 1))))); // pair 0
-		p.push_back(NopPair());                                           // pair 1: delay slot
-		for (u32 i = 2; i < 6; i++)
-			p.push_back(NopPair());
-		p.push_back(EBitNopPair());
-		h.LoadProgram(std::move(p));
-		h.SetVi(REG_STATUS_FLAG, 0);
-		vuRegs[0].VI[REG_FBRST].UL = 0x8u; // T-stop for VU0
-
-		// The T bit on a branch orders the delay slot differently in the two
-		// engines, so each runs alone and only the flags are compared.
-		h.RunInterpOnly();
-		h.RunJitPreserveBlockCache();
-		vuRegs[0].VI[REG_FBRST].UL = savedFbrst;
-
-		EXPECT_NE(h.GetViInterp(REG_VPU_STAT) & 0x4u, 0u) << "the interpreter did not stop on the T bit";
-		EXPECT_NE(h.GetViJit(REG_VPU_STAT) & 0x4u, 0u) << "the JIT did not stop on the T bit";
-		// A B to pair 2 is the pair after its delay slot: microVU folds it into a
-		// NOP, and the T bit then stops at pair 1, before the delay slot runs.
-		// The interpreter stops at pair 2.
-		if (target != 2)
+		for (u32 target = 2; target <= 5; target++)
 		{
-			EXPECT_EQ(h.GetViInterp(REG_TPC), target);
-			EXPECT_EQ(h.GetViJit(REG_TPC), target) << "the T stop is not at the branch target";
+			SCOPED_TRACE(target);
+
+			// DIV 1/0 at pair 0: Q is due a few pairs later, so the compile marks a
+			// pair in the loop's range with the divide flag, and mVU.divFlag holds
+			// D. Only the compile matters here (the engines' zero-divisor Q differs
+			// at this clamp mode), so the run is not diffed.
+			h.SetStartPc(0);
+			h.LoadProgram({
+				LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0)), // pair 0: Q = vf0.w / vf0.x
+				NopPair(), NopPair(), NopPair(), NopPair(), NopPair(),
+				EBitNopPair(),
+			});
+			h.RunNoDiff();
+
+			// B with the T bit to `target`; T stops the program there. No divide
+			// runs, so the status flags stay as seeded.
+			std::vector<VuOp> p;
+			p.push_back(TBit(LowerOnly(VB_L(static_cast<s16>(target - 1))))); // pair 0
+			p.push_back(NopPair());                                           // pair 1: delay slot
+			for (u32 i = 2; i < 6; i++)
+				p.push_back(NopPair());
+			p.push_back(EBitNopPair());
+			h.LoadProgram(std::move(p));
+			h.SetVi(REG_STATUS_FLAG, 0);
+			vuRegs[0].VI[REG_FBRST].UL = TStopBit(vu);
+
+			// The T bit on a branch orders the delay slot differently in the two
+			// engines, so each runs alone and only the flags are compared.
+			h.RunInterpOnly();
+			h.RunJitPreserveBlockCache();
+			vuRegs[0].VI[REG_FBRST].UL = savedFbrst;
+
+			if (vu == 0) // (VU1's stop bit is in VU0's VPU_STAT, which a VU1 snapshot does not hold)
+			{
+				EXPECT_NE(h.GetViInterp(REG_VPU_STAT) & 0x4u, 0u) << "the interpreter did not stop on the T bit";
+				EXPECT_NE(h.GetViJit(REG_VPU_STAT) & 0x4u, 0u) << "the JIT did not stop on the T bit";
+			}
+			// A B to pair 2 is the pair after its delay slot: microVU folds it into a
+			// NOP, and the T bit then stops at pair 1, before the delay slot runs.
+			// The interpreter stops at pair 2.
+			if (target != 2)
+			{
+				EXPECT_EQ(h.GetViInterp(REG_TPC), target);
+				EXPECT_EQ(h.GetViJit(REG_TPC), target) << "the T stop is not at the branch target";
+			}
+			EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30u, 0u);
+			EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & 0x30u, 0u)
+				<< "the T-bit end set D/I from a divide an earlier program ran";
 		}
-		EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30u, 0u);
-		EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & 0x30u, 0u)
-			<< "the T-bit end set D/I from a divide an earlier program ran";
 	}
 }
 
@@ -154,44 +166,51 @@ TEST(MvuCompileHistory, TBitBranchEndDoesNotReadTheTargetSlot)
 // program's DIV left a divide marked due.
 TEST(MvuCompileHistory, TBitOnEBitDelaySlotDoesNotReadTheNextSlot)
 {
-	VuTestHarness h(0);
-	const u32 savedFbrst = vuRegs[0].VI[REG_FBRST].UL;
-
-	for (u32 ebit = 0; ebit <= 3; ebit++)
+	// VU1 code is position independent (its addresses come from the root its
+	// blocks store), VU0's is not: the end has to hold in both forms.
+	for (const u32 vu : {0u, 1u})
 	{
-		SCOPED_TRACE(ebit);
+		SCOPED_TRACE(::testing::Message() << "VU" << vu);
+		VuTestHarness h(vu);
+		const u32 savedFbrst = vuRegs[0].VI[REG_FBRST].UL;
 
-		// DIV 1/0 at pair 0 marks a later pair with the divide flag and leaves
-		// D in mVU.divFlag, as in the test above.
-		h.SetStartPc(0);
-		h.LoadProgram({
-			LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0)),
-			NopPair(), NopPair(), NopPair(), NopPair(), NopPair(),
-			EBitNopPair(),
-		});
-		h.RunNoDiff();
+		for (u32 ebit = 0; ebit <= 3; ebit++)
+		{
+			SCOPED_TRACE(ebit);
 
-		// The E bit on pair `ebit`, the T bit on its delay slot (the pair
-		// LoadProgram appends). No divide runs.
-		std::vector<VuOp> p(ebit, NopPair());
-		p.push_back(EBitNopPair());
-		h.LoadProgram(std::move(p));
-		u8* const delaySlotUpper = vuRegs[0].Micro + (ebit + 1) * 8 + 4;
-		u32 upper;
-		std::memcpy(&upper, delaySlotUpper, sizeof(upper));
-		upper |= bits::T;
-		std::memcpy(delaySlotUpper, &upper, sizeof(upper));
-		h.SetVi(REG_STATUS_FLAG, 0);
-		vuRegs[0].VI[REG_FBRST].UL = 0x8u; // T-stop for VU0
+			// DIV 1/0 at pair 0 marks a later pair with the divide flag and leaves
+			// D in mVU.divFlag, as in the test above.
+			h.SetStartPc(0);
+			h.LoadProgram({
+				LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0)),
+				NopPair(), NopPair(), NopPair(), NopPair(), NopPair(),
+				EBitNopPair(),
+			});
+			h.RunNoDiff();
 
-		h.RunInterpOnly();
-		h.RunJitPreserveBlockCache();
-		vuRegs[0].VI[REG_FBRST].UL = savedFbrst;
+			// The E bit on pair `ebit`, the T bit on its delay slot (the pair
+			// LoadProgram appends). No divide runs.
+			std::vector<VuOp> p(ebit, NopPair());
+			p.push_back(EBitNopPair());
+			h.LoadProgram(std::move(p));
+			u8* const delaySlotUpper = vuRegs[vu].Micro + (ebit + 1) * 8 + 4;
+			u32 upper;
+			std::memcpy(&upper, delaySlotUpper, sizeof(upper));
+			upper |= bits::T;
+			std::memcpy(delaySlotUpper, &upper, sizeof(upper));
+			h.SetVi(REG_STATUS_FLAG, 0);
+			vuRegs[0].VI[REG_FBRST].UL = TStopBit(vu);
 
-		EXPECT_NE(h.GetViJit(REG_VPU_STAT) & 0x4u, 0u) << "the JIT did not stop on the T bit";
-		EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30u, 0u);
-		EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & 0x30u, 0u)
-			<< "the T-bit end set D/I from a divide an earlier program ran";
+			h.RunInterpOnly();
+			h.RunJitPreserveBlockCache();
+			vuRegs[0].VI[REG_FBRST].UL = savedFbrst;
+
+			if (vu == 0)
+				EXPECT_NE(h.GetViJit(REG_VPU_STAT) & 0x4u, 0u) << "the JIT did not stop on the T bit";
+			EXPECT_EQ(h.GetViInterp(REG_STATUS_FLAG) & 0x30u, 0u);
+			EXPECT_EQ(h.GetViJit(REG_STATUS_FLAG) & 0x30u, 0u)
+				<< "the T-bit end set D/I from a divide an earlier program ran";
+		}
 	}
 }
 
@@ -202,28 +221,34 @@ TEST(MvuCompileHistory, TBitOnEBitDelaySlotDoesNotReadTheNextSlot)
 // pair set D in the status flag before the divide finished.
 TEST(MvuCompileHistory, SkippedTBitEndLeavesTheNextSlotAlone)
 {
-	VuTestHarness h(0);
-	h.SetVi(REG_STATUS_FLAG, 0);
-	h.LoadProgram({
-		TBit(LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0))), // pair 0: DIV 1/0, T bit
-		LowerOnly(VB_L(+2)),                             // pair 1: B to pair 4, Q still pending
-		NopPair(),                                       // pair 2: delay slot, the block's end
-		NopPair(),                                       // pair 3
-		LowerOnly(VFSAND_L(vi::vi1, 0x30)),              // pair 4
-		LowerOnly(VFSAND_L(vi::vi2, 0x30)),
-		LowerOnly(VFSAND_L(vi::vi3, 0x30)),
-		LowerOnly(VFSAND_L(vi::vi4, 0x30)),
-		LowerOnly(VFSAND_L(vi::vi5, 0x30)),
-		LowerOnly(VFSAND_L(vi::vi6, 0x30)),
-		LowerOnly(VFSAND_L(vi::vi7, 0x30)),
-		EBitNopPair(),
-	});
-	// The engines' zero-divisor Q differs at this clamp mode, so the run is
-	// not diffed; the FSAND results are compared.
-	h.RunNoDiff();
+	// VU1 code is position independent (its addresses come from the root its
+	// blocks store), VU0's is not: the end has to hold in both forms.
+	for (const u32 vu : {0u, 1u})
+	{
+		SCOPED_TRACE(::testing::Message() << "VU" << vu);
+		VuTestHarness h(vu);
+		h.SetVi(REG_STATUS_FLAG, 0);
+		h.LoadProgram({
+			TBit(LowerOnly(VDIV_L(vf::vf0, 3, vf::vf0, 0))), // pair 0: DIV 1/0, T bit
+			LowerOnly(VB_L(+2)),                             // pair 1: B to pair 4, Q still pending
+			NopPair(),                                       // pair 2: delay slot, the block's end
+			NopPair(),                                       // pair 3
+			LowerOnly(VFSAND_L(vi::vi1, 0x30)),              // pair 4
+			LowerOnly(VFSAND_L(vi::vi2, 0x30)),
+			LowerOnly(VFSAND_L(vi::vi3, 0x30)),
+			LowerOnly(VFSAND_L(vi::vi4, 0x30)),
+			LowerOnly(VFSAND_L(vi::vi5, 0x30)),
+			LowerOnly(VFSAND_L(vi::vi6, 0x30)),
+			LowerOnly(VFSAND_L(vi::vi7, 0x30)),
+			EBitNopPair(),
+		});
+		// The engines' zero-divisor Q differs at this clamp mode, so the run is
+		// not diffed; the FSAND results are compared.
+		h.RunNoDiff();
 
-	for (u32 r = vi::vi1; r <= vi::vi7; r++)
-		EXPECT_EQ(h.GetViJit(r), h.GetViInterp(r)) << "FSAND into vi" << r;
+		for (u32 r = vi::vi1; r <= vi::vi7; r++)
+			EXPECT_EQ(h.GetViJit(r), h.GetViInterp(r)) << "FSAND into vi" << r;
+	}
 }
 
 } // namespace recompiler_tests

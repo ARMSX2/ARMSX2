@@ -509,3 +509,315 @@ __fi bool mVUoptimizeConstantAddr(mV, u32 srcreg, s32 offset, s32 offsetSS_,
 	out = {gprOutQ, 0};
 	return true;
 }
+
+//------------------------------------------------------------------
+// Micro VU - micro-memory addresses in VU1 code
+//------------------------------------------------------------------
+
+// VU1 code holds no micro-memory address of its own. A branch target, a link
+// value, the TPC an exit stores and the address of an immediate read at run
+// time are each the placement's root (the low bits of mVU.place, written by
+// the entry stub of the block that was entered) plus the distance the compiler
+// knows, wrapped the way the VU wraps: pair indices to 11 bits, byte addresses
+// to 16 KiB. The same code is therefore right for a copy of the program
+// anywhere in micro memory, given that copy's root.
+//
+// This holds while no VU address reaches the code any other way. Constant
+// propagation would bake vi15 and a JR target in.
+static_assert(!doConstProp, "VU1 code takes its micro-memory addresses from mVU.place");
+
+// The code holds no pointer to a block object of the program it was compiled
+// in, and no branch to a block outside its chunk, either: those come from the
+// placement's slots (mVU.placeSlots), numbered by the chunk and found through
+// the high bits of mVU.place.
+
+// VU0 keeps its addresses as constants: its compiler decides on the absolute
+// PC (the M-bit check, the spin loop detector).
+__fi static bool mVUrootRelative(mV) { return isVU1; }
+
+// Bytes of the part of a VU1 block's entry stub that stores mVU.place.
+static constexpr u32 mVUrootStubBytes = 12;
+// Bytes the stub goes on with under the IbitHack gamefix, to store
+// mVU.placeMicro.
+static constexpr u32 mVUplaceMicroStubBytes = 16;
+static constexpr u32 mVUplaceRootBits = 11;
+
+// Bytes of an entry stub as the compiler emits them now.
+__fi static u32 mVUplaceStubBytes()
+{
+	return mVUrootStubBytes + (EmuConfig.Gamefixes.IbitHack ? mVUplaceMicroStubBytes : 0);
+}
+
+// The value a placement's entry stubs store in mVU.place.
+__fi static u32 mVUplaceWord(u32 rootPC, u32 slotBase)
+{
+	pxAssert(slotBase < (1u << (32 - mVUplaceRootBits)));
+	return ((rootPC / 8) & 0x7ff) | (slotBase << mVUplaceRootBits);
+}
+
+// An entry stub: three instructions that store `word` in mVU.place. Under
+// the IbitHack gamefix four more store the placement's micro memory in
+// mVU.placeMicro, for the run-time immediate reads (mVUemitLoadCurI). w9 is
+// free at a block entry: mVUtestCycles loads it first thing. So is x17, the
+// address scratch.
+static void mVUemitPlaceStub(mV, u32 word)
+{
+	vixl::ExactAssemblyScope scope(armAsm, mVUplaceStubBytes());
+	armAsm->movz(a64::w9, word & 0xffff);
+	armAsm->movk(a64::w9, word >> 16, 16);
+	armAsm->str(a64::w9, mVUfieldMem(mVU, &mVU.place));
+	if (EmuConfig.Gamefixes.IbitHack)
+	{
+		armAsm->ubfiz(a64::x9, a64::x9, 3, mVUplaceRootBits);
+		armAsm->ldr(RSCRATCHADDR, mVUstateMem(offsetof(VURegs, Micro)));
+		armAsm->add(a64::x9, RSCRATCHADDR, a64::Operand(a64::x9));
+		armAsm->str(a64::x9, mVUfieldMem(mVU, &mVU.placeMicro));
+	}
+}
+
+// The entry stub of a block being compiled: every way into the block from
+// outside its chunk (the dispatcher, the jump cache, a link from another
+// chunk, a resume) lands here and gets the placement set. Links inside the
+// chunk skip it.
+static void mVUemitRootStub(mV)
+{
+	mVUemitPlaceStub(mVU, mVUplaceWord(mVU.compileRoot, mVU.chunk.slotBase));
+}
+
+// Gives the chunk being compiled its next slot and fills it for the placement
+// the compile runs as. Returns the slot's number within the chunk.
+static u32 mVUchunkAddSlot(mV, microBlock* block, microBlock* target, u32 targetPC, const microRegInfo* key)
+{
+	const u32 n = static_cast<u32>(mVU.chunk.slots.size());
+	pxAssertRel(mVU.chunk.slotBase + n < mVUplaceSlotCapacity, "microVU: out of placement slots");
+	mVUChunkSlot slot = {};
+	slot.kind = target ? mVUslotLink : mVUslotBlock;
+	slot.block = block;
+	slot.target = target;
+	slot.targetPC = targetPC;
+	if (key)
+		std::memcpy(&slot.key, key, sizeof(microRegInfo));
+	mVU.chunk.slots.push_back(slot);
+	mVU.placeSlots[mVU.chunk.slotBase + n] = reinterpret_cast<u64>(target ? target->hostEntry : static_cast<void*>(block));
+	mVU.placeSlotsUsed = mVU.chunk.slotBase + n + 1;
+	return n;
+}
+
+// Gives the chunk being compiled a slot that holds no block: 0 for the code
+// to fill when it runs, or the program of the placement.
+static u32 mVUchunkAddDataSlot(mV, mVUChunkSlotKind kind)
+{
+	const u32 n = static_cast<u32>(mVU.chunk.slots.size());
+	pxAssertRel(mVU.chunk.slotBase + n < mVUplaceSlotCapacity, "microVU: out of placement slots");
+	mVUChunkSlot slot = {};
+	slot.kind = kind;
+	mVU.chunk.slots.push_back(slot);
+	mVU.placeSlots[mVU.chunk.slotBase + n] = kind == mVUslotProgram ? reinterpret_cast<u64>(mVU.prog.cur) : 0;
+	mVU.placeSlotsUsed = mVU.chunk.slotBase + n + 1;
+	return n;
+}
+
+// The slot the chunk being compiled gave `block`, one of its own blocks.
+static u32 mVUchunkBlockSlot(mV, const microBlock* block)
+{
+	for (size_t n = mVU.chunk.slots.size(); n-- > 0;)
+	{
+		if (mVU.chunk.slots[n].kind == mVUslotBlock && mVU.chunk.slots[n].block == block)
+			return static_cast<u32>(n);
+	}
+	pxFailRel("microVU: a block of the chunk has no slot");
+	return 0;
+}
+
+// dst = slot `n` of the placement now running. Leaves the flags alone.
+static void mVUemitLoadSlot(mV, const a64::Register& dst, const a64::Register& tmp, u32 n)
+{
+	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.place));
+	armAsm->Ldr(tmp.X(), mVUfieldMem(mVU, &mVU.placeSlots));
+	armAsm->Lsr(dst.W(), dst.W(), mVUplaceRootBits);
+	armAsm->Add(tmp.X(), tmp.X(), a64::Operand(dst.X(), a64::LSL, 3));
+	armAsm->Ldr(dst.X(), a64::MemOperand(tmp.X(), static_cast<s64>(n) * 8));
+}
+
+// dst = root + (pc / 8 - compile root), not yet wrapped.
+__fi static void mVUemitRootPlus(mV, const a64::Register& dst, u32 pc)
+{
+	const u32 dist = ((pc - mVU.compileRoot) / 8) & 0x7ff;
+	armAsm->Ldr(dst.W(), mVUfieldMem(mVU, &mVU.place));
+	if (dist)
+		armAsm->Add(dst.W(), dst.W(), dist);
+}
+
+// dst = the micro-memory byte address `pc`.
+static void mVUemitPC(mV, const a64::Register& dst, u32 pc)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armAsm->Mov(dst.W(), pc);
+		return;
+	}
+	mVUemitRootPlus(mVU, dst, pc);
+	armAsm->Ubfiz(dst.W(), dst.W(), 3, 11);
+}
+
+// dst = the link value of the BAL or JALR at `pc`: its own pair index plus 2.
+// The pair wraps at the top of micro memory and the sum does not, so a link
+// from the last two pairs is 0x800 or 0x801, as the console writes it.
+static void mVUemitLinkValue(mV, const a64::Register& dst, u32 pc)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armAsm->Mov(dst.W(), pc / 8 + 2);
+		return;
+	}
+	mVUemitRootPlus(mVU, dst, pc);
+	armAsm->And(dst.W(), dst.W(), 0x7ff);
+	armAsm->Add(dst.W(), dst.W(), 2);
+}
+
+// Under IbitHack, the bits of lower word `code` the compiled code depends on
+// when the op reads its immediate from micro memory at run time; 0 for any
+// other op. The run-time immediates: LQ/SQ/ILW/ISW imm11 (bits 0-10),
+// IADDIU/ISUBIU imm15 (bits 0-10 and 21-24), IADDI imm5 (bits 6-10).
+static u32 mVUibitHackKeptBits(u32 code)
+{
+	switch (code >> 25)
+	{
+		case 0x00: case 0x01: case 0x04: case 0x05: // LQ, SQ, ILW, ISW
+			return ~0x000007FFu;
+		case 0x08: case 0x09:                       // IADDIU, ISUBIU
+			return ~0x01E007FFu;
+		case 0x40:                                  // IADDI
+			return ((code & 0x3F) == 0x32) ? ~0x000007C0u : 0;
+		default:
+			return 0;
+	}
+}
+
+// dst = the word at iPC, read from micro memory when the block runs (the
+// IbitHack gamefix). `runtimeBits` are the bits of it the caller goes on to
+// use: the compiled code does not depend on them. Clobbers RSCRATCHADDR, as
+// armLoadPtr does.
+//
+// VU1 reads the word at its distance from mVU.placeMicro, the placement's
+// root in micro memory, with no wrap. The distance is the word's own address
+// less the root's, signed, so at the compile's own root every read is in micro
+// memory, a chunk that runs across the top included. The chunk store places
+// the code at another root only where every word the chunk read, these among
+// them, is in micro memory there (mVUchunkBodyMatches).
+static void mVUemitLoadCurI(mV, const a64::Register& dst, u32 runtimeBits)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armLoadPtr(dst.W(), &rawI);
+		return;
+	}
+	if (mVU.chunk.recording)
+		mVU.chunk.runtimeBits.push_back({iPC, runtimeBits});
+	const s32 off = (static_cast<s32>(xPC) - static_cast<s32>(mVU.compileRoot)) + (iPC & 1) * 4;
+	armAsm->Ldr(dst.X(), mVUfieldMem(mVU, &mVU.placeMicro));
+	if (off >= -256)
+	{
+		armAsm->Ldr(dst.W(), a64::MemOperand(dst.X(), off));
+	}
+	else
+	{
+		armAsm->Mov(RSCRATCHADDR, off);
+		armAsm->Ldr(dst.W(), a64::MemOperand(dst.X(), RSCRATCHADDR));
+	}
+}
+
+// The body of the block of the chunk being compiled whose entry is
+// `hostEntry`, or null if that entry is not a block of this chunk.
+static u8* mVUchunkBody(mV, const void* hostEntry)
+{
+	for (const mVUChunkEpisode::Block& cb : mVU.chunk.blocks)
+	{
+		if (cb.stub == hostEntry && cb.block->hostEntry == hostEntry)
+			return cb.body;
+	}
+	return nullptr;
+}
+
+// The slot of the link from the chunk being compiled to the block outside it
+// that a search at `pc` with `key` finds and whose entry is `hostEntry`.
+// -1 if no such block is registered: the entry is then code only this compile
+// knows about.
+static int mVUchunkLinkSlot(mV, microBlock* target, const void* hostEntry, u32 pc, microRegInfo* key)
+{
+	if (!target && mVUblocks[pc / 8])
+		target = mVUblocks[pc / 8]->search(mVU, key);
+	if (!target || target->hostEntry != hostEntry)
+		return -1;
+	return static_cast<int>(mVUchunkAddSlot(mVU, nullptr, target, pc, key));
+}
+
+// Branches to the block at `pc` whose entry is `hostEntry`; a search there
+// with `key` found it (`target`, or null to have it searched for again).
+//
+// A block of the chunk being compiled is entered at its body by a direct
+// branch: the placement is already the one its stub would write. A block
+// outside the chunk is a different block for every placement of this code, so
+// the branch goes through the placement's slot for it and lands on that
+// block's stub.
+static void mVUemitLink(mV, microBlock* target, void* hostEntry, u32 pc, microRegInfo* key)
+{
+	if (!mVUrootRelative(mVU))
+	{
+		armEmitJmp(hostEntry);
+		return;
+	}
+	if (const u8* body = mVUchunkBody(mVU, hostEntry))
+	{
+		armEmitJmp(body);
+		return;
+	}
+	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
+	if (slot < 0)
+	{
+		mVU.chunk.unstorable = true;
+		armEmitJmp(hostEntry);
+		return;
+	}
+	mVUemitLoadSlot(mVU, a64::x9, a64::x10, static_cast<u32>(slot));
+	armAsm->Br(a64::x9);
+}
+
+// mVUemitLink taken on `cond`.
+static void mVUemitCondLink(mV, a64::Condition cond, microBlock* target, u32 pc, microRegInfo* key)
+{
+	void* const hostEntry = target->hostEntry;
+	const u8* body = mVUrootRelative(mVU) ? mVUchunkBody(mVU, hostEntry) : static_cast<const u8*>(hostEntry);
+	if (body)
+	{
+		armEmitCondBranch(cond, body);
+		return;
+	}
+	const int slot = mVUchunkLinkSlot(mVU, target, hostEntry, pc, key);
+	if (slot < 0)
+	{
+		mVU.chunk.unstorable = true;
+		armEmitCondBranch(cond, hostEntry);
+		return;
+	}
+	a64::Label skip;
+	armAsm->B(&skip, a64::InvertCondition(cond));
+	mVUemitLoadSlot(mVU, a64::x9, a64::x10, static_cast<u32>(slot));
+	armAsm->Br(a64::x9);
+	armAsm->Bind(&skip);
+}
+
+// The compile is about to go on at `pc`, the pair after the one it just did.
+// Pair 0 can only follow the last pair of micro memory.
+__fi static void mVUchunkNoteFallThrough(mV, u32 pc)
+{
+	if (pc == 0)
+		mVU.chunk.wrapped = true;
+}
+
+// An FSAND, FSEQ or FSOR is being compiled.
+__fi static void mVUnoteStatusReader(mV, u32 imm12)
+{
+	mVU.chunk.statusImm |= imm12;
+	mVUvuAotOnStatusReader(mVU, imm12);
+}
