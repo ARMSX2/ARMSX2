@@ -159,51 +159,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
 }
     }
 
-    // queue:nil = synchronous delivery, so background colors are set BEFORE
-    // SwiftUI re-renders the game overlay (avoids gray flash)
-    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSRequestVMBoot
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-        std::string bootISO;
-        if (s_settings_interface)
-            bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
-        const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
-        std::fprintf(stderr, "@@BOOT_NOTIFY@@ received=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
-            (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
-            EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
-        std::fflush(stderr);
-        NSNumber* loadState = note.userInfo[@"loadLastSaveState"];
-        s_loadLastSaveStateOnBoot.store(loadState ? loadState.boolValue : true);
-        ARMSX2ApplyIOSMultitapConfig("boot-request");
-        if (s_rootVC) s_rootVC.view.backgroundColor = [UIColor blackColor];
-#if TARGET_OS_SIMULATOR
-        [self startVMThread];
-#else
-        [self checkJITAndStartVM];
-#endif
-    }];
-
-    // RootView paints the menu background; rootVC stays black so a VM restart has no white flash.
-
-    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSVMDidShutdown
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-    }];
-
-    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSReturnToMenu
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-    }];
-
-    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSEnterGameScreen
-                                                      object:nil
-                                                       queue:nil
-                                                  usingBlock:^(NSNotification * _Nonnull note) {
-        if (s_rootVC) s_rootVC.view.backgroundColor = [UIColor blackColor];
-    }];
+    [self addVMObserversOnce];
 
 // Auto-boot — debug/simulator only
 #if DEBUG || TARGET_OS_SIMULATOR
@@ -346,6 +302,59 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     }
     Host::CommitBaseSettingChanges();
     Host::RunOnCPUThread([]() { VMManager::ApplySettings(); }, false);
+}
+
+- (void)addVMObserversOnce {
+    // A second set after a reconnect would start the VM twice for one boot request.
+    static bool s_added = false;
+    if (s_added) return;
+    s_added = true;
+
+    // queue:nil = synchronous delivery, so background colors are set BEFORE
+    // SwiftUI re-renders the game overlay (avoids gray flash)
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSRequestVMBoot
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        std::string bootISO;
+        if (s_settings_interface)
+            bootISO = Host::GetBaseStringSettingValue("GameISO", "BootISO", "");
+        const std::string biosPath = Path::Combine(EmuFolders::Bios, EmuConfig.BaseFilenames.Bios);
+        std::fprintf(stderr, "@@BOOT_NOTIFY@@ received=1 has_bios=%d bios=\"%s\" boot_iso=\"%s\"\n",
+            (!EmuConfig.BaseFilenames.Bios.empty() && FileSystem::FileExists(biosPath.c_str())) ? 1 : 0,
+            EmuConfig.BaseFilenames.Bios.c_str(), bootISO.c_str());
+        std::fflush(stderr);
+        NSNumber* loadState = note.userInfo[@"loadLastSaveState"];
+        s_loadLastSaveStateOnBoot.store(loadState ? loadState.boolValue : true);
+        ARMSX2ApplyIOSMultitapConfig("boot-request");
+        if (s_rootVC) s_rootVC.view.backgroundColor = [UIColor blackColor];
+#if TARGET_OS_SIMULATOR
+        [self startVMThread];
+#else
+        [self checkJITAndStartVM];
+#endif
+    }];
+
+    // RootView paints the menu background; rootVC stays black so a VM restart has no white flash.
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSVMDidShutdown
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSReturnToMenu
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+    }];
+
+    [[NSNotificationCenter defaultCenter] addObserverForName:ARMSX2iOSEnterGameScreen
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification * _Nonnull note) {
+        if (s_rootVC) s_rootVC.view.backgroundColor = [UIColor blackColor];
+    }];
 }
 
 #pragma mark - Deep-link handling
