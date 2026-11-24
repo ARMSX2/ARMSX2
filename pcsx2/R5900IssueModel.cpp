@@ -325,6 +325,14 @@ namespace R5900::Issue
 									i.Read(R_FACC);
 								i.Write(R_FPR + fd);
 								i.lat = 4;
+								// Measured with COP0 Count around loops of k copies, k in
+								// {1, 2, 4, 8}, on an SCPH-90000 and an SCPH-30001 alike:
+								// MUL.S latency 4, issue interval 1; DIV.S and SQRT.S 7,
+								// RSQRT.S 13, on one shared unpipelined unit (DIV.S with
+								// SQRT.S costs 14 per pair, with RSQRT.S 20), while an
+								// FPU add or multiply runs inside a divide. The latency
+								// is the same on every operand class tried: denormals,
+								// zero, divide by zero, overflow.
 								if (fn == 3 || fn == 4) // DIV SQRT
 								{
 									i.lat = 7; i.unit = U_FDIV; i.busy = 7;

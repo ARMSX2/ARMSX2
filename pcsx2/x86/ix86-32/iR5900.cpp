@@ -11,6 +11,7 @@
 #include "Patch.h"
 #include "R3000A.h"
 #include "R5900OpcodeTables.h"
+#include "R5900IssueModel.h"
 #include "VMManager.h"
 #include "vtlb.h"
 #include "x86/BaseblockEx.h"
@@ -55,6 +56,7 @@ alignas(16) static u32 hwLUT[_64kb];
 static __fi u32 HWADDR(u32 mem) { return hwLUT[mem >> 16] + mem; }
 
 u32 s_nBlockCycles = 0; // cycles of current block recompiling
+static R5900::Issue::State s_x86Issue; // the issue model's path in the block being compiled
 bool s_nBlockInterlocked = false; // Block is VU0 interlocked
 u32 pc; // recompiler pc
 int g_branch; // set for branch
@@ -1771,7 +1773,6 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 	const OPCODE& opcode = GetCurrentInstruction();
 
 	//pxAssert( !(g_pCurInstInfo->info & EEINSTINFO_NOREC) );
-	//Console.Warning("opcode name = %s, it's cycles = %d\n",opcode.Name,opcode.cycles);
 	// if this instruction is a jump or a branch, exit right away
 	if (delayslot)
 	{
@@ -1835,18 +1836,11 @@ void recompileNextInstruction(bool delayslot, bool swapped_delay_slot)
 			return;
 		}
 	}
-	// Check for NOP
-	if (cpuRegs.code == 0x00000000)
-	{
-		// Note: Tests on a ps2 suggested more like 5 cycles for a NOP. But there's many factors in this..
-		s_nBlockCycles += 9 * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
-	}
-	else
-	{
-		//If the COP0 DIE bit is disabled, cycles should be doubled.
-		s_nBlockCycles += opcode.cycles * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	// What the instruction adds to its path under the issue model; doubled with
+	// dual issue off. This recompiler charges no exit constants.
+	s_nBlockCycles += 8 * R5900::Issue::Step(s_x86Issue, delayslot ? pc : pc - 4, cpuRegs.code) * (2 - ((cpuRegs.CP0.n.Config >> 18) & 0x1));
+	if (cpuRegs.code != 0x00000000)
 		opcode.recompile();
-	}
 
 	if (!swapped_delay_slot)
 	{
@@ -2259,6 +2253,7 @@ static void recRecompile(const u32 startpc)
 
 	// reset recomp state variables
 	s_nBlockCycles = 0;
+	R5900::Issue::Reset(s_x86Issue);
 	s_nBlockInterlocked = false;
 	pc = startpc;
 	g_cpuHasConstReg = g_cpuFlushedConstReg = 1;
