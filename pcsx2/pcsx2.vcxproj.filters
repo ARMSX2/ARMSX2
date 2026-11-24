@@ -548,6 +548,9 @@
     <ClCompile Include="Gif.cpp">
       <Filter>System\Ps2\EmotionEngine\DMAC\Gif</Filter>
     </ClCompile>
+    <ClCompile Include="R5900IssueModel.cpp">
+      <Filter>System\Ps2\EmotionEngine\EE</Filter>
+    </ClCompile>
     <ClCompile Include="R5900OpcodeTables.cpp">
       <Filter>System\Ps2\EmotionEngine\EE</Filter>
     </ClCompile>
@@ -1824,6 +1827,9 @@
       <Filter>System\Ps2\EmotionEngine\DMAC\Gif</Filter>
     </ClInclude>
     <ClInclude Include="R5900.h">
+      <Filter>System\Ps2\EmotionEngine\EE</Filter>
+    </ClInclude>
+    <ClInclude Include="R5900IssueModel.h">
       <Filter>System\Ps2\EmotionEngine\EE</Filter>
     </ClInclude>
     <ClInclude Include="R5900OpcodeTables.h">

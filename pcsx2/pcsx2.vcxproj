@@ -645,6 +645,7 @@
     </ClCompile>
     <ClCompile Include="SPR.cpp" />
     <ClCompile Include="Gif.cpp" />
+    <ClCompile Include="R5900IssueModel.cpp" />
     <ClCompile Include="R5900OpcodeTables.cpp" />
     <ClCompile Include="x86\iCOP0.cpp">
       <ExcludedFromBuild Condition="'$(Platform)'!='x64'">true</ExcludedFromBuild>
@@ -1239,6 +1240,7 @@
     <ClInclude Include="SPR.h" />
     <ClInclude Include="Gif.h" />
     <ClInclude Include="R5900.h" />
+    <ClInclude Include="R5900IssueModel.h" />
     <ClInclude Include="R5900OpcodeTables.h" />
     <ClInclude Include="COP0.h" />
     <ClInclude Include="x86\iR5900.h" />
