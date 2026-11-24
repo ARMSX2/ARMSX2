@@ -4,7 +4,7 @@
 import SwiftUI
 import UIKit
 
-private extension Notification.Name {
+extension Notification.Name {
     static let captureMenuBackgroundSnapshot = Notification.Name(
         "ARMSX2.captureMenuBackgroundSnapshot"
     )
@@ -291,16 +291,17 @@ private final class BackgroundSnapshotHostingController: UIViewController {
             isPresentationActive: presentationActive
         )
 
+        // Not willResignActive: the background surface is released 32 ms after this.
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(applicationWillResignActive),
-            name: UIApplication.willResignActiveNotification,
+            selector: #selector(sceneWillDeactivate),
+            name: UIScene.willDeactivateNotification,
             object: nil
         )
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(applicationDidBecomeActive),
-            name: UIApplication.didBecomeActiveNotification,
+            selector: #selector(sceneDidActivate),
+            name: UIScene.didActivateNotification,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -392,15 +393,17 @@ private final class BackgroundSnapshotHostingController: UIViewController {
         )
     }
 
-    @objc private func applicationWillResignActive() {
+    @objc private func sceneWillDeactivate(_ notification: Notification) {
+        guard notification.object as? UIScene === view.window?.windowScene else { return }
         captureSnapshot()
     }
 
-    @objc private func captureRequested() {
-        captureSnapshot()
+    // A request from the video view carries it: its frame view was added this turn.
+    @objc private func captureRequested(_ notification: Notification) {
+        captureSnapshot(afterScreenUpdates: notification.object != nil)
     }
 
-    private func captureSnapshot() {
+    private func captureSnapshot(afterScreenUpdates: Bool = false) {
         guard snapshotHost?.canCaptureLiveBackground == true,
               let targetView = backgroundController?.view,
               targetView.window != nil,
@@ -420,7 +423,7 @@ private final class BackgroundSnapshotHostingController: UIViewController {
         let snapshot = renderer.image { context in
             let captured = targetView.drawHierarchy(
                 in: targetView.bounds,
-                afterScreenUpdates: false
+                afterScreenUpdates: afterScreenUpdates
             )
             if !captured {
                 targetView.layer.render(in: context.cgContext)
@@ -429,7 +432,8 @@ private final class BackgroundSnapshotHostingController: UIViewController {
         snapshotHost?.retainInactiveSnapshot(snapshot)
     }
 
-    @objc private func applicationDidBecomeActive() {
+    @objc private func sceneDidActivate(_ notification: Notification) {
+        guard notification.object as? UIScene === view.window?.windowScene else { return }
         snapshotHost?.releaseInactiveSnapshotWhenRendererIsReady()
     }
 }
