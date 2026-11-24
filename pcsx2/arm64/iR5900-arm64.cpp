@@ -1201,6 +1201,11 @@ static u32 eeEncodeChargeWord(u32 word, EeChargeForm form, u32 charge)
 	return word;
 }
 
+#ifdef PCSX2_RECOMPILER_TESTS
+// The fraction of a cycle the charge-scaling test hook carries, in 1/8192.
+static u64 s_eeTestChargeAcc = 0;
+#endif
+
 u32 scaleblockcycles_clear(EeChargeForm form)
 {
 	s_eeChargeSites++;
@@ -1214,6 +1219,30 @@ u32 scaleblockcycles_clear(EeChargeForm form)
 	s_eeChargePendingUnpatchable = eeClassifyChargeForm(form);
 	s_eeChargePendingCharge = scaleblockcycles_clear_impl();
 	s_eeChargePending = true;
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test hook: every charge scaled by (1024 + extra) / 1024, the fraction
+	// carried at run time from one charge to the next, as the interpreter
+	// carries it. Emitted ahead of the site's own instruction, which stays the
+	// last one written.
+	if (const u32 extra = R5900::Issue::g_testExtraPer1024)
+	{
+		// x16 and x17 may hold anything here; they are saved around it.
+		const u32 consumed = s_eeChargePendingRaw - s_nBlockCycles;
+		const a64::Register addr = a64::x16;
+		const a64::Register acc = a64::x17;
+		armAsm->Stp(addr, acc, a64::MemOperand(a64::sp, -16, a64::PreIndex));
+		armAsm->Mov(addr, reinterpret_cast<uintptr_t>(&s_eeTestChargeAcc));
+		armAsm->Ldr(acc, a64::MemOperand(addr));
+		armAsm->Mov(addr, static_cast<u64>(consumed) * extra);
+		armAsm->Add(acc, acc, addr);
+		armAsm->Add(RECCYCLE, RECCYCLE, a64::Operand(acc, a64::LSR, 13));
+		armAsm->And(acc, acc, 0x1FFF);
+		armAsm->Mov(addr, reinterpret_cast<uintptr_t>(&s_eeTestChargeAcc));
+		armAsm->Str(acc, a64::MemOperand(addr));
+		armAsm->Ldp(addr, acc, a64::MemOperand(a64::sp, 16, a64::PostIndex));
+	}
+#endif
 
 	// The scaler floors at 1, so every caller below emits its charge
 	// instruction — the `if (cycles != 0) ... else Cmp` arms are dead. The

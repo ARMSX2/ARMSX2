@@ -100,6 +100,10 @@ void intUpdateCPUCycles()
 	// Ensure block cycle count is never less than 1.
 	cpuRegs.cycle += (scale_cycles < 1) ? 1 : scale_cycles;
 
+#ifdef PCSX2_RECOMPILER_TESTS
+	const u32 raw_before = cpuBlockCycles;
+#endif
+
 	if (cyclerate > 1)
 	{
 		cpuBlockCycles &= (0x1 << (cyclerate + 2)) - 1;
@@ -108,6 +112,18 @@ void intUpdateCPUCycles()
 	{
 		cpuBlockCycles &= 0x7;
 	}
+
+#ifdef PCSX2_RECOMPILER_TESTS
+	// Test hook: every charge scaled by (1024 + extra) / 1024, the fraction
+	// carried from one charge to the next, as the recompiler's hook does.
+	if (const u32 extra = R5900::Issue::g_testExtraPer1024)
+	{
+		static u64 s_acc = 0;
+		s_acc += static_cast<u64>(raw_before - cpuBlockCycles) * extra;
+		cpuRegs.cycle += s_acc >> 13;
+		s_acc &= 0x1FFF;
+	}
+#endif
 }
 
 #ifdef PCSX2_RECOMPILER_TESTS

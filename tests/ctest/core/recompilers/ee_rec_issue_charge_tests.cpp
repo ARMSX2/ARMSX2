@@ -384,3 +384,40 @@ TEST(EeRecIssueCharge, LoopHeadSplitFallsThroughAsOnePath)
 		{Range(7, 8), Exit::Taken},
 	}));
 }
+
+// The test hook that scales every charge (used to ask whether a game still
+// runs right if the EE were charged a few percent more) scales both engines
+// alike, carrying the fraction from charge to charge.
+TEST(EeRecIssueCharge, ChargeScalingHookScalesBothEngines)
+{
+	const ScopedClean clean;
+	constexpr u32 kIterations = 200;
+	const std::vector<u32> prog = {
+		kRead0,                                    // 0
+		ADDIU(reg::t6, reg::zero, kIterations),    // 1
+		ADDIU(reg::t6, reg::t6, -1),               // 2: the loop
+		ADDU(reg::t5, reg::t6, reg::t6),           // 3
+		BNE(reg::t6, reg::zero, Off(4, 2)),        // 4
+		NOP,                                       // 5
+		BEQ(reg::zero, reg::zero, Off(6, 9)),      // 6
+		NOP,                                       // 7
+		kFiller,                                   // 8
+		kRead1,                                    // 9
+	};
+	std::vector<PathSpec> paths = {{Range(0, 5), Exit::Taken}};
+	for (u32 k = 1; k < kIterations - 1; k++)
+		paths.push_back({Range(2, 5), Exit::Taken});
+	paths.push_back({Range(2, 5), Exit::NotTaken});
+	paths.push_back({Range(6, 7), Exit::Taken});
+	const u64 base = ModelCost(prog, paths);
+
+	R5900::Issue::g_testExtraPer1024 = 31;
+	EeRecTestHarness h;
+	RunProgram(h, prog);
+	R5900::Issue::g_testExtraPer1024 = 0;
+	const u64 jit = h.GetGprJit(reg::t1) - h.GetGprJit(reg::t0);
+	const u64 interp = h.GetGprInterp(reg::t1) - h.GetGprInterp(reg::t0);
+	const u64 want = base * (1024 + 31) / 1024;
+	EXPECT_NEAR(static_cast<double>(jit), static_cast<double>(want), 2.0) << "base " << base;
+	EXPECT_NEAR(static_cast<double>(interp), static_cast<double>(want), 2.0) << "base " << base;
+}
