@@ -1450,9 +1450,6 @@ extern u32   mVUvuAotTierUpRuns();
 extern bool  mVUvuAotBodyAllowed(bool droppedSticky);
 // A tiered body was placed for a copy of its routine.
 extern void  mVUvuAotOnBodyPlaced(microVU& mVU, bool droppedSticky);
-// A copy's block that is the root of `head`'s routine became a node of
-// another routine's tiered body.
-extern void  mVUvuAotOnRootCovered(mVUChunkHead& head);
 // A tiered body, or the tier's "no region" mark, came back from the disk pack
 // for `head`'s routine: files it as the tier files one it built.
 extern void  mVUvuAotOnBodyLoaded(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUChunkBody> body);

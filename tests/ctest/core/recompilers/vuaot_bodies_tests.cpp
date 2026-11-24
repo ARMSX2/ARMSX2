@@ -495,7 +495,8 @@ TEST(VuAotBodies, JobFinishedAfterTheRoutineMovedIsBuiltAtTheNewAddress)
 // A JR/JALR target the jump cache keeps missing is a routine of its own and
 // asks for its regions. When the routine that jumps to it is built first, its
 // body holds the target as a node and takes over the target's block: the
-// target's own job is not built on top of it.
+// target's own job is not built on top of it (it waits for a copy outside the
+// body: JobOfARootTakenInIsBuiltForACopyOutsideTheBody).
 TEST(VuAotBodies, RootTakenInByAnotherRoutinesBodyIsNotBuiltAgain)
 {
 	const std::vector<VuOp> routine = CallRoutine(9);
@@ -522,8 +523,7 @@ TEST(VuAotBodies, RootTakenInByAnotherRoutinesBodyIsNotBuiltAgain)
 	for (u32 i = 0; i < 4; i++)
 		run();
 	const vuaot::live::Stats s1 = vuaot::live::GetStats();
-	EXPECT_EQ(s1.built - s0.built, 1u);
-	EXPECT_EQ(s1.discardCovered - s0.discardCovered, 1u) << "the return point's job was built over the body that holds it";
+	EXPECT_EQ(s1.built - s0.built, 1u) << "the return point's job was built over the body that holds it";
 	EXPECT_EQ(s1.tieredBodies, 1u);
 }
 
@@ -715,14 +715,17 @@ struct CallPair
 };
 } // namespace
 
-// The return point's job is dropped when the first routine's body is placed
-// over it. Its next request through the jump path comes only after another
-// kJumpTierUpRuns jump entries, not at the next one.
-TEST(VuAotBodies, JumpPathAsksAgainOnlyAfterMoreJumpEntries)
+// The return point's job finishes while the first routine's body holds the
+// return point as a node. The second routine runs the return point on
+// microVU's code: the job is built there, at its first slow-path entry, with
+// no second job. (A routine placed in many programs takes in other routines'
+// roots in each of them; a job dropped at each placement left those roots
+// running microVU's code wherever they were not taken in.)
+TEST(VuAotBodies, JobOfARootTakenInIsBuiltForACopyOutsideTheBody)
 {
-	constexpr u32 kJumpRuns = 4;
+	const VuSnapshot interpCopy = InterpOf(2, kCopy, CallRoutine(7), kCopy);
 	CallPair c(/*sync=*/false);
-	vuaot::live::SetJumpTierUpRuns(kJumpRuns);
+	vuaot::live::SetJumpTierUpRuns(4);
 	const vuaot::live::Stats s0 = vuaot::live::GetStats();
 	vuaot::live::HoldWorker(true);
 	for (u32 i = 0; i < kTierRuns + 4; i++)
@@ -733,19 +736,22 @@ TEST(VuAotBodies, JumpPathAsksAgainOnlyAfterMoreJumpEntries)
 	for (u32 i = 0; i < 2; i++)
 		c.RunAt(kHome);
 	const vuaot::live::Stats s1 = vuaot::live::GetStats();
-	ASSERT_EQ(s1.discardCovered - s0.discardCovered, 1u) << "the return point's job was not dropped under the body";
+	ASSERT_EQ(s1.built - s0.built, 1u) << "the first routine's body was not built";
 
+	// (neither routine may ask for anything new)
 	vuaot::live::SetTierUpRuns(1000000);
+	vuaot::live::SetJumpTierUpRuns(1000000);
 	Upload(2, kCopy, c.second);
-	std::vector<u64> jobs;
-	for (u32 i = 0; i < kJumpRuns + 1; i++)
+	for (u32 i = 0; i < 3; i++)
 	{
 		c.RunAt(kCopy);
-		jobs.push_back(vuaot::live::GetStats().jobs - s1.jobs);
+		ExpectMatchesInterp(c.jit.h, interpCopy, "copy");
 	}
-	EXPECT_EQ(jobs[0], 0u) << "the jump path asked again at its next entry";
-	EXPECT_EQ(jobs.back(), 1u) << "the jump path did not ask again";
+	const vuaot::live::Stats s2 = vuaot::live::GetStats();
+	EXPECT_EQ(s2.jobs - s1.jobs, 0u);
+	EXPECT_EQ(s2.built - s1.built, 1u) << "the return point's job was not built for the copy outside the body";
 }
+
 
 } // namespace recompiler_tests
 

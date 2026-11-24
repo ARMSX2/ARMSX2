@@ -356,13 +356,10 @@ static void* mVUchunkInstall(microVU& mVU, mVUChunkBody& b, u32 rootPC, int& mis
 		if (placed)
 		{
 			mVUchunkReAim(placed, stub);
-			// (the root's state is its caller's to set)
+			// (the root's state is its caller's to set; a job of the routine
+			// this block is the root of waits for a copy outside the body)
 			if (placed->tierState == mVUtierNone)
-			{
 				placed->tierState = mVUtierCovered;
-				if (placed->tierHead && placed != mVU.chunkStore->placingRoot)
-					mVUvuAotOnRootCovered(*static_cast<mVUChunkHead*>(placed->tierHead));
-			}
 			// (a block that ends in a JR or JALR keeps its end state: microVU's
 			// code for it, which a bail runs, reads it too)
 			if (!placed->jumpCache)

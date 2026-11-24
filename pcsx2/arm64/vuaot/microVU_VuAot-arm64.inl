@@ -462,21 +462,6 @@ void mVUvuAotOnBodyLoaded(microVU& mVU, mVUChunkHead& head, std::unique_ptr<mVUC
 	head.serial++;
 }
 
-// The copy already runs region code from that block on: a job that finished
-// for the routine and is waiting for a copy is not built on top of it. A copy
-// that is not taken in may ask again, as after any job that came to nothing.
-void mVUvuAotOnRootCovered(mVUChunkHead& head)
-{
-	if (!head.job)
-		return;
-	head.job.reset();
-	head.outstanding = false;
-	head.attempts++;
-	head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
-	head.nextJump = head.jumpRuns + s_vuaot.jumpTierUpRuns;
-	s_vuaot.stats.discardCovered++;
-}
-
 // VU1's run entry. The tripwire has gone off and regions without the sticky byte exist: a reset
 // throws away every program and region, and the next compiles are exact. Not while a program is
 // parked at a cycle-budget stop (a reset would drop the pipeline state it resumes from); the next
@@ -699,12 +684,11 @@ namespace vuaot::live
 		}
 		std::snprintf(buf, sizeof(buf),
 			"\n  background: sync=%d jobs=%llu dropped=%llu done=%llu built=%llu "
-			"declined=%llu discarded: stale=%llu memory=%llu covered=%llu sticky=%llu space=%llu trace=%llu unstorable=%llu | "
+			"declined=%llu discarded: stale=%llu memory=%llu sticky=%llu space=%llu trace=%llu unstorable=%llu | "
 			"lag(dispatches) avg=%.1f max=%llu | worker_ins=%llu build_ins=%llu veneers=%llu",
 			s_vuaot.synchronous ? 1 : 0, (unsigned long long)s.jobs, (unsigned long long)s.jobsDropped, (unsigned long long)s.jobsDone,
 			(unsigned long long)s.built, (unsigned long long)s.jobsDeclined,
-			(unsigned long long)s.discardStale, (unsigned long long)s.discardMemory, (unsigned long long)s.discardCovered,
-			(unsigned long long)s.discardSticky, (unsigned long long)s.discardSpace, (unsigned long long)s.discardTrace,
+			(unsigned long long)s.discardStale, (unsigned long long)s.discardMemory, (unsigned long long)s.discardSticky, (unsigned long long)s.discardSpace, (unsigned long long)s.discardTrace,
 			(unsigned long long)s.discardUnstorable,
 			s.built ? static_cast<double>(s.lagSum) / s.built : 0.0, (unsigned long long)s.lagMax,
 			(unsigned long long)s.workerIns, (unsigned long long)s.buildIns, (unsigned long long)s.veneers);
