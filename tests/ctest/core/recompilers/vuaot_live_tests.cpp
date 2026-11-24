@@ -522,7 +522,8 @@ TEST(VuAotLive, BackgroundTierUpPublishesAtADispatch)
 }
 
 // Micro memory changes under a finished job before it is published, through a write the program's quick slot did not see
-// (so microVU keeps running its old code): the job compiled words that are gone, and is discarded, never published.
+// (so microVU keeps running its old code): the job compiled words that are gone and fits no copy, so it is never published,
+// and the copy asks for a job of its own.
 TEST(VuAotLive, PublishAfterMicroMemoryChangedIsDiscarded)
 {
 	const auto sequence = [](bool on, vuaot::live::Stats& d) {
@@ -563,9 +564,8 @@ TEST(VuAotLive, PublishAfterMicroMemoryChangedIsDiscarded)
 	ASSERT_EQ(ref.size(), got.size());
 	for (size_t i = 0; i < ref.size(); i++)
 		EXPECT_EQ(Diff(ref[i], got[i]), "") << "run " << i;
-	EXPECT_EQ(on.jobs, 2u) << "the discarded tier-up is asked for again (and held)";
-	EXPECT_EQ(on.discardMemory, 1u) << "the job read the word that changed";
-	EXPECT_EQ(on.built, 0u);
+	EXPECT_EQ(on.jobs, 2u) << "the copy did not ask for a job of its own (held)";
+	EXPECT_EQ(on.built, 0u) << "the job read the word that changed";
 	EXPECT_EQ(on.regions, 0u);
 }
 

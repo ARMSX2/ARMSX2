@@ -142,11 +142,11 @@ namespace vuaot
 			u64 jobsDeclined = 0;     // the region builder declined the root
 			u64 built = 0;            // jobs that became a tiered body
 			u64 bodiesLoaded = 0;     // tiered bodies made from the disk pack's records
-			// Finished jobs thrown away: made before a reset (stale), for a routine no copy of
-			// which was entered again (memory), made with the sticky byte dropped before the
-			// tripwire went off (sticky), with no room left in the code cache (space), whose root
-			// microVU analysed differently when it compiled it (trace), or whose compile the chunk
-			// store could not keep (unstorable).
+			// Finished jobs thrown away: made before a reset (stale), the oldest waiting job of a
+			// routine whose bodies and waiting jobs filled its head (memory), made with the sticky
+			// byte dropped before the tripwire went off (sticky), with no room left in the code
+			// cache (space), whose root microVU analysed differently when it compiled it (trace),
+			// or whose compile the chunk store could not keep (unstorable).
 			u64 discardStale = 0, discardMemory = 0, discardSticky = 0, discardSpace = 0, discardTrace = 0, discardUnstorable = 0;
 			// VU1 dispatches between a job's request and its build.
 			u64 lagSum = 0, lagMax = 0;

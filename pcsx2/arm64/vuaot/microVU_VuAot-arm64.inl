@@ -41,9 +41,9 @@
 #include <sys/mman.h>
 #endif
 
-// A job that is dropped (queue full), discarded (micro memory changed under
-// it, no copy came back to its address) or not placed is asked for again
-// after another kTierUpRuns runs, this many times at most per routine.
+// A job that is dropped (queue full), declined by a region build that wrapped,
+// or not placed is asked for again after another kTierUpRuns runs, this many
+// times at most per routine.
 static constexpr u32 kMaxGenAttempts = 4;
 // Tiered bodies and "no region" marks one head keeps: routines that begin
 // alike and go on differently each need their own.
@@ -1337,11 +1337,17 @@ static void vuAotCollectFinished()
 		head.serial++;
 		if (j->accepted)
 		{
-			// (if no copy of its routine takes it within another kTierUpRuns runs, it goes)
-			head.runsAtJob = head.runs[0] + head.runs[1];
+			// It waits for a copy it fits; meanwhile a copy of another variant
+			// may ask for a job of its own. The oldest waiting job makes room.
+			head.outstanding = false;
 			head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
 			head.next[1] = std::min(head.next[1], head.runs[1] + s_vuaot.tierUpRuns);
-			head.job = std::move(j);
+			head.jobs.push_back(std::move(j));
+			if (head.tiered.size() + head.jobs.size() > kMaxBodiesPerHead)
+			{
+				head.jobs.erase(head.jobs.begin());
+				s_vuaot.stats.discardMemory++;
+			}
 			continue;
 		}
 		head.outstanding = false;
@@ -1574,28 +1580,18 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 	void* result, bool tierNow, bool viaJump)
 {
 	const auto build = [&]() {
-		if (!head.job)
-			return;
-		const std::shared_ptr<VuAotJob> j = std::static_pointer_cast<VuAotJob>(head.job);
-		// (a copy taken into another routine's body leaves the job for one that is not)
+		// (a copy taken into another routine's body leaves the jobs for one that is not)
 		if (blk.tierState == mVUtierCovered)
 			return;
-		if (std::memcmp(&j->key, &key, sizeof(key)) == 0 && vuAotJobFits(mVU, *j, startPC))
+		for (auto it = head.jobs.begin(); it != head.jobs.end(); ++it)
 		{
-			head.job.reset();
-			head.outstanding = false;
+			const std::shared_ptr<VuAotJob> j = std::static_pointer_cast<VuAotJob>(*it);
+			if (std::memcmp(&j->key, &key, sizeof(key)) != 0 || !vuAotJobFits(mVU, *j, startPC))
+				continue;
+			head.jobs.erase(it);
 			vuAotRebase(*j, startPC);
 			vuAotBuildBody(mVU, prog, head, *j);
-		}
-		else if (head.runs[0] + head.runs[1] - head.runsAtJob >= s_vuaot.tierUpRuns)
-		{
-			// No copy of the routine the job compiled has been entered since.
-			head.job.reset();
-			head.outstanding = false;
-			head.attempts++;
-			head.next[0] = head.runs[0] + s_vuaot.tierUpRuns;
-			head.nextJump = head.jumpRuns + s_vuaot.jumpTierUpRuns;
-			s_vuaot.stats.discardMemory++;
+			return;
 		}
 	};
 	const auto place = [&]() {
@@ -1636,8 +1632,8 @@ static void* vuAotConsider(microVU& mVU, microProgram& prog, microBlock& blk, mV
 				place();
 			}
 		}
-		// (nothing to ask for and nothing to wait for: the count stops sending entries here)
-		if (head.runs[0] >= head.next[0] && !head.job)
+		// (nothing to ask for: the count stops sending entries here until a job comes back)
+		if (head.runs[0] >= head.next[0])
 			head.next[0] = canAsk && !head.outstanding ? head.runs[0] + 1 : ~0u;
 		return result;
 	}

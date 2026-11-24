@@ -834,7 +834,7 @@ struct mVUChunkHead
 	u32 jumpRuns = 0;
 	// The jump count at which the JR/JALR slow path may ask for a job again.
 	u32 nextJump = 0;
-	// A job is queued, running, or finished and not built yet.
+	// A job is queued or running.
 	bool outstanding = false;
 	// Jobs dropped, discarded or not placed.
 	u32 attempts = 0;
@@ -845,10 +845,11 @@ struct mVUChunkHead
 	u32 emptyChecks = 0;
 	bool settled = false;
 	u32 nextBodyId = 0;
-	// A finished job (VuAotJob) waiting for a copy of the routine it compiled
-	// to be entered, and runs[0] + runs[1] when it arrived.
-	std::shared_ptr<void> job;
-	u32 runsAtJob = 0;
+	// Finished jobs (VuAotJob), oldest first, each waiting for a copy of the
+	// variant of the routine it compiled to be entered. Routines that begin
+	// alike and go on differently share the head, and a game can run them in
+	// turn many times a frame.
+	std::vector<std::shared_ptr<void>> jobs;
 	// The disk pack held a tiered body for a copy of the routine that could
 	// not be placed (microVU_ChunkPack-arm64.inl): the copy asks for its
 	// regions at its first counted run, not after the usual number.

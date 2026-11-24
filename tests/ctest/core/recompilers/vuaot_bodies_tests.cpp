@@ -652,43 +652,56 @@ TEST(VuAotBodies, CompilingDispatchCountsOnTheRootsHead)
 	}
 }
 
-// A copy of a routine that the routine's body does not fit asks for a job.
-// While it is out, the game goes back to the first image, whose copy runs the
-// body. The job is dropped after kTierUpRuns runs of any copy, the ones on a
-// body included, so it does not hold the routine's next request for good.
-TEST(VuAotBodies, JobNoCopyFitsIsDroppedWhileTheCopiesRunABody)
+// Two routines with the same first pair share a head, and the game runs them
+// in turn. The first asks for a job; while the second runs, the job comes back
+// and waits, and the second asks for a job of its own. Each job is built when
+// a copy of its own routine is entered: the first routine's needs no second
+// request, however long the second ran in between.
+TEST(VuAotBodies, JobsOfRoutinesSharingAHeadWaitForTheirOwnCopies)
 {
 	const std::vector<VuOp> routine = LoopRoutine(10);
 	std::vector<VuOp> other = routine;
 	other[8] = EBit(LoadViImm(vi::vi6, 0x67)); // the same first pair: the same routine's head
 	const VuSnapshot interp = InterpOf(1, kHome, routine, kHome);
+	const VuSnapshot interpOther = InterpOf(2, kCopy, other, kCopy);
 
-	TierScope on(true, true);
+	TierScope on(true, true, /*sync=*/false);
+	const vuaot::live::Stats s0 = vuaot::live::GetStats();
 	Jit jit(1, kHome, routine, kHome);
+	vuaot::live::HoldWorker(true);
 	for (u32 i = 0; i < kTierRuns + 2; i++)
 		jit.RunAt(kHome);
-	const vuaot::live::Stats s0 = vuaot::live::GetStats();
-	ASSERT_EQ(s0.tieredBodies, 1u);
+	ASSERT_EQ(vuaot::live::GetStats().jobs - s0.jobs, 1u) << "the first routine did not ask for regions";
 
-	vuaot::live::SetSynchronous(false);
-	vuaot::live::HoldWorker(true);
 	Upload(2, kCopy, other);
-	for (u32 i = 0; i < kTierRuns + 2; i++)
-		jit.RunAt(kCopy);
-	const vuaot::live::Stats s1 = vuaot::live::GetStats();
-	ASSERT_EQ(s1.jobs - s0.jobs, 1u) << "the copy the body does not fit did not ask for regions";
-
-	Upload(1, kHome, routine);
 	vuaot::live::HoldWorker(false);
 	vuaot::live::WaitWorkerIdle();
+	vuaot::live::HoldWorker(true);
 	for (u32 i = 0; i < 3 * kTierRuns; i++)
+	{
+		jit.RunAt(kCopy);
+		ExpectMatchesInterp(jit.h, interpOther, "other");
+	}
+	const vuaot::live::Stats s1 = vuaot::live::GetStats();
+	ASSERT_EQ(s1.jobs - s0.jobs, 2u) << "the second routine did not ask for regions";
+	EXPECT_EQ(s1.built, s0.built) << "a job was built for a routine it does not fit";
+	vuaot::live::HoldWorker(false);
+	vuaot::live::WaitWorkerIdle();
+	for (u32 i = 0; i < 2; i++)
+		jit.RunAt(kCopy);
+	ASSERT_EQ(vuaot::live::GetStats().built - s0.built, 1u) << "the second routine's job was not built";
+
+	Upload(1, kHome, routine);
+	for (u32 i = 0; i < 2; i++)
 	{
 		jit.RunAt(kHome);
 		ExpectMatchesInterp(jit.h, interp, "home");
 	}
 	const vuaot::live::Stats s2 = vuaot::live::GetStats();
-	EXPECT_EQ(s2.built, s1.built);
-	EXPECT_EQ(s2.discardMemory - s1.discardMemory, 1u) << "the job was held while only copies on the body ran";
+	EXPECT_EQ(s2.jobs - s0.jobs, 2u) << "the first routine asked for its regions again";
+	EXPECT_EQ(s2.built - s0.built, 2u) << "the first routine's job was not built when it came back";
+	EXPECT_EQ(s2.tieredBodies, 2u);
+	EXPECT_EQ(s2.discardMemory, s0.discardMemory);
 }
 
 // Two routines around one subroutine call: CallRoutine with two trip counts,
