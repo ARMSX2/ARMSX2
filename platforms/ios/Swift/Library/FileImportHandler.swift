@@ -38,7 +38,6 @@ final class FileImportHandler {
     // BIOS dumps use loose/non-standard UTTypes on iOS. Keep the picker permissive
     // but include explicit .bin/.rom types so sideloaded Files providers expose them.
     static let biosContentTypes: [UTType] = broaderContentTypes(for: biosExtensionList)
-    static let gameContentTypes: [UTType] = broaderContentTypes(for: gameExtensionList)
     static let pnachContentTypes: [UTType] = Array(Set([.item, .data, .content, .text, .plainText] + contentTypes(for: pnachExtensionList + ["txt", "patch"])))
     static let pnachImportNeedsGameMessage = "PNACH patches need to be imported for a specific game. Boot a game first or long-press a game in your library, then import the patch."
     static let pnachCheatBlockedByHardcoreMessage = "PNACH cheat import is blocked while RetroAchievements Hardcore Mode is enabled."

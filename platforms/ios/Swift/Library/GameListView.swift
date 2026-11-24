@@ -402,8 +402,8 @@ struct GameListView: View {
             }
 				.sheet(isPresented: $controller.showGameImporter) {
 					ImportDocumentPicker(
-						allowsMultipleSelection: true,
-						legacyDocumentTypes: ["public.item", "public.data", "public.content"]
+						allowedContentTypes: [.item, .data, .content],
+						allowsMultipleSelection: true
 	                ) { result in
                     controller.showGameImporter = false
                     switch result {

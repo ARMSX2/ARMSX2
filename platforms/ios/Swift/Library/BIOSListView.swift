@@ -358,8 +358,8 @@ struct BIOSListView: View {
             }
             .sheet(isPresented: $showBIOSCompatibilityImporter) {
                 ImportDocumentPicker(
-                    allowsMultipleSelection: true,
-                    legacyDocumentTypes: ["public.item", "public.data", "public.content"]
+                    allowedContentTypes: [.item, .data, .content],
+                    allowsMultipleSelection: true
                 ) { result in
                     showBIOSCompatibilityImporter = false
                     handleBIOSPickerResult(result)

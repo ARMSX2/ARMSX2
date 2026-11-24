@@ -508,20 +508,16 @@ struct ShaderChainSection: View {
     private func picker(for source: ShaderPackPickerSource) -> some View {
         if source.isFolder {
             ImportDocumentPicker(
-                allowedContentTypes: [.folder],
+                allowedContentTypes: [.folder, .directory],
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.folder", "public.directory"],
-                legacyDocumentMode: .open,
                 asCopy: false
             ) { result in
                 install(result, isFolder: true)
             }
         } else {
             ImportDocumentPicker(
-                allowedContentTypes: [UTType(filenameExtension: "zip") ?? .data, .archive, .data],
+                allowedContentTypes: [.zip, UTType("com.pkware.zip-archive"), .archive].compactMap { $0 },
                 allowsMultipleSelection: false,
-                legacyDocumentTypes: ["public.zip-archive", "com.pkware.zip-archive", "public.archive"],
-                legacyDocumentMode: .import,
                 asCopy: true
             ) { result in
                 install(result, isFolder: false)
