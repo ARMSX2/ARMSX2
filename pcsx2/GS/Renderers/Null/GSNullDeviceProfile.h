@@ -127,7 +127,7 @@ namespace GSNullDeviceProfile
 		f.feedback_loop_layout = false; // both advertise ROAA, which excludes the layout road
 		// Neither profile is on the declared feedback loop road: the experiment key is off by
 		// default, the ordering fact needs a tagged Turnip on a6xx (the SD865 profile is stock
-		// Turnip), and the barrier-kept preference needs Turnip on a7xx. The same part on a
+		// Turnip), and the barrier-kept preference needs Turnip on a7xx or a8xx. The same part on a
 		// different driver is a different feature set: add a new row rather than editing one,
 		// or numbers recorded under the existing name silently change meaning.
 		f.declared_feedback_loop_orders_overlap = false;

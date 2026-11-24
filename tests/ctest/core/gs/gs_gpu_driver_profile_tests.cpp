@@ -1081,8 +1081,8 @@ TEST(GSGpuDriverProfile, TheOrderingClaimDoesNotReachTheOpenGLPath)
 }
 
 // ---------------------------------------------------------------------------------------------
-// The a7xx preference: Turnip on an Adreno 7xx belongs on the declared feedback loop with the
-// per-draw barriers KEPT.
+// The barrier-kept preference: Turnip on an Adreno 7xx or 8xx belongs on the declared feedback loop
+// with the per-draw barriers KEPT.
 //
 // Unlike the ordering fact above, this one needs no build tag. It is a fact about the PART, not
 // about a build: on an a740 both our pack build and upstream main draw the declared-with-barriers
@@ -1118,6 +1118,59 @@ TEST(GSGpuDriverProfile, StockTurnipOnAdreno7xxPrefersTheDeclaredLoopWithBarrier
 		// And no tag, so no ordering claim. Being on the declared road is not being ordered.
 		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
 	}
+}
+
+// The Adreno 830 (Snapdragon 8 Elite) is the one 8xx part this was run on; the rule covers every 8xx
+// part, listed in the table or not. Stock Turnip with no tag earns it, as on the 7xx parts, and claims
+// no ordering: the ordering fix has no 8xx build.
+TEST(GSGpuDriverProfile, StockTurnipOnAdreno8xxPrefersTheDeclaredLoopWithBarriers)
+{
+	// "830v1" is the name Turnip reports on the 830.
+	for (const char* device_name : {"Adreno (TM) 830", "Adreno (TM) 830v1", "Turnip Adreno (TM) 830",
+			 "Adreno (TM) 840", "Adreno (TM) 825", "Adreno (TM) 829", "Adreno (TM) 810", "Adreno (TM) 850"})
+	{
+		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kStockTurnipDriverInfo);
+		EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno8xx) << device_name;
+		EXPECT_EQ(sel.driver.driver, MobileGpuDriver::MesaTurnip) << device_name;
+		EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel)) << device_name;
+		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+		EXPECT_FALSE(sel.driver.declared_loop_orders_overlap_on_request) << device_name;
+		// The workaround stays set; the road policy is where the preference outranks it.
+		EXPECT_TRUE(sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback)) << device_name;
+	}
+}
+
+// The Qualcomm driver is not on this road on any part, 8xx included.
+TEST(GSGpuDriverProfile, TheQualcommDriverOnAdreno8xxGetsNoPreference)
+{
+	for (const char* device_name : {"Adreno (TM) 830", "Adreno (TM) 840"})
+	{
+		for (const char* driver_info : {kStockTurnipDriverInfo, kFixedTurnipDriverInfo})
+		{
+			const GpuProfileSelection sel = ResolveAdrenoVKWithInfo(device_name, kQualcommProprietaryDriverId,
+				"Qualcomm", PackVulkanVersion(512, 800, 46), driver_info);
+			EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno8xx) << device_name;
+			EXPECT_EQ(sel.driver.driver, MobileGpuDriver::QualcommProprietary) << device_name;
+			EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel)) << device_name << " " << driver_info;
+			EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name << " " << driver_info;
+			EXPECT_TRUE(TakesTheRenderTargetCopyPath(sel)) << device_name << " " << driver_info;
+		}
+	}
+}
+
+// The declaration is a Vulkan pipeline flag and an image layout, so freedreno on an 8xx part under
+// OpenGL never takes it.
+TEST(GSGpuDriverProfile, TheAdreno8xxPreferenceDoesNotReachTheOpenGLPath)
+{
+	MobileDriverContext context;
+	context.api = MobileGpuApi::OpenGL;
+	context.driver_name = "Turnip Adreno (TM) 830";
+	context.api_version_string = "OpenGL ES 3.2 Mesa 27.0.0";
+
+	const GpuProfileSelection sel =
+		GpuProfileDetector::Resolve("auto", "freedreno", "Adreno (TM) 830", context);
+	EXPECT_EQ(sel.gpu.architecture, MobileGpuArchitecture::Adreno8xx);
+	EXPECT_FALSE(PrefersDeclaredLoopWithBarriers(sel));
 }
 
 // Only the 730 and up, and the 722. The a740 is the one part this was measured on. The table files
@@ -1240,6 +1293,30 @@ TEST(GSGpuDriverProfile, AGeneration2TurnipOnAdreno702To725MakesNoOrderingClaim)
 		const GpuProfileSelection sel = ResolveTurnipVK(device_name, kGen2TurnipDriverInfo);
 		EXPECT_EQ(sel.driver.declared_loop_fix_generation, 2u) << device_name;
 		EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name;
+	}
+}
+
+namespace
+{
+	// The build the 830 was run on.
+	constexpr const char* kAxfl3TurnipDriverInfo = "Mesa 27.0.0-devel (git-axfl3-004)";
+}
+
+// A tag of any generation leaves an 8xx part where stock Turnip puts it. The ordering claim needs the a7xx
+// half of the fix, which is a generation-2 change to a7xx code, so no generation earns it on an 8xx part;
+// the preference holds for each.
+TEST(GSGpuDriverProfile, ATaggedTurnipOnAdreno8xxGetsThePreferenceAndNotTheOrderingClaim)
+{
+	for (const char* driver_info : {kFixedTurnipDriverInfo, kGen2TurnipDriverInfo, kAxfl3TurnipDriverInfo})
+	{
+		for (const char* device_name : {"Adreno (TM) 830v1", "Adreno (TM) 840"})
+		{
+			const GpuProfileSelection sel = ResolveTurnipVK(device_name, driver_info);
+			EXPECT_GE(sel.driver.declared_loop_fix_generation, 1u) << device_name << " " << driver_info;
+			EXPECT_TRUE(PrefersDeclaredLoopWithBarriers(sel)) << device_name << " " << driver_info;
+			EXPECT_FALSE(OrdersDeclaredLoop(sel)) << device_name << " " << driver_info;
+			EXPECT_FALSE(sel.driver.declared_loop_orders_overlap_on_request) << device_name << " " << driver_info;
+		}
 	}
 }
 

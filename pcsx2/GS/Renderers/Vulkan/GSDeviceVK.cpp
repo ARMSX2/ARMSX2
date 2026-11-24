@@ -4401,7 +4401,7 @@ GSSelfReadRoadDecision GSDeviceVK::ResolveSelfReadRoad()
 	road_inputs.driver_orders_declared_loop = GetMobileDriverProfile().orders_declared_feedback_loop &&
 		(!order_on_request || m_optional_extensions.vk_ext_rasterization_order_attachment_access);
 	// The database saying this part belongs on the declared loop with our own barriers kept: Turnip on
-	// Adreno 730 and up and on the 722, where the copy road renders wrong.
+	// Adreno 730 and up, the 722 and every 8xx part, where the copy road renders wrong or costs passes.
 	road_inputs.driver_prefers_declared_loop_with_barriers =
 		GetMobileDriverProfile().prefers_declared_loop_with_barriers;
 	// Turnip on the Adreno 613: the copy road, with the destination-alpha draws alone in a declared loop.
@@ -4786,7 +4786,7 @@ void GSDeviceVK::LogResolvedFeatures(const GSSelfReadRoadDecision& road, bool de
 	if (GetMobileDriverProfile().prefers_declared_loop_with_barriers)
 	{
 		const bool in_effect = road.selected_by_driver_fact && road.road == GSSelfReadRoad::InPassBarrier;
-		Console.WriteLn("VK: driver rule: Turnip a7xx -- declared feedback loop with the per-draw "
+		Console.WriteLn("VK: driver rule: Turnip a7xx/a8xx -- declared feedback loop with the per-draw "
 						"barriers KEPT; %s.",
 			in_effect ? "in effect" : "NOT in effect, overridden here");
 	}

@@ -95,7 +95,7 @@ TEST_F(GSDateRoad, DriverOrderedDeclaredLoopReadsDestinationAlphaInThePass)
 	EXPECT_FALSE(m_device->m_require_full_barrier);
 }
 
-// The same declared loop with barriers kept (the a7xx preference, or a driver not known to order
+// The same declared loop with barriers kept (the barrier-kept preference, or a driver not known to order
 // one) keeps the stencil choice: there the barrier is real and stencil DATE is what saves it.
 TEST_F(GSDateRoad, BarrierOrderedDeclaredLoopKeepsStencil)
 {

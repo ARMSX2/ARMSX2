@@ -327,20 +327,35 @@ static u32 ParseFixGeneration(std::string_view driver_info)
 	return 0;
 }
 
-// The Adreno 7xx parts on which Turnip takes the declared feedback loop with our per-draw barriers
-// kept (MobileDriverProfile::prefers_declared_loop_with_barriers): the 730 and up, and the 722.
+// The Adreno parts on which Turnip takes the declared feedback loop with our per-draw barriers kept
+// (MobileDriverProfile::prefers_declared_loop_with_barriers): on 7xx the 730 and up and the 722, and
+// every 8xx part.
 //
-// Only the 740 and the 722 have been run. The 730 and 750 are in as the 740's neighbours in Mesa's
+// 7xx: only the 740 and the 722 have been run. The 730 and 750 are in as the 740's neighbours in Mesa's
 // freedreno table. The 722 (Snapdragon 7 Gen 4) is an a7xx generation 1 part derived from the 730, and
 // Turnip runs it through the same CHIP == A7XX paths as the 740. A pass that declares the loop is not
 // tiled, so the 722's smaller GMEM does not enter those draws. The road this rule replaces, the
 // render-target copy, draws primitives that overlap within one draw wrong on any part.
 //
+// 8xx: only the 830 (Snapdragon 8 Elite) has been run. On it the declared loop with our barriers draws
+// the same pixels as the copy road on all 22 dumps of a replay corpus, and cuts the render passes and
+// copies a frame (Sly 3 at 2x: 19 passes and 6 copies against 65 and 32; Stuntman at 2x: 18 and 7
+// against 860 and 432). That is CPU time on a part whose replay is limited by the GS thread: in
+// interleaved replays at 2x the GS thread took 0.29 ms less a frame on Sly 3 (2.9%) and 2.86 ms less on
+// Stuntman (29%), and the frame time moved with it. Those are dump replays on one device, not play.
+// The other 8xx parts run through the same a8xx code in Turnip, so the rule covers all of them and is
+// withdrawn for a part if a report shows it drawing wrong.
+//
 // Not in the list: the 702, which Mesa's freedreno table files as an a6xx-family part, and the 710,
 // 720 and 725. None have been run.
-static constexpr bool PrefersDeclaredLoopOnA7xx(u16 model)
+static constexpr bool PrefersDeclaredLoopWithBarriers(MobileGpuArchitecture architecture, u16 model)
 {
-	return model >= 730 || model == 722;
+	switch (architecture)
+	{
+		case MobileGpuArchitecture::Adreno7xx: return model >= 730 || model == 722;
+		case MobileGpuArchitecture::Adreno8xx: return true;
+		default: return false;
+	}
 }
 
 // The Adreno 6xx parts on which Turnip takes the barrier-kept declared loop for the destination-alpha
@@ -348,7 +363,7 @@ static constexpr bool PrefersDeclaredLoopOnA7xx(u16 model)
 // has been run. On the render-target copy road a destination-alpha draw that cannot ride a barrier
 // builds its stencil from the target in a pass of its own, so every such draw ends the pass twice:
 // Stuntman issues about 1,070 a frame, 2,170 passes against 18 with the loop. The loop for every
-// self-read (the a7xx preference) rendered Black, OutRun, Katamari and Shadow of the Colossus
+// self-read (the preference of the 7xx and 8xx parts) rendered Black, OutRun, Katamari and Shadow of the Colossus
 // differently from run to run on this part, with the barriers kept; the copy road was stable.
 //
 // Not in the list: the 610 and the other parts below 650, which have not been run on this road, and the
@@ -763,7 +778,7 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// run to run while the copy road is stable, so parts below 650 keep their barriers and copy
 	// road. Generation 2 adds the A7XX half (the per-overlap prim mode and the per-draw flush for a
 	// declared loop) and is trusted on the parts TrustsGeneration2OrderingOnA7xx names, the 730 and
-	// up. The 722 is on the a7xx road preference below but not here: without our barriers it renders
+	// up. The 722 is on the declared-loop preference below but not here: without our barriers it renders
 	// unstably. A Qualcomm driver cannot carry a Mesa git tag.
 	profile.declared_loop_fix_generation = ParseFixGeneration(context.driver_info);
 	const bool tagged_turnip_vk = (context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip);
@@ -778,15 +793,14 @@ MobileDriverProfile ResolveDriverProfile(const GpuProfileSelection& selection,
 	// primitives only for a pipeline that requests rasterization-order access.
 	profile.declared_loop_orders_overlap_on_request = tagged_turnip_vk && a7xx_fix && !a6xx_fix;
 
-	// The a7xx preference is about the part, not the build, so it needs no tag: on Adreno 740 the
-	// declared loop with our barriers is correct and stable where the copy road renders wrong.
-	// Limited to the parts PrefersDeclaredLoopOnA7xx names: the 740 and 722 have been run, and the 730
-	// and 750 are in as the 740's neighbours. The other 7xx parts have not been run (Mesa treats the
-	// 702 as a6xx family), so they keep the copy road.
-	profile.prefers_declared_loop_with_barriers = (context.api == MobileGpuApi::Vulkan) &&
-		                                          (profile.driver == MobileGpuDriver::MesaTurnip) &&
-		                                          (selection.gpu.architecture == MobileGpuArchitecture::Adreno7xx) &&
-		                                          PrefersDeclaredLoopOnA7xx(selection.gpu.model_number);
+	// The a7xx and a8xx preference is about the part, not the build, so it needs no tag: on Adreno 740
+	// the declared loop with our barriers is correct and stable where the copy road renders wrong, and on
+	// the 830 it draws what the copy road draws with fewer passes. Limited to the parts
+	// PrefersDeclaredLoopWithBarriers names. It claims no ordering: the 8xx parts get no
+	// orders_declared_feedback_loop, since the generation-2 half of the driver fix is a7xx code.
+	profile.prefers_declared_loop_with_barriers =
+		(context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
+		PrefersDeclaredLoopWithBarriers(selection.gpu.architecture, selection.gpu.model_number);
 	profile.prefers_declared_loop_for_destination_alpha =
 		(context.api == MobileGpuApi::Vulkan) && (profile.driver == MobileGpuDriver::MesaTurnip) &&
 		(selection.gpu.architecture == MobileGpuArchitecture::Adreno6xx) &&

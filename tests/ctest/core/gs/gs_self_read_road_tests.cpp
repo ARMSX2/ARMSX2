@@ -21,6 +21,7 @@
 // Rides gs_vertex_tests -- the policy is header-only constexpr, so it needs no extra linkage.
 
 #include "Config.h"
+#include "GS/Renderers/Common/GSGPUProfile.h"
 #include "GS/Renderers/Common/GSMeasurementOverrides.h"
 #include "GS/Renderers/Common/GSSelfReadRoadPolicy.h"
 
@@ -458,7 +459,7 @@ TEST(GSSelfReadRoad, TheBannerSaysWhichEntranceWasUsed)
 		"in-pass, barrier-ordered, declared feedback loop");
 }
 
-// --- the a7xx preference --------------------------------------------------------------------
+// --- the barrier-kept preference --------------------------------------------------------------------
 //
 // The second driver fact, and the one that fixes wrong pixels rather than slow ones. On an Adreno
 // 740 the copy road the database puts every Turnip part on draws The Godfather a third wrong
@@ -669,6 +670,94 @@ TEST(GSSelfReadRoad, TheBannerSeparatesTheBarrierPreferenceFromTheOtherEntrances
 	EXPECT_STRNE(by_preference, GSSelfReadRoadName(DecideSelfReadRoad(Desktop())));
 	EXPECT_STREQ(GSSelfReadRoadName(DecideSelfReadRoad(Desktop())),
 		"in-pass, barrier-ordered, declared feedback loop");
+}
+
+// --- the Adreno 8xx parts --------------------------------------------------------------------
+//
+// The preference reaches the 8xx parts through the driver database, so these tests start from a device
+// name and driver id, resolve the profile, and feed its answers into the road decision the way
+// GSDeviceVK::CheckFeatures does.
+namespace
+{
+	constexpr u32 kQualcommVendorId = 0x5143u;
+	constexpr u32 kQualcommProprietaryId = 8;
+	constexpr u32 kMesaTurnipId = 18;
+
+	// Every extension is available whichever driver the profile names, so only the profile's answers
+	// decide the road.
+	GSSelfReadRoadDecision RoadFromTheDatabase(
+		const char* device_name, bool turnip, const char* driver_info = "Mesa 27.0.0-devel")
+	{
+		MobileDriverContext context;
+		context.api = MobileGpuApi::Vulkan;
+		context.vendor_id = kQualcommVendorId;
+		context.driver_id = turnip ? kMesaTurnipId : kQualcommProprietaryId;
+		context.driver_version = turnip ? (27u << 22) : (0x80000000u | (800u << 12) | 46u);
+		context.driver_name = turnip ? "turnip Mesa driver" : "Qualcomm Technologies Inc. Adreno Vulkan Driver";
+		context.driver_info = driver_info;
+		const GpuProfileSelection sel =
+			GpuProfileDetector::Resolve("auto", std::string_view(), device_name, context);
+
+		GSSelfReadRoadInputs in;
+		in.in_tile_read_available = true;
+		in.layout_road_available = true;
+		in.roaa_available = true;
+		in.rt_self_read_is_broken = sel.driver.UsesWorkaround(DriverWorkaround::UseRenderTargetCopyForFeedback);
+		in.driver_orders_declared_loop = sel.driver.orders_declared_feedback_loop;
+		in.driver_prefers_declared_loop_with_barriers = sel.driver.prefers_declared_loop_with_barriers;
+		return DecideSelfReadRoad(in);
+	}
+} // namespace
+
+// Turnip on the Adreno 830 and the other 8xx parts takes the declared loop with our barriers kept and
+// takes no copy, with no key set: the road of the 7xx parts, bit for bit.
+TEST(GSSelfReadRoad, TurnipOnAdreno8xxTakesTheBarrierKeptDeclaredLoop)
+{
+	const GSSelfReadRoadDecision a740 = RoadFromTheDatabase("Adreno (TM) 740", true);
+	for (const char* device_name : {"Adreno (TM) 830", "Adreno (TM) 830v1", "Adreno (TM) 840", "Adreno (TM) 810"})
+	{
+		const GSSelfReadRoadDecision d = RoadFromTheDatabase(device_name, true);
+		EXPECT_EQ(d.road, GSSelfReadRoad::InPassBarrier) << device_name;
+		EXPECT_EQ(d.spelling, GSSelfReadSpelling::FeedbackLoopLayout) << device_name;
+		EXPECT_TRUE(d.texture_barrier) << device_name;
+		EXPECT_FALSE(d.in_tile_read) << device_name;
+		EXPECT_TRUE(d.loop_declared) << device_name;
+		EXPECT_TRUE(d.force_feedback_loop_layout) << device_name;
+		EXPECT_TRUE(d.selected_by_driver_fact) << device_name;
+		// Barriers do the ordering, as on the 7xx parts.
+		EXPECT_FALSE(d.orders_overlapping_prims) << device_name;
+
+		EXPECT_EQ(d.road, a740.road) << device_name;
+		EXPECT_EQ(d.spelling, a740.spelling) << device_name;
+		EXPECT_EQ(d.texture_barrier, a740.texture_barrier) << device_name;
+		EXPECT_EQ(d.in_tile_read, a740.in_tile_read) << device_name;
+		EXPECT_STREQ(GSSelfReadRoadName(d), GSSelfReadRoadName(a740)) << device_name;
+		EXPECT_STREQ(GSSelfReadRoadName(d), "in-pass, barrier-ordered, declared feedback loop (driver fact)")
+			<< device_name;
+	}
+}
+
+// A tagged build on the 830 lands on the same road: no generation claims ordering there.
+TEST(GSSelfReadRoad, ATaggedTurnipOnAdreno830TakesTheSameRoad)
+{
+	const GSSelfReadRoadDecision stock = RoadFromTheDatabase("Adreno (TM) 830v1", true);
+	const GSSelfReadRoadDecision tagged =
+		RoadFromTheDatabase("Adreno (TM) 830v1", true, "Mesa 27.0.0-devel (git-axfl3-004)");
+	EXPECT_EQ(tagged.road, GSSelfReadRoad::InPassBarrier);
+	EXPECT_EQ(tagged.road, stock.road);
+	EXPECT_EQ(tagged.spelling, stock.spelling);
+	EXPECT_EQ(tagged.texture_barrier, stock.texture_barrier);
+	EXPECT_FALSE(tagged.orders_overlapping_prims);
+}
+
+// The Qualcomm driver on the 830 stays on the copy road even with the loop extensions available: it gets no
+// preference from the database, and the copy-road workaround decides.
+TEST(GSSelfReadRoad, TheQualcommDriverOnAdreno830StaysOnTheCopyRoad)
+{
+	const GSSelfReadRoadDecision d = RoadFromTheDatabase("Adreno (TM) 830", false, "");
+	EXPECT_EQ(d.road, GSSelfReadRoad::Copy);
+	EXPECT_FALSE(d.loop_declared);
+	EXPECT_FALSE(d.selected_by_driver_fact);
 }
 
 // --- the experiment arm is a harness global, not a setting ---------------------------------------

@@ -278,11 +278,13 @@ struct MobileDriverProfile
 	/// our barriers give the ordering. Weaker than orders_declared_feedback_loop, which lets the
 	/// barriers go and wins if both are set.
 	///
-	/// True for Turnip on Adreno 730 and up and on the 722, where the copy road renders wrong. The
-	/// barrier-less declared road races on a7xx under stock Turnip, which never emits the ordering
-	/// state there; a generation-2 build does, and on the 730 and up orders_declared_feedback_loop is
-	/// set as well and wins. On the 722 it is not set: without our barriers that part renders a
-	/// different picture on each run, so it keeps them.
+	/// True for Turnip on Adreno 730 and up, on the 722 and on every 8xx part. On the 7xx parts the copy
+	/// road renders wrong; on the 830, the one 8xx part run, it draws the same pixels with several times
+	/// the passes and copies. The barrier-less declared road races on a7xx under stock Turnip, which
+	/// never emits the ordering state there; a generation-2 build does, and on the 730 and up
+	/// orders_declared_feedback_loop is set as well and wins. On the 722 it is not set: without our
+	/// barriers that part renders a different picture on each run, so it keeps them. On an 8xx part this
+	/// is set and orders_declared_feedback_loop never is: no build carries the ordering fix for 8xx.
 	bool prefers_declared_loop_with_barriers = false;
 
 	/// Only the destination-alpha draws that the stencil-one mode would otherwise serve with a stencil
