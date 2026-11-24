@@ -130,6 +130,7 @@ set(pcsx2Sources
 	R3000AInterpreter.cpp
 	R3000AOpcodeTables.cpp
 	R5900.cpp
+	R5900IssueModel.cpp
 	R5900OpcodeImpl.cpp
 	R5900OpcodeTables.cpp
 	SaveState.cpp
@@ -239,6 +240,7 @@ set(pcsx2Headers
 	PrecompiledHeader.h
 	R3000A.h
 	R5900.h
+	R5900IssueModel.h
 	R5900OpcodeTables.h
 	SaveState.h
 	SaveStateLegacy.h
