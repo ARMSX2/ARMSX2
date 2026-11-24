@@ -41,7 +41,7 @@ namespace mVUChunkPack
 	// Tiered bodies and "no region" marks made from the pack for one routine:
 	// what one head keeps (kMaxBodiesPerHead, vuaot/microVU_VuAot-arm64.inl),
 	// the ones stored last. The records past it leave the pack.
-	static constexpr size_t kMaxTieredPerRoot = 8;
+	static constexpr size_t kMaxTieredPerRoot = 32;
 
 	// The routine's head is settled (mVUChunkHead::settled).
 	static constexpr u32 kSettledMagic = 0x54455356u; // 'VSET'
