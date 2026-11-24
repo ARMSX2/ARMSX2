@@ -251,9 +251,15 @@ void recBC1F()
 		SaveBranchState();
 		recompileNextInstruction(true, false);
 	}
+	// Both arms charge the full accrual: SetBranchImm's scaleblockcycles_clear
+	// consumes s_nBlockCycles, and the swapped path has no LoadBranchState to
+	// restore it.
+	const u32 fork_cycles = s_nBlockCycles;
 	SetBranchImm(branchTo);
 
 	recBindBC1Label();
+	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{
@@ -276,9 +282,15 @@ void recBC1T()
 		SaveBranchState();
 		recompileNextInstruction(true, false);
 	}
+	// Both arms charge the full accrual: SetBranchImm's scaleblockcycles_clear
+	// consumes s_nBlockCycles, and the swapped path has no LoadBranchState to
+	// restore it.
+	const u32 fork_cycles = s_nBlockCycles;
 	SetBranchImm(branchTo);
 
 	recBindBC1Label();
+	s_nBlockCycles = fork_cycles;
+	recEeIssueForkRestored();
 
 	if (!swap)
 	{

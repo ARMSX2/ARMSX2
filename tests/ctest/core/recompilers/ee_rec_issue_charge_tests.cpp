@@ -421,3 +421,30 @@ TEST(EeRecIssueCharge, ChargeScalingHookScalesBothEngines)
 	EXPECT_NEAR(static_cast<double>(jit), static_cast<double>(want), 2.0) << "base " << base;
 	EXPECT_NEAR(static_cast<double>(interp), static_cast<double>(want), 2.0) << "base " << base;
 }
+
+// A coprocessor branch whose delay slot was swapped in front of it: the
+// not-taken arm charges its path as fully as the taken one.
+TEST(EeRecIssueCharge, SwappedCopBranchNotTakenChargesItsPath)
+{
+	const ScopedClean clean;
+	const std::vector<u32> prog = {
+		kRead0,                                // 0
+		ADDIU(reg::t2, reg::zero, 1),          // 1
+		ADDIU(reg::t3, reg::t2, 1),            // 2
+		ADDIU(reg::t4, reg::t3, 1),            // 3
+		ee::BC1T(Off(4, 9)),                   // 4: condition clear, not taken
+		NOP,                                   // 5: swapped in front of the branch
+		ADDIU(reg::t5, reg::t4, 1),            // 6
+		BEQ(reg::zero, reg::zero, Off(7, 10)), // 7
+		NOP,                                   // 8
+		kFiller,                               // 9
+		kRead1,                                // 10
+	};
+	EeRecTestHarness h;
+	h.SetCp0(kCp0Status, kStatusCu0 | (1u << 29)); // COP1 usable
+	h.SetCp0(kCp0Config, kConfigDie);
+	h.SetFcr31(0);
+	h.LoadProgram(prog);
+	h.Run();
+	ExpectCharged(h, ModelCost(prog, {{Range(0, 5), Exit::NotTaken}, {Range(6, 8), Exit::Taken}}));
+}

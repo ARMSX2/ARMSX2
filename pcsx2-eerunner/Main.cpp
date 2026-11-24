@@ -1664,6 +1664,7 @@ bool EERunner::ParseCommandLineArgs(int argc, char* argv[], VMBootParameters& pa
 			{
 #ifdef PCSX2_RECOMPILER_TESTS
 				R5900::Issue::g_testExtraPer1024 = static_cast<u32>(std::strtoul(argv[++i], nullptr, 10));
+				continue;
 #else
 				Console.Error("--ee-charge-extra-per1024 needs a build with the recompiler test hooks.");
 				return false;
