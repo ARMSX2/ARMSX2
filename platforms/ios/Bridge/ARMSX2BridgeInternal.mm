@@ -103,7 +103,7 @@ BOOL ARMSX2GetCurrentSaveStateIdentity(std::string* serial, u32* crc)
         *serial = currentSerial;
     if (crc)
         *crc = currentCRC;
-	return YES;
+    return YES;
 }
 
 /// A deleted state waits under this name until its undo runs out. No lookup matches it.
@@ -114,226 +114,226 @@ std::string ARMSX2HeldPath(const std::string& path)
 
 static BOOL ARMSX2IsPathInsideDirectory(NSString* path, NSString* directory)
 {
-	if (path.length == 0 || directory.length == 0)
-		return NO;
+    if (path.length == 0 || directory.length == 0)
+        return NO;
 
-	NSString* normalizedPath = path.stringByStandardizingPath;
-	NSString* normalizedDirectory = directory.stringByStandardizingPath;
-	if ([normalizedPath isEqualToString:normalizedDirectory])
-		return YES;
+    NSString* normalizedPath = path.stringByStandardizingPath;
+    NSString* normalizedDirectory = directory.stringByStandardizingPath;
+    if ([normalizedPath isEqualToString:normalizedDirectory])
+        return YES;
 
-	NSString* prefix = [normalizedDirectory hasSuffix:@"/"] ? normalizedDirectory : [normalizedDirectory stringByAppendingString:@"/"];
-	return [normalizedPath hasPrefix:prefix];
+    NSString* prefix = [normalizedDirectory hasSuffix:@"/"] ? normalizedDirectory : [normalizedDirectory stringByAppendingString:@"/"];
+    return [normalizedPath hasPrefix:prefix];
 }
 
 static NSMutableArray<NSURL*>* ARMSX2ActiveExternalGameAccessURLs()
 {
-	static NSMutableArray<NSURL*>* activeAccess = nil;
-	static dispatch_once_t onceToken;
-	dispatch_once(&onceToken, ^{
-		activeAccess = [[NSMutableArray alloc] init];
-	});
-	return activeAccess;
+    static NSMutableArray<NSURL*>* activeAccess = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        activeAccess = [[NSMutableArray alloc] init];
+    });
+    return activeAccess;
 }
 
 BOOL ARMSX2ExternalGameAccessAlreadyActive(NSString* path)
 {
-	NSMutableArray<NSURL*>* activeAccess = ARMSX2ActiveExternalGameAccessURLs();
-	@synchronized(activeAccess) {
-		for (NSURL* activeURL in activeAccess) {
-			if (![activeURL isKindOfClass:NSURL.class])
-				continue;
+    NSMutableArray<NSURL*>* activeAccess = ARMSX2ActiveExternalGameAccessURLs();
+    @synchronized(activeAccess) {
+        for (NSURL* activeURL in activeAccess) {
+            if (![activeURL isKindOfClass:NSURL.class])
+                continue;
 
-			NSString* activePath = activeURL.path;
-			if (activePath.length > 0 && ARMSX2IsPathInsideDirectory(path, activePath))
-				return YES;
-		}
-	}
+            NSString* activePath = activeURL.path;
+            if (activePath.length > 0 && ARMSX2IsPathInsideDirectory(path, activePath))
+                return YES;
+        }
+    }
 
-	return NO;
+    return NO;
 }
 
 static void ARMSX2RememberExternalGameAccess(NSURL* url)
 {
-	if (!url)
-		return;
+    if (!url)
+        return;
 
-	NSString* normalizedPath = url.path.stringByStandardizingPath;
-	if (normalizedPath.length == 0)
-		return;
+    NSString* normalizedPath = url.path.stringByStandardizingPath;
+    if (normalizedPath.length == 0)
+        return;
 
-	NSMutableArray<NSURL*>* activeAccess = ARMSX2ActiveExternalGameAccessURLs();
-	@synchronized(activeAccess) {
-		for (NSURL* activeURL in activeAccess) {
-			if (![activeURL isKindOfClass:NSURL.class])
-				continue;
-			if ([activeURL.path.stringByStandardizingPath isEqualToString:normalizedPath])
-				return;
-		}
+    NSMutableArray<NSURL*>* activeAccess = ARMSX2ActiveExternalGameAccessURLs();
+    @synchronized(activeAccess) {
+        for (NSURL* activeURL in activeAccess) {
+            if (![activeURL isKindOfClass:NSURL.class])
+                continue;
+            if ([activeURL.path.stringByStandardizingPath isEqualToString:normalizedPath])
+                return;
+        }
 
-		[activeAccess addObject:url];
-	}
+        [activeAccess addObject:url];
+    }
 }
 
 NSArray<NSDictionary*>* ARMSX2ExternalGameDirectoryRecords()
 {
-	id rawRecords = [[NSUserDefaults standardUserDefaults] objectForKey:ARMSX2iOSExternalGameDirectories];
-	if (![rawRecords isKindOfClass:NSArray.class]) {
-		if (rawRecords)
-			NSLog(@"[ARMSX2Bridge] External game folder records ignored unexpectedClass=%@", [rawRecords class]);
-		return @[];
-	}
+    id rawRecords = [[NSUserDefaults standardUserDefaults] objectForKey:ARMSX2iOSExternalGameDirectories];
+    if (![rawRecords isKindOfClass:NSArray.class]) {
+        if (rawRecords)
+            NSLog(@"[ARMSX2Bridge] External game folder records ignored unexpectedClass=%@", [rawRecords class]);
+        return @[];
+    }
 
-	NSMutableArray<NSDictionary*>* records = [NSMutableArray array];
-	for (id rawRecord in (NSArray*)rawRecords) {
-		if ([rawRecord isKindOfClass:NSDictionary.class])
-			[records addObject:(NSDictionary*)rawRecord];
-		else
-			NSLog(@"[ARMSX2Bridge] External game folder record ignored unexpectedClass=%@", [rawRecord class]);
-	}
+    NSMutableArray<NSDictionary*>* records = [NSMutableArray array];
+    for (id rawRecord in (NSArray*)rawRecords) {
+        if ([rawRecord isKindOfClass:NSDictionary.class])
+            [records addObject:(NSDictionary*)rawRecord];
+        else
+            NSLog(@"[ARMSX2Bridge] External game folder record ignored unexpectedClass=%@", [rawRecord class]);
+    }
 
-	return records;
+    return records;
 }
 
 BOOL ARMSX2ExternalGameRecordIsDirectory(NSDictionary* record, NSURL* url)
 {
-	id isDirectoryValue = record[ARMSX2GameLibraryKeyIsDirectory];
-	if ([isDirectoryValue isKindOfClass:NSNumber.class])
-		return [(NSNumber*)isDirectoryValue boolValue];
+    id isDirectoryValue = record[ARMSX2GameLibraryKeyIsDirectory];
+    if ([isDirectoryValue isKindOfClass:NSNumber.class])
+        return [(NSNumber*)isDirectoryValue boolValue];
 
-	NSString* kind = [record[ARMSX2GameLibraryKeyKind] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyKind] : nil;
-	if ([kind isEqualToString:@"file"])
-		return NO;
-	if ([kind isEqualToString:@"folder"])
-		return YES;
+    NSString* kind = [record[ARMSX2GameLibraryKeyKind] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyKind] : nil;
+    if ([kind isEqualToString:@"file"])
+        return NO;
+    if ([kind isEqualToString:@"folder"])
+        return YES;
 
-	NSNumber* isDirectory = nil;
-	if ([url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil])
-		return isDirectory.boolValue;
+    NSNumber* isDirectory = nil;
+    if ([url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil])
+        return isDirectory.boolValue;
 
-	return !ARMSX2IsSupportedGameImageAtPath(url.path);
+    return !ARMSX2IsSupportedGameImageAtPath(url.path);
 }
 
 BOOL ARMSX2ExternalGameRecordIsCloudProvider(NSDictionary* record, NSURL* url)
 {
-	NSString* path = (url.path ?: @"").lowercaseString;
-	NSString* displayName = [record[ARMSX2GameLibraryKeyDisplayName] isKindOfClass:NSString.class] ? [(NSString*)record[ARMSX2GameLibraryKeyDisplayName] lowercaseString] : @"";
-	return [path containsString:@"google"] || [displayName containsString:@"google"];
+    NSString* path = (url.path ?: @"").lowercaseString;
+    NSString* displayName = [record[ARMSX2GameLibraryKeyDisplayName] isKindOfClass:NSString.class] ? [(NSString*)record[ARMSX2GameLibraryKeyDisplayName] lowercaseString] : @"";
+    return [path containsString:@"google"] || [displayName containsString:@"google"];
 }
 
 NSURL* ARMSX2ResolveExternalGameDirectoryRecord(NSDictionary* record)
 {
-	NSString* path = [record[ARMSX2GameLibraryKeyPath] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyPath] : nil;
-	NSData* bookmarkData = [record[ARMSX2GameLibraryKeyBookmarkData] isKindOfClass:NSData.class] ? record[ARMSX2GameLibraryKeyBookmarkData] : nil;
-	if (bookmarkData.length > 0) {
-		BOOL stale = NO;
-		NSError* error = nil;
-		NSURL* url = [NSURL URLByResolvingBookmarkData:bookmarkData
-		                                       options:0
-		                                 relativeToURL:nil
-		                           bookmarkDataIsStale:&stale
-		                                         error:&error];
-		if (url) {
-			if (stale)
-				NSLog(@"[ARMSX2Bridge] External game folder bookmark is stale path=%@", url.path);
-			return url;
-		}
+    NSString* path = [record[ARMSX2GameLibraryKeyPath] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyPath] : nil;
+    NSData* bookmarkData = [record[ARMSX2GameLibraryKeyBookmarkData] isKindOfClass:NSData.class] ? record[ARMSX2GameLibraryKeyBookmarkData] : nil;
+    if (bookmarkData.length > 0) {
+        BOOL stale = NO;
+        NSError* error = nil;
+        NSURL* url = [NSURL URLByResolvingBookmarkData:bookmarkData
+                                               options:0
+                                         relativeToURL:nil
+                                   bookmarkDataIsStale:&stale
+                                                 error:&error];
+        if (url) {
+            if (stale)
+                NSLog(@"[ARMSX2Bridge] External game folder bookmark is stale path=%@", url.path);
+            return url;
+        }
 
-		NSLog(@"[ARMSX2Bridge] External game folder bookmark failed path=%@ error=%@",
-		      path ?: @"", error.localizedDescription ?: @"");
-	}
+        NSLog(@"[ARMSX2Bridge] External game folder bookmark failed path=%@ error=%@",
+              path ?: @"", error.localizedDescription ?: @"");
+    }
 
-	if (path.length > 0) {
-		BOOL isDirectory = YES;
-		id isDirectoryValue = record[ARMSX2GameLibraryKeyIsDirectory];
-		NSString* kind = [record[ARMSX2GameLibraryKeyKind] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyKind] : nil;
-		if ([isDirectoryValue isKindOfClass:NSNumber.class])
-			isDirectory = [(NSNumber*)isDirectoryValue boolValue];
-		else if ([kind isEqualToString:@"file"])
-			isDirectory = NO;
-		return [NSURL fileURLWithPath:path isDirectory:isDirectory];
-	}
+    if (path.length > 0) {
+        BOOL isDirectory = YES;
+        id isDirectoryValue = record[ARMSX2GameLibraryKeyIsDirectory];
+        NSString* kind = [record[ARMSX2GameLibraryKeyKind] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyKind] : nil;
+        if ([isDirectoryValue isKindOfClass:NSNumber.class])
+            isDirectory = [(NSNumber*)isDirectoryValue boolValue];
+        else if ([kind isEqualToString:@"file"])
+            isDirectory = NO;
+        return [NSURL fileURLWithPath:path isDirectory:isDirectory];
+    }
 
-	return nil;
+    return nil;
 }
 
 static BOOL ARMSX2StartExternalGameDirectoryAccessForPath(NSString* path)
 {
-	if (path.length == 0 || !path.isAbsolutePath)
-		return NO;
+    if (path.length == 0 || !path.isAbsolutePath)
+        return NO;
 
-	if (ARMSX2ExternalGameAccessAlreadyActive(path))
-		return YES;
+    if (ARMSX2ExternalGameAccessAlreadyActive(path))
+        return YES;
 
-	for (NSDictionary* record in ARMSX2ExternalGameDirectoryRecords()) {
-		NSURL* directoryURL = ARMSX2ResolveExternalGameDirectoryRecord(record);
-		if (!directoryURL)
-			continue;
-		if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL))
-			continue;
+    for (NSDictionary* record in ARMSX2ExternalGameDirectoryRecords()) {
+        NSURL* directoryURL = ARMSX2ResolveExternalGameDirectoryRecord(record);
+        if (!directoryURL)
+            continue;
+        if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL))
+            continue;
 
-		BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
-		NSString* normalizedRecordPath = directoryURL.path.stringByStandardizingPath;
-		NSString* normalizedPath = path.stringByStandardizingPath;
-		BOOL matches = isDirectory ? ARMSX2IsPathInsideDirectory(path, directoryURL.path) : [normalizedPath isEqualToString:normalizedRecordPath];
-		if (!matches)
-			continue;
+        BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
+        NSString* normalizedRecordPath = directoryURL.path.stringByStandardizingPath;
+        NSString* normalizedPath = path.stringByStandardizingPath;
+        BOOL matches = isDirectory ? ARMSX2IsPathInsideDirectory(path, directoryURL.path) : [normalizedPath isEqualToString:normalizedRecordPath];
+        if (!matches)
+            continue;
 
-		BOOL granted = [directoryURL startAccessingSecurityScopedResource];
-		if (granted)
-			ARMSX2RememberExternalGameAccess(directoryURL);
-		else
-			NSLog(@"[ARMSX2Bridge] External game %@ access not granted path=%@", isDirectory ? @"folder" : @"file", directoryURL.path);
-		return granted;
-	}
+        BOOL granted = [directoryURL startAccessingSecurityScopedResource];
+        if (granted)
+            ARMSX2RememberExternalGameAccess(directoryURL);
+        else
+            NSLog(@"[ARMSX2Bridge] External game %@ access not granted path=%@", isDirectory ? @"folder" : @"file", directoryURL.path);
+        return granted;
+    }
 
-	return NO;
+    return NO;
 }
 
 BOOL ARMSX2StartExternalGameDirectoryAccessForPathSafe(NSString* path)
 {
-	@try {
-		return ARMSX2StartExternalGameDirectoryAccessForPath(path);
-	} @catch (NSException* exception) {
-		NSLog(@"[ARMSX2Bridge] External game folder access exception path=%@ name=%@ reason=%@",
-		      path ?: @"", exception.name ?: @"", exception.reason ?: @"");
-		return NO;
-	}
+    @try {
+        return ARMSX2StartExternalGameDirectoryAccessForPath(path);
+    } @catch (NSException* exception) {
+        NSLog(@"[ARMSX2Bridge] External game folder access exception path=%@ name=%@ reason=%@",
+              path ?: @"", exception.name ?: @"", exception.reason ?: @"");
+        return NO;
+    }
 }
 
 BOOL ARMSX2IsSupportedGameImageAtPath(NSString* path)
 {
-	NSString* ext = path.pathExtension.lowercaseString;
-	if ([ext isEqualToString:@"iso"] || [ext isEqualToString:@"img"] || [ext isEqualToString:@"chd"] ||
-	    [ext isEqualToString:@"cso"] || [ext isEqualToString:@"zso"] || [ext isEqualToString:@"gz"] ||
-	    [ext isEqualToString:@"elf"])
-		return YES;
+    NSString* ext = path.pathExtension.lowercaseString;
+    if ([ext isEqualToString:@"iso"] || [ext isEqualToString:@"img"] || [ext isEqualToString:@"chd"] ||
+        [ext isEqualToString:@"cso"] || [ext isEqualToString:@"zso"] || [ext isEqualToString:@"gz"] ||
+        [ext isEqualToString:@"elf"])
+        return YES;
 
-	if ([ext isEqualToString:@"bin"]) {
-		NSDictionary* attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
-		return [attrs fileSize] > 50 * 1024 * 1024;
-	}
+    if ([ext isEqualToString:@"bin"]) {
+        NSDictionary* attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+        return [attrs fileSize] > 50 * 1024 * 1024;
+    }
 
-	return NO;
+    return NO;
 }
 
 NSString* ARMSX2ResolveISOPath(NSString* isoName)
 {
-	if (isoName.length == 0)
-		return nil;
+    if (isoName.length == 0)
+        return nil;
 
-	NSFileManager* fm = [NSFileManager defaultManager];
-	if (isoName.isAbsolutePath) {
-		if ([fm fileExistsAtPath:isoName])
-			return isoName;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    if (isoName.isAbsolutePath) {
+        if ([fm fileExistsAtPath:isoName])
+            return isoName;
 
-		if (ARMSX2StartExternalGameDirectoryAccessForPathSafe(isoName) && [fm fileExistsAtPath:isoName])
-			return isoName;
-	}
+        if (ARMSX2StartExternalGameDirectoryAccessForPathSafe(isoName) && [fm fileExistsAtPath:isoName])
+            return isoName;
+    }
 
-	NSString* isoPath = [[ARMSX2Bridge isoDirectory] stringByAppendingPathComponent:isoName];
-	if ([fm fileExistsAtPath:isoPath])
-		return isoPath;
+    NSString* isoPath = [[ARMSX2Bridge isoDirectory] stringByAppendingPathComponent:isoName];
+    if ([fm fileExistsAtPath:isoPath])
+        return isoPath;
 
     NSString* docsPath = [[ARMSX2Bridge documentsDirectory] stringByAppendingPathComponent:isoName];
     if ([fm fileExistsAtPath:docsPath])

@@ -379,5 +379,5 @@ private struct RunningStatusText: View {
                     .combined(with: .offset(x: -8))
             )
         }
-	}
+    }
 }

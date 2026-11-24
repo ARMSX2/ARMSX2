@@ -6,32 +6,32 @@ import PhotosUI
 import UIKit
 
 extension GameLibraryControllerCoordinator {
-	func presentMenuPanel(_ action: @escaping () -> Void) {
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-			action()
-		}
-	}
+    func presentMenuPanel(_ action: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            action()
+        }
+    }
 
-	func open(
+    func open(
         _ game: ISOEntry,
         allowsAutomaticSkinPrompt: Bool = true
     ) {
-		// A touch long-press shares the card's gesture arena. Once the unified
-		// context surface owns this game, ignore the Button release from that same
-		// press instead of launching underneath the menu.
-		guard controllerContextMenuState.gameID != game.id else { return }
-		MenuAudioPackManager.shared.suppressPendingGenericActivation()
-		if library.isRunning(game) {
-			session.returnToGame()
-			return
-		}
+        // A touch long-press shares the card's gesture arena. Once the unified
+        // context surface owns this game, ignore the Button release from that same
+        // press instead of launching underneath the menu.
+        guard controllerContextMenuState.gameID != game.id else { return }
+        MenuAudioPackManager.shared.suppressPendingGenericActivation()
+        if library.isRunning(game) {
+            session.returnToGame()
+            return
+        }
 
-		guard ARMSX2Bridge.canResolveISO(game.bootName) else {
-			gameActionTitle = settings.localized("Game Not Found")
-			gameActionMessage = settings.localized("This game file is no longer available. Refresh the library or import it again.")
-			library.loadGames()
-			return
-		}
+        guard ARMSX2Bridge.canResolveISO(game.bootName) else {
+            gameActionTitle = settings.localized("Game Not Found")
+            gameActionMessage = settings.localized("This game file is no longer available. Refresh the library or import it again.")
+            library.loadGames()
+            return
+        }
 
         let transition = makeGameplayLaunchTransition(for: game)
         let automaticSkinOptions = allowsAutomaticSkinPrompt
@@ -51,7 +51,7 @@ extension GameLibraryControllerCoordinator {
         }
 
         continueGameLaunch(game, transition: transition)
-	}
+    }
 
     private func continueGameLaunch(
         _ game: ISOEntry,
@@ -430,8 +430,8 @@ extension GameLibraryControllerCoordinator {
         }
     }
 
-	func releaseLibraryResourcesForGameplay() {
-		coverFlowPreheater.cancel()
+    func releaseLibraryResourcesForGameplay() {
+        coverFlowPreheater.cancel()
         nowRunningRemovalResetTask?.cancel()
         nowRunningRemovalResetTask = nil
         favoriteAnimationValues.removeAll(keepingCapacity: false)
@@ -442,7 +442,7 @@ extension GameLibraryControllerCoordinator {
         nowRunningStatusOpacity = 1
         gameplayLaunchCardRegistry.removeAll()
         library.releaseLibraryResourcesForGameplay()
-		}
+        }
 
     func scheduleStopRunningGame() {
         showStopAlert = false
@@ -517,8 +517,8 @@ extension GameLibraryControllerCoordinator {
         }
     }
 
-	@discardableResult
-	func toggleFavorite(
+    @discardableResult
+    func toggleFavorite(
         _ game: ISOEntry,
         playsSelectionFeedback: Bool = true
     ) -> Bool {
@@ -542,30 +542,30 @@ extension GameLibraryControllerCoordinator {
             )
         }
 
-		if playsSelectionFeedback {
-			UISelectionFeedbackGenerator().selectionChanged()
-		}
-		return updatedValue
-	}
+        if playsSelectionFeedback {
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        return updatedValue
+    }
 
-	func copyLaunchLink(_ game: ISOEntry) {
-		let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
-		UIPasteboard.general.string = link
-		presentMenuPanel { [self] in
-			gameActionTitle = "Launch Link Copied"
-			gameActionMessage = link
-		}
-	}
+    func copyLaunchLink(_ game: ISOEntry) {
+        let link = ARMSX2DeepLinkHandler.launchURL(forISO: game.name)
+        UIPasteboard.general.string = link
+        presentMenuPanel { [self] in
+            gameActionTitle = "Launch Link Copied"
+            gameActionMessage = link
+        }
+    }
 
-	func clearGameCache(_ game: ISOEntry) {
-		(gameActionTitle, gameActionMessage) = library.clearGameCache(game)
-	}
+    func clearGameCache(_ game: ISOEntry) {
+        (gameActionTitle, gameActionMessage) = library.clearGameCache(game)
+    }
 
-	func deleteGameData(_ game: ISOEntry) {
-		(gameActionTitle, gameActionMessage) = library.deleteGameData(game)
-	}
+    func deleteGameData(_ game: ISOEntry) {
+        (gameActionTitle, gameActionMessage) = library.deleteGameData(game)
+    }
 
-	func deleteGame(_ game: ISOEntry, deleteData: Bool) {
-		(gameActionTitle, gameActionMessage) = library.deleteGame(game, deleteData: deleteData)
-	}
+    func deleteGame(_ game: ISOEntry, deleteData: Bool) {
+        (gameActionTitle, gameActionMessage) = library.deleteGame(game, deleteData: deleteData)
+    }
 }

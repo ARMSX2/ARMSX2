@@ -5,143 +5,143 @@ import SwiftUI
 
 @MainActor
 final class GameLibrarySnapshot {
-	struct CachedGameMetadata: Codable, Sendable {
-		let metadata: [String: String]
-		let modificationDate: Date?
-		let size: UInt64
-	}
+    struct CachedGameMetadata: Codable, Sendable {
+        let metadata: [String: String]
+        let modificationDate: Date?
+        let size: UInt64
+    }
 
-	static let shared = GameLibrarySnapshot()
+    static let shared = GameLibrarySnapshot()
 
-	private var entriesByID: [String: ISOEntry] = [:]
-	private var orderedEntries: [ISOEntry] = []
-	// Per-game metadata keyed by entry id, checked against the ISO's modification time
-	// (or size), so a reload reuses serial/CRC/region instead of reopening every ISO.
-	// Persisted to disk so a cold launch does not rescan the whole library.
-	private var metadataCache: [String: CachedGameMetadata] = [:]
-	private var metadataCacheDirty = false
-	private var metadataCacheLoaded = false
-	private var metadataCacheLoadTask:
-		Task<[String: CachedGameMetadata], Never>?
-	private let persistenceQueue = DispatchQueue(
-		label: "com.armsx2.ios.game-library-metadata",
-		qos: .utility
-	)
-	private var libraryRefreshNeeded = true
-	private var lastLibraryRefresh: Date?
+    private var entriesByID: [String: ISOEntry] = [:]
+    private var orderedEntries: [ISOEntry] = []
+    // Per-game metadata keyed by entry id, checked against the ISO's modification time
+    // (or size), so a reload reuses serial/CRC/region instead of reopening every ISO.
+    // Persisted to disk so a cold launch does not rescan the whole library.
+    private var metadataCache: [String: CachedGameMetadata] = [:]
+    private var metadataCacheDirty = false
+    private var metadataCacheLoaded = false
+    private var metadataCacheLoadTask:
+        Task<[String: CachedGameMetadata], Never>?
+    private let persistenceQueue = DispatchQueue(
+        label: "com.armsx2.ios.game-library-metadata",
+        qos: .utility
+    )
+    private var libraryRefreshNeeded = true
+    private var lastLibraryRefresh: Date?
 
-	private static var persistenceURL: URL? {
-		URL.applicationSupportDirectory.appendingPathComponent("LibraryMetadataCache.json")
-	}
+    private static var persistenceURL: URL? {
+        URL.applicationSupportDirectory.appendingPathComponent("LibraryMetadataCache.json")
+    }
 
-	private init() {}
+    private init() {}
 
-	func loadMetadataCacheIfNeeded() async {
-		guard !metadataCacheLoaded else { return }
-		if metadataCacheLoadTask == nil {
-			let url = Self.persistenceURL
-			metadataCacheLoadTask = Task.detached(priority: .utility) {
-				guard let url,
-				      let data = try? Data(contentsOf: url),
-				      let decoded = try? JSONDecoder().decode(
-						[String: CachedGameMetadata].self,
-						from: data
-				      ) else { return [:] }
-				return decoded
-			}
-		}
-		guard let metadataCacheLoadTask else { return }
-		let decoded = await metadataCacheLoadTask.value
-		guard !Task.isCancelled else { return }
-		// A rename/import can write fresh metadata while the persisted cache is
-		// decoding. Keep the in-memory value whenever both contain the same key.
-		for (key, value) in decoded where metadataCache[key] == nil {
-			metadataCache[key] = value
-		}
-		metadataCacheLoaded = true
-		self.metadataCacheLoadTask = nil
-	}
+    func loadMetadataCacheIfNeeded() async {
+        guard !metadataCacheLoaded else { return }
+        if metadataCacheLoadTask == nil {
+            let url = Self.persistenceURL
+            metadataCacheLoadTask = Task.detached(priority: .utility) {
+                guard let url,
+                      let data = try? Data(contentsOf: url),
+                      let decoded = try? JSONDecoder().decode(
+                        [String: CachedGameMetadata].self,
+                        from: data
+                      ) else { return [:] }
+                return decoded
+            }
+        }
+        guard let metadataCacheLoadTask else { return }
+        let decoded = await metadataCacheLoadTask.value
+        guard !Task.isCancelled else { return }
+        // A rename/import can write fresh metadata while the persisted cache is
+        // decoding. Keep the in-memory value whenever both contain the same key.
+        for (key, value) in decoded where metadataCache[key] == nil {
+            metadataCache[key] = value
+        }
+        metadataCacheLoaded = true
+        self.metadataCacheLoadTask = nil
+    }
 
-	var entries: [ISOEntry] {
-		orderedEntries
-	}
+    var entries: [ISOEntry] {
+        orderedEntries
+    }
 
-	func existingEntries(merging currentEntries: [ISOEntry]) -> [String: ISOEntry] {
-		var merged = entriesByID
-		for entry in currentEntries {
-			merged[entry.id] = entry
-		}
-		return merged
-	}
+    func existingEntries(merging currentEntries: [ISOEntry]) -> [String: ISOEntry] {
+        var merged = entriesByID
+        for entry in currentEntries {
+            merged[entry.id] = entry
+        }
+        return merged
+    }
 
-	func update(_ entries: [ISOEntry]) {
-		orderedEntries = entries
-		var updatedEntriesByID: [String: ISOEntry] = [:]
-		updatedEntriesByID.reserveCapacity(entries.count)
-		for entry in entries {
-			updatedEntriesByID[entry.id] = entry
-		}
-		entriesByID = updatedEntriesByID
-	}
+    func update(_ entries: [ISOEntry]) {
+        orderedEntries = entries
+        var updatedEntriesByID: [String: ISOEntry] = [:]
+        updatedEntriesByID.reserveCapacity(entries.count)
+        for entry in entries {
+            updatedEntriesByID[entry.id] = entry
+        }
+        entriesByID = updatedEntriesByID
+    }
 
-	func releaseEntriesForGameplay() {
-		orderedEntries.removeAll(keepingCapacity: false)
-		entriesByID.removeAll(keepingCapacity: false)
-		libraryRefreshNeeded = true
-	}
+    func releaseEntriesForGameplay() {
+        orderedEntries.removeAll(keepingCapacity: false)
+        entriesByID.removeAll(keepingCapacity: false)
+        libraryRefreshNeeded = true
+    }
 
-	func markLibraryRefreshNeeded() {
-		libraryRefreshNeeded = true
-	}
+    func markLibraryRefreshNeeded() {
+        libraryRefreshNeeded = true
+    }
 
-	func shouldRefreshLibrary(maximumAge: TimeInterval = 30) -> Bool {
-		guard !orderedEntries.isEmpty,
-		      !libraryRefreshNeeded,
-		      let lastLibraryRefresh else { return true }
-		return Date().timeIntervalSince(lastLibraryRefresh) > maximumAge
-	}
+    func shouldRefreshLibrary(maximumAge: TimeInterval = 30) -> Bool {
+        guard !orderedEntries.isEmpty,
+              !libraryRefreshNeeded,
+              let lastLibraryRefresh else { return true }
+        return Date().timeIntervalSince(lastLibraryRefresh) > maximumAge
+    }
 
-	func markLibraryRefreshCompleted() {
-		libraryRefreshNeeded = false
-		lastLibraryRefresh = Date()
-	}
+    func markLibraryRefreshCompleted() {
+        libraryRefreshNeeded = false
+        lastLibraryRefresh = Date()
+    }
 
-	func storeMetadata(_ metadata: [ARMSX2GameLibraryKey: String], modificationDate: Date?, size: UInt64, for id: String) {
-		let stored = Dictionary(uniqueKeysWithValues: metadata.map { ($0.key.rawValue, $0.value) })
-		metadataCache[id] = CachedGameMetadata(metadata: stored, modificationDate: modificationDate, size: size)
-		metadataCacheDirty = true
-	}
+    func storeMetadata(_ metadata: [ARMSX2GameLibraryKey: String], modificationDate: Date?, size: UInt64, for id: String) {
+        let stored = Dictionary(uniqueKeysWithValues: metadata.map { ($0.key.rawValue, $0.value) })
+        metadataCache[id] = CachedGameMetadata(metadata: stored, modificationDate: modificationDate, size: size)
+        metadataCacheDirty = true
+    }
 
     func metadataSnapshot() -> [String: CachedGameMetadata] {
         metadataCache
     }
 
-	/// Drops metadata for games no longer in the library so deleted files do not linger.
-	func purgeMetadata(keeping ids: Set<String>) {
-		let removedKeys = metadataCache.keys.filter { !ids.contains($0) }
-		guard !removedKeys.isEmpty else { return }
-		for key in removedKeys {
-			metadataCache.removeValue(forKey: key)
-		}
-		metadataCacheDirty = true
-	}
+    /// Drops metadata for games no longer in the library so deleted files do not linger.
+    func purgeMetadata(keeping ids: Set<String>) {
+        let removedKeys = metadataCache.keys.filter { !ids.contains($0) }
+        guard !removedKeys.isEmpty else { return }
+        for key in removedKeys {
+            metadataCache.removeValue(forKey: key)
+        }
+        metadataCacheDirty = true
+    }
 
-	/// Copies dirty metadata and serializes it off the main thread. The serial
-	/// queue preserves write order when several library refreshes finish close together.
-	func persistMetadataCache() {
-		guard metadataCacheDirty else { return }
-		metadataCacheDirty = false
-		guard let url = Self.persistenceURL else { return }
-		let snapshot = metadataCache
-		persistenceQueue.async {
-			try? FileManager.default.createDirectory(
-				at: url.deletingLastPathComponent(),
-				withIntermediateDirectories: true
-			)
-			guard let data = try? JSONEncoder().encode(snapshot) else { return }
-			try? data.write(to: url, options: .atomic)
-		}
-	}
+    /// Copies dirty metadata and serializes it off the main thread. The serial
+    /// queue preserves write order when several library refreshes finish close together.
+    func persistMetadataCache() {
+        guard metadataCacheDirty else { return }
+        metadataCacheDirty = false
+        guard let url = Self.persistenceURL else { return }
+        let snapshot = metadataCache
+        persistenceQueue.async {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
+    }
 }
 
 /// Immutable result of the filesystem/bridge portion of one library refresh.
@@ -274,12 +274,12 @@ enum GameLibraryBackgroundScanner {
 /// active disc image.
 @MainActor
 enum GameLibraryRuntimeResources {
-	static func activateForMenu() {
-		CoverThumbnailCache.shared.activateForMenu()
-	}
+    static func activateForMenu() {
+        CoverThumbnailCache.shared.activateForMenu()
+    }
 
-	static func releaseForGameplay() {
-		GameLibrarySnapshot.shared.releaseEntriesForGameplay()
-		CoverThumbnailCache.shared.releaseForGameplay()
-	}
+    static func releaseForGameplay() {
+        GameLibrarySnapshot.shared.releaseEntriesForGameplay()
+        CoverThumbnailCache.shared.releaseForGameplay()
+    }
 }

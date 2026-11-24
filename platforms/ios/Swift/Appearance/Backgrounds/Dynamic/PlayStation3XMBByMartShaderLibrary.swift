@@ -6,88 +6,88 @@ import Foundation
 
 @MainActor
 enum PlayStation3XMBByMartShaderLibrary {
-  private static var cachedLibrary: MTLLibrary?
-  private static var activeRendererCount = 0
-  private static var releaseWhenUnused = false
+    private static var cachedLibrary: MTLLibrary?
+    private static var activeRendererCount = 0
+    private static var releaseWhenUnused = false
 
-  static func makeLibrary(device: MTLDevice) -> MTLLibrary? {
-    if let cachedLibrary {
-      return cachedLibrary
+    static func makeLibrary(device: MTLDevice) -> MTLLibrary? {
+        if let cachedLibrary {
+            return cachedLibrary
+        }
+
+        if let defaultLibrary = device.makeDefaultLibrary(),
+            requiredFunctions.allSatisfy({
+                defaultLibrary.makeFunction(name: $0) != nil
+            })
+        {
+            cachedLibrary = defaultLibrary
+            return defaultLibrary
+        }
+
+        do {
+            let library = try device.makeLibrary(source: source, options: nil)
+            cachedLibrary = library
+            return library
+        } catch {
+            NSLog(
+                "[ARMSX2 Dynamic Backgrounds] XMB shader compilation failed: %@",
+                error.localizedDescription
+            )
+            return nil
+        }
     }
 
-    if let defaultLibrary = device.makeDefaultLibrary(),
-      requiredFunctions.allSatisfy({
-        defaultLibrary.makeFunction(name: $0) != nil
-      })
-    {
-      cachedLibrary = defaultLibrary
-      return defaultLibrary
-    }
-
-    do {
-      let library = try device.makeLibrary(source: source, options: nil)
-      cachedLibrary = library
-      return library
-    } catch {
-      NSLog(
-        "[ARMSX2 Dynamic Backgrounds] XMB shader compilation failed: %@",
-        error.localizedDescription
-      )
-      return nil
-    }
-  }
-
-  static func retainForRenderer() {
-    activeRendererCount += 1
-    releaseWhenUnused = false
-  }
-
-  static func releaseForRenderer() {
-    guard activeRendererCount > 0 else {
-      if releaseWhenUnused {
-        cachedLibrary = nil
+    static func retainForRenderer() {
+        activeRendererCount += 1
         releaseWhenUnused = false
-      }
-      return
     }
 
-    activeRendererCount -= 1
-    if activeRendererCount == 0 && releaseWhenUnused {
-      cachedLibrary = nil
-      releaseWhenUnused = false
+    static func releaseForRenderer() {
+        guard activeRendererCount > 0 else {
+            if releaseWhenUnused {
+                cachedLibrary = nil
+                releaseWhenUnused = false
+            }
+            return
+        }
+
+        activeRendererCount -= 1
+        if activeRendererCount == 0 && releaseWhenUnused {
+            cachedLibrary = nil
+            releaseWhenUnused = false
+        }
     }
-  }
 
-  /// Renderer handoffs between the menu and Appearance preview may briefly
-  /// reach zero active surfaces. Keep the compiled library across that handoff.
-  static func releaseIfUnused() {
-    if activeRendererCount == 0 && releaseWhenUnused {
-      cachedLibrary = nil
-      releaseWhenUnused = false
+    /// Renderer handoffs between the menu and Appearance preview may briefly
+    /// reach zero active surfaces. Keep the compiled library across that handoff.
+    static func releaseIfUnused() {
+        if activeRendererCount == 0 && releaseWhenUnused {
+            cachedLibrary = nil
+            releaseWhenUnused = false
+        }
     }
-  }
 
-  /// Gameplay and background removal end the complete menu session, so the
-  /// shader cache can be released even if SwiftUI dismantles the MTKView later.
-  static func releaseSessionCache() {
-    if activeRendererCount == 0 {
-      cachedLibrary = nil
-      releaseWhenUnused = false
-    } else {
-      releaseWhenUnused = true
+    /// Gameplay and background removal end the complete menu session, so the
+    /// shader cache can be released even if SwiftUI dismantles the MTKView later.
+    static func releaseSessionCache() {
+        if activeRendererCount == 0 {
+            cachedLibrary = nil
+            releaseWhenUnused = false
+        } else {
+            releaseWhenUnused = true
+        }
     }
-  }
 
-  private static let requiredFunctions = [
-    "xmbBackgroundVertex",
-    "xmbBackgroundFragment",
-    "xmbWaveVertex",
-    "xmbWaveFragment",
-    "xmbParticleVertex",
-    "xmbParticleFragment",
-  ]
+    private static let requiredFunctions = [
+        "xmbBackgroundVertex",
+        "xmbBackgroundFragment",
+        "xmbWaveVertex",
+        "xmbWaveFragment",
+        "xmbParticleVertex",
+        "xmbParticleFragment",
+    ]
 
-  private static let source = #"""
+    private static let source = #"""
 // PlayStation 3 XMB recreation shaders
 // SPDX-License-Identifier: MIT
 

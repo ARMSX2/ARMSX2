@@ -36,15 +36,15 @@ enum RegionFlag {
 }
 
 struct ISOEntry: Identifiable, Equatable, Sendable {
-	var id: String { bootPath ?? fileURL?.path ?? name }
-	let name: String
-	let fileURL: URL?
-	let bootPath: String?
-	let coverURL: URL?
-	let coverSignature: String?
-	let metadata: [ARMSX2GameLibraryKey: String]
-	let size: UInt64
-	var isFavorite: Bool
+    var id: String { bootPath ?? fileURL?.path ?? name }
+    let name: String
+    let fileURL: URL?
+    let bootPath: String?
+    let coverURL: URL?
+    let coverSignature: String?
+    let metadata: [ARMSX2GameLibraryKey: String]
+    let size: UInt64
+    var isFavorite: Bool
     var isExternal: Bool = false
     var sourceName: String? = nil
     let displayName: String
@@ -113,17 +113,17 @@ struct ISOEntry: Identifiable, Equatable, Sendable {
         }
     }
 
-	var bootName: String {
-		isExternal ? (bootPath ?? fileURL?.path ?? name) : name
-	}
+    var bootName: String {
+        isExternal ? (bootPath ?? fileURL?.path ?? name) : name
+    }
 
-	var isELF: Bool {
-		(bootPath ?? fileURL?.path ?? name).lowercased().hasSuffix(".elf")
-	}
+    var isELF: Bool {
+        (bootPath ?? fileURL?.path ?? name).lowercased().hasSuffix(".elf")
+    }
 
-	var coverInfo: CoverGameInfo {
-		CoverGameInfo(name: name, fileURL: fileURL, metadata: metadata, hasCover: coverURL != nil)
-	}
+    var coverInfo: CoverGameInfo {
+        CoverGameInfo(name: name, fileURL: fileURL, metadata: metadata, hasCover: coverURL != nil)
+    }
 
     static func normalizedIdentifierKeys(
         for value: String

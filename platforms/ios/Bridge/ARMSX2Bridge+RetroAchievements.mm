@@ -18,7 +18,7 @@ extern "C" void ARMSX2_PostRetroAchievementsStateChanged(void)
 }
 
 extern "C" void ARMSX2_PostRetroAchievementsNotification(const char* title, const char* message,
-	const char* badgePath, float duration)
+    const char* badgePath, float duration)
 {
     NSString* titleString = title ? [NSString stringWithUTF8String:title] : nil;
     if (titleString.length == 0)

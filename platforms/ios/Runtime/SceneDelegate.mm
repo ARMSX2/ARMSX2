@@ -71,7 +71,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     DarwinMisc::SetJITActivityQuery(&ARMSX2JITWorkerBusy);
 
     UIWindowScene *windowScene = (UIWindowScene *)scene;
-    
+
     static bool s_initialized = false;
     if (!s_initialized) {
         SDL_SetMainReady();
@@ -82,16 +82,16 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         s_initialized = true;
     }
     ARMSX2InstallNativeGamepadDpadObserversOnMain();
-    
+
     [self loadSettingsOnce];
     ARMSX2_PostRetroAchievementsStateChanged();
-    
+
     Host::g_sdl_window = SDL_CreateWindow("PCSX2 iOS", 1280, 720, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
     if (!Host::g_sdl_window) {
         Console.Error("Failed to create SDL window: %s", SDL_GetError());
         return;
     }
-    
+
     UIWindow *uiWindow = (__bridge UIWindow*)SDL_GetPointerProperty(SDL_GetWindowProperties(Host::g_sdl_window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, NULL);
     if (uiWindow) {
         uiWindow.windowScene = windowScene;
@@ -125,7 +125,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         }
         // Do NOT addSubview here — SwiftUI's MetalGameView handles view hierarchy
     }
-    
+
     {
         UIViewController *rootVC = self.window.rootViewController;
         if (rootVC) {
@@ -196,7 +196,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
     s_loaded = true;
 
     std::string dataRoot = [[ARMSX2Bridge documentsDirectory] UTF8String];
-    
+
     EmuFolders::DataRoot = dataRoot;
     EmuFolders::Bios = dataRoot + "/bios";
 
@@ -205,7 +205,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         s_settings_interface = new INISettingsInterface(iniPath);
         if (!static_cast<INISettingsInterface*>(s_settings_interface)->Load()) {
             Console.WriteLn("Creating new config at %s", iniPath.c_str());
-            
+
             // [iPSX2] Standard Defaults: JIT Enabled (if supported), EE/IOP/VU Recompilers ON
             s_settings_interface->SetIntValue("EmuCore/CPU", "CoreType", 2); // ARM64 JIT in the Swift UI model
             s_settings_interface->SetBoolValue("EmuCore/CPU", "UseArm64Dynarec", true);
@@ -241,7 +241,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         s_secrets_settings_interface = new INISettingsInterface(secretsPath);
         s_secrets_settings_interface->Load();
         Host::Internal::SetSecretsSettingsLayer(s_secrets_settings_interface);
-	// Load gamepad button mapping from INI
+    // Load gamepad button mapping from INI
         for (int i = 0; i < 16; i++) {
             char key[32]; snprintf(key, sizeof(key), "Button%d", i);
             int val = s_settings_interface->GetIntValue("ARMSX2iOS/GamepadMapping", key, s_defaultMap[i]);

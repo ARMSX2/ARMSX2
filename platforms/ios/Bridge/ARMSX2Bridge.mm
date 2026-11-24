@@ -61,35 +61,35 @@ static NSString* ARMSX2RegionFallbackForSerial(const std::string& serial)
 
 static BOOL ARMSX2ExternalGameRecordScanDisabled(NSDictionary* record, NSURL* url)
 {
-	if (ARMSX2ExternalGameRecordIsCloudProvider(record, url))
-		return YES;
+    if (ARMSX2ExternalGameRecordIsCloudProvider(record, url))
+        return YES;
 
-	return NO;
+    return NO;
 }
 
 static void ARMSX2EnumerateLocalGameImages(NSString* root, void (^block)(NSString* absolutePath, NSString* relativeName))
 {
-	NSFileManager* fm = [NSFileManager defaultManager];
-	BOOL isDir = NO;
-	if (root.length == 0 || block == nil || ![fm fileExistsAtPath:root isDirectory:&isDir] || !isDir)
-		return;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (root.length == 0 || block == nil || ![fm fileExistsAtPath:root isDirectory:&isDir] || !isDir)
+        return;
 
-	NSString* prefix = [root.stringByStandardizingPath stringByAppendingString:@"/"];
-	for (NSURL* url in [fm enumeratorAtURL:[NSURL fileURLWithPath:root isDirectory:YES]
-	               includingPropertiesForKeys:nil
-	                                  options:NSDirectoryEnumerationSkipsHiddenFiles
-	                             errorHandler:nil]) {
-		NSString* path = url.path;
-		if (!ARMSX2IsSupportedGameImageAtPath(path))
-			continue;
+    NSString* prefix = [root.stringByStandardizingPath stringByAppendingString:@"/"];
+    for (NSURL* url in [fm enumeratorAtURL:[NSURL fileURLWithPath:root isDirectory:YES]
+                   includingPropertiesForKeys:nil
+                                      options:NSDirectoryEnumerationSkipsHiddenFiles
+                                 errorHandler:nil]) {
+        NSString* path = url.path;
+        if (!ARMSX2IsSupportedGameImageAtPath(path))
+            continue;
 
-		NSString* full = path.stringByStandardizingPath;
-		NSString* rel = [full hasPrefix:prefix] ? [full substringFromIndex:prefix.length] : full.lastPathComponent;
-		if ([rel containsString:@"/"] && ![rel.pathExtension.lowercaseString isEqualToString:@"elf"])
-			continue;
+        NSString* full = path.stringByStandardizingPath;
+        NSString* rel = [full hasPrefix:prefix] ? [full substringFromIndex:prefix.length] : full.lastPathComponent;
+        if ([rel containsString:@"/"] && ![rel.pathExtension.lowercaseString isEqualToString:@"elf"])
+            continue;
 
-		block(path, rel);
-	}
+        block(path, rel);
+    }
 }
 
 static NSArray<NSString*>* ARMSX2GameDataTokensForEntry(NSString* isoName, const GameList::Entry& entry)
@@ -221,9 +221,9 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 }
 
 + (nonnull NSArray<NSString *> *)availableISOs {
-	NSFileManager *fm = [NSFileManager defaultManager];
-	NSMutableSet *seen = [NSMutableSet set];
-	NSMutableArray *isos = [NSMutableArray array];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableSet *seen = [NSMutableSet set];
+    NSMutableArray *isos = [NSMutableArray array];
 
     // Helper block: scan a directory for ISO files
     void (^scanDir)(NSString *) = ^(NSString *dir) {
@@ -256,115 +256,115 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
     NSString *docsPath = [self documentsDirectory];
     scanDir(docsPath);
 
-	return isos;
+    return isos;
 }
 
 + (nonnull NSArray<NSDictionary<ARMSX2GameLibraryKey, id> *> *)availableISOEntries {
-	NSFileManager* fm = [NSFileManager defaultManager];
-	NSMutableSet<NSString*>* seenPaths = [NSMutableSet set];
-	NSMutableArray<NSDictionary<ARMSX2GameLibraryKey, id>*>* entries = [NSMutableArray array];
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSMutableSet<NSString*>* seenPaths = [NSMutableSet set];
+    NSMutableArray<NSDictionary<ARMSX2GameLibraryKey, id>*>* entries = [NSMutableArray array];
 
-	void (^addPathWithName)(NSString*, NSString*, BOOL, NSString*, BOOL) = ^(NSString* path, NSString* displayName, BOOL external, NSString* source, BOOL forceGameFile) {
-		if (path.length == 0 || (!forceGameFile && !ARMSX2IsSupportedGameImageAtPath(path)))
-			return;
+    void (^addPathWithName)(NSString*, NSString*, BOOL, NSString*, BOOL) = ^(NSString* path, NSString* displayName, BOOL external, NSString* source, BOOL forceGameFile) {
+        if (path.length == 0 || (!forceGameFile && !ARMSX2IsSupportedGameImageAtPath(path)))
+            return;
 
-		NSString* normalizedPath = path.stringByStandardizingPath;
-		NSString* entryName = displayName.length > 0 ? displayName : normalizedPath.lastPathComponent;
-		NSString* key = normalizedPath.lowercaseString;
-		if ([seenPaths containsObject:key])
-			return;
+        NSString* normalizedPath = path.stringByStandardizingPath;
+        NSString* entryName = displayName.length > 0 ? displayName : normalizedPath.lastPathComponent;
+        NSString* key = normalizedPath.lowercaseString;
+        if ([seenPaths containsObject:key])
+            return;
 
-		[seenPaths addObject:key];
-		[entries addObject:@{
-			ARMSX2GameLibraryKeyName: entryName ?: @"",
-			ARMSX2GameLibraryKeyPath: normalizedPath,
-			ARMSX2GameLibraryKeyExternal: @(external),
-			ARMSX2GameLibraryKeySource: source ?: (external ? @"External" : @"On My iPhone"),
-		}];
-	};
+        [seenPaths addObject:key];
+        [entries addObject:@{
+            ARMSX2GameLibraryKeyName: entryName ?: @"",
+            ARMSX2GameLibraryKeyPath: normalizedPath,
+            ARMSX2GameLibraryKeyExternal: @(external),
+            ARMSX2GameLibraryKeySource: source ?: (external ? @"External" : @"On My iPhone"),
+        }];
+    };
 
-	void (^addPath)(NSString*, BOOL, NSString*) = ^(NSString* path, BOOL external, NSString* source) {
-		addPathWithName(path, nil, external, source, NO);
-	};
+    void (^addPath)(NSString*, BOOL, NSString*) = ^(NSString* path, BOOL external, NSString* source) {
+        addPathWithName(path, nil, external, source, NO);
+    };
 
-	void (^scanLocalDir)(NSString*, NSString*) = ^(NSString* dir, NSString* source) {
-		NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
-		for (NSString* file in files) {
-			addPath([dir stringByAppendingPathComponent:file], NO, source);
-		}
-	};
+    void (^scanLocalDir)(NSString*, NSString*) = ^(NSString* dir, NSString* source) {
+        NSArray<NSString*>* files = [fm contentsOfDirectoryAtPath:dir error:nil];
+        for (NSString* file in files) {
+            addPath([dir stringByAppendingPathComponent:file], NO, source);
+        }
+    };
 
-	ARMSX2EnumerateLocalGameImages([self isoDirectory], ^(NSString* absolutePath, NSString* relativeName) {
-		addPathWithName(absolutePath, relativeName, NO, @"On My iPhone", YES);
-	});
-	scanLocalDir([self documentsDirectory], @"On My iPhone");
+    ARMSX2EnumerateLocalGameImages([self isoDirectory], ^(NSString* absolutePath, NSString* relativeName) {
+        addPathWithName(absolutePath, relativeName, NO, @"On My iPhone", YES);
+    });
+    scanLocalDir([self documentsDirectory], @"On My iPhone");
 
-	for (NSDictionary* record in ARMSX2ExternalGameDirectoryRecords()) {
-		NSURL* directoryURL = ARMSX2ResolveExternalGameDirectoryRecord(record);
-		if (!directoryURL)
-			continue;
-		if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL)) {
-			NSLog(@"[ARMSX2Bridge] External game cloud provider list entry skipped path=%@", directoryURL.path);
-			continue;
-		}
+    for (NSDictionary* record in ARMSX2ExternalGameDirectoryRecords()) {
+        NSURL* directoryURL = ARMSX2ResolveExternalGameDirectoryRecord(record);
+        if (!directoryURL)
+            continue;
+        if (ARMSX2ExternalGameRecordIsCloudProvider(record, directoryURL)) {
+            NSLog(@"[ARMSX2Bridge] External game cloud provider list entry skipped path=%@", directoryURL.path);
+            continue;
+        }
 
-		BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
-		if (isDirectory && ARMSX2ExternalGameRecordScanDisabled(record, directoryURL))
-			continue;
+        BOOL isDirectory = ARMSX2ExternalGameRecordIsDirectory(record, directoryURL);
+        if (isDirectory && ARMSX2ExternalGameRecordScanDisabled(record, directoryURL))
+            continue;
 
-		BOOL alreadyActive = ARMSX2ExternalGameAccessAlreadyActive(directoryURL.path);
-		BOOL startedAccess = alreadyActive ? NO : [directoryURL startAccessingSecurityScopedResource];
+        BOOL alreadyActive = ARMSX2ExternalGameAccessAlreadyActive(directoryURL.path);
+        BOOL startedAccess = alreadyActive ? NO : [directoryURL startAccessingSecurityScopedResource];
 
-		NSString* source = [record[ARMSX2GameLibraryKeyDisplayName] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyDisplayName] : directoryURL.lastPathComponent;
-		if (!isDirectory) {
-			addPathWithName(directoryURL.path, source, YES, source, YES);
-			if (startedAccess)
-				[directoryURL stopAccessingSecurityScopedResource];
-			continue;
-		}
+        NSString* source = [record[ARMSX2GameLibraryKeyDisplayName] isKindOfClass:NSString.class] ? record[ARMSX2GameLibraryKeyDisplayName] : directoryURL.lastPathComponent;
+        if (!isDirectory) {
+            addPathWithName(directoryURL.path, source, YES, source, YES);
+            if (startedAccess)
+                [directoryURL stopAccessingSecurityScopedResource];
+            continue;
+        }
 
-		NSError* contentsError = nil;
-		NSArray<NSURL*>* urls = [fm contentsOfDirectoryAtURL:directoryURL
-		                         includingPropertiesForKeys:@[NSURLIsRegularFileKey, NSURLIsDirectoryKey]
-		                                            options:NSDirectoryEnumerationSkipsHiddenFiles
-		                                              error:&contentsError];
-		if (!urls) {
-			NSLog(@"[ARMSX2Bridge] External game folder scan failed path=%@ error=%@",
-			      directoryURL.path, contentsError.localizedDescription ?: @"");
-			if (startedAccess)
-				[directoryURL stopAccessingSecurityScopedResource];
-			continue;
-		}
+        NSError* contentsError = nil;
+        NSArray<NSURL*>* urls = [fm contentsOfDirectoryAtURL:directoryURL
+                                 includingPropertiesForKeys:@[NSURLIsRegularFileKey, NSURLIsDirectoryKey]
+                                                    options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                      error:&contentsError];
+        if (!urls) {
+            NSLog(@"[ARMSX2Bridge] External game folder scan failed path=%@ error=%@",
+                  directoryURL.path, contentsError.localizedDescription ?: @"");
+            if (startedAccess)
+                [directoryURL stopAccessingSecurityScopedResource];
+            continue;
+        }
 
-		for (NSURL* url in urls) {
-			NSNumber* isDirectory = nil;
-			if ([url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil] && isDirectory.boolValue)
-				continue;
+        for (NSURL* url in urls) {
+            NSNumber* isDirectory = nil;
+            if ([url getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil] && isDirectory.boolValue)
+                continue;
 
-			addPath(url.path, YES, source);
-		}
+            addPath(url.path, YES, source);
+        }
 
-		if (startedAccess)
-			[directoryURL stopAccessingSecurityScopedResource];
-	}
+        if (startedAccess)
+            [directoryURL stopAccessingSecurityScopedResource];
+    }
 
-	return entries;
+    return entries;
 }
 
 + (nonnull NSDictionary<ARMSX2GameLibraryKey, NSString *> *)gameMetadataForISO:(nonnull NSString *)isoName {
-	if (isoName.length == 0)
-		return @{};
+    if (isoName.length == 0)
+        return @{};
 
-	NSFileManager *fm = [NSFileManager defaultManager];
-	NSString *path = ARMSX2ResolveISOPath(isoName);
-	NSString *fileName = path.length > 0 ? path.lastPathComponent : isoName.lastPathComponent;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *path = ARMSX2ResolveISOPath(isoName);
+    NSString *fileName = path.length > 0 ? path.lastPathComponent : isoName.lastPathComponent;
 
-	NSMutableDictionary<ARMSX2GameLibraryKey, NSString *> *metadata = [NSMutableDictionary dictionary];
-	metadata[ARMSX2GameLibraryKeyFileTitle] = fileName.stringByDeletingPathExtension ?: fileName;
+    NSMutableDictionary<ARMSX2GameLibraryKey, NSString *> *metadata = [NSMutableDictionary dictionary];
+    metadata[ARMSX2GameLibraryKeyFileTitle] = fileName.stringByDeletingPathExtension ?: fileName;
 
-	if (![fm fileExistsAtPath:path]) {
-		return metadata;
-	}
+    if (![fm fileExistsAtPath:path]) {
+        return metadata;
+    }
 
     GameList::Entry entry;
     if (GameList::PopulateEntryFromPath(path.UTF8String, &entry)) {
@@ -562,36 +562,36 @@ static NSInteger ARMSX2RemoveMatchingGeneratedFiles(NSString* directory, NSArray
 #pragma mark - ISO boot
 
 + (BOOL)canResolveISO:(nonnull NSString *)isoName {
-	return ARMSX2ResolveISOPath(isoName).length > 0 ? YES : NO;
+    return ARMSX2ResolveISOPath(isoName).length > 0 ? YES : NO;
 }
 
 + (void)bootISO:(nonnull NSString *)isoName {
-	if (!ARMSX2HasBaseSettings()) {
-		std::fprintf(stderr, "@@BOOT_SET_ISO@@ status=no_settings input=\"%s\"\n", isoName ? isoName.UTF8String : "");
-		std::fflush(stderr);
-		return;
-	}
-	ARMSX2FlushINISave(); // persist deferred base-setting writes before booting
-	NSString* resolvedPath = ARMSX2ResolveISOPath(isoName);
-	NSString* bootValue = isoName.isAbsolutePath ? (resolvedPath ?: isoName) : isoName;
-	if (bootValue.isAbsolutePath) {
-		BOOL accessActive = ARMSX2StartExternalGameDirectoryAccessForPathSafe(bootValue);
-		NSLog(@"[ARMSX2Bridge] bootISO external access path=%@ active=%d", bootValue, accessActive ? 1 : 0);
-	}
-	std::fprintf(stderr, "@@BOOT_SET_ISO@@ input=\"%s\" boot=\"%s\" resolved=\"%s\" resolved_exists=%d absolute=%d\n",
-		isoName ? isoName.UTF8String : "", bootValue ? bootValue.UTF8String : "", resolvedPath ? resolvedPath.UTF8String : "",
-		resolvedPath.length > 0 ? 1 : 0, bootValue.isAbsolutePath ? 1 : 0);
-	std::fflush(stderr);
-	bool fastBoot = false;
-	ARMSX2EditBaseSettings([&](SettingsInterface& si) {
-		si.SetStringValue("GameISO", "BootISO", bootValue.UTF8String);
-		fastBoot = si.GetBoolValue("GameISO", "FastBoot", si.GetBoolValue("EmuCore", "EnableFastBoot", false));
-		si.SetBoolValue("GameISO", "FastBoot", fastBoot);
-		si.SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
-	});
-	Host::CommitBaseSettingChanges();
-	std::fprintf(stderr, "@@BOOT_FASTBOOT_SET@@ value=%d source=settings\n", fastBoot ? 1 : 0);
-	std::fflush(stderr);
+    if (!ARMSX2HasBaseSettings()) {
+        std::fprintf(stderr, "@@BOOT_SET_ISO@@ status=no_settings input=\"%s\"\n", isoName ? isoName.UTF8String : "");
+        std::fflush(stderr);
+        return;
+    }
+    ARMSX2FlushINISave(); // persist deferred base-setting writes before booting
+    NSString* resolvedPath = ARMSX2ResolveISOPath(isoName);
+    NSString* bootValue = isoName.isAbsolutePath ? (resolvedPath ?: isoName) : isoName;
+    if (bootValue.isAbsolutePath) {
+        BOOL accessActive = ARMSX2StartExternalGameDirectoryAccessForPathSafe(bootValue);
+        NSLog(@"[ARMSX2Bridge] bootISO external access path=%@ active=%d", bootValue, accessActive ? 1 : 0);
+    }
+    std::fprintf(stderr, "@@BOOT_SET_ISO@@ input=\"%s\" boot=\"%s\" resolved=\"%s\" resolved_exists=%d absolute=%d\n",
+        isoName ? isoName.UTF8String : "", bootValue ? bootValue.UTF8String : "", resolvedPath ? resolvedPath.UTF8String : "",
+        resolvedPath.length > 0 ? 1 : 0, bootValue.isAbsolutePath ? 1 : 0);
+    std::fflush(stderr);
+    bool fastBoot = false;
+    ARMSX2EditBaseSettings([&](SettingsInterface& si) {
+        si.SetStringValue("GameISO", "BootISO", bootValue.UTF8String);
+        fastBoot = si.GetBoolValue("GameISO", "FastBoot", si.GetBoolValue("EmuCore", "EnableFastBoot", false));
+        si.SetBoolValue("GameISO", "FastBoot", fastBoot);
+        si.SetBoolValue("EmuCore", "EnableFastBoot", fastBoot);
+    });
+    Host::CommitBaseSettingChanges();
+    std::fprintf(stderr, "@@BOOT_FASTBOOT_SET@@ value=%d source=settings\n", fastBoot ? 1 : 0);
+    std::fflush(stderr);
 }
 
 #pragma mark - Favorites

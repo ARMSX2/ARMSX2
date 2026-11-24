@@ -47,14 +47,14 @@ struct AnimatedLibraryBackgroundView: View {
             guard !reduceMotion, frames.isEmpty, !loadFailed else { return }
             // Decode off the MainActor so a large multi-frame image cannot
             // stall the UI while the library is presented.
-			let loader = Task.detached(priority: .utility) {
+            let loader = Task.detached(priority: .utility) {
                 AnimatedBackgroundLoader.loadFrames(from: url)
-			}
-			let loaded = await withTaskCancellationHandler {
-				await loader.value
-			} onCancel: {
-				loader.cancel()
-			}
+            }
+            let loaded = await withTaskCancellationHandler {
+                await loader.value
+            } onCancel: {
+                loader.cancel()
+            }
             // `.task(id:)` cancels this task when url changes; drop the result.
             guard !Task.isCancelled else { return }
             if loaded.isEmpty {
@@ -265,7 +265,7 @@ enum AnimatedBackgroundLoader {
         frames.reserveCapacity(count)
         var decodedBytes = 0
         for i in 0..<count {
-			guard !Task.isCancelled else { return [] }
+            guard !Task.isCancelled else { return [] }
             guard let cgImage = CGImageSourceCreateImageAtIndex(source, i, nil) else { continue }
             // Skip oversized frames to avoid memory spikes; treat as static.
             if CGFloat(cgImage.width) > maxFrameDimension || CGFloat(cgImage.height) > maxFrameDimension {

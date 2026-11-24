@@ -34,259 +34,259 @@ static std::atomic<bool> s_hapticFeedbackEnabled{true};
 
 void ARMSX2SetHapticFeedbackEnabled(bool enabled)
 {
-	s_hapticFeedbackEnabled.store(enabled, std::memory_order_relaxed);
+    s_hapticFeedbackEnabled.store(enabled, std::memory_order_relaxed);
 }
 
 void ARMSX2StopNativeGamepadRumblePulseOnMain(u32 slot)
 {
-	if (slot >= ARMSX2_MAX_IOS_GAMEPADS)
-		return;
+    if (slot >= ARMSX2_MAX_IOS_GAMEPADS)
+        return;
 
-	s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed);
-	if (s_nativePulseHapticEngine[slot]) {
-		@try {
-			[s_nativePulseHapticEngine[slot] stopWithCompletionHandler:nil];
-		} @catch (NSException* exception) {
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic stop exception slot=%u name=%s reason=%s",
-				slot + 1,
-				exception.name.UTF8String ?: "unknown",
-				exception.reason.UTF8String ?: "unknown");
-		}
-		s_nativePulseHapticEngine[slot] = nil;
-	}
+    s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed);
+    if (s_nativePulseHapticEngine[slot]) {
+        @try {
+            [s_nativePulseHapticEngine[slot] stopWithCompletionHandler:nil];
+        } @catch (NSException* exception) {
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic stop exception slot=%u name=%s reason=%s",
+                slot + 1,
+                exception.name.UTF8String ?: "unknown",
+                exception.reason.UTF8String ?: "unknown");
+        }
+        s_nativePulseHapticEngine[slot] = nil;
+    }
 }
 
 // Only the controller in this slot. Falling back to another controller would hand
 // player 2's rumble to player 1, and one Joy-Con could kill rumble for every slot.
 static GCController* ARMSX2FindNativeHapticControllerForSlot(u32 slot)
 {
-	NSArray<GCController*>* controllers = [GCController controllers];
-	if (slot >= controllers.count)
-		return nil;
+    NSArray<GCController*>* controllers = [GCController controllers];
+    if (slot >= controllers.count)
+        return nil;
 
-	GCController* controller = controllers[slot];
-	return controller.haptics ? controller : nil;
+    GCController* controller = controllers[slot];
+    return controller.haptics ? controller : nil;
 }
 
 static GCController* ARMSX2FindNativeControllerForSlot(u32 slot)
 {
-	NSArray<GCController*>* controllers = [GCController controllers];
-	return (slot < controllers.count) ? controllers[slot] : nil;
+    NSArray<GCController*>* controllers = [GCController controllers];
+    return (slot < controllers.count) ? controllers[slot] : nil;
 }
 
 static bool ARMSX2NativeControllerLooksLikeJoyCon(GCController* controller)
 {
-	if (!controller)
-		return false;
+    if (!controller)
+        return false;
 
-	NSString* vendor = controller.vendorName ?: @"";
-	NSString* category = @"";
-	if ([controller respondsToSelector:@selector(productCategory)])
-		category = controller.productCategory ?: @"";
+    NSString* vendor = controller.vendorName ?: @"";
+    NSString* category = @"";
+    if ([controller respondsToSelector:@selector(productCategory)])
+        category = controller.productCategory ?: @"";
 
-	NSString* descriptor = [[NSString stringWithFormat:@"%@ %@", vendor, category] lowercaseString];
-	return [descriptor containsString:@"joy-con"] ||
-	       [descriptor containsString:@"joycon"] ||
-	       [descriptor containsString:@"joy con"];
+    NSString* descriptor = [[NSString stringWithFormat:@"%@ %@", vendor, category] lowercaseString];
+    return [descriptor containsString:@"joy-con"] ||
+           [descriptor containsString:@"joycon"] ||
+           [descriptor containsString:@"joy con"];
 }
 
 static bool ARMSX2CStringLooksLikeJoyCon(const char* value)
 {
-	if (!value || !*value)
-		return false;
+    if (!value || !*value)
+        return false;
 
-	NSString* descriptor = [NSString stringWithUTF8String:value];
-	if (!descriptor)
-		return false;
+    NSString* descriptor = [NSString stringWithUTF8String:value];
+    if (!descriptor)
+        return false;
 
-	descriptor = descriptor.lowercaseString;
-	return [descriptor containsString:@"joy-con"] ||
-	       [descriptor containsString:@"joycon"] ||
-	       [descriptor containsString:@"joy con"];
+    descriptor = descriptor.lowercaseString;
+    return [descriptor containsString:@"joy-con"] ||
+           [descriptor containsString:@"joycon"] ||
+           [descriptor containsString:@"joy con"];
 }
 
 bool ARMSX2SDLGamepadLooksLikeJoyCon(SDL_Gamepad* gamepad)
 {
-	return gamepad && ARMSX2CStringLooksLikeJoyCon(SDL_GetGamepadName(gamepad));
+    return gamepad && ARMSX2CStringLooksLikeJoyCon(SDL_GetGamepadName(gamepad));
 }
 
 static bool ARMSX2NativeControllerSlotLooksLikeJoyCon(u32 slot)
 {
-	return ARMSX2NativeControllerLooksLikeJoyCon(ARMSX2FindNativeControllerForSlot(slot));
+    return ARMSX2NativeControllerLooksLikeJoyCon(ARMSX2FindNativeControllerForSlot(slot));
 }
 
 static bool ARMSX2GamepadSlotLooksLikeJoyCon(u32 slot)
 {
-	if (ARMSX2NativeControllerSlotLooksLikeJoyCon(slot))
-		return true;
+    if (ARMSX2NativeControllerSlotLooksLikeJoyCon(slot))
+        return true;
 
-	// Cached rather than read off s_gamepads, because this gets asked from the
-	// main queue and the pad it would be naming can be closed at any moment.
-	return slot < ARMSX2_MAX_IOS_GAMEPADS && s_gamepadIsJoyCon[slot].load(std::memory_order_relaxed);
+    // Cached rather than read off s_gamepads, because this gets asked from the
+    // main queue and the pad it would be naming can be closed at any moment.
+    return slot < ARMSX2_MAX_IOS_GAMEPADS && s_gamepadIsJoyCon[slot].load(std::memory_order_relaxed);
 }
 
 static bool ARMSX2ApplyNativeGamepadRumblePulseOnMain(
-	u32 slot, u32 packed, const char* reason, double duration_seconds = 0.18)
+    u32 slot, u32 packed, const char* reason, double duration_seconds = 0.18)
 {
-	if (slot >= ARMSX2_MAX_IOS_GAMEPADS)
-		return false;
+    if (slot >= ARMSX2_MAX_IOS_GAMEPADS)
+        return false;
 
-	if (@available(iOS 14.0, *)) {
-	} else {
-		return false;
-	}
+    if (@available(iOS 14.0, *)) {
+    } else {
+        return false;
+    }
 
-	if (ARMSX2GamepadSlotLooksLikeJoyCon(slot)) {
-		const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16)
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con native rumble hard-disabled slot=%u reason=%s",
-				slot + 1, reason ? reason : "unknown");
-		return false;
-	}
+    if (ARMSX2GamepadSlotLooksLikeJoyCon(slot)) {
+        const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16)
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con native rumble hard-disabled slot=%u reason=%s",
+                slot + 1, reason ? reason : "unknown");
+        return false;
+    }
 
-	const float large = ARMSX2RumbleLargeIntensity(packed);
-	const float small = ARMSX2RumbleSmallIntensity(packed);
-	const float raw_intensity = std::max(large, small);
-	if (raw_intensity <= 0.01f) {
-		ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
-		return true;
-	}
+    const float large = ARMSX2RumbleLargeIntensity(packed);
+    const float small = ARMSX2RumbleSmallIntensity(packed);
+    const float raw_intensity = std::max(large, small);
+    if (raw_intensity <= 0.01f) {
+        ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
+        return true;
+    }
 
-	GCController* controller = ARMSX2FindNativeHapticControllerForSlot(slot);
-	if (ARMSX2NativeControllerLooksLikeJoyCon(controller)) {
-		const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16) {
-			NSString* vendor = controller.vendorName ?: @"unknown";
-			NSString* product = @"";
-			if ([controller respondsToSelector:@selector(productCategory)])
-				product = controller.productCategory ?: @"";
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con native rumble skipped slot=%u controller=%s category=%s reason=%s",
-				slot + 1, vendor.UTF8String, product.UTF8String, reason ? reason : "unknown");
-		}
-		return false;
-	}
+    GCController* controller = ARMSX2FindNativeHapticControllerForSlot(slot);
+    if (ARMSX2NativeControllerLooksLikeJoyCon(controller)) {
+        const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16) {
+            NSString* vendor = controller.vendorName ?: @"unknown";
+            NSString* product = @"";
+            if ([controller respondsToSelector:@selector(productCategory)])
+                product = controller.productCategory ?: @"";
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con native rumble skipped slot=%u controller=%s category=%s reason=%s",
+                slot + 1, vendor.UTF8String, product.UTF8String, reason ? reason : "unknown");
+        }
+        return false;
+    }
 
-	if (!controller || !controller.haptics) {
-		const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16) {
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse unavailable slot=%u reason=%s controllers=%u",
-				slot + 1, reason ? reason : "unknown", static_cast<unsigned>([GCController controllers].count));
-		}
-		return false;
-	}
+    if (!controller || !controller.haptics) {
+        const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16) {
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse unavailable slot=%u reason=%s controllers=%u",
+                slot + 1, reason ? reason : "unknown", static_cast<unsigned>([GCController controllers].count));
+        }
+        return false;
+    }
 
-	ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
+    ARMSX2StopNativeGamepadRumblePulseOnMain(slot);
 
-	GCHapticsLocality locality = GCHapticsLocalityDefault;
-	NSSet<GCHapticsLocality>* localities = controller.haptics.supportedLocalities;
-	if ([localities containsObject:GCHapticsLocalityAll])
-		locality = GCHapticsLocalityAll;
+    GCHapticsLocality locality = GCHapticsLocalityDefault;
+    NSSet<GCHapticsLocality>* localities = controller.haptics.supportedLocalities;
+    if ([localities containsObject:GCHapticsLocalityAll])
+        locality = GCHapticsLocalityAll;
 
-	CHHapticEngine* engine = [controller.haptics createEngineWithLocality:locality];
-	if (!engine) {
-		const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16) {
-			NSString* vendor = controller.vendorName ?: @"unknown";
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse engine failed slot=%u controller=%s locality=%s reason=%s",
-				slot + 1, vendor.UTF8String, locality.UTF8String, reason ? reason : "unknown");
-		}
-		return false;
-	}
+    CHHapticEngine* engine = [controller.haptics createEngineWithLocality:locality];
+    if (!engine) {
+        const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16) {
+            NSString* vendor = controller.vendorName ?: @"unknown";
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse engine failed slot=%u controller=%s locality=%s reason=%s",
+                slot + 1, vendor.UTF8String, locality.UTF8String, reason ? reason : "unknown");
+        }
+        return false;
+    }
 
-	engine.playsHapticsOnly = YES;
-	engine.autoShutdownEnabled = YES;
+    engine.playsHapticsOnly = YES;
+    engine.autoShutdownEnabled = YES;
 
-	NSError* error = nil;
-	if (![engine startAndReturnError:&error]) {
-		NSString* vendor = controller.vendorName ?: @"unknown";
-		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse start failed slot=%u controller=%s: %s",
-			slot + 1, vendor.UTF8String, error.localizedDescription.UTF8String ?: "unknown");
-		return false;
-	}
+    NSError* error = nil;
+    if (![engine startAndReturnError:&error]) {
+        NSString* vendor = controller.vendorName ?: @"unknown";
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse start failed slot=%u controller=%s: %s",
+            slot + 1, vendor.UTF8String, error.localizedDescription.UTF8String ?: "unknown");
+        return false;
+    }
 
-	const float intensity = std::clamp(raw_intensity, 0.10f, 0.55f);
-	const float sharpness = std::clamp(0.25f + (small * 0.45f), 0.20f, 0.65f);
-	NSArray<CHHapticEventParameter*>* params = @[
-		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
-		[[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
-	];
-	CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-	                                                     parameters:params
-	                                                   relativeTime:0.0
-	                                                        duration:duration_seconds];
-	CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
-	if (!pattern) {
-		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse pattern failed slot=%u: %s",
-			slot + 1, error.localizedDescription.UTF8String ?: "unknown");
-		[engine stopWithCompletionHandler:nil];
-		return false;
-	}
+    const float intensity = std::clamp(raw_intensity, 0.10f, 0.55f);
+    const float sharpness = std::clamp(0.25f + (small * 0.45f), 0.20f, 0.65f);
+    NSArray<CHHapticEventParameter*>* params = @[
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:intensity],
+        [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:sharpness]
+    ];
+    CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+                                                         parameters:params
+                                                       relativeTime:0.0
+                                                            duration:duration_seconds];
+    CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
+    if (!pattern) {
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse pattern failed slot=%u: %s",
+            slot + 1, error.localizedDescription.UTF8String ?: "unknown");
+        [engine stopWithCompletionHandler:nil];
+        return false;
+    }
 
-	id<CHHapticPatternPlayer> player = [engine createPlayerWithPattern:pattern error:&error];
-	if (!player || ![player startAtTime:CHHapticTimeImmediate error:&error]) {
-		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse player failed slot=%u: %s",
-			slot + 1, error.localizedDescription.UTF8String ?: "unknown");
-		[engine stopWithCompletionHandler:nil];
-		return false;
-	}
+    id<CHHapticPatternPlayer> player = [engine createPlayerWithPattern:pattern error:&error];
+    if (!player || ![player startAtTime:CHHapticTimeImmediate error:&error]) {
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse player failed slot=%u: %s",
+            slot + 1, error.localizedDescription.UTF8String ?: "unknown");
+        [engine stopWithCompletionHandler:nil];
+        return false;
+    }
 
-	s_nativePulseHapticEngine[slot] = engine;
-	const u32 stop_generation = s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed) + 1;
-	const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
-	if (log_index < 16) {
-		NSString* vendor = controller.vendorName ?: @"unknown";
-		NSString* product = @"";
-		if ([controller respondsToSelector:@selector(productCategory)])
-			product = controller.productCategory ?: @"";
-		Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse accepted slot=%u controller=%s category=%s locality=%s reason=%s intensity=%.2f",
-			slot + 1, vendor.UTF8String, product.UTF8String, locality.UTF8String, reason ? reason : "unknown", intensity);
-	}
+    s_nativePulseHapticEngine[slot] = engine;
+    const u32 stop_generation = s_nativePulseHapticStopGeneration[slot].fetch_add(1, std::memory_order_relaxed) + 1;
+    const u32 log_index = s_loggedNativePulseHapticEvents.fetch_add(1, std::memory_order_relaxed);
+    if (log_index < 16) {
+        NSString* vendor = controller.vendorName ?: @"unknown";
+        NSString* product = @"";
+        if ([controller respondsToSelector:@selector(productCategory)])
+            product = controller.productCategory ?: @"";
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic pulse accepted slot=%u controller=%s category=%s locality=%s reason=%s intensity=%.2f",
+            slot + 1, vendor.UTF8String, product.UTF8String, locality.UTF8String, reason ? reason : "unknown", intensity);
+    }
 
-	const double force_stop_seconds = std::max(
-		ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS, duration_seconds);
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(force_stop_seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-		if (slot >= ARMSX2_MAX_IOS_GAMEPADS ||
-			s_nativePulseHapticStopGeneration[slot].load(std::memory_order_relaxed) != stop_generation)
-			return;
+    const double force_stop_seconds = std::max(
+        ARMSX2_GAMEPAD_RUMBLE_FORCE_STOP_SECONDS, duration_seconds);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, static_cast<int64_t>(force_stop_seconds * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (slot >= ARMSX2_MAX_IOS_GAMEPADS ||
+            s_nativePulseHapticStopGeneration[slot].load(std::memory_order_relaxed) != stop_generation)
+            return;
 
-		if (s_nativePulseHapticEngine[slot]) {
-			@try {
-				[s_nativePulseHapticEngine[slot] stopWithCompletionHandler:nil];
-			} @catch (NSException* exception) {
-				Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic delayed stop exception slot=%u name=%s reason=%s",
-					slot + 1,
-					exception.name.UTF8String ?: "unknown",
-					exception.reason.UTF8String ?: "unknown");
-			}
-			s_nativePulseHapticEngine[slot] = nil;
-		}
-	});
+        if (s_nativePulseHapticEngine[slot]) {
+            @try {
+                [s_nativePulseHapticEngine[slot] stopWithCompletionHandler:nil];
+            } @catch (NSException* exception) {
+                Console.WriteLn("[ARMSX2 iOS Gamepad] Native haptic delayed stop exception slot=%u name=%s reason=%s",
+                    slot + 1,
+                    exception.name.UTF8String ?: "unknown",
+                    exception.reason.UTF8String ?: "unknown");
+            }
+            s_nativePulseHapticEngine[slot] = nil;
+        }
+    });
 
-	return true;
+    return true;
 }
 
 static bool ARMSX2ApplyNativeGamepadRumblePulseForJoyConOnMain(u32 slot, u32 packed, const char* reason)
 {
-	GCController* controller = ARMSX2FindNativeControllerForSlot(slot);
-	if (!ARMSX2NativeControllerLooksLikeJoyCon(controller))
-		return false;
+    GCController* controller = ARMSX2FindNativeControllerForSlot(slot);
+    if (!ARMSX2NativeControllerLooksLikeJoyCon(controller))
+        return false;
 
-	const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-	if (log_index < 16) {
-		NSString* vendor = controller.vendorName ?: @"unknown";
-		NSString* product = @"";
-		if ([controller respondsToSelector:@selector(productCategory)])
-			product = controller.productCategory ?: @"";
-		Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con rumble skipped slot=%u controller=%s category=%s reason=%s",
-			slot + 1, vendor.UTF8String, product.UTF8String, reason ? reason : "unknown");
-	}
-	return false;
+    const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+    if (log_index < 16) {
+        NSString* vendor = controller.vendorName ?: @"unknown";
+        NSString* product = @"";
+        if ([controller respondsToSelector:@selector(productCategory)])
+            product = controller.productCategory ?: @"";
+        Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con rumble skipped slot=%u controller=%s category=%s reason=%s",
+            slot + 1, vendor.UTF8String, product.UTF8String, reason ? reason : "unknown");
+    }
+    return false;
 }
 
 void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
 {
-	if (gamepad_index >= ARMSX2_MAX_IOS_GAMEPADS)
-		return;
+    if (gamepad_index >= ARMSX2_MAX_IOS_GAMEPADS)
+        return;
 
     // Ahead of the unchanged-value bail below, so a held rumble still gets
     // its stop. The pump runs every frame, so a deadline is enough and no
@@ -335,27 +335,27 @@ void ARMSX2ApplyPendingGamepadRumble(unsigned int gamepad_index)
         });
     }
 
-	if (wants_rumble && ARMSX2NativeControllerSlotLooksLikeJoyCon(gamepad_index)) {
-		const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16)
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con rumble request ignored safely slot=%u", gamepad_index + 1);
-		s_appliedGamepadRumble[gamepad_index] = packed;
-		s_appliedGamepadRumbleStrength[gamepad_index] = game_rumble_strength;
-		s_appliedGamepadRumbleValid[gamepad_index] = true;
-		return;
-	}
+    if (wants_rumble && ARMSX2NativeControllerSlotLooksLikeJoyCon(gamepad_index)) {
+        const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16)
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con rumble request ignored safely slot=%u", gamepad_index + 1);
+        s_appliedGamepadRumble[gamepad_index] = packed;
+        s_appliedGamepadRumbleStrength[gamepad_index] = game_rumble_strength;
+        s_appliedGamepadRumbleValid[gamepad_index] = true;
+        return;
+    }
 
-	if (wants_rumble && ARMSX2GamepadSlotLooksLikeJoyCon(gamepad_index)) {
-		const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-		if (log_index < 16)
-			Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con SDL rumble request ignored safely slot=%u name=%s",
-				gamepad_index + 1,
-				s_gamepads[gamepad_index] ? (SDL_GetGamepadName(s_gamepads[gamepad_index]) ?: "unknown") : "unknown");
-		s_appliedGamepadRumble[gamepad_index] = packed;
-		s_appliedGamepadRumbleStrength[gamepad_index] = game_rumble_strength;
-		s_appliedGamepadRumbleValid[gamepad_index] = true;
-		return;
-	}
+    if (wants_rumble && ARMSX2GamepadSlotLooksLikeJoyCon(gamepad_index)) {
+        const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+        if (log_index < 16)
+            Console.WriteLn("[ARMSX2 iOS Gamepad] Joy-Con SDL rumble request ignored safely slot=%u name=%s",
+                gamepad_index + 1,
+                s_gamepads[gamepad_index] ? (SDL_GetGamepadName(s_gamepads[gamepad_index]) ?: "unknown") : "unknown");
+        s_appliedGamepadRumble[gamepad_index] = packed;
+        s_appliedGamepadRumbleStrength[gamepad_index] = game_rumble_strength;
+        s_appliedGamepadRumbleValid[gamepad_index] = true;
+        return;
+    }
 
     if (s_gamepads[gamepad_index]) {
         if (SDL_RumbleGamepad(s_gamepads[gamepad_index], large, small, ARMSX2_GAMEPAD_RUMBLE_DURATION_MS)) {
@@ -468,13 +468,13 @@ void ARMSX2ServiceGamepadRumbleTest()
         if (!s_gamepads[slot])
             continue;
 
-		if (ARMSX2GamepadSlotLooksLikeJoyCon(slot)) {
-			const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
-			if (log_index < 16)
-				Console.WriteLn("[ARMSX2 iOS Gamepad] Test Joy-Con rumble hard-disabled slot=%u name=%s",
-					slot + 1, SDL_GetGamepadName(s_gamepads[slot]) ?: "unknown");
-			continue;
-		}
+        if (ARMSX2GamepadSlotLooksLikeJoyCon(slot)) {
+            const u32 log_index = s_loggedJoyConRumbleSkipped.fetch_add(1, std::memory_order_relaxed);
+            if (log_index < 16)
+                Console.WriteLn("[ARMSX2 iOS Gamepad] Test Joy-Con rumble hard-disabled slot=%u name=%s",
+                    slot + 1, SDL_GetGamepadName(s_gamepads[slot]) ?: "unknown");
+            continue;
+        }
 
         anySDLGamepad = true;
         const bool ok = SDL_RumbleGamepad(s_gamepads[slot], test_motor_strength, test_motor_strength,
