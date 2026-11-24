@@ -191,7 +191,7 @@ std::atomic<bool> s_loadLastSaveStateOnBoot{false};
         ARMSX2IOSApplyRetroAchievementsOverlayDefaults(s_settings_interface, "after-startup-settings");
     }
     Host::CommitBaseSettingChanges();
-    VMManager::ApplySettings();
+    Host::RunOnCPUThread([]() { VMManager::ApplySettings(); }, false);
     ARMSX2_PostRetroAchievementsStateChanged();
     
     Host::g_sdl_window = SDL_CreateWindow("PCSX2 iOS", 1280, 720, SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE);
