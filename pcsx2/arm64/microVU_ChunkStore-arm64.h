@@ -95,7 +95,7 @@ namespace mVUChunkStore
 		u64 packLoadedCodeBytes = 0;
 		u64 packLoadNs = 0;
 		u64 packRejected = 0;
-		u64 packDropped = 0; // records left out and removed: a routine had more plain bodies than are kept
+		u64 packDropped = 0; // records left out and removed: a routine had more bodies than a head keeps
 		// The first placement of a tiered body since the store was last
 		// emptied (a reset): which outermost compile asked for since then it
 		// served (1: the first), and how many before it the JIT compiled. 0

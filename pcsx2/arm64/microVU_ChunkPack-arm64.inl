@@ -38,6 +38,11 @@ namespace mVUChunkPack
 	static constexpr u32 kMaxCodeBytes = 8u << 20;
 	static constexpr u32 kMaxSlots = 1u << 18;
 
+	// Tiered bodies and "no region" marks made from the pack for one routine:
+	// what one head keeps (kMaxBodiesPerHead, vuaot/microVU_VuAot-arm64.inl),
+	// the ones stored last. The records past it leave the pack.
+	static constexpr size_t kMaxTieredPerRoot = 8;
+
 	// The routine's head is settled (mVUChunkHead::settled).
 	static constexpr u32 kSettledMagic = 0x54455356u; // 'VSET'
 	struct SettledRecord
@@ -549,18 +554,19 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 	const auto t0 = std::chrono::steady_clock::now();
 	const bool tierOn = mVUvuAotEnabled();
 	bool sawTiered = false, settled = false;
-	// (the records come oldest first: this many plain ones are passed over)
-	size_t plainToSkip = 0;
+	// (the records come oldest first: this many plain ones, and this many of
+	// the tier's, are passed over)
+	size_t plainToSkip = 0, tieredToSkip = 0;
 	{
-		size_t plain = 0;
+		size_t plain = 0, tiered = 0;
 		for (const std::vector<u8>& rec : records)
 		{
 			mVUChunkPack::Header h;
 			if (rec.size() >= sizeof(h))
 			{
 				std::memcpy(&h, rec.data(), sizeof(h));
-				plain += h.magic == mVUChunkPack::kRecordMagic && !(h.flags & mVUChunkPack::kFlagTiered) &&
-						 std::memcmp(h.rootState, &state, sizeof(microRegInfo)) == 0;
+				if (h.magic == mVUChunkPack::kRecordMagic && std::memcmp(h.rootState, &state, sizeof(microRegInfo)) == 0)
+					((h.flags & mVUChunkPack::kFlagTiered) ? tiered : plain)++;
 			}
 		}
 		// A routine with an immediate compiled in that a game rewrites between
@@ -568,6 +574,7 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		// would make a body of every one of them here. Past what a head keeps,
 		// the records leave the pack.
 		plainToSkip = plain > mVUchunkMaxPlainPerHead ? plain - mVUchunkMaxPlainPerHead : 0;
+		tieredToSkip = (tierOn && tiered > mVUChunkPack::kMaxTieredPerRoot) ? tiered - mVUChunkPack::kMaxTieredPerRoot : 0;
 	}
 	for (const std::vector<u8>& rec : records)
 	{
@@ -589,9 +596,9 @@ static void mVUchunkPackFetch(microVU& mVU, u32 rootPC, const microRegInfo& stat
 		const bool tiered = !reject && (p.h.flags & mVUChunkPack::kFlagTiered);
 		if (tiered && !tierOn)
 			continue;
-		if (!reject && !tiered && plainToSkip)
+		if (!reject && (tiered ? tieredToSkip : plainToSkip))
 		{
-			plainToSkip--;
+			(tiered ? tieredToSkip : plainToSkip)--;
 			st.packDropped++;
 			mVUProgCache::DropBody(1, rootHash, rec.data(), rec.size());
 			continue;

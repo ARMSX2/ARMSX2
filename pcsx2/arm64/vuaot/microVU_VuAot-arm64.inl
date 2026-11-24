@@ -48,6 +48,7 @@ static constexpr u32 kMaxGenAttempts = 4;
 // Tiered bodies and "no region" marks one head keeps: routines that begin
 // alike and go on differently each need their own.
 static constexpr size_t kMaxBodiesPerHead = 8;
+static_assert(kMaxBodiesPerHead == mVUChunkPack::kMaxTieredPerRoot, "the disk pack brings back as many of the tier's bodies as a head keeps");
 
 // A region node as a job sees it, and the block it became when the job's code
 // was placed.
