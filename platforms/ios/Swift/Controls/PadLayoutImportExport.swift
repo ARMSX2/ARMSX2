@@ -67,6 +67,7 @@ enum PadLayoutImportExport {
             p.hitScaleX = PadLayoutMetrics.clampedScale(position.hitScaleX)
             p.hitScaleY = PadLayoutMetrics.clampedScale(position.hitScaleY)
             p.opacity = PadLayoutMetrics.clampedOpacity(position.opacity)
+            p.zone = position.zone.flatMap(PadLayoutMetrics.clampedZone)
             return p
         }
     }

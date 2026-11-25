@@ -302,6 +302,31 @@ final class PadLayoutPresetStore {
         persist()
     }
 
+    /// Drops the stored stick modes of the layout all games use on this device class, so the global
+    /// Dynamic Thumbsticks setting shows on it. Per-game layouts keep theirs; nothing writes when none was set.
+    func followGlobalStickMode() {
+        func cleared(_ snapshot: PadLayoutSnapshot) -> PadLayoutSnapshot {
+            var s = snapshot
+            for id in ["lstick", "rstick"] {
+                s.portrait[id]?.floating = nil
+                s.landscape[id]?.floating = nil
+                s.book?[id]?.floating = nil
+            }
+            return s
+        }
+        if let preset = preset(id: globalPresetID) {
+            let snapshot = preset.snapshot(for: .current)
+            let next = cleared(snapshot)
+            if next != snapshot { try? updatePreset(id: preset.id, snapshot: next, for: .current) }
+        } else {
+            let layout = PadLayoutStore.shared, snapshot = layout.snapshot()
+            let next = cleared(snapshot)
+            guard next != snapshot else { return }
+            layout.apply(snapshot: next)
+            layout.save()
+        }
+    }
+
     func renamePreset(id: String, to name: String) throws {
         guard let index = presets.firstIndex(where: { $0.id == id }) else {
             throw PadLayoutPresetStoreError.missingPreset

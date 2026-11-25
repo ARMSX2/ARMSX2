@@ -56,14 +56,20 @@ struct VirtualPadDynamicControlSections: View {
                 settings.localized("Legacy Thumbsticks"),
                 isOn: Binding(
                     get: { dynamicSettings.legacyThumbsticks },
-                    set: { dynamicSettings.setLegacyThumbsticks($0) }
+                    set: {
+                        dynamicSettings.setLegacyThumbsticks($0)
+                        PadLayoutPresetStore.shared.followGlobalStickMode()
+                    }
                 )
             )
             controllerToggle(
                 settings.localized("Dynamic Thumbsticks"),
                 isOn: Binding(
                     get: { dynamicSettings.dynamicThumbsticks },
-                    set: { dynamicSettings.setDynamicThumbsticks($0) }
+                    set: {
+                        dynamicSettings.setDynamicThumbsticks($0)
+                        PadLayoutPresetStore.shared.followGlobalStickMode()
+                    }
                 )
             )
             controllerToggle(settings.localized("Swipe Camera"), isOn: $dynamicSettings.swipeCamera)
@@ -71,7 +77,7 @@ struct VirtualPadDynamicControlSections: View {
         } header: {
             Text(settings.localized("Dynamic Controls"))
         } footer: {
-            Text(settings.localized("Legacy and Dynamic Thumbsticks are mutually exclusive. Dynamic sticks appear where each touch begins. Swipe Camera replaces the right touch stick, while Gyroscope Camera augments the active right-side control."))
+            Text(settings.localized("Legacy and Dynamic Thumbsticks are mutually exclusive. Dynamic Thumbsticks makes both sticks float in layouts that don't set their own; set each stick in Edit Layout. Swipe Camera uses the right stick's zone, while Gyroscope Camera augments the active right-side control."))
         }
 
         Section {

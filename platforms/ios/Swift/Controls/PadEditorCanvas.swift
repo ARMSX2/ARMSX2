@@ -33,6 +33,7 @@ struct PadEditorPieces: View {
             }
             if let selected = geometries.first(where: { $0.id == editor.selection }) {
                 PadResizeHandle(editor: editor, geometry: selected)
+                if editor.zoneFrame(selected.id) != nil { PadZoneHandle(editor: editor, id: selected.id) }
                 if editor.resizing { readout(selected) }
             }
         }
@@ -183,7 +184,30 @@ private struct PadResizeHandle: View {
     }
 }
 
-/// The grid, touch areas, overlaps and snap guides; none takes a touch.
+/// Resizes the selected stick's zone from its inner top corner.
+private struct PadZoneHandle: View {
+    let editor: PadEditor
+    let id: String
+    @Environment(\.uiAccentColour) private var accent
+
+    var body: some View {
+        let corner = editor.zoneCorner(id), size = editor.area.size
+        Circle()
+            .fill(accent)
+            .frame(width: 14, height: 14)
+            .overlay(Circle().stroke(OverlayTheme.shell, lineWidth: 2))
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .position(x: corner.x * size.width, y: corner.y * size.height)
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(PadEditorPieces.space))
+                    .onChanged { editor.moveZoneCorner(id, to: $0.location) }
+            )
+            .accessibilityHidden(true)
+    }
+}
+
+/// The grid, zones, touch areas, overlaps and snap guides; none takes a touch.
 struct PadEditorMarks: View {
     let editor: PadEditor
     let showGrid: Bool
@@ -207,6 +231,7 @@ struct PadEditorMarks: View {
                 }
                 .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
             }
+            zones
             touchAreas
             ForEach(Array(editor.guides), id: \.self) { guide in
                 Rectangle()
@@ -221,6 +246,29 @@ struct PadEditorMarks: View {
         .frame(width: size.width, height: size.height, alignment: .topLeading)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+
+    private var zones: some View {
+        let swipe = SettingsStore.shared.dynamicThumbsticks.swipeCamera
+        let labels = ["lstick": "Left stick zone", "rstick": swipe ? "Right stick and camera zone" : "Right stick zone"]
+        return ForEach(["lstick", "rstick"].filter { !editor.isHidden($0) }, id: \.self) { id in
+            if let zone = editor.zoneFrame(id) {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(accent.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(accent.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                    )
+                    .overlay(alignment: id == "lstick" ? .topLeading : .topTrailing) {
+                        Text(SettingsStore.shared.localized(labels[id] ?? id))
+                            .font(.caption)
+                            .foregroundStyle(OverlayTheme.textSecondary)
+                            .padding(8)
+                    }
+                    .frame(width: zone.width, height: zone.height)
+                    .position(x: zone.midX, y: zone.midY)
+            }
+        }
     }
 
     /// The selected piece's own area always shows, and every colliding one in the destructive colour.

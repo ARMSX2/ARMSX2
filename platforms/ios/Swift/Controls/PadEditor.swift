@@ -446,6 +446,78 @@ final class PadEditor {
         stepping(id, setting: "opacity") { edit(id) { $0.opacity = value } }
     }
 
+    // MARK: Floating sticks
+
+    /// The stick's stored mode, else the global Dynamic Thumbsticks setting it follows.
+    func effectiveFloating(_ id: String) -> Bool {
+        resolved(id).floating ?? SettingsStore.shared.dynamicThumbsticks.dynamicThumbsticks
+    }
+
+    /// Stores an explicit mode, which the partner stick takes too with Mirror on.
+    func setFloating(_ id: String, _ value: Bool) {
+        guard isStick(id) else { return }
+        stepping(id, setting: "floating") { edit(id) { $0.floating = value } }
+    }
+
+    /// True where the stick takes touches in a zone: floating, or the right stick under Swipe Camera.
+    func usesZone(_ id: String) -> Bool {
+        isStick(id) && (effectiveFloating(id) || id == "rstick" && SettingsStore.shared.dynamicThumbsticks.swipeCamera)
+    }
+
+    func zone(of id: String) -> CGRect {
+        resolved(id).zone ?? PadLayoutMetrics.defaultZone(isLeft: id == "lstick")
+    }
+
+    func zoneFrame(_ id: String) -> CGRect? {
+        guard usesZone(id) else { return nil }
+        let z = zone(of: id), size = area.size
+        return CGRect(x: z.minX * size.width, y: z.minY * size.height, width: z.width * size.width, height: z.height * size.height)
+    }
+
+    /// Sizes the zone from its outer and bottom edges, 25% to 100% of the pad.
+    func setZoneSize(_ id: String, axis: PadSizeAxis, value: CGFloat) {
+        let v = min(max(value, PadLayoutMetrics.minimumZoneShare), 1)
+        var z = zone(of: id)
+        switch axis {
+        case .x:
+            z.origin.x = id == "lstick" ? min(z.minX, 1 - v) : max(z.maxX - v, 0)
+            z.size.width = v
+        case .y:
+            z.origin.y = max(z.maxY - v, 0)
+            z.size.height = v
+        }
+        setZone(id, z, setting: "zone.\(axis)")
+    }
+
+    /// The handle's corner, inner top: the left stick's right edge, the right stick's left edge.
+    func zoneCorner(_ id: String) -> CGPoint {
+        let z = zone(of: id)
+        return CGPoint(x: id == "lstick" ? z.maxX : z.minX, y: z.minY)
+    }
+
+    /// Moves the inner top corner to `point` in pad points; the outer bottom corner stays.
+    func moveZoneCorner(_ id: String, to point: CGPoint) {
+        guard area.size.width > 0, area.size.height > 0 else { return }
+        let z = zone(of: id), m = PadLayoutMetrics.minimumZoneShare
+        let x = min(max(point.x / area.size.width, 0), 1), y = min(max(point.y / area.size.height, 0), z.maxY - m)
+        let next = id == "lstick"
+            ? CGRect(x: z.minX, y: y, width: max(x - z.minX, m), height: z.maxY - y)
+            : CGRect(x: min(x, z.maxX - m), y: y, width: max(z.maxX - x, m), height: z.maxY - y)
+        setZone(id, next, setting: "zone.corner")
+    }
+
+    /// With Mirror on, the partner stick takes the mirrored zone.
+    private func setZone(_ id: String, _ zone: CGRect, setting: String) {
+        guard isStick(id), area.size.width > 0, let z = PadLayoutMetrics.clampedZone(zone) else { return }
+        stepping(id, setting: setting) {
+            for target in [id] + (mirrorEnabled ? [Self.mirrorPartner[id]].compactMap { $0 } : []) {
+                var p = resolved(target)
+                p.zone = target == id ? z : CGRect(x: 1 - z.maxX, y: z.minY, width: z.width, height: z.height)
+                write(target, p)
+            }
+        }
+    }
+
     /// Hidden pieces are one set for every orientation.
     func toggleHidden(_ id: String) {
         recordingVisibility {

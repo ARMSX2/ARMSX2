@@ -111,6 +111,8 @@ struct DynamicThumbstickView: View {
     var tapActionsEnabled = false
     var maximumTapDuration: TimeInterval = 0.30
     var tapTravelTolerance: CGFloat = 12
+    // Where a layout's floating stick rests, drawn as a faint ring while idle.
+    var home: CGPoint? = nil
     var onVector: (DynamicThumbstickVector) -> Void
     var onInteractionBegan: () -> Void = {}
     var onInteractionActivity: () -> Void = {}
@@ -133,6 +135,14 @@ struct DynamicThumbstickView: View {
             ZStack(alignment: .topLeading) {
                 Color.clear
                     .contentShape(Rectangle())
+
+                if !isActive, let home {
+                    Circle()
+                        .stroke(Color(white: 0.72).opacity(baseOpacity * 0.25), lineWidth: 1.5)
+                        .frame(width: radius * 2, height: radius * 2)
+                        .position(home)
+                        .allowsHitTesting(false)
+                }
 
                 if isActive {
                     DynamicThumbstickVisual(

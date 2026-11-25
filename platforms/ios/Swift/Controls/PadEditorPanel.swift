@@ -85,6 +85,12 @@ struct PadPiecePanel: View {
                      warning: true)
             }
             if hidden { note(settings.localized("Hidden while you play. Tap Show to bring it back.")) }
+            if isStick(id) && editor.effectiveFloating(id) {
+                note(settings.localized("The stick appears where your thumb lands in its zone."))
+            }
+            if id == "rstick" && SettingsStore.shared.dynamicThumbsticks.swipeCamera {
+                note(settings.localized("Swipe Camera uses this zone too."))
+            }
         }
         .padding(12)
     }
@@ -94,6 +100,12 @@ struct PadPiecePanel: View {
             // A stick touches over the circle it draws from one scale, so it has one Size and no Touch Area.
             if isStick(id) {
                 pair(wide, sizeStepper("Size", spoken: "Size", p.scaleX, .visible, .x), opacityStepper(p.opacity))
+                if editor.usesZone(id) {
+                    let zone = editor.zone(of: id)
+                    caption("Zone")
+                    pair(wide, zoneStepper("Width", spoken: "Zone width", zone.width, .x),
+                         zoneStepper("Height", spoken: "Zone height", zone.height, .y))
+                }
                 if wide { GridRow { tiles(hidden: hidden).gridCellColumns(2) } }
             } else {
                 caption("Size")
@@ -134,6 +146,12 @@ struct PadPiecePanel: View {
     private func sizeStepper(_ label: String, spoken: String, _ value: CGFloat, _ kind: PadSizeKind, _ axis: PadSizeAxis) -> some View {
         stepper(label, spoken: spoken, value, in: PadLayoutMetrics.minControlScale...PadLayoutMetrics.maxControlScale) { delta in
             editor.setSize(id, kind: kind, axis: axis, value: ((value + delta) * 10).rounded() / 10)
+        }
+    }
+
+    private func zoneStepper(_ label: String, spoken: String, _ value: CGFloat, _ axis: PadSizeAxis) -> some View {
+        stepper(label, spoken: spoken, value, in: PadLayoutMetrics.minimumZoneShare...1) { delta in
+            editor.setZoneSize(id, axis: axis, value: ((value + delta) * 10).rounded() / 10)
         }
     }
 
@@ -196,6 +214,13 @@ struct PadPiecePanel: View {
 
     private func tiles(hidden: Bool, _ layout: AnyLayout = AnyLayout(HStackLayout(spacing: 4))) -> some View {
         layout {
+            if isStick(id) {
+                let floating = editor.effectiveFloating(id)
+                tile("Floating", spoken: "Floating stick", id == "lstick" ? "l.joystick" : "r.joystick", on: floating) {
+                    editor.setFloating(id, !floating)
+                }
+                .accessibilityValue(Text(settings.localized(floating ? "On" : "Off")))
+            }
             if hidden {
                 tile("Show", spoken: "Show", "eye.slash", on: true) { editor.toggleHidden(id) }
                     .accessibilityValue(Text(settings.localized("Off")))
