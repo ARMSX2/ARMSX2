@@ -14,9 +14,12 @@ struct PadGroupPosition: Codable, Equatable {
     var hitScaleX: CGFloat
     var hitScaleY: CGFloat
     var opacity: CGFloat = 1
+    // Sticks only: nil follows the global Dynamic Thumbsticks setting, and a nil zone is the stick's half.
+    var floating: Bool? = nil
+    var zone: CGRect? = nil
 
     enum CodingKeys: String, CodingKey {
-        case x, y, scaleX, scaleY, hitScaleX, hitScaleY, opacity
+        case x, y, scaleX, scaleY, hitScaleX, hitScaleY, opacity, floating, zone
     }
 
     var scale: CGFloat {
@@ -50,7 +53,7 @@ struct PadGroupPosition: Codable, Equatable {
         self.hitScaleY = hitScaleY
     }
 
-    // Files written before per-piece opacity have no key, so it alone may be absent.
+    // Files written before per-piece opacity and floating sticks lack those keys.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         x = try c.decode(CGFloat.self, forKey: .x)
@@ -60,6 +63,8 @@ struct PadGroupPosition: Codable, Equatable {
         hitScaleX = try c.decode(CGFloat.self, forKey: .hitScaleX)
         hitScaleY = try c.decode(CGFloat.self, forKey: .hitScaleY)
         opacity = PadLayoutMetrics.clampedOpacity((try? c.decodeIfPresent(CGFloat.self, forKey: .opacity)) ?? 1)
+        floating = try? c.decodeIfPresent(Bool.self, forKey: .floating)
+        zone = (try? c.decodeIfPresent(CGRect.self, forKey: .zone)).flatMap(PadLayoutMetrics.clampedZone)
     }
 }
 
@@ -95,6 +100,21 @@ enum PadLayoutMetrics {
     static func clampedOpacity(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 1 }
         return min(max(value, opacityRange.lowerBound), opacityRange.upperBound)
+    }
+
+    /// The share of the pad a floating stick takes when its layout sets no zone.
+    static func defaultZone(isLeft: Bool) -> CGRect {
+        CGRect(x: isLeft ? 0 : 0.5, y: 0, width: 0.5, height: 1)
+    }
+
+    static let minimumZoneShare: CGFloat = 0.25
+
+    /// A zone kept inside the pad; nil (the half) when it is not finite or too small on an axis.
+    static func clampedZone(_ zone: CGRect) -> CGRect? {
+        guard [zone.origin.x, zone.origin.y, zone.width, zone.height].allSatisfy(\.isFinite) else { return nil }
+        let z = zone.standardized.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let floor = minimumZoneShare - 0.001
+        return !z.isNull && z.width >= floor && z.height >= floor ? z : nil
     }
 }
 
@@ -362,11 +382,23 @@ final class PadLayoutStore {
         ARMSX2Bridge.setINIFloat(section, key: "\(id)_hitScaleX", value: Float(pos.hitScaleX))
         ARMSX2Bridge.setINIFloat(section, key: "\(id)_hitScaleY", value: Float(pos.hitScaleY))
         ARMSX2Bridge.setINIFloat(section, key: "\(id)_opacity", value: Float(pos.opacity))
+        guard isStick(id) else { return }
+        let mode: Float = pos.floating.map { $0 ? 1 : 0 } ?? -1
+        ARMSX2Bridge.setINIFloat(section, key: "\(id)_floating", value: mode)
+        let zone: [CGFloat] = pos.zone.map { [$0.minX, $0.minY, $0.width, $0.height] } ?? [-1, -1, -1, -1]
+        for (key, value) in zip(Self.zoneKeys, zone) {
+            ARMSX2Bridge.setINIFloat(section, key: "\(id)\(key)", value: Float(value))
+        }
     }
+
+    private static let zoneKeys = ["_zoneX", "_zoneY", "_zoneW", "_zoneH"]
 
     private func writeSizeKeysSentinel(section: String, id: String) {
         for suffix in ["scale", "hitScale", "scaleX", "scaleY", "hitScaleX", "hitScaleY", "opacity"] {
             ARMSX2Bridge.setINIFloat(section, key: "\(id)_\(suffix)", value: -1.0)
+        }
+        for key in isStick(id) ? ["_floating"] + Self.zoneKeys : [] {
+            ARMSX2Bridge.setINIFloat(section, key: "\(id)\(key)", value: -1.0)
         }
     }
 
@@ -440,6 +472,14 @@ final class PadLayoutStore {
         return value < 0 ? 1 : PadLayoutMetrics.clampedOpacity(CGFloat(value))
     }
 
+    private func readStickMode(_ pos: inout PadGroupPosition, section: String, id: String) {
+        guard isStick(id) else { return }
+        let floating = ARMSX2Bridge.getINIFloat(section, key: "\(id)_floating", defaultValue: -1)
+        pos.floating = floating < 0 ? nil : floating > 0.5
+        let z = Self.zoneKeys.map { CGFloat(ARMSX2Bridge.getINIFloat(section, key: "\(id)\($0)", defaultValue: -1)) }
+        pos.zone = z.contains { $0 < 0 } ? nil : PadLayoutMetrics.clampedZone(CGRect(x: z[0], y: z[1], width: z[2], height: z[3]))
+    }
+
     private func writePosition(_ pos: PadGroupPosition?, section: String, id: String) {
         guard let pos else {
             ARMSX2Bridge.setINIFloat(section, key: "\(id)_x", value: -1.0)
@@ -467,6 +507,7 @@ final class PadLayoutStore {
             let axes = readSizeAxes(section: section, id: id)
             var pos = PadGroupPosition(x: CGFloat(x), y: CGFloat(y), scaleX: axes.scaleX, scaleY: axes.scaleY, hitScaleX: axes.hitScaleX, hitScaleY: axes.hitScaleY)
             pos.opacity = readOpacity(section: section, id: id)
+            readStickMode(&pos, section: section, id: id)
             positions[id] = pos
         }
         let stored = ARMSX2Bridge.getINIFloat(section, key: "stored", defaultValue: -1) > 0
@@ -482,6 +523,7 @@ final class PadLayoutStore {
                 let axes = readSizeAxes(section: "ARMSX2iOS/PadLayout/Portrait", id: id)
                 var pos = PadGroupPosition(x: CGFloat(px), y: CGFloat(py), scaleX: axes.scaleX, scaleY: axes.scaleY, hitScaleX: axes.hitScaleX, hitScaleY: axes.hitScaleY)
                 pos.opacity = readOpacity(section: "ARMSX2iOS/PadLayout/Portrait", id: id)
+                readStickMode(&pos, section: "ARMSX2iOS/PadLayout/Portrait", id: id)
                 portrait[id] = pos
             }
             // Landscape
@@ -491,6 +533,7 @@ final class PadLayoutStore {
                 let axes = readSizeAxes(section: "ARMSX2iOS/PadLayout/Landscape", id: id)
                 var pos = PadGroupPosition(x: CGFloat(lx), y: CGFloat(ly), scaleX: axes.scaleX, scaleY: axes.scaleY, hitScaleX: axes.hitScaleX, hitScaleY: axes.hitScaleY)
                 pos.opacity = readOpacity(section: "ARMSX2iOS/PadLayout/Landscape", id: id)
+                readStickMode(&pos, section: "ARMSX2iOS/PadLayout/Landscape", id: id)
                 landscape[id] = pos
             }
         }

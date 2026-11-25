@@ -366,5 +366,6 @@ enum BuiltInDynamicControlPreset: String, CaseIterable, Identifiable {
             settings.releaseFireWhenTouchEnds = true
             settings.fireReleaseDelay = 0
         }
+        PadLayoutPresetStore.shared.followGlobalStickMode()
     }
 }

@@ -64,7 +64,7 @@ struct VirtualControllerView: View {
             legacyThumbsticks: dynamicSettings.legacyThumbsticks,
             swipeCamera: dynamicSettings.swipeCamera,
             inputSessionGeneration: inputSessionGeneration,
-            inputZones: dynamicInputZones(w: w, h: h)
+            inputZones: dynamicInputZones(w: w, h: h, usesLayoutZones: false)
         )
     }
 
@@ -348,7 +348,7 @@ struct VirtualControllerView: View {
         areaH: CGFloat
     ) -> some View {
         let p = pos(id, landscape: landscape)
-        if dynamicSettings.legacyThumbsticks && !(!isLeft && dynamicSettings.swipeCamera) {
+        if (p.floating.map { !$0 } ?? dynamicSettings.legacyThumbsticks) && !(!isLeft && dynamicSettings.swipeCamera) {
             let center = CGPoint(x: p.x * areaW, y: p.y * areaH)
             StickView(
                 isLeft: isLeft,
@@ -363,18 +363,36 @@ struct VirtualControllerView: View {
         }
     }
 
+    /// A stick's stored mode wins; an unset stick follows the global Dynamic Thumbsticks setting.
+    private func stickFloats(_ isLeft: Bool, landscape: Bool) -> Bool {
+        pos(isLeft ? "lstick" : "rstick", landscape: landscape).floating ?? dynamicSettings.dynamicThumbsticks
+    }
+
+    private func floatingZone(_ isLeft: Bool, landscape: Bool, w: CGFloat, h: CGFloat) -> CGRect {
+        let share = pos(isLeft ? "lstick" : "rstick", landscape: landscape).zone ?? PadLayoutMetrics.defaultZone(isLeft: isLeft)
+        return CGRect(x: share.minX * w, y: share.minY * h, width: share.width * w, height: share.height * h)
+    }
+
+    // V2 skins keep the global flags and the halves.
     @ViewBuilder
-    private func dynamicInputZones(w: CGFloat, h: CGFloat) -> some View {
+    private func dynamicInputZones(w: CGFloat, h: CGFloat, usesLayoutZones: Bool) -> some View {
         let conversionSettings = dynamicSettings.effectiveSwipeConversionSettings
         let visualRadius = CGFloat(dynamicSettings.thumbstickRadius)
         let rightAreaScale = CGFloat(
             min(max(dynamicSettings.rightThumbstickAreaScale, 1), 5)
         )
+        let floats = { (isLeft: Bool) in
+            usesLayoutZones ? stickFloats(isLeft, landscape: isLandscape) : dynamicSettings.dynamicThumbsticks
+        }
+        let zone = { (isLeft: Bool) in
+            usesLayoutZones
+                ? floatingZone(isLeft, landscape: isLandscape, w: w, h: h)
+                : CGRect(x: isLeft ? 0 : w / 2, y: 0, width: w / 2, height: h)
+        }
+        let leftZone = zone(true), rightZone = zone(false)
         Group {
-            if dynamicSettings.dynamicThumbsticks && isVisible("lstick") {
-                dynamicThumbstickZone(isLeft: true)
-                    .frame(width: w / 2, height: h)
-                    .position(x: w / 4, y: h / 2)
+            if floats(true) && isVisible("lstick") {
+                floatingStick(isLeft: true, zone: leftZone, w: w, h: h, usesLayout: usesLayoutZones)
             }
 
             if dynamicSettings.swipeCamera && isVisible("rstick") {
@@ -438,18 +456,25 @@ struct VirtualControllerView: View {
                         }
                     }
                 )
-                .frame(width: w / 2, height: h)
-                .position(x: w * 0.75, y: h / 2)
-            } else if dynamicSettings.dynamicThumbsticks && isVisible("rstick") {
-                dynamicThumbstickZone(isLeft: false)
-                    .frame(width: w / 2, height: h)
-                    .position(x: w * 0.75, y: h / 2)
+                .frame(width: rightZone.width, height: rightZone.height)
+                .position(x: rightZone.midX, y: rightZone.midY)
+                .opacity(usesLayoutZones ? pos("rstick", landscape: isLandscape).opacity : 1)
+            } else if floats(false) && isVisible("rstick") {
+                floatingStick(isLeft: false, zone: rightZone, w: w, h: h, usesLayout: usesLayoutZones)
             }
         }
         .id(inputSessionGeneration)
     }
 
-    private func dynamicThumbstickZone(isLeft: Bool) -> some View {
+    private func floatingStick(isLeft: Bool, zone: CGRect, w: CGFloat, h: CGFloat, usesLayout: Bool) -> some View {
+        let p = pos(isLeft ? "lstick" : "rstick", landscape: isLandscape)
+        return dynamicThumbstickZone(isLeft: isLeft, home: usesLayout ? CGPoint(x: p.x * w - zone.minX, y: p.y * h - zone.minY) : nil)
+            .frame(width: zone.width, height: zone.height)
+            .position(x: zone.midX, y: zone.midY)
+            .opacity(usesLayout ? p.opacity : 1)
+    }
+
+    private func dynamicThumbstickZone(isLeft: Bool, home: CGPoint?) -> some View {
         let usesActions = isLeft
             ? dynamicSettings.leftThumbstickActionsEnabled
             : dynamicSettings.rightThumbstickActionsEnabled
@@ -481,6 +506,7 @@ struct VirtualControllerView: View {
             tapActionsEnabled: usesActions,
             maximumTapDuration: dynamicSettings.tapMaximumDuration,
             tapTravelTolerance: CGFloat(dynamicSettings.tapTravelTolerance),
+            home: home,
             onVector: { vector in
                 if isLeft {
                     EmulatorBridge.shared.setLeftStick(x: Float(vector.x), y: Float(vector.y))
@@ -550,7 +576,7 @@ struct VirtualControllerView: View {
                     .allowsHitTesting(false)
             }
 
-            dynamicInputZones(w: w, h: h)
+            dynamicInputZones(w: w, h: h, usesLayoutZones: true)
 
             placedDPad(landscape: true, areaW: w, areaH: h)
 
@@ -616,7 +642,7 @@ struct VirtualControllerView: View {
                     .allowsHitTesting(false)
             }
 
-            dynamicInputZones(w: w, h: h)
+            dynamicInputZones(w: w, h: h, usesLayoutZones: true)
 
             GeometryReader { cGeo in
                 let cW = cGeo.size.width
