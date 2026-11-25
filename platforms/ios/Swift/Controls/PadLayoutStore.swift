@@ -158,6 +158,7 @@ final class PadLayoutStore {
     static let shared = PadLayoutStore()
 
     nonisolated static let perButtonIDs = ["triangle", "circle", "square", "cross", "up", "down", "left", "right"]
+    nonisolated static let clusterMembers = ["dpad": ["up", "down", "left", "right"], "action": ["triangle", "circle", "square", "cross"]]
     nonisolated static let groupIDs = ["dpad", "action", "l1", "l2", "r1", "r2", "lstick", "rstick", "select", "start"]
 
     var portrait: [String: PadGroupPosition] = [:]
@@ -237,7 +238,7 @@ final class PadLayoutStore {
         let offset = VirtualPadButtonOffset.offset(for: id, isLandscape: isLandscape)
         let scaledOffsetX = offset.width * groupPos.scaleX
         let scaledOffsetY = offset.height * groupPos.scaleY
-        return PadGroupPosition(
+        var p = PadGroupPosition(
             x: groupPos.x + scaledOffsetX / areaW,
             y: groupPos.y + scaledOffsetY / areaH,
             scaleX: groupPos.scaleX,
@@ -245,6 +246,8 @@ final class PadLayoutStore {
             hitScaleX: groupPos.hitScaleX,
             hitScaleY: groupPos.hitScaleY
         )
+        p.opacity = groupPos.opacity
+        return p
     }
 
     nonisolated static func groupID(for perButtonID: String) -> String {

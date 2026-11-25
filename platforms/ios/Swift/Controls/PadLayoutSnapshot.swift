@@ -37,7 +37,7 @@ struct PadLayoutSnapshot: Codable, Equatable {
         let offset = VirtualPadButtonOffset.offset(for: id, isLandscape: isLandscape)
         let scaledOffsetX = offset.width * groupPos.scaleX
         let scaledOffsetY = offset.height * groupPos.scaleY
-        return PadGroupPosition(
+        var p = PadGroupPosition(
             x: groupPos.x + scaledOffsetX / areaW,
             y: groupPos.y + scaledOffsetY / areaH,
             scaleX: groupPos.scaleX,
@@ -45,6 +45,8 @@ struct PadLayoutSnapshot: Codable, Equatable {
             hitScaleX: groupPos.hitScaleX,
             hitScaleY: groupPos.hitScaleY
         )
+        p.opacity = groupPos.opacity
+        return p
     }
 
     func isControlVisible(_ id: String) -> Bool {
@@ -59,25 +61,36 @@ struct PadLayoutSnapshot: Codable, Equatable {
         size: CGSize,
         landscape isLandscape: Bool,
         analogStickScale: CGFloat,
-        includeHidden: Bool = false
+        includeHidden: Bool = false,
+        joined: Set<String> = []
     ) -> [PadEditorControlGeometry] {
         let shown = { (id: String) in includeHidden || isControlVisible(id) }
         func geometry(_ id: String, _ p: PadGroupPosition) -> PadEditorControlGeometry {
             let isStick = id == "lstick" || id == "rstick"
-            return PadEditorControlGeometry(
+            let base = padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale)
+            var g = PadEditorControlGeometry(
                 id: id,
                 center: CGPoint(x: p.x * size.width, y: p.y * size.height),
-                baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
+                baseSize: base,
                 hitScaleX: isStick ? p.scaleX : p.hitScaleX,
                 hitScaleY: isStick ? p.scaleY : p.hitScaleY,
                 visibleScaleX: p.scaleX,
                 visibleScaleY: p.scaleY
             )
+            // A joined cluster takes touches over its buttons' areas: the spacing scales with the cluster, the buttons' own areas with Touch Area.
+            if let first = PadLayoutStore.clusterMembers[id]?.first {
+                let button = padEditorBaseSize(for: first, isLandscape: isLandscape, analogStickScale: analogStickScale)
+                g.hitOverride = CGSize(
+                    width: (base.width - button.width) * p.scaleX + PadLayoutMetrics.touchLength(baseLength: button.width, hitScale: p.hitScaleX),
+                    height: (base.height - button.height) * p.scaleY + PadLayoutMetrics.touchLength(baseLength: button.height, hitScale: p.hitScaleY)
+                )
+            }
+            return g
         }
-        let buttons = PadLayoutStore.perButtonIDs.filter(shown).map {
+        let buttons = PadLayoutStore.perButtonIDs.filter { shown($0) && !joined.contains(PadLayoutStore.groupID(for: $0)) }.map {
             geometry($0, perButtonPosition(for: $0, landscape: isLandscape, areaW: size.width, areaH: size.height))
         }
-        let groups = PadLayoutStore.groupIDs.filter { $0 != "action" && $0 != "dpad" && shown($0) }.map {
+        let groups = PadLayoutStore.groupIDs.filter { (PadLayoutStore.clusterMembers[$0] == nil || joined.contains($0)) && shown($0) }.map {
             geometry($0, position(for: $0, landscape: isLandscape))
         }
         return buttons + groups
@@ -202,6 +215,8 @@ struct PadEditorControlGeometry {
     let hitScaleY: CGFloat
     let visibleScaleX: CGFloat
     let visibleScaleY: CGFloat
+    /// Set for a joined cluster, whose touch area is its buttons' areas together.
+    var hitOverride: CGSize?
 
     /// What the eye sees, which snapping lines up; touches use `hitFrame`.
     var visibleFrame: CGRect {
@@ -210,6 +225,7 @@ struct PadEditorControlGeometry {
     }
 
     var hitSize: CGSize {
+        if let hitOverride { return hitOverride }
         if isStick(id) {
             return CGSize(
                 width: PadLayoutMetrics.visibleLength(baseLength: baseSize.width, visibleScale: hitScaleX),
@@ -233,6 +249,14 @@ func isStick(_ id: String) -> Bool {
 
 func padEditorBaseSize(for id: String, isLandscape: Bool, analogStickScale: CGFloat) -> CGSize {
     switch id {
+    case "dpad", "action":
+        let members = PadLayoutStore.clusterMembers[id] ?? []
+        let button = padEditorBaseSize(for: members.first ?? id, isLandscape: isLandscape, analogStickScale: analogStickScale)
+        let reach = members.map { VirtualPadButtonOffset.offset(for: $0, isLandscape: isLandscape) }
+        return CGSize(
+            width: button.width + 2 * (reach.map { abs($0.width) }.max() ?? 0),
+            height: button.height + 2 * (reach.map { abs($0.height) }.max() ?? 0)
+        )
     case "up", "down", "left", "right":
         let width = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: isLandscape)
         return CGSize(width: width, height: width)

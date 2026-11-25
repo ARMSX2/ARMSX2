@@ -62,7 +62,7 @@ final class PadEditor {
     static let undoDepth = 100
     static let mirrorPartner: [String: String] = {
         let pairs = [("left", "circle"), ("right", "square"), ("up", "triangle"), ("down", "cross"),
-                     ("l1", "r1"), ("l2", "r2"), ("lstick", "rstick"), ("select", "start")]
+                     ("l1", "r1"), ("l2", "r2"), ("lstick", "rstick"), ("select", "start"), ("dpad", "action")]
         return Dictionary(uniqueKeysWithValues: pairs.flatMap { [($0.0, $0.1), ($0.1, $0.0)] })
     }()
 
@@ -109,6 +109,7 @@ final class PadEditor {
         endResize()
         lastStep = nil
         slot = s
+        if let selected = selection, !pieces.contains(selected) { selection = nil }
     }
 
     var renderSnapshot: PadLayoutSnapshot { slot == .book ? draft.inBook() : draft }
@@ -139,15 +140,19 @@ final class PadEditor {
     }
 
     /// On-screen frames of every piece, hidden ones included.
-    func geometries() -> [PadEditorControlGeometry] {
+    func geometries(joined: Set<String>? = nil) -> [PadEditorControlGeometry] {
         // Until the pad is measured, a button that follows its group divides by a zero area and lands at NaN.
         guard area.size.width > 0, area.size.height > 0 else { return [] }
         return shownSnapshot().controlGeometries(
-            size: area.size, landscape: slot.isLandscape, analogStickScale: area.analogStickScale, includeHidden: true
+            size: area.size, landscape: slot.isLandscape, analogStickScale: area.analogStickScale, includeHidden: true,
+            joined: joined ?? joinedClusters
         )
     }
 
-    func isHidden(_ id: String) -> Bool { !draft.isControlVisible(id) }
+    func isHidden(_ id: String) -> Bool {
+        if let members = PadLayoutStore.clusterMembers[id] { return members.contains(where: isHidden) }
+        return !draft.isControlVisible(id)
+    }
 
     private static func isPerButton(_ id: String) -> Bool { PadLayoutStore.perButtonIDs.contains(id) }
 
@@ -175,14 +180,14 @@ final class PadEditor {
     /// With Mirror on, the left/right partner takes the same size at the mirrored place.
     func place(_ id: String, _ p: PadGroupPosition) {
         write(id, p)
-        guard mirrorEnabled, let partner = Self.mirrorPartner[id] else { return }
+        guard mirrorEnabled, let partner = mirrored(id) else { return }
         var mirrored = p
         mirrored.x = 1 - p.x
         write(partner, mirrored)
     }
 
     /// Nil drops the entry, so the piece follows its default or group again.
-    private func write(_ id: String, _ p: PadGroupPosition?) {
+    func write(_ id: String, _ p: PadGroupPosition?) {
         let perButton = Self.isPerButton(id)
         switch slot {
         case .portrait:
@@ -317,7 +322,7 @@ final class PadEditor {
         var found = Set<PadGuide>()
         if snapEnabled {
             let others = geometries()
-                .filter { $0.id != id && !isHidden($0.id) && !(mirrorEnabled && Self.mirrorPartner[id] == $0.id) }
+                .filter { $0.id != id && !isHidden($0.id) && !(mirrorEnabled && mirrored(id) == $0.id) }
             (frame, found) = snapped(frame, to: targets(size: size, fold: area.fold, others: others))
         }
         if found != guides, !found.isEmpty { tick.selectionChanged() }
@@ -341,7 +346,7 @@ final class PadEditor {
         var y = [Self.margin, size.height - Self.margin, size.height / 2]
         if let fold { x += [fold.minX, fold.maxX] }
         let frames = Dictionary(uniqueKeysWithValues: others.map { ($0.id, $0.visibleFrame) })
-        for id in Self.pieceIDs {
+        for id in pieces {
             guard let frame = frames[id] else { continue }
             x += [frame.minX, frame.midX, frame.maxX]
             y += [frame.minY, frame.midY, frame.maxY]
@@ -394,7 +399,7 @@ final class PadEditor {
     /// Changes `id`, and with Mirror on its partner the same way, then nudges each back inside the pad.
     private func edit(_ id: String, _ change: (inout PadGroupPosition) -> Void) {
         guard area.size.width > 0, area.size.height > 0 else { return }
-        for target in [id] + (mirrorEnabled ? [Self.mirrorPartner[id]].compactMap { $0 } : []) {
+        for target in [id] + (mirrorEnabled ? [mirrored(id)].compactMap { $0 } : []) {
             var p = resolved(target)
             change(&p)
             write(target, p)
@@ -510,7 +515,7 @@ final class PadEditor {
     private func setZone(_ id: String, _ zone: CGRect, setting: String) {
         guard isStick(id), area.size.width > 0, let z = PadLayoutMetrics.clampedZone(zone) else { return }
         stepping(id, setting: setting) {
-            for target in [id] + (mirrorEnabled ? [Self.mirrorPartner[id]].compactMap { $0 } : []) {
+            for target in [id] + (mirrorEnabled ? [mirrored(id)].compactMap { $0 } : []) {
                 var p = resolved(target)
                 p.zone = target == id ? z : CGRect(x: 1 - z.maxX, y: z.minY, width: z.width, height: z.height)
                 write(target, p)
@@ -521,15 +526,15 @@ final class PadEditor {
     /// Hidden pieces are one set for every orientation.
     func toggleHidden(_ id: String) {
         recordingVisibility {
-            let group = PadLayoutStore.groupID(for: id)
+            let members = PadLayoutStore.clusterMembers[id]
+            let group = members == nil ? PadLayoutStore.groupID(for: id) : id
             // The old editor hid the D-pad or face buttons as a group; its pieces keep their look on their own keys.
-            if group != id, draft.controlVisibility[group] != nil {
-                for member in PadLayoutStore.perButtonIDs where PadLayoutStore.groupID(for: member) == group {
-                    draft.controlVisibility[member] = !isHidden(member)
-                }
+            if let all = PadLayoutStore.clusterMembers[group], draft.controlVisibility[group] != nil {
+                for member in all { draft.controlVisibility[member] = !isHidden(member) }
                 draft.controlVisibility[group] = nil
             }
-            draft.controlVisibility[id] = isHidden(id)
+            let show = isHidden(id)
+            for target in members ?? [id] { draft.controlVisibility[target] = show }
         }
     }
 
