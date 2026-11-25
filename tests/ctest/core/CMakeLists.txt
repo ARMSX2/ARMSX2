@@ -55,6 +55,7 @@ add_pcsx2_test(core_test
 	ee_cycle_rate_eligibility_tests.cpp
 	ee_cycle_rate_sampler_tests.cpp
 	memcard_folder_tests.cpp
+	embedded_resources_tests.cpp
 	MockMemoryInterface.h
 	StubHost.cpp
 )
@@ -62,6 +63,10 @@ add_pcsx2_test(core_test
 # The game database tests parse the real GameIndex.yaml and the mobile overlay from the source tree.
 set_source_files_properties(iop_thread_gamedb_tests.cpp PROPERTIES COMPILE_DEFINITIONS
 	"ARMSX2_GAMEINDEX_YAML=\"${CMAKE_SOURCE_DIR}/bin/resources/GameIndex.yaml\";ARMSX2_GAMEDB_OVERLAY_YAML=\"${CMAKE_SOURCE_DIR}/bin/resources-overlay/armsx2_overrides.yaml\"")
+
+# The embedded-resources test compares the renderer's shader text with the file in the source tree.
+set_source_files_properties(embedded_resources_tests.cpp PROPERTIES COMPILE_DEFINITIONS
+	"ARMSX2_SOURCE_CONVERT_GLSL=\"${CMAKE_SOURCE_DIR}/bin/resources/shaders/vulkan/convert.glsl\"")
 
 # gsrunner_affinity_tests.cpp includes the runner's own -affinity parse header; the flag
 # decides which cores a measurement round runs on, so it is worth a test even though the

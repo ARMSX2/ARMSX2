@@ -1344,15 +1344,15 @@ std::vector<GameDatabaseSchema::GameEntry::ClaimableSetting> GameDatabaseSchema:
 
 void GameDatabase::loadFile(const std::string& path, const std::string& name, bool is_override)
 {
-	std::optional<std::string> buffer = FileSystem::ReadFileToString(path.c_str());
+	std::optional<std::string> buffer;
 #ifdef ARMSX2_EMBEDDED_RESOURCES
-	// Same deal as the shaders: a core is handed a system directory and there is
-	// no telling what is in it. Without the database every game runs without its
-	// fixes and patches, which is not a failure anyone would connect back to a
-	// missing file, so carry a copy.
-	if (!buffer.has_value() && !is_override)
-		buffer = EmbeddedResources::Read(name.c_str());
+	// As with the shaders, the built-in copy wins over the resources directory.
+	// Without the database every game runs without its fixes and patches, which
+	// is not a failure anyone would connect back to a missing or stale file.
+	buffer = EmbeddedResources::Read(name.c_str());
 #endif
+	if (!buffer.has_value())
+		buffer = FileSystem::ReadFileToString(path.c_str());
 	if (!buffer.has_value())
 	{
 		// Override file is optional — silent skip when not shipped.

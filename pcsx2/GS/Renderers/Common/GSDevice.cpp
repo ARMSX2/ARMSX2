@@ -537,17 +537,16 @@ static const std::map<std::string, const unsigned char*> s_baked_shaders = {
 
 std::optional<std::string> GSDevice::ReadShaderSource(const char* filename)
 {
+#ifdef ARMSX2_EMBEDDED_RESOURCES
+	// The built-in copy wins: it always matches the code that compiles it. A copy
+	// in the resources directory can be stale or empty, and the libretro core may
+	// have no resources directory at all.
+	if (std::optional<std::string> embedded = EmbeddedResources::Read(filename))
+		return embedded;
+#endif
+
 	std::optional<std::string> source =
 		FileSystem::ReadFileToString(Path::Combine(EmuFolders::Resources, filename).c_str());
-
-#ifdef ARMSX2_EMBEDDED_RESOURCES
-	// The resources directory wins, so a user can still edit a shader in place;
-	// the built-in copy is what makes a build that has no resources directory
-	// at all - the libretro core, typically - come up instead of failing to
-	// create the device and leaving the frontend with a black screen.
-	if (!source.has_value())
-		source = EmbeddedResources::Read(filename);
-#endif
 
 #ifdef BAKE_SHADERS_IN_CPP
 	// Checked after the resources directory, unlike upstream: the rig links the

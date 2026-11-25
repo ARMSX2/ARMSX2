@@ -150,15 +150,16 @@ namespace Catalog
 			return items;
 		}
 
-		// The game database text, from the resources folder or, in builds that carry one, from the
-		// copy compiled into the binary (the same order GameDatabase uses).
+		// The game database text: in builds that carry one, the copy compiled into the binary,
+		// otherwise the resources folder's (the same order GameDatabase uses).
 		static std::shared_ptr<const CoverRegionIndex> LoadRegionIndex(const std::string& resources_dir)
 		{
-			std::optional<std::string> yaml = FileSystem::ReadFileToString(Path::Combine(resources_dir, GAMEINDEX_FILE_NAME).c_str());
+			std::optional<std::string> yaml;
 #ifdef ARMSX2_EMBEDDED_RESOURCES
-			if (!yaml.has_value())
-				yaml = EmbeddedResources::Read(GAMEINDEX_FILE_NAME);
+			yaml = EmbeddedResources::Read(GAMEINDEX_FILE_NAME);
 #endif
+			if (!yaml.has_value())
+				yaml = FileSystem::ReadFileToString(Path::Combine(resources_dir, GAMEINDEX_FILE_NAME).c_str());
 			if (!yaml.has_value())
 			{
 				Console.WarningFmt("Covers: {} not found, covers keep the disc's own region", GAMEINDEX_FILE_NAME);

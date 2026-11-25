@@ -7,9 +7,9 @@
 #include <string>
 
 // Files from bin/resources compiled into the binary by
-// cmake/EmbedResources.cmake. The readers fall back to these when the resources
-// directory has no copy - the normal case for the libretro core, where the
-// frontend gives us a system directory and nothing is guaranteed to be in it.
+// cmake/EmbedResources.cmake. Where a file is compiled in, the readers use it and
+// ignore the resources directory's copy, which can be missing (the libretro core
+// gets a system directory with nothing guaranteed in it), stale or empty.
 namespace EmbeddedResources
 {
 	// Named relative to the resources directory, the way the readers ask for
