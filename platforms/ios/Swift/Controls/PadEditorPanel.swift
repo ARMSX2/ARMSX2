@@ -8,7 +8,7 @@ import SwiftUI
         "up": "D-Pad Up", "down": "D-Pad Down", "left": "D-Pad Left", "right": "D-Pad Right",
         "triangle": "Triangle", "circle": "Circle", "square": "Square", "cross": "Cross",
         "l1": "L1", "l2": "L2", "r1": "R1", "r2": "R2",
-        "lstick": "Left Stick", "rstick": "Right Stick", "select": "Select", "start": "Start",
+        "lstick": "Left Stick", "rstick": "Right Stick", "select": "Select", "start": "Start", "l3": "L3", "r3": "R3",
         "dpad": "D-Pad", "action": "Face Buttons",
     ]
     return SettingsStore.shared.localized(names[id] ?? id)

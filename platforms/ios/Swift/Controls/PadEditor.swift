@@ -62,7 +62,7 @@ final class PadEditor {
     static let undoDepth = 100
     static let mirrorPartner: [String: String] = {
         let pairs = [("left", "circle"), ("right", "square"), ("up", "triangle"), ("down", "cross"),
-                     ("l1", "r1"), ("l2", "r2"), ("lstick", "rstick"), ("select", "start"), ("dpad", "action")]
+                     ("l1", "r1"), ("l2", "r2"), ("lstick", "rstick"), ("select", "start"), ("l3", "r3"), ("dpad", "action")]
         return Dictionary(uniqueKeysWithValues: pairs.flatMap { [($0.0, $0.1), ($0.1, $0.0)] })
     }()
 
@@ -135,7 +135,7 @@ final class PadEditor {
                 if landscape { s.landscape[id] = p } else { s.portrait[id] = p }
             }
         }
-        s.controlVisibility = [:]
+        s.controlVisibility = Dictionary(uniqueKeysWithValues: PadLayoutStore.hiddenByDefault.map { ($0, true) })
         return s
     }
 
@@ -550,7 +550,12 @@ final class PadEditor {
         write(id, nil)
     }
 
-    var hasHidden: Bool { Self.pieceIDs.contains(where: isHidden) }
+    /// L3 and R3 start hidden, so only a hide the player made counts here.
+    var hasHidden: Bool { Self.pieceIDs.contains { isHidden($0) && !PadLayoutStore.hiddenByDefault.contains($0) } }
+
+    private var visibilityChanged: Bool {
+        Self.pieceIDs.contains { isHidden($0) != PadLayoutStore.hiddenByDefault.contains($0) }
+    }
 
     func showHidden() {
         guard hasHidden else { return }
@@ -560,7 +565,7 @@ final class PadEditor {
     // Every piece shows on its own key, so the old editor's group keys can go.
     private var shownAll: [String: Bool] {
         var visibility = draft.controlVisibility
-        for id in Self.pieceIDs where isHidden(id) { visibility[id] = true }
+        for id in Self.pieceIDs where isHidden(id) && !PadLayoutStore.hiddenByDefault.contains(id) { visibility[id] = true }
         visibility["dpad"] = nil
         visibility["action"] = nil
         return visibility
@@ -584,7 +589,7 @@ final class PadEditor {
         return (current.perButton ?? [:]).isEmpty && (current.groups ?? [:]).allSatisfy { defaults[$0.key] == $0.value }
     }
 
-    var isAllDefault: Bool { PadEditorSlot.allCases.allSatisfy(isDefault) && !hasHidden }
+    var isAllDefault: Bool { PadEditorSlot.allCases.allSatisfy(isDefault) && !visibilityChanged }
 
     /// Hidden pieces are not per orientation, so they stay as they are.
     func resetSlot() {
@@ -596,7 +601,11 @@ final class PadEditor {
 
     /// Every orientation and every hidden piece, with an undo step in each orientation that changed.
     func resetAll() {
-        let shown = hasHidden ? visibilityChange { draft.controlVisibility = shownAll } : nil
+        let shown = visibilityChanged ? visibilityChange {
+            var visibility = shownAll
+            for id in PadLayoutStore.hiddenByDefault { visibility[id] = nil }
+            draft.controlVisibility = visibility
+        } : nil
         for s in PadEditorSlot.allCases where shown != nil || !isDefault(s) {
             var step = slice(of: s)
             step.visibility = shown

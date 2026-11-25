@@ -159,7 +159,9 @@ final class PadLayoutStore {
 
     nonisolated static let perButtonIDs = ["triangle", "circle", "square", "cross", "up", "down", "left", "right"]
     nonisolated static let clusterMembers = ["dpad": ["up", "down", "left", "right"], "action": ["triangle", "circle", "square", "cross"]]
-    nonisolated static let groupIDs = ["dpad", "action", "l1", "l2", "r1", "r2", "lstick", "rstick", "select", "start"]
+    nonisolated static let groupIDs = ["dpad", "action", "l1", "l2", "r1", "r2", "lstick", "rstick", "select", "start", "l3", "r3"]
+    // A tap on the stick already clicks it, so the buttons stay out of the way until shown.
+    nonisolated static let hiddenByDefault: Set<String> = ["l3", "r3"]
 
     var portrait: [String: PadGroupPosition] = [:]
     var landscape: [String: PadGroupPosition] = [:]
@@ -189,6 +191,8 @@ final class PadLayoutStore {
         "action": PadGroupPosition(x: 0.82, y: 0.44, scale: 1.0),
         "lstick": PadGroupPosition(x: 0.28, y: 0.78, scale: 1.0),
         "rstick": PadGroupPosition(x: 0.72, y: 0.78, scale: 1.0),
+        "l3":     PadGroupPosition(x: 0.10, y: 0.78, scale: 1.0),
+        "r3":     PadGroupPosition(x: 0.90, y: 0.78, scale: 1.0),
     ]
 
     // Landscape: relative to full screen — positions kept well inside safe area
@@ -204,6 +208,8 @@ final class PadLayoutStore {
         "start":  PadGroupPosition(x: 0.57, y: 0.90, scale: 1.0),
         "lstick": PadGroupPosition(x: 0.26, y: 0.86, scale: 1.0),
         "rstick": PadGroupPosition(x: 0.68, y: 0.86, scale: 1.0),
+        "l3":     PadGroupPosition(x: 0.26, y: 0.69, scale: 1.0),
+        "r3":     PadGroupPosition(x: 0.68, y: 0.69, scale: 1.0),
     ]
 
     init() {
@@ -264,13 +270,13 @@ final class PadLayoutStore {
 
     /// Returns whether a control or button is visible.
     /// If an explicit per-button key exists, it wins.
-    /// Otherwise, fall back to the group visibility (default: visible).
+    /// Otherwise, fall back to the group visibility (default: visible, except `hiddenByDefault`).
     func isControlVisible(_ id: String) -> Bool {
         if let explicit = controlVisibility[id] {
             return explicit
         }
         let group = groupID(for: id)
-        return controlVisibility[group] ?? true
+        return controlVisibility[group] ?? !Self.hiddenByDefault.contains(group)
     }
 
     func resetControlVisibility() {
@@ -497,7 +503,7 @@ final class PadLayoutStore {
         }
         book = readPositions(section: "ARMSX2iOS/PadLayout/Book", ids: Self.groupIDs)
         perButtonBook = readPositions(section: "ARMSX2iOS/PadLayout/PerButtonBook", ids: Self.perButtonIDs)
-        // Visibility: `0` = hidden, `1` = visible, absent = visible (default).
+        // Visibility: `0` = hidden, `1` = visible, absent = visible, or hidden for `hiddenByDefault`.
         for id in Self.groupIDs {
             let value = ARMSX2Bridge.getINIFloat("ARMSX2iOS/PadLayout/ControlVisibility", key: id, defaultValue: -1)
             if value >= 0 {

@@ -54,7 +54,7 @@ struct PadLayoutSnapshot: Codable, Equatable {
             return explicit
         }
         let group = PadLayoutStore.groupID(for: id)
-        return controlVisibility[group] ?? true
+        return controlVisibility[group] ?? !PadLayoutStore.hiddenByDefault.contains(group)
     }
 
     func controlGeometries(
@@ -274,6 +274,8 @@ func padEditorBaseSize(for id: String, isLandscape: Bool, analogStickScale: CGFl
         return CGSize(width: isLandscape ? 40 : 42, height: 22)
     case "start":
         return CGSize(width: 48, height: 22)
+    case "l3", "r3":
+        return CGSize(width: 36, height: 36)
     default:
         return CGSize(width: 60, height: 40)
     }

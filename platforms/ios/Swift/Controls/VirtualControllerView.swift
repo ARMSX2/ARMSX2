@@ -624,6 +624,12 @@ struct VirtualControllerView: View {
             if isVisible("rstick") {
                 placedStick(id: "rstick", isLeft: false, landscape: true, areaW: w, areaH: h)
             }
+            if isVisible("l3") {
+                placedPadButton(id: "l3", label: "L3", w: 36, h: 36, btn: .L3, landscape: true, areaW: w, areaH: h)
+            }
+            if isVisible("r3") {
+                placedPadButton(id: "r3", label: "R3", w: 36, h: 36, btn: .R3, landscape: true, areaW: w, areaH: h)
+            }
         }
     }
 
@@ -694,6 +700,12 @@ struct VirtualControllerView: View {
                 }
                 if isVisible("rstick") {
                     placedStick(id: "rstick", isLeft: false, landscape: false, areaW: cW, areaH: cH)
+                }
+                if isVisible("l3") {
+                    placedPadButton(id: "l3", label: "L3", w: 36, h: 36, btn: .L3, landscape: false, areaW: cW, areaH: cH)
+                }
+                if isVisible("r3") {
+                    placedPadButton(id: "r3", label: "R3", w: 36, h: 36, btn: .R3, landscape: false, areaW: cW, areaH: cH)
                 }
             }
         }
