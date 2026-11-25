@@ -266,10 +266,8 @@ struct PerGameSettingsPanel: View {
         }
         .interactiveDismissDisabled(draft.hasPendingChanges)
         .fullScreenCover(isPresented: $showPadLayoutEditor) {
-            PadLayoutEditView(
-                onDismiss: { showPadLayoutEditor = false },
-                context: perGamePadLayoutEditorContext
-            )
+            PadEditorView(context: perGamePadLayoutEditorContext, backdrop: .cover(game.coverURL)) { showPadLayoutEditor = false }
+                .appStatusBarHidden()
         }
         .sheet(item: $shaderPresetRequest, onDismiss: {
             if !draft.perGameShaderPresetRef.isEmpty, ShaderPresetLibrary.resolve(draft.perGameShaderPresetRef) == nil {

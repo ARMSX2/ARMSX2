@@ -205,6 +205,29 @@ struct VirtualControllerView: View {
             .opacity(p.opacity)
     }
 
+    /// Each arrow shows on its own key, else the old editor's "dpad" group key. The 8-way surface needs
+    /// all four, as the face buttons' combo surface does; otherwise each shown arrow stands alone.
+    @ViewBuilder
+    private func placedDPad(landscape: Bool, areaW: CGFloat, areaH: CGFloat) -> some View {
+        let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: landscape)
+        if settings.controller.dpadDiagonalsEnabled && isVisible("up") && isVisible("down") && isVisible("left") && isVisible("right") {
+            placedCompositeDPad(landscape: landscape, areaW: areaW, areaH: areaH)
+        } else {
+            if isVisible("up") {
+                placedPadButton(id: "up", label: "▲", w: dpadW, h: dpadW, btn: .up, landscape: landscape, areaW: areaW, areaH: areaH, perButton: true)
+            }
+            if isVisible("down") {
+                placedPadButton(id: "down", label: "▼", w: dpadW, h: dpadW, btn: .down, landscape: landscape, areaW: areaW, areaH: areaH, perButton: true)
+            }
+            if isVisible("left") {
+                placedPadButton(id: "left", label: "◀", w: dpadW, h: dpadW, btn: .left, landscape: landscape, areaW: areaW, areaH: areaH, perButton: true)
+            }
+            if isVisible("right") {
+                placedPadButton(id: "right", label: "▶", w: dpadW, h: dpadW, btn: .right, landscape: landscape, areaW: areaW, areaH: areaH, perButton: true)
+            }
+        }
+    }
+
     // 8-way D-pad for diagonals. Its capture circle and deadzone come from the four
     // cardinal buttons, so it follows custom layouts, per-orientation sizing and hit scaling.
     private func placedCompositeDPad(landscape: Bool, areaW: CGFloat, areaH: CGFloat) -> some View {
@@ -529,17 +552,7 @@ struct VirtualControllerView: View {
 
             dynamicInputZones(w: w, h: h)
 
-            if isVisible("dpad") {
-                if settings.controller.dpadDiagonalsEnabled {
-                    placedCompositeDPad(landscape: true, areaW: w, areaH: h)
-                } else {
-                    let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: true)
-                    placedPadButton(id: "up", label: "▲", w: dpadW, h: dpadW, btn: .up, landscape: true, areaW: w, areaH: h, perButton: true)
-                    placedPadButton(id: "down", label: "▼", w: dpadW, h: dpadW, btn: .down, landscape: true, areaW: w, areaH: h, perButton: true)
-                    placedPadButton(id: "left", label: "◀", w: dpadW, h: dpadW, btn: .left, landscape: true, areaW: w, areaH: h, perButton: true)
-                    placedPadButton(id: "right", label: "▶", w: dpadW, h: dpadW, btn: .right, landscape: true, areaW: w, areaH: h, perButton: true)
-                }
-            }
+            placedDPad(landscape: true, areaW: w, areaH: h)
 
             // The combo surface needs all four face buttons visible; otherwise each button stands alone.
             if settings.controller.faceComboZonesEnabled,
@@ -628,17 +641,7 @@ struct VirtualControllerView: View {
                     placedPadButton(id: "start", label: "START", w: 48, h: 22, btn: .start, landscape: false, areaW: cW, areaH: cH)
                 }
 
-                if isVisible("dpad") {
-                    if settings.controller.dpadDiagonalsEnabled {
-                        placedCompositeDPad(landscape: false, areaW: cW, areaH: cH)
-                    } else {
-                        let dpadW = VirtualPadButtonOffset.dpadButtonWidth(isLandscape: false)
-                        placedPadButton(id: "up", label: "▲", w: dpadW, h: dpadW, btn: .up, landscape: false, areaW: cW, areaH: cH, perButton: true)
-                        placedPadButton(id: "down", label: "▼", w: dpadW, h: dpadW, btn: .down, landscape: false, areaW: cW, areaH: cH, perButton: true)
-                        placedPadButton(id: "left", label: "◀", w: dpadW, h: dpadW, btn: .left, landscape: false, areaW: cW, areaH: cH, perButton: true)
-                        placedPadButton(id: "right", label: "▶", w: dpadW, h: dpadW, btn: .right, landscape: false, areaW: cW, areaH: cH, perButton: true)
-                    }
-                }
+                placedDPad(landscape: false, areaW: cW, areaH: cH)
 
                 // The combo surface needs all four face buttons visible; otherwise each button stands alone.
                 if settings.controller.faceComboZonesEnabled,

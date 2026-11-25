@@ -537,6 +537,24 @@ struct GameListView: View {
                 .presentationBackground(.clear)
                 .appStatusBarHidden()
             }
+            .fullScreenCover(item: $controller.padLayoutEditorTarget) { game in
+                let identity = PadLayoutGameIdentity(serial: game.metadata[.serial], crc: game.metadata[.crc])
+                let serial = game.metadata[.serial]
+                PadEditorView(
+                    context: PadLayoutEditorContext.forGame(
+                        identity,
+                        fallbackSerial: serial,
+                        store: .shared,
+                        skinDescriptor: PadLayoutPresetStore.shared.effectiveSkinDescriptor(
+                            for: identity, fallbackSerial: serial, using: .shared
+                        )
+                    ),
+                    backdrop: .cover(game.coverURL),
+                    onDismiss: { controller.padLayoutEditorTarget = nil }
+                )
+                .environment(\.menuControllerInputRouter, controllerInput)
+                .appStatusBarHidden()
+            }
             .fullScreenCover(item: $controller.renameTarget) { game in
                 OrbitKeysKeyboardView(
                     title: settings.localized("Rename"),

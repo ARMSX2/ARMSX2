@@ -61,17 +61,20 @@ struct PadLayoutEditorContext: Equatable {
     var gameIdentity: PadLayoutGameIdentity?
     var initialSnapshot: PadLayoutSnapshot?
     var skinDescriptor: VPadSkinDescriptor?
+    var effectivePresetID: String?
 
     init(
         presetID: String? = nil,
         gameIdentity: PadLayoutGameIdentity? = nil,
         initialSnapshot: PadLayoutSnapshot? = nil,
-        skinDescriptor: VPadSkinDescriptor? = nil
+        skinDescriptor: VPadSkinDescriptor? = nil,
+        effectivePresetID: String? = nil
     ) {
         self.presetID = presetID
         self.gameIdentity = gameIdentity
         self.initialSnapshot = initialSnapshot
         self.skinDescriptor = skinDescriptor
+        self.effectivePresetID = effectivePresetID
     }
 
     static let current = PadLayoutEditorContext(
@@ -93,7 +96,8 @@ struct PadLayoutEditorContext: Equatable {
             presetID: identity.flatMap { store.presetID(for: $0) } ?? (identity == nil ? store.globalPresetID : nil),
             gameIdentity: identity,
             initialSnapshot: store.effectiveSnapshot(for: identity, fallbackSerial: fallbackSerial),
-            skinDescriptor: skinDescriptor
+            skinDescriptor: skinDescriptor,
+            effectivePresetID: store.effectivePreset(for: identity, fallbackSerial: fallbackSerial)?.id
         )
     }
 }

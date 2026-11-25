@@ -501,14 +501,15 @@ struct VirtualPadSettingsView: View {
             ]
         )
         .fullScreenCover(isPresented: $showLayoutEditor) {
-            PadLayoutEditView(
-                onDismiss: { showLayoutEditor = false },
+            PadEditorView(
                 context: PadLayoutEditorContext(
                     presetID: layoutPresets.globalPresetID,
                     gameIdentity: nil,
                     initialSnapshot: layoutPresets.effectiveSnapshot(for: nil)
-                )
+                ),
+                onDismiss: { showLayoutEditor = false }
             )
+            .appStatusBarHidden()
         }
     }
 
