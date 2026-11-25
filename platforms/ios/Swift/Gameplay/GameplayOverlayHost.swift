@@ -150,9 +150,10 @@ struct GameplayOverlayHost: View {
         case .pausedPresenting(let destination):
             switch destination {
             case .padLayout:
-                PadLayoutEditView(
-                    onDismiss: { finishRuntimePadLayoutEditing() },
-                    context: runtimePadLayoutEditorContext
+                PadEditorView(
+                    context: runtimePadLayoutEditorContext,
+                    backdrop: .pausedGame,
+                    onDismiss: { finishRuntimePadLayoutEditing() }
                 )
                 .frame(
                     maxWidth: .infinity,

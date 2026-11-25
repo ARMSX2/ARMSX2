@@ -44,6 +44,11 @@ extension GameLibraryControllerCoordinator {
                     title: settings.localized("Per-Game Custom Skin"),
                     systemImage: "gamecontroller.fill"
                 ),
+                GameLibraryControllerMenuItem(
+                    action: .editTouchLayout,
+                    title: settings.localized("Edit Virtual Pad Layout"),
+                    systemImage: "square.resize"
+                ),
             ]
             if game.isELF {
                 items.append(
@@ -405,6 +410,9 @@ extension GameLibraryControllerCoordinator {
         case .perGameCustomSkin:
             deferControllerContextMenuSelection(action, for: game)
 
+        case .editTouchLayout:
+            deferControllerContextMenuSelection(action, for: game)
+
         case .discPath:
             deferControllerContextMenuSelection(action, for: game)
 
@@ -501,6 +509,10 @@ extension GameLibraryControllerCoordinator {
             controllerInput?.playFeedback(.destination)
         case .perGameCustomSkin:
             presentPerGameCustomSkin(for: game)
+            controllerInput?.playFeedback(.destination)
+        case .editTouchLayout:
+            padLayoutEditorTarget = game
+            MenuAudioPackManager.shared.playEvent(.uiToast)
             controllerInput?.playFeedback(.destination)
         case .discPath:
             discLinkTarget = game

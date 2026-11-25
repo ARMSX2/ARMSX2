@@ -30,6 +30,7 @@ final class GameLibraryControllerCoordinator {
     var selectedCoverPhotoItem: PhotosPickerItem?
     var gameInfoTarget: ISOEntry?
     var gameSettingsTarget: ISOEntry?
+    var padLayoutEditorTarget: ISOEntry?
     var gameSettingsStartsInShaders = false
     var preparedGameSettingsID: String?
     var preparedGameSettings: [ARMSX2PerGameKey: Any]?
@@ -348,6 +349,7 @@ final class GameLibraryControllerCoordinator {
             || showBackgroundAssetError
             || gameInfoTarget != nil
             || gameSettingsTarget != nil
+            || padLayoutEditorTarget != nil
             || renameTarget != nil
             || discLinkTarget != nil
             || cheatsManagerTarget != nil
@@ -358,13 +360,14 @@ final class GameLibraryControllerCoordinator {
             || deferredControllerContextMenuSelection != nil
     }
 
-    /// Per-game settings owns a shared accessibility session and must remain
-    /// routable. The other library presentations are driven by the custom
+    /// Per-game settings and the pad editor own their controller focus and must
+    /// remain routable. The other library presentations are driven by the custom
     /// command listener or native UIKit and therefore capture the retained
     /// library explicitly.
     var manuallyCapturedControllerPresentationActive: Bool {
         nonContextControllerNavigationPresentationActive
             && gameSettingsTarget == nil
+            && padLayoutEditorTarget == nil
     }
 
     var controllerNavigationPresentationActive: Bool {
@@ -465,6 +468,7 @@ final class GameLibraryControllerCoordinator {
         // Leave the retained library completely passive underneath their
         // presentation so one button press cannot trigger two actions.
         if gameSettingsTarget != nil
+            || padLayoutEditorTarget != nil
             || cheatsManagerTarget != nil {
             return
         }

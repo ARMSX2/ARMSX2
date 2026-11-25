@@ -86,14 +86,18 @@ final class EmulatorBridge {
     @ObservationIgnored private var virtualRightTouchY: Float = 0
     @ObservationIgnored private var virtualRightMotionX: Float = 0
     @ObservationIgnored private var virtualRightMotionY: Float = 0
+    /// Set while the pad editor's try mode lights the pad up, so none of it reaches the game.
+    @ObservationIgnored var muted = false
 
     private init() {}
 
     func setPadButton(_ button: ARMSX2PadButton, pressed: Bool) {
+        guard !muted else { return }
         ARMSX2Bridge.setPadButton(button, pressed: pressed)
     }
 
     func setLeftStick(x: Float, y: Float) {
+        guard !muted else { return }
         let dynamicSettings = SettingsStore.shared.dynamicThumbsticks
         let sensitivity = Float(dynamicSettings.movementSensitivity)
         let clamped = Self.radiallyClamped(x: x * sensitivity, y: y * sensitivity)
@@ -107,6 +111,7 @@ final class EmulatorBridge {
     }
 
     func setRightStick(x: Float, y: Float) {
+        guard !muted else { return }
         let sensitivity = Float(SettingsStore.shared.dynamicThumbsticks.lookSensitivity)
         virtualRightTouchX = x * sensitivity
         virtualRightTouchY = y * sensitivity
@@ -114,6 +119,7 @@ final class EmulatorBridge {
     }
 
     func setRightStickMotion(x: Float, y: Float) {
+        guard !muted else { return }
         virtualRightMotionX = x
         virtualRightMotionY = y
         applyVirtualRightStick()

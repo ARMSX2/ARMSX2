@@ -55,7 +55,13 @@ struct PadLayoutSnapshot: Codable, Equatable {
         return controlVisibility[group] ?? true
     }
 
-    func controlGeometries(size: CGSize, landscape isLandscape: Bool, analogStickScale: CGFloat) -> [PadEditorControlGeometry] {
+    func controlGeometries(
+        size: CGSize,
+        landscape isLandscape: Bool,
+        analogStickScale: CGFloat,
+        includeHidden: Bool = false
+    ) -> [PadEditorControlGeometry] {
+        let shown = { (id: String) in includeHidden || isControlVisible(id) }
         func geometry(_ id: String, _ p: PadGroupPosition) -> PadEditorControlGeometry {
             let isStick = id == "lstick" || id == "rstick"
             return PadEditorControlGeometry(
@@ -63,13 +69,15 @@ struct PadLayoutSnapshot: Codable, Equatable {
                 center: CGPoint(x: p.x * size.width, y: p.y * size.height),
                 baseSize: padEditorBaseSize(for: id, isLandscape: isLandscape, analogStickScale: analogStickScale),
                 hitScaleX: isStick ? p.scaleX : p.hitScaleX,
-                hitScaleY: isStick ? p.scaleY : p.hitScaleY
+                hitScaleY: isStick ? p.scaleY : p.hitScaleY,
+                visibleScaleX: p.scaleX,
+                visibleScaleY: p.scaleY
             )
         }
-        let buttons = PadLayoutStore.perButtonIDs.filter(isControlVisible).map {
+        let buttons = PadLayoutStore.perButtonIDs.filter(shown).map {
             geometry($0, perButtonPosition(for: $0, landscape: isLandscape, areaW: size.width, areaH: size.height))
         }
-        let groups = PadLayoutStore.groupIDs.filter { $0 != "action" && $0 != "dpad" && isControlVisible($0) }.map {
+        let groups = PadLayoutStore.groupIDs.filter { $0 != "action" && $0 != "dpad" && shown($0) }.map {
             geometry($0, position(for: $0, landscape: isLandscape))
         }
         return buttons + groups
@@ -141,7 +149,7 @@ enum PadDeviceClass: String, Codable, CaseIterable {
 }
 
 /// Places the reference portrait deck's layout in a shorter deck: x stays, sizes and rows scale by `scale`.
-struct PadPortraitFit {
+struct PadPortraitFit: Equatable {
     // The iPhone 18 Pro portrait deck the built-in layout was drawn on.
     static let referenceDeckWidth: CGFloat = 402
     static let referenceDeckHeight: CGFloat = 510.5
@@ -192,6 +200,14 @@ struct PadEditorControlGeometry {
     let baseSize: CGSize
     let hitScaleX: CGFloat
     let hitScaleY: CGFloat
+    let visibleScaleX: CGFloat
+    let visibleScaleY: CGFloat
+
+    /// What the eye sees, which snapping lines up; touches use `hitFrame`.
+    var visibleFrame: CGRect {
+        let w = baseSize.width * visibleScaleX, h = baseSize.height * visibleScaleY
+        return CGRect(x: center.x - w / 2, y: center.y - h / 2, width: w, height: h)
+    }
 
     var hitSize: CGSize {
         if isStick(id) {

@@ -16,6 +16,7 @@ enum GameLibraryControllerMenuAction: String, Identifiable, Equatable {
     case perGameSettings
     case perGameShaders
     case perGameCustomSkin
+    case editTouchLayout
     case discPath
     case cheatsAndPatches
     case covers

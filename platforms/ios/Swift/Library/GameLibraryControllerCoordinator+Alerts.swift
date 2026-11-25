@@ -504,6 +504,8 @@ extension GameLibraryControllerCoordinator {
             gameInfoTarget = nil
         } else if gameSettingsTarget != nil {
             gameSettingsTarget = nil
+        } else if padLayoutEditorTarget != nil {
+            padLayoutEditorTarget = nil
         } else if discLinkTarget != nil {
             discLinkTarget = nil
         } else if cheatsManagerTarget != nil {

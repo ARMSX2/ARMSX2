@@ -10,7 +10,7 @@ from ios_source import SWIFT, block, read, swift, without_comments
 NATIVE = {
     "PerGameSettingsPanel.swift", "CheatsPatchesManagerView.swift", "GameListView.swift",
     "BIOSListView.swift", "StorageSettingsView.swift", "VirtualPadSettingsView.swift",
-    "PadLayoutEditView.swift",
+    "PadLayoutEditView.swift", "PadEditorView.swift",
 }
 
 
