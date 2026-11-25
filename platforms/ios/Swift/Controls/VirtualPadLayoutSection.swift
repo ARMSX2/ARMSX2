@@ -42,10 +42,10 @@ struct VirtualPadLayoutSection: View {
             .controllerAccessibilityActionTarget(id: settings.localized("Edit Layout"), label: settings.localized("Edit Layout")) {
                 showLayoutEditor = true
             }
-            Text(settings.localized("Drag buttons to reposition. Pinch to resize."))
+            Text(settings.localized("Drag buttons to move them. Pinch or drag the corner to resize."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Simple custom pad skins are shown behind the blue hit boxes in Edit Layout. Advanced skin packages can include their own PS2 control layout metadata. Non-PS2 Delta/Manic skins are not converted automatically.")
+            Text(settings.localized("Simple custom pad skins show behind the buttons in Edit Layout. Advanced skin packages can include their own PS2 control layout. Non-PS2 Delta/Manic skins are not converted automatically."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

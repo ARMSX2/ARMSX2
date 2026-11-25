@@ -233,86 +233,6 @@ final class PadLayoutStore {
         return defaultPerButtonPosition(for: id, groupPos: groupPos, isLandscape: landscape, areaW: areaW, areaH: areaH)
     }
 
-    func updateGroupScale(_ id: String, scale: CGFloat, landscape isLandscape: Bool) {
-        var p = position(for: id, landscape: isLandscape)
-        p.scale = PadLayoutMetrics.clampedScale(scale)
-        setGroupPosition(p, for: id, landscape: isLandscape)
-    }
-
-    func updateGroupHitScale(_ id: String, hitScale: CGFloat, landscape isLandscape: Bool) {
-        var p = position(for: id, landscape: isLandscape)
-        p.hitScale = PadLayoutMetrics.clampedScale(hitScale)
-        setGroupPosition(p, for: id, landscape: isLandscape)
-    }
-
-    func updatePerButtonScale(_ id: String, scale: CGFloat, landscape: Bool, areaW: CGFloat, areaH: CGFloat) {
-        var p = perButtonPosition(for: id, landscape: landscape, areaW: areaW, areaH: areaH)
-        p.scale = PadLayoutMetrics.clampedScale(scale)
-        setPerButtonPosition(p, for: id, landscape: landscape)
-    }
-
-    func updatePerButtonHitScale(_ id: String, hitScale: CGFloat, landscape: Bool, areaW: CGFloat, areaH: CGFloat) {
-        var p = perButtonPosition(for: id, landscape: landscape, areaW: areaW, areaH: areaH)
-        p.hitScale = PadLayoutMetrics.clampedScale(hitScale)
-        setPerButtonPosition(p, for: id, landscape: landscape)
-    }
-
-    // MARK: - Per-axis (unlinked) sizing
-
-    func updateGroupSize(_ id: String, kind: PadSizeKind, axis: PadSizeAxis, scale: CGFloat, landscape isLandscape: Bool) {
-        var p = position(for: id, landscape: isLandscape)
-        Self.applyAxisScale(&p, kind: kind, axis: axis, scale: scale)
-        setGroupPosition(p, for: id, landscape: isLandscape)
-    }
-
-    func updatePerButtonSize(_ id: String, kind: PadSizeKind, axis: PadSizeAxis, scale: CGFloat, landscape: Bool, areaW: CGFloat, areaH: CGFloat) {
-        var p = perButtonPosition(for: id, landscape: landscape, areaW: areaW, areaH: areaH)
-        Self.applyAxisScale(&p, kind: kind, axis: axis, scale: scale)
-        setPerButtonPosition(p, for: id, landscape: landscape)
-    }
-
-    private static func applyAxisScale(_ p: inout PadGroupPosition, kind: PadSizeKind, axis: PadSizeAxis, scale: CGFloat) {
-        let clamped = PadLayoutMetrics.clampedScale(scale)
-        switch (kind, axis) {
-        case (.visible, .x): p.scaleX = clamped
-        case (.visible, .y): p.scaleY = clamped
-        case (.hit, .x):     p.hitScaleX = clamped
-        case (.hit, .y):     p.hitScaleY = clamped
-        }
-    }
-
-    /// Re-lock a control's aspect: collapse the Y axis onto the X axis
-    /// (width-wins) for both the visible and hit scales.
-    func relinkAxes(_ id: String, perButton: Bool, landscape: Bool, areaW: CGFloat, areaH: CGFloat) {
-        if perButton {
-            var p = perButtonPosition(for: id, landscape: landscape, areaW: areaW, areaH: areaH)
-            p.scaleY = p.scaleX
-            p.hitScaleY = p.hitScaleX
-            setPerButtonPosition(p, for: id, landscape: landscape)
-        } else {
-            var p = position(for: id, landscape: landscape)
-            p.scaleY = p.scaleX
-            p.hitScaleY = p.hitScaleX
-            setGroupPosition(p, for: id, landscape: landscape)
-        }
-    }
-
-    func setGroupPosition(_ position: PadGroupPosition, for id: String, landscape isLandscape: Bool) {
-        if isLandscape {
-            landscape[id] = position
-        } else {
-            portrait[id] = position
-        }
-    }
-
-    func setPerButtonPosition(_ position: PadGroupPosition, for id: String, landscape isLandscape: Bool) {
-        if isLandscape {
-            perButtonLandscape[id] = position
-        } else {
-            perButtonPortrait[id] = position
-        }
-    }
-
     private func defaultPerButtonPosition(for id: String, groupPos: PadGroupPosition, isLandscape: Bool, areaW: CGFloat, areaH: CGFloat) -> PadGroupPosition {
         let offset = VirtualPadButtonOffset.offset(for: id, isLandscape: isLandscape)
         let scaledOffsetX = offset.width * groupPos.scaleX
@@ -348,21 +268,6 @@ final class PadLayoutStore {
         }
         let group = groupID(for: id)
         return controlVisibility[group] ?? true
-    }
-
-    func setControlVisible(_ id: String, visible: Bool) {
-        if visible {
-            let group = groupID(for: id)
-            if id == group {
-                controlVisibility.removeValue(forKey: id)
-            } else if let groupVisible = controlVisibility[group], !groupVisible {
-                controlVisibility[id] = true
-            } else {
-                controlVisibility.removeValue(forKey: id)
-            }
-        } else {
-            controlVisibility[id] = false
-        }
     }
 
     func resetControlVisibility() {
@@ -605,30 +510,6 @@ final class PadLayoutStore {
         }
         // A hand-edited INI can hold nan or inf, which the editor's Int() conversions trap on.
         apply(snapshot: PadLayoutImportExport.clampedSnapshot(snapshot()))
-    }
-
-    func resetPerButtonActionButtons(isLandscape: Bool) {
-        if isLandscape {
-            for id in ["triangle", "circle", "square", "cross"] {
-                perButtonLandscape.removeValue(forKey: id)
-            }
-        } else {
-            for id in ["triangle", "circle", "square", "cross"] {
-                perButtonPortrait.removeValue(forKey: id)
-            }
-        }
-    }
-
-    func resetPerButtonDPad(isLandscape: Bool) {
-        if isLandscape {
-            for id in ["up", "down", "left", "right"] {
-                perButtonLandscape.removeValue(forKey: id)
-            }
-        } else {
-            for id in ["up", "down", "left", "right"] {
-                perButtonPortrait.removeValue(forKey: id)
-            }
-        }
     }
 
     func resetAll() {
