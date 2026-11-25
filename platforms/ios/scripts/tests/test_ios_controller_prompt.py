@@ -5,12 +5,11 @@ import unittest
 
 from ios_source import SWIFT, block, read, swift, without_comments
 
-# Still native on purpose: these already switch to a controller alert themselves, ask for text,
-# or live in the touch-only layout editor.
+# Still native on purpose: these already switch to a controller alert themselves or ask for text.
 NATIVE = {
     "PerGameSettingsPanel.swift", "CheatsPatchesManagerView.swift", "GameListView.swift",
     "BIOSListView.swift", "StorageSettingsView.swift", "VirtualPadSettingsView.swift",
-    "PadLayoutEditView.swift", "PadEditorView.swift",
+    "PadEditorView.swift",
 }
 
 

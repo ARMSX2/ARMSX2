@@ -17,14 +17,11 @@ class CoverStatusBar(unittest.TestCase):
                 end = source.find(".fullScreenCover(", start + 1)
                 cover = source[start:end if end >= 0 else len(source)][:8000]
                 with self.subTest(path=path.name, at=source[:start].count("\n") + 1):
-                    # The pad layout editor hides the bar itself.
-                    self.assertTrue(
-                        "appStatusBarHidden()" in cover or "PadLayoutEditView(" in cover
-                    )
+                    self.assertIn("appStatusBarHidden()", cover)
                 start = end
 
     def test_the_layout_editor_hides_it(self):
-        editor = without_comments(read(swift("PadLayoutEditView.swift")))
+        editor = without_comments(read(swift("PadEditorView.swift")))
         self.assertIn(".statusBarHidden()", editor)
 
 
