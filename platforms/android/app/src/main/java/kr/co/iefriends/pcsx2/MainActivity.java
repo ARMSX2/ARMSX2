@@ -367,61 +367,21 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** Whether this launch rewrites the files copyFile keeps in step with the APK (the shaders, the GameDB,
-     *  our overrides): only when this install of the app has not written them into the data folder yet,
-     *  which MainActivityRuntime reads from the folder's marker. Rewriting them every launch on an SD card
-     *  data folder is slow enough to trigger an ANR (app not responding). */
-    public static volatile boolean refreshShippedAssets = true;
-
-    /** Copies that failed since the last pass began: the marker is written only after a clean one. */
-    public static volatile int copyFailures = 0;
-
+    /** Copies one APK asset into the data folder if it is not there yet. Nothing is ever rewritten:
+     *  the files that must match this build (the GS shaders, the GameDB, our overrides) are compiled
+     *  into the core instead, because a copy rewritten on update could read back empty until a reboot. */
     public static void copyFile(Context p_context, String srcFile, String destFile) {
-        AssetManager assetMgr = p_context.getAssets();
-
-        InputStream is = null;
-        FileOutputStream os = null;
-        // Files that MUST always reflect the current APK assets, even on an app
-        // UPDATE where the on-disk copy already exists (copyFile otherwise skips
-        // existing files): shader sources (a C++ entry-point bump needs the new
-        // GLSL or the compiler reports "main() is missing"), the GameDB
-        // (GameIndex.yaml — shipped per-game fixes like True Crime's must reach
-        // users who already have an old copy, or the fix never applies), AND our
-        // GameDB override (armsx2_overrides.yaml — the whole point of that file is
-        // shipping per-game fixes like VP2/LEGO Batman; without force-refresh an
-        // existing user keeps the original copy and override edits never land).
-        final boolean forceFresh = refreshShippedAssets && (srcFile.contains("shaders")
-                || srcFile.endsWith("GameIndex.yaml")
-                || srcFile.endsWith("armsx2_overrides.yaml"));
-        try {
-            is = assetMgr.open(srcFile);
-            File destFileObj = new File(destFile);
-            boolean _exists = destFileObj.exists();
-            if (forceFresh) {
-                // Delete first so a partial/denied write can't silently fall back
-                // to stale content.
-                if (_exists && !destFileObj.delete()) {
-                    Log.w("ARMSX2", "copyFile: failed to delete stale asset " + destFile);
-                }
-                _exists = false;
-            }
-            if (!_exists) {
-                os = new FileOutputStream(destFile);
-
-                byte[] buffer = new byte[64 * 1024];
-                int read;
-                while ((read = is.read(buffer)) != -1) {
-                    os.write(buffer, 0, read);
-                }
-                is.close();
-                os.flush();
-                os.close();
-            }
+        File destFileObj = new File(destFile);
+        if (destFileObj.exists())
+            return;
+        try (InputStream is = p_context.getAssets().open(srcFile);
+             FileOutputStream os = new FileOutputStream(destFileObj)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = is.read(buffer)) != -1)
+                os.write(buffer, 0, read);
         } catch (IOException e) {
-            copyFailures++;
             Log.e("ARMSX2", "copyFile failed: " + srcFile + " -> " + destFile + ": " + e.getMessage());
-            try { if (is != null) is.close(); } catch (IOException ignored) {}
-            try { if (os != null) os.close(); } catch (IOException ignored) {}
         }
     }
 }

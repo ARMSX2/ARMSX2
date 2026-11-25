@@ -82,26 +82,30 @@ if (armsx2SigningPropertiesFile.isFile && !armsx2PlaySigningReady) {
     throw GradleException("armsx2_keystore.properties is missing one or more required signing keys.")
 }
 
-// Runtime resources (GameDB, shaders, fonts, icons) have a single canonical copy
+// Runtime resources (fonts, icons, the controller DB) have a single canonical copy
 // at <repo>/bin/resources — the same tree the desktop/Linux build ships via
 // pcsx2_copy_runtime_resources. Rather than commit a third drifting copy under
-// src/main/assets, generate the APK's assets/resources from it at build time:
-// sync bin/resources (minus the Windows-only dx11 shaders the mobile backends
-// never compile) plus the canonical mobile GameDB overlay into a generated
-// assets root. Genuine Android-only extras (patches.zip) stay committed under
-// src/main/assets/resources and AGP merges the roots.
+// src/main/assets, generate the APK's assets/resources from it at build time.
+// The app copies assets/resources into the data folder for the core. Genuine
+// Android-only extras (patches.zip) stay committed under src/main/assets/resources
+// and AGP merges the roots.
+//
+// The GS shaders, the GameDB and the mobile GameDB overlay are compiled into the
+// core (ARMSX2_EMBED_RESOURCES), so they are left out here. GameIndex.yaml is
+// still packed, at the assets root where nothing copies it, for the app's own
+// reader (CoverRegionIndex).
 val generateSharedResources by tasks.registering(Sync::class) {
     val repoRoot = rootProject.layout.projectDirectory.dir("../..")
     from(repoRoot.dir("bin/resources")) {
-        // Windows-only DX11 shaders the mobile backends never compile. The path is
-        // shaders/dx11/ (relative to bin/resources), so "dx11/**" alone never matched.
-        exclude("**/dx11/**")
+        exclude("shaders/**")
+        exclude("GameIndex.yaml")
         // The desktop builds' emoji font. Nothing on Android loads it: the in-game overlay seeds
         // Roboto only (ImGuiManager::LoadFontData), and the app draws emoji with the system's font.
         exclude("fonts/Twemoji*")
+        into("resources")
     }
-    from(repoRoot.file("bin/resources-overlay/armsx2_overrides.yaml"))
-    into(layout.buildDirectory.dir("generated/sharedResources/resources"))
+    from(repoRoot.file("bin/resources/GameIndex.yaml"))
+    into(layout.buildDirectory.dir("generated/sharedResources"))
 }
 
 // The About screen's license texts. GPL.html and ThirdPartyLicenses.html are the files the desktop

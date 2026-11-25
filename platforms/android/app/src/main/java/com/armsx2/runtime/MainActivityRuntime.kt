@@ -2162,26 +2162,22 @@ open class MainActivityRuntime : ComponentActivity() {
         }
 
         /**
-         * Puts the APK's resources in the data folder for the core (shaders, the GameDB, fonts,
-         * fullscreenui, patches.zip, the controller DB, at <data folder>/resources), and on a new install
-         * of the app drops the GPU cache files older builds left (LegacyGpuCache). Off the main thread, before the core starts.
+         * Puts the APK's resources in the data folder for the core (fonts, fullscreenui, patches.zip, the
+         * controller DB, at <data folder>/resources), copying only what is missing, and on a new install
+         * of the app drops the GPU cache files older builds left (LegacyGpuCache). Off the main thread,
+         * before the core starts.
          *
-         * The files kept in step with the APK are rewritten only when this install has not written them
-         * yet: the marker beside them names the install that did, and is written after a clean pass, so a
-         * failed one is retried at the next launch. A data folder shared by two installs gets the files
-         * of whichever started last.
+         * The GS shaders, the GameDB and our overrides are compiled into the core and not copied. Older
+         * builds rewrote their copies here on every update, and some phones then read the new files back
+         * empty until a reboot. Those copies are left in place: the core ignores them, and an older
+         * install sharing the data folder still reads them.
          */
         private fun ComponentActivity.prepareDataFolder() {
             val info = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
             val install = "$packageName ${BuildConfig.VERSION_CODE} ${BuildConfig.VERSION_NAME} ${info?.lastUpdateTime}"
             val root = assetCopyRoot(applicationContext)
 
-            val shipped = File(File(root, "resources"), ".install")
-            MainActivity.refreshShippedAssets = runCatching { shipped.readText() }.getOrNull() != install
-            MainActivity.copyFailures = 0
             copyAssetAll(applicationContext, "resources")
-            if (MainActivity.refreshShippedAssets && MainActivity.copyFailures == 0)
-                runCatching { shipped.writeText(install) }
 
             // On any new install of the app, drop what GPU caches from before the stamped format left
             // (LegacyGpuCache). The current caches stay: each carries the stamps of what it depends on and

@@ -1668,21 +1668,32 @@ else()
 	target_sources(PCSX2 PRIVATE ${pcsx2LTOSources})
 endif()
 
-# Files from bin/resources, compiled in. The readers still prefer a copy in the
-# resources directory; this is what lets a build that has none - the libretro
-# core gets a system directory from the frontend and nothing is guaranteed to be
-# in it - create its device and load its game database instead of coming up as a
-# black screen with no fixes.
+# The repository root. Not CMAKE_SOURCE_DIR: the Android build's top level is
+# platforms/android/app/src/main/cpp.
+set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Files from bin/resources, compiled in. When a file is compiled in, the readers
+# use that copy and ignore the resources directory. The libretro core gets a
+# system directory from the frontend with nothing guaranteed in it. Android used
+# to copy these files into the user's data folder, rewriting them on each update,
+# and some phones then read the new copies back empty until a reboot. The APK
+# no longer packs them, so Android always embeds, whatever an older build
+# directory has cached for the option.
 option(ARMSX2_EMBED_RESOURCES
 	"Compile the GS shaders and the game database into the binary, so no resources directory is required at runtime"
 	${ENABLE_LIBRETRO})
 
-if(ARMSX2_EMBED_RESOURCES)
-	set(ARMSX2_RESOURCE_ROOT "${CMAKE_SOURCE_DIR}/bin/resources")
+if(ARMSX2_EMBED_RESOURCES OR ANDROID)
+	set(ARMSX2_RESOURCE_ROOT "${ARMSX2_REPO_ROOT}/bin/resources")
 	set(ARMSX2_EMBEDDED_RESOURCE_DIRS shaders/common shaders/opengl shaders/vulkan)
 	# GameIndex.yaml is 2.7 MB of YAML and worth every byte: without it no game
 	# gets its fixes, patches or memcard filters, and nothing says why.
 	set(ARMSX2_EMBEDDED_RESOURCE_FILES GameIndex.yaml)
+	# The app packs no copy of the mobile GameDB overlay; the core carries it.
+	if(ANDROID)
+		list(APPEND ARMSX2_EMBEDDED_RESOURCE_FILES
+			"armsx2_overrides.yaml=${ARMSX2_REPO_ROOT}/bin/resources-overlay/armsx2_overrides.yaml")
+	endif()
 
 	# CONFIGURE_DEPENDS: a glob runs at configure time, so a shader added later
 	# would be left out of the embedded set until something else triggered a
@@ -1706,7 +1717,8 @@ if(ARMSX2_EMBED_RESOURCES)
 		"https://github.com/isztldav/pcsx2_patches/releases/latest/download/patches.zip"
 		CACHE STRING "Where to fetch patches.zip when none is given")
 
-	if(ARMSX2_EMBED_PATCHES)
+	# Android packs patches.zip as an asset (src/main/assets/resources), so it is not fetched.
+	if(ARMSX2_EMBED_PATCHES AND NOT ANDROID)
 		if(ARMSX2_PATCHES_ZIP AND EXISTS "${ARMSX2_PATCHES_ZIP}")
 			set(_patches_zip "${ARMSX2_PATCHES_ZIP}")
 		else()
@@ -1753,10 +1765,10 @@ if(ARMSX2_EMBED_RESOURCES)
 			-DOUT=${ARMSX2_EMBEDDED_RESOURCES_CPP}
 			-DROOT=${ARMSX2_RESOURCE_ROOT}
 			-DLIST=${ARMSX2_EMBEDDED_RESOURCE_LIST_FILE}
-			-P "${CMAKE_SOURCE_DIR}/cmake/EmbedResources.cmake"
+			-P "${ARMSX2_REPO_ROOT}/cmake/EmbedResources.cmake"
 		DEPENDS ${ARMSX2_EMBEDDED_RESOURCE_INPUTS}
 			"${ARMSX2_EMBEDDED_RESOURCE_LIST_FILE}"
-			"${CMAKE_SOURCE_DIR}/cmake/EmbedResources.cmake"
+			"${ARMSX2_REPO_ROOT}/cmake/EmbedResources.cmake"
 		COMMENT "Embedding the resources"
 		VERBATIM)
 
@@ -1773,7 +1785,6 @@ endif()
 # configure dependencies, so CMake reruns and the list follows; this keeps a dry run clean, which a
 # CONFIGURE_DEPENDS glob does not. The list goes through a file for the same reason as the embedded
 # resources' list.
-set(ARMSX2_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set(ARMSX2_GS_CACHE_ID_EXTENSIONS cpp c h hpp inl mm glsl hlsl fx metal)
 set(ARMSX2_GS_CACHE_ID_INPUTS "")
 set(ARMSX2_GS_CACHE_ID_DIRS "")

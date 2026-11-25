@@ -3,7 +3,6 @@ package com.armsx2
 import android.content.Context
 import androidx.compose.runtime.mutableIntStateOf
 import com.armsx2.runtime.MainActivityRuntime
-import java.io.File
 
 /**
  * Show a game's cover art from a DIFFERENT region than the disc you own (requested by Sizor).
@@ -132,8 +131,9 @@ object CoverRegionIndex {
     }
 
     private fun build(context: Context) {
-        val file = File(MainActivityRuntime.assetCopyRoot(context), "resources/GameIndex.yaml")
-        if (!file.isFile) return
+        // Read from the APK, not the data folder: the core carries its own copy, and nothing copies
+        // this one out.
+        val reader = runCatching { context.assets.open("GameIndex.yaml").bufferedReader() }.getOrNull() ?: return
         val groups = HashMap<String, MutableList<String>>(16384)
         val of = HashMap<String, String>(16384)
         var currentSerial: String? = null
@@ -153,7 +153,7 @@ object CoverRegionIndex {
             currentSerial = null; name = null; nameEn = null
         }
 
-        file.bufferedReader().useLines { lines ->
+        reader.useLines { lines ->
             for (raw in lines) {
                 if (raw.isEmpty() || raw.startsWith('#')) continue
                 if (!raw[0].isWhitespace()) {
