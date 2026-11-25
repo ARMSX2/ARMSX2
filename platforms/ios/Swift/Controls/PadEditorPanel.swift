@@ -9,6 +9,7 @@ import SwiftUI
         "triangle": "Triangle", "circle": "Circle", "square": "Square", "cross": "Cross",
         "l1": "L1", "l2": "L2", "r1": "R1", "r2": "R2",
         "lstick": "Left Stick", "rstick": "Right Stick", "select": "Select", "start": "Start",
+        "dpad": "D-Pad", "action": "Face Buttons",
     ]
     return SettingsStore.shared.localized(names[id] ?? id)
 }
@@ -229,6 +230,13 @@ struct PadPiecePanel: View {
             }
             tile("Reset Piece", spoken: "Reset this piece", "arrow.counterclockwise") { editor.resetPiece(id) }
                 .disabled(editor.isDefault(id))
+            if PadLayoutStore.clusterMembers[id] != nil {
+                tile("Split", spoken: "Split into separate buttons", "square.split.2x2") { editor.split(id) }
+            } else if PadLayoutStore.groupID(for: id) != id {
+                tile("Join", spoken: "Join the buttons into one", "arrow.down.forward.and.arrow.up.backward") {
+                    editor.join(PadLayoutStore.groupID(for: id))
+                }
+            }
         }
     }
 

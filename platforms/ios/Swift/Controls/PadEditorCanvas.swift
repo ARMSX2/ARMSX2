@@ -17,7 +17,7 @@ struct PadEditorPieces: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture { editor.selection = nil }
-            let partner = editor.mirrorEnabled ? editor.selection.flatMap { PadEditor.mirrorPartner[$0] } : nil
+            let partner = editor.mirrorEnabled ? editor.selection.flatMap(editor.mirrored) : nil
             ForEach(geometries, id: \.id) { geometry in
                 PadPieceEditOverlay(
                     editor: editor,
@@ -404,11 +404,15 @@ extension PadEditor {
 
     /// Pairs of pieces in play from different hit groups whose touch areas share some area.
     func overlaps() -> [(String, String)] {
-        let shown = geometries().filter { !isHidden($0.id) }
+        // Checked button by button, then named by the piece in hand, so a joined cluster warns only where its buttons clash.
+        let joined = joinedClusters
+        let shown = geometries(joined: []).filter { !isHidden($0.id) }
+        func piece(_ id: String) -> String { joined.contains(PadLayoutStore.groupID(for: id)) ? PadLayoutStore.groupID(for: id) : id }
         var pairs: [(String, String)] = []
         for (index, a) in shown.enumerated() {
             for b in shown[(index + 1)...] where hitGroup(a.id) != hitGroup(b.id) && Self.clash(a, b) && !defaultShoulders(a.id, b.id) {
-                pairs.append((a.id, b.id))
+                let pair = (piece(a.id), piece(b.id))
+                if !pairs.contains(where: { $0 == pair }) { pairs.append(pair) }
             }
         }
         return pairs
