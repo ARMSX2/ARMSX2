@@ -404,10 +404,14 @@ jobs:
     # Run as long as the PC guardrail passed, even if Android failed (its APK is
     # then simply absent). `!cancelled()` disables the implicit "all needs must
     # succeed" gate so we can require only the PC jobs explicitly.
+    # macOS may also be 'cancelled': GitHub cancels a job it finds no macOS arm64
+    # runner for (capacity shortages on the hosted pool), and that should not hold
+    # back the other platforms; the nightly then ships without the macOS asset.
+    # A macOS build that ran and failed is still fatal.
     # NOTE: must be a single-line ${{ }} with nothing around it -- a folded/multi-line
     # scalar leaves extra characters (a newline) around the expression, which GitHub
     # then treats as a truthy string and the guard is silently bypassed.
-    if: ${{ !cancelled() && needs.gate.outputs.proceed == 'true' && needs.pc-macos-arm64.result == 'success' && needs.pc-linux-arm64.result == 'success' && needs.pc-windows-arm64.result == 'success' }}
+    if: ${{ !cancelled() && needs.gate.outputs.proceed == 'true' && (needs.pc-macos-arm64.result == 'success' || needs.pc-macos-arm64.result == 'cancelled') && needs.pc-linux-arm64.result == 'success' && needs.pc-windows-arm64.result == 'success' }}
     runs-on: ubuntu-latest
     # Job-level so the Discord step's `if: env.HOOK != ''` guard can see it.
     env:
