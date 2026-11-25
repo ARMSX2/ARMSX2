@@ -422,7 +422,7 @@ TEST(EeVu0Cop2TransferResidency, Qmfc2SyncSeamPreservesResidency)
 	h.EnableCop1();
 	h.SeedVu0Vi(REG_VPU_STAT, 0); // control regs survive EnableVu0Capture — start clean
 	// The JIT sync path and the interp single-stepper drain the pending micro
-	// to different depths (run-ahead cycle accounting), so TPC legitimately
+	// to different depths (different cycle accounting), so TPC legitimately
 	// diverges — same benign class as the VPU_STAT exclusion in the BC2
 	// suite. The EE-side residency assertions below are the test's contract.
 	h.IgnoreVu0Vi(REG_TPC);
@@ -572,8 +572,8 @@ TEST(EeVu0Cop2TransferResidency, TakenSyncFlushesAndReloadsDirtyLazyPins)
 
 TEST(EeVu0Cop2TransferResidency, TakenInterlockedSyncPreservesResidency)
 {
-	// The interlocked (.I) transfer forms use the exact-catch-up sync +
-	// wait/finish protocol — a different seam envelope than the run-ahead
+	// The interlocked (.I) transfer forms use the catch-up sync +
+	// wait/finish protocol — a different seam envelope than the plain sync
 	// path the other taken-sync tests exercise (QMTC2.I pairs the sync with
 	// _vu0WaitMicro, QMFC2.I with _vu0FinishMicro). Same residency contract:
 	// dirty scalars and dirty lazy pins must ride the taken seam.

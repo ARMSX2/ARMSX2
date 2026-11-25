@@ -657,7 +657,6 @@ extern u32 s_nBlockCycles; // cycles of current block recompiling
 // swapped delay slot has no LoadBranchState) lets the second arm charge its
 // own exit.
 void recEeIssueForkRestored();
-extern bool s_nBlockInterlocked; // Current block has VU0 interlocking
 
 //////////////////////////////////////////////////////////////////////////////////////////
 // Interpreter fallback macros
@@ -896,7 +895,7 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)());
 // before any block compiles — called from _DynGen_Dispatchers.
 void cop2DynGenSyncStubs();
 
-// VU0 parked in a recognized wait loop, as the run-ahead sync stub tests it
+// VU0 parked in a recognized wait loop, as the COP2 sync stub tests it
 // (defined in microVU-arm64.cpp, which owns arming and disarming). Zero when
 // disarmed. Otherwise:
 //   bits  0-15: byte offset of VI[viA] in VURegs; bit 0 holds the loop's exit

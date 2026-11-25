@@ -2276,7 +2276,7 @@ namespace mvu_test_hooks
 	}
 	u64 GetSpinBounceCount(int vu_index) { return g_spinBounces[vu_index & 1]; }
 
-	// The run-ahead sync stub's copy of the bounce (mVU0ParkedSpin). Off, the
+	// The COP2 sync stub's copy of the bounce (mVU0ParkedSpin). Off, the
 	// stub always calls into C++.
 	void SetParkedSyncEnabled(bool enabled)
 	{
@@ -2411,7 +2411,7 @@ static bool mVUspinBounce(microVU& mVU, u32 cycles)
 	return true;
 }
 
-// Publishes the parked spin for the EE's run-ahead sync stub, which then
+// Publishes the parked spin for the EE's COP2 sync stub, which then
 // answers the next syncs itself while the loop holds: the same test of the
 // two VI registers mVUspinBounce makes, and the same VU0.cycle advance.
 //

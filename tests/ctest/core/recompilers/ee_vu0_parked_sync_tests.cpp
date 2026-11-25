@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: 2026 ARMSX2 Dev Team
 // SPDX-License-Identifier: GPL-3.0+
 
-// The run-ahead COP2 sync stub's parked-spin bounce (iCOP2-arm64.cpp,
+// The COP2 sync stub's parked-spin bounce (iCOP2-arm64.cpp,
 // cop2EmitParkedSpinTest; armed by mVU0ArmParkedSpin in microVU-arm64.cpp).
 //
 // A VU0 program parked in a NOP-only wait loop (mvu_spin_ff_tests.cpp) is
 // answered by recMicroVU0::Execute's mVUspinBounce without entering the
-// recompiler: VU0.cycle advances by the floored grant and nothing else moves.
+// recompiler: VU0.cycle advances by the grant and nothing else moves.
 // Once Execute has armed it, the stub gives that same answer itself, before its
 // pin flush and the C call. It may only skip host work:
 //
-//   1. An EE block that syncs many times against a parked VU0 (bounces, a
-//      negative delta inside the 16-cycle floor, a CTC2 release and the real
-//      run it causes, re-parking) ends with identical VURegs, EE registers
+//   1. An EE block that syncs many times against a parked VU0 (bounces,
+//      back-to-back syncs, a CTC2 release and the real run it causes,
+//      re-parking) ends with identical VURegs, EE registers
 //      read through CFC2 (including VPU_STAT and TPC) and both clocks in all
 //      three arms: emitted spin head only, C++ bounce only, and stub bounce.
 //      The stub arm must make fewer Execute calls than the C++ arm.
@@ -109,9 +109,8 @@ std::vector<u32> Pad(std::vector<u32> prog, int nops)
 }
 
 // The EE side of the handshake, the way UYA's feeder loop does it: CFC2
-// reads and `CTC2 $zero, viN` writes, each a non-interlocked run-ahead sync
-// (the zero write re-arms the analysis' sync for the next transfer). The
-// NOP runs put more than the 16-cycle floor between most syncs.
+// reads and `CTC2 $zero, viN` writes, each a non-interlocked sync (the zero
+// write re-arms the analysis' sync for the next transfer).
 std::vector<u32> ServerFeeder()
 {
 	std::vector<u32> p;
@@ -121,8 +120,8 @@ std::vector<u32> ServerFeeder()
 	p.push_back(CFC2(r_t1, REG_VPU_STAT));                   // bounce; VU0 reads as running
 	p = Pad(p, 24);
 	p.push_back(CTC2(0, vu::vi::vi2));                       // bounce
-	p.push_back(CTC2(0, vu::vi::vi2));                       // delta under the floor: VU0 runs ahead
-	p.push_back(CTC2(0, vu::vi::vi2));                       // negative delta: nothing to do
+	p.push_back(CTC2(0, vu::vi::vi2));                       // a delta of a cycle or two
+	p.push_back(CTC2(0, vu::vi::vi2));
 	p = Pad(p, 24);
 	p.push_back(CTC2(0, vu::vi::vi1));                       // bounce, then post the job
 	p = Pad(p, 24);

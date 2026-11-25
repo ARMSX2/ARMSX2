@@ -353,4 +353,65 @@ TEST(EeVu0Ctc2, InterlockedWriteToVi00DrainsPendingMicro)
 	EXPECT_EQ(h.GetVu0ViJit(1), h.GetVu0ViInterp(1));
 }
 
+// =========================================================================
+//  A VU0 wait loop released by CTC2, then the next input
+// =========================================================================
+
+// Ratchet & Clank: Up Your Arsenal feeds a VU0 program that never ends. VU0
+// waits in a NOP loop while vi1 != 0; the EE writes an input to vf1, releases
+// the loop with `CTC2 $zero, vi1` and, a few cycles later, writes the next
+// input to vf1. VU0 leaves the loop and reads vf1 between the two writes.
+//
+// VU0 runs only when the EE syncs it. A sync that grants VU0 more cycles than
+// the EE has run sends it into the EE's future, where the wait loop spends
+// them before the release that comes next. The syncs after the release then
+// find VU0 ahead of the EE and run nothing, and VU0 reads the second input.
+// That drew Ratchet's characters with wrong bone matrices.
+//
+// JIT only: the harness runs its interpreter leg under the recompiler's
+// settings, where _vu0run does not charge the interpreter's pending cycles
+// before a sync, so in a program without a branch its VU0 never runs.
+TEST(EeVu0WaitRelease, LoopReadsTheInputWrittenBeforeTheRelease)
+{
+	constexpr u32 kUpperNop = 0x000002FFu;
+	constexpr u32 kLowerNop = 0x8000033Cu;
+	constexpr u32 kBase = 0x200; // not 0: a TPC of 0 reads the same in both units
+	constexpr u64 kFirst = 0x1111111111111111ull;
+	constexpr u64 kSecond = 0x2222222222222222ull;
+
+	EeRecTestHarness h;
+	h.EnableVu0Capture();
+	h.EnableCop1();
+	h.SeedVu0Microprogram(kBase, {
+		vu::VuOp{vu::VIBNE_L(vu::vi::vi1, vu::vi::vi0, -1), kUpperNop}, // wait while vi1 != 0
+		vu::VuOp{kLowerNop, kUpperNop},
+		vu::VuOp{vu::VMOVE_L(vu::mask::xyzw, vu::vf::vf10, vu::vf::vf1), kUpperNop},
+		vu::EBitNopPair(),
+		vu::NopPair(),
+	});
+	h.SeedVu0Vi(1, 1);
+	h.SeedVu0Vi(REG_TPC, kBase / 8);
+	h.SeedVu0Vi(REG_VPU_STAT, 1);
+	vuRegs[0].flags = 0;
+	vuRegs[0].cycle = cpuRegs.cycle;
+	h.SetGpr128(r_t0, kFirst, kFirst);
+	h.SetGpr128(r_t1, kSecond, kSecond);
+
+	// Eight cycles from the release to the next input: room for VU0 to leave
+	// the loop and copy vf1, and fewer than the 16 cycles the JIT once ran it
+	// ahead by.
+	h.LoadProgram({
+		QMTC2(r_t0, 1),    // the input for this pass
+		CTC2(0, 1),        // release the wait
+		NOP, NOP, NOP, NOP, NOP, NOP, NOP, NOP,
+		QMTC2(r_t1, 1),    // the input for the next pass
+		QMFC2_I(r_t2, 10), // what the loop copied; drains VU0 to its E-bit
+	});
+	h.RunJitNoDiff();
+
+	EXPECT_EQ(h.GetGpr64Jit(r_t2), kFirst) << "VU0 read the input written after the release";
+	EXPECT_EQ(h.GetGprUpper64Jit(r_t2), kFirst);
+	EXPECT_EQ(h.GetVu0ViJit(REG_VPU_STAT) & 1, 0u);
+}
+
 } // namespace recompiler_tests

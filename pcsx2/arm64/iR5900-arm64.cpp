@@ -67,7 +67,6 @@ u32 pc;
 int g_branch;
 u32 target;
 u32 s_nBlockCycles;
-bool s_nBlockInterlocked;
 
 // The issue model's state for the path being compiled (R5900IssueModel.h).
 // Each instruction adds what it costs the path to s_nBlockCycles as it is
@@ -4907,7 +4906,6 @@ static void recRecompile(const u32 startpc)
 	s_nBlockCycles = 0;
 	R5900::Issue::Reset(s_eeIssue);
 	s_eeIssueExitCharged = false;
-	s_nBlockInterlocked = false;
 	s_eeBlockHasFormChange = false; // per-block, so the block counter counts blocks
 
 	// A recompile at a startpc reuses the existing BASEBLOCKEX — drop any

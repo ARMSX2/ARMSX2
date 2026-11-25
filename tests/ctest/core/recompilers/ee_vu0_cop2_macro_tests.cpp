@@ -34,7 +34,6 @@ bool mVUTestProbe_VIPoolUsable(int hostreg, bool cop2mode);
 
 // VE-08: thin rec-only sync helpers, defined in arm64/iCOP2-arm64.cpp.
 void vu0SyncThin();
-void vu0SyncRunAheadThin();
 
 namespace recompiler_tests {
 
@@ -2374,20 +2373,15 @@ TEST(EeVu0Cop2Macro, PinnedV0SurvivesMacroMemoryOpsAndMicroDispatch)
 }
 
 // =========================================================================
-//  VE-08 — thin sync helpers (vu0SyncThin / vu0SyncRunAheadThin)
+//  VE-08 — thin sync helper (vu0SyncThin)
 // =========================================================================
-// These are the BL targets of the rec-emitted COP2 sync sites
-// (cop2EmitConditionalSync). Contract pinned here:
+// The BL target of the rec-emitted COP2 sync sites (cop2EmitConditionalSync).
+// Contract pinned here:
 //   - the emitted site owns the VPU_STAT gate (Tbz) and the cycle flush;
-//     the helpers do a bare delta clamp + CpuVU0->Execute tail-call.
-//   - dispatch DECISIONS are bit-identical to _vu0run's sync path:
-//     delta < 0 dispatches nothing; delta >= 0 dispatches (including
-//     Execute(0) on the exact variant — skipping delta == 0 shifts VU0
-//     run-ahead timing and moved the UYA stepdiff signature off the
-//     known-benign timer block, so VE-08 is wrapper thinning ONLY).
-//   - run-ahead floors the dispatch at 16 cycles (mirrors _vu0run /
-//     upstream CalculateMinRunCycles); the exact variant passes delta
-//     through untouched.
+//     the helper does a bare delta clamp + CpuVU0->Execute tail-call.
+//   - dispatch decisions are _vu0run's sync path's: delta < 0 dispatches
+//     nothing; delta >= 0 dispatches exactly delta, Execute(0) included.
+//     Nothing floors the grant: VU0 never runs past the EE's clock.
 
 class CaptureVU0CPU final : public BaseVUmicroCPU
 {
@@ -2443,26 +2437,16 @@ TEST(EeVu0SyncThin, NegativeDeltaDispatchesNothing)
 {
 	SyncThinFixture f(-5);
 	vu0SyncThin();
-	vu0SyncRunAheadThin();
 	EXPECT_EQ(f.mock.executeCalls, 0);
 }
 
 TEST(EeVu0SyncThin, ZeroDeltaMatchesVu0Run)
 {
-	// _vu0run parity: delta == 0 still dispatches — Execute(0) exact,
-	// Execute(16) with the run-ahead floor.
-	{
-		SyncThinFixture f(0);
-		vu0SyncThin();
-		EXPECT_EQ(f.mock.executeCalls, 1);
-		EXPECT_EQ(f.mock.lastCycles, 0u);
-	}
-	{
-		SyncThinFixture f(0);
-		vu0SyncRunAheadThin();
-		EXPECT_EQ(f.mock.executeCalls, 1);
-		EXPECT_EQ(f.mock.lastCycles, 16u);
-	}
+	// _vu0run parity: delta == 0 still dispatches, as Execute(0).
+	SyncThinFixture f(0);
+	vu0SyncThin();
+	EXPECT_EQ(f.mock.executeCalls, 1);
+	EXPECT_EQ(f.mock.lastCycles, 0u);
 }
 
 TEST(EeVu0SyncThin, ExactPassesSmallDeltaThrough)
@@ -2473,45 +2457,11 @@ TEST(EeVu0SyncThin, ExactPassesSmallDeltaThrough)
 	EXPECT_EQ(f.mock.lastCycles, 3u);
 }
 
-TEST(EeVu0SyncThin, RunAheadFloorsSmallDeltaTo16)
+TEST(EeVu0SyncThin, LargeDeltaPassesThrough)
 {
-	SyncThinFixture f(3);
-	vu0SyncRunAheadThin();
-	EXPECT_EQ(f.mock.executeCalls, 1);
-	EXPECT_EQ(f.mock.lastCycles, 16u);
-}
-
-TEST(EeVu0SyncThin, RunAheadFloorBoundaryAt16)
-{
-	{
-		SyncThinFixture f(15);
-		vu0SyncRunAheadThin();
-		EXPECT_EQ(f.mock.lastCycles, 16u);
-	}
-	{
-		SyncThinFixture f(16);
-		vu0SyncRunAheadThin();
-		EXPECT_EQ(f.mock.lastCycles, 16u);
-	}
-	{
-		SyncThinFixture f(17);
-		vu0SyncRunAheadThin();
-		EXPECT_EQ(f.mock.lastCycles, 17u);
-	}
-}
-
-TEST(EeVu0SyncThin, LargeDeltaPassesThroughBothVariants)
-{
-	{
-		SyncThinFixture f(5000);
-		vu0SyncThin();
-		EXPECT_EQ(f.mock.lastCycles, 5000u);
-	}
-	{
-		SyncThinFixture f(5000);
-		vu0SyncRunAheadThin();
-		EXPECT_EQ(f.mock.lastCycles, 5000u);
-	}
+	SyncThinFixture f(5000);
+	vu0SyncThin();
+	EXPECT_EQ(f.mock.lastCycles, 5000u);
 }
 
 // =========================================================================

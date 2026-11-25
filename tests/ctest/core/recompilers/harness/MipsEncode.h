@@ -460,8 +460,8 @@ constexpr u32 QMFC2(u32 rt, u32 fs) { return COP2(0x01, rt, fs, 0, 0); }
 constexpr u32 QMTC2(u32 rt, u32 fs) { return COP2(0x05, rt, fs, 0, 0); }
 
 // Interlocked (.I) forms — funct bit 0 set. The recompiler routes these
-// through the COP2_Interlock sync protocol (exact VU0 catch-up + wait/finish)
-// instead of the non-interlock run-ahead gating.
+// through the COP2_Interlock sync protocol (VU0 catch-up + wait/finish)
+// instead of the non-interlocked catch-up alone.
 constexpr u32 CFC2_I (u32 rt, u32 fs) { return COP2(0x02, rt, fs, 0, 1); }
 constexpr u32 CTC2_I (u32 rt, u32 fs) { return COP2(0x06, rt, fs, 0, 1); }
 constexpr u32 QMFC2_I(u32 rt, u32 fs) { return COP2(0x01, rt, fs, 0, 1); }

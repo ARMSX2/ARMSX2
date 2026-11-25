@@ -679,16 +679,12 @@ void EeRecTestHarness::EnableVu0Capture()
 
 	// The control registers at VI[24..31] (TPC/CMSAR0/FBRST/VPU_STAT/CMSAR1),
 	// the M-bit handshake flag, VU0's clock, and the interpreter's resume
-	// sentinels were historically left to inherit from the previous test.
-	// That inheritance is what produced the order-dependent EeVu0* failures
-	// under --gtest_shuffle: a VU-harness test leaves vuRegs[0] mid-program
-	// (VPU_STAT.0 set, a couple of pairs from its E-bit), and the next EE
-	// test's non-interlocked COP2 sync then diverges on the 16-cycle
-	// run-ahead floor — the JIT's floored grant drains the leftover program
-	// while the interp's exact-delta sync leaves it running. That divergence
-	// is by design (x86 parity); see ee_vu0_runahead_floor_tests.cpp, which
-	// pins it with deliberately constructed state. Reset to idle here; tests
-	// that want a running VU0 construct it explicitly after this call.
+	// sentinels were historically left to inherit from the previous test, which
+	// made EeVu0* results depend on test order under --gtest_shuffle: a
+	// VU-harness test leaves vuRegs[0] mid-program and the next EE test's COP2
+	// sync runs the leftover. Reset to idle here; tests that want a running
+	// VU0 construct it explicitly after this call
+	// (ee_vu0_noninterlocked_sync_tests.cpp).
 	for (int i = 24; i < 32; i++)
 		vu.VI[i].UL = 0;
 	vu.flags = 0;

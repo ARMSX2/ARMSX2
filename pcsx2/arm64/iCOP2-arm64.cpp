@@ -1399,28 +1399,18 @@ extern void _vu0WaitMicro();
 // (SD865 locked-60: aether's vuSync runs 0.22 Mcyc/f where our generic
 // _vu0run specialization paid 0.60 for the same payload).
 //
-// The dispatch DECISIONS are bit-identical to _vu0run's sync path — same
-// >= 0 gate, same 16-cycle floor. (Aether additionally skips delta == 0;
-// that shifts VU0 run-ahead timing and moved the UYA stepdiff signature
-// off the known-benign 0x0013d208 timer block, so it was dropped —
-// wrapper thinning only, no timing change.) Pinned by EeVu0SyncThin.*.
+// The dispatch decisions are _vu0run's sync path's: a negative delta runs
+// nothing, any other runs exactly the delta, 0 included. VU0 never runs past
+// the EE's clock: a VU0 program waiting on a register the EE writes would
+// spend cycles beyond it in its wait loop before the write that follows, and
+// see the write late. Pinned by EeVu0SyncThin.* and EeVu0WaitRelease.*.
 
-// Exact catch-up (interlocked COP2 ops) — vu0Sync minus the wrapper.
+// Exact catch-up for every COP2 sync site — vu0Sync minus the wrapper.
 void vu0SyncThin()
 {
 	const s32 runCycles = static_cast<s32>(static_cast<s64>(cpuRegs.cycle - VU0.cycle));
 	if (runCycles >= 0)
 		CpuVU0->Execute(runCycles);
-}
-
-// Non-interlocked catch-up with the 16-cycle run-ahead floor (mirrors
-// _vu0run / upstream CalculateMinRunCycles — overshooting the EE is fine
-// here; the next sync sees a negative delta and no-ops).
-void vu0SyncRunAheadThin()
-{
-	const s32 runCycles = static_cast<s32>(static_cast<s64>(cpuRegs.cycle - VU0.cycle));
-	if (runCycles >= 0)
-		CpuVU0->Execute(runCycles < 16 ? 16 : runCycles);
 }
 
 // SL-2: seam preparation for the conditional VU0 sync below — the retain
@@ -1434,7 +1424,7 @@ void vu0SyncRunAheadThin()
 //    raw-preserves the caller-saved pool registers around the C calls, so
 //    the values survive both paths in-register. Sound for the same reason
 //    the old writeback-keep + reload was: the VU0-sync callees
-//    (vu0SyncThin/RunAheadThin/_vu0FinishMicro/_vu0WaitMicro →
+//    (vu0SyncThin/_vu0FinishMicro/_vu0WaitMicro →
 //    CpuVU0->Execute) have no path that reads OR writes EE GPRs or fprc —
 //    stale canonical memory during the call is unobservable.
 //  - VIREG entries are freed WITH writeback: VU0 execution writes VU0.VI, so
@@ -1489,28 +1479,27 @@ enum : int
 {
 	kCop2SyncStubSyncFinish, // vu0SyncThin + _vu0FinishMicro (interlocked op)
 	kCop2SyncStubSyncWait, // vu0SyncThin + _vu0WaitMicro (interlocked QMTC2/CTC2)
-	kCop2SyncStubSyncExact, // vu0SyncThin (non-interlock sync in an interlocked block)
-	kCop2SyncStubSyncRunAhead, // vu0SyncRunAheadThin (non-interlock sync)
+	kCop2SyncStubSyncExact, // vu0SyncThin (non-interlocked op, or interlocked with no wait)
 	kCop2SyncStubFinish, // _vu0FinishMicro (finish-only)
 	kCop2SyncStubCount
 };
 static const u8* s_cop2SyncStubs[kCop2SyncStubCount];
 
-// Parked-spin bounce, run-ahead stub only (the "parked" tail below).
+// Parked-spin bounce, exact-sync stub only (the "parked" tail below).
 //
 // A VU0 program can sit in a NOP-only wait loop on a VI register the EE
-// writes. For a run-ahead sync that finds it still there, all
-// recMicroVU0::Execute does is mVUspinBounce: VU0.cycle += max(delta, 16).
+// writes. For a sync that finds it still there, all recMicroVU0::Execute does
+// is mVUspinBounce: VU0.cycle += delta.
 // While mVU0ParkedSpin is armed, the stub answers that here, before touching
 // the stack or the pins, instead of paying for the pin flush and reload, the
 // register saves and two C calls.
 //
 // It has to leave behind exactly what the C++ path does, step for step:
-//   vu0SyncRunAheadThin: publishes cpuRegs.cycle (the slow path's
+//   vu0SyncThin: publishes cpuRegs.cycle (the slow path's
 //     armFlushCycleDelta) and does nothing more when the s32 delta is
 //     negative.
 //   recMicroVU0::Execute: clears VUFLAG_MFLAGSET, bounces (VU0.cycle +=
-//     the floored delta), raises the VU0 interrupt if flags bit 2 is set.
+//     delta), raises the VU0 interrupt if flags bit 2 is set.
 // Arming guarantees the bounce's other preconditions (see mVU0ArmParkedSpin),
 // so what is left to test per sync is the loop condition, which reads the
 // two VI registers the EE writes, and the interrupt bit, which sends the
@@ -1551,15 +1540,11 @@ static void cop2EmitParkedSpinTest(a64::Label* slow, a64::Label* parked)
 // The verdict half: w17 = VU0.flags. Ends in Ret.
 static void cop2EmitParkedSpinBounce()
 {
-	a64::Label negative, floored;
+	a64::Label negative;
 	armFlushCycleDelta(a64::x16); // x16 = cpuRegs.cycle, published
 	armAsm->Ldr(a64::x8, armVU0Mem(&VU0.cycle));
 	armAsm->Sub(a64::w16, a64::w16, a64::w8); // (s32)(cpuRegs.cycle - VU0.cycle)
 	armAsm->Tbnz(a64::w16, 31, &negative);
-	armAsm->Cmp(a64::w16, 16);
-	armAsm->B(&floored, a64::ge);
-	armAsm->Mov(a64::w16, 16);
-	armAsm->Bind(&floored);
 	armAsm->Add(a64::x8, a64::x8, a64::Operand(a64::w16, a64::UXTW));
 	armAsm->Str(a64::x8, armVU0Mem(&VU0.cycle));
 	armAsm->And(a64::w17, a64::w17, ~static_cast<u32>(VUFLAG_MFLAGSET));
@@ -1636,8 +1621,7 @@ void cop2DynGenSyncStubs()
 {
 	s_cop2SyncStubs[kCop2SyncStubSyncFinish] = cop2DynGenOneSyncStub(vu0SyncThin, _vu0FinishMicro);
 	s_cop2SyncStubs[kCop2SyncStubSyncWait] = cop2DynGenOneSyncStub(vu0SyncThin, _vu0WaitMicro);
-	s_cop2SyncStubs[kCop2SyncStubSyncExact] = cop2DynGenOneSyncStub(vu0SyncThin, nullptr);
-	s_cop2SyncStubs[kCop2SyncStubSyncRunAhead] = cop2DynGenOneSyncStub(vu0SyncRunAheadThin, nullptr, /*parkedSpin=*/true);
+	s_cop2SyncStubs[kCop2SyncStubSyncExact] = cop2DynGenOneSyncStub(vu0SyncThin, nullptr, /*parkedSpin=*/true);
 	s_cop2SyncStubs[kCop2SyncStubFinish] = cop2DynGenOneSyncStub(nullptr, _vu0FinishMicro);
 }
 
@@ -1684,12 +1668,6 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)())
 	// Handle interlock (bit 0 set): COP2_Interlock pattern
 	if (interlock)
 	{
-		// An interlocked COP2 op anywhere in the block means VU0 timing must be
-		// exact: forbid the non-interlock run-ahead for the rest of the block so
-		// a later sync can't overshoot the cycle this interlock waits on. Mirrors
-		// upstream's block-level s_nBlockInterlocked (set in COP2_Interlock).
-		s_nBlockInterlocked = true;
-
 		// Interlock requires sync — check if analysis says VU0 could be running
 		if (g_pCurInstInfo->info & EEINST_COP2_SYNC_VU0)
 		{
@@ -1731,17 +1709,7 @@ void cop2EmitConditionalSync(bool interlock, void (*finishFunc)())
 		armAsm->Add(RECCYCLE, RECCYCLE, cycles);
 	recEeNoteChargeSite(EeChargeSite::Cop2SyncPlain);
 
-	if (needsSync)
-	{
-		// Non-interlocked catch-up: run a 16-cycle minimum to amortize the mVU
-		// dispatch envelope over small blocks (6dc5087cb). If the block also
-		// contains an interlocked op, fall back to the exact sync.
-		armEmitCall(s_cop2SyncStubs[s_nBlockInterlocked ? kCop2SyncStubSyncExact : kCop2SyncStubSyncRunAhead]);
-	}
-	else
-	{
-		armEmitCall(s_cop2SyncStubs[kCop2SyncStubFinish]);
-	}
+	armEmitCall(s_cop2SyncStubs[needsSync ? kCop2SyncStubSyncExact : kCop2SyncStubFinish]);
 }
 
 namespace R5900 {
